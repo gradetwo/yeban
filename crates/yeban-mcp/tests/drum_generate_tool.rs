@@ -95,11 +95,16 @@ fn generates_into_new_track_with_synth_kit() {
     let project = project(&dispatcher);
     let track = drum_track(project, "Trap Drums");
     // 电子族：无采样器，一台内置乐器设备，五个键位名参数齐全；
-    // 其后是效果层（trap：通道条 + 混响）。
+    // 其后是效果层。改钉依据（鼓机 v2）：trap 预置 fx 段带 delay
+    // （trap.json: eq/comp + reverb + delay），drum_fx_device_specs
+    // 按 strip → tape → reverb → delay 序产出，trap 无 tape，故效果层
+    // 为通道条 + 混响 + 延迟，共 4 台器件（v1 期望 3 台系 v2 前旧值）。
+    // 鼓总线器件挂在独立的总线轨上，不计入本轨。
     assert!(track.sampler.is_none());
-    assert_eq!(track.devices.len(), 3);
+    assert_eq!(track.devices.len(), 4);
     assert_eq!(track.devices[1].name, "Channel Strip");
     assert_eq!(track.devices[2].name, "Reverb");
+    assert_eq!(track.devices[3].name, "Delay");
     let device = &track.devices[0];
     assert_eq!(device.kind, yeban_model::DeviceKind::InternalInstrument);
     let names: Vec<&str> = device.params.iter().map(|p| p.name.as_str()).collect();
@@ -125,10 +130,13 @@ fn generates_into_new_track_with_synth_kit() {
         panic!("片段必须是 MIDI");
     };
     assert!(!notes.is_empty());
-    // GM 键只来自 trap 预置的道（36/38/42/46/82）。
+    // GM 键只来自 trap 预置的道。改钉依据（鼓机 v2）：trap.json 的道
+    // 为 kick 36 / snare 38 / hihat 42 / crash 49 / shaker 82——v2 以
+    // crash 道取代 v1 的开镲 46 道，故白名单 46 → 49（此断言原被同测
+    // 的器件数断言挡在前面，改钉器件数后才暴露）。
     for note in notes.values() {
         assert!(
-            [36_u8, 38, 42, 46, 82].contains(&note.pitch),
+            [36_u8, 38, 42, 49, 82].contains(&note.pitch),
             "非法 GM 键 {}",
             note.pitch
         );
@@ -144,7 +152,11 @@ fn acoustic_style_binds_sfz_sampler() {
     );
     assert_eq!(result["status"], "success", "{result}");
     let project = project(&dispatcher);
-    let track = drum_track(project, "Rock Drums");
+    // 改钉依据（鼓机 v2 命名口径）：原声族预置名带 Acoustic 前缀
+    // （rock.json name = "Acoustic Rock"，theory 判据
+    // acoustic_factory_styles_carry_acoustic_names_and_chosen_programs
+    // 钉住），轨道名 = format!("{} Drums", preset.name)。
+    let track = drum_track(project, "Acoustic Rock Drums");
     let sampler = track.sampler.as_ref().expect("原声族必须绑采样器");
     assert_eq!(sampler.path, yeban_theory::ACOUSTIC_KIT_SFZ_PATH);
     // rock 的效果层：通道条 + 磁带 + 混响。
@@ -164,7 +176,9 @@ fn same_seed_byte_identical_clip() {
     assert_eq!(generate(&mut b, args)["status"], "success");
     let clip_bytes = |dispatcher: &Dispatcher| -> String {
         let project = project(dispatcher);
-        let track = drum_track(project, "Boom Bap Drums");
+        // 改钉依据同 acoustic_style_binds_sfz_sampler：boombap 预置名
+        // 为 "Acoustic Boom Bap"（v2 Acoustic 前缀口径）。
+        let track = drum_track(project, "Acoustic Boom Bap Drums");
         let placement = track.clips.values().next().expect("摆放");
         let clip = project.clip_pool.get(&placement.clip_id).expect("片段");
         serde_json::to_string(clip).expect("片段可序列化")
@@ -228,7 +242,9 @@ fn unknown_style_is_style_not_found() {
     let available = result["error"]["data"]["availableStyles"]
         .as_array()
         .expect("availableStyles 数组");
-    assert_eq!(available.len(), 10);
+    // 改钉依据（鼓机 v2）：出厂风格由 10 扩到 14（新增 jazz/funk/
+    // rnb/hiphop），FACTORY_SOURCES 在 drum_preset.rs 钉为 14 条。
+    assert_eq!(available.len(), 14);
 }
 
 #[test]
@@ -268,11 +284,13 @@ fn existing_empty_track_gets_default_kit() {
     let project = project(&dispatcher);
     let bass_id = EntityId::from_str(BASS).expect("ULID");
     let bass = project.tracks.get(&bass_id).expect("bass 轨");
-    // lofi 是原声族：空轨装 SFZ 默认鼓组。
-    assert_eq!(
-        bass.sampler.as_ref().map(|s| s.path.as_str()),
-        Some(yeban_theory::ACOUSTIC_KIT_SFZ_PATH)
-    );
+    // 改钉依据（鼓机 v2）：lofi 已转电子族（lofi.json
+    // kit_family = "electronic"），空轨装合成鼓机而非 SFZ 采样器：
+    // sampler 恒空，首台器件为内置乐器（合成鼓组）。
+    assert!(bass.sampler.is_none());
+    let kit = bass.devices.first().expect("空轨须装默认鼓组器件");
+    assert_eq!(kit.kind, yeban_model::DeviceKind::InternalInstrument);
+    assert_eq!(kit.name, "Yeban Drum Kit (Synth)");
 }
 
 #[test]
