@@ -31,14 +31,21 @@
 //! 两者都不需要 `rand` / `getrandom`（`docs/adr/ADR-0001` D20/D21 的零新增依赖倾向）。
 //! 非 Unix 平台上 [`TokenFile::save`] / [`TokenFile::load`] 一律返回
 //! [`SecurityError::UnsupportedPlatform`] —— **明确拒绝，而不是静默放过**。
+//!
+//! [PATCH] Windows 例外：它没有权限位，但**有 ACL**。因此 Windows 上走
+//! `icacls /inheritance:r` + 只授当前用户读，并**读回**真实 ACL 判定
+//! （`win_acl::is_owner_only`）—— 语义等价于 `0600`，收不紧仍然 fail-closed。
+//! 同一个补丁把 Windows 的熵源从"退回确定性回退"改成 `RandomState`（OS 播种，见 `fill_os_random` 的 Windows 实现说明）。
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::fs;
 #[cfg(unix)]
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
+#[cfg(any(unix, windows))]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -74,11 +81,11 @@ pub const OS_ENTROPY_PATH: &str = "/dev/urandom";
 ///
 /// 与 `[ARCH-SEC-004]` 的 `.yeban.tmp-{ulid}` 同形：临时文件与目标**同目录**，
 /// 因此 `rename` 是同目录内的原子替换，不可能 `EXDEV`。
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const TOKEN_TEMP_INFIX: &str = ".tmp-";
 
 /// 进程内临时文件序号（保证同一 PID 的多次 `save` 不会撞名）。
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static TOKEN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 安全模型相关的错误。
@@ -957,12 +964,79 @@ impl TokenFile {
         fs::rename(temp, &self.path)
     }
 
-    /// 非 Unix 平台：明确拒绝，不静默放过。
+    /// Windows：用 owner-only ACL **等价**落实 `0600`，收不紧就 fail-closed。
+    ///
+    /// POSIX 的 `0600` 在 Windows 上没有权限位可写，[PATCH] 因此这里做的是
+    /// **语义等价**而不是放宽：
+    /// 1. 临时文件 `create_new`（与 Unix 同一套三段式落盘，不会有半截文件）；
+    /// 2. `icacls /inheritance:r` 断掉**全部**继承 ACE（SYSTEM / Administrators /
+    ///    Users 随之消失），再 `/grant:r "<user>:R"` 只给**当前用户**读；
+    /// 3. `icacls` **读回**再判一遍（[`win_acl::is_owner_only`]）—— 只要还能看到
+    ///    `Everyone` / `BUILTIN\Users` / `Authenticated Users` 这类宽主体，就
+    ///    **拒绝发布令牌**，不让"权限收不紧"变成一条静默通过的路径；
+    /// 4. 目标已存在时先删再 rename（Windows 的 `rename` 不覆盖既有文件），
+    ///    因此这一步**不是**原子替换 —— 代价写在下面，由读侧的内容校验兜住。
+    ///
+    /// # Errors
+    ///
+    /// `icacls` 不可用 / 权限收不紧 / I/O 失败。
+    #[cfg(windows)]
+    pub fn save(&self, token: &BearerToken) -> Result<(), SecurityError> {
+        let path_text = self.path.display().to_string();
+        let io = |source: std::io::Error| SecurityError::Io {
+            path: path_text.clone(),
+            source,
+        };
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        fs::create_dir_all(&parent).map_err(io)?;
+
+        let temp = parent.join(format!(
+            "{TOKEN_FILE_NAME}{TOKEN_TEMP_INFIX}{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let written = (|| -> Result<(), SecurityError> {
+            {
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp)
+                    .map_err(io)?;
+                file.write_all(token.expose().as_bytes()).map_err(io)?;
+                file.write_all(b"\n").map_err(io)?;
+                file.sync_all().map_err(io)?;
+            }
+            win_acl::restrict_owner_read(&temp)?;
+            if !win_acl::is_owner_only(&temp)? {
+                return Err(SecurityError::InsecureTokenPermissions {
+                    path: path_text.clone(),
+                    mode: 0,
+                    expected: TOKEN_FILE_MODE,
+                });
+            }
+            if self.path.exists() {
+                fs::remove_file(&self.path).map_err(io)?;
+            }
+            fs::rename(&temp, &self.path).map_err(io)
+        })();
+
+        if written.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        written
+    }
+
+    /// 非 Unix / 非 Windows 平台：明确拒绝，不静默放过。
     ///
     /// # Errors
     ///
     /// 永远返回 [`SecurityError::UnsupportedPlatform`]。
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     pub fn save(&self, _token: &BearerToken) -> Result<(), SecurityError> {
         Err(SecurityError::UnsupportedPlatform)
     }
@@ -1013,12 +1087,55 @@ impl TokenFile {
         BearerToken::parse(&text)
     }
 
-    /// 非 Unix 平台：明确拒绝，不静默放过。
+    /// Windows：读取令牌，并用**读回 ACL** 代替 `0600` 位校验。
+    ///
+    /// 判定对象与 Unix 那条逐字同义："这个文件是不是只有属主能读"。差别只在
+    /// 取证方式 —— Windows 没有权限位，因此 [`win_acl::is_owner_only`] 去问
+    /// `icacls`，只要还能看到 `Everyone` / `BUILTIN\Users` 这类宽主体就报
+    /// [`SecurityError::InsecureTokenPermissions`]（`mode: 0` 表示"平台没有这个
+    /// 数值"，而不是"权限是 000"）。
+    ///
+    /// # Errors
+    ///
+    /// 路径是符号链接、ACL 不是 owner-only、内容不是 64 位十六进制、I/O 失败。
+    #[cfg(windows)]
+    pub fn load(&self) -> Result<BearerToken, SecurityError> {
+        let path_text = self.path.display().to_string();
+        let io = |source: std::io::Error| SecurityError::Io {
+            path: path_text.clone(),
+            source,
+        };
+        let link_meta = fs::symlink_metadata(&self.path).map_err(io)?;
+        if link_meta.file_type().is_symlink() {
+            return Err(SecurityError::TokenPathIsSymlink { path: path_text });
+        }
+        if !win_acl::is_owner_only(&self.path)? {
+            return Err(SecurityError::InsecureTokenPermissions {
+                path: path_text,
+                mode: 0,
+                expected: TOKEN_FILE_MODE,
+            });
+        }
+        let text = fs::read_to_string(&self.path).map_err(io)?;
+        if text.trim().is_empty() {
+            return Err(SecurityError::MalformedTokenFile {
+                path: path_text,
+                reason: if text.is_empty() {
+                    String::from("空文件")
+                } else {
+                    String::from("只有空白字符")
+                },
+            });
+        }
+        BearerToken::parse(&text)
+    }
+
+    /// 非 Unix / 非 Windows 平台：明确拒绝，不静默放过。
     ///
     /// # Errors
     ///
     /// 永远返回 [`SecurityError::UnsupportedPlatform`]。
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     pub fn load(&self) -> Result<BearerToken, SecurityError> {
         Err(SecurityError::UnsupportedPlatform)
     }
@@ -1071,9 +1188,155 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), SecurityError> {
 /// # Errors
 ///
 /// 永远返回 [`SecurityError::UnsupportedPlatform`]。
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 pub fn fill_os_random(_buf: &mut [u8]) -> Result<(), SecurityError> {
     Err(SecurityError::UnsupportedPlatform)
+}
+
+/// Windows 上的 OS 熵源。
+///
+/// [PATCH] 之前这里走 `UnsupportedPlatform`，`BearerToken::generate` 于是退回
+/// [`fill_deterministic`]（时间 + PID + 栈地址），令牌**不是**不可预测的 ——
+/// 而它是 UI 控制面的唯一凭据。
+///
+/// ## 为什么不是 `BCryptGenRandom`
+///
+/// 那个调用必须写 `unsafe` 块，而本 crate 的 `#![forbid(unsafe_code)]` 是一条
+/// 红线；为一条令牌就把它开个洞不值得。这里改用 `std` 自己那条**已经被 OS 播种**
+/// 的哈希键：`RandomState::new()` 的键来自 `std` 的 OS 随机源
+/// （Windows 上即 `RtlGenRandom`），每次 `build_hasher()` 得到的 SipHash 都以
+/// 这对**不可预测**的键为种子。于是"没有 `unsafe`、没有新依赖、种子来自 OS"
+/// 三件事同时成立。
+///
+/// 诚实登记它的边界：这是**带随机种子的哈希**，不是密码学 KDF。它够用于
+/// "本机进程间的一次性凭据"，**不**用于会话密钥 —— 与本模块自始的定位一致。
+///
+/// # Errors
+///
+/// 不产生错误（`Result` 保留是为了与 Unix 腿同一签名）。
+#[cfg(windows)]
+pub fn fill_os_random(buf: &mut [u8]) -> Result<(), SecurityError> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher as _, Hasher as _};
+
+    let seed = RandomState::new();
+    let mut written = 0usize;
+    while written < buf.len() {
+        let mut hasher = seed.build_hasher();
+        hasher.write_u64(TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let digest = hasher.finish().to_le_bytes();
+        for byte in &digest {
+            if written == buf.len() {
+                break;
+            }
+            buf[written] = *byte;
+            written += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Windows 上"`0600` 等价"的唯一实现点：`icacls` 断继承 + 只授当前用户读，
+/// 并且每次判定都**读回**真实 ACL，而不是相信刚才那条命令的退出码。
+#[cfg(windows)]
+mod win_acl {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::SecurityError;
+
+    /// 宽主体名单 —— 出现任何一个就说明"这个文件不止属主能读"。
+    /// 比对时按 `icacls` 里 `DOMAIN\Name:(R)` 的**主体部分**做不区分大小写的包含判定。
+    const BROAD_PRINCIPALS: [&str; 7] = [
+        "Everyone",
+        "BUILTIN\\Users",
+        "Authenticated Users",
+        "INTERACTIVE",
+        "ANONYMOUS LOGON",
+        "NT AUTHORITY\\NETWORK",
+        "NETWORK SERVICE",
+    ];
+
+    fn io_error(path: &Path, message: impl Into<String>) -> SecurityError {
+        SecurityError::Io {
+            path: path.display().to_string(),
+            source: std::io::Error::other(message.into()),
+        }
+    }
+
+    fn icacls(path: &Path, args: &[&str]) -> Result<String, SecurityError> {
+        let output = Command::new("icacls")
+            .arg(path)
+            .args(args)
+            .output()
+            .map_err(|error| io_error(path, format!("icacls 无法执行: {error}")))?;
+        if !output.status.success() {
+            return Err(io_error(
+                path,
+                format!(
+                    "icacls {args:?} 失败 ({}) : {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// 当前用户名（`USERNAME`）。没有它就没法写 owner-only ACL ⇒ 直接拒绝。
+    fn current_user(path: &Path) -> Result<String, SecurityError> {
+        std::env::var("USERNAME")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| io_error(path, "环境变量 USERNAME 缺失, 无法把令牌收成 owner-only"))
+    }
+
+    /// 断继承 → 只授当前用户读。两步都跑完才算成功。
+    pub(super) fn restrict_owner_read(path: &Path) -> Result<(), SecurityError> {
+        let user = current_user(path)?;
+        // `/inheritance:r`：删掉所有**继承**来的 ACE（SYSTEM / Administrators / Users）。
+        icacls(path, &["/inheritance:r"])?;
+        // `/grant:r`：替换掉该主体既有的显式授权，只留 `R`。
+        icacls(path, &["/grant:r", &format!("{user}:R")])?;
+        Ok(())
+    }
+
+    /// 读回 ACL 判"是不是只有属主能读"。
+    ///
+    /// 判定口径：**没有**任何宽主体 ACE，**且**至少有一条属于当前用户的 ACE。
+    /// `icacls` 输出形如
+    /// `session.token DESKTOP-XX\Administrator:(R)` / `              BUILTIN\Users:(RX)`，
+    /// 因此按 `:(` 切出主体名再比。
+    pub(super) fn is_owner_only(path: &Path) -> Result<bool, SecurityError> {
+        let user = current_user(path)?;
+        let report = icacls(path, &[])?;
+        let mut has_owner = false;
+        for line in report.lines() {
+            let Some((principal, _rights)) = line.split_once(":(") else {
+                continue;
+            };
+            // 路径本身在最左，取最后一段当作主体（`DESKTOP-XX\Administrator`）。
+            let principal = principal.trim();
+            let principal = principal
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or(principal);
+            let upper = principal.to_ascii_uppercase();
+            if BROAD_PRINCIPALS
+                .iter()
+                .any(|broad| upper.contains(&broad.to_ascii_uppercase()))
+            {
+                return Ok(false);
+            }
+            if upper.ends_with(&format!("\\{}", user.to_ascii_uppercase()))
+                || upper == user.to_ascii_uppercase()
+            {
+                has_owner = true;
+            }
+        }
+        Ok(has_owner)
+    }
 }
 
 /// 进程内单调计数器（保证同一纳秒内的多次生成长度不同的输出）。
@@ -1862,22 +2125,24 @@ mod tests {
         );
     }
 
+    /// [PATCH] Windows：令牌文件**可用**（ACL 等价 `0600`），不再报
+    /// `UnsupportedPlatform`。这里钉住三件事：真的写得进去、读回来是同一枚令牌、
+    /// 落盘后的 ACL 里没有任何宽主体。
     #[test]
-    #[cfg(not(unix))]
-    fn token_file_is_unsupported_on_non_unix() {
-        // 明确拒绝, 而不是静默放过权限校验。
-        let path = std::env::temp_dir()
-            .join("yeban-mcp-token-non-unix")
-            .join(TOKEN_FILE_NAME);
-        let file = TokenFile::new(path);
-        assert!(matches!(
-            file.save(&fixture_token(0x77)),
-            Err(SecurityError::UnsupportedPlatform)
+    #[cfg(windows)]
+    fn token_file_roundtrips_with_owner_only_acl_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        assert!(matches!(
-            file.load(),
-            Err(SecurityError::UnsupportedPlatform)
-        ));
+        let file = TokenFile::new(dir.join(TOKEN_FILE_NAME));
+        let token = fixture_token(0x5a);
+        file.save(&token).expect("Windows 上应当写得进去");
+        assert!(super::win_acl::is_owner_only(file.path()).expect("读回 ACL"));
+        let loaded = file.load().expect("Windows 上应当读得回来");
+        assert_eq!(loaded.expose(), token.expose());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
