@@ -794,7 +794,7 @@ impl App {
             return Vec::new();
         };
         let mut list: Vec<MidiNote> = notes.values().cloned().collect();
-        list.sort_by(|a, b| (a.start_tick, a.pitch, a.id).cmp(&(b.start_tick, b.pitch, b.id)));
+        list.sort_by_key(|a| (a.start_tick, a.pitch, a.id));
         list
     }
 
