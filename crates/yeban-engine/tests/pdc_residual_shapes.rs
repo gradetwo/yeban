@@ -269,3 +269,213 @@ fn bus_delay_beyond_one_quantum_lands_on_plan() {
         );
     }
 }
+
+// ===========================================================================
+// S2：混合轨（自有音符 + 入边）＋逐边档（两条出边补偿量不同）
+// ===========================================================================
+
+#[derive(Clone, Copy)]
+struct S2Ids {
+    master: EntityId,
+    feeder: EntityId,
+    split: EntityId,
+    bus: EntityId,
+}
+
+/// feeder 在 tick 40（第 1000 帧）才发声 ⇒ [0, 1000) 窗内只有 split 的
+/// 自有分量，可以逐位断言；窗外用「两份参考之和」的 epsilon 断言。
+const FEEDER_START_TICK: u64 = 40;
+
+fn s2_project(
+    ids: S2Ids,
+    feeder_edge: bool,
+    feeder_notes: bool,
+    split_notes: bool,
+) -> YebanProjectV1 {
+    let feeder = note_track_v(
+        ids.feeder,
+        "Feeder",
+        FEEDER_START_TICK,
+        60,
+        feeder_notes,
+        QUIET,
+    );
+    let split = note_track_v(ids.split, "Split", 0, 72, split_notes, QUIET);
+    let bus = (aux_bus(ids.bus, "Bus", 64), None);
+    let mut edges = vec![
+        (ids.split, ids.master),
+        (ids.split, ids.bus),
+        (ids.bus, ids.master),
+    ];
+    if feeder_edge {
+        edges.push((ids.feeder, ids.split));
+    }
+    let graph = routing(vec![ids.feeder, ids.split, ids.bus, ids.master], &edges);
+    assemble(vec![feeder, split, bus], ids.master, graph)
+}
+
+/// S2：split 有自有音符，又收 feeder 的入边；两条出边 `D = 64 / 0`
+/// （逐边档）。旧实现里 split 的边线在逐轨段喂自有内容、3a⁗ 再喂收入
+/// ⇒ 两份真实流交错进同一条线，自有分量的后半段每量子提前 128 帧。
+/// 断言：feeder 静音窗内 mixed 与 own_ref **逐位相同**；全程与
+/// own_ref + feed_ref 之和的偏差 ≤ 1e-5（求和结合律的 ulp 级）。
+#[test]
+fn mixed_track_with_incoming_lands_per_edge() {
+    let ids = S2Ids {
+        master: EntityId::new(),
+        feeder: EntityId::new(),
+        split: EntityId::new(),
+        bus: EntityId::new(),
+    };
+
+    // ---- 计划面 ----
+    {
+        let snapshot = EngineSnapshot::from_project(&s2_project(ids, true, true, true), 1)
+            .expect("工程必须合法");
+        let plan = snapshot.pdc();
+        assert_eq!(
+            plan.edge_compensation(&ids.split, &ids.master),
+            Some(64),
+            "计划：split→master 必须吃 64"
+        );
+        assert_eq!(
+            plan.edge_compensation(&ids.split, &ids.bus),
+            Some(0),
+            "计划：split→bus 必须吃 0"
+        );
+    }
+
+    let mixed = render(&s2_project(ids, true, true, true), QUANTA);
+    // ⚠ own_ref 里 feeder 必须**静音**：一条没有出边的轨按引擎口径直连
+    // master 兜底发声，只删入边会让它从第 1000 帧起污染参考。
+    let own_ref = render(&s2_project(ids, false, false, true), QUANTA);
+    let feed_ref = render(&s2_project(ids, true, true, false), QUANTA);
+
+    assert_eq!(mixed.stats.pdc_edge_unarmed_edges, 0, "两条出边都必须进池");
+    let feed_loud = feed_ref.left.iter().filter(|s| s.abs() > 1e-3).count();
+    assert!(feed_loud > 500, "feeder 分量必须足够响（实测 {feed_loud}）");
+
+    // ---- 窗内逐位：[0, 1000) 只有自有分量 ----
+    let window = (FEEDER_START_TICK * SAMPLES_PER_TICK) as usize;
+    for index in 0..window {
+        assert_eq!(
+            mixed.left[index].to_bits(),
+            own_ref.left[index].to_bits(),
+            "S2 第 {index} 帧：feeder 静音窗内必须与自有参考逐位相同"
+        );
+    }
+
+    // ---- 全程落点：与两份参考之和的偏差必须是 ulp 级 ----
+    let mut max_err = 0.0f32;
+    for index in 0..mixed.frames() {
+        let expected = own_ref.left[index] + feed_ref.left[index];
+        max_err = max_err.max((mixed.left[index] - expected).abs());
+    }
+    assert!(
+        max_err <= 1e-5,
+        "S2 全程最大偏差 {max_err} 必须 ≤ 1e-5（交错喂线会给出 1e-1 级偏差）"
+    );
+}
+
+// ===========================================================================
+// S3：混合轨（自有音符 + 入边）＋节点级档（单条出边）
+// ===========================================================================
+
+#[derive(Clone, Copy)]
+struct S3Ids {
+    master: EntityId,
+    feeder: EntityId,
+    split: EntityId,
+    late: EntityId,
+    bus: EntityId,
+}
+
+fn s3_project(
+    ids: S3Ids,
+    feeder_edge: bool,
+    feeder_notes: bool,
+    split_notes: bool,
+    late_notes: bool,
+) -> YebanProjectV1 {
+    let feeder = note_track_v(
+        ids.feeder,
+        "Feeder",
+        FEEDER_START_TICK,
+        60,
+        feeder_notes,
+        QUIET,
+    );
+    let split = note_track_v(ids.split, "Split", 0, 72, split_notes, QUIET);
+    let late = note_track(ids.late, "Late", 0, 48, late_notes);
+    let bus = (aux_bus(ids.bus, "Bus", 64), None);
+    let mut edges = vec![
+        (ids.split, ids.master),
+        (ids.late, ids.bus),
+        (ids.bus, ids.master),
+    ];
+    if feeder_edge {
+        edges.push((ids.feeder, ids.split));
+    }
+    let graph = routing(
+        vec![ids.feeder, ids.split, ids.late, ids.bus, ids.master],
+        &edges,
+    );
+    assemble(vec![feeder, split, late, bus], ids.master, graph)
+}
+
+/// S3：split 只有一条出边（`D = 64`，节点级线），同样有自有音符 + 入边。
+/// 旧实现里节点级线在逐轨段被自有内容喂一次、3a⁗ 再被收入喂一次。
+/// 参考的构造：own_ref 保留 late 支路（在两份参考里只数一次）、
+/// feed_ref 把 split 与 late 都静音（只剩 feeder 分量）。
+#[test]
+fn mixed_track_with_incoming_lands_on_node_line() {
+    let ids = S3Ids {
+        master: EntityId::new(),
+        feeder: EntityId::new(),
+        split: EntityId::new(),
+        late: EntityId::new(),
+        bus: EntityId::new(),
+    };
+
+    // ---- 计划面 ----
+    {
+        let snapshot = EngineSnapshot::from_project(&s3_project(ids, true, true, true, true), 1)
+            .expect("工程必须合法");
+        let plan = snapshot.pdc();
+        assert_eq!(
+            plan.edge_compensation(&ids.split, &ids.master),
+            Some(64),
+            "计划：split→master 必须吃 64"
+        );
+    }
+
+    let mixed = render(&s3_project(ids, true, true, true, true), QUANTA);
+    // ⚠ own_ref 里 feeder 必须**静音**（同 S2：无出边的轨直连 master 兜底）。
+    let own_ref = render(&s3_project(ids, false, false, true, true), QUANTA);
+    let feed_ref = render(&s3_project(ids, true, true, false, false), QUANTA);
+
+    assert_eq!(mixed.stats.pdc_unarmed_nodes, 0, "节点线必须进池");
+    let feed_loud = feed_ref.left.iter().filter(|s| s.abs() > 1e-3).count();
+    assert!(feed_loud > 500, "feeder 分量必须足够响（实测 {feed_loud}）");
+
+    // ---- 窗内逐位 ----
+    let window = (FEEDER_START_TICK * SAMPLES_PER_TICK) as usize;
+    for index in 0..window {
+        assert_eq!(
+            mixed.left[index].to_bits(),
+            own_ref.left[index].to_bits(),
+            "S3 第 {index} 帧：feeder 静音窗内必须与自有参考逐位相同"
+        );
+    }
+
+    // ---- 全程落点 ----
+    let mut max_err = 0.0f32;
+    for index in 0..mixed.frames() {
+        let expected = own_ref.left[index] + feed_ref.left[index];
+        max_err = max_err.max((mixed.left[index] - expected).abs());
+    }
+    assert!(
+        max_err <= 1e-5,
+        "S3 全程最大偏差 {max_err} 必须 ≤ 1e-5（交错喂线会给出 1e-1 级偏差）"
+    );
+}
