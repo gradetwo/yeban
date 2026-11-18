@@ -478,6 +478,99 @@
               }
             }
           },
+          "lane_chains": {
+            "type": "array",
+            "description": "Optional per-lane (per-piece) processing chains addressed by GM key groups (LaneChainDef). Absent key or an empty array means \"this track has no per-lane chains\" and is the semantic default, so the writer omits it when empty; projects written before this field existed load unchanged. Groups are normalized: keys strictly ascending and non-empty within a group, groups mutually non-overlapping and ordered by first key, at most 16 groups, every device latency_samples is 0 (lane branches do no PDC).",
+            "items": {
+              "type": "object",
+              "required": [
+                "keys",
+                "name",
+                "devices"
+              ],
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 127
+                  },
+                  "minItems": 1
+                },
+                "name": {
+                  "type": "string"
+                },
+                "devices": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "kind",
+                      "bypassed",
+                      "params",
+                      "latency_samples"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                        "description": "ULID in Crockford Base32 (26 chars)"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "DeviceKind spelling (InternalInstrument / InternalEffect / ExternalInstrument / ExternalEffect); kept a plain string here so the schema vocabulary registry is unchanged."
+                      },
+                      "bypassed": {
+                        "type": "boolean"
+                      },
+                      "params": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "name",
+                            "value"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            },
+                            "unit": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "latency_samples": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "pan": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": -1.0,
+                  "maximum": 1.0
+                }
+              }
+            }
+          },
           "macros": {
             "type": "array",
             "items": {

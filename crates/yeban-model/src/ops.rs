@@ -53,8 +53,9 @@ use crate::music::{MidiNote, SlideConfig};
 use crate::preset::TrackPresetState;
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, KeySignature, LoopConfig, MAX_BPM, MIN_BPM, RoutingEdge,
-    SamplerBinding, SceneV3, SectionV3, TimeSignature, TrackV3, TransportConfig, YebanProjectV1,
+    ClipPoolEntry, DeviceDefinition, KeySignature, LaneChainDef, LoopConfig, MAX_BPM, MIN_BPM,
+    RoutingEdge, SamplerBinding, SceneV3, SectionV3, TimeSignature, TrackV3, TransportConfig,
+    YebanProjectV1, validate_lane_chains,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -1134,6 +1135,23 @@ pub enum Op {
         /// 修改后的绑定（`None` = 解绑 = 回到"不用采样器"）。
         new_sampler: Option<SamplerBinding>,
     },
+    /// 整表替换音轨的**逐件链组**（[`TrackV3::lane_chains`]，逐件处理线期 2）。
+    ///
+    /// 与 [`Op::SetTrackSampler`] 同型：只写这一个字段，整表换值（组数至多 16，
+    /// 不设逐组增删改的细粒度变体——逐件链的编辑入口是生成器整表重建与将来的
+    /// 专用编辑面）。两边都是规范化形态的 `Vec<LaneChainDef>`：`old` 与当前值
+    /// 逐项相等才放行（陈旧载荷必被拒）；`new` 必须先过
+    /// [`validate_lane_chains`]（组内升序非空、组间不重叠、组序、设备零延迟、
+    /// 声相范围），非规范化载荷在校验期响亮拒绝，⛔ 不静默重排后落盘。
+    /// 空表是一等状态（"这条轨没有逐件链"），设成空表 = 清除全部逐件链。
+    SetTrackLaneChains {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的逐件链组（空表 = 该轨本来没有逐件链）。
+        old_lane_chains: Vec<LaneChainDef>,
+        /// 修改后的逐件链组（空表 = 清除）。
+        new_lane_chains: Vec<LaneChainDef>,
+    },
     /// 设置音轨的**预制状态**（[`TrackV3::preset`]，设计稿 §2.6）。
     ///
     /// 与 [`Op::SetTrackSampler`] 同型：只写这一个字段（`preset_id` /
@@ -1468,6 +1486,7 @@ impl Op {
             Self::SetTrackName { .. } => "SetTrackName",
             Self::SetTrackColor { .. } => "SetTrackColor",
             Self::SetTrackSampler { .. } => "SetTrackSampler",
+            Self::SetTrackLaneChains { .. } => "SetTrackLaneChains",
             Self::SetTrackPreset { .. } => "SetTrackPreset",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
@@ -2180,6 +2199,19 @@ impl Op {
                 ..
             } => {
                 if doc.track(track_id)?.sampler != *old_sampler {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            // 与 `SetTrackSampler` 同型的整表替换，但多一道：`new` 侧必须先过
+            // 逐件链规范化校验（非规范化载荷响亮拒绝，⛔ 不静默重排后落盘）。
+            Self::SetTrackLaneChains {
+                track_id,
+                old_lane_chains,
+                new_lane_chains,
+            } => {
+                validate_lane_chains(new_lane_chains)?;
+                if doc.track(track_id)?.lane_chains != *old_lane_chains {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -3064,6 +3096,16 @@ impl Op {
                 old_sampler: new_sampler.clone(),
                 new_sampler: old_sampler.clone(),
             },
+            // 纯结构化取反：只交换"前 / 后"两张逐件链表（同 `SetTrackSampler`）。
+            Self::SetTrackLaneChains {
+                track_id,
+                old_lane_chains,
+                new_lane_chains,
+            } => Self::SetTrackLaneChains {
+                track_id: *track_id,
+                old_lane_chains: new_lane_chains.clone(),
+                new_lane_chains: old_lane_chains.clone(),
+            },
             Self::SetTrackPreset {
                 track_id,
                 old_preset,
@@ -3615,6 +3657,16 @@ impl Op {
                 ..
             } => {
                 doc.track_mut(track_id)?.sampler = new_sampler.clone();
+                Ok(())
+            }
+            // 只写那**一个**逐件链字段（整表替换）：⛔ 不碰设备链、宏、自动化、
+            // 摆放、混音标量，也⛔ 不碰其它轨。
+            Self::SetTrackLaneChains {
+                track_id,
+                new_lane_chains,
+                ..
+            } => {
+                doc.track_mut(track_id)?.lane_chains = new_lane_chains.clone();
                 Ok(())
             }
             // 只写那**一个**预制状态字段：不碰设备链、宏、自动化、路由、混音标量。
@@ -4732,6 +4784,19 @@ mod tests {
                     path: "instruments/lead.sfz".to_owned(),
                 }),
             },
+            // 逐件链组：整表替换。`old_lane_chains: Vec::new()` 对应夹具的
+            // `TrackV3::default()`（空表 = 无逐件链，是一等状态）；新值一组
+            // 帽键（闭镲 42 / 脚踏 44 / 开镲 46 同一 choke 组，必须同组）。
+            Op::SetTrackLaneChains {
+                track_id: f.lead,
+                old_lane_chains: Vec::new(),
+                new_lane_chains: vec![LaneChainDef {
+                    keys: vec![42, 44, 46],
+                    name: "hats".to_owned(),
+                    devices: Vec::new(),
+                    pan: None,
+                }],
+            },
             // 预制状态：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 换预制只能删轨重建。
             // `old_preset: None` 对应夹具的 `TrackV3::default()`（`preset` 默认 `None`
             // ＝“这条轨不用预制”，是一等状态）；新值只记标识与开关，不带设备链。
@@ -5050,6 +5115,79 @@ mod tests {
             "SetTrackSampler",
             "同族 `Option<T>` setter 的逆仍是它自己（照 `SetTrackColor`）"
         );
+        inverse.apply(&mut doc).expect("施加逆操作");
+        assert_eq!(doc, fixture_document(), "逆操作必须精确还原");
+    }
+
+    /// `SetTrackLaneChains` 只写**那一个**字段、陈旧载荷必被拒、且 `new` 侧
+    /// 非规范化（组内未升序）必须在校验期响亮拒绝（逐件处理线期 2）。
+    #[test]
+    fn set_track_lane_chains_writes_exactly_one_field_and_rejects_stale_or_unnormalized() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let hats = LaneChainDef {
+            keys: vec![42, 44, 46],
+            name: "hats".to_owned(),
+            devices: Vec::new(),
+            pan: None,
+        };
+        let before = doc.track(&f.lead).expect("lead 轨在夹具里").clone();
+
+        // ① 陈旧载荷：文档现值是空表，声明非空旧值必须被拒，文档一位不动。
+        let stale = Op::SetTrackLaneChains {
+            track_id: f.lead,
+            old_lane_chains: vec![hats.clone()],
+            new_lane_chains: Vec::new(),
+        };
+        assert_eq!(
+            stale.apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetTrackLaneChains"
+            }),
+            "陈旧载荷必须被拒"
+        );
+        assert_eq!(doc, fixture_document(), "被拒的操作不得改动文档");
+
+        // ② 非规范化新值：键组未升序 ⇒ 校验期拒绝（不静默重排）。
+        let unnormalized = Op::SetTrackLaneChains {
+            track_id: f.lead,
+            old_lane_chains: Vec::new(),
+            new_lane_chains: vec![LaneChainDef {
+                keys: vec![46, 42],
+                ..hats.clone()
+            }],
+        };
+        assert_eq!(
+            unnormalized.apply(&mut doc),
+            Err(ModelError::LaneChainKeysNotAscending {
+                name: "hats".to_owned()
+            }),
+            "非规范化载荷必须响亮拒绝"
+        );
+        assert_eq!(doc, fixture_document(), "被拒的操作不得改动文档");
+
+        // ③ 正路：空表 ⇒ 一组，且**只有** `lane_chains` 变。
+        let op = Op::SetTrackLaneChains {
+            track_id: f.lead,
+            old_lane_chains: Vec::new(),
+            new_lane_chains: vec![hats.clone()],
+        };
+        assert_eq!(op.precondition(&doc), Ok(()));
+        op.apply(&mut doc).expect("施加");
+        let after = doc.track(&f.lead).expect("lead 轨在夹具里");
+        assert_eq!(after.lane_chains, vec![hats]);
+        assert_eq!(
+            TrackV3 {
+                lane_chains: before.lane_chains.clone(),
+                ..after.clone()
+            },
+            before,
+            "`SetTrackLaneChains` 只许改 `lane_chains`：其余字段必须逐字段不变"
+        );
+
+        // ④ 逆操作：整表还原为空表，逐字节精确还原。
+        let inverse = op.invert(&doc).expect("求逆");
+        assert_eq!(inverse.name(), "SetTrackLaneChains");
         inverse.apply(&mut doc).expect("施加逆操作");
         assert_eq!(doc, fixture_document(), "逆操作必须精确还原");
     }
@@ -10875,6 +11013,7 @@ mod tests {
             ("SetTrackName", &["tracks"]),
             ("SetTrackPolarity", &["tracks"]),
             ("SetTrackSampler", &["tracks"]),
+            ("SetTrackLaneChains", &["tracks"]),
             ("SetTrackPreset", &["tracks"]),
             ("SetTrackSolo", &["tracks"]),
             ("SetTrackTune", &["tracks"]),
@@ -11151,6 +11290,7 @@ mod tests {
             ("SetTrackName", &["name"]),
             ("SetTrackPolarity", &["invert_polarity"]),
             ("SetTrackSampler", &["sampler"]),
+            ("SetTrackLaneChains", &["lane_chains"]),
             ("SetTrackPreset", &["preset"]),
             ("SetTrackSolo", &["solo"]),
             ("SetTrackTune", &["tune_offset_cents"]),

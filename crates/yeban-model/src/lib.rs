@@ -85,11 +85,12 @@ pub use preset::{
 pub use project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, AutomationUnit,
     AutomationValueDomain, AutomationWriteMode, BitDepth, BlockSize, ClipContent, ClipPlacement,
-    ClipPoolEntry, DeviceDefinition, DeviceKind, KeySignature, LaunchQuantization, LoopConfig,
-    MIN_READER_VERSION, MacroMapping, MacroParameter, MediaKind, PanLaw, ParameterValue,
-    PluginBinding, ProjectAudioConfig, ProjectMetadata, READER_SCHEMA_VERSION, RoutingEdge,
-    RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate, SamplerBinding, SceneV3, SectionV3,
-    TimeSignature, TrackKind, TrackV3, TransportConfig, YebanProjectV1, now_unix_ms,
+    ClipPoolEntry, DeviceDefinition, DeviceKind, KeySignature, LaneChainDef,
+    LaunchQuantization, LoopConfig, MAX_LANE_CHAINS_PER_TRACK, MIN_READER_VERSION, MacroMapping,
+    MacroParameter, MediaKind, PanLaw, ParameterValue, PluginBinding, ProjectAudioConfig,
+    ProjectMetadata, READER_SCHEMA_VERSION, RoutingEdge, RoutingGraph, RoutingKind,
+    SCHEMA_VERSION, SampleRate, SamplerBinding, SceneV3, SectionV3, TimeSignature, TrackKind,
+    TrackV3, TransportConfig, YebanProjectV1, now_unix_ms, validate_lane_chains,
 };
 pub use samples::{SampleExportError, export_all, export_to_default_dir};
 pub use session::{

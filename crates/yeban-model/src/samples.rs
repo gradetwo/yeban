@@ -833,6 +833,7 @@ pub fn demo_project() -> YebanProjectV1 {
                 sampler: None,
                 preset: None,
                 devices: demo_track_devices(slot),
+                lane_chains: Vec::new(),
                 macros: Vec::new(),
                 automation_lanes: demo_automation_lanes(slot, track_id),
                 clips: BTreeMap::new(),
