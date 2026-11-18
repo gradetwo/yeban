@@ -867,6 +867,11 @@ mod tests {
         };
         let bits = |buf: &[f32]| buf.iter().map(|v| v.to_bits()).collect::<Vec<u32>>();
         let close = |a: &[f32], b: &[f32]| {
+            // ⭐ **stage 28**：给遍历**加一条显式的规模界**（`assertion_bounds_audit`
+            // 的棘轮要求：`.all(` 站点必须由 `len()`／`is_empty()` 界定，或逐条登记理由）。
+            // 这里两者长度本来就必须相等（同一个声相阶段的左右输出），把前提写成断言
+            // 比登记成"例外"更结实。
+            assert_eq!(a.len(), b.len(), "两个待比缓冲的长度必须相等");
             a.iter()
                 .zip(b.iter())
                 .all(|(x, y)| (x - y).abs() <= 1e-6 * (1.0 + x.abs().max(y.abs())))
