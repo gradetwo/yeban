@@ -4748,6 +4748,20 @@ pub struct PreparedRegion {
     /// ⚠ **只在 `off_mode=time` 上被读**：`fast` / `normal` 两支⛔ 不看它
     /// （⛔ 不用它去覆盖 `ampeg_release`：规范说它**独立于** sample release time）。
     off_time: f32,
+    /// ⭐ **`off_curve`（stage 19）**：`off_mode=time` 淡出用的**曲线族**（原样，
+    /// 缺省 `10` ＝ vendor 口径）。
+    ///
+    /// 规范（<https://sfzformat.com/opcodes/off_curve/>）：`-2` 静态不变、`-1` 线性、
+    /// `0` `x^n`（n ＝ [`Self::off_shape`]）、`1` `n^x`、`2` 对数、`10` vendor。
+    /// ⭐ 本片**实现** `-1`（线性）与 `-2`（静态）；`0`／`1`／`2`／`10` 一律走
+    /// **vendor 指数**（既有的 [`FadeRamp`] 衰减因子），如实登记、⛔ 不静默降级成
+    /// "看起来实现了"。
+    off_curve: i32,
+    /// ⭐ **`off_shape`（stage 19）**：曲线系数（原样，缺省 `-10.3616`）。
+    ///
+    /// 只在 `off_curve=0`（`x^n`）的语义里参与求值；本片把它搬进摊平表
+    /// （读数可查、判据可断言），⛔ 尚未参与任何逐样本求值 —— 见上一字段的登记。
+    off_shape: f32,
     /// ⭐ **播放方向**（`direction`；任务单 `#113`）。
     ///
     /// 解析与取值域在 `yeban-sfz` 里**早已落地**（[`PlayDirection`]：`forward` 缺省 /
@@ -5410,6 +5424,18 @@ impl PreparedRegion {
     #[must_use]
     pub const fn off_time_seconds(&self) -> f32 {
         self.off_time
+    }
+
+    /// ⭐ 本区域的淡出**曲线族**（`off_curve`，缺省 `10`；见 [`Self::off_curve`] 的域）。
+    #[must_use]
+    pub const fn off_curve(&self) -> i32 {
+        self.off_curve
+    }
+
+    /// ⭐ 本区域的曲线**系数**（`off_shape`，缺省 `-10.3616`）。
+    #[must_use]
+    pub const fn off_shape(&self) -> f32 {
+        self.off_shape
     }
 
     /// ⭐ 本区域的**同音同时发声数上限**（`note_polyphony` ＋ `note_selfmask`，原样）。
@@ -7174,6 +7200,8 @@ fn flatten_regions(
                 // 后者是 `Option<f32>`，摊平表要的是"关断时直接用"的秒数 ⇒ 缺省值在
                 // 解析层就折叠掉（那一层的 `None` / `Some(0.0)` 区分仍然保留）。
                 off_time: region.effective_off_time(),
+                off_curve: region.effective_off_curve(),
+                off_shape: region.effective_off_shape(),
                 // ⭐ 同音复音限制（任务单 `#100`）：`note_polyphony` ＋ `note_selfmask`
                 // 归约出的**一份** `Copy` 读数原样搬进摊平表（`yeban-sfz` 早已解析并裁决：
                 // `limit = 0` ⇒ 不限制、`self_mask` 缺省 `on`）⇒ 本片只**搬运**，
@@ -7358,21 +7386,30 @@ fn cc_gate_slots(gates: &[CcGate]) -> ([CcGate; CC_GATE_CAP], u8) {
 pub struct FadeRamp {
     /// 是否仍在淡出（`false` ⇒ [`Self::NONE`] 语义，逐帧增益恒 `1.0`）。
     fading: bool,
+    /// ⭐ **stage 19**：淡出**形状**（`0` ＝ vendor 指数、`1` ＝ 线性、`2` ＝ 静态）。
+    ///
+    /// 来源是区域的 `off_curve`：`-1` ⇒ 线性、`-2` ⇒ 静态、其余（`0`／`1`／`2`／`10`）
+    /// ⇒ vendor 指数（如实登记，见 `PreparedRegion::off_curve` 的文档）。
+    shape: u8,
     /// 剩余淡出帧数（`fading == true` 时恒 `>= 1`）。
     remaining: u32,
     /// 当前逐帧增益（非淡出恒 `1.0`）。
     gain: f32,
     /// 每帧乘的衰减因子 `FLOOR^(1/N)`（触发期算好 ⇒ ⛔ 逐样本无 `powf`）。
     decay: f32,
+    /// ⭐ **stage 19**：线性形状每帧减去的量 `1/N`（其它形状恒 `0`）。
+    step: f32,
 }
 
 impl FadeRamp {
     /// **不淡出**（`decay == 1.0` ⇒ 逐帧乘法是恒等）。
     pub const NONE: Self = Self {
         fading: false,
+        shape: 0,
         remaining: 0,
         gain: 1.0,
         decay: 1.0,
+        step: 0.0,
     };
 
     /// 按**帧数**构造一段 3 ms 指数淡出；`frames == 0` ⇒ [`Self::NONE`]（硬窃取）。
@@ -7381,15 +7418,49 @@ impl FadeRamp {
     /// 与 PolySynth 的 `note_on` 允许 `exp` 同一条纪律）⇒ 逐样本只有一次乘法。
     #[must_use]
     pub fn new(frames: u32) -> Self {
+        Self::new_shaped(frames, 10)
+    }
+
+    /// ⭐ **stage 19**：按 `off_curve` 构造一段 `frames` 长的淡出。
+    ///
+    /// * `-1` ⇒ **线性**：每帧减 `1/frames`（`step` 在**触发期**算好 ⇒ 逐样本只有一次减法）；
+    /// * `-2` ⇒ **静态**：增益恒 `1.0`，最后一帧落到 `0`（规范："a static,
+    ///   non-changing envelope segment"）；
+    /// * 其余（含缺省 `10`）⇒ **vendor 指数**（既有 `FLOOR^(1/N)` 口径，逐位不变）；
+    /// * `frames == 0` ⇒ [`Self::NONE`]（调用方显式硬停）。
+    ///
+    /// `-1`／`-2` 的求值 ⛔ 不需要任何超越函数；`0`／`1`／`2` 的曲线族未实现
+    /// （见 `PreparedRegion::off_curve` 的登记）。
+    #[must_use]
+    pub fn new_shaped(frames: u32, off_curve: i32) -> Self {
         if frames == 0 {
             return Self::NONE;
         }
-        let decay = libm::pow(f64::from(STEAL_FADE_FLOOR), 1.0 / f64::from(frames)) as f32;
-        Self {
-            fading: true,
-            remaining: frames,
-            gain: 1.0,
-            decay,
+        match off_curve {
+            -1 => Self {
+                fading: true,
+                shape: 1,
+                remaining: frames,
+                gain: 1.0,
+                decay: 0.0,
+                step: 1.0 / frames as f32,
+            },
+            -2 => Self {
+                fading: true,
+                shape: 2,
+                remaining: frames,
+                gain: 1.0,
+                decay: 0.0,
+                step: 0.0,
+            },
+            _ => Self {
+                fading: true,
+                shape: 0,
+                remaining: frames,
+                gain: 1.0,
+                decay: libm::pow(f64::from(STEAL_FADE_FLOOR), 1.0 / f64::from(frames)) as f32,
+                step: 0.0,
+            },
         }
     }
 
@@ -7397,6 +7468,12 @@ impl FadeRamp {
     #[must_use]
     pub const fn is_fading(&self) -> bool {
         self.fading
+    }
+
+    /// 当前逐帧增益（非淡出恒 `1.0`；⭐ stage 19 的判据读它）。
+    #[must_use]
+    pub const fn gain(&self) -> f32 {
+        self.gain
     }
 
     /// 剩余淡出帧数（非淡出恒 `0`）。
@@ -7408,7 +7485,14 @@ impl FadeRamp {
     /// 推进一帧；返回 `false` 表示**淡出已走完**（调用方应交出剩余帧）。
     fn advance(&mut self) -> bool {
         self.remaining = self.remaining.saturating_sub(1);
-        self.gain *= self.decay;
+        match self.shape {
+            // 线性：每帧减一个固定量（触发期算好的 `1/N`）。
+            1 => self.gain -= self.step,
+            // 静态：增益不变（规范："non-changing envelope segment"）。
+            2 => {}
+            // vendor 指数（既有口径，逐位不变）。
+            _ => self.gain *= self.decay,
+        }
         if self.remaining == 0 {
             self.gain = 0.0;
             self.fading = false;
@@ -9193,7 +9277,7 @@ impl SfzVoicePool {
                     self.voices[index].silence();
                     self.fade[index] = FadeRamp::NONE;
                 } else {
-                    self.fade[index] = FadeRamp::new(frames);
+                    self.fade[index] = FadeRamp::new_shaped(frames, victim_region.off_curve());
                 }
                 continue;
             }
@@ -11000,5 +11084,57 @@ mod tests {
             .expect("闭包");
         println!("[sfz] 两次解析的区域表地址: {first} / {second}");
         assert_eq!(instrument.region_count(), 2, "区域数不随解析次数变化");
+    }
+}
+
+/// ⭐ **stage 19 判据**：`off_curve=-1` 的淡出**逐帧线性**、`-2` 的**静态**、缺省仍是 vendor 指数。
+#[cfg(test)]
+mod stage19_fade_shape {
+    use super::FadeRamp;
+
+    #[test]
+    fn off_curve_minus_one_fades_linearly_and_minus_two_holds() {
+        // 线性：每帧减 1/N，最后一帧落到 0。
+        let mut linear = FadeRamp::new_shaped(8, -1);
+        let mut gains = Vec::new();
+        for _ in 0..8 {
+            linear.advance();
+            gains.push(linear.gain());
+        }
+        for (index, gain) in gains.iter().enumerate() {
+            let expected = 1.0 - (index as f32 + 1.0) / 8.0;
+            assert!(
+                (gain - expected).abs() < 1e-6,
+                "第 {} 帧：{} vs {}",
+                index,
+                gain,
+                expected
+            );
+        }
+        assert_eq!(gains[7], 0.0, "走完必须恰好归零");
+        assert!(!linear.is_fading());
+
+        // 静态：除了最后一帧归零，其余每帧仍是 1.0。
+        let mut stat = FadeRamp::new_shaped(8, -2);
+        for index in 0..7 {
+            stat.advance();
+            assert_eq!(stat.gain(), 1.0, "静态段第 {} 帧必须不变", index);
+        }
+        stat.advance();
+        assert_eq!(stat.gain(), 0.0, "静态段走完归零");
+
+        // 缺省（10）：仍是 vendor 指数（与 `FadeRamp::new` 逐位相同）。
+        let mut plain = FadeRamp::new(144);
+        let mut shaped = FadeRamp::new_shaped(144, 10);
+        for _ in 0..144 {
+            plain.advance();
+            shaped.advance();
+            assert_eq!(plain.gain().to_bits(), shaped.gain().to_bits());
+        }
+        println!(
+            "[stage19] 线性 8 帧终值 {:.6}、静态 8 帧终值 {:.6}",
+            gains[7],
+            stat.gain()
+        );
     }
 }

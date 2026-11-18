@@ -616,11 +616,11 @@ fn r6_sizes_stay_under_the_200_kib_red_line() {
     assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 6_600,
+        pool, 6_664,
         "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＋ LFO 片 lfo_states 数组（16 槽 × 12 B 的 `LfoVoiceState`）192 B ＝ 4800 B"
     );
     assert_eq!(
-        region, 6_296,
+        region, 6_304,
         "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＋ 键盘跟踪 amp_keytrack/amp_keycenter 两字段的 8 B ＋ 滤波片滤波六字段的 24 B ＋ 包络族片 ampeg_delay/ampeg_start 两 f32 与 fileg_eg/pitcheg_eg 两 u16 下标的 32 B ＝ 6256 B（本片：`offset_random` `u32` ＋ `amp_random` `f32` 再 ＋8）"
     );
 }

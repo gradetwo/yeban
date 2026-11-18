@@ -336,6 +336,12 @@ pub struct PlaybackSpec {
     /// 生效值（缺省 [`crate::OFF_TIME_DEFAULT_SECONDS`]）。该时长只对
     /// `off_mode=time` 的关断有意义（<https://sfzformat.com/opcodes/off_time/>）。
     pub off_time: Option<f32>,
+    /// 该 region 的 `off_curve`（原样；`None` ＝ 未给出；生效值见
+    /// [`PlaybackSpec::effective_off_curve`]）。
+    pub off_curve: Option<i32>,
+    /// 该 region 的 `off_shape`（原样；`None` ＝ 未给出；生效值见
+    /// [`PlaybackSpec::effective_off_shape`]）。
+    pub off_shape: Option<f32>,
     /// 生效的循环模式（原样，**但** `trigger=release` / `release_key` 强制
     /// [`LoopMode::OneShot`]，见 [`Region::effective_loop_mode`]）。
     pub loop_mode: LoopMode,
@@ -416,6 +422,18 @@ impl PlaybackSpec {
     #[must_use]
     pub fn effective_off_time(&self) -> f32 {
         self.off_time.unwrap_or(crate::OFF_TIME_DEFAULT_SECONDS)
+    }
+
+    /// 生效的淡出曲线族（缺省 `crate::OFF_CURVE_DEFAULT` ＝ `10`）。
+    #[must_use]
+    pub fn effective_off_curve(&self) -> i32 {
+        self.off_curve.unwrap_or(crate::OFF_CURVE_DEFAULT)
+    }
+
+    /// 生效的曲线系数（缺省 `crate::OFF_SHAPE_DEFAULT` ＝ `-10.3616`）。
+    #[must_use]
+    pub fn effective_off_shape(&self) -> f32 {
+        self.off_shape.unwrap_or(crate::OFF_SHAPE_DEFAULT)
     }
 
     /// 是否不产生采样输出（`end=-1`，或显式区间为空）。
@@ -815,6 +833,8 @@ impl<'a> Region<'a> {
             trigger: self.trigger,
             off_mode: self.off_mode,
             off_time: self.off_time,
+            off_curve: self.off_curve,
+            off_shape: self.off_shape,
             loop_mode: self.effective_loop_mode(),
             loop_window: self.loop_window(),
             offset: self.offset,
@@ -1568,6 +1588,8 @@ mod tests {
                             trigger: Trigger::Attack,
                             off_mode: OffMode::Fast,
                             off_time: None,
+                            off_curve: None,
+                            off_shape: None,
                             rt_decay: 0.0,
                             lovel: 0,
                             hivel: 127,

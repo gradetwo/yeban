@@ -296,6 +296,14 @@ impl Trigger {
 /// 由消费方决定何时使用。两者不互相改写。
 pub const OFF_TIME_DEFAULT_SECONDS: f32 = 0.006;
 
+/// `off_curve` 的规范缺省值（vendor 口径，<https://sfzformat.com/opcodes/off_curve/>）。
+pub const OFF_CURVE_DEFAULT: i32 = 10;
+
+/// `off_shape` 的规范缺省值（<https://sfzformat.com/opcodes/off_shape/>）。
+///
+/// ⚠ 它是**负数**（曲线的弯曲方向），⛔ 不是长度；长度是 [`OFF_TIME_DEFAULT_SECONDS`]。
+pub const OFF_SHAPE_DEFAULT: f32 = -10.3616;
+
 // ---------------------------------------------------------------------------
 // ⭐ `ampeg_*`（幅度包络；任务单 `#92`）：单位、取值域与缺省
 // ---------------------------------------------------------------------------
@@ -792,6 +800,17 @@ pub struct Region<'a> {
     /// 取值域：规范表格的 Range 为空 ⇒ 只要求**有限**且**非负**
     /// （负时长的取反是明确 `Err`，不静默钳位）。
     pub off_time: Option<f32>,
+    /// 该 region 的 `off_curve`（淡出**曲线族**，原样；`None` ＝ 未给出）。
+    ///
+    /// 规范取值（<https://sfzformat.com/opcodes/off_curve/>）：`-2` 静态不变、
+    /// `-1` 线性、`0` `x^n`（n ＝ [`Region::off_shape`]）、`1` `n^x`、`2` 对数、
+    /// `10` vendor 口径；缺省由 [`Region::effective_off_curve`] 回退为 `10`。
+    /// ⚠ 只有 `off_mode=time` 才用它。
+    pub off_curve: Option<i32>,
+    /// 该 region 的 `off_shape`（曲线系数，原样；`None` ＝ 未给出）。
+    ///
+    /// 规范缺省 `-10.3616`，见 [`Region::effective_off_shape`]。
+    pub off_shape: Option<f32>,
     /// ⭐ **释放采样随按住时长衰减**（`rt_decay`，dB/秒；缺省 0）。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/rt_decay/>：
@@ -1477,6 +1496,18 @@ impl<'a> Region<'a> {
     #[must_use]
     pub fn effective_off_time(&self) -> f32 {
         self.off_time.unwrap_or(OFF_TIME_DEFAULT_SECONDS)
+    }
+
+    /// 生效的淡出**曲线族**（缺省 [`OFF_CURVE_DEFAULT`]）。
+    #[must_use]
+    pub fn effective_off_curve(&self) -> i32 {
+        self.off_curve.unwrap_or(OFF_CURVE_DEFAULT)
+    }
+
+    /// 生效的曲线**系数**（缺省 [`OFF_SHAPE_DEFAULT`]）。
+    #[must_use]
+    pub fn effective_off_shape(&self) -> f32 {
+        self.off_shape.unwrap_or(OFF_SHAPE_DEFAULT)
     }
 
     /// ⭐ **该区域某参数的基准值**（不含任何 CC 调制；单位见字段文档：时间 = 秒、
@@ -2598,6 +2629,30 @@ pub(crate) fn build_region<'a>(
         }
         None => None,
     };
+    // ⭐ **stage 19**：`off_curve`（淡出**曲线族**）与 `off_shape`（曲线系数）。
+    // 规范（<https://sfzformat.com/opcodes/off_curve/>）：整数，Options = -2/-1/0/1/2/10，
+    // Default = 10；`off_shape` 是 float，Default = -10.3616
+    // （<https://sfzformat.com/opcodes/off_shape/>）。两者都只在 `off_mode=time`
+    // 的淡出上有意义。缺省记 `None`（"没说"）⇒ 由 `effective_off_*` 回退。
+    let off_curve = match scopes.get("off_curve") {
+        Some(value) => {
+            let curve = value.as_int(-2, 10)? as i32;
+            if !matches!(curve, -2 | -1 | 0 | 1 | 2 | 10) {
+                return Err(SfzError::InvalidOption {
+                    line,
+                    opcode: "off_curve".to_string(),
+                    value: value.as_str().to_string(),
+                    allowed: "-2,-1,0,1,2,10",
+                });
+            }
+            Some(curve)
+        }
+        None => None,
+    };
+    let off_shape = match scopes.get("off_shape") {
+        Some(value) => Some(value.as_f32()?),
+        None => None,
+    };
     // ⭐ 释放采样随按住时长衰减（`rt_decay`）：表格 Range 0 to 200、缺省 0；
     // 越界是明确 `FloatOutOfRange`（⛔ 不静默钳位）。只对 release 家族生效。
     let rt_decay = match scopes.get("rt_decay") {
@@ -3013,6 +3068,8 @@ pub(crate) fn build_region<'a>(
             trigger,
             off_mode,
             off_time,
+            off_curve,
+            off_shape,
             rt_decay,
             lovel,
             hivel,
@@ -4734,6 +4791,8 @@ mod tests {
             trigger: Trigger::Attack,
             off_mode: OffMode::Fast,
             off_time: None,
+            off_curve: None,
+            off_shape: None,
             rt_decay: 0.0,
             lovel: 0,
             hivel: 127,
@@ -6644,6 +6703,48 @@ mod tests {
     // （解析期十进制字面量取最近 f32、缺省常量），没有超越函数参与，逐位确定。
 
     #[test]
+    /// ⭐ **stage 19**：`off_curve` / `off_shape` 的解析 ＋ 缺省 ＋ 响亮拒绝。
+    #[test]
+    fn off_curve_and_off_shape_are_read_with_spec_defaults_and_loud_rejection() {
+        // 缺省：两者都记 `None`（"没说"），生效值回退到规范缺省。
+        let bare = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let region = &bare.regions()[0];
+        assert_eq!(region.off_curve, None);
+        assert_eq!(region.off_shape, None);
+        assert_eq!(region.effective_off_curve(), 10);
+        assert_eq!(region.effective_off_shape(), -10.3616);
+        assert_ne!(region.effective_off_shape(), 0.0);
+
+        // 显式取值：六个合法曲线族逐个回读。
+        for text in ["-2", "-1", "0", "1", "2", "10"] {
+            let source = format!("<region>sample=a.wav off_curve={text} off_shape=2.5");
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            let region = &instrument.regions()[0];
+            assert_eq!(
+                region.off_curve,
+                Some(text.parse::<i32>().unwrap()),
+                "off_curve={text}"
+            );
+            assert_eq!(region.off_shape, Some(2.5));
+            assert_eq!(region.effective_off_shape(), 2.5);
+        }
+
+        // 响亮拒绝：不在白名单里的整数 / 越界 / 非数字 / 非有限。
+        for text in ["5", "11", "abc", "inf", "1.5"] {
+            let source = format!("<region>sample=a.wav off_curve={text}");
+            assert!(
+                parse_text(&source, &Default::default()).is_err(),
+                "off_curve={text} 必须响亮报错"
+            );
+        }
+        // 同批数据里的合法样例必须被接受（⛔ 判据不是"整批都拒"）。
+        assert!(
+            parse_text("<region>sample=a.wav off_curve=-1", &Default::default()).is_ok(),
+            "合法样例必须被接受"
+        );
+        println!("[stage19] off_curve/off_shape 解析判据：缺省 10 / -10.3616、六族合法、五类拒绝");
+    }
+
     fn off_time_defaults_to_the_spec_value_and_is_not_folded_into_a_zero() {
         // 规范表格 Default = 0.006 秒（<https://sfzformat.com/opcodes/off_time/>）。
         // 缺省必须是「未给出」（`None`）+ 生效值 0.006，**不是** 0.0：
