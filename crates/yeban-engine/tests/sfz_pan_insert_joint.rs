@@ -42,6 +42,7 @@ const QUANTA: usize = 400;
 /// 直流样本（0.4）：逐帧同一电平 ⇒ "左是否逐位 0"不受插值影响。
 fn dc_sample(amplitude: f32, frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![amplitude; frames]),
         sample_hz: 48_000.0,
         loop_points: None,

@@ -21,6 +21,7 @@ const NOTE: u8 = 60;
 
 fn flat(value: f32) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![value; FRAMES]),
         sample_hz: HZ,
         loop_points: None,

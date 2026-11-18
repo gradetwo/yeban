@@ -53,6 +53,7 @@ const PCM: usize = 65_536;
 
 fn flat_sample(frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0f32; frames]),
         sample_hz: 48_000.0,
         loop_points: None,

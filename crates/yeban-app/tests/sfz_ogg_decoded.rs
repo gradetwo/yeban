@@ -1,6 +1,19 @@
 //! 判据（任务单 `#95`）：SFZ 样本的**通用解码腿** —— **OGG/Vorbis** 真的被解出来，
 //! 且**确实**走的是 `#85` 接线的那条腿（`yeban_decode::decode_path` ＋ 折单声道）。
 //!
+//! ## ⭐ 修订段（2026-11-18，立体声样本通路片）
+//!
+//! 本片**有意改钉**判据 ④：原判据钉的是 R315 裁决下的"折单声道"口径
+//! （`a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg`）。
+//! 该裁决已被台账新条取代：解码腿改为**保声道**（交织 PCM ＋ 声道数原样
+//! 进 `InMemorySample`），引擎真立体声发声。判据 ④ 改名
+//! `a_stereo_ogg_vorbis_keeps_both_channels_like_the_wav_leg` 并改钉新口径；
+//! 判据 ⑤ 的同一夹具 PCM 长度断言随之改钉（800 ⇒ 1600 交织样本）。
+//! 判据 ② 的恒等式**未改钉**：它的夹具是单声道（`channels == 1`），
+//! 新口径下 `read_sample_file(ogg).pcm` 与 `decode_path(ogg).samples()`
+//! 仍逐位相等（`step_by(1)` 即恒等），恒等式形状不变、只是右侧的读法
+//! 应理解为"交织原样"；判据 ①③⑥（单声道／无损／分类）不受影响。
+//!
 //! ## 本单补的是 `#85` **自己登记**的那个缺口（⛔ 不是新发现）
 //!
 //! `#85` 把非 WAV 样本接到了通用解码腿，但它逐字登记：
@@ -63,8 +76,8 @@
 //! | # | 判据 | ⭐ 它**单独**钉住的那一件事 |
 //! | :--- | :--- | :--- |
 //! | ① | `an_ogg_vorbis_..._within_the_codec_tolerance` | 真 Vorbis 经 **SFZ 样本路径**渲染**真的出声**（报告 `decoded_samples=1 silent=0 unreadable=0`），且与同一份 PCM 的 WAV 腿按**实测容差**对拍 |
-//! | ② | `the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg` | ⭐ **最强**：`read_sample_file(ogg) ≡ decode_path(ogg).samples().step_by(channels)`，**逐位**（见下"为什么②最强"） |
-//! | ④ | `a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg` | 立体声 Vorbis 折**声道 0**（`step_by(channels)`），⛔ 不是交织直传 |
+//! | ② | `the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg` | ⭐ **最强**：`read_sample_file(ogg) ≡ decode_path(ogg).samples()`（单声道夹具上与 `step_by(channels)` 恒等），**逐位**（见下"为什么②最强"） |
+//! | ④ | `a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg` | ⭐ 立体声 Vorbis **保声道**（交织原样 ＋ 声道数；2026-11-18 改钉，原钉"折声道 0"，见文件头修订段） |
 //! | ⑤ | `a_44k_ogg_vorbis_is_read_at_its_own_rate` | 44.1 kHz Vorbis **原样上报**采样率、**不重采样**（换算交给既有 `RenderRates::new`） |
 //!
 //! ## ⭐ 为什么判据 ② 是甲组里**最强**的一条
@@ -72,11 +85,11 @@
 //! 其它三条都是"某个**可观测量**在容差内"；② 是**恒等式**：
 //!
 //! ```text
-//! read_sample_file(<f>.ogg).pcm  ≡  decode_path(<f>.ogg).samples().step_by(channels)
+//! read_sample_file(<f>.ogg).pcm  ≡  decode_path(<f>.ogg).samples().step_by(channels)   （单声道夹具：step_by(1) 恒等）
 //! ```
 //!
 //! ⇒ 它把 `#85` 那句「走**同一条腿**」从**推断**变成**恒等式**：左侧是 SFZ 样本路径真正
-//! 交给引擎的缓冲，右侧是 `yeban-decode` 的解码结果按**同一个** `step_by(channels)` 折声道 0。
+//! 交给引擎的缓冲，右侧是 `yeban-decode` 的解码结果按**同一个** `step_by(channels)` 折声道 0（本夹具单声道 ⇒ 与交织原样恒等；立体声的保声道恒等式由判据 ④ 钉）。
 //! 两侧都用 `==`（`f32` 逐位），所以：分派把 `.ogg` 交给 hound ⇒ 左侧**报错**（`expect` 红）；
 //! 折法被改成直传 ⇒ 立体声那侧长度不等（红）；期望值差 `1e-7` ⇒ 红（实测注入 ③ 就是这样）。
 //!
@@ -90,16 +103,16 @@
 //! | `fnv1a_64` | 一条导出的**交错 f32 样本**（逐位卷字节） | 无符号 64 位整数 |
 //! | `decoded_samples` | 真的进了提供表的样本份数 | 份 |
 //! | `silent_region_count` | 引擎口径：缺样本 ⇒ `NO_SAMPLE` 的区域数 | 区域数 |
-//! | `sample_hz` / `frames` | 读取器上报的文件采样率 / **折单声道后**的帧数 | Hz / 帧 |
+//! | `sample_hz` / `frames` | 读取器上报的文件采样率 / 帧数（**按帧计**，立体声一帧仍一帧） | Hz / 帧 |
 //!
 //! ## 判据清单
 //!
 //! | # | 判据 | 作用 |
 //! | :--- | :--- | :--- |
 //! | ① | `an_ogg_vorbis_sample_is_decoded_end_to_end_and_matches_the_wav_leg_within_the_codec_tolerance` | **本单核心**：真 Vorbis ⇒ 渲染出声、报告干净、与同一份 PCM 的 WAV 腿按**实测容差**对拍 |
-//! | ② | `the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg` | ⭐ **"同一条腿"判据**：`read_sample_file` 折声道 0 后**逐位**等于 `decode_path`（⛔ 不是 hound 那条） |
+//! | ② | `the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg` | ⭐ **"同一条腿"判据**：`read_sample_file` **逐位**等于 `decode_path` 的交织样本（单声道夹具；⛔ 不是 hound 那条） |
 //! | ③ | `an_ogg_container_with_a_lossless_flac_payload_is_bit_identical_to_the_wav_leg` | ⭐ **§3.3 的分母判据（乙组）**：⚠ **Ogg 容器 ＋ FLAC 载荷**（无损）；⛔ 不证明 Vorbis 解码。`#254` 之后 `.ogg` 腿与 WAV 腿用**同一个** `raw × 1/2²³` ⇒ 逐位相同 |
-//! | ④ | `a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg` | ⭐ §5.3 折单声道（注入 ② 的靶子） |
+//! | ④ | `a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg` | ⭐ §5.3 保声道（2026-11-18 改钉，原钉折单声道；注入 ② 的靶子） |
 //! | ⑤ | `a_44k_ogg_vorbis_is_read_at_its_own_rate` | ⭐ §5.3 采样率原样进、不重采样 |
 //! | ⑥ | `a_broken_ogg_is_classified_and_a_valid_ogg_in_the_same_batch_is_accepted` | ⭐ §5.4 可判别性（实测档位，⛔ 不猜） |
 //!
@@ -720,8 +733,10 @@ fn an_ogg_vorbis_sample_is_decoded_end_to_end_and_matches_the_wav_leg_within_the
 /// 1. **走的是 `decode_path`**（symphonia 那条腿）—— ⛔ 不是 hound（`read_plain_wav_mono_f32`）。
 ///    hound 根本读不动 Ogg ⇒ 若分派把 `.ogg` 交给它，`read_sample_file` 会**返回错误**，
 ///    下面的 `.expect` 立刻红；
-/// 2. **折单声道那一步是 `step_by(channels)` 取声道 0** —— 与 hound 腿**同一口径**
-///    （`src/sfz_load.rs` 的 `decode_with_yeban_decode`）。
+/// 2. **样本交出那一步与 hound 腿同一口径**（`src/sfz_load.rs` 的
+///    `decode_with_yeban_decode`）。⭐ 2026-11-18 立体声通路片修订：该步已由
+///    "折单声道"改为"交织原样 ＋ 声道数"；本夹具是单声道 ⇒ `step_by(1)` 与
+///    原样交出**恒等**，本条的恒等式与断言**逐字不变**（立体声面由判据 ④ 钉）。
 ///
 /// ## 判定量
 ///
@@ -779,11 +794,11 @@ fn the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg() {
         "描述必须写折后帧数与文件采样率：{describe}"
     );
 
-    // ---- ⭐ 逐位：SFZ 样本腿 ≡ 共享解码器的折声道 0 ----
+    // ---- ⭐ 逐位：SFZ 样本腿 ≡ 共享解码器的交织样本（单声道 ⇒ 与折声道 0 恒等） ----
     assert_eq!(
         sample.pcm.len(),
         expected.len(),
-        "折声道 0 之后的长度必须与 `decode_path` 的折法一致"
+        "样本长度必须与 `decode_path` 的交织长度一致（单声道夹具）"
     );
     assert_eq!(
         sample.pcm.as_slice(),
@@ -959,31 +974,31 @@ fn an_ogg_container_with_a_lossless_flac_payload_is_bit_identical_to_the_wav_leg
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// ⭐ 判据 ④（**折单声道口径**；⭐ 注入 ② 的靶子）：立体声 **OGG/Vorbis** 与 WAV **同款**
-/// 取声道 0。
+/// ⭐ 判据 ④（**保声道口径**；⭐ 立体声样本通路片**有意改钉** —— 原判据钉的是
+/// "折单声道与 WAV 腿一致"，该口径已被本线取代，修订段见文件头）：立体声
+/// **OGG/Vorbis** 与 WAV **同款保留双声道**。
 ///
-/// ## 夹具
+/// ## 夹具（与改钉前同一批，⛔ 不换夹具）
 ///
-/// * `stereo44.wav` —— 逐帧交替 `(阶梯, −0.5)` 的**立体声** `44.1 kHz` WAV（走既有 hound 腿）；
+/// * `stereo44.wav` —— 逐帧交替 `(阶梯, −0.5)` 的**立体声** WAV（走 hound 腿）；
 /// * `stereo44.ogg` —— **同一份立体声 PCM** 的 Vorbis（5867 字节）。
 ///
 /// ## 判定量
 ///
 /// * 夹具自证：`decode_path(stereo44.ogg)` ⇒ `channels == 2`、交织样本 `1600`、
 ///   且**第 0 与第 1 个样本不同**（⛔ 若夹具退化成单声道，本判据测不出任何东西）；
-/// * **WAV 腿内部一致**：立体声 WAV 的导出指纹 == 单声道 WAV 参照（既有口径：取**声道 0**）；
-/// * **OGG 腿内部一致**：`read_sample_file(stereo44.ogg)` 折后 `800` 帧（⛔ 不是 `1600`），
-///   且**逐位**等于 `decode_path(stereo44.ogg).samples().step_by(2)`。
+/// * **OGG 腿（解码层）**：`read_sample_file(stereo44.ogg)` ⇒ `channels == 2`、
+///   帧数 `800`（**按帧计**；`1600` 是交织样本数）、`pcm.len() == 1600`，
+///   且与 `decode_path` 的交织样本**逐位相同**（通用腿原样直传）；
+/// * **WAV 腿（渲染层参照）**：立体声 WAV 的导出指纹 **≠** 单声道 WAV 参照
+///   （右声道带的是 `−0.5`，不是左声道的复制），但其**左声道**与单声道参照的
+///   左声道**逐位相同**（声道 0 原样保留）；
+/// * **OGG 端到端**：立体声 OGG 导出**出声**且左右声道**真的不同**。
 ///
-/// ## 实测读数（本机 `aarch64/macos`，2026-10-16）
-///
-/// `channels = 2`、交织 `1600`、折后 `800`、`sample_hz = 44100`、
-/// `s0 = 2.5238612e-1`、`s1 = −5.052742e-1`（左右**不同**）。
-///
-/// ⚠ **注入 ②**：把 `decode_with_yeban_decode` 里的 `step_by(channels)` 改成 `step_by(1)`
-/// （交织直传）⇒ 折后变 `1600` 帧 ⇒ 帧数断言与逐位断言**同时红**。
+/// ⚠ **注入 ②（改钉后）**：把通用腿改回 `step_by(channels)` 折声道 0
+/// ⇒ `channels` / `pcm.len()` / 逐位断言与左右声道差断言**同时红**。
 #[test]
-fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
+fn a_stereo_ogg_vorbis_keeps_both_channels_like_the_wav_leg() {
     let dir = scratch("ogg-stereo");
     let left = stair_values();
     let right = vec![-0.5_f32; left.len()];
@@ -999,7 +1014,7 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
     )
     .expect("写立体声 OGG 夹具");
 
-    // ---- 夹具自证：它**真的**是立体声，且左右不同（否则注入 ② 测不出东西）----
+    // ---- 夹具自证：它**真的**是立体声，且左右不同（否则保声道那一步不可判）----
     let asset = decode_path(&dir.join("stereo44.ogg"), &DecodeOptions::default())
         .expect("立体声 OGG 夹具必须能解");
     assert_eq!(asset.channels(), 2, "夹具必须是 2 声道");
@@ -1011,17 +1026,16 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
     assert_ne!(
         asset.samples()[0],
         asset.samples()[1],
-        "夹具的左右声道必须不同（⛔ 否则'折单声道'那一步不可判）"
+        "夹具的左右声道必须不同（⛔ 否则'保声道'那一步不可判）"
     );
 
-    // ---- WAV 腿的"取声道 0"参照（既有口径，本单⛔ 不动）----
+    // ---- WAV 腿的渲染层参照（本片的新口径：真立体声、左声道保留）----
     let mono_wav = render_bound(&dir, "mono-wav.sfz", "stair.wav");
     let stereo_wav = render_bound(&dir, "stereo-wav.sfz", "stereo.wav");
 
-    // ---- OGG 腿：折后帧数与逐位口径 ----
+    // ---- OGG 腿：保声道的帧数、声道数与逐位口径 ----
     let (sample, frames, describe) =
         read_sample_file(&dir.join("stereo44.ogg")).expect("立体声 OGG 必须可读");
-    let expected: Vec<f32> = asset.samples().iter().step_by(2).copied().collect();
     let ogg = render_bound(&dir, "stereo-ogg.sfz", "stereo44.ogg");
     let (_, report) = &ogg.sfz_decoded[0];
     assert_eq!(
@@ -1035,7 +1049,7 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
     let ogg_hash = fnv1a_64(&ogg.samples);
     println!(
         "[app-sfz-ogg/stereo] wav_leg mono=0x{mono_wav_hash:016x} stereo=0x{stereo_wav_hash:016x} \
-         ogg_leg fnv1a=0x{ogg_hash:016x} folded_frames={frames} interleaved_before_fold=1600 \
+         ogg_leg fnv1a=0x{ogg_hash:016x} frames={frames} interleaved_kept=1600 \
          channels={} s0={:?} s1={:?} sample_hz={} describe={describe} ogg_nonzero={}",
         asset.channels(),
         asset.samples()[0],
@@ -1046,30 +1060,49 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
 
     assert_eq!(
         frames, 800,
-        "折单声道后必须是 800 帧（⛔ 交织直传会是 1600）"
+        "帧数**按帧计**必须是 800（1600 是交织样本数，⛔ 不是帧数）"
     );
-    assert_eq!(sample.pcm.len(), 800, "PCM 长度也必须折到 800");
+    assert_eq!(sample.channels, 2, "声道数必须原样带出");
+    assert_eq!(
+        sample.pcm.len(),
+        1_600,
+        "交织 PCM 必须整份保留（⛔ 不再折到 800）"
+    );
     assert_eq!(sample.sample_hz, 44_100.0, "采样率原样上报");
     assert!(
-        describe.contains("frames=800"),
-        "描述必须写折后帧数：{describe}"
+        describe.contains("frames=800") && describe.contains("channels=2"),
+        "描述必须写帧数与声道数：{describe}"
     );
     assert!(
-        sample.pcm.as_slice() == expected.as_slice(),
-        "⭐ OGG 腿必须**逐位**等于 `decode_path(..).samples().step_by(2)`（取声道 0）—— \
-         若不等，最可能是把**交织**样本当成了单声道（实得 {} 项 vs 期望 {} 项）",
+        sample.pcm.as_slice() == asset.samples(),
+        "⭐ 通用腿必须把交织样本**逐位原样**交出（⛔ 不折、不下混；实得 {} 项 vs 期望 {} 项）",
         sample.pcm.len(),
-        expected.len()
+        asset.samples().len()
     );
 
     assert!(nonzero(&mono_wav.samples) > 0, "WAV 参照必须真的发声");
-    assert_eq!(
+    assert_ne!(
         stereo_wav_hash, mono_wav_hash,
-        "既有 WAV 腿对立体声也是**取声道 0**（0x{stereo_wav_hash:016x} vs 0x{mono_wav_hash:016x}）"
+        "⭐ 立体声 WAV **不再**等于单声道参照：右声道带的是 −0.5，不是左声道的复制"
     );
+    let left_of = |samples: &[f32]| -> Vec<f32> { samples.iter().step_by(2).copied().collect() };
+    let right_of =
+        |samples: &[f32]| -> Vec<f32> { samples.iter().skip(1).step_by(2).copied().collect() };
+    assert_eq!(
+        left_of(&stereo_wav.samples),
+        left_of(&mono_wav.samples),
+        "⭐ WAV 腿：立体声导出的左声道必须与单声道参照的左声道**逐位相同**（声道 0 原样保留）"
+    );
+    assert!(nonzero(&ogg.samples) > 0, "立体声 OGG 保声道后必须照常发声");
+    let ogg_differing = left_of(&ogg.samples)
+        .iter()
+        .zip(right_of(&ogg.samples).iter())
+        .filter(|(l, r)| l != r)
+        .count();
     assert!(
-        nonzero(&ogg.samples) > 0,
-        "立体声 OGG 折单声道后必须照常发声"
+        ogg_differing > 0,
+        "⭐ 立体声 OGG 导出的左右声道必须**真的不同**（实得 {ogg_differing} 帧不同；\
+         折单声道口径下这个数是 0）"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -1088,7 +1121,7 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
 /// ## 夹具
 ///
 /// `stereo44.ogg` —— **立体声** `44.1 kHz`（`800` 帧／声道）。本判据只取它的**采样率面**
-/// （折单声道那一面由判据 ④ 负责；⭐ 同一份夹具 ⇒ 少一个二进制面）。
+/// （保声道那一面由判据 ④ 负责；⭐ 同一份夹具 ⇒ 少一个二进制面）。
 ///
 /// ## 判定量
 ///
@@ -1123,10 +1156,15 @@ fn a_44k_ogg_vorbis_is_read_at_its_own_rate() {
         frames, 800,
         "⭐ 读层**不重采样**（若见 871 一类数字 ⇒ 有人在这里插了 sinc）"
     );
-    assert_eq!(sample.pcm.len(), 800);
+    assert_eq!(sample.channels, 2, "立体声夹具的声道数必须原样带出");
+    assert_eq!(
+        sample.pcm.len(),
+        1_600,
+        "交织 PCM 整份保留（800 帧 × 2 声道；2026-11-18 改钉，原钉折后 800）"
+    );
     assert!(
         describe.contains("rate=44100") && describe.contains("frames=800"),
-        "描述必须写文件采样率与折后帧数：{describe}"
+        "描述必须写文件采样率与帧数：{describe}"
     );
 
     let out = render_bound(&dir, "m44.sfz", "stereo44.ogg");

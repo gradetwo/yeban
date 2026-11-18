@@ -44,6 +44,7 @@ const OUT: usize = 24_000;
 fn ramp() -> InMemorySample {
     let pcm: Vec<f32> = (0..PCM).map(|i| i as f32 / 1024.0).collect();
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm),
         sample_hz: HZ,
         loop_points: None,

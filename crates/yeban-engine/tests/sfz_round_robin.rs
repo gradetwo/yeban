@@ -43,6 +43,7 @@ const FRAMES: usize = 64;
 /// 一条常值 PCM（`Arc` 共享，与真实解码路径同形状）。
 fn flat(value: f32) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![value; FRAMES]),
         sample_hz: 48_000.0,
         loop_points: None,

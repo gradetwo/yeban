@@ -1,6 +1,18 @@
 //! 判据（任务单 `#85`）：SFZ 样本的**通用解码腿** —— **FLAC** 真的被解出来，且与 WAV 腿
 //! **逐位同口径**。
 //!
+//! ## ⭐ 修订段（2026-11-18，立体声样本通路片）
+//!
+//! 本片**有意改钉**判据 ②：原判据钉的是 R315 裁决下的"折单声道"口径
+//! （`a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg`：两条腿都取
+//! 声道 0、立体声导出与单声道参照逐位相同）。该裁决已被台账新条取代：
+//! 两条解码腿改为**保声道**（交织 PCM ＋ 声道数原样进 `InMemorySample`），
+//! 引擎真立体声发声。判据 ② 改名
+//! `a_stereo_flac_keeps_both_channels_like_the_wav_leg` 并改钉新口径
+//! （解码层保声道逐位、渲染层左右不同且左声道与参照逐位相同）。
+//! 判据 ①（单声道两腿逐位相同）与 ③（采样率原样）**不受影响**、未改钉：
+//! 单声道文件在新腿下 `channels == 1`、PCM 与旧腿逐位相同。
+//!
 //! ## 本单改了哪两件事（`#83` 的乙口径 ⇒ 甲口径）
 //!
 //! 1. `crates/yeban-app/Cargo.toml` 新增**一条工作区内部**依赖边 `yeban-decode`
@@ -8,6 +20,8 @@
 //! 2. `crates/yeban-app/src/sfz_load.rs` 的 `decode_sample_classified` **按后缀分派**：
 //!    `.wav` / `.wave` ⇒ 既有 hound 腿（**逐位不变**）；**其余** ⇒ `yeban_decode::decode_path`
 //!    ＋ **显式折单声道**（`step_by(channels)` 取声道 0 —— 与 hound 腿同一口径）。
+//!    ⭐ 其中的"折单声道"已于 2026-11-18 被立体声样本通路片改为**保声道**
+//!    （见文件头修订段）；分派本身不变。
 //!
 //! ## 判定量（每个数字都有单位）
 //!
@@ -26,7 +40,7 @@
 //! | # | 判据 | 作用 |
 //! | :--- | :--- | :--- |
 //! | ① | `a_flac_sample_is_bit_identical_to_the_wav_leg_after_the_normalisation_fix` | **本单核心**：同一份 PCM 的 WAV／FLAC 导出**逐位相同**（`#254` 统一分母后） |
-//! | ② | `a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg` | 折单声道口径与 WAV 腿一致（⭐ 注入 ② 的靶子） |
+//! | ② | `a_stereo_flac_keeps_both_channels_like_the_wav_leg` | ⭐ **保声道**口径与 WAV 腿一致（2026-11-18 改钉，原名 `..._is_folded_to_channel_zero_...`，见文件头修订段） |
 //! | ③ | `a_flac_at_another_sample_rate_is_read_at_its_own_rate` | 采样率不匹配 ⇒ **不重采样**，按引擎既有播放速率口径 |
 //!
 //! ## 夹具来源（⛔ 不是"随便造的字节"）
@@ -491,31 +505,36 @@ fn a_flac_sample_is_bit_identical_to_the_wav_leg_after_the_normalisation_fix() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// ⭐ 判据 ②（**折单声道口径**；⭐ 注入 ② 的靶子）：立体声 FLAC 与 WAV **同款**取声道 0。
+/// ⭐ 判据 ②（**保声道口径**；⭐ 立体声样本通路片**有意改钉** —— 原判据钉的是
+/// "折单声道与 WAV 腿一致"，该口径已被本线取代，修订段见文件头）：立体声 FLAC
+/// 与 WAV **同款保留双声道**，且端到端真立体声发声。
 ///
-/// ## 夹具
+/// ## 夹具（与改钉前同一批，⛔ 不换夹具）
 ///
 /// * `stair.wav` —— 单声道八段阶梯（**WAV 腿**的同口径参照）；
 /// * `stair.flac` —— 同一份单声道 PCM 的 FLAC（**FLAC 腿**的同口径参照）；
-/// * `stereo.wav` —— 逐帧交替 `(阶梯, −0.5)` 的**立体声** WAV（走既有 hound 腿）；
+/// * `stereo.wav` —— 逐帧交替 `(阶梯, −0.5)` 的**立体声** WAV（走 hound 腿）；
 /// * `stereo.flac` —— **同一份立体声 PCM** 的 FLAC（755 字节）。
 ///
 /// ## 判定量
 ///
 /// * 夹具自证：`decode_path(stereo.flac)` ⇒ `channels == 2`、交织样本 `9600`、
 ///   且**第 0 与第 1 个样本不同**（⛔ 若夹具退化成单声道，本判据测不出任何东西）；
-/// * **WAV 腿内部一致**：立体声 WAV 的导出指纹 == 单声道 WAV 参照（既有口径：取**声道 0**）；
-/// * **FLAC 腿内部一致**：立体声 FLAC 的导出指纹 == 单声道 FLAC 参照（⭐ 折单声道那一枪的靶子）；
-/// * `read_sample_file(stereo.flac)` ⇒ 折后 `4800` 帧（⛔ 不是 `9600`）。
+/// * **解码层（两腿同口径）**：`read_sample_file(stereo.flac)` ⇒ `channels == 2`、
+///   帧数 `4800`（**按帧计**；`9600` 是交织样本数）、`pcm.len() == 9600`（整份保留，
+///   ⛔ 不再折到 4800），且与 `decode_path` 的交织样本**逐位相同**（通用腿原样直传）；
+///   `read_sample_file(stereo.wav)` 同样 `channels == 2`、帧数 `4800`，且 PCM 与
+///   FLAC 腿**逐位相同**（同一份 24-bit PCM、`#254` 统一分母）；
+/// * **渲染层**：立体声导出与单声道参照**不再相等**（右声道带的是 `−0.5`，
+///   不是左声道的复制）；立体声导出的**左声道**与单声道参照的左声道**逐位相同**
+///   （声道 0 在中性 `pan`/`width`/`position` 下原样保留）；左右声道不同的帧数
+///   远大于 0；两条腿的立体声导出**逐位相同**（同 PCM、同引擎）。
 ///
-/// ⚠ **为什么两条腿各自比**：`#254` 之前两条腿的归一化分母不同（见模块文档），跨腿比会把
-/// "分母差"和"折单声道"两件事混在一条断言里。`#254` 之后分母已统一（两腿逐位相同），但
-/// 分开比仍然更好：下面那两条**只**对折法敏感，红了就只有一个原因。
-///
-/// ⚠ **注入 ②**：把 `decode_with_yeban_decode` 里的 `step_by(channels)` 改成 `step_by(1)`
-/// （交织直传）⇒ 折后变 9600 帧、左右交替 ⇒ `flac_hash` 与帧数断言**同时红**。
+/// ⚠ **注入 ②（改钉后）**：把任一条腿改回 `step_by(channels)` 折声道 0
+/// ⇒ `channels` / `pcm.len()` / 逐位断言与左右声道差断言**同时红**；
+/// 把声道数填错（如交织直传却报 1）⇒ 帧数与渲染层断言红。
 #[test]
-fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
+fn a_stereo_flac_keeps_both_channels_like_the_wav_leg() {
     let dir = scratch("flac-stereo");
     let left = stair_values();
     let right = vec![-0.5_f32; left.len()];
@@ -540,7 +559,7 @@ fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
     )
     .expect("写单声道 FLAC 参照");
 
-    // ---- 夹具自证：它**真的**是立体声，且左右不同（否则注入 ② 测不出东西）----
+    // ---- 夹具自证：它**真的**是立体声，且左右不同（否则保声道那一步不可判）----
     let asset = decode_path(&dir.join("stereo.flac"), &DecodeOptions::default())
         .expect("立体声 FLAC 夹具必须能解");
     assert_eq!(asset.channels(), 2, "夹具必须是 2 声道");
@@ -552,10 +571,10 @@ fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
     assert_ne!(
         asset.samples()[0],
         asset.samples()[1],
-        "夹具的左右声道必须不同（⛔ 否则'折单声道'那一步不可判）"
+        "夹具的左右声道必须不同（⛔ 否则'保声道'那一步不可判）"
     );
 
-    // ---- 两条腿各自的"取声道 0"参照 ----
+    // ---- 两条腿各自的单声道参照（渲染层对照） ----
     let mono_wav = render_bound(&dir, "mono-wav.sfz", "stair.wav");
     let mono_flac = render_bound(&dir, "mono-flac.sfz", "stair.flac");
     let stereo_wav = render_bound(&dir, "stereo-wav.sfz", "stereo.wav");
@@ -570,18 +589,37 @@ fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
         );
     }
 
-    // 折后帧数：4800（⛔ 不是 9600）。`read_sample_file` 的第二个返回值就是帧数。
+    // ---- 解码层（FLAC 腿）：帧数按帧计、交织整份保留、与共享解码器逐位相同 ----
     let (sample, frames, describe) =
         read_sample_file(&dir.join("stereo.flac")).expect("立体声 FLAC 必须可读");
     assert_eq!(
         frames, 4_800,
-        "折单声道后必须是 4800 帧（⛔ 交织直传会是 9600）"
+        "帧数**按帧计**必须是 4800（9600 是交织样本数，⛔ 不是帧数）"
     );
-    assert_eq!(sample.pcm.len(), 4_800, "PCM 长度也必须折到 4800");
+    assert_eq!(sample.channels, 2, "声道数必须原样带出");
+    assert_eq!(
+        sample.pcm.len(),
+        9_600,
+        "交织 PCM 必须整份保留（⛔ 不再折到 4800）"
+    );
     assert_eq!(sample.sample_hz, 48_000.0, "采样率原样上报");
     assert!(
-        describe.contains("frames=4800"),
-        "描述必须写折后帧数：{describe}"
+        describe.contains("frames=4800") && describe.contains("channels=2"),
+        "描述必须写帧数与声道数：{describe}"
+    );
+    assert!(
+        sample.pcm.as_slice() == asset.samples(),
+        "⭐ 通用腿必须把交织样本**逐位原样**交出（⛔ 不折、不下混）"
+    );
+
+    // ---- 解码层（WAV 腿）：同口径，且与 FLAC 腿逐位相同 ----
+    let (wav_sample, wav_frames, _wav_describe) =
+        read_sample_file(&dir.join("stereo.wav")).expect("立体声 WAV 必须可读");
+    assert_eq!(wav_frames, 4_800, "WAV 腿帧数同样按帧计");
+    assert_eq!(wav_sample.channels, 2, "WAV 腿声道数必须原样带出");
+    assert!(
+        wav_sample.pcm.as_slice() == sample.pcm.as_slice(),
+        "⭐ 同一份 24-bit PCM，两条腿的交织 PCM 必须**逐位相同**（`#254` 统一分母）"
     );
 
     let mono_wav_hash = fnv1a_64(&mono_wav.samples);
@@ -591,26 +629,53 @@ fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
     println!(
         "[app-sfz-decoded/stereo] wav_leg mono=0x{mono_wav_hash:016x} stereo=0x{stereo_wav_hash:016x} \
          flac_leg mono=0x{mono_flac_hash:016x} stereo=0x{stereo_flac_hash:016x} \
-         folded_frames={frames} interleaved_before_fold=9600 wav_nonzero={} flac_nonzero={}",
+         frames={frames} interleaved_kept=9600 wav_nonzero={} flac_nonzero={}",
         nonzero(&mono_wav.samples),
         nonzero(&mono_flac.samples),
     );
 
     assert!(nonzero(&mono_wav.samples) > 0, "WAV 参照必须真的发声");
-    assert_eq!(
+    assert_ne!(
         stereo_wav_hash, mono_wav_hash,
-        "既有 WAV 腿对立体声也是**取声道 0**（0x{stereo_wav_hash:016x} vs 0x{mono_wav_hash:016x}）"
+        "⭐ 立体声 WAV **不再**等于单声道参照：右声道带的是 −0.5，不是左声道的复制"
+    );
+    assert_ne!(
+        stereo_flac_hash, mono_flac_hash,
+        "⭐ 立体声 FLAC **不再**等于单声道参照（同上）"
     );
     assert_eq!(
-        stereo_flac_hash, mono_flac_hash,
-        "⭐ FLAC 腿必须与它自己的单声道参照**逐位相同**（取声道 0）：\
-         0x{stereo_flac_hash:016x} vs 0x{mono_flac_hash:016x} —— \
-         若不等，最可能是把**交织**样本当成了单声道"
+        stereo_wav_hash, stereo_flac_hash,
+        "⭐ 两条腿同 PCM、同引擎 ⇒ 立体声导出必须**逐位相同**"
     );
     assert_eq!(
         stereo_flac.samples.len(),
         mono_flac.samples.len(),
-        "折单声道后导出长度必须与参照一致"
+        "导出长度（帧数）必须与参照一致（保声道不改变时长）"
+    );
+
+    // ---- 渲染层细节：左声道 = 声道 0 原样保留；左右声道真的不同 ----
+    let left_of = |samples: &[f32]| -> Vec<f32> { samples.iter().step_by(2).copied().collect() };
+    let right_of =
+        |samples: &[f32]| -> Vec<f32> { samples.iter().skip(1).step_by(2).copied().collect() };
+    assert_eq!(
+        left_of(&stereo_wav.samples),
+        left_of(&mono_wav.samples),
+        "⭐ WAV 腿：立体声导出的左声道必须与单声道参照的左声道**逐位相同**（声道 0 原样保留）"
+    );
+    assert_eq!(
+        left_of(&stereo_flac.samples),
+        left_of(&mono_flac.samples),
+        "⭐ FLAC 腿：立体声导出的左声道必须与单声道参照的左声道**逐位相同**（声道 0 原样保留）"
+    );
+    let differing_frames = left_of(&stereo_flac.samples)
+        .iter()
+        .zip(right_of(&stereo_flac.samples).iter())
+        .filter(|(l, r)| l != r)
+        .count();
+    assert!(
+        differing_frames > 100,
+        "⭐ 立体声导出的左右声道必须**真的不同**（实得 {differing_frames} 帧不同；\
+         折单声道口径下这个数是 0）"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -668,7 +733,7 @@ fn a_flac_at_another_sample_rate_is_read_at_its_own_rate() {
     assert_eq!(sample.pcm.len(), 4_800);
     assert!(
         describe.contains("rate=44100") && describe.contains("frames=4800"),
-        "描述必须写文件采样率与折后帧数：{describe}"
+        "描述必须写文件采样率与帧数：{describe}"
     );
 
     let out = render_bound(&dir, "m44.sfz", "m44.flac");

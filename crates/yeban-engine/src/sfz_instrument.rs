@@ -2372,18 +2372,32 @@ pub struct SampleLoop {
     pub end: u32,
 }
 
-/// 单个采样（**单声道、已归一化**的 PCM ＋ 它自己的采样率 ＋ 文件自带的循环点）。
+/// 单个采样（**已归一化**的 PCM ＋ 声道数 ＋ 它自己的采样率 ＋ 文件自带的循环点）。
 ///
 /// ⚠ 本仓目前**没有**采样文件读取/解码 ⇒ 样本数据必须由**调用方**提供；
 /// 本类型是离线/控制侧的最小载体（构造期分配，⛔ 不用于实时回调）。
+///
+/// ⭐ **立体声（本片，`line/sfz-stereo-path`）**：`pcm` 是**交错**存储
+/// （帧 `f` 的声道 `c` 在 `pcm[f * channels + c]`）；`channels == 1` 时布局与
+/// 本片之前**逐字相同**（单声道样本全链路逐位不变）。这正式取代 R315 的
+/// 「多声道取声道 0」裁决（台账新条目写明取代关系）：解码侧保留声道、
+/// 分声道通路真立体声出声；单声道通路读声道 0（＝ 旧口径听到的那一份，
+/// ⛔ 不发明下混）。文件解码只接受 1／2 声道（照 sfizz `getReaderInformation`
+/// 的口径），>2 声道在装载侧响亮拒绝（见 `yeban-app` 的 `sfz_load`）。
 #[derive(Debug, Clone)]
 pub struct InMemorySample {
-    /// 单声道 PCM（归一化到 `[-1, 1]`）。
+    /// 交错 PCM（归一化到 `[-1, 1]`；帧数 ＝ `len / channels`）。
     ///
     /// ⭐ `#279`：`Arc<Vec<f32>>` —— 摊平表用 `Arc::clone` **共享**它（⛔ 不再整段 clone）
     /// ⇒ "调用方手里那份已解码 PCM"与"摊平表"是**同一块内存**。调用方解码后包一次
     /// `Arc::new` 即可；⛔ 本类型与摊平表都**只读**它（全仓对 PCM 的 `&mut` 取值点 ＝ 0）。
     pub pcm: Arc<Vec<f32>>,
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声；解码侧只产出这两档）。
+    ///
+    /// ⭐ 交错存储的理由：解码器（hound／symphonia）原生输出交错帧，
+    /// 保留原序 ⇒ 解码腿零重排；逐样本取数是 `index * channels + channel`
+    /// 一次乘加（见 [`mix_span_into`]），⛔ 不需要第二份缓冲。
+    pub channels: u16,
     /// 该 PCM 的原始采样率（Hz）—— 换算交给 `yeban-sfz` 的 `RenderRates`。
     pub sample_hz: f32,
     /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 文件里没有 loop，
@@ -2407,9 +2421,17 @@ impl InMemorySample {
             .collect();
         Self {
             pcm: Arc::new(pcm),
+            channels: 1,
             sample_hz,
             loop_points: None,
         }
+    }
+
+    /// 帧数（`pcm.len() / channels`；声道数按至少 1 计 ⇒ 手工构造的
+    /// `channels == 0` 不会除零，读数退化为"全部样本算一帧一格"的单声道口径）。
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.pcm.len() / usize::from(self.channels.max(1))
     }
 
     /// ⭐ **挂上文件自带的循环点**（构造期链式调用；`#331`）。
@@ -2831,7 +2853,7 @@ impl SfzInstrument {
                     (None, Some(sample)) => sample,
                     (None, None) => continue,
                 };
-                let pcm_len = source.pcm.len();
+                let pcm_len = source.frames();
                 let rates = RenderRates::new(source.sample_hz, engine_hz);
                 // ⭐ 任务单 `#217`：`sample=*silence` 的 region **存在、会被选中**，但
                 // ⛔ **不产生任何采样输出**。必须在**这里**判，⛔ 不能靠"PCM 为空"：
@@ -3075,6 +3097,8 @@ impl SfzInstrument {
                 );
                 let region_written = mix_span_into(
                     &source.pcm,
+                    usize::from(source.channels.max(1)),
+                    0,
                     &mut position,
                     rate,
                     rate,
@@ -6077,20 +6101,27 @@ pub struct PreparedSfz {
     has_release: bool,
 }
 
-/// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
+/// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 声道数 ＋ 原始采样率。
 ///
 /// ⭐ `#279`：PCM 是**共享**进来的（`Arc<Vec<f32>>`，构造期只 `Arc::clone` 一次引用计数）
 /// ⇒ 同一份已解码 PCM 在多条轨／多个摊平表之间**只有一份字节**；`PreparedSample`
 /// 因此从 **56 B → 40 B**（`String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐）。⛔ 仍无流式与字节预算
 /// ⇒ sfz-needs-8 的"流式"那一半仍未闭合。回调侧只**借用** PCM（⛔ 不 clone、⛔ 不 `Arc` clone）。
+///
+/// ⭐ **本片（立体声样本通路）**：新增 `channels: u16`（交错存储，见
+/// [`InMemorySample::channels`]）⇒ 本结构 **48 B → 56 B**（`#331` 的
+/// `loop_points` 已占 48 B，`u16` 落不进既有填充）；判据 S12b 的尺寸钉
+/// 已按此改钉并留修订段。⛔ 仍不进实时对象（按样本数计、摊平期定）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSample {
     /// 去重键 ＝ [`yeban_sfz::instrument::Region::sample_path`] 的字符串（⛔ 不规范化、⛔ 不查文件）。
     ///
     /// ⚠ [`PreparedSfz::prepare`] 的**广播**路径没有路径身份 ⇒ 它是**空串**。
     path: String,
-    /// 单声道 PCM（归一化到 `[-1, 1]`；与调用方 `InMemorySample.pcm` **同一块内存**）。
+    /// 交错 PCM（归一化到 `[-1, 1]`；与调用方 `InMemorySample.pcm` **同一块内存**）。
     pcm: Arc<Vec<f32>>,
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声；摊平期自 [`InMemorySample::channels`] 抄入）。
+    channels: u16,
     /// 该 PCM 的原始采样率（Hz；摊平期已在 `Region::playback_rate` 里换算过）。
     sample_hz: f32,
     /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 没有）。
@@ -6114,6 +6145,12 @@ impl PreparedSample {
         &self.pcm
     }
 
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声）。
+    #[must_use]
+    pub const fn channels(&self) -> u16 {
+        self.channels
+    }
+
     /// 原始采样率（Hz）。
     #[must_use]
     pub const fn sample_hz(&self) -> f32 {
@@ -6128,13 +6165,17 @@ impl PreparedSample {
         self.loop_points
     }
 
-    /// 帧数。
+    /// 帧数（`pcm.len() / channels`；立体声一帧仍算一帧 —— 与装载侧
+    /// `MAX_SAMPLE_FRAMES_TOTAL` 的按帧记账同一口径）。
     #[must_use]
     pub fn frames(&self) -> usize {
-        self.pcm.len()
+        self.pcm.len() / usize::from(self.channels.max(1))
     }
 
     /// PCM 字节数（⛔ 不含 `path` 文本）。
+    ///
+    /// ⭐ 按**实际存储的样本数**计（立体声每帧 2 个）⇒ 内存/峰值记账随声道数
+    /// 如实放大，⛔ 不按帧数低估（本片口径，判据钉住）。
     #[must_use]
     pub fn pcm_bytes(&self) -> usize {
         core::mem::size_of::<f32>() * self.pcm.len()
@@ -6147,6 +6188,7 @@ impl PreparedSample {
         Self {
             path,
             pcm: Arc::clone(&source.pcm),
+            channels: source.channels,
             sample_hz: source.sample_hz,
             loop_points: source.loop_points,
         }
@@ -6628,6 +6670,18 @@ impl PreparedSfz {
             .count()
     }
 
+    /// 本条乐器有没有**多声道**样本（去重样本表里任一 `channels > 1`）。
+    ///
+    /// 消费方选通路时必须与 [`Self::regions_with_pan`] ／
+    /// [`Self::regions_with_cc_pan`] **一起判**：样本本身带右声道时，即使
+    /// 区域声相全中性，单声道通路也只取声道 0 ⇒ 右声道整段丢失；只有
+    /// 分声道通路（[`crate::synth::SynthEngine::render_track_stereo`]）
+    /// 保得住它。⛔ 本读数只扫**样本表**（摊平期已定型），不看区域。
+    #[must_use]
+    pub fn has_multichannel_samples(&self) -> bool {
+        self.samples.iter().any(|sample| sample.channels() > 1)
+    }
+
     /// 区域声相（百分比；`0` ＝ 中性）。单声道通路不施加，分声道通路按它分左右。
     #[must_use]
     pub fn region_pan(&self, index: usize) -> f32 {
@@ -6956,14 +7010,14 @@ impl PreparedSfz {
             if !rate_is_usable(rate) || pcm.is_empty() {
                 continue;
             }
-            let Some((start, source_end)) = region.span_bounds(pcm.len()) else {
+            let Some((start, source_end)) = region.span_bounds(sample.frames()) else {
                 continue;
             };
             // ⭐ 增益（任务单 `#108`）：CC 轴交叉淡化按**同一**探针求值
             // （`cc == None` ⇒ `gain_at` 的老口径，逐位不变）。
             let gain = region.gain_at_with_cc(note, velocity, cc);
             // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
-            let loop_window = region.loop_window(pcm.len(), sample.loop_points());
+            let loop_window = region.loop_window(sample.frames(), sample.loop_points());
             // ⭐ **播放方向**（任务单 `#113`）：与离线/实时两条路**同一份**归约
             // （[`reduce_travel`]）。⚠ `forward` ⇒ 三项逐位不变（判据 `S33`/`S37`/`S65`）。
             let (mut position, rate, source_end) =
@@ -7001,6 +7055,8 @@ impl PreparedSfz {
             let filter_base_hz = egs.base_cutoff_hz;
             let region_written = mix_span_into(
                 pcm,
+                usize::from(sample.channels().max(1)),
+                0,
                 &mut position,
                 rate,
                 rate,
@@ -7943,6 +7999,15 @@ fn configured_voice_filter(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into<'a>(
     pcm: &[f32],
+    // ⭐ **源声道**（立体声样本通路片）：`pcm` 是**交错**存储 ⇒
+    // `src_channels` 是交错步长（`1` ＝ 单声道、`2` ＝ 立体声），帧数
+    // ＝ `pcm.len() / src_channels`，取数下标 ＝ `index * src_channels
+    // + src_channel`；`src_channel` 是本次取哪一声道（单声道输出通路
+    // 恒 `0`；分声道通路由声部池按声道各调一次本函数）。
+    // `src_channels == 1` 时每个下标/帧数表达式退化为接线前原式
+    // ⇒ 单声道逐位不变。⛔ 调用方保证 `src_channel < src_channels`。
+    src_channels: usize,
+    src_channel: usize,
     position: &mut f32,
     rate: f32,
     // ⭐ **本段末的速率**（`rate == rate_end` ⇒ 恒定，与接线前**逐位相同**）。
@@ -7980,6 +8045,12 @@ pub(crate) fn mix_span_into<'a>(
     // ⭐ 反向的闸门要用**浮点**比（整数下标会漏掉 `low + 0.5` 那一帧）⇒ 循环外转一次。
     // ⚠ `source_end` 在 `reverse` 时是**下界**（见本函数文档的追加修订段）。
     let travel_bound = source_end as f32;
+    // ⭐ **源帧数**（立体声样本通路片）：交错存储下"长度"一律是**帧**，
+    // ⛔ 不是样本个数。下面所有以 `pcm_len` 为名的既有口径（钳位腿、
+    // 停止闸门、窗口终点比较）都换算到帧上；`stride == 1` 时
+    // `frames == pcm.len()` ⇒ 逐字退化为接线前表达式。
+    let stride = src_channels.max(1);
+    let frames = pcm.len() / stride;
     // ⭐ **钳位腿**（任务单 `#97`）：窗口终点**恰好等于** PCM 长度时，回绕点上要读的
     // `index + 1` 落在 PCM 之外 ⇒ 把"插值要读的下一格"钳到**最后一格**
     // （`Some(last)` ⇒ 本声部走钳位腿；`pcm` 为空时 `checked_sub` ⇒ `None`）。
@@ -7987,12 +8058,15 @@ pub(crate) fn mix_span_into<'a>(
     // ⭐ ⭐ **追加修订段（任务单 `#113`）**：反向**恒**走钳位腿 —— 反向从区间高端起步，
     // 最高一格可以恰好是 `pcm_len − 1` ⇒ `index + 1` 越界；`forward` 那一侧的触发条件
     // 逐字未变（表达式仍是同一个 `loop_window.filter(...)`）。
+    // ⭐ ⭐ **追加修订段（立体声样本通路片）—— 被修订的是本块里的 `pcm.len()`**
+    // （⛔ 原文保留在上）：钳位腿的"最后一格"与窗口终点比较改按**帧**
+    // （`frames`）；`stride == 1` 时两者同值 ⇒ 既有读数逐位不变。
     let tail_clamp = if reverse {
-        pcm.len().checked_sub(1)
+        frames.checked_sub(1)
     } else {
         loop_window
-            .filter(|window| window.end as usize == pcm.len())
-            .and_then(|_| pcm.len().checked_sub(1))
+            .filter(|window| window.end as usize == frames)
+            .and_then(|_| frames.checked_sub(1))
     };
     // ⭐ 块内线性 ramp 的步长（`rate == rate_end` ⇒ 恰 `0.0`）。
     // `out.is_empty()` 时不会被读到，但除法要在循环外做掉（⛔ 逐样本不做除法）。
@@ -8062,7 +8136,7 @@ pub(crate) fn mix_span_into<'a>(
             // （正常值下与 `+ 1` 逐位相同）。
             (index as u64).saturating_add(1) >= source_end
         };
-        if past_source_end || next >= pcm.len() {
+        if past_source_end || next >= frames {
             break;
         }
         // ⭐ 包络（本片新增）：`None` ⇒ `1.0` ⇒ 下面那个乘法是**恒等**的 `× 1.0`
@@ -8170,8 +8244,13 @@ pub(crate) fn mix_span_into<'a>(
             pitch_mult *= (level * pitch.depth() / 1200.0).exp2();
         }
         let frac = *position - index as f32;
-        // ⚠ `next`（⭐ 钳位腿上是最后一格）⛔ 不是 `index + 1`：越界读一次都不允许。
-        let sample = pcm[index] * (1.0 - frac) + pcm[next] * frac;
+        // ⚠ `next`（⭐ 钳位腿上是最后一帧）⛔ 不是 `index + 1`：越界读一次都不允许。
+        // ⭐ 取数（立体声样本通路片）：交错下标 `帧 × stride + 声道`。
+        // `stride == 1 && src_channel == 0` 时就是 `pcm[index]` / `pcm[next]`
+        // ⇒ 与接线前逐字相同；立体声时取本声道（单声道输出通路恒取声道 0
+        // ＝ R315 时代听到的那一份，⛔ 不下混、不发明规则）。
+        let sample = pcm[index * stride + src_channel] * (1.0 - frac)
+            + pcm[next * stride + src_channel] * frac;
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
@@ -8658,6 +8737,15 @@ pub struct SfzVoicePool {
     ///   （池的 `PartialEq` 是确定性判据的一部分，残留会让两次渲染分家，
     ///   与 `pitch_shape` 的退休纪律同一条）。
     filters: [VoiceFilter; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **每槽声部的右声道滤波器**（立体声样本通路片；88 B × 16 ＝ 1408 B / 池）。
+    ///
+    /// sfizz 的立体声滤波是"同一份系数、左右各一份状态"（`filterStageStereo`
+    /// 把双声道交给同一只滤波器、其内部按声道存状态）⇒ 夜半的等价形状是
+    /// 第二只 [`VoiceFilter`]：与 [`Self::filters`] 在**同四处**赋值
+    /// （触发／窃取／提升／退休，恒同值），渲染时左声道用 `filters`、
+    /// 右声道用 `filters_r` 各自推进。单声道声部永不读它（但赋值纪律不分
+    /// 声道 ⇒ 池的 `PartialEq` 确定性不依赖"这槽是不是立体声"）。
+    filters_r: [VoiceFilter; SFZ_VOICES_PER_TRACK],
     /// ⭐ **每槽两族调制包络的持久状态**（SFZ 包络族片；`[fil, pitch]` 各一份
     /// [`EgVoiceState`]，16 × 2 × 20 B ＝ 640 B / 池）。
     ///
@@ -8683,6 +8771,67 @@ pub struct SfzVoicePool {
     /// 同款四处清零/退休点（触发/窃取/提升/退休）；逐声部的全部振荡器
     /// 共享一份（见 [`LfoVoiceState`]）。
     lfo_states: [LfoVoiceState; SFZ_VOICES_PER_TRACK],
+}
+
+/// ⭐ **立体声双跑的槽状态快照**（立体声样本通路片）。
+///
+/// 分声道通路渲染一个立体声声部时，同一块要把 [`SfzVoicePool::render_slot`]
+/// 跑**两遍**（左声道一遍、右声道一遍）—— 逐样本循环全仓只有一份
+/// （[`mix_span_into`]），双跑是让两声道共用它的唯一办法。两遍的**标量**
+/// 推进（包络／调制包络／LFO／淡出／位置／滑音帧）必须逐位一致 ⇒ 第一遍
+/// 前快照本槽的全部可变状态、第一遍后存下终态、恢复快照跑第二遍、再恢复
+/// 第一遍的终态。唯一**不**进快照的是 `filters_r`（右声道滤波状态本就该
+/// 只被第二遍推进）与池级计数（渲染期不写）。
+#[derive(Clone, Copy)]
+struct SlotRenderSnapshot {
+    voice: SfzVoice,
+    pending: SfzVoice,
+    pending_active: bool,
+    fade: FadeRamp,
+    filter: VoiceFilter,
+    eg_states: (EgVoiceState, EgVoiceState),
+    lfo_state: LfoVoiceState,
+    pitch_shape: u16,
+    pending_pitch_shape: u16,
+    note_start: u64,
+    pending_note_start: u64,
+    porta_frame: u32,
+}
+
+impl SfzVoicePool {
+    /// 取本槽的双跑快照（见 [`SlotRenderSnapshot`]）。
+    fn snapshot_slot(&self, index: usize) -> SlotRenderSnapshot {
+        SlotRenderSnapshot {
+            voice: self.voices[index],
+            pending: self.pending[index],
+            pending_active: self.pending_active[index],
+            fade: self.fade[index],
+            filter: self.filters[index],
+            eg_states: self.eg_states[index],
+            lfo_state: self.lfo_states[index],
+            pitch_shape: self.pitch_shape[index],
+            pending_pitch_shape: self.pending_pitch_shape[index],
+            note_start: self.note_start[index],
+            pending_note_start: self.pending_note_start[index],
+            porta_frame: self.porta_frame,
+        }
+    }
+
+    /// 恢复本槽的双跑快照（⛔ 不动 `filters_r`，理由见 [`SlotRenderSnapshot`]）。
+    fn restore_slot(&mut self, index: usize, snapshot: &SlotRenderSnapshot) {
+        self.voices[index] = snapshot.voice;
+        self.pending[index] = snapshot.pending;
+        self.pending_active[index] = snapshot.pending_active;
+        self.fade[index] = snapshot.fade;
+        self.filters[index] = snapshot.filter;
+        self.eg_states[index] = snapshot.eg_states;
+        self.lfo_states[index] = snapshot.lfo_state;
+        self.pitch_shape[index] = snapshot.pitch_shape;
+        self.pending_pitch_shape[index] = snapshot.pending_pitch_shape;
+        self.note_start[index] = snapshot.note_start;
+        self.pending_note_start[index] = snapshot.pending_note_start;
+        self.porta_frame = snapshot.porta_frame;
+    }
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -8860,6 +9009,7 @@ impl SfzVoicePool {
             note_start: [0; SFZ_VOICES_PER_TRACK],
             pending_note_start: [0; SFZ_VOICES_PER_TRACK],
             filters: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
+            filters_r: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
             eg_states: [(EgVoiceState::INERT, EgVoiceState::INERT); SFZ_VOICES_PER_TRACK],
             lfo_states: [LfoVoiceState::INERT; SFZ_VOICES_PER_TRACK],
         }
@@ -9247,7 +9397,7 @@ impl SfzVoicePool {
             let Some(sample) = plan.sample(region.sample_index) else {
                 continue;
             };
-            let pcm_len = sample.pcm().len();
+            let pcm_len = sample.frames();
             // ⭐⭐ B8 轨级调律：触发期把轨偏移乘进基准步进（同一份换算；
             // `0.0` ⇒ 恰 `1.0` ⇒ 速率与接线前逐位相同）。乘子恒正 ⇒ 不改行进方向。
             let rate = region.rate_per_note[n] * tune_ratio_from_cents(tune_cents);
@@ -9328,6 +9478,8 @@ impl SfzVoicePool {
                     // `engine_hz`（与 `rate_per_note` 同一条纪律：换采样率
                     // 须重新摊平）。
                     self.filters[index] = region.voice_filter(plan.engine_hz(), note, velocity);
+                    // ⭐ 右声道滤波同刻同值（本片；见 `filters_r` 字段文档）。
+                    self.filters_r[index] = self.filters[index];
                     // ⭐ 调制包络状态与声部**同刻**清零（新声部自 IDLE 起）。
                     self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
                     // ⭐ LFO 状态同刻清零（新声部自触发起算）。
@@ -9631,6 +9783,8 @@ impl SfzVoicePool {
                 .map_or(VoiceFilter::BYPASSED, |region| {
                     region.voice_filter(plan.engine_hz(), voice.note(), voice.velocity())
                 });
+            // ⭐ 右声道滤波随声部一起换（本片；同值）。
+            self.filters_r[victim] = self.filters[victim];
             // ⭐ 调制包络状态随声部一起换（硬窃取：新声部自 IDLE 起）。
             self.eg_states[victim] = (EgVoiceState::INERT, EgVoiceState::INERT);
             // ⭐ LFO 状态随声部一起换（同上）。
@@ -9747,7 +9901,7 @@ impl SfzVoicePool {
         pitch: Option<&dyn Fn(u16, u64) -> f32>,
     ) {
         for index in 0..SFZ_VOICES_PER_TRACK {
-            self.render_slot(index, plan, position, out, cc, pitch);
+            self.render_slot(index, plan, position, out, cc, pitch, 0);
         }
     }
 
@@ -9764,6 +9918,31 @@ impl SfzVoicePool {
     ///   计入 [`Self::stereo_fallbacks`]（⛔ 不静默、⛔ 不在 RT 里重新分配）；
     /// * 逐槽多一次内存往返（4096 帧上限内），⛔ 不改 `mix_span_into` 的逐样本实现
     ///   —— 全仓仍然只有一份逐样本循环。
+    ///
+    /// ⭐ **立体声样本（本片，立体声样本通路）**：本槽声部的样本带 ≥2 声道时
+    /// 走**分声道通路**（照 sfizz `Voice::renderBlock` 的 stereo 路径）：
+    ///
+    /// 1. 每 128 帧一块，先对本槽取 [`SlotRenderSnapshot`]，以取数声道 0 跑
+    ///    一遍 `render_slot` 得左声道，存下其终态；恢复快照后以声道 1 再跑
+    ///    一遍得右声道；最后恢复左声道那遍的终态 —— 两遍的标量推进（包络/
+    ///    调制/淡出/位置）逐位一致，只有滤波状态按声道分开推进（左
+    ///    `filters`、右 `filters_r`）；
+    /// 2. 源侧声像级序照 sfizz `panStageStereo`：既有 `pan` 级（左右各乘
+    ///    `centered_pan_gains`）→ `width` 级 → `position` 级，后两级合在
+    ///    [`crate::mixer::apply_stereo_width_position`] 一次算完（区域静态值
+    ///    ＋ `width_onccN` / `position_onccN` 的逐块调制，缺区域 ⇒ 中性）；
+    /// 3. ⛔ **不采 sfizz 的两级 pan 补偿增益**（`panStageStereo` 末尾
+    ///    +6 dB、单声道 `panStageMono` +3 dB）：sfizz 的 `pan()` 在中央也
+    ///    衰减 −3 dB/声道、补偿是补它自己的衰减；夜半第一级是
+    ///    `centered_pan_gains`（裁决 #300：中央恰 `(1, 1)`、监制听与离线
+    ///    导出一致），且 `apply_stereo_width_position` 在中性值短路逐位
+    ///    恒等 —— 没有衰减就没有补偿，照搬 +6 dB 只会让立体声区域凭空比
+    ///    单声道区域响 6 dB 并顶破削波余量。本裁决与台账同文钉死；
+    /// 4. 单声道样本的声部**不进**分声道通路（走上面原有的单声道分声道
+    ///    复制 ⇒ 与接线前逐位相同，sfizz `panStageMono` 口径）。窃取淡出
+    ///    窗口里新旧声部声道数不同时，以**当前活声部**的样本定走哪条通路，
+    ///    另一段在 `render_slot` 内按自己的样本钳位取数声道（单声道段取
+    ///    声道 0）—— 一个块的过渡形态，下一块自愈。
     pub fn render_into_stereo_with_probes(
         &mut self,
         plan: &PreparedSfz,
@@ -9783,21 +9962,66 @@ impl SfzVoicePool {
                 pan / 100.0,
                 crate::mixer::PanLaw::ConstantPowerMinus3dB,
             );
+            // ⭐ 本片：本槽活声部的样本是立体声 ⇒ 分声道通路（见函数文档）。
+            let voice = self.voices[index];
+            let stereo_voice = voice.active
+                && plan
+                    .sample(voice.sample_index)
+                    .is_some_and(|sample| sample.channels() >= 2);
             let mut offset = 0usize;
             while offset < frames {
                 let len = (frames - offset).min(STEREO_CHUNK_FRAMES);
-                let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
-                self.render_slot(
-                    index,
-                    plan,
-                    position.saturating_add(offset as u64),
-                    &mut chunk[..len],
-                    cc,
-                    pitch,
-                );
-                for (slot, value) in chunk[..len].iter().enumerate() {
-                    left[offset + slot] += value * gain_l;
-                    right[offset + slot] += value * gain_r;
+                let block_position = position.saturating_add(offset as u64);
+                if stereo_voice {
+                    // ⭐ 宽度/声像位置取**本块**读数（静态 ＋ CC 调制）。
+                    let region_index = usize::from(self.voices[index].region_index);
+                    let width = plan.region_width_with_cc(region_index, cc);
+                    let image_position = plan.region_position_with_cc(region_index, cc);
+                    let mut chunk_l = [0.0f32; STEREO_CHUNK_FRAMES];
+                    let mut chunk_r = [0.0f32; STEREO_CHUNK_FRAMES];
+                    let before = self.snapshot_slot(index);
+                    self.render_slot(
+                        index,
+                        plan,
+                        block_position,
+                        &mut chunk_l[..len],
+                        cc,
+                        pitch,
+                        0,
+                    );
+                    let after_left = self.snapshot_slot(index);
+                    self.restore_slot(index, &before);
+                    self.render_slot(
+                        index,
+                        plan,
+                        block_position,
+                        &mut chunk_r[..len],
+                        cc,
+                        pitch,
+                        1,
+                    );
+                    self.restore_slot(index, &after_left);
+                    for slot in 0..len {
+                        chunk_l[slot] *= gain_l;
+                        chunk_r[slot] *= gain_r;
+                    }
+                    crate::mixer::apply_stereo_width_position(
+                        &mut chunk_l[..len],
+                        &mut chunk_r[..len],
+                        width,
+                        image_position,
+                    );
+                    for slot in 0..len {
+                        left[offset + slot] += chunk_l[slot];
+                        right[offset + slot] += chunk_r[slot];
+                    }
+                } else {
+                    let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
+                    self.render_slot(index, plan, block_position, &mut chunk[..len], cc, pitch, 0);
+                    for (slot, value) in chunk[..len].iter().enumerate() {
+                        left[offset + slot] += value * gain_l;
+                        right[offset + slot] += value * gain_r;
+                    }
                 }
                 offset += len;
             }
@@ -9820,6 +10044,10 @@ impl SfzVoicePool {
     ///    （否则释放段会被 note-off 当场切断）—— 见 [`Self::slot_readings`]；
     /// 3. 把声部的推进状态（段位 / 计数 / note-off↔epoch）按需交给 [`EnvRun`]，
     ///    写完再**写回**（跨块延续）。
+    // ⚠ `clippy::too_many_arguments`：8 个参数是互不相关的输入维度（槽 / 摊平表 /
+    //    块位置 / 输出 / CC 探针 / 弯音探针 / 取数声道），与 `render_note_into_with_cc`
+    //    同一条口径 —— 合并成结构体只会让三个调用点写样板。
+    #[allow(clippy::too_many_arguments)]
     fn render_slot(
         &mut self,
         index: usize,
@@ -9828,6 +10056,13 @@ impl SfzVoicePool {
         out: &mut [f32],
         cc: Option<&dyn Fn(u8) -> u8>,
         pitch: Option<&dyn Fn(u16, u64) -> f32>,
+        // ⭐ **取数声道**（立体声样本通路片）：`0` ＝ 左/单声道（单声道通路
+        // 恒用它）；`1` ＝ 右声道（只由分声道通路对立体声声部传入，见
+        // [`Self::render_into_stereo_with_probes`] 的双跑）。滤波随声道选
+        // `filters` / `filters_r`；取数声道在每段按**该段样本**的声道数
+        // 钳位（单声道样本恒取 0 ⇒ 窃取淡出窗口里声道数不同的新旧声部
+        // 混槽也不会越界取数）。
+        channel: usize,
     ) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
@@ -9857,7 +10092,14 @@ impl SfzVoicePool {
             let mut fade = self.fade[index];
             // ⭐ victim 用**它自己**那只滤波（触发/提升时已配置）：本地
             // 副本推进递推、写完回写（与 `fade` 同一条纪律）。
-            let mut filter = self.filters[index];
+            // ⭐ 本片：按取数声道选左右滤波（`channel == 0` ⇒ 与接线前同一只）。
+            let mut filter = if channel == 0 {
+                self.filters[index]
+            } else {
+                self.filters_r[index]
+            };
+            // ⭐ 本段的取数声道（按 victim 样本的声道数钳位，见签名处 `channel` 文档）。
+            let fetch_channel = channel.min(usize::from(sample.channels().max(1)) - 1);
             let mut env = readings.env.map(|run| {
                 EnvRun::new(
                     run,
@@ -9896,6 +10138,8 @@ impl SfzVoicePool {
             );
             let written = mix_span_into(
                 sample.pcm(),
+                usize::from(sample.channels().max(1)),
+                fetch_channel,
                 &mut local,
                 readings.rate,
                 readings.rate,
@@ -9923,7 +10167,11 @@ impl SfzVoicePool {
             // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
             self.voices[index].position = local;
             self.fade[index] = fade;
-            self.filters[index] = filter;
+            if channel == 0 {
+                self.filters[index] = filter;
+            } else {
+                self.filters_r[index] = filter;
+            }
             offset = written;
             // 源/引擎终点在淡出走完之前先到 ⇒ victim 已经静音（见下面第 2 步）。
             victim_stopped = written < limit;
@@ -9947,6 +10195,8 @@ impl SfzVoicePool {
                 .map_or(VoiceFilter::BYPASSED, |region| {
                     region.voice_filter(plan.engine_hz(), promoted.note(), promoted.velocity())
                 });
+            // ⭐ 右声道滤波同刻同值（本片）。
+            self.filters_r[index] = self.filters[index];
             // ⭐ 调制包络状态在**提升这一刻**清零：被提升声部的包络自接管
             // 那一帧起算（与 ampeg 在提升后以 IDLE/0 组装 `EnvRun` 同款；
             // victim 的残余状态随淡出段一起结束，⛔ 不继承）。
@@ -9981,7 +10231,14 @@ impl SfzVoicePool {
         let mut fade = self.fade[index];
         // ⭐ 本槽声部的滤波：本地副本推进递推、写完回写（跨块延续，
         // 与 `fade` 同一条纪律）；直通时 `process` 恒等 ⇒ 逐位不变。
-        let mut filter = self.filters[index];
+        // ⭐ 本片：按取数声道选左右滤波（`channel == 0` ⇒ 与接线前同一只）。
+        let mut filter = if channel == 0 {
+            self.filters[index]
+        } else {
+            self.filters_r[index]
+        };
+        // ⭐ 本段的取数声道（按本声部样本的声道数钳位，见签名处 `channel` 文档）。
+        let fetch_channel = channel.min(usize::from(sample.channels().max(1)) - 1);
         let mut env = readings.env.map(|run| {
             EnvRun::new(
                 run,
@@ -10065,6 +10322,8 @@ impl SfzVoicePool {
         }
         let written = mix_span_into(
             sample.pcm(),
+            usize::from(sample.channels().max(1)),
+            fetch_channel,
             &mut local,
             rate,
             rate_end,
@@ -10091,7 +10350,11 @@ impl SfzVoicePool {
         );
         self.voices[index].position = local;
         self.fade[index] = fade;
-        self.filters[index] = filter;
+        if channel == 0 {
+            self.filters[index] = filter;
+        } else {
+            self.filters_r[index] = filter;
+        }
         // ⭐ portamento 的时间源推进（`pitch == None` 时 `eg_frame` 恒 `0`，
         // 这次 `saturating_add` 不改变任何读数）。
         if self.porta_slot as usize == index {
@@ -10156,7 +10419,7 @@ impl SfzVoicePool {
     ) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
         let sample = plan.sample(voice.sample_index)?;
-        let pcm_len = sample.pcm().len();
+        let pcm_len = sample.frames();
         // ⭐ `#331`：循环窗口的缺省点来自**该声部自己那份样本**（`smpl` 块）。
         let loop_window = region.loop_window(pcm_len, sample.loop_points());
         // ⭐ ⭐ CC 轴交叉淡化（任务单 `#108`）：**逐块现算**本声部的逐样本增益 ——
@@ -10280,6 +10543,7 @@ impl SfzVoicePool {
         self.fade[index] = FadeRamp::NONE;
         // ⭐ 滤波状态一并退休（理由同上：池相等是确定性判据的一部分）。
         self.filters[index] = VoiceFilter::BYPASSED;
+        self.filters_r[index] = VoiceFilter::BYPASSED;
         // ⭐ 调制包络状态一并退休（理由同上）。
         self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
         // ⭐ LFO 状态一并退休（理由同上）。

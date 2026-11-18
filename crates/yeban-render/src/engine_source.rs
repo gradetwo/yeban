@@ -121,12 +121,16 @@ impl From<SnapshotError> for EngineSourceError {
 /// * `path`：`region.sample_path()` 的**原样**字符串（⚠ 可能已拼上
 ///   `default_path=` 前缀）—— 它同时是 `SfzPlan::prepare_with_samples` 的**去重键**，
 ///   ⛔ 本层不做任何路径规范化（与引擎的 `PreparedSfz::prepare_with_samples` 同一句）；
-/// * `pcm`：单声道、归一化到 `[-1, 1]` 的样本帧；⭐ `#279` 起是 `Arc<Vec<f32>>`
-///   —— provider 直接交出它自己那份已解码 PCM 的 `Arc::clone`（⛔ 不复制元素），
-///   引擎摊平表也只 `Arc::clone` 它 ⇒ **同一份 PCM 只有一份字节**；
+/// * `pcm`：归一化到 `[-1, 1]` 的样本帧，**按 `channels` 交错存储**
+///   （立体声样本通路片起：立体声 PCM 左右交错原样交出，⛔ 不再折单声道）；
+///   ⭐ `#279` 起是 `Arc<Vec<f32>>` —— provider 直接交出它自己那份已解码 PCM
+///   的 `Arc::clone`（⛔ 不复制元素），引擎摊平表也只 `Arc::clone` 它
+///   ⇒ **同一份 PCM 只有一份字节**；
+/// * `channels`：`pcm` 的声道数（`1` ＝ 单声道、`2` ＝ 立体声；provider 的
+///   解码若仍是单声道口径就如实填 `1`，⛔ 不许拿交错长度冒充）；
 /// * `sample_hz`：该 PCM 的**原始采样率**（Hz）—— 播放速率换算交给引擎的
 ///   `RenderRates`（⛔ 本层不重采样）。
-pub type ArmedSfzSample = (String, (Arc<Vec<f32>>, f32));
+pub type ArmedSfzSample = (String, (Arc<Vec<f32>>, u16, f32));
 
 /// ⭐ `#274`：一条轨的**武装输入**（provider 的返回值）。
 ///
@@ -312,11 +316,12 @@ impl EngineTimbre {
             let provided: Vec<(String, InMemorySample)> = input
                 .samples
                 .into_iter()
-                .map(|(path, (pcm, sample_hz))| {
+                .map(|(path, (pcm, channels, sample_hz))| {
                     (
                         path,
                         InMemorySample {
                             pcm,
+                            channels,
                             sample_hz,
                             loop_points: None,
                         },
@@ -711,9 +716,15 @@ impl AudioSource for EngineTrackSource {
         //    （`pan` 全 0 的语料 ⇒ 与接线前逐位相同）。
         // ⚠ stage 3 起还要看**逐块可变**的声相：静态 `pan=0` ＋ `pan_onccN` 的库，
         //   只有在分声道通路上才听得见调制（同样条数为 0 时不切，逐位不变）。
+        // ⭐ **立体声样本通路补门**：样本本身是多声道时，即使声相全中性也必须
+        //   走分声道通路 —— 单声道通路只取声道 0，右声道会整段丢失（stage 2
+        //   立门时样本全是单声道，这条前提随立体声样本通路落地已不成立）。
         let source_panned = channels == 2
-            && sfz
-                .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0);
+            && sfz.is_some_and(|plan| {
+                plan.regions_with_pan() > 0
+                    || plan.regions_with_cc_pan() > 0
+                    || plan.has_multichannel_samples()
+            });
         if source_panned {
             // 栈上定长分块：⛔ 不在渲染中分配（与 `SfzVoicePool` 的分声道入口同一条纪律）。
             const CHUNK: usize = 128;
@@ -873,7 +884,7 @@ mod tests {
                 sfz_path.clone(),
                 vec![(
                     "tone.wav".to_owned(),
-                    (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                    (Arc::new(vec![0.25_f32; 4_800]), 1, 48_000.0),
                 )],
             )
         })
@@ -968,7 +979,7 @@ mod tests {
                     sfz_path.clone(),
                     vec![(
                         "tone.wav".to_owned(),
-                        (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                        (Arc::new(vec![0.25_f32; 4_800]), 1, 48_000.0),
                     )],
                 )
             })
@@ -1215,6 +1226,113 @@ mod tests {
             .validate()
             .unwrap_or_else(|error| panic!("多轨夹具必须合法: {error}"));
         (project, ids)
+    }
+
+    /// ⭐ **render 层选路证据**：单声道 SFZ 语料经**分声道通路**渲染，与经
+    /// **单声道通路**渲染**逐位一致**（引擎层 S124 钉的是单声道出口对立体声
+    /// 样本取声道 0；本条钉的是离线源在双声道出口上两条通路的合流）。
+    ///
+    /// 三个渲染（同一工程、同一音符、同一份单声道样本，只差 SFZ 文本）：
+    /// 1. 纯区域（声相全中性、样本单声道）⇒ 选路走单声道通路；
+    /// 2. 区域带 `pan_oncc10`（选路的 CC 声相一路命中）但不接 CC 探针
+    ///    ⇒ 走分声道通路、有效声相仍为中性 ⇒ 必须与 1 **逐位相同**；
+    /// 3. 同 2 的区域再加 `<control>set_cc10=127` 并接上离线探针 ⇒ 声相被
+    ///    推满 +100 ⇒ 输出必须与 1 不同、左声道塌到近零 —— 这是 2 真的走了
+    ///    分声道通路的**见证**（否则 1＝2 可能只是两边都走了单声道通路）。
+    #[test]
+    fn a_mono_sfz_corpus_renders_bit_identically_through_the_stereo_path() {
+        fn render_stereo(source: &mut EngineTrackSource, frames: u64) -> Vec<f32> {
+            let mut block = vec![0.0_f32; 256];
+            let mut all = Vec::new();
+            let mut first = 0u64;
+            let mut index = 0u64;
+            while first < frames {
+                let len = usize::try_from((frames - first).min(128)).expect("块长");
+                source
+                    .render_block(
+                        BlockContext {
+                            block_index: index,
+                            first_frame: first,
+                            frames: len,
+                            channels: 2,
+                            sample_rate: 48_000,
+                            seed: 1,
+                        },
+                        &mut block[..len * 2],
+                    )
+                    .expect("连续升序的块必须被接受");
+                all.extend_from_slice(&block[..len * 2]);
+                first += len as u64;
+                index += 1;
+            }
+            all
+        }
+
+        let dir = tempfile::tempdir().expect("临时目录");
+        let sfz_path = dir.path().join("gate.sfz");
+        let render = |sfz_text: &str, with_probe: bool| -> Vec<f32> {
+            std::fs::write(&sfz_path, sfz_text).expect("写 SFZ");
+            let (mut project, ids) = many_track_project(1);
+            let track = ids[0];
+            project.tracks.get_mut(&track).expect("轨").sampler =
+                Some(yeban_model::SamplerBinding {
+                    note_octave_override: None,
+                    path: sfz_path.display().to_string(),
+                });
+            project.validate().expect("选路夹具必须合法");
+            let pcm: Vec<f32> = (0..4_800)
+                .map(|i| (((i * 37) % 401) as f32) / 401.0 - 0.5)
+                .collect();
+            let timbre = EngineTimbre::from_project_armed(&project, 48_000.0, |_, _| {
+                ArmedSfzInput::new(
+                    sfz_path.clone(),
+                    vec![("tone.wav".to_owned(), (Arc::new(pcm.clone()), 1, 48_000.0))],
+                )
+            })
+            .expect("武装必须成功");
+            let mut source = timbre.track_source(track).expect("必须能武装");
+            if with_probe {
+                source = source.with_cc(&project);
+            }
+            render_stereo(&mut source, 4_800)
+        };
+
+        let plain = "<region> sample=tone.wav key=48 amp_veltrack=0\n";
+        let gated = "<region> sample=tone.wav key=48 amp_veltrack=0 pan_oncc10=100\n";
+        let seeded = "<control>set_cc10=127\n<region> sample=tone.wav key=48 amp_veltrack=0 pan_oncc10=100\n";
+
+        let mono = render(plain, false);
+        let stereo_neutral = render(gated, false);
+        let bits = |buf: &[f32]| buf.iter().map(|v| v.to_bits()).collect::<Vec<u32>>();
+        assert_eq!(
+            bits(&stereo_neutral),
+            bits(&mono),
+            "⭐ 单声道语料经分声道通路（声相中性）必须与单声道通路逐位一致"
+        );
+
+        let panned = render(seeded, true);
+        assert_ne!(
+            bits(&panned),
+            bits(&mono),
+            "⭐ set_cc10=127 把 pan_oncc 推满后输出必须改变（分声道通路的见证）"
+        );
+        let left_peak = panned
+            .iter()
+            .step_by(2)
+            .fold(0.0_f32, |acc, v| acc.max(v.abs()));
+        let right_peak = panned
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0_f32, |acc, v| acc.max(v.abs()));
+        assert!(
+            right_peak > 0.1,
+            "⭐ 声相推满后右声道必须带满信号（实得峰值 {right_peak}）"
+        );
+        assert!(
+            left_peak <= right_peak * 1e-6,
+            "⭐ 声相推满 +100 后左声道必须塌到近零（实得峰值 {left_peak}，右 {right_peak}）"
+        );
     }
 
     /// 把一个源按 128 帧切块渲染 `frames` 帧，返回样本峰值（线性幅度）。

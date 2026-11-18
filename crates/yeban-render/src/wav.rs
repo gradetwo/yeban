@@ -342,6 +342,40 @@ pub fn read_plain_wav_mono_f32_from_bytes(
     mono_f32_from_plain(format, buffer, display)
 }
 
+/// ⭐ **保声道腿**（立体声样本通路片）：与 [`read_plain_wav_mono_f32`] **同一份
+/// 换算**（[`interleaved_f32_from_plain`]），但⛔ 不折声道 —— 返回
+/// `(交错样本, 声道数, 采样率, 描述)`，立体声文件左右声道逐帧交错原样保留。
+///
+/// 单声道腿与本腿共用换算本体 ⇒ 同一文件两腿的声道 0 **逐位相同**
+/// （单声道腿 = 本腿输出按声道数 `step_by` 取 0，见 [`mono_f32_from_plain`]）。
+/// 声道数 >2 的文件本腿同样原样读出（拒绝/告警是**调用方**的装载口径，
+/// 本腿只如实交出文件里有什么）。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav_mono_f32`] 同。
+pub fn read_plain_wav_f32(
+    path: impl AsRef<Path>,
+) -> Result<(Vec<f32>, u16, u32, String), WavError> {
+    let path = path.as_ref();
+    let display = path.display().to_string();
+    let (format, buffer) = read_plain_wav(path)?;
+    channels_f32_from_plain(format, buffer, &display)
+}
+
+/// 与 [`read_plain_wav_f32`] 同口径的**内存字节**腿（内嵌样本用）。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav_f32`] 同。
+pub fn read_plain_wav_f32_from_bytes(
+    bytes: &[u8],
+    display: &str,
+) -> Result<(Vec<f32>, u16, u32, String), WavError> {
+    let (format, buffer) = read_plain_wav_bytes(bytes)?;
+    channels_f32_from_plain(format, buffer, display)
+}
+
 /// [`read_plain_wav`] 的内存字节腿：`bytes` 是一份完整 WAV 的字节。
 ///
 /// # Errors
@@ -352,40 +386,64 @@ pub fn read_plain_wav_bytes(bytes: &[u8]) -> Result<(PcmFormat, PcmBuffer), WavE
     read_plain_wav_from_reader(&mut reader)
 }
 
+/// ⭐ **换算本体（全仓唯一一份）**：`hound` 读出的缓冲换成**交错** `f32`，
+/// 声道原样保留（立体声样本通路片从 [`mono_f32_from_plain`] 拆出）。
+///
+/// ⚠ 顺序**必须**先判浮点：`BitDepth::scale` 对 `Float32` 是 panic。
+/// `#254`：分母是 `2^(bits-1)`（`BitDepth::scale()`），⛔ 不是 `2^(bits-1) - 1`
+/// （`full_scale_max()`）—— 后者把 `-32768` 映射成 `-1.0000305`，越出满量程。
+/// 换算是**逐样本独立**的 ⇒ 先全量换算再按声道抽取，与先抽取再换算逐位相同。
+fn interleaved_f32_from_plain(buffer: &PcmBuffer) -> Vec<f32> {
+    let scale = match buffer.depth() {
+        BitDepth::Float32 => 1.0_f32,
+        depth => 1.0_f32 / depth.scale(),
+    };
+    match buffer {
+        PcmBuffer::Int16(values) => values
+            .iter()
+            .map(|value| f32::from(*value) * scale)
+            .collect(),
+        PcmBuffer::Int24(values) => values.iter().map(|value| (*value as f32) * scale).collect(),
+        PcmBuffer::Float32(values) => values.clone(),
+    }
+}
+
 /// `hound` 读出的 `(格式, 缓冲)` 折成单声道 `f32`（与 [`read_plain_wav_mono_f32`]
 /// 同一份换算，⛔ 不许各写一份：分母/声道口径漂移会直接改渲染字节）。
+/// 折法 = 对 [`interleaved_f32_from_plain`] 的输出按声道数 `step_by` 取声道 0
+/// ⇒ 与保声道腿的声道 0 逐位相同。
 fn mono_f32_from_plain(
     format: PcmFormat,
     buffer: PcmBuffer,
     display: &str,
 ) -> Result<(Vec<f32>, u32, String), WavError> {
     let channels = usize::from(format.channels.max(1));
-    // ⚠ 顺序**必须**先判浮点：`BitDepth::scale` 对 `Float32` 是 panic。
-    // `#254`：分母是 `2^(bits-1)`（`BitDepth::scale()`），⛔ 不是 `2^(bits-1) - 1`
-    // （`full_scale_max()`）—— 后者把 `-32768` 映射成 `-1.0000305`，越出满量程。
-    let scale = match buffer.depth() {
-        BitDepth::Float32 => 1.0_f32,
-        depth => 1.0_f32 / depth.scale(),
-    };
-    let samples: Vec<f32> = match &buffer {
-        PcmBuffer::Int16(values) => values
-            .iter()
-            .step_by(channels)
-            .map(|value| f32::from(*value) * scale)
-            .collect(),
-        PcmBuffer::Int24(values) => values
-            .iter()
-            .step_by(channels)
-            .map(|value| (*value as f32) * scale)
-            .collect(),
-        PcmBuffer::Float32(values) => values.iter().step_by(channels).copied().collect(),
-    };
+    let interleaved = interleaved_f32_from_plain(&buffer);
+    let samples: Vec<f32> = interleaved.iter().step_by(channels).copied().collect();
     let describe = format!(
         "file({display} frames={} rate={})",
         samples.len(),
         format.sample_rate
     );
     Ok((samples, format.sample_rate, describe))
+}
+
+/// `hound` 读出的 `(格式, 缓冲)` 换成**保声道**交错 `f32`（[`read_plain_wav_f32`]
+/// 的落点；换算本体与单声道腿共用，见 [`interleaved_f32_from_plain`]）。
+fn channels_f32_from_plain(
+    format: PcmFormat,
+    buffer: PcmBuffer,
+    display: &str,
+) -> Result<(Vec<f32>, u16, u32, String), WavError> {
+    let channels = format.channels.max(1);
+    let samples = interleaved_f32_from_plain(&buffer);
+    let describe = format!(
+        "file({display} frames={} channels={} rate={})",
+        samples.len() / usize::from(channels),
+        channels,
+        format.sample_rate
+    );
+    Ok((samples, channels, format.sample_rate, describe))
 }
 
 /// P3 流式：WAV 按需分页读取器（磁盘线程的 WAV 腿）。
@@ -1586,6 +1644,63 @@ mod tests {
             let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回");
             assert_eq!(pcm, vec![0.125, -0.25, 0.5, -1.0], "浮点必须逐样本直用");
         }
+    }
+
+    /// ⭐ **保声道腿**（立体声样本通路片）：立体声文件左右声道交错原样读出，
+    /// 且与单声道腿的声道 0 **逐位相同**（两腿共用换算本体的钉）。
+    #[test]
+    fn read_plain_wav_f32_keeps_channels_and_matches_the_mono_leg_channel_zero() {
+        // ---- 16-bit 立体声：左右用可区分的斜坡 ----
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("stereo16.wav");
+        let format = PcmFormat::integer(2, 44_100, 16);
+        let frames = 96usize;
+        let mut interleaved_i16 = Vec::new();
+        for frame in 0..frames {
+            interleaved_i16.push((frame as i16) * 300 - 14_000);
+            interleaved_i16.push(12_000 - (frame as i16) * 250);
+        }
+        let buffer = PcmBuffer::Int16(interleaved_i16.clone());
+        write_plain_wav(&path, &format, &buffer).expect("写夹具");
+
+        let (pcm, channels, rate, describe) = read_plain_wav_f32(&path).expect("保声道读回");
+        assert_eq!(channels, 2, "声道数必须原样带出");
+        assert_eq!(rate, 44_100);
+        assert_eq!(pcm.len(), frames * 2, "交错样本数 = 帧数 × 声道数");
+        let scale = 1.0_f32 / 32_768.0;
+        for (index, value) in interleaved_i16.iter().enumerate() {
+            assert_eq!(
+                pcm[index],
+                f32::from(*value) * scale,
+                "第 {index} 个交错样本必须与源整数 × 2^-15 逐位相同"
+            );
+        }
+        assert!(
+            describe.contains("channels=2"),
+            "描述必须点名声道数: {describe}"
+        );
+
+        // 单声道腿 = 保声道腿按声道数 step_by 取 0（逐位）。
+        let (mono, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("单声道读回");
+        let folded: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+        assert_eq!(mono, folded, "单声道腿与保声道腿的声道 0 必须逐位相同");
+
+        // 字节腿与路径腿逐位相同（保声道版）。
+        let bytes = std::fs::read(&path).expect("读夹具字节");
+        let (pcm_bytes, channels_bytes, _rate, _describe) =
+            read_plain_wav_f32_from_bytes(&bytes, "fixture").expect("字节腿读回");
+        assert_eq!(channels_bytes, 2);
+        assert_eq!(pcm_bytes, pcm, "字节腿与路径腿必须逐位相同");
+
+        // ---- 单声道文件走保声道腿：channels = 1，输出与单声道腿逐位相同 ----
+        let mono_path = directory.path().join("mono24.wav");
+        let mono_format = PcmFormat::integer(1, 48_000, 24);
+        let mono_buffer = PcmBuffer::Int24(vec![-8_000_000, -1, 0, 1, 8_000_000]);
+        write_plain_wav(&mono_path, &mono_format, &mono_buffer).expect("写单声道夹具");
+        let (pcm1, channels1, _rate, _describe) = read_plain_wav_f32(&mono_path).expect("读回");
+        assert_eq!(channels1, 1);
+        let (mono1, _rate, _describe) = read_plain_wav_mono_f32(&mono_path).expect("单声道读回");
+        assert_eq!(pcm1, mono1, "单声道文件两腿必须逐位相同");
     }
 
     /// 字节腿与路径腿**逐位相同**（采样内嵌：同一份 WAV 经 CAS 字节解出的 PCM
