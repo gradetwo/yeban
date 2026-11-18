@@ -298,7 +298,10 @@ fn position_and_width_evaluate_with_baked_cc() {
         position_value_with_baked(region.position, &baked, Some(&|_| 0)),
         10.0
     );
-    assert_eq!(position_value_with_baked(region.position, &baked, None), 10.0);
+    assert_eq!(
+        position_value_with_baked(region.position, &baked, None),
+        10.0
+    );
     // width：缺省基准 100 + `width_oncc1=-100`，CC 满 ⇒ 0（单声道化点）。
     let instrument = parse_text(
         "<region> sample=a.wav width_oncc1=-100",
@@ -308,7 +311,10 @@ fn position_and_width_evaluate_with_baked_cc() {
     let region = &instrument.regions()[0];
     assert_eq!(region.width, 100.0, "width 缺省必须是 100（立体声原样）");
     let baked = bake_cc_mods(region.cc_modulations(), Curve::built_in);
-    assert_eq!(width_value_with_baked(region.width, &baked, Some(&|_| 127)), 0.0);
+    assert_eq!(
+        width_value_with_baked(region.width, &baked, Some(&|_| 127)),
+        0.0
+    );
     // 求值和越界钳回：80 + 50 ⇒ 100（不是 130、不是回绕）。
     let instrument = parse_text(
         "<region> sample=a.wav position=80 position_oncc1=50",

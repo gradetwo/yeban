@@ -3035,7 +3035,7 @@ pub(crate) fn build_region<'a>(
         line,
         parse_on_cc_trigger_name,
         true,
-    consumed,
+        consumed,
     )?;
 
     // ---- portamento 的 pitch 包络（egN_*，见 crate::pitch_eg） ----

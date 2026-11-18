@@ -285,12 +285,7 @@ pub fn centered_pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
 ///   for stereo samples"）。夜半当前 SFZ 样本在摊平期是单声道 PCM
 ///   ⇒ 声部分声道通路**不**调用本函数（接线点在将来立体声样本通路的
 ///   源侧分配处）；本函数的判据用合成双声道缓冲钉住公式本身。
-pub fn apply_stereo_width_position(
-    left: &mut [f32],
-    right: &mut [f32],
-    width: f32,
-    position: f32,
-) {
+pub fn apply_stereo_width_position(left: &mut [f32], right: &mut [f32], width: f32, position: f32) {
     if width.is_finite() && width != 100.0 {
         let nu = (width / 100.0).clamp(-1.0, 1.0);
         let w = (nu + 1.0) * 0.5;
@@ -884,13 +879,19 @@ mod tests {
 
         // ② width=0 ⇒ 两声道相等（浮点容差内）：L' == R' == (L+R)·√2/2。
         let (left, right) = run(0.0, 0.0);
-        assert!(close(&left, &right), "width=0 时 L 必须 == R：{left:?} vs {right:?}");
+        assert!(
+            close(&left, &right),
+            "width=0 时 L 必须 == R：{left:?} vs {right:?}"
+        );
         let mid: Vec<f32> = orig_left
             .iter()
             .zip(orig_right.iter())
             .map(|(l, r)| (l + r) * core::f32::consts::FRAC_1_SQRT_2)
             .collect();
-        assert!(close(&left, &mid), "width=0 的公共值必须是 mid·√2/2：{left:?}");
+        assert!(
+            close(&left, &mid),
+            "width=0 的公共值必须是 mid·√2/2：{left:?}"
+        );
 
         // ③ width=-100 ⇒ side 反转：左右内容互换。
         let (left, right) = run(-100.0, 0.0);
@@ -916,7 +917,10 @@ mod tests {
         //    position=100 必须整体落到右声道（左 ≈ 0、右 == mid·√2/2）。
         let (left, right) = run(0.0, 100.0);
         assert!(left.iter().all(|v| v.abs() <= 1e-6));
-        assert!(close(&right, &mid), "width→position 的顺序结果必须是 mid 落右：{right:?}");
+        assert!(
+            close(&right, &mid),
+            "width→position 的顺序结果必须是 mid 落右：{right:?}"
+        );
 
         // ⑥ 非有限输入只跳过**自己那一级**（逐级独立守卫），⛔ 不把 NaN
         //    扩散进缓冲、也不连坐另一级：width=NaN + position=0 ⇒ 全不动；
