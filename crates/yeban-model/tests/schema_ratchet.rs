@@ -98,6 +98,7 @@ use yeban_model::samples::filled_project;
 /// | 20–28 | `#.tracks.*.preset` 及其 8 个子路径（`preset_id` / `bypassed` / `auto_load` / `previous` / `previous.strip` / `previous.effects` / `previous.sends` / `previous.macros`） | `tracks[*].preset` 一组 | `None` / 缺省值 / 空集 ⇒ 不落盘（夜半原生预制线新增） |
 /// | 34–36 | `#.tracks.*.delay_samples` / `#.tracks.*.invert_polarity` / `#.tracks.*.clips.*.offset_samples` | `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` | `None` ⇒ 不落盘（手动相位对齐线新增） |
 /// | 37 | `#.tracks.*.sampler.note_octave_override` | `tracks[*].sampler.note_octave_override` | `None` ⇒ 不落盘（音名八度统一线阶段 2 新增） |
+/// | 38–40 | `#.tracks.*.lane_chains` / `#.tracks.*.lane_chains[].devices[].params[].unit` / `#.tracks.*.lane_chains[].pan` | `tracks[*].lane_chains` 一组 | 空集 / `None` ⇒ 不落盘（逐件处理线期 2 新增） |
 ///
 /// **注意反例**：`clip_pool[*].content.Audio.gain_db` **不在**本表里 —— 那里 `gain_db`
 /// 是裸 `f32`，所以它**是**必需的（§5.4 原文明确点名了这个对比）。
@@ -159,6 +160,13 @@ use yeban_model::samples::filled_project;
 /// 不同（未设 ⇒ 装载跑自动检测；设了 ⇒ 检测停跑）是本字段必须用 `Option`
 /// 承载的原因。既有夹具一处都不落盘它（"默认不改变既有工程"），填进夹具
 /// 会改掉冻结 sha256 ⇒ 唯一正确的出路同样是登记。账本两处已同步补行。
+///
+/// ⚠ **第 38–40 项的来历**（逐件处理线期 2，2026-11-18）：`TrackV3::lane_chains`
+/// 是 `Vec<LaneChainDef>` ＋ `#[serde(default)]` + `skip_serializing_if`（空集不落盘），
+/// 与第 32/33 项**同形** ⇒ 契约里只能声明为可选属性；组内 `LaneChainDef::pan`
+/// 是 `Option<f32>` ＋ 同形，链内设备参数的 `unit` 与第 4 项同形。既有夹具
+/// 一处都不落盘它们（"缺省 = 无逐件链"正是期 2 的序列化兼容裁决本身），
+/// 填进夹具会改掉冻结 sha256 ⇒ 唯一正确的出路同样是登记。账本两处已同步补行。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -181,6 +189,9 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.tracks.*.delay_samples",
     "#.tracks.*.invert_polarity",
     "#.tracks.*.clips.*.offset_samples",
+    "#.tracks.*.lane_chains",
+    "#.tracks.*.lane_chains[].devices[].params[].unit",
+    "#.tracks.*.lane_chains[].pan",
     "#.sections.*.color",
     "#.scenes.*.tempo",
     "#.scenes.*.color",
@@ -1068,8 +1079,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        37,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics` ＋ 手动相位对齐线的 `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` 3 条 ＋ 音名八度统一线的 `tracks[*].sampler.note_octave_override`（逐项对应见常量上的表）"
+        40,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics` ＋ 手动相位对齐线的 `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` 3 条 ＋ 音名八度统一线的 `tracks[*].sampler.note_octave_override` ＋ 逐件处理线期 2 的 `tracks[*].lane_chains` 一组 3 条（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,

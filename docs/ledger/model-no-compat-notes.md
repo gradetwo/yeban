@@ -238,10 +238,11 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 > ### ⚠ 两条同样重要：§5.1–§5.3 是"该收紧的"，**§5.4 是"绝不能收紧的"**
 >
 > 集成者明确要求把豁免清单放在显眼位置（原话：**豁免比收紧更容易出错：收紧了语义上可选的字段就是 bug**）。
-> 因此：**§5.4 的字段一律不得进任何 `required`** —— 今天共 **32** 项（历史 18 项 ＋ 任务单 `#76`
+> 因此：**§5.4 的字段一律不得进任何 `required`** —— 今天共 **35** 项（历史 18 项 ＋ 任务单 `#76`
 > 新增的 `tracks[*].sampler` ＋ 采样内嵌线新增的根 `embedded_samples` ＋ UI 轨道交互线新增的根
 > `track_order` ＋ 夜半原生预制线新增的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线新增的根 `lyrics`
-> ＋ 音名八度统一线阶段 2 新增的 `tracks[*].sampler.note_octave_override`），其中 29 个本写入器**会在默认值上省略**
+> ＋ 音名八度统一线阶段 2 新增的 `tracks[*].sampler.note_octave_override`
+> ＋ 逐件处理线期 2 新增的 `tracks[*].lane_chains` 一组 3 条），其中 32 个本写入器**会在默认值上省略**
 > （`Option::None` 或空集 + `skip_serializing_if`），另 3 个（`author` / `description` / `tags`）本写入器总是写出但**读取器接受缺失**。
 > （注：常量 `D43_EXEMPT_REQUIRED_PATHS` 另含 `#348` 的 `channel` 与任务单 `#350` 的 `key_signature`
 > 两项未入本表 —— 此前已漂移，本线只标注、不替旧账改数。）
@@ -332,6 +333,9 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | `tracks[*]` | `folder_id`, `color` | `None` ⇒ **不落盘** |
 | `tracks[*]` | `sampler` | `None` ⇒ **不落盘**（**任务单 `#76` 新增的第 19 项**；`Option<SamplerBinding>` = "这条轨用哪份采样器定义文件"，⛔ 不含运行时对象） |
 | `tracks[*].sampler` | `note_octave_override` | `None` ⇒ **不落盘**（**音名八度统一线阶段 2 新增**；`Option<i32>` = "手动八度覆盖（半音，只许 −24/−12/0/+12/+24）"，未设与显式 0 语义不同：未设 ⇒ 装载跑记法自动检测，设了 ⇒ 检测停跑） |
+| `tracks[*]` | `lane_chains` | 空集 ⇒ **不落盘**（**逐件处理线期 2 新增**；`Vec<LaneChainDef>` = "逐件处理链（按 GM 键组寻址）"，缺省 = 无逐件链、旧工程行为逐位不变） |
+| `tracks[*].lane_chains[*].devices[*].params[*]` | `unit` | `None` ⇒ **不落盘** |
+| `tracks[*].lane_chains[*]` | `pan` | `None` ⇒ **不落盘**（`Option<f32>` = "逐件链组声相"，未设 = 居中） |
 | 根 | `embedded_samples` | 空表 ⇒ **不落盘**（**采样内嵌线新增的第 20 项**；`BTreeMap<渲染根相对路径, SHA-256>` = "用到的采样在容器里的索引"，渲染侧先查表、命中则读 CAS） |
 | 根 | `track_order` | 空表 ⇒ **不落盘**（**UI 轨道交互线新增的第 21 项**；`Vec<EntityId>` = "轨道显示顺序"，缺键/空表时投影按 BTreeMap 的 id 序，旧工程默认顺序不变） |
 | 根 | `lyrics` | 空表 ⇒ **不落盘**（**歌词轨线新增的第 31 项**；`Vec<LyricLine>` = "歌词时间轴（一行 = 一个 LRC 行：起始 tick + 整行文本）"，行文本非空、起始 tick 严格升序由 `validate` 机械检查） |

@@ -39,18 +39,8 @@ fn lane_chains_absent_by_default_and_old_json_loads_unchanged() {
     back.validate().expect("旧形态音轨必须校验通过");
 
     // 工程级同样成立：整份旧工程 JSON 无 `lane_chains` 键，往返逐值相等。
-    let mut doc = YebanProjectV1::default();
-    let track_id = EntityId::from_str("01J8ZQ00000000000000000001").expect("合法 ULID");
-    yeban_model::Op::AddTrack {
-        track: TrackV3 {
-            id: track_id,
-            name: "Drums".to_owned(),
-            kind: TrackKind::Midi,
-            ..TrackV3::default()
-        },
-    }
-    .apply(&mut doc)
-    .expect("加轨");
+    // 夹具用仓库自带的合法填充工程（手搭工程过不了路由图自洽校验）。
+    let doc = yeban_model::samples::filled_project();
     let project_json = serde_json::to_string(&doc).expect("工程序列化");
     assert!(
         !project_json.contains("\"lane_chains\""),
