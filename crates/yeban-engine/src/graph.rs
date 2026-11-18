@@ -31,6 +31,22 @@
 //! 不属于任何支路的相位（`D(master)` 因此恒为 0）。
 //! 该不变量在测试里被机械断言（见 `mod tests` 的 `pdc_alignment_invariant_*`）。
 //!
+//! ## ⭐ stage 21：两种补偿口径并存（**纯函数层已落，实时侧未切换**）
+//!
+//! * [`PdcPlan::compensation`]（**上游到达式**，`D(v) = L_max − arrival(v)`）——
+//!   实时侧与离线渲染器**当前**用的就是它，只对**轨**施加。
+//! * [`PdcPlan::chain_compensation`]（**下游关键路径式**，`D(v) = L_max − down(v)`，
+//!   `down(v)` 是"从 `v` 输入端到 `master` 求和输入端"的最长剩余延迟）——
+//!   Logic 同款口径：**关键路径上的节点一格不补，只延迟短支路**。
+//!
+//! 差别只在"支路下游还有延迟"时显形（多级总线／总线里挂延迟器件）：
+//! `t → b1(0) → b2(64) → m` ＋ 并行 `e → m` 上，上游式给 `t`／`b1` 各补 64，
+//! 与 `b2` 自己的 64 叠成 **128**（比 `e` 支路多 64 帧）；下游式给三者全 0、
+//! 只给 `e` 补 64 —— 两条支路都是 64。判据见 `stage21_*` 两条。
+//!
+//! ⚠ 切换实时侧之前必须先把"总线输出也要走延迟线"接上（`rt.rs` 的
+//! "总线 PDC 仍未接"登记），否则新口径算出的非零 `D` 无处施加。
+//!
 //! ## 与离线渲染共用
 //!
 //! [`PdcPlan::compute`] 是**不依赖 cpal 的纯函数**：输入 `RoutingGraph` + 延迟表，
@@ -211,6 +227,21 @@ pub struct PdcPlan {
     latency: BTreeMap<EntityId, u32>,
     arrival: BTreeMap<EntityId, u32>,
     compensation: BTreeMap<EntityId, u32>,
+    /// ⭐ **stage 21**：`down(v)` —— 从 `v` 的**输入端**到主总线**求和输入端**的
+    /// 最长剩余延迟（采样点）。**含** `v` 自己的 `own_latency`，`⛔` 不含
+    /// `master` 自己的延迟（它发生在求和之后，只进 `output_latency`）。
+    downstream: BTreeMap<EntityId, u32>,
+    /// ⭐ **stage 21**：`D_chain(v) = L_max − down(v)` —— **下游关键路径式**补偿
+    /// （Logic 同款口径：只延迟**短支路**，关键路径上的节点一格不补）。
+    ///
+    /// 与 [`Self::compensation`]（**上游到达式**，`D(v) = L_max − arrival(v)`）的差别
+    /// 只在"支路下游还有延迟"时显形：**多级总线**（`T → B1 → B2(64) → M`）把上游
+    /// 式算出的 `D(T)=64` 与 `B2` 自己的 64 叠成 128 ⇒ 过补、反而错位 64 帧。
+    ///
+    /// ⚠ **本片只做纯函数层**：实时侧仍按上游式武装（只对轨施加），总线输出
+    /// 未接延迟线 —— 见 `rt.rs` 的"总线 PDC 仍未接"登记。判据见本文件
+    /// `stage21_*` 两条。
+    chain_compensation: BTreeMap<EntityId, u32>,
     excluded: Vec<EntityId>,
     total_latency: u32,
     output_latency: u32,
@@ -351,6 +382,48 @@ impl PdcPlan {
             let node_arrival = arrival.get(node).copied().unwrap_or(0);
             compensation.insert(*node, total_latency.saturating_sub(node_arrival));
         }
+        // --- 4. ⭐ **stage 21**：下游关键路径 `down(v)` 与下游式补偿 `D_chain(v)` ---
+        //
+        // `down(v) = max over 后继 s of ( own(s) ＋ down(s) )`，其中 `master` 的
+        // `own(master)` **不算**（求和之后的限制器延迟只进 `output_latency`），
+        // 且 `down(master) = 0`。逆拓扑序一次遍历即可（每个节点的后继都已算过）。
+        //
+        // 于是 `D_chain(v) = L_max − down(v)` ⇒ **关键路径上的节点补偿为 0**，
+        // 只延迟短支路 —— 这正是"多级总线不叠延迟"的口径（见字段文档的反例）。
+        // `L_max` 只由**能到达 master** 的支路决定；不可达节点 `D_chain` 也按 0 处理
+        // （与上游式 `excluded` 的口径一致：无对齐意义）。
+        let mut downstream: BTreeMap<EntityId, u32> = BTreeMap::new();
+        for node in order.iter().rev() {
+            let mut longest_rest = 0u32;
+            if let Some(next) = successors.get(node) {
+                for successor in next {
+                    let rest = downstream.get(successor).copied().unwrap_or(0);
+                    if rest > longest_rest {
+                        longest_rest = rest;
+                    }
+                }
+            }
+            // `down(v)` **含** `v` 自己的 `own_latency`（它是"从 v 输入端到 master
+            // 求和输入端"的剩余延迟）；`master` 自己的延迟发生在求和之后 ⇒ 记 0。
+            let own = if node == &master {
+                0
+            } else {
+                latencies.get(node)
+            };
+            downstream.insert(*node, own.saturating_add(longest_rest));
+        }
+        let mut chain_compensation: BTreeMap<EntityId, u32> = BTreeMap::new();
+        for node in &reachable {
+            // `master` 是**求和节点本身**：它的延迟发生在求和之后，补偿恒为 0
+            // （给它一条 `D=64` 只会把整个输出再后移 64，一个相位也补不回来）。
+            if node == &master {
+                chain_compensation.insert(*node, 0);
+                continue;
+            }
+            let rest = downstream.get(node).copied().unwrap_or(0);
+            chain_compensation.insert(*node, total_latency.saturating_sub(rest));
+        }
+
         let excluded: Vec<EntityId> = nodes
             .iter()
             .copied()
@@ -362,6 +435,8 @@ impl PdcPlan {
             latency,
             arrival,
             compensation,
+            downstream,
+            chain_compensation,
             excluded,
             total_latency,
             output_latency,
@@ -388,6 +463,35 @@ impl PdcPlan {
         } else {
             None
         }
+    }
+
+    /// ⭐ **stage 21**：`down(v)` —— 从 `v` 输入端到主总线求和输入端的最长剩余
+    /// 延迟（**含** `v` 自己的延迟、`⛔` 不含 `master` 自己的延迟）。
+    #[must_use]
+    pub fn downstream(&self, node: &EntityId) -> Option<u32> {
+        self.downstream.get(node).copied()
+    }
+
+    /// ⭐ **stage 21**：**下游关键路径式**补偿 `D_chain(v) = L_max − down(v)`。
+    ///
+    /// 与 [`Self::compensation`] 的区别见 `chain_compensation` 字段文档：
+    /// **多级总线**下上游式会过补，本式不会。`v` 不可达 master（或无 `master`）时
+    /// 返回 `None`，与 [`Self::compensation`] 同口径。
+    ///
+    /// # ⚠ 使用边界
+    ///
+    /// 实时侧**尚未**按本式武装（本片只落纯函数层与判据）；离线渲染器与实时侧
+    /// 继续用上游式 ⇒ 两边的 `D` 在"总线里还有延迟"的工程上**会不一致**。
+    /// 这条边界由 [ARCH-PDC-001] 的门在读，见 `rt.rs` 的总线 PDC 登记。
+    #[must_use]
+    pub fn chain_compensation(&self, node: &EntityId) -> Option<u32> {
+        self.chain_compensation.get(node).copied()
+    }
+
+    /// 按 `EntityId` 升序的全部下游式补偿（`master` 自己的值恒为 0，故不单独过滤）。
+    #[must_use]
+    pub fn chain_compensations(&self) -> impl Iterator<Item = (&EntityId, &u32)> {
+        self.chain_compensation.iter()
     }
 
     /// `D(v) = L_max - arrival(v)`；`v` 不可达 master 时返回 `None`（无对齐意义）。
@@ -2044,5 +2148,110 @@ mod tests {
             .to_string(),
             "0 与 1 个未消化节点的文案必须不同（否则上面的等号可能是'两边同一个常量'）"
         );
+    }
+
+    // ================= ⭐ stage 21：下游关键路径式补偿 =================
+
+    /// ⭐ **stage 21 判据 (a)**：多级总线 —— 上游式会**过补**，下游式不会。
+    ///
+    /// 图：`t → b1(0) → b2(64) → m`，并行 `e → m`。真正的两条支路总延迟都是 64
+    /// ⇒ **一格都不该补**（关键路径本身就是 64）。上游式给 `t`／`b1` 各补 64，
+    /// 叠到 `b2` 自己的 64 上变成 128 ⇒ 比 `e` 支路多 64 帧。
+    #[test]
+    fn stage21_downstream_compensation_does_not_double_count_multi_level_buses() {
+        let t = EntityId::new();
+        let b1 = EntityId::new();
+        let b2 = EntityId::new();
+        let e = EntityId::new();
+        let m = EntityId::new();
+        let graph = graph_of(&[(t, b1), (b1, b2), (b2, m), (e, m)]);
+        let latencies = latency_table(&[(b2, 64)]);
+        let plan = PdcPlan::compute(&graph, m, &latencies).expect("合法 DAG");
+
+        assert_eq!(plan.total_latency(), 64, "L_max = b2 的 64");
+        // 定义性不变量（下游口径）：down(v) + D_chain(v) == L_max
+        for node in plan.order() {
+            if node == &m {
+                continue; // 求和节点本身：补偿恒 0，不进支路不变量
+            }
+            if let (Some(rest), Some(chain)) =
+                (plan.downstream(node), plan.chain_compensation(node))
+            {
+                assert_eq!(
+                    rest + chain,
+                    plan.total_latency(),
+                    "下游式不变量被破坏：{node:?}"
+                );
+            }
+        }
+        // 关键路径上的三个节点一格不补；只有直连支路 `e` 补满。
+        assert_eq!(plan.downstream(&t), Some(64), "t 的下游正好是 b2 的 64");
+        assert_eq!(plan.chain_compensation(&t), Some(0), "关键路径起点不补");
+        assert_eq!(plan.chain_compensation(&b1), Some(0), "中间总线不补");
+        assert_eq!(
+            plan.chain_compensation(&b2),
+            Some(0),
+            "带延迟的总线自己更不补"
+        );
+        assert_eq!(plan.downstream(&e), Some(0), "e 直连 master ⇒ 下游为 0");
+        assert_eq!(plan.chain_compensation(&e), Some(64), "短支路补满 64");
+        assert_eq!(
+            plan.chain_compensation(&m),
+            Some(0),
+            "master 是求和节点本身，补偿恒为 0"
+        );
+
+        // ⚠ **上游式的反例**（本片如实登记、⛔ 不改它的行为）：同一张图上
+        // `D(t) = 64` ⇒ 与 `b2` 的 64 叠加 ⇒ 该支路 128，比 `e` 支路多 64 帧。
+        assert_eq!(
+            plan.compensation(&t),
+            Some(64),
+            "上游式给关键路径起点也补 64（这正是下游式要替换它的理由）"
+        );
+        let upstream_path = 64 + 64;
+        let downstream_path = 64;
+        assert_ne!(
+            upstream_path, downstream_path,
+            "两种口径在这张图上必须给出不同的支路总延迟（否则判据没有牙齿）"
+        );
+    }
+
+    /// ⭐ **stage 21 判据 (b)**：单级总线带延迟 —— 下游式把延迟**只**补在直连支路，
+    /// 且两条支路真的等长；同时 `arrival + D`（上游式）与 `down + D_chain` 在这张
+    /// 图上**数值不同**（⛔ 不是同一个式子的两种写法）。
+    #[test]
+    fn stage21_single_bus_latency_is_compensated_on_the_short_branch_only() {
+        let t = EntityId::new();
+        let b = EntityId::new();
+        let e = EntityId::new();
+        let m = EntityId::new();
+        let graph = graph_of(&[(t, b), (b, m), (e, m)]);
+        let latencies = latency_table(&[(b, 60)]);
+        let plan = PdcPlan::compute(&graph, m, &latencies).expect("合法 DAG");
+
+        // 支路总延迟：t→b→m ＝ 0(补偿) + 60(b) ＝ 60；e→m ＝ 60(补偿) + 0 ＝ 60。
+        assert_eq!(plan.chain_compensation(&t), Some(0), "t 之后还有 60 ⇒ 不补");
+        assert_eq!(
+            plan.chain_compensation(&b),
+            Some(0),
+            "b 的输出后面一格延迟都没有 ⇒ 它自己也不补（它的 60 已经在链内发生了）"
+        );
+        assert_eq!(
+            plan.chain_compensation(&e),
+            Some(60),
+            "e 的支路短 60 ⇒ 必须补满 60"
+        );
+        assert_eq!(plan.total_latency(), 60);
+        // 反向：上游式在同一张图上是 `D(t) = 60`（与下游式的 0 不同）。
+        assert_eq!(plan.compensation(&t), Some(60));
+        assert_ne!(
+            plan.compensation(&t),
+            plan.chain_compensation(&t),
+            "两种口径在'总线里有延迟'的图上必须不同"
+        );
+        // 两条支路等长（下游口径下的机械对账）。
+        let via_bus = plan.chain_compensation(&t).unwrap_or(0) + 60;
+        let direct = plan.chain_compensation(&e).unwrap_or(0);
+        assert_eq!(via_bus, direct, "经过补偿后两条支路必须等长");
     }
 }
