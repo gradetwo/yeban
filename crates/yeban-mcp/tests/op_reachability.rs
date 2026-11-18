@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 62] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 63] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -180,6 +180,11 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 62] = [
     // `build_apply_ops` / `build_bypass_ops` 在 `domain/preset.rs` 构造
     // `Op::SetTrackPreset`（每批提案的最后一项，写轨的 `preset` 状态）。
     ("SetTrackPreset", &["domain/preset.rs"]),
+    // ⭐ 逐件处理线期 2 新增：`yeban_generate_drum_pattern` 的
+    // `plan_generate_drum_pattern` 在 `domain/mod.rs` 构造
+    // `Op::SetTrackLaneChains`（预置带 `lane_chains` 段时整表写入，
+    // 每批提案的最后一项之一，写轨的 `lane_chains` 字段）。
+    ("SetTrackLaneChains", &["domain/mod.rs"]),
 ];
 
 /// **模型里有、而工具面**确实**没有构造点**的 `Op` 变体（显式欠账清单）。
@@ -469,9 +474,9 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        62,
-        "登记表有 62 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
-         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59；OTCP 音高校正线加 `SetClipAsset` 一条（构造点 `domain/otcp.rs`）⇒ 59 → 60；本票加 `SetLyrics` 一条（构造点 `domain/notes.rs`）⇒ 60 → 61；本票加 `SetTrackTune` 一条（构造点 `domain/notes.rs`）⇒ 61 → 62）"
+        63,
+        "登记表有 63 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59；OTCP 音高校正线加 `SetClipAsset` 一条（构造点 `domain/otcp.rs`）⇒ 59 → 60；本票加 `SetLyrics` 一条（构造点 `domain/notes.rs`）⇒ 60 → 61；本票加 `SetTrackTune` 一条（构造点 `domain/notes.rs`）⇒ 61 → 62；逐件处理线期 2 加 `SetTrackLaneChains` 一条（构造点 `domain/mod.rs`）⇒ 62 → 63）"
     );
 }
 

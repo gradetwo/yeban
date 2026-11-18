@@ -53,9 +53,9 @@ use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
-    ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
-    MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3,
-    YebanProjectV1,
+    ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LaneChainDef,
+    LoopConfig, MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind,
+    TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::{BEXT_FIXED_LEN, parse_container};
 
@@ -7957,6 +7957,61 @@ fn with_sidechain_edge(
     );
     project.validate().expect("带侧链边的夹具必须合法");
     project
+}
+
+/// 逐件链读数（逐件处理线期 2）：无逐件链的工程报 `0 / 0`；带两组
+/// 逐件链的工程报「声明 2 / 未应用 2」——离线逐件渲染在期 3 落地，
+/// 本期一条都不应用，两数如实同报，⛔ 不许报未应用 0 冒充已生效。
+#[test]
+fn lane_chain_counts_report_declared_and_unapplied() {
+    let baseline = render_or_ok(&project(&Spec::default()), "lane-baseline");
+    assert_eq!(baseline["data"]["laneChainsDeclared"], 0, "{baseline}");
+    assert_eq!(baseline["data"]["laneChainsUnapplied"], 0, "{baseline}");
+
+    let mut with_lanes = project(&Spec::default());
+    let lead = id(2);
+    with_lanes
+        .tracks
+        .get_mut(&lead)
+        .expect("lead 轨")
+        .lane_chains = vec![
+        LaneChainDef {
+            keys: vec![36],
+            name: "kick".to_owned(),
+            devices: Vec::new(),
+            pan: None,
+        },
+        LaneChainDef {
+            keys: vec![42, 46],
+            name: "hats".to_owned(),
+            devices: Vec::new(),
+            pan: Some(0.25),
+        },
+    ];
+    with_lanes.validate().expect("带逐件链的夹具必须合法");
+    let rendered = render_or_ok(&with_lanes, "lane-two");
+    assert_eq!(rendered["data"]["laneChainsDeclared"], 2, "{rendered}");
+    assert_eq!(rendered["data"]["laneChainsUnapplied"], 2, "{rendered}");
+
+    // 两个读数必须声明在 `outputSchema` 里（否则 agent 读不到它们）。
+    let schema = yeban_mcp::tools::catalog()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "yeban_render_master")
+        .expect("render_master 必须在 tools/list 里")["outputSchema"]
+        .clone();
+    let declared = yeban_mcp::output_schema::declared_fields(&schema);
+    for field in ["laneChainsDeclared", "laneChainsUnapplied"] {
+        assert!(
+            declared.iter().any(|name| name == field),
+            "`{field}` 必须被 outputSchema 声明，实测已声明 {declared:?}"
+        );
+        assert_eq!(
+            schema["properties"][field]["type"], "integer",
+            "`{field}` 的类型必须是 integer: {schema}"
+        );
+    }
 }
 
 /// 从一份 `data` 里读出三个侧链读数

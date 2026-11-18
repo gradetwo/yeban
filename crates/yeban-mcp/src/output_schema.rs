@@ -2000,6 +2000,11 @@ fn render_master() -> Value {
              被求值（K = N 时一条都没有被求值）；`0 / N / 0` = 全部求值。⛔ 单看 `0` 会以为问题消失了。\
              口径逐字：`sidechainEdgesSummedAsOrdinaryAudio` 说的是\"这条边走了普通音频\
              求和路径\"、⛔ 不是\"+6 dB 了几路\"。\
+             ⭐ 逐件处理线期 2：逐件链有**两个读数**——\
+             `laneChainsDeclared` 数\"工程里全部音轨共声明了多少条逐件链组\"，\
+             `laneChainsUnapplied` 数\"声明了、但本次渲染没有应用的有几条\"。\
+             离线逐件渲染在期 3 落地 ⇒ 期 2 两数恒等（声明几条、未应用几条）；\
+             期 3 落地后未应用归零。⛔ 别把\"生成时写进了工程\"读成\"渲染时生效了\"。\
              ⭐ `ADR-0020`：请求给 `contributions: true` 时**额外**出现\
              `contributions[]`（每条非 master 轨一行：`{trackId, name, alreadyMuted,\
              deltaRmsDbfs, deltaPeakDbfs}`，两次**未归一化**母带逐样本差的 RMS / 峰值，\
@@ -2059,6 +2064,8 @@ fn render_master() -> Value {
             "sidechainEdgesSummedAsOrdinaryAudio",
             "sidechainEdgesInRoutingGraph",
             "sidechainEdgesDeclaredWithoutKeyInput",
+            "laneChainsDeclared",
+            "laneChainsUnapplied",
             "projectDigest",
             "renderedAtUnixMs",
         ],
@@ -2135,6 +2142,16 @@ fn render_master() -> Value {
         );
         properties.insert(
             "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
+            json!({"type": "integer"}),
+        );
+        // ⭐ 逐件处理线期 2：逐件链两个读数同样是**单独插入**（同一处
+        // 递归上限），与 Required 里的两条一一对应。
+        properties.insert(
+            "laneChainsDeclared".to_owned(),
+            json!({"type": "integer"}),
+        );
+        properties.insert(
+            "laneChainsUnapplied".to_owned(),
             json!({"type": "integer"}),
         );
         // ⭐ `ADR-0020`：可选键 ⇒ ⛔ 不进 `required`（缺省时它们不存在）。

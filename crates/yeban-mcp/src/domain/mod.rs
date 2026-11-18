@@ -4262,6 +4262,19 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         ));
     }
 
+    // 逐件链生成校验（默认不能静默，与覆盖审计同一路线）：choke 组
+    // 拆分 / 侧链声明（lane 级侧链求值期 4 才落地）⇒ 响亮拒绝。
+    let lane_violations = yeban_theory::lane_chain_generation_violations(&preset);
+    if !lane_violations.is_empty() {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "风格 `{style}` 的逐件链不可生成: {}",
+                lane_violations.join("; ")
+            ),
+        ));
+    }
+
     // 目标轨：给 `trackId` 用既有轨；缺省新建鼓轨。
     let requested_track = if call.arguments.get("trackId").is_some() {
         Some(arg_id(call, "trackId")?)
@@ -4482,6 +4495,62 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         }
     }
 
+    // 逐件链：预置 `lane_chains` 段 → 整表写入目标轨的 `lane_chains`
+    // （配方与 UI 路径共用一份；身份按本路径的确定性纪律派生）。
+    // 既有轨已有用户逐件链时**不覆盖**，计划文本如实说明（用户链优先）。
+    let mut lane_note = "无逐件链（预置未带 lane_chains 段）".to_owned();
+    if !preset.lane_chains.is_empty() {
+        let existing_chains = existing_track
+            .as_ref()
+            .map_or_else(Vec::new, |track| track.lane_chains.clone());
+        if existing_track.is_some() && !existing_chains.is_empty() {
+            lane_note = "逐件链：目标轨已有用户逐件链，未覆盖".to_owned();
+        } else {
+            let lane_chains: Vec<yeban_model::LaneChainDef> = preset
+                .lane_chains
+                .iter()
+                .map(|chain| yeban_model::LaneChainDef {
+                    keys: chain.keys.clone(),
+                    name: chain.name.clone(),
+                    devices: yeban_theory::drum_lane_device_specs(chain)
+                        .into_iter()
+                        .map(|spec| DeviceDefinition {
+                            id: ids::deterministic_id(&format!(
+                                "drum-gen:lane-{}-{}:{label}",
+                                chain.name, spec.family
+                            )),
+                            name: spec.name.to_owned(),
+                            kind: DeviceKind::InternalEffect,
+                            bypassed: false,
+                            params: spec
+                                .params
+                                .into_iter()
+                                .map(|(name, value)| yeban_model::ParameterValue {
+                                    name,
+                                    value,
+                                    unit: None,
+                                })
+                                .collect(),
+                            latency_samples: 0,
+                            plugin: None,
+                        })
+                        .collect(),
+                    pan: chain.pan,
+                })
+                .collect();
+            let groups: Vec<String> = lane_chains
+                .iter()
+                .map(|chain| format!("{} {:?}", chain.name, chain.keys))
+                .collect();
+            lane_note = format!("逐件链：{}", groups.join("、"));
+            ops.push(Op::SetTrackLaneChains {
+                track_id,
+                old_lane_chains: existing_chains,
+                new_lane_chains: lane_chains,
+            });
+        }
+    }
+
     // 生成音符列 ⇒ MIDI 片段 + 摆放。
     let generated = yeban_theory::generate_drum_pattern(
         &preset,
@@ -4542,7 +4611,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         "generate_drum_pattern",
         format!("生成鼓型：{} → 音轨 {track_id}", preset.name),
         format!(
-            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}；{bus_note}",
+            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}；{bus_note}；{lane_note}",
             generated.len(),
         ),
         ops,

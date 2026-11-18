@@ -288,3 +288,95 @@ fn knob_out_of_range_is_rejected() {
         "{result}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 逐件链（lane_chains）判据（逐件处理线期 2）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lane_chains_installed_on_new_track() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "house", "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    // 计划文本必须点名逐件链（声明落位要读得出来，不许静默装）。
+    assert!(
+        result.to_string().contains("逐件链"),
+        "提案文本须点名逐件链: {result}"
+    );
+    let project = project(&dispatcher);
+    let track = drum_track(project, "House Drums");
+    assert_eq!(track.lane_chains.len(), 1, "house 预置带一条帽组逐件链");
+    let hats = &track.lane_chains[0];
+    assert_eq!(hats.name, "hats");
+    assert_eq!(hats.keys, vec![42, 46]);
+    assert_eq!(hats.devices.len(), 1, "帽组链 = 一台通道条");
+    assert_eq!(hats.devices[0].name, "Channel Strip");
+    assert_eq!(hats.devices[0].latency_samples, 0, "逐件链设备必须零延迟");
+    let params: Vec<(&str, f32)> = hats.devices[0]
+        .params
+        .iter()
+        .map(|p| (p.name.as_str(), p.value))
+        .collect();
+    assert!(
+        params.contains(&("hpf_hz", 400.0)),
+        "帽组高通 400 Hz 必须落位: {params:?}"
+    );
+    assert!(
+        params.contains(&("eq_high_gain", 2.0)),
+        "帽组高频搁架 +2 dB 必须落位: {params:?}"
+    );
+}
+
+#[test]
+fn lane_chains_installed_on_existing_empty_track() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "trap", "trackId": BASS, "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let project = project(&dispatcher);
+    let bass_id = EntityId::from_str(BASS).expect("ULID");
+    let bass = project.tracks.get(&bass_id).expect("bass 轨");
+    assert_eq!(bass.lane_chains.len(), 1, "trap 预置带一条闭镲逐件链");
+    assert_eq!(bass.lane_chains[0].name, "hats");
+    assert_eq!(bass.lane_chains[0].keys, vec![42]);
+}
+
+#[test]
+fn existing_track_with_user_lane_chains_keeps_them() {
+    // 既有轨已有用户逐件链 ⇒ 生成不覆盖（R5），计划文本如实说明。
+    let mut fixture = filled_project();
+    let lead_id = EntityId::from_str(LEAD).expect("ULID");
+    let user_chain = yeban_model::LaneChainDef {
+        keys: vec![36],
+        name: "mine".to_owned(),
+        devices: Vec::new(),
+        pan: Some(0.5),
+    };
+    fixture
+        .tracks
+        .get_mut(&lead_id)
+        .expect("lead 轨")
+        .lane_chains = vec![user_chain.clone()];
+    let mut dispatcher = dispatcher_with_project(fixture);
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "house", "trackId": LEAD, "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    assert!(
+        result.to_string().contains("未覆盖"),
+        "计划文本须说明未覆盖用户逐件链: {result}"
+    );
+    let project = project(&dispatcher);
+    let lead = project.tracks.get(&lead_id).expect("lead 轨");
+    assert_eq!(
+        lead.lane_chains,
+        vec![user_chain],
+        "用户逐件链必须逐值保留"
+    );
+}

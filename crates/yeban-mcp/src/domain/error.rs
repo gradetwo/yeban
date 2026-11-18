@@ -172,6 +172,9 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::TimeSignatureDenominatorUnsupported { .. }
         | ModelError::KeySignatureSharpsFlatsOutOfRange { .. }
         | ModelError::PanOutOfRange { .. }
+        // 逐件链声相与组数上限：与声相同组（同是"量越界"）。
+        | ModelError::LaneChainPanOutOfRange { .. }
+        | ModelError::LaneChainCountOutOfRange { .. }
         | ModelError::MacroValueOutOfRange { .. }
         | ModelError::MacroDepthOutOfRange { .. }
         // 弯音曲线的 `cents` 是**音高偏移的量**（±1 八度）⇒ 与音域越界同组。
@@ -201,6 +204,13 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::LyricTextEmpty { .. }
         | ModelError::LyricStartNotAscending { .. }
         | ModelError::LyricTimeConversionFailed { .. }
+        // 逐件处理线期 2：逐件链的键组为空 / 未升序 / 组序未定 / 链内设备
+        // 带延迟 —— 都是"载荷形状不合法"（设备延迟与 `PluginBindingKindMismatch`
+        // 同款"器件放错了位置"），不是"量越界"。
+        | ModelError::LaneChainKeysEmpty { .. }
+        | ModelError::LaneChainKeysNotAscending { .. }
+        | ModelError::LaneChainsNotOrdered
+        | ModelError::LaneChainDeviceLatency { .. }
         | ModelError::TempoMapZeroTick { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }
@@ -216,6 +226,9 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         // (这条 match **刻意穷举、没有 `_` 兜底**: `Op`/`ModelError` 一扩张就必须在这里做一次显式决定,
         //  否则编译不过 —— 本次 D27 就是这样被强制发现的。)
         | ModelError::ClipInUse { .. }
+        // 逐件处理线期 2：同一个键被两个逐件链组重复认领 —— "键值不匹配 /
+        // 重复认领"，与本组的键值不一致同类处置。
+        | ModelError::LaneChainKeyOverlap { .. }
         | ModelError::RoutingNodeInUse { .. } => ErrorCode::Conflict,
     }
 }
