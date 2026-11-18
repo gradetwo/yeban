@@ -74,8 +74,12 @@ rubato = { version = "5.0.1", default-features = false }
 hound = { version = "3.5.1", default-features = false }
 # TUI (crates/yeban-tui, 2026-11-18 立项): ratatui + crossterm, 均 MIT。
 # ratatui 关默认特性以避开 termion/termwiz 两套后端, 只留 crossterm 后端与全部控件。
-ratatui = { version = "0.29.0", default-features = false, features = ["crossterm", "all-widgets"] }
-crossterm = { version = "0.28.1" }
+# 版本裁决 (2026-11-18 验证线实测): ratatui 0.29.0 把 unicode-width 钉死 `=0.2.0`,
+# 与 i-slint-compiler 的 annotate-snippets 所需 `^0.2.2` 在同一 semver 兼容族内冲突, 不可同图;
+# ratatui 0.30.x 的 ratatui-core 改用 `>=0.2.0`, 可与 0.2.2 共存, 故取 0.30.2。
+# crossterm 随 ratatui-crossterm 的默认绑定取 0.29 (其 crossterm_0_29 特性), 与 TUI 直用同版。
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "all-widgets"] }
+crossterm = { version = "0.29.0" }
 unicode-width = { version = "0.2.0" }
 midly = { version = "0.5.3", default-features = false }
 # ADR-0006 (Accepted 2026-10-11): hardware MIDI input. Version pinned exactly to 0.11.1;
