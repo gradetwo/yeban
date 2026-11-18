@@ -341,6 +341,27 @@ msgstr "Export Diagnostics Bundle (D56)"
 msgid "音乐提案抽屉 (Musical PR Drawer)"
 msgstr "Musical Proposal Drawer (Musical PR)"
 
+msgid "打开浏览器 · 音色/采样/预设/效果 (⇧⌘B)"
+msgstr "Open Browser · Sounds/Samples/Presets/Effects (⇧⌘B)"
+
+msgid "效果"
+msgstr "Effects"
+
+msgid "浏览器"
+msgstr "Browser"
+
+msgid "网格强度 · 强"
+msgstr "Grid Strength · Strong"
+
+msgid "网格强度 · 标准"
+msgstr "Grid Strength · Normal"
+
+msgid "网格强度 · 轻（默认）"
+msgstr "Grid Strength · Light (Default)"
+
+msgid "音色"
+msgstr "Instrument"
+
 # --- console/device_rack.slint ---
 
 msgid "{} 台设备"
@@ -528,9 +549,6 @@ msgstr "Unfold Chord Track"
 msgid "+ 轨道"
 msgstr "+ Track"
 
-msgid "添加新音轨 [Ctrl+T]"
-msgstr "Add New Track [Ctrl+T]"
-
 msgid "轨道菜单"
 msgstr "Track Menu"
 
@@ -610,9 +628,6 @@ msgstr "Create a New Audio or MIDI Track"
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Drag Audio or MIDI Files Here, or Double-Click to Add a Track"
 
-msgid "双击或点击此区域添加新轨道 [Ctrl+T]"
-msgstr "Double-Click or Click Here to Add a Track [Ctrl+T]"
-
 msgid "+ 新建 MIDI 乐器轨"
 msgstr "+ New MIDI Instrument Track"
 
@@ -660,6 +675,12 @@ msgstr "Effect Slot • Insert Reverb"
 
 msgid "效果槽 • 插入 动态压缩 Compressor"
 msgstr "Effect Slot • Insert Compressor"
+
+msgid "双击或点击此区域添加新轨道"
+msgstr "Double-click or click here to add a new track"
+
+msgid "添加新音轨"
+msgstr "Add New Track"
 
 # --- lower_dock.slint ---
 
@@ -803,29 +824,17 @@ msgstr "Dual-Oscillator 3D Wavetable Synth"
 msgid "内联实时频谱零延迟动态 EQ"
 msgstr "Inline Real-Time Spectrum, Zero-Latency Dynamic EQ"
 
-msgid "支持 MPE 弯音的粒子采样器"
-msgstr "Granular Sampler with MPE Pitch Bend"
-
 msgid "含 64 个多麦克风分层鼓组"
 msgstr "Layered Drum Kit with 64 Multi-Mic Samples"
 
 msgid "模拟 SSL 4000G 总线粘合压缩"
 msgstr "SSL 4000G-Style Bus Glue Compressor"
 
-msgid "带宏旋钮一键失真度映射"
-msgstr "One-Knob Macro Distortion Mapping"
-
 msgid "通道检查器"
 msgstr "Channel Inspector"
 
 msgid "当前音轨与总线信号链检查器"
 msgstr "Signal-Chain Inspector for the Current Track & Buses"
-
-msgid "智能音色库"
-msgstr "Smart Sound Library"
-
-msgid "工程资产、音频切片与采样音色库"
-msgstr "Project Assets, Audio Slices & Sample Library"
 
 msgid "更换音色 [v]"
 msgstr "Change Instrument [V]"
@@ -922,6 +931,30 @@ msgstr "All"
 
 msgid "点击载入 {} 至当前轨道"
 msgstr "Click to Load {} onto the Current Track"
+
+msgid "2.8 秒大房间混响预设"
+msgstr "2.8-Second Large Hall Reverb Preset"
+
+msgid "{} 个片段"
+msgstr "{} Clips"
+
+msgid "仅当前轨道"
+msgstr "Current Track Only"
+
+msgid "含总线"
+msgstr "Includes Bus"
+
+msgid "未选中"
+msgstr "None Selected"
+
+msgid "未选中片段 · 在编曲区点一个片段"
+msgstr "No Clip Selected · Click a Clip in the Arrangement"
+
+msgid "浏览器：音色 / 采样 / 预设 / 效果链 / 工程资产，一个入口 [B]"
+msgstr "Browser: Sounds / Samples / Presets / Effect Chains / Project Assets, One Entry [B]"
+
+msgid "片段级"
+msgstr "Clip Level"
 
 # --- workspace/song_overview_panel.slint ---
 
@@ -1115,9 +1148,6 @@ msgstr "Track {}"
 msgid "轨道 {} 录音准备"
 msgstr "Track {} Arm"
 
-msgid "编曲空车道拖动滚动面"
-msgstr "Arrangement Empty-Lane Drag Scroll Surface"
-
 msgid "剪辑 {}"
 msgstr "Clip {}"
 
@@ -1135,6 +1165,9 @@ msgstr "Playhead Cursor"
 
 msgid "编曲横向滚动条"
 msgstr "Arrangement Horizontal Scrollbar"
+
+msgid "编曲空车道框选面"
+msgstr "Arrangement Empty-Lane Marquee Surface"
 
 # --- console/piano_roll.slint ---
 

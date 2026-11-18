@@ -341,6 +341,27 @@ msgstr "診断パッケージを書き出し (D56)"
 msgid "音乐提案抽屉 (Musical PR Drawer)"
 msgstr "音楽提案ドロワー (Musical PR)"
 
+msgid "打开浏览器 · 音色/采样/预设/效果 (⇧⌘B)"
+msgstr "ブラウザを開く · サウンド/サンプル/プリセット/エフェクト (⇧⌘B)"
+
+msgid "效果"
+msgstr "エフェクト"
+
+msgid "浏览器"
+msgstr "ブラウザ"
+
+msgid "网格强度 · 强"
+msgstr "グリッド強度 · 強"
+
+msgid "网格强度 · 标准"
+msgstr "グリッド強度 · 標準"
+
+msgid "网格强度 · 轻（默认）"
+msgstr "グリッド強度 · 軽（デフォルト）"
+
+msgid "音色"
+msgstr "音色"
+
 # --- console/device_rack.slint ---
 
 msgid "{} 台设备"
@@ -528,9 +549,6 @@ msgstr "コードトラックを展開"
 msgid "+ 轨道"
 msgstr "+ トラック"
 
-msgid "添加新音轨 [Ctrl+T]"
-msgstr "新規トラックを追加 [Ctrl+T]"
-
 msgid "轨道菜单"
 msgstr "トラックメニュー"
 
@@ -610,9 +628,6 @@ msgstr "新規オーディオ／MIDIトラックを作成"
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "ここへオーディオ／MIDIファイルをドラッグ、またはダブルクリックでトラックを追加"
 
-msgid "双击或点击此区域添加新轨道 [Ctrl+T]"
-msgstr "ダブルクリックまたはクリックで新規トラックを追加 [Ctrl+T]"
-
 msgid "+ 新建 MIDI 乐器轨"
 msgstr "+ 新規MIDI楽器トラック"
 
@@ -660,6 +675,12 @@ msgstr "エフェクトスロット・リバーブを挿入"
 
 msgid "效果槽 • 插入 动态压缩 Compressor"
 msgstr "エフェクトスロット・コンプレッサーを挿入"
+
+msgid "双击或点击此区域添加新轨道"
+msgstr "ここをダブルクリックまたはクリックして新規トラックを追加"
+
+msgid "添加新音轨"
+msgstr "新規トラックを追加"
 
 # --- lower_dock.slint ---
 
@@ -803,29 +824,17 @@ msgstr "デュアルオシレーター3Dウェーブテーブルシンセ"
 msgid "内联实时频谱零延迟动态 EQ"
 msgstr "インライン・リアルタイムスペクトラム、ゼロレイテンシーダイナミックEQ"
 
-msgid "支持 MPE 弯音的粒子采样器"
-msgstr "MPEピッチベンド対応グラニュラーサンプラー"
-
 msgid "含 64 个多麦克风分层鼓组"
 msgstr "64マルチマイクレイヤードラムキット"
 
 msgid "模拟 SSL 4000G 总线粘合压缩"
 msgstr "SSL 4000G風バスグルーコンプレッサー"
 
-msgid "带宏旋钮一键失真度映射"
-msgstr "マクロノブ一発歪み量マッピング"
-
 msgid "通道检查器"
 msgstr "チャンネルインスペクター"
 
 msgid "当前音轨与总线信号链检查器"
 msgstr "現在のトラックとバスのシグナルチェーンインスペクター"
-
-msgid "智能音色库"
-msgstr "スマートサウンドライブラリ"
-
-msgid "工程资产、音频切片与采样音色库"
-msgstr "プロジェクトアセット、オーディオスライスとサンプルライブラリ"
 
 msgid "更换音色 [v]"
 msgstr "音色を変更 [v]"
@@ -922,6 +931,30 @@ msgstr "すべて"
 
 msgid "点击载入 {} 至当前轨道"
 msgstr "クリックで{}を現在のトラックへ読み込み"
+
+msgid "2.8 秒大房间混响预设"
+msgstr "2.8秒大ホールリバーブプリセット"
+
+msgid "{} 个片段"
+msgstr "{} 個のクリップ"
+
+msgid "仅当前轨道"
+msgstr "現在のトラックのみ"
+
+msgid "含总线"
+msgstr "バスを含む"
+
+msgid "未选中"
+msgstr "未選択"
+
+msgid "未选中片段 · 在编曲区点一个片段"
+msgstr "クリップ未選択 · アレンジでクリップをクリック"
+
+msgid "浏览器：音色 / 采样 / 预设 / 效果链 / 工程资产，一个入口 [B]"
+msgstr "ブラウザ：サウンド / サンプル / プリセット / エフェクトチェーン / プロジェクトアセット、入口は一つ [B]"
+
+msgid "片段级"
+msgstr "クリップレベル"
 
 # --- workspace/song_overview_panel.slint ---
 
@@ -1115,9 +1148,6 @@ msgstr "トラック{}"
 msgid "轨道 {} 录音准备"
 msgstr "トラック{}録音待機"
 
-msgid "编曲空车道拖动滚动面"
-msgstr "アレンジ空レーンのドラッグスクロール面"
-
 msgid "剪辑 {}"
 msgstr "クリップ{}"
 
@@ -1135,6 +1165,9 @@ msgstr "再生ヘッドカーソル"
 
 msgid "编曲横向滚动条"
 msgstr "アレンジ横スクロールバー"
+
+msgid "编曲空车道框选面"
+msgstr "アレンジ空レーンの矩形選択面"
 
 # --- console/piano_roll.slint ---
 
