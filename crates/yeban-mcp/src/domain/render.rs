@@ -5400,7 +5400,7 @@ fn prepare_sampler_track(
     // ⭐ `#279`：池里那份已解码 PCM 是 `Arc<Vec<f32>>` ⇒ 这里只 `Arc::clone`
     // （⛔ 不再 `as_ref().clone()` 复制元素）；引擎摊平表随后也 `Arc::clone` 同一份
     // ⇒ 整条渲染只有**一份** PCM 字节。
-    // ⚠ 武装元组里的声道数恒填 1：MCP 侧解码（domain::sfz）现仍折单声道，
+    // ⚠ 武装元组里的声道数恒填 1：MCP 侧解码（`domain::sfz`）现仍折单声道，
     // PCM 本来就是单声道 ⇒ 如实填 1（保声道缺口已登记台账规格，另立线）。
     let samples: Vec<ArmedSfzSample> = table
         .into_iter()
