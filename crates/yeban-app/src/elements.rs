@@ -782,6 +782,17 @@ impl ElementRegistry {
             "Arrangement 线性编曲时间轴",
             false,
         );
+        // 出货面（`ui/arrangement.slint`）的轨道滚动面：`accessible-role: list`
+        // ⇒ `ElementKind::List`。此条自 baf80ebe2 引入该 id 起漏登记，
+        // `slint_accessible_ids_and_registry_cover_each_other` 在基线即红；
+        // line/blank-drag-selection 触及同一登记表时一并补上（2026-11-18）。
+        registry.add(
+            "arr-lanes-flickable",
+            ElementKind::List,
+            "arrangement.slint",
+            "编曲轨道列表滚动区",
+            false,
+        );
         for (section_index, section) in view.sections.iter().enumerate() {
             registry.add(
                 &format!("section-{section_index}-card"),
@@ -933,10 +944,10 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "arrangement-lane-scroll-area",
+            "arrangement-lane-marquee-area",
             ElementKind::Region,
             "workspace/arrangement_view.slint",
-            "编曲空车道拖动滚动面",
+            "编曲空车道框选面",
             false,
         );
         registry.add(

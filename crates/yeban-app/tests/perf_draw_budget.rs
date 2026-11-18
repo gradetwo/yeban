@@ -258,7 +258,15 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// `APPLY_VIEW_WRITE_SITE_BUDGET` 同步 +5。消费者只在调音台通道条（Tab 1，
 /// 默认帧 Tab 0 不实例化）⇒ 默认帧一位不变；取数侧走 `bridge::sampler_display`
 /// 的进程缓存（键 = 路径＋覆盖），⛔ 不在每帧读盘。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 63;
+/// ## 63 → 65 的追加（line/blank-drag-selection，2026-11-18）
+///
+/// 那两格是框选选区的**标志投影**：`clip-selected-flags`（与 `clip-ulids`
+/// 同序同长）与 `timeline-block-selected`（与 `timeline-blocks` 同序同长），
+/// 都按界面上的选区集 `selected-clip-ulids` 在 `apply_view` 每帧路径上重算
+/// （选区是界面态、⛔ 不在 `ViewState` 里；只在手势时设 ⇒ 重注入后必然错位，
+/// 与音符面 `note-selected` 同一条口径）。默认选区为空集 ⇒ 标志全 `false`
+/// ⇒ 默认帧逐像素不变，⛔ 无需重录基准。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 65;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -529,7 +537,13 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 63;
 /// 114 失真——并集算法取了旧基数 103（103＋网格 6＋八度 5），未计主干在鼓机
 /// 合入后已带进的增量；按本文件 `write_sites` 口径实测合入树 `apply_view`
 /// 的 `ui.set_` 写点为 **122** ⇒ **114 → 122**。该常量无活测试断言，纯台账。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 122;
+/// ⭐ 2026-11-18（line/blank-drag-selection）：多**一行** `ui.set_clip_selected_flags`
+/// （框选标志的工作区面投影，按选区集在 `apply_view` 里现算）⇒ **122 → 123**。
+/// 结构面的同序标志 `timeline-block-selected` 的写入点收在
+/// `host::refresh_timeline_block_selected` 里（与 `apply_current_scene` /
+/// `inject_sidebar` 同款收拢法），⛔ 不计本常量的函数体口径；其数组本身计入
+/// `PER_FRAME_ARRAY_REWRITE_BUDGET`（63 → 65，见彼处条目）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 123;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -581,6 +595,10 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("section-positions", get_section_positions);
     push!("section-widths", get_section_widths);
     push!("clip-ulids", get_clip_ulids);
+    // ⭐ line/blank-drag-selection（2026-11-18）：框选标志的两个投影都在
+    // `apply_view` 的每帧路径上（按界面选区集重算）⇒ 必须计入这份清单。
+    push!("clip-selected-flags", get_clip_selected_flags);
+    push!("timeline-block-selected", get_timeline_block_selected);
     push!("clip-labels", get_clip_labels);
     // ⭐ `D-UI-16`（2026-11-02）：`clip-mutes` 也在 `apply_view` 的每帧路径上（⛔ 不是手势路径，
     // 它是 `Cmd/Ctrl+M` 的结果读数）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。

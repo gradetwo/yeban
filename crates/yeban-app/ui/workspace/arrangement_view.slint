@@ -74,13 +74,20 @@ export component ArrangementView inherits Rectangle {
     property <length> drag-origin-x: 0px;
     property <bool> drag-moved: false;
     property <bool> dragging: false;
-    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：空车道拖动的**界面本地**读数
-    // （与卷帘 `piano_roll.slint` 的拖动滚动手势面同款：`drag-last-x` 是上一帧的 x，
-    // 增量 = 上一帧 − 当前帧 ⇒ 向右拖内容左移、偏移增加）。
-    property <length> lane-drag-origin-x: 0px;
-    property <length> lane-drag-last-x: 0px;
-    property <bool> lane-drag-moved: false;
-    property <bool> lane-dragging: false;
+    // ⭐ 框选选区标志（line/blank-drag-selection）：与 `clip-ulids` 同序同长的
+    // 选中标志（宿主按 `selected-clip-ulids` 选区集重算注入）；包头高亮与
+    // 无障碍选中态读它 —— 长度与 `clip-ulids` 对不上时回落到只认主选中。
+    in property <[bool]> clip-selected-flags: [];
+    // ⭐ 框选草稿（line/blank-drag-selection，Wang 2026-11-18 口径，照 Logic Pro；
+    // 取代 2026-11-07 的空车道拖动横滚读数 —— 拖拽滚动已废，见车道面注释）：
+    // 界面本地瞬态，坐标是 **Flickable 内容帧**；越过 4px 阈值才激活。
+    property <length> marquee-x0: 0px;
+    property <length> marquee-y0: 0px;
+    property <length> marquee-x1: 0px;
+    property <length> marquee-y1: 0px;
+    property <bool> marquee-pressed: false;
+    property <bool> marquee-active: false;
+    property <bool> marquee-additive: false;
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -285,9 +292,12 @@ export component ArrangementView inherits Rectangle {
     callback arrangement-wheel(length, length, bool, bool);
     /// 横向滚动条（`host::wire_arrangement_hscroll`）：绝对目标 px。
     callback arrangement-scroll-to(length);
-    /// 空车道拖动 ⇒ 横向滚动（与卷帘 `scroll-requested` 同一条回调，宿主
-    /// `install_roll_scroll`；只在空白车道区生效，不与剪辑拖拽抢事件）。
-    callback scroll-requested(length);
+    /// ⭐ 框选收尾（line/blank-drag-selection）：矩形四边（x = **时间轴像素帧**，
+    /// 与投影的剪辑 x 同帧；y = **行几何帧**，与 `track-ys` 同帧；未归一化）
+    /// + 是否加选（Shift）。命中判定与选区写入在宿主。
+    /// （2026-11-07 的空车道拖动横滚 `scroll-requested` 已按 Wang 2026-11-18
+    /// 框选口径移除；本组件不再声明它 —— 根窗口的同名回调只剩卷帘在用。）
+    callback clip-marquee-select(length, length, length, length, bool);
     /// 点击自动化车道添加或编辑点 (G-A1): (点击处相对于车道区域的 x, 点击处相对于行区内容顶部的 y)
     callback automation-lane-click(length, length);
 
@@ -1026,47 +1036,63 @@ export component ArrangementView inherits Rectangle {
         border-color: Tokens.line;
     }
 
-    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：空车道拖动 ⇒ 横向滚动。
+    // ⭐ 框选（line/blank-drag-selection，Wang 2026-11-18 口径，照 Logic Pro；
+    // 取代 2026-11-07 的空车道拖动横滚 —— 拖拽滚动已废，滚动只走滚轮 /
+    // Shift+滚轮 / 滚动条，下方 `scroll-event` 分流不变）。
     //
     // 一块覆盖全部车道的 TouchArea（置于车道矩形循环之后、剪辑循环之前 ⇒ 剪辑仍在
     // 上层，命中测试先到剪辑；只在空白车道区生效，不与剪辑拖拽抢事件）。
-    // 照抄卷帘 `piano_roll.slint` 的 `scroll-requested(drag-last-x - mouse-x)` 模式：
-    // 按下记 `drag-last-x`，move 时报增量并更新，越过 4px 阈值才滚动（小抖动不滚）。
-    // 高度 = 行区内容高（`sheet-height`）；纵向位移不处理（纵向归 Flickable）。
+    // 手势状态机（阈值判定与剪辑拖拽同款 4px、双向各自比较）：按下记起点
+    // （内容帧），越阈值激活框选并画橡皮筋矩形；松手激活 ⇒ 把矩形换算到
+    // 时间轴像素帧 / 行几何帧报给宿主算命中；松手未激活 ⇒ 仍是原来的
+    // 自动化车道单击（G-A1，语义一位不改）；`cancel` 只清草稿不提交。
+    // 本面 x = 168px 起 ⇒ 局部 mouse-x 即时间轴像素；y 换算加 `rows-top`。
     TouchArea {
         x: 168px;
         y: 0;
         width: parent.width - 168px;
         height: root.sheet-height * 1px;
         accessible-role: region;
-        accessible-id: "arrangement-lane-scroll-area";
-        accessible-label: @tr("编曲空车道拖动滚动面");
+        accessible-id: "arrangement-lane-marquee-area";
+        accessible-label: @tr("编曲空车道框选面");
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down {
-                root.lane-drag-origin-x = self.mouse-x;
-                root.lane-drag-last-x = self.mouse-x;
-                root.lane-drag-moved = false;
-                root.lane-dragging = true;
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.marquee-x0 = self.mouse-x + 168px;
+                root.marquee-y0 = self.mouse-y;
+                root.marquee-x1 = root.marquee-x0;
+                root.marquee-y1 = root.marquee-y0;
+                root.marquee-additive = event.modifiers.shift;
+                root.marquee-pressed = true;
+                root.marquee-active = false;
             } else if event.kind == PointerEventKind.up {
-                root.lane-dragging = false;
-                if !root.lane-drag-moved {
+                if root.marquee-pressed && root.marquee-active {
+                    root.clip-marquee-select(
+                        root.marquee-x0 - 168px,
+                        root.marquee-y0 + root.rows-top,
+                        root.marquee-x1 - 168px,
+                        root.marquee-y1 + root.rows-top,
+                        root.marquee-additive);
+                } else if root.marquee-pressed {
                     root.automation-lane-click(self.mouse-x, self.mouse-y);
                 }
-                root.lane-drag-moved = false;
+                root.marquee-pressed = false;
+                root.marquee-active = false;
             } else if event.kind == PointerEventKind.move {
-                if !root.lane-drag-moved
-                    && ((self.mouse-x - root.lane-drag-origin-x) > 4px
-                        || (root.lane-drag-origin-x - self.mouse-x) > 4px) {
-                    root.lane-drag-moved = true;
-                }
-                if root.lane-dragging && root.lane-drag-moved {
-                    root.scroll-requested(root.lane-drag-last-x - self.mouse-x);
-                    root.lane-drag-last-x = self.mouse-x;
+                if root.marquee-pressed {
+                    root.marquee-x1 = self.mouse-x + 168px;
+                    root.marquee-y1 = self.mouse-y;
+                    if !root.marquee-active
+                        && ((root.marquee-x1 - root.marquee-x0) > 4px
+                            || (root.marquee-x0 - root.marquee-x1) > 4px
+                            || (root.marquee-y1 - root.marquee-y0) > 4px
+                            || (root.marquee-y0 - root.marquee-y1) > 4px) {
+                        root.marquee-active = true;
+                    }
                 }
             } else {
-                // `cancel`：收尾但不提交（拖动滚动没有草稿要丢，只有状态要清）。
-                root.lane-dragging = false;
-                root.lane-drag-moved = false;
+                // `cancel`：收尾但不提交（框选没有草稿要落，只有状态要清）。
+                root.marquee-pressed = false;
+                root.marquee-active = false;
             }
         }
         // ⭐ 滚轮分流 —— 带 Shift / Option 时接宿主，无修饰返回 `reject` ⇒
@@ -1111,8 +1137,10 @@ export component ArrangementView inherits Rectangle {
             background: root.clip-mutes[clip_index] ? Tokens.bg-void : Tokens.bg-raised;
             // 选中态 = 包头描边（与音符矩形同一支令牌 `selection`；⛔ 不改填充）。
             // 没有选中（默认）⇒ 0px 无描边 ⇒ 默认帧逐像素不变。
-            border-width: root.selected-clip-ulid == clip_ulid ? 2px : 0px;
-            border-color: root.selected-clip-ulid == clip_ulid ? Tokens.selection : transparent;
+            // 选中 = 主选中 **或** 框选标志（line/blank-drag-selection；标志与
+            // `clip-ulids` 同序同长时才读，长度对不上 ⇒ 只认主选中）。
+            border-width: (root.selected-clip-ulid == clip_ulid || (root.clip-selected-flags.length == root.clip-ulids.length && root.clip-selected-flags[clip_index])) ? 2px : 0px;
+            border-color: (root.selected-clip-ulid == clip_ulid || (root.clip-selected-flags.length == root.clip-ulids.length && root.clip-selected-flags[clip_index])) ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "clip-" + clip_ulid + "-header";
             accessible-label: @tr("剪辑 {}", root.clip-labels[clip_index])
@@ -1121,7 +1149,8 @@ export component ArrangementView inherits Rectangle {
             accessible-item-count: root.clip-ulids.length;
             accessible-item-selectable: true;
             // 选中态按**身份**键控（与轨道头同款）：下标会在撤销 / 重排后指向别的剪辑。
-            accessible-item-selected: root.selected-clip-ulid == clip_ulid;
+            // 框选命中的片段同样报选中（标志投影，见包头描边注释）。
+            accessible-item-selected: root.selected-clip-ulid == clip_ulid || (root.clip-selected-flags.length == root.clip-ulids.length && root.clip-selected-flags[clip_index]);
             accessible-action-default => { root.clip-select(clip_ulid); }
 
             // 点击面：零视觉、零算术 —— 只把**身份**原样报给宿主。
@@ -1216,6 +1245,21 @@ export component ArrangementView inherits Rectangle {
         double-clicked => {
             root.clip-double-click(clip_ulid);
         }
+    }
+
+    // 框选矩形（line/blank-drag-selection）：只在草稿激活时画。坐标是
+    // Flickable 内容帧（x 含 168px 包头区偏移，与车道面局部帧同源）。
+    // 颜色用现行令牌 `Tokens.selection`：框选属半透明保留例外（Wang 口径），
+    // 填充取低 alpha、边框取令牌实色；纯 Rectangle 不接指针事件，不挡命中。
+    Rectangle {
+        visible: root.marquee-active;
+        x: Math.min(root.marquee-x0, root.marquee-x1);
+        y: Math.min(root.marquee-y0, root.marquee-y1);
+        width: Math.abs(root.marquee-x1 - root.marquee-x0);
+        height: Math.abs(root.marquee-y1 - root.marquee-y0);
+        background: Tokens.selection.with-alpha(0.15);
+        border-width: 1px;
+        border-color: Tokens.selection;
     }
 
     // ---------------------------------------------------------------- 自动化曲线 (自动化泳道)

@@ -485,6 +485,11 @@ fn option_wheel_zooms_and_option_shift_wheel_zooms_horizontally() {
 }
 
 /// ⑦：横向滚动条（点轨道跳位置）+ 空车道拖动（向左拖 100px ⇒ 偏移 +100）。
+///
+/// ⭐ 2026-11-18 口径变更（line/blank-drag-selection，Wang 裁决，照 Logic Pro）：
+/// 「空车道拖动横滚」已废 —— 编曲区空白拖拽改为橡皮筋框选，滚动只走滚轮 /
+/// Shift+滚轮 / 滚动条。本判据的车道拖动一半自此失效（横向滚动条一半不变）；
+/// 框选语义由 `tests/clip_marquee_selection.rs` 钉住。
 #[test]
 fn scrollbar_and_lane_drag_scroll_horizontally() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。

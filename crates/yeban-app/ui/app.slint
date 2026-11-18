@@ -610,6 +610,17 @@ export component MainWindow inherits Window {
     in-out property <[length]> section-positions: [];
     in-out property <[length]> section-widths: [];
     in-out property <string> selected-clip-ulid: "";
+    // ⭐ 框选选区（line/blank-drag-selection，Wang 2026-11-18 框选口径）：编曲区
+    // 空白拖拽命中的片段身份集（视图态，唯一写者 = `host::wire_clip_scope` 的
+    // 单击 / 框选两条臂）。`selected-clip-ulid` 仍是主选中（单目标动作的读点），
+    // 本集是它的复数面：单击 ⇒ 集 = [该片段]；框选 ⇒ 集 = 命中集。
+    in-out property <[string]> selected-clip-ulids: [];
+    // 与 `timeline-blocks` **同序同长**的选中标志（宿主按集重算，见
+    // `host::refresh_timeline_block_selected`）；长度不一致时界面回落到主选中比较。
+    in-out property <[bool]> timeline-block-selected: [];
+    // 与 `clip-ulids` 同序同长的选中标志（工作区编曲视图包头高亮用，同一份集的
+    // 另一投影；`host::apply_view` 每次注入时按 `selected-clip-ulids` 重算）。
+    in-out property <[bool]> clip-selected-flags: [];
     in-out property <int> selected-note-count: 0;
     in-out property <string> selected-track-id: "";
     in-out property <[string]> selected-ulids: [];
@@ -777,6 +788,10 @@ export component MainWindow inherits Window {
     callback clip-drag-move(string, length);
     callback clip-drag-release(string, length);
     callback clip-select(string);
+    /// 框选收尾（line/blank-drag-selection）：矩形四边（**时间轴像素帧**的 x
+    /// 与行区内容帧的 y，逻辑像素，未归一化）+ 是否加选（Shift）。
+    /// 命中判定与选区写入全在宿主（`host::wire_clip_scope`）。
+    callback clip-marquee-select(length, length, length, length, bool);
     callback close-drum-gen();
     callback close-export-wav();
     callback close-humanize();
@@ -1430,6 +1445,8 @@ export component MainWindow inherits Window {
                     sheet-height: root.arrangement-sheet-height;
                     scroll-x: root.roll-scroll-x * 1px;
                     selected-clip-ulid: root.selected-clip-ulid;
+                    selected-clip-ulids: root.selected-clip-ulids;
+                    timeline-block-selected: root.timeline-block-selected;
 
                     select-track(t-id) => {
                         root.selected-track-index = t-id;
@@ -1448,6 +1465,7 @@ export component MainWindow inherits Window {
                     zoom-h-step(zoom-in) => { root.zoom-h-step(zoom-in); }
                     zoom-v-step(zoom-in) => { root.zoom-v-step(zoom-in); }
                     clip-select(clip-ulid) => { root.clip-select(clip-ulid); }
+                    clip-marquee-select(x1, y1, x2, y2, additive) => { root.clip-marquee-select(x1, y1, x2, y2, additive); }
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }
                     track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
