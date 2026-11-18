@@ -841,7 +841,13 @@ export component UnifiedLowerDock inherits Rectangle {
                         // flat：选中不做"换一档灰"，而是和编曲轨道头同一套语言——
                         // 条面蘸一点 accent（bg-shell 混 14% accent），读作"这条被选中"，
                         // 又不会像 skin-inset 那样在通道条上砸出一块比邻居更暗的洞。
-                        background: Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell);
+                        // flat：选中用**边框**表达身份，整条底色保持不变（2026-11-18 修）。
+                        // 改前：`trk.id == selected ? accent.mix(bg-shell, 0.14) : bg-shell`
+                        // —— 选中那一条比邻居亮一档、还带蓝调，在混音台里读起来像
+                        // "Lead 的背景色和其它通道不一样"（用户两次报的同一个问题）。
+                        // 现在底色只有一个来源 `bg-shell`，选中由下面 848 行的 accent 边 +
+                        // 色标条做区分，与 Logic 的选择语义一致。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-shell;
                         border-radius: 4px;
                         border-width: 1px;
                         // 选中在两套主题里都留一个明确的身份边（physical 没有色差，只能靠边框）。

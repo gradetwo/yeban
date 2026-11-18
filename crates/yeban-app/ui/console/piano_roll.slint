@@ -147,7 +147,12 @@ export component PianoRoll inherits Rectangle {
     //    上界仍是投影的 `base-midi-pitch + 15`（row 0 最高音），音符
     //    位置由 `note-ys` 注入、不随本窗口变化 ⇒ 前 16 行逐像素不变。
     // ③ 最少 8 行：面板被拖到极矮时也保留可读的最小窗口。
-    property <int> visible-rows: Math.max(8, Math.floor((self.height - 28px) / 14px));
+    // 力度泳道占位（2026-11-18 修）：格子与琴键此前按 `height - 28` 算，而
+    // 力度泳道是贴在底部的 44px 实心块 ⇒ 最后 3 行车道与琴键被它整片盖住，
+    // 画面看上去像"格子在半空中断掉、下面没有琴键"。这里把 44px 显式扣出来：
+    // 格子/琴键止于泳道上沿，行数也跟着减，不再有被遮挡的"僵尸行"。
+    property <length> velocity-lane-height: root.show-velocity-lane ? 44px : 0px;
+    property <int> visible-rows: Math.max(8, Math.floor((self.height - 28px - root.velocity-lane-height) / 14px));
     property <int> roll-rows: Math.min(self.visible-rows, Math.max(8, root.base-midi-pitch - 8));
     function row-pitch(row: int) -> int { return root.base-midi-pitch + 15 - row; }
     function row-is-white(row: int) -> bool { return root.white-key-pattern[root.row-pitch(row).mod(12)]; }
@@ -259,6 +264,15 @@ export component PianoRoll inherits Rectangle {
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
+            // [UI-TEST-001] §12.2：可点击的元素必须能被控制面寻址。
+            // 此前这两颗八度按钮没有语义 ID ⇒ 自动化既点不到、也验证不了
+            // "C0 下限"（用户报过的"卷帘下方空一大片"就出在这条路径上）。
+            accessible-role: button;
+            accessible-id: "pitch-range-down";
+            accessible-label: @tr("音域下移一个八度");
+            accessible-action-default => {
+                root.pitch-range-shift(-12);
+            }
             UiText {
                 width: parent.width;
                 height: parent.height;
@@ -284,6 +298,12 @@ export component PianoRoll inherits Rectangle {
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
+            accessible-role: button;
+            accessible-id: "pitch-range-up";
+            accessible-label: @tr("音域上移一个八度");
+            accessible-action-default => {
+                root.pitch-range-shift(12);
+            }
             UiText {
                 width: parent.width;
                 height: parent.height;
@@ -360,7 +380,8 @@ export component PianoRoll inherits Rectangle {
         x: 0;
         y: 28px;
         width: 56px;
-        height: parent.height - 28px;
+        // 与网格同源止于泳道上沿，避免琴键"漏"到力度泳道背后。
+        height: parent.height - 28px - root.velocity-lane-height;
         // 白键平面（physical 走 §12 键刷的纵向明暗，flat 仍旧平色）
         background: Tokens.roll-key-white-brush;
         clip: true;
@@ -442,7 +463,8 @@ export component PianoRoll inherits Rectangle {
         x: 56px;
         y: 28px;
         width: parent.width - 56px;
-        height: parent.height - 28px;
+        // 止于力度泳道上沿（此前是 `parent.height - 28px`，底部 44px 被泳道盖住）。
+        height: parent.height - 28px - root.velocity-lane-height;
         // 网格底 (2026-11-17 口径): flat 回平 Tokens.bg-lane 平色;
         // physical 按 Bitwig 截图采样提亮到 #20272e (Wang 定:
         // 拟物版卷帘背景太深), 下方车道三档与分隔线同幅上移。
@@ -556,9 +578,10 @@ export component PianoRoll inherits Rectangle {
     // 由本元素**上报**（`velocity-lane-top`），而不是让宿主再算一次 `height - 44px`。
     velocity-lane := Rectangle {
         x: 0;
-        y: parent.height - 44px;
+        // 单一来源：高度与格子/琴键的扣减共用 `velocity-lane-height`。
+        y: parent.height - root.velocity-lane-height;
         width: parent.width;
-        height: 44px;
+        height: root.velocity-lane-height;
         // 力度泳道回平 (2026-11-17 口径): 两套主题同为 bg-panel 平色。
         background: Tokens.bg-panel;
         visible: root.show-velocity-lane;
@@ -605,7 +628,8 @@ export component PianoRoll inherits Rectangle {
         x: 56px;
         y: 28px;
         width: parent.width - 56px;
-        height: parent.height - 28px;
+        // 走带光标同样止于泳道上沿：否则光标会穿过力度柱画到组件最底。
+        height: parent.height - 28px - root.velocity-lane-height;
         clip: true;
 
         Rectangle {
