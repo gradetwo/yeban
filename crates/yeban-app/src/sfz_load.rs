@@ -2270,7 +2270,7 @@ impl yeban_render::render::AudioSource for SfzTrackSource {
     ///
     /// **跨过定位点的音符**（`start_frame < frame < start_frame + target_frames`）
     /// **保留**：本源的每个音符都是整段预渲染进自己的 scratch 的
-    /// （[`Self::ensure_rendered`]），[`Self::render_block`] 按绝对帧偏移取窗
+    /// （[`Self::ensure_rendered`]），`render_block` 按绝对帧偏移取窗
     /// ⇒ 保留即追补 —— 区间产物与全程渲染在定位点之后的切片逐样本一致
     /// （判据 `seek_to_chases_cross_start_notes_and_matches_the_full_slice`）。
     /// 这与引擎源 `EngineTrackSource::seek_to` 的预滚追补是**同一条口径**：
