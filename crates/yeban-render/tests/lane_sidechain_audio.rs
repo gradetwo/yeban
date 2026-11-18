@@ -116,10 +116,10 @@ fn comp_strip() -> DeviceDefinition {
     }
 }
 
-/// hats 组的高通通道条（6 kHz 低切）。
+/// hats 组的高通通道条（9 kHz 低切；不开压缩，只走滤波级）。
 fn hpf_strip() -> DeviceDefinition {
     DeviceDefinition {
-        params: vec![param("hpf_hz", 6_000.0)],
+        params: vec![param("hpf_hz", 9_000.0)],
         ..comp_strip()
     }
 }
@@ -307,11 +307,20 @@ fn kick_ducks_the_808_lane() {
 /// ② hat 组高通不影响 kick（逐位）；hat 段本身必须被高通改动（判据不空转）。
 #[test]
 fn hat_highpass_does_not_touch_kick() {
-    let (with_hpf, track) = project(NOTES, standard_chains(vec![hpf_strip()]), None);
+    // 专用音符：kick@0（独占 0..12000 帧）、开镲 46@480（长衰减，高通
+    // 前后在起音段的低频含量差异最大）、808 不参与（不淹没测量窗）。
+    let notes: &[(u64, u8, u64)] = &[(0, 36, 240), (480, 46, 960), (1_920, 36, 240)];
+    let chains = |hat_devices: Vec<DeviceDefinition>| {
+        vec![
+            chain(&[36], "kick", Vec::new()),
+            chain(&[42, 46], "hats", hat_devices),
+        ]
+    };
+    let (with_hpf, track) = project(notes, chains(vec![hpf_strip()]), None);
     let (keyed_a, _) = render(&with_hpf, track, true);
-    let (without_hpf, track) = project(NOTES, standard_chains(Vec::new()), None);
+    let (without_hpf, track) = project(notes, chains(Vec::new()), None);
     let (keyed_b, _) = render(&without_hpf, track, true);
-    // 首个 hat 在帧 12000；其前只有 kick+808 ⇒ 逐位相同。
+    // 首个 hat 在帧 12000；其前只有 kick ⇒ 逐位相同。
     for (index, (a, b)) in keyed_a[..12_000 * 2]
         .iter()
         .zip(&keyed_b[..12_000 * 2])
@@ -323,10 +332,10 @@ fn hat_highpass_does_not_touch_kick() {
             "hat 高通不得影响 kick 段（第 {index} 个样本）"
         );
     }
-    // hat 段（首个 hat 起音后）必须有别：高通真的在 hat 组上生效。
-    let hat_a = rms_db(&keyed_a, 12_500..20_000);
-    let hat_b = rms_db(&keyed_b, 12_500..20_000);
-    println!("hat 段 RMS：高通 {hat_a:.2} dB / 无高通 {hat_b:.2} dB");
+    // 开镲起音段（12000..15600）必须有别：高通真的在 hat 组上生效。
+    let hat_a = rms_db(&keyed_a, 12_000..15_600);
+    let hat_b = rms_db(&keyed_b, 12_000..15_600);
+    println!("开镲起音段 RMS：高通 {hat_a:.2} dB / 无高通 {hat_b:.2} dB");
     assert!(
         (hat_a - hat_b).abs() > 0.5,
         "高通必须真的改动 hat 段（差 {:.2} dB）",
