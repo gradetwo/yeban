@@ -341,6 +341,27 @@ msgstr "Exportar paquete de diagnóstico (D56)"
 msgid "音乐提案抽屉 (Musical PR Drawer)"
 msgstr "Cajón de propuestas musicales (Musical PR)"
 
+msgid "打开浏览器 · 音色/采样/预设/效果 (⇧⌘B)"
+msgstr "Abrir el explorador · Sonidos/Samples/Presets/Efectos (⇧⌘B)"
+
+msgid "效果"
+msgstr "Efectos"
+
+msgid "浏览器"
+msgstr "Explorador"
+
+msgid "网格强度 · 强"
+msgstr "Intensidad de la rejilla · Fuerte"
+
+msgid "网格强度 · 标准"
+msgstr "Intensidad de la rejilla · Normal"
+
+msgid "网格强度 · 轻（默认）"
+msgstr "Intensidad de la rejilla · Ligera (predeterminada)"
+
+msgid "音色"
+msgstr "Instrumento"
+
 # --- console/device_rack.slint ---
 
 msgid "{} 台设备"
@@ -528,9 +549,6 @@ msgstr "Desplegar la pista de acordes"
 msgid "+ 轨道"
 msgstr "+ Pista"
 
-msgid "添加新音轨 [Ctrl+T]"
-msgstr "Añadir pista nueva [Ctrl+T]"
-
 msgid "轨道菜单"
 msgstr "Menú de pista"
 
@@ -610,9 +628,6 @@ msgstr "Crear una pista de audio o MIDI"
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Arrastra archivos de audio o MIDI aquí, o haz doble clic para añadir una pista"
 
-msgid "双击或点击此区域添加新轨道 [Ctrl+T]"
-msgstr "Haz doble clic o clic aquí para añadir una pista [Ctrl+T]"
-
 msgid "+ 新建 MIDI 乐器轨"
 msgstr "+ Nueva pista de instrumento MIDI"
 
@@ -660,6 +675,12 @@ msgstr "Slot de efecto • Insertar reverb"
 
 msgid "效果槽 • 插入 动态压缩 Compressor"
 msgstr "Slot de efecto • Insertar compresor"
+
+msgid "双击或点击此区域添加新轨道"
+msgstr "Haz doble clic o haz clic aquí para añadir una pista nueva"
+
+msgid "添加新音轨"
+msgstr "Añadir pista nueva"
 
 # --- lower_dock.slint ---
 
@@ -803,29 +824,17 @@ msgstr "Sintetizador wavetable 3D de dos osciladores"
 msgid "内联实时频谱零延迟动态 EQ"
 msgstr "EQ dinámico en línea con espectro en tiempo real y latencia cero"
 
-msgid "支持 MPE 弯音的粒子采样器"
-msgstr "Sampler granular con pitch bend MPE"
-
 msgid "含 64 个多麦克风分层鼓组"
 msgstr "Kit de batería con 64 samples multicapa y varios micrófonos"
 
 msgid "模拟 SSL 4000G 总线粘合压缩"
 msgstr "Compresión de pegado de bus estilo SSL 4000G"
 
-msgid "带宏旋钮一键失真度映射"
-msgstr "Asignación de distorsión de un solo knob macro"
-
 msgid "通道检查器"
 msgstr "Inspector de canal"
 
 msgid "当前音轨与总线信号链检查器"
 msgstr "Inspector de la cadena de señal de la pista y los buses actuales"
-
-msgid "智能音色库"
-msgstr "Biblioteca inteligente de sonidos"
-
-msgid "工程资产、音频切片与采样音色库"
-msgstr "Assets del proyecto, cortes de audio y biblioteca de samples"
 
 msgid "更换音色 [v]"
 msgstr "Cambiar instrumento [V]"
@@ -922,6 +931,30 @@ msgstr "Todo"
 
 msgid "点击载入 {} 至当前轨道"
 msgstr "Clic para cargar {} en la pista actual"
+
+msgid "2.8 秒大房间混响预设"
+msgstr "Preset de reverberación de sala grande de 2,8 segundos"
+
+msgid "{} 个片段"
+msgstr "{} clips"
+
+msgid "仅当前轨道"
+msgstr "Solo la pista actual"
+
+msgid "含总线"
+msgstr "Incluye bus"
+
+msgid "未选中"
+msgstr "Nada seleccionado"
+
+msgid "未选中片段 · 在编曲区点一个片段"
+msgstr "Ningún clip seleccionado · Haz clic en un clip en el arreglo"
+
+msgid "浏览器：音色 / 采样 / 预设 / 效果链 / 工程资产，一个入口 [B]"
+msgstr "Explorador: sonidos / samples / presets / cadenas de efectos / assets del proyecto, una sola entrada [B]"
+
+msgid "片段级"
+msgstr "Nivel de clip"
 
 # --- workspace/song_overview_panel.slint ---
 
@@ -1115,9 +1148,6 @@ msgstr "Pista {}"
 msgid "轨道 {} 录音准备"
 msgstr "Armar la pista {} para grabar"
 
-msgid "编曲空车道拖动滚动面"
-msgstr "Superficie de arrastre y desplazamiento de carril vacío de arreglo"
-
 msgid "剪辑 {}"
 msgstr "Clip {}"
 
@@ -1135,6 +1165,9 @@ msgstr "Cursor de reproducción"
 
 msgid "编曲横向滚动条"
 msgstr "Barra de desplazamiento horizontal de arreglo"
+
+msgid "编曲空车道框选面"
+msgstr "Superficie de selección por marco de carril vacío de arreglo"
 
 # --- console/piano_roll.slint ---
 

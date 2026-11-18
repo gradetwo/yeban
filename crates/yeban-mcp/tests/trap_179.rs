@@ -383,25 +383,35 @@ fn note_forms_are_still_blocked_on_an_audio_clip() {
 /// 任一条 ⇒ 对应的音符形态在 MIDI 片段上被误拦（`CLIP_NOT_FOUND`），本判据先红。
 #[test]
 fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
-    // 收窄**前**（`d15edd62`）录下的读数：形态 → 合并后的 projectDigest。
-    // ⚠ 这里的四个值不是在本票代码上"自测出来的"，而是先回退到基线源码跑一次
+    // 录下的读数：形态 → 合并后的 projectDigest。
+    // ⚠ 这里的四个值不是在本票代码上"自测出来的"，而是在基线源码上跑一次
     // 录下、再写回常量（复跑时逐字相等）。
+    //
+    // 重钉记录（2026-11-19，line/ci-fix-5aa9f0bc0-i18n-trap179）：初值录于收窄前
+    // `d15edd62`；其后规范夹具 `filled_project()` 被有意改动，摘要随之漂移——
+    // 逐件数据面入轨（`f0555c12d` 的 `TrackV3::lane_chains`、`27901d4dd` 的
+    // `RoutingEdge::{source_lane, dest_lane}`）、夹具落 lane 端点并新增 64 号
+    // 侧链边 lead→bass（`14351ad65`、`f7cd56d71`）、`nodes` 改升序（`721747c06`）。
+    // `serialize_project` 本身未动（`serde_json::to_string_pretty`），音符操作
+    // 行为亦未变（四式均 success、能合并、合并后摘要确变）；漂移只来自夹具
+    // 字节，故重钉。重钉值三处逐字一致：yanshi-5 上 Linux 实测、CI windows 腿
+    // job 134920100261、CI macOS 腿 job 134920100561（run 44338026588）。
     let pinned: [(&str, &str); 4] = [
         (
             "add",
-            "667819d66cc5b439a4be44a2f5ce94f96a4ffeb9db240f044bfbbdfc26df9ba7",
+            "47c976d19f7a43b96dcd4d08be501986cf9ee22ea4e8a386821202c729d4805a",
         ),
         (
             "delete",
-            "e32c6683d5d30ad7af8d6eb28f16d09009d4cc870a37ae6c0616b1202ec7de83",
+            "fad336315b03c48c071feaf8f29f5589d02952b1c01bb6eb0cea35e78c6a3556",
         ),
         (
             "move",
-            "f80a93faadcd3705985d3d0b36ec40cc23b5103d78edb6267573e0ff181bb405",
+            "ba4c2d870134c4ef1b112eff5cf8e0d538ca997117979cb4f7a3f31345abf975",
         ),
         (
             "velocity",
-            "2e1732e86b8c384fdf095bc6a0c58992acabe3398d0300901efaa93c73ac0820",
+            "95210bed0480314bd3561cabc5d65a33ca5e776f90b227e5666dca2a1dc39d82",
         ),
     ];
     let mut mismatches = Vec::new();
