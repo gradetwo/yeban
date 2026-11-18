@@ -1171,10 +1171,10 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
          ＝ 144 字节（定长、全 `Copy`、⛔ 无 `Vec`／`HashMap`）"
     );
     assert_eq!(
-        pool, 6664,
+        pool, 8200,
         "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
          ＋ 计数器 28（序号舵 8 ＋ 丢弃 8 ＋ 窃取 8 ＋ 淡出帧数 4）⇒ 对齐到 1712；\
-         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232，再加 portamento 池级四字段 ＋8 ＝ 2240，再加弯音旁表四数组 ＋320 ＝ 2560** → ⭐ **滤波片再修订：每槽一只 `VoiceFilter`（88 B）× 16 槽 ＝ ＋1408 ⇒ 3968** → ⭐ **包络族片再修订：`eg_states` 数组 ＋512（16 槽 × 两只 16 B 的 `EgVoiceState`）、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800**"
+         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232，再加 portamento 池级四字段 ＋8 ＝ 2240，再加弯音旁表四数组 ＋320 ＝ 2560** → ⭐ **滤波片再修订：每槽一只 `VoiceFilter`（88 B）× 16 槽 ＝ ＋1408 ⇒ 3968** → ⭐ **包络族片再修订：`eg_states` 数组 ＋512（16 槽 × 两只 16 B 的 `EgVoiceState`）、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -1550,11 +1550,11 @@ fn s12b_the_plan_shares_the_callers_pcm_instead_of_copying_it() {
     );
     assert_eq!(
         core::mem::size_of::<PreparedSample>(),
-        48,
+        56,
         "⭐ `PreparedSample` = `String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐 ⇒ **40 B**\
          （`#279` 前是 `Vec` 24 ⇒ 56 B；⛔ 不进实时对象）\
          → ⭐ **`#331` 修订：`loop_points: Option<SampleLoop>`（两个 `u32`）净 ＋8 ⇒ 48 B**\
-         （原文 40 B 保留不删；⛔ 仍不进实时对象 —— 它按**样本数**计、摊平期定）"
+         （原文 40 B 保留不删；⛔ 仍不进实时对象 —— 它按**样本数**计、摊平期定） → ⭐ **立体声样本通路片修订：`channels: u16` 净 ＋8（2 B 字段 ＋ 对齐填充）⇒ 56 B**（原文保留不删）"
     );
     assert!(
         core::ptr::eq(sample.pcm().as_ptr(), caller.pcm.as_ptr()),
@@ -7860,8 +7860,8 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -8334,8 +8334,8 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -9360,8 +9360,8 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert_eq!(
         cc_state, 144,
@@ -10156,8 +10156,8 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B，再加 portamento ＋8 ⇒ 2240 B，再加弯音旁表 ＋320 ⇒ 2560 B → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B，再加 portamento ＋8 ⇒ 2240 B，再加弯音旁表 ＋320 ⇒ 2560 B → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -10462,8 +10462,8 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -11105,8 +11105,8 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -12111,8 +12111,8 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 6664,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B**"
+        pool, 8200,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 8200 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -14746,8 +14746,8 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 6664, ENGINE_RUNTIME_BYTES),
-        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**"
+        (6312, 40, 8200, ENGINE_RUNTIME_BYTES),
+        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 8200；①②④ 不变**"
     );
 }
 
@@ -15362,8 +15362,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 6664, ENGINE_RUNTIME_BYTES),
-        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**"
+        (6312, 40, 8200, ENGINE_RUNTIME_BYTES),
+        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 8200；①②④ 不变**"
     );
 }
 
@@ -17026,8 +17026,8 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 6664, ENGINE_RUNTIME_BYTES),
-        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**"
+        (6312, 40, 8200, ENGINE_RUNTIME_BYTES),
+        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 8200；①②④ 不变**"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
@@ -17376,4 +17376,236 @@ fn mono_sample_path_ignores_position_and_width_bit_exactly() {
     );
     let panned = render("<region> sample=a.wav key=60 pitch_keycenter=60 pan=100\n");
     assert_ne!(plain, panned, "pan 在同一通路上必须生效（反向对照）");
+}
+
+// =====================================================================
+// ⭐ 立体声样本通路片（2026-11-18）：S121～S125
+//
+// 本片把样本通路立体声化（取代 R315 的"多声道取声道 0"裁决）：解码保留
+// 声道、`InMemorySample`/`PreparedSample` 带声道数、池的分声道通路对
+// 立体声声部按 sfizz 级序（pan → width → position）真立体声渲染。
+// 单声道路径逐位不变由既有判据（S1～S120 的指纹群）继续钉住，本组只钉
+// **新行为**与**记账口径**。
+// =====================================================================
+
+/// ⭐ 立体声夹具样本：左右用**互不相同**的确定性图案（256 帧）。
+fn stereo_fixture_sample() -> InMemorySample {
+    let frames = 256usize;
+    let mut pcm = Vec::with_capacity(frames * 2);
+    for i in 0..frames {
+        pcm.push(((i * 7) % 61) as f32 / 61.0 - 0.5);
+        pcm.push(0.4 - ((i * 5) % 47) as f32 / 47.0);
+    }
+    InMemorySample {
+        pcm: Arc::new(pcm),
+        channels: 2,
+        sample_hz: 48_000.0,
+        loop_points: None,
+    }
+}
+
+/// ⭐ 单声道夹具样本（任意一份 PCM）。
+fn mono_fixture_sample(pcm: Vec<f32>) -> InMemorySample {
+    InMemorySample {
+        pcm: Arc::new(pcm),
+        channels: 1,
+        sample_hz: 48_000.0,
+        loop_points: None,
+    }
+}
+
+/// ⭐ 触发一个声部并走**分声道通路**渲染 `frames` 帧。
+fn render_pool_stereo(plan: &PreparedSfz, frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let created = pool.trigger_note(plan, 60, 127, 1_000_000, 1.0, None);
+    assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
+    let mut left = vec![0.0f32; frames];
+    let mut right = vec![0.0f32; frames];
+    pool.render_into_stereo_with_probes(plan, 0, &mut left, &mut right, None, None);
+    (left, right)
+}
+
+/// S121：⭐ **立体声声部在中性 `pan`/`width`/`position` 下，左右声道逐位等于
+/// 各自声道单独作单声道样本渲染的结果**（声道 0 与声道 1 都原样保留，
+/// ⛔ 不是折声道 0、⛔ 不是下混）。
+#[test]
+fn s121_a_stereo_voice_renders_each_channel_bit_exactly_at_neutral_image() {
+    let text = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let stereo = stereo_fixture_sample();
+    let plan_stereo = prepare_with(text, &stereo);
+    let (left, right) = render_pool_stereo(&plan_stereo, 256);
+
+    let channel0: Vec<f32> = stereo.pcm.iter().step_by(2).copied().collect();
+    let channel1: Vec<f32> = stereo.pcm.iter().skip(1).step_by(2).copied().collect();
+    let plan0 = prepare_with(text, &mono_fixture_sample(channel0));
+    let plan1 = prepare_with(text, &mono_fixture_sample(channel1));
+    let (left_ref, _) = render_pool_stereo(&plan0, 256);
+    let (_, right_ref) = render_pool_stereo(&plan1, 256);
+
+    assert!(
+        left.iter().any(|v| *v != 0.0) && right.iter().any(|v| *v != 0.0),
+        "夹具必须真的双声道出声（⛔ 不是两边都哑）"
+    );
+    assert_ne!(
+        bits(&left),
+        bits(&right),
+        "左右声道必须不同（夹具左右图案不同 ⇒ 折声道/下混都会让这一条红）"
+    );
+    assert_eq!(
+        bits(&left),
+        bits(&left_ref),
+        "⭐ 左声道必须逐位等于声道 0 单独渲染（中性声像下原样保留）"
+    );
+    assert_eq!(
+        bits(&right),
+        bits(&right_ref),
+        "⭐ 右声道必须逐位等于声道 1 单独渲染（⛔ 接线前这里是声道 0 的复制）"
+    );
+}
+
+/// S122：⭐ **`width=0` 时立体声塌成中置**：左右逐位相等，且逐位等于中性
+/// 渲染的 `(L + R) × cos(π/4)`（`apply_stereo_width_position` 的规范公式：
+/// `width=0 ⇒ 两系数同为 cos(π/4)`）。
+#[test]
+fn s122_width_zero_collapses_to_the_mid_signal() {
+    let plain = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let collapsed = "<region> sample=a.wav key=60 pitch_keycenter=60 width=0\n";
+    let stereo = stereo_fixture_sample();
+    let (left, right) = render_pool_stereo(&prepare_with(plain, &stereo), 256);
+    let (mid_l, mid_r) = render_pool_stereo(&prepare_with(collapsed, &stereo), 256);
+    assert_eq!(
+        bits(&mid_l),
+        bits(&mid_r),
+        "⭐ width=0 ⇒ 左右必须逐位相等（纯中置）"
+    );
+    let coeff = 0.5_f32.sqrt();
+    for frame in 0..256 {
+        let expected = (left[frame] + right[frame]) * coeff;
+        assert!(
+            (mid_l[frame] - expected).abs() <= 1e-6,
+            "⭐ width=0 的第 {frame} 帧必须等于 (L+R)×cos(π/4)（实得 {}，期望 {expected}）",
+            mid_l[frame]
+        );
+    }
+}
+
+/// S123：⭐ **`position` 是第二级声像（照 sfizz 的 position stage）**：
+/// `position=100` ⇒ 左声道能量塌到近零、右声道与中性渲染逐位近似；
+/// `position=-100` 镜像。
+#[test]
+fn s123_position_shifts_the_image_to_the_named_side() {
+    let plain = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let stereo = stereo_fixture_sample();
+    let (_, right) = render_pool_stereo(&prepare_with(plain, &stereo), 256);
+    let (left, _) = render_pool_stereo(&prepare_with(plain, &stereo), 256);
+
+    let hard_right = "<region> sample=a.wav key=60 pitch_keycenter=60 position=100\n";
+    let (pos_l, pos_r) = render_pool_stereo(&prepare_with(hard_right, &stereo), 256);
+    let peak_r = right.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
+    let peak_pos_l = pos_l.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
+    assert!(
+        peak_pos_l <= peak_r * 1e-6,
+        "⭐ position=100 ⇒ 左声道必须塌到近零（实得峰值 {peak_pos_l}，右声道峰值 {peak_r}）"
+    );
+    for frame in 0..256 {
+        assert!(
+            (pos_r[frame] - right[frame]).abs() <= 1e-6,
+            "⭐ position=100 的右声道增益必须 ≈ 1（第 {frame} 帧实得 {}，中性 {})",
+            pos_r[frame],
+            right[frame]
+        );
+    }
+
+    let hard_left = "<region> sample=a.wav key=60 pitch_keycenter=60 position=-100\n";
+    let (neg_l, neg_r) = render_pool_stereo(&prepare_with(hard_left, &stereo), 256);
+    let peak_l = left.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
+    let peak_neg_r = neg_r.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
+    assert!(
+        peak_neg_r <= peak_l * 1e-6,
+        "⭐ position=-100 ⇒ 右声道必须塌到近零（实得峰值 {peak_neg_r}，左声道峰值 {peak_l}）"
+    );
+    for frame in 0..256 {
+        assert!(
+            (neg_l[frame] - left[frame]).abs() <= 1e-6,
+            "⭐ position=-100 的左声道增益必须 ≈ 1（第 {frame} 帧）"
+        );
+    }
+}
+
+/// S124：⭐ **单声道输出路径对立体声样本只取声道 0，逐位等于"声道 0 的
+/// 单声道样本"**：摊平路 `render_block_into` 与离线 `render_note_into`
+/// 都不发明下混（口径与 R315 时代在单声道出口上一致 —— 变的只有
+/// 分声道出口）。
+#[test]
+fn s124_the_mono_output_paths_render_channel_zero_of_a_stereo_sample_bit_exactly() {
+    let text = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let stereo = stereo_fixture_sample();
+    let channel0: Vec<f32> = stereo.pcm.iter().step_by(2).copied().collect();
+    let mono = mono_fixture_sample(channel0);
+
+    // ---- 摊平路 ----
+    let plan_stereo = prepare_with(text, &stereo);
+    let plan_mono = prepare_with(text, &mono);
+    let mut flat_stereo = vec![0.0f32; 256];
+    let mut flat_mono = vec![0.0f32; 256];
+    let written_stereo = plan_stereo.render_block_into(60, 127, &mut flat_stereo);
+    let written_mono = plan_mono.render_block_into(60, 127, &mut flat_mono);
+    assert_eq!(written_stereo, written_mono, "两边写出的帧数必须相同");
+    assert_eq!(
+        bits(&flat_stereo),
+        bits(&flat_mono),
+        "⭐ 摊平路对立体声样本必须逐位等于声道 0 的单声道渲染"
+    );
+
+    // ---- 离线（逐音符）路 ----
+    let instrument =
+        SfzInstrument::load(text.to_owned(), &Default::default()).expect("SFZ 必须解析成功");
+    let mut off_stereo = vec![0.0f32; 256];
+    let mut off_mono = vec![0.0f32; 256];
+    instrument
+        .render_note_into(&stereo, 60, 127, &mut off_stereo, 48_000.0)
+        .expect("离线渲染必须成功");
+    instrument
+        .render_note_into(&mono, 60, 127, &mut off_mono, 48_000.0)
+        .expect("离线渲染必须成功");
+    assert_eq!(
+        bits(&off_stereo),
+        bits(&off_mono),
+        "⭐ 离线对立体声样本必须逐位等于声道 0 的单声道渲染"
+    );
+    assert!(
+        off_stereo.iter().any(|v| *v != 0.0),
+        "离线渲染必须真的出声（⛔ 不是两边都哑）"
+    );
+}
+
+/// S125：⭐ **记账口径**：帧数按**帧**计（立体声一帧仍一帧，预算
+/// `MAX_SAMPLE_FRAMES_TOTAL` 的口径不变）；存储/峰值记账按**实际存储
+/// 样本数**计（立体声每帧 2 个样本 ⇒ `pcm_bytes` 翻倍）。
+#[test]
+fn s125_frame_accounting_counts_frames_and_memory_counts_stored_samples() {
+    let stereo = stereo_fixture_sample();
+    assert_eq!(stereo.frames(), 256, "立体声 512 个交织样本 = 256 帧");
+    let text = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let plan = prepare_with(text, &stereo);
+    let sample = plan.sample(0).expect("摊平表里必须有样本");
+    assert_eq!(sample.channels(), 2, "声道数必须随样本进摊平表");
+    assert_eq!(sample.frames(), 256, "摊平样本的帧数按帧计");
+    assert_eq!(
+        sample.pcm_bytes(),
+        512 * 4,
+        "⭐ 存储记账按交织样本数计：512 个 f32 = 2048 B（⛔ 不是按帧的 1024 B）"
+    );
+
+    let mono = mono_fixture_sample(vec![0.25; 256]);
+    assert_eq!(mono.frames(), 256, "单声道 256 个样本 = 256 帧");
+    let plan_mono = prepare_with(text, &mono);
+    let mono_sample = plan_mono.sample(0).expect("摊平表里必须有样本");
+    assert_eq!(mono_sample.channels(), 1);
+    assert_eq!(mono_sample.frames(), 256);
+    assert_eq!(
+        mono_sample.pcm_bytes(),
+        256 * 4,
+        "单声道存储记账 = 帧数 × 4 B"
+    );
 }
