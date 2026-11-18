@@ -66,14 +66,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
+use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotError};
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{EntityId, LaneChainDef, YebanProjectV1};
 use yeban_sfz::parser::ParseLimits;
 
-use crate::automation::CcProbe;
-use crate::render::{AudioSource, BlockContext, RenderError};
+use crate::automation::{CcProbe, centered_pan_gains};
+use crate::inserts::{InsertChain, InsertRuntime};
+use crate::render::{AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError};
 
 /// 引擎音源装配失败（快照投影 / `arm_from_snapshot`）。
 ///
@@ -407,6 +408,26 @@ impl EngineTimbre {
     pub fn track_source(&self, track: EntityId) -> Result<EngineTrackSource, EngineSourceError> {
         EngineTrackSource::new(Arc::clone(&self.snapshot), track)
     }
+
+    /// ⭐ 逐件渲染（逐件处理线期 3）：为一条带 `lane_chains` 的轨道武装
+    /// 一个**分组源**（[`LaneSplitSource`]：调度表按键组切分、逐组引擎
+    /// 渲染、逐组插入链与组声相、最后按组首键升序＋余量求和）。
+    ///
+    /// `bpm` 只用于 lane 链里乒乓延迟的音符同步换算（与轨链投影同一口径，
+    /// 调用方传 `project.bpm`）。
+    ///
+    /// # Errors
+    ///
+    /// [`EngineSourceError`]：任一组引擎武装失败，或 SFZ 独占组被 lane
+    /// 分组拆开（choke 双保险，见 [`LaneSplitSource::new`]）。
+    pub fn lane_track_source(
+        &self,
+        track: EntityId,
+        chains: &[LaneChainDef],
+        bpm: f64,
+    ) -> Result<LaneSplitSource, EngineSourceError> {
+        LaneSplitSource::new(Arc::clone(&self.snapshot), track, chains, bpm)
+    }
 }
 
 /// 控制侧**读盘 ＋ 解析**一份 SFZ（⭐ `#274`；与 CLI 的
@@ -575,6 +596,19 @@ impl EngineTrackSource {
             probe = probe.with_seeds(*plan.prepared().cc_seeds());
         }
         self.cc = (!probe.is_empty()).then_some(probe);
+        self
+    }
+
+    /// ⭐ 逐件渲染（期 3）：把本源的调度表换成调用方给的**过滤副本**。
+    ///
+    /// [`LaneSplitSource`] 用它把整轨调度表按键组切开：每组一个源、各自
+    /// 只留本组的音符。引擎本身不存调度表（`render_track` 每块从本源的
+    /// `schedule` 字段读），因此换表即换发声集合，⛔ 不需要第二种武装。
+    /// 音高形状旁表必须**整张**跟着走（下标语义，见 [`Self::seek_to`] 的
+    /// 同一条纪律）—— 过滤由 [`filter_schedule`] 统一做，本方法只换表。
+    #[must_use]
+    pub fn with_schedule(mut self, schedule: Option<NoteSchedule>) -> Self {
+        self.schedule = schedule;
         self
     }
 
@@ -816,6 +850,411 @@ impl AudioSource for EngineTrackSource {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// 按音高谓词过滤一张调度表（逐件渲染期 3 的切分核）。
+///
+/// 旁表纪律与 [`EngineTrackSource::seek_to`] 的过滤**同一条**：音高形状
+/// 旁表整张保留（音符的 `pitch_shape` 是它的下标，压缩会让下标失效）；
+/// 轨增益门与调律偏移照抄。过滤保序 ⇒ 结果仍满足 `from_sorted` 的前提。
+fn filter_schedule(schedule: &NoteSchedule, keep: impl Fn(u8) -> bool) -> NoteSchedule {
+    let kept: Vec<yeban_engine::synth::ScheduledNote> = schedule
+        .notes()
+        .iter()
+        .copied()
+        .filter(|note| keep(note.pitch()))
+        .collect();
+    NoteSchedule::from_sorted(kept)
+        .with_track_gain(schedule.track_gain())
+        .with_tune_cents(schedule.tune_cents())
+        .with_pitch_shapes(schedule.pitch_shapes().to_vec())
+}
+
+/// 组声相的增益换算：与 MCP 轨声相**同一条**等功率（−3 dB）曲线
+/// （`θ = (pan + 1) * π/4`，`(cos θ, sin θ)`），外层走
+/// [`centered_pan_gains`] 的中心规则（`pan == 0` ⇒ `(1.0, 1.0)`，
+/// ⛔ 不是 0.707）。
+fn lane_pan_gains(pan: f32) -> (f32, f32) {
+    centered_pan_gains(pan, |position| {
+        let clamped = position.clamp(-1.0, 1.0);
+        let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
+        (libm::cosf(angle), libm::sinf(angle))
+    })
+}
+
+/// ⭐ **choke 双保险**（逐件渲染期 3）：SFZ 独占组不得被 lane 分组拆开。
+///
+/// 语义（`yeban-engine` `#94`）：区域触发时按自己的 `off_by` 去关断
+/// 「`group == off_by` 的正在发声声部」。触发键与受害键若落在不同的
+/// lane 分区（不同组、或一组在链内一组在余量），它们会被**不同的引擎
+/// 实例**渲染，关断无从发生 ⇒ choke 静默失效。因此构造期按摊平表再核
+/// 一遍（生成侧已核过一次，这是第二道）：任一独占关系的触发键集与
+/// 受害键集只要有**一对**键分区不同，整源响亮失败、点名键与组号。
+///
+/// 合成鼓机侧没有跨音色 choke（各音色独立声部），无摊平表的轨不核。
+fn check_choke_groups_not_split(
+    prepared: &PreparedSfz,
+    chains: &[LaneChainDef],
+    track: EntityId,
+) -> Result<(), EngineSourceError> {
+    let assignment = |key: u8| chains.iter().position(|chain| chain.keys.contains(&key));
+    let keys_of = |mask: [u64; 2]| -> Vec<u8> {
+        let mut keys = Vec::new();
+        for (word, bits) in mask.iter().enumerate() {
+            for bit in 0..64 {
+                if bits & (1u64 << bit) != 0 {
+                    keys.push(u8::try_from(word * 64 + bit).unwrap_or(u8::MAX));
+                }
+            }
+        }
+        keys
+    };
+    for region in prepared.regions() {
+        let off_by = region.off_by();
+        if off_by == 0 {
+            continue;
+        }
+        let trigger_keys = keys_of(region.key_mask());
+        let mut victim_keys: Vec<u8> = Vec::new();
+        for victim in prepared.regions() {
+            if victim.group() == off_by {
+                victim_keys.extend(keys_of(victim.key_mask()));
+            }
+        }
+        if trigger_keys.is_empty() || victim_keys.is_empty() {
+            continue;
+        }
+        for &trigger_key in &trigger_keys {
+            for &victim_key in &victim_keys {
+                if assignment(trigger_key) != assignment(victim_key) {
+                    return Err(EngineSourceError::new(format!(
+                        "逐件分组拆开了 SFZ 独占组: 轨道 {} 的区域以 off_by={off_by} 关断 \
+                         group={off_by}，但触发键 {trigger_key} 与受害键 {victim_key} \
+                         落在不同的 lane 分区（choke 会失效）；请把同一独占组的键放进同一条 lane 链",
+                        track.to_canonical_string()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`LaneSplitSource`] 的一个 lane 组：过滤调度表的引擎源 ＋ 本组链的
+/// 运行态（无可执行器件 ⇒ `None` ⇒ 整级不执行）＋ 组声相增益。
+struct LaneGroup {
+    /// 本组的引擎源（调度表只含本组键的音符；声相恒 `(1.0, 1.0)`，
+    /// 轨声相与组声相都由 [`LaneSplitSource`] 在组外施加）。
+    source: EngineTrackSource,
+    /// 本组插入链运行态（由 `InsertChain::from_devices` 投影构造，
+    /// 与轨链同一投影、同一运行态实现）。
+    runtime: Option<InsertRuntime>,
+    /// 组声相增益（`LaneChainDef::pan` 经 [`lane_pan_gains`] 换算；
+    /// `None` = 预置未给声相 ⇒ 不乘）。
+    pan: Option<(f32, f32)>,
+    /// 本组过滤后的调度表是否有音符。`false` ⇒ 组链**整段不执行**
+    /// （设计 §5.1 断言 1：无本组音符时组链不得改动任何样本）。
+    has_notes: bool,
+    /// 本组引擎的声部窃取句柄（构造期留存，渲染后读）。
+    steals: Arc<AtomicU64>,
+}
+
+impl LaneGroup {
+    /// 把 `MidiCc` 探针接到本组源上（与 [`LaneSplitSource::with_cc`] 同步）。
+    fn with_cc(self, project: &YebanProjectV1) -> Self {
+        Self {
+            source: self.source.with_cc(project),
+            ..self
+        }
+    }
+}
+
+/// ⭐ **逐件（逐 lane）分组源**（逐件处理线期 3，离线发声落点）。
+///
+/// 一条带 `lane_chains` 的轨在离线渲染里不再走单个 [`EngineTrackSource`]，
+/// 而是走本源：整轨调度表按 lane 组的键集切成「组调度表 × N ＋ 余量
+/// 调度表」，每份各武装一台 1 槽引擎（与 [`EngineTrackSource::new`]
+/// 同款武装、同一份 `Arc` 快照，⛔ 不复制 PCM）；逐块渲染时按
+/// **组首键升序（＝ `lane_chains` 的校验序）、余量最后**的固定顺序求和
+/// 进节点缓冲（[ARCH-DET-002]：顺序固定 ⇒ 确定性）。每组在求和之前先过
+/// 本组的插入链运行态（与轨链同一份 [`InsertRuntime`] 投影）与组声相；
+/// 余量不加链、不加组声相。轨声相（[`Self::with_pan`]，调用方注入，
+/// 与单源同一口径）在求和之后乘一次 —— 与单源路径里「源侧声相在轨链
+/// 之前」的相对次序一致（轨链在 `render_node` 里跑，位于源之后）。
+///
+/// ## 契约与边界
+///
+/// * **无组音符 ⇒ 组链不执行**：某组过滤后的调度表为空时，它的引擎照常
+///   推进（推进契约要求每块恰好一次），但链运行态整段跳过 ⇒ 该组的链
+///   对本次渲染的任何样本**一位都不改**（设计 §5.1 断言 1 的落点）。
+/// * **choke 双保险**：构造期核对 SFZ 独占组未被分组拆开，拆开响亮
+///   失败（[`check_choke_groups_not_split`]）。
+/// * **声部池按组隔离**（设计 R2 的已知行为差）：每组一台引擎 ⇒ SFZ
+///   声部池按组各 16 槽，整轨可用声部数上升、窃取只会 ≤ 单源；
+///   [`Self::steal_counter`] 报的是各组与余量的**总和**，与单源读数同口径。
+/// * **lane 器件不可自动化**（设计 §2.5 既定边界）：`DeviceParam` 泳道
+///   寻址是 (track, slot)，lane 器件不在此寻址空间 ⇒ 本源的链是静态的。
+/// * **声道**：组链运行态只支持立体声（与轨链的
+///   `RenderError::UnsupportedInsertChannels` 同一条）；非立体声渲染里
+///   只要有任一组链可执行就响亮失败，⛔ 不静默跳过链。
+pub struct LaneSplitSource {
+    /// 本源负责的轨道。
+    track: EntityId,
+    /// lane 组（`lane_chains` 原序 ＝ 组首键升序，模型校验已钉）。
+    groups: Vec<LaneGroup>,
+    /// 余量源（不属于任何 lane 组的键；不加链）。
+    remainder: EngineTrackSource,
+    /// 余量源的声部窃取句柄。
+    remainder_steals: Arc<AtomicU64>,
+    /// 累加用的暂存缓冲（第一份直接写入 `out`，其余份先写这里再累加）。
+    scratch: Vec<f32>,
+    /// 轨声相（`(左, 右)`；默认 `(1.0, 1.0)` ＝ 居中，与单源同一缺省）。
+    pan: (f32, f32),
+    /// 全部子源窃取数之和的句柄（每块末尾由各子源句柄汇总写回）。
+    steals: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for LaneSplitSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaneSplitSource")
+            .field("track", &self.track)
+            .field("groups", &self.groups.len())
+            .field("pan", &self.pan)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LaneSplitSource {
+    /// 从快照与该轨的 `lane_chains` 武装一个分组源。
+    ///
+    /// `bpm` 只用于 lane 链里乒乓延迟的音符同步换算（与轨链投影同口径）。
+    ///
+    /// # Errors
+    ///
+    /// [`EngineSourceError`]：任一子源武装失败，或 SFZ 独占组被分组
+    /// 拆开（见 [`check_choke_groups_not_split`]）。
+    pub fn new(
+        snapshot: Arc<EngineSnapshot>,
+        track: EntityId,
+        chains: &[LaneChainDef],
+        bpm: f64,
+    ) -> Result<Self, EngineSourceError> {
+        if let Some(plan) = snapshot.sfz().get(&track) {
+            check_choke_groups_not_split(plan.prepared(), chains, track)?;
+        }
+        let sample_rate = snapshot.sample_rate();
+        let schedule = snapshot.schedules().get(&track).cloned();
+        let mut groups = Vec::with_capacity(chains.len());
+        for chain in chains {
+            let filtered = schedule
+                .as_ref()
+                .map(|full| filter_schedule(full, |pitch| chain.keys.contains(&pitch)));
+            let has_notes = filtered
+                .as_ref()
+                .is_some_and(|table| !table.notes().is_empty());
+            let source =
+                EngineTrackSource::new(Arc::clone(&snapshot), track)?.with_schedule(filtered);
+            let steals = source.steal_counter();
+            let projection = InsertChain::from_devices(&chain.devices, sample_rate, bpm);
+            let runtime = (!projection.is_empty())
+                .then(|| InsertRuntime::new(&projection, sample_rate, L1_BLOCK_SIZE));
+            groups.push(LaneGroup {
+                source,
+                runtime,
+                pan: chain.pan.map(lane_pan_gains),
+                has_notes,
+                steals,
+            });
+        }
+        let remainder_filtered = schedule.as_ref().map(|full| {
+            filter_schedule(full, |pitch| {
+                !chains.iter().any(|chain| chain.keys.contains(&pitch))
+            })
+        });
+        let remainder =
+            EngineTrackSource::new(Arc::clone(&snapshot), track)?.with_schedule(remainder_filtered);
+        let remainder_steals = remainder.steal_counter();
+        Ok(Self {
+            track,
+            groups,
+            remainder,
+            remainder_steals,
+            scratch: Vec::new(),
+            pan: (1.0, 1.0),
+            steals: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    /// 写入**轨声相**（与 [`EngineTrackSource::with_pan`] 同一口径：
+    /// 调用方给等功率增益对；缺省 `(1.0, 1.0)` ⇒ 与接线前逐位相同）。
+    #[must_use]
+    pub const fn with_pan(mut self, pan: (f32, f32)) -> Self {
+        self.pan = pan;
+        self
+    }
+
+    /// 把本轨的 `MidiCc` 泳道接成离线 CC 探针（逐组与余量各接一份
+    /// 同内容的探针：探针按绝对帧查表，组间读数一致；没有 CC 泳道时
+    /// 每份探针内部仍是 `None` ⇒ 与接线前逐位相同）。
+    #[must_use]
+    pub fn with_cc(self, project: &YebanProjectV1) -> Self {
+        Self {
+            groups: self
+                .groups
+                .into_iter()
+                .map(|group| group.with_cc(project))
+                .collect(),
+            remainder: self.remainder.with_cc(project),
+            ..self
+        }
+    }
+
+    /// 本源负责的轨道 ID。
+    #[must_use]
+    pub const fn track(&self) -> EntityId {
+        self.track
+    }
+
+    /// 全部子源的已排程音符数之和（＝ 整轨调度表的音符数）。
+    #[must_use]
+    pub fn scheduled_notes(&self) -> usize {
+        self.groups
+            .iter()
+            .map(|group| group.source.scheduled_notes())
+            .sum::<usize>()
+            + self.remainder.scheduled_notes()
+    }
+
+    /// 声部窃取总数的句柄（各组 ＋ 余量之和；渲染后读，口径与
+    /// [`EngineTrackSource::steal_counter`] 相同）。
+    #[must_use]
+    pub fn steal_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.steals)
+    }
+
+    /// 渲染一份（组或余量）到 `buf`，并**原地**过它的组链与组声相。
+    ///
+    /// `runtime` 为 `None`（余量、或组链投影为空）⇒ 只渲染不处理；
+    /// `has_notes` 为假 ⇒ 链整段跳过（设计 §5.1 断言 1）。
+    /// 组链按 [`L1_BLOCK_SIZE`] 帧分块喂运行态（运行态的内部暂存按
+    /// 构造块长分配，块可以更小、⛔ 不能更大）。
+    fn render_part(
+        source: &mut EngineTrackSource,
+        runtime: Option<&mut InsertRuntime>,
+        pan: Option<(f32, f32)>,
+        has_notes: bool,
+        context: BlockContext,
+        buf: &mut [f32],
+    ) -> Result<(), RenderError> {
+        source.render_block(context, buf)?;
+        let channels = context.channels.max(1);
+        let frames = context.frames.min(buf.len() / channels);
+        if frames == 0 {
+            return Ok(());
+        }
+        if has_notes && let Some(runtime) = runtime {
+            let mut offset = 0usize;
+            while offset < frames {
+                let chunk = (frames - offset).min(L1_BLOCK_SIZE);
+                runtime.process(&mut buf[offset * channels..(offset + chunk) * channels]);
+                offset += chunk;
+            }
+        }
+        if let Some((gain_l, gain_r)) = pan
+            && (gain_l != 1.0 || gain_r != 1.0)
+        {
+            for frame in 0..frames {
+                let base = frame * channels;
+                buf[base] *= gain_l;
+                if channels > 1 {
+                    buf[base + 1] *= gain_r;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl AudioSource for LaneSplitSource {
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        for group in &mut self.groups {
+            group.source.seek_to(frame)?;
+        }
+        self.remainder.seek_to(frame)
+    }
+
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        let channels = context.channels.max(1);
+        let frames = context.frames.min(out.len() / channels);
+        let width = frames * channels;
+        // 组链运行态只支持立体声（与轨链同一条响亮口径）：非立体声且
+        // 任一组链可执行 ⇒ 指名失败，⛔ 不静默跳过链照常出声。
+        if channels != 2 && self.groups.iter().any(|group| group.runtime.is_some()) {
+            return Err(RenderError::UnsupportedInsertChannels(channels));
+        }
+        if self.scratch.len() < width {
+            self.scratch.resize(width, 0.0);
+        }
+        // 固定求和顺序（[ARCH-DET-002]）：组按 `lane_chains` 序（组首键
+        // 升序）、余量最后。第一份直接写进 `out`（子源的 `render_block`
+        // 本来就整段覆写），其余份经暂存累加。
+        let mut started = false;
+        for group in &mut self.groups {
+            if started {
+                Self::render_part(
+                    &mut group.source,
+                    group.runtime.as_mut(),
+                    group.pan,
+                    group.has_notes,
+                    context,
+                    &mut self.scratch[..width],
+                )?;
+                for (slot, sample) in out[..width].iter_mut().zip(&self.scratch[..width]) {
+                    *slot += *sample;
+                }
+            } else {
+                Self::render_part(
+                    &mut group.source,
+                    group.runtime.as_mut(),
+                    group.pan,
+                    group.has_notes,
+                    context,
+                    &mut out[..width],
+                )?;
+                started = true;
+            }
+        }
+        if started {
+            self.remainder
+                .render_block(context, &mut self.scratch[..width])?;
+            for (slot, sample) in out[..width].iter_mut().zip(&self.scratch[..width]) {
+                *slot += *sample;
+            }
+        } else {
+            self.remainder.render_block(context, &mut out[..width])?;
+        }
+        // 轨声相在求和之后乘一次（与单源「源侧声相」的相对次序一致：
+        // 都在轨链之前）。`(1.0, 1.0)` 时一个样本都不碰。
+        let (gain_l, gain_r) = self.pan;
+        if gain_l != 1.0 || gain_r != 1.0 {
+            for frame in 0..frames {
+                let base = frame * channels;
+                out[base] *= gain_l;
+                if channels > 1 {
+                    out[base + 1] *= gain_r;
+                }
+            }
+        }
+        // 窃取读数汇总（只写一个 relaxed 原子，⛔ 不改音频）。
+        let total: u64 = self
+            .groups
+            .iter()
+            .map(|group| group.steals.load(Ordering::Relaxed))
+            .sum::<u64>()
+            + self.remainder_steals.load(Ordering::Relaxed);
+        self.steals.store(total, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -1477,6 +1916,435 @@ mod tests {
             source.track_slots(),
             1,
             "离线源只渲染一条轨 ⇒ 只该占一个槽（每多一个槽 ≈ 32 KiB 的鼓机 + 声部池）"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // ⭐ 逐件渲染（期 3）判据组：设计 §5.1 的离线验收落到源级。
+    // -----------------------------------------------------------------
+
+    /// 逐件夹具的通道条设备（参数名与轨链同一张拼写表）。
+    fn lane_strip(params: &[(&str, f32)]) -> yeban_model::DeviceDefinition {
+        yeban_model::DeviceDefinition {
+            id: EntityId::new(),
+            name: "Lane Strip".to_owned(),
+            kind: yeban_model::DeviceKind::InternalEffect,
+            bypassed: false,
+            params: params
+                .iter()
+                .map(|(name, value)| yeban_model::ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+            plugin: None,
+        }
+    }
+
+    /// 单轨多音符夹具：音符由 `(start_tick, pitch, duration_ticks)` 给定，
+    /// 可选给该轨挂逐件链。工程 120 BPM / 960 PPQ / 48 kHz ⇒ 1 tick = 25 帧。
+    fn lane_project(
+        notes: &[(u64, u8, u64)],
+        chains: Vec<LaneChainDef>,
+    ) -> (YebanProjectV1, EntityId) {
+        use std::str::FromStr as _;
+
+        use yeban_model::{
+            ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig, MidiNote, RoutingEdge,
+            RoutingKind, SampleRate, TrackKind, TrackV3,
+        };
+
+        let id = |seed: usize| {
+            EntityId::from_str(&format!("01J8ZN{seed:020}")).expect("夹具 ULID 必须合法")
+        };
+        let master = id(1);
+        let track = id(100);
+        let clip = id(1_000);
+        let placement = id(2_000);
+        let edge = id(4_000);
+        let mut project = YebanProjectV1 {
+            title: "lane fixture".to_owned(),
+            master_bus_track_id: master,
+            ..YebanProjectV1::default()
+        };
+        project.audio_config.sample_rate = SampleRate::Hz48000;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(master);
+        let mut track_params = TrackV3 {
+            id: track,
+            name: "Drums".to_owned(),
+            kind: TrackKind::Midi,
+            lane_chains: chains,
+            ..TrackV3::default()
+        };
+        track_params.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: clip,
+                start_tick: 0,
+                duration_ticks: 3_840,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        project.tracks.insert(track, track_params);
+        let mut note_map = BTreeMap::new();
+        for (index, &(start, pitch, duration)) in notes.iter().enumerate() {
+            let note = id(3_000 + index);
+            note_map.insert(note, MidiNote::new(note, start, pitch, duration));
+        }
+        project.clip_pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: "Clip".to_owned(),
+                content: ClipContent::Midi { notes: note_map },
+            },
+        );
+        project.routing_graph.nodes.push(track);
+        project.routing_graph.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("逐件夹具必须合法: {error}"));
+        (project, track)
+    }
+
+    /// 把任意源按 128 帧立体声块渲染 `frames` 帧，返回交错样本。
+    fn render_stereo_any(source: &mut impl AudioSource, frames: u64) -> Vec<f32> {
+        let mut block = vec![0.0_f32; 256];
+        let mut all = Vec::new();
+        let mut first = 0u64;
+        let mut index = 0u64;
+        while first < frames {
+            let len = usize::try_from((frames - first).min(128)).expect("块长");
+            source
+                .render_block(
+                    BlockContext {
+                        block_index: index,
+                        first_frame: first,
+                        frames: len,
+                        channels: 2,
+                        sample_rate: 48_000,
+                        seed: 1,
+                    },
+                    &mut block[..len * 2],
+                )
+                .expect("连续升序的块必须被接受");
+            all.extend_from_slice(&block[..len * 2]);
+            first += len as u64;
+            index += 1;
+        }
+        all
+    }
+
+    /// 某帧区间、某声道（`None` = 两声道合并）的 RMS（线性）。
+    fn segment_rms(samples: &[f32], frames: std::ops::Range<usize>, channel: Option<usize>) -> f32 {
+        let mut sum = 0.0f64;
+        let mut count = 0usize;
+        for frame in frames {
+            for ch in 0..2 {
+                if channel.is_some_and(|wanted| wanted != ch) {
+                    continue;
+                }
+                let value = f64::from(samples[frame * 2 + ch]);
+                sum += value * value;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return 0.0;
+        }
+        (sum / count as f64).sqrt() as f32
+    }
+
+    fn db(ratio: f32) -> f32 {
+        20.0 * ratio.max(1.0e-9).log10()
+    }
+
+    /// 三件套音符：kick(36) @0、hat(42) @960、snare(38) @1920（tick）。
+    const KIT_NOTES: [(u64, u8, u64); 3] = [(0, 36, 240), (960, 42, 240), (1_920, 38, 240)];
+    /// 三个音符的测量窗（帧）：起音后 +500 .. +5000（避开起音瞬态与尾段）。
+    const KICK_WIN: std::ops::Range<usize> = 500..5_000;
+    const HAT_WIN: std::ops::Range<usize> = 24_500..29_000;
+    const SNARE_WIN: std::ops::Range<usize> = 48_500..53_000;
+
+    /// §5.1 断言 1（逐位隔离）：只有 kick 音符的工程挂一条**可执行的**
+    /// hats 组链，分组渲染必须与单源渲染**逐位相同**——无 hat 音符 ⇒
+    /// hat 组链整段不执行；若实现把组链跑在求和后的缓冲上（或空组也跑
+    /// 链并留下状态痕迹），kick 会被 −48 dB 压掉、本条立即变红。
+    /// 对称地再测只有 snare 音符的一份。
+    #[test]
+    fn a_lane_chain_for_an_absent_key_group_changes_not_one_bit() {
+        let chains = vec![LaneChainDef {
+            keys: vec![42, 46],
+            name: "hats".to_owned(),
+            devices: vec![lane_strip(&[("output_gain_db", -48.0)])],
+            pan: None,
+        }];
+        for notes in [&[(0u64, 36u8, 240u64)][..], &[(0, 38, 240)][..]] {
+            let (project, track) = lane_project(notes, chains.clone());
+            let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
+            let mut plain = timbre.track_source(track).expect("必须能武装");
+            let plain_out = render_stereo_any(&mut plain, 24_000);
+            let mut lane = timbre
+                .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+                .expect("分组源必须能武装");
+            let lane_out = render_stereo_any(&mut lane, 24_000);
+            assert!(
+                segment_rms(&plain_out, KICK_WIN, None) > 0.01,
+                "夹具音符必须真的出声（否则逐位相同是空判据）"
+            );
+            assert_eq!(
+                RenderOutput::digest_of(&lane_out),
+                RenderOutput::digest_of(&plain_out),
+                "无本组音符时组链不得改动任何一位（音高集 {notes:?}）"
+            );
+        }
+    }
+
+    /// §5.1 断言 2（隔离量级）：hats 组链 −48 dB 只许压低 hat 段；
+    /// kick 段与 snare 段的 RMS 差必须在容差内（链间不许串扰）。
+    /// 容差逐字取设计 §5.1：kick 段 ≤ 0.1 dB、snare 段 ≤ 0.25 dB；
+    /// hat 段以 −48 dB 增益链断言压低 ≥ 20 dB（强于设计的 HPF 频带
+    /// ≥ 10 dB 口径——源级夹具是时段隔离的合成音色，用时段 RMS
+    /// 代频带能量，量法差异已在期 3 回执登记）。
+    #[test]
+    fn a_lane_chain_gain_hits_only_its_own_key_group() {
+        let chains = vec![LaneChainDef {
+            keys: vec![42, 46],
+            name: "hats".to_owned(),
+            devices: vec![lane_strip(&[("output_gain_db", -48.0)])],
+            pan: None,
+        }];
+        let (project, track) = lane_project(&KIT_NOTES, chains);
+        let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
+        let mut plain = timbre.track_source(track).expect("必须能武装");
+        let plain_out = render_stereo_any(&mut plain, 72_000);
+        let mut lane = timbre
+            .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+            .expect("分组源必须能武装");
+        let lane_out = render_stereo_any(&mut lane, 72_000);
+
+        let hat_drop = db(segment_rms(&plain_out, HAT_WIN.clone(), None))
+            - db(segment_rms(&lane_out, HAT_WIN.clone(), None));
+        let kick_diff = (db(segment_rms(&plain_out, KICK_WIN, None))
+            - db(segment_rms(&lane_out, KICK_WIN, None)))
+        .abs();
+        let snare_diff = (db(segment_rms(&plain_out, SNARE_WIN, None))
+            - db(segment_rms(&lane_out, SNARE_WIN, None)))
+        .abs();
+        println!(
+            "### [lane-gain] hat_drop={hat_drop:.2} dB kick_diff={kick_diff:.3} dB \
+             snare_diff={snare_diff:.3} dB"
+        );
+        assert!(
+            segment_rms(&plain_out, HAT_WIN, None) > 0.01,
+            "hat 段基线必须出声"
+        );
+        assert!(
+            hat_drop >= 20.0,
+            "hat 段必须被组链压低 ≥ 20 dB（实测 {hat_drop:.2}）"
+        );
+        assert!(
+            kick_diff <= 0.1,
+            "kick 段不得被 hat 组链影响（实测差 {kick_diff:.3} dB）"
+        );
+        assert!(
+            snare_diff <= 0.25,
+            "snare 段不得被 hat 组链影响（实测差 {snare_diff:.3} dB）"
+        );
+    }
+
+    /// §5.1 断言 3（组声相）：hats 组 pan = −1（硬左）⇒ hat 段右声道塌陷、
+    /// 左声道保留；kick 段左右平衡不动。
+    #[test]
+    fn a_lane_group_pan_moves_only_its_own_group() {
+        let chains = vec![LaneChainDef {
+            keys: vec![42, 46],
+            name: "hats".to_owned(),
+            devices: Vec::new(),
+            pan: Some(-1.0),
+        }];
+        let (project, track) = lane_project(&KIT_NOTES, chains);
+        let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
+        let mut lane = timbre
+            .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+            .expect("分组源必须能武装");
+        let out = render_stereo_any(&mut lane, 72_000);
+        let hat_l = segment_rms(&out, HAT_WIN, Some(0));
+        let hat_r = segment_rms(&out, HAT_WIN, Some(1));
+        let kick_l = segment_rms(&out, KICK_WIN, Some(0));
+        let kick_r = segment_rms(&out, KICK_WIN, Some(1));
+        println!("### [lane-pan] hat L={hat_l:.5} R={hat_r:.6} kick L={kick_l:.5} R={kick_r:.5}");
+        assert!(hat_l > 0.01, "hat 段左声道必须保留（实测 {hat_l:.5}）");
+        assert!(
+            hat_r <= hat_l * 0.01,
+            "hat 段右声道必须塌陷到左的 1% 以下（实测 R={hat_r:.6} L={hat_l:.5}）"
+        );
+        assert!(
+            (db(kick_l) - db(kick_r)).abs() <= 0.5,
+            "kick 段声像不得被 hat 组声相移动（L/R 差 {:.3} dB）",
+            (db(kick_l) - db(kick_r)).abs()
+        );
+    }
+
+    /// §5.1 断言 5（确定性）：同一工程两份分组源渲染摘要一致。
+    #[test]
+    fn lane_split_rendering_is_deterministic() {
+        let chains = vec![LaneChainDef {
+            keys: vec![42, 46],
+            name: "hats".to_owned(),
+            devices: vec![lane_strip(&[("output_gain_db", -6.0), ("hpf_hz", 400.0)])],
+            pan: Some(-0.3),
+        }];
+        let (project, track) = lane_project(&KIT_NOTES, chains);
+        let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
+        let render = || {
+            let mut lane = timbre
+                .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+                .expect("分组源必须能武装");
+            RenderOutput::digest_of(&render_stereo_any(&mut lane, 72_000))
+        };
+        assert_eq!(render(), render(), "分组渲染必须逐位可复现");
+    }
+
+    /// §5.1 断言 4（choke 回归）＋拆组响亮失败（双保险）：
+    /// 开镲（46, group=1）长音后接闭镲（42, off_by=1）——hats 同组
+    /// [42,46] 时分组渲染的掐尾时刻与单源渲染差 ≤ 1 块；把 42/46 拆到
+    /// 不同分区时，分组源构造必须响亮失败。
+    #[test]
+    fn choke_survives_lane_grouping_and_split_groups_fail_loudly() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let sfz_path = dir.path().join("kit.sfz");
+        let sfz_text = "<region> sample=open.wav key=46 group=1 amp_veltrack=0\n\
+                        <region> sample=closed.wav key=42 group=2 off_by=1 amp_veltrack=0\n";
+        std::fs::write(&sfz_path, sfz_text).expect("写 SFZ");
+        let notes = [(0u64, 46u8, 1_920u64), (960, 42, 120)];
+        let hats_chain = |keys: Vec<u8>| LaneChainDef {
+            keys,
+            name: "hats".to_owned(),
+            devices: vec![lane_strip(&[("output_gain_db", -6.0)])],
+            pan: None,
+        };
+        let build = |chains: Vec<LaneChainDef>| {
+            let (mut project, track) = lane_project(&notes, chains);
+            project.tracks.get_mut(&track).expect("轨").sampler =
+                Some(yeban_model::SamplerBinding {
+                    note_octave_override: None,
+                    path: sfz_path.display().to_string(),
+                });
+            project.validate().expect("choke 夹具必须合法");
+            let timbre = EngineTimbre::from_project_armed(&project, 48_000.0, |_, _| {
+                ArmedSfzInput::new(
+                    sfz_path.clone(),
+                    vec![
+                        (
+                            "open.wav".to_owned(),
+                            (Arc::new(vec![0.4_f32; 96_000]), 1, 48_000.0),
+                        ),
+                        (
+                            "closed.wav".to_owned(),
+                            (Arc::new(vec![0.3_f32; 4_800]), 1, 48_000.0),
+                        ),
+                    ],
+                )
+            })
+            .expect("武装必须成功");
+            (project, track, timbre)
+        };
+        let last_audible = |samples: &[f32]| -> usize {
+            samples
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .rposition(|frame| frame[0].abs() > 0.05 || frame[1].abs() > 0.05)
+                .unwrap_or(0)
+        };
+
+        // 单源基线与同组分组渲染的掐尾时刻对账。
+        let (project, track, timbre) = build(vec![hats_chain(vec![42, 46])]);
+        let mut plain = timbre.track_source(track).expect("必须能武装");
+        let plain_out = render_stereo_any(&mut plain, 72_000);
+        let mut lane = timbre
+            .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+            .expect("同组分组源必须能武装");
+        let lane_out = render_stereo_any(&mut lane, 72_000);
+        let plain_last = last_audible(&plain_out);
+        let lane_last = last_audible(&lane_out);
+        println!("### [lane-choke] plain_last={plain_last} lane_last={lane_last}");
+        assert!(
+            plain_last.abs_diff(lane_last) <= 128,
+            "choke 掐尾时刻差不得超过 1 块（单源 {plain_last} vs 分组 {lane_last}）"
+        );
+        // 非空证明：没有闭镲时开镲长音必须响得久得多（掐尾真的发生过）。
+        let (mut open_project, open_track) = lane_project(&[(0, 46, 1_920)], Vec::new());
+        open_project
+            .tracks
+            .get_mut(&open_track)
+            .expect("轨")
+            .sampler = Some(yeban_model::SamplerBinding {
+            note_octave_override: None,
+            path: sfz_path.display().to_string(),
+        });
+        open_project.validate().expect("开镲夹具必须合法");
+        let open_timbre = EngineTimbre::from_project_armed(&open_project, 48_000.0, |_, _| {
+            ArmedSfzInput::new(
+                sfz_path.clone(),
+                vec![
+                    (
+                        "open.wav".to_owned(),
+                        (Arc::new(vec![0.4_f32; 96_000]), 1, 48_000.0),
+                    ),
+                    (
+                        "closed.wav".to_owned(),
+                        (Arc::new(vec![0.3_f32; 4_800]), 1, 48_000.0),
+                    ),
+                ],
+            )
+        })
+        .expect("武装必须成功");
+        let mut open_source = open_timbre.track_source(open_track).expect("必须能武装");
+        let open_out = render_stereo_any(&mut open_source, 72_000);
+        let open_last = last_audible(&open_out);
+        println!("### [lane-choke] open_last={open_last}");
+        assert!(
+            open_last > plain_last + 8_000,
+            "无闭镲时开镲必须多响至少 8000 帧（open {open_last} vs choked {plain_last}）"
+        );
+        // 窃取对账（§2.5）：两边都不得发生声部窃取。
+        assert_eq!(plain.steal_counter().load(Ordering::Relaxed), 0);
+        assert_eq!(lane.steal_counter().load(Ordering::Relaxed), 0);
+
+        // 拆组 ⇒ 构造响亮失败（触发键 42 在组内、受害键 46 在余量）。
+        let (_project2, track2, timbre2) = build(vec![hats_chain(vec![42])]);
+        let error = timbre2
+            .lane_track_source(track2, &[hats_chain(vec![42])], 120.0)
+            .expect_err("拆开独占组的分组必须失败");
+        assert!(
+            error.message().contains("off_by=1"),
+            "失败报文必须点名独占组: {}",
+            error.message()
         );
     }
 }

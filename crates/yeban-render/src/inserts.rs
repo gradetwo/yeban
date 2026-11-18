@@ -882,23 +882,72 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
     if !ignored_strip_devices(track).is_empty() {
         return true;
     }
-    track.devices.iter().any(|device| {
-        if device.bypassed {
-            return false;
+    track.devices.iter().any(device_has_unhandled_dsp)
+}
+
+/// 一台**轨**设备有没有未被任何离线路径消费的部分（[`track_has_unhandled_dsp`]
+/// 的逐台核，两处共用一条，⛔ 不许抄第二份）。
+fn device_has_unhandled_dsp(device: &DeviceDefinition) -> bool {
+    if device.bypassed {
+        return false;
+    }
+    match device.kind {
+        DeviceKind::InternalEffect => {
+            device.params.is_empty()
+                || device
+                    .params
+                    .iter()
+                    .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
         }
-        match device.kind {
-            DeviceKind::InternalEffect => {
-                device.params.is_empty()
-                    || device
-                        .params
-                        .iter()
-                        .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
+        DeviceKind::InternalInstrument => device.params.iter().any(|param| {
+            !yeban_engine::synth::is_consumed_instrument_param(&param.name.to_ascii_lowercase())
+        }),
+        DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect => true,
+    }
+}
+
+/// ⭐ 逐件链版的未消费判据（逐件处理线期 3）：`track.lane_chains` 里的设备
+/// 有没有**不会被逐件渲染执行**的部分。与轨版同口径、但执行面不同：
+///
+/// - lane 链由 [`InsertChain::from_devices`] 在**链内**投影（首源规则在
+///   链内同样成立）：链内第二台起的通道条来源设备与轨版的
+///   [`ignored_strip_devices`] 同罪；
+/// - 链内**没有**乐器与外部器件的执行路径：非旁通的
+///   `InternalInstrument` / `ExternalInstrument` / `ExternalEffect`
+///   放在 lane 链里永远不会发声 ⇒ 一律算未消费（⛔ 不许静默装作支持）；
+/// - `InternalEffect` 的名字口径与轨版逐字相同（同一张拼写表）。
+#[must_use]
+pub fn lane_chain_has_unhandled_dsp(track: &TrackV3) -> bool {
+    track.lane_chains.iter().any(|chain| {
+        let strip_sources = chain
+            .devices
+            .iter()
+            .filter(|device| {
+                !device.bypassed
+                    && device.kind == DeviceKind::InternalEffect
+                    && strip_of(device).is_some()
+            })
+            .count();
+        if strip_sources > 1 {
+            return true;
+        }
+        chain.devices.iter().any(|device| {
+            if device.bypassed {
+                return false;
             }
-            DeviceKind::InternalInstrument => device.params.iter().any(|param| {
-                !yeban_engine::synth::is_consumed_instrument_param(&param.name.to_ascii_lowercase())
-            }),
-            DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect => true,
-        }
+            match device.kind {
+                DeviceKind::InternalEffect => {
+                    device.params.is_empty()
+                        || device
+                            .params
+                            .iter()
+                            .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
+                }
+                DeviceKind::InternalInstrument
+                | DeviceKind::ExternalInstrument
+                | DeviceKind::ExternalEffect => true,
+            }
+        })
     })
 }
 
