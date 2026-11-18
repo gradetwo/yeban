@@ -66,6 +66,7 @@ NON_ENGINE_CRATES = (
     "yeban-plugin-host",
     "yeban-record",
     "yeban-services",
+    "yeban-tui",
     "yeban-ui-mcp",
     "yeban-ui-test-port",
     "yeban-vst",
