@@ -1300,6 +1300,106 @@ impl SamplerBinding {
     }
 }
 
+/// 一条音轨至多容纳的逐件链组数 (设计 R3：组数硬上限，超限响亮拒绝)。
+pub const MAX_LANE_CHAINS_PER_TRACK: usize = 16;
+
+/// 逐件（per-lane）处理链：按 GM 键组寻址的一条独立设备链。
+///
+/// 一件鼓 = 一组 GM 键；一组键共享一条链。组单位与 SFZ 的 exclusive/choke
+/// 组对齐：同一 choke 组内的键（如闭镲 42 / 脚踏 44 / 开镲 46）必须同组，
+/// 拆开会破坏掐音语义，生成期校验会响亮拒绝拆分（见 `yeban-theory` 的
+/// 逐件链生成校验）。
+///
+/// 规范化形态（[`validate_lane_chains`] 强制，非规范化输入响亮拒绝、
+/// 不静默重排）：`keys` 组内严格升序、非空；各组键互不重叠；组按首键
+/// 升序排列；组数至多 [`MAX_LANE_CHAINS_PER_TRACK`]。链内设备
+/// `latency_samples` 必须为 0：逐件分支不做 PDC，非零延迟设备拒绝入链。
+/// 逐件链参数 v1 不接自动化（无对应 `AutomationTarget`）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LaneChainDef {
+    /// 本组覆盖的 GM 键（严格升序、非空）。
+    pub keys: Vec<u8>,
+    /// 组名（生成来源的 lane 组名，如 `hats`；亦作计划文本与诊断的指称）。
+    pub name: String,
+    /// 本组的设备链（有序；设备形态与音轨设备链相同）。
+    pub devices: Vec<DeviceDefinition>,
+    /// 本组声相覆盖（`None` = 不覆盖，跟随命中声部的 SFZ 声像求值）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pan: Option<f32>,
+}
+
+/// 校验一组逐件链的规范化形态（组数上限、组内升序非空、组间不重叠、
+/// 组序、设备合法且零延迟、声相范围）。
+///
+/// [`TrackV3::validate`] 与 `Op::SetTrackLaneChains` 的前置校验共用本函数，
+/// 两条入口同一口径。
+///
+/// # Errors
+///
+/// 任一规范化条件不满足 → 对应的 [`ModelError`] 逐件链变体；
+/// 链内设备自身非法 → 冒泡 [`DeviceDefinition::validate`] 的错误。
+pub fn validate_lane_chains(chains: &[LaneChainDef]) -> Result<(), ModelError> {
+    if chains.len() > MAX_LANE_CHAINS_PER_TRACK {
+        return Err(ModelError::LaneChainCountOutOfRange {
+            count: chains.len(),
+            max: MAX_LANE_CHAINS_PER_TRACK,
+        });
+    }
+    let mut previous_first: Option<u8> = None;
+    let mut claimed: Vec<u8> = Vec::new();
+    for chain in chains {
+        let Some(first) = chain.keys.first() else {
+            return Err(ModelError::LaneChainKeysEmpty {
+                name: chain.name.clone(),
+            });
+        };
+        for pair in chain.keys.windows(2) {
+            if pair[0] >= pair[1] {
+                return Err(ModelError::LaneChainKeysNotAscending {
+                    name: chain.name.clone(),
+                });
+            }
+        }
+        if let Some(previous) = previous_first
+            && *first <= previous
+        {
+            return Err(ModelError::LaneChainsNotOrdered);
+        }
+        previous_first = Some(*first);
+        for key in &chain.keys {
+            if claimed.contains(key) {
+                return Err(ModelError::LaneChainKeyOverlap { key: *key });
+            }
+            claimed.push(*key);
+        }
+        for device in &chain.devices {
+            device.validate()?;
+            if device.latency_samples != 0 {
+                return Err(ModelError::LaneChainDeviceLatency {
+                    name: chain.name.clone(),
+                    device: device.id,
+                    latency: device.latency_samples,
+                });
+            }
+        }
+        if let Some(pan) = chain.pan {
+            if !pan.is_finite() {
+                return Err(ModelError::NonFiniteValue {
+                    field: "track.lane_chains.pan",
+                    value: f64::from(pan),
+                });
+            }
+            if !(-1.0..=1.0).contains(&pan) {
+                return Err(ModelError::LaneChainPanOutOfRange {
+                    name: chain.name.clone(),
+                    value: pan,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 音轨 [MODEL-AST-002]。
 ///
 /// `folder_id` **仅**用于界面层树状折叠，严禁承载音频信号语义
@@ -1404,6 +1504,15 @@ pub struct TrackV3 {
     ///
     /// **必需** [ADR-0001 D43]：设备链是音轨内容的一部分，缺键等于静默清空整条链。
     pub devices: Vec<DeviceDefinition>,
+    /// 逐件（per-lane）处理链组（按 GM 键组寻址，见 [`LaneChainDef`]）。
+    ///
+    /// **可选**：与 `devices` 的「必需」口径不同，本字段是逐件处理线
+    /// （per-lane）落地时**新增**的字段，存量工程文件里根本不存在这个键；
+    /// 缺省 = 空表 = 无逐件链，旧工程逐字节可读、行为逐位不变。空表时
+    /// `skip_serializing_if` 不落盘 ⇒ 无逐件链的工程序列化形态与引入本
+    /// 字段之前完全一致。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lane_chains: Vec<LaneChainDef>,
     /// 宏。
     ///
     /// **必需** [ADR-0001 D43]：同上，缺键等于静默清空全部宏（连同它们的映射）。
@@ -1442,6 +1551,7 @@ impl Default for TrackV3 {
             sampler: None,
             preset: None,
             devices: Vec::new(),
+            lane_chains: Vec::new(),
             macros: Vec::new(),
             automation_lanes: BTreeMap::new(),
             clips: BTreeMap::new(),
@@ -1458,6 +1568,7 @@ impl TrackV3 {
     /// - 声相越界 → [`ModelError::PanOutOfRange`]；
     /// - 自动化泳道的键与 `lane.target` 不一致，或泳道的目标指向**别的**音轨
     ///   → [`ModelError::AutomationLaneTargetMismatch`]；
+    /// - 逐件链组违反规范化形态（见 [`validate_lane_chains`]）→ 对应逐件链错误变体；
     /// - 设备/宏/自动化/摆放非法 → 冒泡对应错误。
     pub fn validate(&self) -> Result<(), ModelError> {
         if !self.volume_db.is_finite() {
@@ -1498,6 +1609,7 @@ impl TrackV3 {
         for device in &self.devices {
             device.validate()?;
         }
+        validate_lane_chains(&self.lane_chains)?;
         if let Some(preset) = &self.preset
             && let Some(previous) = &preset.previous
         {
@@ -3811,6 +3923,7 @@ mod tests {
         "src/error.rs::ModelError::BpmOutOfRange.value",
         "src/error.rs::ModelError::NonFiniteValue.value",
         "src/error.rs::ModelError::PanOutOfRange.value",
+        "src/error.rs::ModelError::LaneChainPanOutOfRange.value",
         "src/error.rs::ModelError::MacroValueOutOfRange.value",
         "src/error.rs::ModelError::MacroDepthOutOfRange.value",
         "src/error.rs::ModelError::TrackTuneOutOfRange.value",
@@ -3844,6 +3957,7 @@ mod tests {
         "src/project.rs::Repr::min",
         "src/project.rs::Repr::max",
         "src/project.rs::ClipContent::Audio.gain_db",
+        "src/project.rs::LaneChainDef::pan",
         "src/project.rs::TrackV3::volume_db",
         "src/project.rs::TrackV3::pan",
         "src/project.rs::TrackV3::tune_offset_cents",
@@ -3860,7 +3974,9 @@ mod tests {
     /// **逐项判定表**：清单里除 `ModelError` 输出载体之外的每一个数值字段一行。
     ///
     /// 行 = `(清单键, 判定结论, 探针)`。键集合必须**恰好**等于
-    /// `NUMERIC_FIELD_INVENTORY` 减去那 7 个输出载体（多一行、少一行都红）。
+    /// `NUMERIC_FIELD_INVENTORY` 减去那 8 个输出载体（多一行、少一行都红；
+    /// 第 8 个是逐件处理线期 2 的 `LaneChainPanOutOfRange.value`，与
+    /// `PanOutOfRange.value` 同为错误输出载体）。
     const NUMERIC_FIELD_POLICY: &[(&str, &str, NumericProbe)] = &[
         (
             "src/music.rs::MidiNote::probability",
@@ -3996,6 +4112,11 @@ mod tests {
             "src/project.rs::ClipContent::Audio.gain_db",
             "非有限拒绝（clip.audio.gain_db）；有限极值接受；入口（AddClip/insert_clip）已校验",
             probe_clip_audio_gain,
+        ),
+        (
+            "src/project.rs::LaneChainDef::pan",
+            "非有限拒绝（track.lane_chains.pan）；-1.0..=1.0 外报 LaneChainPanOutOfRange；None=居中",
+            probe_lane_chain_pan,
         ),
         (
             "src/project.rs::TrackV3::volume_db",
@@ -4751,6 +4872,33 @@ mod tests {
         }
         for edge in [-1.0_f32, -0.5, 0.0, 1.0] {
             accepts("闭区间声相端点", track(edge).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_lane_chain_pan() -> Result<(), String> {
+        let track = |pan| TrackV3 {
+            lane_chains: vec![LaneChainDef {
+                keys: vec![42],
+                name: "hats".to_owned(),
+                devices: Vec::new(),
+                pan,
+            }],
+            ..midi_track(fixture_id(1))
+        };
+        rejects_non_finite_f32("track.lane_chains.pan", |value| {
+            track(Some(value)).validate()
+        })?;
+        for bad in [1.5_f32, -1.5, 2.0] {
+            rejects_matching(
+                "逐件链声相越界",
+                track(Some(bad)).validate(),
+                |error| matches!(error, ModelError::LaneChainPanOutOfRange { .. }),
+            )?;
+        }
+        accepts("None（居中）", track(None).validate())?;
+        for edge in [-1.0_f32, -0.5, 0.0, 1.0] {
+            accepts("闭区间声相端点", track(Some(edge)).validate())?;
         }
         Ok(())
     }
@@ -6048,8 +6196,9 @@ mod tests {
 
     /// 逐项判定：清单里每个**入口**字段都有一行判定，且该行的探针必须真的成立。
     ///
-    /// `ModelError` 的 7 个 `value` 字段是错误输出载体（不是入口），
-    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 7 条），不能悄悄扩大。
+    /// `ModelError` 的 8 个 `value` 字段是错误输出载体（不是入口），
+    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 8 条），不能悄悄扩大
+    /// （第 8 条由逐件处理线期 2 显式改钉：`LaneChainPanOutOfRange.value`）。
     #[test]
     fn every_numeric_entry_point_has_a_passing_policy_probe() {
         let inventory: std::collections::BTreeSet<&str> =
@@ -6061,8 +6210,8 @@ mod tests {
             .collect();
         assert_eq!(
             outputs.len(),
-            7,
-            "输出载体豁免必须恰好 7 条（ModelError 的 value 字段）: {outputs:?}"
+            8,
+            "输出载体豁免必须恰好 8 条（ModelError 的 value 字段）: {outputs:?}"
         );
         let expected: std::collections::BTreeSet<&str> =
             inventory.difference(&outputs).copied().collect();

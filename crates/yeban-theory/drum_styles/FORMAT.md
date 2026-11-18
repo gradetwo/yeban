@@ -24,6 +24,7 @@ unknown shapes and out-of-range values are loud errors, never guesses.
 | `fill` | object, optional | `{"lanes": [...]}` with exactly 16 steps per lane (1 bar) |
 | `fx` | object, optional | per-style insert FX layer (see below); absent = dry generation. All 14 factory presets carry one, each tuned individually |
 | `bus` | object, optional | drum-bus chain (see below); absent = drum track connects straight to the master bus. All 14 factory presets carry one |
+| `lane_chains` | array, optional | per-lane (per-piece) processing chains by GM key group (see below); absent = no per-lane chains |
 | `sfz_path` | string, optional | acoustic family only: repo-relative path of the SFZ kit program to bind; absent = the default basic kit. Each acoustic factory preset names its own program (different mic mix / kit) |
 
 ## `fx` object
@@ -59,6 +60,54 @@ into the master bus, and installs two devices on the bus in chain order:
 
 Generating onto an existing track does not create a bus (the track keeps
 its current routing); the plan/report says so explicitly.
+
+## `lane_chains` array (optional, per-lane processing)
+
+Per-piece processing chains addressed by GM key groups — one group is one
+drum piece (or one choke family) with its own EQ/comp/space/pan, installed
+alongside the whole-track `fx` chain. Absent = no per-lane chains
+(generation behaves exactly as before this field existed). The format
+version stays 1: the field is additive and optional.
+
+Each entry is `{name, keys, chain}`:
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | group name (e.g. `"hats"`); carried into the project's lane chain and the generation plan text |
+| `keys` | array of int | GM keys of this group, strictly ascending, non-empty. Every key must be one of the preset's lane keys (main lanes ∪ fill lanes). Groups are mutually non-overlapping, ordered by first key, at most 16 groups |
+| `chain` | object | the group's processing; every sub-object is optional, but a group whose chain declares nothing at all is a parse error |
+
+`chain` sub-objects (when an object is present, all of its fields are
+required; ranges are exactly the `fx` ranges of the same section — one
+shared validation implementation, out-of-range is a parse error):
+
+| field | type | meaning |
+|---|---|---|
+| `eq` | object, optional | same fields/ranges as `fx.eq` |
+| `comp` | object, optional | same fields/ranges as `fx.comp` |
+| `reverb` | object, optional | same fields/ranges as `fx.reverb` |
+| `tape` | object, optional | same fields/ranges as `fx.tape` |
+| `delay` | object, optional | same fields/ranges as `fx.delay` |
+| `pan` | number, optional | group pan override −1..=1 |
+| `sidechain` | object, optional | `{key_keys}`: the keys whose voices key this group's compressor; strictly ascending, non-empty, subset of the preset's lane keys |
+
+Generation rules (loud by default — violations refuse generation and name
+themselves, nothing is silently dropped):
+
+- Lane chains are installed as one whole-table write per generation; on an
+  existing track that already carries user lane chains, generation keeps
+  the user's chains and the plan/report says so.
+- A group must not split an SFZ choke (exclusive/`off_by`) group of the
+  chosen acoustic program: the used keys of one choke group must sit in a
+  single lane group or stay ungrouped as a whole. (Electronic kits have no
+  choke groups.)
+- `sidechain` declarations parse, but generation refuses them until
+  lane-level sidechain evaluation lands (phase 4 of the per-lane line);
+  factory presets do not ship sidechain values before phase 5.
+- Lane-chain parameters are not automatable in v1.
+
+Factory opt-ins shipped with the format: house (hats 42+46, hat EQ),
+trap (closed hat 42, hat EQ), lofi (kick 36, darkening EQ).
 
 ## `source` object
 

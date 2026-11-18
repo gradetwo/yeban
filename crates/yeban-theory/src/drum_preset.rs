@@ -191,6 +191,98 @@ pub struct DrumFxPreset {
     pub delay: Option<DrumDelayPreset>,
 }
 
+/// EQ 段（`fx.eq` 与逐件链 `chain.eq` 共用同一形状与值域）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumEqPreset {
+    /// 低频搁架增益（dB）−18..=18。
+    pub low_db: f32,
+    /// 中频峰值增益（dB）−18..=18。
+    pub mid_db: f32,
+    /// 高频搁架增益（dB）−18..=18。
+    pub high_db: f32,
+    /// 低频转折（Hz）20..=1000。
+    pub low_hz: f32,
+    /// 中频中心（Hz）100..=8000。
+    pub mid_hz: f32,
+    /// 中频 Q 0.3..=6。
+    pub mid_q: f32,
+    /// 高频转折（Hz）1000..=16000。
+    pub high_hz: f32,
+    /// 高通转折（Hz）0..=500；0 = 不启用。
+    pub hpf_hz: f32,
+    /// 低通截止（Hz）800..=20000；20000 = 不启用。
+    pub cutoff_hz: f32,
+}
+
+/// 压缩段（`fx.comp` 与逐件链 `chain.comp` 共用同一形状与值域）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumCompPreset {
+    /// 阈值（dBFS）−60..=0。
+    pub threshold_db: f32,
+    /// 压缩比 1..=20。
+    pub ratio: f32,
+    /// 软膝（dB）0..=24。
+    pub knee_db: f32,
+    /// 起振（秒）0.0005..=0.2。
+    pub attack_s: f32,
+    /// 释放（秒）0.01..=1。
+    pub release_s: f32,
+    /// makeup（dB）−12..=12。
+    pub makeup_db: f32,
+}
+
+/// 混响段（`fx.reverb` 与逐件链 `chain.reverb` 共用同一形状与值域）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumReverbPreset {
+    /// 尺寸 0..=1。
+    pub size: f32,
+    /// 高频阻尼 0..=1。
+    pub damp: f32,
+    /// 湿电平 0..=1。
+    pub wet: f32,
+    /// 预延迟（秒）0..=0.1。
+    pub predelay_s: f32,
+}
+
+/// 逐件链的侧链声明（`lane_chains[].chain.sidechain`）：本组压缩的
+/// key 源 = `key_keys` 这些键命中的声部信号。格式层只落声明；
+/// lane 级侧链求值在期 4 落地，生成期见到声明响亮拒绝（见
+/// [`lane_chain_generation_violations`]），不出厂预置在期 5 之前不写
+/// 本段（设计裁决）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrumLaneSidechainPreset {
+    /// key 源键组（严格升序、非空；必须是本预置鼓道键的子集）。
+    pub key_keys: Vec<u8>,
+}
+
+/// 一条逐件（per-lane）处理链预置（`lane_chains[]`）：按 GM 键组寻址，
+/// 组单位与 SFZ choke 组对齐。`chain` 内各段全部可选（出现则整段字段
+/// 必填，值域与 `fx` 同段完全一致、共用同一套校验）；整段为空
+/// （什么处理都不带）是内容错误，解析期拒绝。逐件链参数 v1 不接
+/// 自动化。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrumLaneChainPreset {
+    /// 组名（与生成后 `LaneChainDef::name` 一致，如 `hats`）。
+    pub name: String,
+    /// 本组覆盖的 GM 键（严格升序、非空；组间不重叠、按首键升序；
+    /// 必须是本预置鼓道键的子集）。
+    pub keys: Vec<u8>,
+    /// EQ 段（可选）。
+    pub eq: Option<DrumEqPreset>,
+    /// 压缩段（可选）。
+    pub comp: Option<DrumCompPreset>,
+    /// 混响段（可选）。
+    pub reverb: Option<DrumReverbPreset>,
+    /// 磁带段（可选）。
+    pub tape: Option<DrumTapePreset>,
+    /// 延迟段（可选）。
+    pub delay: Option<DrumDelayPreset>,
+    /// 本组声相覆盖（可选）−1..=1。
+    pub pan: Option<f32>,
+    /// 侧链声明（可选；格式可写，生成期 4 前拒绝，出厂值期 5 才写）。
+    pub sidechain: Option<DrumLaneSidechainPreset>,
+}
+
 /// 鼓总线胶水压缩段（`bus.glue`）：把整组鼓粘成一个整体的慢起振压缩。
 /// 数值口径照 Wang 的 v2 定值：比 2:1–4:1、起振 30 ms 让瞬态先过、
 /// 增益衰减目标 1–2 dB（由阈值与 makeup 共同落）。
@@ -268,6 +360,9 @@ pub struct DrumStylePreset {
     pub lanes: Vec<DrumLanePreset>,
     /// fill（1 小节）的鼓道表；`None` = 该风格一期无 fill。
     pub fill_lanes: Option<Vec<DrumLanePreset>>,
+    /// 逐件链预置（`lane_chains` 段）；空表 = 文件未带逐件链段，
+    /// 生成不写逐件链（与本字段引入前行为一致）。
+    pub lane_chains: Vec<DrumLaneChainPreset>,
     /// 效果层预置（`fx` 段）；`None` = 文件未带效果段，生成走干声。
     pub fx: Option<DrumFxPreset>,
     /// 鼓总线预置（`bus` 段）；`None` = 文件未带总线段，生成不建总线。
@@ -362,6 +457,7 @@ impl DrumStylePreset {
                 Some(parse_lanes(fill_obj, "lanes", STEPS_PER_BAR)?)
             }
         };
+        let lane_chains = parse_lane_chains(obj, &lanes, fill_lanes.as_deref())?;
         let fx = match get_opt(obj, "fx") {
             None => None,
             Some(fx_json) => {
@@ -410,6 +506,7 @@ impl DrumStylePreset {
             bars,
             lanes,
             fill_lanes,
+            lane_chains,
             fx,
             bus,
             sfz_path,
@@ -522,22 +619,127 @@ fn get_f32_ranged(
     Ok(raw as f32)
 }
 
+/// 解析 EQ 段（`{base}.eq`）：整段字段必填，值域与通道条 EQ 钳制域
+/// 对齐。`fx` 与逐件链 `chain` 共用本实现——同一形状只许有一套校验。
+fn parse_eq(obj: &[(String, Json)], base: &str) -> Result<DrumEqPreset, DrumPresetError> {
+    Ok(DrumEqPreset {
+        low_db: get_f32_ranged(obj, "low_db", &format!("{base}.eq.low_db"), -18.0, 18.0)?,
+        mid_db: get_f32_ranged(obj, "mid_db", &format!("{base}.eq.mid_db"), -18.0, 18.0)?,
+        high_db: get_f32_ranged(obj, "high_db", &format!("{base}.eq.high_db"), -18.0, 18.0)?,
+        low_hz: get_f32_ranged(obj, "low_hz", &format!("{base}.eq.low_hz"), 20.0, 1000.0)?,
+        mid_hz: get_f32_ranged(obj, "mid_hz", &format!("{base}.eq.mid_hz"), 100.0, 8000.0)?,
+        mid_q: get_f32_ranged(obj, "mid_q", &format!("{base}.eq.mid_q"), 0.3, 6.0)?,
+        high_hz: get_f32_ranged(
+            obj,
+            "high_hz",
+            &format!("{base}.eq.high_hz"),
+            1000.0,
+            16000.0,
+        )?,
+        hpf_hz: get_f32_ranged(obj, "hpf_hz", &format!("{base}.eq.hpf_hz"), 0.0, 500.0)?,
+        cutoff_hz: get_f32_ranged(
+            obj,
+            "cutoff_hz",
+            &format!("{base}.eq.cutoff_hz"),
+            800.0,
+            20000.0,
+        )?,
+    })
+}
+
+/// 解析压缩段（`{base}.comp`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_comp(obj: &[(String, Json)], base: &str) -> Result<DrumCompPreset, DrumPresetError> {
+    Ok(DrumCompPreset {
+        threshold_db: get_f32_ranged(
+            obj,
+            "threshold_db",
+            &format!("{base}.comp.threshold_db"),
+            -60.0,
+            0.0,
+        )?,
+        ratio: get_f32_ranged(obj, "ratio", &format!("{base}.comp.ratio"), 1.0, 20.0)?,
+        knee_db: get_f32_ranged(obj, "knee_db", &format!("{base}.comp.knee_db"), 0.0, 24.0)?,
+        attack_s: get_f32_ranged(
+            obj,
+            "attack_s",
+            &format!("{base}.comp.attack_s"),
+            0.0005,
+            0.2,
+        )?,
+        release_s: get_f32_ranged(
+            obj,
+            "release_s",
+            &format!("{base}.comp.release_s"),
+            0.01,
+            1.0,
+        )?,
+        makeup_db: get_f32_ranged(
+            obj,
+            "makeup_db",
+            &format!("{base}.comp.makeup_db"),
+            -12.0,
+            12.0,
+        )?,
+    })
+}
+
+/// 解析混响段（`{base}.reverb`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_reverb(obj: &[(String, Json)], base: &str) -> Result<DrumReverbPreset, DrumPresetError> {
+    Ok(DrumReverbPreset {
+        size: get_f32_ranged(obj, "size", &format!("{base}.reverb.size"), 0.0, 1.0)?,
+        damp: get_f32_ranged(obj, "damp", &format!("{base}.reverb.damp"), 0.0, 1.0)?,
+        wet: get_f32_ranged(obj, "wet", &format!("{base}.reverb.wet"), 0.0, 1.0)?,
+        predelay_s: get_f32_ranged(
+            obj,
+            "predelay_s",
+            &format!("{base}.reverb.predelay_s"),
+            0.0,
+            0.1,
+        )?,
+    })
+}
+
+/// 解析磁带段（`{base}.tape`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_tape(obj: &[(String, Json)], base: &str) -> Result<DrumTapePreset, DrumPresetError> {
+    Ok(DrumTapePreset {
+        drive: get_f32_ranged(obj, "drive", &format!("{base}.tape.drive"), 0.0, 1.0)?,
+        mix: get_f32_ranged(obj, "mix", &format!("{base}.tape.mix"), 0.0, 1.0)?,
+        hf_hz: get_f32_ranged(obj, "hf_hz", &format!("{base}.tape.hf_hz"), 2000.0, 20000.0)?,
+        asym: get_f32_ranged(obj, "asym", &format!("{base}.tape.asym"), 0.0, 0.5)?,
+    })
+}
+
+/// 解析延迟段（`{base}.delay`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_delay(obj: &[(String, Json)], base: &str) -> Result<DrumDelayPreset, DrumPresetError> {
+    let ping_pong = match get(obj, "ping_pong")? {
+        Json::Bool(b) => *b,
+        _ => {
+            return Err(field_err(
+                &format!("{base}.delay.ping_pong"),
+                "expected a boolean",
+            ));
+        }
+    };
+    Ok(DrumDelayPreset {
+        time_s: get_f32_ranged(obj, "time_s", &format!("{base}.delay.time_s"), 0.01, 2.0)?,
+        feedback: get_f32_ranged(obj, "feedback", &format!("{base}.delay.feedback"), 0.0, 0.9)?,
+        mix: get_f32_ranged(obj, "mix", &format!("{base}.delay.mix"), 0.0, 0.6)?,
+        damp: get_f32_ranged(obj, "damp", &format!("{base}.delay.damp"), 0.0, 1.0)?,
+        ping_pong,
+    })
+}
+
 fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
-    let eq = get_obj(obj, "eq")?;
-    let comp = get_obj(obj, "comp")?;
-    let reverb = get_obj(obj, "reverb")?;
+    let eq = parse_eq(get_obj(obj, "eq")?, "fx")?;
+    let comp = parse_comp(get_obj(obj, "comp")?, "fx")?;
+    let reverb = parse_reverb(get_obj(obj, "reverb")?, "fx")?;
     let tape = match get_opt(obj, "tape") {
         None => None,
         Some(tape_json) => {
             let t = tape_json
                 .as_object()
                 .ok_or_else(|| field_err("fx.tape", "tape must be an object"))?;
-            Some(DrumTapePreset {
-                drive: get_f32_ranged(t, "drive", "fx.tape.drive", 0.0, 1.0)?,
-                mix: get_f32_ranged(t, "mix", "fx.tape.mix", 0.0, 1.0)?,
-                hf_hz: get_f32_ranged(t, "hf_hz", "fx.tape.hf_hz", 2000.0, 20000.0)?,
-                asym: get_f32_ranged(t, "asym", "fx.tape.asym", 0.0, 0.5)?,
-            })
+            Some(parse_tape(t, "fx")?)
         }
     };
     let delay = match get_opt(obj, "delay") {
@@ -546,49 +748,241 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
             let d = delay_json
                 .as_object()
                 .ok_or_else(|| field_err("fx.delay", "delay must be an object"))?;
-            let ping_pong = match get(d, "ping_pong")? {
-                Json::Bool(b) => *b,
-                _ => return Err(field_err("fx.delay.ping_pong", "expected a boolean")),
-            };
-            Some(DrumDelayPreset {
-                time_s: get_f32_ranged(d, "time_s", "fx.delay.time_s", 0.01, 2.0)?,
-                feedback: get_f32_ranged(d, "feedback", "fx.delay.feedback", 0.0, 0.9)?,
-                mix: get_f32_ranged(d, "mix", "fx.delay.mix", 0.0, 0.6)?,
-                damp: get_f32_ranged(d, "damp", "fx.delay.damp", 0.0, 1.0)?,
-                ping_pong,
-            })
+            Some(parse_delay(d, "fx")?)
         }
     };
     Ok(DrumFxPreset {
-        eq_low_db: get_f32_ranged(eq, "low_db", "fx.eq.low_db", -18.0, 18.0)?,
-        eq_mid_db: get_f32_ranged(eq, "mid_db", "fx.eq.mid_db", -18.0, 18.0)?,
-        eq_high_db: get_f32_ranged(eq, "high_db", "fx.eq.high_db", -18.0, 18.0)?,
-        eq_low_hz: get_f32_ranged(eq, "low_hz", "fx.eq.low_hz", 20.0, 1000.0)?,
-        eq_mid_hz: get_f32_ranged(eq, "mid_hz", "fx.eq.mid_hz", 100.0, 8000.0)?,
-        eq_mid_q: get_f32_ranged(eq, "mid_q", "fx.eq.mid_q", 0.3, 6.0)?,
-        eq_high_hz: get_f32_ranged(eq, "high_hz", "fx.eq.high_hz", 1000.0, 16000.0)?,
-        hpf_hz: get_f32_ranged(eq, "hpf_hz", "fx.eq.hpf_hz", 0.0, 500.0)?,
-        cutoff_hz: get_f32_ranged(eq, "cutoff_hz", "fx.eq.cutoff_hz", 800.0, 20000.0)?,
-        comp_threshold_db: get_f32_ranged(
-            comp,
-            "threshold_db",
-            "fx.comp.threshold_db",
-            -60.0,
-            0.0,
-        )?,
-        comp_ratio: get_f32_ranged(comp, "ratio", "fx.comp.ratio", 1.0, 20.0)?,
-        comp_knee_db: get_f32_ranged(comp, "knee_db", "fx.comp.knee_db", 0.0, 24.0)?,
-        comp_attack_s: get_f32_ranged(comp, "attack_s", "fx.comp.attack_s", 0.0005, 0.2)?,
-        comp_release_s: get_f32_ranged(comp, "release_s", "fx.comp.release_s", 0.01, 1.0)?,
-        comp_makeup_db: get_f32_ranged(comp, "makeup_db", "fx.comp.makeup_db", -12.0, 12.0)?,
+        eq_low_db: eq.low_db,
+        eq_mid_db: eq.mid_db,
+        eq_high_db: eq.high_db,
+        eq_low_hz: eq.low_hz,
+        eq_mid_hz: eq.mid_hz,
+        eq_mid_q: eq.mid_q,
+        eq_high_hz: eq.high_hz,
+        hpf_hz: eq.hpf_hz,
+        cutoff_hz: eq.cutoff_hz,
+        comp_threshold_db: comp.threshold_db,
+        comp_ratio: comp.ratio,
+        comp_knee_db: comp.knee_db,
+        comp_attack_s: comp.attack_s,
+        comp_release_s: comp.release_s,
+        comp_makeup_db: comp.makeup_db,
         output_db: get_f32_ranged(obj, "output_db", "fx.output_db", -12.0, 12.0)?,
-        reverb_size: get_f32_ranged(reverb, "size", "fx.reverb.size", 0.0, 1.0)?,
-        reverb_damp: get_f32_ranged(reverb, "damp", "fx.reverb.damp", 0.0, 1.0)?,
-        reverb_wet: get_f32_ranged(reverb, "wet", "fx.reverb.wet", 0.0, 1.0)?,
-        reverb_predelay_s: get_f32_ranged(reverb, "predelay_s", "fx.reverb.predelay_s", 0.0, 0.1)?,
+        reverb_size: reverb.size,
+        reverb_damp: reverb.damp,
+        reverb_wet: reverb.wet,
+        reverb_predelay_s: reverb.predelay_s,
         tape,
         delay,
     })
+}
+
+/// 读一个 GM 键数组字段并校验规范化形态：非空、每键 0..=127、严格
+/// 升序（升序 + 无重复一并钉死）。`field` 是报错点名的完整字段路径。
+fn parse_key_group(
+    obj: &[(String, Json)],
+    key: &str,
+    field: &str,
+) -> Result<Vec<u8>, DrumPresetError> {
+    let arr = get_arr(obj, key).map_err(|_| field_err(field, "expected an array of GM keys"))?;
+    if arr.is_empty() {
+        return Err(field_err(field, "key group must not be empty"));
+    }
+    let mut keys = Vec::with_capacity(arr.len());
+    for raw in arr {
+        let value = match raw {
+            Json::Num(n) if n.fract() == 0.0 && *n >= 0.0 && *n <= 127.0 => *n as u8,
+            _ => {
+                return Err(field_err(
+                    field,
+                    format!("keys must be integers in 0..=127, got {raw:?}"),
+                ));
+            }
+        };
+        if let Some(previous) = keys.last()
+            && value <= *previous
+        {
+            return Err(field_err(
+                field,
+                "keys must be strictly ascending (no duplicates)",
+            ));
+        }
+        keys.push(value);
+    }
+    Ok(keys)
+}
+
+/// 解析 `lane_chains` 段（可选；缺省 = 空表）。规范化校验在本层完成：
+/// 组数上限、组内升序非空、组间不重叠、组按首键升序、键必须是本预置
+/// 鼓道（主道 ∪ fill 道）的键、链内至少一段处理、侧链 key 键是鼓道
+/// 键的子集。choke 组不拆分与侧链声明拒绝是**生成期**校验（依赖所选
+/// SFZ 程序与落地期次，见 [`lane_chain_generation_violations`]）。
+fn parse_lane_chains(
+    obj: &[(String, Json)],
+    lanes: &[DrumLanePreset],
+    fill_lanes: Option<&[DrumLanePreset]>,
+) -> Result<Vec<DrumLaneChainPreset>, DrumPresetError> {
+    let Some(raw) = get_opt(obj, "lane_chains") else {
+        return Ok(Vec::new());
+    };
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| field_err("lane_chains", "lane_chains must be an array"))?;
+    if arr.len() > 16 {
+        return Err(field_err(
+            "lane_chains",
+            format!("at most 16 lane chain groups per preset, got {}", arr.len()),
+        ));
+    }
+    let mut lane_keys: Vec<u8> = lanes.iter().map(|lane| lane.gm_key).collect();
+    if let Some(fill) = fill_lanes {
+        lane_keys.extend(fill.iter().map(|lane| lane.gm_key));
+    }
+    let mut chains: Vec<DrumLaneChainPreset> = Vec::with_capacity(arr.len());
+    let mut claimed: Vec<u8> = Vec::new();
+    let mut previous_first: Option<u8> = None;
+    for (idx, item) in arr.iter().enumerate() {
+        let entry = item
+            .as_object()
+            .ok_or_else(|| field_err("lane_chains", format!("group {idx} must be an object")))?;
+        let name = get_str(entry, "name")?.to_owned();
+        if name.is_empty() {
+            return Err(field_err(
+                "lane_chains",
+                format!("group {idx} name must not be empty"),
+            ));
+        }
+        let base = format!("lane_chains.{name}.chain");
+        let keys = parse_key_group(entry, "keys", &format!("lane_chains.{name}.keys"))?;
+        for key in &keys {
+            if !lane_keys.contains(key) {
+                return Err(field_err(
+                    &format!("lane_chains.{name}.keys"),
+                    format!("key {key} is not one of this preset's lane keys"),
+                ));
+            }
+            if claimed.contains(key) {
+                return Err(field_err(
+                    &format!("lane_chains.{name}.keys"),
+                    format!("key {key} is already claimed by an earlier lane chain group"),
+                ));
+            }
+            claimed.push(*key);
+        }
+        let first = keys[0];
+        if let Some(previous) = previous_first
+            && first <= previous
+        {
+            return Err(field_err(
+                "lane_chains",
+                "groups must be ordered by their first key (strictly ascending)",
+            ));
+        }
+        previous_first = Some(first);
+        let chain_obj = get_obj(entry, "chain")?;
+        let eq = match get_opt(chain_obj, "eq") {
+            None => None,
+            Some(raw_eq) => {
+                let eq_obj = raw_eq
+                    .as_object()
+                    .ok_or_else(|| field_err(&format!("{base}.eq"), "eq must be an object"))?;
+                Some(parse_eq(eq_obj, &base)?)
+            }
+        };
+        let comp = match get_opt(chain_obj, "comp") {
+            None => None,
+            Some(raw_comp) => {
+                let comp_obj = raw_comp
+                    .as_object()
+                    .ok_or_else(|| field_err(&format!("{base}.comp"), "comp must be an object"))?;
+                Some(parse_comp(comp_obj, &base)?)
+            }
+        };
+        let reverb = match get_opt(chain_obj, "reverb") {
+            None => None,
+            Some(raw_reverb) => {
+                let reverb_obj = raw_reverb.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.reverb"), "reverb must be an object")
+                })?;
+                Some(parse_reverb(reverb_obj, &base)?)
+            }
+        };
+        let tape = match get_opt(chain_obj, "tape") {
+            None => None,
+            Some(raw_tape) => {
+                let tape_obj = raw_tape
+                    .as_object()
+                    .ok_or_else(|| field_err(&format!("{base}.tape"), "tape must be an object"))?;
+                Some(parse_tape(tape_obj, &base)?)
+            }
+        };
+        let delay = match get_opt(chain_obj, "delay") {
+            None => None,
+            Some(raw_delay) => {
+                let delay_obj = raw_delay.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.delay"), "delay must be an object")
+                })?;
+                Some(parse_delay(delay_obj, &base)?)
+            }
+        };
+        let pan = match get_opt(chain_obj, "pan") {
+            None => None,
+            Some(_) => Some(get_f32_ranged(
+                chain_obj,
+                "pan",
+                &format!("{base}.pan"),
+                -1.0,
+                1.0,
+            )?),
+        };
+        let sidechain = match get_opt(chain_obj, "sidechain") {
+            None => None,
+            Some(raw_sidechain) => {
+                let sidechain_obj = raw_sidechain.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.sidechain"), "sidechain must be an object")
+                })?;
+                let key_keys = parse_key_group(
+                    sidechain_obj,
+                    "key_keys",
+                    &format!("{base}.sidechain.key_keys"),
+                )?;
+                for key in &key_keys {
+                    if !lane_keys.contains(key) {
+                        return Err(field_err(
+                            &format!("{base}.sidechain.key_keys"),
+                            format!("key key {key} is not one of this preset's lane keys"),
+                        ));
+                    }
+                }
+                Some(DrumLaneSidechainPreset { key_keys })
+            }
+        };
+        if eq.is_none()
+            && comp.is_none()
+            && reverb.is_none()
+            && tape.is_none()
+            && delay.is_none()
+            && pan.is_none()
+            && sidechain.is_none()
+        {
+            return Err(field_err(
+                &format!("lane_chains.{name}"),
+                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/pan/sidechain)",
+            ));
+        }
+        chains.push(DrumLaneChainPreset {
+            name,
+            keys,
+            eq,
+            comp,
+            reverb,
+            tape,
+            delay,
+            pan,
+            sidechain,
+        });
+    }
+    Ok(chains)
 }
 
 fn parse_bus(obj: &[(String, Json)]) -> Result<DrumBusPreset, DrumPresetError> {
@@ -657,6 +1051,115 @@ pub struct DrumFxDeviceSpec {
     pub params: Vec<(String, f32)>,
 }
 
+/// EQ 段 → 通道条参数表的前半（EQ 开关 + 三段 + 高通/低通塑形）。
+/// 整轨 `fx` 与逐件链共用：同一段只许有一套参数拼法。
+fn strip_eq_params(eq: &DrumEqPreset) -> Vec<(String, f32)> {
+    let mut params: Vec<(String, f32)> = vec![
+        ("eq_enabled".to_owned(), 1.0),
+        ("eq_low_gain".to_owned(), eq.low_db),
+        ("eq_low_freq".to_owned(), eq.low_hz),
+        ("eq_mid_gain".to_owned(), eq.mid_db),
+        ("eq_mid_freq".to_owned(), eq.mid_hz),
+        ("eq_mid_q".to_owned(), eq.mid_q),
+        ("eq_high_gain".to_owned(), eq.high_db),
+        ("eq_high_freq".to_owned(), eq.high_hz),
+    ];
+    if eq.hpf_hz > 0.0 {
+        params.push(("hpf_hz".to_owned(), eq.hpf_hz));
+    }
+    if eq.cutoff_hz < 20_000.0 {
+        params.push(("filter_enabled".to_owned(), 1.0));
+        params.push(("cutoff_hz".to_owned(), eq.cutoff_hz));
+    }
+    params
+}
+
+/// 压缩段 → 通道条参数表的后半（压缩级开关 + 六参数）。
+fn strip_comp_params(comp: &DrumCompPreset) -> Vec<(String, f32)> {
+    vec![
+        ("compressor_enabled".to_owned(), 1.0),
+        ("threshold_db".to_owned(), comp.threshold_db),
+        ("ratio".to_owned(), comp.ratio),
+        ("knee_db".to_owned(), comp.knee_db),
+        ("attack_s".to_owned(), comp.attack_s),
+        ("release_s".to_owned(), comp.release_s),
+        ("makeup_db".to_owned(), comp.makeup_db),
+    ]
+}
+
+/// 混响段 → 混响器件参数表。
+fn reverb_params(reverb: &DrumReverbPreset) -> Vec<(String, f32)> {
+    vec![
+        ("reverb_size".to_owned(), reverb.size),
+        ("reverb_damp".to_owned(), reverb.damp),
+        ("reverb_wet".to_owned(), reverb.wet),
+        ("reverb_predelay".to_owned(), reverb.predelay_s),
+    ]
+}
+
+/// 磁带段 → 磁带器件参数表。
+fn tape_params(tape: &DrumTapePreset) -> Vec<(String, f32)> {
+    vec![
+        ("tape_drive".to_owned(), tape.drive),
+        ("tape_mix".to_owned(), tape.mix),
+        ("tape_hf_hz".to_owned(), tape.hf_hz),
+        ("tape_asym".to_owned(), tape.asym),
+    ]
+}
+
+/// 延迟段 → 延迟器件参数表。
+fn delay_params(delay: &DrumDelayPreset) -> Vec<(String, f32)> {
+    vec![
+        ("delay_time_s".to_owned(), delay.time_s),
+        ("delay_feedback".to_owned(), delay.feedback),
+        ("delay_mix".to_owned(), delay.mix),
+        ("delay_damp".to_owned(), delay.damp),
+        (
+            "delay_ping_pong".to_owned(),
+            if delay.ping_pong { 1.0 } else { 0.0 },
+        ),
+    ]
+}
+
+impl DrumFxPreset {
+    /// 扁平 `fx` 字段的 EQ 段视图（与逐件链共用参数构造的接缝）。
+    fn eq_view(&self) -> DrumEqPreset {
+        DrumEqPreset {
+            low_db: self.eq_low_db,
+            mid_db: self.eq_mid_db,
+            high_db: self.eq_high_db,
+            low_hz: self.eq_low_hz,
+            mid_hz: self.eq_mid_hz,
+            mid_q: self.eq_mid_q,
+            high_hz: self.eq_high_hz,
+            hpf_hz: self.hpf_hz,
+            cutoff_hz: self.cutoff_hz,
+        }
+    }
+
+    /// 扁平 `fx` 字段的压缩段视图。
+    fn comp_view(&self) -> DrumCompPreset {
+        DrumCompPreset {
+            threshold_db: self.comp_threshold_db,
+            ratio: self.comp_ratio,
+            knee_db: self.comp_knee_db,
+            attack_s: self.comp_attack_s,
+            release_s: self.comp_release_s,
+            makeup_db: self.comp_makeup_db,
+        }
+    }
+
+    /// 扁平 `fx` 字段的混响段视图。
+    fn reverb_view(&self) -> DrumReverbPreset {
+        DrumReverbPreset {
+            size: self.reverb_size,
+            damp: self.reverb_damp,
+            wet: self.reverb_wet,
+            predelay_s: self.reverb_predelay_s,
+        }
+    }
+}
+
 /// 把 `fx` 段翻译成器件配方（跳过 `present` 里已在场的族）。
 ///
 /// ⚠ EQ 与压缩必须合在**同一台**通道条器件里：插入链投影对通道条族只取
@@ -667,30 +1170,8 @@ pub struct DrumFxDeviceSpec {
 pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<DrumFxDeviceSpec> {
     let mut specs = Vec::new();
     if !present.strip {
-        let mut params: Vec<(String, f32)> = vec![
-            ("eq_enabled".to_owned(), 1.0),
-            ("eq_low_gain".to_owned(), fx.eq_low_db),
-            ("eq_low_freq".to_owned(), fx.eq_low_hz),
-            ("eq_mid_gain".to_owned(), fx.eq_mid_db),
-            ("eq_mid_freq".to_owned(), fx.eq_mid_hz),
-            ("eq_mid_q".to_owned(), fx.eq_mid_q),
-            ("eq_high_gain".to_owned(), fx.eq_high_db),
-            ("eq_high_freq".to_owned(), fx.eq_high_hz),
-        ];
-        if fx.hpf_hz > 0.0 {
-            params.push(("hpf_hz".to_owned(), fx.hpf_hz));
-        }
-        if fx.cutoff_hz < 20_000.0 {
-            params.push(("filter_enabled".to_owned(), 1.0));
-            params.push(("cutoff_hz".to_owned(), fx.cutoff_hz));
-        }
-        params.push(("compressor_enabled".to_owned(), 1.0));
-        params.push(("threshold_db".to_owned(), fx.comp_threshold_db));
-        params.push(("ratio".to_owned(), fx.comp_ratio));
-        params.push(("knee_db".to_owned(), fx.comp_knee_db));
-        params.push(("attack_s".to_owned(), fx.comp_attack_s));
-        params.push(("release_s".to_owned(), fx.comp_release_s));
-        params.push(("makeup_db".to_owned(), fx.comp_makeup_db));
+        let mut params = strip_eq_params(&fx.eq_view());
+        params.extend(strip_comp_params(&fx.comp_view()));
         if fx.output_db != 0.0 {
             params.push(("output_gain_db".to_owned(), fx.output_db));
         }
@@ -706,24 +1187,14 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
         specs.push(DrumFxDeviceSpec {
             family: "tape",
             name: "Tape Saturation",
-            params: vec![
-                ("tape_drive".to_owned(), tape.drive),
-                ("tape_mix".to_owned(), tape.mix),
-                ("tape_hf_hz".to_owned(), tape.hf_hz),
-                ("tape_asym".to_owned(), tape.asym),
-            ],
+            params: tape_params(tape),
         });
     }
     if !present.reverb {
         specs.push(DrumFxDeviceSpec {
             family: "reverb",
             name: "Reverb",
-            params: vec![
-                ("reverb_size".to_owned(), fx.reverb_size),
-                ("reverb_damp".to_owned(), fx.reverb_damp),
-                ("reverb_wet".to_owned(), fx.reverb_wet),
-                ("reverb_predelay".to_owned(), fx.reverb_predelay_s),
-            ],
+            params: reverb_params(&fx.reverb_view()),
         });
     }
     if let Some(delay) = &fx.delay
@@ -732,16 +1203,57 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
         specs.push(DrumFxDeviceSpec {
             family: "delay",
             name: "Delay",
-            params: vec![
-                ("delay_time_s".to_owned(), delay.time_s),
-                ("delay_feedback".to_owned(), delay.feedback),
-                ("delay_mix".to_owned(), delay.mix),
-                ("delay_damp".to_owned(), delay.damp),
-                (
-                    "delay_ping_pong".to_owned(),
-                    if delay.ping_pong { 1.0 } else { 0.0 },
-                ),
-            ],
+            params: delay_params(delay),
+        });
+    }
+    specs
+}
+
+/// 把一条逐件链预置翻译成器件配方（逐件处理线期 2）。
+///
+/// 与整轨 `fx` 的差别：① **无同族在场去重**——逐件链装在独立的 lane
+/// 分支上，与轨上整轨链并行存在，不互相顶替；② 无 output 微调
+/// （逐件链格式没有这个字段）；③ EQ 与压缩仍合在**同一台**通道条
+/// 器件里（与 [`drum_fx_device_specs`] 同一口径）。`pan` 与
+/// `sidechain` 不产器件：pan 进模型的 `LaneChainDef::pan`；sidechain
+/// 是期 4 的求值输入，生成在期 4 之前由
+/// [`lane_chain_generation_violations`] 响亮拒绝。
+#[must_use]
+pub fn drum_lane_device_specs(chain: &DrumLaneChainPreset) -> Vec<DrumFxDeviceSpec> {
+    let mut specs = Vec::new();
+    if chain.eq.is_some() || chain.comp.is_some() {
+        let mut params = Vec::new();
+        if let Some(eq) = &chain.eq {
+            params.extend(strip_eq_params(eq));
+        }
+        if let Some(comp) = &chain.comp {
+            params.extend(strip_comp_params(comp));
+        }
+        specs.push(DrumFxDeviceSpec {
+            family: "strip",
+            name: "Channel Strip",
+            params,
+        });
+    }
+    if let Some(tape) = &chain.tape {
+        specs.push(DrumFxDeviceSpec {
+            family: "tape",
+            name: "Tape Saturation",
+            params: tape_params(tape),
+        });
+    }
+    if let Some(reverb) = &chain.reverb {
+        specs.push(DrumFxDeviceSpec {
+            family: "reverb",
+            name: "Reverb",
+            params: reverb_params(reverb),
+        });
+    }
+    if let Some(delay) = &chain.delay {
+        specs.push(DrumFxDeviceSpec {
+            family: "delay",
+            name: "Delay",
+            params: delay_params(delay),
         });
     }
     specs
@@ -1667,6 +2179,103 @@ fn acoustic_covered_keys(sfz_path: Option<&str>) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// 逐件链生成校验（choke 组不拆分 + 侧链声明拒绝；生成路径共用）
+// ---------------------------------------------------------------------------
+
+/// 原声鼓组在**指定 SFZ 程序**下的 choke（exclusive / off_by）互斥组：
+/// 每组内的键互掐——一个键发声会掐掉组内其它键的声部。出处：
+/// 2026-11-18 用 `yeban-sfz` 装载四个出厂程序、按 region 的
+/// `group`/`off_by` 建无向互掐连通分量实测（与 [`acoustic_covered_keys`]
+/// 同一「静态表 + 出处留痕」口径：`yeban-theory` 不依赖 SFZ 解析，
+/// 探针在装载侧跑、结论钉成表）。`01-basic-kit.sfz` 的帽组是
+/// {42, 44, 46}；其余出厂程序（`keymap.sfz` 系）开镲并入 42、另有
+/// 92 号「掐音键」与 42/44 同组，帽组为 {42, 44, 92}。未知程序按
+/// 非 basic 键位图计（与覆盖表的缺省口径一致）。
+#[must_use]
+pub fn choke_groups(sfz_path: Option<&str>) -> Vec<Vec<u8>> {
+    let tail = vec![vec![62, 63], vec![71, 72], vec![80, 81]];
+    let file = sfz_path.map(|path| path.rsplit('/').next().unwrap_or(path));
+    let hats: Vec<u8> = match file {
+        None | Some("01-basic-kit.sfz") => vec![42, 44, 46],
+        Some(_) => vec![42, 44, 92],
+    };
+    let mut groups = vec![hats];
+    groups.extend(tail);
+    groups
+}
+
+/// 逐件链的**生成期**违规清单（空 = 可生成）。生成路径（MCP
+/// `yeban_generate_drum_pattern` 与 UI `drum_gen_ops`）在覆盖审计之后
+/// 调用本函数，非空即响亮拒绝并逐条点名——与
+/// [`uncovered_pattern_keys`] 同一「默认不能静默」口径。两类违规：
+///
+/// 1. **侧链声明**：预置的逐件链带 `sidechain` 段。格式层可写，但
+///    lane 级侧链求值在期 4 才落地；期 4 之前生成带侧链声明的逐件链
+///    等于静默丢弃声明，响亮拒绝。出厂预置的侧链值期 5 才写。
+/// 2. **choke 组被拆分**（仅原声族）：本预置用到的键里，同一 choke
+///    组的键不得分布在两条不同的逐件链里，也不得一部分分组、一部分
+///    留在整轨链上——逐件渲染按组分引擎，拆开后互掐关系断裂
+///    （踩镲掐不开镲的语义被静默改掉）。整组同链或整组不分组才合法。
+#[must_use]
+pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String> {
+    let mut violations = Vec::new();
+    for chain in &preset.lane_chains {
+        if let Some(sidechain) = &chain.sidechain {
+            violations.push(format!(
+                "逐件链组 `{}` 声明了侧链（key 键 {:?}）：lane 级侧链求值在期 4 落地，本期生成响亮拒绝，不静默丢弃声明",
+                chain.name, sidechain.key_keys
+            ));
+        }
+    }
+    if preset.kit_family != KitFamily::Acoustic || preset.lane_chains.is_empty() {
+        return violations;
+    }
+    // 本预置真正用到的键（主道 + fill 道）。
+    let mut used: Vec<u8> = preset.lanes.iter().map(|lane| lane.gm_key).collect();
+    if let Some(fill) = &preset.fill_lanes {
+        used.extend(fill.iter().map(|lane| lane.gm_key));
+    }
+    for component in choke_groups(preset.sfz_path.as_deref()) {
+        // 这组 choke 键落在哪几个分区里：每条逐件链是一个分区，
+        // 未被任何逐件链认领的键同属「未分组」分区。
+        let mut cells: Vec<String> = Vec::new();
+        let mut any_used = false;
+        let mut any_ungrouped = false;
+        for key in &component {
+            if !used.contains(key) {
+                continue;
+            }
+            any_used = true;
+            match preset
+                .lane_chains
+                .iter()
+                .find(|chain| chain.keys.contains(key))
+            {
+                Some(chain) => {
+                    if !cells.contains(&chain.name) {
+                        cells.push(chain.name.clone());
+                    }
+                }
+                None => any_ungrouped = true,
+            }
+        }
+        if !any_used {
+            continue;
+        }
+        if any_ungrouped {
+            cells.push("未分组（整轨链）".to_owned());
+        }
+        if cells.len() > 1 {
+            violations.push(format!(
+                "choke 组 {component:?} 被拆开（分布在 {}）：同一 choke 组的键必须同属一条逐件链或整组不分组，拆开会破坏掐音语义",
+                cells.join(" / ")
+            ));
+        }
+    }
+    violations
+}
+
+// ---------------------------------------------------------------------------
 // 出厂预置（嵌入文本与磁盘文件同一格式）
 // ---------------------------------------------------------------------------
 
@@ -2330,5 +2939,280 @@ mod tests {
             .expect("valid json");
         let obj = value.as_object().expect("object");
         assert_eq!(get_str(obj, "a").expect("a"), "x\n☃😀");
+    }
+
+    // -----------------------------------------------------------------
+    // 逐件链（lane_chains）判据（逐件处理线期 2）
+    // -----------------------------------------------------------------
+
+    /// 16 步全击点步进格（测试夹具）。
+    const STEPS16: &str = "[[100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+        [100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+        [100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+        [100,1,0],[100,1,0],[100,1,0],[100,1,0]]";
+
+    /// 带多道与可选段的预置夹具：`family` 为 `electronic` / `acoustic`，
+    /// `extra` 是插在顶层 lanes 之后的原始 JSON 片段（如 lane_chains 段）。
+    fn preset_with_lanes(family: &str, lane_keys: &[u8], extra: &str) -> String {
+        let lanes: Vec<String> = lane_keys
+            .iter()
+            .map(|key| {
+                format!("{{\"role\": \"lane{key}\", \"gm_key\": {key}, \"steps\": {STEPS16}}}")
+            })
+            .collect();
+        format!(
+            "{{\
+                \"format\": \"yeban-drum-style\", \"version\": 1,\
+                \"id\": \"fixture\", \"name\": \"Fixture\", \"name_zh\": \"夹具\",\
+                \"source\": {{\"kind\": \"constructed\", \"groove_genre_id\": \"none\",\
+                           \"tuning\": []}},\
+                \"kit_family\": \"{family}\",\
+                \"bpm\": {{\"default\": 120, \"min\": 100, \"max\": 140}},\
+                \"swing_permille\": 500, \"bars\": 1,\
+                \"lanes\": [{}]{extra}\
+            }}",
+            lanes.join(", ")
+        )
+    }
+
+    const HATS_EQ: &str = "\"eq\": {\"low_db\": 0, \"mid_db\": 0, \"high_db\": 2,\
+        \"low_hz\": 200, \"mid_hz\": 1000, \"mid_q\": 0.9, \"high_hz\": 6000,\
+        \"hpf_hz\": 400, \"cutoff_hz\": 20000}";
+
+    #[test]
+    fn lane_chains_absent_means_empty_and_present_parses() {
+        let plain = DrumStylePreset::from_json(&preset_with_lanes("electronic", &[36, 42], ""))
+            .expect("valid preset");
+        assert!(plain.lane_chains.is_empty(), "无 lane_chains 段 = 空表");
+
+        let text = preset_with_lanes(
+            "electronic",
+            &[36, 42, 46],
+            &format!(
+                ", \"lane_chains\": [{{\"name\": \"hats\", \"keys\": [42, 46], \
+                 \"chain\": {{{HATS_EQ}, \"pan\": -0.2}}}}]"
+            ),
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid lane chains");
+        assert_eq!(preset.lane_chains.len(), 1);
+        let chain = &preset.lane_chains[0];
+        assert_eq!(chain.name, "hats");
+        assert_eq!(chain.keys, vec![42, 46]);
+        assert_eq!(chain.pan, Some(-0.2));
+        assert!(chain.sidechain.is_none());
+        let eq = chain.eq.expect("eq parsed");
+        assert_eq!(eq.hpf_hz, 400.0);
+        assert_eq!(eq.high_db, 2.0);
+        // 器件配方：一台通道条，带 EQ 与高通，无压缩段、无 output。
+        let specs = drum_lane_device_specs(chain);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].family, "strip");
+        let names: Vec<&str> = specs[0].params.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"eq_enabled"));
+        assert!(names.contains(&"hpf_hz"));
+        assert!(
+            !names.contains(&"compressor_enabled"),
+            "无 comp 段不得拼压缩"
+        );
+        assert!(!names.contains(&"output_gain_db"), "逐件链无 output 微调");
+    }
+
+    #[test]
+    fn lane_device_specs_cover_all_families_in_order() {
+        let text = preset_with_lanes(
+            "electronic",
+            &[36],
+            ", \"lane_chains\": [{\"name\": \"kick\", \"keys\": [36], \"chain\": {\
+                \"eq\": {\"low_db\": 1, \"mid_db\": -2, \"high_db\": -6, \"low_hz\": 120,\
+                        \"mid_hz\": 400, \"mid_q\": 0.8, \"high_hz\": 3000,\
+                        \"hpf_hz\": 0, \"cutoff_hz\": 4500},\
+                \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
+                          \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
+                \"reverb\": {\"size\": 0.3, \"damp\": 0.5, \"wet\": 0.1, \"predelay_s\": 0.01},\
+                \"tape\": {\"drive\": 0.2, \"mix\": 0.4, \"hf_hz\": 8000, \"asym\": 0.1},\
+                \"delay\": {\"time_s\": 0.25, \"feedback\": 0.2, \"mix\": 0.08,\
+                           \"damp\": 0.3, \"ping_pong\": false}\
+            }}]",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid lane chains");
+        let specs = drum_lane_device_specs(&preset.lane_chains[0]);
+        let families: Vec<&str> = specs.iter().map(|spec| spec.family).collect();
+        assert_eq!(families, vec!["strip", "tape", "reverb", "delay"]);
+        // strip = EQ 参数在前、压缩参数在后，同一台器件。
+        let strip_names: Vec<&str> = specs[0].params.iter().map(|(n, _)| n.as_str()).collect();
+        let eq_pos = strip_names.iter().position(|n| *n == "eq_enabled").unwrap();
+        let comp_pos = strip_names
+            .iter()
+            .position(|n| *n == "compressor_enabled")
+            .unwrap();
+        assert!(eq_pos < comp_pos);
+        assert!(
+            strip_names.contains(&"cutoff_hz"),
+            "cutoff < 20000 必须拼低通"
+        );
+    }
+
+    #[test]
+    fn lane_chains_reject_bad_shapes() {
+        let base = |chains: &str| {
+            preset_with_lanes(
+                "electronic",
+                &[36, 42, 46],
+                &format!(", \"lane_chains\": {chains}"),
+            )
+        };
+        let cases: Vec<String> = vec![
+            // 键组为空。
+            base("[{\"name\": \"hats\", \"keys\": [], \"chain\": {\"pan\": 0}}]"),
+            // 键组未升序。
+            base("[{\"name\": \"hats\", \"keys\": [46, 42], \"chain\": {\"pan\": 0}}]"),
+            // 键不是本预置的鼓道键。
+            base("[{\"name\": \"toms\", \"keys\": [43], \"chain\": {\"pan\": 0}}]"),
+            // 两组抢同一个键。
+            base(
+                "[{\"name\": \"a\", \"keys\": [36, 42], \"chain\": {\"pan\": 0}},\
+                 {\"name\": \"b\", \"keys\": [42], \"chain\": {\"pan\": 0}}]",
+            ),
+            // 组序未按首键升序。
+            base(
+                "[{\"name\": \"b\", \"keys\": [46], \"chain\": {\"pan\": 0}},\
+                 {\"name\": \"a\", \"keys\": [42], \"chain\": {\"pan\": 0}}]",
+            ),
+            // 空链（什么处理都不带）。
+            base("[{\"name\": \"hats\", \"keys\": [42], \"chain\": {}}]"),
+            // EQ 值越界（与 fx 同一值域：low_db 只许 −18..=18）。
+            base(
+                "[{\"name\": \"hats\", \"keys\": [42], \"chain\": {\
+                 \"eq\": {\"low_db\": 99, \"mid_db\": 0, \"high_db\": 0, \"low_hz\": 200,\
+                         \"mid_hz\": 1000, \"mid_q\": 0.9, \"high_hz\": 6000,\
+                         \"hpf_hz\": 0, \"cutoff_hz\": 20000}}}]",
+            ),
+            // pan 越界。
+            base("[{\"name\": \"hats\", \"keys\": [42], \"chain\": {\"pan\": 2}}]"),
+            // 侧链 key 键不是鼓道键。
+            base(
+                "[{\"name\": \"kick\", \"keys\": [36], \"chain\": {\
+                 \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
+                           \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
+                 \"sidechain\": {\"key_keys\": [43]}}}]",
+            ),
+            // 侧链 key 键未升序。
+            base(
+                "[{\"name\": \"kick\", \"keys\": [36], \"chain\": {\
+                 \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
+                           \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
+                 \"sidechain\": {\"key_keys\": [46, 42]}}}]",
+            ),
+        ];
+        for (idx, text) in cases.iter().enumerate() {
+            assert!(
+                DrumStylePreset::from_json(text).is_err(),
+                "用例 {idx} 必须被拒绝: {text}"
+            );
+        }
+        // 组数超上限：组数检查在逐组解析之前，任何 17 组数组都必须被拒。
+        let many = (0..17)
+            .map(|i| format!("{{\"name\": \"g{i}\", \"keys\": [36], \"chain\": {{\"pan\": 0}}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(DrumStylePreset::from_json(&base(&format!("[{many}]"))).is_err());
+    }
+
+    #[test]
+    fn lane_chain_generation_violations_cover_sidechain_and_choke() {
+        // 侧链声明：格式可解析，生成期拒绝（期 4 前）。
+        let sidechained = DrumStylePreset::from_json(&preset_with_lanes(
+            "electronic",
+            &[36, 42],
+            ", \"lane_chains\": [{\"name\": \"kick\", \"keys\": [36], \"chain\": {\
+                \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
+                          \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
+                \"sidechain\": {\"key_keys\": [36]}}}]",
+        ))
+        .expect("sidechain declaration parses");
+        let violations = lane_chain_generation_violations(&sidechained);
+        assert_eq!(violations.len(), 1);
+        assert!(
+            violations[0].contains("期 4"),
+            "违规须点名期次: {violations:?}"
+        );
+
+        // 原声 basic：帽组 {42,44,46}，预置用到 42/46。只把 42 分组 ⇒
+        // 46 留在整轨链上，choke 组被拆 ⇒ 违规。
+        let split = DrumStylePreset::from_json(&preset_with_lanes(
+            "acoustic",
+            &[36, 42, 46],
+            ", \"lane_chains\": [{\"name\": \"closed\", \"keys\": [42], \"chain\": {\"pan\": 0}}]",
+        ))
+        .expect("parses");
+        let violations = lane_chain_generation_violations(&split);
+        assert_eq!(violations.len(), 1, "拆 choke 组必须违规: {violations:?}");
+        assert!(violations[0].contains("choke"));
+
+        // 42/46 同组 ⇒ 合法。
+        let whole = DrumStylePreset::from_json(&preset_with_lanes(
+            "acoustic",
+            &[36, 42, 46],
+            ", \"lane_chains\": [{\"name\": \"hats\", \"keys\": [42, 46], \"chain\": {\"pan\": 0}}]",
+        ))
+        .expect("parses");
+        assert!(lane_chain_generation_violations(&whole).is_empty());
+
+        // 电子族不查 choke：同样的拆法合法。
+        let electronic_split = DrumStylePreset::from_json(&preset_with_lanes(
+            "electronic",
+            &[36, 42, 46],
+            ", \"lane_chains\": [{\"name\": \"closed\", \"keys\": [42], \"chain\": {\"pan\": 0}}]",
+        ))
+        .expect("parses");
+        assert!(lane_chain_generation_violations(&electronic_split).is_empty());
+    }
+
+    #[test]
+    fn choke_groups_match_probed_programs() {
+        let basic = choke_groups(Some(
+            "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz",
+        ));
+        assert!(basic.contains(&vec![42, 44, 46]));
+        let other = choke_groups(Some(
+            "assets/samples/virtuosity-drums/Programs/06-mid-mic.sfz",
+        ));
+        assert!(other.contains(&vec![42, 44, 92]));
+        // 缺省（无 sfz_path = 默认基础组）按 basic 计。
+        assert!(choke_groups(None).contains(&vec![42, 44, 46]));
+    }
+
+    #[test]
+    fn factory_lane_chain_opt_ins_are_present_and_generatable() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        for style in &styles {
+            assert!(
+                lane_chain_generation_violations(style).is_empty(),
+                "出厂风格 {} 的逐件链必须可生成",
+                style.id
+            );
+        }
+        let by_id = |id: &str| styles.iter().find(|s| s.id == id).unwrap();
+        // house：帽组 [42, 46] 一条链；trap：闭镲 [42]；lofi：kick [36]。
+        let house = by_id("house");
+        assert_eq!(house.lane_chains.len(), 1);
+        assert_eq!(house.lane_chains[0].name, "hats");
+        assert_eq!(house.lane_chains[0].keys, vec![42, 46]);
+        let trap = by_id("trap");
+        assert_eq!(trap.lane_chains.len(), 1);
+        assert_eq!(trap.lane_chains[0].keys, vec![42]);
+        let lofi = by_id("lofi");
+        assert_eq!(lofi.lane_chains.len(), 1);
+        assert_eq!(lofi.lane_chains[0].keys, vec![36]);
+        // 其余出厂风格本期不带逐件链。
+        for style in &styles {
+            if !matches!(style.id.as_str(), "house" | "trap" | "lofi") {
+                assert!(
+                    style.lane_chains.is_empty(),
+                    "出厂风格 {} 本期不带逐件链",
+                    style.id
+                );
+            }
+        }
     }
 }

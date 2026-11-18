@@ -3092,6 +3092,15 @@ pub struct RenderArtifact {
     /// 都没有被求值（"你的侧链现在什么都不做"）；`(0, 0)` 且声明 `N > 0` 条 =
     /// 全部求值。⛔ 不要把这个数读成"求和了"。
     pub sidechain_edges_declared_without_key_input: usize,
+    /// 逐件链（per-lane）读数：工程里全部音轨共声明了多少条逐件链组。
+    ///
+    /// 与 [`Self::lane_chains_unapplied`] 一起读：逐件渲染（期 3）落地
+    /// 之前，声明的链一条都不发声——这个事实必须在回执里读得出来，
+    /// ⛔ 不许让"生成时写进了工程"冒充"渲染时生效了"。
+    pub lane_chains_declared: usize,
+    /// 逐件链读数：声明了、但本次渲染没有应用的逐件链组数。期 2 恒等于
+    /// [`Self::lane_chains_declared`]；期 3 逐件渲染落地后归零。
+    pub lane_chains_unapplied: usize,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
     /// 每个"没渲染"部分的出现次数。
@@ -3402,6 +3411,16 @@ impl RenderArtifact {
             "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
             Value::from(self.sidechain_edges_declared_without_key_input),
         );
+        // 逐件链读数（期 2）：声明数与未应用数。本期渲染不应用任何逐件链，
+        // 两数恒等；期 3 逐件渲染落地后未应用数归零。
+        map.insert(
+            "laneChainsDeclared".to_owned(),
+            Value::from(self.lane_chains_declared),
+        );
+        map.insert(
+            "laneChainsUnapplied".to_owned(),
+            Value::from(self.lane_chains_unapplied),
+        );
         map.insert(
             "projectDigest".to_owned(),
             Value::from(self.project_digest.clone()),
@@ -3592,6 +3611,15 @@ pub fn build(
         .values()
         .filter(|edge| edge.kind == RoutingKind::Sidechain)
         .count();
+    // 逐件链读数（期 2）：声明 = 全部音轨的 `lane_chains` 组数之和；
+    // 未应用 = 声明（离线逐件渲染在期 3 落地，本期一条都不应用，
+    // 两数如实同报，⛔ 不许报 0 未应用冒充已生效）。
+    let lane_chains_declared: usize = project
+        .tracks
+        .values()
+        .map(|track| track.lane_chains.len())
+        .sum();
+    let lane_chains_unapplied = lane_chains_declared;
     // ⭐ 侧链键输入（v1）：没有键输入路径的条数**不能**在这里绑定 —— 计划还没
     // 编译，求值条数未知。它在主计划编译、设备泳道挂好、`attach_key_armed_nodes`
     // 挂接之后才绑定（声明条数 − 真的接上键输入的条数），见下面的挂接点。
@@ -4302,6 +4330,8 @@ pub fn build(
         sidechain_edges_summed_as_ordinary_audio,
         sidechain_edges_in_routing_graph,
         sidechain_edges_declared_without_key_input,
+        lane_chains_declared,
+        lane_chains_unapplied,
         unsupported,
         unsupported_counts: counts,
     })

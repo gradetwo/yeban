@@ -1510,5 +1510,16 @@
       "mix": 1.0,
       "oversample": 4
     }
-  }
+  },
+  "lane_chains": [
+    {
+      "name": "hats",
+      "keys": [42, 46],
+      "chain": {
+        "eq": {"low_db": 0, "mid_db": 0, "high_db": 2, "low_hz": 200,
+               "mid_hz": 1000, "mid_q": 0.9, "high_hz": 6000,
+               "hpf_hz": 400, "cutoff_hz": 20000}
+      }
+    }
+  ]
 }

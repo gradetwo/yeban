@@ -257,6 +257,64 @@ pub enum ModelError {
         value: f32,
     },
 
+    /// 逐件链组数越界 (允许至多 [`crate::project::MAX_LANE_CHAINS_PER_TRACK`] 组)。
+    #[error("lane chain count {count} exceeds maximum {max}")]
+    LaneChainCountOutOfRange {
+        /// 实际收到的组数。
+        count: usize,
+        /// 允许的最大组数。
+        max: usize,
+    },
+
+    /// 逐件链的键组为空 (一组必须至少含一个 GM 键)。
+    #[error("lane chain `{name}` has an empty key group")]
+    LaneChainKeysEmpty {
+        /// 出问题那一组的组名。
+        name: String,
+    },
+
+    /// 逐件链的键组未按严格升序排列 (规范化形态要求组内升序、无重复；
+    /// 非规范化输入响亮拒绝，不静默重排)。
+    #[error("lane chain `{name}` keys are not strictly ascending")]
+    LaneChainKeysNotAscending {
+        /// 出问题那一组的组名。
+        name: String,
+    },
+
+    /// 两个逐件链组声明了同一个键 (一个键只能属于一条逐件链)。
+    #[error("lane chain key {key} is claimed by more than one group")]
+    LaneChainKeyOverlap {
+        /// 被重复声明的键。
+        key: u8,
+    },
+
+    /// 逐件链组未按首键升序排列 (规范化形态要求组序确定)。
+    #[error("lane chains are not ordered by their first key")]
+    LaneChainsNotOrdered,
+
+    /// 逐件链里的设备带非零延迟 (逐件分支不做 PDC，延迟设备必须响亮拒绝，
+    /// 不静默忽略其延迟)。
+    #[error(
+        "lane chain `{name}` device `{device}` declares latency {latency} samples; lane branches do not compensate latency"
+    )]
+    LaneChainDeviceLatency {
+        /// 出问题那一组的组名。
+        name: String,
+        /// 出问题那台设备的身份。
+        device: EntityId,
+        /// 设备声明的延迟 (采样点)。
+        latency: u32,
+    },
+
+    /// 逐件链声相越界 (允许 -1.0..=1.0)。
+    #[error("lane chain `{name}` pan {value} out of range -1.0..=1.0")]
+    LaneChainPanOutOfRange {
+        /// 出问题那一组的组名。
+        name: String,
+        /// 实际收到的声相值。
+        value: f32,
+    },
+
     /// 同一集合中出现了重复身份。
     #[error("duplicate entity id `{id}`")]
     DuplicateEntityId {

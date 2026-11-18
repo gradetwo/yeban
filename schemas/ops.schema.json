@@ -552,6 +552,16 @@
         },
         {
           "required": [
+            "SetTrackLaneChains"
+          ],
+          "properties": {
+            "SetTrackLaneChains": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackPreset"
           ],
           "properties": {

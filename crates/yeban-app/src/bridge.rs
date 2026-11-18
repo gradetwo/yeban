@@ -2854,7 +2854,10 @@ pub fn drum_gen_target<'a>(
 ///    **效果族**判：轨上已有非旁通的同族内置效果（以参数名命中
 ///    `yeban_dsp::device_param` 的族拼写表为准）⇒ 该族不重复叠加，
 ///    用户的效果优先；
-/// 4. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
+/// 4. 预置带 `lane_chains` 段时整表写入逐件链（`SetTrackLaneChains`）：
+///    既有轨已有用户逐件链 ⇒ 不覆盖（用户链优先，与 MCP 同口径）；
+///    生成前先过逐件链生成校验（choke 拆分 / 侧链声明 ⇒ 响亮拒绝）；
+/// 5. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
 ///    （tick 0 起、时长 = 小节数 × [`yeban_theory::TICKS_PER_BAR`]）。
 ///
 /// # Errors
@@ -2880,6 +2883,16 @@ pub fn drum_gen_ops(
             "风格 `{}` 的这些鼓道有击点但绑不到音色（生成会无声）: {}",
             preset.id,
             lanes.join(", ")
+        ));
+    }
+    // 逐件链生成校验（默认不能静默，与 MCP 路径同一守卫）：choke 组
+    // 拆分 / 侧链声明（lane 级侧链求值期 4 才落地）⇒ 响亮拒绝。
+    let lane_violations = yeban_theory::lane_chain_generation_violations(preset);
+    if !lane_violations.is_empty() {
+        return Err(format!(
+            "风格 `{}` 的逐件链不可生成: {}",
+            preset.id,
+            lane_violations.join("; ")
         ));
     }
     let mut ops: Vec<Op> = Vec::new();
@@ -3047,6 +3060,31 @@ pub fn drum_gen_ops(
         }
     }
 
+    // 逐件链（预置带 `lane_chains` 段时）：整表写入目标轨。既有轨已有
+    // 用户逐件链时**不覆盖**（与 MCP 路径同一口径；本路径没有计划文本
+    // 通道，跳过 = 保持用户链原样，不静默改写用户数据）。新轨的
+    // `old_lane_chains` 为空表。
+    if !preset.lane_chains.is_empty() {
+        let existing_chains = target.map_or_else(Vec::new, |track| track.lane_chains.clone());
+        if existing_chains.is_empty() {
+            let lane_chains: Vec<yeban_model::LaneChainDef> = preset
+                .lane_chains
+                .iter()
+                .map(|chain| yeban_model::LaneChainDef {
+                    keys: chain.keys.clone(),
+                    name: chain.name.clone(),
+                    devices: drum_lane_devices(chain),
+                    pan: chain.pan,
+                })
+                .collect();
+            ops.push(Op::SetTrackLaneChains {
+                track_id,
+                old_lane_chains: existing_chains,
+                new_lane_chains: lane_chains,
+            });
+        }
+    }
+
     let generated = yeban_theory::generate_drum_pattern(preset, params)
         .map_err(|error| format!("鼓型生成失败: {error}"))?;
     if generated.is_empty() {
@@ -3107,6 +3145,29 @@ fn drum_fx_families_present(devices: &[DeviceDefinition]) -> yeban_theory::DrumF
     present
 }
 
+/// 把一份器件配方落成本路径的器件（身份随机分配）。整轨 `fx` 与逐件链
+/// 共用同一份配方类型（[`yeban_theory::DrumFxDeviceSpec`]），落点也共用
+/// 本函数，保证两条链的器件形态逐字段一致。
+fn drum_spec_device(spec: yeban_theory::DrumFxDeviceSpec) -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: spec.name.to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: spec
+            .params
+            .into_iter()
+            .map(|(name, value)| ParameterValue {
+                name,
+                value,
+                unit: None,
+            })
+            .collect(),
+        latency_samples: 0,
+        plugin: None,
+    }
+}
+
 /// 把预置 `fx` 段的器件配方（[`yeban_theory::drum_fx_device_specs`]，
 /// 与 MCP 路径共用一份）落成本路径的器件（身份随机分配）。
 fn drum_fx_devices(
@@ -3115,23 +3176,16 @@ fn drum_fx_devices(
 ) -> Vec<DeviceDefinition> {
     yeban_theory::drum_fx_device_specs(fx, present)
         .into_iter()
-        .map(|spec| DeviceDefinition {
-            id: EntityId::new(),
-            name: spec.name.to_owned(),
-            kind: DeviceKind::InternalEffect,
-            bypassed: false,
-            params: spec
-                .params
-                .into_iter()
-                .map(|(name, value)| ParameterValue {
-                    name,
-                    value,
-                    unit: None,
-                })
-                .collect(),
-            latency_samples: 0,
-            plugin: None,
-        })
+        .map(drum_spec_device)
+        .collect()
+}
+
+/// 把一条逐件链预置的器件配方（[`yeban_theory::drum_lane_device_specs`]，
+/// 与 MCP 路径共用一份）落成本路径的器件（身份随机分配）。
+fn drum_lane_devices(chain: &yeban_theory::DrumLaneChainPreset) -> Vec<DeviceDefinition> {
+    yeban_theory::drum_lane_device_specs(chain)
+        .into_iter()
+        .map(drum_spec_device)
         .collect()
 }
 
@@ -10412,8 +10466,8 @@ mod tests {
         let ops = drum_gen_ops(&project, &preset, &params, None).expect("新建鼓轨批次");
         assert_eq!(
             ops.len(),
-            14,
-            "建轨 2 + 总线 6 + 装鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
+            15,
+            "建轨 2 + 总线 6 + 装鼓组 1 + 效果层 3 + 逐件链 1 + 片段 2: {ops:?}"
         );
         match &ops[0] {
             Op::AddTrack { track } => {
@@ -10514,9 +10568,30 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+        // 逐件链整表写入（trap 的闭镲组 [42]，一台通道条，带 350 Hz 高通）。
+        match &ops[12] {
+            Op::SetTrackLaneChains {
+                old_lane_chains,
+                new_lane_chains,
+                ..
+            } => {
+                assert!(old_lane_chains.is_empty(), "新轨旧值必须为空表");
+                assert_eq!(new_lane_chains.len(), 1);
+                assert_eq!(new_lane_chains[0].name, "hats");
+                assert_eq!(new_lane_chains[0].keys, vec![42]);
+                assert_eq!(new_lane_chains[0].devices.len(), 1);
+                assert!(
+                    new_lane_chains[0].devices[0]
+                        .params
+                        .iter()
+                        .any(|p| p.name == "hpf_hz" && p.value == 350.0)
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         // 片段音符与 theory 生成逐项一致（tick / 音高 / 力度 / 时值）。
         let expected = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();
-        match &ops[12] {
+        match &ops[13] {
             Op::AddClip { clip } => match &clip.content {
                 ClipContent::Midi { notes } => {
                     assert_eq!(notes.len(), expected.len());
@@ -10536,7 +10611,7 @@ mod tests {
             },
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[13] {
+        match &ops[14] {
             Op::AddClipPlacement { placement, .. } => {
                 assert_eq!(placement.start_tick, 0);
                 assert_eq!(placement.duration_ticks, 4 * yeban_theory::TICKS_PER_BAR);
@@ -10603,8 +10678,9 @@ mod tests {
         let ops =
             drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
         // 鼓组不动（无装鼓组笔），但效果层照常补齐（该轨没有任何效果）：
-        // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 延迟（槽 3）+ 片段两笔。
-        assert_eq!(ops.len(), 5, "效果层 3 + 片段 2: {ops:?}");
+        // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 延迟（槽 3）
+        // + 逐件链整表一笔 + 片段两笔。
+        assert_eq!(ops.len(), 6, "效果层 3 + 逐件链 1 + 片段 2: {ops:?}");
         assert!(
             !ops.iter()
                 .any(|op| matches!(op, Op::SetTrackSampler { .. })),
@@ -10645,14 +10721,67 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        assert!(matches!(ops[3], Op::AddClip { .. }));
-        match &ops[4] {
+        // 逐件链整表写入（该轨原本没有逐件链，old = 空表）。
+        match &ops[3] {
+            Op::SetTrackLaneChains {
+                track_id: chained_on,
+                old_lane_chains,
+                new_lane_chains,
+            } => {
+                assert_eq!(*chained_on, track_id);
+                assert!(old_lane_chains.is_empty());
+                assert_eq!(new_lane_chains.len(), 1);
+                assert_eq!(new_lane_chains[0].keys, vec![42]);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[4], Op::AddClip { .. }));
+        match &ops[5] {
             Op::AddClipPlacement {
                 track_id: placed_on,
                 ..
             } => assert_eq!(*placed_on, track_id),
             other => panic!("unexpected op: {other:?}"),
         }
+    }
+
+    #[test]
+    fn drum_gen_ops_existing_track_with_user_lane_chains_keeps_them() {
+        let mut project = filled_project();
+        let track_id = EntityId::new();
+        let mut equipped = TrackV3 {
+            id: track_id,
+            name: "我的鼓轨".to_owned(),
+            kind: TrackKind::Midi,
+            devices: vec![DeviceDefinition {
+                id: EntityId::new(),
+                name: "已有乐器".to_owned(),
+                kind: DeviceKind::InternalInstrument,
+                bypassed: false,
+                params: Vec::new(),
+                latency_samples: 0,
+                plugin: None,
+            }],
+            ..TrackV3::default()
+        };
+        equipped.lane_chains = vec![yeban_model::LaneChainDef {
+            keys: vec![36],
+            name: "mine".to_owned(),
+            devices: Vec::new(),
+            pan: Some(0.5),
+        }];
+        project.tracks.insert(track_id, equipped);
+        let target = project.tracks.get(&track_id).unwrap();
+        let preset = yeban_theory::factory_drum_style("house")
+            .unwrap()
+            .expect("house 预置必须存在");
+        let ops =
+            drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::SetTrackLaneChains { .. })),
+            "已有用户逐件链的轨不得被生成覆盖: {ops:?}"
+        );
     }
     #[test]
     fn drum_gen_ops_existing_track_with_user_reverb_keeps_it() {
