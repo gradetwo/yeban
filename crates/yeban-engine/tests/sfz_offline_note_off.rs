@@ -40,6 +40,7 @@ const HZ: f32 = 48_000.0;
 /// 一条常值 PCM（`Arc` 共享，与真实解码路径同形状）。
 fn flat(value: f32, frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![value; frames]),
         sample_hz: HZ,
         loop_points: None,

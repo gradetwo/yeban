@@ -80,6 +80,7 @@ fn engine_render_pitch_is_exact() {
             "{rate} Hz 输入 PCM 偏差 {cents_in:+.2} 音分"
         );
         let sample = InMemorySample {
+            channels: 1,
             pcm: Arc::new(pcm),
             sample_hz: rate as f32,
             loop_points: None,

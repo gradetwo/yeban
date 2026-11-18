@@ -2372,18 +2372,32 @@ pub struct SampleLoop {
     pub end: u32,
 }
 
-/// 单个采样（**单声道、已归一化**的 PCM ＋ 它自己的采样率 ＋ 文件自带的循环点）。
+/// 单个采样（**已归一化**的 PCM ＋ 声道数 ＋ 它自己的采样率 ＋ 文件自带的循环点）。
 ///
 /// ⚠ 本仓目前**没有**采样文件读取/解码 ⇒ 样本数据必须由**调用方**提供；
 /// 本类型是离线/控制侧的最小载体（构造期分配，⛔ 不用于实时回调）。
+///
+/// ⭐ **立体声（本片，`line/sfz-stereo-path`）**：`pcm` 是**交错**存储
+/// （帧 `f` 的声道 `c` 在 `pcm[f * channels + c]`）；`channels == 1` 时布局与
+/// 本片之前**逐字相同**（单声道样本全链路逐位不变）。这正式取代 R315 的
+/// 「多声道取声道 0」裁决（台账新条目写明取代关系）：解码侧保留声道、
+/// 分声道通路真立体声出声；单声道通路读声道 0（＝ 旧口径听到的那一份，
+/// ⛔ 不发明下混）。文件解码只接受 1／2 声道（照 sfizz `getReaderInformation`
+/// 的口径），>2 声道在装载侧响亮拒绝（见 `yeban-app` 的 `sfz_load`）。
 #[derive(Debug, Clone)]
 pub struct InMemorySample {
-    /// 单声道 PCM（归一化到 `[-1, 1]`）。
+    /// 交错 PCM（归一化到 `[-1, 1]`；帧数 ＝ `len / channels`）。
     ///
     /// ⭐ `#279`：`Arc<Vec<f32>>` —— 摊平表用 `Arc::clone` **共享**它（⛔ 不再整段 clone）
     /// ⇒ "调用方手里那份已解码 PCM"与"摊平表"是**同一块内存**。调用方解码后包一次
     /// `Arc::new` 即可；⛔ 本类型与摊平表都**只读**它（全仓对 PCM 的 `&mut` 取值点 ＝ 0）。
     pub pcm: Arc<Vec<f32>>,
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声；解码侧只产出这两档）。
+    ///
+    /// ⭐ 交错存储的理由：解码器（hound／symphonia）原生输出交错帧，
+    /// 保留原序 ⇒ 解码腿零重排；逐样本取数是 `index * channels + channel`
+    /// 一次乘加（见 [`mix_span_into`]），⛔ 不需要第二份缓冲。
+    pub channels: u16,
     /// 该 PCM 的原始采样率（Hz）—— 换算交给 `yeban-sfz` 的 `RenderRates`。
     pub sample_hz: f32,
     /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 文件里没有 loop，
@@ -2407,9 +2421,17 @@ impl InMemorySample {
             .collect();
         Self {
             pcm: Arc::new(pcm),
+            channels: 1,
             sample_hz,
             loop_points: None,
         }
+    }
+
+    /// 帧数（`pcm.len() / channels`；声道数按至少 1 计 ⇒ 手工构造的
+    /// `channels == 0` 不会除零，读数退化为"全部样本算一帧一格"的单声道口径）。
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.pcm.len() / usize::from(self.channels.max(1))
     }
 
     /// ⭐ **挂上文件自带的循环点**（构造期链式调用；`#331`）。
@@ -6077,20 +6099,27 @@ pub struct PreparedSfz {
     has_release: bool,
 }
 
-/// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
+/// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 声道数 ＋ 原始采样率。
 ///
 /// ⭐ `#279`：PCM 是**共享**进来的（`Arc<Vec<f32>>`，构造期只 `Arc::clone` 一次引用计数）
 /// ⇒ 同一份已解码 PCM 在多条轨／多个摊平表之间**只有一份字节**；`PreparedSample`
 /// 因此从 **56 B → 40 B**（`String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐）。⛔ 仍无流式与字节预算
 /// ⇒ sfz-needs-8 的"流式"那一半仍未闭合。回调侧只**借用** PCM（⛔ 不 clone、⛔ 不 `Arc` clone）。
+///
+/// ⭐ **本片（立体声样本通路）**：新增 `channels: u16`（交错存储，见
+/// [`InMemorySample::channels`]）⇒ 本结构 **48 B → 56 B**（`#331` 的
+/// `loop_points` 已占 48 B，`u16` 落不进既有填充）；判据 S12b 的尺寸钉
+/// 已按此改钉并留修订段。⛔ 仍不进实时对象（按样本数计、摊平期定）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSample {
     /// 去重键 ＝ [`yeban_sfz::instrument::Region::sample_path`] 的字符串（⛔ 不规范化、⛔ 不查文件）。
     ///
     /// ⚠ [`PreparedSfz::prepare`] 的**广播**路径没有路径身份 ⇒ 它是**空串**。
     path: String,
-    /// 单声道 PCM（归一化到 `[-1, 1]`；与调用方 `InMemorySample.pcm` **同一块内存**）。
+    /// 交错 PCM（归一化到 `[-1, 1]`；与调用方 `InMemorySample.pcm` **同一块内存**）。
     pcm: Arc<Vec<f32>>,
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声；摊平期自 [`InMemorySample::channels`] 抄入）。
+    channels: u16,
     /// 该 PCM 的原始采样率（Hz；摊平期已在 `Region::playback_rate` 里换算过）。
     sample_hz: f32,
     /// ⭐ **文件自带的循环点**（任务单 `#331`；`None` ＝ 没有）。
@@ -6114,6 +6143,12 @@ impl PreparedSample {
         &self.pcm
     }
 
+    /// 声道数（`1` ＝ 单声道、`2` ＝ 立体声）。
+    #[must_use]
+    pub const fn channels(&self) -> u16 {
+        self.channels
+    }
+
     /// 原始采样率（Hz）。
     #[must_use]
     pub const fn sample_hz(&self) -> f32 {
@@ -6128,13 +6163,17 @@ impl PreparedSample {
         self.loop_points
     }
 
-    /// 帧数。
+    /// 帧数（`pcm.len() / channels`；立体声一帧仍算一帧 —— 与装载侧
+    /// `MAX_SAMPLE_FRAMES_TOTAL` 的按帧记账同一口径）。
     #[must_use]
     pub fn frames(&self) -> usize {
-        self.pcm.len()
+        self.pcm.len() / usize::from(self.channels.max(1))
     }
 
     /// PCM 字节数（⛔ 不含 `path` 文本）。
+    ///
+    /// ⭐ 按**实际存储的样本数**计（立体声每帧 2 个）⇒ 内存/峰值记账随声道数
+    /// 如实放大，⛔ 不按帧数低估（本片口径，判据钉住）。
     #[must_use]
     pub fn pcm_bytes(&self) -> usize {
         core::mem::size_of::<f32>() * self.pcm.len()
@@ -6147,6 +6186,7 @@ impl PreparedSample {
         Self {
             path,
             pcm: Arc::clone(&source.pcm),
+            channels: source.channels,
             sample_hz: source.sample_hz,
             loop_points: source.loop_points,
         }

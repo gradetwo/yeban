@@ -32,6 +32,7 @@ const RATE: f32 = 48_000.0;
 /// 480 帧的常量样本（`0.25`）—— "真样本"那条腿用。
 fn sample() -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![0.25; 480]),
         sample_hz: RATE,
         loop_points: None,

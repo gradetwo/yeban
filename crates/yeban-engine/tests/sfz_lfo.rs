@@ -35,6 +35,7 @@ const OUT: usize = 4_800;
 /// 恒值样本：输出 = 恒值 × 增益链 ⇒ 增益调制可逐位对读。
 fn constant() -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![0.5_f32; PCM]),
         sample_hz: HZ,
         loop_points: None,
@@ -47,6 +48,7 @@ fn sine(freq: f32) -> InMemorySample {
         .map(|i| 0.5 * (2.0 * std::f32::consts::PI * freq * i as f32 / HZ).sin())
         .collect();
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm),
         sample_hz: HZ,
         loop_points: None,
@@ -313,6 +315,7 @@ fn sine_long(freq: f32) -> InMemorySample {
         .map(|i| 0.5 * (2.0 * std::f32::consts::PI * freq * i as f32 / HZ).sin())
         .collect();
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm),
         sample_hz: HZ,
         loop_points: None,

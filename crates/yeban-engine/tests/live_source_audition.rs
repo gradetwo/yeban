@@ -87,6 +87,7 @@ fn peak(samples: &[f32]) -> f32 {
 
 fn constant_sfz_sample(amplitude: f32, frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![amplitude; frames]),
         sample_hz: 48_000.0,
         loop_points: None,

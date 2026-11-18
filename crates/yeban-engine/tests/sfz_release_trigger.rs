@@ -41,6 +41,7 @@ const NOTE: u8 = 60;
 /// 常值 PCM（首帧可反解是哪一个样本）。
 fn flat(value: f32) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![value; FRAMES]),
         sample_hz: HZ,
         loop_points: None,

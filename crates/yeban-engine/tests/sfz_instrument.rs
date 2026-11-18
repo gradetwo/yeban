@@ -643,6 +643,7 @@ fn s1c_a_mid_block_note_starts_on_its_own_frame_and_does_not_double() {
     )
     .expect("SFZ 必须解析成功");
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![0.5; 4_096]),
         sample_hz: 48_000.0,
         loop_points: None,
@@ -1526,6 +1527,7 @@ fn s12b_the_plan_shares_the_callers_pcm_instead_of_copying_it() {
     )
     .expect("解析必须成功");
     let caller = InMemorySample {
+        channels: 1,
         pcm: Arc::new(
             (0..FRAMES)
                 .map(|frame| (frame % 97) as f32 / 97.0)
@@ -2231,6 +2233,7 @@ fn constant_plan(regions: usize, key: u8) -> PreparedSfz {
     }
     let sfz = SfzInstrument::load(text, &Default::default()).expect("SFZ 必须解析成功");
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0f32; SAMPLE_FRAMES]),
         sample_hz: 48_000.0,
         loop_points: None,
@@ -3279,6 +3282,7 @@ const LOOP_RENDER_FRAMES: usize = LOOP_END + 3 * LOOP_PERIOD;
 /// 下标**，从而把"循环周期"量成**下标的精确序列**，⛔ 不是"波形看起来像在重复"。
 fn ramp_sample(frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(
             (0..frames)
                 .map(|frame| (frame + 1) as f32 / 1024.0)
@@ -3733,6 +3737,7 @@ const AMPEG_NOTE_OFF: usize = AMPEG_SUSTAIN_START + 240;
 /// （本片实测：`frac = 0.1` 时该式**不等于** 1.0）。
 fn flat_sample(frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0f32; frames]),
         sample_hz: 48_000.0,
         loop_points: None,
@@ -5069,6 +5074,7 @@ fn s47_the_clamp_stays_inside_the_window_and_bounds_every_sample() {
     pcm[0] = -OUTLIER;
     pcm[LOOP_PCM_FRAMES - 1] = OUTLIER;
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm.clone()),
         sample_hz: 48_000.0,
         loop_points: None,
@@ -6080,6 +6086,7 @@ fn s55_two_cc_values_change_the_envelope_by_the_specification_formula() {
     let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
     // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（实测写入 71999）。
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
         loop_points: None,
@@ -6264,6 +6271,7 @@ fn s57_the_fixture_can_actually_show_the_difference() {
                             ampeg_attack=0.5 ampeg_attack_oncc100=0.5\n";
     const WITHOUT_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.5\n";
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
         loop_points: None,
@@ -6587,6 +6595,7 @@ fn s60_two_velocities_change_the_envelope_by_the_specification_formula() {
     let instrument = SfzInstrument::load(SFZ_WITH.to_owned(), &Default::default()).expect("解析");
     // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（与 S55 同款）。
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
         loop_points: None,
@@ -6682,6 +6691,7 @@ fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity(
                        ampeg_attack=0.005 ampeg_vel2attack=-0.004\n";
     let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
         loop_points: None,
@@ -6774,6 +6784,7 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     const ZERO_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
                             ampeg_attack=0.005 ampeg_vel2attack=0\n";
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
         loop_points: None,
@@ -6934,6 +6945,7 @@ fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
     const HZ: f32 = 48_000.0;
     const FRAMES: usize = 512;
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
         loop_points: None,
@@ -7038,6 +7050,7 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
     let instrument = SfzInstrument::load(CC_ATTACK_FIXTURE.to_owned(), &Default::default())
         .expect("夹具必须解析成功");
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
         loop_points: None,
@@ -7295,6 +7308,7 @@ fn expected_cc_fade_in(v: u8, high: u8, power: bool) -> f32 {
 /// ⭐ 恒 `1.0` 的样本（S67／S68 用）：`rate == 1.0`、`frac == 0` ⇒ 插值逐位精确。
 fn constant_sample(frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![1.0; frames]),
         sample_hz: 48_000.0,
         loop_points: None,
@@ -9867,6 +9881,7 @@ fn s95_reverse_is_really_reversed_and_matches_the_reversed_source_reading() {
     let mut reversed_pcm = sample.pcm[DIR_OFFSET..DIR_END_INCLUSIVE + 1].to_vec();
     reversed_pcm.reverse();
     let reversed_sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(reversed_pcm),
         sample_hz: sample.sample_hz,
         loop_points: None,
@@ -11704,6 +11719,7 @@ fn tune_compound_fixture(items: usize, delta: i32) -> String {
 /// 在**非零帧数**与**指纹**上都分得开（`InMemorySample::sine` 的 `pcm[0] == 0` 分不开）。
 fn ramp_at(sample_hz: f32, frames: usize) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(
             (0..frames)
                 .map(|frame| (frame + 1) as f32 / 1024.0)
@@ -17200,6 +17216,7 @@ fn s120_cutoff_oncc_modulates_the_lowpass_per_block() {
     const HZ: f32 = 48_000.0;
     const FRAMES: usize = 512;
     let sample = InMemorySample {
+        channels: 1,
         pcm: Arc::new(
             (0..4_096)
                 .map(|index| {

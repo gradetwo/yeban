@@ -49,6 +49,7 @@ const PCM: usize = 4_096;
 /// 斜坡样本：第 `i` 帧的值 ＝ `i as f32` ⇒ 输出序列能**逐帧反解**位置。
 fn ramp_sample(loop_points: Option<SampleLoop>) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new((0..PCM).map(|index| index as f32).collect()),
         sample_hz: 48_000.0,
         loop_points,

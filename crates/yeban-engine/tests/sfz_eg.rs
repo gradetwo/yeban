@@ -41,6 +41,7 @@ fn nyquist() -> InMemorySample {
         .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
         .collect();
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm),
         sample_hz: HZ,
         loop_points: None,
@@ -50,6 +51,7 @@ fn nyquist() -> InMemorySample {
 /// 恒值样本：输出 = 恒值 × 包络 × 增益 ⇒ 包络形状可逐位对读。
 fn constant() -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![0.5_f32; PCM]),
         sample_hz: HZ,
         loop_points: None,

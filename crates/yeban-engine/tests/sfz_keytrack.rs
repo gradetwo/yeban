@@ -34,6 +34,7 @@ const FRAMES: usize = 4096;
 /// 一条常值 PCM。
 fn flat(value: f32) -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(vec![value; FRAMES]),
         sample_hz: HZ,
         loop_points: None,
@@ -44,6 +45,7 @@ fn flat(value: f32) -> InMemorySample {
 /// 读位置不同必然读出不同值，音高差可直接由输出反解）。
 fn ramp() -> InMemorySample {
     InMemorySample {
+        channels: 1,
         pcm: Arc::new((0..FRAMES).map(|i| i as f32 / FRAMES as f32).collect()),
         sample_hz: HZ,
         loop_points: None,

@@ -37,6 +37,7 @@ fn nyquist() -> InMemorySample {
         .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
         .collect();
     InMemorySample {
+        channels: 1,
         pcm: Arc::new(pcm),
         sample_hz: HZ,
         loop_points: None,
