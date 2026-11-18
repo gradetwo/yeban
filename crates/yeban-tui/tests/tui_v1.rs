@@ -260,6 +260,22 @@ fn undo_redo_wired_through_gui_and_vi_keys() {
     assert!(!app.project.tracks[&track_id].mute);
 }
 
+/// K6：`Tab` 在三个窗格间循环焦点（轨道→片段→检查器→轨道），
+/// 不改模式、不改选轨。
+#[test]
+fn tab_cycles_pane_focus() {
+    let mut app = App::with_demo().expect("demo app");
+    assert_eq!(app.focus, Pane::Tracks);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Pane::Grid, "Tab 1 应到片段网格");
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Pane::Inspector, "Tab 2 应到检查器");
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Pane::Tracks, "Tab 3 应回到轨道");
+    assert_eq!(app.mode, Mode::Normal, "Tab 不应改模式");
+    assert_eq!(app.selected, 0, "Tab 不应改选轨");
+}
+
 /// 编辑一轮：片段网格焦点下 `L` 平移片段（走 MoveClipPlacement）、
 /// GUI `Delete` 删摆放、`:tempo` 改速度、`:seek` 定位播放头；
 /// 每笔文档编辑都可撤销。
