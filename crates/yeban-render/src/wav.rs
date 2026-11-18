@@ -460,7 +460,7 @@ fn channels_f32_from_plain(
 /// 因此本腿改用纯 `std` 的 `Seek + Read` 按需读：**目标不变，机制换一条**。
 ///
 /// 目标（与原定 mmap 腿逐条对齐）：整文件**不**解码进内存 —— 每次
-/// `read_mono_frames` 只 `seek` 到帧偏移、读一窗口字节、换算出 `f32`；
+/// `read_mono_frames`／`read_frames` 只 `seek` 到帧偏移、读一窗口字节、换算出 `f32`；
 /// 常驻内存只有磁盘线程的环（有界）与本腿复用的窗口缓冲（有界）；
 /// 页缓存仍由操作系统提供（`read` 同样走页缓存）。与 mmap 相比，唯一
 /// 多出的是每窗口一次 `seek + read` 系统调用（页缓存命中时可忽略）
@@ -469,6 +469,9 @@ fn channels_f32_from_plain(
 /// 磁盘线程无论如何都要把样本**拷贝进环**（`SampleRing` 是独立缓冲）。
 /// 接口与原定按需读腿同形（`open`／`frames`／`sample_hz`／`channels`／
 /// `read_mono_frames`），将来若集成者授权新 crate 做映射隔离，本腿可直换。
+/// 立体声样本通路（台账 §15.8 缺口二）后另加**保声道**的
+/// [`read_frames`](PagedWav::read_frames)：交错读出全部声道，与整文件保声道腿
+/// [`read_plain_wav_f32`] 逐位一致；`read_mono_frames` 保留原口径（取声道 0）。
 ///
 /// ## 接受面（窄，⛔ 不贪）
 ///
@@ -486,6 +489,11 @@ fn channels_f32_from_plain(
 /// （`#254` 口径）、浮点直用、声道折叠同为"取第 0 声道"（⛔ 不降混）。
 /// 判据见本模块测试（int16／int24／float32、单声道／立体声、data 前有
 /// 杂 chunk 三组，全量比位）。
+///
+/// 同理，`read_frames` 全量交错读出与 [`read_plain_wav_f32`]（保声道腿）
+/// **逐位相同**：两读法共用同一份逐样本换算（[`PagedWav::convert_sample`]），
+/// 换算逐样本独立 ⇒ 取声道与换算顺序无关。判据见本模块测试
+/// （立体声三位深全量比位＋窗口读切片对齐）。
 ///
 /// ## 预算口径
 ///
@@ -608,39 +616,67 @@ impl PagedWav {
         self.channels
     }
 
-    /// 从 `start_frame` 起读单声道（第 0 声道）帧进 `out`，返回实读帧数。
+    /// 把一帧字节里的第 `channel` 声道换算成 `f32`（两读法共用一份，
+    /// ⛔ 不许各写一份：分母口径漂移会直接改渲染字节）。
     ///
-    /// 换算口径与 [`read_plain_wav_mono_f32`] 逐字相同（整数除 `2^(bits-1)`、
-    /// 浮点直用）；`start_frame` 越界或 `out` 为空时返回 0。读盘中途出错
-    /// （文件被删／截断）时返回已读帧数 —— 调用方按"流已尽"处理，与
-    /// 整文件腿读失败时的"恒静音＋已播完"结局同类（⛔ 不把 IO 错升级成
-    /// 音频回调里的错误）。
-    pub fn read_mono_frames(&mut self, start_frame: u64, out: &mut [f32]) -> usize {
-        use std::io::{Read as _, Seek as _};
-        let total = self.frames();
-        if start_frame >= total || out.is_empty() {
-            return 0;
-        }
-        let remaining = total - start_frame;
-        let count = (out.len() as u64).min(remaining) as usize;
+    /// 换算口径与整文件腿 [`interleaved_f32_from_plain`] 逐字相同：整数除
+    /// `2^(bits-1)`（`#254`）、浮点直用；逐样本独立 ⇒ 先换算哪个声道、
+    /// 换算与取声道的先后都逐位相同。
+    fn convert_sample(&self, frame_bytes: &[u8], channel: usize) -> f32 {
         let bytes_per_sample = self.block_align / self.channels;
+        let sample = &frame_bytes[channel * bytes_per_sample..(channel + 1) * bytes_per_sample];
+        if self.is_float {
+            f32::from_le_bytes(sample.try_into().expect("浮点样本恰好 4 字节"))
+        } else {
+            match self.bits {
+                16 => {
+                    let value =
+                        i16::from_le_bytes(sample.try_into().expect("16 位样本恰好 2 字节"));
+                    f32::from(value) * (1.0_f32 / 32768.0)
+                }
+                24 => {
+                    let raw =
+                        (sample[0] as i32) | ((sample[1] as i32) << 8) | ((sample[2] as i32) << 16);
+                    let value = if raw & 0x800000 != 0 {
+                        raw - 0x1000000
+                    } else {
+                        raw
+                    };
+                    (value as f32) * (1.0_f32 / 8388608.0)
+                }
+                _ => unreachable!("open 已把整数位深收敛到 16/24，浮点只留 32 位直用分支"),
+            }
+        }
+    }
+
+    /// 读一窗口原始字节进复用缓冲：从 `start_frame` 起 `count` 帧。
+    /// `seek`／读失败（文件被删／截断）返回 `None` —— 调用方按"流已尽"
+    /// 处理（返回 0 帧），⛔ 不把 IO 错升级成音频路径里的错误。
+    fn read_window(&mut self, start_frame: u64, count: usize) -> Option<()> {
+        use std::io::{Read as _, Seek as _};
         let byte_count = count * self.block_align;
         if self.scratch.len() < byte_count {
             self.scratch.resize(byte_count, 0);
         }
         let byte_offset = self.data_start + start_frame * (self.block_align as u64);
-        if self
-            .file
-            .seek(std::io::SeekFrom::Start(byte_offset))
-            .is_err()
-        {
+        self.file.seek(std::io::SeekFrom::Start(byte_offset)).ok()?;
+        self.file.read_exact(&mut self.scratch[..byte_count]).ok()
+    }
+
+    /// 从 `start_frame` 起读单声道（第 0 声道）帧进 `out`，返回实读帧数。
+    ///
+    /// 换算口径与 [`read_plain_wav_mono_f32`] 逐字相同（整数除 `2^(bits-1)`、
+    /// 浮点直用）；`start_frame` 越界或 `out` 为空时返回 0。读盘中途出错
+    /// （文件被删／截断）时返回 0 —— 调用方按"流已尽"处理，与
+    /// 整文件腿读失败时的"恒静音＋已播完"结局同类（⛔ 不把 IO 错升级成
+    /// 音频回调里的错误）。
+    pub fn read_mono_frames(&mut self, start_frame: u64, out: &mut [f32]) -> usize {
+        let total = self.frames();
+        if start_frame >= total || out.is_empty() {
             return 0;
         }
-        if self
-            .file
-            .read_exact(&mut self.scratch[..byte_count])
-            .is_err()
-        {
+        let count = (out.len() as u64).min(total - start_frame) as usize;
+        if self.read_window(start_frame, count).is_none() {
             return 0;
         }
         for (frame_bytes, slot) in self
@@ -649,30 +685,46 @@ impl PagedWav {
             .zip(out.iter_mut())
             .take(count)
         {
-            let sample = &frame_bytes[..bytes_per_sample];
-            *slot = if self.is_float {
-                f32::from_le_bytes(sample.try_into().expect("浮点样本恰好 4 字节"))
-            } else {
-                match self.bits {
-                    16 => {
-                        let value =
-                            i16::from_le_bytes(sample.try_into().expect("16 位样本恰好 2 字节"));
-                        f32::from(value) * (1.0_f32 / 32768.0)
-                    }
-                    24 => {
-                        let raw = (sample[0] as i32)
-                            | ((sample[1] as i32) << 8)
-                            | ((sample[2] as i32) << 16);
-                        let value = if raw & 0x800000 != 0 {
-                            raw - 0x1000000
-                        } else {
-                            raw
-                        };
-                        (value as f32) * (1.0_f32 / 8388608.0)
-                    }
-                    _ => unreachable!("open 已把整数位深收敛到 16/24，浮点只留 32 位直用分支"),
-                }
-            };
+            *slot = self.convert_sample(frame_bytes, 0);
+        }
+        count
+    }
+
+    /// 从 `start_frame` 起**保声道**读帧进 `out`（交错：同一帧的各声道相邻），
+    /// 返回实读帧数（台账 §15.8 缺口二：流式读腿立体声化）。
+    ///
+    /// `out` 按交错样本计长：至多读 `out.len() / channels()` 帧（不足一帧的
+    /// 尾部样本不写）。全量读出与整文件保声道腿 [`read_plain_wav_f32`]
+    /// **逐位相同**（共用 [`PagedWav::convert_sample`]，见结构体文档的
+    /// 逐位一致承诺）；单声道文件上与 [`PagedWav::read_mono_frames`] 逐位相同。
+    /// 越界／空 `out`／读盘出错时返回 0（口径与 `read_mono_frames` 同）。
+    ///
+    /// ⚠ 本腿如实交出文件里的全部声道（>2 声道也读）：声道数上限是
+    /// **调用方**的装载口径（台账 §15.5），喂环层（`sfz_stream`）在打开后
+    /// 按 `channels()` 响亮拒绝 >2，与 app 两条解码腿同口径。
+    pub fn read_frames(&mut self, start_frame: u64, out: &mut [f32]) -> usize {
+        let total = self.frames();
+        if start_frame >= total || out.is_empty() {
+            return 0;
+        }
+        let wanted = out.len() / self.channels;
+        if wanted == 0 {
+            return 0;
+        }
+        let count = (wanted as u64).min(total - start_frame) as usize;
+        if self.read_window(start_frame, count).is_none() {
+            return 0;
+        }
+        for (frame_index, frame_bytes) in self
+            .scratch
+            .chunks_exact(self.block_align)
+            .take(count)
+            .enumerate()
+        {
+            for channel in 0..self.channels {
+                out[frame_index * self.channels + channel] =
+                    self.convert_sample(frame_bytes, channel);
+            }
         }
         count
     }
@@ -2004,6 +2056,147 @@ mod tests {
         let mut empty = vec![0.0_f32; 4];
         assert_eq!(mapped.read_mono_frames(8, &mut empty), 0);
         assert_eq!(mapped.read_mono_frames(100, &mut empty), 0);
+    }
+
+    /// ⭐ §15.8 缺口二判据：**保声道**按需读（`read_frames`）全量交错读出与
+    /// 整文件保声道腿逐位相同（三位深），且立体声的 side 分量真实可测
+    /// （⛔ 不是把声道 0 复制两份的假立体声）。
+    #[test]
+    fn paged_wav_read_frames_keeps_stereo_bit_identical_and_measurably_wide() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        // ---- int16 立体声：左右用方向相反的斜坡（side 分量大、mid 分量小）----
+        let path16 = directory.path().join("paged_stereo16.wav");
+        let frames = 96usize;
+        let mut interleaved16 = Vec::new();
+        for frame in 0..frames {
+            interleaved16.push((frame as i16) * 300 - 14_000);
+            interleaved16.push(12_000 - (frame as i16) * 250);
+        }
+        write_plain_wav(
+            &path16,
+            &PcmFormat::integer(2, 44_100, 16),
+            &PcmBuffer::Int16(interleaved16),
+        )
+        .expect("写 int16 立体声夹具");
+        let (whole16, channels16, _rate, _describe) =
+            read_plain_wav_f32(&path16).expect("整文件保声道腿读 int16 立体声");
+        assert_eq!(channels16, 2);
+        let mut mapped16 = PagedWav::open(&path16).expect("按需读腿开 int16 立体声");
+        assert_eq!(mapped16.channels(), 2);
+        assert_eq!(mapped16.frames(), frames as u64);
+        let mut out16 = vec![0.0_f32; frames * 2];
+        assert_eq!(mapped16.read_frames(0, &mut out16), frames);
+        assert_bit_identical(&out16, &whole16);
+        // 单声道读法仍是声道 0（与保声道输出的偶数位逐位相同）。
+        let mut mono16 = vec![0.0_f32; frames];
+        assert_eq!(mapped16.read_mono_frames(0, &mut mono16), frames);
+        let channel0: Vec<f32> = out16.iter().step_by(2).copied().collect();
+        assert_bit_identical(&mono16, &channel0);
+        // side/mid 可测：side = (L−R)/2 的 RMS 必须显著非零且大于 mid 的 RMS
+        // （夹具左右反向斜坡 ⇒ 声像宽度是构造出来的，不是噪声级）。
+        let (mut mid_sq, mut side_sq) = (0.0_f64, 0.0_f64);
+        for frame in 0..frames {
+            let (left, right) = (f64::from(out16[frame * 2]), f64::from(out16[frame * 2 + 1]));
+            mid_sq += ((left + right) / 2.0).powi(2);
+            side_sq += ((left - right) / 2.0).powi(2);
+        }
+        let mid_rms = (mid_sq / frames as f64).sqrt();
+        let side_rms = (side_sq / frames as f64).sqrt();
+        println!(
+            "[wav] paged stereo16: side RMS={side_rms:.6}, mid RMS={mid_rms:.6}, side/mid={:.3}",
+            side_rms / mid_rms
+        );
+        assert!(
+            side_rms > 0.05,
+            "side 分量必须真实可测（实测 {side_rms}）；若读法把声道 0 复制两份，这里恒为 0"
+        );
+        assert!(
+            side_rms > mid_rms,
+            "夹具声像以 side 为主（side {side_rms} 应大于 mid {mid_rms}）"
+        );
+        // ---- int24 立体声 ----
+        let path24 = directory.path().join("paged_stereo24.wav");
+        let buffer24 = PcmBuffer::Int24(vec![
+            -8_000_000, 8_000_000, -1, 1, 0, 0, 1, -1, 8_388_607, -8_388_608,
+        ]);
+        write_plain_wav(&path24, &PcmFormat::integer(2, 48_000, 24), &buffer24)
+            .expect("写 int24 立体声夹具");
+        let (whole24, channels24, _rate, _describe) =
+            read_plain_wav_f32(&path24).expect("整文件保声道腿读 int24 立体声");
+        assert_eq!(channels24, 2);
+        let mut mapped24 = PagedWav::open(&path24).expect("按需读腿开 int24 立体声");
+        let mut out24 = vec![0.0_f32; 10];
+        assert_eq!(mapped24.read_frames(0, &mut out24), 5);
+        assert_bit_identical(&out24, &whole24);
+        // ---- float32 立体声 ----
+        let path32 = directory.path().join("paged_stereof32.wav");
+        let buffer32 = PcmBuffer::Float32(vec![-1.0, 1.0, -0.5, 0.25, 0.0, -0.0, 0.75, -0.75]);
+        write_plain_wav(&path32, &PcmFormat::float(2, 48_000, 32), &buffer32)
+            .expect("写 float32 立体声夹具");
+        let (whole32, channels32, _rate, _describe) =
+            read_plain_wav_f32(&path32).expect("整文件保声道腿读 float32 立体声");
+        assert_eq!(channels32, 2);
+        let mut mapped32 = PagedWav::open(&path32).expect("按需读腿开 float32 立体声");
+        let mut out32 = vec![0.0_f32; 8];
+        assert_eq!(mapped32.read_frames(0, &mut out32), 4);
+        assert_bit_identical(&out32, &whole32);
+        // ---- 单声道文件走 read_frames：与 read_mono_frames 逐位相同 ----
+        let path_mono = directory.path().join("paged_mono16.wav");
+        write_plain_wav(
+            &path_mono,
+            &PcmFormat::integer(1, 48_000, 16),
+            &PcmBuffer::Int16(vec![-32768, -1, 0, 1, 32767]),
+        )
+        .expect("写单声道夹具");
+        let mut mapped_mono = PagedWav::open(&path_mono).expect("按需读腿开单声道");
+        let mut out_mono = vec![0.0_f32; 5];
+        assert_eq!(mapped_mono.read_frames(0, &mut out_mono), 5);
+        let mut mono_leg = vec![0.0_f32; 5];
+        assert_eq!(mapped_mono.read_mono_frames(0, &mut mono_leg), 5);
+        assert_bit_identical(&out_mono, &mono_leg);
+    }
+
+    /// §15.8 缺口二判据：`read_frames` 窗口读（起帧偏移、超长 out、越界起帧、
+    /// out 长度非声道数整数倍）与整文件保声道腿的交错切片逐帧对齐。
+    #[test]
+    fn paged_wav_read_frames_windowed_stereo_aligns_with_whole_file_slices() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("paged_stereo_window.wav");
+        // 8 帧立体声：左 = 帧号×4096−16384，右 = −左（逐帧可辨）。
+        let mut interleaved = Vec::new();
+        for frame in 0..8_i16 {
+            let left = frame * 4096 - 16384;
+            interleaved.push(left);
+            interleaved.push(-left);
+        }
+        write_plain_wav(
+            &path,
+            &PcmFormat::integer(2, 48_000, 16),
+            &PcmBuffer::Int16(interleaved),
+        )
+        .expect("写立体声窗口夹具");
+        let (whole, channels, _rate, _describe) =
+            read_plain_wav_f32(&path).expect("整文件保声道腿读立体声窗口夹具");
+        assert_eq!(channels, 2);
+        let mut mapped = PagedWav::open(&path).expect("按需读腿开立体声窗口夹具");
+        // 起帧 3、读 4 帧 ⇒ 交错切片 [3×2 .. 7×2]。
+        let mut window = vec![0.0_f32; 8];
+        assert_eq!(mapped.read_frames(3, &mut window), 4);
+        assert_bit_identical(&window, &whole[6..14]);
+        // 超长 out：只回剩余 2 帧（4 个样本），其余位置不写。
+        let mut overlong = vec![9.0_f32; 20];
+        assert_eq!(mapped.read_frames(6, &mut overlong), 2);
+        assert_bit_identical(&overlong[..4], &whole[12..16]);
+        assert_eq!(overlong[4], 9.0, "未读到的位置不得被写");
+        // 越界起帧 ⇒ 0。
+        let mut empty = vec![0.0_f32; 4];
+        assert_eq!(mapped.read_frames(8, &mut empty), 0);
+        assert_eq!(mapped.read_frames(100, &mut empty), 0);
+        // out 长度 3（非声道数整数倍）：只读 1 帧（2 样本），尾样本不写。
+        let mut odd = vec![9.0_f32; 3];
+        assert_eq!(mapped.read_frames(0, &mut odd), 1);
+        assert_bit_identical(&odd[..2], &whole[..2]);
+        assert_eq!(odd[2], 9.0, "不足一帧的尾部样本不得被写");
     }
 
     /// P3 判据：接受面之外的格式按需读腿一律拒绝（调用方回落整文件腿，

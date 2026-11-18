@@ -16,6 +16,10 @@
 //!   写、消费者（音频线程）读，只用原子操作交接：**无锁、无分配、无 IO**。
 //!   消费者路径（[`StreamVoice::read_block`]）只有原子读写与切片拷贝，
 //!   满足实时音频回调"不分配、不加锁、不阻塞 IO"那条红线。
+//!   环里存**交错样本**（一帧 = 声道数个样本相邻）：声道数由磁盘线程打开
+//!   源后发布，环按"帧容量 × 声道数"个槽在首块喂入前建好（见
+//!   [`VoiceState::open_ring`]）⇒ 帧容量口径与单声道时代相同、单声道声部的
+//!   环内存也相同（台账 §15.8 缺口二，2026-11-19 关闭）。
 //! - **起音预载**：声部触发后，磁盘线程先把前 `preload_frames` 帧喂进环
 //!   并打上 `preloaded` 闩，[`StreamVoice::ready`] 才为真 ⇒ 调用方在
 //!   `ready()` 为真后再开播，起音一到就有声，不用等整文件解码。
@@ -23,7 +27,7 @@
 //!   同一文件被多声部触发时只开一次句柄；久未用的句柄按闲置超时与
 //!   数量上限淘汰（策略见 [`StreamCacheConfig`]）。
 //! - **声部池**（[`StreamingVoicePool`]，P3）：`VoicePool`（分配／窃取／
-//!   退役淡出）＋ `StreamEngine`（流式声部）＋单声道求和。离线渲染
+//!   退役淡出）＋ `StreamEngine`（流式声部）＋立体声求和。离线渲染
 //!   仍走 P1 的 `load_with`；本池是预览／实时播放器的声部源。
 //!
 //! ## 预载范围（场景三分的落法）
@@ -67,6 +71,14 @@
 //!   把它 bound 在 300 秒内）；缓存是会话期快照，⛔ 不是文件监听。
 //! - 声部池**不**做变速／音高／包络／循环：那是引擎 `PreparedSfz` 的职责，
 //!   未来播放器再组合。池只做分配／窃取／退役淡出／电平求和。
+//! - 流式通路**保声道**（台账 §15.8 缺口二，2026-11-19 关闭）：三腿
+//!   （WAV 按需读／整文件回落／流式解码）都交错喂环，池按立体声求和
+//!   （单声道声部同值入两声道 = 引擎中心声像 `(1, 1)` 口径，§15.4）。
+//!   声道数 >2 在喂环层**响亮拒绝**：WAV 腿打开后即拒（不入缓存）、
+//!   整文件腿由 `read_sample_file` 拒、流式解码腿首包后拒 —— 三腿结局
+//!   同为声部 `failed`＋已播完（`stats().failed` 可读），⛔ 不折声道、
+//!   不下混（§15.5）。池**不**做声像（pan／width／position 是引擎声部
+//!   渲染链的职责，§15.3），只按声道原样求和。
 //! - 池的淡入曲线是 P3 的决定（`VoicePool` 只给计数器，不给增益函数）：
 //!   退役淡出用 [`StealFade::gain_at`](yeban_sfz::voice_pool::StealFade::gain_at)
 //!   的已走采样数；窃取淡入用**同一函数**的剩余采样数（时间镜像：
@@ -85,7 +97,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -115,6 +127,10 @@ const RING_FULL_BACKOFF: Duration = Duration::from_millis(1);
 
 /// 单生产者／单消费者无锁环：样本以 `f32` 位模式存在 `AtomicU32` 槽里。
 ///
+/// ⚠ 本环的单位是**样本槽**，不是帧：立体声一帧占 2 个槽。帧↔样本的换算
+/// 由调用方按声道数做（环容量 = 帧容量 × 声道数，见 [`VoiceState::open_ring`]）；
+/// 生产者与消费者都只按整帧进出 ⇒ 游标恒落在帧边界上，交错不串位。
+///
 /// 协议（SPSC 的标准原子交接，⛔ 不写 `unsafe` 也能成立）：
 ///
 /// - 生产者只写下标在 `[read_pos, read_pos + capacity)` 里的槽
@@ -139,10 +155,10 @@ pub struct SampleRing {
 }
 
 impl SampleRing {
-    /// 建一个容量为 `frames`（向上取到 2 的幂，夹在 `[2, 2^30]`）的环。
+    /// 建一个容量为 `samples` 个槽（向上取到 2 的幂，夹在 `[2, 2^30]`）的环。
     #[must_use]
-    pub fn new(frames: usize) -> Self {
-        let capacity = frames.clamp(2, 1 << 30).next_power_of_two();
+    pub fn new(samples: usize) -> Self {
+        let capacity = samples.clamp(2, 1 << 30).next_power_of_two();
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             slots.push(AtomicU32::new(0));
@@ -155,13 +171,13 @@ impl SampleRing {
         }
     }
 
-    /// 容量（帧；构造时向上取到的 2 的幂）。
+    /// 容量（样本槽；构造时向上取到的 2 的幂）。
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.slots.len()
     }
 
-    /// 环里可读的帧数（生产者已发布、消费者未读）。
+    /// 环里可读的样本数（生产者已发布、消费者未读）。
     #[must_use]
     pub fn available(&self) -> usize {
         let write = self.write_pos.load(Ordering::Acquire);
@@ -169,15 +185,16 @@ impl SampleRing {
         write.wrapping_sub(read) as usize
     }
 
-    /// 环里还能写的帧数（`capacity - available`，饱和）。
+    /// 环里还能写的样本数（`capacity - available`，饱和）。
     #[must_use]
     pub fn free(&self) -> usize {
         self.capacity().saturating_sub(self.available())
     }
 
-    /// 生产者写：写 `min(samples.len(), free())` 帧，返回实际写下的帧数。
+    /// 生产者写：写 `min(samples.len(), free())` 个样本，返回实际写下的样本数。
     ///
     /// 写不下时返回部分数（⛔ 不阻塞、不覆盖未消费数据）；调用方以后再写。
+    /// ⚠ 调用方须保证单次写入不把一帧拆开（见本类型文档的帧边界不变量）。
     pub fn write(&self, samples: &[f32]) -> usize {
         let read = self.read_pos.load(Ordering::Acquire);
         let write = self.write_pos.load(Ordering::Relaxed);
@@ -193,7 +210,7 @@ impl SampleRing {
         n
     }
 
-    /// 消费者读：读 `min(out.len(), available())` 帧，剩余位置零，返回实读帧数。
+    /// 消费者读：读 `min(out.len(), available())` 个样本，剩余位置零，返回实读样本数。
     ///
     /// 环空时返回 0 且 `out` 全零（⛔ 不阻塞、不等盘）——欠载就是零，由调用方计数。
     pub fn read(&self, out: &mut [f32]) -> usize {
@@ -247,7 +264,13 @@ pub struct VoiceStats {
 /// 声部的共享状态（磁盘线程与消费侧各持一份 `Arc`）。
 #[derive(Debug)]
 struct VoiceState {
-    ring: SampleRing,
+    /// 交错样本环：磁盘线程知道声道数后才建（见 [`VoiceState::open_ring`]）；
+    /// 建好之前消费侧一律读零（与环空同结局）。
+    ring: OnceLock<SampleRing>,
+    /// 环的帧容量（触发时定；实际槽数 = 本值 × 声道数）。
+    ring_frames: usize,
+    /// 声道数：磁盘线程打开源后发布（打开前为 0）；只写一次，⛔ 不复位。
+    channels: AtomicUsize,
     preload_frames: usize,
     /// 起音闩：磁盘线程发布够 `preload_frames` 帧（或文件播完）后置真，⛔ 不复位。
     preloaded: AtomicBool,
@@ -259,6 +282,27 @@ struct VoiceState {
     total_frames: AtomicU64,
     frames_read: AtomicU64,
     underrun_frames: AtomicU64,
+}
+
+impl VoiceState {
+    /// 磁盘线程发布声道数并建环（喂第一块之前调；重复调无副作用——
+    /// `OnceLock::set` 与同值 `store` 都是幂等的）。
+    ///
+    /// 顺序：先发布声道数、再建环。消费侧两样任缺其一都按"还没声"处理
+    /// （声道数 0 ⇒ 按单声道计且全零；环未建 ⇒ 读零），⇒ 两种中间态都安全。
+    /// 环槽数 = `ring_frames × channels` ⇒ 帧容量不因声道数打折，
+    /// 单声道声部的环与单声道时代逐槽相同。
+    fn open_ring(&self, channels: usize) {
+        self.channels.store(channels, Ordering::Release);
+        let _ = self.ring.set(SampleRing::new(self.ring_frames * channels));
+    }
+
+    /// 把声部标成"读盘失败＋已播完"（本层的响亮结局：`stats().failed`
+    /// 可读、声部恒静音、立即 `is_finished`）。
+    fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+        self.eof.store(true, Ordering::Release);
+    }
 }
 
 /// 一条声部流：磁盘线程在后台喂环，消费侧用 [`Self::read_block`] 取声。
@@ -281,6 +325,16 @@ impl StreamVoice {
         self.state.preloaded.load(Ordering::Acquire)
     }
 
+    /// 本声部的声道数（1 或 2）：磁盘线程打开源后发布；打开前为 0。
+    ///
+    /// `ready()` 为真时必 ≥ 1（起音已喂 ⇒ 源已打开）；读盘失败的声部恒为 0
+    /// （恒静音，无声道可言）。消费侧按本值给 `read_block` 的 `out` 定长
+    /// （帧数 × 声道数）。
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.state.channels.load(Ordering::Acquire)
+    }
+
     /// 是否已播完（`eof` 且已读帧数 ≥ 总帧数；读盘失败的声部也算播完——恒静音）。
     #[must_use]
     pub fn is_finished(&self) -> bool {
@@ -289,13 +343,32 @@ impl StreamVoice {
                 >= self.state.total_frames.load(Ordering::Acquire)
     }
 
-    /// 读一块：从环里取声、环空处补零，返回本次读数。
+    /// 读一块：从环里取声、环空处补零，返回本次读数（按**帧**计）。
     ///
-    /// ⛔ 永不阻塞：环里有多少就给多少，缺的补零并计入欠载；`out` 的长度
-    /// 就是本次消费的帧数（实声＋补零之和），与调用方的块长恒一致。
+    /// `out` 是**交错**缓冲，长度应为 帧数 × [`Self::channels`]（声道数
+    /// 未发布时按 1 计：此时环里还没有样本，整块必全零）。`out` 长度不是
+    /// 声道数整数倍时，不足一帧的尾样本只清零、不计帧。
+    /// ⛔ 永不阻塞：环里有多少就给多少，缺的补零并计入欠载；本次消费的
+    /// 帧数（实声＋补零之和）与调用方的块长恒一致。
     pub fn read_block(&self, out: &mut [f32]) -> VoiceRead {
-        let from_ring = self.state.ring.read(out);
-        let underrun = out.len() - from_ring;
+        let channels = self.state.channels.load(Ordering::Acquire).max(1);
+        let frames_out = out.len() / channels;
+        let usable = frames_out * channels;
+        let from_samples = match self.state.ring.get() {
+            Some(ring) => ring.read(&mut out[..usable]),
+            None => {
+                for slot in &mut out[..usable] {
+                    *slot = 0.0;
+                }
+                0
+            }
+        };
+        for slot in &mut out[usable..] {
+            *slot = 0.0;
+        }
+        // 生产者只按整帧写 ⇒ from_samples 恒为声道数的整数倍（帧边界不变量）。
+        let from_ring = from_samples / channels;
+        let underrun = frames_out - from_ring;
         self.state
             .frames_read
             .fetch_add(from_ring as u64, Ordering::Relaxed);
@@ -315,7 +388,9 @@ impl StreamVoice {
         VoiceStats {
             frames_read: self.state.frames_read.load(Ordering::Relaxed),
             underrun_frames: self.state.underrun_frames.load(Ordering::Relaxed),
-            available: self.state.ring.available(),
+            available: self.state.ring.get().map_or(0, |ring| {
+                ring.available() / self.state.channels.load(Ordering::Acquire).max(1)
+            }),
             finished: self.is_finished(),
             failed: self.state.failed.load(Ordering::Acquire),
         }
@@ -505,7 +580,7 @@ impl SourceCache {
 pub struct StreamOptions {
     /// 起音预载帧数（`ready()` 的门槛；0 ＝ 触发即就绪）。
     pub preload_frames: usize,
-    /// 声部环容量（向上取到 2 的幂）。
+    /// 声部环容量（帧；实际槽数 = 帧 × 声道数，再向上取到 2 的幂）。
     pub ring_frames: usize,
     /// 磁盘线程每次喂环的块大小（⛔ 不得为 0，触发时钳到 ≥ 1）。
     pub chunk_frames: usize,
@@ -594,7 +669,9 @@ impl StreamEngine {
     #[must_use]
     pub fn trigger(&self, path: &Path, options: StreamOptions) -> StreamVoice {
         let state = Arc::new(VoiceState {
-            ring: SampleRing::new(options.ring_frames),
+            ring: OnceLock::new(),
+            ring_frames: options.ring_frames,
+            channels: AtomicUsize::new(0),
             preload_frames: options.preload_frames,
             preloaded: AtomicBool::new(options.preload_frames == 0),
             eof: AtomicBool::new(false),
@@ -614,8 +691,7 @@ impl StreamEngine {
             .as_ref()
             .is_some_and(|sender| sender.send(job).is_ok());
         if !sent {
-            state.failed.store(true, Ordering::Release);
-            state.eof.store(true, Ordering::Release);
+            state.fail();
         }
         StreamVoice { state }
     }
@@ -655,45 +731,79 @@ fn disk_main(
     }
 }
 
-/// 喂环的块源：每次产出一块**单声道**帧进 `out`，返回帧数；
-/// `None` ＝ 播完。⛔ 永不返回 `Some(0)`（0 帧即播完，调用方不自旋）。
+/// 流式通路的声道数上限（台账 §15.5：只收 1/2 声道，>2 响亮拒绝）。
+const MAX_STREAM_CHANNELS: usize = 2;
+
+/// 喂环的块源：每次产出一块**交错**帧进 `out`（至多 `max_frames` 帧），
+/// 返回帧数；`None` ＝ 播完。⛔ 永不返回 `Some(0)`（0 帧即播完，调用方不自旋）。
 trait ChunkSource {
-    fn next_mono(&mut self, out: &mut [f32]) -> Result<Option<usize>, DecodeError>;
+    fn next_chunk(
+        &mut self,
+        out: &mut [f32],
+        max_frames: usize,
+    ) -> Result<Option<usize>, DecodeError>;
+    /// 声道数（块源构造时已知为 >0；流式解码腿首包解出前为 0，
+    /// 第一块产出后必 >0——`feed_loop` 据此发布声道数并建环）。
+    fn channels(&self) -> usize;
     /// 播完时的总帧数（喂环结束时写进声部状态；流式腿到 EOF 才知道）。
     fn final_total(&self) -> u64;
 }
 
-/// 整文件腿的块源（回落用）：整段 PCM 的滑动窗口。
+/// 整文件腿的块源（回落用）：整段交错 PCM 的滑动窗口。
 struct WholeFileSource<'a> {
     pcm: &'a [f32],
+    channels: usize,
     offset: usize,
 }
 
 impl ChunkSource for WholeFileSource<'_> {
-    fn next_mono(&mut self, out: &mut [f32]) -> Result<Option<usize>, DecodeError> {
-        if self.offset >= self.pcm.len() {
+    fn next_chunk(
+        &mut self,
+        out: &mut [f32],
+        max_frames: usize,
+    ) -> Result<Option<usize>, DecodeError> {
+        let total_frames = self.pcm.len() / self.channels;
+        let done_frames = self.offset / self.channels;
+        if done_frames >= total_frames {
             return Ok(None);
         }
-        let n = out.len().min(self.pcm.len() - self.offset);
-        out[..n].copy_from_slice(&self.pcm[self.offset..self.offset + n]);
-        self.offset += n;
-        Ok(Some(n))
+        let take = (total_frames - done_frames)
+            .min(max_frames)
+            .min(out.len() / self.channels);
+        if take == 0 {
+            return Ok(None);
+        }
+        let samples = take * self.channels;
+        out[..samples].copy_from_slice(&self.pcm[self.offset..self.offset + samples]);
+        self.offset += samples;
+        Ok(Some(take))
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
     }
 
     fn final_total(&self) -> u64 {
-        self.pcm.len() as u64
+        (self.pcm.len() / self.channels) as u64
     }
 }
 
 /// 按需读腿的块源：[`PagedWav`] 的帧窗口（位置无关，⛔ 不持有文件外状态）。
+/// 保声道读（[`PagedWav::read_frames`]）⇒ 交错原样喂环。
 struct PagedSource<'a> {
     wav: &'a mut PagedWav,
     offset: u64,
 }
 
 impl ChunkSource for PagedSource<'_> {
-    fn next_mono(&mut self, out: &mut [f32]) -> Result<Option<usize>, DecodeError> {
-        let n = self.wav.read_mono_frames(self.offset, out);
+    fn next_chunk(
+        &mut self,
+        out: &mut [f32],
+        max_frames: usize,
+    ) -> Result<Option<usize>, DecodeError> {
+        let channels = self.wav.channels();
+        let usable = max_frames.min(out.len() / channels) * channels;
+        let n = self.wav.read_frames(self.offset, &mut out[..usable]);
         if n == 0 {
             return Ok(None);
         }
@@ -701,16 +811,23 @@ impl ChunkSource for PagedSource<'_> {
         Ok(Some(n))
     }
 
+    fn channels(&self) -> usize {
+        self.wav.channels()
+    }
+
     fn final_total(&self) -> u64 {
         self.wav.frames()
     }
 }
 
-/// 流式解码腿的块源：[`StreamingDecoder`] 的交错输出折成单声道（取第 0 声道）。
+/// 流式解码腿的块源：[`StreamingDecoder`] 的交错输出**原样**通过
+/// （⛔ 不再折声道 0 —— 那是 R315 单声道口径，§15.8 缺口二关闭）。
 ///
-/// 交错缓冲按需增长：`fill` 在 out 装不下一帧时返回 0 且未播完（⛔ 不是 EOF），
+/// 交错缓冲按需增长：`fill` 在缓冲装不下一帧时返回 0 且未播完（⛔ 不是 EOF），
 /// 此时把缓冲翻倍再调 —— 声道数 ≤ 65535（`u16`）⇒ 缓冲上界 65536 样本，
 /// 恒能推进；`fill` 的硬错原样上报（调用方把声部标失败＋已播完）。
+/// 声道数在首包解出后才知道：>2 声道在此**响亮拒绝**（回 `Err` ⇒
+/// 声部 `failed`，§15.5），⛔ 不折不混。
 struct StreamedSource<'s> {
     decoder: StreamingDecoder<'s>,
     inter: Vec<f32>,
@@ -732,7 +849,11 @@ impl<'s> StreamedSource<'s> {
 }
 
 impl ChunkSource for StreamedSource<'_> {
-    fn next_mono(&mut self, out: &mut [f32]) -> Result<Option<usize>, DecodeError> {
+    fn next_chunk(
+        &mut self,
+        out: &mut [f32],
+        max_frames: usize,
+    ) -> Result<Option<usize>, DecodeError> {
         if self.inter_pos >= self.inter_len {
             if self.decoder.is_finished() {
                 return Ok(None);
@@ -744,6 +865,13 @@ impl ChunkSource for StreamedSource<'_> {
                 let frames = self.decoder.fill(&mut self.inter)?;
                 if frames > 0 {
                     let channels = self.decoder.channels().ok_or(DecodeError::EmptyStream)?;
+                    if usize::from(channels) > MAX_STREAM_CHANNELS {
+                        return Err(DecodeError::InconsistentLayout {
+                            detail: format!(
+                                "流式腿只收 1/{MAX_STREAM_CHANNELS} 声道，本流为 {channels} 声道（台账 §15.5），拒绝"
+                            ),
+                        });
+                    }
                     self.channels = usize::from(channels);
                     self.inter_pos = 0;
                     self.inter_len = frames * self.channels;
@@ -752,20 +880,25 @@ impl ChunkSource for StreamedSource<'_> {
                 if self.decoder.is_finished() {
                     return Ok(None);
                 }
-                // out 装不下一帧（声道数未知时也可能）⇒ 翻倍再调。
+                // 缓冲装不下一帧（声道数未知时也可能）⇒ 翻倍再调。
                 self.inter.resize(self.inter.len() * 2, 0.0);
             }
         }
         let available_frames = (self.inter_len - self.inter_pos) / self.channels.max(1);
-        let take = available_frames.min(out.len());
+        let take = available_frames
+            .min(max_frames)
+            .min(out.len() / self.channels.max(1));
         if take == 0 {
             return Ok(None);
         }
-        for (index, slot) in out[..take].iter_mut().enumerate() {
-            *slot = self.inter[self.inter_pos + index * self.channels];
-        }
-        self.inter_pos += take * self.channels;
+        let samples = take * self.channels;
+        out[..samples].copy_from_slice(&self.inter[self.inter_pos..self.inter_pos + samples]);
+        self.inter_pos += samples;
         Ok(Some(take))
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
     }
 
     fn final_total(&self) -> u64 {
@@ -776,6 +909,11 @@ impl ChunkSource for StreamedSource<'_> {
 /// 喂环循环的公共骨架：取消／关停检查、环满退让、预载闩、EOF 旗全部共用；
 /// 三腿只差块源。`initial_total` 已知时先写进声部状态（WAV／整文件腿），
 /// 播完时再以 `final_total` 为准写一次（流式腿到 EOF 才知道总数）。
+///
+/// 声道发布：块源声道数一已知（WAV／整文件腿构造时、流式腿第一块后），
+/// 先 [`VoiceState::open_ring`] 再喂第一块 ⇒ 消费侧见到声道数时环必已建。
+/// 写环只按**整帧**进出（单次写入 ≤ 环空闲的整帧数）⇒ 游标恒落帧边界，
+/// 交错声道不串位（环的帧边界不变量）。
 ///
 /// 块源硬错时返回 `Err`：调用方把声部标失败＋已播完（已喂进环的帧照常播出）。
 fn feed_loop(
@@ -788,31 +926,47 @@ fn feed_loop(
     if let Some(total) = initial_total {
         state.total_frames.store(total, Ordering::Release);
     }
-    let mut scratch = vec![0.0_f32; job.chunk_frames];
+    if source.channels() > 0 {
+        state.open_ring(source.channels());
+    }
+    // 暂存块按最大声道数定长：一块至多 `chunk_frames` 帧 × 2 声道。
+    let mut scratch = vec![0.0_f32; job.chunk_frames * MAX_STREAM_CHANNELS];
     let mut published = 0u64;
     loop {
         if state.cancelled.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
             return Ok(());
         }
-        let Some(n) = source.next_mono(&mut scratch)? else {
+        let Some(frames) = source.next_chunk(&mut scratch, job.chunk_frames)? else {
             break;
         };
-        if n == 0 {
+        if frames == 0 {
             break;
         }
-        let mut written_total = 0usize;
-        while written_total < n {
+        let channels = source.channels();
+        if state.ring.get().is_none() {
+            state.open_ring(channels);
+        }
+        let ring = state.ring.get().expect("open_ring 后环必已建");
+        let samples = frames * channels;
+        let mut written_samples = 0usize;
+        while written_samples < samples {
             if state.cancelled.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let written = state.ring.write(&scratch[written_total..n]);
-            if written == 0 {
+            let free_frames = ring.free() / channels;
+            if free_frames == 0 {
                 // 环满且消费侧停读：只退让、不覆盖、不阻塞。
                 thread::sleep(RING_FULL_BACKOFF);
                 continue;
             }
-            written_total += written;
-            published += written as u64;
+            let want = (samples - written_samples).min(free_frames * channels);
+            let written = ring.write(&scratch[written_samples..written_samples + want]);
+            if written == 0 {
+                thread::sleep(RING_FULL_BACKOFF);
+                continue;
+            }
+            written_samples += written;
+            published += (written / channels) as u64;
             if published >= state.preload_frames as u64 {
                 state.preloaded.store(true, Ordering::Release);
             }
@@ -846,6 +1000,11 @@ fn feed_job(
     if is_plain_wav_suffix(&job.path) {
         if let Some(wav) = cache.get_mut(&job.path, stats) {
             stats.hits.fetch_add(1, Ordering::Relaxed);
+            if wav.channels() > MAX_STREAM_CHANNELS {
+                // 缓存里不该有 >2 声道句柄（插入前已拒）；万一有，同样响亮拒绝。
+                state.fail();
+                return;
+            }
             let total = wav.frames();
             let mut source = PagedSource { wav, offset: 0 };
             let _ = feed_loop(job, shutdown, Some(total), &mut source);
@@ -854,6 +1013,13 @@ fn feed_job(
         stats.misses.fetch_add(1, Ordering::Relaxed);
         match PagedWav::open(&job.path) {
             Ok(mut wav) => {
+                if wav.channels() > MAX_STREAM_CHANNELS {
+                    // ⭐ §15.5：>2 声道**响亮拒绝**（声部 failed＋已播完），
+                    // ⛔ 不入缓存、不折声道 0 —— 按需读腿此前是全通路唯一
+                    // 还在静默折声道的多声道入口（§15.8 缺口二的一半）。
+                    state.fail();
+                    return;
+                }
                 let total = wav.frames();
                 let mut source = PagedSource {
                     wav: &mut wav,
@@ -870,14 +1036,13 @@ fn feed_job(
         Ok(decoder) => {
             let mut source = StreamedSource::new(decoder);
             if feed_loop(job, shutdown, None, &mut source).is_err() {
-                // 流式中途硬错：已喂的帧照常播出，声部转恒静音＋已播完。
-                state.failed.store(true, Ordering::Release);
-                state.eof.store(true, Ordering::Release);
+                // 流式中途硬错（含 >2 声道拒绝）：已喂的帧照常播出，
+                // 声部转恒静音＋已播完。
+                state.fail();
             }
         }
         Err(_) => {
-            state.failed.store(true, Ordering::Release);
-            state.eof.store(true, Ordering::Release);
+            state.fail();
         }
     }
 }
@@ -889,30 +1054,21 @@ fn feed_whole(job: &StreamJob, shutdown: &AtomicBool) {
         Ok(reading) => reading,
         Err(_) => {
             // 读不到 ⇒ 声部恒静音（原因由调用方重读文件自查，本层不另记字符串，
-            // 以免消费侧读它时要锁）。
-            state.failed.store(true, Ordering::Release);
-            state.eof.store(true, Ordering::Release);
+            // 以免消费侧读它时要锁）。>2 声道文件也在这里被 `read_sample_file`
+            // 响亮拒绝（同一结局：`failed` 为真），与 §15.5 对齐。
+            state.fail();
             return;
         }
     };
     let total = reading.frames;
-    // ⭐ 流式腿是**单声道设计**（台账 §15.8 的另一条缺口：流式读腿保声道
-    // 另立线）⇒ `read_sample_file` 保声道后，多声道样本在这里**显式取声道 0**
-    // 再喂（与改前折声道 0 的输出逐位一致）。⛔ 不把交错样本直接当单声道
-    // 喂 —— 那会左右交替误读、音高减半且无声告警。
-    let mono_storage: Vec<f32>;
-    let pcm: &[f32] = if reading.channels > 1 {
-        mono_storage = reading
-            .pcm
-            .iter()
-            .step_by(usize::from(reading.channels))
-            .copied()
-            .collect();
-        &mono_storage
-    } else {
-        &reading.pcm
+    // ⭐ 流式通路已保声道（台账 §15.8 缺口二关闭）：`read_sample_file` 交出的
+    // 交错 PCM **原样**喂环，声道数随行。⛔ 不再折声道 0（那是 R315 口径）；
+    // 也⛔ 不把多声道当单声道误读（`WholeFileSource` 按声道数切帧）。
+    let mut source = WholeFileSource {
+        pcm: &reading.pcm,
+        channels: usize::from(reading.channels),
+        offset: 0,
     };
-    let mut source = WholeFileSource { pcm, offset: 0 };
     let _ = feed_loop(job, shutdown, Some(total), &mut source);
 }
 
@@ -1007,13 +1163,19 @@ struct PoolVoice {
 }
 
 /// P3 流式声部池：`VoicePool`（分配／窃取／退役淡出）＋ [`StreamEngine`]
-/// （流式声部）＋单声道求和。
+/// （流式声部）＋立体声求和。
 ///
 /// 位置：预览／实时播放器的声部源。离线渲染仍走 P1 的 `load_with`。
 ///
 /// 渲染口径（`render_block`）：
-/// - `out` 是**单声道**求和缓冲；本函数先清零再求和（调用方不必预清零）。
-/// - 每槽增益 = `db_to_gain(level_db)` × 包络增益（逐样本）：
+/// - `out` 是**立体声交错**求和缓冲（帧 × 2 声道）；本函数先清零再求和
+///   （调用方不必预清零）。长度为奇数时，尾部多出的一个样本只清零、不成帧。
+/// - 声部按自身声道数入和：立体声声部左右各入各声道；单声道声部同值入
+///   两声道（居中——与引擎中心声像增益 `(1, 1)` 同口径，台账 §15.4；
+///   本池不做 pan／width／position，那是引擎声部渲染链的职责，§15.3）。
+///   声道数未发布的声部（源未打开／已失败）环里尚无样本，跳过读取；
+///   失败声部靠 `is_finished` 在块尾被回收。
+/// - 每槽增益 = `db_to_gain(level_db)` × 包络增益（逐**帧**算，两声道同值）：
 ///   退役槽用 `StealFade::gain_at(已走采样数)`，窃取淡入槽用同一函数的
 ///   剩余采样数（时间镜像，见模块文档）；其余槽包络增益恒 1。
 /// - 每块结束时调 `pool.process(frames)` 推进淡出计时并回收槽位；
@@ -1034,7 +1196,8 @@ pub struct StreamingVoicePool {
 
 impl StreamingVoicePool {
     /// 建池：`capacity` 个槽位、`sample_rate` 定 3 ms 淡出长度、
-    /// `scratch_frames` 为内部读缓冲（块长上限，分块处理时可小于 `out`）。
+    /// `scratch_frames` 为内部读缓冲的**帧**长上限（缓冲实占
+    /// `scratch_frames × 2` 个样本——最宽声部的交错块，分块处理时可小于 `out`）。
     pub fn new(capacity: usize, sample_rate: f32, scratch_frames: usize) -> Result<Self, SfzError> {
         Self::with_cache_config(
             capacity,
@@ -1057,7 +1220,7 @@ impl StreamingVoicePool {
             pool,
             engine: StreamEngine::with_cache_config(cache_config),
             voices: (0..capacity).map(|_| None).collect(),
-            scratch: vec![0.0_f32; scratch_frames.max(1)],
+            scratch: vec![0.0_f32; scratch_frames.max(1) * MAX_STREAM_CHANNELS],
         })
     }
 
@@ -1129,14 +1292,18 @@ impl StreamingVoicePool {
         self.pool.set_level(handle, level_db)
     }
 
-    /// 渲染一块：全部在场声部按电平＋包络增益求和进 `out`（单声道）。
+    /// 渲染一块：全部在场声部按电平＋包络增益求和进 `out`（立体声交错）。
     pub fn render_block(&mut self, out: &mut [f32]) {
         let scratch_len = self.scratch.len();
         for chunk in out.chunks_mut(scratch_len) {
             for slot in chunk.iter_mut() {
                 *slot = 0.0;
             }
-            let frames = chunk.len();
+            let frames = chunk.len() / MAX_STREAM_CHANNELS;
+            if frames == 0 {
+                // 尾部奇数样本：已清零，不成帧（`process` 不推进）。
+                break;
+            }
             let fade = self.pool.steal_fade();
             let fade_samples = fade.samples();
             for index in 0..self.voices.len() {
@@ -1149,24 +1316,40 @@ impl StreamingVoicePool {
                 if !info.active {
                     continue;
                 }
-                let read = pool_voice.voice.read_block(&mut self.scratch[..frames]);
+                let channels = pool_voice.voice.channels();
+                if channels == 0 {
+                    // 源未打开（声道未发布）：环里尚无样本，无可读；
+                    // 失败声部的回收走块尾的 `reap_finished`。
+                    continue;
+                }
+                let read = pool_voice
+                    .voice
+                    .read_block(&mut self.scratch[..frames * channels]);
                 let _ = read;
                 let level = db_to_gain(info.level_db);
                 if level == 0.0 {
                     continue;
                 }
-                for (sample_index, slot) in chunk.iter_mut().enumerate() {
+                for frame in 0..frames {
                     let envelope = if info.retiring {
                         let elapsed =
-                            fade_samples.saturating_sub(info.fade_remaining) + sample_index as u32;
+                            fade_samples.saturating_sub(info.fade_remaining) + frame as u32;
                         fade.gain_at(elapsed)
                     } else if info.fade_in_remaining > 0 {
-                        let remaining = info.fade_in_remaining.saturating_sub(sample_index as u32);
+                        let remaining = info.fade_in_remaining.saturating_sub(frame as u32);
                         fade.gain_at(remaining)
                     } else {
                         1.0
                     };
-                    *slot += self.scratch[sample_index] * level * envelope;
+                    let gain = level * envelope;
+                    if channels == 1 {
+                        let sample = self.scratch[frame] * gain;
+                        chunk[frame * 2] += sample;
+                        chunk[frame * 2 + 1] += sample;
+                    } else {
+                        chunk[frame * 2] += self.scratch[frame * 2] * gain;
+                        chunk[frame * 2 + 1] += self.scratch[frame * 2 + 1] * gain;
+                    }
                 }
             }
             self.pool.process(frames as u32);
@@ -1236,7 +1419,7 @@ mod tests {
     fn ring_full_write_is_capped_not_overwriting() {
         let ring = SampleRing::new(4);
         assert_eq!(ring.write(&[1.0, 2.0, 3.0, 4.0]), 4);
-        assert_eq!(ring.write(&[5.0, 6.0]), 0, "环满时一帧都写不进");
+        assert_eq!(ring.write(&[5.0, 6.0]), 0, "环满时一个样本都写不进");
         let mut out = [0.0_f32; 2];
         assert_eq!(ring.read(&mut out), 2);
         assert_eq!(out, [1.0, 2.0]);
