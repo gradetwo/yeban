@@ -10005,15 +10005,7 @@ impl SfzVoicePool {
                     }
                 } else {
                     let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
-                    self.render_slot(
-                        index,
-                        plan,
-                        block_position,
-                        &mut chunk[..len],
-                        cc,
-                        pitch,
-                        0,
-                    );
+                    self.render_slot(index, plan, block_position, &mut chunk[..len], cc, pitch, 0);
                     for (slot, value) in chunk[..len].iter().enumerate() {
                         left[offset + slot] += value * gain_l;
                         right[offset + slot] += value * gain_r;
