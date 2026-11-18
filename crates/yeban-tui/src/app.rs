@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use yeban_app::engine_host::{EditMark, EngineHost};
-use yeban_app::export_wav::{BitDepth, WavExportOptions};
+use yeban_app::export_wav::WavExportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
 use yeban_engine::ring::TransportCommand;
@@ -365,7 +365,7 @@ impl App {
 
     /// Vi 计数前缀的当前值（状态行显示用）。
     pub fn vi_count(&self) -> Option<usize> {
-        self.vi.pending_count()
+        self.vi.count()
     }
 
     /// 选中轨名（状态行显示用）。
@@ -460,7 +460,7 @@ impl App {
             2,
             sample_rate,
             self.project.rng_seed,
-            BitDepth::Bit24,
+            options.bit_depth,
         )
         .map_err(|error| format!("写 WAV 失败：{error}"))?;
         let receipt = ExportReceipt {
@@ -614,9 +614,9 @@ impl App {
             Action::ToggleTrackMute => self.toggle_mute(),
             Action::ToggleTrackSolo => self.toggle_solo(),
             Action::NudgeMixerChannel { param, direction } => {
-                self.nudge_mixer(param, direction);
+                self.nudge_mixer(param, i32::from(direction));
             }
-            Action::SelectTrackBy(delta) => self.move_selection(delta),
+            Action::SelectTrackBy(delta) => self.move_selection(i32::from(delta)),
             Action::ToggleView => {
                 self.focus = self.focus.next();
                 self.log_line(format!("焦点 → {}", self.focus.label()));

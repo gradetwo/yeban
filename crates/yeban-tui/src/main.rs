@@ -119,7 +119,7 @@ fn event_loop(
         let now = Instant::now();
         let elapsed = now.duration_since(last);
         if elapsed >= Duration::from_millis(10) {
-            app.tick(elapsed.as_secs_f64());
+            app.tick();
             last = now;
         }
     }
