@@ -191,6 +191,54 @@ pub struct DrumFxPreset {
     pub delay: Option<DrumDelayPreset>,
 }
 
+/// 鼓总线胶水压缩段（`bus.glue`）：把整组鼓粘成一个整体的慢起振压缩。
+/// 数值口径照 Wang 的 v2 定值：比 2:1–4:1、起振 30 ms 让瞬态先过、
+/// 增益衰减目标 1–2 dB（由阈值与 makeup 共同落）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusGluePreset {
+    /// 压缩阈值（dBFS）−60..=0。
+    pub threshold_db: f32,
+    /// 压缩比 1..=20（出厂定值 2..=4）。
+    pub ratio: f32,
+    /// 压缩软膝（dB）0..=24。
+    pub knee_db: f32,
+    /// 压缩起振（秒）0.0005..=0.2（出厂定值 0.03）。
+    pub attack_s: f32,
+    /// 压缩释放（秒）0.01..=1。
+    pub release_s: f32,
+    /// 压缩 makeup（dB）−12..=12。
+    pub makeup_db: f32,
+}
+
+/// 鼓总线末级软削波段（`bus.clipper`）：链上最后一台，削个别瞬态尖峰、
+/// 防削波失真并抬整体响度。`ceiling_db` 是削波渐近线，出厂定值 −0.3
+/// 量级，保证渲染真峰值留 −0.1 dBTP 以上的余量。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusClipperPreset {
+    /// 输入驱动（dB）0..=24。
+    pub drive_db: f32,
+    /// 削波渐近线（dBFS）−6..=0。
+    pub ceiling_db: f32,
+    /// 软膝宽度（dB）0..=6。
+    pub knee_db: f32,
+    /// 干湿比 0..=1。
+    pub mix: f32,
+    /// 过采样倍数（1/2/4/8）。
+    pub oversample: u32,
+}
+
+/// 鼓总线段（`bus`）：生成时新建一条鼓总线轨（`AuxReturn`），鼓轨先
+/// 进总线、总线再进主总线；总线链 = 胶水压缩 → 末级 Soft Clipper。
+/// 字段缺失（旧格式文件无 `bus`）⇒ 生成不建总线，鼓轨直连主总线，
+/// 与一期行为一致；出厂 14 风格全部带 `bus`（判据钉住）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusPreset {
+    /// 胶水压缩。
+    pub glue: DrumBusGluePreset,
+    /// 末级软削波。
+    pub clipper: DrumBusClipperPreset,
+}
+
 /// 一个风格预置。（不派生 `Eq`：`fx` 段含 `f32`。）
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumStylePreset {
@@ -222,6 +270,11 @@ pub struct DrumStylePreset {
     pub fill_lanes: Option<Vec<DrumLanePreset>>,
     /// 效果层预置（`fx` 段）；`None` = 文件未带效果段，生成走干声。
     pub fx: Option<DrumFxPreset>,
+    /// 鼓总线预置（`bus` 段）；`None` = 文件未带总线段，生成不建总线。
+    pub bus: Option<DrumBusPreset>,
+    /// 原声族的 SFZ 鼓组路径覆盖（`sfz_path` 字段，仓库相对路径）；
+    /// `None` = 用默认基础组 [`ACOUSTIC_KIT_SFZ_PATH`]。电子族忽略。
+    pub sfz_path: Option<String>,
 }
 
 impl DrumStylePreset {
@@ -318,6 +371,31 @@ impl DrumStylePreset {
                 Some(parse_fx(fx_obj)?)
             }
         };
+        let bus = match get_opt(obj, "bus") {
+            None => None,
+            Some(bus_json) => {
+                let bus_obj = bus_json
+                    .as_object()
+                    .ok_or_else(|| field_err("bus", "bus must be an object"))?;
+                Some(parse_bus(bus_obj)?)
+            }
+        };
+        let sfz_path = match get_opt(obj, "sfz_path") {
+            None => None,
+            Some(raw) => {
+                let path = match raw {
+                    Json::Str(s) => s.clone(),
+                    _ => return Err(field_err("sfz_path", "expected a string")),
+                };
+                if path.is_empty() || !path.ends_with(".sfz") || path.contains("..") {
+                    return Err(field_err(
+                        "sfz_path",
+                        format!("expected a repo-relative .sfz path, got `{path}`"),
+                    ));
+                }
+                Some(path)
+            }
+        };
         Ok(Self {
             id,
             name,
@@ -333,6 +411,8 @@ impl DrumStylePreset {
             lanes,
             fill_lanes,
             fx,
+            bus,
+            sfz_path,
         })
     }
 
@@ -511,6 +591,56 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
     })
 }
 
+fn parse_bus(obj: &[(String, Json)]) -> Result<DrumBusPreset, DrumPresetError> {
+    let glue = get_obj(obj, "glue")?;
+    let clipper = get_obj(obj, "clipper")?;
+    let oversample_raw = get_u64(clipper, "oversample")?;
+    let oversample = u32::try_from(oversample_raw)
+        .ok()
+        .filter(|v| matches!(v, 1 | 2 | 4 | 8))
+        .ok_or_else(|| {
+            field_err(
+                "bus.clipper.oversample",
+                format!("oversample must be 1, 2, 4 or 8, got {oversample_raw}"),
+            )
+        })?;
+    Ok(DrumBusPreset {
+        glue: DrumBusGluePreset {
+            threshold_db: get_f32_ranged(
+                glue,
+                "threshold_db",
+                "bus.glue.threshold_db",
+                -60.0,
+                0.0,
+            )?,
+            ratio: get_f32_ranged(glue, "ratio", "bus.glue.ratio", 1.0, 20.0)?,
+            knee_db: get_f32_ranged(glue, "knee_db", "bus.glue.knee_db", 0.0, 24.0)?,
+            attack_s: get_f32_ranged(glue, "attack_s", "bus.glue.attack_s", 0.0005, 0.2)?,
+            release_s: get_f32_ranged(glue, "release_s", "bus.glue.release_s", 0.01, 1.0)?,
+            makeup_db: get_f32_ranged(glue, "makeup_db", "bus.glue.makeup_db", -12.0, 12.0)?,
+        },
+        clipper: DrumBusClipperPreset {
+            drive_db: get_f32_ranged(
+                clipper,
+                "drive_db",
+                "bus.clipper.drive_db",
+                0.0,
+                24.0,
+            )?,
+            ceiling_db: get_f32_ranged(
+                clipper,
+                "ceiling_db",
+                "bus.clipper.ceiling_db",
+                -6.0,
+                0.0,
+            )?,
+            knee_db: get_f32_ranged(clipper, "knee_db", "bus.clipper.knee_db", 0.0, 6.0)?,
+            mix: get_f32_ranged(clipper, "mix", "bus.clipper.mix", 0.0, 1.0)?,
+            oversample,
+        },
+    })
+}
+
 /// 效果族在场标记（生成侧的去重判据由调用方按参数名扫轨上已有器件得出，
 /// 判读口径在调用方：参数名命中 `yeban-dsp` 的族拼写表）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -629,6 +759,43 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
     specs
 }
 
+/// 把 `bus` 段翻译成鼓总线链的器件配方：胶水压缩在前、Soft Clipper
+/// 末级。链内次序由插入链投影的固定级序保证（压缩级 → 削波级），
+/// 这里只需给出两台器件。参数名用 `yeban-dsp` `device_param` 的规范
+/// 拼写（压缩 = 通道条压缩拼写、削波 = `ClipperField` 拼写）。
+#[must_use]
+pub fn drum_bus_device_specs(bus: &DrumBusPreset) -> Vec<DrumFxDeviceSpec> {
+    vec![
+        DrumFxDeviceSpec {
+            family: "glue",
+            name: "Glue Compressor",
+            params: vec![
+                ("compressor_enabled".to_owned(), 1.0),
+                ("threshold_db".to_owned(), bus.glue.threshold_db),
+                ("ratio".to_owned(), bus.glue.ratio),
+                ("knee_db".to_owned(), bus.glue.knee_db),
+                ("attack_s".to_owned(), bus.glue.attack_s),
+                ("release_s".to_owned(), bus.glue.release_s),
+                ("makeup_db".to_owned(), bus.glue.makeup_db),
+            ],
+        },
+        DrumFxDeviceSpec {
+            family: "clipper",
+            name: "Soft Clipper",
+            params: vec![
+                ("clipper_drive_db".to_owned(), bus.clipper.drive_db),
+                ("clipper_ceiling_db".to_owned(), bus.clipper.ceiling_db),
+                ("clipper_knee_db".to_owned(), bus.clipper.knee_db),
+                ("clipper_mix".to_owned(), bus.clipper.mix),
+                (
+                    "clipper_oversample".to_owned(),
+                    bus.clipper.oversample as f32,
+                ),
+            ],
+        },
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // 鼓组装配（默认鼓组一份；按族分工，GM 映射统一）
 // ---------------------------------------------------------------------------
@@ -644,7 +811,7 @@ pub enum DrumKitSetup {
     /// 原声：轨采样器绑定到 SFZ 定义文件。
     AcousticSfz {
         /// SFZ 路径（仓库相对）。
-        sfz_path: &'static str,
+        sfz_path: String,
     },
     /// 电子：轨上插入一台内置乐器设备，参数表即鼓机识别所需的
     /// 五个键位名 + 音色参数（名字口径见 `yeban-engine` 的 `drums`
@@ -667,7 +834,10 @@ pub enum DrumKitSetup {
 pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
     match preset.kit_family {
         KitFamily::Acoustic => DrumKitSetup::AcousticSfz {
-            sfz_path: ACOUSTIC_KIT_SFZ_PATH,
+            sfz_path: preset
+                .sfz_path
+                .clone()
+                .unwrap_or_else(|| ACOUSTIC_KIT_SFZ_PATH.to_owned()),
         },
         KitFamily::Electronic => {
             let mut params: Vec<(String, f32)> = vec![
@@ -692,6 +862,61 @@ pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 击点覆盖审计（段 5 守卫：绑到不存在音色的击点必须响亮失败，不许无声）
+// ---------------------------------------------------------------------------
+
+/// 原声默认鼓组（Virtuosity 系全部出厂程序共用同一张 GM 键位图）里
+/// **有 region 落点**的鼓件键位。出处：`Programs/keymaps/keymap_basic.sfz`
+/// 的 `#define` 键位表（鼓件部分）+ 2026-11-18 全库装载审计逐键核对
+/// （出厂预置用到的每个键都有样本发声）。扩展打击乐键（54–84 的
+/// 非鼓件部分）**不**列入：它们在部分单麦程序里没有 region，列入会
+/// 让守卫对没声音的键放行 —— 宁可将来真用到时守卫响亮报错、人工
+/// 复核后再扩表，也不让表先行放宽。
+pub const ACOUSTIC_KIT_KEYS: &[u8] = &[
+    35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, 55, 57, 59, 82,
+];
+
+/// 本预置的 pattern（主道 + fill）里**有击点但绑不到任何音色**的鼓道：
+/// 返回 `(role, gm_key)` 清单，空 = 全部击点有声。
+///
+/// - 电子族：音色集 = [`kit_setup`] 的合成鼓机参数表里全部 `*_note`
+///   键位（引擎鼓机识别口径的同一份名单，⛔ 不另抄一份）；
+/// - 原声族：音色集 = [`ACOUSTIC_KIT_KEYS`]（按预置选定的 SFZ 程序
+///   共用同一张键位图，见该常量文档）。
+///
+/// 生成路径（MCP `yeban_generate_drum_pattern` 与 UI `drum_gen_ops`）
+/// 在生成前调用本函数，非空即响亮拒绝 —— 这是 Wang「默认不能静默」
+/// 规则在鼓机上的落点：一期电子族 shaker 道（键 82）整道无声的事故
+/// 不许重演。
+#[must_use]
+pub fn uncovered_pattern_keys(preset: &DrumStylePreset) -> Vec<(String, u8)> {
+    let covered: Vec<u8> = match preset.kit_family {
+        KitFamily::Electronic => match kit_setup(preset) {
+            DrumKitSetup::SynthDevice { params, .. } => params
+                .iter()
+                .filter(|(name, _)| name.ends_with("_note"))
+                .map(|(_, value)| *value as u8)
+                .collect(),
+            DrumKitSetup::AcousticSfz { .. } => Vec::new(),
+        },
+        KitFamily::Acoustic => ACOUSTIC_KIT_KEYS.to_vec(),
+    };
+    let mut uncovered = Vec::new();
+    let mut check = |lanes: &[DrumLanePreset]| {
+        for lane in lanes {
+            if lane.steps.iter().any(|step| step.is_hit()) && !covered.contains(&lane.gm_key) {
+                uncovered.push((lane.role.clone(), lane.gm_key));
+            }
+        }
+    };
+    check(&preset.lanes);
+    if let Some(fill) = &preset.fill_lanes {
+        check(fill);
+    }
+    uncovered
 }
 
 // ---------------------------------------------------------------------------

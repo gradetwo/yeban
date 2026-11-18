@@ -2838,7 +2838,9 @@ pub fn drum_gen_target<'a>(
 /// 形状（顺序承重）：
 /// 1. `target = None` 时先 `AddTrack`（名 `<预置名> Drums`、-6 dB）+
 ///    `AddRoutingNode` + `ConnectRouting` 到主总线（主总线节点缺失时补一格，
-///    与 [`track_create_ops`] 同款守卫）；
+///    与 [`track_create_ops`] 同款守卫）；预置带 `bus` 段时先建鼓总线轨
+///    （`AuxReturn` + 胶水压缩 → Soft Clipper），鼓轨先进总线、总线再进
+///    主总线；既有轨目标不新建总线（沿用现有路由）；
 /// 2. 目标轨尚无音源（`sampler` 为空且 `devices` 为空）时按
 ///    [`yeban_theory::kit_setup`] 装默认鼓组：原声族 `SetTrackSampler` 绑
 ///    Virtuosity 基础组、电子族 `InsertDevice` 合成鼓机；已有音源 ⇒ 不动
@@ -2862,6 +2864,20 @@ pub fn drum_gen_ops(
     params: &yeban_theory::DrumGenParams,
     target: Option<&TrackV3>,
 ) -> Result<Vec<Op>, String> {
+    // 击点覆盖审计（默认不能静默，与 MCP 路径同一守卫）：有击点但绑
+    // 不到音色的鼓道 ⇒ 响亮拒绝，不许整道无声地生成出去。
+    let uncovered = yeban_theory::uncovered_pattern_keys(preset);
+    if !uncovered.is_empty() {
+        let lanes: Vec<String> = uncovered
+            .iter()
+            .map(|(role, key)| format!("{role}(key {key})"))
+            .collect();
+        return Err(format!(
+            "风格 `{}` 的这些鼓道有击点但绑不到音色（生成会无声）: {}",
+            preset.id,
+            lanes.join(", ")
+        ));
+    }
     let mut ops: Vec<Op> = Vec::new();
     let (track_id, has_instrument) = match target {
         Some(track) => {
@@ -2896,11 +2912,66 @@ pub fn drum_gen_ops(
             if !project.routing_graph.nodes.contains(&master.id) {
                 ops.push(Op::AddRoutingNode { node: master.id });
             }
+            // 鼓总线（预置带 bus 段时，与 MCP 路径同一形状）：新建
+            // AuxReturn 总线轨 + 总线链（胶水压缩 → Soft Clipper），
+            // 鼓轨先进总线、总线再进主总线。既有轨目标不新建总线
+            // （沿用现有路由，与 MCP 路径同口径）。
+            let drum_destination = match &preset.bus {
+                Some(bus) => {
+                    let bus_id = EntityId::new();
+                    ops.push(Op::AddTrack {
+                        track: TrackV3 {
+                            id: bus_id,
+                            name: format!("{} Drum Bus", preset.name),
+                            kind: TrackKind::AuxReturn,
+                            volume_db: 0.0,
+                            ..TrackV3::default()
+                        },
+                    });
+                    ops.push(Op::AddRoutingNode { node: bus_id });
+                    for (slot_index, spec) in
+                        yeban_theory::drum_bus_device_specs(bus).into_iter().enumerate()
+                    {
+                        ops.push(Op::InsertDevice {
+                            track_id: bus_id,
+                            slot_index,
+                            device: DeviceDefinition {
+                                id: EntityId::new(),
+                                name: spec.name.to_owned(),
+                                kind: DeviceKind::InternalEffect,
+                                bypassed: false,
+                                params: spec
+                                    .params
+                                    .into_iter()
+                                    .map(|(name, value)| ParameterValue {
+                                        name,
+                                        value,
+                                        unit: None,
+                                    })
+                                    .collect(),
+                                latency_samples: 0,
+                                plugin: None,
+                            },
+                        });
+                    }
+                    ops.push(Op::ConnectRouting {
+                        edge: RoutingEdge {
+                            id: EntityId::new(),
+                            source_node: bus_id,
+                            destination_node: master.id,
+                            kind: RoutingKind::BusToMaster,
+                            gain_db: None,
+                        },
+                    });
+                    bus_id
+                }
+                None => master.id,
+            };
             ops.push(Op::ConnectRouting {
                 edge: RoutingEdge {
                     id: EntityId::new(),
                     source_node: track_id,
-                    destination_node: master.id,
+                    destination_node: drum_destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
                 },

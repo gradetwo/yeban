@@ -22,7 +22,9 @@ unknown shapes and out-of-range values are loud errors, never guesses.
 | `bars` | integer | pattern length in bars, 1..=8 (factory presets: 2) |
 | `lanes` | array | drum lanes (see below) |
 | `fill` | object, optional | `{"lanes": [...]}` with exactly 16 steps per lane (1 bar) |
-| `fx` | object, optional | per-style insert FX layer (see below); absent = dry generation. All 10 factory presets carry one, each tuned individually |
+| `fx` | object, optional | per-style insert FX layer (see below); absent = dry generation. All 14 factory presets carry one, each tuned individually |
+| `bus` | object, optional | drum-bus chain (see below); absent = drum track connects straight to the master bus. All 14 factory presets carry one |
+| `sfz_path` | string, optional | acoustic family only: repo-relative path of the SFZ kit program to bind; absent = the default basic kit. Each acoustic factory preset names its own program (different mic mix / kit) |
 
 ## `fx` object
 
@@ -43,6 +45,20 @@ family, that family is not duplicated.
 
 All `fx` sub-fields are required when their object is present; out-of-range
 values are parse errors, never clamped guesses.
+
+## `bus` object
+
+The drum-bus chain. Generation (new-track path only) creates a dedicated
+drum bus track (`AuxReturn`), routes the drum track into it and the bus
+into the master bus, and installs two devices on the bus in chain order:
+
+| field | type | meaning |
+|---|---|---|
+| `glue` | object | glue compressor: `threshold_db` −60..=0, `ratio` 1..=20 (factory values 2..=4), `knee_db` 0..=24, `attack_s` 0.0005..=0.2 (factory value 0.03, per the v2 spec: slow attack lets transients through), `release_s` 0.01..=1, `makeup_db` −12..=12. Target gain reduction is 1–2 dB, set by threshold against the kit level |
+| `clipper` | object | final-stage soft clipper: `drive_db` 0..=24, `ceiling_db` −6..=0 (factory −0.35, keeping rendered true peak below −0.1 dBTP), `knee_db` 0..=6, `mix` 0..=1, `oversample` one of 1/2/4/8 |
+
+Generating onto an existing track does not create a bus (the track keeps
+its current routing); the plan/report says so explicitly.
 
 ## `source` object
 

@@ -1664,5 +1664,22 @@
         ]
       }
     ]
+  },
+  "bus": {
+    "glue": {
+      "threshold_db": -20,
+      "ratio": 2,
+      "knee_db": 6,
+      "attack_s": 0.03,
+      "release_s": 0.22,
+      "makeup_db": 1.0
+    },
+    "clipper": {
+      "drive_db": 0.0,
+      "ceiling_db": -0.35,
+      "knee_db": 3,
+      "mix": 1.0,
+      "oversample": 4
+    }
   }
 }

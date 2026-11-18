@@ -1,0 +1,30 @@
+test the_builtin_hierarchy_survives_the_grouping_api_on_every_registered_meter ... ok
+test swing_never_collapses_a_grid ... ok
+test tonality_only_changes_orthography ... ok
+test the_genre_drum_entry_point_reads_only_the_genres_own_registered_fields ... ok
+test voice_leading_never_exceeds_the_documented_jump_bound ... ok
+test every_genre_produces_a_playable_sketch ... ok
+test voice_leading_is_deterministic ... ok
+test four_voice_configuration_also_respects_the_bound ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s
+
+     Running tests/scan_guards.rs (target/debug/deps/scan_guards-e452b904848d7080)
+
+running 3 tests
+test mask_preserves_byte_length_on_multibyte_samples ... ok
+test scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls ... ok
+test no_criterion_reads_a_runtime_external_resource ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests yeban_theory
+
+running 3 tests
+test crates/yeban-theory/src/drum.rs - drum::styled_drum_pattern (line 441) ... ok
+test crates/yeban-theory/src/drum.rs - drum::drum_pattern (line 401) ... ok
+test crates/yeban-theory/src/lib.rs - (line 47) ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+all doctests ran in 0.17s; merged doctests compilation took 0.15s
