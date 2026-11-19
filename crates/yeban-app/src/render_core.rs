@@ -621,6 +621,18 @@ pub fn render_project_f32_with_plans_under(
         )
         .map_err(|error| WavExportError::Sfz(error.to_string()))?;
         sfz_decoded = decoded;
+        // ⭐ **未命中音符统计**（默认不能静默）：摊平表已进快照 ⇒ 逐轨数
+        //    工程音符里打不中任何 region 的个数并回填解码报告；CLI 导出
+        //    据此产响亮告警行（`SfzDecodeReport::unmatched_notes_line`）。
+        //    在此之前这类音符**完全静默** —— SSO 鼓组八度错位时 60/61/62
+        //    全部打空、导出全程静音而报告一个字都没有。
+        for (track_id, report) in &mut sfz_decoded {
+            if let Some(plan) = snapshot.sfz_plan(track_id) {
+                let (count, pitches) = count_unmatched_notes(project, *track_id, plan.prepared());
+                report.unmatched_note_count = count;
+                report.unmatched_note_pitches = pitches;
+            }
+        }
         // ⭐ 快照以 `Arc` 共享给逐轨音源：`render_track` 只**借用**里面的摊平表
         //    （⛔ 不 clone PCM —— 与实时路径同一条纪律）。
         let snapshot = std::sync::Arc::new(snapshot);
@@ -1380,6 +1392,62 @@ pub fn render_project_f32_with_plans_under(
         limiter_reductions,
         unrouted_tracks,
     })
+}
+
+/// ⭐ **未命中音符统计**：一条 sampler 轨的工程音符里，打不中任何 region
+/// 的个数（单位：个）与不同音高（升序去重）。
+///
+/// 判定用引擎摊平表自己的静态接受谓词
+/// [`PreparedRegion::accepts`](yeban_engine::sfz_instrument::PreparedRegion::accepts)
+/// （与声部池 note-on 选择同一张键/力度掩码），⛔ 不在 app 侧另拼键位/力度
+/// 范围 —— 两份口径必然漂移。动态门控（`trigger=first/legato` 的按住数等
+/// 会话状态）不在静态掩码内，掩码对那几族照常放行 ⇒ 本统计**不会**把
+/// 它们误报成未命中。
+///
+/// 口径（写死在此，告警行与判据都按它读）：
+/// * 静音轨整轨跳过（它在本次渲染里本就不该出声）；
+/// * 静音摆放（`ClipPlacement::muted`）跳过（有意不发声）；
+/// * 每条摆放按谱面音符各计一次，⛔ 不展开循环重复（数的是「写错的
+///   键位」，不是「响了几次」）；
+/// * 片段内容不是音符（音频片段）的摆放不计。
+fn count_unmatched_notes(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    prepared: &yeban_engine::sfz_instrument::PreparedSfz,
+) -> (usize, Vec<u8>) {
+    let Some(track) = project.tracks.get(&track_id) else {
+        return (0, Vec::new());
+    };
+    if track.mute {
+        return (0, Vec::new());
+    }
+    let regions = prepared.regions();
+    let mut count = 0usize;
+    let mut pitches: Vec<u8> = Vec::new();
+    for placement in track.clips.values() {
+        if placement.muted {
+            continue;
+        }
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for note in notes.values() {
+            if !regions
+                .iter()
+                .any(|region| region.accepts(note.pitch, note.velocity))
+            {
+                count += 1;
+                if !pitches.contains(&note.pitch) {
+                    pitches.push(note.pitch);
+                }
+            }
+        }
+    }
+    pitches.sort_unstable();
+    (count, pitches)
 }
 
 /// ⭐ 模型 SFZ 链条的**读数文案**（进 `source_label` ⇒ ⛔ 缺样本不静默）。

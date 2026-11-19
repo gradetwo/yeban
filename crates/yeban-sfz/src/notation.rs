@@ -15,6 +15,10 @@
 //! 2. 候选移位只认 `+12` / `−12`（八度级差才是记法冲突的形状）；
 //! 3. `#{delta = S} ≥ 90% × |E|` 且 `#{delta = −S} = 0` 才命中 S；
 //! 4. 任一不满足 ⇒ **不移位**（结论带未命中原因与证据计数，报告不许静默）。
+//! 5. **零证据独立结论**：E = ∅ 但音名拼写 region ≥ 1 条时，未命中原因记
+//!    [`NotationMissReason::NoEvidence`] 而非 `TooFewEvidence` —— 这类文件
+//!    （SSO 式老采样库：音名键位 + 采样无 `smpl` 嵌入根音）必须在报告里
+//!    被单独点名，⛔ 不许混进「数字键位文件本来就无可检测」的静默多数。
 //!
 //! 数字拼写与缺省根音的 region **不进 E**：数字写法的作者说的就是数字，
 //! 不存在记法可猜（§14.4 的证据资格）。
@@ -51,7 +55,13 @@ impl NotationEvidence {
 /// 未命中自动移位的原因（报告与提示行用；每一条都对应判定规则的一条）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotationMissReason {
-    /// 证据集太小（`|E| < 5`）：音名拼写且根音可读的 region 不足五条。
+    /// ⭐ **零证据**：文件确实用音名写键位（音名拼写 region ≥ 1 条），但
+    /// **没有任何一条**的采样带可读嵌入根音 ⇒ E = ∅。这是 SSO 式老采样库
+    /// 的形态（采样无 `smpl` 块），与「文件本来就是数字键位」是两回事：
+    /// 报告必须给它**独立结论**并响亮透出（问题文件 drum-octave-issue-2
+    /// 修复建议第 1 条），⛔ 不许与不移位的静默多数混在一起。
+    NoEvidence,
+    /// 证据集太小（`0 < |E| < 5`）：音名拼写且根音可读的 region 不足五条。
     TooFewEvidence,
     /// 证据占比不足（`E < 60% × 带采样 region 总数`）。
     EvidenceShareTooLow,
@@ -64,9 +74,21 @@ impl NotationMissReason {
     #[must_use]
     pub fn describe(&self) -> &'static str {
         match self {
+            Self::NoEvidence => "文件用音名写键位，但采样没有可读的嵌入根音，证据为零",
             Self::TooFewEvidence => "音名拼写且嵌入根音可读的 region 不足 5 条",
             Self::EvidenceShareTooLow => "证据 region 占比不足 60%",
             Self::NoConsistentOctave => "嵌入根音的差值不构成一致的八度偏移",
+        }
+    }
+
+    /// 机器可读的短名（CLI 报告行的 `reason=` 字段用，⛔ 不许随文案漂移）。
+    #[must_use]
+    pub fn machine_name(&self) -> &'static str {
+        match self {
+            Self::NoEvidence => "no_evidence",
+            Self::TooFewEvidence => "too_few_evidence",
+            Self::EvidenceShareTooLow => "evidence_share_too_low",
+            Self::NoConsistentOctave => "no_consistent_octave",
         }
     }
 }
@@ -83,6 +105,11 @@ pub struct NotationDetection {
     pub miss_reason: Option<NotationMissReason>,
     /// 证据集大小 `|E|`（音名拼写且根音可读的 region 数）。
     pub evidence_count: usize,
+    /// **音名拼写**的 region 数（不论根音是否可读）。它与
+    /// [`Self::evidence_count`] 的差就是「写了音名、但采样给不出根音」的
+    /// 条数 —— 零证据形态（[`NotationMissReason::NoEvidence`]）靠它与
+    /// 纯数字键位文件区分开。
+    pub named_key_region_count: usize,
     /// 带采样 region 总数（占比规则的分母，由输入切片长度给出）。
     pub sampled_region_count: usize,
     /// E 中 `delta = +12` 的条数。
@@ -135,7 +162,11 @@ pub fn detect_notation_shift(evidence: &[NotationEvidence]) -> NotationDetection
     let mut minus_twelve_count = 0usize;
     let mut delta_counts: BTreeMap<i32, usize> = BTreeMap::new();
     let mut evidence_count = 0usize;
+    let mut named_key_region_count = 0usize;
     for item in evidence {
+        if item.spelling == KeycenterSpelling::NoteName {
+            named_key_region_count += 1;
+        }
         // 证据资格（§14.4）：音名拼写 **且** 嵌入根音可读。
         if item.spelling != KeycenterSpelling::NoteName {
             continue;
@@ -169,6 +200,7 @@ pub fn detect_notation_shift(evidence: &[NotationEvidence]) -> NotationDetection
         suspected_shift: None,
         miss_reason: None,
         evidence_count,
+        named_key_region_count,
         sampled_region_count,
         plus_twelve_count,
         minus_twelve_count,
@@ -176,9 +208,15 @@ pub fn detect_notation_shift(evidence: &[NotationEvidence]) -> NotationDetection
         dominant_delta_count,
     };
 
-    // 规则 1a：证据集下限。
+    // 规则 1a：证据集下限。零证据且文件确实用音名写键位 ⇒ 独立结论
+    // `NoEvidence`（SSO 形态）；零证据且全是数字/缺省拼写 ⇒ 仍是
+    // `TooFewEvidence`（数字文件本来就没有记法可猜，不许给它加噪音）。
     if evidence_count < MIN_EVIDENCE_REGIONS {
-        detection.miss_reason = Some(NotationMissReason::TooFewEvidence);
+        detection.miss_reason = Some(if evidence_count == 0 && named_key_region_count > 0 {
+            NotationMissReason::NoEvidence
+        } else {
+            NotationMissReason::TooFewEvidence
+        });
         return with_suspicion(detection);
     }
     // 规则 1b：证据占比（整数比，⛔ 不用浮点）。
@@ -357,6 +395,33 @@ mod tests {
         let detection = detect_notation_shift(&evidence);
         assert_eq!(detection.evidence_count, 0);
         assert_eq!(detection.applied_shift, None);
+    }
+
+    #[test]
+    fn note_named_keys_without_any_roots_are_a_distinct_no_evidence_miss() {
+        // ⭐ SSO 形态（问题文件 drum-octave-issue-2）：键位用音名拼写、
+        // 采样全部没有嵌入根音 ⇒ E = ∅。结论必须是**独立**的
+        // `NoEvidence`，⛔ 不是与纯数字文件同款的 `TooFewEvidence`。
+        let rootless = |keycenter: i32| NotationEvidence {
+            keycenter_written: keycenter,
+            spelling: KeycenterSpelling::NoteName,
+            root: None,
+        };
+        let detection = detect_notation_shift(&[rootless(48), rootless(49), rootless(50)]);
+        assert_eq!(detection.applied_shift, None);
+        assert_eq!(detection.evidence_count, 0);
+        assert_eq!(detection.named_key_region_count, 3);
+        assert_eq!(detection.sampled_region_count, 3);
+        assert_eq!(detection.miss_reason, Some(NotationMissReason::NoEvidence));
+        assert_eq!(detection.miss_reason.unwrap().machine_name(), "no_evidence");
+        assert_eq!(detection.suspected_shift, None);
+        // 对照：音名拼写为零（纯数字）时零证据仍是 TooFewEvidence。
+        let detection = detect_notation_shift(&repeat(numeric(48, 60), 3));
+        assert_eq!(
+            detection.miss_reason,
+            Some(NotationMissReason::TooFewEvidence)
+        );
+        assert_eq!(detection.named_key_region_count, 0);
     }
 
     #[test]
