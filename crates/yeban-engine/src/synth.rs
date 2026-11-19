@@ -193,6 +193,25 @@ pub const MAX_TRACK_SLOTS: usize = 2048;
 /// 声部池的**最少**轨道槽数（至少要能装一条轨）。
 pub const MIN_TRACK_SLOTS: usize = 1;
 
+/// ⭐ **lane 组槽**容量（逐件处理，期 5）：组槽与轨槽平行、独立计数。
+///
+/// 每轨至多 [`yeban_model::MAX_LANE_CHAINS_PER_TRACK`] = 16 组；256 槽 =
+/// 16 条满组轨。代价与轨槽同价（每槽一台鼓机 + 一份 SFZ 池，构造期一次性
+/// 堆分配 ≈ 256 × 17 KiB ≈ 4.4 MiB，⛔ 不在音频线程上）。装不下的组在
+/// 武装时计数（[`SynthEngine::group_drops`]），其轨整轨回退单路渲染
+/// （⛔ 不做半组渲染 —— 部分 lane 化会让组间扼流/键控语义 silently 错位）。
+pub const MAX_LANE_GROUP_SLOTS: usize = 256;
+
+/// ⭐ 渲染体查哪张槽表（期 5）：轨槽与组槽共用同一份渲染实现，本枚举只是
+/// 槽表选择器（见 `SynthEngine::render_bank_inner`）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotBank {
+    /// 轨槽（接线前的唯一槽表）。
+    Track,
+    /// lane 组槽（期 5）。
+    Group,
+}
+
 /// 单轨音符调度表的容量上限（条）。
 ///
 /// 超过上限的音符在**构造期**被丢弃并计数
@@ -1344,6 +1363,26 @@ pub struct SynthEngine {
     wanted_drums: Box<[Option<(EntityId, DrumsParams)>]>,
     /// 构造时**请求**的轨道槽数（与 [`Self::slots`] 的长度对照，用来看是否被钳过）。
     requested_track_slots: usize,
+    /// ⭐ **lane 组槽表**（逐件处理，期 5）：与轨槽平行的一套声部/鼓机/SFZ 池，
+    /// 容量 [`MAX_LANE_GROUP_SLOTS`]，构造期一次性分配（纪律同 [`Self::slots`]）。
+    ///
+    /// 一组 = 一条轨的一个键组：它用**该轨的**音色/鼓机参数渲染**只含本组键**
+    /// 的分调度表（快照已切分），再由 rt 送组链、施组声相、累加回轨。
+    /// 组槽独立的理由：组与组之间不能共享声部状态（扼流组、包络、SFZ 声部池
+    /// 都是逐组语义）；而组槽**不**进 `EngineRuntime` 的第二分支共享 —— 它住在
+    /// `SynthEngine` 里，A/B 试听的每个分支各有一台引擎 ⇒ 天然隔离。
+    group_slots: Box<[TrackSlot]>,
+    /// 每组槽一台鼓机（与 [`Self::drums`] 同一条尺寸纪律）。
+    group_drums: Box<[DrumMachine<DRUM_SLOTS>]>,
+    /// 每组槽的鼓机投影（`Some((轨, 参数))`；与 [`Self::drum_slots`] 同口径）。
+    group_drum_slots: Box<[Option<(EntityId, DrumsParams)>]>,
+    /// 每组槽的武装音源数读数（与 [`Self::armed_sources`] 同口径）。
+    group_armed_sources: Box<[u8]>,
+    /// 每组槽的**绑定**：`Some((轨, 组首键))` = 本槽服务于哪条轨的哪个组。
+    /// 组身份用首键（模型校验保证组键集互不重叠、组内升序 ⇒ 首键唯一）。
+    group_keys: Box<[Option<(EntityId, u8)>]>,
+    /// 累计因组槽容量不足而没装上的组数（武装时计数，⛔ 不静默）。
+    group_drops: u64,
 }
 
 impl SynthEngine {
@@ -1395,6 +1434,15 @@ impl SynthEngine {
                 .into_boxed_slice(),
             wanted_drums: vec![None; capacity].into_boxed_slice(),
             requested_track_slots: track_slots,
+            // ⭐ 组槽：固定容量、构造期一次性分配（纪律同轨槽）。
+            group_slots: vec![TrackSlot::empty(sample_rate); MAX_LANE_GROUP_SLOTS]
+                .into_boxed_slice(),
+            group_drums: vec![DrumMachine::new(sample_rate); MAX_LANE_GROUP_SLOTS]
+                .into_boxed_slice(),
+            group_drum_slots: vec![None; MAX_LANE_GROUP_SLOTS].into_boxed_slice(),
+            group_armed_sources: vec![0; MAX_LANE_GROUP_SLOTS].into_boxed_slice(),
+            group_keys: vec![None; MAX_LANE_GROUP_SLOTS].into_boxed_slice(),
+            group_drops: 0,
         }
     }
 
@@ -1565,7 +1613,29 @@ impl SynthEngine {
         self.align_cursors(snapshot.schedules().iter().filter(|(id, _)| **id != master));
         // ⭐ 第三条快照派生状态：⭐ 逐轨增益门（⭐ 与投影同一个 [`track_gain_scale`]）。
         self.set_track_gain_scales(snapshot);
+        // ⭐ 期 5：lane 组同刻武装（组绑定 + 组游标 + 组增益门）。
+        self.arm_lane_from_snapshot(snapshot);
         Ok(())
+    }
+
+    /// ⭐ **lane 组武装**（逐件处理，期 5）：把快照的 lane 组表装进组槽。
+    ///
+    /// 组成三步（与轨武装同序）：[`Self::arm_lane_groups`] 绑定并下推轨级
+    /// 音色/鼓机参数 → [`Self::align_group_cursors`] 校正组游标 →
+    /// [`Self::set_group_gain_scales`] 写组增益门。没有 lane 组的快照里
+    /// 三步都是空转（组槽 `present` 全清零）⇒ 既有路径逐位不变。
+    pub fn arm_lane_from_snapshot(&mut self, snapshot: &EngineSnapshot) {
+        let master = snapshot.master();
+        self.arm_lane_groups(
+            snapshot.sample_rate(),
+            snapshot.lane_chains().iter().flat_map(|(track, groups)| {
+                groups.iter().map(move |group| (*track, group.first_key()))
+            }),
+            snapshot.tones().iter().filter(|(id, _)| **id != master),
+            snapshot.drums().iter().filter(|(id, _)| **id != master),
+        );
+        self.align_group_cursors(snapshot.lane_group_schedules());
+        self.set_group_gain_scales(snapshot);
     }
 
     /// **单轨武装**：只把 `track` 一条轨投影进槽位（离线逐轨源用）。
@@ -1630,6 +1700,29 @@ impl SynthEngine {
     pub fn set_track_gain_scales(&mut self, snapshot: &EngineSnapshot) {
         let any_solo = snapshot.tracks().values().any(|params| params.is_soloed());
         for slot in &mut self.slots {
+            slot.gain_scale = if slot.assigned {
+                snapshot.tracks().get(&slot.id).map_or(0.0, |params| {
+                    track_gain_scale(
+                        params.is_muted(),
+                        params.is_soloed(),
+                        params.is_solo_safe(),
+                        any_solo,
+                        params.volume_db(),
+                    )
+                })
+            } else {
+                0.0
+            };
+        }
+    }
+
+    /// ⭐ 组槽的增益门（期 5）：与 [`Self::set_track_gain_scales`] 同一算子，
+    /// 组槽读**所属轨**的那一份（组没有自己的推子/静音/独奏 —— 轨级混音
+    /// 语义在组求和之后还要再走一遍轨级链，⛔ 不在这里重复施加音量，
+    /// 本门只承载调度表音符增益的同源折算，与轨槽口径一致）。
+    pub fn set_group_gain_scales(&mut self, snapshot: &EngineSnapshot) {
+        let any_solo = snapshot.tracks().values().any(|params| params.is_soloed());
+        for slot in &mut self.group_slots {
             slot.gain_scale = if slot.assigned {
                 snapshot.tracks().get(&slot.id).map_or(0.0, |params| {
                     track_gain_scale(
@@ -2532,6 +2625,243 @@ impl SynthEngine {
         }
     }
 
+    /// ⭐ **lane 组武装**（逐件处理，期 5）：快照边界把 `(轨, 组首键)` 绑定到
+    /// 组槽，并把**该轨的**音色/鼓机参数下推到组槽的器件。
+    ///
+    /// 纪律与 [`Self::begin_snapshot`] **逐条同款**（它在音频线程的快照边界上
+    /// 运行 ⇒ 零分配、只写定长表）：
+    ///
+    /// 1. 已绑定的组**留在原槽**（声部/包络状态连续）；新组占空槽；本快照里
+    ///    不再出现的组**不**解绑、不 reset（等它回来，与轨的 `present = false`
+    ///    同口径）—— 组槽的 `present` 只表示「本快照里有这个组」；
+    /// 2. 同组同参数 ⇒ 一个字段都不写；参数变了 ⇒ 只 `set_params`；
+    ///    **换组接管**（槽被另一个 `(轨, 首键)` 占用）⇒ `reset` 丢尾巴；
+    /// 3. 槽位装不下的组计数进 [`Self::group_drops`]（⛔ 不静默）；rt 侧据
+    ///    [`Self::lane_groups_armed_for`] 判定整轨是否 lane 化（半组不渲染）。
+    ///
+    /// `tones` / `drums` 是**轨级**投影（组用所属轨的那一份）；迭代器只读一遍，
+    /// 落进与 `begin_snapshot` 共用的 `wanted_*` 暂存（调用序上两者在同一边界
+    /// 先后运行，暂存复用不冲突）。
+    pub fn arm_lane_groups<'a, G, T, D>(&mut self, sample_rate: u32, groups: G, tones: T, drums: D)
+    where
+        G: IntoIterator<Item = (EntityId, u8)>,
+        T: IntoIterator<Item = (&'a EntityId, &'a ToneParams)>,
+        D: IntoIterator<Item = (&'a EntityId, &'a DrumsParams)>,
+    {
+        let sample_rate_u32 = sample_rate;
+        let sample_rate = sanitise_sample_rate(sample_rate);
+        let sample_rate_changed = sample_rate != self.sample_rate;
+        if sample_rate_changed {
+            self.sample_rate = sample_rate;
+            self.steal_fade_frames = steal_fade_frames_for(sample_rate);
+        }
+
+        // 轨级音色/鼓机投影落暂存（与 begin_snapshot 同一条复用纪律）。
+        let capacity = self.slots.len();
+        let mut wanted_len = 0usize;
+        for (id, tone) in tones {
+            if wanted_len >= capacity {
+                break;
+            }
+            self.wanted_tones[wanted_len] = (*id, *tone);
+            wanted_len += 1;
+        }
+        let mut wanted_drums_len = 0usize;
+        for (id, params) in drums {
+            if wanted_drums_len >= capacity {
+                break;
+            }
+            self.wanted_drums[wanted_drums_len] = Some((*id, *params));
+            wanted_drums_len += 1;
+        }
+
+        // 绑定：先全标 not-present，再按给定序认领/新占槽位。
+        for slot in &mut self.group_slots {
+            slot.present = false;
+        }
+        for (track, first_key) in groups {
+            if let Some(index) = self
+                .group_keys
+                .iter()
+                .position(|binding| *binding == Some((track, first_key)))
+            {
+                self.group_slots[index].present = true;
+                continue;
+            }
+            match self.group_keys.iter().position(|binding| binding.is_none()) {
+                Some(index) => {
+                    self.group_slots[index] = TrackSlot::empty(sample_rate_u32);
+                    self.group_slots[index].assigned = true;
+                    self.group_slots[index].present = true;
+                    self.group_slots[index].id = track;
+                    self.group_slots[index].live_position = self.position;
+                    self.group_keys[index] = Some((track, first_key));
+                    // 换组接管：鼓机/SFZ 的旧尾巴必须丢（与轨的换轨 reset 同口径）。
+                    self.group_drums[index].reset();
+                    self.group_drums[index].set_sample_rate(sample_rate_u32);
+                    self.group_drum_slots[index] = None;
+                }
+                None => self.group_drops = self.group_drops.saturating_add(1),
+            }
+        }
+
+        // 器件参数下推：音色（逐组查所属轨的那一份）。
+        let tables = &self.tables;
+        let steal_fade_frames = self.steal_fade_frames;
+        for (index, slot) in self.group_slots.iter_mut().enumerate() {
+            if self.group_keys[index].is_none() {
+                continue;
+            }
+            let tone = self.wanted_tones[..wanted_len]
+                .iter()
+                .find(|(id, _)| *id == slot.id)
+                .map(|(_, tone)| *tone)
+                .unwrap_or_else(ToneParams::bypass);
+            if sample_rate_changed {
+                slot.synth.set_sample_rate(sample_rate_u32);
+                slot.synth.set_steal_fade_frames(steal_fade_frames);
+                slot.sfz.set_sample_rate(sample_rate);
+                slot.sfz.set_steal_fade_frames(steal_fade_frames);
+            }
+            if sample_rate_changed || tone != slot.tone {
+                slot.tone = tone;
+                slot.synth.set_params(tone.poly_synth_params(), tables);
+            }
+        }
+
+        // 鼓机下推：三口径与 begin_snapshot 的鼓机段同款（同轨同参不写、
+        // 变参只 set_params、非鼓机了就 reset 本槽那一份）。
+        let Self {
+            group_slots,
+            group_drums,
+            group_drum_slots,
+            group_keys,
+            wanted_drums,
+            ..
+        } = self;
+        let wanted_drums = &wanted_drums[..wanted_drums_len];
+        for index in 0..group_slots.len() {
+            let Some((track, _)) = group_keys[index] else {
+                continue;
+            };
+            let present = group_slots[index].present;
+            let desired = if present {
+                wanted_drums
+                    .iter()
+                    .flatten()
+                    .find(|(want, _)| *want == track)
+                    .map(|(_, params)| (track, *params))
+            } else {
+                None
+            };
+            let armed = group_drum_slots[index];
+            match desired {
+                Some((track, params)) => {
+                    let same_track = armed.map(|(id, _)| id) == Some(track);
+                    if !same_track {
+                        group_drums[index].reset();
+                        group_drums[index].set_sample_rate(sample_rate_u32);
+                        group_slots[index].live_drum = false;
+                    } else if sample_rate_changed {
+                        group_drums[index].set_sample_rate(sample_rate_u32);
+                    }
+                    group_slots[index].sfz.silence();
+                    group_slots[index].live_sfz = false;
+                    if !same_track || armed.map(|(_, prev)| prev) != Some(params) {
+                        group_drums[index].set_params(params.kit());
+                    }
+                    group_drum_slots[index] = Some((track, params));
+                }
+                None => match armed {
+                    // 本组仍在快照里、但所属轨不再是鼓机 ⇒ 丢尾巴。
+                    Some((id, _)) if present && id == track => {
+                        group_drums[index].reset();
+                        group_drum_slots[index] = None;
+                        group_slots[index].live_drum = false;
+                    }
+                    // 本组暂时不在快照里 ⇒ 保留状态与武装记录。
+                    Some(_) if !present => {}
+                    Some(_) => {
+                        group_drums[index].reset();
+                        group_drum_slots[index] = None;
+                        group_slots[index].live_drum = false;
+                    }
+                    None => group_drum_slots[index] = None,
+                },
+            }
+        }
+    }
+
+    /// ⭐ 某条轨有几个组**在本快照里**武装好了（期 5；rt 整轨 lane 化的判据）。
+    #[must_use]
+    pub fn lane_groups_armed_for(&self, track: &EntityId) -> usize {
+        self.group_keys
+            .iter()
+            .zip(self.group_slots.iter())
+            .filter(|(binding, slot)| slot.present && binding.is_some_and(|(id, _)| id == *track))
+            .count()
+    }
+
+    /// ⭐ 某个组是否已绑定且在本快照里在场（期 5）。
+    #[must_use]
+    pub fn lane_group_armed(&self, track: &EntityId, first_key: u8) -> bool {
+        self.group_keys
+            .iter()
+            .zip(self.group_slots.iter())
+            .any(|(binding, slot)| slot.present && *binding == Some((*track, first_key)))
+    }
+
+    /// ⭐ 累计因组槽容量不足而没装上的组数（期 5；⛔ 不静默的读数）。
+    #[must_use]
+    pub const fn group_drops(&self) -> u64 {
+        self.group_drops
+    }
+
+    /// ⭐ 组游标校正（期 5）：与 [`Self::align_cursors`] 同纪律，只作用于组槽。
+    pub fn align_group_cursors<'a, I>(&mut self, schedules: I)
+    where
+        I: IntoIterator<Item = ((EntityId, u8), &'a NoteSchedule)>,
+    {
+        let position = self.position;
+        for ((track, first_key), schedule) in schedules {
+            let Some(index) = self
+                .group_keys
+                .iter()
+                .position(|binding| *binding == Some((track, first_key)))
+            else {
+                continue;
+            };
+            let slot = &mut self.group_slots[index];
+            if !slot.present {
+                continue;
+            }
+            slot.cursor = slot.cursor.max(schedule.first_sounding_index(position));
+            slot.synth.retire_finished(position);
+        }
+    }
+
+    /// ⭐ 组游标重定位（期 5）：与 [`Self::realign_cursors`] 同纪律（定位专用）。
+    pub fn realign_group_cursors<'a, I>(&mut self, schedules: I)
+    where
+        I: IntoIterator<Item = ((EntityId, u8), &'a NoteSchedule)>,
+    {
+        let position = self.position;
+        for ((track, first_key), schedule) in schedules {
+            let Some(index) = self
+                .group_keys
+                .iter()
+                .position(|binding| *binding == Some((track, first_key)))
+            else {
+                continue;
+            };
+            let slot = &mut self.group_slots[index];
+            if !slot.present {
+                continue;
+            }
+            slot.cursor = schedule.first_sounding_index(position);
+        }
+    }
+
     /// 快照边界处的游标校正 + 声部回收（需要调度表，故与
     /// [`begin_snapshot`](Self::begin_snapshot) 分开：调度表的迭代由调用方给）。
     ///
@@ -2706,6 +3036,58 @@ impl SynthEngine {
         self.render_track_inner(track, schedule, sfz, left, Some(right), cc);
     }
 
+    /// ⭐ **lane 组的带 CC 渲染入口**（逐件处理，期 5）：与
+    /// [`Self::render_track_with_cc`] 同语义，只是槽位换成 `(轨, 组首键)`
+    /// 绑定的**组槽**、调度表换成该组的分表。组没武装 ⇒ 输出静音（`out`
+    /// 已清零），⛔ 不 panic。零分配、零锁、零 I/O（同轨渲染）。
+    pub fn render_group_with_cc(
+        &mut self,
+        track: EntityId,
+        first_key: u8,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
+        self.render_bank_inner(
+            SlotBank::Group,
+            track,
+            first_key,
+            schedule,
+            sfz,
+            out,
+            None,
+            cc,
+        );
+    }
+
+    /// ⭐ **lane 组的分声道渲染入口**（期 5）：与
+    /// [`Self::render_track_stereo_with_cc`] 同形（组渲染的常态是立体声对：
+    /// 组链与组声相都按对处理）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_group_stereo_with_cc(
+        &mut self,
+        track: EntityId,
+        first_key: u8,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        left: &mut [f32],
+        right: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
+        right.fill(0.0);
+        self.render_bank_inner(
+            SlotBank::Group,
+            track,
+            first_key,
+            schedule,
+            sfz,
+            left,
+            Some(right),
+            cc,
+        );
+    }
+
     /// 单声道/分声道**共用的唯一一份**轨渲染体（`out_r == None` ⇒ 逐位同旧）。
     #[allow(clippy::too_many_arguments)]
     fn render_track_inner(
@@ -2714,40 +3096,75 @@ impl SynthEngine {
         schedule: Option<&NoteSchedule>,
         sfz: Option<&PreparedSfz>,
         out: &mut [f32],
+        out_r: Option<&mut [f32]>,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
+        self.render_bank_inner(SlotBank::Track, track, 0, schedule, sfz, out, out_r, cc);
+    }
+
+    /// ⭐ 轨槽 / 组槽**共用的唯一一份**渲染体（期 5）：`bank` 只决定查哪张
+    /// 槽表、写哪张武装读数，其余（触发、分派次序、三条音源支路、增益口径）
+    /// **逐字同一份** ⇒ 组渲染与轨渲染不可能漂移出两套语义。
+    #[allow(clippy::too_many_arguments)]
+    fn render_bank_inner(
+        &mut self,
+        bank: SlotBank,
+        track: EntityId,
+        first_key: u8,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        out: &mut [f32],
         mut out_r: Option<&mut [f32]>,
         cc: Option<&dyn Fn(u8) -> u8>,
     ) {
         out.fill(0.0);
-        let Some(index) = self
-            .slots
-            .iter()
-            .position(|slot| slot.assigned && slot.id == track)
-        else {
+        let index = match bank {
+            SlotBank::Track => self
+                .slots
+                .iter()
+                .position(|slot| slot.assigned && slot.id == track),
+            SlotBank::Group => self
+                .group_keys
+                .iter()
+                .position(|binding| *binding == Some((track, first_key))),
+        };
+        let Some(index) = index else {
             return;
         };
-        if !self.slots[index].present {
+        let present = match bank {
+            SlotBank::Track => self.slots[index].present,
+            SlotBank::Group => self.group_slots[index].present,
+        };
+        if !present {
             return;
         }
 
         let position = self.position;
         let end = position.saturating_add(out.len() as u64);
-        let Self {
-            tables,
-            slots,
-            drums,
-            drum_slots,
-            notes_triggered,
-            drum_hits,
-            armed_sources,
-            ..
-        } = self;
-        let slot = &mut slots[index];
+        let tables = &self.tables;
+        let notes_triggered = &mut self.notes_triggered;
+        let drum_hits = &mut self.drum_hits;
         // 本槽的音源：`Some(map)` = 鼓机（键位映射）。
-        let drum_map: Option<DrumNoteMap> = drum_slots[index].map(|(_, params)| params.notes());
+        let drum_map: Option<DrumNoteMap> = match bank {
+            SlotBank::Track => self.drum_slots[index].map(|(_, params)| params.notes()),
+            SlotBank::Group => self.group_drum_slots[index].map(|(_, params)| params.notes()),
+        };
+        let (slot, drum_machine, armed_count) = match bank {
+            SlotBank::Track => (
+                &mut self.slots[index],
+                &mut self.drums[index],
+                &mut self.armed_sources[index],
+            ),
+            SlotBank::Group => (
+                &mut self.group_slots[index],
+                &mut self.group_drums[index],
+                &mut self.group_armed_sources[index],
+            ),
+        };
         // ⭐ `sfz-needs-3` 的可读信号：把"本槽武装了几件音源"写成**投影读数**。
         // 复音合成器恒在场（每个槽一台）⇒ 至少 1；鼓机 +1、SFZ +1。
         // 三件同轨 = 3（被忽略 2 件，读 `ignored_sources`）；⛔ 本行不改任何输出。
-        armed_sources[index] = 1u8
+        *armed_count = 1u8
             .saturating_add(u8::from(drum_map.is_some()))
             .saturating_add(u8::from(sfz.is_some()));
 
@@ -2877,7 +3294,7 @@ impl SynthEngine {
                     match drum_map {
                         Some(map) => {
                             if let Some(voice) = map.voice_for(note.pitch) {
-                                drums[index].trigger(DrumHit::new(
+                                drum_machine.trigger(DrumHit::new(
                                     voice,
                                     note.start_sample,
                                     note.gain,
@@ -2953,10 +3370,10 @@ impl SynthEngine {
                 slot.sfz.silence();
                 match out_r.as_deref_mut() {
                     Some(right) if !has_live_poly_voice(&slot.synth) => {
-                        drums[index].render_stereo(position, out, right);
+                        drum_machine.render_stereo(position, out, right);
                         drum_stereo_written = true;
                     }
-                    _ => drums[index].render(position, out),
+                    _ => drum_machine.render(position, out),
                 }
             }
             None => match sfz {
@@ -3009,7 +3426,7 @@ impl SynthEngine {
         if !slot.sfz.has_active_voices() {
             slot.live_sfz = false;
         }
-        if drums[index].active_slots() == 0 {
+        if drum_machine.active_slots() == 0 {
             slot.live_drum = false;
         }
         // ⭐ 鼓机 / 复音的兜底支路没有源侧声相 ⇒ 它们只写了左声道，

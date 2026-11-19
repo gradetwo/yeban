@@ -280,7 +280,10 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// 内联体积里**：声部池是**堆上**的（`EngineRuntime` 只持有一个指针/盒）。
 /// ⇒ 本片把 `SfzVoicePool` 的尺寸钉值改到 `10_504 B`，`EngineRuntime` 的钉值
 /// **保持 46_480 B**（改它反而会把"池在堆上"这条事实记反）。门槛仍是 200 KiB。
-const ENGINE_RUNTIME_BYTES: usize = 46_480;
+/// ⭐ **逐件＋侧链期 5**：**升到 47_872 B**（＋1392 B）—— `EngineRuntime` 新增
+/// lane 组链一族字段（记账见 `tests/audio_clip_render.rs` 的 A8）；
+/// `SfzVoicePool` 本身一位不动，本常量随 `EngineRuntime` 的现读值走。
+const ENGINE_RUNTIME_BYTES: usize = 47_872;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [

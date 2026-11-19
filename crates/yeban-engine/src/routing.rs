@@ -141,6 +141,77 @@ pub struct RoutingPlan {
     /// 键抽头源：源节点 -> 它在抽头池里的槽位（与 `key_routes` 的值同一把尺子）。
     /// 逐轨循环只给这些节点写抽头。
     key_sources: BTreeMap<EntityId, usize>,
+    /// ⭐ 逐件侧链（期 5）：**同轨内**组 → 组的键路由（节点 -> 已求值路由表，
+    /// 按目的组至多一条）。由 [`Self::compile_lane_routes`] 在节点级编译之后
+    /// 单独求值（需要快照的 lane 布局投影，`compile` 本身看不到设备链）。
+    lane_key_routes: BTreeMap<EntityId, Vec<LaneKeyRoute>>,
+    /// ⭐ 逐件侧链（期 5）：lane 键抽头源 `(节点, 源组下标)` -> 抽头池槽位
+    /// （与离线 `LaneKeyRoute` 的槽位分配同一把尺子：边身份升序、首次出现序）。
+    lane_key_sources: BTreeMap<(EntityId, usize), usize>,
+    /// ⭐ 带 lane 端点（`source_lane` / `dest_lane` 任一非空）的 Sidechain 边总数
+    /// （构造期计数，响亮读数的一半；见 [`Self::lane_edges_evaluated`]）。
+    lane_edges_declared: usize,
+    /// ⭐ 其中被 [`Self::compile_lane_routes`] 真求值的条数；
+    /// `declared - evaluated` = 未求值（跨轨 / 混合端点 / 键不属组 / 目的组未武装），
+    /// ⛔ 不静默：快照武装时累计进 `EngineStats` 的 lane 读数。
+    lane_edges_evaluated: usize,
+}
+
+/// ⭐ 一条已求值的**逐件**键路由（期 5）：同一条轨内，`source_group` 组的
+/// **链前**渲染作 `dest_group` 组通道条的检波键。
+///
+/// 求值条件与离线 `yeban-render` 的 `attach_lane_key_routes` **逐条同口径**
+/// （设计稿 §3.3 的 R4 定案）：同节点、两端都带 lane 键、两键各属一组、
+/// 目的组静态武装、同目的组第一条合格边。键增益在构造期由边 `gain_db`
+/// 线性化（缺省 1.0），逐块路径只读。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneKeyRoute {
+    /// 源组在该轨 lane 组表里的下标。
+    source_group: usize,
+    /// 目的组在该轨 lane 组表里的下标。
+    dest_group: usize,
+    /// 键增益（线性；构造期由 `gain_db` 换算，缺省 1.0）。
+    key_gain: f32,
+    /// 来源边的身份（诊断与判据对账用）。
+    edge: EntityId,
+}
+
+impl LaneKeyRoute {
+    /// 源组下标。
+    #[must_use]
+    pub const fn source_group(&self) -> usize {
+        self.source_group
+    }
+
+    /// 目的组下标。
+    #[must_use]
+    pub const fn dest_group(&self) -> usize {
+        self.dest_group
+    }
+
+    /// 键增益（线性）。
+    #[must_use]
+    pub const fn key_gain(&self) -> f32 {
+        self.key_gain
+    }
+
+    /// 来源边身份。
+    #[must_use]
+    pub const fn edge(&self) -> EntityId {
+        self.edge
+    }
+}
+
+/// ⭐ 一轨的 lane 布局投影（期 5 键求值的构造期输入）：每组的键集 + 目的组
+/// 静态武装位。与离线 `yeban-render` 的 `LaneKeyLayout` **同形同源**（都由
+/// 快照构造期从 `TrackV3.lane_chains` 投影；武装位 = 组链投影的通道条
+/// `compressor_enabled`，见设计稿 §3.3 条件 4）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaneKeyLayout {
+    /// 逐组的键集（组序 = `lane_chains` 原序）。
+    pub groups: Vec<Vec<u8>>,
+    /// 与 `groups` 同序：该组作目的时是否静态武装（链会执行压缩）。
+    pub armed_groups: Vec<bool>,
 }
 
 /// `node` 是否会收到别的节点搬来的音频（[`RoutingPlan::has_incoming_audio`] 的
@@ -259,8 +330,17 @@ impl RoutingPlan {
             .collect();
         let mut key_routes: BTreeMap<EntityId, usize> = BTreeMap::new();
         let mut key_sources: BTreeMap<EntityId, usize> = BTreeMap::new();
+        let mut lane_edges_declared = 0usize;
         for edge in graph.edges.values() {
             if edge.kind != RoutingKind::Sidechain {
+                continue;
+            }
+            // ⭐ 逐件侧链（期 5）：任一端带 lane 键的边**不**在节点级求值 ——
+            // 它的键是某一组的链前渲染，不是整轨信号；在这里当节点边求值会
+            // 与 lane 求值双重计数（离线 `attach_key_armed_nodes` 同口径）。
+            // 这类边只计数（declared），求值在 `compile_lane_routes`。
+            if edge.source_lane.is_some() || edge.dest_lane.is_some() {
+                lane_edges_declared += 1;
                 continue;
             }
             let source = edge.source_node;
@@ -295,7 +375,91 @@ impl RoutingPlan {
             uses_buses,
             key_routes,
             key_sources,
+            lane_key_routes: BTreeMap::new(),
+            lane_key_sources: BTreeMap::new(),
+            lane_edges_declared,
+            lane_edges_evaluated: 0,
         }
+    }
+
+    /// ⭐ 逐件键路由求值（期 5）：在节点级编译之后、由快照构造期拿着 lane
+    /// 布局投影调用。条件与离线 `attach_lane_key_routes` **逐条同口径**：
+    ///
+    /// 1. 边是 Sidechain 且**两端都带 lane 键**（只带一端的混合边不求值）；
+    /// 2. 源节点 == 目的节点（跨轨 lane 边不求值 —— 离线同口径，键缓冲是
+    ///    轨内两遍渲染的产物，跨轨没有对应的抽头时机）；
+    /// 3. 源键与目的键各属该轨布局里的一组；
+    /// 4. 目的组静态武装（其链投影会执行压缩）；
+    /// 5. 同一目的组只取边身份升序第一条合格边。
+    ///
+    /// 未求值的边不占位、后面的边仍可生效；总数账在
+    /// [`Self::lane_edges_declared`] / [`Self::lane_edges_evaluated`]。
+    pub fn compile_lane_routes(
+        &mut self,
+        graph: &RoutingGraph,
+        layouts: &BTreeMap<EntityId, LaneKeyLayout>,
+    ) {
+        let mut routes: BTreeMap<EntityId, Vec<LaneKeyRoute>> = BTreeMap::new();
+        let mut sources: BTreeMap<(EntityId, usize), usize> = BTreeMap::new();
+        let mut evaluated = 0usize;
+        for edge in graph.edges.values() {
+            if edge.kind != RoutingKind::Sidechain {
+                continue;
+            }
+            let (Some(source_key), Some(dest_key)) = (edge.source_lane, edge.dest_lane) else {
+                continue;
+            };
+            if edge.source_node != edge.destination_node {
+                continue;
+            }
+            let track = edge.source_node;
+            let Some(layout) = layouts.get(&track) else {
+                continue;
+            };
+            let Some(source_group) = layout
+                .groups
+                .iter()
+                .position(|keys| keys.contains(&source_key))
+            else {
+                continue;
+            };
+            let Some(dest_group) = layout
+                .groups
+                .iter()
+                .position(|keys| keys.contains(&dest_key))
+            else {
+                continue;
+            };
+            if !layout
+                .armed_groups
+                .get(dest_group)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let dest_routes = routes.entry(track).or_default();
+            if dest_routes
+                .iter()
+                .any(|route| route.dest_group == dest_group)
+            {
+                continue;
+            }
+            if !sources.contains_key(&(track, source_group)) {
+                let slot = sources.len();
+                sources.insert((track, source_group), slot);
+            }
+            dest_routes.push(LaneKeyRoute {
+                source_group,
+                dest_group,
+                key_gain: edge.gain_db.map_or(1.0, db_to_gain),
+                edge: edge.id,
+            });
+            evaluated += 1;
+        }
+        self.lane_key_routes = routes;
+        self.lane_key_sources = sources;
+        self.lane_edges_evaluated = evaluated;
     }
 
     /// 可渲染节点（不含 master），按 PDC 拓扑序。
@@ -361,6 +525,46 @@ impl RoutingPlan {
     #[must_use]
     pub fn key_tap_slot(&self, source: &EntityId) -> Option<usize> {
         self.key_sources.get(source).copied()
+    }
+
+    /// ⭐ 某轨已求值的逐件键路由（期 5）；没有 ⇒ 空切片（该轨无 lane 键控）。
+    #[must_use]
+    pub fn lane_key_routes(&self, track: &EntityId) -> &[LaneKeyRoute] {
+        self.lane_key_routes.get(track).map_or(&[], Vec::as_slice)
+    }
+
+    /// ⭐ 某轨某个目的组的逐件键路由（期 5）；没有 ⇒ 该组走节目检波。
+    #[must_use]
+    pub fn lane_key_route_for(&self, track: &EntityId, dest_group: usize) -> Option<&LaneKeyRoute> {
+        self.lane_key_routes
+            .get(track)?
+            .iter()
+            .find(|route| route.dest_group == dest_group)
+    }
+
+    /// ⭐ `(轨, 源组)` 是不是某条已求值逐件键路由的源；是 ⇒ 它在 lane 抽头池
+    /// 里的槽位（逐轨循环第一遍只给这些组写抽头）。
+    #[must_use]
+    pub fn lane_key_tap_slot(&self, track: &EntityId, source_group: usize) -> Option<usize> {
+        self.lane_key_sources.get(&(*track, source_group)).copied()
+    }
+
+    /// ⭐ lane 抽头池需要的槽位总数（构造期定尺寸用）。
+    #[must_use]
+    pub fn lane_key_tap_slots(&self) -> usize {
+        self.lane_key_sources.len()
+    }
+
+    /// ⭐ 带 lane 端点的 Sidechain 边总数（声明数；响亮读数）。
+    #[must_use]
+    pub const fn lane_edges_declared(&self) -> usize {
+        self.lane_edges_declared
+    }
+
+    /// ⭐ 其中被真求值的条数；`declared - evaluated` 即未求值数（⛔ 不静默）。
+    #[must_use]
+    pub const fn lane_edges_evaluated(&self) -> usize {
+        self.lane_edges_evaluated
     }
 
     /// 计划里的节点数（判据/诊断用）。

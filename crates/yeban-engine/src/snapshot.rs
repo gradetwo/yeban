@@ -81,8 +81,8 @@ use yeban_dsp::math::note_to_hz;
 use yeban_model::project::DEFAULT_BPM;
 use yeban_model::time_math::TempoMap;
 use yeban_model::{
-    AssetHash, AutomationLane, AutomationTarget, BlockSize, ClipContent, EntityId, MidiNote,
-    ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
+    AssetHash, AutomationLane, AutomationTarget, BlockSize, ClipContent, EntityId, LaneChainDef,
+    MidiNote, ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_sfz::modulation::tune_ratio_from_cents;
 
@@ -94,7 +94,7 @@ use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, centered_pan_gains};
-use crate::routing::RoutingPlan;
+use crate::routing::{LaneKeyLayout, RoutingPlan};
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
     BendPoint, MAX_NOTES_PER_TRACK, NO_PITCH_SHAPE, NoteSchedule, PitchShape, ScheduledNote,
@@ -488,6 +488,103 @@ fn bus_output_stages(
         .collect()
 }
 
+/// ⭐ 一条轨的一个 **lane 组**的实时投影（逐件处理，期 5）。
+///
+/// 与 [`Self::inserts`] 同族的**引擎侧临时形状**：由
+/// [`InsertParams::from_devices`] 从 `TrackV3.lane_chains` 的一组
+/// `LaneChainDef.devices` 在**构造期**投影。离线侧的同一投影是
+/// `yeban-render` 的 `InsertChain::from_devices` —— 两份投影的拼写表共用、
+/// 由镜像判据 `insert_chain.rs` 守零漂移（期 5 开工前已在基线上复跑全绿）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneGroupParams {
+    /// 本组覆盖的键（模型校验保证严格升序、非空、组间不重叠）。
+    keys: Vec<u8>,
+    /// 本组的插入链投影（与轨链同一的四级实时子集在 rt 侧武装）。
+    insert: InsertParams,
+    /// 本组声相覆盖（`None` = 跟随命中声部的 SFZ 声像求值，与模型同口径）。
+    pan: Option<f32>,
+    /// 本组作侧链**目的**时是否静态武装（链投影的通道条 `compressor_enabled`）。
+    ///
+    /// ⚠ 与离线 `InsertChain::compresses_statically` 的一处已知口径差：离线版
+    /// 还会把「全级中性」的透明通道条滤掉，本位不滤 ⇒ 本位是离线武装集的
+    /// **超集**，多出的只有「压缩已启用但参数全中性」的病理手写链 —— 那类链
+    /// 即使走键检波，增益也恒为 1.0，听感无差。
+    key_armed: bool,
+}
+
+impl LaneGroupParams {
+    /// 从模型的一组逐件链投影（**构造期**；`sample_rate` / `bpm` 的用途与
+    /// [`InsertParams::from_devices`] 相同）。
+    #[must_use]
+    pub fn from_chain(chain: &LaneChainDef, sample_rate: u32, bpm: f64) -> Self {
+        let insert = InsertParams::from_devices(&chain.devices, sample_rate, bpm);
+        let key_armed = insert
+            .strip()
+            .is_some_and(|params| params.compressor_enabled);
+        Self {
+            keys: chain.keys.clone(),
+            insert,
+            pan: chain.pan,
+            key_armed,
+        }
+    }
+
+    /// 本组覆盖的键。
+    #[must_use]
+    pub fn keys(&self) -> &[u8] {
+        &self.keys
+    }
+
+    /// 本组的首键（组身份；模型校验保证 `keys` 非空）。
+    #[must_use]
+    pub fn first_key(&self) -> u8 {
+        self.keys.first().copied().unwrap_or(0)
+    }
+
+    /// 本组的插入链投影。
+    #[must_use]
+    pub const fn insert(&self) -> &InsertParams {
+        &self.insert
+    }
+
+    /// 本组声相覆盖。
+    #[must_use]
+    pub const fn pan(&self) -> Option<f32> {
+        self.pan
+    }
+
+    /// 本组作侧链目的时是否静态武装（见字段文档）。
+    #[must_use]
+    pub const fn key_armed(&self) -> bool {
+        self.key_armed
+    }
+}
+
+/// 把一条轨的调度表按组键集切成「逐组 ＋ 余量」（**构造期**）。
+///
+/// 切分式与离线 `yeban-render` 的 `filter_schedule` **逐字同口径**：按
+/// `note.pitch()` 命中第一组，未命中归余量（最后一张）；每张分表继承整轨的
+/// `track_gain` / `tune_cents` 与**整张**音高形状旁表（下标是轨内共享的）。
+fn split_lane_schedule(schedule: &NoteSchedule, groups: &[LaneGroupParams]) -> Vec<NoteSchedule> {
+    let mut parts: Vec<Vec<ScheduledNote>> = vec![Vec::new(); groups.len() + 1];
+    for note in schedule.notes() {
+        let part = groups
+            .iter()
+            .position(|group| group.keys().contains(&note.pitch()))
+            .unwrap_or(groups.len());
+        parts[part].push(*note);
+    }
+    parts
+        .into_iter()
+        .map(|notes| {
+            NoteSchedule::from_sorted(notes)
+                .with_track_gain(schedule.track_gain())
+                .with_tune_cents(schedule.tune_cents())
+                .with_pitch_shapes(schedule.pitch_shapes().to_vec())
+        })
+        .collect()
+}
+
 /// 不可变引擎快照：音频线程在每个渲染量子边界读取的唯一权威运行态
 /// [ARCH-RT-002, ROAD-M2-002]。
 ///
@@ -701,6 +798,19 @@ pub struct EngineSnapshot {
     /// ⚠ **不携带播放游标**：播放位置由走带的**绝对帧**导出（见 [`crate::audio_clip`]），
     /// 因此本表在快照生命周期内是不可变的、[MODEL-ISO-001] 也不被违反。
     audio_clips: BTreeMap<EntityId, AudioClipSchedule>,
+    /// ⭐ 每轨的 **lane 组表**（逐件处理，期 5）：组序 = 模型 `lane_chains` 原序。
+    ///
+    /// 只收录 `lane_chains` 非空的轨：不在表里的轨 ⇒ 实时侧整段走接线前的
+    /// 单路渲染 ⇒ 逐位不变。由 [`Self::with_lane_chains`] 附上（生产路径是
+    /// [`Self::from_project`]）；它同时把同轨的 lane 键布局交给
+    /// [`RoutingPlan::compile_lane_routes`] 求值。
+    lane_chains: BTreeMap<EntityId, Vec<LaneGroupParams>>,
+    /// ⭐ 与 [`Self::lane_chains`] 同轨同序的**分调度表**：每轨
+    /// `组数 + 1` 张（逐组在前、余量最后），由 [`Self::with_schedules`] 在
+    /// 附上整轨调度表时用 [`split_lane_schedule`] 切出（与离线切分同式）。
+    ///
+    /// 只收录 [`Self::lane_chains`] 里的轨；没有整轨调度表的轨得到全空分表。
+    lane_schedules: BTreeMap<EntityId, Vec<NoteSchedule>>,
 }
 
 impl EngineSnapshot {
@@ -842,6 +952,8 @@ impl EngineSnapshot {
         let mut inserts: BTreeMap<EntityId, InsertParams> = BTreeMap::new();
         // 只收录识别出鼓机的轨道（见 `EngineSnapshot::drums` 的字段文档）。
         let mut drums: BTreeMap<EntityId, DrumsParams> = BTreeMap::new();
+        // 只收录 lane_chains 非空的轨道（见 `EngineSnapshot::lane_chains` 的字段文档）。
+        let mut lane_chains: BTreeMap<EntityId, Vec<LaneGroupParams>> = BTreeMap::new();
         // ⭐ 模型→快照的**接线**（任务单 `#78`）：`TrackV3.sampler` 只给出一个路径，
         // 引擎⛔ 不读盘、⛔ 不摊平 ⇒ 这里只把"这条轨有一份 SFZ 待摊平"这一**事实**
         // 抄进快照（重数据 [`SfzPlan`] 仍由控制侧解码后经 [`EngineSnapshot::with_sfz`]
@@ -861,6 +973,16 @@ impl EngineSnapshot {
             }
             if let Some(params) = DrumsParams::from_devices(&track.devices) {
                 drums.insert(*id, params);
+            }
+            if !track.lane_chains.is_empty() {
+                lane_chains.insert(
+                    *id,
+                    track
+                        .lane_chains
+                        .iter()
+                        .map(|chain| LaneGroupParams::from_chain(chain, sample_rate, project.bpm))
+                        .collect(),
+                );
             }
             // ⭐ 接线：有采样器绑定 ⇒ 记一条**待摊平**（路径原样；⛔ 不读盘、⛔ 不解析）。
             //    阶段 2：八度覆盖一并投影（`effective_octave_override` 已过滤非法值）。
@@ -892,6 +1014,7 @@ impl EngineSnapshot {
         )
         .map(|snapshot| {
             snapshot
+                .with_lane_chains(lane_chains, &project.routing_graph)
                 .with_schedules(schedules, dropped)
                 .with_tones(tones)
                 .with_inserts(inserts)
@@ -982,6 +1105,10 @@ impl EngineSnapshot {
             // ⛔ `from_parts` **不**填音频片段：摆放只能由 [`Self::from_project`] 投影、
             // PCM 只能由 [`Self::with_audio_asset`] 注入（见 [`crate::audio_clip`]）。
             audio_clips: BTreeMap::new(),
+            // ⛔ `from_parts` **不**填 lane 组表：只能由 [`Self::with_lane_chains`]
+            // 附上（它同时求值 lane 键路由，两件事必须同源）。
+            lane_chains: BTreeMap::new(),
+            lane_schedules: BTreeMap::new(),
         })
     }
 
@@ -998,6 +1125,48 @@ impl EngineSnapshot {
         self.scheduled_notes = schedules.values().map(NoteSchedule::len).sum();
         self.note_schedule_drops = dropped;
         self.schedules = schedules;
+        // ⭐ 期 5：lane 分调度表与整轨表**同源同刻**切出（切分式见
+        // [`split_lane_schedule`]）；没有整轨表的 lane 轨得到全空分表。
+        self.lane_schedules = self
+            .lane_chains
+            .iter()
+            .map(|(track, groups)| {
+                let empty = NoteSchedule::default();
+                let schedule = self.schedules.get(track).unwrap_or(&empty);
+                (*track, split_lane_schedule(schedule, groups))
+            })
+            .collect();
+        self
+    }
+
+    /// ⭐ **附上每轨的 lane 组表**（逐件处理，期 5；见 [`Self::lane_chains`]）。
+    ///
+    /// 形状照 [`Self::with_inserts`]：消费式构造器、整表替换。附带求值 lane
+    /// 键路由：布局（组键集 ＋ 目的组武装位）与组表**同源**产出后交给
+    /// [`RoutingPlan::compile_lane_routes`]（需要路由图，故多收一个 `graph`）。
+    ///
+    /// ⚠ 调用序：必须在 [`Self::with_schedules`] **之前**（分调度表在那一步
+    /// 按本表切分）。生产路径 [`Self::from_project`] 已按此序接线。
+    #[must_use]
+    pub fn with_lane_chains(
+        mut self,
+        lane_chains: BTreeMap<EntityId, Vec<LaneGroupParams>>,
+        graph: &RoutingGraph,
+    ) -> Self {
+        let layouts: BTreeMap<EntityId, LaneKeyLayout> = lane_chains
+            .iter()
+            .map(|(track, groups)| {
+                (
+                    *track,
+                    LaneKeyLayout {
+                        groups: groups.iter().map(|group| group.keys().to_vec()).collect(),
+                        armed_groups: groups.iter().map(LaneGroupParams::key_armed).collect(),
+                    },
+                )
+            })
+            .collect();
+        self.routing.compile_lane_routes(graph, &layouts);
+        self.lane_chains = lane_chains;
         self
     }
 
@@ -1240,6 +1409,46 @@ impl EngineSnapshot {
     #[must_use]
     pub fn schedule(&self, id: &EntityId) -> Option<&NoteSchedule> {
         self.schedules.get(id)
+    }
+
+    /// ⭐ 全部带 lane 组的轨道（期 5；`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    #[must_use]
+    pub const fn lane_chains(&self) -> &BTreeMap<EntityId, Vec<LaneGroupParams>> {
+        &self.lane_chains
+    }
+
+    /// ⭐ 单轨的 lane 组表（没有该轨时为 `None` ⇒ 实时侧走单路渲染）。
+    #[must_use]
+    pub fn lane_groups(&self, id: &EntityId) -> Option<&[LaneGroupParams]> {
+        self.lane_chains.get(id).map(Vec::as_slice)
+    }
+
+    /// ⭐ 单轨的 lane 分调度表（逐组在前、余量最后，与 [`Self::lane_groups`]
+    /// 同序）；没有该轨时为 `None`。
+    #[must_use]
+    pub fn lane_schedules(&self, id: &EntityId) -> Option<&[NoteSchedule]> {
+        self.lane_schedules.get(id).map(Vec::as_slice)
+    }
+
+    /// ⭐ 单轨的 lane **余量**调度表（分表最后一张）；没有 lane 组时为 `None`。
+    #[must_use]
+    pub fn lane_remainder_schedule(&self, id: &EntityId) -> Option<&NoteSchedule> {
+        self.lane_schedules.get(id).and_then(|parts| parts.last())
+    }
+
+    /// ⭐ 全部组分调度表：`((轨, 组首键), &分表)`，按轨序、组序展开（期 5；
+    /// 组游标校正与判据对账用）。
+    pub fn lane_group_schedules(
+        &self,
+    ) -> impl Iterator<Item = ((EntityId, u8), &NoteSchedule)> + '_ {
+        self.lane_chains.iter().flat_map(|(track, groups)| {
+            let parts = self.lane_schedules.get(track);
+            groups.iter().enumerate().filter_map(move |(index, group)| {
+                parts
+                    .and_then(|parts| parts.get(index))
+                    .map(|schedule| ((*track, group.first_key()), schedule))
+            })
+        })
     }
 
     /// 全部音轨的**音色参数**（`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。

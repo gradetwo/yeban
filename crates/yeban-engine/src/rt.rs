@@ -268,7 +268,7 @@ use crate::routing::{RouteTarget, RoutingPlan};
 use crate::rt_probe::{self, RtDiagEvent};
 use crate::snapshot::{EngineSnapshot, RetireProducer, SnapshotReader, SnapshotSlot};
 use crate::stats_mirror::EngineStatsMirror;
-use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
+use crate::synth::{MAX_TRACK_SLOTS, NoteSchedule, SynthEngine};
 use crate::transport::{
     Transport, TransportEffect, TransportMirror, TransportReading, TransportState, next_beat_tick,
 };
@@ -311,6 +311,22 @@ pub const PDC_SLOTS: usize = 64;
 /// `reverb_pool` ≈ 85 KiB（结构体；延迟线在堆上）、两张 `armed_*` 表 ≈ 3 KiB、
 /// IR 哈希表 ≈ 520 B（`conv_pool` 在堆上）。
 pub const INSERT_SLOTS: usize = PDC_SLOTS + 1;
+
+/// ⭐ **lane 组链槽位**（逐件处理，期 5）：带非空组链的组按 (轨序, 组序)
+/// 占一个**统一槽位**（四级器件表同下标、同身份），上限 64。
+///
+/// 为什么是 64 而不是组槽的 256：卷积池每槽 ≈ 313 KiB（见 [`INSERT_SLOTS`]
+/// 的字段文档口径），64 槽 ≈ 20 MiB 构造期堆，与轨链池同量级；带链的组
+/// 远少于组总数（多数工程只有几条鼓轨挂组链）。装不下的组计数
+/// （`EngineStats::lane_group_capacity_drops`），其轨整轨回退单路渲染
+/// （⛔ 不做半组渲染）。
+pub const LANE_INSERT_SLOTS: usize = 64;
+
+/// ⭐ **lane 键抽头池槽位**（期 5）：一个槽位 = 一个 `(轨, 源组)` 的立体声
+/// 抽头（左右各一条定长缓冲）。128 槽 ≈ 128 KiB 构造期堆。计划里的抽头
+/// 槽位序号超过本上限的路由在逐块路径上被跳过（目的组走节目检波），
+/// 差额在武装时计入容量丢弃读数（⛔ 不静默）。
+pub const LANE_KEY_TAP_SLOTS: usize = 128;
 
 /// 每条 PDC 延迟线的**最大补偿延迟**（采样点）。
 ///
@@ -685,6 +701,43 @@ pub struct EngineStats {
     /// 没有它，"总线的插入链真的在跑（stage 15 起是立体声）"就无法与"只有轨上有器件"
     /// 区分；行为判据见 `tests/bus_insert.rs` 的 B1/B2/B3。
     pub bus_insert_frames: u64,
+    /// ⭐ **逐件侧链声明数**（期 5）：带 lane 端点（`source_lane` / `dest_lane`
+    /// 任一非空）的 Sidechain 边总数，**按快照修订累计**（每次武装把该修订的
+    /// 计划声明数加进来，与 `pdc_unarmed_nodes` 的累计口径同族）。
+    ///
+    /// 它与 [`Self::lane_key_edges_evaluated`] / [`Self::lane_key_edges_unevaluated`]
+    /// 是一本三栏账：声明 = 求值 + 未求值。没有这本账，「工程里写了 lane 侧链
+    /// 但实时侧没生效」只能从音频反推。
+    pub lane_key_edges_declared: u64,
+    /// ⭐ **逐件侧链求值数**（期 5）：声明里被 `RoutingPlan::compile_lane_routes`
+    /// 真求值（同轨、两端带键、两键属组、目的组静态武装、首条合格边）的条数，
+    /// 按修订累计。求值了的边在实时侧真的走组间键控（两遍渲染 + 键检波）。
+    pub lane_key_edges_evaluated: u64,
+    /// ⭐ **逐件侧链未求值数**（期 5）：声明 − 求值，按修订累计。未求值的边
+    /// 在实时侧**不产生任何键控**（目的组走节目检波）——跨轨 lane 边与
+    /// 只带一端 lane 键的混合边按设计定案就是这一类（离线同口径），
+    /// ⛔ 不是静默丢弃：本读数就是它的响亮面。
+    pub lane_key_edges_unevaluated: u64,
+    /// ⭐ **lane 容量回退数**（期 5）：因组槽（`MAX_LANE_GROUP_SLOTS`）或
+    /// 组链槽（[`LANE_INSERT_SLOTS`]）或键抽头池（[`LANE_KEY_TAP_SLOTS`]）
+    /// 装不下而**整轨回退单路渲染**的累计次数（按修订 × 轨计）。
+    /// 大于 0 ⇒ 有轨的逐件处理在实时侧没有生效（离线仍生效），⛔ 不静默。
+    pub lane_group_capacity_drops: u64,
+    /// ⭐ **SFZ 扼流组跨组回退数**（期 5）：轨的 SFZ 扼流组被 lane 切分跨组
+    /// （同一扼流组的键落在两个组、或一组与余量里）⇒ 整轨回退单路渲染的
+    /// 累计次数（按修订 × 轨计）。回退保住扼流语义（组间独立声部池会让
+    /// 同组键互相掐尾失效），⛔ 不静默：本读数就是它的响亮面。
+    pub lane_choke_fallbacks: u64,
+    /// ⭐ **lane 处理型总线回退数**（期 5）：轨同时是 lane 轨与「链在总线
+    /// 转发段跑」的处理型总线（有入边 ＋ 轨级链已武装）⇒ 整轨回退单路渲染
+    /// 的累计次数（按修订 × 轨计）。转发段的总线自声源汇入只读单声道暂存，
+    /// lane 组的立体声和在那里会丢右声道 ⇒ 宁可整轨回退（组链不生效、离线
+    /// 仍生效），⛔ 不静默：本读数就是它的响亮面。
+    pub lane_bus_fallbacks: u64,
+    /// ⭐ **lane 组链处理帧数**（期 5）：组通道条真的处理过的帧数（累计，
+    /// 与 [`Self::insert_strip_frames`] 同族但分开记账）。工程里没有 lane 组链
+    /// 时恒为 0；有组链时它是「实时逐件链真的在跑」的覆盖度见证。
+    pub lane_insert_frames: u64,
     /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
     ///
     /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
@@ -1168,7 +1221,12 @@ pub fn audition_topology_mismatch(
         return Some(AuditionRefusal::AudioConfig);
     }
     // ② 设备链：轨道集合 + 每轨混音参数（⭐ 整体相等，见上表）。
-    if main.tracks() != proposal.tracks() || main.inserts() != proposal.inserts() {
+    // ⭐ 期 5：lane 组表（逐件链投影）同属设备链 —— 组链不同 ⇒ 两条分支的
+    // 渲染拓扑不同（组槽位/组链/键路由都随之而变），必须拒绝试听切换。
+    if main.tracks() != proposal.tracks()
+        || main.inserts() != proposal.inserts()
+        || main.lane_chains() != proposal.lane_chains()
+    {
         return Some(AuditionRefusal::DeviceChain);
     }
     // ③ 自动化目标指纹。
@@ -1580,6 +1638,37 @@ struct BranchShare<'a> {
     key_taps: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]],
     /// 本量子各抽头槽位是否已写满（`render_branch` 起点清零）。
     key_tap_filled: &'a mut [bool],
+    /// ⭐ **lane 组链武装表**（逐件处理，期 5）：统一槽位，身份 `(轨, 组首键)`
+    /// 只在本表存一份（见 `EngineRuntime::armed_lane_strips` 的字段文档）。
+    armed_lane_strips: &'a mut [(EntityId, u8, Option<ChannelStrip>)],
+    /// 本快照武装的 lane 组链条数（前 `n` 项有效）。
+    armed_lane_slots: &'a mut usize,
+    /// lane 混响池（统一槽位同下标）。
+    lane_reverb_pool: &'a mut [Reverb],
+    /// 各统一槽位的 lane 混响是否武装。
+    armed_lane_reverbs: &'a mut [bool],
+    /// lane 采样延迟池（统一槽位同下标）。
+    lane_sample_delay_pool: &'a mut [SampleDelay],
+    /// 各统一槽位的 lane 采样延迟是否武装。
+    armed_lane_sample_delays: &'a mut [bool],
+    /// lane 卷积池（统一槽位同下标）。
+    lane_conv_pool: &'a mut Box<[ConvolutionReverb]>,
+    /// 各统一槽位的 lane 卷积是否武装。
+    armed_lane_convs: &'a mut [bool],
+    /// ⭐ 本快照**整轨 lane 化生效**的轨（武装期算好；只读借用）。
+    lane_active_tracks: &'a [EntityId],
+    /// lane 组渲染暂存（左/右，逐组复用）。
+    lane_scratch: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
+    /// [`BranchShare::lane_scratch`] 的右声道。
+    lane_scratch_r: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ **lane 键抽头池**（期 5）：`[槽位][帧]` 左右各一份（组渲染是立体声对）。
+    lane_key_taps_l: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]],
+    /// [`BranchShare::lane_key_taps_l`] 的右声道。
+    lane_key_taps_r: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]],
+    /// 本量子各 lane 抽头槽位是否已写满（`render_branch` 起点清零）。
+    lane_key_tap_filled: &'a mut [bool],
+    /// lane 组链累计处理帧数（与 `EngineStats::lane_insert_frames` 同源）。
+    lane_insert_frames: &'a mut u64,
     scratch_meters: &'a mut [MeterFrame; SCRATCH_METERS],
     insert_gain_reductions: &'a mut u64,
     insert_max_reduction_db: &'a mut f32,
@@ -1821,6 +1910,374 @@ fn process_insert_chain(
     seen
 }
 
+/// ⭐ 把 `share.lane_scratch(_r)[..frames]` 里**一组**的立体声信号送过该组的
+/// 已武装组链（逐件处理，期 5）：**采样延迟 → 通道条 → 混响 → 卷积混响**，
+/// 与轨链 [`process_insert_chain`] **同四级、同次序**（实时轨链本身也只有
+/// 这四级；磁带/延迟/削波/限制器未接实时池是既存面，⛔ 不是组链独有的差）。
+///
+/// 与轨链的差别只有三处：
+///
+/// 1. **槽位**是统一 lane 槽（身份 `(轨, 组首键)` 只存在 `armed_lane_strips`
+///    里，其余三级用同下标的武装位）；
+/// 2. **通道条恒走立体声入口**，且本组有已求值的 lane 键路由、且键源组本量子
+///    已写满抽头时走 `process_stereo_with_key`（键 = 源组的**链前**立体声
+///    渲染，`key_gain` 在消费时乘进抽头副本 —— 抽头池是共享读数，同一源组
+///    可能喂多个不同增益的目的组，⛔ 不能原地乘）；
+/// 3. **计数**：帧数进 lane 自己的 [`EngineStats::lane_insert_frames`]；
+///    动态级的增益账（压了多少帧/最大/当前/检波电平）与轨链**共用一本**
+///    （那本账的主语是引擎的动态级总量，不是某一条轨）。
+///
+/// 返回值：本组的通道条是否真的处理过帧。零分配、零锁、零 I/O、零日志。
+fn process_lane_insert_chain(
+    share: &mut BranchShare<'_>,
+    slot: usize,
+    frames: usize,
+    current_db: &mut f32,
+    detector_db: &mut f32,
+    // 键源在 lane 抽头池里的槽位 + 键增益（`RoutingPlan::lane_key_route_for`
+    // 的读数）；`None` = 本组没有已求值的键路由 ⇒ 走节目检波。
+    key: Option<(usize, f32)>,
+) -> bool {
+    let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+    let mut seen = false;
+
+    // --- ⓪ 采样延迟级（立体声对：左右各走自己那条线、一个游标只推进一次）---
+    if share
+        .armed_lane_sample_delays
+        .get(slot)
+        .copied()
+        .unwrap_or(false)
+    {
+        let device = &mut share.lane_sample_delay_pool[slot];
+        let (left, right) = (
+            &mut share.lane_scratch[..frames],
+            &mut share.lane_scratch_r[..frames],
+        );
+        device.process_pair(left, right);
+        *share.insert_sample_delay_frames =
+            share.insert_sample_delay_frames.wrapping_add(frames as u64);
+    }
+
+    // --- ① 通道条（恒立体声；有键走键检波）---
+    let (_, _, strip) = &mut share.armed_lane_strips[slot];
+    if let Some(strip) = strip {
+        let before_reductions = strip.gain_reduction_count();
+        let before_frames = strip.processed_frames();
+        // 键副本落在 `reverb_scratch`：组链的混响级走立体声原地入口、
+        // ⛔ 不用这块暂存（轨链只有单声道混响分支用它，而那条路径与组处理
+        // 不同时发生）⇒ 借用不冲突。键增益在这里乘（见函数文档第 2 条）。
+        let key_filled = key.is_some_and(|(tap, _)| {
+            tap < share.lane_key_tap_filled.len() && share.lane_key_tap_filled[tap]
+        });
+        if key_filled {
+            let (tap, gain) = key.unwrap_or((0, 1.0));
+            for frame in 0..frames {
+                share.reverb_scratch[0][frame] = share.lane_key_taps_l[tap][frame] * gain;
+                share.reverb_scratch[1][frame] = share.lane_key_taps_r[tap][frame] * gain;
+            }
+            let (key_l, key_r) = share.reverb_scratch.split_at_mut(1);
+            let (left, right) = (
+                &mut share.lane_scratch[..frames],
+                &mut share.lane_scratch_r[..frames],
+            );
+            strip.process_stereo_with_key(left, right, &key_l[0][..frames], &key_r[0][..frames]);
+        } else {
+            let (left, right) = (
+                &mut share.lane_scratch[..frames],
+                &mut share.lane_scratch_r[..frames],
+            );
+            strip.process_stereo(left, right);
+        }
+        let reduced = strip
+            .gain_reduction_count()
+            .saturating_sub(before_reductions);
+        *share.insert_gain_reductions = share.insert_gain_reductions.wrapping_add(reduced);
+        let processed = strip.processed_frames().saturating_sub(before_frames);
+        *share.lane_insert_frames = share.lane_insert_frames.wrapping_add(processed);
+        let reduction_db = strip.max_gain_reduction_db();
+        if reduction_db > *share.insert_max_reduction_db {
+            *share.insert_max_reduction_db = reduction_db;
+        }
+        let measured_current_db = strip.current_gain_reduction_db();
+        if measured_current_db > *current_db {
+            *current_db = measured_current_db;
+        }
+        let measured_detector_db = strip.detector_level_db();
+        if measured_detector_db > *detector_db {
+            *detector_db = measured_detector_db;
+        }
+        seen = true;
+    }
+
+    // --- ② 混响级（立体声入口：左右各一份状态、一次推进）---
+    if share.armed_lane_reverbs.get(slot).copied().unwrap_or(false) {
+        let reverb = &mut share.lane_reverb_pool[slot];
+        if reverb.is_active() {
+            let (left, right) = (
+                &mut share.lane_scratch[..frames],
+                &mut share.lane_scratch_r[..frames],
+            );
+            reverb.process(left, right);
+            *share.insert_reverb_frames = share.insert_reverb_frames.wrapping_add(frames as u64);
+        }
+    }
+
+    // --- ③ 卷积混响级（交错立体声块；暂存与轨链共用 `conv_scratch`：
+    // 两个调用面在同一量子内顺序使用、从不重叠）---
+    if share.armed_lane_convs.get(slot).copied().unwrap_or(false) {
+        let conv = &mut share.lane_conv_pool[slot];
+        if conv.is_active() {
+            for frame in 0..frames {
+                share.conv_scratch[2 * frame] = share.lane_scratch[frame];
+                share.conv_scratch[2 * frame + 1] = share.lane_scratch_r[frame];
+            }
+            conv.process(&mut share.conv_scratch[..2 * frames]);
+            for frame in 0..frames {
+                share.lane_scratch[frame] = share.conv_scratch[2 * frame];
+                share.lane_scratch_r[frame] = share.conv_scratch[2 * frame + 1];
+            }
+            *share.insert_convolution_frames =
+                share.insert_convolution_frames.wrapping_add(frames as u64);
+        }
+    }
+
+    seen
+}
+
+/// ⭐ **SFZ 掐尾组是否被 lane 分组拆开**（期 5）：与离线
+/// `check_choke_groups_not_split` **同一语义**、本侧只判真假 —— 任一
+/// `off_by` 关系的触发键集与受害键集（`group == off_by` 的全部区域）只要
+/// 有一对键落在不同分区（不同组、或一组在组内一组在余量），即为拆开。
+/// 判法：把每个键集映射成「出现过的分区集合」（位集），两集并集多于一位
+/// ⟺ 存在分区不同的一对键。零分配（栈上定长表）。
+fn lane_choke_split(
+    prepared: &crate::sfz_instrument::PreparedSfz,
+    groups: &[crate::snapshot::LaneGroupParams],
+) -> bool {
+    // 键 → 分区（组下标；`usize::MAX` = 余量）。同键多组时取**第一组**
+    // （与离线的 `position` 查找同款）。
+    let mut assign = [usize::MAX; 128];
+    for (index, group) in groups.iter().enumerate() {
+        for &key in group.keys() {
+            let slot = &mut assign[usize::from(key)];
+            if *slot == usize::MAX {
+                *slot = index;
+            }
+        }
+    }
+    let assignment_set = |mask: [u64; 2]| -> u32 {
+        let mut set = 0u32;
+        for (word, bits_word) in mask.iter().enumerate() {
+            let mut bits = *bits_word;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let key = word * 64 + bit;
+                let partition = assign[key];
+                set |= if partition == usize::MAX {
+                    1u32 << 31
+                } else {
+                    1u32 << partition
+                };
+                bits &= bits - 1;
+            }
+        }
+        set
+    };
+    for trigger in prepared.regions() {
+        let off_by = trigger.off_by();
+        if off_by == 0 {
+            continue;
+        }
+        let trigger_set = assignment_set(trigger.key_mask());
+        if trigger_set == 0 {
+            continue;
+        }
+        let mut victim_set = 0u32;
+        for victim in prepared.regions() {
+            if victim.group() == off_by {
+                victim_set |= assignment_set(victim.key_mask());
+            }
+        }
+        if victim_set != 0 && (trigger_set | victim_set).count_ones() > 1 {
+            return true;
+        }
+    }
+    false
+}
+
+/// ⭐ **lane 化轨的声源段**（逐件处理，期 5）：把一条 lane 化轨渲染进
+/// `share.track_scratch(_r)` 立体声对，之后的段（参数/轨链/电平/PDC/相位/
+/// 声相/汇流）由 `render_branch` 的既有立体声下游接手。
+///
+/// ## 顺序（与离线 `LaneSplitSource` 同构）
+///
+/// 1. **第一遍（键源组）**：凡是某条已求值 lane 键路由的**源组**，先把它的
+///    分表调度渲染进 lane 键抽头池 —— 抽头取**链前、组声相前**的原始组渲染
+///    （与离线 R4 裁决同口径）。抽头池按 `(轨, 源组下标)` 编槽
+///    （[`RoutingPlan::lane_key_tap_slot`]），跨轨共用一张池。
+/// 2. **主遍（逐组）**：键源组**直接取抽头**（⛔ 不重渲 —— 引擎推进契约是
+///    一量子一组只推进一次，离线同款），其余组在此渲染；本组分表**有音符**
+///    才把信号送过组链（无音符整链跳过、状态一位不推进 —— 离线 `has_notes`
+///    同口径）；组链之后施加**组声相**（居中等功率、默认律 —— 离线
+///    `lane_pan_gains` 同律），再累加进轨对。
+/// 3. **余量最后**：不属于任何组的音符走轨槽位的立体声渲染累加（轨游标在
+///    武装期已对齐到余量分表）。
+/// 4. **音频片段**：单声道素材按轨级同口径 `mix_into` 后**双声道同值**累加
+///    （片段源本身是单声道，这与"片段轨在立体声下游里 L=R"的既有形状一致）。
+///
+/// 组链的统一槽位按身份 `(轨, 组首键)` 在武装表里查（定长扫描，≤64 项）。
+/// 零分配、零锁、零 I/O、零日志 [MUST-GATE-001]。
+#[allow(clippy::too_many_arguments)]
+fn render_lane_track_source(
+    share: &mut BranchShare<'_>,
+    synth: &mut SynthEngine,
+    current: &EngineSnapshot,
+    routing: &RoutingPlan,
+    track: EntityId,
+    frames: usize,
+    block_start_frame: u64,
+    cc: Option<&dyn Fn(u8) -> u8>,
+    insert_current_db: &mut f32,
+    insert_detector_db: &mut f32,
+    insert_current_seen: &mut bool,
+) {
+    let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
+    let groups: &[crate::snapshot::LaneGroupParams] = current.lane_groups(&track).unwrap_or(&[]);
+    let parts: &[NoteSchedule] = current.lane_schedules(&track).unwrap_or(&[]);
+
+    // --- 第一遍：键源组 → 抽头池 ---
+    for (index, group) in groups.iter().enumerate() {
+        let Some(&first_key) = group.keys().first() else {
+            continue;
+        };
+        let Some(tap) = routing.lane_key_tap_slot(&track, index) else {
+            continue;
+        };
+        if tap >= share.lane_key_taps_l.len() {
+            // 抽头池容量在武装期按同一张计划核过并计数（lane_group_capacity_drops），
+            // 这里只守下标，⛔ 不 panic。
+            continue;
+        }
+        let part = parts.get(index);
+        let (left, right) = (
+            &mut share.lane_scratch[..frames],
+            &mut share.lane_scratch_r[..frames],
+        );
+        synth.render_group_stereo_with_cc(track, first_key, part, prepared_sfz, left, right, cc);
+        share.lane_key_taps_l[tap][..frames].copy_from_slice(&share.lane_scratch[..frames]);
+        share.lane_key_taps_r[tap][..frames].copy_from_slice(&share.lane_scratch_r[..frames]);
+        share.lane_key_tap_filled[tap] = true;
+    }
+
+    // --- 主遍：逐组渲染/取抽头 → 组链 → 组声相 → 累加 ---
+    share.track_scratch[..frames].fill(0.0);
+    share.track_scratch_r[..frames].fill(0.0);
+    for (index, group) in groups.iter().enumerate() {
+        let Some(&first_key) = group.keys().first() else {
+            continue;
+        };
+        let part = parts.get(index);
+        let from_tap = routing.lane_key_tap_slot(&track, index).filter(|tap| {
+            *tap < share.lane_key_tap_filled.len() && share.lane_key_tap_filled[*tap]
+        });
+        if let Some(tap) = from_tap {
+            share.lane_scratch[..frames].copy_from_slice(&share.lane_key_taps_l[tap][..frames]);
+            share.lane_scratch_r[..frames].copy_from_slice(&share.lane_key_taps_r[tap][..frames]);
+        } else {
+            let (left, right) = (
+                &mut share.lane_scratch[..frames],
+                &mut share.lane_scratch_r[..frames],
+            );
+            synth.render_group_stereo_with_cc(
+                track,
+                first_key,
+                part,
+                prepared_sfz,
+                left,
+                right,
+                cc,
+            );
+        }
+        // 组链：分表无音符 ⇒ 整链跳过（链的状态一个样本都不推进）。
+        let has_notes = part.is_some_and(|schedule| !schedule.is_empty());
+        if has_notes {
+            let slot = share.armed_lane_strips[..*share.armed_lane_slots]
+                .iter()
+                .position(|(id, key, _)| *id == track && *key == first_key);
+            if let Some(slot) = slot {
+                let key = routing.lane_key_route_for(&track, index).and_then(|route| {
+                    routing
+                        .lane_key_tap_slot(&track, route.source_group())
+                        .map(|tap| (tap, route.key_gain()))
+                });
+                if process_lane_insert_chain(
+                    share,
+                    slot,
+                    frames,
+                    insert_current_db,
+                    insert_detector_db,
+                    key,
+                ) {
+                    *insert_current_seen = true;
+                }
+            }
+        }
+        // 组声相（链后；居中等功率 + 默认律，与离线 `lane_pan_gains` 同律；
+        // pan 为 0 或未声明 ⇒ 增益 (1, 1) ⇒ 一位不动）。
+        if let Some(pan) = group.pan() {
+            let (gain_l, gain_r) = crate::mixer::centered_pan_gains(pan, PanLaw::default());
+            if (gain_l, gain_r) != (1.0, 1.0) {
+                for frame in 0..frames {
+                    share.lane_scratch[frame] *= gain_l;
+                    share.lane_scratch_r[frame] *= gain_r;
+                }
+            }
+        }
+        for frame in 0..frames {
+            share.track_scratch[frame] += share.lane_scratch[frame];
+            share.track_scratch_r[frame] += share.lane_scratch_r[frame];
+        }
+    }
+
+    // --- 余量（不属于任何组的音符）：轨槽位立体声渲染，最后累加 ---
+    if let Some(remainder) = parts.get(groups.len()) {
+        let (left, right) = (
+            &mut share.lane_scratch[..frames],
+            &mut share.lane_scratch_r[..frames],
+        );
+        synth.render_track_stereo_with_cc(track, Some(remainder), prepared_sfz, left, right, cc);
+        for frame in 0..frames {
+            share.track_scratch[frame] += share.lane_scratch[frame];
+            share.track_scratch_r[frame] += share.lane_scratch_r[frame];
+        }
+    }
+
+    // --- 音频片段：单声道素材双声道同值累加 ---
+    if let Some(clips) = current.audio_clip_schedule(&track) {
+        share.lane_scratch[..frames].fill(0.0);
+        crate::audio_clip::mix_into(clips, block_start_frame, &mut share.lane_scratch[..frames]);
+        for frame in 0..frames {
+            share.track_scratch[frame] += share.lane_scratch[frame];
+            share.track_scratch_r[frame] += share.lane_scratch[frame];
+        }
+    }
+}
+
+/// ⭐ **游标对齐用的调度视图**（期 5）：lane 轨的**轨游标**对齐到**余量
+/// 分表**（组游标另由 `SynthEngine::align_group_cursors` 对齐到各组分表），
+/// 其余轨用整表。与离线分工同构：轨槽位只负责「不属于任何组的音符」，
+/// 整表喂给轨游标会让组内音符被轨槽位与组槽位**各触发一次**。
+fn cursor_schedules(
+    snapshot: &EngineSnapshot,
+    master: EntityId,
+) -> impl Iterator<Item = (&EntityId, &NoteSchedule)> + '_ {
+    snapshot
+        .schedules()
+        .iter()
+        .filter(move |(id, _)| **id != master)
+        .map(|(id, schedule)| (id, snapshot.lane_remainder_schedule(id).unwrap_or(schedule)))
+}
+
 /// **渲染一条分支**的逐轨材料到 `out`（逐轨合成 → 电平 → PDC → 声相 → 汇入母线）。
 ///
 /// [ARCH-RT-005] 片 2a：本函数是**纯抽取** —— 函数体逐字等于抽取前 `render_block` 里
@@ -1917,6 +2374,8 @@ fn render_branch(
     // 槽位永不被读）。不清零时上一量子的抽头会被当成本量子的键（错键）。
     // 位置：任何路由之前；不论 `uses_buses()`（无总线的工程仍可能有键路由）。
     share.key_tap_filled.fill(false);
+    // ⭐ lane 键抽头（期 5）：同口径清零（只清标记不清内容，未填充永不被读）。
+    share.lane_key_tap_filled.fill(false);
     // ⭐ 任务单 `#154`：本快照的路由计划（构造期编译好的纯数据）。
     //
     // ⚠ **默认口径**：`uses_buses()` 为假（所有节点都只直连 master）⇒ 下面的
@@ -2043,8 +2502,35 @@ fn render_branch(
             // （`render_panned_pair_into`），`route_panned` 本来就吃立体声源
             // ⇒ `routes_of_track` 的旧条件（单边直连 master、单位增益、无发送自动化）全部删除。
             ;
+        // ⭐ **期 5（逐件处理）**：本轨是否走 **lane 化**整轨通路 —— 名单在
+        // 武装期（快照边界）已经算好（全部组在合成器侧武装 + 全部非空组链
+        // 就位 + SFZ 掐尾组未被分组拆开 + 不是"链在转发段跑"的处理型总线），
+        // 这里只查名单（见 `EngineRuntime::lane_active_tracks` 的字段文档与
+        // [`EngineStats::lane_choke_fallbacks`] 等回退读数）。lane 化轨的声源
+        // 恒为**立体声对**（组渲染恒立体声、余量立体声渲染、片段双声道累加）
+        // ⇒ 下游的参数/轨链/电平/PDC/相位/声相全部按对走，与 `stereo_track`
+        // 共用同一套立体声下游（合取 `pair_track`）；`stereo_track` 本身的
+        // 定义与覆盖度计数一位不动。
+        let lane_active = running && share.lane_active_tracks.contains(&track);
+        let pair_track = stereo_track || lane_active;
 
-        if running && stereo_track {
+        if lane_active {
+            // ⭐ lane 化声源：分组渲染 → 组链 → 组声相 → 求和（余量最后），
+            // 结果落在 `track_scratch(_r)`，之后的段与普通立体声轨完全同路。
+            render_lane_track_source(
+                share,
+                synth,
+                current,
+                routing,
+                track,
+                frames,
+                block_start_frame,
+                cc,
+                &mut insert_current_db,
+                &mut insert_detector_db,
+                &mut insert_current_seen,
+            );
+        } else if running && stereo_track {
             // 分声道：左 → `track_scratch`、右 → `track_scratch_r`（区域 `pan` 在源侧施加）。
             let (left, right) = (
                 &mut share.track_scratch[..frames],
@@ -2123,7 +2609,7 @@ fn render_branch(
         //
         // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
         // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
-        if stereo_track {
+        if pair_track {
             // ⭐ stage 7：一对声道共用同一条增益曲线（平滑器只推进一次）。
             share.params.apply_pair(
                 track,
@@ -2155,7 +2641,7 @@ fn render_branch(
                 &mut insert_current_db,
                 &mut insert_detector_db,
                 routing.key_route(&track),
-                stereo_track,
+                pair_track,
             )
         {
             insert_current_seen = true;
@@ -2177,7 +2663,7 @@ fn render_branch(
             // ⭐ stage 4：分声道轨的电平取样点取"两声道里绝对值较大的那个"（峰值口径）；
             //   单声道轨仍读 `track_scratch`，一位不动。借 `reverb_scratch[0]` 当临时格
             //   （它在下面声相段才会被写，此处空闲），⛔ 不新增任何缓冲。
-            let meter_source: &[f32] = if stereo_track {
+            let meter_source: &[f32] = if pair_track {
                 for index in 0..frames {
                     let left = share.track_scratch[index];
                     let right = share.track_scratch_r[index];
@@ -2226,7 +2712,7 @@ fn render_branch(
         // 若两边都施加就会补偿两次。代价如实登记：这一档下本轨的节点级延迟线
         // 本量子不推进（与总线转发段 stage 26 慢路同一条边界）。
         if track_edges_uniform {
-            if stereo_track {
+            if pair_track {
                 // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
                 share.pdc.apply_pair(
                     &track,
@@ -2242,7 +2728,7 @@ fn render_branch(
         // 与 PDC 同一条位置规则（"进入总线求和节点前"）：先把插件延迟补齐，
         // 用户延时再按对齐后的信号施加。无武装的轨返回 `false`、样本一位不动
         // ⇒ 没有相位设置的工程逐位不变。走带停住时**也**调（喂静音，推进线）。
-        if stereo_track {
+        if pair_track {
             // ⭐ stage 9：同一个延迟线游标、同一份对齐延时与极性。
             let _ = share.phase_bank.apply_pair(
                 &track,
@@ -2410,7 +2896,7 @@ fn render_branch(
                 // 与快路的 `sum_pair_into_bus_smoothed` **同一把尺子**（⛔ 不再把
                 // 左右先压成一条 `track_scratch` 再乘两个增益）。
                 {
-                    let (left_source, right_source) = if stereo_track {
+                    let (left_source, right_source) = if pair_track {
                         (
                             &share.track_scratch[..frames],
                             &share.track_scratch_r[..frames],
@@ -2422,7 +2908,7 @@ fn render_branch(
                         )
                     };
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
-                    if stereo_track {
+                    if pair_track {
                         render_panned_pair_into_smoothed(
                             &mut first[0][..frames],
                             &mut second[0][..frames],
@@ -2450,7 +2936,7 @@ fn render_branch(
                 (share.pan_gains[index].1, share.pan_gains[index].2)
             });
             if single_unit_to_master {
-                if stereo_track {
+                if pair_track {
                     if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
                         // ⭐ stage 10：声相自动化 ＋ 分声道 ⇒ 逐帧平滑的成对求和。
                         sum_pair_into_bus_smoothed(
@@ -2477,7 +2963,7 @@ fn render_branch(
             } else {
                 {
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
-                    if stereo_track {
+                    if pair_track {
                         // ⭐ stage 16：分声道 ⇒ 左右分别乘（与 `sum_pair_into_bus` 同尺子）。
                         render_panned_pair_into(
                             &mut first[0][..frames],
@@ -3292,6 +3778,71 @@ pub struct EngineRuntime {
     /// 口径：主总线有已武装器件时**每量子** `＋frames`（恰好一次）；没有器件时
     /// 恒为 0 ⇒ 它就是"主总线的快路真的被走 / 真的被绕过"的机械读数。
     master_insert_frames: u64,
+    /// ⭐ **lane 组链武装表**（逐件处理，期 5）：`(轨, 组首键, 通道条)`，
+    /// 前 [`Self::armed_lane_slots`] 项有效，槽位是**统一槽位** —— 同一下标在
+    /// 混响/采样延迟/卷积三张 lane 表里指**同一个组**（身份只在本表存一份）。
+    ///
+    /// 与轨链四张表（[`Self::armed_strips`] 等）分开的理由：组链的键是
+    /// `(轨, 组)` 二元组，且组链只在组渲染通路上消费（逐轨循环的 lane 段），
+    /// 与轨链的三个调用点互不重叠。武装纪律与轨链同款（快照边界、状态保留、
+    /// 采样率守卫），槽位上限 [`LANE_INSERT_SLOTS`]。
+    armed_lane_strips: Box<[(EntityId, u8, Option<ChannelStrip>)]>,
+    /// 本快照武装的 lane 组链条数（前 `n` 项有效，统一槽位计数）。
+    armed_lane_slots: usize,
+    /// **lane 混响延迟线池**：每统一槽位一台，构造期按初始快照采样率预分配
+    /// （纪律同 [`Self::reverb_pool`]）。
+    lane_reverb_pool: Box<[Reverb]>,
+    /// 本快照各统一槽位的 lane 混响是否武装（与 [`Self::armed_lane_strips`] 同下标）。
+    armed_lane_reverbs: Box<[bool]>,
+    /// **lane 采样延迟池**：每统一槽位一台，容量与轨池共用
+    /// [`Self::sample_delay_capacity`]（构造期按初始快照的轨+组最大延迟定）。
+    lane_sample_delay_pool: Box<[SampleDelay]>,
+    /// 本快照各统一槽位的 lane 采样延迟是否武装。
+    armed_lane_sample_delays: Box<[bool]>,
+    /// **lane 卷积混响池**：每统一槽位一台，构造期占位 IR 建好（纪律同
+    /// [`Self::conv_pool`]）。
+    lane_conv_pool: Box<[ConvolutionReverb]>,
+    /// 本快照各统一槽位的 lane 卷积是否武装。
+    armed_lane_convs: Box<[bool]>,
+    /// 每个统一槽位当前装着的 IR 内容标识（纪律同 [`Self::armed_conv_ir_hashes`]）。
+    armed_lane_conv_ir_hashes: Box<[u64]>,
+    /// ⭐ 本快照里**整轨 lane 化生效**的轨（武装期算好：组全武装 + 带链组
+    /// 全有槽 + SFZ 扼流组未被切分跨组）。逐轨循环只查本表（前
+    /// [`Self::lane_active_track_count`] 项），⛔ 不在逐块路径上重算资格。
+    lane_active_tracks: Box<[EntityId]>,
+    /// [`Self::lane_active_tracks`] 的有效项数。
+    lane_active_track_count: usize,
+    /// **lane 组渲染暂存**（左/右）：组渲染与组链的工作缓冲，逐组复用
+    /// （纪律同 [`Self::track_scratch`]）。
+    lane_scratch: [f32; DEFAULT_BLOCK_FRAMES],
+    /// [`Self::lane_scratch`] 的右声道。
+    lane_scratch_r: [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ **lane 键抽头池**（期 5）：`[槽位][帧]`，左右各一份（组渲染是立体声
+    /// 对，检波器要读两路）。槽位 = `RoutingPlan::lane_key_tap_slot` 的读数。
+    /// 构造期预分配、逐块复用 ⇒ 零分配；每量子起点清零填充标记（纪律同
+    /// [`Self::key_taps`]）。
+    lane_key_taps_l: Box<[[f32; DEFAULT_BLOCK_FRAMES]]>,
+    /// [`Self::lane_key_taps_l`] 的右声道。
+    lane_key_taps_r: Box<[[f32; DEFAULT_BLOCK_FRAMES]]>,
+    /// 本量子各 lane 抽头槽位是否已写满（`render_branch` 起点清零）。
+    lane_key_tap_filled: Box<[bool]>,
+    /// 见 [`EngineStats::lane_key_edges_declared`]。
+    lane_key_edges_declared: u64,
+    /// 见 [`EngineStats::lane_key_edges_evaluated`]。
+    lane_key_edges_evaluated: u64,
+    /// 见 [`EngineStats::lane_key_edges_unevaluated`]。
+    lane_key_edges_unevaluated: u64,
+    /// 见 [`EngineStats::lane_group_capacity_drops`]。
+    lane_group_capacity_drops: u64,
+    /// 见 [`EngineStats::lane_choke_fallbacks`]。
+    lane_choke_fallbacks: u64,
+    /// 见 [`EngineStats::lane_bus_fallbacks`]。
+    lane_bus_fallbacks: u64,
+    /// lane 组槽位容量丢弃的**上次已入账值**（内部记账，不进 `EngineStats`）：
+    /// `SynthEngine::group_drops` 是引擎生命周期累计值，武装段按差量入账。
+    lane_group_drops_seen: u64,
+    /// 见 [`EngineStats::lane_insert_frames`]。
+    lane_insert_frames: u64,
     /// **实时侧参数目标表**（[`crate::param`]）：`SetParam` → 逐样本平滑的逐轨增益乘子。
     ///
     /// 与 [`Self::armed_strips`] 的差别：这张表由**事件**（不是快照）驱动
@@ -3552,6 +4103,16 @@ impl EngineRuntime {
             .values()
             .filter_map(|insert| insert.sample_delay())
             .map(|params| params.delay_samples)
+            // ⭐ 期 5：lane 组链的采样延迟与轨链共用同一条容量线（构造期按
+            // 轨+组的最大延迟定，武装期守卫同口径）。
+            .chain(
+                slot.current()
+                    .lane_chains()
+                    .values()
+                    .flatten()
+                    .filter_map(|group| group.insert().sample_delay())
+                    .map(|params| params.delay_samples),
+            )
             .max()
             .unwrap_or(0);
         let mut sample_delay_pool: Vec<SampleDelay> = Vec::with_capacity(INSERT_SLOTS);
@@ -3584,6 +4145,31 @@ impl EngineRuntime {
             conv_pool.push(conv);
         }
         let conv_pool = conv_pool.into_boxed_slice();
+        // ⭐ lane 组链池（逐件处理，期 5）：与轨池**同一条构造纪律**（混响逐台
+        // 建、采样延迟按同一容量线、卷积用同一份占位 IR），槽位数
+        // [`LANE_INSERT_SLOTS`]。分配只在这里（构造期），回调内一次也不分配。
+        let mut lane_reverb_pool: Vec<Reverb> = Vec::with_capacity(LANE_INSERT_SLOTS);
+        for _ in 0..LANE_INSERT_SLOTS {
+            let mut reverb = Reverb::new();
+            reverb.set_sample_rate(armed_reverb_sample_rate as f32);
+            lane_reverb_pool.push(reverb);
+        }
+        let lane_reverb_pool = lane_reverb_pool.into_boxed_slice();
+        let mut lane_sample_delay_pool: Vec<SampleDelay> = Vec::with_capacity(LANE_INSERT_SLOTS);
+        for _ in 0..LANE_INSERT_SLOTS {
+            let mut device = SampleDelay::new();
+            device.configure_with_capacity(armed_reverb_sample_rate as f32, sample_delay_capacity);
+            lane_sample_delay_pool.push(device);
+        }
+        let lane_sample_delay_pool = lane_sample_delay_pool.into_boxed_slice();
+        let mut lane_conv_pool: Vec<ConvolutionReverb> = Vec::with_capacity(LANE_INSERT_SLOTS);
+        for _ in 0..LANE_INSERT_SLOTS {
+            let mut conv = ConvolutionReverb::new();
+            conv.set_sample_rate(armed_conv_sample_rate as f32);
+            conv.set_impulse_response(&placeholder, &placeholder, &placeholder, &placeholder);
+            lane_conv_pool.push(conv);
+        }
+        let lane_conv_pool = lane_conv_pool.into_boxed_slice();
         // 参数目标表：同样在**构造期**按初始快照的采样率建满（每个平滑器的 `α`
         // 含一次 `exp`；回调内一次也不重算 —— 采样率不变时 `set_sample_rate` 直接返回）。
         let params = ParamTable::with_slots(armed_reverb_sample_rate as f32, track_slots);
@@ -3824,6 +4410,58 @@ impl EngineRuntime {
             put!(insert_convolution_frames, 0);
             put!(insert_convolution_rejects, 0);
             put!(master_insert_frames, 0);
+            // ⭐ lane 组链（期 5）：池由上面三个局部量搬入，其余表构造期定长预分配。
+            put!(
+                armed_lane_strips,
+                vec![(EntityId::default(), 0u8, None); LANE_INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(armed_lane_slots, 0);
+            put!(lane_reverb_pool, lane_reverb_pool);
+            put!(
+                armed_lane_reverbs,
+                vec![false; LANE_INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(lane_sample_delay_pool, lane_sample_delay_pool);
+            put!(
+                armed_lane_sample_delays,
+                vec![false; LANE_INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(lane_conv_pool, lane_conv_pool);
+            put!(
+                armed_lane_convs,
+                vec![false; LANE_INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(
+                armed_lane_conv_ir_hashes,
+                vec![0u64; LANE_INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(
+                lane_active_tracks,
+                vec![EntityId::default(); MAX_TRACK_SLOTS].into_boxed_slice()
+            );
+            put!(lane_active_track_count, 0);
+            put!(lane_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
+            put!(lane_scratch_r, [0.0; DEFAULT_BLOCK_FRAMES]);
+            put!(
+                lane_key_taps_l,
+                vec![[0.0; DEFAULT_BLOCK_FRAMES]; LANE_KEY_TAP_SLOTS].into_boxed_slice()
+            );
+            put!(
+                lane_key_taps_r,
+                vec![[0.0; DEFAULT_BLOCK_FRAMES]; LANE_KEY_TAP_SLOTS].into_boxed_slice()
+            );
+            put!(
+                lane_key_tap_filled,
+                vec![false; LANE_KEY_TAP_SLOTS].into_boxed_slice()
+            );
+            put!(lane_key_edges_declared, 0);
+            put!(lane_key_edges_evaluated, 0);
+            put!(lane_key_edges_unevaluated, 0);
+            put!(lane_group_capacity_drops, 0);
+            put!(lane_choke_fallbacks, 0);
+            put!(lane_bus_fallbacks, 0);
+            put!(lane_group_drops_seen, 0);
+            put!(lane_insert_frames, 0);
             // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
             put!(params, params);
             put!(armed_master, armed_master);
@@ -4185,6 +4823,13 @@ impl EngineRuntime {
             master_insert_frames: self.master_insert_frames,
             stereo_track_frames: self.stereo_track_frames,
             bus_insert_frames: self.bus_insert_frames,
+            lane_key_edges_declared: self.lane_key_edges_declared,
+            lane_key_edges_evaluated: self.lane_key_edges_evaluated,
+            lane_key_edges_unevaluated: self.lane_key_edges_unevaluated,
+            lane_group_capacity_drops: self.lane_group_capacity_drops,
+            lane_choke_fallbacks: self.lane_choke_fallbacks,
+            lane_bus_fallbacks: self.lane_bus_fallbacks,
+            lane_insert_frames: self.lane_insert_frames,
             param_gain_frames: self.params.gain_frames(),
             param_master_gain_frames: self.params.master_gain_frames(),
             param_gain_rejects: self.params.rejections(),
@@ -4908,6 +5553,31 @@ impl EngineRuntime {
             insert_convolution_frames,
             insert_convolution_rejects,
             master_insert_frames,
+            // ⭐ lane 组链一族（期 5）：快照边界武装、逐轨循环的 lane 段消费。
+            armed_lane_strips,
+            armed_lane_slots,
+            lane_reverb_pool,
+            armed_lane_reverbs,
+            lane_sample_delay_pool,
+            armed_lane_sample_delays,
+            lane_conv_pool,
+            armed_lane_convs,
+            armed_lane_conv_ir_hashes,
+            lane_active_tracks,
+            lane_active_track_count,
+            lane_scratch,
+            lane_scratch_r,
+            lane_key_taps_l,
+            lane_key_taps_r,
+            lane_key_tap_filled,
+            lane_key_edges_declared,
+            lane_key_edges_evaluated,
+            lane_key_edges_unevaluated,
+            lane_group_capacity_drops,
+            lane_choke_fallbacks,
+            lane_bus_fallbacks,
+            lane_group_drops_seen,
+            lane_insert_frames,
             params,
             armed_master,
             // 声相一族（P4=(b)）：事件循环要写平滑器的目标，逐样本路径要推进它们。
@@ -5009,8 +5679,10 @@ impl EngineRuntime {
                 current.tones().iter().filter(|(id, _)| **id != master),
                 current.drums().iter().filter(|(id, _)| **id != master),
             );
-            synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+            synth.align_cursors(cursor_schedules(current, master));
             synth.set_track_gain_scales(current);
+            // ⭐ 期 5：lane 组槽位与组游标在同一条快照边界上武装。
+            synth.arm_lane_from_snapshot(current);
             early_armed = true;
         }
 
@@ -5269,7 +5941,9 @@ impl EngineRuntime {
             // ⚠ 只在**定位过的量子**里搬：正常播放时游标与位置同步前进，每量子重扫
             // 调度表既是白花钱、也会破坏"只增"这条已被判据钉住的纪律。
             if seeked {
-                synth.realign_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                synth.realign_cursors(cursor_schedules(current, master));
+                // ⭐ 期 5：组游标与轨游标同一条定位纪律（只增不减地校正）。
+                synth.realign_group_cursors(current.lane_group_schedules());
             }
 
             // 采样率/块长变了 ⇒ 电平弹道系数按新的"量子/秒"折算(保留电平状态)。
@@ -5348,11 +6022,12 @@ impl EngineRuntime {
                         current.tones().iter().filter(|(id, _)| **id != master),
                         current.drums().iter().filter(|(id, _)| **id != master),
                     );
-                    synth
-                        .align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                    synth.align_cursors(cursor_schedules(current, master));
                     // ⭐ 逐轨增益门（与 `begin_snapshot` 同一处边界；⭐ 顺序：**先槽位对齐、后增益**）
                     // ⇒ ⭐ 活音符的 gain 与已调度音符同源（⛔ 不是两处各算一遍）。
                     synth.set_track_gain_scales(current);
+                    // ⭐ 期 5：lane 组槽位与组游标在同一条快照边界上武装。
+                    synth.arm_lane_from_snapshot(current);
                 }
                 // --- 2b') 走带武装：采样率与 BPM 必须来自**同一份快照**（见快照的 `bpm` 字段）。
                 // 位置与状态都不动 ⇒ 换快照 / 改速度不跳变 [ARCH-DET-001]。
@@ -5788,6 +6463,246 @@ impl EngineRuntime {
                     *armed_sample_delay_slots += 1;
                 }
 
+                // --- 2c'''''') ⭐ lane 组链武装 + 整轨 lane 化判定（逐件处理，期 5）---
+                // 与轨链四级**同一条武装纪律**（快照边界、定长槽位、只
+                // `set_params`/`set_sample_rate`/同长度换 IR、拒绝计数），
+                // 差别只有两点：① 槽位是**统一槽**——一条组链占一格，身份
+                // `(轨, 组首键)` 只存在通道条表里，其余三级用同下标的武装位；
+                // ② 遍历序 = 快照 `lane_chains` 的 `BTreeMap` 序 × 组序
+                // （确定性 [MODEL-AST-003]），渲染侧按身份查槽、不依赖下标。
+                //
+                // 武装之后逐轨判定**整轨 lane 化**是否生效（全组在合成器侧
+                // 武装 + 全部非空组链就位 + SFZ 掐尾组未被分组拆开 + 不是
+                // 「链在转发段跑」的处理型总线），生效名单写进
+                // `lane_active_tracks`；每种不生效各有响亮读数（⛔ 不静默，
+                // 见 `EngineStats` 的 `lane_*` 一族）。判定只在修订变化时跑，
+                // 逐样本路径只查名单。
+                {
+                    let routing = current.routing();
+                    let sample_rate = current.sample_rate() as f32;
+                    *armed_lane_slots = 0;
+                    // 混响/卷积整级采样率守卫（与轨链 §8.5/§9 同款）：采样率
+                    // 与构造期不同 ⇒ 本修订该级一台都不武装；真的有该级器件
+                    // 时才计数（读数回答"有几个器件因此没工作"）。
+                    let lane_reverb_rate_ok = current.sample_rate() == *armed_reverb_sample_rate;
+                    if !lane_reverb_rate_ok
+                        && current
+                            .lane_chains()
+                            .values()
+                            .flatten()
+                            .any(|group| group.insert().reverb().is_some())
+                    {
+                        *insert_reverb_rate_rejects = insert_reverb_rate_rejects.wrapping_add(1);
+                    }
+                    let lane_conv_rate_ok = current.sample_rate() == *armed_conv_sample_rate;
+                    if !lane_conv_rate_ok {
+                        let unarmed = current
+                            .lane_chains()
+                            .values()
+                            .flatten()
+                            .filter(|group| group.insert().convolution().is_some())
+                            .count() as u64;
+                        *insert_convolution_rejects =
+                            insert_convolution_rejects.wrapping_add(unarmed);
+                    }
+                    for (track, groups) in current.lane_chains() {
+                        for group in groups {
+                            let insert = group.insert();
+                            if insert.is_empty() {
+                                continue;
+                            }
+                            if *armed_lane_slots >= LANE_INSERT_SLOTS {
+                                // 统一槽耗尽：本组链不就位 ⇒ 整轨判定按
+                                // 「链未就位」回退并计容量读数（在下面落账）。
+                                continue;
+                            }
+                            let slot = *armed_lane_slots;
+                            let first_key = group.first_key();
+                            // 复用判定必须在**覆写之前**读：本槽上一修订的
+                            // 身份与武装位（每槽每修订至多写一次）。
+                            let same_identity = armed_lane_strips[slot].0 == *track
+                                && armed_lane_strips[slot].1 == first_key;
+                            // ① 通道条（轨链同款：同身份只换参数保状态）。
+                            match insert.strip() {
+                                Some(params) => match &mut armed_lane_strips[slot] {
+                                    (_, _, Some(strip)) if same_identity => {
+                                        strip.set_params(params);
+                                        strip.set_sample_rate(sample_rate);
+                                    }
+                                    entry => {
+                                        *entry = (
+                                            *track,
+                                            first_key,
+                                            Some(ChannelStrip::new(params, sample_rate)),
+                                        );
+                                    }
+                                },
+                                None => {
+                                    // 本组没有通道条：身份仍登记（其余三级靠
+                                    // 同下标对齐），通道条位留空。
+                                    armed_lane_strips[slot] = (*track, first_key, None);
+                                }
+                            }
+                            // ② 混响级（整级守卫在上面；同身份只换参数）。
+                            if lane_reverb_rate_ok {
+                                if let Some(params) = insert.reverb() {
+                                    if same_identity && armed_lane_reverbs[slot] {
+                                        lane_reverb_pool[slot].set_params(params);
+                                    } else {
+                                        lane_reverb_pool[slot].set_sample_rate(sample_rate);
+                                        lane_reverb_pool[slot].set_params(params);
+                                        armed_lane_reverbs[slot] = true;
+                                    }
+                                } else {
+                                    armed_lane_reverbs[slot] = false;
+                                }
+                            } else {
+                                // 整级采样率守卫未过 ⇒ 本槽混响不武装（⛔ 不留
+                                // 上一修订的旧武装位：那会让旧参数在新采样率
+                                // 下被误用，正是守卫要防的事）。
+                                armed_lane_reverbs[slot] = false;
+                            }
+                            // ③ 卷积级（IR 长度守卫 + 哈希复用，与轨链同款）。
+                            if lane_conv_rate_ok {
+                                match insert.convolution() {
+                                    Some(plan)
+                                        if plan.ir_frames()
+                                            == crate::insert::convolution_ir_frames(
+                                                *armed_conv_sample_rate,
+                                            ) =>
+                                    {
+                                        if same_identity
+                                            && armed_lane_convs[slot]
+                                            && armed_lane_conv_ir_hashes[slot] == plan.ir_hash()
+                                        {
+                                            lane_conv_pool[slot].set_params(plan.params());
+                                        } else {
+                                            let right = plan.ir_r().unwrap_or_else(|| plan.ir());
+                                            let accepted = lane_conv_pool[slot]
+                                                .set_impulse_response(
+                                                    plan.ir(),
+                                                    plan.silence(),
+                                                    plan.silence(),
+                                                    right,
+                                                );
+                                            if accepted != plan.ir_frames() {
+                                                *insert_convolution_rejects =
+                                                    insert_convolution_rejects.wrapping_add(1);
+                                                armed_lane_convs[slot] = false;
+                                            } else {
+                                                lane_conv_pool[slot].set_params(plan.params());
+                                                armed_lane_convs[slot] = true;
+                                                armed_lane_conv_ir_hashes[slot] = plan.ir_hash();
+                                            }
+                                        }
+                                    }
+                                    Some(_) => {
+                                        *insert_convolution_rejects =
+                                            insert_convolution_rejects.wrapping_add(1);
+                                        armed_lane_convs[slot] = false;
+                                    }
+                                    None => {
+                                        armed_lane_convs[slot] = false;
+                                    }
+                                }
+                            } else {
+                                // 整级采样率守卫未过 ⇒ 本槽卷积不武装（同混响级
+                                // 的理由：⛔ 不留上一修订的旧武装位）。
+                                armed_lane_convs[slot] = false;
+                            }
+                            // ④ 采样延迟级（恒等不武装；超容量拒绝，轨链同款）。
+                            match insert.sample_delay() {
+                                Some(params) if !params.is_identity() => {
+                                    if params.delay_samples > *sample_delay_capacity {
+                                        *insert_sample_delay_capacity_rejects =
+                                            insert_sample_delay_capacity_rejects.wrapping_add(1);
+                                        armed_lane_sample_delays[slot] = false;
+                                    } else if same_identity && armed_lane_sample_delays[slot] {
+                                        lane_sample_delay_pool[slot].set_params(params);
+                                    } else {
+                                        lane_sample_delay_pool[slot].reset();
+                                        lane_sample_delay_pool[slot].set_params(params);
+                                        armed_lane_sample_delays[slot] = true;
+                                    }
+                                }
+                                _ => {
+                                    armed_lane_sample_delays[slot] = false;
+                                }
+                            }
+                            *armed_lane_slots += 1;
+                        }
+                    }
+
+                    // --- 整轨 lane 化判定 + 响亮读数落账 ---
+                    *lane_key_edges_declared =
+                        lane_key_edges_declared.wrapping_add(routing.lane_edges_declared() as u64);
+                    *lane_key_edges_evaluated = lane_key_edges_evaluated
+                        .wrapping_add(routing.lane_edges_evaluated() as u64);
+                    *lane_key_edges_unevaluated = lane_key_edges_unevaluated.wrapping_add(
+                        (routing.lane_edges_declared() - routing.lane_edges_evaluated()) as u64,
+                    );
+                    // 合成器组槽位的容量丢弃是累计值 ⇒ 按差量入账。
+                    let group_drops_total = synth.group_drops();
+                    *lane_group_capacity_drops = lane_group_capacity_drops
+                        .wrapping_add(group_drops_total - *lane_group_drops_seen);
+                    *lane_group_drops_seen = group_drops_total;
+                    // 抽头池容量：计划要的槽位多于池 ⇒ 超额部分按源组数计。
+                    *lane_group_capacity_drops = lane_group_capacity_drops.wrapping_add(
+                        routing
+                            .lane_key_tap_slots()
+                            .saturating_sub(LANE_KEY_TAP_SLOTS) as u64,
+                    );
+                    *lane_active_track_count = 0;
+                    for (track, groups) in current.lane_chains() {
+                        if groups.is_empty() || *track == master {
+                            continue;
+                        }
+                        let synth_ok = synth.lane_groups_armed_for(track) == groups.len();
+                        let chains_ok = groups.iter().all(|group| {
+                            group.insert().is_empty()
+                                || armed_lane_strips[..*armed_lane_slots]
+                                    .iter()
+                                    .any(|(id, key, _)| id == track && *key == group.first_key())
+                        });
+                        if !synth_ok {
+                            // 逐组丢弃已由 `group_drops` 差量入账，这里只回退。
+                            continue;
+                        }
+                        if !chains_ok {
+                            *lane_group_capacity_drops = lane_group_capacity_drops.wrapping_add(1);
+                            continue;
+                        }
+                        let choke_split = current
+                            .sfz_plan(track)
+                            .is_some_and(|plan| lane_choke_split(plan.prepared(), groups));
+                        if choke_split {
+                            *lane_choke_fallbacks = lane_choke_fallbacks.wrapping_add(1);
+                            continue;
+                        }
+                        // 处理型总线谓词与逐轨循环同款（`has_armed_insert_devices`
+                        // 的三表）：转发段的自声源汇入只读单声道暂存，lane
+                        // 立体声和会在那里丢右声道 ⇒ 整轨回退。
+                        let bus_fallback = routing.has_incoming_audio(track)
+                            && (armed_strips[..*armed_insert_slots]
+                                .iter()
+                                .any(|(id, strip)| id == track && strip.is_some())
+                                || armed_reverbs[..*armed_reverb_slots]
+                                    .iter()
+                                    .any(|(id, armed)| *armed && id == track)
+                                || armed_convs[..*armed_conv_slots]
+                                    .iter()
+                                    .any(|(id, armed)| *armed && id == track));
+                        if bus_fallback {
+                            *lane_bus_fallbacks = lane_bus_fallbacks.wrapping_add(1);
+                            continue;
+                        }
+                        if *lane_active_track_count < lane_active_tracks.len() {
+                            lane_active_tracks[*lane_active_track_count] = *track;
+                            *lane_active_track_count += 1;
+                        }
+                    }
+                }
+
                 // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
                 // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
                 // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
@@ -5912,6 +6827,21 @@ impl EngineRuntime {
                     pan_gains: &mut pan_gains,
                     key_taps: &mut *key_taps,
                     key_tap_filled: &mut key_tap_filled[..],
+                    armed_lane_strips: &mut *armed_lane_strips,
+                    armed_lane_slots: &mut *armed_lane_slots,
+                    lane_reverb_pool: &mut *lane_reverb_pool,
+                    armed_lane_reverbs: &mut *armed_lane_reverbs,
+                    lane_sample_delay_pool: &mut *lane_sample_delay_pool,
+                    armed_lane_sample_delays: &mut *armed_lane_sample_delays,
+                    lane_conv_pool: &mut *lane_conv_pool,
+                    armed_lane_convs: &mut *armed_lane_convs,
+                    lane_active_tracks: &lane_active_tracks[..*lane_active_track_count],
+                    lane_scratch: &mut *lane_scratch,
+                    lane_scratch_r: &mut *lane_scratch_r,
+                    lane_key_taps_l: &mut *lane_key_taps_l,
+                    lane_key_taps_r: &mut *lane_key_taps_r,
+                    lane_key_tap_filled: &mut lane_key_tap_filled[..],
+                    lane_insert_frames: &mut *lane_insert_frames,
                 };
                 produced = render_branch(
                     &mut share,
@@ -5945,10 +6875,13 @@ impl EngineRuntime {
                             proposal.tones().iter().filter(|(id, _)| **id != master),
                             proposal.drums().iter().filter(|(id, _)| **id != master),
                         );
-                        branch.synth.align_cursors(
-                            proposal.schedules().iter().filter(|(id, _)| **id != master),
-                        );
+                        branch
+                            .synth
+                            .align_cursors(cursor_schedules(proposal, master));
                         branch.synth.set_track_gain_scales(proposal);
+                        // ⭐ 期 5：试听分支的引擎自带组槽位（与主线隔离，
+                        // 见 `SynthEngine` 组槽位组文档），同一条边界武装。
+                        branch.synth.arm_lane_from_snapshot(proposal);
                         branch.armed_revision = Some(proposal.revision());
                     }
                     let _ = render_branch(
@@ -9530,6 +10463,22 @@ mod tests {
                 meter_capacity_drops,
                 key_taps,
                 key_tap_filled,
+                armed_lane_strips,
+                armed_lane_slots,
+                lane_reverb_pool,
+                armed_lane_reverbs,
+                lane_sample_delay_pool,
+                armed_lane_sample_delays,
+                lane_conv_pool,
+                armed_lane_convs,
+                lane_active_tracks,
+                lane_active_track_count,
+                lane_scratch,
+                lane_scratch_r,
+                lane_key_taps_l,
+                lane_key_taps_r,
+                lane_key_tap_filled,
+                lane_insert_frames,
                 ..
             } = self;
             let quantum = *quanta;
@@ -9599,6 +10548,21 @@ mod tests {
                 pan_gains: &mut pan_gains,
                 key_taps,
                 key_tap_filled,
+                armed_lane_strips,
+                armed_lane_slots,
+                lane_reverb_pool,
+                armed_lane_reverbs,
+                lane_sample_delay_pool,
+                armed_lane_sample_delays,
+                lane_conv_pool,
+                armed_lane_convs,
+                lane_active_tracks: &lane_active_tracks[..*lane_active_track_count],
+                lane_scratch,
+                lane_scratch_r,
+                lane_key_taps_l,
+                lane_key_taps_r,
+                lane_key_tap_filled,
+                lane_insert_frames,
             };
             let _ = render_branch(
                 &mut share,

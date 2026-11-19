@@ -539,20 +539,20 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 46_480,
+        runtime, 47_872,
         "EngineRuntime 的现读值。**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
          声部池（默认 1024 槽）、插入池（65 槽）、混响池、卷积池、声相表、键抽头表\
          全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身只剩瘦指针，\
          而「每槽一格」的表不再随容量增长把它撑大。⛔ 这不是「省掉了功能」：\
          分配次数仍是构造期那几次，回调内依旧零分配 [MUST-GATE-001]。\
-          ⭐ **`P6`（限制器）＋32 B ⇒ 45 680 B**：`Limiter` 增加 `ceiling: f32`、`true_peak: bool` 与         `history: [[f32; 3]; 2]`（真峰值插值的三点历史）；窗口本身已改为**常量泛型**         （母线仍是 33 帧），⛔ 没有把 192 帧的存储塞进运行时。 ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。 ⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。 ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`（`[f32; 128]` ＝ 512 B，实时回调源侧分声道的右声道暂存）；余量 204800 − 46480 = 158320 B。        改前读数（历史）：（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
+          ⭐ **`P6`（限制器）＋32 B ⇒ 45 680 B**：`Limiter` 增加 `ceiling: f32`、`true_peak: bool` 与         `history: [[f32; 3]; 2]`（真峰值插值的三点历史）；窗口本身已改为**常量泛型**         （母线仍是 33 帧），⛔ 没有把 192 帧的存储塞进运行时。 ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。 ⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。 ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`（`[f32; 128]` ＝ 512 B，实时回调源侧分声道的右声道暂存）；余量 204800 − 46480 = 158320 B。 ⭐ **逐件＋侧链期 5 片 ＋1392 B ⇒ 47 872 B**：`EngineRuntime` 新增 lane 组链一族——三池与武装/抽头表的 12 个胖指针 192 B、组渲染暂存对 `lane_scratch(_r)`（`[f32; 128]` × 2）1024 B、槽位与 8 个计数标量 80 B，余 96 B 为布局填充；池本体在构造期按上限堆分配，⛔ 回调内零分配照旧 [MUST-GATE-001]；余量 204800 − 47872 = 156928 B。        改前读数（历史）：（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
          逐边发送量表/平滑器/重放副本；⭐ **S1 第一片**再加 **16 B** = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`，⛔ 不新增任何表\
          ——落点复用既有的 `armed_strips`；本判据只要求音频片段**不再**加字节 ——\
          见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）"
     );
     assert!(
-        (4_496..=4_736).contains(&snapshot),
-        "EngineSnapshot 上限随侧链 v1 放宽到 4736（4608 ＋ RoutingPlan 新增 key_routes／key_sources 两表各 24 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
+        (4_496..=4_848).contains(&snapshot),
+        "EngineSnapshot 上限随逐件＋侧链期 5 放宽到 4848（4736 ＋ lane_chains／lane_schedules 两表各 24 B ＋ RoutingPlan 的 lane 键路由两表各 24 B 与声明/求值计数 16 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
     );
 }
