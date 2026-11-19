@@ -1,0 +1,373 @@
+// 夜半 (Yeban) — 缺音源的救援面板
+//
+// 它回答的是"打开工程发现没声音"那一刻的三个问题：
+//   1. 是哪条轨、缺的是哪一件？
+//   2. 我能不能一键换一件**能响的相近音源**（同类乐器）？
+//   3. 如果我就想要原音源，去哪儿下载？
+//
+// ## 设计纪律（见 `docs/UX-错误与提醒设计原则.md`）
+// - 一屏说清，每一行**只放一轨**，行内最多 3 个候选 + 1 个"下载原音源"。
+// - 候选优先**已经装好的**（本地能直接响），其次才是要下载的；按钮文字如实
+//   区分「换成 X」（已装，点了就响）与「下载 X」（还没装，点了去下载）。
+// - ⛔ 不显示工程内部路径原文（那是给开发看的），只显示文件名主干与轨道名。
+//
+// ## 数据契约（本文件不做任何实事）
+// 全部数据由宿主以**平行数组**写入（与本仓其它面板同款形态）：
+// `track-names` / `details` / `hints` / `can-download` +
+// `s1-name`/`s1-path`/`s1-installed` … `s3-*`。空名 = 该格没有候选。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+// 一个候选音源按钮：已装 = "换成 X"（发 swap），没装 = "下载 X"（发 open-pack）。
+component CandidateButton inherits Rectangle {
+    in property <int> row-index: 0;
+    in property <string> name: "";
+    in property <string> pack-id: "";
+    in property <string> path: "";
+    in property <bool> installed: true;
+
+    callback swap(int, string, string);
+    callback open-pack(string, string);
+
+    width: 150px;
+    height: 26px;
+    background: Tokens.bg-void;
+    border-radius: Tokens.radius-sm;
+    border-width: 1px;
+    border-color: installed ? Tokens.line : Tokens.gold-deep;
+
+    accessible-role: button;
+    accessible-id: "missing-sounds-candidate";
+    accessible-label: installed ? @tr("换成 {}", root.name) : @tr("下载 {}", root.name);
+    accessible-action-default => {
+        if (root.installed) {
+            root.swap(root.row-index, root.path, root.name);
+        } else {
+            root.open-pack(root.pack-id, root.name);
+        }
+    }
+
+    UiText {
+        x: 8px;
+        y: 0;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.installed ? @tr("换成 {}", root.name) : @tr("下载 {}", root.name);
+        color: root.installed ? Tokens.ink-1 : Tokens.gold-bright;
+        font-size: Tokens.font-size-xs;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            if (root.installed) {
+                root.swap(root.row-index, root.path, root.name);
+            } else {
+                root.open-pack(root.pack-id, root.name);
+            }
+        }
+    }
+}
+
+export component MissingSoundsDialog inherits Rectangle {
+    // ---- 行数据（宿主写，等长平行数组）----------------------------------
+    in property <[string]> track-names;
+    in property <[string]> details;
+    in property <[string]> hints;
+    in property <[bool]> can-download;
+    in property <[string]> s1-name;
+    in property <[string]> s1-path;
+    in property <[string]> s1-id;
+    in property <[bool]> s1-installed;
+    in property <[string]> s2-name;
+    in property <[string]> s2-path;
+    in property <[string]> s2-id;
+    in property <[bool]> s2-installed;
+    in property <[string]> s3-name;
+    in property <[string]> s3-path;
+    in property <[string]> s3-id;
+    in property <[bool]> s3-installed;
+    // ---- 顶部摘要（宿主写：一句话说清有几件、能直接换几件）------------------
+    in property <string> summary: "";
+
+    callback close();
+    callback swap-suggested(int, string, string);
+    callback open-pack(string, string);
+    callback download-original(int);
+
+    // 行数由宿主写入（⛔ 不用 `track-names.length` 推：布局期数组可能还没到，面板高度会抖）
+    in property <int> row-count: 0;
+    property <length> panel-w: Math.min(760px, root.width - 32px);
+    // 高度跟着行数走（2 行 ≈ 340px）：面板不留一大片空底，重量与内容对得上。
+    property <length> panel-h: Math.min(520px, Math.max(240px, 84px + row-count * 102px + 56px));
+
+
+    background: Tokens.mask-black.with-alpha(0.66);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "missing-sounds-dialog";
+    accessible-label: @tr("缺音源");
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        panel := Rectangle {
+            x: (root.width - root.panel-w) / 2;
+            y: (root.height - root.panel-h) / 2;
+            width: root.panel-w;
+            height: root.panel-h;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "missing-sounds-panel";
+            accessible-label: @tr("缺音源");
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: @tr("这件音源没装好，要不要换个能响的？");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            UiText {
+                x: Tokens.space-6;
+                y: Tokens.space-4 + 30px;
+                width: parent.width - 2 * Tokens.space-6;
+                height: 34px;
+                text: root.summary;
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-sm;
+                wrap: word-wrap;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "missing-sounds-close-button";
+                accessible-label: @tr("先不管，关掉");
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // 行列表（Flickable 绝对定位，与本仓其它列表同款；行高固定，重量均匀）
+            row-scroll := Flickable {
+                x: Tokens.space-4;
+                y: 84px;
+                width: parent.width - 2 * Tokens.space-4;
+                height: parent.height - 84px - 52px;
+                content-height: row-count * 102px + 4px;
+
+                for row-title[i] in root.track-names : Rectangle {
+                    x: 2px;
+                    y: i * 102px + 2px;
+                    width: parent.width - 4px;
+                    height: 96px;
+                    background: Tokens.bg-panel-alt;
+                    border-radius: Tokens.radius-md;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+
+                        // 轨名 · 缺的那件
+                        UiText {
+                            x: Tokens.space-4;
+                            y: 10px;
+                            width: parent.width - 2 * Tokens.space-4;
+                            height: 18px;
+                            text: @tr("{} · 缺「{}」", root.track-names[i], root.details[i]);
+                            color: Tokens.ink-0;
+                            font-size: Tokens.font-size-md;
+                            font-weight: 600;
+                        }
+
+                        UiText {
+                            x: Tokens.space-4;
+                            y: 31px;
+                            width: parent.width - 2 * Tokens.space-4;
+                            height: 18px;
+                            text: root.hints[i];
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+
+                        // 候选三枚 + 下载原音源（同一行的控件语言）
+                        HorizontalLayout {
+                            x: Tokens.space-4;
+                            y: 58px;
+                            height: 26px;
+                            spacing: 6px;
+
+                            if root.s1-name[i] != "" : CandidateButton {
+                                row-index: i;
+                                name: root.s1-name[i];
+                                pack-id: root.s1-id[i];
+                                path: root.s1-path[i];
+                                installed: root.s1-installed[i];
+                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                open-pack(id, n) => { root.open-pack(id, n); }
+                            }
+
+                            if root.s2-name[i] != "" : CandidateButton {
+                                row-index: i;
+                                name: root.s2-name[i];
+                                pack-id: root.s2-id[i];
+                                path: root.s2-path[i];
+                                installed: root.s2-installed[i];
+                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                open-pack(id, n) => { root.open-pack(id, n); }
+                            }
+
+                            if root.s3-name[i] != "" : CandidateButton {
+                                row-index: i;
+                                name: root.s3-name[i];
+                                pack-id: root.s3-id[i];
+                                path: root.s3-path[i];
+                                installed: root.s3-installed[i];
+                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                open-pack(id, n) => { root.open-pack(id, n); }
+                            }
+
+                            // 就想要原音源 ⇒ 去下载（在清单里才出现）
+                            if root.can-download[i] : Rectangle {
+                                width: 104px;
+                                height: 26px;
+                                background: Tokens.bg-void;
+                                border-radius: Tokens.radius-sm;
+                                border-width: 1px;
+                                border-color: Tokens.gold-deep;
+                                accessible-role: button;
+                                accessible-id: "missing-sounds-download-original";
+                                accessible-label: @tr("下载原音源");
+                                accessible-action-default => { root.download-original(i); }
+
+                                UiText {
+                                    x: 4px;
+                                    y: 0;
+                                    width: parent.width - 8px;
+                                    height: parent.height;
+                                    text: @tr("下载原音源");
+                                    color: Tokens.gold-bright;
+                                    font-size: Tokens.font-size-xs;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    clicked => { root.download-original(i); }
+                                }
+                            }
+                        }
+                    }
+            }
+
+            // 底部：一句话 + 关掉
+            UiText {
+                x: Tokens.space-6;
+                y: parent.height - 42px;
+                width: parent.width - 176px;
+                height: 30px;
+                text: @tr("换上同类音源后这条轨立刻就能发声；原来的音源以后装回来还能再改。");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                x: parent.width - 100px;
+                y: parent.height - 38px;
+                width: 76px;
+                height: 26px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line;
+                accessible-role: button;
+                accessible-id: "missing-sounds-later-button";
+                accessible-label: @tr("先不管");
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("先不管");
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+

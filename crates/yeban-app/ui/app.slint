@@ -22,6 +22,7 @@ import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
 import { StartupChooserDialog } from "dialogs/startup_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
 import { SoundLibraryDialog } from "dialogs/sound_library_dialog.slint";
+import { MissingSoundsDialog } from "dialogs/missing_sounds_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay } from "modals.slint";
 
 export component MainWindow inherits Window {
@@ -546,6 +547,29 @@ export component MainWindow inherits Window {
     in-out property <bool> sound-library-status-is-error: false;
     // 搜索框原文（`sound_library_dialog.slint` 双向绑定的那一格；清空 = 不过滤）
     in-out property <string> sound-library-search: "";
+    // 缺音源救援面板（`dialogs/missing_sounds_dialog.slint`）：打开工程时如果
+    // 有轨的音源没装好，就把"哪条轨缺什么 + 换成哪件同类"摆到眼前。
+    // 平行数组同样全部由宿主写（`host::wire_missing_sounds_dialog`）。
+    in-out property <bool> missing-sounds-open: false;
+    in-out property <int> missing-row-count: 0;
+    in-out property <string> missing-sounds-summary: "";
+    in-out property <[string]> missing-track-names: [];
+    in-out property <[string]> missing-details: [];
+    in-out property <[string]> missing-hints: [];
+    in-out property <[bool]> missing-can-download: [];
+    in-out property <[string]> missing-s1-name: [];
+    in-out property <[string]> missing-s1-path: [];
+    in-out property <[string]> missing-s2-name: [];
+    in-out property <[string]> missing-s2-path: [];
+    in-out property <[string]> missing-s3-name: [];
+    in-out property <[string]> missing-s3-path: [];
+    // 三格候选各自的包 id（点"下载 X"时拿去筛音源管理）与"本机是否已装"
+    in-out property <[string]> missing-s1-id: [];
+    in-out property <[string]> missing-s2-id: [];
+    in-out property <[string]> missing-s3-id: [];
+    in-out property <[bool]> missing-s1-installed: [];
+    in-out property <[bool]> missing-s2-installed: [];
+    in-out property <[bool]> missing-s3-installed: [];
     in-out property <bool> instrument-install-available: false;
     in-out property <string> instrument-install-reason: "";
     in-out property <string> instrument-install-status: "";
@@ -908,6 +932,13 @@ export component MainWindow inherits Window {
     // 音源管理：搜索原文变化（宿主按它重播过滤后的平行数组）与「一键全下」
     callback sound-library-filter-changed(string);
     callback sound-library-download-all();
+    // 缺音源救援面板的三个动作（接线见 `host::wire_missing_sounds_dialog`）：
+    // 换同类 / 就想要原音源（去下载）/ 先不管。
+    callback missing-swap-suggested(int, string, string);
+    callback missing-download-original(int);
+    callback missing-close();
+    // 候选还没装 ⇒ 去下载那一件（打开音源管理并按包 id 筛好）
+    callback missing-open-pack(string, string);
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
@@ -2111,6 +2142,37 @@ export component MainWindow inherits Window {
         }
 
         // Visible Sound Library Manager Dialog（line/sound-library-manager）
+        // 缺音源救援面板：只在"真的有轨的音源没装好"时出现（默认关着）。
+        if root.missing-sounds-open : MissingSoundsDialog {
+            z: 9650;
+            row-count: root.missing-row-count;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            track-names: root.missing-track-names;
+            details: root.missing-details;
+            hints: root.missing-hints;
+            can-download: root.missing-can-download;
+            s1-name: root.missing-s1-name;
+            s1-path: root.missing-s1-path;
+            s1-id: root.missing-s1-id;
+            s1-installed: root.missing-s1-installed;
+            s2-name: root.missing-s2-name;
+            s2-path: root.missing-s2-path;
+            s2-id: root.missing-s2-id;
+            s2-installed: root.missing-s2-installed;
+            s3-name: root.missing-s3-name;
+            s3-path: root.missing-s3-path;
+            s3-id: root.missing-s3-id;
+            s3-installed: root.missing-s3-installed;
+            summary: root.missing-sounds-summary;
+            close => { root.missing-close(); }
+            swap-suggested(row, path, name) => { root.missing-swap-suggested(row, path, name); }
+            open-pack(id, name) => { root.missing-open-pack(id, name); }
+            download-original(row) => { root.missing-download-original(row); }
+        }
+
         if root.sound-library-open : SoundLibraryDialog {
             z: 9600;
             x: 0px;

@@ -3384,15 +3384,15 @@ fn commit_sampler_binding(
     index: i32,
     new_path: Option<&str>,
     message: &str,
-) {
+) -> bool {
     let Some(track_id) = track_id_at(ui, index) else {
-        return;
+        return false;
     };
     let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
-        return;
+        return false;
     };
     let Some(old_sampler) = authoritative_sampler(port, &track_id) else {
-        return;
+        return false;
     };
     let new_sampler = new_path.map(|path| {
         let normalized = crate::samples::normalize_sampler_path_for_storage(path);
@@ -3412,7 +3412,7 @@ fn commit_sampler_binding(
     // 比较的是归一化后的新值与文档原值：文档里旧的绝对形式 ⇒ 仍提交一次
     // （那次提交就是形式收敛本身，与 bridge 助手同一条口径）。
     if old_sampler == new_sampler {
-        return;
+        return false;
     }
     let op = yeban_model::Op::SetTrackSampler {
         track_id: id,
@@ -3421,9 +3421,10 @@ fn commit_sampler_binding(
     };
     if port.commit_ops(now_ms(), message, vec![op]).is_err() {
         report_rejected(ui, "更换音源");
-        return;
+        return false;
     }
     refresh_undo_window(ui, port, true);
+    true
 }
 
 /// ⭐ 阶段 2：八度覆盖的**六档循环**（步进一格）：自动 → −2 → −1 → 0 → +1 → +2
@@ -23829,4 +23830,277 @@ fn view_to_notes(view: &ViewState) -> Vec<PianoRollNote> {
             }
         })
         .collect()
+}
+
+// ============================================================== 缺音源救援面板
+//
+// 设计来源：Wang 2026-11-19 口径 ——"打开工程缺音源时，如果是内置的就引导下载；
+// 不在常见清单里的，按乐器类型**推荐同类**，用户点一下就能换"。所以这个面板
+// 只有三种按钮，都是一步到位：
+//   * 候选**本机已装**  ⇒ 「换成 X」（立刻提交 `Op::SetTrackSampler`，当下就响）；
+//   * 候选**还没装**    ⇒ 「下载 X」（直接开音源管理并筛好那一件，下载完回来再换）；
+//   * 原音源在清单里    ⇒ 「下载原音源」。
+//
+// ⛔ 本面板不下载、不写文件、不碰撤销树以外的东西；它只发动作，真正的提交
+// 仍走 [`commit_sampler_binding`]（与混音台 SET/Clear 同一条路，因此撤销/重做、
+// 陈旧载荷校验、八度覆盖清理一位不差）。
+
+/// 面板里的行（宿主持有：换掉一件就把那一行摘掉，列表越点越短）。
+type MissingRows = std::rc::Rc<std::cell::RefCell<Vec<crate::missing_sounds::MissingSound>>>;
+
+/// 把当前行状态重播进界面（平行数组；三项候选各自 name / path / installed）。
+fn publish_missing_rows(ui: &MainWindow, rows: &MissingRows) {
+    let items = rows.borrow();
+    let mut track_names = Vec::with_capacity(items.len());
+    let mut details = Vec::with_capacity(items.len());
+    let mut hints = Vec::with_capacity(items.len());
+    let mut can_download = Vec::with_capacity(items.len());
+    let (mut s1_name, mut s1_path, mut s1_on, mut s1_id) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut s2_name, mut s2_path, mut s2_on, mut s2_id) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut s3_name, mut s3_path, mut s3_on, mut s3_id) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut ready = 0usize;
+    for item in items.iter() {
+        track_names.push(SharedString::from(item.track_name.as_str()));
+        // 只显示文件名主干：工程里那条路径是给开发看的，用户只认"哪一件"。
+        details.push(SharedString::from(missing_file_label(&item.path)));
+        let installed = item
+            .suggestions
+            .iter()
+            .filter(|suggestion| suggestion.installed)
+            .count();
+        if installed > 0 {
+            ready += 1;
+        }
+        hints.push(SharedString::from(missing_row_hint(item, installed)));
+        can_download.push(item.pack_id.is_some());
+        let mut slots = [
+            (&mut s1_name, &mut s1_path, &mut s1_on, &mut s1_id),
+            (&mut s2_name, &mut s2_path, &mut s2_on, &mut s2_id),
+            (&mut s3_name, &mut s3_path, &mut s3_on, &mut s3_id),
+        ];
+        for (index, slot) in slots.iter_mut().enumerate() {
+            let (name, path, on, id) = slot;
+            match item.suggestions.get(index) {
+                Some(suggestion) => {
+                    name.push(SharedString::from(suggestion.name.as_str()));
+                    path.push(SharedString::from(suggestion.path.as_str()));
+                    on.push(suggestion.installed);
+                    id.push(SharedString::from(suggestion.id.as_str()));
+                }
+                None => {
+                    name.push(SharedString::from(""));
+                    path.push(SharedString::from(""));
+                    on.push(false);
+                    id.push(SharedString::from(""));
+                }
+            }
+        }
+    }
+    let summary = if items.is_empty() {
+        String::new()
+    } else if ready == items.len() {
+        format!(
+            "有 {} 条轨的音源没装好。下面每条都给了本机已装好的同类音源，点一下立刻换上就能出声。",
+            items.len()
+        )
+    } else if ready > 0 {
+        format!(
+            "有 {} 条轨的音源没装好，其中 {} 条可以直接换成已装好的同类音源；其余的点「下载」装上再换。",
+            items.len(),
+            ready
+        )
+    } else {
+        format!(
+            "有 {} 条轨的音源没装好，同类音源这台机器上也还没装。点「下载」装好一件，回来我再帮你换。",
+            items.len()
+        )
+    };
+    ui.set_missing_sounds_summary(SharedString::from(summary.as_str()));
+    ui.set_missing_row_count(i32::try_from(items.len()).unwrap_or(0));
+    ui.set_missing_track_names(ModelRc::new(VecModel::from(track_names)));
+    ui.set_missing_details(ModelRc::new(VecModel::from(details)));
+    ui.set_missing_hints(ModelRc::new(VecModel::from(hints)));
+    ui.set_missing_can_download(ModelRc::new(VecModel::from(can_download)));
+    ui.set_missing_s1_name(ModelRc::new(VecModel::from(s1_name)));
+    ui.set_missing_s1_path(ModelRc::new(VecModel::from(s1_path)));
+    ui.set_missing_s1_installed(ModelRc::new(VecModel::from(s1_on)));
+    ui.set_missing_s2_name(ModelRc::new(VecModel::from(s2_name)));
+    ui.set_missing_s2_path(ModelRc::new(VecModel::from(s2_path)));
+    ui.set_missing_s2_installed(ModelRc::new(VecModel::from(s2_on)));
+    ui.set_missing_s3_name(ModelRc::new(VecModel::from(s3_name)));
+    ui.set_missing_s3_path(ModelRc::new(VecModel::from(s3_path)));
+    ui.set_missing_s3_installed(ModelRc::new(VecModel::from(s3_on)));
+    ui.set_missing_s1_id(ModelRc::new(VecModel::from(s1_id)));
+    ui.set_missing_s2_id(ModelRc::new(VecModel::from(s2_id)));
+    ui.set_missing_s3_id(ModelRc::new(VecModel::from(s3_id)));
+}
+
+/// 路径 ⇒ 只留文件名主干（`samples/bass/ebass_rel.sfz` ⇒ `ebass_rel`）。
+fn missing_file_label(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let name = normalized.rsplit('/').next().unwrap_or_default();
+    let stem = name.strip_suffix(".sfz").unwrap_or(name);
+    if stem.is_empty() {
+        name.to_owned()
+    } else {
+        stem.to_owned()
+    }
+}
+
+/// 一行下面那句提示：说清"这条轨是哪种乐器、有几种走法"。
+fn missing_row_hint(item: &crate::missing_sounds::MissingSound, installed: usize) -> String {
+    if item.suggestions.is_empty() {
+        return format!(
+            "这件的乐器类型是「{}」，但这台机器和清单里都没有可替换的同类。你可以自己装回原音源，或先用别的音源顶一下。",
+            item.kind.label()
+        );
+    }
+    if installed == 0 {
+        return format!(
+            "认作「{}」。同类音源本机还没装，选一件下载后就能立刻换上。",
+            item.kind.label()
+        );
+    }
+    format!(
+        "认作「{}」。{} 件同类候选里有 {} 件都在这台机器上，点一下立刻换上。",
+        item.kind.label(),
+        item.suggestions.len(),
+        installed
+    )
+}
+
+/// 换上一条候选音源（一次点击的完整闭环：提交 + 回执）。
+///
+/// 返回 `true` = 真的提交了（界面上那一行可以摘掉）。
+fn swap_track_sampler(
+    ui: &MainWindow,
+    port: &UndoPort,
+    index: i32,
+    path: &str,
+    name: &str,
+) -> bool {
+    if !commit_sampler_binding(ui, port, index, Some(path), "swap missing sound") {
+        return false;
+    }
+    report_notice(
+        ui,
+        &format!("已换上「{name}」，这条轨现在按播放就有声音了。"),
+        false,
+    );
+    true
+}
+
+/// 开音源管理并**筛好**一件（"去下载"的那条腿）。顺序是契约：先开、再写搜索、最后重播。
+fn open_library_for(ui: &MainWindow, seed: &str, status: &str) {
+    ui.invoke_open_sound_library();
+    ui.set_sound_library_search(SharedString::from(seed));
+    ui.set_sound_library_status(SharedString::from(status));
+    ui.set_sound_library_status_is_error(false);
+    ui.invoke_sound_library_filter_changed(SharedString::from(seed));
+}
+
+/// 接线：把"打开工程时发现的缺失"交给救援面板，并接管它的三个动作。
+///
+/// ⚠ 只能在**装配阶段**调一次（`ui.on_missing_*` 是单槽回调）；
+/// `items` 为空 ⇒ 面板保持关闭，默认帧一位不变。
+pub fn wire_missing_sounds_dialog(
+    ui: &MainWindow,
+    port: Rc<UndoPort>,
+    items: Vec<crate::missing_sounds::MissingSound>,
+) {
+    let rows: MissingRows = Rc::new(RefCell::new(items));
+    publish_missing_rows(ui, &rows);
+    ui.set_missing_sounds_open(!rows.borrow().is_empty());
+
+    // ---- 换成同类（已装的候选）---------------------------------------------
+    ui.on_missing_swap_suggested({
+        let weak = ui.as_weak();
+        let rows = Rc::clone(&rows);
+        let port = Rc::clone(&port);
+        move |index, path, name| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(row) = rows
+                .borrow()
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .cloned()
+            else {
+                return;
+            };
+            if !swap_track_sampler(&ui, &port, row.track_index, path.as_str(), name.as_str()) {
+                return;
+            }
+            // 换好了 ⇒ 这一行不再"缺"，列表越点越短；全清 ⇒ 面板自己走人。
+            rows.borrow_mut()
+                .retain(|item| item.track_index != row.track_index);
+            let empty = rows.borrow().is_empty();
+            publish_missing_rows(&ui, &rows);
+            if empty {
+                ui.set_missing_sounds_open(false);
+                report_notice(&ui, "音源都换好了，现在按播放就有声音。", false);
+            }
+        }
+    });
+
+    // ---- 候选还没装 ⇒ 去下载那一件（不替用户下，只把路铺到"点下载"）------------
+    ui.on_missing_open_pack({
+        let weak = ui.as_weak();
+        move |pack_id, pack_name| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if pack_id.is_empty() {
+                return;
+            }
+            let status = format!(
+                "「{pack_name}」还没下载。点右边的「下载」，装好后回到这条轨再点一次「换成 {pack_name}」就出声了。"
+            );
+            open_library_for(&ui, pack_id.as_str(), status.as_str());
+        }
+    });
+
+    // ---- 就想要原音源 ⇒ 开音源管理、按它的包 id 筛好 --------------------------
+    ui.on_missing_download_original({
+        let weak = ui.as_weak();
+        let rows = Rc::clone(&rows);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(row) = rows
+                .borrow()
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .cloned()
+            else {
+                return;
+            };
+            let Some(pack_id) = row.pack_id.clone() else {
+                report_notice(
+                    &ui,
+                    "这件音源不在内置清单里，没法一键下载。你可以换成同类音源，或自己把 .sfz 装好后在混音台指定。",
+                    true,
+                );
+                return;
+            };
+            let name = row.pack_name.clone().unwrap_or_else(|| pack_id.clone());
+            let status = format!("这是工程原本用的「{name}」。点右边的「下载」，装好后回到这条轨再点一次「换成 {name}」。");
+            open_library_for(&ui, pack_id.as_str(), status.as_str());
+        }
+    });
+
+    // ---- 先不管 ------------------------------------------------------------
+    ui.on_missing_close({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_missing_sounds_open(false);
+        }
+    });
 }

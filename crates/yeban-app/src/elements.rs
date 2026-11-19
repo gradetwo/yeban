@@ -1152,6 +1152,53 @@ impl ElementRegistry {
             "钢琴键列",
             false,
         );
+        // 缺音源救援面板（`dialogs/missing_sounds_dialog.slint`）：默认关着，
+        // 打开工程发现有轨的音源没装好时由宿主写数据并弹出。
+        registry.add(
+            "missing-sounds-dialog",
+            ElementKind::Region,
+            "dialogs/missing_sounds_dialog.slint",
+            "缺音源救援面板",
+            false,
+        );
+        registry.add(
+            "missing-sounds-panel",
+            ElementKind::Region,
+            "dialogs/missing_sounds_dialog.slint",
+            "缺音源救援面板主体",
+            false,
+        );
+        registry.add(
+            "missing-sounds-close-button",
+            ElementKind::Button,
+            "dialogs/missing_sounds_dialog.slint",
+            "先不管，关掉",
+            false,
+        );
+        registry.add(
+            "missing-sounds-later-button",
+            ElementKind::Button,
+            "dialogs/missing_sounds_dialog.slint",
+            "先不管",
+            false,
+        );
+        // ⚠ 行内重复 id 是本仓既有的列表口径（声音库列表的下载钮同样是常量 id）：
+        // 一个"候选"按钮在每一行里语义相同，判据按整组点。它的两种角色（换成 / 下载）
+        // 由 `accessible-label` 区分 —— ⛔ id 不能写成条件式（契约判据按字面段比）。
+        registry.add(
+            "missing-sounds-candidate",
+            ElementKind::Button,
+            "dialogs/missing_sounds_dialog.slint",
+            "换成或下载这件同类音源",
+            false,
+        );
+        registry.add(
+            "missing-sounds-download-original",
+            ElementKind::Button,
+            "dialogs/missing_sounds_dialog.slint",
+            "下载原音源",
+            false,
+        );
         registry.add(
             "piano-roll-grid",
             ElementKind::Region,
@@ -3550,7 +3597,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 40] = [
+    const SLINT_MANIFEST: [&str; 41] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3609,6 +3656,9 @@ mod tests {
         "lower_dock.slint",
         "modals.slint",
         "transport_bar.slint",
+        // 缺音源救援面板（Wang 2026-11-19）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        // ⚠ 新增一个 .slint 就必须在这张清单里显式登记（同 `sound_library_dialog`）。
+        "dialogs/missing_sounds_dialog.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {

@@ -1071,43 +1071,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ 音源管理对话框（line/sound-library-manager）：主菜单「设置 →
     // 音源管理...」的接线（打开才拉目录，⛔ 启动不联网）。
     host::wire_sound_library_dialog(&ui);
-    // ⭐ **缺音源的友好引导**（本票）：工程里绑着的 SFZ 本地解析不到时，
-    // 不再只在终端喊一串术语 —— 直接替用户打开音源管理、按缺失件筛好，
-    // 并在状态行写一句人话。用户要做的只剩"点一下下载"。
-    //
-    // ⚠ 顺序是契约：先 `invoke_open_sound_library`（它会重置状态行、清空搜索），
-    // 再写搜索词与状态行，最后用 `invoke_...filter_changed` 让列表按新搜索词重播。
+    // ⭐ **缺音源的救援面板**（Wang 2026-11-19 口径）：打开工程时若某条轨的音源
+    // 没装好，不再"直接把人扔进音源管理再自己找" —— 而是先摆出**救援面板**：
+    // 每条轨给 3 个同类候选（已装的点一下就换、没装的点一下去下载），
+    // 外加"下载原音源 / 先不管"。真正的换绑仍走混音台同一条提交路径。
     if !missing_sounds.is_empty() {
-        let first = &missing_sounds[0];
-        let catalogued = missing_sounds
-            .iter()
-            .filter(|m| m.pack_id.is_some())
-            .count();
-        let summary = if catalogued > 0 {
-            format!(
-                "这个工程有 {} 条轨的音源没装（例如「{}」）。已为你筛出可下载的 {} 件，点「下载」即可装上。",
-                missing_sounds.len(),
-                first.track_name,
-                catalogued
-            )
-        } else {
-            format!(
-                "这个工程有 {} 条轨的音源没装（例如「{}」），它不在内置清单里。可在列表里挑一件同类音源下载，再用混音台的「…」把它指定给这条轨。",
-                missing_sounds.len(),
-                first.track_name
-            )
-        };
-        ui.invoke_open_sound_library();
-        // 横幅那条人话由 `host::apply_engine_error` 统一给（它才是唯一写者，
-        // 在这里覆写会被下一跳心跳打回去）。这里只补"已经替你打开"这一句。
-        let seed = missing_sounds
-            .iter()
-            .find_map(|m| m.pack_id.clone())
-            .unwrap_or_default();
-        ui.set_sound_library_search(seed.as_str().into());
-        ui.set_sound_library_status(summary.as_str().into());
-        ui.set_sound_library_status_is_error(false);
-        ui.invoke_sound_library_filter_changed(seed.as_str().into());
+        host::wire_missing_sounds_dialog(&ui, Rc::clone(&undo_port), missing_sounds);
     }
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
