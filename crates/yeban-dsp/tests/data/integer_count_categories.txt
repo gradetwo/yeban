@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 334 条：collection_size 70 ／ value_bound 251 ／ element_value_bound 5 ／ condition_counter 8
+# 合计 340 条：collection_size 72 ／ value_bound 254 ／ element_value_bound 5 ／ condition_counter 9
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -85,6 +85,7 @@ src/device_param.rs|crusher_field_spellings_round_trip|collection_size|assert_eq
 src/device_param.rs|delay_spellings_resolve_to_the_same_field|collection_size|assert_eq!(DelayField::SPELLINGS.len(), 15, "延迟拼写共 15 条"
 src/device_param.rs|delay_sync_conversion_table_at_84_bpm|value_bound|assert!(                 (got - expected).abs() < 1e-4,                 "84 BPM {num}/{den
 src/device_param.rs|delay_sync_off_or_bad_bpm_keeps_written_time|value_bound|assert!(             (delay_params_from_stage(&stage, 84.0).time_s - 2.0).abs() < f32::EPS
+src/device_param.rs|noise_field_spellings_round_trip|collection_size|assert_eq!(NoiseField::SPELLINGS.len(), 5, "噪声拼写共 5 条"
 src/device_param.rs|sample_delay_field_spellings_round_trip|collection_size|assert_eq!(SampleDelayField::SPELLINGS.len(), 4, "采样延迟拼写共 4 条"
 src/device_param.rs|transient_field_spellings_round_trip|collection_size|assert_eq!(TransientField::SPELLINGS.len(), 2, "瞬态拼写共 2 条"
 src/drums/anatomy.rs|default_preset_coefficients_match_the_groove_formulas|collection_size|assert!(                 (f64::from(got) - want).abs() < 1e-4,                 "系数 {got} 与
@@ -175,6 +176,11 @@ src/noise.rs|pink_falls_at_three_db_per_octave|value_bound|assert!(             
 src/noise.rs|rng_never_gets_stuck_and_never_reaches_one|value_bound|assert_ne!(rng.state(), 0
 src/noise.rs|rng_state_can_be_restored_to_replay_a_render|value_bound|assert_eq!(original.next_u32(), replay.next_u32()
 src/noise.rs|white_is_flat|value_bound|assert!(             measured.abs() < 0.5,             "white should be flat, measured {me
+src/noise_source.rs|crackle_events_are_countable_and_sparse|collection_size|assert!(                 (50..=160).contains(&events),                 "{name} 声道事件数须在期望 1
+src/noise_source.rs|pink_and_white_levels_are_comparable|condition_counter|assert!(             ratio_db.abs() <= 2.0,             "粉红/白噪声 RMS 差须在 ±2 dB 内，实测 {ratio_
+src/noise_source.rs|reset_reproduces_a_fresh_source|value_bound|assert_eq!(l2, fresh_l
+src/noise_source.rs|same_seed_reproduces_bit_exactly_and_other_seed_differs|value_bound|assert_eq!(l1, l2, "同种子左声道必须逐位一致"
+src/noise_source.rs|sanitised_clamps_every_field|value_bound|assert_eq!(clean.color, 1.0, "color 非有限回落缺省色 1"
 src/oscillator.rs|a_high_note_has_no_energy_outside_its_harmonics|value_bound|assert!(             clean < -40.0,             "band-limited playback leaked {clean:.1} d
 src/oscillator.rs|a_short_cycle_is_resampled_rather_than_refused|value_bound|assert!(                 harmonic_amplitude(table.level_samples(0), harmonic) < first * 0.
 src/oscillator.rs|an_imported_cycle_is_band_limited_at_every_level|value_bound|assert!(                 energy < 1e-6,                 "level {level} leaked above its Ny

@@ -1071,19 +1071,21 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
 /// （`sample_delay_samples` / `sample_delay_invert`，各 1 别名）⇒ **＋2 规范、＋2 别名 = 113**（64 + 49）。
 /// ⭐ **C-1**：新增 `clipper` 组，5 条规范拼写、0 别名 ⇒ **118**（69 + 49）。
 /// ⭐ **D3/D4 接线**：新增 `transient` 组（2 条）与 `crusher` 组（3 条），均 0 别名 ⇒ **123**（74 + 49）。
+/// ⭐ **混响 P1＋D5（2026-11-19 main 上重钉）**：reverb 组新增 `reverb_kind`／`reverb_decay_s`
+/// （＋别名 `reverb_decay`）⇒ ＋2 规范、＋1 别名；noise 组新增 5 条规范、0 别名 ⇒ **131**（81 + 50）。
 /// ⛔ 故意不给裸 `threshold_db` 之类别名：它已经被压缩器占着，同名会让"写进设备的是
 /// 谁的阈值"变成猜的。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 123, "74 规范 + 49 别名");
+    assert_eq!(names.len(), 131, "81 规范 + 50 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        74
+        81
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1095,7 +1097,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 74);
+    assert_eq!(branches.len(), 81);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1105,7 +1107,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 123, "公告面的拼写个数");
+    assert_eq!(published, 131, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(

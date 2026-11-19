@@ -337,21 +337,23 @@ fn a_deliberately_unrecognised_name_is_accepted_but_warned() {
 /// （`sample_delay_samples` / `sample_delay_invert`，各 1 别名）⇒ **＋2 规范、＋2 别名 = 113**（64 + 49）。
 /// ⭐ **C-1**：新增 `clipper` 组，5 条规范拼写、0 别名 ⇒ **118**（69 + 49）。
 /// ⭐ **D3/D4 接线**：新增 `transient` 组（2 条）与 `crusher` 组（3 条），均 0 别名 ⇒ **123**（74 + 49）。
+/// ⭐ **混响 P1＋D5（2026-11-19 main 上重钉）**：reverb 组新增 `reverb_kind`／`reverb_decay_s`
+/// （＋别名 `reverb_decay`）⇒ ＋2 规范、＋1 别名；noise 组新增 5 条规范、0 别名 ⇒ **131**（81 + 50）。
 #[test]
 fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let names = effect_params::recognised_names();
     assert_eq!(
         names.len(),
-        123,
-        "拼写总数必须是 74 规范 + 49 别名 = 123，实测 {names:?}"
+        131,
+        "拼写总数必须是 81 规范 + 50 别名 = 131，实测 {names:?}"
     );
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        74,
-        "规范名个数（`#156` 的 45 ＋ `tape_asym` ＋ `conv_ir_stereo` ＋ `P6` 的 5 条 `limiter_*` ＋ 预制线的 10 条 ＋ 相位对齐线的 2 条 ＋ C-1 的 5 条 ＋ D3/D4 接线的 5 条）"
+        81,
+        "规范名个数（`#156` 的 45 ＋ `tape_asym` ＋ `conv_ir_stereo` ＋ `P6` 的 5 条 `limiter_*` ＋ 预制线的 10 条 ＋ 相位对齐线的 2 条 ＋ C-1 的 5 条 ＋ D3/D4 接线的 5 条 ＋ 混响 P1 的 2 条 ＋ D5 的 5 条）"
     );
 
     // 公告面：`tools/list` 的 `insertDevice.device.params.items.oneOf[].name.enum`。
@@ -365,7 +367,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 74, "每个引擎参数一个分支");
+    assert_eq!(branches.len(), 81, "每个引擎参数一个分支");
     let published: Vec<String> = branches
         .iter()
         .flat_map(|branch| {
@@ -377,7 +379,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert_eq!(published.len(), 123, "公告的拼写总数");
+    assert_eq!(published.len(), 131, "公告的拼写总数");
     for name in &names {
         assert!(
             published.iter().any(|item| item == name),
@@ -487,8 +489,8 @@ fn the_warning_hands_back_the_exact_accepted_spellings() {
     let table = effect_params::recognised_names();
     assert_eq!(
         table.len(),
-        123,
-        "本判据的前提是词表有 123 个拼写（判据 ④ 也钉这个数）"
+        131,
+        "本判据的前提是词表有 131 个拼写（判据 ④ 也钉这个数）"
     );
 
     for warning in warnings {

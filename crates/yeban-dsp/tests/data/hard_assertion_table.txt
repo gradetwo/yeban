@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 426 条：float_bits 92 ／ integer_count 334；其中 hard 70 ／ platform 19
+# 合计 433 条：float_bits 93 ／ integer_count 340；其中 hard 70 ／ platform 20
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -121,6 +121,7 @@ integer_count | no_callee | 0 | - | src/device_param.rs | crusher_field_spelling
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_spellings_resolve_to_the_same_field
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_conversion_table_at_84_bpm
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_off_or_bad_bpm_keeps_written_time
+integer_count | no_callee | 0 | - | src/device_param.rs | noise_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/device_param.rs | sample_delay_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/device_param.rs | transient_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | default_preset_coefficients_match_the_groove_formulas
@@ -247,6 +248,12 @@ integer_count | no_callee | 0 | - | src/noise.rs | rng_state_can_be_restored_to_
 float_bits | no_callee | 0 | - | src/noise.rs | the_noise_render_is_frozen_bit_for_bit
 float_bits | hard | 5 | - | src/noise.rs | the_seeded_sequence_is_frozen_bit_for_bit
 integer_count | no_callee | 0 | - | src/noise.rs | white_is_flat
+integer_count | no_callee | 0 | - | src/noise_source.rs | crackle_events_are_countable_and_sparse
+float_bits | platform | 8 | exp | src/noise_source.rs | identity_params_leave_the_buffer_and_the_stream_untouched
+integer_count | no_callee | 0 | - | src/noise_source.rs | pink_and_white_levels_are_comparable
+integer_count | no_callee | 0 | - | src/noise_source.rs | reset_reproduces_a_fresh_source
+integer_count | no_callee | 0 | - | src/noise_source.rs | same_seed_reproduces_bit_exactly_and_other_seed_differs
+integer_count | no_callee | 0 | - | src/noise_source.rs | sanitised_clamps_every_field
 integer_count | no_callee | 0 | - | src/oscillator.rs | a_high_note_has_no_energy_outside_its_harmonics
 float_bits | hard | 12 | - | src/oscillator.rs | a_non_finite_phase_never_enters_the_oscillator_state
 integer_count | no_callee | 0 | - | src/oscillator.rs | a_short_cycle_is_resampled_rather_than_refused

@@ -36,6 +36,10 @@ const SOURCES: &[(&str, &str)] = &[
     ),
     ("src/automation.rs", include_str!("../src/automation.rs")),
     ("src/bridge.rs", include_str!("../src/bridge.rs")),
+    (
+        "src/builtin_sounds.rs",
+        include_str!("../src/builtin_sounds.rs"),
+    ),
     ("src/elements.rs", include_str!("../src/elements.rs")),
     ("src/host.rs", include_str!("../src/host.rs")),
     (
