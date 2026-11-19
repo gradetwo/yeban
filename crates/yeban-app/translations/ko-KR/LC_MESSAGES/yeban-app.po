@@ -1237,6 +1237,12 @@ msgstr "휴머나이즈…"
 msgid "量化…"
 msgstr "퀀타이즈…"
 
+msgid "音域下移一个八度"
+msgstr "음역을 한 옥타브 내리기"
+
+msgid "音域上移一个八度"
+msgstr "음역을 한 옥타브 올리기"
+
 # --- modals.slint ---
 
 msgid "切换至：夜半全景工作区 (默认 Production)"

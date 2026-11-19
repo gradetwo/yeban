@@ -9710,10 +9710,17 @@ mod tests {
             VELOCITY_BAR_OFFSET_X_PX, 30.0,
             "力度柱左沿偏移必须与 .slint 的 30px 一致（此前两处都是手抄值）"
         );
+        // 2026-11-19 改钉（0f626645a 把泳道高度单源化）：`velocity-lane-height` 是
+        // 唯一来源（`root.show-velocity-lane ? 44px : 0px`），泳道 y 与 height 都从它
+        // 派生 ⇒ 显示时 y = parent.height - 44px、height = 44px，与旧字面量逐值相同；
+        // 隐藏时泳道不可见（`visible: root.show-velocity-lane`）且高为 0，格子/琴键/
+        // 走带光标减同一属性、不会与泳道分叉。判据改钉新拼写 + 钉死单源定义里的 44px，
+        // 44px 数值本身仍由上面 `VELOCITY_LANE_HEIGHT_PX == 44.0` 守住。
         for literal in [
             "velocity-lane := Rectangle {",
-            "y: parent.height - 44px;",
-            "height: 44px;",
+            "y: parent.height - root.velocity-lane-height;",
+            "height: root.velocity-lane-height;",
+            "property <length> velocity-lane-height: root.show-velocity-lane ? 44px : 0px;",
             "y: parent.height - 4px - 28px * velocity_reading;",
             "height: 28px * velocity_reading;",
             "56px + Tokens.space-5 + root.note-positions[velocity_index] + 30px",
