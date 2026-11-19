@@ -5,8 +5,10 @@
 //! | :--- | :--- | :--- |
 //! | ① | 鼓机生成装上的逐件链在渲染后 `declared = 1`、`unapplied = 0`（真的建了分组源） | `generated_lane_chains_render_applied` |
 //! | ② | 一条没有音符、没进渲染源集的轨上声明的逐件链 ⇒ `declared = 1`、`unapplied = 1`（不许冒充已应用） | `lane_chains_on_an_unrendered_track_stay_unapplied` |
+//! | ③ | 出厂 trap/phonk 预置（bass 组以 kick 为键的同轨 lane 侧链）经 generate → render_master 端到端渲出非静音母带，lane 边被求值（`sidechainLaneEdgesEvaluated = 1`） | `factory_sidechain_styles_render_end_to_end` |
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
@@ -153,4 +155,107 @@ fn lane_chains_on_an_unrendered_track_stay_unapplied() {
         data["laneChainsUnapplied"], 1,
         "该轨没进本次渲染 ⇒ 不许报已应用: {data}"
     );
+}
+
+/// 读一份 24-bit PCM 母带的峰值（全部声道 `max |sample|`；静音 = 恰 0，
+/// 抖动噪声在 1e-7 量级 ⇒ 判据门 0.01 与两者都有数量级距离）。
+fn wav_peak(path: &Path) -> f32 {
+    let bytes = fs::read(path).expect("读母带");
+    assert_eq!(&bytes[0..4], b"RIFF", "RIFF 头");
+    assert_eq!(&bytes[8..12], b"WAVE", "WAVE 标记");
+    let mut position = 12usize;
+    let mut channels = 1usize;
+    let mut data: &[u8] = &[];
+    while position + 8 <= bytes.len() {
+        let id = &bytes[position..position + 4];
+        let length = u32::from_le_bytes(
+            bytes[position + 4..position + 8]
+                .try_into()
+                .expect("chunk 长度 4 B"),
+        ) as usize;
+        let body = &bytes[position + 8..position + 8 + length];
+        if id == b"fmt " {
+            channels = usize::from(u16::from_le_bytes([body[2], body[3]])).max(1);
+            let bits = u16::from_le_bytes([body[14], body[15]]);
+            assert_eq!(bits, 24, "MCP 母带是 24-bit PCM");
+        }
+        if id == b"data" {
+            data = body;
+        }
+        position += 8 + length + (length & 1);
+    }
+    assert!(!data.is_empty(), "必须有 data 块");
+    let mut peak = 0.0_f32;
+    for frame in data.chunks_exact(3 * channels) {
+        for channel in 0..channels {
+            let at = channel * 3;
+            let raw =
+                i32::from_le_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 2]]) >> 8;
+            peak = peak.max((raw as f32 / 8_388_608.0).abs());
+        }
+    }
+    peak
+}
+
+/// ③ 出厂侧链风格（trap/phonk）端到端：生成落的同轨 lane 侧链边
+/// （bass 组键 35 的压缩以 kick 键 36 为键）在 `render_master` 里必须
+/// 真的落到分组源上并渲出非静音母带。
+///
+/// 回归缺陷（2026-11-19 鼓机 loop 重渲线首次暴露）：`RenderPlan::execute`
+/// 把已求值的 lane 键路由交给节点**最外层**源，而生产构造的包装层
+/// （`PeakTap` / `TrackSource` / `MidiSource` 等）只转发 `seek_to`、
+/// 不转发 `attach_lane_keys` ⇒ 特征缺省实现返回 `false` ⇒ 整次渲染
+/// `RENDER_FAILED`（「该节点的源不是逐件分组源」），尽管最内层建的
+/// 正是 `LaneSplitSource`。期 4/5 判据把分组源直接交给计划、绕过了
+/// 包装层，所以没照到这条缝。
+#[test]
+fn factory_sidechain_styles_render_end_to_end() {
+    for style in ["trap", "phonk"] {
+        let mut dispatcher = dispatcher_with_project(filled_project());
+        let generated = call_tool(
+            &mut dispatcher,
+            "yeban_generate_drum_pattern",
+            json!({ "style": style, "autoMerge": true }),
+        );
+        assert_eq!(
+            generated["status"], "success",
+            "{style} 生成必须成功: {generated}"
+        );
+        let out = std::env::temp_dir().join(format!(
+            "yeban-mcp-lane-render-{}-factory-{style}.wav",
+            std::process::id()
+        ));
+        let result = call_tool(
+            &mut dispatcher,
+            "yeban_render_master",
+            json!({
+                "format": "wav",
+                "sampleRate": 48000,
+                "path": out.display().to_string(),
+            }),
+        );
+        assert_eq!(
+            result["status"], "success",
+            "{style} 出厂侧链预置必须端到端渲染成功: {result}"
+        );
+        let data = &result["data"];
+        assert_eq!(
+            data["laneChainsDeclared"], 3,
+            "{style} 出厂预置声明三条逐件链: {data}"
+        );
+        assert_eq!(
+            data["laneChainsUnapplied"], 0,
+            "{style} 鼓轨进了本次渲染且建了分组源 ⇒ 未应用必须归零: {data}"
+        );
+        assert_eq!(
+            data["sidechainLaneEdgesEvaluated"], 1,
+            "{style} 的同轨 lane 侧链边（kick 键 → bass 组）必须被求值: {data}"
+        );
+        let peak = wav_peak(&out);
+        assert!(
+            peak > 0.01,
+            "{style} 母带不得静音（电子鼓组为合成音源、无样本依赖），实测峰值 {peak}"
+        );
+        let _ = fs::remove_file(&out);
+    }
 }
