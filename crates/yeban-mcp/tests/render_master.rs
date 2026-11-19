@@ -6245,7 +6245,9 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
         .expect("setTrackSampler 分支");
     assert_eq!(
         branch["properties"]["sampler"]["type"],
-        json!(["string", "null"])
+        json!(["string", "null", "object"]),
+        // ⭐ 对象形是八度线（2026-11-19）加的第三形：`{"path": ..., "noteOctaveOverride": 12|null}`。
+        // 顶层 `type` 必须是 anyOf 三形的并集；此前一度只剩 anyOf、`type` 缺失 ⇒ 读到 Null。
     );
     assert_eq!(
         branch["required"],

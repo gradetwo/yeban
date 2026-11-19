@@ -69,6 +69,10 @@ fn op(kind: &str, description: &str, required: &[&str], properties: Value, close
 /// vec!`），拆出来让每份 `json!` 的展开深度回到浅层。
 fn sampler_binding_schema() -> Value {
     json!({
+        // ⭐ 顶层 `type` 必须与 anyOf 三形并集一致（字符串 / 对象 / null）：
+        // 2026-11-19 八度线只留了 anyOf，`type` 键缺失 ⇒ 读 schema 的客户端
+        // 拿到 Null，新头 CI render_master 判据（`["string", "null", "object"]`）红。
+        "type": ["string", "null", "object"],
         "anyOf": [
             {
                 "type": "string",

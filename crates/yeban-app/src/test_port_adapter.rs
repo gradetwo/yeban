@@ -940,18 +940,18 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
         "点在音符上必须选中它（绘制帧坐标 {cx},{cy}）"
     );
 
-    // 牙: 点在音符**下半截**（相对顶部 +11px）也必须命中 —— 若宿主的高度常量小于 `.slint` 的
-    // `height: 12px`, 这一条会红（第 501 轮我第一次写 6.0, 只有这条能抓到）。
+    // 牙: 点在音符**下半截**（相对顶部 +9px）也必须命中 —— 若宿主的高度常量小于 `.slint` 的
+    // `height: 10px`, 这一条会红（第 501 轮我第一次写 6.0, 只有这条能抓到）。
     let bottom = view.visible_notes(scroll, width);
     let (bx, by) = host_to_painted(
         bottom.positions[0] + bottom.widths[0] / 2.0,
-        bottom.ys[0] + 11.0,
+        bottom.ys[0] + 9.0,
     );
     ui.invoke_clicked(bx, by);
     assert_eq!(
         ui.get_selected_note_count(),
         1,
-        "音符下半截必须可命中（高度常量须与 .slint 的 12px 一致）"
+        "音符下半截必须可命中（高度常量须与 .slint 的 10px 一致）"
     );
 
     // 被点击的那个音符的 ULID —— 两次点击（中心与下半截）点的都是可见集里的第一个。

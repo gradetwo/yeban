@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 296 | 1263 | `56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 298 | 1271 | `2b4f1050e7bbf33afd6ca18d1fbec5c2d41042af170a50f47924eca981731cd9` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -197,7 +197,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 292] = [
+pub const GOLDEN_REASONS: [&str; 294] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -370,6 +370,8 @@ pub const GOLDEN_REASONS: [&str; 292] = [
     "routingNodeNotFound",
     // ⭐ 自动相位对齐第二层：基准轨与目标轨是同一条轨。
     "sameReferenceAndTarget",
+    // ⭐ 八度覆盖线（2026-11-19）：`setTrackSampler` 对象形的覆盖值非法。
+    "samplerOctaveOverrideMustBeOctaveStep",
     "samplerUnreadable",
     "sceneAlreadyExists",
     // ⭐ `#290`：`sceneId` 缺失 / 队列满 / 场景 tempo 越界。
@@ -457,6 +459,7 @@ pub const GOLDEN_REASONS: [&str; 292] = [
     "unknownKeySignatureField",
     "unknownQuantizeClipField",
     "unknownRetrogradeClipField",
+    "unknownSamplerBindingField",
     "unknownSetAuthorField",
     "unknownSetClipGainField",
     "unknownSetClipNameField",
@@ -1166,7 +1169,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "reject_unknown_keys",
         suffix: "",
-        call_sites: 37,
+        call_sites: 38,
         literals: &[
             "unknownChordStaggerClipField",
             "unknownDuplicateClipField",
@@ -1175,6 +1178,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
             "unknownKeySignatureField",
             "unknownQuantizeClipField",
             "unknownRetrogradeClipField",
+            "unknownSamplerBindingField",
             "unknownSetAuthorField",
             "unknownSetClipGainField",
             "unknownSetClipNameField",
@@ -1212,7 +1216,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "read_non_empty_string",
         suffix: "",
-        call_sites: 9,
+        call_sites: 10,
         literals: &[
             "assetLicenseMustBeNonEmptyString",
             "assetOriginalPathMustBeNonEmptyString",
@@ -1231,7 +1235,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "read_non_empty_string",
         suffix: "MustBeString",
-        call_sites: 9,
+        call_sites: 10,
         literals: &[
             "assetLicenseMustBeNonEmptyStringMustBeString",
             "assetOriginalPathMustBeNonEmptyStringMustBeString",
@@ -1787,13 +1791,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
 // 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
 // 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 350;
+const REASON_OCCURRENCES_TOTAL: usize = 351;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 346;
-const REASON_LITERAL_SITES_TOTAL: usize = 334;
+const REASON_KEY_SITES_TOTAL: usize = 347;
+const REASON_LITERAL_SITES_TOTAL: usize = 335;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 7;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2116,7 +2120,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 292] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 294] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2610,6 +2614,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 292] = [
         &["reason", "trackId"],
     ),
     (
+        // ⭐ 八度覆盖线（2026-11-19）：覆盖值非法（非八度步）。
+        "samplerOctaveOverrideMustBeOctaveStep",
+        &["field", "reason", "received"],
+    ),
+    (
         "samplerUnreadable",
         &[
             "cause",
@@ -3034,6 +3043,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 292] = [
     ),
     (
         "unknownSetTrackNameField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSamplerBindingField",
         &["reason", "supportedFields", "unsupportedFields"],
     ),
     (
@@ -3590,13 +3603,17 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 292 → **296**、规范行数 1250 → **1263**（4 reason 行 ＋ 9 键行）。新摘要
 /// `56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ 八度覆盖线（2026-11-19，fix-on-main 登记）：`setTrackSampler` 对象形新增
+/// 2 条 reason（`unknownSamplerBindingField` 传播 ＋ `samplerOctaveOverrideMustBeOctaveStep`
+/// 字面，各 1 reason 行 ＋ 3 键行）⇒ reason 数 296 → **298**、规范行数
+/// 1263 → **1271**。新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74";
+    "2b4f1050e7bbf33afd6ca18d1fbec5c2d41042af170a50f47924eca981731cd9";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 296;
+pub const REASON_SURFACE_REASONS: usize = 298;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1263;
+pub const REASON_SURFACE_LINES: usize = 1271;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
