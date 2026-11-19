@@ -51,6 +51,9 @@ export component SoundLibraryDialog inherits Rectangle {
     // ---- 状态行（宿主写：最近一次操作的真实结果）--------------------------
     in property <string> status: "";
     in property <bool> status-is-error: false;
+    // ---- 失败后可重试的那一件（宿主写：下载失败时填包 id，成功/开始新下载清空）----
+    // 用户口径："也不知道下载成功与否" —— 失败必须能**一键重来**，不能只留一行红字。
+    in property <string> retry-pack-id: "";
     // ---- 「用到当前轨」的目标（宿主写：混音台当前那条轨的名字；空 = 没有目标）----
     in property <string> target-track-name: "";
     // ---- 删除确认态（本文件自有：正在确认删除的行 id，空 = 无）-------------
@@ -69,6 +72,8 @@ export component SoundLibraryDialog inherits Rectangle {
 
     /// 列表可用宽度（面板宽减去左右留白）。
     property <length> list-w: Math.min(820px, root.width - 32px) - 48px;
+    /// 只在这一行同时满足"有错误"和"知道是哪一件"时才出「再试一次」。
+    property <bool> retry-shown: root.status-is-error && root.retry-pack-id != "";
 
     background: Tokens.mask-black.with-alpha(0.65);
     clip: true;
@@ -259,7 +264,8 @@ export component SoundLibraryDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Tokens.gold-deep;
                         accessible-role: button;
-                        accessible-id: "sound-library-delete-button";
+                        property <string> row-suffix: "-" + i;
+                                accessible-id: "sound-library-delete-button" + self.row-suffix;
                         accessible-label: @tr("删除音源库");
                         accessible-action-default => { root.confirm-delete-id = root.installed-ids[i]; }
 
@@ -597,7 +603,8 @@ export component SoundLibraryDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Tokens.gold-deep;
                         accessible-role: button;
-                        accessible-id: "sound-library-use-button";
+                        property <string> row-suffix: "-" + i;
+                        accessible-id: "sound-library-use-button" + self.row-suffix;
                         accessible-label: @tr("用这件音源到当前轨");
                         accessible-action-default => { root.use-pack(root.pack-ids[i]); }
 
@@ -671,7 +678,8 @@ export component SoundLibraryDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Tokens.gold;
                         accessible-role: button;
-                        accessible-id: "sound-library-download-button";
+                        property <string> row-suffix: "-" + i;
+                                accessible-id: "sound-library-download-button" + self.row-suffix;
                         accessible-label: @tr("下载音源包");
                         accessible-action-default => { root.download-pack(root.pack-ids[i]); }
 
@@ -711,12 +719,47 @@ export component SoundLibraryDialog inherits Rectangle {
                 UiText {
                     x: 0;
                     y: 0;
-                    width: parent.width;
+                    width: parent.width - (root.retry-shown ? 100px : 0px);
                     height: parent.height;
                     text: root.status;
                     color: root.status-is-error ? Tokens.record-red : Tokens.ink-2;
                     font-size: Tokens.font-size-xs;
                     overflow: elide;
+                }
+
+                // 「再试一次」：失败时同一行右侧，点一下重走**同一条**下载路（不是新逻辑）。
+                if root.retry-shown : Rectangle {
+                    x: parent.width - 96px;
+                    y: -4px;
+                    width: 96px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+
+                    accessible-role: button;
+                    accessible-id: "sound-library-retry-button";
+                    accessible-label: @tr("再试一次");
+                    accessible-action-default => { root.download-pack(root.retry-pack-id); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: @tr("再试一次");
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.download-pack(root.retry-pack-id); }
+                    }
                 }
             }
         }

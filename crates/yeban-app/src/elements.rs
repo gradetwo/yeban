@@ -1182,9 +1182,11 @@ impl ElementRegistry {
             "先不管",
             false,
         );
-        // ⚠ 行内重复 id 是本仓既有的列表口径（声音库列表的下载钮同样是常量 id）：
-        // 一个"候选"按钮在每一行里语义相同，判据按整组点。它的两种角色（换成 / 下载）
-        // 由 `accessible-label` 区分 —— ⛔ id 不能写成条件式（契约判据按字面段比）。
+        // ⚠ 行内 id 必须带**行/槽下标**（`missing-sounds-candidate-{row}-{slot}`）：
+        // 早先这里写的是"行内重复 id 是本仓既有的列表口径"，实测代价是运行时控件树在
+        // "两条轨（2 行 × 3 候选）"的状态下**直接构造失败**（`DuplicateId`），
+        // 无障碍树与树导出全废（用户看不见，但判据与读屏都起不来）。
+        // 注册表这里只登记"一族"的描述；运行时 id 由 `.slint` 按行/槽拼接。
         registry.add(
             "missing-sounds-candidate",
             ElementKind::Button,
@@ -3751,6 +3753,15 @@ mod tests {
     /// - 纯字面量: 必须完全相等;
     /// - 单段模板 `"sidebar-item-" + i`: 必须是该前缀且后面还有东西;
     /// - 多段模板 `"track-" + i + "-fader"`: 首段前缀 + 末段后缀 + 中间段按序出现。
+    ///
+    /// ⚠ 单段模板的一个例外（2026-11-19，行内重复 id 修复的副产物）：当字面前缀
+    /// **不以分隔符结尾**时，它与注册表里的**族名**成对 —— `.slint` 写
+    /// `"missing-sounds-candidate" + self.id-suffix`（实例 id 是
+    /// `missing-sounds-candidate-1-2`），而注册表只登记族名 `missing-sounds-candidate`
+    /// （一行里三枚候选语义相同，注册表按族登记）。此时"完全等于族名"也是合法配对，
+    /// 否则两个方向会互相打架：注册表说"族存在"，.slint 说"实例比族名长"。
+    /// 以 `-` 结尾的旧写法（`"sidebar-item-" + i`）**不享受**这个例外 —— 那意味着
+    /// 右侧多半忘了拼后缀，族名与实例混为一谈正是 `DuplicateId` 的来源。
     fn id_matches_pattern(segments: &[String], is_template: bool, id: &str) -> bool {
         let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
             return false;
@@ -3762,7 +3773,7 @@ mod tests {
             return false;
         }
         if segments.len() == 1 {
-            return id.len() > first.len();
+            return id.len() > first.len() || !first.ends_with('-');
         }
         if !id.ends_with(last.as_str()) {
             return false;

@@ -10911,10 +10911,26 @@ struct SoundLibraryAsyncSlot {
     download_in_flight: bool,
     catalog_outcome:
         Option<Result<crate::sound_library::Catalog, crate::sound_library::CatalogError>>,
-    /// 最近一次进度读数 `(包 id, 百分比)`。
-    progress: Option<(String, i32)>,
+    /// 最近一次进度读数（百分比 ＋ 一行人话读数）。
+    progress: Option<DownloadTick>,
     /// 下载结局 `(包 id, 状态行文本)`；`Err` 的文本进红色状态行。
     download_outcome: Option<(String, Result<String, String>)>,
+}
+
+/// 一次下载进度采样（跨线程槽里的唯一进度载体）。
+///
+/// 为什么要连**读数文本**一起搬，而不是只搬百分比：用户原话"下载看不到速度和进度"。
+/// 读数要 `已下 / 总量 · 速度`，而这几项只有下载线程知道（`progress(done, total)` 的原始字节），
+/// 换算必须在**产生数据的地方**做一次（[`crate::sound_library::format_download_readout`]），
+/// ⛔ 不在界面线程里瞎猜。
+#[derive(Clone, Debug, Default)]
+struct DownloadTick {
+    /// 包 id（界面用它把进度条挂在对应那一行）。
+    pack_id: String,
+    /// 百分比；`-1` = 总量未知（服务器没给长度）。
+    percent: i32,
+    /// 一行人话读数（`42% · 12.1 / 66.8 MiB · 3.2 MiB/s`）。
+    readout: String,
 }
 
 impl SoundLibraryAsyncState {
@@ -10951,8 +10967,8 @@ impl SoundLibraryAsyncState {
         true
     }
 
-    fn set_progress(&self, pack_id: &str, percent: i32) {
-        self.lock().progress = Some((pack_id.to_owned(), percent));
+    fn set_progress(&self, tick: DownloadTick) {
+        self.lock().progress = Some(tick);
     }
 
     fn finish_download(&self, pack_id: &str, outcome: Result<String, String>) {
@@ -11532,6 +11548,8 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             ui.set_sound_download_progress(0);
             ui.set_sound_library_status("".into());
             ui.set_sound_library_status_is_error(false);
+            // 开始新一次下载 ⇒ 上一次的"再试一次"入口必须退场（否则点它下的还是旧包）。
+            ui.set_sound_library_retry_id("".into());
             let worker_state = state.clone();
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
@@ -11540,7 +11558,32 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 let ping_weak = worker_weak.clone();
                 let ping_state = worker_state.clone();
                 let mut last_percent = -1i32;
+                // 速度读数需要**两次采样**（⛔ 不从 0 开始算，那会把第一秒的启动延迟
+                // 说成"几 GiB/s"）。每 ≥200 ms 或百分比变化时刷新一行。
+                let mut last_sample: Option<(std::time::Instant, u64)> = None;
+                let mut last_emit = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(5))
+                    .unwrap_or_else(std::time::Instant::now);
                 let mut progress = |downloaded: u64, total: Option<u64>| {
+                    let now = std::time::Instant::now();
+                    let rate = match last_sample {
+                        Some((at, bytes)) => {
+                            let secs = now.duration_since(at).as_secs_f64();
+                            if secs >= 0.2 {
+                                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                                let rate =
+                                    ((downloaded.saturating_sub(bytes)) as f64 / secs) as u64;
+                                last_sample = Some((now, downloaded));
+                                Some(rate)
+                            } else {
+                                None
+                            }
+                        }
+                        None => {
+                            last_sample = Some((now, downloaded));
+                            None
+                        }
+                    };
                     let percent = match total {
                         Some(total) if total > 0 => {
                             i32::try_from(downloaded.saturating_mul(100) / total)
@@ -11549,9 +11592,18 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                         }
                         _ => -1,
                     };
-                    if percent != last_percent {
+                    if percent != last_percent
+                        || now.duration_since(last_emit) >= std::time::Duration::from_millis(200)
+                    {
                         last_percent = percent;
-                        ping_state.set_progress(&pack_id, percent);
+                        last_emit = now;
+                        ping_state.set_progress(DownloadTick {
+                            pack_id: pack_id.clone(),
+                            percent,
+                            readout: crate::sound_library::format_download_readout(
+                                percent, downloaded, total, rate,
+                            ),
+                        });
                         let _ = ping_weak.upgrade_in_event_loop(|ui| {
                             ui.invoke_sound_library_drain_requested();
                         });
@@ -11642,6 +11694,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             };
             ui.set_sound_library_status(hint.as_str().into());
             ui.set_sound_library_status_is_error(false);
+            ui.set_sound_library_retry_id("".into());
             let worker_state = state.clone();
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
@@ -11649,10 +11702,14 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 let sounds = crate::builtin_sounds::load_builtin_sounds().unwrap_or_default();
                 let mut failed: Vec<String> = Vec::new();
                 let mut done: usize = 0;
-                for pack in &pending {
+                for (index, pack) in pending.iter().enumerate() {
                     let pack_id = pack.id.clone();
-                    // 换到下一条：把"正在下谁"先播出去（百分比等第一块字节回来再刷）。
-                    worker_state.set_progress(&pack_id, -1);
+                    // 换到下一条：把"正在下谁 / 第几个"先播出去（字节与速度等第一块回来再刷）。
+                    worker_state.set_progress(DownloadTick {
+                        pack_id: pack_id.clone(),
+                        percent: -1,
+                        readout: format!("第 {} / {} 个 · {}", index + 1, pending.len(), pack.name),
+                    });
                     let ping_weak = worker_weak.clone();
                     let _ = ping_weak.upgrade_in_event_loop(|ui| {
                         ui.invoke_sound_library_drain_requested();
@@ -11666,7 +11723,16 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                             }
                             _ => -1,
                         };
-                        worker_state.set_progress(&pack_id, percent);
+                        worker_state.set_progress(DownloadTick {
+                            pack_id: pack_id.clone(),
+                            percent,
+                            readout: crate::sound_library::format_download_readout(
+                                percent,
+                                downloaded,
+                                total_bytes,
+                                None,
+                            ),
+                        });
                         let _ = worker_weak.upgrade_in_event_loop(|ui| {
                             ui.invoke_sound_library_drain_requested();
                         });
@@ -11776,13 +11842,23 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                     }
                 }
             }
-            if let Some((pack_id, percent)) = progress {
-                ui.set_sound_downloading_id(pack_id.into());
-                ui.set_sound_download_progress(percent);
+            if let Some(tick) = progress {
+                ui.set_sound_downloading_id(tick.pack_id.into());
+                ui.set_sound_download_progress(tick.percent);
+                // 读数落在**状态行**（那一行够宽）：百分比 · 已下/总量 · 速度。
+                // ⛔ 不把它塞进 92px 的按钮位（会 elide 成 `42% …`，等于没给）。
+                ui.set_sound_library_status(tick.readout.into());
+                ui.set_sound_library_status_is_error(false);
             }
             if let Some((pack_id, outcome)) = download_outcome {
                 ui.set_sound_downloading_id("".into());
                 ui.set_sound_download_progress(-1);
+                // 失败的那一件留着"再试一次"；成功则撤掉入口（结局文字常驻，不被冲掉）。
+                ui.set_sound_library_retry_id(if outcome.is_err() {
+                    pack_id.clone().into()
+                } else {
+                    Default::default()
+                });
                 let installed_ok = outcome.is_ok();
                 match outcome {
                     Ok(text) => {

@@ -118,3 +118,100 @@ fn the_error_banner_lets_its_message_shrink_instead_of_overlapping() {
         "横幅消息必须住在一个 `clip: true` 的弹性块里：\n{block}"
     );
 }
+
+// ===========================================================================
+// ⑤ 运行时控件树在"多行"状态下必须**能构造**（行内 id 唯一）
+// ===========================================================================
+
+mod runtime_ids {
+    use std::rc::Rc;
+
+    use yeban_app::bridge;
+    use yeban_app::bridge::ViewState;
+    use yeban_app::host;
+    use yeban_app::scene::DemoScene;
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_model::project::{TrackKind, YebanProjectV1};
+    use yeban_ui_test_port::Size;
+    use yeban_ui_test_port::inspect::tree_from_element_root;
+    use yeban_ui_test_port::port::Permission;
+    use yeban_ui_test_port::render::LivePort;
+
+    const NOW_MS: u64 = 1_760_000_000_000;
+    const MISSING: &str = "assets/samples/emily_basic/Programs/emily_basic.sfz";
+
+    /// 两条 MIDI 轨都绑着**同一件不存在**的音源 ⇒ 救援面板 2 行 × 3 候选。
+    ///
+    /// 这是当初把控件树打挂的那个状态：`DuplicateId { id: "missing-sounds-candidate" }`。
+    fn project_with_two_missing_samplers() -> YebanProjectV1 {
+        let mut project = bridge::demo_project();
+        let mut done = 0;
+        for id in project.display_track_ids() {
+            if done == 2 {
+                break;
+            }
+            let Some(track) = project.tracks.get_mut(&id) else {
+                continue;
+            };
+            if track.kind != TrackKind::Midi {
+                continue;
+            }
+            track.sampler = Some(yeban_model::SamplerBinding {
+                note_octave_override: None,
+                path: MISSING.to_owned(),
+            });
+            done += 1;
+        }
+        assert_eq!(done, 2, "夹具工程必须有两条 MIDI 轨");
+        project
+    }
+
+    #[test]
+    fn the_runtime_tree_survives_two_rescue_rows() {
+        let project = project_with_two_missing_samplers();
+        let view = ViewState::from_project(&project).expect("投影");
+        let port = Rc::new(UndoPort::new(
+            UndoSession::open("<行内 id>", "yeban-app", project.clone(), NOW_MS).expect("会话"),
+        ));
+        let scene = DemoScene::from_view(&view);
+        let live = LivePort::new(Size::new(1200, 700), Permission::Interactive, None, || {
+            host::build_main_window_with_console_tab(&view, &scene, 2)
+        })
+        .expect("Tier-1 平台");
+        let ui = live.ui();
+        host::wire_sound_library_dialog_with(ui, Some(Rc::clone(&port)));
+        let rows = yeban_app::missing_sounds::collect(&port.project(), None);
+        assert_eq!(rows.len(), 2, "夹具必须造成 2 行救援");
+        host::wire_missing_sounds_dialog(ui, Rc::clone(&port), rows);
+
+        let json = tree_from_element_root(ui, None)
+            .expect("2 行 × 3 候选的状态下控件树必须能构造（行内 id 必须唯一）")
+            .dump_json();
+        let tree = yeban_ui_test_port::tree::ControlTree::from_json(&json)
+            .expect("同一套校验必须能读回自己导出的 JSON");
+        let total = tree.iter().count();
+        let mut ids: Vec<String> = tree.iter().map(|node| node.id.clone()).collect();
+        ids.sort();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(
+            before,
+            ids.len(),
+            "运行时控件树里出现了重复 id（无障碍树会直接构造失败）：{:?}",
+            ids
+        );
+        assert!(
+            total >= 10,
+            "树节点数异常少（{total}）—— 树可能被裁了：{:?}",
+            ids
+        );
+        assert!(
+            ids.iter()
+                .any(|id| id.starts_with("missing-sounds-candidate-")),
+            "救援候选的 id 必须带行/槽下标：{:?}",
+            ids.iter()
+                .filter(|id| id.starts_with("missing-sounds"))
+                .collect::<Vec<_>>()
+        );
+    }
+}

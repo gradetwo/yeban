@@ -21,6 +21,9 @@ import { Tokens, UiText, UiTitleText } from "../tokens.slint";
 // 一个候选音源按钮：已装 = "换成 X"（发 swap），没装 = "下载 X"（发 open-pack）。
 component CandidateButton inherits Rectangle {
     in property <int> row-index: 0;
+    // ⚠ 同一行里三枚候选语义相同但**不是同一个控件** ⇒ 语义 id 必须带行与槽下标，
+    // 否则运行时控件树直接构造失败（`DuplicateId`，用户看不见，但无障碍树/树导出全废）。
+    in property <int> slot: 1;
     in property <string> name: "";
     in property <string> pack-id: "";
     in property <string> path: "";
@@ -42,7 +45,9 @@ component CandidateButton inherits Rectangle {
     border-color: installed ? Tokens.line : Tokens.gold-deep;
 
     accessible-role: button;
-    accessible-id: "missing-sounds-candidate";
+    // 契约判据按**字面段**比 ⇒ 前缀只留一段，`-{row}-{slot}` 放进属性。
+    property <string> id-suffix: "-" + row-index + "-" + slot;
+    accessible-id: "missing-sounds-candidate" + self.id-suffix;
     accessible-label: installed ? @tr("换成 {}", root.name) : @tr("下载 {}", root.name);
     accessible-action-default => {
         if (root.installed) {
@@ -263,6 +268,7 @@ export component MissingSoundsDialog inherits Rectangle {
 
                             if root.s1-name[i] != "" : CandidateButton {
                                 row-index: i;
+                                slot: 1;
                                 name: root.s1-name[i];
                                 pack-id: root.s1-id[i];
                                 path: root.s1-path[i];
@@ -273,6 +279,7 @@ export component MissingSoundsDialog inherits Rectangle {
 
                             if root.s2-name[i] != "" : CandidateButton {
                                 row-index: i;
+                                slot: 2;
                                 name: root.s2-name[i];
                                 pack-id: root.s2-id[i];
                                 path: root.s2-path[i];
@@ -283,6 +290,7 @@ export component MissingSoundsDialog inherits Rectangle {
 
                             if root.s3-name[i] != "" : CandidateButton {
                                 row-index: i;
+                                slot: 3;
                                 name: root.s3-name[i];
                                 pack-id: root.s3-id[i];
                                 path: root.s3-path[i];
@@ -300,7 +308,8 @@ export component MissingSoundsDialog inherits Rectangle {
                                 border-width: 1px;
                                 border-color: Tokens.gold-deep;
                                 accessible-role: button;
-                                accessible-id: "missing-sounds-download-original";
+                                property <string> row-suffix: "-" + i;
+                                accessible-id: "missing-sounds-download-original" + self.row-suffix;
                                 accessible-label: @tr("下载原音源");
                                 accessible-action-default => { root.download-original(i); }
 

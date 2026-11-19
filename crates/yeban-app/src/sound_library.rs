@@ -715,6 +715,38 @@ pub fn format_size(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
+/// 下载读数（**唯一**把"进度 → 人话"的地方）：`42% · 12.1 / 67.1 MiB · 3.2 MiB/s`。
+///
+/// 用户原话："下载看不到速度和进度 也不知道下载成功与否"。界面此前只有一根进度条 +
+/// `下载中 N%`：**没有总量、没有速度**，几十 MiB 的包看起来像卡住。
+///
+/// 三种降级都要如实（⛔ 不编造数字）：
+/// - 总量未知（服务器没给 `Content-Length`）⇒ 只报已下的字节；
+/// - 速度未知（第一个采样点还没有间隔）⇒ 省掉最后一节；
+/// - 进度未知（`percent < 0`）⇒ 不写百分号。
+#[must_use]
+pub fn format_download_readout(
+    percent: i32,
+    done: u64,
+    total: Option<u64>,
+    bytes_per_sec: Option<u64>,
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(3);
+    if percent >= 0 {
+        parts.push(format!("{percent}%"));
+    }
+    match total {
+        Some(total) if total > 0 => {
+            parts.push(format!("{} / {}", format_size(done), format_size(total)))
+        }
+        _ => parts.push(format_size(done)),
+    }
+    if let Some(rate) = bytes_per_sec.filter(|rate| *rate > 0) {
+        parts.push(format!("{}/s", format_size(rate)));
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,5 +1078,31 @@ mod tests {
         assert_eq!(format_size(1024), "1.0 KiB");
         assert_eq!(format_size(1536), "1.5 KiB");
         assert_eq!(format_size(9_844_170_377), "9.2 GiB");
+    }
+}
+
+#[cfg(test)]
+mod readout_tests {
+    use super::format_download_readout;
+
+    #[test]
+    fn the_readout_never_invents_numbers() {
+        // 全信息：百分比 · 已下/总量 · 速度
+        assert_eq!(
+            format_download_readout(42, 12_700_000, Some(70_000_000), Some(3_400_000)),
+            "42% · 12.1 MiB / 66.8 MiB · 3.2 MiB/s"
+        );
+        // 总量未知 ⇒ 只报已下
+        assert_eq!(
+            format_download_readout(42, 2048, None, None),
+            "42% · 2.0 KiB"
+        );
+        // 速度未知（第一个采样点）⇒ 省掉最后一节
+        assert_eq!(
+            format_download_readout(7, 1_000_000, Some(20_000_000), None),
+            "7% · 976.6 KiB / 19.1 MiB"
+        );
+        // 进度未知 ⇒ 不写百分号；速度为 0 ⇒ 不写"0 B/s"
+        assert_eq!(format_download_readout(-1, 0, None, Some(0)), "0 B");
     }
 }

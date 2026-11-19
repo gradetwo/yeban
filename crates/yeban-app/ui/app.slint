@@ -552,6 +552,8 @@ export component MainWindow inherits Window {
     in-out property <int> sound-download-progress: -1;
     in-out property <string> sound-library-status: "";
     in-out property <bool> sound-library-status-is-error: false;
+    // 下载失败时"还能一键重来的那一件"（宿主在失败时填包 id，成功/新下载时清空）
+    in-out property <string> sound-library-retry-id: "";
     // 「用到当前轨」指向哪条轨（宿主按混音台当前轨写；空 = 没有目标轨）
     in-out property <string> sound-library-target-name: "";
     // 搜索框原文（`sound_library_dialog.slint` 双向绑定的那一格；清空 = 不过滤）
@@ -2219,6 +2221,7 @@ export component MainWindow inherits Window {
             download-progress: root.sound-download-progress;
             status: root.sound-library-status;
             status-is-error: root.sound-library-status-is-error;
+            retry-pack-id: root.sound-library-retry-id;
             target-track-name: root.sound-library-target-name;
             search-text <=> root.sound-library-search;
             close => { root.close-sound-library(); }
