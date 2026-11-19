@@ -6048,6 +6048,9 @@ impl PreparedRegion {
 /// 效果总线数（`fx1..fx4`；`ADR-0077` D1）。
 pub const BUS_COUNT: usize = 4;
 
+/// 一条总线的三个旋钮读数（`size` / `damp` / `predelay`；`None` ＝ 该槽没配）。
+pub type BusTone = (Option<f32>, Option<f32>, Option<f32>);
+
 /// 一条总线的**静态计划**（器件标识与路由，⛔ 不含状态）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BusEffect {
@@ -6055,6 +6058,33 @@ pub struct BusEffect {
     order: u8,
     /// 器件种类（本片恒 `Reverb`）。
     kind: BusKind,
+    /// `room/size`（`<control> set_cc{offset}`，`0..127` 归一到 `0..1`）；`None` ＝ 缺省。
+    size: Option<f32>,
+    /// `damp`（`set_cc{offset+1}`）；`None` ＝ 缺省。
+    damp: Option<f32>,
+    /// `predelay`（`set_cc{offset+3}`，归一后乘 `0.1 s`）；`None` ＝ 缺省。
+    predelay: Option<f32>,
+}
+
+impl BusEffect {
+    /// `dsp_order`（越小越先跑）。同一条总线有多条声明时，**最小者胜**。
+    #[must_use]
+    pub const fn order(&self) -> u8 {
+        self.order
+    }
+
+    /// 器件种类（本片恒 [`BusKind::Reverb`]）。
+    #[must_use]
+    pub const fn kind(&self) -> BusKind {
+        self.kind
+    }
+
+    /// 三个可调参数的读数（`(size, damp, predelay)`，`None` ＝ 该参数没被
+    /// `set_ccN` 配过、用固定缺省）。判据读数，不参与实时路径。
+    #[must_use]
+    pub const fn tone(&self) -> BusTone {
+        (self.size, self.damp, self.predelay)
+    }
 }
 
 /// 总线器件种类（本片唯一实现 [`BusKind::Reverb`]）。
@@ -6449,12 +6479,25 @@ fn bus_effects(instrument: &SfzInstrument) -> Result<[Option<BusEffect>; BUS_COU
                 continue;
             }
             let order = effect.dsp_order().unwrap_or(0);
+            // ⭐ `ADR-0077` D12（Proposed）：`param_offset` ＋ `<control>` 的
+            // `set_ccN` 初值 → 三个混响旋钮。**`mix` 不开放**：总线要纯湿，
+            // 否则尾巴里混进干声会被加回主路（等于双重干声）。
+            let offset = u16::try_from(effect.param_offset().unwrap_or(0).max(0)).unwrap_or(0);
+            let knob = |slot: u16| {
+                parsed
+                    .cc_default(offset.saturating_add(slot))
+                    .map(|value| f32::from(value) / 127.0)
+            };
+            let params = (knob(0), knob(1), knob(3));
             match buses[index] {
                 Some(existing) if existing.order <= order => {}
                 _ => {
                     buses[index] = Some(BusEffect {
                         order,
                         kind: BusKind::Reverb,
+                        size: params.0,
+                        damp: params.1,
+                        predelay: params.2,
                     })
                 }
             }
@@ -6901,6 +6944,12 @@ impl PreparedSfz {
         std::array::from_fn(|index| self.buses[index].map(|effect| effect.order))
     }
 
+    /// 四条总线的三个旋钮（`BusBank` 重建判据要连它们一起比：换了参数
+    /// 却不重建 = 用户改了 `set_ccN` 听不出差别）。
+    pub(crate) fn bus_tone(&self) -> [Option<BusTone>; BUS_COUNT] {
+        std::array::from_fn(|index| self.buses[index].map(|effect| effect.tone()))
+    }
+
     /// ⭐ 某区域的发送量（区域不存在 ⇒ 全 0，逐位不变）。
     pub(crate) fn region_effect_sends(&self, region_index: u16) -> [f32; 4] {
         self.regions
@@ -6929,6 +6978,15 @@ impl PreparedSfz {
     #[must_use]
     pub const fn has_round_robin(&self) -> bool {
         self.has_round_robin
+    }
+
+    /// 第 `index` 条总线（`0` ＝ `fx1`）的静态计划；`None` ＝ 没声明或类型不支持。
+    ///
+    /// ⭐ 这是**判据读数**：同一条总线有多条 `<effect>` 声明时，选
+    /// `dsp_order` **最小**者（同序取**先出现**者）——本访问器让它可观测。
+    #[must_use]
+    pub fn bus_effect(&self, index: usize) -> Option<BusEffect> {
+        self.buses.get(index).copied().flatten()
     }
 
     /// ⭐ 这条乐器**本次触发要不要一个随机数**（实时路径读的就是这一位）。
@@ -9195,15 +9253,16 @@ impl SfzVoicePool {
             return;
         }
         // 已经够长且器件表没变 ⇒ ⛔ 不重建（否则逐块分配，违 [ARCH-RT-001]）。
-        if self
-            .buses
-            .as_deref()
-            .is_some_and(|bank| bank.frames >= frames && bank.orders == plan.bus_orders())
-        {
+        if self.buses.as_deref().is_some_and(|bank| {
+            bank.frames >= frames
+                && bank.orders == plan.bus_orders()
+                && bank.tone == plan.bus_tone()
+        }) {
             return;
         }
         self.buses = Some(Box::new(BusBank::new(
             plan.bus_orders(),
+            plan.bus_tone(),
             frames,
             self.sample_rate,
         )));
@@ -9223,12 +9282,13 @@ impl SfzVoicePool {
             return self.buses.take();
         }
         let rebuilt = match self.buses.as_deref() {
-            Some(bank) if bank.frames >= frames => false,
+            Some(bank) if bank.frames >= frames && bank.tone == plan.bus_tone() => false,
             Some(_) | None => true,
         };
         if rebuilt {
             self.buses = Some(Box::new(BusBank::new(
                 plan.bus_orders(),
+                plan.bus_tone(),
                 frames,
                 self.sample_rate,
             )));
@@ -12210,6 +12270,8 @@ pub(crate) struct BusBank {
     verbs: [Option<Box<Reverb>>; BUS_COUNT],
     /// 每条的 `dsp_order`（升序执行；`None` ⇒ 无器件）。
     orders: [Option<u8>; BUS_COUNT],
+    /// 每条的三个旋钮（`size/damp/predelay`；`None` ＝ 缺省）。重建判据连它一起比。
+    tone: [Option<BusTone>; BUS_COUNT],
 }
 
 impl core::fmt::Debug for BusBank {
@@ -12225,20 +12287,31 @@ impl core::fmt::Debug for BusBank {
 }
 
 impl BusBank {
-    fn new(orders: [Option<u8>; BUS_COUNT], frames: usize, sample_hz: f32) -> Self {
+    fn new(
+        orders: [Option<u8>; BUS_COUNT],
+        tone: [Option<BusTone>; BUS_COUNT],
+        frames: usize,
+        sample_hz: f32,
+    ) -> Self {
         let frames = frames.max(1);
         let mut verbs: [Option<Box<Reverb>>; BUS_COUNT] = Default::default();
-        for (slot, order) in verbs.iter_mut().zip(orders.iter()) {
-            if order.is_some() {
-                let mut reverb = Box::new(Reverb::new());
-                reverb.set_sample_rate(sample_hz);
-                // D4：固定缺省，唯一差别 `mix = 1.0`（纯湿）⇒ 发送量是唯一可调量。
-                reverb.set_params(ReverbParams {
-                    mix: 1.0,
-                    ..ReverbParams::default()
-                });
-                *slot = Some(reverb);
+        for (index, slot) in verbs.iter_mut().enumerate() {
+            if orders[index].is_none() {
+                continue;
             }
+            let mut reverb = Box::new(Reverb::new());
+            reverb.set_sample_rate(sample_hz);
+            // `mix` 恒 `1.0`（纯湿，D12 不开放）；其余三项按 `set_ccN` 覆盖。
+            let defaults = ReverbParams::default();
+            let (size, damp, predelay) = tone[index].unwrap_or((None, None, None));
+            reverb.set_params(ReverbParams {
+                mix: 1.0,
+                size: size.unwrap_or(defaults.size),
+                damp: damp.unwrap_or(defaults.damp),
+                predelay: predelay.map_or(defaults.predelay, |p| p * 0.1),
+                ..defaults
+            });
+            *slot = Some(reverb);
         }
         Self {
             frames,
@@ -12246,6 +12319,7 @@ impl BusBank {
             wet: std::array::from_fn(|_| vec![0.0; frames]),
             verbs,
             orders,
+            tone,
         }
     }
 

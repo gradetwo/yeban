@@ -445,6 +445,20 @@ pub enum Warning {
         /// 钳位后的静态值（文本形式；即值域的某一端）。
         clamped: String,
     },
+    /// ⭐ **发送量指向一条不存在的总线**：region 写了 `effectN`（> 0），
+    /// 但整份文件没有任何 `bus=fxN` 的 `<effect>` 声明 ⇒ 这条发送**永远到不了
+    /// 任何器件**（干声照常响，用户听不出差别，只有告警能告诉他）。
+    ///
+    /// * 按**总线号去重**：同一份文件里缺 `fx2` 只报一条（`line` 取首次
+    ///   引用它的 region 段头行），⛔ 不逐 region 刷满；
+    /// * `bus=fxN` **声明了但类型不支持**（如 `chorus`）走既有的
+    ///   [`Self::EffectNotProcessed`]，⛔ 不重复报本变体。
+    EffectSendWithoutBus {
+        /// 1-based 行号（首次写该发送量的 region 段头行）。
+        line: usize,
+        /// 总线号（`1..=4`，对应 `effect1..4`）。
+        bus: u8,
+    },
     /// ⭐ **不认识的 opcode 名**：该名字在作用域里出现，但装载器**没有
     /// 任何一处读它**（Wang 2026-11-18 开发规则「默认不能静默」的首个
     /// 适用面 —— 旧行为是静默忽略）。
@@ -559,6 +573,11 @@ impl core::fmt::Display for Warning {
             Self::Truncated { kept, dropped } => write!(
                 f,
                 "warning list capped at {kept}: {dropped} warning(s) dropped"
+            ),
+            Self::EffectSendWithoutBus { line, bus } => write!(
+                f,
+                "line {line}: `effect{bus}` send declared but bus `fx{bus}` has no \
+                 `<effect>` declaration — the send goes nowhere"
             ),
             Self::EffectNotProcessed { line, bus, kind } => match kind {
                 Some(kind) => write!(
@@ -1570,12 +1589,19 @@ impl<'a> Parser<'a> {
         if supported {
             return Ok(());
         }
-        let bus = match effect.bus() {
-            EffectBus::Main => "main".to_string(),
-            EffectBus::Aux(number) => format!("aux{number}"),
-            EffectBus::Fx(number) => format!("fx{number}"),
-            EffectBus::Midi => "midi".to_string(),
-        };
+        // ⭐ 告警里的 `bus` 必须**如实**：未认识的写法（如 `fx5`）会被
+        // `EffectBus::from_value` 归约成 `main`，若照归约值写就会把
+        // "作者写了 fx5" 静默改写成 "main"（判据
+        // `effect_sends::an_out_of_range_fx_bus_still_warns_with_its_own_name`）。
+        let bus = effect.bus_raw().map_or_else(
+            || match effect.bus() {
+                EffectBus::Main => "main".to_string(),
+                EffectBus::Aux(number) => format!("aux{number}"),
+                EffectBus::Fx(number) => format!("fx{number}"),
+                EffectBus::Midi => "midi".to_string(),
+            },
+            str::to_string,
+        );
         let kind = effect.type_name().map(str::to_string);
         self.warn(Warning::EffectNotProcessed {
             line: self.effect_line,
@@ -2036,6 +2062,36 @@ impl<'a> Parser<'a> {
         // 之前跑。
         let tail_line = self.region_line;
         self.scan_unknown_opcodes(tail_line, true);
+        // ⭐ 孤儿发送（`effectN` 指向没声明的 `fxN`）：按总线号去重、只报一次。
+        // 声明了但不支持的总线已有 `EffectNotProcessed`，这里不重复。
+        let declared: [bool; 4] = {
+            let mut flags = [false; 4];
+            for effect in &self.effects {
+                let EffectBus::Fx(number) = effect.bus() else {
+                    continue;
+                };
+                let index = usize::from(number).saturating_sub(1);
+                if index < flags.len() {
+                    flags[index] = true;
+                }
+            }
+            flags
+        };
+        let mut orphans: Vec<(usize, u8)> = Vec::new();
+        {
+            let mut reported = [false; 4];
+            for region in &self.regions {
+                for (index, send) in region.effect_sends.iter().enumerate() {
+                    if *send > 0.0 && !declared[index] && !reported[index] {
+                        reported[index] = true;
+                        orphans.push((region.source_line, index as u8 + 1));
+                    }
+                }
+            }
+        }
+        for (line, bus) in orphans {
+            self.warn(Warning::EffectSendWithoutBus { line, bus });
+        }
         // ⭐ `set_ccN`（SFZ v2 精确整数）赢过 `set_hdccN` / `set_realccN`（ARIA 换算值）：
         // `or_insert` 只填整数表没声明过的 CC —— 优先级与文件里的书写顺序**无关**。
         let mut cc_defaults = self.control_cc_defaults;
@@ -3547,7 +3603,7 @@ mod tests {
     ///
     /// R48：这张表**必须**与 `warning_arm` 的臂编号一一对应
     /// （由 `the_warning_golden_table_covers_every_arm_number` 守住）。
-    fn warning_display_cases() -> [(Warning, &'static str); 12] {
+    fn warning_display_cases() -> [(Warning, &'static str); 13] {
         [
             (
                 Warning::IgnoredHeader {
@@ -3630,6 +3686,10 @@ mod tests {
                 },
                 "line 17: `<effect>` bus `aux2` type `reverb` declared but not processed (no DSP in this build)",
             ),
+            (
+                Warning::EffectSendWithoutBus { line: 18, bus: 2 },
+                "line 18: `effect2` send declared but bus `fx2` has no `<effect>` declaration — the send goes nowhere",
+            ),
         ]
     }
 
@@ -3638,7 +3698,7 @@ mod tests {
         // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
         // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
         let cases = warning_display_cases();
-        assert_eq!(cases.len(), 12, "one case per variant");
+        assert_eq!(cases.len(), 13, "one case per variant");
         for (warning, expected) in cases {
             assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
         }
@@ -3664,6 +3724,7 @@ mod tests {
             Warning::ClampedStaticValue { .. } => 9,
             Warning::UnknownOpcode { .. } => 10,
             Warning::EffectNotProcessed { .. } => 11,
+            Warning::EffectSendWithoutBus { .. } => 12,
         }
     }
 

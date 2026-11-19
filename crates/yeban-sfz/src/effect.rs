@@ -158,6 +158,7 @@ fn numbered(text: &str, prefix: &str) -> Option<u8> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effect<'a> {
     bus: EffectBus,
+    bus_raw: Option<Cow<'a, str>>,
     type_name: Option<Cow<'a, str>>,
     param_offset: Option<i64>,
     dsp_order: Option<u8>,
@@ -169,6 +170,12 @@ impl<'a> Effect<'a> {
     #[must_use]
     pub fn bus(&self) -> EffectBus {
         self.bus
+    }
+
+    /// `bus=` 的**原始**取值（未认识的写法原样保留，供告警如实点名）。
+    #[must_use]
+    pub fn bus_raw(&self) -> Option<&str> {
+        self.bus_raw.as_deref()
     }
 
     /// `type` 的原始取值（去引号、去首尾空白、已做宏替换）；未给出为 `None`。
@@ -212,6 +219,7 @@ impl<'a> Effect<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct EffectBuilder<'a> {
     bus: Option<EffectBus>,
+    bus_raw: Option<Cow<'a, str>>,
     type_name: Option<Cow<'a, str>>,
     param_offset: Option<i64>,
     dsp_order: Option<u8>,
@@ -223,6 +231,7 @@ impl<'a> EffectBuilder<'a> {
     pub(crate) fn new() -> Self {
         Self {
             bus: None,
+            bus_raw: None,
             type_name: None,
             param_offset: None,
             dsp_order: None,
@@ -233,6 +242,7 @@ impl<'a> EffectBuilder<'a> {
     /// 记录 `bus`（规范缺省 `main`；未知取值归约成 `main`）。
     pub(crate) fn set_bus(&mut self, value: &str) {
         self.bus = Some(EffectBus::from_value(value));
+        self.bus_raw = Some(Cow::Owned(value.to_string()));
     }
 
     /// 记录 `type`（原样，不解释）。
@@ -263,6 +273,7 @@ impl<'a> EffectBuilder<'a> {
     /// 与 `<curve>` 的空段口径一致。
     pub(crate) fn has_data(&self) -> bool {
         self.bus.is_some()
+            || self.bus_raw.is_some()
             || self.type_name.is_some()
             || self.param_offset.is_some()
             || self.dsp_order.is_some()
@@ -273,6 +284,7 @@ impl<'a> EffectBuilder<'a> {
     pub(crate) fn build(self) -> Effect<'a> {
         Effect {
             bus: self.bus.unwrap_or(EffectBus::Main),
+            bus_raw: self.bus_raw,
             type_name: self.type_name,
             param_offset: self.param_offset,
             dsp_order: self.dsp_order,

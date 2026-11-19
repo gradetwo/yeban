@@ -9318,27 +9318,28 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // （`88 + seed_table`）在**基线自己漂了**的时候不会响（内层原有 88 若变成别的数，
     // 增量腿仍绿）⇒ 这里同时钉绝对值。
     assert_eq!(
-        prepared_sfz, 320,
-        "⭐ `PreparedSfz` 的**绝对值**基线（`88 + 152 + 24 + 24`；⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 ⇒ 288**；⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 ⇒ 312**；⭐ **`ADR-0077` D5 的四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 ⇒ 320**；基线漂了本腿必须响）"
+        prepared_sfz, 424,
+        "⭐ `PreparedSfz` 的**绝对值**基线（`88 + 152 + 24 + 24`；⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 ⇒ 288**；⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 ⇒ 312**；⭐ **`ADR-0077` D5 的四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 ⇒ 320**；⭐ **`ADR-0077` D12（`set_ccN` 旋钮）把 `BusEffect` 带到 `32 B`（`order/kind` ＋ 三个 `Option<f32>`）⇒ `＋104` ⇒ 424**；基线漂了本腿必须响）"
     );
     assert_eq!(
-        plan, 320,
+        plan, 424,
         "⭐ `SfzPlan` 的**绝对值**基线（它按值内联 `PreparedSfz` ⇒ 与内层同长；包络族片后同为 288；LFO 片后同为 312）"
     );
     assert_eq!(
         prepared_sfz,
-        88 + seed_table + 24 + 24 + 24 + 8,
+        88 + seed_table + 24 + 24 + 24 + 112,
         "⭐ `PreparedSfz` 的增量 ＝ `size_of::<CcSeedTable>()` ＋ pitch_egs 24 B（摊平表长大，⛔ 不进实时对象）；\
          ⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 B（式子尾加一个 `+ 24`）**；\
          ⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 B（式子尾再加一个 `+ 24`）**；\
-         ⭐ **`ADR-0077` D5：四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 B（式子尾再加 `+ 8`）**"
+         ⭐ **`ADR-0077` D5：四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 B；D12 旋钮后 `BusEffect` 28 B ⇒ 整表 ＋112 B（式子尾再加 `+ 8`）**"
     );
     assert_eq!(
         plan,
-        88 + seed_table + 24 + 24 + 24 + 8,
+        88 + seed_table + 24 + 24 + 24 + 112,
         "⭐ `SfzPlan` 的增量 ＝ 内层的增量（它按值内联 `PreparedSfz`）；\
          ⭐ **包络族片修订同内层：`eg_defs` 再 ＋24 B**；\
-         ⭐ **LFO 片修订同内层：`lfo_defs` 再 ＋24 B**"
+         ⭐ **LFO 片修订同内层：`lfo_defs` 再 ＋24 B**；\
+         ⭐ **`ADR-0077` D12：总线表同内层 ＋112 B**"
     );
     assert_eq!(
         prepared_sfz, plan,
