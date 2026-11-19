@@ -51,6 +51,8 @@ export component SoundLibraryDialog inherits Rectangle {
     // ---- 状态行（宿主写：最近一次操作的真实结果）--------------------------
     in property <string> status: "";
     in property <bool> status-is-error: false;
+    // ---- 「用到当前轨」的目标（宿主写：混音台当前那条轨的名字；空 = 没有目标）----
+    in property <string> target-track-name: "";
     // ---- 删除确认态（本文件自有：正在确认删除的行 id，空 = 无）-------------
     in-out property <string> confirm-delete-id: "";
     // ---- 搜索原文（本文件自有；过滤由宿主按这份原文重播平行数组）-------------
@@ -62,6 +64,8 @@ export component SoundLibraryDialog inherits Rectangle {
     callback delete-library(string);
     callback filter-changed(string);
     callback download-all();
+    /// 把这一件**装好的**音源用到混音台当前那条轨上（一次点击）。
+    callback use-pack(string);
 
     /// 列表可用宽度（面板宽减去左右留白）。
     property <length> list-w: Math.min(820px, root.width - 32px) - 48px;
@@ -123,6 +127,21 @@ export component SoundLibraryDialog inherits Rectangle {
                 text: @tr("音源管理");
                 color: Tokens.gold-bright;
                 font-size: Tokens.font-size-xl;
+            }
+
+            // 「用到当前轨」指向哪条轨（空 = 混音台没有可用的目标轨）
+            UiText {
+                x: 180px;
+                y: Tokens.space-4 + 4px;
+                width: parent.width - 180px - 48px;
+                height: 20px;
+                text: root.target-track-name == ""
+                    ? @tr("混音台还没有可用的轨")
+                    : @tr("用到当前轨") + " ⇒ " + root.target-track-name;
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: right;
+                overflow: elide;
             }
 
             // 关闭
@@ -567,16 +586,38 @@ export component SoundLibraryDialog inherits Rectangle {
                         overflow: elide;
                     }
 
-                    // 已装上的包：如实标已安装，不再给下载钮
-                    if root.pack-installed[i] : UiText {
+                    // 已装上的包：给一个「用到当前轨」——装好了却不知道怎么用，等于没装
+                    if root.pack-installed[i] : Rectangle {
                         x: root.list-w - 104px;
-                        y: 0;
+                        y: 12px;
                         width: 92px;
-                        height: parent.height;
-                        text: @tr("已安装");
-                        color: Tokens.ok-green;
-                        font-size: Tokens.font-size-xs;
-                        horizontal-alignment: center;
+                        height: 28px;
+                        background: Tokens.bg-void;
+                        border-radius: Tokens.radius-sm;
+                        border-width: 1px;
+                        border-color: Tokens.gold-deep;
+                        accessible-role: button;
+                        accessible-id: "sound-library-use-button";
+                        accessible-label: @tr("用这件音源到当前轨");
+                        accessible-action-default => { root.use-pack(root.pack-ids[i]); }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("用到当前轨");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.use-pack(root.pack-ids[i]); }
+                        }
                     }
 
                     // 正在下的包：进度条 + 读数（替换下载钮的位置）

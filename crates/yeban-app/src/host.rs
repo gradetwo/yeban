@@ -11004,6 +11004,15 @@ fn sound_installed_library_ids() -> Vec<String> {
         .collect()
 }
 
+/// 这件内置音源**此刻能不能直接用**（与救援面板同一条判据：`resolve_sampler_path` 解得开）。
+///
+/// ⛔ 不与"扫描到的库 id"画等号：仓库自带的 `assets/samples` 被 `scan_installed` 扫成
+/// **一个**库（"内置音色库"），逐包比 `user:<id>` 会让 28 件明明在本地的音源全部显示
+/// "未安装" —— 界面上出现过，用户会以为要重新下载 700 MB。
+fn builtin_pack_usable(pack_id: &str) -> bool {
+    crate::missing_sounds::installed_path(pack_id, crate::sfz_load::SfzRoots::none()).is_some()
+}
+
 /// 把一份目录写进界面（唯一写 `sound-pack-*` 的地方），并把目录态
 /// 置为「已拿到」（包数组可以为空 —— 空是真实状态）。
 ///
@@ -11035,10 +11044,13 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
         versions.push(pack.version.clone());
         sizes.push(crate::sound_library::format_size(pack.size_bytes));
         descriptions.push(pack.description.clone());
+        // ⭐ 两条路子都算"已装"：① 用户库里装上的一件（`user:<id>`）
+        // ② 仓库自带的 `assets/samples` 里**真的解析得到 .sfz**（与救援面板同判据）。
         installed_flags.push(
-            installed_ids
-                .iter()
-                .any(|id| id == &format!("user:{}", pack.id)),
+            builtin_pack_usable(&pack.id)
+                || installed_ids
+                    .iter()
+                    .any(|id| id == &format!("user:{}", pack.id)),
         );
     }
     ui.set_sound_pack_ids(strings(&ids));
@@ -11098,10 +11110,12 @@ fn refresh_sound_pack_installed_flags(ui: &MainWindow) {
     let installed_ids = sound_installed_library_ids();
     let flags: Vec<bool> = ids
         .iter()
+        // 与 `publish_sound_catalog` 同一条口径（两条路子都算已装）。
         .map(|id| {
-            installed_ids
-                .iter()
-                .any(|installed| installed == &format!("user:{id}"))
+            builtin_pack_usable(id)
+                || installed_ids
+                    .iter()
+                    .any(|installed| installed == &format!("user:{id}"))
         })
         .collect();
     ui.set_sound_pack_installed(booleans(&flags));
@@ -11345,12 +11359,45 @@ pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
     }
 }
 
+/// 「用到当前轨」指向哪条轨：`(index, 轨道名)`（`index` 0 起，与 `track-<i>-*` 同一口径）。
+///
+/// 目标 = **混音台当前轨**（`selected-track-index`，1 起）。没有可用轨（空工程）⇒ `None`，
+/// 界面上就写"混音台还没有可用的轨" —— ⛔ 不猜一条轨让用户点完发现用错了地方。
+fn sound_library_target(ui: &MainWindow) -> Option<(i32, String)> {
+    let ids = read_strings(&ui.get_track_ids());
+    if ids.is_empty() {
+        return None;
+    }
+    let names = read_strings(&ui.get_track_names());
+    let last = i32::try_from(ids.len()).unwrap_or(1).saturating_sub(1);
+    let index = ui.get_selected_track_index().saturating_sub(1).clamp(0, last);
+    let name = names
+        .get(usize::try_from(index).ok()?)
+        .cloned()
+        .unwrap_or_default();
+    Some((index, name))
+}
+
+/// 把"当前轨是哪条"写进音源管理面板（打开时与每次用完之后都播一次）。
+fn publish_library_target(ui: &MainWindow) {
+    let name = sound_library_target(ui).map_or_else(String::new, |(_, name)| name);
+    ui.set_sound_library_target_name(SharedString::from(name));
+}
+
 /// 音源管理对话框接线（主菜单「设置 → 音源管理...」）。
 ///
 /// 打开 ⇒ 先同步发布已安装扫描（本地读盘，快），目录拉取走工作
 /// 线程；下载走工作线程 + 进度槽；删除是本地文件操作、同步做完
 /// 即重扫。所有联网只在这里由用户手势触发（⛔ 启动 / 投影不调）。
 pub fn wire_sound_library_dialog(ui: &MainWindow) {
+    wire_sound_library_dialog_with(ui, None);
+}
+
+/// 带撤销端口的装配（生产 GUI 走这条）：装好的音源可以**一次点击**用到混音台当前轨。
+///
+/// `port = None` ⇒ 保留旧的只读行为（列表 / 下载 / 删除照旧，但「用到当前轨」如实报
+/// "这个装配没有撤销会话"）—— 判据与无端口的装配因此一位都不变。
+pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
     let state = SoundLibraryAsyncState::default();
     // 最近一份目录只活在 UI 线程（下载点击时按 id 查包），不进跨线程槽。
     let last_catalog: std::rc::Rc<std::cell::RefCell<Option<crate::sound_library::Catalog>>> =
@@ -11391,6 +11438,7 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
             publish_sound_installed(&ui);
             ui.set_sound_library_status("".into());
             ui.set_sound_library_status_is_error(false);
+            publish_library_target(&ui);
             ui.set_sound_catalog_state(0);
             ui.set_sound_library_open(true);
             start_catalog_fetch();
@@ -11409,6 +11457,11 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
             ui.set_sound_library_open(false);
             if was_open {
                 ui.invoke_focus_shortcut_layer();
+            }
+            // 从救援面板过来的（还有没解决的轨）⇒ 关掉音源管理就把面板还给他：
+            // 下载没成 / 用户放弃，都不该让他"找不到刚才那个面板"。
+            if rescue_rows_remaining() {
+                ui.set_missing_sounds_open(true);
             }
         });
     }
@@ -11549,13 +11602,16 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
                 return;
             };
             let installed_ids = sound_installed_library_ids();
+            // ⚠ 「已装」与列表同一口径（含仓库自带 `assets/samples` 里能解析的那些）：
+            // 否则「全部下载」会把 28 件本机已有的音源再下一次（几百 MB 白花）。
             let pending: Vec<crate::sound_library::CatalogPack> = catalog
                 .packs
                 .iter()
                 .filter(|pack| {
-                    !installed_ids
-                        .iter()
-                        .any(|id| id == &format!("user:{}", pack.id))
+                    !builtin_pack_usable(&pack.id)
+                        && !installed_ids
+                            .iter()
+                            .any(|id| id == &format!("user:{}", pack.id))
                 })
                 .cloned()
                 .collect();
@@ -11721,9 +11777,10 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
                 ui.set_sound_downloading_id(pack_id.into());
                 ui.set_sound_download_progress(percent);
             }
-            if let Some((_pack_id, outcome)) = download_outcome {
+            if let Some((pack_id, outcome)) = download_outcome {
                 ui.set_sound_downloading_id("".into());
                 ui.set_sound_download_progress(-1);
+                let installed_ok = outcome.is_ok();
                 match outcome {
                     Ok(text) => {
                         ui.set_sound_library_status(text.into());
@@ -11736,6 +11793,84 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
                 }
                 publish_sound_installed(&ui);
                 refresh_sound_pack_installed_flags(&ui);
+                // ⭐ 装好了 ⇒ 救援面板里等着这件音源的轨**立刻**换上（用户只点过一次「下载」）。
+                // ⛔ 失败不换：没装好就换，只是一条死路径加一次新的失败。
+                if installed_ok {
+                    rescue_after_pack_installed(&ui, &pack_id);
+                }
+            }
+        });
+    }
+    // ---- 装好的音源 ⇒ 一次点击用到混音台当前轨 --------------------------------
+    //
+    // 用户口径：「装好了却不知道怎么用，等于没装」。所以列表里装好的那一行不再是
+    // 一枚不可点的"已安装"标签，而是「用到当前轨」：点了就提交 `Op::SetTrackSampler`
+    // 到**混音台当前轨**，并如实报"用到哪条轨上"。
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        let last_catalog = last_catalog.clone();
+        ui.on_sound_library_use_pack(move |pack_id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = port.clone() else {
+                ui.set_sound_library_status("这个装配没有撤销会话，用不了「用到当前轨」。".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            };
+            let Some((index, track_name)) = sound_library_target(&ui) else {
+                ui.set_sound_library_status("混音台还没有可用的轨：先在混音台选一条轨，再回来点这里。".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            };
+            let pack_name = last_catalog
+                .borrow()
+                .as_ref()
+                .and_then(|catalog| {
+                    catalog
+                        .packs
+                        .iter()
+                        .find(|pack| pack.id == pack_id.as_str())
+                        .map(|pack| pack.name.clone())
+                })
+                .unwrap_or_else(|| pack_id.to_string());
+            // 只有真的解析得到 .sfz 才换：⛔ 不写一条猜出来的路径。
+            let Some(path) =
+                crate::missing_sounds::installed_path(pack_id.as_str(), crate::sfz_load::SfzRoots::none())
+            else {
+                ui.set_sound_library_status(
+                    format!(
+                        "「{pack_name}」装得不完整：包里没找到能直接用的 .sfz。请在混音台手动指定文件。"
+                    )
+                    .into(),
+                );
+                ui.set_sound_library_status_is_error(true);
+                return;
+            };
+            if commit_sampler_binding(&ui, &port, index, Some(path.as_str()), "use library sound") {
+                // 刚补上的这条轨如果本来就在救援名单里 ⇒ 摘掉它（同一件事不该留两个入口）。
+                let resolved = RESCUE_SINK.with(|slot| {
+                    slot.try_borrow_mut().ok().and_then(|mut guard| {
+                        let sink = guard.as_mut()?;
+                        sink.rows
+                            .borrow_mut()
+                            .retain(|item| item.track_index != index);
+                        let empty = sink.rows.borrow().is_empty();
+                        publish_missing_rows(&ui, &sink.rows);
+                        Some(empty)
+                    })
+                });
+                if resolved == Some(true) {
+                    ui.set_missing_sounds_open(false);
+                    ui.set_engine_error(SharedString::from(""));
+                }
+                ui.set_sound_library_status(
+                    format!("已把「{pack_name}」用到「{track_name}」。回到工程按播放就有声音。").into(),
+                );
+                ui.set_sound_library_status_is_error(false);
+                publish_library_target(&ui);
             }
         });
     }
@@ -23994,12 +24129,145 @@ fn swap_track_sampler(
 }
 
 /// 开音源管理并**筛好**一件（"去下载"的那条腿）。顺序是契约：先开、再写搜索、最后重播。
+///
+/// ⭐ 顺带把救援面板**收起来**：两个面板叠着是"用户点了下载却看不见下载进度"的根因。
+/// 行状态一位不丢（`RESCUE_SINK` 还在），关掉音源管理时若还有没解决的轨，面板自己回来。
 fn open_library_for(ui: &MainWindow, seed: &str, status: &str) {
+    ui.set_missing_sounds_open(false);
     ui.invoke_open_sound_library();
     ui.set_sound_library_search(SharedString::from(seed));
     ui.set_sound_library_status(SharedString::from(status));
     ui.set_sound_library_status_is_error(false);
     ui.invoke_sound_library_filter_changed(SharedString::from(seed));
+}
+
+/// 一条"下载完就换到轨上"的待办（用户点了「下载 X」那一刻记下）。
+#[derive(Clone, Debug)]
+struct PendingBind {
+    track_index: i32,
+    pack_id: String,
+    /// 界面上那件音源的显示名（回执里要用）。
+    name: String,
+}
+
+/// 救援面板的**活引用**：下载完成那一跳（音源管理那边）拿它继续把轨换掉。
+///
+/// 为什么放线程局部而不是字段：`wire_sound_library_dialog` 与
+/// [`wire_missing_sounds_dialog`] 是两个**各自独立**的装配入口，谁也不知道对方。
+/// 两者的回调都跑在 Slint 事件循环线程上，因此这里不需要锁、也不能用 `Rc` 跨线程。
+struct RescueSink {
+    port: Rc<UndoPort>,
+    rows: MissingRows,
+    pending: Vec<PendingBind>,
+}
+
+thread_local! {
+    static RESCUE_SINK: RefCell<Option<RescueSink>> = const { RefCell::new(None) };
+}
+
+/// 记下"这条轨在等这件音源装好"（同一条轨只留最新一件：用户改主意了就按新的来）。
+fn remember_pending_bind(track_index: i32, pack_id: &str, name: &str) {
+    RESCUE_SINK.with(|slot| {
+        let Ok(mut guard) = slot.try_borrow_mut() else {
+            return;
+        };
+        let Some(sink) = guard.as_mut() else {
+            return;
+        };
+        sink.pending
+            .retain(|pending| pending.track_index != track_index);
+        sink.pending.push(PendingBind {
+            track_index,
+            pack_id: pack_id.to_owned(),
+            name: name.to_owned(),
+        });
+    });
+}
+
+/// 救援面板里还有没解决的轨吗？（音源管理关闭时要据此把面板还回去）
+fn rescue_rows_remaining() -> bool {
+    RESCUE_SINK.with(|slot| {
+        slot.try_borrow()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|sink| !sink.rows.borrow().is_empty()))
+            .unwrap_or(false)
+    })
+}
+
+/// 一个音源包装好了 ⇒ 把**等着它的那些轨**立刻换上（用户点过一次「下载」就不该再点第二次）。
+///
+/// 由 `wire_sound_library_dialog` 的排空跳在**下载成功之后**调用；失败不调（没装好就别换）。
+/// 没有救援待办 ⇒ 什么也不做（普通下载不受影响）。
+pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
+    RESCUE_SINK.with(|slot| {
+        let Ok(mut guard) = slot.try_borrow_mut() else {
+            return;
+        };
+        let Some(sink) = guard.as_mut() else {
+            return;
+        };
+        let targets: Vec<PendingBind> = sink
+            .pending
+            .iter()
+            .filter(|pending| pending.pack_id == pack_id)
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        sink.pending.retain(|pending| pending.pack_id != pack_id);
+        let roots = crate::sfz_load::SfzRoots::none();
+        let mut swapped: Vec<String> = Vec::new();
+        for target in targets {
+            let track_name = sink
+                .rows
+                .borrow()
+                .iter()
+                .find(|item| item.track_index == target.track_index)
+                .map(|item| item.track_name.clone())
+                .unwrap_or_default();
+            let Some(path) = crate::missing_sounds::installed_path(&target.pack_id, roots) else {
+                report_notice(
+                    ui,
+                    &format!(
+                        "「{}」装好了，但这个音源包里没找到能直接用的 .sfz。请在混音台给这条轨手动指定音源。",
+                        target.name
+                    ),
+                    true,
+                );
+                continue;
+            };
+            if !swap_track_sampler(ui, &sink.port, target.track_index, &path, &target.name) {
+                continue;
+            }
+            sink.rows
+                .borrow_mut()
+                .retain(|item| item.track_index != target.track_index);
+            if track_name.is_empty() {
+                swapped.push(target.name.clone());
+            } else {
+                swapped.push(format!("{}（{track_name}）", target.name));
+            }
+        }
+        if swapped.is_empty() {
+            return;
+        }
+        let empty = sink.rows.borrow().is_empty();
+        publish_missing_rows(ui, &sink.rows);
+        if empty {
+            ui.set_missing_sounds_open(false);
+            // 都换好了 ⇒ 那条"音源没装好"的红字不再成立，收掉它。
+            ui.set_engine_error(SharedString::from(""));
+        }
+        report_notice(
+            ui,
+            &format!(
+                "装好了，已自动换上：{}。按播放就有声音了。",
+                swapped.join("、")
+            ),
+            false,
+        );
+    });
 }
 
 /// 接线：把"打开工程时发现的缺失"交给救援面板，并接管它的三个动作。
@@ -24014,6 +24282,14 @@ pub fn wire_missing_sounds_dialog(
     let rows: MissingRows = Rc::new(RefCell::new(items));
     publish_missing_rows(ui, &rows);
     ui.set_missing_sounds_open(!rows.borrow().is_empty());
+    // 把"活引用"交给下载完成那一跳：点了「下载」之后**不用再点第二次**。
+    RESCUE_SINK.with(|slot| {
+        *slot.borrow_mut() = Some(RescueSink {
+            port: Rc::clone(&port),
+            rows: Rc::clone(&rows),
+            pending: Vec::new(),
+        });
+    });
 
     // ---- 换成同类（已装的候选）---------------------------------------------
     ui.on_missing_swap_suggested({
@@ -24042,6 +24318,7 @@ pub fn wire_missing_sounds_dialog(
             publish_missing_rows(&ui, &rows);
             if empty {
                 ui.set_missing_sounds_open(false);
+                ui.set_engine_error(SharedString::from(""));
                 report_notice(&ui, "音源都换好了，现在按播放就有声音。", false);
             }
         }
@@ -24050,15 +24327,27 @@ pub fn wire_missing_sounds_dialog(
     // ---- 候选还没装 ⇒ 去下载那一件（不替用户下，只把路铺到"点下载"）------------
     ui.on_missing_open_pack({
         let weak = ui.as_weak();
-        move |pack_id, pack_name| {
+        let rows = Rc::clone(&rows);
+        move |index, pack_id, pack_name| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
             if pack_id.is_empty() {
                 return;
             }
+            let Some(row) = rows
+                .borrow()
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .cloned()
+            else {
+                return;
+            };
+            // ⭐ 记下"这条轨在等这件音源"：装好那一刻自动换上（见
+            // [`rescue_after_pack_installed`]），用户不用回来再点第二次。
+            remember_pending_bind(row.track_index, pack_id.as_str(), pack_name.as_str());
             let status = format!(
-                "「{pack_name}」还没下载。点右边的「下载」，装好后回到这条轨再点一次「换成 {pack_name}」就出声了。"
+                "「{pack_name}」还没下载。点右边的「下载」，装好之后我会自动把它换到「{}」上。",
+                row.track_name
             );
             open_library_for(&ui, pack_id.as_str(), status.as_str());
         }
@@ -24088,7 +24377,11 @@ pub fn wire_missing_sounds_dialog(
                 return;
             };
             let name = row.pack_name.clone().unwrap_or_else(|| pack_id.clone());
-            let status = format!("这是工程原本用的「{name}」。点右边的「下载」，装好后回到这条轨再点一次「换成 {name}」。");
+            remember_pending_bind(row.track_index, pack_id.as_str(), name.as_str());
+            let status = format!(
+                "这是工程原本用的「{name}」。点右边的「下载」，装好之后我会自动把它换回「{}」。",
+                row.track_name
+            );
             open_library_for(&ui, pack_id.as_str(), status.as_str());
         }
     });

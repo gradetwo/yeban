@@ -545,6 +545,8 @@ export component MainWindow inherits Window {
     in-out property <int> sound-download-progress: -1;
     in-out property <string> sound-library-status: "";
     in-out property <bool> sound-library-status-is-error: false;
+    // 「用到当前轨」指向哪条轨（宿主按混音台当前轨写；空 = 没有目标轨）
+    in-out property <string> sound-library-target-name: "";
     // 搜索框原文（`sound_library_dialog.slint` 双向绑定的那一格；清空 = 不过滤）
     in-out property <string> sound-library-search: "";
     // 缺音源救援面板（`dialogs/missing_sounds_dialog.slint`）：打开工程时如果
@@ -932,13 +934,15 @@ export component MainWindow inherits Window {
     // 音源管理：搜索原文变化（宿主按它重播过滤后的平行数组）与「一键全下」
     callback sound-library-filter-changed(string);
     callback sound-library-download-all();
+    // 装好的音源 ⇒ 一次点击用到混音台当前轨（见 `host::wire_sound_library_dialog_with`）
+    callback sound-library-use-pack(string);
     // 缺音源救援面板的三个动作（接线见 `host::wire_missing_sounds_dialog`）：
     // 换同类 / 就想要原音源（去下载）/ 先不管。
     callback missing-swap-suggested(int, string, string);
     callback missing-download-original(int);
     callback missing-close();
     // 候选还没装 ⇒ 去下载那一件（打开音源管理并按包 id 筛好）
-    callback missing-open-pack(string, string);
+    callback missing-open-pack(int, string, string);
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
@@ -1969,17 +1973,25 @@ export component MainWindow inherits Window {
                 background: Tokens.skin-arm;
             }
             HorizontalLayout {
-                padding-left: 14px; padding-right: 10px; alignment: space-between;
-                // ⚠ 文字必须与底色**对比**（曾经写成本身 `skin-arm` ⇒ 红字压红底 = 看不见）。
-                // 这条横幅存在的唯一意义就是让用户读到它。
-                Text {
-                    text: @tr("提醒：{}", root.engine-error);
-                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 600; color: Tokens.ink-0;
-                    vertical-alignment: center;
-                    overflow: elide;
+                padding-left: 14px; padding-right: 10px; spacing: 10px;
+                // ⚠ 文案必须**关在盒子**里：曾经把 `Text` 直接放进按钮的 96px 矩形里而没给宽度 ⇒
+                // 英文（"Go to Sound Library Manager"）按固有宽度画出盒子，压到左边那句提醒上，
+                // 两句话叠在一起谁都读不清（用户截图报的就是这个）。
+                Rectangle {
+                    horizontal-stretch: 1;
+                    clip: true;
+                    // ⚠ 文字必须与底色**对比**（曾经写成本身 `skin-arm` ⇒ 红字压红底 = 看不见）。
+                    // 这条横幅存在的唯一意义就是让用户读到它。
+                    Text {
+                        width: parent.width; height: parent.height;
+                        text: @tr("提醒：{}", root.engine-error);
+                        font-family: Tokens.font-ui; font-size: 11px; font-weight: 600; color: Tokens.ink-0;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
                 Rectangle {
-                    width: 96px; height: 22px; y: 7px; border-radius: 3px;
+                    width: 112px; height: 22px; y: 7px; border-radius: 3px; clip: true;
                     background: Tokens.skin-arm.with-alpha(0.22);
                     border-width: 1px;
                     border-color: Tokens.skin-arm.with-alpha(0.75);
@@ -1988,12 +2000,15 @@ export component MainWindow inherits Window {
                     accessible-label: @tr("去音源管理");
                     accessible-action-default => { root.sound-library-open = true; }
                     Text {
+                        width: parent.width; height: parent.height;
                         text: @tr("去音源管理");
                         font-family: Tokens.font-ui; font-size: 10px; font-weight: 700; color: Tokens.ink-0;
                         horizontal-alignment: center; vertical-alignment: center;
+                        overflow: elide;
                     }
                     TouchArea {
                         mouse-cursor: MouseCursor.pointer;
+                        width: parent.width; height: parent.height;
                         clicked => { root.sound-library-open = true; }
                     }
                 }
@@ -2146,7 +2161,7 @@ export component MainWindow inherits Window {
         // Visible Sound Library Manager Dialog（line/sound-library-manager）
         // 缺音源救援面板：只在"真的有轨的音源没装好"时出现（默认关着）。
         if root.missing-sounds-open : MissingSoundsDialog {
-            z: 9650;
+            z: 9400;
             row-count: root.missing-row-count;
             x: 0px;
             y: 0px;
@@ -2171,7 +2186,7 @@ export component MainWindow inherits Window {
             summary: root.missing-sounds-summary;
             close => { root.missing-close(); }
             swap-suggested(row, path, name) => { root.missing-swap-suggested(row, path, name); }
-            open-pack(id, name) => { root.missing-open-pack(id, name); }
+            open-pack(r, id, name) => { root.missing-open-pack(r, id, name); }
             download-original(row) => { root.missing-download-original(row); }
         }
 
@@ -2197,6 +2212,7 @@ export component MainWindow inherits Window {
             download-progress: root.sound-download-progress;
             status: root.sound-library-status;
             status-is-error: root.sound-library-status-is-error;
+            target-track-name: root.sound-library-target-name;
             search-text <=> root.sound-library-search;
             close => { root.close-sound-library(); }
             refresh-catalog => { root.sound-library-refresh-catalog(); }
@@ -2204,6 +2220,7 @@ export component MainWindow inherits Window {
             delete-library(id) => { root.sound-library-delete(id); }
             filter-changed(text) => { root.sound-library-filter-changed(text); }
             download-all => { root.sound-library-download-all(); }
+            use-pack(id) => { root.sound-library-use-pack(id); }
         }
 
         // Visible Musical PR Drawer

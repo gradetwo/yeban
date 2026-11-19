@@ -3091,6 +3091,15 @@ impl ElementRegistry {
             "下载音源包",
             false,
         );
+        // 「用到当前轨」：装好的那一行给的一次点击（面板打开时存在；没有目标轨时仍存在、
+        // 点了如实报"先在混音台选一条轨" ⇒ 注册表不按"可用"过滤它）。
+        registry.add(
+            "sound-library-use-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "用这件音源到当前轨",
+            false,
+        );
         // 本票新增的两个控件（搜索框 / 一键全下）：同样只在面板打开时存在。
         registry.add(
             "sound-library-search-input",

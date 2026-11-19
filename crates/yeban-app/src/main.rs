@@ -1070,13 +1070,37 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_drum_gen_dialog(&ui, Some(Rc::clone(&undo_port)));
     // ⭐ 音源管理对话框（line/sound-library-manager）：主菜单「设置 →
     // 音源管理...」的接线（打开才拉目录，⛔ 启动不联网）。
-    host::wire_sound_library_dialog(&ui);
+    host::wire_sound_library_dialog_with(&ui, Some(Rc::clone(&undo_port)));
+    // ⭐ 自动化钩子（与 `YEBAN_UI_EXPORT_WAV_PATH` 同一类约定）：设了
+    // `YEBAN_UI_OPEN_SOUND_LIBRARY=1` ⇒ 启动即打开音源管理。
+    // 用途只有一个：截图 / 判据要看到**这个面板**，而 Slint 窗口收不到合成点击
+    // （`PostMessage` 点击在本仓试过两轮，不生效）。⛔ 不改变任何默认行为。
+    if std::env::var("YEBAN_UI_OPEN_SOUND_LIBRARY")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+    {
+        ui.invoke_open_sound_library();
+    }
     // ⭐ **缺音源的救援面板**（Wang 2026-11-19 口径）：打开工程时若某条轨的音源
     // 没装好，不再"直接把人扔进音源管理再自己找" —— 而是先摆出**救援面板**：
     // 每条轨给 3 个同类候选（已装的点一下就换、没装的点一下去下载），
     // 外加"下载原音源 / 先不管"。真正的换绑仍走混音台同一条提交路径。
+    // ⭐ 自动化钩子（截图用）：`YEBAN_UI_RESCUE_DOWNLOAD=1` ⇒ 启动后替用户**点一次**
+    // 救援面板第一行的「下载原音源」（走的就是那个按钮的同一个 callback，⛔ 不是另写一条
+    // 旁路）。用途：截图要看见"面板让位、音源管理在前台"的现场，而 Slint 窗口收不到合成点击。
+    let rescue_first_pack: Option<(String, String)> = missing_sounds
+        .first()
+        .and_then(|row| row.pack_id.clone().map(|id| (id, row.pack_name.clone().unwrap_or_default())));
     if !missing_sounds.is_empty() {
         host::wire_missing_sounds_dialog(&ui, Rc::clone(&undo_port), missing_sounds);
+    }
+    if std::env::var("YEBAN_UI_RESCUE_DOWNLOAD")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+    {
+        if let Some((pack_id, pack_name)) = rescue_first_pack {
+            ui.invoke_missing_open_pack(0, pack_id.into(), pack_name.into());
+        }
     }
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。

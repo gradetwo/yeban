@@ -279,6 +279,28 @@ fn candidate_path(
     Some((expected, false))
 }
 
+/// 某个清单包**此刻**在本机能解析到的 `.sfz` 路径（`None` = 还没装 / 装得不完整）。
+///
+/// 用途只有一处：用户在救援面板点了「下载」，装完那一刻要**立刻**把这条轨换上
+/// （见 `host::rescue_after_pack_installed`）。⛔ 它不猜"装了以后会在哪儿" ——
+/// 只有 `resolve_sampler_path` 真的解得开才算装好，否则宁可不换也不给一条死路径。
+#[must_use]
+pub fn installed_path(pack_id: &str, roots: SfzRoots<'_>) -> Option<String> {
+    let sounds = load_builtin_sounds().ok()?;
+    let sound = sounds
+        .iter()
+        .find(|sound| sound.id == pack_id)
+        .or_else(|| sounds.iter().find(|sound| squashed(&sound.id) == squashed(pack_id)))?;
+    let library_root = roots
+        .library_root
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(crate::samples::library_root);
+    match candidate_path(sound, &library_root, roots) {
+        Some((path, true)) => Some(path),
+        _ => None,
+    }
+}
+
 /// 每条轨最多给几个"换成这件"候选（用户在救援面板里一眼扫完的上限）。
 pub const SUGGESTION_LIMIT: usize = 3;
 
@@ -299,7 +321,16 @@ pub fn collect(
     // 清单只读一次（8.7 MB）；挂在这个调用里，⛔ 不逐轨重读。
     let catalog: Option<Vec<BuiltinSound>> = load_builtin_sounds().ok();
     let mut missing = Vec::new();
-    for (index, track) in project.tracks.values().enumerate() {
+    // ⚠ `track_index` 必须与界面**同一套顺序**：`ViewState::tracks` 的行下标来自
+    // `YebanProjectV1::display_track_ids()`（主总线不进 `tracks`，也不占行）。
+    // 早先这里遍历 `project.tracks.values()`（`BTreeMap` 身份升序、且含主总线）⇒
+    // 主总线的身份一旦排在展示轨前面，救援行就会指到**下一条**轨上：用户点「换成 X」
+    // 改的是别的轨（或在末行直接改不动）。`tests/missing_sounds_rescue_flow.rs` 用
+    // "换完读回权威工程"抓的就是这一格。
+    for (index, id) in project.display_track_ids().iter().enumerate() {
+        let Some(track) = project.tracks.get(id) else {
+            continue;
+        };
         let Some(binding) = track.sampler.as_ref() else {
             continue;
         };

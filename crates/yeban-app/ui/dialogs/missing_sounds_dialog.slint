@@ -27,7 +27,7 @@ component CandidateButton inherits Rectangle {
     in property <bool> installed: true;
 
     callback swap(int, string, string);
-    callback open-pack(string, string);
+    callback open-pack(int, string, string);
 
     width: 150px;
     height: 26px;
@@ -43,7 +43,7 @@ component CandidateButton inherits Rectangle {
         if (root.installed) {
             root.swap(root.row-index, root.path, root.name);
         } else {
-            root.open-pack(root.pack-id, root.name);
+            root.open-pack(root.row-index, root.pack-id, root.name);
         }
     }
 
@@ -68,7 +68,7 @@ component CandidateButton inherits Rectangle {
             if (root.installed) {
                 root.swap(root.row-index, root.path, root.name);
             } else {
-                root.open-pack(root.pack-id, root.name);
+                root.open-pack(root.row-index, root.pack-id, root.name);
             }
         }
     }
@@ -97,14 +97,17 @@ export component MissingSoundsDialog inherits Rectangle {
 
     callback close();
     callback swap-suggested(int, string, string);
-    callback open-pack(string, string);
+    callback open-pack(int, string, string);
     callback download-original(int);
 
     // 行数由宿主写入（⛔ 不用 `track-names.length` 推：布局期数组可能还没到，面板高度会抖）
     in property <int> row-count: 0;
     property <length> panel-w: Math.min(760px, root.width - 32px);
     // 高度跟着行数走（2 行 ≈ 340px）：面板不留一大片空底，重量与内容对得上。
-    property <length> panel-h: Math.min(520px, Math.max(240px, 84px + row-count * 102px + 56px));
+    // ⚠ 同时**不得高于窗口**：小屏 / 分屏里 `root.height` 只有 600px 时，原先只按行数
+    // 算高度会让面板垂直溢出、底部「先不管」被窗口边裁掉（用户截图里"看不见出口"就是这一类）。
+    // 上限 `root.height - 24px`，行列表自己在 `Flickable` 里滚 ⇒ 按钮永远够得着。
+    property <length> panel-h: Math.min(Math.min(520px, root.height - 24px), Math.max(240px, 84px + row-count * 102px + 56px));
 
 
     background: Tokens.mask-black.with-alpha(0.66);
@@ -210,7 +213,7 @@ export component MissingSoundsDialog inherits Rectangle {
                 x: Tokens.space-4;
                 y: 84px;
                 width: parent.width - 2 * Tokens.space-4;
-                height: parent.height - 84px - 52px;
+                height: Math.max(0px, parent.height - 84px - 52px);
                 content-height: row-count * 102px + 4px;
 
                 for row-title[i] in root.track-names : Rectangle {
@@ -260,7 +263,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 path: root.s1-path[i];
                                 installed: root.s1-installed[i];
                                 swap(r, p, n) => { root.swap-suggested(r, p, n); }
-                                open-pack(id, n) => { root.open-pack(id, n); }
+                                open-pack(r, id, n) => { root.open-pack(r, id, n); }
                             }
 
                             if root.s2-name[i] != "" : CandidateButton {
@@ -270,7 +273,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 path: root.s2-path[i];
                                 installed: root.s2-installed[i];
                                 swap(r, p, n) => { root.swap-suggested(r, p, n); }
-                                open-pack(id, n) => { root.open-pack(id, n); }
+                                open-pack(r, id, n) => { root.open-pack(r, id, n); }
                             }
 
                             if root.s3-name[i] != "" : CandidateButton {
@@ -280,7 +283,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 path: root.s3-path[i];
                                 installed: root.s3-installed[i];
                                 swap(r, p, n) => { root.swap-suggested(r, p, n); }
-                                open-pack(id, n) => { root.open-pack(id, n); }
+                                open-pack(r, id, n) => { root.open-pack(r, id, n); }
                             }
 
                             // 就想要原音源 ⇒ 去下载（在清单里才出现）
