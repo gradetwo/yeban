@@ -51,7 +51,9 @@ fn z_after(source: &str, anchor: &str) -> i64 {
                 .chars()
                 .take_while(|ch| ch.is_ascii_digit())
                 .collect();
-            return number.parse().unwrap_or_else(|_| panic!("z: 后面不是整数：{line}"));
+            return number
+                .parse()
+                .unwrap_or_else(|_| panic!("z: 后面不是整数：{line}"));
         }
     }
     panic!("{anchor} 之后 12 行内没有 `z:`")
