@@ -404,13 +404,17 @@ export component PianoRoll inherits Rectangle {
         }
 
         // 短黑键：宽度只有白键的 6 成，纵向留缝 ⇒ 看得出是"夹在白键中间"
+        // 2026-11-19 实机复核：原来是 9px 高 + 3px 圆角，在 14px 音高车道上渲染成
+        // 一颗**胶囊开关**（6× 帧里就是两个悬空的圆角深色药丸），不像琴键 ——
+        // 琴键列是创作者的音高地图，形状读错就没法当参照。改成 12px 高、1px 圆角，
+        // 键帽顶到车道上下各留 1px 缝，读起来才是"压在白键上的黑键"。
         for key_index in root.roll-rows : Rectangle {
             visible: !root.row-is-white(key_index);
             x: 0px;
             y: 14px * key_index + 1px;
             width: 30px;
-            height: 9px;
-            border-radius: 3px;
+            height: 12px;
+            border-radius: 1px;
             background: root.audition-active-row == key_index ? Tokens.selection : (Tokens.texture-physical ? Tokens.roll-key-cap-brush : Tokens.roll-key-black-brush);
             border-width: 1px;
             border-color: root.audition-active-row == key_index ? Tokens.selection : Tokens.roll-key-edge;

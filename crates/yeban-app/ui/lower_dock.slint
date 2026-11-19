@@ -622,6 +622,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                     font-weight: 700;
                                     color: root.device-bypassed[idx] ? Tokens.skin-text-dim : Tokens.skin-text-strong;
                                     overflow: elide;
+                                    // 2026-11-19 实测（1460×900 实机帧）：右侧「已识别 …」摘要
+                                    // 无 elide、按自然宽度抢位，把**设备名挤成单个省略号**「…」
+                                    // —— 卡片上最重要的字反而看不见。这里给设备名留出最小宽度，
+                                    // 同时让摘要可省略（见下方 `overflow: elide`）。
+                                    min-width: 64px;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }
@@ -636,6 +641,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     color: Tokens.skin-meter-low;
                                     font-weight: 400;
                                     vertical-alignment: center;
+                                    // 空间不够时先让摘要让位（否则它会把设备名挤没）
+                                    overflow: elide;
                                 }
                                 Rectangle {
                                     width: 16px;
@@ -721,7 +728,12 @@ export component UnifiedLowerDock inherits Rectangle {
                                     color: root.device-bypassed[idx] ? Tokens.skin-mute : Tokens.skin-meter-low;
                                 }
                                 Text {
-                                    text: "ID: " + (idx < root.device-ids.length ? root.device-ids[idx] : "-");
+                                    // 2026-11-19 实测：这里原本直接画设备实例的 ULID
+                                    // （`ID: 01J8ZQ0000000000000000020`）—— 创作者界面上
+                                    // 露内部主键，一读不懂、二长到被卡片右缘裁断。改成
+                                    // **1 起的槽位号**（与左面板 `"" + (idx + 1)` 同款写法），
+                                    // 只表达"这是链上第几件"这件创作者真正需要的事。
+                                    text: "#" + (idx + 1);
                                     font-family: Tokens.font-mono;
                                     font-size: 9px;
                                     color: Tokens.skin-text-dim;

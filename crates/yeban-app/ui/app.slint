@@ -1602,13 +1602,15 @@ export component MainWindow inherits Window {
                     mouse-cursor: MouseCursor.row-resize;
                     moved => {
                         let delta = self.mouse-y - self.pressed-y;
-                        // 拖拽上限跟着窗口高走：`window-h - 320px` 保证拖到底也还剩编曲区
-                        // 约 320px（A1：700 高窗口里 dock 固定 320 时编曲区只剩 262）。
-                        // ⚠ 下限**必须**留在 320px：下坞内容（卷帘键盘行/混音台）有硬性最小高，
-                        //   实测压到 180 会让整块下坞塌成 0，所以这里只收紧"能拖多高"，
-                        //   绝不让拖拽把下坞拖进塌陷区间。
-                        let max-h = Math.max(320px, Math.min(480px, root.window-h - 320px));
-                        root.lower-dock-height = Math.min(max-h, Math.max(180px, root.lower-dock-height - delta));
+                        // 拖拽上下限**必须与渲染侧同一套数**（渲染侧在下方 `dock-height:
+                        // Math.max(200px, Math.min(lower-dock-height, window-h - 420px))`）。
+                        // 2026-11-19 实机复核发现两边各说各话：拖拽按 `window-h - 320` 封顶、
+                        // 下限 180，渲染却按 `window-h - 420` 封顶、下限 200 ⇒ 拖到接近底部的
+                        // 那 100px（以及最低的 20px）里**存值在变、面板不动**，手感发黏，
+                        // 往回拖还得先把这段死区走完才见反应。
+                        // 现在两边都取 `window-h - 420` / 200px：一次拖拽 = 一次可见位移。
+                        let max-h = Math.max(200px, Math.min(480px, root.window-h - 420px));
+                        root.lower-dock-height = Math.min(max-h, Math.max(200px, root.lower-dock-height - delta));
                     }
                     double-clicked => {
                         root.lower-dock-height = 320px;
