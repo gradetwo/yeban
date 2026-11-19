@@ -222,6 +222,7 @@ pub struct NoiseGate {
     // 预计算的一阶系数
     alpha_attack: f32,
     alpha_release: f32,
+    alpha_det_peak: f32,
     alpha_det_ms: f32,
 }
 
@@ -262,6 +263,7 @@ impl NoiseGate {
             linear_gain: db_to_gain(initial_gain_db),
             alpha_attack: 0.0,
             alpha_release: 0.0,
+            alpha_det_peak: 0.0,
             alpha_det_ms: 0.0,
         };
         gate.update_filter_coefficients();
@@ -345,6 +347,8 @@ impl NoiseGate {
             (1.0 - libm::expf(-dt / self.params.attack_s.max(0.00005))).clamp(0.0001, 1.0);
         self.alpha_release =
             (1.0 - libm::expf(-dt / self.params.release_s.max(0.0005))).clamp(0.00001, 1.0);
+        // 峰值检波器 5 ms 平滑释放
+        self.alpha_det_peak = (1.0 - libm::expf(-1.0 / (sr * 0.005))).clamp(0.0001, 1.0);
         // 对称 RMS 平均窗口取 10ms
         self.alpha_det_ms = (1.0 - libm::expf(-dt / 0.010)).clamp(0.0001, 1.0);
     }
@@ -401,9 +405,7 @@ impl NoiseGate {
                 if peak_in >= self.detector_peak {
                     self.detector_peak = peak_in;
                 } else {
-                    let rel_alpha =
-                        (1.0 - libm::expf(-1.0 / (self.sample_rate * 0.005))).clamp(0.0001, 1.0);
-                    self.detector_peak += rel_alpha * (peak_in - self.detector_peak);
+                    self.detector_peak += self.alpha_det_peak * (peak_in - self.detector_peak);
                 }
                 let peak = self.detector_peak.max(1e-6);
                 gain_to_db(peak)
@@ -728,5 +730,41 @@ mod tests {
         for &x in &bad_right {
             assert!(x.is_finite());
         }
+    }
+
+    #[test]
+    fn peak_detector_release_matches_5ms_and_updates_on_sample_rate_change() {
+        let params = NoiseGateParams {
+            detector: GateDetector::Peak,
+            hpf_hz: 0.0,
+            lpf_hz: 24_000.0,
+            ..Default::default()
+        };
+        let mut gate = NoiseGate::new(params, 48_000.0);
+        let expected_48k = (1.0 - libm::expf(-1.0 / (48_000.0 * 0.005))).clamp(0.0001, 1.0);
+        assert!((gate.alpha_det_peak - expected_48k).abs() < 1e-7);
+
+        let _ = gate.process_gain_with_key(1.0, 1.0);
+        assert!((gate.detector_peak - 1.0).abs() < 1e-6);
+        let _ = gate.process_gain_with_key(0.0, 0.0);
+        assert!(
+            (gate.detector_peak - (1.0 - expected_48k)).abs() < 1e-6,
+            "48 kHz release step mismatch: {}",
+            gate.detector_peak
+        );
+
+        gate.set_sample_rate(96_000.0);
+        let expected_96k = (1.0 - libm::expf(-1.0 / (96_000.0 * 0.005))).clamp(0.0001, 1.0);
+        assert!((gate.alpha_det_peak - expected_96k).abs() < 1e-7);
+
+        gate.reset();
+        assert!((gate.alpha_det_peak - expected_96k).abs() < 1e-7);
+        let _ = gate.process_gain_with_key(1.0, 1.0);
+        let _ = gate.process_gain_with_key(0.0, 0.0);
+        assert!(
+            (gate.detector_peak - (1.0 - expected_96k)).abs() < 1e-6,
+            "96 kHz release step mismatch: {}",
+            gate.detector_peak
+        );
     }
 }
