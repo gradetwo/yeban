@@ -133,10 +133,11 @@ fn generates_into_new_track_with_synth_kit() {
     // GM 键只来自 trap 预置的道。改钉依据（鼓机 v2）：trap.json 的道
     // 为 kick 36 / snare 38 / hihat 42 / crash 49 / shaker 82——v2 以
     // crash 道取代 v1 的开镲 46 道，故白名单 46 → 49（此断言原被同测
-    // 的器件数断言挡在前面，改钉器件数后才暴露）。
+    // 的器件数断言挡在前面，改钉器件数后才暴露）。期 5 追加 35：
+    // trap 新增 808 道（gm_key 35，steps 镜像 kick）承载出厂侧链。
     for note in notes.values() {
         assert!(
-            [36_u8, 38, 42, 49, 82].contains(&note.pitch),
+            [35_u8, 36, 38, 42, 49, 82].contains(&note.pitch),
             "非法 GM 键 {}",
             note.pitch
         );
@@ -359,9 +360,29 @@ fn lane_chains_installed_on_existing_empty_track() {
     let project = project(&dispatcher);
     let bass_id = EntityId::from_str(BASS).expect("ULID");
     let bass = project.tracks.get(&bass_id).expect("bass 轨");
-    assert_eq!(bass.lane_chains.len(), 1, "trap 预置带一条闭镲逐件链");
-    assert_eq!(bass.lane_chains[0].name, "hats");
-    assert_eq!(bass.lane_chains[0].keys, vec![42]);
+    assert_eq!(bass.lane_chains.len(), 3, "trap 预置带三条逐件链（期 5）");
+    // 期 5 出厂三组按首键升序：808（侧链压缩）/ kick（透明 EQ）/ hats。
+    assert_eq!(bass.lane_chains[0].name, "bass");
+    assert_eq!(bass.lane_chains[0].keys, vec![35]);
+    assert_eq!(bass.lane_chains[1].name, "kick");
+    assert_eq!(bass.lane_chains[1].keys, vec![36]);
+    assert_eq!(bass.lane_chains[2].name, "hats");
+    assert_eq!(bass.lane_chains[2].keys, vec![42]);
+    // 出厂侧链边同批落位：同轨 Sidechain 边 source_lane=36 → dest_lane=35
+    //（夹具工程自带其它侧链边，按端点 + lane 精确找本批这条）。
+    let edge = project
+        .routing_graph
+        .edges
+        .values()
+        .find(|edge| {
+            edge.kind == yeban_model::RoutingKind::Sidechain
+                && edge.source_node == bass_id
+                && edge.destination_node == bass_id
+                && edge.dest_lane == Some(35)
+        })
+        .expect("出厂侧链边必须落位");
+    assert_eq!(edge.source_lane, Some(36));
+    assert_eq!(edge.dest_lane, Some(35));
 }
 
 #[test]

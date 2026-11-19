@@ -3256,20 +3256,59 @@ mod tests {
             );
         }
         let by_id = |id: &str| styles.iter().find(|s| s.id == id).unwrap();
-        // house：帽组 [42, 46] 一条链；trap：闭镲 [42]；lofi：kick [36]。
+        // house：帽组 [42, 46] 一条链；lofi：kick [36]。
         let house = by_id("house");
         assert_eq!(house.lane_chains.len(), 1);
         assert_eq!(house.lane_chains[0].name, "hats");
         assert_eq!(house.lane_chains[0].keys, vec![42, 46]);
-        let trap = by_id("trap");
-        assert_eq!(trap.lane_chains.len(), 1);
-        assert_eq!(trap.lane_chains[0].keys, vec![42]);
         let lofi = by_id("lofi");
         assert_eq!(lofi.lane_chains.len(), 1);
         assert_eq!(lofi.lane_chains[0].keys, vec![36]);
+        // trap / phonk（期 5 出厂侧链）：bass[35] 压缩 + kick 键控、kick[36]
+        // 独立成组（键必须有组认领）、hats 高通组。组序按首键升序。
+        for (id, hats_keys) in [("trap", vec![42]), ("phonk", vec![42, 46])] {
+            let style = by_id(id);
+            assert_eq!(style.lane_chains.len(), 3, "{id} 须有 bass/kick/hats 三组");
+            assert_eq!(style.lane_chains[0].name, "bass");
+            assert_eq!(style.lane_chains[0].keys, vec![35]);
+            let bass_comp = style.lane_chains[0]
+                .comp
+                .as_ref()
+                .expect("bass 组必须带压缩");
+            assert_eq!(bass_comp.threshold_db, -30.0);
+            assert_eq!(bass_comp.ratio, 6.0);
+            let sidechain = style.lane_chains[0]
+                .sidechain
+                .as_ref()
+                .expect("bass 组必须带侧链声明");
+            assert_eq!(
+                sidechain.key_keys,
+                vec![36],
+                "{id} 的 key 必须是 kick 键 36"
+            );
+            assert_eq!(style.lane_chains[1].name, "kick");
+            assert_eq!(style.lane_chains[1].keys, vec![36]);
+            assert_eq!(style.lane_chains[2].name, "hats");
+            assert_eq!(style.lane_chains[2].keys, hats_keys);
+            // 808 道与 kick 同步点（steps 镜像）：生成出的 808 音符数与 kick 相等。
+            let bass_lane = style
+                .lanes
+                .iter()
+                .find(|lane| lane.gm_key == 35)
+                .expect("出厂侧链风格必须带 808 道（键 35）");
+            let kick_lane = style
+                .lanes
+                .iter()
+                .find(|lane| lane.gm_key == 36)
+                .expect("必须有 kick 道");
+            assert_eq!(
+                bass_lane.steps, kick_lane.steps,
+                "{id} 的 808 步进须镜像 kick"
+            );
+        }
         // 其余出厂风格本期不带逐件链。
         for style in &styles {
-            if !matches!(style.id.as_str(), "house" | "trap" | "lofi") {
+            if !matches!(style.id.as_str(), "house" | "trap" | "lofi" | "phonk") {
                 assert!(
                     style.lane_chains.is_empty(),
                     "出厂风格 {} 本期不带逐件链",

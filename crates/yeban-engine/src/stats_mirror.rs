@@ -183,6 +183,20 @@ pub struct EngineStatsMirror {
     insert_convolution_frames: AtomicU64,
     insert_convolution_rejects: AtomicU64,
     master_insert_frames: AtomicU64,
+    /// ⭐ 期 5：lane 键边声明数（与 `rt.rs` 的 `EngineStats::lane_key_edges_declared` 同源）。
+    lane_key_edges_declared: AtomicU64,
+    /// ⭐ 期 5：lane 键边已求值数（与 `EngineStats::lane_key_edges_evaluated` 同源）。
+    lane_key_edges_evaluated: AtomicU64,
+    /// ⭐ 期 5：lane 键边未求值数（与 `EngineStats::lane_key_edges_unevaluated` 同源）。
+    lane_key_edges_unevaluated: AtomicU64,
+    /// ⭐ 期 5：lane 容量丢弃数（与 `EngineStats::lane_group_capacity_drops` 同源）。
+    lane_group_capacity_drops: AtomicU64,
+    /// ⭐ 期 5：lane 掐尾组回退数（与 `EngineStats::lane_choke_fallbacks` 同源）。
+    lane_choke_fallbacks: AtomicU64,
+    /// ⭐ 期 5：lane 处理型总线回退数（与 `EngineStats::lane_bus_fallbacks` 同源）。
+    lane_bus_fallbacks: AtomicU64,
+    /// ⭐ 期 5：lane 组链处理帧数（与 `EngineStats::lane_insert_frames` 同源）。
+    lane_insert_frames: AtomicU64,
     /// ⭐ stage 18：分声道渲染帧数（与 `rt.rs` 的 `EngineStats::stereo_track_frames` 同源）。
     stereo_track_frames: AtomicU64,
     /// ⭐ stage 20：总线插入链帧数（与 `rt.rs` 的 `EngineStats::bus_insert_frames` 同源）。
@@ -269,6 +283,13 @@ impl EngineStatsMirror {
             insert_convolution_frames: AtomicU64::new(0),
             insert_convolution_rejects: AtomicU64::new(0),
             master_insert_frames: AtomicU64::new(0),
+            lane_key_edges_declared: AtomicU64::new(0),
+            lane_key_edges_evaluated: AtomicU64::new(0),
+            lane_key_edges_unevaluated: AtomicU64::new(0),
+            lane_group_capacity_drops: AtomicU64::new(0),
+            lane_choke_fallbacks: AtomicU64::new(0),
+            lane_bus_fallbacks: AtomicU64::new(0),
+            lane_insert_frames: AtomicU64::new(0),
             stereo_track_frames: AtomicU64::new(0),
             bus_insert_frames: AtomicU64::new(0),
             param_gain_frames: AtomicU64::new(0),
@@ -391,6 +412,20 @@ impl EngineStatsMirror {
             .store(stats.insert_convolution_rejects, Ordering::Relaxed);
         self.master_insert_frames
             .store(stats.master_insert_frames, Ordering::Relaxed);
+        self.lane_key_edges_declared
+            .store(stats.lane_key_edges_declared, Ordering::Relaxed);
+        self.lane_key_edges_evaluated
+            .store(stats.lane_key_edges_evaluated, Ordering::Relaxed);
+        self.lane_key_edges_unevaluated
+            .store(stats.lane_key_edges_unevaluated, Ordering::Relaxed);
+        self.lane_group_capacity_drops
+            .store(stats.lane_group_capacity_drops, Ordering::Relaxed);
+        self.lane_choke_fallbacks
+            .store(stats.lane_choke_fallbacks, Ordering::Relaxed);
+        self.lane_bus_fallbacks
+            .store(stats.lane_bus_fallbacks, Ordering::Relaxed);
+        self.lane_insert_frames
+            .store(stats.lane_insert_frames, Ordering::Relaxed);
         self.stereo_track_frames
             .store(stats.stereo_track_frames, Ordering::Relaxed);
         self.bus_insert_frames
@@ -524,6 +559,13 @@ impl EngineStatsMirror {
             insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
             master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
+            lane_key_edges_declared: self.lane_key_edges_declared.load(Ordering::Relaxed),
+            lane_key_edges_evaluated: self.lane_key_edges_evaluated.load(Ordering::Relaxed),
+            lane_key_edges_unevaluated: self.lane_key_edges_unevaluated.load(Ordering::Relaxed),
+            lane_group_capacity_drops: self.lane_group_capacity_drops.load(Ordering::Relaxed),
+            lane_choke_fallbacks: self.lane_choke_fallbacks.load(Ordering::Relaxed),
+            lane_bus_fallbacks: self.lane_bus_fallbacks.load(Ordering::Relaxed),
+            lane_insert_frames: self.lane_insert_frames.load(Ordering::Relaxed),
             stereo_track_frames: self.stereo_track_frames.load(Ordering::Relaxed),
             bus_insert_frames: self.bus_insert_frames.load(Ordering::Relaxed),
             param_gain_frames: self.param_gain_frames.load(Ordering::Relaxed),
@@ -632,6 +674,13 @@ mod tests {
             insert_convolution_frames: 27,
             insert_convolution_rejects: 28,
             master_insert_frames: 54,
+            lane_key_edges_declared: 63,
+            lane_key_edges_evaluated: 64,
+            lane_key_edges_unevaluated: 65,
+            lane_group_capacity_drops: 66,
+            lane_choke_fallbacks: 67,
+            lane_bus_fallbacks: 69,
+            lane_insert_frames: 68,
             stereo_track_frames: 57,
             bus_insert_frames: 58,
             param_gain_frames: 40,

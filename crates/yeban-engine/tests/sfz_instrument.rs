@@ -284,7 +284,10 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// `node_stash: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>` 胖指针（有入边且非处理型
 /// 总线节点的自有内容暂存池，与 `routing_buses` 同尺寸；池本体在堆上、构造期
 /// 分配）。余量 204800 − 46496 = 158304 B。
-const ENGINE_RUNTIME_BYTES: usize = 46_496;
+/// ⭐ **逐件＋侧链期 5**：**再升到 47_888 B**（＋1392 B）—— `EngineRuntime` 新增
+/// lane 组链一族字段（记账见 `tests/audio_clip_render.rs` 的 A8）；
+/// `SfzVoicePool` 本身一位不动，本常量随 `EngineRuntime` 的现读值走。
+const ENGINE_RUNTIME_BYTES: usize = 47_888;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
