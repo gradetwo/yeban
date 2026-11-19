@@ -22,7 +22,18 @@
 | 2 | `off_time` / `off_mode=time` | 有 `off_by` 的镲片/吉他扼音**淡出长度**变成作者写的那个值 | `PreparedRegion` ＋ `stop_off_by_victims` 一个分支 | ✅ 完成（5 条判据） |
 | 3 | WAV `smpl` 块的循环点 | 采样库里**只写 `loop_mode`** 的音色从"只响一声"变成正常循环 | 引擎归约 ＋ `sfz_load` 扫 RIFF | ✅ 完成（5 ＋ 5 条判据） |
 | 4 | `ampeg_dynamic` | ⛔ **今天听不出**（见 §5.1） | 需要先让实时路径读 CC 状态 | ⛔ 未做（裁决：前置未满足） |
-| 5 | `fileg_*` | 音色随时间的明暗变化（filter envelope） | 需要 per-region 滤波链 ＋ 第二套包络 ＋ 声部状态 | ⛔ 未做（见 §5.2） |
+| 5 | `fileg_*` | 音色随时间的明暗变化（filter envelope） | 需要 per-region 滤波链 ＋ 第二套包络 ＋ 声部状态 | ✅ **已完成**（后续"SFZ 包络族片"落地；原"未做"结论见 §5.2 的闭合登记） |
+
+> ⭐ **2026-11-19 复核（本条是活清单，就地改结论，⛔ 不改 §5.2 的原文）**：第 5 行
+> 当时判"需要新子系统"的**三个前提今天全部具备** ——
+> per-region 滤波链＝[`crate::instrument::Region::filter_cutoff`] 折出的静态有效截止 ＋
+> [`yeban_dsp::voice_filter::VoiceFilter`]（每声部一只、池级定长数组）；第二套包络＝
+> [`crate::eg::EgDef`]（八静态参 ＋ 八 `vel2*`）；声部状态＝`SfzVoicePool` 的 `filters` ＋
+> `EgSpan`。消费点在 `yeban-engine` 的 `sfz_instrument.rs`：离线一次性入口
+> `eg_run_from(&region.fileg, …)`、摊平/实时入口同一份 [`crate::eg`] 归约（帧口径
+> `eg_frame`）。⇒ **`fileg_*` 与 `pitcheg_*` 都会发声**，`fileg` 走截止、`pitcheg` 走播放
+> 速率。范围裁决仍是 [`crate::eg`] 模块头那一条（⛔ `*_onccN`/`*_curveccN`、段形状分段线性），
+> ⛔ 不因为这条复核而扩权。
 
 **为什么 4／5 不做**：这两项都不是"接线"级别的活，而是**新子系统**（§5 逐条说明）。
 把它们做一半（例如只解析不消费、或只做离线不做实时）会在本仓制造"第二条半成品路径"，
@@ -220,7 +231,7 @@ loop_end == 0（一个点都没写）  ⇒ 用样本的 (start, end)
 届时 `ampeg_dynamic=1` 才有消费者。那是**另一个单**，而且它的收益远大于
 `ampeg_dynamic` 本身（`ampeg_*ccN`／`cutoff_oncc*`／`pan_oncc*` 全部依赖它）。
 
-### §5.2 `fileg_*` —— **需要新子系统**
+### §5.2 `fileg_*` —— **需要新子系统**（⭐ 2026-11-19 已闭合，原文保留）
 
 `fileg_attack/decay/sustain/release` ＋ `fileg_depth` ＋ `fil_type`/`cutoff`/`resonance`
 意味着：**per-region 滤波器**（今天引擎里**一个都没有**）＋ **第二套包络** ＋
@@ -233,6 +244,13 @@ loop_end == 0（一个点都没写）  ⇒ 用样本的 (start, end)
 ⇒ 工作量是 §2／§3／§4 三项之和的 2–3 倍，且必须一次做对（半成品＝第二条音源路径）。
 **另开单**，⛔ 不在本轮硬塞。
 
+> ⭐ **2026-11-19 闭合登记（原文一字未删）**：上面这段的**三个前提已分别落地** ——
+> ① per-region 滤波器＝`VoiceFilter`（`yeban-dsp/src/voice_filter.rs`，池级 `filters`）；
+> ② 第二套包络＝`yeban-sfz/src/eg.rs` 的 `EgDef`（`fileg` / `pitcheg` 各一份）；
+> ③ 声部状态＝`eg_run_from` 的帧口径 ＋ `EgSpan`（离线/摊平/实时**同一份**归约）。
+> 判据：`crates/yeban-engine/tests/` 的 SFZ 包络族套件（`fileg` 截止扫描与 `pitcheg`
+> 速率调制各一组）。⇒ §5.1 的 `ampeg_dynamic` **仍是未做**（它缺的是 CC 消息流，与本条无关）。
+
 ### §5.3 其余登记（本轮新增的缺口）
 
 | 缺口 | 状态 |
@@ -241,6 +259,29 @@ loop_end == 0（一个点都没写）  ⇒ 用样本的 (start, end)
 | `smpl` 的**多 loop**（只取第 0 条） | 按规范"只有第 0 条可播"，非缺口 |
 | `cue ` / `inst` / AIFF `MARK` 的 loop 来源 | 未做（本仓只解 WAV 腿的 `smpl`） |
 | 逐点回退（只写 `loop_end` 时 `loop_start` 取样本的） | 未做（§4.4 的取舍） |
+
+### §5.4 2026-11-19 复核：三项"缺口"的定性修正
+
+> 复核动因：`docs` 之外的 SFZ 规范页逐条亲读（<https://sfzformat.com/opcodes/fil_type/> 等）
+> 后发现，此前凭"代码里零命中"推出来的缺口里，**有两项在规范里根本不是那个东西**，
+> 另有一项只是**白名单少了一个值**。登记在此，⛔ 不再按旧口径排期。
+
+| 旧的记法 | 规范事实 | 本仓现状 |
+| :--- | :--- | :--- |
+| `pitch_offset` 未实现 | **规范没有这个 opcode**（音高偏移由 `transpose` / `tune` / `note_offset` / `octave_offset` 承担；全站没有 `pitch_offset` 页） | 从缺口表**撤下**（旧结论是误判，⛔ 不为不存在的 opcode 造实现） |
+| `<sample>` 段头 / `count` 未建模 | `<sample>` 是**内嵌样本数据**（Rapture 专有，spec 原文："Allows to embed sample data directly in SFZ files"），**不是**"一个 region 挂多份采样"的容器 | 维持不建模：段头落 [`Warning::IgnoredHeader`]（已有告警），⛔ 不是静默 |
+| `apf_1p` 不在白名单 | `fil_type` 的 v2 选项本就有 `apf_1p`（另有一整排：`bpf_1p` / `brf_1p` / `*_sv` / `pkf_2p` / `comb` / `pink`，ARIA 的 `lsh` / `hsh` / `peq`，以及二阶串联的 `fil2_type`） | **已补**：`FilterType::Allpass1p` ＋ `VoiceFilterKind::Allpass1p`（一阶全通，幅度平坦、只改相位）；其余值**维持响亮拒绝**（`InvalidOption` 的允许值清单已同步成 11 个） |
+
+### §5.5 `<effect>`：**声明了但不处理，现在会告警**
+
+规范原文（<https://sfzformat.com/headers/effect/>）自己写明"the specifics differ widely
+between SFZ players"，因此本仓**不实现**具体效果器 DSP 是合规裁决。但**静默**不合规：
+2026-11-19 起，每一条 `<effect>` 登记成功的同时压一条
+[`Warning::EffectNotProcessed`]（载荷：段头行号 ＋ 规范写法的 `bus` ＋ `type` 原文）。
+它出现在 `yeban_load_sfz` 的 `warnings` 字段里，用户能读到"这个 patch 声明了效果器、
+本机不处理"⇒ 不会再把自己的 patch 写错当成"听起来干"的原因。
+⚠ 边界：**region 级** `effect1`/`effect2`（SFZ v1 的发送量）仍不读（`effect.rs` 模块头已登记），
+它属于"效果总线"子系统，与本条告警**分开**排期。
 
 ---
 
