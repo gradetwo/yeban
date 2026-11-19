@@ -1585,7 +1585,15 @@ export component MainWindow inherits Window {
                 //   （钢琴卷帘一起没），说明下坞内部内容有硬性最小高度，压到 180 时布局直接塌成 0。
                 //   ⇒ 想缩下坞必须**先**让卷帘/混音台的最小高可缩，再谈封顶；否则一行算式就会
                 //     把整个下坞弄没。本轮已回退，保留这条结论避免重复走。
-                dock-height: root.lower-dock-height;
+                // ⭐ 2026-11-19：A1 第一步 —— 只做「下坞给工作区让位」这一条**单向**封顶。
+                //   信号源是 Rust 侧窗口 resize 注入的 `window-h`（已有），⛔ 不回读 root.height
+                //   （那会 9 条 binding loop；见上面两条记录）。
+                //   · 保留 420px 给「顶栏 + 标签行 + 编曲画布」，下坞最多吃到 window-h - 420；
+                //   · 下限 240px：下坞内部硬性最小高 ≈ 标签栏 34 + 卷帘工具条 20 + 标尺 9
+                //     + 力度泳道 64 + 页脚 32 ≈ 169，再留出音符画布的最小可视行，
+                //     实测压到 180 时实机整块下坞会塌成 0，所以 240 起。
+                //   · 1920×1080 下算出来仍是 320（用户拖动值原样生效）⇒ 像素基线不变。
+                dock-height: Math.max(240px, Math.min(root.lower-dock-height, root.window-h - 420px));
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";

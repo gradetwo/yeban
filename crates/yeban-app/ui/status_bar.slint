@@ -226,6 +226,12 @@ export component StatusBar inherits Rectangle {
         text: root.tip;
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
+        // ⭐ 窄窗收尾：`tip-width = min(480, width - 612px)`，窗口一窄这条提示就装不下；
+        //   `UiText` 默认溢出是硬裁，末段会被从**字形中间**切掉（实机 973×600 下
+        //   尾部只剩半截 `[1 A/R 监听`，看着像乱码）。改 `elide` ⇒ 收尾成 `…`。
+        //   ⛔ 不动 `text`/`accessible-value`：`d_ui_27` 判据钉的是那串承诺的**内容**，
+        //   省略号只改**绘制**，两个语义通道读到的仍是同一整句。
+        overflow: elide;
         accessible-role: text;
         accessible-id: "status-bar-shortcut-tip";
         accessible-label: @tr("快捷键提示");
@@ -244,6 +250,9 @@ export component StatusBar inherits Rectangle {
         text: root.save-status;
         color: root.save-succeeded ? Tokens.ink-1 : Tokens.record-red;
         font-size: Tokens.font-size-xs;
+        // 同 `status-bar-shortcut-tip`：保存回执可能比 480px 长（含路径/字节数），
+        // 硬裁会把结论（"已保存" / "保存被拒"）从字形中间切掉 ⇒ 一律省略号收尾。
+        overflow: elide;
         accessible-role: text;
         // 这是一个**独立**的语义节点（不是把提示节点改个名）：判据按 `[UI-TEST-001]` 的
         // 语义 ID 寻址它，屏读器按它念出最近一次保存的结果。
