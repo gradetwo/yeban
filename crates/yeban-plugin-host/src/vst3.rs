@@ -64,8 +64,8 @@ use crate::error::HostError;
 use crate::types::{
     FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
     IMIDI_MAPPING_IID, MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance,
-    PluginKind, PluginState, RESULT_FALSE, RESULT_NO_INTERFACE, RESULT_NOT_IMPLEMENTED, RESULT_OK,
-    RESULT_TRUE, TUID_INVALID, Tuid,
+    PluginKind, PluginState, RESULT_FALSE, RESULT_INVALID_ARGUMENT, RESULT_NO_INTERFACE,
+    RESULT_NOT_IMPLEMENTED, RESULT_OK, RESULT_TRUE, TUID_INVALID, Tuid,
 };
 
 // ---------------------------------------------------------------------------
@@ -671,44 +671,25 @@ impl HostEventList {
 }
 
 unsafe extern "system" fn event_list_count(this: *mut c_void) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `HostEventList`，只读。
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostEventList`，只读。
     unsafe { (*this.cast::<HostEventList>()).count }
 }
 
 unsafe extern "system" fn event_list_get(this: *mut c_void, index: i32, out: *mut Event) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `HostEventList`；`out` 是插件提供的写槽。
+    if this.is_null() || out.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostEventList`，只读。
     let list = unsafe { &*this.cast::<HostEventList>() };
-    if index < 0 || index >= list.count {
+    if index < 0 || index >= list.count || list.events.is_null() {
         return RESULT_FALSE; // `kResultFalse`：越界＝无此事件。
     }
-    // SAFETY: 下标已在上文越界检查后；`out` 是插件提供的 Event 写槽。
-    // 正常宿主流程下 `out` 恒有效：JUCE 插件要求组件与控制器已
-    // `IConnectionPoint` 双向连接（见 `open()` 的连接步骤），未连接时
-    // JUCE 传空写槽；非 JUCE 插件传栈上 Event 地址。空写槽属宿主／插件
-    // 契约破坏，严格拷贝触发的 panic 即定位信号，不静默丢事件。
+    // SAFETY: 下标已在上文越界检查后，且 `list.events` 非空；`out` 非空且由插件提供。
     unsafe {
         ptr::copy_nonoverlapping(list.events.add(index as usize), out, 1);
-    }
-    // JUCE quirks（2026-11-03 真插件＋反汇编实证，⛔ 不可删）：
-    // JUCE 的参数循环（`ProcessData`＋0x28 槽）在每次 `getParameterData` 调用前
-    // 不设 `rdx`（`out`）：首个参数的 `out` 由 `process` 入口置入（连接后有效，
-    // 即控制器对象起始处），后续参数的 `out` 沿用上一次调用返回时残留在 `rdx`
-    // 里的值。宿主若用 `memcpy` 拷贝（`rdx`＝字节数 48），下一次调用即得
-    // `out`＝0x30，写 0x30 处段错误（旧布局下参数循环误读事件列表时实测）。
-    // 故返回前显式把 `rdx` 置为下一事件槽（`out + 1` 个 `Event`）：事件循环
-    // 每次调用前自设 `rdx`，此残留值无影响；参数循环若将来收到非空参数列表，
-    // 残留值指向连续槽位而非 0x30。单事件块／下一 `process` 入口会重设 `rdx`，
-    // 无残留危害。
-    // SAFETY: 内联汇编只写 `rdx`（调用方保存寄存器，调用约定允许宿主改写），
-    // 不碰栈与其它寄存器；`out.add(1)` 仅作指针算术，不解引用。
-    // x86_64 专属：`mov rdx` 在 aarch64 上非法，故与 `let next` 同块门控；
-    // 非 x86_64 下两句皆为空操作（`next` 不存在，不触发 unused 警告）。
-    #[cfg(target_arch = "x86_64")]
-    let next = unsafe { out.add(1) };
-    // SAFETY: 见上文（只写 `rdx`，不碰栈与其它寄存器）。
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("mov rdx, {next}", next = in(reg) next, options(nostack));
     }
     RESULT_OK
 }
@@ -753,7 +734,7 @@ impl HostParamValueQueue {
             vtbl: &VTBL,
             param_id,
             points: points.as_ptr(),
-            count: points.len() as i32,
+            count: i32::try_from(points.len()).unwrap_or(i32::MAX),
         }
     }
 }
@@ -822,9 +803,30 @@ impl HostParameterChanges {
         Self {
             vtbl: &VTBL,
             queues: queues.as_ptr(),
-            count: queues.len() as i32,
+            count: i32::try_from(queues.len()).unwrap_or(i32::MAX),
         }
     }
+}
+
+/// 单参数的参数变化队列（纯所有权数据，无自引用裸指针）。
+struct ParamQueueData {
+    param_id: u32,
+    points: Vec<ParamPoint>,
+}
+
+/// 在调用作用域内临时构造 `HostParamValueQueue`／`HostParameterChanges` 视图。
+/// 空队列时传 `null_mut()`（插件保持上次参数值）。
+fn with_parameter_changes<R>(queues: &[ParamQueueData], call: impl FnOnce(*mut c_void) -> R) -> R {
+    if queues.is_empty() {
+        return call(ptr::null_mut());
+    }
+    let host_queues: Vec<HostParamValueQueue> = queues
+        .iter()
+        .map(|queue| HostParamValueQueue::new(queue.param_id, &queue.points))
+        .collect();
+    let mut host_changes = HostParameterChanges::new(&host_queues);
+    let ptr = (&mut host_changes) as *mut HostParameterChanges as *mut c_void;
+    call(ptr)
 }
 
 unsafe extern "system" fn param_changes_count(this: *mut c_void) -> i32 {
@@ -1196,6 +1198,14 @@ fn bus_count(component: *mut c_void, media: i32, dir: i32) -> Result<i32, HostEr
 ///   `setComponentHandler` 时拿到裸指针，`Box` 在实例生命周期内不替换，
 ///   故指针地址稳定；插件按 SDK 语义不在调用外持有宿主对象（`initialize` 的
 ///   context 只在调用内有效，`setComponentHandler` 的指针由实例全程保活）。
+/// 预分配音频暂存缓冲（在 `activate` 时按 `max_block` 与样本位宽一次性分配，
+/// 渲染期间不再堆分配）。
+#[derive(Default)]
+struct AudioScratch {
+    in_l32: Vec<f32>,
+    in_r32: Vec<f32>,
+}
+
 pub struct Vst3Instance {
     // 仅为保活持有：`Arc` 让动态库活得比实例久（工厂指针借用它）。
     #[allow(dead_code)]
@@ -1223,12 +1233,14 @@ pub struct Vst3Instance {
     host_app: Box<HostApplicationObj>,
     name: String,
     kind: PluginKind,
+    has_audio_in: bool,
     active: bool,
     latency: u32,
     sample_rate: f64,
     max_block: usize,
     /// 激活时插件接受的样本大小（`SAMPLE_32` 或 `SAMPLE_64`；未激活为 0）。
     sample_size: i32,
+    scratch: AudioScratch,
 }
 
 // SAFETY: 实例单主持有；全部插件调用都在持有 `&mut self` 的调用方线程上发生；
@@ -1289,10 +1301,11 @@ impl Vst3Instance {
         let mut processor: *mut c_void = ptr::null_mut();
         let mut controller: Option<*mut c_void> = None;
         let mut midi_mapping: Option<*mut c_void> = None;
-        // `open` 闭包的返回四元组（`kind`、双向连接点、控制器是否分离式、
-        // `IMidiMapping` 查询引用——无则为 `None`，不拦 `open`）。
+        // `open` 闭包的返回五元组（`kind`、`has_audio_in`、双向连接点、
+        // 控制器是否分离式、`IMidiMapping` 查询引用——无则为 `None`，不拦 `open`）。
         type OpenOutcome = (
             PluginKind,
+            bool,
             Option<(*mut c_void, *mut c_void)>,
             bool,
             Option<*mut c_void>,
@@ -1314,6 +1327,7 @@ impl Vst3Instance {
             let event_in = bus_count(component, MEDIA_EVENT, DIR_INPUT)?;
             let audio_in = bus_count(component, MEDIA_AUDIO, DIR_INPUT)?;
             let kind = classify_kind(event_in, audio_in);
+            let has_audio_in = audio_in >= 1;
             // 控制器解析：先问分离式（`getControllerClassId` 真值＋非零 CID），
             // 否则问组合式（`queryInterface(IEditController)`），都没有也允许
             // （无控制器插件：参数为空集，状态只有处理器段）。
@@ -1390,10 +1404,16 @@ impl Vst3Instance {
                     (None, None) => {}
                 }
             }
-            Ok((kind, connection, controller_separate, midi_mapping))
+            Ok((
+                kind,
+                has_audio_in,
+                connection,
+                controller_separate,
+                midi_mapping,
+            ))
         })();
         match result {
-            Ok((kind, connection, controller_separate, midi_mapping)) => Ok(Self {
+            Ok((kind, has_audio_in, connection, controller_separate, midi_mapping)) => Ok(Self {
                 module: std::sync::Arc::clone(&module.inner),
                 component,
                 processor,
@@ -1406,11 +1426,13 @@ impl Vst3Instance {
                 host_app,
                 name: class_name.to_owned(),
                 kind,
+                has_audio_in,
                 active: false,
                 latency: 0,
                 sample_rate: 0.0,
                 max_block: 0,
                 sample_size: SAMPLE_32,
+                scratch: AudioScratch::default(),
             }),
             Err(error) => {
                 // SAFETY: 配对释放（已建的才放；空指针不放）。
@@ -1460,23 +1482,17 @@ impl Vst3Instance {
         if code != RESULT_OK { None } else { Some(id) }
     }
 
-    /// 从弯音事件装配一次 `process` 调用内的参数变化通道（乐器 `process`
-    /// 与效果器 `process_audio` 共用；点表、队列、通道对象三者须活到
-    /// `process` 返回，返回后 ⛔ 不得再向点表／队列 push——重分配会使通道内
-    /// 裸指针失效）。
+    /// 从弯音事件装配参数变化队列（纯所有权数据，无自引用裸指针；
+    /// 随后经 `with_parameter_changes` 在 `process` 调用作用域内生成临时 COM 视图）。
     ///
     /// 弯音按通道归组为队列（参数 id 经 `IMidiMapping` 映射）；无弯音时
     /// 队列为空（调用方传空指针，插件保持上次弯音值）；无映射的通道整组
     /// 跳过，每实例只记一次日志（长渲染不刷屏）。
-    fn bend_param_channel(
+    fn bend_param_queues(
         &mut self,
         bends: &[(u8, u32, f64)],
         frames: usize,
-    ) -> (
-        Vec<Vec<ParamPoint>>,
-        Vec<HostParamValueQueue>,
-        HostParameterChanges,
-    ) {
+    ) -> Vec<ParamQueueData> {
         let bend_queues = pitch_bend_queues(bends, frames, &|channel| self.midi_param_id(channel));
         let kept_points: usize = bend_queues.iter().map(|(_, points)| points.len()).sum();
         if bends.len() > kept_points && !self.bend_skip_logged {
@@ -1487,25 +1503,19 @@ impl Vst3Instance {
                 self.name
             );
         }
-        let point_vecs: Vec<Vec<ParamPoint>> = bend_queues
-            .iter()
-            .map(|(_, points)| {
-                points
-                    .iter()
+        bend_queues
+            .into_iter()
+            .map(|(param_id, points)| ParamQueueData {
+                param_id,
+                points: points
+                    .into_iter()
                     .map(|(offset, value)| ParamPoint {
-                        sample_offset: *offset as i32,
-                        value: *value,
+                        sample_offset: offset as i32,
+                        value,
                     })
-                    .collect()
+                    .collect(),
             })
-            .collect();
-        let param_queues: Vec<HostParamValueQueue> = bend_queues
-            .iter()
-            .zip(point_vecs.iter())
-            .map(|((param_id, _), points)| HostParamValueQueue::new(*param_id, points))
-            .collect();
-        let param_changes = HostParameterChanges::new(&param_queues);
-        (point_vecs, param_queues, param_changes)
+            .collect()
     }
 
     /// 组件对象裸指针（ARA 绑定用：`IPlugInEntryPoint2` 从组件上查；
@@ -1700,6 +1710,7 @@ impl PluginInstance for Vst3Instance {
             // 未知 kind（既无事件输入又无音频输入）无法定排布 ⇒ 响亮失败。
             let event_in = bus_count(self.component, MEDIA_EVENT, DIR_INPUT)?;
             let audio_in = bus_count(self.component, MEDIA_AUDIO, DIR_INPUT)?;
+            self.has_audio_in = audio_in >= 1;
             if event_in == 0 && audio_in == 0 {
                 return Err(HostError::Other(
                     "插件类未能判定 kind（既无事件输入又无音频输入），无法激活".to_owned(),
@@ -1767,6 +1778,13 @@ impl PluginInstance for Vst3Instance {
             )?;
             // 延迟在 `setActive(true)` 之后读（SDK 注记：此前读到的可能是旧值）。
             self.latency = (proc_vtbl.get_latency_samples)(self.processor);
+        }
+        if self.has_audio_in {
+            self.scratch.in_l32.resize(max_block, 0.0);
+            self.scratch.in_r32.resize(max_block, 0.0);
+        } else {
+            self.scratch.in_l32.clear();
+            self.scratch.in_r32.clear();
         }
         self.active = true;
         self.sample_rate = sample_rate;
@@ -2002,13 +2020,29 @@ impl PluginInstance for Vst3Instance {
         let event_ptr = (&mut event_list) as *mut HostEventList as *mut c_void;
         // 参数变化通道：弯音按通道归组为队列（参数 id 经 `IMidiMapping` 映射）；
         // 无弯音时传空指针（插件保持上次弯音值）；无映射的通道整组跳过，
-        // 每实例只记一次日志（长渲染不刷屏）。点表与队列须活到 process 返回。
-        let (_point_vecs, param_queues, mut param_changes) =
-            self.bend_param_channel(&bends, frames);
-        let param_changes_ptr = if param_queues.is_empty() {
-            ptr::null_mut()
+        // 每实例只记一次日志（长渲染不刷屏）。
+        let bend_queues = self.bend_param_queues(&bends, frames);
+        let mut in_ptrs: [*mut f32; 2] = if self.has_audio_in {
+            if self.scratch.in_l32.len() < frames || self.scratch.in_r32.len() < frames {
+                return Err(HostError::Other(format!(
+                    "帧数 {frames} ＞ 激活块上限 {}",
+                    self.max_block
+                )));
+            }
+            self.scratch.in_l32[..frames].fill(0.0);
+            self.scratch.in_r32[..frames].fill(0.0);
+            [
+                self.scratch.in_l32.as_mut_ptr(),
+                self.scratch.in_r32.as_mut_ptr(),
+            ]
         } else {
-            (&mut param_changes) as *mut HostParameterChanges as *mut c_void
+            [ptr::null_mut(), ptr::null_mut()]
+        };
+        let mut in_bus = AudioBusBuffers {
+            num_channels: 2,
+            _pad: 0,
+            silence_flags: 0x3,
+            channel_buffers: in_ptrs.as_mut_ptr(),
         };
         let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
         let mut out_bus = AudioBusBuffers {
@@ -2017,27 +2051,33 @@ impl PluginInstance for Vst3Instance {
             silence_flags: 0,
             channel_buffers: channel_ptrs.as_mut_ptr(),
         };
-        let mut data = ProcessData {
-            process_mode: PROCESS_REALTIME,
-            symbolic_sample_size: SAMPLE_32,
-            num_samples: frames as i32,
-            num_inputs: 0,
-            num_outputs: 1,
-            _pad: 0,
-            inputs: ptr::null_mut(),
-            outputs: &mut out_bus,
-            input_events: event_ptr,
-            output_events: ptr::null_mut(),
-            input_parameter_changes: param_changes_ptr,
-            output_parameter_changes: ptr::null_mut(),
-            process_context: ptr::null_mut(),
-        };
-        // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
-        // 总线与事件列表，插件在 `process` 返回前只用它们。
-        unsafe {
-            let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-            check("process", (proc_vtbl.process)(self.processor, &mut data))
-        }
+        with_parameter_changes(&bend_queues, |param_changes_ptr| {
+            let mut data = ProcessData {
+                process_mode: PROCESS_REALTIME,
+                symbolic_sample_size: SAMPLE_32,
+                num_samples: frames as i32,
+                num_inputs: i32::from(self.has_audio_in),
+                num_outputs: 1,
+                _pad: 0,
+                inputs: if self.has_audio_in {
+                    &mut in_bus
+                } else {
+                    ptr::null_mut()
+                },
+                outputs: &mut out_bus,
+                input_events: event_ptr,
+                output_events: ptr::null_mut(),
+                input_parameter_changes: param_changes_ptr,
+                output_parameter_changes: ptr::null_mut(),
+                process_context: ptr::null_mut(),
+            };
+            // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+            // 总线与事件列表，插件在 `process` 返回前只用它们。
+            unsafe {
+                let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                check("process", (proc_vtbl.process)(self.processor, &mut data))
+            }
+        })
     }
 
     fn process_audio(
@@ -2083,13 +2123,7 @@ impl PluginInstance for Vst3Instance {
                 _ => None,
             })
             .collect();
-        let (_point_vecs, param_queues, mut param_changes) =
-            self.bend_param_channel(&bends, frames);
-        let param_changes_ptr = if param_queues.is_empty() {
-            ptr::null_mut()
-        } else {
-            (&mut param_changes) as *mut HostParameterChanges as *mut c_void
-        };
+        let bend_queues = self.bend_param_queues(&bends, frames);
         // 输入指针：VST3 契约里输入与输出片分离时插件 ⛔ 不得写输入；
         // 本方法只在输入／输出片分离的前提下被调用（见 trait 文档）。
         // SAFETY: `in_l`／`in_r` 在调用帧内有效；插件在 `process` 返回前只读它们。
@@ -2107,27 +2141,29 @@ impl PluginInstance for Vst3Instance {
             silence_flags: 0,
             channel_buffers: out_ptrs.as_mut_ptr(),
         };
-        let mut data = ProcessData {
-            process_mode: PROCESS_REALTIME,
-            symbolic_sample_size: SAMPLE_32,
-            num_samples: frames as i32,
-            num_inputs: 1,
-            num_outputs: 1,
-            _pad: 0,
-            inputs: &mut in_bus,
-            outputs: &mut out_bus,
-            input_events: ptr::null_mut(),
-            output_events: ptr::null_mut(),
-            input_parameter_changes: param_changes_ptr,
-            output_parameter_changes: ptr::null_mut(),
-            process_context: ptr::null_mut(),
-        };
-        // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
-        // 总线，插件在 `process` 返回前只用它们。
-        unsafe {
-            let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-            check("process", (proc_vtbl.process)(self.processor, &mut data))
-        }
+        with_parameter_changes(&bend_queues, |param_changes_ptr| {
+            let mut data = ProcessData {
+                process_mode: PROCESS_REALTIME,
+                symbolic_sample_size: SAMPLE_32,
+                num_samples: frames as i32,
+                num_inputs: 1,
+                num_outputs: 1,
+                _pad: 0,
+                inputs: &mut in_bus,
+                outputs: &mut out_bus,
+                input_events: ptr::null_mut(),
+                output_events: ptr::null_mut(),
+                input_parameter_changes: param_changes_ptr,
+                output_parameter_changes: ptr::null_mut(),
+                process_context: ptr::null_mut(),
+            };
+            // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+            // 总线，插件在 `process` 返回前只用它们。
+            unsafe {
+                let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                check("process", (proc_vtbl.process)(self.processor, &mut data))
+            }
+        })
     }
 }
 
@@ -2301,5 +2337,117 @@ mod tests {
         assert!(is_non_component_class("Component Controller Class"));
         assert!(is_non_component_class("Plugin Compatibility Class"));
         assert!(!is_non_component_class("Audio Module Class"));
+    }
+
+    #[test]
+    fn process_data_and_event_layouts_match_sdk() {
+        let ptr = size_of::<*const ()>();
+        assert_eq!(size_of::<ProcessSetup>(), 24);
+        assert_eq!(size_of::<AudioBusBuffers>(), 24);
+        assert_eq!(size_of::<ProcessData>(), 80);
+        assert_eq!(offset_of!(ProcessData, input_parameter_changes), 40);
+        assert_eq!(offset_of!(ProcessData, output_parameter_changes), 48);
+        assert_eq!(offset_of!(ProcessData, input_events), 56);
+        assert_eq!(offset_of!(ProcessData, output_events), 64);
+        assert_eq!(offset_of!(ProcessData, process_context), 72);
+        assert_eq!(size_of::<Event>(), 48);
+        assert_eq!(offset_of!(Event, event_type), 18);
+        assert_eq!(offset_of!(Event, data), 24);
+        assert_eq!(size_of::<EventListVtbl>(), 6 * ptr);
+        assert_eq!(offset_of!(EventListVtbl, get_event_count), 3 * ptr);
+        assert_eq!(offset_of!(EventListVtbl, get_event), 4 * ptr);
+        assert_eq!(offset_of!(EventListVtbl, add_event), 5 * ptr);
+    }
+
+    #[test]
+    fn event_list_get_rejects_null_pointers_and_reads_events() {
+        let events = [
+            Event::note_on(0, 60, 0.75, 1, 10),
+            Event::note_off(1, 64, 0.25, 2, 20),
+        ];
+        let mut list = HostEventList::new(&events);
+        let list_ptr = (&mut list) as *mut HostEventList as *mut c_void;
+        let mut out = Event::note_on(0, 0, 0.0, 0, 0);
+
+        // SAFETY: 空指针分支只检查指针是否为空，不解引用。
+        unsafe {
+            assert_eq!(event_list_count(ptr::null_mut()), 0);
+            assert_eq!(event_list_count(list_ptr), 2);
+            assert_eq!(
+                event_list_get(ptr::null_mut(), 0, &mut out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                event_list_get(list_ptr, 0, ptr::null_mut()),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(event_list_get(list_ptr, -1, &mut out), RESULT_FALSE);
+            assert_eq!(event_list_get(list_ptr, 2, &mut out), RESULT_FALSE);
+            assert_eq!(event_list_get(list_ptr, 0, &mut out), RESULT_OK);
+            assert_eq!(out.sample_offset, 10);
+            assert_eq!(out.event_type, EVENT_NOTE_ON);
+            assert_eq!(out.data, events[0].data);
+            assert_eq!(event_list_get(list_ptr, 1, &mut out), RESULT_OK);
+            assert_eq!(out.sample_offset, 20);
+            assert_eq!(out.event_type, EVENT_NOTE_OFF);
+            assert_eq!(out.data, events[1].data);
+        }
+    }
+
+    #[test]
+    fn bend_param_queues_and_scoped_changes_roundtrip() {
+        let empty: Vec<ParamQueueData> = Vec::new();
+        with_parameter_changes(&empty, |ptr| {
+            assert!(ptr.is_null(), "空队列必须传空指针");
+        });
+
+        let queues = vec![
+            ParamQueueData {
+                param_id: 100,
+                points: vec![
+                    ParamPoint {
+                        sample_offset: 0,
+                        value: 0.25,
+                    },
+                    ParamPoint {
+                        sample_offset: 64,
+                        value: 0.75,
+                    },
+                ],
+            },
+            ParamQueueData {
+                param_id: 230,
+                points: vec![ParamPoint {
+                    sample_offset: 12,
+                    value: 0.5,
+                }],
+            },
+        ];
+        with_parameter_changes(&queues, |changes_ptr| {
+            assert!(!changes_ptr.is_null());
+            // SAFETY: `changes_ptr` 在本闭包的调用帧内有效。
+            unsafe {
+                let changes_vtbl = vtbl::<ParameterChangesVtbl>(changes_ptr);
+                assert_eq!((changes_vtbl.get_parameter_count)(changes_ptr), 2);
+                assert!(
+                    (changes_vtbl.get_parameter_data)(changes_ptr, 2).is_null(),
+                    "越界队列索引应返回空指针"
+                );
+                let q0 = (changes_vtbl.get_parameter_data)(changes_ptr, 0);
+                assert!(!q0.is_null());
+                let q0_vtbl = vtbl::<ParamValueQueueVtbl>(q0);
+                assert_eq!((q0_vtbl.get_parameter_id)(q0), 100);
+                assert_eq!((q0_vtbl.get_point_count)(q0), 2);
+                let mut offset = 0;
+                let mut val = 0.0;
+                assert_eq!((q0_vtbl.get_point)(q0, 1, &mut offset, &mut val), RESULT_OK);
+                assert_eq!(offset, 64);
+                assert!((val - 0.75).abs() < 1e-12);
+                assert_eq!(
+                    (q0_vtbl.get_point)(q0, 2, &mut offset, &mut val),
+                    RESULT_FALSE
+                );
+            }
+        });
     }
 }
