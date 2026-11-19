@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 341 条：collection_size 72 ／ value_bound 255 ／ element_value_bound 5 ／ condition_counter 9
+# 合计 345 条：collection_size 72 ／ value_bound 259 ／ element_value_bound 5 ／ condition_counter 9
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -282,6 +282,10 @@ src/tape.rs|asym_keeps_silence_silent|value_bound|assert!(                 worst
 src/tape.rs|asym_zero_is_the_pre_change_curve|value_bound|assert!(                 (a - b).abs() < 1e-3,                 "⭐ `asym = 0` 必须与接线前的公式一致（{
 src/tape.rs|latency_samples_is_the_oversampler_round_trip|value_bound|assert_eq!(OS_LATENCY, 31
 src/tape.rs|mix_zero_is_identity_within_float_tolerance|value_bound|assert!(                 (*sample - 0.7).abs() < 1e-5,                 "mix = 0 时稳态必须与输入相等
+src/tape.rs|modulation_delay_is_measurable_by_cross_correlation|value_bound|assert!(             spread >= 48.0,             "⭐ 调制必须真的动：有效延迟极差 {spread} 样本 < 48（1 ms）"
+src/tape.rs|modulation_depth_zero_is_bit_identical|value_bound|assert_eq!(dressed.modulation_latency_samples(), 0
+src/tape.rs|modulation_latency_samples_reports_the_center_delay|value_bound|assert_eq!(tape.modulation_latency_samples(), 144
+src/tape.rs|modulation_reset_reproduces_fresh_instance_bit_for_bit|value_bound|assert_eq!(l1, l2
 src/tape.rs|non_finite_input_falls_back_to_zero_and_does_not_poison_state|value_bound|assert_eq!(clean, clean2
 src/tape.rs|oversampling_aliasing_is_below_the_direct_formula|value_bound|assert!(             third_1x > 0.001,             "1x 直算的 3 次谐波折叠必须显著非零（否则比较真空），实读 {third
 src/tape.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(left, left2

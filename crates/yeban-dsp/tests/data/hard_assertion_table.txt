@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 434 条：float_bits 93 ／ integer_count 341；其中 hard 70 ／ platform 20
+# 合计 438 条：float_bits 93 ／ integer_count 345；其中 hard 70 ／ platform 20
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -371,6 +371,10 @@ integer_count | no_callee | 0 | - | src/tape.rs | asym_keeps_silence_silent
 integer_count | no_callee | 0 | - | src/tape.rs | asym_zero_is_the_pre_change_curve
 integer_count | no_callee | 0 | - | src/tape.rs | latency_samples_is_the_oversampler_round_trip
 integer_count | no_callee | 0 | - | src/tape.rs | mix_zero_is_identity_within_float_tolerance
+integer_count | no_callee | 0 | - | src/tape.rs | modulation_delay_is_measurable_by_cross_correlation
+integer_count | no_callee | 0 | - | src/tape.rs | modulation_depth_zero_is_bit_identical
+integer_count | no_callee | 0 | - | src/tape.rs | modulation_latency_samples_reports_the_center_delay
+integer_count | no_callee | 0 | - | src/tape.rs | modulation_reset_reproduces_fresh_instance_bit_for_bit
 integer_count | no_callee | 0 | - | src/tape.rs | non_finite_input_falls_back_to_zero_and_does_not_poison_state
 integer_count | no_callee | 0 | - | src/tape.rs | oversampling_aliasing_is_below_the_direct_formula
 integer_count | no_callee | 0 | - | src/tape.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
