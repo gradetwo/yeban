@@ -190,33 +190,30 @@ fn steady_state_rendering_never_rebuilds_the_bus() {
     );
 }
 
-/// SFX-8：**立体声腿目前不接总线**（已登记的缺口，⛔ 不是功能）。
+/// SFX-8（`ADR-0077` D6 修订：立体声腿**也接总线**）。
 ///
-/// # 为什么要钉一个"没接线"的判据
+/// # 判定量
 ///
-/// `ADR-0077` D6 只把总线接在**单声道主路**：立体声腿的源侧声相已经分声道，
-/// "两声道如何归约进单声道总线"要先定口径。缺一个判据，这条缺口会在后续
-/// 改动里**静默地**变化（要么悄悄接上、要么悄悄变成半接线），而台账读不出来。
+/// 1. `effect1 = 0` 与无 `<effect>` ⇒ 两声道**逐位相同**（零发送不动干声）；
+/// 2. `effect1 = 100` ⇒ 两声道都在 7..12 块出现混响尾巴，且干声 3 块后归零；
+/// 3. 尾巴**等量**：两声道尾部读数相同（同一份单声道湿声加回两边）。
 ///
-/// 判定量：同一份带 `effect1=100` 的乐器，立体声腿的输出与不带 `<effect>` 的
-/// **逐位相同**；正对照（单声道主路）尾巴可闻（SFX-2 已钉）。
+/// 口径（归约）：进总线的是 `(L + R) / 2` —— 每声道各送 `0.5 × send`。
 #[test]
-fn the_stereo_leg_stays_dry_by_design() {
+fn the_stereo_leg_carries_the_same_mono_tail() {
     let plain = prepare("<region> sample=a.wav lokey=60 hikey=60");
+    let dry_plan =
+        prepare("<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=0");
     let wet_plan = prepare(
         "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
     );
-    let mut left_a = vec![0.0f32; 16 * BLOCK];
-    let mut right_a = vec![0.0f32; 16 * BLOCK];
-    let mut left_b = vec![0.0f32; 16 * BLOCK];
-    let mut right_b = vec![0.0f32; 16 * BLOCK];
-    for (plan, left, right) in [
-        (&plain, &mut left_a, &mut right_a),
-        (&wet_plan, &mut left_b, &mut right_b),
-    ] {
+
+    let render = |plan: &PreparedSfz| {
         let mut pool = SfzVoicePool::new(HZ);
         pool.warm_buses(plan, BLOCK);
         assert_eq!(pool.trigger_note(plan, 60, 100, 12_000, 1.0, None), 1);
+        let mut left = vec![0.0f32; 16 * BLOCK];
+        let mut right = vec![0.0f32; 16 * BLOCK];
         for block in 0..16 {
             let start = block * BLOCK;
             pool.render_into_stereo_with_probes(
@@ -228,18 +225,33 @@ fn the_stereo_leg_stays_dry_by_design() {
                 None,
             );
         }
-    }
+        (left, right)
+    };
+
+    let (plain_l, plain_r) = render(&plain);
+    let (dry_l, dry_r) = render(&dry_plan);
     let bits = |samples: &[f32]| samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&plain_l), bits(&dry_l), "左声道：零发送必须逐位不变");
+    assert_eq!(bits(&plain_r), bits(&dry_r), "右声道：零发送必须逐位不变");
+
+    let (wet_l, wet_r) = render(&wet_plan);
+    let window = |samples: &[f32], from: usize, to: usize| rms(&samples[from * BLOCK..to * BLOCK]);
+    for (name, samples) in [("左", &wet_l), ("右", &wet_r)] {
+        assert!(
+            window(&wet_l, 3, 6) < 1e-3,
+            "{name}声道：干声段应当已经被扣干（读数 {}）",
+            window(samples, 3, 6)
+        );
+        let tail = window(samples, 7, 12);
+        assert!(tail > 1e-4, "{name}声道：7..12 块必须有尾巴（读数 {tail}）");
+    }
     assert_eq!(
-        bits(&left_a),
-        bits(&left_b),
-        "左声道：立体声腿必须仍是纯干声"
+        bits(&wet_l),
+        bits(&wet_r),
+        "居中单声道源 ⇒ 两声道拿到的尾巴必须逐位相同（同一份湿声）"
     );
-    assert_eq!(
-        bits(&right_a),
-        bits(&right_b),
-        "右声道：立体声腿必须仍是纯干声"
-    );
+    let _ = dry_l;
+    let _ = dry_r;
 }
 
 /// SFX-9（`ADR-0077` D8 的"绑定期分配"清零）：**控制侧预占槽 ＋ 预热**之后，

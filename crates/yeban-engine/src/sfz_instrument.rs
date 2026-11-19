@@ -10412,6 +10412,9 @@ impl SfzVoicePool {
         let frames = left.len().min(right.len());
         left[..frames].fill(0.0);
         right[..frames].fill(0.0);
+        // ⭐ `ADR-0077` D6 修订：**立体声腿也接总线**。两声道各送 `0.5 × send`
+        // （累加出来就是 `(L + R) / 2`），尾巴等量加回两声道（见 `apply_stereo`）。
+        let mut bank = self.take_bank(plan, frames);
         for index in 0..SFZ_VOICES_PER_TRACK {
             // ⭐ stage 3：`pan_onccN` 逐块生效（`cc == None` ⇒ 与 stage 1 逐位相同）。
             let pan = plan.region_pan_with_cc(usize::from(self.voices[index].region_index), cc);
@@ -10425,6 +10428,7 @@ impl SfzVoicePool {
                 && plan
                     .sample(voice.sample_index)
                     .is_some_and(|sample| sample.channels() >= 2);
+            let sends = plan.region_effect_sends(self.voices[index].region_index);
             let mut offset = 0usize;
             while offset < frames {
                 let len = (frames - offset).min(STEREO_CHUNK_FRAMES);
@@ -10437,6 +10441,9 @@ impl SfzVoicePool {
                     let mut chunk_l = [0.0f32; STEREO_CHUNK_FRAMES];
                     let mut chunk_r = [0.0f32; STEREO_CHUNK_FRAMES];
                     let before = self.snapshot_slot(index);
+                    let bus = bank
+                        .as_deref_mut()
+                        .and_then(|bank| bank.send_for_scaled(sends, frames, 0.5));
                     self.render_slot(
                         index,
                         plan,
@@ -10445,10 +10452,13 @@ impl SfzVoicePool {
                         cc,
                         pitch,
                         0,
-                        None,
+                        bus,
                     );
                     let after_left = self.snapshot_slot(index);
                     self.restore_slot(index, &before);
+                    let bus = bank
+                        .as_deref_mut()
+                        .and_then(|bank| bank.send_for_scaled(sends, frames, 0.5));
                     self.render_slot(
                         index,
                         plan,
@@ -10457,7 +10467,7 @@ impl SfzVoicePool {
                         cc,
                         pitch,
                         1,
-                        None,
+                        bus,
                     );
                     self.restore_slot(index, &after_left);
                     for slot in 0..len {
@@ -10476,6 +10486,11 @@ impl SfzVoicePool {
                     }
                 } else {
                     let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
+                    // 单声道样本走"复制到两声道"这条腿 ⇒ 进总线的量是
+                    // `mono × (gain_l + gain_r) / 2`（正好等于 `(L + R) / 2`）。
+                    let bus = bank.as_deref_mut().and_then(|bank| {
+                        bank.send_for_scaled(sends, frames, (gain_l + gain_r) * 0.5)
+                    });
                     self.render_slot(
                         index,
                         plan,
@@ -10484,7 +10499,7 @@ impl SfzVoicePool {
                         cc,
                         pitch,
                         0,
-                        None,
+                        bus,
                     );
                     for (slot, value) in chunk[..len].iter().enumerate() {
                         left[offset + slot] += value * gain_l;
@@ -10494,6 +10509,10 @@ impl SfzVoicePool {
                 offset += len;
             }
         }
+        if let Some(bank) = bank.as_deref_mut() {
+            bank.apply_stereo(&mut left[..frames], &mut right[..frames]);
+        }
+        self.buses = bank;
     }
 
     /// 渲染**一个槽**（`render_into` 的逐槽体；拆出来是为了借用清晰）。
@@ -12243,8 +12262,19 @@ impl BusBank {
 
     /// 给一个声部造发送目标；全 0 ⇒ `None`（逐位不变）。
     fn send_for<'b>(&'b mut self, sends: [f32; 4], len: usize) -> Option<BusSend<'b>> {
+        self.send_for_scaled(sends, len, 1.0)
+    }
+
+    /// 同 [`Self::send_for`]，但整体再乘一个 `scale`（立体声腿用：两声道各送一半，
+    /// 合起来正好是 `(L + R) / 2`）。
+    fn send_for_scaled<'b>(
+        &'b mut self,
+        sends: [f32; 4],
+        len: usize,
+        scale: f32,
+    ) -> Option<BusSend<'b>> {
         let len = len.min(self.frames);
-        let scaled: [f32; BUS_COUNT] = std::array::from_fn(|index| sends[index] / 100.0);
+        let scaled: [f32; BUS_COUNT] = std::array::from_fn(|index| sends[index] / 100.0 * scale);
         if scaled.iter().all(|send| *send == 0.0) {
             return None;
         }
@@ -12275,6 +12305,34 @@ impl BusBank {
             reverb.process(&mut dry[..len], &mut wet[..len]);
             for (frame, out_slot) in out[..len].iter_mut().enumerate() {
                 *out_slot += (dry[frame] + wet[frame]) * 0.5;
+            }
+        }
+    }
+
+    /// 立体声腿的落点（`ADR-0077` D6 的修订）：把 **同一份**单声道湿声
+    /// **等量**加到左右两声道。
+    ///
+    /// 口径（本片定的，写在 ADR §7.4.5）：
+    /// * 进总线的是 `(L + R) / 2` —— 由调用方把发送量各乘 `0.5` 实现（两声道
+    ///   同一条区域发送 ⇒ 累加出来正好是归约后的单声道）；
+    /// * 出总线时**只加湿声**（`mix = 1.0` ⇒ 处理后的缓冲本身就是湿声）；
+    /// * 干声一个样本都不动 ⇒ `send = 0` 时逐位不变（SFX-1 的立体声版）。
+    fn apply_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let len = left.len().min(right.len()).min(self.frames);
+        let mut ordered: [usize; BUS_COUNT] = std::array::from_fn(|index| index);
+        ordered.sort_by_key(|index| self.orders[*index]);
+        for index in ordered {
+            let Some(reverb) = self.verbs[index].as_mut() else {
+                continue;
+            };
+            let dry = &mut self.dry[index];
+            let wet = &mut self.wet[index];
+            wet[..len].copy_from_slice(&dry[..len]);
+            reverb.process(&mut dry[..len], &mut wet[..len]);
+            for frame in 0..len {
+                let tail = (dry[frame] + wet[frame]) * 0.5;
+                left[frame] += tail;
+                right[frame] += tail;
             }
         }
     }
