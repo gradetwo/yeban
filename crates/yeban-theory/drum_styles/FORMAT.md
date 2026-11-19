@@ -40,7 +40,7 @@ family, that family is not duplicated.
 | `eq` | object | `low_db`/`mid_db`/`high_db` −18..=18 dB; `low_hz` 20..=1000, `mid_hz` 100..=8000, `mid_q` 0.3..=6, `high_hz` 1000..=16000; `hpf_hz` 0..=500 (0 = off); `cutoff_hz` 800..=20000 (20000 = off) |
 | `comp` | object | `threshold_db` −60..=0, `ratio` 1..=20, `knee_db` 0..=24, `attack_s` 0.0005..=0.2, `release_s` 0.01..=1, `makeup_db` −12..=12 |
 | `output_db` | number | strip output trim −12..=12 dB (one of the style-to-style level balance points) |
-| `reverb` | object | `size`/`damp`/`wet` 0..=1, `predelay_s` 0..=0.1 |
+| `reverb` | object | `kind` string: `room`/`plate`/`hall`/`spring`; `decay_s` 0.1..=10 (reverb time, seconds, T60); `damp`/`wet` 0..=1, `predelay_s` 0..=0.1. Generation writes `reverb_kind` + `reverb_decay_s` device params; the legacy dimensionless `size` field is gone from this format (the device still accepts `reverb_size`, presets no longer write it) |
 | `tape` | object, optional | `drive`/`mix` 0..=1, `hf_hz` 2000..=20000, `asym` 0..=0.5 |
 | `delay` | object, optional | `time_s` 0.01..=2, `feedback` 0..=0.9, `mix` 0..=0.6, `damp` 0..=1, `ping_pong` bool. Whole-track insert (no per-lane sends exist), so factory mixes stay low |
 

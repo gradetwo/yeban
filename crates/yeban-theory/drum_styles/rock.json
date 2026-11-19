@@ -43,7 +43,8 @@
     },
     "output_db": 1.0,
     "reverb": {
-      "size": 0.8,
+      "kind": "hall",
+      "decay_s": 2.0,
       "damp": 0.4,
       "wet": 0.22,
       "predelay_s": 0.038

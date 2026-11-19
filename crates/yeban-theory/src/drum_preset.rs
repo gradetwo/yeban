@@ -177,8 +177,10 @@ pub struct DrumFxPreset {
     pub comp_makeup_db: f32,
     /// 通道条输出微调（dB）−12..=12（风格间电平平衡的落点之一）。
     pub output_db: f32,
-    /// 混响尺寸 0..=1。
-    pub reverb_size: f32,
+    /// 混响空间类型（Plate/Room/Hall/Spring）。
+    pub reverb_kind: DrumReverbKind,
+    /// 混响时间（秒，T60）0.1..=10。
+    pub reverb_decay_s: f32,
     /// 混响高频阻尼 0..=1。
     pub reverb_damp: f32,
     /// 混响湿电平 0..=1。
@@ -231,11 +233,67 @@ pub struct DrumCompPreset {
     pub makeup_db: f32,
 }
 
+/// 混响空间类型（预置侧表示）：与 `yeban-dsp` 的 `ReverbKind` 同一套四档，
+/// 生成路径经 [`DrumReverbKind::device_value`] 写出 `reverb_kind` 器件参数。
+///
+/// ⚠ 索引值是两个 crate 之间的镜像契约（theory 不依赖 dsp，无法直接引用）：
+/// dsp 侧 `ReverbKind` 的档位序改动必须同步改这里；两端一致由 render 侧
+/// 端到端判据（按类型生成预置、读回器件参数）钉住。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrumReverbKind {
+    /// 房间（现行 Freeverb 标定本身）。
+    Room,
+    /// 板式（密早期反射、高频保持最强）。
+    Plate,
+    /// 大厅（长延迟线、早期反射最稀）。
+    Hall,
+    /// 弹簧（参数组近似：强色散 allpass 链，非物理弹簧模型）。
+    Spring,
+}
+
+impl DrumReverbKind {
+    /// JSON 名 → 类型。未知名字是内容错误，解析期响亮失败（默认不能静默）。
+    fn from_name(name: &str, field: &str) -> Result<Self, DrumPresetError> {
+        match name {
+            "room" => Ok(Self::Room),
+            "plate" => Ok(Self::Plate),
+            "hall" => Ok(Self::Hall),
+            "spring" => Ok(Self::Spring),
+            _ => Err(field_err(
+                field,
+                format!("unknown reverb kind {name:?} (expected room/plate/hall/spring)"),
+            )),
+        }
+    }
+
+    /// 规范名（JSON 与回读共用）。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Room => "room",
+            Self::Plate => "plate",
+            Self::Hall => "hall",
+            Self::Spring => "spring",
+        }
+    }
+
+    /// 器件参数值（镜像 `yeban_dsp::reverb::ReverbKind` 的档位序）。
+    pub fn device_value(self) -> f32 {
+        match self {
+            Self::Room => 0.0,
+            Self::Plate => 1.0,
+            Self::Hall => 2.0,
+            Self::Spring => 3.0,
+        }
+    }
+}
+
 /// 混响段（`fx.reverb` 与逐件链 `chain.reverb` 共用同一形状与值域）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrumReverbPreset {
-    /// 尺寸 0..=1。
-    pub size: f32,
+    /// 空间类型。
+    pub kind: DrumReverbKind,
+    /// 混响时间（秒，T60）0.1..=10。
+    pub decay_s: f32,
     /// 高频阻尼 0..=1。
     pub damp: f32,
     /// 湿电平 0..=1。
@@ -684,8 +742,15 @@ fn parse_comp(obj: &[(String, Json)], base: &str) -> Result<DrumCompPreset, Drum
 
 /// 解析混响段（`{base}.reverb`）：整段字段必填。`fx` 与逐件链共用。
 fn parse_reverb(obj: &[(String, Json)], base: &str) -> Result<DrumReverbPreset, DrumPresetError> {
+    let kind_name = get_str(obj, "kind").map_err(|_| {
+        field_err(
+            &format!("{base}.reverb.kind"),
+            "reverb kind must be a string",
+        )
+    })?;
     Ok(DrumReverbPreset {
-        size: get_f32_ranged(obj, "size", &format!("{base}.reverb.size"), 0.0, 1.0)?,
+        kind: DrumReverbKind::from_name(kind_name, &format!("{base}.reverb.kind"))?,
+        decay_s: get_f32_ranged(obj, "decay_s", &format!("{base}.reverb.decay_s"), 0.1, 10.0)?,
         damp: get_f32_ranged(obj, "damp", &format!("{base}.reverb.damp"), 0.0, 1.0)?,
         wet: get_f32_ranged(obj, "wet", &format!("{base}.reverb.wet"), 0.0, 1.0)?,
         predelay_s: get_f32_ranged(
@@ -767,7 +832,8 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
         comp_release_s: comp.release_s,
         comp_makeup_db: comp.makeup_db,
         output_db: get_f32_ranged(obj, "output_db", "fx.output_db", -12.0, 12.0)?,
-        reverb_size: reverb.size,
+        reverb_kind: reverb.kind,
+        reverb_decay_s: reverb.decay_s,
         reverb_damp: reverb.damp,
         reverb_wet: reverb.wet,
         reverb_predelay_s: reverb.predelay_s,
@@ -1089,7 +1155,8 @@ fn strip_comp_params(comp: &DrumCompPreset) -> Vec<(String, f32)> {
 /// 混响段 → 混响器件参数表。
 fn reverb_params(reverb: &DrumReverbPreset) -> Vec<(String, f32)> {
     vec![
-        ("reverb_size".to_owned(), reverb.size),
+        ("reverb_kind".to_owned(), reverb.kind.device_value()),
+        ("reverb_decay_s".to_owned(), reverb.decay_s),
         ("reverb_damp".to_owned(), reverb.damp),
         ("reverb_wet".to_owned(), reverb.wet),
         ("reverb_predelay".to_owned(), reverb.predelay_s),
@@ -1151,7 +1218,8 @@ impl DrumFxPreset {
     /// 扁平 `fx` 字段的混响段视图。
     fn reverb_view(&self) -> DrumReverbPreset {
         DrumReverbPreset {
-            size: self.reverb_size,
+            kind: self.reverb_kind,
+            decay_s: self.reverb_decay_s,
             damp: self.reverb_damp,
             wet: self.reverb_wet,
             predelay_s: self.reverb_predelay_s,
@@ -2778,7 +2846,7 @@ mod tests {
         "comp": {"threshold_db": -16, "ratio": 3, "knee_db": 6,
                  "attack_s": 0.01, "release_s": 0.12, "makeup_db": 1.5},
         "output_db": 0.5,
-        "reverb": {"size": 0.4, "damp": 0.45, "wet": 0.15, "predelay_s": 0.01},
+        "reverb": {"kind": "plate", "decay_s": 1.1, "damp": 0.45, "wet": 0.15, "predelay_s": 0.01},
         "tape": {"drive": 0.3, "mix": 0.5, "hf_hz": 9000, "asym": 0.2},
         "delay": {"time_s": 0.28, "feedback": 0.25, "mix": 0.1, "damp": 0.4,
                   "ping_pong": true}
@@ -2797,6 +2865,8 @@ mod tests {
         assert_eq!(fx.comp_ratio, 3.0);
         assert_eq!(fx.output_db, 0.5);
         assert_eq!(fx.reverb_wet, 0.15);
+        assert_eq!(fx.reverb_kind, DrumReverbKind::Plate);
+        assert_eq!(fx.reverb_decay_s, 1.1);
         let tape = fx.tape.expect("tape parsed");
         assert_eq!(tape.drive, 0.3);
         assert_eq!(tape.asym, 0.2);
@@ -2823,6 +2893,16 @@ mod tests {
             DrumStylePreset::from_json(&bad_ratio).is_err(),
             "comp ratio below 1 must be rejected"
         );
+        let bad_kind = base.replace("\"kind\": \"plate\"", "\"kind\": \"cathedral\"");
+        assert!(
+            DrumStylePreset::from_json(&bad_kind).is_err(),
+            "unknown reverb kind must be rejected"
+        );
+        let bad_decay = base.replace("\"decay_s\": 1.1", "\"decay_s\": 42");
+        assert!(
+            DrumStylePreset::from_json(&bad_decay).is_err(),
+            "reverb decay_s above 10 must be rejected"
+        );
     }
 
     #[test]
@@ -2843,6 +2923,61 @@ mod tests {
         assert!(
             signatures.len() > 1,
             "factory fx must be tuned per style, not one shared parameter set"
+        );
+    }
+
+    /// P1/P2 落点钉：14 风格的混响类型与混响时间逐条按分配表钉死，
+    /// Room/Plate/Hall/Spring 四档都有归属；且生成路径真写出
+    /// `reverb_kind`/`reverb_decay_s` 两个器件参数、不再写 `reverb_size`。
+    #[test]
+    fn factory_styles_pin_their_reverb_kind_and_decay() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let expected: [(&str, DrumReverbKind, f32); 14] = [
+            ("boombap", DrumReverbKind::Room, 0.9),
+            ("drill", DrumReverbKind::Room, 0.7),
+            ("edm", DrumReverbKind::Hall, 1.4),
+            ("funk", DrumReverbKind::Room, 0.5),
+            ("hiphop", DrumReverbKind::Room, 0.9),
+            ("house", DrumReverbKind::Plate, 1.1),
+            ("jazz", DrumReverbKind::Room, 1.0),
+            ("lofi", DrumReverbKind::Spring, 1.0),
+            ("phonk", DrumReverbKind::Hall, 1.3),
+            ("pop", DrumReverbKind::Plate, 1.35),
+            ("rnb", DrumReverbKind::Hall, 2.2),
+            ("rock", DrumReverbKind::Hall, 2.0),
+            ("techno", DrumReverbKind::Room, 0.8),
+            ("trap", DrumReverbKind::Room, 0.8),
+        ];
+        let mut seen_kinds = std::collections::BTreeSet::new();
+        for (id, kind, decay_s) in expected {
+            let style = styles
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("factory style {id} missing"));
+            let fx = style
+                .fx
+                .unwrap_or_else(|| panic!("factory style {id} must carry an fx section"));
+            assert_eq!(fx.reverb_kind, kind, "{id} reverb kind");
+            assert_eq!(fx.reverb_decay_s, decay_s, "{id} reverb decay_s");
+            seen_kinds.insert(kind.name());
+            let params = reverb_params(&fx.reverb_view());
+            assert!(
+                params.contains(&("reverb_kind".to_owned(), kind.device_value())),
+                "{id} generation must write reverb_kind"
+            );
+            assert!(
+                params.contains(&("reverb_decay_s".to_owned(), decay_s)),
+                "{id} generation must write reverb_decay_s"
+            );
+            assert!(
+                !params.iter().any(|(n, _)| n == "reverb_size"),
+                "{id} generation must not write reverb_size anymore"
+            );
+        }
+        assert_eq!(
+            seen_kinds.len(),
+            4,
+            "all four reverb kinds must be represented: {seen_kinds:?}"
         );
     }
 
@@ -3093,7 +3228,7 @@ mod tests {
                         \"hpf_hz\": 0, \"cutoff_hz\": 4500},\
                 \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
                           \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
-                \"reverb\": {\"size\": 0.3, \"damp\": 0.5, \"wet\": 0.1, \"predelay_s\": 0.01},\
+                \"reverb\": {\"kind\": \"room\", \"decay_s\": 0.8, \"damp\": 0.5, \"wet\": 0.1, \"predelay_s\": 0.01},\
                 \"tape\": {\"drive\": 0.2, \"mix\": 0.4, \"hf_hz\": 8000, \"asym\": 0.1},\
                 \"delay\": {\"time_s\": 0.25, \"feedback\": 0.2, \"mix\": 0.08,\
                            \"damp\": 0.3, \"ping_pong\": false}\
