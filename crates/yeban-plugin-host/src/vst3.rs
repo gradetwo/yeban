@@ -1421,18 +1421,16 @@ impl Vst3Instance {
         let handler_ptr = (&*handler) as *const ComponentHandlerObj as *mut c_void;
         let host_ptr = (&*host_app) as *const HostApplicationObj as *mut c_void;
         let mut component: *mut c_void = ptr::null_mut();
+        let mut component_initialized = false;
         let mut processor: *mut c_void = ptr::null_mut();
         let mut controller: Option<*mut c_void> = None;
+        let mut controller_separate = false;
+        let mut controller_initialized = false;
+        let mut connection: Option<(*mut c_void, *mut c_void)> = None;
         let mut midi_mapping: Option<*mut c_void> = None;
-        // `open` 闭包的返回五元组（`kind`、`has_audio_in`、双向连接点、
-        // 控制器是否分离式、`IMidiMapping` 查询引用——无则为 `None`，不拦 `open`）。
-        type OpenOutcome = (
-            PluginKind,
-            bool,
-            Option<(*mut c_void, *mut c_void)>,
-            bool,
-            Option<*mut c_void>,
-        );
+        // `open` 闭包的返回三元组（`kind`、`has_audio_in`、
+        // `IMidiMapping` 查询引用——无则为 `None`，不拦 `open`）。
+        type OpenOutcome = (PluginKind, bool, Option<*mut c_void>);
         let result = (|| -> Result<OpenOutcome, HostError> {
             component = module.create_instance(class_id, &ICOMPONENT_IID)?;
             // SAFETY: `component` 刚创建有效；虚表为组件虚表。
@@ -1444,6 +1442,7 @@ impl Vst3Instance {
             // SAFETY: `component` 是刚创建的组件对象；虚表调用按 SDK 签名。
             let code = unsafe { (comp_vtbl.base.initialize)(component, host_ptr) };
             check("initialize", code)?;
+            component_initialized = true;
             processor = Vst3Module::query_interface(component, &IAUDIO_PROCESSOR_IID)
                 .map_err(|_| HostError::InterfaceMissing("IAudioProcessor"))?;
             // 总线探针定 `kind`（见 `classify_kind`）。
@@ -1465,7 +1464,7 @@ impl Vst3Instance {
             }
             // 分离式控制器须单独 `initialize`（SDK 要求；未初始化的 JUCE 控制器
             // 在连接后被组件经 `IEditController` 指针访问时会崩溃）。
-            let controller_separate = code == RESULT_TRUE && controller_cid != TUID_INVALID;
+            controller_separate = code == RESULT_TRUE && controller_cid != TUID_INVALID;
             let ctrl_to_init = if controller_separate {
                 controller
             } else {
@@ -1477,6 +1476,7 @@ impl Vst3Instance {
                 // SAFETY: `ctrl` 是刚工厂创建的控制器指针；`host_ptr` 由实例拥有。
                 let code = unsafe { (ctrl_vtbl.base.initialize)(ctrl, host_ptr) };
                 check("controller initialize", code)?;
+                controller_initialized = true;
             }
             // 控制器拿到后挂实例拥有的 handler（失败忽略：handler 只是通知通道）。
             if let Some(ctrl) = controller {
@@ -1492,7 +1492,6 @@ impl Vst3Instance {
             // 双向连接（事件投递前提，见模块文档）：组件连接点接控制器连接点，
             // 控制器连接点接回组件连接点；任一查询失败即跳过，不拦 `open`。
             // 组合式控制器（与组件同一对象）不另连：同一指针自连无意义。
-            let mut connection = None;
             if let Some(ctrl) = controller {
                 let comp_cp = Vst3Module::query_interface(component, &ICONNECTIONPOINT_IID).ok();
                 let ctrl_cp = Vst3Module::query_interface(ctrl, &ICONNECTIONPOINT_IID).ok();
@@ -1527,16 +1526,10 @@ impl Vst3Instance {
                     (None, None) => {}
                 }
             }
-            Ok((
-                kind,
-                has_audio_in,
-                connection,
-                controller_separate,
-                midi_mapping,
-            ))
+            Ok((kind, has_audio_in, midi_mapping))
         })();
         match result {
-            Ok((kind, has_audio_in, connection, controller_separate, midi_mapping)) => Ok(Self {
+            Ok((kind, has_audio_in, midi_mapping)) => Ok(Self {
                 module: std::sync::Arc::clone(&module.inner),
                 component,
                 processor,
@@ -1558,10 +1551,27 @@ impl Vst3Instance {
                 scratch: AudioScratch::default(),
             }),
             Err(error) => {
-                // SAFETY: 配对释放（已建的才放；空指针不放）。
+                // SAFETY: 逆序撤回已完成的步骤（断开连接 → 释 mapping → 对已 initialize
+                // 的分离控制器／组件调 terminate → 释 COM 引用；保留 JUCE `ctrl_cp` 规避）。
                 unsafe {
+                    if let Some((comp_cp, ctrl_cp)) = connection {
+                        let comp_cp_vtbl = vtbl::<ConnectionPointVtbl>(comp_cp);
+                        let _ = (comp_cp_vtbl.disconnect)(comp_cp, ctrl_cp);
+                        Vst3Module::release(comp_cp);
+                    }
                     if let Some(mapping) = midi_mapping {
                         Vst3Module::release(mapping);
+                    }
+                    if controller_separate
+                        && controller_initialized
+                        && let Some(ctrl) = controller
+                    {
+                        let ctrl_vtbl = vtbl::<EditControllerVtbl>(ctrl);
+                        let _ = (ctrl_vtbl.base.terminate)(ctrl);
+                    }
+                    if component_initialized && !component.is_null() {
+                        let comp_vtbl = vtbl::<ComponentVtbl>(component);
+                        let _ = (comp_vtbl.base.terminate)(component);
                     }
                     if let Some(ctrl) = controller {
                         Vst3Module::release(ctrl);
