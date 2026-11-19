@@ -27,7 +27,7 @@
 ## 3. 开发环境与构建指令 (Development Setup)
 
 ### 3.1 基础依赖要求
-- Rust 1.80+ (Stable toolchain)
+- Rust 1.92+ (Stable toolchain；须与 `Cargo.toml` 的 `rust-version` 一致 —— ⛔ 这里不再手抄别的数)
 - CMake, pkg-config (部分底层库构建所需)
 - 操作系统底层音频库头文件（Linux: `libasound2-dev`, `libpipewire-0.3-dev` 等）
 

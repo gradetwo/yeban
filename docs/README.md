@@ -26,6 +26,10 @@
 | [CI_CD.md](./CI_CD.md) | GitHub Actions 有哪些 workflow、何时触发、需要哪些 secret、判决怎么读回来 |
 | [asset-resolution.md](./asset-resolution.md) | SFZ 采样资源解析规则：`sample=` 相对路径与 `default_path`、`#include` 沙箱、解码与失败记账、渲染时容器池优先于磁盘的候选顺序（逐条带代码出处） |
 | [tool-availability.md](./tool-availability.md) | MCP 工具可用性：形态 A／B 的差异、`yeban-app` 的 feature 门控表、两个依赖宿主 provider 的工具与 `providerUnavailable` 契约、CLI 导出开关与 MCP 工具的对应表 |
+| [cli-reference.md](./cli-reference.md) | **CLI 非导出族**开关的参考：采样切片（`--slice-audio` 族）、样本编辑（`--edit-samples` 族）、旧工程迁移、整曲概览口径、渲染线程、分轨选轨；含退出码与组合规则 |
+| [app-i18n-notes.md](./app-i18n-notes.md) | 九语 i18n 的设计与实施记录：语言清单、单一词表按中文原文精确匹配、运行时切换与持久化优先级、顶栏开关 |
+| [SFZ_SAMPLE_ACQUISITION.md](./SFZ_SAMPLE_ACQUISITION.md) | SFZ 采样**外取**一步到位：登记式素材清单（`repo` + `pin` / `archive.url` + `sha256`）怎么拉、怎么校验、门禁怎么判 |
+| [skeuo-bitwig-palette-20261117.md](./skeuo-bitwig-palette-20261117.md) | 拟物主题对 Bitwig 色板的采样、映射、对比度复核与透叠清点记录（`line/ui-skeuo-palette`） |
 | [../skills/yeban-dev-workflow/SKILL.md](./skills/yeban-dev-workflow/SKILL.md) | 十条用血换来的规则（测量优先、判据必须先能变红、绝不管道化门禁……） |
 | [../skills/song-arrangement/SKILL.md](./skills/song-arrangement/SKILL.md) | 编曲方法论：先定角色、再定音区、最后写音符；改风格走参考学习法，写完用数据验收 |
 | [../skills/instrumentation-craft/SKILL.md](./skills/instrumentation-craft/SKILL.md) | 配器与音源选型方法论：选库先审计、SFZ 入库先清洗、接引擎先小样验证 |

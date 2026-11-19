@@ -175,7 +175,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | CI 缓存 | 各矩阵腿会重复编译公共依赖；`Swatinem/rust-cache` 之类的缓存尚未接入 |
 | `CONTRIBUTING.md` 的 MSRV 表述 | 正文写 "Rust 1.80+"，实际 MSRV 因 slint 1.18.1 定为 **1.92**（ADR-0001 D5）。文件不在红线名单内，但改动治理文档建议由人类确认 |
 | UI/UX 规范的缺口 | 字体与 CJK 字体栈、间距/圆角/字号 scale、DPR 细则、Splitter 约束对象、24px 状态栏归属——见 ADR-0001 与 UI 摘要，实现前需按登记口径执行 |
-| `schemas/mcp-tools.schema.json` 与 10 个工具的最终对账 | 需 `yeban-mcp` 实现后才能做真实对账 |
+| ~~`schemas/mcp-tools.schema.json` 与 10 个工具的最终对账~~ **（2026-11-19 复核：本条已完成）** | 原写「需 `yeban-mcp` 实现后才能做真实对账」——`yeban-mcp` 已实现，契约现登记 **45** 个工具（`TOOL_COUNT 45`；schema enum 45），对账由 `scripts/gates/validate_schemas.py` ＋ `check_feature_alignment.py` 机械执行。**新缺口**改登记为：契约 45 个里只有 **10** 个有参数级文档（`DOCUMENTED_TOOL_COUNT = 10`），35 个扩展工具无文档面 |
 
 ### 5.3 创作缺口审计（GAPS 18 条）状态表（首测 2026-10-27T09:43Z；**复测 2026-10-28**）
 
@@ -17950,7 +17950,10 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - `song` 阶段 301.0 s 墙钟里 **262.4 s 是主动等待**（等重投影/重绘），CPU 均值 3.6%。
 - 两次离线渲染都是**单核**（`CPU% ≈ 100`，从未 >100）—— 见报告 §5.1。
 
-### 23.3 导出腿的两条新缺陷（⛔ 本批只登记，未动代码）
+### 23.3 导出腿的两条新缺陷（⛔ 本批只登记，未动代码；⭐ **2026-11-19 复核：D-EX-1 已修** ——
+`ui/dialogs/export_wav_dialog.slint` 第五格 `limiter`（注释里逐字写 `D-EX-1`）＋ `ui/app.slint` 的
+`export-wav-limiter` 双向绑定 ＋ `host.rs` 的 `wav_options.limiter = ui.get_export_wav_limiter()`。
+本条历史文字按纪律不改写，只加这一句现读；**D-EX-2（渲染占 UI 线程）仍成立**）
 
 - **D-EX-1｜限幅器在 GUI 面上不可达**：导出 = 线性求和，界面推子 0.75 dB/px、范围 [−60,+6]，
   ⇒ 1 dB 推子 = 1 dB 峰值 = 1 dB LUFS。实测交付面天花板 **−19.8 LUFS**（探测法：逐轨静音归因 + 净空上限外推），
@@ -18064,8 +18067,11 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **普查（单位：文件数 / 次数；分母 1 399 份 `git ls-files` 的 `.sfz`，剥 `//` · `/* */` 注释后按
   `(?:^|[\\s])([A-Za-z_][A-Za-z_0-9]*)\\s*=` 取 opcode 名，一次性 `python3 -B` 探针）**：
   `offset_random` **79 / 4 901**、`amp_random` **2 / 19**（两族此前**解析层与播放层都不认**）；
-  仍未实现的族：`rt_decay` 5、`eq1_*` 33、`fil2_*` 24、`eg06_*` 23、`var01_*` 6、`width` 11、
+  当时**仍未实现**的族：`rt_decay` 5、`eq1_*` 33、`fil2_*` 24、`eg06_*` 23、`var01_*` 6、`width` 11、
   `set_hdcc*` 10、`off_shape` 8、`bend_smooth` 2（逐条与理由见 `docs/ledger/sfz-random-start-notes.md` §6）。
+  ⭐ **2026-11-19 现读更正**：`rt_decay`（`yeban-sfz` **40** 处）、`off_shape`（**29** 处）、`width`
+  （`instrument.rs` 的 `scopes.get("width")` 已解析）、`set_hdcc*`（`control.rs` 已有专节）**均已实现**；
+  **仍然为 0 / 仅文档注释**的是 `fil2_*`、`var01_*`、`eg06_*`、`bend_smooth`、`eq1_*`。
 - **落地**：`Region` 两个字段 ＋ 两个纯函数（`offset_random_shift` / `amp_random_gain`，唯一算术）＋
   `Region::playback_span_with_rand`；引擎 `PreparedRegion` 两个读数 ＋ `span_bounds_with_rand` /
   `amp_random_gain`；实时路径把随机音量**折进** `SfzVoice::track_gain`（⛔ 不新增逐声部字段）。

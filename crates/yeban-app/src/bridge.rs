@@ -151,8 +151,10 @@ pub const PITCH_LANE_COUNT: i32 = 16;
 
 /// 车道窗口下界的 MIDI 音高：`C4 = 60`。
 ///
-/// 落在窗口之外的音高**钳制**进窗口（不 panic、不绕回）：真正的视口滚动 /
-/// 裁剪属于 `[UI-NOTE-001]`，仍未实现，见 `docs/ledger/app-completion-notes.md` 的未实现项。
+/// 落在窗口之外的音高**钳制**进窗口（不 panic、不绕回）：真正的视口滚动 / 裁剪
+/// **已实现** —— 见同文件的 [`VisibleNotes`] / [`ViewState::notes_visible_in`] /
+/// [`ViewState::visible_notes_scoped`]（宿主注入 `note-*` 数组时只消费裁剪结果）。
+/// ⚠ 本注释 2026-11-19 由「仍未实现」更正；`[UI-NOTE-001]` 的剩余缺口请以台账**现读**为准。
 pub const PITCH_LANE_BASE: u8 = 60;
 
 /// 一条车道在逻辑像素里的高度（与 `piano_roll.slint` 的 `14px * lane_index` 对齐）。

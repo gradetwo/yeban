@@ -12,12 +12,12 @@
 
 | # | 项 | 现状证据 |
 |---|---|---|
-| B1 | 波形真实峰值缺失 | `ui/arrangement.slint:1156` 注释「真实峰值（按 block 的离线分析缓存）尚未接入」；`:1183` accessible-label 仍写「峰值分析尚未接入，当前为 0dB 基准线占位」 |
-| B2 | BUS COMP 仍「示意」 | `ui/left_panel.slint:859` `text: "BUS COMP · 示意"` |
-| B3 | 复制 / 粘贴 / 剪切 = 0 | `ui/app.slint` 三词各 0 处；`host.rs` 无 `edit-copy`/`edit-paste`/`edit-cut` 命令臂 |
-| B4 | 菜单无「退出」 | `ui/app.slint`「退出」0 处；仓库无 `quit_event_loop`/`process::exit` 先例 |
-| B5 | 分轨导出仅 CLI | `ui/app.slint:763` 文案「请用 CLI」；`host.rs:18632` 只打开 WAV 面板 + toast |
-| B6 | 多选框选未触及 | `host.rs:13952` 注释「空白处拖拽语义一位不改（仍是滚动；marquee 未裁决）⇒ ⛔ 不做框选」 |
+| B1 | 波形真实峰值缺失 | **已落地（2026-11-19 复核）**：`crates/yeban-app/src/bridge.rs` 的 `pub fn compute_waveform_peaks` ＋ `TimelineBlockData.waveform_peaks`；后台 `crate::waveform_cache` ＋ `host.rs` 的 `pub fn pump_waveform_analysis`（16 ms 心跳）。立项时那句「尚未接入」的注释已从 `ui/arrangement.slint` 消失 |
+| B2 | BUS COMP 仍「示意」 | **已落地**：`ui/left_panel.slint` 的 `text: root.comp-curve-svg != "" ? "BUS COMP" : @tr("BUS COMP · 示意")` —— 有压缩器画**真实传递曲线**，无压缩器才降级「示意」；曲线由 `bridge::project_compressor_curve` 注入 |
+| B3 | 复制 / 粘贴 / 剪切 = 0 | **已落地**：`host.rs` 有 `"edit-copy"` / `"edit-paste"` / `"edit-cut"` 三个命令臂，与键盘**同一组函数**（代码注释逐字：「同一组函数 ⇒ 键盘与菜单不可能分叉」） |
+| B4 | 菜单无「退出」 | **已落地**：`ui/app.slint` 的「退出 Yeban」菜单项 → `command-execute("app-quit")`；`host.rs` 走 `slint::quit_event_loop()` |
+| B5 | 分轨导出仅 CLI | **已落地**：`ui/app.slint` 菜单「导出分轨 (Stems)...」→ `export-stems`；`host.rs` 命令臂 → 工作线程调 `crate::export_stems::export_stems`（与 CLI / MCP **同一份**）。「请用 CLI」文案 0 处 |
+| B6 | 多选框选未触及 | **已落地**：`host.rs` 的 `pub fn clip_marquee_hits` ＋ `ui.on_clip_marquee_select`；`ui/app.slint` 的 `callback clip-marquee-select`；`ui/arrangement.slint` 的 `marquee-x0/y0/x1/y1` ＋ **4 px 阈值**（越过才起框，未越过仍是滚动 —— 即产品裁决以阈值形式落地） |
 
 ## 已落地（本次）
 
@@ -100,21 +100,25 @@ artifact `golden-linux`）：
 - 验收：菜单项存在 + 命令臂调用退出 API（判据钉接线）；真机验证退出。
 
 ### B5 分轨导出 GUI（中，2026-11-16 降级：后端已存在）
-- **核验结论**：`in-process-mcp` 自 2026-11-12 起**默认开**（`Cargo.toml:270`
-  `default = ["in-process-mcp"]`）；`rfd = "0.17.2"` 已是依赖；**后端现成**：
+- **核验结论**：`in-process-mcp` 自 2026-11-12 起**默认开**（`crates/yeban-app/Cargo.toml` 的 `default` 键
+  `= ["in-process-mcp"]`；⚠ 原文写的根 `Cargo.toml:270` 已失效 —— 该文件现 185 行，键在**子 crate** 清单里）；`rfd = "0.17.2"` 已是依赖；**后端现成**：
   `crate::export_stems::export_stems(...)`（与 MCP `yeban_export_stems` 同一份）。
-- 实现：命令臂 `export-stems` → `rfd` 选目录 → 调 `export_stems`（放工作线程，
-  复用 P1-A 模式）→ 回执。⛔ 不再只是「请用 CLI」。
+- 实现（**2026-11-19 复核的现状**）：命令臂 `export-stems` → 按 `stems_output_dir()` 推导固定落点
+  （Windows `%USERPROFILE%\Documents\Yeban\stems`，其它平台退回 `TEMP/yeban-stems`）→ 工作线程调
+  `crate::export_stems::export_stems` → toast 回执。⛔ 不再只是「请用 CLI」。
+  ⚠ **仍未做**：`rfd` 目录选择器（本节草案里写的那个）；现落点是**推导**的，不是用户选的。
 
-### B6 多选框选（大，需裁决）
-- 代码明确「marquee 未裁决」：空白拖拽当前是**滚动**语义；改成框选会改变既有交互。
-- 需产品裁决：空白拖拽 = 滚动 还是 框选（或修饰键区分）。
-- 裁决后再做：框选矩形 + 命中测试 + 多选状态（`selected_ulids` 已是数组）。
+### B6 多选框选（**已落地，2026-11-19 复核**）
+- 产品裁决以**阈值**形式落地：空白拖拽**未越过 4 px** 仍是滚动；越过 4 px 才起框（`marquee-active`）。
+  既有交互语义未被改变，因此不需要再单独裁决「滚动还是框选」。
+- 已实现：框选矩形（`ui/arrangement.slint` 的 `marquee-x0/y0/x1/y1` + `marquee-active`）、
+  命中测试（`host.rs` 的纯函数 `pub fn clip_marquee_hits`，几何取行几何帧）、多选状态
+  （`ui.on_clip_marquee_select` → `selected-clip-ulids`，与 `timeline-block-selected` 是同一份状态的两个投影）。
 
 ## 后果
 
 - 正向：6 项从"散落在报告/口述"变成**有证据、有实现要点、有验收口径**的立项清单；
   P2-1 死代码本次已清。
-- 负向 / 限制：B6 **仍未实现**（卡在产品裁决：空白拖拽 = 滚动 还是 框选）；B1/B2/B3/B5 已落地
-  （B1 见上「落地（2026-11-16，两步）」）。⛔ 不把"仍是示意/请用 CLI"当作已修 ——
-  本轮之后这三句都已从代码里消失（B2 画真曲线、B5 真导出、B1 有真峰值）。
+- 负向 / 限制：**2026-11-19 复核后 B1–B6 全部落地**（B6 以 4 px 阈值落地，见上）。本表此后只作
+  **立项档案**保留：它记录的是「当时缺什么」，⛔ 不再是「现在缺什么」；现状请以代码符号现读为准。
+  唯一仍未做的是 B5 的 `rfd` 目录选择器（落点现为推导值）。

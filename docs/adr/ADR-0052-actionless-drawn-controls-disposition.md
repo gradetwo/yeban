@@ -27,15 +27,15 @@
 | 控件（语义 ID） | 画在哪 | 缺的是**哪一层** | 现读证据 |
 | --- | --- | --- | --- |
 | `ai-rail-intent-button` | `crates/yeban-app/ui/app.slint:120`，卡片标签逐字「用自然语言描述编曲意图」（`:121`） | **产品入口不存在** | `.slint` 侧**没有**任何 `callback`；`grep -rn intent crates/yeban-app/src/host.rs` ⇒ **0 行**；全仓 `自然语言` 在 `crates/*/src` ＋ `crates/*/ui` 里共 **2 行**（就是上面那个标签与注册表文案）⇒ "自然语言 → 生成"这条链在代码里**一处都不存在**（⛔ 没有解析器、⛔ 没有吃自由文本的生成入口） |
-| `transport-commit-button` | `crates/yeban-app/ui/transport.slint` 的 `commit_area`（**有** `TouchArea`、**没有** `clicked`） | **会话状态层不存在** | 界面每一次编辑**当场**提交：`crates/yeban-app/src/host.rs` 里 `.commit_ops(` 的真实调用点 **33** 处（例 `:1591` 音量 / `:1727` 声像 / `:2134` 通用开关臂）⇒ 会话里**不存在**"攒一批待提交的编辑"这个状态；而权威对**空** op 批次直接 `return Ok(None)`（`crates/yeban-mcp/src/domain/mod.rs:1387`）⇒ 这个键**没有可作用的对象** |
-| `transport-branch-button` | 同文件（该控件**连** `TouchArea` **都没有**，判据第 ④ 条钉死了这一点） | **领域操作面不存在**（⚠ 模型层**已有**原语，见下） | `Domain::active_branch()` **只读**（`crates/yeban-mcp/src/domain/mod.rs:555`）、`UndoState::branch()` **只读**（`crates/yeban-mcp/src/undo_session.rs:182`）、`HostAction` 今天**只有 3 臂**（`crates/yeban-mcp/src/domain/mod.rs:859` 的 `pub enum HostAction`：`Undo` / `Redo` / `Commit`）⇒ 没有"切换活跃分支"的动作面 |
+| `transport-commit-button` | `crates/yeban-app/ui/transport.slint` 的 `commit_area`（**有** `TouchArea`、**没有** `clicked`） | **会话状态层不存在** | 界面每一次编辑**当场**提交：`crates/yeban-app/src/host.rs` 里 `.commit_ops(` 的真实调用点**多处**（⛔ 数字不抄进文档：跑 `grep -c '\.commit_ops(' crates/yeban-app/src/host.rs` 现读即可；2026-11-19 为 **65**，立项时记的 33 早已漂移）⇒ 会话里**不存在**"攒一批待提交的编辑"这个状态；而权威对**空** op 批次直接 `return Ok(None)`（`crates/yeban-mcp/src/domain/mod.rs` 的 `pub fn mutates_project`（`HostAction::Commit` 判 `!ops.is_empty()` ⇒ 空批=工程一位不动））⇒ 这个键**没有可作用的对象** |
+| `transport-branch-button` | 同文件（该控件**连** `TouchArea` **都没有**，判据第 ④ 条钉死了这一点） | **领域操作面不存在**（⚠ 模型层**已有**原语，见下） | `Domain::active_branch()` **只读**（`crates/yeban-mcp/src/domain/mod.rs` 的 `pub fn active_branch`）、`UndoState::branch()` **只读**（`crates/yeban-mcp/src/undo_session.rs:182`）、`HostAction` 今天**只有 3 臂**（`crates/yeban-mcp/src/domain/mod.rs` 的 `pub enum HostAction`：`Undo` / `Redo` / `Commit`）⇒ 没有"切换活跃分支"的动作面 |
 
 ⚠ **本票对既有判据文档的一处更正**（登记、⛔ 擅自改写 —— 那是别的切片的活文档）：
 `crates/yeban-app/src/elements.rs` 的 `the_remaining_transport_document_actions_are_not_wired_today` 把分支键写成
 "切换活跃分支的 API **一处都不存在**"。这句在**领域／宿主面**成立；在**模型面不成立** ——
 `crates/yeban-model/src/commit.rs` 今天就有四个分支原语：`create_branch`（`:492`）、`fork_anonymous`（`:570`）、
 `branch_head`（`:652`）、`branch_count`（`:787`），而 `create_branch` 在仓库里的唯一**领域**消费者是提案路径
-（`crates/yeban-mcp/src/domain/mod.rs:4391`：建在 `draft.base_commit` 上的隔离分支 `ai/proposal-{ulid}`；
+（`crates/yeban-mcp/src/domain/mod.rs` 的 `PROPOSAL_BRANCH_PREFIX` ＋ `draft.base_commit`：建在 `draft.base_commit` 上的隔离分支 `ai/proposal-{ulid}`；
 语义见 `crates/yeban-mcp/src/domain/proposal.rs` 的模块文档）。⇒ 分支键缺的**不是模型能力**，
 是**领域操作面 ＋ 撤销语义**，这直接改变了 `D4` 的代价表（比"从零造分支"低一档）。
 

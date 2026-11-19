@@ -11,8 +11,10 @@
   `app.slint:716`（注释逐字："accept ⇒ Slint 也不做 `Tab` 焦点轮转"）、
   `crates/yeban-app/src/input.rs:702`（`Action::ToggleView`）、`input.rs:1262`（画布持焦时 `Tab` 解析成它）、
   `input.rs:924`（该变体的文档逐字写明这个事实）、`input.rs:1402`（既有判据"删掉 TextInput 分支会变红"）、
-  `crates/yeban-app/ui/app.slint:2237`（`focus-sidebar-search()`，D1 的成例）与
-  `app.slint:2247-2251`（时光机那一对 `undo_tree_trap.focus()` / `key-handler.focus()`，程序性取焦的第二个成例）、
+  `crates/yeban-app/ui/app.slint` 的 `public function focus-sidebar-search()`（D1 的成例）与
+  同文件 `public function focus-shortcut-layer()`（`key-handler.focus()`，程序性取焦的第二个成例）、
+  ⭐ **2026-11-19 复核**：本行此前写的 `app.slint:2237` / `:2247-2251` 两个行号**均已失效**（文件现 2,208 行，
+  且 `undo_tree_trap.focus()` 那一对已随重构消失）⇒ 改成**按函数名**引用（行号不抄进文档）、
   `crates/yeban-app/ui/transport.slint` 的 `bpm-input`（今天**没有**任何键盘入口，见下"证据边界"）
 - **日期**: 2026-11-03
 

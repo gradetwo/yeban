@@ -62,8 +62,11 @@ tree 与 `0f181bd` 一致），故清单的代码事实对当前 tip 成立。�
 配套：`ui_display_honesty.rs` 判据 ②/⑤ 随演进同步更新，新增
 `ui_unfixed_list_regression.rs` 5 条源码层判据（含 golden 保护断言）。
 
-⛔ BUS COMP / 机架卡片 / 通道条 EQ 三处**仍未接**真实参数（无对应投影属性），
-继续保持「示意」标注，不臆造曲线。
+~~BUS COMP / 机架卡片 / 通道条 EQ 三处**仍未接**真实参数~~ ⇒ ⭐ **2026-11-19 复核：三处均已接真实投影** ——
+BUS COMP 用 `ui/left_panel.slint` 的 `comp-curve-svg`（**无压缩器**才降级「BUS COMP · 示意」）、
+通道条 EQ 用同文件的 `eq-curve-svg`（由 `bridge::calculate_eq_curve_svg` 注入）、
+机架卡片用 `ui/console/device_rack.slint` 的 `eq-gain-db` / `eq-curve-svg`。⇒ 立项时的「仍未接」已不成立；
+**判据仍然有效**：⛔ 不画常量曲线冒充响应（空串 = 诚实降级「示意」）。
 
 ### D2 — 双层键路冲突：**已采纳 R1（人类 2026-11-16 确认「参考 Logic Pro」）**
 

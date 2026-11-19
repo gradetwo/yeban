@@ -1,8 +1,16 @@
 # ADR-0053 — 界面上的「导出分轨」入口⛔ 接不了：它唯一诚实的落点 `yeban_mcp::domain::stems` 在**默认发行构建里不存在**（MUST-GATE-009 的第一道开关把它连同整张依赖图一起关掉），而"再做一份分轨实现"是第二个真相源
 
-- **状态**: **Proposed**（待人类批准；⛔ 集成者代签。本票**不改任何代码、不改任何 `.slint`、不重录任何基准**，
-  只把「导出分轨的 GUI 入口」这一票的**架构阻塞**与其代价写成可批可驳的选项）
-- **决定者**: 待人类裁决（集成者提出）
+- **状态**: **Superseded（2026-11-19）** —— 本票登记的**阻塞前提已被解除**：GUI 入口经 `ADR-0076` **B5** 走
+  `crate::export_stems::export_stems`（与 CLI / MCP **同一份**后端）落地，**不再**复用 `yeban_mcp::domain::stems`，
+  因此 `MUST-GATE-009` 那道发行开关**不再挡住它**；⚠ 且 `in-process-mcp` 自 2026-11-12 起**默认开**
+  （`crates/yeban-app/Cargo.toml` 的 `default = ["in-process-mcp"]`）⇒ 本票原文所说的「`yeban_mcp::domain::stems`
+  在默认发行构建里不存在」这一**前提本身**也已不成立。
+  原文以下各节按**历史记录**保留（⛔ 不改写），本票不再需要人类在 D1/D2/D3/D5 之间裁决。
+- **决定者**: 待人类裁决（集成者提出） ⇒ **已被 `ADR-0076` B5 的事实落地取代（2026-11-19）**
+- **复核（2026-11-19）**: `crates/yeban-app/ui/app.slint` 的菜单项「导出分轨 (Stems)...」→ `command-execute("export-stems")`；
+  `crates/yeban-app/src/host.rs` 的 `"export-stems"` 臂（建目录 → `port.try_project()` → 工作线程调
+  `crate::export_stems::export_stems`）；后端 `crates/yeban-app/src/export_stems.rs` 的 `pub fn export_stems`。
+  ⭐ 复核口径：**符号**（⛔ 行号）—— 行号会随重构腐烂，本节刻意不写行号。
 - **关联**: `ADR-0030`（分轨导出的**工具面**裁决，本票⛔ 推翻它、只补它没写的那一半——**界面**入口）、
   `ADR-0001` **D47**（导出的唯一出口＝ CLI/离线语义）、**D51**（工作区**内部**依赖边可以新增，但生成物必须机械重生成、
   同时只允许一条线碰根清单）、`ADR-0005`（GUI 进程内⛔ 第二份权威）、`ADR-0011`（`yeban-render`→`yeban-engine`
