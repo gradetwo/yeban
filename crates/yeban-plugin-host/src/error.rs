@@ -19,7 +19,7 @@ pub enum HostError {
     NotAnEffect(String),
     /// 插件没有实现一期必需的接口（`IComponent`／`IAudioProcessor`）。
     InterfaceMissing(&'static str),
-    /// 插件不支持 32 位浮点处理（`canProcessSampleSize(kSample32)` 非真）。
+    /// 插件不支持 32 位或 64 位浮点处理（`canProcessSampleSize` 均返回非真）。
     SampleSizeUnsupported,
     /// 插件输出总线不是立体声（一期只接立体声输出）。
     OutputNotStereo,
@@ -60,7 +60,7 @@ impl fmt::Display for HostError {
             Self::InterfaceMissing(interface) => {
                 write!(f, "插件没有实现一期必需的接口 `{interface}`")
             }
-            Self::SampleSizeUnsupported => write!(f, "插件不支持 32 位浮点处理"),
+            Self::SampleSizeUnsupported => write!(f, "插件不支持 32 位或 64 位浮点处理"),
             Self::OutputNotStereo => write!(f, "插件输出总线不是立体声（一期只接立体声输出）"),
             Self::InputNotStereo => {
                 write!(f, "插件输入总线不是立体声（效果器线一期只接立体声输入）")

@@ -212,6 +212,14 @@ struct ProcessSetup {
     sample_rate: f64,
 }
 
+/// `AudioBusBuffers` 的声道指针联合（32 位或 64 位浮点，由 `symbolic_sample_size` 决定）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+union ChannelBuffers {
+    f32_ptrs: *mut *mut f32,
+    f64_ptrs: *mut *mut f64,
+}
+
 /// `AudioBusBuffers`：24 字节。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -219,7 +227,7 @@ struct AudioBusBuffers {
     num_channels: i32,
     _pad: i32,
     silence_flags: u64,
-    channel_buffers: *mut *mut f32,
+    channel_buffers: ChannelBuffers,
 }
 
 /// `ProcessContext`：112 字节（Steinberg `pluginterfaces/vst/ivstprocesscontext.h`
@@ -1204,6 +1212,44 @@ fn bus_count(component: *mut c_void, media: i32, dir: i32) -> Result<i32, HostEr
 struct AudioScratch {
     in_l32: Vec<f32>,
     in_r32: Vec<f32>,
+    in_l64: Vec<f64>,
+    in_r64: Vec<f64>,
+    out_l64: Vec<f64>,
+    out_r64: Vec<f64>,
+}
+
+/// 把 64 位输出暂存写回 32 位调用方缓冲，并遵守 VST3 `silence_flags`（bit 0/1）。
+fn copy_f64_bus_to_f32(
+    silence_flags: u64,
+    src_l: &[f64],
+    src_r: &[f64],
+    dst_l: &mut [f32],
+    dst_r: &mut [f32],
+) {
+    if (silence_flags & 1) != 0 {
+        dst_l.fill(0.0);
+    } else {
+        for (dst, src) in dst_l.iter_mut().zip(src_l.iter()) {
+            *dst = *src as f32;
+        }
+    }
+    if (silence_flags & 2) != 0 {
+        dst_r.fill(0.0);
+    } else {
+        for (dst, src) in dst_r.iter_mut().zip(src_r.iter()) {
+            *dst = *src as f32;
+        }
+    }
+}
+
+/// 32 位输出路径遵守 VST3 `silence_flags`（bit 0/1 置位时清零对应声道）。
+fn apply_f32_silence_flags(silence_flags: u64, dst_l: &mut [f32], dst_r: &mut [f32]) {
+    if (silence_flags & 1) != 0 {
+        dst_l.fill(0.0);
+    }
+    if (silence_flags & 2) != 0 {
+        dst_r.fill(0.0);
+    }
 }
 
 pub struct Vst3Instance {
@@ -1560,39 +1606,119 @@ impl Vst3Instance {
         for sample in out_l.iter_mut().chain(out_r.iter_mut()) {
             *sample = 0.0;
         }
-        let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
-        let mut in_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: u64::MAX,
-            channel_buffers: channel_ptrs.as_mut_ptr(),
-        };
-        let mut out_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: 0,
-            channel_buffers: channel_ptrs.as_mut_ptr(),
-        };
-        let mut data = ProcessData {
-            process_mode: PROCESS_REALTIME,
-            symbolic_sample_size: SAMPLE_32,
-            num_samples: frames as i32,
-            num_inputs: 1,
-            num_outputs: 1,
-            _pad: 0,
-            inputs: &mut in_bus,
-            outputs: &mut out_bus,
-            input_events: ptr::null_mut(),
-            output_events: ptr::null_mut(),
-            input_parameter_changes: ptr::null_mut(),
-            output_parameter_changes: ptr::null_mut(),
-            process_context: context as *const ProcessContext as *mut c_void,
-        };
-        // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
-        // 总线与上下文，插件在 `process` 返回前只用它们。
-        unsafe {
-            let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-            check("process", (proc_vtbl.process)(self.processor, &mut data))
+        match self.sample_size {
+            SAMPLE_32 => {
+                let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: u64::MAX,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: channel_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: channel_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut data = ProcessData {
+                    process_mode: PROCESS_REALTIME,
+                    symbolic_sample_size: SAMPLE_32,
+                    num_samples: frames as i32,
+                    num_inputs: 1,
+                    num_outputs: 1,
+                    _pad: 0,
+                    inputs: &mut in_bus,
+                    outputs: &mut out_bus,
+                    input_events: ptr::null_mut(),
+                    output_events: ptr::null_mut(),
+                    input_parameter_changes: ptr::null_mut(),
+                    output_parameter_changes: ptr::null_mut(),
+                    process_context: context as *const ProcessContext as *mut c_void,
+                };
+                // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                // 总线与上下文，插件在 `process` 返回前只用它们。
+                unsafe {
+                    let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                    check("process", (proc_vtbl.process)(self.processor, &mut data))?;
+                }
+                apply_f32_silence_flags(out_bus.silence_flags, out_l, out_r);
+                Ok(())
+            }
+            SAMPLE_64 => {
+                if self.scratch.in_l64.len() < frames
+                    || self.scratch.in_r64.len() < frames
+                    || self.scratch.out_l64.len() < frames
+                    || self.scratch.out_r64.len() < frames
+                {
+                    return Err(HostError::Other(format!(
+                        "帧数 {frames} ＞ 激活块上限 {}",
+                        self.max_block
+                    )));
+                }
+                self.scratch.in_l64[..frames].fill(0.0);
+                self.scratch.in_r64[..frames].fill(0.0);
+                self.scratch.out_l64[..frames].fill(0.0);
+                self.scratch.out_r64[..frames].fill(0.0);
+                let mut in_ptrs: [*mut f64; 2] = [
+                    self.scratch.in_l64.as_mut_ptr(),
+                    self.scratch.in_r64.as_mut_ptr(),
+                ];
+                let mut out_ptrs: [*mut f64; 2] = [
+                    self.scratch.out_l64.as_mut_ptr(),
+                    self.scratch.out_r64.as_mut_ptr(),
+                ];
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: u64::MAX,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: in_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: out_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut data = ProcessData {
+                    process_mode: PROCESS_REALTIME,
+                    symbolic_sample_size: SAMPLE_64,
+                    num_samples: frames as i32,
+                    num_inputs: 1,
+                    num_outputs: 1,
+                    _pad: 0,
+                    inputs: &mut in_bus,
+                    outputs: &mut out_bus,
+                    input_events: ptr::null_mut(),
+                    output_events: ptr::null_mut(),
+                    input_parameter_changes: ptr::null_mut(),
+                    output_parameter_changes: ptr::null_mut(),
+                    process_context: context as *const ProcessContext as *mut c_void,
+                };
+                // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                // 64 位非重叠暂存总线与上下文，插件在 `process` 返回前只用它们。
+                unsafe {
+                    let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                    check("process", (proc_vtbl.process)(self.processor, &mut data))?;
+                }
+                copy_f64_bus_to_f32(
+                    out_bus.silence_flags,
+                    &self.scratch.out_l64[..frames],
+                    &self.scratch.out_r64[..frames],
+                    out_l,
+                    out_r,
+                );
+                Ok(())
+            }
+            _ => Err(HostError::SampleSizeUnsupported),
         }
     }
 
@@ -1779,12 +1905,25 @@ impl PluginInstance for Vst3Instance {
             // 延迟在 `setActive(true)` 之后读（SDK 注记：此前读到的可能是旧值）。
             self.latency = (proc_vtbl.get_latency_samples)(self.processor);
         }
-        if self.has_audio_in {
-            self.scratch.in_l32.resize(max_block, 0.0);
-            self.scratch.in_r32.resize(max_block, 0.0);
-        } else {
+        if self.sample_size == SAMPLE_64 {
             self.scratch.in_l32.clear();
             self.scratch.in_r32.clear();
+            self.scratch.in_l64.resize(max_block, 0.0);
+            self.scratch.in_r64.resize(max_block, 0.0);
+            self.scratch.out_l64.resize(max_block, 0.0);
+            self.scratch.out_r64.resize(max_block, 0.0);
+        } else {
+            self.scratch.in_l64.clear();
+            self.scratch.in_r64.clear();
+            self.scratch.out_l64.clear();
+            self.scratch.out_r64.clear();
+            if self.has_audio_in {
+                self.scratch.in_l32.resize(max_block, 0.0);
+                self.scratch.in_r32.resize(max_block, 0.0);
+            } else {
+                self.scratch.in_l32.clear();
+                self.scratch.in_r32.clear();
+            }
         }
         self.active = true;
         self.sample_rate = sample_rate;
@@ -1943,14 +2082,6 @@ impl PluginInstance for Vst3Instance {
                 "效果器实例不能走乐器 process 路径（须用 process_audio）".to_owned(),
             ));
         }
-        // f32 trait 路径只服务 32 位插件；64 位插件无 trait 路径
-        // （⛔ 不得把 f32 缓冲硬塞给 double 插件静默出声）。
-        // ARA 侧 64 位协商插件走 `process_ara`（f32，见 ara.rs 注释）。
-        if self.sample_size == SAMPLE_64 {
-            return Err(HostError::Other(
-                "插件只接受 64 位浮点，f32 trait 路径不可用".to_owned(),
-            ));
-        }
         if out_l.len() != frames || out_r.len() != frames {
             return Err(HostError::Other(format!(
                 "输出片长（{}／{}）≠ 帧数 {frames}",
@@ -2022,62 +2153,154 @@ impl PluginInstance for Vst3Instance {
         // 无弯音时传空指针（插件保持上次弯音值）；无映射的通道整组跳过，
         // 每实例只记一次日志（长渲染不刷屏）。
         let bend_queues = self.bend_param_queues(&bends, frames);
-        let mut in_ptrs: [*mut f32; 2] = if self.has_audio_in {
-            if self.scratch.in_l32.len() < frames || self.scratch.in_r32.len() < frames {
-                return Err(HostError::Other(format!(
-                    "帧数 {frames} ＞ 激活块上限 {}",
-                    self.max_block
-                )));
-            }
-            self.scratch.in_l32[..frames].fill(0.0);
-            self.scratch.in_r32[..frames].fill(0.0);
-            [
-                self.scratch.in_l32.as_mut_ptr(),
-                self.scratch.in_r32.as_mut_ptr(),
-            ]
-        } else {
-            [ptr::null_mut(), ptr::null_mut()]
-        };
-        let mut in_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: 0x3,
-            channel_buffers: in_ptrs.as_mut_ptr(),
-        };
-        let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
-        let mut out_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: 0,
-            channel_buffers: channel_ptrs.as_mut_ptr(),
-        };
-        with_parameter_changes(&bend_queues, |param_changes_ptr| {
-            let mut data = ProcessData {
-                process_mode: PROCESS_REALTIME,
-                symbolic_sample_size: SAMPLE_32,
-                num_samples: frames as i32,
-                num_inputs: i32::from(self.has_audio_in),
-                num_outputs: 1,
-                _pad: 0,
-                inputs: if self.has_audio_in {
-                    &mut in_bus
+        match self.sample_size {
+            SAMPLE_32 => {
+                let mut in_ptrs: [*mut f32; 2] = if self.has_audio_in {
+                    if self.scratch.in_l32.len() < frames || self.scratch.in_r32.len() < frames {
+                        return Err(HostError::Other(format!(
+                            "帧数 {frames} ＞ 激活块上限 {}",
+                            self.max_block
+                        )));
+                    }
+                    self.scratch.in_l32[..frames].fill(0.0);
+                    self.scratch.in_r32[..frames].fill(0.0);
+                    [
+                        self.scratch.in_l32.as_mut_ptr(),
+                        self.scratch.in_r32.as_mut_ptr(),
+                    ]
                 } else {
-                    ptr::null_mut()
-                },
-                outputs: &mut out_bus,
-                input_events: event_ptr,
-                output_events: ptr::null_mut(),
-                input_parameter_changes: param_changes_ptr,
-                output_parameter_changes: ptr::null_mut(),
-                process_context: ptr::null_mut(),
-            };
-            // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
-            // 总线与事件列表，插件在 `process` 返回前只用它们。
-            unsafe {
-                let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-                check("process", (proc_vtbl.process)(self.processor, &mut data))
+                    [ptr::null_mut(), ptr::null_mut()]
+                };
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0x3,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: in_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut channel_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: channel_ptrs.as_mut_ptr(),
+                    },
+                };
+                with_parameter_changes(&bend_queues, |param_changes_ptr| {
+                    let mut data = ProcessData {
+                        process_mode: PROCESS_REALTIME,
+                        symbolic_sample_size: SAMPLE_32,
+                        num_samples: frames as i32,
+                        num_inputs: i32::from(self.has_audio_in),
+                        num_outputs: 1,
+                        _pad: 0,
+                        inputs: if self.has_audio_in {
+                            &mut in_bus
+                        } else {
+                            ptr::null_mut()
+                        },
+                        outputs: &mut out_bus,
+                        input_events: event_ptr,
+                        output_events: ptr::null_mut(),
+                        input_parameter_changes: param_changes_ptr,
+                        output_parameter_changes: ptr::null_mut(),
+                        process_context: ptr::null_mut(),
+                    };
+                    // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                    // 总线与事件列表，插件在 `process` 返回前只用它们。
+                    unsafe {
+                        let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                        check("process", (proc_vtbl.process)(self.processor, &mut data))
+                    }
+                })?;
+                apply_f32_silence_flags(out_bus.silence_flags, out_l, out_r);
+                Ok(())
             }
-        })
+            SAMPLE_64 => {
+                if self.scratch.out_l64.len() < frames || self.scratch.out_r64.len() < frames {
+                    return Err(HostError::Other(format!(
+                        "帧数 {frames} ＞ 激活块上限 {}",
+                        self.max_block
+                    )));
+                }
+                let mut in_ptrs: [*mut f64; 2] = if self.has_audio_in {
+                    if self.scratch.in_l64.len() < frames || self.scratch.in_r64.len() < frames {
+                        return Err(HostError::Other(format!(
+                            "帧数 {frames} ＞ 激活块上限 {}",
+                            self.max_block
+                        )));
+                    }
+                    self.scratch.in_l64[..frames].fill(0.0);
+                    self.scratch.in_r64[..frames].fill(0.0);
+                    [
+                        self.scratch.in_l64.as_mut_ptr(),
+                        self.scratch.in_r64.as_mut_ptr(),
+                    ]
+                } else {
+                    [ptr::null_mut(), ptr::null_mut()]
+                };
+                self.scratch.out_l64[..frames].fill(0.0);
+                self.scratch.out_r64[..frames].fill(0.0);
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0x3,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: in_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut channel_ptrs: [*mut f64; 2] = [
+                    self.scratch.out_l64.as_mut_ptr(),
+                    self.scratch.out_r64.as_mut_ptr(),
+                ];
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: channel_ptrs.as_mut_ptr(),
+                    },
+                };
+                with_parameter_changes(&bend_queues, |param_changes_ptr| {
+                    let mut data = ProcessData {
+                        process_mode: PROCESS_REALTIME,
+                        symbolic_sample_size: SAMPLE_64,
+                        num_samples: frames as i32,
+                        num_inputs: i32::from(self.has_audio_in),
+                        num_outputs: 1,
+                        _pad: 0,
+                        inputs: if self.has_audio_in {
+                            &mut in_bus
+                        } else {
+                            ptr::null_mut()
+                        },
+                        outputs: &mut out_bus,
+                        input_events: event_ptr,
+                        output_events: ptr::null_mut(),
+                        input_parameter_changes: param_changes_ptr,
+                        output_parameter_changes: ptr::null_mut(),
+                        process_context: ptr::null_mut(),
+                    };
+                    // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                    // 64 位暂存总线与事件列表，插件在 `process` 返回前只用它们。
+                    unsafe {
+                        let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                        check("process", (proc_vtbl.process)(self.processor, &mut data))
+                    }
+                })?;
+                copy_f64_bus_to_f32(
+                    out_bus.silence_flags,
+                    &self.scratch.out_l64[..frames],
+                    &self.scratch.out_r64[..frames],
+                    out_l,
+                    out_r,
+                );
+                Ok(())
+            }
+            _ => Err(HostError::SampleSizeUnsupported),
+        }
     }
 
     fn process_audio(
@@ -2124,46 +2347,133 @@ impl PluginInstance for Vst3Instance {
             })
             .collect();
         let bend_queues = self.bend_param_queues(&bends, frames);
-        // 输入指针：VST3 契约里输入与输出片分离时插件 ⛔ 不得写输入；
-        // 本方法只在输入／输出片分离的前提下被调用（见 trait 文档）。
-        // SAFETY: `in_l`／`in_r` 在调用帧内有效；插件在 `process` 返回前只读它们。
-        let mut in_ptrs: [*mut f32; 2] = [in_l.as_ptr() as *mut f32, in_r.as_ptr() as *mut f32];
-        let mut in_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: 0,
-            channel_buffers: in_ptrs.as_mut_ptr(),
-        };
-        let mut out_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
-        let mut out_bus = AudioBusBuffers {
-            num_channels: 2,
-            _pad: 0,
-            silence_flags: 0,
-            channel_buffers: out_ptrs.as_mut_ptr(),
-        };
-        with_parameter_changes(&bend_queues, |param_changes_ptr| {
-            let mut data = ProcessData {
-                process_mode: PROCESS_REALTIME,
-                symbolic_sample_size: SAMPLE_32,
-                num_samples: frames as i32,
-                num_inputs: 1,
-                num_outputs: 1,
-                _pad: 0,
-                inputs: &mut in_bus,
-                outputs: &mut out_bus,
-                input_events: ptr::null_mut(),
-                output_events: ptr::null_mut(),
-                input_parameter_changes: param_changes_ptr,
-                output_parameter_changes: ptr::null_mut(),
-                process_context: ptr::null_mut(),
-            };
-            // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
-            // 总线，插件在 `process` 返回前只用它们。
-            unsafe {
-                let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
-                check("process", (proc_vtbl.process)(self.processor, &mut data))
+        match self.sample_size {
+            SAMPLE_32 => {
+                // 输入指针：VST3 契约里输入与输出片分离时插件 ⛔ 不得写输入；
+                // 本方法只在输入／输出片分离的前提下被调用（见 trait 文档）。
+                // SAFETY: `in_l`／`in_r` 在调用帧内有效；插件在 `process` 返回前只读它们。
+                let mut in_ptrs: [*mut f32; 2] =
+                    [in_l.as_ptr() as *mut f32, in_r.as_ptr() as *mut f32];
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: in_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut out_ptrs: [*mut f32; 2] = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f32_ptrs: out_ptrs.as_mut_ptr(),
+                    },
+                };
+                with_parameter_changes(&bend_queues, |param_changes_ptr| {
+                    let mut data = ProcessData {
+                        process_mode: PROCESS_REALTIME,
+                        symbolic_sample_size: SAMPLE_32,
+                        num_samples: frames as i32,
+                        num_inputs: 1,
+                        num_outputs: 1,
+                        _pad: 0,
+                        inputs: &mut in_bus,
+                        outputs: &mut out_bus,
+                        input_events: ptr::null_mut(),
+                        output_events: ptr::null_mut(),
+                        input_parameter_changes: param_changes_ptr,
+                        output_parameter_changes: ptr::null_mut(),
+                        process_context: ptr::null_mut(),
+                    };
+                    // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                    // 总线，插件在 `process` 返回前只用它们。
+                    unsafe {
+                        let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                        check("process", (proc_vtbl.process)(self.processor, &mut data))
+                    }
+                })?;
+                apply_f32_silence_flags(out_bus.silence_flags, out_l, out_r);
+                Ok(())
             }
-        })
+            SAMPLE_64 => {
+                if self.scratch.in_l64.len() < frames
+                    || self.scratch.in_r64.len() < frames
+                    || self.scratch.out_l64.len() < frames
+                    || self.scratch.out_r64.len() < frames
+                {
+                    return Err(HostError::Other(format!(
+                        "帧数 {frames} ＞ 激活块上限 {}",
+                        self.max_block
+                    )));
+                }
+                for (dst, src) in self.scratch.in_l64[..frames].iter_mut().zip(in_l.iter()) {
+                    *dst = f64::from(*src);
+                }
+                for (dst, src) in self.scratch.in_r64[..frames].iter_mut().zip(in_r.iter()) {
+                    *dst = f64::from(*src);
+                }
+                self.scratch.out_l64[..frames].fill(0.0);
+                self.scratch.out_r64[..frames].fill(0.0);
+                let mut in_ptrs: [*mut f64; 2] = [
+                    self.scratch.in_l64.as_mut_ptr(),
+                    self.scratch.in_r64.as_mut_ptr(),
+                ];
+                let mut in_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: in_ptrs.as_mut_ptr(),
+                    },
+                };
+                let mut out_ptrs: [*mut f64; 2] = [
+                    self.scratch.out_l64.as_mut_ptr(),
+                    self.scratch.out_r64.as_mut_ptr(),
+                ];
+                let mut out_bus = AudioBusBuffers {
+                    num_channels: 2,
+                    _pad: 0,
+                    silence_flags: 0,
+                    channel_buffers: ChannelBuffers {
+                        f64_ptrs: out_ptrs.as_mut_ptr(),
+                    },
+                };
+                with_parameter_changes(&bend_queues, |param_changes_ptr| {
+                    let mut data = ProcessData {
+                        process_mode: PROCESS_REALTIME,
+                        symbolic_sample_size: SAMPLE_64,
+                        num_samples: frames as i32,
+                        num_inputs: 1,
+                        num_outputs: 1,
+                        _pad: 0,
+                        inputs: &mut in_bus,
+                        outputs: &mut out_bus,
+                        input_events: ptr::null_mut(),
+                        output_events: ptr::null_mut(),
+                        input_parameter_changes: param_changes_ptr,
+                        output_parameter_changes: ptr::null_mut(),
+                        process_context: ptr::null_mut(),
+                    };
+                    // SAFETY: `processor` 是本实例的有效指针；`data` 指向调用帧内的
+                    // 64 位非重叠暂存总线，插件在 `process` 返回前只用它们。
+                    unsafe {
+                        let proc_vtbl = vtbl::<AudioProcessorVtbl>(self.processor);
+                        check("process", (proc_vtbl.process)(self.processor, &mut data))
+                    }
+                })?;
+                copy_f64_bus_to_f32(
+                    out_bus.silence_flags,
+                    &self.scratch.out_l64[..frames],
+                    &self.scratch.out_r64[..frames],
+                    out_l,
+                    out_r,
+                );
+                Ok(())
+            }
+            _ => Err(HostError::SampleSizeUnsupported),
+        }
     }
 }
 
@@ -2449,5 +2759,31 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn sample64_scratch_copy_respects_silence_flags() {
+        assert_eq!(size_of::<ChannelBuffers>(), size_of::<*mut *mut f32>());
+        assert_eq!(size_of::<AudioBusBuffers>(), 24);
+        let src_l = [0.25_f64, -0.5_f64, 1.0_f64];
+        let src_r = [0.75_f64, -0.125_f64, 0.5_f64];
+        let mut dst_l = [9.0_f32; 3];
+        let mut dst_r = [9.0_f32; 3];
+
+        // silence_flags bit 0 置位 => 左声道强制清零，右声道按 f64 转 f32。
+        copy_f64_bus_to_f32(0b01, &src_l, &src_r, &mut dst_l, &mut dst_r);
+        assert_eq!(dst_l, [0.0, 0.0, 0.0]);
+        assert_eq!(dst_r, [0.75, -0.125, 0.5]);
+
+        // silence_flags bit 1 置位 => 左声道按 f64 转 f32，右声道强制清零。
+        copy_f64_bus_to_f32(0b10, &src_l, &src_r, &mut dst_l, &mut dst_r);
+        assert_eq!(dst_l, [0.25, -0.5, 1.0]);
+        assert_eq!(dst_r, [0.0, 0.0, 0.0]);
+
+        let mut f32_l = [1.0_f32, 2.0];
+        let mut f32_r = [3.0_f32, 4.0];
+        apply_f32_silence_flags(0b10, &mut f32_l, &mut f32_r);
+        assert_eq!(f32_l, [1.0, 2.0]);
+        assert_eq!(f32_r, [0.0, 0.0]);
     }
 }
