@@ -290,7 +290,11 @@ pub fn installed_path(pack_id: &str, roots: SfzRoots<'_>) -> Option<String> {
     let sound = sounds
         .iter()
         .find(|sound| sound.id == pack_id)
-        .or_else(|| sounds.iter().find(|sound| squashed(&sound.id) == squashed(pack_id)))?;
+        .or_else(|| {
+            sounds
+                .iter()
+                .find(|sound| squashed(&sound.id) == squashed(pack_id))
+        })?;
     let library_root = roots
         .library_root
         .map(std::path::Path::to_path_buf)

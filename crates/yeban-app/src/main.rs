@@ -1088,19 +1088,20 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ 自动化钩子（截图用）：`YEBAN_UI_RESCUE_DOWNLOAD=1` ⇒ 启动后替用户**点一次**
     // 救援面板第一行的「下载原音源」（走的就是那个按钮的同一个 callback，⛔ 不是另写一条
     // 旁路）。用途：截图要看见"面板让位、音源管理在前台"的现场，而 Slint 窗口收不到合成点击。
-    let rescue_first_pack: Option<(String, String)> = missing_sounds
-        .first()
-        .and_then(|row| row.pack_id.clone().map(|id| (id, row.pack_name.clone().unwrap_or_default())));
+    let rescue_first_pack: Option<(String, String)> = missing_sounds.first().and_then(|row| {
+        row.pack_id
+            .clone()
+            .map(|id| (id, row.pack_name.clone().unwrap_or_default()))
+    });
     if !missing_sounds.is_empty() {
         host::wire_missing_sounds_dialog(&ui, Rc::clone(&undo_port), missing_sounds);
     }
     if std::env::var("YEBAN_UI_RESCUE_DOWNLOAD")
         .map(|value| value.trim() == "1")
         .unwrap_or(false)
+        && let Some((pack_id, pack_name)) = rescue_first_pack
     {
-        if let Some((pack_id, pack_name)) = rescue_first_pack {
-            ui.invoke_missing_open_pack(0, pack_id.into(), pack_name.into());
-        }
+        ui.invoke_missing_open_pack(0, pack_id.into(), pack_name.into());
     }
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。

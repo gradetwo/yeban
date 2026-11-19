@@ -34,9 +34,9 @@ use yeban_model::{EntityId, MidiNote, SamplerBinding};
 use yeban_render::dither::{BitDepth, PcmBuffer};
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
+use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
-use yeban_ui_test_port::Size;
 
 const WINDOW: Size = Size::new(1440, 1000);
 const NOW_MS: u64 = 1_760_000_000_000;
@@ -69,8 +69,12 @@ impl AudioFixture {
             let value = (phase.sin() * 0.5 * 8_388_607.0).round() as i32;
             pcm.push(value);
         }
-        write_plain_wav(&wav, &PcmFormat::integer(1, RATE, 24), &PcmBuffer::Int24(pcm))
-            .expect("写夹具 WAV");
+        write_plain_wav(
+            &wav,
+            &PcmFormat::integer(1, RATE, 24),
+            &PcmBuffer::Int24(pcm),
+        )
+        .expect("写夹具 WAV");
         let sfz = dir.join("tone.sfz");
         std::fs::write(&sfz, "<region> sample=tone.wav key=60 pitch_keycenter=60\n")
             .expect("写夹具 SFZ");
@@ -167,8 +171,13 @@ fn project_with_missing_sampler(tag: &str) -> (YebanProjectV1, EntityId) {
 fn live_window(project: &YebanProjectV1, tag: &str) -> (LivePort<MainWindow>, Rc<UndoPort>) {
     let view = ViewState::from_project(project).expect("投影");
     let port = Rc::new(UndoPort::new(
-        UndoSession::open(format!("<判据 {tag}>"), "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
+        UndoSession::open(
+            format!("<判据 {tag}>"),
+            "yeban-app",
+            project.clone(),
+            NOW_MS,
+        )
+        .expect("打开撤销会话"),
     ));
     let scene = DemoScene::from_view(&view);
     let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
@@ -178,7 +187,10 @@ fn live_window(project: &YebanProjectV1, tag: &str) -> (LivePort<MainWindow>, Rc
     let ui = live.ui();
     host::wire_sound_library_dialog_with(ui, Some(Rc::clone(&port)));
     let rows = yeban_app::missing_sounds::collect(&port.project(), None);
-    assert!(!rows.is_empty(), "夹具必须真的被判成缺音源（否则本判据是空绿）");
+    assert!(
+        !rows.is_empty(),
+        "夹具必须真的被判成缺音源（否则本判据是空绿）"
+    );
     host::wire_missing_sounds_dialog(ui, Rc::clone(&port), rows);
     (live, port)
 }
@@ -197,7 +209,11 @@ fn render(project: &YebanProjectV1) -> Result<(usize, f32, String), String> {
     };
     let output = render_project_f32_with_assets(project, options, None, &[])
         .map_err(|error| format!("{error:?}"))?;
-    let nonzero = output.samples.iter().filter(|sample| **sample != 0.0).count();
+    let nonzero = output
+        .samples
+        .iter()
+        .filter(|sample| **sample != 0.0)
+        .count();
     let peak = output
         .samples
         .iter()
@@ -306,9 +322,10 @@ fn a_pack_finishing_after_the_rescue_button_binds_the_track_without_a_second_cli
 fn first_installed_pack() -> Option<(String, String, String)> {
     let sounds = yeban_app::builtin_sounds::load_builtin_sounds().ok()?;
     for sound in sounds {
-        if let Some(path) =
-            yeban_app::missing_sounds::installed_path(&sound.id, yeban_app::sfz_load::SfzRoots::none())
-        {
+        if let Some(path) = yeban_app::missing_sounds::installed_path(
+            &sound.id,
+            yeban_app::sfz_load::SfzRoots::none(),
+        ) {
             return Some((sound.id, sound.name, path));
         }
     }

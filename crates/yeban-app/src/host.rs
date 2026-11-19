@@ -11370,7 +11370,10 @@ fn sound_library_target(ui: &MainWindow) -> Option<(i32, String)> {
     }
     let names = read_strings(&ui.get_track_names());
     let last = i32::try_from(ids.len()).unwrap_or(1).saturating_sub(1);
-    let index = ui.get_selected_track_index().saturating_sub(1).clamp(0, last);
+    let index = ui
+        .get_selected_track_index()
+        .saturating_sub(1)
+        .clamp(0, last);
     let name = names
         .get(usize::try_from(index).ok()?)
         .cloned()
