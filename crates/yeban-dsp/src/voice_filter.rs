@@ -188,7 +188,7 @@ impl Section {
     /// RBJ 二阶低通（与 [`crate::shaping::Biquad::lowpass`] 同式）。
     fn lowpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(
             (1.0 - cos) * 0.5,
@@ -203,7 +203,7 @@ impl Section {
     /// RBJ 二阶高通（与 [`crate::shaping::Biquad::highpass`] 同式）。
     fn highpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(
             (1.0 + cos) * 0.5,
@@ -219,7 +219,7 @@ impl Section {
     /// [`crate::shaping::Biquad::bandpass`] 同式）。
     fn bandpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
@@ -227,20 +227,20 @@ impl Section {
     /// RBJ 二阶带阻（陷波）。
     fn bandreject(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
 
     /// 一阶低通（单极点 RC 形，套双二阶递推：`b2 = a2 = 0`）。
     fn lowpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let p = (-TAU * freq / sample_rate).exp();
+        let p = libm::expf(-TAU * freq / sample_rate);
         self.set(1.0 - p, 0.0, 0.0, 1.0, -p, 0.0);
     }
 
     /// 一阶高通（单极点 RC 形，套双二阶递推：`b2 = a2 = 0`）。
     fn highpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let p = (-TAU * freq / sample_rate).exp();
+        let p = libm::expf(-TAU * freq / sample_rate);
         self.set(p, -p, 0.0, 1.0, -p, 0.0);
     }
 
@@ -252,7 +252,7 @@ impl Section {
     /// 极点 `−a` 恒在单位圆内（`|a| < 1`，`tan(πfc/sr) > 0` 时 `a ∈ (−1,1)`），
     /// 与二阶节共用同一条转置直接 II 递推。
     fn allpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let t = (core::f32::consts::PI * freq / sample_rate).tan();
+        let t = libm::tanf(core::f32::consts::PI * freq / sample_rate);
         let a = (t - 1.0) / (t + 1.0);
         self.set(a, 1.0, 0.0, 1.0, a, 0.0);
     }
@@ -323,7 +323,7 @@ impl VoiceFilter {
         let sections = kind.sections();
         // 级联均分：每节 dB = 总 dB / 节数 ⇒ f0 处总增益（各节 Q 之积）
         // 恰为 10^(总 dB/20)，与单节口径一致。
-        let q = 10.0f32.powf(db / f32::from(sections as u8) / 20.0);
+        let q = libm::powf(10.0, db / f32::from(sections as u8) / 20.0);
         let mut filter = VoiceFilter::BYPASSED;
         filter.active = sections as u8;
         // ⭐ 自带配置（retune 复用同一份 (类型, 谐振, 采样率)；存的是
@@ -420,8 +420,8 @@ impl VoiceFilter {
         let sr = sanitise_sample_rate(sample_rate);
         let f = freq.clamp(1.0, sr * 0.499);
         let w = TAU * (f / sr);
-        let (sin_w, cos_w) = w.sin_cos();
-        let (sin_2w, cos_2w) = (2.0 * w).sin_cos();
+        let (sin_w, cos_w) = libm::sincosf(w);
+        let (sin_2w, cos_2w) = libm::sincosf(2.0 * w);
         let mut total_db = 0.0f32;
         for section in self.sections.iter().take(usize::from(self.active)) {
             let num_re = section.b0 + section.b1 * cos_w + section.b2 * cos_2w;
@@ -435,7 +435,7 @@ impl VoiceFilter {
             }
             let mag_sq = num_sq / den_sq;
             if mag_sq > 1e-12 {
-                total_db += 10.0 * mag_sq.log10();
+                total_db += 10.0 * libm::log10f(mag_sq);
             } else {
                 total_db += -120.0;
             }

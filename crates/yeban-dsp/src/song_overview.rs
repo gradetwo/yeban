@@ -1532,7 +1532,7 @@ type ClashGroup = (f32, f32, u32, f32, usize);
 /// 频谱重叠度换算：两轨频段能量差距 `gap_db`（dB）→ 线性域能量比
 /// `E2 / E1 = 10^(-gap_db / 10)`（等能为 1，3 dB 差为 0.5，6 dB 差为 0.25）。
 fn overlap_from_gap_db(gap_db: f32) -> f32 {
-    10f32.powf(-gap_db / 10.0)
+    libm::powf(10.0, -gap_db / 10.0)
 }
 
 /// 重叠度 → 严重度分档（Wang 2026-11-11 13:17 定）：> 0.5 重（差距 < 3 dB，

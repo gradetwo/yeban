@@ -88,7 +88,7 @@ pub fn pitch_class_histogram(f0_hz: &[f32], energy: Option<&[f32]>) -> Option<[f
         if !f.is_finite() || f <= 0.0 {
             continue;
         }
-        let midi = 69.0 + 12.0 * (f / 440.0).log2();
+        let midi = 69.0 + 12.0 * libm::log2f(f / 440.0);
         let pc = midi.round() as i32;
         let pc = pc.rem_euclid(12) as usize;
         let w = energy.map_or(1.0, |e| e[i]);

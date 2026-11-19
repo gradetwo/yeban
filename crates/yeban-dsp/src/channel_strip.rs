@@ -764,8 +764,8 @@ impl ChannelStrip {
     /// **包络的最大值**而不是块内样本峰值（后者会让衰减量随块相位抖动）。
     fn deq_cut(&mut self, band: &[f32], frames: usize, params: DynEqParams) -> f32 {
         let sample_rate = self.sample_rate;
-        let attack = (-1.0 / (DynEqParams::ATTACK_S * sample_rate)).exp();
-        let release = (-1.0 / (DynEqParams::RELEASE_S * sample_rate)).exp();
+        let attack = libm::expf(-1.0 / (DynEqParams::ATTACK_S * sample_rate));
+        let release = libm::expf(-1.0 / (DynEqParams::RELEASE_S * sample_rate));
         let mut env = self.deq_env;
         let mut peak = 0.0f32;
         for x in band.iter().take(frames) {
@@ -778,7 +778,7 @@ impl ChannelStrip {
         }
         self.deq_env = if env.is_finite() { env } else { 0.0 };
 
-        let level_db = 20.0 * peak.max(1.0e-9).log10();
+        let level_db = 20.0 * libm::log10f(peak.max(1.0e-9));
         let over = (level_db - params.threshold_db).max(0.0);
         (over * (1.0 - 1.0 / params.ratio.max(1.0))).min(params.max_cut_db)
     }

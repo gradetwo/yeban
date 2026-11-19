@@ -661,8 +661,7 @@ impl Reverb {
                 comb.damp = damp;
                 comb.feedback = if decay_s > 0.0 {
                     let round_trip_s = comb.len as f32 / self.sample_rate;
-                    (-T60_LN * T60_CALIBRATION * round_trip_s / decay_s)
-                        .exp()
+                    libm::expf(-T60_LN * T60_CALIBRATION * round_trip_s / decay_s)
                         .clamp(0.05, 0.995)
                 } else {
                     0.70 + self.params.size * 0.24

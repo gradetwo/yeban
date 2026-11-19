@@ -138,7 +138,7 @@ fn rms_curve(source: &[f32], sample_rate: u32) -> Vec<(f64, f32)> {
 /// 汉宁窗系数。
 fn hann(n: usize) -> Vec<f64> {
     (0..n)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos()))
+        .map(|i| 0.5 * (1.0 - libm::cos(2.0 * core::f64::consts::PI * i as f64 / (n - 1) as f64)))
         .collect()
 }
 
@@ -465,7 +465,7 @@ pub fn refine_note(
         .map(|frame| frame.band_energy)
         .fold(0.0_f32, f32::max)
         .max(1e-12);
-    let drop_line = peak_band * 10_f32.powf(-OFF_DROP_DB / 10.0);
+    let drop_line = peak_band * libm::powf(10.0, -OFF_DROP_DB / 10.0);
     let mut off_s = next_bound_s;
     let mut run = 0usize;
     let mut last_voiced = vop_s;
@@ -518,7 +518,7 @@ pub fn refine_note(
         .map(|frame| f64::from(frame.peak))
         .collect();
     let peak_median = median(peak_values).clamp(0.01, 0.99);
-    let hnr_db = 10.0 * (peak_median / (1.0 - peak_median)).log10();
+    let hnr_db = 10.0 * libm::log10(peak_median / (1.0 - peak_median));
     // 置信度：起音跳变强度 × F0 一致性。跳变本底取 [coarse−300 ms,
     // coarse+80 ms] 内最低 3 帧带能量的中位数（连唱时即辅音水平，不是
     // 上一元音水平）；一致性容差 ±100 音分（颤音容忍，仍拒八度错）。
@@ -533,14 +533,14 @@ pub fn refine_note(
     } else {
         floor
     };
-    let jump_db = 10.0 * (f64::from(vop.band_energy) / f64::from(local_floor)).log10();
+    let jump_db = 10.0 * libm::log10(f64::from(vop.band_energy) / f64::from(local_floor));
     let onset_strength = ((jump_db - 3.0) / 17.0).clamp(0.0, 1.0);
     let consistent = if f0_median > 0.0 {
         let total = core_frames.len();
         let good = core_frames
             .iter()
             .filter(|frame| {
-                let cents = 1200.0 * (f64::from(frame.f0_hz) / f0_median).log2();
+                let cents = 1200.0 * libm::log2(f64::from(frame.f0_hz) / f0_median);
                 cents.abs() <= 100.0
             })
             .count();
@@ -567,7 +567,7 @@ pub fn refine_note(
 pub fn breath_spans(source: &[f32], sample_rate: u32, gaps: &[(f64, f64)]) -> Vec<BreathSpan> {
     let rms = rms_curve(source, sample_rate);
     let hop_s = 10.0 / 1000.0;
-    let threshold = 10_f32.powf((SILENCE_DB / 20.0) as f32);
+    let threshold = libm::powf(10.0, (SILENCE_DB / 20.0) as f32);
     let mut spans = Vec::new();
     for (gap_start, gap_end) in gaps {
         if gap_end <= gap_start {
@@ -617,7 +617,7 @@ fn span_with_rms(rms: &[(f64, f32)], start_s: f64, end_s: f64, kind: GapKind) ->
         values.iter().map(|value| f64::from(*value)).sum::<f64>() / values.len() as f64
     };
     let rms_db = if mean > 0.0 {
-        20.0 * mean.log10()
+        20.0 * libm::log10(mean)
     } else {
         -120.0
     };

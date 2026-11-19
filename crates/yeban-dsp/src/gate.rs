@@ -342,11 +342,11 @@ impl NoiseGate {
         // 1阶低通滤波器 α = 1 - exp(-1 / (τ * fs))
         let dt = 1.0 / sr;
         self.alpha_attack =
-            (1.0 - (-dt / self.params.attack_s.max(0.00005)).exp()).clamp(0.0001, 1.0);
+            (1.0 - libm::expf(-dt / self.params.attack_s.max(0.00005))).clamp(0.0001, 1.0);
         self.alpha_release =
-            (1.0 - (-dt / self.params.release_s.max(0.0005)).exp()).clamp(0.00001, 1.0);
+            (1.0 - libm::expf(-dt / self.params.release_s.max(0.0005))).clamp(0.00001, 1.0);
         // 对称 RMS 平均窗口取 10ms
-        self.alpha_det_ms = (1.0 - (-dt / 0.010).exp()).clamp(0.0001, 1.0);
+        self.alpha_det_ms = (1.0 - libm::expf(-dt / 0.010)).clamp(0.0001, 1.0);
     }
 
     fn update_filter_coefficients(&mut self) {
@@ -402,7 +402,7 @@ impl NoiseGate {
                     self.detector_peak = peak_in;
                 } else {
                     let rel_alpha =
-                        (1.0 - (-1.0 / (self.sample_rate * 0.005)).exp()).clamp(0.0001, 1.0);
+                        (1.0 - libm::expf(-1.0 / (self.sample_rate * 0.005))).clamp(0.0001, 1.0);
                     self.detector_peak += rel_alpha * (peak_in - self.detector_peak);
                 }
                 let peak = self.detector_peak.max(1e-6);

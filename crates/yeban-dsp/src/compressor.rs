@@ -734,7 +734,7 @@ impl Compressor {
         };
 
         // ③ 电平：10·log10(ms)，均方先钳到 POWER_FLOOR ⇒ 结果恒 ≥ MIN_LEVEL_DB（§6）。
-        self.level_db = 10.0 * self.mean_square.max(POWER_FLOOR).log10();
+        self.level_db = 10.0 * libm::log10f(self.mean_square.max(POWER_FLOOR));
 
         // ④ 静态曲线（纯函数，无状态）。
         let target_gain_db = gain_db_for(self.level_db, self.params);

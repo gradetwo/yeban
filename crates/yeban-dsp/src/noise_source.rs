@@ -238,7 +238,7 @@ impl NoiseSource {
         let sr = sanitise_sample_rate(sample_rate);
         let crackle = params.crackle_active();
         let event_p = (params.crackle_density / sr).clamp(0.0, 1.0);
-        let decay = (-1.0 / (CRACKLE_TAU_S * sr)).exp();
+        let decay = libm::expf(-1.0 / (CRACKLE_TAU_S * sr));
         let white_gain = (1.0 - params.color) * params.level;
         let pink_gain = params.color * PINK_NORM * params.level;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {

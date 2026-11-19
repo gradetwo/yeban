@@ -188,9 +188,7 @@ fn estimate_in_window(window: &[f32], sample_rate: f32, prev: Option<f32>) -> Op
     }
     let n = window.len();
     let hann: Vec<f32> = (0..n)
-        .map(|i| {
-            0.5 * (1.0 - (2.0 * core::f64::consts::PI * i as f64 / (n - 1) as f64).cos() as f32)
-        })
+        .map(|i| 0.5 * (1.0 - cos(2.0 * core::f64::consts::PI * i as f64 / (n - 1) as f64) as f32))
         .collect();
     let windowed: Vec<f32> = window.iter().zip(hann.iter()).map(|(x, w)| x * w).collect();
     let coarse = estimate_period_tracked(&windowed, sample_rate, 0.5, prev)?;
@@ -343,7 +341,7 @@ pub fn synthesize_layer(samples: &[f32], sample_rate: f32) -> Result<Vec<f32>, S
     let fade = ((LAYER_FADE_IN_MS / 1000.0 * sample_rate) as usize).min(out.len() / 2);
     for (index, sample) in out.iter_mut().take(fade).enumerate() {
         let phase = core::f32::consts::PI * index as f32 / fade.max(1) as f32;
-        *sample *= 0.5 - 0.5 * phase.cos();
+        *sample *= 0.5 - 0.5 * libm::cosf(phase);
     }
     Ok(out)
 }
