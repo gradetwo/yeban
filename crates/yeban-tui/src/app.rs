@@ -342,9 +342,10 @@ impl App {
     // 每跳驱动（主循环以约 16 ms 一跳调用）
     // ------------------------------------------------------------------
 
-    /// 墙钟泵送 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
+    /// 墙钟泵送 + 快照回收心跳 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
     pub fn tick(&mut self) {
         self.host.pump_wall_clock();
+        let _ = self.host.heartbeat();
         if let Some(collector) = &mut self.collector {
             let mut scratch = vec![MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
@@ -1757,5 +1758,34 @@ impl App {
             },
             other => self.log_line(format!("未知命令：{other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_calls_heartbeat_and_reclaims_retired_snapshots() {
+        let mut app = App::with_demo().expect("demo app");
+        assert!(!app.is_playing());
+        const EDITS: u64 = 10;
+        for _ in 0..EDITS {
+            app.toggle_mute();
+            app.host.drive_audio(1);
+        }
+        let before = app.host.snapshot_counts().expect("snapshot counts");
+        assert_eq!(before.pending_len, usize::try_from(EDITS).unwrap());
+        assert_eq!(before.retire_pending, usize::try_from(EDITS).unwrap());
+        assert_eq!(before.pruned, 0);
+        assert_eq!(before.retire_dropped, 0);
+
+        app.tick();
+
+        let after = app.host.snapshot_counts().expect("snapshot counts");
+        assert_eq!(after.pending_len, 0);
+        assert_eq!(after.retire_pending, 0);
+        assert_eq!(after.pruned, EDITS);
+        assert_eq!(after.retire_dropped, EDITS);
     }
 }
