@@ -103,7 +103,11 @@ fn write_numeric_fixture(dir: &Path) -> PathBuf {
 }
 
 /// 带 (a) 声明的音名夹具：`<control> octave_offset=-1`（(a) = −12）。
+/// 样本必须自带一份（本夹具用独立目录，⛔ 不能指望别的夹具写过）。
 fn write_declared_fixture(dir: &Path) -> PathBuf {
+    write_const_sample(&dir.join("kick.wav"), 0.2);
+    write_const_sample(&dir.join("snare.wav"), 0.4);
+    write_const_sample(&dir.join("roll.wav"), 0.6);
     let path = dir.join("declared.sfz");
     std::fs::write(
         &path,
