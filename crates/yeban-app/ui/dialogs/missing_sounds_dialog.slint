@@ -29,7 +29,12 @@ component CandidateButton inherits Rectangle {
     callback swap(int, string, string);
     callback open-pack(int, string, string);
 
-    width: 150px;
+    // 候选按钮的宽度跟着名字走。此前写死 150px，长音源名（`Yeban PolySynth Lead` 之类）
+    // 被截成 `下载 Yeban PolySy…`，三个候选挤在一起时一眼分不出是哪一个 —— 而这正是
+    // 用户要"挑一个能响的"的时刻。改成"最少 150px、名字长了自己变宽、最多 200px"，
+    // 三枚并排仍能塞进 760px 的救援面板。
+    min-width: 150px;
+    preferred-width: max(150px, min(200px, label.preferred-width + 16px));
     height: 26px;
     background: Tokens.bg-void;
     border-radius: Tokens.radius-sm;
@@ -47,7 +52,7 @@ component CandidateButton inherits Rectangle {
         }
     }
 
-    UiText {
+    label := UiText {
         x: 8px;
         y: 0;
         width: parent.width - 16px;
