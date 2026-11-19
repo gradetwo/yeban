@@ -2656,6 +2656,11 @@ mod tests {
             DeviceParamField::Tape(TapeField::TrimDb) => -6.0,
             DeviceParamField::Tape(TapeField::HfHz) => 8_000.0,
             DeviceParamField::Tape(TapeField::Asym) => 0.3,
+            DeviceParamField::Tape(TapeField::WowRateHz) => 1.25,
+            DeviceParamField::Tape(TapeField::WowDepthMs) => 3.0,
+            DeviceParamField::Tape(TapeField::FlutterRateHz) => 9.0,
+            DeviceParamField::Tape(TapeField::FlutterDepthMs) => 0.8,
+            DeviceParamField::Tape(TapeField::Seed) => 2026.0,
             DeviceParamField::Reverb(ReverbField::Size | ReverbField::Damp | ReverbField::Wet) => {
                 0.72
             }

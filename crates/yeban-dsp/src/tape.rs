@@ -57,6 +57,35 @@
 //!   曲线是 `tanh(g·x)`，`g` 只由 `drive` 决定 ⇒ `drive = 0` 时级本来就不建，
 //!   `asym` 写了也不生效。这是既有建成条件的直接后果，⛔ 不为它开口子。
 //!
+//! ## ⭐ wow / flutter（音高调制段，鼓机缺口 P7）
+//!
+//! 真磁带机的走带速度不是常数：转盘偏心 ⇒ **wow**（慢，0.05–2 Hz），
+//! 电机与压带轮的高频抖动 ⇒ **flutter**（快，2–15 Hz）。两者都是**延迟调制**：
+//! 信号经过一台速度在晃的机器，等价于经过一条长度在晃的延迟线
+//! ⇒ 瞬时音高跟着晃。本段就是这条延迟线：
+//!
+//! ```text
+//! τ(t) = τc + Dw·(0.75·sin(2π·fw·t + φw) + 0.25·drift(t)) + Df·sin(2π·ff·t + φf)
+//! τc   = Dw + Df + 0.5 ms（中心延迟，保证 τ(t) ≥ 0.5 ms > 0）
+//! ```
+//!
+//! * **深度单位是 ms（延迟峰值偏离）**，不是音分：音高偏离由 `深度 × 速率`
+//!   决定（`ε ≈ 2π·f·D`），把深度钉在延迟域里，判据才能直接量延迟
+//!   （互相关峰位）而不必从音高反推。
+//! * **两声道共用同一条调制**（同一个走带机构）：写钟、帧计数、调制值
+//!   两声道完全一致 ⇒ 立体声像不晃，只有音高晃。
+//! * **种子可复现（硬规则）**：相位 `φw` / `φf` 与漂移 `drift(t)` 全部是
+//!   `(seed, 帧号)` 的纯函数（splitmix32 哈希），**没有运行期 PRNG 状态**
+//!   ⇒ 同 seed 同输出逐位成立；`reset()` 只需把帧计数归零；块边界改 seed
+//!   等价于按新种子重播种（与 `noise_seed` 同口径）。
+//! * **深度全 0 ⇒ 调制段不存在**：`process` 根本不碰延迟线，输出与本段
+//!   接入之前**逐位一致**（判据 `modulation_depth_zero_is_bit_identical`），
+//!   也不引入任何延迟。任一深度 > 0 ⇒ 延迟线接入，级延迟增加
+//!   [`TapeSaturation::modulation_latency_samples`]（名义值 = 中心延迟）。
+//! * 调制段位于**饱和之后**（整条级是一个"磁带机"，干湿混合后的信号
+//!   一起过走带机构）；深度与 `mix` 无关——`mix < 1` 时干声同样被调制，
+//!   这是走带物理，不是合唱效果器。
+//!
 //! ## 级建成条件（与运行态同口径）
 //!
 //! `tape_drive > 0` **且** `tape_mix > 0`（两者任一为缺省 ⇒ 不建器件，
@@ -70,6 +99,9 @@
 //! `latency_samples` 声明（[`TapeSaturation::latency_samples`] 即此数；
 //! 未武装时级不执行、延迟为 0）。模型层 `latency_samples` 是唯一事实源
 //! [ARCH-PDC-001]，本 crate 不替模型层推导它。
+//! wow/flutter 武装时**再加** [`TapeSaturation::modulation_latency_samples`]
+//! （中心延迟，随采样率变）——同一条声明纪律：本 crate 给出读数，
+//! 计入声明是设备作者的事。
 //!
 //! ## 实时安全
 //!
@@ -105,6 +137,63 @@ pub const TAPE_HF_MAX_HZ: f32 = 20_000.0;
 /// "磁带"而是硬削波了。
 pub const TAPE_ASYM_MAX: f32 = 0.5;
 
+/// `tape_wow_rate_hz` 的合法域（Hz）：走带偏心的转速量级。
+pub const TAPE_WOW_RATE_MIN_HZ: f32 = 0.05;
+/// `tape_wow_rate_hz` 的合法域（Hz）。
+pub const TAPE_WOW_RATE_MAX_HZ: f32 = 2.0;
+/// `tape_wow_depth_ms` 的合法域（ms）：延迟峰值偏离。
+///
+/// 上界 8 ms 的出处：wow 音高偏离 `ε ≈ 2π·f·D`，在速率上界 2 Hz 处
+/// 8 ms 已是 ±10% 的音高晃动——那是坏机器，不是乐器。再大不给写。
+pub const TAPE_WOW_DEPTH_MAX_MS: f32 = 8.0;
+/// `tape_flutter_rate_hz` 的合法域（Hz）：电机抖动的量级。
+pub const TAPE_FLUTTER_RATE_MIN_HZ: f32 = 2.0;
+/// `tape_flutter_rate_hz` 的合法域（Hz）。
+pub const TAPE_FLUTTER_RATE_MAX_HZ: f32 = 15.0;
+/// `tape_flutter_depth_ms` 的合法域（ms）：延迟峰值偏离。
+///
+/// flutter 的音高偏离同样是 `2π·f·D`：15 Hz 处 2 ms 已是 ±19%，
+/// 远超任何真实机器的 flutter（规格书量级 0.1% 以下 ⇒ 微秒级深度就够），
+/// 2 ms 是给"效果化"留的顶，不是写实值。
+pub const TAPE_FLUTTER_DEPTH_MAX_MS: f32 = 2.0;
+/// `tape_seed` 的合法域（整数，与 `noise_seed` 同口径）。
+pub const TAPE_SEED_MAX: f32 = 16_777_215.0;
+
+/// wow/flutter 延迟线长度（样本 / 声道，环形缓冲）。
+///
+/// 需求侧：中心延迟最大 `(8 + 2 + 0.5) ms`；`8192` 样本在 384 kHz 下有
+/// 21 ms、768 kHz 下有 10.7 ms ⇒ 任何现实采样率下都装得下最大中心延迟。
+/// 读延迟在 `apply_modulation` 里另有钳制兜底（见彼处注释）。
+const MOD_BUFFER_LEN: usize = 8_192;
+
+/// 调制中心延迟的安全边距（ms）：保证调制摆幅最大时延迟仍 ≥ 此值，
+/// 线性插值的两个读点永远落在已写入的历史里。
+const MOD_MARGIN_MS: f32 = 0.5;
+
+/// splitmix32 终结器：把 `(seed, index)` 压成均匀分布的 `u32`。
+///
+/// 调制的全部"随机性"（相位、漂移端点）都由它从 `(seed, 帧号/段号)`
+/// 现场导出 ⇒ 没有运行期 PRNG 状态需要保存或复位，同 seed 同输出
+/// 是构造性质，不是纪律（与 `noise` 的 `Rng` 同一哈希家族，不另发明）。
+fn seed_hash(seed: u32, index: u32) -> u32 {
+    let mut z = seed
+        .wrapping_add(index.wrapping_mul(0x9E37_79B9))
+        .wrapping_add(0x9E37_79B9);
+    z = (z ^ (z >> 16)).wrapping_mul(0x21F0_AAAD);
+    z = (z ^ (z >> 15)).wrapping_mul(0x735A_2D97);
+    z ^ (z >> 15)
+}
+
+/// `(seed, index)` → `[0, 1)` 的均匀值（取哈希高 24 位 ⇒ binary32 可精确表示）。
+fn seed_unit(seed: u32, index: u32) -> f32 {
+    (seed_hash(seed, index) >> 8) as f32 * (1.0 / 16_777_216.0)
+}
+
+/// `(seed, segment)` → `[−1, 1]` 的漂移端点值（盐与相位错开，互不相关）。
+fn seed_signed(seed: u32, segment: u32) -> f32 {
+    seed_unit(seed ^ 0xD1B5_4A32, segment) * 2.0 - 1.0
+}
+
 /// 磁带饱和参数。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TapeParams {
@@ -124,16 +213,38 @@ pub struct TapeParams {
     ///
     /// ⚠ `0` ⇒ **逐位等于接线前的公式**（补偿项恰 `0.0`、加法是恒等）。
     pub asym: f32,
+    /// wow 速率（Hz，0.05..=2）。深度为 0 时不生效。
+    pub wow_rate_hz: f32,
+    /// ⭐ **wow 深度**（ms，0..=8）：延迟线长度的慢速峰值偏离。
+    ///
+    /// `0`（缺省）⇒ wow 分量不存在；wow 与 flutter 深度**都**为 0 时
+    /// 整段调制不存在、输出逐位等于接入前（见模块文档「wow / flutter」节）。
+    pub wow_depth_ms: f32,
+    /// flutter 速率（Hz，2..=15）。深度为 0 时不生效。
+    pub flutter_rate_hz: f32,
+    /// ⭐ **flutter 深度**（ms，0..=2）：延迟线长度的快速峰值偏离。
+    pub flutter_depth_ms: f32,
+    /// 调制种子（整数，0..=2²⁴−1）：wow/flutter 相位与随机漂移的唯一来源。
+    ///
+    /// 相位与漂移都是 `(seed, 帧号)` 的纯函数（无运行期 PRNG 状态）
+    /// ⇒ 同 seed 同输出逐位成立；与 `noise_seed` 同口径。
+    pub seed: f32,
 }
 
 impl TapeParams {
     /// 缺省：全干、无驱动、无补偿、湿路低通旁通 ⇒ 级不建（恒等）。
+    /// 调制深度全 0 ⇒ 调制段不存在；速率取典型走带值，作者只写深度即出声。
     pub const DEFAULT: Self = Self {
         drive: 0.0,
         mix: 0.0,
         trim_db: 0.0,
         hf_hz: TAPE_HF_MAX_HZ,
         asym: 0.0,
+        wow_rate_hz: 0.5,
+        wow_depth_ms: 0.0,
+        flutter_rate_hz: 6.0,
+        flutter_depth_ms: 0.0,
+        seed: 0.0,
     };
 
     /// 缺省参数。
@@ -150,6 +261,11 @@ impl TapeParams {
     /// | `trim_db` | `[−24, +24]` | 下界 | 上界 | **下界** |
     /// | `hf_hz` | `[2000, 20000]` | 下界 | 上界 | **下界** |
     /// | `asym` | `[0, 0.5]` | `0` | 上界 | **`0`**（下界 ⇒ 对称，恒等） |
+    /// | `wow_rate_hz` | `[0.05, 2]` | 下界 | 上界 | **下界** |
+    /// | `wow_depth_ms` | `[0, 8]` | `0` | 上界 | **`0`**（下界 ⇒ 无调制，恒等） |
+    /// | `flutter_rate_hz` | `[2, 15]` | 下界 | 上界 | **下界** |
+    /// | `flutter_depth_ms` | `[0, 2]` | `0` | 上界 | **`0`**（下界 ⇒ 无调制，恒等） |
+    /// | `seed` | `[0, 2²⁴−1]` 整数 | `0` | 上界 | **`0`**；有限值先钳后取整 |
     ///
     /// 非有限一律归下界（沿 [`crate::compressor::CompressorParams::sanitised`] 的
     /// 口径：`f32::clamp` 对 `NaN` 是恒等，单靠 `clamp` 会漏一个 `NaN` 进实时路径）。
@@ -168,6 +284,15 @@ impl TapeParams {
             trim_db: finite_or(self.trim_db, TAPE_TRIM_MIN_DB, TAPE_TRIM_MAX_DB),
             hf_hz: finite_or(self.hf_hz, TAPE_HF_MIN_HZ, TAPE_HF_MAX_HZ),
             asym: finite_or(self.asym, 0.0, TAPE_ASYM_MAX),
+            wow_rate_hz: finite_or(self.wow_rate_hz, TAPE_WOW_RATE_MIN_HZ, TAPE_WOW_RATE_MAX_HZ),
+            wow_depth_ms: finite_or(self.wow_depth_ms, 0.0, TAPE_WOW_DEPTH_MAX_MS),
+            flutter_rate_hz: finite_or(
+                self.flutter_rate_hz,
+                TAPE_FLUTTER_RATE_MIN_HZ,
+                TAPE_FLUTTER_RATE_MAX_HZ,
+            ),
+            flutter_depth_ms: finite_or(self.flutter_depth_ms, 0.0, TAPE_FLUTTER_DEPTH_MAX_MS),
+            seed: finite_or(self.seed, 0.0, TAPE_SEED_MAX).floor(),
         }
     }
 }
@@ -194,6 +319,19 @@ pub struct TapeSaturation {
     wet_bypass: bool,
     sample_rate: f32,
     ready: bool,
+    /// wow/flutter 调制延迟线（每声道一条环形缓冲）。
+    ///
+    /// 只在任一调制深度 > 0 时才读写；深度全 0 时 `process` 根本不碰它
+    /// ⇒ 输出逐位等于调制段接入之前。两声道共用 [`Self::delay_pos`] 写钟
+    /// 与同一条调制曲线（同一台走带机构，见模块文档）。
+    delay_line: [[f32; MOD_BUFFER_LEN]; 2],
+    /// 延迟线写位置（两声道共用）。
+    delay_pos: usize,
+    /// 自 `configure` / `reset` 起的帧计数：调制相位与漂移的唯一时间基。
+    ///
+    /// 相位是 `(seed, frame)` 的纯函数 ⇒ 帧计数归零即回到与全新实例
+    /// 完全相同的调制轨迹（判据 `reset_reproduces_…` 的调制版钉住）。
+    frame: u64,
 }
 
 impl TapeSaturation {
@@ -209,6 +347,9 @@ impl TapeSaturation {
             wet_bypass: true,
             sample_rate: 0.0,
             ready: false,
+            delay_line: [[0.0; MOD_BUFFER_LEN]; 2],
+            delay_pos: 0,
+            frame: 0,
         }
     }
 
@@ -259,7 +400,117 @@ impl TapeSaturation {
         OS_LATENCY
     }
 
-    /// 清空全部时间状态（过采样历史、滤波器状态），不碰参数与采样率。
+    /// wow/flutter 调制是否武装：任一深度 > 0（读的是已 `sanitised` 的值）。
+    ///
+    /// 两深度全 0 ⇒ 调制段不存在：`process` 不碰延迟线、不引入延迟，
+    /// 输出逐位等于调制段接入之前。
+    #[must_use]
+    pub fn modulation_active(&self) -> bool {
+        self.params.wow_depth_ms > 0.0 || self.params.flutter_depth_ms > 0.0
+    }
+
+    /// 调制中心延迟（ms）：两深度之和 + 安全边距；未武装时为 0。
+    ///
+    /// 调制摆幅的最大值恰是两深度之和（wow 分量 `0.75·sin + 0.25·drift`
+    /// 的值域是 `[−1, 1]`）⇒ 实际延迟恒落在
+    /// `[MOD_MARGIN_MS, 2·(Dw + Df) + MOD_MARGIN_MS]` ms 内、永不为负。
+    fn modulation_center_ms(&self) -> f32 {
+        if self.modulation_active() {
+            self.params.wow_depth_ms + self.params.flutter_depth_ms + MOD_MARGIN_MS
+        } else {
+            0.0
+        }
+    }
+
+    /// 调制段引入的延迟（帧，名义值 = 中心延迟按当前采样率换算、四舍五入）。
+    ///
+    /// 未武装或未 `configure` 时为 0。设备作者按与 [`Self::latency_samples`]
+    /// 同一条纪律把武装时的此数计入 `latency_samples` 声明（见模块文档
+    /// 「延迟与 PDC」）——实际延迟在中心值 ±（两深度之和）内摆动，
+    /// PDC 只能补名义值，这与一切 LFO 调制延迟的宿命相同。
+    #[must_use]
+    pub fn modulation_latency_samples(&self) -> usize {
+        if self.sample_rate > 0.0 {
+            (self.modulation_center_ms() * self.sample_rate / 1000.0).round() as usize
+        } else {
+            0
+        }
+    }
+
+    /// 第 `frame` 帧的调制偏离（ms，可正可负）。
+    ///
+    /// 全部输入是 `(params.seed, frame)` 的纯函数（splitmix32 哈希，
+    /// 见 [`seed_unit`]）：无运行期 PRNG 状态 ⇒ 同 seed 同轨迹逐位成立，
+    /// `reset()` 把帧计数归零即回到轨迹起点，块边界改 seed 等价于重播种。
+    fn modulation_offset_ms(&self, frame: u64) -> f32 {
+        let params = &self.params;
+        let seed = params.seed as u32;
+        let t = frame as f32 / self.sample_rate;
+        let tau = core::f32::consts::TAU;
+        // wow：正弦（走带偏心）+ 慢速随机漂移（轴承/皮带的不规则），
+        // 权重 0.75 / 0.25 ⇒ 合成值域仍是 [−1, 1]，深度语义不被漂移偷走。
+        let wow = if params.wow_depth_ms > 0.0 {
+            let phase = tau * params.wow_rate_hz * t + tau * seed_unit(seed, 1);
+            // 漂移：以一个 wow 周期为段长，段端点取种子哈希值（∈ [−1, 1]），
+            // 段内 smoothstep 插值 ⇒ 处处连续、无台阶。
+            let period_frames = (self.sample_rate / params.wow_rate_hz).max(1.0);
+            let pos = frame as f32 / period_frames;
+            let segment = pos.floor();
+            let frac = pos - segment;
+            let smooth = frac * frac * (3.0 - 2.0 * frac);
+            let a = seed_signed(seed, segment as u32);
+            let b = seed_signed(seed, (segment as u32).wrapping_add(1));
+            let drift = a + (b - a) * smooth;
+            params.wow_depth_ms * (0.75 * libm::sinf(phase) + 0.25 * drift)
+        } else {
+            0.0
+        };
+        let flutter = if params.flutter_depth_ms > 0.0 {
+            let phase = tau * params.flutter_rate_hz * t + tau * seed_unit(seed, 2);
+            params.flutter_depth_ms * libm::sinf(phase)
+        } else {
+            0.0
+        };
+        wow + flutter
+    }
+
+    /// 从延迟线读 `delay` 样本之前的样本（线性插值；`delay ≥ 0`）。
+    ///
+    /// 调用方保证 `delay ≤ MOD_BUFFER_LEN − 2`（`apply_modulation` 钳过）。
+    fn read_delayed(&self, channel: usize, delay: f32) -> f32 {
+        let whole = delay.floor();
+        let frac = delay - whole;
+        let back = whole as usize;
+        let here = (self.delay_pos + MOD_BUFFER_LEN - back) % MOD_BUFFER_LEN;
+        let older = (here + MOD_BUFFER_LEN - 1) % MOD_BUFFER_LEN;
+        let a = self.delay_line[channel][here];
+        let b = self.delay_line[channel][older];
+        a + (b - a) * frac
+    }
+
+    /// 把一对已下采样的声道块送进调制延迟线（两声道同调制，见模块文档）。
+    ///
+    /// 逐帧先写后读：当前帧先入线、再按当帧延迟读回 ⇒ 延迟恒 ≥ 0 且
+    /// 读点永远落在已写入的历史里（最小延迟 = [`MOD_MARGIN_MS`]）。
+    fn apply_modulation(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let center = self.modulation_center_ms() * self.sample_rate / 1000.0;
+        // 兜底钳制：中心延迟在合法采样率（≤ 768 kHz）下恒 < MOD_BUFFER_LEN − 2，
+        // 此钳只对病态采样率生效，防的是环形缓冲回绕读错位，不是参数口径。
+        let max_delay = (MOD_BUFFER_LEN - 2) as f32;
+        for i in 0..left.len() {
+            self.delay_line[0][self.delay_pos] = left[i];
+            self.delay_line[1][self.delay_pos] = right[i];
+            let offset = self.modulation_offset_ms(self.frame) * self.sample_rate / 1000.0;
+            let delay = (center + offset).clamp(0.0, max_delay);
+            left[i] = self.read_delayed(0, delay);
+            right[i] = self.read_delayed(1, delay);
+            self.delay_pos = (self.delay_pos + 1) % MOD_BUFFER_LEN;
+            self.frame += 1;
+        }
+    }
+
+    /// 清空全部时间状态（过采样历史、滤波器状态、调制延迟线与帧计数），
+    /// 不碰参数与采样率。
     ///
     /// 复位后的实例与一台刚 [`Self::configure`] 过、同参数的实例在逐帧输出上
     /// **逐位相同**（判据 `reset_reproduces_a_freshly_built_device_bit_for_bit`）。
@@ -267,6 +518,9 @@ impl TapeSaturation {
         self.oversampler_l.reset();
         self.oversampler_r.reset();
         self.lp_state = [0.0; 2];
+        self.delay_line = [[0.0; MOD_BUFFER_LEN]; 2];
+        self.delay_pos = 0;
+        self.frame = 0;
     }
 
     /// 按当前参数重算湿路低通系数与旁通位（`configure` / `set_params` 共用）。
@@ -365,6 +619,11 @@ impl TapeSaturation {
         self.saturate_channel(1, &mut upsampled[..n * 2]);
         self.oversampler_r
             .downsample(&upsampled[..n * 2], &mut right[..n], scratch);
+        // ⭐ wow/flutter 调制段（饱和之后，整台"磁带机"一起晃）：
+        // 深度全 0 时不进入 ⇒ 延迟线不被触碰、输出逐位等于接入之前。
+        if self.modulation_active() {
+            self.apply_modulation(&mut left[..n], &mut right[..n]);
+        }
     }
 }
 
@@ -394,6 +653,30 @@ mod tests {
             trim_db,
             hf_hz,
             asym,
+            ..TapeParams::DEFAULT
+        });
+        tape
+    }
+
+    /// 带 wow/flutter 调制段的同款构造（P7 判据用）。
+    fn make_tape_mod(
+        wow_rate_hz: f32,
+        wow_depth_ms: f32,
+        flutter_rate_hz: f32,
+        flutter_depth_ms: f32,
+        seed: f32,
+    ) -> TapeSaturation {
+        let mut tape = TapeSaturation::new();
+        tape.configure(SR);
+        tape.set_params(TapeParams {
+            drive: 0.1,
+            mix: 1.0,
+            wow_rate_hz,
+            wow_depth_ms,
+            flutter_rate_hz,
+            flutter_depth_ms,
+            seed,
+            ..TapeParams::DEFAULT
         });
         tape
     }
@@ -427,6 +710,11 @@ mod tests {
                 trim_db: value,
                 hf_hz: value,
                 asym: value,
+                wow_rate_hz: value,
+                wow_depth_ms: value,
+                flutter_rate_hz: value,
+                flutter_depth_ms: value,
+                seed: value,
             }
             .sanitised();
             assert!((0.0..=1.0).contains(&params.drive), "drive {value}");
@@ -440,6 +728,28 @@ mod tests {
                 "hf_hz {value}"
             );
             assert!((0.0..=TAPE_ASYM_MAX).contains(&params.asym), "asym {value}");
+            assert!(
+                (TAPE_WOW_RATE_MIN_HZ..=TAPE_WOW_RATE_MAX_HZ).contains(&params.wow_rate_hz),
+                "wow_rate_hz {value}"
+            );
+            assert!(
+                (0.0..=TAPE_WOW_DEPTH_MAX_MS).contains(&params.wow_depth_ms),
+                "wow_depth_ms {value}"
+            );
+            assert!(
+                (TAPE_FLUTTER_RATE_MIN_HZ..=TAPE_FLUTTER_RATE_MAX_HZ)
+                    .contains(&params.flutter_rate_hz),
+                "flutter_rate_hz {value}"
+            );
+            assert!(
+                (0.0..=TAPE_FLUTTER_DEPTH_MAX_MS).contains(&params.flutter_depth_ms),
+                "flutter_depth_ms {value}"
+            );
+            assert!(
+                (0.0..=TAPE_SEED_MAX).contains(&params.seed) && params.seed.fract() == 0.0,
+                "seed {value} ⇒ {}",
+                params.seed
+            );
         }
         // 非有限一律归下界（不是上界、不是 NaN 透传）。
         let nan = TapeParams {
@@ -448,6 +758,11 @@ mod tests {
             trim_db: f32::NAN,
             hf_hz: f32::NAN,
             asym: f32::NAN,
+            wow_rate_hz: f32::NAN,
+            wow_depth_ms: f32::NAN,
+            flutter_rate_hz: f32::NAN,
+            flutter_depth_ms: f32::NAN,
+            seed: f32::NAN,
         }
         .sanitised();
         assert_eq!(nan.drive, 0.0);
@@ -455,6 +770,21 @@ mod tests {
         assert_eq!(nan.trim_db, TAPE_TRIM_MIN_DB);
         assert_eq!(nan.hf_hz, TAPE_HF_MIN_HZ);
         assert_eq!(nan.asym, 0.0, "非有限的 `asym` 归 `0`（＝对称 ⇒ 恒等）");
+        assert_eq!(nan.wow_rate_hz, TAPE_WOW_RATE_MIN_HZ);
+        assert_eq!(nan.wow_depth_ms, 0.0, "非有限的 wow 深度归 `0`（⇒ 无调制）");
+        assert_eq!(nan.flutter_rate_hz, TAPE_FLUTTER_RATE_MIN_HZ);
+        assert_eq!(nan.flutter_depth_ms, 0.0, "非有限的 flutter 深度归 `0`");
+        assert_eq!(nan.seed, 0.0);
+        // seed 取整：先钳后 floor（2.9 ⇒ 2，不是四舍五入到 3）。
+        assert_eq!(
+            TapeParams {
+                seed: 2.9,
+                ..TapeParams::DEFAULT
+            }
+            .sanitised()
+            .seed,
+            2.0
+        );
     }
 
     #[test]
@@ -801,5 +1131,176 @@ mod tests {
                 "⭐ `asym = 0` 必须与接线前的公式一致（{label}: 器件 {a:e} vs 直算 {b:e}）"
             );
         }
+    }
+
+    /// 确定性噪声（xorshift32；判据专用，不进产品路径）。
+    fn test_noise(n: usize, seed: u32) -> Vec<f32> {
+        let mut state = if seed == 0 { 0x2545_F491 } else { seed };
+        (0..n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                ((state >> 8) as f32 / 16_777_216.0 - 0.5) * 0.6
+            })
+            .collect()
+    }
+
+    /// 分块处理（一块 512 帧 ⇒ 调制状态必须跨块连续，顺带钉住这一点）。
+    fn process_in_blocks(tape: &mut TapeSaturation, left: &mut [f32], right: &mut [f32]) {
+        let mut offset = 0;
+        while offset < left.len() {
+            let end = (offset + 512).min(left.len());
+            process_all(tape, &mut left[offset..end], &mut right[offset..end]);
+            offset = end;
+        }
+    }
+
+    /// ⭐ **深度全 0 ⇒ 调制段不存在**（P7 的零回归钉）。
+    ///
+    /// 速率与 seed 随便写、深度全 0 ⇒ 输出与"没有调制参数"逐位相同，
+    /// 且 `modulation_latency_samples` 为 0（没有偷偷加延迟）。
+    #[test]
+    fn modulation_depth_zero_is_bit_identical() {
+        let input = test_noise(8192, 42);
+        let mut plain = make_tape(0.4, 0.9, -2.0, 9000.0);
+        let mut dressed = TapeSaturation::new();
+        dressed.configure(SR);
+        dressed.set_params(TapeParams {
+            drive: 0.4,
+            mix: 0.9,
+            trim_db: -2.0,
+            hf_hz: 9000.0,
+            asym: 0.0,
+            wow_rate_hz: 1.7,
+            wow_depth_ms: 0.0,
+            flutter_rate_hz: 13.0,
+            flutter_depth_ms: 0.0,
+            seed: 999.0,
+        });
+        assert!(!dressed.modulation_active());
+        assert_eq!(dressed.modulation_latency_samples(), 0);
+        let (mut l1, mut r1) = (input.clone(), input.clone());
+        let (mut l2, mut r2) = (input.clone(), input.clone());
+        process_in_blocks(&mut plain, &mut l1, &mut r1);
+        process_in_blocks(&mut dressed, &mut l2, &mut r2);
+        assert_eq!(l1, l2, "⭐ 深度全 0 的左声道必须逐位等于无调制参数");
+        assert_eq!(r1, r2, "⭐ 深度全 0 的右声道必须逐位等于无调制参数");
+    }
+
+    /// 在 `output` 的 `center` 附近用互相关估有效延迟（样本，整数）。
+    ///
+    /// 估计窗内的输出与**输入**对应窗互相关，峰位即（过采样延迟 + 调制延迟）。
+    /// 噪声输入的自相关峰唯一 ⇒ 无周期歧义；窗长 8192（0.17 s）内 wow 相位
+    /// 移动 ≤ 31° ⇒ 峰位误差在数个样本内（断言容差按此留）。
+    fn estimate_delay(input: &[f32], output: &[f32], center: usize, max_lag: usize) -> usize {
+        const WIN: usize = 8192;
+        let start = center - WIN / 2;
+        let mut best_lag = 0usize;
+        let mut best = f32::MIN;
+        for lag in 0..=max_lag {
+            let mut acc = 0.0f32;
+            for i in 0..WIN {
+                // `start ≥ 4096 > max_lag`（判据的中心帧最小 24_000）⇒ 不下溢。
+                acc += output[start + i] * input[start + i - lag];
+            }
+            if acc > best {
+                best = acc;
+                best_lag = lag;
+            }
+        }
+        best_lag
+    }
+
+    /// ⭐ **深度非 0 ⇒ 延迟调制可量**（P7 的功能钉）。
+    ///
+    /// wow 深度 2.0 ms（96 样本）@ 0.5 Hz：互相关估出的有效延迟必须
+    /// ① 全程落在理论包络 `[OS_LATENCY + 边距, OS_LATENCY + 中心 + 深度]`
+    /// 内（±4 样本估计容差）；② 随时间真的动（极差 ≥ 48 样本 = 1 ms；
+    /// 纯正弦分量一个周期内的峰峰值是 144 样本，漂移只会加不会减）。
+    #[test]
+    fn modulation_delay_is_measurable_by_cross_correlation() {
+        let n = 144_000; // 3 s @ 48 kHz（wow 周期 2 s，采样点跨整周期）
+        let input = test_noise(n, 7);
+        let mut tape = make_tape_mod(0.5, 2.0, 6.0, 0.0, 7.0);
+        assert!(tape.modulation_active());
+        let mut left = input.clone();
+        let mut right = input.clone();
+        process_in_blocks(&mut tape, &mut left, &mut right);
+        // 两声道共用同一条调制 ⇒ 同一输入必须给出逐位相同的输出。
+        assert_eq!(left, right, "⭐ 两声道同调制：同输入 ⇒ 同输出逐位成立");
+
+        let center_samples = (2.0 + MOD_MARGIN_MS) * SR / 1000.0; // 120
+        let depth_samples = 2.0 * SR / 1000.0; // 96
+        let lo = OS_LATENCY as f32 + MOD_MARGIN_MS * SR / 1000.0 - 4.0;
+        let hi = OS_LATENCY as f32 + center_samples + depth_samples + 4.0;
+        let max_lag = (hi as usize) + 8;
+        let mut estimates = Vec::new();
+        for center in [24_000usize, 48_000, 72_000, 96_000, 120_000] {
+            let lag = estimate_delay(&input, &left, center, max_lag) as f32;
+            assert!(
+                (lo..=hi).contains(&lag),
+                "⭐ 中心帧 {center} 的有效延迟 {lag} 必须落在理论包络 [{lo}, {hi}] 内"
+            );
+            estimates.push(lag);
+        }
+        let spread = estimates.iter().fold(f32::MIN, |a, b| a.max(*b))
+            - estimates.iter().fold(f32::MAX, |a, b| a.min(*b));
+        println!("[dsp-tape/p7] 有效延迟读数 {estimates:?}，极差 {spread} 样本");
+        assert!(
+            spread >= 48.0,
+            "⭐ 调制必须真的动：有效延迟极差 {spread} 样本 < 48（1 ms）"
+        );
+    }
+
+    /// ⭐ **同 seed 两次渲染逐位一致；换 seed 轨迹必变**（种子可复现钉）。
+    #[test]
+    fn modulation_same_seed_is_bit_identical_and_seed_matters() {
+        let input = test_noise(16_384, 99);
+        let render = |seed: f32| {
+            let mut tape = make_tape_mod(0.55, 0.9, 6.5, 0.04, seed);
+            let mut left = input.clone();
+            let mut right = input.clone();
+            process_in_blocks(&mut tape, &mut left, &mut right);
+            left
+        };
+        let a = render(2026.0);
+        let b = render(2026.0);
+        assert_eq!(a, b, "⭐ 同 seed 两次渲染必须逐位一致");
+        let c = render(2027.0);
+        assert_ne!(a, c, "⭐ 换 seed 后调制轨迹必须变（seed 不是摆设）");
+    }
+
+    /// ⭐ 调制武装时 `reset()` 复现全新实例（帧计数与延迟线都归零）。
+    #[test]
+    fn modulation_reset_reproduces_fresh_instance_bit_for_bit() {
+        let input = test_noise(8192, 5);
+        let mut fresh = make_tape_mod(0.8, 1.5, 9.0, 0.3, 31.0);
+        let mut reused = make_tape_mod(0.8, 1.5, 9.0, 0.3, 31.0);
+        // reused 先跑一段别的音频（把延迟线与帧计数推离起点），再复位。
+        let mut junk = test_noise(4096, 6);
+        let mut junk_r = junk.clone();
+        process_in_blocks(&mut reused, &mut junk, &mut junk_r);
+        reused.reset();
+        let (mut l1, mut r1) = (input.clone(), input.clone());
+        let (mut l2, mut r2) = (input.clone(), input.clone());
+        process_in_blocks(&mut fresh, &mut l1, &mut r1);
+        process_in_blocks(&mut reused, &mut l2, &mut r2);
+        assert_eq!(l1, l2);
+        assert_eq!(r1, r2);
+    }
+
+    /// 调制延迟读数：未武装 0；武装 = 中心延迟（两深度和 + 边距）。
+    #[test]
+    fn modulation_latency_samples_reports_the_center_delay() {
+        let mut tape = make_tape_mod(0.5, 2.0, 6.0, 0.5, 1.0);
+        // 中心 = (2.0 + 0.5 + 0.5) ms = 3 ms @ 48 kHz = 144 样本。
+        assert_eq!(tape.modulation_latency_samples(), 144);
+        tape.set_params(TapeParams {
+            wow_depth_ms: 0.0,
+            flutter_depth_ms: 0.0,
+            ..tape.params()
+        });
+        assert_eq!(tape.modulation_latency_samples(), 0);
     }
 }

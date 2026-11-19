@@ -1435,6 +1435,29 @@ impl TapeProjection {
                 self.params.asym = value;
                 self.seen = true;
             }
+            // ⭐ wow/flutter 调制段（鼓机缺口 P7）：与 `TapeField` 的
+            // WowRateHz / WowDepthMs / FlutterRateHz / FlutterDepthMs / Seed
+            // **同一张拼写表**的十个名字（同一条等集判据钉住）。
+            "tape_wow_rate_hz" | "saturation_wow_rate_hz" => {
+                self.params.wow_rate_hz = value;
+                self.seen = true;
+            }
+            "tape_wow_depth_ms" | "saturation_wow_depth_ms" => {
+                self.params.wow_depth_ms = value;
+                self.seen = true;
+            }
+            "tape_flutter_rate_hz" | "saturation_flutter_rate_hz" => {
+                self.params.flutter_rate_hz = value;
+                self.seen = true;
+            }
+            "tape_flutter_depth_ms" | "saturation_flutter_depth_ms" => {
+                self.params.flutter_depth_ms = value;
+                self.seen = true;
+            }
+            "tape_seed" | "saturation_seed" => {
+                self.params.seed = value;
+                self.seen = true;
+            }
             _ => {}
         }
     }

@@ -14,7 +14,7 @@
 //! | 类型 | 内容 |
 //! | :--- | :--- |
 //! | [`StripField`] | 通道条 32 个可自动化字段（`61` 个拼写） |
-//! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
+//! | [`TapeField`] | 磁带饱和与 wow/flutter 的 10 个标量字段（`20` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 6 个字段（`9` 个拼写；含类型档位与混响时间） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
@@ -1004,8 +1004,11 @@ pub fn delay_params_from_stage(stage: &DelayStageParams, bpm: f64) -> DelayParam
 /// 与 `tape_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]）：静态投影与
 /// 块边界自动化读的是同一组名字，⛔ 不写第二份。
 ///
-/// 四个字段都是 `TapeSaturation::set_params` 的入参；该函数文档承诺**零分配、
+/// 十个字段都是 `TapeSaturation::set_params` 的入参；该函数文档承诺**零分配、
 /// 可以逐块调用** ⇒ 块边界自动化不需要重建过采样器（`configure` 才是状态初始化入口）。
+/// wow/flutter 五字段（鼓机缺口 P7）同理：深度/速率/种子在块边界改，
+/// 调制相位是 `(seed, 帧号)` 的纯函数 ⇒ 改 seed 等价于重播种（与
+/// [`NoiseField::Seed`] 同口径），改深度不复位帧计数、不切断延迟线。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TapeField {
     /// 饱和驱动（0..1）。`tape_drive` / `saturation_drive`。
@@ -1021,14 +1024,36 @@ pub enum TapeField {
     /// 它产生**偶次**谐波（磁带"暖"的来源）—— `pade_tanh` 是奇函数，只出奇次。
     /// 见 `crate::tape` 模块文档的「⭐ 偶次谐波」一节。
     Asym,
+    /// wow 速率（Hz，0.05..2）。`tape_wow_rate_hz` / `saturation_wow_rate_hz`。
+    WowRateHz,
+    /// ⭐ wow 深度（ms，0..8；`0` ＝ 无 wow）。`tape_wow_depth_ms` / `saturation_wow_depth_ms`。
+    ///
+    /// 延迟线长度的慢速峰值偏离；见 `crate::tape` 模块文档的「wow / flutter」节。
+    WowDepthMs,
+    /// flutter 速率（Hz，2..15）。`tape_flutter_rate_hz` / `saturation_flutter_rate_hz`。
+    FlutterRateHz,
+    /// ⭐ flutter 深度（ms，0..2；`0` ＝ 无 flutter）。`tape_flutter_depth_ms` / `saturation_flutter_depth_ms`。
+    FlutterDepthMs,
+    /// 调制种子（整数，0..=2²⁴−1）。`tape_seed` / `saturation_seed`。
+    Seed,
 }
 
 impl TapeField {
     /// 全部字段。
-    pub const ALL: &'static [Self] =
-        &[Self::Drive, Self::Mix, Self::TrimDb, Self::HfHz, Self::Asym];
+    pub const ALL: &'static [Self] = &[
+        Self::Drive,
+        Self::Mix,
+        Self::TrimDb,
+        Self::HfHz,
+        Self::Asym,
+        Self::WowRateHz,
+        Self::WowDepthMs,
+        Self::FlutterRateHz,
+        Self::FlutterDepthMs,
+        Self::Seed,
+    ];
 
-    /// **全部拼写** → 字段（`10` 条 = `5` 个字段）。
+    /// **全部拼写** → 字段（`20` 条 = `10` 个字段）。
     pub const SPELLINGS: &'static [(&'static str, Self)] = &[
         ("tape_drive", Self::Drive),
         ("saturation_drive", Self::Drive),
@@ -1040,6 +1065,16 @@ impl TapeField {
         ("saturation_hf_hz", Self::HfHz),
         ("tape_asym", Self::Asym),
         ("saturation_asym", Self::Asym),
+        ("tape_wow_rate_hz", Self::WowRateHz),
+        ("saturation_wow_rate_hz", Self::WowRateHz),
+        ("tape_wow_depth_ms", Self::WowDepthMs),
+        ("saturation_wow_depth_ms", Self::WowDepthMs),
+        ("tape_flutter_rate_hz", Self::FlutterRateHz),
+        ("saturation_flutter_rate_hz", Self::FlutterRateHz),
+        ("tape_flutter_depth_ms", Self::FlutterDepthMs),
+        ("saturation_flutter_depth_ms", Self::FlutterDepthMs),
+        ("tape_seed", Self::Seed),
+        ("saturation_seed", Self::Seed),
     ];
 
     /// 名字 → 字段（大小写不敏感）。
@@ -1060,6 +1095,11 @@ impl TapeField {
             Self::TrimDb => "tape_trim_db",
             Self::HfHz => "tape_hf_hz",
             Self::Asym => "tape_asym",
+            Self::WowRateHz => "tape_wow_rate_hz",
+            Self::WowDepthMs => "tape_wow_depth_ms",
+            Self::FlutterRateHz => "tape_flutter_rate_hz",
+            Self::FlutterDepthMs => "tape_flutter_depth_ms",
+            Self::Seed => "tape_seed",
         }
     }
 
@@ -1072,6 +1112,11 @@ impl TapeField {
             Self::TrimDb => params.trim_db,
             Self::HfHz => params.hf_hz,
             Self::Asym => params.asym,
+            Self::WowRateHz => params.wow_rate_hz,
+            Self::WowDepthMs => params.wow_depth_ms,
+            Self::FlutterRateHz => params.flutter_rate_hz,
+            Self::FlutterDepthMs => params.flutter_depth_ms,
+            Self::Seed => params.seed,
         }
     }
 
@@ -1083,6 +1128,11 @@ impl TapeField {
             Self::TrimDb => params.trim_db = value,
             Self::HfHz => params.hf_hz = value,
             Self::Asym => params.asym = value,
+            Self::WowRateHz => params.wow_rate_hz = value,
+            Self::WowDepthMs => params.wow_depth_ms = value,
+            Self::FlutterRateHz => params.flutter_rate_hz = value,
+            Self::FlutterDepthMs => params.flutter_depth_ms = value,
+            Self::Seed => params.seed = value,
         }
     }
 

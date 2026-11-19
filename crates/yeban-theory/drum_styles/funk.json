@@ -50,7 +50,12 @@
       "drive": 0.15,
       "mix": 0.25,
       "hf_hz": 12000,
-      "asym": 0.1
+      "asym": 0.1,
+      "wow_rate_hz": 0.5,
+      "wow_depth_ms": 0.0,
+      "flutter_rate_hz": 6.0,
+      "flutter_depth_ms": 0.0,
+      "seed": 0
     },
     "transient": {
       "attack": 0.45,

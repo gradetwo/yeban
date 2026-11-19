@@ -139,7 +139,8 @@ pub struct DrumLanePreset {
     pub steps: Vec<DrumStep>,
 }
 
-/// 磁带饱和段（`fx.tape`，可选）：给整组鼓加谐波与轻微高频滚降。
+/// 磁带饱和段（`fx.tape`，可选）：给整组鼓加谐波与轻微高频滚降，
+/// 并可带 wow/flutter 走带调制（P7；深度 0 = 无调制）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrumTapePreset {
     /// 驱动量 0..=1。
@@ -150,6 +151,16 @@ pub struct DrumTapePreset {
     pub hf_hz: f32,
     /// 曲线不对称量 0..=0.5（偶次谐波 = 「暖」的来源）。
     pub asym: f32,
+    /// wow 速率（Hz）0.05..=2。
+    pub wow_rate_hz: f32,
+    /// wow 深度（ms，延迟峰值偏离）0..=8。
+    pub wow_depth_ms: f32,
+    /// flutter 速率（Hz）2..=15。
+    pub flutter_rate_hz: f32,
+    /// flutter 深度（ms，延迟峰值偏离）0..=2。
+    pub flutter_depth_ms: f32,
+    /// 调制种子（整数）0..=16777215：同 seed 同渲染（可复现口径）。
+    pub seed: f32,
 }
 
 /// 延迟段（`fx.delay`，可选）：整轨插入式延迟（引擎无逐道发送，
@@ -1024,6 +1035,35 @@ fn parse_tape(obj: &[(String, Json)], base: &str) -> Result<DrumTapePreset, Drum
         mix: get_f32_ranged(obj, "mix", &format!("{base}.tape.mix"), 0.0, 1.0)?,
         hf_hz: get_f32_ranged(obj, "hf_hz", &format!("{base}.tape.hf_hz"), 2000.0, 20000.0)?,
         asym: get_f32_ranged(obj, "asym", &format!("{base}.tape.asym"), 0.0, 0.5)?,
+        wow_rate_hz: get_f32_ranged(
+            obj,
+            "wow_rate_hz",
+            &format!("{base}.tape.wow_rate_hz"),
+            0.05,
+            2.0,
+        )?,
+        wow_depth_ms: get_f32_ranged(
+            obj,
+            "wow_depth_ms",
+            &format!("{base}.tape.wow_depth_ms"),
+            0.0,
+            8.0,
+        )?,
+        flutter_rate_hz: get_f32_ranged(
+            obj,
+            "flutter_rate_hz",
+            &format!("{base}.tape.flutter_rate_hz"),
+            2.0,
+            15.0,
+        )?,
+        flutter_depth_ms: get_f32_ranged(
+            obj,
+            "flutter_depth_ms",
+            &format!("{base}.tape.flutter_depth_ms"),
+            0.0,
+            2.0,
+        )?,
+        seed: get_f32_ranged(obj, "seed", &format!("{base}.tape.seed"), 0.0, 16_777_215.0)?,
     })
 }
 
@@ -1554,6 +1594,11 @@ fn tape_params(tape: &DrumTapePreset) -> Vec<(String, f32)> {
         ("tape_mix".to_owned(), tape.mix),
         ("tape_hf_hz".to_owned(), tape.hf_hz),
         ("tape_asym".to_owned(), tape.asym),
+        ("tape_wow_rate_hz".to_owned(), tape.wow_rate_hz),
+        ("tape_wow_depth_ms".to_owned(), tape.wow_depth_ms),
+        ("tape_flutter_rate_hz".to_owned(), tape.flutter_rate_hz),
+        ("tape_flutter_depth_ms".to_owned(), tape.flutter_depth_ms),
+        ("tape_seed".to_owned(), tape.seed),
     ]
 }
 
@@ -3501,7 +3546,7 @@ mod tests {
                  "attack_s": 0.01, "release_s": 0.12, "makeup_db": 1.5},
         "output_db": 0.5,
         "reverb": {"kind": "plate", "decay_s": 1.1, "damp": 0.45, "wet": 0.15, "predelay_s": 0.01},
-        "tape": {"drive": 0.3, "mix": 0.5, "hf_hz": 9000, "asym": 0.2},
+        "tape": {"drive": 0.3, "mix": 0.5, "hf_hz": 9000, "asym": 0.2, "wow_rate_hz": 0.5, "wow_depth_ms": 0.0, "flutter_rate_hz": 6.0, "flutter_depth_ms": 0.0, "seed": 0},
         "delay": {"time_s": 0.28, "feedback": 0.25, "mix": 0.1, "damp": 0.4,
                   "ping_pong": true}
     }"#;
@@ -3883,7 +3928,7 @@ mod tests {
                 \"comp\": {\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
                           \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1},\
                 \"reverb\": {\"kind\": \"room\", \"decay_s\": 0.8, \"damp\": 0.5, \"wet\": 0.1, \"predelay_s\": 0.01},\
-                \"tape\": {\"drive\": 0.2, \"mix\": 0.4, \"hf_hz\": 8000, \"asym\": 0.1},\
+                \"tape\": {\"drive\": 0.2, \"mix\": 0.4, \"hf_hz\": 8000, \"asym\": 0.1, \"wow_rate_hz\": 0.5, \"wow_depth_ms\": 0.0, \"flutter_rate_hz\": 6.0, \"flutter_depth_ms\": 0.0, \"seed\": 0},\
                 \"delay\": {\"time_s\": 0.25, \"feedback\": 0.2, \"mix\": 0.08,\
                            \"damp\": 0.3, \"ping_pong\": false}\
             }}]",

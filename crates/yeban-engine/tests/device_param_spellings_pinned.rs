@@ -48,7 +48,7 @@ const IR_SHAPE_NAMES: [&str; 4] = [
 ];
 
 /// 冻结读数（与 `yeban-render` 的 `automation.rs` 同一条口径：实时臂 61 ＋ 9 ＋ 12；
-/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 10 拼写（`tape_asym` 之后）⇒ 名单共 100 个拼写；
+/// 自动化名单另＋延迟 15 拼写（共享表，引擎经 `DelayField` 认）＋磁带饱和 20 拼写（P7 之后）⇒ 名单共 110 个拼写；
 /// 实时侧再＋ 4 个 IR 形状键 ⇒ 卷积族在**本判据**里是 12）。
 // ⭐ `#344`：通道条 51 → 53（mono-maker 一个字段两个拼写 `mono_below_hz` /
 // `mono_maker_hz`）；其余三族未动。
@@ -56,7 +56,8 @@ const IR_SHAPE_NAMES: [&str; 4] = [
 // ⭐ 立体声卷积：卷积 11 → 12（`conv_ir_stereo` IR 形状键）。
 // ⭐ 混响 P1＋P2（2026-11-19，fix-on-main）：混响 6 → 9（新增 `reverb_kind` /
 // `reverb_decay_s` / `reverb_decay` 三拼写，四种混响类型走同一 Freeverb 拓扑）。
-const FROZEN_COUNTS: (usize, usize, usize, usize) = (61, 9, 12, 10);
+// ⭐ P7 wow/flutter（2026-11-19）：磁带 10 → 20（wow/flutter 五字段各两拼写）。
+const FROZEN_COUNTS: (usize, usize, usize, usize) = (61, 9, 12, 20);
 
 /// 取 `impl <header>` 块内 `fn apply(&mut self, name: &str, value: f32)` 的**臂名**列表。
 ///
@@ -180,7 +181,7 @@ fn the_realtime_reverb_arms_are_the_dsp_reverb_spellings() {
     assert_eq!(got, expected, "实时链与 dsp 的混响拼写表不一致");
 }
 
-/// **磁带饱和 10 拼写**（`tape_asym` 之后）：实时臂集 == [`TapeField::SPELLINGS`]。
+/// **磁带饱和 20 拼写**（`tape_asym` 之后 10；P7 wow/flutter 五字段再＋10）：实时臂集 == [`TapeField::SPELLINGS`]。
 #[test]
 fn the_realtime_tape_arms_are_the_dsp_tape_spellings() {
     let arms = apply_arm_names("impl TapeProjection {");

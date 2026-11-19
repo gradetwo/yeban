@@ -20,7 +20,8 @@
    "v2 (2026-11-18): family changed acoustic -> electronic per the v2 brief (HipHop synth base + dark processing); the Virtuosity lofi mapping is not a standalone program (it is an include fragment - parse error as an entry point, probed 2026-11-18). Bitcrusher / vinyl noise floor / wow & flutter have no devices yet: approximated with heavy tape, an 8.5 kHz track lowpass and dark reverb; the missing devices are listed as gap lines in the receipt",
    "Ping-pong delay 0.42 s/mix 0.10 added in v2 loudness/width tuning to widen the synth image (side/mid was 0.016).",
    "D3/D4 wiring (2026-11-19): fx.crusher now drives the real Bitcrusher device (bits 10 / down 2 / aa 0.35); the tape + lowpass approximation above stays as the kit's darkness layer. Vinyl noise floor (D5) and wow & flutter (P7) still have no devices and remain gap lines",
-   "D5 noise source (2026-11-19): fx.noise now drives the real Noise Source device (level 0.035 / color 0.85 pink-leaning / crackle 5 per second per channel at level 0.4 / seed 2026, reproducible); the noise enters at the head of the track chain and is darkened by the same tape + lowpass + crusher layer as the drums. Wow & flutter (P7) remains a gap line"
+   "D5 noise source (2026-11-19): fx.noise now drives the real Noise Source device (level 0.035 / color 0.85 pink-leaning / crackle 5 per second per channel at level 0.4 / seed 2026, reproducible); the noise enters at the head of the track chain and is darkened by the same tape + lowpass + crusher layer as the drums. Wow & flutter (P7) remains a gap line",
+   "P7 wow & flutter (2026-11-19): fx.tape now carries real wow/flutter modulation on the Tape Saturation device (seeded delay-line modulation, same seed = same render). Values are restrained on purpose: wow 0.55 Hz / 0.9 ms peak delay deviation (about +/-0.3% pitch sway with the seeded drift) and flutter 6.5 Hz / 0.04 ms (about +/-0.16%) - a healthy but dusty machine, not a seasick effect. Seed 2026 matches the noise seed above. All other styles keep wow/flutter depths at 0 (bit-identical renders)"
   ]
  },
  "kit_family": "electronic",
@@ -56,7 +57,12 @@
    "drive": 0.6,
    "mix": 0.75,
    "hf_hz": 5500,
-   "asym": 0.4
+   "asym": 0.4,
+   "wow_rate_hz": 0.55,
+   "wow_depth_ms": 0.9,
+   "flutter_rate_hz": 6.5,
+   "flutter_depth_ms": 0.04,
+   "seed": 2026
   },
   "delay": {
    "time_s": 0.42,

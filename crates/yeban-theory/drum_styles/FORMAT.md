@@ -41,7 +41,7 @@ family, that family is not duplicated.
 | `comp` | object | `threshold_db` −60..=0, `ratio` 1..=20, `knee_db` 0..=24, `attack_s` 0.0005..=0.2, `release_s` 0.01..=1, `makeup_db` −12..=12 |
 | `output_db` | number | strip output trim −12..=12 dB (one of the style-to-style level balance points) |
 | `reverb` | object | `kind` string: `room`/`plate`/`hall`/`spring`; `decay_s` 0.1..=10 (reverb time, seconds, T60); `damp`/`wet` 0..=1, `predelay_s` 0..=0.1. Generation writes `reverb_kind` + `reverb_decay_s` device params; the legacy dimensionless `size` field is gone from this format (the device still accepts `reverb_size`, presets no longer write it) |
-| `tape` | object, optional | `drive`/`mix` 0..=1, `hf_hz` 2000..=20000, `asym` 0..=0.5 |
+| `tape` | object, optional | `drive`/`mix` 0..=1, `hf_hz` 2000..=20000, `asym` 0..=0.5, `wow_rate_hz` 0.05..=2, `wow_depth_ms` 0..=8, `flutter_rate_hz` 2..=15, `flutter_depth_ms` 0..=2, `seed` 0..=16777215 (wow/flutter delay-line modulation on the tape device, P7; depths 0 = no modulation, renders bit-identical) |
 | `delay` | object, optional | `time_s` 0.01..=2, `feedback` 0..=0.9, `mix` 0..=0.6, `damp` 0..=1, `ping_pong` bool. Whole-track insert (no per-lane sends exist), so factory mixes stay low |
 
 All `fx` sub-fields are required when their object is present; out-of-range

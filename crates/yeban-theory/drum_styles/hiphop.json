@@ -49,7 +49,12 @@
       "drive": 0.25,
       "mix": 0.4,
       "hf_hz": 9000,
-      "asym": 0.25
+      "asym": 0.25,
+      "wow_rate_hz": 0.5,
+      "wow_depth_ms": 0.0,
+      "flutter_rate_hz": 6.0,
+      "flutter_depth_ms": 0.0,
+      "seed": 0
     },
     "delay": {
       "time_s": 0.489,

@@ -39,8 +39,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：123 个拼写 = 76 个字段，含别名；
-//!   通道条 32（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）＋ 磁带饱和 5 ＋ Freeverb 6 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5 ＋ 瞬态塑形 2 ＋ 比特碾碎 3 ＋ 噪声源 5）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：133 个拼写 = 81 个字段，含别名；
+//!   通道条 32（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）＋ 磁带饱和 10 ＋ Freeverb 6 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5 ＋ 瞬态塑形 2 ＋ 比特碾碎 3 ＋ 噪声源 5）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -1160,7 +1160,8 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "delay_sync_num",
     "delay_sync_den",
     "delay_sync_dotted",
-    // 磁带饱和标量（10 = 5 个字段；`ADR-0062`，`tape_asym` 为 0001 片新增）。
+    // 磁带饱和标量（20 = 10 个字段；`ADR-0062`，`tape_asym` 为 0001 片新增，
+    // wow/flutter 五字段为 P7 新增）。
     "tape_drive",
     "saturation_drive",
     "tape_mix",
@@ -1171,6 +1172,16 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "saturation_hf_hz",
     "tape_asym",
     "saturation_asym",
+    "tape_wow_rate_hz",
+    "saturation_wow_rate_hz",
+    "tape_wow_depth_ms",
+    "saturation_wow_depth_ms",
+    "tape_flutter_rate_hz",
+    "saturation_flutter_rate_hz",
+    "tape_flutter_depth_ms",
+    "saturation_flutter_depth_ms",
+    "tape_seed",
+    "saturation_seed",
     // 插入式限制器（5 = 5 个字段；⛔ 无别名：裸 `threshold_db` 会撞压缩器）。
     "limiter_threshold_db",
     "limiter_ceiling_db",
@@ -3343,6 +3354,38 @@ mod tests {
             0.05,
             0.35,
         ),
+        // P7 wow/flutter 五字段：两端都在器件合法域内；`seed` 取整数
+        // （净化层对 seed 是钳制后取整，非整数终点会与原始终点对不上位）。
+        (
+            DeviceParamField::Tape(TapeField::WowRateHz),
+            "tape_wow_rate_hz",
+            0.5,
+            1.5,
+        ),
+        (
+            DeviceParamField::Tape(TapeField::WowDepthMs),
+            "tape_wow_depth_ms",
+            0.0,
+            2.0,
+        ),
+        (
+            DeviceParamField::Tape(TapeField::FlutterRateHz),
+            "tape_flutter_rate_hz",
+            6.0,
+            12.0,
+        ),
+        (
+            DeviceParamField::Tape(TapeField::FlutterDepthMs),
+            "tape_flutter_depth_ms",
+            0.0,
+            0.8,
+        ),
+        (
+            DeviceParamField::Tape(TapeField::Seed),
+            "tape_seed",
+            0.0,
+            2026.0,
+        ),
         // 插入式限制器 5 字段：两端都落在器件合法域内，且差值足够大
         // （判据要求"中点真的在动"，差值 < 1e-3 会被 `ramps_monotonically` 判成恒等）。
         (
@@ -3592,8 +3635,8 @@ mod tests {
         assert_eq!(DelayField::ALL.len(), 9, "延迟 9 个字段");
         assert_eq!(
             TapeField::ALL.len(),
-            5,
-            "磁带饱和 5 个字段（`tape_asym` 为 0001 片新增）"
+            10,
+            "磁带饱和 10 个字段（`tape_asym` 为 0001 片新增，wow/flutter 五字段为 P7 新增）"
         );
         assert_eq!(
             StripField::SPELLINGS.len(),
@@ -3611,8 +3654,8 @@ mod tests {
             + yeban_dsp::device_param::CrusherField::SPELLINGS.len()
             + yeban_dsp::device_param::NoiseField::SPELLINGS.len();
         assert_eq!(
-            expected_len, 123,
-            "61 + 9 + 8 + 15 + 10 + 5 + 5 + 2 + 3 + 5 = 123 个拼写"
+            expected_len, 133,
+            "61 + 9 + 8 + 15 + 20 + 5 + 5 + 2 + 3 + 5 = 133 个拼写"
         );
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
@@ -3677,7 +3720,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**76 个字段各一条**（123 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**81 个字段各一条**（133 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

@@ -700,6 +700,54 @@ const TAPE: EffectGroup = EffectGroup {
                   ⚠ 只在级建成时生效（`tape_drive > 0` 且 `tape_mix > 0`）；\
                   小信号增益会略降（−1 dB 量级），用 `tape_trim_db` 补",
         },
+        EffectParam {
+            name: "tape_wow_rate_hz",
+            aliases: &["saturation_wow_rate_hz"],
+            unit: "Hz",
+            min: 0.05,
+            max: 2.0,
+            default: 0.5,
+            doc: "wow 速率（走带慢摆；P7 调制段：饱和之后整段过一条种子化调制延迟线，\
+                  干声一并调制 —— 走带物理，不是合唱）",
+        },
+        EffectParam {
+            name: "tape_wow_depth_ms",
+            aliases: &["saturation_wow_depth_ms"],
+            unit: "ms",
+            min: 0.0,
+            max: 8.0,
+            default: 0.0,
+            doc: "wow 深度（延迟峰值偏离毫秒数；含 25% 种子漂移分量。0 = 无调制，\
+                  与无调制段时逐位一致）",
+        },
+        EffectParam {
+            name: "tape_flutter_rate_hz",
+            aliases: &["saturation_flutter_rate_hz"],
+            unit: "Hz",
+            min: 2.0,
+            max: 15.0,
+            default: 6.0,
+            doc: "flutter 速率（走带快抖）",
+        },
+        EffectParam {
+            name: "tape_flutter_depth_ms",
+            aliases: &["saturation_flutter_depth_ms"],
+            unit: "ms",
+            min: 0.0,
+            max: 2.0,
+            default: 0.0,
+            doc: "flutter 深度（延迟峰值偏离毫秒数；0 = 无调制）",
+        },
+        EffectParam {
+            name: "tape_seed",
+            aliases: &["saturation_seed"],
+            unit: "",
+            min: 0.0,
+            max: 16777215.0,
+            default: 0.0,
+            doc: "调制种子（整数部分生效；相位与漂移都是 (seed, 帧号) 的纯函数 ⇒ \
+                  同 seed 同渲染逐位一致，不同步进随机状态）",
+        },
     ],
 };
 

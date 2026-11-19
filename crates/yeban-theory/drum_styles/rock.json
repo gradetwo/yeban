@@ -53,7 +53,12 @@
       "drive": 0.35,
       "mix": 0.5,
       "hf_hz": 11000,
-      "asym": 0.2
+      "asym": 0.2,
+      "wow_rate_hz": 0.5,
+      "wow_depth_ms": 0.0,
+      "flutter_rate_hz": 6.0,
+      "flutter_depth_ms": 0.0,
+      "seed": 0
     }
   },
   "bpm": {
