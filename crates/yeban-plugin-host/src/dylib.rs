@@ -1,9 +1,8 @@
-//! 最小动态库加载器（std＋平台 `dlopen`／`LoadLibrary`，零第三方依赖）。
+//! 最小动态库加载器（std＋平台 `dlopen`／`LoadLibraryW`，零第三方依赖）。
 //!
 //! ⚠ 本模块的 `extern` 声明只覆盖一期用到的 4 个 Unix 符号与 3 个 Windows 符号；
-//! 不做通用 FFI 封装。Windows 上符号名必须是 ANSI（`LoadLibraryA`），
-//! 因此路径在加载前先按 UTF-8→ANSI 有损转换——含非 ASCII 的路径在 Windows 上
-//! 可能打不开（已知一期限缩，见 ADR-0069 D12 注）。
+//! 不做通用 FFI 封装。Windows 上使用 `LoadLibraryW` 传入 UTF-16 路径，
+//! 完整支持含非 ASCII 字符的插件路径。
 
 use std::ffi::{CString, c_void};
 
@@ -19,19 +18,14 @@ pub struct Library {
 unsafe impl Send for Library {}
 
 impl Library {
-    /// 打开动态库（`dlopen`／`LoadLibraryA`）。
+    /// 打开动态库（`dlopen`／`LoadLibraryW`）。
     ///
     /// # Errors
     ///
+    /// 路径含 NUL ⇒ [`HostError::InvalidPluginPath`]；
     /// 打开失败 ⇒ [`HostError::LibraryLoad`]（含系统错误文本）。
     pub fn open(path: &str) -> Result<Self, HostError> {
-        let c_path = CString::new(path)
-            .map_err(|_| HostError::InvalidPluginPath(format!("路径含 NUL 字节: {path}")))?;
-        // SAFETY: 路径来自 CString（NUL 结尾）；dlopen 只读。
-        let handle = unsafe { platform_open(c_path.as_ptr()) };
-        if handle.is_null() {
-            return Err(HostError::LibraryLoad(platform_last_error()));
-        }
+        let handle = platform_open(path)?;
         Ok(Self { handle })
     }
 
@@ -63,8 +57,8 @@ impl Drop for Library {
 
 #[cfg(unix)]
 mod platform {
-    use super::c_void;
-    use std::ffi::c_char;
+    use super::{HostError, c_void};
+    use std::ffi::{CString, c_char};
 
     // RTLD_NOW = 0x2（立即解析，加载时就暴露缺失符号，不拖到调用时）；
     // RTLD_LOCAL = 0x0（符号不进全局表，两个插件同名符号不互相干扰）。
@@ -80,9 +74,15 @@ mod platform {
         fn dlerror() -> *const c_char;
     }
 
-    pub(super) unsafe fn platform_open(path: *const c_char) -> *mut c_void {
-        // SAFETY: `path` 来自调用方构造的 `CString`（NUL 结尾），`dlopen` 只读。
-        unsafe { dlopen(path, RTLD_NOW) }
+    pub(super) fn platform_open(path: &str) -> Result<*mut c_void, HostError> {
+        let c_path = CString::new(path)
+            .map_err(|_| HostError::InvalidPluginPath(format!("路径含 NUL 字节: {path}")))?;
+        // SAFETY: `c_path` 来自 `CString`（NUL 结尾），`dlopen` 只读。
+        let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW) };
+        if handle.is_null() {
+            return Err(HostError::LibraryLoad(platform_last_error()));
+        }
+        Ok(handle)
     }
 
     pub(super) unsafe fn platform_symbol(handle: *mut c_void, name: *const c_char) -> *mut c_void {
@@ -95,7 +95,7 @@ mod platform {
         unsafe { dlclose(handle) };
     }
 
-    pub(super) fn platform_last_error() -> String {
+    fn platform_last_error() -> String {
         // SAFETY: `dlerror` 返回线程局部的 NUL 结尾串（失败时非空；为空则给兜底文案）。
         let ptr = unsafe { dlerror() };
         if ptr.is_null() {
@@ -109,26 +109,36 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use super::c_void;
-    use std::ffi::c_char;
+    use super::{HostError, c_void};
+    use std::ffi::{OsStr, c_char};
+    use std::os::windows::ffi::OsStrExt;
 
-    // SAFETY: `kernel32` 的公开接口；`LoadLibraryA` 要求 ANSI 路径，
-    // 调用方已按 UTF-8→ANSI 有损转换（见模块文档）。
+    // SAFETY: `kernel32` 的公开接口；`LoadLibraryW` 接受 NUL 结尾 UTF-16 路径。
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
         fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
         fn FreeLibrary(module: *mut c_void) -> i32;
-        fn GetLastError() -> u32;
     }
 
-    pub(super) unsafe fn platform_open(path: *const c_char) -> *mut c_void {
-        // SAFETY: `path` 是 NUL 结尾的 ANSI 串。
-        unsafe { LoadLibraryA(path) }
+    pub(super) fn platform_open(path: &str) -> Result<*mut c_void, HostError> {
+        if path.contains('\0') {
+            return Err(HostError::InvalidPluginPath(format!(
+                "路径含 NUL 字节: {path}"
+            )));
+        }
+        let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` 是 NUL 结尾的 UTF-16 缓冲且在调用期间存活，`LoadLibraryW` 只读。
+        let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
+        if handle.is_null() {
+            let err = std::io::Error::last_os_error();
+            return Err(HostError::LibraryLoad(format!("LoadLibraryW 失败: {err}")));
+        }
+        Ok(handle)
     }
 
     pub(super) unsafe fn platform_symbol(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-        // SAFETY: `handle` 是 `LoadLibraryA` 返回的有效句柄。
+        // SAFETY: `handle` 是 `LoadLibraryW` 返回的有效句柄，`name` 是 NUL 结尾 ANSI 串。
         unsafe { GetProcAddress(handle, name) }
     }
 
@@ -136,15 +146,9 @@ mod platform {
         // SAFETY: `handle` 有效且只关一次（`Drop` 置空）。
         unsafe { FreeLibrary(handle) };
     }
-
-    pub(super) fn platform_last_error() -> String {
-        // SAFETY: `GetLastError` 无指针参数，恒可调用。
-        let code = unsafe { GetLastError() };
-        format!("LoadLibraryA 失败（Win32 错误码 {code}）")
-    }
 }
 
-use platform::{platform_close, platform_last_error, platform_open, platform_symbol};
+use platform::{platform_close, platform_open, platform_symbol};
 
 #[cfg(test)]
 mod tests {
@@ -153,6 +157,12 @@ mod tests {
     #[test]
     fn missing_library_reports_load_error_not_panic() {
         let result = Library::open("/definitely/not/a/plugin.so");
+        assert!(matches!(result, Err(HostError::LibraryLoad(_))));
+    }
+
+    #[test]
+    fn non_ascii_missing_library_reports_load_error_not_panic() {
+        let result = Library::open("/definitely/not/a/中文_插件.so");
         assert!(matches!(result, Err(HostError::LibraryLoad(_))));
     }
 
