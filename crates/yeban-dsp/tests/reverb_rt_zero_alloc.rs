@@ -36,7 +36,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use yeban_dsp::reverb::{REVERB_LATENCY, Reverb, ReverbParams};
+use yeban_dsp::reverb::{REVERB_LATENCY, Reverb, ReverbKind, ReverbParams};
 
 // ---------------------------------------------------------------------------
 // 计数型全局分配器（按线程武装）
@@ -135,6 +135,8 @@ fn configured_reverb() -> Reverb {
         mix: 0.6,
         width: 0.8,
         predelay: 0.02,
+        kind: ReverbKind::Room,
+        decay_s: 0.0,
     });
     verb
 }
@@ -211,6 +213,8 @@ fn rt_path_allocates_nothing_over_5_000_quanta() {
                     mix: 0.6,
                     width: 0.8,
                     predelay: if phase { 0.0 } else { 0.1 },
+                    kind: ReverbKind::Room,
+                    decay_s: 0.0,
                 });
             }
             if quantum % RESET_EVERY == 0 {
@@ -341,6 +345,8 @@ fn retuning_across_the_whole_predelay_range_allocates_nothing() {
                 mix: 0.6,
                 width: 0.8,
                 predelay,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             });
             verb.process(&mut left, &mut right);
             verb.reset();
@@ -352,6 +358,8 @@ fn retuning_across_the_whole_predelay_range_allocates_nothing() {
             mix: 0.5,
             width: f32::NAN,
             predelay: f32::NAN,
+            kind: ReverbKind::Room,
+            decay_s: f32::NAN,
         });
         verb.process(&mut left, &mut right);
         verb.reset();
@@ -366,4 +374,49 @@ fn retuning_across_the_whole_predelay_range_allocates_nothing() {
     assert!(finite, "退化参数毒化了混响总线");
     assert_eq!(reading.allocations, 0, "扫预延迟不该分配");
     assert_eq!(reading.deallocations, 0, "扫预延迟不该释放");
+}
+
+/// 判据 5：**切换类型与混响时间**在观测窗口内同样零分配。
+///
+/// 类型切换要重排全部延迟线的逻辑长度（`Reverb::relayout_kind`）——
+/// 它只能成立为零分配，是因为缓冲容量在 `set_sample_rate` 时已按最大
+/// 类型缩放预留。本判据在窗口内逐量子轮换四档类型并轮换 `decay_s`
+/// （含未设的 `0.0`），任何一档的重排若触碰堆分配都会在这里现形。
+/// 计数器有牙由判据 2 保证。
+#[test]
+fn switching_kinds_and_decay_times_allocates_nothing() {
+    let mut verb = configured_reverb();
+    let mut left = vec![0.0f32; QUANTUM_FRAMES];
+    let mut right = vec![0.0f32; QUANTUM_FRAMES];
+    refill(&mut left, &mut right, 0, 0.5);
+
+    let mut finite = true;
+    let reading = window(|| {
+        for quantum in 0..RT_QUANTA {
+            refill(&mut left, &mut right, quantum, 0.6);
+            verb.process(&mut left, &mut right);
+            if quantum % RETUNE_EVERY == 0 {
+                let step = (quantum / RETUNE_EVERY) as usize;
+                verb.set_params(ReverbParams {
+                    size: 0.7,
+                    damp: 0.3,
+                    mix: 0.6,
+                    width: 0.8,
+                    predelay: 0.02,
+                    kind: ReverbKind::ALL[step % ReverbKind::ALL.len()],
+                    decay_s: [0.0, 0.8, 1.6, 2.4][step % 4],
+                });
+            }
+        }
+        finite = left.iter().all(|v| v.is_finite()) && right.iter().all(|v| v.is_finite());
+    });
+
+    eprintln!(
+        "[yeban-dsp/RT] reverb 类型轮换（四档）＋ decay_s 轮换（0/0.8/1.6/2.4 s）: \
+         allocations={} deallocations={}",
+        reading.allocations, reading.deallocations
+    );
+    assert!(finite, "类型轮换产出了非有限样本");
+    assert_eq!(reading.allocations, 0, "切换类型/时间不该分配");
+    assert_eq!(reading.deallocations, 0, "切换类型/时间不该释放");
 }

@@ -14,7 +14,7 @@
 //! | 类型 | 内容 |
 //! | :--- | :--- |
 //! | [`StripField`] | 通道条 28 个可自动化字段（`53` 个拼写） |
-//! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
+//! | [`ReverbField`] | Freeverb 的 6 个字段（`9` 个拼写；含类型档位与混响时间） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
 //! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
@@ -32,7 +32,7 @@ use crate::convolution_reverb::{
     ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
 };
 use crate::delay::{DelayParams, MAX_DELAY_SECONDS};
-use crate::reverb::{REVERB_MAX_PREDELAY_S, ReverbParams};
+use crate::reverb::{REVERB_MAX_DECAY_S, REVERB_MAX_PREDELAY_S, ReverbKind, ReverbParams};
 use crate::sample_delay::{MAX_SAMPLE_DELAY_SAMPLES, SampleDelayParams};
 use crate::tape::TapeParams;
 
@@ -426,8 +426,11 @@ impl StripField {
 /// 块边界自动化读的是同一组名字，⛔ 不写第二份。刻意**不含** `reverb_mix` /
 /// `reverb_width`（与引擎 `ReverbProjection::apply` 同口径，那两个名字**不认**）。
 ///
-/// 四个字段都是器件 `Reverb::set_params` 的标量入参；该函数文档承诺**零分配、可逐块**
+/// 六个字段都是器件 `Reverb::set_params` 的入参；该函数文档承诺**零分配、可逐块**
 /// ⇒ 块边界自动化不需要重新分配延迟线（`set_sample_rate` 才是分配入口）。
+/// [`Self::Kind`] 是离散档位（以数值承载，见 [`ReverbKind::index`]）：
+/// 自动化落到它上面时，值在块边界被量化到最近档 —— 与延迟的同步分频
+/// 数字段（`SyncNum` / `SyncDen`）同款口径。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReverbField {
     /// 衰减长度（0..1）。`reverb_size`。
@@ -438,13 +441,24 @@ pub enum ReverbField {
     Wet,
     /// 湿路预延迟（秒）。`reverb_predelay` / `reverb_predelay_s`。
     Predelay,
+    /// 空间类型（档位数值，见 [`ReverbKind::index`]）。`reverb_kind`。
+    Kind,
+    /// 混响时间（秒，T60；0 = 未设）。`reverb_decay_s` / `reverb_decay`。
+    Decay,
 }
 
 impl ReverbField {
     /// 全部字段。
-    pub const ALL: &'static [Self] = &[Self::Size, Self::Damp, Self::Wet, Self::Predelay];
+    pub const ALL: &'static [Self] = &[
+        Self::Size,
+        Self::Damp,
+        Self::Wet,
+        Self::Predelay,
+        Self::Kind,
+        Self::Decay,
+    ];
 
-    /// **全部拼写** → 字段（`6` 条 = `4` 个字段）。
+    /// **全部拼写** → 字段（`9` 条 = `6` 个字段）。
     pub const SPELLINGS: &'static [(&'static str, Self)] = &[
         ("reverb_size", Self::Size),
         ("reverb_damp", Self::Damp),
@@ -452,6 +466,9 @@ impl ReverbField {
         ("reverb_wet_mix", Self::Wet),
         ("reverb_predelay", Self::Predelay),
         ("reverb_predelay_s", Self::Predelay),
+        ("reverb_kind", Self::Kind),
+        ("reverb_decay_s", Self::Decay),
+        ("reverb_decay", Self::Decay),
     ];
 
     /// 名字 → 字段（大小写不敏感）。
@@ -471,6 +488,8 @@ impl ReverbField {
             Self::Damp => "reverb_damp",
             Self::Wet => "reverb_wet",
             Self::Predelay => "reverb_predelay_s",
+            Self::Kind => "reverb_kind",
+            Self::Decay => "reverb_decay_s",
         }
     }
 
@@ -482,23 +501,32 @@ impl ReverbField {
             Self::Damp => params.damp,
             Self::Wet => params.mix,
             Self::Predelay => params.predelay,
+            Self::Kind => params.kind.index(),
+            Self::Decay => params.decay_s,
         }
     }
 
     /// 把**原生绝对值**写进投影参数（⛔ 不在这里钳制：钳制在器件的 `set_params`）。
+    ///
+    /// ⚠ [`Self::Kind`] 例外：它的载体是枚举，没有「未钳制的中间值」可存，
+    /// 写入即按 [`ReverbKind::from_f32`] 量化（四舍五入＋钳档＋非有限回落
+    /// 缺省档）。这与器件侧的读数恒等：`set_params` 存的就是枚举本身。
     pub fn store(self, params: &mut ReverbParams, value: f32) {
         match self {
             Self::Size => params.size = value,
             Self::Damp => params.damp = value,
             Self::Wet => params.mix = value,
             Self::Predelay => params.predelay = value,
+            Self::Kind => params.kind = ReverbKind::from_f32(value),
+            Self::Decay => params.decay_s = value,
         }
     }
 
     /// 与 `Reverb::set_params` **同一次**钳制/回落（只给恒等判定用）。
     ///
     /// 非有限值：`size` / `damp` / `mix` 回落到 [`ReverbParams::default`] 的对应值，
-    /// `predelay` 回落到 `0.0`（与器件逐字一致）。由真实器件的网格判据钉住。
+    /// `predelay` / `decay_s` 回落到 `0.0`，`kind` 回落到缺省档（与器件逐字一致）。
+    /// 由真实器件的网格判据钉住。
     #[must_use]
     pub fn sanitise(self, value: f32) -> f32 {
         let fallback = ReverbParams::default();
@@ -510,6 +538,8 @@ impl ReverbField {
             Self::Damp => finite(value, fallback.damp).clamp(0.0, 1.0),
             Self::Wet => finite(value, fallback.mix).clamp(0.0, 1.0),
             Self::Predelay => finite(value, 0.0).clamp(0.0, REVERB_MAX_PREDELAY_S),
+            Self::Kind => ReverbKind::from_f32(value).index(),
+            Self::Decay => finite(value, 0.0).clamp(0.0, REVERB_MAX_DECAY_S),
         }
     }
 }

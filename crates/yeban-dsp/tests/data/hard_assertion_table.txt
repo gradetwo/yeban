@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 420 条：float_bits 91 ／ integer_count 329；其中 hard 75 ／ platform 13
+# 合计 424 条：float_bits 92 ／ integer_count 332；其中 hard 70 ／ platform 19
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -301,13 +301,17 @@ integer_count | no_callee | 0 | - | src/polysynth.rs | the_second_oscillator_add
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_voice_size_is_pinned_after_adding_the_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | ties_on_start_sample_are_broken_by_the_smallest_index
 integer_count | no_callee | 0 | - | src/reverb.rs | an_unconfigured_reverb_is_a_passthrough
-float_bits | hard | 5 | - | src/reverb.rs | calling_set_sample_rate_again_drops_the_predelay_history
+float_bits | platform | 11 | exp | src/reverb.rs | calling_set_sample_rate_again_drops_the_predelay_history
 integer_count | no_callee | 0 | - | src/reverb.rs | changing_the_pre_delay_length_never_replays_stale_audio
-float_bits | hard | 6 | - | src/reverb.rs | latency_is_zero_and_the_predelay_delays_only_the_wet_path
+integer_count | no_callee | 0 | - | src/reverb.rs | decay_s_tracks_the_measured_t60
+integer_count | no_callee | 0 | - | src/reverb.rs | each_kind_renders_a_measurably_different_tail
+integer_count | no_callee | 0 | - | src/reverb.rs | kind_index_round_trips_and_decay_s_is_clamped
+float_bits | platform | 12 | exp | src/reverb.rs | kind_switch_relayouts_and_leaves_no_stale_audio
+float_bits | platform | 12 | exp | src/reverb.rs | latency_is_zero_and_the_predelay_delays_only_the_wet_path
 integer_count | no_callee | 0 | - | src/reverb.rs | predelay_is_measured_in_seconds_at_any_sample_rate
-float_bits | hard | 5 | - | src/reverb.rs | re_applying_the_same_params_is_a_no_op
-float_bits | hard | 6 | - | src/reverb.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
-float_bits | hard | 5 | - | src/reverb.rs | the_wet_impulse_response_is_frozen_bit_for_bit
+float_bits | platform | 11 | exp | src/reverb.rs | re_applying_the_same_params_is_a_no_op
+float_bits | platform | 12 | exp | src/reverb.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
+float_bits | platform | 11 | exp | src/reverb.rs | the_wet_impulse_response_is_frozen_bit_for_bit
 integer_count | no_callee | 0 | - | src/reverb.rs | width_controls_the_stereo_spread
 integer_count | no_callee | 0 | - | src/sample_delay.rs | delay_beyond_configured_capacity_is_clamped_not_panicking
 integer_count | no_callee | 0 | - | src/sample_delay.rs | delay_beyond_max_is_clamped

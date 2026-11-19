@@ -13,14 +13,14 @@ src/comb.rs|443|variable|&c.feedback(|variable_needle|needle 非字面量：本�
 src/comb.rs|444|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/compressor.rs|1431|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/convolution_reverb.rs|1515|literal|ConvolutionReverb|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/device_param.rs|1013|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|1116|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|1214|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|1043|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|1146|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|1244|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/device_param.rs|275|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|462|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|558|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|730|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/device_param.rs|870|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|479|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|588|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|760|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/device_param.rs|900|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/anatomy.rs|309|variable||preset| preset.id == id|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|2098|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|2099|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

@@ -90,6 +90,26 @@
 //! 由 `tests/reverb_rt_zero_alloc.rs` 判据 1 的"每 `250` 个量子换一次 `predelay`"与
 //! 判据 4 的全程扫描覆盖）。要平滑拖动，调用方应在器件之外做参数平滑。
 //! 口径与 [`crate::convolution_reverb`] 模块文档 §2.2 相同。
+//!
+//! ## 7. 类型与混响时间（本轮新增）
+//!
+//! [`ReverbKind`] 给 Freeverb 拓扑加了**空间类型**面（Plate/Room/Hall/Spring），
+//! [`ReverbParams::decay_s`] 给了**按秒写**的混响时间面 —— 两者都是鼓机预置
+//! 逐风格点名却无处可写的量（缺口 P1/P2）。实现路线如实写明：
+//!
+//! 1. **类型 = 参数组 + 长度布局，不是独立算法**。四档共用同一组梳状+全通，
+//!    靠长度缩放（早期反射稀疏度）、阻尼偏移（亮度）、全通反馈（扩散/色散）
+//!    区分。`Spring` 档是串联全通强色散的参数组**近似**，不是弹簧物理模型。
+//! 2. **Room 是旧调音本身**，且 `decay_s` 未设时反馈走旧公式 ⇒ 既有工程、
+//!    既有判据逐位不变；类型与时间都是**增量**面。
+//! 3. **时间口径只此一处汇合**（`Reverb::apply_gain_model`）：`decay_s > 0`
+//!    时逐梳按 T60 标定反馈；`decay_s == 0` 时 `size` 的旧公式说了算。
+//!    ⛔ 没有第二条决定反馈的路径。
+//! 4. **类型切换 = 重排 + 清历史**：长度变了，旧历史留在线里就是 §6 的
+//!    幽灵回声。缓冲容量在 `set_sample_rate` 时按最大类型缩放一次预留，
+//!    重排只改逻辑长度 ⇒ `set_params` 仍零分配（`reverb_rt_zero_alloc`
+//!    的换类型场景覆盖）。切换瞬间尾巴断掉（无交叉淡化，同 §6 的取舍），
+//!    调用方若在播放中换类型，应预期一次清尾。
 
 use crate::math::finite_or_zero;
 
@@ -117,6 +137,23 @@ const PREDELAY_MAX: usize = 9600;
 /// [`crate::device_param::ReverbField::Predelay`] 的落点钳制读**同一个**常量
 /// （此前 `yeban_render::inserts` 里有一份只能镜像的私有 `0.1`，靠网格对账判据钉住）。
 pub const REVERB_MAX_PREDELAY_S: f32 = 0.1;
+
+/// 混响时间 [`ReverbParams::decay_s`] 的上界（秒，T60 口径）。
+///
+/// 与 [`REVERB_MAX_PREDELAY_S`] 同款：`Reverb::set_params` 的钳制与
+/// [`crate::device_param::ReverbField::Decay`] 的落点钳制读**同一个**常量。
+pub const REVERB_MAX_DECAY_S: f32 = 10.0;
+
+/// −60 dB 的自然对数（`ln(1000)`）：T60 标定把「每往返衰减」换算成反馈系数用。
+const T60_LN: f32 = 6.907_755_3;
+
+/// T60 标定的实测修正系数（无量纲）。纯公式 `exp(−ln1000 · D/(sr·T60))` 只算
+/// 了反馈本身；环路里的一极点阻尼对一切非直流内容幅值都 `< 1`，宽带尾巴因此
+/// 比公式快约 11%。实测（48 kHz、斜率法 T60、目标 0.4/1.0/2.2 s）：未修正
+/// 读数 0.364/0.890/1.961 s（一致偏短约 11%，且 damp 0 与 0.7 之间只差
+/// 约 3 个百分点）⇒ 指数乘本系数后三档回到 ±3% 内。判据
+/// `reverb::tests::decay_s_tracks_the_measured_t60` 钉住这组读数。
+const T60_CALIBRATION: f32 = 0.89;
 
 /// 本器件引入的**处理延迟**（帧）。`0` = 不参与 [ARCH-PDC-001] 的补偿量。
 ///
@@ -156,14 +193,25 @@ impl Comb {
         }
     }
 
-    fn setup(&mut self, base_len: usize, sr_scale: f32) {
-        let scaled = (base_len as f32 * sr_scale) as usize;
-        self.len = scaled.clamp(64, COMB_MAX - 8);
-        if self.buf.len() != self.len {
-            self.buf = vec![0.0; self.len];
+    fn setup(&mut self, base_len: usize, sr_scale: f32, kind_scale: f32, alloc_len: usize) {
+        self.len = ((base_len as f32 * sr_scale * kind_scale) as usize).clamp(64, COMB_MAX - 8);
+        if self.buf.len() < alloc_len {
+            self.buf = vec![0.0; alloc_len];
         } else {
             self.buf.fill(0.0);
         }
+        self.index = 0;
+        self.store = 0.0;
+    }
+
+    /// 类型切换时的**重排**：只改逻辑长度并清历史，⛔ 不触碰缓冲容量
+    /// （容量在 [`Self::setup`] 时已按最大类型缩放预留）⇒ 零分配，可在
+    /// `set_params` 里逐块调用 [ARCH-RT-001]。清历史的理由与预延迟改长
+    /// 清线相同（模块文档 §6）：长度变长后旧样本会落在从未读出的区段，
+    /// 变成与参数历史有关的幽灵回声。
+    fn relayout(&mut self, base_len: usize, sr_scale: f32, kind_scale: f32) {
+        self.len = ((base_len as f32 * sr_scale * kind_scale) as usize).clamp(64, COMB_MAX - 8);
+        self.buf.fill(0.0);
         self.index = 0;
         self.store = 0.0;
     }
@@ -197,6 +245,9 @@ struct Allpass {
     buf: Vec<f32>,
     len: usize,
     index: usize,
+    /// 反馈系数（扩散/色散强度）：Freeverb 原值 `0.5`，由混响类型决定
+    /// （[`ReverbKind::allpass_feedback`]），`set_params` 时写入。
+    feedback: f32,
 }
 
 impl Allpass {
@@ -205,16 +256,25 @@ impl Allpass {
             buf: Vec::new(),
             len: 1,
             index: 0,
+            feedback: 0.5,
         }
     }
 
-    fn setup(&mut self, base_len: usize, sr_scale: f32) {
-        self.len = ((base_len as f32 * sr_scale) as usize).clamp(32, ALLPASS_MAX - 1);
-        if self.buf.len() != self.len {
-            self.buf = vec![0.0; self.len];
+    fn setup(&mut self, base_len: usize, sr_scale: f32, kind_scale: f32, alloc_len: usize) {
+        self.len = ((base_len as f32 * sr_scale * kind_scale) as usize).clamp(32, ALLPASS_MAX - 1);
+        if self.buf.len() < alloc_len {
+            self.buf = vec![0.0; alloc_len];
         } else {
             self.buf.fill(0.0);
         }
+        self.index = 0;
+    }
+
+    /// 类型切换时的**重排**：与 [`Comb::relayout`] 同口径（只改逻辑长度、
+    /// 清历史、零分配）。
+    fn relayout(&mut self, base_len: usize, sr_scale: f32, kind_scale: f32) {
+        self.len = ((base_len as f32 * sr_scale * kind_scale) as usize).clamp(32, ALLPASS_MAX - 1);
+        self.buf.fill(0.0);
         self.index = 0;
     }
 
@@ -228,11 +288,9 @@ impl Allpass {
 
     #[inline]
     fn process(&mut self, input: f32) -> f32 {
-        /// 全通反馈系数（Freeverb 的固定值）。
-        const FEEDBACK: f32 = 0.5;
         let buffered = self.buf[self.index];
         let out = -input + buffered;
-        self.buf[self.index] = input + buffered * FEEDBACK;
+        self.buf[self.index] = input + buffered * self.feedback;
         self.index += 1;
         if self.index >= self.len {
             self.index = 0;
@@ -241,10 +299,114 @@ impl Allpass {
     }
 }
 
-/// 混响参数：除 `predelay` 外全部归一化到 0..1。
+/// 混响**类型**（空间选择）：同一 Freeverb 拓扑上的四组调音，⛔ 不是四台
+/// 独立算法。每档由三件事定义：延迟线**长度缩放**（早期反射的稀疏度与
+/// 衰减标定的基数）、**阻尼偏移**（尾巴亮度）、**全通反馈**（扩散/色散
+/// 强度）。差异由判据实测钉住（衰减包络与逐对差分，见本模块测试）。
+///
+/// - [`Self::Room`] 是**旧调音本身**：缩放 `1.0`、偏移 `0`、全通反馈
+///   `0.5`，且 [`ReverbParams::decay_s`] 未设时反馈走旧公式 ⇒ 既有工程
+///   逐位不变。它同时是缺省档：从未写过类型的设备就是 Room。
+/// - [`Self::Plate`]：线更短更密、阻尼更低（更亮）、扩散更强 —— 板式
+///   混响的稠密亮尾。
+/// - [`Self::Hall`]：线更长（大空间的稀疏早期反射）、阻尼更高（更暗）、
+///   扩散更弱。
+/// - [`Self::Spring`]：线最短、全通反馈显著更高 —— 串联全通的强色散是
+///   弹簧箱「啾啾」声的近似来源。⚠ 如实标注：这是**参数组近似**，不是
+///   弹簧的物理模型（无三弹簧并联与机械色散曲线）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ReverbKind {
+    /// 房间（旧调音，缺省）。
+    #[default]
+    Room,
+    /// 板式。
+    Plate,
+    /// 大厅。
+    Hall,
+    /// 弹簧（参数组近似）。
+    Spring,
+}
+
+impl ReverbKind {
+    /// 全部类型（器件参数值的顺序即本顺序）。
+    pub const ALL: &'static [Self] = &[Self::Room, Self::Plate, Self::Hall, Self::Spring];
+
+    /// 长度缩放的最大值（缓冲预留按它算，见 `Reverb::set_sample_rate`）。
+    const MAX_LENGTH_SCALE: f32 = 1.30;
+
+    /// 器件参数面上的数值（`reverb_kind`）：`Room = 0`、`Plate = 1`、
+    /// `Hall = 2`、`Spring = 3`。
+    #[must_use]
+    pub const fn index(self) -> f32 {
+        match self {
+            Self::Room => 0.0,
+            Self::Plate => 1.0,
+            Self::Hall => 2.0,
+            Self::Spring => 3.0,
+        }
+    }
+
+    /// 器件参数数值 → 类型：有限值四舍五入后钳到 `0..=3`；非有限值回落
+    /// [`Self::Room`]（与 `set_params` 的退化输入回落同一口径：实时路径
+    /// 上无法报错，只能就地回落到缺省档）。
+    #[must_use]
+    pub fn from_f32(value: f32) -> Self {
+        if !value.is_finite() {
+            return Self::Room;
+        }
+        match value.round().clamp(0.0, 3.0) as u32 {
+            0 => Self::Room,
+            1 => Self::Plate,
+            2 => Self::Hall,
+            _ => Self::Spring,
+        }
+    }
+
+    /// 延迟线长度缩放（梳状与全通共用）：空间越「大」线越长、早期反射
+    /// 越稀疏。
+    #[must_use]
+    pub const fn length_scale(self) -> f32 {
+        match self {
+            Self::Room => 1.0,
+            Self::Plate => 0.82,
+            Self::Hall => 1.30,
+            Self::Spring => 0.64,
+        }
+    }
+
+    /// 阻尼偏移（加在 `0.05 + damp × 0.72` 的映射结果上）：负 = 更亮。
+    #[must_use]
+    pub const fn damp_offset(self) -> f32 {
+        match self {
+            Self::Room => 0.0,
+            Self::Plate => -0.12,
+            Self::Hall => 0.08,
+            Self::Spring => 0.04,
+        }
+    }
+
+    /// 全通反馈（扩散/色散强度）：Freeverb 原值 `0.5`。
+    #[must_use]
+    pub const fn allpass_feedback(self) -> f32 {
+        match self {
+            Self::Room => 0.5,
+            Self::Plate => 0.58,
+            Self::Hall => 0.44,
+            Self::Spring => 0.72,
+        }
+    }
+}
+
+/// 混响参数：除 `predelay` / `decay_s`（秒）外全部归一化到 0..1。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReverbParams {
-    /// 衰减长度：映射到梳状反馈 0.72…0.985。
+    /// 衰减长度（旧归一化旋钮）：映射到梳状反馈 0.70…0.94。
+    ///
+    /// ⚠ 与 [`Self::decay_s`] 的分工（时间口径**只此一处汇合**，见
+    /// `Reverb::apply_gain_model`）：`decay_s > 0` 时反馈由 T60 标定
+    /// 决定，`size` 不参与；`decay_s == 0`（未设）时反馈走本字段的旧
+    /// 公式。`size` 保留是为了既有工程与既有拼写表逐位不变，⛔ 不要
+    /// 在新内容里同时写两者来「叠加」——没有叠加语义。
     pub size: f32,
     /// 尾巴里的高频阻尼。
     pub damp: f32,
@@ -254,6 +416,11 @@ pub struct ReverbParams {
     pub width: f32,
     /// 预延迟（秒，0…0.1）。
     pub predelay: f32,
+    /// 空间类型（见 [`ReverbKind`]）。
+    pub kind: ReverbKind,
+    /// 混响时间（秒，T60）：`0` = 未设（反馈由 [`Self::size`] 决定）；
+    /// `> 0` 时逐梳按 T60 标定反馈，上界 [`REVERB_MAX_DECAY_S`]。
+    pub decay_s: f32,
 }
 
 impl Default for ReverbParams {
@@ -264,6 +431,8 @@ impl Default for ReverbParams {
             mix: 0.25,
             width: 0.8,
             predelay: 0.012,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         }
     }
 }
@@ -278,6 +447,10 @@ pub struct Reverb {
     sample_rate: f32,
     sr_scale: f32,
     params: ReverbParams,
+    /// 当前延迟线长度布局对应的类型。`params.kind` 与它不同 ⇒ 下一次
+    /// `set_params` 先重排长度（见 `relayout_kind`）。与 `params.kind`
+    /// 分开存的原因：未配置时没有长度可言，布局只能在配置后成立。
+    layout_kind: ReverbKind,
     configured: bool,
 }
 
@@ -334,7 +507,10 @@ impl Reverb {
                 mix: 0.25,
                 width: 0.8,
                 predelay: 0.012,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             },
+            layout_kind: ReverbKind::Room,
             configured: false,
         }
     }
@@ -355,19 +531,50 @@ impl Reverb {
             self.pre[1].fill(0.0);
         }
         self.pre_index = 0;
+        // 缓冲容量按**最大类型缩放**预留：之后类型切换只改逻辑长度
+        // （`relayout_kind`），永不在 `set_params` 里分配 [ARCH-RT-001]。
+        let kind_scale = self.params.kind.length_scale();
+        let comb_alloc = (((COMB_TUNING[7] + STEREO_SPREAD) as f32
+            * self.sr_scale
+            * ReverbKind::MAX_LENGTH_SCALE) as usize
+            + 8)
+        .min(COMB_MAX);
+        let allpass_alloc = (((ALLPASS_TUNING[0] + STEREO_SPREAD) as f32
+            * self.sr_scale
+            * ReverbKind::MAX_LENGTH_SCALE) as usize
+            + 8)
+        .min(ALLPASS_MAX);
         for (channel, combs) in self.combs.iter_mut().enumerate() {
             let spread = if channel == 1 { STEREO_SPREAD } else { 0 };
             for (index, comb) in combs.iter_mut().enumerate() {
-                comb.setup(COMB_TUNING[index] + spread, self.sr_scale);
+                comb.setup(
+                    COMB_TUNING[index] + spread,
+                    self.sr_scale,
+                    kind_scale,
+                    comb_alloc,
+                );
             }
         }
         for (channel, allpasses) in self.allpass.iter_mut().enumerate() {
             let spread = if channel == 1 { STEREO_SPREAD } else { 0 };
             for (index, allpass) in allpasses.iter_mut().enumerate() {
-                allpass.setup(ALLPASS_TUNING[index] + spread, self.sr_scale);
+                allpass.setup(
+                    ALLPASS_TUNING[index] + spread,
+                    self.sr_scale,
+                    kind_scale,
+                    allpass_alloc,
+                );
             }
         }
+        self.layout_kind = self.params.kind;
         self.configured = true;
+        // `decay_s` 的标定反馈依赖**真实线长**：参数若在配置之前就已
+        // 设好（`set_params` 时线长还是占位值），在这里按真实长度重算
+        // 一次。旧路径（`decay_s == 0`）的反馈只依赖参数本身，配置前后
+        // 同值，⛔ 不在这里动（保持既有调用顺序的逐位行为）。
+        if self.params.decay_s > 0.0 {
+            self.apply_gain_model();
+        }
     }
 
     /// 是否已经过 [`Self::set_sample_rate`]。
@@ -382,7 +589,8 @@ impl Reverb {
     /// `NaN` 并静默毒化整条混响总线，而实时路径上无法报错，只能就地回落。
     ///
     /// **预延迟的帧数变了**就把两条预延迟线清零、写头归零（见模块文档 §6）。
-    /// 帧数**没变**时一个字节都不动：梳状组、全通组与两条预延迟线的历史全部保留，
+    /// **类型变了**就重排梳状/全通的逻辑长度并清它们的历史（见模块文档 §7）。
+    /// 两者都没变时一个字节都不动：梳状组、全通组与两条预延迟线的历史全部保留，
     /// 因此"同一组参数重复设置"是严格空操作。清线只对已分配的缓冲做原地写 ⇒
     /// **零分配**，可以在实时线程上逐块调用 [ARCH-RT-001]。
     pub fn set_params(&mut self, params: ReverbParams) {
@@ -393,6 +601,8 @@ impl Reverb {
             mix: 0.25,
             width: 0.8,
             predelay: 0.012,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         };
         let sanitise = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
         let params = ReverbParams {
@@ -401,18 +611,17 @@ impl Reverb {
             mix: sanitise(params.mix, FALLBACK.mix).clamp(0.0, 1.0),
             width: sanitise(params.width, FALLBACK.width).clamp(0.0, 1.0),
             predelay: sanitise(params.predelay, 0.0).clamp(0.0, REVERB_MAX_PREDELAY_S),
+            kind: params.kind,
+            decay_s: sanitise(params.decay_s, FALLBACK.decay_s).clamp(0.0, REVERB_MAX_DECAY_S),
         };
         self.params = params;
-        // 0.70…0.94 是稳定区间的映射（0.96 是带调制混响的稳定极限）；
-        // 阻尼下限让环路在 DAMP = 0 时仍有损耗。
-        let feedback = 0.70 + params.size * 0.24;
-        let damp = 0.05 + params.damp * 0.72;
-        for combs in self.combs.iter_mut() {
-            for comb in combs.iter_mut() {
-                comb.feedback = feedback;
-                comb.damp = damp;
-            }
+        // 类型变了且已配置 ⇒ 先重排长度（清历史、零分配），再套增益
+        // 模型（标定反馈读的是重排后的真实线长）。类型没变时重排是
+        // 严格空操作：长度与历史一个字节都不动。
+        if self.configured && params.kind != self.layout_kind {
+            self.relayout_kind(params.kind);
         }
+        self.apply_gain_model();
         if self.configured {
             let wanted = ((params.predelay * self.sample_rate) as usize).clamp(1, PREDELAY_MAX - 1);
             if wanted != self.pre_len {
@@ -427,6 +636,65 @@ impl Reverb {
                 self.pre_len = wanted;
             }
         }
+    }
+
+    /// 把当前参数的**增益模型**写进梳状组与全通组：反馈、阻尼、全通
+    /// 反馈。`set_params` 与 `set_sample_rate`（仅 `decay_s` 已设时）
+    /// 共用这一处 ⇒ 时间口径只此一处汇合。
+    ///
+    /// - **反馈**：`decay_s > 0` 时逐梳按 T60 标定 —— 每条梳的往返时间
+    ///   是 `len / sr` 秒，要让它在 `decay_s` 秒内衰减 60 dB，反馈须为
+    ///   `exp(−ln(1000) · len / (sr · decay_s))`，逐梳各按自己的线长算
+    ///   ⇒ 八条梳的标称 T60 相同（阻尼的一极点只吃高频，低频衰减率即
+    ///   本式）。`decay_s == 0`（未设）时走旧公式 `0.70 + size × 0.24`
+    ///   全梳同值（0.70…0.94 是稳定区间的映射，0.96 是带调制混响的
+    ///   稳定极限）⇒ 既有工程逐位不变。
+    /// - **阻尼**：`0.05 + damp × 0.72` 再加类型的阻尼偏移（Room 偏移
+    ///   为 0 ⇒ 旧值逐位不变）；下限让环路在 DAMP = 0 时仍有损耗。
+    /// - **全通反馈**：类型的扩散/色散强度（Room = Freeverb 原值 0.5）。
+    fn apply_gain_model(&mut self) {
+        let kind = self.params.kind;
+        let damp = (0.05 + self.params.damp * 0.72 + kind.damp_offset()).clamp(0.02, 0.95);
+        let decay_s = self.params.decay_s;
+        for combs in self.combs.iter_mut() {
+            for comb in combs.iter_mut() {
+                comb.damp = damp;
+                comb.feedback = if decay_s > 0.0 {
+                    let round_trip_s = comb.len as f32 / self.sample_rate;
+                    (-T60_LN * T60_CALIBRATION * round_trip_s / decay_s)
+                        .exp()
+                        .clamp(0.05, 0.995)
+                } else {
+                    0.70 + self.params.size * 0.24
+                };
+            }
+        }
+        for allpasses in self.allpass.iter_mut() {
+            for allpass in allpasses.iter_mut() {
+                allpass.feedback = kind.allpass_feedback();
+            }
+        }
+    }
+
+    /// 按新类型**重排**全部延迟线的逻辑长度并清历史（零分配：容量已
+    /// 在 `set_sample_rate` 时按最大缩放预留）。清历史的理由与预延迟
+    /// 改长清线相同（模块文档 §6）：长度变长后，未清的旧样本会落在
+    /// 从未被读出的区段里，变成与参数历史有关的幽灵回声。
+    fn relayout_kind(&mut self, kind: ReverbKind) {
+        let scale = kind.length_scale();
+        for (channel, combs) in self.combs.iter_mut().enumerate() {
+            let spread = if channel == 1 { STEREO_SPREAD } else { 0 };
+            for (index, comb) in combs.iter_mut().enumerate() {
+                comb.relayout(COMB_TUNING[index] + spread, self.sr_scale, scale);
+            }
+        }
+        for (channel, allpasses) in self.allpass.iter_mut().enumerate() {
+            let spread = if channel == 1 { STEREO_SPREAD } else { 0 };
+            for (index, allpass) in allpasses.iter_mut().enumerate() {
+                allpass.relayout(ALLPASS_TUNING[index] + spread, self.sr_scale, scale);
+            }
+        }
+        self.layout_kind = kind;
     }
 
     /// 当前参数。
@@ -716,6 +984,8 @@ mod tests {
                 damp: 0.0,
                 width: 1.0,
                 predelay: 0.012,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             });
             let n = 48_000 * 4;
             let mut l = vec![0.0f32; n];
@@ -866,6 +1136,8 @@ mod tests {
             mix: 0.5,
             width: f32::NAN,
             predelay: f32::NAN,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         });
         assert!(verb.is_active());
         let mut left = vec![0.2f32; 4096];
@@ -917,6 +1189,8 @@ mod tests {
             mix: 0.6,
             width: 0.7,
             predelay: 0.02,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         };
         let build = || {
             let mut verb = Reverb::new();
@@ -1045,6 +1319,8 @@ mod tests {
             mix: 0.6,
             width: 0.6,
             predelay: 0.02,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         };
         let build = || {
             let mut verb = Reverb::new();
@@ -1159,6 +1435,8 @@ mod tests {
                 mix: MIX,
                 width: 0.8,
                 predelay,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             });
             assert_eq!(verb.latency_samples(), REVERB_LATENCY);
             assert_eq!(verb.latency_samples(), 0, "预延迟不是 PDC 延迟");
@@ -1246,6 +1524,8 @@ mod tests {
                 mix: 1.0,
                 width: 1.0,
                 predelay,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             }
         }
 
@@ -1388,6 +1668,8 @@ mod tests {
                 mix: 1.0,
                 width: 0.8,
                 predelay,
+                kind: ReverbKind::Room,
+                decay_s: 0.0,
             });
             let mut left = vec![0.0f32; frames];
             let mut right = vec![0.0f32; frames];
@@ -1487,6 +1769,8 @@ mod tests {
             mix: 1.0,
             width: 0.8,
             predelay: 0.05,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         };
         let build = || {
             let mut verb = Reverb::new();
@@ -1537,5 +1821,272 @@ mod tests {
             "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
         );
         assert!(rearmed_r.iter().all(|sample| *sample == 0.0));
+    }
+
+    // ---- 类型与混响时间（模块文档 §7；缺口 P1/P2）----
+
+    /// 窗 RMS 的 dB 序列（10 ms 窗）：T60 斜率法的输入。
+    fn window_db(samples: &[f32]) -> Vec<f32> {
+        samples
+            .chunks(480)
+            .map(|c| {
+                let e = c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32;
+                10.0 * e.max(1e-12).log10()
+            })
+            .collect()
+    }
+
+    /// 从 50 ms 处电平起算，衰减 `drop_db` 的穿越时间（秒，线性插值）。
+    fn decay_crossing(db: &[f32], drop_db: f32) -> Option<f32> {
+        let start = db[5];
+        let target = start - drop_db;
+        for i in 6..db.len() {
+            if db[i] <= target {
+                let (x0, x1) = (db[i - 1], db[i]);
+                let frac = if x1 != x0 {
+                    (target - x0) / (x1 - x0)
+                } else {
+                    0.0
+                };
+                return Some((i as f32 - 1.0 + frac) * 0.01);
+            }
+        }
+        None
+    }
+
+    /// 斜率法 T60：−20 dB 与 −50 dB 穿越点之间的斜率外推到 60 dB
+    /// （声学 RT60 的标准测法；直接找 −60 dB 穿越会被尾巴的早期
+    /// 高频快衰段拉偏）。
+    fn measured_t60(samples: &[f32]) -> f32 {
+        let db = window_db(samples);
+        let t20 = decay_crossing(&db, 20.0).expect("尾巴必须衰减到 −20 dB");
+        let t50 = decay_crossing(&db, 50.0).expect("尾巴必须衰减到 −50 dB");
+        60.0 / (30.0 / (t50 - t20))
+    }
+
+    /// 全湿脉冲响应的双声道和（判据统一走这条：梳状组本来就吃双声道和）。
+    fn wet_impulse(params: ReverbParams, seconds: f32) -> Vec<f32> {
+        let (l, r, _) = impulse_response(params, seconds);
+        l.iter().zip(r.iter()).map(|(a, b)| a + b).collect()
+    }
+
+    /// ⭐ P2 判据：`decay_s` 写几秒，实测 T60 就是几秒（±8%）。
+    ///
+    /// 实测基线（48 kHz、damp 0.35、Room）：目标 0.4/1.0/2.2 s → 斜率法
+    /// 读数 0.405/1.004/2.257 s。±8% 的窗比未加 [`T60_CALIBRATION`] 时的
+    /// 系统偏差（约 −11%）更窄 ⇒ 标定常数被拿掉本判据必红。
+    #[test]
+    fn decay_s_tracks_the_measured_t60() {
+        for target in [0.4f32, 1.0, 2.2] {
+            let x = wet_impulse(
+                ReverbParams {
+                    mix: 1.0,
+                    damp: 0.35,
+                    predelay: 0.0,
+                    width: 1.0,
+                    decay_s: target,
+                    ..Default::default()
+                },
+                target + 1.5,
+            );
+            let measured = measured_t60(&x);
+            assert!(
+                (measured - target).abs() <= target * 0.08,
+                "decay_s={target} 时实测 T60={measured}，超出 ±8%"
+            );
+        }
+    }
+
+    /// ⭐ P1 判据：四档类型在**同一** `decay_s` 下渲染出可测地不同的尾巴，
+    /// 且各自的性格量排序成立（不是只改了名字）。
+    ///
+    /// 实测基线（48 kHz、decay_s 1.2、damp 0.35）：逐对差分比最小
+    /// 1.19（Plate↔Hall）；前 100 ms 反射峰计数 Hall 661 < Room 928
+    /// < Plate 1023 < Spring 1156；高频占比 Plate 0.0446 > Room
+    /// 0.0257 > Hall 0.0222 > Spring 0.0006。
+    #[test]
+    fn each_kind_renders_a_measurably_different_tail() {
+        let base = ReverbParams {
+            mix: 1.0,
+            damp: 0.35,
+            predelay: 0.0,
+            width: 1.0,
+            decay_s: 1.2,
+            ..Default::default()
+        };
+        let renders: Vec<Vec<f32>> = ReverbKind::ALL
+            .iter()
+            .map(|kind| {
+                wet_impulse(
+                    ReverbParams {
+                        kind: *kind,
+                        ..base
+                    },
+                    3.0,
+                )
+            })
+            .collect();
+        // 逐对差分：任何两档的差分 RMS 必须大于各自 RMS 的一半。
+        for i in 0..renders.len() {
+            assert!(
+                !renders[i].is_empty() && renders[i].iter().all(|s| s.is_finite()),
+                "夹具必须非空且全有限（否则下面的差分断言没有判别力）"
+            );
+            for j in (i + 1)..renders.len() {
+                let diff: Vec<f32> = renders[i]
+                    .iter()
+                    .zip(renders[j].iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                let ratio = rms(&diff) / rms(&renders[i]);
+                assert!(
+                    ratio > 0.5,
+                    "{:?} 与 {:?} 的尾巴差分比只有 {ratio}，两档没有可测差异",
+                    ReverbKind::ALL[i],
+                    ReverbKind::ALL[j]
+                );
+            }
+            // 每档自身必须衰减且有界。
+            let head = rms(&renders[i][..48_000]);
+            let tail = rms(&renders[i][96_000..]);
+            assert!(tail < head * 0.5, "{:?} 的尾巴没有衰减", ReverbKind::ALL[i]);
+        }
+        // 早期反射密度：前 100 ms 内超过峰值 −40 dB 的局部极大值个数。
+        // 大厅线最长 ⇒ 最稀疏；弹簧线最短＋强色散 ⇒ 最密。
+        let early_peaks = |x: &[f32]| {
+            let head = &x[..4800];
+            let peak = head.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+            let thresh = peak * 0.01;
+            (1..head.len() - 1)
+                .filter(|&i| {
+                    head[i].abs() > thresh
+                        && head[i].abs() >= head[i - 1].abs()
+                        && head[i].abs() > head[i + 1].abs()
+                })
+                .count()
+        };
+        let peaks: Vec<usize> = renders.iter().map(|x| early_peaks(x)).collect();
+        let (room, plate, hall, spring) = (peaks[0], peaks[1], peaks[2], peaks[3]);
+        assert!(
+            hall < room && room < plate && plate < spring,
+            "反射密度排序应为 Hall({hall}) < Room({room}) < Plate({plate}) < Spring({spring})"
+        );
+        // 高频占比：尾巴 1.0–1.5 s 段的差分能量比。板式最亮、弹簧最暗。
+        let hf_ratio = |x: &[f32]| {
+            let seg = &x[48_000..72_000];
+            let e: f32 = seg.iter().map(|v| v * v).sum();
+            let d: f32 = seg.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            if e > 0.0 { d / e } else { 0.0 }
+        };
+        let hf: Vec<f32> = renders.iter().map(|x| hf_ratio(x)).collect();
+        assert!(
+            hf[1] > hf[0] && hf[0] > hf[2] && hf[2] > hf[3],
+            "高频占比排序应为 Plate({}) > Room({}) > Hall({}) > Spring({})",
+            hf[1],
+            hf[0],
+            hf[2],
+            hf[3]
+        );
+        assert!(
+            hf[3] < 0.005,
+            "弹簧档的高频占比 {} 应显著低于其余三档",
+            hf[3]
+        );
+    }
+
+    /// ⭐ P1 判据（接线侧）：类型切换**重排清史**——切换后喂同一段输入，
+    /// 输出与一台全新装配的目标类型实例逐位相同（预延迟先用静音排空，
+    /// 它不属于类型布局）。切换不清史就会在这里以比特差现形。
+    #[test]
+    fn kind_switch_relayouts_and_leaves_no_stale_audio() {
+        let base = ReverbParams {
+            mix: 1.0,
+            damp: 0.35,
+            predelay: 0.0,
+            width: 1.0,
+            decay_s: 1.2,
+            ..Default::default()
+        };
+        // 激励：确定性伪噪声（不用 RNG 对象，与本模块既有夹具同款）。
+        let excite = |n: usize| -> (Vec<f32>, Vec<f32>) {
+            let mut l = vec![0.0f32; n];
+            let mut r = vec![0.0f32; n];
+            for i in 0..n {
+                let t = ((i as u64 * 2_654_435_761) % 977) as f32 / 977.0 - 0.5;
+                l[i] = t * 0.8;
+                r[i] = -t * 0.6;
+            }
+            (l, r)
+        };
+        let mut switched = Reverb::new();
+        switched.set_sample_rate(SR);
+        switched.set_params(ReverbParams {
+            kind: ReverbKind::Room,
+            ..base
+        });
+        let (mut l, mut r) = excite(24_000);
+        switched.process(&mut l, &mut r);
+        assert!(
+            l.iter().any(|s| s.abs() > 1e-4),
+            "切换前的 Room 渲染必须是活的（否则本判据没有判别力）"
+        );
+        // 排空预延迟（静音 0.15 s > 最大预延迟 0.1 s），再切换类型。
+        let (mut zl, mut zr) = (vec![0.0f32; 7_200], vec![0.0f32; 7_200]);
+        switched.process(&mut zl, &mut zr);
+        switched.set_params(ReverbParams {
+            kind: ReverbKind::Hall,
+            ..base
+        });
+        let (mut fresh_l, mut fresh_r) = excite(24_000);
+        let (mut sw_l, mut sw_r) = (fresh_l.clone(), fresh_r.clone());
+        let mut fresh = Reverb::new();
+        fresh.set_sample_rate(SR);
+        fresh.set_params(ReverbParams {
+            kind: ReverbKind::Hall,
+            ..base
+        });
+        fresh.process(&mut fresh_l, &mut fresh_r);
+        switched.process(&mut sw_l, &mut sw_r);
+        assert!(
+            fresh_l.iter().any(|s| s.abs() > 1e-4),
+            "对照实例的 Hall 渲染必须是活的（否则逐位相同是空判）"
+        );
+        for frame in 0..fresh_l.len() {
+            assert_eq!(
+                sw_l[frame].to_bits(),
+                fresh_l[frame].to_bits(),
+                "第 {frame} 帧左声道与全新 Hall 实例不同：切换留下了旧类型的历史"
+            );
+            assert_eq!(
+                sw_r[frame].to_bits(),
+                fresh_r[frame].to_bits(),
+                "第 {frame} 帧右声道与全新 Hall 实例不同：切换留下了旧类型的历史"
+            );
+        }
+    }
+
+    /// 类型与时间的**参数面往返**：`from_f32` 的量化与 `index` 互逆，
+    /// 非有限值回落缺省档；`decay_s` 的钳制与字段表 `sanitise` 同值
+    /// （字段表侧的恒等由 render 的镜像判据钉住，这里钉器件侧读数）。
+    #[test]
+    fn kind_index_round_trips_and_decay_s_is_clamped() {
+        for kind in ReverbKind::ALL {
+            assert_eq!(ReverbKind::from_f32(kind.index()), *kind);
+        }
+        assert_eq!(ReverbKind::from_f32(f32::NAN), ReverbKind::Room);
+        assert_eq!(ReverbKind::from_f32(99.0), ReverbKind::Spring);
+        assert_eq!(ReverbKind::from_f32(-2.0), ReverbKind::Room);
+        let mut verb = Reverb::new();
+        verb.set_sample_rate(SR);
+        verb.set_params(ReverbParams {
+            decay_s: 99.0,
+            ..Default::default()
+        });
+        assert_eq!(verb.params().decay_s, REVERB_MAX_DECAY_S);
+        verb.set_params(ReverbParams {
+            decay_s: f32::NAN,
+            ..Default::default()
+        });
+        assert_eq!(verb.params().decay_s, 0.0);
     }
 }
