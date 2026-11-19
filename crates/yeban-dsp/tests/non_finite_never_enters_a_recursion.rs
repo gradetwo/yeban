@@ -50,7 +50,7 @@ use yeban_dsp::delay::{Delay, DelayParams};
 use yeban_dsp::filter::LadderFilter;
 use yeban_dsp::limiter::Limiter;
 use yeban_dsp::noise::{NoiseColour, NoiseGen};
-use yeban_dsp::reverb::{Reverb, ReverbParams};
+use yeban_dsp::reverb::{Reverb, ReverbKind, ReverbParams};
 use yeban_dsp::shaping::{
     BitCrusher, CrushParams, EqParams, ShapingEq, TransientParams, TransientShaper,
 };
@@ -134,6 +134,8 @@ fn run_reverb(hostile: f32) -> Vec<f32> {
         mix: 0.5,
         width: 1.0,
         predelay: 0.0,
+        kind: ReverbKind::Room,
+        decay_s: 0.0,
     });
     let mut left = vec![0.0f32; 64];
     let mut right = vec![0.0f32; 64];
@@ -385,6 +387,8 @@ fn bypass_paths_stay_bit_exact_passthrough() {
             mix: 0.0,
             width: 1.0,
             predelay: 0.0,
+            kind: ReverbKind::Room,
+            decay_s: 0.0,
         });
         let mut left = vec![0.0f32; 8];
         let mut right = vec![0.0f32; 8];

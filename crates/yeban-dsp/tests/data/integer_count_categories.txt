@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 331 条：collection_size 70 ／ value_bound 248 ／ element_value_bound 5 ／ condition_counter 8
+# 合计 332 条：collection_size 68 ／ value_bound 251 ／ element_value_bound 5 ／ condition_counter 8
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -81,12 +81,10 @@ src/delay.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|collection_size
 src/delay.rs|the_delay_time_is_seconds_not_samples|value_bound|assert_eq!(                 peak, expected_tap,                 "at {sample_rate} Hz a 50 
 src/delay.rs|the_time_floor_is_folded_onto_the_documented_minimum|element_value_bound|assert!(floor.iter().any(|bits| *bits != 0), "夹具输出全零"
 src/delay.rs|two_instances_do_not_share_time_or_feedback|value_bound|assert!(             short_alone[short_tap].abs() > 0.9,             "the 50 ms echo shoul
-src/device_param.rs|crusher_field_spellings_round_trip|collection_size|assert_eq!(CrusherField::SPELLINGS.len(), 3, "碾碎拼写共 3 条"
 src/device_param.rs|delay_spellings_resolve_to_the_same_field|collection_size|assert_eq!(DelayField::SPELLINGS.len(), 15, "延迟拼写共 15 条"
 src/device_param.rs|delay_sync_conversion_table_at_84_bpm|value_bound|assert!(                 (got - expected).abs() < 1e-4,                 "84 BPM {num}/{den
 src/device_param.rs|delay_sync_off_or_bad_bpm_keeps_written_time|value_bound|assert!(             (delay_params_from_stage(&stage, 84.0).time_s - 2.0).abs() < f32::EPS
 src/device_param.rs|sample_delay_field_spellings_round_trip|collection_size|assert_eq!(SampleDelayField::SPELLINGS.len(), 4, "采样延迟拼写共 4 条"
-src/device_param.rs|transient_field_spellings_round_trip|collection_size|assert_eq!(TransientField::SPELLINGS.len(), 2, "瞬态拼写共 2 条"
 src/drums/anatomy.rs|default_preset_coefficients_match_the_groove_formulas|collection_size|assert!(                 (f64::from(got) - want).abs() < 1e-4,                 "系数 {got} 与
 src/drums/anatomy.rs|kick_style_from_f32_threshold|value_bound|assert_eq!(KickStyle::from_f32(0.0), KickStyle::Classic
 src/drums/anatomy.rs|preset_table_is_complete_and_verbatim|collection_size|assert_eq!(ANATOMY_KICK_PRESETS.len(), 9
@@ -225,6 +223,9 @@ src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|v
 src/polysynth.rs|ties_on_start_sample_are_broken_by_the_smallest_index|value_bound|assert_eq!(synth.voice_steals(), 1
 src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(             (verb.params().mix - 0.5).abs() < 1e-6,             "the finite knob 
 src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰
+src/reverb.rs|decay_s_tracks_the_measured_t60|value_bound|assert!(                 (measured - target).abs() <= target * 0.08,                 "deca
+src/reverb.rs|each_kind_renders_a_measurably_different_tail|value_bound|assert!(             hf[1] > hf[0] && hf[0] > hf[2] && hf[2] > hf[3],             "高频占比排序应
+src/reverb.rs|kind_index_round_trips_and_decay_s_is_clamped|value_bound|assert_eq!(ReverbKind::from_f32(kind.index()), *kind
 src/reverb.rs|predelay_is_measured_in_seconds_at_any_sample_rate|value_bound|assert!(                 (added - 50.0).abs() < 2.0,                 "at {sample_rate} Hz 
 src/reverb.rs|width_controls_the_stereo_spread|value_bound|assert!(diff0 < diff * 0.1, "width 0 should collapse to mono"
 src/sample_delay.rs|delay_beyond_configured_capacity_is_clamped_not_panicking|value_bound|assert_eq!(d.capacity(), 9

@@ -42,7 +42,8 @@
     },
     "output_db": 1.5,
     "reverb": {
-      "size": 0.4,
+      "kind": "plate",
+      "decay_s": 1.1,
       "damp": 0.4,
       "wet": 0.13,
       "predelay_s": 0.01

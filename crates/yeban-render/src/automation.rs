@@ -1022,8 +1022,9 @@ impl TrackPanAutomation {
 ///
 /// - 53 个通道条拼写对应 [`crate::inserts::StripField`] 的 28 个字段
 ///   （14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）；
-/// - 6 个混响拼写对应 [`crate::inserts::ReverbField`] 的 4 个字段
-///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`)）；
+/// - 9 个混响拼写对应 [`crate::inserts::ReverbField`] 的 6 个字段
+///   （`reverb_size` / `reverb_damp` / `reverb_wet`(＋`_mix`) / `reverb_predelay`(＋`_s`) /
+///   `reverb_kind` / `reverb_decay_s`(＋`reverb_decay`)）；
 /// - 8 个卷积拼写对应 [`crate::inserts::ConvolutionField`] 的 4 个字段
 ///   （`conv_predelay*` / `conv_dry` / `conv_wet`(＋`_mix`) / `conv_ir_gain*`）；
 /// - 15 个延迟拼写对应 [`crate::inserts::DelayField`] 的 9 个字段
@@ -1124,13 +1125,16 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "ms_mid_gain",
     "ms_mid_freq_hz",
     "ms_mid_freq",
-    // Freeverb 标量（6 = 4 个字段）。
+    // Freeverb 标量（9 = 6 个字段；含类型档位与混响时间）。
     "reverb_size",
     "reverb_damp",
     "reverb_wet",
     "reverb_wet_mix",
     "reverb_predelay",
     "reverb_predelay_s",
+    "reverb_kind",
+    "reverb_decay_s",
+    "reverb_decay",
     // 卷积混响标量（8 = 4 个字段；⛔ 不含 `conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）。
     "conv_predelay_s",
     "conv_pre_delay_s",
@@ -3209,6 +3213,18 @@ mod tests {
             0.09,
         ),
         (
+            DeviceParamField::Reverb(ReverbField::Kind),
+            "reverb_kind",
+            0.0,
+            3.0,
+        ),
+        (
+            DeviceParamField::Reverb(ReverbField::Decay),
+            "reverb_decay_s",
+            0.0,
+            2.4,
+        ),
+        (
             DeviceParamField::Convolution(ConvolutionField::PreDelay),
             "conv_predelay_s",
             0.0,
@@ -3520,7 +3536,11 @@ mod tests {
             32,
             "通道条 32 个字段（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）；             低切、动态 EQ、宽度与 mono-maker 是 `#341` / `#342` / `#343` / `#344` 新增的四级，Q/比率与 ms_mid 是 nightfall v14 落地补的四级"
         );
-        assert_eq!(ReverbField::ALL.len(), 4, "Freeverb 4 个字段");
+        assert_eq!(
+            ReverbField::ALL.len(),
+            6,
+            "Freeverb 6 个字段（类型档位与混响时间为本线新增）"
+        );
         assert_eq!(ConvolutionField::ALL.len(), 4, "卷积标量 4 个字段");
         assert_eq!(DelayField::ALL.len(), 9, "延迟 9 个字段");
         assert_eq!(
@@ -3543,8 +3563,8 @@ mod tests {
             + yeban_dsp::device_param::TransientField::SPELLINGS.len()
             + yeban_dsp::device_param::CrusherField::SPELLINGS.len();
         assert_eq!(
-            expected_len, 115,
-            "61 + 6 + 8 + 15 + 10 + 5 + 5 + 2 + 3 = 115 个拼写"
+            expected_len, 118,
+            "61 + 9 + 8 + 15 + 10 + 5 + 5 + 2 + 3 = 118 个拼写"
         );
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
@@ -3604,7 +3624,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**69 个字段各一条**（115 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**71 个字段各一条**（118 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]

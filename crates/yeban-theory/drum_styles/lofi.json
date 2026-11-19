@@ -45,7 +45,8 @@
   },
   "output_db": 5.5,
   "reverb": {
-   "size": 0.45,
+   "kind": "spring",
+   "decay_s": 1.0,
    "damp": 0.8,
    "wet": 0.18,
    "predelay_s": 0.01

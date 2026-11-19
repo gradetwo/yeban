@@ -1110,10 +1110,10 @@ fn a_reverb_wet_zero_source_really_changes_the_export_when_automated() {
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ `#294`：`#293` 剩下的 **7 个字段**逐个端到端音频
-// （混响 4 ＋ 卷积 4 = 8 个字段，减去 `#293` 已做过的 `reverb_wet`）。
+// ⭐ `#294`：`#293` 剩下的 **9 个字段**逐个端到端音频
+// （混响 6 ＋ 卷积 4 = 10 个字段，减去 `#293` 已做过的 `reverb_wet`）。
 //
-// `#293` 已给 `reverb_wet` 一条端到端判据；其它 7 个字段只有落点/镜像/单调判据
+// `#293` 已给 `reverb_wet` 一条端到端判据；其它 9 个字段只有落点/镜像/单调判据
 // （`inserts.rs` 的 `*_field_clamp_is_the_device_clamp` 与 `automation.rs` 的
 // `every_applied_name_*`），**没有**“静态基线 vs 有泳道”的音频读数。本切片按
 // 同一条形状补齐：每个字段都给 `base sha` / `auto sha` / `digest` / 分段读数，
@@ -1192,6 +1192,35 @@ const MOD_CASES: &[ModCase] = &[
         read: ModRead::Centroid {
             start: 4_800,
             end: 43_200,
+        },
+        direction: ModDirection::Rising,
+    },
+    ModCase {
+        name: "reverb_kind",
+        params: &[("reverb_kind", 0.0)],
+        from: 0.0,
+        mid: 2.0,
+        to: 1.0,
+        // 0.30 s … 0.60 s 尾窗（size 路径、其余参数默认）：同夹具实测 RMS
+        // Room 9.96e-4 > Hall 6.45e-4 > Plate 3.94e-4。类型是枚举、没有
+        // 数值方向，阶梯按这条实测序 Room→Hall→Plate 递减读。
+        read: ModRead::WindowRms {
+            start: 14_400,
+            end: 28_800,
+        },
+        direction: ModDirection::Falling,
+    },
+    ModCase {
+        name: "reverb_decay_s",
+        params: &[("reverb_decay_s", 0.4)],
+        from: 0.4,
+        mid: 1.2,
+        to: 2.4,
+        // 0.30 s … 0.60 s 尾窗：T60 越长尾能越高（T60 0.4 s 时该窗已衰减
+        // −45 dB 以下，2.4 s 时只衰减约 −15 dB）。
+        read: ModRead::WindowRms {
+            start: 14_400,
+            end: 28_800,
         },
         direction: ModDirection::Rising,
     },
@@ -1450,14 +1479,14 @@ fn every_remaining_scalar_field_really_changes_the_export_and_moves_monotonicall
     }
 }
 
-/// ⭐ `#294`：这 7 个名字就是“混响/卷积的 8 个可自动化字段减去 `reverb_wet`”
-/// （`#293` 唯一做过端到端音频的那一个）。⚠ 卷积的 `conv_wet` **仍在**这 7 个里：
+/// ⭐ `#294`：这 9 个名字就是“混响/卷积的 10 个可自动化字段减去 `reverb_wet`”
+/// （`#293` 唯一做过端到端音频的那一个）。⚠ 卷积的 `conv_wet` **仍在**这 9 个里：
 /// `#293` 只做了 `reverb_wet`。
 ///
 /// ⛔ 不手抄第二份清单：名字从 `ReverbField::ALL` / `ConvolutionField::ALL` 现读，
 /// 因此本判据与 `MOD_CASES` 互为对方的机械锚（任一边漏一个字段都会红）。
 #[test]
-fn the_seven_remaining_fields_are_the_scalar_fields_minus_reverb_wet() {
+fn the_nine_remaining_fields_are_the_scalar_fields_minus_reverb_wet() {
     use yeban_render::inserts::{ConvolutionField, ReverbField};
 
     let mut expected: Vec<&str> = Vec::new();
@@ -1472,6 +1501,6 @@ fn the_seven_remaining_fields_are_the_scalar_fields_minus_reverb_wet() {
     let covered: Vec<&str> = MOD_CASES.iter().map(|case| case.name).collect();
     println!("### #294 expected={expected:?}");
     println!("### #294 covered={covered:?}");
-    assert_eq!(expected.len(), 7, "混响 3 ＋ 卷积 4 = 7");
-    assert_eq!(covered, expected, "MOD_CASES 必须逐字覆盖这 7 个字段");
+    assert_eq!(expected.len(), 9, "混响 5 ＋ 卷积 4 = 9");
+    assert_eq!(covered, expected, "MOD_CASES 必须逐字覆盖这 9 个字段");
 }

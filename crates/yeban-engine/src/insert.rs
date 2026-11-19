@@ -1376,6 +1376,18 @@ impl ReverbProjection {
                 self.params.predelay = value;
                 self.seen = true;
             }
+            // ⭐ 空间类型与混响时间（与 `dsp::device_param::ReverbField`
+            // **同一张拼写表**，判据 `device_param_spellings_pinned` 钉住等集）。
+            // 类型是枚举：写入即按 `ReverbKind::from_f32` 量化（与 render
+            // 投影的 `ReverbField::Kind::store` 逐字同口径）。
+            "reverb_kind" => {
+                self.params.kind = yeban_dsp::reverb::ReverbKind::from_f32(value);
+                self.seen = true;
+            }
+            "reverb_decay_s" | "reverb_decay" => {
+                self.params.decay_s = value;
+                self.seen = true;
+            }
             _ => {}
         }
     }
