@@ -58,8 +58,8 @@
 //! AGPL-3.0，禁入 MIT 仓库。
 
 use crate::vocal_pitch_shift::{
-    ChunkRoute, DEFAULT_CHUNK_SAMPLES, MAX_SHIFT_CENTS, PitchShiftConfig, PitchShiftReceipt,
-    PitchShifter,
+    ChunkRoute, PitchShiftConfig, PitchShiftReceipt, PitchShifter, DEFAULT_CHUNK_SAMPLES,
+    MAX_SHIFT_CENTS,
 };
 use std::error::Error;
 use std::fmt;
@@ -257,6 +257,7 @@ pub fn chunk_needs_vocoder(
 pub struct HybridPitchRouter {
     sample_rate: f32,
     config: PitchRouteConfig,
+    fade_samples: usize,
     shifter: PitchShifter,
     backend: Box<dyn NeuralVocoderBackend>,
 }
@@ -281,9 +282,14 @@ impl HybridPitchRouter {
             "sample_rate {sample_rate} is below {}",
             crate::MIN_SAMPLE_RATE
         );
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let fade_samples = (shift_config.transition_fade_s * sample_rate)
+            .round()
+            .max(0.0) as usize;
         Self {
             sample_rate,
             config,
+            fade_samples,
             shifter: PitchShifter::new(sample_rate, shift_config),
             backend,
         }
@@ -453,13 +459,31 @@ impl HybridPitchRouter {
             chunk_receipt.voiced = voiced_any[c];
             if needs_vocoder[c] {
                 let resynth = neural_out[c].take().expect("neural output missing");
-                output[start..end].copy_from_slice(&resynth);
+                let len = end - start;
+                let enter_from_dsp = c > 0 && !needs_vocoder[c - 1];
+                let exit_to_dsp = c + 1 < n_chunks && !needs_vocoder[c + 1];
+                let fade_len = self.fade_samples.min(len / 2);
+                let head_fade = if enter_from_dsp { fade_len } else { 0 };
+                let tail_fade = if exit_to_dsp { fade_len } else { 0 };
+
+                for (i, &neural) in resynth.iter().enumerate().take(head_fade) {
+                    let w = i as f32 / head_fade as f32;
+                    output[start + i] = (1.0 - w) * output[start + i] + w * neural;
+                }
+                output[start + head_fade..end - tail_fade]
+                    .copy_from_slice(&resynth[head_fade..len - tail_fade]);
+                for i in 0..tail_fade {
+                    let idx = len - tail_fade + i;
+                    let w = (i + 1) as f32 / tail_fade as f32;
+                    output[start + idx] = (1.0 - w) * resynth[idx] + w * output[start + idx];
+                }
+
                 chunk_receipt.route = ChunkRoute::NeuralVocoder;
                 chunk_receipt.cents_applied = correction[c];
                 chunk_receipt.period_samples = None;
                 chunk_receipt.periods_inserted = 0;
                 chunk_receipt.periods_deleted = 0;
-                chunk_receipt.transition_fade = false;
+                chunk_receipt.transition_fade = head_fade > 0 || tail_fade > 0;
                 neural_count += 1;
             } else {
                 if correction[c].abs() < f32::EPSILON {
@@ -863,8 +887,17 @@ mod tests {
         assert_eq!(applied, vec![10.0, 74.0, 75.0, 200.0]);
         assert_eq!(receipt.neural_chunks, 2);
         assert_eq!(state.borrow().calls, 2);
-        // 神经 chunk 是后端标记值，DSP chunk 不是。
-        assert_eq!(output[2 * CHUNK..3 * CHUNK], vec![0.5f32; CHUNK][..]);
+        // 神经 chunk 是后端标记值（chunk 2 头部与 DSP 交界处有 5 ms 交叉淡入）。
+        let fade_len =
+            ((PitchShiftConfig::default().transition_fade_s * SR).round() as usize).min(CHUNK / 2);
+        assert!(!receipt.chunks[0].transition_fade);
+        assert!(!receipt.chunks[1].transition_fade);
+        assert!(receipt.chunks[2].transition_fade);
+        assert!(!receipt.chunks[3].transition_fade);
+        assert_eq!(
+            output[2 * CHUNK + fade_len..3 * CHUNK],
+            vec![0.5f32; CHUNK - fade_len][..]
+        );
         assert_eq!(output[3 * CHUNK..4 * CHUNK], vec![0.5f32; CHUNK][..]);
         assert_ne!(output[..2 * CHUNK], vec![0.5f32; 2 * CHUNK][..]);
         // 总计等于各 chunk 之和。
@@ -940,5 +973,62 @@ mod tests {
             .route(&input, &devs, &voiced, &f0, 320)
             .expect_err("chunk 480 must not accept frame 320");
         assert!(matches!(err, RouteError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn dsp_neural_dsp_transitions_crossfade_smoothly() {
+        let input = take_440(3);
+        let devs = vec![10.0f32, 120.0, 10.0];
+        let voiced = vec![true; 3];
+        let f0 = vec![440.0f32; 3];
+        let config = PitchRouteConfig {
+            enabled: true,
+            vocoder_threshold_cents: 75.0,
+            chunk_samples: CHUNK,
+        };
+
+        let make_router = |transition_fade_s: f32| {
+            let state = Rc::new(RefCell::new(FakeVocoderState::default()));
+            let fake = FakeVocoder {
+                state,
+                marker: -0.75,
+            };
+            let shift_config = PitchShiftConfig {
+                transition_fade_s,
+                ..PitchShiftConfig::default()
+            };
+            HybridPitchRouter::new(SR, config, shift_config, Box::new(fake))
+        };
+
+        let mut faded_router = make_router(0.005);
+        let (faded_out, faded_receipt) = faded_router
+            .route(&input, &devs, &voiced, &f0, CHUNK)
+            .expect("faded routing must succeed");
+        assert!(!faded_receipt.chunks[0].transition_fade);
+        assert!(faded_receipt.chunks[1].transition_fade);
+        assert!(!faded_receipt.chunks[2].transition_fade);
+
+        let enter_step = (faded_out[CHUNK] - faded_out[CHUNK - 1]).abs();
+        let exit_step = (faded_out[2 * CHUNK] - faded_out[2 * CHUNK - 1]).abs();
+        assert!(
+            enter_step < 0.1,
+            "DSP->Neural boundary step too large with crossfade: {enter_step}"
+        );
+        assert!(
+            exit_step < 0.1,
+            "Neural->DSP boundary step too large with crossfade: {exit_step}"
+        );
+
+        let mut hard_router = make_router(0.0);
+        let (hard_out, hard_receipt) = hard_router
+            .route(&input, &devs, &voiced, &f0, CHUNK)
+            .expect("hard routing must succeed");
+        assert!(!hard_receipt.chunks[1].transition_fade);
+        let hard_enter_step = (hard_out[CHUNK] - hard_out[CHUNK - 1]).abs();
+        let hard_exit_step = (hard_out[2 * CHUNK] - hard_out[2 * CHUNK - 1]).abs();
+        assert!(
+            hard_enter_step > 0.4 && hard_exit_step > 0.4,
+            "expected hard splice discontinuity without fade, got enter={hard_enter_step}, exit={hard_exit_step}"
+        );
     }
 }
