@@ -492,12 +492,20 @@ export component ArrangementViewport inherits Rectangle {
 
                             // ⭐ 可见缩放控件：横向 / 纵向各一对（与滚轮、快捷键同一条宿主入口
                             // `zoom-h-step` / `zoom-v-step`）。滚轮 / 快捷键仍可用。
+                            // ⭐ 这组控件是**浮在标尺带上**的：编号与刻度先画、它后画，
+                            // 所以底色一旦半透明，下面的小节编号（如 `4`）和刻度线就会
+                            // 从胶囊里透出来，看着像坏图（1460×900 实机实测）。
+                            // ⇒ 底色改**实底** `bg-void`（与标尺带 `bg-shell` 区分开），
+                            //    并 `clip: true`，让悬停胶囊不越出圆角。
+                            // ⇒ 上沿贴住带顶（`y: 0px`、高 22px）：编号区占带上部 12px，
+                            //    浮层若从 2px 起，编号顶端仍会有 2px 从上沿露出。
                             Rectangle {
                                 x: parent.width - 120px;
-                                y: 2px;
+                                y: 0px;
                                 width: 114px;
-                                height: 20px;
-                                background: Tokens.bg-void.with-alpha(0.80);
+                                height: 22px;
+                                clip: true;
+                                background: Tokens.bg-void;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Tokens.skin-hairline;
@@ -892,7 +900,7 @@ export component ArrangementViewport inherits Rectangle {
         }
 
         // TRACK LANES CONTAINER
-        Rectangle {
+        arr_lanes_container := Rectangle {
             vertical-stretch: 1;
             clip: true;
             // 车道底（十一版，Wang 2026-11-17 18:51 + 18:53 亲定）：
@@ -2182,40 +2190,48 @@ export component ArrangementViewport inherits Rectangle {
                 }
             }
 
-            // ⭐ 轨道区纵向滚动指示（UI 补丁 v6）：`arr_tracks_flickable` 早就能滚，但界面上
-            // 没有任何可见提示 —— 1460×700 实测下第 4 轨与末尾「＋ 点击添加新轨道」被滚出
-            // 视野，创作者只能靠"盲滚"发现下面还有内容。
-            // 判据只看「内容高 > 可视高」：演示工程在 1920×1080 下内容不高 ⇒ 不画，
-            // golden 逐像素不变；纯视觉条，不新增任何文案，不影响 9 个语种的词表。
-            // 两处颜色按半透明口径换等效实色（原稿 #ffffff10 / #64748b80 按扁平车道底
-            // #1D2333 合成取整），不使用半透明。
-            if arr_tracks_flickable.content-height > arr_tracks_flickable.height + 1px : Rectangle {
-                arr_scroll_bar := Rectangle {
-                    x: parent.width - 7px;
-                    y: 3px;
-                    width: 4px;
-                    height: parent.height - 6px;
-                    border-radius: 2px;
-                    background: #2b3140;
+            // ⭐ 轨道区纵向滚动指示（UI 补丁 v6 修正版）：`arr_tracks_flickable` 早就能滚，
+            // 但界面上没有任何可见提示 —— 窄窗口实测下第 3 轨之后与末尾「＋ 点击添加新轨道」
+            // 被滚出视野，创作者只能靠"盲滚"发现下面还有内容。
+            //
+            // ⚠ 三处实测结论（2026-11-19，全窗抓帧 + 亮色定位）：
+            // ① 定位不能写 `parent.width`：`if 条件 : Rectangle { … }` 的包裹层不继承外层
+            //    尺寸，里面的 parent 是条件块自身（宽 = 滑块 4px），x 会算成 -3px 被 clip，
+            //    判据成立也一个像素都不画。改锚行区容器 id 后亮色条精确落在 x=1439..1444。
+            // ② 显隐不能只靠「content-height > flickable.height」：这条判据在实机上恒假
+            //    （flickable.height 绑 parent.height，与容器同源），滚动条因此始终不出现。
+            //    改为**用滑块自身的占比自证**：内容装得下 ⇒ 滑块占满 ⇒ 自动隐藏。
+            // ③ 比例与位移全部用容器高，不再引用 flickable.height。
+            // 纯视觉条、无文案，不影响 9 个语种词表与拟物化分支。
+            arr_scroll_bar := Rectangle {
+                visible: arr_scroll_bar.thumb-h < arr_lanes_container.height - 3px;
+                x: arr_lanes_container.width - 7px;
+                y: 3px;
+                width: 4px;
+                height: arr_lanes_container.height - 6px;
+                border-radius: 2px;
+                background: #2b3140;
 
-                    // 滑块高宽比 = 可视高 / 内容高；位置 = 已滚动比例。
-                    // ⚠ 必须挂在**带 id 的外层**（`arr_scroll_bar.thumb-h`）：内层 Rectangle 的
-                    // `self` 指自己，写成 `self.thumb-h` 会编译失败（实测报 does not have property）。
-                    property <length> thumb-h: Math.max(
+                // 滑块高 = 可视高 × (可视高 / 内容高)，下限 28px；上限压到轨槽高，
+                // 内容装得下时正好等于轨槽高 ⇒ 上面 visible 判据自动为假。
+                // ⚠ 必须挂在带 id 的外层：内层 Rectangle 的 self 指自己，写 self.thumb-h 编译不过。
+                property <length> thumb-h: Math.min(
+                    arr_lanes_container.height - 6px,
+                    Math.max(
                         28px,
-                        (parent.height * arr_tracks_flickable.height) / arr_tracks_flickable.content-height
-                    );
+                        (arr_lanes_container.height * arr_lanes_container.height) / max(1px, arr_tracks_flickable.content-height)
+                    )
+                );
 
-                    Rectangle {
-                        width: parent.width;
-                        height: arr_scroll_bar.thumb-h;
-                        y: Math.min(
-                            parent.height - arr_scroll_bar.thumb-h,
-                            Math.max(0px, (-arr_tracks_flickable.content-y) * (arr_tracks_flickable.height / arr_tracks_flickable.content-height))
-                        );
-                        border-radius: 2px;
-                        background: #404c5f;
-                    }
+                Rectangle {
+                    width: arr_scroll_bar.width;
+                    height: arr_scroll_bar.thumb-h;
+                    y: Math.min(
+                        arr_scroll_bar.height - arr_scroll_bar.thumb-h,
+                        Math.max(0px, (-arr_tracks_flickable.content-y) * (arr_lanes_container.height / max(1px, arr_tracks_flickable.content-height)))
+                    );
+                    border-radius: 2px;
+                    background: #404c5f;
                 }
             }
         }
