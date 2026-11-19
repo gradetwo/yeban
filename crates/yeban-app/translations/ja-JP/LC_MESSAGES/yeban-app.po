@@ -1237,6 +1237,12 @@ msgstr "ヒューマナイズ…"
 msgid "量化…"
 msgstr "クオンタイズ…"
 
+msgid "音域下移一个八度"
+msgstr "音域を1オクターブ下げる"
+
+msgid "音域上移一个八度"
+msgstr "音域を1オクターブ上げる"
+
 # --- modals.slint ---
 
 msgid "切换至：夜半全景工作区 (默认 Production)"

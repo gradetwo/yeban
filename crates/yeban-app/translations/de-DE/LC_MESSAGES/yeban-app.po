@@ -1237,6 +1237,12 @@ msgstr "Humanisieren…"
 msgid "量化…"
 msgstr "Quantisieren…"
 
+msgid "音域下移一个八度"
+msgstr "Bereich um eine Oktave nach unten verschieben"
+
+msgid "音域上移一个八度"
+msgstr "Bereich um eine Oktave nach oben verschieben"
+
 # --- modals.slint ---
 
 msgid "切换至：夜半全景工作区 (默认 Production)"

@@ -1188,6 +1188,23 @@ impl ElementRegistry {
             "力度泳道",
             false,
         );
+        // 2026-11-19：0f626645a 给两颗八度按钮补了语义 ID（[UI-TEST-001] §12.2），
+        // 注册表同步登记，否则 `slint_accessible_ids_and_registry_cover_each_other`
+        // 的方向 2 会报「.slint 有 ID、注册表无成员」。
+        registry.add(
+            "pitch-range-down",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "音域下移一个八度",
+            false,
+        );
+        registry.add(
+            "pitch-range-up",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "音域上移一个八度",
+            false,
+        );
         for velocity_index in 0..view.note_ulids.len() {
             registry.add(
                 &format!("velocity-{velocity_index}-bar"),

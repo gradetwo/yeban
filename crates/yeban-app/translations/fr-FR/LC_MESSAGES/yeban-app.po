@@ -1237,6 +1237,12 @@ msgstr "Humaniser…"
 msgid "量化…"
 msgstr "Quantifier…"
 
+msgid "音域下移一个八度"
+msgstr "Descendre la plage d'une octave"
+
+msgid "音域上移一个八度"
+msgstr "Monter la plage d'une octave"
+
 # --- modals.slint ---
 
 msgid "切换至：夜半全景工作区 (默认 Production)"
