@@ -323,9 +323,6 @@ msgstr "Séparateur entre l'espace de travail principal et la console inférieur
 msgid "引擎错误横幅"
 msgstr "Bannière d'erreur du moteur"
 
-msgid "音频引擎提示: {}"
-msgstr "Avis du moteur audio : {}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "Barre de collaboration IA : génération d'intentions et diagnostic acoustique"
 
@@ -1907,6 +1904,21 @@ msgstr "Supprimer la bibliothèque de sons"
 
 msgid "确认删除"
 msgstr "Confirmer la suppression"
+msgid "下载全部内置音源"
+msgstr "Télécharger tous les sons intégrés"
+
+msgid "全部下载"
+msgstr "Tout télécharger"
+
+msgid "提醒：{}"
+msgstr "Remarque : {}"
+
+msgid "搜索音源…"
+msgstr "Rechercher des sons…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "Rechercher des sons (nom / catégorie / licence)"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"

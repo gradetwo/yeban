@@ -323,9 +323,6 @@ msgstr "Divider Between Main Workspace and Lower Console (220–600 px)"
 msgid "引擎错误横幅"
 msgstr "Engine Error Banner"
 
-msgid "音频引擎提示: {}"
-msgstr "Audio Engine Notice: {}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "AI Collaboration Bar: Intent Generation & Acoustic Diagnostics"
 
@@ -1907,6 +1904,21 @@ msgstr "Delete sound library"
 
 msgid "确认删除"
 msgstr "Confirm Delete"
+msgid "下载全部内置音源"
+msgstr "Download all built-in sounds"
+
+msgid "全部下载"
+msgstr "Download all"
+
+msgid "提醒：{}"
+msgstr "Note: {}"
+
+msgid "搜索音源…"
+msgstr "Search sounds…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "Search sounds (name / category / license)"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"

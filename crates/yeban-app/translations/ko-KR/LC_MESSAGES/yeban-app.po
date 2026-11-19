@@ -323,9 +323,6 @@ msgstr "메인 작업 공간과 하단 콘솔 구분선 (220–600px)"
 msgid "引擎错误横幅"
 msgstr "엔진 오류 배너"
 
-msgid "音频引擎提示: {}"
-msgstr "오디오 엔진 알림: {}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "AI 협업 바: 의도 생성 및 어쿠스틱 진단"
 
@@ -1907,6 +1904,21 @@ msgstr "사운드 라이브러리 삭제"
 
 msgid "确认删除"
 msgstr "삭제 확인"
+msgid "下载全部内置音源"
+msgstr "내장 사운드 모두 다운로드"
+
+msgid "全部下载"
+msgstr "모두 다운로드"
+
+msgid "提醒：{}"
+msgstr "알림: {}"
+
+msgid "搜索音源…"
+msgstr "사운드 검색…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "사운드 검색(이름 / 분류 / 라이선스)"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"

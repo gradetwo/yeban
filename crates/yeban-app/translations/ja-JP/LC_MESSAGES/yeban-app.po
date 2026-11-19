@@ -323,9 +323,6 @@ msgstr "メインワークスペースと下部コンソールの仕切り (220�
 msgid "引擎错误横幅"
 msgstr "エンジンエラーバナー"
 
-msgid "音频引擎提示: {}"
-msgstr "オーディオエンジン通知：{}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "AIコラボレーションバー：意図生成と音響診断"
 
@@ -1907,6 +1904,21 @@ msgstr "サウンドライブラリを削除"
 
 msgid "确认删除"
 msgstr "削除を確認"
+msgid "下载全部内置音源"
+msgstr "内蔵サウンドをすべてダウンロード"
+
+msgid "全部下载"
+msgstr "すべてダウンロード"
+
+msgid "提醒：{}"
+msgstr "注意：{}"
+
+msgid "搜索音源…"
+msgstr "サウンドを検索…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "サウンドを検索（名前 / カテゴリ / ライセンス）"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"

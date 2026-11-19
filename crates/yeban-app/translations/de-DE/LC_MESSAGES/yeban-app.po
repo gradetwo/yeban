@@ -323,9 +323,6 @@ msgstr "Trennlinie zwischen Hauptarbeitsbereich und unterer Konsole (220–600 p
 msgid "引擎错误横幅"
 msgstr "Engine-Fehlerbanner"
 
-msgid "音频引擎提示: {}"
-msgstr "Audio-Engine-Hinweis: {}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "KI-Kollaborationsleiste: Intent-Generierung & Akustikdiagnose"
 
@@ -1907,6 +1904,21 @@ msgstr "Sound-Library löschen"
 
 msgid "确认删除"
 msgstr "Löschen bestätigen"
+msgid "下载全部内置音源"
+msgstr "Alle integrierten Sounds herunterladen"
+
+msgid "全部下载"
+msgstr "Alle herunterladen"
+
+msgid "提醒：{}"
+msgstr "Hinweis: {}"
+
+msgid "搜索音源…"
+msgstr "Sounds suchen…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "Sounds suchen (Name / Kategorie / Lizenz)"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"

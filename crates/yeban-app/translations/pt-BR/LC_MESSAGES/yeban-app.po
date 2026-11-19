@@ -323,9 +323,6 @@ msgstr "Divisor entre o workspace principal e o console inferior (220–600 px)"
 msgid "引擎错误横幅"
 msgstr "Faixa de erro do motor"
 
-msgid "音频引擎提示: {}"
-msgstr "Aviso do motor de áudio: {}"
-
 msgid "AI 协作栏: 意图生成与声学诊断"
 msgstr "Barra de colaboração por IA: geração de intenção e diagnóstico acústico"
 
@@ -1907,6 +1904,21 @@ msgstr "Excluir biblioteca de sons"
 
 msgid "确认删除"
 msgstr "Confirmar exclusão"
+msgid "下载全部内置音源"
+msgstr "Baixar todos os sons integrados"
+
+msgid "全部下载"
+msgstr "Baixar tudo"
+
+msgid "提醒：{}"
+msgstr "Observação: {}"
+
+msgid "搜索音源…"
+msgstr "Pesquisar sons…"
+
+msgid "搜索音源（名字 / 分类 / 许可）"
+msgstr "Pesquisar sons (nome / categoria / licença)"
+
 # --- dialogs/startup_chooser.slint ---
 
 msgid "选择工程"
