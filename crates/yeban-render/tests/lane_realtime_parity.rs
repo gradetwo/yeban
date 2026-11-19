@@ -131,6 +131,7 @@ fn chain(keys: &[u8], name: &str, devices: Vec<DeviceDefinition>) -> LaneChainDe
         name: name.to_owned(),
         devices,
         pan: None,
+        gain_db: None,
     }
 }
 
@@ -392,6 +393,65 @@ fn realtime_hat_highpass_does_not_touch_kick() {
         plain[split..],
         "实时：hat 段必须被高通改动（否则判据空转）"
     );
+}
+
+/// ④ 组增益双路对拍（P4）：hats 组 `gain_db = -6` —— 实时与离线两路
+/// 都必须满足：首个 hat 之前（纯 kick 段）与无增益渲染逐位相同；
+/// 纯 hat 段 RMS 恰降 6 dB（容差 0.75 dB，同 `db_to_gain` 近似口径）。
+#[test]
+fn lane_group_gain_applies_in_realtime_and_offline() {
+    let gained_chains = |gain: Option<f32>| {
+        let mut hats = chain(&[42, 46], "hats", Vec::new());
+        hats.gain_db = gain;
+        vec![chain(&[36], "kick", Vec::new()), hats]
+    };
+    // A) kick + hats：首个 hat（tick 480 ⇒ 帧 12_000）之前不得动 kick。
+    let notes: &[(u64, u8, u64)] = &[(0, 36, 240), (480, 46, 960), (1_920, 36, 240)];
+    let (gained, track) = project(notes, gained_chains(Some(-6.0)), None);
+    let (plain, _) = project(notes, gained_chains(None), None);
+    let split = 12_000 * 2;
+    let (rt_gained, _) = render_realtime(&gained);
+    let (rt_plain, _) = render_realtime(&plain);
+    assert_eq!(
+        rt_gained[..split],
+        rt_plain[..split],
+        "实时：hat 组增益不得改动首个 hat 之前的 kick 样本"
+    );
+    assert_ne!(
+        rt_gained[split..],
+        rt_plain[split..],
+        "实时：hat 段必须被增益改动（否则判据空转）"
+    );
+    let (off_gained, _) = render_offline(&gained, track);
+    let (off_plain, _) = render_offline(&plain, track);
+    assert_eq!(
+        off_gained[..split],
+        off_plain[..split],
+        "离线：hat 组增益不得改动首个 hat 之前的 kick 样本"
+    );
+    // B) 纯 hats：整段 RMS 的增益量双路都必须 ≈ −6 dB。
+    let hats_only: &[(u64, u8, u64)] = &[
+        (480, 42, 120),
+        (1_440, 42, 120),
+        (2_400, 42, 120),
+        (3_360, 42, 120),
+    ];
+    let (gained, track) = project(hats_only, gained_chains(Some(-6.0)), None);
+    let (plain, _) = project(hats_only, gained_chains(None), None);
+    let win = 12_000..96_000;
+    let (off_gained, _) = render_offline(&gained, track);
+    let (off_plain, _) = render_offline(&plain, track);
+    let (rt_gained, _) = render_realtime(&gained);
+    let (rt_plain, _) = render_realtime(&plain);
+    let off_delta = rms_db(&off_gained, win.clone()) - rms_db(&off_plain, win.clone());
+    let rt_delta = rms_db(&rt_gained, win.clone()) - rms_db(&rt_plain, win);
+    println!("组增益双路实测：离线 {off_delta:.3} dB；实时 {rt_delta:.3} dB（目标 -6）");
+    for (label, delta) in [("离线", off_delta), ("实时", rt_delta)] {
+        assert!(
+            (delta + 6.0).abs() <= 0.75,
+            "{label}：-6 dB 组增益实测 {delta:.3} dB"
+        );
+    }
 }
 
 /// ③ 实时响亮读数：有边工程的已求值计数与组链帧数必须为正；无边工程

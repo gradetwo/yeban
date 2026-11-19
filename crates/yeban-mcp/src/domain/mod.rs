@@ -4591,6 +4591,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                         })
                         .collect(),
                     pan: chain.pan,
+                    gain_db: chain.gain_db,
                 })
                 .collect();
             let groups: Vec<String> = lane_chains

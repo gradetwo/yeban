@@ -77,7 +77,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
 use thiserror::Error;
-use yeban_dsp::math::note_to_hz;
+use yeban_dsp::math::{db_to_gain, note_to_hz};
 use yeban_model::project::DEFAULT_BPM;
 use yeban_model::time_math::TempoMap;
 use yeban_model::{
@@ -503,6 +503,9 @@ pub struct LaneGroupParams {
     insert: InsertParams,
     /// 本组声相覆盖（`None` = 跟随命中声部的 SFZ 声像求值，与模型同口径）。
     pan: Option<f32>,
+    /// 本组增益线性系数（`LaneChainDef::gain_db` 经 `db_to_gain` 在
+    /// 构造期换算；`None` = 不覆盖、组信号原电平通过，与模型同口径）。
+    gain: Option<f32>,
     /// 本组作侧链**目的**时是否静态武装（链投影的通道条 `compressor_enabled`）。
     ///
     /// ⚠ 与离线 `InsertChain::compresses_statically` 的一处已知口径差：离线版
@@ -525,6 +528,7 @@ impl LaneGroupParams {
             keys: chain.keys.clone(),
             insert,
             pan: chain.pan,
+            gain: chain.gain_db.map(db_to_gain),
             key_armed,
         }
     }
@@ -551,6 +555,12 @@ impl LaneGroupParams {
     #[must_use]
     pub const fn pan(&self) -> Option<f32> {
         self.pan
+    }
+
+    /// 本组增益线性系数（由 `gain_db` 构造期换算；`None` = 不覆盖）。
+    #[must_use]
+    pub const fn gain(&self) -> Option<f32> {
+        self.gain
     }
 
     /// 本组作侧链目的时是否静态武装（见字段文档）。

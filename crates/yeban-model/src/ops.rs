@@ -4801,6 +4801,7 @@ mod tests {
                     name: "hats".to_owned(),
                     devices: Vec::new(),
                     pan: None,
+                    gain_db: None,
                 }],
             },
             // 预制状态：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 换预制只能删轨重建。
@@ -5136,6 +5137,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: Vec::new(),
             pan: None,
+            gain_db: None,
         };
         let before = doc.track(&f.lead).expect("lead 轨在夹具里").clone();
 

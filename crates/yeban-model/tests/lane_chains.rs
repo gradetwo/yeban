@@ -10,6 +10,7 @@ fn hats_chain() -> LaneChainDef {
         name: "hats".to_owned(),
         devices: Vec::new(),
         pan: None,
+        gain_db: None,
     }
 }
 
@@ -65,12 +66,21 @@ fn lane_chains_round_trip_verbatim_when_present() {
                 ..DeviceDefinition::default()
             }],
             pan: Some(-0.25),
+            gain_db: Some(-1.5),
         },
         hats_chain(),
     ]);
     track.validate().expect("规范化逐件链必须校验通过");
     let json = serde_json::to_string(&track).expect("序列化");
     assert!(json.contains("\"lane_chains\""), "非空逐件链必须落盘");
+    // 增益落盘口径与声相同形：`Some` 写出、`None`（hats 组）不写出
+    // ⇒ 全文恰出现一次。
+    assert_eq!(
+        json.matches("\"gain_db\"").count(),
+        1,
+        "gain_db 只应为带增益的组写出一次: {json}"
+    );
+    assert!(json.contains("\"gain_db\":-1.5"), "增益值必须落盘: {json}");
     let back: TrackV3 = serde_json::from_str(&json).expect("反序列化");
     assert_eq!(back, track);
     assert_eq!(
@@ -154,6 +164,7 @@ fn track_validate_rejects_unnormalized_lane_chains() {
                 name: format!("g{key}"),
                 devices: Vec::new(),
                 pan: None,
+                gain_db: None,
             })
             .collect(),
     );
@@ -199,6 +210,39 @@ fn track_validate_rejects_unnormalized_lane_chains() {
         nan_pan.validate(),
         Err(ModelError::NonFiniteValue { .. })
     ));
+    // 增益越界（上下界外）。
+    for bad_gain in [24.5_f32, -60.5] {
+        let bad = track_with(vec![LaneChainDef {
+            gain_db: Some(bad_gain),
+            ..hats_chain()
+        }]);
+        assert_eq!(
+            bad.validate(),
+            Err(ModelError::LaneChainGainOutOfRange {
+                name: "hats".to_owned(),
+                value: bad_gain
+            })
+        );
+    }
+    // 增益非有限（NaN 与无穷）。
+    for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let bad = track_with(vec![LaneChainDef {
+            gain_db: Some(non_finite),
+            ..hats_chain()
+        }]);
+        assert!(matches!(
+            bad.validate(),
+            Err(ModelError::NonFiniteValue { .. })
+        ));
+    }
+    // 增益闭区间端点合法。
+    for edge in [-60.0_f32, 24.0, 0.0] {
+        let ok = track_with(vec![LaneChainDef {
+            gain_db: Some(edge),
+            ..hats_chain()
+        }]);
+        assert_eq!(ok.validate(), Ok(()), "gain_db {edge} 必须合法");
+    }
     // 链内设备参数非有限 ⇒ 设备自身校验冒泡。
     let nan_param_device = DeviceDefinition {
         params: vec![yeban_model::ParameterValue {

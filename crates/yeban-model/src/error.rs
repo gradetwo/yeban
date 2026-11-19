@@ -315,6 +315,16 @@ pub enum ModelError {
         value: f32,
     },
 
+    /// 逐件链增益越界 (允许 -60.0..=24.0 dB，与
+    /// `LANE_CHAIN_GAIN_DB_MIN` / `LANE_CHAIN_GAIN_DB_MAX` 同值)。
+    #[error("lane chain `{name}` gain {value} dB out of range -60.0..=24.0")]
+    LaneChainGainOutOfRange {
+        /// 出问题那一组的组名。
+        name: String,
+        /// 实际收到的增益值 (dB)。
+        value: f32,
+    },
+
     /// 路由边带了逐件 lane 端点，但边的类型不是侧链（逐件＋侧链期 4：
     /// lane 端点只对侧链边有意义，其它类型带端点响亮拒绝、不静默忽略）。
     #[error("routing edge `{edge}` carries lane endpoints but is not a sidechain edge")]

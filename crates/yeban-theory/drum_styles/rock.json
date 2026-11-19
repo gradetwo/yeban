@@ -1694,5 +1694,35 @@
       "mix": 1.0,
       "oversample": 4
     }
-  }
+  },
+  "lane_chains": [
+    {
+      "name": "kick",
+      "keys": [36],
+      "chain": {
+        "gain_db": 1.0
+      }
+    },
+    {
+      "name": "snare",
+      "keys": [38],
+      "chain": {
+        "gain_db": 1.0
+      }
+    },
+    {
+      "name": "hats",
+      "keys": [42, 46],
+      "chain": {
+        "gain_db": -1.5
+      }
+    },
+    {
+      "name": "shaker",
+      "keys": [82],
+      "chain": {
+        "gain_db": -1.0
+      }
+    }
+  ]
 }

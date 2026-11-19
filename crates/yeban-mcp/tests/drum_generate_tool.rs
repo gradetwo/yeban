@@ -395,6 +395,7 @@ fn existing_track_with_user_lane_chains_keeps_them() {
         name: "mine".to_owned(),
         devices: Vec::new(),
         pan: Some(0.5),
+        gain_db: None,
     };
     fixture
         .tracks

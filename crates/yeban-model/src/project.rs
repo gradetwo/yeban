@@ -1303,6 +1303,14 @@ impl SamplerBinding {
 /// 一条音轨至多容纳的逐件链组数 (设计 R3：组数硬上限，超限响亮拒绝)。
 pub const MAX_LANE_CHAINS_PER_TRACK: usize = 16;
 
+/// 逐件链增益的合法值域下限（dB）：−60 dB 的线性系数是 0.001，
+/// 再低与静音无听感差别，作为修剪下限足够。
+pub const LANE_CHAIN_GAIN_DB_MIN: f32 = -60.0;
+
+/// 逐件链增益的合法值域上限（dB）：逐件相对电平的抬升上限，
+/// 与鼓总线削波驱动的上限同量级（+24 dB = 线性 16 倍）。
+pub const LANE_CHAIN_GAIN_DB_MAX: f32 = 24.0;
+
 /// 逐件（per-lane）处理链：按 GM 键组寻址的一条独立设备链。
 ///
 /// 一件鼓 = 一组 GM 键；一组键共享一条链。组单位与 SFZ 的 exclusive/choke
@@ -1326,10 +1334,21 @@ pub struct LaneChainDef {
     /// 本组声相覆盖（`None` = 不覆盖，跟随命中声部的 SFZ 声像求值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pan: Option<f32>,
+    /// 本组增益覆盖（dB；`None` = 不覆盖，组信号以原电平通过）。
+    ///
+    /// 与 `pan` 同族的组级标量覆盖：施加点在组链之后、组声相之后、
+    /// 求和之前，离线与实时两路同位同序。原声系逐件的相对电平自此
+    /// 有独立落点，不再只能靠改力度硬凑（力度还兼选 SFZ 力度层，
+    /// 拿它凑电平会连音色一起改）。值域
+    /// [`LANE_CHAIN_GAIN_DB_MIN`]..=[`LANE_CHAIN_GAIN_DB_MAX`]，
+    /// [`validate_lane_chains`] 强制：非有限或越界响亮拒绝。
+    /// `None` 时不落盘 ⇒ **无增益段的工程逐字节不变**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<f32>,
 }
 
 /// 校验一组逐件链的规范化形态（组数上限、组内升序非空、组间不重叠、
-/// 组序、设备合法且零延迟、声相范围）。
+/// 组序、设备合法且零延迟、声相范围、增益范围）。
 ///
 /// [`TrackV3::validate`] 与 `Op::SetTrackLaneChains` 的前置校验共用本函数，
 /// 两条入口同一口径。
@@ -1393,6 +1412,20 @@ pub fn validate_lane_chains(chains: &[LaneChainDef]) -> Result<(), ModelError> {
                 return Err(ModelError::LaneChainPanOutOfRange {
                     name: chain.name.clone(),
                     value: pan,
+                });
+            }
+        }
+        if let Some(gain_db) = chain.gain_db {
+            if !gain_db.is_finite() {
+                return Err(ModelError::NonFiniteValue {
+                    field: "track.lane_chains.gain_db",
+                    value: f64::from(gain_db),
+                });
+            }
+            if !(LANE_CHAIN_GAIN_DB_MIN..=LANE_CHAIN_GAIN_DB_MAX).contains(&gain_db) {
+                return Err(ModelError::LaneChainGainOutOfRange {
+                    name: chain.name.clone(),
+                    value: gain_db,
                 });
             }
         }
@@ -3997,6 +4030,7 @@ mod tests {
         "src/error.rs::ModelError::NonFiniteValue.value",
         "src/error.rs::ModelError::PanOutOfRange.value",
         "src/error.rs::ModelError::LaneChainPanOutOfRange.value",
+        "src/error.rs::ModelError::LaneChainGainOutOfRange.value",
         "src/error.rs::ModelError::MacroValueOutOfRange.value",
         "src/error.rs::ModelError::MacroDepthOutOfRange.value",
         "src/error.rs::ModelError::TrackTuneOutOfRange.value",
@@ -4031,6 +4065,7 @@ mod tests {
         "src/project.rs::Repr::max",
         "src/project.rs::ClipContent::Audio.gain_db",
         "src/project.rs::LaneChainDef::pan",
+        "src/project.rs::LaneChainDef::gain_db",
         "src/project.rs::TrackV3::volume_db",
         "src/project.rs::TrackV3::pan",
         "src/project.rs::TrackV3::tune_offset_cents",
@@ -4047,9 +4082,10 @@ mod tests {
     /// **逐项判定表**：清单里除 `ModelError` 输出载体之外的每一个数值字段一行。
     ///
     /// 行 = `(清单键, 判定结论, 探针)`。键集合必须**恰好**等于
-    /// `NUMERIC_FIELD_INVENTORY` 减去那 8 个输出载体（多一行、少一行都红；
-    /// 第 8 个是逐件处理线期 2 的 `LaneChainPanOutOfRange.value`，与
-    /// `PanOutOfRange.value` 同为错误输出载体）。
+    /// `NUMERIC_FIELD_INVENTORY` 减去那 9 个输出载体（多一行、少一行都红；
+    /// 第 8 个是逐件处理线期 2 的 `LaneChainPanOutOfRange.value`，第 9 个是
+    /// P4 的 `LaneChainGainOutOfRange.value`，与 `PanOutOfRange.value`
+    /// 同为错误输出载体）。
     const NUMERIC_FIELD_POLICY: &[(&str, &str, NumericProbe)] = &[
         (
             "src/music.rs::MidiNote::probability",
@@ -4190,6 +4226,11 @@ mod tests {
             "src/project.rs::LaneChainDef::pan",
             "非有限拒绝（track.lane_chains.pan）；-1.0..=1.0 外报 LaneChainPanOutOfRange；None=居中",
             probe_lane_chain_pan,
+        ),
+        (
+            "src/project.rs::LaneChainDef::gain_db",
+            "非有限拒绝（track.lane_chains.gain_db）；-60.0..=24.0 外报 LaneChainGainOutOfRange；None=不覆盖",
+            probe_lane_chain_gain_db,
         ),
         (
             "src/project.rs::TrackV3::volume_db",
@@ -4956,6 +4997,7 @@ mod tests {
                 name: "hats".to_owned(),
                 devices: Vec::new(),
                 pan,
+                gain_db: None,
             }],
             ..midi_track(fixture_id(1))
         };
@@ -4972,6 +5014,34 @@ mod tests {
         accepts("None（居中）", track(None).validate())?;
         for edge in [-1.0_f32, -0.5, 0.0, 1.0] {
             accepts("闭区间声相端点", track(Some(edge)).validate())?;
+        }
+        Ok(())
+    }
+
+    fn probe_lane_chain_gain_db() -> Result<(), String> {
+        let track = |gain_db| TrackV3 {
+            lane_chains: vec![LaneChainDef {
+                keys: vec![42],
+                name: "hats".to_owned(),
+                devices: Vec::new(),
+                pan: None,
+                gain_db,
+            }],
+            ..midi_track(fixture_id(1))
+        };
+        rejects_non_finite_f32("track.lane_chains.gain_db", |value| {
+            track(Some(value)).validate()
+        })?;
+        for bad in [24.5_f32, -60.5, 96.0] {
+            rejects_matching(
+                "逐件链增益越界",
+                track(Some(bad)).validate(),
+                |error| matches!(error, ModelError::LaneChainGainOutOfRange { .. }),
+            )?;
+        }
+        accepts("None（不覆盖）", track(None).validate())?;
+        for edge in [-60.0_f32, 0.0, 24.0] {
+            accepts("闭区间增益端点", track(Some(edge)).validate())?;
         }
         Ok(())
     }
@@ -6273,9 +6343,10 @@ mod tests {
 
     /// 逐项判定：清单里每个**入口**字段都有一行判定，且该行的探针必须真的成立。
     ///
-    /// `ModelError` 的 8 个 `value` 字段是错误输出载体（不是入口），
-    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 8 条），不能悄悄扩大
-    /// （第 8 条由逐件处理线期 2 显式改钉：`LaneChainPanOutOfRange.value`）。
+    /// `ModelError` 的 9 个 `value` 字段是错误输出载体（不是入口），
+    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 9 条），不能悄悄扩大
+    /// （第 8 条由逐件处理线期 2 显式改钉：`LaneChainPanOutOfRange.value`；
+    /// 第 9 条由 P4 显式改钉：`LaneChainGainOutOfRange.value`）。
     #[test]
     fn every_numeric_entry_point_has_a_passing_policy_probe() {
         let inventory: std::collections::BTreeSet<&str> =
@@ -6287,8 +6358,8 @@ mod tests {
             .collect();
         assert_eq!(
             outputs.len(),
-            8,
-            "输出载体豁免必须恰好 8 条（ModelError 的 value 字段）: {outputs:?}"
+            9,
+            "输出载体豁免必须恰好 9 条（ModelError 的 value 字段）: {outputs:?}"
         );
         let expected: std::collections::BTreeSet<&str> =
             inventory.difference(&outputs).copied().collect();

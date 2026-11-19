@@ -3084,6 +3084,7 @@ pub fn drum_gen_ops(
                     name: chain.name.clone(),
                     devices: drum_lane_devices(chain),
                     pan: chain.pan,
+                    gain_db: chain.gain_db,
                 })
                 .collect();
             ops.push(Op::SetTrackLaneChains {
@@ -10720,11 +10721,33 @@ mod tests {
             other => panic!("unexpected op: {other:?}"),
         }
         // rock 的效果层：通道条 + 磁带 + 混响（采样器不占器件槽，槽位从 0 起）。
+        // P4 起 rock 带出厂逐件增益链 ⇒ 多一笔 SetTrackLaneChains（ops[12]）。
         assert_eq!(
             ops.len(),
-            14,
-            "建轨 2 + 总线 6 + 绑鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
+            15,
+            "建轨 2 + 总线 6 + 绑鼓组 1 + 效果层 3 + 逐件链 1 + 片段 2: {ops:?}"
         );
+        match &ops[12] {
+            Op::SetTrackLaneChains {
+                new_lane_chains, ..
+            } => {
+                let gains: Vec<(&str, Option<f32>)> = new_lane_chains
+                    .iter()
+                    .map(|chain| (chain.name.as_str(), chain.gain_db))
+                    .collect();
+                assert_eq!(
+                    gains,
+                    [
+                        ("kick", Some(1.0)),
+                        ("snare", Some(1.0)),
+                        ("hats", Some(-1.5)),
+                        ("shaker", Some(-1.0))
+                    ],
+                    "rock 出厂增益必须随生成落到工程"
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         let fx_names: Vec<&str> = ops[9..12]
             .iter()
             .map(|op| match op {
@@ -10928,6 +10951,7 @@ mod tests {
             name: "mine".to_owned(),
             devices: Vec::new(),
             pan: Some(0.5),
+            gain_db: None,
         }];
         project.tracks.insert(track_id, equipped);
         let target = project.tracks.get(&track_id).unwrap();

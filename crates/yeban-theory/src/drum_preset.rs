@@ -435,6 +435,11 @@ pub struct DrumLaneChainPreset {
     pub noise: Option<DrumNoisePreset>,
     /// 本组声相覆盖（可选）−1..=1。
     pub pan: Option<f32>,
+    /// 本组增益覆盖（可选，dB）−60..=24：逐件相对电平的独立落点，
+    /// 生成落成 `LaneChainDef::gain_db`，渲染在组链与组声相之后施加。
+    /// 只写增益（无任何处理段）的组同样合法——原声系逐件电平微调
+    /// 正是这种组。
+    pub gain_db: Option<f32>,
     /// 侧链声明（可选；期 4 起生成落成 lane 级侧链边，出厂值期 5 才写）。
     pub sidechain: Option<DrumLaneSidechainPreset>,
 }
@@ -1412,6 +1417,16 @@ fn parse_lane_chains(
                 1.0,
             )?),
         };
+        let gain_db = match get_opt(chain_obj, "gain_db") {
+            None => None,
+            Some(_) => Some(get_f32_ranged(
+                chain_obj,
+                "gain_db",
+                &format!("{base}.gain_db"),
+                -60.0,
+                24.0,
+            )?),
+        };
         let sidechain = match get_opt(chain_obj, "sidechain") {
             None => None,
             Some(raw_sidechain) => {
@@ -1443,11 +1458,12 @@ fn parse_lane_chains(
             && crusher.is_none()
             && noise.is_none()
             && pan.is_none()
+            && gain_db.is_none()
             && sidechain.is_none()
         {
             return Err(field_err(
                 &format!("lane_chains.{name}"),
-                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/transient/crusher/noise/pan/sidechain)",
+                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/transient/crusher/noise/pan/gain_db/sidechain)",
             ));
         }
         chains.push(DrumLaneChainPreset {
@@ -1462,6 +1478,7 @@ fn parse_lane_chains(
             crusher,
             noise,
             pan,
+            gain_db,
             sidechain,
         });
     }
@@ -3917,6 +3934,48 @@ mod tests {
     }
 
     #[test]
+    fn lane_chain_gain_db_parses_and_rejects_loudly() {
+        // 只带 gain_db 的链合法（纯增益组不算空链），值原样落预置。
+        let text = preset_with_lanes(
+            "acoustic",
+            &[36, 42],
+            ", \"lane_chains\": [{\"name\": \"kick\", \"keys\": [36], \"chain\": {\"gain_db\": -1.5}}]",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("纯增益组必须可解析");
+        assert_eq!(preset.lane_chains.len(), 1);
+        assert_eq!(preset.lane_chains[0].gain_db, Some(-1.5));
+        // 增益不是器件：器件配方仍为空。
+        assert!(drum_lane_device_specs(&preset.lane_chains[0]).is_empty());
+        // 闭区间端点接受。
+        for edge in [-60.0, 24.0] {
+            let text = preset_with_lanes(
+                "acoustic",
+                &[36],
+                &format!(
+                    ", \"lane_chains\": [{{\"name\": \"kick\", \"keys\": [36], \"chain\": {{\"gain_db\": {edge}}}}}]"
+                ),
+            );
+            let preset = DrumStylePreset::from_json(&text).expect("端点增益必须可解析");
+            assert_eq!(preset.lane_chains[0].gain_db, Some(edge as f32));
+        }
+        // 超界响亮拒绝（不钳位）。
+        for bad in ["24.5", "-60.5", "96"] {
+            let text = preset_with_lanes(
+                "acoustic",
+                &[36],
+                &format!(
+                    ", \"lane_chains\": [{{\"name\": \"kick\", \"keys\": [36], \"chain\": {{\"gain_db\": {bad}}}}}]"
+                ),
+            );
+            let err = DrumStylePreset::from_json(&text).expect_err("越界增益必须被拒");
+            assert!(
+                err.to_string().contains("gain_db"),
+                "错误必须点名 gain_db: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn lane_device_specs_cover_all_families_in_order() {
         let text = preset_with_lanes(
             "electronic",
@@ -4140,9 +4199,102 @@ mod tests {
                 "{id} 的 808 步进须镜像 kick"
             );
         }
-        // 其余出厂风格本期不带逐件链。
+        // 原声系 6 风格（P4）：只带增益的逐件相对电平组 —— 无器件段、
+        // 无声相、无侧链；增益值逐条钉住（出厂定值，改值须改本判据）。
+        type GainGroup = (&'static str, &'static [u8], f32);
+        let acoustic_gains: [(&str, &[GainGroup]); 6] = [
+            (
+                "pop",
+                &[
+                    ("kick", &[36], 1.0),
+                    ("snare", &[38], 0.5),
+                    ("hats", &[42, 46], -2.0),
+                    ("shaker", &[82], -1.0),
+                ],
+            ),
+            (
+                "rock",
+                &[
+                    ("kick", &[36], 1.0),
+                    ("snare", &[38], 1.0),
+                    ("hats", &[42, 46], -1.5),
+                    ("shaker", &[82], -1.0),
+                ],
+            ),
+            (
+                "boombap",
+                &[
+                    ("kick", &[36], 1.5),
+                    ("snare", &[38], 0.5),
+                    ("hats", &[42, 46], -1.5),
+                    ("shaker", &[82], -1.0),
+                ],
+            ),
+            (
+                "funk",
+                &[
+                    ("kick", &[36], 1.0),
+                    ("snare", &[37, 38], 0.5),
+                    ("hats", &[42, 44], -2.0),
+                    ("crash", &[49], -1.0),
+                    ("shaker", &[82], -1.0),
+                ],
+            ),
+            (
+                "jazz",
+                &[
+                    ("kick", &[36], 1.0),
+                    ("snare", &[37, 38], 0.5),
+                    ("hats", &[44], -1.0),
+                    ("crash", &[49], -1.5),
+                    ("ride", &[51, 53], -1.0),
+                ],
+            ),
+            (
+                "rnb",
+                &[
+                    ("kick", &[36], 0.5),
+                    ("snare", &[37, 38], 1.0),
+                    ("hats", &[42], -1.5),
+                    ("crash", &[49], -1.0),
+                    ("shaker", &[82], -1.5),
+                ],
+            ),
+        ];
+        for (id, expected) in acoustic_gains {
+            let style = by_id(id);
+            assert_eq!(style.lane_chains.len(), expected.len(), "{id} 增益组数不符");
+            for (chain, (name, keys, gain)) in style.lane_chains.iter().zip(expected) {
+                assert_eq!(chain.name, *name, "{id} 组名不符");
+                assert_eq!(chain.keys, *keys, "{id} {name} 键组不符");
+                assert_eq!(chain.gain_db, Some(*gain), "{id} {name} 增益定值不符");
+                assert!(
+                    chain.eq.is_none()
+                        && chain.comp.is_none()
+                        && chain.reverb.is_none()
+                        && chain.tape.is_none()
+                        && chain.delay.is_none()
+                        && chain.pan.is_none()
+                        && chain.sidechain.is_none(),
+                    "{id} {name} 必须是纯增益组（无器件/声相/侧链段）"
+                );
+            }
+        }
+        // 其余出厂风格本期不带逐件链（合成系相对电平走 *_level，不在此写）。
         for style in &styles {
-            if !matches!(style.id.as_str(), "house" | "trap" | "lofi" | "phonk") {
+            if !matches!(
+                style.id.as_str(),
+                "house"
+                    | "trap"
+                    | "lofi"
+                    | "phonk"
+                    | "pop"
+                    | "rock"
+                    | "boombap"
+                    | "funk"
+                    | "jazz"
+                    | "rnb"
+            ) {
                 assert!(
                     style.lane_chains.is_empty(),
                     "出厂风格 {} 本期不带逐件链",

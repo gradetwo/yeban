@@ -134,6 +134,7 @@ fn chain(keys: &[u8], name: &str, devices: Vec<DeviceDefinition>) -> LaneChainDe
         name: name.to_owned(),
         devices,
         pan: None,
+        gain_db: None,
     }
 }
 

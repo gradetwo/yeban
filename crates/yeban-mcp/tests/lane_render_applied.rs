@@ -128,6 +128,7 @@ fn lane_chains_on_an_unrendered_track_stay_unapplied() {
             plugin: None,
         }],
         pan: None,
+        gain_db: None,
     }];
     project.tracks.insert(track_id, track);
     project.routing_graph.nodes.push(track_id);

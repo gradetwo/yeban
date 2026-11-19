@@ -2125,7 +2125,8 @@ fn lane_choke_split(
 ///    一量子一组只推进一次，离线同款），其余组在此渲染；本组分表**有音符**
 ///    才把信号送过组链（无音符整链跳过、状态一位不推进 —— 离线 `has_notes`
 ///    同口径）；组链之后施加**组声相**（居中等功率、默认律 —— 离线
-///    `lane_pan_gains` 同律），再累加进轨对。
+///    `lane_pan_gains` 同律）与**组增益**（`gain_db` 的构造期线性换算），
+///    再累加进轨对。
 /// 3. **余量最后**：不属于任何组的音符走轨槽位的立体声渲染累加（轨游标在
 ///    武装期已对齐到余量分表）。
 /// 4. **音频片段**：单声道素材按轨级同口径 `mix_into` 后**双声道同值**累加
@@ -2237,6 +2238,16 @@ fn render_lane_track_source(
                     share.lane_scratch[frame] *= gain_l;
                     share.lane_scratch_r[frame] *= gain_r;
                 }
+            }
+        }
+        // 组增益（链后、组声相后；与离线 `LaneSplitSource` 同位同序；
+        // 未声明或 0 dB ⇒ 系数 1.0 ⇒ 一位不动）。
+        if let Some(gain) = group.gain()
+            && gain != 1.0
+        {
+            for frame in 0..frames {
+                share.lane_scratch[frame] *= gain;
+                share.lane_scratch_r[frame] *= gain;
             }
         }
         for frame in 0..frames {

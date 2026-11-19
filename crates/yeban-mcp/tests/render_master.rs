@@ -8022,12 +8022,14 @@ fn lane_chain_counts_report_declared_and_unapplied() {
             name: "kick".to_owned(),
             devices: Vec::new(),
             pan: None,
+            gain_db: None,
         },
         LaneChainDef {
             keys: vec![42, 46],
             name: "hats".to_owned(),
             devices: Vec::new(),
             pan: Some(0.25),
+            gain_db: None,
         },
     ];
     with_lanes.validate().expect("带逐件链的夹具必须合法");

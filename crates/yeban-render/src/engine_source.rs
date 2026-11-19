@@ -66,6 +66,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use yeban_dsp::math::db_to_gain;
 use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotError};
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
@@ -411,7 +412,7 @@ impl EngineTimbre {
 
     /// ⭐ 逐件渲染（逐件处理线期 3）：为一条带 `lane_chains` 的轨道武装
     /// 一个**分组源**（[`LaneSplitSource`]：调度表按键组切分、逐组引擎
-    /// 渲染、逐组插入链与组声相、最后按组首键升序＋余量求和）。
+    /// 渲染、逐组插入链与组声相与组增益、最后按组首键升序＋余量求和）。
     ///
     /// `bpm` 只用于 lane 链里乒乓延迟的音符同步换算（与轨链投影同一口径，
     /// 调用方传 `project.bpm`）。
@@ -1021,6 +1022,11 @@ struct LaneGroup {
     /// 组声相增益（`LaneChainDef::pan` 经 [`lane_pan_gains`] 换算；
     /// `None` = 预置未给声相 ⇒ 不乘）。
     pan: Option<(f32, f32)>,
+    /// 组增益线性系数（`LaneChainDef::gain_db` 经
+    /// [`yeban_dsp::math::db_to_gain`] 在构造期换算；`None` = 预置
+    /// 未给增益 ⇒ 不乘）。施加点在组声相之后、求和之前，与组声相
+    /// 同位同序；系数恰为 1.0（0 dB）时一个样本都不碰。
+    gain: Option<f32>,
     /// 本组过滤后的调度表是否有音符。`false` ⇒ 组链**整段不执行**
     /// （设计 §5.1 断言 1：无本组音符时组链不得改动任何样本）。
     has_notes: bool,
@@ -1141,6 +1147,7 @@ impl LaneSplitSource {
                 source,
                 runtime,
                 pan: chain.pan.map(lane_pan_gains),
+                gain: chain.gain_db.map(db_to_gain),
                 has_notes,
                 steals,
             });
@@ -1221,10 +1228,12 @@ impl LaneSplitSource {
     /// `has_notes` 为假 ⇒ 链整段跳过（设计 §5.1 断言 1）。
     /// 组链按 [`L1_BLOCK_SIZE`] 帧分块喂运行态（运行态的内部暂存按
     /// 构造块长分配，块可以更小、⛔ 不能更大）。
+    #[allow(clippy::too_many_arguments)]
     fn render_part(
         source: &mut EngineTrackSource,
         runtime: Option<&mut InsertRuntime>,
         pan: Option<(f32, f32)>,
+        gain: Option<f32>,
         has_notes: bool,
         context: BlockContext,
         buf: &mut [f32],
@@ -1251,6 +1260,19 @@ impl LaneSplitSource {
                 buf[base] *= gain_l;
                 if channels > 1 {
                     buf[base + 1] *= gain_r;
+                }
+            }
+        }
+        // 组增益在组声相之后施加（与键控路 `fill_group_keyed` 同位
+        // 同序）；系数 1.0（未声明或 0 dB）时一个样本都不碰。
+        if let Some(gain) = gain
+            && gain != 1.0
+        {
+            for frame in 0..frames {
+                let base = frame * channels;
+                buf[base] *= gain;
+                if channels > 1 {
+                    buf[base + 1] *= gain;
                 }
             }
         }
@@ -1415,6 +1437,19 @@ fn fill_group_keyed(
             }
         }
     }
+    // 组增益在组声相之后施加（与无键原路 `render_part` 同位同序）；
+    // 系数 1.0（未声明或 0 dB）时一个样本都不碰。
+    if let Some(gain) = group.gain
+        && gain != 1.0
+    {
+        for frame in 0..frames {
+            let base = frame * channels;
+            target[base] *= gain;
+            if channels > 1 {
+                target[base + 1] *= gain;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1476,6 +1511,7 @@ impl AudioSource for LaneSplitSource {
                     &mut group.source,
                     group.runtime.as_mut(),
                     group.pan,
+                    group.gain,
                     group.has_notes,
                     context,
                     &mut self.scratch[..width],
@@ -1488,6 +1524,7 @@ impl AudioSource for LaneSplitSource {
                     &mut group.source,
                     group.runtime.as_mut(),
                     group.pan,
+                    group.gain,
                     group.has_notes,
                     context,
                     &mut out[..width],
@@ -2552,6 +2589,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: vec![lane_strip(&[("output_gain_db", -48.0)])],
             pan: None,
+            gain_db: None,
         }];
         for notes in [&[(0u64, 36u8, 240u64)][..], &[(0, 38, 240)][..]] {
             let (project, track) = lane_project(notes, chains.clone());
@@ -2587,6 +2625,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: vec![lane_strip(&[("output_gain_db", -48.0)])],
             pan: None,
+            gain_db: None,
         }];
         let (project, track) = lane_project(&KIT_NOTES, chains);
         let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
@@ -2636,6 +2675,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: Vec::new(),
             pan: Some(-1.0),
+            gain_db: None,
         }];
         let (project, track) = lane_project(&KIT_NOTES, chains);
         let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
@@ -2660,6 +2700,58 @@ mod tests {
         );
     }
 
+    /// P4 增益判据：hats 组 `gain_db` 的三条性质 —— ① 未声明与 0.0 dB
+    /// 渲染逐位相同（零回归）；② ±6 dB 时 hat 段 RMS 按 dB 量变化
+    /// （容差 0.75 dB：`db_to_gain` 用 2^(dB/6.0206) 近似，与真值差
+    /// <0.01 dB，余量留给求和序浮点）；③ kick / snare 段一位不动
+    /// （增益只作用本组）。
+    #[test]
+    fn a_lane_chain_gain_db_scales_only_its_own_group() {
+        let render_with = |gain_db: Option<f32>| {
+            let chains = vec![LaneChainDef {
+                keys: vec![42, 46],
+                name: "hats".to_owned(),
+                devices: Vec::new(),
+                pan: None,
+                gain_db,
+            }];
+            let (project, track) = lane_project(&KIT_NOTES, chains);
+            let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
+            let mut lane = timbre
+                .lane_track_source(track, &project.tracks[&track].lane_chains, project.bpm)
+                .expect("分组源必须能武装");
+            render_stereo_any(&mut lane, 72_000)
+        };
+        let plain = render_with(None);
+        let zero = render_with(Some(0.0));
+        assert_eq!(plain, zero, "gain_db 0.0 与未声明必须逐位相同");
+        let boosted = render_with(Some(6.0));
+        let cut = render_with(Some(-6.0));
+        for win in [KICK_WIN, SNARE_WIN] {
+            assert_eq!(
+                &plain[win.start * 2..win.end * 2],
+                &boosted[win.start * 2..win.end * 2],
+                "非本组段不得被组增益触碰"
+            );
+            assert_eq!(
+                &plain[win.start * 2..win.end * 2],
+                &cut[win.start * 2..win.end * 2],
+                "非本组段不得被组增益触碰"
+            );
+        }
+        let hat_plain = segment_rms(&plain, HAT_WIN, None);
+        let hat_boost = segment_rms(&boosted, HAT_WIN, None);
+        let hat_cut = segment_rms(&cut, HAT_WIN, None);
+        assert!(hat_plain > 0.001, "hat 段必须有声（实测 {hat_plain:.6}）");
+        let up = db(hat_boost) - db(hat_plain);
+        let down = db(hat_plain) - db(hat_cut);
+        println!(
+            "### [lane-gain] plain={hat_plain:.5} +6dB 实测 {up:.3} dB / -6dB 实测 {down:.3} dB"
+        );
+        assert!((up - 6.0).abs() <= 0.75, "+6 dB 组增益实测 {up:.3} dB");
+        assert!((down - 6.0).abs() <= 0.75, "-6 dB 组增益实测 {down:.3} dB");
+    }
+
     /// §5.1 断言 5（确定性）：同一工程两份分组源渲染摘要一致。
     #[test]
     fn lane_split_rendering_is_deterministic() {
@@ -2668,6 +2760,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: vec![lane_strip(&[("output_gain_db", -6.0), ("hpf_hz", 400.0)])],
             pan: Some(-0.3),
+            gain_db: None,
         }];
         let (project, track) = lane_project(&KIT_NOTES, chains);
         let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
@@ -2697,6 +2790,7 @@ mod tests {
             name: "hats".to_owned(),
             devices: vec![lane_strip(&[("output_gain_db", -6.0)])],
             pan: None,
+            gain_db: None,
         };
         let build = |chains: Vec<LaneChainDef>| {
             let (mut project, track) = lane_project(&notes, chains);

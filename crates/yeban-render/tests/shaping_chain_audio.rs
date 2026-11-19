@@ -328,6 +328,7 @@ fn crusher_on_a_lane_chain_changes_only_that_lanes_region() {
         name: "hats".to_owned(),
         devices,
         pan: None,
+        gain_db: None,
     };
     let (plain_project, track) = project(Vec::new(), vec![hat_chain(Vec::new())]);
     let plain = render(&plain_project, track);
