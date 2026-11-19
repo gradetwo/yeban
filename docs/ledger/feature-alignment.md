@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，97 行）
+# 三方对齐矩阵（系统 / UI / MCP，98 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -31,12 +31,12 @@
   `系统有` 且两侧都暴露 ⇒ **三方齐全**；只有 UI 暴露 ⇒ **系统+UI**；只有 MCP 暴露 ⇒ **系统+MCP**；否则 ⇒ **仅系统**。
 
 - 三方齐全：36 行
-- 系统+UI（MCP 无）：6 行
+- 系统+UI（MCP 无）：7 行
 - 系统+MCP（UI 无）：33 行
 - 仅系统：12 行
 - 仅计划（系统也未实现）：6 行
 - UI 或 MCP 独有（系统没有）：4 行
-- **合计：97 行**
+- **合计：98 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -96,6 +96,7 @@
 | 非容器文件精确拒绝（容器是唯一格式） | 已实现｜app 侧 `OpenError::NotAYebanContainer`（`crates/yeban-app/src/open.rs`）；MCP 侧 `crates/yeban-mcp/src/domain/store.rs:293` 同语义；判据 `store.rs:902`（同一份 JSON 在容器里仍能打开） | 有｜CLI `--open <path>`（`crates/yeban-app/src/cli.rs`，`docs/ledger/app-no-compat-notes.md`） | 有｜`yeban_open_project`（`path`）对非容器返回 `FILE_NOT_FOUND` 或 `IO_ERROR`（`docs/ledger/mcp-no-compat-notes.md` §3） | 状态：三方齐全 |
 | 保存落盘：临时文件 → `fsync` → `rename`，以及 `history.dag` 的内容 | 部分｜原子替换两处都有（`crates/yeban-mcp/src/domain/store.rs:44-46`、`crates/yeban-app/src/save.rs:205`）；但 `history.dag` 由 `yeban_save_project` / `ui/force_save` 写成**空字节**（`docs/ledger/app-mixer-notes.md` §7 #7），权威内容在 `crates/yeban-model/src/commit.rs` | 有｜`ui/force_save`（无参数，`Scope::AppSave`） | 有｜`yeban_save_project`（`force`） | 原因：容器布局要求该条目存在，但提交图谱序列化未被任一入口调用；计划：`yeban-model` 提供 DAG 序列化面，再由两个保存入口同一次接；状态：PENDING |
 
+| 音源库（内置音源目录、在线目录安装·卸载、缺音源引导） | 已实现｜`crates/yeban-app/src/builtin_sounds.rs`（`BuiltinSound` / `load_builtin_sounds` / `community_extras` / `download_builtin`）、`crates/yeban-app/src/sound_library.rs`（`scan_installed` / `parse_catalog` / `fetch_catalog` / `install_pack_archive` / `download_pack` / `delete_library`）、`crates/yeban-app/src/missing_sounds.rs`（`MissingSound` 分析，**只读**：不写工程、不下载、不碰撤销树） | 有｜`crates/yeban-app/ui/dialogs/sound_library_dialog.slint`（`installed-*` / `pack-*` / `catalog-state`）+ 宿主 `publish_sound_catalog`；打开工程时缺音源引导在 `crates/yeban-app/src/main.rs`（摘要「这个工程有 N 条轨的音源没装…，已为你筛出可下载的 M 件，点「下载」即可装上」） | 无｜`grep -rn 'sound_library\|builtin_sound\|missing_sound' crates/yeban-mcp/src` 命中 **0**：没有任何工具能列内置音源、装包或查缺音源 | 原因：安装类操作会写用户磁盘（`download_pack` / `install_pack_archive` / `delete_library`），要进 MCP 面须先经人类裁决（落盘路径与确认语义）；计划：如要脚本化，先出**只读**的「列内置音源」工具（工具名待定，⛔ 现在不发明）；状态：PENDING |
 ## 6. 分组 D —— 自动化
 
 | 功能 | 系统（实现/计划 + 证据） | UI 暴露（有/无 + 载体） | MCP 暴露（有/无 + 工具·参数） | 缺口：原因 / 计划 / 状态 |

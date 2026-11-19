@@ -27,6 +27,7 @@
 | [asset-resolution.md](./asset-resolution.md) | SFZ 采样资源解析规则：`sample=` 相对路径与 `default_path`、`#include` 沙箱、解码与失败记账、渲染时容器池优先于磁盘的候选顺序（逐条带代码出处） |
 | [tool-availability.md](./tool-availability.md) | MCP 工具可用性：形态 A／B 的差异、`yeban-app` 的 feature 门控表、两个依赖宿主 provider 的工具与 `providerUnavailable` 契约、CLI 导出开关与 MCP 工具的对应表 |
 | [cli-reference.md](./cli-reference.md) | **CLI 非导出族**开关的参考：采样切片（`--slice-audio` 族）、样本编辑（`--edit-samples` 族）、旧工程迁移、整曲概览口径、渲染线程、分轨选轨；含退出码与组合规则 |
+| [UX-错误与提醒设计原则.md](./UX-错误与提醒设计原则.md) | 所有面向用户的报错 / 警告 / 提醒 / 状态行的**评审依据**：报错本身不产生价值，让用户点一下把问题解决掉才产生价值；新增一条提示时逐条对照（含「静默失败不许存在」「给动作、不给指令」） |
 | [app-i18n-notes.md](./app-i18n-notes.md) | 九语 i18n 的设计与实施记录：语言清单、单一词表按中文原文精确匹配、运行时切换与持久化优先级、顶栏开关 |
 | [SFZ_SAMPLE_ACQUISITION.md](./SFZ_SAMPLE_ACQUISITION.md) | SFZ 采样**外取**一步到位：登记式素材清单（`repo` + `pin` / `archive.url` + `sha256`）怎么拉、怎么校验、门禁怎么判 |
 | [skeuo-bitwig-palette-20261117.md](./skeuo-bitwig-palette-20261117.md) | 拟物主题对 Bitwig 色板的采样、映射、对比度复核与透叠清点记录（`line/ui-skeuo-palette`） |
@@ -45,7 +46,7 @@
 | [ledger/legacy-reuse-audit.md](./ledger/legacy-reuse-audit.md) | 对 `groove` / `synth` 两个历史代码库的复用审计（结论 + 许可风险） |
 | [ledger/gate-status.md](./ledger/gate-status.md) | **"现在到底什么算绿"的唯一去处**：`MUST-GATE-001..015` 与 `BASELINE-001..006` 逐条给出状态 + 可复跑证据 + 还差什么。由 `scripts/gates/check_gate_status.py` 机械守卫 |
 | [ledger/phase-status.md](./ledger/phase-status.md) | **"每个阶段项做没做完"的唯一去处**：`ROAD-M-1-001..ROAD-M4-011`（47 项）逐条给出状态（已完成 / 部分 / PENDING）+ 可复跑证据 + 还缺哪一部分，并给逐阶段汇总计数。由 `scripts/gates/check_phase_status.py` 机械守卫 |
-| [ledger/feature-alignment.md](./ledger/feature-alignment.md) | **"三方暴露对齐"的唯一去处**：97 行功能逐个给出「系统（实现/计划 + crate·文件·规范 ID）/ UI（有/无 + 元素 ID·`.slint`·`ui/*` 方法）/ MCP（有/无 + 工具名·参数名）/ 缺口（原因 / 计划 / 状态）」＋六类对齐汇总，以及建表时发现的**具体错位**（有能力零调用者、假阻塞、零消费者、回调未接线）。由 `scripts/gates/check_feature_alignment.py` 机械守卫 |
+| [ledger/feature-alignment.md](./ledger/feature-alignment.md) | **"三方暴露对齐"的唯一去处**：98 行功能逐个给出「系统（实现/计划 + crate·文件·规范 ID）/ UI（有/无 + 元素 ID·`.slint`·`ui/*` 方法）/ MCP（有/无 + 工具名·参数名）/ 缺口（原因 / 计划 / 状态）」＋六类对齐汇总，以及建表时发现的**具体错位**（有能力零调用者、假阻塞、零消费者、回调未接线）。由 `scripts/gates/check_feature_alignment.py` 机械守卫 |
 | [ledger/human-decisions.md](./ledger/human-decisions.md) | **需要人类裁决的唯一入口**：`HD-01..HD-72`，每项含选项 / 建议 / 不决定的后果（含"当前处置"，因此不构成单点阻塞）。由 `scripts/gates/check_decisions.py` 机械守卫 |
 | [ledger/](./ledger) | 各工作线的实测台账（`*-notes.md`）：上游 API 核验、口径表、注入→变红记录、本机 vs CI 的分界、pending/needs |
 
