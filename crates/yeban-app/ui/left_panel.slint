@@ -213,9 +213,16 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         }
 
         // TAB 1: DUAL INSPECTOR
-        if root.active-tab == "inspector" : insp_flick := Flickable {
+        // ⭐ 外层套一个 host：滚动条要**钉在视口上**（不能跟着内容一起滚），
+        //   又在 VerticalLayout 里没法绝对定位，所以用「host 包住 Flickable + 条做兄弟」。
+        if root.active-tab == "inspector" : insp_host := Rectangle {
             vertical-stretch: 1;
             min-height: 120px;
+            clip: true;
+
+            insp_flick := Flickable {
+            width: insp_host.width;
+            height: insp_host.height;
             content-width: self.width;
             content-height: Math.max(self.height, insp_body.preferred-height);
 
@@ -1263,6 +1270,41 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     }
                 }
             }
+            }
+            }
+
+            // ⭐ 检查器纵向滚动指示：与编曲区同一条思路 —— 只在「内容高于视口」时出现，
+            // 1080 高度下装得下 ⇒ 不新增任何像素。
+            //   背景：`insp_flick` 早就能滚（见上面的 `content-height`），但窄窗里没有任何
+            //   视觉提示，创作者只看到 `TRACK` 之后被切掉一半，以为「CHANNEL STRIP 根本没有」。
+            // ⚠ 判据必须是 `insp_body.preferred-height`（真内容高），⛔ 不能用 `content-height`：
+            //   后者写成 `Math.max(self.height, …)`，恒 >= 视口高，判据会恒真。
+            insp_sb := Rectangle {
+                visible: insp_body.preferred-height > insp_flick.height + 1px;
+                x: insp_host.width - 11px;
+                y: 4px;
+                width: 4px;
+                height: insp_host.height - 8px;
+                border-radius: 2px;
+                background: #2b3140;
+
+                property <length> thumb-h: Math.min(
+                    insp_sb.height,
+                    Math.max(
+                        (insp_sb.height * insp_sb.height) / max(1px, insp_body.preferred-height)
+                    )
+                );
+                Rectangle {
+                    width: insp_sb.width;
+                    height: insp_sb.thumb-h;
+                    // 滚动位移取反：`content-y`（旧名 `viewport-y`）向下滚为负值。
+                    y: Math.min(
+                        insp_sb.height - insp_sb.thumb-h,
+                        Math.max(0px, (0px - insp_flick.content-y) * (insp_sb.height / max(1px, insp_body.preferred-height)))
+                    );
+                    border-radius: 2px;
+                    background: #404c5f;
+                }
             }
         }
 
