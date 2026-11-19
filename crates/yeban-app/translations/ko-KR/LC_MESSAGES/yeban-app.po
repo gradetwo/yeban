@@ -1953,6 +1953,8 @@ msgstr "사운드 팩 다운로드"
 
 msgid "重试"
 msgstr "다시 시도"
+msgid "再试一次"
+msgstr "다시 시도"
 
 msgid "正在获取目录..."
 msgstr "카탈로그를 가져오는 중..."

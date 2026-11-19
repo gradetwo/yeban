@@ -1953,6 +1953,8 @@ msgstr "Download sound pack"
 
 msgid "重试"
 msgstr "Retry"
+msgid "再试一次"
+msgstr "Try again"
 
 msgid "正在获取目录..."
 msgstr "Fetching catalog..."

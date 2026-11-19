@@ -1953,6 +1953,8 @@ msgstr "Télécharger le pack de sons"
 
 msgid "重试"
 msgstr "Réessayer"
+msgid "再试一次"
+msgstr "Réessayer"
 
 msgid "正在获取目录..."
 msgstr "Récupération du catalogue..."

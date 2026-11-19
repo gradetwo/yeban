@@ -1953,6 +1953,8 @@ msgstr "Descargar paquete de sonidos"
 
 msgid "重试"
 msgstr "Reintentar"
+msgid "再试一次"
+msgstr "Reintentar"
 
 msgid "正在获取目录..."
 msgstr "Obteniendo el catálogo..."
