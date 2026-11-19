@@ -11,6 +11,7 @@
 //! （`port.project()`），本地 `project` 只是它的镜像。保存时把提交图谱写回
 //! 归档的 `history.dag`，重开后历史可恢复（`session_from_archive`）。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,6 +24,7 @@ use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
 use yeban_engine::ring::TransportCommand;
 use yeban_engine::transport::{TransportReading, TransportState};
+use yeban_model::AssetHash;
 use yeban_model::container::ProjectArchive;
 use yeban_model::ids::EntityId;
 use yeban_model::music::MidiNote;
@@ -139,6 +141,8 @@ pub struct App {
     pub quit: bool,
     /// 上次导出证据。
     pub last_export: Option<ExportReceipt>,
+    /// 已播报过的音频注入修订（避免每跳重复刷日志）。
+    audio_revision: u64,
 }
 
 impl App {
@@ -201,9 +205,15 @@ impl App {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<demo>".to_owned());
         let session = yeban_app::undo::session_from_archive(&source, &archive, now_ms())?;
+        // ⭐ 音频片段必须拿得到**字节**：TUI 独占终端时静默引擎诊断，由日志行统一播报。
+        let asset_bytes: BTreeMap<AssetHash, Vec<u8>> = archive.assets.iter().cloned().collect();
         let port = Rc::new(UndoPort::new(session));
         let project = port.project();
         let mut host = EngineHost::new();
+        host.set_quiet_diagnostics(true);
+        host.set_audio_asset_source(Box::new(move |hash: &AssetHash| {
+            asset_bytes.get(hash).cloned()
+        }));
         if let Some(dir) = project_path.as_deref().and_then(Path::parent) {
             host.set_project_dir(Some(dir.to_path_buf()));
         }
@@ -240,8 +250,10 @@ impl App {
             master_peak: 0.0,
             quit: false,
             last_export: None,
+            audio_revision: 0,
         };
         app.refresh_track_ids();
+        app.report_audio_issues();
         app.log_line(format!(
             "已载入「{}」（{} 轨，{:.0} BPM）",
             app.project.title,
@@ -259,6 +271,13 @@ impl App {
     #[must_use]
     pub fn transport(&self) -> TransportReading {
         self.host.transport()
+    }
+
+    /// 音频注入读数：(注入素材数, 跳过数)。判据入口，界面不直接消费。
+    #[must_use]
+    pub fn audio_injection_counts(&self) -> (usize, usize) {
+        let report = self.host.audio_clip_report();
+        (report.injected_assets, report.skipped.len())
     }
 
     /// 是否播放中。
@@ -345,6 +364,7 @@ impl App {
     /// 墙钟泵送 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
     pub fn tick(&mut self) {
         self.host.pump_wall_clock();
+        self.report_audio_issues();
         if let Some(collector) = &mut self.collector {
             let mut scratch = vec![MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
@@ -358,6 +378,27 @@ impl App {
                 self.master_peak *= 0.92;
             }
         }
+    }
+
+    /// 把引擎的音频注入读数收成**一条**日志（只在修订变化且确有跳过时说话）。
+    fn report_audio_issues(&mut self) {
+        let revision = self.host.audio_clip_report().revision;
+        if revision == self.audio_revision {
+            return;
+        }
+        self.audio_revision = revision;
+        let (injected, skipped) = {
+            let report = self.host.audio_clip_report();
+            (report.injected_assets, report.skipped.clone())
+        };
+        if skipped.is_empty() {
+            return;
+        }
+        let mut line = format!("音频片段：注入 {injected} 个 / 跳过 {} 个", skipped.len());
+        for skip in &skipped {
+            line.push_str(&format!("；{}：{}", skip.asset, skip.reason));
+        }
+        self.log_line(line);
     }
 
     // ------------------------------------------------------------------
@@ -1053,11 +1094,20 @@ impl App {
 
     /// 定位播放头到第 `bar` 小节（0 起；走带状态，非文档编辑，不进撤销史）。
     pub fn seek_to_bar(&mut self, bar: usize) {
-        let ticks = u64::try_from(bar).unwrap_or(0) * self.bar_ticks();
+        let total = self.total_bars();
+        let clamped = bar.min(total.saturating_sub(1));
+        let ticks = u64::try_from(clamped).unwrap_or(0) * self.bar_ticks();
         self.host
             .send_transport(&[TransportCommand::SeekTicks(ticks)]);
-        self.cursor_bar = bar;
-        self.log_line(format!("定位到第 {} 小节", bar + 1));
+        self.cursor_bar = clamped;
+        if clamped == bar {
+            self.log_line(format!("定位到第 {} 小节", clamped + 1));
+        } else {
+            self.log_line(format!(
+                "工程只有 {total} 小节，已定位到第 {} 小节",
+                clamped + 1
+            ));
+        }
     }
 
     /// 设工程速度（BPM）：走 `Op::SetTempo`，可撤销。
@@ -1142,6 +1192,15 @@ impl App {
     /// # Errors
     /// 渲染或写盘失败时返回错误文本。
     pub fn export_wav(&mut self, path: &Path) -> Result<ExportReceipt, String> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.is_dir()
+        {
+            return Err(format!(
+                "写 WAV 失败：目录不存在 `{}`（先创建目录，或换一个已存在的路径）",
+                parent.display()
+            ));
+        }
         let sample_rate = sample_rate_hz(self.project.audio_config.sample_rate);
         let seconds = self.project_len_ticks() as f64 / self.ticks_per_beat().max(1) as f64 * 60.0
             / self.project.bpm.max(1.0);
@@ -1317,6 +1376,11 @@ impl App {
             if ch == 'n' && self.focus == Pane::Grid && self.list_view.is_none() {
                 self.vi.reset();
                 self.open_notes_view();
+                return;
+            }
+            if ch == 'n' && self.focus != Pane::Grid && self.list_view.is_none() {
+                self.vi.reset();
+                self.log_line("先 Tab 到片段网格，再按 n 开音符视图".to_owned());
                 return;
             }
             // 片段网格焦点下的片段平移键（TUI 自加）：`H`/`L` 按小节平移
@@ -1541,6 +1605,7 @@ impl App {
             self.rename = Some(entry.name.clone());
             self.rename_target = Some(RenameTarget::Clip(placement.clip_id));
             self.mode = Mode::Insert;
+            self.log_line("改名中：Ctrl+U 清空 · Enter 提交 · Esc 取消".to_owned());
             return;
         }
         let Some(id) = self.selected_track_id() else {
@@ -1550,6 +1615,7 @@ impl App {
             self.rename = Some(track.name.clone());
             self.rename_target = Some(RenameTarget::Track(id));
             self.mode = Mode::Insert;
+            self.log_line("改名中：Ctrl+U 清空 · Enter 提交 · Esc 取消".to_owned());
         }
     }
 
@@ -1611,6 +1677,11 @@ impl App {
             KeyCode::Backspace => {
                 if let Some(buffer) = &mut self.rename {
                     buffer.pop();
+                }
+            }
+            KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(buffer) = &mut self.rename {
+                    buffer.clear();
                 }
             }
             KeyCode::Char(ch) => {
@@ -1714,8 +1785,13 @@ impl App {
             "tempo" => {
                 // :tempo <bpm> —— 设工程速度（经撤销端口提交，可撤销）。
                 match rest.parse::<f64>() {
-                    Ok(bpm) if bpm > 0.0 => self.set_tempo(bpm),
-                    _ => self.log_line("用法：:tempo <BPM>".to_owned()),
+                    Ok(bpm) if (20.0..=300.0).contains(&bpm) => self.set_tempo(bpm),
+                    Ok(bpm) => self.log_line(format!(
+                        "BPM {bpm:.1} 超出范围（合法 20–300，例如 :tempo 140）"
+                    )),
+                    Err(_) => self.log_line(
+                        "用法：:tempo <BPM>（合法范围 20–300，例如 :tempo 140）".to_owned(),
+                    ),
                 }
             }
             "stop" => self.stop(),
@@ -1730,11 +1806,20 @@ impl App {
             }
             "export" => {
                 // 形态：export wav <path> 或 export <path>（默认 wav）。
-                let target = rest.strip_prefix("wav ").map(str::trim).unwrap_or(rest);
-                if target.is_empty() {
-                    self.log_line("用法：:export wav <path>".to_owned());
-                } else if let Err(error) = self.export_wav(Path::new(target)) {
-                    self.log_line(error);
+                // ⚠ `:export wav`（不带路径）必须报用法，⛔ 不能把 "wav" 当文件名写盘。
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let target = match words.as_slice() {
+                    ["wav"] | [] => None,
+                    ["wav", path] | [path] => Some(*path),
+                    _ => None,
+                };
+                match target {
+                    None => self.log_line("用法：:export wav <path>".to_owned()),
+                    Some(target) => {
+                        if let Err(error) = self.export_wav(Path::new(target)) {
+                            self.log_line(error);
+                        }
+                    }
                 }
             }
             "open" => {

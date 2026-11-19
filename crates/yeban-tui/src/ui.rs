@@ -569,7 +569,7 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         Mode::Insert => Line::from(Span::styled(
             format!(
-                "-- INSERT 改名中：{}▌ · Enter 提交 · Esc 取消 --",
+                "-- INSERT 改名中：{}▌ · Ctrl+U 清空 · Enter 提交 · Esc 取消 --",
                 app.rename.as_deref().unwrap_or_default()
             ),
             Style::default().fg(theme::RECORD_RED),
@@ -587,7 +587,7 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     "-- 片段池 -- j/k 选 · Del 删条目（被引用会被模型拒绝） · Esc 返回{count}"
                 ),
                 None => format!(
-                    "-- NORMAL -- 焦点 {} ·{}{} · Space 播放 · M 静音 · S 独奏 · : 命令 · i 改名",
+                    "-- NORMAL -- 焦点 {} ·{}{} · Space 播放 · M 静音 · S 独奏 · : 命令 · i 改名 · n 音符",
                     app.focus.label(),
                     app.selected_track_name().unwrap_or_default(),
                     count

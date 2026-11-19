@@ -945,6 +945,8 @@ pub struct EngineHost {
     audio_cache: AudioPcmCache,
     /// ⭐ **最近一次注入的读数**（注入几个素材 / 每个的 `frames` / 跳过原因）。
     audio_report: AudioClipReport,
+    /// **诊断静默**：`true` 时不写 stdout/stderr（TUI 等独占终端的消费者接管后必须置位）。
+    quiet_diagnostics: bool,
 }
 
 /// 手写 `Debug`：`EngineRuntime` / `SnapshotSlot` 刻意没有 `Debug`（它们持有裸指针与
@@ -1159,6 +1161,14 @@ impl EngineHost {
         &self.audio_report
     }
 
+    /// 打开/关闭诊断输出（默认关闭静默，保持既有 CLI 行为）。
+    ///
+    /// ⚠ TUI/GUI 这类**独占终端或窗口**的消费者：置 `true`，改由自己的日志行展示
+    /// [`Self::audio_clip_report`]，否则 `eprintln!` 会直接撕碎整屏。
+    pub fn set_quiet_diagnostics(&mut self, quiet: bool) {
+        self.quiet_diagnostics = quiet;
+    }
+
     /// 音频解码缓存的读数（`decodes` / `hits` / 回收与上限计数）。
     #[must_use]
     pub fn audio_cache_readings(&self) -> AudioCacheReadings {
@@ -1261,7 +1271,7 @@ impl EngineHost {
             }
         }
         report.cache = self.audio_cache.readings();
-        if !report.is_empty() {
+        if !report.is_empty() && !self.quiet_diagnostics {
             // ⛔ 不静默：一行摘要 ＋ 逐素材读数 ＋ 逐跳过原因（逐字文本）。
             eprintln!("[yeban-app] {}", report.summary());
             for line in report.asset_lines() {
