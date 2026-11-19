@@ -1326,6 +1326,9 @@ impl EngineHost {
             .iter()
             .map(|(track, plan)| (*track, plan.clone()))
             .collect();
+        // ⭐ `ADR-0077` D8：轨号与采样率也抄一份（槽预占要用；`snapshot` 马上移进槽）。
+        let track_ids: Vec<yeban_model::EntityId> = snapshot.tracks().keys().copied().collect();
+        let sample_rate = snapshot.sample_rate();
         let slot = SnapshotSlot::new(snapshot);
         let FreshRuntime {
             mut runtime,
@@ -1335,6 +1338,11 @@ impl EngineHost {
             stats_mirror,
             collector,
         } = fresh_runtime(&slot);
+        // ① 先在控制线程**预占**每条轨的槽（`TrackSlot::empty` 零分配，但落在快照
+        //    边界就晚了）；② 再预热总线 ⇒ 音频回调里"建槽"与"建总线"都不再发生。
+        for track in &track_ids {
+            runtime.reserve_sfx_slot(sample_rate, *track);
+        }
         for (track, plan) in &sfz_warm {
             runtime.warm_sfz_buses(*track, plan.prepared(), DEFAULT_BLOCK_FRAMES);
         }
@@ -1581,9 +1589,14 @@ impl EngineHost {
             .iter()
             .map(|(track, plan)| (*track, plan.clone()))
             .collect();
+        let track_ids: Vec<yeban_model::EntityId> = snapshot.tracks().keys().copied().collect();
+        let sample_rate = snapshot.sample_rate();
         // 复用槽自己的写者路径（`publish` 就是本函数的包装）。
         slot.publish_arc(std::sync::Arc::new(snapshot));
         if let Some(runtime) = self.runtime.as_deref_mut() {
+            for track in &track_ids {
+                runtime.reserve_sfx_slot(sample_rate, *track);
+            }
             for (track, plan) in &sfz_warm {
                 runtime.warm_sfz_buses(*track, plan.prepared(), DEFAULT_BLOCK_FRAMES);
             }

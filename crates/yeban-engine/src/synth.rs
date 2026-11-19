@@ -1574,8 +1574,55 @@ impl SynthEngine {
     ///
     /// ⚠ 没有该轨的槽（快照还没建槽）⇒ **什么都不做**（不是错：下一块会用
     /// 兜底路径建，代价是一次分配）。
+    /// ⭐ 控制线程**预占**一条轨的槽（`ADR-0077` D8 的"绑定期分配"清零）。
+    ///
+    /// 与 [`Self::begin_snapshot`] 的槽位分配循环**同一条口径**（占第一个空槽、
+    /// `assigned = true`、`id` 写入、`live_position` 对齐当前播放头），但**只**
+    /// 建槽：⛔ 不碰其它槽的 `present`／音色／鼓机武装。`present` 仍为 `false`
+    /// ⇒ 真快照到达前这个槽**不会出声**。
+    ///
+    /// 为什么需要它：`TrackSlot::empty` 本身零分配，但落在**快照边界**（音频
+    /// 线程）⇒ 总线预热没有可挂的槽。先在控制线程占好槽，再`warm_sfz_buses`，
+    /// 音频回调里就没有"第一次分配"了。
+    ///
+    /// 已经有该轨的槽 ⇒ **严格空操作**（可重复调用）。
+    pub fn reserve_track_slot(&mut self, sample_rate: u32, track: EntityId) {
+        if self.reserved_slot_index(track).is_some() {
+            return;
+        }
+        let free = self.slots.iter().position(|slot| !slot.assigned);
+        if let Some(index) = free {
+            self.slots[index] = TrackSlot::empty(sample_rate);
+            self.slots[index].assigned = true;
+            self.slots[index].id = track;
+            self.slots[index].live_position = self.position;
+        }
+    }
+
+    /// 某轨的 SFZ 总线构造次数（`None` ＝ 还没有该轨的槽）。
+    ///
+    /// ⚠ 与 [`Self::slot_index`] 的区别：**不要求 `present`** —— 预占的槽
+    /// （`present == false`，见 [`Self::reserve_track_slot`]）也要读得到，
+    /// 否则"预热是否命中"这条判据没法闭合。
+    #[must_use]
+    pub fn sfz_bus_builds(&self, track: EntityId) -> Option<u64> {
+        self.reserved_slot_index(track)
+            .map(|index| self.slots[index].sfz.bus_builds())
+    }
+
+    /// 按"已分配 ＋ 轨号"找槽（**不看 `present`**）：预占/预热用。
+    fn reserved_slot_index(&self, track: EntityId) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| slot.assigned && slot.id == track)
+    }
+
+    /// ⭐ 控制线程预热某轨的 SFZ 效果总线（`ADR-0077` D5/D8）。
+    ///
+    /// 传 `frames` 为上界块长（引擎是 [`crate::block::DEFAULT_BLOCK_FRAMES`]）。
+    /// 先 [`Self::reserve_track_slot`] 再调本函数 ⇒ 音频回调里不再有第一次分配。
     pub fn warm_sfz_buses(&mut self, track: EntityId, plan: &PreparedSfz, frames: usize) {
-        if let Some(index) = self.slot_index(track) {
+        if let Some(index) = self.reserved_slot_index(track) {
             self.slots[index].sfz.warm_buses(plan, frames);
         }
     }

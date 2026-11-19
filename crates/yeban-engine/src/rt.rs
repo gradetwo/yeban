@@ -4055,6 +4055,20 @@ impl EngineRuntime {
     /// **更省**、⛔ 不是更费。
     /// 代价是构造期多一次 `size_of::<Self>()` 的堆分配（本函数本来就在构造期大量分配：
     /// 卷积混响池一处就是 ≈ 4.8 MiB）—— 这条差别写在提交信息与报告里。
+    /// ⭐ 控制线程**预占**一条轨的槽（转发给 [`SynthEngine::reserve_track_slot`]）。
+    ///
+    /// 宿主在发布快照后、播放前对每条轨调用一次，再 `warm_sfz_buses`
+    /// ⇒ 音频回调里连"建槽"与"建总线"都不再发生。见 `ADR-0077` D8。
+    pub fn reserve_sfx_slot(&mut self, sample_rate: u32, track: EntityId) {
+        self.synth.reserve_track_slot(sample_rate, track);
+    }
+
+    /// 某轨的 SFZ 总线构造次数（判据读数；`None` ＝ 还没有该轨的槽）。
+    #[must_use]
+    pub fn sfz_bus_builds(&self, track: EntityId) -> Option<u64> {
+        self.synth.sfz_bus_builds(track)
+    }
+
     /// ⭐ 控制线程预热某轨的 SFZ 效果总线（转发给 [`SynthEngine::warm_sfz_buses`]）。
     ///
     /// 宿主在发布快照后、播放前调用；`frames` 传上界块长。见 `ADR-0077` D5/D8。

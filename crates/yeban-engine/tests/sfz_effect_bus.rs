@@ -189,3 +189,105 @@ fn steady_state_rendering_never_rebuilds_the_bus() {
         "稳态渲染必须**零重建**（重建 ＝ 在回调里分配，违 [MUST-GATE-001]）"
     );
 }
+
+/// SFX-8：**立体声腿目前不接总线**（已登记的缺口，⛔ 不是功能）。
+///
+/// # 为什么要钉一个"没接线"的判据
+///
+/// `ADR-0077` D6 只把总线接在**单声道主路**：立体声腿的源侧声相已经分声道，
+/// "两声道如何归约进单声道总线"要先定口径。缺一个判据，这条缺口会在后续
+/// 改动里**静默地**变化（要么悄悄接上、要么悄悄变成半接线），而台账读不出来。
+///
+/// 判定量：同一份带 `effect1=100` 的乐器，立体声腿的输出与不带 `<effect>` 的
+/// **逐位相同**；正对照（单声道主路）尾巴可闻（SFX-2 已钉）。
+#[test]
+fn the_stereo_leg_stays_dry_by_design() {
+    let plain = prepare("<region> sample=a.wav lokey=60 hikey=60");
+    let wet_plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut left_a = vec![0.0f32; 16 * BLOCK];
+    let mut right_a = vec![0.0f32; 16 * BLOCK];
+    let mut left_b = vec![0.0f32; 16 * BLOCK];
+    let mut right_b = vec![0.0f32; 16 * BLOCK];
+    for (plan, left, right) in [
+        (&plain, &mut left_a, &mut right_a),
+        (&wet_plan, &mut left_b, &mut right_b),
+    ] {
+        let mut pool = SfzVoicePool::new(HZ);
+        pool.warm_buses(plan, BLOCK);
+        assert_eq!(pool.trigger_note(plan, 60, 100, 12_000, 1.0, None), 1);
+        for block in 0..16 {
+            let start = block * BLOCK;
+            pool.render_into_stereo_with_probes(
+                plan,
+                start as u64,
+                &mut left[start..start + BLOCK],
+                &mut right[start..start + BLOCK],
+                None,
+                None,
+            );
+        }
+    }
+    let bits = |samples: &[f32]| samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(&left_a),
+        bits(&left_b),
+        "左声道：立体声腿必须仍是纯干声"
+    );
+    assert_eq!(
+        bits(&right_a),
+        bits(&right_b),
+        "右声道：立体声腿必须仍是纯干声"
+    );
+}
+
+/// SFX-9（`ADR-0077` D8 的"绑定期分配"清零）：**控制侧预占槽 ＋ 预热**之后，
+/// 快照边界的建槽不再发生、总线也不再重建。
+///
+/// # 判定量
+///
+/// * 正腿：`reserve_track_slot` → `warm_sfz_buses` ⇒ `sfz_bus_builds` 在
+///   **渲染之前**就是 `Some(1)`（证明预热真的挂到了槽上，⛔ 不是空操作）；
+/// * 判据腿：随后 `begin_snapshot` ＋ 80 块渲染，读数**仍为 1**（零重建）；
+/// * 反腿：不预占直接预热 ⇒ 读数 `None`（旧路径的空操作，证明仪器能区分两者）。
+#[test]
+fn reserved_slots_keep_the_bus_from_being_built_on_the_audio_thread() {
+    use yeban_engine::synth::SynthEngine;
+    use yeban_model::EntityId;
+
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let track = EntityId::new();
+
+    // 反腿：没有槽 ⇒ 预热无处可挂（读数 `None`）。
+    let mut lazy = SynthEngine::new(48_000);
+    lazy.warm_sfz_buses(track, &plan, BLOCK);
+    assert_eq!(
+        lazy.sfz_bus_builds(track),
+        None,
+        "没有预占槽时预热必须是空操作（否则说明它在偷偷建槽）"
+    );
+
+    // 正腿 ＋ 判据腿。
+    let mut engine = SynthEngine::new(48_000);
+    engine.reserve_track_slot(48_000, track);
+    engine.warm_sfz_buses(track, &plan, BLOCK);
+    assert_eq!(
+        engine.sfz_bus_builds(track),
+        Some(1),
+        "预占 ＋ 预热之后，渲染之前总线就该已经建好"
+    );
+    engine.begin_snapshot(48_000, std::slice::from_ref(&track), [], []);
+    for block in 0..80 {
+        let mut out = vec![0.0f32; BLOCK];
+        engine.render_track(track, None, Some(&plan), &mut out);
+        let _ = block;
+    }
+    assert_eq!(
+        engine.sfz_bus_builds(track),
+        Some(1),
+        "快照边界必须复用预占的槽 ⇒ 80 块里零重建"
+    );
+}
