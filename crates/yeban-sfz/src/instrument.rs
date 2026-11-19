@@ -124,13 +124,14 @@ impl PlayDirection {
 /// `bpf_2p_sv` / `brf_2p_sv` / `pkf_2p` / `lpf_4p` / `hpf_4p` / `lpf_6p` /
 /// `hpf_6p` / `comb` / `pink`；ARIA 追加 `lsh` / `hsh` / `peq`。
 ///
-/// ⭐ **本仓实现子集（10 个）**：v1 六个 ＋ v2 的 `lpf_4p` / `hpf_4p` /
-/// `lpf_6p` / `hpf_6p`（RBJ 双二阶节级联，见 `yeban-dsp` 的 `VoiceFilter`）。
+/// ⭐ **本仓实现子集（11 个）**：v1 六个 ＋ v2 的 `lpf_4p` / `hpf_4p` /
+/// `lpf_6p` / `hpf_6p`（RBJ 双二阶节级联，见 `yeban-dsp` 的 `VoiceFilter`）
+/// ＋ `apf_1p`（一阶全通，2026-11-19 补：幅度平坦、只改相位）。
 /// 其余规范值**响亮报错**（[`SfzError::InvalidOption`]），⛔ 不静默替换成近似
 /// 类型：`*_sv` 是状态变量拓扑（与 RBJ 的相位/谐振行为不同，另立项）、
 /// `pkf_2p` / `lsh` / `hsh` / `peq` 依赖 `fil_gain`（不在滤波静态族一期
-/// 范围）、`comb` / `pink` 不是截止频率型滤波、`bpf_1p` / `brf_1p` /
-/// `apf_1p` 语料罕见（另立项）。
+/// 范围）、`comb` / `pink` 不是截止频率型滤波、`bpf_1p` / `brf_1p`
+/// 语料罕见（另立项）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterType {
     /// `lpf_1p`：一阶低通（单极点 RC 形）。
@@ -153,6 +154,14 @@ pub enum FilterType {
     Lowpass6p,
     /// `hpf_6p`：六阶高通（三节 RBJ 级联）。
     Highpass6p,
+    /// ⭐ `apf_1p`：一阶全通（SFZ v2 选项；幅度恒 0 dB、只改相位）。
+    ///
+    /// 落点是 `yeban-dsp::voice_filter::VoiceFilterKind::Allpass1p`：
+    /// `H(z) = (a + z⁻¹)/(1 + a z⁻¹)`，`a = (tan(π fc / sr) − 1)/(tan(π fc / sr) + 1)`
+    /// （一阶全通的标准形态，与 SFZ 规范"allpass"一致：规范只给类型名与
+    /// 白名单，不给系数设计 ⇒ 系数是实现口径，本仓明记）。
+    /// `resonance` 对一阶全通无意义（没有峰），与 1p 低通/高通同口径忽略。
+    Allpass1p,
 }
 
 impl FilterType {
@@ -168,12 +177,13 @@ impl FilterType {
         ("hpf_4p", FilterType::Highpass4p),
         ("lpf_6p", FilterType::Lowpass6p),
         ("hpf_6p", FilterType::Highpass6p),
+        ("apf_1p", FilterType::Allpass1p),
     ];
 
     /// 用于错误信息的允许值列表（**只列本仓实现的子集**：未实现值与
     /// 未知值同样报错，差别只在调用方查文档时的登记说明，见枚举文档）。
     pub const ALLOWED: &'static str =
-        "lpf_1p, hpf_1p, lpf_2p, hpf_2p, bpf_2p, brf_2p, lpf_4p, hpf_4p, lpf_6p, hpf_6p";
+        "lpf_1p, hpf_1p, lpf_2p, hpf_2p, bpf_2p, brf_2p, lpf_4p, hpf_4p, lpf_6p, hpf_6p, apf_1p";
 }
 
 /// region 收到的 MIDI 事件：`trigger` 门控的**事件口径**。
@@ -9163,7 +9173,22 @@ v127=1
         assert_eq!(first.midi_sections().len(), 1, "midi sections");
         assert_eq!(first.cc_labels().len(), 1, "control label_ccN");
         assert_eq!(first.cc_defaults().len(), 1, "control set_ccN");
-        assert!(first.warnings().is_empty(), "the corpus is well formed");
+        // ⭐ 2026-11-19：语料里那条 `<effect>` 声明现在**必然**产一条"未处理"告警
+        // （DSP 未实现的响亮提示）；除此之外语料仍然干净。
+        assert_eq!(
+            first.warnings().len(),
+            1,
+            "the corpus is well formed apart from the declared <effect>: {:?}",
+            first.warnings()
+        );
+        assert!(
+            matches!(
+                first.warnings()[0],
+                crate::parser::Warning::EffectNotProcessed { .. }
+            ),
+            "唯一的告警必须是 EffectNotProcessed，实得 {:?}",
+            first.warnings()[0]
+        );
 
         assert_eq!(
             first, second,
@@ -9702,6 +9727,9 @@ v127=1
             "<region>sample=a.wav resonance=40 fil_keytrack=1200 fil_veltrack=9600",
             "<region>sample=a.wav fil_veltrack=-9600 fil_keycenter=0",
             "<region>sample=a.wav fil_type=lpf_6p cutoff=0.5",
+            // ⭐ 2026-11-19：`apf_1p` 进白名单后同样是合法值（此前被响亮拒绝）。
+            "<region>sample=a.wav fil_type=apf_1p cutoff=1000",
+            "<region>sample=a.wav fil_type=APF_1P cutoff=1000",
         ] {
             assert!(
                 parse_text(text, &Default::default()).is_ok(),
@@ -10457,7 +10485,16 @@ v127=1
             whole.cc_labels().get(&1).map(|label| label.as_ref()),
             Some("Volume")
         );
-        assert!(whole.warnings().is_empty(), "{:?}", whole.warnings());
+        // ⭐ 2026-11-19：同上 —— 唯一的告警是 `<effect>` 的"未处理"提示。
+        assert_eq!(whole.warnings().len(), 1, "{:?}", whole.warnings());
+        assert!(
+            matches!(
+                whole.warnings()[0],
+                crate::parser::Warning::EffectNotProcessed { .. }
+            ),
+            "唯一的告警必须是 EffectNotProcessed，实得 {:?}",
+            whole.warnings()[0]
+        );
     }
 
     #[test]

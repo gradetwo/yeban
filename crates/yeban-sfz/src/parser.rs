@@ -60,7 +60,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::curve::{Curve, CurvePoint};
-use crate::effect::{Effect, EffectBuilder};
+use crate::effect::{Effect, EffectBuilder, EffectBus};
 use crate::error::SfzError;
 use crate::instrument::{Instrument, Region, RegionShift, build_region};
 use crate::midi::{MidiOpcode, MidiSection};
@@ -484,6 +484,25 @@ pub enum Warning {
         /// 被丢弃的**实质**告警条数（累计）。
         dropped: usize,
     },
+    /// ⭐ `<effect>` 段声明了一条效果器，但本仓**没有对应的 DSP**（只登记、不处理）。
+    ///
+    /// 这是"静默降级"的反面：规范原文（<https://sfzformat.com/headers/effect/>）
+    /// "The specifics of what can be used under this header differ widely between
+    /// SFZ players." ⇒ 不实现具体效果器是**合规的裁决**，但**不得静默** ——
+    /// 用户必须能从装载报告里读到"这个 patch 声明了 N 个效果器，本机不处理"，
+    /// 才能判断"听起来干"是缺件而不是自己写错了 patch。
+    ///
+    /// 与 [`Warning::IgnoredHeader`] 的分工：`<effect>` 段**是**被登记下来的
+    /// （`Instrument::effects()` 能读到 `bus` / `type` / `dsp_order`），只是没有
+    /// 消费 DSP；因此不是"忽略段头"，而是"登记但未处理"。
+    EffectNotProcessed {
+        /// 1-based 行号（`<effect>` 段头所在行）。
+        line: usize,
+        /// `bus` 的规范写法（`main` / `auxN` / `fxN` / `midi`）。
+        bus: String,
+        /// `type` 的原始取值；未给出为 `None`（规范 Type 栏是 N/A）。
+        kind: Option<String>,
+    },
 }
 
 impl core::fmt::Display for Warning {
@@ -541,6 +560,16 @@ impl core::fmt::Display for Warning {
                 f,
                 "warning list capped at {kept}: {dropped} warning(s) dropped"
             ),
+            Self::EffectNotProcessed { line, bus, kind } => match kind {
+                Some(kind) => write!(
+                    f,
+                    "line {line}: `<effect>` bus `{bus}` type `{kind}` declared but not processed (no DSP in this build)"
+                ),
+                None => write!(
+                    f,
+                    "line {line}: `<effect>` bus `{bus}` declared but not processed (no DSP in this build)"
+                ),
+            },
         }
     }
 }
@@ -1530,6 +1559,20 @@ impl<'a> Parser<'a> {
             });
         }
         self.effects.push(builder.build());
+        // ⭐ 登记成功，但本仓没有效果器 DSP ⇒ **响亮告警**（⛔ 不静默降级）。
+        let effect = self.effects.last().expect("刚才 push 过");
+        let bus = match effect.bus() {
+            EffectBus::Main => "main".to_string(),
+            EffectBus::Aux(number) => format!("aux{number}"),
+            EffectBus::Fx(number) => format!("fx{number}"),
+            EffectBus::Midi => "midi".to_string(),
+        };
+        let kind = effect.type_name().map(str::to_string);
+        self.warn(Warning::EffectNotProcessed {
+            line: self.effect_line,
+            bus,
+            kind,
+        });
         Ok(())
     }
 
@@ -3495,7 +3538,7 @@ mod tests {
     ///
     /// R48：这张表**必须**与 `warning_arm` 的臂编号一一对应
     /// （由 `the_warning_golden_table_covers_every_arm_number` 守住）。
-    fn warning_display_cases() -> [(Warning, &'static str); 11] {
+    fn warning_display_cases() -> [(Warning, &'static str); 12] {
         [
             (
                 Warning::IgnoredHeader {
@@ -3570,6 +3613,14 @@ mod tests {
                 },
                 "line 16: unknown opcode `frobnicate` ignored",
             ),
+            (
+                Warning::EffectNotProcessed {
+                    line: 17,
+                    bus: "aux2".to_string(),
+                    kind: Some("reverb".to_string()),
+                },
+                "line 17: `<effect>` bus `aux2` type `reverb` declared but not processed (no DSP in this build)",
+            ),
         ]
     }
 
@@ -3578,7 +3629,7 @@ mod tests {
         // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
         // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
         let cases = warning_display_cases();
-        assert_eq!(cases.len(), 11, "one case per variant");
+        assert_eq!(cases.len(), 12, "one case per variant");
         for (warning, expected) in cases {
             assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
         }
@@ -3603,6 +3654,7 @@ mod tests {
             Warning::ClampedModulationDepth { .. } => 8,
             Warning::ClampedStaticValue { .. } => 9,
             Warning::UnknownOpcode { .. } => 10,
+            Warning::EffectNotProcessed { .. } => 11,
         }
     }
 

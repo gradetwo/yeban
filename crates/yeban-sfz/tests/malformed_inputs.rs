@@ -609,6 +609,39 @@ fn effect_header_is_modeled_and_is_no_longer_an_ignored_header() {
     assert_eq!(effects[0].bus(), yeban_sfz::EffectBus::Main);
 }
 
+/// ⭐ 2026-11-19：`<effect>` 登记成功但**没有 DSP** ⇒ 必须有一条**可读**告警
+/// （这是"静默降级"的反面：用户要能从装载报告里读到"这个 patch 声明了效果器，
+/// 本机不处理"）。规范本身写明效果器在播放器之间"differ widely"，因此不实现 DSP
+/// 是合规裁决；但**不告警**会让"听起来干"被误判成 patch 写错。
+#[test]
+fn a_declared_effect_emits_a_loud_not_processed_warning() {
+    let instrument = parse_text(
+        "<effect>\nbus=aux2\ntype=reverb\n\n<region>sample=a.wav\n",
+        &ParseLimits::default(),
+    )
+    .expect("parses");
+    let hits: Vec<&yeban_sfz::Warning> = instrument
+        .warnings()
+        .iter()
+        .filter(|warning| matches!(warning, yeban_sfz::Warning::EffectNotProcessed { .. }))
+        .collect();
+    assert_eq!(hits.len(), 1, "一条 <effect> 声明对应一条告警");
+    match hits[0] {
+        yeban_sfz::Warning::EffectNotProcessed { line, bus, kind } => {
+            assert_eq!(*line, 1, "行号指向 <effect> 段头");
+            assert_eq!(bus, "aux2", "总线按规范写法渲染");
+            assert_eq!(kind.as_deref(), Some("reverb"), "type 原样带出");
+        }
+        other => panic!("实得 {other:?}"),
+    }
+    // 告警文案必须是可读的英文整句（UI 直接展示，不拼内部枚举名）。
+    assert!(
+        format!("{}", hits[0]).contains("not processed"),
+        "文案要说明「未处理」：{}",
+        hits[0]
+    );
+}
+
 #[test]
 fn effect_header_does_not_clear_the_inheritance_chain() {
     // 定义段语义：`<effect>` 既不写进继承链、也不清空它。
