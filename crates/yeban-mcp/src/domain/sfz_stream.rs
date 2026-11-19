@@ -866,10 +866,9 @@ impl ChunkSource for StreamedSource<'_> {
                 if frames > 0 {
                     let channels = self.decoder.channels().ok_or(DecodeError::EmptyStream)?;
                     if usize::from(channels) > MAX_STREAM_CHANNELS {
-                        return Err(DecodeError::InconsistentLayout {
-                            detail: format!(
-                                "流式腿只收 1/{MAX_STREAM_CHANNELS} 声道，本流为 {channels} 声道（台账 §15.5），拒绝"
-                            ),
+                        return Err(DecodeError::TooManyStreamChannels {
+                            channels,
+                            limit: MAX_STREAM_CHANNELS as u16,
                         });
                     }
                     self.channels = usize::from(channels);

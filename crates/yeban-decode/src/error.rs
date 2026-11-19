@@ -71,6 +71,21 @@ pub enum DecodeError {
         detail: String,
     },
 
+    /// 流式解码腿的声道数超过流式通路的结构上限。
+    ///
+    /// 台账 §15.5：流式通路只建模单声道与立体声，>2 声道**响亮拒绝** ——
+    /// ⛔ 不折到声道 0，也不再借 [`InconsistentLayout`](Self::InconsistentLayout)
+    /// （那是「流在解码过程中改变了形状」，语义不符）。
+    /// 与 [`Budget`](Self::Budget) 里的 `TooManyChannels` 区分：那是整文件腿的
+    /// **可调预算**闸门；本变体是流式腿的**结构上限**，与预算无关。
+    #[error("streaming leg takes only 1/{limit} channels (ledger §15.5), got {channels} channels")]
+    TooManyStreamChannels {
+        /// 本流的声道数。
+        channels: u16,
+        /// 流式通路的声道数上限。
+        limit: u16,
+    },
+
     /// 流没有解出任何采样（空资产）。
     ///
     /// 口径：夜半不导入零长资产 —— 一个 0 帧的剪辑在时间线上没有意义，却会一路
@@ -175,7 +190,7 @@ mod tests {
         assert!(err.to_string().contains("99"));
     }
 
-    /// 判据（诊断文案黄金表）：[`DecodeError`] 的**全部 15 个变体**逐个渲染出**逐字固定**
+    /// 判据（诊断文案黄金表）：[`DecodeError`] 的**全部 16 个变体**逐个渲染出**逐字固定**
     /// 的文案。
     ///
     /// 量什么：每个变体的 `Display` 输出（单位：字符），以及"上游原文是否被保留"。
@@ -203,7 +218,7 @@ mod tests {
             delta: 256,
         };
         let io = std::io::Error::other("boom");
-        let cases: [(&str, DecodeError, String); 15] = [
+        let cases: [(&str, DecodeError, String); 16] = [
             ("Io", DecodeError::Io(io), "io error: boom".to_owned()),
             (
                 "UnsupportedFormat",
@@ -258,6 +273,14 @@ mod tests {
                     .to_owned(),
             ),
             (
+                "TooManyStreamChannels",
+                DecodeError::TooManyStreamChannels {
+                    channels: 3,
+                    limit: 2,
+                },
+                "streaming leg takes only 1/2 channels (ledger §15.5), got 3 channels".to_owned(),
+            ),
+            (
                 "EmptyStream",
                 DecodeError::EmptyStream,
                 "stream decoded to zero audio frames".to_owned(),
@@ -291,7 +314,7 @@ mod tests {
                     .to_owned(),
             ),
         ];
-        // 15 是 `DecodeError` 的变体数：黄金表必须与枚举一样长（加一个变体而漏一行,
+        // 16 是 `DecodeError` 的变体数：黄金表必须与枚举一样长（加一个变体而漏一行,
         // 这里就会以"臂数不符"红）。
         // R177：数表按**变体名**定位（⛔ 不按位置）—— 逐行核对"声明的名字"== "值自己的变体名"。
         let name_pairs: Vec<(&str, String)> = cases
@@ -299,7 +322,7 @@ mod tests {
             .map(|(name, error, _)| (*name, format!("{error:?}")))
             .collect();
         crate::testfix::assert_rows_are_name_located(&name_pairs);
-        assert_eq!(cases.len(), 15, "the golden table must cover every arm");
+        assert_eq!(cases.len(), 16, "the golden table must cover every arm");
         for (arm, error, expected) in cases {
             assert_eq!(decode_error_arm(&error), arm, "arm label {arm}");
             assert_eq!(error.to_string(), expected, "arm {arm}");
@@ -309,8 +332,8 @@ mod tests {
     /// **无通配符**的 `match`：`DecodeError` 新增一个变体、或给某个臂改名，都会让这段
     /// **编译**失败。
     ///
-    /// 存在理由：黄金表的 `assert_eq!(cases.len(), 15)` 只保证"表里有 15 行"，**抓不到**
-    /// "枚举多了一个变体而表没跟上"。本函数把"覆盖全部 15 个臂"变成机器保证，也顺带钉住
+    /// 存在理由：黄金表的 `assert_eq!(cases.len(), 16)` 只保证"表里有 16 行"，**抓不到**
+    /// "枚举多了一个变体而表没跟上"。本函数把"覆盖全部 16 个臂"变成机器保证，也顺带钉住
     /// `#[derive(Debug)]` 的**形状**（`Debug` 的输出就是变体名 ＋ 字段名，而这里与黄金表的
     /// 构造式写出了全部变体名与字段名）。
     ///
@@ -330,6 +353,7 @@ mod tests {
             DecodeError::Malformed { .. } => "Malformed",
             DecodeError::Budget(_) => "Budget",
             DecodeError::InconsistentLayout { .. } => "InconsistentLayout",
+            DecodeError::TooManyStreamChannels { .. } => "TooManyStreamChannels",
             DecodeError::EmptyStream => "EmptyStream",
             DecodeError::DurationMismatch(_) => "DurationMismatch",
             DecodeError::ResamplerConfiguration { .. } => "ResamplerConfiguration",

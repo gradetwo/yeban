@@ -5794,6 +5794,7 @@ pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
         DecodeError::Malformed { .. } => "malformed",
         DecodeError::Budget(_) => "budget",
         DecodeError::InconsistentLayout { .. } => "inconsistentLayout",
+        DecodeError::TooManyStreamChannels { .. } => "tooManyStreamChannels",
         DecodeError::EmptyStream => "emptyStream",
         DecodeError::DurationMismatch(_) => "durationMismatch",
         DecodeError::ResamplerConfiguration { .. } => "resamplerConfiguration",
