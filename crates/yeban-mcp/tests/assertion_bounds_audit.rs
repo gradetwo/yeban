@@ -82,6 +82,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../src/undo_session.rs"),
     ),
     (
+        "tests/drum_generate_tool.rs",
+        include_str!("drum_generate_tool.rs"),
+    ),
+    (
         "tests/effect_contract.rs",
         include_str!("effect_contract.rs"),
     ),
@@ -149,6 +153,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "src/song_overview_provider.rs",
         "assert!(row.bands_tilted_db.iter().all(|db| db.is_finite()));",
         "整曲总览图演示工程测试：`bands_tilted_db` 是 `[f64; 8]` 定长数组（`output_schema.rs`），.all 恒迭代 8 个元素，长度由类型钉死，空集真空风险不存在；审计的 has_bound 只认断言体内的界，故登记为例外。（本条随 provider 实现自 yeban-app 迁入，锚与理由原文保留。）",
+    ),
+    (
+        "tests/drum_generate_tool.rs",
+        ".all(|p| p.curve == yeban_model::CurveType::SCurve),",
+        "同测试内相邻的 assert_eq 已把 lane.points 钉死为恰好 3 个点 \
+         [(0, 0.10), (3840, 0.15), (7680, 0.22)]，迭代集合非空且成员逐一已知，\
+         空集真空风险不存在；审计的 has_bound 只认断言体内的界，故登记为例外。",
     ),
     (
         "tests/tools_e2e.rs",
