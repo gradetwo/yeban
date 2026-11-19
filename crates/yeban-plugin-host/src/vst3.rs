@@ -65,7 +65,7 @@ use crate::types::{
     FUNKNOWN_IID, IAUDIO_PROCESSOR_IID, ICOMPONENT_IID, ICONNECTIONPOINT_IID, IEDIT_CONTROLLER_IID,
     IMIDI_MAPPING_IID, MidiEvent, MidiEventKind, ParamInfo, PluginClass, PluginInstance,
     PluginKind, PluginState, RESULT_FALSE, RESULT_INVALID_ARGUMENT, RESULT_NO_INTERFACE,
-    RESULT_NOT_IMPLEMENTED, RESULT_OK, RESULT_TRUE, TUID_INVALID, Tuid,
+    RESULT_NOT_IMPLEMENTED, RESULT_OK, RESULT_OUT_OF_MEMORY, RESULT_TRUE, TUID_INVALID, Tuid,
 };
 
 // ---------------------------------------------------------------------------
@@ -576,13 +576,18 @@ unsafe extern "system" fn host_app_query(
     iid: *const Tuid,
     out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: 插件按 COM 约定传有效指针；只读 IID 做比较。
+    if this.is_null() || iid.is_null() || out.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `iid` 非空且由插件按 COM 约定提供；只读 IID 做比较。
     let iid = unsafe { *iid };
     if iid == FUNKNOWN_IID {
-        // SAFETY: `out` 是插件提供的写槽。
+        // SAFETY: `out` 非空，是插件提供的写槽。
         unsafe { *out = this };
         RESULT_OK
     } else {
+        // SAFETY: `out` 非空；未命中接口时按 COM 约定清零出参。
+        unsafe { *out = ptr::null_mut() };
         RESULT_NO_INTERFACE
     }
 }
@@ -592,10 +597,12 @@ unsafe extern "system" fn host_noop_ref(_this: *mut c_void) -> u32 {
     1
 }
 
-unsafe extern "system" fn host_app_get_name(_this: *mut c_void, name: *mut u16) -> i32 {
-    // SAFETY: `name` 是插件提供的 `String128` 写槽（128 个 u16）。
+unsafe extern "system" fn host_app_get_name(this: *mut c_void, name: *mut u16) -> i32 {
+    if this.is_null() || name.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
     let units: Vec<u16> = "Yeban".encode_utf16().collect();
-    // SAFETY: `name` 是插件提供的 String128 写槽（128 个 u16）；写入 5 个单元＋NUL，不越界。
+    // SAFETY: `name` 非空，是插件提供的 String128 写槽（128 个 u16）；写入 5 个单元＋NUL，不越界。
     unsafe {
         ptr::copy_nonoverlapping(units.as_ptr(), name, units.len());
         *name.add(units.len()) = 0;
@@ -607,8 +614,12 @@ unsafe extern "system" fn host_app_create_instance(
     _this: *mut c_void,
     _cid: *const Tuid,
     _iid: *const Tuid,
-    _out: *mut *mut c_void,
+    out: *mut *mut c_void,
 ) -> i32 {
+    if !out.is_null() {
+        // SAFETY: `out` 非空；创建接口不支持时清零出参。
+        unsafe { *out = ptr::null_mut() };
+    }
     // 一期宿主不提供可创建对象（见模块文档的局限说明）。
     RESULT_NO_INTERFACE
 }
@@ -748,12 +759,18 @@ impl HostParamValueQueue {
 }
 
 unsafe extern "system" fn param_queue_id(this: *mut c_void) -> u32 {
-    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`，只读。
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostParamValueQueue`，只读。
     unsafe { (*this.cast::<HostParamValueQueue>()).param_id }
 }
 
 unsafe extern "system" fn param_queue_count(this: *mut c_void) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`，只读。
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostParamValueQueue`，只读。
     unsafe { (*this.cast::<HostParamValueQueue>()).count }
 }
 
@@ -763,12 +780,15 @@ unsafe extern "system" fn param_queue_get_point(
     sample_offset: *mut i32,
     value: *mut f64,
 ) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `HostParamValueQueue`；两写槽是插件提供的。
+    if this.is_null() || sample_offset.is_null() || value.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostParamValueQueue`，只读。
     let queue = unsafe { &*this.cast::<HostParamValueQueue>() };
-    if index < 0 || index >= queue.count {
+    if index < 0 || index >= queue.count || queue.points.is_null() {
         return RESULT_FALSE; // `kResultFalse`：越界＝无此点。
     }
-    // SAFETY: 下标已越界检查；两写槽是插件提供的。
+    // SAFETY: 下标已越界检查且 `queue.points` 非空；两写槽均已判非空。
     unsafe {
         let point = &*queue.points.add(index as usize);
         *sample_offset = point.sample_offset;
@@ -838,17 +858,23 @@ fn with_parameter_changes<R>(queues: &[ParamQueueData], call: impl FnOnce(*mut c
 }
 
 unsafe extern "system" fn param_changes_count(this: *mut c_void) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `HostParameterChanges`，只读。
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostParameterChanges`，只读。
     unsafe { (*this.cast::<HostParameterChanges>()).count }
 }
 
 unsafe extern "system" fn param_changes_get_queue(this: *mut c_void, index: i32) -> *mut c_void {
-    // SAFETY: `this` 是调用帧内的 `HostParameterChanges`，只读。
+    if this.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `HostParameterChanges`，只读。
     let changes = unsafe { &*this.cast::<HostParameterChanges>() };
-    if index < 0 || index >= changes.count {
+    if index < 0 || index >= changes.count || changes.queues.is_null() {
         return ptr::null_mut(); // 越界＝无此队列（nih-plug 的 `upgrade()` 会跳过空指针）。
     }
-    // SAFETY: 下标已越界检查；队列地址在 `process` 调用内稳定。
+    // SAFETY: 下标已越界检查且 `changes.queues` 非空；队列地址在 `process` 调用内稳定。
     unsafe { changes.queues.add(index as usize) as *mut c_void }
 }
 
@@ -894,6 +920,9 @@ fn pitch_bend_queues(
     out
 }
 
+/// 内存流最大字节上限（64 MiB，防恶意/损坏插件状态写爆宿主内存）。
+const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
+
 /// 内存流（`IBStream` 的宿主实现；栈上构造，只在一次 `getState`／`setState` 内有效）。
 #[repr(C)]
 struct MemoryStream {
@@ -937,21 +966,29 @@ unsafe extern "system" fn stream_read(
     num_bytes: i32,
     out: *mut i32,
 ) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `MemoryStream`；`buffer` 是插件提供的写槽。
+    if this.is_null() || buffer.is_null() || num_bytes < 0 {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `MemoryStream`。
     let stream = unsafe { &mut *this.cast::<MemoryStream>() };
-    let want = num_bytes.max(0) as usize;
+    let want = num_bytes as usize;
     let have = stream.buf.len().saturating_sub(stream.pos);
     let take = want.min(have);
-    // SAFETY: `take` ≤ 剩余字节；`buffer` 是插件提供的写槽。
-    unsafe {
-        ptr::copy_nonoverlapping(
-            stream.buf.as_ptr().add(stream.pos),
-            buffer.cast::<u8>(),
-            take,
-        );
-        *out = take as i32;
+    if take > 0 {
+        // SAFETY: `take` ≤ 剩余字节；`buffer` 非空且由插件提供写槽。
+        unsafe {
+            ptr::copy_nonoverlapping(
+                stream.buf.as_ptr().add(stream.pos),
+                buffer.cast::<u8>(),
+                take,
+            );
+        }
     }
-    stream.pos += take;
+    if !out.is_null() {
+        // SAFETY: `out` 非空（`IBStream::read` 允许 `numBytesRead == nullptr`）。
+        unsafe { *out = i32::try_from(take).unwrap_or(i32::MAX) };
+    }
+    stream.pos = stream.pos.saturating_add(take);
     RESULT_OK
 }
 
@@ -961,25 +998,43 @@ unsafe extern "system" fn stream_write(
     num_bytes: i32,
     out: *mut i32,
 ) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `MemoryStream`；`buffer` 是插件提供的读槽。
+    if this.is_null() || buffer.is_null() || num_bytes < 0 {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `MemoryStream`。
     let stream = unsafe { &mut *this.cast::<MemoryStream>() };
-    let want = num_bytes.max(0) as usize;
+    let want = num_bytes as usize;
     if stream.pos > stream.buf.len() {
         stream.pos = stream.buf.len();
     }
-    if stream.pos + want > stream.buf.len() {
-        stream.buf.resize(stream.pos + want, 0);
+    let Some(end) = stream.pos.checked_add(want) else {
+        return RESULT_OUT_OF_MEMORY;
+    };
+    if end > MAX_STREAM_BYTES {
+        return RESULT_OUT_OF_MEMORY;
     }
-    // SAFETY: 目标区已按需扩容；`buffer` 是插件提供的读槽。
-    unsafe {
-        ptr::copy_nonoverlapping(
-            buffer.cast::<u8>(),
-            stream.buf.as_mut_ptr().add(stream.pos),
-            want,
-        );
-        *out = want as i32;
+    if end > stream.buf.len() {
+        let grow = end - stream.buf.len();
+        if stream.buf.try_reserve(grow).is_err() {
+            return RESULT_OUT_OF_MEMORY;
+        }
+        stream.buf.resize(end, 0);
     }
-    stream.pos += want;
+    if want > 0 {
+        // SAFETY: 目标区已按需扩容；`buffer` 非空且由插件提供读槽。
+        unsafe {
+            ptr::copy_nonoverlapping(
+                buffer.cast::<u8>(),
+                stream.buf.as_mut_ptr().add(stream.pos),
+                want,
+            );
+        }
+    }
+    if !out.is_null() {
+        // SAFETY: `out` 非空（`IBStream::write` 允许 `numBytesWritten == nullptr`）。
+        unsafe { *out = i32::try_from(want).unwrap_or(i32::MAX) };
+    }
+    stream.pos = end;
     RESULT_OK
 }
 
@@ -989,26 +1044,48 @@ unsafe extern "system" fn stream_seek(
     mode: i32,
     out: *mut i64,
 ) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `MemoryStream`；`out` 是插件提供的写槽。
+    if this.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `MemoryStream`。
     let stream = unsafe { &mut *this.cast::<MemoryStream>() };
+    let Ok(pos_i64) = i64::try_from(stream.pos) else {
+        return RESULT_INVALID_ARGUMENT;
+    };
+    let Ok(len_i64) = i64::try_from(stream.buf.len()) else {
+        return RESULT_INVALID_ARGUMENT;
+    };
     let base: i64 = match mode {
         SEEK_SET => 0,
-        SEEK_CUR => stream.pos as i64,
-        SEEK_END => stream.buf.len() as i64,
+        SEEK_CUR => pos_i64,
+        SEEK_END => len_i64,
         _ => return RESULT_NOT_IMPLEMENTED,
     };
-    let target = base.saturating_add(pos).clamp(0, stream.buf.len() as i64);
+    let Some(target) = base.checked_add(pos) else {
+        return RESULT_INVALID_ARGUMENT;
+    };
+    if target < 0 || target > len_i64 {
+        return RESULT_INVALID_ARGUMENT;
+    }
     stream.pos = target as usize;
-    // SAFETY: `out` 是插件提供的 i64 写槽。
-    unsafe { *out = target };
+    if !out.is_null() {
+        // SAFETY: `out` 非空（`IBStream::seek` 允许 `result == nullptr`）。
+        unsafe { *out = target };
+    }
     RESULT_OK
 }
 
 unsafe extern "system" fn stream_tell(this: *mut c_void, out: *mut i64) -> i32 {
-    // SAFETY: `this` 是调用帧内的 `MemoryStream`；`out` 是插件提供的写槽。
+    if this.is_null() || out.is_null() {
+        return RESULT_INVALID_ARGUMENT;
+    }
+    // SAFETY: `this` 非空，是调用帧内的 `MemoryStream`，只读。
     let stream = unsafe { &*this.cast::<MemoryStream>() };
-    // SAFETY: `out` 是插件提供的 i64 写槽。
-    unsafe { *out = stream.pos as i64 };
+    let Ok(pos_i64) = i64::try_from(stream.pos) else {
+        return RESULT_INVALID_ARGUMENT;
+    };
+    // SAFETY: `out` 非空，是插件提供的 i64 写槽。
+    unsafe { *out = pos_i64 };
     RESULT_OK
 }
 
@@ -2785,5 +2862,198 @@ mod tests {
         apply_f32_silence_flags(0b10, &mut f32_l, &mut f32_r);
         assert_eq!(f32_l, [1.0, 2.0]);
         assert_eq!(f32_r, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn host_app_and_param_queue_reject_null_pointers() {
+        let app = HostApplicationObj::new();
+        let app_ptr = (&*app) as *const HostApplicationObj as *mut c_void;
+        let mut out_iface: *mut c_void = app_ptr;
+        let mut name_buf = [0_u16; 128];
+
+        // SAFETY: 空指针分支只判空，有效指针分支均指向栈上或 Box 对象。
+        unsafe {
+            assert_eq!(
+                host_app_query(ptr::null_mut(), &FUNKNOWN_IID, &mut out_iface),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                host_app_query(app_ptr, ptr::null(), &mut out_iface),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                host_app_query(app_ptr, &FUNKNOWN_IID, ptr::null_mut()),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                host_app_query(app_ptr, &ICOMPONENT_IID, &mut out_iface),
+                RESULT_NO_INTERFACE
+            );
+            assert!(out_iface.is_null(), "不匹配接口时应清零出参");
+            assert_eq!(
+                host_app_query(app_ptr, &FUNKNOWN_IID, &mut out_iface),
+                RESULT_OK
+            );
+            assert_eq!(out_iface, app_ptr);
+
+            assert_eq!(
+                host_app_get_name(ptr::null_mut(), name_buf.as_mut_ptr()),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                host_app_get_name(app_ptr, ptr::null_mut()),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(host_app_get_name(app_ptr, name_buf.as_mut_ptr()), RESULT_OK);
+            assert_eq!(decode_string128(&name_buf), "Yeban");
+        }
+
+        let points = [ParamPoint {
+            sample_offset: 8,
+            value: 0.42,
+        }];
+        let mut queue = HostParamValueQueue::new(7, &points);
+        let queue_ptr = (&mut queue) as *mut HostParamValueQueue as *mut c_void;
+        let mut offset = -1;
+        let mut val = -1.0;
+
+        // SAFETY: 空指针分支只判空，有效指针分支指向栈上对象。
+        unsafe {
+            assert_eq!(param_queue_id(ptr::null_mut()), 0);
+            assert_eq!(param_queue_count(ptr::null_mut()), 0);
+            assert_eq!(
+                param_queue_get_point(ptr::null_mut(), 0, &mut offset, &mut val),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                param_queue_get_point(queue_ptr, 0, ptr::null_mut(), &mut val),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                param_queue_get_point(queue_ptr, 0, &mut offset, ptr::null_mut()),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                param_queue_get_point(queue_ptr, -1, &mut offset, &mut val),
+                RESULT_FALSE
+            );
+            assert_eq!(
+                param_queue_get_point(queue_ptr, 1, &mut offset, &mut val),
+                RESULT_FALSE
+            );
+            assert_eq!(
+                param_queue_get_point(queue_ptr, 0, &mut offset, &mut val),
+                RESULT_OK
+            );
+            assert_eq!(offset, 8);
+            assert!((val - 0.42).abs() < 1e-12);
+            assert_eq!(param_changes_count(ptr::null_mut()), 0);
+            assert!(param_changes_get_queue(ptr::null_mut(), 0).is_null());
+        }
+    }
+
+    #[test]
+    fn memory_stream_enforces_null_bounds_seek_and_size_cap() {
+        let mut stream = MemoryStream::capture();
+        let s_ptr = (&mut stream) as *mut MemoryStream as *mut c_void;
+        let payload = b"yeban-vst3";
+        let mut read_buf = [0_u8; 16];
+        let mut count: i32 = 0;
+        let mut pos_out: i64 = -1;
+
+        // SAFETY: 空指针与越界测试；有效指针分支均指向栈上本地变量。
+        unsafe {
+            // 1. 空指针与负 num_bytes 拒绝。
+            assert_eq!(
+                stream_write(ptr::null_mut(), payload.as_ptr().cast(), 4, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_write(s_ptr, ptr::null(), 4, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_write(s_ptr, payload.as_ptr().cast(), -1, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_read(ptr::null_mut(), read_buf.as_mut_ptr().cast(), 4, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_read(s_ptr, ptr::null_mut(), 4, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_read(s_ptr, read_buf.as_mut_ptr().cast(), -1, &mut count),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_seek(ptr::null_mut(), 0, SEEK_SET, &mut pos_out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_tell(ptr::null_mut(), &mut pos_out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(stream_tell(s_ptr, ptr::null_mut()), RESULT_INVALID_ARGUMENT);
+
+            // 2. 允许 out == null（IBStream 语义）。
+            assert_eq!(
+                stream_write(
+                    s_ptr,
+                    payload.as_ptr().cast(),
+                    payload.len() as i32,
+                    ptr::null_mut()
+                ),
+                RESULT_OK
+            );
+            assert_eq!(stream_tell(s_ptr, &mut pos_out), RESULT_OK);
+            assert_eq!(pos_out, payload.len() as i64);
+
+            // 3. seek 越界、负偏移、溢出、非法 mode 全部拒绝且不改写 pos。
+            assert_eq!(
+                stream_seek(s_ptr, -1, SEEK_SET, &mut pos_out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_seek(s_ptr, (payload.len() + 1) as i64, SEEK_SET, &mut pos_out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_seek(s_ptr, i64::MAX, SEEK_CUR, &mut pos_out),
+                RESULT_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                stream_seek(s_ptr, 0, 99, &mut pos_out),
+                RESULT_NOT_IMPLEMENTED
+            );
+            assert_eq!(stream_tell(s_ptr, &mut pos_out), RESULT_OK);
+            assert_eq!(pos_out, payload.len() as i64);
+
+            // 4. 合法 seek（含 out == null）与 read（含 out == null）。
+            assert_eq!(stream_seek(s_ptr, 0, SEEK_SET, ptr::null_mut()), RESULT_OK);
+            assert_eq!(
+                stream_read(s_ptr, read_buf.as_mut_ptr().cast(), 5, ptr::null_mut()),
+                RESULT_OK
+            );
+            assert_eq!(&read_buf[..5], b"yeban");
+            assert_eq!(stream_seek(s_ptr, -4, SEEK_END, &mut pos_out), RESULT_OK);
+            assert_eq!(pos_out, (payload.len() - 4) as i64);
+            assert_eq!(
+                stream_read(s_ptr, read_buf.as_mut_ptr().cast(), 10, &mut count),
+                RESULT_OK
+            );
+            assert_eq!(count, 4);
+            assert_eq!(&read_buf[..4], b"vst3");
+
+            // 5. 超过 MAX_STREAM_BYTES（64 MiB）与 pos + want 溢出必须报 RESULT_OUT_OF_MEMORY 且不扩容。
+            assert_eq!(stream_seek(s_ptr, 0, SEEK_END, &mut pos_out), RESULT_OK);
+            assert_eq!(
+                stream_write(s_ptr, payload.as_ptr().cast(), i32::MAX, &mut count),
+                RESULT_OUT_OF_MEMORY
+            );
+        }
+        assert_eq!(stream.buf, payload);
     }
 }
