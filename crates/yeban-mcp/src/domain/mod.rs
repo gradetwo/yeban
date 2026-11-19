@@ -4206,6 +4206,18 @@ fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     )
 }
 
+/// 预置自动化曲线（theory 侧镜像枚举）→ 模型 `CurveType`；生成路径
+/// 逐点写入 `AutomationPoint::curve`（模型侧该字段必需、无缺省）。
+/// 与 UI 路径（`yeban-app` 的 `drum_gen_ops`）同一映射。
+fn drum_automation_curve(curve: yeban_theory::DrumAutomationCurve) -> yeban_model::CurveType {
+    match curve {
+        yeban_theory::DrumAutomationCurve::Linear => yeban_model::CurveType::Linear,
+        yeban_theory::DrumAutomationCurve::Exponential => yeban_model::CurveType::Exponential,
+        yeban_theory::DrumAutomationCurve::Logarithmic => yeban_model::CurveType::Logarithmic,
+        yeban_theory::DrumAutomationCurve::SCurve => yeban_model::CurveType::SCurve,
+    }
+}
+
 /// `yeban_generate_drum_pattern`（鼓机一期；提案路径，`autoMerge` 可一次调用落 main）。
 ///
 /// 风格预置（`yeban_theory::factory_drum_style`，出厂 10 风格）+ 三旋钮
@@ -4224,6 +4236,12 @@ fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// `yeban_theory::drum_fx_device_specs` 一份，身份按本函数的确定性纪律
 /// 派生）；既有轨上已有同族效果（按参数名判读，与插入链投影同口径）
 /// 时不重复叠加。
+///
+/// 自动化：预置带 `automation` 段时逐段落成一条自动化泳道
+/// （`Op::SetAutomationLane` 整表写入，点 tick 按 `startTick` 平移，
+/// 身份确定性派生）；器件参数按名在生成后的鼓轨器件表上换算落点，
+/// 换算不到 ⇒ 响亮拒绝；既有轨已有该目标的用户泳道 ⇒ 跳过并在
+/// 计划文本里如实说明（用户自动化优先）。
 ///
 /// 身份纪律：轨/片段/摆放/音符 id 全部由 `(目标, 风格, 种子, 三旋钮,
 /// 小节数, fill, 起始 tick)` 确定性派生 ⇒ 同参数重复调用命中同一身份
@@ -4435,6 +4453,23 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         }
     };
 
+    // 自动化落点换算用的器件参数名表（按生成后鼓轨的最终槽位序）：
+    // 先抄既有轨器件，生成中装入的器件在各插入点按插入序追加。
+    let mut device_param_names: Vec<Vec<String>> =
+        existing_track.as_ref().map_or_else(Vec::new, |track| {
+            track
+                .devices
+                .iter()
+                .map(|device| {
+                    device
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect()
+                })
+                .collect()
+        });
+
     // 默认鼓组：轨上尚无音源时才装。
     let has_instrument = existing_track
         .as_ref()
@@ -4481,6 +4516,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                         plugin: None,
                     },
                 });
+                device_param_names.push(params.iter().map(|(name, _)| name.clone()).collect());
                 kit_note = "装默认鼓组：合成鼓机（电子件）".to_owned();
             }
         }
@@ -4524,6 +4560,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
             let names: Vec<&str> = specs.iter().map(|spec| spec.name).collect();
             fx_note = format!("效果层（风格预置）：{}", names.join(" + "));
             for spec in specs {
+                device_param_names.push(spec.params.iter().map(|(name, _)| name.clone()).collect());
                 ops.push(Op::InsertDevice {
                     track_id,
                     slot_index,
@@ -4644,6 +4681,103 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         }
     }
 
+    // 自动化：预置 `automation` 段 → 逐段一条 `Op::SetAutomationLane`
+    // （整表写入，与 UI 路径同一落法；点 tick 按片段摆放起点
+    // `start_tick` 平移）。器件参数在上面攒齐的最终器件表上按名换算
+    // 落点；换算不到 ⇒ 响亮拒绝（不许静默丢段）。既有轨已有该目标
+    // 的用户泳道 ⇒ 跳过该段并在计划文本里如实说明（用户自动化优先，
+    // 与逐件链不覆盖同一口径）。
+    let mut auto_note = "无自动化（预置未带 automation 段）".to_owned();
+    if !preset.automation.is_empty() {
+        let mut landed: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for (seg_index, segment) in preset.automation.iter().enumerate() {
+            let Some(landing) = segment.landing(&device_param_names) else {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "风格 `{style}` 的自动化目标 `{}` 在生成后的鼓轨上找不到落点（目标参数不在轨上器件中）",
+                        segment.target.describe()
+                    ),
+                ));
+            };
+            let auto_target = match landing {
+                yeban_theory::DrumAutomationLanding::TrackVolume => {
+                    yeban_model::AutomationTarget::TrackVolume { track_id }
+                }
+                yeban_theory::DrumAutomationLanding::TrackPan => {
+                    yeban_model::AutomationTarget::TrackPan { track_id }
+                }
+                yeban_theory::DrumAutomationLanding::DeviceParam {
+                    slot_index,
+                    param_index,
+                } => yeban_model::AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index,
+                },
+            };
+            if existing_track
+                .as_ref()
+                .is_some_and(|track| track.automation_lanes.contains_key(&auto_target))
+            {
+                skipped.push(segment.target.describe());
+                continue;
+            }
+            let curve = drum_automation_curve(segment.curve);
+            let points: std::collections::BTreeMap<
+                yeban_model::EntityId,
+                yeban_model::AutomationPoint,
+            > = segment
+                .points
+                .iter()
+                .map(|point| {
+                    let tick = start_tick + point.tick;
+                    let id = ids::deterministic_id(&format!(
+                        "drum-gen:auto-point:{label}:{seg_index}:{tick}"
+                    ));
+                    (
+                        id,
+                        yeban_model::AutomationPoint {
+                            id,
+                            tick,
+                            value: point.value,
+                            curve,
+                        },
+                    )
+                })
+                .collect();
+            ops.push(Op::SetAutomationLane {
+                target: auto_target,
+                old_lane: None,
+                new_lane: yeban_model::AutomationLane {
+                    target: auto_target,
+                    points,
+                    read_enabled: true,
+                    write_mode: yeban_model::AutomationWriteMode::Off,
+                    domain: None,
+                },
+            });
+            landed.push(format!(
+                "{}（{} 点）",
+                segment.target.describe(),
+                segment.points.len()
+            ));
+        }
+        auto_note = match (landed.is_empty(), skipped.is_empty()) {
+            (false, true) => format!("自动化：{}", landed.join("、")),
+            (false, false) => format!(
+                "自动化：{}；跳过（目标轨已有该目标的用户泳道）：{}",
+                landed.join("、"),
+                skipped.join("、")
+            ),
+            (true, _) => format!(
+                "自动化：全部跳过（目标轨已有该目标的用户泳道）：{}",
+                skipped.join("、")
+            ),
+        };
+    }
+
     // 生成音符列 ⇒ MIDI 片段 + 摆放。
     let generated = yeban_theory::generate_drum_pattern(
         &preset,
@@ -4704,7 +4838,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         "generate_drum_pattern",
         format!("生成鼓型：{} → 音轨 {track_id}", preset.name),
         format!(
-            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}；{bus_note}；{lane_note}",
+            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}；{bus_note}；{lane_note}；{auto_note}",
             generated.len(),
         ),
         ops,

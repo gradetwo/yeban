@@ -10,6 +10,9 @@
 //! | ⑥ | 既有轨已有音源 ⇒ 鼓组不动、只落片段 | `existing_track_with_instrument_keeps_kit` |
 //! | ⑦ | 既有空轨 ⇒ 装默认鼓组再落片段 | `existing_empty_track_gets_default_kit` |
 //! | ⑧ | 旋钮越界 ⇒ `INVALID_PARAMETER_RANGE` | `knob_out_of_range_is_rejected` |
+//! | ⑨ | edm 自动化段落成混响湿电平泳道（点列逐项 + 求值对账） | `edm_generation_lands_reverb_wet_automation_lane` |
+//! | ⑩ | 自动化点随 `startTick` 平移且身份确定性派生 | `edm_automation_points_shift_with_start_tick_and_stay_deterministic` |
+//! | ⑪ | 无自动化段的风格不写泳道 | `style_without_automation_lands_no_lane` |
 
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -415,4 +418,116 @@ fn existing_track_with_user_lane_chains_keeps_them() {
     let project = project(&dispatcher);
     let lead = project.tracks.get(&lead_id).expect("lead 轨");
     assert_eq!(lead.lane_chains, vec![user_chain], "用户逐件链必须逐值保留");
+}
+
+#[test]
+fn edm_generation_lands_reverb_wet_automation_lane() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "edm", "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    assert!(
+        result.to_string().contains("reverb.reverb_wet"),
+        "计划文本须提及落成的自动化段: {result}"
+    );
+
+    let project = project(&dispatcher);
+    let track = drum_track(project, "EDM Big Room Drums");
+    // 目标按轨上最终布局对账：混响器件槽位 + 其 reverb_wet 参数下标。
+    let (slot_index, device) = track
+        .devices
+        .iter()
+        .enumerate()
+        .find(|(_, device)| device.name == "Reverb")
+        .expect("混响器件在轨上");
+    let param_index = device
+        .params
+        .iter()
+        .position(|param| param.name == "reverb_wet")
+        .expect("reverb_wet 参数在混响器件上");
+    let target = yeban_model::AutomationTarget::DeviceParam {
+        track_id: track.id,
+        slot_index,
+        param_index,
+    };
+    let lane = track
+        .automation_lanes
+        .get(&target)
+        .expect("edm 的自动化泳道必须落成");
+    assert!(lane.read_enabled, "生成泳道默认读开");
+    assert_eq!(lane.write_mode, yeban_model::AutomationWriteMode::Off);
+    let mut points: Vec<(u64, f32)> = lane.points.values().map(|p| (p.tick, p.value)).collect();
+    points.sort_by_key(|(tick, _)| *tick);
+    assert_eq!(points, vec![(0, 0.10), (3840, 0.15), (7680, 0.22)]);
+    assert!(
+        lane.points
+            .values()
+            .all(|p| p.curve == yeban_model::CurveType::SCurve),
+        "段级 s_curve 逐点展开"
+    );
+    // 求值对账（模型唯一求值入口）：点上逐位精确、末点后保持、
+    // 段内插值落在两端之间。
+    let value_at = |tick: u64| {
+        project
+            .automation_value_at(&target, tick)
+            .expect("目标对账通过")
+    };
+    assert_eq!(value_at(0), Some(0.10));
+    assert_eq!(value_at(3840), Some(0.15));
+    assert_eq!(value_at(7680), Some(0.22));
+    assert_eq!(value_at(20_000), Some(0.22));
+    let mid = value_at(1920).expect("段内应有自动化值");
+    assert!(mid > 0.10 && mid < 0.15, "s_curve 插值应在两端之间: {mid}");
+}
+
+#[test]
+fn edm_automation_points_shift_with_start_tick_and_stay_deterministic() {
+    let run = |dispatcher: &mut Dispatcher| {
+        let result = generate(
+            dispatcher,
+            json!({ "style": "edm", "startTick": 3840, "autoMerge": true }),
+        );
+        assert_eq!(result["status"], "success", "{result}");
+        let project = project(dispatcher);
+        let track = drum_track(project, "EDM Big Room Drums");
+        let lane = track
+            .automation_lanes
+            .values()
+            .next()
+            .expect("自动化泳道必须落成");
+        let mut points: Vec<(u64, String)> = lane
+            .points
+            .values()
+            .map(|p| (p.tick, p.id.to_canonical_string()))
+            .collect();
+        points.sort_by_key(|(tick, _)| *tick);
+        points
+    };
+    let mut first = dispatcher_with_project(filled_project());
+    let mut second = dispatcher_with_project(filled_project());
+    let points_first = run(&mut first);
+    let points_second = run(&mut second);
+    // 点 tick 按摆放起点平移（3840 + pattern 内坐标）。
+    let ticks: Vec<u64> = points_first.iter().map(|(tick, _)| *tick).collect();
+    assert_eq!(ticks, vec![3840, 7680, 11520]);
+    // 同参数两次生成 ⇒ 点身份逐一相同（确定性派生）。
+    assert_eq!(points_first, points_second);
+}
+
+#[test]
+fn style_without_automation_lands_no_lane() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "trap", "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let project = project(&dispatcher);
+    let track = drum_track(project, "Trap Drums");
+    assert!(
+        track.automation_lanes.is_empty(),
+        "无 automation 段的风格不得写自动化泳道"
+    );
 }

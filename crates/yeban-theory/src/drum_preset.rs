@@ -492,6 +492,253 @@ pub struct DrumBusPreset {
     pub clipper: DrumBusClipperPreset,
 }
 
+/// 自动化曲线形状（预置侧表示）：与模型 `yeban_model::CurveType` 同一套
+/// 四档（一一镜像——theory 不依赖 model，无法直接引用，与
+/// [`DrumReverbKind`] 的镜像契约同型）。生成路径把曲线**逐点**写进
+/// `AutomationPoint::curve`（模型侧该字段必需、无缺省）：本格式的段级
+/// `curve` 只是书写便利，落点处展开到每一点，不在模型侧留缺省。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrumAutomationCurve {
+    /// 线性插值。
+    Linear,
+    /// 指数插值。
+    Exponential,
+    /// 对数插值。
+    Logarithmic,
+    /// S 型（缓入缓出）插值。
+    SCurve,
+}
+
+impl DrumAutomationCurve {
+    /// JSON 名 → 曲线。未知名字是内容错误，解析期响亮失败（默认不能静默）。
+    fn from_name(name: &str, field: &str) -> Result<Self, DrumPresetError> {
+        match name {
+            "linear" => Ok(Self::Linear),
+            "exponential" => Ok(Self::Exponential),
+            "logarithmic" => Ok(Self::Logarithmic),
+            "s_curve" => Ok(Self::SCurve),
+            _ => Err(field_err(
+                field,
+                format!(
+                    "unknown automation curve {name:?} (expected linear/exponential/logarithmic/s_curve)"
+                ),
+            )),
+        }
+    }
+
+    /// 规范名（JSON 与回读共用）。
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Exponential => "exponential",
+            Self::Logarithmic => "logarithmic",
+            Self::SCurve => "s_curve",
+        }
+    }
+}
+
+/// 自动化目标（预置侧表示）：与模型 `AutomationTarget` 对齐的三种寻址。
+///
+/// - `track_volume` / `track_pan`：鼓轨自身的音量 / 声相（Auto-Pan 的
+///   落点就是声相泳道）；
+/// - `<family>.<param>`：鼓轨效果层里某族器件的一个参数，`family` 与
+///   [`DrumFxDeviceSpec::family`] 同一词表（`strip` / `tape` / `reverb` /
+///   `delay` / `transient` / `crusher` / `noise`），`param` 是
+///   `yeban-dsp` `device_param` 的规范拼写（如 `reverb_wet`）。
+///
+/// 逐件链（`lane_chains`）与鼓总线（`bus`）的器件**不在**本词表内：
+/// 逐件链参数 v1 不接自动化（见 [`DrumLaneChainPreset`]）；总线轨只在
+/// 新建轨路径存在，寻址不对称。写这两类目标 ⇒ 未知目标，解析期拒绝。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrumAutomationTarget {
+    /// 鼓轨音量（dB）。
+    TrackVolume,
+    /// 鼓轨声相（双极 −1..=1）。
+    TrackPan,
+    /// 效果器件参数（族 + 参数名）。
+    DeviceParam {
+        /// 效果族（`DrumFxDeviceSpec::family` 词表）。
+        family: String,
+        /// 参数规范名（`device_param` 拼写）。
+        param: String,
+    },
+}
+
+impl DrumAutomationTarget {
+    /// 与 JSON 拼写一致的目标名（报错、计划文本与回读共用）。
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::TrackVolume => "track_volume".to_owned(),
+            Self::TrackPan => "track_pan".to_owned(),
+            Self::DeviceParam { family, param } => format!("{family}.{param}"),
+        }
+    }
+
+    /// 本目标的解析期取值域：音量 / 声相取模型固有域（镜像
+    /// `yeban_model` 的 `NOMINAL_GAIN_MIN_DB` / `NOMINAL_GAIN_MAX_DB`
+    /// −60..=12 dB 与双极 −1..=1——theory 不依赖 model，镜像值改动
+    /// 须两端同步）；器件参数取 [`drum_fx_param_domain`] 的格式参数表。
+    fn value_domain(&self) -> (f32, f32) {
+        match self {
+            Self::TrackVolume => (-60.0, 12.0),
+            Self::TrackPan => (-1.0, 1.0),
+            Self::DeviceParam { family, param } => drum_fx_param_domain(family, param)
+                .expect("device param targets are only built after a table hit"),
+        }
+    }
+}
+
+/// 一个自动化点（预置侧表示）：`tick` 是 pattern 内绝对 tick
+/// （0 起，上限 = pattern 全长 `bars * TICKS_PER_BAR`，含末点）；
+/// 生成路径按片段摆放起点平移后写进模型的 `AutomationPoint`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumAutomationPoint {
+    /// 时间位置（tick），段内严格升序（解析期钉死）。
+    pub tick: u64,
+    /// 参数值（目标值域内、有限；解析期钉死）。
+    pub value: f32,
+}
+
+/// 一段自动化（`automation[]` 一条 = 模型里一条自动化泳道）：一个
+/// 目标 + 一列点 + 一条段级曲线（落点时逐点展开）。同一预置内目标
+/// 不许重复（模型里一个目标只有一条泳道，第二段无处落，解析期拒绝）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrumAutomationPreset {
+    /// 目标。
+    pub target: DrumAutomationTarget,
+    /// 段内各点的曲线形状（到下一点的形状，逐点展开写进模型）。
+    pub curve: DrumAutomationCurve,
+    /// 点列（非空、tick 严格升序；解析期钉死）。
+    pub points: Vec<DrumAutomationPoint>,
+}
+
+/// 自动化在生成后鼓轨上的落点（生成路径的换算结果）：轨级目标直接
+/// 成形；器件参数已换算成（器件槽位， 参数下标）——与模型
+/// `AutomationTarget::DeviceParam` 的寻址逐字对齐。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrumAutomationLanding {
+    /// 鼓轨音量。
+    TrackVolume,
+    /// 鼓轨声相。
+    TrackPan,
+    /// 器件参数：鼓轨器件表的槽位与该器件参数表的下标。
+    DeviceParam {
+        /// 器件槽位（鼓轨 `devices` 下标）。
+        slot_index: usize,
+        /// 参数下标（该器件 `params` 下标）。
+        param_index: usize,
+    },
+}
+
+impl DrumAutomationPreset {
+    /// 在生成后的鼓轨器件表上换算落点。`device_param_names` 是鼓轨
+    /// `devices` 按槽位序的参数名表（生成路径按其最终器件布局构造，
+    /// 含既有器件与本次装入的器件）。器件参数按名取**第一台**含该
+    /// 参数的器件（与插入链投影「按族取第一台命中器件」同一口径）；
+    /// 找不到 ⇒ `None`，生成路径据此响亮拒绝（不许静默丢段）。
+    #[must_use]
+    pub fn landing(&self, device_param_names: &[Vec<String>]) -> Option<DrumAutomationLanding> {
+        match &self.target {
+            DrumAutomationTarget::TrackVolume => Some(DrumAutomationLanding::TrackVolume),
+            DrumAutomationTarget::TrackPan => Some(DrumAutomationLanding::TrackPan),
+            DrumAutomationTarget::DeviceParam { param, .. } => {
+                for (slot_index, names) in device_param_names.iter().enumerate() {
+                    if let Some(param_index) = names.iter().position(|name| name == param) {
+                        return Some(DrumAutomationLanding::DeviceParam {
+                            slot_index,
+                            param_index,
+                        });
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
+/// 效果族参数的自动化取值域表：（族， 参数名， 下限， 上限）。
+///
+/// 参数名全集 = 本格式 `fx` 配方能写出的名字（[`drum_fx_device_specs`]
+/// 各族参数表的并集，含通道条的条件参数 `hpf_hz` / `cutoff_hz` /
+/// `filter_enabled` / `output_gain_db`）；值域 = 对应预置字段的解析
+/// 值域（与 `parse_eq` / `parse_comp` 等的 `get_f32_ranged` 钉值逐条
+/// 一致——同一参数只许有一套合法区间，改一处必须同步另一处）。
+/// 表外名字 = 未知参数，解析期响亮拒绝。
+const DRUM_FX_PARAM_DOMAINS: &[(&str, &str, f32, f32)] = &[
+    // 通道条（strip）：EQ 段。
+    ("strip", "eq_enabled", 0.0, 1.0),
+    ("strip", "eq_low_gain", -18.0, 18.0),
+    ("strip", "eq_low_freq", 20.0, 1000.0),
+    ("strip", "eq_mid_gain", -18.0, 18.0),
+    ("strip", "eq_mid_freq", 100.0, 8000.0),
+    ("strip", "eq_mid_q", 0.3, 6.0),
+    ("strip", "eq_high_gain", -18.0, 18.0),
+    ("strip", "eq_high_freq", 1000.0, 16000.0),
+    ("strip", "hpf_hz", 0.0, 500.0),
+    ("strip", "filter_enabled", 0.0, 1.0),
+    ("strip", "cutoff_hz", 800.0, 20000.0),
+    // 通道条（strip）：压缩段 + 输出微调。
+    ("strip", "compressor_enabled", 0.0, 1.0),
+    ("strip", "threshold_db", -60.0, 0.0),
+    ("strip", "ratio", 1.0, 20.0),
+    ("strip", "knee_db", 0.0, 24.0),
+    ("strip", "attack_s", 0.0005, 0.2),
+    ("strip", "release_s", 0.01, 1.0),
+    ("strip", "makeup_db", -12.0, 12.0),
+    ("strip", "output_gain_db", -12.0, 12.0),
+    // 磁带（tape）。
+    ("tape", "tape_drive", 0.0, 1.0),
+    ("tape", "tape_mix", 0.0, 1.0),
+    ("tape", "tape_hf_hz", 2000.0, 20000.0),
+    ("tape", "tape_asym", 0.0, 0.5),
+    // 混响（reverb）。`reverb_kind` 是离散档位（0..=3），列入表内是
+    // 为了让拼写合法性有单一判据；把它写成连续自动化没有音乐意义，
+    // 但格式层不替作者做审美裁决，只钉值域。
+    ("reverb", "reverb_kind", 0.0, 3.0),
+    ("reverb", "reverb_decay_s", 0.1, 10.0),
+    ("reverb", "reverb_damp", 0.0, 1.0),
+    ("reverb", "reverb_wet", 0.0, 1.0),
+    ("reverb", "reverb_predelay", 0.0, 0.1),
+    // 延迟（delay）。
+    ("delay", "delay_time_s", 0.01, 2.0),
+    ("delay", "delay_feedback", 0.0, 0.9),
+    ("delay", "delay_mix", 0.0, 0.6),
+    ("delay", "delay_damp", 0.0, 1.0),
+    ("delay", "delay_ping_pong", 0.0, 1.0),
+    // 瞬态塑形（transient）。
+    ("transient", "transient_attack", -1.0, 1.0),
+    ("transient", "transient_sustain", -1.0, 1.0),
+    // 比特碾碎（crusher）。
+    ("crusher", "crush_bits", 4.0, 16.0),
+    ("crusher", "crush_down", 1.0, 64.0),
+    ("crusher", "crush_aa", 0.0, 1.0),
+    // 噪声源（noise）。
+    ("noise", "noise_level", 0.0, 1.0),
+    ("noise", "noise_color", 0.0, 1.0),
+    ("noise", "noise_crackle_density", 0.0, 240.0),
+    ("noise", "noise_crackle_level", 0.0, 1.0),
+    ("noise", "noise_seed", 0.0, 16777215.0),
+];
+
+/// 查一个效果族参数的自动化取值域；名字不在格式参数表内 ⇒ `None`
+/// （未知参数，调用方响亮拒绝）。生成路径与解析校验共用这一份表。
+#[must_use]
+pub fn drum_fx_param_domain(family: &str, param: &str) -> Option<(f32, f32)> {
+    DRUM_FX_PARAM_DOMAINS
+        .iter()
+        .find(|(fam, name, _, _)| *fam == family && *name == param)
+        .map(|(_, _, min, max)| (*min, *max))
+}
+
+/// 族名是否在自动化词表内（`DrumFxDeviceSpec::family` 的七族）。
+fn drum_fx_family_known(family: &str) -> bool {
+    DRUM_FX_PARAM_DOMAINS
+        .iter()
+        .any(|(fam, _, _, _)| *fam == family)
+}
+
 /// 一个风格预置。（不派生 `Eq`：`fx` 段含 `f32`。）
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumStylePreset {
@@ -528,6 +775,9 @@ pub struct DrumStylePreset {
     pub fx: Option<DrumFxPreset>,
     /// 鼓总线预置（`bus` 段）；`None` = 文件未带总线段，生成不建总线。
     pub bus: Option<DrumBusPreset>,
+    /// 自动化段（`automation` 段）；空表 = 文件未带自动化段，
+    /// 生成不写自动化泳道（与本字段引入前行为逐位一致）。
+    pub automation: Vec<DrumAutomationPreset>,
     /// 原声族的 SFZ 鼓组路径覆盖（`sfz_path` 字段，仓库相对路径）；
     /// `None` = 用默认基础组 [`ACOUSTIC_KIT_SFZ_PATH`]。电子族忽略。
     pub sfz_path: Option<String>,
@@ -637,6 +887,9 @@ impl DrumStylePreset {
                 Some(parse_bus(bus_obj)?)
             }
         };
+        // 自动化段在 fx 之后解析：器件目标要对 fx 的在场形状校验
+        // （无 fx 段 / 无对应子段 ⇒ 目标无处落，解析期响亮拒绝）。
+        let automation = parse_automation(obj, fx.as_ref(), bars)?;
         let sfz_path = match get_opt(obj, "sfz_path") {
             None => None,
             Some(raw) => {
@@ -670,6 +923,7 @@ impl DrumStylePreset {
             lane_chains,
             fx,
             bus,
+            automation,
             sfz_path,
         })
     }
@@ -1151,6 +1405,261 @@ fn parse_noise(obj: &[(String, Json)], base: &str) -> Result<DrumNoisePreset, Dr
             16_777_215.0,
         )?,
     })
+}
+
+/// 自动化目标引用的效果族在预置 `fx` 段里是否真有着陆器件：
+/// `strip` / `reverb` 随 `fx` 本身在场；其余五族要有对应子段。
+/// 没有着陆器件的目标是内容错误（生成时无处落），解析期拒绝。
+fn automation_family_lands(fx: Option<&DrumFxPreset>, family: &str) -> bool {
+    let Some(fx) = fx else {
+        return false;
+    };
+    match family {
+        "strip" | "reverb" => true,
+        "tape" => fx.tape.is_some(),
+        "delay" => fx.delay.is_some(),
+        "transient" => fx.transient.is_some(),
+        "crusher" => fx.crusher.is_some(),
+        "noise" => fx.noise.is_some(),
+        _ => false,
+    }
+}
+
+/// 解析一个自动化目标字符串（`automation[i].target`）：词表与值域
+/// 见 [`DrumAutomationTarget`] 与 [`DRUM_FX_PARAM_DOMAINS`]。
+/// 未知目标 / 未知族 / 未知参数 / 目标无着陆器件 / 条件参数未启用，
+/// 全部响亮拒绝并点名（默认不能静默）。
+fn parse_automation_target(
+    raw: &str,
+    fx: Option<&DrumFxPreset>,
+    idx: usize,
+) -> Result<DrumAutomationTarget, DrumPresetError> {
+    let field = "automation.target";
+    match raw {
+        "track_volume" => return Ok(DrumAutomationTarget::TrackVolume),
+        "track_pan" => return Ok(DrumAutomationTarget::TrackPan),
+        _ => {}
+    }
+    let Some((family, param)) = raw.split_once('.') else {
+        return Err(field_err(
+            field,
+            format!(
+                "segment {idx}: unknown automation target {raw:?} (expected track_volume, track_pan, or <family>.<param>)"
+            ),
+        ));
+    };
+    if !drum_fx_family_known(family) {
+        return Err(field_err(
+            field,
+            format!(
+                "segment {idx}: unknown effect family {family:?} in target {raw:?} (expected strip/tape/reverb/delay/transient/crusher/noise)"
+            ),
+        ));
+    }
+    if drum_fx_param_domain(family, param).is_none() {
+        return Err(field_err(
+            field,
+            format!(
+                "segment {idx}: unknown parameter {param:?} for family {family:?} in target {raw:?}"
+            ),
+        ));
+    }
+    if !automation_family_lands(fx, family) {
+        return Err(field_err(
+            field,
+            format!(
+                "segment {idx}: target {raw:?} has no device to land on (the preset has no fx section or no fx.{family} subsection)"
+            ),
+        ));
+    }
+    // 通道条的条件参数：`hpf_hz` / `cutoff_hz` / `filter_enabled` /
+    // `output_gain_db` 只在 fx 定值启用对应级时才写进器件参数表
+    // （见 `strip_eq_params` 与 `drum_fx_device_specs`），未启用即
+    // 无落点，与「无对应子段」同罪，解析期拒绝。
+    if family == "strip" {
+        let fx = fx.expect("strip only lands when fx exists");
+        let disabled = match param {
+            "hpf_hz" if fx.hpf_hz <= 0.0 => Some("fx.hpf_hz is 0 (high-pass disabled)"),
+            "cutoff_hz" | "filter_enabled" if fx.cutoff_hz >= 20_000.0 => {
+                Some("fx.cutoff_hz is 20000 (low-pass disabled)")
+            }
+            "output_gain_db" if fx.output_db == 0.0 => {
+                Some("fx.output_db is 0 (no output_gain_db param is written)")
+            }
+            _ => None,
+        };
+        if let Some(reason) = disabled {
+            return Err(field_err(
+                field,
+                format!("segment {idx}: target {raw:?} has no landing param: {reason}"),
+            ));
+        }
+    }
+    Ok(DrumAutomationTarget::DeviceParam {
+        family: family.to_owned(),
+        param: param.to_owned(),
+    })
+}
+
+/// 解析自动化段（`automation`）：缺省（无此键）⇒ 空表，与引入本段
+/// 前的行为一致。形状与值域的全部校验都在这里一次钉死，生成路径
+/// 只做落点换算，不再猜测：段必须是对象、目标必须可解析、点列
+/// 非空、tick 严格升序且不越 pattern 全长、值在目标值域内、
+/// 同一目标不许出现两段。
+fn parse_automation(
+    obj: &[(String, Json)],
+    fx: Option<&DrumFxPreset>,
+    bars: u32,
+) -> Result<Vec<DrumAutomationPreset>, DrumPresetError> {
+    let Some(raw) = get_opt(obj, "automation") else {
+        return Ok(Vec::new());
+    };
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| field_err("automation", "automation must be an array"))?;
+    let span = u64::from(bars) * crate::drum_gen::TICKS_PER_BAR;
+    let mut segments: Vec<DrumAutomationPreset> = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        let seg = item
+            .as_object()
+            .ok_or_else(|| field_err("automation", format!("segment {idx} must be an object")))?;
+        let target_raw = match get_opt(seg, "target") {
+            Some(Json::Str(s)) => s.clone(),
+            _ => {
+                return Err(field_err(
+                    "automation.target",
+                    format!("segment {idx}: `target` is required and must be a string"),
+                ));
+            }
+        };
+        let target = parse_automation_target(&target_raw, fx, idx)?;
+        if segments
+            .iter()
+            .any(|s: &DrumAutomationPreset| s.target == target)
+        {
+            return Err(field_err(
+                "automation.target",
+                format!(
+                    "segment {idx}: duplicate automation segment for target `{}`",
+                    target.describe()
+                ),
+            ));
+        }
+        let curve = match get_opt(seg, "curve") {
+            None => DrumAutomationCurve::Linear,
+            Some(Json::Str(s)) => DrumAutomationCurve::from_name(s, "automation.curve")?,
+            Some(_) => {
+                return Err(field_err(
+                    "automation.curve",
+                    format!("segment {idx}: `curve` must be a string"),
+                ));
+            }
+        };
+        let points_raw = match get_opt(seg, "points") {
+            Some(Json::Arr(points)) => points,
+            _ => {
+                return Err(field_err(
+                    "automation.points",
+                    format!(
+                        "segment {idx} ({}): `points` is required and must be an array of [tick, value] pairs",
+                        target.describe()
+                    ),
+                ));
+            }
+        };
+        if points_raw.is_empty() {
+            return Err(field_err(
+                "automation.points",
+                format!(
+                    "segment {idx} ({}): points must not be empty (omit the segment instead)",
+                    target.describe()
+                ),
+            ));
+        }
+        let (min, max) = target.value_domain();
+        let mut points: Vec<DrumAutomationPoint> = Vec::with_capacity(points_raw.len());
+        for (j, point_raw) in points_raw.iter().enumerate() {
+            let pair = match point_raw {
+                Json::Arr(pair) if pair.len() == 2 => pair,
+                _ => {
+                    return Err(field_err(
+                        "automation.points",
+                        format!(
+                            "segment {idx} ({}): point {j} must be a [tick, value] pair",
+                            target.describe()
+                        ),
+                    ));
+                }
+            };
+            let tick_raw = match &pair[0] {
+                Json::Num(n) => *n,
+                _ => {
+                    return Err(field_err(
+                        "automation.points",
+                        format!(
+                            "segment {idx} ({}): point {j} tick must be a number",
+                            target.describe()
+                        ),
+                    ));
+                }
+            };
+            // fract 先行：非整数 tick 在转 u64 前拒绝；`as` 对超大
+            // 浮点是饱和转换，饱和值随后被 span 检查抓住，不会绕过。
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let tick = tick_raw as u64;
+            if tick_raw.fract() != 0.0 || tick_raw < 0.0 || tick > span {
+                return Err(field_err(
+                    "automation.points",
+                    format!(
+                        "segment {idx} ({}): point {j} tick {tick_raw} out of 0..={span} (the pattern span) or not an integer",
+                        target.describe()
+                    ),
+                ));
+            }
+            let value_raw = match &pair[1] {
+                Json::Num(n) => *n,
+                _ => {
+                    return Err(field_err(
+                        "automation.points",
+                        format!(
+                            "segment {idx} ({}): point {j} value must be a number",
+                            target.describe()
+                        ),
+                    ));
+                }
+            };
+            if !value_raw.is_finite() || value_raw < f64::from(min) || value_raw > f64::from(max) {
+                return Err(field_err(
+                    "automation.points",
+                    format!(
+                        "segment {idx} ({}): point {j} value {value_raw} out of {min}..={max} for this target",
+                        target.describe()
+                    ),
+                ));
+            }
+            #[allow(clippy::cast_possible_truncation)] // 已校验落在目标值域（f32 可承载）内
+            let value = value_raw as f32;
+            if let Some(prev) = points.last()
+                && tick <= prev.tick
+            {
+                return Err(field_err(
+                    "automation.points",
+                    format!(
+                        "segment {idx} ({}): point ticks must be strictly ascending (point {j} tick {tick} <= previous {})",
+                        target.describe(),
+                        prev.tick
+                    ),
+                ));
+            }
+            points.push(DrumAutomationPoint { tick, value });
+        }
+        segments.push(DrumAutomationPreset {
+            target,
+            curve,
+            points,
+        });
+    }
+    Ok(segments)
 }
 
 fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
@@ -4552,5 +5061,243 @@ mod tests {
         let specs = drum_lane_device_specs(chain);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].family, "noise");
+    }
+
+    // ------------------------------------------------ 自动化段（P5）
+
+    /// 夹具 fx 段：hpf 关（0）、低通关（20000）、output 0 —— 通道条
+    /// 的三个条件参数都未启用，供条件参数拒绝判据用。
+    const FIXTURE_FX: &str = r#""fx": {"eq": {"low_db": 0, "mid_db": 0, "high_db": 0, "low_hz": 100, "mid_hz": 1000, "mid_q": 1, "high_hz": 8000, "hpf_hz": 0, "cutoff_hz": 20000}, "comp": {"threshold_db": -12, "ratio": 2, "knee_db": 6, "attack_s": 0.01, "release_s": 0.1, "makeup_db": 0}, "output_db": 0, "reverb": {"kind": "room", "decay_s": 1.2, "damp": 0.5, "wet": 0.2, "predelay_s": 0.01}}"#;
+
+    fn preset_with_automation(fx: Option<&str>, automation: &str) -> String {
+        let fx_part = fx.map_or_else(String::new, |fx| format!(", {fx}"));
+        preset_with_lanes(
+            "electronic",
+            &[36],
+            &format!("{fx_part}, \"automation\": {automation}"),
+        )
+    }
+
+    #[test]
+    fn automation_absent_means_empty_and_factory_only_edm_carries_it() {
+        let plain = DrumStylePreset::from_json(MINIMAL).expect("valid preset");
+        assert!(plain.automation.is_empty(), "无 automation 段 = 空表");
+
+        // 出厂 14 风格全部可解析；只有 edm 写了自动化段，其余 13 份
+        // 空表（生成逐位不变的格式侧钉子）。
+        let styles = factory_drum_styles().expect("factory styles parse");
+        assert_eq!(styles.len(), 14);
+        for preset in &styles {
+            if preset.id == "edm" {
+                assert_eq!(preset.automation.len(), 1, "edm 带一段自动化");
+                let segment = &preset.automation[0];
+                assert_eq!(
+                    segment.target,
+                    DrumAutomationTarget::DeviceParam {
+                        family: "reverb".to_owned(),
+                        param: "reverb_wet".to_owned(),
+                    }
+                );
+                assert_eq!(segment.curve, DrumAutomationCurve::SCurve);
+                let points: Vec<(u64, f32)> =
+                    segment.points.iter().map(|p| (p.tick, p.value)).collect();
+                assert_eq!(points, vec![(0, 0.10), (3840, 0.15), (7680, 0.22)]);
+            } else {
+                assert!(preset.automation.is_empty(), "{} 不带自动化段", preset.id);
+            }
+        }
+    }
+
+    #[test]
+    fn automation_segment_parses_targets_points_curve_and_landing() {
+        let text = preset_with_automation(
+            Some(FIXTURE_FX),
+            r#"[
+                {"target": "track_pan", "points": [[0, -0.5], [3840, 0.5]]},
+                {"target": "track_volume", "curve": "exponential", "points": [[0, -6.0], [3840, -3.0]]},
+                {"target": "reverb.reverb_wet", "points": [[0, 0.2], [1920, 0.35]]}
+            ]"#,
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid automation");
+        assert_eq!(preset.automation.len(), 3);
+        // 缺省 curve = linear（格式级缺省，落点时逐点展开）。
+        assert_eq!(preset.automation[0].target, DrumAutomationTarget::TrackPan);
+        assert_eq!(preset.automation[0].curve, DrumAutomationCurve::Linear);
+        assert_eq!(preset.automation[0].points[1].tick, 3840);
+        assert_eq!(preset.automation[0].points[1].value, 0.5);
+        assert_eq!(
+            preset.automation[1].target,
+            DrumAutomationTarget::TrackVolume
+        );
+        assert_eq!(preset.automation[1].curve, DrumAutomationCurve::Exponential);
+        // 落点换算：轨级目标直接成形；器件参数按名取第一台命中器件。
+        let devices: Vec<Vec<String>> = vec![
+            vec!["kick_tune_hz".to_owned()],
+            vec![
+                "reverb_kind".to_owned(),
+                "reverb_decay_s".to_owned(),
+                "reverb_damp".to_owned(),
+                "reverb_wet".to_owned(),
+                "reverb_predelay".to_owned(),
+            ],
+        ];
+        assert_eq!(
+            preset.automation[0].landing(&devices),
+            Some(DrumAutomationLanding::TrackPan)
+        );
+        assert_eq!(
+            preset.automation[1].landing(&devices),
+            Some(DrumAutomationLanding::TrackVolume)
+        );
+        assert_eq!(
+            preset.automation[2].landing(&devices),
+            Some(DrumAutomationLanding::DeviceParam {
+                slot_index: 1,
+                param_index: 3,
+            })
+        );
+        // 器件不在轨上 ⇒ 无落点（生成路径据此响亮拒绝，不静默丢段）。
+        assert_eq!(preset.automation[2].landing(&[]), None);
+        // 参数词表自查：已知参数有值域，未知名字无。
+        assert_eq!(
+            drum_fx_param_domain("reverb", "reverb_wet"),
+            Some((0.0, 1.0))
+        );
+        assert_eq!(drum_fx_param_domain("reverb", "reverb_wetness"), None);
+        assert_eq!(drum_fx_param_domain("echo", "delay_mix"), None);
+    }
+
+    #[test]
+    fn automation_rejections_are_loud_and_name_the_field() {
+        let seg = |target: &str, points: &str| {
+            format!(r#"[{{"target": "{target}", "points": {points}}}]"#)
+        };
+        let cases: Vec<(String, &str)> = vec![
+            // 未知参数名 / 未知族 / 未知裸目标。
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    &seg("reverb.reverb_wetness", "[[0, 0.2]]"),
+                ),
+                "automation.target",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("echo.delay_mix", "[[0, 0.2]]")),
+                "automation.target",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("sidechain", "[[0, 0.2]]")),
+                "automation.target",
+            ),
+            // 器件目标无 fx 段可落。
+            (
+                preset_with_automation(None, &seg("reverb.reverb_wet", "[[0, 0.2]]")),
+                "automation.target",
+            ),
+            // fx 在场但无 tape 子段。
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("tape.tape_mix", "[[0, 0.2]]")),
+                "automation.target",
+            ),
+            // 条件参数未启用（hpf 关 / output 0）。
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("strip.hpf_hz", "[[0, 100.0]]")),
+                "automation.target",
+            ),
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    &seg("strip.output_gain_db", "[[0, 1.0]]"),
+                ),
+                "automation.target",
+            ),
+            // 同一目标两段。
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    r#"[{"target": "track_pan", "points": [[0, 0.0]]}, {"target": "track_pan", "points": [[0, 0.5]]}]"#,
+                ),
+                "automation.target",
+            ),
+            // 空点列。
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[]")),
+                "automation.points",
+            ),
+            // tick 逆序 / 同 tick 两点 / 非整数 tick / 越 pattern 全长（bars=1 ⇒ 3840）。
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    &seg("track_pan", "[[100, 0.0], [50, 0.5]]"),
+                ),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    &seg("track_pan", "[[100, 0.0], [100, 0.5]]"),
+                ),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[[0.5, 0.0]]")),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[[3841, 0.0]]")),
+                "automation.points",
+            ),
+            // 值越目标值域（声相 ±1 / 混响湿 0..=1 / 音量 −60..=12）。
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[[0, 1.5]]")),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("reverb.reverb_wet", "[[0, -0.1]]")),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_volume", "[[0, 13.0]]")),
+                "automation.points",
+            ),
+            // 点形状错误（单元素 / 非数组元素）。
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[[0]]")),
+                "automation.points",
+            ),
+            (
+                preset_with_automation(Some(FIXTURE_FX), &seg("track_pan", "[0, 0.5]")),
+                "automation.points",
+            ),
+            // 未知曲线名。
+            (
+                preset_with_automation(
+                    Some(FIXTURE_FX),
+                    r#"[{"target": "track_pan", "curve": "wobbly", "points": [[0, 0.0]]}]"#,
+                ),
+                "automation.curve",
+            ),
+        ];
+        for (text, field) in &cases {
+            match DrumStylePreset::from_json(text) {
+                Err(DrumPresetError::Field {
+                    field: got,
+                    message,
+                }) => {
+                    assert_eq!(&got, field, "错误须点名字段: {message}");
+                }
+                other => panic!("非法自动化段须响亮拒绝（期望字段 {field}），实际: {other:?}"),
+            }
+        }
+        // 对照：启用 hpf 后 strip.hpf_hz 合法（条件参数的放行侧）。
+        let fx_hpf = FIXTURE_FX.replace("\"hpf_hz\": 0", "\"hpf_hz\": 120");
+        let ok = preset_with_automation(
+            Some(&fx_hpf),
+            &seg("strip.hpf_hz", "[[0, 120.0], [3840, 300.0]]"),
+        );
+        assert!(
+            DrumStylePreset::from_json(&ok).is_ok(),
+            "hpf 启用后可自动化"
+        );
     }
 }

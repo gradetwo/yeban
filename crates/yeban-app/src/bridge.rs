@@ -2862,7 +2862,11 @@ pub fn drum_gen_target<'a>(
 ///    既有轨已有用户逐件链 ⇒ 不覆盖（用户链优先，与 MCP 同口径）；
 ///    生成前先过逐件链生成校验（choke 拆分 ⇒ 响亮拒绝）；预置的侧链
 ///    声明同步落成同轨 lane 级侧链边（期 4，与 MCP 同口径）；
-/// 5. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
+/// 5. 预置带 `automation` 段时逐段落成自动化泳道（`SetAutomationLane`，
+///    一段一条、整表写入）：器件参数按名在生成后的鼓轨器件表上换算
+///    （槽位，参数下标），找不到落点 ⇒ 响亮拒绝；既有轨已有该目标的
+///    用户泳道 ⇒ 不覆盖（用户自动化优先，与逐件链同一口径）；
+/// 6. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
 ///    （tick 0 起、时长 = 小节数 × [`yeban_theory::TICKS_PER_BAR`]）。
 ///
 /// # Errors
@@ -3008,6 +3012,21 @@ pub fn drum_gen_ops(
     };
 
     let mut kit_added_device = false;
+    // 自动化落点换算用的器件参数名表（按生成后鼓轨的最终槽位序）：
+    // 先抄目标轨既有器件，生成中装入的器件在各插入点按插入序追加。
+    let mut device_param_names: Vec<Vec<String>> = target.map_or_else(Vec::new, |track| {
+        track
+            .devices
+            .iter()
+            .map(|device| {
+                device
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect()
+            })
+            .collect()
+    });
     if !has_instrument {
         match yeban_theory::kit_setup(preset) {
             yeban_theory::DrumKitSetup::AcousticSfz { sfz_path } => {
@@ -3047,6 +3066,8 @@ pub fn drum_gen_ops(
                         plugin: None,
                     },
                 });
+                device_param_names
+                    .push(device_params.iter().map(|(name, _)| name.clone()).collect());
             }
         }
     }
@@ -3060,6 +3081,13 @@ pub fn drum_gen_ops(
             slot_index += 1;
         }
         for device in drum_fx_devices(fx, present) {
+            device_param_names.push(
+                device
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+            );
             ops.push(Op::InsertDevice {
                 track_id,
                 slot_index,
@@ -3126,6 +3154,70 @@ pub fn drum_gen_ops(
                 });
             }
         }
+    }
+
+    // 自动化（预置带 `automation` 段时）：逐段落成一条自动化泳道
+    // （`SetAutomationLane` 整表写入，与 MIDI 导入的 CC 泳道同一落法；
+    // 点的 tick 是 pattern 内坐标，本路径片段恒摆在 tick 0，无平移）。
+    // 器件参数在上面攒齐的最终器件表上按名换算落点；换算不到 ⇒
+    // 响亮拒绝（预置写了自动化却无处落 = 内容错误，不许静默丢段）。
+    // 既有轨已有该目标的用户泳道 ⇒ 跳过该段（用户自动化优先，与
+    // 逐件链不覆盖同一口径）；新轨恒无既有泳道。
+    for segment in &preset.automation {
+        let Some(landing) = segment.landing(&device_param_names) else {
+            return Err(format!(
+                "风格 `{}` 的自动化目标 `{}` 在生成后的鼓轨上找不到落点（目标参数不在轨上器件中）",
+                preset.id,
+                segment.target.describe()
+            ));
+        };
+        let auto_target = match landing {
+            yeban_theory::DrumAutomationLanding::TrackVolume => {
+                AutomationTarget::TrackVolume { track_id }
+            }
+            yeban_theory::DrumAutomationLanding::TrackPan => {
+                AutomationTarget::TrackPan { track_id }
+            }
+            yeban_theory::DrumAutomationLanding::DeviceParam {
+                slot_index,
+                param_index,
+            } => AutomationTarget::DeviceParam {
+                track_id,
+                slot_index,
+                param_index,
+            },
+        };
+        if target.is_some_and(|track| track.automation_lanes.contains_key(&auto_target)) {
+            continue;
+        }
+        let curve = drum_automation_curve(segment.curve);
+        let points: BTreeMap<EntityId, AutomationPoint> = segment
+            .points
+            .iter()
+            .map(|point| {
+                let id = EntityId::new();
+                (
+                    id,
+                    AutomationPoint {
+                        id,
+                        tick: point.tick,
+                        value: point.value,
+                        curve,
+                    },
+                )
+            })
+            .collect();
+        ops.push(Op::SetAutomationLane {
+            target: auto_target,
+            old_lane: None,
+            new_lane: AutomationLane {
+                target: auto_target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        });
     }
 
     let generated = yeban_theory::generate_drum_pattern(preset, params)
@@ -3213,6 +3305,17 @@ fn drum_spec_device(spec: yeban_theory::DrumFxDeviceSpec) -> DeviceDefinition {
             .collect(),
         latency_samples: 0,
         plugin: None,
+    }
+}
+
+/// 预置自动化曲线（theory 侧镜像枚举）→ 模型 `CurveType`；生成路径
+/// 逐点写入 `AutomationPoint::curve`（模型侧该字段必需、无缺省）。
+fn drum_automation_curve(curve: yeban_theory::DrumAutomationCurve) -> yeban_model::CurveType {
+    match curve {
+        yeban_theory::DrumAutomationCurve::Linear => yeban_model::CurveType::Linear,
+        yeban_theory::DrumAutomationCurve::Exponential => yeban_model::CurveType::Exponential,
+        yeban_theory::DrumAutomationCurve::Logarithmic => yeban_model::CurveType::Logarithmic,
+        yeban_theory::DrumAutomationCurve::SCurve => yeban_model::CurveType::SCurve,
     }
 }
 
@@ -11159,6 +11262,145 @@ mod tests {
                 preset.id
             );
         }
+    }
+
+    #[test]
+    fn drum_gen_ops_edm_lands_reverb_wet_automation_lane() {
+        let project = filled_project();
+        let preset = yeban_theory::factory_drum_style("edm")
+            .unwrap()
+            .expect("edm 预置必须存在");
+        let ops = drum_gen_ops(&project, &preset, &drum_params(), None).expect("新建鼓轨批次");
+        let track_id = match &ops[0] {
+            Op::AddTrack { track } => track.id,
+            other => panic!("unexpected op: {other:?}"),
+        };
+        let lanes: Vec<&Op> = ops
+            .iter()
+            .filter(|op| matches!(op, Op::SetAutomationLane { .. }))
+            .collect();
+        assert_eq!(lanes.len(), 1, "edm 只带一段自动化: {ops:?}");
+        match lanes[0] {
+            Op::SetAutomationLane {
+                target,
+                old_lane,
+                new_lane,
+            } => {
+                // 新轨 edm 器件序：合成鼓组 0、通道条 1、混响 2、延迟 3；
+                // reverb_wet 是混响参数表第 3 号（kind/decay/damp 之后）。
+                assert_eq!(
+                    *target,
+                    AutomationTarget::DeviceParam {
+                        track_id,
+                        slot_index: 2,
+                        param_index: 3,
+                    }
+                );
+                assert!(old_lane.is_none(), "新轨无旧泳道");
+                assert_eq!(new_lane.target, *target);
+                assert!(new_lane.read_enabled, "生成泳道默认读开");
+                assert_eq!(new_lane.write_mode, AutomationWriteMode::Off);
+                assert!(new_lane.domain.is_none());
+                let mut points: Vec<(u64, f32)> = new_lane
+                    .points
+                    .values()
+                    .map(|p| (p.tick, p.value))
+                    .collect();
+                points.sort_by_key(|(tick, _)| *tick);
+                assert_eq!(points, vec![(0, 0.10), (3840, 0.15), (7680, 0.22)]);
+                assert!(
+                    new_lane
+                        .points
+                        .values()
+                        .all(|p| p.curve == yeban_model::CurveType::SCurve),
+                    "段级 s_curve 逐点展开"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_style_without_automation_emits_no_lane_op() {
+        let project = filled_project();
+        let preset = yeban_theory::factory_drum_style("trap")
+            .unwrap()
+            .expect("trap 预置必须存在");
+        let ops = drum_gen_ops(&project, &preset, &drum_params(), None).expect("新建鼓轨批次");
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::SetAutomationLane { .. })),
+            "无 automation 段 ⇒ 无泳道 op: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn drum_gen_ops_existing_track_user_automation_lane_wins() {
+        // 既有轨：用户混响在槽 0（reverb_wet 是其参数 0），且该目标
+        // 已有用户泳道 ⇒ edm 的自动化段跳过，不覆盖用户泳道。
+        let mut project = filled_project();
+        let track_id = EntityId::new();
+        let user_target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 0,
+            param_index: 0,
+        };
+        let point_id = EntityId::new();
+        let mut automation_lanes = BTreeMap::new();
+        automation_lanes.insert(
+            user_target,
+            AutomationLane {
+                target: user_target,
+                points: BTreeMap::from([(
+                    point_id,
+                    AutomationPoint {
+                        id: point_id,
+                        tick: 0,
+                        value: 0.9,
+                        curve: yeban_model::CurveType::Linear,
+                    },
+                )]),
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+        let equipped = TrackV3 {
+            id: track_id,
+            name: "我的鼓轨".to_owned(),
+            kind: TrackKind::Midi,
+            sampler: Some(SamplerBinding {
+                path: "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz".to_owned(),
+                note_octave_override: None,
+            }),
+            devices: vec![DeviceDefinition {
+                id: EntityId::new(),
+                name: "我的混响".to_owned(),
+                kind: DeviceKind::InternalEffect,
+                bypassed: false,
+                params: vec![ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 0.9,
+                    unit: None,
+                }],
+                latency_samples: 0,
+                plugin: None,
+            }],
+            automation_lanes,
+            ..TrackV3::default()
+        };
+        project.tracks.insert(track_id, equipped);
+        let target = project.tracks.get(&track_id).unwrap();
+        let preset = yeban_theory::factory_drum_style("edm")
+            .unwrap()
+            .expect("edm 预置必须存在");
+        let ops =
+            drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::SetAutomationLane { .. })),
+            "用户泳道优先，自动化段必须跳过: {ops:?}"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ unknown shapes and out-of-range values are loud errors, never guesses.
 | `fx` | object, optional | per-style insert FX layer (see below); absent = dry generation. All 14 factory presets carry one, each tuned individually |
 | `bus` | object, optional | drum-bus chain (see below); absent = drum track connects straight to the master bus. All 14 factory presets carry one |
 | `lane_chains` | array, optional | per-lane (per-piece) processing chains by GM key group (see below); absent = no per-lane chains |
+| `automation` | array, optional | automation segments for the generated drum track (see below); absent = no automation lanes are written |
 | `sfz_path` | string, optional | acoustic family only: repo-relative path of the SFZ kit program to bind; absent = the default basic kit. Each acoustic factory preset names its own program (different mic mix / kit) |
 
 ## `fx` object
@@ -108,6 +109,51 @@ themselves, nothing is silently dropped):
 
 Factory opt-ins shipped with the format: house (hats 42+46, hat EQ),
 trap (closed hat 42, hat EQ), lofi (kick 36, darkening EQ).
+
+## `automation` array (optional, preset automation segments)
+
+Each segment becomes one automation lane on the generated drum track,
+written with the project's existing automation model (one
+`SetAutomationLane` op per segment; the lane is evaluated by the
+renderer's device-param automation at block boundaries — no second
+automation semantics). A segment is
+`{"target": string, "curve": string (optional), "points": [[tick, value], ...]}`:
+
+- `target`: `track_volume` (drum-track volume, −60..=12 dB),
+  `track_pan` (drum-track pan, −1..=1 — this is where an Auto-Pan
+  gesture is written), or `<family>.<param>` addressing one parameter
+  of the drum track's FX layer. `family` is the FX device family
+  (`strip`/`tape`/`reverb`/`delay`/`transient`/`crusher`/`noise`);
+  `param` is the canonical device-param spelling (e.g. `reverb_wet`,
+  `delay_mix`). The legal param set and value range per family are
+  exactly the params and ranges the `fx` section itself can write.
+  Lane-chain and drum-bus devices are not addressable here.
+- `points`: `[tick, value]` pairs; non-empty, ticks strictly
+  ascending, integer ticks within `0..=bars * 3840` (960 PPQ; the end
+  point may sit exactly on the pattern end), values finite and inside
+  the target's range. Point ticks are pattern-relative; generation
+  shifts them by the clip's placement start tick.
+- `curve`: `linear` (default), `exponential`, `logarithmic`, or
+  `s_curve` — the segment's curve shape, expanded onto every point
+  when the lane is written (the project model stores a curve per
+  point and has no default).
+
+Parse-time loud rejections: unknown target/family/param, a device
+target whose FX family is absent from the preset's `fx` section
+(including the strip's conditional params `hpf_hz`, `cutoff_hz`,
+`filter_enabled`, `output_gain_db` when the corresponding stage is
+disabled), duplicate targets, empty point lists, non-ascending or
+out-of-span ticks, out-of-range values, unknown curve names.
+
+Generation conventions: a segment whose target parameter is not
+found on the generated track (e.g. the target track carries a user
+device of that family without the named param) fails the whole
+generation loudly — a written segment is never dropped silently.
+If the target track already has a user automation lane for the
+resolved target, the segment is skipped (user automation wins, the
+same precedence as lane chains and FX families) and the plan/report
+says so. Factory use: edm only (reverb wet builds 0.10 → 0.15 → 0.22
+across the 2-bar loop, `s_curve`).
 
 ## `source` object
 

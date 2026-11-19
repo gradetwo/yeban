@@ -16,7 +16,8 @@
       "expanded to 2 bars (bar 2 starts as a copy of bar 1)",
       "velocity shaping applied to flat lane(s): kick(36), clap(39), hihat_open(46), shaker(82) (grid formula; varied lanes keep source velocities)",
       "bar 2 variation: extra open hat on the last cell (step 31)",
-      "fill: snare/clap density ramp + open hat 46 on last cell"
+      "fill: snare/clap density ramp + open hat 46 on last cell",
+      "automation (P5): reverb wet builds across the 2-bar loop (0.10 -> 0.15 -> 0.22, s_curve) so the loop leans into its own repeat; static fx.reverb.wet stays 0.15 as the no-automation fallback value"
     ]
   },
   "kit_family": "electronic",
@@ -56,6 +57,13 @@
       "ping_pong": true
     }
   },
+  "automation": [
+    {
+      "target": "reverb.reverb_wet",
+      "curve": "s_curve",
+      "points": [[0, 0.1], [3840, 0.15], [7680, 0.22]]
+    }
+  ],
   "bpm": {
     "default": 128,
     "min": 126,
