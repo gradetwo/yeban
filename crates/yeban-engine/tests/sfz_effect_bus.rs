@@ -47,6 +47,8 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// SFX-1：`effect1=0` ⇒ 与没有 `<effect>` 的同一份乐器**逐位相同**。
+/// 同一义务在 ADR-0077 D5 的表述为 `S-bus-0`：同一份夹具、同一块长度、
+/// `to_bits` 全等——本判据即其落点，两 ID 同指。
 #[test]
 fn a_zero_send_is_bit_identical_to_a_plain_instrument() {
     let plain = render_note(&prepare("<region> sample=a.wav lokey=60 hikey=60"), 4);
