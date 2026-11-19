@@ -15939,6 +15939,8 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let scope = roll_scope(&ui, view);
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
+            // 2026-11-19：卷帘把块高从 12px 改到 10px（`NOTE_INSET_Y_PX(2) + 10 <= 14`，
+            // 避免块跨过行底线），此处同步 12→10；否则命中测试上下各多 2px 的"假可点"区。
             // `[D-UI-13]` 作用域过滤发生在命中测试**内部**（择优之前）：⛔ 不是"先在全工程里
             // 挑最后绘制的那颗、再事后丢掉作用域外的" —— 那样别的轨在同一 x/y 上的音符会
             // 遮住正在编辑的这颗，返回 `None`，选区为空，于是选择 / 橡皮擦 / 剪刀 / 箭头
@@ -18393,7 +18395,7 @@ const ROLL_LANE_COUNT: i32 = 16;
 ///
 /// 实测教训: 我第一次写 6.0 而 `.slint` 是 `height: 12px` —— 注释声称"两处必须一致", 实际不一致,
 /// 而判据没抓到（它只点了顶部 3px 内）。现在由 `check_viewport_bounds_wiring.py` 机械钉住。
-const NOTE_HEIGHT_PX: f32 = 12.0;
+const NOTE_HEIGHT_PX: f32 = 10.0;
 
 /// `[UI-NOTE-001]` tick 值转为界面的 `i32` 属性：**饱和**而非回绕。
 ///

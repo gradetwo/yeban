@@ -42,23 +42,30 @@ def main() -> int:
     # 而这种错在界面上看起来只是"少画了几条", 不会被任何既有判据抓住（账本第 202/462 轮）。
     import re
 
-    m_slint = re.search(r"for lane_index in (\d+)", roll)
+    # 2026-11-19 更正：卷帘不再用固定 `for lane_index in 16` 循环（下坞可拖高、行数随高度铺满），
+    # 泳道数改由**音高映射数组**承载 ⇒ 数 `lane-is-white` 的元素个数，与宿主常量对账。
+    m_slint = re.search(r"lane-is-white: \[(.*?)\]", roll, re.S)
     m_host = re.search(r"const ROLL_LANE_COUNT: i32 = (\d+);", host)
     if m_slint is None:
-        problems.append("piano_roll.slint 里找不到 `for lane_index in <N>` ⇒ 本判据失效, 需更新")
+        problems.append("piano_roll.slint 里找不到 `lane-is-white: [...]` ⇒ 本判据失效, 需更新")
     elif m_host is None:
         problems.append("host.rs 里找不到 `const ROLL_LANE_COUNT: i32 = <N>;`")
-    elif m_slint.group(1) != m_host.group(1):
-        problems.append(
-            f"泳道数不一致: .slint 画 {m_slint.group(1)} 条, 宿主常量是 {m_host.group(1)}"
-            " ⇒ 发布的音高上下界与实际绘制不符"
-        )
     else:
-        lane_ok = m_slint.group(1)
+        lanes = len([t for t in m_slint.group(1).replace("\n", " ").split(",") if t.strip()])
+        if lanes != int(m_host.group(1)):
+            problems.append(
+                f"泳道数不一致: .slint 的 `lane-is-white` 有 {lanes} 项, 宿主常量是 {m_host.group(1)}"
+                " ⇒ 发布的音高上下界与实际绘制不符"
+            )
+        else:
+            lane_ok = str(lanes)
 
     # 第六处：宿主常量 `NOTE_HEIGHT_PX` 必须等于 `.slint` 里音符矩形的 `height`。
     # 实测教训（第 501 轮）: 我写了 6.0 而 `.slint` 是 12px, 命中测试于是对下半截无效; 判据没抓到。
-    m_height = re.search(r"width: root\.note-widths\[[^\]]+\];\s*\n\s*height: (\d+)px;", roll)
+    # 2026-11-19 更正：块高与宽度之间允许夹注释行（卷帘在那里写"块高必须留在本行之内"）。
+    m_height = re.search(
+        r"width: root\.note-widths\[[^\]]+\];(?:\s*\n\s*//[^\n]*)*\s*\n\s*height: (\d+)px;", roll
+    )
     m_const = re.search(r"const NOTE_HEIGHT_PX: f32 = (\d+)\.0;", host)
     if m_height is None:
         problems.append("piano_roll.slint 里找不到音符矩形的 `height: <N>px;` ⇒ 本判据失效, 需更新")
