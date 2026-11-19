@@ -18,7 +18,8 @@
    "swing: groove source swing 30% converts to 650 permille; fixed style value 590 used",
    "fill: sparse snare variation only (no crash/tom; kept restrained for lo-fi)",
    "v2 (2026-11-18): family changed acoustic -> electronic per the v2 brief (HipHop synth base + dark processing); the Virtuosity lofi mapping is not a standalone program (it is an include fragment - parse error as an entry point, probed 2026-11-18). Bitcrusher / vinyl noise floor / wow & flutter have no devices yet: approximated with heavy tape, an 8.5 kHz track lowpass and dark reverb; the missing devices are listed as gap lines in the receipt",
-   "Ping-pong delay 0.42 s/mix 0.10 added in v2 loudness/width tuning to widen the synth image (side/mid was 0.016)."
+   "Ping-pong delay 0.42 s/mix 0.10 added in v2 loudness/width tuning to widen the synth image (side/mid was 0.016).",
+   "D3/D4 wiring (2026-11-19): fx.crusher now drives the real Bitcrusher device (bits 10 / down 2 / aa 0.35); the tape + lowpass approximation above stays as the kit's darkness layer. Vinyl noise floor (D5) and wow & flutter (P7) still have no devices and remain gap lines"
   ]
  },
  "kit_family": "electronic",
@@ -61,6 +62,11 @@
    "mix": 0.1,
    "damp": 0.6,
    "ping_pong": true
+  },
+  "crusher": {
+   "bits": 10,
+   "down": 2,
+   "aa": 0.35
   }
  },
  "bpm": {

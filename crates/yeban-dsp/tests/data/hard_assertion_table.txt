@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 420 条：float_bits 91 ／ integer_count 329；其中 hard 75 ／ platform 13
+# 合计 422 条：float_bits 91 ／ integer_count 331；其中 hard 75 ／ platform 13
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -117,10 +117,12 @@ integer_count | no_callee | 0 | - | src/delay.rs | reset_reproduces_a_freshly_bu
 integer_count | no_callee | 0 | - | src/delay.rs | the_delay_time_is_seconds_not_samples
 integer_count | no_callee | 0 | - | src/delay.rs | the_time_floor_is_folded_onto_the_documented_minimum
 integer_count | no_callee | 0 | - | src/delay.rs | two_instances_do_not_share_time_or_feedback
+integer_count | no_callee | 0 | - | src/device_param.rs | crusher_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_spellings_resolve_to_the_same_field
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_conversion_table_at_84_bpm
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_off_or_bad_bpm_keeps_written_time
 integer_count | no_callee | 0 | - | src/device_param.rs | sample_delay_field_spellings_round_trip
+integer_count | no_callee | 0 | - | src/device_param.rs | transient_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | default_preset_coefficients_match_the_groove_formulas
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | kick_style_from_f32_threshold
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | preset_table_is_complete_and_verbatim
