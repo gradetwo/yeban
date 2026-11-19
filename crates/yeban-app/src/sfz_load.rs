@@ -157,7 +157,7 @@ use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
 use yeban_sfz::instrument::is_builtin_silence_sample;
-use yeban_sfz::notation::NotationDetection;
+use yeban_sfz::notation::{NotationDetection, NotationMissReason};
 use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
 /// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
@@ -365,62 +365,93 @@ impl SfzLoadReport {
     /// ⭐ 阶段 2：记法适配的**响亮报告行**（⛔ 绝不静默移位是硬口径）。
     ///
     /// 只在有事可报时产行：文件自带 (a) 生效、(b) 命中、(c) 覆盖生效、
-    /// (b) 未命中但**疑似**（带手动出路）。普通对齐乐器（未命中、无疑似、
-    /// 无 (a)）⇒ 空 —— 它们的完整结论在 [`Self::notation`] 结构里，不刷屏。
+    /// (b) 未命中但**疑似**（带手动出路）、**零证据**（音名键位 + 采样无
+    /// 嵌入根音，独立点名）。普通对齐乐器（未命中、无疑似、无 (a)、非零
+    /// 证据形态）⇒ 空 —— 它们的完整结论在 [`Self::notation`] 结构里，
+    /// 不刷屏。
+    /// 文案构造与 [`SfzDecodeReport::notation_lines`] 共用
+    /// [`notation_report_lines`]（⛔ 不许两份措辞）。
     #[must_use]
     pub fn notation_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        if !self.declared_shifts.is_empty() {
-            let mut values: Vec<i32> = self
-                .declared_shifts
-                .iter()
-                .map(|&(_, shift)| shift)
-                .collect();
-            values.sort_unstable();
-            values.dedup();
-            let rendered: Vec<String> = values.iter().map(|value| format!("{value:+}")).collect();
-            lines.push(format!(
-                "记法适配：文件自带移位（note_offset/octave_offset）在 {} 个 region 生效：{} 半音",
-                self.declared_shifts.len(),
-                rendered.join("/")
-            ));
+        notation_report_lines(
+            &self.declared_shifts,
+            self.notation_source,
+            self.notation_shift,
+            self.notation.as_ref(),
+        )
+    }
+}
+
+/// ⭐ 记法适配响亮行的**唯一**文案构造（装载报告与解码报告共用）。
+///
+/// 入参就是两份报告共同的那组事实：(a) 逐 region 归属、外部移位来源、
+/// 外部移位量、(b) 的结构化结论。规则同 [`SfzLoadReport::notation_lines`]：
+/// 只在有事可报时产行，普通对齐乐器 ⇒ 空。
+fn notation_report_lines(
+    declared_shifts: &[(usize, i32)],
+    notation_source: NotationShiftSource,
+    notation_shift: i32,
+    notation: Option<&NotationDetection>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !declared_shifts.is_empty() {
+        let mut values: Vec<i32> = declared_shifts.iter().map(|&(_, shift)| shift).collect();
+        values.sort_unstable();
+        values.dedup();
+        let rendered: Vec<String> = values.iter().map(|value| format!("{value:+}")).collect();
+        lines.push(format!(
+            "记法适配：文件自带移位（note_offset/octave_offset）在 {} 个 region 生效：{} 半音",
+            declared_shifts.len(),
+            rendered.join("/")
+        ));
+    }
+    match notation_source {
+        NotationShiftSource::AutoDetected => {
+            if let Some(detection) = notation {
+                lines.push(format!(
+                    "记法适配：检测到八度记法冲突，已整体移位 {:+} 半音；证据 {}/{} 个音名 region 的嵌入根音一致（带采样 region 共 {} 个）",
+                    notation_shift,
+                    detection.matching_count(),
+                    detection.evidence_count,
+                    detection.sampled_region_count,
+                ));
+            }
         }
-        match self.notation_source {
-            NotationShiftSource::AutoDetected => {
-                if let Some(detection) = &self.notation {
+        NotationShiftSource::ManualOverride => {
+            if notation_shift != 0 {
+                lines.push(format!(
+                    "记法适配：按工程手动八度覆盖移位 {:+} 半音（手动覆盖优先，自动检测未运行）",
+                    notation_shift,
+                ));
+            }
+        }
+        NotationShiftSource::None => {
+            if let Some(detection) = notation {
+                if detection.miss_reason == Some(NotationMissReason::NoEvidence) {
+                    // ⭐ **零证据独立行**（修复建议第 1 条）：文件用音名写
+                    //    键位、采样却没有嵌入根音 ⇒ 检测**原理上**无从判定。
+                    //    这类文件（SSO 式老库）必须被单独点名并给出手动
+                    //    出路，⛔ 不许与「数字键位、本来就没什么可查」的
+                    //    普通文件一样一行不发。
                     lines.push(format!(
-                        "记法适配：检测到八度记法冲突，已整体移位 {:+} 半音；证据 {}/{} 个音名 region 的嵌入根音一致（带采样 region 共 {} 个）",
-                        self.notation_shift,
-                        detection.matching_count(),
+                        "记法适配：文件用音名写键位（{} 个 region），但采样没有嵌入根音，自动检测零证据、未移位（notation_shift=0 reason=no_evidence evidence={}/{}）；若按作者键位触发静音，多半是采样库的八度记法与夜半的 IPN（C4=60）不一致，可用八度覆盖修正（setTrackSampler 的 noteOctaveOverride 或乐器面板）",
+                        detection.named_key_region_count,
                         detection.evidence_count,
                         detection.sampled_region_count,
                     ));
-                }
-            }
-            NotationShiftSource::ManualOverride => {
-                if self.notation_shift != 0 {
-                    lines.push(format!(
-                        "记法适配：按工程手动八度覆盖移位 {:+} 半音（手动覆盖优先，自动检测未运行）",
-                        self.notation_shift,
-                    ));
-                }
-            }
-            NotationShiftSource::None => {
-                if let Some(detection) = &self.notation
-                    && let Some(suspected) = detection.suspected_shift
-                {
+                } else if let Some(suspected) = detection.suspected_shift {
                     let reason = detection
                         .miss_reason
                         .map_or("证据不足", |reason| reason.describe());
                     lines.push(format!(
-                        "记法适配：疑似八度记法偏移 {:+} 半音，证据不足未自动移位（{reason}）；可在乐器面板手动设八度覆盖",
+                        "记法适配：疑似八度记法偏移 {:+} 半音，证据不足未自动移位（{reason}）；可在乐器面板手动设八度覆盖，或用 setTrackSampler 的 noteOctaveOverride 写入工程",
                         suspected,
                     ));
                 }
             }
         }
-        lines
     }
+    lines
 }
 
 /// 装载一份 SFZ 并（可选）探测一个音符。
@@ -1387,8 +1418,24 @@ pub struct SfzDecodeReport {
     pub notation_shift: i32,
     /// ⭐ 阶段 2：外部移位的来源（自动检测／手动覆盖／无）。
     pub notation_source: NotationShiftSource,
+    /// ⭐ 阶段 2：文件自带移位 (a) 的**逐 region 归属**（透传装载报告；
+    /// 只含非零，空 ⇒ 文件没声明 (a)）。
+    pub declared_shifts: Vec<(usize, i32)>,
     /// ⭐ 阶段 2：移位后实际覆盖键位范围（透传装载报告）。
     pub key_range: Option<(i32, i32)>,
+    /// ⭐ **未命中音符数**（单位：个）：渲染侧（`render_core`）在摊平后按
+    /// 工程逐轨回填 —— 该轨工程音符里**打不中任何 region** 的个数（判据 =
+    /// 引擎自身静态接受谓词 `PreparedRegion::accepts`；口径：非静音轨、
+    /// 非静音摆放、每摆放按谱面音符各计一次，不展开循环重复）。
+    ///
+    /// ⚠ 本函数（解码）**不知道工程** ⇒ 构造时恒为 0；只有走渲染回填的
+    /// 报告才有真值。0 的含义是「没有未命中」**或**「没数过」，靠
+    /// [`Self::unmatched_notes_line`] 的调用方语境区分（CLI 只在导出
+    /// 报告上打印它，那条路恒回填）。
+    pub unmatched_note_count: usize,
+    /// ⭐ 未命中音符的**不同音高**（升序去重；与 [`Self::unmatched_note_count`]
+    /// 同一次回填产出）。告警行靠它让用户一眼看出是哪几个键位错位。
+    pub unmatched_note_pitches: Vec<u8>,
 }
 
 impl SfzDecodeReport {
@@ -1438,6 +1485,37 @@ impl SfzDecodeReport {
             .iter()
             .filter(|entry| entry.reason == reason)
             .count()
+    }
+
+    /// ⭐ 阶段 2：记法适配的**响亮报告行**（与 [`SfzLoadReport::notation_lines`]
+    /// 同一份文案构造，⛔ 不许两份措辞）。CLI 的 `--export-wav` 路径打印它 ——
+    /// 在此之前解码报告里的检测结论只躺在结构里，命令行用户看不见
+    /// （问题文件 drum-octave-issue 第 3 节）。
+    #[must_use]
+    pub fn notation_lines(&self) -> Vec<String> {
+        notation_report_lines(
+            &self.declared_shifts,
+            self.notation_source,
+            self.notation_shift,
+            self.notation.as_ref(),
+        )
+    }
+
+    /// ⭐ **未命中告警行**：该轨有工程音符打不中任何 region 时产行，否则
+    /// `None`。⛔ 这是**告警不是错误**：草稿里可以有意把音符写在乐器范围
+    /// 之外；但整段键位错位（采样库八度记法与工程不一致）也会长成这个
+    /// 形状 —— 响亮报出来，让用户自己判是哪一种（默认不能静默）。
+    #[must_use]
+    pub fn unmatched_notes_line(&self) -> Option<String> {
+        if self.unmatched_note_count == 0 {
+            return None;
+        }
+        Some(format!(
+            "sfz-unmatched-notes: path={} notes={} pitches={:?}（这些音符打不中任何 region、不会发声；若整段错位，多半是采样库的八度记法与工程不一致，可用八度覆盖修正）",
+            self.path.display(),
+            self.unmatched_note_count,
+            self.unmatched_note_pitches,
+        ))
     }
 }
 
@@ -1775,7 +1853,11 @@ pub fn decode_sfz_plan_with_override(
         notation: load.notation.clone(),
         notation_shift: load.notation_shift,
         notation_source: load.notation_source,
+        declared_shifts: load.declared_shifts.clone(),
         key_range: load.key_range,
+        // 未命中计数要工程音符才能算 ⇒ 解码期恒 0，渲染侧回填（见字段文档）。
+        unmatched_note_count: 0,
+        unmatched_note_pitches: Vec::new(),
     };
     Ok((plan, report))
 }

@@ -64,3 +64,17 @@
 - [ ] B.4 其他音名表面复核（含新增 builtin_sounds.rs 目录条目）。
 - [ ] B.5 门槛边界结论登记。
 - [ ] 实现 A2＋B.3，写判据（红→绿留证），盒上（yanshi-2，等 UI 验证构建结束）验证。
+
+## 补充输入（2026-11-19 11:00 父 agent 转达 Wang 完整版报告 drum-octave-issue-2.md）
+- 增量 1：模型字段既存——审计已确认，本线是接通既有字段（解析/编译两丢弃点），未另造存储。
+- 增量 2：主验收改真实文件（~/workspace/yeban-samples/）；⚠ 本机实测该目录不存在（全盘 find 特征文件名 snare-roll.wav/bass_drum-f.wav/Sonatina 无果），已挂起等父 agent 确认投放位置；合成夹具判据照常推进，真实文件验收待文件到位后在盒上跑（原版 vs fixed 副本逐样本比对＋Timpani＋one_shot 尾段核查）。
+- 增量 3①【必做，已落地】：零证据独立结论——yeban-sfz notation.rs 新增 NotationMissReason::NoEvidence（E=∅ 且音名拼写 region ≥1 时）＋ named_key_region_count 字段＋ machine_name()；sfz_load notation_report_lines 在 None 来源下对 NoEvidence 产独立响亮行（含 notation_shift=0 reason=no_evidence evidence=0/N 与覆盖出路）。key→pitch_keycenter 拼写出处传递已核（instrument.rs:2800，含 group 继承与既有测试）。
+- 增量 3②：one_shot＋音名键位加载警告——与 ① 合并：① 的行在装载期对整个受影响形态触发（one_shot 打击乐 kit 是其子集），另加 one_shot 专项行会对同一批文件双重报告；B.3 未命中行覆盖渲染期症状面。取舍写入回执。
+- 增量 4：one_shot 掐尾附带核查（只报告不修）——待真实 kit 到位后用 snare-roll 长样本短/长音符双渲比对尾段 RMS，与 2026-11-18 结论对账，数字入回执单节。
+
+## 实现进度（截至 11:0x）
+- sfz_load.rs：notation_lines 文案抽共享 notation_report_lines；SfzDecodeReport 补 declared_shifts＋notation_lines()＋unmatched 字段与 unmatched_notes_line()；构造点回填。
+- render_core.rs：arm_pending_sfz 后逐轨 count_unmatched_notes（引擎 accepts 谓词；口径：跳过静音轨/静音摆放、每摆放谱面音符各计一次、不展开循环）。
+- cli.rs：--sfz 块与 --export-wav 块均透出 notation_lines＋unmatched 行（普通乐器零新增行）。
+- yeban-mcp：notes.rs 对象形 sampler 解析（read_sampler_binding/read_sampler_octave_override，未知键 unknownSamplerBindingField、坏步 samplerOctaveOverrideMustBeOctaveStep）＋编译层保留覆盖；op_schema anyOf 三形；tools.rs 文档句扩写；notes.rs 单元测试 3 个已加。
+- 待办：app 集成判据文件、盒上验证（分批）、真实文件验收（待文件到位）、B.4 剩余抽查（builtin_sounds/鼓预置）、PROGRESS 收尾与回执。

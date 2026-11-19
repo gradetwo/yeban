@@ -913,9 +913,33 @@ pub fn ops_items() -> Value {
                     "kind": kind("setTrackSampler"),
                     "trackId": id("目标音轨身份"),
                     "sampler": {
-                        "type": ["string", "null"],
-                        "minLength": 1,
-                        "description": "非空字符串 = SFZ 定义文件路径（落在采样库根之下的绝对路径存入时改写成 assets/samples/ ＋ 库根下相对部分，其余原样；不查存在性）；null = 解绑（缺键 ≠ 解绑）",
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "SFZ 定义文件路径（落在采样库根之下的绝对路径存入时改写成 assets/samples/ ＋ 库根下相对部分，其余原样；不查存在性）",
+                            },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["path"],
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "SFZ 定义文件路径（存入归一化同字符串形）",
+                                    },
+                                    "noteOctaveOverride": {
+                                        "type": ["integer", "null"],
+                                        "enum": [-24, -12, 0, 12, 24, null],
+                                        "description": "工程手动八度覆盖 (c)（台账 §14.4 阶段 2）：整轨键位移位半音数，只认八度步；null 或缺键 = 不设覆盖（走自动检测）。采样库八度记法与 IPN 不一致、又无嵌入根音证据时用它自救",
+                                    },
+                                },
+                                "description": "对象形：路径 + 可选八度覆盖；未知键响亮拒绝",
+                            },
+                            { "type": "null", "description": "解绑（缺键 ≠ 解绑）" },
+                        ],
+                        "description": "字符串 = 只给路径；对象 = 路径 + 八度覆盖；null = 解绑（缺键 ≠ 解绑）",
                     },
                 }),
                 true,

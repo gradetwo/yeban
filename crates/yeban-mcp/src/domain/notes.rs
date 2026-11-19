@@ -2400,9 +2400,15 @@ pub const SET_TRACK_SAMPLER_KIND: &str = "setTrackSampler";
 /// 绑定采样器形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
 pub const SET_TRACK_SAMPLER_TRACK_FIELD: &str = "trackId";
 
-/// 绑定采样器形态的**采样器路径**字段名（`ops[].sampler`，**必填**，非空字符串或 `null`）。
+/// 绑定采样器形态的**采样器**字段名（`ops[].sampler`，**必填**）。
 ///
-/// ⚠ `null` = **解绑**（回到"这条轨不用采样器"）—— 模型的 `None` 是**一等状态**；
+/// 三种形状：
+/// * 非空字符串 = 只给路径（八度覆盖恒 `None`，与对象形缺
+///   [`SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD`] 同义）；
+/// * 对象 `{path, noteOctaveOverride?}` = 路径 + 工程手动八度覆盖 (c)
+///   （台账 §14.4 阶段 2；对象内未知键响亮拒绝）；
+/// * `null` = **解绑**（回到"这条轨不用采样器"）—— 模型的 `None` 是**一等状态**。
+///
 /// ⚠ **缺键 ⛔ 不等于解绑**（本形态是单字段设值、⛔ 不是合并式 patch）。
 ///
 /// ⚠ ⭐ **本层不发明路径语义**：不查存在性、不查扩展名、不规范化 —— 与
@@ -2410,6 +2416,26 @@ pub const SET_TRACK_SAMPLER_TRACK_FIELD: &str = "trackId";
 /// "这个路径读不到"由**渲染**那一侧响亮拒绝（`RENDER_FAILED` / `samplerUnreadable`），
 /// ⛔ 不在解析期猜。
 pub const SET_TRACK_SAMPLER_SAMPLER_FIELD: &str = "sampler";
+
+/// 对象形 `sampler` 的**路径**键（`ops[].sampler.path`，对象形必填，非空字符串）。
+pub const SET_TRACK_SAMPLER_PATH_FIELD: &str = "path";
+
+/// 对象形 `sampler` 的**八度覆盖**键（`ops[].sampler.noteOctaveOverride`，
+/// 可缺省；整数八度步 `−24/−12/0/+12/+24`，或 `null` = 不设覆盖）。
+///
+/// ⭐ 这是工程手动八度覆盖 (c) 的 CLI／MCP 入口（台账 §14.4 阶段 2）：
+/// 采样库用 Yamaha 记法（C3=60）写音名键位、夜半按 IPN（C4=60）解析时
+/// 整库错一个八度；采样没有 WAV 嵌入根音证据时自动检测 (b) 按设计
+/// 不移位，用户靠本键把整轨键位移回来（SSO 鼓组即此情形）。覆盖优先于
+/// (b)、与文件自带 (a) 相加（合成顺序见台账 §14.4）。非八度步的值
+/// （如 `13`）与非整数一律响亮拒绝，⛔ 不许静默取整或钳位。
+pub const SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD: &str = "noteOctaveOverride";
+
+/// 对象形 `sampler` 允许出现的**全部**键（路径 + 八度覆盖）。
+pub const SET_TRACK_SAMPLER_OBJECT_FIELDS: [&str; 2] = [
+    SET_TRACK_SAMPLER_PATH_FIELD,
+    SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD,
+];
 
 /// 绑定采样器形态允许出现的**全部**键（判别键 + 目标音轨 + 采样器路径）。
 pub const SET_TRACK_SAMPLER_FIELDS: [&str; 3] = [
@@ -5539,19 +5565,10 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     None => {
                         return Err(missing(
                             SET_TRACK_SAMPLER_SAMPLER_FIELD,
-                            "非空字符串或 null（null 表示解绑、这条轨回到不用采样器）",
+                            "非空字符串、{path, noteOctaveOverride?} 对象或 null（null 表示解绑、这条轨回到不用采样器）",
                         ));
                     }
-                    Some(Value::Null) => None,
-                    Some(value) => Some(SamplerBinding {
-                        note_octave_override: None,
-                        path: read_non_empty_string(
-                            SET_TRACK_SAMPLER_KIND,
-                            value,
-                            SET_TRACK_SAMPLER_SAMPLER_FIELD,
-                            "trackSamplerMustBeNonEmptyString",
-                        )?,
-                    }),
+                    Some(value) => read_sampler_binding(value)?,
                 },
             })
         }
@@ -6358,6 +6375,86 @@ fn reject_set_track_sampler_fields(object: &Map<String, Value>) -> Result<(), Fa
         SET_TRACK_SAMPLER_KIND,
         "unknownSetTrackSamplerField",
     )
+}
+
+/// 读 `setTrackSampler` 的 `sampler` 值 ⇒ 模型绑定（`None` = 解绑）。
+///
+/// 三种形状（见 [`SET_TRACK_SAMPLER_SAMPLER_FIELD`] 文档）：字符串（只给
+/// 路径、八度覆盖恒 `None`）、对象（路径 + 可选八度覆盖 (c)）、`null`
+/// （解绑）。对象内未知键、缺 `path`、非八度步的覆盖值一律响亮拒绝 ——
+/// ⛔ 不许静默忽略用户写错的键（默认不能静默）。
+///
+/// # Errors
+///
+/// 对象含未知键 → `unknownSamplerBindingField`；对象缺 `path` → 缺键
+/// 拒绝；`path` 非非空字符串 → `trackSamplerMustBeNonEmptyString`；
+/// 覆盖值非法 → `samplerOctaveOverrideMustBeOctaveStep`。
+fn read_sampler_binding(value: &Value) -> Result<Option<SamplerBinding>, Fault> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Object(binding) => {
+            reject_unknown_keys(
+                binding,
+                &SET_TRACK_SAMPLER_OBJECT_FIELDS,
+                SET_TRACK_SAMPLER_KIND,
+                "unknownSamplerBindingField",
+            )?;
+            let path = match binding.get(SET_TRACK_SAMPLER_PATH_FIELD) {
+                None => {
+                    return Err(missing(
+                        "sampler.path",
+                        "非空字符串（对象形 sampler 必须给 path）",
+                    ));
+                }
+                Some(path_value) => read_non_empty_string(
+                    SET_TRACK_SAMPLER_SAMPLER_FIELD,
+                    path_value,
+                    SET_TRACK_SAMPLER_PATH_FIELD,
+                    "trackSamplerMustBeNonEmptyString",
+                )?,
+            };
+            Ok(Some(SamplerBinding {
+                note_octave_override: read_sampler_octave_override(binding)?,
+                path,
+            }))
+        }
+        _ => Ok(Some(SamplerBinding {
+            note_octave_override: None,
+            path: read_non_empty_string(
+                SET_TRACK_SAMPLER_KIND,
+                value,
+                SET_TRACK_SAMPLER_SAMPLER_FIELD,
+                "trackSamplerMustBeNonEmptyString",
+            )?,
+        })),
+    }
+}
+
+/// 读对象形 `sampler` 的八度覆盖 (c)：缺键 / `null` ⇒ `None`（不设覆盖、
+/// 走自动检测 (b)）；整数且是八度步 ⇒ `Some(step)`；其余（非整数如
+/// `12.5`、字符串、非八度步如 `13`）⇒ 响亮拒绝，⛔ 不取整、不钳位。
+fn read_sampler_octave_override(binding: &Map<String, Value>) -> Result<Option<i32>, Fault> {
+    let Some(value) = binding.get(SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let step = value.as_i64().and_then(|raw| i32::try_from(raw).ok());
+    match step {
+        Some(step) if SamplerBinding::is_valid_octave_override(step) => Ok(Some(step)),
+        _ => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`setTrackSampler.sampler.noteOctaveOverride` 必须是八度步整数（-24/-12/0/12/24）或 null, 实际收到 {value}"
+            ),
+            serde_json::json!({
+                "field": "sampler.noteOctaveOverride",
+                "reason": "samplerOctaveOverrideMustBeOctaveStep",
+                "received": value,
+            }),
+        )),
+    }
 }
 
 fn reject_set_clip_placement_muted_fields(object: &Map<String, Value>) -> Result<(), Fault> {
@@ -10625,7 +10722,10 @@ fn compile_inner(
                 let new_sampler = new_sampler
                     .as_ref()
                     .map(|binding| yeban_model::SamplerBinding {
-                        note_octave_override: None,
+                        // ⭐ 八度覆盖 (c) 是绑定的另一半：归一化只动路径，
+                        //    覆盖必须**原样带过** —— 在此之前它在这里被写死
+                        //    成 `None`，解析层就算收下了也会在编译期丢掉。
+                        note_octave_override: binding.note_octave_override,
                         path: yeban_model::sampler_path::normalize_sampler_path_for_storage(
                             &super::sample_roots::library_root(),
                             &binding.path,
@@ -26456,6 +26556,168 @@ mod tests {
         assert_ne!(
             SET_ASSET_KIND, REMOVE_ASSET_KIND,
             "改与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// ⭐ 八度覆盖 (c) 的 CLI／MCP 入口：`setTrackSampler` 的对象形
+    /// `sampler` 必须把 `noteOctaveOverride` 一路带到编译出的
+    /// `Op::SetTrackSampler` —— 解析层与编译层各有一个历史丢弃点
+    /// （解析写死 `None`、编译归一化路径时重建绑定丢掉覆盖），两个点
+    /// 任一复活本判据即红。
+    #[test]
+    fn set_track_sampler_object_form_carries_the_octave_override_to_the_op() {
+        let project = filled_project();
+        let track_id = *project.tracks.keys().next().expect("夹具工程有轨");
+        let track_text = track_id.to_canonical_string();
+
+        // ① 对象形 + 覆盖 ⇒ 解析保留、编译不丢。
+        let parsed = parse_ops(&serde_json::json!([{
+            "kind": "setTrackSampler",
+            "trackId": track_text,
+            "sampler": {"path": "/tmp/kits/sso.sfz", "noteOctaveOverride": 12},
+        }]))
+        .expect("对象形必须可解析");
+        match &parsed[0] {
+            NoteOp::SetTrackSampler { new_sampler, .. } => {
+                let binding = new_sampler.as_ref().expect("绑定");
+                assert_eq!(binding.note_octave_override, Some(12));
+                assert_eq!(binding.path, "/tmp/kits/sso.sfz");
+            }
+            other => panic!("应当是 SetTrackSampler: {other:?}"),
+        }
+        let compiled = compile(&project, &track_id, &EntityId::default(), &parsed).expect("编译");
+        match &compiled[0] {
+            Op::SetTrackSampler { new_sampler, .. } => {
+                let binding = new_sampler.as_ref().expect("绑定");
+                assert_eq!(
+                    binding.note_octave_override,
+                    Some(12),
+                    "编译期的路径归一化只许动路径，覆盖必须原样带过"
+                );
+            }
+            other => panic!("应当是 Op::SetTrackSampler: {other:?}"),
+        }
+
+        // ② 对象形缺覆盖键 / 覆盖为 null ⇒ `None`（不设覆盖、走自动检测）。
+        for sampler in [
+            serde_json::json!({"path": "/tmp/kits/sso.sfz"}),
+            serde_json::json!({"path": "/tmp/kits/sso.sfz", "noteOctaveOverride": null}),
+        ] {
+            let parsed = parse_ops(&serde_json::json!([{
+                "kind": "setTrackSampler",
+                "trackId": track_text,
+                "sampler": sampler,
+            }]))
+            .expect("无覆盖的对象形必须可解析");
+            match &parsed[0] {
+                NoteOp::SetTrackSampler { new_sampler, .. } => {
+                    assert_eq!(
+                        new_sampler.as_ref().expect("绑定").note_octave_override,
+                        None
+                    );
+                }
+                other => panic!("应当是 SetTrackSampler: {other:?}"),
+            }
+        }
+
+        // ③ 字符串形与 null 形逐字保持旧语义（覆盖恒 `None` / 解绑）。
+        let parsed = parse_ops(&serde_json::json!([{
+            "kind": "setTrackSampler",
+            "trackId": track_text,
+            "sampler": "/tmp/kits/sso.sfz",
+        }]))
+        .expect("字符串形必须可解析");
+        match &parsed[0] {
+            NoteOp::SetTrackSampler { new_sampler, .. } => {
+                assert_eq!(
+                    new_sampler.as_ref().expect("绑定").note_octave_override,
+                    None
+                );
+            }
+            other => panic!("应当是 SetTrackSampler: {other:?}"),
+        }
+        let parsed = parse_ops(&serde_json::json!([{
+            "kind": "setTrackSampler",
+            "trackId": track_text,
+            "sampler": null,
+        }]))
+        .expect("null 形必须可解析");
+        match &parsed[0] {
+            NoteOp::SetTrackSampler { new_sampler, .. } => {
+                assert!(new_sampler.is_none(), "null = 解绑");
+            }
+            other => panic!("应当是 SetTrackSampler: {other:?}"),
+        }
+    }
+
+    /// ⭐ 坏覆盖值一律响亮拒绝（默认不能静默）：非八度步、非整数、
+    /// 对象内未知键、对象缺 `path`。
+    #[test]
+    fn set_track_sampler_rejects_bad_octave_overrides_loudly() {
+        let project = filled_project();
+        let track_text = project
+            .tracks
+            .keys()
+            .next()
+            .expect("夹具工程有轨")
+            .to_canonical_string();
+        let reasoned: Vec<(serde_json::Value, &str)> = vec![
+            (
+                serde_json::json!({"path": "/tmp/kits/sso.sfz", "noteOctaveOverride": 13}),
+                "samplerOctaveOverrideMustBeOctaveStep",
+            ),
+            (
+                serde_json::json!({"path": "/tmp/kits/sso.sfz", "noteOctaveOverride": "12"}),
+                "samplerOctaveOverrideMustBeOctaveStep",
+            ),
+            (
+                serde_json::json!({"path": "/tmp/kits/sso.sfz", "noteOctaveOverride": 12.5}),
+                "samplerOctaveOverrideMustBeOctaveStep",
+            ),
+            (
+                serde_json::json!({"path": "/tmp/kits/sso.sfz", "octave": 12}),
+                "unknownSamplerBindingField",
+            ),
+        ];
+        for (sampler, reason) in reasoned {
+            let fault = parse_ops(&serde_json::json!([{
+                "kind": "setTrackSampler",
+                "trackId": track_text,
+                "sampler": sampler,
+            }]))
+            .expect_err("坏的 sampler 对象必须被拒");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some(reason),
+                "sampler={sampler}"
+            );
+        }
+        // 对象缺 `path` ⇒ 缺键拒绝（报文点名 `sampler.path`）。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "setTrackSampler",
+            "trackId": track_text,
+            "sampler": {"noteOctaveOverride": 12},
+        }]))
+        .expect_err("对象形缺 path 必须被拒");
+        assert!(
+            format!("{fault:?}").contains("sampler.path"),
+            "缺 path 的报文必须点名 sampler.path: {fault:?}"
+        );
+    }
+
+    /// `setTrackSampler` 的对象形**字面名与支持集合**被钉住。
+    #[test]
+    fn set_track_sampler_object_field_names_are_pinned() {
+        assert_eq!(SET_TRACK_SAMPLER_PATH_FIELD, "path");
+        assert_eq!(SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD, "noteOctaveOverride");
+        assert_eq!(
+            SET_TRACK_SAMPLER_OBJECT_FIELDS,
+            ["path", "noteOctaveOverride"]
+        );
+        assert_eq!(
+            SET_TRACK_SAMPLER_FIELDS,
+            ["kind", "trackId", "sampler"],
+            "顶层键集不变：对象形只扩 sampler 的值形状"
         );
     }
 }

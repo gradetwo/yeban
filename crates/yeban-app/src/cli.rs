@@ -6673,6 +6673,10 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         for issue in &report.include_issues {
             lines.push(format!("sfz-include-issue: {issue}"));
         }
+        // ⭐ 记法适配结论**必须出在可见输出**（问题文件 drum-octave-issue
+        //    第 3 节）：(a)/(b)/(c) 任一层生效或疑似未命中时逐行打出；
+        //    普通对齐乐器零新增行。
+        lines.extend(report.notation_lines());
         loaded_sfz = Some((std::sync::Arc::new(instrument), path.clone()));
     }
 
@@ -7297,6 +7301,18 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         lines.push(exported_wav_line(&report, &loaded));
+        // ⭐ 记法适配结论 + 未命中告警（⛔ 不许只躺在报告结构里）：逐份解码
+        //    报告把响亮行打出来 —— (a)/(b)/(c) 任一层生效、疑似未命中、
+        //    或有工程音符打不中任何 region 时才产行；普通对齐乐器零新增行
+        //    ⇒ 既有 stdout 逐字不变。在此之前 CLI 用户对 SSO 式八度错位
+        //    只能看到一行 `sfz(tracks=1 regions=10 …)` 的正常读数、导出
+        //    全程静音而无任何提示（问题文件 drum-octave-issue 第 3 节）。
+        for (_track, decode_report) in &report.sfz_decoded {
+            lines.extend(decode_report.notation_lines());
+            if let Some(line) = decode_report.unmatched_notes_line() {
+                lines.push(line);
+            }
+        }
         // ⭐ 任务单 `#226`：削波时**多打一行**（含 `clippedSamples` / `suggestedTrimDb`）。
         //    ⛔ 不削波时**一行都不多** ⇒ `--export-wav` 的既有 stdout 逐字不变。
         if let Some(note) = report.clipping_note() {
