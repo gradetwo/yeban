@@ -82,3 +82,11 @@
 ## 变更（2026-11-19 11:16 父 agent 转达）
 - 补充输入第 4 项（one_shot 掐尾附带核查）**取消**：Wang 确认报告人备注是报告人自己那边的问题、非引擎缺陷，2026-11-18 核查结论维持。本线不做、不在回执单列。
 - 验证进度：盒上 yeban-sfz --lib 469/0 全绿（含新增 NoEvidence 单元测试）；fmt 已在盒上格式化并回同步提交（a176f1b6e）；app+mcp --all-targets --keep-going 检查在跑。
+
+## 终局（2026-11-19 11:5x，yanshi-2 验证完毕）
+- 判据套件 sfz_octave_override_cli **6/6 绿**（日志盒上 sfz-oct-final-suite.log）；红证据：4 个源文件退基线 9d238f09c 时套件编译失败 16 条 error（RED_EXIT=101，sfz-oct-red.log），恢复后复绿。
+- 各 crate：yeban-sfz --lib 469/0（sfz-oct-sfz.log）；yeban-mcp --lib 754/0（含新增 3 个 setTrackSampler 测试，sfz-oct-mcp-lib.log）；yeban-app --lib 534/0（sfz-oct2-app-lib.log）；app 集成 apply_ops 9/0、sfz_model_chain 4/0、sfz_notation_adaptation 3/0；yeban-engine sfz_notation_adaptation 4/0。
+- clippy：sfz 0、mcp 0；app 唯一 error 是基线既存 builtin_sounds.rs:90 vec_init_then_push（main 已于 43e657a15 修复、本线未碰该文件），本线改动文件零 clippy 发现。fmt 终查 FMT_EXIT=0。
+- 中途事故（如实记）：① op_schema 内联 anyOf 撞 serde_json 宏递归上限，拆 sampler_binding_schema() 修复（60f795e45）；② 盒 /data 满致 yeban-app 链接 Bus error，清已合入线的 perlane-p5 target（9.7 GB）与 UI 补丁树 target 后恢复；③ 清 deps 可执行文件时误删 proc-macro .so 致 app-lib 一轮失败，cargo clean -p displaydoc 后复绿——今后清 deps 须排除 .so。
+- **真实文件验收阻塞**：~/workspace/yeban-samples/ 在本 VM 不存在（多次 ls＋find 核查无果），SSO 原版与 fixed 副本未能实跑；验收由与报告形态 1:1 同构的夹具承担（c3/c#3/d3＋one_shot＋无 smpl WAV）。文件到位后按回执所列命令可直接复跑。
+- 普查/钉数类按 §7 不在分支跑（main 上跑）。
