@@ -532,6 +532,14 @@ export component ArrangementViewport inherits Rectangle {
                                         Text { text: "H+"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
                                         hz-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(true); } }
                                     }
+                                    // 横向缩放（H−/H+）与纵向缩放（V−/V+）是两组不同的手势：
+                                    // 四个 25×16 的按钮以 2px 间距排成一串时读起来像"四档同一种缩放"，
+                                    // 加一条 1px 竖分隔把两组分开（必须是**兄弟**节点，别落进某个按钮里）。
+                                    Rectangle {
+                                        width: 1px;
+                                        height: 16px;
+                                        background: Tokens.line;
+                                    }
                                     Rectangle {
                                         width: 25px;
                                         height: 16px;

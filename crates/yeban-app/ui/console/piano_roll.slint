@@ -235,6 +235,17 @@ export component PianoRoll inherits Rectangle {
         }
     }
 
+    // 工具组与右侧"吸附 / PPQ / 音域"读数之间的一条竖分隔：
+    // 实测帧里 `5 橡皮` 与 `吸附 1/16 …` 只隔 10px、又没有分组线，读起来像同一串
+    // 连续文字（工具是**可点**的、读数是**只读**的，这两类不该贴在一起）。
+    Rectangle {
+        x: 264px;
+        y: Tokens.space-2 + 4px;
+        width: 1px;
+        height: 12px;
+        background: Tokens.line;
+    }
+
     UiMonoText {
         x: 272px;
         y: Tokens.space-2;
@@ -612,6 +623,16 @@ export component PianoRoll inherits Rectangle {
             width: parent.width;
             height: 1px;
             background: Tokens.line;
+        }
+
+        // 泳道左侧缺一个语义标签：一排柱子紧贴格子区，4x 帧里读不出"这排是力度"。
+        // 补一个 ASCII `VEL` 小签（⛔ 不新增 @tr 键 —— i18n 基线由另一条线在改）。
+        UiMonoText {
+            x: 8px;
+            y: 6px;
+            text: "VEL";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
         }
 
         // `for <标识符>[i] in <model>` 必须带声明标识符；本切片把它从 `_` 换成 `note_ulid`，

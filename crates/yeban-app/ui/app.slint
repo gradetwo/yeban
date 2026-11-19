@@ -206,6 +206,13 @@ export component MainWindow inherits Window {
     // 尺寸变化时刷新。⛔ 需要"按窗口高封顶"的地方一律读这个属性，不许回读
     // `root.height` —— 回读会与布局互喂，Slint 会报成串 binding loop。
     in-out property <length> window-h: 700px;
+    // ⚠ A12（2026-11-19）试过"混音台/设备堆叠 Tab 下把留给编曲区的 420 放软到 340"：
+    //   下坞确实从 200 长到 260，但**编曲区被压到只剩一条轨道**，而且通道条仍然贴底被裁
+    //   （实机帧 f1-mixer：推子尾部与 dB 读数照旧看不见）。原因不是下坞不够高，而是通道条
+    //   外层把整叠行**底对齐**渲染、内容自然高 > 可见高，往下长出来的那 60px 全落在空白处。
+    //   ⇒ 抢编曲区的空间买不到通道条，已回退成固定 420。
+    // 真正的解法在 `lower_dock.slint` 的 `strip-compact`：矮窗下让出「音色插入」+「dB 读数牌」
+    // 两行（≈40px），把高度还给 88px 推子单元。
     in-out property <bool> show-floating-toast: false;
     // ⭐ 审计 P1-4：提示条分级。`true` = 这条是**错误**（不自动消失）；`false` = 信息类
     // （4 秒后自己收走，见下面的 `toast-timer`）。

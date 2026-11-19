@@ -352,6 +352,11 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
 
                         Rectangle {
+                            // 钢琴卷帘 Tab 下这条 `量化` 与卷帘自己的 `量化 Q` 是同一件事：
+                            // 两处按钮并存会让创作者以为它们作用不同（实测帧 f4-roll 里
+                            // 一条 tab 栏上同时出现「量化」与「量化 Q」）。卷帘 Tab 下让本按钮退场，
+                            // 命令入口仍在卷帘工具条上。
+                            visible: root.active-tab != "pianoroll";
                             height: 22px;
                             border-radius: 3px;
                             background: dock-quant-btn.has-hover ? Tokens.line : Tokens.bg-lane2;
@@ -632,18 +637,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
+                            // 2026-11-19 第二轮实测（设备机架 1460×900 帧 f3-devices）：
+                            // 名与摘要挤在**同一行**时，330px 的卡片里两边都只剩省略号
+                            // ——「Yeban Po…」+「已识别 1 · 低通滤波：P…」，两个词都读不全。
+                            // 摘要挪到名的下一行独占一条：名拿到整行宽度（只留 × 的位置），
+                            // 摘要拿到自己的整行（`已识别 1 · 低通滤波：P 64%` 现在能读完）。
                             HorizontalLayout {
                                 spacing: 4px;
-                                if idx < root.device-recognised.length && root.device-recognised[idx] != "" : Text {
-                                    text: root.device-recognised[idx];
-                                    font-family: Tokens.font-mono;
-                                    font-size: 9px;
-                                    color: Tokens.skin-meter-low;
-                                    font-weight: 400;
-                                    vertical-alignment: center;
-                                    // 空间不够时先让摘要让位（否则它会把设备名挤没）
-                                    overflow: elide;
-                                }
                                 Rectangle {
                                     width: 16px;
                                     height: 16px;
@@ -666,6 +666,17 @@ export component UnifiedLowerDock inherits Rectangle {
                                     TooltipBubble { text: @tr("从轨道设备链移除"); is-visible: dev_rm_touch.has-hover; tip-offset-y: 20px; }
                                 }
                             }
+                        }
+
+                        // 摘要独占一行（紧随名那一行之下）；空串时**整行不占高**。
+                        if idx < root.device-recognised.length && root.device-recognised[idx] != "" : Text {
+                            text: root.device-recognised[idx];
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            color: Tokens.skin-meter-low;
+                            font-weight: 400;
+                            overflow: elide;
+                            vertical-alignment: center;
                         }
 
                         // Real Device Visualizer / EQ Preview Box
@@ -760,7 +771,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9.5px;
                                         font-weight: 400;
-                                        color: Theme.accent;
+                                        // 这里是**读数**（点它是换档，但视觉上不该像"报警"）：
+                                        // 原来用 Theme.accent（橙），与卡片里唯一的动作 `切换` 抢同一层
+                                        // 视觉权重，创作者第一眼会以为 POS 是异常状态。改成与 `4800Hz`
+                                        // 同族的读数色，动作只留 `切换` 一处强调。
+                                        color: Tokens.skin-text-body;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1584,16 +1599,33 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             // Pan / Title
+                            // 2026-11-19 实测（混音台帧 h3/h4）：同层的 MASTER 卡把这一格画成
+                            // 带框的 `MONO` **按钮**，而这里只有一行裸文字 `BUS 1+2` —— 两块并排的
+                            // 母线卡，同一层信息一个是按钮、一个是文本，创作者读不出"这条能不能按"。
+                            // 这里给 `BUS 1+2` 补上与 `MONO` 同尺寸、同底色的**读数牌**（底色有、
+                             // 无可点手势 ⇒ 明确是"只读"），两块卡纵向因此也对齐。
                             HorizontalLayout {
                                 alignment: center;
                                 height: 16px;
-                                Text {
-                                    text: "BUS 1+2";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 8.5px;
-                                    color: Tokens.skin-text-dim;
-                                    font-weight: 400;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    height: 16px;
+                                    background: Tokens.bg-panel;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: Tokens.line;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text {
+                                            text: "BUS 1+2";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 8.5px;
+                                            color: Tokens.skin-text-dim;
+                                            font-weight: 400;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
 
@@ -2149,9 +2181,11 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                     }
 
-                    // Empty / Add Channel Strip Slot in Mixer mode (Fixed width: 72px)
+                    // Empty / Add Channel Strip Slot in Mixer mode
+                    // 2026-11-19 实测：通道条是 96px 宽，而这只空槽只有 72px —— 并排看像
+                    // 一根比通道窄一截的窄柱，读不出"这里还能再放一条通道"。改成与通道条同宽。
                     if root.active-tab == "mixer" : Rectangle {
-                        width: 72px;
+                        width: 96px;
                         // 空槽不再用 void-brush（拟物下等于一个近黑窟窿，与页面底色断层）；
                         // 统一 bg-lane2 + 1px 描边，读成"一个可放通道的空位"。
                         background: add_mix_trk_touch.has-hover ? Tokens.panel-brush : Tokens.bg-lane2;
@@ -2160,7 +2194,12 @@ export component UnifiedLowerDock inherits Rectangle {
                         border-color: add_mix_trk_touch.has-hover ? Theme.accent : Tokens.line;
 
                         VerticalLayout {
-                            alignment: center;
+                            // 2026-11-19 实测：这一格原来 `alignment: center`，在下坞拉高时
+                            // "+ 添加混音轨"会飘到卡片中下部，与相邻通道条的**名称牌那一行完全错位**
+                            // （阅读节奏被打断，看起来像通道被拉长了一截）。改成从上往下起排、
+                            // 顶部留 8px，于是 "+" 落在与其它通道名称牌同一条水平线上。
+                            alignment: start;
+                            padding-top: 8px;
                             spacing: 4px;
                             Text {
                                 text: "+";
