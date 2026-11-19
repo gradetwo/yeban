@@ -1887,6 +1887,12 @@ msgstr "Sound-Library-Manager..."
 msgid "音源管理"
 msgstr "Sound-Library-Manager"
 
+msgid "去音源管理"
+msgstr "Sound-Library-Manager öffnen"
+
+msgid "收起这条提示"
+msgstr "Diesen Hinweis ausblenden"
+
 msgid "关闭音源管理"
 msgstr "Sound-Library-Manager schließen"
 

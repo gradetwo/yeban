@@ -1887,6 +1887,12 @@ msgstr "Gerenciador da Biblioteca de Sons..."
 msgid "音源管理"
 msgstr "Gerenciador da Biblioteca de Sons"
 
+msgid "去音源管理"
+msgstr "Ir para o Gerenciador da Biblioteca de Sons"
+
+msgid "收起这条提示"
+msgstr "Recolher este aviso"
+
 msgid "关闭音源管理"
 msgstr "Fechar o Gerenciador da Biblioteca de Sons"
 

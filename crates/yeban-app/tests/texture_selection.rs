@@ -378,8 +378,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "轨道头底走三元 (拟物 §12 头刷/accent α0.10 选中; 补丁包第四轮改钉: 扁平支改 accent α0.12 选中 / bg-panel 未选中)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane",
-            "轨道头表井 (void-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane)",
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void",
+            "轨道头表井 (void-brush; UI 滚动包第三轮改钉: flat 支换 Tokens.bg-void)",
         ),
     ] {
         assert!(
