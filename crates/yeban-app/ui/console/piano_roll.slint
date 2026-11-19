@@ -152,7 +152,11 @@ export component PianoRoll inherits Rectangle {
     // 画面看上去像"格子在半空中断掉、下面没有琴键"。这里把 44px 显式扣出来：
     // 格子/琴键止于泳道上沿，行数也跟着减，不再有被遮挡的"僵尸行"。
     property <length> velocity-lane-height: root.show-velocity-lane ? 44px : 0px;
-    property <int> visible-rows: Math.max(8, Math.floor((self.height - 28px - root.velocity-lane-height) / 14px));
+    // ④ 2026-11-19 修：下界曾是 8 行，但下坞压到 200px 时这里只剩 94px 可用
+    //    （200 − 标签栏 34 − 工具行 28 − 力度泳道 44），8 行 = 112px > 94px ⇒
+    //    多出来的行被 `clip: true` 从**行中间**切掉，实机上底部琴键是一条半截黑键。
+    //    改成"放得下几行就画几行"，下界退到 3 行（面板被拖到极矮时仍保留一个最小窗口）。
+    property <int> visible-rows: Math.max(3, Math.floor((self.height - 28px - root.velocity-lane-height) / 14px));
     property <int> roll-rows: Math.min(self.visible-rows, Math.max(8, root.base-midi-pitch - 8));
     function row-pitch(row: int) -> int { return root.base-midi-pitch + 15 - row; }
     function row-is-white(row: int) -> bool { return root.white-key-pattern[root.row-pitch(row).mod(12)]; }
@@ -588,6 +592,23 @@ export component PianoRoll inherits Rectangle {
         accessible-role: region;
         accessible-id: "piano-roll-velocity-lane";
         accessible-label: @tr("力度泳道");
+
+        // 顶沿分隔线（2026-11-19 修）：穹道底色与上方节奏区同族，4x 放大下两区之间
+        // 看不出边界，力度柱像"浮在格子底下的一截颜色"。补 1px 硬边把两区切开。
+        Rectangle {
+            y: 0;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.line-strong;
+        }
+        // 柱底基线：柱高上限 28px + 底边距 4px，此前柱底是悬空的，读数只能靠目测对齐。
+        // 给一条横贯全宽的基线，127 与 0 都有落脚点（指针反解仍走 velocity-lane-top，不变）。
+        Rectangle {
+            y: parent.height - 4px;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.line;
+        }
 
         // `for <标识符>[i] in <model>` 必须带声明标识符；本切片把它从 `_` 换成 `note_ulid`，
         // 因为力度臂的草稿预览要按**身份**选中被拖的那一根柱（见 arrangement_view.slint 的注释）。

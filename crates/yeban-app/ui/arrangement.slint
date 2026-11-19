@@ -1376,10 +1376,13 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 6px;
                                             height: 20px;
-                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane;
+                                            // 电平表井：条体与轨道头同色（bg-lane）时整格读成一块
+                                            // 无字灰板 —— 凹陷用 bg-void（比头暗一档）、边界用
+                                            // line（比 hairline 实），静默时也看得出这是一格表。
+                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
                                             border-radius: 1.5px;
-                                            border-width: 0.8px;
-                                            border-color: Tokens.skin-hairline;
+                                            border-width: 1px;
+                                            border-color: Tokens.line;
                                             clip: true;
 
                                             Rectangle {
@@ -1971,10 +1974,13 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 6px;
                                             height: 20px;
-                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane;
+                                            // 电平表井：条体与轨道头同色（bg-lane）时整格读成一块
+                                            // 无字灰板 —— 凹陷用 bg-void（比头暗一档）、边界用
+                                            // line（比 hairline 实），静默时也看得出这是一格表。
+                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
                                             border-radius: 1.5px;
-                                            border-width: 0.8px;
-                                            border-color: Tokens.skin-hairline;
+                                            border-width: 1px;
+                                            border-color: Tokens.line;
                                             clip: true;
 
                                             Rectangle {
