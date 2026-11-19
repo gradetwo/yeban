@@ -108,13 +108,51 @@ pub struct CrushParams {
     pub aa: f32,
 }
 
+impl CrushParams {
+    /// 缺省参数（16 bit / 不抽取 / 无抗混叠 = 碾碎器旋钮全在出厂位）。
+    ///
+    /// ⚠ 这组缺省**不是**逐位恒等：16 bit 量化步长 3.05e-5 仍会改写低位。
+    /// 它只是"器件在场但未调"的基线，不是旁通（与瞬态塑形的 (0, 0) 不同）。
+    pub const DEFAULT: Self = Self {
+        bits: 16.0,
+        down: 1.0,
+        aa: 0.0,
+    };
+
+    /// 缺省参数。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::DEFAULT
+    }
+
+    /// 与 [`BitCrusher::process`] 入口**同一次**钳制（`process` 直接调本函数，
+    /// ⛔ 不复制第二份规则）：bits 钳 4..16（非有限 → 16）、down 钳
+    /// 1..[`MAX_DIVISOR`]（非有限 → 1）、aa 钳 0..1（非有限 → 0）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            bits: if self.bits.is_finite() {
+                self.bits.clamp(4.0, 16.0)
+            } else {
+                16.0
+            },
+            down: if self.down.is_finite() {
+                self.down.clamp(1.0, MAX_DIVISOR)
+            } else {
+                1.0
+            },
+            aa: if self.aa.is_finite() {
+                self.aa.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
 impl Default for CrushParams {
     fn default() -> Self {
-        Self {
-            bits: 16.0,
-            down: 1.0,
-            aa: 0.0,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -237,21 +275,12 @@ impl BitCrusher {
             return;
         }
         let sample_rate = sanitise_sample_rate(sample_rate);
-        let bits = if params.bits.is_finite() {
-            params.bits.clamp(4.0, 16.0)
-        } else {
-            16.0
-        };
-        let down = if params.down.is_finite() {
-            params.down.clamp(1.0, MAX_DIVISOR)
-        } else {
-            1.0
-        };
-        let aa = if params.aa.is_finite() {
-            params.aa.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        // 钳制只有一份：[`CrushParams::sanitised`]（字段表 `CrusherField::sanitise`
+        // 与投影层读的是同一次钳制的结果）。
+        let params = params.sanitised();
+        let bits = params.bits;
+        let down = params.down;
+        let aa = params.aa;
         // `exp2` 是一条指令；对一个只有 4..16 的控制范围来说，
         // `powf` 会白白拉进一个 libm 例程。
         let levels = exp2(bits);
@@ -287,6 +316,60 @@ impl BitCrusher {
             }
             out_l[i] = wet[0];
             out_r[i] = wet[1];
+        }
+    }
+
+    /// 原地处理立体声缓冲区（零堆分配，零锁，实时安全）。
+    ///
+    /// 与 [`Self::process`] 逐样本同式：每个样本先把左右读进 `raw` 再写回，
+    /// 声道之间不交叉读 ⇒ 输入输出同缓冲别名安全（与
+    /// `TransientShaper::process_in_place` 同一条理由、同一款镜像）。
+    #[inline(never)]
+    pub fn process_in_place(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: CrushParams,
+        sample_rate: f32,
+    ) {
+        let frames = left.len().min(right.len());
+        if frames == 0 {
+            return;
+        }
+        let sample_rate = sanitise_sample_rate(sample_rate);
+        let params = params.sanitised();
+        let levels = exp2(params.bits);
+        let step = 2.0 / levels;
+        let limit = levels * 0.5;
+        let decimated = sample_rate / params.down;
+        let pre_coeff = (1.0 - libm::expf(-TAU * 0.45 * decimated / sample_rate)).clamp(0.0, 1.0);
+        let post_coeff = (1.0 - libm::expf(-TAU * 0.30 * decimated / sample_rate)).clamp(0.0, 1.0);
+        for i in 0..frames {
+            // 入口守卫见模块文档"非有限输入样本"一节。有限样本逐位不变。
+            let raw = [finite_or_zero(left[i]), finite_or_zero(right[i])];
+            self.phase += 1.0;
+            let capture = self.phase >= params.down;
+            if capture {
+                self.phase -= params.down;
+            }
+            let mut wet = [0.0f32; 2];
+            for (channel, slot) in wet.iter_mut().enumerate() {
+                let x = raw[channel];
+                self.pre[channel][0] += pre_coeff * (x - self.pre[channel][0]);
+                self.pre[channel][1] += pre_coeff * (self.pre[channel][0] - self.pre[channel][1]);
+                // `aa = 0` 保留原始输入，因此只有量化器与分频器在塑造信号。
+                let source = x + params.aa * (self.pre[channel][1] - x);
+                if capture {
+                    self.hold[channel] = quantise(source, step, limit);
+                }
+                self.post[channel][0] += post_coeff * (self.hold[channel] - self.post[channel][0]);
+                self.post[channel][1] +=
+                    post_coeff * (self.post[channel][0] - self.post[channel][1]);
+                *slot =
+                    self.hold[channel] + params.aa * (self.post[channel][1] - self.hold[channel]);
+            }
+            left[i] = wet[0];
+            right[i] = wet[1];
         }
     }
 }
@@ -615,12 +698,42 @@ pub struct TransientParams {
     pub sustain_amt: f32,
 }
 
+impl TransientParams {
+    /// 缺省参数（两量皆 0 = **逐位恒等**，模块文档与判据
+    /// `the_transient_shaper_is_bit_exact_when_neutral` 钉住）。
+    pub const DEFAULT: Self = Self {
+        attack_amt: 0.0,
+        sustain_amt: 0.0,
+    };
+
+    /// 缺省参数。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::DEFAULT
+    }
+
+    /// 与 [`TransientShaper::process`] 入口**同一次**钳制（`process` 与
+    /// `process_in_place` 都直接调本函数，⛔ 不复制第二份规则）：两量各钳
+    /// −1..1，非有限回落 0。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            attack_amt: clamp_or(self.attack_amt, -1.0, 1.0, 0.0),
+            sustain_amt: clamp_or(self.sustain_amt, -1.0, 1.0, 0.0),
+        }
+    }
+
+    /// 本参数是否**恒等**（两量钳制后皆 0 ⇒ 增益恒为 1、输出逐位等于输入，
+    /// 运行态可整级跳过）。
+    #[must_use]
+    pub fn is_identity(self) -> bool {
+        self.sanitised() == Self::DEFAULT
+    }
+}
+
 impl Default for TransientParams {
     fn default() -> Self {
-        Self {
-            attack_amt: 0.0,
-            sustain_amt: 0.0,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -694,8 +807,10 @@ impl TransientShaper {
         let rect_coeff = one_pole(RECT_HZ, sample_rate);
         let fast_coeff = one_pole(FAST_HZ, sample_rate);
         let slow_coeff = one_pole(SLOW_HZ, sample_rate);
-        let attack = clamp_or(params.attack_amt, -1.0, 1.0, 0.0);
-        let sustain = clamp_or(params.sustain_amt, -1.0, 1.0, 0.0);
+        // 钳制只有一份：[`TransientParams::sanitised`]。
+        let params = params.sanitised();
+        let attack = params.attack_amt;
+        let sustain = params.sustain_amt;
         // 两个量都为 0 是真正的恒等：下面的增益恰好是 `exp2(0) = 1`，
         // 输出逐样本等于输入。
         let neutral = attack == 0.0 && sustain == 0.0;
@@ -753,8 +868,10 @@ impl TransientShaper {
         let rect_coeff = one_pole(RECT_HZ, sample_rate);
         let fast_coeff = one_pole(FAST_HZ, sample_rate);
         let slow_coeff = one_pole(SLOW_HZ, sample_rate);
-        let attack = clamp_or(params.attack_amt, -1.0, 1.0, 0.0);
-        let sustain = clamp_or(params.sustain_amt, -1.0, 1.0, 0.0);
+        // 钳制只有一份：[`TransientParams::sanitised`]。
+        let params = params.sanitised();
+        let attack = params.attack_amt;
+        let sustain = params.sustain_amt;
         let neutral = attack == 0.0 && sustain == 0.0;
         for i in 0..frames {
             let raw = [finite_or_zero(left[i]), finite_or_zero(right[i])];

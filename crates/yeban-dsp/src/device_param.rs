@@ -9,16 +9,20 @@
 //!
 //! ## 表的内容
 //!
-//! 四个**器件族**各一张字段表 ＋ 一张把四个族合起来的落点枚举：
+//! 每个**器件族**各一张字段表 ＋ 一张把各族合起来的落点枚举：
 //!
 //! | 类型 | 内容 |
 //! | :--- | :--- |
-//! | [`StripField`] | 通道条 28 个可自动化字段（`53` 个拼写） |
+//! | [`StripField`] | 通道条 32 个可自动化字段（`61` 个拼写） |
+//! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
 //! | [`ReverbField`] | Freeverb 的 4 个标量字段（`6` 个拼写） |
 //! | [`ConvolutionField`] | 卷积混响的 4 个标量字段（`8` 个拼写；IR 形状不落点） |
 //! | [`DelayField`] | 乒乓延迟的 9 个字段（`15` 个拼写；音符同步四字段只在投影期换算） |
-//! | [`TapeField`] | 磁带饱和的 5 个标量字段（`10` 个拼写） |
-//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 四族的合流枚举与器件族标签 |
+//! | [`LimiterField`] | 插入式限制器的 5 个字段（`5` 个拼写） |
+//! | [`ClipperField`] | 软削波器的 5 个字段（`5` 个拼写） |
+//! | [`TransientField`] | 瞬态塑形的 2 个字段（`2` 个拼写；D3 接线） |
+//! | [`CrusherField`] | 比特碾碎的 3 个字段（`3` 个拼写；D4 接线） |
+//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 九族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
 //! 钳制对齐（[`ChannelStripParams::sanitised`] / [`crate::reverb::Reverb::set_params`] /
@@ -34,6 +38,7 @@ use crate::convolution_reverb::{
 use crate::delay::{DelayParams, MAX_DELAY_SECONDS};
 use crate::reverb::{REVERB_MAX_PREDELAY_S, ReverbParams};
 use crate::sample_delay::{MAX_SAMPLE_DELAY_SAMPLES, SampleDelayParams};
+use crate::shaping::{CrushParams, TransientParams};
 use crate::tape::TapeParams;
 
 /// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
@@ -1265,6 +1270,169 @@ impl ClipperField {
     }
 }
 
+/// 瞬态塑形上**可被 `DeviceParam` 自动化落点**的字段（鼓机缺口 D3 接线）。
+///
+/// 与 `transient_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]），
+/// 全部带 `transient_` 前缀（⛔ 不提供裸 `attack` / `sustain`：`attack`
+/// 已是通道条压缩起振时间的别名，裸名会把塑形量悄悄写进压缩器）。
+///
+/// 器件（`TransientShaper`）不持有参数：参数按块传入 `process`，因此块边界
+/// 自动化只需改运行态保存的那一份 [`TransientParams`]，无 `set_params` 往返
+/// （与乒乓延迟的运行口径同款）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TransientField {
+    /// 起音瞬态强度（−1..1；`+` 抬起音、 `-` 压起音）。`transient_attack`。
+    Attack,
+    /// 延音包络强度（−1..1；`+` 抬尾巴、 `-` 收尾巴）。`transient_sustain`。
+    Sustain,
+}
+
+impl TransientField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::Attack, Self::Sustain];
+
+    /// **全部拼写** → 字段（`2` 条 = `2` 个字段；⛔ 无别名，理由见类型文档）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("transient_attack", Self::Attack),
+        ("transient_sustain", Self::Sustain),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Attack => "transient_attack",
+            Self::Sustain => "transient_sustain",
+        }
+    }
+
+    /// 本字段是否是**开关**（瞬态塑形没有开关字段）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        false
+    }
+
+    /// 从参数结构里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &TransientParams) -> f32 {
+        match self {
+            Self::Attack => params.attack_amt,
+            Self::Sustain => params.sustain_amt,
+        }
+    }
+
+    /// 把**原生绝对值**写进参数结构（⛔ 不在这里钳制：钳制在 `sanitised()`）。
+    pub fn store(self, params: &mut TransientParams, value: f32) {
+        match self {
+            Self::Attack => params.attack_amt = value,
+            Self::Sustain => params.sustain_amt = value,
+        }
+    }
+
+    /// 与器件**同一次**钳制：把值写进一份 `DEFAULT`、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：[`TransientParams::sanitised`] 是唯一一份规则。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = TransientParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
+/// 比特碾碎上**可被 `DeviceParam` 自动化落点**的字段（鼓机缺口 D4 接线）。
+///
+/// 与 `crusher_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]），
+/// 全部带 `crush_` 前缀（⛔ 不提供裸 `bits` / `down` / `aa`：过泛的裸名
+/// 会与未来器件撞名，与 `limiter_` / `clipper_` 的前缀惯例一致）。
+///
+/// 器件（`BitCrusher`）不持有参数：参数按块传入 `process`，块边界自动化
+/// 只改运行态保存的那一份 [`CrushParams`]（与 [`TransientField`] 同款）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CrusherField {
+    /// 量化位数（4..16）。`crush_bits`。
+    Bits,
+    /// 采样保持除数（1..64）。`crush_down`。
+    Down,
+    /// 抗混叠量（0..1）。`crush_aa`。
+    Aa,
+}
+
+impl CrusherField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::Bits, Self::Down, Self::Aa];
+
+    /// **全部拼写** → 字段（`3` 条 = `3` 个字段；⛔ 无别名，理由见类型文档）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("crush_bits", Self::Bits),
+        ("crush_down", Self::Down),
+        ("crush_aa", Self::Aa),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Bits => "crush_bits",
+            Self::Down => "crush_down",
+            Self::Aa => "crush_aa",
+        }
+    }
+
+    /// 本字段是否是**开关**（比特碾碎没有开关字段）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        false
+    }
+
+    /// 从参数结构里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &CrushParams) -> f32 {
+        match self {
+            Self::Bits => params.bits,
+            Self::Down => params.down,
+            Self::Aa => params.aa,
+        }
+    }
+
+    /// 把**原生绝对值**写进参数结构（⛔ 不在这里钳制：钳制在 `sanitised()`）。
+    pub fn store(self, params: &mut CrushParams, value: f32) {
+        match self {
+            Self::Bits => params.bits = value,
+            Self::Down => params.down = value,
+            Self::Aa => params.aa = value,
+        }
+    }
+
+    /// 与器件**同一次**钳制：把值写进一份 `DEFAULT`、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：[`CrushParams::sanitised`] 是唯一一份规则。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = CrushParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
@@ -1285,6 +1453,10 @@ pub enum DeviceParamField {
     Limiter(LimiterField),
     /// 软削波器字段。
     Clipper(ClipperField),
+    /// 瞬态塑形字段（D3 接线）。
+    Transient(TransientField),
+    /// 比特碾碎字段（D4 接线）。
+    Crusher(CrusherField),
 }
 
 /// 强制实例化按**器件族**分开。
@@ -1304,10 +1476,16 @@ pub enum DeviceParamFamily {
     Limiter,
     /// 软削波器。
     Clipper,
+    /// 瞬态塑形（D3 接线）。
+    Transient,
+    /// 比特碾碎（D4 接线）。
+    Crusher,
 }
 
 impl DeviceParamField {
-    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 饱和 → 混响 → 卷积 → 延迟。
+    /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 饱和 → 混响 → 卷积 → 延迟
+    /// → 限制器 → 削波器 → 瞬态塑形 → 比特碾碎（各族拼写互不重叠，顺序只定
+    /// 撞名时的优先级）。
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         StripField::from_name(name)
@@ -1318,6 +1496,8 @@ impl DeviceParamField {
             .or_else(|| DelayField::from_name(name).map(Self::Delay))
             .or_else(|| LimiterField::from_name(name).map(Self::Limiter))
             .or_else(|| ClipperField::from_name(name).map(Self::Clipper))
+            .or_else(|| TransientField::from_name(name).map(Self::Transient))
+            .or_else(|| CrusherField::from_name(name).map(Self::Crusher))
     }
 
     /// 规范名。
@@ -1331,6 +1511,8 @@ impl DeviceParamField {
             Self::Delay(field) => field.canonical_name(),
             Self::Limiter(field) => field.canonical_name(),
             Self::Clipper(field) => field.canonical_name(),
+            Self::Transient(field) => field.canonical_name(),
+            Self::Crusher(field) => field.canonical_name(),
         }
     }
 
@@ -1345,6 +1527,8 @@ impl DeviceParamField {
             Self::Delay(_) => DeviceParamFamily::Delay,
             Self::Limiter(_) => DeviceParamFamily::Limiter,
             Self::Clipper(_) => DeviceParamFamily::Clipper,
+            Self::Transient(_) => DeviceParamFamily::Transient,
+            Self::Crusher(_) => DeviceParamFamily::Crusher,
         }
     }
 
@@ -1359,6 +1543,8 @@ impl DeviceParamField {
             Self::Delay(field) => field.sanitise(value),
             Self::Limiter(field) => field.sanitise(value),
             Self::Clipper(field) => field.sanitise(value),
+            Self::Transient(field) => field.sanitise(value),
+            Self::Crusher(field) => field.sanitise(value),
         }
     }
 }
@@ -1512,5 +1698,77 @@ mod tests {
         );
         SampleDelayField::Invert.store(&mut params, 0.0);
         assert!(!params.invert);
+    }
+
+    /// 瞬态塑形字段表（D3 接线）：规范名往返、拼写数钉死、合流解析、
+    /// `sanitise` 与器件钳制同解；裸 `attack` 必须仍归通道条压缩（撞名防线）。
+    #[test]
+    fn transient_field_spellings_round_trip() {
+        for field in TransientField::ALL {
+            assert_eq!(
+                TransientField::from_name(field.canonical_name()),
+                Some(*field),
+                "规范名 {} 必须解析",
+                field.canonical_name()
+            );
+            assert_eq!(
+                DeviceParamField::from_name(field.canonical_name()),
+                Some(DeviceParamField::Transient(*field)),
+                "合流解析必须落到瞬态族"
+            );
+            assert_eq!(
+                DeviceParamField::Transient(*field).family(),
+                DeviceParamFamily::Transient
+            );
+            assert!(!field.is_flag());
+        }
+        assert_eq!(TransientField::SPELLINGS.len(), 2, "瞬态拼写共 2 条");
+        assert_eq!(TransientField::ALL.len(), 2, "瞬态共 2 个字段");
+        // 撞名防线：裸 `attack` 是压缩起振的别名，绝不能被塑形族抢走。
+        assert_eq!(
+            DeviceParamField::from_name("attack"),
+            Some(DeviceParamField::Strip(StripField::AttackS)),
+            "裸 attack 必须仍归通道条压缩"
+        );
+        assert_eq!(TransientField::Attack.sanitise(2.5), 1.0);
+        assert_eq!(TransientField::Sustain.sanitise(-2.5), -1.0);
+        assert_eq!(TransientField::Attack.sanitise(f32::NAN), 0.0);
+        let mut params = TransientParams::DEFAULT;
+        TransientField::Attack.store(&mut params, 0.45);
+        assert_eq!(TransientField::Attack.read(&params), 0.45);
+    }
+
+    /// 比特碾碎字段表（D4 接线）：规范名往返、拼写数钉死、合流解析、
+    /// `sanitise` 与器件钳制同解。
+    #[test]
+    fn crusher_field_spellings_round_trip() {
+        for field in CrusherField::ALL {
+            assert_eq!(
+                CrusherField::from_name(field.canonical_name()),
+                Some(*field),
+                "规范名 {} 必须解析",
+                field.canonical_name()
+            );
+            assert_eq!(
+                DeviceParamField::from_name(field.canonical_name()),
+                Some(DeviceParamField::Crusher(*field)),
+                "合流解析必须落到碾碎族"
+            );
+            assert_eq!(
+                DeviceParamField::Crusher(*field).family(),
+                DeviceParamFamily::Crusher
+            );
+            assert!(!field.is_flag());
+        }
+        assert_eq!(CrusherField::SPELLINGS.len(), 3, "碾碎拼写共 3 条");
+        assert_eq!(CrusherField::ALL.len(), 3, "碾碎共 3 个字段");
+        assert_eq!(CrusherField::Bits.sanitise(99.0), 16.0);
+        assert_eq!(CrusherField::Bits.sanitise(2.0), 4.0);
+        assert_eq!(CrusherField::Down.sanitise(0.0), 1.0);
+        assert_eq!(CrusherField::Down.sanitise(100.0), 64.0);
+        assert_eq!(CrusherField::Aa.sanitise(f32::NAN), 0.0);
+        let mut params = CrushParams::DEFAULT;
+        CrusherField::Bits.store(&mut params, 10.0);
+        assert_eq!(CrusherField::Bits.read(&params), 10.0);
     }
 }
