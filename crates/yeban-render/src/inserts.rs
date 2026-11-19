@@ -2251,6 +2251,8 @@ mod tests {
                 0.72
             }
             DeviceParamField::Reverb(ReverbField::Predelay) => 0.05,
+            DeviceParamField::Reverb(ReverbField::Kind) => 2.0,
+            DeviceParamField::Reverb(ReverbField::Decay) => 1.6,
             DeviceParamField::Convolution(ConvolutionField::PreDelay) => 0.05,
             DeviceParamField::Convolution(ConvolutionField::Dry | ConvolutionField::Wet) => 0.72,
             DeviceParamField::Convolution(ConvolutionField::IrGainDb) => -7.5,
