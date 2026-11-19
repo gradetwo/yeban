@@ -553,10 +553,8 @@ pub struct ChannelStrip {
     eq: ShapingEq,
     /// ④ 动态 EQ 的**侧链检波**带通（单声道，只用 `v[0]`）。
     deq_det: Biquad,
-    /// ④ 动态 EQ 的峰值滤波器，左。
+    /// ④ 动态 EQ 的立体声峰值滤波器（[`Biquad`] 内部已按左/右独立保存状态）。
     deq_l: Biquad,
-    /// ④ 动态 EQ 的峰值滤波器，右。
-    deq_r: Biquad,
     /// ④ 动态 EQ 的包络（线性，带通电平的跟随值）。
     deq_env: f32,
     /// ④⁗ **M/S 中频**的峰值滤波器（`#346`）：只作用在 side/mid 分解后的 mid 上。
@@ -664,7 +662,6 @@ impl ChannelStrip {
         self.deq_det.process_mono_in_place(&mut band, frames);
         let cut = self.deq_cut(&band, frames, params);
         configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
-        configure_deq_peak(&mut self.deq_r, self.sample_rate, params, -cut);
         self.deq_l.process_in_place(left, right, frames);
     }
 
@@ -753,7 +750,6 @@ impl ChannelStrip {
         self.deq_det.process_mono_in_place(&mut band, frames);
         let cut = self.deq_cut(&band, frames, params);
         configure_deq_peak(&mut self.deq_l, self.sample_rate, params, -cut);
-        configure_deq_peak(&mut self.deq_r, self.sample_rate, params, -cut);
         self.deq_l.process_in_place(left, right, frames);
     }
 
@@ -832,9 +828,7 @@ impl ChannelStrip {
         let mut deq_det = Biquad::identity();
         configure_deq_detector(&mut deq_det, sample_rate, params.dyn_eq);
         let mut deq_l = Biquad::identity();
-        let mut deq_r = Biquad::identity();
         configure_deq_peak(&mut deq_l, sample_rate, params.dyn_eq, 0.0);
-        configure_deq_peak(&mut deq_r, sample_rate, params.dyn_eq, 0.0);
         let mut side_hp = Biquad::identity();
         configure_mono_maker(&mut side_hp, sample_rate, params.mono_below_hz);
         let mut ms_mid = Biquad::identity();
@@ -847,7 +841,6 @@ impl ChannelStrip {
             eq: ShapingEq::new(),
             deq_det,
             deq_l,
-            deq_r,
             deq_env: 0.0,
             ms_mid,
             side_hp,
@@ -1502,7 +1495,11 @@ fn sanitise_eq(params: EqParams) -> EqParams {
 #[inline]
 #[must_use]
 fn finite_or_zero(value: f32) -> f32 {
-    if value.is_finite() { value } else { 0.0 }
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
 }
 
 /// [ARCH-DET-001] 用的确定性指纹：**FNV-1a 64**。
@@ -2981,5 +2978,57 @@ mod tests {
             assert_eq!(plain_l[frame].to_bits(), keyed_l[frame].to_bits());
             assert_eq!(plain_r[frame].to_bits(), keyed_r[frame].to_bits());
         }
+    }
+
+    #[test]
+    fn dyn_eq_processes_stereo_channels_independently() {
+        let params = ChannelStripParams {
+            eq_enabled: false,
+            filter_enabled: false,
+            compressor_enabled: false,
+            dyn_eq: DynEqParams {
+                freq_hz: 300.0,
+                threshold_db: -30.0,
+                max_cut_db: 12.0,
+                q: DynEqParams::Q,
+                ratio: DynEqParams::RATIO,
+            },
+            ..ChannelStripParams::DEFAULT
+        };
+        let n = 4800;
+        let sine_300: Vec<f32> = (0..n)
+            .map(|i| 0.8 * libm::sinf(2.0 * core::f32::consts::PI * 300.0 * i as f32 / SR))
+            .collect();
+
+        // 自检波模式：左声道 300 Hz 正弦被压低，右声道全 0 保持逐位为 0。
+        let mut left = sine_300.clone();
+        let mut right = vec![0.0f32; n];
+        let mut strip = ChannelStrip::new(params, SR);
+        strip.process_stereo(&mut left, &mut right);
+        assert!(right.iter().all(|&s| s.to_bits() == 0.0f32.to_bits()));
+        let in_peak = sine_300[n - 1000..]
+            .iter()
+            .fold(0.0f32, |m, &s| m.max(s.abs()));
+        let out_peak = left[n - 1000..].iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(
+            out_peak < 0.7 * in_peak,
+            "左声道应被动态 EQ 明显衰减: in={in_peak}, out={out_peak}"
+        );
+
+        // 键检波模式：同样左声道独立衰减、右声道保持逐位为 0。
+        let mut keyed_l = sine_300.clone();
+        let mut keyed_r = vec![0.0f32; n];
+        let key_l = sine_300;
+        let key_r = vec![0.0f32; n];
+        let mut keyed_strip = ChannelStrip::new(params, SR);
+        keyed_strip.process_stereo_with_key(&mut keyed_l, &mut keyed_r, &key_l, &key_r);
+        assert!(keyed_r.iter().all(|&s| s.to_bits() == 0.0f32.to_bits()));
+        let keyed_out_peak = keyed_l[n - 1000..]
+            .iter()
+            .fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(
+            keyed_out_peak < 0.7 * in_peak,
+            "键检波左声道应被动态 EQ 明显衰减: in={in_peak}, out={keyed_out_peak}"
+        );
     }
 }
