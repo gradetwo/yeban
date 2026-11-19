@@ -1956,6 +1956,9 @@ msgstr "Retry"
 msgid "再试一次"
 msgstr "Try again"
 
+msgid "共 {} 件 · 列表可上下滚动"
+msgstr "{} in total · the list scrolls up and down"
+
 msgid "正在获取目录..."
 msgstr "Fetching catalog..."
 

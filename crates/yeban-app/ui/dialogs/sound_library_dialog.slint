@@ -202,7 +202,7 @@ export component SoundLibraryDialog inherits Rectangle {
                 y: 52px;
                 width: root.list-w - 76px;
                 height: 18px;
-                text: "共 " + root.installed-names.length + " 件 · 列表可上下滚动";
+                text: @tr("共 {} 件 · 列表可上下滚动", root.installed-names.length);
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: right;
