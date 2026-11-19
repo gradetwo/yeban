@@ -8146,6 +8146,7 @@ fn configured_voice_filter(
         FilterType::Highpass4p => VoiceFilterKind::Highpass4p,
         FilterType::Lowpass6p => VoiceFilterKind::Lowpass6p,
         FilterType::Highpass6p => VoiceFilterKind::Highpass6p,
+        FilterType::Allpass1p => VoiceFilterKind::Allpass1p,
     };
     VoiceFilter::configured(kind, cutoff_hz, resonance_db, sample_rate)
 }

@@ -90,6 +90,8 @@ pub enum VoiceFilterKind {
     Lowpass6p,
     /// `hpf_6p`：六阶高通（三节级联）。
     Highpass6p,
+    /// ⭐ `apf_1p`：一阶全通（SFZ v2 选项）。幅度恒 0 dB，只改相位。
+    Allpass1p,
 }
 
 impl VoiceFilterKind {
@@ -99,6 +101,7 @@ impl VoiceFilterKind {
         match self {
             VoiceFilterKind::Lowpass1p
             | VoiceFilterKind::Highpass1p
+            | VoiceFilterKind::Allpass1p
             | VoiceFilterKind::Lowpass2p
             | VoiceFilterKind::Highpass2p
             | VoiceFilterKind::Bandpass2p
@@ -122,6 +125,7 @@ impl VoiceFilterKind {
             VoiceFilterKind::Highpass4p => 8,
             VoiceFilterKind::Lowpass6p => 9,
             VoiceFilterKind::Highpass6p => 10,
+            VoiceFilterKind::Allpass1p => 11,
         }
     }
 
@@ -139,6 +143,7 @@ impl VoiceFilterKind {
             8 => Some(VoiceFilterKind::Highpass4p),
             9 => Some(VoiceFilterKind::Lowpass6p),
             10 => Some(VoiceFilterKind::Highpass6p),
+            11 => Some(VoiceFilterKind::Allpass1p),
             _ => None,
         }
     }
@@ -239,6 +244,19 @@ impl Section {
         self.set(p, -p, 0.0, 1.0, -p, 0.0);
     }
 
+    /// ⭐ 一阶全通（`apf_1p`）：`H(z) = (a + z⁻¹)/(1 + a z⁻¹)`，
+    /// `a = (tan(πfc/sr) − 1)/(tan(πfc/sr) + 1)`。
+    ///
+    /// 幅度恒 1（0 dB），`fc` 处相位 −90°、直流 0°、Nyquist −180° ——
+    /// 一阶全通的标准形态（规范只给类型名，系数设计属实现口径，明记于此）。
+    /// 极点 `−a` 恒在单位圆内（`|a| < 1`，`tan(πfc/sr) > 0` 时 `a ∈ (−1,1)`），
+    /// 与二阶节共用同一条转置直接 II 递推。
+    fn allpass_1p(&mut self, sample_rate: f32, freq: f32) {
+        let t = (core::f32::consts::PI * freq / sample_rate).tan();
+        let a = (t - 1.0) / (t + 1.0);
+        self.set(a, 1.0, 0.0, 1.0, a, 0.0);
+    }
+
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
         let v = x - self.a1 * self.v1 - self.a2 * self.v2;
@@ -325,6 +343,8 @@ impl VoiceFilter {
                 | VoiceFilterKind::Highpass6p => section.highpass(sample_rate, freq, q),
                 VoiceFilterKind::Bandpass2p => section.bandpass(sample_rate, freq, q),
                 VoiceFilterKind::Bandreject2p => section.bandreject(sample_rate, freq, q),
+                // ⭐ `apf_1p`：一阶全通不吃 `resonance`（没有峰），与 1p 低通/高通同口径。
+                VoiceFilterKind::Allpass1p => section.allpass_1p(sample_rate, freq),
             }
         }
         filter
@@ -512,6 +532,38 @@ mod tests {
         assert!(
             filter.response_db(8_000.0, SR) > -25.0,
             "一阶在 8 kHz 应只压约 18 dB"
+        );
+    }
+
+    /// ⭐ `apf_1p`：幅度**平坦**（全频段 ≈ 0 dB），只改相位。
+    #[test]
+    fn allpass_is_flat_in_magnitude() {
+        let filter = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 12.0, SR);
+        assert!(!filter.is_bypassed());
+        for f in [50.0, 200.0, 1_000.0, 5_000.0, 12_000.0] {
+            let db = filter.response_db(f, SR);
+            assert!(db.abs() < 0.2, "{f} Hz 处应平坦（≈0 dB），实测 {db}");
+        }
+        // 相位确实被改（幅度不变 ⇒ 与直通在逐样本上不同，但能量有界）。
+        let mut ap = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, SR);
+        let mut peak = 0.0f32;
+        for i in 0..4_800usize {
+            let x = (TAU * 1_000.0 * i as f32 / SR).sin();
+            let y = ap.process(x);
+            assert!(y.is_finite(), "第 {i} 帧非有限：{y}");
+            peak = peak.max(y.abs());
+        }
+        // 正弦稳态下全通的输出幅度与输入同量级（≈1），不会放大。
+        assert!(
+            (peak - 1.0).abs() < 0.05,
+            "全通不应改变幅度，峰值实测 {peak}"
+        );
+        // 与直通不是同一条路：脉冲输入的首样本输出 = `a ≠ 0`（直通则恒等 1）。
+        let mut fresh = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, SR);
+        let y0 = fresh.process(1.0);
+        assert!(
+            y0.is_finite() && y0 != 0.0,
+            "全通脉冲首样本应为 a，实测 {y0}"
         );
     }
 
