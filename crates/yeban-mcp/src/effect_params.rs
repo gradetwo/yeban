@@ -840,8 +840,75 @@ const SAMPLE_DELAY: EffectGroup = EffectGroup {
     ],
 };
 
+/// 瞬态塑形：双包络跟随差值塑形（鼓机缺口 D3 接线；本体在 `yeban-dsp`
+/// `shaping.rs`，落点表是 `TransientField`）。
+const TRANSIENT: EffectGroup = EffectGroup {
+    id: "transient",
+    title: "瞬态塑形",
+    summary: "快/慢双包络跟随器的差值塑形：attack 抬/压起音、sustain 抬/收尾巴，两量皆 0 时逐位恒等。\
+              插入链位置在通道条之后、磁带饱和之前。",
+    params: &[
+        EffectParam {
+            name: "transient_attack",
+            aliases: &[],
+            unit: "",
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "起音瞬态强度：正值抬起音（满量程约 +8.5 dB 量级），负值镜像压低；0 = 不动",
+        },
+        EffectParam {
+            name: "transient_sustain",
+            aliases: &[],
+            unit: "",
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "延音包络强度：正值抬尾巴，负值收尾巴（近门限感）；0 = 不动",
+        },
+    ],
+};
+
+/// 比特碾碎：量化 + 采样保持降采样（鼓机缺口 D4 接线；本体在 `yeban-dsp`
+/// `shaping.rs`，落点表是 `CrusherField`）。
+const CRUSHER: EffectGroup = EffectGroup {
+    id: "crusher",
+    title: "比特碾碎",
+    summary: "先量化（bits）再采样保持降采样（down）的老采样器质感；aa 在分频前后各混一级单极点低通压混叠。\
+              插入链位置在磁带饱和之后、软削波器之前。⚠ 缺省 16 bit / 1 / 0 不是逐位恒等（量化步长真实改低位）。",
+    params: &[
+        EffectParam {
+            name: "crush_bits",
+            aliases: &[],
+            unit: "bit",
+            min: 4.0,
+            max: 16.0,
+            default: 16.0,
+            doc: "量化位数：16 接近透明，8 是经典采样器味，4 近乎方波化",
+        },
+        EffectParam {
+            name: "crush_down",
+            aliases: &[],
+            unit: "x",
+            min: 1.0,
+            max: 64.0,
+            default: 1.0,
+            doc: "采样保持除数：有效采样率被它整除，高频镜像折回的来源",
+        },
+        EffectParam {
+            name: "crush_aa",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "抗混叠量：0 = 原始混叠（镜像全留），1 = 两级低通全开（暗而顺）",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 12] = [
+pub const EFFECT_GROUPS: [EffectGroup; 14] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
@@ -854,6 +921,8 @@ pub const EFFECT_GROUPS: [EffectGroup; 12] = [
     LIMITER,
     SAMPLE_DELAY,
     CLIPPER,
+    TRANSIENT,
+    CRUSHER,
 ];
 
 /// 按名字（大小写不敏感）查一个参数的归属。
