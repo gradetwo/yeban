@@ -126,8 +126,8 @@ fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
     .expect("读 lower_dock.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell)",
-            "通道条/总线条背景 (panel-brush; f7c5192f 改钉: flat 支换选中 bg-shell 蘸 14% accent / 未选中 bg-shell)",
+            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-shell",
+            "通道条/总线条背景 (panel-brush; 2026-11-19 裁决去 accent: flat 支恒 bg-shell, 选中靠边框与色标条)",
         ),
         (
             "Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface",

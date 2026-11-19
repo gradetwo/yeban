@@ -74,22 +74,26 @@ fn lower_dock_badges_are_solid_mixes() {
 }
 
 #[test]
-fn lower_dock_strip_selection_is_brightness_not_accent_border() {
-    // f7c5192f 改钉（Wang 自推）：skin-inset 在通道条上像"砸出一块比邻居
-    // 更暗的洞"，选中改走 bg-shell 蘸 14% accent（扁平）/ panel-brush
-    // （拟物），另配 accent 边框。旧"底色一档差"规则在此条作废，判据
-    // 跟进 Wang 取值，不回退。
+fn lower_dock_strip_selection_is_accent_border_not_accent_fill() {
+    // 取值沿革：f7c5192f（Wang 自推）曾钉 bg-shell 蘸 14% accent 作选中底；
+    // 06:14 补丁（0f626645a）改为底色恒 bg-shell、选中只靠 accent 边框与
+    // 色标条；Wang 2026-11-19 裁决「按照补丁去 accent」，本判据按补丁取值
+    // 改钉，f7c5192f 的蘸色在此条作废。
     assert!(
         LOWER_DOCK.contains(
-            "trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell"
+            "background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-shell;"
         ),
-        "通道条选中必须走 bg-shell 蘸 14% accent（f7c5192f 改钉）"
+        "通道条底色必须恒为 bg-shell（flat）/ panel-brush（拟物），不随选中蘸 accent（2026-11-19 裁决）"
+    );
+    assert!(
+        !LOWER_DOCK.contains("Tokens.accent.mix(Tokens.bg-shell, 0.14)"),
+        "通道条不得再用 bg-shell 蘸 14% accent 作选中底色（2026-11-19 裁决去 accent）"
     );
     assert!(
         LOWER_DOCK.contains(
             "border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.85) : Tokens.skin-chip;"
         ),
-        "通道条选中边框必须走 accent 0.85（f7c5192f 改钉）"
+        "通道条选中边框必须走 accent 0.85"
     );
     assert!(
         !LOWER_DOCK
