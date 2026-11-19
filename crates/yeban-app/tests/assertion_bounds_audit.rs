@@ -169,6 +169,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "assert!(picked.iter().all(|s| s.id.starts_with(\"bass\")));",
         "缺音源救援 suggest 单元测试：同一测试内相邻 assert_eq 已把 picked 钉死为 [\"bass-small\", \"bass-big\"]（定长 2 元、非空），.all 迭代的集合已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
     ),
+    (
+        "src/bridge.rs",
+        ".all(|p| p.curve == yeban_model::CurveType::SCurve),",
+        "鼓机预置 automation 展开测试：同一测试内先把 new_lane.points 收集成 points 并 assert_eq 钉死为 [(0, 0.10), (3840, 0.15), (7680, 0.22)]（定长 3 元、非空），.all 迭代的集合已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
+    ),
 ];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。
