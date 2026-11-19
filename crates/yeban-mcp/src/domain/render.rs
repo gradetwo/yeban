@@ -523,8 +523,9 @@ use yeban_render::inserts::{
 };
 use yeban_render::mastering;
 use yeban_render::render::{
-    AudioSource, BlockContext, InputStage, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
-    RenderOutput, RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
+    AudioSource, BlockContext, InputStage, L1_BLOCK_SIZE, LaneKeyRoute, OutputStage, RenderError,
+    RenderOptions, RenderOutput, RenderPlan, SilentSource, db_to_linear, project_phase_align,
+    track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
 // 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
@@ -5176,6 +5177,17 @@ impl AudioSource for MidiSource {
         }
     }
 
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：lane 键路由只落在分组源
+    /// 形态上。单引擎源没有 lane 组 ⇒ `false`（`execute` 照旧响亮
+    /// 失败，真无落点不许静默）；分组源本人的判定（组下标越界等）
+    /// 原样透传，⛔ 不在这里另设一套。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            Self::Lane(source) => source.attach_lane_keys(routes),
+        }
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         match self {
             Self::Plain(source) => source.render_block(context, out),
@@ -5245,6 +5257,15 @@ impl AudioSource for PeakTap {
         self.inner.seek_to(frame)
     }
 
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：探针只读、不持状态，
+    /// lane 键路由转发给内层源（与 `seek_to` 同一条转发纪律）。
+    /// 缺这层转发时，每个被探针包住的源都会被 `execute` 误判成
+    /// "不是逐件分组源"—— 出厂侧链预置（trap/phonk）端到端渲染
+    /// 正是这样被假拒绝的。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.inner.attach_lane_keys(routes)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         self.inner.render_block(context, out)?;
         let peak = math::peak_of(out);
@@ -5309,6 +5330,17 @@ impl AudioSource for TrackSource {
             clips.seek_to(frame)?;
         }
         Ok(())
+    }
+
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：lane 键路由属于 MIDI 支
+    /// 的分组源，转发给它；插件胜出 / 无可发声音符时 `midi` 为空
+    /// ⇒ 无落点 ⇒ `false`（`execute` 响亮失败，口径不变）。片段支
+    /// 是整轨求和的素材，没有 lane 组，⛔ 不冒充落点。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        match &mut self.midi {
+            Some(midi) => midi.attach_lane_keys(routes),
+            None => false,
+        }
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {

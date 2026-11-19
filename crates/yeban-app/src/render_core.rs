@@ -95,8 +95,8 @@ use yeban_render::automation::{
 };
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
-    AudioSource, BlockContext, InputStage, OutputStage, RenderError, RenderOptions, RenderOutput,
-    RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
+    AudioSource, BlockContext, InputStage, LaneKeyRoute, OutputStage, RenderError, RenderOptions,
+    RenderOutput, RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
 };
 
 use yeban_engine::mixer::{BusLimiter, LOOKAHEAD_SAMPLES, PanLaw, pan_gains};
@@ -137,6 +137,14 @@ impl AudioSource for TrackSource {
         Ok(())
     }
 
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：lane 键路由属于基座
+    /// （引擎分组源），转发给它；片段支是整轨求和的素材、没有
+    /// lane 组，⛔ 不冒充落点。基座不是分组源时其 `false` 原样
+    /// 上传，真无落点仍旧响亮失败。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.base.attach_lane_keys(routes)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 基座会清零（三个既有源都 `out.fill(0.0)`）；音频片段只**累加**。
         self.base.render_block(context, out)?;
@@ -167,6 +175,12 @@ impl AudioSource for AutomationGain {
     /// 之前）⇒ 冷启动语义与 MCP 的 `TrackSource` 同一条口径。
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
         self.inner.seek_to(frame)
+    }
+
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：自动化门只乘输出，
+    /// lane 键路由转发给内层源（与 `seek_to` 同一条转发纪律）。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.inner.attach_lane_keys(routes)
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
@@ -205,6 +219,12 @@ impl AudioSource for AutomationPan {
     /// [`AutomationGain`] 同一条口径：曲线按绝对帧读，平滑器冷启动）。
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
         self.inner.seek_to(frame)
+    }
+
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：声相门只乘输出，
+    /// lane 键路由转发给内层源（与 `seek_to` 同一条转发纪律）。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.inner.attach_lane_keys(routes)
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
@@ -248,6 +268,14 @@ impl AudioSource for PeakTap {
     /// 定位清零 —— 定位发生在任何一块渲染之前，读数本就还是 0。
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
         self.inner.seek_to(frame)
+    }
+
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：探针只读、不持状态，
+    /// lane 键路由转发给内层源。缺这层转发时每个被探针包住的源
+    /// 都会被 `execute` 误判成"不是逐件分组源"（与 MCP 的
+    /// `PeakTap` 同一条缝，两个构造器各中一次）。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.inner.attach_lane_keys(routes)
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
