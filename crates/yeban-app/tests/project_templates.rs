@@ -265,6 +265,7 @@ fn same_name_scopes_to_the_three_level_path() {
         history_dag: Vec::new(),
         assets: Vec::new(),
         embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
     };
 
     // 不同子曲风，同名 —— 两条都成立。

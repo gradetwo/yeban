@@ -194,6 +194,15 @@ pub struct ProjectArchive {
     ///
     /// 系统预制凭标识引用，不进包；只有**用户**预制缺省物化进包。条目按名升序。
     pub embedded_presets: Vec<(String, Vec<u8>)>,
+    /// ⭐ **装载留痕**：本次装载由装载层施加的规范化记录（人话，每条一项）。
+    ///
+    /// 空 ⇒ 装载没有改动任何东西。现有一项：`routing_graph.nodes` 在文件
+    /// 里未按字典序排列、装载时已排序（[MODEL-AST-003] 的装载强制，见
+    /// `RoutingGraph::sort_nodes`）。「默认不能静默」：装载层修了什么，
+    /// 调用方（打开工程的界面／CLI／MCP）必须能从装载结果里看见，
+    /// ⛔ 不许静默改序后装作文件本来就这样。手工构造的新归档（保存
+    /// 路径）恒为空。
+    pub load_notes: Vec<String>,
 }
 
 /// `.yeban` 容器层的错误类型。
@@ -694,7 +703,30 @@ fn validate_embedded_preset_entry(name: &str, data: &[u8]) -> Result<(), Contain
     Ok(())
 }
 
+/// 装载留痕探针：只读原始 `project.json` 里的 `routing_graph.nodes`
+/// 原始顺序（其余字段由 serde 跳过，不构造完整文档）。
+///
+/// 存在的理由见 [`read_project_container`] 的留痕段：`RoutingGraph`
+/// 的反序列化会排序，解析后无从分辨文件原本是否有序，只能在解析
+/// **之前**对原始字节探一次。
+#[derive(serde::Deserialize)]
+struct RoutingNodesProbe {
+    /// 路由图（只取 `nodes`）。
+    routing_graph: RoutingNodesOnly,
+}
+
+/// [`RoutingNodesProbe`] 的内层（只取 `nodes`）。
+#[derive(serde::Deserialize)]
+struct RoutingNodesOnly {
+    /// 文件里的原始节点顺序。
+    nodes: Vec<crate::ids::EntityId>,
+}
+
 /// 读取一个按 §5.3 布局写出的工程容器，并校验 CAS 完整性。
+///
+/// 装载规范化（`routing_graph.nodes` 排序，[MODEL-AST-003]）若改动了
+/// 文件里的顺序，会逐项记进返回值的 [`ProjectArchive::load_notes`]，
+/// ⛔ 不静默改序。
 ///
 /// # Errors
 ///
@@ -741,14 +773,32 @@ pub fn read_project_container(
             });
         }
     }
-    let project = serde_json::from_slice(project_json.ok_or(ContainerError::MissingProjectJson)?)
-        .map_err(|error| ContainerError::InvalidProjectJson {
-        detail: error.to_string(),
+    let project_json = project_json.ok_or(ContainerError::MissingProjectJson)?;
+    // ⭐ 装载留痕（「默认不能静默」）：`RoutingGraph` 的反序列化会把
+    //    `nodes` 排序（装载强制 [MODEL-AST-003]），但排序发生在解析
+    //    内部、解析完无从分辨文件里原本是否有序 ⇒ 这里先用只读
+    //    `nodes` 的探针解析原始字节比对，改过序就记进 `load_notes`。
+    //    探针失败不另行报错：主解析会以 `InvalidProjectJson` 给出裁决。
+    let mut load_notes = Vec::new();
+    if let Ok(probe) = serde_json::from_slice::<RoutingNodesProbe>(project_json) {
+        let on_disk = &probe.routing_graph.nodes;
+        if !on_disk.is_sorted() {
+            load_notes.push(format!(
+                "routing_graph.nodes 在文件中未按字典序排列（{} 个节点），装载时已排序",
+                on_disk.len()
+            ));
+        }
+    }
+    let project = serde_json::from_slice(project_json).map_err(|error| {
+        ContainerError::InvalidProjectJson {
+            detail: error.to_string(),
+        }
     })?;
     Ok(ProjectArchive {
         project,
         history_dag: history_dag.ok_or(ContainerError::MissingHistoryDag)?,
         assets,
         embedded_presets,
+        load_notes,
     })
 }

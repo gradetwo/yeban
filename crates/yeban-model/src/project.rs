@@ -1812,13 +1812,32 @@ impl RoutingEdge {
 /// 且数组顺序是确定的（键升序），不会出现"同一工程两次导出字节不同"。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoutingGraph {
-    /// 参与路由的节点身份列表（音轨/总线）。
+    /// 参与路由的节点身份列表（音轨/总线）。**恒按字典序** [MODEL-AST-003]：
+    /// 装载时由 [`Self::sort_nodes`] 强制（见 [`Deserialize`] 实现），
+    /// 运维操作（`AddRoutingNode` 的二分插入）只在已然有序时成立。
     pub nodes: Vec<EntityId>,
     /// 路由边集合，键为边身份。
     pub edges: BTreeMap<EntityId, RoutingEdge>,
 }
 
 impl RoutingGraph {
+    /// 把 `nodes` 排到字典序，返回**是否改动了顺序**。
+    ///
+    /// 「恒有序」是 [MODEL-AST-003] 的不变量：`AddRoutingNode` 用
+    /// `partition_point` 二分插入，只在列表已然有序时成立；其逆操作
+    /// （撤销 `RemoveRoutingNode` ＝ 再插入）在未排序列表上会把节点放
+    /// 到无意义的位置 ⇒ 整表被重排。因此装载路径必须先把列表排好。
+    ///
+    /// 返回值是给装载层的**留痕**依据：改动过顺序 ⇒ 装载层必须记下
+    /// （见 `read_project_container` 的 `load_notes`），⛔ 不许静默改序。
+    pub fn sort_nodes(&mut self) -> bool {
+        if self.nodes.is_sorted() {
+            return false;
+        }
+        self.nodes.sort();
+        true
+    }
+
     /// 校验图自洽性。
     ///
     /// 检查项：节点列表无重复；每条边的键与 `id` 一致；边的两端节点都存在；
@@ -1886,10 +1905,17 @@ impl<'de> Deserialize<'de> for RoutingGraph {
                 ));
             }
         }
-        Ok(Self {
+        let mut graph = Self {
             nodes: json.nodes,
             edges,
-        })
+        };
+        // ⭐ 装载强制 [MODEL-AST-003]：`nodes` 恒有序（见 [`Self::sort_nodes`]）。
+        //    与上面 edges 收拢 `BTreeMap` 同类：装载是唯一能对所有入口
+        //    （容器／纯 JSON／历史）一并强制的层。改序的**留痕**在容器层
+        //    （`read_project_container` 探针比对原始字节后记 `load_notes`）；
+        //    本层只负责强制，不负责报告。
+        graph.sort_nodes();
+        Ok(graph)
     }
 }
 
@@ -3053,6 +3079,32 @@ mod tests {
             duplicated.validate(),
             Err(ModelError::DuplicateEntityId { id: node_a })
         );
+    }
+
+    /// ⭐ 判据（[MODEL-AST-003] 装载强制）：JSON 里未按字典序排列的
+    /// `nodes`，反序列化后必须有序；已排序的装载后逐字不变。
+    ///
+    /// 为什么需要：`AddRoutingNode` 的二分插入与它的逆操作都只在
+    /// 列表已然有序时成立 —— 装载是唯一能对所有入口一并强制的层。
+    /// 本判据直接钉住 `Deserialize` 的排序行为（容器层的留痕判据在
+    /// `tests/container_roundtrip.rs`）。
+    #[test]
+    fn routing_graph_deserialize_sorts_nodes() {
+        let (a, b, c) = (fixture_id(1), fixture_id(2), fixture_id(3));
+        let unsorted = format!(r#"{{"nodes":["{c}","{a}","{b}"],"edges":[]}}"#);
+        let graph: RoutingGraph = serde_json::from_str(&unsorted).expect("未排序的图必须能装载");
+        assert_eq!(graph.nodes, vec![a, b, c], "装载必须把 nodes 排到字典序");
+        let sorted = format!(r#"{{"nodes":["{a}","{b}","{c}"],"edges":[]}}"#);
+        let graph: RoutingGraph = serde_json::from_str(&sorted).expect("已排序的图必须能装载");
+        assert_eq!(graph.nodes, vec![a, b, c], "已排序的装载后逐字不变");
+        // `sort_nodes` 的留痕返回值：改过序 ⇒ true，未改 ⇒ false。
+        let mut graph = RoutingGraph {
+            nodes: vec![c, a, b],
+            edges: BTreeMap::new(),
+        };
+        assert!(graph.sort_nodes(), "未排序时 sort_nodes 必须报 true");
+        assert_eq!(graph.nodes, vec![a, b, c]);
+        assert!(!graph.sort_nodes(), "已排序时 sort_nodes 必须报 false");
     }
 
     /// 主总线必须出现在 `routing_graph.nodes` 里 —— 两个方向各一条。

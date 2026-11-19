@@ -578,6 +578,7 @@ mod tests {
             history_dag: b"commit-graph-bytes".to_vec(),
             assets: vec![(AssetHash::of_bytes(&asset), asset.clone())],
             embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
         };
 
         let dir = scratch_dir("archive");

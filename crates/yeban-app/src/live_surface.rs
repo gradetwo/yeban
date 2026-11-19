@@ -1025,6 +1025,7 @@ impl LiveAdminSurface {
                 history_dag: yeban_model::commit::encode_history_dag(&port.graph()),
                 assets,
                 embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
             };
             (save_archive_file(&archive, &path), asset_count)
         } else {

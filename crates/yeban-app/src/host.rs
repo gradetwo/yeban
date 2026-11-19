@@ -9003,6 +9003,7 @@ pub fn new_project_archive_with_clock(
         history_dag: Vec::new(),
         assets: Vec::new(),
         embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
     }
 }
 
@@ -9603,6 +9604,7 @@ pub fn wire_startup_chooser(
                         history_dag: Vec::new(),
                         assets: sample.assets(),
                         embedded_presets: Vec::new(),
+                        load_notes: Vec::new(),
                     };
                     let label = match sample {
                         crate::cli::Sample::Default => "sample:default",
@@ -9689,6 +9691,7 @@ pub fn wire_startup_chooser(
                 history_dag: Vec::new(),
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
             };
             match untitled.open_archive_runtime(&ui, "new-project", &archive, None) {
                 Ok(()) => {
@@ -9881,6 +9884,7 @@ fn save_template_from_dialog(
         history_dag: yeban_model::commit::encode_history_dag(&graph),
         assets,
         embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
     };
     match crate::templates::save_template_archive(
         user_root, &style, &substyle, &name, &archive, overwrite,

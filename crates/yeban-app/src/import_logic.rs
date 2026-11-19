@@ -573,6 +573,7 @@ pub fn run_with_options(
         history_dag: Vec::new(),
         assets: built.assets,
         embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
     };
     let saved = crate::save::save_archive_file(&archive, output).map_err(|source| {
         ImportLogicError::Save {

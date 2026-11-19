@@ -216,6 +216,7 @@ fn create_new_project_file_writes_the_1187_byte_master_bus_container() {
             history_dag: Vec::new(),
             assets: Vec::new(),
             embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
         },
         source: yeban_app::cli::ProjectSource::Sample(yeban_app::cli::Sample::Filled),
     };
