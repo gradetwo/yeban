@@ -87,41 +87,41 @@ pub struct BuiltinSound {
 /// * 体积未登记（0 ⇒ 不做字节对账），界面上大小列显示 `—`。
 #[must_use]
 pub fn community_extras() -> Vec<BuiltinSound> {
-    let mut extras = Vec::new();
-    extras.push(BuiltinSound {
-        id: "salamander-grand-piano".to_owned(),
-        name: "Salamander Grand Piano V3".to_owned(),
-        category: "Keys".to_owned(),
-        license: "CC-BY-3.0 / Public Domain(2022)".to_owned(),
-        author: "Alexander Holm".to_owned(),
-        repo: "sfzinstruments/SalamanderGrandPiano".to_owned(),
-        pin: String::new(),
-        source_url: "https://archive.org/details/SalamanderGrandPianoV3".to_owned(),
-        total_bytes: 0,
-        file_count: 0,
-        bundled: false,
-        sfz: String::new(),
-        archive_override:
-            "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/refs/heads/master.zip"
+    vec![
+        BuiltinSound {
+            id: "salamander-grand-piano".to_owned(),
+            name: "Salamander Grand Piano V3".to_owned(),
+            category: "Keys".to_owned(),
+            license: "CC-BY-3.0 / Public Domain(2022)".to_owned(),
+            author: "Alexander Holm".to_owned(),
+            repo: "sfzinstruments/SalamanderGrandPiano".to_owned(),
+            pin: String::new(),
+            source_url: "https://archive.org/details/SalamanderGrandPianoV3".to_owned(),
+            total_bytes: 0,
+            file_count: 0,
+            bundled: false,
+            sfz: String::new(),
+            archive_override:
+                "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/refs/heads/master.zip"
+                    .to_owned(),
+        },
+        BuiltinSound {
+            id: "vsco-2-ce".to_owned(),
+            name: "VSCO 2 Community Edition".to_owned(),
+            category: "Orchestral".to_owned(),
+            license: "CC0-1.0".to_owned(),
+            author: "Versilian Studios".to_owned(),
+            repo: "sgossner/VSCO-2-CE".to_owned(),
+            pin: String::new(),
+            source_url: "https://versilian-studios.com/vsco-community/".to_owned(),
+            total_bytes: 0,
+            file_count: 0,
+            bundled: false,
+            sfz: String::new(),
+            archive_override: "https://github.com/sgossner/VSCO-2-CE/archive/refs/heads/master.zip"
                 .to_owned(),
-    });
-    extras.push(BuiltinSound {
-        id: "vsco-2-ce".to_owned(),
-        name: "VSCO 2 Community Edition".to_owned(),
-        category: "Orchestral".to_owned(),
-        license: "CC0-1.0".to_owned(),
-        author: "Versilian Studios".to_owned(),
-        repo: "sgossner/VSCO-2-CE".to_owned(),
-        pin: String::new(),
-        source_url: "https://versilian-studios.com/vsco-community/".to_owned(),
-        total_bytes: 0,
-        file_count: 0,
-        bundled: false,
-        sfz: String::new(),
-        archive_override: "https://github.com/sgossner/VSCO-2-CE/archive/refs/heads/master.zip"
-            .to_owned(),
-    });
-    extras
+        },
+    ]
 }
 
 impl BuiltinSound {
