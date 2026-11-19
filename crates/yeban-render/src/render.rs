@@ -67,6 +67,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -92,6 +93,32 @@ fn default_thread_count() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
+}
+
+/// 按线程数缓存 Rayon 线程池，避免每次 `RenderPlan::execute` 反复拉起/销毁 OS 线程。
+/// 构建线程池期间不持锁，防止并发或嵌套调用互相阻塞。
+fn cached_thread_pool(thread_count: usize) -> Result<Arc<rayon::ThreadPool>, RenderError> {
+    static POOL_CACHE: OnceLock<Mutex<BTreeMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
+    let cache = POOL_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    {
+        let guard = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pool) = guard.get(&thread_count) {
+            return Ok(Arc::clone(pool));
+        }
+    }
+    let built = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .build()
+            .map_err(|error| RenderError::ThreadPool(error.to_string()))?,
+    );
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = guard.entry(thread_count).or_insert(built);
+    Ok(Arc::clone(entry))
 }
 
 /// 渲染选项。
@@ -1899,25 +1926,24 @@ impl RenderPlan {
             }
         }
 
-        let pool = rayon::ThreadPoolBuilder::new()
-            // ⭐ Nightfall v1（Wang 2026-11-01 定）：离线渲染缺省改多线程。`None`
-            // 解析为可用并行度（见 [`default_thread_count`]），与 Rayon 不设
-            // `num_threads` 时的缺省一致；显式 `with_threads(n)` 仍优先。
-            // 历史实测保留作参考：在参考机（M2 Max）上以 tracks=4/8/16/32/64、各 30 秒
-            // 扫过两种模式，并行在每一个尺寸都更慢（1.9–4.4×；32 轨时 auto 95.5× vs
-            // 单线程 229.3×）——这条路是开销/带宽受限而非粒度受限。缺省改为多线程是
-            // 产品决定，不是对该实测的推翻；多线程与单线程逐字节一致由 lib.rs 的
-            // 1/2/4/8 线程等价判据守着。
-            .num_threads(self.options.threads.unwrap_or_else(default_thread_count))
-            .build()
-            .map_err(|error| RenderError::ThreadPool(error.to_string()))?;
-
+        let thread_count = match self.options.threads {
+            None | Some(0) => default_thread_count().max(1),
+            Some(n) => n,
+        };
         let blocks = total_frames.div_ceil(block_size as u64);
         // `frames * channels` 的可表示性由 `compile` 的 `checked_mul` 定下 (那一步不过就
         // 拿不到这个计划), 因此这里的乘法不会溢出 —— 不需要第二遍检查。
         let mut samples = vec![0.0f32; (total_frames as usize) * channels];
 
-        pool.install(|| -> Result<(), RenderError> {
+        let has_parallel_layer = self
+            .layers
+            .iter()
+            .enumerate()
+            .any(|(layer, &(start, end))| {
+                end - start > 1 && !self.layer_key_orders.contains_key(&layer)
+            });
+
+        if thread_count <= 1 || !has_parallel_layer {
             let states = &mut self.states;
             let layers = &self.layers;
             let layer_key_orders = &self.layer_key_orders;
@@ -1940,11 +1966,6 @@ impl RenderPlan {
 
                 for (layer, &(start, end)) in layers.iter().enumerate() {
                     if let Some(order) = layer_key_orders.get(&layer) {
-                        // 同层键层（逐件＋侧链线期 1）：串行拓扑序渲染 —— 目的
-                        // 必须读到源**本块**的抽头，并行渲染做不到。把当前节点
-                        // 的状态整份取出、整个 `states` 作 `done`（下标 = 绝对
-                        // 槽位，与 `render_node` 的读法一致；占位状态从不被
-                        // 渲染，见 `detached_state`），渲完立即换回。
                         for &slot in order {
                             let node_id = states[slot].node;
                             let mut state =
@@ -1958,17 +1979,150 @@ impl RenderPlan {
                     let (done, current) = states.split_at_mut(start);
                     let done: &[NodeState] = done;
                     let current = &mut current[..end - start];
-                    current
-                        .par_iter_mut()
-                        .try_for_each(|state| render_node(state, done, context, width))?;
+                    for state in current {
+                        render_node(state, done, context, width)?;
+                    }
                 }
 
                 let master = &states[master_slot].buffer[..width];
                 let offset = (block_index as usize) * block_size * channels;
                 samples[offset..offset + width].copy_from_slice(master);
             }
-            Ok(())
-        })?;
+        } else {
+            // 粗粒度宏块调度：把每层最多 64 块（8192 帧 @ 128 帧块）合批到一次 Rayon 派发，
+            // 并将单节点层（如 master）直接在调用线程执行，避免逐 128 帧同步屏障开销，
+            // 同时严格保持每节点按 block_index 升序串行推进与固定入边归约顺序 [ARCH-DET-002]。
+            let pool = cached_thread_pool(thread_count)?;
+            let block_width = block_size * channels;
+            let chunk_blocks = (8192 / block_size.max(1))
+                .clamp(1, 64)
+                .min(usize::try_from(blocks).unwrap_or(usize::MAX))
+                .max(1);
+            let mut chunk_buffers: Vec<Vec<f32>> =
+                vec![vec![0.0; chunk_blocks * block_width]; self.states.len()];
+            let mut chunk_key_buffers: Vec<Vec<f32>> = self
+                .states
+                .iter()
+                .map(|s| {
+                    if s.key_tap {
+                        vec![0.0; chunk_blocks * block_width]
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect();
+
+            pool.install(|| -> Result<(), RenderError> {
+                let states = &mut self.states;
+                let layers = &self.layers;
+                let layer_key_orders = &self.layer_key_orders;
+                let master_slot = self.master_slot;
+                let sample_rate = self.options.sample_rate;
+                let seed = self.options.seed;
+
+                let mut chunk_start = 0u64;
+                while chunk_start < blocks {
+                    let chunk_len = ((blocks - chunk_start) as usize).min(chunk_blocks);
+                    for (layer, &(start, end)) in layers.iter().enumerate() {
+                        if let Some(order) = layer_key_orders.get(&layer) {
+                            for &slot in order {
+                                let state = &mut states[slot];
+                                let mut my_buf = std::mem::take(&mut chunk_buffers[slot]);
+                                let mut my_key = std::mem::take(&mut chunk_key_buffers[slot]);
+                                let rendered = render_node_chunk(
+                                    state,
+                                    &mut my_buf,
+                                    &mut my_key,
+                                    &chunk_buffers,
+                                    &chunk_key_buffers,
+                                    chunk_start,
+                                    chunk_len,
+                                    total_frames,
+                                    start_frame,
+                                    block_size,
+                                    channels,
+                                    block_width,
+                                    sample_rate,
+                                    seed,
+                                );
+                                chunk_buffers[slot] = my_buf;
+                                chunk_key_buffers[slot] = my_key;
+                                rendered?;
+                            }
+                            continue;
+                        }
+                        let (done_bufs, rest_bufs) = chunk_buffers.split_at_mut(start);
+                        let (done_keys, rest_keys) = chunk_key_buffers.split_at_mut(start);
+                        let done_bufs: &[Vec<f32>] = done_bufs;
+                        let done_keys: &[Vec<f32>] = done_keys;
+                        let current_states = &mut states[start..end];
+                        let current_bufs = &mut rest_bufs[..end - start];
+                        let current_keys = &mut rest_keys[..end - start];
+                        if end - start <= 1 {
+                            for ((state, my_buf), my_key) in current_states
+                                .iter_mut()
+                                .zip(current_bufs.iter_mut())
+                                .zip(current_keys.iter_mut())
+                            {
+                                render_node_chunk(
+                                    state,
+                                    my_buf,
+                                    my_key,
+                                    done_bufs,
+                                    done_keys,
+                                    chunk_start,
+                                    chunk_len,
+                                    total_frames,
+                                    start_frame,
+                                    block_size,
+                                    channels,
+                                    block_width,
+                                    sample_rate,
+                                    seed,
+                                )?;
+                            }
+                        } else {
+                            current_states
+                                .par_iter_mut()
+                                .zip(current_bufs.par_iter_mut())
+                                .zip(current_keys.par_iter_mut())
+                                .try_for_each(|((state, my_buf), my_key)| {
+                                    render_node_chunk(
+                                        state,
+                                        my_buf,
+                                        my_key,
+                                        done_bufs,
+                                        done_keys,
+                                        chunk_start,
+                                        chunk_len,
+                                        total_frames,
+                                        start_frame,
+                                        block_size,
+                                        channels,
+                                        block_width,
+                                        sample_rate,
+                                        seed,
+                                    )
+                                })?;
+                        }
+                    }
+
+                    let master_buf = &chunk_buffers[master_slot];
+                    for local_b in 0..chunk_len {
+                        let block_index = chunk_start + local_b as u64;
+                        let frames = ((total_frames - block_index * block_size as u64) as usize)
+                            .min(block_size);
+                        let width = frames * channels;
+                        let src_offset = local_b * block_width;
+                        let dst_offset = (block_index as usize) * block_width;
+                        samples[dst_offset..dst_offset + width]
+                            .copy_from_slice(&master_buf[src_offset..src_offset + width]);
+                    }
+                    chunk_start += chunk_len as u64;
+                }
+                Ok(())
+            })?;
+        }
 
         let digest = RenderOutput::digest_of(&samples);
         Ok(RenderOutput {
@@ -2059,6 +2213,85 @@ fn detached_state(node: EntityId) -> NodeState {
     }
 }
 
+enum UpstreamView<'a> {
+    States(&'a [NodeState]),
+    Chunk {
+        buffers: &'a [Vec<f32>],
+        key_buffers: &'a [Vec<f32>],
+        offset: usize,
+    },
+}
+
+impl<'a> UpstreamView<'a> {
+    #[inline]
+    fn buffer(&self, slot: usize, width: usize) -> &[f32] {
+        match self {
+            Self::States(states) => &states[slot].buffer[..width],
+            Self::Chunk {
+                buffers, offset, ..
+            } => &buffers[slot][*offset..*offset + width],
+        }
+    }
+
+    #[inline]
+    fn key_buffer(&self, slot: usize, start: usize, end: usize) -> &[f32] {
+        match self {
+            Self::States(states) => &states[slot].key_buffer[start..end],
+            Self::Chunk {
+                key_buffers,
+                offset,
+                ..
+            } => &key_buffers[slot][*offset + start..*offset + end],
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_node_chunk(
+    state: &mut NodeState,
+    my_buf: &mut [f32],
+    my_key: &mut [f32],
+    done_bufs: &[Vec<f32>],
+    done_keys: &[Vec<f32>],
+    chunk_start: u64,
+    chunk_len: usize,
+    total_frames: u64,
+    start_frame: u64,
+    block_size: usize,
+    channels: usize,
+    block_width: usize,
+    sample_rate: u32,
+    seed: u64,
+) -> Result<(), RenderError> {
+    for local_b in 0..chunk_len {
+        let block_index = chunk_start + local_b as u64;
+        let first_frame = start_frame + block_index * block_size as u64;
+        let frames = ((total_frames - block_index * block_size as u64) as usize).min(block_size);
+        let context = BlockContext {
+            block_index,
+            first_frame,
+            frames,
+            channels,
+            sample_rate,
+            seed,
+        };
+        let width = context.width();
+        let upstream_offset = local_b * block_width;
+        let upstream = UpstreamView::Chunk {
+            buffers: done_bufs,
+            key_buffers: done_keys,
+            offset: upstream_offset,
+        };
+        render_node_with_upstream(state, &upstream, context, width)?;
+        my_buf[upstream_offset..upstream_offset + width].copy_from_slice(&state.buffer[..width]);
+        if state.key_tap {
+            my_key[upstream_offset..upstream_offset + width]
+                .copy_from_slice(&state.key_buffer[..width]);
+        }
+    }
+    Ok(())
+}
+
 /// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ **输入级**
 /// （[`InputStage`]，主总线推子；恒等时不碰样本）→ 插入链 → **输出级**
 /// （[`OutputStage`]，任务单 `#296`）。
@@ -2073,6 +2306,16 @@ fn detached_state(node: EntityId) -> NodeState {
 fn render_node(
     state: &mut NodeState,
     done: &[NodeState],
+    context: BlockContext,
+    width: usize,
+) -> Result<(), RenderError> {
+    let upstream = UpstreamView::States(done);
+    render_node_with_upstream(state, &upstream, context, width)
+}
+
+fn render_node_with_upstream(
+    state: &mut NodeState,
+    done: &UpstreamView<'_>,
     context: BlockContext,
     width: usize,
 ) -> Result<(), RenderError> {
@@ -2115,7 +2358,7 @@ fn render_node(
     // [ARCH-DET-002] 固定顺序的**单线程串行累加**。`incoming` 在编译期已按
     // (source_node, edge_id) 字典序排好, 这里的 for 循环顺序就是全部。
     for (index, contribution) in incoming.iter().enumerate() {
-        let upstream = &done[contribution.source_slot].buffer[..width];
+        let upstream = done.buffer(contribution.source_slot, width);
         let line = &mut delay_lines[index];
         let source_slice = if line.is_bypass() {
             // 绝大多数边没有补偿延迟: 直接累加, 连一次拷贝都不要。
@@ -2171,7 +2414,7 @@ fn render_node(
             if let Some(source_slot) = *key_input {
                 inserts.process_with_key(
                     &mut buffer[..width],
-                    &done[source_slot].key_buffer[..width],
+                    done.key_buffer(source_slot, 0, width),
                     *key_gain,
                 );
             } else {
@@ -2193,8 +2436,11 @@ fn render_node(
                     }
                 }
                 if let Some(source_slot) = *key_input {
-                    let key = &done[source_slot].key_buffer
-                        [offset * channels..(offset + chunk) * channels];
+                    let key = done.key_buffer(
+                        source_slot,
+                        offset * channels,
+                        (offset + chunk) * channels,
+                    );
                     inserts.process_with_key(
                         &mut buffer[offset * channels..(offset + chunk) * channels],
                         key,
@@ -4145,6 +4391,126 @@ mod tests {
                 keyed_sample < plain_sample,
                 "有键尾部第 {index} 个样本必须被压下去：有键 {keyed_sample} vs 无键 {plain_sample}"
             );
+        }
+    }
+
+    #[test]
+    fn multi_chunk_layered_dag_is_bit_identical_across_thread_counts() {
+        let master = ulid(0xFFFF);
+        let t1 = ulid(1);
+        let t2 = ulid(2);
+        let t3 = ulid(3);
+        let t4 = ulid(4);
+        let bus_a = ulid(10);
+        let bus_b = ulid(11);
+        let routing = graph(
+            &[master, t1, t2, t3, t4, bus_a, bus_b],
+            vec![
+                edge(t1, bus_a, None),
+                edge(t2, bus_a, None),
+                edge(t3, bus_b, None),
+                edge(t4, bus_b, None),
+                edge(bus_a, master, None),
+                edge(bus_b, master, None),
+            ],
+        );
+        let mut latencies = BTreeMap::new();
+        latencies.insert(t1, 17);
+        latencies.insert(bus_a, 11);
+        // 10_240 帧 = 80 块（跨 64 块宏块边界）
+        let options = RenderOptions::l1(10_240, 2, 48_000, 0xCAFE_BABE);
+        let mut reference: Option<RenderOutput> = None;
+        for threads in [1usize, 2, 4, 8] {
+            let mut plan = RenderPlan::compile_with_latencies(
+                &routing,
+                master,
+                options.with_threads(threads),
+                &latencies,
+            )
+            .expect("编译");
+            let output = plan
+                .execute(synthetic_sources(&[t1, t2, t3, t4], options.seed))
+                .expect("渲染");
+            let prev = reference.replace(output);
+            if let Some(expected) = prev {
+                let current = reference.as_ref().expect("刚写入");
+                assert_eq!(current.digest, expected.digest);
+                assert_eq!(current.samples, expected.samples);
+            }
+        }
+    }
+
+    #[test]
+    fn same_layer_key_sidechain_across_chunks_matches_single_thread() {
+        let master = ulid(0xFFFF);
+        let kick = ulid(1);
+        let pad = ulid(2);
+        let extra = ulid(3);
+        let bus_a = ulid(10);
+        let bus_b = ulid(11);
+        let routing = graph(
+            &[master, kick, pad, extra, bus_a, bus_b],
+            vec![
+                edge(kick, bus_a, None),
+                edge(pad, bus_a, None),
+                edge(extra, bus_b, None),
+                edge(bus_a, master, None),
+                edge(bus_b, master, None),
+                sidechain_edge(ulid(100), kick, pad),
+            ],
+        );
+        let mut inserts = BTreeMap::new();
+        inserts.insert(pad, compressing_chain());
+        let frames = 10_240u64;
+        let sources = || {
+            let mut map: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+            map.insert(kick, Box::new(ConstantSource(0.8)));
+            map.insert(pad, Box::new(ConstantSource(0.05)));
+            map.insert(extra, Box::new(ConstantSource(0.2)));
+            map
+        };
+        let mut plan_1 = RenderPlan::compile_with_latencies_and_inserts(
+            &routing,
+            master,
+            RenderOptions::l1(frames, 2, 48_000, 7).with_threads(1),
+            &BTreeMap::new(),
+            &inserts,
+        )
+        .expect("编译 1");
+        let mut plan_4 = RenderPlan::compile_with_latencies_and_inserts(
+            &routing,
+            master,
+            RenderOptions::l1(frames, 2, 48_000, 7).with_threads(4),
+            &BTreeMap::new(),
+            &inserts,
+        )
+        .expect("编译 4");
+        let armed: BTreeSet<EntityId> = [pad].into_iter().collect();
+        plan_1.attach_key_armed_nodes(&armed);
+        plan_4.attach_key_armed_nodes(&armed);
+        assert!(!plan_4.layer_key_orders.is_empty());
+        let out_1 = plan_1.execute(sources()).expect("渲染 1");
+        let out_4 = plan_4.execute(sources()).expect("渲染 4");
+        assert_eq!(out_1.digest, out_4.digest);
+        assert_eq!(out_1.samples, out_4.samples);
+    }
+
+    #[test]
+    fn repeated_execute_with_varying_thread_counts_reuses_pools_identically() {
+        let (routing, master, sources) = star_graph(8);
+        let options = RenderOptions::l1(2_048, 2, 48_000, 0x1234_5678);
+        let mut baseline = None;
+        for threads in [2usize, 4, 1, 4, 2] {
+            let mut plan =
+                RenderPlan::compile(&routing, master, options.with_threads(threads)).expect("编译");
+            let out = plan
+                .execute(synthetic_sources(&sources, options.seed))
+                .expect("渲染");
+            if let Some(ref expected) = baseline {
+                assert_eq!(out.digest, *expected);
+            } else {
+                baseline = Some(out.digest);
+            }
         }
     }
 }
