@@ -10512,8 +10512,8 @@ mod tests {
         let ops = drum_gen_ops(&project, &preset, &params, None).expect("新建鼓轨批次");
         assert_eq!(
             ops.len(),
-            15,
-            "建轨 2 + 总线 6 + 装鼓组 1 + 效果层 3 + 逐件链 1 + 片段 2: {ops:?}"
+            16,
+            "建轨 2 + 总线 6 + 装鼓组 1 + 效果层 3 + 逐件链 1 + 侧链边 1 + 片段 2: {ops:?}"
         );
         match &ops[0] {
             Op::AddTrack { track } => {
@@ -10622,12 +10622,25 @@ mod tests {
                 ..
             } => {
                 assert!(old_lane_chains.is_empty(), "新轨旧值必须为空表");
-                assert_eq!(new_lane_chains.len(), 1);
-                assert_eq!(new_lane_chains[0].name, "hats");
-                assert_eq!(new_lane_chains[0].keys, vec![42]);
-                assert_eq!(new_lane_chains[0].devices.len(), 1);
+                // 期 5 起 trap 出厂三组：808（带侧链的压缩）/ kick（透明 EQ）/
+                // hats（EQ + 高通），按首键升序。
+                assert_eq!(new_lane_chains.len(), 3);
+                assert_eq!(new_lane_chains[0].name, "bass");
+                assert_eq!(new_lane_chains[0].keys, vec![35]);
                 assert!(
                     new_lane_chains[0].devices[0]
+                        .params
+                        .iter()
+                        .any(|p| p.name == "threshold_db" && p.value == -30.0),
+                    "808 组必须带出厂侧链压缩（阈值 −30 dB）"
+                );
+                assert_eq!(new_lane_chains[1].name, "kick");
+                assert_eq!(new_lane_chains[1].keys, vec![36]);
+                assert_eq!(new_lane_chains[2].name, "hats");
+                assert_eq!(new_lane_chains[2].keys, vec![42]);
+                assert_eq!(new_lane_chains[2].devices.len(), 1);
+                assert!(
+                    new_lane_chains[2].devices[0]
                         .params
                         .iter()
                         .any(|p| p.name == "hpf_hz" && p.value == 350.0)
@@ -10635,9 +10648,19 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+        // 期 5：出厂侧链声明紧随逐件链落成同轨 lane 边（kick 36 → 808 35）。
+        match &ops[13] {
+            Op::ConnectRouting { edge } => {
+                assert_eq!(edge.kind, RoutingKind::Sidechain);
+                assert_eq!(edge.source_node, edge.destination_node);
+                assert_eq!(edge.source_lane, Some(36));
+                assert_eq!(edge.dest_lane, Some(35));
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         // 片段音符与 theory 生成逐项一致（tick / 音高 / 力度 / 时值）。
         let expected = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();
-        match &ops[13] {
+        match &ops[14] {
             Op::AddClip { clip } => match &clip.content {
                 ClipContent::Midi { notes } => {
                     assert_eq!(notes.len(), expected.len());
@@ -10657,7 +10680,7 @@ mod tests {
             },
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[14] {
+        match &ops[15] {
             Op::AddClipPlacement { placement, .. } => {
                 assert_eq!(placement.start_tick, 0);
                 assert_eq!(placement.duration_ticks, 4 * yeban_theory::TICKS_PER_BAR);
@@ -10725,8 +10748,12 @@ mod tests {
             drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
         // 鼓组不动（无装鼓组笔），但效果层照常补齐（该轨没有任何效果）：
         // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 延迟（槽 3）
-        // + 逐件链整表一笔 + 片段两笔。
-        assert_eq!(ops.len(), 6, "效果层 3 + 逐件链 1 + 片段 2: {ops:?}");
+        // + 逐件链整表一笔 + 出厂侧链边一笔 + 片段两笔。
+        assert_eq!(
+            ops.len(),
+            7,
+            "效果层 3 + 逐件链 1 + 侧链边 1 + 片段 2: {ops:?}"
+        );
         assert!(
             !ops.iter()
                 .any(|op| matches!(op, Op::SetTrackSampler { .. })),
@@ -10776,13 +10803,26 @@ mod tests {
             } => {
                 assert_eq!(*chained_on, track_id);
                 assert!(old_lane_chains.is_empty());
-                assert_eq!(new_lane_chains.len(), 1);
-                assert_eq!(new_lane_chains[0].keys, vec![42]);
+                assert_eq!(new_lane_chains.len(), 3);
+                assert_eq!(new_lane_chains[0].keys, vec![35]);
+                assert_eq!(new_lane_chains[1].keys, vec![36]);
+                assert_eq!(new_lane_chains[2].keys, vec![42]);
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        assert!(matches!(ops[4], Op::AddClip { .. }));
-        match &ops[5] {
+        // 期 5：侧链边紧随逐件链（kick 36 → 808 35，同轨）。
+        match &ops[4] {
+            Op::ConnectRouting { edge } => {
+                assert_eq!(edge.kind, RoutingKind::Sidechain);
+                assert_eq!(edge.source_node, track_id);
+                assert_eq!(edge.destination_node, track_id);
+                assert_eq!(edge.source_lane, Some(36));
+                assert_eq!(edge.dest_lane, Some(35));
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[5], Op::AddClip { .. }));
+        match &ops[6] {
             Op::AddClipPlacement {
                 track_id: placed_on,
                 ..
