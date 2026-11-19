@@ -136,9 +136,33 @@ pub struct DrumDelayPreset {
     pub ping_pong: bool,
 }
 
+/// 瞬态塑形段（`fx.transient` 与逐件链 `chain.transient`，可选）：整组鼓的
+/// 起音/尾巴塑形（鼓机缺口 D3 接线；器件本体在 `yeban-dsp` 的
+/// `shaping.rs`，参数名是 `TransientField` 的规范拼写）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumTransientPreset {
+    /// 起音瞬态强度 −1..=1（正值抬起音、负值压起音）。
+    pub attack: f32,
+    /// 延音包络强度 −1..=1（正值抬尾巴、负值收尾巴）。
+    pub sustain: f32,
+}
+
+/// 比特碾碎段（`fx.crusher` 与逐件链 `chain.crusher`，可选）：量化 +
+/// 采样保持降采样的老采样器味（鼓机缺口 D4 接线；器件本体在
+/// `yeban-dsp` 的 `shaping.rs`，参数名是 `CrusherField` 的规范拼写）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumCrusherPreset {
+    /// 量化位数 4..=16。
+    pub bits: f32,
+    /// 采样保持除数 1..=64。
+    pub down: f32,
+    /// 抗混叠量 0..=1。
+    pub aa: f32,
+}
+
 /// 风格效果层（`fx` 段）：按 Logic 通道条预置的思路给整轨鼓预调的
 /// 一套完整处理——三段 EQ + 高通/低通塑形、压缩、输出微调、插入混响，
-/// 按风格可选磁带饱和与延迟。生成时由 `yeban-app` 的 `drum_gen_ops`
+/// 按风格可选磁带饱和、延迟、瞬态塑形与比特碾碎。生成时由 `yeban-app` 的 `drum_gen_ops`
 /// 翻译成轨上效果器件（EQ 与压缩合为一台通道条器件，见该函数文档）。
 ///
 /// 字段缺失（旧格式文件无 `fx`）⇒ 生成走干声，与一期行为一致；
@@ -189,6 +213,10 @@ pub struct DrumFxPreset {
     pub tape: Option<DrumTapePreset>,
     /// 延迟（可选）。
     pub delay: Option<DrumDelayPreset>,
+    /// 瞬态塑形（可选）。
+    pub transient: Option<DrumTransientPreset>,
+    /// 比特碾碎（可选）。
+    pub crusher: Option<DrumCrusherPreset>,
 }
 
 /// EQ 段（`fx.eq` 与逐件链 `chain.eq` 共用同一形状与值域）。
@@ -276,6 +304,10 @@ pub struct DrumLaneChainPreset {
     pub tape: Option<DrumTapePreset>,
     /// 延迟段（可选）。
     pub delay: Option<DrumDelayPreset>,
+    /// 瞬态塑形段（可选）。
+    pub transient: Option<DrumTransientPreset>,
+    /// 比特碾碎段（可选）。
+    pub crusher: Option<DrumCrusherPreset>,
     /// 本组声相覆盖（可选）−1..=1。
     pub pan: Option<f32>,
     /// 侧链声明（可选；期 4 起生成落成 lane 级侧链边，出厂值期 5 才写）。
@@ -728,6 +760,38 @@ fn parse_delay(obj: &[(String, Json)], base: &str) -> Result<DrumDelayPreset, Dr
     })
 }
 
+/// 解析瞬态塑形段（`{base}.transient`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_transient(
+    obj: &[(String, Json)],
+    base: &str,
+) -> Result<DrumTransientPreset, DrumPresetError> {
+    Ok(DrumTransientPreset {
+        attack: get_f32_ranged(
+            obj,
+            "attack",
+            &format!("{base}.transient.attack"),
+            -1.0,
+            1.0,
+        )?,
+        sustain: get_f32_ranged(
+            obj,
+            "sustain",
+            &format!("{base}.transient.sustain"),
+            -1.0,
+            1.0,
+        )?,
+    })
+}
+
+/// 解析比特碾碎段（`{base}.crusher`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_crusher(obj: &[(String, Json)], base: &str) -> Result<DrumCrusherPreset, DrumPresetError> {
+    Ok(DrumCrusherPreset {
+        bits: get_f32_ranged(obj, "bits", &format!("{base}.crusher.bits"), 4.0, 16.0)?,
+        down: get_f32_ranged(obj, "down", &format!("{base}.crusher.down"), 1.0, 64.0)?,
+        aa: get_f32_ranged(obj, "aa", &format!("{base}.crusher.aa"), 0.0, 1.0)?,
+    })
+}
+
 fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
     let eq = parse_eq(get_obj(obj, "eq")?, "fx")?;
     let comp = parse_comp(get_obj(obj, "comp")?, "fx")?;
@@ -748,6 +812,24 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
                 .as_object()
                 .ok_or_else(|| field_err("fx.delay", "delay must be an object"))?;
             Some(parse_delay(d, "fx")?)
+        }
+    };
+    let transient = match get_opt(obj, "transient") {
+        None => None,
+        Some(transient_json) => {
+            let t = transient_json
+                .as_object()
+                .ok_or_else(|| field_err("fx.transient", "transient must be an object"))?;
+            Some(parse_transient(t, "fx")?)
+        }
+    };
+    let crusher = match get_opt(obj, "crusher") {
+        None => None,
+        Some(crusher_json) => {
+            let c = crusher_json
+                .as_object()
+                .ok_or_else(|| field_err("fx.crusher", "crusher must be an object"))?;
+            Some(parse_crusher(c, "fx")?)
         }
     };
     Ok(DrumFxPreset {
@@ -773,6 +855,8 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
         reverb_predelay_s: reverb.predelay_s,
         tape,
         delay,
+        transient,
+        crusher,
     })
 }
 
@@ -924,6 +1008,24 @@ fn parse_lane_chains(
                 Some(parse_delay(delay_obj, &base)?)
             }
         };
+        let transient = match get_opt(chain_obj, "transient") {
+            None => None,
+            Some(raw_transient) => {
+                let transient_obj = raw_transient.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.transient"), "transient must be an object")
+                })?;
+                Some(parse_transient(transient_obj, &base)?)
+            }
+        };
+        let crusher = match get_opt(chain_obj, "crusher") {
+            None => None,
+            Some(raw_crusher) => {
+                let crusher_obj = raw_crusher.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.crusher"), "crusher must be an object")
+                })?;
+                Some(parse_crusher(crusher_obj, &base)?)
+            }
+        };
         let pan = match get_opt(chain_obj, "pan") {
             None => None,
             Some(_) => Some(get_f32_ranged(
@@ -961,12 +1063,14 @@ fn parse_lane_chains(
             && reverb.is_none()
             && tape.is_none()
             && delay.is_none()
+            && transient.is_none()
+            && crusher.is_none()
             && pan.is_none()
             && sidechain.is_none()
         {
             return Err(field_err(
                 &format!("lane_chains.{name}"),
-                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/pan/sidechain)",
+                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/transient/crusher/pan/sidechain)",
             ));
         }
         chains.push(DrumLaneChainPreset {
@@ -977,6 +1081,8 @@ fn parse_lane_chains(
             reverb,
             tape,
             delay,
+            transient,
+            crusher,
             pan,
             sidechain,
         });
@@ -1034,6 +1140,10 @@ pub struct DrumFxFamilies {
     pub reverb: bool,
     /// 延迟族已在场。
     pub delay: bool,
+    /// 瞬态塑形族已在场（D3 接线）。
+    pub transient: bool,
+    /// 比特碾碎族已在场（D4 接线）。
+    pub crusher: bool,
 }
 
 /// 一台待装效果器件的配方（名字 + 参数表）；身份（`EntityId`）由调用方
@@ -1041,7 +1151,7 @@ pub struct DrumFxFamilies {
 /// 保证两条生成路径装出的效果层逐参数一致。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumFxDeviceSpec {
-    /// 效果族标识（`strip` / `tape` / `reverb` / `delay`）。
+    /// 效果族标识（`strip` / `tape` / `reverb` / `delay` / `transient` / `crusher`）。
     pub family: &'static str,
     /// 器件显示名。
     pub name: &'static str,
@@ -1103,6 +1213,23 @@ fn tape_params(tape: &DrumTapePreset) -> Vec<(String, f32)> {
         ("tape_mix".to_owned(), tape.mix),
         ("tape_hf_hz".to_owned(), tape.hf_hz),
         ("tape_asym".to_owned(), tape.asym),
+    ]
+}
+
+/// 瞬态塑形段 → 瞬态塑形器件参数表。
+fn transient_params(transient: &DrumTransientPreset) -> Vec<(String, f32)> {
+    vec![
+        ("transient_attack".to_owned(), transient.attack),
+        ("transient_sustain".to_owned(), transient.sustain),
+    ]
+}
+
+/// 比特碾碎段 → 比特碾碎器件参数表。
+fn crusher_params(crusher: &DrumCrusherPreset) -> Vec<(String, f32)> {
+    vec![
+        ("crush_bits".to_owned(), crusher.bits),
+        ("crush_down".to_owned(), crusher.down),
+        ("crush_aa".to_owned(), crusher.aa),
     ]
 }
 
@@ -1180,6 +1307,15 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
             params,
         });
     }
+    if let Some(transient) = &fx.transient
+        && !present.transient
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "transient",
+            name: "Transient Shaper",
+            params: transient_params(transient),
+        });
+    }
     if let Some(tape) = &fx.tape
         && !present.tape
     {
@@ -1187,6 +1323,15 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
             family: "tape",
             name: "Tape Saturation",
             params: tape_params(tape),
+        });
+    }
+    if let Some(crusher) = &fx.crusher
+        && !present.crusher
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "crusher",
+            name: "Bitcrusher",
+            params: crusher_params(crusher),
         });
     }
     if !present.reverb {
@@ -1233,11 +1378,25 @@ pub fn drum_lane_device_specs(chain: &DrumLaneChainPreset) -> Vec<DrumFxDeviceSp
             params,
         });
     }
+    if let Some(transient) = &chain.transient {
+        specs.push(DrumFxDeviceSpec {
+            family: "transient",
+            name: "Transient Shaper",
+            params: transient_params(transient),
+        });
+    }
     if let Some(tape) = &chain.tape {
         specs.push(DrumFxDeviceSpec {
             family: "tape",
             name: "Tape Saturation",
             params: tape_params(tape),
+        });
+    }
+    if let Some(crusher) = &chain.crusher {
+        specs.push(DrumFxDeviceSpec {
+            family: "crusher",
+            name: "Bitcrusher",
+            params: crusher_params(crusher),
         });
     }
     if let Some(reverb) = &chain.reverb {
@@ -3277,5 +3436,139 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// D3/D4 接线（预置面）：funk 的 fx 带瞬态段、lofi 的 fx 带碾碎段，
+    /// 且器件配方把两段翻成带规范拼写的器件；在场标记能压掉重复生成。
+    #[test]
+    fn factory_funk_and_lofi_carry_the_wired_shaping_sections() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let by_id = |id: &str| styles.iter().find(|s| s.id == id).unwrap();
+
+        let funk = by_id("funk");
+        let fx = funk.fx.expect("funk fx");
+        let transient = fx.transient.expect("funk fx 必须带瞬态段（D3 接线）");
+        assert_eq!(transient.attack.to_bits(), 0.45f32.to_bits());
+        assert_eq!(transient.sustain.to_bits(), 0.15f32.to_bits());
+        assert!(fx.crusher.is_none(), "funk 不带碾碎段");
+        let specs = drum_fx_device_specs(&fx, DrumFxFamilies::default());
+        let transient_spec = specs
+            .iter()
+            .find(|spec| spec.family == "transient")
+            .expect("配方必须含瞬态器件");
+        assert_eq!(transient_spec.name, "Transient Shaper");
+        assert_eq!(
+            transient_spec.params,
+            vec![
+                ("transient_attack".to_owned(), 0.45),
+                ("transient_sustain".to_owned(), 0.15),
+            ]
+        );
+        let present = DrumFxFamilies {
+            transient: true,
+            ..Default::default()
+        };
+        let specs = drum_fx_device_specs(&fx, present);
+        let families: Vec<&str> = specs.iter().map(|spec| spec.family).collect();
+        assert!(
+            !families.contains(&"transient"),
+            "瞬态族已在场 ⇒ 不得重复生成，实测配方 {families:?}"
+        );
+
+        let lofi = by_id("lofi");
+        let fx = lofi.fx.expect("lofi fx");
+        let crusher = fx.crusher.expect("lofi fx 必须带碾碎段（D4 接线）");
+        assert_eq!(crusher.bits.to_bits(), 10.0f32.to_bits());
+        assert_eq!(crusher.down.to_bits(), 2.0f32.to_bits());
+        assert_eq!(crusher.aa.to_bits(), 0.35f32.to_bits());
+        assert!(fx.transient.is_none(), "lofi 不带瞬态段");
+        let specs = drum_fx_device_specs(&fx, DrumFxFamilies::default());
+        let crusher_spec = specs
+            .iter()
+            .find(|spec| spec.family == "crusher")
+            .expect("配方必须含碾碎器件");
+        assert_eq!(crusher_spec.name, "Bitcrusher");
+        assert_eq!(
+            crusher_spec.params,
+            vec![
+                ("crush_bits".to_owned(), 10.0),
+                ("crush_down".to_owned(), 2.0),
+                ("crush_aa".to_owned(), 0.35),
+            ]
+        );
+        let present = DrumFxFamilies {
+            crusher: true,
+            ..Default::default()
+        };
+        let specs = drum_fx_device_specs(&fx, present);
+        let families: Vec<&str> = specs.iter().map(|spec| spec.family).collect();
+        assert!(
+            !families.contains(&"crusher"),
+            "碾碎族已在场 ⇒ 不得重复生成，实测配方 {families:?}"
+        );
+    }
+
+    /// D3/D4 接线（解析面）：fx 与逐件链两处都认新段；越界与缺字段响亮拒绝；
+    /// 只带碾碎段的逐件链不算空链。
+    #[test]
+    fn shaping_sections_parse_and_reject_loudly() {
+        // fx 两段齐备。
+        let text = MINIMAL.replace(
+            "\"bars\": 1,",
+            "\"bars\": 1, \"fx\": {\
+             \"eq\": {\"low_db\": 0, \"mid_db\": 0, \"high_db\": 0, \"low_hz\": 200,\
+                    \"mid_hz\": 1000, \"mid_q\": 0.9, \"high_hz\": 6000,\
+                    \"hpf_hz\": 0, \"cutoff_hz\": 20000},\
+             \"comp\": {\"threshold_db\": -16, \"ratio\": 3, \"knee_db\": 6,\
+                      \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 0},\
+             \"output_db\": 0,\
+             \"reverb\": {\"size\": 0.4, \"damp\": 0.45, \"wet\": 0.15, \"predelay_s\": 0.01},\
+             \"transient\": {\"attack\": 0.3, \"sustain\": -0.2},\
+             \"crusher\": {\"bits\": 12, \"down\": 3, \"aa\": 0.5}},",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid shaping fx");
+        let fx = preset.fx.expect("fx parsed");
+        assert_eq!(
+            fx.transient.expect("transient").attack.to_bits(),
+            0.3f32.to_bits()
+        );
+        assert_eq!(
+            fx.crusher.expect("crusher").down.to_bits(),
+            3.0f32.to_bits()
+        );
+
+        // 越界与缺字段必须拒绝。
+        let bad_attack = text.replace("\"attack\": 0.3", "\"attack\": 1.5");
+        assert!(
+            DrumStylePreset::from_json(&bad_attack).is_err(),
+            "attack 越界须拒绝"
+        );
+        let bad_bits = text.replace("\"bits\": 12", "\"bits\": 3");
+        assert!(
+            DrumStylePreset::from_json(&bad_bits).is_err(),
+            "bits < 4 须拒绝"
+        );
+        let missing_aa = text.replace(", \"aa\": 0.5", "");
+        assert!(
+            DrumStylePreset::from_json(&missing_aa).is_err(),
+            "缺 aa 须拒绝"
+        );
+
+        // 逐件链：只带碾碎段也算非空链，配方按序产出碾碎器件。
+        let text = preset_with_lanes(
+            "electronic",
+            &[36, 42],
+            ", \"lane_chains\": [{\"name\": \"kick\", \"keys\": [36], \"chain\": {\
+             \"crusher\": {\"bits\": 8, \"down\": 4, \"aa\": 0}}}]",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("crusher-only lane chain");
+        let chain = &preset.lane_chains[0];
+        assert_eq!(
+            chain.crusher.expect("lane crusher").bits.to_bits(),
+            8.0f32.to_bits()
+        );
+        let specs = drum_lane_device_specs(chain);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].family, "crusher");
     }
 }

@@ -50,6 +50,10 @@
       "mix": 0.25,
       "hf_hz": 12000,
       "asym": 0.1
+    },
+    "transient": {
+      "attack": 0.45,
+      "sustain": 0.15
     }
   },
   "bpm": {

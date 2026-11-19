@@ -3169,7 +3169,9 @@ pub fn drum_gen_ops(
 /// 投影按族取第一台命中器件，用户已有的同族效果会先被投影选中，
 /// 再叠一台只会成为死器件。
 fn drum_fx_families_present(devices: &[DeviceDefinition]) -> yeban_theory::DrumFxFamilies {
-    use yeban_dsp::device_param::{DelayField, ReverbField, StripField, TapeField};
+    use yeban_dsp::device_param::{
+        CrusherField, DelayField, ReverbField, StripField, TapeField, TransientField,
+    };
     let mut present = yeban_theory::DrumFxFamilies::default();
     for device in devices {
         if device.bypassed || device.kind != DeviceKind::InternalEffect {
@@ -3180,6 +3182,8 @@ fn drum_fx_families_present(devices: &[DeviceDefinition]) -> yeban_theory::DrumF
             present.tape |= TapeField::from_name(&param.name).is_some();
             present.reverb |= ReverbField::from_name(&param.name).is_some();
             present.delay |= DelayField::from_name(&param.name).is_some();
+            present.transient |= TransientField::from_name(&param.name).is_some();
+            present.crusher |= CrusherField::from_name(&param.name).is_some();
         }
     }
     present
@@ -10995,7 +10999,8 @@ mod tests {
     #[test]
     fn drum_gen_ops_factory_styles_all_carry_the_full_fx_layer() {
         use yeban_dsp::device_param::{
-            ClipperField, DelayField, ReverbField, StripField, TapeField,
+            ClipperField, CrusherField, DelayField, ReverbField, StripField, TapeField,
+            TransientField,
         };
         let project = filled_project();
         for preset in yeban_theory::factory_drum_styles().expect("出厂预置") {
@@ -11013,16 +11018,18 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            // 轨 FX（通道条 + 混响 + 可选磁带/延迟）+ 鼓总线链
+            // 轨 FX（通道条 + 混响 + 可选磁带/延迟/瞬态/碾碎）+ 鼓总线链
             // （胶水压缩 + 软削波，段 1 起新建轨路径恒有）。
             let expected = 2
                 + usize::from(fx.tape.is_some())
                 + usize::from(fx.delay.is_some())
+                + usize::from(fx.transient.is_some())
+                + usize::from(fx.crusher.is_some())
                 + if preset.bus.is_some() { 2 } else { 0 };
             assert_eq!(
                 effects.len(),
                 expected,
-                "{} 效果器件数（通道条 + 混响 + 可选磁带/延迟 + 总线两台）",
+                "{} 效果器件数（通道条 + 混响 + 可选磁带/延迟/瞬态/碾碎 + 总线两台）",
                 preset.id
             );
             // 每个参数名都必须被 dsp 族拼写表识别（写错名 = 死参数）。
@@ -11033,7 +11040,9 @@ mod tests {
                             || TapeField::from_name(&param.name).is_some()
                             || ReverbField::from_name(&param.name).is_some()
                             || DelayField::from_name(&param.name).is_some()
-                            || ClipperField::from_name(&param.name).is_some(),
+                            || ClipperField::from_name(&param.name).is_some()
+                            || TransientField::from_name(&param.name).is_some()
+                            || CrusherField::from_name(&param.name).is_some(),
                         "{} 的器件 {} 参数 {} 不被任何效果族识别",
                         preset.id,
                         device.name,
