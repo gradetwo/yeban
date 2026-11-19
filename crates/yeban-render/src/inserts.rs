@@ -147,6 +147,23 @@
 //!
 //! [`InsertRuntime`] 的全部缓冲在构造期分配（[`InsertRuntime::new`]）。逐块
 //! [`InsertRuntime::process`] 只有环形缓冲读写与乘加：**零分配、零锁、零 I/O**。
+//!
+//! ## 5. 瞬态塑形与比特碾碎（鼓机缺口 D3/D4 接线）
+//!
+//! `yeban_dsp::shaping` 的两件器件自本线起进链。级序（`process` 与
+//! `process_with_key` 同序）：采样延迟 → 通道条 → **瞬态塑形** → 磁带 →
+//! **比特碾碎** → 削波 → 混响 → 卷积 → 延迟 → 限制器。
+//!
+//! - 瞬态放在磁带**之前**：包络跟随器看的是磁带柔化前的信号，塑形量不被
+//!   磁带自身的瞬态软化抵消；
+//! - 碾碎是**介质退化**级，与染色级同段（磁带后、削波前）：削波与限制器
+//!   仍在其后兜底碾碎后的峰值；混响/延迟吃的是碾碎后的干声 ⇒ 尾巴是
+//!   "碾碎鼓的混响"，不是"混响被碾碎"；
+//! - 与限制器/削波器（C-1）同一先例：本线只接离线/渲染侧（含逐件链），
+//!   实时引擎 `insert.rs` 不接这两族；
+//! - 建级门：瞬态参数恒等（两量皆 0 = 逐位恒等）且未强制时不建器件
+//!   （与延迟的 `mix = 0` 门同理）；碾碎缺省（16 bit / 1 / 0）**不是**
+//!   逐位恒等（量化步长真实改低位）⇒ 投影为 `Some` 即建，不设恒等门。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -160,7 +177,7 @@ use yeban_dsp::noise::Rng;
 use yeban_dsp::oversample::OS_TAPS;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};
-use yeban_dsp::shaping::EqParams;
+use yeban_dsp::shaping::{BitCrusher, CrushParams, EqParams, TransientParams, TransientShaper};
 use yeban_dsp::tape::{TapeParams, TapeSaturation};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3, YebanProjectV1};
 
@@ -247,7 +264,8 @@ impl ConvolutionPlan {
     }
 }
 
-/// 一条轨的**插入链投影**（通道条、Freeverb、卷积混响、乒乓延迟）。
+/// 一条轨的**插入链投影**（通道条、瞬态塑形、磁带、比特碾碎、削波、Freeverb、
+/// 卷积混响、乒乓延迟、采样延迟、限制器）。
 ///
 /// 四件**各自独立**取来源（与引擎 `InsertParams::from_devices` 同口径）：同一台设备
 /// 可以同时是四者或其中之一的来源。`None` 表示"本轨没有这一件" ⇒ 运行态整级跳过。
@@ -287,6 +305,14 @@ pub struct InsertChain {
     /// 链上位置在磁带饱和**之后**、限制器**之前**（母带链 Strip → Tape →
     /// Clipper → Limiter 的同一顺序）：削波降 crest，限制器只兜底真峰值。
     clipper: Option<ClipperParams>,
+    /// 瞬态塑形参数；`None` = 本轨没有瞬态塑形（D3 接线）。
+    ///
+    /// 链上位置在通道条**之后**、磁带**之前**（见模块头 §5）。
+    transient: Option<TransientParams>,
+    /// 比特碾碎参数；`None` = 本轨没有比特碾碎（D4 接线）。
+    ///
+    /// 链上位置在磁带**之后**、削波器**之前**（见模块头 §5）。
+    crusher: Option<CrushParams>,
     /// **编译期强制实例化通道条**（任务单 `#266`）。
     ///
     /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
@@ -315,6 +341,13 @@ pub struct InsertChain {
     /// **编译期强制实例化削波器**（与 `#293` 同理）：静态 `clipper_mix: 0`
     /// 时运行态不建器件，但一条非恒等削波泳道会在块边界把它拉起来。
     force_clipper: bool,
+    /// **编译期强制实例化瞬态塑形**（与 `#293` 同理）：静态参数恒等
+    /// （两量皆 0）时运行态不建器件，但一条非恒等塑形泳道会在块边界
+    /// 把它拉起来 —— 且包络状态必须从头推进，迟建会让第一块的塑形量不对。
+    force_transient: bool,
+    /// **编译期强制实例化比特碾碎**（与 `#293` 同理）：碾碎投影为 `Some`
+    /// 即建器件，本位只为族口径齐整（强制位语义与其余族一致）。
+    force_crusher: bool,
 }
 
 impl InsertChain {
@@ -330,6 +363,8 @@ impl InsertChain {
             sample_delay: None,
             limiter: None,
             clipper: None,
+            transient: None,
+            crusher: None,
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
@@ -337,6 +372,8 @@ impl InsertChain {
             force_delay: false,
             force_limiter: false,
             force_clipper: false,
+            force_transient: false,
+            force_crusher: false,
         }
     }
 
@@ -345,7 +382,7 @@ impl InsertChain {
     /// 规则与引擎 `InsertParams::from_devices` 逐条一致：
     ///
     /// 1. 只看**非旁通**的 [`DeviceKind::InternalEffect`]；
-    /// 2. 七件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
+    /// 2. 九件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
     /// 3. 未出现的字段保持 `yeban-dsp` 的默认值；
     /// 4. 同名参数**后者胜**；参数名大小写不敏感；
     /// 5. 没写旋钮的级不执行（`eq_enabled` 等开关写过的优先）。
@@ -361,6 +398,8 @@ impl InsertChain {
         let mut sample_delay: Option<SampleDelayParams> = None;
         let mut limiter: Option<LimiterParams> = None;
         let mut clipper: Option<ClipperParams> = None;
+        let mut transient: Option<TransientParams> = None;
+        let mut crusher: Option<CrushParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
@@ -389,6 +428,12 @@ impl InsertChain {
             if clipper.is_none() {
                 clipper = clipper_of(device);
             }
+            if transient.is_none() {
+                transient = transient_of(device);
+            }
+            if crusher.is_none() {
+                crusher = crusher_of(device);
+            }
             if strip.is_some()
                 && saturation.is_some()
                 && reverb.is_some()
@@ -397,6 +442,8 @@ impl InsertChain {
                 && sample_delay.is_some()
                 && limiter.is_some()
                 && clipper.is_some()
+                && transient.is_some()
+                && crusher.is_some()
             {
                 break;
             }
@@ -410,6 +457,8 @@ impl InsertChain {
             sample_delay,
             limiter: limiter.map(LimiterParams::sanitised),
             clipper: clipper.map(ClipperParams::sanitised),
+            transient: transient.map(TransientParams::sanitised),
+            crusher: crusher.map(CrushParams::sanitised),
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
@@ -417,6 +466,8 @@ impl InsertChain {
             force_delay: false,
             force_limiter: false,
             force_clipper: false,
+            force_transient: false,
+            force_crusher: false,
         }
     }
 
@@ -526,6 +577,44 @@ impl InsertChain {
         self.clipper
     }
 
+    /// 置"强制实例化瞬态塑形"位（与 `#293` 同理）。见 [`Self::force_transient`]。
+    #[must_use]
+    pub const fn with_forced_transient(mut self, force: bool) -> Self {
+        self.force_transient = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了瞬态塑形（读数用）。
+    #[must_use]
+    pub const fn is_forced_transient(&self) -> bool {
+        self.force_transient
+    }
+
+    /// 本链的瞬态塑形参数（读数用；已 sanitised）。
+    #[must_use]
+    pub const fn transient(&self) -> Option<TransientParams> {
+        self.transient
+    }
+
+    /// 置"强制实例化比特碾碎"位（与 `#293` 同理）。见 [`Self::force_crusher`]。
+    #[must_use]
+    pub const fn with_forced_crusher(mut self, force: bool) -> Self {
+        self.force_crusher = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了比特碾碎（读数用）。
+    #[must_use]
+    pub const fn is_forced_crusher(&self) -> bool {
+        self.force_crusher
+    }
+
+    /// 本链的比特碾碎参数（读数用；已 sanitised）。
+    #[must_use]
+    pub const fn crusher(&self) -> Option<CrushParams> {
+        self.crusher
+    }
+
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
     /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
@@ -540,6 +629,8 @@ impl InsertChain {
             && self.sample_delay.is_none()
             && self.limiter.is_none()
             && self.clipper.is_none()
+            && self.transient.is_none()
+            && self.crusher.is_none()
     }
 
     /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
@@ -703,10 +794,14 @@ pub struct ForcedInsertInstances {
     pub limiter: BTreeSet<EntityId>,
     /// 需要强制实例化削波器的轨。
     pub clipper: BTreeSet<EntityId>,
+    /// 需要强制实例化瞬态塑形的轨（D3 接线）。
+    pub transient: BTreeSet<EntityId>,
+    /// 需要强制实例化比特碾碎的轨（D4 接线）。
+    pub crusher: BTreeSet<EntityId>,
 }
 
 impl ForcedInsertInstances {
-    /// 四族都空。
+    /// 各族都空。
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.strip.is_empty()
@@ -716,6 +811,8 @@ impl ForcedInsertInstances {
             && self.delay.is_empty()
             && self.limiter.is_empty()
             && self.clipper.is_empty()
+            && self.transient.is_empty()
+            && self.crusher.is_empty()
     }
 }
 
@@ -740,7 +837,9 @@ pub fn project_inserts_with_forced_instances(
                 .with_forced_convolution(forced.convolution.contains(&id))
                 .with_forced_delay(forced.delay.contains(&id))
                 .with_forced_limiter(forced.limiter.contains(&id))
-                .with_forced_clipper(forced.clipper.contains(&id));
+                .with_forced_clipper(forced.clipper.contains(&id))
+                .with_forced_transient(forced.transient.contains(&id))
+                .with_forced_crusher(forced.crusher.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -1144,6 +1243,73 @@ pub fn clipper_source_params(track: &TrackV3) -> Option<ClipperParams> {
     let slot = clipper_source_slot(track)?;
     clipper_of(&track.devices[slot])
 }
+/// 单台设备 → 瞬态塑形参数（`None` = 一个已识别的塑形名字都没有）。
+///
+/// 与 [`clipper_of`] 同式：只认 [`TransientField::SPELLINGS`]（`transient_`
+/// 前缀），未写字段保持 [`TransientParams::DEFAULT`]。
+fn transient_of(device: &DeviceDefinition) -> Option<TransientParams> {
+    let mut params = TransientParams::DEFAULT;
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = TransientField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 本轨 **瞬态塑形来源设备**的下标（`from_devices` 的"首个含已识别塑形名字的设备"）。
+#[must_use]
+pub fn transient_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && transient_of(device).is_some()
+    })
+}
+
+/// 本轨瞬态塑形**来源设备**的投影参数（已 sanitised 口径由 `from_devices`
+/// 统一处理；本入口返回投影原值，器件 `process` 入口再净化一次）。
+#[must_use]
+pub fn transient_source_params(track: &TrackV3) -> Option<TransientParams> {
+    let slot = transient_source_slot(track)?;
+    transient_of(&track.devices[slot])
+}
+
+/// 单台设备 → 比特碾碎参数（`None` = 一个已识别的碾碎名字都没有）。
+///
+/// 与 [`transient_of`] 同式：只认 [`CrusherField::SPELLINGS`]（`crush_`
+/// 前缀），未写字段保持 [`CrushParams::DEFAULT`]。
+fn crusher_of(device: &DeviceDefinition) -> Option<CrushParams> {
+    let mut params = CrushParams::DEFAULT;
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = CrusherField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 本轨 **比特碾碎来源设备**的下标（`from_devices` 的"首个含已识别碾碎名字的设备"）。
+#[must_use]
+pub fn crusher_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && crusher_of(device).is_some()
+    })
+}
+
+/// 本轨比特碾碎**来源设备**的投影参数（口径与 [`transient_source_params`] 同）。
+#[must_use]
+pub fn crusher_source_params(track: &TrackV3) -> Option<CrushParams> {
+    let slot = crusher_source_slot(track)?;
+    crusher_of(&track.devices[slot])
+}
+
 /// 本轨乒乓延迟**来源设备**的投影期参数（未换算；音符同步换算在 `delay_of` 里做，
 /// 与 `from_devices` 交给器件的同一份换算前输入）。
 #[must_use]
@@ -1165,8 +1331,9 @@ pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
 /// `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
-    ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily, DeviceParamField,
-    ReverbField, SampleDelayField, StripField, TapeField, sanitised_output_gain_db,
+    ConvolutionField, CrusherField, DelayField, DelayStageParams, DeviceParamFamily,
+    DeviceParamField, ReverbField, SampleDelayField, StripField, TapeField, TransientField,
+    sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -1710,6 +1877,14 @@ pub(crate) struct InsertRuntime {
     clipper: Option<Clipper>,
     /// 削波器当前参数（块边界自动化改这一份，再 `set_params`）。
     clipper_params: ClipperParams,
+    /// 瞬态塑形状态；`None` = 不动（参数恒等且未强制，或本轨没有塑形）。
+    transient: Option<TransientShaper>,
+    /// 瞬态塑形当前参数（块边界自动化改这一份；器件按块读它）。
+    transient_params: TransientParams,
+    /// 比特碾碎状态；`None` = 本轨没有碾碎。
+    crusher: Option<BitCrusher>,
+    /// 比特碾碎当前参数（块边界自动化改这一份；器件按块读它）。
+    crusher_params: CrushParams,
     /// 采样率：只为把限制器的 dB/ms 参数换算成器件域（构造期一次，之后复用）。
     sample_rate: f32,
     /// 左声道去交错缓冲。
@@ -1853,6 +2028,20 @@ impl InsertRuntime {
             state.set_params(sample_delay_params);
             Some(state)
         });
+        // 瞬态塑形：建级门是**非恒等**（两量皆 0 是逐位恒等 ⇒ 整级跳过、
+        // 状态不推进，与恒等同解）；强制位为真时保留实例供块边界拉起，
+        // 且包络状态从第一块起推进（迟建会让拉起后的塑形量不对）。
+        let transient_params = chain.transient.unwrap_or_default();
+        let transient = chain.transient.and_then(|_| {
+            if transient_params.is_identity() && !chain.is_forced_transient() {
+                return None;
+            }
+            Some(TransientShaper::new())
+        });
+        // 比特碾碎：缺省参数不是逐位恒等（16 bit 量化真实改低位）⇒
+        // 没有恒等门，投影为 `Some` 即建（与限制器同款）。
+        let crusher_params = chain.crusher.unwrap_or_default();
+        let crusher = chain.crusher.map(|_| BitCrusher::new());
         Self {
             strip,
             saturation,
@@ -1866,6 +2055,10 @@ impl InsertRuntime {
             limiter_params,
             clipper,
             clipper_params,
+            transient,
+            transient_params,
+            crusher,
+            crusher_params,
             sample_rate: sample_rate_f32,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
@@ -1901,6 +2094,12 @@ impl InsertRuntime {
         }
         if let Some(clipper) = &mut self.clipper {
             clipper.reset();
+        }
+        if let Some(transient) = &mut self.transient {
+            transient.reset();
+        }
+        if let Some(crusher) = &mut self.crusher {
+            crusher.reset();
         }
     }
 
@@ -1967,6 +2166,18 @@ impl InsertRuntime {
                     clipper.set_params(self.clipper_params);
                 }
             }
+            // 瞬态塑形 / 比特碾碎：器件不持有参数（按块读运行态这一份），
+            // 块边界只改参数结构，`process` 下一块自然读到（与延迟同款）。
+            DeviceParamField::Transient(field) => {
+                if self.transient.is_some() {
+                    field.store(&mut self.transient_params, value);
+                }
+            }
+            DeviceParamField::Crusher(field) => {
+                if self.crusher.is_some() {
+                    field.store(&mut self.crusher_params, value);
+                }
+            }
             // 延迟的 5 个器件字段直接写进运行参数（`Delay::process` 每块读它）；
             // 同步四字段是**投影期输入**，块边界没有 `bpm` 可重算 ⇒ 这里不改
             // `time_s`（同步泳道仍报 applied、仍强制建器件，见 ADR-0061）。
@@ -1990,7 +2201,8 @@ impl InsertRuntime {
 
     /// 原地处理一个**立体声交错**块（`buffer.len() == frames * 2`）。
     ///
-    /// 顺序与实时引擎同一条链：通道条 → 磁带饱和 → Freeverb → 卷积混响 → 乒乓延迟。各级在参数为 0 时
+    /// 顺序：采样延迟 → 通道条 → 瞬态塑形 → 磁带饱和 → 比特碾碎 → 削波 →
+    /// Freeverb → 卷积混响 → 乒乓延迟 → 限制器（模块头 §5）。各级在参数为 0 时
     /// 整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
     ///
     /// ⚠ 延迟的 `mix = 0` 必须**整级跳过**、不能靠"乘零"混过去：`x + 0·w` 在
@@ -2011,6 +2223,11 @@ impl InsertRuntime {
             sample_delay_params,
             limiter,
             clipper,
+            transient,
+            transient_params,
+            crusher,
+            crusher_params,
+            sample_rate,
             left,
             right,
             tape_upsampled,
@@ -2033,12 +2250,32 @@ impl InsertRuntime {
         if let Some(strip) = strip {
             strip.process_stereo(&mut left[..frames], &mut right[..frames]);
         }
+        // 瞬态塑形在通道条之后、磁带之前（模块头 §5）：包络跟随器看磁带
+        // 柔化前的信号。
+        if let Some(transient) = transient {
+            transient.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *transient_params,
+                *sample_rate,
+            );
+        }
         if let Some(saturation) = saturation {
             saturation.process(
                 &mut left[..frames],
                 &mut right[..frames],
                 &mut tape_upsampled[..2 * frames],
                 &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
+            );
+        }
+        // 比特碾碎在磁带之后、削波器之前（模块头 §5）：介质退化级，
+        // 削波与限制器仍在其后兜底峰值。
+        if let Some(crusher) = crusher {
+            crusher.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *crusher_params,
+                *sample_rate,
             );
         }
         // 削波器在磁带之后、限制器之前（C-1 母带链序）：先削 crest，限制器兜底。
@@ -2103,6 +2340,11 @@ impl InsertRuntime {
             right,
             limiter,
             clipper,
+            transient,
+            transient_params,
+            crusher,
+            crusher_params,
+            sample_rate,
             key_left,
             key_right,
             tape_upsampled,
@@ -2131,12 +2373,30 @@ impl InsertRuntime {
                 &key_right[..frames],
             );
         }
+        // 瞬态塑形与比特碾碎读节目、不读键（键只喂通道条检波器），
+        // 位置与 `process` 同序（模块头 §5）。
+        if let Some(transient) = transient {
+            transient.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *transient_params,
+                *sample_rate,
+            );
+        }
         if let Some(saturation) = saturation {
             saturation.process(
                 &mut left[..frames],
                 &mut right[..frames],
                 &mut tape_upsampled[..2 * frames],
                 &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
+            );
+        }
+        if let Some(crusher) = crusher {
+            crusher.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *crusher_params,
+                *sample_rate,
             );
         }
         // 削波器在磁带之后、限制器之前（C-1 母带链序，与 `process` 同一位）。
@@ -2272,6 +2532,11 @@ mod tests {
             DeviceParamField::Clipper(ClipperField::KneeDb) => 4.0,
             DeviceParamField::Clipper(ClipperField::Mix) => 0.8,
             DeviceParamField::Clipper(ClipperField::Oversample) => 8.0,
+            DeviceParamField::Transient(TransientField::Attack) => 0.45,
+            DeviceParamField::Transient(TransientField::Sustain) => -0.3,
+            DeviceParamField::Crusher(CrusherField::Bits) => 10.0,
+            DeviceParamField::Crusher(CrusherField::Down) => 4.0,
+            DeviceParamField::Crusher(CrusherField::Aa) => 0.6,
         }
     }
 
@@ -2372,6 +2637,26 @@ mod tests {
                         "{name} 的器件读数与恒等判定值必须同一个"
                     );
                 }
+                DeviceParamField::Transient(transient_field) => {
+                    // 器件不持有参数（按块传入）：判据比"投影读数"与
+                    // "恒等判定读数"，两者都来自同一份 `sanitised`（与延迟同款）。
+                    let projected = transient_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 transient_of 认出来"));
+                    assert_eq!(
+                        transient_field.read(&projected.sanitised()).to_bits(),
+                        transient_field.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Crusher(crusher_field) => {
+                    let projected = crusher_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 crusher_of 认出来"));
+                    assert_eq!(
+                        crusher_field.read(&projected.sanitised()).to_bits(),
+                        crusher_field.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
             }
         }
     }
@@ -2396,6 +2681,18 @@ mod tests {
         }
         for field in DelayField::ALL {
             assert_eq!(DelayField::from_name(field.canonical_name()), Some(*field));
+        }
+        for field in TransientField::ALL {
+            assert_eq!(
+                TransientField::from_name(field.canonical_name()),
+                Some(*field)
+            );
+        }
+        for field in CrusherField::ALL {
+            assert_eq!(
+                CrusherField::from_name(field.canonical_name()),
+                Some(*field)
+            );
         }
         for (alias, field) in [
             ("input_gain", StripField::InputGainDb),
@@ -3279,5 +3576,126 @@ mod tests {
         );
         let quiet = InsertRuntime::new(&quiet_chain, 48_000, 512);
         assert!(quiet.clipper.is_none(), "mix = 0 ⇒ 不建器件");
+    }
+
+    /// D3/D4 接线：瞬态与碾碎的名字进链、首来源胜、旁通跳过、来源槽一致；
+    /// 裸 `attack` 是通道条的起振时间，⛔ 不是瞬态来源。
+    #[test]
+    fn transient_and_crusher_first_source_wins_and_bypassed_ignored() {
+        let first = device(&[("transient_attack", 0.45)]);
+        let second = device(&[("transient_sustain", -0.3)]);
+        let chain = InsertChain::from_devices(&[first, second], 48_000, 120.0);
+        let params = chain.transient().expect("瞬态应被识别");
+        assert_eq!(params.attack_amt.to_bits(), 0.45f32.to_bits());
+        assert_eq!(
+            params.sustain_amt.to_bits(),
+            0.0f32.to_bits(),
+            "首个来源胜：第二台的 `transient_sustain` 不覆盖缺省"
+        );
+
+        let mut bypassed = device(&[("transient_attack", 0.45)]);
+        bypassed.bypassed = true;
+        let second_again = device(&[("transient_sustain", -0.3)]);
+        let chain = InsertChain::from_devices(&[bypassed, second_again], 48_000, 120.0);
+        let params = chain.transient().expect("旁通跳过后第二台成来源");
+        assert_eq!(params.sustain_amt.to_bits(), (-0.3f32).to_bits());
+
+        let first = device(&[("crush_bits", 10.0)]);
+        let second = device(&[("crush_down", 4.0)]);
+        let chain = InsertChain::from_devices(&[first, second], 48_000, 120.0);
+        let params = chain.crusher().expect("碾碎应被识别");
+        assert_eq!(params.bits.to_bits(), 10.0f32.to_bits());
+        assert_eq!(
+            params.down.to_bits(),
+            1.0f32.to_bits(),
+            "首个来源胜：第二台的 `crush_down` 不覆盖缺省"
+        );
+
+        // 来源槽与参数同口径。
+        let track = yeban_model::TrackV3 {
+            devices: vec![
+                device(&[("tape_drive", 0.5)]),
+                device(&[("transient_attack", 0.2), ("crush_aa", 0.6)]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(transient_source_slot(&track), Some(1));
+        assert_eq!(
+            transient_source_params(&track).map(|p| p.attack_amt.to_bits()),
+            Some(0.2f32.to_bits())
+        );
+        assert_eq!(crusher_source_slot(&track), Some(1));
+        assert_eq!(
+            crusher_source_params(&track).map(|p| p.aa.to_bits()),
+            Some(0.6f32.to_bits())
+        );
+
+        // 裸名不认：`attack` 属通道条，`bits` 不是任何族的名字。
+        assert_eq!(transient_of(&device(&[("attack", 0.5)])), None);
+        assert_eq!(crusher_of(&device(&[("bits", 8.0)])), None);
+    }
+
+    /// D3/D4 接线（机制层）：中性瞬态 (0,0) 在不强制时**不建**器件（恒等门，
+    /// 逐位直通）；强制位置位则建台，自动化才有着力点。碾碎**无恒等门**：
+    /// 缺省 (16,1,0) 也建台且真改样本（16 位量化步进 3.05e-5）。
+    #[test]
+    fn transient_identity_gate_and_crusher_runtime() {
+        // 瞬态真处理：衰减脉冲串过 attack 0.45 后与输入不同。
+        let chain = InsertChain::from_devices(
+            &[device(&[
+                ("transient_attack", 0.45),
+                ("transient_sustain", 0.15),
+            ])],
+            48_000,
+            120.0,
+        );
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 512);
+        assert!(runtime.transient.is_some(), "非恒等瞬态必须建台");
+        let mut buffer = vec![0.0; 2 * 512];
+        for frame in 0..512 {
+            let v = 0.8 * (1.0 - (frame % 128) as f32 / 128.0);
+            buffer[2 * frame] = v;
+            buffer[2 * frame + 1] = v;
+        }
+        let input = buffer.clone();
+        runtime.process(&mut buffer);
+        assert_ne!(buffer, input, "瞬态定值必须改动样本");
+
+        // 恒等门：(0,0) 不建台、逐位直通。
+        let neutral = InsertChain::from_devices(
+            &[device(&[
+                ("transient_attack", 0.0),
+                ("transient_sustain", 0.0),
+            ])],
+            48_000,
+            120.0,
+        );
+        assert!(neutral.transient().is_some(), "静态投影认得瞬态名字");
+        let quiet = InsertRuntime::new(&neutral, 48_000, 512);
+        assert!(quiet.transient.is_none(), "(0,0) 恒等 ⇒ 不建器件");
+        let mut passthrough = input.clone();
+        let mut quiet = quiet;
+        quiet.process(&mut passthrough);
+        assert_eq!(passthrough, input, "恒等门下整链逐位直通");
+
+        // 强制位：(0,0) 也建台（自动化泳道的着力点）。
+        let forced = neutral.with_forced_transient(true);
+        assert!(forced.is_forced_transient());
+        let runtime = InsertRuntime::new(&forced, 48_000, 512);
+        assert!(runtime.transient.is_some(), "强制位 ⇒ 运行态必须有器件");
+
+        // 碾碎无恒等门：只写 crush_bits = 16（余缺省）也建台且改样本。
+        let chain = InsertChain::from_devices(&[device(&[("crush_bits", 16.0)])], 48_000, 120.0);
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 512);
+        assert!(runtime.crusher.is_some(), "碾碎缺省也建台（无恒等门）");
+        let mut sine = vec![0.0; 2 * 512];
+        for frame in 0..512 {
+            let v = 0.5 * (std::f32::consts::TAU * 440.0 * frame as f32 / 48_000.0).sin();
+            sine[2 * frame] = v;
+            sine[2 * frame + 1] = v;
+        }
+        let input = sine.clone();
+        runtime.process(&mut sine);
+        assert_ne!(sine, input, "16 位量化必须真改低位样本");
     }
 }

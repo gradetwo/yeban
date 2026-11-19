@@ -39,8 +39,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：110 个拼写 = 64 个字段，含别名；
-//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：115 个拼写 = 69 个字段，含别名；
+//!   通道条 32（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5 ＋ 瞬态塑形 2 ＋ 比特碾碎 3）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -1179,6 +1179,13 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "clipper_knee_db",
     "clipper_mix",
     "clipper_oversample",
+    // 瞬态塑形（2 = 2 个字段；D3 接线，⛔ 无别名：裸 `attack` 是通道条压缩的起振别名）。
+    "transient_attack",
+    "transient_sustain",
+    // 比特碾碎（3 = 3 个字段；D4 接线，⛔ 无别名：裸名过泛、易与未来器件撞名）。
+    "crush_bits",
+    "crush_down",
+    "crush_aa",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1233,6 +1240,14 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
         }
         DeviceParamField::Clipper(field) => {
             let params = crate::inserts::clipper_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Transient(field) => {
+            let params = crate::inserts::transient_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Crusher(field) => {
+            let params = crate::inserts::crusher_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
         }
     }
@@ -1293,6 +1308,12 @@ fn applicable_device_param(
         }
         DeviceParamFamily::Clipper => {
             crate::inserts::clipper_source_slot(track) == Some(slot_index)
+        }
+        DeviceParamFamily::Transient => {
+            crate::inserts::transient_source_slot(track) == Some(slot_index)
+        }
+        DeviceParamFamily::Crusher => {
+            crate::inserts::crusher_source_slot(track) == Some(slot_index)
         }
     };
     if !slot_is_source {
@@ -1880,6 +1901,12 @@ pub fn forced_insert_instances(
                 }
                 DeviceParamFamily::Clipper => {
                     forced.clipper.insert(*track_id);
+                }
+                DeviceParamFamily::Transient => {
+                    forced.transient.insert(*track_id);
+                }
+                DeviceParamFamily::Crusher => {
+                    forced.crusher.insert(*track_id);
                 }
             }
         }
@@ -3349,6 +3376,38 @@ mod tests {
             2.0,
             8.0,
         ),
+        // 瞬态塑形 2 字段（D3 接线）：两端落在器件合法域内、差值足够大。
+        (
+            DeviceParamField::Transient(yeban_dsp::device_param::TransientField::Attack),
+            "transient_attack",
+            0.0,
+            0.6,
+        ),
+        (
+            DeviceParamField::Transient(yeban_dsp::device_param::TransientField::Sustain),
+            "transient_sustain",
+            0.0,
+            -0.5,
+        ),
+        // 比特碾碎 3 字段（D4 接线）：同上。
+        (
+            DeviceParamField::Crusher(yeban_dsp::device_param::CrusherField::Bits),
+            "crush_bits",
+            16.0,
+            8.0,
+        ),
+        (
+            DeviceParamField::Crusher(yeban_dsp::device_param::CrusherField::Down),
+            "crush_down",
+            1.0,
+            8.0,
+        ),
+        (
+            DeviceParamField::Crusher(yeban_dsp::device_param::CrusherField::Aa),
+            "crush_aa",
+            0.0,
+            0.7,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -3455,7 +3514,7 @@ mod tests {
                 .collect();
             assert!(spellings.contains(&canonical), "{canonical}: {spellings:?}");
         }
-        // 3. 名单与五张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
+        // 3. 名单与各张**唯一名字表**的并集逐字相等（⛔ 少一个、多一个、重复都红）。
         assert_eq!(
             StripField::ALL.len(),
             32,
@@ -3480,15 +3539,17 @@ mod tests {
             + DelayField::SPELLINGS.len()
             + TapeField::SPELLINGS.len()
             + yeban_dsp::device_param::LimiterField::SPELLINGS.len()
-            + yeban_dsp::device_param::ClipperField::SPELLINGS.len();
+            + yeban_dsp::device_param::ClipperField::SPELLINGS.len()
+            + yeban_dsp::device_param::TransientField::SPELLINGS.len()
+            + yeban_dsp::device_param::CrusherField::SPELLINGS.len();
         assert_eq!(
-            expected_len, 110,
-            "61 + 6 + 8 + 15 + 10 + 5 + 5 = 110 个拼写"
+            expected_len, 115,
+            "61 + 6 + 8 + 15 + 10 + 5 + 5 + 2 + 3 = 115 个拼写"
         );
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
-            "名单与五张 SPELLINGS 的并集条数必须相等"
+            "名单与各张 SPELLINGS 的并集条数必须相等"
         );
         let mut sorted: Vec<&str> = APPLIED_DEVICE_PARAM_NAMES.to_vec();
         sorted.sort_unstable();
@@ -3509,9 +3570,19 @@ mod tests {
                     .iter()
                     .map(|(name, _)| *name),
             )
+            .chain(
+                yeban_dsp::device_param::TransientField::SPELLINGS
+                    .iter()
+                    .map(|(name, _)| *name),
+            )
+            .chain(
+                yeban_dsp::device_param::CrusherField::SPELLINGS
+                    .iter()
+                    .map(|(name, _)| *name),
+            )
             .collect();
         expected.sort_unstable();
-        assert_eq!(sorted, expected, "名单必须与五张 SPELLINGS 完全一致");
+        assert_eq!(sorted, expected, "名单必须与各张 SPELLINGS 完全一致");
         sorted.dedup();
         assert_eq!(
             sorted.len(),
@@ -3533,7 +3604,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**54 个字段各一条**（100 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**69 个字段各一条**（115 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]
