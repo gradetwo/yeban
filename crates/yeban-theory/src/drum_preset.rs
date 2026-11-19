@@ -96,13 +96,45 @@ impl DrumStep {
     }
 }
 
+/// 一条鼓道的一个**叠层键**（分层音色，缺口 P6）：与主道同格同刻
+/// 触发的附加 GM 键，有自己的电平与力度窗。军鼓叠 clap 是典型
+/// 用法：主道写满 pattern，叠层跟随发声——格式能表达叠层之前，
+/// 这类内容只能单开一条道手抄同一串步进（hiphop 的 clap 道即是）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumLaneLayer {
+    /// 叠层 GM 打击乐键号 0..=127。不得与本道主键、本道其它叠层键、
+    /// 同表其它道的主键或叠层键重复（解析期响亮拒绝，保生成层
+    /// 「同 tick 同键至多一项」不变量）。
+    pub gm_key: u8,
+    /// 相对主道的电平（dB）−48..=12，缺省 0。生成时按振幅口径
+    /// `10^(dB/20)` 缩放该格的写力度，再走统一的强度/ratchet 变换。
+    pub level_db: f32,
+    /// 力度窗下限 1..=127，缺省 1：写力度低于此值的格不触发本层。
+    /// 窗对**预置写力度**判定，不含生成期的强度缩放。
+    pub vel_min: u8,
+    /// 力度窗上限 1..=127，缺省 127：写力度高于此值的格不触发本层。
+    pub vel_max: u8,
+}
+
+impl DrumLaneLayer {
+    /// 本层是否在写力度 `velocity` 的格上触发（力度窗判定）。
+    #[must_use]
+    pub const fn fires_on(self, velocity: u8) -> bool {
+        velocity >= self.vel_min && velocity <= self.vel_max
+    }
+}
+
 /// 一条鼓道（一个 GM 键）的完整 pattern（`bars * 16` 格）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// （不派生 `Eq`：`layers` 的 `level_db` 是 `f32`。）
+#[derive(Debug, Clone, PartialEq)]
 pub struct DrumLanePreset {
     /// 道角色名（`kick` / `snare` / `hihat` / `clap` / `open_hat` / …）。
     pub role: String,
     /// GM 打击乐键号 0..=127。
     pub gm_key: u8,
+    /// 叠层键（`layers` 段）；空 = 单键道。旧格式无此段 ⇒ 空，
+    /// 生成结果与引入本字段前逐位一致。
+    pub layers: Vec<DrumLaneLayer>,
     /// 步进格，长度恒为 `bars * STEPS_PER_BAR`。
     pub steps: Vec<DrumStep>,
 }
@@ -640,6 +672,12 @@ fn parse_lanes(
 ) -> Result<Vec<DrumLanePreset>, DrumPresetError> {
     let arr = get_arr(obj, key)?;
     let mut lanes = Vec::with_capacity(arr.len());
+    // 全表发声键登记（主键与叠层键分开记）：叠层键不得与任何主键或
+    // 叠层键撞键，主键不得与先行叠层键撞键——生成层「同 tick 同键
+    // 至多一项」的不变量靠这条在解析期钉死，撞键响亮拒绝，不许
+    // 生成层去重猜测。主键撞先行主键是格式既有行为，本函数不新拒。
+    let mut primary_keys: Vec<u8> = Vec::new();
+    let mut layer_keys: Vec<u8> = Vec::new();
     for (idx, item) in arr.iter().enumerate() {
         let lane_obj = item
             .as_object()
@@ -647,6 +685,31 @@ fn parse_lanes(
         let role = get_str(lane_obj, "role")?.to_owned();
         let gm_key = u8::try_from(get_u64(lane_obj, "gm_key")?)
             .map_err(|_| field_err("gm_key", format!("lane {idx} gm_key out of range")))?;
+        if layer_keys.contains(&gm_key) {
+            return Err(field_err(
+                "layers",
+                format!(
+                    "lane {idx} ({role}) gm_key {gm_key} collides with an earlier lane's layer key"
+                ),
+            ));
+        }
+        let layers = parse_lane_layers(lane_obj, idx, &role)?;
+        for layer in &layers {
+            if layer.gm_key == gm_key
+                || primary_keys.contains(&layer.gm_key)
+                || layer_keys.contains(&layer.gm_key)
+            {
+                return Err(field_err(
+                    "layers",
+                    format!(
+                        "lane {idx} ({role}) layer key {} is already used in this lane table",
+                        layer.gm_key
+                    ),
+                ));
+            }
+            layer_keys.push(layer.gm_key);
+        }
+        primary_keys.push(gm_key);
         let raw_steps = get_arr(lane_obj, "steps")?;
         if raw_steps.len() != expected_steps {
             return Err(field_err(
@@ -703,10 +766,115 @@ fn parse_lanes(
         lanes.push(DrumLanePreset {
             role,
             gm_key,
+            layers,
             steps,
         });
     }
     Ok(lanes)
+}
+
+/// 解析一条道的 `layers` 段（缺省 = 无叠层）。形状/值域非法一律
+/// 响亮拒绝：空数组、键越界、电平越界、力度窗越界或上下限颠倒。
+fn parse_lane_layers(
+    lane_obj: &[(String, Json)],
+    lane_idx: usize,
+    role: &str,
+) -> Result<Vec<DrumLaneLayer>, DrumPresetError> {
+    let Some(raw) = get_opt(lane_obj, "layers") else {
+        return Ok(Vec::new());
+    };
+    let arr = match raw {
+        Json::Arr(items) => items,
+        _ => {
+            return Err(field_err(
+                "layers",
+                format!("lane {lane_idx} ({role}) layers must be an array"),
+            ));
+        }
+    };
+    if arr.is_empty() {
+        return Err(field_err(
+            "layers",
+            format!(
+                "lane {lane_idx} ({role}) layers is empty; omit the field for a single-key lane"
+            ),
+        ));
+    }
+    let mut layers = Vec::with_capacity(arr.len());
+    for (layer_idx, item) in arr.iter().enumerate() {
+        let layer_obj = item.as_object().ok_or_else(|| {
+            field_err(
+                "layers",
+                format!("lane {lane_idx} ({role}) layer {layer_idx} must be an object"),
+            )
+        })?;
+        let gm_key = u8::try_from(get_u64(layer_obj, "gm_key")?).map_err(|_| {
+            field_err(
+                "layers",
+                format!("lane {lane_idx} ({role}) layer {layer_idx} gm_key out of range"),
+            )
+        })?;
+        let level_db = match get_opt(layer_obj, "level_db") {
+            None => 0.0,
+            Some(Json::Num(n)) => {
+                if !n.is_finite() || !(-48.0..=12.0).contains(n) {
+                    return Err(field_err(
+                        "layers",
+                        format!(
+                            "lane {lane_idx} ({role}) layer {layer_idx} level_db {n} out of -48..=12"
+                        ),
+                    ));
+                }
+                *n as f32
+            }
+            Some(_) => {
+                return Err(field_err(
+                    "layers",
+                    format!("lane {lane_idx} ({role}) layer {layer_idx} level_db must be a number"),
+                ));
+            }
+        };
+        let vel_min = parse_layer_vel_bound(layer_obj, "vel_min", 1, lane_idx, role, layer_idx)?;
+        let vel_max = parse_layer_vel_bound(layer_obj, "vel_max", 127, lane_idx, role, layer_idx)?;
+        if vel_min > vel_max {
+            return Err(field_err(
+                "layers",
+                format!(
+                    "lane {lane_idx} ({role}) layer {layer_idx} vel_min {vel_min} > vel_max {vel_max}"
+                ),
+            ));
+        }
+        layers.push(DrumLaneLayer {
+            gm_key,
+            level_db,
+            vel_min,
+            vel_max,
+        });
+    }
+    Ok(layers)
+}
+
+/// 读一个叠层的力度窗界（缺省 `default`）；在场则必须是 1..=127 的
+/// 整数（0 是休止、>127 不是 MIDI 力度，一律响亮拒绝）。
+fn parse_layer_vel_bound(
+    layer_obj: &[(String, Json)],
+    key: &str,
+    default: u8,
+    lane_idx: usize,
+    role: &str,
+    layer_idx: usize,
+) -> Result<u8, DrumPresetError> {
+    let Some(raw) = get_opt(layer_obj, key) else {
+        return Ok(default);
+    };
+    let value = as_u8(raw, "layers")?;
+    if !(1..=127).contains(&value) {
+        return Err(field_err(
+            "layers",
+            format!("lane {lane_idx} ({role}) layer {layer_idx} {key} {value} out of 1..=127"),
+        ));
+    }
+    Ok(value)
 }
 
 /// 读一个浮点字段并校验值域（值域与 `yeban-dsp` 对应器件的钳制域对齐：
@@ -2578,6 +2746,18 @@ pub fn uncovered_pattern_keys(preset: &DrumStylePreset) -> Vec<(String, u8)> {
             if lane.steps.iter().any(|step| step.is_hit()) && !covered.contains(&lane.gm_key) {
                 uncovered.push((lane.role.clone(), lane.gm_key));
             }
+            // 叠层键同样发声：本层力度窗内有击点且键无音色覆盖
+            // ⇒ 与主键同口径点名，不许叠层整层静默无声。
+            for layer in &lane.layers {
+                if lane
+                    .steps
+                    .iter()
+                    .any(|step| step.is_hit() && layer.fires_on(step.velocity))
+                    && !covered.contains(&layer.gm_key)
+                {
+                    uncovered.push((lane.role.clone(), layer.gm_key));
+                }
+            }
         }
     };
     check(&preset.lanes);
@@ -3131,6 +3311,186 @@ mod tests {
         assert_eq!(preset.lanes[0].steps[10].tier, 1);
         assert!(preset.fill_lanes.is_none());
         assert!(preset.fx.is_none(), "no fx section means dry generation");
+    }
+
+    #[test]
+    fn parses_lane_layers_with_defaults() {
+        let text = MINIMAL.replace(
+            "\"gm_key\": 36,",
+            "\"gm_key\": 36, \"layers\": [{\"gm_key\": 39}, \
+             {\"gm_key\": 37, \"level_db\": -6.0, \"vel_min\": 40, \"vel_max\": 100}],",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid layered preset");
+        let layers = &preset.lanes[0].layers;
+        assert_eq!(layers.len(), 2);
+        // 缺省：电平 0 dB、力度窗全开。
+        assert_eq!(layers[0].gm_key, 39);
+        assert_eq!(layers[0].level_db, 0.0);
+        assert_eq!((layers[0].vel_min, layers[0].vel_max), (1, 127));
+        assert_eq!(layers[1].gm_key, 37);
+        assert_eq!(layers[1].level_db, -6.0);
+        assert_eq!((layers[1].vel_min, layers[1].vel_max), (40, 100));
+        // 力度窗含两端、窗外不触发。
+        assert!(layers[1].fires_on(40) && layers[1].fires_on(100));
+        assert!(!layers[1].fires_on(39) && !layers[1].fires_on(101));
+    }
+
+    #[test]
+    fn rejects_invalid_layers_loudly() {
+        let with_layers = |layers: &str| {
+            MINIMAL.replace(
+                "\"gm_key\": 36,",
+                &format!("\"gm_key\": 36, \"layers\": {layers},"),
+            )
+        };
+        // 空数组：单键道应省略字段，不许写空段。
+        assert!(DrumStylePreset::from_json(&with_layers("[]")).is_err());
+        // 叠层键 == 本道主键。
+        assert!(DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 36}]")).is_err());
+        // 同一道内叠层键重复。
+        assert!(
+            DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 39}, {\"gm_key\": 39}]"))
+                .is_err()
+        );
+        // 电平越界（两端）。
+        assert!(
+            DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 39, \"level_db\": 12.5}]"))
+                .is_err()
+        );
+        assert!(
+            DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 39, \"level_db\": -48.5}]"))
+                .is_err()
+        );
+        // 力度窗颠倒 / 越界（0 是休止、128 不是 MIDI 力度）。
+        assert!(
+            DrumStylePreset::from_json(&with_layers(
+                "[{\"gm_key\": 39, \"vel_min\": 90, \"vel_max\": 40}]"
+            ))
+            .is_err()
+        );
+        assert!(
+            DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 39, \"vel_min\": 0}]")).is_err()
+        );
+        assert!(
+            DrumStylePreset::from_json(&with_layers("[{\"gm_key\": 39, \"vel_max\": 128}]"))
+                .is_err()
+        );
+        // 形状错误：layers 非数组、层非对象。
+        assert!(DrumStylePreset::from_json(&with_layers("{}")).is_err());
+        assert!(DrumStylePreset::from_json(&with_layers("[39]")).is_err());
+    }
+
+    #[test]
+    fn rejects_layer_keys_colliding_across_lanes() {
+        // 叠层键撞另一道的主键（两个先后方向都拒）或撞另一道的
+        // 叠层键，都必须响亮失败；不撞的组合放行。
+        let mk = |lanes: &str| {
+            format!(
+                r#"{{
+                    "format": "yeban-drum-style", "version": 1,
+                    "id": "x", "name": "X", "name_zh": "X",
+                    "source": {{"kind": "test", "groove_genre_id": "x",
+                               "repo": "t", "license": "MIT",
+                               "converted": "2026-11-19", "tuning": []}},
+                    "kit_family": "electronic",
+                    "bpm": {{"default": 90, "min": 80, "max": 100}},
+                    "swing_permille": 500, "bars": 1,
+                    "lanes": [{lanes}]
+                }}"#
+            )
+        };
+        let plain = |role: &str, key: u8| {
+            format!("{{\"role\": \"{role}\", \"gm_key\": {key}, \"steps\": {STEPS16}}}")
+        };
+        let layered = |role: &str, key: u8, layers: &str| {
+            format!(
+                "{{\"role\": \"{role}\", \"gm_key\": {key}, \"layers\": {layers}, \"steps\": {STEPS16}}}"
+            )
+        };
+        // 先行道叠层 39，后行道主键 39 ⇒ 拒。
+        assert!(
+            DrumStylePreset::from_json(&mk(&format!(
+                "{}, {}",
+                layered("snare", 38, "[{\"gm_key\": 39}]"),
+                plain("clap", 39)
+            )))
+            .is_err()
+        );
+        // 先行道主键 39 在前，后行道叠层 39 ⇒ 拒。
+        assert!(
+            DrumStylePreset::from_json(&mk(&format!(
+                "{}, {}",
+                plain("clap", 39),
+                layered("snare", 38, "[{\"gm_key\": 39}]")
+            )))
+            .is_err()
+        );
+        // 两道叠层键互相撞（都叠 40）⇒ 拒。
+        assert!(
+            DrumStylePreset::from_json(&mk(&format!(
+                "{}, {}",
+                layered("snare", 38, "[{\"gm_key\": 40}]"),
+                layered("clap", 39, "[{\"gm_key\": 40}]")
+            )))
+            .is_err()
+        );
+        // 不撞的叠层（38 叠 37、39 叠 40）⇒ 通过。
+        assert!(
+            DrumStylePreset::from_json(&mk(&format!(
+                "{}, {}",
+                layered("snare", 38, "[{\"gm_key\": 37}]"),
+                layered("clap", 39, "[{\"gm_key\": 40}]")
+            )))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn uncovered_pattern_keys_includes_firing_layers() {
+        // 电子族合成键位表没有 60：叠层键无覆盖且力度窗内有击点
+        // ⇒ 与主键同口径被点名；力度窗避开全部写力度 ⇒ 不点名。
+        let firing = MINIMAL.replace(
+            "\"gm_key\": 36,",
+            "\"gm_key\": 36, \"layers\": [{\"gm_key\": 60}],",
+        );
+        let preset = DrumStylePreset::from_json(&firing).expect("valid layered preset");
+        assert!(uncovered_pattern_keys(&preset).contains(&("kick".to_owned(), 60)));
+        let windowed_out = MINIMAL.replace(
+            "\"gm_key\": 36,",
+            "\"gm_key\": 36, \"layers\": [{\"gm_key\": 60, \"vel_min\": 121}],",
+        );
+        let preset = DrumStylePreset::from_json(&windowed_out).expect("valid layered preset");
+        assert!(!uncovered_pattern_keys(&preset).contains(&("kick".to_owned(), 60)));
+    }
+
+    #[test]
+    fn factory_styles_parse_and_only_hiphop_carries_layers() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        assert_eq!(styles.len(), 14);
+        for style in &styles {
+            let mut layered: Vec<(&str, u8, u8)> = Vec::new();
+            for lane in style.lanes.iter().chain(style.fill_lanes.iter().flatten()) {
+                for layer in &lane.layers {
+                    layered.push((style.id.as_str(), lane.gm_key, layer.gm_key));
+                }
+            }
+            if style.id == "hiphop" {
+                // 主道与 fill 道各一条：军鼓(38) 叠 clap(39)。
+                assert_eq!(layered, vec![("hiphop", 38, 39), ("hiphop", 38, 39)]);
+                let snare = style
+                    .lanes
+                    .iter()
+                    .find(|lane| lane.gm_key == 38)
+                    .expect("hiphop snare lane");
+                assert!((snare.layers[0].level_db - -3.2).abs() < 1e-6);
+            } else {
+                assert!(
+                    layered.is_empty(),
+                    "{} must not gain layers in this change: {layered:?}",
+                    style.id
+                );
+            }
+        }
     }
 
     const MINIMAL_FX: &str = r#""fx": {

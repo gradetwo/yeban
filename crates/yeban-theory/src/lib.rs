@@ -181,7 +181,7 @@ pub use drum_preset::{
     ACOUSTIC_KIT_KEYS, ACOUSTIC_KIT_SFZ_PATH, DRUM_STYLE_FORMAT, DRUM_STYLE_FORMAT_VERSION,
     DrumBusClipperPreset, DrumBusGluePreset, DrumBusPreset, DrumCompPreset, DrumDelayPreset,
     DrumEqPreset, DrumFxDeviceSpec, DrumFxFamilies, DrumFxPreset, DrumKitSetup,
-    DrumLaneChainPreset, DrumLanePreset, DrumLaneSidechainPreset, DrumPresetError,
+    DrumLaneChainPreset, DrumLaneLayer, DrumLanePreset, DrumLaneSidechainPreset, DrumPresetError,
     DrumReverbPreset, DrumStep, DrumStylePreset, DrumTapePreset, KitFamily, MAX_RATCHET,
     STEPS_PER_BAR, choke_groups, drum_bus_device_specs, drum_fx_device_specs,
     drum_lane_device_specs, factory_drum_style, factory_drum_style_ids, factory_drum_styles,
