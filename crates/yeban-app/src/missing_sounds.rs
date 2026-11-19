@@ -38,7 +38,10 @@ pub struct MissingSound {
 /// 库根 ⇒ 仓库根 ⇒ cwd）。⛔ 这里不另写一份"文件在不在"的判断 —— 否则会出现
 /// "界面说缺、引擎能读"这种自相矛盾。
 #[must_use]
-pub fn collect(project: &yeban_model::YebanProjectV1, project_dir: Option<&Path>) -> Vec<MissingSound> {
+pub fn collect(
+    project: &yeban_model::YebanProjectV1,
+    project_dir: Option<&Path>,
+) -> Vec<MissingSound> {
     let roots = match project_dir {
         Some(dir) => SfzRoots::under_project(dir),
         None => SfzRoots::none(),
@@ -79,10 +82,7 @@ pub fn collect(project: &yeban_model::YebanProjectV1, project_dir: Option<&Path>
 /// 1. 路径里出现 `assets/samples/<id>/`（或库根下 `<id>/`）⇒ 取 `<id>` 精确比对；
 /// 2. 都不中 ⇒ 拿路径最后一段（去掉 `.sfz`）与条目的 `id`/`name` 做包含匹配。
 #[must_use]
-pub fn match_by_path<'a>(
-    sounds: &'a [BuiltinSound],
-    path: &str,
-) -> Option<&'a BuiltinSound> {
+pub fn match_by_path<'a>(sounds: &'a [BuiltinSound], path: &str) -> Option<&'a BuiltinSound> {
     let normalized = path.replace('\\', "/");
     let trimmed = normalized
         .strip_prefix("assets/samples/")
@@ -157,15 +157,21 @@ mod tests {
             Some("aliexpress-erhu")
         );
         assert_eq!(
-            match_by_path(&sounds, "C:\\Users\\me\\samples\\aliexpress-erhu\\Programs\\02.sfz")
-                .map(|s| s.id.as_str()),
+            match_by_path(
+                &sounds,
+                "C:\\Users\\me\\samples\\aliexpress-erhu\\Programs\\02.sfz"
+            )
+            .map(|s| s.id.as_str()),
             Some("aliexpress-erhu")
         );
     }
 
     #[test]
     fn matches_by_stem_when_prefix_absent() {
-        let sounds = vec![sample_sound("salamander-grand-piano", "Salamander Grand Piano V3")];
+        let sounds = vec![sample_sound(
+            "salamander-grand-piano",
+            "Salamander Grand Piano V3",
+        )];
         assert_eq!(
             match_by_path(&sounds, "piano/SalamanderGrandPiano.sfz").map(|s| s.id.as_str()),
             Some("salamander-grand-piano")

@@ -82,10 +82,10 @@ pub mod bridge;
 // 拼 GitHub 归档直链，交给 `sound_library` 的既有安装腿。⛔ 不手写第二份清单。
 pub mod builtin_sounds;
 // ⭐ **缺音源的友好引导**（打开工程时）：算出"哪条轨缺哪件、能不能一键装回来"。
-pub mod missing_sounds;
 pub mod cli;
 pub mod elements;
 pub mod engine_host;
+pub mod missing_sounds;
 // ⭐ **效果器参数契约（任务单 `#157`）—— 与 `yeban-mcp` **字面上同一份源码**。
 //
 // 设备机架要回答两件必须由契约回答的事：⭐ ① 某个参数名**引擎认不认**（"已识别 /

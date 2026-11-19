@@ -118,8 +118,8 @@ pub fn community_extras() -> Vec<BuiltinSound> {
         file_count: 0,
         bundled: false,
         sfz: String::new(),
-        archive_override:
-            "https://github.com/sgossner/VSCO-2-CE/archive/refs/heads/master.zip".to_owned(),
+        archive_override: "https://github.com/sgossner/VSCO-2-CE/archive/refs/heads/master.zip"
+            .to_owned(),
     });
     extras
 }
@@ -213,9 +213,8 @@ pub fn load_builtin_sounds() -> Result<Vec<BuiltinSound>, String> {
     CACHE
         .get_or_init(|| {
             let path = manifest_path();
-            let text = std::fs::read_to_string(&path).map_err(|error| {
-                format!("读内置音源清单失败（{}）：{error}", path.display())
-            })?;
+            let text = std::fs::read_to_string(&path)
+                .map_err(|error| format!("读内置音源清单失败（{}）：{error}", path.display()))?;
             parse_manifest(&text)
         })
         .clone()
@@ -264,8 +263,8 @@ struct ManifestEntry {
 
 /// 解析登记表文本（判据与生产共用）。
 pub fn parse_manifest(text: &str) -> Result<Vec<BuiltinSound>, String> {
-    let doc: ManifestDoc = serde_json::from_str(text)
-        .map_err(|error| format!("内置音源清单解析失败：{error}"))?;
+    let doc: ManifestDoc =
+        serde_json::from_str(text).map_err(|error| format!("内置音源清单解析失败：{error}"))?;
     let instruments = doc
         .instruments
         .ok_or_else(|| "内置音源清单缺少 instruments 数组".to_owned())?;
@@ -291,7 +290,11 @@ pub fn parse_manifest(text: &str) -> Result<Vec<BuiltinSound>, String> {
             },
             license: {
                 let license = text(entry.license);
-                if license.is_empty() { "未登记".to_owned() } else { license }
+                if license.is_empty() {
+                    "未登记".to_owned()
+                } else {
+                    license
+                }
             },
             author: text(entry.author),
             repo: text(entry.repo),
@@ -345,10 +348,7 @@ pub fn download_builtin(
         )));
     };
     if is_installed(roots, &sound.id) {
-        return Err(SoundError::BadArchive(format!(
-            "{} 已经装过了",
-            sound.name
-        )));
+        return Err(SoundError::BadArchive(format!("{} 已经装过了", sound.name)));
     }
     // 大小已知 ⇒ 沿用既有安装腿的逐字节对账；哈希未知 ⇒ 空串（⛔ 不假装校验过）。
     let pack = crate::sound_library::CatalogPack {
@@ -399,13 +399,11 @@ fn flatten_wrapper_dir(root: &Path) -> Result<(), SoundError> {
             continue;
         };
         let dest = root.join(name);
-        std::fs::rename(&child, &dest).map_err(|error| {
-            SoundError::Io(format!("移到 {} 失败：{error}", dest.display()))
-        })?;
+        std::fs::rename(&child, &dest)
+            .map_err(|error| SoundError::Io(format!("移到 {} 失败：{error}", dest.display())))?;
     }
-    std::fs::remove_dir(&wrapper).map_err(|error| {
-        SoundError::Io(format!("删空壳 {} 失败：{error}", wrapper.display()))
-    })?;
+    std::fs::remove_dir(&wrapper)
+        .map_err(|error| SoundError::Io(format!("删空壳 {} 失败：{error}", wrapper.display())))?;
     Ok(())
 }
 
@@ -521,7 +519,9 @@ mod tests {
             .expect("登记表里的条目必须出现");
         assert_eq!(
             demo.archive_url().as_deref(),
-            Some("https://github.com/owner/repo/archive/6615047b2fd06126877483e97b8bb4af9d00b080.zip")
+            Some(
+                "https://github.com/owner/repo/archive/6615047b2fd06126877483e97b8bb4af9d00b080.zip"
+            )
         );
         assert!(demo.installable());
     }

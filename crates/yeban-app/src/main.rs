@@ -421,10 +421,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         // 横幅可关闭、可在无头控件树里按 ID 寻址，读屏也会播。
         let text = format!("走带未接线 —— 引擎快照投影失败: {error}");
         cli::emit(&[format!("yeban-app: {text}")]);
-        host::apply_engine_error(
-            &ui,
-            host::EnginePublishOutcome::Failed(text.as_str()),
-        );
+        host::apply_engine_error(&ui, host::EnginePublishOutcome::Failed(text.as_str()));
         host::ProductionLoop::without_engine()
     });
     if engine.has_engine() {
@@ -1082,7 +1079,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 再写搜索词与状态行，最后用 `invoke_...filter_changed` 让列表按新搜索词重播。
     if !missing_sounds.is_empty() {
         let first = &missing_sounds[0];
-        let catalogued = missing_sounds.iter().filter(|m| m.pack_id.is_some()).count();
+        let catalogued = missing_sounds
+            .iter()
+            .filter(|m| m.pack_id.is_some())
+            .count();
         let summary = if catalogued > 0 {
             format!(
                 "这个工程有 {} 条轨的音源没装（例如「{}」）。已为你筛出可下载的 {} 件，点「下载」即可装上。",

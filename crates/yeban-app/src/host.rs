@@ -6033,7 +6033,8 @@ fn humanize_engine_error(raw: &str) -> String {
         return "有声轨道的音源没装好 · 打开「设置 › 音源管理」下载即可恢复声音".to_owned();
     }
     if raw.contains("音频设备") || raw.contains("设备打开") {
-        return "音频设备没打开（可能被其它程序占用）· 可在「设置 › 音频设备」换一个再试".to_owned();
+        return "音频设备没打开（可能被其它程序占用）· 可在「设置 › 音频设备」换一个再试"
+            .to_owned();
     }
     if raw.contains("引擎快照") || raw.contains("投影失败") {
         return "工程没能送进音频引擎 · 可在「诊断」里查看详情".to_owned();
@@ -10891,11 +10892,7 @@ fn sound_installed_library_ids() -> Vec<String> {
 /// `filter` 是搜索框的原文（空串 = 不过滤）：按**名字 / 分类 / 许可**三处做
 /// 大小写不敏感的子串匹配。过滤只影响**显示**的数组，`last_catalog` 里的全集
 /// 一位不动（否则清空搜索框就"丢包"了）。
-fn publish_sound_catalog(
-    ui: &MainWindow,
-    catalog: &crate::sound_library::Catalog,
-    filter: &str,
-) {
+fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalog, filter: &str) {
     let needle = filter.trim().to_lowercase();
     let mut ids = Vec::with_capacity(catalog.packs.len());
     let mut names = Vec::with_capacity(catalog.packs.len());
@@ -10968,7 +10965,6 @@ fn builtin_catalog() -> Result<crate::sound_library::Catalog, crate::sound_libra
         .collect();
     Ok(crate::sound_library::Catalog { packs })
 }
-
 
 /// 只重算可下载列表的「已安装」标记（安装 / 删除后调用；目录本身
 /// 不重拉，⛔ 不让一次本地操作变成一次联网）。
