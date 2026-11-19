@@ -160,9 +160,29 @@ pub struct DrumCrusherPreset {
     pub aa: f32,
 }
 
+/// 噪声源段（`fx.noise` 与逐件链 `chain.noise`，可选）：连续底噪
+/// （白 ↔ 粉红）＋爆裂声的黑胶表面层（鼓机缺口 D5 新器件；器件本体在
+/// `yeban-dsp` 的 `noise_source.rs`，参数名是 `NoiseField` 的规范
+/// 拼写）。噪声是加性源：整段渲染期间连续存在，不逐击触发；爆裂声是
+/// 稀疏瞬态事件，按 `seed` 确定性排布（同种子同输出，Wang 硬规则）。
+/// 不写本段 ⇒ 无噪声器件 ⇒ 渲染逐位不变（无隐藏默认噪声）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumNoisePreset {
+    /// 连续底噪电平（线性）0..=1。
+    pub level: f32,
+    /// 噪声颜色 0..=1（0 = 白、1 = 粉红）。
+    pub color: f32,
+    /// 爆裂声密度（次/秒/声道）0..=240。
+    pub crackle_density: f32,
+    /// 爆裂声电平 0..=1。
+    pub crackle_level: f32,
+    /// 随机种子 0..=16777215（器件侧取整使用）。
+    pub seed: f32,
+}
+
 /// 风格效果层（`fx` 段）：按 Logic 通道条预置的思路给整轨鼓预调的
 /// 一套完整处理——三段 EQ + 高通/低通塑形、压缩、输出微调、插入混响，
-/// 按风格可选磁带饱和、延迟、瞬态塑形与比特碾碎。生成时由 `yeban-app` 的 `drum_gen_ops`
+/// 按风格可选磁带饱和、延迟、瞬态塑形、比特碾碎与噪声源。生成时由 `yeban-app` 的 `drum_gen_ops`
 /// 翻译成轨上效果器件（EQ 与压缩合为一台通道条器件，见该函数文档）。
 ///
 /// 字段缺失（旧格式文件无 `fx`）⇒ 生成走干声，与一期行为一致；
@@ -219,6 +239,8 @@ pub struct DrumFxPreset {
     pub transient: Option<DrumTransientPreset>,
     /// 比特碾碎（可选）。
     pub crusher: Option<DrumCrusherPreset>,
+    /// 噪声源（可选）。
+    pub noise: Option<DrumNoisePreset>,
 }
 
 /// EQ 段（`fx.eq` 与逐件链 `chain.eq` 共用同一形状与值域）。
@@ -366,6 +388,8 @@ pub struct DrumLaneChainPreset {
     pub transient: Option<DrumTransientPreset>,
     /// 比特碾碎段（可选）。
     pub crusher: Option<DrumCrusherPreset>,
+    /// 噪声源段（可选）。
+    pub noise: Option<DrumNoisePreset>,
     /// 本组声相覆盖（可选）−1..=1。
     pub pan: Option<f32>,
     /// 侧链声明（可选；期 4 起生成落成 lane 级侧链边，出厂值期 5 才写）。
@@ -887,6 +911,35 @@ fn parse_crusher(obj: &[(String, Json)], base: &str) -> Result<DrumCrusherPreset
     })
 }
 
+/// 解析噪声源段（`{base}.noise`）：整段字段必填。`fx` 与逐件链共用。
+fn parse_noise(obj: &[(String, Json)], base: &str) -> Result<DrumNoisePreset, DrumPresetError> {
+    Ok(DrumNoisePreset {
+        level: get_f32_ranged(obj, "level", &format!("{base}.noise.level"), 0.0, 1.0)?,
+        color: get_f32_ranged(obj, "color", &format!("{base}.noise.color"), 0.0, 1.0)?,
+        crackle_density: get_f32_ranged(
+            obj,
+            "crackle_density",
+            &format!("{base}.noise.crackle_density"),
+            0.0,
+            240.0,
+        )?,
+        crackle_level: get_f32_ranged(
+            obj,
+            "crackle_level",
+            &format!("{base}.noise.crackle_level"),
+            0.0,
+            1.0,
+        )?,
+        seed: get_f32_ranged(
+            obj,
+            "seed",
+            &format!("{base}.noise.seed"),
+            0.0,
+            16_777_215.0,
+        )?,
+    })
+}
+
 fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
     let eq = parse_eq(get_obj(obj, "eq")?, "fx")?;
     let comp = parse_comp(get_obj(obj, "comp")?, "fx")?;
@@ -927,6 +980,15 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
             Some(parse_crusher(c, "fx")?)
         }
     };
+    let noise = match get_opt(obj, "noise") {
+        None => None,
+        Some(noise_json) => {
+            let n = noise_json
+                .as_object()
+                .ok_or_else(|| field_err("fx.noise", "noise must be an object"))?;
+            Some(parse_noise(n, "fx")?)
+        }
+    };
     Ok(DrumFxPreset {
         eq_low_db: eq.low_db,
         eq_mid_db: eq.mid_db,
@@ -953,6 +1015,7 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
         delay,
         transient,
         crusher,
+        noise,
     })
 }
 
@@ -1122,6 +1185,15 @@ fn parse_lane_chains(
                 Some(parse_crusher(crusher_obj, &base)?)
             }
         };
+        let noise = match get_opt(chain_obj, "noise") {
+            None => None,
+            Some(raw_noise) => {
+                let noise_obj = raw_noise.as_object().ok_or_else(|| {
+                    field_err(&format!("{base}.noise"), "noise must be an object")
+                })?;
+                Some(parse_noise(noise_obj, &base)?)
+            }
+        };
         let pan = match get_opt(chain_obj, "pan") {
             None => None,
             Some(_) => Some(get_f32_ranged(
@@ -1161,12 +1233,13 @@ fn parse_lane_chains(
             && delay.is_none()
             && transient.is_none()
             && crusher.is_none()
+            && noise.is_none()
             && pan.is_none()
             && sidechain.is_none()
         {
             return Err(field_err(
                 &format!("lane_chains.{name}"),
-                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/transient/crusher/pan/sidechain)",
+                "lane chain group declares an empty chain (no eq/comp/reverb/tape/delay/transient/crusher/noise/pan/sidechain)",
             ));
         }
         chains.push(DrumLaneChainPreset {
@@ -1179,6 +1252,7 @@ fn parse_lane_chains(
             delay,
             transient,
             crusher,
+            noise,
             pan,
             sidechain,
         });
@@ -1240,6 +1314,8 @@ pub struct DrumFxFamilies {
     pub transient: bool,
     /// 比特碾碎族已在场（D4 接线）。
     pub crusher: bool,
+    /// 噪声源族已在场（D5 新器件）。
+    pub noise: bool,
 }
 
 /// 一台待装效果器件的配方（名字 + 参数表）；身份（`EntityId`）由调用方
@@ -1247,7 +1323,7 @@ pub struct DrumFxFamilies {
 /// 保证两条生成路径装出的效果层逐参数一致。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumFxDeviceSpec {
-    /// 效果族标识（`strip` / `tape` / `reverb` / `delay` / `transient` / `crusher`）。
+    /// 效果族标识（`strip` / `tape` / `reverb` / `delay` / `transient` / `crusher` / `noise`）。
     pub family: &'static str,
     /// 器件显示名。
     pub name: &'static str,
@@ -1330,6 +1406,17 @@ fn crusher_params(crusher: &DrumCrusherPreset) -> Vec<(String, f32)> {
     ]
 }
 
+/// 噪声源段 → 噪声源器件参数表。
+fn noise_params(noise: &DrumNoisePreset) -> Vec<(String, f32)> {
+    vec![
+        ("noise_level".to_owned(), noise.level),
+        ("noise_color".to_owned(), noise.color),
+        ("noise_crackle_density".to_owned(), noise.crackle_density),
+        ("noise_crackle_level".to_owned(), noise.crackle_level),
+        ("noise_seed".to_owned(), noise.seed),
+    ]
+}
+
 /// 延迟段 → 延迟器件参数表。
 fn delay_params(delay: &DrumDelayPreset) -> Vec<(String, f32)> {
     vec![
@@ -1393,6 +1480,17 @@ impl DrumFxPreset {
 #[must_use]
 pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<DrumFxDeviceSpec> {
     let mut specs = Vec::new();
+    // 噪声源是链头（加性源，见 `yeban-render` 的 `inserts.rs` §6），
+    // 配方表也把它排在最前，与信号次序一致。
+    if let Some(noise) = &fx.noise
+        && !present.noise
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "noise",
+            name: "Noise Source",
+            params: noise_params(noise),
+        });
+    }
     if !present.strip {
         let mut params = strip_eq_params(&fx.eq_view());
         params.extend(strip_comp_params(&fx.comp_view()));
@@ -1462,6 +1560,13 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
 #[must_use]
 pub fn drum_lane_device_specs(chain: &DrumLaneChainPreset) -> Vec<DrumFxDeviceSpec> {
     let mut specs = Vec::new();
+    if let Some(noise) = &chain.noise {
+        specs.push(DrumFxDeviceSpec {
+            family: "noise",
+            name: "Noise Source",
+            params: noise_params(noise),
+        });
+    }
     if chain.eq.is_some() || chain.comp.is_some() {
         let mut params = Vec::new();
         if let Some(eq) = &chain.eq {
@@ -3777,5 +3882,118 @@ mod tests {
         let specs = drum_lane_device_specs(chain);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].family, "crusher");
+    }
+
+    /// D5 新器件（预置面）：lofi 的 fx 带噪声段且只有 lofi 带；其余 13
+    /// 风格不写噪声段（不写段 = 无噪声器件 = 渲染逐位不变）；配方把噪声
+    /// 段翻成链头第一台器件；在场标记能压掉重复生成。
+    #[test]
+    fn factory_lofi_carries_the_noise_section_and_others_do_not() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let by_id = |id: &str| styles.iter().find(|s| s.id == id).unwrap();
+
+        let lofi = by_id("lofi");
+        let fx = lofi.fx.expect("lofi fx");
+        let noise = fx.noise.expect("lofi fx 必须带噪声段（D5 新器件）");
+        assert_eq!(noise.level.to_bits(), 0.035f32.to_bits());
+        assert_eq!(noise.color.to_bits(), 0.85f32.to_bits());
+        assert_eq!(noise.crackle_density.to_bits(), 5.0f32.to_bits());
+        assert_eq!(noise.crackle_level.to_bits(), 0.4f32.to_bits());
+        assert_eq!(noise.seed.to_bits(), 2026.0f32.to_bits());
+        for style in &styles {
+            if style.id != "lofi" {
+                let other = style.fx.expect("出厂风格都带 fx");
+                assert!(
+                    other.noise.is_none(),
+                    "{} 不得带噪声段（只有 lofi 出厂写噪声）",
+                    style.id
+                );
+            }
+        }
+        let specs = drum_fx_device_specs(&fx, DrumFxFamilies::default());
+        let noise_spec = specs
+            .iter()
+            .find(|spec| spec.family == "noise")
+            .expect("配方必须含噪声器件");
+        assert_eq!(noise_spec.name, "Noise Source");
+        assert_eq!(specs[0].family, "noise", "噪声源是链头，配方也必须排第一");
+        assert_eq!(
+            noise_spec.params,
+            vec![
+                ("noise_level".to_owned(), 0.035),
+                ("noise_color".to_owned(), 0.85),
+                ("noise_crackle_density".to_owned(), 5.0),
+                ("noise_crackle_level".to_owned(), 0.4),
+                ("noise_seed".to_owned(), 2026.0),
+            ]
+        );
+        let present = DrumFxFamilies {
+            noise: true,
+            ..Default::default()
+        };
+        let specs = drum_fx_device_specs(&fx, present);
+        let families: Vec<&str> = specs.iter().map(|spec| spec.family).collect();
+        assert!(
+            !families.contains(&"noise"),
+            "噪声族已在场 ⇒ 不得重复生成，实测配方 {families:?}"
+        );
+    }
+
+    /// D5 新器件（解析面）：fx 与逐件链两处都认噪声段；越界、缺字段、
+    /// 坏类型响亮拒绝；只带噪声段的逐件链不算空链。
+    #[test]
+    fn noise_sections_parse_and_reject_loudly() {
+        let text = MINIMAL.replace(
+            "\"bars\": 1,",
+            "\"bars\": 1, \"fx\": {\"eq\": {\"low_db\": 0, \"mid_db\": 0, \"high_db\": 0, \"low_hz\": 200, \"mid_hz\": 1000, \"mid_q\": 0.9, \"high_hz\": 6000, \"hpf_hz\": 0, \"cutoff_hz\": 20000}, \"comp\": {\"threshold_db\": -16, \"ratio\": 3, \"knee_db\": 6, \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 0}, \"output_db\": 0, \"reverb\": {\"size\": 0.4, \"damp\": 0.45, \"wet\": 0.15, \"predelay_s\": 0.01}, \"noise\": {\"level\": 0.03, \"color\": 0.5, \"crackle_density\": 4, \"crackle_level\": 0.3, \"seed\": 99}},",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("valid noise fx");
+        let fx = preset.fx.expect("fx parsed");
+        let noise = fx.noise.expect("noise parsed");
+        assert_eq!(noise.level.to_bits(), 0.03f32.to_bits());
+        assert_eq!(noise.seed.to_bits(), 99.0f32.to_bits());
+
+        // 越界与缺字段必须拒绝。
+        let bad_level = text.replace("\"level\": 0.03", "\"level\": 1.5");
+        assert!(
+            DrumStylePreset::from_json(&bad_level).is_err(),
+            "level 越界须拒绝"
+        );
+        let bad_density = text.replace("\"crackle_density\": 4", "\"crackle_density\": 241");
+        assert!(
+            DrumStylePreset::from_json(&bad_density).is_err(),
+            "crackle_density 越界须拒绝"
+        );
+        let bad_seed = text.replace("\"seed\": 99", "\"seed\": -1");
+        assert!(
+            DrumStylePreset::from_json(&bad_seed).is_err(),
+            "seed 为负须拒绝"
+        );
+        let missing_seed = text.replace(", \"seed\": 99", "");
+        assert!(
+            DrumStylePreset::from_json(&missing_seed).is_err(),
+            "缺 seed 须拒绝"
+        );
+        let bad_type = text.replace("\"level\": 0.03", "\"level\": \"loud\"");
+        assert!(
+            DrumStylePreset::from_json(&bad_type).is_err(),
+            "level 坏类型须拒绝"
+        );
+
+        // 逐件链：只带噪声段也算非空链，配方产出噪声器件。
+        let text = preset_with_lanes(
+            "electronic",
+            &[36, 42],
+            ", \"lane_chains\": [{\"name\": \"kick\", \"keys\": [36], \"chain\": {\"noise\": {\"level\": 0.02, \"color\": 1, \"crackle_density\": 0, \"crackle_level\": 0, \"seed\": 1}}}]",
+        );
+        let preset = DrumStylePreset::from_json(&text).expect("noise-only lane chain");
+        let chain = &preset.lane_chains[0];
+        assert_eq!(
+            chain.noise.expect("lane noise").level.to_bits(),
+            0.02f32.to_bits()
+        );
+        let specs = drum_lane_device_specs(chain);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].family, "noise");
     }
 }

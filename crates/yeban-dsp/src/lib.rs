@@ -99,6 +99,7 @@ pub mod loudness;
 pub mod math;
 pub mod meter;
 pub mod noise;
+pub mod noise_source;
 pub mod oscillator;
 pub mod oversample;
 pub mod phase_align_auto;

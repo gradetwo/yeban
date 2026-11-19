@@ -164,6 +164,28 @@
 //! - 建级门：瞬态参数恒等（两量皆 0 = 逐位恒等）且未强制时不建器件
 //!   （与延迟的 `mix = 0` 门同理）；碾碎缺省（16 bit / 1 / 0）**不是**
 //!   逐位恒等（量化步长真实改低位）⇒ 投影为 `Some` 即建，不设恒等门。
+//!
+//! ## 6. 噪声源（鼓机缺口 D5 新器件）
+//!
+//! `yeban_dsp::noise_source` 的噪声源自本线起进链。它是全链唯一的
+//! **加性源**（静音输入也产出信号），级序（`process` 与 `process_with_key`
+//! 同序）：采样延迟 → **噪声源** → 通道条 → 瞬态塑形 → 磁带 → 比特碾碎
+//! → 削波 → 混响 → 卷积 → 延迟 → 限制器。
+//!
+//! - 放在链头（采样延迟之后）：黑胶底噪与爆裂声是"录在素材里的"成分，
+//!   应当与节目信号一起被 EQ 塑形、被压缩、被磁带与碾碎染色、被混响
+//!   送进空间；放在链尾（限制器之前）会让底噪绕开 lofi 的全部暗色
+//!   处理，比节目更亮更靠前，且爆裂峰值逃过削波级的驯服；
+//! - 采样延迟仍在它之前：那一级只是整段信号的时间平移（相位对齐），
+//!   噪声与节目必须同移，不许相对错位；
+//! - 限制器仍在链尾兜底：噪声（含爆裂峰值）计入真峰值预算，不许从
+//!   限制器之后再加任何东西；
+//! - 种子可复现：随机流只由 `noise_seed` 决定，逐样本抽取顺序与块
+//!   大小无关（见 `noise_source` 模块文档），同工程双渲逐位一致；
+//! - 建级门：参数恒等（底噪电平 0 且爆裂声关 = 逐位恒等）且未强制时
+//!   不建器件（与瞬态塑形同理）；
+//! - 与 D3/D4 同一先例：本线只接离线/渲染侧（含逐件链），实时引擎
+//!   `insert.rs` 不接噪声族。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -174,6 +196,7 @@ use yeban_dsp::delay::{Delay, DelayParams};
 use yeban_dsp::device_param::{ClipperField, LimiterField, delay_params_from_stage};
 use yeban_dsp::limiter::{InsertLimiter, LimiterParams};
 use yeban_dsp::noise::Rng;
+use yeban_dsp::noise_source::{NoiseParams, NoiseSource};
 use yeban_dsp::oversample::OS_TAPS;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};
@@ -313,6 +336,10 @@ pub struct InsertChain {
     ///
     /// 链上位置在磁带**之后**、削波器**之前**（见模块头 §5）。
     crusher: Option<CrushParams>,
+    /// 噪声源参数；`None` = 本轨没有噪声源（D5 新器件）。
+    ///
+    /// 链上位置在采样延迟**之后**、通道条**之前**（链头，见模块头 §6）。
+    noise: Option<NoiseParams>,
     /// **编译期强制实例化通道条**（任务单 `#266`）。
     ///
     /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
@@ -348,6 +375,11 @@ pub struct InsertChain {
     /// **编译期强制实例化比特碾碎**（与 `#293` 同理）：碾碎投影为 `Some`
     /// 即建器件，本位只为族口径齐整（强制位语义与其余族一致）。
     force_crusher: bool,
+    /// **编译期强制实例化噪声源**（与 `#293` 同理）：静态参数恒等
+    /// （底噪关且爆裂声关）时运行态不建器件，但一条非恒等噪声泳道会在
+    /// 块边界把它拉起来 —— 且随机流必须从第一块起按种子推进，迟建会
+    /// 让拉起后的噪声排布与从头建器件的渲染不一致。
+    force_noise: bool,
 }
 
 impl InsertChain {
@@ -365,6 +397,7 @@ impl InsertChain {
             clipper: None,
             transient: None,
             crusher: None,
+            noise: None,
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
@@ -374,6 +407,7 @@ impl InsertChain {
             force_clipper: false,
             force_transient: false,
             force_crusher: false,
+            force_noise: false,
         }
     }
 
@@ -382,7 +416,7 @@ impl InsertChain {
     /// 规则与引擎 `InsertParams::from_devices` 逐条一致：
     ///
     /// 1. 只看**非旁通**的 [`DeviceKind::InternalEffect`]；
-    /// 2. 九件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
+    /// 2. 十件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
     /// 3. 未出现的字段保持 `yeban-dsp` 的默认值；
     /// 4. 同名参数**后者胜**；参数名大小写不敏感；
     /// 5. 没写旋钮的级不执行（`eq_enabled` 等开关写过的优先）。
@@ -400,6 +434,7 @@ impl InsertChain {
         let mut clipper: Option<ClipperParams> = None;
         let mut transient: Option<TransientParams> = None;
         let mut crusher: Option<CrushParams> = None;
+        let mut noise: Option<NoiseParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
@@ -434,6 +469,9 @@ impl InsertChain {
             if crusher.is_none() {
                 crusher = crusher_of(device);
             }
+            if noise.is_none() {
+                noise = noise_of(device);
+            }
             if strip.is_some()
                 && saturation.is_some()
                 && reverb.is_some()
@@ -444,6 +482,7 @@ impl InsertChain {
                 && clipper.is_some()
                 && transient.is_some()
                 && crusher.is_some()
+                && noise.is_some()
             {
                 break;
             }
@@ -459,6 +498,7 @@ impl InsertChain {
             clipper: clipper.map(ClipperParams::sanitised),
             transient: transient.map(TransientParams::sanitised),
             crusher: crusher.map(CrushParams::sanitised),
+            noise: noise.map(NoiseParams::sanitised),
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
@@ -468,6 +508,7 @@ impl InsertChain {
             force_clipper: false,
             force_transient: false,
             force_crusher: false,
+            force_noise: false,
         }
     }
 
@@ -615,6 +656,25 @@ impl InsertChain {
         self.crusher
     }
 
+    /// 置"强制实例化噪声源"位（与 `#293` 同理）。见 [`Self::force_noise`]。
+    #[must_use]
+    pub const fn with_forced_noise(mut self, force: bool) -> Self {
+        self.force_noise = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了噪声源（读数用）。
+    #[must_use]
+    pub const fn is_forced_noise(&self) -> bool {
+        self.force_noise
+    }
+
+    /// 本链的噪声源参数（读数用；已 sanitised）。
+    #[must_use]
+    pub const fn noise(&self) -> Option<NoiseParams> {
+        self.noise
+    }
+
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
     /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
@@ -631,6 +691,7 @@ impl InsertChain {
             && self.clipper.is_none()
             && self.transient.is_none()
             && self.crusher.is_none()
+            && self.noise.is_none()
     }
 
     /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
@@ -798,6 +859,8 @@ pub struct ForcedInsertInstances {
     pub transient: BTreeSet<EntityId>,
     /// 需要强制实例化比特碾碎的轨（D4 接线）。
     pub crusher: BTreeSet<EntityId>,
+    /// 需要强制实例化噪声源的轨（D5 新器件）。
+    pub noise: BTreeSet<EntityId>,
 }
 
 impl ForcedInsertInstances {
@@ -813,6 +876,7 @@ impl ForcedInsertInstances {
             && self.clipper.is_empty()
             && self.transient.is_empty()
             && self.crusher.is_empty()
+            && self.noise.is_empty()
     }
 }
 
@@ -839,7 +903,8 @@ pub fn project_inserts_with_forced_instances(
                 .with_forced_limiter(forced.limiter.contains(&id))
                 .with_forced_clipper(forced.clipper.contains(&id))
                 .with_forced_transient(forced.transient.contains(&id))
-                .with_forced_crusher(forced.crusher.contains(&id));
+                .with_forced_crusher(forced.crusher.contains(&id))
+                .with_forced_noise(forced.noise.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -1310,6 +1375,37 @@ pub fn crusher_source_params(track: &TrackV3) -> Option<CrushParams> {
     crusher_of(&track.devices[slot])
 }
 
+/// 单台设备 → 噪声源参数（`None` = 一个已识别的噪声名字都没有）。
+///
+/// 与 [`crusher_of`] 同式：只认 [`NoiseField::SPELLINGS`]（`noise_`
+/// 前缀），未写字段保持 [`NoiseParams::DEFAULT`]。
+fn noise_of(device: &DeviceDefinition) -> Option<NoiseParams> {
+    let mut params = NoiseParams::DEFAULT;
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = NoiseField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 本轨 **噪声源来源设备**的下标（`from_devices` 的"首个含已识别噪声名字的设备"）。
+#[must_use]
+pub fn noise_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::InternalEffect && noise_of(device).is_some()
+    })
+}
+
+/// 本轨噪声源**来源设备**的投影参数（口径与 [`crusher_source_params`] 同）。
+#[must_use]
+pub fn noise_source_params(track: &TrackV3) -> Option<NoiseParams> {
+    let slot = noise_source_slot(track)?;
+    noise_of(&track.devices[slot])
+}
+
 /// 本轨乒乓延迟**来源设备**的投影期参数（未换算；音符同步换算在 `delay_of` 里做，
 /// 与 `from_devices` 交给器件的同一份换算前输入）。
 #[must_use]
@@ -1332,8 +1428,8 @@ pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
     ConvolutionField, CrusherField, DelayField, DelayStageParams, DeviceParamFamily,
-    DeviceParamField, ReverbField, SampleDelayField, StripField, TapeField, TransientField,
-    sanitised_output_gain_db,
+    DeviceParamField, NoiseField, ReverbField, SampleDelayField, StripField, TapeField,
+    TransientField, sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -1885,6 +1981,11 @@ pub(crate) struct InsertRuntime {
     crusher: Option<BitCrusher>,
     /// 比特碾碎当前参数（块边界自动化改这一份；器件按块读它）。
     crusher_params: CrushParams,
+    /// 噪声源状态；`None` = 不动（参数恒等且未强制，或本轨没有噪声源）。
+    noise: Option<NoiseSource>,
+    /// 噪声源当前参数（块边界自动化改这一份；器件按块读它，种子变化
+    /// 在块头重播种）。
+    noise_params: NoiseParams,
     /// 采样率：只为把限制器的 dB/ms 参数换算成器件域（构造期一次，之后复用）。
     sample_rate: f32,
     /// 左声道去交错缓冲。
@@ -2042,6 +2143,17 @@ impl InsertRuntime {
         // 没有恒等门，投影为 `Some` 即建（与限制器同款）。
         let crusher_params = chain.crusher.unwrap_or_default();
         let crusher = chain.crusher.map(|_| BitCrusher::new());
+        // 噪声源：建级门是**非恒等**（底噪关且爆裂声关是逐位恒等 ⇒ 整级
+        // 跳过、随机流不推进，与恒等同解）；强制位为真时保留实例供块边界
+        // 拉起，且随机流从第一块起按种子推进（迟建会让拉起后的排布与
+        // 从头建器件的渲染不一致）。实例按投影种子构造。
+        let noise_params = chain.noise.unwrap_or_default();
+        let noise = chain.noise.and_then(|_| {
+            if noise_params.is_identity() && !chain.is_forced_noise() {
+                return None;
+            }
+            Some(NoiseSource::new(noise_params))
+        });
         Self {
             strip,
             saturation,
@@ -2059,6 +2171,8 @@ impl InsertRuntime {
             transient_params,
             crusher,
             crusher_params,
+            noise,
+            noise_params,
             sample_rate: sample_rate_f32,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
@@ -2100,6 +2214,9 @@ impl InsertRuntime {
         }
         if let Some(crusher) = &mut self.crusher {
             crusher.reset();
+        }
+        if let Some(noise) = &mut self.noise {
+            noise.reset();
         }
     }
 
@@ -2178,6 +2295,14 @@ impl InsertRuntime {
                     field.store(&mut self.crusher_params, value);
                 }
             }
+            // 噪声源：与瞬态/碾碎同款（器件按块读运行态这一份）；种子
+            // 字段的变化由器件在下一块块头重播种（`process_in_place`
+            // 的种子口径），不在这里动状态。
+            DeviceParamField::Noise(field) => {
+                if self.noise.is_some() {
+                    field.store(&mut self.noise_params, value);
+                }
+            }
             // 延迟的 5 个器件字段直接写进运行参数（`Delay::process` 每块读它）；
             // 同步四字段是**投影期输入**，块边界没有 `bpm` 可重算 ⇒ 这里不改
             // `time_s`（同步泳道仍报 applied、仍强制建器件，见 ADR-0061）。
@@ -2201,8 +2326,9 @@ impl InsertRuntime {
 
     /// 原地处理一个**立体声交错**块（`buffer.len() == frames * 2`）。
     ///
-    /// 顺序：采样延迟 → 通道条 → 瞬态塑形 → 磁带饱和 → 比特碾碎 → 削波 →
-    /// Freeverb → 卷积混响 → 乒乓延迟 → 限制器（模块头 §5）。各级在参数为 0 时
+    /// 顺序：采样延迟 → 噪声源 → 通道条 → 瞬态塑形 → 磁带饱和 → 比特碾碎
+    /// → 削波 → Freeverb → 卷积混响 → 乒乓延迟 → 限制器（模块头 §5/§6）。
+    /// 各级在参数为 0 时
     /// 整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
     ///
     /// ⚠ 延迟的 `mix = 0` 必须**整级跳过**、不能靠"乘零"混过去：`x + 0·w` 在
@@ -2227,6 +2353,8 @@ impl InsertRuntime {
             transient_params,
             crusher,
             crusher_params,
+            noise,
+            noise_params,
             sample_rate,
             left,
             right,
@@ -2245,6 +2373,16 @@ impl InsertRuntime {
                 *sample_delay_params,
                 &mut left[..frames],
                 &mut right[..frames],
+            );
+        }
+        // 噪声源在采样延迟之后、通道条之前（模块头 §6）：链头加性源，
+        // 底噪与爆裂声与节目一起被后续全部级处理。
+        if let Some(noise) = noise {
+            noise.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *noise_params,
+                *sample_rate,
             );
         }
         if let Some(strip) = strip {
@@ -2344,6 +2482,8 @@ impl InsertRuntime {
             transient_params,
             crusher,
             crusher_params,
+            noise,
+            noise_params,
             sample_rate,
             key_left,
             key_right,
@@ -2363,6 +2503,15 @@ impl InsertRuntime {
                 *sample_delay_params,
                 &mut left[..frames],
                 &mut right[..frames],
+            );
+        }
+        // 噪声源与 `process` 同位（键只喂通道条检波器，噪声不读键）。
+        if let Some(noise) = noise {
+            noise.process_in_place(
+                &mut left[..frames],
+                &mut right[..frames],
+                *noise_params,
+                *sample_rate,
             );
         }
         if let Some(strip) = strip {
@@ -2539,6 +2688,11 @@ mod tests {
             DeviceParamField::Crusher(CrusherField::Bits) => 10.0,
             DeviceParamField::Crusher(CrusherField::Down) => 4.0,
             DeviceParamField::Crusher(CrusherField::Aa) => 0.6,
+            DeviceParamField::Noise(NoiseField::Level) => 0.035,
+            DeviceParamField::Noise(NoiseField::Color) => 0.85,
+            DeviceParamField::Noise(NoiseField::CrackleDensity) => 5.0,
+            DeviceParamField::Noise(NoiseField::CrackleLevel) => 0.4,
+            DeviceParamField::Noise(NoiseField::Seed) => 2026.0,
         }
     }
 
@@ -2659,6 +2813,15 @@ mod tests {
                         "{name} 的投影值与恒等判定值必须同一个"
                     );
                 }
+                DeviceParamField::Noise(noise_field) => {
+                    let projected = noise_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 noise_of 认出来"));
+                    assert_eq!(
+                        noise_field.read(&projected.sanitised()).to_bits(),
+                        noise_field.sanitise(value).to_bits(),
+                        "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
             }
         }
     }
@@ -2695,6 +2858,9 @@ mod tests {
                 CrusherField::from_name(field.canonical_name()),
                 Some(*field)
             );
+        }
+        for field in NoiseField::ALL {
+            assert_eq!(NoiseField::from_name(field.canonical_name()), Some(*field));
         }
         for (alias, field) in [
             ("input_gain", StripField::InputGainDb),
@@ -3635,6 +3801,45 @@ mod tests {
         // 裸名不认：`attack` 属通道条，`bits` 不是任何族的名字。
         assert_eq!(transient_of(&device(&[("attack", 0.5)])), None);
         assert_eq!(crusher_of(&device(&[("bits", 8.0)])), None);
+    }
+
+    /// D5 新器件：噪声的名字进链、首来源胜、旁通跳过、来源槽一致；
+    /// 裸 `level` / `seed` 不是噪声来源（撞名防线）。
+    #[test]
+    fn noise_first_source_wins_and_bypassed_ignored() {
+        let first = device(&[("noise_level", 0.035)]);
+        let second = device(&[("noise_seed", 7.0)]);
+        let chain = InsertChain::from_devices(&[first, second], 48_000, 120.0);
+        let params = chain.noise().expect("噪声应被识别");
+        assert_eq!(params.level.to_bits(), 0.035f32.to_bits());
+        assert_eq!(
+            params.seed.to_bits(),
+            0.0f32.to_bits(),
+            "首个来源胜：第二台的 `noise_seed` 不覆盖缺省"
+        );
+
+        let mut bypassed = device(&[("noise_level", 0.035)]);
+        bypassed.bypassed = true;
+        let second_again = device(&[("noise_seed", 7.0)]);
+        let chain = InsertChain::from_devices(&[bypassed, second_again], 48_000, 120.0);
+        let params = chain.noise().expect("旁通跳过后第二台成来源");
+        assert_eq!(params.seed.to_bits(), 7.0f32.to_bits());
+
+        let track = yeban_model::TrackV3 {
+            devices: vec![
+                device(&[("tape_drive", 0.5)]),
+                device(&[("noise_level", 0.02), ("noise_crackle_level", 0.4)]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(noise_source_slot(&track), Some(1));
+        assert_eq!(
+            noise_source_params(&track).map(|p| p.level.to_bits()),
+            Some(0.02f32.to_bits())
+        );
+
+        assert_eq!(noise_of(&device(&[("level", 0.5)])), None);
+        assert_eq!(noise_of(&device(&[("seed", 3.0)])), None);
     }
 
     /// D3/D4 接线（机制层）：中性瞬态 (0,0) 在不强制时**不建**器件（恒等门，

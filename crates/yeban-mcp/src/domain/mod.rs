@@ -4491,7 +4491,8 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
     let mut fx_note = "无效果层（预置未带 fx 段）".to_owned();
     if let Some(fx) = &preset.fx {
         use yeban_render::inserts::{
-            CrusherField, DelayField, ReverbField, StripField, TapeField, TransientField,
+            CrusherField, DelayField, NoiseField, ReverbField, StripField, TapeField,
+            TransientField,
         };
         let mut present = yeban_theory::DrumFxFamilies::default();
         if let Some(track) = &existing_track {
@@ -4506,6 +4507,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     present.delay |= DelayField::from_name(&param.name).is_some();
                     present.transient |= TransientField::from_name(&param.name).is_some();
                     present.crusher |= CrusherField::from_name(&param.name).is_some();
+                    present.noise |= NoiseField::from_name(&param.name).is_some();
                 }
             }
         }

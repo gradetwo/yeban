@@ -22,7 +22,8 @@
 //! | [`ClipperField`] | 软削波器的 5 个字段（`5` 个拼写） |
 //! | [`TransientField`] | 瞬态塑形的 2 个字段（`2` 个拼写；D3 接线） |
 //! | [`CrusherField`] | 比特碾碎的 3 个字段（`3` 个拼写；D4 接线） |
-//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 九族的合流枚举与器件族标签 |
+//! | [`NoiseField`] | 噪声源的 5 个字段（`5` 个拼写；D5 新器件） |
+//! | [`DeviceParamField`] / [`DeviceParamFamily`] | 十族的合流枚举与器件族标签 |
 //!
 //! ⛔ **本模块不含**任何 I/O、模型类型或 GUI：每个 `sanitise` 都与器件内部**同一次**
 //! 钳制对齐（[`ChannelStripParams::sanitised`] / [`crate::reverb::Reverb::set_params`] /
@@ -36,6 +37,7 @@ use crate::convolution_reverb::{
     ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
 };
 use crate::delay::{DelayParams, MAX_DELAY_SECONDS};
+use crate::noise_source::NoiseParams;
 use crate::reverb::{REVERB_MAX_DECAY_S, REVERB_MAX_PREDELAY_S, ReverbKind, ReverbParams};
 use crate::sample_delay::{MAX_SAMPLE_DELAY_SAMPLES, SampleDelayParams};
 use crate::shaping::{CrushParams, TransientParams};
@@ -1463,6 +1465,109 @@ impl CrusherField {
     }
 }
 
+/// 噪声源上**可被 `DeviceParam` 自动化落点**的字段（鼓机缺口 D5 新器件）。
+///
+/// 与 `noise_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]），全部带
+/// `noise_` 前缀（⛔ 不提供裸 `level` / `seed`：过泛的裸名会与未来器件
+/// 撞名，与 `limiter_` / `clipper_` / `crush_` 的前缀惯例一致）。
+///
+/// 器件（`NoiseSource`）按块读参数：块边界自动化改运行态保存的那一份
+/// [`NoiseParams`]，`process_in_place` 下一块自然读到；`seed` 在块头与
+/// 当前种子不同 ⇒ 重播种（见 `noise_source` 模块文档的确定性口径）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoiseField {
+    /// 连续底噪电平（0..1）。`noise_level`。
+    Level,
+    /// 噪声颜色（0 = 白、1 = 粉红）。`noise_color`。
+    Color,
+    /// 爆裂声密度（次/秒/声道）。`noise_crackle_density`。
+    CrackleDensity,
+    /// 爆裂声电平（0..1）。`noise_crackle_level`。
+    CrackleLevel,
+    /// 随机种子（0..=2²⁴−1，取整）。`noise_seed`。
+    Seed,
+}
+
+impl NoiseField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[
+        Self::Level,
+        Self::Color,
+        Self::CrackleDensity,
+        Self::CrackleLevel,
+        Self::Seed,
+    ];
+
+    /// **全部拼写** → 字段（`5` 条 = `5` 个字段；⛔ 无别名，理由见类型文档）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("noise_level", Self::Level),
+        ("noise_color", Self::Color),
+        ("noise_crackle_density", Self::CrackleDensity),
+        ("noise_crackle_level", Self::CrackleLevel),
+        ("noise_seed", Self::Seed),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Level => "noise_level",
+            Self::Color => "noise_color",
+            Self::CrackleDensity => "noise_crackle_density",
+            Self::CrackleLevel => "noise_crackle_level",
+            Self::Seed => "noise_seed",
+        }
+    }
+
+    /// 本字段是否是**开关**（噪声源没有开关字段）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        false
+    }
+
+    /// 从参数结构里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &NoiseParams) -> f32 {
+        match self {
+            Self::Level => params.level,
+            Self::Color => params.color,
+            Self::CrackleDensity => params.crackle_density,
+            Self::CrackleLevel => params.crackle_level,
+            Self::Seed => params.seed,
+        }
+    }
+
+    /// 把**原生绝对值**写进参数结构（⛔ 不在这里钳制：钳制在 `sanitised()`）。
+    pub fn store(self, params: &mut NoiseParams, value: f32) {
+        match self {
+            Self::Level => params.level = value,
+            Self::Color => params.color = value,
+            Self::CrackleDensity => params.crackle_density = value,
+            Self::CrackleLevel => params.crackle_level = value,
+            Self::Seed => params.seed = value,
+        }
+    }
+
+    /// 与器件**同一次**钳制：把值写进一份 `DEFAULT`、`sanitised()`、再读回来。
+    ///
+    /// ⛔ 不复制上下界：[`NoiseParams::sanitised`] 是唯一一份规则。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = NoiseParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
@@ -1487,6 +1592,8 @@ pub enum DeviceParamField {
     Transient(TransientField),
     /// 比特碾碎字段（D4 接线）。
     Crusher(CrusherField),
+    /// 噪声源字段（D5 新器件）。
+    Noise(NoiseField),
 }
 
 /// 强制实例化按**器件族**分开。
@@ -1510,12 +1617,14 @@ pub enum DeviceParamFamily {
     Transient,
     /// 比特碾碎（D4 接线）。
     Crusher,
+    /// 噪声源（D5 新器件）。
+    Noise,
 }
 
 impl DeviceParamField {
     /// 名字 → 落点（大小写不敏感）。顺序：通道条 → 饱和 → 混响 → 卷积 → 延迟
-    /// → 限制器 → 削波器 → 瞬态塑形 → 比特碾碎（各族拼写互不重叠，顺序只定
-    /// 撞名时的优先级）。
+    /// → 限制器 → 削波器 → 瞬态塑形 → 比特碾碎 → 噪声源（各族拼写互不重叠，
+    /// 顺序只定撞名时的优先级）。
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         StripField::from_name(name)
@@ -1528,6 +1637,7 @@ impl DeviceParamField {
             .or_else(|| ClipperField::from_name(name).map(Self::Clipper))
             .or_else(|| TransientField::from_name(name).map(Self::Transient))
             .or_else(|| CrusherField::from_name(name).map(Self::Crusher))
+            .or_else(|| NoiseField::from_name(name).map(Self::Noise))
     }
 
     /// 规范名。
@@ -1543,6 +1653,7 @@ impl DeviceParamField {
             Self::Clipper(field) => field.canonical_name(),
             Self::Transient(field) => field.canonical_name(),
             Self::Crusher(field) => field.canonical_name(),
+            Self::Noise(field) => field.canonical_name(),
         }
     }
 
@@ -1559,6 +1670,7 @@ impl DeviceParamField {
             Self::Clipper(_) => DeviceParamFamily::Clipper,
             Self::Transient(_) => DeviceParamFamily::Transient,
             Self::Crusher(_) => DeviceParamFamily::Crusher,
+            Self::Noise(_) => DeviceParamFamily::Noise,
         }
     }
 
@@ -1575,6 +1687,7 @@ impl DeviceParamField {
             Self::Clipper(field) => field.sanitise(value),
             Self::Transient(field) => field.sanitise(value),
             Self::Crusher(field) => field.sanitise(value),
+            Self::Noise(field) => field.sanitise(value),
         }
     }
 }
@@ -1800,5 +1913,43 @@ mod tests {
         let mut params = CrushParams::DEFAULT;
         CrusherField::Bits.store(&mut params, 10.0);
         assert_eq!(CrusherField::Bits.read(&params), 10.0);
+    }
+
+    /// 噪声源字段表（D5 新器件）：规范名往返、拼写数钉死、合流解析、
+    /// `sanitise` 与器件钳制同解；裸 `level` / `seed` 必须无落点（撞名防线）。
+    #[test]
+    fn noise_field_spellings_round_trip() {
+        for field in NoiseField::ALL {
+            assert_eq!(
+                NoiseField::from_name(field.canonical_name()),
+                Some(*field),
+                "规范名 {} 必须解析",
+                field.canonical_name()
+            );
+            assert_eq!(
+                DeviceParamField::from_name(field.canonical_name()),
+                Some(DeviceParamField::Noise(*field)),
+                "合流解析必须落到噪声族"
+            );
+            assert_eq!(
+                DeviceParamField::Noise(*field).family(),
+                DeviceParamFamily::Noise
+            );
+            assert!(!field.is_flag());
+        }
+        assert_eq!(NoiseField::SPELLINGS.len(), 5, "噪声拼写共 5 条");
+        assert_eq!(NoiseField::ALL.len(), 5, "噪声共 5 个字段");
+        // 撞名防线：裸名过泛，绝不能被噪声族抢走。
+        assert_eq!(DeviceParamField::from_name("level"), None);
+        assert_eq!(DeviceParamField::from_name("seed"), None);
+        assert_eq!(NoiseField::Level.sanitise(2.5), 1.0);
+        assert_eq!(NoiseField::Level.sanitise(f32::NAN), 0.0);
+        assert_eq!(NoiseField::Color.sanitise(f32::NAN), 1.0);
+        assert_eq!(NoiseField::CrackleDensity.sanitise(999.0), 240.0);
+        assert_eq!(NoiseField::Seed.sanitise(2026.4), 2026.0);
+        assert_eq!(NoiseField::Seed.sanitise(1.0e9), 16_777_215.0);
+        let mut params = NoiseParams::DEFAULT;
+        NoiseField::Level.store(&mut params, 0.035);
+        assert_eq!(NoiseField::Level.read(&params), 0.035);
     }
 }
