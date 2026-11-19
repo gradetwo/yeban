@@ -526,11 +526,15 @@ export component PianoRoll inherits Rectangle {
             y: 0;
             width: 1px;
             height: parent.height;
-            // 分档：**小节线**一档（skin-grid-beat，能看见但不抢戏）、**拍线**退到
-            // 车道底色那一档（bg-lane2，只作为背景纹理存在）。
-            // 实测教训：8px 拍线若和 bar 线同强度，整屏就是一道竖栅栏，比原来的
-            // "48px 一根错位线"更累眼 —— 网格是背景，永远不许比音符亮。
-            background: grid_index.mod(4) == 0 ? Tokens.grid-beat : Tokens.bg-lane2;
+            // 分档（2026-11-19 定稿）：
+            //   小节线（每 4 拍）→ `grid-bar`，是唯一"看得清"的那一档；
+            //   拍线（每 1 拍）→ `bg-lane2` 降到 60% 不透明度，只留节奏底纹；
+            //   ⛔ 不再给 8px 那级补第二套线：整屏 ~170 根竖线叠起来就是"竖栅栏"，
+            //   远看变成方格纸、音符退到背景里（用户两次点名"网格线太扎眼"）。
+            //   Logic Pro 的卷帘同样只把**小节**画实，拍线只做微弱的呼吸感。
+            background: grid_index.mod(4) == 0
+                ? Tokens.grid-bar
+                : Tokens.bg-lane2.with-alpha(0.60);
         }
 
         // ------------------------------------------------------------ 音符图元

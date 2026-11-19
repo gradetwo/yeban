@@ -83,8 +83,12 @@ pub const PACK_MARKER_FILE: &str = ".yeban-pack.json";
 /// 临时区目录名（库根下，`.` 开头 ⇒ 扫描跳过、界面不可见）。
 pub const STAGING_DIR_NAME: &str = ".incoming";
 
-/// 内置音色库在已安装列表里的固定 id（删除入口按它拒绝）。
-pub const BUILTIN_ID: &str = "builtin";
+/// 内置音色库条目 id 的前缀（后接目录名）：`builtin:<目录名>`。
+///
+/// 早先是单条聚合行（id 恒为 `builtin`），用户看得出"有东西"却看不出装了哪几件；
+/// 逐件列出后每个内置子目录各占一行，删除入口统一按**前缀**拒绝（内置在仓库里，
+/// 删了等于拆工程，不是卸载音源）。
+pub const BUILTIN_ID_PREFIX: &str = "builtin:";
 
 /// 用户库条目 id 的前缀（后接目录名）：`user:<目录名>`。
 pub const USER_ID_PREFIX: &str = "user:";
@@ -116,12 +120,12 @@ impl SoundRoots {
     }
 }
 
-/// 已安装列表里的一条（内置一条 + 用户目录各一条）。
+/// 已安装列表里的一条（内置每件一条 + 用户目录各一条）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledLibrary {
-    /// 稳定 id：内置为 [`BUILTIN_ID`]，用户库为 `user:<目录名>`。
+    /// 稳定 id：内置为 `builtin:<目录名>`，用户库为 `user:<目录名>`。
     pub id: String,
-    /// 显示名：包取标记里的名字，其余取目录名，内置为「内置音色库」。
+    /// 显示名：包取标记里的名字，其余取目录名。
     pub name: String,
     /// 位置（目录的绝对路径）。
     pub location: PathBuf,
@@ -274,17 +278,38 @@ fn marker_name(dir: &Path) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// 扫描已安装列表：内置一条（存在才列）+ 库根下每个非隐藏子目录一条，
-/// 用户条目按目录名排序（确定性口径）。
+/// 扫描已安装列表：**内置逐件一条**（`builtin_root` 下每个非隐藏子目录 = 一件）
+/// + 库根下每个非隐藏子目录一条，两组内各自按目录名排序（确定性口径）。
+///
+/// ⚠ 早先内置只有一条聚合行（「内置音色库 17 MiB」）——用户看得见"有东西"，却
+/// 看不出**装了哪几件**、更没法对着某一件去换。逐件列出后"我装没装这个包"变成
+/// 一眼可查；内置仍**不可删**（它在仓库里）。
 #[must_use]
 pub fn scan_installed(roots: &SoundRoots) -> Vec<InstalledLibrary> {
     let mut out = Vec::new();
-    if roots.builtin_root.is_dir() {
+    let mut builtin_dirs: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&roots.builtin_root) {
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if !kind.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            builtin_dirs.push((name, entry.path()));
+        }
+    }
+    builtin_dirs.sort();
+    for (dir_name, path) in builtin_dirs {
         out.push(InstalledLibrary {
-            id: BUILTIN_ID.to_owned(),
-            name: "内置音色库".to_owned(),
-            location: roots.builtin_root.clone(),
-            size_bytes: dir_size(&roots.builtin_root),
+            id: format!("{BUILTIN_ID_PREFIX}{dir_name}"),
+            name: marker_name(&path).unwrap_or_else(|| dir_name.clone()),
+            size_bytes: dir_size(&path),
+            location: path,
             deletable: false,
         });
     }
@@ -681,7 +706,7 @@ fn download_to_file(
 /// 删除一个用户音源库（删后由接线层重扫）。内置 id 与非法 id 都在
 /// 这里挡下，⛔ 不许调用方自己拼路径删。
 pub fn delete_library(roots: &SoundRoots, id: &str) -> Result<(), SoundError> {
-    if id == BUILTIN_ID {
+    if id.starts_with(BUILTIN_ID_PREFIX) {
         return Err(SoundError::BuiltInNotDeletable);
     }
     let Some(dir_name) = id.strip_prefix(USER_ID_PREFIX) else {
@@ -773,6 +798,11 @@ mod tests {
             fs::create_dir_all(&library_root).expect("建库根");
             fs::create_dir_all(&builtin_root).expect("建内置根");
             fs::write(builtin_root.join("builtin.sfz"), b"<group>").expect("写内置夹具");
+            // ⭐ 内置现在**逐件列出**（`builtin/<目录>` = 一件），判据需要一个真子目录。
+            // 根下那份 `builtin.sfz` 不再算"一件"（它不是目录）。
+            let builtin_pack = builtin_root.join("pack-a");
+            fs::create_dir_all(&builtin_pack).expect("建内置子目录");
+            fs::write(builtin_pack.join("a.sfz"), b"<group>").expect("写内置子目录夹具");
             Self {
                 roots: SoundRoots {
                     library_root,
@@ -948,10 +978,17 @@ mod tests {
                 .exists(),
             "落位后临时区不许留解包残骸"
         );
-        // 扫描：内置一条（不可删）+ 本包一条（名字取标记、大小为正）。
+        // 扫描：内置一件（不可删）+ 本包一条（名字取标记、大小为正）。
         let listed = scan_installed(&fixture.roots);
-        assert_eq!(listed.len(), 2, "应有内置 + 本包两条，实得：{listed:?}");
-        assert_eq!(listed[0].id, BUILTIN_ID);
+        assert_eq!(
+            listed.len(),
+            2,
+            "应有 1 件内置 + 本包两条，实得：{listed:?}"
+        );
+        assert!(
+            listed[0].id.starts_with(BUILTIN_ID_PREFIX),
+            "内置必须逐件列出：{listed:?}"
+        );
         assert!(!listed[0].deletable);
         assert_eq!(listed[1].id, "user:test-pack");
         assert_eq!(listed[1].name, "测试包 test-pack");
@@ -961,7 +998,7 @@ mod tests {
         assert!(!dest.exists(), "删除必须真的移除目录");
         let listed = scan_installed(&fixture.roots);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, BUILTIN_ID);
+        assert!(listed[0].id.starts_with(BUILTIN_ID_PREFIX));
         assert_eq!(
             delete_library(&fixture.roots, "user:test-pack"),
             Err(SoundError::NotFound("user:test-pack".to_owned()))
@@ -1054,7 +1091,7 @@ mod tests {
     fn delete_rejects_builtin_and_bad_ids() {
         let fixture = TestRoots::new("delete");
         assert_eq!(
-            delete_library(&fixture.roots, BUILTIN_ID),
+            delete_library(&fixture.roots, "builtin:pack-a"),
             Err(SoundError::BuiltInNotDeletable)
         );
         assert_eq!(
