@@ -1372,6 +1372,9 @@ impl AuditionBranch {
     /// 控制路径：按采样率**预计算等功率淡化表**，并记下本次的**切换帧**。
     ///
     /// ⚠ 只许在控制路径调用（会分配）。同一个采样率下**只建一次**表。
+    /// 控制路径：按采样率**预计算等功率淡化表**，并记下本次的切换帧与倒计时。
+    ///
+    /// ⚠ 只许在控制路径调用（可能分配：`fade` 长度随采样率变）。
     pub fn prepare(&mut self, sample_rate: u32, switch_frame: u64, position_frames: u64) {
         let len = crate::mixer::crossfade_len_frames(sample_rate as f32).max(1);
         if self.fade.len() != len + 1 {
@@ -4052,6 +4055,19 @@ impl EngineRuntime {
     /// **更省**、⛔ 不是更费。
     /// 代价是构造期多一次 `size_of::<Self>()` 的堆分配（本函数本来就在构造期大量分配：
     /// 卷积混响池一处就是 ≈ 4.8 MiB）—— 这条差别写在提交信息与报告里。
+    /// ⭐ 控制线程预热某轨的 SFZ 效果总线（转发给 [`SynthEngine::warm_sfz_buses`]）。
+    ///
+    /// 宿主在发布快照后、播放前调用；`frames` 传上界块长。见 `ADR-0077` D5/D8。
+    pub fn warm_sfz_buses(
+        &mut self,
+        track: EntityId,
+        plan: &crate::sfz_instrument::PreparedSfz,
+        frames: usize,
+    ) {
+        self.synth.warm_sfz_buses(track, plan, frames);
+    }
+
+    /// 构造运行时（控制线程）：把快照读端、退役队列、事件端与各路镜像装起来。
     #[must_use]
     pub fn new(
         slot: &Arc<SnapshotSlot>,

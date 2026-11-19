@@ -765,6 +765,12 @@ impl KeycenterSpelling {
 pub struct Region<'a> {
     /// `sample` opcode 的原始取值（未拼接 `default_path`）。
     pub sample: Cow<'a, str>,
+    /// ⭐ region 的**效果发送量**（`effect1..4`，百分比 0..=100，原样；缺省 0）。
+    ///
+    /// 语义按 `ADR-0077` D2：这是**加性发送** —— 干声不扣，总线收 `干 × send%`。
+    /// 消费方：`yeban-engine` 的摊平表与效果总线（`SfzVoicePool::buses`）。
+    /// `[0.0; 4]` ⇒ 一切既有行为逐位不变。
+    pub effect_sends: [f32; 4],
     /// `<control>default_path`：播放时拼在 `sample` 前面，见 [`Region::sample_path`]。
     pub default_path: Option<Cow<'a, str>>,
     /// 音域下界（MIDI 号）。
@@ -2615,6 +2621,25 @@ fn clamp_static_pan_family(
     clamped
 }
 
+/// `effect1..4` 的取值钳制（百分比 0..=100；越界走既有的
+/// [`Warning::ClampedStaticValue`]，与声像族同一口径）。
+///
+/// ⚠ **不做负数到 0 的静默改写**：负的发送量在规范里没有定义，钳到 0 会让
+/// "写错了"变成"看起来正常"；告警是给作者的唯一线索。
+fn clamp_effect_send(key: &str, value: f32, line: usize, warnings: &mut Vec<Warning>) -> f32 {
+    if (0.0..=100.0).contains(&value) {
+        return value;
+    }
+    let clamped = value.clamp(0.0, 100.0);
+    warnings.push(Warning::ClampedStaticValue {
+        line,
+        opcode: key.to_string(),
+        value: format!("{value}"),
+        clamped: format!("{clamped}"),
+    });
+    clamped
+}
+
 /// 归约一个 region。返回值第二元是归约期的非致命降级记录（调制深度
 /// 钳位 [`Warning::ClampedModulationDepth`] 与声像族静态值钳位
 /// [`Warning::ClampedStaticValue`]）：随结果带出，由调用方
@@ -2622,6 +2647,9 @@ fn clamp_static_pan_family(
 // ⚠ `clippy::too_many_arguments`：四个作用域表 + 消费登记 + 路径 + 移位
 // + 行号是互不相关的输入维度（消费登记是未知 opcode 告警的依据，由
 // 解析器持有、跨 region 累积），与引擎侧同款裁决一致地就地 allow。
+/// `effect1..4` 的 opcode 名（`scopes.get` 要 `&'static str`）。
+const EFFECT_SEND_KEYS: [&str; 4] = ["effect1", "effect2", "effect3", "effect4"];
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
@@ -3032,6 +3060,21 @@ pub(crate) fn build_region<'a>(
         None => 0.0,
     };
     // ⚠ `width` 的缺省是 **100**（立体声原样），⛔ 不是 0 —— sfizz
+    // ---- 效果发送（`effect1..4`，ADR-0077 D2） ----
+    // 规范把 `effect1..4` 放在 region / group / master 作用域（"Amount of the
+    // effect on effect bus 1..4, 0 to 100"）⇒ 走同一套作用域链。⛔ 只取数值，
+    // ⛔ 不在这里判断总线是否存在（那是引擎摊平期与告警的活）。
+    let mut effect_sends = [0.0f32; 4];
+    for (key, slot) in EFFECT_SEND_KEYS
+        .iter()
+        .copied()
+        .zip(effect_sends.iter_mut())
+    {
+        if let Some(value) = scopes.get(key) {
+            *slot = clamp_effect_send(key, value.as_f32()?, line, &mut warnings);
+        }
+    }
+
     // `Defaults.cpp` 与规范页表格行同数；缺省若写 0 会把所有立体声
     // 样本压成单声道。
     let width = match scopes.get("width") {
@@ -3119,6 +3162,7 @@ pub(crate) fn build_region<'a>(
     Ok((
         Some(Region {
             sample,
+            effect_sends,
             default_path: default_path.filter(|path| !path.is_empty()),
             lokey,
             hikey,
@@ -4864,6 +4908,7 @@ mod tests {
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {
             pitch_eg: None,
+            effect_sends: [0.0; 4],
             sample: Cow::Borrowed("x.wav"),
             default_path: None,
             lokey: i32::from(note),

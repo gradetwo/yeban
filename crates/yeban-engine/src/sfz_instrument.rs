@@ -1952,11 +1952,13 @@ use std::sync::Arc;
 // ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
 // 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
 use yeban_dsp::polysynth::{NO_PITCH_SHAPE, steal_fade_frames_for};
+use yeban_dsp::reverb::{Reverb, ReverbParams};
 // ⭐ 逐声部静态滤波器（SFZ 滤波静态族）：系数与递推在 `yeban-dsp`，
 // 本模块只做 (类型映射, 有效截止折算后的配置, 池侧持有)，见
 // [`PreparedRegion::voice_filter`] 与模块头「滤波静态族」一节。
 use yeban_dsp::voice_filter::{VoiceFilter, VoiceFilterKind};
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
+use yeban_sfz::effect::EffectBus;
 use yeban_sfz::eg::{EgDef, EgParam};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
@@ -3116,6 +3118,7 @@ impl SfzInstrument {
                     // ⇒ `+ 0.0` 逐位不变）。
                     base_hz.unwrap_or(0.0),
                     cutoff_delta_hz,
+                    None,
                     out,
                 );
                 written = written.max(region_written);
@@ -4516,6 +4519,11 @@ const INERT_CC_GATE: CcGate = CcGate {
 /// 而 CC 轴（任务单 `#108`）由 [`Self::cc_crossfades`] 承载、**逐块**按探针求值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRegion {
+    /// ⭐ **效果发送量**（`effect1..4`，百分比 `0..=100`；`ADR-0077` D2）。
+    ///
+    /// **加性**语义：干声仍进 `out`，总线另收 `干 × send%` ⇒ 全 0 时逐样本
+    /// 路径不加任何运算（`bus` 为 `None`），与接线前逐位相同。
+    effect_sends: [f32; 4],
     /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`（门控不过时全 0）。
     key_mask: [u64; 2],
     /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`（门控不过时全 0）。
@@ -6036,6 +6044,27 @@ impl PreparedRegion {
 ///   `out` 的原地写入（⛔ 无 `Vec::push`／`Box`／`String`／锁／I/O）。
 ///   违反的后果：实时回调内产生堆分配/释放或锁等待 ⇒ 可能造成音频线程不可预测的停顿
 ///   （红线 7 的一票否决项），由 `tests/rt_zero_alloc.rs` 的**计数型全局分配器**窗口判据检测。
+///
+/// 效果总线数（`fx1..fx4`；`ADR-0077` D1）。
+pub const BUS_COUNT: usize = 4;
+
+/// 一条总线的**静态计划**（器件标识与路由，⛔ 不含状态）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusEffect {
+    /// 声明里的 `dsp_order`（缺省 `0`，越小越先跑）。
+    order: u8,
+    /// 器件种类（本片恒 `Reverb`）。
+    kind: BusKind,
+}
+
+/// 总线器件种类（本片唯一实现 [`BusKind::Reverb`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusKind {
+    /// `yeban-dsp` 的 Freeverb 类混响。
+    Reverb,
+}
+
+/// **摊平后的 SFZ 表**（实时回调唯一能读的形态；字段文档见各字段注释与模块头）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSfz {
     regions: Vec<PreparedRegion>,
@@ -6057,6 +6086,12 @@ pub struct PreparedSfz {
     /// 同款**不进** `byte_usage` 的三项读数（区域表读数 ＝ `size_of × N`）。
     lfo_defs: Vec<LfoDef>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
+    /// ⭐ **本乐器声明的效果总线**（`<effect bus=fxN type=...>`；`ADR-0077` D1/D3）。
+    ///
+    /// 每条总线至多一台器件，选 **`dsp_order` 最小**的声明（同序取先出现者）。
+    /// 只收 `reverb`（大小写不敏感）；其余 `type` 在装载期已告警 ⇒ 这里跳过。
+    /// `None` ⇒ 该总线无 DSP，发送落空（⛔ 不静默折到 `main`）。
+    buses: [Option<BusEffect>; BUS_COUNT],
     broadcast: bool,
     /// ⭐ **不产生采样输出**的区域数（**计数**，⛔ 不静默）。
     ///
@@ -6396,6 +6431,43 @@ impl SfzBudgetOverrun {
     }
 }
 
+/// 从乐器声明里挑出**每条总线跑什么**（`ADR-0077` D1/D3 的静态半边）。
+///
+/// 1. 只看 `EffectBus::Fx(n)`、`n ∈ 1..=4`：`main` / `aux*` / `midi` 不建 DSP；
+/// 2. `type` 含 `"reverb"`（大小写不敏感）⇒ 支持，其余跳过（装载期已告警）；
+/// 3. 同一总线多条 ⇒ `dsp_order` 最小者胜，同序取先出现者；
+/// 4. ⛔ 不读 `paramN`（未建模 ⇒ 固定缺省参数）。
+fn bus_effects(instrument: &SfzInstrument) -> Result<[Option<BusEffect>; BUS_COUNT], SfzError> {
+    instrument.with_instrument(|parsed| {
+        let mut buses: [Option<BusEffect>; BUS_COUNT] = [None; BUS_COUNT];
+        for effect in parsed.effects() {
+            let EffectBus::Fx(number) = effect.bus() else {
+                continue;
+            };
+            let index = usize::from(number).saturating_sub(1);
+            if index >= BUS_COUNT || !effect_is_reverb(effect.type_name()) {
+                continue;
+            }
+            let order = effect.dsp_order().unwrap_or(0);
+            match buses[index] {
+                Some(existing) if existing.order <= order => {}
+                _ => {
+                    buses[index] = Some(BusEffect {
+                        order,
+                        kind: BusKind::Reverb,
+                    })
+                }
+            }
+        }
+        buses
+    })
+}
+
+/// `type` 是否属于本片支持集（`ADR-0077` D3：`reverb` 子串、大小写不敏感）。
+fn effect_is_reverb(type_name: Option<&str>) -> bool {
+    type_name.is_some_and(|name| name.to_ascii_lowercase().contains("reverb"))
+}
+
 impl PreparedSfz {
     /// **构造期**摊平（**单样本广播**）：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
     ///
@@ -6450,6 +6522,7 @@ impl PreparedSfz {
             missing_samples: Vec::new(),
             engine_hz,
             cc_seeds,
+            buses: bus_effects(instrument)?,
             has_round_robin,
             has_rand,
             has_release,
@@ -6549,6 +6622,7 @@ impl PreparedSfz {
             missing_samples: missing,
             engine_hz,
             cc_seeds,
+            buses: bus_effects(instrument)?,
             has_round_robin,
             has_rand,
             has_release,
@@ -6817,6 +6891,24 @@ impl PreparedSfz {
 
     /// 摊平后的区域表（**只读**；判据与控制侧读数用）。
     #[must_use]
+    /// ⭐ 本表有没有**可跑的总线器件**（`ADR-0077` D1/D3）。
+    pub(crate) fn has_effect_buses(&self) -> bool {
+        self.buses.iter().any(Option::is_some)
+    }
+
+    /// ⭐ 每条总线的 `dsp_order`（`None` ⇒ 该总线无器件）。
+    pub(crate) fn bus_orders(&self) -> [Option<u8>; BUS_COUNT] {
+        std::array::from_fn(|index| self.buses[index].map(|effect| effect.order))
+    }
+
+    /// ⭐ 某区域的发送量（区域不存在 ⇒ 全 0，逐位不变）。
+    pub(crate) fn region_effect_sends(&self, region_index: u16) -> [f32; 4] {
+        self.regions
+            .get(usize::from(region_index))
+            .map_or([0.0; 4], |region| region.effect_sends)
+    }
+
+    /// 摊平后的区域表。
     pub fn regions(&self) -> &[PreparedRegion] {
         &self.regions
     }
@@ -7080,6 +7172,7 @@ impl PreparedSfz {
                 &mut lfos,
                 filter_base_hz,
                 region.cutoff_cc_delta_hz(note, velocity, cc),
+                None,
                 out,
             );
             written = written.max(region_written);
@@ -7459,6 +7552,7 @@ fn flatten_regions(
                 fil_keytrack: region.fil_keytrack,
                 fil_keycenter: region.fil_keycenter,
                 fil_veltrack: region.fil_veltrack,
+                effect_sends: region.effect_sends,
             });
         }
         (
@@ -8251,10 +8345,22 @@ fn configured_voice_filter(
 ///   ＋ `pcm[index] * 0.0` ＝ `pcm[index]`，⭐ 与"多读一格"无关；
 /// * ⭐ **代价**：钳位腿的**逐样本**增量只有一次 `.min()` 与一次"是不是钳位腿"的
 ///   `Option` 判别（`pcm.len()` 那一侧的判断在**函数开头**算一次）
-///   ⇒ 纯算术、⛔ 零分配、⛔ 零锁、⛔ 零 I/O [MUST-GATE-001]。
-// ⚠ 10 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
+///
+/// ⚠ 10 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
+/// ⚠ 10 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
 // （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 与 `env` 是仅有的**静态**入参
-// （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
+/// （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
+///
+/// 逐样本混音的**效果总线目标**（`ADR-0077` D5）。
+///
+/// 一条声部可同时向四条总线送（region 的 `effect1..4` 各自独立）⇒ 目标是
+/// **四条对齐的切片** ＋ 四个已折成 `0..=1` 的发送量；`targets` 与 `out`
+/// 的窗口逐帧对齐（调用方按同一 `offset..remaining` 切片）。
+pub(crate) struct BusSend<'b> {
+    pub targets: [&'b mut [f32]; BUS_COUNT],
+    pub sends: [f32; BUS_COUNT],
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into<'a>(
     pcm: &[f32],
@@ -8293,6 +8399,9 @@ pub(crate) fn mix_span_into<'a>(
     // `cutoff_delta_hz` ＝ `Σ delta × curve(cc)`（`0.0` ⇒ 与接线前**逐位相同**）。
     filter_base_hz: f32,
     cutoff_delta_hz: f32,
+    // ⭐ 效果总线目标（`ADR-0077` D5）：`None` ⇒ 逐样本路径一项运算都不加
+    // （与接线前逐位相同）；`Some` ⇒ 每帧把本声部干声按各 send 再加进总线。
+    mut bus: Option<&mut BusSend<'_>>,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
@@ -8515,7 +8624,20 @@ pub(crate) fn mix_span_into<'a>(
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
         // 原样返回 `sample` ⇒ 整个表达式与接线前逐位相同。
         // ⭐ LFO 增益同理：缺席时 `lfo_gain == 1.0` ⇒ 再乘一次逐位不变。
-        *slot += filter.process(sample) * gain * fade.gain * env_gain * lfo_gain;
+        let voice_out = filter.process(sample) * gain * fade.gain * env_gain * lfo_gain;
+        *slot += voice_out;
+        // ⭐ 加性发送（`ADR-0077` D2）：干声不扣，总线另收 `干 × send%`。
+        // `bus == None` ⇒ 这段一次都不进 ⇒ 逐位不变。
+        if let Some(bus) = bus.as_deref_mut() {
+            for (target, send) in bus.targets.iter_mut().zip(bus.sends.iter()) {
+                if *send == 0.0 {
+                    continue;
+                }
+                if let Some(bus_slot) = target.get_mut(written) {
+                    *bus_slot += voice_out * *send;
+                }
+            }
+        }
         // ⭐ 音高包络或音高 LFO 在场时步进乘合成乘子（都缺席时走原表达式，
         // 逐位不变；`pitch_mult` 的合成见上面的推进段）。
         if egs.pitch.is_some() || lfo_has_pitch {
@@ -8847,7 +8969,7 @@ impl SfzVoice {
 /// ⭐ 本条同时裁决了模块头登记的那处"立即接管 vs 额外 slack 槽"：**slack 就在槽内**
 /// （`pending` 与 victim 共用同一个槽，与 `PolySynth` 的 `PendingNote` 同款）
 /// ⇒ 定容池不需要第 17 个槽，⛔ 也不是"立即接管"。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct SfzVoicePool {
     /// 定长声部表（下标稳定 ⇒ 触发分配是确定性的：取最低空闲槽 [ARCH-DET-001]）。
     voices: [SfzVoice; SFZ_VOICES_PER_TRACK],
@@ -8868,6 +8990,13 @@ pub struct SfzVoicePool {
     dropped: u64,
     /// 池满时**窃取**（换掉别人）的声部数（**累计、单调递增**）。
     stolen: u64,
+    /// ⭐ **效果总线运行态**（`ADR-0077` D5）：无 `<effect bus=fxN>` ⇒ `None`。
+    buses: Option<Box<BusBank>>,
+    /// 本池至今重建过几次总线（判据仪器：稳态渲染必须**不增长**）。
+    ///
+    /// 为什么需要它：`warm_buses` 的"参数没变 ⇒ 严格空操作"是无分配的**前提**，
+    /// 而"没分配"在普通 debug 测试里没有分配器钩子就不可见 ⇒ 用"重建次数"当可判代理。
+    bus_builds: u64,
     /// ⭐ **每音高的触发计数**（round-robin 的推进量；`seq_*` 用）。
     ///
     /// # 为什么按音高、为什么在池里而不是声部里
@@ -9058,6 +9187,60 @@ struct SlotRenderSnapshot {
 }
 
 impl SfzVoicePool {
+    /// ⭐ 控制线程**预热**总线（构造 `Vec` 与 `Reverb`；⛔ 不在音频回调里发生）。
+    ///
+    /// 传 `frames` 为上界块长（引擎是 [`crate::block::DEFAULT_BLOCK_FRAMES`]）。
+    pub fn warm_buses(&mut self, plan: &PreparedSfz, frames: usize) {
+        if !plan.has_effect_buses() {
+            return;
+        }
+        // 已经够长且器件表没变 ⇒ ⛔ 不重建（否则逐块分配，违 [ARCH-RT-001]）。
+        if self
+            .buses
+            .as_deref()
+            .is_some_and(|bank| bank.frames >= frames && bank.orders == plan.bus_orders())
+        {
+            return;
+        }
+        self.buses = Some(Box::new(BusBank::new(
+            plan.bus_orders(),
+            frames,
+            self.sample_rate,
+        )));
+        self.bus_builds = self.bus_builds.saturating_add(1);
+    }
+
+    /// 本池至今重建过几次总线（`0` ＝ 从未；稳态渲染时必须**不增长**）。
+    #[must_use]
+    pub const fn bus_builds(&self) -> u64 {
+        self.bus_builds
+    }
+
+    /// ⭐ 把总线运行态**取出来**（`take` ＋ 归还）：逐槽渲染期间 `self.buses` 是
+    /// `None`，`&mut self` 与 `&mut bank` 不会互相借两次。
+    fn take_bank(&mut self, plan: &PreparedSfz, frames: usize) -> Option<Box<BusBank>> {
+        if !plan.has_effect_buses() {
+            return self.buses.take();
+        }
+        let rebuilt = match self.buses.as_deref() {
+            Some(bank) if bank.frames >= frames => false,
+            Some(_) | None => true,
+        };
+        if rebuilt {
+            self.buses = Some(Box::new(BusBank::new(
+                plan.bus_orders(),
+                frames,
+                self.sample_rate,
+            )));
+            self.bus_builds = self.bus_builds.saturating_add(1);
+        }
+        let mut bank = self.buses.take();
+        if let Some(bank) = bank.as_deref_mut() {
+            bank.clear(frames);
+        }
+        bank
+    }
+
     /// 取本槽的双跑快照（见 [`SlotRenderSnapshot`]）。
     fn snapshot_slot(&self, index: usize) -> SlotRenderSnapshot {
         SlotRenderSnapshot {
@@ -9251,6 +9434,8 @@ impl SfzVoicePool {
             steal_fade_frames: steal_fade_frames_for(sample_rate),
             dropped: 0,
             stolen: 0,
+            buses: None,
+            bus_builds: 0,
             seq_occurrence: [0; 128],
             release_occurrence: [0; 128],
             key_on_frame: [0; 128],
@@ -10163,8 +10348,17 @@ impl SfzVoicePool {
         cc: Option<&dyn Fn(u8) -> u8>,
         pitch: Option<&dyn Fn(u16, u64) -> f32>,
     ) {
+        let mut bank = self.take_bank(plan, out.len());
         for index in 0..SFZ_VOICES_PER_TRACK {
-            self.render_slot(index, plan, position, out, cc, pitch, 0);
+            let sends = plan.region_effect_sends(self.voices[index].region_index);
+            let bus = bank
+                .as_deref_mut()
+                .and_then(|bank| bank.send_for(sends, out.len()));
+            self.render_slot(index, plan, position, out, cc, pitch, 0, bus);
+        }
+        if let Some(mut bank) = bank {
+            bank.apply(out);
+            self.buses = Some(bank);
         }
     }
 
@@ -10251,6 +10445,7 @@ impl SfzVoicePool {
                         cc,
                         pitch,
                         0,
+                        None,
                     );
                     let after_left = self.snapshot_slot(index);
                     self.restore_slot(index, &before);
@@ -10262,6 +10457,7 @@ impl SfzVoicePool {
                         cc,
                         pitch,
                         1,
+                        None,
                     );
                     self.restore_slot(index, &after_left);
                     for slot in 0..len {
@@ -10280,7 +10476,16 @@ impl SfzVoicePool {
                     }
                 } else {
                     let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
-                    self.render_slot(index, plan, block_position, &mut chunk[..len], cc, pitch, 0);
+                    self.render_slot(
+                        index,
+                        plan,
+                        block_position,
+                        &mut chunk[..len],
+                        cc,
+                        pitch,
+                        0,
+                        None,
+                    );
                     for (slot, value) in chunk[..len].iter().enumerate() {
                         left[offset + slot] += value * gain_l;
                         right[offset + slot] += value * gain_r;
@@ -10326,6 +10531,9 @@ impl SfzVoicePool {
         // 钳位（单声道样本恒取 0 ⇒ 窃取淡出窗口里声道数不同的新旧声部
         // 混槽也不会越界取数）。
         channel: usize,
+        // ⭐ 效果总线目标（`ADR-0077` D5）：单声道路径由池按槽造；
+        // 立体声双跑与淡出段传 `None`（见 `render_into_stereo_with_probes` 的登记）。
+        mut bus: Option<BusSend<'_>>,
     ) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
@@ -10425,6 +10633,7 @@ impl SfzVoicePool {
                     voice.velocity(),
                     cc,
                 ),
+                None,
                 &mut out[..limit],
             );
             // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
@@ -10609,6 +10818,7 @@ impl SfzVoicePool {
                 voice.velocity(),
                 cc,
             ),
+            bus.as_mut(),
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
@@ -11959,6 +12169,112 @@ mod stage29_off_curve_families {
                 }
                 assert!(previous <= 1.0, "走完必须收底");
                 assert_eq!(gains[96], 0.0, "走完必须**恰好**归零");
+            }
+        }
+    }
+}
+
+/// 每条总线在本块的**运行态**（`ADR-0077` D5/D8）。
+///
+/// ⚠ **分配点（D8 修订）**：`ADR-0077` D8 原写"构造期分配"，但池构造时拿不到
+/// [`PreparedSfz`]（表每次渲染才传进来）。改为**首次遇到带总线的渲染时分配一次**
+/// ＋ 提供 [`SfzVoicePool::warm_buses`] 供控制线程预热；没有 `<effect bus=fxN>`
+/// 的乐器一个字节都不分配（判据 SFX-6）。
+pub(crate) struct BusBank {
+    /// 缓冲块长（本块更短 ⇒ 只用前 `len` 帧）。
+    frames: usize,
+    /// 四条总线的干声累积。
+    dry: [Vec<f32>; BUS_COUNT],
+    /// 混响的第二声道输入（同一份干声，取 `(L+R)/2` 回单声道）。
+    wet: [Vec<f32>; BUS_COUNT],
+    /// 每台器件。
+    verbs: [Option<Box<Reverb>>; BUS_COUNT],
+    /// 每条的 `dsp_order`（升序执行；`None` ⇒ 无器件）。
+    orders: [Option<u8>; BUS_COUNT],
+}
+
+impl core::fmt::Debug for BusBank {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BusBank")
+            .field("frames", &self.frames)
+            .field(
+                "active",
+                &self.orders.iter().filter(|order| order.is_some()).count(),
+            )
+            .finish()
+    }
+}
+
+impl BusBank {
+    fn new(orders: [Option<u8>; BUS_COUNT], frames: usize, sample_hz: f32) -> Self {
+        let frames = frames.max(1);
+        let mut verbs: [Option<Box<Reverb>>; BUS_COUNT] = Default::default();
+        for (slot, order) in verbs.iter_mut().zip(orders.iter()) {
+            if order.is_some() {
+                let mut reverb = Box::new(Reverb::new());
+                reverb.set_sample_rate(sample_hz);
+                // D4：固定缺省，唯一差别 `mix = 1.0`（纯湿）⇒ 发送量是唯一可调量。
+                reverb.set_params(ReverbParams {
+                    mix: 1.0,
+                    ..ReverbParams::default()
+                });
+                *slot = Some(reverb);
+            }
+        }
+        Self {
+            frames,
+            dry: std::array::from_fn(|_| vec![0.0; frames]),
+            wet: std::array::from_fn(|_| vec![0.0; frames]),
+            verbs,
+            orders,
+        }
+    }
+
+    /// 每块清零（不清 ⇒ 上一块尾巴会被再混一遍，判据 SFX-6）。
+    fn clear(&mut self, len: usize) {
+        let len = len.min(self.frames);
+        for bus in &mut self.dry {
+            bus[..len].fill(0.0);
+        }
+        for bus in &mut self.wet {
+            bus[..len].fill(0.0);
+        }
+    }
+
+    /// 给一个声部造发送目标；全 0 ⇒ `None`（逐位不变）。
+    fn send_for<'b>(&'b mut self, sends: [f32; 4], len: usize) -> Option<BusSend<'b>> {
+        let len = len.min(self.frames);
+        let scaled: [f32; BUS_COUNT] = std::array::from_fn(|index| sends[index] / 100.0);
+        if scaled.iter().all(|send| *send == 0.0) {
+            return None;
+        }
+        let [d0, d1, d2, d3] = &mut self.dry;
+        Some(BusSend {
+            targets: [
+                &mut d0[..len],
+                &mut d1[..len],
+                &mut d2[..len],
+                &mut d3[..len],
+            ],
+            sends: scaled,
+        })
+    }
+
+    /// 块末：按 `dsp_order` 升序跑器件，湿声加回 `out`（离线/实时共用这一份）。
+    fn apply(&mut self, out: &mut [f32]) {
+        let len = out.len().min(self.frames);
+        let mut ordered: [usize; BUS_COUNT] = std::array::from_fn(|index| index);
+        ordered.sort_by_key(|index| self.orders[*index]);
+        for index in ordered {
+            let Some(reverb) = self.verbs[index].as_mut() else {
+                continue;
+            };
+            let dry = &mut self.dry[index];
+            let wet = &mut self.wet[index];
+            wet[..len].copy_from_slice(&dry[..len]);
+            reverb.process(&mut dry[..len], &mut wet[..len]);
+            for (frame, out_slot) in out[..len].iter_mut().enumerate() {
+                *out_slot += (dry[frame] + wet[frame]) * 0.5;
             }
         }
     }

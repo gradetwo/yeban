@@ -1559,8 +1559,17 @@ impl<'a> Parser<'a> {
             });
         }
         self.effects.push(builder.build());
-        // ⭐ 登记成功，但本仓没有效果器 DSP ⇒ **响亮告警**（⛔ 不静默降级）。
         let effect = self.effects.last().expect("刚才 push 过");
+        // ⭐ 告警口径（`ADR-0077` D3，2026-11-19 修订）：
+        // `fx1..fx4` ＋ `type` 含 `reverb` ⇒ 引擎已接线（Freeverb 总线）⇒ 不再告警；
+        // 其余（`main`/`aux*`/`midi`、非 reverb 的 `type`）⇒ 仍然**响亮告警**（⛔ 不静默）。
+        let supported = matches!(effect.bus(), EffectBus::Fx(1..=4))
+            && effect
+                .type_name()
+                .is_some_and(|name| name.to_ascii_lowercase().contains("reverb"));
+        if supported {
+            return Ok(());
+        }
         let bus = match effect.bus() {
             EffectBus::Main => "main".to_string(),
             EffectBus::Aux(number) => format!("aux{number}"),

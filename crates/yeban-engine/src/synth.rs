@@ -1220,7 +1220,7 @@ impl NoteSchedule {
 /// 上移前的那一串字符（见 `crates/yeban-dsp/src/polysynth.rs` §0–§5）。
 ///
 /// 一个轨道槽：身份 + 游标 + 本轨音色参数 + **DSP 器件实例**（每轨一台合成器）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct TrackSlot {
     /// 是否已被某条轨道占用（占用后**不释放**：轨道身份与槽位一一绑定，
     /// 这样同一条轨道的声部状态能跨快照连续）。
@@ -1419,7 +1419,9 @@ impl SynthEngine {
             sample_rate: sample_rate_f32,
             steal_fade_frames: steal_fade_frames_for(sample_rate_f32),
             position: 0,
-            slots: vec![TrackSlot::empty(sample_rate); capacity].into_boxed_slice(),
+            slots: (0..capacity)
+                .map(|_| TrackSlot::empty(sample_rate))
+                .collect(),
             track_drops: 0,
             notes_triggered: 0,
             // 鼓机池：**构造期一次性分配**（`vec!` 在这里，不在 `begin_snapshot` 里），
@@ -1435,8 +1437,9 @@ impl SynthEngine {
             wanted_drums: vec![None; capacity].into_boxed_slice(),
             requested_track_slots: track_slots,
             // ⭐ 组槽：固定容量、构造期一次性分配（纪律同轨槽）。
-            group_slots: vec![TrackSlot::empty(sample_rate); MAX_LANE_GROUP_SLOTS]
-                .into_boxed_slice(),
+            group_slots: (0..MAX_LANE_GROUP_SLOTS)
+                .map(|_| TrackSlot::empty(sample_rate))
+                .collect(),
             group_drums: vec![DrumMachine::new(sample_rate); MAX_LANE_GROUP_SLOTS]
                 .into_boxed_slice(),
             group_drum_slots: vec![None; MAX_LANE_GROUP_SLOTS].into_boxed_slice(),
@@ -1563,6 +1566,25 @@ impl SynthEngine {
     ///
     /// ⭐ **一条舵，两件器件**：同一个数同时下推给每个槽的复音合成器与
     /// [`SfzVoicePool`]（SFZ 的池满窃取淡出与复音**同一条口径** ⇒ ⛔ 不是第二份常数）。
+    /// ⭐ 控制线程**预热**某轨的 SFZ 效果总线（`ADR-0077` D5/D8）。
+    ///
+    /// 传 `frames` 为上界块长（引擎是 [`crate::block::DEFAULT_BLOCK_FRAMES`]）。
+    /// 宿主在**发布快照之后、开始播放之前**调用：`BusBank`（≤4 台混响 ＋ 8 条
+    /// 缓冲）在这里分配，音频回调里就只剩原地混音 ⇒ 不违 [MUST-GATE-001]。
+    ///
+    /// ⚠ 没有该轨的槽（快照还没建槽）⇒ **什么都不做**（不是错：下一块会用
+    /// 兜底路径建，代价是一次分配）。
+    pub fn warm_sfz_buses(&mut self, track: EntityId, plan: &PreparedSfz, frames: usize) {
+        if let Some(index) = self.slot_index(track) {
+            self.slots[index].sfz.warm_buses(plan, frames);
+        }
+    }
+
+    /// 覆盖窃取淡出帧数（**判据/注入用**；`0` ＝ 硬窃取）。
+    ///
+    /// 产物路径不调用它：帧数由采样率与
+    /// [`STEAL_RELEASE_SECONDS`](yeban_dsp::envelope::STEAL_RELEASE_SECONDS) 决定。
+    /// ⭐ 同一条数值同时下推给每个槽的复音合成器与 `SfzVoicePool`。
     pub fn set_steal_fade_frames(&mut self, frames: u32) {
         self.steal_fade_frames = frames;
         for slot in &mut self.slots {
@@ -3167,6 +3189,14 @@ impl SynthEngine {
         *armed_count = 1u8
             .saturating_add(u8::from(drum_map.is_some()))
             .saturating_add(u8::from(sfz.is_some()));
+
+        // ⭐ `ADR-0077` D5：SFZ 效果总线的**热**（控制侧 API 之外的兜底）。
+        // 有 `<effect>` 的乐器第一次进渲染时把 `BusBank`（≤4 台混响 ＋ 8 条缓冲）
+        // 建起来；这是**一次性**分配，之后 `frames`/器件表不变就严格空操作。
+        // ⛔ 只在轨槽上做：组槽与 SFZ 同一套池，但组没有 SFZ 音源。
+        if let (SlotBank::Track, Some(plan)) = (bank, sfz) {
+            slot.sfz.warm_buses(plan, out.len());
+        }
 
         // --- 1) 触发本量子窗口内起音、且尚未结束的音符 ---
         // 游标只增不减 ⇒ 已触发过的音符永远不会被再次触发。

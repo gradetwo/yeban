@@ -363,3 +363,28 @@ between SFZ players"，因此本仓**不实现**具体效果器 DSP 是合规裁
 加字段的人必须一行一行看过去、在报文里写清"这 8 B 是谁"。
 ⇒ 以后凡是给 `PreparedRegion` / `PreparedSample` / `SfzVoice` 加字段，
 **先假设 13 条会红**，并把"更新基线"算进工作量，别拿"判据现读"当挡箭牌。
+
+#### §5.5 追加（2026-11-19，`ADR-0077` D2 的装载半边已落地）
+
+`<effect>` 之前只有**声明**层（`EffectBus` / `type` / `dsp_order`），region 侧的
+**发送量** `effect1..4` 完全没有模型 ⇒ 写了 50% 与没写，在 `Region` 上无法区分。
+
+本片把四个数搬进两层：
+
+| 层 | 字段 | 口径 |
+| :--- | :--- | :--- |
+| `yeban-sfz` | `Region::effect_sends` / `PlaybackSpec::effect_sends` | 百分比 `0..=100`、缺省 `[0.0; 4]`；作用域链同 `pan`（region → group → master → global）；越界走 `ClampedStaticValue`（钳位 ＋ 点名告警，⛔ 不拒载） |
+| 判据 | `crates/yeban-sfz/tests/effect_sends.rs`（5 条） | 原样搬运 / 缺省全 0 / group 作用域 / 越界钳位与告警逐字 / `PlaybackSpec` 同值 |
+
+⛔ **仍没做的**：引擎侧读取与 DSP —— `PreparedRegion` 不带这四个数、`mix_span_into`
+没有总线目标、`SfzVoicePool` 没有总线状态。按 `ADR-0077` D5/D6，这些与
+`reverb` 器件、离线/实时共用 `apply_buses` 是**同一批**，需要一次改完
+（否则就是"读了不生效"）。⇒ 本批到此为止，下一批接着做 D5/D6。
+
+#### §5.5 补记（同日，D5/D6 实施阻塞）
+
+把总线运行态（4 条 `Vec` ＋ 4 台 `Reverb`）放进 `SfzVoicePool` 的首轮尝试在编译期
+撞到 `Copy` 派生链（池 → `TrackSlot`）、分配点（池构造时还没有表）与
+`EngineRuntime ≤ 196608 B` 三条硬约束，已撤回、未留半成品。两条可行路线与代价
+写在 `docs/adr/ADR-0077-sfz-effect-bus.md` §7.3（甲：去 `Copy`、池持有；乙：运行时
+持有、渲染签名加参数）。

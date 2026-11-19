@@ -375,6 +375,11 @@ pub struct PlaybackSpec {
     /// 判定函数是 [`crate::voice_pool::VoicePool::apply_note_polyphony`]；语义与
     /// 规范出处见 [`NotePolyphony`]。
     pub note_polyphony: NotePolyphony,
+    /// ⭐ region 的**效果发送量**（`effect1..4`，百分比 `0..=100`，原样）。
+    ///
+    /// 语义见 `ADR-0077` D2：**加性**发送（干声不扣，总线收 `干 × send%`）；
+    /// `[0.0; 4]` ⇒ 没有 `effect1..4` 的 region，一切既有行为逐位不变。
+    pub effect_sends: [f32; 4],
     /// 该 region 的 `<region>` 段头所在行号（1-based，诊断用）。
     pub source_line: usize,
 }
@@ -836,6 +841,7 @@ impl<'a> Region<'a> {
             cutoff: self.cutoff,
             resonance: self.resonance,
             filter_cutoff: self.filter_cutoff(note, velocity),
+            effect_sends: self.effect_sends,
             fileg: self.fileg,
             pitcheg: self.pitcheg,
             pan: self.pan,
@@ -1587,6 +1593,7 @@ mod tests {
                 for transpose in [-127i32, -1, 0, 1, 127] {
                     for tune in [-100i32, 0, 100] {
                         let region = Region {
+                            effect_sends: [0.0; 4],
                             pitch_eg: None,
                             sample: std::borrow::Cow::Borrowed("a.wav"),
                             default_path: None,

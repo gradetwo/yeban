@@ -19,7 +19,7 @@
 | :--- | :--- | :--- | :--- |
 | **本表** `docs/ledger/phase-status.md` | **阶段项**做没做完（`ROAD-*`，47 项） | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md` §3 | `scripts/gates/check_phase_status.py` |
 | `docs/ledger/gate-status.md` | **发布门禁**过没过（`MUST-GATE-001..015` / `BASELINE-001..006`，21 条） | 同一份路线图 §5 | `scripts/gates/check_gate_status.py` |
-| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-72`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
+| `docs/ledger/human-decisions.md` | **待人类裁决**（`HD-01..HD-73`） | `docs/adr/ADR-0001-*` + 负责人追认 | `scripts/gates/check_decisions.py` |
 
 引用规则（这是三张表不互相矛盾的关键）：
 
@@ -10988,7 +10988,7 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 | :--- | :--- |
 | ⭐ 新 ADR | ⭐ **`docs/adr/ADR-0009-road-m1-005-historical-migration-scope.md`**（状态 **`Proposed`**，⭐ 三问 D1／D2／D3 各给选项与建议） |
 | ⭐ 登记待裁 | ⭐ **`HD-64`**（⭐ 未决）⇒ ⭐ `human-decisions.md` 表头 ⇒ **64 项中 60 项已裁决、未决 4 项**（⭐ `HD-48`／`HD-52`／`HD-58`／`HD-64`） |
-| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-72`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ 2026-10-31 随 `HD-72`／`ADR-0052` 移动；上一版的 `HD-71` 是 `ADR-0051` 那次） |
+| ⭐ 上界级联 | ⭐ **4 处活文档** ⇒ `HD-01..HD-73`（⭐ `docs/README.md`／`feature-alignment.md`／`phase-status.md` 两处）⇒ ⭐ `check_decisions.py` ＝ **0**（⭐ 2026-10-31 随 `HD-72`／`ADR-0052` 移动；上一版的 `HD-71` 是 `ADR-0051` 那次） |
 | ⭐ 交接 §6 | ⭐ ⭐ **五件 ⇒ 六件**（⭐ 新增 `M1` 行；⭐ `check_handover_consistency.py` ＝ **0**） |
 | ⭐ 阶段表那一行 | ⭐ `ROAD-M1-005` **仍记 `PENDING`**，⭐ 但证据列写明"⭐ **等 `HD-64` 裁决**、⭐ ⛔ 不代表本轮要做"（⭐ 状态词受 `check_phase_status.py` 的三值词汇约束 ⇒ ⛔ 不能写"有意不做"） |
 

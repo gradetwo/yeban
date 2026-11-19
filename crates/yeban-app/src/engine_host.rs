@@ -1318,6 +1318,14 @@ impl EngineHost {
 
         // 第 2 步：四样东西全是新的（与设备腿走**同一份**构造 [`fresh_runtime`]）。
         // 事件**生产端**保留下来（走带命令从这里进引擎）。
+        // ⭐ `ADR-0077` D8：把"有 `<effect>` 的轨"记下来，运行时一建好就在**控制线程**
+        // 预热总线（`BusBank` ＝ ≤4 台混响 ＋ 8 条缓冲）。没有这一句，第一次渲染块会
+        // 在兜底路径上分配一次。计划按引用取出、随后 `snapshot` 移进槽里。
+        let sfz_warm: Vec<(yeban_model::EntityId, SfzPlan)> = snapshot
+            .sfz()
+            .iter()
+            .map(|(track, plan)| (*track, plan.clone()))
+            .collect();
         let slot = SnapshotSlot::new(snapshot);
         let FreshRuntime {
             mut runtime,
@@ -1327,6 +1335,9 @@ impl EngineHost {
             stats_mirror,
             collector,
         } = fresh_runtime(&slot);
+        for (track, plan) in &sfz_warm {
+            runtime.warm_sfz_buses(*track, plan.prepared(), DEFAULT_BLOCK_FRAMES);
+        }
 
         // 第 3 步：真的推量子。
         //
@@ -1563,8 +1574,20 @@ impl EngineHost {
         //    **仍然带 PCM**（PCM 不在工程模型里 ⇒ 每个修订都要重注入）。缓存保证同一素材
         //    只解码一次（`audio_cache_readings().decodes` 是判据读数）。
         let snapshot = self.arm_audio_clips_into_snapshot(project, snapshot);
+        // ⭐ `ADR-0077` D8：发布前把"有 `<effect>` 的轨"的计划抄一份（控制线程），
+        // 发布后立刻在**同一条线程**上预热总线 ⇒ 渲染回调里不再发生第一次分配。
+        let sfz_warm: Vec<(yeban_model::EntityId, SfzPlan)> = snapshot
+            .sfz()
+            .iter()
+            .map(|(track, plan)| (*track, plan.clone()))
+            .collect();
         // 复用槽自己的写者路径（`publish` 就是本函数的包装）。
         slot.publish_arc(std::sync::Arc::new(snapshot));
+        if let Some(runtime) = self.runtime.as_deref_mut() {
+            for (track, plan) in &sfz_warm {
+                runtime.warm_sfz_buses(*track, plan.prepared(), DEFAULT_BLOCK_FRAMES);
+            }
+        }
         self.snapshot_revision = revision;
         self.last_mark = Some(mark);
         Ok(revision)

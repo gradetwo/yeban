@@ -278,7 +278,7 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// ⭐ **stage 29**：**仍是 46_480 B**（一位不动）—— `SfzVoicePool` 那 `+2304 B`
 /// （`FadeRamp::knots`：12 段 × 12 B ＝ 144 B／槽 × 16 槽）**不在 `EngineRuntime` 的
 /// 内联体积里**：声部池是**堆上**的（`EngineRuntime` 只持有一个指针/盒）。
-/// ⇒ 本片把 `SfzVoicePool` 的尺寸钉值改到 `10_504 B`，`EngineRuntime` 的钉值
+/// ⇒ 本片把 `SfzVoicePool` 的尺寸钉值改到 `10_520 B`，`EngineRuntime` 的钉值
 /// **保持 46_480 B**（改它反而会把"池在堆上"这条事实记反）。门槛仍是 200 KiB。
 /// ⭐ **逐边 PDC 残余两形状修复**：**46_496 B**（＋16 B）—— `EngineRuntime` 新增
 /// `node_stash: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>` 胖指针（有入边且非处理型
@@ -1167,7 +1167,7 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
     // 共 6 B —— ⭐ 现值由 `size_of` 现读：见判据 `S85`）。
     let gate_bytes = CC_GATE_CAP * std::mem::size_of::<CcGate>();
     assert!(
-        (5768 + gate_bytes..=5768 + gate_bytes + 160)
+        (5768 + gate_bytes..=5768 + gate_bytes + 176)
             .contains(&std::mem::size_of::<PreparedRegion>()),
         "⭐ `#109` 的每区域代价 ＝ `CC_GATE_CAP × size_of::<CcGate>()`（＝ {gate_bytes} B）\
          ＋ 条数 `u8` ＋ 尾部对齐（≤ 8 B）＋ ⭐ **round-robin 的两个 `u32`（8 B）**\
@@ -1183,7 +1183,7 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
          ＝ 144 字节（定长、全 `Copy`、⛔ 无 `Vec`／`HashMap`）"
     );
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
          ＋ 计数器 28（序号舵 8 ＋ 丢弃 8 ＋ 窃取 8 ＋ 淡出帧数 4）⇒ 对齐到 1712；\
          ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232，再加 portamento 池级四字段 ＋8 ＝ 2240，再加弯音旁表四数组 ＋320 ＝ 2560** → ⭐ **滤波片再修订：每槽一只 `VoiceFilter`（88 B）× 16 槽 ＝ ＋1408 ⇒ 3968** → ⭐ **包络族片再修订：`eg_states` 数组 ＋512（16 槽 × 两只 16 B 的 `EgVoiceState`）、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
@@ -7872,7 +7872,7 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert!(
@@ -8346,7 +8346,7 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert!(
@@ -9318,23 +9318,24 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // （`88 + seed_table`）在**基线自己漂了**的时候不会响（内层原有 88 若变成别的数，
     // 增量腿仍绿）⇒ 这里同时钉绝对值。
     assert_eq!(
-        prepared_sfz, 312,
-        "⭐ `PreparedSfz` 的**绝对值**基线（`88 + 152 + 24 + 24`；⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 ⇒ 288**；⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 ⇒ 312**；基线漂了本腿必须响）"
+        prepared_sfz, 320,
+        "⭐ `PreparedSfz` 的**绝对值**基线（`88 + 152 + 24 + 24`；⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 ⇒ 288**；⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 ⇒ 312**；⭐ **`ADR-0077` D5 的四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 ⇒ 320**；基线漂了本腿必须响）"
     );
     assert_eq!(
-        plan, 312,
+        plan, 320,
         "⭐ `SfzPlan` 的**绝对值**基线（它按值内联 `PreparedSfz` ⇒ 与内层同长；包络族片后同为 288；LFO 片后同为 312）"
     );
     assert_eq!(
         prepared_sfz,
-        88 + seed_table + 24 + 24 + 24,
+        88 + seed_table + 24 + 24 + 24 + 8,
         "⭐ `PreparedSfz` 的增量 ＝ `size_of::<CcSeedTable>()` ＋ pitch_egs 24 B（摊平表长大，⛔ 不进实时对象）；\
          ⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 B（式子尾加一个 `+ 24`）**；\
-         ⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 B（式子尾再加一个 `+ 24`）**"
+         ⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 B（式子尾再加一个 `+ 24`）**；\
+         ⭐ **`ADR-0077` D5：四条总线表 `buses: [Option<BusEffect>; 4]` ＋8 B（式子尾再加 `+ 8`）**"
     );
     assert_eq!(
         plan,
-        88 + seed_table + 24 + 24 + 24,
+        88 + seed_table + 24 + 24 + 24 + 8,
         "⭐ `SfzPlan` 的增量 ＝ 内层的增量（它按值内联 `PreparedSfz`）；\
          ⭐ **包络族片修订同内层：`eg_defs` 再 ＋24 B**；\
          ⭐ **LFO 片修订同内层：`lfo_defs` 再 ＋24 B**"
@@ -9353,13 +9354,13 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // 上面两条 `88 → 240` 的腿整条有效）；⛔ `SfzVoice` / 池 / `EngineRuntime` 三条
     // **＋0 边界一条未动**（下面三条断言逐字保留）。
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#113` 后的**绝对值**基线（`6152 ＋ 8`；⛔ 三条实时边界仍 ＋0）；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8 + 16,
         "⭐ `#113` 的**增量** ＝ `direction: PlayDirection` ＋ 尾部对齐（⛔ 不是 `per-table` 那一份）；\
          ⭐ 现读 `6152 ＋ 16`：后 8 B 是 **round-robin** 的两个 `u32`\
          → ⭐ **`#331` 修订：再加 `off_time: f32` 的 8 B ⇒ `6152 ＋ 16 ＋ 8`。\
@@ -9372,7 +9373,7 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -10151,13 +10152,13 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
         200 * 1024 - runtime
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ 本单唯一的代价：`PreparedRegion` `6152 → 6160`（＋8 ＝ `direction` ＋ 对齐；摊平期）；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8 + 16,
         "⭐ 增量腿：`direction: PlayDirection`（`size_of` ＝ 1）＋ 尾部对齐 ＝ ＋8；\
          ⭐ **round-robin 的两个 `u32`** 再 ＋8 ⇒ 合计 `6152 ＋ 16`\
          → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ `6152 ＋ 16 ＋ 8`（原文式子保留在式子里）**\
@@ -10168,7 +10169,7 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B，再加 portamento ＋8 ⇒ 2240 B，再加弯音旁表 ＋320 ⇒ 2560 B → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -10468,13 +10469,13 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#115` 的 `amplitude: f32` 落进既有尾部对齐空隙 ⇒ `PreparedRegion` **＋0**；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -11110,14 +11111,14 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#116` ⛔ 没有新增任何每区域字段（基准 `tune` 早在 `rate_per_note` 里、\
          调制项早在 `cc_mods` 里）⇒ `PreparedRegion` **＋0**；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -12117,13 +12118,13 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
         200 * 1024
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#117` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -13197,13 +13198,13 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#118` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
          ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -14143,13 +14144,13 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6312,
+        region, 6328,
         "⭐ `#119` 没新增任何每区域字段（`volume` 基准早在 `volume_gain` 里、乘子是栈上值）\
          ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 10504,
+        pool, 10520,
         "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B** → ⭐ **包络族片修订：`eg_states` 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）＋512、filters 随 `VoiceFilter` 88 → 96 B 再 ＋128 ⇒ 4608 B** → ⭐ **LFO 片再修订：`lfo_states` 数组（16 槽 × 12 B 的 `LfoVoiceState`）＋192 ⇒ 4800 B** → ⭐ **立体声样本通路片修订：`filters_r` 数组（16 槽 × 96 B 的 `VoiceFilter`，右声道滤波状态）＋1536 ⇒ 10504 B（⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304**）**"
     );
     assert_eq!(
@@ -14758,7 +14759,7 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 10504, ENGINE_RUNTIME_BYTES),
+        (6328, 40, 10520, ENGINE_RUNTIME_BYTES),
         "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 10504（⭐ **stage 29 曲线折线片：`FadeRamp::knots` 12 段 × 12 B ＝ ＋144 B／槽 × 16 槽 ＝ ＋2304**）；①②④ 不变**"
     );
 }
@@ -15374,7 +15375,7 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 10504, ENGINE_RUNTIME_BYTES),
+        (6328, 40, 10520, ENGINE_RUNTIME_BYTES),
         "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 10504（⭐ **stage 29 曲线折线片：`FadeRamp::knots` 12 段 × 12 B ＝ ＋144 B／槽 × 16 槽 ＝ ＋2304**）；①②④ 不变**"
     );
 }
@@ -16343,7 +16344,7 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 10504, ENGINE_RUNTIME_BYTES),
+        (6328, 40, 10520, ENGINE_RUNTIME_BYTES),
         "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 10504（⭐ **stage 29 曲线折线片：`FadeRamp::knots` 12 段 × 12 B ＝ ＋144 B／槽 × 16 槽 ＝ ＋2304**）；①②④ 不变**"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
@@ -17038,7 +17039,7 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6312, 40, 10504, ENGINE_RUNTIME_BYTES),
+        (6328, 40, 10520, ENGINE_RUNTIME_BYTES),
         "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**／ ⭐ **包络族片修订：① 再 ＋32（ampeg 两 f32 ＋ EG 两 u16 下标）⇒ 6256、③ 再 ＋640（`eg_states` ＋512 ＋ filters 随 `VoiceFilter` 88 → 96 B 的 ＋128）⇒ 4608；②④ 仍 ＋0**／⭐ **LFO 片再修订：③ 再 ＋192（`lfo_states` 数组）⇒ 4800；①②④ 不变**／⭐ **声像族建模补全片修订：① 再 ＋8（`position`／`width` 两 f32）⇒ 6312；②③④ 不变**／⭐ **立体声样本通路片修订：③ 再 ＋1536（`filters_r` 数组，16 槽 × 96 B 的 `VoiceFilter`）⇒ 10504（⭐ **stage 29 曲线折线片：`FadeRamp::knots` 12 段 × 12 B ＝ ＋144 B／槽 × 16 槽 ＝ ＋2304**）；①②④ 不变**"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
