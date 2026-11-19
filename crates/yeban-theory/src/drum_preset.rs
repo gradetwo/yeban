@@ -772,17 +772,47 @@ fn parse_comp(obj: &[(String, Json)], base: &str) -> Result<DrumCompPreset, Drum
     })
 }
 
-/// 解析混响段（`{base}.reverb`）：整段字段必填。`fx` 与逐件链共用。
+/// 解析混响段（`{base}.reverb`）：`damp`／`wet`／`predelay_s` 整段必填；`kind` 与
+/// `decay_s` 可缺——旧式段（只有 `size`、无 `kind`/`decay_s`）仍须解析：kind 缺省
+/// 为 Room（ legacy 调音即 Room 参数集），decay_s 缺省为 0（未设 ⇒ 走 legacy size 路）。
+/// 写了就必须合法：kind 非字符串、未知名、decay_s 越界一律响亮拒绝。`fx` 与逐件链共用。
 fn parse_reverb(obj: &[(String, Json)], base: &str) -> Result<DrumReverbPreset, DrumPresetError> {
-    let kind_name = get_str(obj, "kind").map_err(|_| {
-        field_err(
-            &format!("{base}.reverb.kind"),
-            "reverb kind must be a string",
-        )
-    })?;
+    let kind = match obj.iter().find(|(k, _)| k == "kind") {
+        None => DrumReverbKind::Room,
+        Some((_, Json::Str(name))) => {
+            DrumReverbKind::from_name(name, &format!("{base}.reverb.kind"))?
+        }
+        Some(_) => {
+            return Err(field_err(
+                &format!("{base}.reverb.kind"),
+                "reverb kind must be a string",
+            ));
+        }
+    };
+    let decay_s = match obj.iter().find(|(k, _)| k == "decay_s") {
+        None => 0.0,
+        Some((_, Json::Num(n))) => {
+            let raw = *n;
+            if !raw.is_finite() || raw < f64::from(0.1f32) || raw > f64::from(10.0f32) {
+                return Err(field_err(
+                    &format!("{base}.reverb.decay_s"),
+                    format!("value {raw} out of 0.1..=10"),
+                ));
+            }
+            #[allow(clippy::cast_possible_truncation)] // 已校验落在 f32 可精确承载的值域内
+            let value = raw as f32;
+            value
+        }
+        Some(_) => {
+            return Err(field_err(
+                &format!("{base}.reverb.decay_s"),
+                "expected a number",
+            ));
+        }
+    };
     Ok(DrumReverbPreset {
-        kind: DrumReverbKind::from_name(kind_name, &format!("{base}.reverb.kind"))?,
-        decay_s: get_f32_ranged(obj, "decay_s", &format!("{base}.reverb.decay_s"), 0.1, 10.0)?,
+        kind,
+        decay_s,
         damp: get_f32_ranged(obj, "damp", &format!("{base}.reverb.damp"), 0.0, 1.0)?,
         wet: get_f32_ranged(obj, "wet", &format!("{base}.reverb.wet"), 0.0, 1.0)?,
         predelay_s: get_f32_ranged(
@@ -3702,6 +3732,9 @@ mod tests {
         );
         let preset = DrumStylePreset::from_json(&text).expect("valid shaping fx");
         let fx = preset.fx.expect("fx parsed");
+        // 旧式混响段（只有 size、无 kind/decay_s）解析为 Room + decay_s 未设（0）。
+        assert_eq!(fx.reverb_kind, DrumReverbKind::Room);
+        assert_eq!(fx.reverb_decay_s.to_bits(), 0.0f32.to_bits());
         assert_eq!(
             fx.transient.expect("transient").attack.to_bits(),
             0.3f32.to_bits()
