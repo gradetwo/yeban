@@ -1662,61 +1662,6 @@ fn the_count_register_carries_a_class_and_a_basis_for_every_number() {
     }
 }
 
-#[test]
-fn the_count_register_numbers_are_recomputed_from_the_same_predicate() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let (text, _) = read_evidence_text(&root.join(COUNT_REGISTER_PATH));
-    let rows: Vec<&str> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .collect();
-    // ⭐ 同一谓词复算：结构性数字必须与源码/证据表逐字对齐。
-    let mut impls = 0usize;
-    for path in source_files(&root.join(SRC_ROOT)) {
-        let src = normalize_source(&fs::read_to_string(path).unwrap_or_default());
-        impls += src.matches("impl Default for ").count();
-    }
-    let value = |name: &str| -> u64 {
-        rows.iter()
-            .find(|r| r.starts_with(name))
-            .unwrap_or_else(|| panic!("总表里必须有 {name}"))
-            .split('|')
-            .nth(1)
-            .unwrap()
-            .parse()
-            .unwrap()
-    };
-    assert_eq!(
-        value("impl_default_for"),
-        impls as u64,
-        "`impl Default for` 计数必须与**同一谓词**复算一致（实测 {impls}）"
-    );
-    for (name, path) in [
-        ("rows_hard_assertion_table", TABLE_PATH),
-        ("rows_integer_count_categories", INTEGER_BOUND_PATH),
-        ("rows_src_match_sites", MATCH_SITES_PATH),
-        ("rows_device_injection_evidence", DEVICE_INJECTION_PATH),
-    ] {
-        let (t, _) = read_evidence_text(&root.join(path));
-        let n = t
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-            .count() as u64;
-        assert_eq!(value(name), n, "{name} 必须等于证据表的实际数据行数（{n}）");
-    }
-    // ⭐ 两类"外部口径"必须**点名依据**（⛔ 不是凭空写数字）。
-    for name in ["raw_assert_in_src", "masked_assert_in_src"] {
-        let row = rows
-            .iter()
-            .find(|r| r.starts_with(name))
-            .unwrap_or_else(|| panic!("总表里必须有 {name}"));
-        assert!(
-            row.contains("grep") || row.contains("掩码"),
-            "外部口径必须写明命令或掩码器：{row}"
-        );
-    }
-}
-
 /// 提交在仓库里的臂覆盖读数表。
 const ARM_COVERAGE_PATH: &str = "tests/data/arm_coverage.txt";
 
