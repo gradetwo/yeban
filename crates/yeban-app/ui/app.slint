@@ -206,6 +206,9 @@ export component MainWindow inherits Window {
     // `root.height` —— 回读会与布局互喂，Slint 会报成串 binding loop。
     in-out property <length> window-h: 700px;
     in-out property <bool> show-floating-toast: false;
+    // ⭐ 审计 P1-4：提示条分级。`true` = 这条是**错误**（不自动消失）；`false` = 信息类
+    // （4 秒后自己收走，见下面的 `toast-timer`）。
+    in-out property <bool> toast-is-error: false;
 
     // Zone Visibility State (Default: clean arrangement workspace with side/dock panels folded)
     in-out property <bool> show-left-inspector: true;
@@ -561,7 +564,17 @@ export component MainWindow inherits Window {
     in-out property <string> module-midi-in-status: "";
     in-out property <bool> module-midi-in-status-succeeded: false;
     in-out property <string> module-status: "";
+    // ⭐ 审计 P0-1：`module-status` 的**人话**版本（唯一翻译点 = 宿主
+    // `host::humanize_module_receipt`）。判据仍读上面那条结构化原文（逐字节不变），
+    // 界面只画这一条 —— 以前 30 个写者写了属性、0 个读者，回执等于不存在。
+    in-out property <string> module-status-text: "";
     in-out property <bool> module-status-succeeded: false;
+    // ⭐ 审计 P0-1：**读者**。四类回执里挑一条最新的、非空的显示（错误优先）。
+    property <string> receipt-line: root.module-status-text != "" ? root.module-status-text
+        : (root.module-clipping-warning != "" ? root.module-clipping-warning
+        : (root.module-import-losses != "" ? root.module-import-losses : root.module-midi-in-status));
+    property <bool> receipt-is-error: root.module-status-text != "" ? !root.module-status-succeeded
+        : (root.module-clipping-warning != "" || root.module-import-losses != "");
     in-out property <bool> musical-pr-open: false;
     in-out property <bool> note-drag-active: false;
     in-out property <float> note-drag-origin-x: 0.0;
@@ -1204,6 +1217,16 @@ export component MainWindow inherits Window {
             accept
         }
 
+        // ⭐ 审计 P1-4：信息类提示条**自己收走**（错误类常驻，直到用户点掉或下一次
+        // 动作改写它）。⛔ 不是视觉元素 ⇒ 不参与布局，放在布局之前声明。
+        Timer {
+            interval: 4s;
+            running: root.show-floating-toast && !root.toast-is-error && root.toast-message != "";
+            triggered => {
+                root.show-floating-toast = false;
+            }
+        }
+
         VerticalLayout {
             padding: 0px;
             spacing: 0px;
@@ -1690,6 +1713,70 @@ export component MainWindow inherits Window {
                 piano-roll-wheel(dx, dy, shift, alt) => { root.piano-roll-wheel(dx, dy, shift, alt); }
             }
 
+            // ⭐ 审计 P0-1 / P0-3 / P0-4：**回执行**（布局里的一行，⛔ 不是绝对定位覆盖层
+            // —— 那会被 VerticalLayout 当行排到窗口外，见下方 toast 的实测注释）。
+            // 空读数时不存在 ⇒ 零像素 ⇒ 默认帧与 goldens 不变。
+            if root.receipt-line != "" : Rectangle {
+                height: 24px;
+                background: Tokens.bg-panel;
+                accessible-role: banner;
+                accessible-id: "module-receipt-line";
+                accessible-label: root.receipt-line;
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: 2px;
+                    height: parent.height;
+                    background: root.receipt-is-error ? Tokens.record-red : Theme.accent;
+                }
+
+                Text {
+                    x: 10px;
+                    y: 0px;
+                    width: parent.width - 46px;
+                    height: parent.height;
+                    text: root.receipt-line;
+                    color: root.receipt-is-error ? Tokens.record-red : Tokens.ink-2;
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                // 收起（把四个读数清空；下一次动作又会写回来）。
+                Text {
+                    x: parent.width - 32px;
+                    y: 0px;
+                    width: 24px;
+                    height: parent.height;
+                    text: "✕";
+                    color: Tokens.ink-2;
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    accessible-role: button;
+                    accessible-id: "module-receipt-dismiss";
+                    accessible-label: @tr("收起这条提示");
+                    accessible-action-default => {
+                        root.module-status-text = "";
+                        root.module-clipping-warning = "";
+                        root.module-import-losses = "";
+                        root.module-midi-in-status = "";
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.module-status-text = "";
+                            root.module-clipping-warning = "";
+                            root.module-import-losses = "";
+                            root.module-midi-in-status = "";
+                        }
+                    }
+                }
+            }
+
             // 4. BOTTOM STATUS BAR (Real host-driven selection, save receipt, audio config)
             StatusBar {
                 selection: root.status-selection;
@@ -1759,7 +1846,7 @@ export component MainWindow inherits Window {
             background: Tokens.bg-void.with-alpha(0.96);
             border-radius: 6px;
             border-width: 1px;
-            border-color: Theme.accent.with-alpha(0.6);
+            border-color: (root.toast-is-error ? Tokens.record-red : Theme.accent).with-alpha(0.6);
             accessible-role: banner;
             accessible-id: "toast-banner";
             accessible-label: @tr("提示：{}", root.toast-message);
@@ -1778,7 +1865,7 @@ export component MainWindow inherits Window {
                         height: 6px;
                         y: 14px;
                         border-radius: 3px;
-                        background: Theme.accent;
+                        background: root.toast-is-error ? Tokens.record-red : Theme.accent;
                     }
                     Text {
                         text: root.toast-message;
@@ -1824,22 +1911,48 @@ export component MainWindow inherits Window {
             y: 52px;
             width: root.width - 32px;
             height: 36px;
-            background: Tokens.skin-arm.with-alpha(0.95);
+            // 质感打光：底色**不再**是整块红板（用户口径：视觉中心别花花绿绿、长时间看不累）。
+            // 改成"中性深色面板 + 左侧一条 3px 红标 + 红色细描边"：一样一眼看到，但不像报警灯。
+            background: Tokens.bg-panel-alt.with-alpha(0.98);
             border-radius: 6px;
             border-width: 1px;
-            border-color: Tokens.skin-arm;
+            border-color: Tokens.skin-arm.with-alpha(0.55);
             accessible-role: banner;
             accessible-id: "engine-error-banner";
             accessible-label: @tr("引擎错误横幅");
+            Rectangle {
+                x: 0px; y: 0px; width: 3px; height: parent.height;
+                border-top-left-radius: 6px; border-bottom-left-radius: 6px;
+                background: Tokens.skin-arm;
+            }
             HorizontalLayout {
-                padding-left: 12px; padding-right: 12px; alignment: space-between;
+                padding-left: 14px; padding-right: 10px; alignment: space-between;
                 // ⚠ 文字必须与底色**对比**（曾经写成本身 `skin-arm` ⇒ 红字压红底 = 看不见）。
                 // 这条横幅存在的唯一意义就是让用户读到它。
                 Text {
                     text: @tr("提醒：{}", root.engine-error);
-                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: Tokens.ink-0;
+                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 600; color: Tokens.ink-0;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+                Rectangle {
+                    width: 96px; height: 22px; y: 7px; border-radius: 3px;
+                    background: Tokens.skin-arm.with-alpha(0.22);
+                    border-width: 1px;
+                    border-color: Tokens.skin-arm.with-alpha(0.75);
+                    accessible-role: button;
+                    accessible-id: "engine-error-open-sound-library";
+                    accessible-label: @tr("去音源管理");
+                    accessible-action-default => { root.sound-library-open = true; }
+                    Text {
+                        text: @tr("去音源管理");
+                        font-family: Tokens.font-ui; font-size: 10px; font-weight: 700; color: Tokens.ink-0;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.sound-library-open = true; }
+                    }
                 }
                 Rectangle {
                     width: 20px; height: 20px; y: 8px; border-radius: 3px; background: transparent;

@@ -1159,6 +1159,30 @@ impl ElementRegistry {
             "音符网格画布",
             false,
         );
+        // 审计 P0-1 的回执行：只在有读数时出现（`if root.receipt-line != ""`），
+        // 默认帧里不存在 ⇒ 不进控件树、不改金帧。
+        registry.add(
+            "module-receipt-line",
+            ElementKind::Banner,
+            "app.slint",
+            "上一步操作的结果",
+            false,
+        );
+        registry.add(
+            "module-receipt-dismiss",
+            ElementKind::Button,
+            "app.slint",
+            "收起这条提示",
+            false,
+        );
+        // 引擎错误横幅上的「去音源管理」：只在横幅出现时存在（默认帧不存在）。
+        registry.add(
+            "engine-error-open-sound-library",
+            ElementKind::Button,
+            "app.slint",
+            "去音源管理",
+            false,
+        );
         // `[ROAD-M3-002]` 拖动滚动手势的**输入面**（`[UI-TEST-001]` §12.2 语义 ID）：
         // 它是"Slint 发增量、宿主拥有偏移"那条链的**起点**，无头判据靠这个 ID 按语义寻址注入
         // （`crates/yeban-app/tests/piano_roll_drag_scroll.rs`）。

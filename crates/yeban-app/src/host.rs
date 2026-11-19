@@ -1533,7 +1533,7 @@ fn commit_move_track_by_id(
         new_index: target as usize,
     };
     if port.commit_ops(now_ms(), "move track", vec![op]).is_err() {
-        eprintln!("[yeban-app] 移轨提交被拒绝（工程未改）");
+        report_rejected(ui, "移动轨道");
         return false;
     }
     refresh_undo_window(ui, port, true);
@@ -1646,7 +1646,7 @@ pub fn wire_track_reorder(ui: &MainWindow, port: &Rc<UndoPort>) {
                 new_index,
             };
             if port.commit_ops(now_ms(), "move track", vec![op]).is_err() {
-                eprintln!("[yeban-app] 移轨提交被拒绝（工程未改）");
+                report_rejected(&ui, "移动轨道");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -1934,12 +1934,17 @@ pub fn wire_automation_lane_click(ui: &MainWindow, port: &Rc<UndoPort>) {
                 height_px,
             );
             if !ops.is_empty() {
-                let _ = port.commit_ops_with_origin(
-                    now_ms(),
-                    yeban_model::OpOrigin::UserUi,
-                    "add/edit automation point",
-                    ops,
-                );
+                if port
+                    .commit_ops_with_origin(
+                        now_ms(),
+                        yeban_model::OpOrigin::UserUi,
+                        "add/edit automation point",
+                        ops,
+                    )
+                    .is_err()
+                {
+                    report_rejected(&ui, "自动化点编辑");
+                }
                 refresh_undo_window(&ui, &port, true);
             }
         }
@@ -2469,7 +2474,7 @@ fn commit_mixer_reset(
         new_val: 0.0,
     };
     if port.commit_ops(now_ms(), &label, vec![op]).is_err() {
-        eprintln!("[yeban-app] 双击复位提交被拒绝（工程未改）");
+        report_rejected(ui, "复位到默认值");
         return;
     }
     refresh_undo_window(ui, port, true);
@@ -2653,7 +2658,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 port.commit_ops(now_ms(), "mixer: set track volume", ops)
             };
             if res.is_err() {
-                eprintln!("[yeban-app] 推子提交被拒绝（工程未改）");
+                report_rejected(&ui, "音量调整");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -2810,7 +2815,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 port.commit_ops(now_ms(), "mixer: set track pan", ops)
             };
             if res.is_err() {
-                eprintln!("[yeban-app] 声相提交被拒绝（工程未改）");
+                report_rejected(&ui, "声相调整");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -2925,7 +2930,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 .commit_ops(now_ms(), "mixer: set master volume", vec![op])
                 .is_err()
             {
-                eprintln!("[yeban-app] 主控推子提交被拒绝（工程未改）");
+                report_rejected(&ui, "主控音量调整");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -3034,7 +3039,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 .commit_ops(now_ms(), "mixer: set master pan", vec![op])
                 .is_err()
             {
-                eprintln!("[yeban-app] 主控声相提交被拒绝（工程未改）");
+                report_rejected(&ui, "主控声相调整");
                 return;
             }
             refresh_undo_window(&ui, &port, true);
@@ -3415,7 +3420,7 @@ fn commit_sampler_binding(
         new_sampler,
     };
     if port.commit_ops(now_ms(), message, vec![op]).is_err() {
-        eprintln!("[yeban-app] SFZ 绑定提交被拒绝（工程未改）");
+        report_rejected(ui, "更换音源");
         return;
     }
     refresh_undo_window(ui, port, true);
@@ -3463,7 +3468,7 @@ fn commit_sampler_octave(ui: &MainWindow, port: &UndoPort, index: i32, delta: i3
         .commit_ops(now_ms(), "set track sampler octave override", vec![op])
         .is_err()
     {
-        eprintln!("[yeban-app] SFZ 八度覆盖提交被拒绝（工程未改）");
+        report_rejected(ui, "音源八度");
         return;
     }
     refresh_undo_window(ui, port, true);
@@ -3627,7 +3632,7 @@ fn wire_mixer_master_switch(
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
-            eprintln!("[yeban-app] 主控混音开关提交被拒绝（工程未改）");
+            report_rejected(&ui, "主控静音/独奏");
             return;
         }
         refresh_undo_window(&ui, &port, true);
@@ -3679,7 +3684,7 @@ fn wire_mixer_switch(
             ),
         };
         if port.commit_ops(now_ms(), message, vec![op]).is_err() {
-            eprintln!("[yeban-app] 混音开关提交被拒绝（工程未改）");
+            report_rejected(&ui, "静音/独奏");
             return;
         }
         refresh_undo_window(&ui, &port, true);
@@ -4184,8 +4189,13 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
                 return;
             };
             let ops = crate::bridge::sidechain_cycle_ops(&project, track.id);
-            if !ops.is_empty() {
-                let _ = port.commit_ops(now_ms(), "cycle sidechain key source", ops);
+            if !ops.is_empty()
+                && port
+                    .commit_ops(now_ms(), "cycle sidechain key source", ops)
+                    .is_err()
+            {
+                // 审计 P0-4：`let _ = commit_ops` 吞掉拒绝 ⇒ 按了没反应。现在出声。
+                report_rejected(&ui, "侧链源切换");
             }
         }
     });
@@ -4203,8 +4213,12 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
                 return;
             };
             let ops = crate::bridge::compressor_cycle_ratio_ops(&project, track.id);
-            if !ops.is_empty() {
-                let _ = port.commit_ops(now_ms(), "cycle compressor ratio", ops);
+            if !ops.is_empty()
+                && port
+                    .commit_ops(now_ms(), "cycle compressor ratio", ops)
+                    .is_err()
+            {
+                report_rejected(&ui, "压缩比切换");
             }
         }
     });
@@ -4265,7 +4279,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
                 }
             };
             if port.commit_ops(now_ms(), "remove device", ops).is_err() {
-                eprintln!("[yeban-app] 删设备被拒绝（工程未改）");
+                report_rejected(&ui, "删除设备");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -4326,7 +4340,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
                 .commit_ops(now_ms(), "remove master device", ops)
                 .is_err()
             {
-                eprintln!("[yeban-app] 删主总线设备被拒绝（工程未改）");
+                report_rejected(&ui, "删除设备");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -4567,7 +4581,7 @@ fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_
         }
     };
     if port.commit_ops(now_ms(), commit_label, ops).is_err() {
-        eprintln!("[yeban-app] {log_label}旁通提交被拒绝（工程未改）");
+        report_rejected(ui, "旁通切换");
         return;
     }
     refresh_undo_window(ui, port, true);
@@ -4815,7 +4829,7 @@ impl DeviceEqWiring {
             self.port.commit_ops(now_ms(), commit_label, ops)
         };
         if res.is_err() {
-            eprintln!("[yeban-app] {log_label} 提交被拒绝（工程未改）");
+            report_rejected(&ui, "插入设备");
         }
         // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
         refresh_undo_window(&ui, &self.port, true);
@@ -5011,8 +5025,13 @@ impl EqCurveWiring {
             });
         }
 
-        if !ops.is_empty() {
-            let _ = self.port.commit_ops(now_ms(), "set device eq curve", ops);
+        if !ops.is_empty()
+            && self
+                .port
+                .commit_ops(now_ms(), "set device eq curve", ops)
+                .is_err()
+        {
+            report_rejected(&ui, "EQ 曲线");
         }
         refresh_undo_window(&ui, &self.port, true);
     }
@@ -5053,7 +5072,7 @@ fn insert_builtin_device(
         }
     };
     if port.commit_ops(now_ms(), commit_label, ops).is_err() {
-        eprintln!("[yeban-app] {log_label}被拒绝（工程未改）");
+        report_rejected(ui, "设备参数调整");
     }
     refresh_undo_window(ui, port, true);
 }
@@ -5089,7 +5108,7 @@ pub fn wire_clip_create(ui: &MainWindow, port: &Rc<UndoPort>) {
                     }
                 };
             if port.commit_ops(now_ms(), "create midi clip", ops).is_err() {
-                eprintln!("[yeban-app] 建片段被拒绝（工程未改）");
+                report_rejected(&ui, "新建片段");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -5314,7 +5333,7 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 .commit_ops(now_ms(), "set send gain", vec![op])
                 .is_err()
             {
-                eprintln!("[yeban-app] 发送增益提交被拒绝（工程未改）");
+                report_rejected(&ui, "发送增益");
             }
             // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
             refresh_undo_window(&ui, &port, true);
@@ -5377,7 +5396,7 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
             }
             ops.push(yeban_model::Op::ConnectRouting { edge });
             if port.commit_ops(now_ms(), "create send", ops).is_err() {
-                eprintln!("[yeban-app] 新建发送被拒绝（工程未改）");
+                report_rejected(&ui, "新建发送");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -5424,7 +5443,7 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 previous_edge: edge,
             };
             if port.commit_ops(now_ms(), "remove send", vec![op]).is_err() {
-                eprintln!("[yeban-app] 删除发送被拒绝（工程未改）");
+                report_rejected(&ui, "删除发送");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -5642,7 +5661,7 @@ pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
                 new_val: last_value,
             };
             if port.commit_ops(now_ms(), "set macro", vec![op]).is_err() {
-                eprintln!("[yeban-app] 宏位置提交被拒绝（工程未改）");
+                report_rejected(&ui, "宏位置");
             }
             // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
             refresh_undo_window(&ui, &port, true);
@@ -5744,7 +5763,7 @@ pub fn wire_track_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                     }
                 };
             if port.commit_ops(now_ms(), "delete track", ops).is_err() {
-                eprintln!("[yeban-app] 删除轨被拒绝（工程未改）");
+                report_rejected(&ui, "删除轨道");
             }
             refresh_undo_window(&ui, &port, true);
         }
@@ -5772,7 +5791,7 @@ fn create_track(ui: &MainWindow, port: &UndoPort, kind: crate::bridge::NewTrackK
         }
     };
     if port.commit_ops(now_ms(), "create track", ops).is_err() {
-        eprintln!("[yeban-app] 新建轨被拒绝（工程未改）");
+        report_rejected(ui, "新建轨道");
         toast_track(ui, "新建轨道被拒绝（工程未改）");
     } else {
         // 回执：用户刚点的那一下必须**看得见结果**。名字从提交后的工程读（差集取新增），
@@ -7094,16 +7113,25 @@ enum RecordToggle {
 
 /// ⭐ 把录音结果写进界面（⭐ 失败**出声**：⛔ 不静默）。
 ///
-/// ⚠ 界面今天**没有**录音状态文本控件 ⇒ 失败走 `stderr`（与 `host` 的其它模块回调同款：
-/// 一个"起录失败"的假成功按钮比没有按钮更糟）。成功不打印在这里 —— `stop` 的
-/// `RecordReport::summary` 已经打了一行。
+/// ⚠ 审计 P0-3 的现场：起录失败 / 停录失败 / **录音已落盘但没进工程** / 录音器重入
+/// 四条原来只写 `stderr` —— 桌面双击启动的用户看不到终端，按了录音键"没反应"，
+/// 而磁盘上已经多了一个没进工程的文件。现在四条都落到**界面上**，且给下一步。
 fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
     if let Some(reason) = error {
         eprintln!("[yeban-app] 录音: {reason}");
+        let human = if reason.contains("没有进工程") {
+            "录音已经存成文件，但没能放进这个工程。文件仍在磁盘上，不会丢；再按一次「录音」会重新录一遍。".to_owned()
+        } else if reason.contains("重入") {
+            "录音已经在进行中，不用再按一次。等这一条录完再看结果。".to_owned()
+        } else {
+            format!("录音没能开始：{reason}。检查一下录音设备是否可用，然后按一次「录音」重试。")
+        };
+        report_notice(ui, &human, true);
+        return;
     }
-    // ⚠ 界面侧现在只有 `recording` 一个录音属性；这里读一次，保证"写了就有读者"
-    // （⛔ 不让一个没人读的属性悄悄腐烂）。将来加状态文本时，落点在这里。
-    let _ = ui.get_recording();
+    ui.set_module_status("录音已经完成，文件已写进工程".into());
+    ui.set_module_status_text("录音完成".into());
+    ui.set_module_status_succeeded(true);
 }
 
 /// 左侧资源栏的分类数（`ui/sidebar.slint` 的 `for category_index in 3`）。
@@ -8201,7 +8229,7 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
         }
         let op = yeban_model::Op::SetTempo { old_bpm, new_bpm };
         if port.commit_ops(now_ms(), "set tempo", vec![op]).is_err() {
-            eprintln!("[yeban-app] 速度提交被拒绝（工程未改）");
+            report_rejected(&ui, "速度");
         }
         refresh_undo_window(&ui, &port, true);
     });
@@ -8368,7 +8396,15 @@ pub fn wire_keys(
                             };
                             apply_action(&ui, undo.as_ref(), Some(&mut context), action)
                         }
-                        Err(_) => false,
+                        Err(_) => {
+                            // 审计 P0-4：引擎被别处借走时这条动作**静默**失败。现在出声。
+                            report_notice(
+                                &ui,
+                                "这一步暂时没执行：音频引擎正忙（可能在渲染或导出）。等它停下再点一次。",
+                                true,
+                            );
+                            false
+                        }
                     },
                     _ => apply_action(&ui, undo.as_ref(), None, action),
                 }
@@ -8622,7 +8658,13 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
             true,
         ),
         crate::save_action::SaveOutcome::Failed { message, .. } => {
-            (format!("保存失败：{message}"), false)
+            // 审计 P1-3：原来只有一句"保存失败：…"（术语 + 没有出路）。现在给出下一步。
+            (
+                format!(
+                    "保存失败：{message} · 下一步：先关掉可能占用这个文件的程序（同名工程/网盘同步）再按一次保存；如果还不行，用「另存为」换个名字或换个目录存。"
+                ),
+                false,
+            )
         }
     };
     ui.set_save_status(status.into());
@@ -10415,6 +10457,78 @@ fn apply_module_receipt(ui: &MainWindow, receipt: &str, ok: bool) {
     apply_module_receipt_with_alerts(ui, receipt, ok, "", "");
 }
 
+/// ⭐ **失败也要被看见**：一次用户手势被模型拒绝时的统一回执。
+///
+/// 为什么要有它：这条路径原来只有 `eprintln!("…被拒绝（工程未改）")` —— 桌面双击
+/// 启动的用户**看不到终端**，于是他看到的是"拖了没反应 / 推子回弹 / 静音键不亮"。
+/// 现在同一句话落到**界面上**（提示条 ＋ 模块回执行两处可见区），并给出下一步。
+pub fn report_rejected(ui: &MainWindow, action: &str) {
+    eprintln!("[yeban-app] {action} 提交被拒绝（工程未改）");
+    report_notice(
+        ui,
+        &format!(
+            "{action}没有生效：这一步被拒绝了，工程没有变化。再试一次；如果仍然不行，说明这个操作当前不适用。"
+        ),
+        true,
+    );
+}
+
+/// 通用可见回执（**唯一落点**：提示条 ＋ 模块回执行同时写，⛔ 不各写一份）。
+///
+/// 为什么两条都写：提示条在布局溢出时会掉出窗口（见 `app.slint` 的实测注释），
+/// 回执行是布局里的固定一行，写它就一定看得见。
+pub fn report_notice(ui: &MainWindow, text: &str, error: bool) {
+    ui.set_module_status(text.into());
+    ui.set_module_status_text(text.into());
+    ui.set_module_status_succeeded(!error);
+    ui.set_toast_message(text.into());
+    ui.set_toast_is_error(error);
+    ui.set_show_floating_toast(true);
+}
+
+/// 把结构化回执翻译成一句人话（**唯一**翻译点：所有回执都从这里过）。
+///
+/// 输入形如 `module:action=export-wav:outcome=error:error=io:message="…"`；
+/// 输出形如 `导出 WAV 没做成 · 写不了文件`。字段名（`outcome` / `error`）是给判据
+/// 与日志用的，⛔ 不直接糊在用户脸上（审计 P2-2）。
+fn humanize_module_receipt(receipt: &str) -> String {
+    let Some(rest) = receipt.strip_prefix("module:") else {
+        return receipt.to_owned();
+    };
+    let field = |key: &str| -> Option<String> {
+        let start = rest.find(&format!("{key}="))? + key.len() + 1;
+        let tail = &rest[start..];
+        let end = tail.find(':').unwrap_or(tail.len());
+        Some(tail[..end].trim().trim_matches('"').to_owned())
+    };
+    let action = field("action").unwrap_or_default();
+    let action_zh = match action.as_str() {
+        "export-wav" => "导出 WAV",
+        "import-midi" => "导入 MIDI",
+        "open-project" => "打开工程",
+        "load-sfz" => "装载音源",
+        "audition" => "试听",
+        "record-wav" => "录音（测试音）",
+        "midi-in" => "硬件 MIDI 输入",
+        _ => "",
+    };
+    let ok = field("outcome").as_deref() == Some("ok");
+    let message = field("message").unwrap_or_default();
+    let verdict = if ok { "完成" } else { "没做成" };
+    if action_zh.is_empty() {
+        return if ok {
+            "上一步操作完成".to_owned()
+        } else {
+            "上一步操作没做成".to_owned()
+        };
+    }
+    if message.is_empty() {
+        format!("{action_zh} {verdict}")
+    } else {
+        format!("{action_zh} {verdict} · {message}")
+    }
+}
+
 /// 与 [`apply_module_receipt`] 相同，但**同一次**写入里带上削波警示行的文本。
 ///
 /// 空串 = 不显示（`.slint` 侧 `visible: text != ""`）。这条短句只属于
@@ -10442,7 +10556,10 @@ fn apply_module_receipt_with_alerts(
     clipping_warning: &str,
     import_losses: &str,
 ) {
+    // ⚠ `module-status` 保留**结构化原文**（判据读它，逐字节不变）；
+    // 给人看的那一句另写 `module-status-text`（`humanize_module_receipt` 唯一翻译点）。
     ui.set_module_status(receipt.into());
+    ui.set_module_status_text(humanize_module_receipt(receipt).into());
     ui.set_module_status_succeeded(ok);
     ui.set_module_clipping_warning(clipping_warning.into());
     ui.set_module_import_losses(import_losses.into());
@@ -12112,6 +12229,25 @@ pub fn wire_module_actions_with_capture(
                 return;
             };
             let started = std::time::Instant::now();
+            // ⭐ 审计 P0-2：这条入口原来**永远**读一个写死的 `ui-instrument.sfz`
+            // （没有文件选择器、不绑任何一条轨）。对新手来说它的表现是"点了一下，
+            // 弹一句 `读 SFZ 失败: SFZ 路径 …`"。现在：没有现成文件 ⇒ 不报术语，
+            // 直接把音源管理打开，让用户在列表里点一下就有了乐器。
+            if !source.is_file() {
+                let receipt = module_receipt(
+                    "load-sfz",
+                    &module_error_fields("sfz-missing", "还没有指定 SFZ 文件"),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                report_notice(
+                    &ui,
+                    "「装载 SFZ 音源」需要先有一个 .sfz 文件。已为你打开音源管理：在列表里选一个音源下载，装好后点「用上」就能绑到这条轨。",
+                    true,
+                );
+                ui.set_sound_library_open(true);
+                module_trace("load-sfz", started, &receipt);
+                return;
+            }
             let (receipt, ok) = match crate::sfz_load::load_sfz_with_instrument(
                 &source,
                 Some(crate::sfz_load::DEFAULT_PROBE_NOTE),
@@ -13139,7 +13275,7 @@ fn commit_transport_config(
         new_config,
     };
     if port.commit_ops(now_ms(), message, vec![op]).is_err() {
-        eprintln!("[yeban-app] 走带设置提交被拒绝（工程未改）: {message}");
+        report_rejected(ui, "走带设置");
         refresh_undo_window(ui, port, true);
         return false;
     }
@@ -18778,6 +18914,34 @@ pub fn build_main_window_with_console_tab(
 mod tests {
     use super::advance_scroll;
 
+    /// ⭐ 审计 P0-1 的据：结构化回执进界面前**必须**被翻成人话。
+    ///
+    /// 三条覆盖三个互相独立的判定：成功、失败（带 `message`）、不认识的 action。
+    /// 判据读的是**输出字面**（⛔ 不读实现），因此"哪天有人把 `outcome` 拼错"会红。
+    #[test]
+    fn humanized_module_receipts_speak_plain_chinese() {
+        use super::humanize_module_receipt;
+        assert_eq!(
+            humanize_module_receipt("module:action=export-wav:outcome=ok:frames=1920"),
+            "导出 WAV 完成"
+        );
+        assert_eq!(
+            humanize_module_receipt(
+                "module:action=import-midi:outcome=error:error=io:message=\"文件不存在\""
+            ),
+            "导入 MIDI 没做成 · 文件不存在"
+        );
+        assert_eq!(
+            humanize_module_receipt("module:action=nonsense:outcome=ok"),
+            "上一步操作完成"
+        );
+        // 不是回执（例如纯文本提示）⇒ 原样返回，⛔ 不吞掉用户要看的字。
+        assert_eq!(
+            humanize_module_receipt("录音已经完成，文件已写进工程"),
+            "录音已经完成，文件已写进工程"
+        );
+    }
+
     /// 九语 i18n 收尾（2026-11-17）：八个目标语言的空选区常量必须与各自
     /// `.po` 里 `选区 无` 的 msgstr **逐字符相同**——`.slint` 默认值
     /// `@tr("选区 无")` 在某语言态渲染出的就是那条 msgstr，宿主写出的若不同
@@ -20115,6 +20279,8 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     let is_high_frequency =
         s.starts_with("[走带]") || s.starts_with("[录音]") || s.starts_with("[循环]");
     ui.set_show_floating_toast(!is_high_frequency);
+    // 常规提示 = 信息级：几秒后自动收走（错误级的常驻见 `report_notice`）。
+    ui.set_toast_is_error(false);
     ui.set_toast_message(s);
 }
 
