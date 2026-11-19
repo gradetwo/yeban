@@ -133,8 +133,8 @@ Vi 层新增（仅导航与模式，不占共享动作）：
 （`Op::RemoveClip`；有摆放引用时模型拒绝、日志如实报），`Esc` 返回。
 
 Command 命令集：`q`、`q!`、`w [path]`、`wq [path]`、`play`、`stop`、
-`rewind`、`seek <小节号>`、`tempo <BPM>`、`export wav <path>`、`open <path>`、
-`demo`、`notes`、`pool`。
+`rewind`、`seek <小节号>`、`tempo <BPM>`、`export wav <path>`、`open[!] <path>`、
+`demo[!]`、`notes`、`pool`。
 
 ## 冲突清单（逐条，按「共享动作从 GUI、导航从 Vi」解）
 

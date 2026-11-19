@@ -1738,9 +1738,12 @@ impl App {
                     self.log_line(error);
                 }
             }
-            "open" => {
+            "open" | "open!" => {
+                let force = verb == "open!";
                 if rest.is_empty() {
                     self.log_line("用法：:open <path>".to_owned());
+                } else if self.dirty && !force {
+                    self.log_line(format!("有未保存修改：先 :w 保存，或 :open! {rest} 强开"));
                 } else {
                     match Self::open_file(Path::new(rest)) {
                         Ok(next) => {
@@ -1750,12 +1753,19 @@ impl App {
                     }
                 }
             }
-            "demo" => match Self::with_demo() {
-                Ok(next) => {
-                    *self = next;
+            "demo" | "demo!" => {
+                let force = verb == "demo!";
+                if self.dirty && !force {
+                    self.log_line("有未保存修改：先 :w 保存，或 :demo! 强开演示工程".to_owned());
+                } else {
+                    match Self::with_demo() {
+                        Ok(next) => {
+                            *self = next;
+                        }
+                        Err(error) => self.log_line(error),
+                    }
                 }
-                Err(error) => self.log_line(error),
-            },
+            }
             other => self.log_line(format!("未知命令：{other}")),
         }
     }
@@ -1787,5 +1797,105 @@ mod tests {
         assert_eq!(after.retire_pending, 0);
         assert_eq!(after.pruned, EDITS);
         assert_eq!(after.retire_dropped, EDITS);
+    }
+
+    #[test]
+    fn open_dirty_guard_blocks_and_force_opens() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let saved_path =
+            std::env::temp_dir().join(format!("yeban-tui-open-dirty-{}.yeban", std::process::id()));
+        let _cleanup = TempCleanup(saved_path.clone());
+
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved_path).expect("save demo");
+
+        let mut app = App::with_demo().expect("demo app");
+        assert!(!app.dirty);
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(!app.dirty);
+        assert_eq!(app.project_path.as_deref(), Some(saved_path.as_path()));
+
+        let track_id = app.track_ids[0];
+        assert!(!app.project.tracks[&track_id].mute);
+        app.toggle_mute();
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+
+        // Empty argument reports usage and keeps dirty edits.
+        app.execute_command("open");
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("用法：:open"))
+        );
+
+        // Unforced :open is blocked while dirty.
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("有未保存修改") && line.contains(":open!"))
+        );
+
+        // Failed :open! on missing path preserves unsaved edits.
+        let missing_path =
+            std::env::temp_dir().join(format!("yeban-tui-missing-{}.yeban", std::process::id()));
+        app.execute_command(&format!("open! {}", missing_path.display()));
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+
+        // Forced :open! discards dirty edits and loads saved file.
+        app.execute_command(&format!("open! {}", saved_path.display()));
+        assert!(!app.dirty);
+        assert!(!app.project.tracks[&track_id].mute);
+        assert_eq!(app.project_path.as_deref(), Some(saved_path.as_path()));
+
+        // Clean :open works without ! after :w clears dirty.
+        app.toggle_mute();
+        assert!(app.dirty);
+        app.execute_command("w");
+        assert!(!app.dirty);
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn demo_dirty_guard_blocks_and_force_resets() {
+        let mut app = App::with_demo().expect("demo app");
+        let default_bpm = app.project.bpm;
+        assert!(!app.dirty);
+
+        // Clean state allows :demo without !.
+        app.execute_command("demo");
+        assert!(!app.dirty);
+
+        // Mutate state and verify :demo is blocked while dirty.
+        app.set_tempo(140.0);
+        assert!(app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), 140.0_f64.to_bits());
+
+        app.execute_command("demo");
+        assert!(app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), 140.0_f64.to_bits());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("有未保存修改") && line.contains(":demo!"))
+        );
+
+        // Forced :demo! resets back to demo default.
+        app.execute_command("demo!");
+        assert!(!app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), default_bpm.to_bits());
     }
 }
