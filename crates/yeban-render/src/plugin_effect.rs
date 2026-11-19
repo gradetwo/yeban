@@ -20,7 +20,7 @@
 use yeban_model::EntityId;
 use yeban_plugin_host::PluginInstance;
 
-use crate::render::{AudioSource, BlockContext, RenderError};
+use crate::render::{AudioSource, BlockContext, LaneKeyRoute, RenderError};
 
 /// 插件效果器包装源。
 pub struct PluginEffectSource {
@@ -103,6 +103,17 @@ impl AudioSource for PluginEffectSource {
         self.inner.seek_to(frame)?;
         self.position = frame;
         Ok(())
+    }
+
+    /// ⭐ 逐件＋侧链落点修复（2026-11-19）：lane 键路由转发给内层源。
+    ///
+    /// 本源只处理内层求和输出，键路由的落点在内层（分组源）里；
+    /// 不转发 ⇒ 特征缺省 `false` 会让 `RenderPlan::execute` 把一条
+    /// 本可落点的路由误判成"源不是逐件分组源"而响亮失败 —— 假拒绝
+    /// 与假收据同样不可接受。内层不是分组源时其 `false` 原样上传，
+    /// 真无落点仍旧响亮失败。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        self.inner.attach_lane_keys(routes)
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {

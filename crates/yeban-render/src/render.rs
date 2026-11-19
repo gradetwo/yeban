@@ -238,6 +238,13 @@ pub trait AudioSource: Send + Sync {
     /// 返回 `true` = 已接受并将在渲染时求值；缺省 `false` = 本源不接受
     /// ⇒ [`RenderPlan::execute`] 响亮失败（⛔ 不静默丢弃已求值的路由：
     /// 收据已经把这条边算作已求值，源不兑现就是假收据）。
+    ///
+    /// ⚠ **包装型源的转发纪律**（2026-11-19 落点修复）：探针 / 复合 /
+    /// 自动化门 / 效果器包装等一切"包住另一个源"的类型，必须把本调用
+    /// 转发给内层源，与 `seek_to` 同一条纪律。漏转发时缺省 `false`
+    /// 会把**本可落点**的路由误判成无落点 ⇒ 整次渲染假失败（出厂
+    /// 侧链预置 trap/phonk 经 MCP 端到端渲染正是这样被拒的：
+    /// 最内层明明是分组源，隔着三层包装够不着）。
     fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
         let _ = routes;
         false
