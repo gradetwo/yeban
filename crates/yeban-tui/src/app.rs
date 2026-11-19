@@ -28,7 +28,8 @@ use yeban_model::ids::EntityId;
 use yeban_model::music::MidiNote;
 use yeban_model::ops::Op;
 use yeban_model::project::{
-    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, TrackKind, YebanProjectV1,
+    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, MAX_BPM, MIN_BPM, TrackKind,
+    YebanProjectV1,
 };
 
 use crate::keymap::{Mode, Pane, ViMachine, ViMotion, ViOutcome, to_logical};
@@ -1063,8 +1064,14 @@ impl App {
 
     /// 设工程速度（BPM）：走 `Op::SetTempo`，可撤销。
     pub fn set_tempo(&mut self, new_bpm: f64) {
+        if !new_bpm.is_finite() || !(MIN_BPM..=MAX_BPM).contains(&new_bpm) {
+            self.log_line(format!(
+                "速度越界：BPM 须为 {MIN_BPM:.0}..={MAX_BPM:.0} 之间的有限值"
+            ));
+            return;
+        }
         let old_bpm = self.project.bpm;
-        if (old_bpm - new_bpm).abs() < f64::EPSILON {
+        if new_bpm.to_bits() == old_bpm.to_bits() {
             self.log_line(format!("速度已是 {new_bpm:.1} BPM，无变化"));
             return;
         }
@@ -1715,8 +1722,15 @@ impl App {
             "tempo" => {
                 // :tempo <bpm> —— 设工程速度（经撤销端口提交，可撤销）。
                 match rest.parse::<f64>() {
-                    Ok(bpm) if bpm > 0.0 => self.set_tempo(bpm),
-                    _ => self.log_line("用法：:tempo <BPM>".to_owned()),
+                    Ok(bpm) if bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(&bpm) => {
+                        self.set_tempo(bpm);
+                    }
+                    Ok(_) => self.log_line(format!(
+                        "速度越界：BPM 须为 {MIN_BPM:.0}..={MAX_BPM:.0} 之间的有限值"
+                    )),
+                    Err(_) => {
+                        self.log_line(format!("用法：:tempo <BPM>（{MIN_BPM:.0}..={MAX_BPM:.0}）"))
+                    }
                 }
             }
             "stop" => self.stop(),
@@ -1897,5 +1911,87 @@ mod tests {
         app.execute_command("demo!");
         assert!(!app.dirty);
         assert_eq!(app.project.bpm.to_bits(), default_bpm.to_bits());
+    }
+
+    #[test]
+    fn tempo_rejects_non_finite_and_out_of_bounds_via_command_and_method() {
+        let mut app = App::with_demo().expect("demo app");
+        let initial_bpm = app.project.bpm;
+
+        for cmd in [
+            "tempo NaN",
+            "tempo inf",
+            "tempo +inf",
+            "tempo -inf",
+            "tempo 0",
+            "tempo -10",
+            "tempo 19.9",
+            "tempo 999.1",
+            "tempo 1000",
+        ] {
+            app.execute_command(cmd);
+            assert_eq!(
+                app.project.bpm.to_bits(),
+                initial_bpm.to_bits(),
+                "{cmd} should not change bpm"
+            );
+            assert!(!app.dirty, "{cmd} should not mark dirty");
+            assert!(
+                app.log.last().is_some_and(|line| line.contains("速度越界")),
+                "{cmd} should log range error, got {:?}",
+                app.log.last()
+            );
+        }
+
+        for cmd in ["tempo abc", "tempo"] {
+            app.execute_command(cmd);
+            assert_eq!(app.project.bpm.to_bits(), initial_bpm.to_bits());
+            assert!(!app.dirty);
+            assert!(
+                app.log.last().is_some_and(|line| line.contains("用法")),
+                "{cmd} should log usage, got {:?}",
+                app.log.last()
+            );
+        }
+
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            -5.0,
+            MIN_BPM - 0.1,
+            MAX_BPM + 0.1,
+        ] {
+            app.set_tempo(bad);
+            assert_eq!(app.project.bpm.to_bits(), initial_bpm.to_bits());
+            assert!(!app.dirty);
+            assert!(app.log.last().is_some_and(|line| line.contains("速度越界")));
+        }
+    }
+
+    #[test]
+    fn tempo_accepts_inclusive_bounds_and_dedups_same_value() {
+        let mut app = App::with_demo().expect("demo app");
+
+        app.execute_command("tempo 20");
+        assert_eq!(app.project.bpm.to_bits(), MIN_BPM.to_bits());
+        assert!(app.dirty);
+
+        app.execute_command("tempo 999");
+        assert_eq!(app.project.bpm.to_bits(), MAX_BPM.to_bits());
+
+        app.execute_command("tempo 128.5");
+        assert!((app.project.bpm - 128.5).abs() < 1e-9);
+
+        app.undo(1);
+        assert_eq!(app.project.bpm.to_bits(), MAX_BPM.to_bits());
+
+        // Same-value tempo is a no-op and does not push a duplicate undo entry.
+        app.execute_command("tempo 999");
+        assert!(app.log.last().is_some_and(|line| line.contains("无变化")));
+        app.undo(1);
+        assert_eq!(app.project.bpm.to_bits(), MIN_BPM.to_bits());
     }
 }
