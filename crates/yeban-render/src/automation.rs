@@ -39,8 +39,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：115 个拼写 = 69 个字段，含别名；
-//!   通道条 32（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5 ＋ 瞬态塑形 2 ＋ 比特碾碎 3）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：123 个拼写 = 76 个字段，含别名；
+//!   通道条 32（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 5 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker ＋ 2 ms_mid）＋ 磁带饱和 5 ＋ Freeverb 6 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5 ＋ 瞬态塑形 2 ＋ 比特碾碎 3 ＋ 噪声源 5）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
@@ -1190,6 +1190,12 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "crush_bits",
     "crush_down",
     "crush_aa",
+    // 噪声源（5 = 5 个字段；D5 新器件，⛔ 无别名：裸 `level` / `seed` 过泛、易撞名）。
+    "noise_level",
+    "noise_color",
+    "noise_crackle_density",
+    "noise_crackle_level",
+    "noise_seed",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1252,6 +1258,10 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
         }
         DeviceParamField::Crusher(field) => {
             let params = crate::inserts::crusher_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Noise(field) => {
+            let params = crate::inserts::noise_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
         }
     }
@@ -1319,6 +1329,7 @@ fn applicable_device_param(
         DeviceParamFamily::Crusher => {
             crate::inserts::crusher_source_slot(track) == Some(slot_index)
         }
+        DeviceParamFamily::Noise => crate::inserts::noise_source_slot(track) == Some(slot_index),
     };
     if !slot_is_source {
         return None;
@@ -1911,6 +1922,9 @@ pub fn forced_insert_instances(
                 }
                 DeviceParamFamily::Crusher => {
                     forced.crusher.insert(*track_id);
+                }
+                DeviceParamFamily::Noise => {
+                    forced.noise.insert(*track_id);
                 }
             }
         }
@@ -3424,6 +3438,39 @@ mod tests {
             0.0,
             0.7,
         ),
+        // 噪声源 5 字段（D5 新器件）：两端落在器件合法域内、差值足够大。
+        // 种子沿泳道渐变时按块取整重播种（块边界语义），本表只要求落点
+        // 与恒等判定成立。
+        (
+            DeviceParamField::Noise(yeban_dsp::device_param::NoiseField::Level),
+            "noise_level",
+            0.0,
+            0.05,
+        ),
+        (
+            DeviceParamField::Noise(yeban_dsp::device_param::NoiseField::Color),
+            "noise_color",
+            0.85,
+            0.2,
+        ),
+        (
+            DeviceParamField::Noise(yeban_dsp::device_param::NoiseField::CrackleDensity),
+            "noise_crackle_density",
+            0.0,
+            6.0,
+        ),
+        (
+            DeviceParamField::Noise(yeban_dsp::device_param::NoiseField::CrackleLevel),
+            "noise_crackle_level",
+            0.0,
+            0.5,
+        ),
+        (
+            DeviceParamField::Noise(yeban_dsp::device_param::NoiseField::Seed),
+            "noise_seed",
+            2026.0,
+            7.0,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -3561,10 +3608,11 @@ mod tests {
             + yeban_dsp::device_param::LimiterField::SPELLINGS.len()
             + yeban_dsp::device_param::ClipperField::SPELLINGS.len()
             + yeban_dsp::device_param::TransientField::SPELLINGS.len()
-            + yeban_dsp::device_param::CrusherField::SPELLINGS.len();
+            + yeban_dsp::device_param::CrusherField::SPELLINGS.len()
+            + yeban_dsp::device_param::NoiseField::SPELLINGS.len();
         assert_eq!(
-            expected_len, 118,
-            "61 + 9 + 8 + 15 + 10 + 5 + 5 + 2 + 3 = 118 个拼写"
+            expected_len, 123,
+            "61 + 9 + 8 + 15 + 10 + 5 + 5 + 2 + 3 + 5 = 123 个拼写"
         );
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
@@ -3600,6 +3648,11 @@ mod tests {
                     .iter()
                     .map(|(name, _)| *name),
             )
+            .chain(
+                yeban_dsp::device_param::NoiseField::SPELLINGS
+                    .iter()
+                    .map(|(name, _)| *name),
+            )
             .collect();
         expected.sort_unstable();
         assert_eq!(sorted, expected, "名单必须与各张 SPELLINGS 完全一致");
@@ -3624,7 +3677,7 @@ mod tests {
         }
     }
 
-    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**71 个字段各一条**（118 个拼写逐个跑）—— 泳道从静态值
+    /// ⭐ `#267`/`#293`/`#304` 判据 1/2：**76 个字段各一条**（123 个拼写逐个跑）—— 泳道从静态值
     /// 渐变到终点值 ⇒ 求值器把**这个字段**接上（`field()` / `param_name()` / 静态值），
     /// 曲线在块边界上单调，且恒等判定为假。别名与规范名解析到**同一个**落点。
     #[test]
