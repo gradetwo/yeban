@@ -412,10 +412,7 @@ mod tests {
         assert_eq!(detection.evidence_count, 0);
         assert_eq!(detection.named_key_region_count, 3);
         assert_eq!(detection.sampled_region_count, 3);
-        assert_eq!(
-            detection.miss_reason,
-            Some(NotationMissReason::NoEvidence)
-        );
+        assert_eq!(detection.miss_reason, Some(NotationMissReason::NoEvidence));
         assert_eq!(detection.miss_reason.unwrap().machine_name(), "no_evidence");
         assert_eq!(detection.suspected_shift, None);
         // 对照：音名拼写为零（纯数字）时零证据仍是 TooFewEvidence。

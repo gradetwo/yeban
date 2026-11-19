@@ -26709,7 +26709,10 @@ mod tests {
     #[test]
     fn set_track_sampler_object_field_names_are_pinned() {
         assert_eq!(SET_TRACK_SAMPLER_PATH_FIELD, "path");
-        assert_eq!(SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD, "noteOctaveOverride");
+        assert_eq!(
+            SET_TRACK_SAMPLER_OCTAVE_OVERRIDE_FIELD,
+            "noteOctaveOverride"
+        );
         assert_eq!(
             SET_TRACK_SAMPLER_OBJECT_FIELDS,
             ["path", "noteOctaveOverride"]

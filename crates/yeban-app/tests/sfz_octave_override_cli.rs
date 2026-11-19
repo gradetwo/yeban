@@ -158,9 +158,7 @@ fn project_with_notes(
     }
     let track = project.tracks.get_mut(&track_id).expect("轨必须在");
     let first_placement = track.clips.keys().next().copied().expect("轨必须有摆放");
-    track
-        .clips
-        .retain(|id, _| *id == first_placement);
+    track.clips.retain(|id, _| *id == first_placement);
     let clip_id = track
         .clips
         .values()
@@ -206,8 +204,8 @@ fn yamaha_named_keys_without_evidence_are_silent_and_loudly_reported() {
     let sfz = write_yamaha_fixture(&dir);
     let project = project_with_notes(&sfz, &[60, 61, 62], None);
 
-    let out = render_project_f32_with_assets(&project, float_options(), None, &[])
-        .expect("渲染必须成功");
+    let out =
+        render_project_f32_with_assets(&project, float_options(), None, &[]).expect("渲染必须成功");
     assert_eq!(peak(&out.samples), 0.0, "按作者键位触发必须全静音（复现）");
     assert_eq!(out.sfz_decoded.len(), 1, "恰一份解码报告");
     let report = &out.sfz_decoded[0].1;
@@ -268,7 +266,10 @@ fn override_plus_twelve_matches_the_numeric_copy_bit_for_bit() {
     let plain = project_with_notes(&numeric, &[60, 61, 62], None);
     let reference = render_project_f32_with_assets(&plain, float_options(), None, &[])
         .expect("数字副本渲染必须成功");
-    assert!(peak(&reference.samples) > 0.0, "数字副本必须出声（夹具前提）");
+    assert!(
+        peak(&reference.samples) > 0.0,
+        "数字副本必须出声（夹具前提）"
+    );
     assert_eq!(
         bits(&auto.samples),
         bits(&reference.samples),
@@ -302,8 +303,8 @@ fn declared_shift_always_adds_and_override_forms_the_external_layer() {
 
     // (a) 在、按 IPN 原位 48 写 ⇒ 全打空。
     let at48 = project_with_notes(&declared, &[48, 49, 50], None);
-    let out = render_project_f32_with_assets(&at48, float_options(), None, &[])
-        .expect("渲染必须成功");
+    let out =
+        render_project_f32_with_assets(&at48, float_options(), None, &[]).expect("渲染必须成功");
     assert_eq!(peak(&out.samples), 0.0);
     assert_eq!(out.sfz_decoded[0].1.unmatched_note_count, 3);
 
@@ -353,9 +354,7 @@ fn the_cli_sfz_load_lines_carry_the_no_evidence_conclusion() {
     let options = yeban_app::cli::parse(&argv).expect("命令行必须解析");
     let lines = yeban_app::cli::run_batch(&options).expect("批处理必须成功");
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("reason=no_evidence")),
+        lines.iter().any(|line| line.contains("reason=no_evidence")),
         "--sfz 的可见输出必须带零证据结论: {lines:?}"
     );
 }
