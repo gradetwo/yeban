@@ -885,11 +885,17 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
+                        // 权重分级（2026-11-19 实测）：停止的方符是 9×9 实心块，却用
+                        // skin-text-strong（近白）常亮 —— 空转时它就是整条走带上最重
+                        // 的一块，压过了绿三角的播放与红圆的录音（两级语义本来就该
+                        // 更亮）。改法：**不播放时降到 body（中灰）**，边界提成 line
+                        // 让格子还在；**播放/录音中才提亮到 strong**（此时停止才是
+                        // 该按的那个键）。填充形状、尺寸、点击语义一位未动。
                         background: (!root.is-playing && !root.is-recording) ? Tokens.bg-lane2 : (btn_stop_touch.has-hover ? Tokens.bg-lane2 : transparent);
                         border-width: (!root.is-playing && !root.is-recording) ? 1px : (btn_stop_touch.has-hover ? 1px : 0);
-                        border-color: (!root.is-playing && !root.is-recording) ? Tokens.bg-panel-alt : Tokens.bg-panel-alt;
+                        border-color: (root.is-playing || root.is-recording) ? Tokens.line-strong : Tokens.line;
                         IconTransportStop {
-                            icon-color: (!root.is-playing && !root.is-recording) ? Tokens.skin-text-strong : (btn_stop_touch.has-hover ? Tokens.skin-text-body : Tokens.skin-text-dim);
+                            icon-color: (root.is-playing || root.is-recording) ? Tokens.skin-text-strong : (btn_stop_touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                         }
                         btn_stop_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;

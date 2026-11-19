@@ -1750,7 +1750,7 @@ export component MainWindow inherits Window {
                     y: 0px;
                     width: 24px;
                     height: parent.height;
-                    text: "✕";
+                    text: "×";
                     color: Tokens.ink-2;
                     font-family: Tokens.font-ui;
                     font-size: 10px;
@@ -1843,7 +1843,10 @@ export component MainWindow inherits Window {
             y: 54px;
             width: 310px;
             height: 34px;
-            background: Tokens.bg-void.with-alpha(0.96);
+            // 底色必须**不透明**（2026-11-19 实测）：原先 `bg-void.with-alpha(0.96)`
+            // 有 4% 透明，浮在标尺上方时底下的「2 / 3」与缩放胶囊 `H− H+ V− V+`
+            // 会透进来，两行字叠在一起读不清 —— 这条浮层的唯一职责就是让人读到它。
+            background: Tokens.bg-void;
             border-radius: 6px;
             border-width: 1px;
             border-color: (root.toast-is-error ? Tokens.record-red : Theme.accent).with-alpha(0.6);
@@ -1880,14 +1883,21 @@ export component MainWindow inherits Window {
                 }
 
                 // 手动收起：清文案与常显位（⛔ 不另设"已关闭"布尔 —— 两个状态会互相打脸）。
+                // 收起键要**看得出是个按钮**（2026-11-19 实测）：原先底色是
+                // `skin-hairline`（白 7% alpha）压在深色浮层上几乎等于没有，实机里
+                // 只是一个深色圆斑、✕ 也读不出来 ⇒ 改成实底 `bg-lane2` + 1px 描边。
                 Rectangle {
                     width: 18px;
                     height: 18px;
                     y: 8px;
                     border-radius: 9px;
-                    background: Tokens.skin-hairline;
+                    background: Tokens.bg-lane2;
+                    border-width: 1px;
+                    border-color: Tokens.line;
                     Text {
-                        text: "✕";
+                        width: parent.width;
+                        height: parent.height;
+                        text: "×";
                         font-family: Tokens.font-ui;
                         font-size: 10.5px;
                         color: Tokens.skin-text-body;
@@ -2341,4 +2351,5 @@ export component MainWindow inherits Window {
         }
     }
 }
+
 

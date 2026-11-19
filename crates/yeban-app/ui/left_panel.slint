@@ -13,6 +13,8 @@ component SectionHeader inherits Rectangle {
     HorizontalLayout {
         spacing: 6px;
         padding-left: 2px;
+        // 右端留出 8px：折叠箭头原本贴着滚动指示条，三角的右侧尖角被压住。
+        padding-right: 8px;
 
         Rectangle {
             width: 2px;
@@ -39,12 +41,22 @@ component SectionHeader inherits Rectangle {
             horizontal-stretch: 1;
             overflow: elide;
         }
-        Text {
-            text: root.open ? "▾" : "▸";
-            font-family: Tokens.font-mono;
-            font-size: 9px;
-            color: Tokens.skin-text-dim;
-            vertical-alignment: center;
+        // 折叠箭头必须**画出来**，不能指望字体（2026-11-19 实测）：`▾` / `▸`
+        // 在本机 UI 字体里没有字形，实机渲染成一小块残缺像素 —— 就是检查器里
+        // `TRACK` 行右端那个灰点（12× 帧可辨）。分组"能不能折叠"全靠这个记号，
+        // 于是一整排分组头都没法读 ⇒ 改成三角 Path（与走带按钮同一门手艺）。
+        // 展开 = 朝下的三角，折叠 = 朝右的三角，都在 7×7 视图里画。
+        // ⚠ Path 必须裹在定尺寸盒里：直接放进 HorizontalLayout 会被纵向拉满
+        // 22px 行高，三角被拉成尖长的箭头（实机第一版就是这样）。
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            Path {
+                width: 7px;
+                height: 7px;
+                commands: root.open ? "M 0 1.5 L 7 1.5 L 3.5 5.5 Z" : "M 1.5 0 L 5.5 3.5 L 1.5 7 Z";
+                fill: Tokens.skin-text-dim;
+            }
         }
     }
     header_touch := TouchArea {
