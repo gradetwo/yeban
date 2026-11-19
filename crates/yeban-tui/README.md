@@ -82,7 +82,7 @@ Vi 层。
 | 撤销 / 重做 | `Ctrl+Z` / `Ctrl+Shift+Z` | 同键；另加 Vi `u`（可带计数）/ `Ctrl+R`（二期 K3 改判） | 已接（走 `UndoPort`，与 GUI 同一撤销栈） |
 | 删除选区 | `Delete` / `Backspace` | 同键 → 片段网格焦点下删光标处片段摆放 | 已接（摆放级，经撤销端口） |
 | 片段平移 | （GUI 鼠标拖动，无键） | 片段网格焦点下 `H` / `L` 按小节平移（计数 = 小节数） | TUI 新增（经撤销端口） |
-| 播放头定位 | （GUI 点标尺） | `:seek <小节号（0 起）>` | TUI 命令 |
+| 播放头定位 | （GUI 点标尺） | `:seek <小节号（1 起）>` | TUI 命令 |
 | 工程速度 | （GUI 走带区 BPM 框） | `:tempo <BPM>` | TUI 命令（经撤销端口） |
 | 选中轨静音 | `M` | `M`（同） | 已接 |
 | 选中轨独奏 | `S` | `S`（同） | 已接 |
@@ -133,7 +133,7 @@ Vi 层新增（仅导航与模式，不占共享动作）：
 （`Op::RemoveClip`；有摆放引用时模型拒绝、日志如实报），`Esc` 返回。
 
 Command 命令集：`q`、`q!`、`w [path]`、`wq [path]`、`play`、`stop`、
-`rewind`、`seek <小节号>`、`tempo <BPM>`、`export wav <path>`、`open[!] <path>`、
+`rewind`、`seek <小节号（1 起）>`、`tempo <BPM>`、`export wav <path>`、`open[!] <path>`、
 `demo[!]`、`notes`、`pool`。
 
 ## 冲突清单（逐条，按「共享动作从 GUI、导航从 Vi」解）

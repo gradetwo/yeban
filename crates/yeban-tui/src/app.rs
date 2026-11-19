@@ -300,17 +300,24 @@ impl App {
         usize::try_from(self.project_len_ticks().div_ceil(bar)).unwrap_or(usize::MAX)
     }
 
-    /// 当前位置（小节，拍，tick 余数），均 0 起。
+    /// 当前位置（小节，拍，tick 余数）：小节与拍均从 1 起（与标尺及 GUI 一致），tick 余数从 0 起。
     #[must_use]
     pub fn position_bar_beat(&self) -> (u64, u64, u64) {
         let ticks = self.transport().position_ticks;
         let per_beat = self.ticks_per_beat().max(1);
         let per_bar = self.bar_ticks().max(1);
         (
-            ticks / per_bar,
-            (ticks % per_bar) / per_beat,
+            ticks / per_bar + 1,
+            (ticks % per_bar) / per_beat + 1,
             ticks % per_beat,
         )
+    }
+
+    /// 播放头所在小节下标（0 起，供网格标尺与横向跟随对齐 `cursor_bar`）。
+    #[must_use]
+    pub fn playhead_bar_index(&self) -> usize {
+        let per_bar = self.bar_ticks().max(1);
+        usize::try_from(self.transport().position_ticks / per_bar).unwrap_or(usize::MAX)
     }
 
     /// 选中轨身份。
@@ -1053,13 +1060,15 @@ impl App {
         self.view_move_selection(0);
     }
 
-    /// 定位播放头到第 `bar` 小节（0 起；走带状态，非文档编辑，不进撤销史）。
-    pub fn seek_to_bar(&mut self, bar: usize) {
-        let ticks = u64::try_from(bar).unwrap_or(0) * self.bar_ticks();
+    /// 定位播放头到第 `bar_index` 小节（内部 0 起下标；走带状态，非文档编辑，不进撤销史）。
+    pub fn seek_to_bar(&mut self, bar_index: usize) {
+        let ticks = u64::try_from(bar_index)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(self.bar_ticks());
         self.host
             .send_transport(&[TransportCommand::SeekTicks(ticks)]);
-        self.cursor_bar = bar;
-        self.log_line(format!("定位到第 {} 小节", bar + 1));
+        self.cursor_bar = bar_index;
+        self.log_line(format!("定位到第 {} 小节", bar_index + 1));
     }
 
     /// 设工程速度（BPM）：走 `Op::SetTempo`，可撤销。
@@ -1713,10 +1722,13 @@ impl App {
                 self.log_line("播放".to_owned());
             }
             "seek" => {
-                // :seek <bar> —— 播放头定位到第 bar 小节（0 起，与小节光标同读数）。
+                // :seek <bar> —— 播放头定位到第 bar 小节（1 起，与标尺及顶栏读数一致）。
                 match rest.parse::<usize>() {
-                    Ok(bar) => self.seek_to_bar(bar),
-                    Err(_) => self.log_line("用法：:seek <小节号（0 起）>".to_owned()),
+                    Ok(0) => {
+                        self.log_line("小节号从 1 起：用法 :seek <小节号（1 起）>".to_owned());
+                    }
+                    Ok(bar) => self.seek_to_bar(bar - 1),
+                    Err(_) => self.log_line("用法：:seek <小节号（1 起）>".to_owned()),
                 }
             }
             "tempo" => {
@@ -1993,5 +2005,78 @@ mod tests {
         assert!(app.log.last().is_some_and(|line| line.contains("无变化")));
         app.undo(1);
         assert_eq!(app.project.bpm.to_bits(), MIN_BPM.to_bits());
+    }
+
+    #[test]
+    fn position_bar_beat_and_playhead_index_are_consistent() {
+        let mut app = App::with_demo().expect("demo app");
+        assert_eq!(app.position_bar_beat(), (1, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 0);
+        assert_eq!(app.cursor_bar, 0);
+
+        app.execute_command("seek 1");
+        assert_eq!(app.position_bar_beat(), (1, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 0);
+        assert_eq!(app.cursor_bar, 0);
+        assert_eq!(app.transport().position_ticks, 0);
+
+        app.execute_command("seek 3");
+        assert_eq!(app.position_bar_beat(), (3, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 2);
+        assert_eq!(app.cursor_bar, 2);
+        assert_eq!(app.transport().position_ticks, 2 * app.bar_ticks());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("第 3 小节"))
+        );
+
+        let mid_ticks = app.bar_ticks() + app.ticks_per_beat() + 123;
+        app.host
+            .send_transport(&[TransportCommand::SeekTicks(mid_ticks)]);
+        assert_eq!(app.position_bar_beat(), (2, 2, 123));
+        assert_eq!(app.playhead_bar_index(), 1);
+    }
+
+    #[test]
+    fn seek_zero_and_invalid_args_are_rejected_without_moving_state() {
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("seek 2");
+        assert_eq!(app.cursor_bar, 1);
+        assert_eq!(app.transport().position_ticks, app.bar_ticks());
+
+        app.execute_command("seek 0");
+        assert_eq!(app.cursor_bar, 1);
+        assert_eq!(app.transport().position_ticks, app.bar_ticks());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("小节号从 1 起"))
+        );
+
+        for cmd in ["seek -1", "seek abc", "seek"] {
+            app.execute_command(cmd);
+            assert_eq!(app.cursor_bar, 1, "{cmd} should not move cursor_bar");
+            assert_eq!(
+                app.transport().position_ticks,
+                app.bar_ticks(),
+                "{cmd} should not move playhead"
+            );
+            assert!(
+                app.log
+                    .last()
+                    .is_some_and(|line| line.contains("用法：:seek")),
+                "{cmd} should log usage, got {:?}",
+                app.log.last()
+            );
+        }
+    }
+
+    #[test]
+    fn seek_large_bar_does_not_overflow_or_panic() {
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command(&format!("seek {}", usize::MAX));
+        assert_eq!(app.cursor_bar, usize::MAX - 1);
+        assert_eq!(app.transport().position_ticks, u64::MAX);
     }
 }

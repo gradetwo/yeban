@@ -70,7 +70,7 @@ fn layout_renders_demo_project_panes() {
         "贝斯",
         "Master",
         "NORMAL",
-        "000.0",
+        "001.1",
         "▼",
         "乐器",
         "音量",
@@ -343,13 +343,13 @@ fn grid_clip_move_delete_tempo_and_seek() {
     app.handle_key(char_key('u'));
     assert_eq!(app.project.bpm, old_bpm, "u 应恢复速度");
 
-    // :seek 定位播放头（走带状态，不进撤销史）。
-    app.execute_command("seek 2");
+    // :seek 定位播放头（1 起小节号；走带状态，不进撤销史）。
+    app.execute_command("seek 3");
     app.tick();
     assert_eq!(app.cursor_bar, 2);
     assert_eq!(
         app.transport().position_ticks,
         2 * app.bar_ticks(),
-        ":seek 应把播放头定位到第 2 小节起点"
+        ":seek 3 应把播放头定位到第 3 小节（下标 2）起点"
     );
 }
