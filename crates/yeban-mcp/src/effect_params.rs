@@ -925,8 +925,63 @@ const CRUSHER: EffectGroup = EffectGroup {
     ],
 };
 
+/// 噪声源：连续底噪（白 ↔ 粉红）＋爆裂声的加性源（鼓机缺口 D5 新器件；
+/// 本体在 `yeban-dsp` `noise_source.rs`，落点表是 `NoiseField`）。
+const NOISE: EffectGroup = EffectGroup {
+    id: "noise",
+    title: "噪声源",
+    summary: "插入链唯一的加性源：静音输入也产出底噪与爆裂声（黑胶表面层）。插入链位置在采样延迟之后、通道条之前（链头），噪声与节目一起被后续全部级处理；末级限制器仍在其后兜底峰值。随机流只由 noise_seed 决定，同种子同输出、双渲逐位一致。level 为 0 且爆裂声关时逐位恒等。",
+    params: &[
+        EffectParam {
+            name: "noise_level",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "连续底噪电平（线性）：0 = 无底噪；0.035 是 lofi 出厂黑胶底噪量级",
+        },
+        EffectParam {
+            name: "noise_color",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            doc: "噪声颜色：0 = 白噪声、1 = 粉红噪声，中间为混合；两端响度已归一化（±2 dB 内）。缺省 1（粉红，黑胶底噪的频谱形状）",
+        },
+        EffectParam {
+            name: "noise_crackle_density",
+            aliases: &[],
+            unit: "/s",
+            min: 0.0,
+            max: 240.0,
+            default: 0.0,
+            doc: "爆裂声密度（次/秒/声道）：0 = 无爆裂声；5 是旧唱片量级，左右声道独立排布",
+        },
+        EffectParam {
+            name: "noise_crackle_level",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "爆裂声电平：单个事件的峰值量级；0 = 无爆裂声（密度再大也不响）",
+        },
+        EffectParam {
+            name: "noise_seed",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 16_777_215.0,
+            default: 0.0,
+            doc: "随机种子（取整使用）：同种子同输出，渲染可复现；换种子换一整套噪声与爆裂排布",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 14] = [
+pub const EFFECT_GROUPS: [EffectGroup; 15] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
@@ -941,6 +996,7 @@ pub const EFFECT_GROUPS: [EffectGroup; 14] = [
     CLIPPER,
     TRANSIENT,
     CRUSHER,
+    NOISE,
 ];
 
 /// 按名字（大小写不敏感）查一个参数的归属。
