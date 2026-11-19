@@ -399,6 +399,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         cli::ProjectSource::File { path, .. } => path.parent().map(std::path::Path::to_path_buf),
         cli::ProjectSource::Sample(_) => None,
     };
+    // ⭐ **缺音源清单**（本票）：与渲染用**同一条**解析（`resolve_sampler_path`），
+    // 因此"这里说缺、引擎却读得到"这种自相矛盾不可能出现。只在进界面之前算一次。
+    let missing_sounds =
+        yeban_app::missing_sounds::collect(&loaded.archive.project, project_dir.as_deref());
     let mut engine = host::ProductionLoop::start_with_audio_source_and_project_dir(
         &loaded.archive.project,
         0,
@@ -409,9 +413,18 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
         // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
         // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
-        cli::emit(&[format!(
-            "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
-        )]);
+        //
+        // ⭐ **界面也要出声**（本票）：此前这条只走终端（`cli::emit`），GUI 里
+        // 一片正常 —— 用户按播放没反应、电平不动，而唯一的原因只写在控制台。
+        // 现在同一段原文同时投进既有的「引擎错误横幅」（`engine-error`，
+        // 唯一写者仍是 `host::apply_engine_error`，⛔ 不新增第二条通道）：
+        // 横幅可关闭、可在无头控件树里按 ID 寻址，读屏也会播。
+        let text = format!("走带未接线 —— 引擎快照投影失败: {error}");
+        cli::emit(&[format!("yeban-app: {text}")]);
+        host::apply_engine_error(
+            &ui,
+            host::EnginePublishOutcome::Failed(text.as_str()),
+        );
         host::ProductionLoop::without_engine()
     });
     if engine.has_engine() {
@@ -460,10 +473,16 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 opening.carryover_position_ticks,
                 opening.carryover_state,
             )]),
-            Err(error) => cli::emit(&[format!(
-                "音频设备: **未接线**（{error}）⇒ 降级为控制面驱动：墙钟泵送按真实时间推量子（无声）；\
-                 界面、走带与电平照常可用"
-            )]),
+            Err(error) => {
+                cli::emit(&[format!(
+                    "音频设备: **未接线**（{error}）⇒ 降级为控制面驱动：墙钟泵送按真实时间推量子（无声）；\
+                     界面、走带与电平照常可用"
+                )]);
+                // 同上一条口径：无声卡 / 打开失败这条**用户能听见差别**的事，
+                // ⛔ 不该只留在控制台。走既有 toast（不占错误横幅，因为引擎本身是好的）。
+                let text = format!("音频设备未接线：本会话无声（{error}）");
+                ui.set_toast_message(text.into());
+            }
         }
     }
     // ⭐ `#290`：把**场景启动口**接到形态 A 的进程内控制面。
@@ -1055,6 +1074,41 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ 音源管理对话框（line/sound-library-manager）：主菜单「设置 →
     // 音源管理...」的接线（打开才拉目录，⛔ 启动不联网）。
     host::wire_sound_library_dialog(&ui);
+    // ⭐ **缺音源的友好引导**（本票）：工程里绑着的 SFZ 本地解析不到时，
+    // 不再只在终端喊一串术语 —— 直接替用户打开音源管理、按缺失件筛好，
+    // 并在状态行写一句人话。用户要做的只剩"点一下下载"。
+    //
+    // ⚠ 顺序是契约：先 `invoke_open_sound_library`（它会重置状态行、清空搜索），
+    // 再写搜索词与状态行，最后用 `invoke_...filter_changed` 让列表按新搜索词重播。
+    if !missing_sounds.is_empty() {
+        let first = &missing_sounds[0];
+        let catalogued = missing_sounds.iter().filter(|m| m.pack_id.is_some()).count();
+        let summary = if catalogued > 0 {
+            format!(
+                "这个工程有 {} 条轨的音源没装（例如「{}」）。已为你筛出可下载的 {} 件，点「下载」即可装上。",
+                missing_sounds.len(),
+                first.track_name,
+                catalogued
+            )
+        } else {
+            format!(
+                "这个工程有 {} 条轨的音源没装（例如「{}」），它不在内置清单里。可在列表里挑一件同类音源下载，再用混音台的「…」把它指定给这条轨。",
+                missing_sounds.len(),
+                first.track_name
+            )
+        };
+        ui.invoke_open_sound_library();
+        // 横幅那条人话由 `host::apply_engine_error` 统一给（它才是唯一写者，
+        // 在这里覆写会被下一跳心跳打回去）。这里只补"已经替你打开"这一句。
+        let seed = missing_sounds
+            .iter()
+            .find_map(|m| m.pack_id.clone())
+            .unwrap_or_default();
+        ui.set_sound_library_search(seed.as_str().into());
+        ui.set_sound_library_status(summary.as_str().into());
+        ui.set_sound_library_status_is_error(false);
+        ui.invoke_sound_library_filter_changed(seed.as_str().into());
+    }
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
     // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处

@@ -78,6 +78,11 @@ pub mod audio_inject;
 pub mod audition;
 pub mod automation;
 pub mod bridge;
+// ⭐ **内置音源清单**（音源管理的「内置音源」区）：读 `assets/samples/manifest.json`，
+// 拼 GitHub 归档直链，交给 `sound_library` 的既有安装腿。⛔ 不手写第二份清单。
+pub mod builtin_sounds;
+// ⭐ **缺音源的友好引导**（打开工程时）：算出"哪条轨缺哪件、能不能一键装回来"。
+pub mod missing_sounds;
 pub mod cli;
 pub mod elements;
 pub mod engine_host;

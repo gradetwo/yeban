@@ -53,11 +53,15 @@ export component SoundLibraryDialog inherits Rectangle {
     in property <bool> status-is-error: false;
     // ---- 删除确认态（本文件自有：正在确认删除的行 id，空 = 无）-------------
     in-out property <string> confirm-delete-id: "";
+    // ---- 搜索原文（本文件自有；过滤由宿主按这份原文重播平行数组）-------------
+    in-out property <string> search-text: "";
 
     callback close();
     callback refresh-catalog();
     callback download-pack(string);
     callback delete-library(string);
+    callback filter-changed(string);
+    callback download-all();
 
     /// 列表可用宽度（面板宽减去左右留白）。
     property <length> list-w: Math.min(820px, root.width - 32px) - 48px;
@@ -349,11 +353,88 @@ export component SoundLibraryDialog inherits Rectangle {
             UiText {
                 x: Tokens.space-6;
                 y: 252px;
-                width: 200px;
+                width: 80px;
                 height: 18px;
                 text: @tr("可下载");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-md;
+            }
+
+            // 搜索框（按名字 / 分类 / 许可做子串匹配；空串 = 全部显示）
+            Rectangle {
+                x: Tokens.space-6 + 84px;
+                y: 246px;
+                width: Math.max(140px, root.list-w - 84px - 320px);
+                height: 28px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line;
+
+                sound-library-search-input := TextInput {
+                    x: 10px;
+                    y: 0;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text <=> root.search-text;
+                    single-line: true;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    accessible-role: text-input;
+                    accessible-id: "sound-library-search-input";
+                    accessible-label: @tr("搜索音源（名字 / 分类 / 许可）");
+                    accessible-value: root.search-text;
+                    accessible-read-only: false;
+                    edited => { root.filter-changed(self.text); }
+                }
+
+                // 占位提示（只在空串时出现，不挡输入）
+                if root.search-text == "" : UiText {
+                    x: 10px;
+                    y: 0;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: @tr("搜索音源…");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                }
+            }
+
+            // 一键下载全部（清单里还没装的，按顺序逐个下）
+            if root.catalog-state == 1 : Rectangle {
+                x: Tokens.space-6 + root.list-w - 300px;
+                y: 246px;
+                width: 96px;
+                height: 28px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "sound-library-download-all-button";
+                accessible-label: @tr("下载全部内置音源");
+                accessible-action-default => { root.download-all(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("全部下载");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.download-all(); }
+                }
             }
 
             // 拉不到时的重试钮（目录区右上角）
@@ -407,7 +488,9 @@ export component SoundLibraryDialog inherits Rectangle {
                 y: 330px;
                 width: root.list-w;
                 height: 20px;
-                text: @tr("无法获取下载目录，请检查网络后重试");
+                // ⚠ 不要用一句笼统的"检查网络"：原因就在 `status` 里（哪一步、哪条路径）。
+                // 用户按这句"检查网络"去排查，往往根本不是网络问题。
+                text: root.status == "" ? @tr("无法获取下载目录，请检查网络后重试") : root.status;
                 color: Tokens.warn-amber;
                 font-size: Tokens.font-size-sm;
                 horizontal-alignment: center;

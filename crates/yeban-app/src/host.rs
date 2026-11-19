@@ -6017,8 +6017,34 @@ pub fn apply_engine_error(ui: &MainWindow, outcome: EnginePublishOutcome<'_>) {
         EnginePublishOutcome::Published => ui.set_engine_error(slint::SharedString::new()),
         // 没有发布 ⇒ 一位不动（见 [`EnginePublishOutcome::Unchanged`] 的说明）。
         EnginePublishOutcome::Unchanged => {}
-        EnginePublishOutcome::Failed(text) => ui.set_engine_error(text.into()),
+        EnginePublishOutcome::Failed(text) => {
+            ui.set_engine_error(humanize_engine_error(text).into());
+        }
     }
+}
+
+/// ⭐ **把引擎错误翻译成一句人话**（设计原则见 `docs/UX-错误与提醒设计原则.md`）。
+///
+/// 为什么在这一层做：`apply_engine_error` 是 `engine-error` 的**唯一写者**，
+/// 在别处再覆写会被下一跳心跳打回去（`Failed` 每跳都可能重发）。原文一字不丢 ——
+/// 它照旧进终端日志（`cli::emit`），只是不再拿术语砸用户的脸。
+fn humanize_engine_error(raw: &str) -> String {
+    if raw.contains("SFZ") || raw.contains("sfz") {
+        return "有声轨道的音源没装好 · 打开「设置 › 音源管理」下载即可恢复声音".to_owned();
+    }
+    if raw.contains("音频设备") || raw.contains("设备打开") {
+        return "音频设备没打开（可能被其它程序占用）· 可在「设置 › 音频设备」换一个再试".to_owned();
+    }
+    if raw.contains("引擎快照") || raw.contains("投影失败") {
+        return "工程没能送进音频引擎 · 可在「诊断」里查看详情".to_owned();
+    }
+    // 兜底：短原文原样，长原文截断（字符安全截断，避免切在多字节中间）。
+    const MAX: usize = 48;
+    if raw.chars().count() <= MAX {
+        return raw.to_owned();
+    }
+    let head: String = raw.chars().take(MAX).collect();
+    format!("{head}…")
 }
 
 /// 电平腿（[`pump_meters`]）的三种结局 —— 三种都能被调用方与判据**分开**读。
@@ -10830,7 +10856,15 @@ fn publish_sound_installed(ui: &MainWindow) {
     for library in &installed {
         ids.push(library.id.clone());
         names.push(library.name.clone());
-        locations.push(library.location.to_string_lossy().into_owned());
+        // ⚠ 去掉 Windows 的 `\\?\` 长路径前缀：它对程序有用，对人 **是噪音**
+        // （界面上一行 `\\?\C:\...` 看着像出错）。只改显示，不改磁盘上的真实路径。
+        let shown = library
+            .location
+            .to_string_lossy()
+            .into_owned()
+            .trim_start_matches(r"\\?\")
+            .to_owned();
+        locations.push(shown);
         sizes.push(crate::sound_library::format_size(library.size_bytes));
         deletable.push(library.deletable);
     }
@@ -10853,7 +10887,16 @@ fn sound_installed_library_ids() -> Vec<String> {
 
 /// 把一份目录写进界面（唯一写 `sound-pack-*` 的地方），并把目录态
 /// 置为「已拿到」（包数组可以为空 —— 空是真实状态）。
-fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalog) {
+///
+/// `filter` 是搜索框的原文（空串 = 不过滤）：按**名字 / 分类 / 许可**三处做
+/// 大小写不敏感的子串匹配。过滤只影响**显示**的数组，`last_catalog` 里的全集
+/// 一位不动（否则清空搜索框就"丢包"了）。
+fn publish_sound_catalog(
+    ui: &MainWindow,
+    catalog: &crate::sound_library::Catalog,
+    filter: &str,
+) {
+    let needle = filter.trim().to_lowercase();
     let mut ids = Vec::with_capacity(catalog.packs.len());
     let mut names = Vec::with_capacity(catalog.packs.len());
     let mut versions = Vec::with_capacity(catalog.packs.len());
@@ -10862,6 +10905,16 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
     let mut installed_flags = Vec::with_capacity(catalog.packs.len());
     let installed_ids = sound_installed_library_ids();
     for pack in &catalog.packs {
+        // ⭐ 搜索词也匹 **id**：内置清单把 id 当作"安装后的目录名 / 一键筛出用的键"，
+        // 缺音源引导正是拿 id 预筛的（见 `missing_sounds`）。不匹 id ⇒ 引导打开了却空列表。
+        if !needle.is_empty()
+            && !pack.id.to_lowercase().contains(&needle)
+            && !pack.name.to_lowercase().contains(&needle)
+            && !pack.version.to_lowercase().contains(&needle)
+            && !pack.description.to_lowercase().contains(&needle)
+        {
+            continue;
+        }
         ids.push(pack.id.clone());
         names.push(pack.name.clone());
         versions.push(pack.version.clone());
@@ -10881,6 +10934,41 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
     ui.set_sound_pack_installed(booleans(&installed_flags));
     ui.set_sound_catalog_state(1);
 }
+
+/// ⭐ **内置音源清单 ⇒ 目录形状**（音源管理「可下载」区的唯一数据源）。
+///
+/// 为什么复用 `Catalog` 而不是再造一组属性：`sound_library_dialog.slint` 的三态、
+/// 逐行渲染、下载按钮、进度条全都已经围着 `CatalogPack` 长好了；把内置清单投影成
+/// 同一形状，界面只需要多一个「全部下载」按钮与一个搜索框。
+///
+/// 字段映射（逐字可读）：
+/// * `version` ← 分类（`Drums` / `Keys` …）—— 界面上就是那一列窄文字；
+/// * `description` ← `许可 · 文件数 · 作者`（由 [`BuiltinSound::detail`] 拼好）；
+/// * `sizeBytes` ← 登记表 `total_bytes`；
+/// * `sha256` ← **空串**（GitHub 归档没有上游摘要）⇒ 安装腿只做结构校验，
+///   下载回调也靠"空 sha + GitHub 归档地址"识别出这条该走内置音源腿；
+/// * `url` ← `https://github.com/<repo>/archive/<pin>.zip`。
+fn builtin_catalog() -> Result<crate::sound_library::Catalog, crate::sound_library::CatalogError> {
+    let sounds = crate::builtin_sounds::load_builtin_sounds()
+        .map_err(crate::sound_library::CatalogError::Unavailable)?;
+    let packs = sounds
+        .iter()
+        .filter_map(|sound| {
+            let url = sound.archive_url()?;
+            Some(crate::sound_library::CatalogPack {
+                id: sound.id.clone(),
+                name: sound.name.clone(),
+                description: sound.detail(),
+                version: sound.category.clone(),
+                size_bytes: sound.total_bytes,
+                sha256: String::new(),
+                url,
+            })
+        })
+        .collect();
+    Ok(crate::sound_library::Catalog { packs })
+}
+
 
 /// 只重算可下载列表的「已安装」标记（安装 / 删除后调用；目录本身
 /// 不重拉，⛔ 不让一次本地操作变成一次联网）。
@@ -11165,7 +11253,10 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
             let worker_state = state.clone();
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
-                let outcome = crate::sound_library::fetch_catalog();
+                // ⭐ 列表来源 = **内置音源清单**（`assets/samples/manifest.json`），
+                // ⛔ 不再等远端 `catalog.json`：远端长期不可达 ⇒ 列表永远是空的，
+                // 那正是"音源管理里什么都没有"的根因。
+                let outcome = builtin_catalog();
                 worker_state.finish_catalog(outcome);
                 let _ = worker_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_sound_library_drain_requested();
@@ -11219,6 +11310,23 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
             };
             ui.set_sound_catalog_state(0);
             start_catalog_fetch();
+        });
+    }
+
+    // ---- 搜索（只过滤显示，⛔ 不重拉清单、⛔ 不动 last_catalog）----------------
+    {
+        let weak = ui.as_weak();
+        let last_catalog = last_catalog.clone();
+        ui.on_sound_library_filter_changed(move |text| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let catalog = last_catalog.borrow().clone();
+            if let Some(catalog) = catalog {
+                let filter = text.to_string();
+                publish_sound_catalog(&ui, &catalog, &filter);
+            }
         });
     }
 
@@ -11279,10 +11387,143 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
                         });
                     }
                 };
-                let outcome = crate::sound_library::download_pack(&pack, &roots, &mut progress)
+                let outcome = {
+                    // ⭐ 内置音源腿：登记表里的包（空 sha256 + GitHub 归档地址）走
+                    // `builtin_sounds::download_builtin` —— 多两步（抹平归档外层目录、
+                    // 装完按文件数/字节数对账），其余与远端包**同一个** `download_pack`。
+                    let builtin = if pack.sha256.is_empty() && pack.url.contains("/archive/") {
+                        crate::builtin_sounds::load_builtin_sounds()
+                            .ok()
+                            .and_then(|sounds| sounds.into_iter().find(|s| s.id == pack_id))
+                    } else {
+                        None
+                    };
+                    match builtin {
+                        Some(sound) => {
+                            crate::builtin_sounds::download_builtin(&sound, &roots, &mut progress)
+                        }
+                        None => crate::sound_library::download_pack(&pack, &roots, &mut progress),
+                    }
                     .map(|installed| format!("已安装：{}", installed.name))
-                    .map_err(|err| err.message());
+                    .map_err(|err| err.message())
+                };
                 worker_state.finish_download(&pack.id, outcome);
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_sound_library_drain_requested();
+                });
+            });
+        });
+    }
+
+    // ---- 一键下载全部（内置音源清单）-----------------------------------------
+    //
+    // 语义：把**当前清单里还没装的**条目按顺序逐个下载安装。一个失败不中断整批
+    // （大件下载失败十有八九是网络抖动，停下来等于让用户从头点一遍），最后一行
+    // 如实报"成功几个 / 失败几个 / 第一个失败原因"。
+    {
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let last_catalog = last_catalog.clone();
+        ui.on_sound_library_download_all(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(catalog) = last_catalog.borrow().clone() else {
+                ui.set_sound_library_status("音源清单还在加载，请稍候再试".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            };
+            let installed_ids = sound_installed_library_ids();
+            let pending: Vec<crate::sound_library::CatalogPack> = catalog
+                .packs
+                .iter()
+                .filter(|pack| {
+                    !installed_ids
+                        .iter()
+                        .any(|id| id == &format!("user:{}", pack.id))
+                })
+                .cloned()
+                .collect();
+            if pending.is_empty() {
+                ui.set_sound_library_status("清单里的音源都已安装".into());
+                ui.set_sound_library_status_is_error(false);
+                return;
+            }
+            if !state.begin_download() {
+                ui.set_sound_library_status("已有音源包在下载中".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            }
+            let total = pending.len();
+            let total_bytes: u64 = pending
+                .iter()
+                .fold(0u64, |sum, pack| sum.saturating_add(pack.size_bytes));
+            let hint = if total_bytes > 0 {
+                format!(
+                    "开始下载 {total} 个音源（共约 {}，按顺序进行，可继续用界面）",
+                    crate::sound_library::format_size(total_bytes)
+                )
+            } else {
+                format!("开始下载 {total} 个音源（按顺序进行，可继续用界面）")
+            };
+            ui.set_sound_library_status(hint.as_str().into());
+            ui.set_sound_library_status_is_error(false);
+            let worker_state = state.clone();
+            let worker_weak = weak.clone();
+            std::thread::spawn(move || {
+                let roots = crate::sound_library::SoundRoots::production();
+                let sounds = crate::builtin_sounds::load_builtin_sounds().unwrap_or_default();
+                let mut failed: Vec<String> = Vec::new();
+                let mut done: usize = 0;
+                for pack in &pending {
+                    let pack_id = pack.id.clone();
+                    // 换到下一条：把"正在下谁"先播出去（百分比等第一块字节回来再刷）。
+                    worker_state.set_progress(&pack_id, -1);
+                    let ping_weak = worker_weak.clone();
+                    let _ = ping_weak.upgrade_in_event_loop(|ui| {
+                        ui.invoke_sound_library_drain_requested();
+                    });
+                    let mut progress = |downloaded: u64, total_bytes: Option<u64>| {
+                        let percent = match total_bytes {
+                            Some(total_bytes) if total_bytes > 0 => {
+                                i32::try_from(downloaded.saturating_mul(100) / total_bytes)
+                                    .unwrap_or(100)
+                                    .min(100)
+                            }
+                            _ => -1,
+                        };
+                        worker_state.set_progress(&pack_id, percent);
+                        let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                            ui.invoke_sound_library_drain_requested();
+                        });
+                    };
+                    let builtin = if pack.sha256.is_empty() && pack.url.contains("/archive/") {
+                        sounds.iter().find(|sound| sound.id == pack_id)
+                    } else {
+                        None
+                    };
+                    let outcome = match builtin {
+                        Some(sound) => {
+                            crate::builtin_sounds::download_builtin(sound, &roots, &mut progress)
+                        }
+                        None => crate::sound_library::download_pack(pack, &roots, &mut progress),
+                    };
+                    match outcome {
+                        Ok(_) => done += 1,
+                        Err(error) => failed.push(format!("{}：{}", pack.name, error.message())),
+                    }
+                }
+                let summary = if failed.is_empty() {
+                    Ok(format!("全部安装完成：{done} 个音源"))
+                } else {
+                    Err(format!(
+                        "完成 {done} / {total}；失败 {} 个 —— 首个失败：{}",
+                        failed.len(),
+                        failed.first().cloned().unwrap_or_default()
+                    ))
+                };
+                worker_state.finish_download("", summary);
                 let _ = worker_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_sound_library_drain_requested();
                 });
@@ -11352,7 +11593,8 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
                 match outcome {
                     Ok(catalog) => {
                         *last_catalog.borrow_mut() = Some(catalog.clone());
-                        publish_sound_catalog(&ui, &catalog);
+                        let filter = ui.get_sound_library_search().to_string();
+                        publish_sound_catalog(&ui, &catalog, &filter);
                     }
                     Err(err) => {
                         ui.set_sound_catalog_state(2);

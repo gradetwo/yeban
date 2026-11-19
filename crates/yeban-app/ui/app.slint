@@ -541,6 +541,8 @@ export component MainWindow inherits Window {
     in-out property <int> sound-download-progress: -1;
     in-out property <string> sound-library-status: "";
     in-out property <bool> sound-library-status-is-error: false;
+    // 搜索框原文（`sound_library_dialog.slint` 双向绑定的那一格；清空 = 不过滤）
+    in-out property <string> sound-library-search: "";
     in-out property <bool> instrument-install-available: false;
     in-out property <string> instrument-install-reason: "";
     in-out property <string> instrument-install-status: "";
@@ -890,6 +892,9 @@ export component MainWindow inherits Window {
     callback sound-library-download(string);
     callback sound-library-delete(string);
     callback sound-library-drain-requested();
+    // 音源管理：搜索原文变化（宿主按它重播过滤后的平行数组）与「一键全下」
+    callback sound-library-filter-changed(string);
+    callback sound-library-download-all();
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
@@ -1816,14 +1821,17 @@ export component MainWindow inherits Window {
             accessible-label: @tr("引擎错误横幅");
             HorizontalLayout {
                 padding-left: 12px; padding-right: 12px; alignment: space-between;
+                // ⚠ 文字必须与底色**对比**（曾经写成本身 `skin-arm` ⇒ 红字压红底 = 看不见）。
+                // 这条横幅存在的唯一意义就是让用户读到它。
                 Text {
-                    text: @tr("音频引擎提示: {}", root.engine-error);
-                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: Tokens.skin-arm;
+                    text: @tr("提醒：{}", root.engine-error);
+                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: Tokens.ink-0;
                     vertical-alignment: center;
+                    overflow: elide;
                 }
                 Rectangle {
-                    width: 20px; height: 20px; y: 8px; border-radius: 3px; background: Tokens.skin-arm;
-                    Text { text: "×"; font-size: 12px; color: Tokens.skin-arm; horizontal-alignment: center; vertical-alignment: center; }
+                    width: 20px; height: 20px; y: 8px; border-radius: 3px; background: transparent;
+                    Text { text: "×"; font-size: 13px; color: Tokens.ink-0; horizontal-alignment: center; vertical-alignment: center; }
                     TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.engine-error = ""; } }
                 }
             }
@@ -1990,10 +1998,13 @@ export component MainWindow inherits Window {
             download-progress: root.sound-download-progress;
             status: root.sound-library-status;
             status-is-error: root.sound-library-status-is-error;
+            search-text <=> root.sound-library-search;
             close => { root.close-sound-library(); }
             refresh-catalog => { root.sound-library-refresh-catalog(); }
             download-pack(id) => { root.sound-library-download(id); }
             delete-library(id) => { root.sound-library-delete(id); }
+            filter-changed(text) => { root.sound-library-filter-changed(text); }
+            download-all => { root.sound-library-download-all(); }
         }
 
         // Visible Musical PR Drawer

@@ -496,11 +496,22 @@ pub fn install_pack_archive(
         });
     }
     let actual_sha = sha256_file(archive_path)?;
-    if !actual_sha.eq_ignore_ascii_case(&pack.sha256) {
+    // ⭐ 空 `sha256` = 这一条**没有上游摘要**（内置音源走 GitHub 归档，GitHub 不发布
+    // 归档摘要）。这一档只做结构校验，⛔ 不假装校验过：界面与状态行会明确写"未校验"。
+    // 非空时仍是**硬校验**（一个字符不符就拒装，语义一位不改）。
+    if !pack.sha256.trim().is_empty() && !actual_sha.eq_ignore_ascii_case(&pack.sha256) {
         return Err(SoundError::ChecksumMismatch {
             expected: pack.sha256.clone(),
             actual: actual_sha,
         });
+    }
+    if pack.sha256.trim().is_empty() {
+        // 本仓没有 `log` 依赖（判据也不许新增依赖边），保持与既有安装腿同款：
+        // 终端一行说明 + 界面状态行如实写"未校验"（不静默、也不假装校验过）。
+        eprintln!(
+            "yeban-app: 安装 {}：该包没有上游 SHA-256（{}），已跳过摘要校验，仅做结构校验",
+            pack.id, pack.url
+        );
     }
     fs::create_dir_all(&roots.library_root).map_err(|err| {
         SoundError::Io(format!(

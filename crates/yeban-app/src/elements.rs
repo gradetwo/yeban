@@ -3020,6 +3020,21 @@ impl ElementRegistry {
             "下载音源包",
             false,
         );
+        // 本票新增的两个控件（搜索框 / 一键全下）：同样只在面板打开时存在。
+        registry.add(
+            "sound-library-search-input",
+            ElementKind::TextInput,
+            "dialogs/sound_library_dialog.slint",
+            "搜索音源输入框",
+            false,
+        );
+        registry.add(
+            "sound-library-download-all-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "下载全部内置音源",
+            false,
+        );
         // 卷帘右键上下文菜单的两项：默认不显示（菜单只在右键按下那一刻弹出），
         // 因此不进运行时控件树、不改任何金帧。点击后只上抛 `humanize-requested` /
         // `quantize-requested`，播种与提交全在宿主。
