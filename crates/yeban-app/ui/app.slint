@@ -1593,7 +1593,11 @@ export component MainWindow inherits Window {
                 //     + 力度泳道 64 + 页脚 32 ≈ 169，再留出音符画布的最小可视行，
                 //     实测压到 180 时实机整块下坞会塌成 0，所以 240 起。
                 //   · 1920×1080 下算出来仍是 320（用户拖动值原样生效）⇒ 像素基线不变。
-                dock-height: Math.max(240px, Math.min(root.lower-dock-height, root.window-h - 420px));
+                // ⭐ 2026-11-19 A1 第二步：下限 240 → 200px。依据是**重新量的固定高度**：
+                //   下坞内固定占用已经比上一轮小 —— 标签栏 34 + 卷帘工具行 28 + 力度泳道 44
+                //   ≈ 106（上一轮记的 169 是力度泳道仍为 64px 时的旧账）。留出 ~90px 音符画布
+                //   ⇒ 200px 起还剩 2 行可视，⛔ 不要再往 180 试：那一档实机塌成 0 的记录仍在。
+                dock-height: Math.max(200px, Math.min(root.lower-dock-height, root.window-h - 420px));
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
