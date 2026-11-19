@@ -2219,3 +2219,12 @@ msgstr "Fehlender Sound"
 
 msgid "这件音源没装好，要不要换个能响的？"
 msgstr "Dieser Sound ist nicht richtig installiert. Einen funktionierenden einsetzen?"
+
+msgid "混音台还没有可用的轨"
+msgstr "Der Mixer hat noch keine verwendbare Spur"
+
+msgid "用到当前轨"
+msgstr "Auf aktuelle Spur anwenden"
+
+msgid "用这件音源到当前轨"
+msgstr "Diesen Sound auf die aktuelle Spur anwenden"

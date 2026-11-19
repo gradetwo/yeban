@@ -2219,3 +2219,12 @@ msgstr "Som faltante"
 
 msgid "这件音源没装好，要不要换个能响的？"
 msgstr "Este som não está instalado corretamente. Trocar por um que funcione?"
+
+msgid "混音台还没有可用的轨"
+msgstr "O mixer ainda não tem uma faixa utilizável"
+
+msgid "用到当前轨"
+msgstr "Usar na faixa atual"
+
+msgid "用这件音源到当前轨"
+msgstr "Usar este som na faixa atual"

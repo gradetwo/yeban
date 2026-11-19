@@ -2219,3 +2219,12 @@ msgstr "Sonido faltante"
 
 msgid "这件音源没装好，要不要换个能响的？"
 msgstr "Este sonido no está bien instalado. ¿Cambiarlo por uno que funcione?"
+
+msgid "混音台还没有可用的轨"
+msgstr "El mezclador aún no tiene una pista utilizable"
+
+msgid "用到当前轨"
+msgstr "Usar en la pista actual"
+
+msgid "用这件音源到当前轨"
+msgstr "Usar este sonido en la pista actual"
