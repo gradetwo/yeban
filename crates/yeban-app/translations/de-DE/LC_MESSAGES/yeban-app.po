@@ -2192,3 +2192,30 @@ msgstr "Verschoben {} (manueller Override)"
 
 msgid "已移位 {}（文件声明）"
 msgstr "Verschoben {} (in Datei deklariert)"
+
+msgid "{} · 缺「{}」"
+msgstr "{} · Fehlt: „{}“"
+
+msgid "下载 {}"
+msgstr "{} herunterladen"
+
+msgid "下载原音源"
+msgstr "Original-Sound herunterladen"
+
+msgid "先不管"
+msgstr "Jetzt nicht"
+
+msgid "先不管，关掉"
+msgstr "Jetzt nicht, schließen"
+
+msgid "换上同类音源后这条轨立刻就能发声；原来的音源以后装回来还能再改。"
+msgstr "Sobald ein Sound derselben Art eingesetzt ist, kann diese Spur sofort spielen; wird der Original-Sound später installiert, können Sie zurückwechseln."
+
+msgid "换成 {}"
+msgstr "Zu {} wechseln"
+
+msgid "缺音源"
+msgstr "Fehlender Sound"
+
+msgid "这件音源没装好，要不要换个能响的？"
+msgstr "Dieser Sound ist nicht richtig installiert. Einen funktionierenden einsetzen?"

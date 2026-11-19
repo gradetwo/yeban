@@ -50,6 +50,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/metronome.rs", include_str!("../src/metronome.rs")),
     ("src/midi_in.rs", include_str!("../src/midi_in.rs")),
     ("src/midi_notes.rs", include_str!("../src/midi_notes.rs")),
+    (
+        "src/missing_sounds.rs",
+        include_str!("../src/missing_sounds.rs"),
+    ),
     ("src/render_core.rs", include_str!("../src/render_core.rs")),
     ("src/scene.rs", include_str!("../src/scene.rs")),
     ("src/settings.rs", include_str!("../src/settings.rs")),
@@ -154,11 +158,18 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// ⚠ **本条守卫不做"内容锚必须唯一"检查**：`tests/tools_e2e.rs` 里有两处**逐字符相同**的
 /// 内层站点（`!= pool_clip` 那两处），它们**共用同一条理由**；唯一性检查会把这对刻意同形的
 /// 站点判成歧义。冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。
-const ALLOWLIST: &[(&str, &str, &str)] = &[(
-    "src/audio_inject.rs",
-    ".all(|s| (*s - 0.25).abs() < 1e-6),",
-    "Phase 1 warped 缓存测试：同一测试内先断言 stored.pcm.frames() == 44_100（夹具 vec![0.25; 44_100] 定长构造），.all 迭代的集合长度已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
-)];
+const ALLOWLIST: &[(&str, &str, &str)] = &[
+    (
+        "src/audio_inject.rs",
+        ".all(|s| (*s - 0.25).abs() < 1e-6),",
+        "Phase 1 warped 缓存测试：同一测试内先断言 stored.pcm.frames() == 44_100（夹具 vec![0.25; 44_100] 定长构造），.all 迭代的集合长度已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
+    ),
+    (
+        "src/missing_sounds.rs",
+        "assert!(picked.iter().all(|s| s.id.starts_with(\"bass\")));",
+        "缺音源救援 suggest 单元测试：同一测试内相邻 assert_eq 已把 picked 钉死为 [\"bass-small\", \"bass-big\"]（定长 2 元、非空），.all 迭代的集合已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
+    ),
+];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。
 fn mark(id: &str, detail: &str) {

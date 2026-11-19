@@ -2192,3 +2192,30 @@ msgstr "Desplazado {} (ajuste manual)"
 
 msgid "已移位 {}（文件声明）"
 msgstr "Desplazado {} (declarado en el archivo)"
+
+msgid "{} · 缺「{}」"
+msgstr "{} · Falta \"{}\""
+
+msgid "下载 {}"
+msgstr "Descargar {}"
+
+msgid "下载原音源"
+msgstr "Descargar el sonido original"
+
+msgid "先不管"
+msgstr "Ahora no"
+
+msgid "先不管，关掉"
+msgstr "Ahora no, cerrar"
+
+msgid "换上同类音源后这条轨立刻就能发声；原来的音源以后装回来还能再改。"
+msgstr "Cuando se coloque un sonido del mismo tipo, esta pista podrá sonar enseguida; si el sonido original se instala más tarde, podrá volver a cambiarlo."
+
+msgid "换成 {}"
+msgstr "Cambiar a {}"
+
+msgid "缺音源"
+msgstr "Sonido faltante"
+
+msgid "这件音源没装好，要不要换个能响的？"
+msgstr "Este sonido no está bien instalado. ¿Cambiarlo por uno que funcione?"

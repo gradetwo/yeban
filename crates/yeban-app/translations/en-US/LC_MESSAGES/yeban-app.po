@@ -2192,3 +2192,30 @@ msgstr "Shifted {} (Manual Override)"
 
 msgid "已移位 {}（文件声明）"
 msgstr "Shifted {} (Declared in File)"
+
+msgid "{} · 缺「{}」"
+msgstr "{} · Missing \"{}\""
+
+msgid "下载 {}"
+msgstr "Download {}"
+
+msgid "下载原音源"
+msgstr "Download the original sound"
+
+msgid "先不管"
+msgstr "Not now"
+
+msgid "先不管，关掉"
+msgstr "Not now, close"
+
+msgid "换上同类音源后这条轨立刻就能发声；原来的音源以后装回来还能再改。"
+msgstr "Once a sound of the same kind is swapped in, this track can play right away; if the original sound is installed later, you can switch back."
+
+msgid "换成 {}"
+msgstr "Swap to {}"
+
+msgid "缺音源"
+msgstr "Missing sound"
+
+msgid "这件音源没装好，要不要换个能响的？"
+msgstr "This sound is not installed properly. Swap in one that works?"
