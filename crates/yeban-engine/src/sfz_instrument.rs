@@ -6064,6 +6064,8 @@ pub struct BusEffect {
     damp: Option<f32>,
     /// `predelay`（`set_cc{offset+3}`，归一后乘 `0.1 s`）；`None` ＝ 缺省。
     predelay: Option<f32>,
+    /// 旋钮基址（`param_offset`，已钳到 `u16`）。运行期 CC 热改要读它。
+    offset: u16,
 }
 
 impl BusEffect {
@@ -6084,6 +6086,12 @@ impl BusEffect {
     #[must_use]
     pub const fn tone(&self) -> BusTone {
         (self.size, self.damp, self.predelay)
+    }
+
+    /// 旋钮基址（`param_offset`；运行期 CC 热改按 `offset+0/1/3` 读）。
+    #[must_use]
+    pub const fn offset(&self) -> u16 {
+        self.offset
     }
 }
 
@@ -6498,6 +6506,7 @@ fn bus_effects(instrument: &SfzInstrument) -> Result<[Option<BusEffect>; BUS_COU
                         size: params.0,
                         damp: params.1,
                         predelay: params.2,
+                        offset,
                     })
                 }
             }
@@ -6948,6 +6957,11 @@ impl PreparedSfz {
     /// 却不重建 = 用户改了 `set_ccN` 听不出差别）。
     pub(crate) fn bus_tone(&self) -> [Option<BusTone>; BUS_COUNT] {
         std::array::from_fn(|index| self.buses[index].map(|effect| effect.tone()))
+    }
+
+    /// 四条总线的旋钮基址（`None` ＝ 该总线没有器件）。
+    pub(crate) fn bus_offsets(&self) -> [Option<u16>; BUS_COUNT] {
+        std::array::from_fn(|index| self.buses[index].map(|effect| effect.offset()))
     }
 
     /// ⭐ 某区域的发送量（区域不存在 ⇒ 全 0，逐位不变）。
@@ -9263,10 +9277,17 @@ impl SfzVoicePool {
         self.buses = Some(Box::new(BusBank::new(
             plan.bus_orders(),
             plan.bus_tone(),
+            plan.bus_offsets(),
             frames,
             self.sample_rate,
         )));
         self.bus_builds = self.bus_builds.saturating_add(1);
+    }
+
+    /// 运行期 `set_params` 写过多少次（判据 A03 的迟滞读数；无总线 ⇒ 0）。
+    #[must_use]
+    pub fn bus_param_writes(&self) -> u64 {
+        self.buses.as_deref().map_or(0, |bank| bank.tune_writes)
     }
 
     /// 本池至今重建过几次总线（`0` ＝ 从未；稳态渲染时必须**不增长**）。
@@ -9289,6 +9310,7 @@ impl SfzVoicePool {
             self.buses = Some(Box::new(BusBank::new(
                 plan.bus_orders(),
                 plan.bus_tone(),
+                plan.bus_offsets(),
                 frames,
                 self.sample_rate,
             )));
@@ -10417,6 +10439,8 @@ impl SfzVoicePool {
             self.render_slot(index, plan, position, out, cc, pitch, 0, bus);
         }
         if let Some(mut bank) = bank {
+            // ⭐ D12 的运行期半边：本块按 CC 热改旋钮（⛔ 不重建总线）。
+            bank.tune(cc);
             bank.apply(out);
             self.buses = Some(bank);
         }
@@ -10570,6 +10594,7 @@ impl SfzVoicePool {
             }
         }
         if let Some(bank) = bank.as_deref_mut() {
+            bank.tune(cc);
             bank.apply_stereo(&mut left[..frames], &mut right[..frames]);
         }
         self.buses = bank;
@@ -12272,6 +12297,12 @@ pub(crate) struct BusBank {
     orders: [Option<u8>; BUS_COUNT],
     /// 每条的三个旋钮（`size/damp/predelay`；`None` ＝ 缺省）。重建判据连它一起比。
     tone: [Option<BusTone>; BUS_COUNT],
+    /// 每条的旋钮基址（运行期 CC 热改用）。
+    offsets: [Option<u16>; BUS_COUNT],
+    /// 当前**已应用**的三旋钮（迟滞比较用；`None` ＝ 该总线没有器件）。
+    applied: [Option<BusTone>; BUS_COUNT],
+    /// 运行期真正写过多少次 `set_params`（判据：迟滞有效则抖动不增长）。
+    tune_writes: u64,
 }
 
 impl core::fmt::Debug for BusBank {
@@ -12290,6 +12321,7 @@ impl BusBank {
     fn new(
         orders: [Option<u8>; BUS_COUNT],
         tone: [Option<BusTone>; BUS_COUNT],
+        offsets: [Option<u16>; BUS_COUNT],
         frames: usize,
         sample_hz: f32,
     ) -> Self {
@@ -12320,6 +12352,62 @@ impl BusBank {
             verbs,
             orders,
             tone,
+            offsets,
+            applied: std::array::from_fn(|index| {
+                (orders[index].is_some()).then(|| {
+                    let defaults = ReverbParams::default();
+                    let (size, damp, predelay) = tone[index].unwrap_or((None, None, None));
+                    (
+                        Some(size.unwrap_or(defaults.size)),
+                        Some(damp.unwrap_or(defaults.damp)),
+                        Some(predelay.map_or(defaults.predelay, |p| p * 0.1)),
+                    )
+                })
+            }),
+            tune_writes: 0,
+        }
+    }
+
+    /// 运行期按 CC **热改**三旋钮（⛔ 不重建总线、⛔ 不碰缓冲）。
+    ///
+    /// 迟滞：同一槽的变化小于 `1/127`（一个 CC 步长）就不写 —— 判据 A03。
+    fn tune(&mut self, cc: Option<&dyn Fn(u8) -> u8>) {
+        let Some(cc) = cc else {
+            return;
+        };
+        for index in 0..BUS_COUNT {
+            let (Some(verb), Some(offset), Some(applied)) = (
+                self.verbs[index].as_mut(),
+                self.offsets[index],
+                self.applied[index],
+            ) else {
+                continue;
+            };
+            let read = |slot: u16| {
+                let index = u8::try_from(offset.saturating_add(slot)).unwrap_or(127);
+                f32::from(cc(index).min(127)) / 127.0
+            };
+            let next: BusTone = (Some(read(0)), Some(read(1)), Some(read(3) * 0.1));
+            let changed = |a: Option<f32>, b: Option<f32>| match (a, b) {
+                (Some(a), Some(b)) => (a - b).abs() > 1.0 / 127.0,
+                _ => false,
+            };
+            if !(changed(applied.0, next.0)
+                || changed(applied.1, next.1)
+                || changed(applied.2, next.2))
+            {
+                continue;
+            }
+            let defaults = ReverbParams::default();
+            verb.set_params(ReverbParams {
+                mix: 1.0,
+                size: next.0.unwrap_or(defaults.size),
+                damp: next.1.unwrap_or(defaults.damp),
+                predelay: next.2.unwrap_or(defaults.predelay),
+                ..defaults
+            });
+            self.applied[index] = Some(next);
+            self.tune_writes = self.tune_writes.saturating_add(1);
         }
     }
 

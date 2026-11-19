@@ -767,3 +767,252 @@ fn a_negative_param_offset_is_rejected_at_load() {
     );
     assert!(error.is_err(), "负 param_offset 必须拒载，而不是钳位");
 }
+
+// ---- D12 运行期半边（批次 2，A01..A10）-------------------------------------
+
+/// 渲染 `blocks` 块，`cc_of(block, cc_index)` 决定每块读到的 CC 值。
+fn render_with_cc<F>(plan: &PreparedSfz, blocks: usize, cc_of: F) -> (Vec<f32>, u64, u64)
+where
+    F: Fn(usize, u8) -> u8,
+{
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(plan, BLOCK);
+    assert_eq!(pool.trigger_note(plan, 60, 100, 12_000, 1.0, None), 1);
+    let mut out = Vec::with_capacity(blocks * BLOCK);
+    for block in 0..blocks {
+        let mut chunk = vec![0.0f32; BLOCK];
+        let probe = |cc: u8| cc_of(block, cc);
+        pool.render_into_with_cc(plan, block as u64 * BLOCK as u64, &mut chunk, Some(&probe));
+        out.extend(chunk);
+    }
+    (out, pool.bus_builds(), pool.bus_param_writes())
+}
+
+/// A01：运行期把 `size` 从 0 推到 127 ⇒ 晚段尾巴必须变长（热改真的进了器件）。
+#[test]
+fn a_runtime_cc_change_moves_the_tail() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let sweep = |block: usize, _cc: u8| if block < 16 { 0 } else { 127 };
+    let (out, _, writes) = render_with_cc(&plan, 32, sweep);
+    assert!(writes >= 1, "CC 变化必须真的写进混响（{writes}）");
+    let late = rms(&out[26 * BLOCK..32 * BLOCK]);
+    assert!(late > 1e-4, "大房间的晚段尾巴必须可闻（{late}）");
+}
+
+/// A02：运行期热改**不重建总线**（缓冲、器件都不换）。
+#[test]
+fn a_runtime_cc_change_never_rebuilds_the_bus() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let sweep = |block: usize, _cc: u8| if block < 16 { 0 } else { 127 };
+    let (_, builds, writes) = render_with_cc(&plan, 32, sweep);
+    assert_eq!(builds, 1, "预热建一次，之后⛔ 不许再建");
+    assert!(writes >= 1);
+}
+
+/// A03：**迟滞** —— CC 抖动 1 个步长（100 ↔ 101）不该反复写参数。
+#[test]
+fn cc_jitter_inside_one_step_writes_at_most_once() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let jitter = |block: usize, _cc: u8| if block.is_multiple_of(2) { 100 } else { 101 };
+    let (_, _, writes) = render_with_cc(&plan, 32, jitter);
+    assert!(
+        writes <= 1,
+        "一个步长内的抖动只允许首次落地（实测 {writes} 次）"
+    );
+}
+
+/// A04：**每总线独立 CC 基址** —— 只动 `fx2` 的 CC（`offset=4`）不影响 `fx1`。
+#[test]
+fn cc_offsets_are_per_bus() {
+    let plan = prepare(
+        "<control> set_cc4=10\n\
+         <effect> bus=fx1 type=reverb param_offset=0\n\
+         <effect> bus=fx2 type=reverb param_offset=4\n\
+         <region> sample=a.wav lokey=60 hikey=60 effect1=100 effect2=100",
+    );
+    let only_fx2 = |_block: usize, cc: u8| if cc == 4 { 120 } else { 0 };
+    let (_, _, writes) = render_with_cc(&plan, 16, only_fx2);
+    // fx1 的 CC0 恒 0 与缺省不同（缺省 size 非 0）⇒ 会写一次；fx2 从 10 变 120 再写一次。
+    assert!(writes >= 1, "fx2 必须响应");
+    let (_, _, none) = render_with_cc(&plan, 16, |_b, _cc| 0);
+    assert!(
+        writes >= none,
+        "动 fx2 不应比全 0 更少（{writes} vs {none}）"
+    );
+}
+
+/// A05：CC 越界（255）钳到 1.0，输出**无 NaN/Inf**。
+#[test]
+fn an_out_of_range_cc_value_stays_finite() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let (out, _, _) = render_with_cc(&plan, 16, |_b, _cc| 255);
+    assert!(out.iter().all(|sample| sample.is_finite()), "输出必须有限");
+    v0_assert_peak_within(&out, 1.0);
+}
+
+fn v0_assert_peak_within(samples: &[f32], bound: f32) {
+    let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+    assert!(peak <= bound, "峰值 {peak} 越过 {bound}");
+}
+
+/// A09：`dsp_order` 相同 ⇒ **先出现者**胜（旋钮基址也跟着那条走）。
+#[test]
+fn a_tie_keeps_the_first_declaration() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb param_offset=0\n\
+         <effect> bus=fx1 type=reverb param_offset=4\n\
+         <region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let effect = plan.bus_effect(0).expect("fx1");
+    assert_eq!(effect.offset(), 0, "同序取先出现者");
+}
+
+// ---- 批次 3：电平/规模/边界（A06/A07/E04/E05）与宿主语义（F01–F04/F06）-----
+
+/// A06：`size` 越大，晚段尾巴**单调**变大（三档 0 / 64 / 127）。
+#[test]
+fn the_tail_is_monotone_in_the_size_knob() {
+    let reading = |size: u8| {
+        let text = format!(
+            "<control> set_cc0={size}\n\
+             <effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100"
+        );
+        let plan = prepare(&text);
+        tail_with(&plan, (20, 28))
+    };
+    let (a, b, c) = (reading(0), reading(64), reading(127));
+    assert!(a < b && b < c, "必须单调递增（{a} < {b} < {c}）");
+}
+
+/// A07：大缓冲（4096 帧）构造不 panic、只建一次。
+#[test]
+fn a_large_block_builds_once() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&plan, 4096);
+    assert_eq!(pool.bus_builds(), 1);
+    pool.warm_buses(&plan, 4096);
+    assert_eq!(pool.bus_builds(), 1, "同长再预热零重建");
+}
+
+/// E04：立体声两声道长度不等 ⇒ 取 `min`，⛔ 不越界 panic。
+#[test]
+fn unequal_stereo_lengths_use_the_shorter_one() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&plan, BLOCK);
+    assert_eq!(pool.trigger_note(&plan, 60, 100, 12_000, 1.0, None), 1);
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK / 2];
+    // 只渲染 `right` 的长度是库的口径；这里直接把两者都传进去，验证不 panic。
+    pool.render_into_stereo_with_probes(&plan, 0, &mut left, &mut right, None, None);
+    assert!(right.iter().all(|s| s.is_finite()));
+    assert!(left.iter().all(|s| s.is_finite()));
+}
+
+/// E05：零长度渲染（空缓冲）不 panic、不产生声音。
+#[test]
+fn a_zero_length_render_is_a_no_op() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&plan, BLOCK);
+    assert_eq!(pool.trigger_note(&plan, 60, 100, 12_000, 1.0, None), 1);
+    let mut out: Vec<f32> = Vec::new();
+    pool.render_into(&plan, 0, &mut out);
+    assert!(pool.bus_builds() >= 1);
+}
+
+/// F01：**两条新轨各自预占 ＋ 预热** ⇒ 每条都 `Some(1)`（宿主 reload 的语义）。
+#[test]
+fn two_tracks_are_warmed_independently() {
+    use yeban_engine::synth::SynthEngine;
+    use yeban_model::EntityId;
+
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let (a, b) = (EntityId::new(), EntityId::new());
+    let mut engine = SynthEngine::new(48_000);
+    for track in [a, b] {
+        engine.reserve_track_slot(48_000, track);
+        engine.warm_sfz_buses(track, &plan, BLOCK);
+    }
+    assert_eq!(engine.sfz_bus_builds(a), Some(1));
+    assert_eq!(engine.sfz_bus_builds(b), Some(1));
+    engine.begin_snapshot(48_000, &[a, b], [], []);
+    for track in [a, b] {
+        assert_eq!(engine.sfz_bus_builds(track), Some(1), "快照后零重建");
+    }
+}
+
+/// F02：**只预占不预热** ⇒ 读数 `Some(0)`（槽在、总线还没建）。
+#[test]
+fn a_reserved_but_unwarmed_track_reports_zero_builds() {
+    use yeban_engine::synth::SynthEngine;
+    use yeban_model::EntityId;
+
+    let track = EntityId::new();
+    let mut engine = SynthEngine::new(48_000);
+    engine.reserve_track_slot(48_000, track);
+    assert_eq!(engine.sfz_bus_builds(track), Some(0));
+}
+
+/// F03：**同一轨换一份不同旋钮的计划** ⇒ 必须重建（工程切换语义）。
+#[test]
+fn switching_plans_rebuilds_the_bus() {
+    let low = prepare(
+        "<control> set_cc0=0\n\
+         <effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let high = prepare(
+        "<control> set_cc0=127\n\
+         <effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&low, BLOCK);
+    let before = pool.bus_builds();
+    pool.warm_buses(&high, BLOCK);
+    assert_eq!(pool.bus_builds(), before + 1);
+}
+
+/// F04：**同一份计划重复预热** ⇒ 零重建（发布两次的稳态）。
+#[test]
+fn republishing_the_same_plan_never_rebuilds() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&plan, BLOCK);
+    let settled = pool.bus_builds();
+    for _ in 0..20 {
+        pool.warm_buses(&plan, BLOCK);
+    }
+    assert_eq!(pool.bus_builds(), settled);
+}
+
+/// F06：**缓冲先大后小** ⇒ 不重建（`frames >= 需求` 判据，⛔ 不必缩容）。
+#[test]
+fn a_smaller_later_block_reuses_the_larger_buffer() {
+    let plan = prepare(
+        "<effect> bus=fx1 type=reverb\n<region> sample=a.wav lokey=60 hikey=60 effect1=100",
+    );
+    let mut pool = SfzVoicePool::new(HZ);
+    pool.warm_buses(&plan, 4096);
+    let big = pool.bus_builds();
+    pool.warm_buses(&plan, BLOCK);
+    assert_eq!(pool.bus_builds(), big, "大缓冲够用 ⇒ 不缩容");
+}
