@@ -78,3 +78,7 @@
 - cli.rs：--sfz 块与 --export-wav 块均透出 notation_lines＋unmatched 行（普通乐器零新增行）。
 - yeban-mcp：notes.rs 对象形 sampler 解析（read_sampler_binding/read_sampler_octave_override，未知键 unknownSamplerBindingField、坏步 samplerOctaveOverrideMustBeOctaveStep）＋编译层保留覆盖；op_schema anyOf 三形；tools.rs 文档句扩写；notes.rs 单元测试 3 个已加。
 - 待办：app 集成判据文件、盒上验证（分批）、真实文件验收（待文件到位）、B.4 剩余抽查（builtin_sounds/鼓预置）、PROGRESS 收尾与回执。
+
+## 变更（2026-11-19 11:16 父 agent 转达）
+- 补充输入第 4 项（one_shot 掐尾附带核查）**取消**：Wang 确认报告人备注是报告人自己那边的问题、非引擎缺陷，2026-11-18 核查结论维持。本线不做、不在回执单列。
+- 验证进度：盒上 yeban-sfz --lib 469/0 全绿（含新增 NoEvidence 单元测试）；fmt 已在盒上格式化并回同步提交（a176f1b6e）；app+mcp --all-targets --keep-going 检查在跑。
