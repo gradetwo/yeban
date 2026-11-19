@@ -12,7 +12,7 @@
     "converted": "2026-11-18",
     "tuning": [
       "bpm range and swing anchored to GENRES entry 'boom_bap' (bpm 85-100, swing 58% -> 580 permille); preset default 92 BPM",
-      "lanes authored as the modern MPC-style variant (clap layered on the snare steps at pattern level, open-hat lift at bar end), distinct from the sampled Acoustic Boom Bap preset",
+      "lanes authored as the modern MPC-style variant (clap as a snare lane layer (P6 layers field: main -3.2 dB full window, fill -2.5 dB at velocity >= 112), open-hat lift at bar end), distinct from the sampled Acoustic Boom Bap preset",
       "kit: DSP synth, per-style parameter table 'hiphop' (segment 2)"
     ]
   },
@@ -236,6 +236,12 @@
     {
       "role": "snare",
       "gm_key": 38,
+      "layers": [
+        {
+          "gm_key": 39,
+          "level_db": -3.2
+        }
+      ],
       "steps": [
         [
           0,
@@ -379,172 +385,6 @@
         ],
         [
           116,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ]
-      ]
-    },
-    {
-      "role": "clap",
-      "gm_key": 39,
-      "steps": [
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          80,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          80,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          80,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ],
-        [
-          80,
           1,
           0
         ],
@@ -1487,6 +1327,14 @@
       {
         "role": "snare",
         "gm_key": 38,
+        "layers": [
+          {
+            "gm_key": 39,
+            "level_db": -2.5,
+            "vel_min": 112,
+            "vel_max": 127
+          }
+        ],
         "steps": [
           [
             84,
@@ -1550,92 +1398,6 @@
           ],
           [
             112,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ]
-        ]
-      },
-      {
-        "role": "clap",
-        "gm_key": 39,
-        "steps": [
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            0,
-            1,
-            0
-          ],
-          [
-            84,
             1,
             0
           ],

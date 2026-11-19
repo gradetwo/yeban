@@ -135,6 +135,25 @@ triple `[velocity, ratchet, tier]`:
   2 ornament. The generator's complexity knob gates tiers
   (<34 core only, 34..66 core+standard, >=67 all tiers + ghost notes).
 
+A lane may also carry `layers` (optional): extra keys struck together
+with the lane's own key on every hit step — this is how a snare+clap
+stack is written (one lane, one pattern, no hand-copied second lane).
+Each layer is
+`{"gm_key": int 0..=127, "level_db": number -48..=12 (optional, default 0), "vel_min": int 1..=127 (optional, default 1), "vel_max": int 1..=127 (optional, default 127)}`.
+The layer fires only when the step's **written** velocity lies inside
+`[vel_min, vel_max]`; its velocity is the written velocity scaled by
+`10^(level_db/20)` (amplitude dB) before the generator's shared
+intensity/ratchet factors. Layers follow the step's tier gate and
+ratchet expansion; ghost notes never trigger layers. A layer key must
+not collide with any lane key or other layer key in the same lane
+table (main lanes and fill lanes are separate tables), and an empty
+`layers` array is invalid — violations are rejected at parse time.
+Layer keys count as sounding keys for the coverage rule below.
+Absent `layers` = single-key lane; generation is bit-identical to
+before the field existed. Factory use: hiphop only (clap layered on
+the snare lane, −3.2 dB; the fill snare carries its own windowed
+layer, −2.5 dB at velocity ≥ 112).
+
 GM keys used by the factory presets: kick 36, rim 37, snare 38, clap 39,
 closed hat 42, pedal hat 44, open hat 46, toms 43/45/48, crash 49,
 ride 51, ride bell 53, cowbell 56, shaker 82.
