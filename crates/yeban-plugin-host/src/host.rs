@@ -53,8 +53,7 @@ impl Host {
     /// macOS 用户＋系统 `Library/Audio/Plug-Ins/VST3`；
     /// Windows `%COMMONPROGRAMFILES%\VST3`）。
     ///
-    /// ⚠ Windows 上非 ASCII 路径经 `LoadLibraryA` 有损转换可能打不开
-    /// （`dylib.rs` 的已知一期限缩）；标准路径本身多为 ASCII。
+    /// Windows 上经 `LoadLibraryW`（UTF-16）打开动态库，支持含非 ASCII 字符的路径。
     #[must_use]
     pub fn default_search_paths() -> Vec<PathBuf> {
         let mut out = Vec::new();
@@ -300,29 +299,48 @@ fn resolve_candidate(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// `.vst3` 包内平台动态库解析（Linux `Contents/x86_64-linux/*.so`；
-/// macOS `Contents/MacOS/*`；Windows `Contents/x86_64-win/*.vst3`）。
-/// 包路径本身是文件时（Windows 单文件 `.vst3`）直接用它。
-fn resolve_bundle_binary(bundle: &Path) -> Option<PathBuf> {
+/// 按 `(os, arch)` 返回 `.vst3` 包内平台二进制目录候选（Steinberg VST3 规范顺序）。
+fn bundle_subdirs_for(os: &str, arch: &str) -> &'static [&'static str] {
+    match (os, arch) {
+        ("linux", "x86_64") => &["Contents/x86_64-linux"],
+        ("linux", "aarch64") => &["Contents/aarch64-linux"],
+        ("linux", "x86") => &["Contents/i386-linux"],
+        ("macos", _) => &["Contents/MacOS"],
+        ("windows", "x86_64") => &["Contents/x86_64-win"],
+        ("windows", "aarch64") => &["Contents/arm64x-win", "Contents/arm64-win"],
+        ("windows", "x86") => &["Contents/x86-win"],
+        _ => &[],
+    }
+}
+
+/// 在给定候选子目录顺序中解析 `.vst3` 包内平台动态库。
+fn resolve_bundle_binary_in(bundle: &Path, subdirs: &[&str]) -> Option<PathBuf> {
     if bundle.is_file() {
         return Some(bundle.to_path_buf());
     }
-    #[cfg(target_os = "linux")]
-    let subdir = bundle.join("Contents/x86_64-linux");
-    #[cfg(target_os = "macos")]
-    let subdir = bundle.join("Contents/MacOS");
-    #[cfg(target_os = "windows")]
-    let subdir = bundle.join("Contents/x86_64-win");
-    let Ok(entries) = std::fs::read_dir(&subdir) else {
-        return None;
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_bundle_binary(path))
-        .collect();
-    files.sort();
-    files.into_iter().next()
+    for subdir_rel in subdirs {
+        let Ok(entries) = std::fs::read_dir(bundle.join(subdir_rel)) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && is_bundle_binary(path))
+            .collect();
+        files.sort();
+        if let Some(found) = files.into_iter().next() {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// `.vst3` 包内平台动态库解析（支持 Linux `x86_64`/`aarch64`/`i386`、
+/// macOS `Contents/MacOS`、Windows `x86_64`/`arm64x`/`arm64`/`x86`）。
+/// 包路径本身是文件时（Windows 单文件 `.vst3`）直接用它。
+fn resolve_bundle_binary(bundle: &Path) -> Option<PathBuf> {
+    let subdirs = bundle_subdirs_for(std::env::consts::OS, std::env::consts::ARCH);
+    resolve_bundle_binary_in(bundle, subdirs)
 }
 
 /// 包内动态库判定（Windows 要 `.vst3` 后缀；macOS 的 `Contents/MacOS/*`
@@ -339,5 +357,75 @@ fn is_bundle_binary(path: &Path) -> bool {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         path.extension().is_some_and(|ext| ext == "so")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundle_subdirs_cover_all_supported_platforms() {
+        assert_eq!(
+            bundle_subdirs_for("linux", "x86_64"),
+            &["Contents/x86_64-linux"]
+        );
+        assert_eq!(
+            bundle_subdirs_for("linux", "aarch64"),
+            &["Contents/aarch64-linux"]
+        );
+        assert_eq!(bundle_subdirs_for("linux", "x86"), &["Contents/i386-linux"]);
+        assert_eq!(bundle_subdirs_for("macos", "x86_64"), &["Contents/MacOS"]);
+        assert_eq!(bundle_subdirs_for("macos", "aarch64"), &["Contents/MacOS"]);
+        assert_eq!(
+            bundle_subdirs_for("windows", "x86_64"),
+            &["Contents/x86_64-win"]
+        );
+        assert_eq!(
+            bundle_subdirs_for("windows", "aarch64"),
+            &["Contents/arm64x-win", "Contents/arm64-win"]
+        );
+        assert_eq!(bundle_subdirs_for("windows", "x86"), &["Contents/x86-win"]);
+        assert!(bundle_subdirs_for("freebsd", "riscv64").is_empty());
+    }
+
+    #[test]
+    fn resolve_bundle_binary_in_respects_subdir_precedence_and_sorting() {
+        let root = std::env::temp_dir().join(format!(
+            "yeban-bundle-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let bundle = root.join("Multi.vst3");
+        let fallback_dir = bundle.join("Contents/fallback");
+        let preferred_dir = bundle.join("Contents/preferred");
+        std::fs::create_dir_all(&fallback_dir).expect("建回退目录");
+        std::fs::create_dir_all(&preferred_dir).expect("建首选目录");
+
+        #[cfg(target_os = "windows")]
+        let (b_name, a_name) = ("b.vst3", "a.vst3");
+        #[cfg(not(target_os = "windows"))]
+        let (b_name, a_name) = (
+            format!("b.{DYLIB_EXTENSION}"),
+            format!("a.{DYLIB_EXTENSION}"),
+        );
+
+        let fallback_file = fallback_dir.join(&a_name);
+        std::fs::write(&fallback_file, b"stub").expect("写回退文件");
+        // 首选目录尚无文件时，应回退到第二候选目录。
+        let found = resolve_bundle_binary_in(&bundle, &["Contents/preferred", "Contents/fallback"]);
+        assert_eq!(found.as_deref(), Some(fallback_file.as_path()));
+
+        // 首选目录出现多个文件时，按字典序取第一个并优先于回退目录。
+        let pref_b = preferred_dir.join(&b_name);
+        let pref_a = preferred_dir.join(&a_name);
+        std::fs::write(&pref_b, b"stub").expect("写首选 b");
+        std::fs::write(&pref_a, b"stub").expect("写首选 a");
+        let found = resolve_bundle_binary_in(&bundle, &["Contents/preferred", "Contents/fallback"]);
+        assert_eq!(found.as_deref(), Some(pref_a.as_path()));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

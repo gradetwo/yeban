@@ -20,6 +20,7 @@
 //!   模型调用只发生在持有 `&mut self` 的调用方线程；插件分析线程只调
 //!   宿主回调（audio reader／通知），回调内只碰 `AraShared` 的锁与原子量。
 
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -495,6 +496,9 @@ struct ArchiveReaderSlot {
     archive_id: CString,
 }
 
+/// 归档写入最大字节上限（64 MiB，防恶意/损坏插件写爆宿主内存）。
+const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+
 /// 归档写入器槽（插件在 `storeObjectsToArchive` 调用内按位置写）。
 struct ArchiveWriterSlot {
     data: Mutex<Vec<u8>>,
@@ -519,13 +523,11 @@ pub struct AraShared {
     context_host_ref: Mutex<AraRef>,
     /// 宿主 tempo 表（恒定 BPM 的两点同步表；见 `AraSession::tempo_entries`）。
     tempo_entries: Mutex<Vec<AraContentTempoEntry>>,
-    /// 存活的音频读取器（`Box` 堆地址稳定，Vec 重分配不移动条目本身；
-    /// 地址已交插件作 host ref，故保留 Box，见 vec_box 豁免）。
-    #[allow(clippy::vec_box)]
-    audio_readers: Mutex<Vec<Box<AudioReaderEntry>>>,
-    /// 存活的 tempo 读取器（同款地址稳定性）。
-    #[allow(clippy::vec_box)]
-    tempo_readers: Mutex<Vec<Box<TempoReaderEntry>>>,
+    /// 存活的音频读取器（`Arc` 托管并在 `BTreeMap` 按指针地址登记，
+    /// 读采样前先持登记表锁克隆 `Arc` 再放表锁，防与并发销毁竞态 UAF）。
+    audio_readers: Mutex<BTreeMap<usize, Arc<AudioReaderEntry>>>,
+    /// 存活的 tempo 读取器（同款 `Arc` + `BTreeMap` 托管，拒已销毁／未知句柄）。
+    tempo_readers: Mutex<BTreeMap<usize, Arc<TempoReaderEntry>>>,
     /// 最近一次分析进度通知（状态，值；`Completed` 由 poll 循环的
     /// `isAudioSourceContentAnalysisIncomplete` 判定，不以通知为准）。
     analysis_progress: Mutex<(i32, f32)>,
@@ -550,8 +552,8 @@ impl AraShared {
             source_host_ref: Mutex::new(ptr::null_mut()),
             context_host_ref: Mutex::new(ptr::null_mut()),
             tempo_entries: Mutex::new(Vec::new()),
-            audio_readers: Mutex::new(Vec::new()),
-            tempo_readers: Mutex::new(Vec::new()),
+            audio_readers: Mutex::new(BTreeMap::new()),
+            tempo_readers: Mutex::new(BTreeMap::new()),
             analysis_progress: Mutex::new((0, 0.0)),
             content_changed: AtomicBool::new(false),
             archive_progress: Mutex::new(0.0),
@@ -675,14 +677,15 @@ unsafe extern "C" fn ara_create_audio_reader(
     else {
         return ptr::null_mut();
     };
-    let entry = Box::new(AudioReaderEntry {
+    let entry = Arc::new(AudioReaderEntry {
         pcm,
         use_64_bit: use_64_bit_samples != ARA_FALSE,
         lock: Mutex::new(()),
     });
-    let ptr = (&*entry) as *const AudioReaderEntry as AraRef;
+    let ptr = Arc::as_ptr(&entry) as AraRef;
+    let key = ptr as usize;
     if let Ok(mut readers) = shared.audio_readers.lock() {
-        readers.push(entry);
+        readers.insert(key, entry);
         ptr
     } else {
         ptr::null_mut()
@@ -697,18 +700,24 @@ unsafe extern "C" fn ara_read_audio_samples(
     samples_per_channel: i64,
     buffers: *const *mut c_void,
 ) -> AraBool {
-    if buffers.is_null() || samples_per_channel < 0 {
+    if audio_reader_host_ref.is_null() || buffers.is_null() || samples_per_channel < 0 {
         return ARA_FALSE;
     }
     let Some(shared) = shared_from(controller_host_ref) else {
         return ARA_FALSE;
     };
-    // SAFETY: reader host ref 是本回调创建的条目指针；插件保证调用期间有效。
-    let entry = unsafe { &*audio_reader_host_ref.cast::<AudioReaderEntry>() };
+    let key = audio_reader_host_ref as usize;
+    let Some(entry) = shared
+        .audio_readers
+        .lock()
+        .ok()
+        .and_then(|readers| readers.get(&key).cloned())
+    else {
+        return ARA_FALSE;
+    };
     let Ok(_guard) = entry.lock.lock() else {
         return ARA_FALSE;
     };
-    let _ = shared;
     for channel in 0..entry.pcm.channel_count() {
         // SAFETY: `buffers` 是插件提供的声道指针数组；下标在声道数内。
         let dst = unsafe { *buffers.add(channel) };
@@ -717,12 +726,11 @@ unsafe extern "C" fn ara_read_audio_samples(
         }
         let source = &entry.pcm.channels[channel];
         for index in 0..samples_per_channel {
-            let at = sample_position + index;
-            let value = if at >= 0 && (at as usize) < source.len() {
-                source[at as usize]
-            } else {
-                0.0
-            };
+            let value = sample_position
+                .checked_add(index)
+                .and_then(|at| usize::try_from(at).ok())
+                .and_then(|at| source.get(at).copied())
+                .unwrap_or(0.0);
             if entry.use_64_bit {
                 // SAFETY: 64 位模式下目标是 f64 数组；下标在块内。
                 unsafe {
@@ -744,15 +752,14 @@ unsafe extern "C" fn ara_destroy_audio_reader(
     controller_host_ref: AraRef,
     audio_reader_host_ref: AraRef,
 ) {
+    if audio_reader_host_ref.is_null() {
+        return;
+    }
     let Some(shared) = shared_from(controller_host_ref) else {
         return;
     };
-    if let Ok(mut readers) = shared.audio_readers.lock()
-        && let Some(index) = readers.iter().position(|entry| {
-            (&**entry) as *const AudioReaderEntry as AraRef == audio_reader_host_ref
-        })
-    {
-        readers.remove(index);
+    if let Ok(mut readers) = shared.audio_readers.lock() {
+        readers.remove(&(audio_reader_host_ref as usize));
     }
 }
 
@@ -814,12 +821,21 @@ unsafe extern "C" fn ara_write_bytes_to_archive(
     let Some(end) = position.checked_add(length) else {
         return ARA_FALSE;
     };
+    if end > MAX_ARCHIVE_BYTES {
+        return ARA_FALSE;
+    }
     if data.len() < end {
+        let grow = end - data.len();
+        if data.try_reserve(grow).is_err() {
+            return ARA_FALSE;
+        }
         data.resize(end, 0);
     }
-    // SAFETY: 目标区已按需扩容；`buffer` 是插件提供的读槽。
-    unsafe {
-        ptr::copy_nonoverlapping(buffer, data.as_mut_ptr().add(position), length);
+    if length > 0 {
+        // SAFETY: 目标区已按需扩容；`buffer` 是插件提供的读槽。
+        unsafe {
+            ptr::copy_nonoverlapping(buffer, data.as_mut_ptr().add(position), length);
+        }
     }
     ARA_TRUE
 }
@@ -912,10 +928,11 @@ unsafe extern "C" fn ara_create_musical_context_content_reader(
     let Some(entries) = entries else {
         return ptr::null_mut();
     };
-    let entry = Box::new(TempoReaderEntry { entries });
-    let ptr = (&*entry) as *const TempoReaderEntry as AraRef;
+    let entry = Arc::new(TempoReaderEntry { entries });
+    let ptr = Arc::as_ptr(&entry) as AraRef;
+    let key = ptr as usize;
     if let Ok(mut readers) = shared.tempo_readers.lock() {
-        readers.push(entry);
+        readers.insert(key, entry);
         ptr
     } else {
         ptr::null_mut()
@@ -949,27 +966,47 @@ unsafe extern "C" fn ara_create_audio_source_content_reader(
 }
 
 unsafe extern "C" fn ara_get_content_reader_event_count(
-    _controller_host_ref: AraRef,
+    controller_host_ref: AraRef,
     content_reader_host_ref: AraRef,
 ) -> i32 {
     if content_reader_host_ref.is_null() {
         return 0;
     }
-    // SAFETY: reader host ref 是本回调创建的 tempo 读取器指针；调用期间有效。
-    let entry = unsafe { &*content_reader_host_ref.cast::<TempoReaderEntry>() };
-    entry.entries.len() as i32
+    let Some(shared) = shared_from(controller_host_ref) else {
+        return 0;
+    };
+    let key = content_reader_host_ref as usize;
+    let Some(entry) = shared
+        .tempo_readers
+        .lock()
+        .ok()
+        .and_then(|readers| readers.get(&key).cloned())
+    else {
+        return 0;
+    };
+    i32::try_from(entry.entries.len()).unwrap_or(i32::MAX)
 }
 
 unsafe extern "C" fn ara_get_content_reader_data_for_event(
-    _controller_host_ref: AraRef,
+    controller_host_ref: AraRef,
     content_reader_host_ref: AraRef,
     event_index: i32,
 ) -> *const c_void {
     if content_reader_host_ref.is_null() || event_index < 0 {
         return ptr::null();
     }
-    // SAFETY: 同上；条目在读取器生命周期内不变，指针稳定。
-    let entry = unsafe { &*content_reader_host_ref.cast::<TempoReaderEntry>() };
+    let Some(shared) = shared_from(controller_host_ref) else {
+        return ptr::null();
+    };
+    let key = content_reader_host_ref as usize;
+    let Some(entry) = shared
+        .tempo_readers
+        .lock()
+        .ok()
+        .and_then(|readers| readers.get(&key).cloned())
+    else {
+        return ptr::null();
+    };
     entry
         .entries
         .get(event_index as usize)
@@ -982,15 +1019,14 @@ unsafe extern "C" fn ara_destroy_content_reader(
     controller_host_ref: AraRef,
     content_reader_host_ref: AraRef,
 ) {
+    if content_reader_host_ref.is_null() {
+        return;
+    }
     let Some(shared) = shared_from(controller_host_ref) else {
         return;
     };
-    if let Ok(mut readers) = shared.tempo_readers.lock()
-        && let Some(index) = readers.iter().position(|entry| {
-            (&**entry) as *const TempoReaderEntry as AraRef == content_reader_host_ref
-        })
-    {
-        readers.remove(index);
+    if let Ok(mut readers) = shared.tempo_readers.lock() {
+        readers.remove(&(content_reader_host_ref as usize));
     }
 }
 
@@ -2562,6 +2598,215 @@ mod tests {
         };
         assert_eq!(rendered.peak(), 0.5);
         assert_eq!(rendered.nonzero_frames(), 2);
+    }
+
+    #[test]
+    fn ara_audio_reader_rejects_null_stale_and_overflow_reads() {
+        let shared = Arc::new(AraShared::new());
+        let source_slot = Box::new([1_u8; 64]);
+        let source_ref = (&*source_slot) as *const Slot as AraRef;
+        *shared.source_host_ref.lock().unwrap() = source_ref;
+        *shared.source_pcm.lock().unwrap() = Some(Arc::new(PcmData {
+            channels: vec![vec![0.25, -0.5, 0.75, 1.0]],
+            sample_rate: 44_100.0,
+        }));
+        let ctrl_ref = Arc::as_ptr(&shared) as AraRef;
+
+        // SAFETY: `ctrl_ref` 指向本栈帧保活的 `Arc<AraShared>`，缓冲在本函数栈上有效。
+        unsafe {
+            let reader_ref = ara_create_audio_reader(ctrl_ref, source_ref, ARA_FALSE);
+            assert!(!reader_ref.is_null());
+
+            let mut out = [99.0_f32; 4];
+            let ptrs = [out.as_mut_ptr().cast::<c_void>()];
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, ptr::null_mut(), 0, 4, ptrs.as_ptr()),
+                ARA_FALSE
+            );
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, reader_ref, 0, -1, ptrs.as_ptr()),
+                ARA_FALSE
+            );
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, reader_ref, 0, 4, ptr::null()),
+                ARA_FALSE
+            );
+            // 正常读与 `i64::MAX` 附近溢出读（填静音 0.0，不 panic）。
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, reader_ref, 1, 4, ptrs.as_ptr()),
+                ARA_TRUE
+            );
+            assert_eq!(out, [-0.5, 0.75, 1.0, 0.0]);
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, reader_ref, i64::MAX - 1, 4, ptrs.as_ptr()),
+                ARA_TRUE
+            );
+            assert_eq!(out, [0.0; 4]);
+
+            // 销毁后再次用旧句柄读必须返回 ARA_FALSE，不能 UAF。
+            ara_destroy_audio_reader(ctrl_ref, reader_ref);
+            assert_eq!(
+                ara_read_audio_samples(ctrl_ref, reader_ref, 0, 4, ptrs.as_ptr()),
+                ARA_FALSE
+            );
+        }
+    }
+
+    #[test]
+    fn ara_audio_reader_concurrent_read_and_destroy_no_uaf() {
+        let shared = Arc::new(AraShared::new());
+        let source_slot = Box::new([2_u8; 64]);
+        let source_ref = (&*source_slot) as *const Slot as AraRef;
+        *shared.source_host_ref.lock().unwrap() = source_ref;
+        *shared.source_pcm.lock().unwrap() = Some(Arc::new(PcmData {
+            channels: vec![vec![0.5; 256], vec![-0.5; 256]],
+            sample_rate: 44_100.0,
+        }));
+        let ctrl_addr = Arc::as_ptr(&shared) as usize;
+
+        let mut reader_addrs = Vec::new();
+        for i in 0..16 {
+            // SAFETY: `ctrl_addr` 指向 `shared`，`source_ref` 在本测试期内保活。
+            let r = unsafe {
+                ara_create_audio_reader(
+                    ctrl_addr as AraRef,
+                    source_ref,
+                    if i % 2 == 0 { ARA_TRUE } else { ARA_FALSE },
+                )
+            };
+            assert!(!r.is_null());
+            reader_addrs.push(r as usize);
+        }
+
+        std::thread::scope(|scope| {
+            for &reader_addr in &reader_addrs {
+                scope.spawn(move || {
+                    let mut buf64_l = [0.0_f64; 64];
+                    let mut buf64_r = [0.0_f64; 64];
+                    let ptrs = [
+                        buf64_l.as_mut_ptr().cast::<c_void>(),
+                        buf64_r.as_mut_ptr().cast::<c_void>(),
+                    ];
+                    for _ in 0..32 {
+                        // SAFETY: 线程局部缓冲有效；`reader_addr` 受 `Arc<AudioReaderEntry>` 登记表保护。
+                        let ok = unsafe {
+                            ara_read_audio_samples(
+                                ctrl_addr as AraRef,
+                                reader_addr as AraRef,
+                                0,
+                                64,
+                                ptrs.as_ptr(),
+                            )
+                        };
+                        assert!(ok == ARA_TRUE || ok == ARA_FALSE);
+                    }
+                });
+            }
+            scope.spawn(move || {
+                for &reader_addr in &reader_addrs {
+                    // SAFETY: 同上；并发销毁必须与读线程安全互斥并保持已克隆 Arc 存活。
+                    unsafe {
+                        ara_destroy_audio_reader(ctrl_addr as AraRef, reader_addr as AraRef);
+                    }
+                }
+            });
+        });
+        assert!(shared.audio_readers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ara_archive_write_enforces_size_cap_and_overflow() {
+        let writer = Box::new(ArchiveWriterSlot {
+            data: Mutex::new(Vec::new()),
+        });
+        let writer_ref = (&*writer) as *const ArchiveWriterSlot as AraRef;
+        let payload = b"ara-archive";
+
+        // SAFETY: `writer_ref` 与 `payload` 在本测试帧内有效。
+        unsafe {
+            assert_eq!(
+                ara_write_bytes_to_archive(
+                    ptr::null_mut(),
+                    writer_ref,
+                    usize::MAX - 1,
+                    4,
+                    payload.as_ptr()
+                ),
+                ARA_FALSE
+            );
+            assert_eq!(
+                ara_write_bytes_to_archive(
+                    ptr::null_mut(),
+                    writer_ref,
+                    MAX_ARCHIVE_BYTES,
+                    1,
+                    payload.as_ptr()
+                ),
+                ARA_FALSE
+            );
+            assert!(writer.data.lock().unwrap().is_empty());
+
+            assert_eq!(
+                ara_write_bytes_to_archive(
+                    ptr::null_mut(),
+                    writer_ref,
+                    2,
+                    payload.len(),
+                    payload.as_ptr()
+                ),
+                ARA_TRUE
+            );
+        }
+        let written = writer.data.lock().unwrap();
+        assert_eq!(written.len(), 2 + payload.len());
+        assert_eq!(&written[..2], &[0, 0]);
+        assert_eq!(&written[2..], payload);
+    }
+
+    #[test]
+    fn ara_tempo_reader_rejects_stale_and_null_handles() {
+        let shared = Arc::new(AraShared::new());
+        let ctx_slot = Box::new([3_u8; 64]);
+        let ctx_ref = (&*ctx_slot) as *const Slot as AraRef;
+        *shared.context_host_ref.lock().unwrap() = ctx_ref;
+        *shared.tempo_entries.lock().unwrap() = vec![
+            AraContentTempoEntry {
+                time_position: 0.0,
+                quarter_position: 0.0,
+            },
+            AraContentTempoEntry {
+                time_position: 0.5,
+                quarter_position: 1.0,
+            },
+        ];
+        let ctrl_ref = Arc::as_ptr(&shared) as AraRef;
+
+        // SAFETY: `ctrl_ref` 与 `ctx_ref` 在本测试帧内保活。
+        unsafe {
+            let reader_ref = ara_create_musical_context_content_reader(
+                ctrl_ref,
+                ctx_ref,
+                CONTENT_TYPE_TEMPO_ENTRIES,
+                ptr::null(),
+            );
+            assert!(!reader_ref.is_null());
+            assert_eq!(
+                ara_get_content_reader_event_count(ctrl_ref, ptr::null_mut()),
+                0
+            );
+            assert_eq!(ara_get_content_reader_event_count(ctrl_ref, reader_ref), 2);
+            assert!(ara_get_content_reader_data_for_event(ctrl_ref, reader_ref, -1).is_null());
+            assert!(ara_get_content_reader_data_for_event(ctrl_ref, reader_ref, 2).is_null());
+            let item_ptr = ara_get_content_reader_data_for_event(ctrl_ref, reader_ref, 1);
+            assert!(!item_ptr.is_null());
+            let item = &*item_ptr.cast::<AraContentTempoEntry>();
+            assert!((item.time_position - 0.5).abs() < 1e-12);
+            assert!((item.quarter_position - 1.0).abs() < 1e-12);
+
+            ara_destroy_content_reader(ctrl_ref, reader_ref);
+            assert_eq!(ara_get_content_reader_event_count(ctrl_ref, reader_ref), 0);
+            assert!(ara_get_content_reader_data_for_event(ctrl_ref, reader_ref, 0).is_null());
+        }
     }
 }
 

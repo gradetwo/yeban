@@ -68,6 +68,12 @@ pub const RESULT_NO_INTERFACE: i32 = -1;
 /// `tresult` 未实现（`kNotImplemented`，`0x80004001`）。
 pub const RESULT_NOT_IMPLEMENTED: i32 = 0x8000_4001_u32 as i32;
 
+/// `tresult` 参数非法（`kInvalidArgument`／COM `E_INVALIDARG`，`0x80070057`）。
+pub const RESULT_INVALID_ARGUMENT: i32 = 0x8007_0057_u32 as i32;
+
+/// `tresult` 内存不足（`kOutOfMemory`／COM `E_OUTOFMEMORY`，`0x8007000E`）。
+pub const RESULT_OUT_OF_MEMORY: i32 = 0x8007_000E_u32 as i32;
+
 /// 全零 TUID（`FUID::isValid` 的否定：全零＝无效类标识）。
 pub const TUID_INVALID: Tuid = [0_u8; 16];
 
