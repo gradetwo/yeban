@@ -150,7 +150,13 @@
   "platform.body": "macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined.",
   "showcase.listen_label": "Preview “雨声太吵” (The Rain Is Too Loud) — a quick taste; the full experience, visuals synced to the music, is on the trilogy site.",
   "ui.title": "The interface",
-  "ui.subtitle": "A 10-track pop project: lead vocal, harmonies, piano, guitars, bass, drums, strings and a synth pad",
-  "ui.shot1_alt": "Arrangement view (zoomed): verse into chorus with clear density contrast, the piano roll showing the piano track's arpeggios",
-  "ui.shot1_caption": "Zoomed arrangement — verse-to-chorus density contrast, piano roll open on the piano track"
+  "ui.subtitle": "The built-in demo project: drums, bass, pad, lead, strings and percussion",
+  "ui.shot1_alt": "Arrangement view (flat theme): six tracks and clips, the piano roll open in the lower dock, the channel inspector on the left",
+  "ui.shot1_caption": "Arrangement view — piano roll in the lower dock, flat theme",
+  "ui.shot2_alt": "The same arrangement view in the physical (skeuomorphic) theme: dark blue-grey control surfaces with teal accents, edit surfaces stay flat",
+  "ui.shot2_caption": "The same view, physical theme",
+  "ui.shot3_alt": "Mixer console in the lower dock: six track channel strips plus bus and master, each with a fader and a dB readout",
+  "ui.shot3_caption": "Mixer console in the lower dock — channel strips, bus and master",
+  "ui.shot4_alt": "The terminal UI (yeban-tui) on the same demo project: track list, clip grid and inspector",
+  "ui.shot4_caption": "The yeban-tui terminal UI — the same demo project"
 }
