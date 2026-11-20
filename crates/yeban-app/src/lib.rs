@@ -191,6 +191,10 @@ pub mod samples;
 // `ui/dialogs/sound_library_dialog.slint`，接线在 `host`。
 pub mod save_action;
 pub mod scene;
+// ⭐ **SFZ Doctor**：非官方（无包标记）用户音源的体检 + 自动修复——
+// 大小写采样路径建链接、越界操作码钳值、引擎探针回路；只在用户在
+// 音源管理里确认后才跑，判据与记录口径见模块内文档。
+pub mod sfz_doctor;
 pub mod sound_library;
 // ⭐ **整曲多层可视化总览图（Song Overview）Phase 1 UI 面板**：stub view-model +
 // 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。

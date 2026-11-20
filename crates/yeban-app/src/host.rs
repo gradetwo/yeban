@@ -10960,6 +10960,10 @@ struct SoundLibraryAsyncSlot {
     progress: Option<DownloadTick>,
     /// 下载结局 `(包 id, 状态行文本)`；`Err` 的文本进红色状态行。
     download_outcome: Option<(String, Result<String, String>)>,
+    doctor_in_flight: bool,
+    /// SFZ Doctor 结局 `(库 id, 状态行文本)`；读数在工人线程里由
+    /// `sfz_doctor::format_doctor_readout` 换算好（与下载读数同一条纪律）。
+    doctor_outcome: Option<(String, Result<String, String>)>,
 }
 
 /// 一次下载进度采样（跨线程槽里的唯一进度载体）。
@@ -11022,6 +11026,21 @@ impl SoundLibraryAsyncState {
         slot.progress = None;
         slot.download_outcome = Some((pack_id.to_owned(), outcome));
     }
+
+    fn begin_doctor(&self) -> bool {
+        let mut slot = self.lock();
+        if slot.doctor_in_flight {
+            return false;
+        }
+        slot.doctor_in_flight = true;
+        true
+    }
+
+    fn finish_doctor(&self, library_id: &str, outcome: Result<String, String>) {
+        let mut slot = self.lock();
+        slot.doctor_in_flight = false;
+        slot.doctor_outcome = Some((library_id.to_owned(), outcome));
+    }
 }
 
 /// 把已安装扫描结果写进界面（唯一写 `sound-installed-*` 的地方）。
@@ -11033,9 +11052,13 @@ fn publish_sound_installed(ui: &MainWindow) {
     let mut locations = Vec::with_capacity(installed.len());
     let mut sizes = Vec::with_capacity(installed.len());
     let mut deletable = Vec::with_capacity(installed.len());
+    let mut doctor_needed = Vec::with_capacity(installed.len());
     for library in &installed {
         ids.push(library.id.clone());
         names.push(library.name.clone());
+        doctor_needed.push(
+            crate::sfz_doctor::doctor_state(library) == crate::sfz_doctor::DoctorState::Needed,
+        );
         // ⚠ 去掉 Windows 的 `\\?\` 长路径前缀：它对程序有用，对人 **是噪音**
         // （界面上一行 `\\?\C:\...` 看着像出错）。只改显示，不改磁盘上的真实路径。
         let shown = library
@@ -11053,6 +11076,7 @@ fn publish_sound_installed(ui: &MainWindow) {
     ui.set_sound_installed_locations(strings(&locations));
     ui.set_sound_installed_sizes(strings(&sizes));
     ui.set_sound_installed_deletable(booleans(&deletable));
+    ui.set_sound_installed_doctor_needed(booleans(&doctor_needed));
 }
 
 /// 当前已安装条目的 id 全集（一次扫描；包对账按 `user:<包 id>` 比）。
@@ -11900,7 +11924,75 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
         });
     }
 
-    // ---- 排空跨线程槽（目录结局 / 下载进度 / 下载结局）-------------------------
+    // ---- SFZ Doctor：对一件非官方音源跑体检 + 自动修复（后台线程）-----------
+    //
+    // 触发口径在界面层已经把好关：只有 `doctor_state == Needed` 的行才出
+    // 「体检」钮，且行内两步确认后才发这个回调。这里只负责找库、防并发、
+    // 起线程；结局经跨线程槽回排空处统一落状态行 + 重扫（与下载同一条路）。
+    {
+        let weak = ui.as_weak();
+        let state = state.clone();
+        ui.on_sound_library_doctor_check(move |library_id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let roots = crate::sound_library::SoundRoots::production();
+            let library = crate::sound_library::scan_installed(&roots)
+                .into_iter()
+                .find(|library| library.id == library_id.as_str());
+            let Some(library) = library else {
+                ui.set_sound_library_status("找不到这个音源库（列表可能已刷新，请重试）".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            };
+            if !state.begin_doctor() {
+                ui.set_sound_library_status("已有音源在检查中".into());
+                ui.set_sound_library_status_is_error(true);
+                return;
+            }
+            ui.set_sound_library_status(format!("SFZ Doctor 正在检查《{}》…", library.name).into());
+            ui.set_sound_library_status_is_error(false);
+            let worker_state = state.clone();
+            let worker_weak = weak.clone();
+            std::thread::spawn(move || {
+                let report = crate::sfz_doctor::run(&library.location);
+                let outcome = Ok(crate::sfz_doctor::format_doctor_readout(
+                    &library.name,
+                    &report,
+                ));
+                worker_state.finish_doctor(&library.id, outcome);
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_sound_library_drain_requested();
+                });
+            });
+        });
+    }
+
+    // ---- SFZ Doctor：拒绝体检（本地操作，同步落记录后重扫）-------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_sound_library_doctor_decline(move |library_id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let roots = crate::sound_library::SoundRoots::production();
+            let library = crate::sound_library::scan_installed(&roots)
+                .into_iter()
+                .find(|library| library.id == library_id.as_str());
+            if let Some(library) = library {
+                crate::sfz_doctor::mark_declined(&library.location);
+                ui.set_sound_library_status(
+                    format!("已跳过《{}》的 SFZ Doctor 检查（不再提示）", library.name).into(),
+                );
+                ui.set_sound_library_status_is_error(false);
+            }
+            publish_sound_installed(&ui);
+        });
+    }
+
+    // ---- 排空跨线程槽（目录结局 / 下载进度 / 下载结局 / 体检结局）-------------
     {
         let weak = ui.as_weak();
         let state = state.clone();
@@ -11910,12 +12002,13 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let (catalog_outcome, progress, download_outcome) = {
+            let (catalog_outcome, progress, download_outcome, doctor_outcome) = {
                 let mut slot = state.lock();
                 (
                     slot.catalog_outcome.take(),
                     slot.progress.take(),
                     slot.download_outcome.take(),
+                    slot.doctor_outcome.take(),
                 )
             };
             if let Some(outcome) = catalog_outcome {
@@ -11967,6 +12060,21 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 if installed_ok {
                     rescue_after_pack_installed(&ui, &pack_id);
                 }
+            }
+            if let Some((_library_id, outcome)) = doctor_outcome {
+                // 体检结局：一行读数进状态行（修不了的在读数里如实报），然后
+                // 重扫 —— 记录已落盘，那一行的「体检」钮应当消失。
+                match outcome {
+                    Ok(text) => {
+                        ui.set_sound_library_status(text.into());
+                        ui.set_sound_library_status_is_error(false);
+                    }
+                    Err(text) => {
+                        ui.set_sound_library_status(text.into());
+                        ui.set_sound_library_status_is_error(true);
+                    }
+                }
+                publish_sound_installed(&ui);
             }
         });
     }

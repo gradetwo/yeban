@@ -3096,6 +3096,28 @@ impl ElementRegistry {
             "取消删除音源库",
             false,
         );
+        // SFZ Doctor 三钮（非官方库那一行）：体检入口、确认开始检查、拒绝检查。
+        registry.add(
+            "sound-library-doctor-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "SFZ 体检（非官方库待检时出现）",
+            false,
+        );
+        registry.add(
+            "sound-library-doctor-confirm-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "确认开始 SFZ 体检",
+            false,
+        );
+        registry.add(
+            "sound-library-doctor-decline-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "不用了（拒绝 SFZ 体检，不再提示）",
+            false,
+        );
         registry.add(
             "sound-library-download-button",
             ElementKind::Button,

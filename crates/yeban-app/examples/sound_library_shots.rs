@@ -115,6 +115,16 @@ fn main() {
     .expect("写夹具 SFZ");
     // 一块有体积的负载，让「占用大小」列显示非零读数。
     std::fs::write(pack_dir.join("payload.bin"), vec![7u8; 12_345]).expect("写夹具负载");
+    // 非官方夹具库：无包标记、无体检记录 ⇒ SFZ Doctor 待检，第一帧那一行
+    // 应当出「体检」钮（帧 1 有断言钉住）。
+    let external_dir = library_root.join("fixture-external");
+    std::fs::create_dir_all(&external_dir).expect("创建非官方夹具库目录");
+    std::fs::write(
+        external_dir.join("fixture-external.sfz"),
+        "<region> sample=keys/*.wav\n",
+    )
+    .expect("写非官方夹具 SFZ");
+    std::fs::write(external_dir.join("payload.bin"), vec![9u8; 2_048]).expect("写非官方夹具负载");
 
     let empty_catalog = fixture_root.join("catalog-empty.json");
     std::fs::write(&empty_catalog, r#"{"version":1,"packs":[]}"#).expect("写空目录夹具");
@@ -179,6 +189,12 @@ fn main() {
     assert!(
         ui.get_sound_installed_ids().row_count() >= 2,
         "已安装至少含内置库与夹具包"
+    );
+    assert!(
+        ui.get_sound_installed_doctor_needed()
+            .iter()
+            .any(|needed| needed),
+        "非官方夹具库必须被标为 SFZ Doctor 待检"
     );
     shot("manager-installed");
     ui.invoke_close_sound_library();

@@ -545,6 +545,7 @@ export component MainWindow inherits Window {
     in-out property <[string]> sound-installed-locations: [];
     in-out property <[string]> sound-installed-sizes: [];
     in-out property <[bool]> sound-installed-deletable: [];
+    in-out property <[bool]> sound-installed-doctor-needed: [];
     in-out property <int> sound-catalog-state: 0;
     in-out property <[string]> sound-pack-ids: [];
     in-out property <[string]> sound-pack-names: [];
@@ -943,6 +944,8 @@ export component MainWindow inherits Window {
     callback sound-library-refresh-catalog();
     callback sound-library-download(string);
     callback sound-library-delete(string);
+    callback sound-library-doctor-check(string);
+    callback sound-library-doctor-decline(string);
     callback sound-library-drain-requested();
     // 音源管理：搜索原文变化（宿主按它重播过滤后的平行数组）与「一键全下」
     callback sound-library-filter-changed(string);
@@ -2218,6 +2221,7 @@ export component MainWindow inherits Window {
             installed-locations: root.sound-installed-locations;
             installed-sizes: root.sound-installed-sizes;
             installed-deletable: root.sound-installed-deletable;
+            installed-doctor-needed: root.sound-installed-doctor-needed;
             catalog-state: root.sound-catalog-state;
             pack-ids: root.sound-pack-ids;
             pack-names: root.sound-pack-names;
@@ -2236,6 +2240,8 @@ export component MainWindow inherits Window {
             refresh-catalog => { root.sound-library-refresh-catalog(); }
             download-pack(id) => { root.sound-library-download(id); }
             delete-library(id) => { root.sound-library-delete(id); }
+            doctor-check(id) => { root.sound-library-doctor-check(id); }
+            doctor-decline(id) => { root.sound-library-doctor-decline(id); }
             filter-changed(text) => { root.sound-library-filter-changed(text); }
             download-all => { root.sound-library-download-all(); }
             use-pack(id) => { root.sound-library-use-pack(id); }

@@ -1,0 +1,169 @@
+//! SFZ Doctor 接线事实 + 判据往返：
+//! ① 对话框有「体检」两步确认、宿主有两条回调的落点；
+//! ② 非官方库的状态机（Needed → Done / Declined；官方库恒 Official）；
+//! ③ 真实修复往返：一件大小写路径 + 越界 tune 的假库，跑完必须真能装载。
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use yeban_app::sfz_doctor::{DoctorState, doctor_state, format_doctor_readout, mark_declined, run};
+use yeban_app::sound_library::InstalledLibrary;
+
+const DIALOG: &str = include_str!("../ui/dialogs/sound_library_dialog.slint");
+const APP: &str = include_str!("../ui/app.slint");
+const HOST: &str = include_str!("../src/host.rs");
+
+#[test]
+fn dialog_and_host_wire_doctor_callbacks() {
+    for needle in [
+        "callback doctor-check(string);",
+        "callback doctor-decline(string);",
+        "sound-library-doctor-button",
+        "sound-library-doctor-confirm-button",
+        "sound-library-doctor-decline-button",
+    ] {
+        assert!(DIALOG.contains(needle), "对话框缺少：{needle}");
+    }
+    for needle in [
+        "sound-installed-doctor-needed: [];",
+        "installed-doctor-needed: root.sound-installed-doctor-needed",
+        "doctor-check(id) => { root.sound-library-doctor-check(id); }",
+        "doctor-decline(id) => { root.sound-library-doctor-decline(id); }",
+    ] {
+        assert!(APP.contains(needle), "app.slint 缺少：{needle}");
+    }
+    for needle in [
+        "ui.on_sound_library_doctor_check",
+        "ui.on_sound_library_doctor_decline",
+        "crate::sfz_doctor::run(",
+        "crate::sfz_doctor::mark_declined(",
+        "set_sound_installed_doctor_needed",
+    ] {
+        assert!(HOST.contains(needle), "host 缺少：{needle}");
+    }
+}
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "yeban-sfz-doctor-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&dir).expect("建临时目录");
+    dir
+}
+
+/// 一段最小可解码的 16-bit 单声道 WAV（10 个采样）。
+fn write_tiny_wav(path: &Path) {
+    let mut bytes: Vec<u8> = Vec::new();
+    let data_len: u32 = 20;
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&48_000u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for i in 0..10i16 {
+        bytes.extend_from_slice(&(i * 100).to_le_bytes());
+    }
+    fs::write(path, bytes).expect("写 WAV");
+}
+
+fn library(id: &str, location: PathBuf) -> InstalledLibrary {
+    InstalledLibrary {
+        id: id.to_string(),
+        name: "ext-lib".to_string(),
+        location,
+        size_bytes: 0,
+        deletable: true,
+    }
+}
+
+/// 造一件坏库：采样目录大小写不对（Samples/flute vs 磁盘 Samples/Flute）
+/// + region 里 tune=-109 越界。返回库根。
+fn make_broken_library(base: &Path) -> PathBuf {
+    let lib = base.join("ext-lib");
+    let samples = lib.join("Samples").join("Flute");
+    fs::create_dir_all(&samples).expect("建采样目录");
+    write_tiny_wav(&samples.join("take1.wav"));
+    // SFZ 放在库根（与真实库同一布局：default_path 相对 SFZ 所在目录）。
+    fs::write(
+        lib.join("test.sfz"),
+        "<control>\ndefault_path=Samples/flute/\n<region> sample=take1.wav key=60 tune=-109\n",
+    )
+    .expect("写 SFZ");
+    lib
+}
+
+#[test]
+fn external_library_state_machine_and_repair_roundtrip() {
+    let base = temp_dir("roundtrip");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+
+    // 未表态 ⇒ Needed。
+    assert_eq!(doctor_state(&lib), DoctorState::Needed);
+
+    // 跑体检：大小写链接 1、tune 钳值 ≥1、修完必须真能装载（探针口径）。
+    let report = run(&lib_dir);
+    assert_eq!(
+        report.links_created.len(),
+        1,
+        "应建 1 条大小写链接：{report:?}"
+    );
+    assert!(
+        report
+            .edits
+            .iter()
+            .any(|e| e.opcode == "tune" && e.new == "-100"),
+        "tune 应被钳到 -100：{report:?}"
+    );
+    assert!(
+        report.still_failing.is_empty(),
+        "修完不应再有装不上的：{:?}",
+        report.still_failing
+    );
+    let readout = format_doctor_readout("ext-lib", &report);
+    assert!(readout.contains("全部可装载"), "读数应报全好：{readout}");
+
+    // 记录已落盘 ⇒ Done，不再提示。
+    assert!(lib_dir.join(".sfz-doctor.json").exists());
+    assert_eq!(doctor_state(&lib), DoctorState::Done);
+
+    // 再跑一次应当无改动（幂等）。
+    let second = run(&lib_dir);
+    assert!(second.links_created.is_empty() && second.edits.is_empty());
+    assert!(second.still_failing.is_empty());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn declined_and_official_are_never_prompted() {
+    let base = temp_dir("states");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+
+    mark_declined(&lib_dir);
+    assert_eq!(doctor_state(&lib), DoctorState::Declined);
+
+    // 带包标记 ⇒ 官方库，恒 Official（哪怕没有体检记录）。
+    fs::write(lib_dir.join(".yeban-pack.json"), "{}").expect("写包标记");
+    let _ = fs::remove_file(lib_dir.join(".sfz-doctor.json"));
+    assert_eq!(doctor_state(&lib), DoctorState::Official);
+
+    // 内置 id 同样恒 Official。
+    let builtin = library("builtin:ext-lib", lib_dir.clone());
+    assert_eq!(doctor_state(&builtin), DoctorState::Official);
+
+    let _ = fs::remove_dir_all(&base);
+}

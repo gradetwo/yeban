@@ -37,6 +37,8 @@ export component SoundLibraryDialog inherits Rectangle {
     in property <[string]> installed-locations;
     in property <[string]> installed-sizes;
     in property <[bool]> installed-deletable;
+    // ---- SFZ Doctor 待检（宿主写：非官方库且未表态的那几行，与 installed-* 平行）----
+    in property <[bool]> installed-doctor-needed;
     // ---- 可下载（宿主写，平行数组 + 三态）--------------------------------
     in property <int> catalog-state: 0;
     in property <[string]> pack-ids;
@@ -58,6 +60,8 @@ export component SoundLibraryDialog inherits Rectangle {
     in property <string> target-track-name: "";
     // ---- 删除确认态（本文件自有：正在确认删除的行 id，空 = 无）-------------
     in-out property <string> confirm-delete-id: "";
+    // ---- SFZ Doctor 确认态（本文件自有：正在确认体检的行 id，空 = 无）----
+    in-out property <string> doctor-confirm-id: "";
     // ---- 搜索原文（本文件自有；过滤由宿主按这份原文重播平行数组）-------------
     in-out property <string> search-text: "";
 
@@ -65,6 +69,10 @@ export component SoundLibraryDialog inherits Rectangle {
     callback refresh-catalog();
     callback download-pack(string);
     callback delete-library(string);
+    /// 对这一件非官方音源跑 SFZ Doctor 体检 + 自动修复（宿主在后台线程跑）。
+    callback doctor-check(string);
+    /// 拒绝这一件的体检（宿主落 declined 记录，之后不再提示）。
+    callback doctor-decline(string);
     callback filter-changed(string);
     callback download-all();
     /// 把这一件**装好的**音源用到混音台当前那条轨上（一次点击）。
@@ -376,6 +384,126 @@ export component SoundLibraryDialog inherits Rectangle {
                                 width: parent.width;
                                 height: parent.height;
                                 clicked => { root.confirm-delete-id = ""; }
+                            }
+                        }
+                    }
+
+                    // SFZ Doctor 钮（非官方未检、且不在任何确认态时；与删除钮同款两步式）
+                    if root.installed-doctor-needed[i] && root.doctor-confirm-id != root.installed-ids[i] && root.confirm-delete-id != root.installed-ids[i] : Rectangle {
+                        x: root.list-w - 186px;
+                        y: 8px;
+                        width: 74px;
+                        height: 28px;
+                        background: Tokens.bg-void;
+                        border-radius: Tokens.radius-sm;
+                        border-width: 1px;
+                        border-color: Tokens.gold-deep;
+                        accessible-role: button;
+                        accessible-id: "sound-library-doctor-button";
+                        accessible-label: @tr("SFZ 体检");
+                        accessible-action-default => { root.doctor-confirm-id = root.installed-ids[i]; }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("体检");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.doctor-confirm-id = root.installed-ids[i]; }
+                        }
+                    }
+
+                    // SFZ Doctor 确认态：行尾展开说明 + 开始检查 / 不用了（覆盖在行上，不发回调直到表态）
+                    if root.installed-doctor-needed[i] && root.doctor-confirm-id == root.installed-ids[i] : Rectangle {
+                        x: root.list-w - 472px;
+                        y: 0;
+                        width: 472px;
+                        height: parent.height;
+                        background: Tokens.bg-panel;
+
+                        UiText {
+                            x: 8px;
+                            y: 0;
+                            width: 224px;
+                            height: parent.height;
+                            text: @tr("非官方音源：用 SFZ Doctor 检查并自动修复？");
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+
+                        Rectangle {
+                            x: 240px;
+                            y: 8px;
+                            width: 104px;
+                            height: 28px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            border-width: 1px;
+                            border-color: Tokens.gold-deep;
+                            accessible-role: button;
+                            accessible-id: "sound-library-doctor-confirm-button";
+                            accessible-label: @tr("开始检查");
+                            accessible-action-default => { root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+
+                            UiText {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("开始检查");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-xs;
+                                horizontal-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => { root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+                            }
+                        }
+
+                        Rectangle {
+                            x: 352px;
+                            y: 8px;
+                            width: 92px;
+                            height: 28px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            border-width: 1px;
+                            border-color: Tokens.gold-deep;
+                            accessible-role: button;
+                            accessible-id: "sound-library-doctor-decline-button";
+                            accessible-label: @tr("不用了");
+                            accessible-action-default => { root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+
+                            UiText {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("不用了");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-xs;
+                                horizontal-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => { root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
                             }
                         }
                     }
