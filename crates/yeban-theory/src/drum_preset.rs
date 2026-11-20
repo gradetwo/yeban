@@ -874,7 +874,12 @@ impl DrumStylePreset {
                 Some(parse_lanes(fill_obj, "lanes", STEPS_PER_BAR)?)
             }
         };
-        let lane_chains = parse_lane_chains(obj, &lanes, fill_lanes.as_deref())?;
+        let sfz_raw = match get_opt(obj, "sfz_path") {
+            Some(Json::Str(s)) => Some(s.as_str()),
+            _ => None,
+        };
+        let lane_chains =
+            parse_lane_chains(obj, &lanes, fill_lanes.as_deref(), kit_family, sfz_raw)?;
         let fx = match get_opt(obj, "fx") {
             None => None,
             Some(fx_json) => {
@@ -1785,12 +1790,18 @@ fn parse_key_group(
 /// 解析 `lane_chains` 段（可选；缺省 = 空表）。规范化校验在本层完成：
 /// 组数上限、组内升序非空、组间不重叠、组按首键升序、键必须是本预置
 /// 鼓道（主道 ∪ fill 道）的键、链内至少一段处理、侧链 key 键是鼓道
-/// 键的子集。choke 组不拆分是**生成期**校验（依赖所选
-/// SFZ 程序与落地期次，见 [`lane_chain_generation_violations`]）。
+/// 键的子集。唯一例外：原声族里与某个鼓道键同属一个 choke 组的键
+/// 可以被同一条链认领——引擎按程序全部 region 分区，choke 组必须
+/// 整组同链（见 [`lane_chain_generation_violations`]），而踩镲 44
+/// 这类键未必是 pattern 鼓道；不放行则出厂预置无从写对。choke 组
+/// 不拆分是**生成期**校验（依赖所选 SFZ 程序与落地期次，见
+/// [`lane_chain_generation_violations`]）。
 fn parse_lane_chains(
     obj: &[(String, Json)],
     lanes: &[DrumLanePreset],
     fill_lanes: Option<&[DrumLanePreset]>,
+    kit_family: KitFamily,
+    sfz_path: Option<&str>,
 ) -> Result<Vec<DrumLaneChainPreset>, DrumPresetError> {
     let Some(raw) = get_opt(obj, "lane_chains") else {
         return Ok(Vec::new());
@@ -1807,6 +1818,19 @@ fn parse_lane_chains(
     let mut lane_keys: Vec<u8> = lanes.iter().map(|lane| lane.gm_key).collect();
     if let Some(fill) = fill_lanes {
         lane_keys.extend(fill.iter().map(|lane| lane.gm_key));
+    }
+    // 可认领键 = 鼓道键 ∪ 与鼓道键同 choke 组的程序键（原声族）。
+    let mut claimable: Vec<u8> = lane_keys.clone();
+    if kit_family == KitFamily::Acoustic {
+        for component in choke_groups(sfz_path) {
+            if component.iter().any(|key| lane_keys.contains(key)) {
+                for key in component {
+                    if !claimable.contains(&key) {
+                        claimable.push(key);
+                    }
+                }
+            }
+        }
     }
     let mut chains: Vec<DrumLaneChainPreset> = Vec::with_capacity(arr.len());
     let mut claimed: Vec<u8> = Vec::new();
@@ -1825,10 +1849,12 @@ fn parse_lane_chains(
         let base = format!("lane_chains.{name}.chain");
         let keys = parse_key_group(entry, "keys", &format!("lane_chains.{name}.keys"))?;
         for key in &keys {
-            if !lane_keys.contains(key) {
+            if !claimable.contains(key) {
                 return Err(field_err(
                     &format!("lane_chains.{name}.keys"),
-                    format!("key {key} is not one of this preset's lane keys"),
+                    format!(
+                        "key {key} is not one of this preset's lane keys or its choke-group mates"
+                    ),
                 ));
             }
             if claimed.contains(key) {
@@ -3402,10 +3428,14 @@ pub fn choke_groups(sfz_path: Option<&str>) -> Vec<Vec<u8>> {
 /// 调用本函数，非空即响亮拒绝并逐条点名——与
 /// [`uncovered_pattern_keys`] 同一「默认不能静默」口径。一类违规：
 ///
-/// 1. **choke 组被拆分**（仅原声族）：本预置用到的键里，同一 choke
-///    组的键不得分布在两条不同的逐件链里，也不得一部分分组、一部分
-///    留在整轨链上——逐件渲染按组分引擎，拆开后互掐关系断裂
-///    （踩镲掐不开镲的语义被静默改掉）。整组同链或整组不分组才合法。
+/// 1. **choke 组被拆分**（仅原声族）：同一 choke 组的键不得分布在
+///    两条不同的逐件链里，也不得一部分分组、一部分留在整轨链上——
+///    逐件渲染按组分引擎，拆开后互掐关系断裂（踩镲掐不开镲的语义
+///    被静默改掉）。整组同链或整组不分组才合法。口径与引擎装配侧
+///    的分区校验一致：按**程序的全部 region 键**计，不只 pattern
+///    用到的键——出厂预置曾只按 pattern 键过检（01-basic-kit 的
+///    踩镲 44 不在 pattern 里），引擎按 region 分区响亮拒绝渲染，
+///    六个原声风格一度全部渲不出（2026-11-20 重渲实测）。
 #[must_use]
 pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String> {
     let mut violations = Vec::new();
@@ -3414,28 +3444,22 @@ pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String>
     if preset.kit_family != KitFamily::Acoustic || preset.lane_chains.is_empty() {
         return violations;
     }
-    // 本预置真正用到的键（主道 + fill 道）。
-    let mut used: Vec<u8> = preset.lanes.iter().map(|lane| lane.gm_key).collect();
-    if let Some(fill) = &preset.fill_lanes {
-        used.extend(fill.iter().map(|lane| lane.gm_key));
-    }
     for component in choke_groups(preset.sfz_path.as_deref()) {
         // 这组 choke 键落在哪几个分区里：每条逐件链是一个分区，
-        // 未被任何逐件链认领的键同属「未分组」分区。
+        // 未被任何逐件链认领的键同属「未分组」分区。按程序的全部
+        // region 键计（静态表即程序口径），不按 pattern 用到的键
+        // 过滤——与引擎装配侧的分区校验同口径。
         let mut cells: Vec<String> = Vec::new();
-        let mut any_used = false;
+        let mut any_grouped = false;
         let mut any_ungrouped = false;
         for key in &component {
-            if !used.contains(key) {
-                continue;
-            }
-            any_used = true;
             match preset
                 .lane_chains
                 .iter()
                 .find(|chain| chain.keys.contains(key))
             {
                 Some(chain) => {
+                    any_grouped = true;
                     if !cells.contains(&chain.name) {
                         cells.push(chain.name.clone());
                     }
@@ -3443,7 +3467,7 @@ pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String>
                 None => any_ungrouped = true,
             }
         }
-        if !any_used {
+        if !any_grouped {
             continue;
         }
         if any_ungrouped {
@@ -4620,14 +4644,32 @@ mod tests {
         assert_eq!(violations.len(), 1, "拆 choke 组必须违规: {violations:?}");
         assert!(violations[0].contains("choke"));
 
-        // 42/46 同组 ⇒ 合法。
+        // 帽组三键同链 ⇒ 合法。44 不是鼓道键，但它是 42/46 的 choke
+        // 同组键，解析期可被同一条链认领（引擎按 region 分区）。
         let whole = DrumStylePreset::from_json(&preset_with_lanes(
+            "acoustic",
+            &[36, 42, 46],
+            ", \"lane_chains\": [{\"name\": \"hats\", \"keys\": [42, 44, 46], \"chain\": {\"pan\": 0}}]",
+        ))
+        .expect("parses");
+        assert!(lane_chain_generation_violations(&whole).is_empty());
+
+        // 42/46 同链但漏 44 ⇒ 仍是拆组（出厂预置 2026-11-20 实测的
+        // 失败形态：44 不在 pattern 里，旧口径只看 pattern 键漏检，
+        // 引擎按 region 分区拒绝渲染）。
+        let missing_mate = DrumStylePreset::from_json(&preset_with_lanes(
             "acoustic",
             &[36, 42, 46],
             ", \"lane_chains\": [{\"name\": \"hats\", \"keys\": [42, 46], \"chain\": {\"pan\": 0}}]",
         ))
         .expect("parses");
-        assert!(lane_chain_generation_violations(&whole).is_empty());
+        let violations = lane_chain_generation_violations(&missing_mate);
+        assert_eq!(
+            violations.len(),
+            1,
+            "漏 choke 同组键必须违规: {violations:?}"
+        );
+        assert!(violations[0].contains("choke"));
 
         // 电子族不查 choke：同样的拆法合法。
         let electronic_split = DrumStylePreset::from_json(&preset_with_lanes(
@@ -4723,7 +4765,7 @@ mod tests {
                 &[
                     ("kick", &[36], 1.0),
                     ("snare", &[38], 0.5),
-                    ("hats", &[42, 46], -2.0),
+                    ("hats", &[42, 44, 46], -2.0),
                     ("shaker", &[82], -1.0),
                 ],
             ),
@@ -4732,7 +4774,7 @@ mod tests {
                 &[
                     ("kick", &[36], 1.0),
                     ("snare", &[38], 1.0),
-                    ("hats", &[42, 46], -1.5),
+                    ("hats", &[42, 44, 46], -1.5),
                     ("shaker", &[82], -1.0),
                 ],
             ),
@@ -4741,7 +4783,7 @@ mod tests {
                 &[
                     ("kick", &[36], 1.5),
                     ("snare", &[38], 0.5),
-                    ("hats", &[42, 46], -1.5),
+                    ("hats", &[42, 44, 46], -1.5),
                     ("shaker", &[82], -1.0),
                 ],
             ),
@@ -4750,7 +4792,7 @@ mod tests {
                 &[
                     ("kick", &[36], 1.0),
                     ("snare", &[37, 38], 0.5),
-                    ("hats", &[42, 44], -2.0),
+                    ("hats", &[42, 44, 92], -2.0),
                     ("crash", &[49], -1.0),
                     ("shaker", &[82], -1.0),
                 ],
@@ -4760,7 +4802,7 @@ mod tests {
                 &[
                     ("kick", &[36], 1.0),
                     ("snare", &[37, 38], 0.5),
-                    ("hats", &[44], -1.0),
+                    ("hats", &[42, 44, 92], -1.0),
                     ("crash", &[49], -1.5),
                     ("ride", &[51, 53], -1.0),
                 ],
@@ -4770,7 +4812,7 @@ mod tests {
                 &[
                     ("kick", &[36], 0.5),
                     ("snare", &[37, 38], 1.0),
-                    ("hats", &[42], -1.5),
+                    ("hats", &[42, 44, 92], -1.5),
                     ("crash", &[49], -1.0),
                     ("shaker", &[82], -1.5),
                 ],
