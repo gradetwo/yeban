@@ -632,6 +632,8 @@ mod tests {
     #[test]
     fn ui_top_bar_and_ruler_align_on_one_based_bars() {
         let mut app = App::with_demo().expect("demo app");
+        // 墙钟泵送使初始 tick 余数不保证为 0；先 :seek 1 钉位再断言精确读数。
+        app.execute_command("seek 1");
         let text0 = render_text(&mut app);
         assert!(
             text0.contains("001.1.000 / 3 小节"),

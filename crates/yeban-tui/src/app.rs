@@ -2088,6 +2088,9 @@ mod tests {
     #[test]
     fn position_bar_beat_and_playhead_index_are_consistent() {
         let mut app = App::with_demo().expect("demo app");
+        // 控制面墙钟泵送自宿主启动起推进播放头，初始位置不保证恰为 0；
+        // 先 :seek 1 把位置钉到 0，再断言 1 起口径的一致性。
+        app.execute_command("seek 1");
         assert_eq!(app.position_bar_beat(), (1, 1, 0));
         assert_eq!(app.playhead_bar_index(), 0);
         assert_eq!(app.cursor_bar, 0);
@@ -2154,7 +2157,20 @@ mod tests {
     fn seek_large_bar_does_not_overflow_or_panic() {
         let mut app = App::with_demo().expect("demo app");
         app.execute_command(&format!("seek {}", usize::MAX));
-        assert_eq!(app.cursor_bar, usize::MAX - 1);
-        assert_eq!(app.transport().position_ticks, u64::MAX);
+        // 合入口径：:seek 沿用 TUI 修复包的钳位语义——超界定位到最后一小节
+        // 并响亮告知工程总小节数；超大入参不得溢出或 panic。
+        let total = app.total_bars();
+        assert_eq!(app.cursor_bar, total - 1);
+        assert_eq!(
+            app.transport().position_ticks,
+            (total as u64 - 1) * app.bar_ticks()
+        );
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("工程只有")),
+            "clamp should be reported loudly, got {:?}",
+            app.log.last()
+        );
     }
 }
