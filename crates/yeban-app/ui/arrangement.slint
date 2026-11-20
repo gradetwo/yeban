@@ -1491,10 +1491,21 @@ export component ArrangementViewport inherits Rectangle {
 
                             // Timeline Clips for this track
                             for blk[blk_idx] in root.timeline-blocks : Rectangle {
-                                if blk.track_id == trk.id : Rectangle {
-                                    x: blk.start_px - root.scroll-x;
+                                // ⭐ 视口裁剪（2026-11-19 实测修复）：片段块宽度 = 片段真实长度，
+                                // 长工程里一个铺满全曲的片段可达 18688px。渲染器对超过 ~16K px 的
+                                // 矩形**背景填充失效**（只剩边缘几像素有底色，内部纯黑、文字与音符
+                                // 条全不见；2048/8192/16384px 均正常，18688px 复现）。这里把每个块
+                                // 裁到视口内再交给渲染器：x/width 取与 [0, root.width] 的交集，
+                                // 内容层用 -raw-x 补偿，于是文字仍停在片段的**真实起点**（起点在
+                                // 视口外时被父级 clip 正常裁掉），语义不变。
+                                // ⛔ 不是"截断宽度"：截断会让块在滚动到后半段时提前消失。
+                                property <length> blk-raw-x: blk.start_px - root.scroll-x;
+                                property <length> blk-vis-x: Math.max(blk-raw-x, 0px);
+                                property <length> blk-vis-r: Math.min(blk-raw-x + blk.width_px, root.width);
+                                if blk.track_id == trk.id && blk-vis-r > blk-vis-x : Rectangle {
+                                    x: blk-vis-x;
                                     y: 4px;
-                                    width: blk.width_px;
+                                    width: Math.max(2px, blk-vis-r - blk-vis-x);
                                     height: Math.max(52px, parent.height - 8px);
                                     border-radius: 4px;
                                     // 片段底（九版，Wang 2026-11-17 16:43 亲定，照 Logic Pro
@@ -1517,6 +1528,10 @@ export component ArrangementViewport inherits Rectangle {
                                     clip: true;
 
                                     VerticalLayout {
+                                        // 内容层随片段真实起点位移（起点在视口左侧外时 x 为正），
+                                        // 宽度相应缩短；超出可见区的内容由本块的 clip 裁掉。
+                                        x: Math.max(0px, -blk-raw-x);
+                                        width: Math.max(2px, (blk-vis-r - blk-vis-x) - Math.max(0px, -blk-raw-x));
                                         padding: 4px;
                                         spacing: 2px;
                                         alignment: space-between;

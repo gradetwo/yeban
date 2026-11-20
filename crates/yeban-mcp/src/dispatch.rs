@@ -365,7 +365,7 @@ impl Dispatcher {
         // 因此是借用检查器保证的, 不靠自觉。运行期判据在 `tests/tools_e2e.rs`。
         if call.is_dry_run() {
             return match dry_run_result(&self.domain, &call) {
-                Ok(result) => (200, Ok(result)),
+                Ok(result) => (200, Ok(wrap_mcp_call_result(result))),
                 Err(error) => (http_status_for(&error), Err(error)),
             };
         }
@@ -381,7 +381,11 @@ impl Dispatcher {
             return (cached.http_status, Ok(replay_value(cached, id)));
         }
         // 7. 执行: 真的做事 (打开/保存/查询/提案/合并/渲染参数校验)。
-        let payload = domain::execute(&mut self.domain, &call);
+        // ⭐ MCP 规范的 `CallToolResult` 包裹（[`wrap_mcp_call_result`]）必须
+        // 在**这里**做，而不是在管线出口：幂等缓存存的是本步的产物，重放时
+        // 原样嵌回 `response.result` 并被判据要求与首次**逐字节相同**——
+        // 出口处再包会让首次（已包）与重放内层（未包）对不上。
+        let payload = domain::execute(&mut self.domain, &call).map(wrap_mcp_call_result);
         let status = match &payload {
             Ok(_) => 200,
             Err(error) => http_status_for(error),
@@ -423,6 +427,47 @@ fn replay_value(cached: &CachedOutcome, id: Id) -> Value {
     let mut map = Map::new();
     map.insert("replayed".to_owned(), Value::from(true));
     map.insert("response".to_owned(), replayed.to_value());
+    Value::Object(map)
+}
+
+/// 把带内 [`ToolResponse`] 包成 MCP 规范的 `CallToolResult`。
+///
+/// ## 为什么必须包
+///
+/// MCP 对 `tools/call` 的返回值定义是
+/// `{ content: ContentBlock[], isError?: bool, structuredContent?: object }`，
+/// 其中 `content` **必填**。本仓历史上的 result 是 `{status, data}`——
+/// 自带客户端够用，但标准 MCP 客户端（Claude Desktop / Cursor / MCP Inspector）
+/// 按 `content` 渲染：拿不到就显示空结果，也识别不出 `status:"error"` 的带内失败。
+///
+/// ## 为什么**保留**原来的顶层字段（而不是换掉形状）
+///
+/// 1. 本仓 HTTP 客户端与既有判据读 `result.status` / `result.data`；
+///    两套形状表达的是同一件事，没必要二选一。
+/// 2. `ToolResponse` 的 JSON Schema 未设 `additionalProperties:false`，
+///    多出的 `content` / `structuredContent` / `isError` 不破坏既有校验。
+///
+/// 于是线上形状是「`CallToolResult` ∪ `ToolResponse`」：新客户端读 `content`，
+/// 老调用方读 `status`，二者指向同一份 JSON。
+fn wrap_mcp_call_result(value: Value) -> Value {
+    // 文本块 = 整份带内响应的紧凑 JSON（客户端即使不解析 structuredContent，
+    // 也能把原文呈现给用户 / 模型）。
+    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_owned());
+    let is_error = value.get("status").and_then(Value::as_str) == Some("error");
+    let mut map = Map::new();
+    map.insert(
+        "content".to_owned(),
+        Value::Array(vec![serde_json::json!({ "type": "text", "text": text })]),
+    );
+    map.insert("isError".to_owned(), Value::Bool(is_error));
+    if value.is_object() {
+        map.insert("structuredContent".to_owned(), value.clone());
+    }
+    if let Some(object) = value.as_object() {
+        for (key, item) in object {
+            map.entry(key.clone()).or_insert_with(|| item.clone());
+        }
+    }
     Value::Object(map)
 }
 
@@ -1447,5 +1492,69 @@ mod tests {
             Dispatcher::initialize_result(&echoed)["protocolVersion"],
             "X"
         );
+    }
+
+    /// ⭐ MCP 规范：`tools/call` 的 `result` 必须是 `CallToolResult`（`content` 必填）。
+    ///
+    /// 判据三件套（成功 / 带内失败 / 幂等重放）—— 三者都走同一个出口，
+    /// 因此**任何**一条漏包都会被本函数抓到：
+    /// * `content[0].type == "text"`，且 `content[0].text` 能解析回 JSON；
+    /// * `structuredContent` 与该 JSON **逐字段相同**（不是两套数据面）；
+    /// * `isError` 与带内 `status` 一致（success ⇒ false，error ⇒ true）。
+    ///
+    /// 同时钉住向后兼容：顶层 `status` / `data` / `error` 必须**原样存在**
+    /// （本仓 HTTP 客户端与既有判据读的就是它们）。
+    ///
+    /// 注入（实测红）：把 [`wrap_mcp_call_result`] 换成恒等函数 ⇒ 三条判据全红；
+    /// 把 `isError` 写成常量 `false` ⇒ 失败臂红。
+    #[test]
+    fn tools_call_result_carries_a_mcp_content_envelope() {
+        let mut dispatcher = dispatcher();
+        let auth = bearer(&dispatcher);
+        seed_project(&mut dispatcher, unique_project_path());
+
+        let assert_envelope = |result: &Value, want_error: bool| {
+            let content = result["content"]
+                .as_array()
+                .unwrap_or_else(|| panic!("result 必须有 content 数组: {result}"));
+            assert_eq!(content.len(), 1, "本仓只产出一个文本块: {result}");
+            assert_eq!(content[0]["type"], "text");
+            let text = content[0]["text"].as_str().expect("text 必须是字符串");
+            let parsed: Value = serde_json::from_str(text).expect("text 必须能解析回 JSON");
+            assert_eq!(
+                &parsed, &result["structuredContent"],
+                "content.text 与 structuredContent 必须指向同一份 JSON"
+            );
+            assert_eq!(result["isError"], Value::Bool(want_error), "isError 口径");
+            assert_eq!(
+                result["status"],
+                if want_error { "error" } else { "success" },
+                "顶层 status 必须保留（向后兼容）"
+            );
+        };
+
+        // ① 成功：查询工程。
+        let outcome = dispatcher.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call("yeban_query_project", serde_json::json!({})),
+        );
+        assert_eq!(outcome.http_status, 200);
+        let result = outcome.response.expect("响应").result.expect("result");
+        assert_envelope(&result, false);
+        assert!(result["data"].is_object(), "顶层 data 必须保留");
+
+        // ② 带内失败：没有活跃工程（新分发器）。
+        // ⛔ 不能叫 `dispatcher`：会遮蔽同名的测试辅助函数，下面就没法再造一个。
+        let mut fresh = self::dispatcher();
+        let auth = bearer(&fresh);
+        let outcome = fresh.handle_line(
+            Channel::Http,
+            Some(&auth),
+            &call("yeban_query_project", serde_json::json!({})),
+        );
+        let result = outcome.response.expect("响应").result.expect("result");
+        assert_envelope(&result, true);
+        assert_eq!(result["error"]["code"], "NO_ACTIVE_PROJECT");
     }
 }

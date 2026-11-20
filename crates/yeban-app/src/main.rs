@@ -477,8 +477,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 )]);
                 // 同上一条口径：无声卡 / 打开失败这条**用户能听见差别**的事，
                 // ⛔ 不该只留在控制台。走既有 toast（不占错误横幅，因为引擎本身是好的）。
-                let text = format!("音频设备未接线：本会话无声（{error}）");
+                //
+                // ⭐ 文案纪律（2026-11-19 实测）：这里原先直接把 `{error}` 拼进提示，
+                // 于是界面上出现的是 `音频设备未接线：本会话无声（audio backend error:
+                // The requested audio device is not available…）`——elide 之后**只剩英文后半段**，
+                // 用户读到一行后端报错，以为软件坏了。环境降级不是错误：说清「什么受影响、
+                // 什么不受影响」就够了，英文原文留在控制台与诊断里。
+                let text = "没有可用的音频输出设备 · 播放将静音；编辑、渲染与导出不受影响";
                 ui.set_toast_message(text.into());
+                // 非错误级：中性提示，几秒后自动收走（⛔ 别让它变成常驻红条）。
+                ui.set_toast_is_error(false);
+                ui.set_show_floating_toast(true);
             }
         }
     }

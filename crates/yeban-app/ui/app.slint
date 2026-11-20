@@ -509,6 +509,10 @@ export component MainWindow inherits Window {
     in-out property <string> drum-gen-swing: "";
     in-out property <string> drum-gen-target-label: "";
     in-out property <string> engine-error: "";
+    // ⭐ 这条提醒是否「需要用户动手」（默认 true）。
+    // false = 环境降级（没有可用音频输出设备）：播放静音、编辑与导出照常，
+    // 横幅按中性提示呈现，且不给「去音源管理」这种无关按钮。
+    in-out property <bool> engine-error-blocking: true;
     in-out property <string> eq-curve-fill-svg: "";
     in-out property <string> eq-curve-info: @tr("平坦响应 (0 dB · 20 Hz – 20 kHz)");
     in-out property <string> eq-curve-svg: "M 0 50 L 420 50";
@@ -1969,17 +1973,19 @@ export component MainWindow inherits Window {
             height: 36px;
             // 质感打光：底色**不再**是整块红板（用户口径：视觉中心别花花绿绿、长时间看不累）。
             // 改成"中性深色面板 + 左侧一条 3px 红标 + 红色细描边"：一样一眼看到，但不像报警灯。
+            // 非阻断（环境降级，如无输出设备）改用中性蓝标 + 常规描边：它不是"错误"，
+            // 播放静音但编辑/渲染/导出都正常，红报警会让人以为软件坏了。
             background: Tokens.bg-panel-alt.with-alpha(0.98);
             border-radius: 6px;
             border-width: 1px;
-            border-color: Tokens.skin-arm.with-alpha(0.55);
+            border-color: root.engine-error-blocking ? Tokens.skin-arm.with-alpha(0.55) : Tokens.divider-row;
             accessible-role: banner;
             accessible-id: "engine-error-banner";
             accessible-label: @tr("引擎错误横幅");
             Rectangle {
                 x: 0px; y: 0px; width: 3px; height: parent.height;
                 border-top-left-radius: 6px; border-bottom-left-radius: 6px;
-                background: Tokens.skin-arm;
+                background: root.engine-error-blocking ? Tokens.skin-arm : Tokens.divider-row;
             }
             HorizontalLayout {
                 padding-left: 14px; padding-right: 10px; spacing: 10px;
@@ -2001,6 +2007,8 @@ export component MainWindow inherits Window {
                 }
                 Rectangle {
                     width: 112px; height: 22px; y: 7px; border-radius: 3px; clip: true;
+                    // 设备类提示给「去音源管理」没有意义（缺的是声卡，不是音源）。
+                    visible: root.engine-error-blocking;
                     background: Tokens.skin-arm.with-alpha(0.22);
                     border-width: 1px;
                     border-color: Tokens.skin-arm.with-alpha(0.75);

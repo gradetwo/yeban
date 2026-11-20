@@ -6034,14 +6034,37 @@ pub fn apply_engine_error(ui: &MainWindow, outcome: EnginePublishOutcome<'_>) {
     match outcome {
         // 成功 ⇒ 横幅消失。空串是 `.slint` 侧 `visible` 的**唯一**判据（⛔ 不另设 bool：
         // 两个属性就有"文字还在、bool 说没有"这种自相矛盾的中间态）。
-        EnginePublishOutcome::Published => ui.set_engine_error(slint::SharedString::new()),
+        EnginePublishOutcome::Published => {
+            ui.set_engine_error(slint::SharedString::new());
+            ui.set_engine_error_blocking(true);
+            // 设备恢复 ⇒ 允许下次缺设备时再提示一次。
+            DEVICE_HINT_SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         // 没有发布 ⇒ 一位不动（见 [`EnginePublishOutcome::Unchanged`] 的说明）。
         EnginePublishOutcome::Unchanged => {}
         EnginePublishOutcome::Failed(text) => {
+            // ⭐ 环境降级（没有可用输出设备）与"需要用户动手的错误"必须分开：
+            // 前者播放静音但编辑/渲染/导出都正常，用红色报警会让人以为软件坏了。
+            let device = is_device_unavailable(text);
+            if device {
+                // 心跳 60Hz、失败后标记通常不再变 ⇒ `Failed` 会每跳重发。
+                // 用户按下横幅的 × 之后，若这里继续 set，"关掉又弹回来"。
+                // 因此设备类提示**只播一次**；设备恢复（Published）后复位。
+                if DEVICE_HINT_SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+            }
+            ui.set_engine_error_blocking(!device);
             ui.set_engine_error(humanize_engine_error(text).into());
         }
     }
 }
+
+/// 设备类提示是否**已经播过**（见 [`apply_engine_error`] 的说明）。
+///
+/// 进程级即可：它表达的是"这台机器在这次运行里已经被告知过没有声卡"，
+/// 与工程、轨道、文档无关，⛔ 不进工程文档。
+static DEVICE_HINT_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// ⭐ **把引擎错误翻译成一句人话**（设计原则见 `docs/UX-错误与提醒设计原则.md`）。
 ///
@@ -6052,8 +6075,9 @@ fn humanize_engine_error(raw: &str) -> String {
     if raw.contains("SFZ") || raw.contains("sfz") {
         return "有声轨道的音源没装好 · 打开「设置 › 音源管理」下载即可恢复声音".to_owned();
     }
-    if raw.contains("音频设备") || raw.contains("设备打开") {
-        return "音频设备没打开（可能被其它程序占用）· 可在「设置 › 音频设备」换一个再试"
+    if is_device_unavailable(raw) {
+        // ⭐ 这不是"出错"，是环境降级：把后果说清楚，别让用户以为软件坏了。
+        return "没有可用的音频输出设备（可能被其它程序占用）· 播放将静音；编辑、渲染与导出不受影响"
             .to_owned();
     }
     if raw.contains("引擎快照") || raw.contains("投影失败") {
@@ -6066,6 +6090,27 @@ fn humanize_engine_error(raw: &str) -> String {
     }
     let head: String = raw.chars().take(MAX).collect();
     format!("{head}…")
+}
+
+/// 「没有可用的音频输出设备」这一类**环境降级**（不是用户操作错误）。
+///
+/// 覆盖两条来源：
+/// * cpal 的英文原文（`audio backend error: The requested audio device ...`、
+///   `no output device` 等）—— 沙箱/无声卡机器上看到的就是它；
+/// * 本仓 `device.rs` 的中文路径（「音频设备」「设备打开」）。
+///
+/// ⛔ 不把"设备被占用"单独分出来：cpal 的文本无法可靠区分两者，
+/// 而两者的用户处置（换个设备 / 关掉占用程序）在同一句提示里都覆盖了。
+fn is_device_unavailable(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    raw.contains("音频设备")
+        || raw.contains("设备打开")
+        || lower.contains("audio backend error")
+        || lower.contains("no output device")
+        || lower.contains("no audio device")
+        || lower.contains("device not found")
+        || lower.contains("requested audio device")
+        || lower.contains("failed to open")
 }
 
 /// 电平腿（[`pump_meters`]）的三种结局 —— 三种都能被调用方与判据**分开**读。
@@ -19137,6 +19182,38 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+
+    /// ⭐ 环境降级（无输出设备）必须说清"后果"，而不是甩一行英文后端错误。
+    ///
+    /// 判据读**输出字面**：
+    /// * 识别 cpal 的英文原文（沙箱/无声卡机器上看到的就是它）；
+    /// * 文案必须同时给出「播放将静音」与「编辑、渲染与导出不受影响」——
+    ///   缺任一句，用户都会以为软件坏了（这正是修复前的实际表现）。
+    ///
+    /// 注入（实测红）：把 [`super::is_device_unavailable`] 的英文分支删掉 ⇒
+    /// 首条断言落回原文截断（不含「播放将静音」），三条全红。
+    #[test]
+    fn device_errors_speak_degradation_not_raw_backend_text() {
+        use super::{humanize_engine_error, is_device_unavailable};
+
+        assert!(is_device_unavailable(
+            "audio backend error: The requested audio device is not available"
+        ));
+        assert!(is_device_unavailable("没有可用的音频设备"));
+        assert!(is_device_unavailable("设备打开失败"));
+        // 反例：音源 / 投影类错误**不能**被误判成设备类（否则横幅会换成中性样式，
+        // 用户就不去装音源了）。
+        assert!(!is_device_unavailable("SFZ 摊平失败: missing sample"));
+        assert!(!is_device_unavailable("引擎快照投影失败"));
+
+        let text = humanize_engine_error(
+            "audio backend error: The requested audio device is not available",
+        );
+        assert!(text.contains("没有可用的音频输出设备"), "{text}");
+        assert!(text.contains("播放将静音"), "{text}");
+        assert!(text.contains("导出不受影响"), "{text}");
+        assert!(!text.contains("audio backend error"), "{text}");
+    }
 
     /// ⭐ 审计 P0-1 的据：结构化回执进界面前**必须**被翻成人话。
     ///
