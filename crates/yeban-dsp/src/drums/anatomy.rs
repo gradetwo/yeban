@@ -561,6 +561,15 @@ pub(crate) struct AnatomyCoef {
     bus_shaper_norm: f32,
     /// 发声总长（帧）：**在响**的层实际停振的最大值（模块文档 D3）。
     total_frames: u64,
+    /// 逐样本指数步进乘子（`exp(log_per_s / sample_rate)`，在 `reconfigure` 算好，避免 `next` 逐样本调 `expf`）。
+    sub_pitch_step: f64,
+    sub_knee_step: f64,
+    sub_tail_step: f64,
+    rumble_step: f64,
+    thump_pitch_step: f64,
+    thump_step: f64,
+    click_pitch_step: f64,
+    click_step: f64,
 }
 
 impl AnatomyCoef {
@@ -595,6 +604,14 @@ impl AnatomyCoef {
         bus_shaper_k: 0.01,
         bus_shaper_norm: 1.0,
         total_frames: 0,
+        sub_pitch_step: 1.0,
+        sub_knee_step: 1.0,
+        sub_tail_step: 1.0,
+        rumble_step: 1.0,
+        thump_pitch_step: 1.0,
+        thump_step: 1.0,
+        click_pitch_step: 1.0,
+        click_step: 1.0,
     };
 }
 
@@ -620,7 +637,11 @@ fn triangle_from_phase(phase: u32) -> f32 {
 #[inline]
 #[must_use]
 fn square_from_phase(phase: u32) -> f32 {
-    if phase < 0x8000_0000 { 1.0 } else { -1.0 }
+    if phase < 0x8000_0000 {
+        1.0
+    } else {
+        -1.0
+    }
 }
 
 /// 指数斜坡的对数比值：`ln(target/start)`，钳到 `(0, 1]` 区间。
@@ -711,6 +732,20 @@ pub(crate) struct AnatomyVoice {
     play_rumble: bool,
     play_thump: bool,
     play_click: bool,
+    /// 逐样本递推状态（`f64` 累加避免高精度采样率下 `f32` 连乘漂移）。
+    sub_freq_hz: f64,
+    thump_freq_hz: f64,
+    click_freq_hz: f64,
+    sub_env: f64,
+    rumble_env: f64,
+    thump_env: f64,
+    click_env: f64,
+    sub_seg: u8,
+    rumble_seg: u8,
+    thump_seg: u8,
+    click_seg: u8,
+    reanchor: bool,
+    expected_next_frame: u64,
 }
 
 impl AnatomyVoice {
@@ -727,6 +762,19 @@ impl AnatomyVoice {
         play_rumble: true,
         play_thump: true,
         play_click: true,
+        sub_freq_hz: 0.0,
+        thump_freq_hz: 0.0,
+        click_freq_hz: 0.0,
+        sub_env: 0.0,
+        rumble_env: 0.0,
+        thump_env: 0.0,
+        click_env: 0.0,
+        sub_seg: 0,
+        rumble_seg: 0,
+        thump_seg: 0,
+        click_seg: 0,
+        reanchor: true,
+        expected_next_frame: 0,
     };
 
     /// 触发：快照层开关与速度（在 `reconfigure` 之前调用）。
@@ -742,6 +790,12 @@ impl AnatomyVoice {
             !params.click_mute && (!any_solo || params.click_solo) && params.click_amount > 0.01;
         self.play_rumble = self.play_sub && params.rumble > 0.2;
         self.vel_norm = gain.clamp(0.0, 1.0);
+        self.sub_seg = 0;
+        self.rumble_seg = 0;
+        self.thump_seg = 0;
+        self.click_seg = 0;
+        self.reanchor = true;
+        self.expected_next_frame = 0;
     }
 
     /// 触发后 gate_on 淡出包络（attack 1 样本到 1，sustain 1 保持）。
@@ -838,12 +892,14 @@ impl AnatomyVoice {
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let total_frames = (total_s * sample_rate).ceil() as u64;
+        let sub_pitch_log_per_s = libm::logf(base_pitch / sub_start_hz) / sub_pitch_drop_s;
+        let inv_sr = 1.0 / f64::from(sample_rate);
 
         self.coef = AnatomyCoef {
             sample_rate,
             sub_start_hz,
             sub_end_hz: base_pitch,
-            sub_pitch_log_per_s: libm::logf(base_pitch / sub_start_hz) / sub_pitch_drop_s,
+            sub_pitch_log_per_s,
             sub_pitch_drop_s,
             sub_peak,
             sub_knee_log_per_s,
@@ -868,7 +924,16 @@ impl AnatomyVoice {
             bus_shaper_k,
             bus_shaper_norm,
             total_frames,
+            sub_pitch_step: libm::exp(f64::from(sub_pitch_log_per_s) * inv_sr),
+            sub_knee_step: libm::exp(f64::from(sub_knee_log_per_s) * inv_sr),
+            sub_tail_step: libm::exp(f64::from(sub_tail_log_per_s) * inv_sr),
+            rumble_step: libm::exp(f64::from(rumble_log_per_s) * inv_sr),
+            thump_pitch_step: libm::exp(f64::from(thump_pitch_log_per_s) * inv_sr),
+            thump_step: libm::exp(f64::from(thump_log_per_s) * inv_sr),
+            click_pitch_step: libm::exp(f64::from(click_pitch_log_per_s) * inv_sr),
+            click_step: libm::exp(f64::from(click_log_per_s) * inv_sr),
         };
+        self.reanchor = true;
     }
 
     /// 当前**输出幅度包络**（用作窃取优先级里的"振幅能量"）。
@@ -911,11 +976,41 @@ impl AnatomyVoice {
     pub(crate) fn next(&mut self, frame: u64) -> f32 {
         #[allow(clippy::cast_precision_loss)]
         let t = frame as f32 / self.coef.sample_rate;
+        let need_anchor = self.reanchor || frame != self.expected_next_frame;
+        if need_anchor {
+            if frame == 0 {
+                self.sub_freq_hz = f64::from(self.coef.sub_start_hz);
+                self.thump_freq_hz = f64::from(self.coef.thump_start_hz);
+                self.click_freq_hz = f64::from(self.coef.click_start_hz);
+            } else {
+                let t64 = f64::from(t);
+                if t < self.coef.sub_pitch_drop_s {
+                    self.sub_freq_hz = f64::from(self.coef.sub_start_hz)
+                        * libm::exp(f64::from(self.coef.sub_pitch_log_per_s) * t64);
+                }
+                if t < 0.022 {
+                    self.thump_freq_hz = f64::from(self.coef.thump_start_hz)
+                        * libm::exp(f64::from(self.coef.thump_pitch_log_per_s) * t64);
+                }
+                if t < 0.008 {
+                    self.click_freq_hz = f64::from(self.coef.click_start_hz)
+                        * libm::exp(f64::from(self.coef.click_pitch_log_per_s) * t64);
+                }
+            }
+            self.sub_seg = 0;
+            self.rumble_seg = 0;
+            self.thump_seg = 0;
+            self.click_seg = 0;
+            self.reanchor = false;
+        }
+
         let fade = self.fade_env.process(true);
         let mut mix = 0.0f32;
         if self.play_sub {
             let freq = if t < self.coef.sub_pitch_drop_s {
-                self.coef.sub_start_hz * libm::expf(self.coef.sub_pitch_log_per_s * t)
+                let f = self.sub_freq_hz as f32;
+                self.sub_freq_hz *= self.coef.sub_pitch_step;
+                f
             } else {
                 self.coef.sub_end_hz
             };
@@ -923,7 +1018,37 @@ impl AnatomyVoice {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let step = increment_for(freq, self.coef.sample_rate) as u32;
             self.phases[0] = self.phases[0].wrapping_add(step);
-            mix += self.sub_lp.process_sample(sub) * sub_amp(&self.coef, t);
+            let amp = if t < SUB_ATTACK_S {
+                self.sub_seg = 0;
+                ENVELOPE_FLOOR + (self.coef.sub_peak - ENVELOPE_FLOOR) * (t / SUB_ATTACK_S)
+            } else if t < SUB_KNEE_S {
+                if self.sub_seg == 1 {
+                    self.sub_env *= self.coef.sub_knee_step;
+                } else {
+                    self.sub_env = f64::from(self.coef.sub_peak)
+                        * libm::exp(
+                            f64::from(self.coef.sub_knee_log_per_s) * f64::from(t - SUB_ATTACK_S),
+                        );
+                    self.sub_seg = 1;
+                }
+                self.sub_env as f32
+            } else if t < self.coef.sub_decay_s {
+                if self.sub_seg == 2 {
+                    self.sub_env *= self.coef.sub_tail_step;
+                } else {
+                    self.sub_env = f64::from(self.coef.sub_peak)
+                        * f64::from(SUB_KNEE_RATIO)
+                        * libm::exp(
+                            f64::from(self.coef.sub_tail_log_per_s) * f64::from(t - SUB_KNEE_S),
+                        );
+                    self.sub_seg = 2;
+                }
+                self.sub_env as f32
+            } else {
+                self.sub_seg = 3;
+                ENVELOPE_FLOOR
+            };
+            mix += self.sub_lp.process_sample(sub) * amp;
         }
         if self.play_rumble {
             // Rumble 无滑频、无滤波（准绳原文）。
@@ -931,11 +1056,31 @@ impl AnatomyVoice {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let step = increment_for(self.coef.sub_end_hz * 0.75, self.coef.sample_rate) as u32;
             self.phases[1] = self.phases[1].wrapping_add(step);
-            mix += rumble * rumble_amp(&self.coef, t);
+            let amp = if t < RUMBLE_ATTACK_S {
+                self.rumble_seg = 0;
+                ENVELOPE_FLOOR + (self.coef.rumble_peak - ENVELOPE_FLOOR) * (t / RUMBLE_ATTACK_S)
+            } else if t < self.coef.rumble_decay_s {
+                if self.rumble_seg == 1 {
+                    self.rumble_env *= self.coef.rumble_step;
+                } else {
+                    self.rumble_env = f64::from(self.coef.rumble_peak)
+                        * libm::exp(
+                            f64::from(self.coef.rumble_log_per_s) * f64::from(t - RUMBLE_ATTACK_S),
+                        );
+                    self.rumble_seg = 1;
+                }
+                self.rumble_env as f32
+            } else {
+                self.rumble_seg = 2;
+                ENVELOPE_FLOOR
+            };
+            mix += rumble * amp;
         }
         if self.play_thump {
             let freq = if t < 0.022 {
-                self.coef.thump_start_hz * libm::expf(self.coef.thump_pitch_log_per_s * t)
+                let f = self.thump_freq_hz as f32;
+                self.thump_freq_hz *= self.coef.thump_pitch_step;
+                f
             } else {
                 self.coef.thump_end_hz
             };
@@ -943,11 +1088,31 @@ impl AnatomyVoice {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let step = increment_for(freq, self.coef.sample_rate) as u32;
             self.phases[2] = self.phases[2].wrapping_add(step);
-            mix += self.thump_bp.process_sample(thump) * thump_amp(&self.coef, t);
+            let amp = if t < THUMP_ATTACK_S {
+                self.thump_seg = 0;
+                ENVELOPE_FLOOR + (self.coef.thump_peak - ENVELOPE_FLOOR) * (t / THUMP_ATTACK_S)
+            } else if t < self.coef.thump_decay_s {
+                if self.thump_seg == 1 {
+                    self.thump_env *= self.coef.thump_step;
+                } else {
+                    self.thump_env = f64::from(self.coef.thump_peak)
+                        * libm::exp(
+                            f64::from(self.coef.thump_log_per_s) * f64::from(t - THUMP_ATTACK_S),
+                        );
+                    self.thump_seg = 1;
+                }
+                self.thump_env as f32
+            } else {
+                self.thump_seg = 2;
+                ENVELOPE_FLOOR
+            };
+            mix += self.thump_bp.process_sample(thump) * amp;
         }
         if self.play_click {
             let freq = if t < 0.008 {
-                self.coef.click_start_hz * libm::expf(self.coef.click_pitch_log_per_s * t)
+                let f = self.click_freq_hz as f32;
+                self.click_freq_hz *= self.coef.click_pitch_step;
+                f
             } else {
                 self.coef.click_end_hz
             };
@@ -955,12 +1120,31 @@ impl AnatomyVoice {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let step = increment_for(freq, self.coef.sample_rate) as u32;
             self.phases[3] = self.phases[3].wrapping_add(step);
-            mix += self.click_bp.process_sample(click) * click_amp(&self.coef, t);
+            let amp = if t < CLICK_ATTACK_S {
+                self.click_seg = 0;
+                ENVELOPE_FLOOR + (self.coef.click_peak - ENVELOPE_FLOOR) * (t / CLICK_ATTACK_S)
+            } else if t < self.coef.click_decay_s {
+                if self.click_seg == 1 {
+                    self.click_env *= self.coef.click_step;
+                } else {
+                    self.click_env = f64::from(self.coef.click_peak)
+                        * libm::exp(
+                            f64::from(self.coef.click_log_per_s) * f64::from(t - CLICK_ATTACK_S),
+                        );
+                    self.click_seg = 1;
+                }
+                self.click_env as f32
+            } else {
+                self.click_seg = 2;
+                ENVELOPE_FLOOR
+            };
+            mix += self.click_bp.process_sample(click) * amp;
         }
         if self.coef.bus_shaper_enabled {
             let k = self.coef.bus_shaper_k;
             mix = libm::tanhf(k * mix) / self.coef.bus_shaper_norm;
         }
+        self.expected_next_frame = frame.saturating_add(1);
         mix * fade
     }
 }
@@ -1244,5 +1428,132 @@ mod tests {
         assert_eq!(square_from_phase(0x7FFF_FFFF), 1.0);
         assert_eq!(square_from_phase(0x8000_0000), -1.0);
         assert_eq!(square_from_phase(0xFFFF_FFFF), -1.0);
+    }
+
+    fn analytic_next_reference(voice: &mut AnatomyVoice, frame: u64) -> f32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = frame as f32 / voice.coef.sample_rate;
+        let fade = voice.fade_env.process(true);
+        let mut mix = 0.0f32;
+        if voice.play_sub {
+            let freq = if t < voice.coef.sub_pitch_drop_s {
+                voice.coef.sub_start_hz * libm::expf(voice.coef.sub_pitch_log_per_s * t)
+            } else {
+                voice.coef.sub_end_hz
+            };
+            let sub = sine_from_phase(voice.phases[0]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let step = increment_for(freq, voice.coef.sample_rate) as u32;
+            voice.phases[0] = voice.phases[0].wrapping_add(step);
+            mix += voice.sub_lp.process_sample(sub) * sub_amp(&voice.coef, t);
+        }
+        if voice.play_rumble {
+            let rumble = sine_from_phase(voice.phases[1]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let step = increment_for(voice.coef.sub_end_hz * 0.75, voice.coef.sample_rate) as u32;
+            voice.phases[1] = voice.phases[1].wrapping_add(step);
+            mix += rumble * rumble_amp(&voice.coef, t);
+        }
+        if voice.play_thump {
+            let freq = if t < 0.022 {
+                voice.coef.thump_start_hz * libm::expf(voice.coef.thump_pitch_log_per_s * t)
+            } else {
+                voice.coef.thump_end_hz
+            };
+            let thump = triangle_from_phase(voice.phases[2]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let step = increment_for(freq, voice.coef.sample_rate) as u32;
+            voice.phases[2] = voice.phases[2].wrapping_add(step);
+            mix += voice.thump_bp.process_sample(thump) * thump_amp(&voice.coef, t);
+        }
+        if voice.play_click {
+            let freq = if t < 0.008 {
+                voice.coef.click_start_hz * libm::expf(voice.coef.click_pitch_log_per_s * t)
+            } else {
+                voice.coef.click_end_hz
+            };
+            let click = square_from_phase(voice.phases[3]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let step = increment_for(freq, voice.coef.sample_rate) as u32;
+            voice.phases[3] = voice.phases[3].wrapping_add(step);
+            mix += voice.click_bp.process_sample(click) * click_amp(&voice.coef, t);
+        }
+        if voice.coef.bus_shaper_enabled {
+            let k = voice.coef.bus_shaper_k;
+            mix = libm::tanhf(k * mix) / voice.coef.bus_shaper_norm;
+        }
+        mix * fade
+    }
+
+    #[test]
+    fn next_recurrence_matches_analytic_expf_across_presets_and_sample_rates() {
+        let presets = [
+            AnatomyKickParams::DEFAULT,
+            ANATOMY_KICK_PRESETS[0].params,
+            ANATOMY_KICK_PRESETS[4].params,
+        ];
+        for params in presets {
+            for sr in [44_100.0, 48_000.0, 96_000.0] {
+                let mut rec = AnatomyVoice::IDLE;
+                rec.trigger(&params, 0.85);
+                rec.reconfigure(&params, sr);
+                rec.gate_on();
+
+                let mut ref_voice = AnatomyVoice::IDLE;
+                ref_voice.trigger(&params, 0.85);
+                ref_voice.reconfigure(&params, sr);
+                ref_voice.gate_on();
+
+                let mut max_diff = 0.0f32;
+                for frame in 0..rec.coef.total_frames {
+                    let y_rec = rec.next(frame);
+                    let y_ref = analytic_next_reference(&mut ref_voice, frame);
+                    assert!(y_rec.is_finite(), "non-finite sample at frame {frame}");
+                    max_diff = max_diff.max((y_rec - y_ref).abs());
+                }
+                assert!(
+                    max_diff < 1e-4,
+                    "recurrence diverged from analytic expf at sr={sr}: max_diff={max_diff}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mid_note_reconfigure_stays_accurate_and_continuous() {
+        let mut rec = AnatomyVoice::IDLE;
+        rec.trigger(&AnatomyKickParams::DEFAULT, 1.0);
+        rec.reconfigure(&AnatomyKickParams::DEFAULT, 48_000.0);
+        rec.gate_on();
+
+        let mut ref_voice = AnatomyVoice::IDLE;
+        ref_voice.trigger(&AnatomyKickParams::DEFAULT, 1.0);
+        ref_voice.reconfigure(&AnatomyKickParams::DEFAULT, 48_000.0);
+        ref_voice.gate_on();
+
+        for frame in 0..500 {
+            let y_rec = rec.next(frame);
+            let y_ref = analytic_next_reference(&mut ref_voice, frame);
+            assert!((y_rec - y_ref).abs() < 1e-4);
+        }
+
+        let mut updated = AnatomyKickParams::DEFAULT;
+        updated.volume = 0.5;
+        updated.boom_to_where = 0.2;
+        updated.softness = 0.7;
+        rec.reconfigure(&updated, 48_000.0);
+        ref_voice.reconfigure(&updated, 48_000.0);
+
+        let mut max_diff = 0.0f32;
+        for frame in 500..rec.coef.total_frames {
+            let y_rec = rec.next(frame);
+            let y_ref = analytic_next_reference(&mut ref_voice, frame);
+            assert!(y_rec.is_finite());
+            max_diff = max_diff.max((y_rec - y_ref).abs());
+        }
+        assert!(
+            max_diff < 1e-4,
+            "mid-note reconfigure recurrence diverged: max_diff={max_diff}"
+        );
     }
 }

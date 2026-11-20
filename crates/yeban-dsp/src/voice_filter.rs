@@ -188,7 +188,7 @@ impl Section {
     /// RBJ 二阶低通（与 [`crate::shaping::Biquad::lowpass`] 同式）。
     fn lowpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(
             (1.0 - cos) * 0.5,
@@ -203,7 +203,7 @@ impl Section {
     /// RBJ 二阶高通（与 [`crate::shaping::Biquad::highpass`] 同式）。
     fn highpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(
             (1.0 + cos) * 0.5,
@@ -219,7 +219,7 @@ impl Section {
     /// [`crate::shaping::Biquad::bandpass`] 同式）。
     fn bandpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
@@ -227,20 +227,20 @@ impl Section {
     /// RBJ 二阶带阻（陷波）。
     fn bandreject(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(MIN_Q));
         self.set(1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
 
     /// 一阶低通（单极点 RC 形，套双二阶递推：`b2 = a2 = 0`）。
     fn lowpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let p = (-TAU * freq / sample_rate).exp();
+        let p = libm::expf(-TAU * freq / sample_rate);
         self.set(1.0 - p, 0.0, 0.0, 1.0, -p, 0.0);
     }
 
     /// 一阶高通（单极点 RC 形，套双二阶递推：`b2 = a2 = 0`）。
     fn highpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let p = (-TAU * freq / sample_rate).exp();
+        let p = libm::expf(-TAU * freq / sample_rate);
         self.set(p, -p, 0.0, 1.0, -p, 0.0);
     }
 
@@ -252,17 +252,29 @@ impl Section {
     /// 极点 `−a` 恒在单位圆内（`|a| < 1`，`tan(πfc/sr) > 0` 时 `a ∈ (−1,1)`），
     /// 与二阶节共用同一条转置直接 II 递推。
     fn allpass_1p(&mut self, sample_rate: f32, freq: f32) {
-        let t = (core::f32::consts::PI * freq / sample_rate).tan();
+        let t = libm::tanf(core::f32::consts::PI * freq / sample_rate);
         let a = (t - 1.0) / (t + 1.0);
         self.set(a, 1.0, 0.0, 1.0, a, 0.0);
     }
 
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
-        let v = x - self.a1 * self.v1 - self.a2 * self.v2;
-        let y = self.b0 * v + self.b1 * self.v1 + self.b2 * self.v2;
-        self.v2 = self.v1;
-        self.v1 = v;
+        let x = if x.is_finite() { x } else { 0.0 };
+        let y = self.b0 * x + self.v1;
+        if !y.is_finite() {
+            self.v1 = 0.0;
+            self.v2 = 0.0;
+            return 0.0;
+        }
+        let v1 = self.b1 * x - self.a1 * y + self.v2;
+        let v2 = self.b2 * x - self.a2 * y;
+        if v1.is_finite() && v2.is_finite() {
+            self.v1 = v1;
+            self.v2 = v2;
+        } else {
+            self.v1 = 0.0;
+            self.v2 = 0.0;
+        }
         y
     }
 }
@@ -323,7 +335,7 @@ impl VoiceFilter {
         let sections = kind.sections();
         // 级联均分：每节 dB = 总 dB / 节数 ⇒ f0 处总增益（各节 Q 之积）
         // 恰为 10^(总 dB/20)，与单节口径一致。
-        let q = 10.0f32.powf(db / f32::from(sections as u8) / 20.0);
+        let q = libm::powf(10.0, db / f32::from(sections as u8) / 20.0);
         let mut filter = VoiceFilter::BYPASSED;
         filter.active = sections as u8;
         // ⭐ 自带配置（retune 复用同一份 (类型, 谐振, 采样率)；存的是
@@ -387,8 +399,8 @@ impl VoiceFilter {
         ];
         *self = VoiceFilter::configured(kind, cutoff_hz, resonance_db, self.sample_rate);
         for (section, (v1, v2)) in self.sections.iter_mut().zip(states) {
-            section.v1 = v1;
-            section.v2 = v2;
+            section.v1 = if v1.is_finite() { v1 } else { 0.0 };
+            section.v2 = if v2.is_finite() { v2 } else { 0.0 };
         }
     }
 
@@ -420,8 +432,8 @@ impl VoiceFilter {
         let sr = sanitise_sample_rate(sample_rate);
         let f = freq.clamp(1.0, sr * 0.499);
         let w = TAU * (f / sr);
-        let (sin_w, cos_w) = w.sin_cos();
-        let (sin_2w, cos_2w) = (2.0 * w).sin_cos();
+        let (sin_w, cos_w) = libm::sincosf(w);
+        let (sin_2w, cos_2w) = libm::sincosf(2.0 * w);
         let mut total_db = 0.0f32;
         for section in self.sections.iter().take(usize::from(self.active)) {
             let num_re = section.b0 + section.b1 * cos_w + section.b2 * cos_2w;
@@ -435,7 +447,7 @@ impl VoiceFilter {
             }
             let mag_sq = num_sq / den_sq;
             if mag_sq > 1e-12 {
-                total_db += 10.0 * mag_sq.log10();
+                total_db += 10.0 * libm::log10f(mag_sq);
             } else {
                 total_db += -120.0;
             }
@@ -596,5 +608,68 @@ mod tests {
     fn nan_cutoff_falls_back_to_bypass() {
         let filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, f32::NAN, 0.0, SR);
         assert!(filter.is_bypassed());
+    }
+
+    #[test]
+    fn tdf2_matches_transfer_function_and_retunes_without_spike() {
+        // 验证 TDF-II 首样本输出等于 b0 * x，且 24 dB 谐振下 retune_cutoff 不出现剧烈瞬态过冲。
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 500.0, 24.0, SR);
+        let y0 = filter.process(1.0);
+        assert!((y0 - filter.sections[0].b0).abs() < 1e-7);
+
+        // 跑稳 500 Hz 正弦后再把截止骤调到 2000 Hz
+        let mut max_after_retune = 0.0f32;
+        for i in 1..2_000 {
+            let x = libm::sinf(TAU * 500.0 * i as f32 / SR);
+            if i == 1_000 {
+                filter.retune_cutoff(2_000.0);
+            }
+            let y = filter.process(x);
+            assert!(y.is_finite());
+            if i >= 1_000 {
+                max_after_retune = max_after_retune.max(y.abs());
+            }
+        }
+        // TDF-II 在 500->2000 Hz retune 时保持有界（24 dB = 15.8x 增益以内，不出现 DF-II 状态放大爆炸）
+        assert!(
+            max_after_retune < 20.0,
+            "retune 后峰值异常过高: {max_after_retune}"
+        );
+    }
+
+    #[test]
+    fn non_finite_input_and_poisoned_state_recover_cleanly() {
+        let mut f_bad = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, SR);
+        let mut f_zero = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, SR);
+        let bad_seq = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.5,
+            -0.25,
+            0.125,
+        ];
+        let zero_seq = [0.0, 0.0, 0.0, 0.5, -0.25, 0.125];
+        for (&xb, &xz) in bad_seq.iter().zip(zero_seq.iter()) {
+            let yb = f_bad.process(xb);
+            let yz = f_zero.process(xz);
+            assert!(yb.is_finite());
+            assert_eq!(yb.to_bits(), yz.to_bits());
+        }
+
+        // 直接注入非有限内部状态：下一次 process 应返回 0 并重置状态，后续样本保持有限。
+        f_bad.sections[0].v1 = f32::NAN;
+        f_bad.sections[0].v2 = f32::INFINITY;
+        assert_eq!(f_bad.process(0.5), 0.0);
+        assert_eq!(f_bad.sections[0].v1, 0.0);
+        assert_eq!(f_bad.sections[0].v2, 0.0);
+        for _ in 0..64 {
+            assert!(f_bad.process(0.25).is_finite());
+        }
+
+        // 直通模式依然逐位透传（含 -0.0 与 NaN）。
+        let mut bypassed = VoiceFilter::BYPASSED;
+        assert_eq!(bypassed.process(-0.0f32).to_bits(), (-0.0f32).to_bits());
+        assert!(bypassed.process(f32::NAN).is_nan());
     }
 }

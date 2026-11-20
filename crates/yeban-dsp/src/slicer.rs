@@ -236,7 +236,7 @@ pub fn detect_onsets(samples: &[f32], sample_rate: u32, options: &OnsetOptions) 
     }
 
     // 绝对底线：dBFS RMS → 能量（均方）。
-    let energy_floor = 10f32.powf(options.floor_db / 10.0);
+    let energy_floor = libm::powf(10.0, options.floor_db / 10.0);
     let min_gap = ((options.min_gap_ms / 1000.0) * sample_rate as f32)
         .round()
         .max(1.0) as usize;

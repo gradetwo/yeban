@@ -419,8 +419,8 @@ impl Biquad {
         let sr = sanitise_sample_rate(sample_rate);
         let f = freq.clamp(1.0, sr * 0.499);
         let w = TAU * (f / sr);
-        let (sin_w, cos_w) = w.sin_cos();
-        let (sin_2w, cos_2w) = (2.0 * w).sin_cos();
+        let (sin_w, cos_w) = libm::sincosf(w);
+        let (sin_2w, cos_2w) = libm::sincosf(2.0 * w);
 
         let num_re = self.b0 + self.b1 * cos_w + self.b2 * cos_2w;
         let num_im = -self.b1 * sin_w - self.b2 * sin_2w;
@@ -436,7 +436,7 @@ impl Biquad {
         if mag_sq <= 1e-12 {
             -60.0
         } else {
-            10.0 * mag_sq.log10()
+            10.0 * libm::log10f(mag_sq)
         }
     }
 
@@ -444,7 +444,7 @@ impl Biquad {
     fn low_shelf(&mut self, sample_rate: f32, freq: f32, gain_db: f32) {
         let a = gain_to_a(gain_db);
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin * 0.5 * core::f32::consts::SQRT_2;
         let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
         self.set(
@@ -461,7 +461,7 @@ impl Biquad {
     fn high_shelf(&mut self, sample_rate: f32, freq: f32, gain_db: f32) {
         let a = gain_to_a(gain_db);
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin * 0.5 * core::f32::consts::SQRT_2;
         let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
         self.set(
@@ -480,7 +480,7 @@ impl Biquad {
     /// 低架在转折点以下趋于常值衰减，高通趋于零 —— 前者压不干净次声，后者才是"切掉"。
     pub(crate) fn highpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(0.05));
         self.set(
             (1.0 + cos) * 0.5,
@@ -500,7 +500,7 @@ impl Biquad {
     ///（缺省 `Q = 1`）；Anatomy 底鼓的 sub 低通（140 Hz）用它。
     pub(crate) fn lowpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(0.05));
         self.set(
             (1.0 - cos) * 0.5,
@@ -516,7 +516,7 @@ impl Biquad {
     /// 只看被处理的那个频带，⛔ 不看全带宽 —— 否则一记大鼓就会把中频压下去。
     pub(crate) fn bandpass(&mut self, sample_rate: f32, freq: f32, q: f32) {
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(0.05));
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
@@ -534,7 +534,7 @@ impl Biquad {
     pub(crate) fn peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
         let a = gain_to_a(gain_db);
         let w0 = TAU * (freq / sample_rate);
-        let (sin, cos) = w0.sin_cos();
+        let (sin, cos) = libm::sincosf(w0);
         let alpha = sin / (2.0 * q.max(0.05));
         self.set(
             1.0 + alpha * a,

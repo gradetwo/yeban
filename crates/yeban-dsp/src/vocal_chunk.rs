@@ -306,7 +306,7 @@ pub fn rms_voiced_flags(
     );
     let rms = rms_curve(samples, sample_rate);
     let hop = hop_samples(sample_rate);
-    let threshold = 10_f32.powf((silence_db / 20.0) as f32);
+    let threshold = libm::powf(10.0, (silence_db / 20.0) as f32);
     let n_chunks = samples.len().div_ceil(chunk_samples);
     let mut flags = Vec::with_capacity(n_chunks);
     for c in 0..n_chunks {
@@ -347,7 +347,7 @@ fn find_silences(
     let rms = rms_curve(samples, sample_rate);
     let hop = hop_samples(sample_rate);
     let hop_s = hop as f64 / sample_rate as f64;
-    let threshold = 10_f32.powf((config.silence_db / 20.0) as f32);
+    let threshold = libm::powf(10.0, (config.silence_db / 20.0) as f32);
     let min_run = (config.min_silence_s / hop_s).ceil() as usize;
     let mut silences = Vec::new();
     let mut idx = 0;

@@ -263,7 +263,7 @@ fn gap_segments(
     }
     let hop = (sample_rate as usize * 10 / 1000).max(1);
     let hop_s = hop as f64 / sample_rate as f64;
-    let threshold = 10_f32.powf((silence_db / 20.0) as f32);
+    let threshold = libm::powf(10.0, (silence_db / 20.0) as f32);
     let start_idx = ((start_s * sample_rate as f64) as usize / hop).min(rms.len());
     let end_idx = ((end_s * sample_rate as f64) as usize / hop).min(rms.len());
     let min_run = (SILENCE_MIN_S / hop_s).ceil() as usize;
