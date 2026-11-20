@@ -155,25 +155,63 @@ impl RecordReceiver {
     ///
     /// 返回实际处理的帧数。⚠ 允许部分帧：若环里的样本数不是帧的整数倍
     /// （理论上不该发生），**余数留在环里**等下一轮，⛔ 不丢。
-    pub fn drain_frames<F>(&mut self, max_frames: usize, mut f: F) -> usize
+    /// 通过整帧 `read_chunk(channels)` + `commit_all()` 保证单帧原子性：若中途
+    /// 读不到完整一帧，已消费并交给 `f` 的帧数仍如实返回，未消费的样本不移动读指针。
+    pub fn drain_frames<F>(&mut self, max_frames: usize, f: F) -> usize
     where
         F: FnMut(&[f32]),
     {
         let channels = usize::from(self.channels);
         let available = self.inner.slots();
-        let whole = (available / channels).min(max_frames);
-        let mut frame = vec![0.0f32; channels];
-        for _ in 0..whole {
-            for slot in frame.iter_mut() {
-                match self.inner.pop() {
-                    Ok(sample) => *slot = sample,
-                    Err(_) => return 0,
-                }
-            }
-            f(&frame);
-        }
-        whole
+        let inner = &mut self.inner;
+        drain_frames_loop(
+            channels,
+            max_frames,
+            available,
+            |frame| {
+                let Ok(chunk) = inner.read_chunk(channels) else {
+                    return false;
+                };
+                let (first, second) = chunk.as_slices();
+                let first_len = first.len();
+                frame[..first_len].copy_from_slice(first);
+                frame[first_len..].copy_from_slice(second);
+                chunk.commit_all();
+                true
+            },
+            f,
+        )
     }
+}
+
+fn drain_frames_loop<R, F>(
+    channels: usize,
+    max_frames: usize,
+    available_samples: usize,
+    mut read_frame: R,
+    mut f: F,
+) -> usize
+where
+    R: FnMut(&mut [f32]) -> bool,
+    F: FnMut(&[f32]),
+{
+    if channels == 0 || max_frames == 0 {
+        return 0;
+    }
+    let whole = (available_samples / channels).min(max_frames);
+    if whole == 0 {
+        return 0;
+    }
+    let mut frame = vec![0.0f32; channels];
+    let mut drained = 0usize;
+    while drained < whole {
+        if !read_frame(&mut frame) {
+            break;
+        }
+        f(&frame);
+        drained += 1;
+    }
+    drained
 }
 
 /// 把收到的帧**按交错顺序**刷到一个 [`Write`]（后台 I/O 线程用）。
@@ -432,5 +470,99 @@ mod tests {
         rx.drain_frames(8, |_| frames += 1);
         assert_eq!(frames, 1, "只应有 1 帧");
         assert_eq!(tx.dropped_frames(), 0, "残余样本⛔ 不计入丢弃");
+    }
+
+    #[test]
+    fn drain_frames_leaves_partial_frame_aligned_for_next_push() {
+        let (mut tx, mut rx) = record_channel(8, 2);
+        for sample in [1.0f32, 2.0, 3.0, 4.0, 5.0] {
+            tx.inner.push(sample).expect("ring has capacity");
+        }
+        let mut drained = Vec::new();
+        let count = rx.drain_frames(10, |frame| drained.push(frame.to_vec()));
+        assert_eq!(count, 2);
+        assert_eq!(drained, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(rx.inner.slots(), 1, "残余的 1 个样本必须留在环里");
+
+        tx.inner.push(6.0).expect("ring has capacity");
+        drained.clear();
+        let count2 = rx.drain_frames(10, |frame| drained.push(frame.to_vec()));
+        assert_eq!(count2, 1);
+        assert_eq!(drained, vec![vec![5.0, 6.0]]);
+        assert_eq!(rx.inner.slots(), 0);
+    }
+
+    #[test]
+    fn drain_frames_with_fewer_than_one_frame_returns_zero_without_dropping() {
+        let (mut tx, mut rx) = record_channel(4, 2);
+        tx.inner.push(0.75).expect("ring has capacity");
+        let mut called = 0usize;
+        assert_eq!(rx.drain_frames(4, |_| called += 1), 0);
+        assert_eq!(called, 0);
+        assert_eq!(rx.inner.slots(), 1);
+    }
+
+    #[test]
+    fn drain_frames_handles_ring_wraparound_with_partial_remainder() {
+        let (mut tx, mut rx) = record_channel(4, 2);
+        assert!(tx.push_frame(&[10.0, 11.0]));
+        assert!(tx.push_frame(&[12.0, 13.0]));
+        assert!(tx.push_frame(&[14.0, 15.0]));
+        let mut got = Vec::new();
+        assert_eq!(rx.drain_frames(2, |f| got.push(f.to_vec())), 2);
+        assert_eq!(got, vec![vec![10.0, 11.0], vec![12.0, 13.0]]);
+
+        // 此时读指针在中间；再推入绕回环尾的新样本 + 1 个半帧残余
+        for s in [16.0f32, 17.0, 18.0, 19.0, 20.0] {
+            tx.inner.push(s).expect("ring has space after drain");
+        }
+        got.clear();
+        assert_eq!(rx.drain_frames(10, |f| got.push(f.to_vec())), 3);
+        assert_eq!(
+            got,
+            vec![vec![14.0, 15.0], vec![16.0, 17.0], vec![18.0, 19.0]]
+        );
+        assert_eq!(rx.inner.slots(), 1);
+
+        tx.inner.push(21.0).expect("ring has space");
+        got.clear();
+        assert_eq!(rx.drain_frames(10, |f| got.push(f.to_vec())), 1);
+        assert_eq!(got, vec![vec![20.0, 21.0]]);
+    }
+
+    #[test]
+    fn drain_frames_bounds_max_frames_and_returns_partial_count_on_midstream_unavailability() {
+        let (mut tx, mut rx) = record_channel(8, 2);
+        for i in 0..5 {
+            assert!(tx.push_frame(&[i as f32, -(i as f32)]));
+        }
+        assert_eq!(
+            rx.drain_frames(0, |_| panic!("max_frames=0 must not call f")),
+            0
+        );
+        let mut got = Vec::new();
+        assert_eq!(rx.drain_frames(2, |f| got.push(f.to_vec())), 2);
+        assert_eq!(got, vec![vec![0.0, 0.0], vec![1.0, -1.0]]);
+        assert_eq!(rx.inner.slots(), 6);
+
+        let mut step = 0usize;
+        let mut callback_frames = Vec::new();
+        let drained = crate::drain_frames_loop(
+            2,
+            5,
+            10,
+            |frame| {
+                if step >= 2 {
+                    return false;
+                }
+                frame[0] = (step * 10) as f32;
+                frame[1] = (step * 10 + 1) as f32;
+                step += 1;
+                true
+            },
+            |frame| callback_frames.push(frame.to_vec()),
+        );
+        assert_eq!(drained, 2, "中途读失败时必须返回已经交给 f 的帧数而非 0");
+        assert_eq!(callback_frames, vec![vec![0.0, 1.0], vec![10.0, 11.0]]);
     }
 }
