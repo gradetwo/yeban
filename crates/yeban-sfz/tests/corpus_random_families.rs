@@ -12,12 +12,12 @@
 //!
 //! | # | 判据 | 判定量 |
 //! | :--- | :--- | :--- |
-//! | C1 | 语料里**没有任何**文件因为这两个 opcode 解析失败 | 1 398 份 `assets/samples/**/*.sfz` 的 `Err` 文本都不含这两个名字 |
+//! | C1 | 语料里**没有任何**文件因为这两个 opcode 解析失败 | 1 397 份 `assets/samples/**/*.sfz` 的 `Err` 文本都不含这两个名字 |
 //! | C2 | 语料里的负值**真的读进** `Region` | accordion 文件的末区域 `amp_random == -6.0` 且首个区域仍为缺省 0 |
 //!
-//! ⚠ **分母**：`assets/samples` 下 1 398 份 `.sfz`（`find` 读数）。仓库里另有 **1** 份
+//! ⚠ **分母**：`assets/samples` 下 1 397 份 `.sfz`（`find` 读数）。仓库里另有 **1** 份
 //! 测试夹具（`crates/yeban-app/tests/fixtures/sampler_c1.sfz`）在 `assets/` 之外，
-//! ⛔ 不计入本判据的分母（语料普查的 1 399 是那两者之和）。
+//! ⛔ 不计入本判据的分母（语料普查的 1 398 是那两者之和）。
 
 use std::path::{Path, PathBuf};
 
@@ -49,8 +49,8 @@ fn c1_no_corpus_file_fails_because_of_the_random_families() {
     files.sort();
     assert_eq!(
         files.len(),
-        1_398,
-        "分母变了 ⇒ 重新登记（1 398 是 assets/samples 下 .sfz 的 find 读数）"
+        1_397,
+        "分母变了 ⇒ 重新登记（1 397 是 assets/samples 下 .sfz 的 find 读数）"
     );
     let limits = ParseLimits::default();
     let mut failed = Vec::new();
