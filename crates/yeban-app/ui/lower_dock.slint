@@ -1061,6 +1061,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
+                            // 4 号插入槽：模型里只有 3 个设备槽（`TrackData.insert1..insert3`，
+                            // 宿主投影读 `devices.get(2)`），这一行原来硬写 "4: Dyn Comp"，等于
+                            // 对每条轨都宣称挂了一台压限器 —— 用户会照着这句话去找一个并不存在的
+                            // 插入。改成与 2/3 号一致的空槽写法，行高/位置不动（最大化档的推子
+                            // 坐标有集成测试钉着，不能删这一行）。
                             if root.console-maximized : Rectangle {
                                 height: 15px;
                                 background: Tokens.bg-panel;
@@ -1071,7 +1076,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 4px;
                                     padding-right: 4px;
                                     Text {
-                                        text: "4: Dyn Comp";
+                                        text: "4: —";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
                                         color: Tokens.skin-text-dim;
