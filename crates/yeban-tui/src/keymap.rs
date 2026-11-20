@@ -28,7 +28,7 @@
 //! | 时间轴缩放 | `Cmd/Ctrl+=/-` | `Ctrl+=/-`（同）→ 网格每小节列宽 | 已接 |
 //! | 轨道导航 | （GUI 用方向键微调选区） | Vi `h/l` 移小节光标、`j/k` 移轨、`gg/G` 首/尾 | TUI 新增（导航层） |
 //! | 计数前缀 | 数字 `1..5` = 选工具 | 数字 = Vi 计数前缀（见冲突 K1） | TUI 新增（导航层） |
-//! | 命令行 | 无 | `:` 进入（`q/w/wq/play/stop/rewind/export/open/demo`） | TUI 新增（模式层） |
+//! | 命令行 | 无 | `:` 进入（`q/w/wq/play/stop/rewind/export/open[!]/demo[!]`） | TUI 新增（模式层） |
 //! | 轨道改名 | 双击轨道头 | `i` 进入 Insert 改名，`Enter` 提交、`Esc` 取消 | TUI 新增（模式层） |
 //! | 退出 | 关窗 | `:q`（脏时拦）、`:q!` 强退 | TUI 新增（模式层） |
 //! | 片段切分 | `Cmd/Ctrl+T`（播放头处） | `Ctrl+T`（同）→ 切分光标处片段 | 已接（三期，走 `host::clip_split_ops_for`） |

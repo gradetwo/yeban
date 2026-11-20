@@ -194,8 +194,7 @@ fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         return;
     }
     let total = app.total_bars();
-    let (play_bar, _, _) = app.position_bar_beat();
-    let play_bar = usize::try_from(play_bar).unwrap_or(0);
+    let play_bar = app.playhead_bar_index();
     // 横向窗口跟随：播放时跟播放头，平时跟光标。
     let anchor = if app.is_playing() {
         play_bar
@@ -600,4 +599,67 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(status).style(Style::default().bg(theme::BG_PANEL)),
         rows[2],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn render_text(app: &mut App) -> String {
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buffer.area.height {
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                out.push_str(symbol);
+                x += if UnicodeWidthStr::width(symbol) >= 2 {
+                    2
+                } else {
+                    1
+                };
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn ui_top_bar_and_ruler_align_on_one_based_bars() {
+        let mut app = App::with_demo().expect("demo app");
+        let text0 = render_text(&mut app);
+        assert!(
+            text0.contains("001.1.000 / 3 小节"),
+            "顶栏初始读数应为 1 起：\n{text0}"
+        );
+        assert!(
+            text0.contains("▼1"),
+            "标尺初始播放头应在第 1 小节：\n{text0}"
+        );
+        assert!(
+            !text0.contains("▼2"),
+            "初始时 ▼ 不应出现在第 2 小节：\n{text0}"
+        );
+
+        app.execute_command("seek 2");
+        app.tick();
+        let text1 = render_text(&mut app);
+        assert!(
+            text1.contains("002.1.000 / 3 小节"),
+            ":seek 2 后顶栏应显示 002.1.000：\n{text1}"
+        );
+        assert!(
+            text1.contains("▼2"),
+            ":seek 2 后标尺播放头应在 ▼2：\n{text1}"
+        );
+        assert!(
+            !text1.contains("▼1"),
+            ":seek 2 后 ▼ 不应留在第 1 小节：\n{text1}"
+        );
+    }
 }

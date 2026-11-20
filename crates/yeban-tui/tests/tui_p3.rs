@@ -131,8 +131,8 @@ fn split_clip_at_playhead_and_refusal() {
         app.log.last()
     );
 
-    // 成功臂：:seek 2 把播放头与光标同步移到 7680（严格落在摆放内）。
-    app.execute_command("seek 2");
+    // 成功臂：:seek 3（1 起第 3 小节 = 下标 2）把播放头与光标同步移到 7680（严格落在摆放内）。
+    app.execute_command("seek 3");
     app.tick();
     assert_eq!(app.transport().position_ticks, 2 * app.bar_ticks());
     app.handle_key(ctrl('t'));

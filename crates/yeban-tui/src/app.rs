@@ -30,7 +30,8 @@ use yeban_model::ids::EntityId;
 use yeban_model::music::MidiNote;
 use yeban_model::ops::Op;
 use yeban_model::project::{
-    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, TrackKind, YebanProjectV1,
+    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, MAX_BPM, MIN_BPM, TrackKind,
+    YebanProjectV1,
 };
 
 use crate::keymap::{Mode, Pane, ViMachine, ViMotion, ViOutcome, to_logical};
@@ -318,17 +319,24 @@ impl App {
         usize::try_from(self.project_len_ticks().div_ceil(bar)).unwrap_or(usize::MAX)
     }
 
-    /// 当前位置（小节，拍，tick 余数），均 0 起。
+    /// 当前位置（小节，拍，tick 余数）：小节与拍均从 1 起（与标尺及 GUI 一致），tick 余数从 0 起。
     #[must_use]
     pub fn position_bar_beat(&self) -> (u64, u64, u64) {
         let ticks = self.transport().position_ticks;
         let per_beat = self.ticks_per_beat().max(1);
         let per_bar = self.bar_ticks().max(1);
         (
-            ticks / per_bar,
-            (ticks % per_bar) / per_beat,
+            ticks / per_bar + 1,
+            (ticks % per_bar) / per_beat + 1,
             ticks % per_beat,
         )
+    }
+
+    /// 播放头所在小节下标（0 起，供网格标尺与横向跟随对齐 `cursor_bar`）。
+    #[must_use]
+    pub fn playhead_bar_index(&self) -> usize {
+        let per_bar = self.bar_ticks().max(1);
+        usize::try_from(self.transport().position_ticks / per_bar).unwrap_or(usize::MAX)
     }
 
     /// 选中轨身份。
@@ -361,10 +369,11 @@ impl App {
     // 每跳驱动（主循环以约 16 ms 一跳调用）
     // ------------------------------------------------------------------
 
-    /// 墙钟泵送 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
+    /// 墙钟泵送 + 快照回收心跳 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
     pub fn tick(&mut self) {
         self.host.pump_wall_clock();
         self.report_audio_issues();
+        let _ = self.host.heartbeat();
         if let Some(collector) = &mut self.collector {
             let mut scratch = vec![MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
@@ -1112,8 +1121,14 @@ impl App {
 
     /// 设工程速度（BPM）：走 `Op::SetTempo`，可撤销。
     pub fn set_tempo(&mut self, new_bpm: f64) {
+        if !new_bpm.is_finite() || !(MIN_BPM..=MAX_BPM).contains(&new_bpm) {
+            self.log_line(format!(
+                "速度越界：BPM 须为 {MIN_BPM:.0}..={MAX_BPM:.0} 之间的有限值"
+            ));
+            return;
+        }
         let old_bpm = self.project.bpm;
-        if (old_bpm - new_bpm).abs() < f64::EPSILON {
+        if new_bpm.to_bits() == old_bpm.to_bits() {
             self.log_line(format!("速度已是 {new_bpm:.1} BPM，无变化"));
             return;
         }
@@ -1776,22 +1791,28 @@ impl App {
                 self.log_line("播放".to_owned());
             }
             "seek" => {
-                // :seek <bar> —— 播放头定位到第 bar 小节（0 起，与小节光标同读数）。
+                // :seek <bar> —— 播放头定位到第 bar 小节（1 起，与标尺及顶栏读数一致）。
                 match rest.parse::<usize>() {
-                    Ok(bar) => self.seek_to_bar(bar),
-                    Err(_) => self.log_line("用法：:seek <小节号（0 起）>".to_owned()),
+                    Ok(0) => {
+                        self.log_line("小节号从 1 起：用法 :seek <小节号（1 起）>".to_owned());
+                    }
+                    Ok(bar) => self.seek_to_bar(bar - 1),
+                    Err(_) => self.log_line("用法：:seek <小节号（1 起）>".to_owned()),
                 }
             }
             "tempo" => {
                 // :tempo <bpm> —— 设工程速度（经撤销端口提交，可撤销）。
                 match rest.parse::<f64>() {
-                    Ok(bpm) if (20.0..=300.0).contains(&bpm) => self.set_tempo(bpm),
-                    Ok(bpm) => self.log_line(format!(
-                        "BPM {bpm:.1} 超出范围（合法 20–300，例如 :tempo 140）"
+                    Ok(bpm) if bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(&bpm) => {
+                        self.set_tempo(bpm);
+                    }
+                    Ok(_) => self.log_line(format!(
+                        "速度越界：BPM 须为 {MIN_BPM:.0}..={MAX_BPM:.0} 之间的有限值"
                     )),
-                    Err(_) => self.log_line(
-                        "用法：:tempo <BPM>（合法范围 20–300，例如 :tempo 140）".to_owned(),
-                    ),
+                    Err(_) => {
+                        self.log_line(format!("用法：:tempo <BPM>（{MIN_BPM:.0}..={MAX_BPM:.0}）"))
+                    }
+
                 }
             }
             "stop" => self.stop(),
@@ -1822,9 +1843,12 @@ impl App {
                     }
                 }
             }
-            "open" => {
+            "open" | "open!" => {
+                let force = verb == "open!";
                 if rest.is_empty() {
                     self.log_line("用法：:open <path>".to_owned());
+                } else if self.dirty && !force {
+                    self.log_line(format!("有未保存修改：先 :w 保存，或 :open! {rest} 强开"));
                 } else {
                     match Self::open_file(Path::new(rest)) {
                         Ok(next) => {
@@ -1834,13 +1858,304 @@ impl App {
                     }
                 }
             }
-            "demo" => match Self::with_demo() {
-                Ok(next) => {
-                    *self = next;
+            "demo" | "demo!" => {
+                let force = verb == "demo!";
+                if self.dirty && !force {
+                    self.log_line("有未保存修改：先 :w 保存，或 :demo! 强开演示工程".to_owned());
+                } else {
+                    match Self::with_demo() {
+                        Ok(next) => {
+                            *self = next;
+                        }
+                        Err(error) => self.log_line(error),
+                    }
                 }
-                Err(error) => self.log_line(error),
-            },
+            }
             other => self.log_line(format!("未知命令：{other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_calls_heartbeat_and_reclaims_retired_snapshots() {
+        let mut app = App::with_demo().expect("demo app");
+        assert!(!app.is_playing());
+        const EDITS: u64 = 10;
+        for _ in 0..EDITS {
+            app.toggle_mute();
+            app.host.drive_audio(1);
+        }
+        let before = app.host.snapshot_counts().expect("snapshot counts");
+        assert_eq!(before.pending_len, usize::try_from(EDITS).unwrap());
+        assert_eq!(before.retire_pending, usize::try_from(EDITS).unwrap());
+        assert_eq!(before.pruned, 0);
+        assert_eq!(before.retire_dropped, 0);
+
+        app.tick();
+
+        let after = app.host.snapshot_counts().expect("snapshot counts");
+        assert_eq!(after.pending_len, 0);
+        assert_eq!(after.retire_pending, 0);
+        assert_eq!(after.pruned, EDITS);
+        assert_eq!(after.retire_dropped, EDITS);
+    }
+
+    #[test]
+    fn open_dirty_guard_blocks_and_force_opens() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let saved_path =
+            std::env::temp_dir().join(format!("yeban-tui-open-dirty-{}.yeban", std::process::id()));
+        let _cleanup = TempCleanup(saved_path.clone());
+
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved_path).expect("save demo");
+
+        let mut app = App::with_demo().expect("demo app");
+        assert!(!app.dirty);
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(!app.dirty);
+        assert_eq!(app.project_path.as_deref(), Some(saved_path.as_path()));
+
+        let track_id = app.track_ids[0];
+        assert!(!app.project.tracks[&track_id].mute);
+        app.toggle_mute();
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+
+        // Empty argument reports usage and keeps dirty edits.
+        app.execute_command("open");
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("用法：:open"))
+        );
+
+        // Unforced :open is blocked while dirty.
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("有未保存修改") && line.contains(":open!"))
+        );
+
+        // Failed :open! on missing path preserves unsaved edits.
+        let missing_path =
+            std::env::temp_dir().join(format!("yeban-tui-missing-{}.yeban", std::process::id()));
+        app.execute_command(&format!("open! {}", missing_path.display()));
+        assert!(app.dirty);
+        assert!(app.project.tracks[&track_id].mute);
+
+        // Forced :open! discards dirty edits and loads saved file.
+        app.execute_command(&format!("open! {}", saved_path.display()));
+        assert!(!app.dirty);
+        assert!(!app.project.tracks[&track_id].mute);
+        assert_eq!(app.project_path.as_deref(), Some(saved_path.as_path()));
+
+        // Clean :open works without ! after :w clears dirty.
+        app.toggle_mute();
+        assert!(app.dirty);
+        app.execute_command("w");
+        assert!(!app.dirty);
+        app.execute_command(&format!("open {}", saved_path.display()));
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn demo_dirty_guard_blocks_and_force_resets() {
+        let mut app = App::with_demo().expect("demo app");
+        let default_bpm = app.project.bpm;
+        assert!(!app.dirty);
+
+        // Clean state allows :demo without !.
+        app.execute_command("demo");
+        assert!(!app.dirty);
+
+        // Mutate state and verify :demo is blocked while dirty.
+        app.set_tempo(140.0);
+        assert!(app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), 140.0_f64.to_bits());
+
+        app.execute_command("demo");
+        assert!(app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), 140.0_f64.to_bits());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("有未保存修改") && line.contains(":demo!"))
+        );
+
+        // Forced :demo! resets back to demo default.
+        app.execute_command("demo!");
+        assert!(!app.dirty);
+        assert_eq!(app.project.bpm.to_bits(), default_bpm.to_bits());
+    }
+
+    #[test]
+    fn tempo_rejects_non_finite_and_out_of_bounds_via_command_and_method() {
+        let mut app = App::with_demo().expect("demo app");
+        let initial_bpm = app.project.bpm;
+
+        for cmd in [
+            "tempo NaN",
+            "tempo inf",
+            "tempo +inf",
+            "tempo -inf",
+            "tempo 0",
+            "tempo -10",
+            "tempo 19.9",
+            "tempo 999.1",
+            "tempo 1000",
+        ] {
+            app.execute_command(cmd);
+            assert_eq!(
+                app.project.bpm.to_bits(),
+                initial_bpm.to_bits(),
+                "{cmd} should not change bpm"
+            );
+            assert!(!app.dirty, "{cmd} should not mark dirty");
+            assert!(
+                app.log.last().is_some_and(|line| line.contains("速度越界")),
+                "{cmd} should log range error, got {:?}",
+                app.log.last()
+            );
+        }
+
+        for cmd in ["tempo abc", "tempo"] {
+            app.execute_command(cmd);
+            assert_eq!(app.project.bpm.to_bits(), initial_bpm.to_bits());
+            assert!(!app.dirty);
+            assert!(
+                app.log.last().is_some_and(|line| line.contains("用法")),
+                "{cmd} should log usage, got {:?}",
+                app.log.last()
+            );
+        }
+
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            -5.0,
+            MIN_BPM - 0.1,
+            MAX_BPM + 0.1,
+        ] {
+            app.set_tempo(bad);
+            assert_eq!(app.project.bpm.to_bits(), initial_bpm.to_bits());
+            assert!(!app.dirty);
+            assert!(app.log.last().is_some_and(|line| line.contains("速度越界")));
+        }
+    }
+
+    #[test]
+    fn tempo_accepts_inclusive_bounds_and_dedups_same_value() {
+        let mut app = App::with_demo().expect("demo app");
+
+        app.execute_command("tempo 20");
+        assert_eq!(app.project.bpm.to_bits(), MIN_BPM.to_bits());
+        assert!(app.dirty);
+
+        app.execute_command("tempo 999");
+        assert_eq!(app.project.bpm.to_bits(), MAX_BPM.to_bits());
+
+        app.execute_command("tempo 128.5");
+        assert!((app.project.bpm - 128.5).abs() < 1e-9);
+
+        app.undo(1);
+        assert_eq!(app.project.bpm.to_bits(), MAX_BPM.to_bits());
+
+        // Same-value tempo is a no-op and does not push a duplicate undo entry.
+        app.execute_command("tempo 999");
+        assert!(app.log.last().is_some_and(|line| line.contains("无变化")));
+        app.undo(1);
+        assert_eq!(app.project.bpm.to_bits(), MIN_BPM.to_bits());
+    }
+
+    #[test]
+    fn position_bar_beat_and_playhead_index_are_consistent() {
+        let mut app = App::with_demo().expect("demo app");
+        assert_eq!(app.position_bar_beat(), (1, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 0);
+        assert_eq!(app.cursor_bar, 0);
+
+        app.execute_command("seek 1");
+        assert_eq!(app.position_bar_beat(), (1, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 0);
+        assert_eq!(app.cursor_bar, 0);
+        assert_eq!(app.transport().position_ticks, 0);
+
+        app.execute_command("seek 3");
+        assert_eq!(app.position_bar_beat(), (3, 1, 0));
+        assert_eq!(app.playhead_bar_index(), 2);
+        assert_eq!(app.cursor_bar, 2);
+        assert_eq!(app.transport().position_ticks, 2 * app.bar_ticks());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("第 3 小节"))
+        );
+
+        let mid_ticks = app.bar_ticks() + app.ticks_per_beat() + 123;
+        app.host
+            .send_transport(&[TransportCommand::SeekTicks(mid_ticks)]);
+        assert_eq!(app.position_bar_beat(), (2, 2, 123));
+        assert_eq!(app.playhead_bar_index(), 1);
+    }
+
+    #[test]
+    fn seek_zero_and_invalid_args_are_rejected_without_moving_state() {
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("seek 2");
+        assert_eq!(app.cursor_bar, 1);
+        assert_eq!(app.transport().position_ticks, app.bar_ticks());
+
+        app.execute_command("seek 0");
+        assert_eq!(app.cursor_bar, 1);
+        assert_eq!(app.transport().position_ticks, app.bar_ticks());
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("小节号从 1 起"))
+        );
+
+        for cmd in ["seek -1", "seek abc", "seek"] {
+            app.execute_command(cmd);
+            assert_eq!(app.cursor_bar, 1, "{cmd} should not move cursor_bar");
+            assert_eq!(
+                app.transport().position_ticks,
+                app.bar_ticks(),
+                "{cmd} should not move playhead"
+            );
+            assert!(
+                app.log
+                    .last()
+                    .is_some_and(|line| line.contains("用法：:seek")),
+                "{cmd} should log usage, got {:?}",
+                app.log.last()
+            );
+        }
+    }
+
+    #[test]
+    fn seek_large_bar_does_not_overflow_or_panic() {
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command(&format!("seek {}", usize::MAX));
+        assert_eq!(app.cursor_bar, usize::MAX - 1);
+        assert_eq!(app.transport().position_ticks, u64::MAX);
     }
 }
