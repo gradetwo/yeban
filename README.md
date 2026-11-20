@@ -52,15 +52,11 @@ Portable `.tar.gz` archives and `SHA256SUMS` are on the [nightly release page](h
 
 ## Screenshots
 
-The current interface, running the built-in demo project (drums, bass, pad, lead, strings, percussion):
+The current interface, running the built-in demo project (drums, bass, pad, lead, strings, percussion). One slideshow cycles through the arrangement view in the flat and physical themes, the mixer console and the terminal UI:
 
-![Arrangement view with the piano roll open in the lower dock (flat theme)](assets/screenshots/ui-full-song.png)
+[![Slideshow: arrangement view (flat theme), the same arrangement in the physical theme, the mixer console, and the terminal UI](assets/screenshots/slideshow.gif)](https://yeban.wangda.today/#interface)
 
-![The same arrangement in the physical (skeuomorphic) theme](assets/screenshots/ui-arrangement-chorus.png)
-
-![Mixer console in the lower dock: six channel strips plus bus and master](assets/screenshots/ui-mixer-console.png)
-
-![The terminal UI (yeban-tui) on the same demo project: track list, clip grid and inspector](assets/screenshots/ui-tui-main.png)
+To step through the screenshots manually, use the carousel in the [interface section of the website](https://yeban.wangda.today/#interface).
 
 ## Made with Yeban
 

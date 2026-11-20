@@ -45,8 +45,8 @@
       "allowed_licenses": [
         "GPL-3.0-only"
       ],
-      "files_count": 3,
-      "files_total_bytes": 471983,
+      "files_count": 5,
+      "files_total_bytes": 827844,
       "bundled": true,
       "note": "README 与官网用的界面截图（登记 + 打包）：本仓库 yeban-app 无头渲染产物，逐条 sha256 / 字节见 assets/screenshots/manifest.json。新增或替换截图时同步更新该清单与本条的 files_count / files_total_bytes。"
     }

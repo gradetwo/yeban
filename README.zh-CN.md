@@ -62,15 +62,11 @@
 
 ## 界面截图
 
-当前界面，打开内置演示工程（鼓、贝斯、铺底、主音、弦乐、打击乐）：
+当前界面，打开内置演示工程（鼓、贝斯、铺底、主音、弦乐、打击乐）。一张轮播图依次展示编曲视图的扁平主题与拟物主题、下坞混音控制台与终端界面：
 
-![编曲视图，下坞打开钢琴卷帘（扁平主题）](assets/screenshots/ui-full-song.png)
+[![轮播图：编曲视图（扁平主题）、同一编曲视图的拟物主题、下坞混音控制台、终端界面](assets/screenshots/slideshow.gif)](https://yeban.wangda.today/#interface)
 
-![同一编曲视图的拟物主题](assets/screenshots/ui-arrangement-chorus.png)
-
-![下坞混音控制台：六条通道条加总线与主输出](assets/screenshots/ui-mixer-console.png)
-
-![终端界面（yeban-tui）打开同一演示工程：轨道列表、片段网格与检查器](assets/screenshots/ui-tui-main.png)
+想手动逐张看，去[官网界面区](https://yeban.wangda.today/#interface)的轮播里切换。
 
 ## 用夜半创作的作品
 
