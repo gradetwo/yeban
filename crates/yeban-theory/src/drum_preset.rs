@@ -688,11 +688,17 @@ const DRUM_FX_PARAM_DOMAINS: &[(&str, &str, f32, f32)] = &[
     ("strip", "release_s", 0.01, 1.0),
     ("strip", "makeup_db", -12.0, 12.0),
     ("strip", "output_gain_db", -12.0, 12.0),
-    // 磁带（tape）。
+    // 磁带（tape）。后五条为 P7 的 wow/flutter 段：`tape_params` 早已
+    // 写出这五个名字，值域表此前漏登记，自动化写到即被判未知参数。
     ("tape", "tape_drive", 0.0, 1.0),
     ("tape", "tape_mix", 0.0, 1.0),
     ("tape", "tape_hf_hz", 2000.0, 20000.0),
     ("tape", "tape_asym", 0.0, 0.5),
+    ("tape", "tape_wow_rate_hz", 0.05, 2.0),
+    ("tape", "tape_wow_depth_ms", 0.0, 8.0),
+    ("tape", "tape_flutter_rate_hz", 2.0, 15.0),
+    ("tape", "tape_flutter_depth_ms", 0.0, 2.0),
+    ("tape", "tape_seed", 0.0, 16777215.0),
     // 混响（reverb）。`reverb_kind` 是离散档位（0..=3），列入表内是
     // 为了让拼写合法性有单一判据；把它写成连续自动化没有音乐意义，
     // 但格式层不替作者做审美裁决，只钉值域。
@@ -5165,6 +5171,33 @@ mod tests {
         );
         assert_eq!(drum_fx_param_domain("reverb", "reverb_wetness"), None);
         assert_eq!(drum_fx_param_domain("echo", "delay_mix"), None);
+        // P7 回归钉：`tape_params` 写出的九个名字必须全部有值域——
+        // wow/flutter 五个曾漏登记，自动化写到即被判未知参数。
+        let tape = DrumTapePreset {
+            drive: 0.3,
+            mix: 0.5,
+            hf_hz: 9000.0,
+            asym: 0.2,
+            wow_rate_hz: 0.5,
+            wow_depth_ms: 0.0,
+            flutter_rate_hz: 6.0,
+            flutter_depth_ms: 0.0,
+            seed: 0.0,
+        };
+        for (name, _) in tape_params(&tape) {
+            assert!(
+                drum_fx_param_domain("tape", &name).is_some(),
+                "tape 参数 {name} 无值域登记"
+            );
+        }
+        assert_eq!(
+            drum_fx_param_domain("tape", "tape_wow_rate_hz"),
+            Some((0.05, 2.0))
+        );
+        assert_eq!(
+            drum_fx_param_domain("tape", "tape_seed"),
+            Some((0.0, 16777215.0))
+        );
     }
 
     #[test]
