@@ -145,6 +145,15 @@ export component UnifiedLowerDock inherits Rectangle {
     private property <length> bus-drag-start-y: 0px;
     private property <float> bus-drag-start-db: -1.0;
     in-out property <length> dock-height: 320px;
+    // 矮窗紧凑档（A12）：通道条内容自然高 ≈ 180px（名称 18 + 音色插入 15 + M/S 16 + 推子 88
+    // + dB 牌 17 + 行间距 16 + 内边距 10），而下坞被 `window-h - 420px` 压到 200px 时，
+    // 通道条可用内高只有 ≈152px —— 底部整段被 clip 切掉（推子帽与刻度看不见）。
+    // 所以这里在矮窗下把「音色插入」与「dB 读数牌」**从布局里摘掉**。
+    // ⚠ 必须用 `if` 条件元素，⛔ 不能用 `visible: false` —— 后者仍占布局高度，
+    //   之前那一版实验就是栽在这里：行"消失了"，推子却一位没动（外层只按剩余空间重排）。
+    // 阈值 228px 来自上面的算式（228 - 2 边框 - 34 标签栏 - 12 内边距 = 180 刚好够）。
+    // 摘掉两行后剩 ≈140px，仍保留：名称牌、M/S/Pan、88px 推子与电平表。
+    private property <bool> strip-compact: root.dock-height < 228px;
     min-height: root.console-maximized ? 0px : root.dock-height;
     max-height: root.console-maximized ? 100000px : root.dock-height;
     vertical-stretch: root.console-maximized ? 1 : 0;
@@ -593,7 +602,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     VerticalLayout {
                         padding: 8px;
                         spacing: 6px;
-                        alignment: space-between;
+                        // 原来是 `space-between`：内容比卡片矮时各行被拉开，紧凑档摘掉 64px
+                        // 预览框后「摘要」被甩到卡片中部、下面整片空着。改成从上往下排，
+                        // 摘掉哪一行都只是让后面的行整体上移（POS / 切换 因此不会再被裁）。
+                        alignment: start;
 
                         // Header Row: Bypass indicator + Device Name + Recognised Badge + Remove
                         HorizontalLayout {
@@ -680,7 +692,10 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
 
                         // Real Device Visualizer / EQ Preview Box
-                        Rectangle {
+                        // 矮窗紧凑档：这块 64px 现在只是「曲线示意 · 未连接参数」占位（等引擎给频响），
+                        // 但它是卡片里最高的一行，压得最低那一行 `POS / 4800Hz / 切换` 整排被裁掉 ——
+                        // 用户在下坞里唯一能操作设备的按钮就没了。所以紧凑档先摘掉它。
+                        if !root.strip-compact : Rectangle {
                             height: 64px;
                             // 一期质感: flat 分支保留旧值; physical 走 §10 玻璃刷。
                             background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2;
@@ -903,6 +918,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
+                                    spacing: 2px;
+                                    alignment: space-between;
                                     Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
@@ -910,6 +927,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-weight: 600;
                                         color: Tokens.skin-text-strong;
                                         horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    // 紧凑档把 dB 数值折进名称牌右侧：矮窗里 dB 读数牌整行被摘掉，
+                                    // 但混音时读不到增益等于盲推。只对**当前选中轨**显示，82px 的
+                                    // 条宽里名字才不会被挤成「Aux Re…」——换轨时数字跟着走。
+                                    if root.strip-compact && trk.id == root.selected-track-id : Text {
+                                        text: root.track-volumes.length > tidx ? root.track-volumes[tidx] : ("" + Math.round(trk.volume_db));
+                                        width: 26px;
+                                        horizontal-alignment: end;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 400;
+                                        color: trk.color;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
@@ -956,7 +988,8 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             // 3. Insert Slots (Clickable Instrument/Timbre Selector)
-                            Rectangle {
+                            // 矮窗下让位给推子：音色仍可从坞头「音色 [v]」切换。
+                            if !root.strip-compact : Rectangle {
                                 height: 15px;
                                 background: insert1_touch.has-hover ? Tokens.line : Tokens.bg-panel;
                                 border-radius: 2px;
@@ -1274,7 +1307,12 @@ export component UnifiedLowerDock inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 4px;
-                                height: 88px;
+                                // ⚠ 布局吃紧时会**压缩**子项（Rectangle 的 min-height 默认 0），
+                                // 88px 的推子会被压到 ~45px：刻度只剩三条、推子帽贴底沿。
+                                // 用 min/max 同时钉死 88px（不能与 `height` 并存，Slint 会报
+                                // "Cannot specify both 'height' and 'min-height'"）。
+                                min-height: 88px;
+                                max-height: 88px;
 
                                 // Vertical Fader Rail
                                 Rectangle {
@@ -1407,7 +1445,9 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             // 8. Compact Centered Volume dB Readout (Standard DAW convention)
-                            HorizontalLayout {
+                            // 矮窗下这一行本来就被裁在窗口沿外（推子下方），摘掉它可以避免
+                            // 参与纵向排布、把上面几行整体往下顶。
+                            if !root.strip-compact : HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
                                     width: 50px;
@@ -1518,8 +1558,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // Inserts
-                            Rectangle {
+                            // Inserts（紧凑档摘掉：否则 BUS 这一行的「1+2」会比左侧
+                            // 通道条的 M/S 行低 19px，混音台横排读数错位）
+                            if !root.strip-compact : Rectangle {
                                 height: 15px;
                                 background: Tokens.bg-panel;
                                 border-radius: 2px;
@@ -1856,8 +1897,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // Master Limiter
-                            Rectangle {
+                            // Master Limiter（紧凑档摘掉，理由同 BUS 的 Inserts 行）
+                            if !root.strip-compact : Rectangle {
                                 height: 15px;
                                 background: Tokens.bg-panel;
                                 border-radius: 2px;
@@ -2182,10 +2223,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
 
                     // Empty / Add Channel Strip Slot in Mixer mode
-                    // 2026-11-19 实测：通道条是 96px 宽，而这只空槽只有 72px —— 并排看像
-                    // 一根比通道窄一截的窄柱，读不出"这里还能再放一条通道"。改成与通道条同宽。
+                    // 2026-11-19 实测：空槽原来是 96px，而**实际通道条是 82px** —— 并排看像
+                    // 一根比通道宽一截的胖柱，读不出"这里还能再放一条通道"。改成与通道条同宽 82px。
                     if root.active-tab == "mixer" : Rectangle {
-                        width: 96px;
+                        width: 82px;
                         // 空槽不再用 void-brush（拟物下等于一个近黑窟窿，与页面底色断层）；
                         // 统一 bg-lane2 + 1px 描边，读成"一个可放通道的空位"。
                         background: add_mix_trk_touch.has-hover ? Tokens.panel-brush : Tokens.bg-lane2;
@@ -2199,7 +2240,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             // （阅读节奏被打断，看起来像通道被拉长了一截）。改成从上往下起排、
                             // 顶部留 8px，于是 "+" 落在与其它通道名称牌同一条水平线上。
                             alignment: start;
-                            padding-top: 8px;
+                            padding-top: 5px;
                             spacing: 4px;
                             Text {
                                 text: "+";
