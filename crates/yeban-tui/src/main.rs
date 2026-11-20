@@ -219,14 +219,16 @@ fn restore_terminal_if_active() {
     }
 }
 
+/// 进程 panic 钩子的签名（`std::panic::take_hook` 的返回类型）。
+type PanicHook = dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send;
+
 struct PanicHookGuard {
-    previous: Option<Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send>>,
+    previous: Option<Arc<PanicHook>>,
 }
 
 impl PanicHookGuard {
     fn install_with(restore: fn()) -> Self {
-        let previous: Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
-            Arc::from(std::panic::take_hook());
+        let previous: Arc<PanicHook> = Arc::from(std::panic::take_hook());
         let prev_for_hook = Arc::clone(&previous);
         std::panic::set_hook(Box::new(move |info| {
             restore();
@@ -439,7 +441,7 @@ mod tests {
         );
     }
 
-    struct HookReset(Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send>>);
+    struct HookReset(Option<Box<PanicHook>>);
 
     impl Drop for HookReset {
         fn drop(&mut self) {
