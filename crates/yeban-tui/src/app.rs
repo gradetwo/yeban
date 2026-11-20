@@ -2166,9 +2166,7 @@ mod tests {
             (total as u64 - 1) * app.bar_ticks()
         );
         assert!(
-            app.log
-                .last()
-                .is_some_and(|line| line.contains("工程只有")),
+            app.log.last().is_some_and(|line| line.contains("工程只有")),
             "clamp should be reported loudly, got {:?}",
             app.log.last()
         );
