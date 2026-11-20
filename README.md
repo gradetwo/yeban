@@ -52,9 +52,15 @@ Portable `.tar.gz` archives and `SHA256SUMS` are on the [nightly release page](h
 
 ## Screenshots
 
-The current interface, running a 10-track pop project (lead vocal, harmonies, piano, guitars, bass, drums, strings, synth pad):
+The current interface, running the built-in demo project (drums, bass, pad, lead, strings, percussion):
 
-![Arrangement view (zoomed): verse into chorus with clear density contrast, the piano roll showing the piano track arpeggios](assets/screenshots/ui-full-song.png)
+![Arrangement view with the piano roll open in the lower dock (flat theme)](assets/screenshots/ui-full-song.png)
+
+![The same arrangement in the physical (skeuomorphic) theme](assets/screenshots/ui-arrangement-chorus.png)
+
+![Mixer console in the lower dock: six channel strips plus bus and master](assets/screenshots/ui-mixer-console.png)
+
+![The terminal UI (yeban-tui) on the same demo project: track list, clip grid and inspector](assets/screenshots/ui-tui-main.png)
 
 ## Made with Yeban
 

@@ -62,9 +62,15 @@
 
 ## 界面截图
 
-当前界面，打开一个 10 轨流行歌工程（主唱、和声、钢琴、吉他、贝斯、鼓组、弦乐、合成铺底）：
+当前界面，打开内置演示工程（鼓、贝斯、铺底、主音、弦乐、打击乐）：
 
-![全曲编曲总览：完整 12 小节段落结构，底部钢琴卷帘显示钢琴轨的分解和弦](assets/screenshots/ui-full-song.png)
+![编曲视图，下坞打开钢琴卷帘（扁平主题）](assets/screenshots/ui-full-song.png)
+
+![同一编曲视图的拟物主题](assets/screenshots/ui-arrangement-chorus.png)
+
+![下坞混音控制台：六条通道条加总线与主输出](assets/screenshots/ui-mixer-console.png)
+
+![终端界面（yeban-tui）打开同一演示工程：轨道列表、片段网格与检查器](assets/screenshots/ui-tui-main.png)
 
 ## 用夜半创作的作品
 
