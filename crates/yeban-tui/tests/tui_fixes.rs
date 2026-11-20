@@ -35,7 +35,7 @@ fn tempo_out_of_range_explains_the_range() {
     let mut app = app();
     app.execute_command("tempo 0");
     let last = app.log.last().cloned().unwrap_or_default();
-    assert!(last.contains("20–300"), "越界必须给合法范围：{last}");
+    assert!(last.contains("20..=999"), "越界必须给合法范围：{last}");
 }
 
 #[test]
