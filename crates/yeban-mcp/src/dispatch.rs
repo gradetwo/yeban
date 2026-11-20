@@ -440,35 +440,84 @@ fn replay_value(cached: &CachedOutcome, id: Id) -> Value {
 /// 自带客户端够用，但标准 MCP 客户端（Claude Desktop / Cursor / MCP Inspector）
 /// 按 `content` 渲染：拿不到就显示空结果，也识别不出 `status:"error"` 的带内失败。
 ///
+/// ## 形状：`content` 是摘要，载荷只出现一次
+///
+/// 线上形状是「`CallToolResult` ∪ `ToolResponse`」：新客户端读 `content`，
+/// 老调用方读 `status` / `data`，二者指向同一份 JSON。
+///
+/// * `content[0].text` 是**一行摘要**（状态＋数据键名／错误码），不是载荷全文。
+///   摘要是预算的一部分：全文只许在顶层键里出现一次，再发一份
+///   `structuredContent` 或全文 `text` 都会把 16 小节往返撑到约 9 KB，
+///   突破 `[BASELINE-006]` 的 4 KiB 上限（T-CI-FIX-1 实测：三份拷贝 9,025 B，
+///   摘要版约 3.0 KB；`tests/payload_budget.rs` 钉住往返字节数）。
+/// * 因此**不发 `structuredContent`**。需要结构化数据的调用方读顶层键
+///   （与 `ToolResponse` 同形）；标准 MCP 客户端读 `content` 得梗概、
+///   读顶层键得全文——`content` 与顶层键指向同一份 JSON，不是两套数据面。
+///
 /// ## 为什么**保留**原来的顶层字段（而不是换掉形状）
 ///
 /// 1. 本仓 HTTP 客户端与既有判据读 `result.status` / `result.data`；
 ///    两套形状表达的是同一件事，没必要二选一。
 /// 2. `ToolResponse` 的 JSON Schema 未设 `additionalProperties:false`，
-///    多出的 `content` / `structuredContent` / `isError` 不破坏既有校验。
-///
-/// 于是线上形状是「`CallToolResult` ∪ `ToolResponse`」：新客户端读 `content`，
-/// 老调用方读 `status`，二者指向同一份 JSON。
+///    多出的 `content` / `isError` 不破坏既有校验。
 fn wrap_mcp_call_result(value: Value) -> Value {
-    // 文本块 = 整份带内响应的紧凑 JSON（客户端即使不解析 structuredContent，
-    // 也能把原文呈现给用户 / 模型）。
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_owned());
     let is_error = value.get("status").and_then(Value::as_str) == Some("error");
     let mut map = Map::new();
     map.insert(
         "content".to_owned(),
-        Value::Array(vec![serde_json::json!({ "type": "text", "text": text })]),
+        Value::Array(vec![
+            serde_json::json!({ "type": "text", "text": envelope_summary(&value) }),
+        ]),
     );
     map.insert("isError".to_owned(), Value::Bool(is_error));
-    if value.is_object() {
-        map.insert("structuredContent".to_owned(), value.clone());
-    }
+    // ⛔ 不发 `structuredContent`：载荷只能出现一次（见本函数文档）。
     if let Some(object) = value.as_object() {
         for (key, item) in object {
             map.entry(key.clone()).or_insert_with(|| item.clone());
         }
     }
     Value::Object(map)
+}
+
+/// `CallToolResult` 的 `content` 文本：一行摘要，绝不是载荷本身。
+///
+/// 只报状态与数据键名（成功）或错误码（失败），让只读 `content` 的标准
+/// 客户端也能看到结果的梗概；完整数据在同一结果的顶层键里（`status` /
+/// `data` / `error`），按 JSON 读得到。摘要必须短：它是预算的一部分
+/// （`tests/payload_budget.rs` 钉住往返字节数；键名最多列 16 个）。
+fn envelope_summary(value: &Value) -> String {
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("success");
+    if status == "error" {
+        let code = value
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if code.is_empty() {
+            "error".to_owned()
+        } else {
+            format!("error: {code}")
+        }
+    } else {
+        match value.get("data") {
+            Some(Value::Object(data)) => {
+                let keys: Vec<&str> = data.keys().take(16).map(String::as_str).collect();
+                if keys.is_empty() {
+                    "success".to_owned()
+                } else {
+                    let mut summary = format!("success: {}", keys.join(", "));
+                    if data.len() > 16 {
+                        summary.push_str(", …");
+                    }
+                    summary
+                }
+            }
+            _ => "success".to_owned(),
+        }
+    }
 }
 
 /// `dryRun` 的结果：`ToolResponse` 形状（`status: success`），`data` 说明"将要做什么"。
@@ -1498,12 +1547,15 @@ mod tests {
     ///
     /// 判据三件套（成功 / 带内失败 / 幂等重放）—— 三者都走同一个出口，
     /// 因此**任何**一条漏包都会被本函数抓到：
-    /// * `content[0].type == "text"`，且 `content[0].text` 能解析回 JSON；
-    /// * `structuredContent` 与该 JSON **逐字段相同**（不是两套数据面）；
+    /// * `content[0].type == "text"`，`content[0].text` 是一行**摘要**（状态＋数据
+    ///   键名／错误码），绝不是载荷全文——全文只在顶层键里出现一次，否则
+    ///   `[BASELINE-006]` 的 4 KiB 预算会被撑爆（T-CI-FIX-1 实测三份拷贝 9,025 B）；
+    /// * `structuredContent` **不得出现**（同上：它是第二份载荷拷贝）；
     /// * `isError` 与带内 `status` 一致（success ⇒ false，error ⇒ true）。
     ///
     /// 同时钉住向后兼容：顶层 `status` / `data` / `error` 必须**原样存在**
-    /// （本仓 HTTP 客户端与既有判据读的就是它们）。
+    /// （本仓 HTTP 客户端与既有判据读的就是它们；`yeban-app/src/mcp_mount/` 的
+    /// 内嵌挂载直接读 `result["data"]`）。
     ///
     /// 注入（实测红）：把 [`wrap_mcp_call_result`] 换成恒等函数 ⇒ 三条判据全红；
     /// 把 `isError` 写成常量 `false` ⇒ 失败臂红。
@@ -1520,10 +1572,19 @@ mod tests {
             assert_eq!(content.len(), 1, "本仓只产出一个文本块: {result}");
             assert_eq!(content[0]["type"], "text");
             let text = content[0]["text"].as_str().expect("text 必须是字符串");
-            let parsed: Value = serde_json::from_str(text).expect("text 必须能解析回 JSON");
-            assert_eq!(
-                &parsed, &result["structuredContent"],
-                "content.text 与 structuredContent 必须指向同一份 JSON"
+            // 摘要必须短：载荷全文在顶层 data 里，摘要里出现全文即重复载荷。
+            assert!(
+                text.len() < 256,
+                "content.text 必须是摘要（< 256 B），实测 {} B: {text}",
+                text.len()
+            );
+            assert!(
+                text.starts_with(if want_error { "error" } else { "success" }),
+                "摘要必须先报状态: {text}"
+            );
+            assert!(
+                result.get("structuredContent").is_none(),
+                "不得发 structuredContent：它是第二份载荷拷贝，会撑爆 BASELINE-006 预算"
             );
             assert_eq!(result["isError"], Value::Bool(want_error), "isError 口径");
             assert_eq!(
@@ -1556,5 +1617,12 @@ mod tests {
         let result = outcome.response.expect("响应").result.expect("result");
         assert_envelope(&result, true);
         assert_eq!(result["error"]["code"], "NO_ACTIVE_PROJECT");
+        let text = result["content"][0]["text"]
+            .as_str()
+            .expect("text 必须是字符串");
+        assert!(
+            text.contains("NO_ACTIVE_PROJECT"),
+            "失败摘要必须带错误码: {text}"
+        );
     }
 }

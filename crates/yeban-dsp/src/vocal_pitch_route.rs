@@ -988,12 +988,14 @@ mod tests {
             ..PitchRouteConfig::default()
         };
 
+        // 标记值 -0.2 的选取有实测依据：DSP 腿在两处交界的值实测约为 +0.40
+        //（480 号样本前）与 ≈-0.75（960 号样本），旧标记 -0.75 恰与后者重合，
+        // 硬拼接的出界步长实测仅 0.0385（T-CI-FIX-1）——数值步长断言对该夹具
+        // 不可观测；逐位相等断言（见下）才是相位无关的判据。
+        let marker = -0.2f32;
         let make_router = |transition_fade_s: f32| {
             let state = Rc::new(RefCell::new(FakeVocoderState::default()));
-            let fake = FakeVocoder {
-                state,
-                marker: -0.75,
-            };
+            let fake = FakeVocoder { state, marker };
             let shift_config = PitchShiftConfig {
                 transition_fade_s,
                 ..PitchShiftConfig::default()
@@ -1025,11 +1027,51 @@ mod tests {
             .route(&input, &devs, &voiced, &f0, CHUNK)
             .expect("hard routing must succeed");
         assert!(!hard_receipt.chunks[1].transition_fade);
+        // 硬拼接的逐位形态（相位无关）：fade 0 时神经 chunk 必须逐位等于后端
+        // 标记值——头/尾淡入循环一次不跑，神经 chunk 不得被 DSP 样本污染。
+        assert_eq!(
+            hard_out[CHUNK..2 * CHUNK],
+            vec![marker; CHUNK][..],
+            "fade 0 时神经 chunk 必须逐位等于后端标记值"
+        );
         let hard_enter_step = (hard_out[CHUNK] - hard_out[CHUNK - 1]).abs();
         let hard_exit_step = (hard_out[2 * CHUNK] - hard_out[2 * CHUNK - 1]).abs();
         assert!(
             hard_enter_step > 0.4 && hard_exit_step > 0.4,
             "expected hard splice discontinuity without fade, got enter={hard_enter_step}, exit={hard_exit_step}"
+        );
+    }
+
+    #[test]
+    fn hard_splice_neural_chunk_is_exact_without_fade() {
+        // 回归钉（T-CI-FIX-1）：fade 0 时神经 chunk 逐位等于后端标记值，与标记
+        // 取值无关。数值步长断言是相位相关的（标记 -0.75 时出界步长实测仅
+        // 0.0385）；逐位相等才是硬拼接的相位无关判据。
+        let input = take_440(3);
+        let devs = vec![10.0f32, 120.0, 10.0];
+        let voiced = vec![true; 3];
+        let f0 = vec![440.0f32; 3];
+        let config = PitchRouteConfig {
+            enabled: true,
+            vocoder_threshold_cents: 75.0,
+            chunk_samples: CHUNK,
+            ..PitchRouteConfig::default()
+        };
+        let state = Rc::new(RefCell::new(FakeVocoderState::default()));
+        let fake = FakeVocoder { state, marker: 0.3 };
+        let shift_config = PitchShiftConfig {
+            transition_fade_s: 0.0,
+            ..PitchShiftConfig::default()
+        };
+        let mut router = HybridPitchRouter::new(SR, config, shift_config, Box::new(fake));
+        let (out, receipt) = router
+            .route(&input, &devs, &voiced, &f0, CHUNK)
+            .expect("hard routing must succeed");
+        assert!(!receipt.chunks[1].transition_fade);
+        assert_eq!(
+            out[CHUNK..2 * CHUNK],
+            vec![0.3f32; CHUNK][..],
+            "fade 0 时神经 chunk 必须逐位等于后端标记值（与标记取值无关）"
         );
     }
 }

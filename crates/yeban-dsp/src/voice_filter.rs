@@ -415,6 +415,22 @@ impl VoiceFilter {
         if self.active == 0 {
             return x;
         }
+        // 中毒状态（任一在用节的递推状态非有限）⇒ 整只滤波器返回 0 并清零
+        // 全部在用节的状态。只在节级守卫会在级联里漏出下游节的残留状态：
+        // 毒节返回 0，下游节仍按旧状态出声（T-CI-FIX-1 回归点：毒 sections[0]
+        // 后 `process(0.5)` 实测 0.0004886901 而非 0.0）。
+        if self
+            .sections
+            .iter()
+            .take(usize::from(self.active))
+            .any(|section| !section.v1.is_finite() || !section.v2.is_finite())
+        {
+            for section in self.sections.iter_mut().take(usize::from(self.active)) {
+                section.v1 = 0.0;
+                section.v2 = 0.0;
+            }
+            return 0.0;
+        }
         let mut y = x;
         for section in self.sections.iter_mut().take(usize::from(self.active)) {
             y = section.process(y);
@@ -671,5 +687,26 @@ mod tests {
         let mut bypassed = VoiceFilter::BYPASSED;
         assert_eq!(bypassed.process(-0.0f32).to_bits(), (-0.0f32).to_bits());
         assert!(bypassed.process(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn poisoned_middle_section_recovers_cleanly() {
+        // 回归钉（T-CI-FIX-1）：毒状态不在链头时，整只滤波器仍须返回 0 并清零
+        // 全部在用节。节级守卫只清本节，毒 sections[1] 时下游节的残留状态
+        // 同样会漏出声——与链头中毒是同一根因的不同落点。
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass6p, 1_000.0, 6.0, SR);
+        for _ in 0..16 {
+            assert!(filter.process(0.25).is_finite());
+        }
+        filter.sections[1].v1 = f32::INFINITY;
+        filter.sections[1].v2 = f32::NAN;
+        assert_eq!(filter.process(0.5), 0.0);
+        for section in filter.sections.iter().take(3) {
+            assert_eq!(section.v1, 0.0);
+            assert_eq!(section.v2, 0.0);
+        }
+        for _ in 0..64 {
+            assert!(filter.process(0.25).is_finite());
+        }
     }
 }

@@ -165,11 +165,19 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     // `unwired` 等数组字段同口径；props_176 要求声明字段必现，故不撤回恒发。缺省响应
     // 因此多一个键 ⇒ 增量按**形状**算：`"resolvedParams"`(16) + `:`(1) + `[]`(2) +
     // 逗号(1) = **+20 B**。⇒ 响应 2,880 → **2,900**（合计 3,096 ≤ 4,096 的预算不变）。
+    // ⭐ 信封改摘要（T-CI-FIX-1）：`content[0].text` 由载荷全文改为一行摘要，
+    // 且不再发 `structuredContent`（两份拷贝把往返撑到 9,025 B，见本文件 §注入证据
+    // 的说明）；响应因此只多 `content` 块与 `"isError"` ⇒ 增量按**形状**算：
+    // `"content":`(10) + `[{"type":"text","text":"<摘要>"}]`(27+144) + 逗号(1) +
+    // `"isError":false,`(16) = **+198 B**。摘要 144 B =
+    // `"success: commitModel, created, mergeTool, pendingMerge, projectDigest,
+    // projectUnchanged, proposal, resolvedParams, unwired, warnings, willCreate"`
+    //（11 个数据键，盒上实测）。⇒ 响应 2,900 → **3,098**（合计 3,294 ≤ 4,096）。
     assert_eq!(
         reading,
         RoundTripPayload {
             request: 196,
-            response: 2900
+            response: 3098
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );
