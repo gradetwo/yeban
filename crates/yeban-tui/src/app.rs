@@ -17,6 +17,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use yeban_app::bridge::{self, NewTrackKind};
 use yeban_app::engine_host::{EditMark, EngineHost};
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution};
@@ -1840,6 +1841,80 @@ impl App {
                             self.log_line(error);
                         }
                     }
+                }
+            }
+            "track" => {
+                // :track [midi|audio|aux] —— 新建一条轨并选中它。
+                // 配方与 GUI 新建轨同源（`bridge::track_create_ops`），经撤销端口提交。
+                let parsed = match rest {
+                    "midi" => Some((NewTrackKind::Midi, "MIDI")),
+                    "audio" => Some((NewTrackKind::Audio, "音频")),
+                    "aux" => Some((NewTrackKind::AuxReturn, "辅助")),
+                    _ => None,
+                };
+                match parsed {
+                    None => {
+                        let usage = if rest.is_empty() {
+                            "用法：:track [midi|audio|aux]".to_owned()
+                        } else {
+                            format!("用法：:track [midi|audio|aux]（收到 `{rest}`）")
+                        };
+                        self.log_line(usage);
+                    }
+                    Some((kind, label)) => match bridge::track_create_ops(&self.project, kind) {
+                        Ok(ops) => {
+                            let new_id = ops.iter().find_map(|op| match op {
+                                Op::AddTrack { track } => Some(track.id),
+                                _ => None,
+                            });
+                            self.commit_edit("tui: create track", ops, &format!("新建{label}轨"));
+                            if let Some(id) = new_id
+                                && let Some(index) =
+                                    self.track_ids.iter().position(|candidate| *candidate == id)
+                            {
+                                self.selected = index;
+                                let name = self
+                                    .project
+                                    .tracks
+                                    .get(&id)
+                                    .map(|track| track.name.clone())
+                                    .unwrap_or_default();
+                                self.log_line(format!("已新建{label}轨（`{name}`）"));
+                            }
+                        }
+                        Err(reason) => self.log_line(format!("新建{label}轨失败：{reason}")),
+                    },
+                }
+            }
+            "clip" => {
+                // :clip —— 在选中轨的**光标小节**新建 4 小节 MIDI 片段。
+                // ⚠ 配方 `clip_create_ops_on` 固定 `start_tick: 0`；落点在这里改写到
+                // `cursor_bar * bar_ticks()`，否则每次都在第 1 小节叠一条。
+                if let Some(track_id) = self.selected_track_id() {
+                    if let Some(track) = self.project.tracks.get(&track_id) {
+                        match bridge::clip_create_ops_on(&self.project, Some(track)) {
+                            Ok(mut ops) => {
+                                let start_tick = u64::try_from(self.cursor_bar)
+                                    .unwrap_or(u64::MAX)
+                                    .saturating_mul(self.bar_ticks());
+                                for op in &mut ops {
+                                    if let Op::AddClipPlacement { placement, .. } = op {
+                                        placement.start_tick = start_tick;
+                                    }
+                                }
+                                self.commit_edit(
+                                    "tui: create clip",
+                                    ops,
+                                    &format!("在第 {} 小节新建片段", self.cursor_bar + 1),
+                                );
+                            }
+                            Err(reason) => self.log_line(format!("新建片段被拒绝：{reason}")),
+                        }
+                    } else {
+                        self.log_line("选中的轨已不在工程里：先重新选一条轨".to_owned());
+                    }
+                } else {
+                    self.log_line("先选中一条轨道，再 :clip".to_owned());
                 }
             }
             "open" | "open!" => {
