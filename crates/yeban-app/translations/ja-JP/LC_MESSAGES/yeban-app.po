@@ -2233,3 +2233,18 @@ msgstr "現在のトラックに使う"
 
 msgid "用这件音源到当前轨"
 msgstr "この音源を現在のトラックに使う"
+
+msgid "SFZ 体检"
+msgstr "SFZチェック"
+
+msgid "不用了"
+msgstr "不要です"
+
+msgid "体检"
+msgstr "チェック"
+
+msgid "开始检查"
+msgstr "チェック開始"
+
+msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
+msgstr "非公式ライブラリ：SFZ Doctorでチェックして自動修復しますか？"

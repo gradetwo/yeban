@@ -2233,3 +2233,18 @@ msgstr "현재 트랙에 사용"
 
 msgid "用这件音源到当前轨"
 msgstr "이 사운드를 현재 트랙에 사용"
+
+msgid "SFZ 体检"
+msgstr "SFZ 점검"
+
+msgid "不用了"
+msgstr "괜찮습니다"
+
+msgid "体检"
+msgstr "점검"
+
+msgid "开始检查"
+msgstr "점검 시작"
+
+msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
+msgstr "비공식 라이브러리: SFZ Doctor로 점검하고 자동 복구할까요?"

@@ -104,6 +104,17 @@ fn make_broken_library(base: &Path) -> PathBuf {
     lib
 }
 
+/// 本机文件系统是否大小写敏感：写一个混合大小写探针文件，再以全小写名看它在不在。
+/// macOS APFS 默认与 Windows NTFS 不敏感——错大小写的路径在那种盘上本身就能解析，
+/// 不是坏路径；Linux ext4 敏感，错大小写就是不存在。
+fn fs_is_case_sensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaSeSeNsItIvItY.tmp");
+    fs::write(&probe, b"x").expect("写大小写探针");
+    let insensitive = dir.join("casesensitivity.tmp").exists();
+    let _ = fs::remove_file(&probe);
+    !insensitive
+}
+
 #[test]
 fn external_library_state_machine_and_repair_roundtrip() {
     let base = temp_dir("roundtrip");
@@ -113,12 +124,15 @@ fn external_library_state_machine_and_repair_roundtrip() {
     // 未表态 ⇒ Needed。
     assert_eq!(doctor_state(&lib), DoctorState::Needed);
 
-    // 跑体检：大小写链接 1、tune 钳值 ≥1、修完必须真能装载（探针口径）。
+    // 跑体检：大小写链接数与本机文件系统的大小写敏感性一致、tune 钳值 ≥1、
+    // 修完必须真能装载（探针口径）。大小写不敏感的盘上错大小写路径本身可解析，
+    // 体检无链接可建、也不需要建——两种都对，只钉本机文件系统的真值。
     let report = run(&lib_dir);
+    let expected_links = if fs_is_case_sensitive(&base) { 1 } else { 0 };
     assert_eq!(
         report.links_created.len(),
-        1,
-        "应建 1 条大小写链接：{report:?}"
+        expected_links,
+        "大小写链接数应与文件系统大小写敏感性一致：{report:?}"
     );
     assert!(
         report

@@ -2233,3 +2233,18 @@ msgstr "Usar na faixa atual"
 
 msgid "用这件音源到当前轨"
 msgstr "Usar este som na faixa atual"
+
+msgid "SFZ 体检"
+msgstr "Verificação SFZ"
+
+msgid "不用了"
+msgstr "Não, obrigado"
+
+msgid "体检"
+msgstr "Verificação"
+
+msgid "开始检查"
+msgstr "Iniciar verificação"
+
+msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
+msgstr "Biblioteca não oficial: verificar e reparar automaticamente com o SFZ Doctor?"

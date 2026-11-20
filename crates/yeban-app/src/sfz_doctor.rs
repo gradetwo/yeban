@@ -153,6 +153,19 @@ pub fn run(root: &Path) -> DoctorReport {
                 report.links_created.push(link.clone());
             }
         }
+        #[cfg(windows)]
+        {
+            // Windows 分文件与目录两种符号链接；目标已在盘上，is_dir 可判。
+            // 建不上（无权限等）不假报：探针回路会把装不上的文件记进 still_failing。
+            let created = if target.is_dir() {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            };
+            if created.is_ok() {
+                report.links_created.push(link.clone());
+            }
+        }
     }
 
     // ---- 第二趟：已知钳值（全树 .sfz/.txt） --------------------------------
