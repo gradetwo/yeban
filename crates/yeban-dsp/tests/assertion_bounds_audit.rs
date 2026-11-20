@@ -184,6 +184,16 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "测试内断言：`out` 为 `vec![0.0f32; 9_600]` 定长渲染块（新音色出声测试），规模由测试构造固定，非生产路径",
     ),
     (
+        "src/channel_strip.rs",
+        "assert!(right.iter().all(|&s| s.to_bits() == 0.0f32.to_bits()));",
+        "测试内断言：右声道为 `vec![0.0f32; 4800]` 定长零块（n = 4800 同测试内写死），自检波模式下 process_stereo 后应逐位保持 0，规模由测试构造固定，非生产路径",
+    ),
+    (
+        "src/channel_strip.rs",
+        "assert!(keyed_r.iter().all(|&s| s.to_bits() == 0.0f32.to_bits()));",
+        "测试内断言：右声道为 `vec![0.0f32; 4800]` 定长零块（n = 4800 同测试内写死），键检波模式下 process_stereo_with_key 后应逐位保持 0，规模由测试构造固定，非生产路径",
+    ),
+    (
         "src/tape.rs",
         "dirty.iter().chain(dirty_r.iter()).all(|s| s.is_finite()),",
         "测试内断言：256 样本定长脏块经处理后全有限，规模由测试构造固定，非生产路径",

@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 345 条：collection_size 72 ／ value_bound 259 ／ element_value_bound 5 ／ condition_counter 9
+# 合计 352 条：collection_size 72 ／ value_bound 266 ／ element_value_bound 5 ／ condition_counter 9
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -90,6 +90,8 @@ src/device_param.rs|sample_delay_field_spellings_round_trip|collection_size|asse
 src/device_param.rs|transient_field_spellings_round_trip|collection_size|assert_eq!(TransientField::SPELLINGS.len(), 2, "瞬态拼写共 2 条"
 src/drums/anatomy.rs|default_preset_coefficients_match_the_groove_formulas|collection_size|assert!(                 (f64::from(got) - want).abs() < 1e-4,                 "系数 {got} 与
 src/drums/anatomy.rs|kick_style_from_f32_threshold|value_bound|assert_eq!(KickStyle::from_f32(0.0), KickStyle::Classic
+src/drums/anatomy.rs|mid_note_reconfigure_stays_accurate_and_continuous|value_bound|assert!((y_rec - y_ref).abs() < 1e-4
+src/drums/anatomy.rs|next_recurrence_matches_analytic_expf_across_presets_and_sample_rates|value_bound|assert!(                     max_diff < 1e-4,                     "recurrence diverged fro
 src/drums/anatomy.rs|preset_table_is_complete_and_verbatim|collection_size|assert_eq!(ANATOMY_KICK_PRESETS.len(), 9
 src/drums/mod.rs|a_closed_hat_chokes_every_ringing_open_hat|value_bound|assert_eq!(machine.active_slots(), 2
 src/drums/mod.rs|a_finished_hit_frees_its_slot|value_bound|assert_eq!(machine.active_slots(), 1
@@ -109,6 +111,7 @@ src/filter.rs|drive_actually_distorts_a_sine|value_bound|assert!(               
 src/filter.rs|is_transparent_below_the_knee|condition_counter|assert!(ratio < -70.0, "filter colours a clean sine: {ratio:.1} dB"
 src/filter.rs|never_emits_subnormal_tail_values|value_bound|assert!(                 value == 0.0 || value.abs() >= f32::MIN_POSITIVE,                
 src/gate.rs|loud_signal_opens_gate_to_unity|value_bound|assert!(             gate.current_gain_db() > -0.05,             "增益应趋近 0 dB: {}",        
+src/gate.rs|peak_detector_release_matches_5ms_and_updates_on_sample_rate_change|value_bound|assert!((gate.alpha_det_peak - expected_48k).abs() < 1e-7
 src/limiter.rs|a_peak_exactly_at_the_threshold_is_not_a_reduction|collection_size|assert_eq!(limiter.reduction_count(), 0
 src/limiter.rs|a_threshold_below_the_ceiling_no_longer_pins_the_output_to_the_threshold|value_bound|assert!(             peak_db <= -1.0 + 0.02,             "峰值 {peak_db} dBFS 越过天花板 −1 dB"
 src/limiter.rs|gain_release_is_bounded_per_sample|value_bound|assert!(                 rise <= LIMITER_RELEASE_PER_SAMPLE + LIMITER_RELEASE_PER_SAMPLE *
@@ -316,6 +319,8 @@ src/vocal_per_note_eq.rs|receipt_counts_applied_bands|value_bound|assert_eq!(rec
 src/vocal_per_note_eq.rs|zero_gain_band_is_skipped_and_identity|collection_size|assert_eq!(receipt.applied, 0
 src/vocal_pitch_route.rs|disabled_router_is_passthrough|collection_size|assert_eq!(receipt.chunks.len(), 10
 src/vocal_pitch_route.rs|dsp_leg_shifts_f0_toward_target|value_bound|assert!(             err.abs() <= 5.0,             "DSP leg F0 error {err:.2} cents exceed
+src/vocal_pitch_route.rs|dsp_neural_dsp_transitions_crossfade_smoothly|value_bound|assert!(!faded_receipt.chunks[0].transition_fade
+src/vocal_pitch_route.rs|hard_splice_neural_chunk_is_exact_without_fade|value_bound|assert!(!receipt.chunks[1].transition_fade
 src/vocal_pitch_route.rs|mixed_take_routes_per_chunk|collection_size|assert_eq!(receipt.chunks.len(), 4
 src/vocal_pitch_route.rs|route_warped_audio_entry_point|value_bound|assert_eq!(routes(&receipt), vec![ChunkRoute::DspShift; 4]
 src/vocal_pitch_route.rs|six_grade_routing_matches_threshold|collection_size|assert_eq!(receipt.chunks.len(), 10
@@ -346,5 +351,7 @@ src/vocal_timemap.rs|render_same_seed_deterministic_across_seeds|value_bound|ass
 src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"
 src/voice_filter.rs|allpass_is_flat_in_magnitude|value_bound|assert!(db.abs() < 0.2, "{f} Hz 处应平坦（≈0 dB），实测 {db}"
 src/voice_filter.rs|one_pole_lowpass|value_bound|assert!((y - 1.0).abs() < 1e-3, "阶跃终值应趋近 1，实测 {y}"
+src/voice_filter.rs|poisoned_middle_section_recovers_cleanly|value_bound|assert_eq!(section.v1, 0.0
 src/voice_filter.rs|resonance_is_the_gain_at_cutoff|value_bound|assert!(                 (at_cutoff - 12.0).abs() < 0.5,                 "{kind:?} 在截止处应约 
+src/voice_filter.rs|tdf2_matches_transfer_function_and_retunes_without_spike|value_bound|assert!((y0 - filter.sections[0].b0).abs() < 1e-7
 src/voice_filter.rs|voice_filter_size_is_pinned|value_bound|assert_eq!(std::mem::size_of::<VoiceFilter>(), 96

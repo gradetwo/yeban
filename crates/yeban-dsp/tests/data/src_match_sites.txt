@@ -36,7 +36,7 @@ src/drums/mod.rs|2154|variable|&kit.tom.tune_hz|variable_needle|needle 非字面
 src/drums/mod.rs|2157|variable|&kit.crash.decay_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|2478|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|2750|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/gate.rs|235|variable|&sr|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/gate.rs|236|variable|&sr|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1570|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1574|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|2013|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
@@ -124,18 +124,18 @@ src/song_overview_report.rs|1306|variable|title|variable_needle|needle 非字面
 src/song_overview_report.rs|1314|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/song_overview_report.rs|1317|literal|<h1></h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/song_overview_report.rs|1318|literal|<h1>   </h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/tape.rs|1242|variable|&lag|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|720|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|721|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|723|variable|&params.trim_db|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|727|variable|&params.hf_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|730|variable|&params.asym|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|732|variable|&params.wow_rate_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|736|variable|&params.wow_depth_ms|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|741|variable|&params.flutter_rate_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|745|variable|&params.flutter_depth_ms|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|749|variable|&params.seed|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/tape.rs|858|variable|&normalise|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|1247|variable|&lag|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|725|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|726|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|728|variable|&params.trim_db|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|732|variable|&params.hf_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|735|variable|&params.asym|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|737|variable|&params.wow_rate_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|741|variable|&params.wow_depth_ms|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|746|variable|&params.flutter_rate_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|750|variable|&params.flutter_depth_ms|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|754|variable|&params.seed|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/tape.rs|863|variable|&normalise|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/vocal_key_detect.rs|350|variable|&pc|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/vocal_key_detect.rs|395|variable|&det.confidence|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/vocal_refine.rs|224|variable|&f0|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
