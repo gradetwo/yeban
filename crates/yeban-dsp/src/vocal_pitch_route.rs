@@ -985,6 +985,7 @@ mod tests {
             enabled: true,
             vocoder_threshold_cents: 75.0,
             chunk_samples: CHUNK,
+            ..PitchRouteConfig::default()
         };
 
         let make_router = |transition_fade_s: f32| {

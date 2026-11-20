@@ -1283,6 +1283,7 @@ fn bus_count(component: *mut c_void, media: i32, dir: i32) -> Result<i32, HostEr
 ///   `setComponentHandler` 时拿到裸指针，`Box` 在实例生命周期内不替换，
 ///   故指针地址稳定；插件按 SDK 语义不在调用外持有宿主对象（`initialize` 的
 ///   context 只在调用内有效，`setComponentHandler` 的指针由实例全程保活）。
+///
 /// 预分配音频暂存缓冲（在 `activate` 时按 `max_block` 与样本位宽一次性分配，
 /// 渲染期间不再堆分配）。
 #[derive(Default)]
@@ -1329,6 +1330,8 @@ fn apply_f32_silence_flags(silence_flags: u64, dst_l: &mut [f32], dst_r: &mut [f
     }
 }
 
+/// 一个已打开的 VST3 插件实例：持有组件／处理器／控制器指针与宿主对象，
+/// 经 `open` 完成初始化，`Drop` 时按 SDK 顺序断开连接并逐引用 `release`。
 pub struct Vst3Instance {
     // 仅为保活持有：`Arc` 让动态库活得比实例久（工厂指针借用它）。
     #[allow(dead_code)]
