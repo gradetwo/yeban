@@ -998,7 +998,7 @@ mod tests {
                 transition_fade_s,
                 ..PitchShiftConfig::default()
             };
-            HybridPitchRouter::new(SR, config, shift_config, Box::new(fake))
+            HybridPitchRouter::new(SR, config.clone(), shift_config, Box::new(fake))
         };
 
         let mut faded_router = make_router(0.005);
