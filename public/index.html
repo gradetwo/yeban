@@ -182,22 +182,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <h2 data-i18n="ui.title">界面</h2>
         <p data-i18n="ui.subtitle">内置演示工程：鼓、贝斯、铺底、主音、弦乐与打击乐</p>
       </header>
-      <figure class="shot">
-        <img src="/assets/shots/ui-full-song.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot1_alt" alt="编曲视图（扁平主题）：六条轨道与片段，下坞打开钢琴卷帘，左栏为通道检查器">
-        <figcaption data-i18n="ui.shot1_caption">编曲视图——下坞钢琴卷帘，扁平主题</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="/assets/shots/ui-arrangement-chorus.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot2_alt" alt="同一编曲视图的拟物主题：控件面为深蓝灰与青绿点缀，编辑面保持平坦">
-        <figcaption data-i18n="ui.shot2_caption">同一视图，拟物主题</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="/assets/shots/ui-mixer-console.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot3_alt" alt="下坞混音控制台：六条轨道通道条加总线与主输出，各带推子与分贝读数">
-        <figcaption data-i18n="ui.shot3_caption">下坞混音控制台——通道条、总线与主输出</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="/assets/shots/ui-tui-main.png" width="1200" height="855" loading="lazy" data-i18n-attr="alt:ui.shot4_alt" alt="终端界面（yeban-tui）打开同一演示工程：轨道列表、片段网格与检查器">
-        <figcaption data-i18n="ui.shot4_caption">终端界面 yeban-tui——同一演示工程</figcaption>
-      </figure>
+      <div class="carousel" data-carousel>
+        <div class="carousel-viewport">
+          <div class="carousel-track" data-carousel-track>
+            <figure class="shot carousel-slide">
+              <img src="/assets/shots/ui-full-song.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot1_alt" alt="编曲视图（扁平主题）：六条轨道与片段，下坞打开钢琴卷帘，左栏为通道检查器">
+              <figcaption data-i18n="ui.shot1_caption">编曲视图——下坞钢琴卷帘，扁平主题</figcaption>
+            </figure>
+            <figure class="shot carousel-slide">
+              <img src="/assets/shots/ui-arrangement-chorus.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot2_alt" alt="同一编曲视图的拟物主题：控件面为深蓝灰与青绿点缀，编辑面保持平坦">
+              <figcaption data-i18n="ui.shot2_caption">同一视图，拟物主题</figcaption>
+            </figure>
+            <figure class="shot carousel-slide">
+              <img src="/assets/shots/ui-mixer-console.png" width="1400" height="900" loading="lazy" data-i18n-attr="alt:ui.shot3_alt" alt="下坞混音控制台：六条轨道通道条加总线与主输出，各带推子与分贝读数">
+              <figcaption data-i18n="ui.shot3_caption">下坞混音控制台——通道条、总线与主输出</figcaption>
+            </figure>
+            <figure class="shot carousel-slide">
+              <img src="/assets/shots/ui-tui-main.png" width="1200" height="855" loading="lazy" data-i18n-attr="alt:ui.shot4_alt" alt="终端界面（yeban-tui）打开同一演示工程：轨道列表、片段网格与检查器">
+              <figcaption data-i18n="ui.shot4_caption">终端界面 yeban-tui——同一演示工程</figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="carousel-bar">
+          <button type="button" class="carousel-btn" data-carousel-prev data-i18n-attr="aria-label:ui.carousel_prev" aria-label="上一张截图">‹</button>
+          <div class="carousel-dots">
+            <button type="button" class="carousel-dot" data-carousel-dot="0" data-i18n-attr="aria-label:ui.carousel_goto1" aria-label="第 1 张截图"></button>
+            <button type="button" class="carousel-dot" data-carousel-dot="1" data-i18n-attr="aria-label:ui.carousel_goto2" aria-label="第 2 张截图"></button>
+            <button type="button" class="carousel-dot" data-carousel-dot="2" data-i18n-attr="aria-label:ui.carousel_goto3" aria-label="第 3 张截图"></button>
+            <button type="button" class="carousel-dot" data-carousel-dot="3" data-i18n-attr="aria-label:ui.carousel_goto4" aria-label="第 4 张截图"></button>
+          </div>
+          <button type="button" class="carousel-btn" data-carousel-next data-i18n-attr="aria-label:ui.carousel_next" aria-label="下一张截图">›</button>
+        </div>
+      </div>
     </div>
   </section>
 
