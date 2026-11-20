@@ -111,9 +111,12 @@ export component SoundLibraryDialog inherits Rectangle {
 
         panel := Rectangle {
             x: (root.width - Math.min(820px, root.width - 32px)) / 2;
-            y: (root.height - Math.min(600px, root.height - 32px)) / 2;
+            // 面板能吃多高就吃多高（上限 720px）：两张列表（内置 28 件 / 可下载
+            // 几十件）在 600px 固定高时各自只剩 3 行，"列表有更多"这件事被藏住了。
+            // 只留 24px 上下呼吸边，最小窗口 700 高 ⇒ 面板 676。
+            y: (root.height - Math.min(720px, root.height - 24px)) / 2;
             width: Math.min(820px, root.width - 32px);
-            height: Math.min(600px, root.height - 32px);
+            height: Math.min(720px, root.height - 24px);
             background: Tokens.bg-panel;
             border-radius: Tokens.radius-lg;
             border-width: 1px;
@@ -192,18 +195,32 @@ export component SoundLibraryDialog inherits Rectangle {
                 font-size: Tokens.font-size-md;
             }
 
+            // 条目计数（列表高 = 4.6 行，内置就有 28 件）——没有这句，用户会以为
+            // "装好的只有这三四个"，而不知道下面还能滚。数字直接取自同一份模型。
+            UiText {
+                x: Tokens.space-6 + 76px;
+                y: 52px;
+                width: root.list-w - 76px;
+                height: 18px;
+                text: "共 " + root.installed-names.length + " 件 · 列表可上下滚动";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+
             installed-flick := Flickable {
                 x: Tokens.space-6;
                 y: 78px;
                 width: root.list-w;
-                height: 150px;
-                content-height: root.installed-names.length * 46px;
+                height: 200px;
+                content-height: root.installed-names.length * 40px;
 
                 for installed-name[i] in root.installed-names : Rectangle {
                     x: 0;
-                    y: i * 46px;
+                    y: i * 40px;
                     width: root.list-w;
-                    height: 44px;
+                    height: 38px;
                     background: Tokens.bg-raised;
                     border-radius: Tokens.radius-md;
 
@@ -368,7 +385,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // 分界线
             Rectangle {
                 x: Tokens.space-6;
-                y: 240px;
+                y: 294px;
                 width: root.list-w;
                 height: 1px;
                 background: Tokens.gold-deep.with-alpha(0.5);
@@ -377,7 +394,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // -------------------------------------------------------- 可下载
             UiText {
                 x: Tokens.space-6;
-                y: 252px;
+                y: 306px;
                 width: 80px;
                 height: 18px;
                 text: @tr("可下载");
@@ -388,7 +405,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // 搜索框（按名字 / 分类 / 许可做子串匹配；空串 = 全部显示）
             Rectangle {
                 x: Tokens.space-6 + 84px;
-                y: 246px;
+                y: 300px;
                 width: Math.max(140px, root.list-w - 84px - 320px);
                 height: 28px;
                 background: Tokens.bg-void;
@@ -430,7 +447,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // 一键下载全部（清单里还没装的，按顺序逐个下）
             if root.catalog-state == 1 : Rectangle {
                 x: Tokens.space-6 + root.list-w - 300px;
-                y: 246px;
+                y: 300px;
                 width: 96px;
                 height: 28px;
                 background: Tokens.bg-raised;
@@ -465,7 +482,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // 拉不到时的重试钮（目录区右上角）
             if root.catalog-state == 2 : Rectangle {
                 x: Tokens.space-6 + root.list-w - 92px;
-                y: 246px;
+                y: 300px;
                 width: 92px;
                 height: 28px;
                 background: Tokens.bg-raised;
@@ -499,7 +516,7 @@ export component SoundLibraryDialog inherits Rectangle {
             // 三态文案（居中显示在包列表区）
             if root.catalog-state == 0 : UiText {
                 x: Tokens.space-6;
-                y: 330px;
+                y: 384px;
                 width: root.list-w;
                 height: 20px;
                 text: @tr("正在获取目录...");
@@ -510,7 +527,7 @@ export component SoundLibraryDialog inherits Rectangle {
 
             if root.catalog-state == 2 : UiText {
                 x: Tokens.space-6;
-                y: 330px;
+                y: 384px;
                 width: root.list-w;
                 height: 20px;
                 // ⚠ 不要用一句笼统的"检查网络"：原因就在 `status` 里（哪一步、哪条路径）。
@@ -523,7 +540,7 @@ export component SoundLibraryDialog inherits Rectangle {
 
             if root.catalog-state == 1 && root.pack-names.length == 0 : UiText {
                 x: Tokens.space-6;
-                y: 330px;
+                y: 384px;
                 width: root.list-w;
                 height: 20px;
                 text: @tr("暂无可下载音源");
@@ -534,9 +551,9 @@ export component SoundLibraryDialog inherits Rectangle {
 
             pack-flick := Flickable {
                 x: Tokens.space-6;
-                y: 282px;
+                y: 336px;
                 width: root.list-w;
-                height: panel.height - 282px - 52px;
+                height: panel.height - 336px - 52px;
                 content-height: root.pack-names.length * 54px;
 
                 for pack-name[i] in root.pack-names : Rectangle {
@@ -739,7 +756,7 @@ export component SoundLibraryDialog inherits Rectangle {
                     border-color: Tokens.line;
 
                     accessible-role: button;
-                    accessible-id: "sound-library-retry-button";
+                    accessible-id: "sound-library-download-retry-button";
                     accessible-label: @tr("再试一次");
                     accessible-action-default => { root.download-pack(root.retry-pack-id); }
 

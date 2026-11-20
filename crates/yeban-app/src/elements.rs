@@ -3065,6 +3065,16 @@ impl ElementRegistry {
             "重试获取下载目录",
             false,
         );
+        // ⚠ 与上面那枚**不是同一个控件**：上面重试的是"拉目录"，这枚重试的是
+        // "下载某一件音源"（失败后出现，带包 id）。两者同屏可见 ⇒ id 必须分开，
+        // 否则运行时控件树又回到 `DuplicateId`（见 docs §8.4.1）。
+        registry.add(
+            "sound-library-download-retry-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "下载失败后，再试一次这一件",
+            false,
+        );
         registry.add(
             "sound-library-delete-button",
             ElementKind::Button,

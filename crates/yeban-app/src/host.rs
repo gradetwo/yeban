@@ -11044,6 +11044,12 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
     let mut descriptions = Vec::with_capacity(catalog.packs.len());
     let mut installed_flags = Vec::with_capacity(catalog.packs.len());
     let installed_ids = sound_installed_library_ids();
+    // ⭐ 先收集"显示项 + 是否已装"，再**把已装沉底**：
+    // 28 件内置音源一屏只放得下 6 行，已经装好的排在最前 ⇒ 用户为了找"还没装的"
+    // 要往下滚半天，而滚出来的全是装好的。未装在前＝一屏里全是可行动项。
+    // `sort_by_key` 是稳定排序 ⇒ 同一组内保持清单原顺序（用户不会觉得"顺序乱跳"）。
+    let mut display: Vec<(&crate::sound_library::CatalogPack, bool)> =
+        Vec::with_capacity(catalog.packs.len());
     for pack in &catalog.packs {
         // ⭐ 搜索词也匹 **id**：内置清单把 id 当作"安装后的目录名 / 一键筛出用的键"，
         // 缺音源引导正是拿 id 预筛的（见 `missing_sounds`）。不匹 id ⇒ 引导打开了却空列表。
@@ -11055,19 +11061,22 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
         {
             continue;
         }
+        // ⭐ 两条路子都算"已装"：① 用户库里装上的一件（`user:<id>`）
+        // ② 仓库自带的 `assets/samples` 里**真的解析得到 .sfz**（与救援面板同判据）。
+        let installed = builtin_pack_usable(&pack.id)
+            || installed_ids
+                .iter()
+                .any(|id| id == &format!("user:{}", pack.id));
+        display.push((pack, installed));
+    }
+    display.sort_by_key(|(_, installed)| *installed);
+    for (pack, installed) in display {
         ids.push(pack.id.clone());
         names.push(pack.name.clone());
         versions.push(pack.version.clone());
         sizes.push(crate::sound_library::format_size(pack.size_bytes));
         descriptions.push(pack.description.clone());
-        // ⭐ 两条路子都算"已装"：① 用户库里装上的一件（`user:<id>`）
-        // ② 仓库自带的 `assets/samples` 里**真的解析得到 .sfz**（与救援面板同判据）。
-        installed_flags.push(
-            builtin_pack_usable(&pack.id)
-                || installed_ids
-                    .iter()
-                    .any(|id| id == &format!("user:{}", pack.id)),
-        );
+        installed_flags.push(installed);
     }
     ui.set_sound_pack_ids(strings(&ids));
     ui.set_sound_pack_names(strings(&names));

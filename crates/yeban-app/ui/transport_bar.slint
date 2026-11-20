@@ -891,8 +891,16 @@ export component TransportHeaderBar inherits Rectangle {
                         // 更亮）。改法：**不播放时降到 body（中灰）**，边界提成 line
                         // 让格子还在；**播放/录音中才提亮到 strong**（此时停止才是
                         // 该按的那个键）。填充形状、尺寸、点击语义一位未动。
-                        background: (!root.is-playing && !root.is-recording) ? Tokens.bg-lane2 : (btn_stop_touch.has-hover ? Tokens.bg-lane2 : transparent);
-                        border-width: (!root.is-playing && !root.is-recording) ? 1px : (btn_stop_touch.has-hover ? 1px : 0);
+                        // 扁平档（2026-11-19）：空转时**不留背板**——只剩一枚中灰方符，
+                        // 悬停才浮出一格 lane 底色。用户点名的"扁平按钮后面有个方块"
+                        // 就是这格常亮填充：图标 12px、背板 32×24，远看像一块贴在走带上的
+                        // 灰砖。拟物档保留软触凹陷面（有材质才谈得上"按下去"）。
+                        background: (!root.is-playing && !root.is-recording)
+                            ? (btn_stop_touch.has-hover ? Tokens.bg-lane2 : transparent)
+                            : Tokens.bg-lane2;
+                        border-width: (!root.is-playing && !root.is-recording)
+                            ? (btn_stop_touch.has-hover ? 1px : 0px)
+                            : (Tokens.texture-physical || btn_stop_touch.has-hover ? 1px : 0px);
                         border-color: (root.is-playing || root.is-recording) ? Tokens.line-strong : Tokens.line;
                         IconTransportStop {
                             icon-color: (root.is-playing || root.is-recording) ? Tokens.skin-text-strong : (btn_stop_touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
@@ -913,9 +921,17 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 36px;
                         height: 24px;
                         border-radius: 3px;
-                        background: root.is-playing ? Tokens.skin-meter-low : (btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.28) : Tokens.skin-meter-low.with-alpha(0.18));
-                        border-width: 1px;
-                        border-color: root.is-playing ? Tokens.skin-meter-low : Tokens.skin-meter-low.with-alpha(0.45);
+                        // 扁平档：未播放 = 透明（只有绿三角），悬停才浮出淡绿底；拟物档
+                        // 保留常亮软触面。播放态两档都用同色实心底（状态必须一眼可见）。
+                        background: root.is-playing
+                            ? Tokens.skin-meter-low
+                            : (Tokens.texture-physical
+                                ? (btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.28) : Tokens.skin-meter-low.with-alpha(0.18))
+                                : (btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.16) : transparent));
+                        border-width: (root.is-playing || Tokens.texture-physical || btn_play_touch.has-hover) ? 1px : 0px;
+                        border-color: root.is-playing
+                            ? Tokens.skin-meter-low
+                            : (Tokens.texture-physical || btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.45) : transparent);
                         IconTransportPlay {
                             icon-color: root.is-playing ? Tokens.skin-inset : Tokens.skin-meter-low;
                         }
@@ -931,9 +947,16 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
-                        background: root.is-recording ? Tokens.skin-arm : (btn_rec_touch.has-hover ? Tokens.skin-arm.with-alpha(0.28) : Tokens.skin-arm.with-alpha(0.18));
-                        border-width: 1px;
-                        border-color: root.is-recording ? Tokens.skin-arm : Tokens.skin-arm.with-alpha(0.45);
+                        // 同播放键：扁平档空转透明，只有红圆；悬停浮出淡红底。
+                        background: root.is-recording
+                            ? Tokens.skin-arm
+                            : (Tokens.texture-physical
+                                ? (btn_rec_touch.has-hover ? Tokens.skin-arm.with-alpha(0.28) : Tokens.skin-arm.with-alpha(0.18))
+                                : (btn_rec_touch.has-hover ? Tokens.skin-arm.with-alpha(0.16) : transparent));
+                        border-width: (root.is-recording || Tokens.texture-physical || btn_rec_touch.has-hover) ? 1px : 0px;
+                        border-color: root.is-recording
+                            ? Tokens.skin-arm
+                            : (Tokens.texture-physical || btn_rec_touch.has-hover ? Tokens.skin-arm.with-alpha(0.45) : transparent);
                         IconTransportRecord {
                             icon-color: root.is-recording ? Tokens.skin-text-strong : Tokens.skin-arm;
                         }

@@ -34,7 +34,10 @@ fn shot_library_readout_and_retry() {
     .expect("Tier-1 平台");
     let ui = live.ui();
     host::wire_sound_library_dialog_with(ui, Some(Rc::clone(&port)));
-    ui.set_sound_library_open(true);
+    // ⚠ 必须走**打开回调**（`on_open_sound_library` 才是真正扫描已安装列表的地方）；
+    // 直接 `set_sound_library_open(true)` 只会把面板挂上，列表永远是空的 —— 上一版
+    // 截图里"已安装"一片空白就是这么来的（不是产品缺陷，是取景方式错了）。
+    ui.invoke_open_sound_library();
     // 正在下载：进度条 + 一条真实形状的读数（与 `format_download_readout` 同格式）。
     ui.set_sound_downloading_id("karoryfer-emilyguitar".into());
     ui.set_sound_download_progress(42);

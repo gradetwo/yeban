@@ -83,8 +83,12 @@ pub const PACK_MARKER_FILE: &str = ".yeban-pack.json";
 /// 临时区目录名（库根下，`.` 开头 ⇒ 扫描跳过、界面不可见）。
 pub const STAGING_DIR_NAME: &str = ".incoming";
 
-/// 内置音色库在已安装列表里的固定 id（删除入口按它拒绝）。
-pub const BUILTIN_ID: &str = "builtin";
+/// 内置音色库条目 id 的前缀（后接目录名）：`builtin:<目录名>`。
+///
+/// 早先是单条聚合行（id 恒为 `builtin`），用户看得出"有东西"却看不出装了哪几件；
+/// 逐件列出后每个内置子目录各占一行，删除入口统一按**前缀**拒绝（内置在仓库里，
+/// 删了等于拆工程，不是卸载音源）。
+pub const BUILTIN_ID_PREFIX: &str = "builtin:";
 
 /// 用户库条目 id 的前缀（后接目录名）：`user:<目录名>`。
 pub const USER_ID_PREFIX: &str = "user:";
@@ -116,12 +120,12 @@ impl SoundRoots {
     }
 }
 
-/// 已安装列表里的一条（内置一条 + 用户目录各一条）。
+/// 已安装列表里的一条（内置每件一条 + 用户目录各一条）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledLibrary {
-    /// 稳定 id：内置为 [`BUILTIN_ID`]，用户库为 `user:<目录名>`。
+    /// 稳定 id：内置为 `builtin:<目录名>`，用户库为 `user:<目录名>`。
     pub id: String,
-    /// 显示名：包取标记里的名字，其余取目录名，内置为「内置音色库」。
+    /// 显示名：包取标记里的名字，其余取目录名。
     pub name: String,
     /// 位置（目录的绝对路径）。
     pub location: PathBuf,
@@ -274,17 +278,38 @@ fn marker_name(dir: &Path) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// 扫描已安装列表：内置一条（存在才列）+ 库根下每个非隐藏子目录一条，
-/// 用户条目按目录名排序（确定性口径）。
+/// 扫描已安装列表：**内置逐件一条**（`builtin_root` 下每个非隐藏子目录 = 一件）
+/// + 库根下每个非隐藏子目录一条，两组内各自按目录名排序（确定性口径）。
+///
+/// ⚠ 早先内置只有一条聚合行（「内置音色库 17 MiB」）——用户看得见"有东西"，却
+/// 看不出**装了哪几件**、更没法对着某一件去换。逐件列出后"我装没装这个包"变成
+/// 一眼可查；内置仍**不可删**（它在仓库里）。
 #[must_use]
 pub fn scan_installed(roots: &SoundRoots) -> Vec<InstalledLibrary> {
     let mut out = Vec::new();
-    if roots.builtin_root.is_dir() {
+    let mut builtin_dirs: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&roots.builtin_root) {
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if !kind.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            builtin_dirs.push((name, entry.path()));
+        }
+    }
+    builtin_dirs.sort();
+    for (dir_name, path) in builtin_dirs {
         out.push(InstalledLibrary {
-            id: BUILTIN_ID.to_owned(),
-            name: "内置音色库".to_owned(),
-            location: roots.builtin_root.clone(),
-            size_bytes: dir_size(&roots.builtin_root),
+            id: format!("{BUILTIN_ID_PREFIX}{dir_name}"),
+            name: marker_name(&path).unwrap_or_else(|| dir_name.clone()),
+            size_bytes: dir_size(&path),
+            location: path,
             deletable: false,
         });
     }
@@ -681,7 +706,7 @@ fn download_to_file(
 /// 删除一个用户音源库（删后由接线层重扫）。内置 id 与非法 id 都在
 /// 这里挡下，⛔ 不许调用方自己拼路径删。
 pub fn delete_library(roots: &SoundRoots, id: &str) -> Result<(), SoundError> {
-    if id == BUILTIN_ID {
+    if id.starts_with(BUILTIN_ID_PREFIX) {
         return Err(SoundError::BuiltInNotDeletable);
     }
     let Some(dir_name) = id.strip_prefix(USER_ID_PREFIX) else {
@@ -773,6 +798,11 @@ mod tests {
             fs::create_dir_all(&library_root).expect("建库根");
             fs::create_dir_all(&builtin_root).expect("建内置根");
             fs::write(builtin_root.join("builtin.sfz"), b"<group>").expect("写内置夹具");
+            // ⭐ 内置现在**逐件列出**（`builtin/<目录>` = 一件），判据需要一个真子目录。
+            // 根下那份 `builtin.sfz` 不再算"一件"（它不是目录）。
+            let builtin_pack = builtin_root.join("pack-a");
+            fs::create_dir_all(&builtin_pack).expect("建内置子目录");
+            fs::write(builtin_pack.join("a.sfz"), b"<group>").expect("写内置子目录夹具");
             Self {
                 roots: SoundRoots {
                     library_root,
@@ -948,10 +978,13 @@ mod tests {
                 .exists(),
             "落位后临时区不许留解包残骸"
         );
-        // 扫描：内置一条（不可删）+ 本包一条（名字取标记、大小为正）。
+        // 扫描：内置一件（不可删）+ 本包一条（名字取标记、大小为正）。
         let listed = scan_installed(&fixture.roots);
-        assert_eq!(listed.len(), 2, "应有内置 + 本包两条，实得：{listed:?}");
-        assert_eq!(listed[0].id, BUILTIN_ID);
+        assert_eq!(listed.len(), 2, "应有 1 件内置 + 本包两条，实得：{listed:?}");
+        assert!(
+            listed[0].id.starts_with(BUILTIN_ID_PREFIX),
+            "内置必须逐件列出：{listed:?}"
+        );
         assert!(!listed[0].deletable);
         assert_eq!(listed[1].id, "user:test-pack");
         assert_eq!(listed[1].name, "测试包 test-pack");
@@ -961,11 +994,128 @@ mod tests {
         assert!(!dest.exists(), "删除必须真的移除目录");
         let listed = scan_installed(&fixture.roots);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, BUILTIN_ID);
+        assert!(listed[0].id.starts_with(BUILTIN_ID_PREFIX));
         assert_eq!(
             delete_library(&fixture.roots, "user:test-pack"),
             Err(SoundError::NotFound("user:test-pack".to_owned()))
         );
+    }
+
+    /// 造一段 16-bit PCM 单声道 WAV（`frames` 个 440 Hz 正弦采样）。
+    fn sine_wav(rate: u32, frames: usize) -> Vec<u8> {
+        let data_bytes = u32::try_from(frames * 2).expect("夹具帧数");
+        let mut out = Vec::with_capacity(44 + data_bytes as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes()); // 字节率
+        out.extend_from_slice(&2u16.to_le_bytes()); // 块对齐
+        out.extend_from_slice(&16u16.to_le_bytes()); // 位深
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_bytes.to_le_bytes());
+        for index in 0..frames {
+            let seconds = index as f32 / rate as f32;
+            let sample = (seconds * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+            out.extend_from_slice(&((sample * 32_767.0) as i16).to_le_bytes());
+        }
+        out
+    }
+
+    /// ⭐ **用户口径的硬判据**（"下载或替换后能正常发声与渲染"，不是只改界面）：
+    /// 一份真的从 zip 装进库的音源（真实 `.sfz` + 真实 WAV）必须
+    /// ① 解包后的样本读得出来（`missing` 为空）② 单音出声 ③ 整工程渲染出声；
+    /// 删掉库之后同一条渲染必须**明确报 SFZ 错误**（⛔ 不许静默导出空带子）。
+    #[test]
+    fn installed_pack_is_audible_and_deleting_it_is_an_explicit_error() {
+        use std::sync::Arc;
+
+        let fixture = TestRoots::new("audible");
+        let wav = sine_wav(44_100, 8_820);
+        let sfz_text =
+            b"<group>\n<region> sample=probe.wav pitch_keycenter=60 lokey=0 hikey=127\n";
+        let zip_path = fixture.base.join("audible.zip");
+        write_zip(
+            &zip_path,
+            &[
+                ("AudiblePack/Probe.sfz", sfz_text.as_slice()),
+                ("AudiblePack/probe.wav", wav.as_slice()),
+            ],
+        );
+        let pack = pack_for(&zip_path, "audible-pack");
+        let installed =
+            install_pack_archive(&pack, &zip_path, &fixture.roots).expect("校验全对的包必须装上");
+        let sfz_path = installed.location.join("AudiblePack/Probe.sfz");
+        assert!(sfz_path.is_file(), "装好后 SFZ 必须落在库根里");
+
+        let (report, instrument) =
+            crate::sfz_load::load_sfz_with_instrument(&sfz_path, Some(60), 44_100.0)
+                .expect("装好的音源必须能读");
+        assert!(report.regions >= 1, "夹具必须至少有 1 个区域");
+        // 样本必须来自解包目录，而不是回退正弦（回退会被登记进 `missing`）。
+        let table = crate::sfz_load::build_region_samples(&instrument, &sfz_path);
+        assert!(
+            table.missing.is_empty(),
+            "解包出来的样本必须读得出来，实得：{:?}",
+            table.missing
+        );
+        assert_eq!(table.samples.len(), 1, "一个 sample= ⇒ 一条样本");
+        let mut single = vec![0.0_f32; 22_050];
+        instrument
+            .render_note_into_from_samples(
+                &table.samples,
+                60,
+                100,
+                None,
+                None,
+                &mut single,
+                44_100.0,
+            )
+            .expect("单音渲染必须不失败");
+        let single_energy: f32 = single.iter().map(|sample| sample * sample).sum();
+        assert!(
+            single_energy > 1e-6,
+            "装好后的音源单音必须出声，实得能量 {single_energy}"
+        );
+
+        // 整工程渲染（用户按播放 / 导出走的那条链）。
+        let project = yeban_model::samples::filled_project();
+        let options = crate::export_wav::WavExportOptions {
+            frames: 96_000,
+            ..Default::default()
+        };
+        let instrument = Arc::new(instrument);
+        let rendered = crate::render_core::render_project_f32(
+            &project,
+            options,
+            Some((Arc::clone(&instrument), Some(sfz_path.clone()))),
+        )
+        .expect("装好的音源必须能整工程渲染");
+        let project_energy: f32 = rendered.0.iter().map(|sample| sample * sample).sum();
+        assert!(
+            project_energy > 1e-6,
+            "整工程渲染必须出声（静音 = 装了等于没装），实得能量 {project_energy}"
+        );
+
+        // 删库之后：路径真的没了。⭐ 判的是**装载腿**（生产里重新打开工程 / 重新绑音源
+        // 都会重新读这个 `.sfz`）：删掉之后必须**点名文件**失败，⛔ 不许当没事。
+        // 注：把已装载的 `Arc<SfzInstrument>` 直接传给渲染不会重读文件——那是"进程内
+        // 已经拿在手里的乐器"，不是"删库后还能用"，所以这里判装载而不是判渲染。
+        delete_library(&fixture.roots, &installed.id).expect("用户库必须可删");
+        assert!(!sfz_path.exists(), "删除必须真的移除目录");
+        match crate::sfz_load::load_sfz_with_instrument(&sfz_path, Some(60), 44_100.0) {
+            Err(crate::sfz_load::SfzLoadError::Read(reason)) => {
+                assert!(
+                    reason.contains("Probe.sfz"),
+                    "删掉音源后的报错必须点名文件，实得：{reason}"
+                );
+            }
+            Ok(_) => panic!("删掉音源后重新装载必须失败，⛔ 不许静默成功"),
+            Err(other) => panic!("必须是 Read 错误（点名文件），实得：{other:?}"),
+        }
     }
 
     #[test]
@@ -1054,7 +1204,7 @@ mod tests {
     fn delete_rejects_builtin_and_bad_ids() {
         let fixture = TestRoots::new("delete");
         assert_eq!(
-            delete_library(&fixture.roots, BUILTIN_ID),
+            delete_library(&fixture.roots, "builtin:pack-a"),
             Err(SoundError::BuiltInNotDeletable)
         );
         assert_eq!(

@@ -77,9 +77,12 @@ fn both_dialog_panels_are_bounded_by_the_window() {
             .unwrap_or("<找不到 panel-h>")
     );
     let library = read("ui/dialogs/sound_library_dialog.slint");
+    // 2026-11-19：面板从固定 600 高改成 `min(720, 窗口高 - 24)` —— 两张列表
+    // （28 件内置 / 几十件可下载）在 600 高时各只剩 3 行，等于把内容藏起来。
+    // 判据只钉"必须对窗口取上限"，具体档位跟着设计走（宽度不变）。
     assert!(
         library.contains("Math.min(820px, root.width - 32px)")
-            && library.contains("Math.min(600px, root.height - 32px)"),
+            && library.contains("Math.min(720px, root.height - 24px)"),
         "音源管理面板的宽/高都必须对窗口取上限"
     );
 }
