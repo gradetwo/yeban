@@ -637,11 +637,7 @@ fn triangle_from_phase(phase: u32) -> f32 {
 #[inline]
 #[must_use]
 fn square_from_phase(phase: u32) -> f32 {
-    if phase < 0x8000_0000 {
-        1.0
-    } else {
-        -1.0
-    }
+    if phase < 0x8000_0000 { 1.0 } else { -1.0 }
 }
 
 /// 指数斜坡的对数比值：`ln(target/start)`，钳到 `(0, 1]` 区间。

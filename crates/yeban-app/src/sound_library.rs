@@ -1039,8 +1039,7 @@ mod tests {
 
         let fixture = TestRoots::new("audible");
         let wav = sine_wav(44_100, 8_820);
-        let sfz_text =
-            b"<group>\n<region> sample=probe.wav pitch_keycenter=60 lokey=0 hikey=127\n";
+        let sfz_text = b"<group>\n<region> sample=probe.wav pitch_keycenter=60 lokey=0 hikey=127\n";
         let zip_path = fixture.base.join("audible.zip");
         write_zip(
             &zip_path,

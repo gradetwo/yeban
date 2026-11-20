@@ -58,8 +58,8 @@
 //! AGPL-3.0，禁入 MIT 仓库。
 
 use crate::vocal_pitch_shift::{
-    ChunkRoute, PitchShiftConfig, PitchShiftReceipt, PitchShifter, DEFAULT_CHUNK_SAMPLES,
-    MAX_SHIFT_CENTS,
+    ChunkRoute, DEFAULT_CHUNK_SAMPLES, MAX_SHIFT_CENTS, PitchShiftConfig, PitchShiftReceipt,
+    PitchShifter,
 };
 use std::error::Error;
 use std::fmt;

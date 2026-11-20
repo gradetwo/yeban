@@ -1495,11 +1495,7 @@ fn sanitise_eq(params: EqParams) -> EqParams {
 #[inline]
 #[must_use]
 fn finite_or_zero(value: f32) -> f32 {
-    if value.is_finite() {
-        value
-    } else {
-        0.0
-    }
+    if value.is_finite() { value } else { 0.0 }
 }
 
 /// [ARCH-DET-001] 用的确定性指纹：**FNV-1a 64**。

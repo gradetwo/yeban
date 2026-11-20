@@ -1812,7 +1812,6 @@ impl App {
                     Err(_) => {
                         self.log_line(format!("用法：:tempo <BPM>（{MIN_BPM:.0}..={MAX_BPM:.0}）"))
                     }
-
                 }
             }
             "stop" => self.stop(),
