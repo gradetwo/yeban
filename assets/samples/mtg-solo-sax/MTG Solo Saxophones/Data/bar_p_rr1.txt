@@ -1,6 +1,6 @@
-<region> region_label=01_rr1 seq_position=1 key=36 sample=bar_p_02.$EXT tune=-109
+<region> region_label=01_rr1 seq_position=1 key=36 sample=bar_p_02.$EXT tune=-100
 <region> region_label=02_rr1 seq_position=1 key=37 sample=bar_p_02.$EXT tune=-9
-<region> region_label=03_rr1 seq_position=1 key=38 sample=bar_p_04.$EXT volume=-1 tune=-108
+<region> region_label=03_rr1 seq_position=1 key=38 sample=bar_p_04.$EXT volume=-1 tune=-100
 <region> region_label=04_rr1 seq_position=1 key=39 sample=bar_p_04.$EXT volume=-1 tune=-8
 <region> region_label=05_rr1 seq_position=1 key=40 sample=bar_p_05.$EXT tune=-2
 <region> region_label=06_rr1 seq_position=1 key=41 sample=bar_p_06.$EXT tune=-5

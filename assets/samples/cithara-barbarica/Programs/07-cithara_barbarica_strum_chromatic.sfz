@@ -281,7 +281,7 @@ sw_label=Muted nail
 
 //Silences just to make the muting keys visible
 <master>
-loop_mode=normal
+loop_mode=loop_continuous
 amplitude=0
 ampeg_sustain=0
 ampeg_decay=0
