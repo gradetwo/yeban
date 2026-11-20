@@ -3239,6 +3239,82 @@ mod tests {
         assert_eq!(snapshot.track(&light).map(|p| p.latency_samples()), Some(0));
     }
 
+    /// 判据 (i-bis)：**离线推导的延迟绝不漏进实时计划**（ADR-0078 / T-DRUM-9）。
+    ///
+    /// 磁带饱和与软削波在离线链真执行、真延迟，其往返延迟由
+    /// `yeban-render::render::track_latencies` 在离线累加处推导；但实时插入池
+    /// 不执行这两族器件 ⇒ 实时快照只认声明：一轨挂着武装的磁带与 4 倍过采样
+    /// 削波（声明都是 0），实时计划的 `total_latency` 必须仍是 0、补偿仍是 0。
+    /// 任何把推导写回声明、或让快照侧也推导的改动都会让本判据变红。
+    #[test]
+    fn derived_offline_latencies_do_not_leak_into_the_realtime_plan() {
+        use yeban_model::{DeviceDefinition, DeviceKind, ParameterValue};
+
+        let drum = EntityId::new();
+        let master = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![drum, master],
+            ..RoutingGraph::default()
+        };
+        let id = EntityId::new();
+        routing.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node: drum,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+                source_lane: None,
+                dest_lane: None,
+            },
+        );
+        let generated = |params: &[(&str, f32)]| DeviceDefinition {
+            kind: DeviceKind::InternalEffect,
+            params: params
+                .iter()
+                .map(|(name, value)| ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+            ..DeviceDefinition::default()
+        };
+        let mut tracks = BTreeMap::new();
+        tracks.insert(
+            drum,
+            TrackV3 {
+                id: drum,
+                devices: vec![
+                    generated(&[("tape_drive", 0.5), ("tape_mix", 1.0)]),
+                    generated(&[("clipper_mix", 1.0), ("clipper_oversample", 4.0)]),
+                ],
+                ..TrackV3::default()
+            },
+        );
+        let project = YebanProjectV1 {
+            master_bus_track_id: master,
+            routing_graph: routing,
+            tracks,
+            ..YebanProjectV1::default()
+        };
+
+        let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影成功");
+        assert_eq!(
+            snapshot.pdc().total_latency(),
+            0,
+            "实时计划只认声明：磁带与削波的离线推导不得进实时账"
+        );
+        assert_eq!(snapshot.pdc().compensation(&drum), Some(0));
+        assert_eq!(
+            snapshot.track(&drum).map(|p| p.latency_samples()),
+            Some(0),
+            "实时侧轨道延迟读数仍是声明值 0"
+        );
+    }
+
     /// 判据 (ii)：**母线限制器的 33 帧只在 `limiter_enabled == true` 时回填到
     /// `master` 节点**，且它接在总线求和**之后** ⇒ 支路的 `D(v)` 一位不动
     /// [ADR-0001 D44(b)]（任务单 `#302` 起默认关）。

@@ -95,13 +95,17 @@
 //! ## 延迟与 PDC
 //!
 //! 本级执行时引入 [`crate::oversample::OS_LATENCY`]（31 样本 @ 任何采样率，
-//! 单位是基础采样率样本）⇒ 设备作者须把该值计入设备的
-//! `latency_samples` 声明（[`TapeSaturation::latency_samples`] 即此数；
-//! 未武装时级不执行、延迟为 0）。模型层 `latency_samples` 是唯一事实源
-//! [ARCH-PDC-001]，本 crate 不替模型层推导它。
-//! wow/flutter 武装时**再加** [`TapeSaturation::modulation_latency_samples`]
-//! （中心延迟，随采样率变）——同一条声明纪律：本 crate 给出读数，
-//! 计入声明是设备作者的事。
+//! 单位是基础采样率样本；[`TapeSaturation::latency_samples`] 即此数；
+//! 未武装时级不执行、延迟为 0）。wow/flutter 武装时**再加**
+//! [`TapeSaturation::modulation_latency_samples`]（中心延迟，随采样率变）。
+//!
+//! 这笔延迟**不写进模型层 `latency_samples` 声明**（ADR-0078 裁决，取代
+//! 此前「设备作者计入声明」的口径）：声明被实时计划共用，而实时插入池
+//! 根本不执行磁带 ⇒ 写进去会让实时侧为不存在的延迟多补。内置磁带在
+//! 轨道插入链里的延迟由 `yeban-render` 的 `track_latencies` 在离线累加处
+//! 按参数推导，读数就取本级的两个 `*_samples` 方法；声明字段仍是插件／
+//! 用户器件延迟的唯一事实源 [ARCH-PDC-001]。本 crate 只给读数，
+//! 不替任何一侧推导。
 //!
 //! ## 实时安全
 //!
@@ -393,8 +397,9 @@ impl TapeSaturation {
 
     /// 本级执行时引入的处理延迟（帧），恒为 [`OS_LATENCY`] [ARCH-PDC-001]。
     ///
-    /// 未武装时级不执行、延迟为 0；设备作者按“武装时声明此数”的口径把该值
-    /// 计入设备的 `latency_samples`（见模块文档“延迟与 PDC”）。
+    /// 未武装时级不执行、延迟为 0。此数是离线推导的输入（ADR-0078）：
+    /// `yeban-render` 的 `tape_latency_frames` 在武装时把它计入离线延迟表，
+    /// ⛔ 不写进模型声明（见模块文档“延迟与 PDC”）。
     #[must_use]
     pub const fn latency_samples(&self) -> usize {
         OS_LATENCY
@@ -424,8 +429,8 @@ impl TapeSaturation {
 
     /// 调制段引入的延迟（帧，名义值 = 中心延迟按当前采样率换算、四舍五入）。
     ///
-    /// 未武装或未 `configure` 时为 0。设备作者按与 [`Self::latency_samples`]
-    /// 同一条纪律把武装时的此数计入 `latency_samples` 声明（见模块文档
+    /// 未武装或未 `configure` 时为 0。与 [`Self::latency_samples`] 同一口径
+    /// （ADR-0078）：此数由离线推导消费，⛔ 不写进模型声明（见模块文档
     /// 「延迟与 PDC」）——实际延迟在中心值 ±（两深度之和）内摆动，
     /// PDC 只能补名义值，这与一切 LFO 调制延迟的宿命相同。
     #[must_use]

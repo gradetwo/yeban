@@ -933,19 +933,30 @@ impl RenderOutput {
 /// - `latency_samples` 是**必需字段**（ADR-0001 D43 之后不再有"取 0 表示未上报"这个区分：
 ///   缺字段会直接报错）。因此 `0` 的含义就是**真的零延迟**，本函数把它
 ///   当 0 参与求和 —— 这是**保守**的: 少补只会少对齐, 不会造成相位错误; 而凭空发明一个
-///   延迟才是错的。设备作者有义务显式声明真实值
-///   (见 `DeviceDefinition::latency_samples` 的文档)。
+///   延迟才是错的。插件与用户器件的延迟由设备作者显式声明
+///   (见 `DeviceDefinition::latency_samples` 的文档)，声明仍是那一类器件的唯一事实源。
 /// - 多个设备串接时延迟相加, 用 `saturating_add` 以免病态输入溢出。
+///
+/// 在声明求和之外，本函数还加三项**离线推导**（ADR-0078）：内置限制器的
+/// 前瞻、磁带饱和的过采样往返（＋ wow/flutter 调制名义值）、软削波的过采样
+/// 级联往返。三者的共同点是「延迟由参数与采样率决定、且只在离线链执行」：
+/// 声明字段被实时计划共用，而实时插入池不执行磁带与削波，写进声明会让
+/// 实时侧为不存在的延迟多补 ⇒ 一律在本累加处推导，⛔ 不回写模型。
+/// `sample_rate` 必须是**本次渲染的采样率**（调制名义值按它换算），与调用方
+/// 传给 `RenderOptions` 的值一致。
 ///
 /// 用法:
 ///
 /// ```text
-/// let latencies = yeban_render::render::track_latencies(&project.tracks);
+/// let latencies = yeban_render::render::track_latencies(&project.tracks, 48_000);
 /// let plan = RenderPlan::compile_with_latencies(
 ///     &project.routing_graph, project.master_bus_track_id, options, &latencies)?;
 /// ```
 #[must_use]
-pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityId, u32> {
+pub fn track_latencies(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    sample_rate: u32,
+) -> BTreeMap<EntityId, u32> {
     tracks
         .iter()
         .map(|(id, track)| {
@@ -963,7 +974,14 @@ pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityI
             //
             // ⚠ 不加这一段，一条带限制器的轨会比别的轨**早**一个前瞻长度到达求和点，
             // 听感是这一轨整体前移（0.7–4 ms），叠加时会梳状滤波。
-            let total = declared.saturating_add(crate::inserts::limiter_latency_frames(track));
+            //
+            // 磁带与软削波的过采样往返同理（ADR-0078）：离线链真执行、真延迟，
+            // 不入账则整轨晚到（出厂鼓预置 47–147 帧）。推导函数与运行态的
+            // 建成判定同构，见 `inserts::{tape,clipper}_latency_frames`。
+            let total = declared
+                .saturating_add(crate::inserts::limiter_latency_frames(track))
+                .saturating_add(crate::inserts::tape_latency_frames(track, sample_rate))
+                .saturating_add(crate::inserts::clipper_latency_frames(track));
             (*id, total)
         })
         .collect()
@@ -3499,7 +3517,7 @@ mod tests {
         let bare = ulid(0x11);
         project_tracks.insert(bare, TrackV3::default());
 
-        let latencies = track_latencies(&project_tracks);
+        let latencies = track_latencies(&project_tracks, 48_000);
         assert_eq!(latencies[&chain], 132, "32 + 100, 旁通的 4096 被跳过");
         assert_eq!(latencies[&bare], 0, "没有设备就是 0（真的零延迟）");
         assert_eq!(latencies.len(), 2);
@@ -3514,6 +3532,78 @@ mod tests {
         )
         .expect("编译");
         assert_eq!(plan.longest_path_frames(), 0, "源节点自身没有延迟");
+    }
+
+    /// 判据（ADR-0078 / T-DRUM-9）: 生成器写声明 0 的磁带与削波器件，其真实
+    /// 过采样往返延迟由 `track_latencies` 在离线侧推导入账；声明本身一字不改。
+    ///
+    /// 读数（48 kHz）: 鼓轨磁带（武装、无调制）= 31；lofi 形（调制 0.9 + 0.04 ms）
+    /// = 31 + 69 = 100；总线削波 4 倍 = 47（级联质心 46.5 就近取整）。
+    /// 守卫面: 推导只发生在本函数的返回值里 —— 输入工程的每台设备
+    /// `latency_samples` 调用后仍是 0（被否决的「写进声明」路线不得回归；
+    /// 实时计划侧的同形守卫在 `yeban-engine` 的 snapshot 判据）。
+    #[test]
+    fn track_latencies_derives_generated_tape_and_clipper_latency() {
+        fn effect(params: &[(&str, f32)]) -> DeviceDefinition {
+            DeviceDefinition {
+                kind: DeviceKind::InternalEffect,
+                params: params
+                    .iter()
+                    .map(|(name, value)| ParameterValue {
+                        name: (*name).to_owned(),
+                        value: *value,
+                        unit: None,
+                    })
+                    .collect(),
+                latency_samples: 0,
+                ..DeviceDefinition::default()
+            }
+        }
+        let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+        let tape_track = ulid(0x20);
+        tracks.insert(
+            tape_track,
+            TrackV3 {
+                devices: vec![effect(&[("tape_drive", 0.5), ("tape_mix", 1.0)])],
+                ..TrackV3::default()
+            },
+        );
+        let lofi_track = ulid(0x21);
+        tracks.insert(
+            lofi_track,
+            TrackV3 {
+                devices: vec![effect(&[
+                    ("tape_drive", 0.5),
+                    ("tape_mix", 1.0),
+                    ("tape_wow_depth_ms", 0.9),
+                    ("tape_flutter_depth_ms", 0.04),
+                ])],
+                ..TrackV3::default()
+            },
+        );
+        let bus_track = ulid(0x22);
+        tracks.insert(
+            bus_track,
+            TrackV3 {
+                devices: vec![effect(&[("clipper_mix", 1.0), ("clipper_oversample", 4.0)])],
+                ..TrackV3::default()
+            },
+        );
+
+        let latencies = track_latencies(&tracks, 48_000);
+        assert_eq!(
+            latencies[&tape_track], 31,
+            "磁带武装 ⇒ 过采样往返 31 帧入账"
+        );
+        assert_eq!(latencies[&lofi_track], 100, "磁带 31 + 调制名义值 69");
+        assert_eq!(latencies[&bus_track], 47, "削波 4 倍级联 ⇒ 47 帧入账");
+
+        // 守卫: 模型声明没有被推导回写。
+        for track in tracks.values() {
+            for device in &track.devices {
+                assert_eq!(device.latency_samples, 0, "声明值不得被离线推导改写");
+            }
+        }
     }
 
     /// 判据: 分层正确 —— 一条串联链的层号严格递增, 且每层在槽数组里连续。
@@ -3752,7 +3842,7 @@ mod tests {
             u64::from(u32::MAX) + 1 > u64::from(u32::MAX),
             "这一格的真实和必须超过 u32, 否则本判据测不到溢出"
         );
-        let latencies = track_latencies(&tracks);
+        let latencies = track_latencies(&tracks, 48_000);
         assert_eq!(latencies[&hot], u32::MAX, "u32::MAX + 1 必须饱和, 不得回绕");
         assert_eq!(latencies[&bypassed], 0, "旁通设备完全不产生延迟");
     }

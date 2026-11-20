@@ -197,7 +197,7 @@ use yeban_dsp::device_param::{ClipperField, LimiterField, delay_params_from_stag
 use yeban_dsp::limiter::{InsertLimiter, LimiterParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::noise_source::{NoiseParams, NoiseSource};
-use yeban_dsp::oversample::OS_TAPS;
+use yeban_dsp::oversample::{OS_LATENCY, OS_TAPS};
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};
 use yeban_dsp::shaping::{BitCrusher, CrushParams, EqParams, TransientParams, TransientShaper};
@@ -319,9 +319,12 @@ pub struct InsertChain {
     sample_delay: Option<SampleDelayParams>,
     /// 插入式限制器参数；`None` = 本轨没有限制器。
     ///
-    /// ⚠ 它是本链**唯一**会引入延迟的器件（前瞻 = [`LimiterParams::latency_frames`]），
-    /// 因此渲染计划必须把那几帧加进本节点的 `latency`（见 [`crate::render::track_latencies`]），
-    /// 否则多轨合流时这一轨整体前移一个前瞻长度。
+    /// ⚠ 它的前瞻延迟（[`LimiterParams::latency_frames`]）**不走模型声明**：
+    /// 渲染计划在离线累加处按参数推导后加进本节点的 `latency`
+    /// （见 [`crate::render::track_latencies`]），否则多轨合流时这一轨整体
+    /// 前移一个前瞻长度。与它同族的离线推导还有磁带饱和与软削波的过采样
+    /// 往返延迟（[`tape_latency_frames`] / [`clipper_latency_frames`]，
+    /// 裁决见 ADR-0078）；⛔ 它**不是**本链唯一会引入延迟的器件。
     limiter: Option<LimiterParams>,
     /// 软削波器参数；`None` = 本轨没有削波器（C-1）。
     ///
@@ -1273,6 +1276,73 @@ pub fn limiter_source_params(track: &TrackV3) -> Option<LimiterParams> {
 #[must_use]
 pub fn limiter_latency_frames(track: &TrackV3) -> u32 {
     limiter_source_params(track).map_or(0, LimiterParams::latency_frames)
+}
+
+/// 本轨磁带饱和引入的**离线推导延迟**（帧）[ADR-0078]。
+///
+/// 磁带与削波的过采样往返延迟**不写进模型声明**：声明被实时计划共用，而
+/// 实时插入池根本不执行这两族器件（`yeban-engine` 的 `rt.rs` 只有采样延迟、
+/// 通道条、混响、卷积混响四级），写进声明会让实时侧为不存在的延迟多补。
+/// 因此与限制器前瞻同一口径：离线累加处（[`crate::render::track_latencies`]）
+/// 按参数推导。裁决全文见 ADR-0078。
+///
+/// 推导方法与 [`InsertRuntime::new`] 的建成判定**逐字同构**：按来源设备的
+/// 投影参数构造一台 [`TapeSaturation`]，`configure` 到渲染采样率后读它自己的
+/// 读数 —— 武装（`drive > 0` 且 `mix > 0`）时 [`TapeSaturation::latency_samples`]
+/// （固定 2 倍过采样往返 = [`OS_LATENCY`]），wow/flutter 武装时再加
+/// [`TapeSaturation::modulation_latency_samples`]（中心延迟名义值，随参数与
+/// 采样率变）。公式只存在于 `yeban-dsp` 一处，本函数不复制。
+///
+/// ⚠ 静态边界：运行态在「静态不武装但有非恒等自动化泳道」时经强制实例化
+/// 仍会建出器件（`force_saturation`），那种情形下块边界拉起的延迟不在本
+/// 静态读数内 —— 与 [`limiter_latency_frames`] 只读静态参数同一条边界。
+#[must_use]
+pub fn tape_latency_frames(track: &TrackV3, sample_rate: u32) -> u32 {
+    let Some(params) = saturation_source_params(track) else {
+        return 0;
+    };
+    let mut state = TapeSaturation::new();
+    state.configure(sample_rate as f32);
+    state.set_params(params);
+    if !state.is_active() {
+        return 0;
+    }
+    let frames = state.latency_samples() + state.modulation_latency_samples();
+    u32::try_from(frames).unwrap_or(u32::MAX)
+}
+
+/// 本轨软削波引入的**离线推导延迟**（帧）[ADR-0078]。
+///
+/// 与 [`tape_latency_frames`] 同一裁决：过采样往返延迟只在离线累加处推导，
+/// ⛔ 不写模型声明。判决点只有 [`clipper_source_slot`] 一处，且与运行态的
+/// 建成门同一条规则（净化后 `mix == 0` ⇒ 恒等 ⇒ 运行态不建器件 ⇒ 0 帧）。
+///
+/// 级联通式（从 `yeban-dsp/src/clipper.rs` 的 `process_channel` 级联结构读出，
+/// 并经冲激响应实测钉死，T-DRUM-9）：第 k 级（0 起）是一台
+/// [`yeban_dsp::oversample::Oversampler2x`]，其往返延迟是 [`OS_LATENCY`]
+/// 个**它自己的基础速率**样本 ⇒ 折回基础采样率是 `OS_LATENCY / 2^k`；
+/// 上行 s 级与下行 s 级对称，总延迟
+/// `2 · Σ_{k=0}^{s-1} OS_LATENCY / 2^k = 2 · OS_LATENCY · (1 − 2^(−s))`。
+/// 实测（48 kHz，冲激响应质心）：1 倍 = 0、2 倍 = 31.000、4 倍 = 46.500、
+/// 8 倍 = 54.25。PDC 表是整帧 ⇒ 就近取整（半值向上）：31 / 47 / 54；
+/// 4 倍档残余的半帧在帧网格之下，不可再补。
+#[must_use]
+pub fn clipper_latency_frames(track: &TrackV3) -> u32 {
+    let Some(params) = clipper_source_params(track) else {
+        return 0;
+    };
+    let params = params.sanitised();
+    if params.is_identity() {
+        return 0;
+    }
+    let stages = params.oversample_stages();
+    if stages == 0 {
+        return 0;
+    }
+    // 整数式：round(2 · OS_LATENCY · (2^s − 1) / 2^s)，半值向上。
+    let denom = 1u32 << stages;
+    let numerator = 2 * OS_LATENCY as u32 * (denom - 1);
+    (numerator + denom / 2) / denom
 }
 
 /// 单台设备 → 削波器参数（`None` = 一个已识别的削波器名字都没有）。
@@ -3696,6 +3766,75 @@ mod tests {
             assert_eq!(passthrough[2 * frame].to_bits(), 0.9f32.to_bits());
             assert_eq!(passthrough[2 * frame + 1].to_bits(), (-0.4f32).to_bits());
         }
+    }
+
+    /// ⭐ ADR-0078：磁带离线推导读数。武装（drive > 0 且 mix > 0）= 31 帧
+    /// 过采样往返；wow/flutter 武装时再加中心延迟名义值（随采样率换算）；
+    /// 未武装 / 旁通 / 无来源一律 0 —— 与运行态的建成门逐字同构。
+    #[test]
+    fn tape_latency_frames_derives_the_oversample_round_trip() {
+        let track_with = |devices: Vec<DeviceDefinition>| yeban_model::TrackV3 {
+            devices,
+            ..Default::default()
+        };
+        // 无磁带来源 ⇒ 0。
+        assert_eq!(tape_latency_frames(&track_with(vec![]), 48_000), 0);
+        // 武装、无调制 ⇒ 31（OS_LATENCY，冲激实测质心 31.000）。
+        let armed = track_with(vec![device(&[("tape_drive", 0.5), ("tape_mix", 1.0)])]);
+        assert_eq!(tape_latency_frames(&armed, 48_000), 31);
+        // lofi 形调制（0.9 + 0.04 + 0.5 ms 边距 = 1.44 ms）：48 kHz ⇒ 69，
+        // 合计 100；96 kHz ⇒ 138，合计 169（名义值随采样率走）。
+        let lofi = track_with(vec![device(&[
+            ("tape_drive", 0.5),
+            ("tape_mix", 1.0),
+            ("tape_wow_depth_ms", 0.9),
+            ("tape_flutter_depth_ms", 0.04),
+        ])]);
+        assert_eq!(tape_latency_frames(&lofi, 48_000), 100);
+        assert_eq!(tape_latency_frames(&lofi, 96_000), 169);
+        // 静态未武装（mix = 0）⇒ 运行态不建器件 ⇒ 0（强制实例化边界见函数文档）。
+        let idle = track_with(vec![device(&[("tape_drive", 0.5), ("tape_mix", 0.0)])]);
+        assert_eq!(tape_latency_frames(&idle, 48_000), 0);
+        // 旁通 ⇒ 不是来源 ⇒ 0。
+        let mut bypassed = device(&[("tape_drive", 0.5), ("tape_mix", 1.0)]);
+        bypassed.bypassed = true;
+        assert_eq!(tape_latency_frames(&track_with(vec![bypassed]), 48_000), 0);
+    }
+
+    /// ⭐ ADR-0078：削波离线推导读数。级联通式 `2 · OS_LATENCY · (1 − 2^(−s))`
+    /// 就近取整（冲激实测质心 0 / 31.000 / 46.500 / 54.25）；
+    /// 恒等（mix = 0）/ 旁通 / 无来源一律 0。
+    #[test]
+    fn clipper_latency_frames_derives_the_cascade_round_trip() {
+        let track_with = |devices: Vec<DeviceDefinition>| yeban_model::TrackV3 {
+            devices,
+            ..Default::default()
+        };
+        assert_eq!(clipper_latency_frames(&track_with(vec![])), 0);
+        for (oversample, expected) in [(1.0f32, 0u32), (2.0, 31), (4.0, 47), (8.0, 54)] {
+            let track = track_with(vec![device(&[
+                ("clipper_mix", 1.0),
+                ("clipper_oversample", oversample),
+            ])]);
+            assert_eq!(
+                clipper_latency_frames(&track),
+                expected,
+                "过采样 {oversample} 倍的级联往返推导读数"
+            );
+        }
+        // 未写 oversample ⇒ 缺省 4 倍 ⇒ 47（与运行态同一缺省）。
+        let defaulted = track_with(vec![device(&[("clipper_mix", 1.0)])]);
+        assert_eq!(clipper_latency_frames(&defaulted), 47);
+        // mix = 0 ⇒ 恒等、运行态不建器件 ⇒ 0。
+        let idle = track_with(vec![device(&[
+            ("clipper_mix", 0.0),
+            ("clipper_oversample", 4.0),
+        ])]);
+        assert_eq!(clipper_latency_frames(&idle), 0);
+        // 旁通 ⇒ 不是来源 ⇒ 0。
+        let mut bypassed = device(&[("clipper_mix", 1.0), ("clipper_oversample", 4.0)]);
+        bypassed.bypassed = true;
+        assert_eq!(clipper_latency_frames(&track_with(vec![bypassed])), 0);
     }
 
     /// C-1：削波器投影 + 运行态处理（1× 路径）：强驱动常量块被渐近压到

@@ -612,7 +612,7 @@ where
     let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, sfz_provider)?;
 
     // 3. 正式计划：延迟 + 插入链。
-    let latencies = track_latencies(&project.tracks);
+    let latencies = track_latencies(&project.tracks, sample_rate);
     let inserts = project_inserts(&project.tracks, sample_rate, project.bpm);
     let options = RenderOptions::l1(frames, 2, sample_rate, settings.seed);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts_and_phase(

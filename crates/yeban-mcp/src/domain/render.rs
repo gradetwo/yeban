@@ -9,7 +9,7 @@
 //! 工程 + 路由图 + 会话 CAS 资产池 (assets/{sha256})
 //!   ├─ 音频片段: 资产字节 → (哈希复核) → yeban-decode 解码 → 编码器延迟裁剪
 //!   │            → 必要时 rubato sinc 重采样 → AudioClipSource   [ARCH-DSP-002 / D26]
-//!   ├─ track_latencies(DeviceDefinition::latency_samples)   [ARCH-PDC-001] **唯一**延迟来源
+//!   ├─ track_latencies(声明求和 + 离线推导)   [ARCH-PDC-001 / ADR-0078] 延迟表的唯一累加处
 //!   ├─ RenderPlan::compile_with_latencies(...)              拓扑分层 + PDC 关键路径
 //!   ├─ 每个源节点注入一个 AudioSource                       MIDI 合成源 ⊕ 音频片段源
 //!   ├─ RenderPlan::execute(...)                             Rayon 并行 + 固定顺序归约 [ARCH-DET-002]
@@ -3579,10 +3579,10 @@ pub fn build(
     // 1. 输出路径 + 两条安全护栏。
     let path = request.output_path(project_path)?;
     guard_output_path(&path, project_path)?;
-    // 2. 延迟表: 唯一来源是 DeviceDefinition::latency_samples [ARCH-PDC-001]。
+    // 2. 延迟表: 唯一累加处是 track_latencies（声明求和 + ADR-0078 离线推导）。
     //    音频片段**不自建第二来源** —— 模型里没有 per-asset 延迟字段,
     //    片段所在音轨的设备链延迟就是它的全部延迟贡献。
-    let latencies = track_latencies(&project.tracks);
+    let latencies = track_latencies(&project.tracks, sample_rate);
     // 3. 探针编译: 用 frames=1 取得"剪枝后的可达子图 + 源节点集合"。
     //    刻意复用渲染器的剪枝/分层逻辑, 而不是在这里复制一份图算法(两份必然漂移)。
     //    ⭐ 同一个探针也服务 `yeban_edit_automation` 的读侧 ⇒ 写侧读数与导出读数
@@ -4851,7 +4851,7 @@ pub(super) fn probe_subgraph(
     project: &YebanProjectV1,
     sample_rate: u32,
 ) -> Result<ProbeSubgraph, RenderError> {
-    let latencies = track_latencies(&project.tracks);
+    let latencies = track_latencies(&project.tracks, sample_rate);
     let probe = RenderOptions::l1(1, MASTER_CHANNELS, sample_rate, project.rng_seed);
     let plan = RenderPlan::compile_with_latencies(
         &project.routing_graph,

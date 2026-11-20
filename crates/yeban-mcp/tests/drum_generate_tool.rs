@@ -531,3 +531,55 @@ fn style_without_automation_lands_no_lane() {
         "无 automation 段的风格不得写自动化泳道"
     );
 }
+
+/// ⭐ ADR-0078 / T-DRUM-9：生成工程端到端 —— lofi 生成后，离线延迟表必须把
+/// 鼓轨磁带（往返 31 + 调制名义值 69 = 100）与鼓总线削波 4 倍（47）入账；
+/// 生成器件的声明值仍全是 0（推导只在离线累加处发生，⛔ 不回写模型，
+/// 实时计划不受影响 —— 引擎侧守卫在 `yeban-engine` 的 snapshot 判据）。
+#[test]
+fn generated_lofi_latencies_are_derived_in_the_offline_table() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({ "style": "lofi", "autoMerge": true }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let project = project(&dispatcher);
+    let latencies = yeban_render::render::track_latencies(&project.tracks, 48_000);
+
+    // 鼓轨按内容定位：带 `tape_drive` 参数的生成器件所在轨。
+    let (drum_id, drum) = project
+        .tracks
+        .iter()
+        .find(|(_, track)| {
+            track
+                .devices
+                .iter()
+                .any(|device| device.params.iter().any(|p| p.name == "tape_drive"))
+        })
+        .expect("lofi 生成工程必须有带磁带的鼓轨");
+    assert_eq!(
+        latencies[drum_id], 100,
+        "鼓轨离线延迟 = 磁带往返 31 + wow/flutter 名义值 69（48 kHz）"
+    );
+    // 鼓总线按名定位（生成器以 `<Style> Drum Bus` 命名）。
+    let (bus_id, bus) = project
+        .tracks
+        .iter()
+        .find(|(_, track)| track.name.ends_with("Drum Bus"))
+        .expect("lofi 生成工程必须有鼓总线轨");
+    assert_eq!(
+        latencies[bus_id], 47,
+        "鼓总线离线延迟 = 软削波 4 倍过采样级联 47（质心 46.5 取整）"
+    );
+    // 守卫：两条轨上每台生成器件的声明值仍是 0。
+    for track in [drum, bus] {
+        for device in &track.devices {
+            assert_eq!(
+                device.latency_samples, 0,
+                "生成器件声明不得被离线推导回写: {}",
+                device.name
+            );
+        }
+    }
+}

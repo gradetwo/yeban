@@ -686,7 +686,7 @@ pub fn render_project_f32_with_plans_under(
     // 修前这里调 `RenderPlan::compile(...)`，它内部等价于传**两张空表**
     // （`crates/yeban-render/src/render.rs:439` 的 `&BTreeMap::new()`）⇒ 用户装的
     // EQ / 混响 / 卷积**完全不进导出**（`#226`／`#240` 登记的口径）。
-    let latencies = track_latencies(&project.tracks);
+    let latencies = track_latencies(&project.tracks, options.sample_rate);
     // ⭐ 任务单 `#266`/`#293`：有**非恒等** `DeviceParam` 泳道的轨，对应器件被**强制
     // 实例化**（通道条：`effective_strip` 在全恒等参数下也返回 `Some`；Freeverb/卷积：
     // 静态 `wet = 0` 时 `is_active()` 为假，但块边界仍需有器件可改）。扫描器与 MCP 的

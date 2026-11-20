@@ -64,7 +64,8 @@
 //! - `bext` 只支持版本 1/2 的读写; BW64 的 `axml`/`bxml`/`sxml`/`chna` XML chunk 未实现。
 //! - PDC 延迟由调用方显式注入（[`render::RenderPlan::compile_with_latencies`]）;
 //!   [`render::track_latencies`] 提供了从 `DeviceDefinition::latency_samples`
-//!   ([ARCH-PDC-001], main `8f40290` 补上) 推导该映射的标准做法。
+//!   ([ARCH-PDC-001], main `8f40290` 补上) 累加、并按 ADR-0078 离线推导
+//!   内置器件延迟的标准做法。
 //! - 没有 `criterion` 基准, 因此 [BASELINE-001] 的 "≥ 100× 实时" **未被本分支证实**。
 //! - 实验性 `.als` 导出（feature `experimental-als-export`, 见 `als` 模块）只在显式开启时
 //!   存在, 且**未与任何参考 `.als` 对账**：它产出 Ableton 风格的 Gzip XML 与一份
