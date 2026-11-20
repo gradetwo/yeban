@@ -1005,6 +1005,123 @@ mod tests {
         );
     }
 
+    /// 造一段 16-bit PCM 单声道 WAV（`frames` 个 440 Hz 正弦采样）。
+    fn sine_wav(rate: u32, frames: usize) -> Vec<u8> {
+        let data_bytes = u32::try_from(frames * 2).expect("夹具帧数");
+        let mut out = Vec::with_capacity(44 + data_bytes as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes()); // 字节率
+        out.extend_from_slice(&2u16.to_le_bytes()); // 块对齐
+        out.extend_from_slice(&16u16.to_le_bytes()); // 位深
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_bytes.to_le_bytes());
+        for index in 0..frames {
+            let seconds = index as f32 / rate as f32;
+            let sample = (seconds * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+            out.extend_from_slice(&((sample * 32_767.0) as i16).to_le_bytes());
+        }
+        out
+    }
+
+    /// ⭐ **用户口径的硬判据**（"下载或替换后能正常发声与渲染"，不是只改界面）：
+    /// 一份真的从 zip 装进库的音源（真实 `.sfz` + 真实 WAV）必须
+    /// ① 解包后的样本读得出来（`missing` 为空）② 单音出声 ③ 整工程渲染出声；
+    /// 删掉库之后同一条渲染必须**明确报 SFZ 错误**（⛔ 不许静默导出空带子）。
+    #[test]
+    fn installed_pack_is_audible_and_deleting_it_is_an_explicit_error() {
+        use std::sync::Arc;
+
+        let fixture = TestRoots::new("audible");
+        let wav = sine_wav(44_100, 8_820);
+        let sfz_text =
+            b"<group>\n<region> sample=probe.wav pitch_keycenter=60 lokey=0 hikey=127\n";
+        let zip_path = fixture.base.join("audible.zip");
+        write_zip(
+            &zip_path,
+            &[
+                ("AudiblePack/Probe.sfz", sfz_text.as_slice()),
+                ("AudiblePack/probe.wav", wav.as_slice()),
+            ],
+        );
+        let pack = pack_for(&zip_path, "audible-pack");
+        let installed =
+            install_pack_archive(&pack, &zip_path, &fixture.roots).expect("校验全对的包必须装上");
+        let sfz_path = installed.location.join("AudiblePack/Probe.sfz");
+        assert!(sfz_path.is_file(), "装好后 SFZ 必须落在库根里");
+
+        let (report, instrument) =
+            crate::sfz_load::load_sfz_with_instrument(&sfz_path, Some(60), 44_100.0)
+                .expect("装好的音源必须能读");
+        assert!(report.regions >= 1, "夹具必须至少有 1 个区域");
+        // 样本必须来自解包目录，而不是回退正弦（回退会被登记进 `missing`）。
+        let table = crate::sfz_load::build_region_samples(&instrument, &sfz_path);
+        assert!(
+            table.missing.is_empty(),
+            "解包出来的样本必须读得出来，实得：{:?}",
+            table.missing
+        );
+        assert_eq!(table.samples.len(), 1, "一个 sample= ⇒ 一条样本");
+        let mut single = vec![0.0_f32; 22_050];
+        instrument
+            .render_note_into_from_samples(
+                &table.samples,
+                60,
+                100,
+                None,
+                None,
+                &mut single,
+                44_100.0,
+            )
+            .expect("单音渲染必须不失败");
+        let single_energy: f32 = single.iter().map(|sample| sample * sample).sum();
+        assert!(
+            single_energy > 1e-6,
+            "装好后的音源单音必须出声，实得能量 {single_energy}"
+        );
+
+        // 整工程渲染（用户按播放 / 导出走的那条链）。
+        let project = yeban_model::samples::filled_project();
+        let options = crate::export_wav::WavExportOptions {
+            frames: 96_000,
+            ..Default::default()
+        };
+        let instrument = Arc::new(instrument);
+        let rendered = crate::render_core::render_project_f32(
+            &project,
+            options,
+            Some((Arc::clone(&instrument), Some(sfz_path.clone()))),
+        )
+        .expect("装好的音源必须能整工程渲染");
+        let project_energy: f32 = rendered.0.iter().map(|sample| sample * sample).sum();
+        assert!(
+            project_energy > 1e-6,
+            "整工程渲染必须出声（静音 = 装了等于没装），实得能量 {project_energy}"
+        );
+
+        // 删库之后：路径真的没了。⭐ 判的是**装载腿**（生产里重新打开工程 / 重新绑音源
+        // 都会重新读这个 `.sfz`）：删掉之后必须**点名文件**失败，⛔ 不许当没事。
+        // 注：把已装载的 `Arc<SfzInstrument>` 直接传给渲染不会重读文件——那是"进程内
+        // 已经拿在手里的乐器"，不是"删库后还能用"，所以这里判装载而不是判渲染。
+        delete_library(&fixture.roots, &installed.id).expect("用户库必须可删");
+        assert!(!sfz_path.exists(), "删除必须真的移除目录");
+        match crate::sfz_load::load_sfz_with_instrument(&sfz_path, Some(60), 44_100.0) {
+            Err(crate::sfz_load::SfzLoadError::Read(reason)) => {
+                assert!(
+                    reason.contains("Probe.sfz"),
+                    "删掉音源后的报错必须点名文件，实得：{reason}"
+                );
+            }
+            Ok(_) => panic!("删掉音源后重新装载必须失败，⛔ 不许静默成功"),
+            Err(other) => panic!("必须是 Read 错误（点名文件），实得：{other:?}"),
+        }
+    }
+
     #[test]
     fn checksum_mismatch_installs_nothing() {
         let fixture = TestRoots::new("checksum");
