@@ -1495,9 +1495,10 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                     }
 
-                    // Optional Group Bus Strip in Mixer mode (Fixed width: 88px)
+                    // Optional Group Bus Strip in Mixer mode（与通道条同宽 82px：原来 88px
+                    // 让 BUS/MASTER 两列比左右通道各宽 6–10px，横排网格看着是"三段拼的"）
                     if root.active-tab == "mixer" : Rectangle {
-                        width: 88px;
+                        width: 82px;
                         vertical-stretch: 1;
                         // 一期质感: flat 分支保留旧值; physical 走 §10 面板刷 + 面板级落影。
                         background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-shell;
@@ -1854,9 +1855,9 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                     }
 
-                    // Dedicated Master 2-Bus Channel Strip on Mixer Right (Fixed width: 92px)
+                    // Dedicated Master 2-Bus Channel Strip on Mixer Right（同宽 82px，理由同 BUS）
                     Rectangle {
-                        width: 92px;
+                        width: 82px;
                         vertical-stretch: 1;
                         // 面板底与其它通道条同一档（flat = bg-shell），身份靠青绿描边 + MASTER 徽章，
                         // 不靠"整条换一个更暗的底色"——那会让总线看起来像掉进凹槽里。
