@@ -11827,6 +11827,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
     // ---- 删除一个用户库（本地操作，同步完成后重扫）---------------------------
     {
         let weak = ui.as_weak();
+        let port = port.clone();
         ui.on_sound_library_delete(move |library_id| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -11849,10 +11850,45 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 .and_then(|index| names.get(index).cloned())
                 .unwrap_or_else(|| library_id.to_string());
             let roots = crate::sound_library::SoundRoots::production();
+            // ⭐ 删之前先回答"删了谁会没声"：按**权威工程**逐轨读采样器路径，
+            // 只算这条路径真的落在这件库目录里的轨（⛔ 不按名字猜）。
+            let dir_name = library_id
+                .strip_prefix(crate::sound_library::USER_ID_PREFIX)
+                .unwrap_or(library_id.as_str());
+            let library_dir = roots.library_root.join(dir_name);
+            let affected: Vec<String> = port
+                .as_ref()
+                .and_then(|port| port.try_project())
+                .map(|project| {
+                    crate::sound_library::tracks_using_library(&project, &library_dir)
+                })
+                .unwrap_or_default();
             match crate::sound_library::delete_library(&roots, library_id.as_str()) {
-                Ok(()) => {
+                Ok(()) if affected.is_empty() => {
                     ui.set_sound_library_status(format!("已删除：{display_name}").into());
                     ui.set_sound_library_status_is_error(false);
+                }
+                Ok(()) => {
+                    // ⭐ 删掉了正在用的音源：这不是"删成功就完事"，而是**制造了 N 条哑轨**。
+                    // 一句话说清"哪几条轨会没声"，并把可下载列表筛到这件音源
+                    // （用户点一次「下载」就能装回来）；另一条出口是换别的音源。
+                    let pack_id = dir_name.to_owned();
+                    ui.set_sound_library_search(pack_id.clone().into());
+                    ui.invoke_sound_library_filter_changed(pack_id.into());
+                    let listed = affected.iter().take(3).cloned().collect::<Vec<_>>().join("、");
+                    let rest = if affected.len() > 3 {
+                        format!(" 等共 {} 条", affected.len())
+                    } else {
+                        String::new()
+                    };
+                    ui.set_sound_library_status(
+                        format!(
+                            "已删除「{display_name}」，但有 {} 条轨正在用它，现在会没声：{listed}{rest}。下面已筛出这件音源的下载项——点「下载」装回来，或在这些轨上换别的音源。",
+                            affected.len(),
+                        )
+                        .into(),
+                    );
+                    ui.set_sound_library_status_is_error(true);
                 }
                 Err(err) => {
                     ui.set_sound_library_status(err.message().into());

@@ -723,6 +723,54 @@ pub fn delete_library(roots: &SoundRoots, id: &str) -> Result<(), SoundError> {
         .map_err(|err| SoundError::Io(format!("删除 {} 失败：{err}", path.display())))
 }
 
+/// 一条轨的采样器路径是不是落在这件用户库的目录里。
+///
+/// 用途只有一处：用户点「确认删除」之前，宿主要能回答"删了之后谁会没声"。
+/// ⛔ 不拿 `starts_with(dir_text)` 直接比字符串 —— 那会把 `pack-a2` 的轨也算进
+/// `pack-a`（少一位分隔符就差一个包），所以两边先统一分隔符/大小写，再要求
+/// **目录前缀 + 分隔符**。Windows 路径大小写不敏感，其它平台保持原样。
+#[must_use]
+pub fn track_uses_library(sampler_path: &str, library_dir: &Path) -> bool {
+    fn normalized(text: &str) -> String {
+        let replaced = text.replace('/', "\\");
+        let trimmed = replaced.trim_end_matches('\\');
+        if cfg!(windows) {
+            trimmed.to_lowercase()
+        } else {
+            trimmed.to_owned()
+        }
+    }
+    let file = normalized(sampler_path);
+    let dir = normalized(&library_dir.to_string_lossy());
+    if file.is_empty() || dir.is_empty() {
+        return false;
+    }
+    file == dir || file.starts_with(&format!("{dir}\\"))
+}
+
+/// 工程里**正在用**这件库的音轨名（删除回执的"谁会没声"）。
+///
+/// 只读权威工程里的采样器路径，⛔ 不看界面行下标、⛔ 不按名称猜；
+/// 主总线不占"轨"的位置，所以排除（与混音台展示口径同源）。
+#[must_use]
+pub fn tracks_using_library(
+    project: &yeban_model::YebanProjectV1,
+    library_dir: &Path,
+) -> Vec<String> {
+    project
+        .tracks
+        .iter()
+        .filter(|(track_id, _)| *track_id != &project.master_bus_track_id)
+        .filter(|(_, track)| {
+            track
+                .sampler
+                .as_ref()
+                .is_some_and(|binding| track_uses_library(&binding.path, library_dir))
+        })
+        .map(|(_, track)| track.name.clone())
+        .collect()
+}
+
 /// 界面用的大小读数（`B` 原样，往上 `KiB` / `MiB` / `GiB` / `TiB`
 /// 一位小数，与仓内 `9.4 GiB` 的既有写法同形态）。
 #[must_use]
@@ -1222,6 +1270,64 @@ mod tests {
             fixture.roots.builtin_root.join("builtin.sfz").is_file(),
             "内置内容一位不许动"
         );
+    }
+
+    #[test]
+    fn track_uses_library_matches_only_the_pack_directory() {
+        let dir = Path::new(r"C:\Users\me\Yeban\samples\probe-pack");
+        assert!(track_uses_library(
+            r"C:\Users\me\Yeban\samples\probe-pack\Instr.sfz",
+            dir
+        ));
+        // 同前缀的隔壁包（少一位分隔符）**不是**同一件，删 dir 不该报它没声。
+        assert!(!track_uses_library(
+            r"C:\Users\me\Yeban\samples\probe-pack-2\Instr.sfz",
+            dir
+        ));
+        // 正斜杠按统一口径归一；Windows 上大小写也不敏感。
+        assert!(track_uses_library(
+            r"C:/Users/me/Yeban/samples/probe-pack/Instr.sfz",
+            dir
+        ));
+        #[cfg(windows)]
+        assert!(track_uses_library(
+            r"C:/Users/me/Yeban/samples/PROBE-PACK/Instr.sfz",
+            dir
+        ));
+        // 空路径（没绑音源的轨）永远不算。
+        assert!(!track_uses_library("", dir));
+    }
+
+    #[test]
+    fn tracks_using_library_names_only_the_bound_tracks() {
+        let mut project = yeban_model::samples::filled_project();
+        let dir = Path::new(r"C:\Users\me\Yeban\samples\probe-pack");
+        let track_id = project
+            .tracks
+            .keys()
+            .copied()
+            .find(|id| *id != project.master_bus_track_id)
+            .expect("演示工程至少有 1 条轨");
+        {
+            let track = project.tracks.get_mut(&track_id).expect("轨存在");
+            track.name = "鼓组".to_owned();
+            track.sampler = Some(yeban_model::SamplerBinding {
+                path: r"C:\Users\me\Yeban\samples\probe-pack\Instr.sfz".to_owned(),
+                note_octave_override: None,
+            });
+        }
+        assert_eq!(
+            tracks_using_library(&project, dir),
+            vec!["鼓组".to_owned()],
+            "只有真的绑在这件库上的轨才进删除回执"
+        );
+        // 同前缀的隔壁包：删除 `probe-pack` 不该说这条轨会哑。
+        project.tracks.get_mut(&track_id).expect("轨存在").sampler =
+            Some(yeban_model::SamplerBinding {
+                path: r"C:\Users\me\Yeban\samples\probe-pack-2\Instr.sfz".to_owned(),
+                note_octave_override: None,
+            });
+        assert!(tracks_using_library(&project, dir).is_empty());
     }
 
     #[test]
