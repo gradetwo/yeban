@@ -2682,11 +2682,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_level", 0.55),
             ("ride_pan", 0.25),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            // 2026-11-20 起带 808 道（Wang 立项）：drill 的 808 要滑音
+            // 长尾——glide 拉长到 0.12 s、decay 拉长到 2.4 s（跨小节
+            //  sustain），与 hiphop 的短而圆拉开差距。
             ("bass808_tune_hz", 49.0),
-            ("bass808_glide_hz", 125.0),
-            ("bass808_glide_s", 0.03),
+            ("bass808_glide_hz", 160.0),
+            ("bass808_glide_s", 0.12),
             ("bass808_attack_s", 0.002),
-            ("bass808_decay_s", 1.2),
+            ("bass808_decay_s", 2.4),
             ("bass808_level", 0.95),
             ("bass808_pan", 0.0),
         ],
@@ -3204,11 +3207,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_level", 0.62),
             ("ride_pan", 0.28),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            // 2026-11-20 起带 808 道（Wang 立项）：hiphop 的 808 要
+            // 短而圆——decay 收进 0.85 s、glide 压到 0.02 s（几乎不
+            // 滑），与 drill 的滑音长尾拉开差距。
             ("bass808_tune_hz", 49.0),
-            ("bass808_glide_hz", 118.0),
-            ("bass808_glide_s", 0.05),
+            ("bass808_glide_hz", 95.0),
+            ("bass808_glide_s", 0.02),
             ("bass808_attack_s", 0.002),
-            ("bass808_decay_s", 1.3),
+            ("bass808_decay_s", 0.85),
             ("bass808_level", 0.95),
             ("bass808_pan", 0.0),
         ],
@@ -4756,6 +4762,73 @@ mod tests {
                 "{id} 的 808 步进须镜像 kick"
             );
         }
+        // drill / hiphop（2026-11-20 Wang 立项加 808 道）：只带 bass 一组
+        // ——压缩 + kick 键控侧链，定值与 trap 同族（阈值/比/Knee/起音
+        // 一致），release 按各自 BPM 分档（drill 142 → 0.16，hiphop
+        // 92 → 0.24）。drill 的 808 步进镜像 kick（跟 kick 走滑音长音，
+        // 滑音与长尾在 synth 参数面）；hiphop 的 808 不与 kick 同点，
+        // 专补 kick 的空缺拍并以长音 sustain 衔接（步点逐条钉住）。
+        for (id, release_s, hits) in [
+            ("drill", 0.16f32, None),
+            (
+                "hiphop",
+                0.24f32,
+                Some(vec![
+                    (4usize, 96u8),
+                    (8, 100),
+                    (14, 88),
+                    (20, 96),
+                    (24, 100),
+                    (30, 90),
+                ]),
+            ),
+        ] {
+            let style = by_id(id);
+            assert_eq!(style.lane_chains.len(), 1, "{id} 只带 bass 一组");
+            assert_eq!(style.lane_chains[0].name, "bass");
+            assert_eq!(style.lane_chains[0].keys, vec![35]);
+            let comp = style.lane_chains[0]
+                .comp
+                .as_ref()
+                .expect("bass 组必须带压缩");
+            assert_eq!(comp.threshold_db, -30.0);
+            assert_eq!(comp.ratio, 6.0);
+            assert_eq!(comp.release_s, release_s, "{id} 的 release 定值不符");
+            let sidechain = style.lane_chains[0]
+                .sidechain
+                .as_ref()
+                .expect("bass 组必须带侧链声明");
+            assert_eq!(
+                sidechain.key_keys,
+                vec![36],
+                "{id} 的 key 必须是 kick 键 36"
+            );
+            let bass_lane = style
+                .lanes
+                .iter()
+                .find(|lane| lane.gm_key == 35)
+                .expect("必须带 808 道（键 35）");
+            let kick_lane = style
+                .lanes
+                .iter()
+                .find(|lane| lane.gm_key == 36)
+                .expect("必须有 kick 道");
+            if let Some(hits) = hits {
+                let actual: Vec<(usize, u8)> = bass_lane
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, step)| step.is_hit())
+                    .map(|(idx, step)| (idx, step.velocity))
+                    .collect();
+                assert_eq!(actual, hits, "{id} 的 808 步点须为补空缺设计");
+            } else {
+                assert_eq!(
+                    bass_lane.steps, kick_lane.steps,
+                    "{id} 的 808 步进须镜像 kick"
+                );
+            }
+        }
         // 原声系 6 风格（P4）：只带增益的逐件相对电平组 —— 无器件段、
         // 无声相、无侧链；增益值逐条钉住（出厂定值，改值须改本判据）。
         type GainGroup = (&'static str, &'static [u8], f32);
@@ -4838,6 +4911,8 @@ mod tests {
             }
         }
         // 其余出厂风格本期不带逐件链（合成系相对电平走 *_level，不在此写）。
+        // drill / hiphop 自 2026-11-20（Wang 立项加 808 道）起带 bass 组，
+        // 已在上方逐条钉住，故列入带链名单。
         for style in &styles {
             if !matches!(
                 style.id.as_str(),
@@ -4845,6 +4920,8 @@ mod tests {
                     | "trap"
                     | "lofi"
                     | "phonk"
+                    | "drill"
+                    | "hiphop"
                     | "pop"
                     | "rock"
                     | "boombap"
