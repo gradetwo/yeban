@@ -11670,9 +11670,11 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                         }
                         _ => -1,
                     };
-                    if percent != last_percent
-                        || now.duration_since(last_emit) >= std::time::Duration::from_millis(200)
-                    {
+                    if crate::sound_library::should_emit_progress(
+                        percent,
+                        last_percent,
+                        now.duration_since(last_emit).as_millis(),
+                    ) {
                         last_percent = percent;
                         last_emit = now;
                         ping_state.set_progress(DownloadTick {
@@ -11792,7 +11794,39 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                     let _ = ping_weak.upgrade_in_event_loop(|ui| {
                         ui.invoke_sound_library_drain_requested();
                     });
+                    // T-FIX-24 / #24.2：批量腿旧代码**每 64 KiB 就 set_progress +
+                    // upgrade_in_event_loop 一次**，几十 MiB 的包会洪泛事件循环。
+                    // 这里补齐与单包腿（上面那条）完全一致的口径：≥200 ms 或百分比
+                    // 变化才发一行，且速度读数同样要两次采样（不从 0 算，免得把启动
+                    // 延迟说成几 GiB/s）。
+                    let mut last_percent = -1i32;
+                    let mut last_sample: Option<(std::time::Instant, u64)> = None;
+                    let mut last_emit = std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(5))
+                        .unwrap_or_else(std::time::Instant::now);
                     let mut progress = |downloaded: u64, total_bytes: Option<u64>| {
+                        let now = std::time::Instant::now();
+                        let rate = match last_sample {
+                            Some((at, bytes)) => {
+                                let secs = now.duration_since(at).as_secs_f64();
+                                if secs >= 0.2 {
+                                    #[allow(
+                                        clippy::cast_possible_truncation,
+                                        clippy::cast_sign_loss
+                                    )]
+                                    let rate =
+                                        ((downloaded.saturating_sub(bytes)) as f64 / secs) as u64;
+                                    last_sample = Some((now, downloaded));
+                                    Some(rate)
+                                } else {
+                                    None
+                                }
+                            }
+                            None => {
+                                last_sample = Some((now, downloaded));
+                                None
+                            }
+                        };
                         let percent = match total_bytes {
                             Some(total_bytes) if total_bytes > 0 => {
                                 i32::try_from(downloaded.saturating_mul(100) / total_bytes)
@@ -11801,19 +11835,27 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                             }
                             _ => -1,
                         };
-                        worker_state.set_progress(DownloadTick {
-                            pack_id: pack_id.clone(),
+                        if crate::sound_library::should_emit_progress(
                             percent,
-                            readout: crate::sound_library::format_download_readout(
+                            last_percent,
+                            now.duration_since(last_emit).as_millis(),
+                        ) {
+                            last_percent = percent;
+                            last_emit = now;
+                            worker_state.set_progress(DownloadTick {
+                                pack_id: pack_id.clone(),
                                 percent,
-                                downloaded,
-                                total_bytes,
-                                None,
-                            ),
-                        });
-                        let _ = worker_weak.upgrade_in_event_loop(|ui| {
-                            ui.invoke_sound_library_drain_requested();
-                        });
+                                readout: crate::sound_library::format_download_readout(
+                                    percent,
+                                    downloaded,
+                                    total_bytes,
+                                    rate,
+                                ),
+                            });
+                            let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                                ui.invoke_sound_library_drain_requested();
+                            });
+                        }
                     };
                     let builtin = if pack.sha256.is_empty() && pack.url.contains("/archive/") {
                         sounds.iter().find(|sound| sound.id == pack_id)

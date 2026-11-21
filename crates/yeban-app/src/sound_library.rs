@@ -96,6 +96,19 @@ pub const USER_ID_PREFIX: &str = "user:";
 /// 解包总量上限（zip 炸弹护栏）：单包解出超过这个字节数即中止报错。
 pub const MAX_UNPACKED_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 
+/// 下载字节上限（T-FIX-24 / P1-7）：流式下载超过这个字节数即中止报错。
+///
+/// 与 [`MAX_UNPACKED_BYTES`] 同量级同语义（归档是压缩字节，通常远小于解包总量；
+/// 但下载腿是**第一道**防线，先于 zip 解析拦下失控响应）。边读边累计、超限即停，
+/// ⛔ 不先落满磁盘再回头判。
+pub const MAX_DOWNLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+
+/// 下载读超时（T-FIX-24 / P1-7）：两次连续读之间允许的最长空闲。
+///
+/// 用 ureq 3 的 `timeout_per_read`（每次读重新计时），而不是全局墙钟 —— 大包合法
+/// 下载可能持续数分钟，全局上限会误杀；但"连 45 秒读不到一个字节"必然是挂死。
+pub const DOWNLOAD_READ_TIMEOUT_SECS: u64 = 45;
+
 /// 目录 JSON 的拉取上限（目录只是清单，超过即视为不可用）。
 const MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -209,6 +222,13 @@ pub enum SoundError {
     },
     /// 归档本身不可装：打不开、含不安全路径 / 符号链接、解包超限。
     BadArchive(String),
+    /// 下载地址超过 [`MAX_DOWNLOAD_BYTES`]：流式读累计超限即中止，不落满磁盘。
+    DownloadTooLarge {
+        /// 允许的最大字节数。
+        limit: u64,
+    },
+    /// 下载地址不是 `https://`：scheme 白名单拒绝明文 / `file://` 等。
+    InsecureUrl(String),
     /// 内置音色库不可删。
     BuiltInNotDeletable,
     /// 删除目标不存在或 id 不认识。
@@ -229,10 +249,56 @@ impl SoundError {
                 format!("包校验不符：目录登记 sha256 {expected}，实际 {actual}，已弃")
             }
             Self::BadArchive(detail) => format!("包不可用：{detail}"),
+            Self::DownloadTooLarge { limit } => {
+                format!("下载字节数超过上限 {limit} 字节，已中止")
+            }
+            Self::InsecureUrl(url) => {
+                format!("下载地址必须使用 https，已拒绝：{url}")
+            }
             Self::BuiltInNotDeletable => "内置音色库不可删除".to_owned(),
             Self::NotFound(id) => format!("找不到要删除的音源库：{id}"),
         }
     }
+}
+
+/// 下载地址的 scheme 白名单（T-FIX-24 / P1-7）：只接受 `https://`。
+///
+/// 纯函数，好让回归测试能确定性地钉住边界。判定口径：
+/// - scheme 大小写不敏感（`HTTPS://` 也认，URL scheme 本就不区分大小写）；
+/// - `https:` 之后必须紧跟 `//` 且 host 非空（拒绝 `https:/x`、`https://` 空 host）；
+/// - 拒绝把 userinfo 塞进 authority（`https://user@host/`）—— 那会误导显示与对账。
+///
+/// 包 URL 与目录 URL 覆盖都走这里；本地文件钩子（`CATALOG_FILE_ENV`）不走网络，
+/// 不经过本函数。
+fn is_https_url(url: &str) -> bool {
+    let lowered = url.to_ascii_lowercase();
+    let Some(rest) = lowered.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty() && !authority.contains('@')
+}
+
+/// 流式字节累计 + 上限检查（T-FIX-24 / P1-7 的唯一口径）。
+///
+/// 返回 `Some(新累计)` 表示仍在上限内；`None` 表示加上 `chunk` 后会越过 `limit`。
+/// 下载腿与解压腿都走它，保证"边读边判、超限即停"这条语义只有一处实现。
+/// 纯函数 + 可注入 limit，让回归测试能用小上限钉住边界（不必造 20 GiB 夹具）。
+fn accumulate_within_limit(current: u64, chunk: u64, limit: u64) -> Option<u64> {
+    let next = current.saturating_add(chunk);
+    (next <= limit).then_some(next)
+}
+
+/// 下载进度的最小刷新间隔（毫秒）：单包与批量两腿共用（#24.2）。
+pub const PROGRESS_EMIT_INTERVAL_MS: u64 = 200;
+
+/// 进度是否该发一行（#24.2 的唯一节流口径，单包 / 批量两腿共用）。
+///
+/// 百分比变化立刻发，否则至少隔 [`PROGRESS_EMIT_INTERVAL_MS`] 再发。纯函数 +
+/// 可注入 `elapsed_ms`，让回归测试能用合成时间钉住边界，而不必真等 200 ms。
+#[must_use]
+pub fn should_emit_progress(percent: i32, last_percent: i32, elapsed_ms: u128) -> bool {
+    percent != last_percent || elapsed_ms >= u128::from(PROGRESS_EMIT_INTERVAL_MS)
 }
 
 /// 目录名 / 包 id 的合法形态：单段、非空、不以 `.` 开头、无路径分隔符。
@@ -426,11 +492,16 @@ fn parse_pack(index: usize, item: &serde_json::Value) -> Result<CatalogPack, Cat
 }
 
 /// 带超时的 HTTP 客户端（`global` 是整次操作的墙钟上限；下载大包时
-/// 传 `None` 不设全局上限，只留连接超时，⛔ 不让慢网被误杀）。
+/// 传 `None` 不设全局上限，只留连接 / 读超时，⛔ 不让慢网被误杀）。
+///
+/// T-FIX-24 / P1-7：新增 `timeout_per_read`（每次读重新计时）—— 下载腿即使
+/// `global = None`，也绝不允许"连 [`DOWNLOAD_READ_TIMEOUT_SECS`] 秒读不到一个字节"
+/// 的挂死连接无限占用线程。目录拉取（小 JSON）另传 `global = 30s`，不受影响。
 fn http_agent(global: Option<Duration>) -> ureq::Agent {
     // ureq 3：`config_builder().build()` 产 `Config`，`Into` 转 `Agent`。
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_per_read(Some(Duration::from_secs(DOWNLOAD_READ_TIMEOUT_SECS)))
         .timeout_global(global)
         .build()
         .into()
@@ -454,6 +525,12 @@ pub fn fetch_catalog() -> Result<Catalog, CatalogError> {
         .ok()
         .filter(|raw| !raw.trim().is_empty())
         .unwrap_or_else(|| CATALOG_URL.to_owned());
+    // P1-7：目录地址覆盖同样只允 https（防运维误配 file:// / http:// 明文注入）。
+    if !is_https_url(&url) {
+        return Err(CatalogError::Unavailable(format!(
+            "目录地址不是 https：{url}"
+        )));
+    }
     let agent = http_agent(Some(Duration::from_secs(30)));
     let mut response = agent
         .get(&url)
@@ -604,14 +681,28 @@ fn extract_and_place(
         }
         let mut out = fs::File::create(&dest)
             .map_err(|err| SoundError::Io(format!("写 {} 失败：{err}", dest.display())))?;
-        let copied = std::io::copy(&mut entry, &mut out)
-            .map_err(|err| SoundError::Io(format!("解包 {} 失败：{err}", dest.display())))?;
-        unpacked = unpacked.saturating_add(copied);
-        if unpacked > MAX_UNPACKED_BYTES {
-            return Err(SoundError::BadArchive(format!(
-                "解包总量超过上限 {} 字节",
-                MAX_UNPACKED_BYTES
-            )));
+        // T-FIX-24 / P1-7：边读边累计，超限**立即**中止 —— 旧代码用 `io::copy`
+        // 把整个条目读完再判 `unpacked > MAX`，一个 20 GiB 的炸弹条目会先被完整
+        // 落盘才报错。这里每读一块就累计，一旦越过上限当场返回，磁盘上最多多出
+        // 一个被截断的条目（临时区随后由调用方整体删除，⛔ 不进已安装区）。
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let read = entry
+                .read(&mut chunk)
+                .map_err(|err| SoundError::Io(format!("解包 {} 失败：{err}", dest.display())))?;
+            if read == 0 {
+                break;
+            }
+            let Some(next) = accumulate_within_limit(unpacked, read as u64, MAX_UNPACKED_BYTES)
+            else {
+                return Err(SoundError::BadArchive(format!(
+                    "解包总量超过上限 {} 字节",
+                    MAX_UNPACKED_BYTES
+                )));
+            };
+            unpacked = next;
+            out.write_all(&chunk[..read])
+                .map_err(|err| SoundError::Io(format!("写 {} 失败：{err}", dest.display())))?;
         }
     }
     // 标记：扫描靠它取显示名，删除 / 重装靠它认包。
@@ -623,14 +714,44 @@ fn extract_and_place(
     });
     fs::write(staging.join(PACK_MARKER_FILE), marker.to_string())
         .map_err(|err| SoundError::Io(format!("写包标记失败：{err}")))?;
-    // 落位：同名旧目录先删（重装 = 替换），然后整体改名（同盘 rename）。
+    // 落位（T-FIX-24 / P1-7）：backup → rename → cleanup 的原子替换。
+    // 旧代码先 `remove_dir_all(dest)` 再 `rename(staging, dest)`，两步之间 dest
+    // 不存在：一旦 rename 失败，用户已装的音源就没了。这里先把旧目录整份改名到
+    // backup（瞬时、同盘、原子），再把 staging 改名到 dest，最后才删 backup ——
+    // 任何一步失败都把 backup 改回 dest，保证"要么旧的完好，要么新的完整"。
     let dest = roots.library_root.join(&pack.id);
-    if dest.exists() {
-        fs::remove_dir_all(&dest)
-            .map_err(|err| SoundError::Io(format!("替换旧目录 {} 失败：{err}", dest.display())))?;
+    // backup 与 staging 同父（同盘），保证 rename 是原子、不会 EXDEV。
+    let staging_root = staging.parent().unwrap_or(&roots.library_root);
+    let backup = staging_root.join(format!("{}.backup-{}", pack.id, STAGING_DIR_NAME));
+    // 上一次异常退出可能残留 backup：先清掉，否则 rename 会失败。
+    if backup.exists() {
+        fs::remove_dir_all(&backup).map_err(|err| {
+            SoundError::Io(format!("清理旧备份 {} 失败：{err}", backup.display()))
+        })?;
     }
-    fs::rename(staging, &dest)
-        .map_err(|err| SoundError::Io(format!("安装落位 {} 失败：{err}", dest.display())))?;
+    let had_old = dest.exists();
+    if had_old {
+        fs::rename(&dest, &backup)
+            .map_err(|err| SoundError::Io(format!("备份旧目录 {} 失败：{err}", dest.display())))?;
+    }
+    if let Err(err) = fs::rename(staging, &dest) {
+        // 回滚：新包没落位成功就把旧目录放回去，绝不让用户丢已装音源。
+        if had_old {
+            let _ = fs::rename(&backup, &dest);
+        }
+        return Err(SoundError::Io(format!(
+            "安装落位 {} 失败（旧目录已回滚）：{err}",
+            dest.display()
+        )));
+    }
+    if had_old && fs::remove_dir_all(&backup).is_err() {
+        // 备份删除失败不影响安装成功（新包已就位），但如实提示，等下次安装再清。
+        eprintln!(
+            "yeban-app: 安装 {}：旧备份 {} 清理失败，将在下次安装时重试",
+            pack.id,
+            backup.display()
+        );
+    }
     Ok(InstalledLibrary {
         id: format!("{USER_ID_PREFIX}{}", pack.id),
         name: pack.name.clone(),
@@ -671,6 +792,10 @@ fn download_to_file(
     part_path: &Path,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<(), SoundError> {
+    // P1-7：scheme 白名单只允 https（明文 / file:// 等一律拒），在发起任何请求前。
+    if !is_https_url(&pack.url) {
+        return Err(SoundError::InsecureUrl(pack.url.clone()));
+    }
     let agent = http_agent(None);
     let mut response = agent
         .get(&pack.url)
@@ -693,9 +818,18 @@ fn download_to_file(
         if read == 0 {
             break;
         }
+        // P1-7：边读边累计，超限**立即**中止（先于写盘）—— 旧代码没有上限，
+        // 一个失控/恶意响应会把磁盘写满。这里的 .part 是临时区，超限后由
+        // download_pack 的收尾统一清掉，⛔ 不落进已安装区。
+        let Some(next) = accumulate_within_limit(downloaded, read as u64, MAX_DOWNLOAD_BYTES)
+        else {
+            return Err(SoundError::DownloadTooLarge {
+                limit: MAX_DOWNLOAD_BYTES,
+            });
+        };
+        downloaded = next;
         out.write_all(&buffer[..read])
             .map_err(|err| SoundError::Io(format!("写临时文件失败：{err}")))?;
-        downloaded += read as u64;
         progress(downloaded, total);
     }
     out.flush()
@@ -1337,6 +1471,120 @@ mod tests {
         assert_eq!(format_size(1024), "1.0 KiB");
         assert_eq!(format_size(1536), "1.5 KiB");
         assert_eq!(format_size(9_844_170_377), "9.2 GiB");
+    }
+
+    // -----------------------------------------------------------------------
+    // T-FIX-24 / P1-7 + #24.2 回归判据
+    // -----------------------------------------------------------------------
+
+    /// 判据：URL scheme 白名单只认 https（大小写不敏感），host 非空、无 userinfo。
+    #[test]
+    fn url_allowlist_accepts_only_https() {
+        assert!(is_https_url("https://example.invalid/pack.zip"));
+        assert!(is_https_url("HTTPS://Example.INVALID/a.zip"));
+        // 明文 / 文件 / 其它 scheme 一律拒。
+        assert!(!is_https_url("http://example.invalid/pack.zip"));
+        assert!(!is_https_url("file:///etc/passwd"));
+        assert!(!is_https_url("ftp://example.invalid/a.zip"));
+        // 空 host / 缺 // / userinfo 混淆都拒。
+        assert!(!is_https_url("https://"));
+        assert!(!is_https_url("https:/only-one-slash"));
+        assert!(!is_https_url("https://user@host/pack.zip"));
+        assert!(!is_https_url("https://@host/"));
+    }
+
+    /// 判据：流式累计在**等于**上限时仍放行、越 1 字节即拒；saturating 不溢出。
+    #[test]
+    fn byte_accumulate_respects_limit_exactly() {
+        assert_eq!(accumulate_within_limit(0, 100, 100), Some(100));
+        assert_eq!(accumulate_within_limit(100, 1, 100), None);
+        assert_eq!(accumulate_within_limit(0, 101, 100), None);
+        // 分块累加：9 + 1 == 10 放行，再加 1 拒绝。
+        assert_eq!(accumulate_within_limit(9, 1, 10), Some(10));
+        assert_eq!(accumulate_within_limit(10, 1, 10), None);
+        // 超大块 saturating 后仍 > limit ⇒ 拒绝，不溢出回绕成"放行"。
+        assert_eq!(
+            accumulate_within_limit(u64::MAX, u64::MAX, u64::MAX - 1),
+            None
+        );
+    }
+
+    /// 判据：进度节流 —— 百分比变化必发，否则至少隔 200ms；合成时间钉边界。
+    #[test]
+    fn progress_emit_is_throttled_by_percent_or_time() {
+        // 百分比变化 ⇒ 立刻发（哪怕刚发过）。
+        assert!(should_emit_progress(11, 10, 0));
+        // 百分比没变且时间未到 ⇒ 不发（这正是批量腿原来洪泛的根源）。
+        assert!(!should_emit_progress(10, 10, 0));
+        assert!(!should_emit_progress(10, 10, 199));
+        // 到了 200ms ⇒ 发。
+        assert!(should_emit_progress(10, 10, 200));
+        assert!(should_emit_progress(10, 10, 500));
+    }
+
+    /// 判据：非 https 的下载地址在**发起请求前**就被拒（不依赖外网）。
+    /// 走 `download_to_file` 的私有入口；用不存在的本地路径作 part，确保一旦
+    /// 真的去建文件或发请求就会与"URL 被拒"的断言矛盾。
+    #[test]
+    fn insecure_pack_url_is_rejected_before_any_io() {
+        let fixture = TestRoots::new("insecure-url");
+        let part = fixture.base.join("never-created.part");
+        let mut pack = CatalogPack {
+            id: "p".to_owned(),
+            name: "p".to_owned(),
+            description: "".to_owned(),
+            version: "1".to_owned(),
+            size_bytes: 0,
+            sha256: String::new(),
+            url: "http://example.invalid/pack.zip".to_owned(),
+        };
+        let mut progress = |_done: u64, _total: Option<u64>| {};
+        match download_to_file(&pack, &part, &mut progress) {
+            Err(SoundError::InsecureUrl(url)) => assert_eq!(url, pack.url),
+            other => panic!("必须因非 https 被拒，实得：{other:?}"),
+        }
+        assert!(!part.exists(), "URL 被拒前不得创建临时文件");
+        // 大小写混写的 https scheme 也应放行校验这一层（真正联网另说）。
+        pack.url = "HTTPS://example.invalid/pack.zip".to_owned();
+        // 这里不继续调用：那会真的发网络请求；只验证白名单函数已覆盖该形态。
+        assert!(is_https_url(&pack.url));
+    }
+
+    /// 判据：原子替换的**正向路径** —— 同 id 重装后旧内容被完整替换，且
+    /// 临时区不残留 `.backup-*` 目录（backup→rename→cleanup 三步都走通）。
+    #[test]
+    fn reinstall_replaces_old_dir_and_cleans_backup() {
+        let fixture = TestRoots::new("reinstall-atomic");
+        let zip_path = fixture.base.join("pack.zip");
+        write_zip(&zip_path, &[("old.txt", b"OLD".as_slice())]);
+        let pack = pack_for(&zip_path, "replace-pack");
+        let first = install_pack_archive(&pack, &zip_path, &fixture.roots).expect("首次安装");
+
+        // 换一份内容不同的归档，同 id 重装（size/sha 也随之更新）。
+        let zip2 = fixture.base.join("pack2.zip");
+        write_zip(&zip2, &[("new.txt", b"NEW-CONTENT".as_slice())]);
+        let mut pack2 = pack_for(&zip2, "replace-pack");
+        pack2.description = "第二版".to_owned();
+        let second = install_pack_archive(&pack2, &zip2, &fixture.roots).expect("重装");
+
+        assert_eq!(first.location, second.location, "落点稳定");
+        let dir = &second.location;
+        assert!(dir.join("new.txt").exists(), "新内容必须就位");
+        assert!(!dir.join("old.txt").exists(), "旧内容必须被整份替换");
+        assert_eq!(
+            fs::read(dir.join("new.txt")).expect("读新文件"),
+            b"NEW-CONTENT",
+            "新内容必须逐字节正确"
+        );
+        // 临时区不得残留 backup 或 extract 目录。
+        let incoming = fixture.roots.library_root.join(STAGING_DIR_NAME);
+        let leftovers: Vec<String> = fs::read_dir(&incoming)
+            .expect("读临时区")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("backup") || name.starts_with("extract"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时区不得残留：{leftovers:?}");
     }
 }
 
