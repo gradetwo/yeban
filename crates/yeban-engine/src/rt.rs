@@ -3005,12 +3005,30 @@ fn render_branch(
             }
         } else if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
             if single_unit_to_master {
-                sum_into_bus_smoothed(
-                    out,
-                    &share.track_scratch[..frames],
-                    &mut share.armed_pan_l[index],
-                    &mut share.armed_pan_r[index],
-                );
+                // ⭐ **T-FIX-14（审计 #14）**：分声道轨走**成对**平滑求和。
+                // 修前这里无条件用单声道版 `sum_into_bus_smoothed`（只读左缓冲
+                // `track_scratch`），分声道轨的右缓冲 `track_scratch_r` 从未被读
+                // ⇒ 右声道内容被左声道顶替（等价于丢右声道）。改与慢路的
+                // `render_panned_pair_into_smoothed`、静态格的
+                // `sum_pair_into_bus_smoothed` 同一把尺子：左乘左增益、右乘右
+                // 增益，两个平滑器每帧各推进一次 ⇒ 快路与慢路逐样本一致。
+                // 单声道轨仍走单声道版（其右缓冲本就不存在），逐位不变。
+                if pair_track {
+                    sum_pair_into_bus_smoothed(
+                        out,
+                        &share.track_scratch[..frames],
+                        &share.track_scratch_r[..frames],
+                        &mut share.armed_pan_l[index],
+                        &mut share.armed_pan_r[index],
+                    );
+                } else {
+                    sum_into_bus_smoothed(
+                        out,
+                        &share.track_scratch[..frames],
+                        &mut share.armed_pan_l[index],
+                        &mut share.armed_pan_r[index],
+                    );
+                }
             } else {
                 // 声相自动化 + 非平凡路由：先把"声相之后"的立体声写进暂存
                 // （平滑器**每帧只推进一次**），再按边分别搬运。
