@@ -6123,6 +6123,30 @@ fn ara_factory_json(descriptor: &yeban_plugin_host::PluginDescriptor) -> Value {
 
 /// `HostError` → `Fault`（与 `plan_load_plugin` 同一条映射：打不开库 ⇒
 /// `IO_ERROR`，其余 ⇒ `INVALID_PARAMETER_RANGE`）。
+/// P0-5：插件路径准入门（`yeban_load_plugin` / `yeban_ara_bind` 共用）。
+///
+/// 外部实参 `pluginPath` 在交给宿主 `dlopen` 之前必须先过
+/// [`Host::validate_plugin_path`]（形态＋`canonicalize`＋白名单根
+/// containment）；不过门 ⇒ `INVALID_PARAMETER_RANGE` +
+/// `pluginPathNotAllowed` 响亮拒绝，不许放行到加载层再报错。
+/// 调用点在各工具真正加载插件的那一步：`yeban_load_plugin` 的 plan
+/// 本身就验证加载，故在 plan 里验；`yeban_ara_bind` 的 plan 不打开
+/// 插件，故在 apply 打开会话前验。
+fn guard_plugin_path(path: &str) -> Result<(), Fault> {
+    Host::validate_plugin_path(path)
+        .map(|_| ())
+        .map_err(|error| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("插件路径校验失败，拒绝加载: {error}"),
+                serde_json::json!({
+                    "reason": "pluginPathNotAllowed",
+                    "pluginPath": path,
+                }),
+            )
+        })
+}
+
 fn ara_host_error(error: HostError) -> Fault {
     let code = match error {
         HostError::LibraryLoad(_) => ErrorCode::IoError,
@@ -6207,6 +6231,8 @@ fn plan_ara_bind(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })?;
     let muted = arg_bool(call, "muted", false);
     let pcm = ara::decode_wav_to_pcm(Path::new(wav_path))?;
+    // P0-5：插件路径校验不在 plan 做——plan 不打开插件（本函数头注的
+    // 切分），校验落在 apply 打开会话（dlopen）之前，见 `apply_ara_bind`。
     Ok(Plan::AraBind {
         plugin_path: plugin_path.to_owned(),
         plugin_id,
@@ -6359,6 +6385,9 @@ fn apply_ara_bind(domain: &mut Domain, request: AraBindRequest) -> Result<ToolRe
         loop_iterations,
         muted,
     };
+    // P0-5：打开会话即 dlopen，之前必须先过插件路径准入门（plan 不打开
+    // 插件，故校验落在这里；apply 也可能被单独调用，同一函数同一口径）。
+    guard_plugin_path(&plugin_path)?;
     let session = AraSession::open(&plugin_path, plugin_id.as_deref(), clip, placement)
         .map_err(ara_host_error)?;
     let factory = session.factory_info().clone();
@@ -6443,6 +6472,7 @@ fn apply_ara_render(
 /// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0069 D13）。
 ///
 /// 顺序承重：先 `require_active`，再解析 `trackId`、查轨（无则 `TRACK_NOT_FOUND`），
+/// 再过 P0-5 插件路径准入门（[`guard_plugin_path`]，dlopen 前校验），
 /// 再按 `kind` 验证（失败响亮，不写提案 —— 坏插件不配进提案模拟），
 /// 最后 `propose_draft` 挂一台外部设备（`autoMerge` 与
 /// `mergeCommitMessage` 由提案收尾从 `call` 实参读，与 `yeban_edit_notes` 同一条纪律）。
@@ -6467,6 +6497,9 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let path = arg_str(call, "pluginPath").ok_or_else(|| {
         Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
     })?;
+    // P0-5：路径先过准入门（白名单根＋规范形态），才许交给 `Host::load`
+    // 执行 dlopen 验证加载；根外路径在本行即响亮拒绝。
+    guard_plugin_path(path)?;
     let class = arg_str(call, "pluginId");
     let kind = arg_str(call, "kind").unwrap_or("instrument");
     let (instance, device_kind) = match kind {
@@ -9666,6 +9699,74 @@ mod tests {
         assert!(
             plan(&domain, &mismatch_call).is_err(),
             "乐器桩走效果器路必须失败"
+        );
+    }
+
+    /// P0-5 判据夹具：temp 目录里一个真实存在的 `.so` 文件（内容任意）。
+    /// temp 不在 `YEBAN_VST3_PATHS`／平台标准 VST3 根内，路径校验必须在
+    /// dlopen 之前响亮拒绝它——未修树上两个工具都会把它放行到加载层。
+    fn outside_roots_fake_plugin() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-p05-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("outside.so");
+        std::fs::write(&path, b"not a plugin").expect("写假插件文件");
+        path
+    }
+
+    /// P0-5：`yeban_load_plugin` 的 `pluginPath` 在白名单根外 ⇒ plan 期
+    /// 响亮拒绝（`INVALID_PARAMETER_RANGE` + `pluginPathNotAllowed`），
+    /// 不许走到 `Host::load` 的 dlopen。
+    #[test]
+    fn load_plugin_rejects_plugin_path_outside_roots() {
+        let domain = domain();
+        let track = fixture_track(&domain);
+        let fake = outside_roots_fake_plugin();
+        let call = call(
+            "yeban_load_plugin",
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "pluginPath": fake.display().to_string(),
+            }),
+        );
+        let error = plan(&domain, &call).expect_err("根外插件路径必须在加载前被拒绝");
+        let Fault::Domain { code, data, .. } = error else {
+            panic!("根外路径应报领域失败，实为 {error:?}");
+        };
+        assert_eq!(code, ErrorCode::InvalidParameterRange);
+        assert_eq!(
+            data.expect("拒绝须带结构化补充")["reason"],
+            "pluginPathNotAllowed"
+        );
+    }
+
+    /// P0-5：`yeban_ara_bind` 的 `pluginPath` 在白名单根外 ⇒ plan 照常
+    /// 成功（plan 不打开插件），apply 在 `AraSession::open`（dlopen）
+    /// 之前响亮拒绝（同上 reason）。
+    #[test]
+    fn ara_bind_rejects_plugin_path_outside_roots() {
+        let mut domain = domain();
+        let wav = ara_sine_wav_fixture();
+        let fake = outside_roots_fake_plugin();
+        let call = call(
+            "yeban_ara_bind",
+            serde_json::json!({
+                "pluginPath": fake.display().to_string(),
+                "wavPath": wav.display().to_string(),
+            }),
+        );
+        let planned = plan(&domain, &call).expect("ARA 绑定规划不打开插件，应成功");
+        let error = apply(&mut domain, planned).expect_err("根外插件路径必须在打开插件前被拒绝");
+        let Fault::Domain { code, data, .. } = error else {
+            panic!("根外路径应报领域失败，实为 {error:?}");
+        };
+        assert_eq!(code, ErrorCode::InvalidParameterRange);
+        assert_eq!(
+            data.expect("拒绝须带结构化补充")["reason"],
+            "pluginPathNotAllowed"
         );
     }
 
