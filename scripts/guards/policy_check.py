@@ -40,6 +40,7 @@ ENGINE_CRATES_NO_GUI = (
     "yeban-sfz",
     "yeban-decode",
     "yeban-otcp",
+    "yeban-midi",
 )
 
 #: 强制 #![forbid(unsafe_code)] 的 crate [AGENTS.md 红线 8]
@@ -48,10 +49,22 @@ SAFE_BY_DEFAULT_CRATES = (
     "yeban-theory",
     "yeban-dsp",
     "yeban-render",
+    "yeban-midi",
 )
 
 #: GUI 依赖黑名单 (出现即违规)
-GUI_DEP_PATTERNS = ("slint", "winit", "glutin", "egui", "qt_core", "gtk", "iced", "tao")
+GUI_DEP_PATTERNS = (
+    "slint",
+    "winit",
+    "glutin",
+    "egui",
+    "qt_core",
+    "gtk",
+    "iced",
+    "tao",
+    "ratatui",
+    "crossterm",
+)
 
 #: ⭐ R567: **非引擎层** crate 的显式清单 —— 与 `ENGINE_CRATES_NO_GUI` 合起来构成
 #: "每个 crate 都必须被分类"的全集（`G15`）。⚠ 为什么需要：`G02`／`G03`／`G11` 都是
@@ -61,7 +74,6 @@ NON_ENGINE_CRATES = (
     "yeban-app",
     "yeban-diagnostics",
     "yeban-mcp",
-    "yeban-midi",
     "yeban-midi-io",
     "yeban-plugin-host",
     "yeban-record",
@@ -187,15 +199,66 @@ def iter_source_files(suffixes: tuple[str, ...] = (".rs", ".toml", ".slint")) ->
     return out
 
 
-def rust_source_before_tests(text: str) -> str:
-    """截掉 `#[cfg(test)]` 之后的内容。
+def iter_manifest_dep_tables(
+    manifest: dict, sections: tuple[str, ...] = ("dependencies", "dev-dependencies", "build-dependencies")
+):
+    """遍历成员 Cargo.toml 的顶层与 `[target.<cfg>.<section>]` 依赖表。"""
+    for section in sections:
+        table = manifest.get(section)
+        if isinstance(table, dict):
+            yield section, table
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for cfg_name, target_table in targets.items():
+            if not isinstance(target_table, dict):
+                continue
+            for section in sections:
+                table = target_table.get(section)
+                if isinstance(table, dict):
+                    yield f"target.{cfg_name}.{section}", table
 
-    约定: 测试模块位于文件末尾; 测试里允许使用 HashMap 之类的容器做夹具。
-    生产代码路径才是红线所在。截断点用「最后一个 `#[cfg(test)]`」,
-    这样即使文件里有多个测试模块也能正确覆盖。
+
+def strip_cfg_test_items(text: str) -> str:
+    """用括号配平剔除全部 `#[cfg(test)]` 修饰的条目（`mod tests` 与早置 `#[cfg(test)] fn` 等），
+    同时保持原始行号不变。
     """
-    idx = text.find("#[cfg(test)]")
-    return text if idx < 0 else text[:idx]
+    out: list[str] = []
+    pending_test = False
+    in_test_item = False
+    depth = 0
+    for raw in text.splitlines():
+        code = _strip_code(raw)
+        if not in_test_item and not pending_test and "#[cfg(test)]" in code:
+            pending_test = True
+
+        if pending_test or in_test_item:
+            out.append("")
+            opens = code.count("{")
+            closes = code.count("}")
+            if not in_test_item:
+                if opens > 0:
+                    depth = opens - closes
+                    if depth <= 0:
+                        pending_test = False
+                        depth = 0
+                    else:
+                        pending_test = False
+                        in_test_item = True
+                elif ";" in code:
+                    pending_test = False
+            else:
+                depth += opens - closes
+                if depth <= 0:
+                    in_test_item = False
+                    depth = 0
+        else:
+            out.append(raw)
+    return "\n".join(out)
+
+
+def rust_source_before_tests(text: str) -> str:
+    """向后兼容别名：剔除 `#[cfg(test)]` 条目（括号配平），避免早置测试项掩盖后面的生产代码。"""
+    return strip_cfg_test_items(text)
 
 
 def is_comment_line(line: str) -> bool:
@@ -241,8 +304,10 @@ def g02_no_gui_deps_in_engine_crates() -> list[Violation]:
         if not manifest_path.is_file():
             continue
         manifest = read_manifest(crate)
-        for section in ("dependencies", "build-dependencies", "dev-dependencies"):
-            for dep_name in manifest.get(section, {}) or {}:
+        for section, table in iter_manifest_dep_tables(
+            manifest, ("dependencies", "build-dependencies", "dev-dependencies")
+        ):
+            for dep_name in table:
                 low = dep_name.lower().replace("-", "_")
                 if any(pat in low for pat in GUI_DEP_PATTERNS):
                     bad.append(
@@ -272,8 +337,9 @@ def g03_safe_by_default_attribute() -> list[Violation]:
 
 
 def g04_no_zero_zero_zero_zero_bind() -> list[Violation]:
-    """[ARCH-SEC-002 / AGENTS.md 红线 5] 严禁绑定 0.0.0.0。"""
+    """[ARCH-SEC-002 / AGENTS.md 红线 5] 严禁绑定通配监听地址（0.0.0.0 / UNSPECIFIED / [::]）。"""
     bad: list[Violation] = []
+    unspec_re = re.compile(r"\b(?:Ipv4Addr|Ipv6Addr)::UNSPECIFIED\b|\[::\]")
     for path in iter_source_files((".rs", ".toml", ".slint")):
         text = path.read_text(encoding="utf-8", errors="replace")
         for lineno, line in enumerate(text.splitlines(), start=1):
@@ -281,6 +347,15 @@ def g04_no_zero_zero_zero_zero_bind() -> list[Violation]:
                 continue
             if "0.0.0.0" in line:
                 bad.append(("G04", f"{rel(path)}:{lineno}", "出现 0.0.0.0 监听字面量"))
+        if path.suffix == ".rs":
+            prod = strip_cfg_test_items(text)
+            for lineno, line in enumerate(prod.splitlines(), start=1):
+                if is_comment_line(line):
+                    continue
+                if unspec_re.search(line):
+                    bad.append(
+                        ("G04", f"{rel(path)}:{lineno}", "出现通配监听地址 (UNSPECIFIED / [::])")
+                    )
     return bad
 
 
@@ -414,6 +489,16 @@ def g08_workspace_inheritance_and_lints() -> list[Violation]:
             bad.append(
                 ("G08", rel(manifest_path), "缺少 [lints] workspace = true (无法继承工作区 lint 策略)")
             )
+        for section, table in iter_manifest_dep_tables(manifest):
+            for dep_name, spec in table.items():
+                if not (isinstance(spec, dict) and spec.get("workspace") is True):
+                    bad.append(
+                        (
+                            "G08",
+                            f"{rel(manifest_path)} [{section}]",
+                            f"依赖 `{dep_name}` 必须通过 `workspace = true` 从根清单继承",
+                        )
+                    )
     return bad
 
 
@@ -440,10 +525,18 @@ def g10_no_wildcard_versions() -> list[Violation]:
         manifest_path = crate / "Cargo.toml"
         if not manifest_path.is_file():
             continue
-        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-            for name, spec in (read_manifest(crate).get(section, {}) or {}).items():
+        for _section, table in iter_manifest_dep_tables(manifest := read_manifest(crate)):
+            for name, spec in table.items():
                 if isinstance(spec, str) and spec.strip().startswith("*"):
                     bad.append(("G10", rel(manifest_path), f"依赖 `{name}` 使用了通配版本 `{spec}`"))
+                elif isinstance(spec, dict) and str(spec.get("version", "")).strip().startswith("*"):
+                    bad.append(
+                        (
+                            "G10",
+                            rel(manifest_path),
+                            f"依赖 `{name}` 使用了通配版本 `{spec.get('version')}`",
+                        )
+                    )
     return bad
 
 
@@ -457,8 +550,10 @@ def g11_no_web_wasm_engine() -> list[Violation]:
         manifest_path = crate / "Cargo.toml"
         if not manifest_path.is_file():
             continue
-        for section in ("dependencies", "build-dependencies"):
-            for dep_name in (read_manifest(crate).get(section, {}) or {}):
+        for _section, table in iter_manifest_dep_tables(
+            read_manifest(crate), ("dependencies", "build-dependencies")
+        ):
+            for dep_name in table:
                 if dep_name in banned:
                     bad.append(
                         (
@@ -478,14 +573,14 @@ def g12_no_tool_cache_in_tree() -> list[Violation]:
     这条守卫保证它不再复发: 目录名与文件名两类都拦。
     """
     bad: list[Violation] = []
-    cache_dirs = {".cache", ".wrangler", ".cargo-home", "node_modules", ".venv"}
+    cache_dirs = {".cache", ".wrangler", ".cargo-home", "node_modules", ".venv", ".work"}
     for path in iter_repo_paths():
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        parts = rel_parts(path)
+        if any(part in SKIP_DIRS for part in parts):
             continue
-        rel_parts = path.relative_to(REPO).parts
-        if any(part in cache_dirs for part in rel_parts):
+        if any(part in cache_dirs for part in parts):
             bad.append(("G12", rel(path), "工具缓存目录内的文件不应入库"))
             continue
         name = path.name
@@ -727,9 +822,8 @@ def g16_no_forbidden_feature_is_defined() -> list[Violation]:
                         f" ⇒ 不得在 `[features]` 里定义它",
                     )
                 )
-            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-                deps = manifest.get(section, {}) or {}
-                if isinstance(deps, dict) and name in deps:
+            for section, deps in iter_manifest_dep_tables(manifest):
+                if name in deps:
                     bad.append(
                         (
                             "G16",
@@ -973,6 +1067,33 @@ def g20_adr_index_matches_adr_files() -> list[Violation]:
     return bad
 
 
+def g21_dsp_no_std_transcendentals() -> list[Violation]:
+    """[ARCH-DET-001] `yeban-dsp` 生产代码禁止直接调用 std 浮点超越函数（统一走 `libm`）。"""
+    bad: list[Violation] = []
+    target = REPO / "crates" / "yeban-dsp" / "src"
+    if not target.is_dir():
+        return bad
+    pattern = re.compile(
+        r"\.(?:sin|cos|tan|sinh|cosh|tanh|asin|acos|atan|atan2|exp|exp2|exp_m1|"
+        r"ln|ln_1p|log|log2|log10|powf|powi|cbrt|hypot|sin_cos)\s*\("
+    )
+    for path in sorted(target.rglob("*.rs")):
+        body = strip_cfg_test_items(path.read_text(encoding="utf-8"))
+        for lineno, line in enumerate(body.splitlines(), start=1):
+            if is_comment_line(line):
+                continue
+            code = _strip_code(line)
+            if pattern.search(code):
+                bad.append(
+                    (
+                        "G21",
+                        f"{rel(path)}:{lineno}",
+                        f"yeban-dsp 生产路径禁止直接调用 std 超越函数，应改用 `libm::*`: {line.strip()}",
+                    )
+                )
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -1003,6 +1124,10 @@ GUARDS = {
         "[文档不变量] docs/adr/README.md 索引与 ADR 文件双向一致（⛔ 漏行／⛔ 死链）",
         g20_adr_index_matches_adr_files,
     ),
+    "G21": (
+        "[ARCH-DET-001] yeban-dsp 生产代码禁止调用 std 超越函数（统一走 libm）",
+        g21_dsp_no_std_transcendentals,
+    ),
 }
 
 
@@ -1014,7 +1139,7 @@ def self_test() -> int:
     ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
     或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
     ⭐ 本自检能机械抓住的三件事：
-      ① **注册表完整性**：`G01`…`G20` 一个不缺、且没有空标题／非可调用项；
+      ① **注册表完整性**：`G01`…`G21` 一个不缺、且没有空标题／非可调用项；
       ② **可调用性**：每个 check 函数存在且可调用；
       ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
     ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
@@ -1022,7 +1147,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 21)]
+    expected = [f"G{n:02d}" for n in range(1, 22)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
