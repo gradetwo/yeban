@@ -45,7 +45,7 @@ experimental-logic-import = []
 
 [dependencies]
 # SMF 编解码（下移出的独立 crate; 本行只为保持 `yeban_render::midi::*` 可用）。
-yeban-midi = { path = "../yeban-midi" }
+yeban-midi = { workspace = true }
 # 路由图与 EntityId 的唯一事实源 [MODEL-AST-001/004]。渲染层不复制数据模型。
 yeban-model.workspace = true
 # ⭐ `ADR-0011`（Accepted 2026-10-21）：**引擎音色源**。`yeban-engine` 的默认 feature
@@ -60,7 +60,7 @@ yeban-engine = { workspace = true, default-features = false }
 # ⭐ ADR-0069 一期：插件轨音源（`plugin_source`）经本 trait 消费插件实例；
 # 本 crate 里只有 `plugin_source` 模块碰它（与 `engine_source` 的引擎边同款纪律）。
 # 零新增第三方包（`yeban-plugin-host` 自身只用 std＋手写 FFI）。
-yeban-plugin-host = { path = "../yeban-plugin-host" }
+yeban-plugin-host = { workspace = true }
 # ⭐ `#274`（`ADR-0011` 的 SFZ 那一半）：引擎的 SFZ 摊平入口需要
 # `yeban_sfz::parser::ParseLimits`（`SfzInstrument::load`／`load_with_includes` 的第二参），
 # 而 `yeban-engine` **没有 re-export** 那个类型 ⇒ 这里只加这一条成员依赖。

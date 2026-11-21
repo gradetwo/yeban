@@ -18,7 +18,7 @@ name = "yeban-app"
 path = "src/main.rs"
 
 [dependencies]
-yeban-midi = { path = "../yeban-midi" }
+yeban-midi = { workspace = true }
 # 鼓机生成（line/drum-machine-p1）：出厂风格预置 + 确定性生成与 MCP 工具同源。
 # 依赖方向: yeban-app -> yeban-theory（theory 只依赖 thiserror + libm，无 GUI）。
 yeban-theory = { workspace = true }
@@ -138,7 +138,7 @@ yeban-engine = { workspace = true, features = ["device"] }
 libm.workspace = true
 
 # [D56] 诊断包: UI 与 MCP 调**同一个** `export_diagnostics`。
-yeban-diagnostics = { path = "../yeban-diagnostics" }
+yeban-diagnostics = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # serde_json: **只**为 `#[path]` 共享进来的 `.yeban.lock` 实现 (零新增包)
@@ -198,7 +198,7 @@ zip = { workspace = true, features = ["deflate"] }
 # ADR-0006 D2/D5: 物理 MIDI 输入的宿主 crate。**可选** —— 只有在 `midi-input` feature 下
 # 才进依赖树（`dep:` 语法, 不产生同名隐式 feature）⇒ 默认构建与 release 默认都不含它。
 yeban-midi-io = { workspace = true, optional = true }
-yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
+yeban-ui-test-port = { workspace = true, optional = true }
 
 # ---------------------------------------------------------------------------
 # in-process-mcp: 形态 A 的**运行态挂载** —— app 进程内托管领域 MCP 的环回 HTTP 控制面
@@ -224,7 +224,7 @@ yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 # 只写 `path`(+`optional`), 不写 version: 成员清单里不出现版本号是本仓库的规则
 # (ADR-0001 D5; 带 path 的 `*` 由 D21 的 `allow-wildcard-paths` 豁免, 与上面
 # `yeban-ui-test-port` 同款)。
-yeban-mcp = { path = "../yeban-mcp", optional = true }
+yeban-mcp = { workspace = true, optional = true }
 
 # ---------------------------------------------------------------------------
 # ui-mcp-http: **UI 控制面**（14 条 `ui/*` 方法）的环回入口
@@ -250,7 +250,7 @@ yeban-mcp = { path = "../yeban-mcp", optional = true }
 # optional 那一条给**产品路径**（非默认 feature 打开时）。
 #
 # 只写 `path`(+`optional`)，不写 version —— 见上面 `yeban-mcp` 的同一条注释。
-yeban-ui-mcp = { path = "../yeban-ui-mcp", optional = true }
+yeban-ui-mcp = { workspace = true, optional = true }
 
 # ---------------------------------------------------------------------------
 # rfd: **原生文件对话框**（任务单 `#86` 乙，⭐ 人类授权）
@@ -278,7 +278,7 @@ yeban-ui-mcp = { path = "../yeban-ui-mcp", optional = true }
 #
 # 只写版本号字面量：它是 **registry** 依赖（⛔ 不是成员间 path 依赖），
 # `deny.toml` 的 `[bans] wildcards = "deny"` 要求真实版本需求。
-rfd = "0.17.2"
+rfd = { workspace = true }
 
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
@@ -372,7 +372,7 @@ experimental-logic-import = ["yeban-render/experimental-logic-import"]
 # 与上面那个 optional 依赖的关系: 同一个包在两个 dep 段里各出现一次是 Cargo 支持的写法
 # (feature 仍能把它拉进 lib/bin 的构建图; 这里只是让测试目标无论如何都拿得到它)。
 [dev-dependencies]
-yeban-ui-test-port = { path = "../yeban-ui-test-port" }
+yeban-ui-test-port = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)
@@ -392,7 +392,7 @@ yeban-ui-test-port = { path = "../yeban-ui-test-port" }
 # `docs/ledger/ui-mcp-notes.md` §8 needs-3。
 #
 # 不写 version 的理由同 `yeban-ui-test-port` (ADR-0001 D5/D21: 成员间 path 依赖)。
-yeban-ui-mcp = { path = "../yeban-ui-mcp" }
+yeban-ui-mcp = { workspace = true }
 
 # 无头控件树断言 + Tier-1 截图比对。**不放进 default**:
 # 一个 `[[test]]` 目标 (src/test_port_adapter.rs) 通过 `required-features` 挂在它后面。
