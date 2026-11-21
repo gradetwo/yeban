@@ -350,20 +350,7 @@ pub fn download_builtin(
     if is_installed(roots, &sound.id) {
         return Err(SoundError::BadArchive(format!("{} 已经装过了", sound.name)));
     }
-    // 大小已知 ⇒ 沿用既有安装腿的逐字节对账；哈希未知 ⇒ 空串（⛔ 不假装校验过）。
-    let pack = crate::sound_library::CatalogPack {
-        id: sound.id.clone(),
-        name: sound.name.clone(),
-        description: sound.download_note(),
-        version: if sound.pin.is_empty() {
-            "社区".to_owned()
-        } else {
-            sound.pin.chars().take(8).collect()
-        },
-        size_bytes: sound.total_bytes,
-        sha256: String::new(),
-        url,
-    };
+    let pack = catalog_pack_for(sound, url);
     let installed = crate::sound_library::download_pack(&pack, roots, progress)?;
     // GitHub 归档外层目录（解出来的只有它）⇒ 抹平，让 `<id>/` 下直接是 Programs/…
     flatten_wrapper_dir(&installed.location)?;
@@ -372,6 +359,31 @@ pub fn download_builtin(
         return Err(error);
     }
     Ok(installed)
+}
+
+/// 把一条内置音源拼成安装腿认的目录包。
+fn catalog_pack_for(sound: &BuiltinSound, url: String) -> crate::sound_library::CatalogPack {
+    // ⭐ 归档大小与摘要都**没有登记值**：登记表的 `total_bytes` 是**解压后**全部
+    // 文件的总字节，不是 `.zip` 的大小（GitHub 也不发布归档大小与摘要）。
+    // ⛔ 不许把 `total_bytes` 填进 `size_bytes`——安装腿会拿它逐字节比对 zip
+    // 文件大小，而解压后总量与压缩包大小几乎永不相等，内置音源会必然报
+    // `SizeMismatch` 全灭（CODE_AUDIT_REPORT P0-6）。`size_bytes` 留 0 ＝ 不做
+    // 归档大小对账，下载段只受 `MAX_DOWNLOAD_BYTES` 上限护栏；字节完整性由
+    // 落位后的 [`verify_extracted`] 按登记的 `total_bytes` / `file_count` 对账，
+    // 不足即整包回滚。哈希同理留空串，⛔ 不假装校验过。
+    crate::sound_library::CatalogPack {
+        id: sound.id.clone(),
+        name: sound.name.clone(),
+        description: sound.download_note(),
+        version: if sound.pin.is_empty() {
+            "社区".to_owned()
+        } else {
+            sound.pin.chars().take(8).collect()
+        },
+        size_bytes: 0,
+        sha256: String::new(),
+        url,
+    }
 }
 
 /// 抹平"只有一个子目录"的落位结果（GitHub 归档的 `<repo>-<pin>/`）。
@@ -529,5 +541,125 @@ mod tests {
     #[test]
     fn empty_manifest_is_error_not_empty_list() {
         assert!(parse_manifest(r#"{"version":"1.0.0"}"#).is_err());
+    }
+
+    /// 临时库根（与 sound_library 判据同款：进程号 + 标签隔离，跑完自清）。
+    fn temp_roots(tag: &str) -> (PathBuf, SoundRoots) {
+        let base =
+            std::env::temp_dir().join(format!("yeban-builtin-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = SoundRoots {
+            library_root: base.join("library"),
+            builtin_root: base.join("builtin"),
+        };
+        (base, roots)
+    }
+
+    /// 造一份 stored 模式的微型 zip 夹具（不依赖外网、不依赖压缩算法）。
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).expect("建 zip 夹具");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in entries {
+            writer.start_file(name, options).expect("写 zip 条目");
+            writer.write_all(bytes).expect("写 zip 内容");
+        }
+        writer.finish().expect("收尾 zip 夹具");
+    }
+
+    fn demo_sound(total_bytes: u64, file_count: u64) -> BuiltinSound {
+        BuiltinSound {
+            id: "demo-builtin".to_owned(),
+            name: "演示音源".to_owned(),
+            category: "Keys".to_owned(),
+            license: "CC0-1.0".to_owned(),
+            author: "test".to_owned(),
+            repo: "owner/repo".to_owned(),
+            pin: "6615047b2fd06126877483e97b8bb4af9d00b080".to_owned(),
+            source_url: String::new(),
+            total_bytes,
+            file_count,
+            bundled: false,
+            sfz: "Programs/demo.sfz".to_owned(),
+            archive_override: String::new(),
+        }
+    }
+
+    const SFZ_BYTES: &[u8] = b"<control>\n<region> sample=../Samples/a.wav\n";
+    const WAV_BYTES: &[u8] = &[7u8; 4096];
+
+    /// GitHub 归档形态的夹具：外层 `<repo>-<pin>/` 目录 + 一个 SFZ + 一个样本。
+    /// 返回（解压后内容总字节， 条目数）。
+    fn write_github_style_zip(zip_path: &Path) -> (u64, u64) {
+        write_zip(
+            zip_path,
+            &[
+                ("owner-repo-6615047b/Programs/demo.sfz", SFZ_BYTES),
+                ("owner-repo-6615047b/Samples/a.wav", WAV_BYTES),
+            ],
+        );
+        ((SFZ_BYTES.len() + WAV_BYTES.len()) as u64, 2)
+    }
+
+    #[test]
+    fn builtin_pack_does_not_register_unpacked_total_as_archive_size() {
+        // 登记表的 `total_bytes` 是**解压后**全部文件的总字节；归档（.zip）字节数
+        // 没有任何登记值（GitHub 不发布归档大小）。把它填进安装腿的归档大小槽，
+        // 安装腿就会拿解压后总量去比 zip 文件大小 —— 必然 SizeMismatch。
+        let sound = demo_sound(123_456, 7);
+        let pack = catalog_pack_for(&sound, "https://example.invalid/x.zip".to_owned());
+        assert_eq!(
+            pack.size_bytes, 0,
+            "内置音源的归档大小没有登记值，必须留 0（不做归档大小对账）"
+        );
+        assert!(pack.sha256.is_empty(), "没有上游摘要时不许假装有");
+    }
+
+    #[test]
+    fn builtin_archive_installs_when_zip_size_differs_from_unpacked_total() {
+        let (base, roots) = temp_roots("install");
+        let zip_path = base.join("archive.zip");
+        std::fs::create_dir_all(&base).expect("建临时目录");
+        let (unpacked, files) = write_github_style_zip(&zip_path);
+        // 前提钉死：夹具的 zip 字节数与解压后总字节**不相等**（真实归档的常态）。
+        assert_ne!(
+            std::fs::metadata(&zip_path).expect("读 zip 大小").len(),
+            unpacked,
+            "夹具失格：zip 大小竟与解压后总量相等，测不出误用总量的缺陷"
+        );
+        let sound = demo_sound(unpacked, files);
+        let pack = catalog_pack_for(&sound, "https://example.invalid/x.zip".to_owned());
+        let installed = crate::sound_library::install_pack_archive(&pack, &zip_path, &roots)
+            .expect("归档大小与解压后登记总量不同是常态，必须装得上");
+        flatten_wrapper_dir(&installed.location).expect("抹平 GitHub 归档外层目录");
+        verify_extracted(&sound, &installed.location).expect("解压后对账必须通过");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_extracted_rejects_when_unpacked_bytes_fall_short() {
+        // 解压后对账是内置音源唯一的字节校验：登记总量比实际内容多 ⇒ 必须响亮拒绝。
+        let (base, roots) = temp_roots("short");
+        let zip_path = base.join("archive.zip");
+        std::fs::create_dir_all(&base).expect("建临时目录");
+        let (unpacked, files) = write_github_style_zip(&zip_path);
+        let sound = demo_sound(unpacked, files);
+        let pack = catalog_pack_for(&sound, "https://example.invalid/x.zip".to_owned());
+        let installed = crate::sound_library::install_pack_archive(&pack, &zip_path, &roots)
+            .expect("夹具包必须装得上");
+        flatten_wrapper_dir(&installed.location).expect("抹平 GitHub 归档外层目录");
+        let inflated = demo_sound(unpacked + 100_000, files);
+        match verify_extracted(&inflated, &installed.location) {
+            Err(SoundError::BadArchive(detail)) => {
+                assert!(
+                    detail.contains("对账不符"),
+                    "错误必须点明对账不符：{detail}"
+                );
+            }
+            other => panic!("解压后字节不足必须是 BadArchive 对账失败，实得：{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
