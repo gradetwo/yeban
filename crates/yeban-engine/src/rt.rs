@@ -2995,12 +2995,23 @@ fn render_branch(
             }
         } else if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
             if single_unit_to_master {
-                sum_into_bus_smoothed(
-                    out,
-                    &share.track_scratch[..frames],
-                    &mut share.armed_pan_l[index],
-                    &mut share.armed_pan_r[index],
-                );
+                if pair_track {
+                    // ⭐ stage 10：声相自动化 ＋ 分声道 ⇒ 逐帧平滑的成对求和。
+                    sum_pair_into_bus_smoothed(
+                        out,
+                        &share.track_scratch[..frames],
+                        &share.track_scratch_r[..frames],
+                        &mut share.armed_pan_l[index],
+                        &mut share.armed_pan_r[index],
+                    );
+                } else {
+                    sum_into_bus_smoothed(
+                        out,
+                        &share.track_scratch[..frames],
+                        &mut share.armed_pan_l[index],
+                        &mut share.armed_pan_r[index],
+                    );
+                }
             } else {
                 // 声相自动化 + 非平凡路由：先把"声相之后"的立体声写进暂存
                 // （平滑器**每帧只推进一次**），再按边分别搬运。
@@ -3049,26 +3060,13 @@ fn render_branch(
             });
             if single_unit_to_master {
                 if pair_track {
-                    if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
-                        // ⭐ stage 10：声相自动化 ＋ 分声道 ⇒ 逐帧平滑的成对求和。
-                        sum_pair_into_bus_smoothed(
-                            out,
-                            &share.track_scratch[..frames],
-                            &share.track_scratch_r[..frames],
-                            &mut share.armed_pan_l[index],
-                            &mut share.armed_pan_r[index],
-                        );
-                        *share.pan_automation_frames =
-                            share.pan_automation_frames.wrapping_add(frames as u64);
-                    } else {
-                        sum_pair_into_bus(
-                            out,
-                            &share.track_scratch[..frames],
-                            &share.track_scratch_r[..frames],
-                            gain_l,
-                            gain_r,
-                        );
-                    }
+                    sum_pair_into_bus(
+                        out,
+                        &share.track_scratch[..frames],
+                        &share.track_scratch_r[..frames],
+                        gain_l,
+                        gain_r,
+                    );
                 } else {
                     sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
                 }
@@ -11709,6 +11707,66 @@ mod tests {
         assert_ne!(
             second_l[0], out_l[0],
             "第二块的第一帧必须与第一块不同（平滑器在继续收敛）"
+        );
+    }
+
+    #[test]
+    fn smoothed_single_master_pan_keeps_stereo_pair_channels_independent() {
+        let (snapshot, track) = note_snapshot_with_pan(1, 0.0);
+        let sample = crate::sfz_instrument::InMemorySample {
+            channels: 1,
+            pcm: Arc::new(vec![0.4; 48_000]),
+            sample_hz: 48_000.0,
+            loop_points: None,
+        };
+        let instrument = crate::sfz_instrument::SfzInstrument::load(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 pan=100 loop_mode=loop_continuous loop_start=0 loop_end=1000 ampeg_attack=0.001 ampeg_sustain=100 ampeg_release=0.001 amp_veltrack=0".to_owned(),
+            &yeban_sfz::parser::ParseLimits::default(),
+        )
+        .expect("有效 SFZ");
+        let plan = crate::sfz_instrument::SfzPlan::prepare(&instrument, &sample, 48_000.0)
+            .expect("SFZ 摊平");
+        let snapshot = snapshot.with_sfz(track, plan);
+        let mut rig = rig_with_snapshot(snapshot);
+
+        // 先跑 1 个量子让快照边界武装声相表槽位，再发声相自动化事件。
+        let mut warmup = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warmup, 2);
+
+        // 单条直连 master 出边 + 声相自动化 + 硬右区域声相 ⇒ 必须走 sum_pair_into_bus_smoothed。
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+                value: 1.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..4 {
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        assert!(rig.runtime.stereo_track_frames() > 0, "须走分声道路径");
+        assert!(
+            rig.runtime.pan_automation_frames() > 0,
+            "须走声相自动化路径"
+        );
+        let max_left = out.iter().step_by(2).fold(0.0f32, |m, s| m.max(s.abs()));
+        let max_right = out
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            max_left <= 1e-6,
+            "pan=100 硬右区域的左声道只能有浮点残留，实得 {max_left}"
+        );
+        assert!(
+            max_right > 0.05,
+            "pan=100 硬右区域的右声道不得被单声道 smoothed 路径吞成 0，实得 {max_right}"
         );
     }
 }
