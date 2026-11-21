@@ -102,6 +102,10 @@ pub fn redact(bytes: &[u8]) -> Vec<u8> {
     if !home.is_empty() {
         out = out.replace(&home, "$HOME");
     }
+    let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+    if !userprofile.is_empty() {
+        out = out.replace(&userprofile, "$USERPROFILE");
+    }
     out.into_bytes()
 }
 
@@ -127,7 +131,7 @@ fn env_txt() -> Vec<u8> {
 }
 
 fn git_txt() -> Vec<u8> {
-    // 无 git 时写"不可用" —— 判据要求**不得留空**。
+    // 优先运行期 `git`；分发二进制不在仓库目录或无 `git` 时回退到编译期 `YEBAN_GIT_HEAD`。
     fn run(args: &[&str]) -> Option<String> {
         let out = std::process::Command::new("git").args(args).output().ok()?;
         if !out.status.success() {
@@ -135,7 +139,13 @@ fn git_txt() -> Vec<u8> {
         }
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
-    let head = run(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unavailable".into());
+    let head = run(&["rev-parse", "HEAD"])
+        .or_else(|| {
+            option_env!("YEBAN_GIT_HEAD")
+                .filter(|v| !v.is_empty() && *v != "unknown")
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unavailable".into());
     let branch =
         run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unavailable".into());
     let dirty = run(&["status", "--porcelain"]).unwrap_or_else(|| "unavailable".into());
@@ -170,10 +180,24 @@ fn manifest_txt(entries: &[BundleEntry]) -> Vec<u8> {
     s.into_bytes()
 }
 
+fn sanitize_bundle_entry_name(name: &str) -> Result<&str, DiagError> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err(DiagError::Io(format!("非法诊断包条目名: {name:?}")));
+    }
+    Ok(name)
+}
+
 /// 采集并打包。返回落盘路径、字节数与包内清单。
 ///
 /// # Errors
-/// 输出目录不存在、写盘失败或打包失败时返回 [`DiagError`]。
+/// 输出目录不存在、条目名非法、写盘失败或打包失败时返回 [`DiagError`]。
 pub fn export_diagnostics(
     out_dir: &Path,
     inputs: BundleInputs<'_>,
@@ -192,13 +216,16 @@ pub fn export_diagnostics(
         items.push(("config.json".into(), c.as_bytes().to_vec()));
     }
     for (name, bytes) in inputs.logs {
-        items.push((format!("logs/{name}"), bytes.clone()));
+        let safe = sanitize_bundle_entry_name(name)?;
+        items.push((format!("logs/{safe}"), bytes.clone()));
     }
     for (name, bytes) in inputs.crashes {
-        items.push((format!("crashes/{name}"), bytes.clone()));
+        let safe = sanitize_bundle_entry_name(name)?;
+        items.push((format!("crashes/{safe}"), bytes.clone()));
     }
     for (name, bytes) in inputs.project {
-        items.push((format!("project/{name}"), bytes.clone()));
+        let safe = sanitize_bundle_entry_name(name)?;
+        items.push((format!("project/{safe}"), bytes.clone()));
     }
     let items: Vec<(String, Vec<u8>)> = items.into_iter().map(|(n, b)| (n, redact(&b))).collect();
 
@@ -245,11 +272,28 @@ pub fn export_diagnostics(
     }
     let zip_bytes = buf.into_inner();
 
-    // 5) 落盘。文件名确定性可排序：时间戳 + 内容短 sha。
+    // 5) 原子落盘：同目录临时文件写入 + fsync + rename，防半截诊断包。
     let digest = sha256_hex(&zip_bytes);
     let short = &digest[..7];
-    let path = out_dir.join(format!("yeban-diagnostics-{}-{short}.zip", now_stamp()));
-    std::fs::write(&path, &zip_bytes).map_err(|e| DiagError::Io(e.to_string()))?;
+    let file_name = format!("yeban-diagnostics-{}-{short}.zip", now_stamp());
+    let path = out_dir.join(&file_name);
+    static DIAG_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = DIAG_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = out_dir.join(format!(".{file_name}.tmp.{}.{seq}", std::process::id()));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(&zip_bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(DiagError::Io(e.to_string()));
+    }
 
     Ok(BundleReport {
         path,
@@ -314,5 +358,24 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unsafe_bundle_entry_names_are_rejected_and_redact_hides_home() {
+        assert!(sanitize_bundle_entry_name("engine.log").is_ok());
+        for bad in ["", ".", "..", "../secret", "a/b.log", "a\\b.log", "x\0y"] {
+            assert!(
+                sanitize_bundle_entry_name(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+        if let Ok(home) = std::env::var("HOME")
+            && !home.is_empty()
+        {
+            let sample = format!("path={home}/project.yeban");
+            let cleaned = String::from_utf8(redact(sample.as_bytes())).expect("utf8");
+            assert!(!cleaned.contains(&home));
+            assert!(cleaned.contains("$HOME/project.yeban"));
+        }
     }
 }
