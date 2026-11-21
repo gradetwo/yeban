@@ -168,6 +168,38 @@ impl SfzPlanCache {
         ))
     }
 
+    /// ⭐ **无副作用探针**（P0-7）：这条轨此刻要用的 (路径, 采样率) 是否已在缓存里。
+    ///
+    /// 命中条件与 [`Self::get_or_prepare`] **逐字相同**（按轨绑定相等 ＋ 表里有
+    /// 那份），但不计数、不读盘、不建任何东西 —— 发布路径用它决定"要不要把
+    /// 解码派给后台线程"，⛔ 探针自己绝不能把 `hits` 顶上去（那会污染判据读数）。
+    #[must_use]
+    pub fn probe(&self, track: EntityId, path: &str, engine_hz: f32) -> bool {
+        let binding = Binding {
+            path: path.to_owned(),
+            engine_hz_bits: engine_hz.to_bits(),
+        };
+        self.by_track.get(&track) == Some(&binding) && self.by_path.contains_key(path)
+    }
+
+    /// ⭐ **存入一份已在别处建好的摊平表**（P0-7：后台线程解码完成 ⇒ 主线程入缓存）。
+    ///
+    /// 记账与 [`Self::get_or_prepare`] 的未命中尾段**完全一致**：`misses` +1、
+    /// 写 `by_path` 与按轨绑定、回收未引用条目。区别只有一件：摊平表不是
+    /// 在这里经 `build` 同步建的，而是调用方（发布路径回收后台结果时）交进来的。
+    pub fn store_prepared(&mut self, track: EntityId, path: &str, engine_hz: f32, plan: SfzPlan) {
+        self.misses = self.misses.saturating_add(1);
+        self.by_path.insert(path.to_owned(), Arc::new(plan));
+        self.by_track.insert(
+            track,
+            Binding {
+                path: path.to_owned(),
+                engine_hz_bits: engine_hz.to_bits(),
+            },
+        );
+        self.evict_unreferenced();
+    }
+
     /// ⭐ **只保留还有 SFZ 绑定的轨**（失效条件 ③ 的入口）。
     ///
     /// 调用点在**每次发布之前**（[`crate::engine_host::EngineHost`]）：把 sampler 清回 `None`

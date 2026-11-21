@@ -264,6 +264,99 @@ pub(crate) struct AudioLookup {
     pub(crate) resampled: bool,
 }
 
+/// ⭐ **一份已定形的解码产物**（P0-7：后台线程解码的成功形态，纯数据、`Send`）。
+///
+/// 公开是因为它经 [`crate::arm_worker::ArmOutcome`] 跨模块流动（后台结果的
+/// 载荷类型必须与通道同等可见）。
+pub struct ShapedAudio {
+    /// 引擎形状的 PCM（采样率 = 目标率）。
+    pub pcm: AudioPcm,
+    /// 解码出的素材采样率（重采样前）。
+    pub source_rate: u32,
+    /// 解码出的帧数（重采样前）。
+    pub source_frames: u64,
+    /// 是否被重采样到目标率（`source_rate != target_rate` 且转换成功）。
+    pub resampled: bool,
+}
+
+/// ⭐ **后台解码的一件结果**（P0-7）：与 `lookup` 未命中段的三种结局一一对应。
+///
+/// 计数（`fetches`／`decodes`／`resamples`）不在这里发生 —— 由主线程在
+/// [`AudioPcmCache::absorb`] 时按 `resampled` 标记补记（口径见该函数）。
+/// 公开是因为它经 [`crate::arm_worker::ArmOutcome`] 跨模块流动。
+pub enum DecodeOutcome {
+    /// 解码＋定形成功。
+    Ready(ShapedAudio),
+    /// **永久形状拒绝**（声道数 ≠ 1,2 ／ PCM 形状非法）：存进缓存的拒绝。
+    /// `resampled` = 拒绝发生前重采样是否已成功（计数口径，见 `absorb`）。
+    Rejected {
+        /// 逐字原因（与同步路径同一文本）。
+        reason: String,
+        /// 拒绝前是否已重采样成功。
+        resampled: bool,
+    },
+    /// 解码/重采样失败（**不**缓存，下次重试）：逐字原因。
+    Failed(String),
+}
+
+/// ⭐ **纯函数：字节 ⇒ 定形结果**（P0-7 时从 `lookup` 的未命中段抽出）。
+///
+/// 顺序与原 `lookup` 逐字一致：解码（失败 ⇒ [`DecodeOutcome::Failed`]，原文
+/// 带 `解码失败: ` 前缀）⇒ 声道形状检查（⇒ `Rejected`）⇒ 帧数 ⇒ 异率重采样
+/// （失败 ⇒ `Failed`）⇒ `AudioPcm::new`（失败 ⇒ `Rejected`，且 `resampled`
+/// 标记已发生的重采样）。⛔ 本函数不碰缓存、不计数 —— 那些由 `absorb` 做，
+/// 因此同步路（`lookup`）与后台路（worker ⇒ `absorb`）的记账不可能漂移。
+pub(crate) fn decode_and_shape(hash: &AssetHash, bytes: &[u8], target_rate: u32) -> DecodeOutcome {
+    let decoded = match crate::audio_clip::decode_asset_bytes(hash, bytes) {
+        Ok(decoded) => decoded,
+        Err(reason) => return DecodeOutcome::Failed(format!("解码失败: {reason}")),
+    };
+    let (samples, channels, sample_rate) = decoded.into_parts();
+    // ⚠ 只做采样率转换：>2 声道仍按引擎的形状拒绝（逐字原因同引擎）。
+    if channels != 1 && channels != 2 {
+        let reason =
+            yeban_engine::audio_clip::AudioClipError::UnsupportedChannels(channels).to_string();
+        return DecodeOutcome::Rejected {
+            reason,
+            resampled: false,
+        };
+    }
+    let source_frames = u64::try_from(samples.len() / usize::from(channels)).unwrap_or(u64::MAX);
+    let resampled = sample_rate != target_rate;
+    let samples = if resampled {
+        match resample_to_target(&samples, channels, sample_rate, target_rate) {
+            Ok(converted) => converted,
+            Err(reason) => return DecodeOutcome::Failed(reason),
+        }
+    } else {
+        // 同率 ⇒ **原样**搬进 `Arc`（零复制、逐位相同；⛔ 不走滤波）。
+        samples
+    };
+    match AudioPcm::new(Arc::from(samples), channels, target_rate) {
+        Ok(pcm) => DecodeOutcome::Ready(ShapedAudio {
+            pcm,
+            source_rate: sample_rate,
+            source_frames,
+            resampled,
+        }),
+        Err(error) => DecodeOutcome::Rejected {
+            reason: error.to_string(),
+            resampled,
+        },
+    }
+}
+
+/// [`AudioPcmCache::probe`] 的结果（P0-7 发布预检）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CacheProbe {
+    /// 缓存能直接服务（warped 覆盖或同率 Ready）。
+    Ready,
+    /// 永久形状拒绝已在缓存里（注入会得到逐字原因，不需要解码）。
+    Rejected,
+    /// 缓存服务不了：需要解码（或异率重定形）。
+    Missing,
+}
+
 /// 按 `AssetHash` 键控的解码缓存 ＋ 一套可读计数器。
 #[derive(Default)]
 pub(crate) struct AudioPcmCache {
@@ -380,60 +473,8 @@ impl AudioPcmCache {
         source: Option<&AudioAssetSource>,
         target_rate: u32,
     ) -> Result<AudioLookup, String> {
-        if let Some(warped) = self.warped.get(hash) {
-            let lookup = if warped.pcm.sample_rate() == target_rate {
-                AudioLookup {
-                    pcm: warped.pcm.clone(),
-                    from_cache: true,
-                    source_sample_rate: warped.source_rate,
-                    source_frames: warped.source_frames,
-                    resampled: warped.resampled,
-                }
-            } else {
-                let converted = resample_to_target(
-                    warped.pcm.samples(),
-                    warped.pcm.channels(),
-                    warped.pcm.sample_rate(),
-                    target_rate,
-                )?;
-                self.readings.resamples = self.readings.resamples.saturating_add(1);
-                let pcm = AudioPcm::new(Arc::from(converted), warped.pcm.channels(), target_rate)
-                    .map_err(|error| error.to_string())?;
-                AudioLookup {
-                    pcm,
-                    from_cache: true,
-                    source_sample_rate: warped.source_rate,
-                    source_frames: warped.source_frames,
-                    resampled: true,
-                }
-            };
-            self.readings.hits = self.readings.hits.saturating_add(1);
-            return Ok(lookup);
-        }
-        if let Some(entry) = self.entries.get(hash) {
-            match &entry.value {
-                CachedAudio::Rejected(reason) => return Err(reason.clone()),
-                CachedAudio::Ready(ready) if ready.pcm.sample_rate() == target_rate => {
-                    let lookup = AudioLookup {
-                        pcm: ready.pcm.clone(),
-                        from_cache: true,
-                        source_sample_rate: ready.source_rate,
-                        source_frames: ready.source_frames,
-                        resampled: ready.resampled,
-                    };
-                    self.readings.hits = self.readings.hits.saturating_add(1);
-                    if let Some(entry) = self.entries.get_mut(hash) {
-                        entry.last_used = self.epoch;
-                    }
-                    return Ok(lookup);
-                }
-                // 目标率变了（工程换了采样率）⇒ 缓存里那份 PCM 属于**另一个工程**的
-                // 目标率，⛔ 不冒充：落到下面重走「字节 ⇒ 解码 ⇒ 重采样」。
-                CachedAudio::Ready(_) => {}
-            }
-        }
-        if let Some(previous) = self.entries.remove(hash) {
-            self.readings.cached_bytes = self.readings.cached_bytes.saturating_sub(previous.bytes);
+        if let Some(result) = self.cached_lookup(hash, target_rate) {
+            return result;
         }
         let Some(source) = source else {
             return Err(
@@ -449,55 +490,178 @@ impl AudioPcmCache {
         };
         self.readings.fetches = self.readings.fetches.saturating_add(1);
         self.readings.decodes = self.readings.decodes.saturating_add(1);
-        let decoded = crate::audio_clip::decode_asset_bytes(hash, &bytes)
-            .map_err(|reason| format!("解码失败: {reason}"))?;
-        let (samples, channels, sample_rate) = decoded.into_parts();
-        // ⚠ 本单只做采样率转换：>2 声道仍按引擎的形状拒绝（逐字原因同引擎）。
-        if channels != 1 && channels != 2 {
-            let reason =
-                yeban_engine::audio_clip::AudioClipError::UnsupportedChannels(channels).to_string();
-            self.store(hash.clone(), CachedAudio::Rejected(reason.clone()), 0);
-            return Err(reason);
+        let outcome = decode_and_shape(hash, &bytes, target_rate);
+        self.absorb(hash, outcome)
+    }
+
+    /// ⭐ **先查缓存的那一半**（P0-7 时从 `lookup` 抽出，两条查询路共用）：
+    /// warped 覆盖 ⇒ 条目命中/拒绝 ⇒ `Some(结果)`；条目是**另一个目标率**的
+    /// Ready ⇒ 移除旧条目并返回 `None`（调用方落到解码路）；没有条目 ⇒ `None`。
+    ///
+    /// 计数与 `lookup` 原逻辑逐字一致：warped 与 Ready 命中各计一次 `hits`，
+    /// warped 异率现转计一次 `resamples`。
+    fn cached_lookup(
+        &mut self,
+        hash: &AssetHash,
+        target_rate: u32,
+    ) -> Option<Result<AudioLookup, String>> {
+        if let Some(warped) = self.warped.get(hash) {
+            let lookup = if warped.pcm.sample_rate() == target_rate {
+                AudioLookup {
+                    pcm: warped.pcm.clone(),
+                    from_cache: true,
+                    source_sample_rate: warped.source_rate,
+                    source_frames: warped.source_frames,
+                    resampled: warped.resampled,
+                }
+            } else {
+                let converted = match resample_to_target(
+                    warped.pcm.samples(),
+                    warped.pcm.channels(),
+                    warped.pcm.sample_rate(),
+                    target_rate,
+                ) {
+                    Ok(converted) => converted,
+                    Err(reason) => return Some(Err(reason)),
+                };
+                self.readings.resamples = self.readings.resamples.saturating_add(1);
+                let pcm =
+                    match AudioPcm::new(Arc::from(converted), warped.pcm.channels(), target_rate) {
+                        Ok(pcm) => pcm,
+                        Err(error) => return Some(Err(error.to_string())),
+                    };
+                AudioLookup {
+                    pcm,
+                    from_cache: true,
+                    source_sample_rate: warped.source_rate,
+                    source_frames: warped.source_frames,
+                    resampled: true,
+                }
+            };
+            self.readings.hits = self.readings.hits.saturating_add(1);
+            return Some(Ok(lookup));
         }
-        let source_frames =
-            u64::try_from(samples.len() / usize::from(channels)).unwrap_or(u64::MAX);
-        let resampled = sample_rate != target_rate;
-        let samples = if resampled {
-            let converted = resample_to_target(&samples, channels, sample_rate, target_rate)?;
-            self.readings.resamples = self.readings.resamples.saturating_add(1);
-            converted
-        } else {
-            // 同率 ⇒ **原样**搬进 `Arc`（零复制、逐位相同；⛔ 不走滤波）。
-            samples
-        };
-        let pcm = match AudioPcm::new(Arc::from(samples), channels, target_rate) {
-            Ok(pcm) => pcm,
-            Err(error) => {
-                let reason = error.to_string();
-                self.store(hash.clone(), CachedAudio::Rejected(reason.clone()), 0);
-                return Err(reason);
+        if let Some(entry) = self.entries.get(hash) {
+            match &entry.value {
+                CachedAudio::Rejected(reason) => return Some(Err(reason.clone())),
+                CachedAudio::Ready(ready) if ready.pcm.sample_rate() == target_rate => {
+                    let lookup = AudioLookup {
+                        pcm: ready.pcm.clone(),
+                        from_cache: true,
+                        source_sample_rate: ready.source_rate,
+                        source_frames: ready.source_frames,
+                        resampled: ready.resampled,
+                    };
+                    self.readings.hits = self.readings.hits.saturating_add(1);
+                    if let Some(entry) = self.entries.get_mut(hash) {
+                        entry.last_used = self.epoch;
+                    }
+                    return Some(Ok(lookup));
+                }
+                // 目标率变了（工程换了采样率）⇒ 缓存里那份 PCM 属于**另一个工程**的
+                // 目标率，⛔ 不冒充：落到下面重走「字节 ⇒ 解码 ⇒ 重采样」。
+                CachedAudio::Ready(_) => {}
             }
-        };
-        let bytes = u64::try_from(pcm.samples().len())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(4);
-        self.store(
-            hash.clone(),
-            CachedAudio::Ready(ReadyAudio {
-                pcm: pcm.clone(),
-                source_rate: sample_rate,
-                source_frames,
-                resampled,
-            }),
-            bytes,
-        );
-        Ok(AudioLookup {
-            pcm,
-            from_cache: false,
-            source_sample_rate: sample_rate,
-            source_frames,
-            resampled,
-        })
+        }
+        if let Some(previous) = self.entries.remove(hash) {
+            self.readings.cached_bytes = self.readings.cached_bytes.saturating_sub(previous.bytes);
+        }
+        None
+    }
+
+    /// ⭐ **无副作用探针**（P0-7 发布预检）：这份素材在目标率下是否已被缓存服务。
+    ///
+    /// 与 [`Self::cached_lookup`] 的命中面一致（warped 覆盖或同率 Ready ⇒
+    /// [`CacheProbe::Ready`]；永久拒绝 ⇒ [`CacheProbe::Rejected`]），但不计数、
+    /// 不碰 `last_used`、不移除异率条目。
+    pub(crate) fn probe(&self, hash: &AssetHash, target_rate: u32) -> CacheProbe {
+        if self.warped.contains_key(hash) {
+            return CacheProbe::Ready;
+        }
+        match self.entries.get(hash) {
+            Some(entry) => match &entry.value {
+                CachedAudio::Rejected(_) => CacheProbe::Rejected,
+                CachedAudio::Ready(ready) if ready.pcm.sample_rate() == target_rate => {
+                    CacheProbe::Ready
+                }
+                CachedAudio::Ready(_) => CacheProbe::Missing,
+            },
+            None => CacheProbe::Missing,
+        }
+    }
+
+    /// ⭐ **吸收一份已解码的结果**（P0-7：后台线程解码 ⇒ 主线程入缓存）。
+    ///
+    /// 与 `lookup` 未命中尾段的记账逐字一致：重采样成功计一次 `resamples`
+    /// （由结果里的 `resampled` 标记携带 —— 原逻辑在 `AudioPcm::new` **之前**
+    /// 计数，因此形状拒绝也要计）；Ready 入缓存并交出 `from_cache: false` 的
+    /// 查询结果；Rejected 存拒绝原因；Failed 不存（与解码失败不缓存一致）。
+    pub(crate) fn absorb(
+        &mut self,
+        hash: &AssetHash,
+        outcome: DecodeOutcome,
+    ) -> Result<AudioLookup, String> {
+        match outcome {
+            DecodeOutcome::Ready(shaped) => {
+                if shaped.resampled {
+                    self.readings.resamples = self.readings.resamples.saturating_add(1);
+                }
+                let bytes = u64::try_from(shaped.pcm.samples().len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(4);
+                let lookup = AudioLookup {
+                    pcm: shaped.pcm.clone(),
+                    from_cache: false,
+                    source_sample_rate: shaped.source_rate,
+                    source_frames: shaped.source_frames,
+                    resampled: shaped.resampled,
+                };
+                self.store(
+                    hash.clone(),
+                    CachedAudio::Ready(ReadyAudio {
+                        pcm: shaped.pcm,
+                        source_rate: shaped.source_rate,
+                        source_frames: shaped.source_frames,
+                        resampled: shaped.resampled,
+                    }),
+                    bytes,
+                );
+                Ok(lookup)
+            }
+            DecodeOutcome::Rejected { reason, resampled } => {
+                if resampled {
+                    self.readings.resamples = self.readings.resamples.saturating_add(1);
+                }
+                self.store(hash.clone(), CachedAudio::Rejected(reason.clone()), 0);
+                Err(reason)
+            }
+            DecodeOutcome::Failed(reason) => Err(reason),
+        }
+    }
+
+    /// ⭐ **先吃后台结果、没有再走 `lookup`**（P0-7 的注入路径）。
+    ///
+    /// 缓存命中面与 `lookup` 相同；未命中时若 `outcomes` 里有同 (哈希, 目标率)
+    /// 的后台解码结果 ⇒ 计一次 `fetches`＋`decodes`（字节确实取过、解码确实
+    /// 发生过，只是发生在后台线程）并 [`Self::absorb`]；再没有 ⇒ 落回
+    /// `lookup` 的同步路（`reload` 等允许同步的路径、以及"字节拿不到"这类
+    /// 根本不会产生后台结果的情形走这里，语义与改动前一致）。
+    pub(crate) fn lookup_or_outcome(
+        &mut self,
+        hash: &AssetHash,
+        source: Option<&AudioAssetSource>,
+        target_rate: u32,
+        outcomes: &mut BTreeMap<(AssetHash, u32), DecodeOutcome>,
+    ) -> Result<AudioLookup, String> {
+        if let Some(result) = self.cached_lookup(hash, target_rate) {
+            return result;
+        }
+        if let Some(outcome) = outcomes.remove(&(hash.clone(), target_rate)) {
+            self.readings.fetches = self.readings.fetches.saturating_add(1);
+            self.readings.decodes = self.readings.decodes.saturating_add(1);
+            return self.absorb(hash, outcome);
+        }
+        self.lookup(hash, source, target_rate)
     }
 
     /// 缓存总字节数（现算；条目最多 [`MAX_CACHED_ASSETS`] 个）。

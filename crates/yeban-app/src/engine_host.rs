@@ -143,9 +143,10 @@ use yeban_model::{LaunchQuantization, TimeSignature};
 // 是唯一一张名字表，`sanitised_output_gain_db` 走的是器件同一次钳制）。
 use yeban_render::inserts::{StripField, sanitised_output_gain_db};
 
+use crate::arm_worker::{ArmJob, ArmJobKey, ArmOutcome, ArmWorker, AudioOutcomeMap};
 use crate::audio_inject::{
     AudioAssetSource, AudioCacheReadings, AudioClipInjection, AudioClipReport, AudioClipSkip,
-    AudioPcmCache,
+    AudioPcmCache, CacheProbe,
 };
 use crate::sfz_cache::{SfzCacheReadings, SfzPlanCache};
 use crate::sfz_load::SfzLoadError;
@@ -242,6 +243,22 @@ impl From<SfzLoadError> for EngineHostError {
     fn from(value: SfzLoadError) -> Self {
         Self::Sfz(value)
     }
+}
+
+/// ⭐ **一跳增量发布的结局**（P0-7：解码离开 UI 线程之后的两种结局）。
+///
+/// `publish_project` 不再为了等一份大音源的解码而冻结心跳：缓存未命中的 SFZ 摊平 /
+/// 音频解码被交给后台线程（[`crate::arm_worker`]），本跳以 [`Self::Deferred`] 收尾。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishOutcome {
+    /// 快照已发布到槽里；值 = 新快照的修订号（与旧签名前 `Ok(u64)` 的值相同）。
+    Published(u64),
+    /// 本跳**没有**发布：至少一项解码还在后台线程上。当前快照一位不动，
+    /// `EngineHost::last_mark` 不推进 ⇒ `should_publish(mark)` 仍为 `true`，
+    /// 调用方（60 Hz 心跳）下一跳直接再调 `publish_project` 即可，
+    /// **不需要**任何额外的就绪通知通道。就绪后那一跳返回
+    /// [`Self::Published`]；解码失败则那一跳返回既有的 `Err`（响亮，不静默）。
+    Deferred,
 }
 
 /// 工程改动的**轻量标记**：这一跳要不要重新发布快照。
@@ -945,6 +962,26 @@ pub struct EngineHost {
     audio_cache: AudioPcmCache,
     /// ⭐ **最近一次注入的读数**（注入几个素材 / 每个的 `frames` / 跳过原因）。
     audio_report: AudioClipReport,
+    /// ⭐ ⭐ **发布装载的后台线程**（CODE_AUDIT_REPORT P0-7）：`publish_project`
+    /// 缓存未命中的 SFZ 摊平 / 音频解码派给它，本跳延后、下一跳收结果。
+    ///
+    /// 为什么住在这里（与 `sfz_cache` 同一条所有权裁决）：生命周期＝这一代
+    /// 宿主、写者只有控制线程（`&mut self`）、判据可隔离。线程懒启动；
+    /// 设计见 [`crate::arm_worker`] 的模块文档。
+    arm_worker: ArmWorker,
+    /// ⭐ **SFZ 后台解码的失败记录**（P0-7）：`(轨, 缓存键, 采样率位型) ⇒ 错误`。
+    ///
+    /// 后台解码失败后，后续每一跳发布都从这里**直接**以 `EngineHostError::Sfz`
+    /// 响亮失败（⛔ 不重复解码、不静默回退到复音合成器），与同步路径"文件坏了
+    /// 就每跳报错"的语义一致。`reload` 开始时清掉（显式重建 = 重新给机会）；
+    /// 条目离开待摊平集合时由发布预检顺手裁掉。
+    sfz_arm_failures: BTreeMap<(EntityId, String, u32), SfzLoadError>,
+    /// ⭐ **音频后台解码的已就绪结果**（P0-7）：`(素材, 目标率) ⇒ 结果`。
+    ///
+    /// 发布预检回收 worker 结果后暂存于此，注入时由
+    /// `AudioPcmCache::lookup_or_outcome` 按 (哈希, 目标率) 取走入缓存；
+    /// 不再被工程引用 / 目标率已变的条目由预检裁掉（⛔ 只涨不落不许）。
+    audio_arm_outcomes: AudioOutcomeMap,
     /// **诊断静默**：`true` 时不写 stdout/stderr（TUI 等独占终端的消费者接管后必须置位）。
     quiet_diagnostics: bool,
 }
@@ -1062,6 +1099,10 @@ impl EngineHost {
     ///
     /// 读盘、解析、PCM 解码与 `SfzPlan` 的 clone **全部**在这里（控制线程）发生；
     /// 音频线程只读快照里已摊平的表。⛔ 本函数不在任何回调路径上。
+    ///
+    /// ⭐ P0-7 注：`publish_project` 走到本函数时，待摊平项必已全部命中缓存
+    /// （预检把未命中的解码派去了后台线程并延后本跳）⇒ 发布路径上本函数的
+    /// `build` 分支不再触发；`reload`（显式重建、不在心跳上）仍可在此同步解码。
     fn arm_pending_sfz_into_snapshot(
         &mut self,
         snapshot: EngineSnapshot,
@@ -1220,10 +1261,14 @@ impl EngineHost {
         let mut snapshot = snapshot;
         for asset in &live {
             let attached_before = snapshot.audio_pcm_spans();
-            match self
-                .audio_cache
-                .lookup(asset, self.audio_asset_source.as_ref(), target_rate)
-            {
+            // ⭐ P0-7：先吃后台解码结果（`publish_project` 预检回收的），没有
+            //    再走同步 `lookup`（`reload` 路径与"字节拿不到"的情形）。
+            match self.audio_cache.lookup_or_outcome(
+                asset,
+                self.audio_asset_source.as_ref(),
+                target_rate,
+                &mut self.audio_arm_outcomes,
+            ) {
                 Ok(lookup) => {
                     let frames = lookup.pcm.frames();
                     let channels = lookup.pcm.channels();
@@ -1307,6 +1352,14 @@ impl EngineHost {
         project: &YebanProjectV1,
         quanta: u64,
     ) -> Result<EngineRebuild, EngineHostError> {
+        // ⭐ P0-7：先回收后台结果（就绪的摊平表进缓存、本次 reload 直接复用），
+        //    再清掉 SFZ 失败记录 —— `reload` 是显式重建动作，等于给失败的音源
+        //    一次重新装载的机会（发布路径则靠记录直接报错，⛔ 不重复解码）。
+        //    ⚠ `reload` 本身仍是**同步**装载：它不在 60 Hz 心跳路径上（打开
+        //    工程/显式重建时才走），P0-7 的冻结面是心跳的增量发布，见
+        //    `publish_project`。
+        self.drain_arm_outcomes();
+        self.sfz_arm_failures.clear();
         let generation = self.generation.saturating_add(1);
         let revision = self.snapshot_revision.saturating_add(1);
         // 第 1 步：真的投影快照（失败在这里就返回，旧的一代不动 —— 包括设备腿）。
@@ -1551,6 +1604,14 @@ impl EngineHost {
     /// **增量发布**：把 `project` 投影成一份新快照，经 `SnapshotSlot::publish_arc`
     /// 原子换掉当前快照。
     ///
+    /// ⭐ **P0-7（异步装载）**：SFZ 摊平与音频解码**不在本函数里同步做** —— 缓存未命中
+    /// 的项交给 [`crate::arm_worker`] 的后台线程，本跳返回
+    /// [`PublishOutcome::Deferred`]（当前快照一位不动、`last_mark` 不推进 ⇒ 调用方的
+    /// 60 Hz 心跳下一跳自动重试，解码就绪后那一跳完成发布）。解码失败在就绪的那一跳
+    /// 以**既有**的 `Err` 形态响亮返回（SFZ ⇒ [`EngineHostError::Sfz`]；音频 ⇒ 进
+    /// [`AudioClipReport::skipped`]），⛔ 不静默吞掉。`reload` 是显式重建动作，
+    /// 不走这条心跳路径，仍同步装载（见 `reload` 的文档）。
+    ///
     /// 这是"编辑 ⇒ 发声"链路的发布点。它与 [`EngineHost::reload`] 的分工是刻意的：
     ///
     /// | | `reload` | `publish_project` |
@@ -1569,23 +1630,36 @@ impl EngineHost {
     ///
     /// # Errors
     ///
-    /// [`EngineHostError::NoEngine`]（还没 `reload` 过）或
-    /// [`EngineHostError::Snapshot`]（投影失败 ⇒ **当前快照一位不动**）。
+    /// [`EngineHostError::NoEngine`]（还没 `reload` 过）、
+    /// [`EngineHostError::Snapshot`]（投影失败 ⇒ **当前快照一位不动**）或
+    /// [`EngineHostError::Sfz`]（路径解析失败 —— 与同步路径同形态、同步发生；
+    /// 或一份已记录的后台解码失败 —— 在它就绪的那一跳返回）。
     pub fn publish_project(
         &mut self,
         project: &YebanProjectV1,
         mark: EditMark,
-    ) -> Result<u64, EngineHostError> {
+    ) -> Result<PublishOutcome, EngineHostError> {
         // ⚠ 先把槽的 `Arc` 拷出来（而不是借 `self.slot`）：本函数下面要 `&mut self`
         //    走 SFZ 缓存 ⇒ 不能同时持有对 `self` 的不可变借用。
         let Some(slot) = self.slot.as_ref().map(std::sync::Arc::clone) else {
             return Err(EngineHostError::NoEngine);
         };
+        // ⭐ P0-7 第 0 步：回收后台装载结果（摊平表入缓存、解码失败入记录、
+        //    音频结果入暂存表）—— 必须在预检之前，预检看的才是最新状态。
+        self.drain_arm_outcomes();
         let revision = self.snapshot_revision.saturating_add(1);
         let snapshot = EngineSnapshot::from_project(project, revision)?;
+        // ⭐ P0-7 预检：有缓存未命中的解码还没就绪 ⇒ 本跳**延后**（快照不发布、
+        //    `last_mark` 不推进 ⇒ 下一跳心跳自动重试）；预检命中的已记录解码
+        //    失败在此以 `EngineHostError::Sfz` 响亮返回（与同步路径同形态）。
+        if self.arm_precheck(&snapshot, project)? {
+            return Ok(PublishOutcome::Deferred);
+        }
         // ⭐ ⭐ 任务单 `#80` 的**第二个**接线点：与 `reload` 走**同一个**注入函数
         //    （缓存 ＋ `#79` 的 `arm_pending_sfz`），因此"编辑 ⇒ 发声"这条生产路径
         //    （GUI 16 ms 一跳）只在**首次**读盘。失败 ⇒ 槽里当前快照一位不动。
+        //    ⭐ P0-7 起：走到这里时全部待摊平项必已命中缓存（预检保证），
+        //    本函数在发布路径上**不再同步解码**。
         let snapshot = self.arm_pending_sfz_into_snapshot(snapshot)?;
         // ⭐ ⭐ 任务单 `#136` 的**第二个**接线点：与 `reload` 走**同一个**
         //    `arm_audio_clips_into_snapshot` ⇒ 编辑（加音符 / 再录一次）发布的新快照
@@ -1613,7 +1687,185 @@ impl EngineHost {
         }
         self.snapshot_revision = revision;
         self.last_mark = Some(mark);
-        Ok(revision)
+        Ok(PublishOutcome::Published(revision))
+    }
+
+    /// ⭐ **回收后台装载结果**（P0-7）：摊平表 ⇒ 入 [`SfzPlanCache`]；SFZ 解码
+    /// 失败 ⇒ 入失败记录；音频结果 ⇒ 入暂存表（注入时再入解码缓存）。
+    ///
+    /// 只在 `publish_project` 开头调（控制线程、非阻塞）：worker 还在解码的
+    /// 工作留在在飞集合里，预检据此判延后。
+    fn drain_arm_outcomes(&mut self) {
+        for outcome in self.arm_worker.drain() {
+            match outcome {
+                ArmOutcome::Sfz {
+                    track,
+                    key,
+                    hz_bits,
+                    result,
+                } => match result {
+                    Ok(plan) => {
+                        self.sfz_cache
+                            .store_prepared(track, &key, f32::from_bits(hz_bits), *plan);
+                    }
+                    Err(error) => {
+                        self.sfz_arm_failures.insert((track, key, hz_bits), error);
+                    }
+                },
+                ArmOutcome::Audio {
+                    hash,
+                    target_rate,
+                    outcome,
+                } => {
+                    self.audio_arm_outcomes.insert((hash, target_rate), outcome);
+                }
+            }
+        }
+    }
+
+    /// ⭐ **发布预检**（P0-7）：这一跳要用的解码是否全部就绪。
+    ///
+    /// 返回 `true` = 有至少一项解码未就绪（已派发或在飞）⇒ 本跳延后。
+    /// 逐项口径：
+    ///
+    /// * **SFZ**：待摊平项逐项算缓存键（路径解析与同步 arm **同一个**函数；
+    ///   解析失败、或文件根本不存在 ⇒ 在此同步以 `Sfz` 错误返回，与改动前
+    ///   同形态同文本）；缓存命中 ⇒ 过；有失败记录 ⇒ 以记录的错误响亮返回；
+    ///   否则派发后台解码（或已在飞）⇒ 延后。
+    /// * **音频**：缓存能服务（命中/已拒绝）⇒ 过；后台结果已在暂存表 ⇒ 过
+    ///   （注入时吸收）；否则**在控制线程取字节**（资产来源不是 `Send`）后
+    ///   派发后台解码 ⇒ 延后；拿不到字节（无来源/池里没有）⇒ **不延后** ——
+    ///   同步注入会把逐字跳过原因记进报告（与改动前同语义，⛔ 不许为了等一份
+    ///   永远不会来的字节把发布挂死）。
+    ///
+    /// # Errors
+    ///
+    /// SFZ 路径解析失败或已记录的后台解码失败 ⇒ [`EngineHostError::Sfz`]。
+    fn arm_precheck(
+        &mut self,
+        snapshot: &EngineSnapshot,
+        project: &YebanProjectV1,
+    ) -> Result<bool, EngineHostError> {
+        let mut blocked = false;
+        // ---- SFZ 半边 ----
+        let engine_hz = snapshot.sample_rate() as f32;
+        let hz_bits = engine_hz.to_bits();
+        let project_dir = self.project_dir.clone();
+        let roots = match project_dir.as_deref() {
+            Some(dir) => crate::sfz_load::SfzRoots::under_project(dir),
+            None => crate::sfz_load::SfzRoots::none(),
+        };
+        // 先把全部待摊平项的键算齐（解析失败在此返回），再裁失败记录：
+        // 只保留"此刻仍在待摊平集合里"的记录（绑定改了 ⇒ 旧失败不再相关）。
+        let mut items: Vec<(EntityId, String, std::path::PathBuf, Option<i32>)> = Vec::new();
+        for (track, entry) in snapshot.sfz_pending() {
+            let resolved = crate::sfz_load::resolve_sampler_path(entry.path(), roots)
+                .map_err(|error| SfzLoadError::Read(error.to_string()))?;
+            // ⭐ 文件根本不存在 ⇒ 在此同步响亮失败（一次 `metadata` 统计）：
+            //    路径写错是最常见的失败，同步路径的旧口径就是当场以同一文本
+            //    报错（`sfz_realtime_cache` 判据六钉住），⛔ 不为它等一轮后台
+            //    解码再报。存在但内容非法的文件仍走后台解码＋失败记录。
+            match std::fs::metadata(&resolved) {
+                Ok(meta) if meta.is_file() => {}
+                Ok(_) => {
+                    return Err(EngineHostError::Sfz(SfzLoadError::Read(format!(
+                        "读 `{}` 失败: 不是普通文件",
+                        resolved.display()
+                    ))));
+                }
+                Err(error) => {
+                    return Err(EngineHostError::Sfz(SfzLoadError::Read(format!(
+                        "读 `{}` 失败: {error}",
+                        resolved.display()
+                    ))));
+                }
+            }
+            let key = match entry.octave_override() {
+                Some(shift) => format!(
+                    "{}\u{1f}octave-override={shift}",
+                    resolved.to_string_lossy()
+                ),
+                None => resolved.to_string_lossy().into_owned(),
+            };
+            items.push((*track, key, resolved, entry.octave_override()));
+        }
+        let live_keys: std::collections::BTreeSet<(EntityId, String, u32)> = items
+            .iter()
+            .map(|(track, key, _, _)| (*track, key.clone(), hz_bits))
+            .collect();
+        self.sfz_arm_failures
+            .retain(|key, _| live_keys.contains(key));
+        for (track, key, resolved, octave_override) in items {
+            if self.sfz_cache.probe(track, &key, engine_hz) {
+                continue;
+            }
+            if let Some(error) = self.sfz_arm_failures.get(&(track, key.clone(), hz_bits)) {
+                return Err(EngineHostError::Sfz(error.clone()));
+            }
+            let job_key = ArmJobKey::Sfz {
+                track,
+                key: key.clone(),
+                hz_bits,
+            };
+            if !self.arm_worker.in_flight(&job_key) {
+                self.arm_worker.dispatch(ArmJob::Sfz {
+                    track,
+                    key,
+                    hz_bits,
+                    resolved,
+                    hz: engine_hz,
+                    octave_override,
+                });
+            }
+            blocked = true;
+        }
+        // ---- 音频半边 ----
+        let target_rate = snapshot.sample_rate();
+        let live: BTreeSet<AssetHash> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| match &entry.content {
+                ClipContent::Audio { asset, .. } => Some(asset.clone()),
+                _ => None,
+            })
+            .collect();
+        // 暂存表只留"仍被引用且目标率未变"的结果（⛔ 只涨不落不许）。
+        self.audio_arm_outcomes
+            .retain(|(hash, rate), _| live.contains(hash) && *rate == target_rate);
+        for asset in &live {
+            if self.audio_cache.probe(asset, target_rate) != CacheProbe::Missing {
+                continue;
+            }
+            if self
+                .audio_arm_outcomes
+                .contains_key(&(asset.clone(), target_rate))
+            {
+                continue;
+            }
+            let job_key = ArmJobKey::Audio {
+                hash: asset.clone(),
+                target_rate,
+            };
+            if self.arm_worker.in_flight(&job_key) {
+                blocked = true;
+                continue;
+            }
+            // 字节只能在控制线程取（来源不是 `Send`）；拿不到 ⇒ 不延后，
+            // 同步注入会记逐字跳过原因（见本函数文档）。
+            let bytes = self
+                .audio_asset_source
+                .as_ref()
+                .and_then(|source| source(asset));
+            if let Some(bytes) = bytes {
+                self.arm_worker.dispatch(ArmJob::Audio {
+                    hash: asset.clone(),
+                    target_rate,
+                    bytes,
+                });
+                blocked = true;
+            }
+        }
+        Ok(blocked)
     }
 
     /// ⭐ **SFZ 摊平缓存的读数**（任务单 `#80` 的缓存判据；单位见 [`SfzCacheReadings`]）。
@@ -2796,10 +3048,14 @@ mod tests {
         // —— 控制线程的一跳：按需发布 + 回收（生产 60Hz 定时器调的就是这三步）——
         let mark = EditMark::from_display(&port.display());
         assert!(host.should_publish(mark), "工程改过 ⇒ 这一跳必须发布");
-        let revision = host
+        let outcome = host
             .publish_project(&port.project(), mark)
             .expect("增量发布");
-        assert_eq!(revision, 2, "增量发布的版本号 = 快照版本号 + 1");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published(2),
+            "增量发布的版本号 = 快照版本号 + 1"
+        );
         assert_eq!(
             host.generation(),
             1,

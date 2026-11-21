@@ -117,7 +117,7 @@ use slint::ComponentHandle as _;
 use yeban_app::bridge::{BridgeError, ViewState};
 use yeban_app::elements::ElementRegistry;
 use yeban_app::engine_host::{
-    EditMark, EngineHost, EngineHostError, HeartbeatReadings, SnapshotCounts,
+    EditMark, EngineHost, EngineHostError, HeartbeatReadings, PublishOutcome, SnapshotCounts,
 };
 use yeban_app::host;
 use yeban_app::input::{Focus, InputContext, LogicalKey, Modifiers, PhysicalKey, Resolution};
@@ -675,10 +675,13 @@ impl LiveAdminSurface {
                 && let Some(project) = project
             {
                 match engine.publish_project(project, mark) {
-                    Ok(revision) => {
+                    Ok(PublishOutcome::Published(revision)) => {
                         published_revision = Some(revision);
                         snapshot_metronome = Some(project.transport.metronome_enabled);
                     }
+                    // ⭐ P0-7：与生产心跳同一口径 —— 解码在后台，本跳不发布、
+                    //    不报错；`last_mark` 未推进，下一跳自动重试。
+                    Ok(PublishOutcome::Deferred) => {}
                     Err(error) => {
                         // ⭐ 保留原文供控制面/判据读（不是 `.ok()`），并出声。
                         eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");

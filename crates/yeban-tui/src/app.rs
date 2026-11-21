@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use yeban_app::bridge::{self, NewTrackKind};
-use yeban_app::engine_host::{EditMark, EngineHost};
+use yeban_app::engine_host::{EditMark, EngineHost, PublishOutcome};
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution};
 use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
@@ -145,6 +145,9 @@ pub struct App {
     pub last_export: Option<ExportReceipt>,
     /// 已播报过的音频注入修订（避免每跳重复刷日志）。
     audio_revision: u64,
+    /// ⭐ P0-7：上一次发布因解码转后台而延后 —— 每跳 `tick` 重试发布，
+    /// 就绪（或失败）后清掉（重试细节见 `publish_snapshot`）。
+    publish_deferred: bool,
 }
 
 impl App {
@@ -255,6 +258,7 @@ impl App {
             quit: false,
             last_export: None,
             audio_revision: 0,
+            publish_deferred: false,
         };
         app.refresh_track_ids();
         app.report_audio_issues();
@@ -375,6 +379,7 @@ impl App {
     /// 墙钟泵送 + 快照回收心跳 + 电平抽干。播放时位置按真实时间推进（控制面模式，无声）。
     pub fn tick(&mut self) {
         self.host.pump_wall_clock();
+        self.retry_deferred_publish();
         self.report_audio_issues();
         let _ = self.host.heartbeat();
         if let Some(collector) = &mut self.collector {
@@ -471,11 +476,43 @@ impl App {
     fn publish_snapshot(&mut self, what: &str) {
         let mark = EditMark::from_display(&self.port.display());
         match self.host.publish_project(&self.project, mark) {
-            Ok(_) => {
+            Ok(PublishOutcome::Published(_)) => {
+                self.publish_deferred = false;
                 self.dirty = true;
                 self.log_line(format!("{what}（已发布到引擎）"));
             }
-            Err(error) => self.log_line(format!("{what} 发布失败：{error:?}")),
+            // ⭐ P0-7：SFZ／音频解码转到后台线程，本跳不发布；置位延后标记，
+            //    `tick` 每跳重试，就绪后自动完成发布（与 GUI 心跳同一口径）。
+            Ok(PublishOutcome::Deferred) => {
+                self.publish_deferred = true;
+                self.log_line(format!("{what}（解码转后台，就绪后自动发布）"));
+            }
+            Err(error) => {
+                self.publish_deferred = false;
+                self.log_line(format!("{what} 发布失败：{error:?}"));
+            }
+        }
+    }
+
+    /// ⭐ P0-7 延后发布的每跳重试：标记从端口显示态现算（与 `publish_snapshot`
+    /// 同一口径）；就绪 ⇒ 完成发布并标脏；失败 ⇒ 响亮记日志并停止重试
+    /// （同一错误不再每 16 ms 刷一遍 —— 下一次编辑会重新触发发布）。
+    fn retry_deferred_publish(&mut self) {
+        if !self.publish_deferred {
+            return;
+        }
+        let mark = EditMark::from_display(&self.port.display());
+        match self.host.publish_project(&self.project, mark) {
+            Ok(PublishOutcome::Published(_)) => {
+                self.publish_deferred = false;
+                self.dirty = true;
+                self.log_line("后台解码就绪（已发布到引擎）".to_owned());
+            }
+            Ok(PublishOutcome::Deferred) => {}
+            Err(error) => {
+                self.publish_deferred = false;
+                self.log_line(format!("后台解码后的发布失败：{error:?}"));
+            }
         }
     }
 

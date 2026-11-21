@@ -50,7 +50,8 @@ use yeban_model::{EntityId, YebanProjectV1};
 
 use crate::bridge::{CurrentScene, DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
 use crate::engine_host::{
-    DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings, SceneLaunchRequest,
+    DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings, PublishOutcome,
+    SceneLaunchRequest,
 };
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
@@ -6394,10 +6395,13 @@ impl ProductionLoop {
             && let Some(project) = project
         {
             match engine.publish_project(project, mark) {
-                Ok(revision) => {
+                Ok(PublishOutcome::Published(revision)) => {
                     published_revision = Some(revision);
                     snapshot_metronome = Some(project.transport.metronome_enabled);
                 }
+                // ⭐ P0-7：解码在后台线程上，本跳不发布、不报错 —— `last_mark`
+                //    没有推进，下一跳心跳会自动重试并在就绪时完成发布。
+                Ok(PublishOutcome::Deferred) => {}
                 // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
                 Err(error) => {
                     eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
@@ -22162,6 +22166,9 @@ fn publish_project_for_audition(port: &UndoPort, engine: &Rc<RefCell<EngineHost>
         host.has_engine() && host.should_publish(mark)
     };
     if should && let Some(project) = port.try_project() {
+        // ⭐ P0-7：试听发布与主心跳用**同一个**端口标记 ⇒ 本跳若因解码转后台
+        //    而延后（`PublishOutcome::Deferred`），主心跳会在后续跳里以同一标记
+        //    完成发布，试听目标随之生效（`let _` 丢弃结局是既有口径，不变）。
         let _ = engine.borrow_mut().publish_project(&project, mark);
     }
 }

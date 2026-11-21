@@ -36,7 +36,7 @@
 
 use std::path::{Path, PathBuf};
 
-use yeban_app::engine_host::{EditMark, EngineHost, EngineHostError};
+use yeban_app::engine_host::{EditMark, EngineHost, EngineHostError, PublishOutcome};
 use yeban_app::sfz_load::{
     decode_sfz_plan, load_sfz_with_instrument, read_probe, read_sample_file,
 };
@@ -134,6 +134,29 @@ fn bind_sampler(project: &mut YebanProjectV1, track_id: EntityId, path: Option<&
             note_octave_override: None,
             path: path.to_string_lossy().into_owned(),
         });
+}
+
+/// ⭐ P0-7：反复发布同一标记直到后台解码就绪（`Published`），返回修订号。
+///
+/// 延后（`Deferred`）是合法的中间态（解码在后台线程）；10 s 内不就绪 ⇒ panic
+/// （判据红得响亮，⛔ 不无限等）。
+fn publish_until_settled(host: &mut EngineHost, project: &YebanProjectV1, mark: EditMark) -> u64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match host
+            .publish_project(project, mark)
+            .expect("publish 必须成功")
+        {
+            PublishOutcome::Published(revision) => return revision,
+            PublishOutcome::Deferred => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "后台解码 10 s 内没有就绪"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
 }
 
 /// 写一份"每个工程音高一条区域"的 SFZ（`sample=` 用相对路径 ⇒ 按 SFZ 目录解析）。
@@ -283,9 +306,8 @@ fn the_publish_points_arm_the_flattened_table() {
     let sfz_two = write_sfz(&dir, "keys2.sfz", &pitches, "const2.wav");
     let mut changed = project.clone();
     bind_sampler(&mut changed, lead, Some(&sfz_two));
-    let revision = host
-        .publish_project(&changed, EditMark::new(None, 1))
-        .expect("publish 必须成功");
+    // ⭐ P0-7：新路径未命中缓存 ⇒ 首跳延后（解码转后台），重试到就绪为止。
+    let revision = publish_until_settled(&mut host, &changed, EditMark::new(None, 1));
     let published = host.current_snapshot().expect("发布后必须有快照");
     assert!(
         published.sfz_pending().is_empty(),
