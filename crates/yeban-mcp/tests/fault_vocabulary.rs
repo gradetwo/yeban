@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 299 | 1275 | `05120798872e54b3ae132bc57d7b8a0c6272785d86f91af28d8f2138b39f5a9f` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 302 | 1283 | `3244796df8921c15eaffa768907248f8a2d6b7dd0c108983c309b6003598282a` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -197,7 +197,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 295] = [
+pub const GOLDEN_REASONS: [&str; 298] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetChannelLayout",
@@ -508,7 +508,7 @@ pub const GOLDEN_REASONS: [&str; 295] = [
     "sectionNameMustBeNonEmptyStringMustBeString",
     "trackColorMustBeNonEmptyStringMustBeString",
     "trackSamplerMustBeNonEmptyStringMustBeString",
-    // ⭐ SVS：`domain/svs.rs` 新增的 16 条字面量 reason（服务地址校验 4 条、请求/任务/回执/音频 4 条、
+    // ⭐ SVS：`domain/svs.rs` 新增的 19 条字面量 reason（服务地址校验 6 条、响应上限 1 条、请求/任务/回执/音频 4 条、
     // 服务故障 4 条、任务失败/未完成/回执缺件 4 条——其中 `serviceUrlBadPort` 占 2 站点、
     // `svsJobNotFound` 占 2 站点、`serviceBadResponse` 占 5 站点；另两处 `"reason": reason`
     // 变量站点见 `EXEMPT_DYNAMIC_REASON_SITES` 的 SVS 登记项，不贡献值）。
@@ -518,10 +518,13 @@ pub const GOLDEN_REASONS: [&str; 295] = [
     "serviceBadJson",
     "serviceBadResponse",
     "serviceHttp",
+    "serviceResponseTooLarge",
     "serviceUnreachable",
     "serviceUrlBadPort",
+    "serviceUrlControlChars",
     "serviceUrlNoHost",
     "serviceUrlNotHttp",
+    "serviceUrlNotLoopback",
     "svsAudioNotFound",
     "svsJobFailed",
     "svsJobNotFound",
@@ -1792,13 +1795,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
 // 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
 // 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 352;
+const REASON_OCCURRENCES_TOTAL: usize = 355;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 348;
-const REASON_LITERAL_SITES_TOTAL: usize = 336;
+const REASON_KEY_SITES_TOTAL: usize = 351;
+const REASON_LITERAL_SITES_TOTAL: usize = 339;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 7;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2121,7 +2124,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 295] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 298] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -3125,10 +3128,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 295] = [
     ("serviceBadJson", &["reason"]),
     ("serviceBadResponse", &["reason"]),
     ("serviceHttp", &["httpStatus", "reason"]),
+    ("serviceResponseTooLarge", &["reason"]),
     ("serviceUnreachable", &["reason"]),
     ("serviceUrlBadPort", &["field", "reason"]),
+    ("serviceUrlControlChars", &["field", "reason"]),
     ("serviceUrlNoHost", &["field", "reason"]),
     ("serviceUrlNotHttp", &["field", "reason"]),
+    ("serviceUrlNotLoopback", &["field", "reason"]),
     ("svsAudioNotFound", &["job_id", "part", "reason", "take"]),
     ("svsJobFailed", &["error", "job_id", "reason"]),
     ("svsJobNotFound", &["job_id", "reason"]),
@@ -3610,12 +3616,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 字面，各 1 reason 行 ＋ 3 键行）⇒ reason 数 296 → **298**、规范行数
 /// 1263 → **1271**。新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "05120798872e54b3ae132bc57d7b8a0c6272785d86f91af28d8f2138b39f5a9f";
+    "3244796df8921c15eaffa768907248f8a2d6b7dd0c108983c309b6003598282a";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 299;
+pub const REASON_SURFACE_REASONS: usize = 302;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1275;
+pub const REASON_SURFACE_LINES: usize = 1283;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
