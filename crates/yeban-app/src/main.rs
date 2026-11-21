@@ -483,7 +483,21 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 // The requested audio device is not available…）`——elide 之后**只剩英文后半段**，
                 // 用户读到一行后端报错，以为软件坏了。环境降级不是错误：说清「什么受影响、
                 // 什么不受影响」就够了，英文原文留在控制台与诊断里。
-                let text = "没有可用的音频输出设备 · 播放将静音；编辑、渲染与导出不受影响";
+                // T-FIX-59：采样率不符不是"没有设备"——设备在，只是跑不到工程
+                // 采样率。toast 必须点名两侧数值与补救办法，⛔ 不套用通用文案
+                // 把用户引去查"设备不存在"。
+                let text = match &error {
+                    yeban_app::engine_host::EngineHostError::Device(
+                        yeban_engine::device::DeviceError::SampleRateMismatch {
+                            want_rate,
+                            device_rate,
+                        },
+                    ) => format!(
+                        "音频设备采样率 {device_rate} Hz 与工程 {want_rate} Hz 不一致 · 播放将静音；\
+                         请换用支持 {want_rate} Hz 的输出设备，或把工程采样率改为 {device_rate} Hz"
+                    ),
+                    _ => "没有可用的音频输出设备 · 播放将静音；编辑、渲染与导出不受影响".to_owned(),
+                };
                 ui.set_toast_message(text.into());
                 // 非错误级：中性提示，几秒后自动收走（⛔ 别让它变成常驻红条）。
                 ui.set_toast_is_error(false);

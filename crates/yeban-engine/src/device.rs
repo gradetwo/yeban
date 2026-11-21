@@ -411,6 +411,26 @@ pub enum DeviceError {
         format: SampleFormat,
     },
 
+    /// 设备不支持请求的采样率：协商只剩退回另一个标准采样率一条路，而实时
+    /// 通路**没有采样率转换** —— 按退回率开流会以错误的速度与音高播放/录制。
+    /// **响亮拒绝**（T-FIX-59），⛔ 不静默退回：原文同时点名请求值与设备实际值，
+    /// 并给出用户可执行的补救（换支持请求率的设备，或把工程采样率改到设备率）。
+    /// 与 Logic Pro 的口径一致：设备必须跑在工程采样率上，跑不到就明确报错，
+    /// 绝不以错误速度出声。
+    #[error(
+        "device does not support the requested sample rate: want {want_rate} Hz, \
+         the device would fall back to {device_rate} Hz; the realtime path has no \
+         sample-rate conversion, so audio would run at the wrong speed and pitch. \
+         Use a device that supports {want_rate} Hz, or change the project sample \
+         rate to {device_rate} Hz"
+    )]
+    SampleRateMismatch {
+        /// 请求的采样率（工程采样率）。
+        want_rate: u32,
+        /// 设备退回到的标准采样率（实际值）。
+        device_rate: u32,
+    },
+
     /// 请求了独占模式，但 cpal 0.18 没有该能力（见模块文档）。
     #[error("exclusive (non-shared) mode is not supported by this backend")]
     ExclusiveModeUnsupported,
@@ -489,7 +509,10 @@ pub fn negotiate_input(
 /// 选择规则（按优先级）：
 ///
 /// 1. 优先 `f32` + 请求的采样率 + 请求的通道数（立体声不足时接受设备的默认通道数）；
-/// 2. 采样率不被支持时退回设备的**首选标准采样率**（48k → 44.1k）；
+/// 2. 采样率只剩退回设备的首选标准采样率一条路时 **响亮拒绝**
+///    （[`DeviceError::SampleRateMismatch`]，T-FIX-59）：实时通路没有采样率转换，
+///    按退回率开流会以错误的速度与音高出声 —— 旧行为静默退回（48k → 44.1k），
+///    是 macOS 无声现场里"设备行毫无告警"的根源；
 /// 3. `f32` 完全不可用 → [`DeviceError::UnsupportedSampleFormat`]（不静默做格式转换，
 ///    因为那会引入一条未经确定性验证的样本路径 [ARCH-DET-001]）。
 ///
@@ -521,19 +544,24 @@ pub fn negotiate(
     // 1) 精确匹配请求的采样率 + 通道数
     for range in &f32_ranges {
         if range.channels() == want.channels && range.contains_rate(want.sample_rate) {
-            return Ok(finish(range, want, want.sample_rate, false));
+            return Ok(finish(range, want, want.sample_rate));
         }
     }
     // 2) 采样率匹配但通道数不同（接受设备默认通道数）
     for range in &f32_ranges {
         if range.contains_rate(want.sample_rate) {
-            return Ok(finish(range, want, want.sample_rate, false));
+            return Ok(finish(range, want, want.sample_rate));
         }
     }
-    // 3) 退回该范围的首选标准采样率
+    // 3) 只剩退回标准采样率一条路 ⇒ **响亮拒绝**（T-FIX-59）：实时通路没有
+    //    采样率转换，退回率开流等于以 44100/48000 的速度与音高出声。把设备
+    //    本会退回到的实际值算出来写进错误原文，用户才知道差在哪、怎么补救。
     for range in &f32_ranges {
         if let Some(config) = range.try_with_standard_sample_rate() {
-            return Ok(finish(range, want, config.sample_rate(), true));
+            return Err(DeviceError::SampleRateMismatch {
+                want_rate: want.sample_rate,
+                device_rate: config.sample_rate(),
+            });
         }
     }
     Err(DeviceError::UnsupportedConfig {
@@ -547,14 +575,16 @@ fn finish(
     range: &SupportedStreamConfigRange,
     want: &EngineConfig,
     sample_rate: u32,
-    rate_fallback: bool,
 ) -> NegotiatedConfig {
     // 请求的块长只有在设备报告的缓冲区间内才写进 Fixed；否则用 Default，
     // 由后端决定（引擎内部渲染量子仍是 DEFAULT_BLOCK_FRAMES）。
+    //
+    // ⭐ T-FIX-59 复议：旧实现把采样率退回连坐进这里（`!rate_fallback && ...`），
+    // 使退回路径**必然** Default —— 块长可否固定与采样率是否退回是两个独立
+    // 问题，连坐只会放大设备侧变量。现本函数根本不接收退回标志，块长接受与否
+    // 只由设备报告的区间决定；采样率退回本身已在 `negotiate` 第 3 步响亮拒绝。
     let fixed_block_accepted = match range.buffer_size() {
-        SupportedBufferSize::Range { min, max } => {
-            !rate_fallback && (*min..=*max).contains(&want.block_frames)
-        }
+        SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&want.block_frames),
         SupportedBufferSize::Unknown => false,
     };
     NegotiatedConfig {
@@ -1085,8 +1115,10 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_falls_back_to_standard_rate_when_requested_rate_is_unsupported() {
-        // 设备只支持 44.1k
+    fn negotiate_rejects_rate_fallback_loudly_when_requested_rate_is_unsupported() {
+        // 设备只支持 44.1k、工程要 48k。旧行为：静默退回 44.1k 开流（播放按
+        // 44100/48000 降速降调、设备行毫无告警）。T-FIX-59：响亮拒绝，错误
+        // 原文同时点名请求值与设备实际值。
         let ranges = [fake_range(
             2,
             44_100,
@@ -1094,14 +1126,92 @@ mod tests {
             SupportedBufferSize::Unknown,
             SampleFormat::F32,
         )];
-        let got = negotiate(&ranges, &EngineConfig::default()).expect("应退回 44.1k");
-        assert_eq!(got.sample_rate, 44_100);
-        assert!(!got.fixed_block_accepted);
-        assert_eq!(
-            got.buffer_size,
-            BufferSize::Default,
-            "设备不报缓冲区间时不得写 Fixed"
+        match negotiate(&ranges, &EngineConfig::default()) {
+            Err(DeviceError::SampleRateMismatch {
+                want_rate,
+                device_rate,
+            }) => {
+                assert_eq!(want_rate, 48_000);
+                assert_eq!(device_rate, 44_100);
+            }
+            other => panic!("预期 SampleRateMismatch, 实际 {other:?}"),
+        }
+        let error = negotiate(&ranges, &EngineConfig::default()).expect_err("异率必须失败");
+        let text = error.to_string();
+        assert!(text.contains("48000"), "错误原文缺点名请求值: {text}");
+        assert!(text.contains("44100"), "错误原文缺点名实际值: {text}");
+    }
+
+    #[test]
+    fn negotiate_rejects_rate_fallback_even_when_block_size_would_fit() {
+        // 缓冲区间装得下请求块长也救不了采样率退回：拒绝的原因是率，不是块长。
+        let ranges = [fake_range(
+            2,
+            44_100,
+            44_100,
+            SupportedBufferSize::Range { min: 64, max: 1024 },
+            SampleFormat::F32,
+        )];
+        match negotiate(&ranges, &EngineConfig::default()) {
+            Err(DeviceError::SampleRateMismatch { .. }) => {}
+            other => panic!("预期 SampleRateMismatch, 实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finish_block_acceptance_depends_only_on_the_reported_range() {
+        // T-FIX-59 复议的钉：块长接受与否只看设备报告的区间，与采样率无关。
+        // 在一个非请求率（44.1k）上直接调 finish：区间装得下 ⇒ Fixed 被接受
+        //（旧实现在退回路径上连坐成恒 Default，这条会红）。
+        let want = EngineConfig::default();
+        let fitting = fake_range(
+            2,
+            44_100,
+            44_100,
+            SupportedBufferSize::Range { min: 64, max: 1024 },
+            SampleFormat::F32,
         );
+        let got = finish(&fitting, &want, 44_100);
+        assert!(got.fixed_block_accepted);
+        assert_eq!(got.buffer_size, BufferSize::Fixed(128));
+        // 区间装不下（128 < 256）⇒ Default，且只因区间、不因别的。
+        let tight = fake_range(
+            2,
+            44_100,
+            44_100,
+            SupportedBufferSize::Range { min: 256, max: 512 },
+            SampleFormat::F32,
+        );
+        let got = finish(&tight, &want, 44_100);
+        assert!(!got.fixed_block_accepted);
+        assert_eq!(got.buffer_size, BufferSize::Default);
+        // 设备不报区间 ⇒ 同样不得写 Fixed。
+        let unknown = fake_range(
+            2,
+            44_100,
+            44_100,
+            SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        );
+        let got = finish(&unknown, &want, 44_100);
+        assert!(!got.fixed_block_accepted);
+        assert_eq!(got.buffer_size, BufferSize::Default);
+    }
+
+    #[test]
+    fn negotiate_exact_rate_with_block_outside_range_uses_default_buffer() {
+        // 精确率命中、块长在区间外：协商成功，块长走 Default（不是失败、不是 Fixed）。
+        let ranges = [fake_range(
+            2,
+            48_000,
+            48_000,
+            SupportedBufferSize::Range { min: 256, max: 512 },
+            SampleFormat::F32,
+        )];
+        let got = negotiate(&ranges, &EngineConfig::default()).expect("精确率应成功");
+        assert_eq!(got.sample_rate, 48_000);
+        assert!(!got.fixed_block_accepted);
+        assert_eq!(got.buffer_size, BufferSize::Default);
     }
 
     #[test]
