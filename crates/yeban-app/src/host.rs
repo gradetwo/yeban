@@ -11521,6 +11521,23 @@ fn publish_library_target(ui: &MainWindow) {
     ui.set_sound_library_target_name(SharedString::from(name));
 }
 
+/// 缺 SFZ 文件时要打开音源管理 —— 走与「设置 → 音源管理...」**同一条**路径。
+///
+/// ⛔ 不直接 `set_sound_library_open(true)`：那只是把面板挂上，跳过了
+/// [`wire_sound_library_dialog_with`] 里 `on_open_sound_library` 的五步准备
+/// （扫描已安装 → 状态清零 → 发布当前轨 → 目录状态归零 → **触发目录拉取**）。
+/// 用户看到的因此往往是空列表 —— 面板开着，却没有内容。
+///
+/// 已经打开着 ⇒ 只刷新"当前轨"，**不**重置目录状态、**不**重拉：
+/// 用户正看着的列表不该因为按了一下"装载 SFZ"被清空重来。
+fn open_sound_library_for_missing_sfz(ui: &MainWindow) {
+    if ui.get_sound_library_open() {
+        publish_library_target(ui);
+    } else {
+        ui.invoke_open_sound_library();
+    }
+}
+
 /// 音源管理对话框接线（主菜单「设置 → 音源管理...」）。
 ///
 /// 打开 ⇒ 先同步发布已安装扫描（本地读盘，快），目录拉取走工作
@@ -12729,6 +12746,11 @@ pub fn wire_module_actions_with_capture(
             // 弹一句 `读 SFZ 失败: SFZ 路径 …`"。现在：没有现成文件 ⇒ 不报术语，
             // 直接把音源管理打开，让用户在列表里点一下就有了乐器。
             if !source.is_file() {
+                // ⭐ 审计 #21：这里原来只 `set_sound_library_open(true)` —— 面板挂上了，
+                // 但跳过了 `on_open_sound_library` 的准备序列（扫描已安装 → 状态清零 →
+                // 发布当前轨 → 目录状态归零 → **触发目录拉取**），用户看到的通常是空列表。
+                // 现在走同一个打开回调，两处不可能漂移。
+                open_sound_library_for_missing_sfz(&ui);
                 let receipt = module_receipt(
                     "load-sfz",
                     &module_error_fields("sfz-missing", "还没有指定 SFZ 文件"),
@@ -12739,7 +12761,6 @@ pub fn wire_module_actions_with_capture(
                     "「装载 SFZ 音源」需要先有一个 .sfz 文件。已为你打开音源管理：在列表里选一个音源下载，装好后点「用上」就能绑到这条轨。",
                     true,
                 );
-                ui.set_sound_library_open(true);
                 module_trace("load-sfz", started, &receipt);
                 return;
             }
