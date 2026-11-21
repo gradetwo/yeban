@@ -61,7 +61,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -196,6 +196,51 @@ fn is_loopback_host(host: &str) -> bool {
     }
     bare.parse::<std::net::IpAddr>()
         .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn write_svs_temp_file(cache_path: &Path, wav: &[u8]) -> Result<(), Fault> {
+    if let Some(parent) = cache_path.parent() {
+        if let Ok(meta) = std::fs::symlink_metadata(parent)
+            && meta.file_type().is_symlink()
+        {
+            return Err(Fault::domain(
+                ErrorCode::IoError,
+                format!("拒绝向符号链接 SVS 暂存目录写入: {}", parent.display()),
+            ));
+        }
+        std::fs::create_dir_all(parent)
+            .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(cache_path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(Fault::domain(
+            ErrorCode::IoError,
+            format!("拒绝覆盖符号链接 SVS 暂存文件: {}", cache_path.display()),
+        ));
+    }
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("svs.wav");
+    let tmp_path =
+        cache_path.with_file_name(format!(".{file_name}.tmp.{}.{seq}", std::process::id()));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(wav)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, cache_path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result.map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))
 }
 
 /// `http://host[:port][/prefix]` 的解析结果。
@@ -1680,13 +1725,8 @@ fn plan_svs_audio(
                     .to_canonical_string(),
             ),
         );
-        // 先写暂存文件，再建导入计划（`import_audio::plan` 读 `path`）。
-        if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
-        }
-        std::fs::write(&cache_path, &wav)
-            .map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))?;
+        // 先写暂存文件（拒绝 symlink 并原子重命名），再建导入计划（`import_audio::plan` 读 `path`）。
+        write_svs_temp_file(&cache_path, &wav)?;
         let import = import_audio::plan(project, domain, &import_args)?;
         let mut report =
             placement_report(args, &model, &outcome, &cache_display, duration_s, false);
@@ -1698,12 +1738,7 @@ fn plan_svs_audio(
             report,
         });
     }
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
-    }
-    std::fs::write(&cache_path, &wav)
-        .map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))?;
+    write_svs_temp_file(&cache_path, &wav)?;
     Ok(Plan::SvsAudio {
         import: None,
         report: serde_json::json!({

@@ -6309,6 +6309,10 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     let out_path = arg_str(call, "outPath")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`outPath` 是必填实参"))?;
+    let out_path_buf = PathBuf::from(out_path);
+    if let Some(project_path) = domain.active_path() {
+        render::guard_output_path(&out_path_buf, project_path)?;
+    }
     let block_frames = arg_u64(call, "blockFrames")?.unwrap_or(1024);
     if !(1..=4096).contains(&block_frames) {
         return Err(Fault::domain(
@@ -6320,7 +6324,7 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .map_err(|_| Fault::domain(ErrorCode::InvalidParameterRange, "`blockFrames` 超出范围"))?;
     Ok(Plan::AraRender {
         session_id: session_id.to_owned(),
-        out_path: PathBuf::from(out_path),
+        out_path: out_path_buf,
         block_frames,
     })
 }
