@@ -5923,9 +5923,18 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
         snapshot.tracks.len(),
         "电平数组必须与轨道数组等长（否则 .slint 按下标取会串到别的轨道）"
     );
-    ui.set_track_meter_peaks(strings(&snapshot.peak_labels()));
-    ui.set_track_meter_rmss(strings(&snapshot.rms_labels()));
-    ui.set_track_meter_levels(lengths(&snapshot.levels()));
+    let peaks = snapshot.peak_labels();
+    if !update_string_model_in_place(&ui.get_track_meter_peaks(), &peaks) {
+        ui.set_track_meter_peaks(strings(&peaks));
+    }
+    let rmss = snapshot.rms_labels();
+    if !update_string_model_in_place(&ui.get_track_meter_rmss(), &rmss) {
+        ui.set_track_meter_rmss(strings(&rmss));
+    }
+    let levels = snapshot.levels();
+    if !update_f32_model_in_place(&ui.get_track_meter_levels(), &levels) {
+        ui.set_track_meter_levels(lengths(&levels));
+    }
     // 可观测性（本轮实测教训）：电平"到底有没有读数"必须能在 stderr 读到，否则界面上一根
     // 不动时分不清两件完全不同的事——"引擎给的就是静音" 与 "值到了但没画出来"。
     // 只在**首次**出现非零读数时打一行（稳态零噪声，一次排查够用）。
@@ -5933,7 +5942,6 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN_NONZERO: AtomicBool = AtomicBool::new(false);
         if !SEEN_NONZERO.load(Ordering::Relaxed) {
-            let levels = snapshot.levels();
             let non_zero = levels.iter().filter(|v| **v > 0.001).count();
             if non_zero > 0 {
                 let peak = levels.iter().copied().fold(0.0_f32, f32::max);
@@ -5945,10 +5953,56 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
             }
         }
     }
-    ui.set_master_meter_peak(snapshot.master_peak_label().into());
-    ui.set_master_meter_rms(snapshot.master_rms_label().into());
-    ui.set_master_meter_lufs(snapshot.master_lufs_label().into());
-    ui.set_master_meter_level(snapshot.master_level());
+    let master_peak = snapshot.master_peak_label();
+    if ui.get_master_meter_peak().as_str() != master_peak {
+        ui.set_master_meter_peak(master_peak.into());
+    }
+    let master_rms = snapshot.master_rms_label();
+    if ui.get_master_meter_rms().as_str() != master_rms {
+        ui.set_master_meter_rms(master_rms.into());
+    }
+    let master_lufs = snapshot.master_lufs_label();
+    if ui.get_master_meter_lufs().as_str() != master_lufs {
+        ui.set_master_meter_lufs(master_lufs.into());
+    }
+    let master_level = snapshot.master_level();
+    if ui.get_master_meter_level().to_bits() != master_level.to_bits() {
+        ui.set_master_meter_level(master_level);
+    }
+}
+
+fn update_string_model_in_place(model: &ModelRc<SharedString>, values: &[String]) -> bool {
+    let Some(vec) = slint::Model::as_any(model).downcast_ref::<VecModel<SharedString>>() else {
+        return false;
+    };
+    if slint::Model::row_count(vec) != values.len() {
+        return false;
+    }
+    for (index, value) in values.iter().enumerate() {
+        let changed = slint::Model::row_data(vec, index)
+            .is_none_or(|current| current.as_str() != value.as_str());
+        if changed {
+            vec.set_row_data(index, SharedString::from(value.as_str()));
+        }
+    }
+    true
+}
+
+fn update_f32_model_in_place(model: &ModelRc<f32>, values: &[f32]) -> bool {
+    let Some(vec) = slint::Model::as_any(model).downcast_ref::<VecModel<f32>>() else {
+        return false;
+    };
+    if slint::Model::row_count(vec) != values.len() {
+        return false;
+    }
+    for (index, &value) in values.iter().enumerate() {
+        let changed = slint::Model::row_data(vec, index)
+            .is_none_or(|current| current.to_bits() != value.to_bits());
+        if changed {
+            vec.set_row_data(index, value);
+        }
+    }
+    true
 }
 
 // ===========================================================================
@@ -21638,20 +21692,42 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
 /// `apply_view` / `apply_meters` 写入后新组件树直接消费; 这里只补那些**不同名**的
 /// 显示态(playing/recording/timecode/bpm/电平/播放头)。由 60Hz 心跳调用。
 pub fn sync_aether_display(ui: &MainWindow) {
-    ui.set_is_playing(ui.get_playing());
-    ui.set_is_recording(ui.get_recording());
-    ui.set_is_looping(ui.get_cycle_enabled());
-    ui.set_timecode_text(ui.get_timecode());
+    let playing = ui.get_playing();
+    if ui.get_is_playing() != playing {
+        ui.set_is_playing(playing);
+    }
+    let recording = ui.get_recording();
+    if ui.get_is_recording() != recording {
+        ui.set_is_recording(recording);
+    }
+    let cycle = ui.get_cycle_enabled();
+    if ui.get_is_looping() != cycle {
+        ui.set_is_looping(cycle);
+    }
+    let timecode = ui.get_timecode();
+    if ui.get_timecode_text() != timecode {
+        ui.set_timecode_text(timecode);
+    }
     let bpm = ui
         .get_bpm_display()
         .as_str()
         .parse::<f32>()
-        .unwrap_or(120.0);
-    ui.set_bpm_val(bpm as i32);
-    let level = ui.get_master_meter_level();
-    ui.set_master_meter_l(level);
-    ui.set_master_meter_r((level * 0.95).min(1.0));
-    ui.set_lufs_short(ui.get_master_meter_lufs());
+        .unwrap_or(120.0) as i32;
+    if ui.get_bpm_val() != bpm {
+        ui.set_bpm_val(bpm);
+    }
+    let level = ui.get_master_meter_level().clamp(0.0, 1.0);
+    if ui.get_master_meter_l().to_bits() != level.to_bits() {
+        ui.set_master_meter_l(level);
+    }
+    // 契约面只有单一主总线标量电平：右声道如实映出同一读数，不编造 *0.95 假立体声差。
+    if ui.get_master_meter_r().to_bits() != level.to_bits() {
+        ui.set_master_meter_r(level);
+    }
+    let lufs = ui.get_master_meter_lufs();
+    if ui.get_lufs_short() != lufs {
+        ui.set_lufs_short(lufs);
+    }
 }
 
 fn tool_name_for_digit(digit: u8) -> &'static str {
