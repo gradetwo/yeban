@@ -2496,13 +2496,12 @@ impl SnapshotSlot {
     /// 以 `Arc` 形式发布（避免调用方多余的一次 `Arc::new`）。
     pub fn publish_arc(&self, snapshot: Arc<EngineSnapshot>) {
         let new_raw = Arc::as_ptr(&snapshot).cast_mut();
-        let old = {
-            let mut anchor = lock(&self.anchor);
-            let old = std::mem::replace(&mut *anchor, snapshot);
-            // Release: 与读者的 Acquire load 配对；且必须早于 `epoch.fetch_add`。
-            self.ptr.store(new_raw, Ordering::Release);
-            old
-        };
+        // 整条发布序列持住 `anchor`：防止并发写者在 `ptr.store` 与
+        // `epoch.fetch_add` / `pending.push` 之间交错，导致 `retired_at` 错配。
+        let mut anchor = lock(&self.anchor);
+        let old = std::mem::replace(&mut *anchor, snapshot);
+        // Release: 与读者的 Acquire load 配对；且必须早于 `epoch.fetch_add`。
+        self.ptr.store(new_raw, Ordering::Release);
         let retired_at = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         lock(&self.pending).push((retired_at, old));
         self.published.fetch_add(1, Ordering::Release);
@@ -2591,17 +2590,33 @@ pub struct SnapshotReader {
     stash_events: u64,
 }
 
+/// 槽位已绑定另一个活跃 [`SnapshotReader`]（单读者契约拒绝并发双绑）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderAlreadyAttached;
+
+impl std::fmt::Display for ReaderAlreadyAttached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("snapshot slot already has an attached reader")
+    }
+}
+
+impl std::error::Error for ReaderAlreadyAttached {}
+
 impl SnapshotReader {
-    /// 在册化一个读者。**必须在音频线程启动前调用一次**。
-    #[must_use]
-    pub fn attach(slot: &Arc<SnapshotSlot>, retire: RetireProducer) -> Self {
-        // 先复位进度再登记: 顺序无关紧要（见模块文档的证明），
-        // 但"先保守后激进"更不容易出错。
+    /// 尝试在册化一个读者；若槽位已有活跃读者则返回 `Err(ReaderAlreadyAttached)`。
+    ///
+    /// **必须在音频线程启动前调用一次**。
+    pub fn try_attach(
+        slot: &Arc<SnapshotSlot>,
+        retire: RetireProducer,
+    ) -> Result<Self, ReaderAlreadyAttached> {
+        slot.reader_attached
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ReaderAlreadyAttached)?;
         slot.reader_done.store(0, Ordering::Release);
-        slot.reader_attached.store(true, Ordering::Release);
         let held = Arc::clone(&lock(&slot.anchor));
         let held_addr = Arc::as_ptr(&held) as usize;
-        Self {
+        Ok(Self {
             slot: Arc::clone(slot),
             retire,
             held: Some(held),
@@ -2610,7 +2625,15 @@ impl SnapshotReader {
             local_epoch: 0,
             switches: 0,
             stash_events: 0,
-        }
+        })
+    }
+
+    /// 在册化一个读者。**必须在音频线程启动前调用一次**。
+    ///
+    /// 若同一 [`SnapshotSlot`] 上已有活跃读者则会 panic；需要非 panic 检查请用 [`Self::try_attach`]。
+    #[must_use]
+    pub fn attach(slot: &Arc<SnapshotSlot>, retire: RetireProducer) -> Self {
+        Self::try_attach(slot, retire).expect("snapshot slot already has an attached reader")
     }
 
     /// 本块开始时调用：必要时切换到最新快照；返回当前快照的只读引用。
@@ -4146,5 +4169,66 @@ mod tests {
             vec![(0, 12_000), (12_000, 48_000)],
             "第一脉冲 0..480 tick 不动；第二脉冲延到踏板抬起"
         );
+    }
+
+    #[test]
+    fn try_attach_rejects_second_reader_until_first_drops() {
+        let initial = EngineSnapshot::from_project(&simple_project(), 0).expect("简单工程可编译");
+        let slot = SnapshotSlot::new(initial);
+        let (p1, _c1) = retire_channel(4);
+        let (p2, _c2) = retire_channel(4);
+        let first = SnapshotReader::try_attach(&slot, p1).expect("首个读者必须成功绑定");
+        assert!(
+            matches!(
+                SnapshotReader::try_attach(&slot, p2),
+                Err(ReaderAlreadyAttached)
+            ),
+            "同一 SnapshotSlot 不允许并发绑定第二个活跃读者"
+        );
+        drop(first);
+        let (p3, _c3) = retire_channel(4);
+        let second = SnapshotReader::try_attach(&slot, p3).expect("原读者释放后必须允许重新绑定");
+        drop(second);
+    }
+
+    #[test]
+    fn concurrent_publish_arc_keeps_epoch_and_prune_consistent() {
+        let base = simple_project();
+        let initial = EngineSnapshot::from_project(&base, 0).expect("简单工程可编译");
+        let slot = SnapshotSlot::new(initial);
+        let (producer, mut consumer) = retire_channel(256);
+        let mut reader = SnapshotReader::try_attach(&slot, producer).expect("读者绑定");
+
+        const THREADS: u64 = 4;
+        const ITERS: u64 = 50;
+        std::thread::scope(|scope| {
+            for t in 0..THREADS {
+                let slot = Arc::clone(&slot);
+                let base = &base;
+                scope.spawn(move || {
+                    for i in 1..=ITERS {
+                        let rev = t * ITERS + i;
+                        let snap = EngineSnapshot::from_project(base, rev).expect("简单工程可编译");
+                        slot.publish_arc(Arc::new(snap));
+                    }
+                });
+            }
+            for _ in 0..(THREADS * ITERS) {
+                if let Some(snap) = reader.begin_block() {
+                    let _ = snap.revision();
+                }
+                reader.end_block();
+                let _ = consumer.drain(256);
+                let _ = slot.prune();
+            }
+        });
+
+        drop(reader);
+        let _ = consumer.drain(256);
+        let _ = slot.prune();
+        assert_eq!(slot.epoch(), THREADS * ITERS);
+        assert_eq!(slot.published(), 1 + THREADS * ITERS);
+        assert_eq!(slot.pending_len(), 0);
+        assert_eq!(slot.pruned(), THREADS * ITERS);
     }
 }
