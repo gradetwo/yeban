@@ -1781,21 +1781,24 @@
       "name": "hats",
       "keys": [42, 44, 92],
       "chain": {
-        "gain_db": -1.5
+        "gain_db": -1.5,
+        "pan": 0.2
       }
     },
     {
       "name": "crash",
       "keys": [49],
       "chain": {
-        "gain_db": -1.0
+        "gain_db": -1.0,
+        "pan": -0.25
       }
     },
     {
       "name": "shaker",
       "keys": [82],
       "chain": {
-        "gain_db": -1.5
+        "gain_db": -1.5,
+        "pan": 0.35
       }
     }
   ]

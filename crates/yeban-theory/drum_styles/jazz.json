@@ -1774,21 +1774,24 @@
       "name": "hats",
       "keys": [42, 44, 92],
       "chain": {
-        "gain_db": -1.0
+        "gain_db": -1.0,
+        "pan": 0.25
       }
     },
     {
       "name": "crash",
       "keys": [49],
       "chain": {
-        "gain_db": -1.5
+        "gain_db": -1.5,
+        "pan": -0.3
       }
     },
     {
       "name": "ride",
       "keys": [51, 53],
       "chain": {
-        "gain_db": -1.0
+        "gain_db": -1.0,
+        "pan": 0.45
       }
     }
   ]

@@ -1456,14 +1456,16 @@
       "name": "hats",
       "keys": [42, 44, 46],
       "chain": {
-        "gain_db": -1.5
+        "gain_db": -1.5,
+        "pan": 0.3
       }
     },
     {
       "name": "shaker",
       "keys": [82],
       "chain": {
-        "gain_db": -1.0
+        "gain_db": -1.0,
+        "pan": 0.15
       }
     }
   ]

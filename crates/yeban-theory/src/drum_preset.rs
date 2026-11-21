@@ -2567,8 +2567,13 @@ pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
 /// （高频收窄，空间与底噪近似在预置 FX 层）。未知 id 落 909 基表
 /// （出厂预置的 id 集合由 FACTORY_SOURCES 钉住，未知 id 只来自
 /// 用户自写预置文件，取基表是装配默认值、不是静默近似音色）。
+/// 声像口径（T-DRUM-13）：kick / snare / bass808 三件全风格恒 0
+/// （俱乐部系严格居中）；其余八件（hihat / clap / tom / rim / shaker /
+/// cowbell / crash / ride）逐风格按曲风惯例定，依据写在各分支注释里，
+/// 八个风格行互不相同（hiphop 旧值整行复制 edm 的事故不得重演）。
 fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
     match id {
+        // 声像（T-DRUM-13）：trap 宽声场——shaker/ride 右翼展开、crash 左翼，rim 左、cowbell 右作旋律性点缀，hats 微右；kick/snare/bass808 严格居中。
         "trap" => vec![
             ("kick_tune_hz", 45.0),
             ("kick_glide_hz", 150.0),
@@ -2595,7 +2600,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.04),
             ("hihat_open_decay_s", 0.3),
             ("hihat_level", 0.65),
-            ("hihat_pan", 0.15),
+            ("hihat_pan", 0.2),
             ("clap_highpass_hz", 1800.0),
             ("clap_lowpass_hz", 7000.0),
             ("clap_bursts", 3.0),
@@ -2604,27 +2609,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.18),
             ("clap_level", 0.7),
-            ("clap_pan", -0.1),
+            ("clap_pan", -0.15),
             ("tom_tune_hz", 90.0),
             ("tom_glide_hz", 130.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.35),
             ("tom_level", 0.8),
-            ("tom_pan", 0.15),
+            ("tom_pan", 0.25),
             ("rim_tone_hz", 1800.0),
             ("rim_noise_highpass_hz", 1500.0),
             ("rim_noise_lowpass_hz", 6500.0),
             ("rim_decay_s", 0.045),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.7),
-            ("rim_pan", 0.1),
+            ("rim_pan", -0.3),
             ("shaker_highpass_hz", 6000.0),
             ("shaker_lowpass_hz", 14000.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.12),
             ("shaker_level", 0.55),
-            ("shaker_pan", 0.55),
+            ("shaker_pan", 0.6),
             ("cowbell_freq_a_hz", 560.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -2632,21 +2637,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.25),
             ("cowbell_level", 0.6),
-            ("cowbell_pan", -0.2),
+            ("cowbell_pan", 0.35),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 6000.0),
             ("crash_lowpass_hz", 15000.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.4),
             ("crash_level", 0.7),
-            ("crash_pan", -0.5),
+            ("crash_pan", -0.55),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7500.0),
             ("ride_lowpass_hz", 16000.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 1.0),
             ("ride_level", 0.6),
-            ("ride_pan", 0.55),
+            ("ride_pan", 0.5),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             ("bass808_tune_hz", 49.0),
             ("bass808_glide_hz", 120.0),
@@ -2656,6 +2661,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.95),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：drill 声场偏暗偏疏——hats 略左、clap 右置与军鼓错开，shaker 左翼、rim 右翼拉开点缀间距，crash 收窄；kick/snare/bass808 严格居中。
         "drill" => vec![
             ("kick_tune_hz", 47.0),
             ("kick_glide_hz", 170.0),
@@ -2682,7 +2688,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.035),
             ("hihat_open_decay_s", 0.25),
             ("hihat_level", 0.6),
-            ("hihat_pan", 0.1),
+            ("hihat_pan", -0.1),
             ("clap_highpass_hz", 2000.0),
             ("clap_lowpass_hz", 6500.0),
             ("clap_bursts", 3.0),
@@ -2691,27 +2697,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.15),
             ("clap_level", 0.65),
-            ("clap_pan", -0.2),
+            ("clap_pan", 0.2),
             ("tom_tune_hz", 95.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.3),
             ("tom_level", 0.75),
-            ("tom_pan", 0.15),
+            ("tom_pan", -0.25),
             ("rim_tone_hz", 1900.0),
             ("rim_noise_highpass_hz", 1300.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.04),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.75),
-            ("rim_pan", 0.15),
+            ("rim_pan", 0.3),
             ("shaker_highpass_hz", 6500.0),
             ("shaker_lowpass_hz", 14500.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.1),
             ("shaker_level", 0.5),
-            ("shaker_pan", 0.35),
+            ("shaker_pan", -0.45),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -2719,21 +2725,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.22),
             ("cowbell_level", 0.55),
-            ("cowbell_pan", -0.25),
+            ("cowbell_pan", 0.15),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 5200.0),
             ("crash_lowpass_hz", 14800.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.2),
             ("crash_level", 0.65),
-            ("crash_pan", -0.2),
+            ("crash_pan", -0.35),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7200.0),
             ("ride_lowpass_hz", 15800.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 0.9),
             ("ride_level", 0.55),
-            ("ride_pan", 0.25),
+            ("ride_pan", 0.2),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             // 2026-11-20 起带 808 道（Wang 立项）：drill 的 808 要滑音
             // 长尾——glide 拉长到 0.12 s、decay 拉长到 2.4 s（跨小节
@@ -2746,6 +2752,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.95),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：phonk 以 cowbell 为旋律主角——cowbell 明确左置主导（-0.40）、crash 左翼呼应，rim 右置、shaker 左置作 Memphis 式点缀；kick/snare/bass808 严格居中。
         "phonk" => vec![
             ("kick_tune_hz", 50.0),
             ("kick_glide_hz", 140.0),
@@ -2772,7 +2779,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.05),
             ("hihat_open_decay_s", 0.35),
             ("hihat_level", 0.6),
-            ("hihat_pan", 0.1),
+            ("hihat_pan", 0.15),
             ("clap_highpass_hz", 1500.0),
             ("clap_lowpass_hz", 5500.0),
             ("clap_bursts", 4.0),
@@ -2781,27 +2788,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.22),
             ("clap_level", 0.75),
-            ("clap_pan", -0.05),
+            ("clap_pan", -0.1),
             ("tom_tune_hz", 85.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.4),
             ("tom_level", 0.8),
-            ("tom_pan", 0.15),
+            ("tom_pan", 0.2),
             ("rim_tone_hz", 1600.0),
             ("rim_noise_highpass_hz", 1300.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.05),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.7),
-            ("rim_pan", 0.25),
+            ("rim_pan", 0.3),
             ("shaker_highpass_hz", 5000.0),
             ("shaker_lowpass_hz", 11000.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.16),
             ("shaker_level", 0.6),
-            ("shaker_pan", 0.25),
+            ("shaker_pan", -0.2),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 800.0),
             ("cowbell_highpass_hz", 400.0),
@@ -2809,21 +2816,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.35),
             ("cowbell_level", 0.85),
-            ("cowbell_pan", -0.3),
+            ("cowbell_pan", -0.4),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 4500.0),
             ("crash_lowpass_hz", 12000.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.5),
             ("crash_level", 0.7),
-            ("crash_pan", -0.3),
+            ("crash_pan", -0.45),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 6000.0),
             ("ride_lowpass_hz", 13000.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 1.1),
             ("ride_level", 0.6),
-            ("ride_pan", 0.55),
+            ("ride_pan", 0.35),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             ("bass808_tune_hz", 46.0),
             ("bass808_glide_hz", 115.0),
@@ -2833,6 +2840,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.95),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：edm 主舞台宽声场——hats/ride 右翼、shaker 右翼铺底，clap/cowbell 左中错开，crash 大幅左展；kick/snare/bass808 严格居中。
         "edm" => vec![
             ("kick_tune_hz", 50.0),
             ("kick_glide_hz", 160.0),
@@ -2859,7 +2867,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.05),
             ("hihat_open_decay_s", 0.4),
             ("hihat_level", 0.7),
-            ("hihat_pan", 0.2),
+            ("hihat_pan", 0.25),
             ("clap_highpass_hz", 1500.0),
             ("clap_lowpass_hz", 6000.0),
             ("clap_bursts", 4.0),
@@ -2868,27 +2876,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.25),
             ("clap_level", 0.8),
-            ("clap_pan", -0.15),
+            ("clap_pan", -0.2),
             ("tom_tune_hz", 100.0),
             ("tom_glide_hz", 150.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.28),
             ("tom_level", 0.9),
-            ("tom_pan", 0.1),
+            ("tom_pan", 0.15),
             ("rim_tone_hz", 1700.0),
             ("rim_noise_highpass_hz", 1200.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.05),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.8),
-            ("rim_pan", -0.1),
+            ("rim_pan", -0.25),
             ("shaker_highpass_hz", 5000.0),
             ("shaker_lowpass_hz", 12000.0),
             ("shaker_attack_s", 0.008),
             ("shaker_decay_s", 0.14),
             ("shaker_level", 0.6),
-            ("shaker_pan", 0.4),
+            ("shaker_pan", 0.5),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -2896,21 +2904,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.28),
             ("cowbell_level", 0.65),
-            ("cowbell_pan", -0.3),
+            ("cowbell_pan", -0.35),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 5000.0),
             ("crash_lowpass_hz", 15000.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.6),
             ("crash_level", 0.8),
-            ("crash_pan", -0.3),
+            ("crash_pan", -0.6),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7000.0),
             ("ride_lowpass_hz", 16000.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 1.1),
             ("ride_level", 0.7),
-            ("ride_pan", 0.35),
+            ("ride_pan", 0.45),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             ("bass808_tune_hz", 50.0),
             ("bass808_glide_hz", 100.0),
@@ -2920,6 +2928,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.9),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：house 俱乐部居中律——clap 与 kick/snare/bass808 同列正中，hats 与 ride 右翼担律动主角，shaker 右翼、cowbell 左点缀。
         "house" => vec![
             ("kick_tune_hz", 50.0),
             ("kick_glide_hz", 160.0),
@@ -2946,7 +2955,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.05),
             ("hihat_open_decay_s", 0.45),
             ("hihat_level", 0.7),
-            ("hihat_pan", 0.15),
+            ("hihat_pan", 0.2),
             ("clap_highpass_hz", 1500.0),
             ("clap_lowpass_hz", 6000.0),
             ("clap_bursts", 4.0),
@@ -2955,27 +2964,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.25),
             ("clap_level", 0.8),
-            ("clap_pan", -0.1),
+            ("clap_pan", 0.0),
             ("tom_tune_hz", 105.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.26),
             ("tom_level", 0.85),
-            ("tom_pan", 0.15),
+            ("tom_pan", 0.1),
             ("rim_tone_hz", 1750.0),
             ("rim_noise_highpass_hz", 1300.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.05),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.85),
-            ("rim_pan", -0.05),
+            ("rim_pan", -0.15),
             ("shaker_highpass_hz", 5500.0),
             ("shaker_lowpass_hz", 12500.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.13),
             ("shaker_level", 0.65),
-            ("shaker_pan", 0.35),
+            ("shaker_pan", 0.45),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -2983,14 +2992,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.28),
             ("cowbell_level", 0.65),
-            ("cowbell_pan", 0.15),
+            ("cowbell_pan", -0.3),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 5200.0),
             ("crash_lowpass_hz", 14800.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.5),
             ("crash_level", 0.75),
-            ("crash_pan", -0.5),
+            ("crash_pan", -0.4),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7200.0),
             ("ride_lowpass_hz", 15800.0),
@@ -3007,6 +3016,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.9),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：techno 仓库式窄声场——点缀全收在 ±0.25 内，hats 微右、rim 右置作金属点缀、crash 远置左后；kick/snare/bass808 严格居中。
         "techno" => vec![
             ("kick_tune_hz", 52.0),
             ("kick_glide_hz", 165.0),
@@ -3033,7 +3043,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.045),
             ("hihat_open_decay_s", 0.35),
             ("hihat_level", 0.72),
-            ("hihat_pan", 0.18),
+            ("hihat_pan", 0.12),
             ("clap_highpass_hz", 1600.0),
             ("clap_lowpass_hz", 6200.0),
             ("clap_bursts", 4.0),
@@ -3042,27 +3052,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.22),
             ("clap_level", 0.8),
-            ("clap_pan", -0.12),
+            ("clap_pan", -0.08),
             ("tom_tune_hz", 98.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.27),
             ("tom_level", 0.88),
-            ("tom_pan", 0.15),
+            ("tom_pan", 0.08),
             ("rim_tone_hz", 1750.0),
             ("rim_noise_highpass_hz", 1300.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.048),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.82),
-            ("rim_pan", 0.25),
+            ("rim_pan", 0.2),
             ("shaker_highpass_hz", 5200.0),
             ("shaker_lowpass_hz", 12800.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.135),
             ("shaker_level", 0.62),
-            ("shaker_pan", 0.38),
+            ("shaker_pan", 0.25),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -3070,21 +3080,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.29),
             ("cowbell_level", 0.68),
-            ("cowbell_pan", 0.18),
+            ("cowbell_pan", 0.1),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 5200.0),
             ("crash_lowpass_hz", 14800.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.55),
             ("crash_level", 0.78),
-            ("crash_pan", -0.28),
+            ("crash_pan", -0.2),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7200.0),
             ("ride_lowpass_hz", 15800.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 1.05),
             ("ride_level", 0.68),
-            ("ride_pan", 0.32),
+            ("ride_pan", 0.18),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             ("bass808_tune_hz", 50.0),
             ("bass808_glide_hz", 105.0),
@@ -3094,6 +3104,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.85),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：lofi 近单声道暖声场——声像全收在 ±0.18 内，hats/ride 微右、shaker 微左，如老采样唱片的窄声场；kick/snare/bass808 严格居中。
         "lofi" => vec![
             ("kick_tune_hz", 48.0),
             ("kick_glide_hz", 130.0),
@@ -3120,7 +3131,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.055),
             ("hihat_open_decay_s", 0.32),
             ("hihat_level", 0.55),
-            ("hihat_pan", 0.08),
+            ("hihat_pan", 0.1),
             ("clap_highpass_hz", 1300.0),
             ("clap_lowpass_hz", 5000.0),
             ("clap_bursts", 3.0),
@@ -3129,27 +3140,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.24),
             ("clap_level", 0.7),
-            ("clap_pan", -0.05),
+            ("clap_pan", -0.08),
             ("tom_tune_hz", 88.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.38),
             ("tom_level", 0.78),
-            ("tom_pan", 0.15),
+            ("tom_pan", 0.05),
             ("rim_tone_hz", 1500.0),
             ("rim_noise_highpass_hz", 1000.0),
             ("rim_noise_lowpass_hz", 5000.0),
             ("rim_decay_s", 0.055),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.72),
-            ("rim_pan", 0.25),
+            ("rim_pan", 0.12),
             ("shaker_highpass_hz", 4500.0),
             ("shaker_lowpass_hz", 9500.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.17),
             ("shaker_level", 0.58),
-            ("shaker_pan", 0.2),
+            ("shaker_pan", -0.15),
             ("cowbell_freq_a_hz", 520.0),
             ("cowbell_freq_b_hz", 780.0),
             ("cowbell_highpass_hz", 350.0),
@@ -3157,21 +3168,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.34),
             ("cowbell_level", 0.7),
-            ("cowbell_pan", -0.1),
+            ("cowbell_pan", 0.08),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 4000.0),
             ("crash_lowpass_hz", 10000.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.3),
             ("crash_level", 0.62),
-            ("crash_pan", -0.2),
+            ("crash_pan", -0.15),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 5500.0),
             ("ride_lowpass_hz", 11000.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 0.95),
             ("ride_level", 0.55),
-            ("ride_pan", 0.22),
+            ("ride_pan", 0.18),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             ("bass808_tune_hz", 45.0),
             ("bass808_glide_hz", 90.0),
@@ -3181,6 +3192,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_level", 0.8),
             ("bass808_pan", 0.0),
         ],
+        // 声像（T-DRUM-13）：hiphop 与 edm 分家——中等宽度，tom 左置、cowbell/rim 右置作 boom-bap 式点缀，hats 右、crash 左；kick/snare/bass808 严格居中。
         "hiphop" => vec![
             ("kick_tune_hz", 46.0),
             ("kick_glide_hz", 145.0),
@@ -3207,7 +3219,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("hihat_closed_decay_s", 0.045),
             ("hihat_open_decay_s", 0.35),
             ("hihat_level", 0.62),
-            ("hihat_pan", 0.3),
+            ("hihat_pan", 0.18),
             ("clap_highpass_hz", 1700.0),
             ("clap_lowpass_hz", 6500.0),
             ("clap_bursts", 4.0),
@@ -3216,27 +3228,27 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("clap_attack_s", 0.0005),
             ("clap_decay_s", 0.2),
             ("clap_level", 0.8),
-            ("clap_pan", -0.2),
+            ("clap_pan", -0.12),
             ("tom_tune_hz", 92.0),
             ("tom_glide_hz", 140.0),
             ("tom_glide_s", 0.03),
             ("tom_attack_s", 0.0005),
             ("tom_decay_s", 0.33),
             ("tom_level", 0.8),
-            ("tom_pan", 0.15),
+            ("tom_pan", -0.15),
             ("rim_tone_hz", 1750.0),
             ("rim_noise_highpass_hz", 1300.0),
             ("rim_noise_lowpass_hz", 6000.0),
             ("rim_decay_s", 0.045),
             ("rim_attack_s", 0.0005),
             ("rim_level", 0.8),
-            ("rim_pan", 0.08),
+            ("rim_pan", 0.25),
             ("shaker_highpass_hz", 5500.0),
             ("shaker_lowpass_hz", 12000.0),
             ("shaker_attack_s", 0.007),
             ("shaker_decay_s", 0.13),
             ("shaker_level", 0.55),
-            ("shaker_pan", 0.28),
+            ("shaker_pan", 0.35),
             ("cowbell_freq_a_hz", 540.0),
             ("cowbell_freq_b_hz", 845.0),
             ("cowbell_highpass_hz", 500.0),
@@ -3244,21 +3256,21 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_attack_s", 0.0005),
             ("cowbell_decay_s", 0.27),
             ("cowbell_level", 0.6),
-            ("cowbell_pan", -0.18),
+            ("cowbell_pan", 0.3),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 5200.0),
             ("crash_lowpass_hz", 14800.0),
             ("crash_attack_s", 0.0005),
             ("crash_decay_s", 1.45),
             ("crash_level", 0.72),
-            ("crash_pan", -0.22),
+            ("crash_pan", -0.35),
             ("ride_base_hz", 420.0),
             ("ride_highpass_hz", 7200.0),
             ("ride_lowpass_hz", 15800.0),
             ("ride_attack_s", 0.0005),
             ("ride_decay_s", 1.05),
             ("ride_level", 0.62),
-            ("ride_pan", 0.28),
+            ("ride_pan", 0.3),
             // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
             // 2026-11-20 起带 808 道（Wang 立项）：hiphop 的 808 要
             // 短而圆——decay 收进 0.85 s、glide 压到 0.02 s（几乎不
@@ -4432,6 +4444,99 @@ mod tests {
         }
     }
 
+    /// T-DRUM-13 钉子：逐风格声像布局——电子族八行 pan 逐值钉住、
+    /// 两两不同，kick/snare/bass808 全风格恒 0；原声族六风格的组级
+    /// 声相签名两两不同，jazz 的 ride 组为原声系最强右置（ride 主导）。
+    #[test]
+    fn factory_styles_carry_per_style_pan_layouts() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        // 电子族声像行：(hihat, clap, tom, rim, shaker, cowbell, crash, ride)。
+        let expected: [(&str, [f32; 8]); 8] = [
+            ("trap", [0.2, -0.15, 0.25, -0.3, 0.6, 0.35, -0.55, 0.5]),
+            ("drill", [-0.1, 0.2, -0.25, 0.3, -0.45, 0.15, -0.35, 0.2]),
+            ("phonk", [0.15, -0.1, 0.2, 0.3, -0.2, -0.4, -0.45, 0.35]),
+            ("edm", [0.25, -0.2, 0.15, -0.25, 0.5, -0.35, -0.6, 0.45]),
+            ("house", [0.2, 0.0, 0.1, -0.15, 0.45, -0.3, -0.4, 0.55]),
+            ("techno", [0.12, -0.08, 0.08, 0.2, 0.25, 0.1, -0.2, 0.18]),
+            ("lofi", [0.1, -0.08, 0.05, 0.12, -0.15, 0.08, -0.15, 0.18]),
+            ("hiphop", [0.18, -0.12, -0.15, 0.25, 0.35, 0.3, -0.35, 0.3]),
+        ];
+        let voices = [
+            "hihat", "clap", "tom", "rim", "shaker", "cowbell", "crash", "ride",
+        ];
+        let mut rows: Vec<(&str, [u32; 8])> = Vec::new();
+        for (id, want) in expected {
+            let style = styles
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} 预置必须存在"));
+            let DrumKitSetup::SynthDevice { params, .. } = kit_setup(style) else {
+                panic!("{id} 必须是合成鼓组");
+            };
+            let get = |name: &str| {
+                params
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| *v)
+                    .unwrap_or_else(|| panic!("{id} 参数表缺 {name}"))
+            };
+            for center in ["kick_pan", "snare_pan", "bass808_pan"] {
+                assert_eq!(
+                    get(center).to_bits(),
+                    0.0_f32.to_bits(),
+                    "{id} 的 {center} 必须恒居中"
+                );
+            }
+            let row: [f32; 8] = voices.map(|voice| get(&format!("{voice}_pan")));
+            assert_eq!(
+                row.map(f32::to_bits),
+                want.map(f32::to_bits),
+                "{id} 声像行定值不符"
+            );
+            rows.push((id, row.map(f32::to_bits)));
+        }
+        for (i, a) in rows.iter().enumerate() {
+            for b in rows.iter().skip(i + 1) {
+                assert_ne!(a.1, b.1, "{} 与 {} 的声像行不得整行相同", a.0, b.0);
+            }
+        }
+        // 原声族：组级声相签名（组名 → pan）六风格两两不同。
+        let acoustic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Acoustic)
+            .collect();
+        assert_eq!(acoustic.len(), 6, "原声族应为 6 个风格");
+        let signatures: Vec<Vec<(&str, Option<f32>)>> = acoustic
+            .iter()
+            .map(|style| {
+                style
+                    .lane_chains
+                    .iter()
+                    .map(|chain| (chain.name.as_str(), chain.pan))
+                    .collect()
+            })
+            .collect();
+        for (i, a) in signatures.iter().enumerate() {
+            for (j, b) in signatures.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    a, b,
+                    "原声风格 {} 与 {} 的组级声相不得相同",
+                    acoustic[i].id, acoustic[j].id
+                );
+            }
+        }
+        let jazz = acoustic
+            .iter()
+            .find(|style| style.id == "jazz")
+            .expect("jazz 预置必须存在");
+        let jazz_ride = jazz
+            .lane_chains
+            .iter()
+            .find(|chain| chain.name == "ride")
+            .expect("jazz 必须带 ride 组");
+        assert_eq!(jazz_ride.pan, Some(0.45), "jazz ride 必须主导靠右");
+    }
+
     /// 段 3 钉子：原声族的程序分配与命名——新风格用各自的麦克风
     /// 视角程序（ pairwise 不同），Acoustic 前缀齐全。
     #[test]
@@ -4908,84 +5013,90 @@ mod tests {
                 );
             }
         }
-        // 原声系 6 风格（P4）：只带增益的逐件相对电平组 —— 无器件段、
-        // 无声相、无侧链；增益值逐条钉住（出厂定值，改值须改本判据）。
-        type GainGroup = (&'static str, &'static [u8], f32);
-        let acoustic_gains: [(&str, &[GainGroup]); 6] = [
+        // 原声系 6 风格：增益 + 声相的逐件组 —— 无器件段、无侧链；
+        // 增益与声相逐条钉住（出厂定值，改值须改本判据）。声相口径
+        // （T-DRUM-13）：kick/snare 组不带声相（居中不覆盖），其余组按
+        // 曲风惯例定组级位置，六风格互不相同（见各预置 JSON 与
+        // FORMAT.md 的声像布局说明）。
+        type GainPanGroup = (&'static str, &'static [u8], f32, Option<f32>);
+        let acoustic_gains: [(&str, &[GainPanGroup]); 6] = [
             (
                 "pop",
                 &[
-                    ("kick", &[36], 1.0),
-                    ("snare", &[38], 0.5),
-                    ("hats", &[42, 44, 46], -2.0),
-                    ("shaker", &[82], -1.0),
+                    ("kick", &[36], 1.0, None),
+                    ("snare", &[38], 0.5, None),
+                    ("hats", &[42, 44, 46], -2.0, Some(0.22)),
+                    ("shaker", &[82], -1.0, Some(-0.25)),
                 ],
             ),
             (
                 "rock",
                 &[
-                    ("kick", &[36], 1.0),
-                    ("snare", &[38], 1.0),
-                    ("hats", &[42, 44, 46], -1.5),
-                    ("shaker", &[82], -1.0),
+                    ("kick", &[36], 1.0, None),
+                    ("snare", &[38], 1.0, None),
+                    ("hats", &[42, 44, 46], -1.5, Some(0.3)),
+                    ("shaker", &[82], -1.0, Some(0.15)),
                 ],
             ),
             (
                 "boombap",
                 &[
-                    ("kick", &[36], 1.5),
-                    ("snare", &[38], 0.5),
-                    ("hats", &[42, 44, 46], -1.5),
-                    ("shaker", &[82], -1.0),
+                    ("kick", &[36], 1.5, None),
+                    ("snare", &[38], 0.5, None),
+                    ("hats", &[42, 44, 46], -1.5, Some(0.12)),
+                    ("shaker", &[82], -1.0, Some(0.2)),
                 ],
             ),
             (
                 "funk",
                 &[
-                    ("kick", &[36], 1.0),
-                    ("snare", &[37, 38], 0.5),
-                    ("hats", &[42, 44, 92], -2.0),
-                    ("crash", &[49], -1.0),
-                    ("shaker", &[82], -1.0),
+                    ("kick", &[36], 1.0, None),
+                    ("snare", &[37, 38], 0.5, None),
+                    ("hats", &[42, 44, 92], -2.0, Some(0.12)),
+                    ("crash", &[49], -1.0, Some(-0.18)),
+                    ("shaker", &[82], -1.0, Some(-0.15)),
                 ],
             ),
             (
                 "jazz",
                 &[
-                    ("kick", &[36], 1.0),
-                    ("snare", &[37, 38], 0.5),
-                    ("hats", &[42, 44, 92], -1.0),
-                    ("crash", &[49], -1.5),
-                    ("ride", &[51, 53], -1.0),
+                    ("kick", &[36], 1.0, None),
+                    ("snare", &[37, 38], 0.5, None),
+                    ("hats", &[42, 44, 92], -1.0, Some(0.25)),
+                    ("crash", &[49], -1.5, Some(-0.3)),
+                    ("ride", &[51, 53], -1.0, Some(0.45)),
                 ],
             ),
             (
                 "rnb",
                 &[
-                    ("kick", &[36], 0.5),
-                    ("snare", &[37, 38], 1.0),
-                    ("hats", &[42, 44, 92], -1.5),
-                    ("crash", &[49], -1.0),
-                    ("shaker", &[82], -1.5),
+                    ("kick", &[36], 0.5, None),
+                    ("snare", &[37, 38], 1.0, None),
+                    ("hats", &[42, 44, 92], -1.5, Some(0.2)),
+                    ("crash", &[49], -1.0, Some(-0.25)),
+                    ("shaker", &[82], -1.5, Some(0.35)),
                 ],
             ),
         ];
         for (id, expected) in acoustic_gains {
             let style = by_id(id);
             assert_eq!(style.lane_chains.len(), expected.len(), "{id} 增益组数不符");
-            for (chain, (name, keys, gain)) in style.lane_chains.iter().zip(expected) {
+            for (chain, (name, keys, gain, pan)) in style.lane_chains.iter().zip(expected) {
                 assert_eq!(chain.name, *name, "{id} 组名不符");
                 assert_eq!(chain.keys, *keys, "{id} {name} 键组不符");
                 assert_eq!(chain.gain_db, Some(*gain), "{id} {name} 增益定值不符");
+                assert_eq!(chain.pan, *pan, "{id} {name} 声相定值不符");
                 assert!(
                     chain.eq.is_none()
                         && chain.comp.is_none()
                         && chain.reverb.is_none()
                         && chain.tape.is_none()
                         && chain.delay.is_none()
-                        && chain.pan.is_none()
+                        && chain.transient.is_none()
+                        && chain.crusher.is_none()
+                        && chain.noise.is_none()
                         && chain.sidechain.is_none(),
-                    "{id} {name} 必须是纯增益组（无器件/声相/侧链段）"
+                    "{id} {name} 必须是增益+声相组（无器件/侧链段）"
                 );
             }
         }

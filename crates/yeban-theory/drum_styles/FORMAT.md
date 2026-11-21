@@ -116,6 +116,19 @@ the program's full choke family — {42, 44, 46} on the basic keymap,
 {42, 44, 92} on the CC4 keymap), and drill / hiphop / phonk add an
 808 bass (35) chain.
 
+Factory pan layouts (per-style, by genre convention — no layout is
+copied between styles): electronic styles place per-voice pans in the
+synth parameter table (kick / snare / 808 always dead centre; trap and
+drill spread a wide percussion field, phonk's cowbell leads at -0.40,
+house keeps its clap dead centre with hats/ride right, techno stays
+narrow within +/-0.25, lofi near-mono within +/-0.18). Acoustic styles
+place group pans in `lane_chains[].chain.pan`; their kick/snare groups
+carry no pan (centre, no override). Jazz's ride group leads right
+(+0.45), rock is the widest acoustic kit (hats +0.30, shaker +0.15),
+funk stays compact (all groups within +/-0.18), rnb is smooth and
+moderate (shaker +0.35), pop puts hats at +0.22 with the shaker left
+(-0.25), and boombap stays narrow (hats +0.12, shaker +0.20).
+
 ## `automation` array (optional, preset automation segments)
 
 Each segment becomes one automation lane on the generated drum track,
