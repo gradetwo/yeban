@@ -809,19 +809,24 @@ pub fn read_project_container(
     limits: &ContainerLimits,
 ) -> Result<ProjectArchive, ContainerError> {
     let archive = read_container(bytes, limits)?;
-    let mut project_json: Option<&[u8]> = None;
+    let mut project_json: Option<Vec<u8>> = None;
     let mut history_dag: Option<Vec<u8>> = None;
     let mut proposals: Option<Vec<u8>> = None;
     let mut assets: Vec<(AssetHash, Vec<u8>)> = Vec::new();
     let mut embedded_presets: Vec<(String, Vec<u8>)> = Vec::new();
-    for entry in archive.entries() {
+    // ⭐ 按值消费归档、逐条**移动**条目字节进结果（T-FIX-44）：旧实现借用
+    //    迭代 + 逐条 `clone()`，装载期间归档与结果同时持有全部资产字节，
+    //    峰值内存约为载荷的 2 倍（音频资产是载荷主体）。`into_entries`
+    //    之后每份字节只有一个所有者；公开 API 与错误语义不变 —— 校验
+    //    （资产哈希、预制条目）仍在移动前对同一份字节完成。
+    for entry in archive.into_entries() {
         if entry.name == PROJECT_JSON_NAME {
-            project_json = Some(&entry.data);
+            project_json = Some(entry.data);
         } else if entry.name == HISTORY_DAG_NAME {
-            history_dag = Some(entry.data.clone());
+            history_dag = Some(entry.data);
         } else if entry.name == PROPOSALS_JSON_NAME {
             // 可选段：原样搬运，本层不解读（见 `ProjectArchive::proposals`）。
-            proposals = Some(entry.data.clone());
+            proposals = Some(entry.data);
         } else if let Some(digest) = entry.name.strip_prefix(ASSETS_PREFIX) {
             let hash = AssetHash::parse(digest).map_err(|_| ContainerError::InvalidAssetName {
                 name: entry.name.clone(),
@@ -833,14 +838,12 @@ pub fn read_project_container(
                     actual: actual.to_string(),
                 });
             }
-            assets.push((hash, entry.data.clone()));
+            assets.push((hash, entry.data));
         } else if entry.name.starts_with(EMBEDDED_PRESET_PREFIX) {
             validate_embedded_preset_entry(&entry.name, &entry.data)?;
-            embedded_presets.push((entry.name.clone(), entry.data.clone()));
+            embedded_presets.push((entry.name, entry.data));
         } else {
-            return Err(ContainerError::UnexpectedContainerEntry {
-                name: entry.name.clone(),
-            });
+            return Err(ContainerError::UnexpectedContainerEntry { name: entry.name });
         }
     }
     let project_json = project_json.ok_or(ContainerError::MissingProjectJson)?;
@@ -850,7 +853,7 @@ pub fn read_project_container(
     //    `nodes` 的探针解析原始字节比对，改过序就记进 `load_notes`。
     //    探针失败不另行报错：主解析会以 `InvalidProjectJson` 给出裁决。
     let mut load_notes = Vec::new();
-    if let Ok(probe) = serde_json::from_slice::<RoutingNodesProbe>(project_json) {
+    if let Ok(probe) = serde_json::from_slice::<RoutingNodesProbe>(&project_json) {
         let on_disk = &probe.routing_graph.nodes;
         if !on_disk.is_sorted() {
             load_notes.push(format!(
@@ -859,7 +862,7 @@ pub fn read_project_container(
             ));
         }
     }
-    let project = serde_json::from_slice(project_json).map_err(|error| {
+    let project = serde_json::from_slice(&project_json).map_err(|error| {
         ContainerError::InvalidProjectJson {
             detail: error.to_string(),
         }
