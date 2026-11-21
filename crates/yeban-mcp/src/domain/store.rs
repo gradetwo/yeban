@@ -234,6 +234,7 @@ pub const fn container_rejection(error: &ContainerError) -> ContainerRejection {
         | E::EntryActualTooLarge { .. }
         | E::ArchiveTooLarge { .. }
         | E::ExpansionRatioExceeded { .. }
+        | E::EntryDataOverlap { .. }
         | E::TooManyEntries { .. } => ContainerRejection::ArchiveBomb,
 
         // ---- 明确不支持的归档特性 ----
@@ -255,6 +256,7 @@ pub const fn container_rejection(error: &ContainerError) -> ContainerRejection {
         | E::BadLocalHeaderSignature { .. }
         | E::LocalCentralMismatch { .. }
         | E::TruncatedEntryData { .. }
+        | E::EntryDataPastCentralDirectory { .. }
         | E::StoredSizeMismatch { .. }
         | E::CrcMismatch { .. } => ContainerRejection::Malformed,
 
@@ -1271,6 +1273,22 @@ mod tests {
                     max: 1,
                 },
                 ContainerRejection::ArchiveBomb,
+            ),
+            (
+                ContainerError::EntryDataOverlap {
+                    first_index: 0,
+                    second_index: 1,
+                    offset: 42,
+                },
+                ContainerRejection::ArchiveBomb,
+            ),
+            (
+                ContainerError::EntryDataPastCentralDirectory {
+                    index: 0,
+                    data_end: 100,
+                    central_start: 42,
+                },
+                ContainerRejection::Malformed,
             ),
             (
                 ContainerError::UnsupportedCompression {

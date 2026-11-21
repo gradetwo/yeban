@@ -14,8 +14,8 @@ use container_support::{
     CENTRAL_FLAGS, CENTRAL_LOCAL_OFFSET, CENTRAL_METHOD, CENTRAL_UNCOMPRESSED, EOCD_CENTRAL_OFFSET,
     EOCD_CENTRAL_SIZE, EOCD_DISK, EOCD_ENTRIES_ON_DISK, EOCD_SIGNATURE, EOCD_TOTAL_ENTRIES,
     LOCAL_COMPRESSED, LOCAL_CRC, LOCAL_FLAGS, LOCAL_METHOD, LOCAL_NAME, LOCAL_UNCOMPRESSED,
-    container, data_start, declare_sizes, find_central, find_eocd, find_local, limits, patch_all,
-    put_u16, put_u32, read_u16, read_u32, small_limits,
+    container, data_start, declare_sizes, duplicate_first_central_record, find_central, find_eocd,
+    find_local, limits, patch_all, put_u16, put_u32, read_u16, read_u32, small_limits,
 };
 use yeban_model::container::{
     ContainerEntry, ContainerError, ContainerLimits, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_ENTRY_BYTES,
@@ -481,51 +481,104 @@ fn total_actual_bytes_over_limit_is_rejected() {
     );
 }
 
-/// 整体压缩膨胀比率超过 `max_ratio` ⇒ 拒绝（`MUST-GATE-007` 的第二道）。
+/// 正常多条目归档必须照常打开（重叠检测不能把合法归档误杀）。
 #[test]
-fn expansion_ratio_over_limit_is_rejected() {
+fn normal_multi_entry_archive_still_opens() {
+    let bytes = container(&[("aaaa", &[1u8; 8]), ("bbbb", &[2u8; 16])]);
+    let archive = read_container(&bytes, &small_limits()).expect("合法多条目归档必须打开");
+    assert_eq!(archive.len(), 2);
+    assert_eq!(archive.get("aaaa").expect("第一条").data, [1u8; 8]);
+    assert_eq!(archive.get("bbbb").expect("第二条").data, [2u8; 16]);
+}
+
+/// **声明比率撒谎**：声明解压 100000 字节、实际只有 8 字节。
+///
+/// 比率闸门现在用"实际读入字节 / 归档总字节"，所以不会被声明值触发；
+/// 归档继续走到 `stored` 尺寸一致性检查，由 `StoredSizeMismatch` 拒绝。
+#[test]
+fn declared_ratio_lie_falls_through_to_stored_size_mismatch() {
     let mut bytes = container(&[("aaaa", &[0u8; 8])]);
     declare_sizes(&mut bytes, "aaaa", 8, 100_000);
     assert_rejected(
         &bytes,
         &limits(1_000_000, 1_000_000, 100, 64),
-        ContainerError::ExpansionRatioExceeded {
-            uncompressed: 100_000,
-            compressed: 8,
-            max_ratio: 100,
-        },
-    );
-}
-
-/// 比率边界必须**精确**：恰好 100:1 放行（随后被"stored 尺寸不一致"拦下），101:1 才由比率闸门拦下。
-///
-/// 这一对判据把"≤ 100:1"与"> 100:1"的分界线钉在两边的错误码上：
-/// 若把比较写成 `>=`，第一条会变成 `ExpansionRatioExceeded`；
-/// 若把比率检查删掉，第二条会变成 `StoredSizeMismatch`。
-#[test]
-fn expansion_ratio_boundary_is_exactly_one_hundred() {
-    let mut at_limit = container(&[("aaaa", &[0u8; 8])]);
-    declare_sizes(&mut at_limit, "aaaa", 8, 800);
-    assert_rejected(
-        &at_limit,
-        &limits(1_000_000, 1_000_000, 100, 64),
         ContainerError::StoredSizeMismatch {
             index: 0,
             name: "aaaa".into(),
             compressed: 8,
-            uncompressed: 800,
+            uncompressed: 100_000,
         },
     );
+}
 
-    let mut over_limit = container(&[("aaaa", &[0u8; 8])]);
-    declare_sizes(&mut over_limit, "aaaa", 8, 801);
+/// 声明比率的 100:1 边界不再替代 `stored` 尺寸检查：两侧都报 `StoredSizeMismatch`。
+#[test]
+fn declared_ratio_boundary_does_not_replace_stored_size_check() {
+    for declared in [800_u32, 801_u32] {
+        let mut bytes = container(&[("aaaa", &[0u8; 8])]);
+        declare_sizes(&mut bytes, "aaaa", 8, declared);
+        assert_rejected(
+            &bytes,
+            &limits(1_000_000, 1_000_000, 100, 64),
+            ContainerError::StoredSizeMismatch {
+                index: 0,
+                name: "aaaa".into(),
+                compressed: 8,
+                uncompressed: declared,
+            },
+        );
+    }
+}
+
+/// 实际读入字节 / 归档总字节超过 `max_ratio` ⇒ 拒绝。
+#[test]
+fn actual_read_ratio_over_limit_is_rejected() {
+    let bytes = container(&[("aaaa", &[0u8; 8])]);
     assert_rejected(
-        &over_limit,
-        &limits(1_000_000, 1_000_000, 100, 64),
+        &bytes,
+        &limits(1 << 20, 1 << 20, 0, 64),
         ContainerError::ExpansionRatioExceeded {
-            uncompressed: 801,
-            compressed: 8,
-            max_ratio: 100,
+            uncompressed: 8,
+            compressed: bytes.len() as u64,
+            max_ratio: 0,
+        },
+    );
+}
+
+/// **比率绕过形状**：两条 central 记录共享同一份 512 KiB 数据。
+///
+/// 归档里只有一份数据，但读取器会按两条记录各 materialize 一次 ⇒ 实际读入量
+/// 是归档总字节的两倍。`max_ratio = 1` 必须拒绝，而不是因为"归档里只有 512 KiB"
+/// 就放行。
+#[test]
+fn ratio_bypass_via_shared_data_is_rejected() {
+    let data = vec![0u8; 512 * 1024];
+    let mut bytes = container(&[("aaaa", &data)]);
+    duplicate_first_central_record(&mut bytes, "aaaa");
+    assert_rejected(
+        &bytes,
+        &limits(1 << 20, 2 << 20, 1, 64),
+        ContainerError::ExpansionRatioExceeded {
+            uncompressed: 2 * 512 * 1024,
+            compressed: bytes.len() as u64,
+            max_ratio: 1,
+        },
+    );
+}
+
+/// 条目区段 `[local_start, data_end)` 重叠本身必须被拒绝（即使比率上限被调宽到不触发）。
+#[test]
+fn overlapping_entry_data_is_rejected() {
+    let mut bytes = container(&[("aaaa", &[0u8; 8])]);
+    let offset = find_local(&bytes, "aaaa");
+    duplicate_first_central_record(&mut bytes, "aaaa");
+    assert_rejected(
+        &bytes,
+        &limits(1 << 20, 1 << 20, 100, 64),
+        ContainerError::EntryDataOverlap {
+            first_index: 0,
+            second_index: 1,
+            offset,
         },
     );
 }
@@ -1004,14 +1057,20 @@ fn local_header_offset_out_of_bounds_is_rejected() {
     );
 }
 
-/// 条目数据区被截断（声明尺寸大于实际存在的字节）。
+/// 条目数据区声明尺寸大于实际存在的字节：数据区会伸进 central directory。
 #[test]
-fn truncated_entry_data_is_rejected() {
+fn entry_data_past_central_directory_is_rejected() {
     let mut bytes = container(&[("aaaa", &[0u8; 8])]);
+    let central_start = find_central(&bytes, "aaaa");
+    let data_start = data_start(&bytes, "aaaa");
     declare_sizes(&mut bytes, "aaaa", 4096, 4096);
     assert_rejected(
         &bytes,
         &limits(1 << 20, 1 << 20, 100, 64),
-        ContainerError::TruncatedEntryData { index: 0 },
+        ContainerError::EntryDataPastCentralDirectory {
+            index: 0,
+            data_end: data_start + 4096,
+            central_start,
+        },
     );
 }

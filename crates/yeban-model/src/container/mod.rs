@@ -347,17 +347,30 @@ pub enum ContainerError {
         max: u64,
     },
     /// 整体压缩膨胀比率超过 `max_ratio`。
+    ///
+    /// 这里的两个数字是**实际读入字节 / 归档总字节**：声明值可被伪造，实际读入量不能。
     #[error(
         "expansion ratio {uncompressed}:{compressed} exceeds the {max_ratio}:1 limit \
-         (uncompressed {uncompressed} bytes / compressed {compressed} bytes)"
+         (actually read {uncompressed} bytes from a {compressed}-byte archive)"
     )]
     ExpansionRatioExceeded {
-        /// 累计声明的解压体积。
+        /// 累计实际读入的数据字节。
         uncompressed: u64,
-        /// 累计压缩后体积。
+        /// 归档总字节数。
         compressed: u64,
         /// 比率上限。
         max_ratio: u64,
+    },
+    /// 两个条目的 `[local_start, data_end)` 区段在归档里重叠
+    /// （同一份字节会被重复 materialize，或一个条目的数据覆盖另一个条目的头部）。
+    #[error("entry data of #{first_index} and #{second_index} overlap at archive offset {offset}")]
+    EntryDataOverlap {
+        /// 先登记的条目序号。
+        first_index: usize,
+        /// 后登记的条目序号。
+        second_index: usize,
+        /// 重叠起始的文件偏移。
+        offset: usize,
     },
     /// 条目数超过 `max_entries`。
     #[error("archive has {found} entries, over the {max}-entry limit")]
@@ -466,6 +479,18 @@ pub enum ContainerError {
     TruncatedEntryData {
         /// central directory 中的序号。
         index: usize,
+    },
+    /// 条目数据区的结束位置越过了 central directory 起点。
+    #[error(
+        "data of entry #{index} ends at {data_end}, past the central directory start {central_start}"
+    )]
+    EntryDataPastCentralDirectory {
+        /// central directory 中的序号。
+        index: usize,
+        /// 数据区结束偏移。
+        data_end: usize,
+        /// central directory 起始偏移。
+        central_start: usize,
     },
     /// `stored` 条目的压缩前后尺寸不一致（声明自相矛盾）。
     #[error(

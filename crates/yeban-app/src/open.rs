@@ -579,23 +579,28 @@ mod tests {
             Some(ContainerError::TooManyEntries { found: 3, max: 1 })
         );
 
-        // (f) 膨胀比率：把 `project.json` **声明**的解压体积改成 1 MB（压缩后只有几百字节）
-        //     ⇒ `ExpansionRatioExceeded`（fail-fast 用声明值，见 zip.rs 的判定顺序注释）。
+        // (f) 声明撒谎：把 `project.json` **声明**的解压体积改成 1 MB（实际只有几百字节）
+        //     ⇒ 实际读入量 / 归档总字节远低于比率上限，但 `stored` 的尺寸自相矛盾
+        //     ⇒ `StoredSizeMismatch`（比率闸门不再看声明值）。
         let mut ratio_bomb = bytes.clone();
         let central = central_record(&ratio_bomb, 0);
+        let local = local_record(&ratio_bomb, 0);
         let compressed = u32_at(&ratio_bomb, central + 20);
         patch_u32(&mut ratio_bomb, central + 24, 1_000_000);
+        patch_u32(&mut ratio_bomb, local + 22, 1_000_000);
         match container_err(open_project_bytes(&ratio_bomb, &limits)) {
-            Some(ContainerError::ExpansionRatioExceeded {
-                uncompressed,
+            Some(ContainerError::StoredSizeMismatch {
+                index,
+                name,
                 compressed: seen,
-                max_ratio,
+                uncompressed,
             }) => {
+                assert_eq!(index, 0);
+                assert_eq!(name, "project.json");
+                assert_eq!(seen, compressed);
                 assert_eq!(uncompressed, 1_000_000);
-                assert_eq!(seen, u64::from(compressed));
-                assert_eq!(max_ratio, 100);
             }
-            other => panic!("膨胀比率必须报 ExpansionRatioExceeded, 实测 {other:?}"),
+            other => panic!("声明尺寸撒谎必须报 StoredSizeMismatch, 实测 {other:?}"),
         }
 
         // (g) ZIP64 哨兵：把 `uncompressed` 改成 `0xFFFFFFFF` ⇒ 明确拒绝（不支持 ZIP64）。

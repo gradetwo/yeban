@@ -196,6 +196,41 @@ pub fn data_start(bytes: &[u8], name: &str) -> usize {
     local + LOCAL_NAME + name_len + extra_len
 }
 
+/// 复制第一条 central directory 记录（不复制 local header / 数据区）。
+///
+/// 用于构造"两条目录记录指向同一份数据"的归档：数据区只存在一份，但读取器会按
+/// 两条记录各 materialize 一次。返回复制出的记录长度，EOCD 的条目数与目录长度
+/// 已同步更新。
+pub fn duplicate_first_central_record(bytes: &mut Vec<u8>, name: &str) -> usize {
+    let eocd = find_eocd(bytes);
+    let central = find_central(bytes, name);
+    let name_len = usize::from(read_u16(bytes, central + 28));
+    let extra_len = usize::from(read_u16(bytes, central + 30));
+    let comment_len = usize::from(read_u16(bytes, central + 32));
+    let record_len = 46 + name_len + extra_len + comment_len;
+    assert_eq!(
+        central + record_len,
+        eocd,
+        "夹具只有一条 central 记录，复制前它必须正好填满目录"
+    );
+
+    let record = bytes[central..central + record_len].to_vec();
+    bytes.splice(eocd..eocd, record);
+
+    let eocd = find_eocd(bytes);
+    let central_size = read_u32(bytes, eocd + EOCD_CENTRAL_SIZE);
+    put_u32(
+        bytes,
+        eocd + EOCD_CENTRAL_SIZE,
+        central_size + record_len as u32,
+    );
+    let total = read_u16(bytes, eocd + EOCD_TOTAL_ENTRIES);
+    let on_disk = read_u16(bytes, eocd + EOCD_ENTRIES_ON_DISK);
+    put_u16(bytes, eocd + EOCD_TOTAL_ENTRIES, total + 1);
+    put_u16(bytes, eocd + EOCD_ENTRIES_ON_DISK, on_disk + 1);
+    record_len
+}
+
 /// 同时改写 local header 与 central directory 的"声明尺寸"（两处保持一致）。
 ///
 /// 用于造出"结构自洽、但声明值与实际字节不符"的归档 —— 这正是"谎报声明"攻击的形状。

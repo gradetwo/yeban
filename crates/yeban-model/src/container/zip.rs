@@ -31,7 +31,7 @@
 //! 直接拒绝**（[`ContainerError::LocalCentralMismatch`]）。这样就没有"以谁为准"的歧义：
 //! 歧义本身就是漏洞，消除歧义的方式是拒绝而不是选一个。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::crc32::crc32;
 use super::{ContainerEntry, ContainerError, ContainerLimits};
@@ -170,6 +170,16 @@ struct CentralRecord {
     external_attributes: u32,
     /// local file header 的偏移。
     local_header_offset: u32,
+}
+
+/// 已定位的条目区段：数据切片与 `[local_start, data_end)` 在归档字节流中的区间。
+struct LocatedData<'a> {
+    /// 数据区切片。
+    data: &'a [u8],
+    /// local file header 起始偏移（区段起点）。
+    start: usize,
+    /// 数据区结束偏移（区段终点，不含）。
+    end: usize,
 }
 
 /// 把**借用**形态的条目序列 `(名字, 字节)` 写成标准 ZIP 字节流。
@@ -417,17 +427,18 @@ fn parse_central_directory(
 ///    4. **路径规范化（`MUST-GATE-006`）**；
 ///    5. 符号链接条目；
 ///    6. 声明解压体积 > `max_entry_bytes`；
-///    7. **实际读取体积 > `max_entry_bytes`（防谎报声明）**；
-///    8. 累计实际体积 > `max_total_bytes`；
-///    9. **累计膨胀比率 > `max_ratio`（`MUST-GATE-007`，fail-fast 用声明值）**；
-///    10. `stored` 的压缩前后尺寸必须相等（谎报声明的第二道拦截）；
-///    11. local header 与 central directory 逐字段一致；
-///    12. 数据区边界、CRC 校验。
+///    7. local header 与 central directory 逐字段一致；数据区不得伸进 central directory；
+///    8. **实际读取体积 > `max_entry_bytes`（防谎报声明）**；
+///    9. 累计实际体积 > `max_total_bytes`；
+///    10. **实际读入字节 / 归档总字节 > `max_ratio`（`MUST-GATE-007`）**；
+///    11. 条目 `[local_start, data_end)` 区段之间不得重叠；
+///    12. `stored` 的压缩前后尺寸必须相等（谎报声明的第二道拦截）；
+///    13. CRC 校验。
 /// 4. 名字大小写折叠后的重复检查。
 ///
-/// 第 9 步刻意排在"尺寸一致性"之前：炸弹**声明**本身就足以拒绝，不应该等我们把结构
-/// 核对完再拒绝（fail-fast）；而第 7/8 步用**实际字节数**兜底，防止"声明撒谎绕过上限"。
-/// 两者覆盖不同的攻击（前者防真炸弹，后者防假声明），判据分别钉住。
+/// 第 10 步刻意排在重叠检查之前：共享同一份数据的多条记录会先把"实际读入量 /
+/// 归档总字节"推过上限；即使上限被调宽，第 11 步仍会把重叠本身拒绝。
+/// 第 8/9/10 步全部用**实际字节数**，防的是"声明撒谎绕过上限"。
 pub(crate) fn read_zip(
     bytes: &[u8],
     limits: &ContainerLimits,
@@ -474,9 +485,8 @@ pub(crate) fn read_zip(
 
     let mut entries: Vec<ContainerEntry> = Vec::with_capacity(records.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut data_spans: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
     let mut actual_total: u64 = 0;
-    let mut declared_uncompressed_total: u64 = 0;
-    let mut declared_compressed_total: u64 = 0;
 
     for record in &records {
         let index = record.index;
@@ -527,9 +537,11 @@ pub(crate) fn read_zip(
             });
         }
 
-        // (3.7) 实际会materialize的字节数：`stored` 下就是压缩后大小（数据区长度）。
-        // 这一条是"声明撒谎"的兜底：谎报 `uncompressed = 1` 也拿不走 2 MiB 的写入量。
-        let actual = u64::from(record.compressed);
+        // (3.7) 定位数据区：先确认 local header 与 central directory 一致，再拿到
+        // 数据切片与它在归档里的半开区间。数据区不得伸进 central directory，同一归档
+        // 内的多个数据区也不得互相重叠（否则一份字节会被重复 materialize）。
+        let located = verify_local_header_and_locate_data(bytes, record, &safe_name, cd_start)?;
+        let actual = located.data.len() as u64;
         if actual > limits.max_entry_bytes {
             return Err(ContainerError::EntryActualTooLarge {
                 actual,
@@ -544,21 +556,19 @@ pub(crate) fn read_zip(
                 max: limits.max_total_bytes,
             });
         }
-        // (3.9) MUST-GATE-007：整体膨胀比率（fail-fast，用声明值）。
-        declared_uncompressed_total += declared;
-        declared_compressed_total += actual;
-        if ratio_exceeded(
-            declared_uncompressed_total,
-            declared_compressed_total,
-            limits.max_ratio,
-        ) {
+        // (3.9) MUST-GATE-007：**实际读入字节 / 归档总字节**的膨胀比率。
+        // 用实际读入量而不是声明值：声明可以被伪造，实际读入量不能。
+        let archive_bytes = bytes.len() as u64;
+        if ratio_exceeded(actual_total, archive_bytes, limits.max_ratio) {
             return Err(ContainerError::ExpansionRatioExceeded {
-                uncompressed: declared_uncompressed_total,
-                compressed: declared_compressed_total,
+                uncompressed: actual_total,
+                compressed: archive_bytes,
                 max_ratio: limits.max_ratio,
             });
         }
-        // (3.10) `stored` 的压缩前后尺寸必须相等。
+        // (3.10) 条目区段重叠：按 `[local_start, data_end)` 登记区间，检查前驱/后继是否相交。
+        register_data_span(&mut data_spans, &located, index)?;
+        // (3.11) `stored` 的压缩前后尺寸必须相等。
         if record.compressed != record.uncompressed {
             return Err(ContainerError::StoredSizeMismatch {
                 index,
@@ -568,11 +578,8 @@ pub(crate) fn read_zip(
             });
         }
 
-        // (3.11) local header 与 central directory 逐字段一致。
-        let data = verify_local_header_and_locate_data(bytes, record, &safe_name)?;
-
         // (3.12) CRC 校验。
-        let actual_crc = crc32(data);
+        let actual_crc = crc32(located.data);
         if actual_crc != record.crc {
             return Err(ContainerError::CrcMismatch {
                 index,
@@ -589,7 +596,7 @@ pub(crate) fn read_zip(
 
         entries.push(ContainerEntry {
             name: safe_name,
-            data: data.to_vec(),
+            data: located.data.to_vec(),
         });
     }
 
@@ -605,12 +612,13 @@ fn is_unix_symlink(record: &CentralRecord) -> bool {
     (record.external_attributes >> 16) & UNIX_S_IFMT == UNIX_S_IFLNK
 }
 
-/// 校验 local header 与 central directory 完全一致，并返回条目数据切片。
+/// 校验 local header 与 central directory 完全一致，并返回条目数据切片及区间。
 fn verify_local_header_and_locate_data<'a>(
     bytes: &'a [u8],
     record: &CentralRecord,
     safe_name: &str,
-) -> Result<&'a [u8], ContainerError> {
+    central_start: usize,
+) -> Result<LocatedData<'a>, ContainerError> {
     let index = record.index;
     let start = record.local_header_offset as usize;
     if start
@@ -665,9 +673,66 @@ fn verify_local_header_and_locate_data<'a>(
     let data_end = data_start
         .checked_add(record.compressed as usize)
         .ok_or(ContainerError::TruncatedEntryData { index })?;
-    bytes
+    // 条目数据必须在 central directory 之前结束：否则数据区与目录区重叠，
+    // 同一个字节可以同时被当作"文件内容"和"目录记录"读。
+    if data_end > central_start {
+        return Err(ContainerError::EntryDataPastCentralDirectory {
+            index,
+            data_end,
+            central_start,
+        });
+    }
+    let data = bytes
         .get(data_start..data_end)
-        .ok_or(ContainerError::TruncatedEntryData { index })
+        .ok_or(ContainerError::TruncatedEntryData { index })?;
+    Ok(LocatedData {
+        data,
+        start,
+        end: data_end,
+    })
+}
+
+/// 登记一个条目的 `[local_start, data_end)` 区段，并拒绝它与已登记区间的任意重叠。
+///
+/// 区间按 `start` 排序存放在 `BTreeMap` 里；只需检查前驱（结束点越过当前起点）
+/// 与后继（当前结束点越过后继起点）两处，就能覆盖所有相交形态。相同起点单独判，
+/// 因为它既没有前驱也没有后继。
+fn register_data_span(
+    spans: &mut BTreeMap<usize, (usize, usize)>,
+    located: &LocatedData<'_>,
+    index: usize,
+) -> Result<(), ContainerError> {
+    let start = located.start;
+    let end = located.end;
+
+    if let Some((_, first_index)) = spans.get(&start) {
+        return Err(ContainerError::EntryDataOverlap {
+            first_index: *first_index,
+            second_index: index,
+            offset: start,
+        });
+    }
+    if let Some((_, (prev_end, prev_index))) = spans.range(..start).next_back()
+        && *prev_end > start
+    {
+        return Err(ContainerError::EntryDataOverlap {
+            first_index: *prev_index,
+            second_index: index,
+            offset: start,
+        });
+    }
+    if let Some((next_start, (_, next_index))) = spans.range(start..).next()
+        && end > *next_start
+    {
+        return Err(ContainerError::EntryDataOverlap {
+            first_index: *next_index,
+            second_index: index,
+            offset: *next_start,
+        });
+    }
+
+    spans.insert(start, (end, index));
+    Ok(())
 }
 
 /// 累计膨胀比率是否超过上限。
@@ -686,10 +751,11 @@ fn ratio_exceeded(uncompressed: u64, compressed: u64, max_ratio: u64) -> bool {
 mod tests {
     use super::{
         CENTRAL_DIRECTORY_SIGNATURE, DOS_DATE, DOS_TIME, EOCD_LEN, EOCD_SIGNATURE,
-        LOCAL_FILE_HEADER_SIGNATURE, find_eocd, ratio_exceeded, u16_at, u32_at, write_zip,
-        write_zip_borrowed,
+        LOCAL_FILE_HEADER_SIGNATURE, LocatedData, find_eocd, ratio_exceeded, register_data_span,
+        u16_at, u32_at, write_zip, write_zip_borrowed,
     };
     use crate::container::{ContainerEntry, ContainerError};
+    use std::collections::BTreeMap;
 
     /// ZIP 头部里 `last mod file time` / `last mod file date` 的**字段顺序**必须与
     /// APPNOTE 4.3.7（local）与 4.3.12（central）一致：time 在前、date 在后。
@@ -863,6 +929,61 @@ mod tests {
             }),
             "65535 条会撞上 ZIP64 哨兵, 必须拒绝"
         );
+    }
+
+    /// 区段重叠必须在前驱、后继、相同起点三个方向都检出，且相邻区段放行。
+    ///
+    /// 端到端判据只能造出"两条 central 记录共享同一 local header"这一种形状；
+    /// 这里直接压 `register_data_span`，把部分重叠的两侧都钉住。
+    #[test]
+    fn data_spans_detect_partial_overlaps_in_both_directions() {
+        let bytes = [0u8; 64];
+        let span = |start: usize, end: usize| LocatedData {
+            data: &bytes[start..end],
+            start,
+            end,
+        };
+
+        // 前驱重叠：[10, 20) 之后来 [15, 25)。
+        let mut spans = BTreeMap::new();
+        register_data_span(&mut spans, &span(10, 20), 0).expect("第一个区段");
+        assert_eq!(
+            register_data_span(&mut spans, &span(15, 25), 1),
+            Err(ContainerError::EntryDataOverlap {
+                first_index: 0,
+                second_index: 1,
+                offset: 15,
+            })
+        );
+
+        // 后继重叠：[10, 20) 之后来 [0, 15)（新区段起点更早）。
+        let mut spans = BTreeMap::new();
+        register_data_span(&mut spans, &span(10, 20), 0).expect("第一个区段");
+        assert_eq!(
+            register_data_span(&mut spans, &span(0, 15), 1),
+            Err(ContainerError::EntryDataOverlap {
+                first_index: 0,
+                second_index: 1,
+                offset: 10,
+            })
+        );
+
+        // 相同起点：[10, 20) 之后来 [10, 25)。
+        let mut spans = BTreeMap::new();
+        register_data_span(&mut spans, &span(10, 20), 0).expect("第一个区段");
+        assert_eq!(
+            register_data_span(&mut spans, &span(10, 25), 1),
+            Err(ContainerError::EntryDataOverlap {
+                first_index: 0,
+                second_index: 1,
+                offset: 10,
+            })
+        );
+
+        // 相邻（前一个结束 == 后一个开始）不是重叠。
+        let mut spans = BTreeMap::new();
+        register_data_span(&mut spans, &span(10, 20), 0).expect("第一个区段");
+        register_data_span(&mut spans, &span(20, 30), 1).expect("相邻区段必须放行");
     }
 
     /// `MUST-GATE-007` 的核心算术：`≤ 100:1` 放行、`> 100:1` 拒绝（边界必须精确）。
