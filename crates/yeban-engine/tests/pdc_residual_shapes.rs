@@ -13,6 +13,10 @@
 //! 2. **混合轨（自有片段 + 入边、无已武装插入器件）且任一出边 `D > 0`**：
 //!    自有内容与收入之和是**两份真实流**，先后喂同一条线，输出是两流的交错
 //!    延迟而非「和」的延迟 —— 本文件 S2（逐边档）与 S3（节点级档）量它。
+//! 3. **处理型总线（已武装插入器件 + 入边）且出边 `D > 128`**（审计 #15）：
+//!    `defer_own_to_forward` 对它恒为假，逐轨段先喂未过链的 scratch、3a⁗ 在
+//!    插入链之后再喂汇合信号 —— 自身内容吃 2 倍 D、收入只吃 1 倍 D。
+//!    本文件 S4 量它；修法同族：逐轨段对处理型总线也跳过喂线。
 //!
 //! 修法（两形状同一条）：节点输出**先汇合、再单点喂线** —— 有入边且不是
 //! 处理型总线的节点，其自有内容在逐轨段不再单独喂线/路由，而是并入自己的
@@ -34,7 +38,8 @@ use support::render;
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
-    MidiNote, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
+    MidiNote, ParameterValue, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 
 const NOTE_TICKS: u64 = 960;
@@ -478,4 +483,124 @@ fn mixed_track_with_incoming_lands_on_node_line() {
         max_err <= 1e-5,
         "S3 全程最大偏差 {max_err} 必须 ≤ 1e-5（交错喂线会给出 1e-1 级偏差）"
     );
+}
+
+// ===========================================================================
+// S4：处理型总线（已武装插入链 + 入边）＋出边补偿 D = 256 > 一量子（128）
+// ===========================================================================
+
+/// 一条**处理型总线**：aux 返回 + 已武装的混响插入（`#158` 的武装口径：
+/// 设备未旁通、参数名被识别）。它与 S1 的纯总线只差这一台器件 ——
+/// 插入链在 3a⁗ 转发段对汇合信号跑**一次**。
+fn process_bus(id: EntityId, name: &str) -> TrackV3 {
+    TrackV3 {
+        id,
+        name: name.to_owned(),
+        kind: TrackKind::AuxReturn,
+        devices: vec![DeviceDefinition {
+            id: EntityId::new(),
+            name: "Effect".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "reverb_size".to_owned(),
+                    value: 1.8,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 0.5,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+            plugin: None,
+        }],
+        ..TrackV3::default()
+    }
+}
+
+fn s4_project(ids: S1Ids, bus3_latency: u32) -> YebanProjectV1 {
+    let src = note_track(ids.src, "Src", 0, 60, true);
+    let bus1 = (process_bus(ids.bus1, "ProcBus"), None);
+    let bus2 = (aux_bus(ids.bus2, "Bus2", 0), None);
+    let bus3 = (aux_bus(ids.bus3, "Bus3", bus3_latency), None);
+    let graph = routing(
+        vec![ids.src, ids.bus1, ids.bus2, ids.bus3, ids.master],
+        &[
+            (ids.src, ids.bus1),
+            (ids.src, ids.bus2),
+            (ids.bus1, ids.master),
+            (ids.bus2, ids.master),
+            (ids.bus3, ids.master),
+        ],
+    );
+    assemble(vec![src, bus1, bus2, bus3], ids.master, graph)
+}
+
+/// S4（审计 #15）：处理型总线的补偿线被**喂两次** —— `defer_own_to_forward`
+/// 对它恒为假，逐轨段在 2752 一带先把本节点 scratch 喂进节点线，3a⁗ 在
+/// 插入链之后再喂汇合信号：自身内容吃 2 倍 D、收入只吃 1 倍 D，`D = 256`
+/// 时汇合信号实际只晚 128 帧。S1 的纯总线已由 `defer_own_to_forward`
+/// 修好，处理型总线不在其覆盖内。断言：分量**恰好晚 256 帧**（逐位），
+/// 且插入链每量子恰好跑一次（`insert_reverb_frames` == 渲染帧数）。
+#[test]
+fn process_bus_delay_beyond_one_quantum_lands_on_plan() {
+    let ids = S1Ids {
+        master: EntityId::new(),
+        src: EntityId::new(),
+        bus1: EntityId::new(),
+        bus2: EntityId::new(),
+        bus3: EntityId::new(),
+    };
+    let delay = 256usize;
+
+    // ---- 计划面 ----
+    {
+        let snapshot =
+            EngineSnapshot::from_project(&s4_project(ids, delay as u32), 1).expect("工程必须合法");
+        let plan = snapshot.pdc();
+        assert_eq!(
+            plan.edge_compensation(&ids.bus1, &ids.master),
+            Some(delay as u32),
+            "计划：处理型总线→master 必须吃 256"
+        );
+        assert_eq!(
+            plan.edge_compensation(&ids.bus2, &ids.master),
+            Some(delay as u32),
+            "计划：bus2→master 必须吃 256"
+        );
+    }
+
+    let base = render(&s4_project(ids, 0), QUANTA);
+    let dual = render(&s4_project(ids, delay as u32), QUANTA);
+
+    // ---- 反空转：总线必须真的按处理型跑过插入链，且恰好一次/量子 ----
+    let rendered_frames = (QUANTA * 128) as u64;
+    assert_eq!(
+        dual.stats.insert_reverb_frames, rendered_frames,
+        "处理型总线的混响链每量子必须恰好跑一次（实测 {}）",
+        dual.stats.insert_reverb_frames
+    );
+
+    // ---- 反空转：两次渲染必须真的不同，且基线非静音 ----
+    assert_ne!(base.left, dual.left, "上报 0 与上报 256 的渲染必须不同");
+    let loud = base.left.iter().filter(|s| s.abs() > 1e-3).count();
+    assert!(loud > 500, "基线必须有足够多非静音帧（实测 {loud}）");
+    assert_eq!(dual.stats.pdc_unarmed_nodes, 0, "总线节点线必须进池");
+
+    // ---- 落点：dual[t] == base[t − 256] 逐位 ----
+    for index in 0..base.frames() {
+        let expected = if index >= delay {
+            base.left[index - delay]
+        } else {
+            0.0
+        };
+        assert_eq!(
+            dual.left[index].to_bits(),
+            expected.to_bits(),
+            "S4 第 {index} 帧：处理型总线分量必须恰好晚 {delay} 帧"
+        );
+    }
 }

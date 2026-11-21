@@ -2749,7 +2749,17 @@ fn render_branch(
         // 汇合后的完整输出喂**唯一一次**（节点级与逐边两档同理：逐边档的
         // 边线在逐轨段的 `route_panned_or_per_edge!` 里喂，同样随路由一起
         // 推迟）。在这里先喂自有内容、3a⁗ 再喂收入，就是两形状的病根。
-        if track_edges_uniform && !defer_own_to_forward {
+        //
+        // ⭐ **审计 #15（处理型总线双喂）同理再加一条**：`process_bus_inserts`
+        // 的节点在这里**也不喂线** —— 它的插入链在 3a⁗ 对汇合信号跑一次，
+        // 节点线随即由链后信号喂**唯一一次**；在这里先喂未过链的 scratch，
+        // 线的时间轴每量子推进两遍 ⇒ 自身内容吃 2 倍 D、收入只吃 1 倍 D
+        // （`D > 128` 时汇合信号实际只晚 D/2，判据见
+        // `tests/pdc_residual_shapes.rs` 的 S4）。逐边档下处理型总线的自有
+        // 内容在逐轨段只并入自己的暂存槽、不经 `route_panned_or_per_edge!`
+        // 喂边线（见下方 `process_bus_inserts` 分支），故本站是它唯一的
+        // 逐轨喂线点，本条跳过即全覆盖。
+        if track_edges_uniform && !defer_own_to_forward && !process_bus_inserts {
             if pair_track {
                 // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
                 share.pdc.apply_pair(
