@@ -290,6 +290,14 @@ pub enum MidiError {
         /// 越界的控制器值。
         value: u8,
     },
+    /// 文件尾部剩余不足 8 字节，凑不出一个完整的 chunk 头。
+    ///
+    /// 旧行为是静默丢掉这段残渣并返回 `Ok`；现在必须响亮拒绝：
+    /// 未处理/越界的数据不得被悄悄丢弃。
+    TrailingResidue {
+        /// 未被任何 chunk 覆盖的尾部字节数。
+        bytes: usize,
+    },
 }
 
 impl core::fmt::Display for MidiError {
@@ -325,6 +333,9 @@ impl core::fmt::Display for MidiError {
             ),
             Self::ControlByteOutOfRange { controller, value } => {
                 write!(f, "控制器字节越界: controller {controller}, value {value}")
+            }
+            Self::TrailingResidue { bytes } => {
+                write!(f, "SMF 文件尾部残留 {bytes} 字节, 不足 8 字节的 chunk 头")
             }
         }
     }
@@ -1541,7 +1552,8 @@ impl TrackChunk {
 ///
 /// # Errors
 ///
-/// 声明长度超出实际字节时返回 [`MidiError::Decode`]。
+/// 声明长度超出实际字节时返回 [`MidiError::Decode`]；文件尾部剩余不足 8 字节、
+/// 凑不出下一个 chunk 头时返回 [`MidiError::TrailingResidue`]（不再静默丢弃）。
 pub fn track_chunks(bytes: &[u8]) -> Result<Vec<TrackChunk>, MidiError> {
     let mut cursor = 0usize;
     let mut out = Vec::new();
@@ -1566,6 +1578,11 @@ pub fn track_chunks(bytes: &[u8]) -> Result<Vec<TrackChunk>, MidiError> {
             payload: start..start + len,
         });
         cursor = start + len;
+    }
+    if cursor < bytes.len() {
+        return Err(MidiError::TrailingResidue {
+            bytes: bytes.len() - cursor,
+        });
     }
     Ok(out)
 }
@@ -3535,7 +3552,7 @@ mod tests {
         assert_eq!(chunks[1].payload, 22..22, "空负载的范围是空的");
     }
 
-    /// 判据 (类别③ 静默丢弃 vs 明确 Err / 错误文案): `MidiError` 的 **14** 个变体
+    /// 判据 (类别③ 静默丢弃 vs 明确 Err / 错误文案): `MidiError` 的 **16** 个变体
     /// 各有一个**字面** `Display` 读数。
     ///
     /// 补的是哪个缺口（本票注入实测）：把每一个变体的文案各改坏一次（注入
@@ -3591,8 +3608,12 @@ mod tests {
                 },
                 "控制器字节越界: controller 128, value 200",
             ),
+            (
+                MidiError::TrailingResidue { bytes: 5 },
+                "SMF 文件尾部残留 5 字节, 不足 8 字节的 chunk 头",
+            ),
         ];
-        assert_eq!(cases.len(), 15, "MidiError 的变体数");
+        assert_eq!(cases.len(), 16, "MidiError 的变体数");
         assert_every_midi_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
@@ -3789,6 +3810,7 @@ mod tests {
             MidiError::UnmatchedNoteOff { .. } => 12,
             MidiError::HalfTimeSignature { .. } => 13,
             MidiError::ControlByteOutOfRange { .. } => 14,
+            MidiError::TrailingResidue { .. } => 15,
         }
     }
 
@@ -3801,7 +3823,7 @@ mod tests {
         arms.sort_unstable();
         assert_eq!(
             arms,
-            (0..15).collect::<Vec<u8>>(),
+            (0..16).collect::<Vec<u8>>(),
             "黄金表必须逐臂恰好一次（缺一臂或不重复都红）"
         );
     }

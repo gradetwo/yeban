@@ -385,31 +385,34 @@ fn unbalanced_notes_are_rejected_from_outside_the_crate() {
     );
 }
 
-/// 判据 ⑧: **已量到的宽松行为**被钉住 —— 它是"登记在案的现状"，不是被认可的契约。
+/// 判据 ⑧a: 文件尾部**不足 8 字节**的残渣必须被响亮拒绝，并报告残渣长度。
 ///
-/// 实测（本次改动前）：
-/// 1. `track_chunks` 忽略文件尾部**不足 8 字节**的残留，返回 `Ok`；
-/// 2. 结构性截断（`MTrk` 声明 4 字节、实际只有 3 字节）时，`track_chunks` 报
-///    `Decode`，而 `parse_smf`（走 `midly`）仍返回 `Ok` 且音符数为 0。
+/// 旧行为是 `track_chunks` 静默忽略这段残渣并返回 `Ok`；该宽松行为已在
+/// T-FIX-46 收紧。未处理/越界的数据不得被悄悄丢弃。
+#[test]
+fn trailing_residue_is_rejected_with_its_length() {
+    let mut trailing = hand_built_smf(0, [0x03, 0xC0], &[&[0x00, 0xFF, 0x2F, 0x00]]);
+    trailing.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00]);
+
+    let error = track_chunks(&trailing).expect_err("尾部残渣必须报错");
+    match &error {
+        MidiError::TrailingResidue { bytes } => assert_eq!(*bytes, 5, "必须报告残渣字节数"),
+        other => panic!("期望 TrailingResidue，实际 {other:?}"),
+    }
+    assert!(
+        error.to_string().contains('5'),
+        "错误文本必须指明残渣长度: {error}"
+    );
+}
+
+/// 判据 ⑧b: 结构性截断（`MTrk` 声明 4 字节、实际只有 3 字节）时，
+/// `track_chunks` 报 `Decode`，而 `parse_smf`（走 `midly`）仍返回 `Ok` 且音符数为 0。
 ///
-/// 第 2 条是**两个读取器之间的分歧**。`parse_smf` 的文档只把"严格"限定在音符配对
+/// 这是**两个读取器之间的分歧**。`parse_smf` 的文档只把"严格"限定在音符配对
 /// （`src/midi.rs:34`），**没有**承诺校验 chunk 骨架，因此这不是文档违约 ——
 /// 这里只把现状钉住：将来任何一侧收紧或放松，本判据会先变红，逼出一次有意识的决定。
 #[test]
-fn measured_reader_leniency_is_pinned() {
-    // 现状 1: 尾部 5 字节残留被静默忽略。
-    let mut trailing = hand_built_smf(0, [0x03, 0xC0], &[&[0x00, 0xFF, 0x2F, 0x00]]);
-    trailing.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00]);
-    let chunks = track_chunks(&trailing).expect("尾部残留目前不报错");
-    assert_eq!(chunks.len(), 2, "MThd + 1 条 MTrk");
-    let covered = chunks.last().expect("至少一个 chunk").payload.end;
-    assert_eq!(
-        trailing.len() - covered,
-        5,
-        "这 5 字节残留**没有**被任何 chunk 覆盖（即被忽略）"
-    );
-
-    // 现状 2: 结构性截断 ⇒ 两个读取器分歧。
+fn structural_truncation_is_rejected_by_track_chunks_but_not_midly() {
     let mut truncated = hand_built_smf(0, [0x03, 0xC0], &[&[0x00, 0xFF, 0x2F, 0x00]]);
     truncated.truncate(truncated.len() - 1);
     assert!(

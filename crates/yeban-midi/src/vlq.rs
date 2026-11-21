@@ -25,18 +25,39 @@ pub const VLQ_MAX: u32 = 0x0FFF_FFFF;
 /// VLQ 编码的最大字节数。
 pub const VLQ_MAX_BYTES: usize = 4;
 
+/// 编码失败的**错误码**：调用方给了一个 VLQ 无法表示的 28 位以上数值。
+///
+/// 这个错误类型留在本模块里（而不是 `midi::MidiError`），因为 `vlq.rs` 是
+/// **零依赖**模块，必须能被 `rustc --test` 单独编译；`midi.rs` 可以在需要时
+/// 把它翻译成自己的错误枚举。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VlqOverflow {
+    /// 调用方试图编码的越界值。
+    pub value: u32,
+}
+
+impl core::fmt::Display for VlqOverflow {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "VLQ 只能表示 28 位 (<= 0x0FFF_FFFF), 收到 {:#010X}",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for VlqOverflow {}
+
 /// 把 `value` 以 VLQ 追加到 `out`。
 ///
-/// # Panics
+/// # Errors
 ///
-/// `value > VLQ_MAX` 时 panic —— 上界是规范硬约束, 不是可恢复错误:
-/// 调用方 (`midi.rs`) 必须在进入本函数前把"tick 越界"变成 `Result`。
-/// 在这里静默截断会让导出的文件与源工程不一致, 那比崩溃更糟。
-pub fn write_into(value: u32, out: &mut Vec<u8>) {
-    assert!(
-        value <= VLQ_MAX,
-        "VLQ 只能表示 28 位 (<= 0x0FFF_FFFF), 收到 {value:#010X}"
-    );
+/// `value > VLQ_MAX` 时返回 [`VlqOverflow`]，并且**不向 `out` 追加任何字节**：
+/// 上界是规范硬约束，不是可恢复错误；半截写入会让导出文件与源工程不一致。
+pub fn write_into(value: u32, out: &mut Vec<u8>) -> Result<(), VlqOverflow> {
+    if value > VLQ_MAX {
+        return Err(VlqOverflow { value });
+    }
     // 从最高有效 7 位组开始输出。先算出组数, 再逐组写, 避免分配临时数组。
     let mut groups = 1;
     while (value >> (7 * groups)) != 0 {
@@ -49,14 +70,18 @@ pub fn write_into(value: u32, out: &mut Vec<u8>) {
         }
         out.push(byte);
     }
+    Ok(())
 }
 
 /// 把 `value` 编码为 VLQ 并返回新分配的最短字节序列。
-#[must_use]
-pub fn encode(value: u32) -> Vec<u8> {
+///
+/// # Errors
+///
+/// `value > VLQ_MAX` 时返回 [`VlqOverflow`]（委托给 [`write_into`]），不 panic。
+pub fn encode(value: u32) -> Result<Vec<u8>, VlqOverflow> {
     let mut out = Vec::with_capacity(VLQ_MAX_BYTES);
-    write_into(value, &mut out);
-    out
+    write_into(value, &mut out)?;
+    Ok(out)
 }
 
 /// 从 `bytes[*pos..]` 解码一个 VLQ, 并把 `*pos` 推进到下一个字节。
@@ -81,24 +106,29 @@ pub fn decode(bytes: &[u8], pos: &mut usize) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// 测试向量都必须落在合法区间；合法值的编码失败就是测试写错了。
+    fn encoded(value: u32) -> Vec<u8> {
+        encode(value).expect("测试向量必须 <= VLQ_MAX")
+    }
+
     /// 规范与公开实现都给过这几个标准向量 (SMF 1.0 的经典例子)。
     #[test]
     fn encodes_known_spec_vectors() {
-        assert_eq!(encode(0), vec![0x00]);
-        assert_eq!(encode(0x40), vec![0x40]);
-        assert_eq!(encode(0x7F), vec![0x7F]);
-        assert_eq!(encode(0x80), vec![0x81, 0x00]);
-        assert_eq!(encode(0x2000), vec![0xC0, 0x00]);
-        assert_eq!(encode(0x3FFF), vec![0xFF, 0x7F]);
-        assert_eq!(encode(0x4000), vec![0x81, 0x80, 0x00]);
-        assert_eq!(encode(0x10_0000), vec![0xC0, 0x80, 0x00]);
-        assert_eq!(encode(0x0FFF_FFFF), vec![0xFF, 0xFF, 0xFF, 0x7F]);
+        assert_eq!(encoded(0), vec![0x00]);
+        assert_eq!(encoded(0x40), vec![0x40]);
+        assert_eq!(encoded(0x7F), vec![0x7F]);
+        assert_eq!(encoded(0x80), vec![0x81, 0x00]);
+        assert_eq!(encoded(0x2000), vec![0xC0, 0x00]);
+        assert_eq!(encoded(0x3FFF), vec![0xFF, 0x7F]);
+        assert_eq!(encoded(0x4000), vec![0x81, 0x80, 0x00]);
+        assert_eq!(encoded(0x10_0000), vec![0xC0, 0x80, 0x00]);
+        assert_eq!(encoded(0x0FFF_FFFF), vec![0xFF, 0xFF, 0xFF, 0x7F]);
     }
 
     #[test]
     fn max_value_uses_exactly_four_bytes() {
-        assert_eq!(encode(VLQ_MAX).len(), VLQ_MAX_BYTES);
-        assert_eq!(encode(VLQ_MAX - 1), vec![0xFF, 0xFF, 0xFF, 0x7E]);
+        assert_eq!(encoded(VLQ_MAX).len(), VLQ_MAX_BYTES);
+        assert_eq!(encoded(VLQ_MAX - 1), vec![0xFF, 0xFF, 0xFF, 0x7E]);
     }
 
     #[test]
@@ -108,7 +138,7 @@ mod tests {
         cases.push(VLQ_MAX - 1);
         cases.push(VLQ_MAX);
         for value in cases {
-            let bytes = encode(value);
+            let bytes = encoded(value);
             let mut pos = 0;
             assert_eq!(decode(&bytes, &mut pos), Some(value), "value={value:#X}");
             assert_eq!(pos, bytes.len(), "解码器必须恰好消费 {bytes:?}");
@@ -140,20 +170,19 @@ mod tests {
         assert!(pos <= bogus.len());
     }
 
-    /// 判据 (类别④ 参数极值, VLQ 上界的**拒绝侧**): `write_into` 对 `VLQ_MAX + 1`
-    /// **必须 panic**。
-    ///
-    /// 这是 `write_into` 的文档写明的契约（"上界是规范硬约束, 不是可恢复错误"），
-    /// 由调用方 `midi.rs` 负责在进入它之前把"tick 越界"变成 `Result`。
-    ///
-    /// 补的是哪个缺口（本票注入实测）：把断言从 `value <= VLQ_MAX` 放宽到
-    /// `value <= VLQ_MAX + 1`（注入 V09）后，本 crate 的全部判据**保持绿**
-    /// ⇒ 上界此前只有**接受侧**（`max_value_uses_exactly_four_bytes` 里的
-    /// `VLQ_MAX`），"多 1 就必须炸"这一步没有判据。
+    /// 判据（类别④ 参数极值，VLQ 上界的**拒绝侧**）：`VLQ_MAX + 1` 必须返回
+    /// [`VlqOverflow`]，不得 panic，也不得把半截编码写进 `out`。
     #[test]
-    #[should_panic(expected = "VLQ 只能表示 28 位")]
-    fn write_into_panics_one_past_the_vlq_maximum() {
-        let mut out = Vec::new();
-        write_into(VLQ_MAX + 1, &mut out);
+    fn write_into_rejects_one_past_the_vlq_maximum_without_panicking() {
+        let mut out = vec![0xAA];
+        let error = write_into(VLQ_MAX + 1, &mut out).expect_err("超限必须返回错误");
+        assert_eq!(error.value, VLQ_MAX + 1);
+        assert_eq!(out, vec![0xAA], "拒绝时不得追加任何字节");
+        assert_eq!(
+            encode(VLQ_MAX + 1)
+                .expect_err("encode 也必须向上返回错误")
+                .value,
+            VLQ_MAX + 1
+        );
     }
 }

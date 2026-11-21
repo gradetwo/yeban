@@ -194,16 +194,19 @@ mod scaffold_tests {
     #[test]
     fn vlq_boundary_matches_the_constant_used_by_the_midi_export() {
         assert_eq!(vlq::VLQ_MAX, 0x0FFF_FFFF);
-        assert_eq!(vlq::encode(vlq::VLQ_MAX), vec![0xFF, 0xFF, 0xFF, 0x7F]);
+        assert_eq!(
+            vlq::encode(vlq::VLQ_MAX).expect("VLQ_MAX 必须可编码"),
+            vec![0xFF, 0xFF, 0xFF, 0x7F]
+        );
     }
 
     /// 判据: 超出 28 位的值必须在编码前被**拒绝**, 而不是被静默截断成一个
-    /// "看起来合法"的 tick。上界是规范硬约束, 因此这里是 panic 而不是 `Result`;
-    /// `midi.rs` 负责在进入本函数前把越界变成 `MidiError::DeltaOverflow`。
+    /// "看起来合法"的 tick。上界是规范硬约束, 因此返回 `VlqOverflow` 错误码,
+    /// 不 panic。
     #[test]
-    #[should_panic(expected = "VLQ 只能表示 28 位")]
     fn vlq_rejects_values_beyond_28_bits() {
-        let _ = vlq::encode(vlq::VLQ_MAX + 1);
+        let error = vlq::encode(vlq::VLQ_MAX + 1).expect_err("超出 28 位必须返回错误");
+        assert_eq!(error.value, vlq::VLQ_MAX + 1);
     }
 
     /// 判据: 公开面的常量与派生量互相自洽（`bits`/`bytes_per_sample`/`scale`/满量程）。
@@ -229,7 +232,7 @@ mod scaffold_tests {
         assert_eq!(buffer.to_le_bytes().len(), 6);
 
         let mut encoded = vec![0xAAu8];
-        vlq::write_into(0x80, &mut encoded);
+        vlq::write_into(0x80, &mut encoded).expect("0x80 必须可编码");
         assert_eq!(encoded, vec![0xAA, 0x81, 0x00]);
     }
 
