@@ -26,10 +26,13 @@
 //!
 //! ## 零新增依赖
 //!
-//! 高熵来源优先读 Unix 的 `/dev/urandom`（纯 `std::fs`）；读不到时退回一个
-//! **确定性**的 splitmix64 混合器（`SystemTime` 纳秒 + PID + 栈地址 + 原子计数器）。
-//! 两者都不需要 `rand` / `getrandom`（`docs/adr/ADR-0001` D20/D21 的零新增依赖倾向）。
-//! 非 Unix 平台上 [`TokenFile::save`] / [`TokenFile::load`] 一律返回
+//! 高熵来源只读 Unix 的 `/dev/urandom`（纯 `std::fs`）；读不到时 **fail-closed**
+//! 报错，不再退回确定性 splitmix64 混合器（`SystemTime` 纳秒 + PID + 栈地址 +
+//! 原子计数器）—— 令牌是 UI 控制面的唯一凭据，弱令牌不可接受（T-FIX-32）。
+//! 不需要 `rand` / `getrandom` / `libc`（`docs/adr/ADR-0001` D20/D21 的零新增依赖
+//! 倾向）：`O_NOFOLLOW` 用按平台钉死的 ABI 常量交给 `OpenOptionsExt::custom_flags`。
+//! symlink / 检查后被替换 / 权限不是 `0600` 一律拒绝；非 Unix / 非 Windows 平台上
+//! [`TokenFile::save`] / [`TokenFile::load`] 返回
 //! [`SecurityError::UnsupportedPlatform`] —— **明确拒绝，而不是静默放过**。
 //!
 //! [PATCH] Windows 例外：它没有权限位，但**有 ACL**。因此 Windows 上走
@@ -88,6 +91,19 @@ const TOKEN_TEMP_INFIX: &str = ".tmp-";
 #[cfg(any(unix, windows))]
 static TOKEN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// `O_NOFOLLOW` 的 ABI 值，交给 [`std::os::unix::fs::OpenOptionsExt::custom_flags`]。
+///
+/// 只在本仓 CI / 主要部署平台 Linux 上给出实测值（`os::O_NOFOLLOW == 0o400000`，
+/// 取自 `<bits/fcntl-linux.h>`）。其余 Unix 平台**保留 0**：不猜各发行版各异的 ABI
+/// 常量（macOS 是 `0x10000`、FreeBSD 是 `0x200`…… 硬编码错值会把无关 flag 塞进
+/// `open`，比不设更危险）。那些平台上 symlink 与"检查后替换"由
+/// [`TokenFile::load`] 里 `symlink_metadata` 与 fd `metadata` 的 `(dev, ino)` 对比
+/// 兜底 —— 安全性不因 flag 缺省而下降，且全程零新增依赖（不引入 `libc`）。
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW_FLAG: i32 = 0o400_000;
+#[cfg(all(unix, not(target_os = "linux")))]
+const O_NOFOLLOW_FLAG: i32 = 0;
+
 /// 安全模型相关的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum SecurityError {
@@ -133,13 +149,22 @@ pub enum SecurityError {
     /// 非 Unix 平台无法校验 POSIX 权限位。
     #[error("非 Unix 平台不支持 POSIX 0600 权限校验: 明确拒绝而不是静默放过")]
     UnsupportedPlatform,
-    /// 找不到家目录。
+    /// 找不到家目录（`HOME` / `USERPROFILE` 都未设置或为空）。
     ///
-    /// 家目录解析链（[`resolve_home_dir`]）已含 `USERPROFILE` 与临时目录两级回退，
-    /// 因此 [`TokenFile::default_path`] 不再产生此错误；变体保留是公开 API 兼容，
-    /// 不删除以免破坏既有匹配代码。
-    #[error("无法定位家目录 (HOME 未设置)")]
+    /// fail-closed：不回退共享临时目录，直接拒绝，避免令牌落到可预测的 `/tmp` 路径。
+    #[error("无法定位家目录 (HOME / USERPROFILE 均未设置): 拒绝把令牌写入共享临时目录")]
     HomeDirectoryUnavailable,
+    /// 令牌路径不是"打开那一刻就固定下来"的普通文件。
+    ///
+    /// 覆盖两种 fail-closed 情形：路径是 FIFO / 目录 / 设备（不是普通文件），
+    /// 或 `symlink_metadata` 与 `open` 之间 inode 被换掉（TOCTOU）。
+    #[error("令牌路径 `{path}` 不是稳定的普通文件: {reason}")]
+    NotARegularFile {
+        /// 文件路径。
+        path: String,
+        /// 具体原因（非普通文件 / 检查后被替换）。
+        reason: String,
+    },
     /// 令牌文件 I/O 失败。
     #[error("令牌文件 I/O 失败 (`{path}`): {source}")]
     Io {
@@ -669,24 +694,49 @@ pub struct GeneratedToken {
 pub struct BearerToken(String);
 
 impl BearerToken {
-    /// 生成一个新的 256-bit 令牌 [ARCH-SEC-002]。
+    /// 生成一个新的 256-bit 令牌 [ARCH-SEC-002]（**fail-closed**）。
     ///
-    /// 优先读操作系统熵源；失败时退回确定性混合器（来源如实写在返回值里，
-    /// 不假装它是 OS 熵）。
+    /// 只走操作系统熵源；熵源不可用时**响亮 panic**，绝不退回确定性弱熵
+    /// （时间 + PID + 栈地址是可预测的，不能当令牌）。 insecure 环境宁可起不来，
+    /// 也不能产出可被预测的 Bearer Token。
+    ///
+    /// 需要可恢复错误时（如令牌文件落盘路径）用 [`Self::try_generate`]。
+    ///
+    /// # Panics
+    ///
+    /// 操作系统熵源不可用时 panic（fail-closed，绝不降级）。
     #[must_use]
     pub fn generate() -> GeneratedToken {
+        Self::try_generate().expect(
+            "OS 熵源不可用: 拒绝生成确定性弱令牌 (fail-closed); 如需可恢复错误请用 try_generate",
+        )
+    }
+
+    /// 生成令牌的可恢复版本：熵源失败返回 [`SecurityError::EntropyUnavailable`]。
+    ///
+    /// 与 [`Self::generate`] 同样**只走 OS 熵**；区别是错误以 `Result` 返回而不是 panic。
+    /// 生产路径（令牌文件 `load_or_create`）必须走这里，实现 fail-closed。
+    ///
+    /// # Errors
+    ///
+    /// 操作系统熵源不可用时返回 `EntropyUnavailable`。
+    pub fn try_generate() -> Result<GeneratedToken, SecurityError> {
+        Self::try_generate_with(fill_os_random)
+    }
+
+    /// [`Self::try_generate`] 的可注入内核：把熵源做成参数，好让回归测试能
+    /// **确定性地**注入"熵源失败"（而不是去动全局的 `/dev/urandom`）。
+    ///
+    /// 熵失败一律 `?` 原样传播（fail-closed），绝不退回确定性弱熵。
+    fn try_generate_with(
+        fill: impl FnOnce(&mut [u8]) -> Result<(), SecurityError>,
+    ) -> Result<GeneratedToken, SecurityError> {
         let mut bytes = [0_u8; TOKEN_BYTES];
-        let source = match fill_os_random(&mut bytes) {
-            Ok(()) => EntropySource::OsRandom,
-            Err(_) => {
-                fill_deterministic(&mut bytes);
-                EntropySource::DeterministicFallback
-            }
-        };
-        GeneratedToken {
+        fill(&mut bytes)?;
+        Ok(GeneratedToken {
             token: Self(bytes_to_hex(&bytes)),
-            source,
-        }
+            source: EntropySource::OsRandom,
+        })
     }
 
     /// 由规范文本解析令牌（接受大小写十六进制，规范化成小写）。
@@ -804,33 +854,43 @@ pub fn authorize(
     }
 }
 
-/// 家目录解析（问题报告 ⑤）：`HOME` → `USERPROFILE` → 系统临时目录。
+/// 家目录解析（问题报告 ⑤ / T-FIX-32）：`HOME` → `USERPROFILE`。
 ///
 /// Windows 默认 PowerShell 会话里没有 `HOME`，惯例是 `USERPROFILE`；只认 `HOME`
-/// 会让裸起 `yeban-mcp --stdio` 直接死在"无法定位家目录"。两级都缺失时按报告
-/// 口径回退临时目录，而不是拒绝启动。
-fn home_dir() -> PathBuf {
-    resolve_home_dir(
+/// 会让裸起 `yeban-mcp --stdio` 直接死在"无法定位家目录"。两级都缺失时
+/// **fail-closed**：不再回退共享临时目录（那里路径可预测，令牌会被别的本地用户
+/// 抢注/读取），而是明确报 [`SecurityError::HomeDirectoryUnavailable`]。
+fn home_dir() -> Result<PathBuf, SecurityError> {
+    home_dir_from(
         std::env::var_os("HOME").as_deref(),
         std::env::var_os("USERPROFILE").as_deref(),
-        &std::env::temp_dir(),
     )
 }
 
-/// [`home_dir`] 的纯函数本体：依次取第一个**非空**候选，全缺则 `temp_dir`。
+/// [`home_dir`] 的可注入内核：纯函数，接收两级候选环境变量，好让回归测试
+/// 确定性地构造"两级全缺"而不改测试进程的真实环境变量。
+fn home_dir_from(
+    home: Option<&OsStr>,
+    userprofile: Option<&OsStr>,
+) -> Result<PathBuf, SecurityError> {
+    resolve_home_dir(home, userprofile).ok_or(SecurityError::HomeDirectoryUnavailable)
+}
+
+/// [`home_dir`] 的纯函数本体：依次取第一个**非空**候选，全缺返回 `None`（fail-closed）。
 ///
 /// 空串视为未设置：空 `HOME` 拼出的会是相对路径，令牌文件会落到当前目录 ——
-/// 比报错更糟。拆成纯函数是为了让三级回退在任何平台上都能被单测构造，
+/// 比报错更糟。**不再回退临时目录**：共享 `/tmp` 下路径可预测，令牌会被别的本地用户
+/// 抢注/读取。拆成纯函数是为了让回退链在任何平台上都能被单测构造，
 /// 不依赖测试进程真实改环境变量。
-fn resolve_home_dir(home: Option<&OsStr>, userprofile: Option<&OsStr>, temp_dir: &Path) -> PathBuf {
+fn resolve_home_dir(home: Option<&OsStr>, userprofile: Option<&OsStr>) -> Option<PathBuf> {
     for candidate in [home, userprofile] {
         if let Some(value) = candidate
             && !value.is_empty()
         {
-            return PathBuf::from(value);
+            return Some(PathBuf::from(value));
         }
     }
-    temp_dir.to_path_buf()
+    None
 }
 
 /// `~/.yeban/session.token` 的读写（POSIX `0600`）[ARCH-SEC-002]。
@@ -848,22 +908,21 @@ impl TokenFile {
 
     /// 规范默认路径 `~/.yeban/session.token`。
     ///
-    /// 家目录按 [`home_dir`] 的解析链取（`HOME` → `USERPROFILE` → 临时目录），
-    /// 链尾恒有结果，因此本函数不再因家目录缺失失败；`Result` 形状保留是
-    /// 公开 API 兼容。
+    /// 家目录按 [`home_dir`] 的解析链取（`HOME` → `USERPROFILE`）；两级都缺
+    /// **响亮报错**，绝不落到共享临时目录（fail-closed）。
     ///
     /// # Errors
     ///
-    /// 不产生错误（签名兼容保留）。
+    /// `HOME` 与 `USERPROFILE` 都未设置 / 为空时返回 `HomeDirectoryUnavailable`。
     pub fn default_path() -> Result<PathBuf, SecurityError> {
-        Ok(home_dir().join(TOKEN_DIR_NAME).join(TOKEN_FILE_NAME))
+        Ok(home_dir()?.join(TOKEN_DIR_NAME).join(TOKEN_FILE_NAME))
     }
 
     /// 规范默认位置的令牌文件。
     ///
     /// # Errors
     ///
-    /// 同 [`TokenFile::default_path`]（现不产生错误）。
+    /// 同 [`TokenFile::default_path`]。
     pub fn at_default_path() -> Result<Self, SecurityError> {
         Ok(Self::new(Self::default_path()?))
     }
@@ -1053,17 +1112,45 @@ impl TokenFile {
     /// 非 Unix 平台、路径是符号链接、权限不是 `0600`、内容不是 64 位十六进制。
     #[cfg(unix)]
     pub fn load(&self) -> Result<BearerToken, SecurityError> {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
         let path_text = self.path.display().to_string();
         let io = |source: std::io::Error| SecurityError::Io {
             path: path_text.clone(),
             source,
         };
-        let link_meta = fs::symlink_metadata(&self.path).map_err(io)?;
-        if link_meta.file_type().is_symlink() {
+
+        // 第 1 步（诊断 + 非 Linux 兜底）：按路径 lstat 一次，识别 symlink，并记下
+        // (dev, ino)。这份元数据**不作为权限判据** —— 它会随路径被替换而过期。
+        let path_meta = fs::symlink_metadata(&self.path).map_err(io)?;
+        if path_meta.file_type().is_symlink() {
             return Err(SecurityError::TokenPathIsSymlink { path: path_text });
         }
-        let mode = fs::metadata(&self.path).map_err(io)?.permissions().mode() & 0o777;
+
+        // 第 2 步（消除 TOCTOU 的核心）：O_NOFOLLOW 打开，拿到指向"打开那一刻那个
+        // inode"的 fd；此后所有检查与读取都针对这个 fd，路径再被 rename / 换成
+        // symlink 都不影响。即便某平台 O_NOFOLLOW_FLAG 为 0，第 3 步的 (dev, ino)
+        // 对比仍会拒绝被替换的路径。
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW_FLAG)
+            .open(&self.path)
+            .map_err(io)?;
+
+        // 第 3 步：fd metadata（fstat）—— 类型、身份、权限都来自同一 inode。
+        let meta = file.metadata().map_err(io)?;
+        if !meta.file_type().is_file() {
+            return Err(SecurityError::NotARegularFile {
+                path: path_text,
+                reason: String::from("令牌路径不是普通文件"),
+            });
+        }
+        if (meta.dev(), meta.ino()) != (path_meta.dev(), path_meta.ino()) {
+            return Err(SecurityError::NotARegularFile {
+                path: path_text,
+                reason: String::from("令牌文件在权限检查与打开之间被替换"),
+            });
+        }
+        let mode = meta.permissions().mode() & 0o777;
         if mode != TOKEN_FILE_MODE {
             return Err(SecurityError::InsecureTokenPermissions {
                 path: path_text,
@@ -1071,9 +1158,11 @@ impl TokenFile {
                 expected: TOKEN_FILE_MODE,
             });
         }
-        let text = fs::read_to_string(&self.path).map_err(io)?;
-        // `read_to_string` 已经保证是 UTF-8。空白文件**单独命名**，这样运维一眼能分辨
-        // "崩溃留空文件"与"文件被人塞了垃圾"。
+
+        // 第 4 步：从 fd 读，而不是按路径 read_to_string —— 与第 2/3 步同一个 inode。
+        let mut text = String::new();
+        file.read_to_string(&mut text).map_err(io)?;
+        // 空白文件**单独命名**，这样运维一眼能分辨"崩溃留空文件"与"文件被人塞了垃圾"。
         if text.trim().is_empty() {
             return Err(SecurityError::MalformedTokenFile {
                 path: path_text,
@@ -1164,7 +1253,8 @@ impl TokenFile {
         if self.path.exists() {
             return Ok((self.load()?, false));
         }
-        let generated = BearerToken::generate();
+        // fail-closed: 熵源不可用时直接返回错误，绝不落盘弱令牌。
+        let generated = BearerToken::try_generate()?;
         self.save(&generated.token)?;
         Ok((generated.token, true))
     }
@@ -1240,7 +1330,7 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), SecurityError> {
 /// 并且每次判定都**读回**真实 ACL，而不是相信刚才那条命令的退出码。
 #[cfg(windows)]
 mod win_acl {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use super::SecurityError;
@@ -1264,8 +1354,21 @@ mod win_acl {
         }
     }
 
+    /// `icacls` 的绝对路径（T-FIX-32）：裸名 `Command::new("icacls")` 会走
+    /// PATH + 当前目录搜索，一份同目录同名 `icacls.exe` 就能劫持"权限收紧"这道
+    /// 安全关口。固定到 `%SystemRoot%\System32\icacls.exe`；`SystemRoot` 缺失时
+    /// 退回 Windows 标准位置 `C:\Windows`（系统保护目录，普通用户不可写）。
+    fn icacls_program() -> PathBuf {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|root| !root.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+            .join("System32")
+            .join("icacls.exe")
+    }
+
     fn icacls(path: &Path, args: &[&str]) -> Result<String, SecurityError> {
-        let output = Command::new("icacls")
+        let output = Command::new(icacls_program())
             .arg(path)
             .args(args)
             .output()
@@ -1340,13 +1443,18 @@ mod win_acl {
 }
 
 /// 进程内单调计数器（保证同一纳秒内的多次生成长度不同的输出）。
+///
+/// T-FIX-32 后生产路径（Unix）不再走确定性回退，只有 Windows 熵源与测试构建
+/// 用到它，故收紧 cfg，避免 Unix 非测试构建里成为死代码触发 `-D warnings`。
+#[cfg(any(windows, test))]
 static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 确定性回退熵源：splitmix64 混合"时间 + PID + 栈地址 + 计数器"。
 ///
-/// 这不是密码学强度的 OS 熵，因此 [`EntropySource`] 会如实标注它。
-/// 用它的唯一理由是：`/dev/urandom` 不可用时**也必须**产出不重复的令牌，
-/// 而不是退回一个常量。
+/// T-FIX-32 起生产路径**不再**用它（熵失败 fail-closed，绝不降级），
+/// 仅保留在测试构建里钉住历史混合器的可复现性，因此 `#[cfg(test)]` —— 生产
+/// 二进制里彻底不含这条弱熵路径。
+#[cfg(test)]
 fn fill_deterministic(buf: &mut [u8]) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1366,6 +1474,7 @@ fn fill_deterministic(buf: &mut [u8]) {
 }
 
 /// splitmix64（`yeban-model` / `yeban-theory` 用的同一个混合器，见 ADR-0001 D5 的说明）。
+#[cfg(test)]
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -2087,42 +2196,120 @@ mod tests {
         assert!(path.is_absolute());
     }
 
-    /// 报告 ⑤ 的三级回退逐级钉住（纯函数构造，不动进程环境变量）：
+    /// 报告 ⑤ 的解析优先级逐级钉住（纯函数构造，不动进程环境变量）：
     /// `HOME` 优先；`HOME` 缺失走 `USERPROFILE`（Windows 默认 PowerShell 形状）；
-    /// 两级全缺走临时目录；空串与缺失同等对待（空 `HOME` 会拼出相对路径）。
+    /// 两级全缺 fail-closed（不回退临时目录）；空串与缺失同等对待（空 `HOME` 会拼出相对路径）。
     #[test]
-    fn home_resolution_follows_home_userprofile_temp_order() {
+    fn home_resolution_follows_home_userprofile_order() {
         use std::ffi::OsString;
-        let temp = PathBuf::from("/tmp-fallback");
         let home = OsString::from("/home/someone");
         let profile = OsString::from("C:\\Users\\someone");
 
         assert_eq!(
-            resolve_home_dir(Some(home.as_os_str()), Some(profile.as_os_str()), &temp),
-            PathBuf::from("/home/someone"),
+            resolve_home_dir(Some(home.as_os_str()), Some(profile.as_os_str())),
+            Some(PathBuf::from("/home/someone")),
             "HOME 在时优先 HOME"
         );
         assert_eq!(
-            resolve_home_dir(None, Some(profile.as_os_str()), &temp),
-            PathBuf::from("C:\\Users\\someone"),
+            resolve_home_dir(None, Some(profile.as_os_str())),
+            Some(PathBuf::from("C:\\Users\\someone")),
             "HOME 缺失时回退 USERPROFILE"
         );
         assert_eq!(
-            resolve_home_dir(None, None, &temp),
-            temp,
-            "两级全缺时回退临时目录"
+            resolve_home_dir(None, None),
+            None,
+            "两级全缺时 fail-closed: 不回退临时目录"
         );
         let empty = OsString::new();
         assert_eq!(
-            resolve_home_dir(Some(empty.as_os_str()), Some(profile.as_os_str()), &temp),
-            PathBuf::from("C:\\Users\\someone"),
+            resolve_home_dir(Some(empty.as_os_str()), Some(profile.as_os_str())),
+            Some(PathBuf::from("C:\\Users\\someone")),
             "空 HOME 视为未设置"
         );
         assert_eq!(
-            resolve_home_dir(Some(empty.as_os_str()), Some(empty.as_os_str()), &temp),
-            temp,
-            "空 USERPROFILE 同样视为未设置"
+            resolve_home_dir(Some(empty.as_os_str()), Some(empty.as_os_str())),
+            None,
+            "空 USERPROFILE 同样视为未设置 -> fail-closed"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // T-FIX-32 回归判据：熵失败 / 无 HOME / symlink 替换，三条都必须 fail-closed
+    // -----------------------------------------------------------------------
+
+    /// 判据 ①：OS 熵源失败必须**拒绝生成**，绝不退回确定性弱令牌。
+    /// 通过 `try_generate_with` 注入一个必然失败的 fill，断言原样返回
+    /// `EntropyUnavailable`，且不会产出任何 `GeneratedToken`。
+    #[test]
+    fn entropy_failure_is_rejected_not_fallen_back() {
+        let injected = |_buf: &mut [u8]| {
+            Err(SecurityError::EntropyUnavailable(String::from(
+                "注入的熵源故障",
+            )))
+        };
+        let error = BearerToken::try_generate_with(injected)
+            .expect_err("熵源失败必须返回错误，不能产出弱令牌");
+        assert!(
+            matches!(error, SecurityError::EntropyUnavailable(_)),
+            "实际错误: {error:?}"
+        );
+    }
+
+    /// 判据 ②：两级家目录都缺失 / 为空时必须**报错**，不落共享 `/tmp`。
+    /// 通过 `home_dir_from` 注入，不动测试进程的真实环境变量。
+    #[test]
+    fn missing_home_is_rejected_without_tmp_fallback() {
+        use std::ffi::OsString;
+        let empty = OsString::new();
+        for (home, profile, label) in [
+            (None, None, "两级全缺"),
+            (Some(empty.as_os_str()), None, "HOME 为空且无 USERPROFILE"),
+        ] {
+            let error = home_dir_from(home, profile).expect_err("无家目录必须被拒，绝不回退 /tmp");
+            assert!(
+                matches!(error, SecurityError::HomeDirectoryUnavailable),
+                "{label}: 实际错误 {error:?}"
+            );
+        }
+    }
+
+    /// 判据 ③：`load` 依赖 `O_NOFOLLOW` 封住"lstat 通过后把路径换成 symlink"
+    /// 的检查-打开窗口。这里直接钉住该机制：用与 `load` 相同的 flag 打开一个
+    /// symlink 必须失败（Linux 上 `ELOOP`），从而 `open` 不会跟随到目标文件。
+    /// 配合上面的 `a_symlinked_token_path_is_refused`（整条 load 路径拒绝 symlink），
+    /// 覆盖"替换成 symlink → 被拒"这条判据。
+    #[test]
+    #[cfg(unix)]
+    fn nofollow_open_refuses_symlink_swap() {
+        use std::os::unix::fs::{OpenOptionsExt as _, symlink};
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-nofollow-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("建目录");
+        let target = dir.join("real.token");
+        fs::write(&target, format!("{}\n", fixture_token(0x31).expose())).expect("写目标");
+        let link = dir.join("swap.token");
+        symlink(&target, &link).expect("建 symlink");
+
+        // 这就是 load 第 2 步用的打开方式：O_NOFOLLOW 下打开 symlink 必须失败。
+        let opened = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW_FLAG)
+            .open(&link);
+        assert!(opened.is_err(), "O_NOFOLLOW 必须拒绝跟随 symlink");
+
+        // 端到端：即使目标是一份完全合法的 0600 令牌，load 也拒绝这条路径。
+        let error = TokenFile::new(&link)
+            .load()
+            .expect_err("symlink 路径必须被拒");
+        assert!(
+            matches!(error, SecurityError::TokenPathIsSymlink { .. }),
+            "实际错误: {error:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// [PATCH] Windows：令牌文件**可用**（ACL 等价 `0600`），不再报
