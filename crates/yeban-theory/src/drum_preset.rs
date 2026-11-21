@@ -3204,6 +3204,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：hiphop 与 edm 分家——中等宽度，tom 左置、cowbell/rim 右置作 boom-bap 式点缀，hats 右、crash 左；kick/snare/bass808 严格居中。
+        // 定值（T-DRUM-14 复核）：本行自 ea8cb1d28 逐风格定表起即独立定值——kick 46 Hz 长衰减的采样鼓机底、snare 185 Hz 肥声、hat 低通 13 kHz 压暗、808 短而圆与 drill 滑音长尾分家；2026-11-20 审计「整表复制 edm」经实测不成立（对 edm 仅 30/84 相同），整音色复制由 electronic_factory_styles_never_copy_a_whole_voice 钉住。
         "hiphop" => vec![
             ("kick_tune_hz", 46.0),
             ("kick_glide_hz", 145.0),
@@ -4453,6 +4454,81 @@ mod tests {
                     electronic[i].id,
                     electronic[j].id
                 );
+            }
+        }
+    }
+
+    /// T-DRUM-14 钉子：逐音色整组不得跨风格复制——电子族 8 风格
+    /// 两两之间，11 个音色中任何一音色的全部参数不得整组逐值
+    /// 相同（段 2 的整行 ≥8 项差异钉子挡不住"单音色整组搬运、
+    /// 其余音色凑差异"）。唯一显式豁免：edm 与 house 的 kick——
+    /// 两者同为 909 基表底鼓（house 是文档化的 909 变体，见
+    /// `synth_style_params` 函数注），其余十音色在两风格间仍须
+    /// 互不相同；豁免在此登记，不许扩散。
+    /// 来历含一次误报复核：2026-11-20 逐音色审计称 hiphop 一行
+    /// 84 参数中 83 个复制 edm；2026-11-21 在审计基线 9f1eb035c
+    /// 与本线基线 b7ce02af3 两次实测均不成立（hiphop 对 edm 仅
+    /// 30/84 相同，11 音色逐个皆有差异，定值自 ea8cb1d28 逐风格
+    /// 定表起即独立）。本钉把"不得整组复制"从人肉比对结论变成
+    /// 机械判据：真事故变红，误报也不再重演。
+    #[test]
+    fn electronic_factory_styles_never_copy_a_whole_voice() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let electronic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Electronic)
+            .collect();
+        assert_eq!(electronic.len(), 8, "电子族应为 8 个风格");
+        let voices = [
+            "kick", "snare", "hihat", "clap", "tom", "rim", "shaker", "cowbell", "crash", "ride",
+            "bass808",
+        ];
+        // 显式豁免登记：(风格甲, 风格乙, 音色)——909 基表同源，仅此一处。
+        let exemptions: [(&str, &str, &str); 1] = [("edm", "house", "kick")];
+        let tables: Vec<Vec<(String, f32)>> = electronic
+            .iter()
+            .map(|style| match kit_setup(style) {
+                DrumKitSetup::SynthDevice { params, .. } => params
+                    .into_iter()
+                    .filter(|(name, _)| !name.ends_with("_note"))
+                    .collect(),
+                DrumKitSetup::AcousticSfz { .. } => panic!("electronic style must be synth"),
+            })
+            .collect();
+        for (i, a) in tables.iter().enumerate() {
+            for (j, b) in tables.iter().enumerate().skip(i + 1) {
+                let (id_a, id_b) = (electronic[i].id.as_str(), electronic[j].id.as_str());
+                for voice in voices {
+                    let prefix = format!("{voice}_");
+                    let va: Vec<(&String, &f32)> = a
+                        .iter()
+                        .filter(|(name, _)| name.starts_with(&prefix))
+                        .map(|(name, value)| (name, value))
+                        .collect();
+                    let vb: Vec<(&String, &f32)> = b
+                        .iter()
+                        .filter(|(name, _)| name.starts_with(&prefix))
+                        .map(|(name, value)| (name, value))
+                        .collect();
+                    assert_eq!(
+                        va.len(),
+                        vb.len(),
+                        "{id_a} 与 {id_b} 的 {voice} 参数个数不一致"
+                    );
+                    let identical = va
+                        .iter()
+                        .zip(vb.iter())
+                        .all(|((an, av), (bn, bv))| an == bn && av.to_bits() == bv.to_bits());
+                    if identical {
+                        assert!(
+                            exemptions.iter().any(|(x, y, v)| {
+                                *v == voice
+                                    && ((*x == id_a && *y == id_b) || (*x == id_b && *y == id_a))
+                            }),
+                            "{id_a} 与 {id_b} 的 {voice} 整组逐值相同（整音色复制）"
+                        );
+                    }
+                }
             }
         }
     }
