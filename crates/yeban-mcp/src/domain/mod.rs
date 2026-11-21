@@ -156,6 +156,14 @@ struct Active {
     project: YebanProjectV1,
     /// 最近一次落盘（或打开）时的内容摘要，用于"未保存标记"。
     saved_digest: String,
+    /// 最近一次落盘（或打开）时的**未合并提案段**摘要（T-FIX-43）。
+    ///
+    /// 与 [`Self::saved_digest`] 并列的第二个未保存口径：提案不进工程文档
+    /// （`projectDigest` 只描述文档），但未决提案是未完成的工作 —— 只提案、
+    /// 不改文档时文档摘要不变，保存若只看文档摘要就会被跳过、提案照样丢。
+    /// 段摘要的算法见 [`Domain::proposals_segment_digest`]（无段时为空字节
+    /// 的摘要）。
+    saved_proposals_digest: String,
     /// 会话 CAS 资产池（`assets/{sha256}` 的**字节**，`BTreeMap` 保证键序确定）。
     ///
     /// 打开工程时由容器里的 `assets/{sha256}` 填充；[`Domain::open_in_memory_with_assets`]
@@ -191,6 +199,10 @@ struct SessionSeed {
     history: Option<CommitGraph>,
     /// 会话 CAS 资产池。
     assets: BTreeMap<AssetHash, Vec<u8>>,
+    /// `proposals.json` 恢复出的未合并提案集（T-FIX-43）；无段 / 内存注入
+    /// 时为空集。提案分支与提交本就在图谱里（随 `history` 一并恢复），
+    /// 这里恢复的是提案**记录**本身。
+    proposals: BTreeMap<EntityId, Proposal>,
 }
 
 /// 系统实时时钟（Unix 毫秒）。
@@ -918,6 +930,33 @@ impl Domain {
         open
     }
 
+    /// 当前未合并提案集的**容器提案段**字节（T-FIX-43；序列化口径的唯一
+    /// 入口在 [`proposal::proposals_segment`]）。
+    ///
+    /// # Errors
+    ///
+    /// 序列化失败时原样上抛（保存侧据此响亮拒绝，⛔ 不吞成无段）。
+    pub fn proposals_segment(&self) -> Result<Option<Vec<u8>>, serde_json::Error> {
+        proposal::proposals_segment(&self.proposals)
+    }
+
+    /// 当前未合并提案集的**段摘要**：有段时是段字节的 SHA-256，无段
+    /// （无未合并提案）时是空字节的 SHA-256。
+    ///
+    /// 它是保存"无变化跳过"判定与未保存标记的**提案侧口径**，与工程文档
+    /// 摘要（`projectDigest`）分开：提案不进文档，文档摘要对提案增删无感。
+    /// 序列化失败（理论上不会）时返回空串 —— 它不可能等于任何一次成功
+    /// 保存留下的摘要，于是保存会走到 [`save_material`] 并在那里响亮
+    /// 失败，而不是被"无变化"跳过后静默丢弃提案。
+    #[must_use]
+    pub fn proposals_segment_digest(&self) -> String {
+        match self.proposals_segment() {
+            Ok(Some(bytes)) => store::digest_of(&bytes),
+            Ok(None) => store::digest_of(&[]),
+            Err(_) => String::new(),
+        }
+    }
+
     /// 未合并提案的**只读投影行**（界面抽屉的数据面；排序 = [`Self::open_proposals`]）。
     ///
     /// 它只给界面画得出来的那五格（身份 / 类别 / 标题 / 状态 / op 条数），
@@ -981,11 +1020,18 @@ impl Domain {
     }
 
     /// 是否有未保存改动。
+    ///
+    /// 两个口径并列（T-FIX-43 起）：工程文档摘要，或未合并提案段摘要 ——
+    /// 只增删提案、不动文档时文档摘要不变，但未决提案同样是未保存的工作，
+    /// 未保存标记必须亮。
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         let Some(active) = self.active.as_ref() else {
             return false;
         };
+        if self.proposals_segment_digest() != active.saved_proposals_digest {
+            return true;
+        }
         self.project_digest()
             .is_none_or(|digest| digest != active.saved_digest)
     }
@@ -1052,6 +1098,7 @@ impl Domain {
             lock: None,
             history: None,
             assets: assets.into_iter().collect(),
+            proposals: BTreeMap::new(),
         })
     }
 
@@ -1065,7 +1112,9 @@ impl Domain {
     /// `undo_does_not_cross_a_project_open_boundary`）。
     fn reset_history(&mut self, seed: SessionSeed) -> Result<(), Fault> {
         self.graph = CommitGraph::new();
-        self.proposals.clear();
+        // 未合并提案随工程恢复（T-FIX-43）：种子带来的就是本次打开的提案集
+        // （无段 / 内存注入时为空集，与此前"打开即清空"的读数一致）。
+        self.proposals = seed.proposals;
         // 已装载的 SFZ 乐器是**会话运行态**（[MODEL-ISO-001] 第 2 层）：
         // 换一个工程之后旧乐器的 instrumentId 不该还能用（那会让"上一份工程的
         // 乐器"悄悄参与这一份工程的导出）。
@@ -1116,6 +1165,9 @@ impl Domain {
             read_only: seed.read_only,
             project: seed.project,
             saved_digest: seed.digest,
+            // 段摘要按恢复出的提案集现算：序列化是确定性的（身份升序 +
+            // 固定字段序），与保存侧对同一提案集算出的摘要逐字节一致。
+            saved_proposals_digest: self.proposals_segment_digest(),
             assets: seed.assets,
             lock: seed.lock,
         });
@@ -1180,6 +1232,10 @@ pub struct OpenRequest {
     /// `apply_open` 在 `reset_history` 之后解析装入会话（`plan` 里已校验过
     /// 引用与条目，因此 `apply` 只做装入，不再重做引用校验）。
     pub embedded_presets: Vec<(String, Vec<u8>)>,
+    /// 容器里 `proposals.json` 恢复出的未合并提案集（T-FIX-43）；无段 /
+    /// 新建工程时为空集。解码在 `plan` 的读盘阶段已完成
+    /// （[`store::load_project`]），`apply` 只经 `SessionSeed` 装入会话。
+    pub proposals: BTreeMap<EntityId, Proposal>,
     /// **新建**工程的落盘字节（`create: true` 且目标路径不存在时才有值）。
     ///
     /// 为什么放在这里而不是在 [`apply_open`] 里现算：`plan` 是**只读**的
@@ -1367,6 +1423,10 @@ pub enum Plan {
         /// 本次保存是否带出用户预制（`yeban_save_project` 的 `includeUserPresets`，
         /// 缺省 `true`；`false` 时上面两数均为 0，接收方打开缺预制会响亮报错）。
         include_user_presets: bool,
+        /// 将要写出的**未合并提案段**摘要（T-FIX-43）：`apply_save` 落盘成功
+        /// 后把它记为已保存口径。`changed` 的判定有一半在它身上 —— 只增删
+        /// 提案时工程文档摘要不变，段变了就必须真写。
+        proposals_digest: String,
     },
     /// `yeban_close_project`
     Close {
@@ -2163,14 +2223,18 @@ impl Plan {
                 embedded_preset_count,
                 embedded_preset_bytes,
                 include_user_presets,
+                proposals_digest,
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
                 preview.insert("bytes".to_owned(), Value::from(bytes.len()));
                 preview.insert("format".to_owned(), Value::from(store::DOCUMENT_FORMAT));
+                // 提案段在场 ⇔ 段摘要 ≠ 空字节摘要（无段时的口径）。
+                let has_proposals = *proposals_digest != store::digest_of(&[]);
                 preview.insert(
                     "containerEntries".to_owned(),
-                    Value::from(2 + assets + embedded_preset_count),
+                    Value::from(2 + assets + embedded_preset_count + usize::from(has_proposals)),
                 );
+                preview.insert("proposalsPersisted".to_owned(), Value::from(has_proposals));
                 preview.insert("assets".to_owned(), Value::from(*assets));
                 preview.insert("historyCommits".to_owned(), Value::from(*history_commits));
                 preview.insert("projectDigest".to_owned(), Value::from(digest.clone()));
@@ -3243,6 +3307,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         history: loaded.graph.map(Box::new),
         assets: loaded.assets,
         embedded_presets: loaded.embedded_presets,
+        proposals: loaded.proposals,
         created: None,
     })))
 }
@@ -3353,6 +3418,7 @@ fn plan_create(
         history: None,
         assets: BTreeMap::new(),
         embedded_presets: Vec::new(),
+        proposals: BTreeMap::new(),
         created: Some(CreatedSeed {
             bytes,
             master_bus_track_id: created.master_bus_track_id,
@@ -3376,7 +3442,10 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .map_err(|fault| with_unsaved_change_stats(domain, fault))?;
     Ok(Plan::Save {
         path: active.path.clone(),
-        changed: material.digest != active.saved_digest,
+        // 变化判定 = 文档摘要 **或** 提案段摘要（T-FIX-43）：只提案不改文档
+        // 时前者不变，只看它会把保存跳过、未决提案随"已保存"假象一起丢掉。
+        changed: material.digest != active.saved_digest
+            || material.proposals_digest != active.saved_proposals_digest,
         assets: material.assets,
         history_commits: material.history_commits,
         bytes: material.bytes,
@@ -3386,6 +3455,7 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         embedded_preset_count: material.embedded_preset_count,
         embedded_preset_bytes: material.embedded_preset_bytes,
         include_user_presets,
+        proposals_digest: material.proposals_digest,
     })
 }
 
@@ -3453,6 +3523,9 @@ struct SaveMaterial {
     embedded_preset_count: usize,
     /// 内嵌用户预制的字节总数。
     embedded_preset_bytes: usize,
+    /// 将要写出的未合并提案段摘要（T-FIX-43；无段时为空字节摘要）。
+    /// 与 [`SaveMaterial::digest`] 并列：保存的变化判定两边都看。
+    proposals_digest: String,
 }
 
 /// "这份工程现在会写出哪些字节 / 摘要 / 条目数" —— `yeban_save_project` 与
@@ -3498,9 +3571,22 @@ fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMate
             serde_json::json!({ "specId": "ARCH-OPS-002" }),
         )
     })?;
+    // ⑤ 未合并提案段（T-FIX-43）：由保存这一刻的未合并集现导出 ——
+    // merge / reject 之后已决议记录已不在集里，本次段自然不含它们
+    // （落盘状态随保存同步清除）；序列化失败响亮拒绝保存，⛔ 不吞成无段。
+    let proposals = domain.proposals_segment().map_err(|error| {
+        Fault::domain(
+            ErrorCode::IoError,
+            format!("序列化未合并提案段失败: {error}"),
+        )
+    })?;
+    let proposals_digest = proposals
+        .as_deref()
+        .map_or_else(|| store::digest_of(&[]), store::digest_of);
     embed_samples::check_container_limits(
         json.len(),
         history_dag.len(),
+        proposals.as_ref().map_or(0, Vec::len),
         &assets,
         &ContainerLimits::default(),
     )?;
@@ -3515,12 +3601,13 @@ fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMate
     let embedded_preset_bytes = embedded.iter().map(|(_, data)| data.len()).sum();
     // 注意：容器写 `&project`（带 `embedded_samples` 表的副本）与 `&assets`（合并后的
     // 池），不是 `&active.project` / `&active.assets` —— 后两者不含本次内嵌收集的表与资产。
-    let bytes = store::container_bytes_with_presets(
+    let bytes = store::container_bytes_with_proposals(
         &active.path,
         &project,
         &domain.graph,
         &assets,
         &embedded,
+        proposals.as_deref(),
     )?;
     Ok(SaveMaterial {
         bytes,
@@ -3530,6 +3617,7 @@ fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMate
         embedded: collected,
         embedded_preset_count,
         embedded_preset_bytes,
+        proposals_digest,
     })
 }
 
@@ -3551,6 +3639,7 @@ fn plan_close(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             embedded_preset_count: material.embedded_preset_count,
             embedded_preset_bytes: material.embedded_preset_bytes,
             include_user_presets: true,
+            proposals_digest: material.proposals_digest,
         }))
     } else {
         None
@@ -5243,7 +5332,7 @@ fn proposal_for_host(domain: &Domain, proposal_id: &str) -> Result<(EntityId, Pr
 /// 而它承诺的是"带上已知提案"。现在兑现：`knownProposals` 是**未合并**提案的
 /// 摘要（与 `yeban_list_proposals` 的 `proposals[]` 同一份 `Proposal::summary()`，
 /// 顺序同 (createdAt, proposalId)），外加 `knownCount` / `listTool` 与
-/// `reason: "proposalNotFound"`。提案表是**会话运行态**（`Domain::proposals`），
+/// `reason: "proposalNotFound"`。提案表就在本层（`Domain::proposals`，打开时已从容器恢复），
 /// 本层直接可达 ⇒ 不需要改注释的诚实版本（没有出现"不可达"的情形）。
 fn proposal_not_found(domain: &Domain, id: &EntityId) -> Fault {
     let mut open: Vec<&Proposal> = domain
@@ -5411,9 +5500,13 @@ fn plan_launch_scene(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 3. **顺序 = (createdAt, proposalId) 升序**：`createdAt` 由注入时钟给，
 ///    同毫秒时用 `proposalId`（ULID，字典序 = 创建序）打破平局 ⇒ 读数稳定。
 ///
-/// ⚠ **不是**跨进程恢复：提案记录住在 [`Domain::proposals`]（会话运行态，
-/// `MODEL-ISO-001` 第 2 层），进程重启后这里为空。这条边界写在工具描述里，
-/// 判据 `tests/props_176.rs` 也把"重启后为空"钉成如实读数（⛔ 不承诺做不到的事）。
+/// ⭐ **跨进程恢复已落地**（T-FIX-43）：未合并提案随工程容器落盘
+/// （`proposals.json` 段），打开时恢复进 [`Domain::proposals`] —— 本工具
+/// 读到的就是恢复后的集合。这条口径写在工具描述里，判据
+/// `tests/props_176.rs` 把描述钉成如实读数；恢复行为本身由
+/// `unmerged_proposal_survives_save_and_reopen_and_merges` 等判据钉住。
+/// 已合并 / 已拒绝的记录仍只住在会话内（它们的事实由 `history.dag`
+/// 的合并提交承担），不在恢复面里。
 fn plan_list_proposals(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     const KINDS: [&str; 3] = ["section", "notes", "macro"];
     let wanted = match arg_str(call, "kind") {
@@ -6838,7 +6931,9 @@ pub fn host_save_project(
             ));
         }
         let material = save_material(domain, true)?;
-        let changed = material.digest != active.saved_digest;
+        // 与 `plan_save` 同一条变化口径：文档摘要或提案段摘要（T-FIX-43）。
+        let changed = material.digest != active.saved_digest
+            || material.proposals_digest != active.saved_proposals_digest;
         (material, changed, active.path.clone())
     };
     let SaveMaterial {
@@ -6849,6 +6944,7 @@ pub fn host_save_project(
         embedded,
         embedded_preset_count,
         embedded_preset_bytes,
+        proposals_digest,
     } = material;
     if !force && !changed {
         return Ok(HostSaveOutcome {
@@ -6868,6 +6964,7 @@ pub fn host_save_project(
         && let Some(active) = domain.active.as_mut()
     {
         active.saved_digest.clone_from(&digest);
+        active.saved_proposals_digest.clone_from(&proposals_digest);
         // 内嵌安装（与 `apply_save` 同一条；只在写回会话自身路径时安装 ——
         // 另存到别处时会话仍指向旧路径，表与池不动）。
         active.project.embedded_samples = embedded.map;
@@ -7100,6 +7197,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             embedded_preset_count,
             embedded_preset_bytes,
             include_user_presets,
+            proposals_digest,
             ..
         } => apply_save(
             domain,
@@ -7115,6 +7213,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
                     bytes: embedded_preset_bytes,
                     included: include_user_presets,
                 },
+                proposals_digest,
             },
         ),
         Plan::Close {
@@ -7510,6 +7609,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         history,
         assets,
         embedded_presets,
+        proposals,
         created,
     } = request;
     let asset_count = assets.len();
@@ -7569,6 +7669,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         lock: Some(lock),
         history: history.map(|graph| *graph),
         assets,
+        proposals,
     })?;
     // `reset_history` 整体清空会话运行态（内嵌预制也在其中），因此这里再装入
     // 本次打开的内嵌副本；`plan_open` 已校验过条目与引用，这里只做装入。
@@ -7620,6 +7721,8 @@ struct SaveEmbeds {
     samples: embed_samples::EmbeddedCollection,
     /// 写进容器的内嵌用户预制收据（条目数 / 字节数 / 是否带出）。
     presets: EmbeddedPresetReceipt,
+    /// 写进容器的未合并提案段摘要（T-FIX-43）；落盘成功后记为已保存口径。
+    proposals_digest: String,
 }
 
 /// `yeban_save_project` 的施加。
@@ -7668,6 +7771,11 @@ fn apply_save(
     store::write_project_atomic(path, bytes)?;
     if let Some(active) = domain.active.as_mut() {
         active.saved_digest.clone_from(&digest);
+        // 提案段的已保存口径随落盘一起推进（T-FIX-43）：不推进的话，
+        // 保存成功之后未保存标记仍会因段摘要不一致而亮着。
+        active
+            .saved_proposals_digest
+            .clone_from(&embeds.proposals_digest);
         // 内嵌安装：表 ＋ 新收资产进池 ＋ 剪枝。跳过时不安装 —— 摘要一致 ⇒
         // 表与池已在位（`changed` 是按带内嵌表的摘要算的，见 `plan_save`）。
         active.project.embedded_samples = embeds.samples.map;
@@ -7735,6 +7843,7 @@ fn apply_close(
         embedded_preset_count,
         embedded_preset_bytes,
         include_user_presets,
+        proposals_digest,
         ..
     }) = save.map(|boxed| *boxed)
     {
@@ -7752,6 +7861,7 @@ fn apply_close(
                     bytes: embedded_preset_bytes,
                     included: include_user_presets,
                 },
+                proposals_digest,
             },
         )?;
         saved = true;
@@ -9591,6 +9701,305 @@ mod tests {
         .expect("执行");
         assert_eq!(forced["status"], "error");
         assert_eq!(forced["error"]["code"], "IO_ERROR");
+    }
+
+    /// T-FIX-43 判据用的**独占**临时工程路径（自己的目录，⛔ 不碰
+    /// `unique_path()` 的父目录 —— 见 `wav_fixture` 的 CI 教训）。
+    fn proposal_disk_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-proposals-{tag}-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir.join("song.yeban")
+    }
+
+    /// 在 `path` 上新建并打开一份真工程（`create: true` 的种子工程自带
+    /// MIDI 材料，`propose_section` 可直接用）。
+    fn create_on_disk(domain: &mut Domain, path: &Path) {
+        let opened = execute(
+            domain,
+            &call(
+                "yeban_open_project",
+                serde_json::json!({"path": path.display().to_string(), "create": true}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(opened["status"], "success", "新建必须成功: {opened}");
+    }
+
+    /// 关闭后从磁盘重新打开同一份工程。
+    fn reopen_from_disk(domain: &mut Domain, path: &Path) {
+        let closed =
+            execute(domain, &call("yeban_close_project", serde_json::json!({}))).expect("执行");
+        assert_eq!(closed["status"], "success", "关闭必须成功: {closed}");
+        let opened = execute(
+            domain,
+            &call(
+                "yeban_open_project",
+                serde_json::json!({"path": path.display().to_string()}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(opened["status"], "success", "重开必须成功: {opened}");
+    }
+
+    /// 提一条提案并返回它的身份（经 `yeban_list_proposals` 发现，
+    /// 与真实调用方同一条面）。
+    fn propose_and_get_id(domain: &mut Domain) -> String {
+        let proposed = execute(
+            domain,
+            &call(
+                "yeban_propose_section",
+                serde_json::json!({"sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 8}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(proposed["status"], "success", "提案必须成功: {proposed}");
+        let listed =
+            execute(domain, &call("yeban_list_proposals", serde_json::json!({}))).expect("执行");
+        let proposals = listed["data"]["proposals"]
+            .as_array()
+            .expect("proposals 数组");
+        assert_eq!(proposals.len(), 1, "应当恰有一条未合并提案: {listed}");
+        proposals[0]["proposalId"]
+            .as_str()
+            .expect("proposalId")
+            .to_owned()
+    }
+
+    fn listed_proposal_ids(domain: &mut Domain) -> Vec<String> {
+        let listed =
+            execute(domain, &call("yeban_list_proposals", serde_json::json!({}))).expect("执行");
+        assert_eq!(listed["status"], "success", "清单必须成功: {listed}");
+        listed["data"]["proposals"]
+            .as_array()
+            .expect("proposals 数组")
+            .iter()
+            .map(|entry| entry["proposalId"].as_str().expect("proposalId").to_owned())
+            .collect()
+    }
+
+    /// 落盘容器里有没有 `proposals.json` 条目（直接读文件字节，不经会话）。
+    fn disk_has_proposals_segment(path: &Path) -> bool {
+        let bytes = std::fs::read(path).expect("读工程文件");
+        let archive = yeban_model::container::read_container(
+            &bytes,
+            &yeban_model::container::ContainerLimits::default(),
+        )
+        .expect("容器必须可读");
+        archive
+            .names()
+            .any(|name| name == yeban_model::container::PROPOSALS_JSON_NAME)
+    }
+
+    /// T-FIX-43 主判据：未合并提案随工程落盘 —— propose → save → 重开 →
+    /// 还在且可 merge；merge 后再保存重开 ⇒ 不再出现，容器里也没有提案段。
+    #[test]
+    fn unmerged_proposal_survives_save_and_reopen_and_merges() {
+        let path = proposal_disk_path("merge");
+        let mut domain = Domain::new();
+        domain.set_now_ms(1_760_000_000_000);
+        create_on_disk(&mut domain, &path);
+        let proposal_id = propose_and_get_id(&mut domain);
+
+        // 只提案、未改文档：保存**不得**被"无变化"跳过（本修复的核心回归点）。
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(saved["status"], "success");
+        assert_eq!(
+            saved["data"]["saved"], true,
+            "只增提案的保存不得跳过: {saved}"
+        );
+        assert_eq!(saved["data"]["skipped"], false);
+        assert!(
+            disk_has_proposals_segment(&path),
+            "落盘容器必须带 proposals.json"
+        );
+        // 幂等：紧接着再保存一次 ⇒ 无变化跳过（段摘要已推进到已保存口径）。
+        let saved_again = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(
+            saved_again["data"]["skipped"], true,
+            "无变化的第二次保存应当跳过: {saved_again}"
+        );
+
+        reopen_from_disk(&mut domain, &path);
+        assert_eq!(
+            listed_proposal_ids(&mut domain),
+            vec![proposal_id.clone()],
+            "重开后未合并提案必须还在"
+        );
+
+        // 恢复出的提案必须可合并（记录与图谱都恢复了才行）。
+        let merged = execute(
+            &mut domain,
+            &call(
+                "yeban_merge_proposal",
+                serde_json::json!({"proposalId": proposal_id}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(merged["status"], "success", "重开后合并必须成功: {merged}");
+        assert!(listed_proposal_ids(&mut domain).is_empty());
+
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(saved["data"]["saved"], true);
+        assert!(
+            !disk_has_proposals_segment(&path),
+            "合并并保存后容器不得再带 proposals.json（落盘同步清除）"
+        );
+        reopen_from_disk(&mut domain, &path);
+        assert!(
+            listed_proposal_ids(&mut domain).is_empty(),
+            "合并后的提案重开不得复活"
+        );
+    }
+
+    /// T-FIX-43：reject 之后保存重开 ⇒ 提案不再出现，容器无提案段。
+    #[test]
+    fn rejected_proposal_does_not_reappear_after_save_and_reopen() {
+        let path = proposal_disk_path("reject");
+        let mut domain = Domain::new();
+        domain.set_now_ms(1_760_000_000_000);
+        create_on_disk(&mut domain, &path);
+        let proposal_id = propose_and_get_id(&mut domain);
+
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(saved["data"]["saved"], true);
+        reopen_from_disk(&mut domain, &path);
+        assert_eq!(listed_proposal_ids(&mut domain), vec![proposal_id.clone()]);
+
+        let rejected = execute(
+            &mut domain,
+            &call(
+                "yeban_reject_proposal",
+                serde_json::json!({"proposalId": proposal_id, "reason": "不用了"}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(rejected["status"], "success", "拒绝必须成功: {rejected}");
+
+        // 只拒绝、不改文档：保存同样不得跳过（段摘要变了）。
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(
+            saved["data"]["saved"], true,
+            "只拒绝提案的保存不得跳过: {saved}"
+        );
+        assert!(
+            !disk_has_proposals_segment(&path),
+            "拒绝并保存后容器不得再带 proposals.json"
+        );
+        reopen_from_disk(&mut domain, &path);
+        assert!(
+            listed_proposal_ids(&mut domain).is_empty(),
+            "被拒绝的提案重开不得复活"
+        );
+    }
+
+    /// T-FIX-43：没有提案的工程保存后容器无提案段，重开按空集处理、不报错
+    /// （旧工程口径）。
+    #[test]
+    fn project_without_proposals_opens_with_an_empty_proposal_set() {
+        let path = proposal_disk_path("none");
+        let mut domain = Domain::new();
+        domain.set_now_ms(1_760_000_000_000);
+        create_on_disk(&mut domain, &path);
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({"force": true})),
+        )
+        .expect("执行");
+        assert_eq!(saved["data"]["saved"], true);
+        assert!(
+            !disk_has_proposals_segment(&path),
+            "没有未合并提案时不得写空段"
+        );
+        reopen_from_disk(&mut domain, &path);
+        assert!(listed_proposal_ids(&mut domain).is_empty());
+    }
+
+    /// T-FIX-43：提案段损坏 ⇒ 打开响亮失败（⛔ 不静默丢弃未决工作）。
+    #[test]
+    fn a_corrupt_proposals_segment_fails_the_open_loudly() {
+        let path = proposal_disk_path("corrupt");
+        let mut domain = Domain::new();
+        domain.set_now_ms(1_760_000_000_000);
+        create_on_disk(&mut domain, &path);
+        let _ = propose_and_get_id(&mut domain);
+        let saved = execute(
+            &mut domain,
+            &call("yeban_save_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(saved["data"]["saved"], true);
+        let closed = execute(
+            &mut domain,
+            &call("yeban_close_project", serde_json::json!({})),
+        )
+        .expect("执行");
+        assert_eq!(closed["status"], "success");
+
+        // 把容器里的提案段换成坏 JSON 后重写文件（经容器层读写，保持其余
+        // 条目逐字节不变）。
+        let bytes = std::fs::read(&path).expect("读工程文件");
+        let archive = yeban_model::container::read_project_container(
+            &bytes,
+            &yeban_model::container::ContainerLimits::default(),
+        )
+        .expect("容器必须可读");
+        assert!(archive.proposals.is_some(), "前置：提案段必须在盘上");
+        let borrowed_assets: Vec<(&AssetHash, &[u8])> = archive
+            .assets
+            .iter()
+            .map(|(hash, data)| (hash, data.as_slice()))
+            .collect();
+        let borrowed_presets: Vec<(&str, &[u8])> = archive
+            .embedded_presets
+            .iter()
+            .map(|(name, data)| (name.as_str(), data.as_slice()))
+            .collect();
+        let damaged = yeban_model::container::write_project_container_with_proposals_borrowed(
+            &archive.project,
+            &archive.history_dag,
+            &borrowed_assets,
+            &borrowed_presets,
+            Some(b"{not json".as_slice()),
+        )
+        .expect("重写容器");
+        std::fs::write(&path, damaged).expect("写回工程文件");
+
+        let opened = execute(
+            &mut domain,
+            &call(
+                "yeban_open_project",
+                serde_json::json!({"path": path.display().to_string()}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(
+            opened["status"], "error",
+            "坏提案段必须让打开失败，而不是静默丢弃: {opened}"
+        );
     }
 
     #[test]

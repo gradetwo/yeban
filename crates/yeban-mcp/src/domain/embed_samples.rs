@@ -151,7 +151,8 @@ pub fn collect(
 ///
 /// `json_len` / `history_len` 是调用方算出的 `project.json` 与 `history.dag`
 /// 字节数（容器条目 ＝ 这两条 ＋ `assets/{sha256}` 池）；`assets` 是合并后
-/// 的池（旧池 ＋ 新收 − 剪枝），不是本次 `added`。
+/// 的池（旧池 ＋ 新收 − 剪枝），不是本次 `added`。`proposals_len` 是未合并
+/// 提案段（`proposals.json`，T-FIX-43）的字节数，`0` = 本次不写提案段。
 ///
 /// # Errors
 ///
@@ -159,6 +160,7 @@ pub fn collect(
 pub fn check_container_limits(
     json_len: usize,
     history_len: usize,
+    proposals_len: usize,
     assets: &BTreeMap<AssetHash, Vec<u8>>,
     limits: &ContainerLimits,
 ) -> Result<(), Fault> {
@@ -174,9 +176,20 @@ pub fn check_container_limits(
             ));
         }
     }
+    let proposals_len_u64 = u64::try_from(proposals_len).unwrap_or(u64::MAX);
+    if proposals_len_u64 > limits.max_entry_bytes {
+        return Err(Fault::domain(
+            ErrorCode::IoError,
+            format!(
+                "未合并提案段 `proposals.json` 有 {proposals_len_u64} 字节，超过单条目上限 {} 字节（容器上限；保存被拒绝，⛔ 不截断）",
+                limits.max_entry_bytes
+            ),
+        ));
+    }
     let total = u64::try_from(json_len)
         .unwrap_or(u64::MAX)
         .saturating_add(u64::try_from(history_len).unwrap_or(u64::MAX))
+        .saturating_add(proposals_len_u64)
         .saturating_add(
             assets
                 .values()
@@ -187,18 +200,20 @@ pub fn check_container_limits(
         return Err(Fault::domain(
             ErrorCode::IoError,
             format!(
-                "容器总字节数 {total} 超过上限 {} 字节（project.json {json_len} 字节 ＋ history.dag {history_len} 字节 ＋ {count} 条资产；保存被拒绝，⛔ 不截断）",
+                "容器总字节数 {total} 超过上限 {} 字节（project.json {json_len} 字节 ＋ history.dag {history_len} 字节 ＋ proposals.json {proposals_len} 字节 ＋ {count} 条资产；保存被拒绝，⛔ 不截断）",
                 limits.max_total_bytes,
                 count = assets.len(),
             ),
         ));
     }
-    let entries = 2usize.saturating_add(assets.len());
+    let entries = 2usize
+        .saturating_add(usize::from(proposals_len > 0))
+        .saturating_add(assets.len());
     if entries > limits.max_entries {
         return Err(Fault::domain(
             ErrorCode::IoError,
             format!(
-                "容器条目数 {entries} 超过上限 {}（project.json ＋ history.dag ＋ {} 条资产；保存被拒绝，⛔ 不截断）",
+                "容器条目数 {entries} 超过上限 {}（project.json ＋ history.dag ＋ proposals.json（若有）＋ {} 条资产；保存被拒绝，⛔ 不截断）",
                 limits.max_entries,
                 assets.len(),
             ),
@@ -560,7 +575,7 @@ mod tests {
             ..ContainerLimits::default()
         };
         assert!(
-            check_container_limits(10, 10, &assets, &limits).is_err(),
+            check_container_limits(10, 10, 0, &assets, &limits).is_err(),
             "单条目超限必须失败"
         );
         // 总体积超限（10 + 10 + 10 = 30 > 25）。
@@ -569,7 +584,7 @@ mod tests {
             ..ContainerLimits::default()
         };
         assert!(
-            check_container_limits(10, 10, &assets, &limits).is_err(),
+            check_container_limits(10, 10, 0, &assets, &limits).is_err(),
             "总体积超限必须失败"
         );
         // 条目数超限（2 + 1 = 3 > 2）。
@@ -578,12 +593,12 @@ mod tests {
             ..ContainerLimits::default()
         };
         assert!(
-            check_container_limits(10, 10, &assets, &limits).is_err(),
+            check_container_limits(10, 10, 0, &assets, &limits).is_err(),
             "条目数超限必须失败"
         );
         // 默认上限下通过。
         assert!(
-            check_container_limits(10, 10, &assets, &ContainerLimits::default()).is_ok(),
+            check_container_limits(10, 10, 0, &assets, &ContainerLimits::default()).is_ok(),
             "默认上限下必须通过"
         );
     }

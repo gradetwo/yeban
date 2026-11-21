@@ -162,11 +162,16 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         descriptor.get("outputSchema").is_none(),
         "list_proposals 不在 outputSchema 清单里: {descriptor}"
     );
-    // 描述里必须如实说"不跨进程"。
+    // 描述里必须如实说清持久化口径（T-FIX-43 起未合并提案随工程落盘；
+    // 此前这里钉的是"进程重启后这里为空"，那正是 T-FIX-43 修掉的行为）。
     let description = descriptor["description"].as_str().expect("description");
     assert!(
-        description.contains("进程重启后这里为空"),
-        "工具描述必须写明提案记录不跨进程: {description}"
+        description.contains("未合并提案随工程容器落盘"),
+        "工具描述必须写明未合并提案随工程落盘: {description}"
+    );
+    assert!(
+        description.contains("会恢复它们"),
+        "工具描述必须写明重开后恢复未合并提案: {description}"
     );
 
     let registry = samples::registry_sample();

@@ -29,6 +29,8 @@
 //! 主干形状**没有**变：`append_merge` 的第一父仍是活跃分支头，`main` 的祖先链上
 //! 不出现提案的提交，撤销仍然是"一次 `Cmd+Z` 回退整套 AI 变更"（`ARCH-OPS-002`）。
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use yeban_model::{EntityId, Op, StampedOp};
@@ -245,6 +247,162 @@ impl ProposalRow {
     }
 }
 
+/// 提案类别的全部规范值（恢复时的校验表；与 `yeban_list_proposals`
+/// 的 `KINDS` 同一份清单）。[`Proposal::kind`] 是 `&'static str`，恢复时
+/// 只能从这张表里取回字面量 —— 表外的值响亮拒绝，⛔ 不现造类别。
+const PROPOSAL_KINDS: [&str; 3] = ["section", "notes", "macro"];
+
+/// 容器提案段的模式版本。读到不认识的版本 ⇒ 响亮拒绝打开，
+/// ⛔ 不猜测性恢复（猜错一条未决提案比拒绝打开更糟）。
+pub const PROPOSALS_SEGMENT_VERSION: u32 = 1;
+
+/// 一条**未合并**提案的落盘形状（[`Proposal`] 的持久化镜像）。
+///
+/// 与 [`Proposal`] 的差异只有两处，都是刻意的：`kind` / `status` 在这里是
+/// 文本（`&'static str` 与枚举本身不带反序列化口径，恢复时按规范值校验）；
+/// `merge_commit` / `resolved_at` / `resolution` **不在段里** —— 已决议的
+/// 记录不落盘（见 [`proposals_segment`]），恢复出的记录这三格恒为 `None`。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedProposal {
+    /// 提案身份。
+    id: EntityId,
+    /// 隔离分支名。
+    branch: String,
+    /// 提案类别（规范值见 [`PROPOSAL_KINDS`]）。
+    kind: String,
+    /// 标题。
+    title: String,
+    /// 批次描述。
+    description: String,
+    /// 生命周期状态（写出时恒为 `open`；恢复时非 `open` 响亮拒绝）。
+    status: String,
+    /// 基于的主分支头。
+    base_commit: EntityId,
+    /// 提案分支上的提交。
+    head_commit: EntityId,
+    /// 捕获的操作日志（与内存记录同一份 `StampedOp` 序列化口径）。
+    ops: Vec<StampedOp>,
+    /// 创建时间（Unix 毫秒）。
+    created_at: u64,
+}
+
+/// 提案段信封：`{version, proposals}`。
+///
+/// 数组顺序 = 会话提案表的 `BTreeMap` 键序（提案身份升序）⇒ 同一提案集
+/// 两次序列化逐字节相同 —— 保存侧的段摘要与"无变化跳过"判定全靠这条
+/// 确定性（与工程内容摘要的口径分开：提案段**不**进 `projectDigest`）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedProposals {
+    /// 模式版本（[`PROPOSALS_SEGMENT_VERSION`]）。
+    version: u32,
+    /// 未合并提案（身份升序）。
+    proposals: Vec<PersistedProposal>,
+}
+
+/// 把当前**未合并**提案集序列化成容器提案段（`proposals.json`）的字节。
+///
+/// - 只收 `status == Open` 的记录：已合并 / 已拒绝的记录是**已决议**的
+///   追溯索引（合并事实由 `history.dag` 的多父提交承担），不随工程落盘；
+///   这也是"merge / reject 之后落盘状态同步清除"的实现点 —— 下一次保存
+///   的段由当时的未合并集重新导出，已决议者自然不在段里。
+/// - 没有未合并提案 ⇒ `None`：容器不写空段，没有未决工作的工程落盘
+///   字节与本扩展之前逐字节相同。
+///
+/// # Errors
+///
+/// 序列化失败（理论上不会：全部字段都可序列化）时原样上抛，保存侧响亮
+/// 拒绝 —— ⛔ 不把失败吞成"没有提案段"（那等于静默丢弃未决工作）。
+pub fn proposals_segment(
+    proposals: &BTreeMap<EntityId, Proposal>,
+) -> Result<Option<Vec<u8>>, serde_json::Error> {
+    let open: Vec<PersistedProposal> = proposals
+        .values()
+        .filter(|record| record.status == ProposalStatus::Open)
+        .map(|record| PersistedProposal {
+            id: record.id,
+            branch: record.branch.clone(),
+            kind: record.kind.to_owned(),
+            title: record.title.clone(),
+            description: record.description.clone(),
+            status: record.status.as_str().to_owned(),
+            base_commit: record.base_commit,
+            head_commit: record.head_commit,
+            ops: record.ops.clone(),
+            created_at: record.created_at,
+        })
+        .collect();
+    if open.is_empty() {
+        return Ok(None);
+    }
+    let envelope = PersistedProposals {
+        version: PROPOSALS_SEGMENT_VERSION,
+        proposals: open,
+    };
+    serde_json::to_vec(&envelope).map(Some)
+}
+
+/// 从容器提案段字节恢复未合并提案集（打开工程的落点）。
+///
+/// 恢复出的记录与创建时逐字段相同（`merge_commit` / `resolved_at` /
+/// `resolution` 恒 `None`，与"未合并"自洽）；其 `base_commit` /
+/// `head_commit` 指向的提交由同容器的 `history.dag` 一并恢复（提案分支
+/// 本就在提交图谱里），因此恢复出的提案可以照常 merge / reject。
+///
+/// # Errors
+///
+/// 段不是合法 JSON、版本不认识、类别不在 [`PROPOSAL_KINDS`]、段里出现
+/// 非 `open` 记录、或提案身份重复 ⇒ 人话错误，调用方响亮拒绝打开
+/// （与坏 `history.dag` 同一口径：⛔ 不静默丢弃用户未决的工作）。
+pub fn restore_proposals(bytes: &[u8]) -> Result<BTreeMap<EntityId, Proposal>, String> {
+    let parsed: PersistedProposals = serde_json::from_slice(bytes)
+        .map_err(|error| format!("`proposals.json` 不是合法的提案段 JSON: {error}"))?;
+    if parsed.version != PROPOSALS_SEGMENT_VERSION {
+        return Err(format!(
+            "`proposals.json` 的版本 {} 不被识别（期望 {}），拒绝猜测性恢复",
+            parsed.version, PROPOSALS_SEGMENT_VERSION
+        ));
+    }
+    let mut restored = BTreeMap::new();
+    for record in parsed.proposals {
+        if record.status != ProposalStatus::Open.as_str() {
+            return Err(format!(
+                "`proposals.json` 里出现了非未合并状态的提案记录（{}: status={}），与段的口径不符",
+                record.id, record.status
+            ));
+        }
+        let kind: &'static str = match record.kind.as_str() {
+            "section" => "section",
+            "notes" => "notes",
+            "macro" => "macro",
+            other => {
+                return Err(format!(
+                    "`proposals.json` 里有不认识的提案类别 `{other}`（规范值: {}）",
+                    PROPOSAL_KINDS.join(" / ")
+                ));
+            }
+        };
+        let proposal = Proposal {
+            id: record.id,
+            branch: record.branch,
+            kind,
+            title: record.title,
+            description: record.description,
+            status: ProposalStatus::Open,
+            base_commit: record.base_commit,
+            head_commit: record.head_commit,
+            merge_commit: None,
+            ops: record.ops,
+            created_at: record.created_at,
+            resolved_at: None,
+            resolution: None,
+        };
+        if restored.insert(proposal.id, proposal).is_some() {
+            return Err(format!("`proposals.json` 里提案身份重复: {}", record.id));
+        }
+    }
+    Ok(restored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +479,112 @@ mod tests {
             detail["ops"][0]["origin"]["McpProposal"]["agent_name"],
             "yeban-mcp"
         );
+    }
+
+    fn open_proposal() -> Proposal {
+        let mut proposal = sample_proposal();
+        proposal.status = ProposalStatus::Open;
+        proposal.merge_commit = None;
+        proposal.resolved_at = None;
+        proposal.resolution = None;
+        proposal.ops.push(StampedOp::new(
+            yeban_model::OpOrigin::McpProposal {
+                proposal_id: proposal.id,
+                agent_name: "yeban-mcp".to_owned(),
+            },
+            7,
+            Op::SetMacro {
+                track_id: deterministic_id("track"),
+                macro_index: 0,
+                old_val: 0.0,
+                new_val: 1.0,
+            },
+        ));
+        proposal
+    }
+
+    #[test]
+    fn proposals_segment_round_trips_open_records_only() {
+        let open = open_proposal();
+        // 已决议记录（status = Merged）；身份必须与 open 不同，否则同键覆盖。
+        let mut resolved = sample_proposal();
+        resolved.id = deterministic_id("proposal-resolved");
+        let mut table = BTreeMap::new();
+        table.insert(open.id, open.clone());
+        table.insert(resolved.id, resolved);
+
+        let bytes = proposals_segment(&table)
+            .expect("序列化")
+            .expect("有未合并提案时必须有段");
+        let restored = restore_proposals(&bytes).expect("恢复");
+        assert_eq!(restored.len(), 1, "已决议记录不得进段");
+        assert_eq!(
+            restored.get(&open.id),
+            Some(&open),
+            "恢复出的记录必须与原记录逐字段相同"
+        );
+
+        // 确定性：同一提案集两次序列化逐字节相同（段摘要的根基）。
+        let again = proposals_segment(&table).expect("序列化");
+        assert_eq!(again, Some(bytes));
+    }
+
+    #[test]
+    fn proposals_segment_is_none_without_open_records() {
+        let resolved = sample_proposal();
+        let mut table = BTreeMap::new();
+        table.insert(resolved.id, resolved);
+        assert_eq!(proposals_segment(&table).expect("序列化"), None);
+        assert_eq!(
+            proposals_segment(&BTreeMap::new()).expect("序列化"),
+            None,
+            "空提案集同样不写段"
+        );
+    }
+
+    #[test]
+    fn restore_proposals_rejects_damage_loudly() {
+        // 不是 JSON。
+        assert!(restore_proposals(b"not json").is_err());
+        // 版本不认识。
+        let future = serde_json::to_vec(&serde_json::json!({ "version": 99, "proposals": [] }))
+            .expect("json");
+        assert!(restore_proposals(&future).is_err());
+        // 类别不在规范表。
+        let bad_kind = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "proposals": [{
+                "id": deterministic_id("p").to_canonical_string(),
+                "branch": "ai/proposal-x",
+                "kind": "bogus",
+                "title": "t",
+                "description": "d",
+                "status": "open",
+                "base_commit": deterministic_id("b").to_canonical_string(),
+                "head_commit": deterministic_id("h").to_canonical_string(),
+                "ops": [],
+                "created_at": 1
+            }]
+        }))
+        .expect("json");
+        assert!(restore_proposals(&bad_kind).is_err());
+        // 段里混入已决议记录。
+        let resolved = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "proposals": [{
+                "id": deterministic_id("p").to_canonical_string(),
+                "branch": "ai/proposal-x",
+                "kind": "notes",
+                "title": "t",
+                "description": "d",
+                "status": "merged",
+                "base_commit": deterministic_id("b").to_canonical_string(),
+                "head_commit": deterministic_id("h").to_canonical_string(),
+                "ops": [],
+                "created_at": 1
+            }]
+        }))
+        .expect("json");
+        assert!(restore_proposals(&resolved).is_err());
     }
 }

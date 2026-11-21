@@ -79,7 +79,7 @@ use std::path::{Path, PathBuf};
 
 use yeban_model::container::{
     ContainerError, ContainerLimits, MAX_ENTRY_NAME_BYTES, read_project_container,
-    write_project_container_with_presets_borrowed,
+    write_project_container_with_proposals_borrowed,
 };
 use yeban_model::{AssetHash, CommitGraph, EntityId, YebanProjectV1};
 
@@ -132,6 +132,10 @@ pub struct LoadedProject {
     /// 容器里 `presets/user/*.json` 的内嵌用户预制条目（名 + 字节，名升序）；
     /// 没有内嵌预制时为空。解析与校验在打开时由领域层做（`Domain::set_embedded_presets`）。
     pub embedded_presets: Vec<(String, Vec<u8>)>,
+    /// 容器里 `proposals.json` 恢复出的**未合并**提案集（T-FIX-43）；
+    /// 没有提案段（旧工程 / 保存时无未决提案）时为空集。段的解码在本层的
+    /// `load_container` 里完成（坏段响亮拒绝打开，与坏 `history.dag` 同口径）。
+    pub proposals: BTreeMap<EntityId, super::proposal::Proposal>,
 }
 
 /// 这份字节有没有 ZIP 结构（三种签名：local header / EOCD / data descriptor）。
@@ -591,12 +595,38 @@ fn load_container(
         .validate()
         .map_err(|error| super::error::from_model("工程结构校验", &error))?;
     let graph = decode_history_dag(path, &archive.history_dag)?;
+    let proposals = decode_proposals(path, archive.proposals.as_deref())?;
     Ok(LoadedProject {
         project: archive.project,
         bytes: len,
         graph,
         assets: archive.assets.into_iter().collect(),
         embedded_presets: archive.embedded_presets,
+        proposals,
+    })
+}
+
+/// `proposals.json` 的读取口径（T-FIX-43）。
+///
+/// - 没有提案段 ⇒ 空集（旧工程与"保存时无未决提案"都走这条，⛔ 不报错）；
+/// - 有段 ⇒ 按 [`super::proposal::restore_proposals`] 恢复；段损坏 / 版本
+///   不认识 / 内容越界 ⇒ `IO_ERROR` **响亮拒绝打开** —— 与
+///   [`decode_history_dag`] 同一口径：静默忽略等于把用户未决的工作悄悄丢掉。
+fn decode_proposals(
+    path: &Path,
+    raw: Option<&[u8]>,
+) -> Result<BTreeMap<EntityId, super::proposal::Proposal>, Fault> {
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    super::proposal::restore_proposals(raw).map_err(|detail| {
+        Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("工程的提案段无法恢复 ({}): {detail}", path.display()),
+            serde_json::json!({
+                "containerEntry": yeban_model::container::PROPOSALS_JSON_NAME,
+            }),
+        )
     })
 }
 
@@ -693,6 +723,25 @@ pub fn container_bytes_with_presets(
     assets: &BTreeMap<AssetHash, Vec<u8>>,
     presets: &[(String, Vec<u8>)],
 ) -> Result<Vec<u8>, Fault> {
+    container_bytes_with_proposals(path, project, graph, assets, presets, None)
+}
+
+/// 同 [`container_bytes_with_presets`]，另加可选的未合并提案段
+/// （`proposals.json`，T-FIX-43）：`proposals` 是
+/// [`super::proposal::proposals_segment`] 产出的字节；`None` 时与
+/// [`container_bytes_with_presets`] 逐字节相同。
+///
+/// # Errors
+///
+/// 同 [`container_bytes_with_presets`]。
+pub fn container_bytes_with_proposals(
+    path: &Path,
+    project: &YebanProjectV1,
+    graph: &CommitGraph,
+    assets: &BTreeMap<AssetHash, Vec<u8>>,
+    presets: &[(String, Vec<u8>)],
+    proposals: Option<&[u8]>,
+) -> Result<Vec<u8>, Fault> {
     let history_dag = serde_json::to_vec(graph).map_err(|error| {
         Fault::domain_with_data(
             ErrorCode::IoError,
@@ -708,11 +757,12 @@ pub fn container_bytes_with_presets(
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
-    write_project_container_with_presets_borrowed(
+    write_project_container_with_proposals_borrowed(
         project,
         &history_dag,
         &borrowed_assets,
         &borrowed_presets,
+        proposals,
     )
     .map_err(|error| container_fault(path, &error))
 }
