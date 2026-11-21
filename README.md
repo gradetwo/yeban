@@ -75,7 +75,7 @@ To step through the screenshots manually, use the carousel in the [interface sec
 - **Projects carry what they use**: used samples and their SFZ definitions are embedded in the `.yeban` container; rendering checks the embedded pool first, disk second; old projects are byte-identical.
 - **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
 - **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
-- **44 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+- **46 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
 
 ## Roadmap
 
@@ -211,7 +211,7 @@ verdict that counts is CI. Read [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md) b
 laptop use the local guards instead of a full workspace build:
 
 ```bash
-bash scripts/gates/run-gates.sh light        # fmt + 14 mechanical red-line guards + docs + licence inventory
+bash scripts/gates/run-gates.sh light        # fmt + 21 mechanical red-line guards + docs + licence inventory
 bash scripts/dev/cargo-local.sh test -p yeban-model   # refuse --workspace on purpose (no heavy CPU locally)
 ```
 
@@ -262,7 +262,7 @@ yeban/
 ├── scripts/
 │   ├── dev/                    # cargo wrapper, worktree lifecycle, CI verdict reader, change planner
 │   ├── gates/                  # gate runner, schema validation, licence inventory
-│   ├── guards/                 # 14 mechanical red-line guards
+│   ├── guards/                 # 21 mechanical red-line guards
 │   └── brand/                  # brand asset regeneration
 ├── docs/                       # see docs/README.md for the authority ranking
 │   ├── YEBAN_*.md              # the four normative specifications
@@ -282,11 +282,17 @@ yeban/
 | `yeban-theory` | Music theory kernel: pitch/scale/chord, roman-numeral progression expansion, voice leading, genre rule library |
 | `yeban-dsp` | Pure-math DSP: envelopes, ZDF ladder filter, wavetable oscillators, oversampling, delay/comb/reverb, shaping, parameter smoothing |
 | `yeban-engine` | cpal device host, lock-free SPSC scheduling, internal PDC, snapshot retirement queue |
+| `yeban-midi` | Standard MIDI File (SMF 1) encoder/decoder, VLQ, MusicXML/MXL read-only import |
+| `yeban-midi-io` | Hardware MIDI input via `midir` -> lock-free SPSC -> 960 PPQ (`midi-input` feature) |
+| `yeban-record` | Lock-free input audio capture ring -> background WAV writer |
 | `yeban-sfz` | Zero-copy SFZ v2 lexer and pre-allocated voice pool |
 | `yeban-decode` | symphonia decoding + rubato resampling |
 | `yeban-render` | Rayon offline mastering render, RF64/BW64 + MIDI export |
+| `yeban-otcp` | Subprocess OTCP IPC supervisor and discovery for offline pitch correction |
+| `yeban-diagnostics` | Cross-platform redacted diagnostic bundle exporter (`diagnostics.zip`) |
 | `yeban-mcp` | Yeban Intent API v2 — library form (embedded) + standalone stdio binary |
 | `yeban-app` | Slint GUI host (`ui/*.slint`, 18 files) |
+| `yeban-tui` | Terminal UI (ratatui + crossterm) sharing `yeban-app` core components |
 | `yeban-ui-test-port` | Headless UI test port: Tier-1 software rasterisation, semantic control tree |
 | `yeban-ui-mcp` | JSON-RPC UI automation and headless screenshot adapter |
 | `yeban-services` | [v1.1.0] external editor integration, acoustic ping calibration |
@@ -306,7 +312,7 @@ Nothing is "green" unless a GitHub Actions run says so. Local green is a hint; a
 **Automatic** (`.github/workflows/ci.yml`, on push/PR, plus manual dispatch):
 
 - `plan` — derives the affected crate set from the diff (including downstream dependents)
-- `checks` — `cargo fmt --check`, 14 mechanical red-line guards, JSON Schema validity,
+- `checks` — `cargo fmt --check`, 21 mechanical red-line guards, JSON Schema validity,
   dependency-licence inventory drift, cross-language contract reconciliation (Rust samples ↔ Python `jsonschema`)
 - `rust` — matrix over affected crates: `clippy --all-targets --locked -D warnings` + `test`
 - `lockfile` — `Cargo.lock` committed and consistent (`cargo metadata --locked`)
