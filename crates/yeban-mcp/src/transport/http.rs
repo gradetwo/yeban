@@ -300,7 +300,15 @@ impl HttpRequest {
 }
 
 fn valid_loopback_port(port: &str) -> bool {
-    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok()
+    if port.is_empty() {
+        return false;
+    }
+    for b in port.bytes() {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+    }
+    port.parse::<u16>().is_ok()
 }
 
 /// Host 头是否为环回：`127.0.0.1` / `localhost` / `[::1]`，可带 `:port`（禁止 `@` / 空白 / 越界端口）。
