@@ -1240,10 +1240,32 @@ pub fn write_initial_receipt(
     let dir = config.job_dir(&receipt.job_id);
     fs::create_dir_all(&dir)
         .map_err(|error| OtcpError::io(format!("建任务目录 {} 失败: {error}", dir.display())))?;
+    let final_path = dir.join("receipt.json");
+    // 先看已有收据：已经有 running / succeeded / failed / cancelled 时一律不覆盖。
+    // 尤其是 worker 的快速失败终态：旧实现“先 spawn 再补写 initial”会让这里的
+    // running 覆盖 failed，轮询便永久停在 running。现在 spawn 前写 initial，且本函数
+    // 也拒绝覆盖任何已存在且可解析的收据（坏收据则响亮报错，不静默覆盖）。
+    match fs::read_to_string(&final_path) {
+        Ok(existing) => {
+            if serde_json::from_str::<JobReceipt>(&existing).is_ok() {
+                return Ok(());
+            }
+            return Err(OtcpError::io(format!(
+                "已有收据 {} 无法解析，拒绝用初始 running 覆盖",
+                final_path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(OtcpError::io(format!(
+                "读已有收据 {} 失败: {error}",
+                final_path.display()
+            )));
+        }
+    }
     let text = serde_json::to_string_pretty(&receipt)
         .map_err(|error| OtcpError::io(format!("序列化初始收据失败: {error}")))?;
     let tmp = dir.join("receipt.json.tmp");
-    let final_path = dir.join("receipt.json");
     fs::write(&tmp, text)
         .map_err(|error| OtcpError::io(format!("写初始收据 {} 失败: {error}", tmp.display())))?;
     fs::rename(&tmp, &final_path).map_err(|error| {
@@ -1508,6 +1530,37 @@ mod tests {
         assert_eq!(read.job_id, "receipt-test-1");
         assert_eq!(read.status, "succeeded");
         let _ = std::fs::remove_dir_all(config.job_dir("receipt-test-1"));
+    }
+
+    #[test]
+    fn initial_receipt_does_not_overwrite_terminal_failure() {
+        let config = OtcpConfig::default();
+        let request = CorrectionRequest {
+            job_id: "receipt-preserve-terminal-1".to_owned(),
+            source_wav: PathBuf::from("/tmp/x.wav"),
+            source_duration_secs: 2.0,
+            key: Key {
+                root: 9,
+                scale: "major".to_owned(),
+            },
+            mode: "snapNotes".to_owned(),
+            tuning_hz: 440.0,
+            dry_run: false,
+            note_ops: Vec::new(),
+            track_id: "t1".to_owned(),
+            clip_id: "c1".to_owned(),
+            auto_merge: false,
+            source_asset_hash: "aa".repeat(32),
+            source_license: "CC0-1.0".to_owned(),
+        };
+        let mut receipt = JobReceipt::new_running(&request);
+        receipt.failed(&OtcpError::new("otcpRenderFailed", "fast failure"));
+        write_receipt(&config, &receipt);
+        write_initial_receipt(&config, &request).expect("初始写入应保留终态而不是失败");
+        let read = read_receipt(&config, &request.job_id).expect("读回");
+        assert_eq!(read.status, "failed");
+        assert!(read.error.is_some());
+        let _ = std::fs::remove_dir_all(config.job_dir(&request.job_id));
     }
 
     #[test]

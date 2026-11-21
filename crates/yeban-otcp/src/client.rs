@@ -9,13 +9,20 @@
 //! * ⛔ token / serverProof 只出现在 `session.hello` 的参数里，
 //!   永不进日志、错误详情与收据（见 [`redact`] 的单元测试）。
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read as _, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::error::{OtcpError, OtcpRpcError};
+
+/// 单条 JSON-RPC 响应行的硬上限（1 MiB）。
+///
+/// 本仓没有现成的 OTCP 响应体上限常量；RFC 8259 没有长度上限，而 OTCP 响应
+/// （音符表 / 收据）在实践中远小于 1 MiB。这里把它作为**传输层防线**：
+/// 超过就响亮拒绝，绝不把对端发来的无界字节灌进 `String`。
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// 对日志与错误文本做脱敏：`token` / `serverProof` 字段值一律打码。
 ///
@@ -94,9 +101,19 @@ impl OtcpClient {
             .flush()
             .map_err(|error| OtcpError::transport(format!("发 {method} 失败: {error}")))?;
         let mut response_line = String::new();
+        let limit = u64::try_from(MAX_RESPONSE_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
         self.reader
+            .by_ref()
+            .take(limit)
             .read_line(&mut response_line)
             .map_err(|error| OtcpError::transport(format!("读 {method} 响应失败: {error}")))?;
+        if response_line.len() > MAX_RESPONSE_BYTES {
+            return Err(OtcpError::protocol(format!(
+                "{method} 响应超长：超过 {MAX_RESPONSE_BYTES} 字节上限（未读到换行或行本身超限）"
+            )));
+        }
         if response_line.trim().is_empty() {
             return Err(OtcpError::transport(format!(
                 "{method} 响应为空（连接已断）"
@@ -207,6 +224,35 @@ mod tests {
             .call("content.getNotes", json!({}), "job-x")
             .expect_err("应返回 NOT_READY");
         assert_eq!(error.reason, "otcpNotReady");
+        handle.join().expect("服务端线程");
+    }
+
+    #[test]
+    fn overlong_response_is_rejected_not_buffered() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定");
+        let port = listener.local_addr().expect("取端口").port();
+        let handle = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("接受连接");
+            // 不读请求也行：写端先灌一条超长行，客户端必须在上限处拒绝。
+            // 保持连接 2 秒，避免对端 close 产生的 reset 抢在“超长”判定之前。
+            let too_long = vec![b'x'; MAX_RESPONSE_BYTES + 2];
+            let _ = socket.write_all(&too_long);
+            thread::sleep(Duration::from_secs(2));
+        });
+        let mut client = OtcpClient::connect(port, Duration::from_secs(5)).expect("连接");
+        let error = client
+            .call("session.info", json!({}), "")
+            .expect_err("超长响应必须拒绝");
+        assert_eq!(error.reason, "otcpServerGone");
+        assert!(
+            error.message.contains("响应超长"),
+            "拒绝必须响亮点名超长，实际: {}",
+            error.message
+        );
         handle.join().expect("服务端线程");
     }
 }

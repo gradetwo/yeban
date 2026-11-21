@@ -32,6 +32,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use serde_json::Value;
@@ -49,6 +50,42 @@ use super::error::{self, Fault};
 use super::proposal::ProposalDraft;
 use super::{Domain, Plan, require_active};
 use crate::tools::{ErrorCode, ToolCall, ToolResponse};
+
+/// 同时进行的 OTCP 校正任务上限。超过一律响亮拒绝，避免线程/子进程无界堆积。
+const MAX_CONCURRENT_OTCP_JOBS: usize = 4;
+
+/// 当前活跃的 OTCP 校正任务数。线程结束（含 panic）时由 [`OtcpJobSlot`] 的 Drop 归还。
+static ACTIVE_OTCP_JOBS: AtomicUsize = AtomicUsize::new(0);
+
+/// 一个已占用的 OTCP 任务槽；Drop 时归还计数。
+struct OtcpJobSlot;
+
+impl OtcpJobSlot {
+    /// 尝试占槽；达到 `MAX_CONCURRENT_OTCP_JOBS` 时返回 None（调用方负责响亮拒绝）。
+    fn acquire() -> Option<Self> {
+        let mut active = ACTIVE_OTCP_JOBS.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_CONCURRENT_OTCP_JOBS {
+                return None;
+            }
+            match ACTIVE_OTCP_JOBS.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(actual) => active = actual,
+            }
+        }
+    }
+}
+
+impl Drop for OtcpJobSlot {
+    fn drop(&mut self) {
+        ACTIVE_OTCP_JOBS.fetch_sub(1, Ordering::Release);
+    }
+}
 
 // ===========================================================================
 // plan 入口（由 `domain::plan` 路由；`apply` 在 `domain::apply_plan_model`）
@@ -112,6 +149,12 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
             ),
         )));
     };
+    let slot = OtcpJobSlot::acquire().ok_or_else(|| {
+        fault_for(&OtcpError::new(
+            "otcpBusy",
+            format!("OTCP 并发任务已达上限 {MAX_CONCURRENT_OTCP_JOBS}；等当前校正任务结束后再提交"),
+        ))
+    })?;
     let request = CorrectionRequest {
         job_id: job_id.clone(),
         source_wav,
@@ -130,29 +173,35 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
         source_asset_hash: source_asset.as_str().to_owned(),
         source_license: license,
     };
-    // 先派生线程（worker 第一件事就是写 `running` 收据），再尽力补写初始收据
-    // （把"提交响应已回、轮询却短暂报 otcpJobNotFound"的窗口关到最小；
-    // 补写失败也无妨 —— worker 自己会写）。
+    // 顺序是修复的关键：先落初始收据与索引，再派生 worker。worker 一旦开跑就可能
+    // 很快写 succeeded/failed；反过来（先 spawn 后补 initial）会让终态被 running 覆盖。
+    if let Err(error) = write_initial_receipt(&config, &request) {
+        let _ = fs::remove_dir_all(config.job_dir(&job_id));
+        return Err(fault_for(&error));
+    }
+    if let Err(error) = write_clip_index(&config, &track_id, &clip_id, &job_id) {
+        let _ = fs::remove_dir_all(config.job_dir(&job_id));
+        return Err(fault_for(&error));
+    }
     let worker_config = config.clone();
     let worker_request = request.clone();
     if thread::Builder::new()
         .name(format!("otcp-{job_id}"))
         .spawn(move || {
+            // 槽跟着线程走：线程结束（含 panic）时 Drop 归还；并发计数不泄漏。
+            let _slot = slot;
             let driver = OtcpDriver::new(worker_config);
             let _ = driver.correct_clip(worker_request);
         })
         .is_err()
     {
         let _ = fs::remove_dir_all(config.job_dir(&job_id));
+        let _ = fs::remove_file(clip_index_path(&config, &track_id, &clip_id));
         return Err(fault_for(&OtcpError::with_data(
             "otcpServerGone",
             "派生校正线程失败（系统线程资源耗尽），任务未建".to_owned(),
             serde_json::json!({ "job_id": job_id }),
         )));
-    }
-    let _ = write_initial_receipt(&config, &request);
-    if let Err(error) = write_clip_index(&config, &track_id, &clip_id, &job_id) {
-        return Err(fault_for(&error));
     }
     Ok(Plan::OtcpSubmit {
         data: serde_json::json!({
@@ -1200,4 +1249,22 @@ fn plan_succeeded_job(
         asset_bytes,
         job_id: receipt.job_id.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_CONCURRENT_OTCP_JOBS, OtcpJobSlot};
+
+    #[test]
+    fn otcp_job_slots_are_bounded_at_four() {
+        let slots: Vec<OtcpJobSlot> = (0..MAX_CONCURRENT_OTCP_JOBS)
+            .map(|_| OtcpJobSlot::acquire().expect("前 4 个槽必须能拿到"))
+            .collect();
+        assert!(
+            OtcpJobSlot::acquire().is_none(),
+            "第 5 个任务必须被并发上限拒绝"
+        );
+        drop(slots);
+        assert!(OtcpJobSlot::acquire().is_some(), "槽归还后必须能再次提交");
+    }
 }
