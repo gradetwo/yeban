@@ -233,9 +233,10 @@ fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
 /// 鼓机效果层又加 `DrumFxFamilies` / `DrumFxPreset` / `drum_fx_device_specs`（`drum_preset.rs`，仅供
 /// `bridge.rs` 落逐风格 FX 器件配方），共 31 处 / 14 符号；2026-11-19
 /// 鼓机预置自动化落地（P5）又加 `DrumAutomationCurve` / `DrumAutomationLanding`
-/// （`bridge.rs` 落预置 automation 泳道），共 22 符号。
+/// （`bridge.rs` 落预置 automation 泳道）；T-FIX-42 出厂电平又加 `factory_drum_levels`
+/// （`bridge.rs` 读逐风格鼓总线电平），共 23 符号。
 /// `factory_drum_style` 与 `factory_drum_styles` 是两个不同符号，须各列一条。
-const DRUM_THEORY_SYMBOLS: [&str; 22] = [
+const DRUM_THEORY_SYMBOLS: [&str; 23] = [
     "ACOUSTIC_KIT_SFZ_PATH",
     "DrumAutomationCurve",
     "DrumAutomationLanding",
@@ -251,6 +252,7 @@ const DRUM_THEORY_SYMBOLS: [&str; 22] = [
     "drum_bus_device_specs",
     "drum_fx_device_specs",
     "drum_lane_device_specs",
+    "factory_drum_levels",
     "factory_drum_style",
     "factory_drum_style_ids",
     "factory_drum_styles",
