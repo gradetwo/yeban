@@ -2278,8 +2278,11 @@ mod tests {
     /// symlink 必须失败（Linux 上 `ELOOP`），从而 `open` 不会跟随到目标文件。
     /// 配合上面的 `a_symlinked_token_path_is_refused`（整条 load 路径拒绝 symlink），
     /// 覆盖"替换成 symlink → 被拒"这条判据。
+    /// 仅 Linux：其余 Unix 上 `O_NOFOLLOW_FLAG` 按设计是 0（见上），flag 为 0 时
+    /// `open` 会跟随 symlink、测试前提不成立；那些平台由 `load` 的
+    /// `symlink_metadata` 与 fd `(dev, ino)` 兜底。
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn nofollow_open_refuses_symlink_swap() {
         use std::os::unix::fs::{OpenOptionsExt as _, symlink};
 

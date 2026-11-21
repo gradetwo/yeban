@@ -9898,7 +9898,7 @@ mod tests {
             &mut domain,
             &call(
                 "yeban_reject_proposal",
-                serde_json::json!({"proposalId": proposal_id, "reason": "不用了"}),
+                serde_json::json!({"proposalId": proposal_id, "reason": "declined"}),
             ),
         )
         .expect("执行");
