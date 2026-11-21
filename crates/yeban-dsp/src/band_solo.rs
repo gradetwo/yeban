@@ -74,10 +74,30 @@ impl BandSoloFilter {
         }
     }
 
-    /// 构造期给定的采样率（Hz）。
+    /// 构造期或快照更新后的采样率（Hz）。
     #[must_use]
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
+    }
+
+    /// 更新采样率（快照边界调用）：非有限 / ≤ 0 时回退到 48 kHz；
+    /// 若已激活某频段，同步按新采样率重算带通系数，否则保持未激活。
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
+            sample_rate
+        } else {
+            DEFAULT_SAMPLE_RATE_HZ
+        };
+        if (self.sample_rate - sample_rate).abs() < f32::EPSILON {
+            return;
+        }
+        self.sample_rate = sample_rate;
+        if let Some(band) = self.band
+            && let (Some(fc), Some(q)) = (band_center_hz(band), band_q(band))
+        {
+            let fc = fc.clamp(1.0, self.sample_rate * 0.499);
+            self.filter.bandpass(self.sample_rate, fc, q);
+        }
     }
 
     /// 当前独奏的频段（`None` = 未激活，直通）。
@@ -289,5 +309,20 @@ mod tests {
                 "采样率 {bad} 下中心响应须有限"
             );
         }
+    }
+
+    #[test]
+    fn set_sample_rate_recomputes_active_band_coefficients() {
+        let mut filter = BandSoloFilter::new(48_000.0);
+        filter.set_band(Some(6)); // 5k..10k, fc ~ 7071 Hz
+        filter.set_sample_rate(96_000.0);
+        assert_eq!(filter.sample_rate(), 96_000.0);
+        let center = band_center_hz(6).expect("band 6 center");
+        assert!(
+            filter.response_db(center).abs() < 0.5,
+            "升到 96 kHz 后中心响应须仍接近 0 dB，实际 {}",
+            filter.response_db(center)
+        );
+        assert!(filter.response_db(center / 10.0) < -20.0);
     }
 }
