@@ -56,6 +56,13 @@ use crate::project::YebanProjectV1;
 pub const PROJECT_JSON_NAME: &str = "project.json";
 /// 提交树在容器内的固定条目名（规范 §5.3 原文）。
 pub const HISTORY_DAG_NAME: &str = "history.dag";
+/// 未合并提案段在容器内的固定条目名（T-FIX-43 扩展 §5.3 布局）。
+///
+/// 与 `history.dag` 同一条口径：本层只搬运**原始字节**，不解读内容 ——
+/// 提案记录的模式（字段、版本、只存未合并者）由 `yeban-mcp` 的提案领域层
+/// 拥有。条目**可选**：没有未合并提案的工程不写它，旧工程（无此条目）
+/// 读出为 `None`，按空提案集处理。
+pub const PROPOSALS_JSON_NAME: &str = "proposals.json";
 /// CAS 资产池在容器内的固定目录前缀（规范 §5.3 的 `assets/{sha256}`）。
 pub const ASSETS_DIR: &str = "assets";
 /// `assets/` 前缀（含分隔符），拼接与剥离都用它，避免两处字面量漂移。
@@ -188,6 +195,12 @@ pub struct ProjectArchive {
     /// `history.dag` 的原始字节（本层**不**解读：编解码口径见
     /// [`crate::commit::encode_history_dag`] / [`crate::commit::decode_history_dag`]）。
     pub history_dag: Vec<u8>,
+    /// `proposals.json` 的原始字节（本层**不**解读：编解码口径由 `yeban-mcp`
+    /// 的提案领域层拥有，见 [`PROPOSALS_JSON_NAME`]）。
+    ///
+    /// `None` = 容器里没有提案段（旧工程，或保存时没有未合并提案）⇒
+    /// 调用方按**空提案集**处理，⛔ 不报错。
+    pub proposals: Option<Vec<u8>>,
     /// `assets/{sha256}` 资产池，按哈希升序（= 容器内顺序 = `BTreeMap` 顺序）。
     pub assets: Vec<(AssetHash, Vec<u8>)>,
     /// 内嵌的用户预制（`presets/user/<ulid>.json`，一律 stored；设计稿 §5）。
@@ -644,6 +657,30 @@ pub fn write_project_container_with_presets_borrowed(
     assets: &[(&AssetHash, &[u8])],
     presets: &[(&str, &[u8])],
 ) -> Result<Vec<u8>, ContainerError> {
+    write_project_container_with_proposals_borrowed(project, history_dag, assets, presets, None)
+}
+
+/// 同 [`write_project_container_with_presets_borrowed`]，另加可选的未合并
+/// 提案段（[`PROPOSALS_JSON_NAME`]，T-FIX-43）。
+///
+/// `proposals = None` 时不写提案条目，产出字节与
+/// [`write_project_container_with_presets_borrowed`] **逐字节相同**（没有
+/// 未合并提案的工程不因本扩展而改变落盘形态）。`Some` 时条目紧随
+/// `history.dag` 写出，位置固定 ⇒ 同一内容两次写出字节完全相同
+/// （`ARCH-DET-001`）。提案段的内容口径由调用方（`yeban-mcp`）拥有，
+/// 本层只按原始字节搬运，不解读、不校验其内部结构（与 `history_dag`
+/// 同一条口径）；体积上限由读侧的 [`ContainerLimits`] 统一把守。
+///
+/// # Errors
+///
+/// 同 [`write_project_container_with_presets_borrowed`]。
+pub fn write_project_container_with_proposals_borrowed(
+    project: &YebanProjectV1,
+    history_dag: &[u8],
+    assets: &[(&AssetHash, &[u8])],
+    presets: &[(&str, &[u8])],
+    proposals: Option<&[u8]>,
+) -> Result<Vec<u8>, ContainerError> {
     let json =
         serde_json::to_vec(project).map_err(|error| ContainerError::ContainerSerialization {
             detail: error.to_string(),
@@ -665,9 +702,13 @@ pub fn write_project_container_with_presets_borrowed(
         names.push(asset_entry_name(hash));
     }
 
-    let mut entries: Vec<(&str, &[u8])> = Vec::with_capacity(2 + ordered.len() + presets.len());
+    let mut entries: Vec<(&str, &[u8])> =
+        Vec::with_capacity(2 + ordered.len() + presets.len() + usize::from(proposals.is_some()));
     entries.push((PROJECT_JSON_NAME, json.as_slice()));
     entries.push((HISTORY_DAG_NAME, history_dag));
+    if let Some(proposals) = proposals {
+        entries.push((PROPOSALS_JSON_NAME, proposals));
+    }
     for (index, &(_, data)) in ordered.iter().enumerate() {
         entries.push((names[index].as_str(), data));
     }
@@ -745,6 +786,7 @@ pub fn read_project_container(
     let archive = read_container(bytes, limits)?;
     let mut project_json: Option<&[u8]> = None;
     let mut history_dag: Option<Vec<u8>> = None;
+    let mut proposals: Option<Vec<u8>> = None;
     let mut assets: Vec<(AssetHash, Vec<u8>)> = Vec::new();
     let mut embedded_presets: Vec<(String, Vec<u8>)> = Vec::new();
     for entry in archive.entries() {
@@ -752,6 +794,9 @@ pub fn read_project_container(
             project_json = Some(&entry.data);
         } else if entry.name == HISTORY_DAG_NAME {
             history_dag = Some(entry.data.clone());
+        } else if entry.name == PROPOSALS_JSON_NAME {
+            // 可选段：原样搬运，本层不解读（见 `ProjectArchive::proposals`）。
+            proposals = Some(entry.data.clone());
         } else if let Some(digest) = entry.name.strip_prefix(ASSETS_PREFIX) {
             let hash = AssetHash::parse(digest).map_err(|_| ContainerError::InvalidAssetName {
                 name: entry.name.clone(),
@@ -797,6 +842,7 @@ pub fn read_project_container(
     Ok(ProjectArchive {
         project,
         history_dag: history_dag.ok_or(ContainerError::MissingHistoryDag)?,
+        proposals,
         assets,
         embedded_presets,
         load_notes,

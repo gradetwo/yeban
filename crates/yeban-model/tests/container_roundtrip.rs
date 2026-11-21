@@ -13,8 +13,10 @@ use std::process::Command;
 use proptest::prelude::*;
 use yeban_model::container::{
     ASSETS_DIR, ContainerEntry, ContainerError, ContainerLimits, HISTORY_DAG_NAME,
-    PROJECT_JSON_NAME, ProjectArchive, asset_entry_name, read_container, read_project_container,
-    write_container, write_project_container, write_project_container_borrowed,
+    PROJECT_JSON_NAME, PROPOSALS_JSON_NAME, ProjectArchive, asset_entry_name, read_container,
+    read_project_container, write_container, write_project_container,
+    write_project_container_borrowed, write_project_container_with_presets_borrowed,
+    write_project_container_with_proposals_borrowed,
 };
 use yeban_model::{AssetHash, YebanProjectV1};
 
@@ -189,10 +191,15 @@ fn project_container_round_trips() {
     let ProjectArchive {
         project: read_project,
         history_dag,
+        proposals: read_proposals,
         assets: read_assets,
         embedded_presets: read_presets,
         load_notes: read_notes,
     } = read_project_container(&bytes, &ContainerLimits::default()).expect("读回必须成功");
+    assert!(
+        read_proposals.is_none(),
+        "未写提案段的容器读回必须为 None（旧工程按空提案集处理）"
+    );
     assert!(read_presets.is_empty(), "无内嵌预制的容器读回必须为空");
     assert!(
         read_notes.is_empty(),
@@ -590,4 +597,83 @@ proptest! {
             read_project_container(&baseline, &ContainerLimits::default()).expect("读回必须成功");
         prop_assert_eq!(archive.assets, owned);
     }
+}
+
+/// 提案段往返（T-FIX-43）：写出 → 读回逐字节守恒，且条目名与位置确定
+/// （`project.json` / `history.dag` / `proposals.json` / `assets/…`）。
+#[test]
+fn project_container_with_proposals_round_trips() {
+    let (project, history, assets) = project_fixture();
+    let borrowed: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+    // 提案段在本层是不解读的原始字节：内容口径归 `yeban-mcp`。
+    let segment = br#"{"version":1,"proposals":[]}"#.to_vec();
+
+    let first = write_project_container_with_proposals_borrowed(
+        &project,
+        &history,
+        &borrowed,
+        &[],
+        Some(&segment),
+    )
+    .expect("写入必须成功");
+    let second = write_project_container_with_proposals_borrowed(
+        &project,
+        &history,
+        &borrowed,
+        &[],
+        Some(&segment),
+    )
+    .expect("写入必须成功");
+    assert_eq!(
+        first, second,
+        "同一输入两次写入必须逐字节相同 [ARCH-DET-001]"
+    );
+
+    let raw = read_container(&first, &ContainerLimits::default()).expect("读回必须成功");
+    let names: Vec<&str> = raw.names().collect();
+    assert_eq!(
+        names[0..3],
+        [PROJECT_JSON_NAME, HISTORY_DAG_NAME, PROPOSALS_JSON_NAME],
+        "提案段必须紧随 history.dag: {names:?}"
+    );
+
+    let archive =
+        read_project_container(&first, &ContainerLimits::default()).expect("读回必须成功");
+    assert_eq!(
+        archive.proposals.as_deref(),
+        Some(segment.as_slice()),
+        "提案段读回必须逐字节守恒"
+    );
+    assert_eq!(archive.project, project);
+    assert_eq!(archive.history_dag, history);
+}
+
+/// 无提案段时的兼容口径（T-FIX-43）：新写入口给 `None` ⇒ 与旧写入口逐字节
+/// 相同；读回 `proposals` 为 `None`（旧工程 / 无未合并提案 ⇒ 空提案集）。
+#[test]
+fn project_container_without_proposals_matches_the_legacy_bytes() {
+    let (project, history, assets) = project_fixture();
+    let borrowed: Vec<(&AssetHash, &[u8])> = assets
+        .iter()
+        .map(|(hash, data)| (hash, data.as_slice()))
+        .collect();
+
+    let legacy = write_project_container_with_presets_borrowed(&project, &history, &borrowed, &[])
+        .expect("写入必须成功");
+    let extended =
+        write_project_container_with_proposals_borrowed(&project, &history, &borrowed, &[], None)
+            .expect("写入必须成功");
+    assert_eq!(legacy, extended, "proposals=None 时不得改变落盘字节");
+
+    let raw = read_container(&extended, &ContainerLimits::default()).expect("读回必须成功");
+    assert!(
+        !raw.names().any(|name| name == PROPOSALS_JSON_NAME),
+        "无提案段时容器里不得出现 proposals.json"
+    );
+    let archive =
+        read_project_container(&extended, &ContainerLimits::default()).expect("读回必须成功");
+    assert!(archive.proposals.is_none());
 }
