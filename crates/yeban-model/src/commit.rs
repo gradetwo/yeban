@@ -31,7 +31,6 @@
 //! （`clippy::too_many_arguments` 是 `clippy::all` 的一部分）。
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -1029,15 +1028,88 @@ pub fn decode_history_dag(raw: &[u8]) -> Result<Option<CommitGraph>, HistoryDagE
 ///
 /// 真实的全量快照哈希由存储引擎在落盘时计算（`ARCH-OPS-002`）；
 /// 这里给出一个**确定性**的模型层替身，使快照策略本身可被测试与断言。
+///
+/// 哈希输入是**规范 JSON**，不是 `Debug` 文本：字段名按键字典序排列、数组保持
+/// 逻辑顺序、枚举以外层标签形式写出变体名、数值由 `serde_json` 的稳定格式输出。
+/// 因此同一逻辑载荷不会因为结构体字段声明顺序、`Debug` derive 输出或格式化空格
+/// 的漂移而改变哈希。域前缀 `yeban.snapshot.v2` 把**非空**新哈希与旧的 `Debug`
+/// 哈希明确隔开：旧值不会被误读成新值；空 ops 是唯一保留旧值的例外（根提交兼容）。
+///
+/// 兼容口径：已经持久化的非空 `snapshot_ref` 是**历史不透明引用**，不得按新算法
+/// 重算后与旧值比较；新提交写 v2 值，旧提交保留旧值。需要重算的迁移工具必须显式
+/// 按算法版本处理，不能把两代哈希混进同一张表。
 #[must_use]
 fn default_snapshot_hash(ops: &[StampedOp]) -> ContentHash {
-    let mut buffer = String::new();
+    // 空 ops 是根提交快照的固定场景；旧的 `Debug` 拼接对空输入恰好得到空串，
+    // 这里保留同一个值，避免仅因算法升级就改写所有既有 `history.dag` 的根提交字节
+    // （`history_dag_and_container_zip_bytes_are_frozen` 钉住这份跨版本契约）。
+    if ops.is_empty() {
+        return ContentHash::of_bytes(b"");
+    }
+    const DOMAIN: &str = "yeban.snapshot.v2";
+    let mut buffer = String::from(DOMAIN);
+    buffer.push('\0');
     for op in ops {
-        // 模型层的全部字段都可序列化，`write!` 到 `String` 不会失败；
-        // 即便失败也只是少写一段文本，摘要仍然是确定的。
-        let _ = write!(buffer, "{op:?}");
+        buffer.push_str(&canonical_snapshot_op(op));
+        buffer.push('\0');
     }
     ContentHash::of_bytes(buffer.as_bytes())
+}
+
+/// 把一条 `StampedOp` 写成规范 JSON 文本。
+///
+/// 合法载荷全部有限（模型层 `apply` / `validate` 会拒绝非有限浮点），因此正常
+/// 路径不会走到错误分支；对无法 JSON 化的非法草稿只写一个**稳定标记**，不 panic、
+/// 不引入 `Debug` 文本。
+fn canonical_snapshot_op(op: &StampedOp) -> String {
+    match serde_json::to_value(op) {
+        Ok(value) => canonical_json(&value),
+        Err(_) => format!("!unserializable:{}", op.op.name()),
+    }
+}
+
+/// 规范 JSON：对象键按键升序、递归处理；数组保持元素顺序。
+fn canonical_json(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => {
+            serde_json::to_string(text).expect("JSON string serialization cannot fail")
+        }
+        Value::Array(items) => {
+            let mut out = String::from("[");
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json(item));
+            }
+            out.push(']');
+            out
+        }
+        Value::Object(map) => {
+            // 不依赖 `serde_json::Map` 的底层实现：显式排序，`preserve_order`
+            // feature 打开时也仍然是字典序。
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            let mut out = String::from("{");
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(
+                    &serde_json::to_string(key).expect("JSON key serialization cannot fail"),
+                );
+                out.push(':');
+                out.push_str(&canonical_json(&map[key]));
+            }
+            out.push('}');
+            out
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1758,6 +1830,59 @@ mod tests {
         different.push(add_section_op(13));
         assert_ne!(first, default_snapshot_hash(&different));
         assert_eq!(first.as_str().len(), 64);
+    }
+
+    #[test]
+    fn empty_snapshot_keeps_the_legacy_root_hash() {
+        // 根提交快照的旧 Debug 输入恰好是空串；升级到规范 JSON 后必须继续逐位
+        // 保持这个值，否则所有既有 history.dag 的根快照引用都会无意义漂移。
+        assert_eq!(
+            default_snapshot_hash(&[]),
+            ContentHash::of_bytes(b""),
+            "空 ops 的根快照哈希必须保持旧值"
+        );
+    }
+
+    #[test]
+    fn canonical_json_sorts_object_keys_at_every_depth() {
+        let left: serde_json::Value =
+            serde_json::from_str(r#"{"z":1,"a":{"m":2,"b":3},"arr":[{"y":4,"x":5}]}"#)
+                .expect("left json");
+        let right: serde_json::Value =
+            serde_json::from_str(r#"{"arr":[{"x":5,"y":4}],"a":{"b":3,"m":2},"z":1}"#)
+                .expect("right json");
+        assert_eq!(
+            canonical_json(&left),
+            r#"{"a":{"b":3,"m":2},"arr":[{"x":5,"y":4}],"z":1}"#,
+            "对象键必须按键升序、递归规范化，数组顺序保持"
+        );
+        assert_eq!(
+            canonical_json(&left),
+            canonical_json(&right),
+            "同一逻辑 JSON 的键重排不得改变规范文本"
+        );
+    }
+
+    #[test]
+    fn canonical_json_pins_enum_variant_names() {
+        let add = serde_json::json!({"AddSection": {"id": "same-payload"}});
+        let delete = serde_json::json!({"DeleteSection": {"id": "same-payload"}});
+        assert_ne!(
+            canonical_json(&add),
+            canonical_json(&delete),
+            "枚举变体名必须进入哈希输入，不能只看载荷"
+        );
+    }
+
+    #[test]
+    fn default_snapshot_hash_uses_the_v2_domain_not_legacy_debug_text() {
+        let op = add_section_op(11);
+        let legacy = ContentHash::of_bytes(format!("{op:?}").as_bytes());
+        assert_ne!(
+            default_snapshot_hash(&[op]),
+            legacy,
+            "新算法必须与旧的 Debug 哈希明确分离"
+        );
     }
 
     /// 一个有形状的图谱：根提交 + 一次追加 + 一条匿名分支。
