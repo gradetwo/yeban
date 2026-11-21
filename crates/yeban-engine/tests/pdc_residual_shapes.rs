@@ -479,3 +479,85 @@ fn mixed_track_with_incoming_lands_on_node_line() {
         "S3 全程最大偏差 {max_err} 必须 ≤ 1e-5（交错喂线会给出 1e-1 级偏差）"
     );
 }
+
+#[test]
+fn processing_bus_with_incoming_and_own_notes_feeds_pdc_once() {
+    let feeder_id = EntityId::new();
+    let mix_bus_id = EntityId::new();
+    let late_id = EntityId::new();
+    let delay_bus_id = EntityId::new();
+    let master_id = EntityId::new();
+
+    let build = |feeder_edge: bool, feeder_notes: bool, bus_notes: bool, late_notes: bool| {
+        let feeder = note_track_v(
+            feeder_id,
+            "Feeder",
+            FEEDER_START_TICK,
+            60,
+            feeder_notes,
+            QUIET,
+        );
+        let (mut mix_bus, mix_clip) = note_track_v(mix_bus_id, "MixBus", 0, 72, bus_notes, QUIET);
+        mix_bus.devices.push(DeviceDefinition {
+            id: EntityId::new(),
+            name: "BusStrip".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![yeban_model::ParameterValue {
+                name: "eq_low_gain".to_owned(),
+                value: 6.0,
+                unit: None,
+            }],
+            latency_samples: 0,
+            plugin: None,
+        });
+        let late = note_track(late_id, "Late", 0, 48, late_notes);
+        let delay_bus = (aux_bus(delay_bus_id, "DelayBus", 64), None);
+        let mut edges = vec![
+            (mix_bus_id, master_id),
+            (late_id, delay_bus_id),
+            (delay_bus_id, master_id),
+        ];
+        if feeder_edge {
+            edges.push((feeder_id, mix_bus_id));
+        }
+        let graph = routing(
+            vec![feeder_id, mix_bus_id, late_id, delay_bus_id, master_id],
+            &edges,
+        );
+        assemble(
+            vec![feeder, (mix_bus, mix_clip), late, delay_bus],
+            master_id,
+            graph,
+        )
+    };
+
+    let mixed = render(&build(true, true, true, true), QUANTA);
+    let own_ref = render(&build(false, false, true, true), QUANTA);
+    let feed_ref = render(&build(true, true, false, false), QUANTA);
+
+    assert_eq!(mixed.stats.pdc_unarmed_nodes, 0, "节点线必须进池");
+    assert!(
+        mixed.stats.insert_strip_frames > 0,
+        "处理型总线插入链必须真的处理样本"
+    );
+
+    let window = (FEEDER_START_TICK * SAMPLES_PER_TICK) as usize;
+    for index in 0..window {
+        assert_eq!(
+            mixed.left[index].to_bits(),
+            own_ref.left[index].to_bits(),
+            "S4 第 {index} 帧：feeder 静音窗内必须与自有参考逐位相同（双喂 PDC 会移位）"
+        );
+    }
+
+    let mut max_err = 0.0f32;
+    for index in 0..mixed.frames() {
+        let expected = own_ref.left[index] + feed_ref.left[index];
+        max_err = max_err.max((mixed.left[index] - expected).abs());
+    }
+    assert!(
+        max_err <= 1e-4,
+        "S4 全程最大偏差 {max_err} 必须 ≤ 1e-4（双喂 PDC 会给出 ~1e-1 级偏差）"
+    );
+}

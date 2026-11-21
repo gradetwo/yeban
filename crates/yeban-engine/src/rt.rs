@@ -2744,12 +2744,10 @@ fn render_branch(
         // 若两边都施加就会补偿两次。代价如实登记：这一档下本轨的节点级延迟线
         // 本量子不推进（与总线转发段 stage 26 慢路同一条边界）。
         //
-        // ⭐ **残余两形状修复再加一条跳过**：`defer_own_to_forward` 的节点
-        // （有入边、非处理型总线）在这里**也不喂线** —— 它的线在 3a⁗ 由
-        // 汇合后的完整输出喂**唯一一次**（节点级与逐边两档同理：逐边档的
-        // 边线在逐轨段的 `route_panned_or_per_edge!` 里喂，同样随路由一起
-        // 推迟）。在这里先喂自有内容、3a⁗ 再喂收入，就是两形状的病根。
-        if track_edges_uniform && !defer_own_to_forward {
+        // ⭐ **残余两形状修复再加一条跳过**：`defer_own_to_forward`（有入边、非处理型
+        // 总线）与 `process_bus_inserts`（有入边、处理型总线，已在 3a'''' 前汇总并
+        // 并在 3a'''' 过完插入链后统一施加 PDC）在这里都**不喂线** —— 补偿线每量子只喂一次。
+        if track_edges_uniform && !defer_own_to_forward && !process_bus_inserts {
             if pair_track {
                 // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
                 share.pdc.apply_pair(
