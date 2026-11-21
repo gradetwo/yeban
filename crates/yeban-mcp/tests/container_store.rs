@@ -1265,3 +1265,85 @@ fn propose_and_merge(dispatcher: &mut Dispatcher, auth: &str, track: &str) {
     );
     assert_eq!(merged["status"], "success", "{merged}");
 }
+
+// ---------------------------------------------------------------------------
+// 判据（T-FIX-41）：空片段可建、可存、可重开
+// ---------------------------------------------------------------------------
+
+/// `create: true` 不带任何 `add` 必须能建**空片段**，并且存盘 → 重开后仍在池里。
+///
+/// 空片段不是一次性的中间对象：它是 `yeban_import_midi` 往"还没有摆放的音轨"导
+/// MIDI 时的落点。旧行为在写入口就把它拒了（"空片段不是可用材料"），于是导入
+/// 那条路只能先造一个**带音符**的片段，与"目标片段必须为空"直接冲突。
+#[test]
+fn empty_clip_can_be_created_saved_and_reopened() {
+    let scratch = Scratch::new("empty-clip");
+    let (mut dispatcher, auth) = dispatcher();
+    let (path, _opened) = open_container(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let clip_id = yeban_model::EntityId::new().to_canonical_string();
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track,
+            "clipId": clip_id,
+            "create": true,
+            "clipName": "Empty",
+            "ops": [],
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal, "commitMessage": "建空片段" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    assert!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("工程")
+            .clip_pool
+            .keys()
+            .any(|id| id.to_canonical_string() == clip_id),
+        "空片段必须真的进池"
+    );
+
+    let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    assert_eq!(saved["status"], "success", "{saved}");
+    call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    let reopened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let entry = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.id.to_canonical_string() == clip_id)
+        .expect("重开后空片段必须还在池里");
+    match &entry.content {
+        yeban_model::ClipContent::Midi { notes } => {
+            assert!(notes.is_empty(), "重开后仍应是空片段");
+        }
+        yeban_model::ClipContent::Audio { .. } => panic!("必须是 MIDI 片段"),
+    }
+}

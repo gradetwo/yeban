@@ -1091,3 +1091,75 @@ fn test_import_midi_reports_empty_and_non_utf8_lyric_buckets() {
 
     let _ = fs::remove_file(smf_path);
 }
+
+/// 回归（T-FIX-41）：目标轨**一条摆放都没有**时，导入必须自建落点，而不是
+/// 死在 `NoDestination("音轨 x 没有任何摆放")`。
+///
+/// 旧行为下"往新轨导 MIDI"只能先手工建一个**带音符**的片段当落点，而导入又要求
+/// 目标片段是空的 —— 这条路径自相矛盾，等于新轨永远导不进 MIDI。
+#[test]
+fn import_midi_creates_a_placement_on_a_track_that_has_none() {
+    let smf_path = create_test_smf_file();
+    let mut project = project_with_notes(0);
+    let track_id = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("非 master 音轨");
+    project
+        .tracks
+        .get_mut(&track_id)
+        .expect("音轨")
+        .clips
+        .clear();
+    let mut dispatcher = dispatcher_with_project(project);
+
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "trackId": track_id.to_canonical_string(),
+        }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert!(
+        data["noteCount"].as_u64().unwrap_or(0) > 0,
+        "导入必须真的落音符: {data}"
+    );
+    let imported_clip = data["clipId"].as_str().expect("clipId").to_owned();
+
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let placements: Vec<&yeban_model::ClipPlacement> = project
+        .tracks
+        .get(&track_id)
+        .expect("音轨")
+        .clips
+        .values()
+        .collect();
+    assert_eq!(
+        placements.len(),
+        1,
+        "必须自建且只自建一条摆放: {placements:?}"
+    );
+    let placement = placements[0];
+    assert_eq!(
+        placement.clip_id.to_canonical_string(),
+        imported_clip,
+        "摆放必须指向本次导入的片段"
+    );
+    assert!(
+        placement.duration_ticks > 0,
+        "摆放时值必须非零（否则渲染按零长裁剪）"
+    );
+    assert!(
+        project
+            .clip_pool
+            .keys()
+            .any(|id| id.to_canonical_string() == imported_clip),
+        "新片段必须真的进池"
+    );
+
+    let _ = fs::remove_file(smf_path);
+}

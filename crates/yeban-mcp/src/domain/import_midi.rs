@@ -30,6 +30,7 @@ use crate::tools::{ErrorCode, ToolResponse};
 use crate::undo_session::CommitRequest;
 
 use super::error::{self, Fault};
+use super::ids::deterministic_id;
 
 /// 多轨拆分时新建音轨的描述信息。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -141,17 +142,74 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         ));
     }
 
+    // ⭐ T-FIX-41：目标轨**一条摆放都没有**（新轨的常态）时自建落点。
+    //
+    // 旧行为是 `destination` 直接报 `NoDestination("音轨 x 没有任何摆放")`，于是
+    // "往新轨导 MIDI"这条最自然的用法永远走不通 —— 必须先手工造一个**带音符**的
+    // 片段当落点，而那个片段又必须是空的才能导入（自相矛盾）。
+    //
+    // 这里先在工程副本里插入一条**空 MIDI 片段**并把它的身份显式交给 `destination`，
+    // 摆放本身等读完文件、知道内容长度之后再补（时值必须覆盖整段，短了会裁剪音符）。
+    // 两条 op 都前置到本批 ⇒ 与音符同一次原子提交、一次撤销。
+    let resolved_track = match track_id_opt {
+        Some(explicit) => Some(explicit),
+        None => project
+            .tracks
+            .keys()
+            .find(|id| **id != project.master_bus_track_id)
+            .copied(),
+    };
+    let mut auto_ops: Vec<Op> = Vec::new();
+    let mut patched: Option<YebanProjectV1> = None;
+    let mut auto_placement: Option<(EntityId, EntityId, EntityId)> = None;
+    let mut auto_clip_id: Option<EntityId> = None;
+    if clip_id_opt.is_none()
+        && let Some(auto_track) = resolved_track
+        && project
+            .tracks
+            .get(&auto_track)
+            .is_some_and(|track| track.clips.is_empty())
+    {
+        let clip_id = deterministic_id(&format!(
+            "import-midi-clip:{}:{}",
+            auto_track.to_canonical_string(),
+            path.to_string_lossy()
+        ));
+        let placement_id = deterministic_id(&super::notes::placement_label(
+            &clip_id.to_canonical_string(),
+            &auto_track.to_canonical_string(),
+            0,
+        ));
+        let entry = yeban_model::ClipPoolEntry {
+            id: clip_id,
+            name: path.file_stem().map_or_else(
+                || "Imported MIDI".to_owned(),
+                |stem| stem.to_string_lossy().into_owned(),
+            ),
+            content: ClipContent::Midi {
+                notes: std::collections::BTreeMap::new(),
+            },
+        };
+        let mut project_clone = project.clone();
+        project_clone.clip_pool.insert(clip_id, entry.clone());
+        auto_ops.push(Op::AddClip { clip: entry });
+        auto_clip_id = Some(clip_id);
+        auto_placement = Some((auto_track, clip_id, placement_id));
+        patched = Some(project_clone);
+    }
+    let project_view: &YebanProjectV1 = patched.as_ref().unwrap_or(project);
+
     let (track_id, clip_id) = destination(
-        project,
+        project_view,
         &MidiImportOptions {
             track_id: track_id_opt,
-            clip_id: clip_id_opt,
+            clip_id: clip_id_opt.or(auto_clip_id),
             split_tracks,
         },
     )
     .map_err(map_import_error)?;
 
-    let clip = project.clip_pool.get(&clip_id).ok_or_else(|| {
+    let clip = project_view.clip_pool.get(&clip_id).ok_or_else(|| {
         Fault::domain(
             ErrorCode::ClipNotFound,
             format!("clip '{clip_id}' not found in clip pool"),
@@ -192,8 +250,34 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         )
     })?;
 
-    let plan = plan_midi_import(
-        project,
+    // 自建摆放的时值必须覆盖整段内容：短了渲染会按摆放裁剪导入的音符。
+    if let Some((auto_track, auto_clip, placement_id)) = auto_placement {
+        let span_ticks = parsed
+            .notes
+            .iter()
+            .map(|note| note.end_tick)
+            .max()
+            .unwrap_or(0);
+        let source_ppq = u64::from(parsed.ppq.max(1));
+        let span_in_model = span_ticks
+            .saturating_mul(MODEL_PPQ)
+            .saturating_add(source_ppq - 1)
+            / source_ppq;
+        let placement = yeban_model::ClipPlacement {
+            id: placement_id,
+            clip_id: auto_clip,
+            start_tick: 0,
+            duration_ticks: span_in_model.max(MODEL_PPQ),
+            ..yeban_model::ClipPlacement::default()
+        };
+        auto_ops.push(Op::AddClipPlacement {
+            track_id: auto_track,
+            placement,
+        });
+    }
+
+    let mut plan = plan_midi_import(
+        project_view,
         &parsed,
         &MidiImportOptions {
             track_id: Some(track_id),
@@ -202,6 +286,12 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         },
     )
     .map_err(map_import_error)?;
+
+    // 自建的落点必须排在音符之前：`AddNote` 依赖片段已经在池子里。
+    if !auto_ops.is_empty() {
+        auto_ops.append(&mut plan.ops);
+        plan.ops = auto_ops;
+    }
 
     let mut adopted_tempo_bpm = None;
     let mut adopted_time_signature = None;

@@ -3844,16 +3844,22 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // 与三个路由级形态、段落形态、场景形态同一纪律（它们的寻址也在操作对象里，
     // 但**仍然**要求顶层两个身份合法 —— 那是本工具既有的入口口径，本票不放松）。
     //
-    // ⚠ 空 `ops` 的**唯一**合法情形是"只摆放"（见下面那条口径），因此这里先放行空的那
-    // 一格，再对非空数组调 `parse_ops` —— 后者自己的空数组守卫**没有**放松。
-    let placement_only = call.arguments.get(notes::PLACEMENT_FIELD).is_some()
-        && raw_ops.as_array().is_some_and(|items| items.is_empty());
-    let note_ops = if placement_only {
+    // ⚠ 空 `ops` 的**合法**情形只有两种（T-FIX-41 把第二种接上）：
+    // ① 只摆放（"这次调用做什么"由 `placement` 承载）；
+    // ② `create: true` 建**空片段**（导入 MIDI 需要一个落点，而新轨可能一条摆放都没有）。
+    // 其余情形仍走 `parse_ops` 自己的空数组守卫 —— "空操作不是一次编辑请求"没有放松。
+    let creating = arg_bool(call, notes::CREATE_PARAM, false);
+    let empty_ops_allowed = call
+        .arguments
+        .get("ops")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.is_empty())
+        && (call.arguments.get(notes::PLACEMENT_FIELD).is_some() || creating);
+    let note_ops = if empty_ops_allowed {
         Vec::new()
     } else {
         notes::parse_ops(raw_ops)?
     };
-    let creating = arg_bool(call, notes::CREATE_PARAM, false);
     let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
     // ⭐ 占位 envelope 身份的两条路: ① 批内**全是**自带寻址形态（`removeTrack` / 设备
     // 形态, 逐字节旧行为）; ② 批内**每条**要么自带寻址、要么自带 `ops[].trackId`

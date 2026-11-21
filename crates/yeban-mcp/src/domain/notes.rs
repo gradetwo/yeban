@@ -12316,15 +12316,11 @@ pub fn compile_create(
             }
         }
     }
-    // `parse_ops` 已经拒绝空数组, 且上面只放行 `add` ⇒ `notes` 至少一条。
-    // 仍显式断言: "空 MIDI 片段"不是可用材料 (`section_build` 的 `usable_materials`),
-    // 建出它等于把 needs-8 的死角换一个地方。
-    if notes.is_empty() {
-        return Err(Fault::domain(
-            ErrorCode::InvalidParameterRange,
-            "`create: true` 至少需要一个 `add` 音符: 空片段不是可用材料",
-        ));
-    }
+    // ⭐ T-FIX-41：**空片段合法**。`create: true` 不带 `add` ⇒ 建一条空 MIDI 片段，
+    // 它正是 `yeban_import_midi` 缺的那个"新轨落点"：没有它，往一条还没摆放的音轨
+    // 导 MIDI 永远只能先手工造一个带音符的片段。
+    // 旧的"空片段不是可用材料"担忧（`section_build` 的 `usable_materials`）由配器侧
+    // 自己过滤空材料解决 —— 在**写入口**上禁掉空片段，代价是整条导入路径不可达。
     Ok(vec![Op::AddClip {
         clip: ClipPoolEntry {
             id: *clip_id,
@@ -21164,22 +21160,33 @@ mod tests {
         assert_eq!(value["error"]["data"]["reason"], "duplicateNoteId");
     }
 
-    /// 空音符集不是可用材料 —— 直接调 [`compile_create`]（**绕过** `parse_ops` 的
-    /// "空数组不是一次编辑请求"那条规则）才能碰到这个分支。
+    /// 空音符集**合法**（T-FIX-41）：`create: true` 不带 `add` 建一条空 MIDI 片段，
+    /// 它正是 `yeban_import_midi` 往"还没有摆放的音轨"导 MIDI 时的落点。
     ///
-    /// 为什么值得一条判据：`parse_ops` 今天恰好拦住了空数组，于是这个守卫从工具面
-    /// **不可达**；不可达的守卫没有任何判据能证明它还在（注入证明：删掉它，全绿）。
-    /// 这条判据让它可达一次，代价是一行 `Vec::new()`。
+    /// 这条判据直接调 [`compile_create`]（**绕过** `parse_ops` 的空数组守卫），
+    /// 钉住"空片段在编译器这一层确实被构造出来"，而不是被静默降级成空 ops。
+    /// 旧判据（`create_refuses_an_empty_note_set`）已经反转：那时在写入口禁掉空片段，
+    /// 代价是整条"新轨导入"路径不可达。
     #[test]
-    fn create_refuses_an_empty_note_set() {
+    fn create_accepts_an_empty_note_set() {
         let project = project_without_midi_clips();
         let (track_id, _) = lead_clip(&filled_project());
         let clip_id = deterministic_id("clip:needs-8:empty");
-        let fault = compile_create(&project, &track_id, &clip_id, "Seed", &[])
-            .expect_err("空音符集必须被拒");
-        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
-        let value = fault.into_result().expect("带内");
-        assert_eq!(value["error"]["code"], "INVALID_PARAMETER_RANGE");
+        let ops =
+            compile_create(&project, &track_id, &clip_id, "Seed", &[]).expect("空音符集必须被允许");
+        assert_eq!(ops.len(), 1, "空片段必须折成恰好一条 `AddClip`");
+        match &ops[0] {
+            Op::AddClip { clip } => {
+                assert_eq!(clip.id, clip_id);
+                match &clip.content {
+                    ClipContent::Midi { notes } => {
+                        assert!(notes.is_empty(), "建出来的必须是空片段");
+                    }
+                    ClipContent::Audio { .. } => panic!("必须是 MIDI 片段"),
+                }
+            }
+            other => panic!("必须是一条 `AddClip`，实际 {other:?}"),
+        }
     }
 
     /// 发声数上限在**材料创建**这条路上也有牙：`check_polyphony` 先施加 `ops`
