@@ -2904,6 +2904,7 @@ pub fn drum_gen_ops(
             lane_violations.join("; ")
         ));
     }
+    let levels = yeban_theory::factory_drum_levels(preset);
     let mut ops: Vec<Op> = Vec::new();
     let (track_id, has_instrument) = match target {
         Some(track) => {
@@ -2930,7 +2931,7 @@ pub fn drum_gen_ops(
                     id: track_id,
                     name: format!("{} Drums", preset.name),
                     kind: TrackKind::Midi,
-                    volume_db: -6.0,
+                    volume_db: levels.track_volume_db,
                     ..TrackV3::default()
                 },
             });
@@ -2950,7 +2951,7 @@ pub fn drum_gen_ops(
                             id: bus_id,
                             name: format!("{} Drum Bus", preset.name),
                             kind: TrackKind::AuxReturn,
-                            volume_db: 0.0,
+                            volume_db: levels.bus_volume_db,
                             ..TrackV3::default()
                         },
                     });
@@ -10647,7 +10648,7 @@ mod tests {
             Op::AddTrack { track } => {
                 assert_eq!(track.name, "Trap Drum Bus");
                 assert_eq!(track.kind, TrackKind::AuxReturn);
-                assert_eq!(track.volume_db, 0.0);
+                assert_eq!(track.volume_db, -6.5, "trap 鼓总线出厂电平（留足峰值余量）");
             }
             other => panic!("unexpected op: {other:?}"),
         }

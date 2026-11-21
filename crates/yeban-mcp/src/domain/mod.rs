@@ -4498,6 +4498,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         "{}:{style}:{seed}:{complexity}:{intensity}:{swing_resolved}:{bars}:{fill}:{start_tick}",
         requested_track.map_or_else(|| "new".to_owned(), |id| id.to_canonical_string()),
     );
+    let levels = yeban_theory::factory_drum_levels(&preset);
     let mut ops: Vec<Op> = Vec::new();
     let mut bus_note = "无鼓总线（预置未带 bus 段）".to_owned();
     let (track_id, existing_track) = match requested_track {
@@ -4517,7 +4518,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     id,
                     name: format!("{} Drums", preset.name),
                     kind: yeban_model::TrackKind::Midi,
-                    volume_db: -6.0,
+                    volume_db: levels.track_volume_db,
                     ..TrackV3::default()
                 },
             });
@@ -4533,7 +4534,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                             id: bus_id,
                             name: format!("{} Drum Bus", preset.name),
                             kind: yeban_model::TrackKind::AuxReturn,
-                            volume_db: 0.0,
+                            volume_db: levels.bus_volume_db,
                             ..TrackV3::default()
                         },
                     });

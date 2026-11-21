@@ -181,12 +181,13 @@ pub use drum_preset::{
     ACOUSTIC_KIT_KEYS, ACOUSTIC_KIT_SFZ_PATH, DRUM_STYLE_FORMAT, DRUM_STYLE_FORMAT_VERSION,
     DrumAutomationCurve, DrumAutomationLanding, DrumAutomationPoint, DrumAutomationPreset,
     DrumAutomationTarget, DrumBusClipperPreset, DrumBusGluePreset, DrumBusPreset, DrumCompPreset,
-    DrumDelayPreset, DrumEqPreset, DrumFxDeviceSpec, DrumFxFamilies, DrumFxPreset, DrumKitSetup,
-    DrumLaneChainPreset, DrumLaneLayer, DrumLanePreset, DrumLaneSidechainPreset, DrumPresetError,
-    DrumReverbPreset, DrumStep, DrumStylePreset, DrumTapePreset, KitFamily, MAX_RATCHET,
-    STEPS_PER_BAR, choke_groups, drum_bus_device_specs, drum_fx_device_specs, drum_fx_param_domain,
-    drum_lane_device_specs, factory_drum_style, factory_drum_style_ids, factory_drum_styles,
-    kit_setup, lane_chain_generation_violations, uncovered_pattern_keys,
+    DrumDelayPreset, DrumEqPreset, DrumFactoryLevels, DrumFxDeviceSpec, DrumFxFamilies,
+    DrumFxPreset, DrumKitSetup, DrumLaneChainPreset, DrumLaneLayer, DrumLanePreset,
+    DrumLaneSidechainPreset, DrumPresetError, DrumReverbPreset, DrumStep, DrumStylePreset,
+    DrumTapePreset, KitFamily, MAX_RATCHET, STEPS_PER_BAR, choke_groups, drum_bus_device_specs,
+    drum_fx_device_specs, drum_fx_param_domain, drum_lane_device_specs, factory_drum_levels,
+    factory_drum_style, factory_drum_style_ids, factory_drum_styles, kit_setup,
+    lane_chain_generation_violations, uncovered_pattern_keys,
 };
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};

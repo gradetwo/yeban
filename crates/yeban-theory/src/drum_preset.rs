@@ -2455,6 +2455,59 @@ pub enum DrumKitSetup {
     },
 }
 
+/// 新建鼓轨 / 鼓总线的**出厂电平**（只动电平，不动 pattern 与音色参数）。
+///
+/// 2026-11-21 `T-FIX-42`：默认 `-6 dB` 鼓轨 + `0 dB` 鼓总线时，电子族多风格
+/// 原始渲染真峰值越过 0 dBFS（phonk/lofi 还削波）。这里按风格把鼓总线出厂
+/// 电平下调，给末级 Soft Clipper 之前的信号留出确定余量；鼓轨仍保持既有的
+/// `-6 dB`，用户后续可自行在调音台改。原声族 / 用户自写预置保持旧值
+/// （`0.0 dB`），逐位不变。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumFactoryLevels {
+    /// 新建鼓轨的音量（dB）。
+    pub track_volume_db: f32,
+    /// 新建鼓总线（`AuxReturn`）的音量（dB）。
+    pub bus_volume_db: f32,
+}
+
+impl Default for DrumFactoryLevels {
+    fn default() -> Self {
+        Self {
+            track_volume_db: -6.0,
+            bus_volume_db: 0.0,
+        }
+    }
+}
+
+/// 一份预置对应的出厂电平（见 [`DrumFactoryLevels`]）。
+///
+/// 电子族按风格给不同总线余量：实测（48 kHz、24-bit 量化前浮点母带）
+/// 在旧的 `-6 / 0 dB` 下 phonk +1.05、lofi +0.93、trap +0.34、
+/// hiphop +0.49 dBFS，故按各自峰值再留约 5–6 dB 余量。原声族总线沿用
+/// `0 dB`（其峰值由采样音源决定，不在本任务口径内）。
+#[must_use]
+pub fn factory_drum_levels(preset: &DrumStylePreset) -> DrumFactoryLevels {
+    if preset.kit_family != KitFamily::Electronic {
+        return DrumFactoryLevels::default();
+    }
+    let bus_volume_db = match preset.id.as_str() {
+        "trap" => -6.5,
+        "drill" => -6.0,
+        "phonk" => -7.0,
+        "lofi" => -7.0,
+        "house" => -6.0,
+        "techno" => -6.0,
+        "edm" => -6.5,
+        "hiphop" => -6.5,
+        // 未知 id 只来自用户自写预置：保持旧值，不替用户改电平。
+        _ => 0.0,
+    };
+    DrumFactoryLevels {
+        track_volume_db: -6.0,
+        bus_volume_db,
+    }
+}
+
 /// 默认鼓组的装配（按风格族分工）：
 /// 原声族走 SFZ 采样；电子族走 DSP 合成鼓机。GM 键位两边统一
 /// （kick 36 / snare 38 / clap 39 / closed hat 42 / open hat 46），
@@ -4068,6 +4121,32 @@ mod tests {
         );
         let preset = DrumStylePreset::from_json(&windowed_out).expect("valid layered preset");
         assert!(!uncovered_pattern_keys(&preset).contains(&("kick".to_owned(), 60)));
+    }
+
+    #[test]
+    fn electronic_factory_styles_trim_the_drum_bus_for_headroom() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let mut electronic = 0;
+        for style in &styles {
+            let levels = factory_drum_levels(style);
+            assert_eq!(levels.track_volume_db, -6.0, "{} 鼓轨电平", style.id);
+            if style.kit_family == KitFamily::Electronic {
+                electronic += 1;
+                assert!(
+                    levels.bus_volume_db <= -6.0,
+                    "{} 鼓总线至少 −6 dB 才能给 0 dBFS 留余量，实际 {}",
+                    style.id,
+                    levels.bus_volume_db
+                );
+            } else {
+                assert_eq!(
+                    levels.bus_volume_db, 0.0,
+                    "{} 是原声族，总线电平必须保持旧值",
+                    style.id
+                );
+            }
+        }
+        assert_eq!(electronic, 8, "电子族出厂风格数");
     }
 
     #[test]
