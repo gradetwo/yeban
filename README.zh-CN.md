@@ -85,7 +85,7 @@
 - **工程自带一切**：用到的采样与 SFZ 定义内嵌进 `.yeban` 容器；渲染先查容器内嵌、再查磁盘；旧工程逐字节不动。
 - **原生预制**：4 个 MCP 工具（`yeban_list_presets`、`yeban_apply_preset`、`yeban_save_preset`、`yeban_preset_bypass`）与 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理，不是干声。
 - **歌声合成（经外部 SVS 服务）**：`synthesize_singing` 提交谱子、`svs_job` 取回结果——夜半是 MCP 客户端，合成在伶人 SVS 服务侧进行。
-- **44 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
+- **46 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
 
 ## 路线图
 
@@ -214,7 +214,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 第一次提交前请读 [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md)；在笔记本上请用本地门禁而不是全量构建：
 
 ```bash
-bash scripts/gates/run-gates.sh light        # fmt + 14 条机械红线守卫 + 文档 + 许可清单
+bash scripts/gates/run-gates.sh light        # fmt + 21 条机械红线守卫 + 文档 + 许可清单
 bash scripts/dev/cargo-local.sh test -p yeban-model   # 刻意拒绝 --workspace（本机不跑重活）
 ```
 
@@ -284,7 +284,7 @@ yeban/
 ├── scripts/
 │   ├── dev/                        # cargo-local.sh / worktree.sh / ci-verdict.sh / changed-crates.py
 │   ├── gates/                      # run-gates.sh / validate_schemas.py
-│   ├── guards/                     # policy_check.py — 14 条机械红线守卫
+│   ├── guards/                     # policy_check.py — 21 条机械红线守卫
 │   └── brand/                      # render-logo.sh
 ├── docs/
 │   ├── YEBAN_*.md                  # Normative 规范 + 建议参考设计（UI/UX 已降级）
@@ -298,13 +298,19 @@ yeban/
 ├── .github/workflows/              # ci.yml(自动) / gates-manual.yml(手动) / site-deploy.yml
 └── crates/
     ├── yeban-app/                  # Slint GUI 主程序与桌面窗口宿主 (内嵌 yeban-mcp HTTP 服务)
+    ├── yeban-tui/                  # 终端界面 (ratatui + crossterm)，共用 yeban-app 引擎宿主与工程核心
     ├── yeban-model/                # [引擎核心] 960 PPQ 数据模型、ULID、BTreeMap AST、Op 日志 (零 GUI 依赖)
     ├── yeban-theory/               # [引擎核心] 159 种流派规则、和弦走向展开与声部连接算法 (零 GUI 依赖)
     ├── yeban-dsp/                  # [引擎核心] 纯数学 DSP 库 (真峰值限制器, SSL 压缩, 通道条, 808/909) (零 GUI 依赖)
     ├── yeban-engine/               # [引擎核心] cpal 声卡直驱、内部 PDC、退役回收队列与无锁 SPSC (零 GUI 依赖)
+    ├── yeban-midi/                 # [引擎核心] 标准 MIDI 文件 (SMF 1) 编解码、VLQ 与只读 MusicXML/MXL 导入 (零 GUI 依赖)
+    ├── yeban-midi-io/              # 物理 MIDI 输入接入（midir → 无锁 SPSC → 960 PPQ，midi-input 特性）
+    ├── yeban-record/               # 无锁录音采集环与后台 WAV 落盘
     ├── yeban-sfz/                  # [引擎核心] 零拷贝 SFZ v2 词法解析器与预分配语音池 (零 GUI 依赖)
     ├── yeban-decode/               # [引擎核心] 基于 symphonia 的全格式解码与 rubato 重采样 (零 GUI 依赖)
     ├── yeban-render/               # [引擎核心] Rayon 多核并行离线母带渲染器与 RF64/MIDI 导出 (零 GUI 依赖)
+    ├── yeban-otcp/                 # OTCP 子进程管理与离线音高修正发现协议
+    ├── yeban-diagnostics/          # 跨平台脱敏诊断包导出（diagnostics.zip）
     ├── yeban-mcp/                  # [业务服务] 兼具库 (供 yeban-app 活会话挂载) 与独立二进制 (stdio 批处理)
     ├── yeban-ui-test-port/         # [测试核心] Slint 无头自动化测试端口与语义控件树内省抽屉 (零物理窗口)
     ├── yeban-ui-mcp/               # [测试服务] 基于 JSON-RPC 的 UI 自动化测试与无头截图 MCP 适配层
