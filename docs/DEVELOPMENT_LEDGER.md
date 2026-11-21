@@ -175,7 +175,7 @@ CARGO_HOME=/Users/crow/work/music/.cargo-home RUSTUP_TOOLCHAIN=stable \
 | CI 缓存 | 各矩阵腿会重复编译公共依赖；`Swatinem/rust-cache` 之类的缓存尚未接入 |
 | `CONTRIBUTING.md` 的 MSRV 表述 | 正文写 "Rust 1.80+"，实际 MSRV 因 slint 1.18.1 定为 **1.92**（ADR-0001 D5）。文件不在红线名单内，但改动治理文档建议由人类确认 |
 | UI/UX 规范的缺口 | 字体与 CJK 字体栈、间距/圆角/字号 scale、DPR 细则、Splitter 约束对象、24px 状态栏归属——见 ADR-0001 与 UI 摘要，实现前需按登记口径执行 |
-| ~~`schemas/mcp-tools.schema.json` 与 10 个工具的最终对账~~ **（2026-11-19 复核：本条已完成）** | 原写「需 `yeban-mcp` 实现后才能做真实对账」——`yeban-mcp` 已实现，契约现登记 **45** 个工具（`TOOL_COUNT 45`；schema enum 45），对账由 `scripts/gates/validate_schemas.py` ＋ `check_feature_alignment.py` 机械执行。**新缺口**改登记为：契约 45 个里只有 **10** 个有参数级文档（`DOCUMENTED_TOOL_COUNT = 10`），35 个扩展工具无文档面 |
+| ~~`schemas/mcp-tools.schema.json` 与 10 个工具的最终对账~~ **（2026-11-19 复核：本条已完成）** | 原写「需 `yeban-mcp` 实现后才能做真实对账」——`yeban-mcp` 已实现，契约现登记 **46** 个工具（`TOOL_COUNT 46`；schema enum 46），对账由 `scripts/gates/validate_schemas.py` ＋ `check_feature_alignment.py` 机械执行。**新缺口**改登记为：契约 46 个里只有 **10** 个有参数级文档（`DOCUMENTED_TOOL_COUNT = 10`），36 个扩展工具无文档面（**2026-11-21 就地更正**：T-FIX-25 新增 `yeban_ara_unbind` 后 45→46、扩展 35→36） |
 | 逐件链（lane 链）层无 PDC（T-DRUM-9 审计 G4，2026-11-20 登记） | 逐件链器件逐件单独渲染、最后与鼓轨干声样本级相加，链内无延迟补偿机制；模型校验（`ValidateModelError::LaneChainDeviceLatency`）只拦**声明值**非零的器件，拦不住「声明 0 但真实非零」的器件：磁带饱和（武装时 31 帧往返）可合法入链、离线真执行、延迟不入任何账 ⇒ 逐件处理过的鼓件比同轨干声晚到。轨道层同类延迟已由 ADR-0078 的离线推导入账，逐件层本期只登记不实现；未来生成器若给逐件链加磁带等族，须先单独立项（量级 L：逐件对齐目标与求和语义要先裁决） |
 
 ### 5.3 创作缺口审计（GAPS 18 条）状态表（首测 2026-10-27T09:43Z；**复测 2026-10-28**）

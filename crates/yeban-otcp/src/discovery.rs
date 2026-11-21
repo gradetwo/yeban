@@ -185,7 +185,7 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
 /// pid 是否存活。
 ///
 /// Unix 读 `/proc/<pid>`；Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
-/// + `GetExitCodeProcess`（`STILL_ACTIVE` 才算存活）。非 Windows/Unix 平台没有可靠
+/// 并用 `GetExitCodeProcess`（`STILL_ACTIVE` 才算存活）。非 Windows/Unix 平台没有可靠
 /// 实现，按“不可判定”返回 `false`，由后续 TCP 连接与握手校验兜底。
 #[must_use]
 #[cfg(unix)]
