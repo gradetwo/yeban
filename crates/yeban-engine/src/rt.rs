@@ -4921,10 +4921,23 @@ impl EngineRuntime {
             // ⚠ `channels == 1` ⇒ 只有第 0 路（= 左）被写：右声道的内容在单声道设备上
             // **无处可去**。这是**待裁决**的已知缺口，不是可以就地改掉的小事：
             // 见 `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
-            for channel in 0..channels {
+            if channels == 2 {
+                for (frame, pair) in output[offset * 2..(offset + frames) * 2]
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .enumerate()
+                {
+                    pair[0] = left[frame];
+                    pair[1] = right[frame];
+                }
+            } else {
                 for frame in 0..frames {
-                    let sample = self.block.get(channel, frame).unwrap_or(0.0);
-                    output[(offset + frame) * channels + channel] = sample;
+                    let base = (offset + frame) * channels;
+                    for channel in 0..channels {
+                        let sample = self.block.get(channel, frame).unwrap_or(0.0);
+                        output[base + channel] = sample;
+                    }
                 }
             }
             offset += frames;
@@ -6192,6 +6205,7 @@ impl EngineRuntime {
                 // 主总线身份供**事件**边界判定"这个地址本表不消费"（母线增益的槽位未开，
                 // 见 `crate::param` 模块文档 §2 第 2 条）。
                 params.set_sample_rate(current.sample_rate() as f32);
+                band_solo.set_sample_rate(current.sample_rate() as f32);
                 *armed_master = master;
 
                 // --- 2b) 声部池对齐到新快照的轨道集合（每修订一次, 非逐样本）---
