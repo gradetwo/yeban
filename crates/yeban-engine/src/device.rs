@@ -686,20 +686,11 @@ pub fn render_callback(runtime: &mut EngineRuntime, data: &mut [f32], channels: 
     runtime.process_quantum(data, channels);
 }
 
-/// 打开默认输出设备并把 [`EngineRuntime`] 挂到回调上。
+/// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
+/// （见 [`open_output`]）。
 ///
 /// 真实设备相关的一切（枚举能力、协商、建流）都在这里，并且**只返回 `Result`**。
 /// 无声卡环境下返回 [`DeviceError::NoDefaultOutputDevice`]，绝不 panic。
-///
-/// # Errors
-///
-/// - [`DeviceError::ExclusiveModeUnsupported`]：要求了独占模式；
-/// - [`DeviceError::NoDefaultOutputDevice`]：没有默认输出设备（CI 常态）；
-/// - [`DeviceError::NoSupportedConfigs`] / [`DeviceError::UnsupportedConfig`] /
-///   [`DeviceError::UnsupportedSampleFormat`]：能力不匹配；
-/// - [`DeviceError::Backend`]：后端错误（设备忙、权限、配置失效……）。
-/// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
-/// （见 [`open_output`]）。
 ///
 /// # Errors
 ///
