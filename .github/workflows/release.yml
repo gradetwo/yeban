@@ -272,6 +272,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: "工具链漂移断言 (与 ci.yml 同一个判据: 单一事实源 rust-toolchain.toml)"
         run: |
@@ -323,6 +325,7 @@ jobs:
           command: check
           arguments: --all-features
           manifest-path: ./Cargo.toml
+          rust-version: "1.99.0"
 
   # ---------------------------------------------------------------------------
   # 构建 + 证明 + 打包
@@ -503,7 +506,8 @@ jobs:
           check_refusal "--enable-ui-mcp-http"    "ui-mcp-http"                   --enable-ui-mcp-http
           check_refusal "--export-als"            "experimental-als-export"       --export-als /tmp/yeban-must-not-exist.als
           check_refusal "--export-logic"          "experimental-logic-export"     --export-logic /tmp/yeban-must-not-exist.logicx
-          echo "[ok] 三个开关都被默认产物以退出码 2 拒绝, 且各自点名了缺失的 feature"
+          check_refusal "--inspect-logic"         "experimental-logic-import"     --inspect-logic /tmp/yeban-must-not-exist.logicx
+          echo "[ok] 四个开关都被默认产物以退出码 2 拒绝, 且各自点名了缺失的 feature"
 
       - name: MUST-GATE-009 证据 ③ 仓库守卫 check_release_defaults.sh (断言它查的是 release 产物)
         run: |

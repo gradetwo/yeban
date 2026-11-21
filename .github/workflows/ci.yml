@@ -112,6 +112,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 安装钉死工具链 (单一事实源 rust-toolchain.toml)
         run: |
@@ -1278,7 +1280,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### Windows 腿未通过 — 多半是平台分支/lint/环境假设"
+            echo "### macOS 腿未通过 — 多半是平台分支/lint/环境假设"
             echo '```text'
             tail -100 "$RUNNER_TEMP/gate.log" 2>/dev/null || echo "(没有捕获到日志)"
             echo '```'
