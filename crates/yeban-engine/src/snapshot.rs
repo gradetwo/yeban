@@ -3070,11 +3070,22 @@ mod tests {
             ..YebanProjectV1::default()
         };
         match EngineSnapshot::from_project(&project, 0) {
-            Err(SnapshotError::Pdc(PdcError::Cycle { nodes })) => {
+            Err(SnapshotError::Model(ModelError::RoutingCycle { path })) => {
+                // T-FIX-52 起，`routing_graph.validate()` 在进入 PDC 拓扑前就拒绝
+                // 音频环，并给出首尾闭合的显式节点路径。原测试的意图是"环必须
+                // 响亮传播、不得静默或 panic"，这里继续钉住这一点，同时钉住路径
+                // 确实闭合、确实覆盖 a↔b，避免把错误类型换成任何泛化错误。
+                assert_eq!(
+                    path.first(),
+                    path.last(),
+                    "RoutingCycle.path 必须首尾闭合，实际 {path:?}"
+                );
+                assert_eq!(path.len(), 3, "两点环必须是 A→B→A，实际 {path:?}");
+                let nodes: BTreeSet<EntityId> = path.into_iter().collect();
                 let expected: BTreeSet<EntityId> = [a, b].into_iter().collect();
-                assert_eq!(nodes.into_iter().collect::<BTreeSet<_>>(), expected);
+                assert_eq!(nodes, expected, "环路径必须覆盖两个参与节点");
             }
-            other => panic!("预期 Cycle 错误, 实际 {other:?}"),
+            other => panic!("预期带闭合路径的 RoutingCycle, 实际 {other:?}"),
         }
     }
 
