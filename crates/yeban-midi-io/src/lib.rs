@@ -81,6 +81,27 @@ pub fn ticks_from_origin_us(now_us: u64, origin_us: u64) -> u64 {
     elapsed.saturating_mul(u64::from(PPQ)) / MICROS_PER_SECOND
 }
 
+/// 按工程速度 `bpm` 把 `midir` 原始时间戳换算成 960 PPQ 的 Tick。
+///
+/// 每四分音符微秒数为 `60_000_000 / bpm`，因此：
+/// `ticks = floor((now_us - origin_us) * PPQ * bpm / 60_000_000)`。
+/// `now_us < origin_us` 返回 0；非有限或 `bpm <= 0.0` 返回 0；极大值饱和到 `u64::MAX`。
+#[must_use]
+pub fn ticks_from_origin_us_at_bpm(now_us: u64, origin_us: u64, bpm: f64) -> u64 {
+    if !bpm.is_finite() || bpm <= 0.0 {
+        return 0;
+    }
+    let elapsed = now_us.saturating_sub(origin_us);
+    let raw = (elapsed as f64) * f64::from(PPQ) * bpm / 60_000_000.0;
+    if !raw.is_finite() || raw <= 0.0 {
+        return 0;
+    }
+    if raw >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    raw.floor() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +149,16 @@ mod tests {
         assert!(ticks.windows(2).all(|pair| pair[0] <= pair[1]), "{ticks:?}");
         assert!(ticks[7] > 0, "序列必须真的推进：{ticks:?}");
         assert_eq!(ticks[7], 840, "7 × 120 Tick（每 125 ms = 1/8 拍）");
+    }
+
+    #[test]
+    fn ticks_from_origin_us_at_bpm_scales_linearly_and_guards_invalid_bpm() {
+        assert_eq!(ticks_from_origin_us_at_bpm(1_000_000, 0, 120.0), 1920);
+        assert_eq!(ticks_from_origin_us_at_bpm(1_000_000, 0, 60.0), 960);
+        assert_eq!(ticks_from_origin_us_at_bpm(1_000_000, 0, 0.0), 0);
+        assert_eq!(ticks_from_origin_us_at_bpm(1_000_000, 0, -120.0), 0);
+        assert_eq!(ticks_from_origin_us_at_bpm(1_000_000, 0, f64::NAN), 0);
+        assert_eq!(ticks_from_origin_us_at_bpm(500, 1_000, 120.0), 0);
     }
 
     /// 判据 ⑥：⭐ **相同的 `(now, origin)` 差值恒得同一 Tick**（⭐ 只依赖差值、

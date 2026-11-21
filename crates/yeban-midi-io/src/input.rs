@@ -49,8 +49,8 @@ pub struct MidiPortInfo {
 /// ⭐ **定长**的 MIDI 事件（⭐ `Copy` ⇒ 环里没有所有权、⭐ 无 `Drop`）。
 ///
 /// ⚠ ⭐ **通道口径（登记项）**：`status`／`data1`／`data2` 是**逐字节**的定长三字节。
-/// ⭐ **系统实时（`0xF8..=0xFF`）** 单字节消息按"`data1 = data2 = 0`"承载；
-/// ⚠ ⭐ **系统专用（`0xF0`）与其它多字节/可变长消息不进本结构** ——
+/// ⭐ **系统实时（`0xF8 | 0xFA..=0xFC | 0xFE | 0xFF`）** 单字节消息按"`data1 = data2 = 0`"承载；
+/// ⚠ ⭐ **系统专用（`0xF0`）、未定义实时（`0xF9`/`0xFD`）与其它多字节/可变长消息不进本结构** ——
 /// ⭐ 由 [`MidiEventSender::unsupported_messages`] **计数登记**，⛔ **不静默丢弃**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiEvent {
@@ -75,21 +75,24 @@ impl MidiEvent {
             0x80..=0xBF | 0xE0..=0xEF => Some(2),
             // 通道消息：⭐ 0xCn/0xDn 一个数据字节。
             0xC0..=0xDF => Some(1),
-            // 系统实时：⭐ 0xF8..=0xFF 没有数据字节。
-            0xF8..=0xFF => Some(0),
-            // ⭐ 系统专用（0xF0/0xF7）与系统共同（0xF1..=0xF6）⇒ **不承载**。
+            // 系统实时：MIDI 1.0 已定义的单字节实时消息（0xF9 / 0xFD 为未定义保留，不承载）。
+            0xF8 | 0xFA..=0xFC | 0xFE | 0xFF => Some(0),
+            // ⭐ 系统专用（0xF0/0xF7）、系统共同（0xF1..=0xF6）与未定义实时（0xF9/0xFD）⇒ **不承载**。
             _ => None,
         }
     }
 
     /// ⭐ 由一条**字节消息**组装定长事件（⭐ 纯函数、⭐ **零分配**）。
     ///
-    /// ⭐ `None` ⇒ **不承载**（⭐ 长度与状态字节不符，或状态字节本就不承载）。
+    /// ⭐ `None` ⇒ **不承载**（⭐ 长度与状态字节不符、状态字节本就不承载或数据字节最高位为 1）。
     #[must_use]
     pub fn from_message(timestamp_us: u64, message: &[u8]) -> Option<Self> {
         let status = *message.first()?;
         let expected = Self::data_bytes_expected(status)?;
         if message.len() != expected + 1 {
+            return None;
+        }
+        if message[1..].iter().any(|&byte| byte >= 0x80) {
             return None;
         }
         Some(Self {
@@ -107,6 +110,12 @@ impl MidiEvent {
     pub fn ticks_from(&self, origin_us: u64) -> u64 {
         ticks_from_origin_us(self.timestamp_us, origin_us)
     }
+
+    /// 按工程速度 `bpm` 把本事件时间戳换算成相对会话起点的 960 PPQ Tick。
+    #[must_use]
+    pub fn ticks_from_at_bpm(&self, origin_us: u64, bpm: f64) -> u64 {
+        crate::ticks_from_origin_us_at_bpm(self.timestamp_us, origin_us, bpm)
+    }
 }
 
 /// ⭐ 生产者侧（⭐ **`midir` 回调线程**持有；⭐ 推送路径零分配／零锁／永不阻塞）。
@@ -114,6 +123,7 @@ pub struct MidiEventSender {
     producer: rtrb::Producer<MidiEvent>,
     dropped_events: u64,
     unsupported_messages: u64,
+    running_status: Option<u8>,
     /// ⭐ 与**接收侧共享**的不承载计数（⭐ 回调里只做一次 `fetch_add` ⇒ 零分配/无锁/无 I/O）。
     unsupported_shared: Arc<AtomicU64>,
     /// ⭐ 与**接收侧共享**的**环满丢弃**计数（⭐ 同一形状：⭐ 一次 `fetch_add`）。
@@ -161,22 +171,136 @@ impl MidiEventSender {
         self.unsupported_messages
     }
 
+    fn record_unsupported(&mut self) {
+        self.unsupported_messages = self.unsupported_messages.saturating_add(1);
+        // ⭐ 同一个事实**再过一次桥**：⭐ 接收侧只能读这个原子
+        // （⭐ `Relaxed` 足够 —— 只求最终计数，⛔ 不拿它排序任何别的写入）。
+        let _ = self.unsupported_shared.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn handle_realtime_byte(&mut self, timestamp_us: u64, byte: u8) {
+        // 系统实时字节（含穿插进通道消息里的情形）不得清除 Running Status。
+        if MidiEvent::data_bytes_expected(byte) == Some(0) {
+            let _accepted = self.push(MidiEvent {
+                timestamp_us,
+                status: byte,
+                data1: 0,
+                data2: 0,
+            });
+        } else {
+            self.record_unsupported();
+        }
+    }
+
     /// ⭐ **模拟回调体**：⭐ 由 `(timestamp_us, &[u8])` 推进环 —— 与真实 `midir` 回调
     /// **走同一段代码**（⭐ 本函数就是回调体的内核，⭐ 真回调只多一层 `timestamp_us` 绑定）。
+    ///
+    /// 支持单条消息、多消息合包与 MIDI Running Status（跨消息/包内零分配续传）；
+    /// 系统实时字节按 MIDI 规范保持 `running_status` 不变。
     ///
     /// ⭐ **本函数必须保持零分配／零 I/O／零锁**（[`ARCH-RT-001`]）。
     ///
     /// [`ARCH-RT-001`]: ../../docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md
     pub fn handle_message(&mut self, timestamp_us: u64, message: &[u8]) {
-        match MidiEvent::from_message(timestamp_us, message) {
-            Some(event) => {
-                let _accepted = self.push(event);
+        if message.is_empty() {
+            self.record_unsupported();
+            return;
+        }
+        let mut idx = 0_usize;
+        while idx < message.len() {
+            let byte = message[idx];
+            if byte >= 0xF8 {
+                self.handle_realtime_byte(timestamp_us, byte);
+                idx += 1;
+                continue;
             }
-            None => {
-                self.unsupported_messages = self.unsupported_messages.saturating_add(1);
-                // ⭐ 同一个事实**再过一次桥**：⭐ 接收侧只能读这个原子
-                // （⭐ `Relaxed` 足够 —— 只求最终计数，⛔ 不拿它排序任何别的写入）。
-                let _ = self.unsupported_shared.fetch_add(1, Ordering::Relaxed);
+            if byte >= 0xF0 {
+                // 系统共同 / SysEx 必须清除 Running Status。
+                self.running_status = None;
+                self.record_unsupported();
+                idx += 1;
+                if byte == 0xF0 {
+                    while idx < message.len() {
+                        let inner = message[idx];
+                        if inner >= 0xF8 {
+                            self.handle_realtime_byte(timestamp_us, inner);
+                            idx += 1;
+                        } else if inner == 0xF7 {
+                            idx += 1;
+                            break;
+                        } else if inner >= 0x80 {
+                            break;
+                        } else {
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    let common_data = match byte {
+                        0xF1 | 0xF3 => 1_usize,
+                        0xF2 => 2_usize,
+                        _ => 0_usize,
+                    };
+                    for _ in 0..common_data {
+                        if idx < message.len() && message[idx] < 0x80 {
+                            idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let status = if byte >= 0x80 {
+                self.running_status = Some(byte);
+                idx += 1;
+                byte
+            } else if let Some(active) = self.running_status {
+                active
+            } else {
+                // 孤立数据字节且当前无有效 Running Status：消费整段孤立数据记一次不承载。
+                self.record_unsupported();
+                while idx < message.len() && message[idx] < 0x80 {
+                    idx += 1;
+                }
+                continue;
+            };
+
+            let Some(expected) = MidiEvent::data_bytes_expected(status) else {
+                self.running_status = None;
+                self.record_unsupported();
+                continue;
+            };
+            let mut data = [0_u8; 2];
+            let mut count = 0_usize;
+            let mut failed = false;
+            while count < expected {
+                if idx >= message.len() {
+                    failed = true;
+                    break;
+                }
+                let next = message[idx];
+                if next >= 0xF8 {
+                    self.handle_realtime_byte(timestamp_us, next);
+                    idx += 1;
+                } else if next >= 0x80 {
+                    failed = true;
+                    break;
+                } else {
+                    data[count] = next;
+                    count += 1;
+                    idx += 1;
+                }
+            }
+            if failed {
+                self.record_unsupported();
+            } else {
+                let _accepted = self.push(MidiEvent {
+                    timestamp_us,
+                    status,
+                    data1: data[0],
+                    data2: data[1],
+                });
             }
         }
     }
@@ -240,6 +364,7 @@ pub fn event_channel(capacity: usize) -> (MidiEventSender, MidiEventReceiver) {
             producer,
             dropped_events: 0,
             unsupported_messages: 0,
+            running_status: None,
             unsupported_shared: Arc::clone(&unsupported_shared),
             dropped_shared: Arc::clone(&dropped_shared),
         },
@@ -332,8 +457,9 @@ impl std::error::Error for MidiInputError {}
 /// ⭐ 只在 `midir` 宿主**自身**不可用时返回 [`MidiInputError::HostUnavailable`]。
 #[cfg(feature = "midi-input")]
 pub fn enumerate_input_ports() -> Result<Vec<MidiPortInfo>, MidiInputError> {
-    let host = midir::MidiInput::new("yeban-midi-io")
+    let mut host = midir::MidiInput::new("yeban-midi-io")
         .map_err(|error| MidiInputError::HostUnavailable(error.to_string()))?;
+    host.ignore(midir::Ignore::None);
     // ⭐ 零端口 ⇒ 空 Vec（⛔ 不报错、⛔ 不 panic）。
     Ok(host
         .ports()
@@ -422,8 +548,9 @@ pub fn open_input(
     origin_us: u64,
     capacity: usize,
 ) -> Result<MidiInputSession, MidiInputError> {
-    let host = midir::MidiInput::new("yeban-midi-io")
+    let mut host = midir::MidiInput::new("yeban-midi-io")
         .map_err(|error| MidiInputError::HostUnavailable(error.to_string()))?;
+    host.ignore(midir::Ignore::None);
     let ports = host.ports();
     let port = ports
         .get(index)
@@ -628,15 +755,17 @@ mod tests {
             .map(|(s, _)| *s)
             .collect::<Vec<_>>();
         assert_eq!(two.len() + one.len() + zero.len() + none.len(), 128);
-        // ⭐ 逐族推导（⭐ 我第一版的期望值 `(64, 32, 8, 24)` 是**我自己算错**的：
-        // ⭐ 两个数据字节的族是 `0x80..=0xBF`（**64** 个）＋ `0xE0..=0xEF`（**16** 个）
-        // = **80**；⭐ 不承载的族只有 `0xF0..=0xF7`（**8** 个））：
-        // ⭐ 80 + 32 + 8 + 8 = 128。
+        // ⭐ 逐族推导：
+        // ⭐ 两个数据字节的族是 `0x80..=0xBF`（**64** 个）＋ `0xE0..=0xEF`（**16** 个）= **80**；
+        // ⭐ 一个数据字节的族是 `0xC0..=0xDF`（**32** 个）；
+        // ⭐ 已定义系统实时字节为 `0xF8 | 0xFA..=0xFC | 0xFE | 0xFF`（**6** 个）；
+        // ⭐ 不承载的是 `0xF0..=0xF7`（**8** 个）＋ 未定义保留实时 `0xF9` / `0xFD`（**2** 个）= **10** 个；
+        // ⭐ 80 + 32 + 6 + 10 = 128。
         assert_eq!(
             (two.len(), one.len(), zero.len(), none.len()),
-            (80, 32, 8, 8),
+            (80, 32, 6, 10),
             "两字节族 0x80..=0xBF(64) + 0xE0..=0xEF(16) = 80；一字节 0xC0..=0xDF = 32；\
-             实时 0xF8..=0xFF = 8；不承载 0xF0..=0xF7 = 8"
+             已定义实时 = 6；不承载(0xF0..=0xF7 + 0xF9/0xFD) = 10"
         );
     }
 
@@ -866,5 +995,55 @@ mod tests {
             "⭐ 环不溢 ⇒ 丢弃数必须是 0（⭐ 否则上面那个数可能是写死的）"
         );
         assert_eq!(calm_sender.dropped_events(), 0);
+    }
+
+    #[test]
+    fn running_status_multi_message_and_interleaved_realtime_work_without_alloc() {
+        let (mut sender, mut receiver) = event_channel(16);
+        // 包内 Note On 复用 Running Status，中间夹系统实时 Clock 0xF8（不得清 Running Status）。
+        sender.handle_message(100, &[0x90, 60, 100, 0xF8, 64, 90]);
+        // 下一包只传数据字节也应沿用 Running Status。
+        sender.handle_message(200, &[67, 80]);
+        // 系统共同消息必须清除 Running Status；随后孤立数据字节计入 unsupported。
+        sender.handle_message(300, &[0xF1, 0x00]);
+        sender.handle_message(400, &[60, 100]);
+
+        let mut events = Vec::new();
+        while let Some(ev) = receiver.pop() {
+            events.push(ev);
+        }
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            (events[0].status, events[0].data1, events[0].data2),
+            (0x90, 60, 100)
+        );
+        assert_eq!(events[1].status, 0xF8);
+        assert_eq!(
+            (events[2].status, events[2].data1, events[2].data2),
+            (0x90, 64, 90)
+        );
+        assert_eq!(
+            (events[3].status, events[3].data1, events[3].data2),
+            (0x90, 67, 80)
+        );
+        assert_eq!(receiver.unsupported_messages(), 2);
+    }
+
+    #[test]
+    fn undefined_realtime_and_high_bit_data_bytes_are_rejected() {
+        assert_eq!(MidiEvent::data_bytes_expected(0xF9), None);
+        assert_eq!(MidiEvent::data_bytes_expected(0xFD), None);
+        assert_eq!(MidiEvent::from_message(0, &[0x90, 0x80, 64]), None);
+        assert_eq!(MidiEvent::from_message(0, &[0x90, 60, 0xF0]), None);
+        assert_eq!(MidiEvent::from_message(0, &[0xF9]), None);
+        assert_eq!(MidiEvent::from_message(0, &[0xFD]), None);
+
+        let ev = MidiEvent {
+            timestamp_us: 1_000_000,
+            status: 0x90,
+            data1: 60,
+            data2: 100,
+        };
+        assert_eq!(ev.ticks_from_at_bpm(0, 120.0), 1920);
     }
 }
