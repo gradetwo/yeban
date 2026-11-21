@@ -133,12 +133,85 @@ pub fn resolve_config(service_url_arg: Option<&str>) -> Result<SvsConfig, Fault>
             serde_json::json!({ "field": "service_url", "reason": "httpsNotSupported" }),
         ));
     }
+    let target = parse_http_target(&base_url)?;
+    if !allow_remote_svs() && !is_loopback_svs_host(&target.host) {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "SVS 服务地址只允许本地环回（127.0.0.1 / localhost / [::1]），当前为 {}；如确需访问远端请设置 YEBAN_SVS_ALLOW_REMOTE=1",
+                target.host
+            ),
+        ));
+    }
     let api_key = match std::env::var(ENV_API_KEY) {
         Ok(key) if !key.is_empty() => Some(key),
         _ => None,
     };
     Ok(SvsConfig { base_url, api_key })
 }
+
+fn allow_remote_svs() -> bool {
+    std::env::var("YEBAN_SVS_ALLOW_REMOTE").as_deref() == Ok("1")
+}
+
+fn is_loopback_svs_host(host: &str) -> bool {
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "[::1]" | "::1"
+    )
+}
+
+fn has_crlf_or_nul(value: &str) -> bool {
+    value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+}
+
+fn write_svs_temp_file(cache_path: &Path, wav: &[u8]) -> Result<(), Fault> {
+    if let Some(parent) = cache_path.parent() {
+        if let Ok(meta) = std::fs::symlink_metadata(parent)
+            && meta.file_type().is_symlink()
+        {
+            return Err(Fault::domain(
+                ErrorCode::IoError,
+                format!("拒绝向符号链接 SVS 暂存目录写入: {}", parent.display()),
+            ));
+        }
+        std::fs::create_dir_all(parent)
+            .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(cache_path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(Fault::domain(
+            ErrorCode::IoError,
+            format!("拒绝覆盖符号链接 SVS 暂存文件: {}", cache_path.display()),
+        ));
+    }
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("svs.wav");
+    let tmp_path =
+        cache_path.with_file_name(format!(".{file_name}.tmp.{}.{seq}", std::process::id()));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        std::io::Write::write_all(&mut file, wav)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, cache_path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result.map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))
+}
+
+const MAX_SVS_JSON_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SVS_AUDIO_BYTES: u64 = 128 * 1024 * 1024;
 
 /// `http://host[:port][/prefix]` 的解析结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,7 +373,13 @@ impl SvsClient {
                 serde_json::json!({ "reason": "svsRequestEncodeFailed" }),
             )
         })?;
-        let response = self.request("POST", "/v1/synthesize", Some(&body), JSON_TIMEOUT)?;
+        let response = self.request(
+            "POST",
+            "/v1/synthesize",
+            Some(&body),
+            JSON_TIMEOUT,
+            MAX_SVS_JSON_BYTES,
+        )?;
         self.expect_json(response, "提交歌声合成任务")
     }
 
@@ -310,7 +389,13 @@ impl SvsClient {
     ///
     /// 404 ⇒ `ENTITY_NOT_FOUND`（未知任务）；其余失败见 [`Self::synthesize`]。
     pub fn job_status(&self, job_id: &str) -> Result<Value, Fault> {
-        let response = self.request("GET", &format!("/v1/jobs/{job_id}"), None, JSON_TIMEOUT)?;
+        let response = self.request(
+            "GET",
+            &format!("/v1/jobs/{job_id}"),
+            None,
+            JSON_TIMEOUT,
+            MAX_SVS_JSON_BYTES,
+        )?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
                 ErrorCode::EntityNotFound,
@@ -333,6 +418,7 @@ impl SvsClient {
             &format!("/v1/jobs/{job_id}/receipt"),
             None,
             JSON_TIMEOUT,
+            MAX_SVS_JSON_BYTES,
         )?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
@@ -367,7 +453,7 @@ impl SvsClient {
             "/v1/jobs/{job_id}/audio?part={}&take={take}",
             percent_encode(part)
         );
-        let response = self.request("GET", &path, None, AUDIO_TIMEOUT)?;
+        let response = self.request("GET", &path, None, AUDIO_TIMEOUT, MAX_SVS_AUDIO_BYTES)?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
                 ErrorCode::IoError,
@@ -386,15 +472,27 @@ impl SvsClient {
         Ok(response.body)
     }
 
-    /// 一次原始请求（方法 + 路径 + 可选 JSON 体 + 超时）。
+    /// 一次原始请求（方法 + 路径 + 可选 JSON 体 + 超时 + 响应上限）。
     fn request(
         &self,
         method: &str,
         path: &str,
         body: Option<&[u8]>,
         timeout: Duration,
+        max_response_bytes: u64,
     ) -> Result<HttpResponse, Fault> {
         let full_path = format!("{}{path}", self.target.prefix);
+        if has_crlf_or_nul(method)
+            || has_crlf_or_nul(&full_path)
+            || has_crlf_or_nul(&self.target.host)
+            || has_crlf_or_nul(&self.target.host_header)
+            || self.api_key.as_deref().is_some_and(has_crlf_or_nul)
+        {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                "SVS 请求参数或凭据包含非法控制字符（CR/LF/NUL）",
+            ));
+        }
         let addr = format!("{}:{}", self.target.host, self.target.port);
         let mut resolved = addr
             .to_socket_addrs()
@@ -432,9 +530,15 @@ impl SvsClient {
             .and_then(|()| body.map_or(Ok(()), |body| stream.write_all(body)))
             .map_err(|error| io_fault("发送 SVS 请求", &error))?;
         let mut raw = Vec::new();
-        stream
-            .read_to_end(&mut raw)
+        let mut limited = std::io::Read::take(&mut stream, max_response_bytes.saturating_add(1));
+        std::io::Read::read_to_end(&mut limited, &mut raw)
             .map_err(|error| io_fault("读取 SVS 响应", &error))?;
+        if (raw.len() as u64) > max_response_bytes {
+            return Err(Fault::domain(
+                ErrorCode::IoError,
+                format!("SVS 响应超过上限 {max_response_bytes} 字节"),
+            ));
+        }
         parse_response(&raw)
     }
 
@@ -1574,13 +1678,8 @@ fn plan_svs_audio(
                     .to_canonical_string(),
             ),
         );
-        // 先写暂存文件，再建导入计划（`import_audio::plan` 读 `path`）。
-        if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
-        }
-        std::fs::write(&cache_path, &wav)
-            .map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))?;
+        // 先写暂存文件（拒绝 symlink 并原子重命名），再建导入计划（`import_audio::plan` 读 `path`）。
+        write_svs_temp_file(&cache_path, &wav)?;
         let import = import_audio::plan(project, domain, &import_args)?;
         let mut report =
             placement_report(args, &model, &outcome, &cache_display, duration_s, false);
@@ -1592,12 +1691,7 @@ fn plan_svs_audio(
             report,
         });
     }
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| super::error::from_io("创建 SVS 暂存目录", &error))?;
-    }
-    std::fs::write(&cache_path, &wav)
-        .map_err(|error| super::error::from_io("写 SVS 暂存 wav", &error))?;
+    write_svs_temp_file(&cache_path, &wav)?;
     Ok(Plan::SvsAudio {
         import: None,
         report: serde_json::json!({
