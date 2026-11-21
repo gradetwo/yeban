@@ -107,8 +107,14 @@ themselves, nothing is silently dropped):
   factory presets do not ship sidechain values before phase 5.
 - Lane-chain parameters are not automatable in v1.
 
-Factory opt-ins shipped with the format: house (hats 42+46, hat EQ),
-trap (closed hat 42, hat EQ), lofi (kick 36, darkening EQ).
+Factory opt-ins: lane chains now ship in 12 of the 14 factory presets
+(all but edm and techno). The original three were house (hats 42+46,
+hat EQ), trap (closed hat 42, hat EQ) and lofi (kick 36, darkening EQ);
+the acoustic presets carry per-piece chains matched to their mic
+program (kick / snare / hats / crash / shaker, the hats group holding
+the program's full choke family — {42, 44, 46} on the basic keymap,
+{42, 44, 92} on the CC4 keymap), and drill / hiphop / phonk add an
+808 bass (35) chain.
 
 ## `automation` array (optional, preset automation segments)
 

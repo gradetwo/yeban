@@ -50,7 +50,7 @@
   "bpm": {
     "default": 150,
     "min": 120,
-    "max": 200
+    "max": 260
   },
   "swing_permille": 660,
   "bars": 2,
