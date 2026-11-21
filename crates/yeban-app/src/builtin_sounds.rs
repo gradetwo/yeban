@@ -350,7 +350,8 @@ pub fn download_builtin(
     if is_installed(roots, &sound.id) {
         return Err(SoundError::BadArchive(format!("{} 已经装过了", sound.name)));
     }
-    // 大小已知 ⇒ 沿用既有安装腿的逐字节对账；哈希未知 ⇒ 空串（⛔ 不假装校验过）。
+    // GitHub归档下载体积事先未知（`sound.total_bytes` 是解压后磁盘尺寸），置 0 跳过与
+    // 解压字节数的误比；仍受 2 GiB 下载上限与解压条目校验约束（哈希未知 ⇒ 空串，不伪造校验）。
     let pack = crate::sound_library::CatalogPack {
         id: sound.id.clone(),
         name: sound.name.clone(),
@@ -360,7 +361,7 @@ pub fn download_builtin(
         } else {
             sound.pin.chars().take(8).collect()
         },
-        size_bytes: sound.total_bytes,
+        size_bytes: 0,
         sha256: String::new(),
         url,
     };
