@@ -132,6 +132,19 @@ pub const PROPOSAL_BRANCH_PREFIX: &str = "ai/proposal-";
 /// 写进 `OpOrigin::McpProposal` 的代理名。
 pub const AGENT_NAME: &str = "yeban-mcp";
 
+/// 会话内 ARA 绑定数上限（T-FIX-25 / #24.5）：超过即响亮拒绝新建。
+///
+/// 取 64：ARA 会话是重量级插件实例（每个持有模块加载 + 文档图），无界增长会吃掉
+/// 内存与文件描述符。上限只作用于会话 registry（换工程整体清零），超限报
+/// `INVALID_PARAMETER_RANGE` 并带当前占用，不静默替换旧会话。
+pub const MAX_ARA_SESSIONS: usize = 64;
+
+/// 会话 registry 是否还容得下一段新绑定（T-FIX-25）。纯函数，便于边界测试。
+#[must_use]
+pub const fn ara_session_limit_allows(current: usize) -> bool {
+    current < MAX_ARA_SESSIONS
+}
+
 /// 一次已经打开的工程（会话态）。
 #[derive(Debug)]
 struct Active {
@@ -1526,6 +1539,11 @@ pub enum Plan {
         /// 渲染块大小（1..=4096；缺省 1024）。
         block_frames: usize,
     },
+    /// `yeban_ara_unbind`：解绑并释放一个 ARA 会话（T-FIX-25 / #24.5）。
+    AraUnbind {
+        /// 要解绑的会话 id。
+        session_id: String,
+    },
     /// `yeban_export_stems`（`ADR-0030`）：逐轨弹分轨（`N + 1` 次渲染与编码都在 `plan` 里）。
     ExportStems {
         /// 已经渲染并编码好的整批分轨（`apply` 只逐条落盘）。
@@ -1697,6 +1715,7 @@ impl Plan {
             Self::RenderSfzWav { .. } => "render_sfz_wav",
             Self::AraBind { .. } => "ara_bind",
             Self::AraRender { .. } => "ara_render",
+            Self::AraUnbind { .. } => "ara_unbind",
             Self::ExportStems { .. } => "export_stems",
             Self::RecordWav { .. } => "record_wav",
             Self::MidiInputProbe { .. } => "midi_input_probe",
@@ -1767,6 +1786,7 @@ impl Plan {
             | Self::RenderSfzWav { .. }
             | Self::AraBind { .. }
             | Self::AraRender { .. }
+            | Self::AraUnbind { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
@@ -1866,6 +1886,7 @@ impl Plan {
             // ARA 绑定只动会话态 registry；ARA 渲染只写盘（两者都不改工程文档）。
             | Self::AraBind { .. }
             | Self::AraRender { .. }
+            | Self::AraUnbind { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 物理 MIDI 探针只读硬件端口（连工程都不要求活跃）。
@@ -2050,6 +2071,7 @@ impl Plan {
             // ARA 绑定只动会话态 registry；ARA 渲染只写盘（两者都不改工程文档）。
             | Self::AraBind { .. }
             | Self::AraRender { .. }
+            | Self::AraUnbind { .. }
             | Self::ExportStems { .. }
             | Self::RecordWav { .. }
             // 探针不改工程内容（连工程都不要求活跃）。
@@ -2630,6 +2652,9 @@ impl Plan {
                     Value::from(out_path.display().to_string()),
                 );
             }
+            Self::AraUnbind { session_id } => {
+                preview.insert("sessionId".to_owned(), Value::from(session_id.clone()));
+            }
             // 宿主动作没有工具信封可预览；顶部的 `plan` 键 + 下面的工程摘要已足够。
             // （`plan` 永不产出这个变体，因此这条分支在实践中不可达。）
             Self::Host(_) => {}
@@ -2978,9 +3003,10 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_save_preset" => plan_save_preset(domain, call),
         "yeban_preset_bypass" => plan_preset_bypass(domain, call),
         "yeban_scan_plugins" => plan_scan_plugins(call),
-        "yeban_ara_bind" => plan_ara_bind(call),
+        "yeban_ara_bind" => plan_ara_bind(domain, call),
         "yeban_ara_query" => plan_ara_query(domain, call),
         "yeban_ara_render" => plan_ara_render(domain, call),
+        "yeban_ara_unbind" => plan_ara_unbind(domain, call),
         "yeban_load_plugin" => plan_load_plugin(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
@@ -5981,7 +6007,20 @@ fn ara_session_not_found(domain: &Domain, session_id: &str) -> Fault {
 /// 实参：`pluginPath`（必填）、`pluginId`（可选，不给取首个 ARA 类）、
 /// `wavPath`（必填）、`tempoBpm`（可选，缺省 120，须 > 0）、
 /// `loopIterations`（可选，缺省 1，须 ≥ 1）、`muted`（可选，缺省 false）。
-fn plan_ara_bind(call: &ToolCall) -> Result<Plan, Fault> {
+fn plan_ara_bind(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    // T-FIX-25 / #24.5：会话数上限在 plan 阶段就查（早于解码 wav / 打开插件），
+    // 超限响亮拒绝，不浪费资源、不静默替换旧会话。
+    if !ara_session_limit_allows(domain.ara_sessions.len()) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("ARA 会话数已达上限 {MAX_ARA_SESSIONS}，请先解绑（yeban_ara_unbind）再绑定"),
+            serde_json::json!({
+                "reason": "araSessionLimitReached",
+                "limit": MAX_ARA_SESSIONS,
+                "current": domain.ara_sessions.len(),
+            }),
+        ));
+    }
     let plugin_path = arg_str(call, "pluginPath").ok_or_else(|| {
         Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
     })?;
@@ -6114,6 +6153,21 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
+/// `yeban_ara_unbind`：解绑并释放一个已绑定的 ARA 会话（T-FIX-25 / #24.5）。
+///
+/// 实参只有 `sessionId`（必填）；会话不存在 ⇒ [`ara_session_not_found`]（纯校验，
+/// 与 query / render 同款）。真正的 `remove` 在 `apply`（只动会话态 registry）。
+fn plan_ara_unbind(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let session_id = arg_str(call, "sessionId")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`sessionId` 是必填实参"))?;
+    if domain.ara_session(session_id).is_none() {
+        return Err(ara_session_not_found(domain, session_id));
+    }
+    Ok(Plan::AraUnbind {
+        session_id: session_id.to_owned(),
+    })
+}
+
 /// `yeban_ara_bind` 的施加参数（clippy 形参上限 7 个；字段与
 /// `Plan::AraBind` 一一对应，施加臂由变体字段原样构造）。
 struct AraBindRequest {
@@ -6177,6 +6231,26 @@ fn apply_ara_bind(domain: &mut Domain, request: AraBindRequest) -> Result<ToolRe
         "sampleRateHz": sample_rate,
         "loopIterations": loop_iterations,
         "muted": muted,
+        "sessionScoped": true,
+    })))
+}
+
+/// `yeban_ara_unbind` 的施加：从会话 registry 移除并释放会话（T-FIX-25）。
+///
+/// `BTreeMap::remove` 返回的 `AraSession` 在本函数末尾被 drop —— 插件实例持有的
+/// 文档图 / 模块资源随之释放，这就是"解绑并释放会话"。只动会话态，不碰工程、不落盘；
+/// 解绑后该 sessionId 立即不可用（query / render / 再次 unbind 都报会话不存在）。
+fn apply_ara_unbind(domain: &mut Domain, session_id: &str) -> Result<ToolResponse, Fault> {
+    // plan 已校验存在；这里再判一次是防御性的（apply 可能被单独调用）。
+    let Some(released) = domain.ara_sessions.remove(session_id) else {
+        return Err(ara_session_not_found(domain, session_id));
+    };
+    let factory = released.factory_info().clone();
+    Ok(ToolResponse::success(serde_json::json!({
+        "sessionId": session_id,
+        "released": true,
+        "factoryName": factory.plug_in_name,
+        "remainingSessions": domain.ara_sessions.len(),
         "sessionScoped": true,
     })))
 }
@@ -6906,7 +6980,8 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::ImportAudio { .. }
         | Plan::ImportMidi(_)
         | Plan::LoadSfz { .. }
-        | Plan::AraBind { .. } => "direct",
+        | Plan::AraBind { .. }
+        | Plan::AraUnbind { .. } => "direct",
         // SVS 落轨：真登记才算当场生效；只取回 / 预览 / 幂等命中 = 没有提交。
         Plan::SvsAudio { import, .. } => {
             if import.as_ref().is_some_and(|import| !import.ops.is_empty()) {
@@ -7149,6 +7224,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             out_path,
             block_frames,
         } => apply_ara_render(domain, &session_id, &out_path, block_frames),
+        Plan::AraUnbind { session_id } => apply_ara_unbind(domain, &session_id),
         Plan::ExportStems { batch } => stems::write(&batch).map(ToolResponse::success),
         Plan::RecordWav { artifact } => apply_record_wav(&artifact),
     }
@@ -9167,6 +9243,10 @@ mod tests {
                         .to_string(),
                 }),
             ),
+            (
+                "yeban_ara_unbind",
+                serde_json::json!({"sessionId": "ara-999"}),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -9235,7 +9315,7 @@ mod tests {
                     let fault = outcome.expect_err("会话里没有已装载的 SFZ");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
                 }
-                "yeban_ara_query" | "yeban_ara_render" => {
+                "yeban_ara_query" | "yeban_ara_render" | "yeban_ara_unbind" => {
                     // 这个夹具**没有**绑定过 ARA 会话 ⇒ 规划阶段响亮拒绝
                     // （`araSessionNotFound` + 已登记 id 清单）。
                     let fault = outcome.expect_err("会话里没有 ARA 会话");
@@ -10596,5 +10676,54 @@ mod tests {
         };
         let data = data.as_ref().expect("本形态的失败必须带 data");
         assert_eq!(data["reason"], "createIsNotReadOnly");
+    }
+
+    // -----------------------------------------------------------------------
+    // T-FIX-25 / #24.5 ARA 会话上限与解绑工具回归判据
+    // -----------------------------------------------------------------------
+
+    /// 判据：会话上限纯函数边界 —— 未满放行、达到上限拒绝。
+    #[test]
+    fn ara_session_limit_boundary() {
+        assert!(ara_session_limit_allows(0));
+        assert!(ara_session_limit_allows(MAX_ARA_SESSIONS - 1));
+        assert!(!ara_session_limit_allows(MAX_ARA_SESSIONS));
+        assert!(!ara_session_limit_allows(MAX_ARA_SESSIONS + 1));
+    }
+
+    /// 判据：`yeban_ara_unbind` 已接线（plan 识别该工具名），且对不存在的会话
+    /// 响亮报 `araSessionNotFound`（不依赖真插件，空 registry 即可判）。
+    #[test]
+    fn ara_unbind_rejects_unknown_session_and_is_registered() {
+        let d = domain();
+        let fault = plan(
+            &d,
+            &call(
+                "yeban_ara_unbind",
+                serde_json::json!({"sessionId": "ara-does-not-exist"}),
+            ),
+        )
+        .expect_err("不存在的会话必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("失败必须带 data");
+        assert_eq!(data["reason"], "araSessionNotFound");
+        assert!(data["loadedSessionIds"].as_array().is_some());
+    }
+
+    /// 判据：`yeban_ara_unbind` 在注册表里的 `sessionId` 参数被标为必填。
+    /// （缺参在 `ToolCall::from_params` 层就拒，plan 拿到的调用必带该字段；
+    /// 这里钉住工具契约侧的必填标记，与 plan 侧的会话存在校验分工。）
+    #[test]
+    fn ara_unbind_declares_session_id_required() {
+        let spec = crate::tools::tool("yeban_ara_unbind").expect("unbind 必须已注册");
+        let session_param = spec
+            .params
+            .iter()
+            .find(|param| param.name == "sessionId")
+            .expect("必须声明 sessionId 参数");
+        assert!(session_param.required, "sessionId 必须是必填实参");
     }
 }

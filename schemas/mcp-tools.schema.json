@@ -63,6 +63,7 @@
             "yeban_ara_bind",
             "yeban_ara_query",
             "yeban_ara_render",
+            "yeban_ara_unbind",
             "synthesize_singing",
             "svs_job",
             "yeban_list_presets",
@@ -491,6 +492,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_ara_render"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_ara_unbind"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_ara_unbind"
               }
             }
           }
@@ -1825,6 +1845,28 @@
           "required": [
             "sessionId",
             "outPath"
+          ]
+        },
+        "yeban_ara_unbind": {
+          "title": "yeban_ara_unbind",
+          "type": "object",
+          "description": "解绑并释放一个已绑定的 ARA 会话（T-FIX-25 / 审计 #24.5）：从会话 registry 移除该 sessionId，插件实例资源随之释放。只动会话态，不改工程、不落盘；解绑后该 id 立即失效。会话不存在 ⇒ INVALID_PARAMETER_RANGE + araSessionNotFound。",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "description": "要解绑的会话 id（yeban_ara_bind 的响应）；不存在 ⇒ INVALID_PARAMETER_RANGE"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId"
           ]
         },
         "synthesize_singing": {

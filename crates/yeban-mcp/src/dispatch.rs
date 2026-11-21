@@ -40,6 +40,14 @@
 //! `definitions.ReplayedToolResponse`，见 [`replay_value`]）：`replayed: true` +
 //! 用当前 `id` 重新组装的那次响应。副作用、`commitCount`、`projectDigest`
 //! 都停在首次的值上（缓存里就是首次的载荷，重放不改任何状态）。
+//!
+//! ## 有界 LRU（T-FIX-25 / #24.4）
+//!
+//! 缓存条目数与占用字节都有上限（[`MAX_IDEMPOTENCY_ENTRIES`] /
+//! [`MAX_IDEMPOTENCY_BYTES`]）。超限时淘汰**最久未用**的条目（按 `seq` 判，命中即
+//! touch），直到两条约束都满足。这是**既定口径**的保留策略：淘汰只在容量压力
+//! 下发生，且回执/注释留痕，不算静默丢弃 —— 被淘汰的 key 下次会重新执行（幂等
+//! 语义由调用方再次携带同一 key 保证）。主存储仍是 `BTreeMap`，快照字典序不变。
 
 use std::collections::BTreeMap;
 
@@ -65,6 +73,14 @@ pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// `dryRun` 结果里标记"这是模拟"的字段名。
 pub const DRY_RUN_FLAG: &str = "dryRun";
+
+/// 幂等缓存最大条目数（T-FIX-25 / #24.4）：超过即淘汰最久未用条目。
+pub const MAX_IDEMPOTENCY_ENTRIES: usize = 1024;
+
+/// 幂等缓存最大占用字节（T-FIX-25 / #24.4）：超过即淘汰最久未用条目。
+///
+/// 字节数按 `key.len() + result 序列化长度 + error 序列化长度` 估算（保守口径）。
+pub const MAX_IDEMPOTENCY_BYTES: u64 = 32 * 1024 * 1024;
 
 /// 一次分发的产物。
 #[derive(Clone, Debug, PartialEq)]
@@ -107,14 +123,34 @@ pub struct CachedOutcome {
     pub result: Option<Value>,
     /// 失败对象。
     pub error: Option<ErrorObject>,
+    /// LRU 序号（插入/命中时取 Dispatcher 的单调计数；越小越旧）。
+    seq: u64,
+    /// 该条目估算占用字节（key + result + error 的序列化长度）。
+    bytes: u64,
 }
 
 impl CachedOutcome {
-    fn from_response(http_status: u16, response: &Response) -> Self {
+    fn from_response(http_status: u16, response: &Response, seq: u64, key_len: usize) -> Self {
+        // 字节估算是保守口径：序列化长度 + key 长度。失败时（理论上不会发生）
+        // 退回 0，不影响正确性，只影响 LRU 的容量判断精度。
+        let result_bytes = response
+            .result
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())
+            .map_or(0, |text| text.len() as u64);
+        let error_bytes = response
+            .error
+            .as_ref()
+            .and_then(|error| serde_json::to_string(error).ok())
+            .map_or(0, |text| text.len() as u64);
         Self {
             http_status,
             result: response.result.clone(),
             error: response.error.clone(),
+            seq,
+            bytes: (key_len as u64)
+                .saturating_add(result_bytes)
+                .saturating_add(error_bytes),
         }
     }
 
@@ -139,6 +175,12 @@ pub struct Dispatcher {
     granted: ScopeSet,
     mode: RunMode,
     idempotency: BTreeMap<String, CachedOutcome>,
+    /// 幂等缓存单调序号（每次插入/命中 +1，作 LRU 时间轴）。
+    idempotency_seq: u64,
+    /// 幂等缓存当前估算占用字节（与条目数一起受上限约束）。
+    idempotency_bytes: u64,
+    /// 因容量上限被 LRU 淘汰的条目数（可观测，回执/诊断用）。
+    idempotency_evicted: u64,
     handled: u64,
     replayed: u64,
     domain: Domain,
@@ -153,6 +195,9 @@ impl Dispatcher {
             granted,
             mode,
             idempotency: BTreeMap::new(),
+            idempotency_seq: 0,
+            idempotency_bytes: 0,
+            idempotency_evicted: 0,
             handled: 0,
             replayed: 0,
             domain: Domain::new(),
@@ -212,6 +257,76 @@ impl Dispatcher {
     #[must_use]
     pub fn idempotency_len(&self) -> usize {
         self.idempotency.len()
+    }
+
+    /// 幂等缓存当前估算占用字节（T-FIX-25 / #24.4）。
+    #[must_use]
+    pub const fn idempotency_bytes(&self) -> u64 {
+        self.idempotency_bytes
+    }
+
+    /// 因容量上限被 LRU 淘汰的条目数（T-FIX-25 / #24.4，可观测）。
+    #[must_use]
+    pub const fn idempotency_evicted(&self) -> u64 {
+        self.idempotency_evicted
+    }
+
+    /// 插入一条幂等结果，并在必要时按 LRU 淘汰到两条上限内（T-FIX-25）。
+    ///
+    /// 淘汰按 `seq` 升序（最久未用先走），直到**条目数 ≤
+    /// [`MAX_IDEMPOTENCY_ENTRIES`] 且字节数 ≤ [`MAX_IDEMPOTENCY_BYTES`]** 都满足。
+    /// 淘汰是既定口径、留痕在 [`Self::idempotency_evicted`]，不算静默丢弃。
+    fn insert_idempotent(&mut self, key: String, outcome: CachedOutcome) {
+        self.insert_idempotent_with_limits(
+            key,
+            outcome,
+            MAX_IDEMPOTENCY_ENTRIES,
+            MAX_IDEMPOTENCY_BYTES,
+        );
+    }
+
+    /// [`Self::insert_idempotent`] 的可注入上限内核：测试用小上限钉住淘汰边界，
+    /// 不必造 1024 条 / 32 MiB 的真实载荷。
+    fn insert_idempotent_with_limits(
+        &mut self,
+        key: String,
+        mut outcome: CachedOutcome,
+        max_entries: usize,
+        max_bytes: u64,
+    ) {
+        // 插入统一分配新 seq（与命中的 touch 共用一条单调时间轴）。
+        self.idempotency_seq += 1;
+        outcome.seq = self.idempotency_seq;
+        // 同 key 覆盖：先扣掉旧条目的字节，避免重复计数。
+        if let Some(old) = self.idempotency.remove(&key) {
+            self.idempotency_bytes = self.idempotency_bytes.saturating_sub(old.bytes);
+        }
+        self.idempotency_bytes = self.idempotency_bytes.saturating_add(outcome.bytes);
+        self.idempotency.insert(key, outcome);
+
+        while self.idempotency.len() > max_entries || self.idempotency_bytes > max_bytes {
+            // 找 seq 最小（最久未用）的条目。空缓存时不可能进到这里。
+            let Some(oldest_key) = self
+                .idempotency
+                .iter()
+                .min_by_key(|(_, value)| value.seq)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(evicted) = self.idempotency.remove(&oldest_key) {
+                self.idempotency_bytes = self.idempotency_bytes.saturating_sub(evicted.bytes);
+                self.idempotency_evicted += 1;
+            }
+        }
+    }
+
+    /// 命中一条幂等结果时 touch 它的 LRU 序号（命中 = 最近使用）。
+    fn touch_idempotent(&mut self, key: &str) {
+        if let Some(cached) = self.idempotency.get_mut(key) {
+            self.idempotency_seq += 1;
+            cached.seq = self.idempotency_seq;
+        }
     }
 
     /// 处理一个已解析的请求。
@@ -378,7 +493,11 @@ impl Dispatcher {
         {
             self.replayed += 1;
             let id = request.response_id();
-            return (cached.http_status, Ok(replay_value(cached, id)));
+            let status = cached.http_status;
+            // LRU: 命中即最近使用，刷新序号（touch 在取走值之后，避免双重借用）。
+            let replay = replay_value(cached, id);
+            self.touch_idempotent(&key);
+            return (status, Ok(replay));
         }
         // 7. 执行: 真的做事 (打开/保存/查询/提案/合并/渲染参数校验)。
         // ⭐ MCP 规范的 `CallToolResult` 包裹（[`wrap_mcp_call_result`]）必须
@@ -395,8 +514,11 @@ impl Dispatcher {
                 Ok(result) => Response::success(request.response_id(), result.clone()),
                 Err(error) => Response::failure(request.response_id(), error.clone()),
             };
-            self.idempotency
-                .insert(key, CachedOutcome::from_response(status, &response));
+            let key_len = key.len();
+            let outcome = CachedOutcome::from_response(status, &response, 0, key_len);
+            // 有界 LRU：超限时淘汰最久未用的条目（既定口径，留痕在 evicted 计数）。
+            // seq 由 insert 统一分配（保证插入/命中共用同一单调时间轴）。
+            self.insert_idempotent(key, outcome);
         }
         (status, payload)
     }
@@ -1623,6 +1745,81 @@ mod tests {
         assert!(
             text.contains("NO_ACTIVE_PROJECT"),
             "失败摘要必须带错误码: {text}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T-FIX-25 / #24.4 幂等缓存有界 LRU 回归判据
+    // -----------------------------------------------------------------------
+
+    /// 造一个指定序号 / 字节的缓存条目（测试可直接访问私有字段）。
+    fn fake_outcome(seq: u64, bytes: u64) -> CachedOutcome {
+        CachedOutcome {
+            http_status: 200,
+            result: Some(serde_json::json!({"seq": seq})),
+            error: None,
+            seq,
+            bytes,
+        }
+    }
+
+    /// 判据：条目数上限触顶时淘汰最久未用（seq 最小）条目，不静默增长。
+    #[test]
+    fn idempotency_cache_evicts_oldest_by_entry_limit() {
+        let mut dispatcher = dispatcher();
+        // 小上限 3：依次插入 k1..k5（seq 1..5）。
+        for index in 1..=5u64 {
+            dispatcher.insert_idempotent_with_limits(
+                format!("k{index}"),
+                fake_outcome(index, 1),
+                3,
+                u64::MAX,
+            );
+        }
+        assert_eq!(dispatcher.idempotency_len(), 3, "条目数必须卡在上限");
+        assert_eq!(dispatcher.idempotency_evicted(), 2, "淘汰数必须留痕");
+        let keys = dispatcher.idempotency_keys();
+        assert_eq!(
+            keys,
+            vec!["k3", "k4", "k5"],
+            "必须淘汰最旧的 k1/k2，保留最新三条"
+        );
+    }
+
+    /// 判据：字节上限触顶时同样淘汰最久未用条目，直到占用回到上限内。
+    #[test]
+    fn idempotency_cache_evicts_oldest_by_byte_limit() {
+        let mut dispatcher = dispatcher();
+        // 每条 10 字节，上限 25 ⇒ 最多留 2 条（20），第 3 条触发淘汰 k1。
+        for index in 1..=3u64 {
+            dispatcher.insert_idempotent_with_limits(
+                format!("k{index}"),
+                fake_outcome(index, 10),
+                usize::MAX,
+                25,
+            );
+        }
+        assert_eq!(dispatcher.idempotency_len(), 2, "字节上限必须生效");
+        assert!(dispatcher.idempotency_bytes() <= 25);
+        assert_eq!(dispatcher.idempotency_keys(), vec!["k2", "k3"]);
+        assert_eq!(dispatcher.idempotency_evicted(), 1);
+    }
+
+    /// 判据：命中缓存会 touch 序号 —— 刚被命中的旧条目在下一轮淘汰中存活。
+    #[test]
+    fn idempotency_cache_hit_refreshes_lru_order() {
+        let mut dispatcher = dispatcher();
+        dispatcher.insert_idempotent_with_limits("a".into(), fake_outcome(1, 1), 3, u64::MAX);
+        dispatcher.insert_idempotent_with_limits("b".into(), fake_outcome(2, 1), 3, u64::MAX);
+        dispatcher.insert_idempotent_with_limits("c".into(), fake_outcome(3, 1), 3, u64::MAX);
+        // 命中 a（最旧）⇒ touch 成最新（seq 4）。
+        dispatcher.touch_idempotent("a");
+        // 再插入 d ⇒ 应淘汰 b（现在最旧），a 存活。
+        dispatcher.insert_idempotent_with_limits("d".into(), fake_outcome(4, 1), 3, u64::MAX);
+        assert_eq!(
+            dispatcher.idempotency_keys(),
+            vec!["a", "c", "d"],
+            "被命中的 a 必须存活，淘汰没被用的 b"
         );
     }
 }

@@ -43,6 +43,7 @@
 //! | `yeban_ara_bind` | 音频 wav 绑定到 ARA 插件进会话 registry（plan 解码、apply 打开会话） | `MCP-TOOL-EXT-ARA-BIND` |
 //! | `yeban_ara_query` | ARA 会话的分析状态与内容查询（只读；内容不可用时报状态不报错） | `MCP-TOOL-EXT-ARA-QUERY` |
 //! | `yeban_ara_render` | 已绑定 ARA 会话离线渲染成 WAV（原子落盘 + 文档 blob 哈希回传） | `MCP-TOOL-EXT-ARA-RENDER` |
+//! | `yeban_ara_unbind` | 解绑并释放一个 ARA 会话（回收会话名额，只动会话态） | `MCP-TOOL-EXT-ARA-UNBIND` |
 //!
 //! | `get_song_overview` | 整曲多层总览图：小节级列式 JSON + 自动异常诊断摘要（设计稿 §8，Phase 1；只读；分析由宿主注入的 provider 提供） | `MCP-TOOL-EXT-SONG-OVERVIEW` |
 //! | `yeban_correct_pitch` | 把一个音频片段提交给用户自备的 OpenTune 做离线调性 snap（`ADR-0070`；后台线程跑，立即回 `job_id`） | `MCP-TOOL-EXT-OTCP-CORRECT` |
@@ -116,8 +117,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条 + 自动相位对齐 1 条 + 鼓机生成 1 条）。
-pub const TOOL_COUNT: usize = 45;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 4 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条 + 自动相位对齐 1 条 + 鼓机生成 1 条）。
+pub const TOOL_COUNT: usize = 46;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -147,7 +148,9 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **鼓机生成 1 条**（鼓机一期：`yeban_generate_drum_pattern`，风格预置 + 三旋钮
 ///   + 种子经 `yeban-theory` 生成鼓型，落成目标轨上的 MIDI 片段；轨无音源时
 ///     按风格族装默认鼓组——原声 SFZ / 电子合成）。
-pub const EXTENSION_TOOL_COUNT: usize = 35;
+/// + **ARA 解绑 1 条**（审计 `#24.5`：`yeban_ara_unbind`，解绑并释放会话，
+///   给有界会话 registry 一个显式的回收出口）。
+pub const EXTENSION_TOOL_COUNT: usize = 36;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -182,6 +185,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_ara_bind",
     "yeban_ara_query",
     "yeban_ara_render",
+    "yeban_ara_unbind",
     "synthesize_singing",
     "svs_job",
     "yeban_list_presets",
@@ -2027,6 +2031,24 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         errors: &[ErrorCode::InvalidParameterRange, ErrorCode::IoError],
     },
     ToolSpec {
+        spec_id: "MCP-TOOL-EXT-ARA-UNBIND",
+        name: "yeban_ara_unbind",
+        summary: "解绑并释放一个已绑定的 ARA 会话（T-FIX-25 / 审计 #24.5）：从会话 registry 移除该 sessionId，插件实例持有的文档图 / 模块资源随之释放。只动会话态，不改工程、不落盘；解绑后该 id 立即失效（query / render / 再次 unbind 都报会话不存在）。会话数已达上限 MAX_ARA_SESSIONS 时，用本工具回收旧会话即可继续绑定。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。",
+        scope: Scope::AppAdmin,
+        // 只动会话态 registry（与 ara_bind 同款）：不改工程、不落盘。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_ara_unbind` 逐字段一致。
+            param(
+                "sessionId",
+                "string",
+                true,
+                "要解绑的会话 id（`yeban_ara_bind` 的响应）；不存在 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
+    ToolSpec {
         spec_id: "MCP-TOOL-EXT-SVS-SUBMIT",
         name: "synthesize_singing",
         summary: "把乐谱提交到伶人 SVS 服务（只提交、不含推理）：`parts` 数组每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`，与 `POST /v1/synthesize` 的 part 形状一致；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`，`lyric` 为 `''` 或 `'<SP>'` 表示休止；`takes` 缺省 1（1..=8）。返回 `{jobId, status, partsTotal, takesTotal, serviceUrl}`；提交失败（连不上、4xx/5xx）直接报 `IO_ERROR`，⛔ 不返回空任务。配置：服务地址 = 实参 `service_url` > 环境变量 `YEBAN_SVS_URL` > 缺省 `http://127.0.0.1:8000`；API key **只**从环境变量 `YEBAN_SVS_API_KEY` 读，⛔ 不是工具参数、⛔ 不进工程文件、⛔ 不出现在响应里。只支持 `http`（`std` 客户端无 TLS，`https` 在配置解析时就响亮拒绝，见 `domain::svs` 模块头）。`dryRun` 只校验参数、不提交。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约（服务文档与调用方都按此名），见注册判据的例外说明。",
@@ -3436,6 +3458,9 @@ mod tests {
                 "yeban_ara_bind",
                 // ARA 查询：纯只读（读会话 registry 与插件内容查询）。
                 "yeban_ara_query",
+                // ARA 解绑：只释放会话态 registry 里的插件实例（与 bind 同款口径），
+                // 不改工程、不落盘 ⇒ 读-only。
+                "yeban_ara_unbind",
                 // 原生预制清单：只读发行表 + 用户库，不改工程、不落盘 ⇒ 读-only。
                 "yeban_list_presets",
                 // 整曲总览：只取 provider 已算好的总览做映射，不改工程、不落盘 ⇒ 只读。
