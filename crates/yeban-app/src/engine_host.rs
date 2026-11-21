@@ -1512,11 +1512,12 @@ impl EngineHost {
         &mut self,
         config: EngineConfig,
     ) -> Result<(DeviceOpening, MeterCollector), EngineHostError> {
-        // 1) 新端点（旧的一代一位不动）。
-        let Some(slot) = self.slot.as_ref().map(std::sync::Arc::clone) else {
+        // 1) 新端点（旧的一代一位不动；为候选 runtime 建独立 SnapshotSlot，避免与 live slot 冲突）。
+        let Some(current_snapshot) = self.slot.as_ref().map(|slot| slot.current()) else {
             return Err(EngineHostError::NoEngine);
         };
-        let channels = slot.current().channels().max(1);
+        let channels = current_snapshot.channels().max(1);
+        let new_slot = SnapshotSlot::from_arc(current_snapshot);
         let before = self.transport();
         let FreshRuntime {
             mut runtime,
@@ -1525,7 +1526,7 @@ impl EngineHost {
             mirror,
             stats_mirror,
             collector,
-        } = fresh_runtime(&slot);
+        } = fresh_runtime(&new_slot);
 
         // 2) 交接走带状态（只在**新**运行时上推量子）。
         let mut scratch = vec![0.0_f32; DEFAULT_BLOCK_FRAMES * usize::from(channels)];
@@ -1569,6 +1570,7 @@ impl EngineHost {
         // 5) 装机（只有到这里，旧的一代才被替换）。
         self.close_device();
         self.runtime = None;
+        self.slot = Some(new_slot);
         self.events = Some(events);
         self.transport_mirror = Some(mirror);
         // ⭐ **stage 25**：运行时已经 move 进回调 ⇒ 统计只剩这份镜像可读。
