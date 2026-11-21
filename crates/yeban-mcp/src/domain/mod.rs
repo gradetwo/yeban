@@ -6275,6 +6275,10 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     let out_path = arg_str(call, "outPath")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`outPath` 是必填实参"))?;
+    let out_path_buf = PathBuf::from(out_path);
+    if let Some(project_path) = domain.active_path() {
+        render::guard_output_path(&out_path_buf, project_path)?;
+    }
     let block_frames = arg_u64(call, "blockFrames")?.unwrap_or(1024);
     if !(1..=4096).contains(&block_frames) {
         return Err(Fault::domain(
@@ -6286,7 +6290,7 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .map_err(|_| Fault::domain(ErrorCode::InvalidParameterRange, "`blockFrames` 超出范围"))?;
     Ok(Plan::AraRender {
         session_id: session_id.to_owned(),
-        out_path: PathBuf::from(out_path),
+        out_path: out_path_buf,
         block_frames,
     })
 }
@@ -6351,6 +6355,7 @@ fn apply_ara_bind(domain: &mut Domain, request: AraBindRequest) -> Result<ToolRe
         loop_iterations,
         muted,
     };
+    validate_plugin_path_allowed(&plugin_path)?;
     let session = AraSession::open(&plugin_path, plugin_id.as_deref(), clip, placement)
         .map_err(ara_host_error)?;
     let factory = session.factory_info().clone();
@@ -6432,6 +6437,33 @@ fn apply_ara_render(
     })))
 }
 
+/// 校验 `pluginPath` 落在允许的插件根目录（`stub:` 或经 canonicalize 后的 `Host::all_search_paths`）内。
+fn validate_plugin_path_allowed(path: &str) -> Result<(), Fault> {
+    if path.starts_with("stub:") {
+        return Ok(());
+    }
+    let canonical = std::fs::canonicalize(Path::new(path)).map_err(|error| {
+        Fault::domain(
+            ErrorCode::IoError,
+            format!("插件路径无法解析 `{path}`: {error}"),
+        )
+    })?;
+    let allowed_roots: Vec<PathBuf> = Host::all_search_paths(&[])
+        .into_iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
+    if allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+        Ok(())
+    } else {
+        Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "插件路径 `{path}` 不在允许的 VST3 搜索目录（~/.vst3、系统目录或 YEBAN_PLUGIN_PATH）内"
+            ),
+        ))
+    }
+}
+
 /// `yeban_load_plugin`：验证加载一个 VST3 插件，经提案路径挂到指定轨道上（ADR-0069 D13）。
 ///
 /// 顺序承重：先 `require_active`，再解析 `trackId`、查轨（无则 `TRACK_NOT_FOUND`），
@@ -6459,6 +6491,7 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let path = arg_str(call, "pluginPath").ok_or_else(|| {
         Fault::domain(ErrorCode::InvalidParameterRange, "`pluginPath` 是必填实参")
     })?;
+    validate_plugin_path_allowed(path)?;
     let class = arg_str(call, "pluginId");
     let kind = arg_str(call, "kind").unwrap_or("instrument");
     let (instance, device_kind) = match kind {
