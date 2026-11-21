@@ -11753,14 +11753,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                             None
                         }
                     };
-                    let percent = match total {
-                        Some(total) if total > 0 => {
-                            i32::try_from(downloaded.saturating_mul(100) / total)
-                                .unwrap_or(100)
-                                .min(100)
-                        }
-                        _ => -1,
-                    };
+                    let percent = crate::sound_library::download_percent(downloaded, total);
                     if crate::sound_library::should_emit_progress(
                         percent,
                         last_percent,
@@ -11918,14 +11911,8 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                                 None
                             }
                         };
-                        let percent = match total_bytes {
-                            Some(total_bytes) if total_bytes > 0 => {
-                                i32::try_from(downloaded.saturating_mul(100) / total_bytes)
-                                    .unwrap_or(100)
-                                    .min(100)
-                            }
-                            _ => -1,
-                        };
+                        let percent =
+                            crate::sound_library::download_percent(downloaded, total_bytes);
                         if crate::sound_library::should_emit_progress(
                             percent,
                             last_percent,

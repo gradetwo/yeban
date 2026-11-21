@@ -243,7 +243,11 @@ impl SoundError {
             Self::Download(detail) => format!("下载失败：{detail}"),
             Self::Io(detail) => format!("文件操作失败：{detail}"),
             Self::SizeMismatch { expected, actual } => {
-                format!("包大小不符：目录登记 {expected} 字节，实际下载 {actual} 字节，已弃")
+                format!(
+                    "包大小不符：目录登记 {expected} 字节（必须是归档文件字节），\
+                     实际下载 {actual} 字节，已弃。若登记值接近解包后的样本总量，\
+                     说明目录 sizeBytes 记成了「解包口径」而不是「归档口径」"
+                )
             }
             Self::ChecksumMismatch { expected, actual } => {
                 format!("包校验不符：目录登记 sha256 {expected}，实际 {actual}，已弃")
@@ -786,6 +790,21 @@ pub fn download_pack(
     outcome
 }
 
+/// 传输编码口径：`identity` / 缺省 = 直接就是归档字节；其它一律拒绝。
+///
+/// 该判据与 [`download_to_file`] 共用，测试用假响应头走同一条判定。
+fn classify_content_encoding(value: Option<&str>) -> Result<(), String> {
+    match value {
+        None => Ok(()),
+        Some(raw) if raw.trim().is_empty() => Ok(()),
+        Some(raw) if raw.trim().eq_ignore_ascii_case("identity") => Ok(()),
+        Some(raw) => Err(format!(
+            "服务器以 Content-Encoding: {raw} 发送归档，但本构建未启用解压；\
+             读到的不是归档本体，字节/摘要对账会错位，已在写盘前中止"
+        )),
+    }
+}
+
 /// [`download_pack`] 的传输段：流式写 `.part`，进度逐块回调。
 fn download_to_file(
     pack: &CatalogPack,
@@ -801,6 +820,18 @@ fn download_to_file(
         .get(&pack.url)
         .call()
         .map_err(|err| SoundError::Download(err.to_string()))?;
+    // T-FIX-58：本构建的 ureq 只开 rustls、**没有** gzip/brotli 解压特性
+    //（见 workspace Cargo.toml 的 default-features=false）。若服务器对 `.zip`
+    // 再套一层 Content-Encoding，读到的就是压缩壳而不是归档本体：字节数、
+    // sha256、大小对账会全错位。这里在写任何字节前明确拒绝，⛔ 不静默装坏包。
+    if let Some(encoding) = response
+        .headers()
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        && let Err(detail) = classify_content_encoding(Some(encoding))
+    {
+        return Err(SoundError::Download(detail));
+    }
     let total = response.body().content_length().or(if pack.size_bytes > 0 {
         Some(pack.size_bytes)
     } else {
@@ -927,8 +958,9 @@ pub fn format_size(bytes: u64) -> String {
 /// 用户原话："下载看不到速度和进度 也不知道下载成功与否"。界面此前只有一根进度条 +
 /// `下载中 N%`：**没有总量、没有速度**，几十 MiB 的包看起来像卡住。
 ///
-/// 三种降级都要如实（⛔ 不编造数字）：
-/// - 总量未知（服务器没给 `Content-Length`）⇒ 只报已下的字节；
+/// 四种形态都要如实（⛔ 不编造数字）：
+/// - 总量未知（服务器没给 `Content-Length` 且目录也没有登记值）⇒ 只报已下；
+/// - 已下超过宣称总量 ⇒ 不写百分号，显式写「宣称 X（超出 Y）」；
 /// - 速度未知（第一个采样点还没有间隔）⇒ 省掉最后一节；
 /// - 进度未知（`percent < 0`）⇒ 不写百分号。
 #[must_use]
@@ -938,11 +970,21 @@ pub fn format_download_readout(
     total: Option<u64>,
     bytes_per_sec: Option<u64>,
 ) -> String {
+    // T-FIX-58：分母只代表「宣称总量」；已下超过它时**不是 100% 继续涨**，
+    // 而是把异常直接写进读数：不再显示百分号，并点名超出多少。这样即使
+    // 服务器没给 Content-Length、目录又登记错，用户也能立刻看出不对劲。
+    let over_declared = total.is_some_and(|total| total > 0 && done > total);
     let mut parts: Vec<String> = Vec::with_capacity(3);
-    if percent >= 0 {
+    if percent >= 0 && !over_declared {
         parts.push(format!("{percent}%"));
     }
     match total {
+        Some(total) if total > 0 && done > total => parts.push(format!(
+            "{} / 宣称 {}（超出 {}）",
+            format_size(done),
+            format_size(total),
+            format_size(done - total)
+        )),
         Some(total) if total > 0 => {
             parts.push(format!("{} / {}", format_size(done), format_size(total)))
         }
@@ -952,6 +994,22 @@ pub fn format_download_readout(
         parts.push(format!("{}/s", format_size(rate)));
     }
     parts.join(" · ")
+}
+
+/// T-FIX-58：进度百分比**唯一**计算口径。
+///
+/// - `done <= total`：正常百分比（恰好下完才是 100）；
+/// - `done > total`：`-1`（未知），交给 [`format_download_readout`] 把
+///   「超出宣称总量」写成显式读数；⛔ 不再 `min(100)` 把异常抹平；
+/// - 没有总量：`-1`，只报已下与速度。
+#[must_use]
+pub fn download_percent(done: u64, total: Option<u64>) -> i32 {
+    match total {
+        Some(total) if total > 0 && done <= total => {
+            i32::try_from(done.saturating_mul(100) / total).unwrap_or(100)
+        }
+        _ => -1,
+    }
 }
 
 #[cfg(test)]
@@ -1550,6 +1608,34 @@ mod tests {
         assert!(is_https_url(&pack.url));
     }
 
+    /// T-FIX-58 判据：非 identity 的传输编码必须在写盘前被拒。
+    #[test]
+    fn transport_content_encoding_is_rejected_before_write() {
+        assert!(classify_content_encoding(None).is_ok());
+        assert!(classify_content_encoding(Some("")).is_ok());
+        assert!(classify_content_encoding(Some("identity")).is_ok());
+        assert!(classify_content_encoding(Some("IDENTITY")).is_ok());
+        for encoding in ["gzip", "GZip", "br", "gzip, br"] {
+            let detail =
+                classify_content_encoding(Some(encoding)).expect_err("非 identity 必须拒绝");
+            assert!(detail.contains(encoding), "错误必须点名编码：{detail}");
+            assert!(detail.contains("未启用解压"), "错误必须说明根因：{detail}");
+        }
+    }
+
+    /// T-FIX-58 判据：目录登记的是归档字节，不能拿解包总量冒充；
+    /// `SizeMismatch` 文案必须把两种口径点出来，便于目录侧排错。
+    #[test]
+    fn size_mismatch_message_names_the_archive_vs_unpacked_trap() {
+        let message = SoundError::SizeMismatch {
+            expected: 443_075_501,
+            actual: 1_226_781_472,
+        }
+        .message();
+        assert!(message.contains("归档文件字节"), "{message}");
+        assert!(message.contains("解包后的样本总量"), "{message}");
+    }
+
     /// 判据：原子替换的**正向路径** —— 同 id 重装后旧内容被完整替换，且
     /// 临时区不残留 `.backup-*` 目录（backup→rename→cleanup 三步都走通）。
     #[test]
@@ -1590,7 +1676,37 @@ mod tests {
 
 #[cfg(test)]
 mod readout_tests {
-    use super::format_download_readout;
+    use super::{download_percent, format_download_readout};
+
+    /// T-FIX-58：已下超过宣称总量时**不许**再钉在 100%.
+    /// 用现场数字（945.9 MiB / 422.5 MiB）钉死读数形态。
+    #[test]
+    fn over_declared_bytes_is_loud_not_clamped_to_100() {
+        let done = 991_800_000u64; // 945.9 MiB，截图时的已下值
+        let declared = 443_075_501u64; // 422.5 MiB，目录 sizeBytes
+        assert_eq!(download_percent(done, Some(declared)), -1);
+        assert_eq!(
+            format_download_readout(-1, done, Some(declared), Some(19_713_000)),
+            "945.9 MiB / 宣称 422.5 MiB（超出 523.3 MiB） · 18.8 MiB/s"
+        );
+        // 恰好下完才是 100%；超一字节立刻转未知并显式点名超出。
+        assert_eq!(download_percent(declared, Some(declared)), 100);
+        assert_eq!(download_percent(declared + 1, Some(declared)), -1);
+        assert_eq!(
+            format_download_readout(100, declared + 1, Some(declared), None),
+            "422.5 MiB / 宣称 422.5 MiB（超出 1 B）"
+        );
+    }
+
+    /// T-FIX-58：无 Content-Length 的 chunked 响应回退目录值时，
+    /// 只要没超过登记值仍是正常百分比；总量缺失则是 -1 + 只报已下。
+    #[test]
+    fn chunked_fallback_and_unknown_total_are_distinct() {
+        assert_eq!(download_percent(0, Some(443_075_501)), 0);
+        assert_eq!(download_percent(221_537_750, Some(443_075_501)), 49);
+        assert_eq!(download_percent(999, None), -1);
+        assert_eq!(format_download_readout(-1, 999, None, None), "999 B");
+    }
 
     #[test]
     fn the_readout_never_invents_numbers() {
