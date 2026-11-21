@@ -26,6 +26,30 @@ fn mock_script() -> PathBuf {
     path
 }
 
+/// 返回可被 `Command::new` 直接启动的 mock 程序。
+///
+/// Unix 直接用 shebang 执行 `.py`；Windows 不认 `.py`（`os error 193`），
+/// 因此在临时目录生成一个 `.cmd` 包装，用 `python` 解释器启动脚本。
+/// `YEBAN_OTCP_PYTHON` 可覆盖解释器（默认 `python`）。
+#[cfg(windows)]
+fn mock_program(dir: &Path) -> PathBuf {
+    let script = mock_script();
+    let wrapper = dir.join("mock_opentune.cmd");
+    let python = std::env::var("YEBAN_OTCP_PYTHON").unwrap_or_else(|_| "python".to_owned());
+    let body = format!(
+        "@echo off\r\n\"{}\" \"{}\" %*\r\n",
+        python,
+        script.display()
+    );
+    fs::write(&wrapper, body).expect("写 mock 启动包装");
+    wrapper
+}
+
+#[cfg(not(windows))]
+fn mock_program(_dir: &Path) -> PathBuf {
+    mock_script()
+}
+
 fn test_config(mode: &str) -> (OtcpConfig, TempDir) {
     let dir = TempDir::new().expect("建临时目录");
     let control_root = dir.path().join("control-root");
@@ -37,7 +61,7 @@ fn test_config(mode: &str) -> (OtcpConfig, TempDir) {
     )
     .expect("写场景");
     let config = OtcpConfig {
-        opentune_bin: mock_script(),
+        opentune_bin: mock_program(dir.path()),
         control_root,
         display: DisplayConfig::Explicit(":0".to_owned()),
         ..OtcpConfig::default()

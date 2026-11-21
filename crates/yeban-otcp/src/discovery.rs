@@ -182,16 +182,45 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
     Ok(file)
 }
 
-/// pid 是否存活（`/proc/<pid>` 存在；非 Linux 平台一律视为存活，
-/// 由后续 TCP 连接与握手校验兜底）。
+/// pid 是否存活。
+///
+/// Unix 读 `/proc/<pid>`；Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+/// + `GetExitCodeProcess`（`STILL_ACTIVE` 才算存活）。非 Windows/Unix 平台没有可靠
+/// 实现，按“不可判定”返回 `false`，由后续 TCP 连接与握手校验兜底。
 #[must_use]
+#[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+#[must_use]
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: OpenProcess 返回的句柄在本函数内配对 CloseHandle；pid 来自发现文件，
+    // 只请求查询权限，不写目标进程。
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
 /// 读 `/proc/<pid>/stat` 第 22 字段（starttime，时钟节拍数），
 /// 换算成 Unix 毫秒。读不到 ⇒ `None`。
+///
+/// Windows 用 `GetProcessTimes` 的 creation FILETIME（1601 起 100ns）换算 Unix 毫秒。
 #[must_use]
+#[cfg(unix)]
 pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm 字段可能含空格与括号：从最后一个 ')' 之后取字段。
@@ -205,13 +234,69 @@ pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     Some(start_ms)
 }
 
+#[must_use]
+#[cfg(windows)]
+pub fn process_start_time_ms(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // FILETIME 是 1601-01-01 起的 100ns 计数；Unix 毫秒 = ticks/10000 - 该偏移。
+    const UNIX_EPOCH_FILETIME_MS: u64 = 11_644_473_600_000;
+    // SAFETY: 句柄在本函数内关闭；只查询创建时间。
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut kernel = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut user = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        let _ = CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        Some(ticks / 10_000 - UNIX_EPOCH_FILETIME_MS)
+    }
+}
+
+#[must_use]
+#[cfg(not(any(unix, windows)))]
+pub fn pid_alive(_pid: u32) -> bool {
+    false
+}
+
+#[must_use]
+#[cfg(not(any(unix, windows)))]
+pub fn process_start_time_ms(_pid: u32) -> Option<u64> {
+    None
+}
+
 /// 时钟节拍数／秒（Linux 缺省 100；读不到时用 100）。
+#[cfg(unix)]
 fn ticks_per_second() -> u64 {
     // libc 不可用（std-only 依赖）；Linux 上 CLK_TCK 恒为 100。
     100
 }
 
 /// 系统启动时间（Unix 毫秒），取自 `/proc/stat` 的 `btime` 行。
+#[cfg(unix)]
 fn boot_time_ms() -> Option<u64> {
     let stat = fs::read_to_string("/proc/stat").ok()?;
     for line in stat.lines() {
@@ -303,9 +388,18 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).expect("设模式");
+            let error = check_control_dir_mode(&dir).expect_err("0775 应拒");
+            assert_eq!(error.reason, "otcpNotConfigured");
         }
-        let error = check_control_dir_mode(&dir).expect_err("0775 应拒");
-        assert_eq!(error.reason, "otcpNotConfigured");
+        // 非 Unix 没有 POSIX 模式位；`check_control_dir_mode` 明确跳过检查，
+        // 这里断言“应放行”，避免把 Unix 专属规则当成跨平台契约。
+        #[cfg(not(unix))]
+        {
+            assert!(
+                check_control_dir_mode(&dir).is_ok(),
+                "非 Unix 平台无 0775 语义，应 Ok"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
