@@ -4910,11 +4910,12 @@ impl EngineRuntime {
     ///
     /// **通道映射（已由判据钉住）**：`ch0 = 左`、`ch1..chN-1 = 右`（判据
     /// `the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right`，
-    /// N = 1/2/3/4/6/8 逐帧逐路逐位）。⚠ `channels == 1` 时因此**只写左声道**：
-    /// 这是当前的**映射**行为，不是"单声道设备应当怎么混"的裁决 —— 把它改成
-    /// `(L + R) · 0.5` 之类的下混会改变渲染输出（实测注入：判据 ⑥-10 的 N = 1
-    /// 分支当场变红）⇒ 修法属**裁决**，措辞写在
-    /// `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
+    /// N = 2/3/4/6/8 逐帧逐路逐位）。`channels == 1`（单声道设备）写
+    /// `(L + R) · 0.5` **下混** —— 裁决（Wang 2026-11-20，照 Logic Pro 立体声进
+    /// 单声道目的地求和下混；CODE_AUDIT_REPORT §5.1(c)）：此前只写左声道、右声道
+    /// 静默丢失（`tests/idempotency_and_channel_consistency.rs` 模块文档 §4
+    /// 发现 1，**已修**）；⑥-10 的 N = 1 分支与回归判据
+    /// `mono_output_is_the_mean_of_left_and_right` 按此裁决逐样本钉住期望值。
     ///
     /// 本函数是实时路径：零分配、零锁、零阻塞 I/O [红线 7]。
     pub fn process_quantum(&mut self, output: &mut [f32], channels: u16) {
@@ -4932,12 +4933,18 @@ impl EngineRuntime {
             let n = frames.min(left.len());
             self.band_solo
                 .process_in_place(&mut left[..n], &mut right[..n]);
-            // ⚠ `channels == 1` ⇒ 只有第 0 路（= 左）被写：右声道的内容在单声道设备上
-            // **无处可去**。这是**待裁决**的已知缺口，不是可以就地改掉的小事：
-            // 见 `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
+            // 单声道（`channels == 1`）写 `(L + R) · 0.5` 下混（裁决：Wang
+            // 2026-11-20；见上方函数文档与判据文件模块文档 §4 发现 1（已修））；
+            // `channels >= 2` 维持映射：第 0 路 = 左、其余路 = 右。
             for channel in 0..channels {
                 for frame in 0..frames {
-                    let sample = self.block.get(channel, frame).unwrap_or(0.0);
+                    let sample = if channels == 1 {
+                        let left = self.block.get(0, frame).unwrap_or(0.0);
+                        let right = self.block.get(1, frame).unwrap_or(0.0);
+                        (left + right) * 0.5
+                    } else {
+                        self.block.get(channel, frame).unwrap_or(0.0)
+                    };
                     output[(offset + frame) * channels + channel] = sample;
                 }
             }

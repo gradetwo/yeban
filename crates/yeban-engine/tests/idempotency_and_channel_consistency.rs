@@ -99,12 +99,13 @@
 //! 因此本条**加宽** ⑥-10（不新增判据编号、不动任何期望值）：以 0 路推进一个量子
 //! 必须与以 1 路推进**逐位相同**，且必须仍然渲染**恰好一个**量子。
 //!
-//! ## 4. 本票发现（**不改**，只报告）
+//! ## 4. 本票发现（发现 1 已修，见其裁决与落地段；其余只报告）
 //!
 //! 发现 1 与发现 2 是 `line/engine-21` 留下的；发现 1 的**复核**与发现 3 由
 //! `line/engine-22` 追加（两者都**没有**改渲染输出）。
 //!
-//! **发现 1（多声道）：单声道设备上的声道映射会把右声相的内容丢掉。**
+//! **发现 1（多声道）：单声道设备上的声道映射会把右声相的内容丢掉。（已修：
+//! 裁决 A 折叠，Wang 2026-11-20；`line/fix16-mono-downmix` 落地，见本节末。）**
 //! `channels == 1` 时 `process_quantum` 只写第 0 路（= 左），而 `device::negotiate`
 //! 的第 2 步只看采样率、**不问通道数** ⇒ 只提供单声道的 f32 设备会被协商成功，
 //! 于是全右声相的轨在单声道设备上**不可闻**。
@@ -152,7 +153,13 @@
 //! > `ChannelLayout::StereoToMono` 的既有口径），并授权同步改写 ⑥-10 的 N = 1
 //! > 分支期望值；`channels >= 3` 时第 2 路起的映射维持 ⑥-10 已钉的"右"。**
 //!
-//! 在裁决落地之前，本票**不改**渲染输出：单声道设备仍然只放左声道。
+//! **发现 1 的裁决与落地（Wang 2026-11-20 裁决，`line/fix16-mono-downmix` 实现）**：
+//! 裁决原文即上引 blockquote（选项 **A 折叠**；口径出处 CODE_AUDIT_REPORT
+//! §5.1(c)，照 Logic Pro 立体声进单声道目的地求和下混）。落地内容：
+//! `process_quantum` 在 `channels == 1` 时写 `(L + R) · 0.5`；⑥-10 的 N = 1
+//! 分支期望值按授权同步改写为下混值；新增回归判据
+//! `mono_output_is_the_mean_of_left_and_right` 逐样本钉住下混并钉住全右声相的
+//! 可闻性。`channels >= 2` 的映射一位不动。本发现**关闭**。
 //!
 //! **发现 2（幂等性，口径澄清而非缺陷）：`SeekTicks(t)` 的"隔量子重发"不是幂等性问题。**
 //! 两次施加之间时钟已经推进（`position_ticks` 越过 `t`、相位余数已经攒起来），
@@ -826,7 +833,8 @@ fn both_channels_follow_the_same_scalar_pan_curve_bit_for_bit() {
     );
 }
 
-/// ⑥-10：交错输出的**通道映射**：`ch0 = 左`、`ch1..chN-1 = 右`（N = 1/2/3/4/6/8 逐位）。
+/// ⑥-10：交错输出的**通道映射**：`ch0 = 左`、`ch1..chN-1 = 右`（N = 2/3/4/6/8 逐位）；
+/// N = 1（单声道）写 `(L + R) · 0.5` 下混（裁决，见模块文档 §4 发现 1 的落地段）。
 ///
 /// 参照刻意取自**块自己的两条声道**（`AudioBlock::left()` / `right()` 直接访问
 /// `left` / `right` 数组），而不是再跑一遍两声道渲染 —— 后者与 `process_quantum`
@@ -835,8 +843,6 @@ fn both_channels_follow_the_same_scalar_pan_curve_bit_for_bit() {
 /// **仍然全绿**）。用 `left()` / `right()` 做参照，注入当场变红。
 ///
 /// 每判据跑 40 个量子并**逐量子**核对（不是只核对最后一个块）。
-///
-/// ⚠ 本判据**只钉映射**，不钉"单声道设备应当怎么混"（见模块文档 §4 的发现）。
 #[test]
 fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
     for (label, pan) in [("centre", 0.0f32), ("hard-right", 1.0)] {
@@ -854,7 +860,11 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
                 let block = rig.runtime.last_block();
                 for frame in 0..DEFAULT_BLOCK_FRAMES {
                     for channel in 0..stride {
-                        let expected = if channel == 0 {
+                        let expected = if stride == 1 {
+                            // 单声道 = `(L + R) · 0.5` 下混（裁决授权改写的期望值，
+                            // 见模块文档 §4 发现 1 的落地段）。
+                            (block.left()[frame] + block.right()[frame]) * 0.5
+                        } else if channel == 0 {
                             block.left()[frame]
                         } else {
                             block.right()[frame]
@@ -871,9 +881,10 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
             assert_eq!(checked, 40 * DEFAULT_BLOCK_FRAMES * stride);
         }
     }
-    // 发现（不改，只报数）：单声道设备上，全右声相的轨落在第 0 路以外的信息**无处可去**。
+    // 报数：单声道设备上全右声相的**下混**峰值（修复前此数是左声道残差 3.9e-8；
+    // 下混后应约为右声道峰值的一半，见模块文档 §4 发现 1 的落地段）。
     println!(
-        "[engine-chan/6-10] 单声道设备 + 全右声相（+6 dB）的峰值 = {:e}（左声道残差；见模块文档 §4 发现 1）",
+        "[engine-chan/6-10] 单声道设备 + 全右声相（+6 dB）的下混峰值 = {:e}（见模块文档 §4 发现 1（已修））",
         mono_peak_of_hard_right()
     );
 
@@ -885,8 +896,9 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
     // 而一条判据都不会红。这里把它钉住：**以 0 路推进一个量子，与以 1 路推进一个量子
     // 逐位相同**（同一份工程、同一个修订、同样的初值）。
     //
-    // ⚠ 本臂只钉"0 路被归一到 1 路"，**不**钉"0 路应当怎么混"（见模块文档 §4 发现 1
-    // 的裁决请求）—— 它与单声道映射是同一件待裁决的事，不是第二件。
+    // ⚠ 本臂只钉"0 路被归一到 1 路"：归一后的写回与 1 路逐位相同（即同一条
+    // `(L + R) · 0.5` 下混），不在这里重复钉下混的期望值 —— 那是 ⑥-10 的 N = 1
+    // 分支与回归判据 `mono_output_is_the_mean_of_left_and_right` 的事。
     {
         let notes = [NoteSpec::at(0, 960, 69, 127)];
         let project = tuned_project(&notes, MixSpec::pan(0.0)).project;
@@ -924,6 +936,45 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
             "[engine-chan/6-10] channels=0 ⇒ 归一为单路：{compared} 个样本与 channels=1 逐位相同"
         );
     }
+}
+
+/// 回归判据（§4 发现 1，裁决 A 折叠）：立体声内容经**单声道**输出，逐样本等于
+/// `(L + R) · 0.5` —— 右声道不再静默丢失。
+///
+/// 参照与 ⑥-10 同款：取自刚渲染完的块自己的 `left()` / `right()`，逐量子核对
+/// （不从立体声渲染反推，避免同源自证）。三种声相各跑 40 个量子。
+/// 另钉一条**可闻性**断言：全右声相（+6 dB，与 §4 发现 1 同一档夹具）在单声道
+/// 输出上的峰值必须 > 0.1 —— 修复前此数是左声道残差 3.934455e-8（与右声道峰值
+/// 9.000982e-1 相差 7 个数量级），断言落点取 0.1 是把"右声道回来了"钉成量级事实，
+/// 不是把峰值钉成某个精确值（精确值由上面的逐样本等式承担）。
+#[test]
+fn mono_output_is_the_mean_of_left_and_right() {
+    for (label, pan) in [("centre", 0.0f32), ("hard-left", -1.0), ("hard-right", 1.0)] {
+        let notes = [NoteSpec::at(0, 960, 69, 127)];
+        let project = tuned_project(&notes, MixSpec::pan(pan)).project;
+        let mut rig = EventRig::new(&project, 1, 1);
+        let mut checked = 0usize;
+        for _ in 0..40 {
+            rig.quantum(1);
+            let block = rig.runtime.last_block();
+            for frame in 0..DEFAULT_BLOCK_FRAMES {
+                let expected = (block.left()[frame] + block.right()[frame]) * 0.5;
+                assert_eq!(
+                    rig.output[frame].to_bits(),
+                    expected.to_bits(),
+                    "{label}: 第 {frame} 帧单声道输出必须逐位等于 (L + R) · 0.5"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 40 * DEFAULT_BLOCK_FRAMES);
+    }
+    let peak = mono_peak_of_hard_right();
+    assert!(
+        peak > 0.1,
+        "全右声相在单声道输出上必须可闻（下混峰值 {peak:e}；修复前为左声道残差 3.934455e-8）"
+    );
+    println!("[engine-chan/mono] 全右声相单声道下混峰值 = {peak:e}");
 }
 
 /// 判据：走带**定位**（`SeekTicks`）必须释放**鼓机**的在响槽位。
