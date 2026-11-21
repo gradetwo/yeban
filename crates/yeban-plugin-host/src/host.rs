@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::error::HostError;
 use crate::stub::{StubEffect, StubInstrument};
 use crate::types::{PluginDescriptor, PluginInstance, PluginKind, tuid_hex};
-use crate::vst3::{Vst3Instance, Vst3Module, inspect_module, is_non_component_class};
+use crate::vst3::{Vst3Instance, Vst3Module, is_non_component_class};
 
 /// `stub:` 桩的前缀（仅测试夹具与演示工程用，⛔ 不是真实插件路径）。
 pub const STUB_PREFIX: &str = "stub:";
@@ -113,25 +113,33 @@ impl Host {
         let mut out = Vec::new();
         for candidate in candidates {
             let path_string = candidate.to_string_lossy().into_owned();
-            // ARA 能力列：模块能打开时才探（打不开的模块无 ARA 列，
-            // 与模块 `error` 分开记——ARA 缺失不是模块失败）。
-            let ara = Vst3Module::load(&path_string)
-                .ok()
-                .and_then(|module| crate::ara::inspect_ara_factory(&module));
-            match inspect_module(&path_string) {
-                Ok((vendor, classes)) => out.push(PluginDescriptor {
-                    path: path_string,
-                    vendor,
-                    classes,
-                    error: None,
-                    ara,
-                }),
+            // 每个候选模块只加载一次，同时服务 ARA 探针与类枚举，避免重复 dlopen。
+            match Vst3Module::load(&path_string) {
+                Ok(module) => {
+                    let ara = crate::ara::inspect_ara_factory(&module);
+                    match crate::vst3::inspect_loaded_module(&module) {
+                        Ok((vendor, classes)) => out.push(PluginDescriptor {
+                            path: path_string,
+                            vendor,
+                            classes,
+                            error: None,
+                            ara,
+                        }),
+                        Err(error) => out.push(PluginDescriptor {
+                            path: path_string,
+                            vendor: String::new(),
+                            classes: Vec::new(),
+                            error: Some(error.to_string()),
+                            ara,
+                        }),
+                    }
+                }
                 Err(error) => out.push(PluginDescriptor {
                     path: path_string,
                     vendor: String::new(),
                     classes: Vec::new(),
                     error: Some(error.to_string()),
-                    ara,
+                    ara: None,
                 }),
             }
         }
@@ -195,25 +203,27 @@ impl Host {
         if raw.is_empty() {
             return Err(HostError::ClassNotFound("工厂没有登记任何类".to_owned()));
         }
-        // 类选择：指名优先（类名精确，或 CID 十六进制）；不指名取首个目标 kind 类。
-        let chosen = if let Some(want) = plugin_id {
-            raw.iter()
+        // 类选择：指名优先（类名精确，或 CID 十六进制）；不指名取首个目标 kind 类并直接复用探针实例。
+        let (chosen_name, mut instance) = if let Some(want) = plugin_id {
+            let chosen = raw
+                .iter()
                 .find(|(cid, name, _)| name == want || tuid_hex(cid).eq_ignore_ascii_case(want))
                 .ok_or_else(|| {
                     HostError::ClassNotFound(format!("没有类叫 `{want}`（或 CID 不是它）"))
-                })?
-                .clone()
+                })?;
+            let inst = Vst3Instance::open(&module, &chosen.0, &chosen.1)?;
+            (chosen.1.clone(), inst)
         } else {
             // 不指名：逐个实例化探针，首个目标 kind 类胜出（探针失败的类跳过；
             // 控制器／兼容类不作组件探针，见 `is_non_component_class`）。
-            let mut found: Option<(crate::types::Tuid, String, String)> = None;
+            let mut found: Option<(String, Vst3Instance)> = None;
             for (cid, name, category) in &raw {
                 if is_non_component_class(category) {
                     continue;
                 }
                 match Vst3Instance::open(&module, cid, name) {
                     Ok(instance) if instance.kind() == want_kind => {
-                        found = Some((*cid, name.clone(), category.clone()));
+                        found = Some((name.clone(), instance));
                         break;
                     }
                     _ => continue,
@@ -233,17 +243,16 @@ impl Host {
                 }
             })?
         };
-        let mut instance = Vst3Instance::open(&module, &chosen.0, &chosen.1)?;
         if instance.kind() != want_kind {
             return Err(match want_kind {
                 PluginKind::Instrument => HostError::NotAnInstrument(format!(
                     "类 `{}` 不是乐器（kind＝{:?}）",
-                    chosen.1,
+                    chosen_name,
                     instance.kind()
                 )),
                 PluginKind::Effect => HostError::NotAnEffect(format!(
                     "类 `{}` 不是效果器（kind＝{:?}）",
-                    chosen.1,
+                    chosen_name,
                     instance.kind()
                 )),
                 PluginKind::Unknown => {
@@ -251,6 +260,7 @@ impl Host {
                 }
             });
         }
+        let _ = chosen_name;
         // 验证激活循环：证明整链可激活，再停用交还（渲染时重激活）。
         instance.activate(48_000.0, 4096)?;
         instance.deactivate();
