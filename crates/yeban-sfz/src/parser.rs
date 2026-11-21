@@ -57,6 +57,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::curve::{Curve, CurvePoint};
@@ -92,6 +93,12 @@ pub const DEFAULT_MAX_DEFINES: usize = 4_096;
 pub const DEFAULT_MAX_MACRO_EXPANSIONS_PER_LINE: usize = 64;
 /// 单个源文件最大字节数 (16 MiB)。
 pub const DEFAULT_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+/// `#include` 展开链累计可读字节数 (64 MiB)。
+///
+/// 单文件上限只约束一份文件；`max_include_files` 又是 1 024 —— 两者相乘会让
+/// 一条 include 链合法地读入 16 GiB。这里加一条**跨文件**总预算，读盘前按
+/// `remaining + 1` 限长，超限立即响亮失败。
+pub const DEFAULT_MAX_INCLUDE_BYTES: usize = 64 * 1024 * 1024;
 /// `#include` 最大嵌套深度 (16)。
 pub const DEFAULT_MAX_INCLUDE_DEPTH: usize = 16;
 /// `#include` 展开后最多几个源文件 (1,024)。
@@ -159,6 +166,8 @@ pub struct ParseLimits {
     pub max_macro_expansions_per_line: usize,
     /// 单文件最大字节数，见 [`DEFAULT_MAX_SOURCE_BYTES`]。
     pub max_source_bytes: usize,
+    /// `#include` 展开链累计最大字节数，见 [`DEFAULT_MAX_INCLUDE_BYTES`]。
+    pub max_include_bytes: usize,
     /// `#include` 最大嵌套深度，见 [`DEFAULT_MAX_INCLUDE_DEPTH`]。
     pub max_include_depth: usize,
     /// `#include` 展开后最大文件数，见 [`DEFAULT_MAX_INCLUDE_FILES`]。
@@ -186,6 +195,7 @@ impl Default for ParseLimits {
             max_defines: DEFAULT_MAX_DEFINES,
             max_macro_expansions_per_line: DEFAULT_MAX_MACRO_EXPANSIONS_PER_LINE,
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
+            max_include_bytes: DEFAULT_MAX_INCLUDE_BYTES,
             max_include_depth: DEFAULT_MAX_INCLUDE_DEPTH,
             max_include_files: DEFAULT_MAX_INCLUDE_FILES,
             max_glob_matches: DEFAULT_MAX_GLOB_MATCHES,
@@ -213,6 +223,7 @@ impl ParseLimits {
             max_defines: usize::MAX,
             max_macro_expansions_per_line: usize::MAX,
             max_source_bytes: usize::MAX,
+            max_include_bytes: usize::MAX,
             max_include_depth: usize::MAX,
             max_include_files: usize::MAX,
             max_glob_matches: usize::MAX,
@@ -2301,6 +2312,7 @@ impl IncludeResolver {
             macros: BTreeMap::new(),
             stack: Vec::new(),
             files: 0,
+            bytes: 0,
             issues: Vec::new(),
             lossy,
         };
@@ -2322,6 +2334,12 @@ impl IncludeResolver {
                         limit: self.limits.max_include_files,
                     });
                 }
+                if text.len() > self.limits.max_include_bytes {
+                    return Err(SfzError::IncludeBytesExceeded {
+                        limit: self.limits.max_include_bytes,
+                    });
+                }
+                state.bytes = text.len();
                 state.stack.push(canonical);
                 let result = self.scan_and_expand(text, &relative, 0, &mut state);
                 state.stack.pop();
@@ -2425,10 +2443,41 @@ impl IncludeResolver {
             });
         }
 
-        let bytes = fs::read(canonical).map_err(|error| SfzError::Io {
+        let metadata = fs::metadata(canonical).map_err(|error| SfzError::Io {
             path: display.to_string(),
             detail: error.to_string(),
         })?;
+        let file_len = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+        if file_len > self.limits.max_source_bytes {
+            return Err(SfzError::SourceTooLarge {
+                path: display.to_string(),
+                len: file_len,
+                limit: self.limits.max_source_bytes,
+            });
+        }
+        let remaining = self.limits.max_include_bytes.saturating_sub(state.bytes);
+        if file_len > remaining {
+            return Err(SfzError::IncludeBytesExceeded {
+                limit: self.limits.max_include_bytes,
+            });
+        }
+        let read_cap = remaining.min(self.limits.max_source_bytes);
+        // 只读到「本文件上限」或「剩余总预算」中较小的那个 + 1 字节：
+        // 这样既不会先把 16 GiB 读进内存再拒绝，也能区分是哪条预算命中。
+        let take_limit = u64::try_from(read_cap)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut file = fs::File::open(canonical).map_err(|error| SfzError::Io {
+            path: display.to_string(),
+            detail: error.to_string(),
+        })?;
+        let mut bytes = Vec::new();
+        std::io::Read::take(&mut file, take_limit)
+            .read_to_end(&mut bytes)
+            .map_err(|error| SfzError::Io {
+                path: display.to_string(),
+                detail: error.to_string(),
+            })?;
         if bytes.len() > self.limits.max_source_bytes {
             return Err(SfzError::SourceTooLarge {
                 path: display.to_string(),
@@ -2436,6 +2485,12 @@ impl IncludeResolver {
                 limit: self.limits.max_source_bytes,
             });
         }
+        if bytes.len() > remaining {
+            return Err(SfzError::IncludeBytesExceeded {
+                limit: self.limits.max_include_bytes,
+            });
+        }
+        state.bytes = state.bytes.saturating_add(bytes.len());
         let text = String::from_utf8(bytes).map_err(|_| SfzError::NotUtf8 {
             path: display.to_string(),
         })?;
@@ -2604,6 +2659,8 @@ struct ResolveState {
     macros: BTreeMap<String, String>,
     stack: Vec<PathBuf>,
     files: usize,
+    /// 已读入的源文件累计字节数（含调用方提供的根文本）。
+    bytes: usize,
     /// 容错档下被跳过的 include（严格档下永远为空）。
     issues: Vec<IncludeIssue>,
     /// `true` ⇒ 缺失的 include 只记不报（见 [`IncludeResolver::resolve_lossy`]）。
@@ -3090,6 +3147,35 @@ mod tests {
                 "unexpected verdict for {bad}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn include_chain_total_bytes_are_bounded() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("sfz-include-budget-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let root = "#include \"child.sfz\"\n<region>sample=a.wav\n";
+        let child = "<region>sample=b.wav\n";
+        fs::write(dir.join("root.sfz"), root).expect("root");
+        fs::write(dir.join("child.sfz"), child).expect("child");
+        let limits = ParseLimits {
+            max_include_bytes: root.len() + child.len() - 1,
+            ..ParseLimits::default()
+        };
+        let resolver = IncludeResolver::new(&dir, limits).expect("base dir");
+        let error = resolver
+            .resolve("root.sfz")
+            .expect_err("the chain must exceed the total byte budget");
+        assert!(
+            matches!(error, SfzError::IncludeBytesExceeded { limit } if limit == limits.max_include_bytes),
+            "unexpected verdict: {error:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ------------------------------------------------------------------
@@ -4320,6 +4406,7 @@ mod tests {
             "max_macro_expansions_per_line"
         );
         assert_eq!(limits.max_source_bytes, 16_777_216, "max_source_bytes");
+        assert_eq!(limits.max_include_bytes, 67_108_864, "max_include_bytes");
         assert_eq!(limits.max_include_depth, 16, "max_include_depth");
         assert_eq!(limits.max_include_files, 1_024, "max_include_files");
         assert_eq!(limits.max_glob_matches, 4_096, "max_glob_matches");

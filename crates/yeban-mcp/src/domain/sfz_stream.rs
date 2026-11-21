@@ -1105,7 +1105,11 @@ fn collect_sources(
         if sample.trim().is_empty() {
             continue;
         }
-        let resolved = resolve_sample_path(sfz_path, &sample);
+        let resolved = match resolve_sample_path(sfz_path, &sample) {
+            Ok(resolved) => resolved,
+            // 沙箱拒绝的样本不是可预载源；装载路径会把拒绝原因写进报告。
+            Err(_) => continue,
+        };
         if seen.insert(resolved.clone()) {
             out.push(resolved);
         }

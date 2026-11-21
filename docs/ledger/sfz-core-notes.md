@@ -80,6 +80,7 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
 | `max_defines` | 4 096 | `TooManyDefines` | 宏表无界增长 |
 | `max_macro_expansions_per_line` | 64 | `MacroExpansionExceeded` | `#define` 文本炸弹 |
 | `max_source_bytes` | 16 MiB | `SourceTooLarge` | 单文件读入内存前先拦 |
+| `max_include_bytes` | 64 MiB | `IncludeBytesExceeded` | 跨文件累计字节预算；单文件 × 文件数上限相乘仍会到 16 GiB |
 | `max_include_depth` | 16 | `IncludeDepthExceeded` | 深链 include |
 | `max_include_files` | 1 024 | `IncludeCountExceeded` | include 扇出 |
 | `max_glob_matches` | 4 096 | `GlobMatchesExceeded` | `*.sfz` 匹配爆炸 |

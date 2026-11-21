@@ -156,6 +156,34 @@ pub enum SfzError {
         limit: usize,
     },
 
+    /// `#include` 展开链累计字节数超过 [`crate::parser::ParseLimits::max_include_bytes`]。
+    #[error("#include expansion read more than {limit} bytes in total")]
+    IncludeBytesExceeded {
+        /// 上限。
+        limit: usize,
+    },
+
+    /// `sample=` 使用了绝对路径。样本只允许在 SFZ 根目录内解析。
+    #[error("sample path `{path}` is absolute and rejected (sandbox)")]
+    SampleAbsolutePath {
+        /// 被拒绝的路径。
+        path: String,
+    },
+
+    /// **安全红线**：`sample=` 通过 `..` 或符号链接逃逸出 SFZ 根目录。
+    #[error("sample path `{path}` escapes the SFZ root (sandbox)")]
+    SampleEscape {
+        /// 被拒绝的路径。
+        path: String,
+    },
+
+    /// `sample=` 路径含 NUL 或其它不能进入文件系统的字符。
+    #[error("sample path `{path}` is not a valid filesystem path")]
+    SampleInvalidPath {
+        /// 被拒绝的路径。
+        path: String,
+    },
+
     /// glob 匹配数超过 [`crate::parser::ParseLimits::max_glob_matches`]。
     #[error("include pattern `{pattern}` matched more than {limit} files")]
     GlobMatchesExceeded {
@@ -476,7 +504,7 @@ mod tests {
 
     /// 每个 `SfzError` 臂的 `Display` 文案**逐字**钉住。
     ///
-    /// 这条判据覆盖 45 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
+    /// 这条判据覆盖 49 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
     /// 都会在这里变红。同时断言 `source()` 恒为 `None` —— 本 crate 刻意不携带底层
     /// `io::Error`（见 `Io` 的文档：保留 `PartialEq`），因此错误链只有一层。
     /// 黄金表的唯一来源：每个 `SfzError` 臂一条 `(错误值, 期望 Display 文案)`。
@@ -768,13 +796,35 @@ mod tests {
                 },
                 "line 3: 21 ampeg_* CC modulations exceed the maximum of 20",
             ),
+            (
+                SfzError::IncludeBytesExceeded { limit: 3 },
+                "#include expansion read more than 3 bytes in total",
+            ),
+            (
+                SfzError::SampleAbsolutePath {
+                    path: String::from("s"),
+                },
+                "sample path `s` is absolute and rejected (sandbox)",
+            ),
+            (
+                SfzError::SampleEscape {
+                    path: String::from("s"),
+                },
+                "sample path `s` escapes the SFZ root (sandbox)",
+            ),
+            (
+                SfzError::SampleInvalidPath {
+                    path: String::from("s"),
+                },
+                "sample path `s` is not a valid filesystem path",
+            ),
         ]
     }
 
     #[test]
     fn every_sfz_error_display_arm_is_pinned() {
         let cases = display_cases();
-        assert_eq!(cases.len(), 45);
+        assert_eq!(cases.len(), 49);
         for (error, expected) in cases {
             assert_eq!(format!("{error}"), expected, "Display for {error:?}");
             assert!(
@@ -837,6 +887,10 @@ mod tests {
             SfzError::InvalidVoiceCapacity { .. } => 42,
             SfzError::StaleVoiceHandle => 43,
             SfzError::TooManyAmpegModulations { .. } => 44,
+            SfzError::IncludeBytesExceeded { .. } => 45,
+            SfzError::SampleAbsolutePath { .. } => 46,
+            SfzError::SampleEscape { .. } => 47,
+            SfzError::SampleInvalidPath { .. } => 48,
         }
     }
 

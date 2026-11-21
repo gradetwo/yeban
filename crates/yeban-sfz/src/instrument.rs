@@ -1371,6 +1371,45 @@ pub fn is_builtin_silence_sample(sample: &str) -> bool {
     sample == BUILTIN_SILENCE_SAMPLE
 }
 
+/// 对一条已经拼好 `default_path=` 的 `sample=` 路径做**词法沙箱检查**。
+///
+/// 只判三件事（⛔ 不碰文件系统，符号链接由调用方的 canonicalize 负责）：
+/// ① NUL；② POSIX 绝对路径或 Windows 盘符绝对路径；③ 任意 `..` 组件。
+/// 空串是「没声明样本」，不算违规。
+///
+/// # Errors
+///
+/// 见 [`Region::sample_path_checked`]。
+pub fn validate_sample_path(sample: &str) -> Result<(), SfzError> {
+    if sample.is_empty() {
+        return Ok(());
+    }
+    if sample.contains('\0') {
+        return Err(SfzError::SampleInvalidPath {
+            path: sample.to_owned(),
+        });
+    }
+    let normalized = sample.replace('\\', "/");
+    if normalized.starts_with('/')
+        || (normalized.as_bytes().get(1) == Some(&b':')
+            && normalized
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+            && normalized.as_bytes().get(2) == Some(&b'/'))
+    {
+        return Err(SfzError::SampleAbsolutePath {
+            path: sample.to_owned(),
+        });
+    }
+    if normalized.split('/').any(|component| component == "..") {
+        return Err(SfzError::SampleEscape {
+            path: sample.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// ⭐ **CC 种子表的唯一合并实现**：文件 `<control> set_ccN` 初值 ⊕ 用户显式
 /// 初始 CC（`yeban_load_sfz.initialCc` / 预制 `cc` 段），**用户值覆盖文件值**。
 ///
@@ -1408,6 +1447,9 @@ impl<'a> Region<'a> {
     }
 
     /// 播放路径：把 `default_path` 拼到 `sample` 上（`sample` 以 `/` 开头时不拼）。
+    ///
+    /// ⚠ 这是**纯词法拼接**，不做沙箱检查；任何要拿它去访问文件系统的调用方都必须
+    /// 改用 [`Self::sample_path_checked`]（或把结果交给带根目录的解析器）。
     #[must_use]
     pub fn sample_path(&self) -> Cow<'_, str> {
         match self.default_path.as_deref() {
@@ -1417,6 +1459,19 @@ impl<'a> Region<'a> {
             }
             _ => Cow::Borrowed(self.sample.as_ref()),
         }
+    }
+
+    /// [`Self::sample_path`] 的沙箱检查版本：绝对路径、`..` 穿越与 NUL 一律响亮拒绝。
+    ///
+    /// # Errors
+    ///
+    /// * [`SfzError::SampleAbsolutePath`]：POSIX 绝对路径或 Windows 盘符绝对路径；
+    /// * [`SfzError::SampleEscape`]：路径含 `..` 组件；
+    /// * [`SfzError::SampleInvalidPath`]：路径含 NUL。
+    pub fn sample_path_checked(&self) -> Result<Cow<'_, str>, SfzError> {
+        let path = self.sample_path();
+        validate_sample_path(path.as_ref())?;
+        Ok(path)
     }
 
     /// 是否由该音符触发（`key=-1` 的 region 永远返回 `false`）。
@@ -10163,26 +10218,46 @@ v127=1
     }
 
     #[test]
-    fn sample_paths_are_passed_through_without_sanitizing() {
-        // 产线**不**清洗 sample 路径：`..`、绝对路径、反斜杠与控制字符全部原样保留，
-        // 只做「前缀 + 分隔符」的拼接。拒绝语义属于调用方（第七批报告里登记为 API 缺口）。
-        for sample in [
-            "../x.wav",
-            "/abs/x.wav",
-            "sub\\x.wav",
-            "a\u{1}b.wav",
-            "x.wav",
-        ] {
-            let source = format!("<region>sample={sample}");
+    fn sample_paths_are_rejected_outside_the_instrument_root() {
+        // 连接口分两层：
+        // * `sample_path()` 仍是纯词法拼接（历史调用方与引擎表键继续可用）；
+        // * 任何要读文件系统的调用方必须用 `sample_path_checked()`，绝对路径与 `..`
+        //   一律响亮拒绝（P1-6）。
+        for bad in ["../x.wav", "/abs/x.wav", "C:/abs/x.wav", "sub/../../x.wav"] {
+            let source = format!("<region>sample={bad}");
             let region = first_region(&source);
-            assert_eq!(region.sample_path(), sample, "no rewriting of {sample:?}");
+            assert_eq!(
+                region.sample_path(),
+                bad,
+                "legacy lexical join is unchanged"
+            );
+            let error = region
+                .sample_path_checked()
+                .expect_err("escaping sample path must be rejected");
+            assert!(
+                matches!(
+                    error,
+                    SfzError::SampleAbsolutePath { .. } | SfzError::SampleEscape { .. }
+                ),
+                "unexpected verdict for {bad:?}: {error:?}"
+            );
+        }
+        for good in ["sub\\x.wav", "a\u{1}b.wav", "x.wav"] {
+            let source = format!("<region>sample={good}");
+            let region = first_region(&source);
+            assert_eq!(
+                region
+                    .sample_path_checked()
+                    .expect("relative path is allowed"),
+                good,
+                "normal relative path must be unchanged"
+            );
         }
         let prefixed = first_region("<control>\ndefault_path=S/\n<region>sample=../x.wav");
-        assert_eq!(
-            prefixed.sample_path(),
-            "S/../x.wav",
-            "the prefix is joined verbatim, without resolving `..`"
-        );
+        let error = prefixed
+            .sample_path_checked()
+            .expect_err("a `..` introduced through the prefix join is still an escape");
+        assert!(matches!(error, SfzError::SampleEscape { .. }));
     }
 
     #[test]

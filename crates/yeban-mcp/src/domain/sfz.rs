@@ -642,9 +642,15 @@ fn classify_failed_read(resolved: &Path, reason: &str) -> SampleDisposition {
     SampleDisposition::Other
 }
 
-/// `sample=` 的路径解析：绝对路径原样用；相对路径**相对 SFZ 文件所在目录**（SFZ 惯例）。
-#[must_use]
-pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> PathBuf {
+/// `sample=` 的路径解析：先做词法沙箱检查，再相对 SFZ 文件所在目录解析，最后
+/// 对**已存在的最深祖先** canonicalize 并断言仍在 SFZ 根目录内（防符号链接逃逸）。
+///
+/// 绝对路径与 `..` 一律返回 [`yeban_sfz::SfzError`]，不再原样放行。
+///
+/// # Errors
+///
+/// [`yeban_sfz::SfzError::SampleAbsolutePath`] / `SampleEscape` / `SampleInvalidPath`。
+pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> Result<PathBuf, yeban_sfz::SfzError> {
     // ⭐ ⭐ `#221`（照抄 app 的 `#205` 口径，⛔ 不另立一套）：SFZ 的
     // `opcode=value` 值里**没有转义语法**（解析器只去掉一层成对双引号），
     // 所以 `sample=arco\\c4.wav` 里的 `\` 是作者写的**路径分隔符**，不是转义符。
@@ -656,14 +662,39 @@ pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> PathBuf {
     // `SampleCache` 一律读不到、静默回退到内存正弦（读数会如实报
     // `samples=0 missing=["…"]`，但**听见的不是那个音色**）。归一之后
     // 同一份 SFZ 读到 210 份样本（见报告里的实测数字）。
+    yeban_sfz::instrument::validate_sample_path(sample)?;
     let normalized = normalize_sample_path(sample);
     let raw = Path::new(normalized.as_ref());
-    if raw.is_absolute() || is_windows_drive_absolute(raw) {
-        raw.to_path_buf()
-    } else {
-        sfz_path
-            .parent()
-            .map_or_else(|| raw.to_path_buf(), |parent| parent.join(raw))
+    let root = sfz_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let resolved = root.join(raw);
+    if let Ok(root_canonical) = std::fs::canonicalize(root)
+        && let Some(ancestor) = nearest_existing_ancestor(&resolved)
+    {
+        let ancestor_canonical =
+            std::fs::canonicalize(ancestor).map_err(|error| yeban_sfz::SfzError::Io {
+                path: ancestor.display().to_string(),
+                detail: error.to_string(),
+            })?;
+        if !ancestor_canonical.starts_with(&root_canonical) {
+            return Err(yeban_sfz::SfzError::SampleEscape {
+                path: sample.to_owned(),
+            });
+        }
+    }
+    Ok(resolved)
+}
+
+/// 从 `path` 往上找第一个存在的祖先（`path` 自身存在就用它）。
+fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut current = path;
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        current = current.parent()?;
     }
 }
 
@@ -2423,6 +2454,7 @@ fn load_with_resolved(
         // ⭐ 第五份报告 A-2：样本处置表与区域遍历同一次产出（见
         // [`SampleDisposition`]）；键 = `sample_path()` 有效路径原样字符串。
         let mut dispositions: BTreeMap<String, SampleDisposition> = BTreeMap::new();
+        let mut rejected_sample_failures: Vec<String> = Vec::new();
         let mut silent_regions = 0usize;
         let mut builtin_silent_regions = 0usize;
         let mut skipped_regions = 0usize;
@@ -2469,39 +2501,61 @@ fn load_with_resolved(
                     summary.sample_file_state = "noSampleOpcode".to_owned();
                     true
                 } else {
-                    let resolved = resolve_sample_path(sfz_path, &sample);
-                    let outcome = cache.get(&resolved);
-                    // ⭐ 提供表的键是 `sample_path()` 的**原样字符串**（含 `default_path=`
-                    // 前缀、⛔ 不规范化）—— 与引擎摊平的去重键同一句。
                     let raw_path = sample.into_owned();
-                    if provider_seen.insert(raw_path.clone()) {
-                        provider.push((raw_path.clone(), outcome.clone()));
-                    }
-                    match outcome {
-                        Ok(reading) => {
-                            summary.sample_file_state = reading.describe;
-                            // ⭐ 第五份报告 A-2：处置记账（键与提供表同一句）。
-                            record_sample_disposition(
-                                &mut dispositions,
-                                raw_path.clone(),
-                                SampleDisposition::Loaded,
-                            );
-                            false
-                        }
-                        Err(reason) => {
-                            if classify_sample_failure(&reason).is_some() {
-                                budget_silent_regions += 1;
-                            }
+                    match resolve_sample_path(sfz_path, &raw_path) {
+                        Err(error) => {
+                            // 沙箱拒绝不是「文件不存在」：它在**读盘之前**就被拦下，
+                            // 必须同时进区域状态与 `sampleFailures`，不能静默回退。
                             summary.sample_file_state =
-                                format!("unreadable({}): {reason}", resolved.display());
-                            // ⭐ 第五份报告 A-2：失败按可判别理由归档
-                            // （不存在 / 格式不支持 / 读不动 / 预算未读）。
+                                format!("rejected(samplePathOutsideRoot): {error}");
+                            rejected_sample_failures.push(format!("rejected({raw_path}): {error}"));
                             record_sample_disposition(
                                 &mut dispositions,
                                 raw_path.clone(),
-                                classify_failed_read(&resolved, &reason),
+                                SampleDisposition::Other,
                             );
+                            if provider_seen.insert(raw_path.clone()) {
+                                provider.push((
+                                    raw_path,
+                                    Err(format!("rejected(samplePathOutsideRoot): {error}")),
+                                ));
+                            }
                             true
+                        }
+                        Ok(resolved) => {
+                            let outcome = cache.get(&resolved);
+                            // ⭐ 提供表的键是 `sample_path()` 的**原样字符串**（含 `default_path=`
+                            // 前缀、⛔ 不规范化）—— 与引擎摊平的去重键同一句。
+                            if provider_seen.insert(raw_path.clone()) {
+                                provider.push((raw_path.clone(), outcome.clone()));
+                            }
+                            match outcome {
+                                Ok(reading) => {
+                                    summary.sample_file_state = reading.describe;
+                                    // ⭐ 第五份报告 A-2：处置记账（键与提供表同一句）。
+                                    record_sample_disposition(
+                                        &mut dispositions,
+                                        raw_path.clone(),
+                                        SampleDisposition::Loaded,
+                                    );
+                                    false
+                                }
+                                Err(reason) => {
+                                    if classify_sample_failure(&reason).is_some() {
+                                        budget_silent_regions += 1;
+                                    }
+                                    summary.sample_file_state =
+                                        format!("unreadable({}): {reason}", resolved.display());
+                                    // ⭐ 第五份报告 A-2：失败按可判别理由归档
+                                    // （不存在 / 格式不支持 / 读不动 / 预算未读）。
+                                    record_sample_disposition(
+                                        &mut dispositions,
+                                        raw_path.clone(),
+                                        classify_failed_read(&resolved, &reason),
+                                    );
+                                    true
+                                }
+                            }
                         }
                     }
                 }
@@ -2527,6 +2581,7 @@ fn load_with_resolved(
                     .map(|reason| format!("unreadable({}): {reason}", path.display()))
             })
             .collect();
+        sample_failures.extend(rejected_sample_failures);
         sample_failures.sort_unstable();
         (
             regions,
@@ -4290,7 +4345,7 @@ pub(super) fn note_wave_at_with_cuts(
                 if raw.trim().is_empty() {
                     return None;
                 }
-                let resolved = resolve_sample_path(sfz, &raw);
+                let resolved = resolve_sample_path(sfz, &raw).ok()?;
                 cache.get(&resolved).ok()
             })
         };
@@ -5949,11 +6004,8 @@ mod tests {
             &PcmBuffer::Float32(frames),
         )
         .expect("写夹具 WAV");
-        let text = format!(
-            "<region> sample={} key=60 pitch_oncc100=1200",
-            wav_path.display()
-        );
-        let instrument = parse_text(&text, &ParseLimits::default()).expect("解析");
+        let text = "<region> sample=tone.wav key=60 pitch_oncc100=1200";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
         let note = SfzNote {
             start_frame: 0,
             frames: 200_000,
@@ -5963,7 +6015,8 @@ mod tests {
             gain_r: 1.0,
         };
         let mut cache = SampleCache::new();
-        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let sfz = dir.join("x.sfz");
+        let sfz = sfz.as_path();
         let plain = note_wave(
             &instrument,
             &note,
@@ -6028,7 +6081,7 @@ mod tests {
             &PcmBuffer::Float32(frames),
         )
         .expect("写夹具 WAV");
-        let wav = wav_path.display();
+        let wav = "tone.wav";
         let plain_text = format!("<region> sample={wav} key=60");
         let sliced_text = format!("<region> sample={wav} key=60 offset=1000 end=1999");
         let plain_inst = parse_text(&plain_text, &ParseLimits::default()).expect("解析");
@@ -6041,7 +6094,8 @@ mod tests {
             gain_l: 1.0,
             gain_r: 1.0,
         };
-        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let sfz = dir.join("x.sfz");
+        let sfz = sfz.as_path();
         let mut cache = SampleCache::new();
         let plain = note_wave(
             &plain_inst,
@@ -6212,7 +6266,7 @@ mod tests {
             &PcmBuffer::Float32(frames),
         )
         .expect("写夹具 WAV");
-        let wav = wav_path.display();
+        let wav = "tone.wav";
         let fwd_text = format!("<region> sample={wav} key=60");
         let rev_text = format!("<region> sample={wav} key=60 direction=reverse");
         let fwd_inst = parse_text(&fwd_text, &ParseLimits::default()).expect("解析");
@@ -6225,7 +6279,8 @@ mod tests {
             gain_l: 1.0,
             gain_r: 1.0,
         };
-        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let sfz = dir.join("x.sfz");
+        let sfz = sfz.as_path();
         // ⚠ 判据只在**步进恰为 1** 时可用：`engine_hz = 样本采样率`（44.1 kHz）⇒
         // `playback_rate` 的 `sample_hz / engine_hz` 恰 1 ⇒ 反向读与正向读落在同一批
         // 整数源帧上，`rev[i]` 必须逐位等于 `fwd[written − 1 − i]`。
@@ -6555,7 +6610,7 @@ mod tests {
             &PcmBuffer::Float32(frames),
         )
         .expect("写夹具 WAV");
-        let wav = wav_path.display().to_string();
+        let wav = "tone.wav";
         let plain_text = format!("<region> sample={wav} key=60");
         let loop_text = format!(
             "<region> sample={wav} key=60 loop_start=10000 loop_end=20000 loop_mode=loop_continuous"
@@ -6570,7 +6625,8 @@ mod tests {
             gain_l: 1.0,
             gain_r: 1.0,
         };
-        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let sfz = dir.join("x.sfz");
+        let sfz = sfz.as_path();
         let mut cache = SampleCache::new();
         let plain = note_wave(
             &plain_inst,
@@ -7510,5 +7566,69 @@ mod tests {
         let modulated = summarize(1, &instrument.regions()[1]);
         assert_eq!(modulated.amplitude_cc_mods.len(), 1);
         assert_eq!(modulated.amplitude_cc_mods[0].cc, 7);
+    }
+
+    #[test]
+    fn sample_paths_are_contained_in_the_sfz_root_and_rejections_are_reported() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("sfz-sample-root-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("根目录");
+        let outside =
+            std::env::temp_dir().join(format!("sfz-sample-outside-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&outside).expect("外部目录");
+        std::fs::write(outside.join("x.wav"), b"RIFF").expect("外部样本");
+
+        let sfz = root.join("root.sfz");
+        for bad in ["/etc/passwd.wav", "../x.wav", "C:/Windows/x.wav"] {
+            let error = resolve_sample_path(&sfz, bad).expect_err("must be rejected");
+            assert!(
+                matches!(
+                    error,
+                    yeban_sfz::SfzError::SampleAbsolutePath { .. }
+                        | yeban_sfz::SfzError::SampleEscape { .. }
+                ),
+                "unexpected verdict for {bad}: {error:?}"
+            );
+        }
+        let normal = resolve_sample_path(&sfz, "sub\\x.wav").expect("relative path");
+        assert_eq!(normal, root.join("sub/x.wav"));
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("escape")).expect("symlink");
+            let error = resolve_sample_path(&sfz, "escape/x.wav")
+                .expect_err("symlink escape must be rejected");
+            assert!(matches!(error, yeban_sfz::SfzError::SampleEscape { .. }));
+        }
+
+        // 装载报告：拒绝必须出现在 sampleFailures 与区域状态里，不能被当作“文件不存在”。
+        std::fs::write(
+            &sfz,
+            "<region> sample=/etc/passwd.wav key=60\n<region> sample=sub/x.wav key=61\n",
+        )
+        .expect("写 SFZ");
+        let limits = parse_sample_limits(&serde_json::Map::new()).expect("缺省预算");
+        let load = load(&sfz, 48_000.0, 1, false, limits, &BTreeMap::new()).expect("装载");
+        assert!(
+            load.sample_failures
+                .iter()
+                .any(|failure| failure.contains("rejected") && failure.contains("absolute")),
+            "sampleFailures 必须点名绝对路径拒绝: {:?}",
+            load.sample_failures
+        );
+        assert!(
+            load.regions[0]
+                .sample_file_state
+                .contains("rejected(samplePathOutsideRoot)"),
+            "区域状态必须点名拒绝: {}",
+            load.regions[0].sample_file_state
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

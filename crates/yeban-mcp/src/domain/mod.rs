@@ -5632,6 +5632,7 @@ fn directory_instrument_entry(path: &Path) -> Value {
     // `resolve_sample_path` 再做分隔符归一与相对解析，与装载侧同一口径）；
     // 内建静音与空 `sample=` 不是文件，⛔ 不计入声明数。
     let mut declared: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut rejected: Vec<String> = Vec::new();
     for region in instrument.regions() {
         if region.is_builtin_silence() {
             continue;
@@ -5640,7 +5641,12 @@ fn directory_instrument_entry(path: &Path) -> Value {
         if sample.trim().is_empty() {
             continue;
         }
-        declared.insert(sfz::resolve_sample_path(path, &sample));
+        match sfz::resolve_sample_path(path, &sample) {
+            Ok(resolved) => {
+                declared.insert(resolved);
+            }
+            Err(error) => rejected.push(format!("{sample}: {error}")),
+        }
     }
     let mut missing: Vec<String> = Vec::new();
     let mut present = 0usize;
@@ -5657,6 +5663,9 @@ fn directory_instrument_entry(path: &Path) -> Value {
     entry["missingSampleCount"] = Value::from(missing.len());
     entry["missingSampleExamples"] =
         Value::from(missing.iter().take(5).cloned().collect::<Vec<_>>());
+    entry["rejectedSampleCount"] = Value::from(rejected.len());
+    entry["rejectedSampleExamples"] =
+        Value::from(rejected.iter().take(5).cloned().collect::<Vec<_>>());
     entry["parseError"] = Value::Null;
     entry
 }

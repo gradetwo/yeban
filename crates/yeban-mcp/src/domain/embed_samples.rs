@@ -234,7 +234,11 @@ fn resolve_sample_bytes(
     assets: &BTreeMap<AssetHash, Vec<u8>>,
 ) -> Option<Vec<u8>> {
     if let Some(disk) = disk_sfz_path {
-        let candidate = resolve_sample_path(disk, raw);
+        let candidate = match resolve_sample_path(disk, raw) {
+            Ok(candidate) => candidate,
+            // 根目录外/绝对路径的样本在解析阶段就被拒绝，不能读盘。
+            Err(_) => return None,
+        };
         if candidate.is_file()
             && let Ok(bytes) = std::fs::read(&candidate)
         {
