@@ -287,7 +287,8 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// ⭐ **逐件＋侧链期 5**：**再升到 47_888 B**（＋1392 B）—— `EngineRuntime` 新增
 /// lane 组链一族字段（记账见 `tests/audio_clip_render.rs` 的 A8）；
 /// `SfzVoicePool` 本身一位不动，本常量随 `EngineRuntime` 的现读值走。
-const ENGINE_RUNTIME_BYTES: usize = 47_888;
+/// ⭐ **T-FIX-68 插入池容量计数**：**47_904 B**（＋16 B，两个 `u64`）。
+const ENGINE_RUNTIME_BYTES: usize = 47_904;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [

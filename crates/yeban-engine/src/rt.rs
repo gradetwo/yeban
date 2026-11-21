@@ -304,8 +304,11 @@ pub const PDC_SLOTS: usize = 64;
 /// `conv_pool` 每槽在构造期要建一份**占位 IR 频谱** ≈ **313 KiB**（48 kHz，见
 /// [`Self::conv_pool`] 的字段文档）⇒ 1024 槽会吃掉 **313 MiB**，而那笔钱买的是
 /// "第 65 条之后的轨也能各挂一台卷积混响"。装不下的轨由
-/// `EngineStats::insert_*` 系列按"未武装"如实体现（⛔ 不静默），
-/// 但它**只是少一层效果**，声部与路由一条都不少。
+/// [`EngineStats::insert_reverb_capacity_drops`] /
+/// [`EngineStats::insert_convolution_capacity_drops`] 逐台计数，
+/// 具体是哪条轨、哪一级、第几号槽由
+/// [`crate::snapshot::EngineSnapshot::insert_capacity_drops`] 的装载回执指名
+/// （⛔ 不静默）；它**只是少一层效果**，声部与路由一条都不少。
 ///
 /// 代价（字节，65 槽实测口径）：`armed_strips` ≈ 44 KiB、
 /// `reverb_pool` ≈ 85 KiB（结构体；延迟线在堆上）、两张 `armed_*` 表 ≈ 3 KiB、
@@ -637,6 +640,13 @@ pub struct EngineStats {
     /// （那会分配 + 释放 [MUST-GATE-001]）⇒ 那一份快照里混响不工作。它是"容量/
     /// 配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_reverb_rate_rejects: u64,
+    /// ⭐ **混响池轨槽容量丢弃数**：本修订里因 [`PDC_SLOTS`] 条轨槽已满而
+    /// **未武装**的混响设备数（主总线保留的额外一格不算）。
+    ///
+    /// 旧行为是静默 `continue`（效果不生效、读数不动）。现在每丢弃一台就
+    /// `+1`；具体是哪条轨、哪一号槽由快照侧
+    /// [`crate::snapshot::EngineSnapshot::insert_capacity_drops`] 逐台指名。
+    pub insert_reverb_capacity_drops: u64,
     /// **每轨插入器件的采样延迟级**累计处理过的帧数（手动相位对齐第一层；0 = 从未处理）。
     ///
     /// 口径：读数由引擎在**真的调用了** [`SampleDelay::process_mono`] 的那一条分支上累加
@@ -669,6 +679,13 @@ pub struct EngineStats {
     ///
     /// 它是"容量/配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_convolution_rejects: u64,
+    /// ⭐ **卷积混响池轨槽容量丢弃数**：本修订里因 [`PDC_SLOTS`] 条轨槽已满
+    /// 而**未武装**的卷积混响设备数（主总线保留的额外一格不算）。
+    ///
+    /// 与 [`Self::insert_reverb_capacity_drops`] 同族：旧行为是静默 `continue`，
+    /// 现在是计数 ＋ 快照侧
+    /// [`crate::snapshot::EngineSnapshot::insert_capacity_drops`] 的逐台回执。
+    pub insert_convolution_capacity_drops: u64,
     /// ⭐ **主总线插入链**累计处理过的帧数（任务单 `#173`；0 = 从未处理）。
     ///
     /// 与 [`Self::insert_strip_frames`] / [`Self::insert_reverb_frames`] /
@@ -3942,6 +3959,9 @@ pub struct EngineRuntime {
     /// 因混响延迟线的采样率不匹配而未武装的修订次数
     /// （与 [`EngineStats::insert_reverb_rate_rejects`] 同源）。
     insert_reverb_rate_rejects: u64,
+    /// 因混响池轨槽容量已满而未武装的设备数
+    /// （与 [`EngineStats::insert_reverb_capacity_drops`] 同源）。
+    insert_reverb_capacity_drops: u64,
     /// 累计被**插入器件的采样延迟级**处理过的帧数
     /// （与 [`EngineStats::insert_sample_delay_frames`] 同源）。
     insert_sample_delay_frames: u64,
@@ -3954,6 +3974,9 @@ pub struct EngineRuntime {
     /// 因配置不可用而未武装的卷积混响设备次数
     /// （与 [`EngineStats::insert_convolution_rejects`] 同源）。
     insert_convolution_rejects: u64,
+    /// 因卷积混响池轨槽容量已满而未武装的设备数
+    /// （与 [`EngineStats::insert_convolution_capacity_drops`] 同源）。
+    insert_convolution_capacity_drops: u64,
     /// ⭐ **主总线插入链**累计处理过的帧数（任务单 `#173`；与
     /// [`EngineStats::master_insert_frames`] 同源）。
     ///
@@ -4620,10 +4643,12 @@ impl EngineRuntime {
             put!(insert_strip_frames, 0);
             put!(insert_reverb_frames, 0);
             put!(insert_reverb_rate_rejects, 0);
+            put!(insert_reverb_capacity_drops, 0);
             put!(insert_sample_delay_frames, 0);
             put!(insert_sample_delay_capacity_rejects, 0);
             put!(insert_convolution_frames, 0);
             put!(insert_convolution_rejects, 0);
+            put!(insert_convolution_capacity_drops, 0);
             put!(master_insert_frames, 0);
             // ⭐ lane 组链（期 5）：池由上面三个局部量搬入，其余表构造期定长预分配。
             put!(
@@ -5038,10 +5063,12 @@ impl EngineRuntime {
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
+            insert_reverb_capacity_drops: self.insert_reverb_capacity_drops,
             insert_sample_delay_frames: self.insert_sample_delay_frames,
             insert_sample_delay_capacity_rejects: self.insert_sample_delay_capacity_rejects,
             insert_convolution_frames: self.insert_convolution_frames,
             insert_convolution_rejects: self.insert_convolution_rejects,
+            insert_convolution_capacity_drops: self.insert_convolution_capacity_drops,
             master_insert_frames: self.master_insert_frames,
             stereo_track_frames: self.stereo_track_frames,
             bus_insert_frames: self.bus_insert_frames,
@@ -5761,6 +5788,7 @@ impl EngineRuntime {
             reverb_scratch,
             insert_reverb_frames,
             insert_reverb_rate_rejects,
+            insert_reverb_capacity_drops,
             sample_delay_pool,
             armed_sample_delays,
             armed_sample_delay_slots,
@@ -5775,6 +5803,7 @@ impl EngineRuntime {
             conv_scratch,
             insert_convolution_frames,
             insert_convolution_rejects,
+            insert_convolution_capacity_drops,
             master_insert_frames,
             // ⭐ lane 组链一族（期 5）：快照边界武装、逐轨循环的 lane 段消费。
             armed_lane_strips,
@@ -6528,6 +6557,10 @@ impl EngineRuntime {
                     // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
                     for (id, insert) in master_last(current) {
                         if *armed_reverb_slots >= PDC_SLOTS && *id != master {
+                            // ⛔ 不静默：容量外仍要响亮登记（逐台计数；具体轨/槽号
+                            // 由快照的 `insert_capacity_drops()` 装载回执给出）。
+                            *insert_reverb_capacity_drops =
+                                insert_reverb_capacity_drops.wrapping_add(1);
                             continue;
                         }
                         let Some(params) = insert.reverb() else {
@@ -6575,6 +6608,9 @@ impl EngineRuntime {
                     // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
                     for (id, insert) in master_last(current) {
                         if *armed_conv_slots >= PDC_SLOTS && *id != master {
+                            // ⛔ 不静默：与混响同族的容量丢弃计数 ＋ 快照装载回执。
+                            *insert_convolution_capacity_drops =
+                                insert_convolution_capacity_drops.wrapping_add(1);
                             continue;
                         }
                         let Some(plan) = insert.convolution() else {
@@ -8095,6 +8131,102 @@ mod tests {
         .with_inserts(inserts)
     }
 
+    /// 与 [`snapshot_with_master_track_and_strips`] 同形，但每条普通轨挂
+    /// **一台混响 + 一台卷积混响**（用于插入池容量边界：`PDC_SLOTS` 条轨槽
+    /// 之外应逐台进容量丢弃回执）。
+    fn snapshot_with_master_track_and_reverbs(
+        revision: u64,
+        track_count: usize,
+    ) -> (EngineSnapshot, Vec<EntityId>) {
+        let master = EntityId::new();
+        let mut nodes = vec![master];
+        let mut routing = RoutingGraph {
+            nodes: Vec::new(),
+            ..RoutingGraph::default()
+        };
+        let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
+        let mut inserts: BTreeMap<EntityId, crate::insert::InsertParams> = BTreeMap::new();
+        let mut ordinary: Vec<EntityId> = Vec::with_capacity(track_count);
+        let master_model = TrackV3 {
+            id: master,
+            ..TrackV3::default()
+        };
+        tracks.insert(
+            master,
+            crate::snapshot::TrackParams::from_track(&master_model, 0),
+        );
+        for _ in 0..track_count {
+            let track = EntityId::new();
+            ordinary.push(track);
+            nodes.push(track);
+            let id = EntityId::new();
+            routing.edges.insert(
+                id,
+                RoutingEdge {
+                    id,
+                    source_node: track,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
+                },
+            );
+            let reverb = yeban_model::DeviceDefinition {
+                id: EntityId::new(),
+                name: "Reverb".to_owned(),
+                kind: yeban_model::DeviceKind::InternalEffect,
+                bypassed: false,
+                params: vec![yeban_model::ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                }],
+                latency_samples: 0,
+                plugin: None,
+            };
+            let convolution = yeban_model::DeviceDefinition {
+                id: EntityId::new(),
+                name: "Convolution".to_owned(),
+                kind: yeban_model::DeviceKind::InternalEffect,
+                bypassed: false,
+                params: vec![yeban_model::ParameterValue {
+                    name: "conv_wet".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                }],
+                latency_samples: 0,
+                plugin: None,
+            };
+            let model = TrackV3 {
+                id: track,
+                devices: vec![reverb, convolution],
+                ..TrackV3::default()
+            };
+            tracks.insert(track, TrackParams::from_track(&model, 0));
+            let insert = crate::insert::InsertParams::from_devices(&model.devices, 48_000, 120.0);
+            if !insert.is_empty() {
+                inserts.insert(track, insert);
+            }
+        }
+        routing.nodes = nodes;
+        // 回执按 `BTreeMap` 的 `EntityId` 升序点名 ⇒ 期望列表也按同一顺序排。
+        ordinary.sort_unstable();
+        let snapshot = EngineSnapshot::from_parts(
+            revision,
+            48_000,
+            DEFAULT_BLOCK_FRAMES,
+            2,
+            master,
+            tracks,
+            &routing,
+            &LatencyTable::new(),
+        )
+        .expect("合法图")
+        .with_inserts(inserts);
+        (snapshot, ordinary)
+    }
+
     struct Rig {
         slot: Arc<SnapshotSlot>,
         queue: crate::snapshot::RetireQueue,
@@ -9036,6 +9168,55 @@ mod tests {
             runtime.stats().insert_strip_frames > 0,
             "填充到池满时通道条必须真的处理过帧（否则这条判据什么都没量到）"
         );
+    }
+
+    #[test]
+    fn reverb_and_convolution_pool_overflow_is_loud_and_named() {
+        // `PDC_SLOTS` 条普通轨进池（主总线另有保留的一格）；第 65、66 条
+        // 的混响与卷积必须**逐台**进装载回执，并在实时侧计数。
+        let (snapshot, ordinary) = snapshot_with_master_track_and_reverbs(1, PDC_SLOTS + 2);
+        let drops = snapshot.insert_capacity_drops();
+        assert_eq!(drops.len(), 4, "两条超限轨 × 两级 = 四条回执");
+
+        let reverbs: Vec<_> = drops
+            .iter()
+            .filter(|drop| drop.stage == crate::snapshot::InsertCapacityStage::Reverb)
+            .collect();
+        let convolutions: Vec<_> = drops
+            .iter()
+            .filter(|drop| drop.stage == crate::snapshot::InsertCapacityStage::Convolution)
+            .collect();
+        assert_eq!(reverbs.len(), 2);
+        assert_eq!(convolutions.len(), 2);
+        for (index, drop) in reverbs.iter().enumerate() {
+            assert_eq!(drop.revision, 1);
+            assert_eq!(
+                drop.track,
+                ordinary[PDC_SLOTS + index],
+                "必须指名第 65/66 条轨"
+            );
+            assert_eq!(drop.slot, PDC_SLOTS + 1 + index, "槽号从 capacity + 1 起");
+            assert_eq!(drop.capacity, PDC_SLOTS);
+        }
+        for (index, drop) in convolutions.iter().enumerate() {
+            assert_eq!(drop.track, ordinary[PDC_SLOTS + index]);
+            assert_eq!(drop.slot, PDC_SLOTS + 1 + index);
+            assert_eq!(drop.capacity, PDC_SLOTS);
+        }
+
+        let slot = SnapshotSlot::new(snapshot);
+        let (retire, _queue) = retire_channel(16);
+        let (_sender, receiver) = event_channel(64);
+        let (publisher, _collector) = meter_channel(1024);
+        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        runtime.process_quantum(&mut out, 2);
+        let stats = runtime.stats();
+        assert_eq!(stats.insert_reverb_capacity_drops, 2);
+        assert_eq!(stats.insert_convolution_capacity_drops, 2);
+        // 覆盖度见证：64 条轨的两级都真的处理过帧（不是"整池都没跑"）。
+        assert!(stats.insert_reverb_frames > 0);
+        assert!(stats.insert_convolution_frames > 0);
     }
 
     #[test]

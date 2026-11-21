@@ -539,8 +539,8 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 47_888,
-        "EngineRuntime 的现读值。**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
+        runtime, 47_904,
+        "EngineRuntime 的现读值。**T-FIX-68 两容量计数 ＋16 ⇒ 47904**；**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
          声部池（默认 1024 槽）、插入池（65 槽）、混响池、卷积池、声相表、键抽头表\
          全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身只剩瘦指针，\
          而「每槽一格」的表不再随容量增长把它撑大。⛔ 这不是「省掉了功能」：\

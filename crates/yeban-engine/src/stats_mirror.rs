@@ -178,10 +178,12 @@ pub struct EngineStatsMirror {
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
+    insert_reverb_capacity_drops: AtomicU64,
     insert_sample_delay_frames: AtomicU64,
     insert_sample_delay_capacity_rejects: AtomicU64,
     insert_convolution_frames: AtomicU64,
     insert_convolution_rejects: AtomicU64,
+    insert_convolution_capacity_drops: AtomicU64,
     master_insert_frames: AtomicU64,
     /// ⭐ 期 5：lane 键边声明数（与 `rt.rs` 的 `EngineStats::lane_key_edges_declared` 同源）。
     lane_key_edges_declared: AtomicU64,
@@ -278,10 +280,12 @@ impl EngineStatsMirror {
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
+            insert_reverb_capacity_drops: AtomicU64::new(0),
             insert_sample_delay_frames: AtomicU64::new(0),
             insert_sample_delay_capacity_rejects: AtomicU64::new(0),
             insert_convolution_frames: AtomicU64::new(0),
             insert_convolution_rejects: AtomicU64::new(0),
+            insert_convolution_capacity_drops: AtomicU64::new(0),
             master_insert_frames: AtomicU64::new(0),
             lane_key_edges_declared: AtomicU64::new(0),
             lane_key_edges_evaluated: AtomicU64::new(0),
@@ -400,6 +404,8 @@ impl EngineStatsMirror {
             .store(stats.insert_reverb_frames, Ordering::Relaxed);
         self.insert_reverb_rate_rejects
             .store(stats.insert_reverb_rate_rejects, Ordering::Relaxed);
+        self.insert_reverb_capacity_drops
+            .store(stats.insert_reverb_capacity_drops, Ordering::Relaxed);
         self.insert_sample_delay_frames
             .store(stats.insert_sample_delay_frames, Ordering::Relaxed);
         self.insert_sample_delay_capacity_rejects.store(
@@ -410,6 +416,8 @@ impl EngineStatsMirror {
             .store(stats.insert_convolution_frames, Ordering::Relaxed);
         self.insert_convolution_rejects
             .store(stats.insert_convolution_rejects, Ordering::Relaxed);
+        self.insert_convolution_capacity_drops
+            .store(stats.insert_convolution_capacity_drops, Ordering::Relaxed);
         self.master_insert_frames
             .store(stats.master_insert_frames, Ordering::Relaxed);
         self.lane_key_edges_declared
@@ -552,12 +560,16 @@ impl EngineStatsMirror {
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
+            insert_reverb_capacity_drops: self.insert_reverb_capacity_drops.load(Ordering::Relaxed),
             insert_sample_delay_frames: self.insert_sample_delay_frames.load(Ordering::Relaxed),
             insert_sample_delay_capacity_rejects: self
                 .insert_sample_delay_capacity_rejects
                 .load(Ordering::Relaxed),
             insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
+            insert_convolution_capacity_drops: self
+                .insert_convolution_capacity_drops
+                .load(Ordering::Relaxed),
             master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
             lane_key_edges_declared: self.lane_key_edges_declared.load(Ordering::Relaxed),
             lane_key_edges_evaluated: self.lane_key_edges_evaluated.load(Ordering::Relaxed),
@@ -669,10 +681,12 @@ mod tests {
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,
+            insert_reverb_capacity_drops: 22,
             insert_sample_delay_frames: 55,
             insert_sample_delay_capacity_rejects: 56,
             insert_convolution_frames: 27,
             insert_convolution_rejects: 28,
+            insert_convolution_capacity_drops: 29,
             master_insert_frames: 54,
             lane_key_edges_declared: 63,
             lane_key_edges_evaluated: 64,

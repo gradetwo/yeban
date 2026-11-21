@@ -595,6 +595,31 @@ fn split_lane_schedule(schedule: &NoteSchedule, groups: &[LaneGroupParams]) -> V
         .collect()
 }
 
+/// 插入池容量回执里的**器件级**（混响 / 卷积混响）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InsertCapacityStage {
+    /// Freeverb 混响级（`insert.reverb()`）。
+    Reverb,
+    /// 卷积混响级（`insert.convolution()`）。
+    Convolution,
+}
+
+/// 一条**超过插入池轨槽容量**的插入设备回执（见
+/// [`EngineSnapshot::insert_capacity_drops`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InsertCapacityDrop {
+    /// 产生这条回执的快照修订号（与 [`EngineSnapshot::revision`] 同源）。
+    pub revision: u64,
+    /// 被挡住的轨道 / 总线身份（主总线不会出现在这里：它有独立保留槽）。
+    pub track: EntityId,
+    /// 被挡住的器件级。
+    pub stage: InsertCapacityStage,
+    /// 该设备在本级里**本应占的 1 基槽号**（`capacity + 1` 起）。
+    pub slot: usize,
+    /// 轨槽容量（[`crate::rt::PDC_SLOTS`]）；槽号 `> capacity` 即被挡。
+    pub capacity: usize,
+}
+
 /// 不可变引擎快照：音频线程在每个渲染量子边界读取的唯一权威运行态
 /// [ARCH-RT-002, ROAD-M2-002]。
 ///
@@ -1489,6 +1514,58 @@ impl EngineSnapshot {
     #[must_use]
     pub fn insert_params(&self, id: &EntityId) -> Option<&InsertParams> {
         self.inserts.get(id)
+    }
+
+    /// ⭐ **装载回执**：超过插入池轨槽容量（[`crate::rt::PDC_SLOTS`]）而无法武装的
+    /// 混响 / 卷积混响设备，**逐台指名**（轨身份 ＋ 级 ＋ 它本应占的 1 基槽号）。
+    ///
+    /// 实时侧 `armed_*` 是「前 `n` 项有效」的紧凑前缀，容量外的设备没有位置可放；
+    /// 旧行为是 `continue` 静默跳过（效果不生效、`insert_*_frames` 也只是不增长）。
+    /// 本方法是快照自带的装载回执：控制线程可在发布前/后读出**具体是哪条轨、
+    /// 哪一级、第几号槽**被容量挡住；实时侧的同一条事实另见
+    /// [`crate::rt::EngineStats::insert_reverb_capacity_drops`] /
+    /// [`crate::rt::EngineStats::insert_convolution_capacity_drops`]（只计数，
+    /// 因为音频线程不能分配回执）。
+    ///
+    /// 主总线**不在**丢弃集里：池多出来的第 `PDC_SLOTS + 1` 格专门留给它。
+    /// 返回值按轨身份（`BTreeMap` 迭代顺序）稳定，混响/卷积各自独立计槽号。
+    /// 控制线程调用；分配只发生在这一次查询里，⛔ 不在音频回调上。
+    #[must_use]
+    pub fn insert_capacity_drops(&self) -> Vec<InsertCapacityDrop> {
+        let capacity = crate::rt::PDC_SLOTS;
+        let mut reverb_slot = 0usize;
+        let mut convolution_slot = 0usize;
+        let mut drops = Vec::new();
+        for (id, insert) in &self.inserts {
+            if *id == self.master {
+                continue;
+            }
+            if insert.reverb().is_some() {
+                reverb_slot += 1;
+                if reverb_slot > capacity {
+                    drops.push(InsertCapacityDrop {
+                        revision: self.revision,
+                        track: *id,
+                        stage: InsertCapacityStage::Reverb,
+                        slot: reverb_slot,
+                        capacity,
+                    });
+                }
+            }
+            if insert.convolution().is_some() {
+                convolution_slot += 1;
+                if convolution_slot > capacity {
+                    drops.push(InsertCapacityDrop {
+                        revision: self.revision,
+                        track: *id,
+                        stage: InsertCapacityStage::Convolution,
+                        slot: convolution_slot,
+                        capacity,
+                    });
+                }
+            }
+        }
+        drops
     }
 
     /// 全部音轨的**鼓机音源**（只含**识别出鼓机**的轨道；`BTreeMap` ⇒ 迭代顺序确定
