@@ -537,6 +537,39 @@ pub fn load_project(path: &Path) -> Result<LoadedProject, Fault> {
     load_project_with_limits(path, &ContainerLimits::default())
 }
 
+/// 以流式上限读入文件原始字节（保留 [`std::io::ErrorKind`] 供调用方分类错误）。
+pub(crate) fn read_bounded_io(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    let mut limited = std::io::Read::take(file, max_bytes.saturating_add(1));
+    std::io::Read::read_to_end(&mut limited, &mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("file exceeds {max_bytes} byte limit"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// 以流式上限读入文件（禁止无界 `fs::read` 把恶意大文件一次拽进内存）。
+///
+/// # Errors
+///
+/// 打开/读取失败或实际读取超过 `max_bytes` 时返回 [`ErrorCode::IoError`]。
+pub(crate) fn read_bounded(path: &Path, max_bytes: u64, what: &str) -> Result<Vec<u8>, Fault> {
+    read_bounded_io(path, max_bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            Fault::domain(
+                ErrorCode::IoError,
+                format!("`{what}` 体积超过允许上限 {max_bytes} 字节"),
+            )
+        } else {
+            from_io(&format!("读取 {what}"), &error)
+        }
+    })
+}
+
 /// 同 [`load_project`]，但上限**可注入**（判据要在小文件上触发"文件过大"这一道）。
 ///
 /// # Errors
@@ -560,8 +593,12 @@ pub fn load_project_with_limits(
     if declared > max_file {
         return Err(oversized_file_fault(path, declared, max_file));
     }
-    let bytes =
-        fs::read(path).map_err(|error| from_io(&format!("读取 {}", path.display()), &error))?;
+    let file = fs::File::open(path)
+        .map_err(|error| from_io(&format!("读取 {}", path.display()), &error))?;
+    let mut bytes = Vec::new();
+    let mut limited = std::io::Read::take(file, max_file.saturating_add(1));
+    std::io::Read::read_to_end(&mut limited, &mut bytes)
+        .map_err(|error| from_io(&format!("读取 {}", path.display()), &error))?;
     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     // 第二道：实际读到的字节数（`metadata` 与 `read` 之间有 TOCTOU 窗口，文件可以变大）。
     if len > max_file {

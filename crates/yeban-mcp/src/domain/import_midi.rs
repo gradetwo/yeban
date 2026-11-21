@@ -236,12 +236,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         }
     }
 
-    let bytes = fs::read(&path).map_err(|err| {
-        error::from_io(
-            &format!("failed to read MIDI file '{}'", path.display()),
-            &err,
-        )
-    })?;
+    let bytes = super::store::read_bounded(&path, 32 * 1024 * 1024, &path.display().to_string())?;
 
     let parsed = parse_smf(&bytes).map_err(|err| {
         Fault::domain(

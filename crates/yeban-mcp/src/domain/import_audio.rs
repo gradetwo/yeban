@@ -466,8 +466,8 @@ pub fn plan(
         }
         ImportSource::DiskPath => {
             let text = path_arg.unwrap_or_default();
-            let bytes = std::fs::read(text)
-                .map_err(|error| error::from_io(&format!("读取 {text}"), &error))?;
+            let bytes =
+                super::store::read_bounded(std::path::Path::new(text), 512 * 1024 * 1024, text)?;
             let facts = decode_and_measure(&bytes, &format!("文件 {text}"))?;
             // ⭐ 同上：索引项由 `yeban-decode` 的 `asset_index` 产出；它内部的
             // `AssetHash::of_bytes(bytes)` 与下面这次的哈希算式**同一个**（内容寻址）。
