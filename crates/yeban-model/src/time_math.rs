@@ -77,6 +77,15 @@
 //! 逐段取整会在每个变速点引入最多半帧的累积误差；只取整一次让整条时间轴仍是
 //! 同一把尺子。求值顺序固定（段的遍历顺序 = tick 升序），没有超越函数 ⇒ 与
 //! 本模块其余换算同一套跨平台可复现论证。
+//!
+//! ## 微秒 ↔ tick：硬件时间戳（审计 #17）
+//!
+//! [`TempoMap::micros_at_tick`] / [`TempoMap::ticks_at_micros`] 是上面分段积分在
+//! **微秒**域的对偶（1 秒 = 1_000_000 µs，相当于把 `sample_rate` 换成 1_000_000）：
+//! 硬件 MIDI 采集的时间戳是微秒，录音落点（`yeban-app` 的 `midi_notes`）经此换算。
+//! 此前采集侧把「1 秒 = 一个四分音符」写死（= 60 BPM），非 60 BPM 工程的录音
+//! 落点整体缩放出错（120 BPM 下缩水 50%）；写死点已删，唯一实现收口在这里，
+//! 与帧域同一套求值顺序与跨平台可复现论证。
 
 use std::collections::BTreeMap;
 
@@ -163,7 +172,7 @@ impl TempoMap {
             bpm = point_bpm;
         }
         frames += tick_span_frames(tick - cursor, bpm, ppq, sample_rate)?;
-        round_frames(frames)
+        round_units(frames)
     }
 
     /// 帧 → tick（**向下取整**；[`frames_at_tick`](Self::frames_at_tick) 的逆方向）。
@@ -201,6 +210,76 @@ impl TempoMap {
         let local = ticks_in_span(frame - frames_before, bpm, ppq, sample_rate)?;
         Some(cursor.saturating_add(local))
     }
+
+    /// tick → 微秒（分段累加、**只取整一次**；[`frames_at_tick`](Self::frames_at_tick)
+    /// 的微秒域对偶，1 秒 = 1_000_000 µs）。
+    ///
+    /// 用途：硬件时间戳域的正向读数（例：某个 tick 在采集时间轴上是第几微秒）。
+    /// 病态输入（`ppq == 0`、任一经过的 `bpm` 非有限或 `<= 0`）⇒ `None`。
+    /// 结果饱和到 `u64::MAX`（⛔ 不回绕）。
+    #[must_use]
+    pub fn micros_at_tick(&self, tick: u64, ppq: u64) -> Option<u64> {
+        if ppq == 0 || !valid_bpm(self.base_bpm) {
+            return None;
+        }
+        if tick == 0 {
+            return Some(0);
+        }
+        let mut micros = 0.0f64;
+        let mut cursor = 0u64;
+        let mut bpm = self.base_bpm;
+        for (&point_tick, &point_bpm) in &self.points {
+            if point_tick >= tick {
+                break;
+            }
+            if !valid_bpm(point_bpm) {
+                return None;
+            }
+            micros += tick_span_micros(point_tick - cursor, bpm, ppq)?;
+            cursor = point_tick;
+            bpm = point_bpm;
+        }
+        micros += tick_span_micros(tick - cursor, bpm, ppq)?;
+        round_units(micros)
+    }
+
+    /// 微秒 → tick（**向下取整**；[`ticks_at_frame`](Self::ticks_at_frame) 的微秒域
+    /// 对偶）。硬件 MIDI 时间戳（`midir` 微秒）落成工程 tick 的**唯一实现**
+    /// （审计 #17：此前采集侧写死 60 BPM 的算式已删）。
+    ///
+    /// 空表路径与旧写死算式在 60 BPM 下**逐位相同**（判据以整数算式
+    /// `µs × ppq / 1_000_000` 全域对账），非 60 BPM 工程按映射分段走查。
+    /// 病态输入 ⇒ `None`（调用方映射成自己的哨兵，⛔ 不许悄悄回退到某个速度）。
+    #[must_use]
+    pub fn ticks_at_micros(&self, micros: u64, ppq: u64) -> Option<u64> {
+        if ppq == 0 || !valid_bpm(self.base_bpm) {
+            return None;
+        }
+        if self.points.is_empty() {
+            return floor_ticks_micros(micros, self.base_bpm, ppq);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let micros = micros as f64;
+        let mut micros_before = 0.0f64;
+        let mut cursor = 0u64;
+        let mut bpm = self.base_bpm;
+        for (&point_tick, &point_bpm) in &self.points {
+            if !valid_bpm(point_bpm) {
+                return None;
+            }
+            let span_micros = tick_span_micros(point_tick - cursor, bpm, ppq)?;
+            let next = micros_before + span_micros;
+            if micros < next {
+                let local = ticks_in_span_micros(micros - micros_before, bpm, ppq)?;
+                return Some(cursor.saturating_add(local.min(point_tick - cursor)));
+            }
+            micros_before = next;
+            cursor = point_tick;
+            bpm = point_bpm;
+        }
+        let local = ticks_in_span_micros(micros - micros_before, bpm, ppq)?;
+        Some(cursor.saturating_add(local))
+    }
 }
 
 /// 合法速度：有限且 `> 0`（与 [`ticks_to_frames`] 同口径，⛔ 不额外的范围钳制）。
@@ -223,9 +302,9 @@ fn tick_span_frames(delta_ticks: u64, bpm: f64, ppq: u64, sample_rate: u32) -> O
     frames.is_finite().then_some(frames)
 }
 
-/// 未取整帧数 → `u64`（四舍五入、饱和；与 [`tick_to_sample`] 同一套哨兵）。
+/// 未取整的量（帧或微秒）→ `u64`（四舍五入、饱和；与 [`tick_to_sample`] 同一套哨兵）。
 #[must_use]
-fn round_frames(frames: f64) -> Option<u64> {
+fn round_units(frames: f64) -> Option<u64> {
     let rounded = frames.round();
     if !rounded.is_finite() || rounded < 0.0 {
         return None;
@@ -261,6 +340,61 @@ fn ticks_in_span(frames: f64, bpm: f64, ppq: u64, sample_rate: u32) -> Option<u6
 fn floor_ticks(frame: u64, bpm: f64, ppq: u64, sample_rate: u32) -> Option<u64> {
     #[allow(clippy::cast_precision_loss)]
     let ticks = (frame as f64) * (ppq as f64) * bpm / (f64::from(sample_rate) * 60.0);
+    if !ticks.is_finite() || ticks < 0.0 {
+        return None;
+    }
+    if ticks >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticks = ticks.floor() as u64;
+    Some(ticks)
+}
+
+/// 一秒的微秒数（微秒域换算的分母；以 `f64` 写出，求值顺序是契约的一部分）。
+const MICROS_PER_SECOND: f64 = 1_000_000.0;
+
+/// 一段 `delta_ticks` 在 `bpm` 下的**未取整**微秒数。
+///
+/// 运算顺序是契约的一部分：`delta × 60 × 1_000_000 / (bpm × ppq)`
+/// （与 [`tick_span_frames`] 同形，先乘、后除）。只有 `+ - * /`，没有超越函数。
+#[must_use]
+fn tick_span_micros(delta_ticks: u64, bpm: f64, ppq: u64) -> Option<f64> {
+    #[allow(clippy::cast_precision_loss)]
+    let delta = delta_ticks as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let ppq = ppq as f64;
+    let micros = delta * 60.0 * MICROS_PER_SECOND / (bpm * ppq);
+    micros.is_finite().then_some(micros)
+}
+
+/// 一段微秒偏移 → 段内 tick（向下取整，夹到 `u64`；[`ticks_in_span`] 的微秒域对偶）。
+#[must_use]
+fn ticks_in_span_micros(micros: f64, bpm: f64, ppq: u64) -> Option<u64> {
+    #[allow(clippy::cast_precision_loss)]
+    let ppq = ppq as f64;
+    let ticks = micros * bpm * ppq / (60.0 * MICROS_PER_SECOND);
+    if !ticks.is_finite() || ticks < 0.0 {
+        return None;
+    }
+    if ticks >= u64::MAX as f64 {
+        return Some(u64::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticks = ticks.floor() as u64;
+    Some(ticks)
+}
+
+/// 空表（恒定速度）的微秒 → tick：`µs × ppq × bpm / (1_000_000 × 60)`，向下取整。
+///
+/// ⚠ 求值顺序与 `yeban-midi-io::ticks_from_origin_us` 的恒定速度算式**逐字同形**
+/// ⇒ 两侧在同一 `(µs, bpm)` 下逐位相等（`yeban-app` 有一条交叉对账判据钉住）。
+/// 60 BPM 时逐位等于审计 #17 之前的整数算式 `µs × ppq / 1_000_000`
+/// （判据以整数算式全域对账，见本模块测试）。
+#[must_use]
+fn floor_ticks_micros(micros: u64, bpm: f64, ppq: u64) -> Option<u64> {
+    #[allow(clippy::cast_precision_loss)]
+    let ticks = (micros as f64) * (ppq as f64) * bpm / (MICROS_PER_SECOND * 60.0);
     if !ticks.is_finite() || ticks < 0.0 {
         return None;
     }
@@ -619,5 +753,86 @@ mod tests {
             None
         );
         assert_eq!(TempoMap::constant(120.0).frames_at_tick(960, PPQ, 0), None);
+    }
+
+    /// 审计 #17 兼容性承诺：60 BPM 恒定速度下，微秒 → tick 与**旧写死整数算式**
+    /// `µs × 960 / 1_000_000` 逐位相同（全域逐点对账 + 大值抽查）。
+    #[test]
+    fn micros_at_60_bpm_is_bit_identical_to_the_legacy_integer_formula() {
+        let tempo = TempoMap::constant(60.0);
+        for micros in 0..=2_000_000_u64 {
+            assert_eq!(
+                tempo.ticks_at_micros(micros, PPQ),
+                Some(micros * 960 / 1_000_000),
+                "60 BPM 逐位对账失败：µs={micros}"
+            );
+        }
+        for micros in [62_500_u64, 123_456_789, 600_000_000, 3_600_000_000] {
+            assert_eq!(
+                tempo.ticks_at_micros(micros, PPQ),
+                Some(micros * 960 / 1_000_000),
+                "60 BPM 大值对账失败：µs={micros}"
+            );
+        }
+    }
+
+    /// 审计 #17 回归：120 BPM 下按速度手算 —— 0.5 秒 = 1 个四分音符 = 960 tick，
+    /// 1 秒 = 1920 tick（旧写死算式会给出 480 / 960，落点缩水 50%）。
+    #[test]
+    fn micros_at_120_bpm_matches_hand_computed_ticks() {
+        let tempo = TempoMap::constant(120.0);
+        assert_eq!(tempo.ticks_at_micros(0, PPQ), Some(0));
+        assert_eq!(tempo.ticks_at_micros(250_000, PPQ), Some(480));
+        assert_eq!(tempo.ticks_at_micros(500_000, PPQ), Some(960));
+        assert_eq!(tempo.ticks_at_micros(1_000_000, PPQ), Some(1_920));
+        assert_eq!(tempo.micros_at_tick(960, PPQ), Some(500_000));
+        assert_eq!(tempo.micros_at_tick(1_920, PPQ), Some(1_000_000));
+    }
+
+    /// 变速映射：基准 60 BPM、tick 960 起 120 BPM —— 分段走查两侧一致。
+    ///
+    /// 手算：tick 960 在 1_000_000 µs（60 BPM 一秒一拍）；其后再过 0.5 秒
+    /// （120 BPM 一拍）到 tick 1920 ⇒ 1_500_000 µs。
+    #[test]
+    fn micros_walk_tempo_points_in_both_directions() {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, 120.0);
+        let tempo = TempoMap::new(60.0, points);
+        assert_eq!(tempo.micros_at_tick(960, PPQ), Some(1_000_000));
+        assert_eq!(tempo.micros_at_tick(1_920, PPQ), Some(1_500_000));
+        assert_eq!(tempo.ticks_at_micros(1_000_000, PPQ), Some(960));
+        assert_eq!(tempo.ticks_at_micros(1_250_000, PPQ), Some(1_440));
+        assert_eq!(tempo.ticks_at_micros(1_500_000, PPQ), Some(1_920));
+        // 往返：只在**整段边界与整拍**上核（正向只取整一次、反向向下取整，
+        // 非整除的 tick 与帧域一样不保证逐点往返 —— 那不是本换算的契约）。
+        for tick in [0_u64, 480, 960, 1_440, 1_920, 2_880] {
+            let micros = tempo.micros_at_tick(tick, PPQ).expect("正向必须有答案");
+            assert_eq!(
+                tempo.ticks_at_micros(micros, PPQ),
+                Some(tick),
+                "往返失败：tick={tick}"
+            );
+        }
+    }
+
+    /// 微秒域病态输入：与帧域同口径，没有答案（⛔ 不发明回退速度）。
+    #[test]
+    fn micros_degenerate_inputs_have_no_answer() {
+        assert_eq!(TempoMap::constant(0.0).ticks_at_micros(1_000, PPQ), None);
+        assert_eq!(TempoMap::constant(-60.0).micros_at_tick(960, PPQ), None);
+        assert_eq!(
+            TempoMap::constant(f64::NAN).ticks_at_micros(1_000, PPQ),
+            None
+        );
+        assert_eq!(TempoMap::constant(120.0).ticks_at_micros(1_000, 0), None);
+        assert_eq!(TempoMap::constant(120.0).micros_at_tick(0, PPQ), Some(0));
+        // 正向（tick → µs）只校验**经过**的点：坏点之前照常回答（与帧域正向同口径）。
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, f64::NAN);
+        let tempo = TempoMap::new(60.0, points);
+        assert_eq!(tempo.micros_at_tick(480, PPQ), Some(500_000));
+        assert_eq!(tempo.micros_at_tick(1_920, PPQ), None);
+        // 反向（µs → tick）走查时逐点校验：坏点存在即没有答案（与帧域反向同口径）。
+        assert_eq!(tempo.ticks_at_micros(500_000, PPQ), None);
     }
 }

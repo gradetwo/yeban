@@ -7437,6 +7437,8 @@ pub fn apply_captured_midi(
         &captured.messages,
         captured.origin_us,
         crate::midi_notes::UNCLOSED_TAIL_TICKS,
+        // ⭐ 工程当前速度（含变速映射，审计 #17）—— ⛔ 不再写死 60 BPM。
+        &loaded.archive.project.tempo(),
     );
     lines.push(pairing.summary());
 

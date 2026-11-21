@@ -71,14 +71,37 @@ const MICROS_PER_SECOND: u64 = 1_000_000;
 /// `midir` 时间戳）⇒ ⭐ **本函数 ⛔ 不接受"当前时刻"当基准**，⭐ 因为那会把
 /// 线程调度延迟算进音乐时间（⭐ 那正是 `RSK-22` 要量的抖动）。
 ///
+/// ⚠ ⭐ **速度由调用方给**（审计 #17）：本函数的前身把「1 秒 = 一个四分音符」
+/// 写死（= 60 BPM），非 60 BPM 工程的录音落点整体缩放出错。本 crate **刻意**
+/// 不依赖工程模型（见 `Cargo.toml`），因此只收 `bpm` 数值；带变速映射的
+/// 分段走查在 `yeban_model::time_math::TempoMap::ticks_at_micros`（app 侧落点
+/// 走那条）。恒定速度下本算式与模型层**逐字同形、逐位相等**（app 有交叉
+/// 对账判据钉住）。
+///
 /// ⭐ **不 panic**：⭐ `now_us < origin_us`（⭐ 例：⭐ 时间戳回绕或起点晚于事件）⇒
-/// ⭐ 返回 **0**（⭐ 饱和），⭐ ⛔ 不触发减法下溢。
+/// ⭐ 返回 **0**（⭐ 饱和），⭐ ⛔ 不触发减法下溢。`bpm` 非有限或 `<= 0` ⇒
+/// ⭐ 返回 `u64::MAX`（⭐ 响亮地错，⛔ 不静默回退到任何速度）。
 ///
 /// [`MODEL-AST-001`]: ../../docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md
 #[must_use]
-pub fn ticks_from_origin_us(now_us: u64, origin_us: u64) -> u64 {
+pub fn ticks_from_origin_us(now_us: u64, origin_us: u64, bpm: f64) -> u64 {
+    if !bpm.is_finite() || bpm <= 0.0 {
+        return u64::MAX;
+    }
     let elapsed = now_us.saturating_sub(origin_us);
-    elapsed.saturating_mul(u64::from(PPQ)) / MICROS_PER_SECOND
+    // ⭐ 求值顺序是契约的一部分：`elapsed × PPQ × bpm / (1_000_000 × 60)`，
+    // 与模型层恒定速度算式逐字同形 ⇒ 同一输入逐位相等。
+    #[allow(clippy::cast_precision_loss)]
+    let ticks = (elapsed as f64) * (f64::from(PPQ)) * bpm / (MICROS_PER_SECOND as f64 * 60.0);
+    if !ticks.is_finite() || ticks < 0.0 {
+        return u64::MAX;
+    }
+    if ticks >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticks = ticks.floor() as u64;
+    ticks
 }
 
 #[cfg(test)]
@@ -88,28 +111,28 @@ mod tests {
     /// 判据 ①：⭐ 起点本身 ⇒ **0 Tick**。
     #[test]
     fn the_origin_maps_to_tick_zero() {
-        assert_eq!(ticks_from_origin_us(1_234_567, 1_234_567), 0);
+        assert_eq!(ticks_from_origin_us(1_234_567, 1_234_567, 60.0), 0);
     }
 
-    /// 判据 ②：⭐ 恰好 1 秒 ⇒ **960 Tick**（⭐ 即 PPQ 的口径被钉住）。
+    /// 判据 ②：⭐ 60 BPM 下恰好 1 秒 ⇒ **960 Tick**（⭐ 即 PPQ 的口径被钉住）。
     #[test]
     fn one_second_is_exactly_one_quarter_note_of_ticks() {
         let origin = 10_000;
-        assert_eq!(ticks_from_origin_us(origin + 1_000_000, origin), 960);
+        assert_eq!(ticks_from_origin_us(origin + 1_000_000, origin, 60.0), 960);
     }
 
     /// 判据 ③：⭐ 半秒 ⇒ **480 Tick**（⭐ 向下取整，⭐ 且**可判定**而非"接近"）。
     #[test]
     fn half_a_second_is_half_a_quarter_note_of_ticks() {
         let origin = 0;
-        assert_eq!(ticks_from_origin_us(500_000, origin), 480);
+        assert_eq!(ticks_from_origin_us(500_000, origin, 60.0), 480);
     }
 
     /// 判据 ④：⭐ **`now_us < origin_us` ⇒ 0、⭐ ⛔ 不 panic**（⭐ 饱和而非下溢）。
     #[test]
     fn a_timestamp_before_the_origin_saturates_to_zero_instead_of_panicking() {
-        assert_eq!(ticks_from_origin_us(999, 1_000), 0);
-        assert_eq!(ticks_from_origin_us(0, u64::MAX), 0);
+        assert_eq!(ticks_from_origin_us(999, 1_000, 60.0), 0);
+        assert_eq!(ticks_from_origin_us(0, u64::MAX, 60.0), 0);
     }
 
     /// 判据 ⑤：⭐ **单调不减**（⭐ 时间递增 ⇒ Tick 不倒退）＋ ⭐ **反向对照**：
@@ -118,7 +141,7 @@ mod tests {
     fn the_mapping_is_monotonic_and_actually_advances() {
         let origin = 5_000;
         let ticks: Vec<u64> = (0..8)
-            .map(|step| ticks_from_origin_us(origin + step * 125_000, origin))
+            .map(|step| ticks_from_origin_us(origin + step * 125_000, origin, 60.0))
             .collect();
         assert_eq!(
             ticks.len(),
@@ -136,10 +159,42 @@ mod tests {
     fn the_result_depends_only_on_the_difference() {
         for (now, origin) in [(1_000_000_u64, 0_u64), (7_500_000, 6_500_000)] {
             assert_eq!(
-                ticks_from_origin_us(now, origin),
-                ticks_from_origin_us(1_000_000, 0),
+                ticks_from_origin_us(now, origin, 60.0),
+                ticks_from_origin_us(1_000_000, 0, 60.0),
                 "差值相同必须同值：(now={now}, origin={origin})"
             );
         }
+    }
+
+    /// 判据 ⑦（审计 #17 回归）：⭐ **120 BPM 下按速度手算** —— 0.5 秒 = 960 Tick、
+    /// 1 秒 = 1920 Tick（⭐ 写死 60 BPM 时会给出 480 / 960，落点缩水 50%）。
+    #[test]
+    fn at_120_bpm_the_ticks_follow_the_tempo_not_the_old_constant() {
+        assert_eq!(ticks_from_origin_us(500_000, 0, 120.0), 960);
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, 120.0), 1_920);
+        assert_eq!(ticks_from_origin_us(250_000, 0, 120.0), 480);
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, 90.0), 1_440);
+    }
+
+    /// 判据 ⑧（审计 #17 兼容性承诺）：⭐ 60 BPM 下与**旧整数算式**
+    /// `elapsed × 960 / 1_000_000` 逐位相同（全域逐点对账）。
+    #[test]
+    fn at_60_bpm_the_result_is_bit_identical_to_the_legacy_integer_formula() {
+        for elapsed in 0..=1_000_000_u64 {
+            assert_eq!(
+                ticks_from_origin_us(elapsed, 0, 60.0),
+                elapsed * 960 / 1_000_000,
+                "60 BPM 逐位对账失败：elapsed={elapsed}"
+            );
+        }
+    }
+
+    /// 判据 ⑨：⭐ **病态速度响亮地错**（`u64::MAX`），⛔ 不回退到 60 BPM。
+    #[test]
+    fn a_degenerate_bpm_saturates_loudly_instead_of_falling_back() {
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, 0.0), u64::MAX);
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, -120.0), u64::MAX);
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, f64::NAN), u64::MAX);
+        assert_eq!(ticks_from_origin_us(1_000_000, 0, f64::INFINITY), u64::MAX);
     }
 }

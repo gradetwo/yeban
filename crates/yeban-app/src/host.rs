@@ -12919,6 +12919,18 @@ pub fn wire_module_actions_with_capture(
                 None
             };
         let live_track = live_note_target.map(|(track, _clip)| track);
+        // ⭐ **实时腿的速度快照**（审计 #17）：与目标同一时刻、同一个工程取
+        // （`TempoMap` 是纯数据 ⇒ 可随轨道 id 一起交给工作线程）。会话中途
+        // 工程改速不影响已开始的会话（记录器的会话参数，见
+        // `IncrementalNoteRecorder::new`）。⚠ 注入替身（`capture = Some(_)`）
+        // 时不走实时腿 ⇒ 与目标同为 `None`。
+        let live_tempo: Option<yeban_model::time_math::TempoMap> = if capture.is_none() {
+            port.as_deref()
+                .and_then(|port| port.try_project())
+                .map(|project| project.tempo())
+        } else {
+            None
+        };
         // ⭐ 把落点**记在状态里**：提交点（UI 线程的心跳）从 `MidiInState` 读它
         // （⚠ `EntityId` 是纯数据 ⇒ 可跨线程读；⛔ 不为此每跳克隆工程）。
         state.set_note_target(live_note_target);
@@ -12974,6 +12986,10 @@ pub fn wire_module_actions_with_capture(
             let worker_state = state.clone();
             let worker_wanted = wanted.clone();
             let worker_weak = weak.clone();
+            // ⭐ 速度快照按**每次触发**克隆一份给工作线程（`TempoMap` 是小数据：
+            // 基准速度 ＋ 一张变速点表）；`on_midi_in` 是 `FnMut` 闭包，⛔ 不能把
+            // 捕获的那份直接 move 进线程（轨道 id 是 `Copy` 才没有这个问题）。
+            let live_tempo = live_tempo.clone();
             // ⭐ 工作线程**只**做三件事：跑会话、把结果放进 Send 的槽、**请求** UI 线程排空。
             // ⛔ 它一个 Slint 对象都不碰（UI 对象只许在 UI 线程上碰）。
             //
@@ -12987,11 +13003,14 @@ pub fn wire_module_actions_with_capture(
             // 的 `origin_us = 0` **同值** ⇒ 两条路算出的 tick 逐位相同（⛔ 不许分叉）。
             const LIVE_ORIGIN_US: u64 = 0;
             let handle = std::thread::spawn(move || {
-                let result = match live_track {
-                    Some(track) => {
+                // ⚠ 目标与速度快照**成对**才走实时腿：两者同源（同一工程），
+                // 正常情况下同有同无；万一装配间隙里工程被关掉导致只剩其一，
+                // 落回批次形态（落地时还会再核工程），⛔ 不拿半套参数开录。
+                let result = match (live_track, live_tempo) {
+                    (Some(track), Some(tempo)) => {
                         // ⭐ 记录器**归工作线程所有**（⭐ 它只在会话线程上被喂）。
                         let mut recorder =
-                            crate::midi_notes::IncrementalNoteRecorder::new(LIVE_ORIGIN_US);
+                            crate::midi_notes::IncrementalNoteRecorder::new(LIVE_ORIGIN_US, tempo);
                         match crate::midi_in::monitor_messages_into(
                             &worker_wanted,
                             seconds,
@@ -13027,7 +13046,7 @@ pub fn wire_module_actions_with_capture(
                         }
                     }
                     // 没有权威工程（或调用方注入了替身）⇒ 保持**批次**形态，一位不变。
-                    None => capture(&worker_wanted, seconds),
+                    _ => capture(&worker_wanted, seconds),
                 };
                 worker_state.finish(result);
                 // ⭐ **唯一**跨线程的一跳：`Weak` 是 `Send`（上游 `api.rs:1247` 的
@@ -13464,20 +13483,32 @@ fn land_captured_notes(
     let Some(port) = port else {
         return Err(MidiInLandingError::NoPort);
     };
+    // ⭐ 先取工程：配对要吃**工程当前速度**（审计 #17），没有工程就没有落点。
+    // ⛔ 不用会 panic 的 `port.project()`（见 `UndoPort::project` 的 `# Panics`）：
+    // 采集是**异步**的，3 秒窗口里工程完全可能被控制面关掉。
+    let Some(project) = port.try_project() else {
+        // ⚠ 与旧顺序（先配对、后取工程）**同判**：没有工程就没有速度、无从
+        // 配对，但"一条音符都没有 ⇒ Ok(None)"这一档不依赖速度即可判定 ——
+        // 配对只从 NoteOn(vel>0) 造音符，没有 NoteOn 就必然没有音符。
+        let has_note_on = captured
+            .messages
+            .iter()
+            .any(|(_, status, _, data2)| status & 0xF0 == 0x90 && *data2 > 0);
+        return if has_note_on {
+            Err(MidiInLandingError::NoActiveProject)
+        } else {
+            Ok(None)
+        };
+    };
     let pairing = crate::midi_notes::pair_notes(
         &captured.messages,
         captured.origin_us,
         crate::midi_notes::UNCLOSED_TAIL_TICKS,
+        &project.tempo(),
     );
     if pairing.notes.is_empty() {
         return Ok(None);
     }
-    // ⭐ 有音符、但**工程已经被控制面关掉**（`yeban_close_project`）⇒ 没有落点。
-    // ⛔ 不用会 panic 的 `port.project()`（见 `UndoPort::project` 的 `# Panics`）：
-    // 采集是**异步**的，3 秒窗口里工程完全可能被控制面关掉。
-    let Some(project) = port.try_project() else {
-        return Err(MidiInLandingError::NoActiveProject);
-    };
     crate::midi_notes::write_notes(port, &project, &pairing, None, now_ms())
         .map(Some)
         .map_err(MidiInLandingError::Notes)

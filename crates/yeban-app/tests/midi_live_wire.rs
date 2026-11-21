@@ -471,7 +471,7 @@ mod session {
         let mut source = ScriptedSource::new(started, script());
         let drained = Rc::new(Cell::new(0_usize));
         let sink = Rc::clone(&drained);
-        let mut recorder = IncrementalNoteRecorder::new(0);
+        let mut recorder = IncrementalNoteRecorder::new(0, project.tempo());
         let (captured, report) = midi_in::monitor_session(
             &mut source,
             track,

@@ -76,10 +76,23 @@ pub fn jitter_reading(deviations_ticks: &[u64]) -> Jitter {
     }
 }
 
-/// ⭐ 微秒**差** → Tick（960 PPQ；⭐ 与 `yeban_midi_io::ticks_from_origin_us` 同一算式）。
+/// ⭐ 微秒**差** → Tick（960 PPQ；按**工程当前速度**换算）。
+///
+/// ⭐ 唯一实现是模型层 [`yeban_model::time_math::TempoMap::ticks_at_micros`]
+/// （分段走查变速映射）；恒定速度时与 `yeban_midi_io::ticks_from_origin_us`
+/// 逐位相等（判据 ⑩ 交叉对账）。
+///
+/// ⚠ 审计 #17：本函数的前身把「1 秒 = 一个四分音符」写死（= 60 BPM），
+/// 非 60 BPM 工程的录音落点整体缩放出错（120 BPM 下缩水 50%）⇒ 写死已删，
+/// 速度必须由调用方从工程取（`YebanProjectV1::tempo()`）。
+///
+/// ⚠ 病态速度（模型层返回 `None`）⇒ 饱和到 `u64::MAX`：工程速度已经过
+/// 模型校验，生产路径不可达；万一到达，响亮地错，⛔ 不静默回退到某个速度。
 #[must_use]
-pub fn ticks_from_gap_us(gap_us: u64) -> u64 {
-    gap_us.saturating_mul(960) / 1_000_000
+pub fn ticks_from_gap_us(gap_us: u64, tempo: &yeban_model::time_math::TempoMap) -> u64 {
+    tempo
+        .ticks_at_micros(gap_us, yeban_model::PPQ)
+        .unwrap_or(u64::MAX)
 }
 
 /// ⭐ `--midi-in` 的**默认**采集时长（秒）。
@@ -852,11 +865,20 @@ fn open_session(
     )
 }
 
+/// ⭐ 抖动读数的**名义网格速度**（BPM）：只作 Tick 单位的换算约定（见
+/// [`inter_onset_jitter_ticks`] 的文档），⛔ 不是工程落点速度。
+const JITTER_NOMINAL_BPM: f64 = 60.0;
+
 /// ⭐ **临时**抖动口径（⭐ `RSK-22` **待裁**）：⭐ 以**相邻事件间隔的中位数**为名义网格，
 /// ⭐ 偏差 = |实际间隔 − 中位间隔|（⭐ 单位 = Tick）⇒ ⭐ 交给
 /// [`yeban_midi_io::jitter_reading`] 取 p50／p99／max。
 ///
 /// ⚠ ⭐ 样本 `< 3` ⇒ `n = 0` 的读数（⭐ 分母不足时**如实**给空）。
+///
+/// ⚠ ⭐ **单位约定**：本读数是**与工程无关**的采集诊断（`capture` 装配点没有
+/// 工程在手），偏差的参照网格是演奏自己的中位间隔；Tick 只是读数单位，按
+/// [`JITTER_NOMINAL_BPM`] 换算。它**不产出任何落点** ⇒ 与审计 #17 的落点
+/// 换算（[`ticks_from_gap_us`]，必须吃工程速度）是两件事，⛔ 不许混用。
 #[must_use]
 pub fn inter_onset_jitter_ticks(timestamps_us: &[u64], _origin_us: u64) -> Jitter {
     let deltas: Vec<u64> = timestamps_us
@@ -873,8 +895,12 @@ pub fn inter_onset_jitter_ticks(timestamps_us: &[u64], _origin_us: u64) -> Jitte
         .iter()
         .map(|delta| {
             let gap_us = delta.abs_diff(median);
-            // ⭐ 用**同一个**换算函数 ⇒ 口径与 crate 一致（⭐ 单位 = Tick）。
-            ticks_from_gap_us(gap_us)
+            // ⭐ 用**同一个**换算函数 ⇒ 口径与 crate 一致（⭐ 单位 = Tick）；
+            // 速度取本读数的名义网格约定（见函数文档），⛔ 不是工程速度。
+            ticks_from_gap_us(
+                gap_us,
+                &yeban_model::time_math::TempoMap::constant(JITTER_NOMINAL_BPM),
+            )
         })
         .collect();
     jitter_reading(&deviations)
@@ -1054,12 +1080,15 @@ mod tests {
             (theirs.n, theirs.p50, theirs.p99, theirs.max),
             "本地序统计量必须与 crate 同口径"
         );
-        for gap in [0_u64, 1, 999, 1_000, 62_500, 1_000_000, u64::MAX / 2] {
-            assert_eq!(
-                ticks_from_gap_us(gap),
-                yeban_midi_io::ticks_from_origin_us(gap, 0),
-                "Tick 换算必须与 crate 同算式：gap={gap}"
-            );
+        for bpm in [60.0_f64, 120.0] {
+            let tempo = yeban_model::time_math::TempoMap::constant(bpm);
+            for gap in [0_u64, 1, 999, 1_000, 62_500, 1_000_000, u64::MAX / 2] {
+                assert_eq!(
+                    ticks_from_gap_us(gap, &tempo),
+                    yeban_midi_io::ticks_from_origin_us(gap, 0, bpm),
+                    "Tick 换算必须与 crate 同算式：gap={gap} bpm={bpm}"
+                );
+            }
         }
     }
 

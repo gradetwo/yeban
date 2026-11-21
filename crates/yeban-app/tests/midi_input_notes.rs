@@ -177,13 +177,15 @@ fn writing_notes_puts_the_injected_notes_into_the_project() {
     );
     assert!(text.contains("midi-notes: notes=2"), "{text}");
 
-    // ⭐ 从工程里**读回**：这就是"谱面有反应"。0.5 s 在 960 PPQ 下 = 480 tick。
+    // ⭐ 从工程里**读回**：这就是"谱面有反应"。演示工程速度 **120 BPM** ⇒
+    // 0.5 s = 1 拍 = 960 tick（960 PPQ）。审计 #17 前的写死 60 BPM 算式会给出
+    // 480 / 960 / 480 —— 本判据的期望按工程真实速度手算，⛔ 不许再按 60 写。
     let track_id = midi_notes::default_track(&loaded.archive.project).expect("有音轨");
     let notes = notes_of(&loaded.archive.project, track_id);
     assert_eq!(notes.len(), 2, "工程里必须多出两条音符: {notes:?}");
     assert_eq!(
         notes,
-        vec![(60, 100, 0, 480), (64, 90, 960, 480)],
+        vec![(60, 100, 0, 960), (64, 90, 1920, 960)],
         "音高 / 力度 / 起点 / 时长必须逐项对得上"
     );
     assert_ne!(
@@ -217,7 +219,13 @@ fn the_ring_events_make_the_engine_sound_and_differ_from_the_no_event_render() {
     let nonzero = |samples: &[f32]| samples.iter().filter(|s| **s != 0.0).count();
 
     // ---- 事件档：注入消息 ⇒ 成对音符 ⇒ **推进环** ⇒ 离线渲染 ----
-    let pairing = midi_notes::pair_notes(&injected().messages, 0, midi_notes::UNCLOSED_TAIL_TICKS);
+    let pairing = midi_notes::pair_notes(
+        &injected().messages,
+        0,
+        midi_notes::UNCLOSED_TAIL_TICKS,
+        // ⭐ 工程当前速度（审计 #17）——与下面渲染用的工程速度同源。
+        &baseline_project.tempo(),
+    );
     assert_eq!(pairing.notes.len(), 2, "{}", pairing.summary());
     let track_id = midi_notes::default_track(&baseline_project).expect("有音轨");
     let mut host = EngineHost::new();

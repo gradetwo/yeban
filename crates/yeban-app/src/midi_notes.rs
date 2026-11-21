@@ -62,9 +62,13 @@
 //!
 //! ## 时间口径
 //!
-//! 采集来的时间戳是**微秒**，按 `[MODEL-AST-001]` 的 960 PPQ 换算成 tick
-//! （复用 [`crate::midi_in::ticks_from_gap_us`] 的**同一个**算式；`midi_in.rs` 有一条判据
-//! 钉住它与 `yeban_midi_io::ticks_from_origin_us` 逐值相等）。
+//! 采集来的时间戳是**微秒**，按 `[MODEL-AST-001]` 的 960 PPQ 与**工程当前
+//! 速度**（[`TempoMap`]，含变速映射）换算成 tick（复用
+//! [`crate::midi_in::ticks_from_gap_us`] 的**同一个**换算；`midi_in.rs` 有一条判据
+//! 钉住它在恒定速度下与 `yeban_midi_io::ticks_from_origin_us` 逐值相等）。
+//!
+//! ⚠ 审计 #17：换算曾经写死 60 BPM，非 60 BPM 工程的录音落点整体缩放出错；
+//! 现在速度由调用方从工程取（`YebanProjectV1::tempo()`），⛔ 本模块不自备速度。
 //!
 //! ⛔ **精度不发明**：本模块只做"消息 ⇒ 音符"的映射，音符的时间就是 MIDI 自己的时间戳
 //! 换算来的 tick；quantize / 吸附仍归模型层（本模块不碰）。
@@ -72,6 +76,7 @@
 use std::collections::BTreeMap;
 
 use yeban_engine::ring::EngineEvent;
+use yeban_model::time_math::TempoMap;
 use yeban_model::{EntityId, MidiNote, Op, OpOrigin, YebanProjectV1};
 use yeban_render::dither::BitDepth;
 
@@ -157,20 +162,22 @@ impl PairingReport {
 ///
 /// ## 时间
 ///
-/// `tick = crate::midi_in::ticks_from_gap_us(timestamp_us - origin_us)` —— 与
+/// `tick = crate::midi_in::ticks_from_gap_us(timestamp_us - origin_us, tempo)` ——
+/// `tempo` 是**工程当前速度**（含变速映射，审计 #17）；恒定速度时与
 /// `yeban_midi_io::ticks_from_origin_us` **同一个算式**（`midi_in.rs` 有一条判据钉住两者相等）。
 #[must_use]
 pub fn pair_notes(
     messages: &[(u64, u8, u8, u8)],
     origin_us: u64,
     unclosed_tail_ticks: u64,
+    tempo: &TempoMap,
 ) -> PairingReport {
     let mut open: BTreeMap<u8, (u64, u8)> = BTreeMap::new();
     let mut report = PairingReport::default();
     let mut last_tick = 0_u64;
 
     for (timestamp_us, status, data1, data2) in messages {
-        let tick = crate::midi_in::ticks_from_gap_us(timestamp_us.saturating_sub(origin_us));
+        let tick = crate::midi_in::ticks_from_gap_us(timestamp_us.saturating_sub(origin_us), tempo);
         last_tick = last_tick.max(tick);
         let pitch = data1 & 0x7F;
         match status & 0xF0 {
@@ -228,7 +235,7 @@ pub fn pair_notes(
 ///
 /// ⚠ `open` 是 `BTreeMap<u8, (u64, u8)>`（与批次版同型）—— 按 pitch 唯一，
 /// 因此"同一 pitch 重触发"与批次版同判（前一条在新起点收尾）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct IncrementalNoteRecorder {
     /// 已闭合（或重触发收尾）的音符，**按收尾顺序**追加。
     notes: Vec<CapturedNote>,
@@ -247,17 +254,29 @@ pub struct IncrementalNoteRecorder {
     /// ⚠ **必须有**：`midir` 的时间戳是**单调时钟**（零点是开机，不是会话开始）⇒
     /// 直接拿它换算会得到巨大的 tick。批次版做的是 `timestamp_us - origin_us`。
     origin_us: u64,
+    /// ⭐ **工程当前速度**（会话开始时由调用方从工程取的快照，审计 #17）。
+    ///
+    /// ⚠ 与 `origin_us` 同为**会话参数**：开录那一刻定死，会话中途工程改速
+    /// 不影响已开始的会话（否则同一条音符的前后半段会落在两把尺子上）。
+    tempo: TempoMap,
 }
 
 impl IncrementalNoteRecorder {
-    /// ⭐ 空记录器：`origin_us` 是会话起点（`midir` 时间戳的零点参照）。
+    /// ⭐ 空记录器：`origin_us` 是会话起点（`midir` 时间戳的零点参照），
+    /// `tempo` 是工程当前速度的快照（审计 #17）。
     ///
     /// ⛔ 不启动任何线程、⛔ 不读时钟（起点由调用方给，与 CLI 的 `--midi-in` 同源）。
     #[must_use]
-    pub fn new(origin_us: u64) -> Self {
+    pub fn new(origin_us: u64, tempo: TempoMap) -> Self {
         Self {
+            notes: Vec::new(),
+            open: BTreeMap::new(),
+            last_tick: 0,
+            ignored: 0,
+            orphan_offs: 0,
+            restarted: 0,
             origin_us,
-            ..Self::default()
+            tempo,
         }
     }
 
@@ -275,8 +294,11 @@ impl IncrementalNoteRecorder {
         data1: u8,
         data2: u8,
     ) -> Option<CapturedNote> {
-        // ⚠ 与批次版同一句：先减会话起点，再换算（见 `origin_us` 的文档）。
-        let tick = crate::midi_in::ticks_from_gap_us(timestamp_us.saturating_sub(self.origin_us));
+        // ⚠ 与批次版同一句：先减会话起点，再按会话速度换算（见 `origin_us` 的文档）。
+        let tick = crate::midi_in::ticks_from_gap_us(
+            timestamp_us.saturating_sub(self.origin_us),
+            &self.tempo,
+        );
         self.last_tick = self.last_tick.max(tick);
         let pitch = data1 & 0x7F;
         match status & 0xF0 {
@@ -1004,6 +1026,12 @@ mod tests {
     use super::*;
     use crate::undo::UndoSession;
 
+    /// 60 BPM 恒定速度（旧判据的口径：它们钉的是 60 BPM 下的既有行为，
+    /// 审计 #17 的兼容性承诺正是这一档逐位不变）。
+    fn tempo_60() -> TempoMap {
+        TempoMap::constant(60.0)
+    }
+
     /// 一段**可判**的注入消息：C4 NoteOn → C4 NoteOff → E4 NoteOn（不闭合）＋ 一条 CC7。
     fn injected() -> Vec<(u64, u8, u8, u8)> {
         vec![
@@ -1016,10 +1044,10 @@ mod tests {
 
     /// 判据 ①（谱面）：⭐ **注入 N 条消息 ⇒ 成对出 N 条音符**，且音高 / 力度 / 起止 tick 逐项对得上。
     ///
-    /// `0.5 s` 在 120 BPM 下 = 480 tick（960 PPQ）；未闭合的那条按**采集末尾 + 尾巴**收尾。
+    /// `0.5 s` 在 60 BPM 下 = 480 tick（960 PPQ）；未闭合的那条按**采集末尾 + 尾巴**收尾。
     #[test]
     fn pairing_turns_injected_messages_into_notes_with_exact_ticks() {
-        let pairing = pair_notes(&injected(), 0, UNCLOSED_TAIL_TICKS);
+        let pairing = pair_notes(&injected(), 0, UNCLOSED_TAIL_TICKS, &tempo_60());
         assert_eq!(pairing.notes.len(), 2, "两条音符: {}", pairing.summary());
         assert_eq!(pairing.ignored, 1, "CC7 必须被计数忽略");
         assert_eq!(pairing.unclosed, 1, "E4 没有 NoteOff");
@@ -1029,16 +1057,19 @@ mod tests {
         let c4 = pairing.notes[0];
         assert_eq!((c4.pitch, c4.velocity), (60, 100));
         assert_eq!(c4.start_tick, 0);
-        let half_second = crate::midi_in::ticks_from_gap_us(500_000);
+        let half_second = crate::midi_in::ticks_from_gap_us(500_000, &tempo_60());
         assert_eq!(c4.end_tick, half_second, "0.5 s 必须换算成 480 tick");
         assert_eq!(half_second, 480);
 
         let e4 = pairing.notes[1];
         assert_eq!((e4.pitch, e4.velocity), (64, 90));
-        assert_eq!(e4.start_tick, crate::midi_in::ticks_from_gap_us(1_000_000));
+        assert_eq!(
+            e4.start_tick,
+            crate::midi_in::ticks_from_gap_us(1_000_000, &tempo_60())
+        );
         // ⭐ 未闭合的音符在**采集末尾**（最后一条消息的 tick）＋ 尾巴处收尾 —— ⛔ 不是
         // 从它自己的起点算尾巴：它一直按着，尾巴是"采集结束时它还没松开"的代价。
-        let last_tick = crate::midi_in::ticks_from_gap_us(1_200_000);
+        let last_tick = crate::midi_in::ticks_from_gap_us(1_200_000, &tempo_60());
         assert_eq!(
             e4.end_tick,
             last_tick + UNCLOSED_TAIL_TICKS,
@@ -1059,22 +1090,89 @@ mod tests {
             (400_000, 0x80, 60, 0),  // 松开
             (500_000, 0x80, 72, 0),  // 孤儿 NoteOff
         ];
-        let pairing = pair_notes(&messages, 0, UNCLOSED_TAIL_TICKS);
+        let pairing = pair_notes(&messages, 0, UNCLOSED_TAIL_TICKS, &tempo_60());
         assert_eq!(pairing.notes.len(), 3, "{}", pairing.summary());
         assert_eq!(pairing.restarted, 1, "重触发必须计数");
         assert_eq!(pairing.orphan_offs, 1, "孤儿 NoteOff 必须计数");
         assert_eq!(pairing.unclosed, 0);
         assert_eq!(
             pairing.notes[0].end_tick,
-            crate::midi_in::ticks_from_gap_us(100_000)
+            crate::midi_in::ticks_from_gap_us(100_000, &tempo_60())
         );
         assert_eq!(
             pairing.notes[1].end_tick,
-            crate::midi_in::ticks_from_gap_us(300_000)
+            crate::midi_in::ticks_from_gap_us(300_000, &tempo_60())
         );
         assert_eq!(
             pairing.notes[2].end_tick,
-            crate::midi_in::ticks_from_gap_us(400_000)
+            crate::midi_in::ticks_from_gap_us(400_000, &tempo_60())
+        );
+    }
+
+    /// 判据（审计 #17 回归）：⭐ **120 BPM 下落点按 120 换算**（批次路）。
+    ///
+    /// 手算：120 BPM 一拍 0.5 秒 ⇒ 消息在 0 / 0.5 s / 1.0 s 处分别落在
+    /// tick 0 / 960 / 1920。写死 60 BPM 的旧算式会给出 0 / 480 / 960
+    /// （落点缩水 50%）⇒ 本判据在旧算式下必红。
+    #[test]
+    fn pairing_at_120_bpm_places_notes_on_the_120_grid() {
+        let messages = vec![
+            (0, 0x90, 60, 100),
+            (500_000, 0x80, 60, 0),
+            (1_000_000, 0x90, 64, 90),
+            (1_500_000, 0x80, 64, 0),
+        ];
+        let pairing = pair_notes(
+            &messages,
+            0,
+            UNCLOSED_TAIL_TICKS,
+            &TempoMap::constant(120.0),
+        );
+        assert_eq!(pairing.notes.len(), 2, "{}", pairing.summary());
+        assert_eq!(
+            (pairing.notes[0].start_tick, pairing.notes[0].end_tick),
+            (0, 960),
+            "0.5 秒 @ 120 BPM = 一拍 = 960 tick"
+        );
+        assert_eq!(
+            (pairing.notes[1].start_tick, pairing.notes[1].end_tick),
+            (1_920, 2_880),
+            "1.0–1.5 秒 @ 120 BPM = 第 2–3 拍"
+        );
+    }
+
+    /// 判据（审计 #17 回归）：⭐ **变速映射分段走查**（批次路）。
+    ///
+    /// 工程：基准 60 BPM、tick 960 起 120 BPM。1.0 s 处是 tick 960（60 BPM
+    /// 一秒一拍），其后再过 0.5 s（120 BPM 一拍）⇒ 1.5 s 处是 tick 1920。
+    #[test]
+    fn pairing_walks_the_projects_tempo_map() {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960_u64, 120.0);
+        let tempo = TempoMap::new(60.0, points);
+        let messages = vec![(1_000_000, 0x90, 60, 100), (1_500_000, 0x80, 60, 0)];
+        let pairing = pair_notes(&messages, 0, UNCLOSED_TAIL_TICKS, &tempo);
+        assert_eq!(pairing.notes.len(), 1, "{}", pairing.summary());
+        assert_eq!(
+            (pairing.notes[0].start_tick, pairing.notes[0].end_tick),
+            (960, 1_920),
+            "变速点前按 60、变速点后按 120"
+        );
+    }
+
+    /// 判据（审计 #17 回归）：⭐ **增量路同口径** —— 记录器吃会话速度快照，
+    /// 120 BPM 下 0.5 s 处闭合的音符止于 tick 960（旧算式 480）。
+    #[test]
+    fn the_recorder_also_uses_the_session_tempo() {
+        let mut recorder = IncrementalNoteRecorder::new(0, TempoMap::constant(120.0));
+        assert!(recorder.consume(0, 0x90, 60, 100).is_none(), "开音符不闭合");
+        let closed = recorder
+            .consume(500_000, 0x80, 60, 0)
+            .expect("NoteOff 必须当刻闭合");
+        assert_eq!(
+            (closed.start_tick, closed.end_tick),
+            (0, 960),
+            "0.5 秒 @ 120 BPM = 960 tick"
         );
     }
 
@@ -1367,9 +1465,10 @@ mod tests {
         messages.push((origin_us + 1_500_000, 0x80, 72, 0)); // 孤立 NoteOff
         messages.push((origin_us + 1_600_000, 0xE0, 0, 0)); // 弯音（非音符）
 
-        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS);
+        let tempo = TempoMap::constant(120.0);
+        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS, &tempo);
 
-        let mut recorder = IncrementalNoteRecorder::new(origin_us);
+        let mut recorder = IncrementalNoteRecorder::new(origin_us, tempo);
         let mut closed_on_arrival = 0_usize;
         for (timestamp_us, status, data1, data2) in &messages {
             if recorder
@@ -1432,7 +1531,7 @@ mod tests {
             .id;
 
         // ---- 批次路 ----
-        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS);
+        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS, &project.tempo());
         let batch_port = UndoPort::new(
             UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
         );
@@ -1440,7 +1539,7 @@ mod tests {
             write_notes(&batch_port, &project, &batch, Some(track), NOW).expect("批次落谱");
 
         // ---- 增量路 ----
-        let mut recorder = IncrementalNoteRecorder::new(origin_us);
+        let mut recorder = IncrementalNoteRecorder::new(origin_us, project.tempo());
         for (t, s, d1, d2) in &messages {
             recorder.consume(*t, *s, *d1, *d2);
         }

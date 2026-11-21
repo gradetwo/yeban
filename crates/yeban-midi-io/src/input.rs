@@ -102,10 +102,14 @@ impl MidiEvent {
 
     /// ⭐ 换算成**相对会话起点**的 960 PPQ Tick（[`MODEL-AST-001`]）。
     ///
+    /// ⚠ `bpm` 是**工程当前速度**（审计 #17：此前写死 60 BPM，非 60 BPM 工程
+    /// 落点整体缩放出错）；带变速映射的落点走 `yeban_model::time_math` 的
+    /// 分段换算，本方法只做恒定速度读数。
+    ///
     /// [`MODEL-AST-001`]: ../../docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md
     #[must_use]
-    pub fn ticks_from(&self, origin_us: u64) -> u64 {
-        ticks_from_origin_us(self.timestamp_us, origin_us)
+    pub fn ticks_from(&self, origin_us: u64, bpm: f64) -> u64 {
+        ticks_from_origin_us(self.timestamp_us, origin_us, bpm)
     }
 }
 
@@ -575,7 +579,7 @@ mod tests {
             sender.handle_message(origin + step * 62_500, &[0x90, 60, 100]);
         }
         let ticks: Vec<u64> = core::iter::from_fn(|| receiver.pop())
-            .map(|event| event.ticks_from(origin))
+            .map(|event| event.ticks_from(origin, 60.0))
             .collect();
         assert_eq!(ticks.len(), 16, "16 条都必须能被读到");
         assert!(
@@ -718,7 +722,9 @@ mod tests {
             .map(|(step, event)| {
                 let nominal = origin + step as u64 * nominal_step_us;
                 // ⭐ 偏差用**同一个**换算函数 ⇒ 口径一致（⭐ 单位 = Tick）。
-                ticks_from_origin_us(origin + event.timestamp_us.abs_diff(nominal), origin)
+                // ⚠ 速度取本判据自己的名义网格（62.5 ms = 60 Tick ⇔ 60 BPM）：
+                // 这是 RSK-22 临时诊断的**单位约定**，不是工程落点换算。
+                ticks_from_origin_us(origin + event.timestamp_us.abs_diff(nominal), origin, 60.0)
             })
             .collect();
         let reading = jitter_reading(&deviations);
