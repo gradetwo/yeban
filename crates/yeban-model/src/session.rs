@@ -114,7 +114,10 @@ impl TaskProgress {
             return 0;
         }
         // 先乘后除保证整数语义；`total_units > 0` 已保证不会除零。
-        (self.completed_units.min(self.total_units) * 100) / self.total_units
+        // 用 u128 中间运算避免 completed_units >= u64::MAX / 100 时乘法溢出。
+        let clamped = u128::from(self.completed_units.min(self.total_units));
+        let total = u128::from(self.total_units);
+        ((clamped * 100) / total) as u64
     }
 
     /// 是否已完成（`completed_units >= total_units`）。
@@ -385,5 +388,31 @@ impl SessionRuntimeState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_progress_percent_avoids_u64_multiplication_overflow() {
+        let progress = TaskProgress {
+            kind: TaskKind::Render,
+            label: "big render".to_owned(),
+            completed_units: u64::MAX / 2,
+            total_units: u64::MAX,
+            cancellable: true,
+        };
+        assert_eq!(progress.percent(), 49);
+
+        let done = TaskProgress {
+            kind: TaskKind::Render,
+            label: "done".to_owned(),
+            completed_units: u64::MAX,
+            total_units: u64::MAX,
+            cancellable: true,
+        };
+        assert_eq!(done.percent(), 100);
     }
 }

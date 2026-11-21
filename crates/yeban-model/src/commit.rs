@@ -609,6 +609,9 @@ impl CommitGraph {
             "{ANONYMOUS_BRANCH_PREFIX}{}",
             draft.id.to_canonical_string()
         );
+        if self.branches.contains_key(&branch_name) {
+            return Err(ModelError::DuplicateEntityId { id: draft.id });
+        }
         let mut draft = draft;
         draft.branch_id.clone_from(&branch_name);
         let id = self.insert_commit(draft, vec![*from], depth);
@@ -784,10 +787,21 @@ impl CommitGraph {
         steps: usize,
         start: Option<UndoPosition>,
     ) -> Result<(Vec<StampedOp>, Option<UndoPosition>), ModelError> {
+        let (refs, next) = self.collect_backwards_refs(from, skip, steps, start)?;
+        Ok((refs.into_iter().cloned().collect(), next))
+    }
+
+    fn collect_backwards_refs(
+        &self,
+        from: &EntityId,
+        skip: usize,
+        steps: usize,
+        start: Option<UndoPosition>,
+    ) -> Result<(Vec<&StampedOp>, Option<UndoPosition>), ModelError> {
         if steps == 0 {
             return Ok((Vec::new(), start));
         }
-        let mut collected: Vec<StampedOp> = Vec::with_capacity(steps);
+        let mut collected: Vec<&StampedOp> = Vec::with_capacity(steps);
         // 命中位置缓存时，`skip` 已经体现在缓存位置上，不能再跳一遍。
         let mut skipped = if start.is_some() { skip } else { 0 };
         let mut current = Some(start.map_or(*from, |position| position.commit));
@@ -827,7 +841,7 @@ impl CommitGraph {
                     skipped += 1;
                     continue;
                 }
-                collected.push(commit.ops[index].clone());
+                collected.push(&commit.ops[index]);
             }
             current = commit.first_parent();
         }
@@ -884,9 +898,9 @@ impl CommitGraph {
         steps: usize,
     ) -> Result<usize, ModelError> {
         let start = self.cached_undo_position(head, cursor);
-        let (ops, next) = self.collect_backwards(head, cursor.skip, steps, start)?;
+        let (ops, next) = self.collect_backwards_refs(head, cursor.skip, steps, start)?;
         let mut undone = 0_usize;
-        for op in &ops {
+        for op in ops {
             if let Err(error) = op.apply_inverse(doc) {
                 // 失败的那一步没有被应用：丢掉位置缓存，下一次从头按新 skip 重扫，
                 // 保证重试的是同一条 op 而不是它后面那条。
@@ -1033,8 +1047,7 @@ pub fn decode_history_dag(raw: &[u8]) -> Result<Option<CommitGraph>, HistoryDagE
 fn default_snapshot_hash(ops: &[StampedOp]) -> ContentHash {
     let mut buffer = String::new();
     for op in ops {
-        // 模型层的全部字段都可序列化，`write!` 到 `String` 不会失败；
-        // 即便失败也只是少写一段文本，摘要仍然是确定的。
+        // 既有项目容器的 `history.dag` 逐字节契约已冻结此摘要编码，不可改动格式。
         let _ = write!(buffer, "{op:?}");
     }
     ContentHash::of_bytes(buffer.as_bytes())
@@ -2275,5 +2288,26 @@ mod tests {
             build(1_760_000_000_000, "main", "other"),
             "只差提交消息必须判为不同"
         );
+    }
+
+    #[test]
+    fn fork_anonymous_rejects_existing_branch_collision() {
+        let mut graph = CommitGraph::new();
+        let genesis_id = fixture_id(1);
+        graph
+            .genesis(CommitDraft::new(genesis_id, "main", "agent", "genesis"))
+            .expect("genesis");
+        let fork_id = fixture_id(2);
+        let branch_name = format!("{ANONYMOUS_BRANCH_PREFIX}{}", fork_id.to_canonical_string());
+        graph
+            .create_branch(&branch_name, &genesis_id)
+            .expect("预占同名分支");
+        let err = graph
+            .fork_anonymous(
+                &genesis_id,
+                CommitDraft::new(fork_id, "ignored", "agent", "fork"),
+            )
+            .expect_err("已存在同名分支时不得覆盖");
+        assert_eq!(err, ModelError::DuplicateEntityId { id: fork_id });
     }
 }
