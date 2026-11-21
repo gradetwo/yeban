@@ -3913,17 +3913,42 @@ impl Op {
                 Ok(())
             }
             Self::Batch { ops, .. } => {
-                // 原子性：在克隆体上整体应用成功后再一次性提交。
-                // 任何子操作失败都不会污染 `doc`（`ARCH-OPS-002` 的原子回滚语义）。
-                let mut probe = doc.clone();
+                // 原子性不再靠整份文档深拷贝：逐条施加并记录每条 op 的
+                // **结构化逆操作**；任一条失败就按相反顺序回放已施加的逆操作。
+                // 拷贝量只与真正被触及的实体有关，不再随工程规模整份复制。
+                // 失败回滚语义与旧实现的“克隆体试跑、成功才换入”逐位一致；
+                // 既有 `batch_is_atomic_when_a_sub_op_fails` 与嵌套批次判据继续钉住。
+                let mut applied_inverses: Vec<Self> = Vec::with_capacity(ops.len());
                 for op in ops {
-                    op.apply(&mut probe)?;
+                    let inverse = match op.structural_inverse() {
+                        Ok(inverse) => inverse,
+                        Err(error) => {
+                            rollback_batch(doc, &applied_inverses)?;
+                            return Err(error);
+                        }
+                    };
+                    match op.apply(doc) {
+                        Ok(()) => applied_inverses.push(inverse),
+                        Err(error) => {
+                            rollback_batch(doc, &applied_inverses)?;
+                            return Err(error);
+                        }
+                    }
                 }
-                *doc = probe;
                 Ok(())
             }
         }
     }
+}
+
+/// 按相反顺序回放已成功施加的批量子操作的结构化逆操作。
+///
+/// 只在 [`Op::Batch`] 的 `commit` 失败路径调用；不复制整份文档。
+fn rollback_batch(doc: &mut YebanProjectV1, applied_inverses: &[Op]) -> Result<(), ModelError> {
+    for inverse in applied_inverses.iter().rev() {
+        inverse.apply(doc)?;
+    }
+    Ok(())
 }
 
 /// 读取 [`AutomationTarget`] 指向的当前参数值。
@@ -6235,6 +6260,106 @@ mod tests {
         };
         assert!(batch.apply(&mut doc).is_err());
         assert_eq!(doc, snapshot, "批量失败必须整体不生效 (原子性)");
+    }
+
+    #[test]
+    fn batch_success_matches_sequential_application() {
+        let f = fixture();
+        let ops = vec![
+            Op::AddNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note: MidiNote::new(fixture_id(630), 0, 60, 240),
+            },
+            Op::AddNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note: MidiNote::new(fixture_id(631), 240, 62, 240),
+            },
+            Op::AddNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note: MidiNote::new(fixture_id(632), 480, 64, 240),
+            },
+        ];
+        let mut batched = fixture_document();
+        Op::Batch {
+            ops: ops.clone(),
+            description: "success path".to_owned(),
+        }
+        .apply(&mut batched)
+        .expect("批量成功");
+        let mut sequential = fixture_document();
+        for op in &ops {
+            op.apply(&mut sequential).expect("逐条成功");
+        }
+        assert_eq!(
+            batched, sequential,
+            "批量成功后的文档必须与逐条施加逐位一致"
+        );
+    }
+
+    #[test]
+    fn batch_rolls_back_every_prior_op_after_a_late_failure() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+        let batch = Op::Batch {
+            ops: vec![
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(620), 0, 60, 240),
+                },
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(621), 240, 62, 240),
+                },
+                Op::AddNote {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note: MidiNote::new(fixture_id(622), 480, 64, 240),
+                },
+                // 第四条必然失败：音符不存在。
+                Op::ModifyNoteVelocity {
+                    track_id: f.lead,
+                    clip_id: f.clip,
+                    note_id: fixture_id(623),
+                    old_vel: 0,
+                    new_vel: 1,
+                },
+            ],
+            description: "rollback three applied notes".to_owned(),
+        };
+        assert!(batch.apply(&mut doc).is_err());
+        assert_eq!(
+            doc, snapshot,
+            "第四条失败必须把前三条已施加的 AddNote 全部回滚"
+        );
+    }
+
+    #[test]
+    fn batch_commit_never_clones_the_whole_document() {
+        // 结构断言：Batch 的成功/失败路径都不再出现整份 `doc.clone()`。
+        // 旧实现正是这里做整份深拷贝；把这段代码钉住，防止回退。
+        let source = include_str!("ops.rs");
+        let start = source
+            .find("Self::Batch { ops, .. } => {")
+            .expect("Batch commit 分支必须存在");
+        let rest = &source[start..];
+        let end = rest
+            .find("/// 按相反顺序回放已成功施加的批量子操作")
+            .expect("Batch commit 分支后必须紧跟 rollback_batch");
+        let batch_arm = &rest[..end];
+        assert!(
+            !batch_arm.contains("doc.clone()"),
+            "Batch commit 不得整份克隆文档"
+        );
+        assert!(
+            batch_arm.contains("structural_inverse") && batch_arm.contains("rollback_batch"),
+            "Batch commit 必须走结构化逆操作回滚"
+        );
     }
 
     /// `crates/yeban-model/../../schemas/<name>`。
