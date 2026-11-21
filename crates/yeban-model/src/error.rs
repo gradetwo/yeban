@@ -7,6 +7,17 @@ use thiserror::Error;
 
 use crate::ids::{AssetHash, EntityId};
 
+/// 把闭合环路径渲染成可读的规范 ULID 文本链（`a -> b -> a`）。
+///
+/// `EntityId` 的 `Debug` 会展开成 `EntityId(Ulid(...))`，不适合直接进用户报文；
+/// 这里统一走 `Display`（26 字符 Crockford Base32）。
+fn format_cycle_path(path: &[EntityId]) -> String {
+    path.iter()
+        .map(EntityId::to_canonical_string)
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
 /// `yeban-model` 的统一错误类型。
 ///
 /// 只派生 `PartialEq` 而不派生 `Eq`：`ProbabilityOutOfRange` 携带 `f32`，而 `f32`
@@ -396,6 +407,22 @@ pub enum ModelError {
     RoutingNodeNotFound {
         /// 缺失的路由节点身份。
         id: EntityId,
+    },
+
+    /// 路由音频子图成环。`path` 是闭合路径（首尾为同一节点）。
+    ///
+    /// ⚠ `Sidechain` 边不参与判环：它是键输入，不搬运音频。
+    #[error("routing cycle detected: {}", format_cycle_path(path))]
+    RoutingCycle {
+        /// 闭合环路径（首尾为同一节点）。
+        path: Vec<EntityId>,
+    },
+
+    /// `folder_id` 父子关系成环。`path` 是闭合路径（首尾为同一节点）。
+    #[error("folder cycle detected: {}", format_cycle_path(path))]
+    FolderCycle {
+        /// 闭合环路径（首尾为同一节点）。
+        path: Vec<EntityId>,
     },
 
     /// 设备插槽下标越界。

@@ -193,6 +193,9 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::SceneNotFound { .. }
         | ModelError::CommitNotFound { .. }
         | ModelError::BranchNotFound { .. } => ErrorCode::EntityNotFound,
+        // 路由环有专门契约码；folder 父链环复用 `CYCLE_DETECTED`。
+        ModelError::RoutingCycle { .. } => ErrorCode::RoutingCycleDetected,
+        ModelError::FolderCycle { .. } => ErrorCode::CycleDetected,
         ModelError::SampleRateUnsupported { .. }
         | ModelError::BlockSizeUnsupported { .. }
         | ModelError::InvalidHash { .. }

@@ -669,8 +669,11 @@ fn project_container_without_proposals_matches_the_legacy_bytes() {
     assert_eq!(legacy, extended, "proposals=None 时不得改变落盘字节");
 
     let raw = read_container(&extended, &ContainerLimits::default()).expect("读回必须成功");
+    let names: Vec<&str> = raw.names().collect();
+    // R111 形态②：先钉住集合非空，后面的 `.any` 才不是空集真空。
+    assert!(!names.is_empty(), "容器至少应有一个条目");
     assert!(
-        !raw.names().any(|name| name == PROPOSALS_JSON_NAME),
+        !names.contains(&PROPOSALS_JSON_NAME),
         "无提案段时容器里不得出现 proposals.json"
     );
     let archive =

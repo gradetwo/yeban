@@ -1502,8 +1502,8 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
                 "pluginPath": "stub:sine",
             }),
         ),
-        // ARA 宿主三条：绑定只做实参校验 + 解码（不开插件），wav 不存在 ⇒
-        // 带内 `IO_ERROR`；查询与渲染先查会话注册表，不存在 ⇒ 带内
+        // ARA 宿主四条：绑定只做实参校验 + 解码（不开插件），wav 不存在 ⇒
+        // 带内 `IO_ERROR`；查询 / 渲染 / 解绑先查会话注册表，不存在 ⇒ 带内
         // `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。这里只要求"走到
         // 领域实现 + 契约形状"，真插件链路的证据在 `tests/fixture_ara_plugin.rs`
         //（桩 ARA 插件）与 `domain/mod.rs` 的 ARA 单元判据。
@@ -1515,6 +1515,7 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             }),
         ),
         ("yeban_ara_query", json!({ "sessionId": "ara-999" })),
+        ("yeban_ara_unbind", json!({ "sessionId": "ara-999" })),
         (
             "yeban_ara_render",
             json!({
@@ -2685,7 +2686,7 @@ fn propose_section_outputs_track_the_inputs() {
 }
 
 #[test]
-fn routing_cycles_are_refused_before_arranging() {
+fn routing_cycle_project_is_refused_on_open() {
     let scratch = Scratch::new("cycle");
     let project = yeban_model::samples::filled_project();
     let mut dispatcher = Dispatcher::new(
@@ -2701,7 +2702,10 @@ fn routing_cycles_are_refused_before_arranging() {
     let edges = value["routing_graph"]["edges"]
         .as_array_mut()
         .expect("edges");
-    for (index, (source, destination)) in [(a.clone(), b.clone()), (b, a)].into_iter().enumerate() {
+    for (index, (source, destination)) in [(a.clone(), b.clone()), (b.clone(), a.clone())]
+        .into_iter()
+        .enumerate()
+    {
         edges.push(json!({
             "id": format!("01J8ZQ{:020}", 900 + index),
             "source_node": source,
@@ -2712,7 +2716,7 @@ fn routing_cycles_are_refused_before_arranging() {
     let cyclic: YebanProjectV1 = serde_json::from_value(value).expect("反序列化回工程");
     let path = scratch.join("cyclic.yeban");
     fs::write(&path, container_fixture(&cyclic)).expect("写容器工程");
-    // 模型层不判环 ⇒ 这份工程是"合法"的, 因此能打开。
+    // T-FIX-52 起模型层判环 ⇒ 这份工程在打开时就被拒绝，不会进入配器。
     let auth = format!("Bearer {}", dispatcher.expected_token().expose());
     let opened = call(
         &mut dispatcher,
@@ -2720,15 +2724,15 @@ fn routing_cycles_are_refused_before_arranging() {
         "yeban_open_project",
         json!({ "path": path.display().to_string() }),
     );
-    assert_eq!(opened["status"], "success", "{opened}");
-    let outcome = call(
-        &mut dispatcher,
-        &auth,
-        "yeban_propose_section",
-        json!({ "sectionName": "Chorus", "stylePreset": "lo_fi_hip_hop", "bars": 4 }),
+    assert_domain_error(&opened, "ROUTING_CYCLE_DETECTED", "成环的工程");
+    let message = opened["error"]["message"]
+        .as_str()
+        .expect("错误 message 必须是字符串");
+    assert!(
+        message.contains(a.as_str().expect("节点 id 是字符串"))
+            && message.contains(b.as_str().expect("节点 id 是字符串")),
+        "错误必须点名环上的两个节点: {opened}"
     );
-    assert_domain_error(&outcome, "CYCLE_DETECTED", "已成环的工程");
-    assert!(outcome["error"]["data"]["cycle"].is_array());
 }
 
 #[test]

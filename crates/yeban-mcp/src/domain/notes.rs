@@ -24011,13 +24011,20 @@ mod tests {
         let (track_id, clip_id) = lead_clip(&project);
         // 两端都取**已在** `nodes` 里的身份（夹具的图很完整）。
         let source = project.routing_graph.nodes[0];
-        let destination = project
-            .routing_graph
-            .nodes
-            .iter()
-            .copied()
-            .find(|node| *node != source)
-            .expect("夹具至少两个节点");
+        // T-FIX-52：新边不得闭合既有音频路径 ⇒ 选一个**没有** back-edge 到 source 的终点。
+        let destination =
+            project
+                .routing_graph
+                .nodes
+                .iter()
+                .copied()
+                .find(|node| {
+                    *node != source
+                        && !project.routing_graph.edges.values().any(|edge| {
+                            edge.source_node == *node && edge.destination_node == source
+                        })
+                })
+                .expect("夹具至少两个节点且有一个安全终点");
         let edge_id = EntityId::from_str("01J8ZQ00000000000000000EDG").expect("ULID");
         assert!(
             !project.routing_graph.edges.contains_key(&edge_id),

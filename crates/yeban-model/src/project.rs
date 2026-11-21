@@ -1874,7 +1874,7 @@ impl RoutingGraph {
     /// 校验图自洽性。
     ///
     /// 检查项：节点列表无重复；每条边的键与 `id` 一致；边的两端节点都存在；
-    /// 每条边的增益有限。
+    /// 每条边的增益有限；**音频子图无环**（`Sidechain` 键输入边不参与）。
     ///
     /// # Errors
     ///
@@ -1900,7 +1900,89 @@ impl RoutingGraph {
             }
             edge.validate()?;
         }
+        self.validate_acyclic()
+    }
+
+    /// 只校验**音频路由子图无环**。
+    ///
+    /// `TrackToBus` / `BusToMaster` / `SendToAux` 是音频连接；`Sidechain`
+    /// 是键输入，⛔ 不是音频连接，因此不参与判环。合法无环图逐位不变：
+    /// 本方法只读，返回 `Ok(())` 时调用方文档一个字节都不改。
+    ///
+    /// # Errors
+    ///
+    /// 成环时返回 [`ModelError::RoutingCycle`]，`path` 是首尾闭合的节点路径。
+    pub fn validate_acyclic(&self) -> Result<(), ModelError> {
+        if let Some(path) = self.audio_cycle_path() {
+            return Err(ModelError::RoutingCycle { path });
+        }
         Ok(())
+    }
+
+    /// 找一条音频路由环（闭合路径，首尾同一节点）。
+    ///
+    /// 遍历顺序由 `nodes` 字典序与 `edges` 键序共同固定 ⇒ 同一张图每次报告
+    /// 同一条环，便于回执与回归逐字比较。用显式栈而非递归，避免不可信文档
+    /// 用超深图把校验路径打爆。
+    fn audio_cycle_path(&self) -> Option<Vec<EntityId>> {
+        let mut adjacency: BTreeMap<EntityId, Vec<EntityId>> =
+            self.nodes.iter().map(|node| (*node, Vec::new())).collect();
+        for edge in self.edges.values() {
+            if edge.kind == RoutingKind::Sidechain {
+                continue;
+            }
+            adjacency
+                .entry(edge.source_node)
+                .or_default()
+                .push(edge.destination_node);
+        }
+
+        // 0 = 未访问，1 = 在当前栈上，2 = 已完成。
+        let mut state: BTreeMap<EntityId, u8> = BTreeMap::new();
+        for start in &self.nodes {
+            if state.get(start).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            let mut stack: Vec<(EntityId, usize)> = vec![(*start, 0)];
+            let mut positions: BTreeMap<EntityId, usize> = BTreeMap::new();
+            let mut path: Vec<EntityId> = Vec::new();
+            state.insert(*start, 1);
+            positions.insert(*start, 0);
+            path.push(*start);
+
+            while !stack.is_empty() {
+                let frame = stack.len() - 1;
+                let (node, next_index) = stack[frame];
+                let neighbors = adjacency.get(&node).map_or(&[][..], Vec::as_slice);
+                if next_index >= neighbors.len() {
+                    state.insert(node, 2);
+                    positions.remove(&node);
+                    path.pop();
+                    stack.pop();
+                    continue;
+                }
+                stack[frame].1 += 1;
+                let next = neighbors[next_index];
+                match state.get(&next).copied().unwrap_or(0) {
+                    0 => {
+                        state.insert(next, 1);
+                        positions.insert(next, path.len());
+                        path.push(next);
+                        stack.push((next, 0));
+                    }
+                    1 => {
+                        let Some(&cycle_start) = positions.get(&next) else {
+                            continue;
+                        };
+                        let mut cycle = path[cycle_start..].to_vec();
+                        cycle.push(next);
+                        return Some(cycle);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
     }
 
     /// 只读访问一条边。
@@ -2322,6 +2404,13 @@ impl YebanProjectV1 {
             }
         }
 
+        // `folder_id` 是**单出边**父子关系（每条轨至多一个父）：存在性由上面的
+        // 循环钉住，这里补**无环**。判定从字典序最小的轨道起沿父链走；遇到
+        // 当前链上的节点即截出闭合路径。合法父子森林逐位不变（只读校验）。
+        if let Some(path) = self.folder_cycle_path() {
+            return Err(ModelError::FolderCycle { path });
+        }
+
         // 显式轨道顺序：重复身份 / 不存在的身份 ⇒ 整个工程拒收（与键与实体不一致同档）。
         // 缺失的身份**不**拒收（投影按身份升序追加，⛔ 永不丢轨）；主总线身份在表里
         // 也不拒收（投影忽略它，手改文件仍能打开）。
@@ -2408,6 +2497,66 @@ impl YebanProjectV1 {
             });
         }
         Ok(())
+    }
+
+    /// 找一条 `folder_id` 父链环（闭合路径，首尾同一轨道）。
+    ///
+    /// 从 `tracks` 的字典序起点逐个走父链，已走完的链整体标记完成 ⇒ 每条轨
+    /// 至多进一次路径，整体 O(n log n)。只读，不改文档。
+    fn folder_cycle_path(&self) -> Option<Vec<EntityId>> {
+        let parents: BTreeMap<EntityId, Option<EntityId>> = self
+            .tracks
+            .iter()
+            .map(|(id, track)| (*id, track.folder_id))
+            .collect();
+        Self::cycle_in_parent_map(&parents)
+    }
+
+    /// 在**尚未落盘**的新增轨道上做同一个判环（`Op::AddTrack` 的前置条件）。
+    ///
+    /// 候选轨道可以自指，也可以把既有轨道的悬空 `folder_id` 接成环；两者都
+    /// 必须在操作落盘前拒绝。
+    pub(crate) fn folder_cycle_path_with_track(
+        &self,
+        candidate: &TrackV3,
+    ) -> Option<Vec<EntityId>> {
+        let mut parents: BTreeMap<EntityId, Option<EntityId>> = self
+            .tracks
+            .iter()
+            .map(|(id, track)| (*id, track.folder_id))
+            .collect();
+        parents.insert(candidate.id, candidate.folder_id);
+        Self::cycle_in_parent_map(&parents)
+    }
+
+    /// `id → folder_id` 单出边图上找闭合环；`None` 表示森林。
+    fn cycle_in_parent_map(
+        parents: &BTreeMap<EntityId, Option<EntityId>>,
+    ) -> Option<Vec<EntityId>> {
+        let mut done: BTreeSet<EntityId> = BTreeSet::new();
+        for start in parents.keys() {
+            if done.contains(start) {
+                continue;
+            }
+            let mut path: Vec<EntityId> = Vec::new();
+            let mut positions: BTreeMap<EntityId, usize> = BTreeMap::new();
+            let mut current = Some(*start);
+            while let Some(id) = current {
+                if let Some(&cycle_start) = positions.get(&id) {
+                    let mut cycle = path[cycle_start..].to_vec();
+                    cycle.push(id);
+                    return Some(cycle);
+                }
+                if done.contains(&id) {
+                    break;
+                }
+                positions.insert(id, path.len());
+                path.push(id);
+                current = parents.get(&id).copied().flatten();
+            }
+            done.extend(path);
+        }
+        None
     }
 
     /// 工程采样率的唯一读取入口（顶层没有冗余副本）[MODEL-AST-002]。
@@ -5235,7 +5384,9 @@ mod tests {
                         id: edge_id,
                         source_node: master,
                         destination_node: master,
-                        kind: RoutingKind::BusToMaster,
+                        // 探针只需要一条合法的路由边做增益写入；自环用侧链形状
+                        // （键输入不参与音频判环），避免探针夹具本身成环。
+                        kind: RoutingKind::Sidechain,
                         gain_db: None,
                         source_lane: None,
                         dest_lane: None,
@@ -6987,15 +7138,13 @@ mod tests {
         );
     }
 
-    /// `RoutingGraph::validate` 的**权威边界**：它对拓扑与全局可达性**刻意沉默**。
+    /// `RoutingGraph::validate` 的**权威边界**：结构自洽 + 音频无环；其余拓扑沉默。
     ///
-    /// 为什么需要（第八轮 · 权威转移）：`render` 在 `validate()` 之后**另外**查主总线
-    /// （`RenderError::MasterNotInGraph`），并把环交给 `yeban-render::pdc::plan` 的
-    /// Kahn 排序（`PdcError::Cycle`，`crates/yeban-render/src/pdc.rs:233`）。
-    /// 本判据把那半边**写成断言**：`validate` 松了会红，`validate` 被收紧到越界也会红
-    /// （那时 `render` 的假设要重新对账）。
+    /// T-FIX-52 起音频子图成环由模型层**响亮拒绝**（自环与二元环都在这里钉住）。
+    /// 平行边、悬挂节点、全局可达性仍不在本判定里：主总线可达性是
+    /// `YebanProjectV1` 的跨集合条件，渲染侧另有 Kahn 排序。
     #[test]
-    fn routing_graph_validate_is_silent_about_topology_and_global_reachability() {
+    fn routing_graph_validate_only_checks_structure_and_audio_acyclicity() {
         let node_a = fixture_id(1);
         let node_b = fixture_id(2);
         let edge_id = fixture_id(10);
@@ -7009,14 +7158,20 @@ mod tests {
             dest_lane: None,
         };
 
-        // 1) 自环：结构上自洽 ⇒ 通过（环由下游判）。
+        // 1) 自环：T-FIX-52 起是**音频环** ⇒ 拒绝并给闭合路径。
         let self_loop = RoutingGraph {
             nodes: vec![node_a],
             edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, node_a))]),
         };
-        assert_eq!(self_loop.validate(), Ok(()), "自环不是结构错误");
+        assert_eq!(
+            self_loop.validate(),
+            Err(ModelError::RoutingCycle {
+                path: vec![node_a, node_a]
+            }),
+            "自环必须响亮拒绝"
+        );
 
-        // 2) 二元环 a→b→a：结构上自洽 ⇒ 通过。
+        // 2) 二元环 a→b→a：同样拒绝。
         let cycle = RoutingGraph {
             nodes: vec![node_a, node_b],
             edges: BTreeMap::from([
@@ -7024,7 +7179,13 @@ mod tests {
                 (fixture_id(11), edge(fixture_id(11), node_b, node_a)),
             ]),
         };
-        assert_eq!(cycle.validate(), Ok(()), "环不是结构错误");
+        assert_eq!(
+            cycle.validate(),
+            Err(ModelError::RoutingCycle {
+                path: vec![node_a, node_b, node_a]
+            }),
+            "二元环必须响亮拒绝"
+        );
 
         // 3) 平行边（同一对端点两条边）：结构上自洽 ⇒ 通过。
         let parallel = RoutingGraph {

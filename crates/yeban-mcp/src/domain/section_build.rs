@@ -900,8 +900,9 @@ pub fn ticks_per_bar(project: &YebanProjectV1) -> u64 {
 /// 迭代顺序 = `graph.nodes` 的顺序，邻接表按 `edges` 的 `BTreeMap` 键序展开，
 /// 因此判定结果与报告内容都是**确定性**的。
 ///
-/// 模型层**不做**环路判定（`RoutingGraph::validate` 只查节点存在性与重复），
-/// 本函数补上它：在一个已经成环的工程上再叠加配器只会掩盖问题。
+/// 模型层自 T-FIX-52 起也有同一判据（`RoutingGraph::validate_acyclic`），
+/// 本函数仍保留：`plan` 直接消费调用方给的工程，不假定它刚过 `validate()`；
+/// 在一个已经成环的工程上再叠加配器只会掩盖问题。
 #[must_use]
 pub fn detect_cycle(graph: &RoutingGraph) -> Option<Vec<EntityId>> {
     #[derive(Clone, Copy, PartialEq)]
@@ -4223,7 +4224,11 @@ mod tests {
             let edge = routing_edge(source, destination, "cyc");
             project.routing_graph.edges.insert(edge.id, edge);
         }
-        project.validate().expect("模型层不判环, 因此它是'合法'的");
+        // T-FIX-52 起模型层也判环；规划器仍保留自己的判据（输入可能未经 validate）。
+        assert!(
+            matches!(project.validate(), Err(ModelError::RoutingCycle { .. })),
+            "模型层必须拒绝 a→b→a 的工程"
+        );
         let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("必须拒绝");
         assert_eq!(fault.domain_code(), Some(BuildCode::CycleDetected));
         let BuildFault::Domain { data, .. } = fault else {

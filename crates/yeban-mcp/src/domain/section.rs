@@ -23,10 +23,10 @@
 //!
 //! ## `CYCLE_DETECTED` 在哪里
 //!
-//! 模型层**不做**环路判定（`RoutingGraph::validate` 只查节点存在性与重复）。
-//! [`super::section_build::detect_cycle`] 补上它（真 DFS 着色判环），
-//! `plan` 在创建骨架**之前**先检查现有路由图 —— 在一个已经成环的工程上再叠加配器
-//! 只会掩盖问题。
+//! T-FIX-52 起模型层也判环（[`yeban_model::RoutingGraph::validate_acyclic`]），
+//! 打开/保存一份成环工程会先被模型响亮拒绝。本层的
+//! [`super::section_build::detect_cycle`] 仍保留：`plan` 直接消费调用方给的工程，
+//! 不假定它一定刚过 `validate()`；在非法输入上叠加配器只会掩盖问题。
 
 use serde_json::Value;
 
@@ -213,7 +213,14 @@ mod tests {
             };
             project.routing_graph.edges.insert(edge.id, edge);
         }
-        project.validate().expect("模型层不判环, 因此它是'合法'的");
+        // T-FIX-52 起模型层也判环；规划器仍保留自己的判据（输入可能未经 validate）。
+        assert!(
+            matches!(
+                project.validate(),
+                Err(yeban_model::ModelError::RoutingCycle { .. })
+            ),
+            "模型层必须拒绝 a→b→a 的工程"
+        );
         let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 4, None).expect_err("必须拒绝");
         assert_eq!(fault.domain_code(), Some(ErrorCode::CycleDetected));
         let value = fault.into_result().expect("带内");

@@ -1862,6 +1862,11 @@ impl Op {
                 if doc.tracks.contains_key(&track.id) {
                     return Err(ModelError::DuplicateEntityId { id: track.id });
                 }
+                // 新增轨也是 folder 父子关系的一个构建面：自指，或把既有轨的
+                // 悬空 `folder_id` 接成环，都必须在落盘前拒绝。
+                if let Some(path) = doc.folder_cycle_path_with_track(track) {
+                    return Err(ModelError::FolderCycle { path });
+                }
                 Ok(())
             }
             Self::RemoveTrack {
@@ -2037,6 +2042,12 @@ impl Op {
                 if doc.routing_graph.edges.contains_key(&edge.id) {
                     return Err(ModelError::DuplicateEntityId { id: edge.id });
                 }
+                // 成环操作必须**在落盘前**响亮拒绝：在克隆图上把本边加进去再
+                // 只跑判环（`Sidechain` 不参与）。合法图多这一条边仍然无环 ⇒
+                // 前置条件通过，文档一个字节不改。
+                let mut probe = doc.routing_graph.clone();
+                probe.edges.insert(edge.id, *edge);
+                probe.validate_acyclic()?;
                 Ok(())
             }
             Self::DisconnectRouting {
@@ -7595,17 +7606,22 @@ mod tests {
                     )
                 {
                     let id = fresh(counter);
-                    return Op::ConnectRouting {
-                        edge: RoutingEdge {
-                            id,
-                            source_node: source,
-                            destination_node: destination,
-                            kind: RoutingKind::SendToAux,
-                            gain_db: Some(-6.0),
-                            source_lane: None,
-                            dest_lane: None,
-                        },
+                    let edge = RoutingEdge {
+                        id,
+                        source_node: source,
+                        destination_node: destination,
+                        kind: RoutingKind::SendToAux,
+                        gain_db: Some(-6.0),
+                        source_lane: None,
+                        dest_lane: None,
                     };
+                    // T-FIX-52：成环的 ConnectRouting 会被前置条件拒绝，本生成器
+                    // 只吐**保证可应用**的操作 ⇒ 先在同一份图上试判环。
+                    let mut probe = doc.routing_graph.clone();
+                    probe.edges.insert(id, edge);
+                    if probe.validate_acyclic().is_ok() {
+                        return Op::ConnectRouting { edge };
+                    }
                 }
             }
             10 => {
