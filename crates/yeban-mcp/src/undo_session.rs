@@ -558,21 +558,25 @@ fn commit_with(
     Ok(id)
 }
 
-/// "这次撤销到底会做几步"的**唯一**口径（真做与 `dryRun` 预览共用）。
+/// 计算"这次撤销会撤哪些 op"：游标定位 + 步数夹取，真做与预览共用。
 ///
-/// 返回 `(活跃分支头, 实际步数)`。步数被夹到 `1..=MAX_STEPS` 再与可撤销深度取小值。
-fn plan_undo(
+/// 与旧实现每次 `state.undoable(graph)` 从分支头重扫整条链不同，这里直接用
+/// [`CommitGraph::ops_backwards_with_cursor`]：游标命中位置缓存时只读当前提交，
+/// 连续单步撤销的总代价是 O(K) 而不是 O(K²)。
+fn plan_undo_ops(
     graph: &CommitGraph,
     state: &UndoState,
     steps: usize,
-) -> Result<(EntityId, usize), UndoRefusal> {
+) -> Result<(EntityId, Vec<StampedOp>), UndoRefusal> {
     let head = state.head(graph)?;
-    let available = state.undoable(graph)?;
-    let steps = steps.clamp(1, MAX_STEPS).min(available);
-    if steps == 0 {
+    let steps = steps.clamp(1, MAX_STEPS);
+    let ops = graph
+        .ops_backwards_with_cursor(&head, &state.cursor, steps)
+        .map_err(model_refusal)?;
+    if ops.is_empty() {
         return Err(UndoRefusal::NoHistory { undoable: 0 });
     }
-    Ok((head, steps))
+    Ok((head, ops))
 }
 
 /// "这次重做到底会做几步"的**唯一**口径。
@@ -599,13 +603,8 @@ pub fn undo_op_kinds(
     state: &UndoState,
     steps: usize,
 ) -> Result<Vec<&'static str>, UndoRefusal> {
-    let (head, steps) = plan_undo(graph, state, steps)?;
-    Ok(graph
-        .ops_backwards_from(&head, state.cursor.skip, steps)
-        .map_err(model_refusal)?
-        .iter()
-        .map(|stamped| stamped.op.name())
-        .collect())
+    let (_, ops) = plan_undo_ops(graph, state, steps)?;
+    Ok(ops.iter().map(|stamped| stamped.op.name()).collect())
 }
 
 /// 将要被重做的 op 变体名（**只读**；顺序 = 处理顺序）。
@@ -685,11 +684,10 @@ pub fn undo(
     state: &mut UndoState,
     steps: usize,
 ) -> Result<UndoOutcome, UndoRefusal> {
-    let (head, steps) = plan_undo(graph, state, steps)?;
-    // 将要被撤销的 op（只读预览；真正的执行在下一行的模型入口里）。
-    let op_kinds = undo_op_kinds(graph, state, steps)?;
+    let (head, preview) = plan_undo_ops(graph, state, steps)?;
+    let op_kinds: Vec<&'static str> = preview.iter().map(|stamped| stamped.op.name()).collect();
     let applied = graph
-        .undo_with(project, &head, &mut state.cursor, steps)
+        .undo_with(project, &head, &mut state.cursor, preview.len())
         .map_err(model_refusal)?;
     Ok(UndoOutcome {
         steps: applied,

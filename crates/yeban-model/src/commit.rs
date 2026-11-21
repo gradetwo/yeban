@@ -41,6 +41,12 @@ use crate::ids::{ContentHash, EntityId};
 use crate::ops::StampedOp;
 use crate::project::YebanProjectV1;
 
+// 判据专用的提交查找计数（线程局部，不影响生产路径）。
+#[cfg(test)]
+thread_local! {
+    static COMMIT_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// 每多少次提交保存一次全量快照 [ARCH-OPS-002, ROAD-M1-003]。
 pub const SNAPSHOT_INTERVAL: u64 = 256;
 
@@ -193,17 +199,40 @@ impl CommitDraft {
 ///
 /// **属于会话运行态，不是持久化文档层** [MODEL-ISO-001]：因此本类型刻意
 /// **不实现** `Serialize`/`Deserialize`，从类型上杜绝它被写进工程文件。
+///
+/// 除步数外还缓存"下一条要撤销的 op 在图谱里的位置"（`position`）。它让连续
+/// `Cmd+Z` 不必每次从分支头重新扫过已经撤销的部分：首次调用定位一次，之后每次
+/// 单步撤销只读当前提交，长会话总代价由 O(K²) 降为 O(K)。缓存不是权威状态 ——
+/// 只要 `skip` 被外部改写、头提交变了或提交被删除，位置立即失效并回退到从头扫描。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UndoCursor {
     /// 已撤销的步数（从分支头往前数）。
     pub skip: usize,
+    /// 下一条要撤销的 op 的位置；`None` = 尚未建立缓存或已经撤到底。
+    position: Option<UndoPosition>,
+}
+
+/// 游标里缓存的"下一条要撤销的 op"位置。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UndoPosition {
+    /// 建立缓存时的已撤销步数（与 `UndoCursor::skip` 不等即失效）。
+    skip: usize,
+    /// 建立缓存时的头提交（换头即失效）。
+    head: EntityId,
+    /// 下一条 op 所在提交。
+    commit: EntityId,
+    /// 下一条 op 在该提交 `ops` 里的下标。
+    op_index: usize,
 }
 
 impl UndoCursor {
     /// 全新的游标（一步都还没撤销）。
     #[must_use]
     pub const fn new() -> Self {
-        Self { skip: 0 }
+        Self {
+            skip: 0,
+            position: None,
+        }
     }
 
     /// 已撤销步数。
@@ -639,6 +668,8 @@ impl CommitGraph {
     ///
     /// 提交不存在 → [`ModelError::CommitNotFound`]。
     pub fn commit(&self, id: &EntityId) -> Result<&Commit, ModelError> {
+        #[cfg(test)]
+        COMMIT_LOOKUPS.with(|cell| cell.set(cell.get() + 1));
         self.commits
             .get(id)
             .ok_or(ModelError::CommitNotFound { id: *id })
@@ -704,8 +735,9 @@ impl CommitGraph {
 
     /// 同 [`CommitGraph::ops_backwards`]，但先跳过已经处理过的 `skip` 条 op。
     ///
-    /// `skip` 正是 [`UndoCursor::skip`]：连续 `Cmd+Z` 时每次都在同一个头提交上
-    /// 重新取数，靠 skip 前移，因此图谱无需保存任何可变游标状态。
+    /// `skip` 正是 [`UndoCursor::skip`]：调用方从同一个头提交重新取数时靠它前移。
+    /// 连续单步撤销请走 [`CommitGraph::undo_with`] —— 它用游标里的位置缓存避免
+    /// 每一步都重扫已撤销的前缀。
     ///
     /// # Errors
     ///
@@ -716,27 +748,103 @@ impl CommitGraph {
         skip: usize,
         steps: usize,
     ) -> Result<Vec<StampedOp>, ModelError> {
-        let mut collected: Vec<StampedOp> = Vec::new();
-        let mut skipped = 0_usize;
-        let mut cursor = Some(*from);
-        while collected.len() < steps {
-            let Some(current) = cursor else {
-                break;
+        let (collected, _) = self.collect_backwards(from, skip, steps, None)?;
+        Ok(collected)
+    }
+
+    /// 用 [`UndoCursor`] 的位置缓存取"接下来要撤销的 op"（只读，不移动游标）。
+    ///
+    /// 与 [`CommitGraph::ops_backwards_from`] 语义相同，区别只在起点：游标里若有
+    /// 仍有效的位置，就从那里继续，不再从分支头重扫已撤销前缀。预览（`dryRun`）与
+    /// 真撤销因此共用 O(1) 的单步定位。
+    ///
+    /// # Errors
+    ///
+    /// 链上出现未知提交 → [`ModelError::CommitNotFound`]。
+    pub fn ops_backwards_with_cursor(
+        &self,
+        from: &EntityId,
+        cursor: &UndoCursor,
+        steps: usize,
+    ) -> Result<Vec<StampedOp>, ModelError> {
+        let start = self.cached_undo_position(from, cursor);
+        let (collected, _) = self.collect_backwards(from, cursor.skip, steps, start)?;
+        Ok(collected)
+    }
+
+    /// 从 `from` 往回收集至多 `steps` 条 op，并返回"下一条要撤销的 op"位置。
+    ///
+    /// `start` 是 [`UndoCursor`] 已校验过的位置缓存：命中时直接从该提交/下标继续，
+    /// 不再从分支头重扫；未命中则按 `skip` 从 `from` 走一遍。返回值第二项为
+    /// `None` 表示已经走到根、没有更多可撤销的 op。
+    fn collect_backwards(
+        &self,
+        from: &EntityId,
+        skip: usize,
+        steps: usize,
+        start: Option<UndoPosition>,
+    ) -> Result<(Vec<StampedOp>, Option<UndoPosition>), ModelError> {
+        if steps == 0 {
+            return Ok((Vec::new(), start));
+        }
+        let mut collected: Vec<StampedOp> = Vec::with_capacity(steps);
+        // 命中位置缓存时，`skip` 已经体现在缓存位置上，不能再跳一遍。
+        let mut skipped = if start.is_some() { skip } else { 0 };
+        let mut current = Some(start.map_or(*from, |position| position.commit));
+        let mut start_index = start.map(|position| position.op_index);
+        while let Some(id) = current {
+            let commit = self.commit(&id)?;
+            let from_index = match start_index.take() {
+                Some(index) => {
+                    if index >= commit.ops.len() {
+                        // 缓存位置在提交内越界：按损坏输入处理，绝不静默跳到父提交。
+                        return Err(ModelError::CommitNotFound { id });
+                    }
+                    index
+                }
+                None => {
+                    if commit.ops.is_empty() {
+                        current = commit.first_parent();
+                        continue;
+                    }
+                    commit.ops.len() - 1
+                }
             };
-            let commit = self.commit(&current)?;
-            for op in commit.ops.iter().rev() {
+            for index in (0..=from_index).rev() {
                 if collected.len() >= steps {
-                    break;
+                    let next_skip = skip + collected.len();
+                    return Ok((
+                        collected,
+                        Some(UndoPosition {
+                            skip: next_skip,
+                            head: *from,
+                            commit: id,
+                            op_index: index,
+                        }),
+                    ));
                 }
                 if skipped < skip {
                     skipped += 1;
                     continue;
                 }
-                collected.push(op.clone());
+                collected.push(commit.ops[index].clone());
             }
-            cursor = commit.first_parent();
+            current = commit.first_parent();
         }
-        Ok(collected)
+        Ok((collected, None))
+    }
+
+    /// 校验游标里的位置缓存是否仍可用于当前头。
+    ///
+    /// 失效条件：`skip` 被外部改写、头提交变了、提交已不存在、下标越界。
+    /// 任一命中都返回 `None`，由调用方回退到从头按 `skip` 扫描。
+    fn cached_undo_position(&self, head: &EntityId, cursor: &UndoCursor) -> Option<UndoPosition> {
+        let position = cursor.position?;
+        if position.skip != cursor.skip || position.head != *head {
+            return None;
+        }
+        let commit = self.commits.get(&position.commit)?;
+        (position.op_index < commit.ops.len()).then_some(position)
     }
 
     /// 跨 Commit 边界连续撤销：对 `doc` 逆序应用最近 `steps` 条 op 的逆操作。
@@ -762,6 +870,9 @@ impl CommitGraph {
     /// 记录已经撤销的步数，因此连续调用会**继续往前**而不是重复撤销同一步。
     /// 游标前移在每一步成功之后进行，因此中途失败不会让游标与文档状态错位。
     ///
+    /// 连续单步撤销的总代价是 O(K)：首次调用定位 `O(skip)`，之后每一步只用
+    /// 游标缓存的位置直接读当前提交，不再从分支头重扫已撤销前缀。
+    ///
     /// # Errors
     ///
     /// 任一步的逆操作不可构造或不可应用 → 返回对应 [`ModelError`]。
@@ -772,13 +883,20 @@ impl CommitGraph {
         cursor: &mut UndoCursor,
         steps: usize,
     ) -> Result<usize, ModelError> {
-        let ops = self.ops_backwards_from(head, cursor.skip, steps)?;
+        let start = self.cached_undo_position(head, cursor);
+        let (ops, next) = self.collect_backwards(head, cursor.skip, steps, start)?;
         let mut undone = 0_usize;
         for op in &ops {
-            op.apply_inverse(doc)?;
+            if let Err(error) = op.apply_inverse(doc) {
+                // 失败的那一步没有被应用：丢掉位置缓存，下一次从头按新 skip 重扫，
+                // 保证重试的是同一条 op 而不是它后面那条。
+                cursor.position = None;
+                return Err(error);
+            }
             undone += 1;
             cursor.skip += 1;
         }
+        cursor.position = next;
         Ok(undone)
     }
 
@@ -976,6 +1094,81 @@ mod tests {
         for op in graph.ops_backwards(head, steps).expect("ops").iter().rev() {
             op.apply(doc).expect("apply forwards");
         }
+    }
+
+    fn reset_commit_lookups() {
+        super::COMMIT_LOOKUPS.with(|cell| cell.set(0));
+    }
+
+    fn commit_lookups() -> usize {
+        super::COMMIT_LOOKUPS.with(std::cell::Cell::get)
+    }
+
+    /// 连续单步撤销的提交查找数必须线性增长，而不是每步从头扫一遍的 O(K²)。
+    ///
+    /// 用提交查找次数当硬读数：旧实现每次 `undo_with(.., 1)` 都从分支头扫过
+    /// 已撤销的 `skip` 条 op，K 步总计约 K(K+1)/2 次查找；新实现首次定位一次，
+    /// 之后只读游标缓存的当前提交，总计 O(K)。
+    #[test]
+    fn continuous_single_step_undo_scans_each_commit_once() {
+        const K: usize = 256;
+        let mut graph = CommitGraph::new();
+        graph
+            .genesis(CommitDraft::new(fixture_id(1), "main", "agent", "root"))
+            .expect("genesis");
+        for index in 1..=K {
+            graph
+                .append(
+                    CommitDraft::new(
+                        fixture_id(10_000 + index as u128),
+                        "main",
+                        "agent",
+                        "one op",
+                    )
+                    .with_ops(vec![add_section_op(20_000 + index as u128)]),
+                )
+                .expect("append");
+        }
+        let head = graph.branch_head("main").expect("main").head;
+        let mut doc = YebanProjectV1::default();
+        let initial = doc.clone();
+        forward(&mut doc, &graph, &head, K);
+        assert_eq!(doc.sections.len(), K);
+
+        reset_commit_lookups();
+        let mut cursor = UndoCursor::new();
+        for _ in 0..K {
+            assert_eq!(
+                graph
+                    .undo_with(&mut doc, &head, &mut cursor, 1)
+                    .expect("undo"),
+                1
+            );
+        }
+        let linear = commit_lookups();
+        assert_eq!(doc, initial, "连续撤销 K 步必须逐位回到初始文档");
+        assert!(cursor.position.is_none(), "撤到底后不再缓存位置");
+        assert!(
+            linear <= K * 4,
+            "连续单步撤销应线性扫链：K={K}, commit lookups={linear}"
+        );
+
+        // 反向对照：旧路径每步都从 head 重扫 skip 前缀，读数必须明显更大。
+        reset_commit_lookups();
+        for skip in 0..K {
+            let _ = graph
+                .ops_backwards_from(&head, skip, 1)
+                .expect("rescan baseline");
+        }
+        let quadratic_baseline = commit_lookups();
+        assert!(
+            quadratic_baseline > K * K / 4,
+            "旧路径必须展示 O(K²) 的查找量：K={K}, lookups={quadratic_baseline}"
+        );
+        assert!(
+            linear * 4 < quadratic_baseline,
+            "新路径查找量必须显著低于旧路径：linear={linear}, baseline={quadratic_baseline}"
+        );
     }
 
     #[test]
