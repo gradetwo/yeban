@@ -18,7 +18,7 @@ serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # Windows 没有 /proc：pid 存活与进程启动时间必须走 Win32 API。
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
