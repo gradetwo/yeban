@@ -106,6 +106,7 @@ impl Drop for ServerSession {
 ///
 /// `job_id` 是 yeban 任务 id（同时作 `import.start` 的 `idempotencyKey`）。
 pub fn start_server(config: &OtcpConfig, job_id: &str) -> Result<ServerSession, OtcpError> {
+    crate::discovery::validate_job_id(job_id)?;
     let bin = &config.opentune_bin;
     if !bin.exists() {
         return Err(OtcpError::with_data(
@@ -127,22 +128,27 @@ pub fn start_server(config: &OtcpConfig, job_id: &str) -> Result<ServerSession, 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&control_dir, fs::Permissions::from_mode(0o700)).map_err(|error| {
-            OtcpError::io(format!(
+        if let Err(error) = fs::set_permissions(&control_dir, fs::Permissions::from_mode(0o700)) {
+            let _ = fs::remove_dir_all(&control_dir);
+            return Err(OtcpError::io(format!(
                 "设控制目录 {} 模式失败: {error}",
                 control_dir.display()
-            ))
-        })?;
+            )));
+        }
     }
-    check_control_dir_mode(&control_dir)?;
+    if let Err(error) = check_control_dir_mode(&control_dir) {
+        let _ = fs::remove_dir_all(&control_dir);
+        return Err(error);
+    }
 
     let job_temp_dir = config.job_tmp_dir(job_id);
-    fs::create_dir_all(&job_temp_dir).map_err(|error| {
-        OtcpError::io(format!(
+    if let Err(error) = fs::create_dir_all(&job_temp_dir) {
+        let _ = fs::remove_dir_all(&control_dir);
+        return Err(OtcpError::io(format!(
             "建任务临时目录 {} 失败: {error}",
             job_temp_dir.display()
-        ))
-    })?;
+        )));
+    }
 
     let nonce = generate_nonce();
     let ready_file = control_dir.join("ready.json");
@@ -162,19 +168,26 @@ pub fn start_server(config: &OtcpConfig, job_id: &str) -> Result<ServerSession, 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|error| {
-        OtcpError::with_data(
-            "otcpNotConfigured",
-            format!("启动 OpenTune 失败（{}）: {error}", bin.display()),
-            json!({"binary": bin.display().to_string()}),
-        )
-    })?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&control_dir);
+            let _ = fs::remove_dir_all(&job_temp_dir);
+            return Err(OtcpError::with_data(
+                "otcpNotConfigured",
+                format!("启动 OpenTune 失败（{}）: {error}", bin.display()),
+                json!({"binary": bin.display().to_string()}),
+            ));
+        }
+    };
 
     let session = match start_server_inner(config, job_id, &control_dir, &job_temp_dir, &nonce) {
         Ok(session) => session,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = fs::remove_dir_all(&control_dir);
+            let _ = fs::remove_dir_all(&job_temp_dir);
             return Err(error);
         }
     };

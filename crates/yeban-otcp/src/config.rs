@@ -123,14 +123,24 @@ impl OtcpConfig {
     /// 关闭服务端时⛔ 不删——MCP 层稍后读它做交付）。
     #[must_use]
     pub fn job_dir(&self, job_id: &str) -> PathBuf {
-        self.control_root.join("jobs").join(job_id)
+        let segment = if crate::discovery::validate_job_id(job_id).is_ok() {
+            job_id
+        } else {
+            "_invalid_job_id"
+        };
+        self.control_root.join("jobs").join(segment)
     }
 
     /// 服务端临时目录（控制根下的 `tmp/<job_id>`；`OPENTUNE_DATA_DIR`
     /// 与自测夹具住这里，关闭服务端时删除）。
     #[must_use]
     pub fn job_tmp_dir(&self, job_id: &str) -> PathBuf {
-        self.control_root.join("tmp").join(job_id)
+        let segment = if crate::discovery::validate_job_id(job_id).is_ok() {
+            job_id
+        } else {
+            "_invalid_job_id"
+        };
+        self.control_root.join("tmp").join(segment)
     }
 
     /// 任务收据路径（任务目录下的 `receipt.json`）。
