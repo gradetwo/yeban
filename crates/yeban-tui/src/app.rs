@@ -158,6 +158,7 @@ impl App {
         let archive = ProjectArchive {
             project: project.clone(),
             history_dag: Vec::new(),
+            proposals: None,
             assets,
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),
@@ -198,6 +199,7 @@ impl App {
         let archive = archive.unwrap_or_else(|| ProjectArchive {
             project: project.clone(),
             history_dag: Vec::new(),
+            proposals: None,
             assets: Vec::new(),
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),

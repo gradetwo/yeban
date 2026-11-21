@@ -571,6 +571,7 @@ pub fn run_with_options(
     let archive = ProjectArchive {
         project: built.project,
         history_dag: Vec::new(),
+        proposals: None,
         assets: built.assets,
         embedded_presets: Vec::new(),
         load_notes: Vec::new(),

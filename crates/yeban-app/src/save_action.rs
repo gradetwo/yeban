@@ -120,6 +120,7 @@ impl SaveRequest {
             archive: ProjectArchive {
                 project,
                 history_dag,
+                proposals: None,
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
@@ -146,6 +147,7 @@ impl SaveRequest {
             archive: ProjectArchive {
                 project,
                 history_dag,
+                proposals: None,
                 assets,
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),

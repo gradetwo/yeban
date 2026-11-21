@@ -5097,6 +5097,7 @@ pub fn load_project_with_clock(
                 archive: ProjectArchive {
                     project,
                     history_dag: Vec::new(),
+                    proposals: None,
                     assets: options.sample.assets(),
                     embedded_presets: Vec::new(),
                     load_notes: Vec::new(),
@@ -8428,6 +8429,7 @@ mod tests {
             &yeban_model::container::ProjectArchive {
                 project: yeban_model::samples::default_project(),
                 history_dag: Vec::new(),
+                proposals: None,
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
@@ -11037,6 +11039,7 @@ mod tests {
             archive: ProjectArchive {
                 project: crate::bridge::demo_project(),
                 history_dag: Vec::new(),
+                proposals: None,
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
@@ -11104,6 +11107,7 @@ mod author_report_tests {
             archive: ProjectArchive {
                 project,
                 history_dag: Vec::new(),
+                proposals: None,
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),

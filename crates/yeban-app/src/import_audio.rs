@@ -598,6 +598,7 @@ mod tests {
         let archive = yeban_model::container::ProjectArchive {
             project: project.clone(),
             history_dag: Vec::new(),
+            proposals: None,
             assets: vec![(plan.asset.clone(), plan.bytes.clone())],
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),

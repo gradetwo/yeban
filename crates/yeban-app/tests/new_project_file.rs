@@ -214,6 +214,7 @@ fn create_new_project_file_writes_the_1187_byte_master_bus_container() {
         archive: yeban_model::container::ProjectArchive {
             project: yeban_model::samples::filled_project(),
             history_dag: Vec::new(),
+            proposals: None,
             assets: Vec::new(),
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),

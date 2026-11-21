@@ -274,11 +274,15 @@ pub fn save_archive_file(
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
-    let bytes = yeban_model::container::write_project_container_with_presets_borrowed(
+    // 提案段（`proposals.json`，T-FIX-43）随归档原样带出：本层与
+    // `history_dag` 一样只搬运字节、不解读 —— 打开时读到的段若在这里被
+    // 丢掉，界面保存一次就会把 MCP 的未合并提案悄悄抹除。
+    let bytes = yeban_model::container::write_project_container_with_proposals_borrowed(
         &archive.project,
         &archive.history_dag,
         &borrowed_assets,
         &borrowed_presets,
+        archive.proposals.as_deref(),
     )?;
     // 与 [`save_project_file`] 同一条门：`--save-as` 因此与 `ui/force_save`、与
     // 控制面的 `yeban_save_project` 争**同一把** `.yeban.lock`。
@@ -561,7 +565,8 @@ mod tests {
         );
     }
 
-    /// 判据 6：**归档保真保存** —— `history.dag` 与资产池必须原样活过一轮
+    /// 判据 6：**归档保真保存** —— `history.dag`、资产池与提案段
+    /// （`proposals.json`，T-FIX-43）必须原样活过一轮
     /// "打开 → 另存"（这是 `--save-as` 的语义，见模块文档）。
     #[test]
     fn an_archive_save_preserves_history_and_the_asset_pool() {
@@ -576,6 +581,7 @@ mod tests {
         let source = ProjectArchive {
             project: project.clone(),
             history_dag: b"commit-graph-bytes".to_vec(),
+            proposals: Some(b"unmerged-proposals-bytes".to_vec()),
             assets: vec![(AssetHash::of_bytes(&asset), asset.clone())],
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),
@@ -597,6 +603,11 @@ mod tests {
         assert_eq!(
             read_back.history_dag, b"commit-graph-bytes",
             "history.dag 必须在 --save-as 之后仍然存在"
+        );
+        assert_eq!(
+            read_back.proposals.as_deref(),
+            Some(b"unmerged-proposals-bytes".as_slice()),
+            "proposals.json 必须在 --save-as 之后仍然存在（界面保存不得抹除未合并提案）"
         );
         assert_eq!(read_back.assets.len(), 1, "资产池不得静默消失");
         assert_eq!(read_back.assets[0].1, asset);

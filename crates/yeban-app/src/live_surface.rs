@@ -1023,6 +1023,7 @@ impl LiveAdminSurface {
             let archive = yeban_model::container::ProjectArchive {
                 project: save_source.clone(),
                 history_dag: yeban_model::commit::encode_history_dag(&port.graph()),
+                proposals: None,
                 assets,
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),

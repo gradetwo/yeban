@@ -9156,6 +9156,7 @@ pub fn new_project_archive_with_clock(
     yeban_model::container::ProjectArchive {
         project,
         history_dag: Vec::new(),
+        proposals: None,
         assets: Vec::new(),
         embedded_presets: Vec::new(),
         load_notes: Vec::new(),
@@ -9757,6 +9758,7 @@ pub fn wire_startup_chooser(
                     let archive = yeban_model::container::ProjectArchive {
                         project,
                         history_dag: Vec::new(),
+                        proposals: None,
                         assets: sample.assets(),
                         embedded_presets: Vec::new(),
                         load_notes: Vec::new(),
@@ -9844,6 +9846,7 @@ pub fn wire_startup_chooser(
             let archive = yeban_model::container::ProjectArchive {
                 project,
                 history_dag: Vec::new(),
+                proposals: None,
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
@@ -10037,6 +10040,7 @@ fn save_template_from_dialog(
     let archive = yeban_model::container::ProjectArchive {
         project,
         history_dag: yeban_model::commit::encode_history_dag(&graph),
+        proposals: None,
         assets,
         embedded_presets: Vec::new(),
         load_notes: Vec::new(),

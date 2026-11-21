@@ -263,6 +263,7 @@ fn same_name_scopes_to_the_three_level_path() {
     let second = yeban_model::container::ProjectArchive {
         project: second_project,
         history_dag: Vec::new(),
+        proposals: None,
         assets: Vec::new(),
         embedded_presets: Vec::new(),
         load_notes: Vec::new(),
