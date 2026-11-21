@@ -1496,13 +1496,9 @@ impl EngineHost {
             debug_assert_eq!(written, 1, "交接的 Play 必须被通道接受");
         }
 
-        // 3) 开设备（失败 ⇒ 手里那一代一位不动）。
-        //
-        // ⚠ `open_output` 的入参是**按值**的 `EngineRuntime`（引擎侧 API，本单⛔ 不改）：
-        // 这里必须把装箱的那一份**移出来**交给它，调用点因此仍有一个 `180144 B` 的
-        // 实参位。这是设备腿的**下限**，不是本单能搬走的部分 —— 读数见
-        // `tests/gui_stack_budget.rs` 的 `DeviceLegEntry` 一档。
-        let handle = match yeban_engine::device::open_output(&config, *runtime) {
+        // 3) 开设备（失败 ⇒ 手里那一代一位不动）：把已装箱的运行时直接移入回调，
+        // 避免在调用栈上按值搬运整份 EngineRuntime。
+        let handle = match yeban_engine::device::open_output_boxed(&config, runtime) {
             Ok(handle) => handle,
             Err(error) => return Err(EngineHostError::Device(error)),
         };
