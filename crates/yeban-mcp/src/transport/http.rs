@@ -10,6 +10,9 @@
 //! | 必须带 `Content-Length` | 缺失 ⇒ `411` |
 //! | 拒绝超长请求 | 头 > [`MAX_REQUEST_HEAD_BYTES`] ⇒ `431`；体 > [`MAX_REQUEST_BODY_BYTES`] ⇒ `413`（**先判长度再分配**） |
 //! | 必须带 `Authorization: Bearer <TOKEN>` | 缺失 / 形状非法 / 不匹配 ⇒ `401` + `WWW-Authenticate`，**绝不回退放开** |
+//! | Host 必须环回 | [`HttpRequest::validate_loopback_security`]，非 `127.0.0.1`/`localhost`/`[::1]` ⇒ `403`（防 DNS Rebinding） |
+//! | Origin 必须环回 | 同上，存在且非环回 ⇒ `403`（防 CSRF） |
+//! | 拒绝 `Transfer-Encoding` | 同上，出现即 ⇒ `400`（含 TE+CL 并存，防请求走私） |
 //! | 生产模式硬禁 `ui:inject` | [`crate::security::authorize`]（判定不在传输层） |
 //!
 //! ## 为什么手写而不是 `tiny_http`
@@ -137,6 +140,24 @@ pub enum HttpError {
     /// 缺少 `Content-Length`。
     #[error("POST 必须带 `Content-Length` 头")]
     MissingContentLength,
+    /// `Host` 不是环回地址（DNS Rebinding 防护）。
+    #[error("拒绝非环回 `Host`: `{host}`（只允许 127.0.0.1 / localhost / [::1]，可带端口）")]
+    InvalidHost {
+        /// 被拒绝的 Host 头原始值。
+        host: String,
+    },
+    /// `Origin` 存在但不是环回（CSRF 防护）。
+    #[error("拒绝跨站 `Origin`: `{origin}`（只允许环回源）")]
+    CrossOrigin {
+        /// 被拒绝的 Origin 头原始值。
+        origin: String,
+    },
+    /// 请求带 `Transfer-Encoding`（请求走私防护）。
+    #[error("拒绝 `Transfer-Encoding: {value}`（本服务只接受 Content-Length）")]
+    TransferEncodingForbidden {
+        /// 被拒绝的 Transfer-Encoding 头原始值。
+        value: String,
+    },
 }
 
 impl HttpError {
@@ -153,6 +174,9 @@ impl HttpError {
             Self::HeadTooLarge { .. } => "head-too-large",
             Self::BodyTooLarge { .. } => "body-too-large",
             Self::MissingContentLength => "missing-content-length",
+            Self::InvalidHost { .. } => "invalid-host",
+            Self::CrossOrigin { .. } => "cross-origin",
+            Self::TransferEncodingForbidden { .. } => "transfer-encoding-forbidden",
         }
     }
 
@@ -166,6 +190,8 @@ impl HttpError {
             Self::HeadTooLarge { .. } => 431,
             Self::BodyTooLarge { .. } => 413,
             Self::MissingContentLength => 411,
+            Self::InvalidHost { .. } | Self::CrossOrigin { .. } => 403,
+            Self::TransferEncodingForbidden { .. } => 400,
             Self::NotLoopback { .. } | Self::Bind { .. } | Self::Io { .. } => 500,
         }
     }
@@ -236,6 +262,64 @@ impl HttpRequest {
     pub fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or(&self.target)
     }
+
+    /// 环回 HTTP 安全校验：Host 环回 / Origin 拒绝 / Transfer-Encoding 拒绝。
+    ///
+    /// 必须在**鉴权之前、解析早期**调用（两个传输的 `respond` 入口）。
+    /// - `Host`：允许 `127.0.0.1` / `localhost` / `[::1]`，可带 `:port`；缺失也拒绝（HTTP/1.1 必须有）。
+    /// - `Origin`：存在则必须是环回源（scheme + host 为上述之一，可带端口），否则拒绝；不存在放行。
+    /// - `Transfer-Encoding`：只要出现一律拒绝（本服务只按 `Content-Length` 收体，防走私）。
+    ///
+    /// # Errors
+    ///
+    /// Host 非环回 / Origin 跨站 / 带 Transfer-Encoding 时返回对应错误。
+    pub fn validate_loopback_security(&self) -> Result<(), HttpError> {
+        // Transfer-Encoding 一律拒绝（请求走私防护，含 TE+CL 并存）。
+        if let Some(value) = self.header("transfer-encoding") {
+            return Err(HttpError::TransferEncodingForbidden {
+                value: value.to_owned(),
+            });
+        }
+        // Host 必须是环回；缺失也拒（HTTP/1.1 强制带 Host）。
+        let host = self.header("host").unwrap_or("");
+        if !is_loopback_host(host) {
+            return Err(HttpError::InvalidHost {
+                host: host.to_owned(),
+            });
+        }
+        // Origin 存在则必须环回；缺失放行（非浏览器客户端可以没有 Origin）。
+        if let Some(origin) = self.header("origin")
+            && !is_loopback_origin(origin)
+        {
+            return Err(HttpError::CrossOrigin {
+                origin: origin.to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Host 头是否为环回：`127.0.0.1` / `localhost` / `[::1]`，可带 `:port`。
+fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim();
+    let authority = h.rsplit_once('@').map_or(h, |(_, rest)| rest); // 去掉 userinfo
+    let hostpart = match authority {
+        a if a.starts_with('[') => a.split(']').next().map_or(a, |x| &x[1..]), // 保留 [::1]
+        a => a.split(':').next().unwrap_or(a),                                 // 去 :port
+    };
+    let hostpart = hostpart.trim().to_ascii_lowercase();
+    matches!(
+        hostpart.as_str(),
+        "127.0.0.1" | "localhost" | "[::1]" | "::1"
+    )
+}
+
+/// Origin 头是否为环回源：scheme://host[:port]，host 为环回。
+fn is_loopback_origin(origin: &str) -> bool {
+    let o = origin.trim();
+    let authority = o.split_once("://").map_or(o, |(_, rest)| rest);
+    let authority = authority.split('/').next().unwrap_or(authority);
+    is_loopback_host(authority)
 }
 
 /// 一个待写出的 HTTP 响应。
@@ -757,6 +841,10 @@ impl HttpServer {
 
     /// 处理一个已解析的请求。
     fn respond(&self, request: &HttpRequest) -> HttpResponse {
+        // 环回安全校验在鉴权之前、解析早期；拒绝留可观测错误（403/400 + error.kind）。
+        if let Err(error) = request.validate_loopback_security() {
+            return error.outcome();
+        }
         if request.method != SUPPORTED_METHOD {
             return method_not_allowed(&request.method);
         }
@@ -1641,5 +1729,91 @@ mod tests {
             "401 必须带 WWW-Authenticate 挑战头: {:?}",
             response.headers
         );
+    }
+
+    // ---- P1-8 环回安全校验回归测试 ----
+
+    /// 正常环回请求不受影响（带 Host 127.0.0.1，无 Origin/TE）。
+    #[test]
+    fn loopback_security_allows_normal_loopback_request() {
+        let server = loopback_server();
+        // 用一个合法 token 让请求能过鉴权，确认校验不误伤正常请求。
+        let generated = BearerToken::generate();
+        let token_str = generated.token.expose().to_owned();
+        let server2 = HttpServer::bind_loopback(Dispatcher::new(
+            generated.token,
+            ScopeSet::all(),
+            RunMode::Production,
+        ))
+        .expect("绑定环回");
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let raw = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: localhost:8080\r\nAuthorization: Bearer {token_str}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let resp = server2.handle_text(&raw);
+        assert_ne!(resp.status, 403, "正常环回 Host 不应被拒: {:?}", resp.body);
+        assert_ne!(resp.status, 400, "正常环回 Host 不应被拒: {:?}", resp.body);
+        assert!(resp.status < 500, "正常请求不应 5xx: {:?}", resp.body);
+        let _ = &server; // 保持 helper 使用
+    }
+
+    /// 恶意 Host 被拒（DNS Rebinding）。
+    #[test]
+    fn loopback_security_rejects_non_loopback_host() {
+        let server = loopback_server();
+        let raw = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: evil.example.com\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 403, "非环回 Host 必须 403: {:?}", resp.body);
+        assert!(
+            resp.body.contains("invalid-host"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    /// 跨站 Origin 被拒（CSRF）；环回 Origin 放行。
+    #[test]
+    fn loopback_security_rejects_cross_origin() {
+        let server = loopback_server();
+        let raw = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 403, "跨站 Origin 必须 403: {:?}", resp.body);
+        assert!(
+            resp.body.contains("cross-origin"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    /// Transfer-Encoding + Content-Length 并存被拒（请求走私）。
+    #[test]
+    fn loopback_security_rejects_transfer_encoding_with_content_length() {
+        let server = loopback_server();
+        let raw = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 400, "TE+CL 必须 400: {:?}", resp.body);
+        assert!(
+            resp.body.contains("transfer-encoding-forbidden"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    /// 环回 Origin（含端口）不应被误拒。
+    #[test]
+    fn loopback_security_allows_loopback_origin() {
+        let server = loopback_server();
+        let raw = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: [::1]\r\nOrigin: http://localhost:3000\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_ne!(resp.status, 403, "环回 Origin 不应被拒: {:?}", resp.body);
     }
 }

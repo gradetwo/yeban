@@ -106,6 +106,10 @@ impl UiHttpServer {
 
     /// 处理一个已解析的请求。
     fn respond(&self, request: &HttpRequest) -> HttpResponse {
+        // 环回安全校验在鉴权之前、解析早期；与 yeban-mcp 共用同一实现（403/400 + error.kind）。
+        if let Err(error) = request.validate_loopback_security() {
+            return outcome_of(&error);
+        }
         if request.method != SUPPORTED_METHOD {
             return method_not_allowed(&request.method);
         }
@@ -661,5 +665,73 @@ mod tests {
                 .expect("响应体是 JSON");
         assert_eq!(json["id"], 42);
         assert_eq!(json["result"]["count"], 2);
+    }
+
+    // ---- P1-8 环回安全校验回归测试（复用 yeban-mcp 实现）----
+
+    #[test]
+    fn loopback_security_rejects_non_loopback_host() {
+        let server = server();
+        let raw = format!(
+            "POST {UI_MCP_PATH} HTTP/1.1\r\nHost: evil.example.com\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 403, "非环回 Host 必须 403: {:?}", resp.body);
+        assert!(
+            resp.body.contains("invalid-host"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    #[test]
+    fn loopback_security_rejects_cross_origin() {
+        let server = server();
+        let raw = format!(
+            "POST {UI_MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 403, "跨站 Origin 必须 403: {:?}", resp.body);
+        assert!(
+            resp.body.contains("cross-origin"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    #[test]
+    fn loopback_security_rejects_transfer_encoding_with_content_length() {
+        let server = server();
+        let raw = format!(
+            "POST {UI_MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{{}}"
+        );
+        let resp = server.handle_text(&raw);
+        assert_eq!(resp.status, 400, "TE+CL 必须 400: {:?}", resp.body);
+        assert!(
+            resp.body.contains("transfer-encoding-forbidden"),
+            "错误 kind: {}",
+            resp.body
+        );
+    }
+
+    #[test]
+    fn loopback_security_allows_normal_loopback_request() {
+        let server = server();
+        let header = bearer(&server);
+        // 正常环回请求（带 Host、合法 Origin）不应因安全校验被拒。
+        let body = r#"{"jsonrpc":"2.0","id":"live","method":"ui/tree"}"#;
+        let raw = format!(
+            "POST {UI_MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:3000\r\nAuthorization: {header}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let resp = server.handle_text(&raw);
+        assert_ne!(resp.status, 403, "正常环回不应被 403: {:?}", resp.body);
+        assert!(
+            !resp.body.contains("invalid-host")
+                && !resp.body.contains("cross-origin")
+                && !resp.body.contains("transfer-encoding-forbidden"),
+            "正常环回不应触发安全校验拒绝: {:?}",
+            resp.body
+        );
     }
 }
