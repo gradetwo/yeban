@@ -151,12 +151,17 @@ pub fn start_server(config: &OtcpConfig, job_id: &str) -> Result<ServerSession, 
         .arg("--control-api")
         .arg(format!("--control-api-dir={}", control_dir.display()))
         .arg(format!("--control-api-ready-file={}", ready_file.display()))
-        .arg(format!("--control-api-launch-nonce={nonce}"))
+        .arg(format!("--control-api-launch-nonce={nonce}"));
+    apply_display(config, &mut command);
+    // ⚠ 审计 #18：env 与 stdio 必须在 apply_display 之后才设。Xvfb 路径的
+    // wrap_xvfb 会整表替换 Command（只搬 program/args/env，stdio 无从读回），
+    // 先设的 stdio 会被静默丢掉——子进程继承 MCP 的 stdio 会直接破坏
+    // JSON-RPC 流；env 的顺序同理以此为准（wrap 侧已修为搬运 env 兜底）。
+    command
         .env("OPENTUNE_DATA_DIR", &job_temp_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    apply_display(config, &mut command);
     let mut child = command.spawn().map_err(|error| {
         OtcpError::with_data(
             "otcpNotConfigured",
@@ -334,13 +339,32 @@ fn apply_display(config: &OtcpConfig, command: &mut Command) {
 }
 
 /// 把命令包进 `xvfb-run -a`（原命令变 `xvfb-run` 的参数）。
+///
+/// ⚠ 审计 #18：整表替换 Command 只搬 program+args 会静默丢掉调用方已设的
+/// env（如 `OPENTUNE_DATA_DIR`）——env 必须一并搬运（含 `env_remove` 标记）。
+/// stdio 无法从 Command 读回，调用方必须在 `apply_display` 之后再设 stdio
+/// （见 `start_server` 的顺序）。
 fn wrap_xvfb(command: &mut Command) {
     let program = command.get_program().to_owned();
     let mut args: Vec<std::ffi::OsString> = vec!["-a".into()];
     args.push(program);
     args.extend(command.get_args().map(ToOwned::to_owned));
+    let envs: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+        .collect();
     *command = Command::new("xvfb-run");
     command.args(args);
+    for (key, value) in envs {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
 }
 
 /// 关闭会话（每条路径都走）：取消未终态任务 → 等终态 →
@@ -503,6 +527,50 @@ mod tests {
             "instanceId": "inst-1", "pid": 1234, "serverProof": "p"
         });
         assert!(verify_hello(&hello, &discovery).is_ok());
+    }
+
+    #[test]
+    fn xvfb_wrap_carries_env_args_and_program() {
+        // 审计 #18 回归钉：wrap_xvfb 整表替换 Command 时必须搬走调用方已设的
+        // env（OPENTUNE_DATA_DIR 等）；旧实现只搬 program+args，env 被静默丢弃，
+        // 服务端会把数据写到默认目录。
+        let config = OtcpConfig {
+            display: DisplayConfig::Xvfb,
+            ..OtcpConfig::default()
+        };
+        let mut command = Command::new("/opt/opentune/OpenTune");
+        command
+            .arg("--control-api")
+            .arg("--control-api-launch-nonce=abc")
+            .env("OPENTUNE_DATA_DIR", "/tmp/job-data")
+            .env_remove("OTCP_REMOVED_MARKER");
+        apply_display(&config, &mut command);
+        assert_eq!(command.get_program(), "xvfb-run");
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-a",
+                "/opt/opentune/OpenTune",
+                "--control-api",
+                "--control-api-launch-nonce=abc"
+            ]
+        );
+        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert!(
+            envs.contains(&(
+                std::ffi::OsStr::new("OPENTUNE_DATA_DIR"),
+                Some(std::ffi::OsStr::new("/tmp/job-data"))
+            )),
+            "OPENTUNE_DATA_DIR 应随 xvfb 包装保留，实测 envs: {envs:?}"
+        );
+        assert!(
+            envs.contains(&(std::ffi::OsStr::new("OTCP_REMOVED_MARKER"), None)),
+            "env_remove 标记应随 xvfb 包装保留，实测 envs: {envs:?}"
+        );
     }
 
     #[test]

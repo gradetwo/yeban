@@ -147,7 +147,7 @@ pub fn wait_ready_file(dir: &Path, timeout: Duration) -> Result<ReadyFile, OtcpE
 /// 读并校验发现文件。
 ///
 /// * `expected_nonce`：本次启动用的 nonce，必须一致；
-/// * pid 必须存活（`/proc/<pid>` 存在）；
+/// * pid 必须存活（平台原生检查：Linux `/proc`、macOS `kill -0`、Windows `OpenProcess`）；
 /// * `processStartTimeMs` 与本机实测的进程启动时间相差 ≤ 2000 ms。
 ///   任一不符 ⇒ 陈旧文件，返回 `Err`（调用方可删文件后重试启动）。
 pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<DiscoveryFile, OtcpError> {
@@ -184,13 +184,34 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
 
 /// pid 是否存活。
 ///
-/// Unix 读 `/proc/<pid>`；Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
-/// 并用 `GetExitCodeProcess`（`STILL_ACTIVE` 才算存活）。非 Windows/Unix 平台没有可靠
-/// 实现，按“不可判定”返回 `false`，由后续 TCP 连接与握手校验兜底。
+/// Linux 读 `/proc/<pid>`；macOS 用 `kill -0`（本 crate 无 libc 依赖，与
+/// supervisor 的 SIGTERM 同走 `/bin/kill`）；Windows 用
+/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 并用 `GetExitCodeProcess`
+/// （`STILL_ACTIVE` 才算存活）。其余平台没有可靠实现，按“不可判定”返回
+/// `false`，由后续 TCP 连接与握手校验兜底。
+///
+/// ⚠ 审计 #18：`/proc` 是 Linux 专属，`#[cfg(unix)]` 会把没有 `/proc` 的
+/// macOS 一并圈进来恒判已死——/proc 实现只许 `target_os = "linux"` 门控。
 #[must_use]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[must_use]
+#[cfg(target_os = "macos")]
+pub fn pid_alive(pid: u32) -> bool {
+    // `kill -0 <pid>`：进程存在 ⇒ 退出码 0。本驱动查的恒是自家拉起的同用户
+    // 进程，EPERM（他人进程）不出现；真出现也只会误判已死，由发现文件校验
+    // 响亮报错、握手兜底，不会静默放行陈旧文件。
+    std::process::Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 #[must_use]
@@ -215,12 +236,14 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// 读 `/proc/<pid>/stat` 第 22 字段（starttime，时钟节拍数），
+/// Linux 读 `/proc/<pid>/stat` 第 22 字段（starttime，时钟节拍数），
 /// 换算成 Unix 毫秒。读不到 ⇒ `None`。
 ///
-/// Windows 用 `GetProcessTimes` 的 creation FILETIME（1601 起 100ns）换算 Unix 毫秒。
+/// macOS 用 `ps -o etime=` 反推（见下）；Windows 用 `GetProcessTimes` 的
+/// creation FILETIME（1601 起 100ns）换算 Unix 毫秒。
+/// ⚠ 审计 #18：/proc 实现只许 `target_os = "linux"` 门控（理由同 `pid_alive`）。
 #[must_use]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm 字段可能含空格与括号：从最后一个 ')' 之后取字段。
@@ -232,6 +255,52 @@ pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     let boot_ms = boot_time_ms()?;
     let start_ms = boot_ms + starttime_ticks * 1000 / ticks_per_sec;
     Some(start_ms)
+}
+
+/// macOS 没有 /proc：用 `ps -o etime=` 取进程已运行秒数，
+/// 启动时刻 ≈ 当前时刻 − 已运行秒数。`etime` 是秒级分辨率，
+/// 误差 < 1 s + 命令耗时，在发现文件的 2000 ms 容差内。读不到 ⇒ `None`。
+#[must_use]
+#[cfg(target_os = "macos")]
+pub fn process_start_time_ms(pid: u32) -> Option<u64> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "etime="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let elapsed_secs = parse_etime_secs(&String::from_utf8_lossy(&output.stdout))?;
+    Some(now_ms().saturating_sub(elapsed_secs * 1000))
+}
+
+/// 解析 BSD `ps -o etime=` 的输出：`[[dd-]hh:]mm:ss`（右对齐，含空白）。
+/// 分／秒必须 < 60；形状不对 ⇒ `None`（响亮失败，不猜）。
+#[cfg(any(target_os = "macos", test))]
+fn parse_etime_secs(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (days, rest) = match text.split_once('-') {
+        Some((days, rest)) => (days.parse::<u64>().ok()?, rest),
+        None => (0, text),
+    };
+    let fields: Vec<&str> = rest.split(':').collect();
+    let (hours, minutes, seconds) = match fields.as_slice() {
+        [minutes, seconds] => (
+            0,
+            minutes.parse::<u64>().ok()?,
+            seconds.parse::<u64>().ok()?,
+        ),
+        [hours, minutes, seconds] => (
+            hours.parse::<u64>().ok()?,
+            minutes.parse::<u64>().ok()?,
+            seconds.parse::<u64>().ok()?,
+        ),
+        _ => return None,
+    };
+    if minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
 }
 
 #[must_use]
@@ -277,26 +346,26 @@ pub fn process_start_time_ms(pid: u32) -> Option<u64> {
 }
 
 #[must_use]
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn pid_alive(_pid: u32) -> bool {
     false
 }
 
 #[must_use]
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn process_start_time_ms(_pid: u32) -> Option<u64> {
     None
 }
 
 /// 时钟节拍数／秒（Linux 缺省 100；读不到时用 100）。
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn ticks_per_second() -> u64 {
     // libc 不可用（std-only 依赖）；Linux 上 CLK_TCK 恒为 100。
     100
 }
 
 /// 系统启动时间（Unix 毫秒），取自 `/proc/stat` 的 `btime` 行。
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn boot_time_ms() -> Option<u64> {
     let stat = fs::read_to_string("/proc/stat").ok()?;
     for line in stat.lines() {
@@ -355,6 +424,34 @@ pub fn control_dir_for(control_root: &Path, job_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn etime_parser_reads_bsd_ps_formats() {
+        // macOS `ps -o etime=` 的输出形状：[[dd-]hh:]mm:ss，右对齐带空格。
+        assert_eq!(parse_etime_secs("00:00"), Some(0));
+        assert_eq!(parse_etime_secs("03:25"), Some(3 * 60 + 25));
+        assert_eq!(parse_etime_secs("01:02:03"), Some(3723));
+        assert_eq!(parse_etime_secs("2-01:02:03"), Some(2 * 86_400 + 3723));
+        assert_eq!(parse_etime_secs("  04:05\n"), Some(245));
+        assert_eq!(parse_etime_secs(""), None);
+        assert_eq!(parse_etime_secs("not-a-time"), None);
+        assert_eq!(parse_etime_secs("1:2:3:4"), None);
+        assert_eq!(parse_etime_secs("12:60"), None);
+    }
+
+    #[test]
+    fn own_pid_is_alive_with_a_start_time() {
+        // 平台原生进程检查的回归钉（Linux /proc、macOS kill+ps、Windows Win32）：
+        // 本进程必然存活，且启动时间应在不久之前。
+        let pid = std::process::id();
+        assert!(pid_alive(pid), "本进程 pid {pid} 应判存活");
+        let start = process_start_time_ms(pid).expect("本进程应读得到启动时间");
+        let now = now_ms();
+        assert!(
+            start <= now && now - start < 10 * 60 * 1000,
+            "启动时间应在 10 分钟内: start={start} now={now}"
+        );
+    }
 
     #[test]
     fn nonce_is_valid_shape() {
