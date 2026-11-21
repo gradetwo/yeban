@@ -3570,17 +3570,23 @@ pub fn factory_drum_style_ids() -> Vec<&'static str> {
     FACTORY_SOURCES.iter().map(|(id, _)| *id).collect()
 }
 
-/// 全部出厂预置（每次调用重新解析；文本小，无缓存必要）。
+/// 全部出厂预置（首次解析后进程内 `OnceLock` 缓存，避免 UI/MCP 重复解析同一批嵌入 JSON）。
 ///
 /// # Errors
 ///
 /// 任一嵌入文本非法 ⇒ [`DrumPresetError`]（出厂数据被判据钉住，
 /// 正常构建下不会发生）。
 pub fn factory_drum_styles() -> Result<Vec<DrumStylePreset>, DrumPresetError> {
-    FACTORY_SOURCES
+    static CACHE: std::sync::OnceLock<Vec<DrumStylePreset>> = std::sync::OnceLock::new();
+    if let Some(cached) = CACHE.get() {
+        return Ok(cached.clone());
+    }
+    let parsed: Vec<DrumStylePreset> = FACTORY_SOURCES
         .iter()
         .map(|(_, text)| DrumStylePreset::from_json(text))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let _ = CACHE.set(parsed.clone());
+    Ok(parsed)
 }
 
 /// 按 id 取一份出厂预置；id 不存在返回 `Ok(None)`。
@@ -3589,12 +3595,9 @@ pub fn factory_drum_styles() -> Result<Vec<DrumStylePreset>, DrumPresetError> {
 ///
 /// id 存在但嵌入文本非法 ⇒ [`DrumPresetError`]。
 pub fn factory_drum_style(id: &str) -> Result<Option<DrumStylePreset>, DrumPresetError> {
-    for (known, text) in FACTORY_SOURCES {
-        if known == id {
-            return DrumStylePreset::from_json(text).map(Some);
-        }
-    }
-    Ok(None)
+    Ok(factory_drum_styles()?
+        .into_iter()
+        .find(|style| style.id == id))
 }
 
 // ---------------------------------------------------------------------------
@@ -3703,15 +3706,20 @@ fn as_u8(value: &Json, field: &str) -> Result<u8, DrumPresetError> {
     }
 }
 
+/// 单层递归解析的最大嵌套深度（防恶意深层 `[...]` / `{...}` 触发栈溢出）。
+const MAX_JSON_DEPTH: usize = 64;
+
 struct JsonParser<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 fn parse_json(text: &str) -> Result<Json, DrumPresetError> {
     let mut parser = JsonParser {
         bytes: text.as_bytes(),
         pos: 0,
+        depth: 0,
     };
     parser.skip_ws();
     let value = parser.parse_value()?;
@@ -3772,6 +3780,16 @@ impl JsonParser<'_> {
     }
 
     fn parse_object(&mut self) -> Result<Json, DrumPresetError> {
+        if self.depth >= MAX_JSON_DEPTH {
+            return Err(self.err("json nesting depth exceeds limit"));
+        }
+        self.depth += 1;
+        let result = self.parse_object_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_object_inner(&mut self) -> Result<Json, DrumPresetError> {
         self.expect(b'{')?;
         let mut pairs = Vec::new();
         self.skip_ws();
@@ -3802,6 +3820,16 @@ impl JsonParser<'_> {
     }
 
     fn parse_array(&mut self) -> Result<Json, DrumPresetError> {
+        if self.depth >= MAX_JSON_DEPTH {
+            return Err(self.err("json nesting depth exceeds limit"));
+        }
+        self.depth += 1;
+        let result = self.parse_array_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_array_inner(&mut self) -> Result<Json, DrumPresetError> {
         self.expect(b'[')?;
         let mut items = Vec::new();
         self.skip_ws();
@@ -3830,6 +3858,19 @@ impl JsonParser<'_> {
         self.expect(b'"')?;
         let mut out = String::new();
         loop {
+            // 一次性消费到下一个 `"`、`\` 或控制字符，避免逐字节对尾部重扫 `from_utf8`。
+            let run_start = self.pos;
+            while let Some(byte) = self.peek() {
+                if byte == b'"' || byte == b'\\' || byte < 0x20 {
+                    break;
+                }
+                self.pos += 1;
+            }
+            if self.pos > run_start {
+                let segment = std::str::from_utf8(&self.bytes[run_start..self.pos])
+                    .map_err(|_| self.err("invalid UTF-8 in string"))?;
+                out.push_str(segment);
+            }
             let byte = self.peek().ok_or_else(|| self.err("unterminated string"))?;
             match byte {
                 b'"' => {
@@ -3881,15 +3922,7 @@ impl JsonParser<'_> {
                     }
                 }
                 0x00..=0x1F => return Err(self.err("control character in string")),
-                _ => {
-                    // 多字节 UTF-8：按 char 边界推进（输入是 &str，恒合法）。
-                    let rest = &self.bytes[self.pos..];
-                    let s = std::str::from_utf8(rest)
-                        .map_err(|_| self.err("invalid UTF-8 in string"))?;
-                    let ch = s.chars().next().ok_or_else(|| self.err("bad char"))?;
-                    out.push(ch);
-                    self.pos += ch.len_utf8();
-                }
+                _ => unreachable!("non-control bytes are consumed in the unescaped run above"),
             }
         }
     }
@@ -5530,5 +5563,23 @@ mod tests {
             DrumStylePreset::from_json(&ok).is_ok(),
             "hpf 启用后可自动化"
         );
+    }
+
+    #[test]
+    fn deeply_nested_json_is_rejected_before_stack_overflow() {
+        let deep = format!(
+            "{}{}",
+            "[".repeat(MAX_JSON_DEPTH + 4),
+            "]".repeat(MAX_JSON_DEPTH + 4)
+        );
+        match DrumStylePreset::from_json(&deep) {
+            Err(DrumPresetError::Parse { message, .. }) => {
+                assert!(
+                    message.contains("depth"),
+                    "deep JSON should fail with depth limit error, got: {message}"
+                );
+            }
+            other => panic!("deep JSON must fail with Parse error, got: {other:?}"),
+        }
     }
 }
