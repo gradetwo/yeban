@@ -383,7 +383,7 @@ impl App {
         self.report_audio_issues();
         let _ = self.host.heartbeat();
         if let Some(collector) = &mut self.collector {
-            let mut scratch = vec![MeterFrame::default(); 128];
+            let mut scratch = [MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
             let master = self.project.master_bus_track_id;
             for frame in &scratch[..drained] {
@@ -683,9 +683,11 @@ impl App {
             }],
             "移动片段",
         );
-        if self.project.tracks[&track_id]
-            .clips
-            .contains_key(&placement_id)
+        if self
+            .project
+            .tracks
+            .get(&track_id)
+            .is_some_and(|track| track.clips.contains_key(&placement_id))
         {
             self.cursor_bar =
                 usize::try_from(new_start / self.bar_ticks().max(1)).unwrap_or(usize::MAX);
