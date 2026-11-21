@@ -2311,6 +2311,9 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 299] = [
             "gainBound",
             "measuredIntegratedLufs",
             "measurementNote",
+            // ⭐ T-FIX-49：可达上限与"目标不可达"诊断（`mix < 1` 时点名干声绕道）。
+            "reachability",
+            "reachableIntegratedLufs",
             "reason",
             "reasonKind",
             "suggestedTrimDb",
@@ -3617,13 +3620,17 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 2 条 reason（`unknownSamplerBindingField` 传播 ＋ `samplerOctaveOverrideMustBeOctaveStep`
 /// 字面，各 1 reason 行 ＋ 3 键行）⇒ reason 数 296 → **298**、规范行数
 /// 1263 → **1271**。新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ T-FIX-49（2026-11-22）：`loudnessTargetMissed` 的载荷新增
+/// `reachableIntegratedLufs` / `reachability` 两键（可达响度上限与"目标不可达"
+/// 诊断；`mix < 1` 时点名干声绕过削波器）⇒ reason 数不变（303），规范行数
+/// 1286 → **1288**（2 键行）。新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "41d4d2f7614ad60cc9e276d1114c5a2c443f2cab6c282adfa46967bf296af0dd";
+    "803e84eb61bc3cb14e18fcd35b565e0cc119b5807d13584b0a6d1e81306d60d0";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 303;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1286;
+pub const REASON_SURFACE_LINES: usize = 1288;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

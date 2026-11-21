@@ -316,8 +316,22 @@
 //! 失败报文同步改为**可执行诊断**（清单 §五.3）：带 `reasonKind` 原因分类、
 //! 施加前实测、实际增益与绑定约束、复测值，上限绑定时再给建议 trim。
 //!
-//! 五件事写死在这里，都是**刻意的**：
+//! ⭐ **2026-11-22 追加（T-FIX-49）**：`masteringClipper.mix` 是**响度可达性开关**，
+//! 不只是音质旋钮。`mix < 1` 会把一部分**干声**混回来，而干声绕过削波器、保留原来的
+//! 真峰值 —— 削波器降下的 crest 被按比例撤销，真峰值上限放不出足额增益，`targetLufs`
+//! 于是**物理上到不了**。实测（48 kHz / 2 s 瞬态夹具，drive 6 dB，ceiling −1 dBTP）：
+//! `mix = 1` 能把 −12.31 LUFS 的母带送到 −10.00；`mix = 0.4` 同一目标只到 −10.93，
+//! 差 0.93 LU；`mix = 0.4` 时把目标改成 −8，结果**还是** −10.93 —— 这个上限由参数决定，
+//! 与目标无关。
 //!
+//! 回执因此多两个键：`data.loudness.reachableIntegratedLufs`（当前参数下的可达上限
+//! = `ceiling − 复测 crest`）与 `data.loudness.reachability`（目标越过上限时非空，
+//! 带 `cause` / `shortfallDb` / `clipperMix` / `message` / `remedies`；
+//! `cause = "clipperDryBypass"` 时第一条建议就是把 `mix` 设为 1，另一条是降目标）。
+//! 判定口径**不变**：`verdict` 仍只看复测与容差 —— 这两个键回答"能不能到"，
+//! 不改变"到了没有"。失败报文同步点名 `mix`，避免"先压低真峰值"把人引向限制器。
+//!
+//! 五件事写死在这里，都是**刻意的**：
 //! 1. **施加只发生在给了 `targetLufs` 时**（显式意图，不像削波预警那样是读数
 //!    推断）：没给目标的**默认路径必须逐字节不变**（`MUST-GATE-002` 的 L1 位级
 //!    渲染）；给了已达标的目标时增益恒为 `0.0`，产物也逐字节不变。规范对响度
@@ -698,6 +712,23 @@ pub const MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE: &str = "postGainOutOfTolerance";
 /// 见 [`MISS_KIND_TRUE_PEAK_CEILING_BOUND`]；母带测不出（静音 / 采样率无核验系数），
 /// 任何增益都够不到目标。
 pub const MISS_KIND_UNMEASURABLE: &str = "unmeasurableMaster";
+
+/// 响度目标**不可达**的原因（进 `loudness.reachability.cause`）。
+///
+/// clipper 的 `mix < 1` 把一部分**干声**混回来，而干声绕过削波器、保留原来的
+/// 瞬态与真峰值 —— 于是"clipper 降 crest"这件事被按比例撤销，真峰值上限只放行
+/// 一点点增益，目标响度物理上到不了。`mix` 因此不只是音质旋钮，它是**响度可达性
+/// 开关**（mix = 1 才让削波器真正决定峰值）。
+pub const REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS: &str = "clipperDryBypass";
+/// 见 [`REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS`]；没有挂 clipper（或 `mix = 1`），
+/// 上限本身就把目标卡住了。
+pub const REACHABILITY_CAUSE_TRUE_PEAK_CEILING: &str = "truePeakCeiling";
+
+/// `loudness.reachability.cause` 的唯一名册。
+pub const REACHABILITY_CAUSE_VALUES: [&str; 2] = [
+    REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS,
+    REACHABILITY_CAUSE_TRUE_PEAK_CEILING,
+];
 
 /// `mastering::GainBound` → 响应字符串（[`BOUND_VALUES`] 之一）。
 fn gain_bound_name(bound: mastering::GainBound) -> &'static str {
@@ -1128,6 +1159,34 @@ pub struct LoudnessTarget {
     /// 取自 [`mastering::NormalizeOutcome::crest_reduction_db`]）；仅给了目标且
     /// `apply` 给出结果时有值；没挂 clipper 时恒 `0.0`。
     pub crest_reduction_db: Option<f32>,
+    /// ⭐ **可达响度上限**（LUFS）：在当前 clipper 参数与真峰值上限下，把真峰值正好
+    /// 推到上限时能达到的最高积分响度 = `ceiling − crest`（crest 取施加后复测值，
+    /// 线性增益不改变 crest）。
+    ///
+    /// `None` = 没给目标（没有施加级）或读数不可用。
+    ///
+    /// 它与 `target_lufs` 的关系是本键的全部意义：`target > reachable + tolerance`
+    /// ⇒ 目标**物理上到不了**，无论伺服怎么算。见 [`Self::reachability`]。
+    pub reachable_lufs: Option<f32>,
+}
+
+/// 当前参数下的**可达响度上限**（LUFS）：`ceiling − 复测 crest`。
+///
+/// crest 取**施加后**的复测值（真峰值 − 门限积分响度）。线性增益对两者是同一个
+/// 乘数，因此 crest 在增益前后不变 —— 这个数描述的是"这套参数本身允许到多响"，
+/// 与本次实际施加了多少 dB 无关。
+///
+/// 读数任一不可用 ⇒ `None`（⛔ 不猜：`−∞` 真峰值或测不出的响度算不出 crest）。
+fn reachable_lufs_from(outcome: &mastering::NormalizeOutcome, ceiling: f32) -> Option<f32> {
+    if !ceiling.is_finite()
+        || !outcome.after.integrated_is_measurable()
+        || !outcome.after.true_peak_dbtp.is_finite()
+    {
+        return None;
+    }
+    let crest = outcome.after.true_peak_dbtp - outcome.after.integrated_lufs;
+    let reachable = ceiling - crest;
+    reachable.is_finite().then_some(reachable)
 }
 
 impl LoudnessTarget {
@@ -1187,6 +1246,7 @@ impl LoudnessTarget {
             true_peak_ceiling_dbtp: None,
             mastering_clipper: None,
             crest_reduction_db: None,
+            reachable_lufs: None,
         }
     }
 
@@ -1217,6 +1277,7 @@ impl LoudnessTarget {
                 true_peak_ceiling_dbtp: Some(ceiling),
                 mastering_clipper: None,
                 crest_reduction_db: None,
+                reachable_lufs: None,
             };
         };
         let before = outcome
@@ -1240,6 +1301,9 @@ impl LoudnessTarget {
             true_peak_ceiling_dbtp: Some(ceiling),
             mastering_clipper: None,
             crest_reduction_db: Some(outcome.crest_reduction_db),
+            // ⭐ 可达上限：`ceiling − 复测 crest`。线性增益不改变 crest，因此这个数
+            // 与"现在施加了多少增益"无关，只由 clipper 参数（尤其 `mix`）决定。
+            reachable_lufs: reachable_lufs_from(&outcome, ceiling),
         };
         if before.is_none() {
             // 静音：`apply` 不动样本（增益 0），测不出 ⇒ 无法判定（与只测时代同一出口）。
@@ -1301,10 +1365,84 @@ impl LoudnessTarget {
             // ⭐ C-1 遗留：削波段回显与 crest 削减量（没给目标时恒 `null` —— 没有施加级）。
             "masteringClipper": self.mastering_clipper.map(mastering_clipper_value),
             "crestReductionDb": json_f32(self.crest_reduction_db),
+            // ⭐ T-FIX-49：当前参数下的**可达响度上限**，以及目标越过它时的**响亮**诊断。
+            // 判定（`verdict`）不因这两个键改变 —— 它们回答"能不能到"，不是"到了没有"。
+            "reachableIntegratedLufs": json_f32(self.reachable_lufs),
+            "reachability": self.reachability(),
             "algorithm": "ITU-R BS.1770-4 (K-weighted, gated integrated: Γa = −70 LUFS, Γr = −10 LU)",
             "implementation": "yeban-dsp::loudness::GatedLoudness (与 yeban_query_engine_state 的 integratedLufs 同一计量器)",
             "specId": "ARCH-UI-002",
             "specSilentOnTolerance": true,
+        })
+    }
+
+    /// 目标是否**物理上不可达**，以及为什么、怎么办（进 `loudness.reachability`）。
+    ///
+    /// 判据是 `target − reachable > tolerance_lu`：只要目标比当前参数允许的上限高出
+    /// 一个容差以上，伺服无论怎么算都到不了 —— 这不是"差一点"，是**参数矛盾**。
+    ///
+    /// `None`（JSON `null`）的三种情形都**不是**问题：
+    /// - 没给目标（没有施加级）；
+    /// - 可达上限算不出（读数不可用）；
+    /// - 目标在上限之内（含正好贴着上限 —— 容差是闭区间，与判定同一口径）。
+    ///
+    /// `cause` 区分两种完全不同的补救方向（[`REACHABILITY_CAUSE_VALUES`]）：
+    /// `mix < 1` 时干声绕过削波器把真峰值顶回来，**拧 mix** 就能解决；否则是上限本身
+    /// 太低，只能降目标或降 crest。
+    #[must_use]
+    pub fn reachability(&self) -> Value {
+        let (Some(target), Some(reachable)) = (self.target_lufs, self.reachable_lufs) else {
+            return Value::Null;
+        };
+        let shortfall_db = target - reachable;
+        if shortfall_db <= self.tolerance_lu {
+            return Value::Null;
+        }
+        let ceiling = self.true_peak_ceiling_dbtp.unwrap_or(f32::NAN);
+        let crest_db = ceiling - reachable;
+        let mix = self.mastering_clipper.map_or(1.0, |params| params.mix);
+        let dry_bypass = mix < 1.0;
+        let cause = if dry_bypass {
+            REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS
+        } else {
+            REACHABILITY_CAUSE_TRUE_PEAK_CEILING
+        };
+        let message = if dry_bypass {
+            format!(
+                "目标 {target} LUFS 在当前参数下**不可达**: masteringClipper.mix = {mix} 把 {:.0}% 的\
+                 干声混回来, 而干声**绕过**削波器、保留原来的真峰值 —— 削波器降下的 crest 被按比例\
+                 撤销, 真峰值上限 {ceiling} dBTP 只放行到 {reachable} LUFS (差 {shortfall_db} LU)。\
+                 ⚠ mix 不只是音质旋钮, 它是**响度可达性开关**",
+                (1.0 - mix) * 100.0
+            )
+        } else {
+            format!(
+                "目标 {target} LUFS 在当前参数下**不可达**: 真峰值上限 {ceiling} dBTP 配当前 crest \
+                 ({crest_db} dB) 只放行到 {reachable} LUFS (差 {shortfall_db} LU); \
+                 提响度必须先降 crest 或抬上限"
+            )
+        };
+        let mut remedies: Vec<Value> = Vec::new();
+        if dry_bypass {
+            remedies.push(Value::from(
+                "把 masteringClipper.mix 设为 1 (全湿: 干声不再绕过削波器, 削波器才能真正决定峰值)",
+            ));
+        }
+        remedies.push(Value::from(format!(
+            "把 targetLufs 降到 {reachable:.1} LUFS 或更低"
+        )));
+        remedies.push(Value::from(
+            "先降低混音峰值 / crest (总线压缩、EQ 或降鼓组电平) 后重试",
+        ));
+        serde_json::json!({
+            "targetLufs": target,
+            "reachableIntegratedLufs": json_f32(Some(reachable)),
+            "shortfallDb": json_f32(Some(shortfall_db)),
+            "cause": cause,
+            "clipperMix": json_f32(self.mastering_clipper.map(|params| params.mix)),
+            "truePeakCeilingDbtp": json_f32(self.true_peak_ceiling_dbtp),
+            "message": message,
+            "remedies": remedies,
         })
     }
 
@@ -1338,6 +1476,17 @@ impl LoudnessTarget {
         } else {
             None
         };
+        // ⭐ T-FIX-49：`mix < 1` 时**必须**点名干声绕过削波器 —— 否则"先把真峰值压低
+        // 至少 x dB"这条建议会把人引向限制器，而真正的一步是把这个旋钮拧到 1。
+        let mix_hint = match self.mastering_clipper {
+            Some(params) if params.mix < 1.0 => format!(
+                "; 且 masteringClipper.mix = {} 把 {:.0}% 的干声混了回来 —— 干声绕过削波器、\
+                 保留原来的真峰值, 这正是上限放不出增益的原因; 把 mix 设为 1 通常能直接解开",
+                params.mix,
+                (1.0 - params.mix) * 100.0
+            ),
+            _ => String::new(),
+        };
         let message = match kind {
             MISS_KIND_UNMEASURABLE => format!(
                 "母带响度无法测量, 因此无法判定目标 {target} LUFS 是否达成: {}",
@@ -1358,10 +1507,11 @@ impl LoudnessTarget {
                     "母带响度未达标: 真峰值上限 {} dBTP 绑定了增益 —— 施加前实测 {before} LUFS, \
                      达到目标 {target} LUFS 需要 {needed:+} dB, 上限只放行 {gain:+} dB, \
                      施加后复测 {after}, 差 {delta} LU (容差 ±{} LU); \
-                     先把真峰值压低至少 {} dB (如用限制器) 或降低目标后重试",
+                     先把真峰值压低至少 {} dB (如用限制器) 或降低目标后重试{}",
                     self.true_peak_ceiling_dbtp.unwrap_or(f32::NAN),
                     self.tolerance_lu,
                     -trim,
+                    mix_hint,
                 )
             }
             _ => match self.measured_lufs {
@@ -1403,6 +1553,10 @@ impl LoudnessTarget {
                 "toleranceLu": self.tolerance_lu,
                 "truePeakCeilingDbtp": json_f32(self.true_peak_ceiling_dbtp),
                 "suggestedTrimDb": json_f32(suggested_trim_db),
+                // ⭐ T-FIX-49：把"到不了"的物理上限与补救方向一并给出 —— 失败回执
+                // 必须能直接指导下一步，而不是只说"差 x dB"。
+                "reachableIntegratedLufs": json_f32(self.reachable_lufs),
+                "reachability": self.reachability(),
                 "measurementNote": self.measurement_note,
                 "algorithm": "ITU-R BS.1770-4",
             }),
@@ -7728,19 +7882,30 @@ mod tests {
         gain_db: f32,
         bound: mastering::GainBound,
     ) -> mastering::NormalizeOutcome {
-        let reading = |integrated_lufs: f32| mastering::MasterLoudness {
+        loudness_outcome_with_peak(before_lufs, after_lufs, f32::NEG_INFINITY, gain_db, bound)
+    }
+
+    /// 同上，但**指定复测真峰值** —— 可达上限（`ceiling − crest`）要靠它算。
+    fn loudness_outcome_with_peak(
+        before_lufs: f32,
+        after_lufs: f32,
+        after_true_peak_dbtp: f32,
+        gain_db: f32,
+        bound: mastering::GainBound,
+    ) -> mastering::NormalizeOutcome {
+        let reading = |integrated_lufs: f32, true_peak_dbtp: f32| mastering::MasterLoudness {
             integrated_lufs,
             loudness_range_lu: None,
             max_momentary_lufs: f32::NEG_INFINITY,
             max_short_term_lufs: f32::NEG_INFINITY,
-            true_peak_dbtp: f32::NEG_INFINITY,
+            true_peak_dbtp,
             oversampling: mastering::MASTERING_TRUE_PEAK_OVERSAMPLING,
         };
         mastering::NormalizeOutcome {
             gain_db,
             bound,
-            before: reading(before_lufs),
-            after: reading(after_lufs),
+            before: reading(before_lufs, f32::NEG_INFINITY),
+            after: reading(after_lufs, after_true_peak_dbtp),
             crest_reduction_db: 0.0,
             target_shortfall_db: None,
             limits_reached: false,
@@ -7814,6 +7979,132 @@ mod tests {
         assert!(!message.contains("NaN"), "{message}");
     }
 
+    /// ⭐ T-FIX-49：`masteringClipper.mix < 1` 时目标可能**物理不可达**。
+    ///
+    /// `mix` 把一部分干声混回来，而干声绕过削波器、保留原来的真峰值 —— 削波器降下的
+    /// crest 被按比例撤销，真峰值上限放不出足额增益。回执必须同时给出：
+    /// 可达上限是多少、为什么到不了（干声绕道）、以及**拧 mix** 这条真正的一步。
+    #[test]
+    fn a_dry_clipper_mix_reports_the_reachable_ceiling_and_the_way_out() {
+        // 复测 −10.928 LUFS / −1.0 dBTP ⇒ crest 9.928 dB ⇒ reachable = −1.0 − 9.928 = −10.928。
+        let mut report = LoudnessTarget::from_apply(
+            -8.0,
+            Some(loudness_outcome_with_peak(
+                -12.314,
+                -10.928,
+                -1.0,
+                1.386,
+                mastering::GainBound::TruePeakCeiling,
+            )),
+        );
+        assert_eq!(report.verdict, VERDICT_FAIL, "差 2.9 LU ⇒ 不达标");
+        let reachable = report.reachable_lufs.expect("可达上限应算得出");
+        assert!(
+            (reachable - (-10.928)).abs() < 0.01,
+            "reachable = {reachable}"
+        );
+        report.mastering_clipper = Some(mastering::ClipperParams {
+            mix: 0.4,
+            ..mastering::ClipperParams::DEFAULT
+        });
+
+        let value = report.reachability();
+        assert_eq!(value["cause"], REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS);
+        // `0.4f32` 进 JSON 会变成 `0.4000000059604645`（f32 → f64 的精确展开），
+        // 因此只比数值、不比位型。
+        assert!((value["clipperMix"].as_f64().expect("数值") - 0.4).abs() < 1e-6);
+        assert!((value["shortfallDb"].as_f64().expect("数值") - 2.928).abs() < 0.01);
+        let message = value["message"].as_str().expect("说明");
+        assert!(message.contains("不可达"), "{message}");
+        assert!(message.contains("绕过"), "{message}");
+        let remedies = value["remedies"].as_array().expect("补救清单");
+        assert!(
+            remedies[0].as_str().expect("首条").contains("mix"),
+            "拧 mix 必须是第一条办法: {remedies:?}"
+        );
+        assert!(
+            remedies.iter().any(|item| item
+                .as_str()
+                .is_some_and(|text| text.contains("targetLufs"))),
+            "降目标也必须给出: {remedies:?}"
+        );
+
+        // 同一个数进响应：`reachableIntegratedLufs` + `reachability`。
+        let json = report.to_value();
+        assert_eq!(
+            json["reachability"]["cause"],
+            REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS
+        );
+        assert!(
+            (json["reachableIntegratedLufs"]
+                .as_f64()
+                .expect("可达上限进响应")
+                - (-10.928))
+                .abs()
+                < 0.01
+        );
+
+        // 失败报文也必须点名 mix —— 否则"先压低真峰值"会把人引向限制器, 而不是拧旋钮。
+        let failure = report.failure().into_result().expect("带内错误");
+        let data = &failure["error"]["data"];
+        assert_eq!(
+            data["reachability"]["cause"],
+            REACHABILITY_CAUSE_CLIPPER_DRY_BYPASS
+        );
+        assert!(data["reachableIntegratedLufs"].as_f64().is_some());
+        let text = failure["error"]["message"].as_str().expect("报文");
+        assert!(text.contains("mix"), "报文必须点名 mix: {text}");
+        assert!(text.contains("绕过削波器"), "报文必须说清干声绕道: {text}");
+    }
+
+    /// 同一条边界的两侧：`mix = 1` 仍不可达 ⇒ 原因换成"上限本身太低"，
+    /// 且不再给"拧 mix"这条无效建议；目标落在上限之内 ⇒ 整块 `null`（不是问题）。
+    #[test]
+    fn reachability_is_null_when_the_target_is_within_the_ceiling() {
+        let build = |target: f32, mix: f32| {
+            let mut report = LoudnessTarget::from_apply(
+                target,
+                Some(loudness_outcome_with_peak(
+                    -12.314,
+                    -10.928,
+                    -1.0,
+                    1.386,
+                    mastering::GainBound::TruePeakCeiling,
+                )),
+            );
+            report.mastering_clipper = Some(mastering::ClipperParams {
+                mix,
+                ..mastering::ClipperParams::DEFAULT
+            });
+            report
+        };
+
+        // mix = 1、目标 −8（上限 −10.928）⇒ 到不了, 但问题在 ceilings 与 crest。
+        let wet = build(-8.0, 1.0);
+        let value = wet.reachability();
+        assert_eq!(value["cause"], REACHABILITY_CAUSE_TRUE_PEAK_CEILING);
+        assert_eq!(value["clipperMix"], 1.0);
+        let remedies = value["remedies"].as_array().expect("补救清单");
+        assert!(
+            !remedies
+                .iter()
+                .any(|item| item.as_str().is_some_and(|text| text.contains("设为 1"))),
+            "mix 已经是 1 ⇒ 不该再建议拧它: {remedies:?}"
+        );
+
+        // 目标 −11 低于上限 −10.928 ⇒ 可达, `null`。
+        let reachable = build(-11.0, 0.4);
+        assert_eq!(reachable.reachability(), Value::Null);
+        // 没挂 clipper（`mix` 未知）⇒ 不臆造原因, 但上限与差距照样报。
+        let mut bare = build(-8.0, 1.0);
+        bare.mastering_clipper = None;
+        assert_eq!(bare.reachability()["clipperMix"], Value::Null);
+        assert_eq!(
+            bare.reachability()["cause"],
+            REACHABILITY_CAUSE_TRUE_PEAK_CEILING
+        );
+    }
+
     #[test]
     fn an_unmeasurable_master_stays_unmeasurable_after_apply() {
         // 静音：`apply` 给得出 outcome（增益 0），但施加前测不出 ⇒ 无法判定。
@@ -7872,7 +8163,7 @@ mod tests {
     }
 
     #[test]
-    fn the_applied_loudness_block_has_the_seventeen_roster_keys() {
+    fn the_applied_loudness_block_has_the_nineteen_roster_keys() {
         // 与 `output_schema::loudness_roster` 逐键同集（广播侧另有判据核对）。
         let value = LoudnessTarget::from_apply(
             -10.0,
@@ -7901,6 +8192,8 @@ mod tests {
                 "measured",
                 "measuredIntegratedLufs",
                 "measurementNote",
+                "reachability",
+                "reachableIntegratedLufs",
                 "specId",
                 "specSilentOnTolerance",
                 "targetLufs",

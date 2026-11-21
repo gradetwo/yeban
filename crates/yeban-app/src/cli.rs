@@ -578,6 +578,10 @@ pub fn usage_text() -> String {
                            逗号分隔 子键=数值: driveDb (0..=24) / ceilingDb (-6..=0) /
                            kneeDb (0..=6) / mix (0..=1) / oversample (1|2|4|8);
                            缺省子键取缺省值 (drive 6 / ceiling -1 / knee 3 / mix 1 / x4);
+                           ⚠ mix 不只是音质旋钮, 它是**响度可达性开关**: mix<1 时有
+                           (1-mix) 的干声绕过削波器、真峰值回落, --loudness-target 可能
+                           物理上到不了 (上限只放行这么多增益); 回执里
+                           reachableIntegratedLufs 给出当前参数的可达上限;
                            必须与 --loudness-target 同给 (削波段排在响度增益之前)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk

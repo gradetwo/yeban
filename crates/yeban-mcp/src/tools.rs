@@ -1149,7 +1149,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "masteringClipper",
                 "object",
                 false,
-                "⭐ C-1 软削波段 (响度目标施加级的**增能**一级): 只与 `targetLufs` 同给时生效 (单独给 ⇒ INVALID_PARAMETER_RANGE, 没有施加级可挂)。给了目标时流程 = clipper 先按本段参数降 crest → 增益伺服补剩余增益 → 真峰值上限 −1.0 dBTP 兜底 (与母带链 / CLI 同一条 `ExportPreset::apply` 复测闭环, ⛔ 不另起第二套伺服)。对象子键全可选, 缺省 = 器件缺省: `driveDb` [0, 24] 缺省 6 (输入驱动, 决定削多少瞬态) / `ceilingDb` [−6, 0] 缺省 −1 (削波渐近线) / `kneeDb` [0, 6] 缺省 3 (软膝宽度) / `mix` [0, 1] 缺省 1 (干湿比) / `oversample` 1|2|4|8 缺省 4。未知子键 / 非数字 / 越界 ⇒ INVALID_PARAMETER_RANGE 并点名子键。回执: `data.loudness.masteringClipper` 回显实际参数、`data.loudness.crestReductionDb` 报削掉的 crest (dB)、`data.request.masteringClipper` 同步回显; 不给本实参 ⇒ 施加级与今天逐位一致",
+                "⭐ C-1 软削波段 (响度目标施加级的**增能**一级): 只与 `targetLufs` 同给时生效 (单独给 ⇒ INVALID_PARAMETER_RANGE, 没有施加级可挂)。给了目标时流程 = clipper 先按本段参数降 crest → 增益伺服补剩余增益 → 真峰值上限 −1.0 dBTP 兜底 (与母带链 / CLI 同一条 `ExportPreset::apply` 复测闭环, ⛔ 不另起第二套伺服)。对象子键全可选, 缺省 = 器件缺省: `driveDb` [0, 24] 缺省 6 (输入驱动, 决定削多少瞬态) / `ceilingDb` [−6, 0] 缺省 −1 (削波渐近线) / `kneeDb` [0, 6] 缺省 3 (软膝宽度) / `mix` [0, 1] 缺省 1 (干湿比; ⚠ 它是**响度可达性开关**不只是音质旋钮: mix<1 时有 (1−mix) 的干声绕过削波器、真峰值回落, `targetLufs` 可能物理上到不了 —— 回执 `data.loudness.reachableIntegratedLufs` 给出当前参数的可达上限, `data.loudness.reachability` 在目标越过上限时给 cause/shortfallDb/remedies) / `oversample` 1|2|4|8 缺省 4。未知子键 / 非数字 / 越界 ⇒ INVALID_PARAMETER_RANGE 并点名子键。回执: `data.loudness.masteringClipper` 回显实际参数、`data.loudness.crestReductionDb` 报削掉的 crest (dB)、`data.request.masteringClipper` 同步回显; 不给本实参 ⇒ 施加级与今天逐位一致",
             ),
             param(
                 "path",

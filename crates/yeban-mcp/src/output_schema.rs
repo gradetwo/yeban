@@ -1116,12 +1116,50 @@ fn loudness_roster() -> Value {
         ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
         ("masteringClipper", mastering_clipper_roster()),
         ("crestReductionDb", json!({"type": ["number", "null"]})),
+        // ⭐ T-FIX-49：当前参数下的可达响度上限，与目标越过上限时的诊断块。
+        (
+            "reachableIntegratedLufs",
+            json!({"type": ["number", "null"]}),
+        ),
+        ("reachability", reachability_roster()),
         ("algorithm", json!({"type": "string"})),
         ("implementation", json!({"type": "string"})),
         ("specId", json!({"type": "string"})),
         (
             "specSilentOnTolerance",
             json!({"type": "boolean", "const": true}),
+        ),
+    ])
+}
+
+/// ⭐ T-FIX-49：`data.loudness.reachability`（8 键，**可空**）。
+///
+/// `null` 的三种情形都**不是**问题：没给目标、可达上限算不出、目标在上限之内。
+/// 非空时逐键给出目标、可达上限、差距、原因分类
+/// （[`crate::domain::render::REACHABILITY_CAUSE_VALUES`]）、实际 clipper `mix`
+/// （没挂 clipper 时 `null`）、真峰值上限、人读报文，以及**可执行**的补救清单。
+/// 拼装点唯一（`domain/render.rs` 的 `LoudnessTarget::reachability`）。
+#[must_use]
+fn reachability_roster() -> Value {
+    nullable_roster(&[
+        // 整块只在 `target_lufs` 与 `reachable_lufs` 都有值时出现 ⇒ 这四个数恒有。
+        ("targetLufs", json!({"type": "number"})),
+        ("reachableIntegratedLufs", json!({"type": "number"})),
+        ("shortfallDb", json!({"type": "number"})),
+        (
+            "cause",
+            json!({
+                "type": "string",
+                "enum": crate::domain::render::REACHABILITY_CAUSE_VALUES.to_vec()
+            }),
+        ),
+        // 没挂 clipper 时 `mix` 无从谈起 ⇒ `null`（⛔ 不填 1.0 冒充"全湿"）。
+        ("clipperMix", json!({"type": ["number", "null"]})),
+        ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
+        ("message", json!({"type": "string"})),
+        (
+            "remedies",
+            json!({"type": "array", "items": {"type": "string"}}),
         ),
     ])
 }
@@ -3230,7 +3268,7 @@ mod tests {
             ("audio", audio_roster(), 8),
             ("peak", peak_roster(), 8),
             ("normalize", normalize_roster(), 5),
-            ("loudness", loudness_roster(), 17),
+            ("loudness", loudness_roster(), 19),
             ("bwf", bwf_roster(), 6),
             ("midiSource", midi_source_roster(), 7),
             (
@@ -3339,6 +3377,13 @@ mod tests {
             "deltaLu": -0.1, "verdict": "pass", "measured": true, "measurementNote": null,
             "appliedGainDb": 0.1, "gainBound": "loudnessTarget", "beforeGainLufs": -14.2,
             "truePeakCeilingDbtp": -1.0, "masteringClipper": null, "crestReductionDb": 0.0,
+            // ⭐ T-FIX-49：这两键恒发（目标不可达时 `reachability` 非空）。
+            "reachableIntegratedLufs": -13.0,
+            "reachability": {
+                "targetLufs": -8.0, "reachableIntegratedLufs": -10.93, "shortfallDb": 2.93,
+                "cause": "clipperDryBypass", "clipperMix": 0.4, "truePeakCeilingDbtp": -1.0,
+                "message": "…", "remedies": ["把 masteringClipper.mix 设为 1", "把 targetLufs 降到 −10.9 LUFS 或更低"]
+            },
             "algorithm": "ITU-R BS.1770-4", "implementation": "yeban-dsp::loudness::GatedLoudness",
             "specId": "ARCH-UI-002", "specSilentOnTolerance": true
         });
