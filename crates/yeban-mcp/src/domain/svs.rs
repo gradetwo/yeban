@@ -21,6 +21,17 @@
 //! `YEBAN_SVS_API_KEY` 读：它**不是**工具参数（`ToolCall` 校验会把
 //! `apiKey` 当未知键拒掉），也**绝不**出现在任何响应、错误信息与日志里。
 //!
+//! 地址来源决定信任（P0-4）：工具实参是调用方给的，**只许环回地址**
+//! （`localhost` / 127.0.0.0/8 / `::1`），非环回在配置解析时响亮拒绝
+//! （`serviceUrlNotLoopback`）——否则调用方给一个任意 `http://` 地址，
+//! 本进程就会把服务端 API key 以明文 Bearer 发过去。远端地址只认
+//! 操作者自己设的环境变量 `YEBAN_SVS_URL`；key 只随请求发往解析出的
+//! 这一个配置源，本客户端不跟随重定向、没有第二条外发路径。地址含
+//! 控制字符或空白一律拒绝（`serviceUrlControlChars`：地址会进请求行
+//! 与 `Host` 头，`\r\n` 能拆出额外头）。响应体有字节上限（JSON
+//! 16 MiB / 音频 512 MiB，超限 `serviceResponseTooLarge`），坏服务
+//! 不能用无界响应吃光本进程内存。
+//!
 //! ## 只支持 `http`（如实登记的边界）
 //!
 //! `std` 客户端没有 TLS：`https` 服务地址会在配置解析时就响亮拒绝
@@ -92,6 +103,16 @@ const AUDIO_TIMEOUT: Duration = Duration::from_secs(300);
 /// 连接超时。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// JSON 端点的响应体字节上限（提交回执 / 状态 / 回执都是小 JSON，
+/// 16 MiB 是数量级冗余）。上限的职责是护栏：坏服务或坏中间人不能
+/// 用无界响应体吃光本进程内存（P0-4），不是服务契约。
+const MAX_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// 音频端点的响应体字节上限（一遍 wav）。按 96 kHz / 32-bit float /
+/// 立体声约 768 KB/s 估算，512 MiB 约合 11 分钟，远超单遍实际长度；
+/// 同为防无界响应的护栏（P0-4）。
+const MAX_AUDIO_RESPONSE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// 解析后的服务配置（地址 + 可选 API key）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SvsConfig {
@@ -106,13 +127,16 @@ pub struct SvsConfig {
 /// # Errors
 ///
 /// 地址不是 `http`（含 `https`）⇒ `IO_ERROR`（`httpsNotSupported`，
-/// 见模块头的边界说明）；地址无 host ⇒ `INVALID_PARAMETER_RANGE`。
+/// 见模块头的边界说明）；地址无 host ⇒ `INVALID_PARAMETER_RANGE`；
+/// **实参**给的地址非环回 ⇒ `INVALID_PARAMETER_RANGE`
+/// （`serviceUrlNotLoopback`，P0-4：实参是调用方给的，不能让它
+/// 决定服务端 API key 发往哪里；远端地址只认操作者的环境变量）。
 pub fn resolve_config(service_url_arg: Option<&str>) -> Result<SvsConfig, Fault> {
-    let raw = match service_url_arg {
-        Some(url) if !url.is_empty() => url.to_owned(),
+    let (raw, from_tool_arg) = match service_url_arg {
+        Some(url) if !url.is_empty() => (url.to_owned(), true),
         _ => match std::env::var(ENV_SERVICE_URL) {
-            Ok(url) if !url.is_empty() => url,
-            _ => DEFAULT_SERVICE_URL.to_owned(),
+            Ok(url) if !url.is_empty() => (url, false),
+            _ => (DEFAULT_SERVICE_URL.to_owned(), false),
         },
     };
     let base_url = raw.trim_end_matches('/').to_owned();
@@ -133,11 +157,45 @@ pub fn resolve_config(service_url_arg: Option<&str>) -> Result<SvsConfig, Fault>
             serde_json::json!({ "field": "service_url", "reason": "httpsNotSupported" }),
         ));
     }
+    if from_tool_arg {
+        // 实参来源 ⇒ 只许环回。判定在建连接之前：被拒的地址根本不会
+        // 收到带 API key 的请求（也不收到任何请求）。
+        let target = parse_http_target(&base_url)?;
+        if !is_loopback_host(&target.host) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "工具实参 `service_url` 只允许环回地址（localhost / 127.0.0.0/8 / ::1），\
+                     收到: {base_url}；远端 SVS 地址请由操作者在服务端环境变量 \
+                     {ENV_SERVICE_URL} 中配置——API key 只发往配置里指定的服务源，\
+                     ⛔ 不随调用方给的地址外发"
+                ),
+                serde_json::json!({ "field": "service_url", "reason": "serviceUrlNotLoopback" }),
+            ));
+        }
+    }
     let api_key = match std::env::var(ENV_API_KEY) {
         Ok(key) if !key.is_empty() => Some(key),
         _ => None,
     };
     Ok(SvsConfig { base_url, api_key })
+}
+
+/// host 是否环回（`localhost` / 127.0.0.0/8 / `::1`）。
+///
+/// 只认字面形状：名字只认 `localhost`（不分大小写，可带尾点），
+/// 其余必须能解析成 IP 字面量且 `is_loopback`。任意其它主机名哪怕
+/// DNS 会解到环回也判否——fail-closed，⛔ 不给 DNS rebinding 留口子。
+fn is_loopback_host(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    if bare.eq_ignore_ascii_case("localhost") || bare.eq_ignore_ascii_case("localhost.") {
+        return true;
+    }
+    bare.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `http://host[:port][/prefix]` 的解析结果。
@@ -156,8 +214,22 @@ struct HttpTarget {
 ///
 /// # Errors
 ///
-/// 无 host / 端口非数字 ⇒ `INVALID_PARAMETER_RANGE`。
+/// 含控制字符或空白 / 无 host / 端口非数字 ⇒ `INVALID_PARAMETER_RANGE`。
 fn parse_http_target(base_url: &str) -> Result<HttpTarget, Fault> {
+    // 地址会进请求行（prefix）与 `Host` 头（host_header）：含控制字符
+    // （\r / \n 等）或空白的地址一律拒绝，否则调用方能在请求里拆出
+    // 额外头、拆碎请求行（P0-4 头注入）。对全部来源生效（实参在
+    // `resolve_config` 就过这一关，环境变量来源在建客户端时过）。
+    if base_url
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`service_url` 含控制字符或空白: {base_url:?}"),
+            serde_json::json!({ "field": "service_url", "reason": "serviceUrlControlChars" }),
+        ));
+    }
     let rest = base_url.strip_prefix("http://").unwrap_or(base_url);
     let (authority, prefix) = match rest.split_once('/') {
         Some((authority, path)) => (authority, format!("/{path}")),
@@ -258,7 +330,8 @@ pub fn wav_cache_path(job_id: &str, part: &str, take: u64) -> PathBuf {
 
 /// 最小 HTTP/1.1 客户端（`std::net`；`Connection: close` + 读到 EOF）。
 ///
-/// 响应体读取：先读头（`\r\n\r\n` 截止），再读到连接关闭；若响应头声明
+/// 响应体读取：先读头（`\r\n\r\n` 截止），再读到连接关闭；读取本身有
+/// 字节上限（见 [`read_capped`]），超限响亮拒绝。若响应头声明
 /// `Transfer-Encoding: chunked`，对体做分块解码；若声明 `Content-Length`，
 /// 体截断到该长度（防御多余字节）。API key 只进请求头，⛔ 不进任何错误。
 pub struct SvsClient {
@@ -300,7 +373,13 @@ impl SvsClient {
                 serde_json::json!({ "reason": "svsRequestEncodeFailed" }),
             )
         })?;
-        let response = self.request("POST", "/v1/synthesize", Some(&body), JSON_TIMEOUT)?;
+        let response = self.request(
+            "POST",
+            "/v1/synthesize",
+            Some(&body),
+            JSON_TIMEOUT,
+            MAX_JSON_RESPONSE_BYTES,
+        )?;
         self.expect_json(response, "提交歌声合成任务")
     }
 
@@ -310,7 +389,13 @@ impl SvsClient {
     ///
     /// 404 ⇒ `ENTITY_NOT_FOUND`（未知任务）；其余失败见 [`Self::synthesize`]。
     pub fn job_status(&self, job_id: &str) -> Result<Value, Fault> {
-        let response = self.request("GET", &format!("/v1/jobs/{job_id}"), None, JSON_TIMEOUT)?;
+        let response = self.request(
+            "GET",
+            &format!("/v1/jobs/{job_id}"),
+            None,
+            JSON_TIMEOUT,
+            MAX_JSON_RESPONSE_BYTES,
+        )?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
                 ErrorCode::EntityNotFound,
@@ -333,6 +418,7 @@ impl SvsClient {
             &format!("/v1/jobs/{job_id}/receipt"),
             None,
             JSON_TIMEOUT,
+            MAX_JSON_RESPONSE_BYTES,
         )?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
@@ -367,7 +453,7 @@ impl SvsClient {
             "/v1/jobs/{job_id}/audio?part={}&take={take}",
             percent_encode(part)
         );
-        let response = self.request("GET", &path, None, AUDIO_TIMEOUT)?;
+        let response = self.request("GET", &path, None, AUDIO_TIMEOUT, MAX_AUDIO_RESPONSE_BYTES)?;
         if response.status == 404 {
             return Err(Fault::domain_with_data(
                 ErrorCode::IoError,
@@ -386,13 +472,14 @@ impl SvsClient {
         Ok(response.body)
     }
 
-    /// 一次原始请求（方法 + 路径 + 可选 JSON 体 + 超时）。
+    /// 一次原始请求（方法 + 路径 + 可选 JSON 体 + 超时 + 响应字节上限）。
     fn request(
         &self,
         method: &str,
         path: &str,
         body: Option<&[u8]>,
         timeout: Duration,
+        max_response_bytes: u64,
     ) -> Result<HttpResponse, Fault> {
         let full_path = format!("{}{path}", self.target.prefix);
         let addr = format!("{}:{}", self.target.host, self.target.port);
@@ -431,10 +518,7 @@ impl SvsClient {
             .write_all(request.as_bytes())
             .and_then(|()| body.map_or(Ok(()), |body| stream.write_all(body)))
             .map_err(|error| io_fault("发送 SVS 请求", &error))?;
-        let mut raw = Vec::new();
-        stream
-            .read_to_end(&mut raw)
-            .map_err(|error| io_fault("读取 SVS 响应", &error))?;
+        let raw = read_capped(&mut stream, max_response_bytes)?;
         parse_response(&raw)
     }
 
@@ -457,6 +541,28 @@ impl SvsClient {
 struct HttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+/// 限流读完一条流：最多读 `max_bytes + 1` 字节，实际超过 `max_bytes`
+/// 即响亮拒绝（`serviceResponseTooLarge`）。⛔ 不用无界 `read_to_end`
+/// ——响应多长由对端决定，无界读等于把本进程内存交给对端（P0-4）。
+fn read_capped<R: Read>(reader: R, max_bytes: u64) -> Result<Vec<u8>, Fault> {
+    let mut raw = Vec::new();
+    reader
+        .take(max_bytes + 1)
+        .read_to_end(&mut raw)
+        .map_err(|error| io_fault("读取 SVS 响应", &error))?;
+    if raw.len() as u64 > max_bytes {
+        return Err(Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!(
+                "SVS 服务响应超过 {max_bytes} 字节上限，已拒绝读取\
+                 （上限是防无界响应用尽内存的护栏，不是服务契约）"
+            ),
+            serde_json::json!({ "reason": "serviceResponseTooLarge" }),
+        ));
+    }
+    Ok(raw)
 }
 
 /// 解析原始响应字节：状态行 + 头 + 体（分块解码 / 长度截断）。
@@ -1783,6 +1889,129 @@ mod tests {
     fn https_is_rejected_loudly_at_config_time() {
         let error = resolve_config(Some("https://example.com")).expect_err("https 必须被拒");
         assert_eq!(error.domain_code(), Some(ErrorCode::IoError));
+    }
+
+    /// 取领域失败的结构化 `reason`（断言用）。
+    fn fault_reason(error: &Fault) -> String {
+        match error {
+            Fault::Domain { data, .. } => data
+                .as_ref()
+                .and_then(|data| data.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            Fault::Impl { .. } => String::new(),
+        }
+    }
+
+    #[test]
+    fn tool_arg_service_url_must_be_loopback() {
+        // 环回形状都放行（隧道把远端服务落到本地 http 端口是既定用法）。
+        for url in [
+            "http://127.0.0.1:8000",
+            "http://127.0.0.2",
+            "http://localhost:9000",
+            "http://LOCALHOST",
+            "http://[::1]:8000",
+        ] {
+            assert!(resolve_config(Some(url)).is_ok(), "{url} 应放行");
+        }
+        // 非环回一律响亮拒绝：调用方给的地址不能把服务端 API key 带出去。
+        for url in [
+            "http://192.168.1.10:8000",
+            "http://10.0.0.5",
+            "http://172.16.0.9:8000",
+            "http://example.com",
+            "http://0.0.0.0:8000",
+            "http://[::]:8000",
+        ] {
+            match resolve_config(Some(url)) {
+                Ok(_) => panic!("{url} 必须被拒"),
+                Err(error) => {
+                    assert_eq!(
+                        error.domain_code(),
+                        Some(ErrorCode::InvalidParameterRange),
+                        "{url}"
+                    );
+                    assert_eq!(fault_reason(&error), "serviceUrlNotLoopback", "{url}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn service_url_with_control_characters_is_rejected() {
+        // 地址会进请求行与 Host 头：\r\n 能拆出额外头，空白能拆碎请求行。
+        for url in [
+            "http://127.0.0.1:8000/prefix\r\nInjected: value",
+            "http://127.0.0.1\r\n:8000",
+            "http://127.0.0.1:8000/a b",
+            "http://127.0.0.1:8000/\t",
+        ] {
+            match parse_http_target(url) {
+                Ok(_) => panic!("{url:?} 必须被拒"),
+                Err(error) => {
+                    assert_eq!(fault_reason(&error), "serviceUrlControlChars", "{url:?}");
+                }
+            }
+        }
+        // 配置解析路径（实参来源）同样拒绝，不等到建客户端才炸。
+        match resolve_config(Some("http://127.0.0.1:8000/x\r\n")) {
+            Ok(_) => panic!("含控制字符的实参地址必须被拒"),
+            Err(error) => assert_eq!(fault_reason(&error), "serviceUrlControlChars"),
+        }
+    }
+
+    #[test]
+    fn oversized_service_response_is_rejected_loudly() {
+        use std::io::{Read as _, Write as _};
+        // 一次性桩服务：回一个声明 17 MiB 的 JSON 响应（JSON 上限 16 MiB）。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 桩服务");
+        let port = listener.local_addr().expect("桩服务地址").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // 先读完请求头再回，避免客户端写阻塞。
+            let mut seen: Vec<u8> = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let body = vec![b'x'; 17 * 1024 * 1024];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        let config = resolve_config(Some(&format!("http://127.0.0.1:{port}"))).expect("配置");
+        let client = SvsClient::new(&config).expect("客户端");
+        match client.job_status("job1") {
+            Ok(_) => panic!("超限响应必须被拒"),
+            Err(error) => assert_eq!(fault_reason(&error), "serviceResponseTooLarge"),
+        }
+        let _ = server.join();
+    }
+
+    #[test]
+    fn read_capped_enforces_the_byte_limit_exactly() {
+        // 恰好等于上限：放行；多 1 字节：拒绝。空响应放行（形状错误
+        // 由 parse_response 另行响亮处理，不归本护栏管）。
+        let at_limit = read_capped(std::io::Cursor::new(vec![b'x'; 100]), 100).expect("等于上限");
+        assert_eq!(at_limit.len(), 100);
+        match read_capped(std::io::Cursor::new(vec![b'x'; 101]), 100) {
+            Ok(_) => panic!("超限必须被拒"),
+            Err(error) => assert_eq!(fault_reason(&error), "serviceResponseTooLarge"),
+        }
+        assert!(
+            read_capped(std::io::Cursor::new(Vec::<u8>::new()), 100)
+                .expect("空响应")
+                .is_empty()
+        );
     }
 
     #[test]
