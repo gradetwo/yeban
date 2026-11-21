@@ -3231,6 +3231,14 @@ pub fn drum_gen_ops(
         let id = EntityId::new();
         let midi = MidiNote {
             velocity: note.velocity,
+            // 逐拍音高（T-DRUM-15）：偏移换算成恒定弯音曲线承载
+            // （起点 0 tick、半音 × 100 音分）；无音高 ⇒ 空曲线
+            // ⇒ 音符与引入本功能前逐字段一致。
+            pitch_bend_curve: if note.pitch_semitones == 0 {
+                Vec::new()
+            } else {
+                vec![(0, i16::from(note.pitch_semitones) * 100)]
+            },
             ..MidiNote::new(id, note.tick, note.gm_key, note.duration_ticks)
         };
         notes.insert(id, midi);

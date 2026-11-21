@@ -1219,3 +1219,105 @@ fn b2_bass808_drive_lifts_the_harmonic_band() {
         peak(&plain)
     );
 }
+
+// ---------------------------------------------------------------------------
+// 逐拍音高（T-DRUM-15）：`DrumHit::pitch_ratio` 只缩放牛铃 / 808 的基频。
+// 判据口径：带比率的一击必须与「把鼓组基频预先乘上同一比率」的一击
+// **逐位一致**——音高只在系数层搬频率，不引入第二条渲染路径。
+// ---------------------------------------------------------------------------
+
+/// 带音高比率渲染一击。
+fn render_hit_pitched(
+    kit: DrumKitParams,
+    voice: DrumVoice,
+    frames: usize,
+    gain: f32,
+    ratio: f32,
+) -> Vec<f32> {
+    let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+    machine.set_params(kit);
+    machine.trigger(DrumHit::new(voice, 0, gain).with_pitch_ratio(ratio));
+    let mut out = vec![0.0f32; frames];
+    machine.render(0, &mut out);
+    out
+}
+
+#[test]
+fn pitched_cowbell_matches_a_pre_scaled_kit_bit_for_bit() {
+    let mut scaled = DrumKitParams::DEFAULT;
+    scaled.cowbell.freq_a_hz *= 2.0;
+    scaled.cowbell.freq_b_hz *= 2.0;
+    let pitched = render_hit_pitched(DrumKitParams::DEFAULT, DrumVoice::Cowbell, FRAMES, 1.0, 2.0);
+    let reference = render_hit(scaled, DrumVoice::Cowbell, FRAMES, 1.0);
+    assert!(pitched.iter().any(|s| *s != 0.0), "牛铃必须出声");
+    assert_eq!(
+        bits(&pitched),
+        bits(&reference),
+        "比率 2.0 的牛铃 = 基频预乘 2.0 的牛铃（逐位）"
+    );
+    let plain = render_default(DrumVoice::Cowbell);
+    assert_ne!(
+        bits(&pitched),
+        bits(&plain),
+        "上移八度必须真的改变波形（不是空转的旋钮）"
+    );
+}
+
+#[test]
+fn pitched_bass808_matches_a_pre_scaled_kit_bit_for_bit() {
+    let mut scaled = DrumKitParams::DEFAULT;
+    scaled.bass808.tune_hz *= 0.5;
+    scaled.bass808.glide_hz *= 0.5;
+    let pitched = render_hit_pitched(DrumKitParams::DEFAULT, DrumVoice::Bass808, FRAMES, 1.0, 0.5);
+    let reference = render_hit(scaled, DrumVoice::Bass808, FRAMES, 1.0);
+    assert_eq!(
+        bits(&pitched),
+        bits(&reference),
+        "比率 0.5 的 808 = tune/glide 预乘 0.5 的 808（逐位）"
+    );
+}
+
+#[test]
+fn unity_pitch_ratio_is_bit_identical_and_non_melodic_voices_ignore_pitch() {
+    let plain = render_default(DrumVoice::Cowbell);
+    let unity = render_hit_pitched(DrumKitParams::DEFAULT, DrumVoice::Cowbell, FRAMES, 1.0, 1.0);
+    assert_eq!(
+        bits(&plain),
+        bits(&unity),
+        "比率 1.0 与不带音高逐位一致（无音高数据时渲染不变）"
+    );
+    let kick_plain = render_default(DrumVoice::Kick);
+    let kick_pitched =
+        render_hit_pitched(DrumKitParams::DEFAULT, DrumVoice::Kick, FRAMES, 1.0, 2.0);
+    assert_eq!(
+        bits(&kick_plain),
+        bits(&kick_pitched),
+        "非旋律声部不读音高比率（底鼓带比率也逐位不变）"
+    );
+}
+
+#[test]
+fn pitch_ratio_is_clamped_loudly_in_range() {
+    assert_eq!(DrumHit::new(DrumVoice::Cowbell, 0, 1.0).pitch_ratio(), 1.0);
+    assert_eq!(
+        DrumHit::new(DrumVoice::Cowbell, 0, 1.0)
+            .with_pitch_ratio(f32::NAN)
+            .pitch_ratio(),
+        1.0,
+        "非有限比率回落 1.0（不许把 NaN 送进系数层）"
+    );
+    assert_eq!(
+        DrumHit::new(DrumVoice::Cowbell, 0, 1.0)
+            .with_pitch_ratio(100.0)
+            .pitch_ratio(),
+        4.0,
+        "比率上限钳在 4.0（±2 个八度）"
+    );
+    assert_eq!(
+        DrumHit::new(DrumVoice::Cowbell, 0, 1.0)
+            .with_pitch_ratio(0.01)
+            .pitch_ratio(),
+        0.25,
+        "比率下限钳在 0.25"
+    );
+}

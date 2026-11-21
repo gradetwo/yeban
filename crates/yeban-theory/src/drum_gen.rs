@@ -18,6 +18,11 @@
 //!   无叠层的道生成结果与引入本功能前逐位一致。
 //! - **fill**：请求且预置带 fill 且总小节 ≥ 2 时，最后一小节整段换成
 //!   fill 道表（fill 里没有的道在该小节休止）。
+//! - **旋律道**（T-DRUM-15）：步进可选第 4 元带逐拍音高（半音偏移，
+//!   只许牛铃 / 808 道，解析期钉死）；生成原样搬运到
+//!   [`GeneratedDrumNote::pitch_semitones`]，ratchet 子音同值、
+//!   叠层与鬼音恒不带音高。无音高步的生成结果与引入本功能前
+//!   逐项一致（偏移恒 0）。
 //!
 //! 确定性契约：同预置 + 同参数 ⇒ 输出逐项一致（逐字节可复现的判据
 //! 在 MCP 层以片段字节对账）。唯一的随机源是鬼音判定，它是
@@ -80,6 +85,11 @@ pub struct GeneratedDrumNote {
     pub velocity: u8,
     /// 时值（tick）。
     pub duration_ticks: u64,
+    /// 逐拍音高：相对 `gm_key` 的半音偏移（来自步进的第 4 元）；
+    /// 0 = 不带音高。落片段时由调用方换算成音符的恒定弯音曲线
+    /// （`pitch_bend_curve`，半音 × 100 音分），引擎触发牛铃 /
+    /// 808 时按此缩放基频；本层只搬运、不解释。
+    pub pitch_semitones: i8,
 }
 
 /// 生成失败。
@@ -203,10 +213,12 @@ pub fn generate_drum_pattern(
                     f64::from(step.velocity),
                     step.ratchet,
                     velocity_factor,
+                    step.pitch.unwrap_or(0),
                 );
                 // 叠层（P6）：同格同刻触发；力度窗对写力度判定，
                 // 电平按 dB 缩放写力度后走同一条 emit 变换（含
-                // ratchet 展开与时值口径，时值按叠层键取）。
+                // ratchet 展开与时值口径，时值按叠层键取）。叠层
+                // 是另一件鼓件，⛔ 不跟随主道的逐拍音高（恒 0）。
                 for layer in &src_lane.layers {
                     if layer.fires_on(step.velocity) {
                         let gain = 10f64.powf(f64::from(layer.level_db) / 20.0);
@@ -217,6 +229,7 @@ pub fn generate_drum_pattern(
                             f64::from(step.velocity) * gain,
                             step.ratchet,
                             velocity_factor,
+                            0,
                         );
                     }
                 }
@@ -236,6 +249,7 @@ pub fn generate_drum_pattern(
                         f64::from(velocity),
                         1,
                         velocity_factor,
+                        0,
                     );
                 }
             }
@@ -256,6 +270,8 @@ fn has_hit_neighbor(lane: &DrumLanePreset, global_step: usize, source_steps: usi
 /// 把一格展开为 1..=ratchet 个子音并套力度变换。`velocity` 是变换
 /// 前的力度（主道 = 写力度；叠层 = 写力度 × 电平增益，仍是浮点，
 /// 只在最终落点舍入一次——主键路径与整数力度时代逐位一致）。
+/// `pitch_semitones` 是该格的逐拍音高，ratchet 子音全员同值
+/// （与力度 shaping 同口径：一格一个音高）。
 fn emit_step(
     notes: &mut Vec<GeneratedDrumNote>,
     tick: u64,
@@ -263,6 +279,7 @@ fn emit_step(
     velocity: f64,
     ratchet: u8,
     velocity_factor: f64,
+    pitch_semitones: i8,
 ) {
     let r = u64::from(ratchet.max(1));
     let sub_ticks = STEP_TICKS / r;
@@ -275,6 +292,7 @@ fn emit_step(
             gm_key,
             velocity: v,
             duration_ticks: duration_for(gm_key),
+            pitch_semitones,
         });
     }
 }
@@ -302,6 +320,58 @@ mod tests {
         let b = generate_drum_pattern(&preset, &params).expect("gen b");
         assert_eq!(a, b);
         assert!(!a.is_empty());
+    }
+
+    /// T-DRUM-15：生成把 lane 的逐步音高带进音符（phonk 牛铃线与
+    /// 808 根音）；无音高风格生成的每个音符音高恒为 0。
+    #[test]
+    fn generation_carries_step_pitch_into_notes() {
+        let preset = factory_drum_style("phonk")
+            .expect("factory presets parse")
+            .expect("phonk exists");
+        let params = DrumGenParams {
+            complexity: 100,
+            bars: 2,
+            fill: false,
+            ..DrumGenParams::default()
+        };
+        let notes = generate_drum_pattern(&preset, &params).expect("phonk generates");
+        let step_of = |note: &GeneratedDrumNote| (note.tick / (TICKS_PER_BAR / 16)) as usize;
+        let cowbell: Vec<(usize, i8)> = notes
+            .iter()
+            .filter(|note| note.gm_key == 56)
+            .map(|note| (step_of(note), note.pitch_semitones))
+            .collect();
+        assert_eq!(cowbell.len(), 16, "the whole cowbell line is generated");
+        assert!(cowbell.contains(&(0, 0)), "riff opens on the root");
+        assert!(cowbell.contains(&(8, 5)), "bar 1 peaks at +5");
+        assert!(
+            cowbell.contains(&(16, -2)),
+            "bar 2 restates a whole step down"
+        );
+        assert!(cowbell.contains(&(28, 5)), "riff ends lifted at +5");
+        let bass: Vec<(usize, i8)> = notes
+            .iter()
+            .filter(|note| note.gm_key == 35)
+            .map(|note| (step_of(note), note.pitch_semitones))
+            .collect();
+        assert_eq!(
+            bass,
+            vec![(0, 0), (6, 0), (10, 0), (16, -2), (22, -2), (26, -2)],
+            "808 notes follow the riff roots"
+        );
+        assert!(
+            notes
+                .iter()
+                .filter(|note| note.gm_key != 56 && note.gm_key != 35)
+                .all(|note| note.pitch_semitones == 0),
+            "unpitched lanes generate zero pitch"
+        );
+        let plain = generate_drum_pattern(&trap(), &params).expect("trap generates");
+        assert!(
+            plain.iter().all(|note| note.pitch_semitones == 0),
+            "a style without pitch data generates zero pitch everywhere"
+        );
     }
 
     #[test]
@@ -470,18 +540,21 @@ mod tests {
                     gm_key: 38,
                     velocity: 102,
                     duration_ticks: 120,
+                    pitch_semitones: 0,
                 },
                 GeneratedDrumNote {
                     tick: 0,
                     gm_key: 39,
                     velocity: 10,
                     duration_ticks: 120,
+                    pitch_semitones: 0,
                 },
                 GeneratedDrumNote {
                     tick: 960,
                     gm_key: 38,
                     velocity: 51,
                     duration_ticks: 120,
+                    pitch_semitones: 0,
                 },
             ]
         );

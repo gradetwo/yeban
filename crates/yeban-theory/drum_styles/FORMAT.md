@@ -189,7 +189,8 @@ across the 2-bar loop, `s_curve`).
 
 A lane is `{"role": string, "gm_key": int 0..=127, "steps": [...]}`.
 `steps` has exactly `bars * 16` entries (16th-note grid). Each step is a
-triple `[velocity, ratchet, tier]`:
+triple `[velocity, ratchet, tier]` with an optional 4th element
+`[velocity, ratchet, tier, pitch]`:
 
 - `velocity` 0..=127; **0 = rest**.
 - `ratchet` 1..=8: the step is split into this many equal sub-hits
@@ -199,6 +200,16 @@ triple `[velocity, ratchet, tier]`:
 - `tier` 0/1/2: complexity layer — 0 core (always played), 1 standard,
   2 ornament. The generator's complexity knob gates tiers
   (<34 core only, 34..66 core+standard, >=67 all tiers + ghost notes).
+- `pitch` (optional 4th element, integer or `null`): per-step pitch as a
+  semitone offset from the lane's `gm_key`, in -12..=12. `null` and a
+  missing 4th element are the same (no pitch) — files written before
+  this element existed parse and render bit-identically. Pitch is only
+  defined on **electronic** lanes whose `gm_key` is 56 (cowbell) or 35
+  (bass 808): those two voices scale their base frequencies
+  (`freq_a`/`freq_b`, `tune`/`glide`) by the pitch ratio per hit.
+  A pitch on a rest step, on any other lane, or on an acoustic preset
+  is a parse error (loud, never silently dropped). Ratchet sub-hits
+  share the step's pitch; layers never inherit it.
 
 A lane may also carry `layers` (optional): extra keys struck together
 with the lane's own key on every hit step — this is how a snare+clap

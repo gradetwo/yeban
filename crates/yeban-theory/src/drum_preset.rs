@@ -70,7 +70,19 @@ pub enum KitFamily {
     Electronic,
 }
 
-/// 一格步进：`[力度, ratchet, tier]` 的展开形。
+/// 逐拍音高的合法半音偏移域（±1 个八度）：与模型弯音曲线
+/// `pitch_bend_curve` 的 ±1200 音分域对齐——生成出的片段把偏移
+/// 换算成恒定弯音曲线承载（ADR-0012 口径），故偏移域不得更宽。
+pub const MAX_PITCH_SEMITONES: i8 = 12;
+
+/// 能带逐拍音高的 GM 键：电子族合成牛铃（56）与 808 低音（35）。
+/// 只有这两件的基频是逐击参数（牛铃 `freq_a/freq_b`、808 的
+/// `tune/glide`），引擎在触发时按音高比率逐击缩放；其余鼓件与
+/// SFZ 原声路没有逐击音高语义，带音高的步在解析期响亮拒绝
+/// （⛔ 不静默丢弃、也不改键冒充）。
+pub const MELODIC_DRUM_KEYS: [u8; 2] = [35, 56];
+
+/// 一格步进：`[力度, ratchet, tier]` 的展开形，可选第 4 元为音高。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrumStep {
     /// 力度 0..=127；0 = 休止。
@@ -79,6 +91,12 @@ pub struct DrumStep {
     pub ratchet: u8,
     /// 复杂度层级：0 = 核心、1 = 标准、2 = 装饰。生成时按复杂度旋钮取舍。
     pub tier: u8,
+    /// 逐拍音高：相对本道 GM 键的半音偏移，域
+    /// ±[`MAX_PITCH_SEMITONES`]；`None` = 不带音高（旧格式三元组
+    /// 与显式 `null` 同义）⇒ 生成与渲染逐位不变。只许落在有击格
+    /// 上、且只许落在 [`MELODIC_DRUM_KEYS`] 的电子族道上（解析期
+    /// 校验，见 `parse_lanes`）。
+    pub pitch: Option<i8>,
 }
 
 impl DrumStep {
@@ -87,6 +105,7 @@ impl DrumStep {
         velocity: 0,
         ratchet: 1,
         tier: 0,
+        pitch: None,
     };
 
     /// 这一格是否有击。
@@ -861,7 +880,7 @@ impl DrumStylePreset {
         if bars == 0 || bars > 8 {
             return Err(field_err("bars", format!("bars must be 1..=8, got {bars}")));
         }
-        let lanes = parse_lanes(obj, "lanes", bars as usize * STEPS_PER_BAR)?;
+        let lanes = parse_lanes(obj, "lanes", bars as usize * STEPS_PER_BAR, kit_family)?;
         if lanes.is_empty() {
             return Err(field_err("lanes", "at least one lane is required"));
         }
@@ -871,7 +890,7 @@ impl DrumStylePreset {
                 let fill_obj = fill
                     .as_object()
                     .ok_or_else(|| field_err("fill", "fill must be an object"))?;
-                Some(parse_lanes(fill_obj, "lanes", STEPS_PER_BAR)?)
+                Some(parse_lanes(fill_obj, "lanes", STEPS_PER_BAR, kit_family)?)
             }
         };
         let sfz_raw = match get_opt(obj, "sfz_path") {
@@ -950,6 +969,7 @@ fn parse_lanes(
     obj: &[(String, Json)],
     key: &str,
     expected_steps: usize,
+    kit_family: KitFamily,
 ) -> Result<Vec<DrumLanePreset>, DrumPresetError> {
     let arr = get_arr(obj, key)?;
     let mut lanes = Vec::with_capacity(arr.len());
@@ -1009,10 +1029,12 @@ fn parse_lanes(
                     format!("lane {idx} step {step_idx} must be [velocity, ratchet, tier]"),
                 )
             })?;
-            if triple.len() != 3 {
+            if triple.len() != 3 && triple.len() != 4 {
                 return Err(field_err(
                     "steps",
-                    format!("lane {idx} step {step_idx} must have exactly 3 numbers"),
+                    format!(
+                        "lane {idx} step {step_idx} must have 3 numbers plus an optional pitch"
+                    ),
                 ));
             }
             let velocity = as_u8(&triple[0], "velocity")?;
@@ -1038,10 +1060,54 @@ fn parse_lanes(
                     format!("lane {idx} step {step_idx} tier {tier} > 2"),
                 ));
             }
+            // 可选第 4 元 = 逐拍音高（半音偏移）：`null` 与缺省同义
+            // （不带音高）；写了就必须合法且落点受限——非法音高
+            // 响亮拒绝，⛔ 不静默丢弃（默认不能静默）。
+            let pitch = match triple.get(3) {
+                None | Some(Json::Null) => None,
+                Some(Json::Num(n)) => {
+                    if !n.is_finite()
+                        || n.fract() != 0.0
+                        || *n < f64::from(-MAX_PITCH_SEMITONES)
+                        || *n > f64::from(MAX_PITCH_SEMITONES)
+                    {
+                        return Err(field_err(
+                            "steps",
+                            format!(
+                                "lane {idx} step {step_idx} pitch {n} out of -{MAX_PITCH_SEMITONES}..={MAX_PITCH_SEMITONES} semitones"
+                            ),
+                        ));
+                    }
+                    Some(*n as i8)
+                }
+                Some(_) => {
+                    return Err(field_err(
+                        "steps",
+                        format!("lane {idx} step {step_idx} pitch must be a number or null"),
+                    ));
+                }
+            };
+            if pitch.is_some() {
+                if velocity == 0 {
+                    return Err(field_err(
+                        "steps",
+                        format!("lane {idx} step {step_idx} carries a pitch on a rest step"),
+                    ));
+                }
+                if kit_family != KitFamily::Electronic || !MELODIC_DRUM_KEYS.contains(&gm_key) {
+                    return Err(field_err(
+                        "steps",
+                        format!(
+                            "lane {idx} step {step_idx} carries a pitch, but per-step pitch is only defined on electronic cowbell (56) / bass808 (35) lanes"
+                        ),
+                    ));
+                }
+            }
             steps.push(DrumStep {
                 velocity,
                 ratchet,
                 tier,
+                pitch,
             });
         }
         lanes.push(DrumLanePreset {
@@ -2820,8 +2886,11 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("cowbell_highpass_hz", 400.0),
             ("cowbell_lowpass_hz", 4000.0),
             ("cowbell_attack_s", 0.0005),
-            ("cowbell_decay_s", 0.35),
-            ("cowbell_level", 0.85),
+            // T-DRUM-15：牛铃是 phonk 的主导件（旋律线领奏）——
+            // decay 拉长到能托住乐句、level 抬到领奏位；点缀位的
+            // 旧值（0.35 s / 0.85）撑不起一条旋律线。
+            ("cowbell_decay_s", 0.55),
+            ("cowbell_level", 0.95),
             ("cowbell_pan", -0.4),
             ("crash_base_hz", 300.0),
             ("crash_highpass_hz", 4500.0),
@@ -3999,6 +4068,170 @@ mod tests {
         assert!(preset.fx.is_none(), "no fx section means dry generation");
     }
 
+    /// T-DRUM-15：逐步音高（第 4 元素）在旋律道（牛铃 56）上合法解析；
+    /// `null` 与缺省三元素同义（无音高）。
+    #[test]
+    fn parses_per_step_pitch_on_melodic_lanes() {
+        let text = MINIMAL
+            .replace(
+                "\"role\": \"kick\", \"gm_key\": 36",
+                "\"role\": \"cowbell\", \"gm_key\": 56",
+            )
+            .replace("[120,1,0]", "[120,1,0,3]")
+            .replace("[105,1,1]", "[105,1,1,null]")
+            .replace("[80,1,1]", "[80,1,1,-12]");
+        let preset = DrumStylePreset::from_json(&text).expect("pitched cowbell lane parses");
+        let steps = &preset.lanes[0].steps;
+        assert_eq!(steps[0].pitch, Some(3));
+        assert_eq!(steps[10].pitch, None, "null pitch = no pitch");
+        assert_eq!(steps[13].pitch, Some(-12), "range edge -12 is legal");
+        assert_eq!(steps[1].pitch, None, "plain triple stays unpitched");
+    }
+
+    /// T-DRUM-15：808 道（键 35）同样可带音高。
+    #[test]
+    fn parses_per_step_pitch_on_bass808_lane() {
+        let text = MINIMAL
+            .replace(
+                "\"role\": \"kick\", \"gm_key\": 36",
+                "\"role\": \"bass808\", \"gm_key\": 35",
+            )
+            .replace("[120,1,0]", "[120,1,0,-2]");
+        let preset = DrumStylePreset::from_json(&text).expect("pitched 808 lane parses");
+        assert_eq!(preset.lanes[0].steps[0].pitch, Some(-2));
+    }
+
+    /// T-DRUM-15：非法音高一律**响亮**解析失败（默认不能静默）——
+    /// 越界、非整数、落在休止步上、落在非旋律道上、声学预设带音高。
+    #[test]
+    fn illegal_step_pitch_fails_loudly() {
+        let cowbell = || {
+            MINIMAL.replace(
+                "\"role\": \"kick\", \"gm_key\": 36",
+                "\"role\": \"cowbell\", \"gm_key\": 56",
+            )
+        };
+        let cases: Vec<(String, &str)> = vec![
+            (
+                cowbell().replace("[120,1,0]", "[120,1,0,13]"),
+                "out-of-range pitch",
+            ),
+            (
+                cowbell().replace("[120,1,0]", "[120,1,0,2.5]"),
+                "non-integer pitch",
+            ),
+            (
+                cowbell().replacen("[0,1,0]", "[0,1,0,4]", 1),
+                "pitch on a rest step",
+            ),
+            (
+                MINIMAL.replace("[120,1,0]", "[120,1,0,3]"),
+                "pitch on the kick lane (not a melodic key)",
+            ),
+            (
+                cowbell()
+                    .replace(
+                        "\"kit_family\": \"electronic\"",
+                        "\"kit_family\": \"acoustic\"",
+                    )
+                    .replace("[120,1,0]", "[120,1,0,3]"),
+                "pitch on an acoustic preset",
+            ),
+        ];
+        for (text, label) in cases {
+            let error =
+                DrumStylePreset::from_json(&text).expect_err(&format!("{label} must be rejected"));
+            assert!(
+                error.to_string().contains("pitch"),
+                "{label}: error must name the pitch element, got: {error}"
+            );
+        }
+    }
+
+    /// T-DRUM-15 本体钉：出厂 phonk 的牛铃是**带音高的领奏线**
+    /// （16 击、第二小节整体低全音），808 跟乐句根音，踩镲已抽稀；
+    /// 其余电子风格不得带任何逐步音高（本线只动 phonk）。
+    #[test]
+    fn phonk_cowbell_leads_a_pitched_line() {
+        let preset = factory_drum_style("phonk")
+            .expect("factory styles parse")
+            .expect("phonk exists");
+        let cowbell = preset
+            .lanes
+            .iter()
+            .find(|lane| lane.role == "cowbell")
+            .expect("phonk has a cowbell lane");
+        let hits: Vec<usize> = cowbell
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.is_hit())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(hits.len(), 16, "cowbell leads: 16 hits over 2 bars");
+        assert!(
+            cowbell
+                .steps
+                .iter()
+                .filter(|step| step.is_hit())
+                .all(|step| step.pitch.is_some()),
+            "every phonk cowbell hit carries a pitch"
+        );
+        let skeleton: Vec<i8> = [0usize, 4, 8, 12, 16, 20, 24, 28]
+            .iter()
+            .map(|&index| {
+                cowbell.steps[index]
+                    .pitch
+                    .expect("skeleton step is pitched")
+            })
+            .collect();
+        assert_eq!(
+            skeleton,
+            vec![0, 3, 5, 0, -2, 1, 3, 5],
+            "tier-0 skeleton alone is the riff (bar 2 a whole step down)"
+        );
+        let bass = preset
+            .lanes
+            .iter()
+            .find(|lane| lane.role == "bass808")
+            .expect("phonk has an 808 lane");
+        let bass_pitches: Vec<(usize, i8)> = bass
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.is_hit())
+            .map(|(index, step)| (index, step.pitch.expect("phonk 808 hits are pitched")))
+            .collect();
+        assert_eq!(
+            bass_pitches,
+            vec![(0, 0), (6, 0), (10, 0), (16, -2), (22, -2), (26, -2)],
+            "808 follows the riff roots (bar 1 root 0, bar 2 root -2)"
+        );
+        let hat_hits = preset
+            .lanes
+            .iter()
+            .find(|lane| lane.role == "hihat")
+            .expect("phonk has a hihat lane")
+            .steps
+            .iter()
+            .filter(|step| step.is_hit())
+            .count();
+        assert_eq!(hat_hits, 19, "hihat thinned from 31 to 19 hits");
+        for id in ["edm", "house", "techno", "trap", "drill", "hiphop", "lofi"] {
+            let other = factory_drum_style(id)
+                .expect("factory styles parse")
+                .expect("style exists");
+            assert!(
+                other
+                    .lanes
+                    .iter()
+                    .flat_map(|lane| lane.steps.iter())
+                    .all(|step| step.pitch.is_none()),
+                "{id} must stay unpitched in this line"
+            );
+        }
+    }
+
     #[test]
     fn parses_lane_layers_with_defaults() {
         let text = MINIMAL.replace(
@@ -5030,8 +5263,18 @@ mod tests {
                 .iter()
                 .find(|lane| lane.gm_key == 36)
                 .expect("必须有 kick 道");
+            // 镜像只比节奏三元组（力度/细分/层级）：T-DRUM-15 起 808
+            // 可带逐步音高（跟乐句根音），kick 没有音高，逐字段
+            // 相等会把有意的音高分歧误判成镜像破裂。
+            let rhythmic = |steps: &[DrumStep]| {
+                steps
+                    .iter()
+                    .map(|step| (step.velocity, step.ratchet, step.tier))
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(
-                bass_lane.steps, kick_lane.steps,
+                rhythmic(&bass_lane.steps),
+                rhythmic(&kick_lane.steps),
                 "{id} 的 808 步进须镜像 kick"
             );
         }

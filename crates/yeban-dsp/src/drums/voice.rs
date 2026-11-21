@@ -314,6 +314,24 @@ pub(super) struct Generator {
     /// `tanh(drive_k)`：饱和曲线的归一化分母（`reconfigure` 时算好，
     /// 逐样本路径不重算）；关闭时为 `1.0`（不参与运算）。
     drive_norm: f32,
+    /// 这一击的**音高比率**（逐拍音高，T-DRUM-15；由 [`super::DrumHit`]
+    /// 在触发时写入，`reconfigure` 消费）：只对牛铃与 808 低音两支
+    /// 生效（基频同比缩放），其余声部不读。`1.0` = 不移调 ⇒ 系数
+    /// 与引入本字段前逐位一致（缩放点在系数层跳过，见 `pitched_hz`）。
+    /// 随槽位存活：参数/采样率变更触发的 `reconfigure` 重算同一击
+    /// 的系数时不丢音高。
+    pitch_ratio: f32,
+}
+
+/// 基频 × 音高比率（系数层）：比率恰为 `1.0` 时**原样返回**
+/// （连乘法都不做）⇒ 无音高的一击系数逐位不变，与 808 drive
+/// 「关闭时整段跳过」同一条钉法。
+fn pitched_hz(freq_hz: f32, pitch_ratio: f32) -> f32 {
+    if pitch_ratio == 1.0 {
+        freq_hz
+    } else {
+        freq_hz * pitch_ratio
+    }
 }
 
 /// 808 drive → tanh 增益的映射跨度：`k = 1 + drive · SPAN`，
@@ -348,6 +366,7 @@ impl Generator {
         anatomy_kick: false,
         drive_k: 0.0,
         drive_norm: 1.0,
+        pitch_ratio: 1.0,
     };
 
     /// 触发一个音色：把 `kit` 解析成系数，并把"本帧就发声"的包络 gate_on。
@@ -357,16 +376,20 @@ impl Generator {
     /// `gain` 是这一击的速度（`0..=1`，已由 [`super::DrumHit`] 钳制）：
     /// 经典声部不用它（电平由 `Slot::gain` 在 `render` 末尾给），
     /// Anatomy 声部用它做速度-音色映射（见 `anatomy.rs` §2）。
+    /// `pitch_ratio` 是这一击的音高比率（已由 [`super::DrumHit`] 钳制）：
+    /// 在 `reconfigure` 之前存入，与 Anatomy 的触发时快照同口径。
     pub(super) fn new(
         voice: u8,
         kit: &DrumKitParams,
         sample_rate: f32,
         seed: u32,
         gain: f32,
+        pitch_ratio: f32,
     ) -> Self {
         let mut generator = Self {
             voice,
             rng: Rng::new(seed),
+            pitch_ratio,
             ..Self::IDLE
         };
         if voice == super::VOICE_KICK {
@@ -602,8 +625,12 @@ impl Generator {
             super::VOICE_BASS808 => {
                 let params = &kit.bass808;
                 self.voice_level = params.level;
-                self.inc_lo = increment_for(params.tune_hz, sample_rate);
-                self.inc_hi = increment_for(params.glide_hz, sample_rate);
+                // 逐拍音高（T-DRUM-15）：tune 与 glide 同比缩放——
+                // 滑音的起止点一起搬，滑程形状不变。
+                self.inc_lo =
+                    increment_for(pitched_hz(params.tune_hz, self.pitch_ratio), sample_rate);
+                self.inc_hi =
+                    increment_for(pitched_hz(params.glide_hz, self.pitch_ratio), sample_rate);
                 self.pitch_env
                     .set_params(0.0, params.glide_s, 0.0, params.glide_s);
                 self.body_env
@@ -650,8 +677,12 @@ impl Generator {
                 let params = &kit.cowbell;
                 self.voice_level = params.level;
                 self.incs = [0.0; HAT_PARTIALS];
-                self.incs[0] = increment_for(params.freq_a_hz, sample_rate);
-                self.incs[1] = increment_for(params.freq_b_hz, sample_rate);
+                // 逐拍音高（T-DRUM-15）：两个方波基频同比缩放——
+                // 牛铃的音程比（freq_b/freq_a）不变，只搬音区。
+                self.incs[0] =
+                    increment_for(pitched_hz(params.freq_a_hz, self.pitch_ratio), sample_rate);
+                self.incs[1] =
+                    increment_for(pitched_hz(params.freq_b_hz, self.pitch_ratio), sample_rate);
                 self.band
                     .reconfigure(sample_rate, params.highpass_hz, params.lowpass_hz);
                 self.body_env

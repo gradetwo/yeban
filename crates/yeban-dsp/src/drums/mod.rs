@@ -1438,17 +1438,37 @@ pub struct DrumHit {
     start_sample: u64,
     /// 这一击的增益（`0..=1`，构造期钳制；非有限 ⇒ `0`）。
     gain: f32,
+    /// 这一击的**音高比率**（逐拍音高，T-DRUM-15）：只对基频为逐击
+    /// 参数的两件生效——牛铃（`freq_a/freq_b` 同比缩放）与 808
+    /// 低音（`tune/glide` 同比缩放）；其余声部忽略。`1.0` = 不移调
+    /// （构造缺省）⇒ 渲染逐位不变。构造期钳制（见
+    /// [`DrumHit::with_pitch_ratio`]）。
+    pitch_ratio: f32,
 }
 
 impl DrumHit {
     /// 构造。`gain` 非有限 ⇒ `0`（静音），越界 ⇒ 钳到 `[0, 1]`。
+    /// 音高比率缺省 `1.0`（不移调）。
     #[must_use]
     pub fn new(voice: DrumVoice, start_sample: u64, gain: f32) -> Self {
         Self {
             voice,
             start_sample,
             gain: clamp_gain(gain),
+            pitch_ratio: 1.0,
         }
+    }
+
+    /// 给这一击带上音高比率（逐拍音高；链式构造期调用）。
+    ///
+    /// 钳制口径（与 `gain` 同族，⛔ 不把非法值放进实时路径）：
+    /// 非有限或 `<= 0` ⇒ `1.0`（落回不移调的安全侧，⛔ 不静音、
+    /// 不反转）；有限正数钳到 `[0.25, 4.0]`（±2 个八度——生成层
+    /// 的合法域是 ±1 个八度，这里留一倍余量给其它调用方）。
+    #[must_use]
+    pub fn with_pitch_ratio(mut self, pitch_ratio: f32) -> Self {
+        self.pitch_ratio = clamp_pitch_ratio(pitch_ratio);
+        self
     }
 
     /// 音色身份。
@@ -1467,6 +1487,22 @@ impl DrumHit {
     #[must_use]
     pub const fn gain(&self) -> f32 {
         self.gain
+    }
+
+    /// 这一击的音高比率（`1.0` = 不移调；钳制见
+    /// [`DrumHit::with_pitch_ratio`]）。
+    #[must_use]
+    pub const fn pitch_ratio(&self) -> f32 {
+        self.pitch_ratio
+    }
+}
+
+/// 音高比率的构造期钳制（见 [`DrumHit::with_pitch_ratio`]）。
+fn clamp_pitch_ratio(value: f32) -> f32 {
+    if !value.is_finite() || value <= 0.0 {
+        1.0
+    } else {
+        value.clamp(0.25, 4.0)
     }
 }
 
@@ -1774,7 +1810,14 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
             .wrapping_mul(0x9E37_79B9)
             .wrapping_add(self.trigger_seed);
         let pending = PendingHit {
-            generator: Generator::new(voice_id, &self.params, self.sample_rate, seed, hit.gain()),
+            generator: Generator::new(
+                voice_id,
+                &self.params,
+                self.sample_rate,
+                seed,
+                hit.gain(),
+                hit.pitch_ratio(),
+            ),
             gain: hit.gain(),
             start_sample: hit.start_sample(),
         };

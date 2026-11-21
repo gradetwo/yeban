@@ -154,7 +154,7 @@ pub use yeban_dsp::polysynth::NO_PITCH_SHAPE;
 use yeban_model::{CurveType, DeviceDefinition, DeviceKind, EntityId, PPQ};
 use yeban_sfz::modulation::tune_ratio_from_cents;
 
-use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
+use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumVoice, DrumsParams};
 use crate::sfz_instrument::{PreparedSfz, SfzVoicePool};
 use crate::snapshot::{EngineSnapshot, SnapshotError};
 
@@ -3371,11 +3371,21 @@ impl SynthEngine {
                     match drum_map {
                         Some(map) => {
                             if let Some(voice) = map.voice_for(note.pitch) {
-                                drum_machine.trigger(DrumHit::new(
-                                    voice,
-                                    note.start_sample,
-                                    note.gain,
-                                ));
+                                let mut hit = DrumHit::new(voice, note.start_sample, note.gain);
+                                // ⭐ 逐拍音高（T-DRUM-15）：牛铃 / 808 两件
+                                // 读本音符在**起点**的弯音＋滑音总音分，
+                                // 换成比率交给这一击（基频同比缩放，器件
+                                // 侧消费）。弯音是整条曲线、鼓击是一击
+                                // 即走 ⇒ 只取起点值，曲线其余部分对鼓件
+                                // 无语义。其余鼓件与无形状音符（绝大多
+                                // 数）不进本支 ⇒ 触发逐位不变。
+                                if matches!(voice, DrumVoice::Cowbell | DrumVoice::Bass808) {
+                                    let cents = schedule.cents_at(note.pitch_shape(), 0);
+                                    if cents != 0.0 {
+                                        hit = hit.with_pitch_ratio(tune_ratio_from_cents(cents));
+                                    }
+                                }
+                                drum_machine.trigger(hit);
                                 *drum_hits = drum_hits.saturating_add(1);
                                 *notes_triggered = notes_triggered.saturating_add(1);
                             }

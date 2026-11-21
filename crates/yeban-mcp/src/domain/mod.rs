@@ -4958,6 +4958,14 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         let id = ids::deterministic_id(&format!("drum-gen:note:{label}:{index}"));
         let midi = yeban_model::MidiNote {
             velocity: note.velocity,
+            // 逐拍音高（T-DRUM-15）：偏移换算成恒定弯音曲线承载
+            // （起点 0 tick、半音 × 100 音分）；无音高 ⇒ 空曲线
+            // ⇒ 音符与引入本功能前逐字段一致（与 app 桥同一口径）。
+            pitch_bend_curve: if note.pitch_semitones == 0 {
+                Vec::new()
+            } else {
+                vec![(0, i16::from(note.pitch_semitones) * 100)]
+            },
             ..yeban_model::MidiNote::new(id, note.tick, note.gm_key, note.duration_ticks)
         };
         notes.insert(id, midi);

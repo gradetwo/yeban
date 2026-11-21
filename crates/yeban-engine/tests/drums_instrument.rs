@@ -65,7 +65,7 @@ use support::{
 };
 use yeban_engine::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumVoice, DrumsParams};
 use yeban_engine::snapshot::EngineSnapshot;
-use yeban_engine::synth::{NoteSchedule, SynthEngine};
+use yeban_engine::synth::{BendPoint, NoteSchedule, PitchShape, SynthEngine};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, YebanProjectV1};
 
 /// D0 的夹具：两个音符、20 个量子（与 `support::render` 的默认形状一致）。
@@ -1176,5 +1176,76 @@ fn a_changed_drum_parameter_reaches_the_device() {
     println!(
         "[engine-drums/D12] 同轨换参数：首个差异帧={:?}（切换帧={prefix}）",
         first_difference
+    );
+}
+
+/// T-DRUM-15：逐拍音高的引擎段——牛铃音符在起点带 +1200 音分弯音时，
+/// 这一击按比率 2.0 触发（与手工器件逐位一致）；同样的弯音落在
+/// 底鼓上逐位无 effect（非旋律声部不读音高）。
+#[test]
+fn a_bent_cowbell_note_is_pitched_and_a_bent_kick_is_not() {
+    let params =
+        DrumsParams::from_devices(&[kit(&[("cowbell_note", 56.0), ("master_level", 0.8)])])
+            .expect("五个必备键位 + 牛铃键位 ⇒ 必须武装");
+
+    let render = |schedule: &NoteSchedule| -> Vec<f32> {
+        let track = EntityId::new();
+        let mut engine = SynthEngine::new(48_000);
+        engine.begin_snapshot(48_000, &[track], [], [(&track, &params)]);
+        let mut out = vec![0.0f32; 128];
+        let mut rendered = Vec::with_capacity(QUANTA * 128);
+        for _ in 0..QUANTA {
+            engine.render_track(track, Some(schedule), None, &mut out);
+            rendered.extend_from_slice(&out);
+            engine.advance(128);
+        }
+        rendered
+    };
+    let bent = |pitch: u8| {
+        let note = support::scheduled(0, 480 * 25, pitch, 0.5, 48_000.0).with_pitch_shape(0);
+        NoteSchedule::from_sorted(vec![note])
+            .with_pitch_shapes(vec![PitchShape::new(vec![BendPoint::new(0, 1200.0)], None)])
+    };
+    let plain = |pitch: u8| {
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 480 * 25, pitch, 0.5, 48_000.0)])
+    };
+    let bits = |samples: &[f32]| -> Vec<u32> { samples.iter().map(|s| s.to_bits()).collect() };
+
+    let cowbell_bent = render(&bent(56));
+    let cowbell_plain = render(&plain(56));
+    assert!(
+        cowbell_plain.iter().any(|sample| *sample != 0.0),
+        "牛铃必须真的出声"
+    );
+    assert_ne!(
+        bits(&cowbell_bent),
+        bits(&cowbell_plain),
+        "+1200 音分必须真的搬动牛铃的音高"
+    );
+
+    // 手工参照：同一鼓组、同一增益、比率 2.0 的一击。
+    let mut reference = DrumMachine::<DRUM_SLOTS>::new(48_000);
+    reference.set_params(params.kit());
+    reference.trigger(DrumHit::new(DrumVoice::Cowbell, 0, 0.5).with_pitch_ratio(2.0));
+    let mut block = vec![0.0f32; 128];
+    let mut reference_samples = Vec::with_capacity(QUANTA * 128);
+    let mut position = 0u64;
+    for _ in 0..QUANTA {
+        reference.render(position, &mut block);
+        reference_samples.extend_from_slice(&block);
+        position += 128;
+    }
+    assert_eq!(
+        bits(&cowbell_bent),
+        bits(&reference_samples),
+        "引擎弯音路径必须与手工比率触发逐位一致"
+    );
+
+    let kick_bent = render(&bent(36));
+    let kick_plain = render(&plain(36));
+    assert_eq!(
+        bits(&kick_bent),
+        bits(&kick_plain),
+        "底鼓不读音高：带弯音的底鼓音符逐位不变"
     );
 }
