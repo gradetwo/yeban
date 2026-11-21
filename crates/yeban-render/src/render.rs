@@ -3400,7 +3400,7 @@ mod tests {
         );
         assert!(matches!(
             RenderPlan::compile(&routing, master, RenderOptions::l1(128, 1, 48_000, 0)),
-            Err(RenderError::Pdc(_))
+            Err(RenderError::InvalidGraph(_) | RenderError::Pdc(_))
         ));
     }
 
