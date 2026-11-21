@@ -193,6 +193,18 @@ struct SessionSeed {
     assets: BTreeMap<AssetHash, Vec<u8>>,
 }
 
+/// 系统实时时钟（Unix 毫秒）。
+///
+/// 读不到系统时钟时退化成 `0` 而不是 panic：调用方把时间只用于记录，
+/// 不该因为时钟不可用就整条工具链失败。
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |delta| {
+            u64::try_from(delta.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 /// 领域会话状态：活跃工程 + 提交图谱 + 提案记录 + **撤销会话态** + 注入的时钟
 /// + **第 2 层会话运行态** + 宿主注入的引擎镜像。
 ///
@@ -306,7 +318,12 @@ pub struct Domain {
     /// 工程**刷新（键 = 工程路径 + 资产键集，没变就不动）。宿主自己构造
     /// provider 注入时（形态 A）用的是宿主那份上下文，本字段不参与。
     provider_context: crate::song_overview_provider::SharedProviderContext,
-    now_ms: u64,
+    /// 时钟源：`Some(v)` = 调用方注入的固定时刻（测试与需要逐字节稳定
+    /// 提交记录的调用方）；`None` = 跟随系统实时时钟（独立二进制）。
+    ///
+    /// 默认 `Some(0)` 保持"领域层不自取时钟"的历史契约不变 —— 时钟由
+    /// 调用方决定，独立二进制用 [`Self::set_wall_clock`] 显式选用实时源。
+    now_ms: Option<u64>,
     /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
     ///
     /// `BTreeMap` 而不是 `HashMap`：红线 4 的确定性精神（响应里的 `instrumentId`
@@ -375,7 +392,7 @@ impl Domain {
                 None,
                 Arc::new(BTreeMap::new()),
             ),
-            now_ms: 0,
+            now_ms: Some(0),
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
             embedded_presets: BTreeMap::new(),
@@ -723,16 +740,25 @@ impl Domain {
     /// 注入时钟（Unix 毫秒）。
     ///
     /// 模型层刻意不自取时钟（可测试性）；MCP 工具的契约里也没有时钟参数，
-    /// 因此时钟由**调用方**注入：形态 B 的二进制在启动时注入一次系统时间，
-    /// 判据注入固定值以获得逐字节稳定的提交记录。
-    pub const fn set_now_ms(&mut self, now_ms: u64) {
-        self.now_ms = now_ms;
+    /// 因此时钟由**调用方**注入：测试注入固定值以获得逐字节稳定的提交记录，
+    /// 独立二进制用 [`Self::set_wall_clock`] 选用实时源。
+    pub fn set_now_ms(&mut self, now_ms: u64) {
+        self.now_ms = Some(now_ms);
     }
 
-    /// 当前注入的时钟。
+    /// 选用系统实时时钟（Unix 毫秒）。
+    ///
+    /// 独立二进制必须调用它：只注入一次固定值会让 `createdAt` / 提交时间
+    /// 永久冻结在启动时刻（T-FIX-38）。需要可复现记录的调用方继续用
+    /// [`Self::set_now_ms`] 覆盖。
+    pub fn set_wall_clock(&mut self) {
+        self.now_ms = None;
+    }
+
+    /// 当前时刻（Unix 毫秒）：注入值优先，未注入则读系统时钟。
     #[must_use]
-    pub const fn now_ms(&self) -> u64 {
-        self.now_ms
+    pub fn now_ms(&self) -> u64 {
+        self.now_ms.unwrap_or_else(wall_clock_ms)
     }
 
     /// 活跃工程（只读）。
@@ -1074,10 +1100,13 @@ impl Domain {
                 .align_with(&self.graph, &seed.project)
                 .map_err(undo_refusal_to_fault)?;
         } else {
+            // 先取时刻：`genesis` 同时可变借用 `graph` 与 `undo`，
+            // 在那两个参数求值后再调 `self.now_ms()` 会撞借用检查。
+            let now_ms = self.now_ms();
             undo_session::genesis(
                 &mut self.graph,
                 &mut self.undo,
-                self.now_ms,
+                now_ms,
                 &format!("open {}", seed.path.display()),
             )
             .map_err(undo_refusal_to_fault)?;
@@ -8519,6 +8548,24 @@ mod tests {
     use std::sync::OnceLock;
 
     use crate::tools::ToolCall;
+
+    /// 回归（T-FIX-38）：独立二进制曾把系统时间**注入一次**，于是 `createdAt`
+    /// 永久冻结在启动时刻。`set_wall_clock` 之后每次读都必须走真实时钟；
+    /// 同时 `set_now_ms` 的"固定值"语义不能变（可复现记录仍靠它）。
+    #[test]
+    fn wall_clock_advances_while_injected_clock_stays_fixed() {
+        let mut domain = Domain::new();
+        domain.set_wall_clock();
+        let first = domain.now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let second = domain.now_ms();
+        assert!(first > 1_600_000_000_000, "实时时钟读数不合理: {first}");
+        assert!(second > first, "实时时钟必须前进: {first} vs {second}");
+
+        domain.set_now_ms(1_760_000_000_000);
+        assert_eq!(domain.now_ms(), 1_760_000_000_000);
+        assert_eq!(domain.now_ms(), 1_760_000_000_000, "注入值必须稳定");
+    }
 
     /// ⭐ **名字表对账**（P2-3）：本 crate 手抄的 [`DRUM_NOTE_NAMES`] 必须逐字等于
     /// 引擎 `crates/yeban-engine/src/drums.rs::note_slot` 的 match 臂 ——

@@ -247,11 +247,7 @@ impl UiHttpServer {
             Err(source) => return Err(HttpError::Io { source }),
         };
         assert_loopback_peer(peer)?;
-        stream
-            .set_nonblocking(false)
-            .and_then(|()| stream.set_read_timeout(Some(CONNECTION_TIMEOUT)))
-            .and_then(|()| stream.set_write_timeout(Some(CONNECTION_TIMEOUT)))
-            .map_err(|source| HttpError::Io { source })?;
+        prepare_connection(&stream).map_err(|source| HttpError::Io { source })?;
         self.handle_stream(&mut stream)?;
         Ok(true)
     }
@@ -281,8 +277,19 @@ impl UiHttpServer {
             if assert_loopback_peer(peer).is_err() {
                 continue;
             }
-            // 单连接失败不影响服务其它连接。
-            let _ = self.handle_stream(&mut stream);
+            // 与 [`Self::try_serve_once`] 同一套连接边界：切回阻塞，并给**读/写**
+            // 各一个 [`CONNECTION_TIMEOUT`]。本方法是单线程串行 accept，没有超时的话
+            // 一个"只连不说"的客户端就能把整个服务永久卡死（T-FIX-38）。
+            if let Err(source) = prepare_connection(&stream) {
+                // 单条连接连 socket 选项都设不上 ⇒ 响亮断开，不拖垮服务。
+                eprintln!("yeban-ui-mcp: 设置连接超时失败，已断开该连接: {source}");
+                continue;
+            }
+            // 单连接失败（含读写超时）不影响服务其它连接；但必须**响亮**：
+            // 静默吞掉会让"服务还在但每请求都超时"变成不可诊断的哑状态。
+            if let Err(error) = self.handle_stream(&mut stream) {
+                eprintln!("yeban-ui-mcp: 连接处理失败，已断开: {error}");
+            }
         }
     }
 }
@@ -330,6 +337,19 @@ fn error_body(kind: &str, detail: &str) -> String {
 /// 只读头并解析出请求行 / 头（体留空）。
 ///
 /// 一并返回读头时多读到的体字节（见 [`read_head`]）：调用方必须先消费它们再读 socket。
+/// 把已 accept 的连接切回阻塞，并给读、写各一个 [`CONNECTION_TIMEOUT`]。
+///
+/// 监听 socket 是非阻塞的（`accept` 要靠它轮询），连接会继承这个标志 ——
+/// 不切回阻塞，第一次 `read` 就立刻 `WouldBlock`。而**不给超时**的代价更大：
+/// 一个"只连不说"的客户端能把单线程的 [`UiHttpServer::serve_forever`] 永久卡死
+/// （T-FIX-38）。两条路径（[`UiHttpServer::try_serve_once`] 与本函数）共用同一套边界。
+fn prepare_connection(stream: &TcpStream) -> std::io::Result<()> {
+    stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(CONNECTION_TIMEOUT)))
+        .and_then(|()| stream.set_write_timeout(Some(CONNECTION_TIMEOUT)))
+}
+
 fn read_head_request(stream: &mut TcpStream) -> Result<(HttpRequest, Vec<u8>), HttpError> {
     let (head_bytes, leftover) = read_head(stream)?;
     let head = String::from_utf8_lossy(&head_bytes).into_owned();
@@ -733,5 +753,66 @@ mod tests {
             "正常环回不应触发安全校验拒绝: {:?}",
             resp.body
         );
+    }
+
+    /// 回归（T-FIX-38）：accept 出来的连接必须带读/写超时。
+    /// 少了这一步，`serve_forever` 的单线程 accept 循环可被一条空闲连接永久卡死。
+    #[test]
+    fn accepted_connection_gets_read_and_write_timeouts() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("绑定环回");
+        let address = listener.local_addr().expect("本地地址");
+        let _client = TcpStream::connect(address).expect("连环回");
+        let (server_stream, _peer) = listener.accept().expect("accept");
+        prepare_connection(&server_stream).expect("设置超时");
+        assert_eq!(
+            server_stream.read_timeout().expect("读超时可查询"),
+            Some(CONNECTION_TIMEOUT)
+        );
+        assert_eq!(
+            server_stream.write_timeout().expect("写超时可查询"),
+            Some(CONNECTION_TIMEOUT)
+        );
+    }
+
+    /// 回归（T-FIX-38）：只连不发的连接要**在超时后返回**，不是无限挂住。
+    ///
+    /// 超时被翻译成一条 5xx 响应（协议层错误不 panic、不静默），所以
+    /// `handle_stream` 的返回值可以是 `Ok`；关键是**耗时**卡在超时附近。
+    #[test]
+    fn idle_connection_is_dropped_instead_of_hanging_forever() {
+        let server = server();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("绑定环回");
+        let address = listener.local_addr().expect("本地地址");
+        let client = TcpStream::connect(address).expect("连环回");
+        let (mut stream, _peer) = listener.accept().expect("accept");
+        prepare_connection(&stream).expect("设置超时");
+
+        let started = std::time::Instant::now();
+        let outcome = server.handle_stream(&mut stream);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= CONNECTION_TIMEOUT,
+            "应等满超时才断开，而不是立刻返回: {elapsed:?}"
+        );
+        assert!(
+            elapsed < CONNECTION_TIMEOUT * 3,
+            "不能在读上无限挂住: {elapsed:?}（outcome={outcome:?}）"
+        );
+        // 连接必须被服务端断掉：客户端读到 5xx 响应、EOF 或错误，都算"没被吊着"。
+        client
+            .set_read_timeout(Some(CONNECTION_TIMEOUT))
+            .expect("客户端读超时");
+        let mut probe = [0_u8; 64];
+        let mut client_ref = &client;
+        match client_ref.read(&mut probe) {
+            Ok(0) | Err(_) => {}
+            Ok(n) => {
+                let text = String::from_utf8_lossy(&probe[..n]);
+                assert!(
+                    text.starts_with("HTTP/1.1 5") || text.starts_with("HTTP/1.1 4"),
+                    "超时应以错误响应收场，实际: {text:?}"
+                );
+            }
+        }
     }
 }

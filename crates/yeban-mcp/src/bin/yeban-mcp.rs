@@ -212,8 +212,10 @@ fn execute(config: &Config) -> Result<(), Failure> {
 
     let mut dispatcher = Dispatcher::new(token, granted, mode);
     // 领域层刻意不自取时钟（模型层同样如此：`Commit::created_at` 与 `StampedOp::timestamp`
-    // 由调用方提供，以便可测试）。形态 B 在这里注入一次系统时间。
-    dispatcher.domain_mut().set_now_ms(now_ms());
+    // 由调用方提供，以便可测试），因此这里显式选用**系统实时时钟**。
+    // 只注入一次固定值会让 `createdAt` / 提交时间永久冻结在启动时刻（T-FIX-38）；
+    // 想要逐字节稳定记录的调用方仍然可以改用 `set_now_ms` 覆盖。
+    dispatcher.domain_mut().set_wall_clock();
     // 形态 B 自带真实 provider（整曲总览 + 自动相位对齐）：实现住在
     // `yeban-mcp` 库里（与形态 A 的进程内控制面同一份），上下文由 Domain
     // 按当前活跃工程托管同步 —— 不装的话这两个工具只能响亮报
@@ -235,15 +237,6 @@ fn execute(config: &Config) -> Result<(), Failure> {
             Ok(())
         }
     }
-}
-
-/// 当前 Unix 毫秒时间（读不到系统时钟就退化成 0，而不是 panic）。
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |delta| {
-            u64::try_from(delta.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// 启动环回 HTTP 传输（形态 A）。
