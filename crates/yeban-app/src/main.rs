@@ -457,19 +457,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     if engine.has_engine() {
         let config = yeban_engine::device::EngineConfig::from_project(&loaded.archive.project);
         match engine.open_device(config) {
-            Ok(opening) => cli::emit(&[format!(
-                "音频设备: `{}` · {} Hz / {} ch · 请求每回调 {} 帧 (后端接受 Fixed = {}) · \
-                 共享模式 {:?} · 交接量子 {} @ tick {} ({:?}) · **真实时钟驱动音频线程**",
-                opening.device_name,
-                opening.sample_rate,
-                opening.channels,
-                opening.block_frames,
-                opening.fixed_block_accepted,
-                opening.share_mode,
-                opening.carryover_quanta,
-                opening.carryover_position_ticks,
-                opening.carryover_state,
-            )]),
+            Ok(opening) => cli::emit(&[opening.status_line()]),
             Err(error) => {
                 cli::emit(&[format!(
                     "音频设备: **未接线**（{error}）⇒ 降级为控制面驱动：墙钟泵送按真实时间推量子（无声）；\

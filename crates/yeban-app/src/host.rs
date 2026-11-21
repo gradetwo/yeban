@@ -8832,7 +8832,8 @@ pub struct PortOpenProject {
     /// 产品心跳那一代（`None` ⇒ 这个装配没有产品心跳；只重投影界面）。
     ///
     /// `Some` 时本结构负责**换代**（[`EngineHost::reload`] ＋ 采纳新的电平消费端 ＋
-    /// 停在停止态），与装配点（`run_gui` 的 [`ProductionLoop::start`] 之后那两行）逐字同款。
+    /// 停在停止态 ＋ **按新工程配置重开设备腿**），与装配点（`run_gui` 的
+    /// [`ProductionLoop::start`] 之后那两行）同一条纪律。
     pub production: Option<Rc<RefCell<ProductionLoop>>>,
     /// `reload` 的量子数（与装配时给 [`ProductionLoop::start`] 的那一个同源）。
     pub quanta: u64,
@@ -8963,6 +8964,11 @@ impl PortOpenProject {
                 // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
                 // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
                 // ⇒ 先把结局**结算**成一个值，再进 `match`。
+                // ⚠ 设备腿状态必须在 `reload` **之前**记下：`reload` 的第 1.5 步会
+                // `close_device()`（`engine_host.rs` 的 `reload` 文档写明"要重新交回设备
+                // 请再调一次 open_device"）。这里曾经只 `stop()`、没有重开 ⇒ 用户在启动
+                // 选择器里换工程之后，走带和轨道电平都正常，但声卡流已经被关掉，播放无声。
+                let device_was_active = engine.borrow().device_active();
                 let rebuild = engine.borrow_mut().reload(&project, self.quanta);
                 match rebuild {
                     Ok(rebuild) => {
@@ -8974,6 +8980,26 @@ impl PortOpenProject {
                         // 停止态（`ProductionLoop::start` 的文档第 ① 条）。⛔ 不 stop 会让
                         // `playing: false` 的界面背后真的在跑。
                         engine.borrow_mut().stop();
+                        // ⭐ **换工程后把设备腿接回去**。离线导出不经过设备腿，所以它会
+                        // 一直是好的；实时播放这条腿则必须在 `reload` 之后显式重开。
+                        // 只在换工程前设备腿活跃时重开：启动时就没声卡的机器不去反复试，
+                        // 保持"控制驱动（无声但走带正常）"的既有降级形态。
+                        if device_was_active {
+                            let config = yeban_engine::device::EngineConfig::from_project(&project);
+                            match production.borrow_mut().open_device(config) {
+                                Ok(opening) => crate::cli::emit(&[opening.status_line()]),
+                                Err(error) => {
+                                    let text = format!(
+                                        "已打开 `{label}`，但音频设备未接线（{error}）：\
+                                         播放将无声；编辑与导出不受影响"
+                                    );
+                                    eprintln!("[yeban-app] {text}");
+                                    ui.set_toast_message(text.into());
+                                    ui.set_toast_is_error(false);
+                                    ui.set_show_floating_toast(true);
+                                }
+                            }
+                        }
                         let reading = engine.borrow().transport();
                         apply_transport(ui, reading);
                     }

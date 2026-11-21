@@ -408,6 +408,29 @@ pub struct DeviceOpening {
     pub carryover_state: TransportState,
 }
 
+impl DeviceOpening {
+    /// 设备腿接通后打给终端的一行（装配点与运行期换工程共用同一份格式）。
+    ///
+    /// 单独收成方法的原因：换工程现在已经会重开设备腿，同一条读数会打印**两次**；
+    /// 字段顺序与单位若在两处各写一份，迟早漂移。
+    #[must_use]
+    pub fn status_line(&self) -> String {
+        format!(
+            "音频设备: `{}` · {} Hz / {} ch · 请求每回调 {} 帧 (后端接受 Fixed = {}) · \
+             共享模式 {:?} · 交接量子 {} @ tick {} ({:?}) · **真实时钟驱动音频线程**",
+            self.device_name,
+            self.sample_rate,
+            self.channels,
+            self.block_frames,
+            self.fixed_block_accepted,
+            self.share_mode,
+            self.carryover_quanta,
+            self.carryover_position_ticks,
+            self.carryover_state,
+        )
+    }
+}
+
 /// **一代引擎的四个端点 + 渲染驱动**（[`EngineHost::reload`] 与
 /// [`EngineHost::open_device`] 用**同一份**构造）。
 ///
