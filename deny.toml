@@ -68,7 +68,7 @@ allow = [
 [licenses.private]
 ignore = true
 
-# 针对特定 crate 的精细化豁免规则 (目前仓库尚无 ring 依赖, 保留以备后续引入 TLS 时使用)
+# 针对特定 crate 的精细化豁免规则（供 ureq/rustls 的 TLS 链使用）
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"

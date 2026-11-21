@@ -20,7 +20,7 @@ path = "src/main.rs"
 # 路线甲 (见 src/lib.rs 的接缝说明): 依赖 yeban-app 库, 只调用其无 Slint 窗口的部件
 # (engine_host / open / save / render_core / export_wav / cli::shortcut_rows /
 # input::InputContext)。Slint 被链接但从不初始化。
-yeban-app = { path = "../yeban-app" }
+yeban-app = { workspace = true }
 yeban-model = { workspace = true }
 yeban-engine = { workspace = true }
 ratatui = { workspace = true }

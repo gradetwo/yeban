@@ -103,11 +103,15 @@ signalsmith-stretch = { version = "0.1.3", default-features = false }
 # realfft 3.5.0 MIT，后端 rustfft 6.4.1 MIT/Apache-2.0；纯 Rust，确定性
 # （同一输入同一输出，无随机性）。不用 ebur128：LUFS 已有树内 GatedLoudness。
 realfft = { version = "3.5.0", default-features = false }
+# 原生文件选择对话框（仅被 yeban-app 消费，MIT/Apache-2.0）。
+rfd = { version = "0.17.2" }
 
 # 夜半自身 crate (workspace 内部路径依赖的唯一登记处)
 yeban-model = { path = "crates/yeban-model" }
 yeban-theory = { path = "crates/yeban-theory" }
 yeban-dsp = { path = "crates/yeban-dsp" }
+yeban-diagnostics = { path = "crates/yeban-diagnostics" }
+yeban-midi = { path = "crates/yeban-midi" }
 # [PATCH build-cargo-default-features] workspace 层关闭默认 feature，
 # 否则 `crates/yeban-render` 的 `default-features = false` 在 cargo >= 1.93 直接报错
 # ("cannot override workspace's default-features")。设备宿主由 yeban-app 显式打开。
@@ -120,6 +124,7 @@ yeban-otcp = { path = "crates/yeban-otcp" }
 yeban-render = { path = "crates/yeban-render" }
 yeban-mcp = { path = "crates/yeban-mcp" }
 yeban-app = { path = "crates/yeban-app" }
+yeban-tui = { path = "crates/yeban-tui" }
 yeban-ui-test-port = { path = "crates/yeban-ui-test-port" }
 yeban-ui-mcp = { path = "crates/yeban-ui-mcp" }
 yeban-services = { path = "crates/yeban-services" }
