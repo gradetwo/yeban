@@ -169,14 +169,18 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
             file.pid
         )));
     }
-    let start_ms = process_start_time_ms(file.pid).ok_or_else(|| {
-        OtcpError::protocol(format!("读 pid {} 的启动时间失败（陈旧文件）", file.pid))
-    })?;
-    let delta = start_ms.abs_diff(file.process_start_time_ms);
-    if delta > 2000 {
+    if let Some(start_ms) = process_start_time_ms(file.pid) {
+        let delta = start_ms.abs_diff(file.process_start_time_ms);
+        if delta > 2000 {
+            return Err(OtcpError::protocol(format!(
+                "发现文件 {} 的 processStartTimeMs 与实测相差 {delta} ms（陈旧文件）",
+                path.display()
+            )));
+        }
+    } else if cfg!(any(target_os = "linux", windows)) {
         return Err(OtcpError::protocol(format!(
-            "发现文件 {} 的 processStartTimeMs 与实测相差 {delta} ms（陈旧文件）",
-            path.display()
+            "读 pid {} 的启动时间失败（陈旧文件）",
+            file.pid
         )));
     }
     Ok(file)
@@ -184,13 +188,26 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
 
 /// pid 是否存活。
 ///
-/// Unix 读 `/proc/<pid>`；Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
-/// 并用 `GetExitCodeProcess`（`STILL_ACTIVE` 才算存活）。非 Windows/Unix 平台没有可靠
-/// 实现，按“不可判定”返回 `false`，由后续 TCP 连接与握手校验兜底。
+/// Linux 读 `/proc/<pid>`；其它 Unix 用 `kill -0 <pid>`；Windows 用
+/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`。
 #[must_use]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[must_use]
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[must_use]
@@ -219,8 +236,9 @@ pub fn pid_alive(pid: u32) -> bool {
 /// 换算成 Unix 毫秒。读不到 ⇒ `None`。
 ///
 /// Windows 用 `GetProcessTimes` 的 creation FILETIME（1601 起 100ns）换算 Unix 毫秒。
+/// Linux 读 `/proc/<pid>/stat`；Windows 用 `GetProcessTimes`；其它 Unix 暂不测量返回 `None`。
 #[must_use]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm 字段可能含空格与括号：从最后一个 ')' 之后取字段。
@@ -232,6 +250,12 @@ pub fn process_start_time_ms(pid: u32) -> Option<u64> {
     let boot_ms = boot_time_ms()?;
     let start_ms = boot_ms + starttime_ticks * 1000 / ticks_per_sec;
     Some(start_ms)
+}
+
+#[must_use]
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn process_start_time_ms(_pid: u32) -> Option<u64> {
+    None
 }
 
 #[must_use]
@@ -289,14 +313,14 @@ pub fn process_start_time_ms(_pid: u32) -> Option<u64> {
 }
 
 /// 时钟节拍数／秒（Linux 缺省 100；读不到时用 100）。
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn ticks_per_second() -> u64 {
     // libc 不可用（std-only 依赖）；Linux 上 CLK_TCK 恒为 100。
     100
 }
 
 /// 系统启动时间（Unix 毫秒），取自 `/proc/stat` 的 `btime` 行。
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn boot_time_ms() -> Option<u64> {
     let stat = fs::read_to_string("/proc/stat").ok()?;
     for line in stat.lines() {
@@ -323,8 +347,13 @@ pub fn now_ms() -> u64 {
 /// 但 nonce 本身只是防重放的会话绑定，不是长期密钥）。
 #[must_use]
 pub fn generate_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut seed = now_ms() ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    let seq = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut seed = now_ms()
+        ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        ^ seq.wrapping_mul(0xBF58476D1CE4E5B9);
     let mut nonce = String::with_capacity(32);
     for _ in 0..32 {
         // xorshift64* 混洗。
@@ -346,9 +375,33 @@ pub fn valid_nonce(nonce: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// 校验 `job_id` 为安全单段文件名（防路径穿越：`..`、`/`、`\`、`\0` 与控制字符）。
+///
+/// # Errors
+///
+/// 若 `job_id` 为空、含路径分隔符、`..`、NUL 或 ASCII 控制字符，返回 [`OtcpError`]。
+pub fn validate_job_id(job_id: &str) -> Result<(), OtcpError> {
+    if job_id.is_empty()
+        || job_id == "."
+        || job_id == ".."
+        || job_id.contains("..")
+        || job_id.contains('/')
+        || job_id.contains('\\')
+        || job_id.bytes().any(|b| b == 0 || b < 0x20)
+    {
+        return Err(OtcpError::protocol(format!(
+            "非法 OTCP job_id（禁止空串、路径分隔符、.. 与控制字符）: {job_id:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// 控制目录路径（任务根下的 `control/<job_id>`）。
 #[must_use]
 pub fn control_dir_for(control_root: &Path, job_id: &str) -> PathBuf {
+    if validate_job_id(job_id).is_err() {
+        return control_root.join("control").join("_invalid_job_id");
+    }
     control_root.join("control").join(job_id)
 }
 
@@ -449,5 +502,17 @@ mod tests {
             wait_ready_file(&dir, Duration::from_millis(300)).expect_err("无 ready.json 应超时");
         assert!(error.message.contains("超时"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_job_id_rejects_traversal_and_separators() {
+        assert!(validate_job_id("job-123_abc").is_ok());
+        assert!(validate_job_id("").is_err());
+        assert!(validate_job_id("..").is_err());
+        assert!(validate_job_id("../etc").is_err());
+        assert!(validate_job_id("a/b").is_err());
+        assert!(validate_job_id("a\\b").is_err());
+        assert!(validate_job_id("bad\0id").is_err());
+        assert_ne!(generate_nonce(), generate_nonce());
     }
 }
