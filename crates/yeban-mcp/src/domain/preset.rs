@@ -115,7 +115,12 @@ pub fn resolve_preset(embedded: &BTreeMap<String, Preset>, id: &str) -> Result<P
         return Ok(preset.clone());
     }
     let path = user_preset_path(id);
-    let bytes = std::fs::read(&path).map_err(|_| {
+    let bytes = super::store::read_bounded(
+        &path,
+        16 * 1024 * 1024,
+        &format!("用户预制 {}", path.display()),
+    )
+    .map_err(|_| {
         Fault::domain(
             ErrorCode::EntityNotFound,
             format!(
@@ -214,11 +219,10 @@ pub fn user_library_presets() -> (Vec<(Preset, PathBuf)>, Vec<String>) {
         .collect();
     paths.sort();
     for path in paths {
-        match std::fs::read(&path).and_then(|bytes| {
-            Preset::parse(&bytes).map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-            })
-        }) {
+        match super::store::read_bounded(&path, 16 * 1024 * 1024, "用户预制")
+            .map_err(|_| ())
+            .and_then(|bytes| Preset::parse(&bytes).map_err(|_| ()))
+        {
             Ok(preset) => presets.push((preset, path)),
             Err(_) => skipped.push(path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -997,12 +1001,30 @@ pub fn write_user_preset_file(path: &std::path::Path, preset: &Preset) -> Result
             format!("建用户预制库 {} 失败：{error}", dir.display()),
         )
     })?;
-    std::fs::write(path, format!("{bytes}\n")).map_err(|error| {
-        Fault::domain(
+    static PRESET_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = PRESET_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("preset.json");
+    let tmp_path = path.with_file_name(format!(".{file_name}.tmp.{}.{seq}", std::process::id()));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        std::io::Write::write_all(&mut file, format!("{bytes}\n").as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if let Err(error) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(Fault::domain(
             ErrorCode::IoError,
             format!("写用户预制 {} 失败：{error}", path.display()),
-        )
-    })?;
+        ));
+    }
     Ok(())
 }
 

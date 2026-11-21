@@ -13,7 +13,6 @@
 //! 目标片段必须存在且为空；导入产生的所有音符与元数据变更在同一次提交中原子落盘，
 //! 保证一次撤销即可完全还原。
 
-use std::fs;
 use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
@@ -29,7 +28,7 @@ use yeban_model::{ClipContent, EntityId, Op, OpOrigin};
 use crate::tools::{ErrorCode, ToolResponse};
 use crate::undo_session::CommitRequest;
 
-use super::error::{self, Fault};
+use super::error::Fault;
 use super::ids::deterministic_id;
 
 /// 多轨拆分时新建音轨的描述信息。
@@ -236,12 +235,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         }
     }
 
-    let bytes = fs::read(&path).map_err(|err| {
-        error::from_io(
-            &format!("failed to read MIDI file '{}'", path.display()),
-            &err,
-        )
-    })?;
+    let bytes = super::store::read_bounded(&path, 32 * 1024 * 1024, &path.display().to_string())?;
 
     let parsed = parse_smf(&bytes).map_err(|err| {
         Fault::domain(

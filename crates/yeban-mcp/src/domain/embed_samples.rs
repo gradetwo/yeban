@@ -75,9 +75,9 @@ pub fn collect(
         // ① SFZ 文本：盘上优先，否则已内嵌复用，否则响亮失败。
         let (text, disk_path) = match super::render::resolve_sampler_path(binding, project_path) {
             Ok(disk) => {
-                let bytes = std::fs::read(&disk).map_err(|error| {
-                    sampler_unreadable(binding, format!("读采样器定义文件失败: {error}"))
-                })?;
+                let bytes = super::store::read_bounded(&disk, 16 * 1024 * 1024, binding).map_err(
+                    |error| sampler_unreadable(binding, format!("读采样器定义文件失败: {error:?}")),
+                )?;
                 let text = String::from_utf8(bytes).map_err(|error| {
                     sampler_unreadable(binding, format!("采样器定义文件不是合法 UTF-8: {error}"))
                 })?;
@@ -255,12 +255,12 @@ fn resolve_sample_bytes(
             Err(_) => return None,
         };
         if candidate.is_file()
-            && let Ok(bytes) = std::fs::read(&candidate)
+            && let Ok(bytes) = super::store::read_bounded(&candidate, 512 * 1024 * 1024, key)
         {
             return Some(bytes);
         }
     } else if let Some(candidate) = resolve_key_disk(key, project_path)
-        && let Ok(bytes) = std::fs::read(&candidate)
+        && let Ok(bytes) = super::store::read_bounded(&candidate, 512 * 1024 * 1024, key)
     {
         return Some(bytes);
     }
