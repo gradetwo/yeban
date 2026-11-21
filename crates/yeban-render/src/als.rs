@@ -335,9 +335,24 @@ fn escape_attr(value: &str) -> String {
     out
 }
 
-/// XML 注释体：只禁 `--`, 且不得以 `-` 结尾（我们总是补一个空格再接 `-->`）。
+/// XML 注释体：只禁连续 `--`，单遍线性扫描拆开任意长度的连续连字符（如 `---` -> `- - -`），
+/// 不追加尾随空格（调用方 `<!-- {body} -->` 总是补空格）。
 fn comment_body(value: &str) -> String {
-    value.replace("--", "- -")
+    let mut out = String::with_capacity(value.len());
+    let mut prev_hyphen = false;
+    for ch in value.chars() {
+        if ch == '-' {
+            if prev_hyphen {
+                out.push(' ');
+            }
+            out.push('-');
+            prev_hyphen = true;
+        } else {
+            out.push(ch);
+            prev_hyphen = false;
+        }
+    }
+    out
 }
 
 /// 逐行拼 XML 的小工具（缩进 + 损失表 + 身份编号）。
@@ -1504,6 +1519,9 @@ mod tests {
 
         // 消毒函数本身的行为也要钉住（不是靠 check_xml 间接判断）。
         assert_eq!(comment_body("a--b-"), "a- -b-");
+        assert_eq!(comment_body("---"), "- - -");
+        assert_eq!(comment_body("a----b"), "a- - - -b");
+        assert!(!comment_body("---a----").contains("--"));
     }
 
     /// 判据 G：**报告出来的**损失表与 XML 本体里那串 `<!-- yeban-loss ... -->` 注释逐条相同。
