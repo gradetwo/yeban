@@ -101,7 +101,7 @@
 // * 无窗口装配（`live_surface.rs` / `ui_mcp_serve`）接 `NoPicker` ⇒ 恒为"取消"；
 //   控制面仍可用既有 `ui/property` 通道直写 `export-wav-path`。
 
-import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+import { Tokens, UiText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
 
 export component ExportWavDialog inherits Rectangle {
     // ---- 四格可编辑文本（唯一写者 = 宿主打开时播种；此后用户输入）------------
@@ -296,7 +296,7 @@ export component ExportWavDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            export-wav-path-input := TextInput {
+            export-wav-path-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 72px;
                 // ⭐ [PATCH UI-WIRING-01]：宽度一位不改 —— 本切片不新增任何可见控件，
@@ -350,7 +350,7 @@ export component ExportWavDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            export-wav-sample-rate-input := TextInput {
+            export-wav-sample-rate-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 128px;
                 width: 200px;
@@ -383,7 +383,7 @@ export component ExportWavDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            export-wav-bit-depth-input := TextInput {
+            export-wav-bit-depth-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 216px;
                 y: 128px;
                 width: parent.width - 48px - 216px;
@@ -423,7 +423,7 @@ export component ExportWavDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            export-wav-seconds-input := TextInput {
+            export-wav-seconds-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 184px;
                 width: 200px;

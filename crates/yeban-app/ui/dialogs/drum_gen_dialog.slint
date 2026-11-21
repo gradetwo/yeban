@@ -22,7 +22,7 @@
 // `Esc` 调 `close`；`↑` / `↓` 在陷阱内切换风格选择（风格行本身可点、
 // 可经无障碍动作触发，不进 Tab 环）。
 
-import { Tokens, UiText, UiTitleText, DrumStyleRow } from "../tokens.slint";
+import { Tokens, UiText, UiTitleText, DrumStyleRow, ImeAwareTextInput } from "../tokens.slint";
 
 export component DrumGenDialog inherits Rectangle {
     // ---- 宿主写的风格行（出厂预置投影；顺序 = 预置登记顺序）--------------
@@ -233,7 +233,7 @@ export component DrumGenDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            drum-gen-complexity-input := TextInput {
+            drum-gen-complexity-input := ImeAwareTextInput {
                 x: 300px;
                 y: 68px;
                 width: 160px;
@@ -262,7 +262,7 @@ export component DrumGenDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            drum-gen-intensity-input := TextInput {
+            drum-gen-intensity-input := ImeAwareTextInput {
                 x: 476px;
                 y: 68px;
                 width: 160px;
@@ -291,7 +291,7 @@ export component DrumGenDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            drum-gen-swing-input := TextInput {
+            drum-gen-swing-input := ImeAwareTextInput {
                 x: 300px;
                 y: 128px;
                 width: 160px;
@@ -320,7 +320,7 @@ export component DrumGenDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            drum-gen-bars-input := TextInput {
+            drum-gen-bars-input := ImeAwareTextInput {
                 x: 476px;
                 y: 128px;
                 width: 160px;
@@ -349,7 +349,7 @@ export component DrumGenDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            drum-gen-seed-input := TextInput {
+            drum-gen-seed-input := ImeAwareTextInput {
                 x: 300px;
                 y: 188px;
                 width: 336px;

@@ -30,7 +30,7 @@
 // 默认关着（`MainWindow.template-save-open = false`）⇒ 默认帧与 5 张
 // Linux 基准一位不变。
 
-import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
 
 export component SaveAsTemplateDialog inherits Rectangle {
     // ---- 三格可编辑文本（打开时由宿主播种：名字清空，分类预填上次用过的）--
@@ -196,7 +196,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            template-style-input := TextInput {
+            template-style-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 80px;
                 width: parent.width - 48px;
@@ -230,7 +230,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            template-substyle-input := TextInput {
+            template-substyle-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 136px;
                 width: parent.width - 48px;
@@ -264,7 +264,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            template-name-input := TextInput {
+            template-name-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 192px;
                 width: parent.width - 48px;

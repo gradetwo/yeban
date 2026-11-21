@@ -32,7 +32,7 @@
 // 数据流方向: 只读。界面只做"取数组下标 + 画像素"，dBFS 换算 / 声相文本 / 推子归一化
 // 全在投影层与 `src/meters.rs`（零 Slint 依赖，本机可 `rustc --test` 真跑）。
 
-import { Tokens, UiText, UiMonoText, UiMediumText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiMediumText, ImeAwareTextInput } from "../tokens.slint";
 import { AssetPoolPanel } from "asset_pool_panel.slint";
 import { Fader } from "../controls/fader.slint";
 import { LedMeter } from "../controls/led_meter.slint";
@@ -697,7 +697,7 @@ export component MixerConsole inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            sampler-path-field := TextInput {
+            sampler-path-field := ImeAwareTextInput {
                 x: Tokens.space-3;
                 y: 208px;
                 // ⚠ `#86` 乙：右边让出 24px 给"浏览"按钮（⛔ 不动 SET / CLR 的几何）。

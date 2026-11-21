@@ -28,7 +28,7 @@
 // 点「取消」或关窗（`if` 块重建）即复位。内置库那一行没有删除钮，
 // 只显示「内置」标记（宿主与逻辑层还会再挡一次，双保险）。
 
-import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+import { Tokens, UiText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
 
 export component SoundLibraryDialog inherits Rectangle {
     // ---- 已安装（宿主写，平行数组）--------------------------------------
@@ -541,7 +541,7 @@ export component SoundLibraryDialog inherits Rectangle {
                 border-width: 1px;
                 border-color: Tokens.line;
 
-                sound-library-search-input := TextInput {
+                sound-library-search-input := ImeAwareTextInput {
                     x: 10px;
                     y: 0;
                     width: parent.width - 20px;

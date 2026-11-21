@@ -95,6 +95,18 @@ export component Transport inherits Rectangle {
     // preedit（候选词）就置位，上屏 / 取消 / 失焦时清零。宿主（src/host.rs 的
     // wire_input）把它翻成 `InputContext::begin_composition` / `end_composition`
     // —— 界面**不**自己做"合成中"的判断。
+    //
+    // ⚠ **2026-11-21（审计 #20）：本文件的这条绑定不生效，保留为历史参照。**
+    // 理由不是"懒得删"，而是两条事实：
+    // ① `build.rs` 只编译根文件 `ui/app.slint`，而 `app.slint` **从未** import 本文件
+    //    （顶栏用的是 `ui/transport_bar.slint` 的 `TransportHeaderBar`）⇒ 本文件整个
+    //    不在编译图里，这里的 `changed preedit-text` 从来没有跑过。这正是审计 #20 的
+    //    病灶：全仓唯一写过合成态事件的地方，是一份没人编译的稿子。
+    // ② 现役事件源已改为 `ui/tokens.slint` 的 `ImeAwareTextInput`（22 个调用点，
+    //    经 `ImeState` 汇聚到 `MainWindow` 的两个回调），`src/host.rs` 的
+    //    `wire_input` 文档表格也改指那里。
+    // 保留本行的唯一价值：它是 `[UI-A11Y-002]` §7.2 落地时的**原始形状**记录
+    // （下面 `bpm-input` 的注释引用了它），删掉会让那段考证失去锚点。
     callback ime-composition-changed(bool);
     callback ime-focus-changed(bool);
 
@@ -295,6 +307,9 @@ export component Transport inherits Rectangle {
             single-line: true;
             read-only: false;
 
+            // ⚠ 审计 #20：这两条 `changed` 属于**未编译**的本文件（见上方 callback 处的
+            // 说明）；现役同款形状住在 `ui/tokens.slint` 的 `ImeAwareTextInput` 里
+            // —— 22 个输入框全部改用它。此处保留不动，只为上面那段考证留锚点。
             changed preedit-text => {
                 root.ime-composition-changed(self.preedit-text != "");
             }

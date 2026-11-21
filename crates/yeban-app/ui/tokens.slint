@@ -1119,6 +1119,72 @@ export component UiSerifText inherits Text {
 }
 
 // ===========================================================================
+// 5b-bis. 输入法合成态的统一出口 (`[UI-A11Y-002]` §7.2) —— 审计 #20, 2026-11-21
+// ===========================================================================
+//
+// ## 1. 病灶: 22 个裸 `TextInput`, 和一条"谁都没接"的回调
+//
+// `MainWindow.ime-composition-changed` / `ime-focus-changed` 一直**声明着**,
+// 宿主 `host::wire_input` 也一直**接着**（落到 `InputContext::begin_composition`
+// / `InputContext::set_focus`）。缺的那一环在界面侧: 全仓唯一写 `changed
+// preedit-text` 的地方是 `ui/transport.slint` 的 `bpm-input`, 而那个文件**不在**
+// `app.slint` 的 import 图里（`build.rs` 只编译 `ui/app.slint` 一个根）⇒ 事件源
+// 根本不存在, 回调永远是死线。CJK 组字期间敲下的字母因此照旧冒泡到 `key-handler`,
+// 触发单键热键（`x` 切混音台、`e` 开编辑器 …）。
+//
+// ## 2. 为什么是"一个 global + 一个组件", 而不是逐层穿线
+//
+// 22 个控件分散在 9 个文件, 其中 `console/mixer_console.slint` 还隔着
+// `console_tabs.slint` 一层。若按"每个组件声明 `callback` 再 `=>` 转发"的写法,
+// 要写三十多行纯管道, 且**每加一个输入框就得再穿一次** —— 漏一层就静默失效,
+// 正是本次病灶的形态。`ImeState` 是 Slint 的 global: 任何层级的实例都能**直接**
+// 写它, `MainWindow` 一处观察即可转给宿主。
+//
+// ⛔ 这里**不**新造状态机: `composing` 只是 `TextInput.preedit-text != ""` 的搬运,
+// 合成态的**唯一**判据仍是宿主 `InputContext`（`src/input.rs`，`resolve_logical`
+// 第 2 步 `focus == TextInput && composing ⇒ ConsumedByIme`）。界面层读
+// `composing` 只有一处用途: 组字期间不再追加 `key-handler` 自己那套 i/h/t 判断。
+export global ImeState {
+    /// 任一文本域正在输入法合成中（`preedit-text` 非空）。
+    ///
+    /// ⚠ 与下面两个 `callback` **并存**是必要的，不是冗余：`key-handler` 要读一个
+    /// **当前值**（组字期间收手），而 `MainWindow` 要收一个**变化**（转给宿主）。
+    /// Slint 1.18.1 的 `changed` 只能观察**本组件**的属性（`changed ImeState.x`
+    /// 是语法错误 —— 实测：`expected '=>'`），所以"变化"只能由写它的地方直接发回调。
+    in-out property <bool> composing: false;
+    /// 任一文本域持有键盘焦点 —— `InputContext::set_focus` 的**唯一**界面侧来源。
+    in-out property <bool> text-focused: false;
+    /// 合成态翻转（`MainWindow` 唯一观察者 ⇒ `ime-composition-changed`）。
+    callback composition-changed(bool);
+    /// 文本域焦点翻转（`MainWindow` 唯一观察者 ⇒ `ime-text-focus-changed`）。
+    callback focus-changed(bool);
+}
+
+// 统一的敲入控件: 继承内置 `TextInput`（与 `UiText inherits Text` 同一范式）,
+// 因此**属性、事件、无障碍角色全部原样保留**（`accessible_role()` 仍是
+// `AccessibleRole::TextInput`，`yeban-ui-test-port` 的 role 判据因此不受影响）;
+// 22 个调用点只换类型名, 其余一位不动。它只做一件事: 把两条 `changed` 搬进 `ImeState`。
+//
+// ⚠ 22 = **全仓**替换处数（含 `sidebar.slint` 那 1 处 —— 该文件已被 `left_panel.slint`
+// 取代、无人 `import`，因此不参与编译）；`app.slint` **可达**的实例数是 21，
+// 由 `tests/ime_composition_wiring.rs` 的普查判据钉住。
+//
+// ⚠ `has-focus` 是**边沿**信号: 焦点在 A→B 之间切换时 Slint 先清 A（false）再
+// 置 B（true）, 因此布尔量不会停在"没人聚焦"的假象上。焦点随组件销毁一起释放时
+// 同样会走 false 这一边 —— 这正是 `host.rs` 里"死控件 ②③"（焦点留在输入框里、
+// 此后所有单键热键失效）需要的兜底。
+export component ImeAwareTextInput inherits TextInput {
+    changed preedit-text => {
+        ImeState.composing = self.preedit-text != "";
+        ImeState.composition-changed(ImeState.composing);
+    }
+    changed has-focus => {
+        ImeState.text-focused = self.has-focus;
+        ImeState.focus-changed(self.has-focus);
+    }
+}
+
+// ===========================================================================
 // 5c. 打包字体 (bundled fonts) —— 2026-10-08, 负责人命令「打包字体」
 // ===========================================================================
 //

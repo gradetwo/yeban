@@ -19,7 +19,7 @@
 // 默认关着（`MainWindow.startup-chooser-open = false`）⇒ 默认帧与
 // 金帧基准一位不变。
 
-import { Tokens, UiText, UiTitleText, StartupChooserRow } from "../tokens.slint";
+import { Tokens, UiText, UiTitleText, StartupChooserRow, ImeAwareTextInput } from "../tokens.slint";
 
 export component StartupChooserDialog inherits Rectangle {
     // ---- 宿主写入的显示态 ------------------------------------------------
@@ -433,7 +433,7 @@ export component StartupChooserDialog inherits Rectangle {
                     border-width: 1px;
                     border-color: Tokens.line;
 
-                    TextInput {
+                    ImeAwareTextInput {
                         x: Tokens.space-3;
                         y: 0;
                         width: parent.width - 12px;

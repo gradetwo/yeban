@@ -1,4 +1,4 @@
-import { Theme, BrowserItemData, Tokens, TooltipBubble } from "tokens.slint";
+import { Theme, BrowserItemData, Tokens, TooltipBubble, ImeAwareTextInput } from "tokens.slint";
 
 // 检查器分组标题（Logic Pro 13 的检查器按**作用域**分组：Region / Track / Channel strip）
 // 一行里只有三样东西：色标、分组名、折叠箭头 —— 分组本身要能一眼扫过，不做装饰。
@@ -1368,7 +1368,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             color: Tokens.skin-text-dim;
                             vertical-alignment: center;
                         }
-                        browser_search_input := TextInput {
+                        browser_search_input := ImeAwareTextInput {
                             width: parent.width;
                             height: parent.height;
                             text <=> root.search-query;

@@ -55,7 +55,7 @@ use crate::engine_host::{
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::{MainWindow, TextureMode, ThemeState, Tokens, YebanTheme};
+use crate::ui::{ImeState, MainWindow, TextureMode, ThemeState, Tokens, YebanTheme};
 // `Tokens` 原本只在 linux / windows 的字体注入分支里用（见
 // build_main_window_with_console_tab），故旧版 import 带 cfg 门；拟物线
 // 的 `apply_texture`（全平台无条件写 `Tokens.texture`）落地后 macOS 也有
@@ -8149,7 +8149,7 @@ pub fn wire_section_seek(
 /// | :--- | :--- | :--- |
 /// | 平台 → Slint | winit 的 `Ime::Preedit` 变成 `KeyEventType::UpdateComposition` | `i-slint-backend-winit-1.18.1/winitwindowadapter.rs:1429` |
 /// | Slint → `.slint` | `TextInput.preedit-text` 被写成候选词 | `i-slint-compiler-1.18.1/builtin_elements.rs:2323`（`out property <string> preedit-text`） |
-/// | `.slint` → 宿主 | `changed preedit-text` / `changed has-focus` 调本函数的两个回调 | `ui/transport.slint` 的 `bpm-input` |
+/// | `.slint` → 宿主 | `changed preedit-text` / `changed has-focus` 写 `ImeState`，`MainWindow` 观察后调本函数的回调 | `ui/tokens.slint` 的 `ImeAwareTextInput`（22 个调用点）→ `ui/app.slint` 的 `changed ImeState.*` |
 /// | 宿主 → 状态机 | [`InputContext::begin_composition`] / [`InputContext::end_composition`] / [`InputContext::set_focus`] | 本函数 |
 ///
 /// **不新造状态机**：合成态的唯一载体是 [`InputContext`]（`src/input.rs`，纯 Rust、
@@ -8175,6 +8175,46 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
             context.end_composition();
         }
     });
+    // ⭐ 审计 #20：22 个 `ImeAwareTextInput` 的**生产**事件源（`ui/tokens.slint` 的
+    // `ImeState`）。为什么由 Rust 直连 global、而不是让 `.slint` 转发到上面那个
+    // `MainWindow` 回调：Slint 1.18.1 的连接语句只接受**元素 id**
+    // （`i-slint-compiler-1.18.1/tests/syntax/lookup/callback_alias_global.slint:10`
+    // —— "指向 global 回调的别名已弃用，请导出 global 让**原生代码**直连"）。
+    //
+    // ## 合成：委托给上面那**一个**实现
+    //
+    // ⛔ 不是第二份状态机、也不是第二个 `InputContext` 写点：这里只调
+    // `invoke_ime_composition_changed`，落点仍是上面那段 `begin/end_composition`。
+    // 保留 `MainWindow.ime-composition-changed` 的理由也在这里 —— 它是
+    // `yeban-ui-test-port` 的注入面（`invoke_ime_composition_changed`），
+    // 判据 `test_port_adapter` 那 5 处直接打的就是它。
+    let composition_ui = ui.as_weak();
+    ui.global::<ImeState<'_>>()
+        .on_composition_changed(move |composing_now| {
+            if let Some(ui) = composition_ui.upgrade() {
+                ui.invoke_ime_composition_changed(composing_now);
+            }
+        });
+    // ## 焦点：**不走** `ime-focus-changed`，另开一条
+    //
+    // `ime-focus-changed` 的唯一读者是 `apply_view` 的 BPM 编辑保护门
+    // （`D-UI-24`，写 `bpm-field-editing`）。若 22 个输入框共用它，
+    // "在搜索框里打字"会把 `bpm-field-editing` 置真 ⇒ `apply_view` 停止回填
+    // `bpm-display`，走带读数在对话框开着时冻住。焦点态与"BPM 草稿在编辑"是两件事、
+    // 各有一个读者，因此各一条线；`set_focus` 自带"离开文本域 ⇒ 结束合成"的兜底
+    // （§7.2 的丢事件防线），所以这条线同时是合成态的兜底清零。
+    let text_focus = Rc::clone(&context);
+    ui.global::<ImeState<'_>>()
+        .on_focus_changed(move |focused_now| {
+            let mut context = text_focus.borrow_mut();
+            context.set_focus(if focused_now {
+                Focus::TextInput
+            } else {
+                // 22 个敲入控件共用同一个"文本域"焦点格：`InputContext` 只关心
+                // "键属于文本编辑还是画布"，⛔ 不区分是哪一只框（区分没有读者）。
+                Focus::MainCanvas
+            });
+        });
     // 焦点：文本域 ⇄ 画布。`set_focus` 会在离开文本域时顺手结束合成态。
     let focused = context;
     // ⭐ `D-UI-24`：同一次通知**顺手**镜像给界面的编辑保护门（唯一读者 = `apply_view`）。

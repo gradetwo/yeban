@@ -29,7 +29,7 @@
 // `bridge::filter_sidebar_content(那份投影, 搜索框的字)`。于是"空态"有两种，理由必须分开：
 // 本类一条都没有（沿用表里那个理由）vs 本类有 N 条但都不匹配「query」（新的理由，带条数）。
 
-import { Tokens, UiText, UiMonoText } from "tokens.slint";
+import { Tokens, UiText, UiMonoText, ImeAwareTextInput } from "tokens.slint";
 
 export component Sidebar inherits Rectangle {
     in property <bool> compact: false;
@@ -215,7 +215,7 @@ export component Sidebar inherits Rectangle {
 
         // 编辑面。⚠ `text` 必须**双向**（`[PATCH export-wav-dialog-binding]` 那条教训：
         // 单向绑定会被用户第一次按键打断，从此输入框与宿主各说各话）。
-        sidebar-search-input := TextInput {
+        sidebar-search-input := ImeAwareTextInput {
             x: Tokens.space-3;
             y: 0;
             width: parent.width - 8px - Tokens.space-3;

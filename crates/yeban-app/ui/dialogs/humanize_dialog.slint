@@ -31,7 +31,7 @@
 // 打开时焦点落点由宿主写的 `focus-section` 定：`0` = 人性化首格（时值抖动量），
 // `1` = 量化首格（网格）。
 
-import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+import { Tokens, UiText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
 
 export component HumanizeDialog inherits Rectangle {
     // ---- 五格可编辑文本（唯一写者 = 宿主打开时播种；此后用户输入）------------
@@ -189,7 +189,7 @@ export component HumanizeDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            humanize-time-input := TextInput {
+            humanize-time-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 92px;
                 width: 160px;
@@ -218,7 +218,7 @@ export component HumanizeDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            humanize-velocity-input := TextInput {
+            humanize-velocity-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 176px;
                 y: 92px;
                 width: 160px;
@@ -247,7 +247,7 @@ export component HumanizeDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            humanize-seed-input := TextInput {
+            humanize-seed-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 352px;
                 y: 92px;
                 width: 160px;
@@ -350,7 +350,7 @@ export component HumanizeDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            quantize-grid-input := TextInput {
+            quantize-grid-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 240px;
                 width: 160px;
@@ -379,7 +379,7 @@ export component HumanizeDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
             }
 
-            quantize-strength-input := TextInput {
+            quantize-strength-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 176px;
                 y: 240px;
                 width: 160px;
