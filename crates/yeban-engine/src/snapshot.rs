@@ -3016,6 +3016,12 @@ mod tests {
             ..YebanProjectV1::default()
         };
         match EngineSnapshot::from_project(&project, 0) {
+            Err(SnapshotError::Model(yeban_model::ModelError::RoutingCycle { path })) => {
+                assert!(
+                    path.contains(&a) && path.contains(&b),
+                    "成环路径须包含 a 与 b: {path:?}"
+                );
+            }
             Err(SnapshotError::Pdc(PdcError::Cycle { nodes })) => {
                 let expected: BTreeSet<EntityId> = [a, b].into_iter().collect();
                 assert_eq!(nodes.into_iter().collect::<BTreeSet<_>>(), expected);
