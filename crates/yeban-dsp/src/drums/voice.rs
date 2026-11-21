@@ -307,7 +307,20 @@ pub(super) struct Generator {
     /// kick 槽位当前是不是 Anatomy 声部（由 `DrumKitParams::kick_style` 定，
     /// `reconfigure` 时更新；经典声部为 `false`）。
     anatomy_kick: bool,
+    /// 808 低音软饱和的增益系数（只在 `voice == VOICE_BASS808` 且
+    /// `Bass808Params::drive > 0` 时由 `reconfigure` 写入）。
+    /// `0.0` = 关闭：`next` 的 808 路径整段跳过饱和、逐位走原路。
+    drive_k: f32,
+    /// `tanh(drive_k)`：饱和曲线的归一化分母（`reconfigure` 时算好，
+    /// 逐样本路径不重算）；关闭时为 `1.0`（不参与运算）。
+    drive_norm: f32,
 }
+
+/// 808 drive → tanh 增益的映射跨度：`k = 1 + drive · SPAN`，
+/// `drive = 1` 时 `k = 10`（重饱和）；`drive → 0⁺` 时 `k → 1`
+/// （`tanh(x)/tanh(1)`，轻度削波）。映射是定值不是旋钮，
+/// 改它等于改全部已定值风格的音色，须与预置定值一并复核。
+const BASS808_DRIVE_K_SPAN: f32 = 9.0;
 
 impl Generator {
     /// 空发生器：全部包络 Idle、相位与滤波器状态归零。
@@ -333,6 +346,8 @@ impl Generator {
         choking: false,
         anatomy: AnatomyVoice::IDLE,
         anatomy_kick: false,
+        drive_k: 0.0,
+        drive_norm: 1.0,
     };
 
     /// 触发一个音色：把 `kit` 解析成系数，并把"本帧就发声"的包络 gate_on。
@@ -593,6 +608,17 @@ impl Generator {
                     .set_params(0.0, params.glide_s, 0.0, params.glide_s);
                 self.body_env
                     .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+                // drive → 饱和系数：`drive = 0` 清零系数，`next` 据此
+                // 整段跳过（逐位不变的契约在系数层就钉死，不靠渲染
+                // 路径自觉）；`drive > 0` 预备 `tanh(k·x)/tanh(k)`
+                // 的增益与分母（曲线口径同 anatomy 总线失真器）。
+                if params.drive > 0.0 {
+                    self.drive_k = 1.0 + params.drive * BASS808_DRIVE_K_SPAN;
+                    self.drive_norm = libm::tanhf(self.drive_k);
+                } else {
+                    self.drive_k = 0.0;
+                    self.drive_norm = 1.0;
+                }
             }
             super::VOICE_RIMSHOT => {
                 let params = &kit.rim;
@@ -688,10 +714,19 @@ impl Generator {
             super::VOICE_CLAP => self.clap(),
             // 桶鼓复用底鼓经典声部的滑音正弦体（同 pitch_env/body_env
             // 槽位），音高由 reconfigure 的比例定。
-            super::VOICE_TOM_LOW
-            | super::VOICE_TOM_MID
-            | super::VOICE_TOM_HIGH
-            | super::VOICE_BASS808 => self.kick(),
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => self.kick(),
+            // 808 低音：同一个滑音正弦体，出体后按 drive 过一层软
+            // 饱和（`tanh(k·x)/tanh(k)`，峰值不变、奇次谐波抬升）。
+            // `drive_k == 0.0`（drive = 0）时整段跳过 ⇒ 与底鼓体
+            // 逐位相同，既有判据不动（T-DRUM-12 契约）。
+            super::VOICE_BASS808 => {
+                let raw = self.kick();
+                if self.drive_k > 0.0 {
+                    libm::tanhf(self.drive_k * raw) / self.drive_norm
+                } else {
+                    raw
+                }
+            }
             super::VOICE_RIMSHOT => self.rimshot(),
             super::VOICE_SHAKER => self.shaker(),
             super::VOICE_COWBELL => self.cowbell(),

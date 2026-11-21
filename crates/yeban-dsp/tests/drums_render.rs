@@ -45,6 +45,8 @@
 //! | S4 | 全部 | 窃取处 `max|x[i+1] − x[i]|`：3 ms 淡出 vs 硬窃取（**产品级注入**） | 把 `steal_fade_frames` 设成 0 ⇒ 3 ms 淡出没生效 |
 //! | R1 | 全部 5 个 | 每个音色的峰值都 > 0（覆盖度） | 某个音色静音 |
 //! | R10 | 全部 5 个 | 同输入两次 ＋ 6 种切分 ⇒ 逐位相同 | 任何隐藏的块边界状态 |
+//! | B1 | 808 低音 | `drive = 0` 与同参数底鼓（经典声部）逐位相同 | 饱和没有在 `drive = 0` 时整段跳过 |
+//! | B2 | 808 低音 | `drive = 0.65`（drill 定值）时 70–250 Hz 奇次谐波带相对基频抬升 | drive 没接进声部 / 映射太弱 |
 //!
 //! 唯一的**产品级注入**是 S4 的 `set_steal_fade_frames(0)`；其余注入在报告里以
 //! "改源码 → 抓红行 → 还原"的形态给出（不改提交内容）。
@@ -1089,4 +1091,131 @@ fn r10_same_input_twice_and_six_chunk_splits_are_bit_identical() {
     }
     // 覆盖度：这条判据的夹具真的产生了非零输出（否则"逐位相同"是空转）。
     assert!(peak(&reference) > 0.05, "R10 的夹具没有发声（空转）");
+}
+
+// ---------------------------------------------------------------------------
+// B1/B2：808 低音 drive（T-DRUM-12）
+// ---------------------------------------------------------------------------
+
+/// drill 的 808 定值（theory `synth_style_params("drill")` 的 bass808 段，
+/// 本文件按同值复刻作夹具；`drive` 由测试逐个指定）。
+fn drill_bass808(drive: f32) -> yeban_dsp::drums::Bass808Params {
+    yeban_dsp::drums::Bass808Params {
+        tune_hz: 49.0,
+        glide_hz: 160.0,
+        glide_s: 0.12,
+        attack_s: 0.002,
+        decay_s: 2.4,
+        level: 0.95,
+        drive,
+        pan: 0.0,
+    }
+}
+
+/// B1：量什么 —— `drive = 0` 的 808 一击（2.5 s，样本位模式）与
+/// **同参数**底鼓经典声部一击的逐位失配数（个）。
+///
+/// 底鼓与 808 共用滑音正弦体（`voice.rs` 的 `kick()`）：`drive = 0`
+/// 时 808 路径必须整段跳过饱和 ⇒ 两段渲染逐位相同。这条钉的是
+/// T-DRUM-12 的硬契约「既有判据不许动」：任何给 808 路径无条件
+/// 加处理（哪怕 `tanh(1·x)/tanh(1)` 这种"看起来约等于直通"的）
+/// 都会在这里变红。
+#[test]
+fn b1_bass808_drive_zero_is_bit_identical_to_kick_body() {
+    let frames = 120_000usize; // 2.5 s：覆盖 drill 808 的 2.4 s 衰减全程
+    let mut bass_kit = DrumKitParams::DEFAULT;
+    bass_kit.bass808 = drill_bass808(0.0);
+    let bass = render_hit(bass_kit, DrumVoice::Bass808, frames, 1.0);
+
+    let mut kick_kit = DrumKitParams::DEFAULT;
+    kick_kit.kick = yeban_dsp::drums::KickParams {
+        tune_hz: 49.0,
+        glide_hz: 160.0,
+        glide_s: 0.12,
+        attack_s: 0.002,
+        decay_s: 2.4,
+        level: 0.95,
+        pan: 0.0,
+    };
+    let kick = render_hit(kick_kit, DrumVoice::Kick, frames, 1.0);
+
+    let mismatch = bits(&bass)
+        .iter()
+        .zip(bits(&kick).iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    report(
+        "B1 808 drive=0 vs 底鼓体",
+        &format!("逐位失配={mismatch}/{frames} 个样本"),
+    );
+    assert!(peak(&bass) > 0.05, "B1 的夹具没有发声（空转）");
+    assert_eq!(mismatch, 0, "drive=0 的 808 与底鼓体不是逐位相同");
+}
+
+/// B2：量什么 —— 70–250 Hz **奇次谐波带相对基频的幅度比**（无量纲）：
+/// 分析窗 `[0.15 s, 1.0 s)`（音高包络已落到 49 Hz 静止频率、幅度还
+/// 在可测区），`R = sqrt(|X(147)|² + |X(245)|²) / |X(49)|`（矩形窗
+/// 单 bin DFT，与本文件 S1 同口径）。`tanh` 是奇函数，只出奇次
+/// 谐波 ⇒ 带内取 3 次（147 Hz）与 5 次（245 Hz）。
+///
+/// 判据：`drive = 0` 时 R 须足够小（纯正弦只剩滑音残留）；drill
+/// 定值 `drive = 0.65` 时 R 须明显抬升（相对与绝对两条都钉）。
+/// 峰值口径：归一化 tanh 曲线在 (0,1) 内**弓在恒等线之上**
+/// （tanh 在正半轴是凹的 ⇒ `tanh(k·x)/tanh(k) ≥ x`），中段样本
+/// 被抬高、合成峰值可以略高于未驱动峰值（实测 0.9426 → 0.9500），
+/// 但**绝不许越过音色电平天花板**（level = 0.95：曲线在 |x| = 1
+/// 处恰好归一到 1），以天花板为钉。
+///
+/// 实测（2026-11-21，盒上首跑）：`drive = 0` 时 R = 0.0046
+/// （−46.7 dB）；`drive = 0.65` 时 R = 0.1687（−15.5 dB），相对
+/// 抬升 +31.2 dB。分析窗跨衰减段 ⇒ 窗内平均 R 被尾段的弱饱和
+/// 稀释，绝对钉取 0.12（实测的约 7 成），相对钉取 +0.10
+/// （实测 +0.164），都留了余量又远离空转区。
+#[test]
+fn b2_bass808_drive_lifts_the_harmonic_band() {
+    let frames = 120_000usize;
+    let mut kit0 = DrumKitParams::DEFAULT;
+    kit0.bass808 = drill_bass808(0.0);
+    let plain = render_hit(kit0, DrumVoice::Bass808, frames, 1.0);
+    let mut kit65 = DrumKitParams::DEFAULT;
+    kit65.bass808 = drill_bass808(0.65);
+    let driven = render_hit(kit65, DrumVoice::Bass808, frames, 1.0);
+
+    let window = |samples: &[f32]| -> f64 {
+        let slice = &samples[7_200..48_000];
+        let fundamental = dft_bin(slice, 49.0, SR);
+        let third = dft_bin(slice, 147.0, SR);
+        let fifth = dft_bin(slice, 245.0, SR);
+        (third * third + fifth * fifth).sqrt() / fundamental
+    };
+    let r_plain = window(&plain);
+    let r_driven = window(&driven);
+    report(
+        "B2 谐波带/基频比",
+        &format!(
+            "drive=0: {r_plain:.4}（{:.1} dB） drive=0.65: {r_driven:.4}（{:.1} dB）",
+            20.0 * r_plain.log10(),
+            20.0 * r_driven.log10()
+        ),
+    );
+    assert!(r_plain < 0.02, "drive=0 的谐波带不纯：R={r_plain:.4}");
+    assert!(
+        r_driven > 0.12,
+        "drive=0.65 的谐波抬升不足（绝对）：R={r_driven:.4}"
+    );
+    assert!(
+        r_driven > r_plain + 0.10,
+        "drive=0.65 的谐波抬升不足（相对）：{r_driven:.4} vs {r_plain:.4}"
+    );
+    assert!(
+        peak(&driven) <= 0.95 * 1.001,
+        "饱和越过电平天花板：峰值 {:.4} > level 0.95",
+        peak(&driven)
+    );
+    assert!(
+        peak(&driven) >= peak(&plain),
+        "drive 不许反而变小：峰值 {:.4} < {:.4}",
+        peak(&driven),
+        peak(&plain)
+    );
 }

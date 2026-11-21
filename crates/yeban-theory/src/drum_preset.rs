@@ -2659,6 +2659,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 1.8),
             ("bass808_level", 0.95),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：drill 声场偏暗偏疏——hats 略左、clap 右置与军鼓错开，shaker 左翼、rim 右翼拉开点缀间距，crash 收窄；kick/snare/bass808 严格居中。
@@ -2744,12 +2745,17 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             // 2026-11-20 起带 808 道（Wang 立项）：drill 的 808 要滑音
             // 长尾——glide 拉长到 0.12 s、decay 拉长到 2.4 s（跨小节
             //  sustain），与 hiphop 的短而圆拉开差距。
+            // T-DRUM-12（2026-11-21）：drive 0.65 给纯正弦 808 加软
+            // 饱和——Wang 耳验「没电没气」的修法；量测口径与数值
+            // 见 yeban-dsp 判据 B2（70–250 Hz 谐波带相对基频抬升）。
+            // 其余风格一律 0.0（逐位不变），本单只改 drill。
             ("bass808_tune_hz", 49.0),
             ("bass808_glide_hz", 160.0),
             ("bass808_glide_s", 0.12),
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 2.4),
             ("bass808_level", 0.95),
+            ("bass808_drive", 0.65),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：phonk 以 cowbell 为旋律主角——cowbell 明确左置主导（-0.40）、crash 左翼呼应，rim 右置、shaker 左置作 Memphis 式点缀；kick/snare/bass808 严格居中。
@@ -2838,6 +2844,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 1.5),
             ("bass808_level", 0.95),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：edm 主舞台宽声场——hats/ride 右翼、shaker 右翼铺底，clap/cowbell 左中错开，crash 大幅左展；kick/snare/bass808 严格居中。
@@ -2926,6 +2933,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 0.8),
             ("bass808_level", 0.9),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：house 俱乐部居中律——clap 与 kick/snare/bass808 同列正中，hats 与 ride 右翼担律动主角，shaker 右翼、cowbell 左点缀。
@@ -3014,6 +3022,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 1.0),
             ("bass808_level", 0.9),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：techno 仓库式窄声场——点缀全收在 ±0.25 内，hats 微右、rim 右置作金属点缀、crash 远置左后；kick/snare/bass808 严格居中。
@@ -3102,6 +3111,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 0.7),
             ("bass808_level", 0.85),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：lofi 近单声道暖声场——声像全收在 ±0.18 内，hats/ride 微右、shaker 微左，如老采样唱片的窄声场；kick/snare/bass808 严格居中。
@@ -3190,6 +3200,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 1.1),
             ("bass808_level", 0.8),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         // 声像（T-DRUM-13）：hiphop 与 edm 分家——中等宽度，tom 左置、cowbell/rim 右置作 boom-bap 式点缀，hats 右、crash 左；kick/snare/bass808 严格居中。
@@ -3281,6 +3292,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 0.85),
             ("bass808_level", 0.95),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
         _ => vec![
@@ -3368,6 +3380,7 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("bass808_attack_s", 0.002),
             ("bass808_decay_s", 0.9),
             ("bass808_level", 0.9),
+            ("bass808_drive", 0.0),
             ("bass808_pan", 0.0),
         ],
     }
@@ -4947,13 +4960,17 @@ mod tests {
             );
         }
         // drill / hiphop（2026-11-20 Wang 立项加 808 道）：只带 bass 一组
-        // ——压缩 + kick 键控侧链，定值与 trap 同族（阈值/比/Knee/起音
-        // 一致），release 按各自 BPM 分档（drill 142 → 0.16，hiphop
-        // 92 → 0.24）。drill 的 808 步进镜像 kick（跟 kick 走滑音长音，
-        // 滑音与长尾在 synth 参数面）；hiphop 的 808 不与 kick 同点，
-        // 专补 kick 的空缺拍并以长音 sustain 衔接（步点逐条钉住）。
-        for (id, release_s, hits) in [
-            ("drill", 0.16f32, None),
+        // ——压缩 + kick 键控侧链，release 按各自 BPM 分档（drill 142 →
+        // 0.16，hiphop 92 → 0.24）。drill 的 808 步进镜像 kick（跟 kick
+        // 走滑音长音，滑音与长尾在 synth 参数面）；hiphop 的 808 不与
+        // kick 同点，专补 kick 的空缺拍并以长音 sustain 衔接（步点逐条
+        // 钉住）。
+        // T-DRUM-12（2026-11-21）起 drill 的 bass 链与同族分家：共享
+        // 模板的 −30 dB / 6:1 / makeup 0 把 2.4 s 长尾 808 几乎全程压
+        // 减（Wang 耳验「没电没气」），drill 单独改 −20 dB / 3:1 /
+        // makeup +2.5 dB（release 0.16 不变）；hiphop 维持同族定值。
+        for (id, release_s, hits, threshold_db, ratio, makeup_db) in [
+            ("drill", 0.16f32, None, -20.0f32, 3.0f32, 2.5f32),
             (
                 "hiphop",
                 0.24f32,
@@ -4965,6 +4982,9 @@ mod tests {
                     (24, 100),
                     (30, 90),
                 ]),
+                -30.0f32,
+                6.0f32,
+                0.0f32,
             ),
         ] {
             let style = by_id(id);
@@ -4975,8 +4995,9 @@ mod tests {
                 .comp
                 .as_ref()
                 .expect("bass 组必须带压缩");
-            assert_eq!(comp.threshold_db, -30.0);
-            assert_eq!(comp.ratio, 6.0);
+            assert_eq!(comp.threshold_db, threshold_db, "{id} 的阈值定值不符");
+            assert_eq!(comp.ratio, ratio, "{id} 的比率定值不符");
+            assert_eq!(comp.makeup_db, makeup_db, "{id} 的 makeup 定值不符");
             assert_eq!(comp.release_s, release_s, "{id} 的 release 定值不符");
             let sidechain = style.lane_chains[0]
                 .sidechain
@@ -5125,6 +5146,36 @@ mod tests {
                     style.id
                 );
             }
+        }
+    }
+
+    /// T-DRUM-12：`bass808_drive` 逐风格定值钉——只有 drill 带驱动
+    /// （0.65，量测依据见 yeban-dsp 判据 B2），其余电子风格与未知 id
+    /// 的 909 基表一律 0.0（= 声部逐位不变）。任何风格漏写这一项
+    /// （走器件默认回退）或数值漂移都在这里变红。
+    #[test]
+    fn synth_bass808_drive_is_pinned_per_style() {
+        for (id, expected) in [
+            ("trap", 0.0),
+            ("drill", 0.65),
+            ("phonk", 0.0),
+            ("edm", 0.0),
+            ("house", 0.0),
+            ("techno", 0.0),
+            ("lofi", 0.0),
+            ("hiphop", 0.0),
+            ("no-such-style", 0.0),
+        ] {
+            let params = synth_style_params(id);
+            let drive = params
+                .iter()
+                .find(|(name, _)| *name == "bass808_drive")
+                .map(|(_, value)| *value);
+            assert_eq!(
+                drive,
+                Some(expected),
+                "{id} 的 bass808_drive 定值不符（缺项 = None）"
+            );
         }
     }
 

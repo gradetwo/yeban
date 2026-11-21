@@ -102,7 +102,7 @@
 //! | `kit.cowbell.*` | `cowbell_freq_a_hz`、`cowbell_freq_b_hz`、`cowbell_highpass_hz`、`cowbell_lowpass_hz`、`cowbell_attack_s`、`cowbell_decay_s`、`cowbell_level`、`cowbell_pan` |
 //! | `kit.crash.*` | `crash_base_hz`、`crash_highpass_hz`、`crash_lowpass_hz`、`crash_attack_s`、`crash_decay_s`、`crash_level`、`crash_pan` |
 //! | `kit.ride.*` | `ride_base_hz`、`ride_highpass_hz`、`ride_lowpass_hz`、`ride_attack_s`、`ride_decay_s`、`ride_level`、`ride_pan` |
-//! | `kit.bass808.*` | `bass808_tune_hz`、`bass808_glide_hz`、`bass808_glide_s`、`bass808_attack_s`、`bass808_decay_s`、`bass808_level`、`bass808_pan`（逐件＋侧链期 4 新增：独立 808 低音，键位名 `bass808_note` 进可选名单槽位 8） |
+//! | `kit.bass808.*` | `bass808_tune_hz`、`bass808_glide_hz`、`bass808_glide_s`、`bass808_attack_s`、`bass808_decay_s`、`bass808_level`、`bass808_drive`、`bass808_pan`（逐件＋侧链期 4 新增：独立 808 低音，键位名 `bass808_note` 进可选名单槽位 8；`bass808_drive` 为 T-DRUM-12 新增的软饱和驱动量，0 = 逐位不变） |
 //! | `kit.master_level` | `master_level` |
 //!
 //! ⛔ **没有别名**，这是**刻意**的：`crates/yeban-dsp/src/drums/mod.rs` 的音色参数是
@@ -734,6 +734,7 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "bass808_attack_s" => kit.bass808.attack_s = value,
         "bass808_decay_s" => kit.bass808.decay_s = value,
         "bass808_level" => kit.bass808.level = value,
+        "bass808_drive" => kit.bass808.drive = value,
         "bass808_pan" => kit.bass808.pan = value,
         // --- 总线 ---
         "master_level" => kit.master_level = value,

@@ -515,6 +515,15 @@ pub struct Bass808Params {
     pub decay_s: f32,
     /// 音色电平（`0..=1`）。默认 `0.95`。
     pub level: f32,
+    /// 软饱和驱动量（`0..=1`）。默认 `0.0`。
+    ///
+    /// 49 Hz 一带的纯正弦在多数回放系统上几乎不可闻、质感软
+    /// （T-DRUM-12，Wang 耳验 drill 808「没电没气」）：`drive > 0` 时
+    /// 声部在正弦体上加一层 `tanh` 软饱和（曲线口径见 `voice.rs`），
+    /// 奇次谐波把基频的能量搬进可闻带。`drive = 0` 时渲染路径
+    /// **逐位不变**（饱和整段跳过，既有判据不许动）；`NaN` 经
+    /// `sanitised` 退化为 `0.0`（= 无驱动，安全侧）。
+    pub drive: f32,
     /// 逐件声像（`−1..=1`，0 = 正中）。默认 `0.0`。
     pub pan: f32,
 }
@@ -528,6 +537,7 @@ impl Bass808Params {
         attack_s: 0.002,
         decay_s: 1.4,
         level: 0.95,
+        drive: 0.0,
         pan: 0.0,
     };
 
@@ -542,6 +552,7 @@ impl Bass808Params {
             attack_s: clamp_time(self.attack_s),
             decay_s: clamp_time(self.decay_s),
             level: clamp_gain(self.level),
+            drive: clamp_gain(self.drive),
             pan: clamp_pan(self.pan),
         }
     }
@@ -2087,6 +2098,7 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: 1.0e9,
                 level: f32::NEG_INFINITY,
+                drive: f32::NAN,
                 pan: f32::NAN,
             },
             master_level: f32::NAN,
@@ -2413,6 +2425,7 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: 1.0e9,
                 level: f32::NEG_INFINITY,
+                drive: f32::NAN,
                 pan: f32::NAN,
             },
             master_level: f32::INFINITY,
