@@ -35,13 +35,21 @@ use crate::music::{MICRO_TIMING_MAX_ABS, MIDI_VELOCITY_MAX, MidiNote};
 /// 只走强度比例的那段距离（线性内插，tick 分辨率取整）。
 ///
 /// `grid <= 1` ⇒ 原值（1 tick 的网格吸了等于没吸）；半格向上取整。
+///
+/// 大值口径：`start + grid / 2` 用饱和加法；若它超过 `u64::MAX`，先饱和到
+/// `u64::MAX`，再取 `≤ u64::MAX` 的**最大 `grid` 倍数**。该结果可能小于
+/// `start`（`start` 之上已没有可表示的网格线）——这是“最近网格不可表示”时
+/// 唯一不 panic、不回绕的确定落点；调用方若要严格单调，应在传入前拒绝
+/// 接近 `u64::MAX` 的 tick。
 #[must_use]
 pub fn quantize_tick(start: u64, grid: u64, strength_permille: u16) -> u64 {
     let snapped = if grid <= 1 {
         start
     } else {
         // 最近整数倍 = round(start / grid) * grid（半格向上）。
-        (start + grid / 2) / grid * grid
+        // 饱和后再除，乘法不会溢出（商 × 网格 ≤ 饱和值）。
+        let rounded = start.saturating_add(grid / 2);
+        (rounded / grid) * grid
     };
     let distance = i128::from(snapped) - i128::from(start);
     let scaled = i128::from(start) + distance * i128::from(strength_permille) / 1000;
@@ -546,6 +554,17 @@ mod tests {
         // grid <= 1 ⇒ 不吸。
         assert_eq!(quantize_tick(123, 1, 1000), 123);
         assert_eq!(quantize_tick(123, 0, 1000), 123);
+    }
+
+    #[test]
+    fn quantize_tick_saturates_at_u64_max_instead_of_overflowing() {
+        const GRID: u64 = 4;
+        let last_line = (u64::MAX / GRID) * GRID;
+        // `start + grid/2` 溢出 ⇒ 饱和到 u64::MAX，再落回 ≤ u64::MAX 的最大网格线。
+        assert_eq!(quantize_tick(u64::MAX, GRID, 1000), last_line);
+        assert_eq!(quantize_tick(u64::MAX - 1, GRID, 1000), last_line);
+        // 结果必须是合法网格线（debug 下不 panic 即无回绕）。
+        assert_eq!(last_line % GRID, 0);
     }
 
     #[test]

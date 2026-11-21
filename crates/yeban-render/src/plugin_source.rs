@@ -190,9 +190,14 @@ impl AudioSource for PluginTrackSource {
         self.events.clear();
         if let Some(schedule) = &self.schedule {
             let notes = schedule.notes();
+            // ⚠ 游标必须**从头**重扫：只增不减的游标在向后 seek 时会停在旧位置，
+            // 把 `(frame, old_position)` 之间的音符整段跳过（丢音）。
+            self.cursor = 0;
             while self.cursor < notes.len() && notes[self.cursor].start_sample() < frame {
                 self.cursor += 1;
             }
+        } else {
+            self.cursor = 0;
         }
         Ok(())
     }
@@ -321,6 +326,50 @@ mod tests {
         assert_eq!(source.position(), 128);
         assert_eq!(out.len(), 64 * 2);
         assert!(out.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn seek_backwards_resets_cursor_and_reemits_the_skipped_note() {
+        let schedule = NoteSchedule::from_sorted(vec![
+            ScheduledNote::new(1_000, 1_200, 69, 127, 440.0, 1.0, 48_000.0),
+            ScheduledNote::new(3_000, 3_200, 72, 127, 523.25, 1.0, 48_000.0),
+        ])
+        .with_track_gain(1.0);
+        let mut source = PluginTrackSource::new(
+            Box::new(StubInstrument::new()),
+            track(),
+            Some(schedule),
+            48_000.0,
+            4096,
+            (1.0, 1.0),
+        )
+        .expect("构造");
+        source.seek_to(2_000).expect("向前 seek");
+        assert_eq!(source.cursor, 1, "向前 seek 应跳过 [0, 2000) 的音符");
+        source.seek_to(0).expect("向后 seek");
+        assert_eq!(source.cursor, 0, "向后 seek 必须把游标重置到表头");
+        let mut out = vec![0.0_f32; 1_024 * 2];
+        source
+            .render_block(context(0, 1_024, 2), &mut out)
+            .expect("渲染");
+        assert!(
+            source
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 0, .. })),
+            "向后 seek 后必须重新发出第 0 个音符的 on，否则丢音"
+        );
+        let mut out = vec![0.0_f32; 2_048 * 2];
+        source
+            .render_block(context(1_024, 2_048, 2), &mut out)
+            .expect("渲染");
+        assert!(
+            source
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 1, .. })),
+            "后续块仍应按游标顺序发出第 1 个音符"
+        );
     }
 
     #[test]

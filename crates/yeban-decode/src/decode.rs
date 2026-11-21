@@ -258,6 +258,11 @@ pub struct StreamingDecoder<'s> {
     packet_buf: Vec<f32>,
     /// 跨 `fill` 调用的余量：只存**整帧**（交错），下次 `fill` 先排空它。
     pending: Vec<f32>,
+    /// `pending` 里**已消费**的样本数（消费游标；`pending[..pending_start]` 是
+    /// 已交出的前缀）。⛔ 不用每次 `drain(..n)` 从头部搬移剩余样本——那会让
+    /// 小缓冲反复 `fill` 退化成 O(N²)；改为推进游标，消费到一半时才压缩一次，
+    /// 均摊 O(1)。
+    pending_start: usize,
     /// `pending` 里的帧数。
     pending_frames: usize,
     /// 已读到流末尾（`next_packet` 返回 `None`）。
@@ -400,6 +405,7 @@ impl<'s> StreamingDecoder<'s> {
             idle_packets: limits::IdleGuard::new(),
             packet_buf: Vec::new(),
             pending: Vec::new(),
+            pending_start: 0,
             pending_frames: 0,
             finished: false,
         })
@@ -472,6 +478,15 @@ impl<'s> StreamingDecoder<'s> {
         self.encoder_padding_frames
     }
 
+    /// 消费游标越过剩余样本的一半时压缩一次 `pending`（搬移成本按几何级数摊薄）。
+    /// 只在 `pending_frames > 0` 时调用。
+    fn compact_pending(&mut self) {
+        if self.pending_start >= self.pending.len() / 2 {
+            self.pending.drain(..self.pending_start);
+            self.pending_start = 0;
+        }
+    }
+
     /// 往 `out` 里写整帧交错样本，返回写出的**帧数**。
     ///
     /// 详见本结构文档的 `fill` 契约。`out` 须能装下至少一帧
@@ -487,13 +502,18 @@ impl<'s> StreamingDecoder<'s> {
             let capacity_frames = out.len() / channels;
             let take = self.pending_frames.min(capacity_frames);
             let take_samples = take * channels;
-            out[..take_samples].copy_from_slice(&self.pending[..take_samples]);
-            self.pending.drain(..take_samples);
+            let start = self.pending_start;
+            out[..take_samples].copy_from_slice(&self.pending[start..start + take_samples]);
+            self.pending_start += take_samples;
             self.pending_frames -= take;
             written += take;
             if self.pending_frames > 0 {
+                self.compact_pending();
                 return Ok(written);
             }
+            // 余量排空：整段释放，游标归零（下一包从空缓冲重新追加）。
+            self.pending.clear();
+            self.pending_start = 0;
         }
         while !self.finished {
             match self.decode_packet_into_buf()? {
@@ -5925,6 +5945,64 @@ mod tests {
         let drained_bits: Vec<u32> = drained.iter().map(|v| v.to_bits()).collect();
         let whole_bits: Vec<u32> = whole.pcm.iter().map(|v| v.to_bits()).collect();
         assert_eq!(drained_bits, whole_bits, "小缓冲切分后仍逐位相同");
+        std::fs::remove_file(&path).expect("删临时夹具");
+    }
+
+    /// 回归：立体声 + 每帧一取的极小 out ⇒ 余量游标只推进、不搬移；
+    /// 排空结果必须与整段路径逐位相同，且游标始终被压缩在半程以内。
+    #[test]
+    fn streaming_fill_with_tiny_stereo_buffer_compacts_pending_instead_of_shifting() {
+        let values: Vec<i32> = (0..64)
+            .flat_map(|index| [index * 512 - 16384, -32768])
+            .collect();
+        let bytes = int_wav(2, 16, &values);
+        let path = write_temp_file("wav_stereo_tiny.wav", &bytes);
+        let whole = decode_path(&path, &DecodeOptions::default()).expect("整段路径解立体声 WAV");
+        let mut decoder = StreamingDecoder::open_path(&path, &DecodeOptions::default())
+            .expect("流式开立体声 WAV");
+        let mut drained: Vec<f32> = Vec::new();
+        // 3 个样本 = 1 整帧 + 1 个装不下的样本：每轮只消费 1 帧。
+        let mut scratch = vec![0.0_f32; 3];
+        loop {
+            let frames = decoder.fill(&mut scratch).expect("流式 fill");
+            if frames == 0 {
+                break;
+            }
+            let channels = usize::from(decoder.channels().expect("有帧后声道数已知"));
+            assert_eq!(frames, 1, "3 样本的 out 每轮只能装 1 个立体声帧");
+            assert!(
+                decoder.pending_start <= decoder.pending.len() / 2 + channels,
+                "消费游标应在半程内被压缩：start={} len={}",
+                decoder.pending_start,
+                decoder.pending.len()
+            );
+            drained.extend_from_slice(&scratch[..frames * channels]);
+        }
+        assert!(decoder.is_finished());
+        let drained_bits: Vec<u32> = drained.iter().map(|v| v.to_bits()).collect();
+        let whole_bits: Vec<u32> = whole.samples().iter().map(|v| v.to_bits()).collect();
+        assert_eq!(drained_bits, whole_bits, "游标消费与整段逐位相同");
+        std::fs::remove_file(&path).expect("删临时夹具");
+    }
+
+    /// 回归：`out` 连一帧都装不下时返回 0 且**不是** EOF（不得误报流已尽）。
+    #[test]
+    fn fill_with_out_shorter_than_one_frame_reports_zero_without_eof() {
+        let values: Vec<i32> = (0..64)
+            .flat_map(|index| [index * 512 - 16384, -32768])
+            .collect();
+        let bytes = int_wav(2, 16, &values);
+        let path = write_temp_file("wav_stereo_short_out.wav", &bytes);
+        let mut decoder = StreamingDecoder::open_path(&path, &DecodeOptions::default())
+            .expect("流式开立体声 WAV");
+        let mut too_small = vec![0.0_f32; 1];
+        assert_eq!(decoder.fill(&mut too_small).expect("过小 out"), 0);
+        assert!(!decoder.is_finished(), "装不下一帧不等于流已尽");
+        assert_eq!(decoder.channels(), Some(2));
+        assert!(decoder.pending_frames > 0, "整包应留在余量里等待重调");
+        let mut scratch = vec![0.0_f32; 4];
+        assert_eq!(decoder.fill(&mut scratch).expect("足够一帧的 out"), 2);
+        assert_eq!(scratch[0].to_bits(), (-16384.0_f32 / 32768.0).to_bits());
         std::fs::remove_file(&path).expect("删临时夹具");
     }
 }
