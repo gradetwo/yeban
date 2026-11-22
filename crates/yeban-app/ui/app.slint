@@ -445,6 +445,10 @@ export component MainWindow inherits Window {
     in-out property <int> active-tool: 1;
     in-out property <bool> ai-drawer-open: false;
     in-out property <float> arrangement-content-px: 0.0;
+    // 编曲时间线**可见宽**（逻辑像素，已扣包头与 5px 缝），由 `ArrangementViewport`
+    // 算好后经回调写上（T-FIX-110 用它判「播放头是否越出可见区」）。
+    // ⛔ 宿主不复制 `width - headers - 5` 这串几何（包头可拖、缝改一次两边就不同步）。
+    in-out property <length> arrangement-timeline-px: 0px;
     in-out property <bool> arrangement-view: true;
     // ⭐ 音频设置面板（T-FIX-71）：宿主供数（设备枚举/实际协商/输入电平），
     // 选择经 `audio-*-picked` 回调上抛，宿主落盘并应用（见 dialogs/audio_settings_dialog.slint）。
@@ -1606,6 +1610,9 @@ export component MainWindow inherits Window {
                     selected-clip-ulid: root.selected-clip-ulid;
                     selected-clip-ulids: root.selected-clip-ulids;
                     timeline-block-selected: root.timeline-block-selected;
+                    // T-FIX-110：把时间线可见宽报给根（本元素在 `if !console-maximized`
+                    // 里面，条件元素里的 id 无法从根作用域引用 ⇒ 只能自下而上报）。
+                    timeline-width-changed(w) => { root.arrangement-timeline-px = w; }
 
                     select-track(t-id) => {
                         root.selected-track-index = t-id;

@@ -25,7 +25,16 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <length> playhead-px: (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px;
     in-out property <bool> is-looping: false;
     property <length> timeline-origin-x: Theme.track-headers-on-right ? 0px : (root.headers-width + 5px);
-    property <length> timeline-width: max(0px, root.width - root.headers-width - 5px);
+    // 时间线**可见宽**（已扣包头与 5px 缝）。几何只在这里算一次：宿主 ⛔ 不复制
+    // `- headers - 5` 这串算术（包头宽度可拖，缝宽改一次就会两边不同步）。
+    out property <length> timeline-width: max(0px, root.width - root.headers-width - 5px);
+    /// 把上面那格几何回读给宿主（T-FIX-110 的播放跟进要判「播放头是否越出可见区」）。
+    ///
+    /// 用回调而⛔ 不用「宿主直接读本组件的 `out` 属性」：本组件在 `app.slint` 里坐在
+    /// `if !root.console-maximized` 的条件分支内，而**条件元素里的 id 无法从根作用域引用**
+    /// （Slint 的 id 只在声明处之后、同一作用域内可见）⇒ 只能自下而上报一格。
+    callback timeline-width-changed(length);
+    changed timeline-width => { root.timeline-width-changed(root.timeline-width); }
     out property <length> playhead-origin-x: root.timeline-origin-x;
     out property <length> playhead-screen-x: root.timeline-origin-x + root.playhead-px - root.scroll-x;
     // [Q6] 标尺读数：可见小节数 / 小节宽 / 循环区间（全部由宿主从投影写入）。

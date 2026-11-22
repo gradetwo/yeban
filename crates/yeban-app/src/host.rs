@@ -6641,6 +6641,113 @@ pub enum MeterPump {
     },
 }
 
+/// 播放跟进（T-FIX-110）的**提前量**：新左界落在播放头左侧「可见宽的 10%」处。
+///
+/// 为什么取比例而不是「一小节」：跟进是**纯像素**决策，本函数手里没有拍号 / 小节宽
+/// （那是 `bar-width-px`，随缩放变、还要跨拍号换算）。用可见宽的比例则与缩放无关、
+/// 与拍号无关，且一眼能验：1000px 视口 ⇒ 播放头停在左起 100px。取 10% 也是"翻页"
+/// 与"贴边"之间的折中 —— 贴边会让用户刚好在翻页后看不清刚过去的内容。
+const FOLLOW_LEAD_RATIO: f32 = 0.10;
+
+/// 判断「用户手动滚开」的容差（逻辑像素）。小于它的差值视作同一偏移 ——
+/// `.slint` 的 `length` 是 `f32`，`apply_view` 写回的值与再读出来的值必须能对上，
+/// 否则每一跳都会把自己写的偏移误判成"用户滚过"，跟进立刻永久脱开。
+const FOLLOW_SCROLL_EPSILON: f32 = 0.5;
+
+/// **播放跟进的决策**（纯函数，无副作用、无窗口）——`Some(新偏移)` = 这一跳要翻页。
+///
+/// | 输入组合 | 输出 | 为什么 |
+/// | :--- | :--- | :--- |
+/// | 没在播放 | `None` | 停止 / 暂停时视图不许自己动（要求 3） |
+/// | 用户已手动滚开（`engaged == false`） | `None` | 不与用户抢视图（要求 2） |
+/// | 播放头在可见区内 | `None` | 界内不动（要求 3 的反面：别每跳都追） |
+/// | 播放头越过右界 | `Some(播放头 − 提前量)` | 翻页跟进（要求 1） |
+/// | 播放头落在左界之外 | `Some(播放头 − 提前量)` | 同一个式子的另一侧：循环回卷 / 起播时视图停在别处，都得把播放头拉回可见区 |
+///
+/// 返回值已夹到 `>= 0`（时间轴之前没有内容）。`viewport_px <= 0`（编曲区没显示 /
+/// 布局未定）一律 `None` —— 零宽视口下"越界"恒成立，跟进会变成每跳把偏移清零。
+fn follow_scroll(
+    playhead_px: f32,
+    scroll_x: f32,
+    viewport_px: f32,
+    is_playing: bool,
+    engaged: bool,
+) -> Option<f32> {
+    if !is_playing || !engaged {
+        return None;
+    }
+    if !(viewport_px.is_finite() && viewport_px > 0.0) || !playhead_px.is_finite() {
+        return None;
+    }
+    let scroll_x = if scroll_x.is_finite() {
+        scroll_x.max(0.0)
+    } else {
+        0.0
+    };
+    // 可见区 = `[scroll_x, scroll_x + viewport_px]`（时间线内容帧）。
+    if playhead_px > scroll_x + viewport_px || playhead_px < scroll_x {
+        let lead = viewport_px * FOLLOW_LEAD_RATIO;
+        return Some((playhead_px - lead).max(0.0));
+    }
+    None
+}
+
+/// 播放跟进的**状态机**（`ProductionLoop` 的字段）——把"这一跳该不该跟"从 `tick` 里
+/// 拿出来，好让它不建窗口就能被测（判据见 `arrangement_follow_*`）。
+///
+/// 三格状态的来历：
+///
+/// - `engaged`：Logic 的 Catch 是否**还挂着**。上升沿（停→播）重新挂上；播放中一旦发现
+///   偏移被改成"不是自己写的那一个"⇒ 判定用户手动滚过 ⇒ 脱开，直到下一次重新起播
+///   （要求 2 的"下一次重新开始播放时跟进恢复"）。
+/// - `written`：上一次**自己**写下的偏移。它是"用户是否动过视图"的对照物 —— 不去监听
+///   滚轮 / 滚动条回调（那要在三条接线里各插一手，还会漏掉缩放改偏移那条路）。
+/// - `was_playing`：上一跳的播放态，只用来认上升沿。
+#[derive(Debug, Clone, Copy)]
+struct ArrangementFollow {
+    engaged: bool,
+    written: Option<f32>,
+    was_playing: bool,
+}
+
+impl ArrangementFollow {
+    /// 装配态：还没播过 ⇒ 未挂、没写过偏移。
+    const fn new() -> Self {
+        Self {
+            engaged: false,
+            written: None,
+            was_playing: false,
+        }
+    }
+
+    /// 一跳的**决策**：返回"这一跳允许跟进吗"。
+    ///
+    /// 顺序是契约：先认上升沿（重新挂上 Catch 并忘掉旧偏移），再看用户有没有动视图，
+    /// 最后才回答。停止态直接 `false` —— 停住时的偏移是用户的，⛔ 不归跟进管。
+    fn observe(&mut self, is_playing: bool, current_scroll: f32) -> bool {
+        if is_playing && !self.was_playing {
+            self.engaged = true;
+            self.written = None;
+        }
+        self.was_playing = is_playing;
+        if !is_playing {
+            return false;
+        }
+        if let Some(written) = self.written
+            && (current_scroll - written).abs() > FOLLOW_SCROLL_EPSILON
+        {
+            self.engaged = false;
+            self.written = None;
+        }
+        self.engaged
+    }
+
+    /// 记下这一跳**自己**写下的偏移（`observe` 返回 `true` 且真的翻了页时调）。
+    fn commit(&mut self, next: f32) {
+        self.written = Some(next);
+    }
+}
+
 /// GUI 主线程的**生产心跳**：引擎与电平两条腿的装配，以及逐跳驱动。
 ///
 /// ## 它补的是哪一个洞（本票的核心，实测）
@@ -6681,6 +6788,9 @@ pub struct ProductionLoop {
     /// 面板里改选重开，三条路**同一个选择**，⛔ 不各存一份。
     /// `None` = 系统默认输出设备。
     audio_output_device: Option<String>,
+    /// 播放跟进（T-FIX-110）的状态机：Logic 式 Catch，播放头越出可见区就翻页，
+    /// 用户手动滚开后脱开，重新起播时恢复。只影响**横向滚动偏移**。
+    follow: ArrangementFollow,
 }
 
 impl ProductionLoop {
@@ -6767,6 +6877,7 @@ impl ProductionLoop {
             meters,
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
             audio_output_device: None,
+            follow: ArrangementFollow::new(),
         })
     }
 
@@ -6781,6 +6892,7 @@ impl ProductionLoop {
             meters: MeterRuntime::empty(),
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
             audio_output_device: None,
+            follow: ArrangementFollow::new(),
         }
     }
 
@@ -6998,6 +7110,29 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ **T-FIX-110**：播放中播放头越出可见区 ⇒ 编曲视图翻页跟进（Logic 的 Catch）。
+        //
+        // 位置取**界面刚写下的** `playhead-px`（与 `.slint` 画播放头同一格、同一个
+        // `ticks-per-pixel` 口径），可见宽取 `.slint` 算好的 `arrangement-timeline-px`
+        // （已扣包头与缝）⇒ 宿主这里⛔ 不做几何算术，只做「越界了没有」的决策。
+        //
+        // ⛔ 只在**真的翻页**那一刻重投影：每跳都调 `apply_view` 会把"每帧写几十个属性"
+        // 变成常态，那正是 `tests/perf_draw_budget.rs` 钉住的东西。翻页一分钟才几次。
+        let running = transport.state.is_running();
+        let current = ui.get_roll_scroll_x();
+        if self.follow.observe(running, current)
+            && let Some(next) = follow_scroll(
+                ui.get_playhead_px(),
+                current,
+                ui.get_arrangement_timeline_px(),
+                running,
+                true,
+            )
+        {
+            let width = slint::ComponentHandle::window(ui).size().width as f32;
+            apply_view(ui, view, width, next);
+            self.follow.commit(next);
+        }
         // ⭐ `D-UI-29`：**节拍器镜面跟着这一跳换上的那一代快照**（与 `apply_transport`
         // 同一处、同一条"借外写界面"的纪律）。`None`（标记没变 / 发布失败）⇒ 一位不动。
         apply_metronome_mirror(ui, snapshot_metronome);
@@ -20788,6 +20923,125 @@ mod tests {
             UndoSession::open("<判据>", "yeban-app", empty, 0).expect("打开"),
         ));
         assert_eq!(super::master_track_id(&port), None);
+    }
+
+    /// **T-FIX-110 判据 ①**：越界翻页 —— 播放头越过可见区右界，新左界落在播放头
+    /// 之前「可见宽的 10%」处，播放头因此重新可见。
+    ///
+    /// 数字手算过（不是"跑一遍把结果抄进来"）：视口 1000px，偏移 0 ⇒ 可见区 [0, 1000]；
+    /// 播放头 1005px 出界 ⇒ 新偏移 = 1005 − 100 = 905，播放头落在屏上 `1005−905 = 100px`
+    /// 处，正是 10% 的提前量。
+    #[test]
+    fn arrangement_follow_pages_when_the_playhead_leaves_the_right_edge() {
+        assert_eq!(
+            super::follow_scroll(1005.0, 0.0, 1000.0, true, true),
+            Some(905.0)
+        );
+        // 恰好压在右界上（1000.0）仍算**看见**（播放头是一根线，不是一段）⇒ 不动。
+        assert_eq!(super::follow_scroll(1000.0, 0.0, 1000.0, true, true), None);
+        // 出界 1px 就翻页：判据不许有"再等等"的模糊地带。
+        assert_eq!(
+            super::follow_scroll(1001.0, 0.0, 1000.0, true, true),
+            Some(901.0)
+        );
+    }
+
+    /// **判据 ②**：界内不动 —— 播放中播放头没出可见区时，偏移一位不动
+    /// （⛔ 不每跳把播放头拖到某个"舒适位置"，那就成了自动居中）。
+    #[test]
+    fn arrangement_follow_leaves_the_view_alone_while_the_playhead_is_visible() {
+        assert_eq!(super::follow_scroll(500.0, 0.0, 1000.0, true, true), None);
+        assert_eq!(
+            super::follow_scroll(2000.0, 1500.0, 1000.0, true, true),
+            None,
+            "偏移 1500 时可见区是 [1500, 2500]，2000 在中间"
+        );
+        // 可见区左右**两端**都算界内。
+        assert_eq!(
+            super::follow_scroll(1500.0, 1500.0, 1000.0, true, true),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll(2500.0, 1500.0, 1000.0, true, true),
+            None
+        );
+    }
+
+    /// **判据 ③**：手动滚开后不抢 —— 用户把视图滚到别处，跟进一律 `None`；
+    /// 这条同时钉住"停止态永不跟进"（要求 3）。
+    #[test]
+    fn arrangement_follow_does_not_fight_the_user_or_the_stopped_transport() {
+        // 用户已经滚开（`engaged == false`）：播放头在哪儿都不动，包括越界。
+        assert_eq!(super::follow_scroll(9000.0, 0.0, 1000.0, true, false), None);
+        // 停止 / 暂停：即使播放头"越界"，视图也不许自己动。
+        assert_eq!(super::follow_scroll(9000.0, 0.0, 1000.0, false, true), None);
+        assert_eq!(
+            super::follow_scroll(9000.0, 0.0, 1000.0, false, false),
+            None
+        );
+    }
+
+    /// **判据 ④**：重播后恢复 —— 脱开只持续到停住为止；下一次起播重新挂上 Catch，
+    /// 且**忘掉**旧偏移（否则"起播时视图停在别处"会被误判成用户刚滚过）。
+    #[test]
+    fn arrangement_follow_re_engages_on_the_next_play_and_forgets_the_old_offset() {
+        let mut follow = super::ArrangementFollow::new();
+        // 起播（上升沿）+ 界内 ⇒ 允许跟进，但还没写过偏移。
+        assert!(follow.observe(true, 0.0));
+        assert_eq!(follow.written, None);
+        // 翻页写 905。
+        follow.commit(905.0);
+        assert!(follow.observe(true, 905.0), "自己写下的偏移不算用户滚动");
+        // 用户滚到 1500 ⇒ 脱开，之后播放头再怎么越界都不跟。
+        assert!(!follow.observe(true, 1500.0));
+        assert!(!follow.observe(true, 1500.0));
+        assert_eq!(
+            super::follow_scroll(9999.0, 1500.0, 1000.0, true, follow.engaged),
+            None
+        );
+        // 停住：不跟进，且脱开状态保持（停止时的偏移是用户的）。
+        assert!(!follow.observe(false, 1500.0));
+        // 重新起播：重新挂上、旧偏移作废 ⇒ 视图停得再远也会跟过去。
+        assert!(follow.observe(true, 1500.0));
+        assert_eq!(follow.written, None);
+        assert_eq!(
+            super::follow_scroll(9999.0, 1500.0, 1000.0, true, follow.engaged),
+            Some(9899.0),
+            "9999 − 10% × 1000 = 9899（重新挂上之后，视图停在哪儿都会跟过去）"
+        );
+    }
+
+    /// 左侧越界（循环回卷 / 起播时视图停在后面）：同一个式子拉回可见区，且夹到 `>= 0`。
+    #[test]
+    fn arrangement_follow_pulls_back_on_a_loop_wrap_and_clamps_at_zero() {
+        // 循环回卷：偏移 3000，播放头跳回 100 ⇒ 新左界 = 100 − 100 = 0。
+        assert_eq!(
+            super::follow_scroll(100.0, 3000.0, 1000.0, true, true),
+            Some(0.0)
+        );
+        // 提前量大于播放头位置时不许出现负偏移（时间轴之前没有内容）。
+        assert_eq!(
+            super::follow_scroll(30.0, 900.0, 1000.0, true, true),
+            Some(0.0)
+        );
+        // 播放头在左界上（== scroll-x）算可见。
+        assert_eq!(super::follow_scroll(900.0, 900.0, 1000.0, true, true), None);
+    }
+
+    /// 退化输入：零宽视口（编曲区没显示）⇒ 一律不动。否则"越界"恒成立，
+    /// 跟进会变成每跳把偏移清零 —— 从混音台切回编曲区时视图会莫名其妙跳到头部。
+    #[test]
+    fn arrangement_follow_stays_put_when_the_viewport_has_no_width() {
+        assert_eq!(super::follow_scroll(500.0, 0.0, 0.0, true, true), None);
+        assert_eq!(super::follow_scroll(500.0, 0.0, -10.0, true, true), None);
+        assert_eq!(
+            super::follow_scroll(f32::NAN, 0.0, 1000.0, true, true),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll(500.0, 0.0, f32::INFINITY, true, true),
+            None
+        );
     }
 
     #[test]
