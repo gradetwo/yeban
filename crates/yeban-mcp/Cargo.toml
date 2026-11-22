@@ -30,9 +30,9 @@ mcp-http = []
 # `[MCP-TOOL-0xx]` SMF 导出/回读：与 app 的 `--export-midi` **共用同一实现**（`yeban-midi`）。
 # 为什么不是 `yeban-render`：那个 crate 拖音频栈（`yeban-dsp`/`hound`），而本 crate 的规则是
 # "轻量 crate: 不拖音频栈进 MCP" ⇒ 账本第 273/283 轮把编解码下移成了 `yeban-midi`。
-yeban-midi = { path = "../yeban-midi" }
+yeban-midi = { workspace = true }
 # [D56] 诊断包采集器（同一实现的两个入口之一）。**轻量 crate**: 不拖音频栈进 MCP。
-yeban-diagnostics = { path = "../yeban-diagnostics" }
+yeban-diagnostics = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -75,7 +75,7 @@ yeban-render.workspace = true
 # 进程内 VST3 宿主（ADR-0069 一期）：扫描 / 验证加载 / 实例化。
 # 路径依赖（零新增第三方包；`Cargo.lock` 只多一条成员间的依赖边）。
 # 本线未改根 `Cargo.toml`。
-yeban-plugin-host = { path = "../yeban-plugin-host" }
+yeban-plugin-host = { workspace = true }
 # 离线解码与高精重采样 (symphonia / rubato, 见 `line/decode-core` 的台账)。
 # `yeban_render_master` 现在**真的消费** `ClipContent::Audio` 的 CAS 资产字节:
 # 解码 → 编码器延迟裁剪 → 采样率不一致时 rubato sinc 重采样 → AudioClipSource。
