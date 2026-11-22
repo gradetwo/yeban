@@ -62,11 +62,13 @@ const NOW: u64 = 1_760_000_000_000;
 
 /// 弹窗在树里的语义 ID（与 `tests/ui_export_dialog.rs` 同一份口径）。
 /// ⭐ `D-EX-1` 加了第五格 ⇒ 第九格之后是 `export-wav-limiter-switch`。
-const DIALOG_IDS: [&str; 10] = [
+/// ⭐ `T-FIX-57` 加了可见「浏览…」钮 `export-wav-browse-button`（紧随路径框）。
+const DIALOG_IDS: [&str; 11] = [
     "export-wav-dialog",
     "export-wav-panel",
     "export-wav-close-button",
     "export-wav-path-input",
+    "export-wav-browse-button",
     "export-wav-sample-rate-input",
     "export-wav-bit-depth-input",
     "export-wav-seconds-input",

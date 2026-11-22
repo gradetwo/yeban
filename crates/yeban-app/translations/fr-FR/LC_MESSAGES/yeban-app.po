@@ -1431,11 +1431,17 @@ msgstr "Exporter WAV · Options"
 msgid "关闭导出设置"
 msgstr "Fermer les réglages d'export"
 
-msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
-msgstr "Chemin de sortie (Ctrl/Cmd+O pour parcourir… ; vide = valeur par défaut de l'hôte)"
+msgid "输出路径（空 = 宿主缺省）"
+msgstr "Chemin de sortie (vide = valeur par défaut de l'hôte)"
 
 msgid "WAV 输出路径"
 msgstr "Chemin de sortie WAV"
+
+msgid "浏览…"
+msgstr "Parcourir…"
+
+msgid "浏览输出路径"
+msgstr "Parcourir le chemin de sortie"
 
 msgid "采样率 Hz（auto = 跟随工程）"
 msgstr "Fréquence d'échantillonnage en Hz (auto = suivre le projet)"

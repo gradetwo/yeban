@@ -44,9 +44,9 @@
 // | 键 | 落点 |
 // | :--- | :--- |
 // | 可打印字符 | `TextInput` 自己吃掉（编辑文本）⇒ ⛔ 不下发快捷键层 |
-// | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**七格闭环轮转**（四框 + 限制器 + 导出 + ✕）并 `accept` ⇒ 焦点逃不出模态 |
+// | `Tab` / `Shift+Tab`（`\u{9}` / `\u{19}` Backtab） | trap 做**八格闭环轮转**（四框 + 浏览 + 限制器 + 导出 + ✕）并 `accept` ⇒ 焦点逃不出模态 |
 // | `Return`（`\u{a}`）落在四框内 | 该框的 `accepted` ⇒ `root.run()` —— 与「导出」钮、`accessible-action-default` **同一条回调** |
-// | `Return` / `Space`（`\u{20}`）落在三格按钮上 | 那一格自己的 `FocusScope.key-pressed` ⇒ 与 `TouchArea.clicked` **逐字同一落点** |
+// | `Return` / `Space`（`\u{20}`）落在四格按钮上 | 那一格自己的 `FocusScope.key-pressed` ⇒ 与 `TouchArea.clicked` **逐字同一落点** |
 // | `Ctrl/Cmd+O`（`[PATCH UI-WIRING-01]`） | trap ⇒ `root.browse-path()` ⇒ 原生保存对话框；`accept` ⇒ 仍不下发快捷键层 |
 // | `Esc` | 调**既有的** `close` 回调（与 ✕ 按钮、`accessible-action-default` 同一条实现） |
 // | 其它裸键 | `reject` ⇒ 冒泡到本组件之外、无人消费 ⇒ 快捷键层⛔ 收不到（焦点不在那里） |
@@ -54,7 +54,8 @@
 // ⭐ `D-UI-20`：那三格原本是**无 `FocusScope` 的** `Rectangle` + `TouchArea` ⇒ 收不到
 // 焦点，键盘既走不到「导出」也走不到限制器开关。现在每格里加一枚同尺寸的
 // `FocusScope`（⛔ 不加任何可见描边 ⇒ 一位像素不改），钮的取焦身份落在它上面，
-// `Return` / `Space` 触发的是**既有那一条**回调。命中测试实测过（Slint 1.18.1
+// `Return` / `Space` 触发的是**既有那一条**回调。`T-FIX-57` 新增的「浏览…」钮
+// 是第四格同款手绘控件，取焦身份同样落在它自己的 `FocusScope` 上。命中测试实测过（Slint 1.18.1
 // `items/input_items.rs`）：`FocusScope::input_event_filter_before_children` 恒返回
 // `ForwardEvent`，而 `focus-on-click: false` 时 `input_event` 对 `Pressed` 返回
 // `EventIgnored` ⇒ 这枚容器**不吃鼠标**；再加它排在 `TouchArea` 之前（Slint 从最上层
@@ -66,16 +67,16 @@
 //   触发方 `module-export-wav-button` 不是可聚焦控件（`FocusScope` 都没有），
 //   复位到"那一个"要先给它建焦点身份，那是另一票。
 // * `D-UI-20` 的两条残留：
-//   1. **点击不改变焦点**（三格都是 `focus-on-click: false`）。焦点的入口只有两个：
+//   1. **点击不改变焦点**（四格都是 `focus-on-click: false`）。焦点的入口只有两个：
 //      宿主打开时那一次 + `Tab` 轮转。⚠ 这条与 `D-UI-21`（遮罩吞鼠标）**不是一件事**，
 //      而且已经不必再捆绑裁决：`D-UI-21` 单独落地后，遮罩那一枚 `TouchArea` 只负责
-//      **接住**落在遮罩上的一击，弹窗内三格的命中测试仍是 `TouchArea` 在先 ⇒
-//      要让"点哪焦点在哪"，只需把那三枚容器的 `focus-on-click` 翻成 `true`，
+//      **接住**落在遮罩上的一击，弹窗内四格的命中测试仍是 `TouchArea` 在先 ⇒
+//      要让"点哪焦点在哪"，只需把那四枚容器的 `focus-on-click` 翻成 `true`，
 //      但那会第一次让焦点可见性变成硬需求（看不见焦点=更糟）⇒ 仍是一票，且排在焦点环之后。
-//   2. **焦点在按钮上时看不见**。三格容器刻意⛔ 不画焦点描边 —— 画了就改像素，
+//   2. **焦点在按钮上时看不见**。四格容器刻意⛔ 不画焦点描边 —— 画了就改像素，
 //      而"弹窗打开态"的视觉基准已在两条 `tests/golden/` 判据里判绿，改基准属
 //      人类/集成者裁决（`docs/ledger/app-zimmer-ui-notes.md` §32 的 `D-UI-20` 边界 2）。
-//      ⇒ 今天键盘用户能**走**到这三格并**按**得动，只是看不出站在哪一格。
+//      ⇒ 今天键盘用户能**走**到这四格并**按**得动，只是看不出站在哪一格。
 // * ⭐ `D-UI-21`（本文件下方那枚遮罩 `TouchArea`）改了模态的**鼠标**语义：弹窗开着时
 //   落在遮罩上的一击被吃掉 ⇒ 下层控件收不到。⛔ 它不关面板（点遮罩不关 = 既有关义），
 //   ⛔ 它不改变焦点。时光机那一份在同款位置（`undo_tree_modal.slint`）。
@@ -83,15 +84,17 @@
 //   —— 模态持有键盘是本票的目的，不是副作用。
 //
 // ⭐ `[PATCH UI-WIRING-01]` 的登记（诚实性边界，⛔ 不假装覆盖）：
-// * **没有新增可见按钮**。加一枚「浏览…」按钮要同时改动
-//   `tests/export_dialog_button_focus.rs`、`export_dialog_key_capture.rs`、
-//   `d_ui_21_modal_mask_swallows_clicks.rs`、`ui_export_dialog.rs` 的 `DIALOG_IDS`
-//   与 `src/elements.rs` 注册表里十余处硬编码计数（ROI 低、回归面大）。
-//   本切片取「零结构改动」：唯一入口是 `Ctrl/Cmd+O`，可见提示写在路径标题里
-//   （既有无 ID 节点 ⇒ 控件树 / 5 张金帧 / 寻址面一位不动）。
-//   ⇒ 鼠标用户目前**只能**用这个和弦（或 `ui/property` 控制面直写路径）；
-//   补一枚可点击按钮列为 `[UI-A11Y-003]` 的后续切片，⛔ 不写成"已经能点"。
-// * `Ctrl/Cmd+O` 落在 `export-trap`（四框与三格按钮的**共同祖先** `FocusScope`）：
+// * **[已被 `T-FIX-57`（2026-11-22） supersede]** 原登记取「零结构改动」：不新增
+//   可见按钮，路径选择的唯一入口是 `Ctrl/Cmd+O`（理由是加按钮要连带改动多处
+//   硬编码计数、ROI 低）。其后口径变化：UI golden 判据已由 Wang 于 2026-11-12
+//   禁用，「不能改像素」的理由不成立；Wang 2026-11-21 macOS 实机又实证鼠标用户
+//   找不到入口 ⇒ `T-FIX-57` 正式补上可见的「浏览…」按钮（见下方控件本体），
+//   并按原登记预告的清单**同提交**更新计数：`ui_export_dialog.rs` 与
+//   `export_dialog_modal_closure.rs` 的 `DIALOG_IDS`（10 ⇒ 11）、
+//   `d_ui_21_modal_mask_swallows_clicks.rs` 的位数钉值（10 ⇒ 11）、
+//   `src/elements.rs` 注册表（+1 条）、焦点闭环七格 ⇒ 八格。
+//   `Ctrl/Cmd+O` 与控制面直写路径两条旧入口**都保留**，⛔ 不写成"只有按钮能点"。
+// * `Ctrl/Cmd+O` 落在 `export-trap`（四框与四格按钮的**共同祖先** `FocusScope`）：
 //   带 `control`/`meta` 的组合键不会被 `TextInput` 当文本吃掉 ⇒ 冒泡到 trap；
 //   `accept` ⇒ 这一键⛔ 不冒到快捷键层（模态仍持键盘）。
 // * 「浏览」只**填框**、⛔ 不导出：真正的写出仍只有「导出」钮那一条 `root.run()`
@@ -152,7 +155,7 @@ export component ExportWavDialog inherits Rectangle {
 
     // ------------------------------------------------- 键盘（D-UI-19）：焦点陷阱
     // `FocusScope` 只有在**孩子的键被拒绝、往上冒泡**时才收到事件 ⇒ 它必须包住全部
-    // 七格（⛔ 不能像时光机那样当兄弟覆盖层放：那接不到 `TextInput` 拒绝的 `Tab`）。
+    // 八格（⛔ 不能像时光机那样当兄弟覆盖层放：那接不到 `TextInput` 拒绝的 `Tab`）。
     export-trap := FocusScope {
         x: 0;
         y: 0;
@@ -182,11 +185,11 @@ export component ExportWavDialog inherits Rectangle {
             } else if ((event.modifiers.control || event.modifiers.meta)
                        && (event.text == "o" || event.text == "O")) {
                 // ⭐ [PATCH UI-WIRING-01]：`Ctrl/Cmd+O` = 浏览输出路径。
-                // 落在 trap（四框与三格按钮的**共同祖先**）而不是某一格 `FocusScope`
+                // 落在 trap（四框与四格按钮的**共同祖先**）而不是某一格 `FocusScope`
                 // ⇒ 焦点在哪一格都能唤起；`accept` ⇒ 这一键⛔ 不冒到快捷键层
                 // （模态仍然持有键盘，与 `D-UI-19` 那条"弹窗开着 DAW 收不到键"不矛盾）。
-                // ⚠ 本切片**没有**可见按钮 ⇒ 这是路径选择的唯一入口；
-                // 它刻意⛔ 不改 `focus-control` 的七格轮转表（两组计数判据钉死）。
+                // `T-FIX-57` 起可见的「浏览…」按钮与这条和弦调的是**同一条**
+                // `root.browse-path()` ⇒ ⛔ 没有第二份浏览实现；和弦作为加速键保留。
                 // 见文件头「已知边界」的 `[PATCH]` 登记。
                 root.browse-path();
                 accept
@@ -289,9 +292,9 @@ export component ExportWavDialog inherits Rectangle {
                 y: 52px;
                 width: parent.width - 48px;
                 height: 16px;
-                // ⭐ [PATCH UI-WIRING-01]：把**已存在**的键盘入口写进可见文案 ——
-                // 不改这一格就不会有人知道 `Ctrl/Cmd+O` 能挑路径（见下方按钮的登记）。
-                text: @tr("输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）");
+                // ⭐ `T-FIX-57`：浏览入口已由右侧那枚可见按钮承担，标题不再兼职
+                // 提示和弦（`Ctrl/Cmd+O` 仍在 trap 里有效，见文件头登记）。
+                text: @tr("输出路径（空 = 宿主缺省）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -299,9 +302,9 @@ export component ExportWavDialog inherits Rectangle {
             export-wav-path-input := ImeAwareTextInput {
                 x: Tokens.space-6;
                 y: 72px;
-                // ⭐ [PATCH UI-WIRING-01]：宽度一位不改 —— 本切片不新增任何可见控件，
-                // 路径选择走 `Ctrl/Cmd+O`（提示写在上面的标题里）。
-                width: parent.width - 48px;
+                // ⭐ `T-FIX-57`：右端让出 84px 给「浏览…」按钮（76px 钮 + 8px 间隔）；
+                // 面板宽度与弹窗默认关着这两条一位不改 ⇒ 默认帧不受影响。
+                width: parent.width - 48px - 84px;
                 height: 24px;
                 // [PATCH export-wav-dialog-binding] 两向绑定：`text:` 是**单向**赋值，
                 // 用户一敲键，TextInput 自己的 text 就与 root.path 脱钩，root 永远停在
@@ -328,16 +331,67 @@ export component ExportWavDialog inherits Rectangle {
                 accepted => { root.run(); }
             }
 
-            // ⭐ [PATCH UI-WIRING-01]：**刻意不画「浏览…」按钮**。
-            //
-            // 加一枚可见按钮 = 新增 `accessible-id` / `TouchArea` / `clicked` 各一处，
-            // 会把 `tests/export_dialog_button_focus.rs`、`export_dialog_key_capture.rs`、
-            // `d_ui_21_modal_mask_swallows_clicks.rs` 等「活文档」判据里十余处硬编码计数
-            // 全部顶掉，还要连带改 `DIALOG_IDS` 与 `elements.rs` 注册表 —— 回归面远大于
-            // 那一枚按钮的收益。按 ROI 取「零结构改动」方案：能力接在
-            // `host::wire_export_wav_browse`，入口是 trap 的 `Ctrl/Cmd+O`，可见提示写在
-            // 上面那行标题里（标题是既有的无 ID 节点 ⇒ 控件树、金帧、寻址面一位不动）。
-            // ⚠ 后续切片若要补鼠标按钮，应连同上述计数判据一起在同一提交里更新。
+            // ⭐ `T-FIX-57`：「浏览…」按钮本体 —— 补上 [PATCH UI-WIRING-01] 当年
+            // 刻意没画的那一枚（登记见文件头：golden 判据已禁用 + Wang 实机实证
+            // 鼠标用户找不到入口 ⇒ 当年的 ROI 前提不成立）。结构与「导出」钮同款：
+            // `Rectangle` + 零视觉 `FocusScope`（取焦身份）+ `TouchArea`（鼠标路），
+            // 三条触发路（无障碍默认动作 / 键盘 `Return`·`Space` / 鼠标点按）与
+            // trap 的 `Ctrl/Cmd+O` **逐字同一落点** `root.browse-path()` ⇒
+            // ⛔ 没有第二份浏览实现。纪律不变：浏览只**填框**、⛔ 不导出
+            // （写出仍只有「导出」钮一条 `root.run()`）。
+            // 焦点闭环里它是第 1 格（紧挨路径框：`Tab` 顺序 = 视觉顺序）。
+            Rectangle {
+                x: parent.width - Tokens.space-6 - 76px;
+                y: 72px;
+                width: 76px;
+                height: 24px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "export-wav-browse-button";
+                accessible-label: @tr("浏览输出路径");
+                accessible-action-default => { root.browse-path(); }
+
+                // ⭐ `D-UI-20` 同款：这一格的取焦身份（⛔ 无视觉、⛔ 不新增
+                // `accessible-id`）。排在 `TouchArea` **之前** ⇒ 鼠标那条路一位不变。
+                export-wav-browse-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.browse-path();
+                            accept
+                        } else {
+                            // `Tab` 等 ⇒ 冒泡到 `export-trap` 去做轮转。
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("浏览…");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.browse-path(); }
+                }
+            }
 
             // ------------------------------------------------------------ 采样率
             UiText {
@@ -599,7 +653,7 @@ export component ExportWavDialog inherits Rectangle {
 
     // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
     /// 四格**文本框**里哪一格正持有键盘：`0` 路径 / `1` 采样率 / `2` 位深 / `3` 时长 /
-    /// `-1` 不在任何文本框内（焦点在三格按钮上，或根本不在模态里）。
+    /// `-1` 不在任何文本框内（焦点在四格按钮上，或根本不在模态里）。
     /// ⚠ 这是从 Slint **自己的**焦点状态**推导**出来的（四个 `has-focus` 就是天然事实源），
     /// ⛔ 不是第三份"我以为焦点在哪"的写态 —— 与 `app.slint` 的 `shortcut-layer-focused`
     /// （`FocusScope.has-focus` 的镜像）同口径。唯一读者 = 宿主与无头判据。
@@ -610,19 +664,22 @@ export component ExportWavDialog inherits Rectangle {
         : export-wav-seconds-input.has-focus ? 3
         : -1;
 
-    /// `D-UI-20`：轮转**全集**的读数 —— 七格。`0..3` 同上，`4` 限制器开关 / `5` 导出 /
-    /// `6` ✕ 关闭 / `-1` 不在模态内。⛔ 不是第二份状态：它与前一条从**同一批** `has-focus`
-    /// 推导，只是多读三格按钮的容器 ⇒ 两条读数不可能互相矛盾。
+    /// `D-UI-20`：轮转**全集**的读数 —— 八格。`0` 路径 / `1` 浏览 / `2` 采样率 /
+    /// `3` 位深 / `4` 时长 / `5` 限制器开关 / `6` 导出 / `7` ✕ 关闭 / `-1` 不在模态内。
+    /// （`T-FIX-57` 加入「浏览」格后全体顺延：它紧挨路径框，`Tab` 顺序 = 视觉顺序。）
+    /// ⛔ 不是第二份状态：它与前一条从**同一批** `has-focus` 推导，只是多读四格按钮
+    /// 的容器 ⇒ 两条读数不可能互相矛盾。
     /// 为什么⛔ 不复用 `focused-field`：那条已由 `D-UI-19` 的判据按"四格"钉死（打开落 `0`、
     /// 关闭落 `-1`），改它的**值域**等于悄悄放宽一条既有判据。
     out property <int> focused-control:
         export-wav-path-input.has-focus ? 0
-        : export-wav-sample-rate-input.has-focus ? 1
-        : export-wav-bit-depth-input.has-focus ? 2
-        : export-wav-seconds-input.has-focus ? 3
-        : export-wav-limiter-focus.has-focus ? 4
-        : export-wav-run-focus.has-focus ? 5
-        : export-wav-close-focus.has-focus ? 6
+        : export-wav-browse-focus.has-focus ? 1
+        : export-wav-sample-rate-input.has-focus ? 2
+        : export-wav-bit-depth-input.has-focus ? 3
+        : export-wav-seconds-input.has-focus ? 4
+        : export-wav-limiter-focus.has-focus ? 5
+        : export-wav-run-focus.has-focus ? 6
+        : export-wav-close-focus.has-focus ? 7
         : -1;
 
     /// 打开时由宿主调用：焦点进**第一格**。停在遮罩上等于"看得见但打不了字"。
@@ -630,27 +687,29 @@ export component ExportWavDialog inherits Rectangle {
         export-wav-path-input.focus();
     }
 
-    /// 七格的**唯一**一张「序号 → 控件」表：下面两条轮转只做序号加减，取焦一律走这里
+    /// 八格的**唯一**一张「序号 → 控件」表：下面两条轮转只做序号加减，取焦一律走这里
     /// ⇒ 再加一格只改这一处（`D-UI-19` 那条"轮转只有一份"的纪律由此继续成立）。
     public function focus-control(index: int) {
         if (index == 0) {
             export-wav-path-input.focus();
         } else if (index == 1) {
-            export-wav-sample-rate-input.focus();
+            export-wav-browse-focus.focus();
         } else if (index == 2) {
-            export-wav-bit-depth-input.focus();
+            export-wav-sample-rate-input.focus();
         } else if (index == 3) {
-            export-wav-seconds-input.focus();
+            export-wav-bit-depth-input.focus();
         } else if (index == 4) {
-            export-wav-limiter-focus.focus();
+            export-wav-seconds-input.focus();
         } else if (index == 5) {
-            export-wav-run-focus.focus();
+            export-wav-limiter-focus.focus();
         } else if (index == 6) {
+            export-wav-run-focus.focus();
+        } else if (index == 7) {
             export-wav-close-focus.focus();
         }
     }
 
-    /// `Tab`：路径 → 采样率 → 位深 → 时长 → 限制器 → 导出 → ✕ → 回第一格。
+    /// `Tab`：路径 → 浏览 → 采样率 → 位深 → 时长 → 限制器 → 导出 → ✕ → 回第一格。
     /// 两端都闭合（焦点逃不出去）；`-1`（从外部进来 / 焦点被清）⇒ 落回第一格 ⇒
     /// ⛔ 不存在"按 Tab 跳到左栏"这一态。
     public function focus-next-control() {
@@ -666,6 +725,8 @@ export component ExportWavDialog inherits Rectangle {
             root.focus-control(5);
         } else if (root.focused-control == 5) {
             root.focus-control(6);
+        } else if (root.focused-control == 6) {
+            root.focus-control(7);
         } else {
             root.focus-control(0);
         }
@@ -685,8 +746,10 @@ export component ExportWavDialog inherits Rectangle {
             root.focus-control(4);
         } else if (root.focused-control == 6) {
             root.focus-control(5);
-        } else {
+        } else if (root.focused-control == 7) {
             root.focus-control(6);
+        } else {
+            root.focus-control(7);
         }
     }
 

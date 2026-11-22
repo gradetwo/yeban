@@ -1431,11 +1431,17 @@ msgstr "Exportar WAV · Opciones"
 msgid "关闭导出设置"
 msgstr "Cerrar ajustes de exportación"
 
-msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
-msgstr "Ruta de salida (Ctrl/Cmd+O para explorar…; vacía = predeterminada del host)"
+msgid "输出路径（空 = 宿主缺省）"
+msgstr "Ruta de salida (vacío = valor predeterminado del host)"
 
 msgid "WAV 输出路径"
 msgstr "Ruta de salida WAV"
+
+msgid "浏览…"
+msgstr "Examinar…"
+
+msgid "浏览输出路径"
+msgstr "Examinar ruta de salida"
 
 msgid "采样率 Hz（auto = 跟随工程）"
 msgstr "Frecuencia de muestreo en Hz (auto = seguir el proyecto)"

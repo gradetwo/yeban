@@ -2368,6 +2368,16 @@ impl ElementRegistry {
             "导出目标路径（留空用默认路径）",
             false,
         );
+        // ⭐ `T-FIX-57`：可见的「浏览…」按钮 —— 补上 `[PATCH UI-WIRING-01]` 当年
+        // 只有 `Ctrl/Cmd+O` 和弦的那条入口（鼠标用户实机找不到）。落点与和弦
+        // 同一条 `browse-path` 回调：只填框、⛔ 不导出。
+        registry.add(
+            "export-wav-browse-button",
+            ElementKind::Button,
+            "dialogs/export_wav_dialog.slint",
+            "浏览输出路径（原生保存对话框，只填框不导出）",
+            false,
+        );
         registry.add(
             "export-wav-sample-rate-input",
             ElementKind::TextInput,

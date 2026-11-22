@@ -51,6 +51,7 @@
 //!    （`.focus()` 调用点恒 8 = 首格 1 + 表 7）、三格按钮的键盘落点与它们的
 //!    `TouchArea` / 无障碍动作**是同一条回调**（`root.run()` 出现 7 处，全指向同一条
 //!    `callback run()`）、⛔ 不新增可寻址控件（`accessible-id:` 恒 10 ⇒ 默认帧与
+//!    （⭐ `T-FIX-57` 后钉值有意改为 11：可见「浏览…」按钮，注册表/`DIALOG_IDS` 同提交。）
 //!    `tests/golden/linux/` 的 5 张基准一位不改）、两个焦点读数都仍是**推导**。
 //!
 //! ## 已知边界（如实登记，⛔ 不假装覆盖）
@@ -95,14 +96,17 @@ use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_ui_test_port::port::{KeyCode, Permission};
 use yeban_ui_test_port::render::report_line;
 
-/// 七格的语义顺序（⛔ 不是新的状态，只是给判据一个可读的名字）。
+/// 八格的语义顺序（⛔ 不是新的状态，只是给判据一个可读的名字）。
+/// ⭐ `T-FIX-57`：可见「浏览…」钮插在路径框之后（第 1 格），其后全体顺延 ——
+/// 与 `export_wav_dialog.slint` 的 `focused-control` 推导逐格同序。
 const PATH: i32 = 0;
-const SAMPLE_RATE: i32 = 1;
-const BIT_DEPTH: i32 = 2;
-const SECONDS: i32 = 3;
-const LIMITER: i32 = 4;
-const RUN: i32 = 5;
-const CLOSE: i32 = 6;
+const BROWSE: i32 = 1;
+const SAMPLE_RATE: i32 = 2;
+const BIT_DEPTH: i32 = 3;
+const SECONDS: i32 = 4;
+const LIMITER: i32 = 5;
+const RUN: i32 = 6;
+const CLOSE: i32 = 7;
 
 /// 临时目录：`Drop` 里清掉，判据不留垃圾文件。
 struct Scratch(PathBuf);

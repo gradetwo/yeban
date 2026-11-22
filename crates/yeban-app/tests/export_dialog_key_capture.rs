@@ -136,6 +136,8 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
 /// * 轮转只定义一次 ⇒ 弹窗文件里 `.focus()` 的调用点恒为 9（首格 1 + 前进 4 + 后退 4）；
 /// * 模态内只有**一个**焦点作用域（`export-trap`）⇒ ⛔ 没有第二个键盘入口；
 /// * 没有新增可寻址控件 ⇒ `accessible-id:` 恒为 10 ⇒ 默认帧、5 张金帧、运行时树的寻址面
+///   （⭐ `T-FIX-57` 起该钉值有意改为 **11**：新增可见「浏览…」按钮一枚，注册表与
+///   `DIALOG_IDS` 同提交跟上；本条纪律的本意「新增必须同提交登记」不变。）
 ///   都一位不改（`tests/export_dialog_modal_closure.rs` 的 `DIALOG_IDS` 同口径）。
 #[test]
 fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {

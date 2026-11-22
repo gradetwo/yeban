@@ -10663,6 +10663,23 @@ pub fn report_notice(ui: &MainWindow, text: &str, error: bool) {
     ui.set_show_floating_toast(true);
 }
 
+/// 导出成功的**可见**回执（`T-FIX-57`）：在 `apply_module_receipt*` 写完状态栏
+/// 回执**之后**调用，补一条带落地文件**完整路径**的信息级提示条。
+///
+/// 为什么需要它：`export-wav` / `export-midi` 的成功此前只写状态栏那一行 ——
+/// 结构化原文 264px 就被 `elide`，人话行也只有「导出 WAV 完成」五个字、没有路径
+/// ⇒ Wang 2026-11-21 macOS 实机实证：用户不知道导出成功没有、文件在哪。
+/// 提示条与 [`report_notice`] **同通道**，但⛔ 不整份调它：它会把人话同时写进
+/// `module-status`，覆盖掉判据逐字节读的结构化原文。这里只补提示条三件套，
+/// 状态栏两行仍由 `apply_module_receipt*` 那一处写。信息级 ⇒ 4 秒自动收走
+/// （`app.slint` 的 `toast-timer`），与错误回执的常驻口径分开；失败路径⛔ 不调它
+/// （失败维持既有响亮口径）。
+pub fn report_export_success(ui: &MainWindow, text: &str) {
+    ui.set_toast_message(text.into());
+    ui.set_toast_is_error(false);
+    ui.set_show_floating_toast(true);
+}
+
 /// 把结构化回执翻译成一句人话（**唯一**翻译点：所有回执都从这里过）。
 ///
 /// 输入形如 `module:action=export-wav:outcome=error:error=io:message="…"`；
@@ -12542,11 +12559,14 @@ pub fn wire_module_actions_with_capture(
                     sfz,
                 );
                 let _ = weak2.upgrade_in_event_loop(move |ui| {
-                    let (receipt, ok, clipping_warning) = match result {
+                    let (receipt, ok, clipping_warning, success_line) = match result {
                         Ok(report) => {
+                            // ⭐ `T-FIX-57`：落地路径先单独取一份 —— 成功提示条要
+                            // 把它**整条**写给用户看（见 `report_export_success`）。
+                            let landed = report.path.display().to_string();
                             let mut fields = vec![
                                 "outcome=ok".to_owned(),
-                                format!("path={}", report.path.display()),
+                                format!("path={landed}"),
                                 format!("frames={}", report.frames),
                                 format!("sample_rate={}", report.sample_rate),
                                 format!("channels={}", report.channels),
@@ -12605,7 +12625,13 @@ pub fn wire_module_actions_with_capture(
                                     report.suggested_trim_db,
                                 )
                             };
-                            (module_receipt("export-wav", &fields), true, warning)
+                            let success_line = format!("导出 WAV 完成 · {landed}");
+                            (
+                                module_receipt("export-wav", &fields),
+                                true,
+                                warning,
+                                Some(success_line),
+                            )
                         }
                         Err(error) => (
                             module_receipt(
@@ -12614,6 +12640,7 @@ pub fn wire_module_actions_with_capture(
                             ),
                             false,
                             String::new(),
+                            None,
                         ),
                     };
                     apply_module_receipt_with_clipping_warning(
@@ -12622,6 +12649,11 @@ pub fn wire_module_actions_with_capture(
                         ok,
                         &clipping_warning,
                     );
+                    // ⭐ `T-FIX-57`：成功必须被**看见** —— 状态栏回执之外再给一条
+                    // 带完整路径的提示条（失败⛔ 不走这条，维持既有口径）。
+                    if let Some(line) = &success_line {
+                        report_export_success(&ui, line);
+                    }
                     module_trace("export-wav", started, &receipt);
                 });
             });
@@ -12671,39 +12703,52 @@ pub fn wire_module_actions_with_capture(
                 module_trace("export-midi", started, &receipt);
                 return;
             };
-            let (receipt, ok) = match crate::export_midi::export_project_to_file(&project, &target)
-            {
-                Ok(report) => (
-                    module_receipt(
-                        "export-midi",
-                        &[
-                            "outcome=ok".to_owned(),
-                            format!("path={}", report.path.display()),
-                            format!("bytes={}", report.bytes),
-                            format!("ppq={}", report.ppq),
-                            format!(
-                                "format={}",
-                                match report.format {
-                                    yeban_midi::midi::MidiFormat::SingleTrack => "single-track",
-                                    yeban_midi::midi::MidiFormat::Parallel => "parallel",
-                                }
+            let (receipt, ok, success_line) =
+                match crate::export_midi::export_project_to_file(&project, &target) {
+                    Ok(report) => {
+                        // ⭐ `T-FIX-57`：与 `export-wav` 对齐 —— 成功同样给一条
+                        // 带完整路径的可见提示条（此前只有状态栏一行，见
+                        // `report_export_success` 的登记）。
+                        let success_line = format!("导出 MIDI 完成 · {}", report.path.display());
+                        (
+                            module_receipt(
+                                "export-midi",
+                                &[
+                                    "outcome=ok".to_owned(),
+                                    format!("path={}", report.path.display()),
+                                    format!("bytes={}", report.bytes),
+                                    format!("ppq={}", report.ppq),
+                                    format!(
+                                        "format={}",
+                                        match report.format {
+                                            yeban_midi::midi::MidiFormat::SingleTrack => {
+                                                "single-track"
+                                            }
+                                            yeban_midi::midi::MidiFormat::Parallel => "parallel",
+                                        }
+                                    ),
+                                    format!("tracks={}", report.tracks),
+                                    format!("notes={}", report.notes),
+                                    format!("tempos={}", report.tempos),
+                                ],
                             ),
-                            format!("tracks={}", report.tracks),
-                            format!("notes={}", report.notes),
-                            format!("tempos={}", report.tempos),
-                        ],
+                            true,
+                            Some(success_line),
+                        )
+                    }
+                    Err(error) => (
+                        module_receipt(
+                            "export-midi",
+                            &module_error_fields("export-midi", &error.to_string()),
+                        ),
+                        false,
+                        None,
                     ),
-                    true,
-                ),
-                Err(error) => (
-                    module_receipt(
-                        "export-midi",
-                        &module_error_fields("export-midi", &error.to_string()),
-                    ),
-                    false,
-                ),
-            };
+                };
             apply_module_receipt(&ui, &receipt, ok);
+            if let Some(line) = &success_line {
+                report_export_success(&ui, line);
+            }
             module_trace("export-midi", started, &receipt);
         });
     }

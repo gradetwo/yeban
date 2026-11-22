@@ -1431,11 +1431,17 @@ msgstr "WAV書き出し・オプション"
 msgid "关闭导出设置"
 msgstr "書き出し設定を閉じる"
 
-msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
-msgstr "出力パス（Ctrl/Cmd+Oで参照…；空＝ホスト既定）"
+msgid "输出路径（空 = 宿主缺省）"
+msgstr "出力パス（空 = ホストのデフォルト）"
 
 msgid "WAV 输出路径"
 msgstr "WAV出力パス"
+
+msgid "浏览…"
+msgstr "参照…"
+
+msgid "浏览输出路径"
+msgstr "出力パスを参照"
 
 msgid "采样率 Hz（auto = 跟随工程）"
 msgstr "サンプルレート Hz（auto＝プロジェクトに従う）"

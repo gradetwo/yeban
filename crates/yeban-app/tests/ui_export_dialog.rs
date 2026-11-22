@@ -73,13 +73,15 @@ impl Drop for Scratch {
 /// 对话框在树里的语义 ID 与登记角色（`elements.rs` 是同一份口径）。
 ///
 /// ⭐ `D-EX-1` 加上第五格 `export-wav-limiter-switch`（布尔量，角色 `switch`）。
+/// ⭐ `T-FIX-57` 加上 `export-wav-browse-button`（可见「浏览…」钮，角色 `button`）。
 /// 这条闭集判据是"UI 加了控件却忘了登记"的第一道防线：`unknown` 那段会在**注册表漏登记**
 /// 时红，`DIALOG_IDS` 少了它则永远不会被发现 —— 所以两处一起加。
-const DIALOG_IDS: [(&str, ElementKind); 10] = [
+const DIALOG_IDS: [(&str, ElementKind); 11] = [
     ("export-wav-dialog", ElementKind::Region),
     ("export-wav-panel", ElementKind::Region),
     ("export-wav-close-button", ElementKind::Button),
     ("export-wav-path-input", ElementKind::TextInput),
+    ("export-wav-browse-button", ElementKind::Button),
     ("export-wav-sample-rate-input", ElementKind::TextInput),
     ("export-wav-bit-depth-input", ElementKind::TextInput),
     ("export-wav-seconds-input", ElementKind::TextInput),

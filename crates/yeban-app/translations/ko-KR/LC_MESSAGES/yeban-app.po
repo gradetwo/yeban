@@ -1431,11 +1431,17 @@ msgstr "WAV 내보내기 · 옵션"
 msgid "关闭导出设置"
 msgstr "내보내기 설정 닫기"
 
-msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
-msgstr "출력 경로 (Ctrl/Cmd+O로 찾아보기…; 비어 있음 = 호스트 기본값)"
+msgid "输出路径（空 = 宿主缺省）"
+msgstr "출력 경로 (비어 있음 = 호스트 기본값)"
 
 msgid "WAV 输出路径"
 msgstr "WAV 출력 경로"
+
+msgid "浏览…"
+msgstr "찾아보기…"
+
+msgid "浏览输出路径"
+msgstr "출력 경로 찾아보기"
 
 msgid "采样率 Hz（auto = 跟随工程）"
 msgstr "샘플 레이트 Hz (auto = 프로젝트 따름)"
