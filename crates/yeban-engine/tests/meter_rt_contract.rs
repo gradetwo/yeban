@@ -335,6 +335,34 @@ fn scenario_publish_contract_per_quantum(report: &mut Report) {
         quanta_seen == (1..=quanta).collect::<Vec<u64>>(),
         "S2 量子序号必须严格递增且每量子一批",
     );
+
+    // S2b：**每一个**量子内的节点都必须互不相同（「每量子每节点恰好一次」）。
+    //
+    // 为什么单独一条：上面 `first_batch` 只取前 4 帧，抓到的是"前 4 帧 4 个节点"；
+    // 一旦某节点每量子发两帧（2026-11-22 实测：组总线电平接入后，Aux 轨在逐轨段
+    // 发一帧自身声源、在转发段再发一帧完整输出 ⇒ 每量子 5 帧、`04` 出现两次），
+    // 表面症状是"帧数对不上"，而 `nodes.len()` 只看第一批会漏掉后几批的重复。
+    // 本条按量子分组逐批查重 ⇒ 重复帧无论落在哪一批都红。
+    let mut per_quantum: Vec<(u64, Vec<EntityId>)> = Vec::new();
+    for frame in &scratch[..drained] {
+        match per_quantum.last_mut() {
+            Some((q, nodes)) if *q == frame.quantum => nodes.push(frame.node),
+            _ => per_quantum.push((frame.quantum, vec![frame.node])),
+        }
+    }
+    let mut duplicated: Vec<(u64, usize, usize)> = Vec::new();
+    for (q, nodes) in &per_quantum {
+        let mut unique = nodes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != nodes.len() {
+            duplicated.push((*q, nodes.len(), unique.len()));
+        }
+    }
+    report.check(
+        duplicated.is_empty(),
+        format!("S2b 每量子内同一节点只能发一帧；重复的 (quantum, 帧数, 去重后) = {duplicated:?}"),
+    );
 }
 
 /// S3：静音 ⇒ 峰值 0、dBFS 负无穷、静音下限有限、无 NaN。

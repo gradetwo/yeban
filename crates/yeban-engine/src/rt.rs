@@ -2512,6 +2512,14 @@ fn render_branch(
         // 真实流交错 —— 两形状的实测见 `tests/pdc_residual_shapes.rs`。
         let defer_own_to_forward =
             buses_needed && routing.has_incoming_audio(&track) && !process_bus_inserts;
+        // ⭐ **每量子每节点恰好一次**（`MeterBank` 的契约）：会在 3a⁗ 转发段发
+        // 电平帧的节点，逐轨段**不再发**。转发段那一帧是"收入 + 自有内容"汇合、
+        // 输出级之后的**完整输出**（组总线电平柱要的就是它）；逐轨段这一帧是
+        // 声相之前的**自身声源**，对纯总线节点恒静音 ⇒ 同一节点每量子出两帧，
+        // 一帧恒 0、一帧有值（实测 `filled_project` 每量子 5 帧，Aux 轨出现两次）。
+        // ⚠ 条件里带上 `routes` 非空：转发段对没有出边的节点会 `continue`，
+        // 那里不发帧；留着逐轨帧才不至于两条都不发（宁可留旧口径也不丢节点）。
+        let metered_at_forward = defer_own_to_forward && !routing.routes(&track).is_empty();
         // ⭐⭐ **stage 4（实时源侧声相）**：只在这条轨是"**干净轨**"时切分声道通路 ——
         // 全部条件缺一不可，任一不成立就**整段退回**原来的单声道流水线（逐位不变）：
         //
@@ -2708,7 +2716,7 @@ fn render_branch(
         // ⭐ 任务单 `#158`：**处理型总线**的电平帧改在 3a⁗ **插入之后**计量
         // （读"发送之和 ＋ 自己的声源"，仍是单声道、仍是"插入之后"的口径）；
         // 这里跳过 ⇒ 每量子每节点仍然**恰好一次**（`MeterBank::measure` 的契约）。
-        if !process_bus_inserts {
+        if !process_bus_inserts && !metered_at_forward {
             // ⭐ stage 4：分声道轨的电平取样点取"两声道里绝对值较大的那个"（峰值口径）；
             //   单声道轨仍读 `track_scratch`，一位不动。借 `reverb_scratch[0]` 当临时格
             //   （它在下面声相段才会被写，此处空闲），⛔ 不新增任何缓冲。
