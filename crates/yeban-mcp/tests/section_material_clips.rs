@@ -294,3 +294,117 @@ fn absent_named_materials_reproduce_the_pool_round_robin() {
         "缺省必须逐字节等于显式给轮询表 {named:?}（同一条 `project_contents` 装配）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ T-FIX-67：空片段（零音符）**不是**配器材料
+//
+// 背景：T-FIX-41 之后空片段可以被创建（`create:true` + `ops:[]`），于是"池里存在
+// 一条零音符片段"成了常态。本票钉住：它不得被 `usable_materials` 轮询选中，也不得让
+// `propose_section` 产出零音符的"空小节"（口径同 Logic：空 region 不参与自动编曲）。
+//
+// 复核方式（先证现状、再钉住）：下面三条判据在**改动前**就跑过 —— 当时它们已全绿，
+// 因为 `usable_materials` 的 `min()?` 恰好把空片段滤掉。那是一条**隐式副作用**
+// （读起来像"算不出根音"），本票把它改成显式闸门，这三条判据防止它再被改宽。
+//
+// ⚠ 夹具注意：`YebanProjectV1::validate()` 要求池里的片段都有轨道摆放，因此这里
+// **不改池的成员**，只把 MIDI 片段的音符清空（空片段本身是合法文档，见 T-FIX-41）。
+// ---------------------------------------------------------------------------
+
+/// 把工程里所有 MIDI 片段的音符清空（摆放与身份都不动）。
+fn clear_all_midi_notes(project: &mut yeban_model::YebanProjectV1) {
+    for entry in project.clip_pool.values_mut() {
+        if let ClipContent::Midi { notes } = &mut entry.content {
+            notes.clear();
+        }
+    }
+}
+
+/// 判据 A：池里**每一条** MIDI 材料都是空的 ⇒ 响亮拒绝（`CLIP_NOT_FOUND`），
+/// ⛔ 不出空小节。
+#[test]
+fn a_pool_of_only_empty_clips_is_refused() {
+    let mut project = filled_project();
+    let total = project.clip_pool.len();
+    clear_all_midi_notes(&mut project);
+    project.validate().expect("空片段本身是合法文档");
+
+    let fault = try_plan(&project, None, None).expect_err("没有一条非空材料时必须拒绝");
+    assert_eq!(fault.domain_code(), Some(BuildCode::ClipNotFound));
+    let BuildFault::Domain { data, .. } = &fault else {
+        panic!("必须是带数据的领域错误: {fault:?}");
+    };
+    assert_eq!(data["missing"], "usableClipPoolEntries");
+    assert_eq!(
+        data["clipPoolEntryCount"], total,
+        "池里的条目必须被如实计数（空片段不算材料，但也不是「池是空的」）: {data}"
+    );
+    assert_eq!(
+        data["acceptedContent"], "Midi clip with at least one note",
+        "报文的材料口径必须写清「至少一个音符」: {data}"
+    );
+}
+
+/// 判据 B：只有**一条**非空材料、其余 MIDI 片段全空 ⇒ 全部声部吃那条非空的，
+/// **一个零音符小节都不许出现**。
+#[test]
+fn empty_clips_are_skipped_in_the_round_robin() {
+    let mut project = filled_project();
+    let (good_id, good_count) = {
+        let (&id, entry) = project
+            .clip_pool
+            .iter()
+            .find(|(_, entry)| entry.content.notes().is_some_and(|notes| !notes.is_empty()))
+            .expect("夹具必须有一条非空 MIDI 片段");
+        (id, entry.content.notes().map_or(0, |notes| notes.len()))
+    };
+    assert!(good_count > 0);
+    for (id, entry) in project.clip_pool.iter_mut() {
+        if *id == good_id {
+            continue;
+        }
+        if let ClipContent::Midi { notes } = &mut entry.content {
+            notes.clear();
+        }
+    }
+    project.validate().expect("混合池必须仍是合法文档");
+
+    let section_plan = try_plan(&project, None, None).expect("有一条非空材料时必须能规划");
+    let counts = part_note_counts(&section_plan);
+    assert!(!counts.is_empty(), "必须真的产出和声材料: {counts:?}");
+    assert!(
+        counts.iter().all(|&count| count > 0),
+        "出现零音符小节 ⇒ 空片段被当材料选中了: {counts:?}"
+    );
+    assert!(
+        counts.iter().all(|&count| count == good_count),
+        "每个声部都必须吃那条非空材料（{good_count} 音符），空片段不得参与轮询: {counts:?}"
+    );
+}
+
+/// 判据 C：`materialClipIds` **指名**空片段 ⇒ `CLIP_NOT_FOUND`（带 clipId），
+/// 与"不存在"和"非 MIDI"分开报 —— 三条路径都不许折叠成一条。
+#[test]
+fn naming_an_empty_clip_is_clip_not_found() {
+    let mut project = filled_project();
+    clear_all_midi_notes(&mut project);
+    project.validate().expect("空片段是合法文档");
+    let empty_id = project
+        .clip_pool
+        .iter()
+        .find(|(_, entry)| entry.content.notes().is_some())
+        .map(|(id, _)| *id)
+        .expect("夹具必须有一条 MIDI 片段");
+
+    let fault = try_plan(&project, None, Some(vec![empty_id, empty_id, empty_id]))
+        .expect_err("指名空片段必须拒绝");
+    assert_eq!(fault.domain_code(), Some(BuildCode::ClipNotFound));
+    let BuildFault::Domain { data, .. } = &fault else {
+        panic!("必须是带数据的领域错误: {fault:?}");
+    };
+    assert_eq!(
+        data["clipId"],
+        empty_id.to_canonical_string(),
+        "报文必须点名是哪一条片段: {data}"
+    );
+    assert_eq!(data["acceptedContent"], "Midi clip with at least one note");
+}

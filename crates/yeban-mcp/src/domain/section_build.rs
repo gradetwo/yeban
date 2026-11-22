@@ -1015,13 +1015,34 @@ struct Material {
 }
 
 /// 工程里全部可用材料（按 `clip_pool` 的 `BTreeMap` 键序 = 确定序）。
+///
+/// # 材料口径（⭐ T-FIX-67）
+///
+/// **MIDI 且至少一个音符**。空片段（零音符）**不是**材料 —— 口径同 Logic：
+/// 空 region 不参与自动编曲提议。它既然被选中就会产出零音符的"空小节"，
+/// 而 `T-FIX-41` 之后空片段是**常态**（`create:true` + `ops:[]` 即可造出），
+/// 因此这条闸门必须是**显式**的：
+///
+/// ⚠ 旧实现靠 `notes.values().map(pitch).min()?` 的副作用挡住空片段（集合为空 ⇒
+/// `min()` 是 `None` ⇒ 整条被 `filter_map` 丢弃）。那读起来像"算不出根音"，
+/// 一旦有人给根音补一个缺省（`unwrap_or(0)` / `min().unwrap_or(60)`），空片段就会
+/// 静默混进材料表。现在把"没有内容"与"算不出根音"分开：前者是**不是材料**，
+/// 后者在这个函数里已经不可达（`expect` 的守卫就在上一行）。
 fn usable_materials(project: &YebanProjectV1) -> Vec<Material> {
     project
         .clip_pool
         .values()
         .filter_map(|entry| {
             let notes = entry.content.notes()?;
-            let root = notes.values().map(|note| note.pitch).min()?;
+            // ⭐ T-FIX-67：空片段不是材料 —— 显式拒绝，不靠 `min()` 的副作用。
+            if notes.is_empty() {
+                return None;
+            }
+            let root = notes
+                .values()
+                .map(|note| note.pitch)
+                .min()
+                .expect("非空音符集必有最小音高");
             Some(Material {
                 id: entry.id,
                 root_pc: root % 12,
