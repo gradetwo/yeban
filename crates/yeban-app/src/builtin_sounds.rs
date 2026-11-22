@@ -105,22 +105,12 @@ pub fn community_extras() -> Vec<BuiltinSound> {
                 "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/refs/heads/master.zip"
                     .to_owned(),
         },
-        BuiltinSound {
-            id: "vsco-2-ce".to_owned(),
-            name: "VSCO 2 Community Edition".to_owned(),
-            category: "Orchestral".to_owned(),
-            license: "CC0-1.0".to_owned(),
-            author: "Versilian Studios".to_owned(),
-            repo: "sgossner/VSCO-2-CE".to_owned(),
-            pin: String::new(),
-            source_url: "https://versilian-studios.com/vsco-community/".to_owned(),
-            total_bytes: 0,
-            file_count: 0,
-            bundled: false,
-            sfz: String::new(),
-            archive_override: "https://github.com/sgossner/VSCO-2-CE/archive/refs/heads/master.zip"
-                .to_owned(),
-        },
+        // ⚠ T-FIX-107：这里**曾经**还有一条 `vsco-2-ce`「VSCO 2 Community Edition」，
+        // 指向 `sgossner/VSCO-2-CE@refs/heads/master`。实测该分支 **0 个 .sfz**
+        // （3187 个文件全是采样与说明），装完必然卡在"没有任何 .sfz"这一步。
+        // 而同一件音源在登记表里已经有钉 commit 的正确条目（`vsco2ce`，
+        // `schollz/VSCO-2-CE` 的 `SFZ` 分支 pin `6dd651d5…`，顶层 75 个 .sfz）——
+        // 所以这条重复条目直接删除，⛔ 不再指到不含 SFZ 的分支上让用户白下 2 GB。
     ]
 }
 
@@ -429,11 +419,26 @@ fn verify_extracted(sound: &BuiltinSound, installed_root: &Path) -> Result<(), S
     let (files, bytes) = count_files_and_bytes(installed_root)?;
     // 标记文件是我们自己写的，⛔ 不计入登记表口径。
     let files = files.saturating_sub(1);
-    if !has_any_sfz(installed_root) {
-        return Err(SoundError::BadArchive(format!(
-            "{} 装完没有找到任何 .sfz（包里可能不是 SFZ 乐器）",
-            sound.name
-        )));
+    // ⚠ 结论措辞分三种，⛔ 不再用一句"包里可能不是 SFZ 乐器"糊过去：
+    // "查完了确实没有"与"没查完就停了"是两件不同的事实，后者不能断言前者
+    // （T-FIX-107：VSCO 2 CE 的归档是"有采样、零 .sfz"的另一个分支，界面却
+    // 断言"包里可能不是 SFZ 乐器" —— 误报的来源就是把这两种情形混成 `false`）。
+    match scan_sfz(installed_root) {
+        SfzScan::Found => {}
+        SfzScan::Absent { seen } => {
+            return Err(SoundError::BadArchive(format!(
+                "{} 装完已查 {seen} 条，里面没有任何 .sfz（这份归档不含 SFZ 乐器文件；\
+                 同一件音源若另有 SFZ 分支，只有带 .sfz 的那个分支才是 SFZ 音色）",
+                sound.name
+            )));
+        }
+        SfzScan::Incomplete { seen } => {
+            return Err(SoundError::BadArchive(format!(
+                "{} 装完已查 {seen} 条未见 .sfz（未查完：条目超过 {SFZ_SCAN_LIMIT} 条上限，\
+                 不能据此断言没有 .sfz）",
+                sound.name
+            )));
+        }
     }
     if sound.file_count > 0 && files < sound.file_count {
         return Err(SoundError::BadArchive(format!(
@@ -452,8 +457,25 @@ fn verify_extracted(sound: &BuiltinSound, installed_root: &Path) -> Result<(), S
     Ok(())
 }
 
-/// 装好的目录里有没有 `.sfz`（递归、最多看 4096 个条目 —— 目录再深也不至于卡死）。
-fn has_any_sfz(root: &Path) -> bool {
+/// 扫描 `.sfz` 的结论。
+///
+/// ⛔ 不用 `bool`：`false` 把"全查完了确实没有"与"条目太多没查完"压成同一个答案，
+/// 而对用户说的话必须不同 —— 后者只能写"已查 N 条未见 .sfz（未查完）"。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SfzScan {
+    /// 找到至少一个 `.sfz`。
+    Found,
+    /// 全部条目都看过，确实没有任何 `.sfz`（`seen` = 实际检查的条目数）。
+    Absent { seen: usize },
+    /// 条目数超过上限，**没查完**就停了（`seen` = 上限）。
+    Incomplete { seen: usize },
+}
+
+/// 扫描条目上限（目录再深也不至于把安装线程卡死）。
+const SFZ_SCAN_LIMIT: usize = 4096;
+
+/// 递归找 `.sfz`，最多看 [`SFZ_SCAN_LIMIT`] 个条目。
+fn scan_sfz(root: &Path) -> SfzScan {
     let mut seen: usize = 0;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -462,8 +484,10 @@ fn has_any_sfz(root: &Path) -> bool {
         };
         for entry in entries.flatten() {
             seen += 1;
-            if seen > 4096 {
-                return false;
+            if seen > SFZ_SCAN_LIMIT {
+                return SfzScan::Incomplete {
+                    seen: SFZ_SCAN_LIMIT,
+                };
             }
             let path = entry.path();
             if path.is_dir() {
@@ -472,11 +496,11 @@ fn has_any_sfz(root: &Path) -> bool {
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("sfz"))
             {
-                return true;
+                return SfzScan::Found;
             }
         }
     }
-    false
+    SfzScan::Absent { seen }
 }
 
 /// 递归数文件数与总字节（读不到的条目按 0 计，⛔ 不中断）。
@@ -524,7 +548,7 @@ mod tests {
              "total_bytes":100,"file_count":3}
         ]}"#;
         let sounds = parse_manifest(text).expect("应能解析");
-        // 登记表条目 + 并进同一张表的两个社区音源（见 `community_extras`）。
+        // 登记表条目 + 并进同一张表的社区音源（见 `community_extras`）。
         let demo = sounds
             .iter()
             .find(|sound| sound.id == "demo")
@@ -661,5 +685,122 @@ mod tests {
             other => panic!("解压后字节不足必须是 BadArchive 对账失败，实得：{other:?}"),
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ---------------------------------------------------------------------
+    // T-FIX-107：VSCO 2 CE「一键安装假失败」
+    // ---------------------------------------------------------------------
+
+    /// 复刻真实故障形态：归档解出来**满是采样、但一个 `.sfz` 都没有**。
+    ///
+    /// 实测依据（2026-11-22，`git ls-tree -r` 亲核）：
+    /// * `sgossner/VSCO-2-CE@master` = 3187 个文件、**0 个 .sfz**（顶层 Brass/Keys/…）；
+    /// * `schollz/VSCO-2-CE@SFZ`（pin `6dd651d5…`）= 顶层 75 个 `.sfz`。
+    ///
+    /// 旧代码在这里只会吐一句"包里可能不是 SFZ 乐器" —— 那是**误报**：
+    /// 包确实是采样库，只是没有 SFZ 乐器文件。
+    #[test]
+    fn absent_sfz_reports_the_scan_count_instead_of_claiming_not_an_sfz_instrument() {
+        let (base, _roots) = temp_roots("absent-sfz");
+        let installed = base.join("installed");
+        for sub in ["Brass", "Strings", "Woodwinds"] {
+            std::fs::create_dir_all(installed.join(sub)).expect("建目录");
+        }
+        std::fs::write(installed.join("README.md"), b"vsco").expect("写说明");
+        std::fs::write(installed.join("Strings/violin.wav"), b"wav").expect("写样本");
+
+        // `SoundError` 没有实现 `Display`（仓里统一用 Debug 打印），与既有判据同款。
+        let error = format!(
+            "{:?}",
+            verify_extracted(&demo_sound(0, 0), &installed).expect_err("零 .sfz 必须报错")
+        );
+        // 条目数要如实报出来（3 个目录 + README + violin.wav = 5）。
+        assert!(error.contains("已查 5 条"), "必须报扫描条数：{error}");
+        // ⛔ 禁止再断言"包里可能不是 SFZ 乐器"。
+        assert!(
+            !error.contains("包里可能不是 SFZ 乐器"),
+            "不许再用旧措辞误报：{error}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 条目数超过上限时必须说"未查完"，⛔ 不能说"没有任何 .sfz"。
+    #[test]
+    fn oversized_tree_reports_incomplete_scan_and_does_not_deny_sfz() {
+        let (base, _roots) = temp_roots("incomplete-scan");
+        let installed = base.join("installed");
+        std::fs::create_dir_all(&installed).expect("建目录");
+        for index in 0..=(SFZ_SCAN_LIMIT) {
+            std::fs::write(installed.join(format!("sample-{index:05}.wav")), b"").expect("写样本");
+        }
+
+        let error = format!(
+            "{:?}",
+            verify_extracted(&demo_sound(0, 0), &installed).expect_err("未查完同样不能放行")
+        );
+        assert!(error.contains("未查完"), "必须点明没查完：{error}");
+        assert!(
+            !error.contains("没有任何 .sfz"),
+            "没查完就不能断言没有 .sfz：{error}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 扫描上限内、`.sfz` 在子目录深处时仍要算找到（⛔ 别把上限当成"只看顶层"）。
+    #[test]
+    fn nested_sfz_within_the_limit_is_found() {
+        let (base, _roots) = temp_roots("nested-sfz");
+        let installed = base.join("installed");
+        std::fs::create_dir_all(installed.join("Programs")).expect("建目录");
+        std::fs::write(installed.join("Programs/demo.sfz"), SFZ_BYTES).expect("写 sfz");
+        for index in 0..64 {
+            std::fs::write(installed.join(format!("s{index}.wav")), b"").expect("写样本");
+        }
+        assert_eq!(scan_sfz(&installed), SfzScan::Found);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 回归钉：社区条目里不许再出现第二份 VSCO 2 CE。
+    ///
+    /// 曾经的 `vsco-2-ce` 指向 `sgossner/VSCO-2-CE@master`（0 个 .sfz），装完必失败；
+    /// 正确的上游是登记表里的 `vsco2ce`（`schollz/VSCO-2-CE` 的 `SFZ` 分支，钉 commit）。
+    #[test]
+    fn community_extras_carry_no_second_vsco_entry() {
+        for extra in community_extras() {
+            assert!(
+                !extra.id.to_lowercase().contains("vsco"),
+                "社区条目 {} 与登记表条目 vsco2ce 重复",
+                extra.id
+            );
+            assert!(
+                !extra.repo.to_lowercase().contains("vsco"),
+                "社区条目 {} 的上游 {} 与登记表条目重复",
+                extra.id,
+                extra.repo
+            );
+        }
+    }
+
+    /// 社区条目既不许和登记表的 id 撞车，也不许和登记表里的条目同名（同一件音源列两遍）。
+    #[test]
+    fn community_extras_do_not_duplicate_registered_sounds() {
+        let text = std::fs::read_to_string(manifest_path()).expect("登记表必须可读");
+        // ⚠ 直接看登记表文档，⛔ 不走 parse_manifest —— 那个函数自己就会并进社区条目。
+        let doc: ManifestDoc = serde_json::from_str(&text).expect("登记表必须可解析");
+        let entries = doc.instruments.expect("登记表必须有 instruments");
+        let ids: Vec<String> = entries.iter().filter_map(|e| e.id.clone()).collect();
+        let names: Vec<String> = entries.iter().filter_map(|e| e.name.clone()).collect();
+        for extra in community_extras() {
+            assert!(
+                !ids.contains(&extra.id),
+                "社区条目 {} 与登记表 id 撞车",
+                extra.id
+            );
+            assert!(
+                !names.contains(&extra.name),
+                "社区条目 {} 与登记表条目同名",
+                extra.name
+            );
+        }
     }
 }
