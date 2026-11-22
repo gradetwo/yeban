@@ -1626,6 +1626,7 @@ mod tests {
                             | DeviceError::NoSupportedConfigs
                             | DeviceError::UnsupportedConfig { .. }
                             | DeviceError::UnsupportedSampleFormat { .. }
+                            | DeviceError::SampleRateMismatch { .. }
                             | DeviceError::Backend(_)
                     ),
                     "错误必须是 DeviceError 的明确变体, 实际 {error:?}"
@@ -1955,6 +1956,11 @@ mod tests {
                             | DeviceError::NoSupportedInputConfigs
                             | DeviceError::UnsupportedConfig { .. }
                             | DeviceError::UnsupportedSampleFormat { .. }
+                            // T-FIX-78: 44.1 kHz-only device + 48 kHz project is a
+                            // loud refusal, not a silent fallback. The exact
+                            // 48_000/44_100 pair is pinned by
+                            // negotiate_rejects_rate_fallback_loudly_when_requested_rate_is_unsupported.
+                            | DeviceError::SampleRateMismatch { .. }
                             | DeviceError::Backend(_)
                     ),
                     "错误必须是 DeviceError 的**明确变体**，实际 {error:?}"
