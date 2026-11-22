@@ -501,10 +501,16 @@ fn parse_pack(index: usize, item: &serde_json::Value) -> Result<CatalogPack, Cat
 /// T-FIX-24 / P1-7：新增 `timeout_per_read`（每次读重新计时）—— 下载腿即使
 /// `global = None`，也绝不允许"连 [`DOWNLOAD_READ_TIMEOUT_SECS`] 秒读不到一个字节"
 /// 的挂死连接无限占用线程。目录拉取（小 JSON）另传 `global = 30s`，不受影响。
+///
+/// ⭐ 连接超时 **15 s → 30 s**（2026-11-21 实测）：GitHub Releases 会 302 到
+/// `release-assets.githubusercontent.com`，本机实测该域名 **TCP 握手 10.2 s**
+/// （同一时刻 `github.com` 只要 0.09 s，`objects.githubusercontent.com` 0.28 s）
+/// ⇒ 15 s 的边界在抖动时会直接判 `timeout: connect`，而 `curl` 同一地址能下完。
+/// 慢网上的这种"连得上但握手久"不该被当成失败；30 s 仍能保证不无限挂住。
 fn http_agent(global: Option<Duration>) -> ureq::Agent {
     // ureq 3：`config_builder().build()` 产 `Config`，`Into` 转 `Agent`。
     ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(30)))
         .timeout_per_read(Some(Duration::from_secs(DOWNLOAD_READ_TIMEOUT_SECS)))
         .timeout_global(global)
         .max_redirects(5)

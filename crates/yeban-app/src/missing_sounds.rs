@@ -438,6 +438,9 @@ mod tests {
             bundled: false,
             sfz: String::new(),
             archive_override: String::new(),
+            release_zip: String::new(),
+            release_sha256: String::new(),
+            release_bytes: 0,
         }
     }
 

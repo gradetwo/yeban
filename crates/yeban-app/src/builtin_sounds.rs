@@ -72,6 +72,20 @@ pub struct BuiltinSound {
     /// 地址只能指到 `refs/heads/<branch>.zip` —— ⚠ 这种地址的内容会随上游推进而变，
     /// 因此**永远**没有摘要可校验（与内置那 28 条钉 commit 的性质不同，如实登记）。
     pub archive_override: String,
+    /// 上游**发布包**直链（登记表 `provenance_form == "archive"` 且给的是 zip 才有）。
+    ///
+    /// ⚠ 与 [`Self::archive_url`]（按 commit 的 GitHub 归档）是**两种布局**：
+    /// 发布包解压后顶层就是乐器本体（`Emilyguitar/`、`Meatbass/`），
+    /// 而 commit 归档会多一层 `<repo>-<sha>/`。登记表的 `sfz` 是按发布包写的 ⇒
+    /// 这一档**必须**用发布包，否则装完按登记路径找不到 SFZ（实测 404）。
+    pub release_zip: String,
+    /// 发布包的 sha256（空 = 未登记 ⇒ 下载后只做结构校验）。
+    pub release_sha256: String,
+    /// 发布包的**压缩**字节数（0 = 未知）。
+    ///
+    /// ⚠ 下载时能对上的只有这个数：登记表的 `total_bytes` 是**解压后**的素材总量
+    /// （9.4 GiB 那一档），拿它当下载大小会 100% 判"包大小不符"。
+    pub release_bytes: u64,
 }
 
 /// ⭐ 几个**知名开源音源**（不在仓库登记表里，但用户会主动想要的那几件）。
@@ -104,6 +118,9 @@ pub fn community_extras() -> Vec<BuiltinSound> {
             archive_override:
                 "https://github.com/sfzinstruments/SalamanderGrandPiano/archive/refs/heads/master.zip"
                     .to_owned(),
+            release_zip: String::new(),
+            release_sha256: String::new(),
+            release_bytes: 0,
         },
         // ⚠ T-FIX-107：这里**曾经**还有一条 `vsco-2-ce`「VSCO 2 Community Edition」，
         // 指向 `sgossner/VSCO-2-CE@refs/heads/master`。实测该分支 **0 个 .sfz**
@@ -115,10 +132,14 @@ pub fn community_extras() -> Vec<BuiltinSound> {
 }
 
 impl BuiltinSound {
-    /// GitHub 归档直链（按 commit 归档）。`repo` / `pin` 形态不对时给 `None`
+    /// 下载地址。**发布包优先**（布局与登记表的 `sfz` 一致，且有 sha256 可校验），
+    /// 其次才是按 commit 的 GitHub 归档；两者都拼不出时给 `None`
     /// —— ⛔ 不拼一个注定 404 的地址。
     #[must_use]
     pub fn archive_url(&self) -> Option<String> {
+        if !self.release_zip.trim().is_empty() {
+            return Some(self.release_zip.clone());
+        }
         if !self.archive_override.trim().is_empty() {
             return Some(self.archive_override.clone());
         }
@@ -129,6 +150,17 @@ impl BuiltinSound {
             "https://github.com/{}/archive/{}.zip",
             self.repo, self.pin
         ))
+    }
+
+    /// 解压后是否需要**抹平**外层目录。
+    ///
+    /// * 发布包（[`Self::release_zip`] 非空）：顶层已是乐器本体 ⇒ **不抹**
+    ///   （抹掉 `Emilyguitar/` 会让登记表的 `sfz` 路径少一层）；
+    /// * GitHub commit 归档 / 分支归档：多一层 `<repo>-<sha>/`（或 `<repo>-<branch>/`）
+    ///   ⇒ 抹一层。
+    #[must_use]
+    pub fn needs_wrapper_flatten(&self) -> bool {
+        self.release_zip.trim().is_empty()
     }
 
     /// 允许自动下载（有归档直链）。
@@ -249,6 +281,26 @@ struct ManifestEntry {
     bundled: bool,
     #[serde(default)]
     sfz: Option<String>,
+    /// 素材来历：`git`（按 commit 归档）或 `archive`（上游发布包 zip）。
+    ///
+    /// ⚠ 两者**解压后的布局不同**：commit 归档带一层 `<repo>-<sha>/`（要抹平），
+    /// 而发布包顶层就是乐器目录本身（`Emilyguitar/…`，⛔ 不能抹）。
+    /// 登记表的 `sfz` / `files[]` 对 `archive` 条目是按**发布包**写的。
+    #[serde(default)]
+    provenance_form: Option<String>,
+    /// 上游发布包（仅 `archive` 条目有）。
+    #[serde(default)]
+    archive: Option<ManifestArchive>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestArchive {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default)]
+    bytes: u64,
 }
 
 /// 解析登记表文本（判据与生产共用）。
@@ -265,6 +317,23 @@ pub fn parse_manifest(text: &str) -> Result<Vec<BuiltinSound>, String> {
             return Err(format!("instruments[{index}] 缺少 id"));
         }
         let text = |value: Option<String>| value.unwrap_or_default();
+        // 只有"发布包"条目才取 archive.url，且**只认 zip**：安装腿只解 zip，
+        // `.tar.xz`（两个 freepats 风琴）如实留在"需手动下载"那一档。
+        let archive = entry.archive;
+        let provenance = text(entry.provenance_form);
+        let release = match (&archive, provenance.as_str()) {
+            (Some(a), "archive") => {
+                let url = text(a.url.clone());
+                if url.to_ascii_lowercase().ends_with(".zip") {
+                    Some((url, text(a.sha256.clone()), a.bytes))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let (release_zip, release_sha256, release_bytes) =
+            release.unwrap_or_else(|| (String::new(), String::new(), 0));
         sounds.push(BuiltinSound {
             name: {
                 let name = text(entry.name);
@@ -297,6 +366,9 @@ pub fn parse_manifest(text: &str) -> Result<Vec<BuiltinSound>, String> {
             id,
             // 登记表里的条目一律走 commit 归档，⛔ 不用覆盖地址。
             archive_override: String::new(),
+            release_zip,
+            release_sha256,
+            release_bytes,
         });
     }
     // ⭐ 两个知名开源音源并进同一张表（同一区展示、同一条安装腿）。
@@ -322,8 +394,17 @@ pub fn is_installed(roots: &SoundRoots, id: &str) -> bool {
     dir.is_dir() && dir.join(PACK_MARKER_FILE).is_file()
 }
 
-/// 下载并安装一条内置音源：归档落到既有安装腿，落位后**抹平 GitHub 归档的外层
-/// 目录**（`<repo>-<sha>/`），再做逐文件对账。
+/// 下载并安装一条内置音源：归档落到既有安装腿，必要时**抹平外层目录**
+/// （GitHub commit 归档的 `<repo>-<sha>/`），再做逐文件对账。
+///
+/// ⭐ 两处口径（2026-11-21 实测修复）：
+///
+/// 1. **下载大小 ≠ 素材总量**：安装腿对 `size_bytes` 做的是**精确相等**校验，
+///    而登记表的 `total_bytes` 是**解压后**的素材字节和（全表 9.4 GiB 那一档）。
+///    此前把它当下载大小传进去 ⇒ zip 永远对不上 ⇒ **每一条都判"包大小不符"**。
+///    现在只传**压缩包**字节数（发布包有登记就传，commit 归档没登记就传 0 ＝ 不校验）。
+/// 2. **布局**：发布包（`provenance_form == "archive"`）解压后顶层就是乐器本体，
+///    抹平会削掉 `Emilyguitar/` 这一层 ⇒ 登记表的 `sfz` 路径失效。这一档不抹。
 ///
 /// 对账失败 ⇒ 已装的那一份整体删掉（⛔ 不留"装了一半"的目录让用户以为能用）。
 pub fn download_builtin(
@@ -333,7 +414,7 @@ pub fn download_builtin(
 ) -> Result<InstalledLibrary, SoundError> {
     let Some(url) = sound.archive_url() else {
         return Err(SoundError::BadArchive(format!(
-            "{} 没有可用的下载地址（repo/pin 形态不对）",
+            "{} 没有可用的下载地址（repo/pin 形态不对，或上游只提供非 zip 归档）",
             sound.name
         )));
     };
@@ -342,8 +423,11 @@ pub fn download_builtin(
     }
     let pack = catalog_pack_for(sound, url);
     let installed = crate::sound_library::download_pack(&pack, roots, progress)?;
-    // GitHub 归档外层目录（解出来的只有它）⇒ 抹平，让 `<id>/` 下直接是 Programs/…
-    flatten_wrapper_dir(&installed.location)?;
+    // 只有 commit / 分支归档才多一层 `<repo>-<sha>/`，需要抹平，让 `<id>/` 下
+    // 直接是 Programs/…；发布包顶层就是乐器本体，不抹（见 `needs_wrapper_flatten`）。
+    if sound.needs_wrapper_flatten() {
+        flatten_wrapper_dir(&installed.location)?;
+    }
     if let Err(error) = verify_extracted(sound, &installed.location) {
         let _ = std::fs::remove_dir_all(&installed.location);
         return Err(error);
@@ -353,25 +437,33 @@ pub fn download_builtin(
 
 /// 把一条内置音源拼成安装腿认的目录包。
 fn catalog_pack_for(sound: &BuiltinSound, url: String) -> crate::sound_library::CatalogPack {
-    // ⭐ 归档大小与摘要都**没有登记值**：登记表的 `total_bytes` 是**解压后**全部
-    // 文件的总字节，不是 `.zip` 的大小（GitHub 也不发布归档大小与摘要）。
-    // ⛔ 不许把 `total_bytes` 填进 `size_bytes`——安装腿会拿它逐字节比对 zip
-    // 文件大小，而解压后总量与压缩包大小几乎永不相等，内置音源会必然报
-    // `SizeMismatch` 全灭（CODE_AUDIT_REPORT P0-6）。`size_bytes` 留 0 ＝ 不做
-    // 归档大小对账，下载段只受 `MAX_DOWNLOAD_BYTES` 上限护栏；字节完整性由
-    // 落位后的 [`verify_extracted`] 按登记的 `total_bytes` / `file_count` 对账，
-    // 不足即整包回滚。哈希同理留空串，⛔ 不假装校验过。
+    // ⭐ 归档大小只认**压缩包**口径：发布包登记了 `archive.bytes` 就传它并附
+    // 登记的 `archive.sha256` 做硬校验；commit 归档没有压缩大小与摘要登记，
+    // `size_bytes` 留 0（不校验）、`sha256` 留空串（⛔ 不假装校验过）。
+    // ⛔ 绝不把登记表的 `total_bytes` 填进 `size_bytes`——那是**解压后**全部
+    // 文件的总字节，安装腿拿它逐字节比对 zip 文件大小必然 `SizeMismatch`，
+    // 内置音源会全灭（CODE_AUDIT_REPORT P0-6）。无发布包登记的条目，字节完整性
+    // 由落位后的 [`verify_extracted`] 按登记的 `total_bytes` / `file_count`
+    // 对账，不足即整包回滚。
+    let size_bytes = if sound.release_zip.trim().is_empty() {
+        0
+    } else {
+        sound.release_bytes
+    };
     crate::sound_library::CatalogPack {
         id: sound.id.clone(),
         name: sound.name.clone(),
         description: sound.download_note(),
-        version: if sound.pin.is_empty() {
+        version: if !sound.release_zip.trim().is_empty() {
+            "发布包".to_owned()
+        } else if sound.pin.is_empty() {
             "社区".to_owned()
         } else {
             sound.pin.chars().take(8).collect()
         },
-        size_bytes: 0,
-        sha256: String::new(),
+        size_bytes,
+        // 发布包登记了 sha256 ⇒ 硬校验（比"只做结构校验"强一档）；无登记时为空串。
+        sha256: sound.release_sha256.clone(),
         url,
     }
 }
@@ -439,6 +531,15 @@ fn verify_extracted(sound: &BuiltinSound, installed_root: &Path) -> Result<(), S
                 sound.name
             )));
         }
+    }
+    // ⭐ 登记表指定的**主 SFZ** 必须真的在：只查"有任意 .sfz"抓不住布局错配
+    // （实测：`provenance_form=archive` 的条目按 commit 归档装完少一层目录，
+    // 主 SFZ 路径 404，但"有任意 .sfz"仍成立 ⇒ 装完显示成功、点「用上」却找不到文件）。
+    if !sound.sfz.is_empty() && !installed_root.join(&sound.sfz).is_file() {
+        return Err(SoundError::BadArchive(format!(
+            "{} 装完在 {} 找不到登记的主 SFZ —— 包布局与登记表不一致",
+            sound.name, sound.sfz
+        )));
     }
     if sound.file_count > 0 && files < sound.file_count {
         return Err(SoundError::BadArchive(format!(
@@ -608,6 +709,9 @@ mod tests {
             bundled: false,
             sfz: "Programs/demo.sfz".to_owned(),
             archive_override: String::new(),
+            release_zip: String::new(),
+            release_sha256: String::new(),
+            release_bytes: 0,
         }
     }
 
@@ -802,5 +906,105 @@ mod tests {
                 extra.name
             );
         }
+    }
+
+    /// ⭐ 发布包条目（`provenance_form=archive`）必须走**发布包直链**、**不抹外层目录**，
+    /// 并且**不把解压后字节数当下载大小**。
+    ///
+    /// 这三条是同一次实测缺陷的三个面（`karoryfer-emilyguitar` / `-meatbass`）：
+    /// 按 commit 归档装完少一层 `Emilyguitar/` ⇒ 登记表的 `sfz` 404；
+    /// 而 `total_bytes` 是解压后口径 ⇒ 下载段必报"包大小不符"。
+    #[test]
+    fn archive_entries_use_the_release_zip_and_keep_their_top_level() {
+        let text = r#"{"version":"1.0.0","instruments":[
+            {"id":"rel","name":"Rel","category":"Guitar","license":"CC0-1.0",
+             "repo":"owner/rel","pin":"6615047b2fd06126877483e97b8bb4af9d00b080",
+             "sfz":"Emilyguitar/emily_basic.sfz",
+             "total_bytes":125538629,"file_count":331,
+             "provenance_form":"archive",
+             "archive":{"url":"https://example.com/Rel.v1.zip","sha256":"ffef3b28972763820bee73660a25cf47ea6e13b184342fd5d325a5631598cacb","bytes":103484350}},
+            {"id":"git","name":"Git","category":"Bass","license":"CC0-1.0",
+             "repo":"owner/git","pin":"6615047b2fd06126877483e97b8bb4af9d00b080",
+             "sfz":"linguine.sfz","total_bytes":100,"file_count":3,"provenance_form":"git"},
+            {"id":"tar","name":"Tar","category":"Keys","license":"CC0-1.0",
+             "sfz":"Organ/x.sfz","provenance_form":"archive",
+             "archive":{"url":"https://example.com/Organ.tar.xz","bytes":6042972}}
+        ]}"#;
+        let sounds = parse_manifest(text).expect("应能解析");
+
+        let rel = sounds.iter().find(|s| s.id == "rel").expect("rel");
+        assert_eq!(
+            rel.archive_url().as_deref(),
+            Some("https://example.com/Rel.v1.zip"),
+            "发布包条目必须用 archive.url（布局与登记表 sfz 一致）"
+        );
+        assert_eq!(rel.release_bytes, 103_484_350, "下载大小只能取压缩包字节数");
+        assert_eq!(rel.release_sha256.len(), 64, "发布包的 sha256 必须带下来");
+        assert!(
+            !rel.needs_wrapper_flatten(),
+            "发布包顶层就是乐器本体，⛔ 不能抹"
+        );
+
+        let git = sounds.iter().find(|s| s.id == "git").expect("git");
+        assert_eq!(
+            git.archive_url().as_deref(),
+            Some(
+                "https://github.com/owner/git/archive/6615047b2fd06126877483e97b8bb4af9d00b080.zip"
+            ),
+            "git 条目仍走 commit 归档"
+        );
+        assert!(git.needs_wrapper_flatten(), "commit 归档多一层，必须抹平");
+        assert_eq!(git.release_bytes, 0, "git 条目没有压缩包登记 ⇒ 不传大小");
+
+        // `.tar.xz` 不进一键装（安装腿只解 zip）——如实留"需手动下载"。
+        let tar = sounds.iter().find(|s| s.id == "tar").expect("tar");
+        assert_eq!(tar.archive_url(), None, "非 zip 的发布包不可一键装");
+        assert!(!tar.installable());
+    }
+
+    /// ⭐ 对账必须抓住"主 SFZ 路径对不上"——只查"有任意 .sfz"会让这种包装成功、
+    /// 用户点「用上」时才无声失败。
+    #[test]
+    fn verification_requires_the_registered_sfz() {
+        let dir = std::env::temp_dir().join(format!("yeban-builtin-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Emilyguitar")).expect("建目录");
+        std::fs::write(dir.join("Emilyguitar/other.sfz"), b"<region>").expect("写 sfz");
+
+        let mut sound = BuiltinSound {
+            id: "rel".to_owned(),
+            name: "Rel".to_owned(),
+            category: String::new(),
+            license: String::new(),
+            author: String::new(),
+            repo: String::new(),
+            pin: String::new(),
+            source_url: String::new(),
+            total_bytes: 0,
+            file_count: 0,
+            bundled: false,
+            sfz: "Emilyguitar/emily_basic.sfz".to_owned(),
+            archive_override: String::new(),
+            release_zip: String::new(),
+            release_sha256: String::new(),
+            release_bytes: 0,
+        };
+        // 包里只有 `other.sfz` ⇒ 登记的 `emily_basic.sfz` 缺失，必须判坏包。
+        let error = verify_extracted(&sound, &dir).expect_err("主 SFZ 缺失必须报错");
+        assert!(
+            error.message().contains("找不到登记的主 SFZ"),
+            "错误要指名，实际：{}",
+            error.message()
+        );
+
+        std::fs::write(dir.join("Emilyguitar/emily_basic.sfz"), b"<region>").expect("写主 sfz");
+        verify_extracted(&sound, &dir).expect("主 SFZ 就位后应通过对账");
+
+        // 登记表没写 sfz 的条目（社区那两条）不做这一项检查。
+        sound.sfz = String::new();
+        std::fs::remove_file(dir.join("Emilyguitar/emily_basic.sfz")).expect("删主 sfz");
+        verify_extracted(&sound, &dir).expect("未登记 sfz 的条目不查主文件");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
