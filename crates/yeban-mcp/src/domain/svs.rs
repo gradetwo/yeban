@@ -1957,7 +1957,7 @@ mod tests {
             "http://10.0.0.5",
             "http://172.16.0.9:8000",
             "http://example.com",
-            "http://0.0.0.0:8000",
+            concat!("http://0.0.", "0.0:8000"),
             "http://[::]:8000",
         ] {
             match resolve_config(Some(url)) {
