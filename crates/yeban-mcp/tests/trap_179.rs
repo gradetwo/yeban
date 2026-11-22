@@ -10,7 +10,8 @@
 //!
 //! ⚠ 本线新增 `setNoteTiming`（写音符的起点/时值绝对值）⇒ 音符形态由四个变**五个**；
 //! 它读顶层 `clipId` 也读目标音符，因此仍在"音频片段必须响亮失败"与
-//! `NOTE_LEVEL_KINDS` 的覆盖里。四个旧形态的基线 digest 常量**逐字未动**。
+//! `NOTE_LEVEL_KINDS` 的覆盖里。四个旧形态的基线 digest 常量只在 T-FIX-113
+//! 因官方夹具有意改动重钉过一次（根因见判据③）。
 //!
 //! ⚠ 后续 `setNoteExpression` / `setNotePitchShape` 与 `ADR-0019` 的
 //! `setPitchBendPoint`（逐点弯音）又把清单推到**八个** —— 本文件的两处读数
@@ -20,7 +21,7 @@
 //! | :--- | :--- | :--- |
 //! | [`six_property_forms_succeed_on_an_audio_clip`] | 六个属性级形态 + **音频**顶层 `clipId` | 6 条 `status:"success"` ＋ 6 个 `projectDigest` 变化 ＋ 6 条标题（`音轨级编辑: 1 步`） |
 //! | [`four_note_forms_are_still_blocked_on_an_audio_clip`] | 八个音符形态 + **音频** `clipId` | 8 条 `CLIP_NOT_FOUND`（逐字含"不是 MIDI 片段"） |
-//! | [`the_four_note_forms_are_byte_identical_on_a_midi_clip`] | 四个**基线**音符形态 + **MIDI** 片段 | 4 个合并后 `projectDigest`（收窄前录下、收窄后逐字相等） |
+//! | [`the_four_note_forms_are_byte_identical_on_a_midi_clip`] | 四个**基线**音符形态 + **MIDI** 片段 | 4 个合并后 `projectDigest`（T-FIX-113 重钉后逐字相等；漂移根因见下） |
 //! | [`the_note_level_predicate_is_exactly_eight`] | `NOTE_LEVEL_KINDS` / `ENVELOPE_CLIP_KINDS` | 8 个成员 ＋ 子集关系（唯一非音符的 `clipId` 读者 = `removeClip`） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_179 -- --nocapture`
@@ -396,22 +397,30 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
     // 行为亦未变（四式均 success、能合并、合并后摘要确变）；漂移只来自夹具
     // 字节，故重钉。重钉值三处逐字一致：yanshi-5 上 Linux 实测、CI windows 腿
     // job 134920100261、CI macOS 腿 job 134920100561（run 44338026588）。
+    //
+    // 重钉记录（2026-11-22，T-FIX-113，基底 3a0bb97e）：`1871e51f`（Remove
+    // solo_safe preset from the official filled demo）有意把官方 filled 样本
+    // Bass 的 `solo_safe` 从 `true` 改为 `false`——UI 没有 `solo_safe` 写入口
+    // （ADR-0049），预置 true 会让 Lead solo 时 Bass 仍出声，像 Solo 失效。
+    // 同笔新增 `crates/yeban-engine/tests/filled_demo_solo.rs` 钉住该行为。
+    // 夹具字节变了，四个摘要随之漂移；音符四式仍 success、能合并、合并后摘要
+    // 确变。只重钉夹具读数，未改任何断言。
     let pinned: [(&str, &str); 4] = [
         (
             "add",
-            "47c976d19f7a43b96dcd4d08be501986cf9ee22ea4e8a386821202c729d4805a",
+            "9ca26454505de2f80c1bfe6134e5136eb9293b25ac59acca23264d7b00070151",
         ),
         (
             "delete",
-            "fad336315b03c48c071feaf8f29f5589d02952b1c01bb6eb0cea35e78c6a3556",
+            "d8e0bc52b1977f25514dc33552dd89174886d199d2f95f9ddbb03b587eddc372",
         ),
         (
             "move",
-            "ba4c2d870134c4ef1b112eff5cf8e0d538ca997117979cb4f7a3f31345abf975",
+            "d2af2680a6e9cb8f61ea499f90a8f4fc4f1215e4b18b926274f76ebbdde0f937",
         ),
         (
             "velocity",
-            "95210bed0480314bd3561cabc5d65a33ca5e776f90b227e5666dca2a1dc39d82",
+            "1b4cfc3cb617473708c6c744fa27db938cac83699cd1eccff15a4eb023f2cfa1",
         ),
     ];
     let mut mismatches = Vec::new();
