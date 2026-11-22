@@ -2,11 +2,12 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 447 条：float_bits 95 ／ integer_count 352；其中 hard 92 ／ platform 0
+# 合计 448 条：float_bits 95 ／ integer_count 353；其中 hard 92 ／ platform 0
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
 integer_count | no_callee | 0 | - | src/band_solo.rs | response_is_unity_at_center_and_rejects_a_decade_away
+integer_count | no_callee | 0 | - | src/band_solo.rs | set_sample_rate_recomputes_active_band_coefficients
 integer_count | no_callee | 0 | - | src/band_solo.rs | silence_stays_silent_and_bypass_is_bit_identical
 integer_count | no_callee | 0 | - | src/band_solo.rs | sine_at_center_passes_and_far_sine_is_rejected
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
@@ -141,12 +142,12 @@ integer_count | no_callee | 0 | - | src/drums/mod.rs | hostile_parameters_never_
 integer_count | no_callee | 0 | - | src/drums/mod.rs | more_hits_than_slots_steals_the_lowest_level_slot_deterministically
 integer_count | no_callee | 0 | - | src/drums/mod.rs | recipe_909_renders_differently_from_the_default_recipe
 integer_count | no_callee | 0 | - | src/drums/mod.rs | render_is_bit_identical_under_any_block_split
-float_bits | hard | 18 | - | src/drums/mod.rs | reset_reproduces_a_freshly_built_machine_bit_for_bit
+float_bits | hard | 19 | - | src/drums/mod.rs | reset_reproduces_a_freshly_built_machine_bit_for_bit
 float_bits | hard | 6 | - | src/drums/mod.rs | sanitised_clamps_every_field_into_its_documented_domain
 integer_count | no_callee | 0 | - | src/drums/mod.rs | set_params_during_a_fade_does_not_cancel_the_fade
-float_bits | hard | 20 | - | src/drums/mod.rs | stereo_with_centered_pans_matches_mono_bit_for_bit
+float_bits | hard | 21 | - | src/drums/mod.rs | stereo_with_centered_pans_matches_mono_bit_for_bit
 integer_count | no_callee | 0 | - | src/drums/mod.rs | the_default_steal_fade_is_the_three_millisecond_constant
-float_bits | hard | 17 | - | src/drums/mod.rs | the_playhead_saturates_at_the_end_of_the_timeline
+float_bits | hard | 18 | - | src/drums/mod.rs | the_playhead_saturates_at_the_end_of_the_timeline
 integer_count | no_callee | 0 | - | src/drums/mod.rs | the_steal_fade_cap_is_pinned_for_absurd_sample_rates
 integer_count | no_callee | 0 | - | src/drums/mod.rs | the_voice_discriminants_round_trip
 float_bits | hard | 10 | - | src/envelope.rs | reset_reproduces_a_freshly_built_envelope_bit_for_bit
