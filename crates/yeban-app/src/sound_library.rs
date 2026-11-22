@@ -507,6 +507,7 @@ fn http_agent(global: Option<Duration>) -> ureq::Agent {
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_per_read(Some(Duration::from_secs(DOWNLOAD_READ_TIMEOUT_SECS)))
         .timeout_global(global)
+        .max_redirects(5)
         .build()
         .into()
 }
@@ -540,6 +541,12 @@ pub fn fetch_catalog() -> Result<Catalog, CatalogError> {
         .get(&url)
         .call()
         .map_err(|err| CatalogError::Unavailable(err.to_string()))?;
+    let final_url = ureq::ResponseExt::get_uri(&response).to_string();
+    if !is_https_url(&final_url) {
+        return Err(CatalogError::Unavailable(format!(
+            "目录重定向到了非 https 地址：{final_url}"
+        )));
+    }
     let mut text = String::new();
     response
         .body_mut()
@@ -820,6 +827,10 @@ fn download_to_file(
         .get(&pack.url)
         .call()
         .map_err(|err| SoundError::Download(err.to_string()))?;
+    let final_url = ureq::ResponseExt::get_uri(&response).to_string();
+    if !is_https_url(&final_url) {
+        return Err(SoundError::InsecureUrl(final_url));
+    }
     // T-FIX-58：本构建的 ureq 只开 rustls、**没有** gzip/brotli 解压特性
     //（见 workspace Cargo.toml 的 default-features=false）。若服务器对 `.zip`
     // 再套一层 Content-Encoding，读到的就是压缩壳而不是归档本体：字节数、
