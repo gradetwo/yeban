@@ -504,11 +504,26 @@ impl SongOverviewProvider for RealSongOverviewProvider {
 /// 当前实现不会失败（纯内存计算）；返回 `Result` 是为了与 provider 的口径一致，
 /// 将来真的接上"谱面读不出来"时不必改签名。
 pub fn score_only_overview(project: &YebanProjectV1) -> Result<McpSongOverview, Fault> {
+    score_only_overview_with_resolution(project, Resolution::Bar)
+}
+
+/// [`score_only_overview`] 的分辨率形：谱面分析本身是小节级的，拍级行由
+/// [`map_song_overview`] 按 `beats_per_bar` 展开（与真实 provider 同一条
+/// 映射）⇒ `get_song_overview` 的 `scoreOnly` 开关（T-FIX-62 / P2-C）能
+/// 如实按调用方给的 `resolution` 出行，而不是偷偷回小节级。
+///
+/// # Errors
+///
+/// 同 [`score_only_overview`]：当前实现不会失败。
+pub fn score_only_overview_with_resolution(
+    project: &YebanProjectV1,
+    resolution: Resolution,
+) -> Result<McpSongOverview, Fault> {
     let score = score_input_from_project(project);
     let beats = score.beats_per_bar();
     let options = AnalysisOptions::default();
     let dsp = analyze_song_overview_with_options(&score, None, &options);
-    Ok(map_song_overview(&dsp, Resolution::Bar, beats))
+    Ok(map_song_overview(&dsp, resolution, beats))
 }
 
 /// 采样器失败的结构化错误（`RENDER_FAILED` + `reason: "samplerUnreadable"`，

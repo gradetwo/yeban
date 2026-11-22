@@ -695,7 +695,8 @@ type StemWriter<'a> = Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<(), Fault
 ///
 /// # Errors
 ///
-/// - `INVALID_PARAMETER_RANGE`：`outDir` 与工程文件/锁文件同路径，或某个既有目标文件已被占用；
+/// - `CONFLICT`：某个既有目标文件已被占用（`conflictingPaths`，见 [`collisions_fault`]）；
+/// - `INVALID_PARAMETER_RANGE`：`outDir` 与工程文件/锁文件同路径（`guard_output_path`）；
 /// - `TRACK_NOT_FOUND`：`trackIds` 里的身份不在工程里；
 /// - `RENDER_FAILED`：渲染层拒绝（含"工程里没有可渲染的内容"）。
 pub fn export(
@@ -1195,9 +1196,16 @@ fn write_failed(
 }
 
 /// 落点冲突的结构化拒绝（预检阶段，还没写任何字节）。
+///
+/// ⭐ T-FIX-62 / P1-D：码是 `CONFLICT` 不是 `INVALID_PARAMETER_RANGE` ——
+/// 参数本身合法（目录、文件名都对），拒绝的理由是**盘上现状与请求相撞**
+/// （目标已被既有文件占用），那是冲突类语义；`INVALID_PARAMETER_RANGE`
+/// 留给「参数值本身非法」（如 `outDir` 不是目录、空 `trackIds`）。
+/// （`guard_output_path` 的工程/锁文件同路径仍是 `INVALID_PARAMETER_RANGE`：
+/// 那是参数指向受保护文件，与占用无关，且是多条导出路径共用的守卫。）
 fn collisions_fault(paths: &[&PathBuf], why: &str) -> Fault {
     Fault::domain_with_data(
-        ErrorCode::InvalidParameterRange,
+        ErrorCode::Conflict,
         format!("分轨落点冲突: {why} (⛔ 不做隐式改名, 也不覆盖既有文件)"),
         json!({
             "conflictingPaths": paths

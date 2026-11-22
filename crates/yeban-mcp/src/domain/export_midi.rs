@@ -310,6 +310,16 @@ mod tests {
         let artifact = plan(&filled_project()).expect("filled 样本必须可导出");
         let parsed = parse_smf(&artifact.bytes).expect("回读");
         assert_eq!(parsed.notes.len(), artifact.notes, "音符数");
+        // ⭐ T-FIX-62 / P2-A 复核钉：歌词必须**真的在字节里** —— `parse_smf`
+        // 回读的是原始 SMF 字节中的 `FF 05` 元事件（`#317`），条数与产物
+        // 自报的 `lyrics`（映射层计数）逐条对上；只对映射层计数断言证明
+        // 不了字节里有事件，本条把「导出没写歌词」的探针结论钉死在字节层。
+        assert_eq!(
+            parsed.lyrics.len(),
+            artifact.lyrics,
+            "歌词条数（parse_smf 回读 FF 05）"
+        );
+        assert_eq!(parsed.lyrics.len(), 4, "filled 样本的四条音节各一条");
         assert_eq!(parsed.tempos.len(), artifact.tempos, "tempo 事件数");
         assert_eq!(parsed.ppq, artifact.ppq, "PPQ");
         assert_eq!(parsed.format, artifact.format, "格式");

@@ -1361,6 +1361,51 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
     }
 
+    /// ⭐ T-FIX-62 / P1-E 复核钉：同一份回执里 `clipId` 与
+    /// `placement.placementId` 必须各报各的身份 —— 片段身份在素材登记时
+    /// 定下，摆放身份由（片段, 音轨, 起点）派生，两者**不同值**；回执把
+    /// 哪个值写进哪个键若混用，本判据立刻变红。
+    #[test]
+    fn receipt_keeps_clip_and_placement_ids_straight() {
+        let project = filled_project();
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1, 2, 3]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let planned = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+                "startTick": 0,
+            })),
+        )
+        .expect("规划");
+        let placement = planned.placement.expect("有摆放");
+        assert_ne!(
+            planned.clip.id, placement.id,
+            "夹具前提：两种身份必须不同值，否则本判据分不开混用"
+        );
+        let data = planned.data().expect("data");
+        assert_eq!(
+            data["clip"]["clipId"],
+            planned.clip.id.to_canonical_string(),
+            "回执 clip.clipId 必须是片段身份"
+        );
+        assert_eq!(
+            data["placement"]["placementId"],
+            placement.id.to_canonical_string(),
+            "回执 placementId 必须是摆放身份"
+        );
+        assert_eq!(
+            data["placement"]["trackId"],
+            track.to_canonical_string(),
+            "回执 placement.trackId 必须是目标音轨"
+        );
+    }
+
     #[test]
     fn budget_is_reported_from_the_single_source() {
         let value = budget_value();

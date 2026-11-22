@@ -1202,3 +1202,80 @@ fn html_report_keeps_unknown_anomaly_text() {
         "未知类型兜底成 low_mid_buildup（契约外值不可达，见转置文档）"
     );
 }
+
+/// ⭐ T-FIX-62 / P2-C：`scoreOnly` 不要求 provider（全量模式在同一情形下
+/// 响亮拒绝，见 `no_provider_is_conflict_with_provider_unavailable`），
+/// 且响应如实标注模式：`scoreOnly: true` + `provider: "score-only"` +
+/// `cacheHit: false`（不走共享缓存）。
+#[test]
+fn score_only_needs_no_provider_and_says_so() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), false);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"scoreOnly": true}),
+    );
+    let data = ok_data(&response);
+    assert_eq!(data["scoreOnly"], true, "{data}");
+    assert_eq!(data["provider"], "score-only", "{data}");
+    assert_eq!(data["cacheHit"], false, "{data}");
+    assert_eq!(data["resolution"], "bar", "{data}");
+    let total_bars = data["song_meta"]["total_bars"]
+        .as_u64()
+        .expect("total_bars");
+    assert!(total_bars > 0, "谱面总览必须有小节: {data}");
+    assert_eq!(
+        data["bar_series"].as_array().expect("bar_series").len() as u64,
+        total_bars,
+        "小节级行数必须与 song_meta.total_bars 一致"
+    );
+}
+
+/// ⭐ T-FIX-62 / P2-C：`scoreOnly` 如实按 `resolution` 出行（拍级展开与
+/// 全量模式同一条映射），而不是偷偷回小节级。
+#[test]
+fn score_only_honours_beat_resolution() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), false);
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"scoreOnly": true, "resolution": "beat"}),
+    );
+    let data = ok_data(&response);
+    assert_eq!(data["resolution"], "beat", "{data}");
+    let total_bars = data["song_meta"]["total_bars"]
+        .as_u64()
+        .expect("total_bars");
+    let rows = data["bar_series"].as_array().expect("bar_series");
+    let beats_per_bar = rows.iter().filter(|row| row["bar"] == 1).count();
+    assert!(beats_per_bar > 1, "拍级展开每小节必须多于一行: {data}");
+    assert_eq!(
+        rows.len() as u64,
+        total_bars * beats_per_bar as u64,
+        "总行数 = 小节数 × 每小节拍数"
+    );
+}
+
+/// ⭐ T-FIX-62 / P2-C：`scoreOnly` 不碰共享缓存 —— 先打一发谱面总览，
+/// 再打全量：全量那一发必须是首次计算（`cacheHit: false`、provider 是
+/// 注入的 stub），且全量响应不带 `scoreOnly` 键；重复全量调用仍命中缓存。
+#[test]
+fn score_only_does_not_touch_the_shared_cache() {
+    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let first = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"scoreOnly": true}),
+    );
+    assert_eq!(ok_data(&first)["provider"], "score-only");
+    let second = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let data = ok_data(&second);
+    assert_eq!(data["provider"], "stub", "{data}");
+    assert_eq!(data["cacheHit"], false, "谱面结果不得毒化全量缓存: {data}");
+    assert!(
+        data.get("scoreOnly").is_none(),
+        "全量响应不带 scoreOnly 键: {data}"
+    );
+    let third = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&third)["cacheHit"], true, "全量缓存本身仍工作");
+}

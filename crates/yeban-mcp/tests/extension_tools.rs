@@ -2083,3 +2083,32 @@ fn an_empty_import_name_is_rejected_and_never_lands_in_the_document() {
         "`tools/list` 必须广播 minLength: {advertised}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⑩ T-FIX-62 / P2-B 复核钉：`yeban_export_midi` 没有落盘口径是 ADR 裁决
+// ---------------------------------------------------------------------------
+
+/// ⭐ T-FIX-62 / P2-B：`yeban_export_midi` 不带任何落盘参数是
+/// `ADR-0001` **D47** 的明文裁决（MIDI 导出的唯一落盘出口 = app CLI
+/// `--export-midi`；本工具 `SideEffect::ReadOnly`、参数面为空）。
+/// 因此给它一个 `outPath` 不是「被静默忽略的好心办坏事」，而是被注册表
+/// 在协议层响亮拒绝（`-32602`，`additionalProperties: false`）——
+/// 现状钉在此：要开落盘口径必须先修订 D47，不许在本工具上偷偷长参数。
+#[test]
+fn export_midi_rejects_a_disk_path_argument_loudly_per_d47() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let (status, code) = call_tool_raw(
+        &mut dispatcher,
+        "yeban_export_midi",
+        serde_json::json!({"outPath": "/tmp/yeban-probe.mid"}),
+    );
+    assert_eq!(
+        code,
+        Some(-32602),
+        "落盘参数必须在协议层被拒: status {status}"
+    );
+    assert!(
+        !std::path::Path::new("/tmp/yeban-probe.mid").exists(),
+        "被拒的调用绝不许偷偷落盘"
+    );
+}

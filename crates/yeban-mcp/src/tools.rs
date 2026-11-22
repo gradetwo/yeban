@@ -1808,7 +1808,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-EXPORT-STEMS",
         name: "yeban_export_stems",
-        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (保留 Unicode 字母/数字与 `._-`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`, 总长封顶 255 字节、超限按整字截断) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`INVALID_PARAMETER_RANGE` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"`); 有喂入且能到达主总线的总线/分组轨出**总线 stem** (喂入求和经其自身通路在主总线上的实际贡献, 与源轨同一条克隆隔离渲染); 无通路/无内容的轨点名 `\"notASourceNode\"` / `\"emptyTrack\"`。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。⭐ 某轨样本峰值**超过 0 dBFS** 时，该轨回执条件出现 `peakWarning`（`code: peakAboveFullScale`，带 `peak` / `peakDbfs` / `truePeakDbfs` 与说明）：32-bit float 文件原样容纳这些样本、不削波，但转 24-bit 整数会硬削平 ⇒ 先压电平再转；不超限的轨**没有**这个键。成功落盘时同时在 `outDir` 写一份机器可读 manifest (`stems-manifest.json`: 每条 stem 的 `trackId` / 轨名 / 文件名 / `sha256` / 字节数等, 响应带 `manifestFileName` / `manifestPath`), 供进程退出后核对与续跑判定; `trackIds` 给空数组 ⇒ `INVALID_PARAMETER_RANGE` 响亮拒绝 (省略才是全部)。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写 (manifest 也不写).",
+        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (保留 Unicode 字母/数字与 `._-`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`, 总长封顶 255 字节、超限按整字截断) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`CONFLICT` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"`); 有喂入且能到达主总线的总线/分组轨出**总线 stem** (喂入求和经其自身通路在主总线上的实际贡献, 与源轨同一条克隆隔离渲染); 无通路/无内容的轨点名 `\"notASourceNode\"` / `\"emptyTrack\"`。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。⭐ 某轨样本峰值**超过 0 dBFS** 时，该轨回执条件出现 `peakWarning`（`code: peakAboveFullScale`，带 `peak` / `peakDbfs` / `truePeakDbfs` 与说明）：32-bit float 文件原样容纳这些样本、不削波，但转 24-bit 整数会硬削平 ⇒ 先压电平再转；不超限的轨**没有**这个键。成功落盘时同时在 `outDir` 写一份机器可读 manifest (`stems-manifest.json`: 每条 stem 的 `trackId` / 轨名 / 文件名 / `sha256` / 字节数等, 响应带 `manifestFileName` / `manifestPath`), 供进程退出后核对与续跑判定; `trackIds` 给空数组 ⇒ `INVALID_PARAMETER_RANGE` 响亮拒绝 (省略才是全部)。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写 (manifest 也不写).",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1828,6 +1828,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         errors: &[
             ErrorCode::NoActiveProject,
             ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
             ErrorCode::TrackNotFound,
             ErrorCode::RenderFailed,
             ErrorCode::IoError,
@@ -2288,7 +2289,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SONG-OVERVIEW",
         name: "get_song_overview",
-        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `frequency_clash` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。`format` 缺省 `\"json\"`（§8.2 JSON）；给 `\"html\"` 返回单文件自包含 HTML 报告字符串（与 JSON 同一份数，由 `yeban-dsp` 的唯一渲染器生成）。共享缓存（线 H）：同一会话内同一工程、同一组分析参数的重复调用只算一次，JSON 响应带 `cacheHit`（首次计算 `false`、命中共享缓存 `true`；工程、参数或 provider 变化后回到 `false`）；HTML 与 JSON 共用同一份计算，但其 `data` 是字符串、不带该字段。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
+        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `frequency_clash` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。`format` 缺省 `\"json\"`（§8.2 JSON）；给 `\"html\"` 返回单文件自包含 HTML 报告字符串（与 JSON 同一份数，由 `yeban-dsp` 的唯一渲染器生成）。共享缓存（线 H）：同一会话内同一工程、同一组分析参数的重复调用只算一次，JSON 响应带 `cacheHit`（首次计算 `false`、命中共享缓存 `true`；工程、参数或 provider 变化后回到 `false`）；HTML 与 JSON 共用同一份计算，但其 `data` 是字符串、不带该字段。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。`scoreOnly: true`（T-FIX-62 / P2-C）只要谱面那一份：跳过整曲渲染与音频面分析、不要求 provider，响应带 `scoreOnly: true`。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
         scope: Scope::AppAdmin,
         // 只读：取 provider 已算好的总览做映射，不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2326,6 +2327,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "响应形态：\"json\"（缺省，§8.2 JSON）或 \"html\"（单文件自包含 HTML 报告字符串，与 JSON 同一份数）；其它值 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"unknownFormat\"`，`accepted: [\"json\", \"html\"]`）；与 `include_png_path: true` 同给 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"includePngPathRequiresJson\"`）",
+            ),
+            param(
+                "scoreOnly",
+                "boolean",
+                false,
+                "只算谱面总览（缺省 false；T-FIX-62 / P2-C，与 app CLI 的 `--overview-score-only` 同一模式）：true 时跳过整曲渲染与音频面分析，只由谱面（音符/段落/速度）算出同构的 §8.2 总览 —— 大工程不再被音频面数据撑大，且不要求宿主注入 provider。响应带 `scoreOnly: true` 且 `provider` 报 `score-only`、`cacheHit` 恒 `false`（不走共享缓存）。`profile` / `expected_levels` 是全量模式的分析参数，本模式下不参与计算（仍被校验，非法值照样响亮拒绝）",
             ),
         ],
         errors: &[

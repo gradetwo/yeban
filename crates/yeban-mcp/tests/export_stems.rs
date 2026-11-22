@@ -1455,3 +1455,41 @@ fn bus_stem_is_unchanged_when_a_non_feeder_track_changes() {
         "Bass 自己的分轨必须随音高改变（改动生效的证据）"
     );
 }
+
+/// ⭐ T-FIX-62 / P1-D：目标文件已被占用 ⇒ `CONFLICT`（不是参数错误）。
+///
+/// 参数本身合法（目录存在、文件名由服务端派生），拒绝的理由是盘上现状
+/// 与请求相撞 ⇒ 冲突类错误码 + `conflictingPaths` 点名；且整批拒绝必须
+/// 在写任何字节之前发生 —— 既有文件逐字节不动。
+#[test]
+fn exporting_onto_existing_stem_files_is_a_conflict_not_a_parameter_error() {
+    let scratch = Scratch::new("occupied");
+    let out_dir = scratch.stems_dir();
+    let (mut dispatcher, auth) = dispatcher_with(&three_track_project(), &scratch.project_path());
+
+    // 第一次导出成功、三条分轨落盘。
+    let _ = export(&mut dispatcher, &auth, &out_dir, Value::Null);
+    let lead_before = file_sha256(&out_dir.join("0001.Lead.wav"));
+
+    // 第二次同目录导出：目标全被占用 ⇒ 整批拒绝。
+    let response = call(
+        &mut dispatcher,
+        &auth,
+        json!({"outDir": out_dir.display().to_string()}),
+    );
+    assert_eq!(response["status"], "error", "{response}");
+    assert_eq!(
+        response["error"]["code"],
+        json!("CONFLICT"),
+        "占用冲突必须是 CONFLICT 类: {response}"
+    );
+    let paths = response["error"]["data"]["conflictingPaths"]
+        .as_array()
+        .expect("conflictingPaths 必须是数组");
+    assert!(!paths.is_empty(), "必须点名冲突落点: {response}");
+    assert_eq!(
+        file_sha256(&out_dir.join("0001.Lead.wav")),
+        lead_before,
+        "冲突拒绝不得改动既有文件"
+    );
+}

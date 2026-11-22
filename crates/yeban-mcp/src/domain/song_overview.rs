@@ -659,8 +659,9 @@ fn arg_expected_levels(call: &ToolCall) -> Result<BTreeMap<String, u8>, Fault> {
 /// 无活跃工程（`NO_ACTIVE_PROJECT`）、`resolution` 非法
 /// （`INVALID_PARAMETER_RANGE`）、`profile` 非法（同码 +
 /// `reason: "unknownProfile"`）、`expected_levels` 非法（同码 +
-/// `reason: "invalidExpectedLevels"`）、宿主未注入 provider（`CONFLICT` +
-/// `providerUnavailable`），或 provider 自身响亮失败（原样转发）。
+/// `reason: "invalidExpectedLevels"`）、全量模式下宿主未注入 provider
+/// （`CONFLICT` + `providerUnavailable`；`scoreOnly: true` 时不要求
+/// provider），或 provider 自身响亮失败（原样转发）。
 pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
     let project = require_active(domain)?;
     let resolution = match arg_str(call, "resolution") {
@@ -708,6 +709,13 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
     };
     let expected_levels = arg_expected_levels(call)?;
     let include_png_path = arg_bool(call, "include_png_path", false);
+    // ⭐ T-FIX-62 / P2-C：`scoreOnly` 开关（与 app CLI 的
+    // `--overview-score-only` 同一个模式）：只要谱面那一份总览，跳过整曲
+    // 渲染与音频面分析 —— 大工程的总览不再被音频面数据撑大，也不再要求
+    // 宿主注入 provider。`profile` / `expected_levels` 是全量模式的分析
+    // 参数，在本模式下不参与计算（纯函数用缺省分析选项，与 app 批处理
+    // 的 ScoreOnly 同一条口径）；它们仍在上面被解析校验，非法值照样响亮拒绝。
+    let score_only = arg_bool(call, "scoreOnly", false);
     if format == OverviewFormat::Html && include_png_path {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -717,38 +725,49 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
             }),
         ));
     }
-    let provider = domain.song_overview_provider().ok_or_else(|| {
-        Fault::domain_with_data(
-            ErrorCode::Conflict,
-            "本会话没有总览分析 provider：宿主既没有注入 provider、也没有装上本 crate \
-             自带的真实 provider，get_song_overview 无法计算总览。",
-            serde_json::json!({
-                "reason": PROVIDER_UNAVAILABLE_REASON,
-                "form": "stdio",
-                "providerAttached": false,
-                "hint": "宿主应在启动时经 Domain::set_song_overview_provider 注入 provider，\
-                         或调用 Domain::install_real_providers 装上自带实现\
-                         （分析住在 yeban-dsp、经 yeban-render 接入；\
-                         独立 stdio 二进制与 yeban-app 都已这样接线）",
-            }),
-        )
-    })?;
-    let request = SongOverviewRequest {
-        resolution,
-        profile,
-        expected_levels,
-    };
-    // 线 H 的共享计算层：同一 (工程指纹, provider, 分辨率) 的重复调用直接
-    // 命中 `Domain` 的共享缓存，provider 一次都不调（见模块头）。持锁期间
-    // 调 provider 是安全的：provider 的契约就是不回头读 `Domain`（见模块头
-    // "provider 怎么拿到工程"），不存在重入死锁。
-    let key = overview_cache_key(project, &request, provider.name());
-    let (overview, cache_hit) = {
-        let mut cache = domain
-            .song_overview_cache()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.get_or_compute(&key, || provider.overview(project, &request))?
+    // 两种模式共用下游的取整与成形：全量模式走 provider + 共享缓存；
+    // `scoreOnly` 走纯函数（不查缓存 —— 缓存键没有模式维度，把谱面结果
+    // 放进去会毒化全量模式的条目），`provider` 字段如实报 `score-only`。
+    let (overview, provider_label, cache_hit) = if score_only {
+        let overview = crate::song_overview_provider::score_only_overview_with_resolution(
+            project, resolution,
+        )?;
+        (overview, "score-only", false)
+    } else {
+        let provider = domain.song_overview_provider().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::Conflict,
+                "本会话没有总览分析 provider：宿主既没有注入 provider、也没有装上本 crate \
+                 自带的真实 provider，get_song_overview 无法计算总览。",
+                serde_json::json!({
+                    "reason": PROVIDER_UNAVAILABLE_REASON,
+                    "form": "stdio",
+                    "providerAttached": false,
+                    "hint": "宿主应在启动时经 Domain::set_song_overview_provider 注入 provider，\
+                             或调用 Domain::install_real_providers 装上自带实现\
+                             （分析住在 yeban-dsp、经 yeban-render 接入；\
+                             独立 stdio 二进制与 yeban-app 都已这样接线）",
+                }),
+            )
+        })?;
+        let request = SongOverviewRequest {
+            resolution,
+            profile,
+            expected_levels,
+        };
+        // 线 H 的共享计算层：同一 (工程指纹, provider, 分辨率) 的重复调用直接
+        // 命中 `Domain` 的共享缓存，provider 一次都不调（见模块头）。持锁期间
+        // 调 provider 是安全的：provider 的契约就是不回头读 `Domain`（见模块头
+        // "provider 怎么拿到工程"），不存在重入死锁。
+        let key = overview_cache_key(project, &request, provider.name());
+        let (overview, cache_hit) = {
+            let mut cache = domain
+                .song_overview_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get_or_compute(&key, || provider.overview(project, &request))?
+        };
+        (overview, provider.name(), cache_hit)
     };
     let overview = rounded(overview);
     if format == OverviewFormat::Html {
@@ -771,8 +790,13 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
         )
     })?;
     let object = data.as_object_mut().expect("SongOverview 序列化后是对象");
-    object.insert("provider".to_owned(), Value::from(provider.name()));
+    object.insert("provider".to_owned(), Value::from(provider_label));
     object.insert("resolution".to_owned(), Value::from(resolution.as_str()));
+    // ⭐ T-FIX-62 / P2-C：模式如实出现在响应里（缺省全量模式不加这个键，
+    // 与 `provider: "score-only"` 互相印证；调用方据此知道音频面没算）。
+    if score_only {
+        object.insert("scoreOnly".to_owned(), Value::from(true));
+    }
     // 线 H：本次响应是否命中共享缓存（首次计算 `false`、重复调用 `true`；
     // 工程 / 请求 / provider 任一变化后回到 `false`）。与 `provider` /
     // `pngPath` 同款的 handler 追加字段，⛔ 不进 §8.2 的 struct 本体。
