@@ -523,18 +523,44 @@ component IconTransportStop inherits Rectangle {
     }
 }
 
+// 走带播放键的**字形**：未播放 = 实心三角（▶），播放中 = 双竖条（‖）。
+// ⚠ T-FIX-109：此前这里只有三角，播放期间按钮不换形 —— 用户看不出正在播放，
+// 也不知道点下去是暂停。字形只由 `playing`（= 引擎 `TransportReading::state`
+// 的镜面，唯一写者是 `host::apply_transport`）决定，⛔ 不引入第二份状态。
 component IconTransportPlay inherits Rectangle {
     in property <color> icon-color: Tokens.skin-meter-low;
+    in property <bool> playing: false;
     width: 10px;
     height: 11px;
 
     Path {
+        visible: !root.playing;
         x: 0px;
         y: 0px;
         width: 10px;
         height: 11px;
         commands: "M 0 0 L 10 5.5 L 0 11 Z";
         fill: root.icon-color;
+    }
+
+    // 暂停字形：两条 2.5px 竖条，留 1px 中缝，撑满 10×11 的同一画框
+    // （位置按三角同高，⛔ 不做垂直居中微调之外的缩放，避免与停止键视觉重量不一致）。
+    Rectangle {
+        visible: root.playing;
+        x: 1px;
+        y: 1px;
+        width: 2.5px;
+        height: 9px;
+        background: root.icon-color;
+    }
+
+    Rectangle {
+        visible: root.playing;
+        x: 6.5px;
+        y: 1px;
+        width: 2.5px;
+        height: 9px;
+        background: root.icon-color;
     }
 }
 
@@ -916,7 +942,7 @@ export component TransportHeaderBar inherits Rectangle {
                         TooltipBubble { text: @tr("停止播放并复位 [Space]"); is-visible: btn_stop_touch.has-hover; }
                     }
 
-                    // 3. Play / Pause Button (▶)
+                    // 3. Play / Pause Button (▶ 未播放 / ‖ 播放中)
                     btn_play := Rectangle {
                         width: 36px;
                         height: 24px;
@@ -933,6 +959,7 @@ export component TransportHeaderBar inherits Rectangle {
                             ? Tokens.skin-meter-low
                             : (Tokens.texture-physical || btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.45) : transparent);
                         IconTransportPlay {
+                            playing: root.is-playing;
                             icon-color: root.is-playing ? Tokens.skin-inset : Tokens.skin-meter-low;
                         }
                         btn_play_touch := TouchArea {
