@@ -1,9 +1,9 @@
-import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
+import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
 // ⭐ 审计 #20：`ImeState` 必须进这份 `export` 列表。
 // `export global` 只让**同一 .slint 文档树内**的组件可见；Rust 侧
 // `ui.global::<ImeState>()` 要拿到的类型，只有在被**本文件导出**后才会出现在
 // `crate::ui` 模块里（未导出时 E0432: no `ImeState` in `ui`）。
-export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
+export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -25,6 +25,7 @@ import { LessonsDrawer } from "dialogs/lessons_drawer.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { DrumGenDialog } from "dialogs/drum_gen_dialog.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
+import { PresetLibraryDialog } from "dialogs/preset_library.slint";
 import { StartupChooserDialog } from "dialogs/startup_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
 import { SoundLibraryDialog } from "dialogs/sound_library_dialog.slint";
@@ -772,6 +773,15 @@ export component MainWindow inherits Window {
     in-out property <int> template-chooser-hidden-rows: 0;
     in-out property <bool> template-chooser-open: false;
     in-out property <[TemplateChooserRow]> template-chooser-rows: [];
+    // 原生预制库（T-FIX-77）：行模型与当前轨的旁通态全由宿主写；
+    // 默认关着 ⇒ 默认帧不变。
+    in-out property <[PresetRowData]> preset-rows: [];
+    in-out property <bool> preset-library-open: false;
+    in-out property <string> preset-current-track: "";
+    in-out property <bool> preset-has-current: false;
+    in-out property <bool> preset-current-bypassed: false;
+    in-out property <string> preset-save-name: "";
+    in-out property <string> preset-error: "";
     in-out property <string> template-save-error: "";
     in-out property <bool> template-save-exists: false;
     in-out property <string> template-save-hint: "";
@@ -1038,6 +1048,10 @@ export component MainWindow inherits Window {
     callback startup-tap-tempo();
     callback stop();
     callback template-selected(int);
+    callback open-preset-library();
+    callback preset-apply(string);
+    callback preset-save(string);
+    callback preset-bypass-toggle(bool);
     callback toggle-ai-drawer();
     callback toggle-metronome();
     callback toggle-sidebar();
@@ -1076,6 +1090,7 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("保存工程 (Ctrl+S)"); activated => { root.command-execute("file-save"); } }
             MenuItem { title: @tr("另存为 (Ctrl+Shift+S)"); activated => { root.command-execute("file-save-as"); } }
             MenuItem { title: @tr("另存为模板..."); activated => { root.command-execute("file-save-as-template"); } }
+            MenuItem { title: @tr("原生预制库..."); activated => { root.open-preset-library(); } }
             MenuSeparator {}
             MenuItem { title: @tr("导出音频 (WAV)..."); activated => { root.command-execute("open-export-wav"); } }
             MenuItem { title: @tr("导出分轨 (Stems)..."); activated => { root.command-execute("export-stems"); } }
@@ -2227,6 +2242,25 @@ export component MainWindow inherits Window {
             hidden-rows: root.template-chooser-hidden-rows;
             template-selected(i) => { root.template-selected(i); }
             close => { root.template-chooser-open = false; }
+        }
+
+        // Visible Preset Library Modal Dialog（T-FIX-77：原生预制四件）
+        if root.preset-library-open : PresetLibraryDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            rows: root.preset-rows;
+            current-track: root.preset-current-track;
+            has-current-preset: root.preset-has-current;
+            current-bypassed: root.preset-current-bypassed;
+            save-name <=> root.preset-save-name;
+            error <=> root.preset-error;
+            apply-preset(id) => { root.preset-apply(id); }
+            save-preset(name) => { root.preset-save(name); }
+            bypass-toggle(bypassed) => { root.preset-bypass-toggle(bypassed); }
+            close => { root.preset-library-open = false; }
         }
 
         // Visible Startup Chooser Modal Dialog（启动工程选择器，

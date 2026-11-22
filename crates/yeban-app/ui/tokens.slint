@@ -1400,6 +1400,17 @@ export struct TimelineBlockData {
     waveform_peaks: [float],
 }
 
+// 原生预制库的一行（`yeban_mcp::domain::preset::list_presets_json` 的界面投影）。
+// `id` 是真正传给应用的预制标识；`kind` 只用于分组标题（system / user）。
+// `bypassed` 只对当前轨有意义，行上不显示别的轨的旁通态。
+export struct PresetRowData {
+    id: string,
+    name: string,
+    detail: string,
+    kind: string,
+    instrument: string,
+}
+
 export struct BrowserItemData {
     name: string,
     desc: string,

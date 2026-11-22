@@ -1,0 +1,382 @@
+// 夜半 (Yeban) — 原生预制库
+//
+// 把 MCP 侧已实现的四件事搬进同一块可见面板：
+//   1. 列出：宿主从 `yeban_mcp::domain::preset::list_presets_json("all", None)`
+//      投影成 `PresetRowData`，界面只画，不扫盘、不解析文件名。
+//   2. 应用：行尾「应用」把 `id` 上抛；宿主用与 `yeban_apply_preset` 同一份
+//      `build_apply_ops` 规划并走 `UndoPort::commit_ops`。
+//   3. 另存：名字输入 + 「另存当前轨」；宿主调 `build_save_preset` 后由
+//      同一写盘函数落用户库，同名拒绝的原文原样回到 `error`。
+//   4. 旁通：顶部一枚闸门，只作用于当前轨；宿主走 `build_bypass_ops`。
+//
+// 入口挂在「文件 → 预制库...」，属于既有的文件 / 音色组织，不新造一级导航。
+// 默认关着 ⇒ 默认帧与 golden 基准不变。
+
+import { Tokens, UiText, UiTitleText, PresetRowData, ImeAwareTextInput } from "../tokens.slint";
+
+export component PresetLibraryDialog inherits Rectangle {
+    in property <[PresetRowData]> rows: [];
+    in property <string> current-track: "";
+    in property <bool> has-current-preset: false;
+    in property <bool> current-bypassed: false;
+    in-out property <string> save-name: "";
+    in-out property <string> error: "";
+
+    callback apply-preset(string);
+    callback save-preset(string);
+    callback bypass-toggle(bool);
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "preset-library-dialog";
+    accessible-label: @tr("原生预制库");
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: (root.width - 760px) / 2;
+        y: (root.height - 600px) / 2;
+        width: 760px;
+        height: 600px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "preset-library-panel";
+        accessible-label: @tr("原生预制库面板");
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: @tr("原生预制库");
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        UiText {
+            x: Tokens.space-6;
+            y: 34px;
+            width: parent.width - 48px;
+            height: 16px;
+            text: @tr("工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。");
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 关闭
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "preset-library-close-button";
+            accessible-label: @tr("关闭原生预制库");
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xl;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.close(); }
+            }
+        }
+
+        // 当前轨 + 旁通闸门
+        Rectangle {
+            x: Tokens.space-6;
+            y: 62px;
+            width: parent.width - 48px;
+            height: 36px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+
+            UiText {
+                x: Tokens.space-4;
+                y: 0;
+                width: parent.width - 220px;
+                height: parent.height;
+                text: root.current-track;
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Rectangle {
+                x: parent.width - 176px;
+                y: 6px;
+                width: 168px;
+                height: 24px;
+                background: root.has-current-preset ? (root.current-bypassed ? Tokens.bg-raised : Tokens.gold-deep) : Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: root.has-current-preset ? Tokens.gold-deep : Tokens.line;
+                accessible-role: button;
+                accessible-id: "preset-library-bypass-toggle";
+                accessible-label: @tr("旁通当前轨预制");
+                accessible-action-default => {
+                    if (root.has-current-preset) { root.bypass-toggle(!root.current-bypassed); }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.current-bypassed ? @tr("已旁通 · 点击恢复") : @tr("旁通当前轨预制");
+                    color: root.has-current-preset ? Tokens.gold-bright : Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: root.has-current-preset ? MouseCursor.pointer : MouseCursor.default;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        if (root.has-current-preset) { root.bypass-toggle(!root.current-bypassed); }
+                    }
+                }
+            }
+        }
+
+        // 另存行
+        Rectangle {
+            x: Tokens.space-6;
+            y: 108px;
+            width: parent.width - 48px;
+            height: 36px;
+            background: transparent;
+
+            // 名字输入框：空串时也要看得见（边框 + 底色，照侧栏搜索框的同款口径；
+            // ⛔ 不另加提示文案——新译文要进九语言词表，不在本票里添）。
+            Rectangle {
+                x: 0;
+                y: 6px;
+                width: parent.width - 152px;
+                height: 24px;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+
+                preset-name-input := ImeAwareTextInput {
+                    x: Tokens.space-3;
+                    y: 0;
+                    width: parent.width - Tokens.space-3;
+                    height: parent.height;
+                    text <=> root.save-name;
+                    single-line: true;
+                    font-family: Tokens.font-ui;
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                    accessible-role: text-input;
+                    accessible-id: "preset-save-name-input";
+                    accessible-label: @tr("新预制名称");
+                    accessible-value: root.save-name;
+                    accessible-read-only: false;
+                    edited => { root.error = ""; }
+                    accepted => { root.save-preset(root.save-name); }
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 140px;
+                y: 6px;
+                width: 140px;
+                height: 24px;
+                background: Tokens.gold-deep;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "preset-save-button";
+                accessible-label: @tr("另存当前轨为预制");
+                accessible-action-default => { root.save-preset(root.save-name); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("另存当前轨为预制");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.save-preset(root.save-name); }
+                }
+            }
+        }
+
+        // 失败原文（空串 = 不占位；有失败就响亮摆在这里，弹窗不关）
+        if root.error != "" : Rectangle {
+            x: Tokens.space-6;
+            y: 150px;
+            width: parent.width - 48px;
+            height: 32px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.record-red;
+
+            UiText {
+                x: Tokens.space-4;
+                y: 0;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: root.error;
+                color: Tokens.record-red;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // 列表
+        Rectangle {
+            x: Tokens.space-6;
+            y: root.error != "" ? 190px : 154px;
+            width: parent.width - 48px;
+            height: parent.height - self.y - 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            accessible-role: list;
+            accessible-id: "preset-library-list";
+            accessible-label: @tr("预制列表");
+
+            if root.rows.length == 0 : UiText {
+                x: Tokens.space-6;
+                y: Tokens.space-6;
+                width: parent.width - 48px;
+                height: 24px;
+                text: @tr("用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Flickable {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: max(self.height, root.rows.length * 44px);
+                interactive: true;
+
+                for row[row-index] in root.rows : Rectangle {
+                    x: 0;
+                    y: row-index * 44px;
+                    width: parent.width;
+                    height: 44px;
+                    clip: true;
+                    background: row-touch.has-hover ? Tokens.bg-raised : transparent;
+
+                    UiText {
+                        x: Tokens.space-4;
+                        y: 5px;
+                        width: parent.width - 112px;
+                        height: 18px;
+                        text: row.name + (row.kind == "system" ? "  ·  工厂" : "  ·  用户");
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: Tokens.space-4;
+                        y: 23px;
+                        width: parent.width - 112px;
+                        height: 14px;
+                        text: row.detail;
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                    }
+
+                    Rectangle {
+                        x: parent.width - 92px;
+                        y: 10px;
+                        width: 80px;
+                        height: 24px;
+                        background: Tokens.gold-deep;
+                        border-radius: Tokens.radius-sm;
+                        accessible-role: button;
+                        accessible-id: "preset-apply-" + row-index;
+                        accessible-label: row.name + @tr(" 应用到当前轨");
+                        accessible-action-default => { root.apply-preset(row.id); }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("应用");
+                            color: Tokens.gold-bright;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.apply-preset(row.id); }
+                        }
+                    }
+
+                    row-touch := TouchArea {
+                        x: 0;
+                        y: 0;
+                        width: parent.width - 100px;
+                        height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.apply-preset(row.id); }
+                    }
+                }
+            }
+        }
+    }
+}

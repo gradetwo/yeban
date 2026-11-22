@@ -11803,6 +11803,277 @@ fn refresh_sound_pack_installed_flags(ui: &MainWindow) {
     ui.set_sound_pack_installed(booleans(&flags));
 }
 
+/// **原生预制库的 GUI 接线（T-FIX-77）**。
+///
+/// 四个动作与 MCP 工具共用同一份构造：
+/// - 列出：`preset::list_presets_json("all", None)`（工厂内嵌 + 用户库读盘）；
+/// - 应用：`preset::resolve_preset` + `preset::build_apply_ops`（缺省五类）；
+/// - 另存：`preset::build_save_preset` + `preset::write_user_preset_file`
+///   （同名未显式覆盖时，`Conflict` 的原文直接回到面板的 `error` 行）；
+/// - 旁通：`preset::build_bypass_ops`。
+///
+/// 所有失败都不吞：`Fault` 的 Display 文本原样写进 `preset-error`，面板不关。
+/// 行模型的唯一写者是这里；界面不扫盘、不解析文件名。
+pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    use std::collections::BTreeMap;
+    use yeban_mcp::domain::preset;
+
+    fn fault_text(error: &yeban_mcp::domain::error::Fault) -> String {
+        match error {
+            yeban_mcp::domain::error::Fault::Domain { message, .. } => message.clone(),
+            yeban_mcp::domain::error::Fault::Impl { error } => error.message.clone(),
+        }
+    }
+
+    fn project_and_track(
+        ui: &MainWindow,
+        port: Option<&Rc<UndoPort>>,
+    ) -> Result<(YebanProjectV1, EntityId), String> {
+        let project = port
+            .and_then(|port| port.try_project())
+            .ok_or_else(|| "当前没有打开的工程".to_owned())?;
+        let track =
+            display_track(ui, &project).ok_or_else(|| "当前工程没有可操作的音轨".to_owned())?;
+        let track_id = track.id;
+        Ok((project, track_id))
+    }
+
+    fn rows() -> Vec<crate::ui::PresetRowData> {
+        let listing = preset::list_presets_json("all", None);
+        let Some(presets) = listing.get("presets").and_then(serde_json::Value::as_array) else {
+            return Vec::new();
+        };
+        presets
+            .iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?;
+                let name = row.get("name")?.as_str()?;
+                let kind = row.get("kind")?.as_str()?;
+                let instrument = row.get("instrument")?.as_str()?;
+                let macros = row
+                    .get("macros")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len);
+                let sends = row
+                    .get("sends")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len);
+                let draft = row
+                    .get("draft")
+                    .and_then(serde_json::Value::as_bool)
+                    .is_some_and(|draft| draft);
+                let detail = format!(
+                    "{instrument} · {} 个宏 · {} 条发送{}",
+                    macros,
+                    sends,
+                    if draft { " · 草稿" } else { "" }
+                );
+                Some(crate::ui::PresetRowData {
+                    id: id.into(),
+                    name: name.into(),
+                    detail: detail.into(),
+                    kind: kind.into(),
+                    instrument: instrument.into(),
+                })
+            })
+            .collect()
+    }
+
+    fn refresh(ui: &MainWindow, port: Option<&Rc<UndoPort>>) {
+        ui.set_preset_rows(ModelRc::new(VecModel::from(rows())));
+        let Some(project) = port.and_then(|port| port.try_project()) else {
+            ui.set_preset_current_track("当前轨：没有打开的工程".into());
+            ui.set_preset_has_current(false);
+            ui.set_preset_current_bypassed(false);
+            return;
+        };
+        let Some(track) = display_track(ui, &project) else {
+            ui.set_preset_current_track("当前轨：未选中（先点一条轨）".into());
+            ui.set_preset_has_current(false);
+            ui.set_preset_current_bypassed(false);
+            return;
+        };
+        let state = track.preset.as_deref();
+        ui.set_preset_current_track(
+            format!(
+                "当前轨：{} · {}",
+                track.name,
+                state
+                    .and_then(|state| state.preset_id.as_deref())
+                    .unwrap_or("未应用预制")
+            )
+            .into(),
+        );
+        ui.set_preset_has_current(state.is_some());
+        ui.set_preset_current_bypassed(state.is_some_and(|state| state.bypassed));
+    }
+
+    fn fail(ui: &MainWindow, message: String) {
+        ui.set_preset_error(message.clone().into());
+        ui.set_toast_message(format!("[预制] {message}").into());
+    }
+
+    fn succeed(ui: &MainWindow, message: &str) {
+        ui.set_preset_error("".into());
+        ui.set_toast_message(format!("[预制] {message}").into());
+    }
+
+    // 打开面板：先投影当前清单与当前轨状态（不缓存陈旧行）。
+    {
+        let weak = ui.as_weak();
+        let port_open = port.clone();
+        ui.on_open_preset_library(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_preset_error("".into());
+            refresh(&ui, port_open.as_ref());
+            ui.set_preset_library_open(true);
+        });
+    }
+
+    // 应用：与 `yeban_apply_preset` 同一条 `build_apply_ops`（缺省五类）。
+    {
+        let weak = ui.as_weak();
+        let port_apply = port.clone();
+        ui.on_preset_apply(move |preset_id| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(port) = port_apply.as_ref() else {
+                fail(&ui, "当前没有可提交的工程会话".to_owned());
+                return;
+            };
+            let (project, track_id) = match project_and_track(&ui, Some(port)) {
+                Ok(pair) => pair,
+                Err(message) => return fail(&ui, message),
+            };
+            let preset = match preset::resolve_preset(&BTreeMap::new(), preset_id.as_str()) {
+                Ok(preset) => preset,
+                Err(error) => return fail(&ui, fault_text(&error)),
+            };
+            let categories = match preset::parse_categories(None) {
+                Ok(categories) => categories,
+                Err(error) => return fail(&ui, fault_text(&error)),
+            };
+            let plan = match preset::build_apply_ops(&project, &track_id, &preset, &categories) {
+                Ok(plan) => plan,
+                Err(error) => return fail(&ui, fault_text(&error)),
+            };
+            let sends_skipped = plan.sends_skipped;
+            let macros_skipped = plan.macros_skipped;
+            if let Err(refusal) = port.commit_ops(
+                now_ms(),
+                &format!("apply preset {} to {track_id}", preset.name),
+                plan.ops,
+            ) {
+                return fail(&ui, format!("提交被拒：{refusal}"));
+            }
+            refresh(&ui, Some(port));
+            let mut message = format!("已应用「{}」到 {track_id}", preset.name);
+            if !sends_skipped.is_empty() {
+                message.push_str(&format!("；跳过发送：{}", sends_skipped.join(", ")));
+            }
+            if macros_skipped > 0 {
+                message.push_str(&format!("；跳过宏：{macros_skipped} 个"));
+            }
+            succeed(&ui, &message);
+        });
+    }
+
+    // 另存：名字为空、轨未绑定采样器、同名冲突等错误原文都由构造层给出。
+    {
+        let weak = ui.as_weak();
+        let port_save = port.clone();
+        ui.on_preset_save(move |name| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(port) = port_save.as_ref() else {
+                fail(&ui, "当前没有可提交的工程会话".to_owned());
+                return;
+            };
+            let (project, track_id) = match project_and_track(&ui, Some(port)) {
+                Ok(pair) => pair,
+                Err(message) => return fail(&ui, message),
+            };
+            let (preset, path, overwritten) = match preset::build_save_preset(
+                &project,
+                &track_id,
+                name.as_str(),
+                yeban_model::preset::PresetScope::Instrument,
+                false,
+            ) {
+                Ok(saved) => saved,
+                Err(error) => return fail(&ui, fault_text(&error)),
+            };
+            if let Err(error) = preset::write_user_preset_file(&path, &preset) {
+                return fail(&ui, fault_text(&error));
+            }
+            ui.set_preset_save_name("".into());
+            refresh(&ui, Some(port));
+            succeed(
+                &ui,
+                &format!(
+                    "已另存「{}」到用户库{}",
+                    preset.name,
+                    if overwritten {
+                        "（覆盖同名）"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        });
+    }
+
+    // 旁通：只作用于当前轨；没有预制状态时构造层会给出原文。
+    {
+        let weak = ui.as_weak();
+        let port_bypass = port.clone();
+        ui.on_preset_bypass_toggle(move |bypassed| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(port) = port_bypass.as_ref() else {
+                fail(&ui, "当前没有可提交的工程会话".to_owned());
+                return;
+            };
+            let (project, track_id) = match project_and_track(&ui, Some(port)) {
+                Ok(pair) => pair,
+                Err(message) => return fail(&ui, message),
+            };
+            let (ops, sends_skipped, macros_skipped) =
+                match preset::build_bypass_ops(&project, &track_id, bypassed, &BTreeMap::new()) {
+                    Ok(result) => result,
+                    Err(error) => return fail(&ui, fault_text(&error)),
+                };
+            let message = if bypassed {
+                format!("bypass preset on {track_id}")
+            } else {
+                format!("restore preset on {track_id}")
+            };
+            if let Err(refusal) = port.commit_ops(now_ms(), &message, ops) {
+                return fail(&ui, format!("提交被拒：{refusal}"));
+            }
+            refresh(&ui, Some(port));
+            let mut message = if bypassed {
+                format!("已旁通 {track_id} 的预制处理")
+            } else {
+                format!("已恢复 {track_id} 的预制处理")
+            };
+            if !sends_skipped.is_empty() {
+                message.push_str(&format!("；跳过发送：{}", sends_skipped.join(", ")));
+            }
+            if macros_skipped > 0 {
+                message.push_str(&format!("；跳过宏：{macros_skipped} 个"));
+            }
+            succeed(&ui, &message);
+        });
+    }
+}
+
 /// 鼓机生成对话框接线（`line/drum-machine-p1`）：「编辑 → 鼓机生成 (Drums)...」。
 ///
 /// - 打开时播种：风格行从 `yeban_theory::factory_drum_styles()` 投影；五格

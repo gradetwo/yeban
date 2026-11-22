@@ -1062,6 +1062,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ **运行期「导入音频」的可见入口**（控制台 Tab 1 的素材池面板）：问一次对话框 ⇒
     // `crate::import_audio::import_audio_file`（经同一个 `UndoPort`，来源 `OpOrigin::Import`
     // ⇒ 可撤销）⇒ 资产字节登记进会话池 ⇒ 重投影 ⇒ `module-status` 回执。
+    // 原生预制库（T-FIX-77）：列表 / 应用 / 另存 / 旁通四个入口共用
+    // `host::wire_preset_library`；与 MCP 工具同一份 `preset` 构造层。
+    host::wire_preset_library(&ui, Some(Rc::clone(&undo_port)));
     host::wire_import_audio(
         &ui,
         Rc::clone(&undo_port),
