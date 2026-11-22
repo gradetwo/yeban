@@ -48,3 +48,7 @@ __pycache__/
 
 # 临时调试/验证日志目录（绝不入库；G12 守卫拦截）
 /.work/
+
+# 本地进度草稿：只留在工作树，不入库（T-FIX-27）
+/PROGRESS*.md
+/DIAGNOSIS-pdc.md
