@@ -198,12 +198,9 @@ fn directory_lists_sfz_with_present_and_missing_samples() {
     let one = lib1.join("one.sfz");
     std::fs::write(
         &one,
-        format!(
-            "<region> sample={} key=60 pitch_keycenter=60\n\
-             <region> sample=missing.wav key=61 pitch_keycenter=61\n\
-             <region> sample=*silence key=62 pitch_keycenter=62\n",
-            tone.display()
-        ),
+        "<region> sample=tone.wav key=60 pitch_keycenter=60\n\
+         <region> sample=missing.wav key=61 pitch_keycenter=61\n\
+         <region> sample=*silence key=62 pitch_keycenter=62\n",
     )
     .expect("写 one.sfz");
     let two_sample = lib2.join("hit.wav");
@@ -380,13 +377,12 @@ fn unreadable_sfz_is_marked_not_dropped() {
 #[test]
 fn directory_manifest_reports_present_and_missing_per_instrument() {
     let scratch = Scratch::new("dir-manifest");
-    let programs = scratch.dir.join("lib-a").join("Programs");
-    let samples = scratch.dir.join("lib-a").join("Samples");
-    std::fs::create_dir_all(&programs).expect("建 Programs");
+    let lib_a = scratch.dir.join("lib-a");
+    let samples = lib_a.join("Samples");
     std::fs::create_dir_all(&samples).expect("建 Samples");
     std::fs::write(
-        programs.join("a.sfz"),
-        "<region> sample=../Samples/s1.wav key=60 pitch_keycenter=60\n",
+        lib_a.join("a.sfz"),
+        "<region> sample=Samples/s1.wav key=60 pitch_keycenter=60\n",
     )
     .expect("写 a.sfz");
     write_constant_wav(&samples.join("s1.wav"), 0.25, 64, 48_000);
@@ -396,13 +392,13 @@ fn directory_manifest_reports_present_and_missing_per_instrument() {
         "instruments": [{
             "id": "lib-a",
             "name": "Lib A",
-            "sfz": "Programs/a.sfz",
+            "sfz": "a.sfz",
             "relative_root": "assets/samples/lib-a",
             "file_count": 3,
             "bundled": false
         }],
         "items": [
-            {"instrument": "lib-a", "relative_path": "assets/samples/lib-a/Programs/a.sfz"},
+            {"instrument": "lib-a", "relative_path": "assets/samples/lib-a/a.sfz"},
             {"instrument": "lib-a", "relative_path": "assets/samples/lib-a/Samples/s1.wav"},
             {"instrument": "lib-a", "relative_path": "assets/samples/lib-a/Samples/s2.wav"}
         ]

@@ -260,8 +260,7 @@ fn bus_fixture() -> BusFixture {
         edge("01ARZ3NDEKTSV4RRFFQ69G5F43", bus, bus2),
         edge("01ARZ3NDEKTSV4RRFFQ69G5F44", bus2, master),
         edge("01ARZ3NDEKTSV4RRFFQ69G5F45", base.empty, quiet_bus),
-        // 成环：Quiet Bus → Track 2。上游遍历必须带已访集，否则在这里打转。
-        edge("01ARZ3NDEKTSV4RRFFQ69G5F46", quiet_bus, base.empty),
+        // `RoutingGraph::validate()` 禁止路由成环（只留无环 DAG 供 Quiet Bus 汇总静音源轨）。
         edge("01ARZ3NDEKTSV4RRFFQ69G5F47", quiet_bus, master),
     ]);
     project
@@ -793,7 +792,7 @@ fn a_device_on_a_transitive_bus_has_no_warning() {
 }
 
 /// 反向钉子：只接静音轨的总线轨仍报 —— 豁免不是"总线轨一律不报"。
-/// 夹具里 `Quiet Bus` ↔ `Track 2` 成环：遍历必须终止且仍判静音。
+/// 夹具里 `Quiet Bus` 只连了无音频源 `Track 2`。
 #[test]
 fn a_device_on_a_bus_fed_only_by_silent_tracks_still_warns() {
     let fixture = bus_fixture();
