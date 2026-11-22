@@ -453,7 +453,7 @@ H 的注入内容随本轮处置的改变而更新（现在是"把文档样本�
 | # | 项 | 性质 |
 | :--- | :--- | :--- |
 | P1 | 十个工具的**领域实现**尚未接线，一律返回 `-32005 NOT_IMPLEMENTED` | 已知缺口；分发/鉴权/dryRun/幂等/传输是真实现 |
-| P2 | 冷启动 **≤ 20ms** 未测量（`docs/.../§7.1` 给形态 B 定的目标） | **未验证**；没有 `iai-callgrind` 打点，也没有 CI 侧启动耗时判据 |
+| P2 | 冷启动 **≤ 20ms**（`docs/.../§7.1` 给形态 B 定的目标） | **已实测（2026-11-22，debug）**：`scripts/gates/measure_mcp_cold_start.py target/debug/yeban-mcp --runs 60` 得 p50 3.32ms / p95 4.91ms / p99 5.58ms / max 5.99ms（页面缓存已热；first_run 378.76ms 单列）。判据：p95 ≥ 20ms 退出 1。release 与真冷盘仍未测 |
 | P3 | ~~CI 未接 mcp 样本导出~~ | **已由集成者关闭**（`ci.yml` 的 `checks` job 已接线） |
 | P4 | ~~错误码契约冲突（13 个码没有家）~~ | **已由 ADR-0001 D25 关闭**（联集 20 值）；D25 标为 `Proposed`，**待人类追认** |
 | P5 | ~~schema 根不引用 `definitions`~~ | **已由 ADR-0001 D25 关闭**（根改成 `oneOf`），判据已升级成承重形态 |

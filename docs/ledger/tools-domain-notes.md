@@ -296,7 +296,7 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
 | # | 项 | 状态 |
 | :--- | :--- | :--- |
 | P1（承接 `mcp-core` 台账） | 十工具领域实现未接线 | **本轮关闭**（唯一残留 = 渲染器本体，见 `MCP-TOOL-008`）—— 该残留已由 `line/mcp-render` 关闭：见 `docs/ledger/mcp-render-notes.md` |
-| P2（承接） | 冷启动 ≤ 20ms 未测量 | **仍 pending**（本线不新增打点） |
+| P2（承接） | 冷启动 ≤ 20ms | **已实测（2026-11-22，debug）**：p50 3.32ms / p95 4.91ms（60 次，`scripts/gates/measure_mcp_cold_start.py`）；release/冷盘仍 pending |
 | P4 / P5 / P10（承接） | ADR-0001 D25 的两处取舍（联集 20 值、4 个 schema 原有码是否全留）待人类追认 | **仍 pending** |
 | P6（承接） | `.yeban.lock` 的 OS 建议锁 / 心跳 / 陈旧锁抢占 | **仍 pending**（本线把"原子创建 + 存在即拒"做实了，见 boundary-3） |
 | P7（承接） | 形态 A 内嵌进 `yeban-app` | **能力已就绪、仍未接线**：本线新增 `Dispatcher::domain_mut()` 与 `Domain::open_in_memory()`，app 侧只要注入自己的 `YebanProjectV1` 即可（含 `Domain::set_now_ms` 注入时钟） |
