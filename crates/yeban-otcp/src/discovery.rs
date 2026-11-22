@@ -392,8 +392,13 @@ pub fn now_ms() -> u64 {
 /// 但 nonce 本身只是防重放的会话绑定，不是长期密钥）。
 #[must_use]
 pub fn generate_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut seed = now_ms() ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    let seq = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut seed = now_ms()
+        ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        ^ seq.wrapping_mul(0xBF58476D1CE4E5B9);
     let mut nonce = String::with_capacity(32);
     for _ in 0..32 {
         // xorshift64* 混洗。
@@ -415,9 +420,33 @@ pub fn valid_nonce(nonce: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// 校验 `job_id` 为安全单段文件名（防路径穿越：`..`、`/`、`\`、`\0` 与控制字符）。
+///
+/// # Errors
+///
+/// 若 `job_id` 为空、含路径分隔符、`..`、NUL 或 ASCII 控制字符，返回 [`OtcpError`]。
+pub fn validate_job_id(job_id: &str) -> Result<(), OtcpError> {
+    if job_id.is_empty()
+        || job_id == "."
+        || job_id == ".."
+        || job_id.contains("..")
+        || job_id.contains('/')
+        || job_id.contains('\\')
+        || job_id.bytes().any(|b| b == 0 || b < 0x20)
+    {
+        return Err(OtcpError::protocol(format!(
+            "非法 OTCP job_id（禁止空串、路径分隔符、.. 与控制字符）: {job_id:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// 控制目录路径（任务根下的 `control/<job_id>`）。
 #[must_use]
 pub fn control_dir_for(control_root: &Path, job_id: &str) -> PathBuf {
+    if validate_job_id(job_id).is_err() {
+        return control_root.join("control").join("_invalid_job_id");
+    }
     control_root.join("control").join(job_id)
 }
 
@@ -546,5 +575,17 @@ mod tests {
             wait_ready_file(&dir, Duration::from_millis(300)).expect_err("无 ready.json 应超时");
         assert!(error.message.contains("超时"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_job_id_rejects_traversal_and_separators() {
+        assert!(validate_job_id("job-123_abc").is_ok());
+        assert!(validate_job_id("").is_err());
+        assert!(validate_job_id("..").is_err());
+        assert!(validate_job_id("../etc").is_err());
+        assert!(validate_job_id("a/b").is_err());
+        assert!(validate_job_id("a\\b").is_err());
+        assert!(validate_job_id("bad\0id").is_err());
+        assert_ne!(generate_nonce(), generate_nonce());
     }
 }

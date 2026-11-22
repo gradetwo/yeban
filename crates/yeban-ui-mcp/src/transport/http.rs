@@ -168,6 +168,8 @@ impl UiHttpServer {
                     method_not_allowed(&request.method)
                 } else if !matches!(request.path(), UI_MCP_PATH | "/") {
                     unknown_path(&request.target)
+                } else if let Err(error) = request.validate_loopback_security() {
+                    outcome_of(&error)
                 } else {
                     match read_body(stream, &mut request, leftover) {
                         Ok(()) => self.respond(&request),

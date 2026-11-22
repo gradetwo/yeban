@@ -2335,7 +2335,7 @@ pub fn load_with(
             }),
         ));
     }
-    let bytes = std::fs::read(path).map_err(|error| {
+    let bytes = super::store::read_bounded_io(path, 16 * 1024 * 1024).map_err(|error| {
         Fault::domain_with_data(
             CODE_IO,
             format!("读 SFZ 文件失败: {} ({error})", path.display()),

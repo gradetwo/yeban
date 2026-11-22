@@ -5130,7 +5130,7 @@ fn plan_save_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             .active_path()
             .and_then(|path| path.parent().map(Path::to_path_buf));
         if let Ok((resolved, _)) = sfz::parse_load_arguments(&arguments, project_dir.as_deref())
-            && let Ok(bytes) = std::fs::read(&resolved)
+            && let Ok(bytes) = store::read_bounded(&resolved, 16 * 1024 * 1024, "SFZ 文件")
         {
             let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
             if let Some(load) = domain.sfz_instrument_by_digest(&digest)
@@ -5735,10 +5735,10 @@ fn directory_instrument_entry(path: &Path) -> Value {
         entry.clone()
     };
     let mut entry = base;
-    let bytes = match std::fs::read(path) {
+    let bytes = match store::read_bounded(path, 16 * 1024 * 1024, "SFZ 文件") {
         Ok(bytes) => bytes,
         Err(error) => {
-            return fail(&mut entry, format!("读 SFZ 文件失败: {error}"));
+            return fail(&mut entry, format!("读 SFZ 文件失败: {error:?}"));
         }
     };
     entry["bytes"] = Value::from(bytes.len());
@@ -6309,6 +6309,10 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     let out_path = arg_str(call, "outPath")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`outPath` 是必填实参"))?;
+    let out_path_buf = PathBuf::from(out_path);
+    if let Some(project_path) = domain.active_path() {
+        render::guard_output_path(&out_path_buf, project_path)?;
+    }
     let block_frames = arg_u64(call, "blockFrames")?.unwrap_or(1024);
     if !(1..=4096).contains(&block_frames) {
         return Err(Fault::domain(
@@ -6320,7 +6324,7 @@ fn plan_ara_render(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .map_err(|_| Fault::domain(ErrorCode::InvalidParameterRange, "`blockFrames` 超出范围"))?;
     Ok(Plan::AraRender {
         session_id: session_id.to_owned(),
-        out_path: PathBuf::from(out_path),
+        out_path: out_path_buf,
         block_frames,
     })
 }
@@ -6622,7 +6626,7 @@ fn plan_sfz_registration(
     // 与 `yeban_render_master` 的**同一份**解析实现 ⇒ 两个工具对同一条预算说同一句话。
     let limits = sfz::parse_sample_limits(arguments)?;
     // 先算内容摘要（`load` 内部会算），因此这里先用文件字节判重用。
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let bytes = store::read_bounded_io(&path, 16 * 1024 * 1024).map_err(|error| {
         Fault::domain_with_data(
             ErrorCode::IoError,
             format!("读 SFZ 文件失败: {} ({error})", path.display()),

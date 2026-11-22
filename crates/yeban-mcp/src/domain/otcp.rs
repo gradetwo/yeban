@@ -30,7 +30,7 @@
 //!   通用 `dryRun` 由 [`crate::dispatch`] 拦截，plan 只出预览、永不派生线程。
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -141,6 +141,7 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
     )?;
     let status = OtcpDriver::new(config.clone()).status();
     if !status.binary_present {
+        let _ = fs::remove_dir_all(config.job_dir(&job_id));
         return Err(fault_for(&OtcpError::new(
             "otcpNotConfigured",
             format!(
@@ -149,12 +150,13 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
             ),
         )));
     };
-    let slot = OtcpJobSlot::acquire().ok_or_else(|| {
-        fault_for(&OtcpError::new(
+    let Some(slot) = OtcpJobSlot::acquire() else {
+        let _ = fs::remove_dir_all(config.job_dir(&job_id));
+        return Err(fault_for(&OtcpError::new(
             "otcpBusy",
             format!("OTCP 并发任务已达上限 {MAX_CONCURRENT_OTCP_JOBS}；等当前校正任务结束后再提交"),
-        ))
-    })?;
+        )));
+    };
     let request = CorrectionRequest {
         job_id: job_id.clone(),
         source_wav,
@@ -897,19 +899,20 @@ fn succeeded_data(config: &OtcpConfig, receipt: &JobReceipt) -> Result<Value, Fa
     let asset = match &receipt.export_path {
         None => Value::Null,
         Some(path) => {
-            let bytes = fs::read(path).map_err(|_| {
-                fault_for(&OtcpError::with_data(
-                    "otcpContentGone",
-                    format!(
-                        "任务 {} 已成功，但导出文件 {} 已不在任务目录",
-                        receipt.job_id, path
-                    ),
-                    serde_json::json!({
-                        "job_id": receipt.job_id,
-                        "content_id": receipt.content_id,
-                    }),
-                ))
-            })?;
+            let bytes = super::store::read_bounded(Path::new(path), 512 * 1024 * 1024, path)
+                .map_err(|_| {
+                    fault_for(&OtcpError::with_data(
+                        "otcpContentGone",
+                        format!(
+                            "任务 {} 已成功，但导出文件 {} 已不在任务目录",
+                            receipt.job_id, path
+                        ),
+                        serde_json::json!({
+                            "job_id": receipt.job_id,
+                            "content_id": receipt.content_id,
+                        }),
+                    ))
+                })?;
             serde_json::json!({
                 "hash": AssetHash::of_bytes(&bytes).as_str(),
                 "path": path,
@@ -1186,12 +1189,14 @@ fn plan_succeeded_job(
             receipt.job_id
         ))
     })?;
-    let asset_bytes = fs::read(&export_path).map_err(|_| {
-        gone(format!(
-            "任务 {} 已成功，但导出文件 {export_path} 已不在任务目录",
-            receipt.job_id
-        ))
-    })?;
+    let asset_bytes =
+        super::store::read_bounded(Path::new(&export_path), 512 * 1024 * 1024, &export_path)
+            .map_err(|_| {
+                gone(format!(
+                    "任务 {} 已成功，但导出文件 {export_path} 已不在任务目录",
+                    receipt.job_id
+                ))
+            })?;
     let new_hash = AssetHash::of_bytes(&asset_bytes);
     let new_meta = AssetMetadata {
         hash: new_hash.clone(),

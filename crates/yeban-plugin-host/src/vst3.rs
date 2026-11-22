@@ -2567,13 +2567,14 @@ impl PluginInstance for Vst3Instance {
     }
 }
 
-/// 扫描一个模块：枚举类，并逐个实例化探针定 `kind`（失败的类记 `error`，不中断）。
+/// 扫描一个已加载模块：枚举类，并逐个实例化探针定 `kind`（失败的类记 `error`，不中断）。
 ///
 /// # Errors
 ///
-/// 模块打不开／无工厂／无类 ⇒ [`HostError`]（模块级失败）。
-pub(crate) fn inspect_module(path: &str) -> Result<(String, Vec<PluginClass>), HostError> {
-    let module = Vst3Module::load(path)?;
+/// 无工厂／无类 ⇒ [`HostError`]（模块级失败）。
+pub(crate) fn inspect_loaded_module(
+    module: &Vst3Module,
+) -> Result<(String, Vec<PluginClass>), HostError> {
     let vendor = module.factory_vendor();
     let raw = module.classes_raw();
     if raw.is_empty() {
@@ -2592,7 +2593,7 @@ pub(crate) fn inspect_module(path: &str) -> Result<(String, Vec<PluginClass>), H
             });
             continue;
         }
-        match Vst3Instance::open(&module, &cid, &name) {
+        match Vst3Instance::open(module, &cid, &name) {
             Ok(instance) => classes.push(PluginClass {
                 id: cid,
                 name,

@@ -299,26 +299,75 @@ impl HttpRequest {
     }
 }
 
-/// Host 头是否为环回：`127.0.0.1` / `localhost` / `[::1]`，可带 `:port`。
+fn valid_loopback_port(port: &str) -> bool {
+    if port.is_empty() {
+        return false;
+    }
+    for b in port.bytes() {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+    }
+    port.parse::<u16>().is_ok()
+}
+
+/// Host 头是否为环回：`127.0.0.1` / `localhost` / `[::1]`，可带 `:port`（禁止 `@` / 空白 / 越界端口）。
 fn is_loopback_host(host: &str) -> bool {
     let h = host.trim();
-    let authority = h.rsplit_once('@').map_or(h, |(_, rest)| rest); // 去掉 userinfo
-    let hostpart = match authority {
-        a if a.starts_with('[') => a.split(']').next().map_or(a, |x| &x[1..]), // 保留 [::1]
-        a => a.split(':').next().unwrap_or(a),                                 // 去 :port
+    if h.is_empty()
+        || h.contains('@')
+        || h.contains('/')
+        || h.bytes().any(|b| b.is_ascii_whitespace())
+    {
+        return false;
+    }
+    let hostpart = if let Some(rest) = h.strip_prefix('[') {
+        let Some((inner, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if !after.is_empty() {
+            let Some(port) = after.strip_prefix(':') else {
+                return false;
+            };
+            if !valid_loopback_port(port) {
+                return false;
+            }
+        }
+        return inner == "::1";
+    } else {
+        match h.split_once(':') {
+            Some((name, port)) => {
+                if !valid_loopback_port(port) {
+                    return false;
+                }
+                name
+            }
+            None => h,
+        }
     };
-    let hostpart = hostpart.trim().to_ascii_lowercase();
     matches!(
-        hostpart.as_str(),
-        "127.0.0.1" | "localhost" | "[::1]" | "::1"
+        hostpart.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost"
     )
 }
 
-/// Origin 头是否为环回源：scheme://host[:port]，host 为环回。
+/// Origin 头是否为环回源：`http(s)://host[:port][/]`，host 严格为环回。
 fn is_loopback_origin(origin: &str) -> bool {
     let o = origin.trim();
-    let authority = o.split_once("://").map_or(o, |(_, rest)| rest);
-    let authority = authority.split('/').next().unwrap_or(authority);
+    let Some((scheme, rest)) = o.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return false;
+    }
+    if rest.contains('?') || rest.contains('#') {
+        return false;
+    }
+    let authority = match rest.split_once('/') {
+        Some((auth, "")) => auth,
+        Some(_) => return false,
+        None => rest,
+    };
     is_loopback_host(authority)
 }
 
@@ -921,6 +970,8 @@ impl HttpServer {
                     method_not_allowed(&request.method)
                 } else if !matches!(request.path(), MCP_PATH | "/") {
                     unknown_path(&request.target)
+                } else if let Err(error) = request.validate_loopback_security() {
+                    error.outcome()
                 } else {
                     match Self::read_body(stream, &mut request, leftover) {
                         Ok(()) => self.respond(&request),
