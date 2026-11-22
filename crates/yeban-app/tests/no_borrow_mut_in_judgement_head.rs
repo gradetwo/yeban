@@ -1,0 +1,272 @@
+//! 守卫：**判据表达式里的 `RefCell::borrow_mut()` 一律禁止**。
+//!
+//! ## 为什么需要这条判据
+//!
+//! 2026-11-22 macOS release 实测：设置→音频切输出设备，应用**直接 abort**
+//! （`thread main panicked at host.rs:3515: RefCell already mutably borrowed`，
+//! 随后 `panic in a function that cannot unwind`——回调跑在 winit/AppKit 的
+//! extern C 派发里，展开穿不过去）。
+//!
+//! 形状是这样的：
+//!
+//! ```ignore
+//! match production.borrow_mut().open_device(config) {
+//!     Ok(_) => refresh_audio_status_line(&ui, &production), // 里面 production.borrow() ⇒ panic
+//!     ...
+//! }
+//! ```
+//!
+//! `match` 判据表达式里的 `RefMut` **活过整个 `match`**（临时量的生命周期延到语句结束），
+//! 于是任何一个分支再借同一个 `RefCell` 就 panic。`if let PAT = <expr 含 borrow_mut> { … }`
+//! 同理。正确写法是先**结算**成值：`let opened = production.borrow_mut().open_device(..);`
+//! 再 `match opened { .. }`。
+//!
+//! 仓里已有两处成文警告（`host.rs` 的 `reload` 与 `open_device` 旁），本判据把它们
+//! 从「注释约定」变成「编译期之后仍会被执行的红线」：⛔ 不许只报"搜了没问题"。
+//!
+//! ## 判据不算「合法例外」
+//!
+//! 不提供白名单。唯一合法的写法（先结算）根本不命中本判据的扫描形状。
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// 把注释与字符串字面量抹成空格（保留字节长度与换行，便于回报行号）。
+///
+/// 只做本判据需要的那点事：① `//` 行注释；② `/* */` 块注释（可嵌套一层就够）；
+/// ③ `"…"` / `'…'` 字面量（避免里面的 `{` `}` `;` 干扰括号配平）。
+fn strip_noise(src: &str) -> String {
+    let bytes: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let ch = bytes[index];
+        // 行注释
+        if ch == '/' && index + 1 < bytes.len() && bytes[index + 1] == '/' {
+            while index < bytes.len() && bytes[index] != '\n' {
+                out.push(' ');
+                index += 1;
+            }
+            continue;
+        }
+        // 块注释
+        if ch == '/' && index + 1 < bytes.len() && bytes[index + 1] == '*' {
+            out.push(' ');
+            index += 1;
+            out.push(' ');
+            index += 1;
+            while index + 1 < bytes.len() && !(bytes[index] == '*' && bytes[index + 1] == '/') {
+                out.push(if bytes[index] == '\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+            if index + 1 < bytes.len() {
+                out.push(' ');
+                out.push(' ');
+                index += 2;
+            }
+            continue;
+        }
+        // 字符串 / 字符字面量
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            out.push(quote);
+            index += 1;
+            while index < bytes.len() {
+                let inner = bytes[index];
+                if inner == '\\' && index + 1 < bytes.len() {
+                    out.push(' ');
+                    out.push(' ');
+                    index += 2;
+                    continue;
+                }
+                if inner == quote {
+                    out.push(quote);
+                    index += 1;
+                    break;
+                }
+                out.push(if inner == '\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+            continue;
+        }
+        out.push(ch);
+        index += 1;
+    }
+    out
+}
+
+/// 从 `start` 起找到**顶层**（括号配平为 0 的）目标字符，返回其下标。
+fn find_top_level(text: &[char], start: usize, target: char) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut index = start;
+    while index < text.len() {
+        let ch = text[index];
+        // ⚠ 先判 target 再配平：`target == '{'` 时若先进 `'{' => depth += 1` 分支，
+        // 判据表达式末尾的那个 `{` 永远返回不了（自检会红，判据变成装饰）。
+        if ch == target && depth == 0 {
+            return Some(index);
+        }
+        match ch {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth -= 1,
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// 找出一处违规：返回 (行号, 片段)。
+fn violations(src: &str) -> Vec<(usize, String)> {
+    let clean = strip_noise(src);
+    let chars: Vec<char> = clean.chars().collect();
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        // 关键字边界：`match` / `if let`
+        let is_match = chars[index..].starts_with(&['m', 'a', 't', 'c', 'h'])
+            && (index == 0 || !is_ident(chars[index - 1]))
+            && chars.get(index + 5).is_none_or(|ch| !is_ident(*ch));
+        let is_if_let = chars[index..].starts_with(&['i', 'f'])
+            && (index == 0 || !is_ident(chars[index - 1]))
+            && chars.get(index + 2) == Some(&' ')
+            && chars[index..].len() > 5
+            && chars[index + 3..].starts_with(&['l', 'e', 't'])
+            && chars.get(index + 6).is_none_or(|ch| !is_ident(*ch));
+        if !is_match && !is_if_let {
+            index += 1;
+            continue;
+        }
+        let after = index + if is_match { 5 } else { 6 };
+        // `if let` 的模式里可能有 `{ … }`（结构体模式）⇒ 先跳到顶层 `=`，再找顶层 `{`。
+        let head_start = if is_if_let {
+            match find_top_level(&chars, after, '=') {
+                Some(eq) => eq + 1,
+                None => {
+                    index = after;
+                    continue;
+                }
+            }
+        } else {
+            after
+        };
+        let Some(brace) = find_top_level(&chars, head_start, '{') else {
+            index = after;
+            continue;
+        };
+        let head: String = chars[head_start..brace].iter().collect();
+        if head.contains("borrow_mut()") {
+            let line = chars[..index].iter().filter(|ch| **ch == '\n').count() + 1;
+            let snippet = head.trim().replace('\n', " ");
+            found.push((line, snippet.chars().take(120).collect()));
+        }
+        index = brace + 1;
+    }
+    found
+}
+
+fn is_ident(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// 仓库里所有 `yeban-app` 源文件（`src/**/*.rs`）。
+fn source_files() -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    files.sort();
+    files
+}
+
+/// **判据本体**：`yeban-app` 全 crate 不许有「判据表达式里借可变」的写法。
+#[test]
+fn no_borrow_mut_in_judgement_head() {
+    let mut reported: Vec<String> = Vec::new();
+    for file in source_files() {
+        let text = fs::read_to_string(&file).expect("读源文件");
+        for (line, snippet) in violations(&text) {
+            reported.push(format!("{}:{line} → {snippet}", file.display()));
+        }
+    }
+    assert!(
+        reported.is_empty(),
+        "判据表达式里的 RefCell::borrow_mut() 会让 RefMut 活过整个 match/if-let；\
+         任何分支再借同一个 RefCell 就 panic（release 下在 extern C 派发里 ⇒ abort）。\
+         正确写法：先 `let x = cell.borrow_mut().f();` 再 `match x {{ .. }}`。\
+         违规点：\n{}",
+        reported.join("\n")
+    );
+}
+
+/// 自检：判据自己的扫描器要能认出现场那个形状，且**不能**把合法写法当成违规。
+///
+/// （判据的判据：没有这条，扫描器写错就变成一条永远绿的装饰。）
+#[test]
+fn scanner_recognises_the_incident_and_accepts_the_fix() {
+    let incident = r#"
+        match production.borrow_mut().open_device(config) {
+            Ok(_) => refresh_audio_status_line(&ui, &production),
+            Err(error) => report(error),
+        }
+    "#;
+    assert_eq!(
+        violations(incident).len(),
+        1,
+        "必须认出事故形状（match 判据里 borrow_mut）"
+    );
+
+    let if_let_incident = r#"
+        if let MixerGesture::Fader { last_db, moved, .. } = &mut *gesture.borrow_mut() {
+            *moved = true;
+        }
+    "#;
+    assert_eq!(
+        violations(if_let_incident).len(),
+        1,
+        "结构体模式里有花括号也必须认出 if-let 形状"
+    );
+
+    for fixed in [
+        r#"
+        let opened = production.borrow_mut().open_device(config);
+        match opened {
+            Ok(_) => refresh_audio_status_line(&ui, &production),
+            Err(error) => report(error),
+        }
+    "#,
+        r#"
+        match kind {
+            Kind::A => cell.borrow_mut().push(1),
+            Kind::B => {}
+        }
+    "#,
+    ] {
+        assert!(
+            violations(fixed).is_empty(),
+            "合法写法（先结算 / 判据里不借）不得误报：{fixed}"
+        );
+    }
+
+    // 注释里写形状不算违规（否则解释性注释会把判据逼红）。
+    let commented = r#"
+        // match production.borrow_mut().open_device(config) { .. }  ← 反例，注释里
+        let opened = production.borrow_mut().open_device(config);
+        match opened { Ok(_) => {}, Err(_) => {} }
+    "#;
+    assert!(violations(commented).is_empty(), "注释里的反例不得算违规");
+}

@@ -2579,9 +2579,14 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             }
             let next_db = dragged_fader_db(start_db, start_y - pointer_y);
-            if let MixerGesture::Fader { last_db, moved, .. } = &mut *gesture.borrow_mut() {
-                *moved = true;
-                *last_db = next_db;
+            // 显式作用域：`RefMut` 在括号里就释放，后面 `preview_*` 再借不会撞上
+            // （判据见 `tests/no_borrow_mut_in_judgement_head.rs`）。
+            {
+                let mut state = gesture.borrow_mut();
+                if let MixerGesture::Fader { last_db, moved, .. } = &mut *state {
+                    *moved = true;
+                    *last_db = next_db;
+                }
             }
             preview_track_volume(&ui, index, next_db);
         }
@@ -2735,12 +2740,17 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             }
             let next_pan = dragged_pan(start_pan, pointer_x - start_x);
-            if let MixerGesture::Pan {
-                last_pan, moved, ..
-            } = &mut *gesture.borrow_mut()
+            // 显式作用域：`RefMut` 在括号里就释放，后面 `preview_*` 再借不会撞上
+            // （判据见 `tests/no_borrow_mut_in_judgement_head.rs`）。
             {
-                *moved = true;
-                *last_pan = next_pan;
+                let mut state = gesture.borrow_mut();
+                if let MixerGesture::Pan {
+                    last_pan, moved, ..
+                } = &mut *state
+                {
+                    *moved = true;
+                    *last_pan = next_pan;
+                }
             }
             preview_track_pan(&ui, index, next_pan);
         }
@@ -2887,9 +2897,13 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 _ => return,
             };
             let next_db = dragged_fader_db(start_db, start_y - pointer_y);
-            if let MixerGesture::Fader { last_db, moved, .. } = &mut *gesture.borrow_mut() {
-                *moved = true;
-                *last_db = next_db;
+            // 显式作用域（理由同上，判据同一处）。
+            {
+                let mut state = gesture.borrow_mut();
+                if let MixerGesture::Fader { last_db, moved, .. } = &mut *state {
+                    *moved = true;
+                    *last_db = next_db;
+                }
             }
             preview_master_volume(&ui, next_db);
         }
@@ -2995,12 +3009,17 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
                 _ => return,
             };
             let next_pan = dragged_pan(start_pan, pointer_x - start_x);
-            if let MixerGesture::Pan {
-                last_pan, moved, ..
-            } = &mut *gesture.borrow_mut()
+            // 显式作用域：`RefMut` 在括号里就释放，后面 `preview_*` 再借不会撞上
+            // （判据见 `tests/no_borrow_mut_in_judgement_head.rs`）。
             {
-                *moved = true;
-                *last_pan = next_pan;
+                let mut state = gesture.borrow_mut();
+                if let MixerGesture::Pan {
+                    last_pan, moved, ..
+                } = &mut *state
+                {
+                    *moved = true;
+                    *last_pan = next_pan;
+                }
             }
             preview_master_pan(&ui, next_pan);
         }
@@ -3698,7 +3717,16 @@ pub fn wire_audio_settings(
             match port.try_project() {
                 Some(project) => {
                     let config = yeban_engine::device::EngineConfig::from_project(&project);
-                    match production.borrow_mut().open_device(config) {
+                    // ⚠ **同一个坑的第三处**（前两处见下面 `reload` / `open_device` 旁的注释）：
+                    // `match production.borrow_mut().open_device(..) { … }` 会让那个 `RefMut`
+                    // **活着穿过整个 `match`** ⇒ `Ok` 分支里 `refresh_audio_status_line` 第一行
+                    // 的 `production.borrow()` 撞上未释放的 `borrow_mut`，panic
+                    // `RefCell already mutably borrowed`；回调跑在 winit/AppKit 的 extern C
+                    // 派发里，panic 穿不过这层 ⇒ **release 构建直接 abort**（Wang 2026-11-22
+                    // macOS 实测：设置→音频切输出设备必崩；切失败反而没事，因为 `Err` 分支不借）。
+                    // ⛔ 不要再写成 `match x.borrow_mut().f() { .. }`：先把结局**结算**成一个值。
+                    let opened = production.borrow_mut().open_device(config);
+                    match opened {
                         Ok(_) => refresh_audio_status_line(&ui, &production),
                         Err(error) => {
                             let text = format!("切换输出设备失败：{error}");
@@ -9483,7 +9511,11 @@ impl PortOpenProject {
                         // 保持"控制驱动（无声但走带正常）"的既有降级形态。
                         if device_was_active {
                             let config = yeban_engine::device::EngineConfig::from_project(&project);
-                            match production.borrow_mut().open_device(config) {
+                            // 同形（判据表达式里 `borrow_mut`），但两个分支都**不再借**
+                            // `production` ⇒ 当前安全。仍统一成「先结算再 match」：这个形状
+                            // 只差一行注释就会变成上面那个 abort（⛔ 不给第三次留门）。
+                            let opened = production.borrow_mut().open_device(config);
+                            match opened {
                                 Ok(opening) => crate::cli::emit(&[opening.status_line()]),
                                 Err(error) => {
                                     let text = format!(

@@ -650,7 +650,11 @@ impl UndoPort {
     ) -> Result<EntityId, UndoRefusal> {
         // `OpOrigin` 不是 `Copy`（它还带载荷）⇒ 记一份克隆，原值继续交给提交请求。
         *self.last_origin.borrow_mut() = Some(origin.clone());
-        match &mut *self.session.borrow_mut() {
+        // 先绑定再 match：`match &mut *self.session.borrow_mut() { .. }` 的 `RefMut`
+        // 临时量会活过整个 `match`，分支内若再借同一份 `RefCell` 就当场 panic
+        // （判据见 `tests/no_borrow_mut_in_judgement_head.rs`）。
+        let mut backend = self.session.borrow_mut();
+        match &mut *backend {
             UndoBackend::Local(session) => session.commit(CommitRequest {
                 now_ms,
                 origin,
@@ -743,7 +747,8 @@ impl UndoPort {
     }
 
     fn undo_steps(&self, steps: usize) -> ActionOutcome {
-        match &mut *self.session.borrow_mut() {
+        let mut backend = self.session.borrow_mut();
+        match &mut *backend {
             UndoBackend::Local(session) => match session.undo_steps(steps) {
                 Ok(outcome) => local_outcome(&outcome),
                 Err(refusal) => ActionOutcome::Refused {
@@ -763,7 +768,8 @@ impl UndoPort {
     }
 
     fn redo_steps(&self, steps: usize) -> ActionOutcome {
-        match &mut *self.session.borrow_mut() {
+        let mut backend = self.session.borrow_mut();
+        match &mut *backend {
             UndoBackend::Local(session) => match session.redo_steps(steps) {
                 Ok(outcome) => local_outcome(&outcome),
                 Err(refusal) => ActionOutcome::Refused {
