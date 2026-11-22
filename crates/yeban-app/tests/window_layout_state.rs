@@ -112,6 +112,7 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
         layout: Some(distinctive_layout()),
         recent_projects: Vec::new(),
         help: yeban_app::help_state::HelpState::default(),
+        debug_output: false,
     })
     .expect("预置设置文件必须写成功");
 

@@ -444,19 +444,39 @@ pub enum DeviceError {
     Backend(#[from] cpal::Error),
 }
 
-/// 输出设备的可枚举信息（**非实时路径**：允许分配字符串）。
+/// 设备的可枚举信息（**非实时路径**：允许分配字符串）。
+/// 输出侧由 [`enumerate_output_devices`] 产出、输入侧由
+/// [`enumerate_input_devices`] 产出，字段口径一致（`channels` / `sample_rate` /
+/// `sample_format` / `supported` 都指**该方向**的配置）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
     /// 设备显示名（`cpal::Device` 的 `Display`）。
     pub name: String,
     /// 设备稳定标识（`DeviceTrait::id`；失败时为空）。
     pub id: String,
-    /// 默认输出配置的通道数。
+    /// 是否为宿主在该方向的默认设备（按 `id` 比对；`id` 读不到时为 `false`，
+    /// ⛔ 不靠显示名猜 —— 显示名可以重名）。
+    pub is_default: bool,
+    /// 默认配置的通道数。
     pub channels: u16,
-    /// 默认输出配置的采样率。
+    /// 默认配置的采样率。
     pub sample_rate: u32,
-    /// 默认输出配置的采样格式。
+    /// 默认配置的采样格式。
     pub sample_format: SampleFormat,
+    /// 全部受支持配置的可读描述（[`describe`] 的格式：逐范围一行
+    /// `Nch MIN-MAXHz FORMAT buffer LO..=HI`）。范围读不到 ⇒
+    /// `unavailable: <后端原文>`（响亮写进字段，⛔ 不静默留空 —— 枚举的
+    /// 用途就是诊断，缺这一格正是最该被看见的事实）。
+    pub supported: String,
+}
+
+/// 把一台设备的受支持范围收成 [`DeviceInfo::supported`] 的文本。
+fn supported_text(ranges: Result<Vec<SupportedStreamConfigRange>, cpal::Error>) -> String {
+    match ranges {
+        Ok(ranges) if !ranges.is_empty() => describe(&ranges),
+        Ok(_) => "none reported".to_owned(),
+        Err(error) => format!("unavailable: {error}"),
+    }
 }
 
 /// 枚举全部输出设备。无声卡时返回空 `Vec`（不是错误）。
@@ -466,6 +486,10 @@ pub struct DeviceInfo {
 /// 后端拒绝枚举（例如音频守护进程不可用）→ [`DeviceError::Backend`]。
 pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
     let host = cpal::default_host();
+    let default_id = host
+        .default_output_device()
+        .and_then(|device| device.id().map(|id| id.to_string()).ok())
+        .unwrap_or_default();
     let mut out = Vec::new();
     for device in host.output_devices()? {
         let config = match device.default_output_config() {
@@ -473,9 +497,47 @@ pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
             // 单个设备读不到默认配置不应让整个枚举失败。
             Err(_) => continue,
         };
+        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
         out.push(DeviceInfo {
             name: device.to_string(),
-            id: device.id().map(|id| id.to_string()).unwrap_or_default(),
+            is_default: !id.is_empty() && id == default_id,
+            supported: supported_text(device.supported_output_configs().map(|it| it.collect())),
+            id,
+            channels: config.channels(),
+            sample_rate: config.sample_rate(),
+            sample_format: config.sample_format(),
+        });
+    }
+    Ok(out)
+}
+
+/// 枚举全部**输入**设备（录音侧）：与 [`enumerate_output_devices`] 同构同口径，
+/// 只是方向换成输入（默认配置读 `default_input_config`、范围读
+/// `supported_input_configs`、默认设备读 `default_input_device`）。
+/// 无声卡时返回空 `Vec`（不是错误）。
+///
+/// # Errors
+///
+/// 后端拒绝枚举 → [`DeviceError::Backend`]。
+pub fn enumerate_input_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
+    let host = cpal::default_host();
+    let default_id = host
+        .default_input_device()
+        .and_then(|device| device.id().map(|id| id.to_string()).ok())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for device in host.input_devices()? {
+        let config = match device.default_input_config() {
+            Ok(config) => config,
+            // 单个设备读不到默认配置不应让整个枚举失败。
+            Err(_) => continue,
+        };
+        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
+        out.push(DeviceInfo {
+            name: device.to_string(),
+            is_default: !id.is_empty() && id == default_id,
+            supported: supported_text(device.supported_input_configs().map(|it| it.collect())),
+            id,
             channels: config.channels(),
             sample_rate: config.sample_rate(),
             sample_format: config.sample_format(),
@@ -508,6 +570,24 @@ pub fn negotiate_input(
     negotiate(supported, want)
 }
 
+/// [`negotiate_input`] 的 trace 版：与它**同一条实现**，多收一份逐步记录
+/// （口径见 [`negotiate_traced`]）。空范围时 trace 里就是拒绝那一步本身。
+pub fn negotiate_input_traced(
+    supported: &[SupportedStreamConfigRange],
+    want: &EngineConfig,
+) -> (Result<NegotiatedConfig, DeviceError>, Vec<String>) {
+    if supported.is_empty() {
+        return (
+            Err(DeviceError::NoSupportedInputConfigs),
+            vec![
+                "negotiate-input: no supported input configs reported -> NoSupportedInputConfigs"
+                    .to_owned(),
+            ],
+        );
+    }
+    negotiate_traced(supported, want)
+}
+
 /// 设备能力与请求的协商（**纯函数**，不触碰真实设备 ⇒ CI 上可单测）。
 ///
 /// 选择规则（按优先级）：
@@ -527,10 +607,57 @@ pub fn negotiate(
     supported: &[SupportedStreamConfigRange],
     want: &EngineConfig,
 ) -> Result<NegotiatedConfig, DeviceError> {
+    negotiate_traced(supported, want).0
+}
+
+/// [`negotiate`] 的 trace 版（T-FIX-70，调试输出的数据源）：与它**同一条
+/// 实现**（`negotiate` 就是本函数丢弃 trace 的薄壳，判据钉死两者结果一致），
+/// 多收一份逐步记录 —— 请求与设备能力的第一行、每一步的命中/未命中、
+/// 最后一行是最终结果。trace 是**控制面诊断文本**（英文，与 [`DeviceError`]
+/// 的 Display 同语言，嵌进上层报告行），⛔ 不进实时路径。
+pub fn negotiate_traced(
+    supported: &[SupportedStreamConfigRange],
+    want: &EngineConfig,
+) -> (Result<NegotiatedConfig, DeviceError>, Vec<String>) {
+    let mut trace = Vec::new();
+    let result = negotiate_inner(supported, want, &mut trace);
+    match &result {
+        Ok(got) => trace.push(format!(
+            "negotiate: result {} Hz / {} ch, buffer {:?}, fixed_block_accepted={}",
+            got.sample_rate, got.channels, got.buffer_size, got.fixed_block_accepted
+        )),
+        Err(error) => trace.push(format!("negotiate: failed: {error}")),
+    }
+    (result, trace)
+}
+
+/// [`negotiate`] 的实现本体；`trace` 逐行记录每一步（见 [`negotiate_traced`]）。
+fn negotiate_inner(
+    supported: &[SupportedStreamConfigRange],
+    want: &EngineConfig,
+    trace: &mut Vec<String>,
+) -> Result<NegotiatedConfig, DeviceError> {
+    trace.push(format!(
+        "negotiate: want {} ch @ {} Hz, block {} frames, share {:?}; offered: {}",
+        want.channels,
+        want.sample_rate,
+        want.block_frames,
+        want.share_mode,
+        if supported.is_empty() {
+            "none".to_owned()
+        } else {
+            describe(supported)
+        },
+    ));
     if want.share_mode == ShareMode::RequireExclusive {
+        trace.push(
+            "negotiate: exclusive mode requested -> refused (backend has no exclusive API)"
+                .to_owned(),
+        );
         return Err(DeviceError::ExclusiveModeUnsupported);
     }
     if supported.is_empty() {
+        trace.push("negotiate: no supported configs -> NoSupportedConfigs".to_owned());
         return Err(DeviceError::NoSupportedConfigs);
     }
 
@@ -540,39 +667,120 @@ pub fn negotiate(
         .filter(|range| range.sample_format() == SampleFormat::F32)
         .collect();
     if f32_ranges.is_empty() {
+        trace.push(format!(
+            "negotiate: no f32 range (first reported format {:?}) -> UnsupportedSampleFormat",
+            supported[0].sample_format()
+        ));
         return Err(DeviceError::UnsupportedSampleFormat {
             format: supported[0].sample_format(),
         });
     }
+    trace.push(format!(
+        "negotiate: {} of {} ranges are f32",
+        f32_ranges.len(),
+        supported.len()
+    ));
 
     // 1) 精确匹配请求的采样率 + 通道数
     for range in &f32_ranges {
         if range.channels() == want.channels && range.contains_rate(want.sample_rate) {
+            trace.push(format!(
+                "negotiate: step 1 (exact rate + channels) matched {} ch {}-{} Hz",
+                range.channels(),
+                range.min_sample_rate(),
+                range.max_sample_rate()
+            ));
             return Ok(finish(range, want, want.sample_rate));
         }
     }
+    trace.push("negotiate: step 1 (exact rate + channels) -> no match".to_owned());
     // 2) 采样率匹配但通道数不同（接受设备默认通道数）
     for range in &f32_ranges {
         if range.contains_rate(want.sample_rate) {
+            trace.push(format!(
+                "negotiate: step 2 (rate matches, channels differ) matched {} ch {}-{} Hz",
+                range.channels(),
+                range.min_sample_rate(),
+                range.max_sample_rate()
+            ));
             return Ok(finish(range, want, want.sample_rate));
         }
     }
+    trace.push("negotiate: step 2 (rate matches, channels differ) -> no match".to_owned());
     // 3) 只剩退回标准采样率一条路 ⇒ **响亮拒绝**（T-FIX-59）：实时通路没有
     //    采样率转换，退回率开流等于以 44100/48000 的速度与音高出声。把设备
     //    本会退回到的实际值算出来写进错误原文，用户才知道差在哪、怎么补救。
     for range in &f32_ranges {
         if let Some(config) = range.try_with_standard_sample_rate() {
+            trace.push(format!(
+                "negotiate: step 3 (standard-rate fallback) would land on {} Hz != wanted {} Hz -> SampleRateMismatch (loud refusal: no realtime sample-rate conversion)",
+                config.sample_rate(),
+                want.sample_rate
+            ));
             return Err(DeviceError::SampleRateMismatch {
                 want_rate: want.sample_rate,
                 device_rate: config.sample_rate(),
             });
         }
     }
+    trace.push(
+        "negotiate: step 3 (standard-rate fallback) -> no standard rate available".to_owned(),
+    );
     Err(DeviceError::UnsupportedConfig {
         want_channels: want.channels,
         want_rate: want.sample_rate,
         offered,
     })
+}
+
+/// 对**默认输出设备**做一次只协商、不建流的 trace（T-FIX-70，调试输出在
+/// 打开失败时的数据源）：宿主、设备名、能力与 [`negotiate_traced`] 的逐步
+/// 记录逐行返回；每一步的失败都写成行（⛔ 不返回 `Err` 把诊断吞掉 ——
+/// 本函数存在的意义就是把失败现场说全）。⛔ 不建流、不碰 [`EngineRuntime`]。
+#[must_use]
+pub fn trace_output_negotiation(want: &EngineConfig) -> Vec<String> {
+    let host = cpal::default_host();
+    let mut lines = vec![format!("trace-output: host {:?}", host.id())];
+    let Some(device) = host.default_output_device() else {
+        lines.push("trace-output: no default output device -> NoDefaultOutputDevice".to_owned());
+        return lines;
+    };
+    lines.push(format!("trace-output: device {device}"));
+    match device.supported_output_configs() {
+        Ok(ranges) => {
+            let supported: Vec<SupportedStreamConfigRange> = ranges.collect();
+            let (_, trace) = negotiate_traced(&supported, want);
+            lines.extend(trace);
+        }
+        Err(error) => lines.push(format!(
+            "trace-output: supported configs unreadable: {error}"
+        )),
+    }
+    lines
+}
+
+/// [`trace_output_negotiation`] 的输入侧同构版（默认**输入**设备 +
+/// [`negotiate_input_traced`]）。
+#[must_use]
+pub fn trace_input_negotiation(want: &EngineConfig) -> Vec<String> {
+    let host = cpal::default_host();
+    let mut lines = vec![format!("trace-input: host {:?}", host.id())];
+    let Some(device) = host.default_input_device() else {
+        lines.push("trace-input: no default input device -> NoDefaultInputDevice".to_owned());
+        return lines;
+    };
+    lines.push(format!("trace-input: device {device}"));
+    match device.supported_input_configs() {
+        Ok(ranges) => {
+            let supported: Vec<SupportedStreamConfigRange> = ranges.collect();
+            let (_, trace) = negotiate_input_traced(&supported, want);
+            lines.extend(trace);
+        }
+        Err(error) => lines.push(format!(
+            "trace-input: supported configs unreadable: {error}"
+        )),
+    }
+    lines
 }
 
 fn finish(
@@ -633,6 +841,10 @@ pub struct OutputStreamHandle {
     /// 不在实时路径上）。
     device_name: String,
     negotiated: NegotiatedConfig,
+    /// 本次打开的协商 trace（[`negotiate_traced`] 的逐步记录；控制面诊断用，
+    /// T-FIX-70）。打开只发生一次、行数个位数 ⇒ 常开收集，调用方按调试
+    /// 开关决定打不打印，关闭时输出零差异。
+    negotiation_trace: Vec<String>,
     backend_errors: Arc<BackendErrorLog>,
 }
 
@@ -641,6 +853,12 @@ impl OutputStreamHandle {
     #[must_use]
     pub const fn negotiated(&self) -> &NegotiatedConfig {
         &self.negotiated
+    }
+
+    /// 本次打开的协商 trace（见 [`negotiate_traced`]）。
+    #[must_use]
+    pub fn negotiation_trace(&self) -> &[String] {
+        &self.negotiation_trace
     }
 
     /// 这台流的设备显示名（`enumerate_output_devices` 的 `DeviceInfo::name` 同源）。
@@ -738,7 +956,8 @@ pub fn open_output_boxed(
         .ok_or(DeviceError::NoDefaultOutputDevice)?;
     let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_output_configs()?.collect();
-    let negotiated = negotiate(&supported, want)?;
+    let (negotiated, negotiation_trace) = negotiate_traced(&supported, want);
+    let negotiated = negotiated?;
 
     let stream_config = StreamConfig {
         channels: negotiated.channels,
@@ -767,6 +986,7 @@ pub fn open_output_boxed(
         stream,
         device_name,
         negotiated,
+        negotiation_trace,
         backend_errors,
     })
 }
@@ -811,6 +1031,9 @@ pub struct InputStreamHandle {
     /// 打开时协商到的那台设备的显示名（控制面读，不在实时路径上）。
     device_name: String,
     negotiated: NegotiatedConfig,
+    /// 本次打开的协商 trace（[`negotiate_input_traced`] 的逐步记录；
+    /// 与输出侧同口径，见 [`OutputStreamHandle::negotiation_trace`]）。
+    negotiation_trace: Vec<String>,
     backend_errors: Arc<BackendErrorLog>,
 }
 
@@ -819,6 +1042,12 @@ impl InputStreamHandle {
     #[must_use]
     pub const fn negotiated(&self) -> &NegotiatedConfig {
         &self.negotiated
+    }
+
+    /// 本次打开的协商 trace（见 [`negotiate_input_traced`]）。
+    #[must_use]
+    pub fn negotiation_trace(&self) -> &[String] {
+        &self.negotiation_trace
     }
 
     /// 这台流的设备显示名。
@@ -909,7 +1138,8 @@ pub fn open_input(
         .ok_or(DeviceError::NoDefaultInputDevice)?;
     let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_input_configs()?.collect();
-    let negotiated = negotiate_input(&supported, want)?;
+    let (negotiated, negotiation_trace) = negotiate_input_traced(&supported, want);
+    let negotiated = negotiated?;
 
     let stream_config = StreamConfig {
         channels: negotiated.channels,
@@ -938,6 +1168,7 @@ pub fn open_input(
         stream,
         device_name,
         negotiated,
+        negotiation_trace,
         backend_errors,
     })
 }
@@ -1215,6 +1446,75 @@ mod tests {
         let got = finish(&unknown, &want, 44_100);
         assert!(!got.fixed_block_accepted);
         assert_eq!(got.buffer_size, BufferSize::Default);
+    }
+
+    #[test]
+    fn negotiate_traced_records_each_step_and_agrees_with_negotiate() {
+        // T-FIX-70：trace 版与裸版必须是同一条实现的两个出口 —— 结果逐值
+        // 一致，且 trace 逐步可读（命中第 1 步时不再往下走）。
+        let ranges = [fake_range(
+            2,
+            44_100,
+            48_000,
+            SupportedBufferSize::Range { min: 64, max: 1024 },
+            SampleFormat::F32,
+        )];
+        let want = EngineConfig::default();
+        let (traced, trace) = negotiate_traced(&ranges, &want);
+        let plain = negotiate(&ranges, &want);
+        assert_eq!(traced.expect("traced 应成功"), plain.expect("裸版应成功"));
+        assert!(
+            trace
+                .iter()
+                .any(|line| line.contains("step 1") && line.contains("matched")),
+            "trace 缺第 1 步命中行: {trace:?}"
+        );
+        assert!(
+            !trace.iter().any(|line| line.contains("step 2")),
+            "第 1 步命中后不应再试第 2 步: {trace:?}"
+        );
+        let last = trace.last().expect("trace 至少有结果行");
+        assert!(
+            last.contains("result") && last.contains("48000"),
+            "trace 末行应是最终结果: {last}"
+        );
+    }
+
+    #[test]
+    fn negotiate_traced_records_the_loud_refusal_step() {
+        // T-FIX-70 × T-FIX-59：异率现场的 trace 必须把第 3 步的响亮拒绝
+        // 写出来 —— 这正是用户回传诊断时要看的那一步。
+        let ranges = [fake_range(
+            2,
+            44_100,
+            44_100,
+            SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        )];
+        let (traced, trace) = negotiate_traced(&ranges, &EngineConfig::default());
+        assert!(matches!(
+            traced,
+            Err(DeviceError::SampleRateMismatch { .. })
+        ));
+        assert!(
+            trace
+                .iter()
+                .any(|line| line.contains("step 3") && line.contains("SampleRateMismatch")),
+            "trace 缺第 3 步拒绝行: {trace:?}"
+        );
+        let last = trace.last().expect("trace 至少有结果行");
+        assert!(last.contains("failed"), "trace 末行应是失败结果: {last}");
+    }
+
+    #[test]
+    fn negotiate_input_traced_names_the_input_side_empty_case() {
+        // 输入侧空范围：错误是输入专用变体，trace 也必须点名输入侧。
+        let (traced, trace) = negotiate_input_traced(&[], &EngineConfig::default());
+        assert!(matches!(traced, Err(DeviceError::NoSupportedInputConfigs)));
+        assert!(
+            trace.iter().any(|line| line.contains("input")),
+            "trace 应点名输入侧: {trace:?}"
+        );
     }
 
     #[test]

@@ -5,9 +5,11 @@
 //! 原先另立的 `~/.yeban/onboarding.json` 就此并入，全应用只此一份
 //! 设置存储，旧文件的折入见 `help_state` 模块）。
 //!
-//! 存四样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
-//! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）与帮助系统
-//! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）。
+//! 存五样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
+//! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）、帮助系统
+//! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）与调试输出
+//! 开关（T-FIX-70，主菜单「设置 → 调试输出」写回，`--debug` /
+//! `--log-file` 是同开关的命令行入口，决策见 [`resolve_debug_output`]）。
 //! 语言的启动优先级（定案）是 `--lang` 参数（临时覆盖、不写回）＞
 //! 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN，决策函数见
 //! [`resolve_startup_language`]，单测钉死。布局的恢复/写回/重置语义在
@@ -54,8 +56,8 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const SETTINGS_PATH_ENV: &str = "YEBAN_SETTINGS_PATH";
 
 /// 设置内容：`language`（i18n 线）＋ `layout`（窗口布局线）＋
-/// `recent_projects`（启动选择器线）＋ `help`（新手引导线，存储并入），
-/// 同一份文件。
+/// `recent_projects`（启动选择器线）＋ `help`（新手引导线，存储并入）＋
+/// `debug_output`（T-FIX-70 调试输出线），同一份文件。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
     /// 用户显式选过的语言；`None` = 从未存过（首次启动走自动检测）。
@@ -70,6 +72,10 @@ pub struct Settings {
     /// 帮助系统状态（新手引导与课程进度，类型与语义见
     /// [`HelpState`]）；`HelpState::default()` = 从未存过。
     pub help: HelpState,
+    /// 调试输出开关（主菜单「设置 → 调试输出」的已存值，T-FIX-70）；
+    /// `false` = 从未开过（键缺失与存 `false` 同义，写回时只在 `true`
+    /// 时落键）。启动决策见 [`resolve_debug_output`]。
+    pub debug_output: bool,
 }
 
 /// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
@@ -257,6 +263,11 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         layout: parse_layout(&value),
         recent_projects: parse_recent_projects(&value),
         help: parse_help_state(&value),
+        // 键缺失 / 不是布尔 ⇒ 没开过（逐字段容错，与本文件其余键同款）。
+        debug_output: value
+            .get("debug_output")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -639,6 +650,9 @@ pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result
     if settings.help != HelpState::default() {
         object.insert("help".to_owned(), help_to_json(&settings.help));
     }
+    if settings.debug_output {
+        object.insert("debug_output".to_owned(), serde_json::json!(true));
+    }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
     let tmp = path.with_extension("json.tmp");
@@ -673,6 +687,28 @@ pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
     if let Err(error) = save(&settings) {
         eprintln!("[yeban-app] 最近工程清单写回设置失败（下次启动的「最近」会少这一条）: {error}");
     }
+}
+
+/// 存下调试输出开关（主菜单「设置 → 调试输出」触发）：先读出现有设置
+/// （保住其余键），再改 `debug_output` 写回。与 [`save_language`] 同款
+/// 契约：写失败只打印，不让调用方把一次切换变失败（开关已在本会话
+/// 生效，设置下次再存）。
+pub fn save_debug_output(enabled: bool) {
+    let mut settings = load();
+    settings.debug_output = enabled;
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 调试输出开关写回设置失败（下次启动仍走旧值）: {error}");
+    }
+}
+
+/// 启动调试输出决策（纯函数，单测钉死）：`--debug`、`--log-file`、
+/// 已存的菜单开关**任一开启即生效**（三者是同一个开关的三个入口，
+/// 不是三档级别）。`--log-file` 给出即算开启的理由见
+/// `cli::Options::log_file` 的字段文档：不开调试就没有行可写，文件
+/// 恒空只会误导回传诊断的人。
+#[must_use]
+pub fn resolve_debug_output(cli_debug: bool, log_file_given: bool, stored: bool) -> bool {
+    cli_debug || log_file_given || stored
 }
 
 /// 存下（`Some`）或清掉（`None`，恢复默认布局用）窗口布局：先读出
@@ -861,6 +897,7 @@ mod tests {
             layout: None,
             recent_projects: Vec::new(),
             help: HelpState::default(),
+            debug_output: false,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -871,6 +908,48 @@ mod tests {
         );
         assert_eq!(load_from(&path), settings);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 调试输出开关往返（T-FIX-70）：存 `true` 落 `debug_output` 键、读回
+    /// 为真；默认（`false`）不落键、读回为假；键形状坏只丢这一格。
+    #[test]
+    fn debug_output_roundtrip_through_a_temp_file() {
+        let dir = test_dir("debug-output");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings {
+            debug_output: true,
+            ..Settings::default()
+        };
+        save_to(&path, &settings).expect("临时目录写设置必须成功");
+        let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
+        assert!(
+            text.contains("\"debug_output\": true"),
+            "开启时须落 debug_output 键: {text}"
+        );
+        assert_eq!(load_from(&path), settings);
+        // 默认不落键。
+        save_to(&path, &Settings::default()).expect("写默认设置");
+        let text = std::fs::read_to_string(&path).expect("读回文件");
+        assert!(
+            !text.contains("debug_output"),
+            "默认（关）不许写 debug_output 键: {text}"
+        );
+        assert!(!load_from(&path).debug_output);
+        // 键形状坏（字符串而非布尔）⇒ 当作没开过，不连坐其它键。
+        std::fs::write(&path, r#"{"version":1,"debug_output":"yes"}"#).expect("写坏形状");
+        assert!(!load_from(&path).debug_output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 启动调试输出决策（T-FIX-70）：三个入口任一开启即生效，全关才关。
+    #[test]
+    fn resolve_debug_output_any_entry_turns_it_on() {
+        assert!(!resolve_debug_output(false, false, false));
+        assert!(resolve_debug_output(true, false, false));
+        assert!(resolve_debug_output(false, true, false));
+        assert!(resolve_debug_output(false, false, true));
+        assert!(resolve_debug_output(true, true, true));
     }
 
     /// 容错：缺文件 / 坏 JSON / 未知语言值 ⇒ 一律当作"没有已存选择"。
@@ -927,6 +1006,7 @@ mod tests {
             layout: Some(distinctive_layout()),
             recent_projects: Vec::new(),
             help: HelpState::default(),
+            debug_output: false,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -1167,6 +1247,7 @@ mod tests {
             layout: Some(distinctive_layout()),
             recent_projects: Vec::new(),
             help: distinctive_help(),
+            debug_output: false,
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。

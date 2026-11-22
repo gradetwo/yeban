@@ -763,6 +763,14 @@ pub fn usage_text() -> String {
                              (Apple 演示工程有版权); **只在** `--features {logic_import_feature}`
                              的构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
+  --debug                  调试输出 (T-FIX-70): 多打印一批 [debug] 诊断行
+                           (全部输出/输入设备枚举 / 设备协商每一步与最终结果 /
+                           宿主打开结果 / 装载逐项明细 / 导出回执明细);
+                           与主菜单「设置 → 调试输出」的已存开关、--log-file
+                           任一开启即生效; 全关时输出与旧版逐字一致
+  --log-file <path>        把调试行另写一份到该文件 (便于回传诊断); 给出即
+                           视为开启调试输出; 启动时创建/截断, 打不开 = 响亮的
+                           启动错误 (退出码 {usage}), 不静默继续
   --theme <{themes}>
                            选择界面主题; 重复给以最后一个为准 (默认 default = yeban 调色板)
   --lang <{langs}>
@@ -2095,6 +2103,23 @@ pub struct Options {
     /// Slint 1.18.1 没有运行时选风格 API。用户需要一个**命令**能读到这件事，
     /// 否则"我选了 material"与"我看到的是 fluent"之间就没有任何可核对的地方。
     pub print_theme: bool,
+    /// `--debug`：调试输出开关（T-FIX-70）。**修饰开关**（与 `--lang` /
+    /// `--theme` 同族，⛔ 不进 [`ACTION_SWITCHES`]、不选路径）：开启后
+    /// 启动与运行期多输出一批 `[debug]` 前缀的诊断行 —— 全部输出/输入
+    /// 设备枚举、设备协商的每一步与最终结果、引擎宿主打开结果、工程
+    /// 装载逐项明细、导出/渲染回执明细（组装与放行见 [`crate::debug_out`]）。
+    ///
+    /// 与另外两个入口是**同一个开关**：主菜单「设置 → 调试输出」的已存
+    /// 值、[`Self::log_file`] 是否给出，三者任一开启即生效
+    /// （[`crate::settings::resolve_debug_output`]，`main` 定案）。
+    /// 关闭（三个入口都没开）时输出与行为与旧版**逐字一致**。
+    pub debug: bool,
+    /// `--log-file <path>`：把调试行**另写一份**到该文件（便于用户把
+    /// 诊断回传）。给出本开关即视为开启调试输出 —— 否则没有行可写、
+    /// 文件恒空，只会误导收文件的人。文件在启动时创建/截断；打不开是
+    /// **响亮的启动错误**（`main` 以用法错误退出），⛔ 不静默继续。
+    /// 只给一次（重复 = 目标不明确，与 `--open` 同款 `set_once`）。
+    pub log_file: Option<PathBuf>,
 }
 
 /// 一个动作开关在**进程形态**上的归属。
@@ -3123,6 +3148,17 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 reject_inline("--print-shortcuts", inline)?;
                 options.print_shortcuts = true;
                 cursor += 1;
+            }
+            // `--debug` / `--log-file`（T-FIX-70）：修饰开关，不选路径 ——
+            // 与 `--lang` 同族。生效定案在 `main`（与已存菜单开关合并）。
+            "--debug" => {
+                reject_inline("--debug", inline)?;
+                options.debug = true;
+                cursor += 1;
+            }
+            "--log-file" => {
+                let value = take_value("--log-file", inline, args, &mut cursor)?;
+                set_once(&mut options.log_file, "--log-file", PathBuf::from(value))?;
             }
             // `--print-theme`: 只读自述命令 (与 `--print-shortcuts` 同族)。
             // 它是**无窗口**路径: 不构造控件树, 只把"请求的主题 vs 编进来的风格"打出来。
@@ -5223,6 +5259,38 @@ pub fn project_report(loaded: &Loaded) -> Vec<String> {
     ]
 }
 
+/// `--debug` 时的装载逐项明细（[`project_report`] 的细节档位，T-FIX-70）：
+/// 工程音频配置一行 + 逐轨一行（身份/名/类型/音量/声相/静默独奏/采样器）。
+/// 只在调试开启时组装与输出；关闭时报告与旧版逐字一致（调用点把关）。
+#[must_use]
+pub fn project_debug_report(loaded: &Loaded) -> Vec<String> {
+    let project = &loaded.archive.project;
+    let mut lines = vec![format!(
+        "[debug] 装载明细: 采样率={} Hz 块长={} 帧 轨数={}",
+        project.audio_config.sample_rate.hz(),
+        project.audio_config.block_size.frames(),
+        project.tracks.len(),
+    )];
+    for (index, track) in project.tracks.values().enumerate() {
+        lines.push(format!(
+            "[debug] 轨[{index}]: id={} name={} kind={:?} volume_db={:.2} pan={:.2} \
+             mute={} solo={} sampler={}",
+            track.id.to_canonical_string(),
+            quoted(&track.name),
+            track.kind,
+            track.volume_db,
+            track.pan,
+            track.mute,
+            track.solo,
+            match &track.sampler {
+                Some(binding) => binding.path.as_str(),
+                None => "none",
+            },
+        ));
+    }
+    lines
+}
+
 /// 界面投影侧的读数（`view-counts:` 一行）。
 ///
 /// 这一行的意义：证明"工程**真的**能被投影成界面状态"（而不是只被反序列化过）。
@@ -6638,6 +6706,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     lines.push(HEADLESS_HANDSHAKE.to_owned());
     lines.extend(project_report(&loaded));
+    // 调试明细（T-FIX-70）：设备枚举 + 装载逐项明细，只在调试开启时进
+    // 报告 —— 开关定案与 GUI 路径同源（`--debug` / `--log-file` / 汇点
+    // 已由 `main` 按已存菜单开关初始化）。关闭时报告逐字不变。
+    if options.debug || options.log_file.is_some() || crate::debug_out::enabled() {
+        let mut debug_lines = crate::debug_out::device_enumeration_lines();
+        debug_lines.extend(project_debug_report(&loaded));
+        // 本段随报告经 `cli::emit` 打到控制台；`--log-file` 的文件副本
+        // 由汇点补齐（`debug_out::append_to_log`），否则回传文件缺明细。
+        crate::debug_out::append_to_log(&debug_lines);
+        lines.extend(debug_lines);
+    }
     // ⭐ `#259`：**自动化泳道的落地读数**。这一行说的是"监听里哪几条泳道不会生效"，
     // 不是工程统计里多一格：`SendGain` 画得出来、MCP 写得进去，而实时引擎没有发送量
     // 槽位 ⇒ 用户会以为它生效。数出来的口径与 `EngineHost::publish_automation` **同一条**
@@ -7306,6 +7385,33 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         lines.push(exported_wav_line(&report, &loaded));
+        // 调试明细（T-FIX-70）：导出回执的细节档位 —— 帧数/摘要/削波/
+        // 真峰值/限制器读数逐格摊开，只在调试开启时产行。
+        if options.debug || options.log_file.is_some() || crate::debug_out::enabled() {
+            let detail = format!(
+                "[debug] 导出明细: path={} frames={} rate={} Hz ch={} bits={} bytes={} \
+                 digest={} source={} audio_clips={} spans={} skipped={} clipped_samples={} \
+                 true_peak_dbfs={:?} headroom_db={:?} limiter_reductions={}",
+                report.path.display(),
+                report.frames,
+                report.sample_rate,
+                report.channels,
+                report.bits,
+                report.bytes,
+                report.digest,
+                report.source,
+                report.audio_clips_rendered,
+                report.audio_clip_spans,
+                report.audio_clips_skipped.len(),
+                report.clipped_samples,
+                report.true_peak_dbfs,
+                report.headroom_db,
+                report.limiter_reductions,
+            );
+            // 同装载明细：控制台随报告出，文件副本经汇点补齐。
+            crate::debug_out::append_to_log(std::slice::from_ref(&detail));
+            lines.push(detail);
+        }
         // ⭐ 记法适配结论 + 未命中告警（⛔ 不许只躺在报告结构里）：逐份解码
         //    报告把响亮行打出来 —— (a)/(b)/(c) 任一层生效、疑似未命中、
         //    或有工程音符打不中任何 region 时才产行；普通对齐乐器零新增行
@@ -8830,6 +8936,47 @@ mod tests {
             Err(ParseError::MissingValue(_)) => parse(&argv(&[name, "probe"])),
             other => other,
         }
+    }
+
+    /// T-FIX-70：`--debug` / `--log-file` 是修饰开关 —— 解析成立、字段
+    /// 落位，且**不选路径**（单独给仍走 GUI，与 `--lang` 同族）；重复给
+    /// `--log-file` 与 `--debug=x` 都是用法错误，⛔ 不静默接受。
+    #[test]
+    fn parse_debug_and_log_file_are_modifiers_not_path_switches() {
+        let plain = parse(&argv(&[])).expect("空参数应解析成功");
+        assert!(!plain.debug);
+        assert!(plain.log_file.is_none());
+
+        let debug_only = parse(&argv(&["--debug"])).expect("--debug 应解析成功");
+        assert!(debug_only.debug);
+        assert!(
+            debug_only.wants_gui(),
+            "--debug 是修饰开关，单独给不得把路径拨去批处理"
+        );
+
+        let with_file = parse(&argv(&["--log-file", "diag.log"])).expect("--log-file 应解析成功");
+        assert_eq!(
+            with_file.log_file.as_deref(),
+            Some(std::path::Path::new("diag.log"))
+        );
+        let with_file_eq = parse(&argv(&["--log-file=diag2.log"])).expect("--log-file= 应解析成功");
+        assert_eq!(
+            with_file_eq.log_file.as_deref(),
+            Some(std::path::Path::new("diag2.log"))
+        );
+
+        assert!(
+            parse(&argv(&["--log-file", "a.log", "--log-file", "b.log"])).is_err(),
+            "--log-file 重复给必须是用��错误"
+        );
+        assert!(
+            parse(&argv(&["--debug=yes"])).is_err(),
+            "--debug 不接受内联值"
+        );
+        assert!(
+            usage_text().contains("--debug") && usage_text().contains("--log-file"),
+            "用法文本必须登记两个新开关"
+        );
     }
 
     /// 本构建里由**编译期门禁**（feature 没开）拒绝的解析错误。

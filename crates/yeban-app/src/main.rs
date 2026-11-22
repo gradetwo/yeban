@@ -228,6 +228,37 @@ fn main() -> ExitCode {
         options.headless = true;
     }
 
+    // 调试输出（T-FIX-70）：在**任何**路径分流之前定案并初始化汇点 ——
+    // `--debug` / `--log-file` / 已存的菜单开关任一开启即生效
+    // （`settings::resolve_debug_output`）。日志文件打不开 = 响亮的启动
+    // 错误：用户明确要了这份回传文件，静默丢掉比启动失败更坏。
+    let stored_settings = yeban_app::settings::load();
+    let debug_enabled = yeban_app::settings::resolve_debug_output(
+        options.debug,
+        options.log_file.is_some(),
+        stored_settings.debug_output,
+    );
+    if let Err(error) = yeban_app::debug_out::init(debug_enabled, options.log_file.as_deref()) {
+        eprintln!("yeban-app: {error}");
+        return ExitCode::from(cli::EXIT_USAGE);
+    }
+    if debug_enabled {
+        let mut first = vec![format!(
+            "[debug] 调试输出已开启（--debug={} --log-file={} 已存菜单开关={}）",
+            options.debug,
+            if options.log_file.is_some() {
+                "已给"
+            } else {
+                "未给"
+            },
+            stored_settings.debug_output,
+        )];
+        if let Some(path) = &options.log_file {
+            first.push(format!("[debug] 调试日志文件: {}", path.display()));
+        }
+        yeban_app::debug_out::emit(&first);
+    }
+
     // 四条路径，判定顺序是**承重**的：
     //   `--headless-idle` 也在 `batch()` 里（它确实不建 OS 窗口），但它是唯一
     //   **会构造 Slint 对象**的无窗口开关 ⇒ 必须在 `wants_gui()` 之前先分流出去，
@@ -273,6 +304,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     let mut lines = cli::project_report(&loaded);
     lines.extend(cli::view_report(&view));
     cli::emit(&lines);
+    // 调试明细（T-FIX-70）：装载逐项明细紧跟装载报告，只在调试开启时出。
+    if yeban_app::debug_out::enabled() {
+        yeban_app::debug_out::emit(&cli::project_debug_report(&loaded));
+    }
 
     let ui = match host::build_main_window(&view, &scene) {
         Ok(ui) => ui,
@@ -456,8 +491,23 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 独占模式（cpal 0.18 没有该 API ⇒ `ShareMode::PreferExclusive` 静默降级为共享）。
     if engine.has_engine() {
         let config = yeban_engine::device::EngineConfig::from_project(&loaded.archive.project);
+        // 调试明细（T-FIX-70）：打开之前先摊设备枚举（全部输出/输入设备、
+        // 默认配置与支持范围），打开之后再摊这一次协商的逐步 trace。
+        if yeban_app::debug_out::enabled() {
+            yeban_app::debug_out::emit(&yeban_app::debug_out::device_enumeration_lines());
+        }
         match engine.open_device(config) {
-            Ok(opening) => cli::emit(&[opening.status_line()]),
+            Ok(opening) => {
+                cli::emit(&[opening.status_line()]);
+                if yeban_app::debug_out::enabled() {
+                    let trace: Vec<String> = opening
+                        .negotiation_trace
+                        .iter()
+                        .map(|line| format!("[debug] {line}"))
+                        .collect();
+                    yeban_app::debug_out::emit(&trace);
+                }
+            }
             Err(error) => {
                 cli::emit(&[format!(
                     "音频设备: **未接线**（{error}）⇒ 降级为控制面驱动：墙钟泵送按真实时间推量子（无声）；\
@@ -490,6 +540,15 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 // 非错误级：中性提示，几秒后自动收走（⛔ 别让它变成常驻红条）。
                 ui.set_toast_is_error(false);
                 ui.set_show_floating_toast(true);
+                // 调试明细（T-FIX-70）：打开失败时句柄不存在、拿不到那一次的
+                // trace ⇒ 对默认设备做一次只协商不建流的重演，把协商在哪
+                // 一步落到这个结果摊开（重演是纯函数 + 只读枚举，与失败的
+                // 那一次同政策同输入，结果一致）。
+                if yeban_app::debug_out::enabled() {
+                    yeban_app::debug_out::emit(
+                        &yeban_app::debug_out::output_negotiation_trace_lines(&config),
+                    );
+                }
             }
         }
     }

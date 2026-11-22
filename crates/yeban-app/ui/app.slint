@@ -259,6 +259,11 @@ export component MainWindow inherits Window {
     // 「设置 → 语言」的当前态勾选读的镜像，.slint 侧不自己翻它。
     in-out property <string> language-code: "zh-CN";
     in-out property <string> language-name: "中文";
+    // 调试输出开关的当前态镜像（T-FIX-70）：主菜单「设置 → 调试输出」
+    // 的勾选读它；唯一写入口是 host::apply_debug_output，.slint 侧
+    // 不自己翻它（与 language-code 同款）。开关本体住在宿主的
+    // debug_out 汇点，菜单回调 toggle-debug-output 由宿主接管。
+    in-out property <bool> debug-output: false;
     in-out property <bool> song-overview-fullscreen: false;
     property <bool> dock-tab-sync-guard: false;
     in-out property <bool> control-room-dim: false;
@@ -334,6 +339,11 @@ export component MainWindow inherits Window {
     // 见 host::apply_language_and_save）。走带栏语言 chip 已按负责人
     // 2026-11-17 口径撤销，菜单是唯一运行期入口。
     callback select-language(string);
+    // 调试输出开关（T-FIX-70）：由主菜单「设置 → 调试输出」触发，宿主
+    // 接管（翻转 debug_out 汇点 + 经 apply_debug_output 回写勾选镜像 +
+    // 写回设置文件，见 host 的接线）。与语言/质感同口径：切换入口只进
+    // 系统主菜单，不放走带栏 chip。
+    callback toggle-debug-output();
     // 恢复默认布局（line/ui-window-state）：由主菜单「设置 → 恢复默认
     // 布局」触发，宿主接管（host::reset_window_layout 是唯一落点：应用
     // .slint 初值并清掉已存布局；.slint 侧不自己改布局状态，与
@@ -1170,6 +1180,7 @@ export component MainWindow inherits Window {
                 MenuItem { title: (Tokens.texture == TextureMode.flat ? "✓ " : "") + @tr("扁平"); activated => { root.select-texture("flat"); } }
                 MenuItem { title: (Tokens.texture == TextureMode.physical ? "✓ " : "") + @tr("实体"); activated => { root.select-texture("physical"); } }
             }
+            MenuItem { title: (root.debug-output ? "✓ " : "") + @tr("调试输出"); activated => { root.toggle-debug-output(); } }
             MenuItem { title: @tr("恢复默认布局"); activated => { root.reset-window-layout(); } }
             MenuSeparator {}
             MenuItem { title: @tr("音源管理..."); activated => { root.command-execute("open-sound-library"); } }

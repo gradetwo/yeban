@@ -2038,6 +2038,9 @@ msgstr "Idioma"
 msgid "质感"
 msgstr "Textura"
 
+msgid "调试输出"
+msgstr "Salida de depuración"
+
 # --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
 msgid "帮助"
 msgstr "Ayuda"

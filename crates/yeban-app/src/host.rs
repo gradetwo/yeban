@@ -19306,6 +19306,16 @@ pub fn apply_language_and_save(ui: &MainWindow, lang: crate::cli::Language) {
     crate::settings::save_language(lang);
 }
 
+/// 调试输出开关的界面侧**唯一**写入口（T-FIX-70）：只写主菜单
+/// 「设置 → 调试输出」的勾选镜像属性（`debug-output`），与
+/// [`apply_language`] 写 `language-code` 同款 —— .slint 侧不自己翻它。
+/// 开关本体（放行与否）住在 [`crate::debug_out`]，翻转走
+/// [`crate::debug_out::set_enabled`]；本函数只管界面镜像，两者由菜单
+/// 接线点（`build_main_window_with_console_tab`）成对调用。
+pub fn apply_debug_output(ui: &MainWindow, enabled: bool) {
+    ui.set_debug_output(enabled);
+}
+
 /// 窗口布局（line/ui-window-state）的**唯一**写入口，与 [`apply_language`]
 /// 同款单向注入：把一份已存布局写进 `MainWindow` 属性与窗口几何。
 ///
@@ -19497,6 +19507,32 @@ pub fn build_main_window_with_console_tab(
             apply_texture(&ui, texture);
         }
     });
+    // 调试输出（主菜单「设置 → 调试输出」，T-FIX-70）：宿主翻转调试汇点
+    // （crate::debug_out，即时对之后发出的调试行生效）、经唯一写入口
+    // apply_debug_output 回写勾选镜像、并把选择存进设置文件（下次启动
+    // 从第一行起生效；启动早期已发出的枚举/协商行不追溯）。与语言选择
+    // 同挂这一处；勾选镜像的初值也在此处按汇点现值注入（汇点已由
+    // `main` 在建窗前定案）。
+    ui.on_toggle_debug_output({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let enabled = !crate::debug_out::enabled();
+            crate::debug_out::set_enabled(enabled);
+            apply_debug_output(&ui, enabled);
+            crate::settings::save_debug_output(enabled);
+            println!(
+                "[yeban-app] 调试输出已{}（已存入设置，下次启动继续生效）",
+                if enabled { "开启" } else { "关闭" }
+            );
+            if enabled {
+                // 刚开启就先给一份当前设备枚举 —— 菜单开启的当下没有
+                // 启动枚举可看，这是离用户最近的一份等价诊断。
+                crate::debug_out::emit(&crate::debug_out::device_enumeration_lines());
+            }
+        }
+    });
+    apply_debug_output(&ui, crate::debug_out::enabled());
     ui.set_timecode(scene.timecode.clone().into());
     ui.set_branch_name(scene.branch_name.clone().into());
     ui.set_arrangement_view(scene.arrangement_by_default);

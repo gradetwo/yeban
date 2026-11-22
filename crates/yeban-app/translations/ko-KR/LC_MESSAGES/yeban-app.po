@@ -2038,6 +2038,9 @@ msgstr "언어"
 msgid "质感"
 msgstr "질감"
 
+msgid "调试输出"
+msgstr "디버그 출력"
+
 # --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
 msgid "帮助"
 msgstr "도움말"

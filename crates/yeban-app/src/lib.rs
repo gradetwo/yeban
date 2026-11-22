@@ -86,6 +86,7 @@ pub mod bridge;
 pub mod builtin_sounds;
 // ⭐ **缺音源的友好引导**（打开工程时）：算出"哪条轨缺哪件、能不能一键装回来"。
 pub mod cli;
+pub mod debug_out;
 pub mod elements;
 pub mod engine_host;
 pub mod missing_sounds;

@@ -406,6 +406,9 @@ pub struct DeviceOpening {
     pub carryover_position_ticks: u64,
     /// 交接时引擎上报的走带状态（`Playing` ⇒ 已入队一条 `Play`，由设备回调生效）。
     pub carryover_state: TransportState,
+    /// 本次打开的协商 trace（`device::negotiate_traced` 的逐步记录，
+    /// T-FIX-70）：调试输出的数据源；调试关闭时调用方不打印，行为零差异。
+    pub negotiation_trace: Vec<String>,
 }
 
 impl DeviceOpening {
@@ -1585,6 +1588,7 @@ impl EngineHost {
         }
         let negotiated = *handle.negotiated();
         let device_name = handle.device_name().to_owned();
+        let negotiation_trace = handle.negotiation_trace().to_vec();
 
         // 5) 装机（只有到这里，旧的一代才被替换）。
         self.close_device();
@@ -1613,6 +1617,7 @@ impl EngineHost {
                 carryover_quanta: carryover_stats.quanta,
                 carryover_position_ticks: before.position_ticks,
                 carryover_state: before.state,
+                negotiation_trace,
             },
             collector,
         ))
