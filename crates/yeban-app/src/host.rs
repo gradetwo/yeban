@@ -6415,6 +6415,16 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     if ui.get_master_meter_level().to_bits() != master_level.to_bits() {
         ui.set_master_meter_level(master_level);
     }
+    // ⭐ T-FIX-114：主控两根柱子各读**自己声道**的柱高（帧里的 peak_l / peak_r）。
+    // 左强右弱必须看得见；用同一个标量抄给两柱就是假立体声。
+    let master_l = snapshot.master_level_l();
+    if ui.get_master_meter_l().to_bits() != master_l.to_bits() {
+        ui.set_master_meter_l(master_l);
+    }
+    let master_r = snapshot.master_level_r();
+    if ui.get_master_meter_r().to_bits() != master_r.to_bits() {
+        ui.set_master_meter_r(master_r);
+    }
 }
 
 fn update_string_model_in_place(model: &ModelRc<SharedString>, values: &[String]) -> bool {
@@ -22903,14 +22913,10 @@ pub fn sync_aether_display(ui: &MainWindow) {
     if ui.get_bpm_val() != bpm {
         ui.set_bpm_val(bpm);
     }
-    let level = ui.get_master_meter_level().clamp(0.0, 1.0);
-    if ui.get_master_meter_l().to_bits() != level.to_bits() {
-        ui.set_master_meter_l(level);
-    }
-    // 契约面只有单一主总线标量电平：右声道如实映出同一读数，不编造 *0.95 假立体声差。
-    if ui.get_master_meter_r().to_bits() != level.to_bits() {
-        ui.set_master_meter_r(level);
-    }
+    // ⛔ 不在这里写 master-meter-l / master-meter-r：这两个属性由
+    // [`apply_meters`] 从引擎帧的 `peak_l` / `peak_r` 直接投影（T-FIX-114）。
+    // 曾在这里把 `master-meter-level`（单标量）抄给左右两柱，界面因此恒显示
+    // 「左右同值」——那是假立体声。谁再抄一遍，左强右弱就永远看不见。
     let lufs = ui.get_master_meter_lufs();
     if ui.get_lufs_short() != lufs {
         ui.set_lufs_short(lufs);

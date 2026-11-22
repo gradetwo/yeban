@@ -103,8 +103,13 @@ pub struct MeterFrame {
     pub node: EntityId,
     /// 量子序号（`sample_rate / block_frames` 递增），UI 用它判断数据新鲜度。
     pub quantum: u64,
-    /// 本量子绝对值峰值（线性幅度）。
+    /// 本量子绝对值峰值（线性幅度；立体声时是两声道最大，即"联动"读数）。
     pub peak: f32,
+    /// 左声道本量子峰值（线性幅度）。单声道节点与 `peak` 相同；
+    /// 主总线由 `measure_bus_stereo` 填入**各自声道**的真实峰值。
+    pub peak_l: f32,
+    /// 右声道本量子峰值（同上）。
+    pub peak_r: f32,
     /// 峰值保持：`max(peak, 上一量子保持 × 释放乘子)`，默认 20 dB/s。
     pub peak_hold: f32,
     /// 本量子 RMS（线性幅度）。
@@ -124,6 +129,8 @@ impl MeterFrame {
             node,
             quantum,
             peak,
+            peak_l: peak,
+            peak_r: peak,
             peak_hold: peak,
             rms,
             rms_smoothed: rms,
@@ -137,6 +144,8 @@ impl MeterFrame {
             node,
             quantum,
             peak: reading.peak,
+            peak_l: reading.peak_l,
+            peak_r: reading.peak_r,
             peak_hold: reading.peak_hold,
             rms: reading.rms,
             rms_smoothed: reading.rms_smoothed,
@@ -157,6 +166,8 @@ impl MeterFrame {
     #[must_use]
     pub fn is_sane(&self) -> bool {
         self.peak.is_finite()
+            && self.peak_l.is_finite()
+            && self.peak_r.is_finite()
             && self.peak_hold.is_finite()
             && self.rms.is_finite()
             && self.rms_smoothed.is_finite()
@@ -913,6 +924,31 @@ mod tests {
 
         let mono = bank.measure_bus(master, 2, &[0.25f32; 16]);
         assert!(mono.is_sane());
+    }
+
+    /// T-FIX-114：主总线**同一帧**里带左右两个峰值（不拆成两帧）。
+    ///
+    /// 左强右弱 ⇒ `peak_l > peak_r`；`peak` 仍是两声道最大（与 T-FIX-101
+    /// 的"一量子每节点恰好一帧"口径并存）。单声道节点两侧如实同值。
+    #[test]
+    fn bus_frame_carries_both_channel_peaks_in_one_frame() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        let frame = bank.measure_bus_stereo(
+            master,
+            0,
+            &[1.0f32, 0.5, 0.25, 0.0],
+            &[0.25f32, 0.25, 0.25, 0.0],
+        );
+        assert!(frame.is_sane());
+        assert_eq!(frame.peak_l, 1.0);
+        assert_eq!(frame.peak_r, 0.25);
+        assert_eq!(frame.peak, 1.0, "联动峰值仍是两声道最大");
+        assert_ne!(frame.peak_l, frame.peak_r, "左强右弱时两声道值必须不同");
+
+        let mono = bank.measure(master, 1, &[0.5f32; 16]).expect("容量足够");
+        assert_eq!(mono.peak_l, mono.peak);
+        assert_eq!(mono.peak_r, mono.peak);
     }
 
     /// 判据：`NaN`/`Inf` 输入经 `MeterBank` 也不得产出 `NaN` 帧。

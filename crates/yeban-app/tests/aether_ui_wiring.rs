@@ -11,6 +11,7 @@
 use slint::Model;
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
+use yeban_app::meters::{ChannelMeter, MeterSnapshot};
 use yeban_app::scene::DemoScene;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
@@ -36,6 +37,10 @@ fn sync_aether_display_mirrors_contract_state() {
     ui.set_timecode("002.03.04".into());
     ui.set_bpm_display("132.00".into());
     ui.set_master_meter_level(0.72);
+    // T-FIX-114：左右两柱只能由 apply_meters 从引擎帧的分声道峰值写入。
+    // 这里给两柱不同的值，sync **不得**用单标量把它们覆盖成同值（假立体声）。
+    ui.set_master_meter_l(0.31);
+    ui.set_master_meter_r(0.77);
 
     host::sync_aether_display(ui);
 
@@ -45,8 +50,61 @@ fn sync_aether_display_mirrors_contract_state() {
     assert_eq!(ui.get_timecode_text().as_str(), "002.03.04");
     assert_eq!(ui.get_bpm_val(), 132, "bpm-display -> bpm-val");
     assert!(
-        (ui.get_master_meter_l() - 0.72).abs() < 1e-4,
-        "master-meter-level -> master-meter-l"
+        (ui.get_master_meter_level() - 0.72).abs() < 1e-4,
+        "契约面单标量保持原值"
+    );
+    assert!(
+        (ui.get_master_meter_l() - 0.31).abs() < 1e-4,
+        "sync 不得用单标量覆盖左声道（假立体声）"
+    );
+    assert!(
+        (ui.get_master_meter_r() - 0.77).abs() < 1e-4,
+        "sync 不得用单标量覆盖右声道（假立体声）"
+    );
+}
+
+/// T-FIX-114：主控两根柱子分别读快照里的左/右声道柱高。
+///
+/// 注入一份左强右弱的快照：`master-meter-l` 与 `master-meter-r` 必须不同，
+/// 且各自等于快照给出的值——这就是"真立体声"与"同一标量复制两遍"的判别点。
+#[test]
+fn apply_meters_projects_master_left_and_right_separately() {
+    let view = ViewState::demo();
+    let port = build_rig(&view);
+    let ui = port.ui();
+
+    let mut master = ChannelMeter::silent(usize::MAX, "master".into(), "Master".into());
+    master.level = 0.90;
+    master.level_l = 0.90;
+    master.level_r = 0.20;
+    let tracks = view
+        .tracks
+        .iter()
+        .map(|track| ChannelMeter::silent(track.index, track.id.clone(), track.name.clone()))
+        .collect();
+    let snapshot = MeterSnapshot {
+        tracks,
+        master: Some(master),
+        quantum: Some(9),
+        nodes_seen: 1,
+    };
+
+    host::apply_meters(ui, &snapshot);
+
+    assert!(
+        (ui.get_master_meter_l() - 0.90).abs() < 1e-4,
+        "左柱必须取快照的左声道: 实际 {}",
+        ui.get_master_meter_l()
+    );
+    assert!(
+        (ui.get_master_meter_r() - 0.20).abs() < 1e-4,
+        "右柱必须取快照的右声道: 实际 {}",
+        ui.get_master_meter_r()
+    );
+    assert_ne!(
+        ui.get_master_meter_l().to_bits(),
+        ui.get_master_meter_r().to_bits(),
+        "左右信号不同时两柱不得同值（假立体声）"
     );
 }
 

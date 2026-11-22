@@ -122,8 +122,13 @@ pub const fn supersedes(candidate_quantum: u64, held_quantum: u64) -> bool {
 /// 一个量子内的电平原语读数（线性幅度，全部有限）。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LevelReading {
-    /// 本量子瞬时峰值。
+    /// 本量子瞬时峰值（立体声时是两声道最大绝对值，即"联动"读数）。
     pub peak: f32,
+    /// 左声道瞬时峰值（**真实分声道**；单声道输入时与 `peak` 相同，
+    /// 因为那一路信号本来就同时喂给两个声道——不是复制冒充）。
+    pub peak_l: f32,
+    /// 右声道瞬时峰值（同上）。
+    pub peak_r: f32,
     /// 峰值保持（带指数释放）。
     pub peak_hold: f32,
     /// 本量子 RMS。
@@ -138,6 +143,8 @@ impl LevelReading {
     pub const fn silence() -> Self {
         Self {
             peak: 0.0,
+            peak_l: 0.0,
+            peak_r: 0.0,
             peak_hold: 0.0,
             rms: 0.0,
             rms_smoothed: 0.0,
@@ -148,6 +155,8 @@ impl LevelReading {
     #[must_use]
     pub fn is_sane(&self) -> bool {
         self.peak.is_finite()
+            && self.peak_l.is_finite()
+            && self.peak_r.is_finite()
             && self.peak_hold.is_finite()
             && self.rms.is_finite()
             && self.rms_smoothed.is_finite()
@@ -318,7 +327,8 @@ impl LevelDetector {
             sum_squares += f64::from(sample) * f64::from(sample);
         }
         let mean_square = mean_of_squares(sum_squares, samples.len());
-        self.commit(peak, mean_square)
+        // 单声道：那一路信号同时进左右两个声道 ⇒ 两侧峰值如实等于同一个读数。
+        self.commit(peak, peak, peak, mean_square)
     }
 
     /// 分析一个**立体声联动**量子：峰值取两声道最大绝对值，
@@ -328,22 +338,34 @@ impl LevelDetector {
     pub fn analyze_stereo(&mut self, left: &[f32], right: &[f32]) -> LevelReading {
         let frames = left.len().min(right.len());
         let mut peak = 0.0f32;
+        let mut peak_l = 0.0f32;
+        let mut peak_r = 0.0f32;
         let mut sum_squares = 0.0f64;
         for index in 0..frames {
             let l = sanitize_sample(left[index]);
             let r = sanitize_sample(right[index]);
-            let magnitude = l.abs().max(r.abs());
+            let mag_l = l.abs();
+            let mag_r = r.abs();
+            if mag_l > peak_l {
+                peak_l = mag_l;
+            }
+            if mag_r > peak_r {
+                peak_r = mag_r;
+            }
+            let magnitude = mag_l.max(mag_r);
             if magnitude > peak {
                 peak = magnitude;
             }
             sum_squares += f64::from(l) * f64::from(l) + f64::from(r) * f64::from(r);
         }
         let mean_square = mean_of_squares(sum_squares, frames.saturating_mul(2));
-        self.commit(peak, mean_square)
+        // `peak` 仍是两声道最大（联动口径，RMS 与弹道不变）；
+        // `peak_l`/`peak_r` 是**各自声道**的真实峰值——左强右弱时两者必然不同。
+        self.commit(peak, peak_l, peak_r, mean_square)
     }
 
     /// 把本量子的 `peak` 与 `mean_square` 推进状态机并产出读数。
-    fn commit(&mut self, peak: f32, mean_square: f32) -> LevelReading {
+    fn commit(&mut self, peak: f32, peak_l: f32, peak_r: f32, mean_square: f32) -> LevelReading {
         self.peak_hold = (self.peak_hold * self.peak_release).max(peak);
         self.mean_square = self.rms_coeff * self.mean_square + (1.0 - self.rms_coeff) * mean_square;
         if !self.peak_hold.is_finite() {
@@ -354,6 +376,8 @@ impl LevelDetector {
         }
         LevelReading {
             peak,
+            peak_l,
+            peak_r,
             peak_hold: self.peak_hold,
             rms: mean_square.max(0.0).sqrt(),
             rms_smoothed: self.mean_square.max(0.0).sqrt(),
@@ -1022,6 +1046,24 @@ mod tests {
         let short = detector.analyze_stereo(&[1.0, 1.0], &[1.0]);
         assert!(short.is_sane());
         assert_eq!(short.peak, 1.0);
+    }
+
+    /// T-FIX-114：联动峰值之外，读数必须带**各自声道**的真实峰值。
+    ///
+    /// 钉住两件事：① 左强右弱时 `peak_l != peak_r`（不是把联动值抄两遍）；
+    /// ② 单声道输入时两侧如实同值（那一路信号本来就同时进两个声道）。
+    #[test]
+    fn stereo_reading_reports_each_channel_peak_separately() {
+        let mut detector = LevelDetector::new();
+        let reading = detector.analyze_stereo(&[1.0, -0.5], &[0.25, 0.125]);
+        assert_eq!(reading.peak_l, 1.0, "左声道峰值应取左切片最大绝对值");
+        assert_eq!(reading.peak_r, 0.25, "右声道峰值应取右切片最大绝对值");
+        assert_eq!(reading.peak, 1.0, "联动峰值仍是两声道最大");
+        assert_ne!(reading.peak_l, reading.peak_r, "左强右弱时两侧必须不同");
+
+        let mono = detector.analyze(&[0.5, -0.25]);
+        assert_eq!(mono.peak_l, mono.peak);
+        assert_eq!(mono.peak_r, mono.peak);
     }
 
     #[test]

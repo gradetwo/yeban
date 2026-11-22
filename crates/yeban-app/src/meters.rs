@@ -75,8 +75,12 @@ pub struct ChannelMeter {
     pub peak_dbfs: f32,
     /// 平滑 RMS dBFS，**已按下限钳位**，恒有限。
     pub rms_dbfs: f32,
-    /// 峰值柱高（0.0–1.0），由 [`peak_fraction`] 从 `peak_dbfs` 得到。
+    /// 峰值柱高（0.0–1.0），由 [`peak_fraction`] 从 `peak_dbfs` 得到（联动读数）。
     pub level: f32,
+    /// 左声道柱高（0.0–1.0），来自帧的 `peak_l`。
+    pub level_l: f32,
+    /// 右声道柱高（0.0–1.0），来自帧的 `peak_r`。
+    pub level_r: f32,
     /// 峰值的显示文本（`{:.1}`，例如 `"-6.0"` / `"-120.0"`）。
     pub peak_label: String,
     /// 平滑 RMS 的显示文本。
@@ -100,6 +104,8 @@ impl ChannelMeter {
             peak_dbfs: METER_FLOOR_DBFS,
             rms_dbfs: METER_FLOOR_DBFS,
             level: 0.0,
+            level_l: 0.0,
+            level_r: 0.0,
             peak_label: display_dbfs(METER_FLOOR_DBFS),
             rms_label: display_dbfs(METER_FLOOR_DBFS),
             quantum: None,
@@ -118,6 +124,8 @@ impl ChannelMeter {
             peak_dbfs,
             rms_dbfs,
             level: peak_fraction(peak_dbfs),
+            level_l: amplitude_fraction(frame.peak_l),
+            level_r: amplitude_fraction(frame.peak_r),
             peak_label: display_dbfs(peak_dbfs),
             rms_label: display_dbfs(rms_dbfs),
             quantum: Some(frame.quantum),
@@ -188,6 +196,22 @@ impl MeterSnapshot {
     #[must_use]
     pub fn master_level(&self) -> f32 {
         self.master.as_ref().map_or(0.0, |master| master.level)
+    }
+
+    /// 主控**左**声道柱高（0.0–1.0）。
+    ///
+    /// 与 [`master_level`](Self::master_level)（两声道最大，契约面的单标量）
+    /// 不同：这里读的是引擎帧里**左声道自己的峰值**。左强右弱时两者不相等——
+    /// 这正是「真立体声」与「同一标量复制两遍」的判别点。
+    #[must_use]
+    pub fn master_level_l(&self) -> f32 {
+        self.master.as_ref().map_or(0.0, |master| master.level_l)
+    }
+
+    /// 主控**右**声道柱高（0.0–1.0）。语义同 [`master_level_l`](Self::master_level_l)。
+    #[must_use]
+    pub fn master_level_r(&self) -> f32 {
+        self.master.as_ref().map_or(0.0, |master| master.level_r)
     }
 
     /// 主控 LUFS 读数（LKFS / LUFS）。
@@ -457,6 +481,8 @@ mod tests {
             node: EntityId::default(),
             quantum: 7,
             peak: f32::NAN,
+            peak_l: f32::NAN,
+            peak_r: f32::NAN,
             peak_hold: f32::NAN,
             rms: f32::NAN,
             rms_smoothed: f32::NAN,
@@ -509,6 +535,52 @@ mod tests {
             assert_eq!(other.peak_label, "-120.0");
             assert_eq!(other.level, 0.0);
         }
+    }
+
+    /// T-FIX-114：主总线快照必须把**左右声道各自的峰值**投影成两根柱高。
+    ///
+    /// 注入一帧 `peak_l = 0.5` / `peak_r = 0.125` 的主总线读数（左强右弱）：
+    /// 两柱高必须不同，且分别等于 `amplitude_fraction` 的换算值；契约面
+    /// 单标量 `master_level` 仍是两声道最大（保持既有消费方语义）。
+    #[test]
+    fn master_snapshot_projects_each_channel_level_separately() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let (mut publisher, collector) = meter_channel(8);
+        let mut runtime = MeterRuntime::with_collector(collector);
+
+        publisher.publish(&[MeterFrame {
+            node: project.master_bus_track_id,
+            quantum: 1,
+            peak: 0.5,
+            peak_l: 0.5,
+            peak_r: 0.125,
+            peak_hold: 0.5,
+            rms: 0.25,
+            rms_smoothed: 0.25,
+        }]);
+        runtime.poll(1);
+        let shot = runtime.snapshot(&view);
+
+        let left = shot.master_level_l();
+        let right = shot.master_level_r();
+        assert!(
+            (left - amplitude_fraction(0.5)).abs() < 1e-5,
+            "左柱高应来自 peak_l: 实际 {left}"
+        );
+        assert!(
+            (right - amplitude_fraction(0.125)).abs() < 1e-5,
+            "右柱高应来自 peak_r: 实际 {right}"
+        );
+        assert!(
+            left > right,
+            "左强右弱必须体现为不同柱高: l={left} r={right}"
+        );
+        assert!(
+            (shot.master_level() - left).abs() < 1e-5,
+            "契约面单标量仍是两声道最大: {}",
+            shot.master_level()
+        );
     }
 
     /// 判据 4：抽帧走的是 `drain_latest`（取最新），**不是** FIFO 前缀。
