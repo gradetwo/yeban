@@ -24,6 +24,54 @@ const CACHE: &str = include_str!("../src/waveform_cache.rs");
 const HOST: &str = include_str!("../src/host.rs");
 const MAIN: &str = include_str!("../src/main.rs");
 
+use std::f32::consts::TAU;
+
+/// T-FIX-80 pin: a known 1 kHz sine must produce per-bin maxima at the
+/// analytic amplitude, and a silent tail must stay zero (not a fake constant).
+#[test]
+fn known_sine_peaks_match_the_analytic_amplitude_per_bin() {
+    let rate = 48_000_usize;
+    let frequency = 1_000.0_f32;
+    let amplitude = 0.75_f32;
+    let samples: Vec<f32> = (0..rate / 10)
+        .map(|n| amplitude * (TAU * frequency * n as f32 / rate as f32).sin())
+        .collect();
+    let peaks = yeban_app::bridge::compute_waveform_peaks(&samples, 8);
+    assert_eq!(peaks.len(), 8, "八个可见 bin 必须各有一个峰值");
+    for (index, peak) in peaks.iter().enumerate() {
+        assert!(
+            (peak - amplitude).abs() < 1e-3,
+            "bin {index} 的峰值应等于正弦幅度 {amplitude}，实际 {peak}"
+        );
+    }
+
+    let mut with_silent_tail = samples;
+    for sample in &mut with_silent_tail[rate / 20..] {
+        *sample = 0.0;
+    }
+    let peaks = yeban_app::bridge::compute_waveform_peaks(&with_silent_tail, 4);
+    assert_eq!(peaks.len(), 4, "四个可见 bin 必须各有一个峰值");
+    assert!(
+        peaks[0] > 0.7 && peaks[1] > 0.7,
+        "前半段应保留正弦峰值，实际 {peaks:?}"
+    );
+    assert_eq!(
+        &peaks[2..],
+        &[0.0, 0.0],
+        "后半段静音必须如实为 0，⛔ 不许被常量波形填满"
+    );
+}
+
+/// T-FIX-80 pin: the projection must hand the cached peaks to the UI model,
+/// not a constant placeholder.
+#[test]
+fn projected_timeline_block_writes_real_peaks_into_the_model() {
+    assert!(
+        HOST.contains("waveform_peaks: ModelRc::new(VecModel::from(waveform_peaks_for(clip)))"),
+        "TimelineBlockData 必须从 waveform_peaks_for(clip) 取真实峰值，⛔ 不许写常量"
+    );
+}
+
 #[test]
 fn waveform_peak_function_is_per_bin_max_abs() {
     assert!(
