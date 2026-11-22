@@ -927,10 +927,15 @@ pub fn detect_cycle(graph: &RoutingGraph) -> Option<Vec<EntityId>> {
         colors.insert(*root, Color::Gray);
         stack.push(*root);
         while let Some(&(node, cursor)) = path.last() {
+            // ⭐ T-FIX-37：侧链边不是音频边（与 `yeban-render/src/render.rs` 的
+            // #337 口径一致）—— 鼓机逐件链会建 `source == destination == 鼓轨` 的
+            // lane 级 Sidechain 自环（语义合法：不同 lane 的键输入）。若把它当音频
+            // 边参与环检测，`detect_cycle` 会报 `[X, X]` 自环 ⇒ 生成鼓后一切
+            // `propose_section` 都被误拒。这里按 kind 跳过侧链边；音频环照常检出。
             let outgoing: Vec<EntityId> = graph
                 .edges
                 .values()
-                .filter(|edge| edge.source_node == node)
+                .filter(|edge| edge.source_node == node && edge.kind != RoutingKind::Sidechain)
                 .map(|edge| edge.destination_node)
                 .collect();
             if cursor >= outgoing.len() {

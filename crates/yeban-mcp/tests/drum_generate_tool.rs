@@ -583,3 +583,41 @@ fn generated_lofi_latencies_are_derived_in_the_offline_table() {
         }
     }
 }
+
+/// T-FIX-37：鼓机逐件链为 lane 级侧链建 `source == destination == 鼓轨` 的
+/// Sidechain 自环（语义合法：不同 lane 的键输入）。`detect_cycle` 不能把侧链边
+/// 当音频边，否则生成鼓之后一切 `propose_section` 都被误判成环路而拒绝。
+#[test]
+fn hiphop_drum_sidechain_self_loop_does_not_block_propose_section() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let drum_result = generate(
+        &mut dispatcher,
+        json!({ "style": "hiphop", "autoMerge": true }),
+    );
+    assert_eq!(
+        drum_result["status"], "success",
+        "鼓生成必须成功: {drum_result}"
+    );
+
+    // 前提：确实建了 Sidechain 自环（source == destination == 同一轨）。
+    let p = project(&dispatcher);
+    let self_loop = p.routing_graph.edges.values().any(|e| {
+        e.kind == yeban_model::RoutingKind::Sidechain && e.source_node == e.destination_node
+    });
+    assert!(
+        self_loop,
+        "hiphop 必须建 lane 侧链自环（否则本判据失去判别力）"
+    );
+
+    let section = call_tool(
+        &mut dispatcher,
+        "yeban_propose_section",
+        json!({
+            "sectionName": "Verse", "stylePreset": "synthwave", "bars": 4, "scale": "C minor"
+        }),
+    );
+    assert_eq!(
+        section["status"], "success",
+        "生成鼓后的 propose_section 不得被侧链自环误判为环路: {section}"
+    );
+}
