@@ -269,6 +269,42 @@ impl AutomationLane {
         Some(interpolate(&low, &high, tick))
     }
 
+    /// 批量求值：`ticks` 中每个 tick 的结果，语义与逐点调用 [`Self::value_at`]
+    /// **逐位相同**（同一 `(tick, id)` 全序、同一条 [`interpolate`]）。
+    ///
+    /// # 为什么批量入口是必须的（T-FIX-51）
+    ///
+    /// [`Self::value_at`] 是**单次查询** O(P) 的单遍扫描。只要调用方对同一泳道问
+    /// N 个 tick（例如界面在每两个采样点之间再细采样 64 段来画缓动曲线），总代价就是
+    /// **N × O(P)** —— P 个点的泳道因此变成 P² 量级（T-TRIAL-DB4-1 的复现）。
+    /// 这里把"排序"提到批量入口只做一次（O(P log P)），每个 tick 走一次二分
+    /// （O(log P)）⇒ O((P + N) log P)，且**不改变任何一个返回值**。
+    #[must_use]
+    pub fn values_at(&self, ticks: &[u64]) -> Vec<Option<f32>> {
+        self.values_at_counting(ticks).0
+    }
+
+    /// 同 [`Self::values_at`]，并返回**实际比较过的采样点数** —— 复杂度的可观测读数，
+    /// 供判据钉住"不再按 P 逐点重扫"（计数型断言，不用墙钟计时）。
+    #[doc(hidden)]
+    #[must_use]
+    pub fn values_at_counting(&self, ticks: &[u64]) -> (Vec<Option<f32>>, usize) {
+        if self.points.is_empty() {
+            return (vec![None; ticks.len()], 0);
+        }
+        let ordered = self.points_in_tick_order();
+        let mut touched = 0_usize;
+        let values = ticks
+            .iter()
+            .map(|&tick| {
+                let (value, comparisons) = value_at_ordered(&ordered, tick);
+                touched += comparisons;
+                value
+            })
+            .collect();
+        (values, touched)
+    }
+
     /// 本泳道的**单位**（由目标派生，恒可判定）。
     #[must_use]
     pub const fn unit(&self) -> AutomationUnit {
@@ -301,6 +337,7 @@ impl AutomationLane {
 /// 2. 差值有限 ⇒ **原公式**，逐位不变（既有判据的期望值因此一个都不动）；
 /// 3. 差值溢出 ⇒ 数学等价的凸组合 `low·(1−u) + high·u`。差值溢出蕴含
 ///    `low < 0 < high`，两项异号，因此和必然有限（不会二次溢出）。
+///
 fn interpolate(low: &AutomationPoint, high: &AutomationPoint, tick: u64) -> f32 {
     debug_assert!(high.tick > low.tick, "插值区间必须非空");
     let span = high.tick - low.tick;
@@ -316,6 +353,41 @@ fn interpolate(low: &AutomationPoint, high: &AutomationPoint, tick: u64) -> f32 
     } else {
         low.value * (1.0 - eased) + high.value * eased
     }
+}
+
+/// 已排序序列上的单点求值：与 [`AutomationLane::value_at`] **同一口径**
+/// （首点之前 / 末点之后保持端点值；`tick` 恰好落在点上时逐位返回该点值；
+/// 同 tick 的多点由 `(tick, point_id)` 最大者胜 —— 排序键已保证
+/// `partition_point` 取到的 `low` 就是那个胜者），但用**二分**代替线性扫描。
+///
+/// 返回 `(值, 比较次数)`；比较次数是判据用的复杂度读数，不参与求值。
+fn value_at_ordered(ordered: &[AutomationPoint], tick: u64) -> (Option<f32>, usize) {
+    debug_assert!(!ordered.is_empty(), "空序列没有可求的值");
+    let mut low = 0_usize;
+    let mut high = ordered.len();
+    let mut comparisons = 0_usize;
+    // 第一个 `tick > T` 的位置 ⇒ `low` 之前的最后一个元素就是 `tick <= T` 的胜者。
+    while low < high {
+        let mid = low + (high - low) / 2;
+        comparisons += 1;
+        if ordered[mid].tick <= tick {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    if low == 0 {
+        // 首点之前：保持首点值（含"只有一个点"与"恰好是首点"）。
+        return (Some(ordered[0].value), comparisons);
+    }
+    if low == ordered.len() {
+        // 末点之后（含等于末点）：保持末点值。
+        return (Some(ordered[ordered.len() - 1].value), comparisons);
+    }
+    (
+        Some(interpolate(&ordered[low - 1], &ordered[low], tick)),
+        comparisons,
+    )
 }
 
 impl YebanProjectV1 {
@@ -352,5 +424,28 @@ impl YebanProjectV1 {
             return Ok(None);
         }
         Ok(lane.value_at(tick))
+    }
+
+    /// **下游唯一批量求值入口**：同一目标在一批 tick 上的自动化值。
+    ///
+    /// 语义与逐点调用 [`Self::automation_value_at`] **逐个逐位相同**（含 `Err` / `None`
+    /// 的三种情形），但排序只做一次、每点二分 —— 见 [`AutomationLane::values_at`]。
+    ///
+    /// # Errors
+    ///
+    /// 目标对账失败时返回具体错误（与 [`Self::automation_value_at`] 同一判据）。
+    pub fn automation_values_at(
+        &self,
+        target: &AutomationTarget,
+        ticks: &[u64],
+    ) -> Result<Vec<Option<f32>>, ModelError> {
+        target.validate_against(self)?;
+        let Some(lane) = self.automation_lane(target) else {
+            return Ok(vec![None; ticks.len()]);
+        };
+        if !lane.read_enabled {
+            return Ok(vec![None; ticks.len()]);
+        }
+        Ok(lane.values_at(ticks))
     }
 }

@@ -1768,3 +1768,127 @@ fn every_automation_unit_symbol_is_pinned_by_arm_number() {
         "臂编号必须恰好是 0..N（R48 的臂编号断言）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ T-FIX-51：批量求值入口（`values_at` / `automation_values_at`）
+//
+// 逐点调用是 N × O(P)；界面"每两个采样点之间再细采样 64 段"的调用面上，P 个点的
+// 泳道因此是 P² 量级（T-TRIAL-DB4-1 的复现）。批量入口只排序一次、每点二分，
+// **返回值必须与逐点调用逐位相同** —— 这条判据钉住"优化没有换来一个不同的数"。
+// ---------------------------------------------------------------------------
+
+/// 一条覆盖全部分支的泳道：缓动段 + 同 tick 双点（`(tick, id)` 最大者胜）。
+fn batch_fixture() -> AutomationLane {
+    let target = AutomationTarget::TrackVolume { track_id: id(7) };
+    lane(
+        target,
+        vec![
+            point(1, 0, -12.0, CurveType::Linear),
+            point(2, 480, -3.0, CurveType::SCurve),
+            point(3, 960, 6.0, CurveType::Linear),
+            point(4, 1440, 2.0, CurveType::Exponential),
+            // 同一 tick 两个点：`(tick, id)` 全序下 id(5) 更大 ⇒ 它胜出（-2.0）。
+            point(5, 1440, -2.0, CurveType::Linear),
+            point(6, 1920, 0.0, CurveType::Logarithmic),
+        ],
+    )
+}
+
+#[test]
+fn batch_values_are_bit_identical_to_single_point_evaluation() {
+    let automation = batch_fixture();
+    // 覆盖：首点之前、首点上、段内、点上、同 tick 双点、末点上、末点之后。
+    let mut ticks: Vec<u64> = vec![
+        0,
+        1,
+        479,
+        480,
+        481,
+        720,
+        959,
+        960,
+        961,
+        1439,
+        1440,
+        1441,
+        1919,
+        1920,
+        u64::MAX,
+    ];
+    ticks.extend((0..2048).step_by(7));
+    let batch = automation.values_at(&ticks);
+    assert_eq!(batch.len(), ticks.len(), "批量结果必须与请求一一对应");
+    for (tick, got) in ticks.iter().zip(&batch) {
+        assert_eq!(
+            got.map(f32::to_bits),
+            automation.value_at(*tick).map(f32::to_bits),
+            "tick {tick} 的批量结果必须与逐点调用逐位相同"
+        );
+    }
+
+    // 空泳道：两种入口给的是同一个 `None`（不是"没有结果"的另一种表示）。
+    let empty = lane(
+        AutomationTarget::TrackVolume { track_id: id(7) },
+        Vec::new(),
+    );
+    assert_eq!(empty.values_at(&ticks), vec![None; ticks.len()]);
+    assert_eq!(
+        empty.values_at_counting(&ticks).1,
+        0,
+        "空泳道不该产生任何比较"
+    );
+}
+
+/// 计数型判据（⛔ 不用墙钟计时，也不用计时器）：
+/// 点数 ×8 时二分比较次数只应增长 **log 级**（≈1.5 倍），而逐点线性扫描正好增长 8 倍。
+#[test]
+fn batch_evaluation_grows_logarithmically_not_linearly_with_the_point_count() {
+    let build = |count: u128| {
+        lane(
+            AutomationTarget::TrackVolume { track_id: id(7) },
+            (0..count)
+                .map(|index| {
+                    point(
+                        index + 1,
+                        index as u64 * 480,
+                        index as f32,
+                        CurveType::Linear,
+                    )
+                })
+                .collect(),
+        )
+    };
+    let ticks: Vec<u64> = (0..4096).map(|index| index * 27).collect();
+
+    let small_lane = build(64);
+    let large_lane = build(512);
+    let (values_small, touches_small) = small_lane.values_at_counting(&ticks);
+    let (values_large, touches_large) = large_lane.values_at_counting(&ticks);
+    assert_eq!(values_small.len(), ticks.len());
+    assert_eq!(values_large.len(), ticks.len());
+
+    // 二分：每个 tick 最多 ⌈log2 P⌉ 次比较（512 ⇒ 9），给一档余量。
+    assert!(
+        touches_large <= ticks.len() * 10,
+        "512 点时每 tick 最多 9 次比较: 实测 {touches_large}"
+    );
+    // 点数 ×8 ⇒ 比较次数只应涨 log 级；线性扫描会是 8 倍。
+    assert!(
+        touches_large < touches_small * 2,
+        "点数 ×8 时比较次数必须只涨 log 级: {touches_small} → {touches_large}"
+    );
+    // 旧实现的读数是 ticks × P：批量必须低一个数量级以上。
+    assert!(
+        touches_large * 16 < ticks.len() * 512,
+        "批量比较次数必须远小于 N×P: {touches_large} vs {}",
+        ticks.len() * 512
+    );
+    // 顺带：大样本上批量与逐点仍然逐位相同。
+    for (tick, got) in ticks.iter().zip(&values_large) {
+        assert_eq!(
+            got.map(f32::to_bits),
+            large_lane.value_at(*tick).map(f32::to_bits),
+            "tick {tick} 在大样本上也必须逐位相同"
+        );
+    }
+}

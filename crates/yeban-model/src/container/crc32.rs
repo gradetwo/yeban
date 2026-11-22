@@ -78,7 +78,10 @@ pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     // workspace MSRV 是 1.92，`slice::as_chunks` 太新不可用；`chunks_exact(8)`
     // 的等价写法，故此处按仓库惯例局部放行该 lint（见 music.rs 的同类 allow）。
-    #[allow(clippy::chunks_exact_to_as_chunks)]
+    // ⚠ `unknown_lints` 是必须的：该 lint 名在部分 clippy 版本上已不存在，
+    // 只写 `clippy::chunks_exact_to_as_chunks` 会在那些版本上变成 "unknown lint"
+    // 错误（`-D warnings` 下直接 red）。
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     let mut chunks = bytes.chunks_exact(8);
     for chunk in &mut chunks {
         let lo = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);

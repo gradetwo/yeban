@@ -563,6 +563,11 @@ fn sample_vertices(
         by_tick.insert(point.tick, point.value);
     }
     // ③ 相邻两点之间的缓动细采样；值来自**模型求值入口**（本模块没有插值实现）。
+    //
+    // ⭐ T-FIX-51：**先收集 tick、再一次批量求值**。逐点调用是 N × O(P)（N = 细采样
+    // 点数、P = 采样点数），P 个点的泳道因此是 P² 量级；批量入口只排序一次、每点二分。
+    // 返回值与逐点调用逐位相同（模型侧判据钉住），插值实现仍然只有模型那一份。
+    let mut ease_ticks: Vec<u64> = Vec::new();
     for pair in ordered.windows(2) {
         let (low, high) = (&pair[0], &pair[1]);
         let Some(span) = high.tick.checked_sub(low.tick) else {
@@ -589,10 +594,15 @@ fn sample_vertices(
             if tick <= low.tick || tick >= high.tick {
                 continue;
             }
-            // 唯一的求值入口；`Err`（目标对账失败）与 `None`（无值）都不画这个顶点 ——
-            // 采样点上的顶点仍然在，因此曲线不会因此消失。
-            if let Ok(Some(value)) = project.automation_value_at(target, tick) {
-                by_tick.insert(tick, value);
+            ease_ticks.push(tick);
+        }
+    }
+    // 唯一的求值入口；`Err`（目标对账失败）与 `None`（无值）都不画这些顶点 ——
+    // 采样点上的顶点仍然在，因此曲线不会因此消失。
+    if let Ok(values) = project.automation_values_at(target, &ease_ticks) {
+        for (tick, value) in ease_ticks.iter().zip(values) {
+            if let Some(value) = value {
+                by_tick.insert(*tick, value);
             }
         }
     }
