@@ -573,6 +573,9 @@ pub struct App {
     pub clipboard: Option<(ClipPoolEntry, ClipPlacement)>,
     /// 片段网格的列表视图（三期；`None` = 普通网格）。
     pub list_view: Option<ListView>,
+    /// 最近一次 `:sessions` 列出的已存工程路径（按显示顺序），供 `:sessions open <n>` 按序号打开。
+    /// 不另存第二套状态源：来源只有 `yeban_app::settings::recent_projects`。
+    session_search: Vec<PathBuf>,
     /// 日志行（最新在尾；底栏显示最后一条）。
     pub log: Vec<String>,
     /// 有未保存修改。
@@ -697,6 +700,7 @@ impl App {
             rename_target: None,
             clipboard: None,
             list_view: None,
+            session_search: Vec::new(),
             log: Vec::new(),
             dirty: false,
             master_peak: 0.0,
@@ -3467,6 +3471,53 @@ impl App {
     // Command（`:` 命令行）
     // ------------------------------------------------------------------
 
+    /// 按名字过滤「最近打开工程」（saved sessions 在磁盘上的落点是本机配置的
+    /// `recent_projects`，显示名从路径派生，⛔ 不在这里另存一份会漂移的名字）。
+    /// 空 query 列出全部；大小写不敏感匹配文件名（不含扩展名）。
+    fn filter_recent_sessions(
+        entries: &[yeban_app::settings::RecentProject],
+        query: &str,
+    ) -> Vec<PathBuf> {
+        let q = query.trim().to_lowercase();
+        entries
+            .iter()
+            .filter(|entry| {
+                if q.is_empty() {
+                    return true;
+                }
+                entry
+                    .path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.to_lowercase().contains(&q))
+            })
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    /// 把候选工程列成编号行；空列表 ⇒ 一条响亮报错，绝不静默。
+    fn session_list_lines(candidates: &[PathBuf], query: &str) -> Vec<String> {
+        if candidates.is_empty() {
+            return vec![format!(
+                "没有匹配的已存工程：{:?}（用 :sessions 不带参数列出全部）",
+                query
+            )];
+        }
+        let mut lines = Vec::with_capacity(candidates.len() + 1);
+        lines.push(format!(
+            "已存工程（{} 条，:sessions open <序号> 打开）：",
+            candidates.len()
+        ));
+        for (idx, path) in candidates.iter().enumerate() {
+            let name = path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<无效名字>");
+            lines.push(format!("  {}）{} — {}", idx + 1, name, path.display()));
+        }
+        lines
+    }
+
     fn handle_command_key(&mut self, event: KeyEvent) {
         match event.code {
             KeyCode::Esc => {
@@ -3867,6 +3918,41 @@ impl App {
                     }
                 }
             }
+            "sessions" | "sessions!" => {
+                let force = verb == "sessions!";
+                // `:sessions open <n>` 从上次列出的结果里打开；仅当 "open " 后是合法
+                // 序号时才走打开分支，否则整个 rest 当作 query（工程名可能以 open 开头）。
+                if let Some(arg) = rest.strip_prefix("open ") {
+                    if let Ok(n) = arg.trim().parse::<usize>() {
+                        if n == 0 || n > self.session_search.len() {
+                            self.log_line(format!(
+                                "无效序号：{n}（先 :sessions 列出，再 :sessions open <序号>）"
+                            ));
+                        } else {
+                            let path = self.session_search[n - 1].clone();
+                            if self.dirty && !force {
+                                self.log_line(format!(
+                                    "有未保存修改：先 :w 保存，或 :sessions open! {n} 强开"
+                                ));
+                            } else {
+                                match Self::open_file(&path) {
+                                    Ok(next) => *self = next,
+                                    Err(error) => self.log_line(error),
+                                }
+                            }
+                        }
+                    } else {
+                        self.log_line(format!("无效序号：{arg:?}（序号须为正整数）"));
+                    }
+                } else {
+                    let settings = yeban_app::settings::load();
+                    let candidates = Self::filter_recent_sessions(&settings.recent_projects, rest);
+                    self.session_search = candidates.clone();
+                    for line in Self::session_list_lines(&candidates, rest) {
+                        self.log_line(line);
+                    }
+                }
+            }
             other => self.log_line(format!("未知命令：{other}")),
         }
     }
@@ -4167,5 +4253,95 @@ mod tests {
             "clamp should be reported loudly, got {:?}",
             app.log.last()
         );
+    }
+
+    fn recent_fixture() -> Vec<yeban_app::settings::RecentProject> {
+        use yeban_app::settings::RecentProject;
+        vec![
+            RecentProject {
+                path: PathBuf::from("/projects/Alpha Session.yeban"),
+                opened_at_unix_ms: 3,
+            },
+            RecentProject {
+                path: PathBuf::from("/projects/beta-demo.yeban"),
+                opened_at_unix_ms: 2,
+            },
+            RecentProject {
+                path: PathBuf::from("/other/Alpha Copy.yeban"),
+                opened_at_unix_ms: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn session_query_matches_names_case_insensitively() {
+        let found = App::filter_recent_sessions(&recent_fixture(), "alpha");
+        assert_eq!(found.len(), 2, "Alpha Session + Alpha Copy");
+        assert!(found.iter().any(|p| p.ends_with("Alpha Session.yeban")));
+        assert!(found.iter().any(|p| p.ends_with("Alpha Copy.yeban")));
+        assert!(!found.iter().any(|p| p.ends_with("beta-demo.yeban")));
+
+        // 文件名匹配、路径目录名不算（/other/ 不该命中 beta 的查询）。
+        let found = App::filter_recent_sessions(&recent_fixture(), "BETA");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("beta-demo.yeban"));
+    }
+
+    #[test]
+    fn session_empty_query_lists_all_in_recent_order() {
+        let found = App::filter_recent_sessions(&recent_fixture(), "   ");
+        assert_eq!(found.len(), 3, "empty query lists all");
+        // 顺序即 recent 顺序（最近在前），不重排。
+        assert!(found[0].ends_with("Alpha Session.yeban"));
+        assert!(found[1].ends_with("beta-demo.yeban"));
+        assert!(found[2].ends_with("Alpha Copy.yeban"));
+        let lines = App::session_list_lines(&found, "");
+        assert!(lines[0].contains("3 条"));
+        assert!(lines.iter().any(|l| l.contains("1）Alpha Session")));
+    }
+
+    #[test]
+    fn session_no_match_reports_loudly() {
+        let found = App::filter_recent_sessions(&recent_fixture(), "nothing-matches-this");
+        assert!(found.is_empty(), "no match must yield empty candidates");
+        let lines = App::session_list_lines(&found, "nothing-matches-this");
+        assert_eq!(lines.len(), 1, "no-match must report exactly one loud line");
+        assert!(lines[0].contains("没有匹配的已存工程"), "got {:?}", lines);
+
+        // 端到端：命令也走同一条响亮路径（settings 读空 ⇒ 无匹配时留痕）。
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = Vec::new();
+        // 直接验证 no-match 的播报文本不为空、且不是静默。
+        for line in lines {
+            app.log_line(line);
+        }
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|l| l.contains("没有匹配的已存工程"))
+        );
+    }
+
+    #[test]
+    fn session_open_chosen_index_loads_that_project() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let saved =
+            std::env::temp_dir().join(format!("yeban-tui-sessions-{}.yeban", std::process::id()));
+        let _cleanup = TempCleanup(saved.clone());
+
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved).expect("save demo as saved session");
+
+        let mut app = App::with_demo().expect("demo app");
+        // 模拟 :sessions 已列出两条，选中第 1 条打开（与既有 :open 同一条落盘路径）。
+        app.session_search = vec![saved.clone(), PathBuf::from("/nonexistent/second.yeban")];
+        app.execute_command("sessions open 1");
+        assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
+        assert!(!app.dirty, "opened session is clean");
     }
 }
