@@ -41,6 +41,9 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+
+#: 空文件的 SHA-256（e3b0c442...）。`size_bytes > 0` 却登记这个值 = 占位符漏进清单。
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 SCHEMAS = REPO / "schemas"
 
 
@@ -263,6 +266,25 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
         optional_missing = 0
         for item in items:
             rel_path = item.get("relative_path", "")
+            # 静态摘要纪律（T-FIX-33）：连**不随仓库分发**的 optional 条目也要有可核的预期摘要。
+            # `size_bytes > 0` 与空文件哈希同时出现，说明占位符漏进了清单 —— 响亮失败，别等文件到场才发现。
+            digest_text = item.get("sha256")
+            if (
+                not isinstance(digest_text, str)
+                or len(digest_text) != 64
+                or any(ch not in "0123456789abcdef" for ch in digest_text)
+            ):
+                problems.append(
+                    f"{rel(manifest_path)}: 条目 {item.get('id')} 的 sha256 缺失或不是 64 位小写十六进制"
+                )
+                continue
+            size = item.get("size_bytes")
+            if isinstance(size, int) and size > 0 and digest_text == EMPTY_SHA256:
+                problems.append(
+                    f"{rel(manifest_path)}: 条目 {item.get('id')} 的 size_bytes={size} 却登记空文件哈希 "
+                    f"({EMPTY_SHA256}) —— 预期摘要待补录，不能拿空文件占位"
+                )
+                continue
             # 路径口径 = **仓库根**相对(与根清单的 sub_manifests 一致), 见 schema 的 description。
             target = REPO / rel_path
             if not target.is_file():
@@ -279,7 +301,6 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
                     f"(清单 {str(item.get('sha256'))[:12]}…, 实际 {digest[:12]}…) —— 文件被改过而清单没更新"
                 )
                 continue
-            size = item.get("size_bytes")
             actual_size = target.stat().st_size
             if isinstance(size, int) and size != actual_size:
                 problems.append(
