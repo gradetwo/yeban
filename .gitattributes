@@ -10,5 +10,13 @@
 # `-text` = 声明为二进制、**不做任何行尾转换** ⇒ Windows 检出仍是 LF、与仓库一致。
 crates/yeban-render/tests/data/*.json -text
 
+# MusicXML 夹具是**逐字节**判据：`musicxml_contract` 把 2716 字节、CRC-32 与
+# `.mxl` 容器里的偏移/尺寸写死。Windows 的 `core.autocrlf=true` 会把 LF 检出成
+# CRLF（2716 → 2797），让九条契约判据同时变红 ⇒ 必须钉 LF，并显式声明 `.mxl`
+# 是二进制（ZIP 内容一个字节都不许被行尾转换）。
+crates/yeban-midi/tests/fixtures/*.musicxml text eol=lf
+crates/yeban-midi/tests/fixtures/*.mxl -text
+crates/yeban-midi/tests/fixtures/*.mid -text
+
 # ⚠ 刻意**不**加 `* text=auto` 之类的全仓规则: 那会改**所有**文本文件在 Windows
 # 工作树里的检出字节 ⇒ 爆炸半径远超收益、且本机（macOS）无法验证（台账 R471 的原判断）。

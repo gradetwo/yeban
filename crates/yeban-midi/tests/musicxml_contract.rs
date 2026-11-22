@@ -147,6 +147,31 @@ fn parse(name: &str, bytes: &[u8]) -> MusicXmlScore {
     parse_musicxml(bytes).unwrap_or_else(|error| panic!("{name} 解析失败: {error}"))
 }
 
+fn crlf_count(bytes: &[u8]) -> usize {
+    bytes
+        .windows(2)
+        .filter(|pair| pair[0] == b'\r' && pair[1] == b'\n')
+        .count()
+}
+
+/// 夹具是**逐字节**判据的输入；Windows 的 `core.autocrlf=true` 会把 LF 改成 CRLF。
+/// 裸的数字不等（2716 vs 2797）看不出根因，所以在这里把"行尾被改写"直接点名。
+fn assert_text_fixture_is_lf(name: &str, bytes: &[u8], expected_len: usize) {
+    let crlf = crlf_count(bytes);
+    assert_eq!(
+        bytes.len(),
+        expected_len,
+        "{name}: 夹具是 {} 字节，期望 {expected_len} 字节；检出到 {crlf} 个 CRLF。\
+         这通常是 Git 的 core.autocrlf 把逐字节夹具改写了，而不是解析器/容器的问题。\
+         检查 .gitattributes 是否有 '*.musicxml text eol=lf'，并重新归一化/检出该夹具。",
+        bytes.len()
+    );
+    assert_eq!(
+        crlf, 0,
+        "{name}: 逐字节夹具里出现 {crlf} 个 CRLF；.gitattributes 必须钉 '*.musicxml text eol=lf'。"
+    );
+}
+
 /// 一个音符的**字面**读数 `(start_tick, key, voice, staff, duration_ticks)`。
 fn literal(note: &MusicXmlNote) -> (u64, u8, u16, u16, u64) {
     (
@@ -156,6 +181,25 @@ fn literal(note: &MusicXmlNote) -> (u64, u8, u16, u16, u64) {
         note.staff,
         note.duration_ticks,
     )
+}
+
+#[test]
+fn committed_text_fixtures_are_lf_with_pinned_sizes() {
+    // 这条判据先于所有解析/容器判据给出可读的根因：Windows 行尾转换会让下面
+    // 九条 `musicxml_contract` 判据出现一堆裸尺寸/CRC 不符。
+    for (name, bytes) in FIXTURES {
+        assert_eq!(
+            crlf_count(bytes),
+            0,
+            "{name}: 已提交的 MusicXML 夹具必须是 LF；检查 .gitattributes 的 eol=lf 规则"
+        );
+    }
+    assert_eq!(
+        HANDMADE_MVP.len(),
+        2716,
+        "handmade_mvp_partwise 的逐字节长度变了；若是 2797，说明 Windows 把它检出成了 CRLF，\
+         检查 .gitattributes 的 '*.musicxml text eol=lf' 并重新归一化/检出"
+    );
 }
 
 #[test]
@@ -741,7 +785,11 @@ fn mxl_cost_is_pinned_by_the_container_fields_without_inflating() {
 
     // ⭐ 不解压也能证明"膨胀结果与纯文本夹具逐字节相同"：用容器**自己**的 CRC-32 与尺寸字段。
     // 于是新增的成本只可能是"容器 + inflate"，不可能来自格式差异。
-    assert_eq!(HANDMADE_MVP.len(), entries[1].uncompressed as usize);
+    assert_text_fixture_is_lf(
+        "handmade_mvp_partwise",
+        HANDMADE_MVP,
+        entries[1].uncompressed as usize,
+    );
     assert_eq!(crc32(HANDMADE_MVP), entries[1].crc32);
     // 压缩比（无量纲）：2716 / 1095 = 2.48。
     assert!(entries[1].uncompressed > entries[1].compressed);
@@ -1129,8 +1177,12 @@ fn mxl_data_descriptor_container_is_read_from_the_central_directory() {
     let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
     assert_eq!(parse_mxl(bytes), Ok(text.clone()));
     // 中央目录声明的载荷就是纯文本夹具本身（⇒ 不接受"少读/多读"）。
+    assert_text_fixture_is_lf(
+        "handmade_mvp_partwise",
+        HANDMADE_MVP,
+        centrals[1].uncompressed as usize,
+    );
     assert_eq!(centrals[1].crc32, crc32(HANDMADE_MVP));
-    assert_eq!(centrals[1].uncompressed as usize, HANDMADE_MVP.len());
 
     // ## 描述符**不是**权威字段：把条目 0 描述符的三个字段全改成 `0xff`，读取结果不变。
     // （`MxlError` 的字段以中央目录为准；模块文档的"尺寸与 CRC 一律以中央目录为准"这一句靠本条钉住。）

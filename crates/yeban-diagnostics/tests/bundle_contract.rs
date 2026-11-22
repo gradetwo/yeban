@@ -157,8 +157,19 @@ fn manifest_sha256_matches_every_entry() {
 #[test]
 fn bundle_is_redacted() {
     let scratch = Scratch::new("redact");
-    let home = std::env::var("HOME").unwrap_or_default();
-    assert!(!home.is_empty(), "本测试要求 HOME 存在");
+    // Windows 默认没有 HOME，只有 USERPROFILE；产品侧的 redact() 两者都处理。
+    // 判据不能再硬性要求 HOME，否则在真实 Windows 上会因环境变量缺失而假红。
+    let (home, placeholder) = match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => (home, "$HOME"),
+        _ => {
+            let profile = std::env::var("USERPROFILE").unwrap_or_default();
+            assert!(
+                !profile.is_empty(),
+                "本测试要求 HOME 或 USERPROFILE 至少存在一个"
+            );
+            (profile, "$USERPROFILE")
+        }
+    };
     let config = format!(r#"{{"path":"{home}/Music/yeban","token":"SECRET"}}"#);
     let report = export_diagnostics(
         &scratch.0,
@@ -177,7 +188,7 @@ fn bundle_is_redacted() {
         let text = String::from_utf8_lossy(bytes);
         assert!(
             !text.contains(&home),
-            "{name} 里出现了真实 $HOME 路径（脱敏失败）"
+            "{name} 里出现了真实家目录路径（脱敏失败）"
         );
     }
     // 只有**确实带路径**的两个条目才应出现替换后的字面量;
@@ -185,8 +196,8 @@ fn bundle_is_redacted() {
     for name in ["engine-state.json", "config.json"] {
         let text = String::from_utf8_lossy(entries.get(name).expect("条目在包里"));
         assert!(
-            text.contains("$HOME"),
-            "{name} 应把真实家目录替换为字面量 $HOME"
+            text.contains(placeholder),
+            "{name} 应把真实家目录替换为字面量 {placeholder}"
         );
     }
 }
