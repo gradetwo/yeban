@@ -557,7 +557,8 @@ fn draw_automation_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
     else {
         return;
     };
-    let kind = app.automation_kind().map_or("自动化", |kind| kind.label());
+    // 泳道名与 GUI 同一口径（设备参数显示参数名、宏显示宏名）。
+    let kind = app.automation_lane_name();
     let unit = target.nominal_unit().symbol();
     let domain = app.automation_domain().map_or_else(
         || "值域未知".to_owned(),

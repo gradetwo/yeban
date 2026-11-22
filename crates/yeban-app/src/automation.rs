@@ -632,7 +632,11 @@ fn path_commands(samples: &[AutomationVertex]) -> String {
 }
 
 /// 目标的人类可读短名（设备参数 / 宏会去文档里取**名字** —— 只取名字，永不取值）。
-fn target_label(track: &TrackV3, target: &AutomationTarget) -> String {
+///
+/// 这是**唯一**命名口径：GUI 的泳道标签（[`project_lane`] 的 `target_label`）与
+/// TUI 的泳道清单（`yeban-tui` 的 `App::target_display_name`）都调它，
+/// ⛔ 任何一侧都不许再写一份"设备参数叫什么"的规则（两份必然漂移）。
+pub fn target_label(track: &TrackV3, target: &AutomationTarget) -> String {
     match target {
         AutomationTarget::TrackVolume { .. } => "音量".to_owned(),
         AutomationTarget::TrackPan { .. } => "声相".to_owned(),

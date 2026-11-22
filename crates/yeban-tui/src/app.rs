@@ -367,17 +367,40 @@ pub enum ListView {
     },
 }
 
-/// 自动化视图能打开的泳道种类（TUI 只接最常用的两条：音量 / 声相）。
+/// 自动化视图能打开的泳道种类（批 5：`AutomationTarget` 的**全部六个**变体）。
 ///
-/// ⛔ 不是"TUI 自己定义的一套泳道清单"：两项都只是 [`AutomationTarget`] 的
-/// `TrackVolume` / `TrackPan` 变体，单位与值域由模型派生
-/// （[`AutomationTarget::nominal_unit`] / [`AutomationTarget::nominal_domain`]）。
+/// ⛔ 不是"TUI 自己定义的一套泳道清单"：每个变体都是 [`AutomationTarget`] 的一对一
+/// 投影，单位 / 值域 / 存在性全部由模型派生
+/// （[`AutomationTarget::nominal_unit`] / [`AutomationTarget::nominal_domain`] /
+/// [`AutomationTarget::validate_against`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationKind {
     /// 音轨音量（dB）。
     Volume,
     /// 音轨声相（-1.0..=1.0）。
     Pan,
+    /// 发送增益（dB；`edge_id` = 路由图里的那条发送边）。
+    Send {
+        /// 发送所对应的路由边。
+        edge_id: EntityId,
+    },
+    /// 设备参数（原生单位；值域由泳道声明或曲线自适应）。
+    Device {
+        /// 设备链下标。
+        slot_index: usize,
+        /// 参数下标。
+        param_index: usize,
+    },
+    /// 宏（归一化 0.0..=1.0）。
+    Macro {
+        /// 宏下标。
+        macro_index: usize,
+    },
+    /// MIDI CC（原始 7 位值 0..=127）。
+    MidiCc {
+        /// 控制器号。
+        controller: u8,
+    },
 }
 
 impl AutomationKind {
@@ -387,24 +410,56 @@ impl AutomationKind {
         match self {
             Self::Volume => AutomationTarget::TrackVolume { track_id },
             Self::Pan => AutomationTarget::TrackPan { track_id },
+            Self::Send { edge_id } => AutomationTarget::SendGain { track_id, edge_id },
+            Self::Device {
+                slot_index,
+                param_index,
+            } => AutomationTarget::DeviceParam {
+                track_id,
+                slot_index,
+                param_index,
+            },
+            Self::Macro { macro_index } => AutomationTarget::Macro {
+                track_id,
+                macro_index,
+            },
+            Self::MidiCc { controller } => AutomationTarget::MidiCc {
+                track_id,
+                controller,
+            },
         }
     }
 
-    /// 状态行 / 视图标题用的中文名。
+    /// 泳道**种类**短名（命令用法与日志前缀）。
+    ///
+    /// ⛔ 不是泳道的人读名 —— 那个走 [`App::automation_lane_name`]（与 GUI 同一命名口径，
+    /// 设备参数会显示参数名、宏会显示宏名）。
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Volume => "音量",
             Self::Pan => "声相",
+            Self::Send { .. } => "发送增益",
+            Self::Device { .. } => "设备参数",
+            Self::Macro { .. } => "宏",
+            Self::MidiCc { .. } => "MIDI CC",
         }
     }
 
-    /// 一次微调的步长（音量 0.5 dB；声相 0.05）。
+    /// 一次微调的步长。
+    ///
+    /// 音量 / 发送保持既有的 0.5 dB、声相 / 宏保持 0.05；CC 是整数域 ⇒ 1；
+    /// 设备参数的值域模型不声明（`nominal_domain` 返回 `None`）⇒ 有泳道声明时取
+    /// 值域的 1%，否则 0.01（⛔ 不替模型编一个值域）。
     #[must_use]
-    pub const fn step(self) -> f32 {
+    pub fn step(self, domain: Option<(f32, f32)>) -> f32 {
         match self {
-            Self::Volume => 0.5,
-            Self::Pan => 0.05,
+            Self::Volume | Self::Send { .. } => 0.5,
+            Self::Pan | Self::Macro { .. } => 0.05,
+            Self::MidiCc { .. } => 1.0,
+            Self::Device { .. } => {
+                domain.map_or(0.01, |(min, max)| ((max - min).abs() / 100.0).max(1e-3))
+            }
         }
     }
 }
@@ -450,12 +505,22 @@ fn view_label(view: View) -> &'static str {
     }
 }
 
-/// 自动化目标 → TUI 能编辑的泳道种类（只认音量 / 声相；其余目标返回 `None`）。
-fn kind_of(target: AutomationTarget) -> Option<AutomationKind> {
+/// 自动化目标 → TUI 泳道种类（六类一一对应；`AutomationTarget` 没有第七个变体）。
+fn kind_of(target: AutomationTarget) -> AutomationKind {
     match target {
-        AutomationTarget::TrackVolume { .. } => Some(AutomationKind::Volume),
-        AutomationTarget::TrackPan { .. } => Some(AutomationKind::Pan),
-        _ => None,
+        AutomationTarget::TrackVolume { .. } => AutomationKind::Volume,
+        AutomationTarget::TrackPan { .. } => AutomationKind::Pan,
+        AutomationTarget::SendGain { edge_id, .. } => AutomationKind::Send { edge_id },
+        AutomationTarget::DeviceParam {
+            slot_index,
+            param_index,
+            ..
+        } => AutomationKind::Device {
+            slot_index,
+            param_index,
+        },
+        AutomationTarget::Macro { macro_index, .. } => AutomationKind::Macro { macro_index },
+        AutomationTarget::MidiCc { controller, .. } => AutomationKind::MidiCc { controller },
     }
 }
 
@@ -1882,7 +1947,24 @@ impl App {
             self.log_line("选中的轨已不在工程里：先重新选一条轨".to_owned());
             return;
         }
-        let target = kind.target(track_id);
+        self.open_automation_target(kind.target(track_id));
+    }
+
+    /// 打开任意目标（六类同一入口）：**先对账、再开视图**。
+    ///
+    /// 对账走 [`AutomationTarget::validate_against`] —— 设备槽 / 参数序 / 宏号越界、
+    /// 路由边不存在、CC 控制器越界都在这里被拒，错误文本是模型给的那条具体错误。
+    /// 被拒时 ⛔ **不开视图、不建泳道**（默认不能静默）；成功时视图只是"打开目标"，
+    /// 泳道本身由首个 `Op::SetAutomationPoint` 落地（模型语义：空泳道不落盘）。
+    pub fn open_automation_target(&mut self, target: AutomationTarget) {
+        let track_id = target.track_id();
+        if let Err(error) = target.validate_against(&self.project) {
+            self.log_line(format!(
+                "目标 {} 在工程里不存在：{error}（未打开泳道）",
+                yeban_app::automation::target_key(&target)
+            ));
+            return;
+        }
         self.list_view = Some(ListView::Automation {
             track_id,
             target,
@@ -1893,10 +1975,143 @@ impl App {
             || "值域未知".to_owned(),
             |(min, max)| format!("值域 [{min}, {max}]"),
         );
+        let kind = kind_of(target);
         self.log_line(format!(
-            "自动化视图：{}（{domain}）：a 在光标处设点 · -/+ 改值 · Delete 删点 · Esc 返回",
-            kind.label()
+            "自动化视图：{} · {}（{domain}）：a 在光标处设点 · -/+ 改值 · Delete 删点 · Esc 返回",
+            kind.label(),
+            self.target_display_name(&target)
         ));
+    }
+
+    /// 目标的人读名（**与 GUI 同一命名口径**：直接调 `yeban_app::automation::target_label`，
+    /// ⛔ TUI 里不再写一份"设备参数叫什么"的规则）。
+    #[must_use]
+    pub fn target_display_name(&self, target: &AutomationTarget) -> String {
+        self.project.track(&target.track_id()).map_or_else(
+            |_| format!("{}（轨道不在工程里）", kind_of(*target).label()),
+            |track| yeban_app::automation::target_label(track, target),
+        )
+    }
+
+    /// 当前泳道的人读名（视图未开时 `"自动化"`）。
+    #[must_use]
+    pub fn automation_lane_name(&self) -> String {
+        self.automation_target().map_or_else(
+            || "自动化".to_owned(),
+            |target| self.target_display_name(&target),
+        )
+    }
+
+    /// 选中轨上**已有**的自动化泳道（`(目标, 点数)`，按 `AutomationTarget::Ord` 升序 ——
+    /// `BTreeMap` 迭代序，与 GUI 投影同一序）。
+    #[must_use]
+    pub fn automation_lanes(&self) -> Vec<(AutomationTarget, usize)> {
+        let Some(track_id) = self.selected_track_id() else {
+            return Vec::new();
+        };
+        self.project.track(&track_id).map_or_else(
+            |_| Vec::new(),
+            |track| {
+                track
+                    .automation_lanes
+                    .iter()
+                    .map(|(target, lane)| (*target, lane.points.len()))
+                    .collect()
+            },
+        )
+    }
+
+    /// 泳道清单的可读行（`:auto` 无参时逐行写出）：序号 · 目标名 · 单位 · 点数。
+    #[must_use]
+    pub fn automation_lane_lines(&self) -> Vec<String> {
+        self.automation_lanes()
+            .iter()
+            .enumerate()
+            .map(|(index, (target, points))| {
+                format!(
+                    "{index}. {} · {} · {points} 个点",
+                    self.target_display_name(target),
+                    target.nominal_unit().symbol()
+                )
+            })
+            .collect()
+    }
+
+    /// 打开清单里的第 `index` 条泳道（`:auto <序号>`）。
+    pub fn open_automation_lane(&mut self, index: usize) {
+        let lanes = self.automation_lanes();
+        match lanes.get(index) {
+            Some((target, _)) => self.open_automation_target(*target),
+            None => self.log_line(format!(
+                "没有第 {index} 条泳道：先 `:auto` 看清单（共 {} 条）",
+                lanes.len()
+            )),
+        }
+    }
+
+    /// `:auto` 的完整语法（批 5：六类目标同一入口）。
+    ///
+    /// - `:auto`：列出选中轨**已有**的泳道（序号 · 目标名 · 单位 · 点数）；
+    /// - `:auto <序号>`：打开清单里的那一条；
+    /// - `:auto volume` / `:auto pan`：既有的两条快捷泳道；
+    /// - `:auto send <路由边ULID>` / `:auto device <设备槽> <参数序>` /
+    ///   `:auto macro <宏号>` / `:auto cc <0-127>`：打开四类目标泳道。
+    ///
+    /// 选择面沿用 TUI 既有惯例（命令 + 序号清单），⛔ 不新造控件框架；
+    /// 目标是否存在由 [`App::open_automation_target`] 的对账决定。
+    fn command_automation(&mut self, rest: &str) {
+        const USAGE: &str = "用法：:auto（列现有泳道）｜:auto <序号>｜:auto volume|pan｜:auto send <路由边ULID>｜:auto device <设备槽> <参数序>｜:auto macro <宏号>｜:auto cc <0-127>";
+        if self.selected_track_id().is_none() {
+            self.log_line("先选中一条轨道，再用 :auto".to_owned());
+            return;
+        }
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {
+                let lines = self.automation_lane_lines();
+                if lines.is_empty() {
+                    self.log_line(
+                        "选中轨还没有自动化泳道：:auto volume|pan|send|device|macro|cc 开一条"
+                            .to_owned(),
+                    );
+                } else {
+                    for line in lines {
+                        self.log_line(line);
+                    }
+                }
+                self.log_line(USAGE.to_owned());
+            }
+            ["volume"] => self.open_automation_view(AutomationKind::Volume),
+            ["pan"] => self.open_automation_view(AutomationKind::Pan),
+            ["send", edge] => match edge.parse::<EntityId>() {
+                Ok(edge_id) => self.open_automation_view(AutomationKind::Send { edge_id }),
+                Err(_) => self.log_line(format!("路由边 `{edge}` 不是合法的 EntityId")),
+            },
+            ["device", slot, param] => match (slot.parse::<usize>(), param.parse::<usize>()) {
+                (Ok(slot_index), Ok(param_index)) => {
+                    self.open_automation_view(AutomationKind::Device {
+                        slot_index,
+                        param_index,
+                    })
+                }
+                _ => self.log_line(format!("设备槽 `{slot}` / 参数序 `{param}` 必须是非负整数")),
+            },
+            ["macro", index] => match index.parse::<usize>() {
+                Ok(macro_index) => self.open_automation_view(AutomationKind::Macro { macro_index }),
+                Err(_) => self.log_line(format!("宏号 `{index}` 必须是非负整数")),
+            },
+            // CC 先按 `u8` 解析（128..=255 能被 `u8` 收下，再由模型的对账拒掉）——
+            // ⛔ 不在 TUI 里另定一条 0..=127 的规则，域的唯一出处是 `validate_against`。
+            ["cc", controller] => match controller.parse::<u8>() {
+                Ok(controller) => self.open_automation_view(AutomationKind::MidiCc { controller }),
+                Err(_) => self.log_line(format!("控制器号 `{controller}` 必须是 0..=255 的整数")),
+            },
+            [index] => match index.parse::<usize>() {
+                Ok(index) => self.open_automation_lane(index),
+                Err(_) => self.log_line(USAGE.to_owned()),
+            },
+            _ => self.log_line(USAGE.to_owned()),
+        }
     }
 
     /// 自动化视图的泳道目标（视图未开时 `None`）。
@@ -1967,9 +2182,18 @@ impl App {
     /// 同 tick 的点按**既有身份**更新（与 MCP 的"重复写入是更新，不是堆积"同一承诺）。
     pub fn set_automation_value(&mut self, value: f32) {
         let Some(target) = self.automation_target() else {
-            self.log_line("先开自动化视图（p 音量 / P 声相），再设点".to_owned());
+            self.log_line("先开自动化视图（p 音量 / P 声相 / :auto ...），再设点".to_owned());
             return;
         };
+        // 视图开着时设备槽 / 宏 / 路由边也可能被撤销掉 ⇒ 每次写入前再对一次账，
+        // ⛔ 不往一个不存在的目标上写点（模型的存在性检查只在求值入口，写点不查）。
+        if let Err(error) = target.validate_against(&self.project) {
+            self.log_line(format!(
+                "目标 {} 在工程里不存在：{error}（拒绝写点）",
+                yeban_app::automation::target_key(&target)
+            ));
+            return;
+        }
         let tick = self.automation_cursor_tick();
         if !value.is_finite() {
             self.log_line(format!("值 {value} 不是有限数：拒绝写点"));
@@ -2028,7 +2252,7 @@ impl App {
         let Some(kind) = self.automation_kind() else {
             return;
         };
-        let next = readout.effective_value + kind.step() * (steps as f32);
+        let next = readout.effective_value + kind.step(self.automation_domain()) * (steps as f32);
         self.set_automation_value(next);
     }
 
@@ -2045,7 +2269,7 @@ impl App {
     /// 当前自动化视图的泳道种类（视图未开或非音量/声相时 `None`）。
     #[must_use]
     pub fn automation_kind(&self) -> Option<AutomationKind> {
-        kind_of(self.automation_target()?)
+        self.automation_target().map(kind_of)
     }
 
     /// 删除光标 tick 处的自动化点（`Op::RemoveAutomationPoint`，可撤销）。
@@ -3402,15 +3626,8 @@ impl App {
                 }
             }
             "auto" => {
-                // :auto <volume|pan> —— 打开选中轨的音量 / 声相自动化泳道。
-                match rest {
-                    "volume" => self.open_automation_view(AutomationKind::Volume),
-                    "pan" => self.open_automation_view(AutomationKind::Pan),
-                    "" => self.log_line("用法：:auto <volume|pan>".to_owned()),
-                    other => {
-                        self.log_line(format!("用法：:auto <volume|pan>（收到 `{other}`）"));
-                    }
-                }
+                // :auto —— 六类目标的泳道清单 / 打开 / 新建（见 `command_automation`）。
+                self.command_automation(rest);
             }
             "export" => {
                 // 形态：export wav <path> 或 export <path>（默认 wav）。

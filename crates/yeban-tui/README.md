@@ -121,7 +121,7 @@ Vi 层。
 | 移轨（显示顺序） | 轨头拖拽重排（无键） | `J` / `K`（计数 = 格数）；`:move <位置>`（0 起，与 `newIndex` 同口径） | 已接（T-FIX-76；`Op::MoveTrack` 同一条 op） |
 | 轨道高度 | 轨头纵向拖拽 + 全局缩放 | `Alt+Shift+↑/↓` 每轨基准 ±16 px；`{` / `}` 全局乘子 ±10%；`:height <px>` / `:height% <n>` | 已接（T-FIX-76；`bridge::TrackHeightLayout`，夹紧仍只有一处；裸 `[`/`]` 是 GUI 试听，⛔ 不抢） |
 | 主视图 Session / Arrangement | `F5` / `F6` | 同键；另有 `:view session|arrangement` | 已接（T-FIX-76；同一个 `yeban_app::input::View` 枚举） |
-| 自动化编辑 | 自动化泳道鼠标画点；`Ctrl+Shift+A` 开关泳道（GUI），`yeban_edit_automation`（MCP） | `Ctrl+Shift+A` 开关音量泳道、`P` 开声相泳道、`:auto <volume\|pan>`；视图内 `a` 设点、`-` / `+` 改值、`Delete` 删点 | 已接（T-FIX-76；读走唯一求值入口，写一条 `Op::SetAutomationPoint`。裸 `p` 是 GUI 编辑器开关、`Ctrl+Alt+A` 是 AI 抽屉，⛔ 不抢） |
+| 自动化编辑 | 自动化泳道鼠标画点；`Ctrl+Shift+A` 开关泳道（GUI），`yeban_edit_automation`（MCP） | `Ctrl+Shift+A` 开关音量泳道、`P` 开声相泳道；`:auto` 列现有泳道（序号 · 目标名 · 单位 · 点数），`:auto <序号>` 打开，`:auto volume\|pan\|send <路由边ULID>\|device <设备槽> <参数序>\|macro <宏号>\|cc <0-127>` 打开/新建六类目标；视图内 `a` 设点、`-` / `+` 改值、`Delete` 删点 | 已接（T-FIX-76 音量/声相；T-FIX-97 补齐设备参数/宏/发送/CC，目标名直接调 `yeban_app::automation::target_label`，与 GUI 同一命名口径；读走唯一求值入口，写一条 `Op::SetAutomationPoint`；目标不存在由 `AutomationTarget::validate_against` 拒。裸 `p` 是 GUI 编辑器开关、`Ctrl+Alt+A` 是 AI 抽屉，⛔ 不抢） |
 
 Vi 层新增（仅导航与模式，不占共享动作）：
 
