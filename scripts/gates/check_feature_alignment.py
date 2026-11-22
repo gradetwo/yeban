@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""校验 `docs/ledger/feature-alignment.md`（三方对齐矩阵）本身没有腐烂。
+"""校验 `docs/ledger/feature-alignment.md`（四方对齐矩阵）本身没有腐烂。
 
 ## 为什么需要这条判据
 
-项目的目标措辞是"系统已经实现/计划的功能，UI 端与 MCP 端都要暴露"。
+项目的目标措辞是"系统已经实现/计划的功能，GUI 端 / MCP 端 / TUI 端都要暴露"。
 在这张表之前，"某个能力在系统里有了、但界面上碰不到、也没有工具能调"这类**错位**
 只散落在 42 份工作线台账的"未实现项 / 边界 / needs"小节里 —— 它**没有任何单一去处**，
 于是同一件事会被三个人按三种口径判断（本仓库已实测多次：`DEVELOPMENT_LEDGER.md` 第 12 轮、
 第 19 轮；`L12` 门禁空跑；`D25` 契约空转）。
 
-本表是"三方暴露"的**唯一事实源**。它与另外三张表是**同一种做法的第四份实现**，但管的东西不同：
+本表是"四方暴露"的**唯一事实源**。它与另外三张表是**同一种做法的第四份实现**，但管的东西不同：
 
 | 表 | 管什么 | 守卫 |
 | :--- | :--- | :--- |
-| 本表 `feature-alignment.md` | **三方暴露**（系统 / UI / MCP） | 本脚本 |
+| 本表 `feature-alignment.md` | **四方暴露**（系统 / GUI / MCP / TUI） | 本脚本 |
 | `gate-status.md` | 发布门禁过没过 | `check_gate_status.py` |
 | `phase-status.md` | 阶段项做没做完 | `check_phase_status.py` |
 | `human-decisions.md` | 待人类裁决 | `check_decisions.py` |
@@ -30,18 +30,18 @@
 2. **反向硬规则**：本表里出现的**每一个**工具名 / 方法名，都必须真的在 `crates/` 里 grep 得到。
    凭空发明的名字直接红 —— 与 `scripts/gates/spec_id_audit.py` 的"不得发明 ID"同族
    （`AGENTS.md` §4.1 点名过 `MODEL-AST-006` 的先例）。
-3. **结构**：每行的功能 / 系统 / UI / MCP / 缺口五列非空；三侧标记只能是允许集合内的词；
+3. **结构**：每行的功能 / 系统 / GUI / MCP / TUI / 缺口六列非空；四侧标记只能是允许集合内的词；
    缺口列必须含 `状态：<状态词>`；**凡"无 / 部分"的行**必须把 `原因：…；计划：…；状态：…`
    三件事按序写全、各自非空。**这是本任务的核心要求**：一个"无"若没有原因与计划，
    下一个人只会把它重问一遍。
    **同一条能力不许有两个口径**：功能名逐字相同（`seen`）或**归一化后互为包含**
    （`capability_key()`，被包含的名字 ≥ `CAPABILITY_KEY_MIN` 字符，见该函数的注释）的两行，
-   三侧标记必须一致。只认"逐字相同"是不够的 —— 实测：同一条撤销 / 重做被写成
+   四侧标记必须一致。只认"逐字相同"是不够的 —— 实测：同一条撤销 / 重做被写成
    `**执行**撤销 / 重做（可逆能力对外可调用）`（旧读数：UI `部分` / MCP `无` / `PENDING`）与
-   `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（三侧齐全）两行，守卫当时全绿。
+   `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（四方齐全）两行，守卫当时全绿。
    本判据**只在标记不一致时开火**，且实测活表上只有那 1 对候选、0 处假红
    （宽松到"最长公共子串 ≥ 5"会产出 30 对假红，故不采用模糊匹配）。
-4. **汇总对账**：顶部的六类分类计数必须与表格逐行统计**逐一相等**。
+4. **汇总对账**：顶部的十类分类计数必须与表格逐行统计**逐一相等**。
    汇总数字是人最爱手抄的东西；口径漂移在本仓库已实测发生多次。改了行忘了改汇总 ⇒ 红。
 5. **手抄副本对账**：本脚本 `[ok]` 行打印的三个数字（`N 行功能` / `N 个 MCP 工具` /
    `N 条 ui 方法`）与 §4 那句 `本表有 N 行是 未核查`，在这些**活文档**里被手抄了多处。
@@ -156,8 +156,8 @@
 
 ## 为什么"分类"是机器算的而不是人填的
 
-分类由 `classify()` 从三侧标记**唯一确定**，不写在表里（表列固定为任务书要求的五列）。
-这样"分类"与"三侧标记"不可能互相矛盾 —— 也就没有第二个可漂移的口径。
+分类由 `classify()` 从四侧标记**唯一确定**，不写在表里（表列固定为六列）。
+这样"分类"与"四侧标记"不可能互相矛盾 —— 也就没有第二个可漂移的口径。
 
 用法:
     python3 scripts/gates/check_feature_alignment.py
@@ -177,14 +177,14 @@ OPS_SCHEMA = REPO / "schemas/ops.schema.json"
 METHODS = REPO / "crates/yeban-ui-mcp/src/methods.rs"
 CRATES = REPO / "crates"
 
-#: 三侧标记的允许取值（首词）。
+#: 四侧标记的允许取值（首词）。
 SYSTEM_MARKS = ("已实现", "部分", "计划", "无")
 SIDE_MARKS = ("有", "部分", "无")
 #: 单元格内部的**全角**分隔符（因此单元格里不会出现半角竖线，markdown 表格不会被切坏）。
 CELL_SEP = "｜"
 #: 缺口列的允许状态词。
 ALLOWED_STATUS = (
-    "三方齐全",
+    "四方齐全",
     "PENDING",
     "未到期",
     "有意不做",
@@ -192,14 +192,18 @@ ALLOWED_STATUS = (
     "待接线",
     "未核查",
 )
-#: 六个对齐分类（顺序 = 汇总里的顺序）。
+#: 十个对齐分类（顺序 = 汇总里的顺序）。
 CATEGORIES = (
-    "三方齐全",
-    "系统+UI（MCP 无）",
-    "系统+MCP（UI 无）",
+    "四方齐全",
+    "系统+GUI+MCP（TUI无）",
+    "系统+GUI+TUI（MCP无）",
+    "系统+MCP+TUI（GUI无）",
+    "系统+GUI（MCP、TUI无）",
+    "系统+MCP（GUI、TUI无）",
+    "系统+TUI（GUI、MCP无）",
     "仅系统",
     "仅计划（系统也未实现）",
-    "UI 或 MCP 独有（系统没有）",
+    "前端独有（系统没有）",
 )
 
 #: 表里允许出现的名字形态：工具名与方法名。
@@ -224,7 +228,7 @@ TABLE_METHOD_RE = re.compile(r"(?<![/\w-])ui/[a-z_]+(?![.\w/])")
 STATUS_CHARS = r"[^\s；|（）()]+"
 GAP_RE = re.compile(r"原因：(?P<reason>.+?)；计划：(?P<plan>.+?)；状态：(?P<status>" + STATUS_CHARS + r")")
 STATUS_RE = re.compile(r"状态：(" + STATUS_CHARS + r")")
-#: 汇总行：`- 三方齐全：15 行` 与 `- **合计：67 行**`。
+#: 汇总行：`- 四方齐全：15 行` 与 `- **合计：98 行**`。
 TOTAL_RE = re.compile(r"^- \*\*合计：(\d+) 行\*\*$")
 
 #: 索引：`docs/README.md` 的文档目录表。
@@ -281,7 +285,7 @@ RETRACTION_RE = re.compile(r"为假|过期|不成立")
 # 上限从 70 放宽到 80（负责人授权的自主决策，第 164 轮）: 工具集从 15 增到 16（D56 诊断导出），
 # 新工具**必须**在矩阵里点名（否则判据自己会报"有工具却没人管它"），所以行数会持续增长。
 # 这个区间的作用是抓"误删/误增整块"，不是精确值，故放宽不削弱它。
-MIN_ROWS, MAX_ROWS = 40, 100  # 表随落地功能自然增长；81 行于本支首次超旧上限 80
+MIN_ROWS, MAX_ROWS = 40, 120  # 表随落地功能自然增长；四方改造后上调上限留余量
 
 #: 判据 3 的"同一能力"归一化名的**最小长度**。比它短的名字（实测活表里只有 `走带` 一个，
 #: 归一化后 2 字符）太容易"被别的名字包含" ⇒ 按构造跳过，不拿它去制造假红。
@@ -362,7 +366,7 @@ def cells_of(line: str) -> list[str]:
 
 
 def marker_of(cell: str, marks: tuple[str, ...]) -> str | None:
-    """取单元格的三侧标记（`<标记>｜...`）；不合形状返回 `None`。"""
+    """取单元格的四侧标记（`<标记>｜...`）；不合形状返回 `None`。"""
     for mark in marks:
         if cell == mark or cell.startswith(mark + CELL_SEP):
             return mark
@@ -372,12 +376,13 @@ def marker_of(cell: str, marks: tuple[str, ...]) -> str | None:
 class Row:
     """表格里的一行。"""
 
-    def __init__(self, line_no: int, feature: str, system: str, ui: str, mcp: str, gap: str) -> None:
+    def __init__(self, line_no: int, feature: str, system: str, ui: str, mcp: str, tui: str, gap: str) -> None:
         self.line_no = line_no
         self.feature = feature
         self.system = system
         self.ui = ui
         self.mcp = mcp
+        self.tui = tui
         self.gap = gap
 
     @staticmethod
@@ -386,19 +391,28 @@ class Row:
         return mark in ("有", "部分")
 
     def classify(self) -> str:
-        """由三侧标记**唯一确定**分类（不依赖表里任何人写的文字）。"""
+        """由四侧标记**唯一确定**分类（不依赖表里任何人写的文字）。"""
         exposed = self._exposed
         system_has = self.system in ("已实现", "部分")
-        if self.system == "计划" or (self.system == "无" and not exposed(self.ui) and not exposed(self.mcp)):
+        gui, mcp, tui = self.ui, self.mcp, self.tui
+        if self.system == "计划" or (self.system == "无" and not exposed(gui) and not exposed(mcp) and not exposed(tui)):
             return "仅计划（系统也未实现）"
         if self.system == "无":
-            return "UI 或 MCP 独有（系统没有）"
-        if exposed(self.ui) and exposed(self.mcp):
-            return "三方齐全"
-        if exposed(self.ui):
-            return "系统+UI（MCP 无）"
-        if exposed(self.mcp):
-            return "系统+MCP（UI 无）"
+            return "前端独有（系统没有）"
+        if exposed(gui) and exposed(mcp) and exposed(tui):
+            return "四方齐全"
+        if exposed(gui) and exposed(mcp):
+            return "系统+GUI+MCP（TUI无）"
+        if exposed(gui) and exposed(tui):
+            return "系统+GUI+TUI（MCP无）"
+        if exposed(mcp) and exposed(tui):
+            return "系统+MCP+TUI（GUI无）"
+        if exposed(gui):
+            return "系统+GUI（MCP、TUI无）"
+        if exposed(mcp):
+            return "系统+MCP（GUI、TUI无）"
+        if exposed(tui):
+            return "系统+TUI（GUI、MCP无）"
         if system_has:
             return "仅系统"
         return "仅计划（系统也未实现）"
@@ -409,6 +423,7 @@ class Row:
             self.system != "已实现"
             or self.ui != "有"
             or self.mcp != "有"
+            or self.tui != "有"
         )
 
 
@@ -418,8 +433,8 @@ def capability_key(feature: str) -> str:
     这是判据 3 里"一行一个功能"的推广。逐字相同的检查**只认字面**，于是同一条能力被
     两种写法各写一行时守卫一声不响 —— 实测（本规则落地的这一轮）：本表有
     `**执行**撤销 / 重做（可逆能力对外可调用）`（第 86 行，当时记 UI `部分` / MCP `无` / `PENDING`）
-    与 `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（第 107 行，记三侧齐全）两行，
-    指的是**同一条能力**（`ADR-0001 D45` 的同一次落地），三侧标记却相反。
+    与 `撤销 / 重做（yeban_undo / yeban_redo + UI 入口）`（第 107 行，记四方齐全）两行，
+    指的是**同一条能力**（`ADR-0001 D45` 的同一次落地），四侧标记却相反。
     归一化后 `撤销重做` 被 `执行撤销重做` 包含 ⇒ 认作同一能力，标记必须一致。
 
     **为什么不做模糊匹配**：本切片实测过"最长公共子串"这一档 —— 阈值放到 5 个字符就
@@ -439,12 +454,12 @@ def parse_rows(text: str) -> tuple[list[Row], list[str]]:
         if not line.startswith("|"):
             continue
         cells = cells_of(line)
-        if len(cells) < 5:
+        if len(cells) < 6:
             continue
         system = marker_of(cells[1], SYSTEM_MARKS)
         if system is None or CELL_SEP not in cells[1]:
             continue
-        rows.append(Row(index, cells[0], system, marker_of(cells[2], SIDE_MARKS) or "", marker_of(cells[3], SIDE_MARKS) or "", cells[4]))
+        rows.append(Row(index, cells[0], system, marker_of(cells[2], SIDE_MARKS) or "", marker_of(cells[3], SIDE_MARKS) or "", marker_of(cells[4], SIDE_MARKS) or "", cells[5]))
     return rows, problems
 
 
@@ -484,7 +499,7 @@ def crate_tokens() -> tuple[set[str], set[str]]:
 
 
 def parse_summary(text: str) -> tuple[dict[str, int], int | None]:
-    """解析 §1 的六类计数与合计。"""
+    """解析 §1 的十类计数与合计。"""
     summary: dict[str, int] = {}
     for category in CATEGORIES:
         pattern = re.compile(r"^- " + re.escape(category) + r"：(\d+) 行$")
@@ -886,7 +901,7 @@ def main() -> int:
             problems.append(f"{where}: 功能列为空")
         if seen.setdefault(row.feature, row.line_no) != row.line_no:
             problems.append(f"{where}: 功能名与第 {seen[row.feature]} 行重复（一行一个功能）")
-        for label, cell, marks in (("系统", row.system, SYSTEM_MARKS), ("UI", row.ui, SIDE_MARKS), ("MCP", row.mcp, SIDE_MARKS)):
+        for label, cell, marks in (("系统", row.system, SYSTEM_MARKS), ("GUI", row.ui, SIDE_MARKS), ("MCP", row.mcp, SIDE_MARKS), ("TUI", row.tui, SIDE_MARKS)):
             if not cell:
                 problems.append(f"{where}: {label}列的标记不在 {marks} 里（写成 `{label}标记{CELL_SEP}载体`）")
         if not row.gap:
@@ -897,8 +912,8 @@ def main() -> int:
             problems.append(f"{where}: 缺口列没有 `状态：<状态词>`")
         elif status.group(1) not in ALLOWED_STATUS:
             problems.append(f"{where}: 状态 `{status.group(1)}` 不在 {ALLOWED_STATUS} 里")
-        elif status.group(1) == "三方齐全" and row.classify() != "三方齐全":
-            problems.append(f"{where}: 写了 `状态：三方齐全`，但三侧标记算出来是 `{row.classify()}`")
+        elif status.group(1) == "四方齐全" and row.classify() != "四方齐全":
+            problems.append(f"{where}: 写了 `状态：四方齐全`，但四侧标记算出来是 `{row.classify()}`")
         if row.has_gap():
             matched = GAP_RE.search(row.gap)
             if matched is None:
@@ -919,12 +934,12 @@ def main() -> int:
     # 只认**包含**这一种结构关系 + 只在标记**不一致**时开火 ⇒ 实测活表上只有 1 对候选
     # （就是那对撤销 / 重做），0 处假红；修好之后两行标记一致，本判据保持沉默。
     ability_rows = [
-        (row.line_no, capability_key(row.feature), row.system, row.ui, row.mcp)
+        (row.line_no, capability_key(row.feature), row.system, row.ui, row.mcp, row.tui)
         for row in rows
         if len(capability_key(row.feature)) >= CAPABILITY_KEY_MIN
     ]
-    for index, (line_a, key_a, system_a, ui_a, mcp_a) in enumerate(ability_rows):
-        for line_b, key_b, system_b, ui_b, mcp_b in ability_rows[index + 1 :]:
+    for index, (line_a, key_a, system_a, ui_a, mcp_a, tui_a) in enumerate(ability_rows):
+        for line_b, key_b, system_b, ui_b, mcp_b, tui_b in ability_rows[index + 1 :]:
             if key_a == key_b:
                 shorter, longer = key_a, key_b
             elif key_a in key_b:
@@ -933,12 +948,12 @@ def main() -> int:
                 shorter, longer = key_b, key_a
             else:
                 continue
-            if (system_a, ui_a, mcp_a) == (system_b, ui_b, mcp_b):
+            if (system_a, ui_a, mcp_a, tui_a) == (system_b, ui_b, mcp_b, tui_b):
                 continue
             problems.append(
                 f"第 {line_a} 行与第 {line_b} 行像是**同一条能力**（归一化功能名 `{shorter}` "
-                f"⊆ `{longer}`），三侧标记却相反："
-                f"({system_a} / {ui_a} / {mcp_a}) vs ({system_b} / {ui_b} / {mcp_b}) —— "
+                f"⊆ `{longer}`），四侧标记却相反："
+                f"({system_a} / {ui_a} / {mcp_a} / {tui_a}) vs ({system_b} / {ui_b} / {mcp_b} / {tui_b}) —— "
                 "同一条能力的两行必须给出同一套标记；若确是两件事，请把功能名改到不互相包含"
             )
 
@@ -1071,7 +1086,7 @@ def main() -> int:
     problems.extend(negative_problems)
 
     if problems:
-        print("三方对齐矩阵校验未通过:", file=sys.stderr)
+        print("四方对齐矩阵校验未通过:", file=sys.stderr)
         for item in problems:
             print(f"  - {item}", file=sys.stderr)
         return 1
