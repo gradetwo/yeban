@@ -51,6 +51,84 @@ pub struct ExportReceipt {
     pub bits: u16,
 }
 
+/// 鼓机生成请求（`yeban_generate_drum_pattern` 的参数面；缺省与 GUI / MCP 同口径）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrumRequest {
+    /// 风格预置 id（`yeban_theory::factory_drum_style_ids()` 之一）。
+    pub style: String,
+    /// 生成小节数（1..=16）。
+    pub bars: u32,
+    /// 复杂度旋钮（0..=100，密度/鬼音）。
+    pub complexity: u8,
+    /// 强度旋钮（0..=100，力度层级）。
+    pub intensity: u8,
+    /// 摇摆千分比（500..=1000）；`None` = 用风格预置定值。
+    pub swing_permille: Option<u16>,
+    /// 种子（鬼音哈希的盐；同种子同参数逐字节可复现）。
+    pub seed: u64,
+    /// 是否在最后一小节落 fill。
+    pub fill: bool,
+}
+
+impl Default for DrumRequest {
+    fn default() -> Self {
+        Self {
+            style: String::new(),
+            bars: 4,
+            complexity: 50,
+            intensity: 80,
+            swing_permille: None,
+            seed: 0,
+            fill: true,
+        }
+    }
+}
+
+impl DrumRequest {
+    /// 范围校验（与 MCP `plan_generate_drum_pattern` 同一批判据与同一批文案）。
+    fn validate(&self) -> Result<(), String> {
+        if !(1..=16).contains(&self.bars) {
+            return Err(format!(
+                "`bars` 必须是 1..=16 的整数, 实际收到 {}",
+                self.bars
+            ));
+        }
+        if self.complexity > 100 {
+            return Err(format!(
+                "`complexity` 必须是 0..=100 的整数, 实际收到 {}",
+                self.complexity
+            ));
+        }
+        if self.intensity > 100 {
+            return Err(format!(
+                "`intensity` 必须是 0..=100 的整数, 实际收到 {}",
+                self.intensity
+            ));
+        }
+        if let Some(swing) = self.swing_permille
+            && !(500..=1000).contains(&swing)
+        {
+            return Err(format!(
+                "`swingPermille` 必须是 500..=1000 的整数, 实际收到 {swing}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 一次诊断包导出的读数（命令回执与测试用；字段与 `yeban_diagnostics::BundleReport` 同名）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticsReceipt {
+    /// 落盘的 `.zip` 路径。
+    pub path: PathBuf,
+    /// 压缩包字节数。
+    pub bytes: u64,
+    /// 压缩包自身的 `sha256`。
+    pub sha256: String,
+    /// 包内条目名（含 `MANIFEST.txt` 自身；顺序即写出顺序）。
+    pub entries: Vec<String>,
+}
+
 /// GUI 电平心跳周期（`crates/yeban-app/src/main.rs` 的 `HEARTBEAT_PERIOD_MS = 16`
 /// ⇒ 62.5 Hz，不低于 60 Hz）：TUI 主循环用**同一个数**做轮询超时与 tick 闸门。
 ///
@@ -87,14 +165,66 @@ pub struct EngineStatus {
     pub channels: Option<u16>,
     /// 设备腿的显示名（TUI 默认不开设备腿 ⇒ `None`）。
     pub device_name: Option<String>,
+    /// 设备腿的采样率（Hz，协商结果）；没有设备腿时 `None`。
+    pub device_sample_rate: Option<u32>,
     /// 设备腿是否活跃。
     pub device_active: bool,
-    /// 采样率转换的**如实**说明（没有设备腿就没有实时转换）。
-    pub conversion: &'static str,
+    /// 采样率转换的**如实**说明（转换中带「工程 X Hz → 设备 Y Hz」两侧数值，
+    /// 与 `DeviceOpening::status_line` 的 T-FIX-72 口径同一句话）。
+    pub conversion: String,
     /// 走带状态。
     pub transport_state: TransportState,
     /// 走带位置（tick）。
     pub position_ticks: u64,
+}
+
+/// 设备状态行读数（T-FIX-82④）：设备名 / 设备采样率 / 工程采样率 / 转换状态。
+///
+/// 四个字段都取**既有**读数：设备名与两侧采样率来自 `EngineHost`（协商结果），
+/// 工程率来自 `project.audio_config`。没有设备腿时前两个是 `None`，格式函数
+/// 会**如实**写「未开设备腿」而不是编一个数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceStatus {
+    /// 设备腿的显示名（没有设备腿 ⇒ `None`）。
+    pub device_name: Option<String>,
+    /// 协商时的工程采样率（Hz，引擎此刻正在转换的源率；没有设备腿 ⇒ `None`）。
+    pub source_rate: Option<u32>,
+    /// 设备采样率（Hz，协商结果；没有设备腿 ⇒ `None`）。
+    pub device_sample_rate: Option<u32>,
+    /// 当前工程声明的采样率（Hz）。
+    pub project_sample_rate: u32,
+}
+
+impl DeviceStatus {
+    /// 状态行文本：`设备 <名> · 设备采样率 N Hz · 工程采样率 M Hz · 转换状态 …`。
+    ///
+    /// 转换中把**两侧数值**都写出来（`采样率转换: 工程 M Hz → 设备 N Hz`），
+    /// 与 `DeviceOpening::status_line` 的 T-FIX-72 口径同一句话；两侧一致时
+    /// 明写「无采样率转换」，⛔ 不留下一个可以随便解读的空格。
+    #[must_use]
+    pub fn line(&self) -> String {
+        let project = self.project_sample_rate;
+        match (&self.device_name, self.device_sample_rate) {
+            (Some(name), Some(device)) => {
+                let conversion = match self.source_rate {
+                    Some(source) if source != device => {
+                        format!("采样率转换: 工程 {source} Hz → 设备 {device} Hz")
+                    }
+                    Some(source) => {
+                        format!("无采样率转换（工程 {source} Hz 与设备率一致）")
+                    }
+                    None => "无采样率转换（协商未报告源率）".to_owned(),
+                };
+                format!(
+                    "设备 {name} · 设备采样率 {device} Hz · 工程采样率 {project} Hz · 转换状态 {conversion}"
+                )
+            }
+            _ => format!(
+                "设备 未开设备腿（TUI 走墙钟泵送） · 设备采样率 — · 工程采样率 {project} Hz · \
+                 转换状态 无（未开设备腿）"
+            ),
+        }
+    }
 }
 
 /// 片段网格窗格的列表视图（三期）：普通网格之外的两种内容变体。
@@ -1876,23 +2006,51 @@ impl App {
         let snapshot = self.host.current_snapshot();
         let reading = self.transport();
         let device_active = self.host.device_active();
+        let device = self.device_status();
+        let conversion = match (device.source_rate, device.device_sample_rate) {
+            (Some(source), Some(target)) if source != target => {
+                format!("采样率转换: 工程 {source} Hz → 设备 {target} Hz")
+            }
+            (Some(source), Some(_)) => {
+                format!("无采样率转换（工程 {source} Hz 与设备率一致）")
+            }
+            _ => "未开设备腿（TUI 走墙钟泵送）⇒ 无实时采样率转换".to_owned(),
+        };
         EngineStatus {
-            project_sample_rate: sample_rate_hz(self.project.audio_config.sample_rate),
+            project_sample_rate: device.project_sample_rate,
             engine_sample_rate: snapshot.as_ref().map(|snapshot| snapshot.sample_rate()),
             block_frames: snapshot
                 .as_ref()
                 .map(|snapshot| u32::try_from(snapshot.block_frames()).unwrap_or(u32::MAX)),
             channels: snapshot.as_ref().map(|snapshot| snapshot.channels()),
-            device_name: self.host.device_name().map(str::to_owned),
+            device_name: device.device_name.clone(),
+            device_sample_rate: device.device_sample_rate,
             device_active,
-            conversion: if device_active {
-                "设备腿已开（设备率与工程率的差异由设备行报告）"
-            } else {
-                "未开设备腿（TUI 走墙钟泵送）⇒ 无实时采样率转换"
-            },
+            conversion,
             transport_state: reading.state,
             position_ticks: reading.position_ticks,
         }
+    }
+
+    /// 设备状态行读数（T-FIX-82④）：设备名 / 设备采样率 / 工程采样率 / 转换状态。
+    ///
+    /// 设备侧两个数来自 `EngineHost::device_rates()`（协商结果）；工程率来自
+    /// `project.audio_config`。⛔ 不从工程推算设备率 —— 没开设备腿就是 `None`。
+    #[must_use]
+    pub fn device_status(&self) -> DeviceStatus {
+        let rates = self.host.device_rates();
+        DeviceStatus {
+            device_name: self.host.device_name().map(str::to_owned),
+            source_rate: rates.map(|(source, _)| source),
+            device_sample_rate: rates.map(|(_, device)| device),
+            project_sample_rate: sample_rate_hz(self.project.audio_config.sample_rate),
+        }
+    }
+
+    /// 设备状态行文本（底栏 `engine_line` 的同一份读数；判据与界面共用）。
+    #[must_use]
+    pub fn device_status_line(&self) -> String {
+        self.device_status().line()
     }
 
     /// 强制保存（GUI `ui/force_save` 的 TUI 等价）：**真的写盘**，不因"看起来没变"而跳过。
@@ -2044,6 +2202,207 @@ impl App {
             receipt.frames as f64 / f64::from(receipt.sample_rate)
         ));
         Ok(receipt)
+    }
+
+    // ───────────── T-FIX-82 批 3：鼓机 / 分轨 / 诊断包 / 设备腿 ─────────────
+
+    /// 鼓机生成（GUI「鼓机生成 (Drums)...」与 `yeban_generate_drum_pattern` 的 TUI 等价面）。
+    ///
+    /// 配方与 GUI / MCP **同一份**：风格预置走 `yeban_theory::factory_drum_style`，
+    /// 旋钮范围与缺省同一个口径（复杂度 0..=100 缺省 50、强度 0..=100 缺省 80、
+    /// 摇摆 500..=1000 缺省取风格定值、种子缺省 0、小节 1..=16 缺省 4、fill 缺省开），
+    /// 音符由 `yeban_theory::generate_drum_pattern` 生成，`Op` 批次由
+    /// `yeban_app::bridge::drum_gen_ops` 构造（目标轨是 MIDI 展示轨 ⇒ 落该轨并沿用
+    /// 其鼓组，否则新建鼓轨并按风格族装默认鼓组）。落点 tick 0（与 GUI 一致）。
+    ///
+    /// # Errors
+    ///
+    /// 风格不存在 / 旋钮越界 / 目标不可写 / 生成为空 / 提交被拒时返回原因文本。
+    pub fn generate_drum_pattern(&mut self, request: &DrumRequest) -> Result<String, String> {
+        request.validate()?;
+        let style = request.style.as_str();
+        let preset = yeban_theory::factory_drum_style(style)
+            .map_err(|error| format!("风格预置 `{style}` 解析失败: {error}"))?
+            .ok_or_else(|| {
+                format!(
+                    "没有名为 `{style}` 的鼓机风格预置（可用：{}）",
+                    yeban_theory::factory_drum_style_ids().join(", ")
+                )
+            })?;
+        let params = yeban_theory::DrumGenParams {
+            complexity: request.complexity,
+            intensity: request.intensity,
+            swing_permille: request.swing_permille.or(Some(preset.swing_permille)),
+            seed: request.seed,
+            bars: request.bars,
+            fill: request.fill,
+        };
+        let display = self
+            .selected_track_id()
+            .and_then(|id| self.project.tracks.get(&id));
+        let target = bridge::drum_gen_target(&self.project, display).cloned();
+        let ops = bridge::drum_gen_ops(&self.project, &preset, &params, target.as_ref())
+            .map_err(|reason| format!("鼓机生成被拒绝：{reason}"))?;
+        let note_count = ops
+            .iter()
+            .find_map(|op| match op {
+                Op::AddClip { clip } => match &clip.content {
+                    ClipContent::Midi { notes } => Some(notes.len()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or(0);
+        let new_track = ops.iter().find_map(|op| match op {
+            Op::AddTrack { track } if track.kind == TrackKind::Midi => Some(track.id),
+            _ => None,
+        });
+        let destination = target.as_ref().map_or_else(
+            || "新建鼓轨".to_owned(),
+            |track| format!("音轨「{}」", track.name),
+        );
+        let clips_before = self.project.clip_pool.len();
+        self.commit_edit(
+            "tui: generate drum pattern",
+            ops,
+            &format!(
+                "鼓机生成：{} · {} 小节 · {note_count} 个音符 → {destination}",
+                preset.name, request.bars
+            ),
+        );
+        if self.project.clip_pool.len() == clips_before {
+            return Err("鼓机生成被拒绝：提交未落库（原因见底栏日志）".to_owned());
+        }
+        // 新建鼓轨 ⇒ 选中它（与 :track 同一条纪律：新对象立刻可编辑）。
+        if let Some(id) = new_track
+            && let Some(index) = self.track_ids.iter().position(|candidate| *candidate == id)
+        {
+            self.selected = index;
+        }
+        Ok(format!(
+            "鼓机生成：{} · {} 小节 · {note_count} 个音符 → {destination}",
+            preset.name, request.bars
+        ))
+    }
+
+    /// 分轨导出（GUI「导出分轨 (Stems)...」与 `yeban_export_stems` 的 TUI 等价面）。
+    ///
+    /// 后端是 `yeban_app::export_stems::export_stems`（与 GUI 菜单臂、CLI
+    /// `--export-stems` **同一份**）：`N + 1` 次渲染、逐轨 32-bit Float、文件名
+    /// `{序号}.{清洗后的轨名}.wav`、跳过的轨逐条点名（⛔ 不静默丢轨）、
+    /// `stems-manifest.json` 落同一目录。目录不存在时在写盘口创建（B6 口径）。
+    ///
+    /// # Errors
+    ///
+    /// 目录被一个非目录占着 / 目标文件已存在 / 渲染或写盘失败时返回
+    /// `[稳定错误码] 原因`（原文照传，不吞）。
+    pub fn export_stems(
+        &mut self,
+        dir: &Path,
+    ) -> Result<yeban_app::export_stems::ExportStemsReport, String> {
+        let project_path = self
+            .project_path
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| "分轨导出失败：既没有工程路径，也读不到当前目录".to_owned())?;
+        let assets: Vec<(AssetHash, Vec<u8>)> = self
+            .archive
+            .as_ref()
+            .map(|archive| archive.assets.clone())
+            .unwrap_or_default();
+        let report =
+            yeban_app::export_stems::export_stems(&self.project, &project_path, dir, None, &assets)
+                .map_err(|error| format!("分轨导出失败［{}］：{}", error.code(), error.reason()))?;
+        // 回执行与 GUI / CLI 同一份（`ExportStemsReport::lines`），逐条进日志。
+        for line in report.lines() {
+            self.log_line(line);
+        }
+        Ok(report)
+    }
+
+    /// 诊断包导出（GUI 诊断导出与 `yeban_export_diagnostics` 的 TUI 等价面）。
+    ///
+    /// **与 GUI 逐项同**：同一个采集器 `yeban_diagnostics::export_diagnostics`、同一组
+    /// 输入（`config.json` 的「不可用」在场记录；日志 / 崩溃 / 工程默认不带 —— 隐私默认）、
+    /// 缺省目录同为 `std::env::temp_dir()`。包内条目因此与 GUI 一致：
+    /// `env.txt` / `git.txt` / `config.json` / `MANIFEST.txt`。
+    ///
+    /// # Errors
+    ///
+    /// 目录不存在 / 不是目录 / 打包或写盘失败时返回原因文本。
+    pub fn export_diagnostics(
+        &mut self,
+        out_dir: Option<&Path>,
+    ) -> Result<DiagnosticsReceipt, String> {
+        let dir = out_dir.map_or_else(std::env::temp_dir, Path::to_path_buf);
+        if !dir.is_dir() {
+            return Err(format!(
+                "诊断包导出失败：目录不存在 `{}`（先创建目录，或换一个已存在的路径）",
+                dir.display()
+            ));
+        }
+        let config = yeban_diagnostics::unavailable_config_json();
+        let inputs = yeban_diagnostics::BundleInputs {
+            config_json: Some(&config),
+            ..Default::default()
+        };
+        let report = yeban_diagnostics::export_diagnostics(&dir, inputs)
+            .map_err(|error| format!("诊断包导出失败：{error}"))?;
+        let receipt = DiagnosticsReceipt {
+            path: report.path.clone(),
+            bytes: report.bytes,
+            sha256: report.sha256.clone(),
+            entries: report
+                .entries
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect(),
+        };
+        self.log_line(format!(
+            "诊断包已写出 {}（{} 字节 · sha256 {} · {} 个条目）",
+            receipt.path.display(),
+            receipt.bytes,
+            receipt.sha256,
+            receipt.entries.len()
+        ));
+        Ok(receipt)
+    }
+
+    /// 打开**设备腿**（GUI 启动时 `EngineHost::open_device` 的 TUI 等价面）：
+    /// 音频线程改由真实设备时钟驱动，设备行随之报出设备名与两侧采样率。
+    ///
+    /// # Errors
+    ///
+    /// 设备腿已开 / 没有引擎 / 设备不可用（无声卡、采样率不支持、格式不是 `f32`）
+    /// 时返回原文原因（⛔ 不静默降级成"看起来开了"）。
+    pub fn open_device(&mut self) -> Result<String, String> {
+        if self.host.device_active() {
+            return Err("设备腿已经开着：先 :device off 再重开".to_owned());
+        }
+        let config = yeban_engine::device::EngineConfig::from_project(&self.project);
+        match self.host.open_device(config) {
+            Ok((opening, collector)) => {
+                self.collector = Some(collector);
+                let line = opening.status_line();
+                self.log_line(line.clone());
+                self.log_line(self.device_status_line());
+                Ok(line)
+            }
+            Err(error) => Err(format!("打开音频设备失败：{error}")),
+        }
+    }
+
+    /// 关掉设备腿并回到墙钟泵送（重建一代控制面引擎，与 `:reload` 同一落点）。
+    ///
+    /// # Errors
+    ///
+    /// 设备腿本来就没开时返回原因（⛔ 不假装关过一次）。
+    pub fn close_device(&mut self) -> Result<String, String> {
+        if !self.host.close_device() {
+            return Err("设备腿本来就没开（TUI 走墙钟泵送）".to_owned());
+        }
+        self.reload_engine();
+        Ok("已关设备腿：回到墙钟泵送".to_owned())
     }
 }
 
@@ -2738,6 +3097,112 @@ impl App {
                     }
                 }
             }
+            "stems" => {
+                // :stems <dir> —— 一次导出 N 条轨（GUI 菜单 / CLI / MCP 同一份后端）。
+                if rest.is_empty() {
+                    self.log_line("用法：:stems <输出目录>".to_owned());
+                } else if let Err(error) = self.export_stems(Path::new(rest)) {
+                    self.log_line(error);
+                }
+            }
+            "diag" | "diagnostics" => {
+                // :diag [dir] —— 诊断包（缺省系统临时目录，与 GUI 同一落点）。
+                let dir = if rest.is_empty() {
+                    None
+                } else {
+                    Some(Path::new(rest))
+                };
+                if let Err(error) = self.export_diagnostics(dir) {
+                    self.log_line(error);
+                }
+            }
+            "drum" => {
+                // :drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill|nofill]
+                // 缺省与 GUI 同一口径：4 小节 / 50 / 80 / 风格定值 / 0 / fill 开。
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let usage = || {
+                    format!(
+                        "用法：:drum <风格> [小节 1..=16] [复杂度 0..=100] [强度 0..=100] \
+                         [摇摆 500..=1000] [种子] [fill|nofill]（出厂风格：{}）",
+                        yeban_theory::factory_drum_style_ids().join(", ")
+                    )
+                };
+                if words.is_empty() {
+                    self.log_line(usage());
+                } else {
+                    let style = words[0];
+                    let mut numbers: Vec<u64> = Vec::new();
+                    let mut fill = true;
+                    let mut parse_failed = None;
+                    for word in &words[1..] {
+                        match *word {
+                            "fill" => fill = true,
+                            "nofill" => fill = false,
+                            other => match other.parse::<u64>() {
+                                Ok(value) => numbers.push(value),
+                                Err(_) => {
+                                    parse_failed = Some(other.to_owned());
+                                    break;
+                                }
+                            },
+                        }
+                    }
+                    let bars = numbers.first().copied().unwrap_or(4);
+                    let complexity = numbers.get(1).copied().unwrap_or(50);
+                    let intensity = numbers.get(2).copied().unwrap_or(80);
+                    let swing = numbers.get(3).copied();
+                    let seed = numbers.get(4).copied().unwrap_or(0);
+                    if let Some(word) = parse_failed {
+                        self.log_line(format!("`{word}` 不是数字：{}", usage()));
+                    } else if numbers.len() > 5 {
+                        self.log_line(usage());
+                    } else if !(1..=16).contains(&bars) {
+                        self.log_line(format!("`bars` 必须是 1..=16 的整数, 实际收到 {bars}"));
+                    } else if complexity > 100 {
+                        self.log_line(format!(
+                            "`complexity` 必须是 0..=100 的整数, 实际收到 {complexity}"
+                        ));
+                    } else if intensity > 100 {
+                        self.log_line(format!(
+                            "`intensity` 必须是 0..=100 的整数, 实际收到 {intensity}"
+                        ));
+                    } else if let Some(swing) = swing
+                        && !(500..=1000).contains(&swing)
+                    {
+                        self.log_line(format!(
+                            "`swingPermille` 必须是 500..=1000 的整数, 实际收到 {swing}"
+                        ));
+                    } else {
+                        let request = DrumRequest {
+                            style: style.to_owned(),
+                            bars: u32::try_from(bars).unwrap_or(u32::MAX),
+                            complexity: u8::try_from(complexity).unwrap_or(u8::MAX),
+                            intensity: u8::try_from(intensity).unwrap_or(u8::MAX),
+                            swing_permille: swing
+                                .map(|value| u16::try_from(value).unwrap_or(u16::MAX)),
+                            seed,
+                            fill,
+                        };
+                        if let Err(error) = self.generate_drum_pattern(&request) {
+                            self.log_line(error);
+                        }
+                    }
+                }
+            }
+            "device" => match rest {
+                // :device —— 设备状态行（名 / 设备率 / 工程率 / 转换状态）。
+                "" | "status" => self.log_line(self.device_status_line()),
+                "on" => {
+                    if let Err(error) = self.open_device() {
+                        self.log_line(error);
+                    }
+                }
+                "off" => match self.close_device() {
+                    Ok(line) => self.log_line(line),
+                    Err(error) => self.log_line(error),
+                },
+                other => self.log_line(format!("用法：:device [on|off|status]（收到 `{other}`）")),
+            },
             "track" => {
                 // :track [midi|audio|aux] —— 新建一条轨并选中它。
                 // 配方与 GUI 新建轨同源（`bridge::track_create_ops`），经撤销端口提交。

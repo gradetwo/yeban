@@ -7353,8 +7353,10 @@ dependencies = [
  "ratatui",
  "unicode-width",
  "yeban-app",
+ "yeban-diagnostics",
  "yeban-engine",
  "yeban-model",
+ "yeban-theory",
 ]
 
 [[package]]

@@ -13,6 +13,10 @@
 | 保存工程 | `yeban_app::save::{save_project_file, save_archive_file}` |
 | 引擎宿主 | `yeban_app::engine_host::EngineHost`（建图、走带、墙钟泵送、电平收集） |
 | 导出 WAV | `yeban_app::render_core::render_project_f32_with_assets_under` + `yeban_app::export_wav::write_interleaved_wav` |
+| 鼓机生成 | `yeban_theory::{factory_drum_style, generate_drum_pattern}` + `yeban_app::bridge::{drum_gen_target, drum_gen_ops}`（与 GUI 对话框、MCP 工具同一配方） |
+| 分轨导出 | `yeban_app::export_stems::export_stems`（与 GUI 菜单臂、CLI `--export-stems` 同一份后端） |
+| 诊断包 | `yeban_diagnostics::export_diagnostics`（与 GUI `UiAction::ExportDiagnostics`、MCP 工具同一个采集器） |
+| 设备腿 | `yeban_app::engine_host::EngineHost::{open_device, close_device, device_rates}`（与 GUI 启动时同一条设备腿） |
 | 快捷键 | `yeban_app::cli::shortcut_rows` 策略表 + `yeban_app::input::InputContext` 解析器（与 GUI 同一张表、同一个解析器，不手抄第二份） |
 | 推子值域 | `yeban_app::bridge::{FADER_MIN_DB, FADER_MAX_DB}` 与 `parse_hex_color` |
 
@@ -98,6 +102,10 @@ Vi 层。
 | 编辑器/卷帘开关 | `E` / `P` | 同键 → 焦点跳片段网格 | 形态适配 |
 | 时间轴缩放 | `Ctrl+=` / `Ctrl+-` | 同（经 GUI 解析器）→ 每小节列宽 2–8 | 已接 |
 | 导出 WAV | （GUI 走菜单，无键） | `:export wav <path>` | TUI 命令 |
+| 鼓机生成 | 菜单「编辑 → 鼓机生成 (Drums)...」 | `:drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill\|nofill]` | 已接（T-FIX-82①；同一预置/生成层，缺省 4/50/80/风格定值/0/fill） |
+| 分轨导出 | 菜单「导出分轨 (Stems)...」 | `:stems <输出目录>` | 已接（T-FIX-82②；N+1 次渲染、32-bit float、`{序号}.{轨名}.wav` + manifest） |
+| 诊断包导出 | 诊断导出动作 | `:diag [目录]`（缺省系统临时目录） | 已接（T-FIX-82③；与 GUI 同一组条目 env/git/config/MANIFEST） |
+| 设备腿开关 / 状态行 | GUI 启动时自动开设备腿 | `:device [on\|off\|status]` | 已接（T-FIX-82④；开腿后底栏报设备名 + 设备率 + 工程率 + 转换状态） |
 | 退出 | （GUI 关窗） | `:q`（脏时拦）/ `:q!` | TUI 命令（冲突 K5） |
 | 片段切分 | `Ctrl+T`（播放头处切分选中剪辑） | `Ctrl+T`（同）→ 切分光标处片段 | 已接（三期；组合与 GUI 共用 `host::clip_split_ops_for`，经撤销端口） |
 | 片段复制 / 剪切 / 粘贴 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 同键 → 光标处片段；粘贴落选中轨的小节光标处 | 已接（三期；组合照 GUI `clipboard_*`，经撤销端口） |
@@ -160,7 +168,8 @@ Vi 层新增（仅导航与模式，不占共享动作）：
 
 Command 命令集：`q`、`q!`、`w [path]`、`wq [path]`、`play`、`stop`、
 `rewind`、`seek <小节号（1 起）>`、`tempo <BPM>`、`export wav <path>`、`open[!] <path>`、
-`demo[!]`、`notes`、`pool`。
+`demo[!]`、`notes`、`pool`、`stems <目录>`、`diag [目录]`、
+`drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill|nofill]`、`device [on|off|status]`。
 
 ## 冲突清单（逐条，按「共享动作从 GUI、导航从 Vi」解）
 
@@ -209,7 +218,8 @@ Command 命令集：`q`、`q!`、`w [path]`、`wq [path]`、`play`、`stop`、
 - 创作面：建轨（`:track`）与建片段（`:clip`）已接；仍无新建工程、换乐器、
   加设备/效果、录音、循环、节拍器。
 - 录音、节拍器、循环播放、AI 抽屉等 GUI 动作未接。
-- 实时播放仍无音频设备输出（控制面墙钟）；音频片段已接字节，可进引擎与离线导出。
+- 实时播放默认走控制面墙钟（无音频设备输出）；`:device on` 可开真实设备腿（设备不可用时
+  响亮报错并留在墙钟泵送），`:device off` 关腿重建控制面引擎。
 - 中文轨道名在轨道列表按显示宽度对齐（unicode-width），片段网格内不显示
   片段名（只画占用块），长工程名在顶栏可能截断。
 - 无音频设备时无声（控制面模式）；有音频设备的实时输出未接（v1 只走

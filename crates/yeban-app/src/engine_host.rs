@@ -1090,6 +1090,19 @@ impl EngineHost {
         self.device.as_ref().map(OutputStreamHandle::device_name)
     }
 
+    /// 设备腿的**两侧采样率** `(工程采样率, 设备采样率)`（Hz）；没有设备腿 ⇒ `None`。
+    ///
+    /// 两个数都来自协商结果（[`DeviceOpening::source_rate`] / [`DeviceOpening::sample_rate`]
+    /// 的同一个来源 `NegotiatedConfig`），⛔ 不从工程推算：设备行报告"工程 → 设备"
+    /// 的前提是这两个数**真的**是引擎此刻跑的那对值。
+    #[must_use]
+    pub fn device_rates(&self) -> Option<(u32, u32)> {
+        self.device.as_ref().map(|handle| {
+            let negotiated = *handle.negotiated();
+            (negotiated.source_rate, negotiated.sample_rate)
+        })
+    }
+
     /// 设备腿的**后端错误计数**（cpal 错误回调只做一次原子自增 [红线 7]；
     /// 没有设备腿 ⇒ `None`）。它由 `OutputStreamHandle::backend_errors()` 直读。
     #[must_use]

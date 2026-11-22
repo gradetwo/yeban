@@ -23,6 +23,11 @@ path = "src/main.rs"
 yeban-app = { workspace = true }
 yeban-model = { workspace = true }
 yeban-engine = { workspace = true }
+# 鼓机生成（T-FIX-82①）：风格预置与生成层与 GUI/MCP 同一份 `yeban-theory`；
+# 批次配方仍走 `yeban_app::bridge::drum_gen_ops`（这里只取预置/参数类型）。
+yeban-theory = { workspace = true }
+# 诊断包导出（T-FIX-82③）：与 GUI/MCP 同一个采集器 `yeban_diagnostics`。
+yeban-diagnostics = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 unicode-width = { workspace = true }

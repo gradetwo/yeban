@@ -743,7 +743,7 @@ fn meter_bar(peak: f32) -> String {
     )
 }
 
-/// 引擎状态行：采样率 / 每块帧数 / 通道 / 设备腿 / 转换 / 走带。
+/// 引擎状态行：采样率 / 每块帧数 / 通道 / 设备腿（名 + 设备率）/ 转换 / 走带。
 fn engine_line(app: &App) -> String {
     let status = app.engine_status();
     let engine = match (
@@ -760,7 +760,10 @@ fn engine_line(app: &App) -> String {
         _ => "引擎 未建".to_owned(),
     };
     let device = match (&status.device_name, status.device_active) {
-        (Some(name), true) => format!("设备 {name}"),
+        (Some(name), true) => match status.device_sample_rate {
+            Some(rate) => format!("设备 {name} @ {:.1} kHz", f64::from(rate) / 1000.0),
+            None => format!("设备 {name}"),
+        },
         _ => "设备 未开".to_owned(),
     };
     let transport = match status.transport_state {
