@@ -2260,3 +2260,104 @@ msgstr "Lancer le bilan"
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Bibliothèque non officielle : vérifier et réparer automatiquement avec SFZ Doctor ?"
+
+# --- 原生预制库面板 (T-FIX-95) 与音频设置面板：T-FIX-116 补齐 ---
+
+msgid " 应用到当前轨"
+msgstr " Appliquer à la piste courante"
+
+msgid "关闭原生预制库"
+msgstr "Fermer la bibliothèque de préréglages native"
+
+msgid "关闭音频设置"
+msgstr "Fermer les réglages audio"
+
+msgid "刷新设备"
+msgstr "Rafraîchir les périphériques"
+
+msgid "原生预制库"
+msgstr "Préréglages natifs"
+
+msgid "原生预制库..."
+msgstr "Préréglages natifs..."
+
+msgid "原生预制库面板"
+msgstr "Panneau de la bibliothèque de préréglages native"
+
+msgid "另存当前轨为预制"
+msgstr "Enregistrer la piste courante comme préréglage"
+
+msgid "在所选输出设备上播放测试音（1 千赫，约 1 秒）"
+msgstr "Jouer une tonalité de test sur la sortie sélectionnée (1 kHz, environ 1 s)"
+
+msgid "宏面板：宏位置与级联去向"
+msgstr "Panneau macro : position de la macro et destination en cascade"
+
+msgid "工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。"
+msgstr "Les préréglages d'usine côtoient votre bibliothèque utilisateur ; l'application capture d'abord la piste courante, le contournement la restaure."
+
+msgid "已旁通 · 点击恢复"
+msgstr "Contourné · cliquer pour restaurer"
+
+msgid "应用"
+msgstr "Appliquer"
+
+msgid "播放测试音"
+msgstr "Jouer une tonalité de test"
+
+msgid "新预制名称"
+msgstr "Nom du nouveau préréglage"
+
+msgid "旁通当前轨预制"
+msgstr "Contourner le préréglage de la piste courante"
+
+msgid "无映射"
+msgstr "Aucun mappage"
+
+msgid "更换"
+msgstr "Remplacer"
+
+msgid "用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。"
+msgstr "Aucun préréglage dans votre bibliothèque ; cliquez d'abord sur « Enregistrer la piste courante comme préréglage » sur la piste courante."
+
+msgid "设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。"
+msgstr "Le choix du périphérique est enregistré dans les réglages et réouvert au prochain lancement ; si le périphérique choisi est absent, une erreur est signalée sans bascule silencieuse vers le périphérique par défaut. Les millisecondes de buffer de la ligne d'état sont nominales (trames ÷ fréquence d'échantillonnage), pas une latence aller-retour mesurée."
+
+msgid "输入电平（面板打开期间）"
+msgstr "Niveau d'entrée (pendant l'ouverture du panneau)"
+
+msgid "输入设备"
+msgstr "Périphérique d'entrée"
+
+msgid "输入设备选择"
+msgstr "Choix du périphérique d'entrée"
+
+msgid "输出设备"
+msgstr "Périphérique de sortie"
+
+msgid "输出设备选择"
+msgstr "Choix du périphérique de sortie"
+
+msgid "重新枚举音频设备"
+msgstr "Réénumérer les périphériques audio"
+
+msgid "音频..."
+msgstr "Audio..."
+
+msgid "音频设置"
+msgstr "Réglages audio"
+
+msgid "音频设置面板"
+msgstr "Panneau des réglages audio"
+
+msgid "预制列表"
+msgstr "Liste des préréglages"
+
+msgid "宏面板，{} 个宏"
+msgstr "Panneau des macros, {} macros"
+
+msgid "  ·  工厂"
+msgstr "  ·  Usine"
+
+msgid "  ·  用户"
+msgstr "  ·  Utilisateur"

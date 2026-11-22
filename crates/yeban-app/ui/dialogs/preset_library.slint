@@ -317,7 +317,7 @@ export component PresetLibraryDialog inherits Rectangle {
                         y: 5px;
                         width: parent.width - 112px;
                         height: 18px;
-                        text: row.name + (row.kind == "system" ? "  ·  工厂" : "  ·  用户");
+                        text: row.name + (row.kind == "system" ? @tr("  ·  工厂") : @tr("  ·  用户"));
                         color: Tokens.ink-1;
                         font-size: Tokens.font-size-sm;
                         font-weight: 600;

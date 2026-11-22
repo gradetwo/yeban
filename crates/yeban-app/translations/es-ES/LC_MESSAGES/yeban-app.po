@@ -2260,3 +2260,104 @@ msgstr "Iniciar revisión"
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Biblioteca no oficial: ¿revisar y reparar automáticamente con SFZ Doctor?"
+
+# --- 原生预制库面板 (T-FIX-95) 与音频设置面板：T-FIX-116 补齐 ---
+
+msgid " 应用到当前轨"
+msgstr " Aplicar a la pista actual"
+
+msgid "关闭原生预制库"
+msgstr "Cerrar la biblioteca de preajustes nativa"
+
+msgid "关闭音频设置"
+msgstr "Cerrar los ajustes de audio"
+
+msgid "刷新设备"
+msgstr "Actualizar dispositivos"
+
+msgid "原生预制库"
+msgstr "Preajustes nativos"
+
+msgid "原生预制库..."
+msgstr "Preajustes nativos..."
+
+msgid "原生预制库面板"
+msgstr "Panel de la biblioteca de preajustes nativa"
+
+msgid "另存当前轨为预制"
+msgstr "Guardar la pista actual como preajuste"
+
+msgid "在所选输出设备上播放测试音（1 千赫，约 1 秒）"
+msgstr "Reproducir un tono de prueba en la salida seleccionada (1 kHz, aprox. 1 s)"
+
+msgid "宏面板：宏位置与级联去向"
+msgstr "Panel de macros: posición de la macro y destino en cascada"
+
+msgid "工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。"
+msgstr "Los preajustes de fábrica comparten lista con tu biblioteca; al aplicar se toma primero una instantánea de la pista actual, y el bypass la restaura."
+
+msgid "已旁通 · 点击恢复"
+msgstr "En bypass · clic para restaurar"
+
+msgid "应用"
+msgstr "Aplicar"
+
+msgid "播放测试音"
+msgstr "Reproducir tono de prueba"
+
+msgid "新预制名称"
+msgstr "Nombre del nuevo preajuste"
+
+msgid "旁通当前轨预制"
+msgstr "Hacer bypass del preajuste de la pista actual"
+
+msgid "无映射"
+msgstr "Sin mapeo"
+
+msgid "更换"
+msgstr "Reemplazar"
+
+msgid "用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。"
+msgstr "Tu biblioteca aún no tiene preajustes; primero pulsa «Guardar la pista actual como preajuste» en la pista actual."
+
+msgid "设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。"
+msgstr "La elección de dispositivo se guarda en los ajustes y se reabre al siguiente arranque; si el dispositivo elegido no está presente se muestra un error claro, sin cambiar en silencio al dispositivo predeterminado. Los milisegundos de búfer de la línea de estado son nominales (tramas ÷ frecuencia de muestreo), no una latencia de ida y vuelta medida."
+
+msgid "输入电平（面板打开期间）"
+msgstr "Nivel de entrada (mientras el panel está abierto)"
+
+msgid "输入设备"
+msgstr "Dispositivo de entrada"
+
+msgid "输入设备选择"
+msgstr "Selección del dispositivo de entrada"
+
+msgid "输出设备"
+msgstr "Dispositivo de salida"
+
+msgid "输出设备选择"
+msgstr "Selección del dispositivo de salida"
+
+msgid "重新枚举音频设备"
+msgstr "Reenumerar los dispositivos de audio"
+
+msgid "音频..."
+msgstr "Audio..."
+
+msgid "音频设置"
+msgstr "Ajustes de audio"
+
+msgid "音频设置面板"
+msgstr "Panel de ajustes de audio"
+
+msgid "预制列表"
+msgstr "Lista de preajustes"
+
+msgid "宏面板，{} 个宏"
+msgstr "Panel de macros, {} macros"
+
+msgid "  ·  工厂"
+msgstr "  ·  Fábrica"
+
+msgid "  ·  用户"
+msgstr "  ·  Usuario"

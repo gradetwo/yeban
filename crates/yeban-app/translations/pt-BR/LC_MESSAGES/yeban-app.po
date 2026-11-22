@@ -2260,3 +2260,104 @@ msgstr "Iniciar verificação"
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Biblioteca não oficial: verificar e reparar automaticamente com o SFZ Doctor?"
+
+# --- 原生预制库面板 (T-FIX-95) 与音频设置面板：T-FIX-116 补齐 ---
+
+msgid " 应用到当前轨"
+msgstr " Aplicar à faixa atual"
+
+msgid "关闭原生预制库"
+msgstr "Fechar a biblioteca de presets nativa"
+
+msgid "关闭音频设置"
+msgstr "Fechar as configurações de áudio"
+
+msgid "刷新设备"
+msgstr "Atualizar dispositivos"
+
+msgid "原生预制库"
+msgstr "Presets nativos"
+
+msgid "原生预制库..."
+msgstr "Presets nativos..."
+
+msgid "原生预制库面板"
+msgstr "Painel da biblioteca de presets nativa"
+
+msgid "另存当前轨为预制"
+msgstr "Salvar a faixa atual como preset"
+
+msgid "在所选输出设备上播放测试音（1 千赫，约 1 秒）"
+msgstr "Reproduzir um tom de teste na saída selecionada (1 kHz, cerca de 1 s)"
+
+msgid "宏面板：宏位置与级联去向"
+msgstr "Painel de macros: posição da macro e destino em cascata"
+
+msgid "工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。"
+msgstr "Os presets de fábrica ficam na mesma lista da sua biblioteca; aplicar tira antes um snapshot da faixa atual, e o bypass o restaura."
+
+msgid "已旁通 · 点击恢复"
+msgstr "Em bypass · clique para restaurar"
+
+msgid "应用"
+msgstr "Aplicar"
+
+msgid "播放测试音"
+msgstr "Reproduzir tom de teste"
+
+msgid "新预制名称"
+msgstr "Nome do novo preset"
+
+msgid "旁通当前轨预制"
+msgstr "Colocar o preset da faixa atual em bypass"
+
+msgid "无映射"
+msgstr "Sem mapeamento"
+
+msgid "更换"
+msgstr "Substituir"
+
+msgid "用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。"
+msgstr "Sua biblioteca ainda não tem presets; primeiro clique em “Salvar a faixa atual como preset” na faixa atual."
+
+msgid "设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。"
+msgstr "A escolha do dispositivo é salva nas configurações e reaberta no próximo início; se o dispositivo escolhido não estiver presente, aparece um erro explícito, sem troca silenciosa para o dispositivo padrão. Os milissegundos de buffer na linha de status são nominais (quadros ÷ taxa de amostragem), não uma latência de ida e volta medida."
+
+msgid "输入电平（面板打开期间）"
+msgstr "Nível de entrada (enquanto o painel está aberto)"
+
+msgid "输入设备"
+msgstr "Dispositivo de entrada"
+
+msgid "输入设备选择"
+msgstr "Seleção do dispositivo de entrada"
+
+msgid "输出设备"
+msgstr "Dispositivo de saída"
+
+msgid "输出设备选择"
+msgstr "Seleção do dispositivo de saída"
+
+msgid "重新枚举音频设备"
+msgstr "Reenumerar os dispositivos de áudio"
+
+msgid "音频..."
+msgstr "Áudio..."
+
+msgid "音频设置"
+msgstr "Configurações de áudio"
+
+msgid "音频设置面板"
+msgstr "Painel de configurações de áudio"
+
+msgid "预制列表"
+msgstr "Lista de presets"
+
+msgid "宏面板，{} 个宏"
+msgstr "Painel de macros, {} macros"
+
+msgid "  ·  工厂"
+msgstr "  ·  Fábrica"
+
+msgid "  ·  用户"
+msgstr "  ·  Usuário"

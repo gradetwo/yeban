@@ -2260,3 +2260,104 @@ msgstr "Prüfung starten"
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Nicht-offizielle Bibliothek: mit SFZ Doctor prüfen und automatisch reparieren?"
+
+# --- 原生预制库面板 (T-FIX-95) 与音频设置面板：T-FIX-116 补齐 ---
+
+msgid " 应用到当前轨"
+msgstr " Auf aktuelle Spur anwenden"
+
+msgid "关闭原生预制库"
+msgstr "Native Preset-Bibliothek schließen"
+
+msgid "关闭音频设置"
+msgstr "Audio-Einstellungen schließen"
+
+msgid "刷新设备"
+msgstr "Geräte aktualisieren"
+
+msgid "原生预制库"
+msgstr "Native Presets"
+
+msgid "原生预制库..."
+msgstr "Native Presets..."
+
+msgid "原生预制库面板"
+msgstr "Panel der nativen Preset-Bibliothek"
+
+msgid "另存当前轨为预制"
+msgstr "Aktuelle Spur als Preset speichern"
+
+msgid "在所选输出设备上播放测试音（1 千赫，约 1 秒）"
+msgstr "Testton auf dem gewählten Ausgabegerät abspielen (1 kHz, ca. 1 Sekunde)"
+
+msgid "宏面板：宏位置与级联去向"
+msgstr "Makro-Panel: Makroposition und Kaskadeziel"
+
+msgid "工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。"
+msgstr "Werks-Presets stehen neben Ihrer eigenen Bibliothek; beim Anwenden wird zuerst die aktuelle Spur gesichert, Bypass stellt sie wieder her."
+
+msgid "已旁通 · 点击恢复"
+msgstr "Umgangen · klicken zum Wiederherstellen"
+
+msgid "应用"
+msgstr "Anwenden"
+
+msgid "播放测试音"
+msgstr "Testton abspielen"
+
+msgid "新预制名称"
+msgstr "Name des neuen Presets"
+
+msgid "旁通当前轨预制"
+msgstr "Preset der aktuellen Spur umgehen"
+
+msgid "无映射"
+msgstr "Keine Zuordnung"
+
+msgid "更换"
+msgstr "Ersetzen"
+
+msgid "用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。"
+msgstr "In Ihrer Bibliothek gibt es noch keine Presets; klicken Sie zuerst auf der aktuellen Spur auf „Aktuelle Spur als Preset speichern“."
+
+msgid "设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。"
+msgstr "Die Gerätewahl wird in den Einstellungen gespeichert und beim nächsten Start wieder geöffnet; fehlt das gewählte Gerät, erscheint eine deutliche Fehlermeldung statt eines stillen Rückfalls auf das Standardgerät. Die Puffer-Millisekunden in der Statuszeile sind nominal (Pufferframes ÷ Abtastrate), keine gemessene Umlaufzeit."
+
+msgid "输入电平（面板打开期间）"
+msgstr "Eingangspegel (solange das Panel offen ist)"
+
+msgid "输入设备"
+msgstr "Eingabegerät"
+
+msgid "输入设备选择"
+msgstr "Auswahl des Eingabegeräts"
+
+msgid "输出设备"
+msgstr "Ausgabegerät"
+
+msgid "输出设备选择"
+msgstr "Auswahl des Ausgabegeräts"
+
+msgid "重新枚举音频设备"
+msgstr "Audiogeräte neu auflisten"
+
+msgid "音频..."
+msgstr "Audio..."
+
+msgid "音频设置"
+msgstr "Audio-Einstellungen"
+
+msgid "音频设置面板"
+msgstr "Audio-Einstellungs-Panel"
+
+msgid "预制列表"
+msgstr "Preset-Liste"
+
+msgid "宏面板，{} 个宏"
+msgstr "Makrobereich, {} Makros"
+
+msgid "  ·  工厂"
+msgstr "  ·  Werks-Preset"
+
+msgid "  ·  用户"
+msgstr "  ·  Benutzer"

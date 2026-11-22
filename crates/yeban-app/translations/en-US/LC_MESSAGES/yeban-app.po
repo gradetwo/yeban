@@ -2260,3 +2260,104 @@ msgstr "Start check"
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Non-official library: check and auto-repair with SFZ Doctor?"
+
+# --- 原生预制库面板 (T-FIX-95) 与音频设置面板：T-FIX-116 补齐 ---
+
+msgid " 应用到当前轨"
+msgstr " Apply to current track"
+
+msgid "关闭原生预制库"
+msgstr "Close native preset library"
+
+msgid "关闭音频设置"
+msgstr "Close audio settings"
+
+msgid "刷新设备"
+msgstr "Refresh devices"
+
+msgid "原生预制库"
+msgstr "Native presets"
+
+msgid "原生预制库..."
+msgstr "Native presets..."
+
+msgid "原生预制库面板"
+msgstr "Native preset library panel"
+
+msgid "另存当前轨为预制"
+msgstr "Save current track as preset"
+
+msgid "在所选输出设备上播放测试音（1 千赫，约 1 秒）"
+msgstr "Play a test tone on the selected output device (1 kHz, about 1 second)"
+
+msgid "宏面板：宏位置与级联去向"
+msgstr "Macro panel: macro position and cascade target"
+
+msgid "工厂预制与用户库同列；应用会先拍当前轨快照，旁通可恢复。"
+msgstr "Factory presets sit alongside your user library; applying first snapshots the current track, so bypass restores it."
+
+msgid "已旁通 · 点击恢复"
+msgstr "Bypassed · click to restore"
+
+msgid "应用"
+msgstr "Apply"
+
+msgid "播放测试音"
+msgstr "Play test tone"
+
+msgid "新预制名称"
+msgstr "New preset name"
+
+msgid "旁通当前轨预制"
+msgstr "Bypass current track preset"
+
+msgid "无映射"
+msgstr "No mapping"
+
+msgid "更换"
+msgstr "Replace"
+
+msgid "用户库里还没有预制；先在当前轨上点「另存当前轨为预制」。"
+msgstr "No presets in your library yet; first click “Save current track as preset” on the current track."
+
+msgid "设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。"
+msgstr "The device choice is saved to settings and reopened on next launch; if the chosen device is absent you get a loud error instead of a silent fallback to the default device. The buffer milliseconds in the status line are nominal (buffer frames ÷ sample rate), not a measured round trip."
+
+msgid "输入电平（面板打开期间）"
+msgstr "Input level (while the panel is open)"
+
+msgid "输入设备"
+msgstr "Input device"
+
+msgid "输入设备选择"
+msgstr "Input device selection"
+
+msgid "输出设备"
+msgstr "Output device"
+
+msgid "输出设备选择"
+msgstr "Output device selection"
+
+msgid "重新枚举音频设备"
+msgstr "Re-enumerate audio devices"
+
+msgid "音频..."
+msgstr "Audio..."
+
+msgid "音频设置"
+msgstr "Audio settings"
+
+msgid "音频设置面板"
+msgstr "Audio settings panel"
+
+msgid "预制列表"
+msgstr "Preset list"
+
+msgid "宏面板，{} 个宏"
+msgstr "Macro panel, {} macros"
+
+msgid "  ·  工厂"
+msgstr "  ·  Factory"
+
+msgid "  ·  用户"
+msgstr "  ·  User"
