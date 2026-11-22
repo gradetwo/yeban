@@ -1535,11 +1535,12 @@ impl EngineHost {
         &mut self,
         config: EngineConfig,
     ) -> Result<(DeviceOpening, MeterCollector), EngineHostError> {
-        // 1) 新端点（旧的一代一位不动）。
-        let Some(slot) = self.slot.as_ref().map(std::sync::Arc::clone) else {
+        // 1) 新端点（旧的一代一位不动；为候选 runtime 建独立 SnapshotSlot，避免与 live slot 冲突）。
+        let Some(current_snapshot) = self.slot.as_ref().map(|slot| slot.current()) else {
             return Err(EngineHostError::NoEngine);
         };
-        let channels = slot.current().channels().max(1);
+        let channels = current_snapshot.channels().max(1);
+        let new_slot = SnapshotSlot::from_arc(current_snapshot);
         let before = self.transport();
         let FreshRuntime {
             mut runtime,
@@ -1548,7 +1549,7 @@ impl EngineHost {
             mirror,
             stats_mirror,
             collector,
-        } = fresh_runtime(&slot);
+        } = fresh_runtime(&new_slot);
 
         // 2) 交接走带状态（只在**新**运行时上推量子）。
         let mut scratch = vec![0.0_f32; DEFAULT_BLOCK_FRAMES * usize::from(channels)];
@@ -1572,13 +1573,9 @@ impl EngineHost {
             debug_assert_eq!(written, 1, "交接的 Play 必须被通道接受");
         }
 
-        // 3) 开设备（失败 ⇒ 手里那一代一位不动）。
-        //
-        // ⚠ `open_output` 的入参是**按值**的 `EngineRuntime`（引擎侧 API，本单⛔ 不改）：
-        // 这里必须把装箱的那一份**移出来**交给它，调用点因此仍有一个 `180144 B` 的
-        // 实参位。这是设备腿的**下限**，不是本单能搬走的部分 —— 读数见
-        // `tests/gui_stack_budget.rs` 的 `DeviceLegEntry` 一档。
-        let handle = match yeban_engine::device::open_output(&config, *runtime) {
+        // 3) 开设备（失败 ⇒ 手里那一代一位不动）：把已装箱的运行时直接移入回调，
+        // 避免在调用栈上按值搬运整份 EngineRuntime。
+        let handle = match yeban_engine::device::open_output_boxed(&config, runtime) {
             Ok(handle) => handle,
             Err(error) => return Err(EngineHostError::Device(error)),
         };
@@ -1592,6 +1589,7 @@ impl EngineHost {
         // 5) 装机（只有到这里，旧的一代才被替换）。
         self.close_device();
         self.runtime = None;
+        self.slot = Some(new_slot);
         self.events = Some(events);
         self.transport_mirror = Some(mirror);
         // ⭐ **stage 25**：运行时已经 move 进回调 ⇒ 统计只剩这份镜像可读。

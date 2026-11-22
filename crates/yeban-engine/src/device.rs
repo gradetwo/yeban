@@ -211,6 +211,7 @@ pub struct BackendErrorLog {
     stop: AtomicU64,
     stopping: AtomicBool,
     first_claimed: AtomicBool,
+    first_ready: AtomicBool,
     first_kind: AtomicU8,
     first_message_len: AtomicU8,
     first_message: [AtomicU8; BACKEND_ERROR_MESSAGE_MAX],
@@ -223,6 +224,7 @@ impl Default for BackendErrorLog {
             stop: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
             first_claimed: AtomicBool::new(false),
+            first_ready: AtomicBool::new(false),
             first_kind: AtomicU8::new(0),
             first_message_len: AtomicU8::new(0),
             first_message: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -241,14 +243,14 @@ impl BackendErrorLog {
     ///
     /// ⛔ 不打印、不分配、不加锁。
     pub fn record(&self, error: &cpal::Error) {
-        if self.stopping.load(Ordering::Relaxed) {
+        if self.stopping.load(Ordering::Acquire) {
             self.stop.fetch_add(1, Ordering::Relaxed);
         } else {
             self.runtime.fetch_add(1, Ordering::Relaxed);
         }
         if self
             .first_claimed
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             self.first_kind
@@ -259,7 +261,9 @@ impl BackendErrorLog {
                 slot.store(*byte, Ordering::Relaxed);
             }
             self.first_message_len
-                .store(u8::try_from(len).unwrap_or(u8::MAX), Ordering::Release);
+                .store(u8::try_from(len).unwrap_or(u8::MAX), Ordering::Relaxed);
+            // Release 配对 counts() 的 Acquire load：所有 first_* 字段写完后再发布就绪标志。
+            self.first_ready.store(true, Ordering::Release);
         }
     }
 
@@ -276,8 +280,8 @@ impl BackendErrorLog {
     /// 控制面读数（暂停/关流之后读才有意义）。
     #[must_use]
     pub fn counts(&self) -> BackendErrorCounts {
-        let len = usize::from(self.first_message_len.load(Ordering::Acquire));
-        let first = if self.first_claimed.load(Ordering::Acquire) {
+        let first = if self.first_ready.load(Ordering::Acquire) {
+            let len = usize::from(self.first_message_len.load(Ordering::Relaxed));
             let mut message = [0u8; BACKEND_ERROR_MESSAGE_MAX];
             for (slot, byte) in message.iter_mut().zip(&self.first_message) {
                 *slot = byte.load(Ordering::Relaxed);
@@ -712,21 +716,18 @@ pub fn render_callback(runtime: &mut EngineRuntime, data: &mut [f32], channels: 
     runtime.process_quantum(data, channels);
 }
 
-/// 打开默认输出设备并把 [`EngineRuntime`] 挂到回调上。
+/// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
+/// （见 [`open_output`]）。
 ///
 /// 真实设备相关的一切（枚举能力、协商、建流）都在这里，并且**只返回 `Result`**。
 /// 无声卡环境下返回 [`DeviceError::NoDefaultOutputDevice`]，绝不 panic。
 ///
 /// # Errors
 ///
-/// - [`DeviceError::ExclusiveModeUnsupported`]：要求了独占模式；
-/// - [`DeviceError::NoDefaultOutputDevice`]：没有默认输出设备（CI 常态）；
-/// - [`DeviceError::NoSupportedConfigs`] / [`DeviceError::UnsupportedConfig`] /
-///   [`DeviceError::UnsupportedSampleFormat`]：能力不匹配；
-/// - [`DeviceError::Backend`]：后端错误（设备忙、权限、配置失效……）。
-pub fn open_output(
+/// 同 [`open_output`]。
+pub fn open_output_boxed(
     want: &EngineConfig,
-    mut runtime: EngineRuntime,
+    mut runtime: Box<EngineRuntime>,
 ) -> Result<OutputStreamHandle, DeviceError> {
     if want.share_mode == ShareMode::RequireExclusive {
         return Err(DeviceError::ExclusiveModeUnsupported);
@@ -768,6 +769,24 @@ pub fn open_output(
         negotiated,
         backend_errors,
     })
+}
+
+/// 用给定配置与预构造的 [`EngineRuntime`] 打开默认输出设备。
+///
+/// 实际实现见 [`open_output_boxed`]；调用方已持有 `Box<EngineRuntime>` 时优先用后者。
+///
+/// # Errors
+///
+/// - [`DeviceError::ExclusiveModeUnsupported`]：要求了独占模式；
+/// - [`DeviceError::NoDefaultOutputDevice`]：没有默认输出设备（CI 常态）；
+/// - [`DeviceError::NoSupportedConfigs`] / [`DeviceError::UnsupportedConfig`] /
+///   [`DeviceError::UnsupportedSampleFormat`]：能力不匹配；
+/// - [`DeviceError::Backend`]：后端错误（设备忙、权限、配置失效……）。
+pub fn open_output(
+    want: &EngineConfig,
+    runtime: EngineRuntime,
+) -> Result<OutputStreamHandle, DeviceError> {
+    open_output_boxed(want, Box::new(runtime))
 }
 
 /// **cpal 输入回调的完整负载** —— 本函数就是"录音回调体"本身。

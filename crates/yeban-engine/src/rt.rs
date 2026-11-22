@@ -4979,16 +4979,29 @@ impl EngineRuntime {
             // 单声道（`channels == 1`）写 `(L + R) · 0.5` 下混（裁决：Wang
             // 2026-11-20；见上方函数文档与判据文件模块文档 §4 发现 1（已修））；
             // `channels >= 2` 维持映射：第 0 路 = 左、其余路 = 右。
-            for channel in 0..channels {
+            if channels == 2 {
+                for (frame, pair) in output[offset * 2..(offset + n) * 2]
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .enumerate()
+                {
+                    pair[0] = left[frame];
+                    pair[1] = right[frame];
+                }
+            } else if channels == 1 {
                 for frame in 0..frames {
-                    let sample = if channels == 1 {
-                        let left = self.block.get(0, frame).unwrap_or(0.0);
-                        let right = self.block.get(1, frame).unwrap_or(0.0);
-                        (left + right) * 0.5
-                    } else {
-                        self.block.get(channel, frame).unwrap_or(0.0)
-                    };
-                    output[(offset + frame) * channels + channel] = sample;
+                    let left_s = self.block.get(0, frame).unwrap_or(0.0);
+                    let right_s = self.block.get(1, frame).unwrap_or(0.0);
+                    output[offset + frame] = (left_s + right_s) * 0.5;
+                }
+            } else {
+                for frame in 0..frames {
+                    let base = (offset + frame) * channels;
+                    for channel in 0..channels {
+                        let sample = self.block.get(channel, frame).unwrap_or(0.0);
+                        output[base + channel] = sample;
+                    }
                 }
             }
             offset += frames;
@@ -6260,6 +6273,7 @@ impl EngineRuntime {
                 // 主总线身份供**事件**边界判定"这个地址本表不消费"（母线增益的槽位未开，
                 // 见 `crate::param` 模块文档 §2 第 2 条）。
                 params.set_sample_rate(current.sample_rate() as f32);
+                band_solo.set_sample_rate(current.sample_rate() as f32);
                 *armed_master = master;
 
                 // --- 2b) 声部池对齐到新快照的轨道集合（每修订一次, 非逐样本）---
