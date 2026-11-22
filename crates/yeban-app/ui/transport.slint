@@ -139,18 +139,11 @@ export component Transport inherits Rectangle {
         // 没有它 accesskit 不给这个节点挂 `Action::Click`，屏读器只能读、不能按。
         accessible-action-default => { root.toggle-play(); }
 
-        UiText {
-            x: 0;
-            y: 0;
-            width: parent.width;
-            height: parent.height;
-            text: root.playing ? "‖" : "▶";
-            // 播放/走带 = 负责人的 铜绿 (`playing`, 原则 ③)。brand 分支 = Tokens.gold-bright = 原来的 `gold`,
-            // 所以**品牌调色板** (`--theme brand`, 2026-10-07 之前的默认主题) 下这一处一位未变。
-            color: Tokens.playing;
-            font-size: Tokens.font-size-xl;
-            horizontal-alignment: center;
-        }
+        // T-FIX-118：播放/暂停**字形**已搬到真实实例化的 `transport_bar.slint`
+        // （`IconTransportPlay` / `IconTransportPause` 两条 `visible` 分流）。本文件
+        // 从未被任何 `.slint` import（`app.slint` 只 import `transport_bar.slint` 的
+        // `TransportHeaderBar`），这块 `‖ / ▶` 文本切换是**死代码**，故删掉，
+        // 免得有人照它改而改不到屏幕上。
 
         play_area := TouchArea {
             width: parent.width;
