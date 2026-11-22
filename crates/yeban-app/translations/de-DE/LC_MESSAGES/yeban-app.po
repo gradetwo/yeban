@@ -1012,11 +1012,14 @@ msgstr "Dichte"
 msgid "折叠 / 展开总览面板"
 msgstr "Übersichtspanel ein-/ausklappen"
 
-msgid "总览 ▸"
-msgstr "Übersicht ▸"
+msgid "总览"
+msgstr "Übersicht"
 
-msgid "总览 ▾"
-msgstr "Übersicht ▾"
+msgid "总览（已折叠）"
+msgstr "Übersicht (eingeklappt)"
+
+msgid "总览（已展开）"
+msgstr "Übersicht (ausgeklappt)"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "Übersichtspanel Vollbild / Vollbild beenden"

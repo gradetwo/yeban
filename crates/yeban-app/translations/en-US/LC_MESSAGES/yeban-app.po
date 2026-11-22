@@ -1012,11 +1012,14 @@ msgstr "Density"
 msgid "折叠 / 展开总览面板"
 msgstr "Fold / Unfold the Overview Panel"
 
-msgid "总览 ▸"
-msgstr "Overview ▸"
+msgid "总览"
+msgstr "Overview"
 
-msgid "总览 ▾"
-msgstr "Overview ▾"
+msgid "总览（已折叠）"
+msgstr "Overview (collapsed)"
+
+msgid "总览（已展开）"
+msgstr "Overview (expanded)"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "Full-Screen / Exit Full-Screen Overview Panel"

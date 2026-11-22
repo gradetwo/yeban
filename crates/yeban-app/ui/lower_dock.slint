@@ -1908,6 +1908,17 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                     }
 
+                    // ⭐ T-FIX-64（走查 #13 收尾）：MASTER 必须**钉在右沿**，不是
+                    // 跟在最后一条通道后面随队伍左排 —— 本布局是 `alignment: start`
+                    // 的横排，面板比通道总宽更宽时（常态）MASTER 原先停在 BUS
+                    // 右边、右沿留出一大片空地，看着像没对齐。加一条可伸缩的
+                    // 空格把 MASTER 推到右沿；通道溢出时空格收成 0，MASTER
+                    // 逐位回到紧跟末条通道的旧位（不比现状更差）。
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                    }
+
                     // Dedicated Master 2-Bus Channel Strip on Mixer Right（同宽 82px，理由同 BUS）
                     Rectangle {
                         width: 82px;

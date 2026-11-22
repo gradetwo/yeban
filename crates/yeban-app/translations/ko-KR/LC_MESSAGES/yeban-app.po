@@ -1012,11 +1012,14 @@ msgstr "밀도"
 msgid "折叠 / 展开总览面板"
 msgstr "개요 패널 접기 / 펼치기"
 
-msgid "总览 ▸"
-msgstr "개요 ▸"
+msgid "总览"
+msgstr "개요"
 
-msgid "总览 ▾"
-msgstr "개요 ▾"
+msgid "总览（已折叠）"
+msgstr "개요 (접힘)"
+
+msgid "总览（已展开）"
+msgstr "개요 (펼침)"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "개요 패널 전체 화면 / 전체 화면 종료"

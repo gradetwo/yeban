@@ -1012,11 +1012,14 @@ msgstr "密度"
 msgid "折叠 / 展开总览面板"
 msgstr "概要パネルを折りたたむ／展開"
 
-msgid "总览 ▸"
-msgstr "概要 ▸"
+msgid "总览"
+msgstr "概要"
 
-msgid "总览 ▾"
-msgstr "概要 ▾"
+msgid "总览（已折叠）"
+msgstr "概要（折りたたみ）"
+
+msgid "总览（已展开）"
+msgstr "概要（展開）"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "概要パネルを全画面／全画面終了"

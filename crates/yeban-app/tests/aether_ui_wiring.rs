@@ -1149,3 +1149,49 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         "冷启动默认投影必须保留 Bar 1/Bar 2 可见音符而非被 0 视口宽裁掉"
     );
 }
+
+/// ⭐ T-FIX-64（走查 #18 收尾）：高频回执（走带 / 录音启停）**不进提示条**，
+/// 普通信息级回执照常进。此前 `update_toast` 只关浮位不拦文案，而横幅的
+/// 可见条件是「有文案」⇒ 每按一次播放都弹一条横幅（刷屏投诉的本体）。
+/// 本判据走真实回调：`wire_aether_callbacks` 的 toggle-play / toggle-record
+/// 触发后 `toast_message` 必须仍为空；对照臂 hot-swap-buffer 的 `[音频]`
+/// 信息回执必须照常写入且浮位点亮（证明抑制是按类收口、不是漏斗死了）。
+#[test]
+fn high_frequency_transport_notices_never_reach_the_toast() {
+    let port = build_rig(&ViewState::demo());
+    let ui = port.ui();
+    host::wire_aether_callbacks(ui);
+
+    ui.invoke_toggle_play();
+    assert!(
+        ui.get_is_playing(),
+        "播放切换本身必须生效（抑制的只是回执，不是动作）"
+    );
+    assert_eq!(
+        ui.get_toast_message().as_str(),
+        "",
+        "[走带] 回执不得写入提示条文案"
+    );
+    assert!(
+        !ui.get_show_floating_toast(),
+        "[走带] 回执不得点亮提示条浮位"
+    );
+
+    ui.invoke_toggle_play();
+    ui.invoke_toggle_record();
+    assert_eq!(
+        ui.get_toast_message().as_str(),
+        "",
+        "[走带] 停止 / [录音] 回执同样不得写入提示条文案"
+    );
+
+    // 对照臂：普通信息级回执照常进提示条。
+    ui.invoke_hot_swap_buffer_size(128);
+    assert!(
+        ui.get_toast_message().contains("[音频]"),
+        "信息级回执必须照常写入提示条: {}",
+        ui.get_toast_message()
+    );
+    assert!(ui.get_show_floating_toast(), "信息级回执必须点亮浮位");
+    assert!(!ui.get_toast_is_error(), "信息级回执不得带错误样式");
+}

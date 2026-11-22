@@ -382,15 +382,28 @@ export component StartupChooserDialog inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                UiText {
+                // 折叠箭头**画出来**，不指望字体（与 `left_panel.slint` 同一门
+                // 手艺）：下/右三角字形在本机 UI 字体里不存在、渲染成残缺像素
+                // （2026-11-19 实测）。T-FIX-64 收尾：本处是走查 #字形残留之一。
+                Rectangle {
                     x: 44px;
                     y: 0;
                     width: 16px;
                     height: parent.height;
-                    text: root.details-open ? "▾" : "▸";
-                    color: Tokens.ink-2;
-                    font-size: Tokens.font-size-md;
-                    vertical-alignment: center;
+
+                    Rectangle {
+                        x: (parent.width - 7px) / 2;
+                        y: (parent.height - 7px) / 2;
+                        width: 7px;
+                        height: 7px;
+
+                        Path {
+                            width: 7px;
+                            height: 7px;
+                            commands: root.details-open ? "M 0 1.5 L 7 1.5 L 3.5 5.5 Z" : "M 1.5 0 L 5.5 3.5 L 1.5 7 Z";
+                            fill: Tokens.ink-2;
+                        }
+                    }
                 }
 
                 TouchArea {

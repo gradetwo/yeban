@@ -651,20 +651,39 @@ export component SongOverviewPanel inherits Rectangle {
         accessible-role: button;
         accessible-id: "song-overview-collapse-button";
         accessible-label: @tr("折叠 / 展开总览面板");
-        // ⭐ [PATCH UI-A11Y-005]：静态名字念不出「当前是折叠还是展开」。把与可见 `text`
-        // **逐字同一个表达式**接到无障碍值通道（⛔ 不是第二份真相源），零可见像素。
-        accessible-value: root.collapsed ? @tr("总览 ▸") : @tr("总览 ▾");
+        // ⭐ [PATCH UI-A11Y-005]：静态名字念不出「当前是折叠还是展开」。无障碍值
+        // 通道把与可见三角**同一个状态**用文字说全（T-FIX-64 起：可见侧改画三角，
+        // 见下；值通道是语音不是像素，⛔ 不再借三角字形——那两个字形在 UI
+        // 字体里根本不存在，正是本次收尾的走查残留）。
+        accessible-value: root.collapsed ? @tr("总览（已折叠）") : @tr("总览（已展开）");
         accessible-action-default => { root.toggle-collapsed(); }
 
-        UiText {
-            x: 0;
-            y: 0;
+        // 可见侧：文字只写「总览」，折叠态由**画出来**的三角报（与
+        // `left_panel.slint` 同一门手艺：7×7 Path，展开朝下 / 折叠朝右）。
+        HorizontalLayout {
             width: parent.width;
             height: parent.height;
-            text: root.collapsed ? @tr("总览 ▸") : @tr("总览 ▾");
-            color: Tokens.ink-1;
-            font-size: Tokens.font-size-xs;
-            horizontal-alignment: center;
+            alignment: center;
+            spacing: 4px;
+
+            UiText {
+                text: @tr("总览");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: 7px;
+                height: 7px;
+
+                Path {
+                    width: 7px;
+                    height: 7px;
+                    commands: root.collapsed ? "M 1.5 0 L 5.5 3.5 L 1.5 7 Z" : "M 0 1.5 L 7 1.5 L 3.5 5.5 Z";
+                    fill: Tokens.ink-1;
+                }
+            }
         }
 
         collapse_touch := TouchArea {

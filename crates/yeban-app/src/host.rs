@@ -6227,7 +6227,12 @@ fn create_track(ui: &MainWindow, port: &UndoPort, kind: crate::bridge::NewTrackK
 
 /// 建轨的**回执**（唯一文案出口：成功与拒绝都经由这里，⛔ 不各写一份前缀）。
 fn toast_track(ui: &MainWindow, text: &str) {
+    // 信息级三件套（T-FIX-64 对齐）：此前只写文案 —— 错误级红样式会从上一条
+    // 残留到这条上，且自动收走计时（`app.slint` 的 toast Timer）虽已按文案
+    // 驱动，显位口径与其余入口保持一致才不留第二种半吊子状态。
     ui.set_toast_message(format!("[轨道] {text}").into());
+    ui.set_toast_is_error(false);
+    ui.set_show_floating_toast(true);
 }
 
 /// 发送增益手势的中间态（**会话运行态**，不进 `.yeban`）。
@@ -18564,6 +18569,11 @@ pub fn report_clipboard(ui: &MainWindow, verb: ClipboardVerb, ok: bool) {
     // stderr 没有 ⇒ 根本没走到这里（回去查按键路由）。
     eprintln!("[yeban-app] toast: {text}");
     ui.set_toast_message(text.clone().into());
+    // 信息级口径对齐（T-FIX-64）：剪贴板回执不是错误级 —— 复位错误样式并
+    // 点亮浮位，让它与其它信息级提示一样 4 秒后被 Timer 清文案收走，而不是
+    // 顶着上一条的红样式常驻。
+    ui.set_toast_is_error(false);
+    ui.set_show_floating_toast(true);
     // 第二道读数：写进去之后**当场读回来**。stderr 里这行与界面像素对不上的话，
     // 责任链就只剩"渲染层"这一段，不用再怀疑按键路由/属性没绑上。
     let applied = ui.get_toast_message();
@@ -21496,7 +21506,16 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     let s: SharedString = msg.into();
     let is_high_frequency =
         s.starts_with("[走带]") || s.starts_with("[录音]") || s.starts_with("[循环]");
-    ui.set_show_floating_toast(!is_high_frequency);
+    if is_high_frequency {
+        // ⭐ T-FIX-64（走查 #18 收尾）：高频类（走带 / 录音 / 循环的启停回执）
+        // **不进提示条** —— 走带状态在走带栏本身逐帧可见，每按一次播放就弹
+        // 一条横幅正是当年的刷屏投诉。此前这里只关 `show_floating_toast`，
+        // 但横幅的可见条件是「有文案」，文案照写 ⇒ 抑制从未生效。现在直接
+        // 不写文案（并顺手收掉可能在屏的浮位），这类回执只走 stderr 日志。
+        ui.set_show_floating_toast(false);
+        return;
+    }
+    ui.set_show_floating_toast(true);
     // 常规提示 = 信息级：几秒后自动收走（错误级的常驻见 `report_notice`）。
     ui.set_toast_is_error(false);
     ui.set_toast_message(s);

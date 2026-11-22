@@ -1012,11 +1012,14 @@ msgstr "Densidad"
 msgid "折叠 / 展开总览面板"
 msgstr "Plegar / desplegar el panel de vista general"
 
-msgid "总览 ▸"
-msgstr "Vista general ▸"
+msgid "总览"
+msgstr "Vista general"
 
-msgid "总览 ▾"
-msgstr "Vista general ▾"
+msgid "总览（已折叠）"
+msgstr "Vista general (contraída)"
+
+msgid "总览（已展开）"
+msgstr "Vista general (expandida)"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "Pantalla completa / salir de pantalla completa del panel de vista general"

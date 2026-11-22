@@ -1329,10 +1329,16 @@ export component MainWindow inherits Window {
 
         // ⭐ 审计 P1-4：信息类提示条**自己收走**（错误类常驻，直到用户点掉或下一次
         // 动作改写它）。⛔ 不是视觉元素 ⇒ 不参与布局，放在布局之前声明。
+        // ⚠ T-FIX-64 实测更正：横幅的可见条件是「有文案」（见下方 `toast-banner`
+        // 的 `if`），只收 `show-floating-toast` **收不走横幅** —— 旧写法触发后
+        // 文案还在、横幅照挂，自动收走从来没真正生效过。收走必须**清文案**；
+        // 计时条件也随之改成只看文案与错误级（不看那个各写入口径不一的显位），
+        // 于是无论哪条路径写的信息级提示都在 4 秒后真的消失。
         Timer {
             interval: 4s;
-            running: root.show-floating-toast && !root.toast-is-error && root.toast-message != "";
+            running: root.toast-message != "" && !root.toast-is-error;
             triggered => {
+                root.toast-message = "";
                 root.show-floating-toast = false;
             }
         }

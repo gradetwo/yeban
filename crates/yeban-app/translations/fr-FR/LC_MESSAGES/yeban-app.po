@@ -1012,11 +1012,14 @@ msgstr "Densité"
 msgid "折叠 / 展开总览面板"
 msgstr "Replier / déplier le panneau d'aperçu"
 
-msgid "总览 ▸"
-msgstr "Aperçu ▸"
+msgid "总览"
+msgstr "Aperçu"
 
-msgid "总览 ▾"
-msgstr "Aperçu ▾"
+msgid "总览（已折叠）"
+msgstr "Aperçu (replié)"
+
+msgid "总览（已展开）"
+msgstr "Aperçu (déplié)"
 
 msgid "全屏 / 退出全屏总览面板"
 msgstr "Plein écran / quitter le plein écran du panneau d'aperçu"
