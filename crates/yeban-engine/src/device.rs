@@ -44,7 +44,8 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
-    BufferSize, Device, SampleFormat, StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
+    BufferSize, Device, Host, SampleFormat, StreamConfig, SupportedBufferSize,
+    SupportedStreamConfigRange,
 };
 use thiserror::Error;
 use yeban_model::YebanProjectV1;
@@ -391,6 +392,33 @@ impl NegotiatedConfig {
     pub const fn resampling(&self) -> bool {
         self.source_rate != self.sample_rate
     }
+
+    /// ⭐ 缓冲模式的人读描述（T-FIX-71，控制面/状态行用）：固定缓冲 ⇒
+    /// `固定 N 帧`；后端默认 ⇒ `后端默认`。放在引擎侧是因为 `buffer_size`
+    /// 的类型是 cpal 的 —— 应用层（`yeban-app`）⛔ 不裸用 cpal 类型（D19），
+    /// 它只读这一句现成的描述。
+    #[must_use]
+    pub fn buffer_label(&self) -> String {
+        match self.buffer_size {
+            BufferSize::Fixed(frames) => format!("固定 {frames} 帧"),
+            BufferSize::Default => "后端默认".to_owned(),
+        }
+    }
+
+    /// ⭐ **名义**单向延迟（毫秒）：固定缓冲帧数 ÷ 设备采样率。
+    ///
+    /// ⚠ 这是**名义值**（只算缓冲这一段），⛔ 不是实测往返延迟 —— 实测要走
+    /// `latency.rs` 的回环测量。后端默认缓冲 ⇒ 帧数未知 ⇒ `None`
+    /// （⛔ 不编一个数字出来）。
+    #[must_use]
+    pub fn nominal_latency_ms(&self) -> Option<f64> {
+        match self.buffer_size {
+            BufferSize::Fixed(frames) if self.sample_rate > 0 => {
+                Some(f64::from(frames) * 1_000.0 / f64::from(self.sample_rate))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// 设备/配置相关错误。**全部是返回值，绝不 panic**。
@@ -405,6 +433,33 @@ pub enum DeviceError {
     /// 是**错的话**，会把调用方引到错误的排查方向。
     #[error("no default input device available")]
     NoDefaultInputDevice,
+
+    /// ⭐ 用户**按名指定**的输出设备不在场（T-FIX-71，音频设置线）：
+    /// 枚举到的输出设备里没有这个显示名（设备被拔掉 / 改名 / 驱动未就绪）。
+    ///
+    /// ⚠ 与 [`DeviceError::NoDefaultOutputDevice`] **分开**，且 ⛔ **绝不静默
+    /// 改用默认设备**：用户在设置里选了哪台就必须是哪台，打不开就响亮报错
+    /// 并**点名** —— 静默换一台会让用户以为声音走了 A 设备、实际走了 B 设备，
+    /// 排查方向被彻底带偏（与本枚举其它"分开报错"的裁决同一理由）。
+    #[error(
+        "the requested output device \"{name}\" is not available; \
+         refusing to fall back to the default output device"
+    )]
+    NamedOutputDeviceUnavailable {
+        /// 用户指定的输出设备显示名（原样回显，便于定位）。
+        name: String,
+    },
+
+    /// ⭐ 用户**按名指定**的输入设备不在场（T-FIX-71）：与输出侧同款裁决，
+    /// ⛔ 不静默改用默认输入设备，报错点名。
+    #[error(
+        "the requested input device \"{name}\" is not available; \
+         refusing to fall back to the default input device"
+    )]
+    NamedInputDeviceUnavailable {
+        /// 用户指定的输入设备显示名（原样回显，便于定位）。
+        name: String,
+    },
 
     /// 设备没有报告任何输出配置。
     #[error("device reports no supported output configuration")]
@@ -566,6 +621,69 @@ pub fn enumerate_input_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
         });
     }
     Ok(out)
+}
+
+/// ⭐ **按名选设备的纯决策**（T-FIX-71）：在已枚举到的显示名清单里找 `want`，
+/// 返回**首个**下标；找不到 ⇒ `None`。
+///
+/// 口径（写死，⛔ 不留模糊空间）：
+/// - **精确相等**才算命中 —— ⛔ 不做前缀 / 子串 / 忽略大小写匹配：设备名是
+///   用户在设置里选定的那台设备的身份，近似命中等于选错设备；
+/// - 显示名**可以重名**（同型号两台 USB 设备），重名时取首个 —— 枚举顺序
+///   由后端决定，调用方若在意区分应改用 [`DeviceInfo::id`]（本函数的输入
+///   只是名字清单，拿不到 id，这是它的能力边界，如实写明）；
+/// - 本函数**纯**（不触设备）⇒ CI 无声卡也可判；cpal 侧的取设备逻辑
+///   （[`select_output_device`] / [`select_input_device`]）只准经它决策，
+///   ⛔ 不另写一份查找（两处政策漂移正是本文件反复消灭的形态）。
+#[must_use]
+pub fn pick_named_device_index(names: &[String], want: &str) -> Option<usize> {
+    names.iter().position(|name| name == want)
+}
+
+/// 按名（或默认）取一台**输出**设备（T-FIX-71 的选择点，输出侧唯一实现）。
+///
+/// - `want_name == None` ⇒ 系统默认输出设备（**现行为**，缺失 ⇒
+///   [`DeviceError::NoDefaultOutputDevice`]）；
+/// - `Some(name)` ⇒ 在宿主枚举里按 [`pick_named_device_index`] 精确命中；
+///   枚举不到 ⇒ [`DeviceError::NamedOutputDeviceUnavailable`]（点名，
+///   ⛔ 不回退默认）；枚举本身被后端拒绝 ⇒ [`DeviceError::Backend`]。
+fn select_output_device(host: &Host, want_name: Option<&str>) -> Result<Device, DeviceError> {
+    let Some(want) = want_name else {
+        return host
+            .default_output_device()
+            .ok_or(DeviceError::NoDefaultOutputDevice);
+    };
+    let devices: Vec<Device> = host.output_devices()?.collect();
+    let names: Vec<String> = devices.iter().map(ToString::to_string).collect();
+    let picked =
+        pick_named_device_index(&names, want).and_then(|index| devices.into_iter().nth(index));
+    if let Some(device) = picked {
+        return Ok(device);
+    }
+    Err(DeviceError::NamedOutputDeviceUnavailable {
+        name: want.to_owned(),
+    })
+}
+
+/// 按名（或默认）取一台**输入**设备：与 [`select_output_device`] 同构同口径，
+/// 只是方向换成输入（缺失默认 ⇒ [`DeviceError::NoDefaultInputDevice`]；
+/// 指定名不在场 ⇒ [`DeviceError::NamedInputDeviceUnavailable`]）。
+fn select_input_device(host: &Host, want_name: Option<&str>) -> Result<Device, DeviceError> {
+    let Some(want) = want_name else {
+        return host
+            .default_input_device()
+            .ok_or(DeviceError::NoDefaultInputDevice);
+    };
+    let devices: Vec<Device> = host.input_devices()?.collect();
+    let names: Vec<String> = devices.iter().map(ToString::to_string).collect();
+    let picked =
+        pick_named_device_index(&names, want).and_then(|index| devices.into_iter().nth(index));
+    if let Some(device) = picked {
+        return Ok(device);
+    }
+    Err(DeviceError::NamedInputDeviceUnavailable {
+        name: want.to_owned(),
+    })
 }
 
 /// ⭐ **输入侧的格式协商**（[A④]）：**纯函数**，⛔ 不触碰真实设备 ⇒ CI/本机均可单测。
@@ -1100,15 +1218,43 @@ pub fn render_callback_converted(state: &mut ConvertedOutput, data: &mut [f32], 
 /// 同 [`open_output`]。
 pub fn open_output_boxed(
     want: &EngineConfig,
+    runtime: Box<EngineRuntime>,
+) -> Result<OutputStreamHandle, DeviceError> {
+    open_output_boxed_impl(want, runtime, None)
+}
+
+/// ⭐ **按名打开输出设备**（T-FIX-71）：`device_name` 是用户在音频设置里
+/// 选定的设备显示名（来自 [`enumerate_output_devices`] 的 [`DeviceInfo::name`]）。
+///
+/// 与 [`open_output_boxed`] 的唯一差别是**选设备那一步**：经
+/// [`select_output_device`] 精确命中；指定的设备不在场 ⇒
+/// [`DeviceError::NamedOutputDeviceUnavailable`]（点名，⛔ 不静默回退默认
+/// 设备）。协商、建流、回调腿与默认路径**同一份实现**（本函数只把名字
+/// 传进同一条 impl），⛔ 不复制第二份打开逻辑。
+///
+/// # Errors
+///
+/// 同 [`open_output`]，另加 [`DeviceError::NamedOutputDeviceUnavailable`]。
+pub fn open_output_boxed_named(
+    want: &EngineConfig,
+    runtime: Box<EngineRuntime>,
+    device_name: Option<&str>,
+) -> Result<OutputStreamHandle, DeviceError> {
+    open_output_boxed_impl(want, runtime, device_name)
+}
+
+/// [`open_output_boxed`] 与 [`open_output_boxed_named`] 的**唯一实现**：
+/// `device_name == None` = 默认设备（现行为）；`Some(名)` = 按名精确选。
+fn open_output_boxed_impl(
+    want: &EngineConfig,
     mut runtime: Box<EngineRuntime>,
+    device_name: Option<&str>,
 ) -> Result<OutputStreamHandle, DeviceError> {
     if want.share_mode == ShareMode::RequireExclusive {
         return Err(DeviceError::ExclusiveModeUnsupported);
     }
     let host = cpal::default_host();
-    let device: Device = host
-        .default_output_device()
-        .ok_or(DeviceError::NoDefaultOutputDevice)?;
+    let device: Device = select_output_device(&host, device_name)?;
     let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_output_configs()?.collect();
     let (negotiated, negotiation_trace) = negotiate_traced(&supported, want);
@@ -1186,6 +1332,20 @@ pub fn open_output(
     runtime: EngineRuntime,
 ) -> Result<OutputStreamHandle, DeviceError> {
     open_output_boxed(want, Box::new(runtime))
+}
+
+/// ⭐ **按名打开输出设备**（T-FIX-71）：[`open_output_boxed_named`] 的
+/// 未装箱版（调用方持有按值 `EngineRuntime` 时用）。语义与错误同它。
+///
+/// # Errors
+///
+/// 同 [`open_output_boxed_named`]。
+pub fn open_output_named(
+    want: &EngineConfig,
+    runtime: EngineRuntime,
+    device_name: Option<&str>,
+) -> Result<OutputStreamHandle, DeviceError> {
+    open_output_boxed_named(want, Box::new(runtime), device_name)
 }
 
 /// **cpal 输入回调的完整负载** —— 本函数就是"录音回调体"本身。
@@ -1306,15 +1466,41 @@ impl std::fmt::Debug for InputStreamHandle {
 /// - [`DeviceError::Backend`]：后端错误（设备忙、权限、配置失效……）。
 pub fn open_input(
     want: &EngineConfig,
+    sender: RecordSender,
+) -> Result<InputStreamHandle, DeviceError> {
+    open_input_impl(want, sender, None)
+}
+
+/// ⭐ **按名打开输入设备**（T-FIX-71）：`device_name` 是用户在音频设置里
+/// 选定的输入设备显示名（来自 [`enumerate_input_devices`]）。
+///
+/// 与 [`open_input`] 的唯一差别是选设备那一步：经 [`select_input_device`]
+/// 精确命中；不在场 ⇒ [`DeviceError::NamedInputDeviceUnavailable`]
+/// （点名，⛔ 不静默回退默认输入设备）。协商与建流是**同一份 impl**。
+///
+/// # Errors
+///
+/// 同 [`open_input`]，另加 [`DeviceError::NamedInputDeviceUnavailable`]。
+pub fn open_input_named(
+    want: &EngineConfig,
+    sender: RecordSender,
+    device_name: Option<&str>,
+) -> Result<InputStreamHandle, DeviceError> {
+    open_input_impl(want, sender, device_name)
+}
+
+/// [`open_input`] 与 [`open_input_named`] 的**唯一实现**：
+/// `device_name == None` = 默认输入设备（现行为）；`Some(名)` = 按名精确选。
+fn open_input_impl(
+    want: &EngineConfig,
     mut sender: RecordSender,
+    device_name: Option<&str>,
 ) -> Result<InputStreamHandle, DeviceError> {
     if want.share_mode == ShareMode::RequireExclusive {
         return Err(DeviceError::ExclusiveModeUnsupported);
     }
     let host = cpal::default_host();
-    let device: Device = host
-        .default_input_device()
-        .ok_or(DeviceError::NoDefaultInputDevice)?;
+    let device: Device = select_input_device(&host, device_name)?;
     let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_input_configs()?.collect();
     let (negotiated, negotiation_trace) = negotiate_input_traced(&supported, want);
@@ -1348,6 +1534,185 @@ pub fn open_input(
         device_name,
         negotiated,
         negotiation_trace,
+        backend_errors,
+    })
+}
+
+/// ⭐ 设备测试音的频率（Hz）（T-FIX-71）：1 kHz 是 Logic 等宿主 I/O 测试的
+/// 通行基准（人耳敏感、任何扬声器都放得出、示波/电平读数都好判）。
+pub const TEST_TONE_FREQ_HZ: f64 = 1_000.0;
+
+/// ⭐ 设备测试音的峰值电平（dBFS）：−12 dBFS —— 听得清，又离满幅足够远，
+/// ⛔ 不会因为设备增益偏大就削波吓人。
+pub const TEST_TONE_LEVEL_DBFS: f64 = -12.0;
+
+/// ⭐ 设备测试音的时长（秒）：约 1 秒（够听清"响了"，不至于变成噪音折磨）。
+pub const TEST_TONE_SECONDS: f64 = 1.0;
+
+/// ⭐ **测试音回调的状态**（T-FIX-71）：构造期把相位步长与总帧数算好，
+/// 回调里只推进 —— 零分配 / 零锁 / 零 I/O（红线 7，与 [`render_callback`]
+/// 同纪律）。总帧数之后输出**静音**（流还开着，由持有方丢弃句柄收尾）。
+pub struct TestToneState {
+    /// 当前相位（弧度，恒在 `[0, 2π)` 内回绕，长时间运行不丢精度）。
+    phase: f64,
+    /// 每帧的相位增量（构造期由频率/采样率算出）。
+    phase_step: f64,
+    /// 峰值振幅（线性的，由 [`TEST_TONE_LEVEL_DBFS`] 换算）。
+    amplitude: f32,
+    /// 已经发出的帧数（声道交错计数以**帧**为单位，⛔ 不是样本数）。
+    frames_done: u64,
+    /// 测试音的总帧数（[`TEST_TONE_SECONDS`] × 采样率，取整）。
+    total_frames: u64,
+}
+
+impl TestToneState {
+    /// 按设备采样率构造（通道数不进状态：每帧各声道写**同一个**样本值，
+    /// 通道数只决定回调里每帧写几份，由回调的 `channels` 参数给）。
+    #[must_use]
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            phase: 0.0,
+            phase_step: 2.0 * core::f64::consts::PI * TEST_TONE_FREQ_HZ / f64::from(sample_rate),
+            amplitude: 10.0_f64.powf(TEST_TONE_LEVEL_DBFS / 20.0) as f32,
+            frames_done: 0,
+            total_frames: (TEST_TONE_SECONDS * f64::from(sample_rate)).round() as u64,
+        }
+    }
+
+    /// 已发出的帧数（控制面/判据读：判断测试音是否已播完）。
+    #[must_use]
+    pub const fn frames_done(&self) -> u64 {
+        self.frames_done
+    }
+
+    /// 测试音的总帧数（播完 = `frames_done() >= total_frames()`）。
+    #[must_use]
+    pub const fn total_frames(&self) -> u64 {
+        self.total_frames
+    }
+}
+
+/// ⭐ **测试音回调体**（T-FIX-71）：与 [`render_callback`] 同款理由抽成
+/// 具名函数 —— "往测试音里多加一点事"从此是可被判据执行的对象。
+///
+/// 行为：前 [`TestToneState::total_frames`] 帧输出 1 kHz 正弦（各声道同相
+/// 同值），其后输出静音。⛔ 只有算术与写出：零分配、零锁、零 I/O、零日志。
+pub fn test_tone_callback(state: &mut TestToneState, data: &mut [f32], channels: u16) {
+    let channels = usize::from(channels.max(1));
+    for frame in data.chunks_exact_mut(channels) {
+        let value = if state.frames_done < state.total_frames {
+            let value = state.amplitude * state.phase.sin() as f32;
+            state.phase += state.phase_step;
+            if state.phase >= 2.0 * core::f64::consts::PI {
+                state.phase -= 2.0 * core::f64::consts::PI;
+            }
+            value
+        } else {
+            0.0
+        };
+        state.frames_done += 1;
+        frame.fill(value);
+    }
+}
+
+/// 已打开的**测试音**流句柄（T-FIX-71）：持有它 = 测试音流在场；
+/// 丢弃它 = 流停（测试音播完后由持有方丢弃收尾）。
+pub struct TestToneHandle {
+    stream: cpal::Stream,
+    device_name: String,
+    sample_rate: u32,
+    channels: u16,
+    backend_errors: Arc<BackendErrorLog>,
+}
+
+impl TestToneHandle {
+    /// 实际打开的设备显示名（控制面回显"在哪台设备上播"）。
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// 流的采样率（= 设备默认配置的采样率）。
+    #[must_use]
+    pub const fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// 流的通道数（= 设备默认配置的通道数）。
+    #[must_use]
+    pub const fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    /// 本流累计的后端错误数（与 [`OutputStreamHandle::backend_errors`] 同口径）。
+    #[must_use]
+    pub fn backend_errors(&self) -> u64 {
+        self.backend_errors.counts().total()
+    }
+
+    /// 开始播放（流打开时是暂停的，必须显式 `play`，与其它句柄同口径）。
+    ///
+    /// # Errors
+    ///
+    /// 后端拒绝启动 → [`DeviceError::Backend`]。
+    pub fn play(&self) -> Result<(), DeviceError> {
+        self.stream.play()?;
+        Ok(())
+    }
+}
+
+/// ⭐ **在指定（或默认）输出设备上打开一条测试音流**（T-FIX-71，Logic 口径
+/// 的「播放测试音」引擎段）。
+///
+/// 配置口径：用设备的**默认输出配置**（采样率/通道数/格式），⛔ 不走工程
+/// 协商 —— 测试音要测的是"这台设备本身通不通"，与工程采样率无关。
+/// 格式不是 `f32` ⇒ [`DeviceError::UnsupportedSampleFormat`]（响亮拒绝，
+/// ⛔ 不静默换格式）。指定的设备不在场 ⇒
+/// [`DeviceError::NamedOutputDeviceUnavailable`]（点名，⛔ 不回退默认）。
+///
+/// 返回的句柄**还没在播**：调用方 `play()` 后测试音开始，约
+/// [`TEST_TONE_SECONDS`] 秒后回调自动转静音，调用方丢弃句柄即收尾。
+///
+/// # Errors
+///
+/// - [`DeviceError::NoDefaultOutputDevice`] / [`DeviceError::NamedOutputDeviceUnavailable`]：选设备失败；
+/// - [`DeviceError::UnsupportedSampleFormat`]：默认配置不是 `f32`；
+/// - [`DeviceError::Backend`]：读配置 / 建流被后端拒绝。
+pub fn play_test_tone(device_name: Option<&str>) -> Result<TestToneHandle, DeviceError> {
+    let host = cpal::default_host();
+    let device: Device = select_output_device(&host, device_name)?;
+    let device_name = device.to_string();
+    let config = device.default_output_config()?;
+    let sample_format = config.sample_format();
+    if sample_format != SampleFormat::F32 {
+        return Err(DeviceError::UnsupportedSampleFormat {
+            format: sample_format,
+        });
+    }
+    let stream_config = StreamConfig {
+        channels: config.channels(),
+        sample_rate: config.sample_rate(),
+        buffer_size: BufferSize::Default,
+    };
+    let channels = config.channels();
+    let backend_errors = Arc::new(BackendErrorLog::new());
+    let error_counter = Arc::clone(&backend_errors);
+    let mut state = TestToneState::new(config.sample_rate());
+    let stream = device.build_output_stream::<f32, _, _>(
+        stream_config,
+        move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+            test_tone_callback(&mut state, data, channels);
+        },
+        move |error: cpal::Error| {
+            error_counter.record(&error);
+        },
+        Some(STREAM_OPEN_TIMEOUT),
+    )?;
+    Ok(TestToneHandle {
+        stream,
+        device_name,
+        sample_rate: config.sample_rate(),
+        channels,
         backend_errors,
     })
 }
@@ -2181,5 +2546,195 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，枚举）**：枚举接口在**任何**机器上都必须返回
+    /// `Ok`（无声卡 ⇒ 空清单，⛔ 不是错误）；每台枚举到的设备名字非空、
+    /// 默认标记至多一台（`is_default` 的口径是"与宿主默认设备 id 比对"，
+    /// 两台同标默认 = 口径坏了）。
+    #[test]
+    fn enumerate_devices_is_ok_and_marks_at_most_one_default() {
+        for (label, devices) in [
+            ("output", enumerate_output_devices()),
+            ("input", enumerate_input_devices()),
+        ] {
+            let devices = devices.unwrap_or_else(|error| {
+                panic!("{label} 枚举必须返回 Ok（无声卡是空清单不是错误），实际 {error}")
+            });
+            assert!(
+                devices.iter().filter(|device| device.is_default).count() <= 1,
+                "{label} 至多一台默认设备"
+            );
+            for device in &devices {
+                assert!(!device.name.is_empty(), "{label} 设备名不许为空");
+                assert!(device.channels >= 1, "{label} 默认配置通道数必须 ≥ 1");
+                assert!(device.sample_rate >= 1, "{label} 默认配置采样率必须 ≥ 1");
+            }
+        }
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，按名选设备的纯决策）**：精确相等才命中；
+    /// 前缀/子串/大小写差异一律不命中；重名取首个；空清单恒 `None`。
+    ///
+    /// 反向腿：把 [`pick_named_device_index`] 改成子串匹配 ⇒ 前缀那行红；
+    /// 改成取末个 ⇒ 重名那行红。
+    #[test]
+    fn pick_named_device_index_requires_an_exact_match() {
+        let names: Vec<String> = [
+            "Built-in Output",
+            "USB Audio",
+            "USB Audio", // 同型号第二台：重名
+            "usb audio", // 只差大小写：另一台
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(pick_named_device_index(&names, "Built-in Output"), Some(0));
+        assert_eq!(
+            pick_named_device_index(&names, "USB Audio"),
+            Some(1),
+            "重名取**首个**"
+        );
+        assert_eq!(
+            pick_named_device_index(&names, "usb audio"),
+            Some(3),
+            "大小写不同是**精确**命中的另一台"
+        );
+        assert_eq!(pick_named_device_index(&names, "USB"), None, "前缀不算命中");
+        assert_eq!(
+            pick_named_device_index(&names, "USB Audio "),
+            None,
+            "尾随空格不算命中"
+        );
+        assert_eq!(pick_named_device_index(&names, "不存在的设备"), None);
+        assert_eq!(pick_named_device_index(&[], "USB Audio"), None);
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，按名打开输出 · 缺失响亮报错）**：指定一台
+    /// **不存在**的输出设备 ⇒ 必须是 [`DeviceError::NamedOutputDeviceUnavailable`]
+    /// 且错误文本**点名**。
+    ///
+    /// 这条判据在两种机器上都成立，且都能抓住"静默回退默认"的实现：
+    /// - 有声卡的机器：回退实现会返回 `Ok`（打开了默认设备）⇒ 红；
+    /// - 无声卡的机器（CI）：回退实现会返回 `NoDefaultOutputDevice` ⇒ 红。
+    #[test]
+    fn open_output_named_with_an_absent_device_fails_loudly_naming_it() {
+        let absent = "夜半测试用不存在的输出设备 T-FIX-71";
+        let error = match open_output_boxed_named(
+            &EngineConfig::default(),
+            Box::new(default_runtime()),
+            Some(absent),
+        ) {
+            Ok(_) => panic!("指定不存在的输出设备必须失败（⛔ 不许静默回退默认设备）"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, DeviceError::NamedOutputDeviceUnavailable { ref name } if name == absent),
+            "错误必须是点名的 NamedOutputDeviceUnavailable，实际 {error:?}"
+        );
+        assert!(
+            error.to_string().contains(absent),
+            "错误文本必须点名该设备，实际：{error}"
+        );
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，按名打开输入 · 缺失响亮报错）**：输入侧同款
+    /// （方向不能串：必须是 `NamedInputDeviceUnavailable`，⛔ 不是输出侧变体）。
+    #[test]
+    fn open_input_named_with_an_absent_device_fails_loudly_naming_it() {
+        let absent = "夜半测试用不存在的输入设备 T-FIX-71";
+        let (sender, _receiver) = record_channel(1024, 2);
+        let error = match open_input_named(&EngineConfig::default(), sender, Some(absent)) {
+            Ok(_) => panic!("指定不存在的输入设备必须失败（⛔ 不许静默回退默认设备）"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, DeviceError::NamedInputDeviceUnavailable { ref name } if name == absent),
+            "错误必须是点名的 NamedInputDeviceUnavailable，实际 {error:?}"
+        );
+        assert!(error.to_string().contains(absent));
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，测试音回调）**：48 kHz 立体声下，前 1 秒是
+    /// 1 kHz 正弦（过零数 ≈ 1000、峰值 ≈ −12 dBFS），满 1 秒后**全静音**，
+    /// 且各声道同值。
+    ///
+    /// 反向腿：频率改 440 Hz ⇒ 过零数那行红；电平改 0 dBFS ⇒ 峰值那行红；
+    /// 播完不停 ⇒ 静音那行红。
+    #[test]
+    fn test_tone_callback_writes_one_second_of_1khz_then_silence() {
+        let mut state = TestToneState::new(48_000);
+        assert_eq!(state.total_frames(), 48_000, "1 秒 @ 48 kHz = 48000 帧");
+        let mut data = vec![0.0_f32; 48_000 * 2];
+        test_tone_callback(&mut state, &mut data, 2);
+        assert_eq!(state.frames_done(), 48_000);
+        // 各声道同值（每帧左右相等）。
+        for frame in data.as_chunks::<2>().0 {
+            assert_eq!(frame[0], frame[1], "测试音各声道必须同相同值");
+        }
+        // 左声道 [0.1 s, 0.9 s) 的上行过零 ⇒ 频率 ≈ 1000 Hz（±1%）。
+        let left: Vec<f32> = data.iter().step_by(2).copied().collect();
+        let (from, to) = (4_800usize, 43_200usize);
+        let crossings = left[from..to]
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count();
+        let estimated = crossings as f64 * 48_000.0 / (to - from) as f64;
+        assert!(
+            (estimated - 1_000.0).abs() <= 10.0,
+            "测试音频率应为 1000 Hz ±1%，实测 {estimated} Hz"
+        );
+        // 峰值 ≈ −12 dBFS（0.2512，±0.01）。
+        let peak = left.iter().fold(0.0_f32, |acc, value| acc.max(value.abs()));
+        assert!(
+            (peak - 0.251_2).abs() <= 0.01,
+            "测试音峰值应为 −12 dBFS ≈ 0.2512，实测 {peak}"
+        );
+        // 满 1 秒后：再喂一块，必须全静音。
+        let mut tail = vec![1.0_f32; 4_800 * 2];
+        test_tone_callback(&mut state, &mut tail, 2);
+        assert!(
+            tail.iter().all(|value| *value == 0.0),
+            "测试音播完后必须转静音"
+        );
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，协商结果的控制面描述）**：固定缓冲 ⇒ 标签带
+    /// 帧数、名义延迟 = 帧数 ÷ 采样率；后端默认 ⇒ 标签是「后端默认」、
+    /// 名义延迟 `None`（⛔ 不编数字）。
+    #[test]
+    fn negotiated_buffer_label_and_nominal_latency_are_honest() {
+        let mut negotiated = NegotiatedConfig {
+            channels: 2,
+            sample_rate: 48_000,
+            source_rate: 48_000,
+            buffer_size: BufferSize::Fixed(128),
+            sample_format: SampleFormat::F32,
+            share_mode: ShareMode::Shared,
+            fixed_block_accepted: true,
+        };
+        assert_eq!(negotiated.buffer_label(), "固定 128 帧");
+        let ms = negotiated
+            .nominal_latency_ms()
+            .expect("固定缓冲必须有名义延迟");
+        assert!((ms - 128.0 * 1_000.0 / 48_000.0).abs() < 1e-9, "实测 {ms}");
+        negotiated.buffer_size = BufferSize::Default;
+        assert_eq!(negotiated.buffer_label(), "后端默认");
+        assert_eq!(negotiated.nominal_latency_ms(), None);
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，测试音选设备）**：在不存在的设备上播测试音
+    /// ⇒ 点名的 [`DeviceError::NamedOutputDeviceUnavailable`]（与打开路径
+    /// 同一条选设备实现，⛔ 不许测试音自己另写一份回退）。
+    #[test]
+    fn play_test_tone_with_an_absent_device_fails_loudly_naming_it() {
+        let absent = "夜半测试用不存在的输出设备 T-FIX-71";
+        let error = play_test_tone(Some(absent))
+            .err()
+            .expect("在不存在的设备上播测试音必须失败");
+        assert!(
+            matches!(error, DeviceError::NamedOutputDeviceUnavailable { ref name } if name == absent),
+            "错误必须是点名的 NamedOutputDeviceUnavailable，实际 {error:?}"
+        );
     }
 }
