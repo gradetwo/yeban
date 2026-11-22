@@ -5,11 +5,13 @@
 //! 原先另立的 `~/.yeban/onboarding.json` 就此并入，全应用只此一份
 //! 设置存储，旧文件的折入见 `help_state` 模块）。
 //!
-//! 存五样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
+//! 存六样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
 //! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）、帮助系统
-//! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）与调试输出
+//! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）、调试输出
 //! 开关（T-FIX-70，主菜单「设置 → 调试输出」写回，`--debug` /
-//! `--log-file` 是同开关的命令行入口，决策见 [`resolve_debug_output`]）。
+//! `--log-file` 是同开关的命令行入口，决策见 [`resolve_debug_output`]）
+//! 与音频设备选择（T-FIX-71，「设置 → 音频」面板写回，存的是引擎枚举
+//! 的设备显示名，`None` = 该方向用系统默认设备）。
 //! 语言的启动优先级（定案）是 `--lang` 参数（临时覆盖、不写回）＞
 //! 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN，决策函数见
 //! [`resolve_startup_language`]，单测钉死。布局的恢复/写回/重置语义在
@@ -76,6 +78,15 @@ pub struct Settings {
     /// `false` = 从未开过（键缺失与存 `false` 同义，写回时只在 `true`
     /// 时落键）。启动决策见 [`resolve_debug_output`]。
     pub debug_output: bool,
+    /// 用户在「设置 → 音频」里选定的**输出**设备显示名（T-FIX-71）；
+    /// `None` = 从未选过（或选回了"系统默认"），启动时用系统默认输出
+    /// 设备（现行为）。名字来自引擎枚举的 `DeviceInfo::name`，按名精确
+    /// 命中；设备不在场时引擎**响亮报错点名**，⛔ 不静默换默认（见
+    /// `yeban_engine::device::open_output_boxed_named`）。
+    pub audio_output_device: Option<String>,
+    /// 用户选定的**输入**设备显示名（T-FIX-71）：与输出侧同款语义，
+    /// `None` = 系统默认输入设备。
+    pub audio_input_device: Option<String>,
 }
 
 /// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
@@ -268,7 +279,21 @@ pub fn load_from(path: &std::path::Path) -> Settings {
             .get("debug_output")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
+        // 键缺失 / 不是字符串 / 空串 ⇒ 没选过（逐字段容错，同上）。
+        // 空串必须当没选过：空名字不可能精确命中任何设备，留着只会让
+        // 每次启动都撞一遍"指定设备不在场"的响亮错误。
+        audio_output_device: parse_audio_device_name(&value, "audio_output_device"),
+        audio_input_device: parse_audio_device_name(&value, "audio_input_device"),
     }
+}
+
+/// 解析一个音频设备名键（T-FIX-71）：是字符串且非空 ⇒ `Some`；
+/// 其余（键缺失 / 类型不对 / 空串）⇒ `None`（= 用系统默认设备）。
+fn parse_audio_device_name(root: &serde_json::Value, key: &str) -> Option<String> {
+    root.get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 /// 解析 `recent_projects` 键：键缺失 / 不是数组 ⇒ 空清单；逐条容错
@@ -653,6 +678,18 @@ pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result
     if settings.debug_output {
         object.insert("debug_output".to_owned(), serde_json::json!(true));
     }
+    if let Some(name) = &settings.audio_output_device {
+        object.insert(
+            "audio_output_device".to_owned(),
+            serde_json::Value::String(name.clone()),
+        );
+    }
+    if let Some(name) = &settings.audio_input_device {
+        object.insert(
+            "audio_input_device".to_owned(),
+            serde_json::Value::String(name.clone()),
+        );
+    }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
     let tmp = path.with_extension("json.tmp");
@@ -698,6 +735,19 @@ pub fn save_debug_output(enabled: bool) {
     settings.debug_output = enabled;
     if let Err(error) = save(&settings) {
         eprintln!("[yeban-app] 调试输出开关写回设置失败（下次启动仍走旧值）: {error}");
+    }
+}
+
+/// 存下音频设备选择（「设置 → 音频」面板触发，T-FIX-71）：先读出现有
+/// 设置（保住其余键），再改两个设备名写回。`None` = 该方向用系统默认
+/// （键不落盘）。与 [`save_debug_output`] 同款契约：写失败只打印，
+/// 不让调用方把一次选择变失败（选择已在本会话生效，设置下次再存）。
+pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
+    let mut settings = load();
+    settings.audio_output_device = output.map(str::to_owned);
+    settings.audio_input_device = input.map(str::to_owned);
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 音频设备选择写回设置失败（下次启动仍走旧选择）: {error}");
     }
 }
 
@@ -898,6 +948,8 @@ mod tests {
             recent_projects: Vec::new(),
             help: HelpState::default(),
             debug_output: false,
+            audio_output_device: None,
+            audio_input_device: None,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -939,6 +991,60 @@ mod tests {
         // 键形状坏（字符串而非布尔）⇒ 当作没开过，不连坐其它键。
         std::fs::write(&path, r#"{"version":1,"debug_output":"yes"}"#).expect("写坏形状");
         assert!(!load_from(&path).debug_output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，音频设备选择持久化）**：选过的输出/输入设备名
+    /// 落键并原样读回；没选过（默认）不落键、读回 `None`；键形状坏 / 空串
+    /// ⇒ 当作没选过，且不连坐其它键。
+    ///
+    /// 反向腿：`save_to` 漏写任一键 ⇒ 读回那行红；`parse_audio_device_name`
+    /// 放行空串 ⇒ 空串那行红。
+    #[test]
+    fn audio_device_selection_roundtrip_through_a_temp_file() {
+        let dir = test_dir("audio-devices");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings {
+            audio_output_device: Some("USB Audio Codec".to_owned()),
+            audio_input_device: Some("Built-in Microphone".to_owned()),
+            ..Settings::default()
+        };
+        save_to(&path, &settings).expect("临时目录写设置必须成功");
+        let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
+        assert!(
+            text.contains("\"audio_output_device\": \"USB Audio Codec\""),
+            "选过的输出设备须落键: {text}"
+        );
+        assert!(
+            text.contains("\"audio_input_device\": \"Built-in Microphone\""),
+            "选过的输入设备须落键: {text}"
+        );
+        assert_eq!(load_from(&path), settings);
+        // 默认（没选过）不落键。
+        save_to(&path, &Settings::default()).expect("写默认设置");
+        let text = std::fs::read_to_string(&path).expect("读回文件");
+        assert!(
+            !text.contains("audio_output_device") && !text.contains("audio_input_device"),
+            "没选过不许写音频设备键: {text}"
+        );
+        let loaded = load_from(&path);
+        assert_eq!(loaded.audio_output_device, None);
+        assert_eq!(loaded.audio_input_device, None);
+        // 键形状坏（数字）/ 空串 ⇒ 当作没选过；同文件的语言键照常读。
+        std::fs::write(
+            &path,
+            r#"{"version":1,"language":"fr-FR","audio_output_device":42,"audio_input_device":""}"#,
+        )
+        .expect("写坏形状");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.audio_output_device, None, "非字符串必须当没选过");
+        assert_eq!(loaded.audio_input_device, None, "空串必须当没选过");
+        assert_eq!(
+            loaded.language,
+            Some(Language::FrFr),
+            "坏音频键不许连坐语言键"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1007,6 +1113,8 @@ mod tests {
             recent_projects: Vec::new(),
             help: HelpState::default(),
             debug_output: false,
+            audio_output_device: None,
+            audio_input_device: None,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -1248,6 +1356,8 @@ mod tests {
             recent_projects: Vec::new(),
             help: distinctive_help(),
             debug_output: false,
+            audio_output_device: None,
+            audio_input_device: None,
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。

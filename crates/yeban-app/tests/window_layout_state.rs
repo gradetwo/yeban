@@ -113,6 +113,8 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
         recent_projects: Vec::new(),
         help: yeban_app::help_state::HelpState::default(),
         debug_output: false,
+        audio_output_device: None,
+        audio_input_device: None,
     })
     .expect("预置设置文件必须写成功");
 

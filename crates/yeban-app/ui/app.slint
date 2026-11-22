@@ -16,6 +16,7 @@ import { StatusBar } from "status_bar.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { MacroPanel } from "dialogs/macro_panel.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
+import { AudioSettingsDialog } from "dialogs/audio_settings_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { ManualDialog } from "dialogs/help_manual.slint";
 import { ShortcutsDialog } from "dialogs/help_shortcuts.slint";
@@ -435,6 +436,7 @@ export component MainWindow inherits Window {
     public function focus-humanize-dialog() { }
     public function focus-drum-gen-dialog() { }
     public function focus-export-wav-dialog() { }
+    public function focus-audio-settings-dialog() { }
 
     // ---- 契约兼容面: 新 UI 视觉组件树保留, 数据/控制面与 main 对齐 ----
     // 由 main 版 MainWindow 顶层 property/callback 声明机械补全: 字面量初值原样保留,
@@ -443,6 +445,17 @@ export component MainWindow inherits Window {
     in-out property <bool> ai-drawer-open: false;
     in-out property <float> arrangement-content-px: 0.0;
     in-out property <bool> arrangement-view: true;
+    // ⭐ 音频设置面板（T-FIX-71）：宿主供数（设备枚举/实际协商/输入电平），
+    // 选择经 `audio-*-picked` 回调上抛，宿主落盘并应用（见 dialogs/audio_settings_dialog.slint）。
+    in-out property <string> audio-device-status: "";
+    in-out property <int> audio-input-device-index: 0;
+    in-out property <[string]> audio-input-device-labels: [];
+    in-out property <float> audio-input-level: 0.0;
+    in-out property <string> audio-input-level-text: "";
+    in-out property <int> audio-output-device-index: 0;
+    in-out property <[string]> audio-output-device-labels: [];
+    in-out property <int> audio-settings-focused-control: 0;
+    in-out property <bool> audio-settings-open: false;
     in-out property <[string]> asset-pool-details: [];
     in-out property <[string]> asset-pool-kinds: [];
     in-out property <[string]> asset-pool-names: [];
@@ -840,6 +853,10 @@ export component MainWindow inherits Window {
     in-out property <string> lesson-step-progress: "";
     in-out property <string> lesson-feedback: "";
 
+    callback audio-input-picked(int);
+    callback audio-output-picked(int);
+    callback audio-play-test-tone();
+    callback audio-refresh-devices();
     callback apply-drum-gen();
     callback apply-humanize();
     callback apply-quantize();
@@ -861,6 +878,7 @@ export component MainWindow inherits Window {
     /// 与行区内容帧的 y，逻辑像素，未归一化）+ 是否加选（Shift）。
     /// 命中判定与选区写入全在宿主（`host::wire_clip_scope`）。
     callback clip-marquee-select(length, length, length, length, bool);
+    callback close-audio-settings();
     callback close-drum-gen();
     callback close-export-wav();
     callback close-humanize();
@@ -945,6 +963,7 @@ export component MainWindow inherits Window {
     callback onboarding-dismiss-forever();
     callback onboarding-next();
     callback onboarding-skip();
+    callback open-audio-settings();
     callback open-drum-gen();
     callback open-export-wav();
     callback open-humanize();
@@ -1183,6 +1202,7 @@ export component MainWindow inherits Window {
             MenuItem { title: (root.debug-output ? "✓ " : "") + @tr("调试输出"); activated => { root.toggle-debug-output(); } }
             MenuItem { title: @tr("恢复默认布局"); activated => { root.reset-window-layout(); } }
             MenuSeparator {}
+            MenuItem { title: @tr("音频..."); activated => { root.command-execute("open-audio-settings"); } }
             MenuItem { title: @tr("音源管理..."); activated => { root.command-execute("open-sound-library"); } }
         }
         Menu {
@@ -2103,6 +2123,28 @@ export component MainWindow inherits Window {
             run => { root.export-wav(); }
             close => { root.close-export-wav(); }
             browse-path => { root.browse-export-wav-path(); }
+        }
+
+        // ⭐ 音频设置面板（T-FIX-71）：默认关着 ⇒ 默认帧不变；打开时宿主
+        // 刷新枚举并供数（`host::wire_audio_settings`）。
+        if root.audio-settings-open : AudioSettingsDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            output-labels <=> root.audio-output-device-labels;
+            output-index <=> root.audio-output-device-index;
+            input-labels <=> root.audio-input-device-labels;
+            input-index <=> root.audio-input-device-index;
+            status-text: root.audio-device-status;
+            input-level: root.audio-input-level;
+            input-level-text: root.audio-input-level-text;
+            close => { root.close-audio-settings(); }
+            output-picked(i) => { root.audio-output-picked(i); }
+            input-picked(i) => { root.audio-input-picked(i); }
+            refresh-devices => { root.audio-refresh-devices(); }
+            play-test-tone => { root.audio-play-test-tone(); }
         }
 
         // Visible Undo Tree Time-Machine Modal Dialog

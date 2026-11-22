@@ -2378,6 +2378,72 @@ impl ElementRegistry {
             "浏览输出路径（原生保存对话框，只填框不导出）",
             false,
         );
+        // ⭐ `T-FIX-71`：音频设置面板（「设置 → 音频」）的全部静态控件。
+        // 设备清单的行是模型生成的（无静态 ID），⛔ 不在此登记 —— 与鼓机
+        // 风格行同款：行本身带 accessible-label（设备名）供读屏寻址。
+        registry.add(
+            "audio-settings-dialog",
+            ElementKind::Region,
+            "dialogs/audio_settings_dialog.slint",
+            "音频设置弹窗（遮罩层）",
+            false,
+        );
+        registry.add(
+            "audio-settings-panel",
+            ElementKind::Region,
+            "dialogs/audio_settings_dialog.slint",
+            "音频设置面板（设备选择/状态/测试）",
+            false,
+        );
+        registry.add(
+            "audio-output-selector",
+            ElementKind::Combobox,
+            "dialogs/audio_settings_dialog.slint",
+            "输出设备选择（第一项 = 系统默认）",
+            false,
+        );
+        registry.add(
+            "audio-input-selector",
+            ElementKind::Combobox,
+            "dialogs/audio_settings_dialog.slint",
+            "输入设备选择（第一项 = 系统默认）",
+            false,
+        );
+        registry.add(
+            "audio-device-status",
+            ElementKind::Text,
+            "dialogs/audio_settings_dialog.slint",
+            "当前实际打开的输出设备状态行（宿主供数）",
+            false,
+        );
+        registry.add(
+            "audio-input-level-text",
+            ElementKind::Text,
+            "dialogs/audio_settings_dialog.slint",
+            "输入电平读数（dB，面板打开期间由临时输入流喂）",
+            false,
+        );
+        registry.add(
+            "audio-test-tone-button",
+            ElementKind::Button,
+            "dialogs/audio_settings_dialog.slint",
+            "在所选输出设备上播放测试音（1 kHz / −12 dBFS / 约 1 秒）",
+            false,
+        );
+        registry.add(
+            "audio-refresh-devices-button",
+            ElementKind::Button,
+            "dialogs/audio_settings_dialog.slint",
+            "重新枚举音频设备",
+            false,
+        );
+        registry.add(
+            "audio-settings-close-button",
+            ElementKind::Button,
+            "dialogs/audio_settings_dialog.slint",
+            "关闭音频设置面板",
+            false,
+        );
         registry.add(
             "export-wav-sample-rate-input",
             ElementKind::TextInput,
@@ -3664,7 +3730,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 41] = [
+    const SLINT_MANIFEST: [&str; 42] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3699,6 +3765,8 @@ mod tests {
         "dialogs/sound_library_dialog.slint",
         // 鼓机生成对话框（`line/drum-machine-p1`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/drum_gen_dialog.slint",
+        // 音频设置对话框（T-FIX-71）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/audio_settings_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
         // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。

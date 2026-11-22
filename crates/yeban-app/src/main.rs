@@ -490,6 +490,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `[ROAD-M2-001]` 实时线程优先级（自实现要新的 `libc` 依赖 ⇒ 依赖图裁决）；
     // 独占模式（cpal 0.18 没有该 API ⇒ `ShareMode::PreferExclusive` 静默降级为共享）。
     if engine.has_engine() {
+        // ⭐ T-FIX-71：把「设置 → 音频」里存过的输出设备选择交给生产循环
+        // （`open_device` 按它开；没存过 = `None` = 系统默认设备，现行为）。
+        // 指定设备不在场时 `open_device` 会在下面走进 `Err` 分支响亮报错
+        // （点名），产品降级为控制面驱动，⛔ 不静默换一台默认设备出声。
+        engine.set_audio_output_device(yeban_app::settings::load().audio_output_device);
         let config = yeban_engine::device::EngineConfig::from_project(&loaded.archive.project);
         // 调试明细（T-FIX-70）：打开之前先摊设备枚举（全部输出/输入设备、
         // 默认配置与支持范围），打开之后再摊这一次协商的逐步 trace。
@@ -1185,6 +1190,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `FilePicker` 能力面的产品腿。选中路径只写回 `export-wav-path`（两向绑定），
     // ⛔ 不写盘、⛔ 不跳过「导出」钮；与上面 SFZ 采样器那条逐字同款。
     host::wire_export_wav_browse(&ui, Rc::new(yeban_app::file_picker::NativeFilePicker));
+    // ⭐ T-FIX-71：「设置 → 音频」面板接线 —— 输出/输入设备选择（落盘到
+    // 设置文件）、实际设备状态行、播放测试音、面板期间的输入电平。
+    // 输出选择的活值住在 `production` 里（与启动时从设置读入的是同一个）。
+    host::wire_audio_settings(&ui, Rc::clone(&production), Rc::clone(&undo_port));
     // ⭐ 把刚建好的实时腿句柄填进心跳的共享槽（见上面 `midi_live_state` 的注释）：
     // 从这一刻起，硬件 MIDI 会话在窗口内采到的事件就会在 60Hz 心跳里进引擎的音符路径。
     // ⭐ 实时腿的落点（音轨 ＋ 片段）也一并记下：提交音符时按它构造 `Op::AddNote`。

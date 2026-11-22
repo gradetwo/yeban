@@ -28,7 +28,7 @@
 //!
 //! 源**只能**经 [`InputSourceFactory`] 取得：
 //!
-//! - 产品实现：[`DeviceInputFactory`]（`negotiate_input` ＋ `open_input` ＋ `play`）；
+//! - 产品实现：[`DeviceInputFactory`]（`negotiate_input` ＋ `open_input_named` ＋ `play`）；
 //! - 显式静音腿：[`SilenceFactory`]（⭐ 保留既有 `SilenceSource`，⛔ 不删）；
 //! - 判据实现：集成判据自己实现本 trait（返回脚本化假源 / 返回 `Err`），
 //!   **⛔ 不读任何环境变量**（测量纪律第 6 条）。
@@ -51,7 +51,7 @@
 use std::rc::Rc;
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
-use yeban_engine::device::{EngineConfig, InputStreamHandle, ShareMode, open_input};
+use yeban_engine::device::{EngineConfig, InputStreamHandle, ShareMode, open_input_named};
 use yeban_engine::record::{RecordReceiver, RecordSender, record_channel};
 
 use crate::record_wav::{InputSource, RecordOptions, SilenceSource};
@@ -86,11 +86,29 @@ pub trait InputSourceFactory {
 const fn assert_send<T: Send>() {}
 const _: () = assert_send::<InputStreamHandle>();
 
-/// ⭐ **产品实现：真设备源**（默认输入设备 ⇒ `f32` 输入流 ⇒ `play()`）。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DeviceInputFactory;
+/// ⭐ **产品实现：真设备源**（选定的输入设备 ⇒ `f32` 输入流 ⇒ `play()`）。
+#[derive(Debug, Clone, Default)]
+pub struct DeviceInputFactory {
+    /// ⭐ 用户在「设置 → 音频」里选定的输入设备名（T-FIX-71）；
+    /// `None` = 系统默认输入设备（现行为）。打开时经
+    /// `open_input_named` 精确命中；不在场 ⇒ 响亮报错点名
+    /// （走本工厂既有的 `Err(String)` 通道），⛔ 不静默改用默认设备。
+    device_name: Option<String>,
+}
 
 impl DeviceInputFactory {
+    /// 带设备选择的工厂（T-FIX-71）：`device_name` 来自设置里存过的
+    /// 输入设备名；`None` = 系统默认输入设备。
+    #[must_use]
+    pub fn with_device_name(device_name: Option<String>) -> Self {
+        Self { device_name }
+    }
+
+    /// 本工厂打开输入流时要用的设备名（`None` = 系统默认）。
+    #[must_use]
+    pub fn device_name(&self) -> Option<&str> {
+        self.device_name.as_deref()
+    }
     /// 报告行 / 判据用的如实文案。
     pub const LABEL: &'static str = "device-input-stream";
 
@@ -137,7 +155,7 @@ impl InputSourceFactory for DeviceInputFactory {
         let requested = options.channels.max(1);
         // ⭐⭐ **环的宽度必须 ＝ 协商到的声道数**（任务单 `#130`）。
         //
-        // 协商发生在 [`open_input`] **内部**，而它又**要求**先把发送端交进来 ⇒
+        // 协商发生在 [`open_input_named`] **内部**，而它又**要求**先把发送端交进来 ⇒
         // "先问协商、再建环"这条路只有两条腿：
         //   ① 按**请求**声道建环试开一次（设备与请求一致 ⇒ 就是这一次，⛔ 不开第二次）；
         //   ② 协商结果不同 ⇒ ⭐ **按协商值重建环并重开一次**。
@@ -146,8 +164,12 @@ impl InputSourceFactory for DeviceInputFactory {
         // 第一次那条流**从未 `play()`** ⇒ 丢掉它不占用设备（引擎自己的
         // `opening_the_default_input_device_never_panics` 用的就是这条生命期口径）。
         let (sender, receiver) = device_ring(options, requested);
-        let handle = open_input(&Self::engine_config_for(options, requested), sender)
-            .map_err(|error| format!("打开输入设备失败（{error}）"))?;
+        let handle = open_input_named(
+            &Self::engine_config_for(options, requested),
+            sender,
+            self.device_name.as_deref(),
+        )
+        .map_err(|error| format!("打开输入设备失败（{error}）"))?;
         // ⭐⭐ **协商结果的两条路，区别对待（都有实测依据）**：
         //
         // ① **通道数不同 ⇒ 照设备说的录**（⛔ 不拒绝、⛔ 不偷偷升降混）。
@@ -179,9 +201,12 @@ impl InputSourceFactory for DeviceInputFactory {
             let channels = negotiated.channels.max(1);
             drop(handle);
             let (sender, receiver) = device_ring(options, channels);
-            let handle = open_input(&Self::engine_config_for(options, channels), sender).map_err(
-                |error| format!("按设备协商到的 {channels} 声道重开输入流失败（{error}）"),
-            )?;
+            let handle = open_input_named(
+                &Self::engine_config_for(options, channels),
+                sender,
+                self.device_name.as_deref(),
+            )
+            .map_err(|error| format!("按设备协商到的 {channels} 声道重开输入流失败（{error}）"))?;
             // ⭐ 第二次协商必须与第一次**逐项一致**（否则环的宽度又和回调宽度分叉，
             // 转换器的两侧率也会跟着分叉）。
             let again = *handle.negotiated();
@@ -396,17 +421,33 @@ pub const RECORD_SOURCE_ENV: &str = "YEBAN_RECORD_SOURCE";
 /// （见模块文档：拼错不可能悄悄变成录静音）。
 #[must_use]
 pub fn input_factory_for(selector: Option<&str>) -> Rc<dyn InputSourceFactory> {
+    input_factory_with_selection(selector, None)
+}
+
+/// ⭐ 同 [`input_factory_for`]，外加**音频设备选择**（T-FIX-71）：
+/// `device_name` 是设置里存过的输入设备名，进真设备工厂；静音腿不带
+/// 设备名（它不打开任何设备）。同为纯函数（选择值与设备名都当参数传）。
+#[must_use]
+pub fn input_factory_with_selection(
+    selector: Option<&str>,
+    device_name: Option<String>,
+) -> Rc<dyn InputSourceFactory> {
     match selector.map(str::trim) {
         Some("silence") => Rc::new(SilenceFactory),
-        _ => Rc::new(DeviceInputFactory),
+        _ => Rc::new(DeviceInputFactory::with_device_name(device_name)),
     }
 }
 
 /// ⭐ **产品默认的输入源工厂**：真设备源（`YEBAN_RECORD_SOURCE=silence` ⇒ 显式静音腿）。
+///
+/// ⭐ T-FIX-71：真设备腿带上设置里存过的输入设备名（没存过 ⇒ 系统默认
+/// 输入设备，现行为）。每次调用现读设置 ⇒ 面板里改选后**下一次录音**
+/// 就用新设备，不必重启。
 #[must_use]
 pub fn default_input_factory() -> Rc<dyn InputSourceFactory> {
     let selector = std::env::var(RECORD_SOURCE_ENV).ok();
-    input_factory_for(selector.as_deref())
+    let stored = crate::settings::load();
+    input_factory_with_selection(selector.as_deref(), stored.audio_input_device)
 }
 
 #[cfg(test)]

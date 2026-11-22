@@ -3379,6 +3379,415 @@ pub fn wire_export_wav_browse(ui: &MainWindow, picker: Rc<dyn crate::file_picker
     });
 }
 
+/// ⭐ **音频设置面板的选择器清单**（T-FIX-71）：标签与设备名两条平行数组
+/// （`names[i]` 是 `labels[i]` 对应的设备名；下标 0 恒为 `None` = 系统默认）。
+pub struct AudioDeviceChoices {
+    /// 给界面看的标签（第一项恒为「系统默认」）。
+    pub labels: Vec<String>,
+    /// 与标签平行的设备名（`None` = 系统默认）。
+    pub names: Vec<Option<String>>,
+    /// 当前选择在清单里的下标。
+    pub selected: usize,
+}
+
+/// ⭐ **纯函数**（T-FIX-71）：由枚举到的设备名与当前选择拼选择器清单。
+///
+/// 口径（写死）：
+/// - 第一项恒为「系统默认」（`names[0] == None`）；
+/// - 当前选择在枚举里 ⇒ 选中它；
+/// - 当前选择**不在**枚举里（设备被拔掉 / 改名 / 驱动未就绪）⇒ 追加一行
+///   「<名字>（未连接）」并选中它 —— ⛔ **不**把用户的选择悄悄换成默认：
+///   那会掩盖"设备丢了"这个事实，而面板的职责正是让它**可见**；
+/// - 没选过（`None`）⇒ 选中第一项。
+#[must_use]
+pub fn audio_device_choices(enumerated: &[String], selected: Option<&str>) -> AudioDeviceChoices {
+    let mut labels = Vec::with_capacity(enumerated.len() + 2);
+    let mut names: Vec<Option<String>> = Vec::with_capacity(enumerated.len() + 2);
+    labels.push("系统默认".to_owned());
+    names.push(None);
+    for name in enumerated {
+        labels.push(name.clone());
+        names.push(Some(name.clone()));
+    }
+    let selected_index = match selected {
+        None => 0,
+        Some(want) => match names.iter().position(|name| name.as_deref() == Some(want)) {
+            Some(index) => index,
+            None => {
+                labels.push(format!("{want}（未连接）"));
+                names.push(Some(want.to_owned()));
+                names.len() - 1
+            }
+        },
+    };
+    AudioDeviceChoices {
+        labels,
+        names,
+        selected: selected_index,
+    }
+}
+
+/// ⭐ **纯函数**（T-FIX-71）：音频设置面板的**状态行** —— 实际打开的那台
+/// 输出设备。数据只来自引擎宿主的活读数（`device_name` +
+/// `device_negotiated`），⛔ 不从工程采样率推算（工程率 ≠ 设备率时推算
+/// 就是编数字；异率时如实写出转换状态）。
+///
+/// 缓冲毫秒是**名义值**（固定缓冲帧数 ÷ 设备率，见
+/// `NegotiatedConfig::nominal_latency_ms`），措辞里写明，⛔ 不冒充实测
+/// 往返延迟。后端默认缓冲 ⇒ 不写毫秒数（帧数未知，不编）。
+#[must_use]
+pub fn audio_device_status_line(
+    device_name: Option<&str>,
+    negotiated: Option<yeban_engine::device::NegotiatedConfig>,
+) -> String {
+    let (Some(name), Some(negotiated)) = (device_name, negotiated) else {
+        return "音频输出未接线（控制面驱动：编辑与导出照常，播放无声）".to_owned();
+    };
+    let mut line = format!(
+        "当前输出：{name} · {} Hz · {} 声道 · 缓冲 {}",
+        negotiated.sample_rate,
+        negotiated.channels,
+        negotiated.buffer_label()
+    );
+    if let Some(ms) = negotiated.nominal_latency_ms() {
+        line.push_str(&format!("（约 {ms:.1} ms，名义值）"));
+    }
+    if negotiated.resampling() {
+        line.push_str(&format!(" · 工程 {} Hz 实时转换中", negotiated.source_rate));
+    }
+    line
+}
+
+/// 「设置 → 音频」面板的接线状态（T-FIX-71）。全部住在 UI 线程
+/// （`Rc<RefCell<..>>`，与其它 `wire_*` 的状态同款）。
+struct AudioPanelState {
+    /// 输出清单的平行设备名（[`refresh_audio_panel`] 每次刷新重写）。
+    output_names: Vec<Option<String>>,
+    /// 输入清单的平行设备名（同上）。
+    input_names: Vec<Option<String>>,
+    /// 当前输入选择（活值；输出选择的活值在 [`ProductionLoop`] 里，
+    /// ⛔ 不在这里存第二份）。
+    input_name: Option<String>,
+    /// 正在播的测试音句柄 + 起播时刻（定时器到点丢弃句柄收尾）。
+    test_tone: Option<(yeban_engine::device::TestToneHandle, std::time::Instant)>,
+    /// 面板打开期间的临时输入源（喂输入电平表；关面板即拆）。
+    input_test: Option<Box<dyn crate::record_wav::InputSource + Send>>,
+    /// 面板打开期间的 50 ms 定时器（抽输入电平 + 测试音收尾）。
+    timer: slint::Timer,
+}
+
+/// 刷新面板供数（T-FIX-71）：重新枚举两个方向、重拼清单、刷新状态行。
+/// 打开面板与「刷新设备」按钮共用这一条（⛔ 不写第二份）。
+fn refresh_audio_panel(
+    ui: &MainWindow,
+    production: &Rc<RefCell<ProductionLoop>>,
+    state: &Rc<RefCell<AudioPanelState>>,
+) {
+    let output_names: Vec<String> = yeban_engine::device::enumerate_output_devices()
+        .map(|devices| devices.into_iter().map(|device| device.name).collect())
+        .unwrap_or_default();
+    let input_names: Vec<String> = yeban_engine::device::enumerate_input_devices()
+        .map(|devices| devices.into_iter().map(|device| device.name).collect())
+        .unwrap_or_default();
+    let (output_selected, input_selected) = {
+        let production = production.borrow();
+        let state_ref = state.borrow();
+        (
+            production.audio_output_device().map(str::to_owned),
+            state_ref.input_name.clone(),
+        )
+    };
+    let output_choices = audio_device_choices(&output_names, output_selected.as_deref());
+    let input_choices = audio_device_choices(&input_names, input_selected.as_deref());
+    ui.set_audio_output_device_labels(strings(&output_choices.labels));
+    ui.set_audio_output_device_index(output_choices.selected as i32);
+    ui.set_audio_input_device_labels(strings(&input_choices.labels));
+    ui.set_audio_input_device_index(input_choices.selected as i32);
+    let mut state_mut = state.borrow_mut();
+    state_mut.output_names = output_choices.names;
+    state_mut.input_names = input_choices.names;
+    drop(state_mut);
+    refresh_audio_status_line(ui, production);
+}
+
+/// 只刷新状态行（T-FIX-71）：读引擎宿主的活读数（实际设备名 + 协商结果）。
+fn refresh_audio_status_line(ui: &MainWindow, production: &Rc<RefCell<ProductionLoop>>) {
+    let engine = production.borrow().engine_handle();
+    let engine = engine.borrow();
+    ui.set_audio_device_status(
+        audio_device_status_line(engine.device_name(), engine.device_negotiated()).into(),
+    );
+}
+
+/// （重）开面板的临时输入测试流（T-FIX-71）：经**录音那条真设备工厂**
+/// 按当前输入选择打开（协商/重开/起播全走产品路径，⛔ 不另写一条
+/// "测试专用"的开流）。打开失败 ⇒ 电平表停在 0 并把原因写进电平读数行
+/// （响亮，⛔ 不假装在测）。
+fn restart_audio_input_test(ui: &MainWindow, state: &Rc<RefCell<AudioPanelState>>) {
+    let input_name = state.borrow().input_name.clone();
+    let factory = crate::record_device::DeviceInputFactory::with_device_name(input_name);
+    let opened = <crate::record_device::DeviceInputFactory as crate::record_device::InputSourceFactory>::open(
+        &factory,
+        &crate::record_wav::RecordOptions::default(),
+    );
+    match opened {
+        Ok(source) => {
+            state.borrow_mut().input_test = Some(source);
+            ui.set_audio_input_level(0.0);
+            ui.set_audio_input_level_text("输入测试中 · -∞ dBFS".into());
+        }
+        Err(error) => {
+            state.borrow_mut().input_test = None;
+            ui.set_audio_input_level(0.0);
+            ui.set_audio_input_level_text(format!("输入不可用：{error}").into());
+        }
+    }
+}
+
+/// ⭐ **「设置 → 音频」面板接线**（T-FIX-71）：设备选择（输出/输入）、
+/// 状态行、播放测试音、输入实时电平。
+///
+/// 纪律：
+/// - 输出选择的**活值**住在 [`ProductionLoop`]（启动/换工程重开/面板改选
+///   三条路同一个值）；输入选择的活值住在本接线的状态里，录音路径每次
+///   经 `record_device::default_input_factory` 现读设置 ⇒ 面板改选后
+///   下一次录音即生效；
+/// - 两个方向的选择都经 [`crate::settings::save_audio_devices`] 落盘；
+/// - 输出改选 ⇒ **立即**按新设备重开设备腿（有工程时）；失败 ⇒ 状态行
+///   写明原因 + 错误 toast（旧设备腿仍在跑，⛔ 不假装切换成功）；
+/// - 输入电平只活在面板打开期间：50 ms 定时器抽临时输入流的峰值，
+///   关面板停表拆流。
+pub fn wire_audio_settings(
+    ui: &MainWindow,
+    production: Rc<RefCell<ProductionLoop>>,
+    port: Rc<UndoPort>,
+) {
+    let stored = crate::settings::load();
+    let state = Rc::new(RefCell::new(AudioPanelState {
+        output_names: vec![None],
+        input_names: vec![None],
+        input_name: stored.audio_input_device.clone(),
+        test_tone: None,
+        input_test: None,
+        timer: slint::Timer::default(),
+    }));
+
+    // ------------------------------------------------------------ 打开 / 关闭
+    {
+        let weak = ui.as_weak();
+        let production = Rc::clone(&production);
+        let state = Rc::clone(&state);
+        ui.on_open_audio_settings(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            refresh_audio_panel(&ui, &production, &state);
+            restart_audio_input_test(&ui, &state);
+            ui.set_audio_settings_open(true);
+            ui.invoke_focus_audio_settings_dialog();
+            // 50 ms 定时器：抽输入电平峰值 + 测试音到点收尾。闭包只持
+            // 状态的 **Weak**（状态持定时器本体，强持会成环）。
+            let tick_weak = weak.clone();
+            let tick_state = Rc::downgrade(&state);
+            let tick_production = Rc::clone(&production);
+            state.borrow().timer.start(
+                slint::TimerMode::Repeated,
+                std::time::Duration::from_millis(50),
+                move || {
+                    let Some(ui) = tick_weak.upgrade() else {
+                        return;
+                    };
+                    if !ui.get_audio_settings_open() {
+                        return;
+                    }
+                    let Some(state) = tick_state.upgrade() else {
+                        return;
+                    };
+                    let mut peak = 0.0_f32;
+                    let mut has_source = false;
+                    let mut tone_finished = false;
+                    {
+                        let mut state_mut = state.borrow_mut();
+                        if let Some(source) = state_mut.input_test.as_mut() {
+                            has_source = true;
+                            let channels = usize::from(source.channels().max(1));
+                            let mut buffer = vec![0.0_f32; 4096];
+                            for _ in 0..8 {
+                                let frames = source.next_block(2048, &mut buffer);
+                                if frames == 0 {
+                                    break;
+                                }
+                                for sample in &buffer[..frames * channels] {
+                                    peak = peak.max(sample.abs());
+                                }
+                            }
+                        }
+                        if let Some((_, started)) = &state_mut.test_tone
+                            && started.elapsed() >= std::time::Duration::from_millis(1300)
+                        {
+                            state_mut.test_tone = None;
+                            tone_finished = true;
+                        }
+                    }
+                    if has_source {
+                        ui.set_audio_input_level(peak);
+                        ui.set_audio_input_level_text(
+                            if peak > 0.0 {
+                                format!("{:.1} dBFS", 20.0 * f64::from(peak).log10())
+                            } else {
+                                "-∞ dBFS".to_owned()
+                            }
+                            .into(),
+                        );
+                    }
+                    if tone_finished {
+                        refresh_audio_status_line(&ui, &tick_production);
+                    }
+                },
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Rc::clone(&state);
+        ui.on_close_audio_settings(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let was_open = ui.get_audio_settings_open();
+            ui.set_audio_settings_open(false);
+            {
+                let mut state_mut = state.borrow_mut();
+                state_mut.timer.stop();
+                state_mut.input_test = None;
+                state_mut.test_tone = None;
+            }
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ 输出改选
+    {
+        let weak = ui.as_weak();
+        let production = Rc::clone(&production);
+        let state = Rc::clone(&state);
+        let port = Rc::clone(&port);
+        ui.on_audio_output_picked(move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let name = {
+                let state_ref = state.borrow();
+                let Some(entry) = state_ref.output_names.get(index as usize) else {
+                    return; // 模型已刷新 ⇒ 这一击的下标过期，忽略（⛔ 不猜）。
+                };
+                entry.clone()
+            };
+            crate::settings::save_audio_devices(
+                name.as_deref(),
+                state.borrow().input_name.as_deref(),
+            );
+            production.borrow_mut().set_audio_output_device(name);
+            // 立即按新选择重开设备腿（有工程时）。失败 ⇒ 旧腿仍在跑，
+            // 状态行写明原因 + 错误 toast，⛔ 不假装切换成功。
+            match port.try_project() {
+                Some(project) => {
+                    let config = yeban_engine::device::EngineConfig::from_project(&project);
+                    match production.borrow_mut().open_device(config) {
+                        Ok(_) => refresh_audio_status_line(&ui, &production),
+                        Err(error) => {
+                            let text = format!("切换输出设备失败：{error}");
+                            ui.set_audio_device_status(text.clone().into());
+                            ui.set_toast_message(text.into());
+                            ui.set_toast_is_error(true);
+                            ui.set_show_floating_toast(true);
+                        }
+                    }
+                }
+                None => refresh_audio_status_line(&ui, &production),
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ 输入改选
+    {
+        let weak = ui.as_weak();
+        let production = Rc::clone(&production);
+        let state = Rc::clone(&state);
+        ui.on_audio_input_picked(move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let name = {
+                let state_ref = state.borrow();
+                let Some(entry) = state_ref.input_names.get(index as usize) else {
+                    return;
+                };
+                entry.clone()
+            };
+            state.borrow_mut().input_name = name.clone();
+            crate::settings::save_audio_devices(
+                production.borrow().audio_output_device(),
+                name.as_deref(),
+            );
+            restart_audio_input_test(&ui, &state);
+        });
+    }
+
+    // ------------------------------------------------------------ 刷新 / 测试音
+    {
+        let weak = ui.as_weak();
+        let production = Rc::clone(&production);
+        let state = Rc::clone(&state);
+        ui.on_audio_refresh_devices(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            refresh_audio_panel(&ui, &production, &state);
+            restart_audio_input_test(&ui, &state);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let production = Rc::clone(&production);
+        let state = Rc::clone(&state);
+        ui.on_audio_play_test_tone(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let name = production.borrow().audio_output_device().map(str::to_owned);
+            let fail = |ui: &MainWindow, error: &dyn std::fmt::Display| {
+                let text = format!("播放测试音失败：{error}");
+                ui.set_toast_message(text.into());
+                ui.set_toast_is_error(true);
+                ui.set_show_floating_toast(true);
+            };
+            match yeban_engine::device::play_test_tone(name.as_deref()) {
+                Ok(handle) => match handle.play() {
+                    Ok(()) => {
+                        let text = format!(
+                            "测试音播放中 · {} · 1 kHz / −12 dBFS / 约 1 秒",
+                            handle.device_name()
+                        );
+                        state.borrow_mut().test_tone = Some((handle, std::time::Instant::now()));
+                        report_export_success(&ui, &text);
+                    }
+                    Err(error) => fail(&ui, &error),
+                },
+                Err(error) => fail(&ui, &error),
+            }
+        });
+    }
+}
+
 /// `Set` / `Clear` 的**唯一**提交实现（两条回调共用，因此不可能有一份漂移的 `Op` 构造）。
 ///
 /// `new_path`：`Some(text)` = 绑定那条路径；`None` = **解绑**。
@@ -6232,6 +6641,13 @@ pub struct ProductionLoop {
     /// 变了就按新位置重算标签（几何不动）。装配态是 0 —— 与投影的默认
     /// `AUTOMATION_CURSOR_TICK` 同值 ⇒ 第一跳不会产生无谓的重写。
     automation_cursor: u64,
+    /// ⭐ 用户选定的**输出设备名**（T-FIX-71）：「设置 → 音频」的**活值**，
+    /// 装配点从 [`crate::settings`] 读入、面板改选时经
+    /// [`Self::set_audio_output_device`] 更新（面板同时写回设置文件）。
+    /// [`Self::open_device`] 每次都按它开设备腿 ⇒ 启动、换工程重开、
+    /// 面板里改选重开，三条路**同一个选择**，⛔ 不各存一份。
+    /// `None` = 系统默认输出设备。
+    audio_output_device: Option<String>,
 }
 
 impl ProductionLoop {
@@ -6317,6 +6733,7 @@ impl ProductionLoop {
             engine: Rc::new(RefCell::new(engine)),
             meters,
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
+            audio_output_device: None,
         })
     }
 
@@ -6330,6 +6747,7 @@ impl ProductionLoop {
             engine: Rc::new(RefCell::new(EngineHost::new())),
             meters: MeterRuntime::empty(),
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
+            audio_output_device: None,
         }
     }
 
@@ -6350,9 +6768,26 @@ impl ProductionLoop {
         &mut self,
         config: yeban_engine::device::EngineConfig,
     ) -> Result<DeviceOpening, EngineHostError> {
-        let (opening, collector) = self.engine.borrow_mut().open_device(config)?;
+        // ⭐ T-FIX-71：按**当前选择**开（`audio_output_device`，装配点从设置
+        // 读入、面板改选时更新）；`None` = 系统默认设备（现行为）。
+        let (opening, collector) = self
+            .engine
+            .borrow_mut()
+            .open_device_on(config, self.audio_output_device.as_deref())?;
         self.meters.adopt(collector);
         Ok(opening)
+    }
+
+    /// 当前的输出设备选择（T-FIX-71）：`None` = 系统默认输出设备。
+    #[must_use]
+    pub fn audio_output_device(&self) -> Option<&str> {
+        self.audio_output_device.as_deref()
+    }
+
+    /// 更新输出设备选择（T-FIX-71）：只改**活值**（下一次 [`Self::open_device`]
+    /// 按它开）；写回设置文件是调用方（面板接线）的事，⛔ 本类不碰磁盘。
+    pub fn set_audio_output_device(&mut self, name: Option<String>) {
+        self.audio_output_device = name;
     }
 
     /// 引擎在这个进程里活没活着（`reload` 成功过）。
@@ -19620,6 +20055,51 @@ pub fn build_main_window_with_console_tab(
 mod tests {
     use super::advance_scroll;
 
+    /// ⭐⭐ **判据（T-FIX-71，选择器清单）**：第一项恒为「系统默认」；
+    /// 选择在枚举里 ⇒ 选中它；选择不在枚举里 ⇒ 追加「（未连接）」行并
+    /// 选中（⛔ 不悄悄换成默认）；没选过 ⇒ 选中第一项。
+    ///
+    /// 反向腿：缺失时直接落回下标 0 ⇒ 「未连接」那组断言红。
+    #[test]
+    fn audio_device_choices_keep_a_missing_selection_visible() {
+        let enumerated = vec!["Built-in Output".to_owned(), "USB Audio".to_owned()];
+        // 没选过 ⇒ 系统默认。
+        let choices = super::audio_device_choices(&enumerated, None);
+        assert_eq!(choices.labels[0], "系统默认");
+        assert_eq!(choices.names[0], None);
+        assert_eq!(choices.selected, 0);
+        assert_eq!(choices.labels.len(), 3);
+        // 选过的在枚举里 ⇒ 选中它（下标 = 枚举序 + 1）。
+        let choices = super::audio_device_choices(&enumerated, Some("USB Audio"));
+        assert_eq!(choices.selected, 2);
+        assert_eq!(choices.names[2].as_deref(), Some("USB Audio"));
+        // 选过的不在枚举里（拔掉了）⇒ 追加未连接行并选中，⛔ 不落回默认。
+        let choices = super::audio_device_choices(&enumerated, Some("HDMI"));
+        assert_eq!(choices.labels.len(), 4);
+        assert_eq!(choices.labels[3], "HDMI（未连接）");
+        assert_eq!(choices.selected, 3);
+        assert_eq!(choices.names[3].as_deref(), Some("HDMI"));
+        // 一台设备都没有 + 没选过 ⇒ 只有系统默认一行。
+        let choices = super::audio_device_choices(&[], None);
+        assert_eq!(choices.labels, vec!["系统默认".to_owned()]);
+        assert_eq!(choices.selected, 0);
+    }
+
+    /// ⭐⭐ **判据（T-FIX-71，状态行 · 无设备腿）**：没有设备腿时状态行
+    /// 必须说清形态（控制面驱动 + 后果），⛔ 不是空串、不是编造的设备名。
+    /// （带协商结果的分支要构造 `NegotiatedConfig`，其 `buffer_size` 是
+    /// cpal 类型、本 crate 不裸用 ⇒ 该分支的数字口径由引擎侧
+    /// `buffer_label` / `nominal_latency_ms` 的判据钉住。）
+    #[test]
+    fn audio_device_status_line_speaks_plainly_without_a_device_leg() {
+        let line = super::audio_device_status_line(None, None);
+        assert!(line.contains("未接线"), "{line}");
+        assert!(line.contains("播放无声"), "{line}");
+        // 有名字没协商结果（不一致的读数）⇒ 同样按未接线说，⛔ 不拼半份。
+        let line = super::audio_device_status_line(Some("USB Audio"), None);
+        assert!(line.contains("未接线"), "{line}");
+    }
+
     /// ⭐ 环境降级（无输出设备）必须说清"后果"，而不是甩一行英文后端错误。
     ///
     /// 判据读**输出字面**：
@@ -22620,6 +23100,7 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "file-save-as" => ui.invoke_save_project_as(),
         "file-save-as-template" => ui.invoke_save_as_template(),
         "open-export-wav" => ui.invoke_open_export_wav(),
+        "open-audio-settings" => ui.invoke_open_audio_settings(),
         // ⛔ 这里**不再有** `export-stems` 臂：真实入口在 `on_command_execute` 里先命中
         // （见 `stems_output_dir` 与 `crate::export_stems::export_stems`）。旧的
         // 「打开 WAV 面板 + 提示请用 CLI」分支已删除——留着会让下一个人误判成"还没修"。

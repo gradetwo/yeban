@@ -1110,6 +1110,14 @@ impl EngineHost {
         self.device.as_ref().map(OutputStreamHandle::backend_errors)
     }
 
+    /// 设备腿的**完整协商结果**（T-FIX-71，「设置 → 音频」面板的状态行读它：
+    /// 实际采样率/通道数/缓冲模式都出自这一份，⛔ 不从工程或枚举另拼）；
+    /// 没有设备腿 ⇒ `None`。
+    #[must_use]
+    pub fn device_negotiated(&self) -> Option<yeban_engine::device::NegotiatedConfig> {
+        self.device.as_ref().map(|handle| *handle.negotiated())
+    }
+
     /// 关掉设备腿（停流并丢掉那一代运行时）。返回"之前是否活跃"。
     ///
     /// 调用点：① [`EngineHost::reload`] 的开头（换代必然换驱动形态，同一时刻只允许
@@ -1565,6 +1573,24 @@ impl EngineHost {
         &mut self,
         config: EngineConfig,
     ) -> Result<(DeviceOpening, MeterCollector), EngineHostError> {
+        self.open_device_on(config, None)
+    }
+
+    /// ⭐ **按名开设备腿**（T-FIX-71）：与 [`Self::open_device`] 的唯一差别是
+    /// 选设备那一步 —— `device_name` 是用户在「设置 → 音频」里选定的输出
+    /// 设备显示名，经 [`yeban_engine::device::open_output_boxed_named`]
+    /// 精确命中；不在场 ⇒ [`EngineHostError::Device`] 里的
+    /// `NamedOutputDeviceUnavailable`（点名，⛔ 不静默回退默认设备）。
+    /// `None` = 系统默认设备（与 [`Self::open_device`] 逐字同行为）。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::open_device`]，另加指定设备不在场的点名错误。
+    pub fn open_device_on(
+        &mut self,
+        config: EngineConfig,
+        device_name: Option<&str>,
+    ) -> Result<(DeviceOpening, MeterCollector), EngineHostError> {
         // 1) 新端点（旧的一代一位不动；为候选 runtime 建独立 SnapshotSlot，避免与 live slot 冲突）。
         let Some(current_snapshot) = self.slot.as_ref().map(|slot| slot.current()) else {
             return Err(EngineHostError::NoEngine);
@@ -1605,10 +1631,12 @@ impl EngineHost {
 
         // 3) 开设备（失败 ⇒ 手里那一代一位不动）：把已装箱的运行时直接移入回调，
         // 避免在调用栈上按值搬运整份 EngineRuntime。
-        let handle = match yeban_engine::device::open_output_boxed(&config, runtime) {
-            Ok(handle) => handle,
-            Err(error) => return Err(EngineHostError::Device(error)),
-        };
+        // ⭐ T-FIX-71：选设备的名字在这一步进引擎（`None` = 默认设备，现行为）。
+        let handle =
+            match yeban_engine::device::open_output_boxed_named(&config, runtime, device_name) {
+                Ok(handle) => handle,
+                Err(error) => return Err(EngineHostError::Device(error)),
+            };
         // 4) 启流（失败 ⇒ 流被 Drop、手里那一代一位不动）。
         if let Err(error) = handle.play() {
             return Err(EngineHostError::Device(error));

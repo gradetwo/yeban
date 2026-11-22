@@ -1,0 +1,692 @@
+// 夜半 (Yeban) — 音频设置面板（T-FIX-71）
+//
+// 「设置 → 音频」：照 Logic Pro 的音频设置口径 —— 选输入/输出设备、
+// 看实际打开的设备状态、播放测试音、看输入实时电平。
+//
+// ## 诚实性边界
+//
+// * 设备清单、当前选择、状态行、电平读数**全部由宿主供数**
+//   （`host::wire_audio_settings`）：枚举走 `yeban_engine::device`
+//   的 `enumerate_output_devices` / `enumerate_input_devices`，状态行读
+//   引擎宿主的**实际协商结果**（`device_name` / `device_negotiated`），
+//   ⛔ 本文件不拼任何读数、不编任何数字。
+// * 状态行里的缓冲毫秒数是**名义值**（协商到的固定缓冲帧数 ÷ 设备
+//   采样率），⛔ 不是实测往返延迟：实测往返要走 `latency.rs` 的回环
+//   测量（需要回环线缆/声卡回送与专门测量流程），不在本面板里假装有。
+// * 输入电平只在**面板打开期间**活着：宿主开一条临时输入流喂它，
+//   关面板即拆。⛔ 面板关着时没有"后台监听"这回事。
+// * 选择器是手绘控件（本仓设计系统不用 std `ComboBox`，见
+//   `ui/tokens.slint` 的登记）：一枚显示当前选择的按钮 + 展开的清单。
+//   清单第一项恒为「系统默认」；宿主供数的模型里，所选设备不在场时
+//   会多出一行「<名字>（未连接）」—— ⛔ 不把用户的选择悄悄换成默认。
+//
+// ## 键盘（与导出对话框同款 D-UI-19 焦点闭环）
+//
+// 五格闭环：输出选择器 / 输入选择器 / 播放测试音 / 刷新设备 / ✕ 关闭。
+// `Tab` / `Shift+Tab` 在 `audio-trap` 里轮转并 `accept`；`Esc` 调既有
+// `close` 回调；选择器格上的 `Return` / `Space` 展开/收起它自己的清单。
+// 清单行可用鼠标点按，也带无障碍默认动作（读屏可达）。
+//
+// ## 几何
+//
+// 弹窗默认**关着**（`MainWindow.audio-settings-open = false`），因此默认帧
+// 一位不变。打开后是整帧遮罩（与 `dialogs/export_wav_dialog.slint` 同款，
+// 含 D-UI-21 的遮罩吞鼠标）。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+export component AudioSettingsDialog inherits Rectangle {
+    // ---- 宿主供数（唯一写者 = 宿主；选择经回调上抛，宿主落盘并应用）--------
+    in-out property <[string]> output-labels: [];
+    in-out property <int> output-index: 0;
+    in-out property <[string]> input-labels: [];
+    in-out property <int> input-index: 0;
+    in property <string> status-text: "";
+    in property <float> input-level: 0.0;
+    in property <string> input-level-text: "";
+
+    // 哪一个选择器的清单正展开：0 = 都没展开 / 1 = 输出 / 2 = 输入。
+    // 纯视图态（⛔ 不进宿主、不落盘）：选择本身走下面的回调。
+    property <int> expanded: 0;
+
+    callback close();
+    callback output-picked(int);
+    callback input-picked(int);
+    callback refresh-devices();
+    callback play-test-tone();
+
+    // 当前选择的安全读数（下标越界 ⇒ 空串，⛔ 不让界面下标炸掉渲染）。
+    out property <string> output-current:
+        root.output-index >= 0 && root.output-index < root.output-labels.length
+            ? root.output-labels[root.output-index] : "";
+    out property <string> input-current:
+        root.input-index >= 0 && root.input-index < root.input-labels.length
+            ? root.input-labels[root.input-index] : "";
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "audio-settings-dialog";
+    accessible-label: @tr("音频设置");
+
+    // D-UI-21 同款：遮罩吞掉落在弹窗外的一击（⛔ 不关面板，只吃掉）。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    audio-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        Rectangle {
+            x: (root.width - 560px) / 2;
+            y: (root.height - 472px) / 2;
+            width: 560px;
+            height: 472px;
+            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "audio-settings-panel";
+            accessible-label: @tr("音频设置面板");
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: @tr("音频设置");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            // 关闭（✕）：焦点闭环第 4 格。
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "audio-settings-close-button";
+                accessible-label: @tr("关闭音频设置");
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                audio-settings-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 输出设备
+            UiText {
+                x: Tokens.space-6;
+                y: 52px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: @tr("输出设备");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 72px;
+                width: parent.width - 48px;
+                height: 28px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: root.expanded == 1 ? Tokens.gold : Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "audio-output-selector";
+                accessible-label: @tr("输出设备选择");
+                accessible-action-default => { root.expanded = root.expanded == 1 ? 0 : 1; }
+
+                audio-output-selector-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.expanded = root.expanded == 1 ? 0 : 1;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: Tokens.space-4;
+                    y: 0;
+                    width: parent.width - 96px;
+                    height: parent.height;
+                    text: root.output-current;
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                UiText {
+                    x: parent.width - 72px;
+                    y: 0;
+                    width: 60px;
+                    height: parent.height;
+                    text: @tr("更换");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.expanded = root.expanded == 1 ? 0 : 1; }
+                }
+            }
+
+            // ------------------------------------------------------------ 输入设备
+            UiText {
+                x: Tokens.space-6;
+                y: 116px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: @tr("输入设备");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 136px;
+                width: parent.width - 48px;
+                height: 28px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: root.expanded == 2 ? Tokens.gold : Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "audio-input-selector";
+                accessible-label: @tr("输入设备选择");
+                accessible-action-default => { root.expanded = root.expanded == 2 ? 0 : 2; }
+
+                audio-input-selector-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.expanded = root.expanded == 2 ? 0 : 2;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: Tokens.space-4;
+                    y: 0;
+                    width: parent.width - 96px;
+                    height: parent.height;
+                    text: root.input-current;
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                UiText {
+                    x: parent.width - 72px;
+                    y: 0;
+                    width: 60px;
+                    height: parent.height;
+                    text: @tr("更换");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.expanded = root.expanded == 2 ? 0 : 2; }
+                }
+            }
+
+            // ------------------------------------------------------------ 状态行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 180px;
+                width: parent.width - 48px;
+                height: 36px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "audio-device-status";
+                accessible-label: root.status-text;
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.status-text;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    wrap: word-wrap;
+                }
+            }
+
+            // ------------------------------------------------------------ 输入电平
+            UiText {
+                x: Tokens.space-6;
+                y: 228px;
+                width: 200px;
+                height: 16px;
+                text: @tr("输入电平（面板打开期间）");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 228px;
+                width: parent.width - 48px;
+                height: 16px;
+
+                accessible-role: text;
+                accessible-id: "audio-input-level-text";
+                accessible-label: root.input-level-text;
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.input-level-text;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: right;
+                }
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 250px;
+                width: parent.width - 48px;
+                height: 14px;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                clip: true;
+
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width * Math.clamp(root.input-level, 0.0, 1.0);
+                    height: parent.height;
+                    background: Tokens.gold;
+                }
+            }
+
+            // ------------------------------------------------------------ 测试与刷新
+            Rectangle {
+                x: Tokens.space-6;
+                y: 286px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "audio-test-tone-button";
+                accessible-label: @tr("在所选输出设备上播放测试音（1 千赫，约 1 秒）");
+                accessible-action-default => { root.play-test-tone(); }
+
+                audio-test-tone-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.play-test-tone();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("播放测试音");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.play-test-tone(); }
+                }
+            }
+
+            Rectangle {
+                x: Tokens.space-6 + 176px;
+                y: 286px;
+                width: 140px;
+                height: 32px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "audio-refresh-devices-button";
+                accessible-label: @tr("重新枚举音频设备");
+                accessible-action-default => { root.refresh-devices(); }
+
+                audio-refresh-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.refresh-devices();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("刷新设备");
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.refresh-devices(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 说明行
+            UiText {
+                x: Tokens.space-6;
+                y: 336px;
+                width: parent.width - 48px;
+                height: 30px;
+                text: @tr("设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                wrap: word-wrap;
+            }
+
+            // ------------------------------------------------------------ 输出清单（展开时）
+            if root.expanded == 1 : Rectangle {
+                x: Tokens.space-6;
+                y: 102px;
+                width: parent.width - 48px;
+                height: Math.min(root.output-labels.length * 26px, 156px);
+                background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                clip: true;
+
+                Flickable {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    content-height: root.output-labels.length * 26px;
+
+                    VerticalLayout {
+                        width: parent.width;
+                        for label[index] in root.output-labels : Rectangle {
+                            height: 26px;
+                            background: index == root.output-index ? Tokens.gold-deep : transparent;
+                            accessible-role: button;
+                            accessible-label: label;
+                            accessible-action-default => {
+                                root.output-picked(index);
+                                root.expanded = 0;
+                            }
+
+                            UiText {
+                                x: Tokens.space-4;
+                                y: 0;
+                                width: parent.width - 24px;
+                                height: parent.height;
+                                text: label;
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-xs;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => {
+                                    root.output-picked(index);
+                                    root.expanded = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ------------------------------------------------------------ 输入清单（展开时）
+            if root.expanded == 2 : Rectangle {
+                x: Tokens.space-6;
+                y: 166px;
+                width: parent.width - 48px;
+                height: Math.min(root.input-labels.length * 26px, 156px);
+                background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                clip: true;
+
+                Flickable {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    content-height: root.input-labels.length * 26px;
+
+                    VerticalLayout {
+                        width: parent.width;
+                        for label[index] in root.input-labels : Rectangle {
+                            height: 26px;
+                            background: index == root.input-index ? Tokens.gold-deep : transparent;
+                            accessible-role: button;
+                            accessible-label: label;
+                            accessible-action-default => {
+                                root.input-picked(index);
+                                root.expanded = 0;
+                            }
+
+                            UiText {
+                                x: Tokens.space-4;
+                                y: 0;
+                                width: parent.width - 24px;
+                                height: parent.height;
+                                text: label;
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-xs;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => {
+                                    root.input-picked(index);
+                                    root.expanded = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- 焦点读数（D-UI-19 口径：从 Slint 自己的 has-focus 推导）--------------
+    /// 五格闭环的当前格：`0` 输出选择器 / `1` 输入选择器 / `2` 播放测试音 /
+    /// `3` 刷新设备 / `4` ✕ 关闭 / `-1` 不在模态内。
+    out property <int> focused-control:
+        audio-output-selector-focus.has-focus ? 0
+        : audio-input-selector-focus.has-focus ? 1
+        : audio-test-tone-focus.has-focus ? 2
+        : audio-refresh-focus.has-focus ? 3
+        : audio-settings-close-focus.has-focus ? 4
+        : -1;
+
+    /// 打开时由宿主调用：焦点进第一格（输出选择器）。
+    public function focus-first-control() {
+        audio-output-selector-focus.focus();
+    }
+
+    /// 五格的唯一「序号 → 控件」表（轮转只做序号加减，取焦一律走这里）。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            audio-output-selector-focus.focus();
+        } else if (index == 1) {
+            audio-input-selector-focus.focus();
+        } else if (index == 2) {
+            audio-test-tone-focus.focus();
+        } else if (index == 3) {
+            audio-refresh-focus.focus();
+        } else if (index == 4) {
+            audio-settings-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：五格正向闭环；`-1` ⇒ 落回第一格。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else if (root.focused-control == 1) {
+            root.focus-control(2);
+        } else if (root.focused-control == 2) {
+            root.focus-control(3);
+        } else if (root.focused-control == 3) {
+            root.focus-control(4);
+        } else {
+            root.focus-control(0);
+        }
+    }
+
+    /// `Shift+Tab`：反向闭环；第一格再退 ⇒ 末格。
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else if (root.focused-control == 2) {
+            root.focus-control(1);
+        } else if (root.focused-control == 3) {
+            root.focus-control(2);
+        } else if (root.focused-control == 4) {
+            root.focus-control(3);
+        } else {
+            root.focus-control(4);
+        }
+    }
+}
