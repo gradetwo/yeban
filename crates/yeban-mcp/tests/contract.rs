@@ -598,55 +598,73 @@ fn extension_argument_constraints_match_the_registry() {
     let root = contract();
     let wiring = root["definitions"]["ToolCall"]["allOf"]
         .as_array()
-        .expect("ToolCall.allOf 必须存在（扩展工具的实参约束靠 if/then 接线）");
+        .expect("ToolCall.allOf 必须存在（每个工具的实参约束靠 if/then 接线）");
     assert_eq!(
         wiring.len(),
-        tools::EXTENSION_TOOL_COUNT,
-        "恰好一条 if/then 对应一个扩展工具"
+        tools::TOOL_COUNT,
+        "恰好一条 if/then 对应一个工具（含规范十工具）"
     );
-    let defs = &root["definitions"]["ExtensionToolArguments"]["$defs"];
+    let documented_defs = root["definitions"]["RegisteredToolArguments"]["$defs"]
+        .as_object()
+        .expect("`RegisteredToolArguments.$defs` 必须是对象");
+    let extension_defs = &root["definitions"]["ExtensionToolArguments"]["$defs"];
 
-    // (1) 既有十工具**绝不**出现在本节（D46 的"不得改动既有参数语义"）。
+    // 两个手写节不得互相重复：规范十工具只在 RegisteredToolArguments，
+    // 扩展工具只在 ExtensionToolArguments。
     for spec in tools::TOOLS.iter().take(tools::DOCUMENTED_TOOL_COUNT) {
         assert!(
-            defs.get(spec.name).is_none(),
-            "规范工具 `{}` 不得出现在 ExtensionToolArguments 里",
+            documented_defs.contains_key(spec.name),
+            "规范工具 `{}` 必须在 RegisteredToolArguments 里有完整参数约束",
             spec.name
         );
         assert!(
-            !wiring.iter().any(|branch| {
-                branch["if"]["properties"]["name"]["const"].as_str() == Some(spec.name)
-            }),
-            "规范工具 `{}` 不得有 if/then 实参约束",
+            extension_defs.get(spec.name).is_none(),
+            "规范工具 `{}` 不得出现在 ExtensionToolArguments 里",
+            spec.name
+        );
+    }
+    for spec in tools::TOOLS.iter().skip(tools::DOCUMENTED_TOOL_COUNT) {
+        assert!(
+            extension_defs.get(spec.name).is_some(),
+            "扩展工具 `{}` 必须在 ExtensionToolArguments 里有参数约束",
+            spec.name
+        );
+        assert!(
+            documented_defs.get(spec.name).is_none(),
+            "扩展工具 `{}` 不得出现在 RegisteredToolArguments 里",
             spec.name
         );
     }
 
-    // (2) 每个扩展工具：分支 ⇄ $defs ⇄ 注册表 三者逐字段一致。
-    let extension_names: Vec<&str> = tools::TOOLS
-        .iter()
-        .skip(tools::DOCUMENTED_TOOL_COUNT)
-        .map(|spec| spec.name)
-        .collect();
-    assert_eq!(extension_names, tools::EXTENSION_NAMES, "扩展清单顺序");
-    for (index, tool) in extension_names.iter().enumerate() {
+    // 每个工具：分支 ⇄ $defs ⇄ 注册表 三者逐字段一致。
+    for (index, spec) in tools::TOOLS.iter().enumerate() {
         let branch = &wiring[index];
         assert_eq!(
-            branch["if"]["properties"]["name"]["const"], *tool,
-            "第 {index} 条 if 必须判 `{tool}`（顺序 = 注册顺序）"
+            branch["if"]["properties"]["name"]["const"], spec.name,
+            "第 {index} 条 if 必须判 `{}`（顺序 = 注册顺序）",
+            spec.name
         );
+        let expected_section = if index < tools::DOCUMENTED_TOOL_COUNT {
+            "RegisteredToolArguments"
+        } else {
+            "ExtensionToolArguments"
+        };
         let reference = branch["then"]["properties"]["arguments"]["$ref"]
             .as_str()
-            .expect("then 必须 $ref 到扩展参数定义");
+            .expect("then 必须 $ref 到工具参数定义");
         assert_eq!(
             reference,
-            format!("#/definitions/ExtensionToolArguments/$defs/{tool}")
+            format!("#/definitions/{expected_section}/$defs/{}", spec.name)
         );
 
-        let spec = tools::tool(tool).unwrap_or_else(|| panic!("`{tool}` 必须注册"));
-        let declared = defs[*tool]["properties"]
+        let declared = if index < tools::DOCUMENTED_TOOL_COUNT {
+            &documented_defs[spec.name]["properties"]
+        } else {
+            &extension_defs[spec.name]["properties"]
+        };
+        let declared = declared
             .as_object()
-            .unwrap_or_else(|| panic!("`{tool}` 的 $defs 必须有 properties"));
+            .unwrap_or_else(|| panic!("`{}` 的 $defs 必须有 properties", spec.name));
 
         // (2a) 属性集合**恰好**等于注册表的全部参数（公共两个 + 特有）。
         let mut declared_keys: Vec<&str> = declared.keys().map(String::as_str).collect();
@@ -654,9 +672,11 @@ fn extension_argument_constraints_match_the_registry() {
         let mut registry_keys: Vec<&str> =
             spec.all_params().iter().map(|param| param.name).collect();
         registry_keys.sort_unstable();
+        registry_keys.dedup();
         assert_eq!(
             declared_keys, registry_keys,
-            "`{tool}` 的实参集合必须与注册表逐项相等"
+            "`{}` 的实参集合必须与注册表逐项相等",
+            spec.name
         );
 
         // (2b) 每个参数的 JSON 类型一致。
@@ -664,8 +684,8 @@ fn extension_argument_constraints_match_the_registry() {
             let property = &declared[param.name];
             assert_eq!(
                 property["type"], param.json_type,
-                "`{tool}.{}` 的 JSON 类型必须与注册表一致",
-                param.name
+                "`{}.{}` 的 JSON 类型必须与注册表一致",
+                spec.name, param.name
             );
         }
 
@@ -676,7 +696,13 @@ fn extension_argument_constraints_match_the_registry() {
             .map(|param| param.name.to_owned())
             .collect();
         registry_required.sort();
-        let schema_required: Vec<String> = defs[*tool]
+        registry_required.dedup();
+        let definition = if index < tools::DOCUMENTED_TOOL_COUNT {
+            &documented_defs[spec.name]
+        } else {
+            &extension_defs[spec.name]
+        };
+        let schema_required: Vec<String> = definition
             .get("required")
             .and_then(|value| value.as_array())
             .map(|items| {
@@ -690,14 +716,16 @@ fn extension_argument_constraints_match_the_registry() {
         schema_required_sorted.sort();
         assert_eq!(
             schema_required_sorted, registry_required,
-            "`{tool}` 的必填集合必须与注册表一致 (手写 schema 的 required 数组)"
+            "`{}` 的必填集合必须与注册表一致 (手写 schema 的 required 数组)",
+            spec.name
         );
         // 反向：注册表说可选的那些参数，schema 里不得列进 required。
         for param in spec.all_params() {
             if !param.required {
                 assert!(
                     !schema_required.contains(&param.name.to_owned()),
-                    "`{tool}.{}` 在注册表里是可选参数, schema 不得把它列成必填",
+                    "`{}.{}` 在注册表里是可选参数, schema 不得把它列成必填",
+                    spec.name,
                     param.name
                 );
             }
@@ -707,12 +735,14 @@ fn extension_argument_constraints_match_the_registry() {
         assert_eq!(
             declared[tools::DRY_RUN_PARAM]["default"],
             serde_json::Value::from(false),
-            "`{tool}.dryRun` 的 default 必须是 false"
+            "`{}.dryRun` 的 default 必须是 false",
+            spec.name
         );
         assert_eq!(
             declared[tools::IDEMPOTENCY_KEY_PARAM]["type"],
             "string",
-            "`{tool}.idempotencyKey` 必须是字符串"
+            "`{}.idempotencyKey` 必须是字符串",
+            spec.name
         );
     }
 

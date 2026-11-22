@@ -549,7 +549,10 @@ fn fixture_argument(tool_name: &str, param: &ParamSpec) -> Value {
         "commitMessage" => Value::from("AI 提案: 副歌加一层八度"),
         "reason" => Value::from("织体过密"),
         "fields" => Value::Array(vec![Value::from("tracks"), Value::from("sections")]),
-        "ops" => Value::Array(vec![Value::Object(Map::new())]),
+        "ops" => Value::Array(vec![serde_json::json!({
+            "kind": "delete",
+            "noteId": "01J8ZQ00000000000000000001",
+        })]),
         "value" => Value::from(0.5),
         // ADR-0001 D46 的三个扩展工具（词汇表与 `project.json` 逐字相同）。
         "lane" => Value::from("TrackVolume"),
