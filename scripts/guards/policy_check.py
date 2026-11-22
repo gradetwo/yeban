@@ -1177,6 +1177,14 @@ def self_test() -> int:
         if not isinstance(found, list):
             fails.append(f"{gid} 返回了 {type(found).__name__} 而不是 list ⇒ 判据可能失效")
 
+    # T-FIX-34 pin: `yeban-midi` is a pure-format engine crate (ADR-0031 / ARCH-TOP-003);
+    # a future edit must not silently move it back to NON_ENGINE_CRATES and skip G02/G11/G03.
+    for crate in ("yeban-midi",):
+        if crate not in ENGINE_CRATES_NO_GUI:
+            fails.append(f"`{crate}` 必须留在 ENGINE_CRATES_NO_GUI（G02/G11 才覆盖它）")
+        if crate not in SAFE_BY_DEFAULT_CRATES:
+            fails.append(f"`{crate}` 必须留在 SAFE_BY_DEFAULT_CRATES（G03 才覆盖它）")
+
     if fails:
         for f in fails:
             print(f"[FAIL] {f}", file=sys.stderr)
