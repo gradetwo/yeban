@@ -20,6 +20,7 @@ fn headless_options(extra: &[&str]) -> Options {
 #[test]
 fn debug_off_adds_no_debug_lines() {
     let lines = run_batch(&headless_options(&[])).expect("默认批处理必须成功");
+    assert!(!lines.is_empty(), "默认批处理报告必须非空");
     assert!(
         lines.iter().all(|line| !line.contains("[debug]")),
         "调试关闭时报告里不许出现 [debug] 行: {lines:?}"
