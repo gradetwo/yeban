@@ -37,14 +37,14 @@ src/drums/mod.rs|2212|variable|&kit.crash.decay_s|variable_needle|needle 非字�
 src/drums/mod.rs|2534|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|2806|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/gate.rs|236|variable|&sr|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|1570|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|1574|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|2013|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2014|literal|sup.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2015|literal|const.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2016|literal|.peak|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2017|literal|.rms|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2018|literal|.is_sane|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|1612|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|1616|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|2055|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2056|literal|sup.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2057|literal|const.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2058|literal|.peak|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2059|literal|.rms|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2060|literal|.is_sane|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
 src/noise.rs|313|variable|&hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|384|variable|&x|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|397|variable|&unit|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
