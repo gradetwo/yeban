@@ -267,7 +267,10 @@ pub const fn container_rejection(error: &ContainerError) -> ContainerRejection {
         | E::UnexpectedContainerEntry { .. }
         | E::InvalidAssetName { .. }
         | E::AssetHashMismatch { .. }
-        | E::ContainerSerialization { .. } => ContainerRejection::Layout,
+        | E::ContainerSerialization { .. }
+        // 版本门（T-FIX-86②）：比本读取器新的工程文档按"布局不可解读"归类，
+        // 与 `InvalidProjectJson` 同一档 —— 都是"文件在，但这份内容本版本不认"。
+        | E::SchemaRejected { .. } => ContainerRejection::Layout,
     }
 }
 

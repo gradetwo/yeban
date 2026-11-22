@@ -537,6 +537,16 @@ pub enum ContainerError {
         /// `serde_json` 的错误描述。
         detail: String,
     },
+    /// `project.json` 的版本高于本读取器（`schema_version` / `min_reader_version`）。
+    ///
+    /// 拒绝而不是"尽量读"：比本版本新的文档里可能有本版本**不认识**的字段，
+    /// 读进来再存一次就会把用户的编辑悄悄丢掉。GUI 与 TUI 共用本入口 ⇒
+    /// 两侧拿到**同一条**响亮失败（T-FIX-86②）。
+    #[error("`project.json` is newer than this reader: {detail}")]
+    SchemaRejected {
+        /// `ModelError` 的原文。
+        detail: String,
+    },
     /// 容器里出现了 §5.3 未定义的条目。
     #[error("container has an unexpected entry `{name}`")]
     UnexpectedContainerEntry {
@@ -862,11 +872,18 @@ pub fn read_project_container(
             ));
         }
     }
-    let project = serde_json::from_slice(&project_json).map_err(|error| {
+    let project: YebanProjectV1 = serde_json::from_slice(&project_json).map_err(|error| {
         ContainerError::InvalidProjectJson {
             detail: error.to_string(),
         }
     })?;
+    // 版本门 [ROAD-M1-001]：比本读取器新的文档必须**拒绝**（错误原文带两侧版本）。
+    // 放在反序列化之后、返回之前：此处是 GUI / TUI / CLI 打开容器的**唯一**入口。
+    project
+        .check_readable()
+        .map_err(|error| ContainerError::SchemaRejected {
+            detail: error.to_string(),
+        })?;
     Ok(ProjectArchive {
         project,
         history_dag: history_dag.ok_or(ContainerError::MissingHistoryDag)?,

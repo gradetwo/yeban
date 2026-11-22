@@ -51,6 +51,110 @@ pub struct ExportReceipt {
     pub bits: u16,
 }
 
+/// 一条语义行（T-FIX-86③）：角色 / 标签 / 序，**与 GUI 同一套角色词**。
+///
+/// 角色串取自 `yeban_app::elements::ElementKind::accessible_role()`（GUI 元素注册表的
+/// 唯一词表），⛔ 不另造一套。终端没有 OS 无障碍树，这些行是"可被读出的语义清单"
+/// （`:a11y` 导出），取舍写在 README。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticRow {
+    /// 稳定语义 ID（`tui-track-3` 这类；判据按它定位）。
+    pub id: String,
+    /// 无障碍角色（`list` / `list-item` / `groupbox` …）。
+    pub role: &'static str,
+    /// 人类可读标签（与界面上显示的文本同源）。
+    pub label: String,
+    /// 在同角色兄弟里的序（0 起）。
+    pub index: usize,
+}
+
+/// 工程信息面读数（T-FIX-86①②）：契约版本 + 960 PPQ 时钟 + EntityId + 规模。
+///
+/// 每个字段都来自**模型自己**：`YebanProjectV1` 的版本字段、`yeban_model::ids::PPQ`、
+/// 实体身份、`App` 的 tick 换算（与时间码/吸附共用同一个 `ticks_per_beat`）。
+/// ⛔ 不写死 960 以外的数、不从文件名猜版本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectInfo {
+    /// 工程标题。
+    pub title: String,
+    /// 工程身份（`YebanProjectV1::id`，ULID 文本）。
+    pub id: String,
+    /// 文档 schema 版本。
+    pub schema_version: u32,
+    /// 最低读取器版本。
+    pub min_reader_version: u32,
+    /// 写入器版本串。
+    pub writer_version: String,
+    /// `check_readable` 的结论（`Err` 带原文；`:info` 照实写）。
+    pub readable: Result<(), String>,
+    /// 每四分音符 tick 数（模型常量 `yeban_model::ids::PPQ`）。
+    pub ppq: u64,
+    /// 每拍 tick 数（按拍号分母换算）。
+    pub ticks_per_beat: u64,
+    /// 每小节 tick 数。
+    pub bar_ticks: u64,
+    /// 拍号分子。
+    pub numerator: u8,
+    /// 拍号分母。
+    pub denominator: u8,
+    /// 工程总小节数。
+    pub total_bars: usize,
+    /// 工程总长（tick）。
+    pub length_ticks: u64,
+    /// 音轨数（含主总线）。
+    pub tracks: usize,
+    /// 片段数（池条目）。
+    pub clips: usize,
+    /// 容器路径（`None` = 内存里的演示工程）。
+    pub source: Option<String>,
+    /// 选中轨（身份 + 名）。
+    pub selected_track: Option<(String, String)>,
+    /// 小节光标（0 起）。
+    pub cursor_bar: usize,
+}
+
+impl ProjectInfo {
+    /// 工程信息面文本（`:info` 的四行；判据与界面共用这一份）。
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let contract = match &self.readable {
+            Ok(()) => "可读（check_readable 通过）".to_owned(),
+            Err(reason) => format!("不可读（{reason}）"),
+        };
+        let source = self
+            .source
+            .clone()
+            .unwrap_or_else(|| "内存演示工程（尚未落盘）".to_owned());
+        let selected = self.selected_track.as_ref().map_or_else(
+            || "未选中轨".to_owned(),
+            |(id, name)| format!("轨「{name}」 {id}"),
+        );
+        vec![
+            format!("工程「{}」 · 身份 {} · 容器 {source}", self.title, self.id),
+            format!(
+                "契约 schema {} · minReader {} · writer {} · {contract}",
+                self.schema_version, self.min_reader_version, self.writer_version
+            ),
+            format!(
+                "时钟 {} PPQ · 每拍 {} tick · 每小节 {} tick · {}/{} · 长度 {} 小节 / {} tick",
+                self.ppq,
+                self.ticks_per_beat,
+                self.bar_ticks,
+                self.numerator,
+                self.denominator,
+                self.total_bars,
+                self.length_ticks
+            ),
+            format!(
+                "规模 {} 轨 · {} 片段 · 选中 {selected} · 光标第 {} 小节",
+                self.tracks,
+                self.clips,
+                self.cursor_bar + 1
+            ),
+        ]
+    }
+}
+
 /// 鼓机生成请求（`yeban_generate_drum_pattern` 的参数面；缺省与 GUI / MCP 同口径）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrumRequest {
@@ -1312,6 +1416,35 @@ impl App {
         );
     }
 
+    /// 改选中音符的时值（`Shift+←/→`，`[UI-NOTE-005]` 项 3）。
+    ///
+    /// 换算与 batch 构造都走 GUI 的**同一对**纯函数：
+    /// `yeban_app::host::resize_duration_delta_for`（一档 = 一个吸附网格，
+    /// 与无修饰 `←/→` 的平移同一个常量）与 `resize_duration_ops_for`
+    /// （`Op::SetNoteTiming`，保住音符身份；逐音符夹紧到 1 tick 下限）。
+    /// 空批（没选区 / 已在下限 / Δ = 0）⇒ ⛔ 不写空 op、如实记日志。
+    pub fn resize_selected_note_by_grid(&mut self, direction: i8) {
+        if !matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.log_line("改时值只在音符视图内接入（片段网格里按 n 打开）".to_owned());
+            return;
+        }
+        let Some((_, _, note)) = self.selected_note() else {
+            self.log_line("音符视图内无选中音符".to_owned());
+            return;
+        };
+        let delta = yeban_app::host::resize_duration_delta_for(direction);
+        let ops = yeban_app::host::resize_duration_ops_for(
+            &self.project,
+            &[note.id.to_canonical_string()],
+            delta,
+        );
+        if ops.is_empty() {
+            self.log_line("音符已在 1 tick 下限，无变化".to_owned());
+            return;
+        }
+        self.commit_edit("tui: resize note duration", ops, "改音符时值");
+    }
+
     /// 在光标处加一个音符（音符视图内裸 `a`）：新身份，起点 = 光标在
     /// 片段内的相对 tick，音高 = 选中音符的音高（无选中时 60），
     /// 时值 = 一拍，力度 = 100（`MidiNote::new` 的缺省力度）。
@@ -2053,6 +2186,176 @@ impl App {
         self.device_status().line()
     }
 
+    /// 工程信息面读数（`:info` 的 TUI 等价面）：契约 + 960 PPQ 时钟 + 身份 + 规模。
+    ///
+    /// 版本字段直接取 `YebanProjectV1` 自己的 `schema_version` / `min_reader_version` /
+    /// `writer_version`，可读性用**同一个** `check_readable`（打开工程时的同一道门，
+    /// ⛔ 不另写一份版本比较）；tick 换算复用时间码/吸附用的 `ticks_per_beat`。
+    #[must_use]
+    pub fn project_info(&self) -> ProjectInfo {
+        let selected_track = self.selected_track_id().map(|id| {
+            let name = self
+                .project
+                .tracks
+                .get(&id)
+                .map(|track| track.name.clone())
+                .unwrap_or_default();
+            (id.to_canonical_string(), name)
+        });
+        ProjectInfo {
+            title: self.project.title.clone(),
+            id: self.project.id.to_canonical_string(),
+            schema_version: self.project.schema_version,
+            min_reader_version: self.project.min_reader_version,
+            writer_version: self.project.writer_version.clone(),
+            readable: self
+                .project
+                .check_readable()
+                .map_err(|error| error.to_string()),
+            ppq: yeban_model::ids::PPQ,
+            ticks_per_beat: self.ticks_per_beat(),
+            bar_ticks: self.bar_ticks(),
+            numerator: self.project.time_signature.numerator,
+            denominator: self.project.time_signature.denominator,
+            total_bars: self.total_bars(),
+            length_ticks: self.project_len_ticks(),
+            tracks: self.project.tracks.len(),
+            clips: self.project.clip_pool.len(),
+            source: self
+                .project_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            selected_track,
+            cursor_bar: self.cursor_bar,
+        }
+    }
+
+    /// 工程信息面的四行文本（`:info` / `:clock` 的落点）。
+    #[must_use]
+    pub fn project_info_lines(&self) -> Vec<String> {
+        self.project_info().lines()
+    }
+
+    /// 当前界面的语义清单（T-FIX-86③）：三个窗格 + 轨道行 + 检查器文本，
+    /// 角色全部取自 GUI 的 `ElementKind::accessible_role`，序按显示顺序。
+    ///
+    /// 终端拿不到 OS 无障碍树（取舍写在 README），这份清单是**可核的语义面**：
+    /// `:a11y` 逐行导出 `role / id / index / label`，判据按它断言"标签与界面上
+    /// 看到的文本同源、序连续"。
+    #[must_use]
+    pub fn semantic_rows(&self) -> Vec<SemanticRow> {
+        use yeban_app::elements::ElementKind;
+        let mut rows = Vec::with_capacity(self.track_ids.len() + 8);
+        rows.push(SemanticRow {
+            id: "tui-main".to_owned(),
+            role: ElementKind::Main.accessible_role(),
+            label: format!("{} 主工作区", self.project.title),
+            index: 0,
+        });
+        rows.push(SemanticRow {
+            id: "tui-tracks".to_owned(),
+            role: ElementKind::List.accessible_role(),
+            label: format!("轨道栏（{} 条）", self.track_ids.len()),
+            index: 0,
+        });
+        for (index, id) in self.track_ids.iter().enumerate() {
+            let name = self
+                .project
+                .tracks
+                .get(id)
+                .map_or_else(String::new, |track| track.name.clone());
+            let selected = if index == self.selected {
+                "（选中）"
+            } else {
+                ""
+            };
+            rows.push(SemanticRow {
+                id: format!("tui-track-{index}"),
+                role: ElementKind::ListItem.accessible_role(),
+                label: format!("轨道 {index}{selected} {name}"),
+                index,
+            });
+        }
+        rows.push(SemanticRow {
+            id: "tui-grid".to_owned(),
+            role: ElementKind::Region.accessible_role(),
+            label: if self.list_view.is_some() {
+                "片段网格（列表视图）".to_owned()
+            } else {
+                "片段网格".to_owned()
+            },
+            index: 0,
+        });
+        rows.push(SemanticRow {
+            id: "tui-inspector".to_owned(),
+            role: ElementKind::GroupBox.accessible_role(),
+            label: "检查器".to_owned(),
+            index: 0,
+        });
+        let track = self
+            .selected_track_id()
+            .and_then(|id| self.project.tracks.get(&id));
+        let inspector_labels: Vec<String> = match track {
+            Some(track) => vec![
+                format!("名称 {}", track.name),
+                format!("类型 {}", track_kind_label(track.kind)),
+                format!("音量 {:+.1} dB", track.volume_db),
+                format!("声相 {:+.1}", track.pan),
+                format!("身份 {}", track.id.to_canonical_string()),
+            ],
+            None => vec!["未选中轨".to_owned()],
+        };
+        for (index, label) in inspector_labels.into_iter().enumerate() {
+            rows.push(SemanticRow {
+                id: format!("tui-inspector-text-{index}"),
+                role: ElementKind::Text.accessible_role(),
+                label,
+                index,
+            });
+        }
+        rows.push(SemanticRow {
+            id: "tui-status".to_owned(),
+            role: ElementKind::ContentInfo.accessible_role(),
+            label: self.log.last().cloned().unwrap_or_default(),
+            index: 0,
+        });
+        rows
+    }
+
+    /// 语义清单的文本行（`:a11y` 的落点；判据与界面共用）。
+    #[must_use]
+    pub fn semantic_lines(&self) -> Vec<String> {
+        self.semantic_rows()
+            .iter()
+            .map(|row| {
+                format!(
+                    "role={} id={} index={} label={}",
+                    row.role, row.id, row.index, row.label
+                )
+            })
+            .collect()
+    }
+
+    /// 置位 / 清零输入法合成态（T-FIX-86④）。
+    ///
+    /// 终端协议**不上报**合成态，所以 TUI 不能自己"检测"到它；这个入口留给
+    /// 能检测的宿主（Windows 控制台桥、将来接 IME 的包装层）以及判据。
+    /// 合成中：除 `F5`/`F6` 外的按键全部吞掉（与 GUI 解析器第 1/2 步同一规则），
+    /// ⛔ 绝不让候选词按键冒泡成走带/编辑热键。
+    pub fn set_ime_composing(&mut self, composing: bool) {
+        if composing {
+            self.input_ctx.begin_composition();
+        } else {
+            self.input_ctx.end_composition();
+        }
+    }
+
+    /// 当前是否处于合成态（与 `InputContext` 是同一份状态）。
+    #[must_use]
+    pub fn ime_composing(&self) -> bool {
+        self.input_ctx.is_composing()
+    }
+
     /// 强制保存（GUI `ui/force_save` 的 TUI 等价）：**真的写盘**，不因"看起来没变"而跳过。
     ///
     /// 与 `ui/force_save` 同一条硬要求：必须有一个**真的路径**，没有就如实报错
@@ -2419,6 +2722,20 @@ pub fn sample_rate_hz(rate: yeban_model::project::SampleRate) -> u32 {
     }
 }
 
+/// 文本缓冲里**不接受**的修饰键组合（Ctrl/Alt/Cmd/Win 都不是"输入一个字符"）。
+///
+/// T-FIX-86④：终端会把 `Cmd+V` / `Win+…` 也作为 `Char` 送进来，若当裸字符处理，
+/// 文本缓冲会混进 `v`/`z` 之类的伪输入。⛔ 一个也不猜，全部拒绝。
+fn is_modifier_leak(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::META
+            | KeyModifiers::HYPER,
+    )
+}
+
 /// 轨道类型 → 显示名。
 #[must_use]
 pub fn track_kind_label(kind: TrackKind) -> &'static str {
@@ -2438,6 +2755,21 @@ impl App {
     /// 处理一次按键（主循环与测试共用入口）。
     pub fn handle_key(&mut self, event: KeyEvent) {
         if event.kind == KeyEventKind::Release {
+            return;
+        }
+        // T-FIX-86④ 合成态防护：合成中除 F5/F6（全局视图键）外一律吞掉。
+        // 与 `InputContext` 的规则同一句（解析器第 1/2 步），这里在**进解析器之前**
+        // 再拦一次：文本缓冲/插件宿主都碰不到半成品按键。
+        if self.input_ctx.is_composing() && !matches!(event.code, KeyCode::F(5) | KeyCode::F(6)) {
+            return;
+        }
+        // T-FIX-86④ 修饰键泄漏防护：终端把 Cmd/Win（SUPER/META/HYPER）组合也送进来，
+        // 若把它当"裸键"处理，`Cmd+V` 会被读成 `v`、`Cmd+Z` 被读成撤销（macOS 上尤其
+        // 明显）。这些组合 TUI 一概不认，⛔ 不猜用户想按什么。
+        if event
+            .modifiers
+            .intersects(KeyModifiers::SUPER | KeyModifiers::META | KeyModifiers::HYPER)
+        {
             return;
         }
         match self.mode {
@@ -2765,6 +3097,11 @@ impl App {
                     self.log_line("微移音符只在音符视图内接入（片段网格里按 n 打开）".to_owned());
                 }
             }
+            Action::ResizeSelectionDuration { direction } => {
+                // Shift+←/→（UI-NOTE-005 项 3）：音符视图内改选中音符时值；
+                // 换算与 op 组装都走 GUI 的同一对纯函数（同一吸附网格）。
+                self.resize_selected_note_by_grid(direction);
+            }
             Action::Undo => self.undo(1),
             Action::Redo => self.redo(1),
             Action::DeleteSelection => {
@@ -2891,9 +3228,7 @@ impl App {
                 }
             }
             KeyCode::Char(ch) => {
-                if event.modifiers.contains(KeyModifiers::CONTROL)
-                    || event.modifiers.contains(KeyModifiers::ALT)
-                {
+                if is_modifier_leak(event.modifiers) {
                     return;
                 }
                 if let Some(buffer) = &mut self.rename {
@@ -2923,9 +3258,7 @@ impl App {
                 self.cmdline.pop();
             }
             KeyCode::Char(ch) => {
-                if event.modifiers.contains(KeyModifiers::CONTROL)
-                    || event.modifiers.contains(KeyModifiers::ALT)
-                {
+                if is_modifier_leak(event.modifiers) {
                     return;
                 }
                 self.cmdline.push(ch);
@@ -3187,6 +3520,18 @@ impl App {
                             self.log_line(error);
                         }
                     }
+                }
+            }
+            "a11y" | "semantics" => {
+                // :a11y —— 语义清单（角色 / ID / 序 / 标签；与 GUI 同一套角色词）。
+                for line in self.semantic_lines() {
+                    self.log_line(line);
+                }
+            }
+            "info" | "clock" => {
+                // :info —— 工程信息面（契约 / 960 PPQ 时钟 / 身份 / 规模）。
+                for line in self.project_info_lines() {
+                    self.log_line(line);
                 }
             }
             "device" => match rest {

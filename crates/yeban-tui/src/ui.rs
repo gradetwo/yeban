@@ -85,10 +85,11 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         Span::styled(
             format!(
-                "  {:.0} BPM  {}/{}",
+                "  {:.0} BPM  {}/{}  {} PPQ",
                 app.project.bpm,
                 app.project.time_signature.numerator,
-                app.project.time_signature.denominator
+                app.project.time_signature.denominator,
+                yeban_model::ids::PPQ
             ),
             Style::default().fg(theme::INK1),
         ),
@@ -643,6 +644,13 @@ fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("名称 ", dim),
             Span::styled(name_display, Style::default().fg(theme::GOLD_BRIGHT)),
+        ]),
+        Line::from(vec![
+            Span::styled("身份 ", dim),
+            Span::styled(
+                truncate_to(&track.id.to_canonical_string(), 26),
+                Style::default().fg(theme::INK2),
+            ),
         ]),
         Line::from(vec![
             Span::styled("类型 ", dim),

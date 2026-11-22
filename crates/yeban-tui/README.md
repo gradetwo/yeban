@@ -17,6 +17,9 @@
 | 分轨导出 | `yeban_app::export_stems::export_stems`（与 GUI 菜单臂、CLI `--export-stems` 同一份后端） |
 | 诊断包 | `yeban_diagnostics::export_diagnostics`（与 GUI `UiAction::ExportDiagnostics`、MCP 工具同一个采集器） |
 | 设备腿 | `yeban_app::engine_host::EngineHost::{open_device, close_device, device_rates}`（与 GUI 启动时同一条设备腿） |
+| 工程信息面 | `YebanProjectV1` 的 `schema_version` / `min_reader_version` / `writer_version` / `check_readable` + `yeban_model::ids::PPQ`（时钟换算与时间码共用 `ticks_per_beat`） |
+| 容器版本门 | `yeban_model::container::read_project_container`（反序列化后 `check_readable`；GUI / TUI / CLI 同一入口同一失败） |
+| 无障碍语义 | `yeban_app::elements::ElementKind::accessible_role`（角色词表唯一来源） |
 | 快捷键 | `yeban_app::cli::shortcut_rows` 策略表 + `yeban_app::input::InputContext` 解析器（与 GUI 同一张表、同一个解析器，不手抄第二份） |
 | 推子值域 | `yeban_app::bridge::{FADER_MIN_DB, FADER_MAX_DB}` 与 `parse_hex_color` |
 
@@ -112,6 +115,9 @@ Vi 层。
 | 片段改名 | （GUI 未接；MCP 有 `setClipName`） | 片段网格焦点 `i` → Insert 改名（`Op::SetClipName`） | TUI 新增（三期） |
 | 音符编辑 | 钢琴卷帘（GUI） | 片段网格焦点 `n` / `:notes` 开音符视图（Esc 关） | 已接（三期；视图内键位见下） |
 | 片段池管理 | （GUI 无池管理面；MCP 有 `removeClip`） | `:pool` 开池视图（Esc 关），视图内 `Delete` 删条目 | TUI 新增（三期；被引用时模型以 `ClipInUse` 拒绝） |
+| 音符时值（键盘） | `Shift+←/→`（一个吸附网格） | 同键（音符视图内）→ 同一对纯函数 `resize_duration_delta_for` / `resize_duration_ops_for` | 已接（T-FIX-86⑤；`Op::SetNoteTiming` 保身份，1 tick 下限） |
+| 工程信息面 | （GUI 无单独信息面） | `:info` / `:clock`（契约 / 960 PPQ / 身份 / 规模四行） | TUI 新增（T-FIX-86①②） |
+| 语义清单 | `ui/tree` 的角色/标签/序 | `:a11y`（`role=… id=… index=… label=…`） | TUI 新增（T-FIX-86③；终端无 OS 无障碍树，清单是可核的语义面） |
 | 移轨（显示顺序） | 轨头拖拽重排（无键） | `J` / `K`（计数 = 格数）；`:move <位置>`（0 起，与 `newIndex` 同口径） | 已接（T-FIX-76；`Op::MoveTrack` 同一条 op） |
 | 轨道高度 | 轨头纵向拖拽 + 全局缩放 | `Alt+Shift+↑/↓` 每轨基准 ±16 px；`{` / `}` 全局乘子 ±10%；`:height <px>` / `:height% <n>` | 已接（T-FIX-76；`bridge::TrackHeightLayout`，夹紧仍只有一处；裸 `[`/`]` 是 GUI 试听，⛔ 不抢） |
 | 主视图 Session / Arrangement | `F5` / `F6` | 同键；另有 `:view session|arrangement` | 已接（T-FIX-76；同一个 `yeban_app::input::View` 枚举） |
@@ -169,7 +175,17 @@ Vi 层新增（仅导航与模式，不占共享动作）：
 Command 命令集：`q`、`q!`、`w [path]`、`wq [path]`、`play`、`stop`、
 `rewind`、`seek <小节号（1 起）>`、`tempo <BPM>`、`export wav <path>`、`open[!] <path>`、
 `demo[!]`、`notes`、`pool`、`stems <目录>`、`diag [目录]`、
-`drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill|nofill]`、`device [on|off|status]`。
+`drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill|nofill]`、`device [on|off|status]`、
+`info` / `clock`、`a11y`。
+
+## 终端表达不了的取舍（T-FIX-86④）
+
+| 项 | GUI | TUI | 取舍 |
+| :--- | :--- | :--- | :--- |
+| 扫描码热键 | `PhysicalKey`（`crates/yeban-app/src/input.rs`）按**物理键位**解析，与键盘布局无关 | 只能拿 crossterm 的**逻辑键**（`KeyCode`） | 终端协议不提供扫描码。TUI 用逻辑键走**同一张**策略表：命令全是 ASCII 字母与功能键，AZERTY/Dvorak 上"按哪个物理键"不同、`KeyCode` 的语义仍一致；布局外的字符（`é`）不会命中任何动作 |
+| IME 合成态 | Slint `on_ime_composition_changed` → `InputContext::begin/end_composition` | `App::set_ime_composing`（同一份 `InputContext`） | 终端**不上报**合成态。TUI 的规则：合成中除 `F5`/`F6` 外一律吞掉（与 GUI 解析器第 1/2 步同一句）；能检测合成态的宿主（Windows 控制台桥、将来的 IME 包装层）调这个入口即可，判据按它钉住 |
+| Cmd/Win 组合 | 原生修饰键由平台层分发 | 终端会把 `SUPER`/`META`/`HYPER` 组合作为 `Char` 送进来 | TUI 一概不认（`is_modifier_leak`）：⛔ 不把 `Cmd+V` 读成 `v`、⛔ 不把 `Cmd+Z` 读成撤销；文本缓冲同样拒收 |
+| 无障碍树 | Slint `accessible-*` → 平台 a11y 树 | `App::semantic_rows` / `:a11y` | 终端没有 OS a11y 树。TUI 把**同一套角色词**（`ElementKind::accessible_role`）+ 标签 + 序导出成可核清单；读屏器接入需要终端/宿主支持（未做，登记为限制） |
 
 ## 冲突清单（逐条，按「共享动作从 GUI、导航从 Vi」解）
 
