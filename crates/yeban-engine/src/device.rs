@@ -1089,9 +1089,8 @@ pub fn render_callback_converted(state: &mut ConvertedOutput, data: &mut [f32], 
     }
 }
 
-
 /// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
-/// （见 [`open_output`]）。 (Add realtime streaming sample-rate conversion for mismatched devices (T-FIX-72))
+/// （见 [`open_output`]）。
 ///
 /// 真实设备相关的一切（枚举能力、协商、建流）都在这里，并且**只返回 `Result`**。
 /// 无声卡环境下返回 [`DeviceError::NoDefaultOutputDevice`]，绝不 panic。
@@ -1138,7 +1137,7 @@ pub fn open_output_boxed(
         negotiated.channels,
     );
     let stream = if let Some(converter) = converter {
-        let mut state = ConvertedOutput::from_converter(runtime, converter, channels);
+        let mut state = ConvertedOutput::from_converter(*runtime, converter, channels);
         device.build_output_stream::<f32, _, _>(
             stream_config,
             move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
