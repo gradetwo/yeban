@@ -4202,12 +4202,10 @@ mod tests {
             .map(|(index, _)| index)
             .collect();
         assert_eq!(hits.len(), 16, "cowbell leads: 16 hits over 2 bars");
+        let cowbell_hits: Vec<_> = cowbell.steps.iter().filter(|step| step.is_hit()).collect();
+        assert!(!cowbell_hits.is_empty(), "phonk cowbell has hits");
         assert!(
-            cowbell
-                .steps
-                .iter()
-                .filter(|step| step.is_hit())
-                .all(|step| step.pitch.is_some()),
+            cowbell_hits.iter().all(|step| step.pitch.is_some()),
             "every phonk cowbell hit carries a pitch"
         );
         let skeleton: Vec<i8> = [0usize, 4, 8, 12, 16, 20, 24, 28]
@@ -4254,12 +4252,14 @@ mod tests {
             let other = factory_drum_style(id)
                 .expect("factory styles parse")
                 .expect("style exists");
+            let other_steps: Vec<_> = other
+                .lanes
+                .iter()
+                .flat_map(|lane| lane.steps.iter())
+                .collect();
+            assert!(!other_steps.is_empty(), "{id} has steps");
             assert!(
-                other
-                    .lanes
-                    .iter()
-                    .flat_map(|lane| lane.steps.iter())
-                    .all(|step| step.pitch.is_none()),
+                other_steps.iter().all(|step| step.pitch.is_none()),
                 "{id} must stay unpitched in this line"
             );
         }

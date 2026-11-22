@@ -387,14 +387,17 @@ mod tests {
             vec![(0, 0), (6, 0), (10, 0), (16, -2), (22, -2), (26, -2)],
             "808 notes follow the riff roots"
         );
+        let unpitched: Vec<_> = notes
+            .iter()
+            .filter(|note| note.gm_key != 56 && note.gm_key != 35)
+            .collect();
+        assert!(!unpitched.is_empty(), "phonk includes unpitched lanes");
         assert!(
-            notes
-                .iter()
-                .filter(|note| note.gm_key != 56 && note.gm_key != 35)
-                .all(|note| note.pitch_semitones == 0),
+            unpitched.iter().all(|note| note.pitch_semitones == 0),
             "unpitched lanes generate zero pitch"
         );
         let plain = generate_drum_pattern(&trap(), &params).expect("trap generates");
+        assert!(!plain.is_empty(), "trap generates notes");
         assert!(
             plain.iter().all(|note| note.pitch_semitones == 0),
             "a style without pitch data generates zero pitch everywhere"
