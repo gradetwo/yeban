@@ -51,6 +51,52 @@ pub struct ExportReceipt {
     pub bits: u16,
 }
 
+/// GUI 电平心跳周期（`crates/yeban-app/src/main.rs` 的 `HEARTBEAT_PERIOD_MS = 16`
+/// ⇒ 62.5 Hz，不低于 60 Hz）：TUI 主循环用**同一个数**做轮询超时与 tick 闸门。
+///
+/// ⛔ 不从 `yeban-app` 导：那个常量住在 bin crate 的 `main.rs`，库侧没有它；
+/// 数值口径相同（判据 `meter_heartbeat_matches_the_gui_period` 钉住 16 ms）。
+pub const METER_HEARTBEAT_MS: u64 = 16;
+
+/// GUI 侧那个常量的**引用副本**（`crates/yeban-app/src/main.rs` 的
+/// `HEARTBEAT_PERIOD_MS = 16`）：判据用它做等式比较，而不是在判据里再写一个 `16`
+/// （两个 16 各自写一遍就没人保证它们还是同一个口径）。
+pub const HEARTBEAT_PERIOD_MS_REFERENCE: u64 = 16;
+
+/// 电平保持的每跳衰减系数（主总线底栏与逐轨电平共用同一个数）。
+const METER_DECAY: f32 = 0.92;
+
+/// 低于这个线性幅度就当作静音（≈ -80 dBFS），不保留无意义的尾巴。
+const METER_FLOOR: f32 = 1.0e-4;
+
+/// 引擎状态读数（`yeban_query_engine_state` 对应的 TUI 面）。
+///
+/// 每个字段都从**既有**读数来：工程采样率取 `project.audio_config`；引擎侧取
+/// `EngineHost::current_snapshot()`（快照自己的 `sample_rate` / `block_frames` /
+/// `channels`）；设备取 `EngineHost::device_name()` / `device_active()`；走带取
+/// `EngineHost::transport()`。⛔ 不新造第二套状态源、不从工程推算引擎读数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineStatus {
+    /// 工程声明的采样率（Hz）。
+    pub project_sample_rate: u32,
+    /// 引擎快照的采样率（Hz）；没有引擎时 `None`。
+    pub engine_sample_rate: Option<u32>,
+    /// 引擎快照的每块帧数；没有引擎时 `None`。
+    pub block_frames: Option<u32>,
+    /// 引擎快照的通道数；没有引擎时 `None`。
+    pub channels: Option<u16>,
+    /// 设备腿的显示名（TUI 默认不开设备腿 ⇒ `None`）。
+    pub device_name: Option<String>,
+    /// 设备腿是否活跃。
+    pub device_active: bool,
+    /// 采样率转换的**如实**说明（没有设备腿就没有实时转换）。
+    pub conversion: &'static str,
+    /// 走带状态。
+    pub transport_state: TransportState,
+    /// 走带位置（tick）。
+    pub position_ticks: u64,
+}
+
 /// 片段网格窗格的列表视图（三期）：普通网格之外的两种内容变体。
 /// 焦点循环仍是三窗格（K6 不变），视图只是网格窗格里换了内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +280,8 @@ pub struct App {
     pub dirty: bool,
     /// 主总线最新峰值（线性幅度，带衰减保持，供底栏电平条）。
     pub master_peak: f32,
+    /// 逐轨峰值（同一份 SPSC 链的抽干结果，带衰减保持）。
+    track_peaks: BTreeMap<EntityId, f32>,
     /// 是否请求退出（主循环读）。
     pub quit: bool,
     /// 上次导出证据。
@@ -353,6 +401,7 @@ impl App {
             log: Vec::new(),
             dirty: false,
             master_peak: 0.0,
+            track_peaks: BTreeMap::new(),
             quit: false,
             last_export: None,
             audio_revision: 0,
@@ -484,14 +533,24 @@ impl App {
             let mut scratch = [MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
             let master = self.project.master_bus_track_id;
+            // 同一份 SPSC 链的抽干结果按节点身份落到两处：主总线进底栏点阵，
+            // 其余逐轨进通道电平（⛔ 不旁路轮询、不另开一条近似值来源）。
             for frame in &scratch[..drained] {
                 if frame.node == master {
-                    self.master_peak = frame.peak.max(self.master_peak * 0.92);
+                    self.master_peak = frame.peak.max(self.master_peak * METER_DECAY);
+                } else {
+                    let peak = self.track_peaks.entry(frame.node).or_insert(0.0);
+                    *peak = frame.peak.max(*peak * METER_DECAY);
                 }
             }
             if drained == 0 {
-                self.master_peak *= 0.92;
+                self.master_peak *= METER_DECAY;
             }
+            // 没有新帧的轨也照常衰减（画面不会停在上一帧的满格）。
+            for peak in self.track_peaks.values_mut() {
+                *peak *= METER_DECAY;
+            }
+            self.track_peaks.retain(|_, peak| *peak > METER_FLOOR);
         }
     }
 
@@ -1779,6 +1838,108 @@ impl App {
         }
     }
 
+    // 引擎状态 / 通道电平 / 管理动作（T-FIX-81）
+    // ------------------------------------------------------------------
+
+    /// 一条轨的最新峰值（线性幅度；没有读数 = `0.0`）。
+    #[must_use]
+    pub fn track_peak(&self, track_id: &EntityId) -> f32 {
+        self.track_peaks.get(track_id).copied().unwrap_or(0.0)
+    }
+
+    /// 判据专用：推 `quanta` 个量子再抽干电平（与主循环 `tick` 同一条抽干路径）。
+    ///
+    /// `#[doc(hidden)]`：不是给界面用的入口 —— 外部判据需要复现"引擎出声 ⇒ 表动"
+    /// 这一条链，而 `tick` 的墙钟泵送在测试里要真等时间。⛔ 不要在生产路径调用。
+    #[doc(hidden)]
+    pub fn drive_meters_for_test(&mut self, quanta: u64) {
+        self.host.drive_audio(quanta);
+        self.tick();
+    }
+
+    /// 判据专用：快照自己的 `(sample_rate, revision)` 读数（`None` = 没有引擎）。
+    ///
+    /// `#[doc(hidden)]`：只为外部判据核对"引擎状态面读的是快照自己的数"，
+    /// ⛔ 界面不许绕过 [`App::engine_status`] 另开一条读数。
+    #[doc(hidden)]
+    pub fn snapshot_readings(&self) -> (Option<u32>, Option<u64>) {
+        self.host
+            .current_snapshot()
+            .map_or((None, None), |snapshot| {
+                (Some(snapshot.sample_rate()), Some(snapshot.revision()))
+            })
+    }
+
+    /// 引擎状态读数（`yeban_query_engine_state` 的 TUI 等价面）。
+    #[must_use]
+    pub fn engine_status(&self) -> EngineStatus {
+        let snapshot = self.host.current_snapshot();
+        let reading = self.transport();
+        let device_active = self.host.device_active();
+        EngineStatus {
+            project_sample_rate: sample_rate_hz(self.project.audio_config.sample_rate),
+            engine_sample_rate: snapshot.as_ref().map(|snapshot| snapshot.sample_rate()),
+            block_frames: snapshot
+                .as_ref()
+                .map(|snapshot| u32::try_from(snapshot.block_frames()).unwrap_or(u32::MAX)),
+            channels: snapshot.as_ref().map(|snapshot| snapshot.channels()),
+            device_name: self.host.device_name().map(str::to_owned),
+            device_active,
+            conversion: if device_active {
+                "设备腿已开（设备率与工程率的差异由设备行报告）"
+            } else {
+                "未开设备腿（TUI 走墙钟泵送）⇒ 无实时采样率转换"
+            },
+            transport_state: reading.state,
+            position_ticks: reading.position_ticks,
+        }
+    }
+
+    /// 强制保存（GUI `ui/force_save` 的 TUI 等价）：**真的写盘**，不因"看起来没变"而跳过。
+    ///
+    /// 与 `ui/force_save` 同一条硬要求：必须有一个**真的路径**，没有就如实报错
+    /// （⛔ 不假成功、不偷偷写到一个编出来的文件名）。
+    ///
+    /// # Errors
+    /// 无路径或写盘失败时返回错误文本。
+    pub fn force_save(&mut self) -> Result<String, String> {
+        let Some(path) = self.project_path.clone() else {
+            return Err(
+                "强制保存失败：尚无文件路径（先 :w <path> 指定，或 :open <path> 打开）".to_owned(),
+            );
+        };
+        let done = self.save_to(&path)?;
+        Ok(format!("{done}（强制保存）"))
+    }
+
+    /// 重载音频引擎（GUI `ui/reload_engine` 的 TUI 等价）：按当前文档重建一代引擎。
+    ///
+    /// 与 GUI 同一个落点（`EngineHost::reload`），失败**原文**记日志（`Debug` 形态，
+    /// 与 TUI 其它引擎错误同一口径）；成功后采纳新的电平消费端并停住走带
+    /// （与打开工程时"加载即停住"同一条纪律）。
+    pub fn reload_engine(&mut self) {
+        match self.host.reload(&self.project, 1) {
+            Ok(rebuild) => {
+                self.collector = Some(rebuild.collector);
+                self.host.stop();
+                // 新的一代已经反映当前文档 ⇒ 重钉"已施加"标记（与 GUI 同一口径）。
+                self.host
+                    .mark_applied(EditMark::from_display(&self.port.display()));
+                self.log_line(format!(
+                    "重载音频引擎：第 {} 代 · revision {} · {} 轨 · 发布 {}/{} 帧 (量子 {}) · 容量丢弃 {}",
+                    rebuild.generation,
+                    rebuild.revision,
+                    rebuild.tracks,
+                    rebuild.meter_bulk_publishes,
+                    rebuild.meter_frames,
+                    rebuild.quanta,
+                    rebuild.meter_capacity_drops,
+                ));
+            }
+            Err(error) => self.log_line(format!("重载音频引擎失败：{error:?}")),
+        }
+    }
+
     // ------------------------------------------------------------------
     // 保存与导出
     // ------------------------------------------------------------------
@@ -2457,6 +2618,15 @@ impl App {
                     Err(error) => self.log_line(error),
                 }
             }
+            "w!" => {
+                // 强制保存（GUI `ui/force_save` 的等价物）：与 `:w` 同一个落盘路径，
+                // 语义差别只在"强制"这件事被显式说出来（无路径时照样响亮报错）。
+                match self.force_save() {
+                    Ok(done) => self.log_line(done),
+                    Err(error) => self.log_line(error),
+                }
+            }
+            "reload" | "reload-engine" => self.reload_engine(),
             "play" => {
                 self.host.play();
                 self.log_line("播放".to_owned());

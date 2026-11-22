@@ -21,7 +21,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use yeban_tui::app::App;
+use yeban_tui::app::{App, METER_HEARTBEAT_MS};
 use yeban_tui::ui;
 
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -272,7 +272,9 @@ fn event_loop(
         if app.quit {
             return Ok(());
         }
-        let timeout = Duration::from_millis(16);
+        // 与 GUI 电平心跳同一个周期（62.5 Hz）：轮询超时与 tick 闸门都用它，
+        // 于是终端重绘节拍与 GUI 的 `HEARTBEAT_PERIOD_MS = 16` 同口径。
+        let timeout = Duration::from_millis(METER_HEARTBEAT_MS);
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key),
@@ -282,7 +284,7 @@ fn event_loop(
         }
         let now = Instant::now();
         let elapsed = now.duration_since(last);
-        if elapsed >= Duration::from_millis(10) {
+        if elapsed >= Duration::from_millis(METER_HEARTBEAT_MS) {
             app.tick();
             last = now;
         }

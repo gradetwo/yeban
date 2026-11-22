@@ -24,7 +24,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let root = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(3),
+        Constraint::Length(4),
     ])
     .split(frame.area());
     draw_top_bar(frame, root[0], app);
@@ -161,8 +161,14 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let cursor = if selected { "▸" } else { " " };
         let mute = if track.mute { "M" } else { "·" };
         let solo = if track.solo { "S" } else { "·" };
-        let name = pad_to(&truncate_to(&track.name, 14), 14);
-        let text = format!("{cursor}{name} {mute}  {solo}  {:+5.1}", track.volume_db);
+        // 通道电平（T-FIX-81 第 2 项）：同一份 SPSC 链抽干出的逐轨峰值，
+        // 4 格条 + 保持衰减（`App::tick` 每跳衰减一次，与主总线同一个系数）。
+        let meter = meter_bar(app.track_peak(id));
+        let name = pad_to(&truncate_to(&track.name, 10), 10);
+        let text = format!(
+            "{cursor}{name} {mute}{solo} {meter} {:+5.1}",
+            track.volume_db
+        );
         let mut style = Style::default()
             .fg(if selected { theme::INK0 } else { theme::INK1 })
             .bg(if index % 2 == 0 {
@@ -717,14 +723,74 @@ fn text_bar(fraction: f32, width: usize) -> String {
     )
 }
 
+/// 4 格通道电平条：线性峰值 → dB → 与推子同一值域的比例。
+///
+/// 值域用 GUI 的 `FADER_MIN_DB` / `FADER_MAX_DB`（同一个常量），⛔ 不另造刻度。
+fn meter_bar(peak: f32) -> String {
+    let fraction = if peak <= 0.0 {
+        0.0
+    } else {
+        let db = 20.0 * peak.log10();
+        ((db - yeban_app::bridge::FADER_MIN_DB)
+            / (yeban_app::bridge::FADER_MAX_DB - yeban_app::bridge::FADER_MIN_DB))
+            .clamp(0.0, 1.0)
+    };
+    let filled = (fraction * 4.0).round() as usize;
+    format!(
+        "{}{}",
+        "█".repeat(filled.min(4)),
+        "·".repeat(4 - filled.min(4))
+    )
+}
+
+/// 引擎状态行：采样率 / 每块帧数 / 通道 / 设备腿 / 转换 / 走带。
+fn engine_line(app: &App) -> String {
+    let status = app.engine_status();
+    let engine = match (
+        status.engine_sample_rate,
+        status.block_frames,
+        status.channels,
+    ) {
+        (Some(rate), Some(frames), Some(channels)) => {
+            format!(
+                "引擎 {:.1} kHz / {frames} 帧 / {channels} ch",
+                f64::from(rate) / 1000.0
+            )
+        }
+        _ => "引擎 未建".to_owned(),
+    };
+    let device = match (&status.device_name, status.device_active) {
+        (Some(name), true) => format!("设备 {name}"),
+        _ => "设备 未开".to_owned(),
+    };
+    let transport = match status.transport_state {
+        TransportState::Playing => "播放中",
+        TransportState::Recording => "录音中",
+        TransportState::Stopped => "停止",
+    };
+    format!(
+        "工程 {:.1} kHz · {engine} · {device} · {} · 走带 {transport} @ {} tick",
+        f64::from(status.project_sample_rate) / 1000.0,
+        status.conversion,
+        status.position_ticks,
+    )
+}
+
 fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(area);
-    // 第一行：Canvas 盲文库点阵 —— 位置进度 + 主总线电平。
+    // 第一行：引擎状态（`yeban_query_engine_state` 的 TUI 面）。
+    frame.render_widget(
+        Paragraph::new(engine_line(app))
+            .style(Style::default().fg(theme::INK1).bg(theme::BG_PANEL)),
+        rows[0],
+    );
+    // 第二行：Canvas 盲文库点阵 —— 位置进度 + 主总线电平。
     let total = app.project_len_ticks().max(1) as f64;
     let position = app.transport().position_ticks as f64;
     let peak = app.master_peak.clamp(0.0, 1.0);
@@ -773,14 +839,14 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 });
             }
         });
-    frame.render_widget(canvas, rows[0]);
+    frame.render_widget(canvas, rows[1]);
     // 第二行：日志（最后一条）。
     let log_text = app.log.last().cloned().unwrap_or_default();
     frame.render_widget(
         Paragraph::new(log_text).style(Style::default().fg(theme::INK1).bg(theme::BG_PANEL)),
-        rows[1],
+        rows[2],
     );
-    // 第三行：命令行 / 状态行。
+    // 第四行：命令行 / 状态行。
     let status = match app.mode {
         Mode::Command => Line::from(vec![
             Span::styled(":", Style::default().fg(theme::GOLD_BRIGHT)),
@@ -824,7 +890,7 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(status).style(Style::default().bg(theme::BG_PANEL)),
-        rows[2],
+        rows[3],
     );
 }
 
@@ -854,6 +920,46 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    fn render_buffer(app: &mut App) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn meter_heartbeat_only_touches_meter_cells() {
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("seek 1");
+        // 先让走带进入播放并把电平推到有读数（两帧的顶栏因此一致）。
+        app.toggle_play();
+        app.drive_meters_for_test(4);
+        let before = render_buffer(&mut app);
+        app.drive_meters_for_test(8);
+        let after = render_buffer(&mut app);
+
+        let mut changed = Vec::new();
+        for y in 0..before.area.height {
+            for x in 0..before.area.width {
+                if before[(x, y)].symbol() != after[(x, y)].symbol() {
+                    changed.push((x, y));
+                }
+            }
+        }
+        assert!(!changed.is_empty(), "电平跳动必须真的画出来（不是死表）");
+        for (x, y) in changed {
+            // 允许变的三处：轨道栏（电平列）、底栏（引擎行/电平点阵/日志/状态）、
+            // 以及顶栏（走带时间码 —— 它在播放时本来就该跳）。
+            let in_track_meter = x < 30;
+            let in_bottom = y >= before.area.height - 4;
+            let in_top_bar = y == 0;
+            assert!(
+                in_track_meter || in_bottom || in_top_bar,
+                "心跳只能碰电平区，但 ({x},{y}) 变了 —— 说明这一跳重画了别处"
+            );
+        }
     }
 
     #[test]
