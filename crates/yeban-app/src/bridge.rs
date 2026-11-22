@@ -1707,6 +1707,28 @@ fn send_gain_display(gain_db: Option<f32>) -> String {
     gain_db.map_or_else(|| "单位增益".to_owned(), |gain_db| format!("{gain_db} dB"))
 }
 
+/// 宏的一条**级联去向**（`MacroMapping`）的显示行。
+///
+/// ⚠ 只读：`MacroMapping` 在工具面与 `Op` 全集里都**没有**写入变体（见
+/// [`macro_mapping_writes_are_absent`] 的文档与判据），因此这一行只呈现
+/// "这个宏会推动谁、推多少"，⛔ 界面上没有建立 / 改绑 / 删除的入口 ——
+/// 那不是界面偷懒，是写通路在系统层就不存在。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroMappingView {
+    /// 目标的一行显示名（[`automation_target_display`]，界面层唯一实现）。
+    pub target_label: String,
+    /// `depth` 的显示文本（带符号；单位 = 目标单位，`MacroMapping::depth` 的口径）。
+    pub depth_display: String,
+}
+
+impl MacroMappingView {
+    /// 一条映射的显示文本：`"{目标} {带符号深度}"`。
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} {}", self.target_label, self.depth_display)
+    }
+}
+
 /// 宏面板里的一行 —— **展示轨**的 `TrackV3::macros` 一条。
 ///
 /// 下标是模型的宏下标（`Op::SetMacro::macro_index`）—— 三个手势与撤销都用它寻址，
@@ -1721,6 +1743,8 @@ pub struct MacroRowView {
     pub value: f32,
     /// 位置的显示文本（[`macro_value_display`]）。
     pub value_display: String,
+    /// 这个宏的级联去向（`MacroParameter::mappings`，按模型顺序）。
+    pub mappings: Vec<MacroMappingView>,
 }
 
 impl MacroRowView {
@@ -1729,6 +1753,77 @@ impl MacroRowView {
     pub fn label(&self) -> String {
         format!("{} · {}", self.name, self.value_display)
     }
+
+    /// 级联去向的一行摘要：`"音量 +6 · 声相 -0.5"`；没有映射 ⇒ 空串
+    /// （界面画「无映射」，⛔ 不画一条假的去向）。
+    #[must_use]
+    pub fn mapping_summary(&self) -> String {
+        self.mappings
+            .iter()
+            .map(MacroMappingView::label)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    /// 带上级联去向的一整行无障碍标签：`"{宏名} · {位置} · → {去向}"`。
+    ///
+    /// 没有映射时**不加** `→` 段（读屏不该被一个空的箭头打扰）。
+    #[must_use]
+    pub fn accessible_label(&self) -> String {
+        let summary = self.mapping_summary();
+        if summary.is_empty() {
+            self.label()
+        } else {
+            format!("{} · → {summary}", self.label())
+        }
+    }
+}
+
+/// 自动化目标的一行显示名（界面层**唯一**实现）。
+///
+/// ⚠ 这是**显示**口径：它只给宏面板的级联行用，⛔ 不参与任何寻址
+/// （寻址一律用 `AutomationTarget` 的字段，见 `MacroMapping::target`）。
+#[must_use]
+pub fn automation_target_display(target: &AutomationTarget) -> String {
+    match target {
+        AutomationTarget::TrackVolume { .. } => "音量".to_owned(),
+        AutomationTarget::TrackPan { .. } => "声相".to_owned(),
+        AutomationTarget::SendGain { .. } => "发送增益".to_owned(),
+        AutomationTarget::DeviceParam {
+            slot_index,
+            param_index,
+            ..
+        } => format!("设备 {slot_index} 参数 {param_index}"),
+        AutomationTarget::Macro { macro_index, .. } => format!("宏 {macro_index}"),
+        AutomationTarget::MidiCc { controller, .. } => format!("CC {controller}"),
+    }
+}
+
+/// 级联深度的显示文本：恒带符号（`"+6"` / `"-0.5"` / `"+0"`）。
+///
+/// 单位由目标决定（dB / 位置 / 参数原生单位，`MacroMapping::depth` 的口径），
+/// 因此这里⛔ **不**拼单位后缀 —— 那会凭空发明一张模型里没有的单位表。
+#[must_use]
+pub fn macro_depth_display(depth: f32) -> String {
+    format!("{depth:+}")
+}
+
+/// 为什么界面**不提供**宏映射的建立 / 改绑 / 删除 —— 一句话事实，带落点。
+///
+/// `Op::SetMacro` 的载荷只有 `old_val` / `new_val`（`crates/yeban-model/src/ops.rs:1273`），
+/// `Op` 全集里没有任何变体能写 `MacroParameter::name` 或 `MacroParameter::mappings`
+/// （判据 `tests/macro_mapping_has_no_write_path.rs`）。GUI 若自己改内存模型，
+/// 就等于绕过 `Op` 这条唯一写入载体（`ADR-0031` D1 的同一条纪律）⇒ 会造出第二真理源。
+pub const MACRO_MAPPING_NO_WRITE_PATH: &str =
+    "宏映射没有写入通路：Op 全集没有能改 MacroParameter::mappings 的变体";
+
+/// 宏映射写入缺口的文档锚点（让 `grep` 从一个名字找到判据）。
+///
+/// 本函数不执行任何事，只把"为什么只读"钉在类型旁边；判据见
+/// `crates/yeban-app/tests/macro_mapping_has_no_write_path.rs`。
+#[must_use]
+pub fn macro_mapping_writes_are_absent() -> &'static str {
+    MACRO_MAPPING_NO_WRITE_PATH
 }
 
 /// 宏位置的显示文本（**唯一**的格式化实现）：0.0..=1.0 映射成 `"0%".."100%"`。
@@ -1742,7 +1837,8 @@ pub fn macro_value_display(value: f32) -> String {
 
 /// 宏面板的投影本体：展示轨的宏逐条变成一行（下标 = 模型里的 `macros` 索引顺序）。
 ///
-/// 没有展示轨 ⇒ 空（界面画空态）。宏没有任何映射时**仍然**投影 —— 位置本身是可写的。
+/// 没有展示轨 ⇒ 空（界面画空态）。宏没有任何映射时**仍然**投影 —— 位置本身是可写的，
+/// 且级联去向那一格会如实画成「无映射」（⛔ 不因为映射缺失就藏掉整行）。
 fn macro_projection(track: Option<&TrackV3>) -> Vec<MacroRowView> {
     let Some(track) = track else {
         return Vec::new();
@@ -1756,6 +1852,14 @@ fn macro_projection(track: Option<&TrackV3>) -> Vec<MacroRowView> {
             name: macro_parameter.name.clone(),
             value: macro_parameter.value,
             value_display: macro_value_display(macro_parameter.value),
+            mappings: macro_parameter
+                .mappings
+                .iter()
+                .map(|mapping| MacroMappingView {
+                    target_label: automation_target_display(&mapping.target),
+                    depth_display: macro_depth_display(mapping.depth),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -5663,6 +5767,18 @@ impl ViewState {
         self.macros
             .iter()
             .map(|row| row.value_display.clone())
+            .collect()
+    }
+
+    /// 宏面板每一行的**级联去向**摘要（`"音量 +6 · 声相 -0.5"`；没有映射 ⇒ 空串）。
+    ///
+    /// 与上面三个数组**同索引集**（下标 = 模型 `macro_index`）⇒ UI 只按下标取用，
+    /// ⛔ 不自己拼文案、不自己决定"哪些映射算数"。
+    #[must_use]
+    pub fn macro_mapping_summaries(&self) -> Vec<String> {
+        self.macros
+            .iter()
+            .map(MacroRowView::mapping_summary)
             .collect()
     }
 

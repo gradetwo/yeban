@@ -8,7 +8,10 @@
 // `macro-{i}-row` / `macro-{i}-name` / `macro-{i}-slider` / `macro-{i}-value`。
 //
 // ⚠ 本文件**不**新建 / 删除宏（`Op` 全集里没有 `AddMacro` / `RemoveMacro`），
-// 也**不**编辑映射（`MacroMapping` 没有工具面入口）。它只写"位置"这一格。
+// 也**不**编辑映射（`MacroMapping` 没有工具面入口，`Op` 枚举体内无 `mappings` 字样
+// —— 判据 `tests/macro_panel_mappings.rs`）。它只写"位置"这一格，并把每条宏的
+// **级联去向**（`macro-mapping-summaries`：目标显示名 + 带符号 `depth`）只读画出来；
+// 没有映射时画「无映射」，⛔ 不画一条假箭头。
 //
 // 默认隐藏：打开开关住在 `app.slint` 的 `macro-panel-open`（默认 false ⇒ 初始帧
 // 不画它，1920 基准截图一位不动）。
@@ -25,6 +28,11 @@ export component MacroPanel inherits Rectangle {
     in property <[float]> macro-values: [];
     /// 位置的显示文本（`"0%".."100%"`，逐字来自投影）。
     in property <[string]> macro-value-labels: [];
+    /// **级联去向**的一行摘要（`"音量 +6 · 声相 -0.5"`；没有映射 ⇒ 空串）。
+    ///
+    /// ⚠ 只读：`MacroMapping` 在 `Op` 全集里没有写入变体（`bridge::MACRO_MAPPING_NO_WRITE_PATH`）
+    /// ⇒ 本面板⛔ 不提供建立 / 改绑 / 删除，只把「这个宏推动谁、推多少」画出来。
+    in property <[string]> macro-mapping-summaries: [];
 
     // ---------------------------------------------------------------- 写入面
     /// 滑块按下（参数 = 宏下标 + 滑块面内的归一化位置）。
@@ -126,9 +134,10 @@ export component MacroPanel inherits Rectangle {
     // ---------------------------------------------------------------- 宏行
     for macro_name[macro_index] in root.macro-names : Rectangle {
         x: Tokens.space-6;
-        y: 48px + 40px * macro_index;
+        // 行高 52px（名字 16 + 滑块 20 + 级联去向 16）：级联摘要不压在滑块上。
+        y: 48px + 56px * macro_index;
         width: parent.width - 32px;
-        height: 36px;
+        height: 52px;
         background: transparent;
 
         // 旋钮位置：注入的 0.0..=1.0 夹紧（值域退化 / 越界时 ⛔ 不画出滑块外面）。
@@ -136,9 +145,25 @@ export component MacroPanel inherits Rectangle {
             ? 0.0
             : (root.macro-values[macro_index] > 1.0 ? 1.0 : root.macro-values[macro_index]);
 
+        // 「有没有级联去向」的唯一判定（Slint 的 `string` 没有 `.length`，只能比空串）。
+        // 空串本体住在下面这个 property 里，⛔ 不进 `accessible-label` 那一行 ——
+        // 守卫 `no_accessible_name_may_be_the_empty_literal` 判的是无障碍名称表达式。
+        property <string> empty-text: "";
+        property <bool> has-mapping: root.macro-mapping-summaries[macro_index] != self.empty-text;
+
+        // 级联去向的一行文本（空 ⇒ 「无映射」，⛔ 不画一条假去向）。
+        property <string> mapping-summary: self.has-mapping
+            ? root.macro-mapping-summaries[macro_index]
+            : @tr("无映射");
+
+        // 无障碍标签的 `→ 去向` 段：没有映射时是**空后缀**（拼接在下面一行）。
+        property <string> mapping-suffix: self.has-mapping
+            ? " · → " + root.macro-mapping-summaries[macro_index]
+            : self.empty-text;
+
         accessible-role: list-item;
         accessible-id: "macro-" + macro_index + "-row";
-        accessible-label: macro_name + " · " + root.macro-value-labels[macro_index];
+        accessible-label: macro_name + " · " + root.macro-value-labels[macro_index] + self.mapping-suffix;
         accessible-item-index: macro_index;
         accessible-item-count: root.macro-names.length;
 
@@ -224,6 +249,22 @@ export component MacroPanel inherits Rectangle {
                     root.macro-release(macro_index);
                 }
             }
+        }
+
+        // 级联去向：只读一行（`MacroMapping::target` + `depth`，宿主拼好文案）。
+        // 空映射时写「无映射」并用次色 —— 与「有去向」一眼可分，⛔ 不画假箭头。
+        UiMonoText {
+            x: 0;
+            y: 40px;
+            width: parent.width;
+            height: 14px;
+            text: parent.mapping-summary;
+            color: parent.has-mapping ? Tokens.gold-deep : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            accessible-role: text;
+            accessible-id: "macro-" + macro_index + "-mappings";
+            accessible-label: parent.mapping-summary;
         }
     }
 }

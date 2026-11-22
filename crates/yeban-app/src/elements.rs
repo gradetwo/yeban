@@ -2108,6 +2108,20 @@ impl ElementRegistry {
                 &format!("{} 位置", row.name),
                 false,
             );
+            // ⭐ 审计 `T-FIX-88` 项 1：级联去向那一行（只读）。空映射时界面画
+            // 「无映射」⇒ 注册表用**同一句**，两侧不会各说一句。
+            let summary = row.mapping_summary();
+            registry.add(
+                &format!("macro-{macro_index}-mappings"),
+                ElementKind::Text,
+                "dialogs/macro_panel.slint",
+                if summary.is_empty() {
+                    "无映射"
+                } else {
+                    &summary
+                },
+                false,
+            );
         }
 
         // ------------------------------------------------------------ 轨 / 路由（⭐ `#160`）

@@ -266,7 +266,12 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// （选区是界面态、⛔ 不在 `ViewState` 里；只在手势时设 ⇒ 重注入后必然错位，
 /// 与音符面 `note-selected` 同一条口径）。默认选区为空集 ⇒ 标志全 `false`
 /// ⇒ 默认帧逐像素不变，⛔ 无需重录基准。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 65;
+///
+/// ## 65 → 66 的追加（审计 `T-FIX-88` 项 1：宏的级联去向，2026-11-22）
+///
+/// 一格 `macro-mapping-summaries`（与 `macro-names` 同索引集，每宏一行摘要）。
+/// 消费者只在默认关着的右侧宏抽屉 ⇒ 默认帧（抽屉未打开）一位不变。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 66;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -543,7 +548,14 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 65;
 /// `host::refresh_timeline_block_selected` 里（与 `apply_current_scene` /
 /// `inject_sidebar` 同款收拢法），⛔ 不计本常量的函数体口径；其数组本身计入
 /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（63 → 65，见彼处条目）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 123;
+///
+/// ## 123 → 124 的追加（审计 `T-FIX-88` 项 1：宏的级联去向，2026-11-22）
+///
+/// 一格 `ui.set_macro_mapping_summaries`（`ViewState::macro_mapping_summaries` 的
+/// 同索引集投影：每宏一行 `"音量 +6 · 声相 -0.5"`，空映射 ⇒ 空串）。消费者只在
+/// 默认关着的右侧宏抽屉（`macro-panel-open`，由下舱「宏 (N)」按钮打开）⇒
+/// 默认帧（未打开）一位不变。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 124;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -644,6 +656,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("macro-names", get_macro_names);
     push!("macro-values", get_macro_values);
     push!("macro-value-labels", get_macro_value_labels);
+    // ⭐ 审计 `T-FIX-88` 项 1：级联去向的摘要数组（`"音量 +6 · 声相 -0.5"`，空映射 ⇒ 空串）
+    // 也在 `apply_view` 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单。
+    push!("macro-mapping-summaries", get_macro_mapping_summaries);
     push!("bar-positions", get_bar_positions);
     push!("note-ulids", get_note_ulids);
     push!("note-velocities", get_note_velocities);

@@ -14,6 +14,7 @@ import { UnifiedLowerDock } from "lower_dock.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { StatusBar } from "status_bar.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
+import { MacroPanel } from "dialogs/macro_panel.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { ManualDialog } from "dialogs/help_manual.slint";
@@ -606,6 +607,10 @@ export component MainWindow inherits Window {
     in-out property <bool> macro-panel-open: false;
     in-out property <[string]> macro-value-labels: [];
     in-out property <[float]> macro-values: [];
+    // ⭐ 宏的**级联去向**摘要（下标 = 模型 `macro_index`，与上面三个数组同索引集）。
+    // 只读呈现：`MacroMapping` 在 `Op` 全集里没有写入变体 ⇒ 界面没有建立/改绑/删除入口
+    // （见 `bridge::MACRO_MAPPING_NO_WRITE_PATH` 与判据 `macro_mapping_has_no_write_path`）。
+    in-out property <[string]> macro-mapping-summaries: [];
     in-out property <bool> metronome-on: false;
     in-out property <bool> mixer-drag-active: false;
     in-out property <string> module-clipping-warning: "";
@@ -1750,6 +1755,10 @@ export component MainWindow inherits Window {
                 device-bypassed: root.device-bypassed;
                 device-recognised: root.device-recognised;
                 device-track-label: root.device-track-label;
+                macro-count: root.macro-names.length;
+                macro-panel-open: root.macro-panel-open;
+
+                open-macro-panel => { root.macro-panel-open = true; }
 
                 device-bypass-toggle(id) => { root.device-bypass-toggle(id); }
                 device-remove(id) => { root.device-remove(id); }
@@ -2306,6 +2315,24 @@ export component MainWindow inherits Window {
             reject => { root.reject-ai-proposal(); }
             close => { root.musical-pr-open = false; }
             select-proposal(id) => { root.select-ai-proposal(id); }
+        }
+
+        // Visible Macro Panel（审计 T-FIX-88 项 1；抽屉式，与 MusicalPR 同一条右侧落位纪律）
+        if root.macro-panel-open : macro_panel := MacroPanel {
+            z: 9500;
+            x: root.width - 388px;
+            y: 52px;
+            width: 376px;
+            height: Math.max(220px, root.height - key-handler.absolute-position.y - 92px);
+            track-label: root.device-track-label;
+            macro-names: root.macro-names;
+            macro-values: root.macro-values;
+            macro-value-labels: root.macro-value-labels;
+            macro-mapping-summaries: root.macro-mapping-summaries;
+            macro-grab(i, f) => { root.macro-grab(i, f); }
+            macro-drag(i, f) => { root.macro-drag(i, f); }
+            macro-release(i) => { root.macro-release(i); }
+            close => { root.macro-panel-open = false; }
         }
 
         // Visible Help Manual Dialog（帮助 → 用户手册）

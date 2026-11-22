@@ -19,6 +19,12 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <[string]> device-recognised: [];
     in-out property <string> device-track-label: "";
 
+    // ⭐ 宏面板入口（审计 T-FIX-88 项 1）：条数来自宿主投影（`TrackV3::macros` 长度），
+    // 打开状态由 `MainWindow` 持有（面板本体不在本组件里，本组件只画那一格按钮）。
+    in property <int> macro-count: 0;
+    in-out property <bool> macro-panel-open: false;
+    callback open-macro-panel();
+
     callback device-bypass-toggle(string);
     callback device-remove(string);
 
@@ -287,6 +293,39 @@ export component UnifiedLowerDock inherits Rectangle {
                     HorizontalLayout {
                         spacing: 3px;
                         alignment: center;
+
+                        // ⭐ 宏面板入口（审计 T-FIX-88 项 1）：条数就是 `TrackV3::macros` 的
+                        // 长度（宿主投影，⛔ 界面不自己数）。面板本体住在
+                        // `dialogs/macro_panel.slint`，由 `MainWindow` 抽屉式挂载。
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
+                            background: root.macro-panel-open ? Theme.accent.with-alpha(0.22) : (dock-macro-btn.has-hover ? Tokens.line : Tokens.bg-lane2);
+                            border-width: 1px;
+                            border-color: root.macro-panel-open ? Theme.accent : Tokens.line;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: @tr("宏 ({})", root.macro-count);
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
+                                    color: root.macro-panel-open ? Theme.accent : Tokens.skin-text-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            accessible-role: button;
+                            accessible-id: "macro-open-button";
+                            accessible-label: @tr("宏面板，{} 个宏", root.macro-count);
+                            // OS 无障碍树的"按下"必须落在**同一个**落点（`[UI-A11Y-003]` §7.3 ①）
+                            accessible-action-default => { root.open-macro-panel(); }
+                            dock-macro-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.open-macro-panel(); }
+                            }
+                            TooltipBubble { text: @tr("宏面板：宏位置与级联去向"); is-visible: dock-macro-btn.has-hover; tip-offset-y: 26px; }
+                        }
 
                         Rectangle {
                             height: 22px;
