@@ -392,8 +392,12 @@ pub struct DeviceOpening {
     pub device_name: String,
     /// 通道数（协商结果）。
     pub channels: u16,
-    /// 采样率（Hz，协商结果）。
+    /// 采样率（Hz，协商结果）：**设备流**真正跑的率。
     pub sample_rate: u32,
+    /// ⭐ **工程采样率**（Hz）（T-FIX-72）：与 `sample_rate` 不同 ⇒ 实时通路
+    /// 正在做采样率转换，设备行必须如实写明（见 [`DeviceOpening::status_line`]），
+    /// ⛔ 不许静默转换。
+    pub source_rate: u32,
     /// **实际**共享模式：当前实现恒为 [`ShareMode::Shared`]（独占不可用，见模块文档缺口 ②）。
     pub share_mode: ShareMode,
     /// 请求的每回调帧数是否被后端接受为 `BufferSize::Fixed`。
@@ -419,10 +423,20 @@ impl DeviceOpening {
     #[must_use]
     pub fn status_line(&self) -> String {
         format!(
-            "音频设备: `{}` · {} Hz / {} ch · 请求每回调 {} 帧 (后端接受 Fixed = {}) · \
+            "音频设备: `{}` · {} Hz{} / {} ch · 请求每回调 {} 帧 (后端接受 Fixed = {}) · \
              共享模式 {:?} · 交接量子 {} @ tick {} ({:?}) · **真实时钟驱动音频线程**",
             self.device_name,
             self.sample_rate,
+            // ⭐ T-FIX-72：转换中就把两侧数值写进设备行（响亮报告）；
+            // 等率时为空串，现行文一字不变。
+            if self.source_rate != self.sample_rate {
+                format!(
+                    " · 采样率转换: 工程 {} Hz → 设备 {} Hz",
+                    self.source_rate, self.sample_rate
+                )
+            } else {
+                String::new()
+            },
             self.channels,
             self.block_frames,
             self.fixed_block_accepted,
@@ -1611,6 +1625,7 @@ impl EngineHost {
                 device_name,
                 channels: negotiated.channels,
                 sample_rate: negotiated.sample_rate,
+                source_rate: negotiated.source_rate,
                 share_mode: negotiated.share_mode,
                 fixed_block_accepted: negotiated.fixed_block_accepted,
                 block_frames: config.block_frames,

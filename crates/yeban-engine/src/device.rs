@@ -15,6 +15,12 @@
 //!    判据的四元组变红。⚠ 覆盖边界：判据 ⑳ 覆盖的是**回调体**；cpal 的**闭包/流**
 //!    （`build_output_stream` → `play` → 真回调线程）仍然**未覆盖**（需要一台有声卡的
 //!    机器，见 `rt_zero_alloc.rs` 的覆盖边界登记）。
+//!
+//!    ⭐ **T-FIX-72 的异率回调**：设备率 ≠ 工程率时，闭包改持
+//!    [`ConvertedOutput`]、回调体是 [`render_callback_converted`] —— 渲染仍只走
+//!    [`render_callback`]，外面套一层**预分配**的流式采样率转换
+//!    （[`crate::resample::RateConverter`]，构造期分配、推进期零分配）。
+//!    判据 ㊻ 以与 ⑳ 完全相同的口径钉住这条回调体；⑳ 本身一字未动。
 //! 3. **真实设备路径必须能在不打开设备的前提下被编译与单测覆盖**：
 //!    配置协商被抽成纯函数 [`negotiate`]（输入是 `&[SupportedStreamConfigRange]`，
 //!    可以用 `SupportedStreamConfigRange::new` 手工构造），因此 CI 上无声卡也能测；
@@ -359,8 +365,13 @@ impl EngineConfig {
 pub struct NegotiatedConfig {
     /// 实际通道数。
     pub channels: u16,
-    /// 实际采样率 (Hz)。
+    /// 实际采样率 (Hz)：**设备流**真正跑的率（cpal `StreamConfig` 用的就是它）。
     pub sample_rate: u32,
+    /// ⭐ **引擎侧采样率** (Hz)：输出腿是引擎的渲染率（工程率），输入腿是
+    /// 请求率（工程率）。与 [`Self::sample_rate`] 不同 ⇒ 实时通路在设备腿做
+    /// **采样率转换**（[`crate::resample::RateConverter`]，T-FIX-72），
+    /// 见 [`Self::resampling`]。
+    pub source_rate: u32,
     /// 请求的缓冲帧数（`BufferSize::Fixed` —— 由后端决定是否尊重）。
     pub buffer_size: BufferSize,
     /// 实际采样格式（当前只支持 `f32`）。
@@ -370,6 +381,16 @@ pub struct NegotiatedConfig {
     /// 目标块长是否被后端接受（`false` 表示后端只会用默认缓冲大小，
     /// 此时引擎内部仍以 128 帧为渲染量子，只是回调长度可能不同）。
     pub fixed_block_accepted: bool,
+}
+
+impl NegotiatedConfig {
+    /// ⭐ 本次打开是否需要**采样率转换**：设备流的率（[`Self::sample_rate`]）
+    /// 与引擎侧的率（[`Self::source_rate`]）不同 ⇒ 输出腿在回调里转换、
+    /// 输入腿在录音抽取侧转换（T-FIX-72）。相等 ⇒ 逐位直通，现行为一字不变。
+    #[must_use]
+    pub const fn resampling(&self) -> bool {
+        self.source_rate != self.sample_rate
+    }
 }
 
 /// 设备/配置相关错误。**全部是返回值，绝不 panic**。
@@ -415,12 +436,13 @@ pub enum DeviceError {
         format: SampleFormat,
     },
 
-    /// 设备不支持请求的采样率：协商只剩退回另一个标准采样率一条路，而实时
-    /// 通路**没有采样率转换** —— 按退回率开流会以错误的速度与音高播放/录制。
-    /// **响亮拒绝**（T-FIX-59），⛔ 不静默退回：原文同时点名请求值与设备实际值，
-    /// 并给出用户可执行的补救（换支持请求率的设备，或把工程采样率改到设备率）。
-    /// 与 Logic Pro 的口径一致：设备必须跑在工程采样率上，跑不到就明确报错，
-    /// 绝不以错误速度出声。
+    /// 设备不支持请求的采样率（T-FIX-59 的响亮拒绝形态）。
+    ///
+    /// ⭐ **T-FIX-72 起 [`negotiate`] 不再产生这个错误**：实时通路已有采样率
+    /// 转换，协商改为接受设备率并在 [`NegotiatedConfig`] 里如实标记两侧
+    /// 采样率（设备行/装载报告会写明正在转换，⛔ 不是静默转换）。本变体
+    /// 保留在公共 API 里（下游的错误分流与文案不因政策变更而静默失效），
+    /// 其原文仍可用于需要"点名两侧数值 + 补救办法"的场合。
     #[error(
         "device does not support the requested sample rate: want {want_rate} Hz, \
          the device would fall back to {device_rate} Hz; the realtime path has no \
@@ -593,11 +615,15 @@ pub fn negotiate_input_traced(
 /// 选择规则（按优先级）：
 ///
 /// 1. 优先 `f32` + 请求的采样率 + 请求的通道数（立体声不足时接受设备的默认通道数）；
-/// 2. 采样率只剩退回设备的首选标准采样率一条路时 **响亮拒绝**
-///    （[`DeviceError::SampleRateMismatch`]，T-FIX-59）：实时通路没有采样率转换，
-///    按退回率开流会以错误的速度与音高出声 —— 旧行为静默退回（48k → 44.1k），
-///    是 macOS 无声现场里"设备行毫无告警"的根源；
-/// 3. `f32` 完全不可用 → [`DeviceError::UnsupportedSampleFormat`]（不静默做格式转换，
+/// 2. 采样率匹配但通道数不同 ⇒ 接受设备通道数；
+/// 3. 设备给不了请求率 ⇒ **按设备的首选标准率开流 + 实时采样率转换**
+///    （T-FIX-72）：结果里 [`NegotiatedConfig::source_rate`] 记引擎侧的率、
+///    [`NegotiatedConfig::sample_rate`] 记设备实际率，两者不同即
+///    [`NegotiatedConfig::resampling`] —— 设备腿据此装转换器，设备行/装载
+///    报告如实写明"正在转换"，⛔ 不是静默退回（T-FIX-59 的响亮口径保留在
+///    **报告**里，而不是拒绝里：44100-only 设备在真实环境里太常见，
+///    拒绝等于不出声；照 Logic Pro 口径，率不一致时转换后以正确速度出声）；
+/// 4. `f32` 完全不可用 → [`DeviceError::UnsupportedSampleFormat`]（不静默做格式转换，
 ///    因为那会引入一条未经确定性验证的样本路径 [ARCH-DET-001]）。
 ///
 /// # Errors
@@ -707,20 +733,25 @@ fn negotiate_inner(
         }
     }
     trace.push("negotiate: step 2 (rate matches, channels differ) -> no match".to_owned());
-    // 3) 只剩退回标准采样率一条路 ⇒ **响亮拒绝**（T-FIX-59）：实时通路没有
-    //    采样率转换，退回率开流等于以 44100/48000 的速度与音高出声。把设备
-    //    本会退回到的实际值算出来写进错误原文，用户才知道差在哪、怎么补救。
-    for range in &f32_ranges {
-        if let Some(config) = range.try_with_standard_sample_rate() {
-            trace.push(format!(
-                "negotiate: step 3 (standard-rate fallback) would land on {} Hz != wanted {} Hz -> SampleRateMismatch (loud refusal: no realtime sample-rate conversion)",
-                config.sample_rate(),
-                want.sample_rate
-            ));
-            return Err(DeviceError::SampleRateMismatch {
-                want_rate: want.sample_rate,
-                device_rate: config.sample_rate(),
-            });
+    // 3) 设备给不了请求率 ⇒ 按设备首选标准率开流，实时通路做采样率转换
+    //    （T-FIX-72，取代 T-FIX-59 的响亮拒绝）：先找同通道数的范围，再任意
+    //    范围。`finish` 会把请求率记进 `source_rate`、把设备率记进
+    //    `sample_rate` ⇒ `resampling()` 为真 ⇒ 设备腿装转换器、设备行报告
+    //    转换中。⛔ 不是静默退回：两侧数值都在协商结果里，报告层必须写明。
+    for same_channels in [true, false] {
+        for range in &f32_ranges {
+            if same_channels && range.channels() != want.channels {
+                continue;
+            }
+            if let Some(config) = range.try_with_standard_sample_rate() {
+                trace.push(format!(
+                    "negotiate: step 3 (device rate differs) matched {} ch at {} Hz -> resampling from wanted {} Hz",
+                    range.channels(),
+                    config.sample_rate(),
+                    want.sample_rate
+                ));
+                return Ok(finish(range, want, config.sample_rate()));
+            }
         }
     }
     trace.push(
@@ -794,7 +825,8 @@ fn finish(
     // ⭐ T-FIX-59 复议：旧实现把采样率退回连坐进这里（`!rate_fallback && ...`），
     // 使退回路径**必然** Default —— 块长可否固定与采样率是否退回是两个独立
     // 问题，连坐只会放大设备侧变量。现本函数根本不接收退回标志，块长接受与否
-    // 只由设备报告的区间决定；采样率退回本身已在 `negotiate` 第 3 步响亮拒绝。
+    // 只由设备报告的区间决定；采样率差由 `source_rate` 与 `sample_rate`
+    // 两侧数值如实记录（T-FIX-72），转换在设备腿做，不在这里连坐。
     let fixed_block_accepted = match range.buffer_size() {
         SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&want.block_frames),
         SupportedBufferSize::Unknown => false,
@@ -802,6 +834,7 @@ fn finish(
     NegotiatedConfig {
         channels: range.channels(),
         sample_rate,
+        source_rate: want.sample_rate,
         buffer_size: if fixed_block_accepted {
             BufferSize::Fixed(want.block_frames)
         } else {
@@ -934,8 +967,131 @@ pub fn render_callback(runtime: &mut EngineRuntime, data: &mut [f32], channels: 
     runtime.process_quantum(data, channels);
 }
 
+/// ⭐ **带采样率转换的输出回调状态**（T-FIX-72）：设备率 ≠ 工程率时，
+/// [`open_output`] 的闭包持有的就是它（而不是裸的 [`EngineRuntime`]）。
+///
+/// 结构：运行时仍按**工程率**渲染（走带、事件、快照的时基一位不动），
+/// 每次渲染一个 128 帧量子进预分配的 `scratch`，再由
+/// [`crate::resample::RateConverter`] 换成**设备率**填进 cpal 的缓冲。
+/// 转换器与暂存都在构造期分配 ⇒ 回调稳态零分配（判据 ㊻ 与 ⑳ 同口径钉住）。
+pub struct ConvertedOutput {
+    runtime: EngineRuntime,
+    converter: crate::resample::RateConverter,
+    /// 一个工程率量子的交错暂存（`DEFAULT_BLOCK_FRAMES × channels`，构造期分配）。
+    scratch: Box<[f32]>,
+}
+
+impl ConvertedOutput {
+    /// 按协商结果组装。`negotiated.resampling()` 为假（等率）⇒ 返回 `None`
+    /// （调用方必须走 [`render_callback`] 的逐位直通路径，⛔ 不许"顺手"过一遍
+    /// 转换器 —— 等率直通是回归判据钉住的现行为）。
+    #[must_use]
+    pub fn new(runtime: EngineRuntime, negotiated: &NegotiatedConfig) -> Option<Self> {
+        let converter = crate::resample::RateConverter::new(
+            negotiated.source_rate,
+            negotiated.sample_rate,
+            negotiated.channels,
+        )?;
+        Some(Self::from_converter(
+            runtime,
+            converter,
+            negotiated.channels,
+        ))
+    }
+
+    /// 按显式两侧采样率组装（判据 ㊻ 用：集成判据构造不出 `cpal` 的协商类型，
+    /// 但必须与产品路径共用同一个组装点，⛔ 不许判据专用近路）。
+    #[must_use]
+    pub fn with_rates(
+        runtime: EngineRuntime,
+        source_rate: u32,
+        device_rate: u32,
+        channels: u16,
+    ) -> Option<Self> {
+        let converter = crate::resample::RateConverter::new(source_rate, device_rate, channels)?;
+        Some(Self::from_converter(runtime, converter, channels))
+    }
+
+    /// 用一台**已建好**的转换器装配（[`open_output`] 用：先在运行时之外建
+    /// 转换器来决定走哪条腿，再把运行时装进来 —— 避免"先按值交出运行时、
+    /// 失败再退回"的借用死结，也不需要任何 panic 路径）。
+    pub(crate) fn from_converter(
+        runtime: EngineRuntime,
+        converter: crate::resample::RateConverter,
+        channels: u16,
+    ) -> Self {
+        let frames = DEFAULT_BLOCK_FRAMES * usize::from(channels.max(1));
+        Self {
+            runtime,
+            converter,
+            scratch: vec![0.0f32; frames].into_boxed_slice(),
+        }
+    }
+
+    /// 转换器（控制面读两侧采样率与帧数记账）。
+    #[must_use]
+    pub const fn converter(&self) -> &crate::resample::RateConverter {
+        &self.converter
+    }
+
+    /// 运行时统计（与 [`EngineRuntime::stats`] 同一份读数）。
+    #[must_use]
+    pub fn stats(&self) -> EngineStats {
+        self.runtime.stats()
+    }
+}
+
+impl std::fmt::Debug for ConvertedOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConvertedOutput")
+            .field("converter", &self.converter)
+            .field("stats", &self.stats())
+            .finish()
+    }
+}
+
+/// **带转换的 cpal 数据回调的完整负载** —— 与 [`render_callback`] 同款理由
+/// 抽成具名函数：[`open_output`] 在异率时建流的闭包与
+/// `crates/yeban-engine/tests/rt_zero_alloc.rs` 的判据 ㊻ 调用**同一个**
+/// 函数 ⇒ 往这条路径里加分配/锁/I-O 会当场变红。
+///
+/// 推进形态：`data` 是**设备率**的交错缓冲；循环「渲染一个工程率量子到
+/// 暂存 ⇒ 逐帧喂转换器 ⇒ 转换器把设备率帧排进 `data`」直到 `data` 的整帧
+/// 部分填满（尾部不足一帧的样本保持原值，与 [`crate::rt::EngineRuntime::process_quantum`]
+/// 的既有契约一致）。转换器自带待排输出：上一个回调没排完的帧在本回调
+/// 先排（`push_frame` 的排空尝试），顺序不乱、样本不丢。
+///
+/// 实时约束（红线 7）：零分配、零锁、零阻塞 I/O、零日志 —— 渲染走
+/// [`render_callback`]（判据 ⑳ 已钉），转换只做定长乘加（判据 ㊻ 钉）。
+pub fn render_callback_converted(state: &mut ConvertedOutput, data: &mut [f32], channels: u16) {
+    let ConvertedOutput {
+        runtime,
+        converter,
+        scratch,
+    } = state;
+    let channels = usize::from(channels.max(1));
+    let total_frames = data.len() / channels;
+    let mut filled = 0usize;
+    while filled < total_frames {
+        render_callback(runtime, scratch, channels as u16);
+        let frames = scratch.len() / channels;
+        for index in 0..frames {
+            let frame = &scratch[index * channels..(index + 1) * channels];
+            // ⚠ `frame` 借 `scratch`、`converter` 是另一字段：两者是不相交
+            // 字段借用（已由上面的解构拆开），编译期成立。
+            //
+            // `data` 填满后余下的帧**仍要喂完**：已渲染出来的样本丢掉任何
+            // 一个都会让流错位；它们的输出留在转换器里待排，下一个回调
+            // 先排（`push_frame` 对满的 `out` 只收不排）。追加量 ≤ 一个
+            // 量子，落在转换器的历史深度不变式内（见 `resample` 模块文档）。
+            converter.push_frame(frame, data, &mut filled);
+        }
+    }
+}
+
+
 /// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
-/// （见 [`open_output`]）。
+/// （见 [`open_output`]）。 (Add realtime streaming sample-rate conversion for mismatched devices (T-FIX-72))
 ///
 /// 真实设备相关的一切（枚举能力、协商、建流）都在这里，并且**只返回 `Result`**。
 /// 无声卡环境下返回 [`DeviceError::NoDefaultOutputDevice`]，绝不 panic。
@@ -967,20 +1123,44 @@ pub fn open_output_boxed(
     let channels = negotiated.channels;
     let backend_errors = Arc::new(BackendErrorLog::new());
     let error_counter = Arc::clone(&backend_errors);
+    let error_counter_converted = Arc::clone(&backend_errors);
 
-    // 数据回调: 只有 `render_callback`（= 只有 `process_quantum`）——
-    // 零分配 / 零锁 / 零 I/O / 零日志 [红线 7]。回调体是**具名函数**，见它的文档。
-    let stream = device.build_output_stream::<f32, _, _>(
-        stream_config,
-        move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-            render_callback(&mut runtime, data, channels);
-        },
-        // 错误回调: 只做原子计数与固定缓冲拷贝（零分配 / 零锁 / 零 I/O；打印禁止 [红线 7]）。
-        move |error: cpal::Error| {
-            error_counter.record(&error);
-        },
-        Some(STREAM_OPEN_TIMEOUT),
-    )?;
+    // 数据回调分两条腿（都是**具名函数**，都受判据钉住）：
+    // - 等率 ⇒ `render_callback`（= 只有 `process_quantum`，判据 ⑳）—— 逐位直通；
+    // - 异率 ⇒ `render_callback_converted`（渲染仍走 `render_callback`，
+    //   外加预分配的流式采样率转换，判据 ㊻）—— T-FIX-72。
+    // 先在运行时之外把转换器建好（`None` = 等率/不可转换 ⇒ 直通腿），
+    // 再决定运行时装进哪条腿 —— ⛔ 不先按值交出再退回。
+    // 错误回调: 只做原子计数与固定缓冲拷贝（零分配 / 零锁 / 零 I/O；打印禁止 [红线 7]）。
+    let converter = crate::resample::RateConverter::new(
+        negotiated.source_rate,
+        negotiated.sample_rate,
+        negotiated.channels,
+    );
+    let stream = if let Some(converter) = converter {
+        let mut state = ConvertedOutput::from_converter(runtime, converter, channels);
+        device.build_output_stream::<f32, _, _>(
+            stream_config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                render_callback_converted(&mut state, data, channels);
+            },
+            move |error: cpal::Error| {
+                error_counter_converted.record(&error);
+            },
+            Some(STREAM_OPEN_TIMEOUT),
+        )?
+    } else {
+        device.build_output_stream::<f32, _, _>(
+            stream_config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                render_callback(&mut runtime, data, channels);
+            },
+            move |error: cpal::Error| {
+                error_counter.record(&error);
+            },
+            Some(STREAM_OPEN_TIMEOUT),
+        )?
+    };
 
     Ok(OutputStreamHandle {
         stream,
@@ -1219,6 +1399,7 @@ impl NullBackend {
             NegotiatedConfig {
                 channels: config.channels,
                 sample_rate: config.sample_rate,
+                source_rate: config.sample_rate,
                 buffer_size: BufferSize::Fixed(config.block_frames),
                 sample_format: SampleFormat::F32,
                 share_mode: ShareMode::Shared,
@@ -1365,10 +1546,15 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_rejects_rate_fallback_loudly_when_requested_rate_is_unsupported() {
-        // 设备只支持 44.1k、工程要 48k。旧行为：静默退回 44.1k 开流（播放按
-        // 44100/48000 降速降调、设备行毫无告警）。T-FIX-59：响亮拒绝，错误
-        // 原文同时点名请求值与设备实际值。
+    fn negotiate_accepts_rate_fallback_and_marks_conversion() {
+        // 设备只支持 44.1k、工程要 48k。
+        // - T-FIX-59 之前：静默退回 44.1k 开流（按 44100/48000 降速降调出声，
+        //   设备行毫无告警）；
+        // - T-FIX-59：响亮拒绝（SampleRateMismatch）—— 在 44100-only 设备
+        //   常见的真实环境里等于不出声，Wang 2026-11-22 亲测撞上后改判；
+        // - T-FIX-72（现行）：**接受设备率 + 实时采样率转换**：协商成功，
+        //   两侧数值都记进结果（`resampling()` 为真），设备腿装转换器、
+        //   设备行如实报告转换中 —— 不是静默退回。
         let ranges = [fake_range(
             2,
             44_100,
@@ -1376,25 +1562,27 @@ mod tests {
             SupportedBufferSize::Unknown,
             SampleFormat::F32,
         )];
-        match negotiate(&ranges, &EngineConfig::default()) {
-            Err(DeviceError::SampleRateMismatch {
-                want_rate,
-                device_rate,
-            }) => {
-                assert_eq!(want_rate, 48_000);
-                assert_eq!(device_rate, 44_100);
-            }
-            other => panic!("预期 SampleRateMismatch, 实际 {other:?}"),
-        }
-        let error = negotiate(&ranges, &EngineConfig::default()).expect_err("异率必须失败");
-        let text = error.to_string();
-        assert!(text.contains("48000"), "错误原文缺点名请求值: {text}");
-        assert!(text.contains("44100"), "错误原文缺点名实际值: {text}");
+        let got = negotiate(&ranges, &EngineConfig::default())
+            .expect("T-FIX-72: 异率必须协商成功并标记转换，⛔ 不再拒绝");
+        assert_eq!(got.sample_rate, 44_100, "设备流跑设备实际率");
+        assert_eq!(got.source_rate, 48_000, "引擎侧记工程（请求）率");
+        assert!(
+            got.resampling(),
+            "两侧不同必须标记为转换中（响亮报告的依据）"
+        );
+        assert_eq!(
+            got.buffer_size,
+            BufferSize::Default,
+            "设备给不出块长区间 ⇒ Default（与采样率无关的独立事实）"
+        );
     }
 
     #[test]
-    fn negotiate_rejects_rate_fallback_even_when_block_size_would_fit() {
-        // 缓冲区间装得下请求块长也救不了采样率退回：拒绝的原因是率，不是块长。
+    fn negotiate_rate_fallback_keeps_fixed_block_when_range_fits() {
+        // 缓冲区间装得下请求块长 ⇒ Fixed 照样接受：采样率转换不许连坐块长
+        //（与 T-FIX-59 对 `finish` 的复议口径一致；旧的拒绝版判据
+        // `negotiate_rejects_rate_fallback_even_when_block_size_would_fit`
+        // 随 T-FIX-72 的政策反转改写为本条）。
         let ranges = [fake_range(
             2,
             44_100,
@@ -1402,10 +1590,29 @@ mod tests {
             SupportedBufferSize::Range { min: 64, max: 1024 },
             SampleFormat::F32,
         )];
-        match negotiate(&ranges, &EngineConfig::default()) {
-            Err(DeviceError::SampleRateMismatch { .. }) => {}
-            other => panic!("预期 SampleRateMismatch, 实际 {other:?}"),
-        }
+        let got = negotiate(&ranges, &EngineConfig::default())
+            .expect("T-FIX-72: 异率 + 块长区间装得下 ⇒ 协商成功");
+        assert_eq!(got.sample_rate, 44_100);
+        assert_eq!(got.source_rate, 48_000);
+        assert!(got.resampling());
+        assert_eq!(got.buffer_size, BufferSize::Fixed(128));
+        assert!(got.fixed_block_accepted);
+    }
+
+    #[test]
+    fn negotiate_exact_rate_match_is_not_marked_resampling() {
+        // 等率路径必须与转换完全脱钩：`resampling()` 为假 ⇒ 回调走逐位直通。
+        let ranges = [fake_range(
+            2,
+            48_000,
+            48_000,
+            SupportedBufferSize::Range { min: 64, max: 1024 },
+            SampleFormat::F32,
+        )];
+        let got = negotiate(&ranges, &EngineConfig::default()).expect("精确匹配");
+        assert_eq!(got.sample_rate, 48_000);
+        assert_eq!(got.source_rate, 48_000);
+        assert!(!got.resampling(), "等率不得标记转换");
     }
 
     #[test]

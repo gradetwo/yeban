@@ -524,6 +524,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 // T-FIX-59：采样率不符不是"没有设备"——设备在，只是跑不到工程
                 // 采样率。toast 必须点名两侧数值与补救办法，⛔ 不套用通用文案
                 // 把用户引去查"设备不存在"。
+                // T-FIX-72 起协商已改为"接受设备率＋实时采样率转换"，本错误
+                // 不再由协商产生；本分流保留（错误类型仍是公共 API），万一
+                // 它从别处冒出来，文案仍是点名两侧数值的正确口径。
                 let text = match &error {
                     yeban_app::engine_host::EngineHostError::Device(
                         yeban_engine::device::DeviceError::SampleRateMismatch {

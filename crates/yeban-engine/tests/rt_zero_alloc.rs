@@ -55,6 +55,7 @@
 //! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A）；**⑲d**（`line/engine-12`）在同一窗口里追加"SPSC 环满的丢帧读数"`EngineStats::meter_dropped_frames`：`写入 + 丢弃 == 量子数 × SCRATCH_METERS`（等号）且丢弃 > 0 |
 //! | ⑲e | 电平容量**边界**（轨道数**恰好** `SCRATCH_METERS − 1` = 255）64 量子 | 同一条判定的**另一侧**：`metered_tracks > track_budget` 是**严格大于** ⇒ 恰好等于时零丢弃、零被抑制诊断，但仍然每量子发满一批（`line/engine-26` 注入 R17 的处置：把 `>` 改成 `>=` 时只有本场景变红） |
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
+//! | ㊻ | 异率设备回调体 2 000 次（`yeban_engine::device::render_callback_converted`，48000 工程 → 44100 设备，T-FIX-72） | `open_output` 异率分支的闭包与判据调用的**同一个**函数 ⇒ 采样率转换层里多做事（分配/锁/I-O/日志）在这里变红；记账见证为量子/输入帧/输出帧三方对账；**feature `device` 门控** |
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
 //! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
@@ -3190,6 +3191,81 @@ fn scenario_device_callback_body(report: &mut Report) {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 ㊻：**异率设备回调体**（`device::render_callback_converted`）—— T-FIX-72
+// ---------------------------------------------------------------------------
+
+/// ㊻ 的回调次数（每次 256 个**设备**帧）。
+#[cfg(feature = "device")]
+const CONVERTED_CALLBACK_CALLS: u64 = 2_000;
+/// ㊻ 每次回调的设备帧数（44100 Hz 下 ≈ 5.8 ms ⇒ 每次回调至少推一个工程量子）。
+#[cfg(feature = "device")]
+const CONVERTED_CALLBACK_FRAMES: usize = 256;
+
+/// ㊻ **异率设备回调体**：`yeban_engine::device::render_callback_converted`。
+///
+/// 与 ⑳ 的分工：⑳ 钉**等率直通**的回调体；㊻ 钉**异率**的回调体 —— 引擎按
+/// 48000 Hz 渲染、流式转换器（[`yeban_engine::resample::RateConverter`]）把
+/// 流换成 44100 Hz 填设备缓冲。`open_output` 的异率分支闭包与本场景调用
+/// **同一个**函数 ⇒ 转换层里多出一次分配/锁/I-O/日志，四元组在这里变红
+/// （与 ⑳ 完全同口径，⛔ 不许放宽）。
+///
+/// 量子记账的期望值不写死：每次回调要推的工程量子数随转换相位浮动，
+/// 期望取窗口前后 `EngineStats::quanta` 的**实测增量** —— 探针 visits 与
+/// 引擎 stats 是两个独立计数器，对不上即红；外加一条三方对账断言
+/// （量子增量 × 128 == 转换器收到帧数、发出帧数 == 回调数 × 256）防假绿。
+#[cfg(feature = "device")]
+fn scenario_device_callback_body_converted(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    rig.send_transport(TransportCommand::Play);
+
+    let runtime = rig.runtime;
+    let mut state = yeban_engine::device::ConvertedOutput::with_rates(runtime, 48_000, 44_100, 2)
+        .expect("异率（48000 → 44100）必须能组装转换状态");
+    let mut buffer = vec![0.0f32; CONVERTED_CALLBACK_FRAMES * 2];
+
+    let mut scenario = Scenario::new("㊻异率设备回调体");
+    let quanta_before = state.stats().quanta;
+    let reading = window(|| {
+        for _ in 0..CONVERTED_CALLBACK_CALLS {
+            yeban_engine::device::render_callback_converted(&mut state, &mut buffer, 2);
+        }
+    });
+    let quanta_in_window = state.stats().quanta - quanta_before;
+    scenario.absorb(quanta_in_window, &reading);
+    let converter = state.converter();
+    scenario.note(format!(
+        "转换回调体 `yeban_engine::device::render_callback_converted` 被调用 \
+         {CONVERTED_CALLBACK_CALLS} 次（每次 {CONVERTED_CALLBACK_FRAMES} 设备帧）⇒ \
+         窗口内量子 {quanta_in_window}；转换器记账：收到 {} 工程帧 / 发出 {} 设备帧",
+        converter.received(),
+        converter.emitted(),
+    ));
+    report.scenario(
+        "㊻",
+        "[MUST-GATE-001] 异率设备回调体（`render_callback_converted`，cpal 异率闭包调用的同一个函数）：四元组全 0",
+        &scenario,
+    );
+    // 记账见证（防假绿）：量子增量、转换器输入帧数、输出帧数三者必须咬合。
+    let expected_emitted = CONVERTED_CALLBACK_CALLS * CONVERTED_CALLBACK_FRAMES as u64;
+    report.assert(
+        "㊻-记账",
+        "[MUST-GATE-001] 异率设备回调体的记账见证（量子/输入帧/输出帧三方对账）",
+        quanta_in_window >= CONVERTED_CALLBACK_CALLS
+            && converter.received() == quanta_in_window * DEFAULT_BLOCK_FRAMES as u64
+            && converter.emitted() == expected_emitted,
+        format!(
+            "窗口量子={quanta_in_window}（≥ 回调数 {CONVERTED_CALLBACK_CALLS}）；\
+             收到={}（期望 窗口量子 × {DEFAULT_BLOCK_FRAMES}）；\
+             发出={}（期望 {expected_emitted}）",
+            converter.received(),
+            converter.emitted(),
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ⑦ 探针有牙（正对照：非 RT 路径上让读数非 0）
 // ---------------------------------------------------------------------------
 
@@ -4394,6 +4470,8 @@ fn judgement_body() -> ExitCode {
     scenario_meter_capacity_boundary(&mut report);
     #[cfg(feature = "device")]
     scenario_device_callback_body(&mut report);
+    #[cfg(feature = "device")]
+    scenario_device_callback_body_converted(&mut report);
     scenario_metronome(&mut report);
     scenario_audio_clip(&mut report);
     scenario_reverb_insert(&mut report);

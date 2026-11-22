@@ -162,6 +162,7 @@ pub mod metronome;
 pub mod mixer;
 pub mod param;
 pub use yeban_record as record;
+pub mod resample;
 pub mod ring;
 pub mod routing;
 pub mod rt;

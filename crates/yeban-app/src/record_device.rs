@@ -160,20 +160,20 @@ impl InputSourceFactory for DeviceInputFactory {
         //    ⚠ 不做降混/上混：本仓对"怎么混"**没有裁决**（`yeban-render` 的
         //    `read_plain_wav_mono_f32` 文档同款措辞）。
         //
-        // ② **采样率不同 ⇒ 响亮失败**（与裁决 §2.3 同一条纪律）。理由不是洁癖：
-        //    WAV 头的采样率与**预备拍帧数**都是按 `RecordOptions::sample_rate` 在
-        //    **打开设备之前**算好的（`host::wire_record` 的 `count_in_frames`）⇒ 静默收下
-        //    44.1k 会让音高/时长与预备拍**双重错位**。宁可明确报错。
+        // ② **采样率不同 ⇒ 在抽取侧做采样率转换**（T-FIX-72，取代旧的响亮拒绝）。
+        //    旧拒绝的理由不是洁癖：WAV 头的采样率与**预备拍帧数**都是按
+        //    `RecordOptions::sample_rate` 算的（`host::wire_record` 的
+        //    `count_in_frames`），静默按设备率落盘会让音高/时长与预备拍**双重错位**。
+        //    但 44100-only 输入设备在真实环境里同样常见，拒绝等于录不了 ——
+        //    与输出腿同一个裁决（T-FIX-72）：**转换**正面解决错位：设备环里是
+        //    **设备率**帧，[`DeviceInputSource::next_block`] 交出去之前先换成
+        //    **请求率** ⇒ WAV 头与预备拍数的都是 `next_block` 交出去的帧，
+        //    口径自洽。转换器在这里构造（分配只在打开期），推进在录音工作
+        //    线程上（⛔ 不在音频回调里，不受红线 7 约束）。转换状态由协商
+        //    结果如实携带（`resampling()`），⛔ 不是静默转换。
         let negotiated = *handle.negotiated();
-        if negotiated.sample_rate != options.sample_rate {
-            return Err(format!(
-                "输入设备协商到的采样率（{} Hz）与请求（{} Hz）不符 ⇒ 拒绝录音\
-                 （不允许静默改音高/时长；预备拍也是按请求采样率算的）",
-                negotiated.sample_rate, options.sample_rate
-            ));
-        }
-        let (receiver, handle) = if negotiated.channels.max(1) == requested {
-            (receiver, handle)
+        let (receiver, handle, negotiated) = if negotiated.channels.max(1) == requested {
+            (receiver, handle, negotiated)
         } else {
             // ① 的第一半：设备的声道数与请求值不同 ⇒ **按协商值重建环**。
             let channels = negotiated.channels.max(1);
@@ -182,16 +182,25 @@ impl InputSourceFactory for DeviceInputFactory {
             let handle = open_input(&Self::engine_config_for(options, channels), sender).map_err(
                 |error| format!("按设备协商到的 {channels} 声道重开输入流失败（{error}）"),
             )?;
-            // ⭐ 第二次协商必须与第一次**逐项一致**（否则环的宽度又和回调宽度分叉）。
+            // ⭐ 第二次协商必须与第一次**逐项一致**（否则环的宽度又和回调宽度分叉，
+            // 转换器的两侧率也会跟着分叉）。
             let again = *handle.negotiated();
-            if again.channels.max(1) != channels || again.sample_rate != options.sample_rate {
+            if again.channels.max(1) != channels
+                || again.sample_rate != negotiated.sample_rate
+                || again.source_rate != negotiated.source_rate
+            {
                 return Err(format!(
-                    "输入设备的第二次协商（{} 声道 / {} Hz）与第一次（{channels} 声道 / {} Hz）\
-                     不一致 ⇒ 拒绝录音（环的宽度必须与设备回调的宽度逐位一致）",
-                    again.channels, again.sample_rate, options.sample_rate
+                    "输入设备的第二次协商（{} 声道 / 设备 {} Hz / 工程 {} Hz）与第一次\
+                     （{channels} 声道 / 设备 {} Hz / 工程 {} Hz）不一致 ⇒ 拒绝录音\
+                     （环的宽度必须与设备回调的宽度逐位一致）",
+                    again.channels,
+                    again.sample_rate,
+                    again.source_rate,
+                    negotiated.sample_rate,
+                    negotiated.source_rate
                 ));
             }
-            (receiver, handle)
+            (receiver, handle, again)
         };
         // ⚠ **必须 `play()`**：`InputStreamHandle` 只是"流在场"，不起播 ⇒ 回调一帧都不来。
         handle
@@ -199,7 +208,14 @@ impl InputSourceFactory for DeviceInputFactory {
             .map_err(|error| format!("启动输入流失败（{error}）"))?;
         // ⭐ 声道数**取自环本身**（`DeviceInputSource::new`）：源报的宽度与环的宽度
         // 因此在结构上不可能分叉 ⇒ `#130` 那条"逐帧拒收"的缺陷无法再出现。
-        Ok(Box::new(DeviceInputSource::new(receiver, handle)))
+        let mut source = DeviceInputSource::new(receiver, handle);
+        // ⭐ 转换器按**最终**协商结果挂：设备率 → 请求率；等率 ⇒ `None`（直通）。
+        source.attach_converter(yeban_engine::resample::RateConverter::new(
+            negotiated.sample_rate,
+            options.sample_rate,
+            negotiated.channels,
+        ));
+        Ok(Box::new(source))
     }
 
     fn label(&self) -> &'static str {
@@ -231,6 +247,10 @@ pub struct DeviceInputSource<H> {
     /// 声道数（⭐ **恒等于环的声道数**：`new` 从 `receiver.channels()` 取，
     /// ⛔ 不是调用方另报一个数 —— 两者分叉就是 `#130` 的"逐帧拒收、拉到 0 帧"）。
     channels: u16,
+    /// ⭐ **采样率转换器**（T-FIX-72）：设备率 ≠ 请求率时由工厂在打开后经
+    /// [`DeviceInputSource::attach_converter`] 挂上；`next_block` 据此把
+    /// **设备率**帧换成**请求率**帧再交出去。`None` = 等率直通（现行为）。
+    converter: Option<yeban_engine::resample::RateConverter>,
 }
 
 impl<H> DeviceInputSource<H> {
@@ -247,7 +267,52 @@ impl<H> DeviceInputSource<H> {
             receiver,
             handle,
             channels,
+            converter: None,
         }
+    }
+
+    /// ⭐ 挂上采样率转换器（T-FIX-72）：由工厂在打开设备、协商落定后调用。
+    ///
+    /// ⛔ 只能在录音开始前挂：`next_block` 的帧数记账（WAV 帧数、预备拍）
+    /// 全部以"交出去的是请求率帧"为前提，中途换转换器会让记账错位。
+    /// `None` = 等率直通。
+    pub fn attach_converter(&mut self, converter: Option<yeban_engine::resample::RateConverter>) {
+        self.converter = converter;
+    }
+
+    /// 当前挂着的转换器（控制面/判据读两侧采样率与帧数记账）。
+    #[must_use]
+    pub const fn converter(&self) -> Option<&yeban_engine::resample::RateConverter> {
+        self.converter.as_ref()
+    }
+
+    /// ⭐ **转换路径的抽取**（T-FIX-72）：设备环里是**设备率**帧，逐帧喂
+    /// 转换器、把**请求率**帧排进 `out`，满 `want` 帧或环空为止，返回
+    /// 排出的帧数（可 < `want`，与直通路径"环空返回实数"同口径）。
+    ///
+    /// 每轮先估一个够用的环帧数（`剩余 × in/out + 窗长 + 2`）再抽，⛔ 不把
+    /// 整个环一次抽干（两层环的节拍见模块文档）；转换器自带待排输出，
+    /// 本轮没排完的下一轮先排，顺序不乱。
+    fn next_block_converted(&mut self, want: usize, out: &mut [f32]) -> usize {
+        let mut filled = 0usize;
+        while filled < want {
+            let (in_rate, out_rate) = {
+                let converter = self.converter.as_ref().expect("转换路径必有转换器");
+                (converter.in_rate(), converter.out_rate())
+            };
+            let remaining = (want - filled) as u64;
+            let estimate = (remaining * u64::from(in_rate) / u64::from(out_rate)) as usize
+                + yeban_engine::resample::RESAMPLER_TAPS
+                + 2;
+            let converter = self.converter.as_mut().expect("转换路径必有转换器");
+            let got = self.receiver.drain_frames(estimate, |frame| {
+                converter.push_frame(frame, out, &mut filled);
+            });
+            if got == 0 {
+                break;
+            }
+        }
+        filled
     }
 
     /// 已打开的设备句柄（⭐ 控制面用：读协商结果 / `backend_errors`）。
@@ -274,6 +339,11 @@ impl<H> InputSource for DeviceInputSource<H> {
         let want = frames.min(capacity_frames);
         if want == 0 {
             return 0;
+        }
+        // ⭐ T-FIX-72：挂了转换器 ⇒ 环里是设备率帧，先换成请求率再交出去
+        //（WAV 头与预备拍只认请求率，见 `open` 的 ② 号口径）。
+        if self.converter.is_some() {
+            return self.next_block_converted(want, out);
         }
         let mut written = 0usize;
         let got = self.receiver.drain_frames(want, |frame| {
@@ -377,5 +447,56 @@ mod tests {
         assert_eq!(drained, 8, "同宽 ⇒ 8 帧整块取出（实得 {drained}）");
         assert_eq!(frames, block, "取出的样本必须逐样本相同");
         assert_eq!(sender.dropped_frames(), 0);
+    }
+
+    /// ⭐⭐ **判据（T-FIX-72，输入腿）**：设备率（44100 Hz）的帧进环，源按
+    /// **请求率（48000 Hz）**交出 —— 1000 Hz 正弦在两侧的频率必须一致
+    /// （音高/速度不变），输出帧数按 48000/44100 放大（差转换窗半窗长以内）。
+    ///
+    /// 反向腿：把 `next_block` 的转换分支删掉 ⇒ 本判据在帧数（44100 ≠ 约
+    /// 48000）与频率（实测约 918 Hz）两处同时红。
+    #[test]
+    fn device_input_source_converts_device_rate_frames_to_the_requested_rate() {
+        let options = RecordOptions::default();
+        assert_eq!(options.sample_rate, 48_000, "前提：默认请求率 48000 Hz");
+        assert_eq!(options.channels, 2, "前提：默认请求 2 声道");
+        let (mut sender, receiver) = device_ring(&options, 2);
+        let mut source = DeviceInputSource::new(receiver, ());
+        assert!(source.converter().is_none(), "挂转换器之前必须是直通");
+        source.attach_converter(yeban_engine::resample::RateConverter::new(
+            44_100, 48_000, 2,
+        ));
+        assert!(source.converter().is_some(), "异率必须挂上转换器");
+
+        // 设备以 44100 Hz 喂 1 秒立体声 1000 Hz 正弦（左右同相）。
+        let frames = 44_100usize;
+        let mut block = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let phase = 2.0 * core::f64::consts::PI * 1000.0 * i as f64 / 44_100.0;
+            let value = (0.8 * phase.sin()) as f32;
+            block.push(value);
+            block.push(value);
+        }
+        let accepted = yeban_engine::record::push_input_block(&mut sender, &block, 2);
+        assert_eq!(accepted, frames, "整秒设备帧必须全部进环");
+
+        let mut out = vec![0.0f32; 48_000 * 2];
+        let got = source.next_block(48_000, &mut out);
+        assert!(
+            got > 47_900 && got <= 48_000,
+            "转换后应排出约 48000 帧（差半窗长以内），实得 {got}"
+        );
+        // 左声道取 [0.1 s, 实得末尾前 100 帧) 的上行过零 ⇒ 频率。
+        let left: Vec<f32> = out[..got * 2].iter().step_by(2).copied().collect();
+        let (from, to) = (4_800usize, got - 100);
+        let crossings = left[from..to]
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count();
+        let estimated = crossings as f64 * 48_000.0 / (to - from) as f64;
+        assert!(
+            (estimated - 1000.0).abs() <= 10.0,
+            "输入腿转换后频率应为 1000 Hz ±1%，实测 {estimated} Hz"
+        );
     }
 }

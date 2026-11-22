@@ -9581,7 +9581,9 @@ mod tests {
             include_str!("../tests/rt_zero_alloc.rs")
                 .matches(needle.as_str())
                 .count(),
-            4,
+            // 4（原 ⑳ 的两常量 + 场景函数 + 注册点）+ 4（T-FIX-72 判据 ㊻ 的
+            // 两常量 + 场景函数 + 注册点）。
+            8,
             "rt_zero_alloc.rs 的 device 门数"
         );
         assert_eq!(
