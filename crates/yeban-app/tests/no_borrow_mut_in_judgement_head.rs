@@ -68,6 +68,20 @@ fn strip_noise(src: &str) -> String {
         }
         // 字符串 / 字符字面量
         if ch == '"' || ch == '\'' {
+            // ⚠ 单引号有两种含义：字符字面量 `'q'` / `'\n'`，以及**生命周期** `'a`。
+            // 把生命周期当地一个字面量起头，就会一路吞到文件里下一个 `'`——中间整段代码
+            // （包括真违规点）被抹成空格 ⇒ 判据假阴性（本判据第一版就漏了 `host.rs` 换工程
+            // 分支里的设备重开，正是被前面某个 `<'a>` 吞掉的）。⇒ 只有"引号里确实是
+            // 一个字符"时才进字面量模式，否则按生命周期前缀原样放行。
+            if ch == '\'' {
+                let escaped = bytes.get(index + 1) == Some(&'\\');
+                let single_char = bytes.get(index + 2) == Some(&'\'');
+                if !escaped && !single_char {
+                    out.push(ch);
+                    index += 1;
+                    continue;
+                }
+            }
             let quote = ch;
             out.push(quote);
             index += 1;
@@ -155,7 +169,7 @@ fn violations(src: &str) -> Vec<(usize, String)> {
             continue;
         };
         let head: String = chars[head_start..brace].iter().collect();
-        if head.contains("borrow_mut()") {
+        if has_panicking_borrow_mut(&head) {
             let line = chars[..index].iter().filter(|ch| **ch == '\n').count() + 1;
             let snippet = head.trim().replace('\n', " ");
             found.push((line, snippet.chars().take(120).collect()));
@@ -167,6 +181,23 @@ fn violations(src: &str) -> Vec<(usize, String)> {
 
 fn is_ident(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
+}
+
+/// 判据表达式里有没有**会 panic 的** `borrow_mut()`。
+///
+/// `try_borrow_mut()` 不算：借不到返回 `Err`，调用方 `else { return }` / `Err(_) =>`
+/// 兜住即可 ⇒ 它是本判据**推荐**的写法（`#212` 的既有修法就是把它放在判据位置，
+/// 让重入变成一个可处理的错误而不是 panic）。所以只认裸的 `borrow_mut()`。
+fn has_panicking_borrow_mut(head: &str) -> bool {
+    const NEEDLE: &str = "borrow_mut()";
+    let mut rest = head;
+    while let Some(pos) = rest.find(NEEDLE) {
+        if !rest[..pos].ends_with("try_") {
+            return true;
+        }
+        rest = &rest[pos + NEEDLE.len()..];
+    }
+    false
 }
 
 /// 仓库里所有 `yeban-app` 源文件（`src/**/*.rs`）。
@@ -269,4 +300,48 @@ fn scanner_recognises_the_incident_and_accepts_the_fix() {
         match opened { Ok(_) => {}, Err(_) => {} }
     "#;
     assert!(violations(commented).is_empty(), "注释里的反例不得算违规");
+
+    // ⚠ 生命周期不得吞掉后面的代码：本判据第一版把 `'a` 当成字符字面量的起头，
+    // 于是一路吞到下一个 `'`，`host.rs` 换工程分支里那处设备重开（真违规）被抹成空格
+    // ⇒ 判据假阴性。这条自检盯死那个形状：前面有生命周期、后面照样要认出来。
+    let after_lifetime = r#"
+        fn project<'a>(path: &'a str) -> char { 'q' }
+        match production.borrow_mut().open_device(config) {
+            Ok(_) => report(production.borrow().status()),
+            Err(_) => {}
+        }
+    "#;
+    assert_eq!(
+        violations(after_lifetime).len(),
+        1,
+        "生命周期 / 字符字面量不得让后面的违规点漏报"
+    );
+
+    // `try_borrow_mut()` **不**算违规：借不到是 `Err`，调用方兜住 ⇒ 这是推荐写法
+    // （`#212` 的既有修法）。判据只看裸的 `borrow_mut()`。
+    let try_form = r#"
+        let toggle = {
+            let mut recorder = match recorder_cell.try_borrow_mut() {
+                Ok(recorder) => recorder,
+                Err(_) => return,
+            };
+            recorder.is_recording()
+        };
+    "#;
+    assert!(
+        violations(try_form).is_empty(),
+        "try_borrow_mut 在判据位置是推荐写法，不得逼红"
+    );
+    // 但同一个判据表达式里既有 try 又有裸 borrow_mut ⇒ 仍要认出来。
+    let mixed = r#"
+        match cell.try_borrow_mut().and_then(|_| other.borrow_mut().take()) {
+            Ok(v) => v,
+            Err(_) => {}
+        }
+    "#;
+    assert_eq!(
+        violations(mixed).len(),
+        1,
+        "混在一条判据里的裸 borrow_mut 仍算违规"
+    );
 }
