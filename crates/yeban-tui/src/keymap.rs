@@ -38,6 +38,10 @@
 //! | 音符选择/移动 | 卷帘选区 + 方向键微移 | 视图内 `j/k` 选、`h/l` 移时、`J/K` 移高、方向键同 GUI 微移 | 已接（三期，走 `nudge_delta_for`） |
 //! | 音符增/删/时值/力度 | 卷帘工具 | 视图内 `a` 加、`Delete` 删、`<`/`>` 时值、`-`/`+` 力度 | TUI 新增（三期，视图层） |
 //! | 片段池视图 | （GUI 无池管理面，MCP 有） | `:pool` 开、Esc 关；视图内 `Delete` 删条目 | TUI 新增（三期，视图层） |
+//! | 移轨（显示顺序） | 轨头拖拽（无键） | `J`/`K`（计数 = 格数）＋ `:move <位置>` | TUI 新增（T-FIX-76，`Op::MoveTrack`） |
+//! | 轨道高度 | 轨头拖拽 + 全局缩放 | `Alt+Shift+↑/↓` 每轨 ±16 px、`{`/`}` 全局 ±10%＋ `:height` / `:height%` | TUI 新增（T-FIX-76，`TrackHeightLayout`） |
+//! | 主视图 Session / Arrangement | `F5` / `F6` | 同键＋ `:view session\|arrangement` | 已接（T-FIX-76，同一个 `View` 枚举） |
+//! | 自动化泳道 | `Ctrl+Shift+A`（开关）+ 鼠标画点 | `Ctrl+Shift+A` 开关音量泳道、`P` 声相、`:auto`；视图内 `a`/`-`/`+`/`Delete` | 已接（T-FIX-76，唯一求值入口 + `Op::SetAutomationPoint`） |
 //!
 //! # 冲突清单（按「共享动作从 GUI、导航从 Vi」解）
 //!
@@ -63,6 +67,12 @@
 //!   表是缩放，只在音符视图内分流为力度，视图外行为不变。新占的键只有
 //!   裸 `n`（共享表 PassThrough、Vi 层未占）与视图内的 `a`/`<`/`>`/`J`/`K`
 //!   （均为 PassThrough 或未占，视图外不拦截）。
+//! - **K8 四方对齐补齐（T-FIX-76）**：新占键**逐个实测过解析器**（⛔ 不靠猜）——
+//!   裸 `J`/`K`、`P`、`{`/`}`、`a` 在画布上下文都是 `PassThrough`；而裸 `p` 是
+//!   `ToggleEditor`、裸 `[`/`]` 是试听、`Ctrl+Alt+A` 是 AI 抽屉 ⇒ 这三格不抢。
+//!   `Ctrl+Shift+A` 是 GUI 的 `ToggleAutomation`（⚠ 不是 `Ctrl+Alt+A`，实测如此），
+//!   在 TUI 落成"打开/关闭音量自动化视图"——同一个"显示自动化"语义的形态适配。
+//!   `J`/`K` 的双重身份按视图分流：音符视图内移音高（三期既有），视图外移轨。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use yeban_app::input::{LogicalKey, Modifiers};

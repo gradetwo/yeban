@@ -11,8 +11,9 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use yeban_app::input::View;
 use yeban_engine::transport::TransportState;
-use yeban_model::project::TrackV3;
+use yeban_model::project::{SceneV3, TrackV3};
 
 use crate::app::{App, ListView, track_kind_label};
 use crate::keymap::{Mode, Pane};
@@ -34,7 +35,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     ])
     .split(root[1]);
     draw_tracks(frame, body[0], app);
-    draw_grid(frame, body[1], app);
+    // 主视图切换（T-FIX-76 第 3 项）：Session 画场景 × 轨道矩阵，
+    // Arrangement 画线性片段网格 —— 同一枚举 `yeban_app::input::View`。
+    match app.view {
+        View::Arrangement => draw_grid(frame, body[1], app),
+        View::Session => draw_session(frame, body[1], app),
+    }
     draw_inspector(frame, body[2], app);
     draw_bottom(frame, root[2], app);
 }
@@ -87,6 +93,10 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(theme::INK1),
         ),
     ];
+    spans.push(Span::styled(
+        format!("  [{}]", view_name(app.view)),
+        Style::default().fg(theme::GOLD_DEEP),
+    ));
     if app.dirty {
         spans.push(Span::styled(
             "  ● 未保存",
@@ -102,6 +112,14 @@ fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let bar_widget = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(theme::BG_PANEL).fg(theme::INK0));
     frame.render_widget(bar_widget, area);
+}
+
+/// 主视图短名（顶栏徽标）。
+fn view_name(view: View) -> &'static str {
+    match view {
+        View::Session => "SESSION",
+        View::Arrangement => "ARRANGE",
+    }
 }
 
 /// 按显示宽度补齐（中文名按 2 列计）。
@@ -155,7 +173,20 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
         if selected {
             style = style.bg(theme::BG_RAISED).add_modifier(Modifier::BOLD);
         }
-        items.push(ListItem::new(Line::from(Span::styled(text, style))));
+        // 轨道高度（T-FIX-76 第 2 项）：一行轨占 `track_rows` 个终端行；
+        // 续行只画一条纵向连接符，⛔ 不重复读数（避免"看起来像多了一条轨"）。
+        let rows = app.track_rows(id);
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(rows));
+        lines.push(Line::from(Span::styled(text, style)));
+        for _ in 1..rows {
+            lines.push(Line::from(Span::styled(
+                "  │",
+                Style::default()
+                    .fg(theme::LINE_STRONG)
+                    .bg(style.bg.unwrap_or(theme::BG_LANE)),
+            )));
+        }
+        items.push(ListItem::new(lines));
     }
     let list = List::new(items).block(pane_block("轨道", focused));
     let mut state = ListState::default();
@@ -169,6 +200,7 @@ fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let title = match app.list_view {
         Some(ListView::Notes { .. }) => "片段 · 音符",
         Some(ListView::Pool { .. }) => "片段 · 池",
+        Some(ListView::Automation { .. }) => "片段 · 自动化",
         None => "片段",
     };
     let block = pane_block(title, focused);
@@ -184,6 +216,10 @@ fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         }
         Some(ListView::Pool { .. }) => {
             draw_pool_list(frame, inner, app);
+            return;
+        }
+        Some(ListView::Automation { .. }) => {
+            draw_automation_list(frame, inner, app);
             return;
         }
         None => {}
@@ -284,7 +320,11 @@ fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             };
             spans.push(Span::styled(cell, cell_style));
         }
-        lines.push(Line::from(spans));
+        // 轨道高度（T-FIX-76 第 2 项）：一条轨按 `track_rows` 个终端行重复画，
+        // 于是"整体放大一档"在网格里也看得见（同一份有效像素读数）。
+        for _ in 0..app.track_rows(id) {
+            lines.push(Line::from(spans.clone()));
+        }
     }
     let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG_PANEL));
     frame.render_widget(paragraph, inner);
@@ -399,6 +439,174 @@ fn draw_pool_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Session 视图（T-FIX-76 第 3 项）：场景（行）× 轨道（列）矩阵。
+///
+/// 数据只取工程：场景来自 `project.scenes`（与 GUI 投影同序 —— `BTreeMap` 身份
+/// 升序，见 `bridge::project_view`），轨迹来自 `display_track_ids()`（主总线不进
+/// 矩阵，与移轨 / 显示顺序同一口径）。插槽内容在模型里**没有**表达
+/// （GUI `session_view.slint` 同样只画空槽），因此这里不编造"哪个槽装了片段"。
+fn draw_session(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let focused = app.focus == Pane::Grid;
+    let block = pane_block("Session", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let width = usize::from(inner.width);
+    let name_w = 20_usize.min(width.saturating_sub(6)).max(6);
+    let cell_w = 5_usize;
+    let capacity = (width.saturating_sub(name_w) / cell_w).max(1);
+    let tracks: Vec<&TrackV3> = app
+        .project
+        .display_track_ids()
+        .iter()
+        .filter_map(|id| app.project.tracks.get(id))
+        .collect();
+    let shown = capacity.min(tracks.len());
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut head = pad_to("  场景", name_w);
+    for track in tracks.iter().take(shown) {
+        head.push_str(&pad_to(&truncate_to(&track.name, cell_w), cell_w));
+    }
+    if tracks.len() > shown {
+        head.push_str(&format!(" +{} 轨", tracks.len() - shown));
+    }
+    lines.push(Line::from(Span::styled(
+        head,
+        Style::default().fg(theme::INK2),
+    )));
+
+    let scenes: Vec<&SceneV3> = app.project.scenes.values().collect();
+    if scenes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  （本工程没有场景：Session 矩阵为空）",
+            Style::default().fg(theme::INK2),
+        )));
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
+    }
+    let selected = app.scene_selected.min(scenes.len().saturating_sub(1));
+    let visible = usize::from(inner.height).saturating_sub(2).max(1);
+    let offset = if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
+    for (index, scene) in scenes.iter().enumerate().skip(offset).take(visible) {
+        let cursor = if index == selected { "▸" } else { " " };
+        let mut row = format!(
+            "{cursor}{}",
+            pad_to(
+                &truncate_to(&scene.name, name_w.saturating_sub(4)),
+                name_w.saturating_sub(2)
+            )
+        );
+        for _ in 0..shown {
+            row.push_str(&pad_to("·", cell_w));
+        }
+        if let Some(tempo) = scene.tempo {
+            row.push_str(&format!(" {tempo:.0} BPM"));
+        }
+        let mut style = Style::default().fg(if index == selected {
+            theme::INK0
+        } else {
+            theme::INK1
+        });
+        if index == selected {
+            style = style.bg(theme::BG_RAISED).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(row, style)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::BG_PANEL)),
+        inner,
+    );
+}
+
+/// tick → 小节.拍+余数（1 起，与顶栏读数同一口径）。
+fn tick_label(app: &App, tick: u64) -> String {
+    let bar_ticks = app.bar_ticks().max(1);
+    let beat_ticks = app.ticks_per_beat().max(1);
+    format!(
+        "{}.{}+{:03}",
+        tick / bar_ticks + 1,
+        (tick % bar_ticks) / beat_ticks + 1,
+        tick % beat_ticks
+    )
+}
+
+/// 自动化泳道视图（T-FIX-76 第 4 项）：光标读数 + 采样点列表。
+///
+/// 读数走 `App::automation_readout`（`YebanProjectV1::automation_value_at`
+/// 是唯一求值入口）；列表顺序是模型的 `points_in_tick_order`（`(tick, 身份)`），
+/// 这里不重新排序。曲线名用模型枚举的 `Debug` 名（`Linear` / `SCurve` …），
+/// 与 `yeban_edit_automation` 回执里的 `curve` 同名。
+fn draw_automation_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(ListView::Automation {
+        target, selected, ..
+    }) = app.list_view
+    else {
+        return;
+    };
+    let kind = app.automation_kind().map_or("自动化", |kind| kind.label());
+    let unit = target.nominal_unit().symbol();
+    let domain = app.automation_domain().map_or_else(
+        || "值域未知".to_owned(),
+        |(min, max)| format!("[{min}, {max}]"),
+    );
+    let points = app.automation_points();
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(points.len() + 2);
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("  {kind} · 单位 {unit} · {domain} · {} 个点", points.len()),
+        Style::default().fg(theme::INK2),
+    ))));
+    if let Some(readout) = app.automation_readout() {
+        let value = readout
+            .automation_value
+            .map_or_else(|| "—".to_owned(), |value| format!("{value:+.2}"));
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!(
+                "  光标 {} = {value} {unit}（{} · 静态 {:+.2}）",
+                tick_label(app, readout.tick),
+                readout.source,
+                readout.static_value
+            ),
+            Style::default().fg(theme::GOLD_DEEP),
+        ))));
+    }
+    for (index, point) in points.iter().enumerate() {
+        let is_selected = index == selected;
+        let cursor = if is_selected { "▸" } else { " " };
+        let text = format!(
+            "{cursor}{}  {:+8.2} {unit}  {:?}",
+            tick_label(app, point.tick),
+            point.value,
+            point.curve
+        );
+        let mut style = Style::default().fg(if is_selected {
+            theme::INK0
+        } else {
+            theme::INK1
+        });
+        if is_selected {
+            style = style.bg(theme::BG_RAISED).add_modifier(Modifier::BOLD);
+        }
+        items.push(ListItem::new(Line::from(Span::styled(text, style))));
+    }
+    if points.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  （本泳道还没有点：a 在光标处按当前值设一个）",
+            Style::default().fg(theme::INK2),
+        ))));
+    }
+    let list = List::new(items);
+    let mut state = ListState::default();
+    state.select(Some(selected.min(points.len()) + 2));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let focused = app.focus == Pane::Inspector;
     let block = pane_block("检查器", focused);
@@ -415,6 +623,8 @@ fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
         _ => track.name.clone(),
     };
     let instrument = instrument_label(track);
+    let (height_base, height_effective) = app.track_height_px(&id);
+    let height_rows = app.track_rows(&id);
     let volume_fraction = ((track.volume_db - yeban_app::bridge::FADER_MIN_DB)
         / (yeban_app::bridge::FADER_MAX_DB - yeban_app::bridge::FADER_MIN_DB))
         .clamp(0.0, 1.0);
@@ -451,6 +661,13 @@ fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled(format!("{} 个", track.clips.len()), bright),
         ]),
         Line::from(vec![
+            Span::styled("高度 ", dim),
+            Span::styled(
+                format!("{height_base} px → {height_effective} px · {height_rows} 行"),
+                bright,
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("状态 ", dim),
             Span::styled(
                 format!(
@@ -467,6 +684,10 @@ fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )),
         Line::from(Span::styled(
             "i 改名 · M 静音 · S 独奏",
+            Style::default().fg(theme::INK2),
+        )),
+        Line::from(Span::styled(
+            "J/K 移轨 · [/] 高度 · p/P 自动化",
             Style::default().fg(theme::INK2),
         )),
     ];
@@ -585,6 +806,12 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Some(ListView::Pool { .. }) => format!(
                     "-- 片段池 -- j/k 选 · Del 删条目（被引用会被模型拒绝） · Esc 返回{count}"
                 ),
+                Some(ListView::Automation { .. }) => format!(
+                    "-- 自动化 -- j/k 选点（光标跟随） · a 设点 · -/+ 改值 · Del 删点 · Esc 返回{count}"
+                ),
+                None if app.view == View::Session => {
+                    format!("-- SESSION -- j/k 选场景 · F6 回编曲 · Space 播放 · : 命令{count}")
+                }
                 None => format!(
                     "-- NORMAL -- 焦点 {} ·{}{} · Space 播放 · M 静音 · S 独奏 · : 命令 · i 改名 · n 音符",
                     app.focus.label(),
@@ -627,6 +854,51 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn session_view_renders_scene_matrix_instead_of_the_ruler() {
+        let mut app = App::with_demo().expect("demo app");
+        app.set_view(View::Session);
+        let text = render_text(&mut app);
+        assert!(
+            text.contains("Session"),
+            "中间窗格标题应为 Session：\n{text}"
+        );
+        assert!(text.contains("SESSION"), "顶栏徽标应显示主视图：\n{text}");
+        assert!(
+            text.contains("Intro") && text.contains("Chorus"),
+            "场景名来自工程：\n{text}"
+        );
+        assert!(
+            !text.contains("▼1"),
+            "Session 视图不画编曲标尺（视图真的是另一套渲染）：\n{text}"
+        );
+    }
+
+    #[test]
+    fn automation_view_lists_points_with_value_and_curve() {
+        let mut app = App::with_demo().expect("demo app");
+        // 演示工程第 1 轨（鼓）有音量泳道：-3.2 / -8 / -1。
+        app.selected = 0;
+        app.open_automation_view(crate::app::AutomationKind::Volume);
+        let text = render_text(&mut app);
+        assert!(text.contains("片段 · 自动化"), "标题应切到自动化：\n{text}");
+        assert!(text.contains("音量"), "泳道名应出现：\n{text}");
+        assert!(text.contains("-3.20"), "点值应出现：\n{text}");
+        assert!(text.contains("Linear"), "曲线名应出现：\n{text}");
+    }
+
+    #[test]
+    fn track_height_readout_reaches_the_inspector() {
+        let mut app = App::with_demo().expect("demo app");
+        app.selected = 0;
+        app.set_track_height_px(112);
+        let text = render_text(&mut app);
+        assert!(
+            text.contains("112 px → 112 px · 2 行"),
+            "检查器应显示基准 → 有效 → 行数：\n{text}"
+        );
     }
 
     #[test]

@@ -102,6 +102,10 @@ Vi 层。
 | 片段改名 | （GUI 未接；MCP 有 `setClipName`） | 片段网格焦点 `i` → Insert 改名（`Op::SetClipName`） | TUI 新增（三期） |
 | 音符编辑 | 钢琴卷帘（GUI） | 片段网格焦点 `n` / `:notes` 开音符视图（Esc 关） | 已接（三期；视图内键位见下） |
 | 片段池管理 | （GUI 无池管理面；MCP 有 `removeClip`） | `:pool` 开池视图（Esc 关），视图内 `Delete` 删条目 | TUI 新增（三期；被引用时模型以 `ClipInUse` 拒绝） |
+| 移轨（显示顺序） | 轨头拖拽重排（无键） | `J` / `K`（计数 = 格数）；`:move <位置>`（0 起，与 `newIndex` 同口径） | 已接（T-FIX-76；`Op::MoveTrack` 同一条 op） |
+| 轨道高度 | 轨头纵向拖拽 + 全局缩放 | `Alt+Shift+↑/↓` 每轨基准 ±16 px；`{` / `}` 全局乘子 ±10%；`:height <px>` / `:height% <n>` | 已接（T-FIX-76；`bridge::TrackHeightLayout`，夹紧仍只有一处；裸 `[`/`]` 是 GUI 试听，⛔ 不抢） |
+| 主视图 Session / Arrangement | `F5` / `F6` | 同键；另有 `:view session|arrangement` | 已接（T-FIX-76；同一个 `yeban_app::input::View` 枚举） |
+| 自动化编辑 | 自动化泳道鼠标画点；`Ctrl+Shift+A` 开关泳道（GUI），`yeban_edit_automation`（MCP） | `Ctrl+Shift+A` 开关音量泳道、`P` 开声相泳道、`:auto <volume\|pan>`；视图内 `a` 设点、`-` / `+` 改值、`Delete` 删点 | 已接（T-FIX-76；读走唯一求值入口，写一条 `Op::SetAutomationPoint`。裸 `p` 是 GUI 编辑器开关、`Ctrl+Alt+A` 是 AI 抽屉，⛔ 不抢） |
 
 Vi 层新增（仅导航与模式，不占共享动作）：
 
@@ -117,6 +121,16 @@ Vi 层新增（仅导航与模式，不占共享动作）：
 | `:` | 进 Command 命令行 |
 | `Esc` | 回 Normal / 清计数与半成品序列；列表视图开着时先关视图（三期） |
 | `n` | 片段网格焦点下开音符视图（三期；共享表 PassThrough、Vi 层未占） |
+
+自动化视图内（片段网格的内容变体，不是新窗格）：
+
+| TUI 键 | 作用 |
+| --- | --- |
+| `j` / `k`、`gg` / `G` | 选点（选中小节光标跟随该点的 tick，读数与 `-`/`+` 都落在它上面） |
+| `a` | 在光标 tick 处按**当前生效值**落一个点（同 tick 更新同一个点，不堆积） |
+| `-` / `+` | 值 ∓/± 一档（音量 0.5 dB、声相 0.05；越出泳道有效值域即**拒绝**） |
+| `Delete` / `Backspace` | 删光标 tick 处的点（`Op::RemoveAutomationPoint`，可撤销） |
+| `Esc` | 返回片段网格 |
 
 音符视图内（片段网格的内容变体，不是新窗格）：
 

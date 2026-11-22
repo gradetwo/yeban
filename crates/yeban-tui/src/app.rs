@@ -20,7 +20,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use yeban_app::bridge::{self, NewTrackKind};
 use yeban_app::engine_host::{EditMark, EngineHost, PublishOutcome};
 use yeban_app::export_wav::WavExportOptions;
-use yeban_app::input::{Action, InputContext, MixerParam, Resolution};
+use yeban_app::input::{Action, InputContext, MixerParam, Resolution, View};
 use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
 use yeban_engine::ring::TransportCommand;
@@ -28,11 +28,12 @@ use yeban_engine::transport::{TransportReading, TransportState};
 use yeban_model::AssetHash;
 use yeban_model::container::ProjectArchive;
 use yeban_model::ids::EntityId;
+use yeban_model::music::CurveType;
 use yeban_model::music::MidiNote;
 use yeban_model::ops::Op;
 use yeban_model::project::{
-    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, MAX_BPM, MIN_BPM, TrackKind,
-    YebanProjectV1,
+    AutomationPoint, AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, MAX_BPM, MIN_BPM,
+    TrackKind, YebanProjectV1,
 };
 
 use crate::keymap::{Mode, Pane, ViMachine, ViMotion, ViOutcome, to_logical};
@@ -71,6 +72,76 @@ pub enum ListView {
         /// 选中条目的下标。
         selected: usize,
     },
+    /// 自动化泳道（T-FIX-76 第 4 项）：`selected` 是按 `(tick, 点身份)` 排序后的下标。
+    ///
+    /// 与 `yeban_edit_automation` 的**读**同一入口（`YebanProjectV1::automation_value_at`
+    /// 是唯一求值处，这里不排序采样点、不做插值），**写**同一条 `Op::SetAutomationPoint`
+    /// （可撤销；同 tick 重复写入更新同一个点，见 [`App::set_automation_value`]）。
+    Automation {
+        /// 泳道所属音轨（与 `target.track_id()` 恒相等，冗余一份供渲染免解析）。
+        track_id: EntityId,
+        /// 泳道目标（唯一寻址）。
+        target: AutomationTarget,
+        /// 选中点的下标。
+        selected: usize,
+    },
+}
+
+/// 自动化视图能打开的泳道种类（TUI 只接最常用的两条：音量 / 声相）。
+///
+/// ⛔ 不是"TUI 自己定义的一套泳道清单"：两项都只是 [`AutomationTarget`] 的
+/// `TrackVolume` / `TrackPan` 变体，单位与值域由模型派生
+/// （[`AutomationTarget::nominal_unit`] / [`AutomationTarget::nominal_domain`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationKind {
+    /// 音轨音量（dB）。
+    Volume,
+    /// 音轨声相（-1.0..=1.0）。
+    Pan,
+}
+
+impl AutomationKind {
+    /// 目标构造（与 MCP `yeban_edit_automation` 的 `lane` 实参同一目标）。
+    #[must_use]
+    pub const fn target(self, track_id: EntityId) -> AutomationTarget {
+        match self {
+            Self::Volume => AutomationTarget::TrackVolume { track_id },
+            Self::Pan => AutomationTarget::TrackPan { track_id },
+        }
+    }
+
+    /// 状态行 / 视图标题用的中文名。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Volume => "音量",
+            Self::Pan => "声相",
+        }
+    }
+
+    /// 一次微调的步长（音量 0.5 dB；声相 0.05）。
+    #[must_use]
+    pub const fn step(self) -> f32 {
+        match self {
+            Self::Volume => 0.5,
+            Self::Pan => 0.05,
+        }
+    }
+}
+
+/// 自动化视图在光标 tick 上的三态读数（与 `yeban_edit_automation` 的读回同语义）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutomationReadout {
+    /// 查询的 tick（= 小节光标 × 每小节 tick）。
+    pub tick: u64,
+    /// 唯一求值入口的返回值；`None` = 本泳道没有可用自动化值。
+    pub automation_value: Option<f32>,
+    /// 目标的静态值（无自动化时的回退）。
+    pub static_value: f32,
+    /// 实际生效值（自动化优先，否则静态）。
+    pub effective_value: f32,
+    /// `"automation"` 或 `"static"`。
+    pub source: &'static str,
 }
 
 /// 改名目标（三期起 Insert 改名有两种对象：轨道 / 片段池条目）。
@@ -91,6 +162,23 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 主视图的中文名（状态行 / 日志）。
+fn view_label(view: View) -> &'static str {
+    match view {
+        View::Session => "Session",
+        View::Arrangement => "编曲",
+    }
+}
+
+/// 自动化目标 → TUI 能编辑的泳道种类（只认音量 / 声相；其余目标返回 `None`）。
+fn kind_of(target: AutomationTarget) -> Option<AutomationKind> {
+    match target {
+        AutomationTarget::TrackVolume { .. } => Some(AutomationKind::Volume),
+        AutomationTarget::TrackPan { .. } => Some(AutomationKind::Pan),
+        _ => None,
+    }
+}
+
 /// 应用状态。
 pub struct App {
     /// 当前工程文档（`UndoPort` 当前版的镜像：每次提交/撤销后从端口刷新）。
@@ -109,6 +197,13 @@ pub struct App {
     pub mode: Mode,
     /// 当前窗格焦点。
     pub focus: Pane,
+    /// 主视图（`Session` / `Arrangement`，与 GUI 同一个 [`View`] 枚举）。
+    pub view: View,
+    /// 轨道高度视图态（`bridge::TrackHeightLayout`：每轨基准 + 全局乘子，
+    /// 夹紧只有 `bridge::effective_track_height_px` 一处 —— TUI 不另立边界）。
+    height: bridge::TrackHeightLayout,
+    /// 会话视图里选中的场景下标。
+    pub scene_selected: usize,
     /// 显示轨序（含主总线，恒在末尾）：`display_track_ids()` + master。
     pub track_ids: Vec<EntityId>,
     /// 选中轨在 `track_ids` 里的下标。
@@ -240,6 +335,9 @@ impl App {
             collector: Some(rebuild.collector),
             mode: Mode::Normal,
             focus: Pane::Tracks,
+            view: View::Arrangement,
+            height: bridge::TrackHeightLayout::default(),
+            scene_selected: 0,
             track_ids: Vec::new(),
             selected: 0,
             cursor_bar: 0,
@@ -467,6 +565,12 @@ impl App {
         // ⛔ 不留一个指向不存在片段的编辑面。
         if let Some(ListView::Notes { clip_id, .. }) = self.list_view
             && !self.project.clip_pool.contains_key(&clip_id)
+        {
+            self.list_view = None;
+        }
+        // 自动化视图同理：泳道所属音轨没了（撤销删轨），视图一并关掉。
+        if let Some(ListView::Automation { track_id, .. }) = self.list_view
+            && !self.project.tracks.contains_key(&track_id)
         {
             self.list_view = None;
         }
@@ -923,6 +1027,9 @@ impl App {
                 (len, selected)
             }
             Some(ListView::Pool { selected }) => (self.pool_rows().len(), selected),
+            Some(ListView::Automation { selected, .. }) => {
+                (self.automation_points().len(), selected)
+            }
             None => return,
         };
         let next = if len == 0 {
@@ -931,11 +1038,14 @@ impl App {
             usize::try_from((selected as i32 + delta).clamp(0, len as i32 - 1)).unwrap_or(0)
         };
         match &mut self.list_view {
-            Some(ListView::Notes { selected, .. }) | Some(ListView::Pool { selected }) => {
+            Some(ListView::Notes { selected, .. })
+            | Some(ListView::Pool { selected })
+            | Some(ListView::Automation { selected, .. }) => {
                 *selected = next;
             }
             None => {}
         }
+        self.automation_follow_selection();
     }
 
     /// 列表视图内跳到首/尾（Vi `gg`/`G` 按视图分流到这里）。
@@ -943,15 +1053,31 @@ impl App {
         let len = match self.list_view {
             Some(ListView::Notes { .. }) => self.view_notes().len(),
             Some(ListView::Pool { .. }) => self.pool_rows().len(),
+            Some(ListView::Automation { .. }) => self.automation_points().len(),
             None => return,
         };
         let next = if last { len.saturating_sub(1) } else { 0 };
         match &mut self.list_view {
-            Some(ListView::Notes { selected, .. }) | Some(ListView::Pool { selected }) => {
+            Some(ListView::Notes { selected, .. })
+            | Some(ListView::Pool { selected })
+            | Some(ListView::Automation { selected, .. }) => {
                 *selected = next;
             }
             None => {}
         }
+        self.automation_follow_selection();
+    }
+
+    /// 自动化视图的选中点决定 `-`/`+` 的落点：选中那一行 ⇒ 小节光标跟到它的 tick。
+    fn automation_follow_selection(&mut self) {
+        let Some(ListView::Automation { selected, .. }) = self.list_view else {
+            return;
+        };
+        let Some(point) = self.automation_points().get(selected).copied() else {
+            return;
+        };
+        let bar_ticks = self.bar_ticks().max(1);
+        self.cursor_bar = usize::try_from(point.tick / bar_ticks).unwrap_or(usize::MAX);
     }
 
     /// 当前选中的音符（音符视图内）：(轨道, 池条目, 音符快照)。
@@ -1206,6 +1332,454 @@ impl App {
     }
 
     // ------------------------------------------------------------------
+    // 主视图（Session / Arrangement）—— T-FIX-76 第 3 项
+    // ------------------------------------------------------------------
+
+    /// 切换主视图（GUI `F5`/`F6` 与 `ui/switch_main_view` 的 TUI 等价落点）。
+    ///
+    /// 枚举本身是 GUI 的 [`View`]（同一个类型、同一组白名单值），TUI 只是换渲染：
+    /// `Arrangement` 画线性时间轴（片段网格），`Session` 画场景 × 轨道矩阵。
+    /// 切换视图**不改工程、不提交任何 op**（视图态与 GUI 一样住在会话里）。
+    pub fn set_view(&mut self, view: View) {
+        if self.view == view {
+            self.log_line(format!("已在{}视图", view_label(view)));
+            return;
+        }
+        self.view = view;
+        // 音符/池/自动化三种列表视图都是 Arrangement 的内容变体，切到 Session
+        // 后没有落点：关掉（⛔ 不留一个看不见却还在吃键的编辑面）。
+        if view == View::Session && self.list_view.is_some() {
+            self.list_view = None;
+            self.log_line("切到 Session 视图：已关闭片段网格的列表视图".to_owned());
+        }
+        let scenes = self.project.scenes.len();
+        if view == View::Session && scenes == 0 {
+            self.log_line("切到 Session 视图（本工程没有场景：矩阵为空）".to_owned());
+        } else {
+            self.log_line(format!("切到{}视图", view_label(view)));
+        }
+        self.scene_selected = self.scene_selected.min(scenes.saturating_sub(1));
+    }
+
+    /// 视图的中文名（状态行 / 回执用）。
+    #[must_use]
+    pub const fn view(&self) -> View {
+        self.view
+    }
+
+    // ------------------------------------------------------------------
+    // 轨道高度（每轨基准 + 全局乘子）—— T-FIX-76 第 2 项
+    // ------------------------------------------------------------------
+    //
+    // 两个旋钮与一条公式全部来自 `yeban_app::bridge`（GUI 的同一份视图态）：
+    // `effective = clamp(base × percent / 100, MIN_TRACK_HEIGHT_PX, MAX_TRACK_HEIGHT_PX)`
+    // 只在 `effective_track_height_px` 里发生一次。TUI 额外做的唯一一件事是
+    // **离散化**：把有效像素折成终端行数 `ceil(px / DEFAULT_TRACK_HEIGHT_PX)` ——
+    // 它不夹紧、不改变有效值，因此不存在第二处边界。
+
+    /// 全局高度乘子（百分比；100 = 不缩放）。
+    #[must_use]
+    pub fn height_percent(&self) -> u32 {
+        self.height.percent()
+    }
+
+    /// 一条轨在终端里的行数（≥ 1）：有效像素 ÷ 默认行高，向上取整。
+    #[must_use]
+    pub fn track_rows(&self, track_id: &EntityId) -> u16 {
+        let effective = self.track_height_px(track_id).1;
+        u16::try_from(effective.div_ceil(bridge::DEFAULT_TRACK_HEIGHT_PX))
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// 一条轨的 `(基准, 有效)` 像素读数（状态行与回执用；夹紧已在有效值里）。
+    #[must_use]
+    pub fn track_height_px(&self, track_id: &EntityId) -> (u32, u32) {
+        let key = track_id.to_canonical_string();
+        (self.height.base_px(&key), self.height.effective_px(&key))
+    }
+
+    /// 设全局高度乘子（`[`/`]` 与 `:height% <n>` 的落点）。
+    pub fn set_height_percent(&mut self, percent: u32) {
+        if !self.height.set_percent(percent) {
+            self.log_line(format!("高度乘子已是 {percent}%，无变化"));
+            return;
+        }
+        self.log_height();
+    }
+
+    /// 全局高度乘子按 `delta` 个百分点调整（下限 0：有效值仍由夹紧兜住）。
+    pub fn nudge_height_percent(&mut self, delta: i32) {
+        let next = i64::from(self.height.percent()) + i64::from(delta);
+        let percent = u32::try_from(next.max(0)).unwrap_or(0);
+        self.set_height_percent(percent);
+    }
+
+    /// 设选中轨的**基准**行高（像素；`0` = 取消覆盖，回到默认）。与
+    /// `ui/set_track_height` 的 `heightPx` 同口径（⚠ 该方法的 `0` 同样表示取消覆盖）。
+    pub fn set_track_height_px(&mut self, px: u32) {
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line("先选中一条轨道，再调轨道高度".to_owned());
+            return;
+        };
+        let key = track_id.to_canonical_string();
+        if !self.height.set_track_px(&key, px) {
+            self.log_line(if px == 0 {
+                "这一轨没有高度覆盖，基准已是默认值".to_owned()
+            } else {
+                format!("轨道高度基准已是 {px} px，无变化")
+            });
+            return;
+        }
+        self.log_height();
+    }
+
+    /// 选中轨基准行高按 `delta` 像素调整（`Alt+Shift+↑/↓`）。
+    ///
+    /// 向下减到 0 以下是"取消覆盖"（`TrackHeightLayout::set_track_px` 对 `0`
+    /// 的既有语义），⛔ 不在这里另造一个"最小基准"。
+    pub fn nudge_track_height_px(&mut self, delta: i32) {
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line("先选中一条轨道，再调轨道高度".to_owned());
+            return;
+        };
+        let base = i64::from(self.track_height_px(&track_id).0) + i64::from(delta);
+        let px = u32::try_from(base.max(0)).unwrap_or(0);
+        self.set_track_height_px(px);
+    }
+
+    fn log_height(&mut self) {
+        let mut line = format!("高度乘子 {}%", self.height.percent());
+        if let Some(track_id) = self.selected_track_id() {
+            let (base, effective) = self.track_height_px(&track_id);
+            let rows = self.track_rows(&track_id);
+            line.push_str(&format!(
+                "；选中轨基准 {base} px → 有效 {effective} px（{rows} 行）"
+            ));
+        }
+        self.log_line(line);
+    }
+
+    // ------------------------------------------------------------------
+    // 移轨（显示顺序绝对位置）—— T-FIX-76 第 1 项
+    // ------------------------------------------------------------------
+
+    /// 把选中轨在**显示顺序**里移动 `delta` 格（`J`/`K`，计数前缀 = 格数）。
+    ///
+    /// 与 `yeban_move_track` 同一组拒绝：主总线不可移（不在 `display_track_ids`
+    /// 里 ⇒ 同一条拒绝理由）、越界不可移；落点都是同一条 [`Op::MoveTrack`]
+    /// （绝对下标形态，`0` 起），⛔ 不另造相对下标的 op。
+    pub fn move_selected_track(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line("先选中一条轨道，再移轨".to_owned());
+            return;
+        };
+        let ids = self.project.display_track_ids();
+        let Some(old_index) = ids.iter().position(|id| *id == track_id) else {
+            self.log_line("选中轨是工程主总线：主总线不参与显示顺序，不能移动".to_owned());
+            return;
+        };
+        let target = i64::try_from(old_index).unwrap_or(0) + i64::from(delta);
+        if target < 0 || target >= i64::try_from(ids.len()).unwrap_or(0) {
+            let edge = if delta > 0 { "末位" } else { "首位" };
+            self.log_line(format!(
+                "已在{edge}：显示顺序只有 {} 条轨，没有可移动的位置",
+                ids.len()
+            ));
+            return;
+        }
+        let new_index = usize::try_from(target).unwrap_or(0);
+        self.apply_move_track(track_id, old_index, new_index);
+    }
+
+    /// 把选中轨移到**绝对位置** `new_index`（`0` 起，与 `yeban_move_track` 的
+    /// `newIndex` 同口径；`:move <index>` 的落点）。
+    ///
+    /// 预校验逐条镜像 MCP 的 `plan_move_track`：不存在 → 主总线拒绝 →
+    /// 越界拒绝（报出轨道条数）→ 原地拒绝；通过后才提交一条 op。
+    pub fn move_selected_track_to(&mut self, new_index: usize) {
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line("先选中一条轨道，再移轨".to_owned());
+            return;
+        };
+        let ids = self.project.display_track_ids();
+        let Some(old_index) = ids.iter().position(|id| *id == track_id) else {
+            self.log_line("选中轨是工程主总线：主总线不参与显示顺序，不能移动".to_owned());
+            return;
+        };
+        if new_index >= ids.len() {
+            self.log_line(format!(
+                "目标位置 {new_index} 越界：显示顺序只有 {} 条轨（0 起）",
+                ids.len()
+            ));
+            return;
+        }
+        if new_index == old_index {
+            self.log_line(format!("这一轨已在位置 {new_index}，没有可移动的位置"));
+            return;
+        }
+        self.apply_move_track(track_id, old_index, new_index);
+    }
+
+    fn apply_move_track(&mut self, track_id: EntityId, old_index: usize, new_index: usize) {
+        let name = self
+            .project
+            .tracks
+            .get(&track_id)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.commit_edit(
+            "tui: move track display order",
+            vec![Op::MoveTrack {
+                track_id,
+                old_index,
+                new_index,
+            }],
+            &format!("「{name}」移到第 {} 位", new_index + 1),
+        );
+        // 选中跟随被移动的轨（不是跟随下标：下标在移动后指向别的轨）。
+        if let Some(index) = self.track_ids.iter().position(|id| *id == track_id) {
+            self.selected = index;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 自动化编辑（`yeban_edit_automation` 的 TUI 入口）—— T-FIX-76 第 4 项
+    // ------------------------------------------------------------------
+
+    /// 打开选中轨的自动化泳道（`p` = 音量、`P` = 声相、`:auto <volume|pan>`）。
+    pub fn open_automation_view(&mut self, kind: AutomationKind) {
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line("先选中一条轨道，再开自动化视图".to_owned());
+            return;
+        };
+        if !self.project.tracks.contains_key(&track_id) {
+            self.log_line("选中的轨已不在工程里：先重新选一条轨".to_owned());
+            return;
+        }
+        let target = kind.target(track_id);
+        self.list_view = Some(ListView::Automation {
+            track_id,
+            target,
+            selected: 0,
+        });
+        self.focus = Pane::Grid;
+        let domain = self.automation_domain().map_or_else(
+            || "值域未知".to_owned(),
+            |(min, max)| format!("值域 [{min}, {max}]"),
+        );
+        self.log_line(format!(
+            "自动化视图：{}（{domain}）：a 在光标处设点 · -/+ 改值 · Delete 删点 · Esc 返回",
+            kind.label()
+        ));
+    }
+
+    /// 自动化视图的泳道目标（视图未开时 `None`）。
+    #[must_use]
+    pub fn automation_target(&self) -> Option<AutomationTarget> {
+        match self.list_view {
+            Some(ListView::Automation { target, .. }) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// 当前泳道在**光标 tick** 处的三态读数（走模型唯一求值入口）。
+    #[must_use]
+    pub fn automation_readout(&self) -> Option<AutomationReadout> {
+        let target = self.automation_target()?;
+        let tick = self.automation_cursor_tick();
+        let automation_value = self.project.automation_value_at(&target, tick).ok()?;
+        let static_value = target.static_value(&self.project).ok()?;
+        let (effective_value, source) = match automation_value {
+            Some(value) => (value, "automation"),
+            None => (static_value, "static"),
+        };
+        Some(AutomationReadout {
+            tick,
+            automation_value,
+            static_value,
+            effective_value,
+            source,
+        })
+    }
+
+    /// 光标所在的 tick（小节光标 × 每小节 tick）。
+    #[must_use]
+    pub fn automation_cursor_tick(&self) -> u64 {
+        u64::try_from(self.cursor_bar)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(self.bar_ticks())
+    }
+
+    /// 当前泳道的采样点（按 `(tick, 点身份)` 升序；视图未开时为空）。
+    #[must_use]
+    pub fn automation_points(&self) -> Vec<AutomationPoint> {
+        let Some(target) = self.automation_target() else {
+            return Vec::new();
+        };
+        self.project
+            .automation_lane(&target)
+            .map(yeban_model::AutomationLane::points_in_tick_order)
+            .unwrap_or_default()
+    }
+
+    /// 当前泳道的有效值域 `(min, max)`（泳道覆盖优先，否则目标固有值域）。
+    #[must_use]
+    pub fn automation_domain(&self) -> Option<(f32, f32)> {
+        let target = self.automation_target()?;
+        let domain = self
+            .project
+            .automation_lane(&target)
+            .and_then(|lane| lane.effective_domain())
+            .or_else(|| target.nominal_domain())?;
+        Some((domain.min(), domain.max()))
+    }
+
+    /// 在光标 tick 写一个自动化点（一条 `Op::SetAutomationPoint`，可撤销）。
+    ///
+    /// 与 `yeban_edit_automation` 同一条值域闸门：非有限或越出有效值域 ⇒
+    /// **响亮拒绝**（⛔ 不夹紧 —— 夹紧会让"用户写的值"与"落盘的值"不一致）。
+    /// 同 tick 的点按**既有身份**更新（与 MCP 的"重复写入是更新，不是堆积"同一承诺）。
+    pub fn set_automation_value(&mut self, value: f32) {
+        let Some(target) = self.automation_target() else {
+            self.log_line("先开自动化视图（p 音量 / P 声相），再设点".to_owned());
+            return;
+        };
+        let tick = self.automation_cursor_tick();
+        if !value.is_finite() {
+            self.log_line(format!("值 {value} 不是有限数：拒绝写点"));
+            return;
+        }
+        if let Some((min, max)) = self.automation_domain()
+            && (value < min || value > max)
+        {
+            self.log_line(format!(
+                "值 {value} 越出本泳道的有效取值域 [{min}, {max}]：拒绝写点"
+            ));
+            return;
+        }
+        let existing = self.project.automation_lane(&target).and_then(|lane| {
+            lane.points
+                .values()
+                .find(|point| point.tick == tick)
+                .copied()
+        });
+        let point_id = existing.map_or_else(EntityId::new, |point| point.id);
+        let curve = existing.map_or(CurveType::Linear, |point| point.curve);
+        let new_point = AutomationPoint {
+            id: point_id,
+            tick,
+            value,
+            curve,
+        };
+        let what = format!(
+            "自动化点 {} @ {tick} = {value:.2} {}",
+            if existing.is_some() {
+                "更新"
+            } else {
+                "新增"
+            },
+            self.automation_unit_symbol()
+        );
+        self.commit_edit(
+            "tui: set automation point",
+            vec![Op::SetAutomationPoint {
+                target,
+                point_id,
+                old_point: existing,
+                new_point,
+            }],
+            &what,
+        );
+        self.select_automation_point_at(tick);
+    }
+
+    /// 光标 tick 处的自动化值按 `steps` 个步长微调（音量 0.5 dB / 声相 0.05）。
+    pub fn nudge_automation_value(&mut self, steps: i32) {
+        let Some(readout) = self.automation_readout() else {
+            self.log_line("先开自动化视图（p 音量 / P 声相），再改值".to_owned());
+            return;
+        };
+        let Some(kind) = self.automation_kind() else {
+            return;
+        };
+        let next = readout.effective_value + kind.step() * (steps as f32);
+        self.set_automation_value(next);
+    }
+
+    /// `Ctrl+Alt+A` 的落点：已开自动化视图 ⇒ 关掉；否则开**音量**泳道。
+    pub fn toggle_automation_view(&mut self) {
+        if matches!(self.list_view, Some(ListView::Automation { .. })) {
+            self.list_view = None;
+            self.log_line("关闭自动化视图".to_owned());
+        } else {
+            self.open_automation_view(AutomationKind::Volume);
+        }
+    }
+
+    /// 当前自动化视图的泳道种类（视图未开或非音量/声相时 `None`）。
+    #[must_use]
+    pub fn automation_kind(&self) -> Option<AutomationKind> {
+        kind_of(self.automation_target()?)
+    }
+
+    /// 删除光标 tick 处的自动化点（`Op::RemoveAutomationPoint`，可撤销）。
+    pub fn remove_automation_point_at_cursor(&mut self) {
+        let Some(target) = self.automation_target() else {
+            self.log_line("先开自动化视图（p 音量 / P 声相），再删点".to_owned());
+            return;
+        };
+        let tick = self.automation_cursor_tick();
+        let Some(point) = self.project.automation_lane(&target).and_then(|lane| {
+            lane.points
+                .values()
+                .find(|point| point.tick == tick)
+                .copied()
+        }) else {
+            self.log_line(format!("光标 tick {tick} 处没有自动化点"));
+            return;
+        };
+        self.commit_edit(
+            "tui: remove automation point",
+            vec![Op::RemoveAutomationPoint {
+                target,
+                point_id: point.id,
+                previous_point: point,
+            }],
+            &format!("删除自动化点 @ {tick}"),
+        );
+    }
+
+    /// 在光标 tick 处按**当前生效值**落一个点（`a`）：把"此刻听起来的样子"钉下来。
+    pub fn add_automation_point_at_cursor(&mut self) {
+        let Some(readout) = self.automation_readout() else {
+            self.log_line("先开自动化视图（p 音量 / P 声相），再设点".to_owned());
+            return;
+        };
+        self.set_automation_value(readout.effective_value);
+    }
+
+    fn automation_unit_symbol(&self) -> &'static str {
+        self.automation_target()
+            .map_or("", |target| target.nominal_unit().symbol())
+    }
+
+    fn select_automation_point_at(&mut self, tick: u64) {
+        let index = self
+            .automation_points()
+            .iter()
+            .position(|point| point.tick == tick);
+        if let (Some(index), Some(ListView::Automation { selected, .. })) =
+            (index, &mut self.list_view)
+        {
+            *selected = index;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 保存与导出
     // ------------------------------------------------------------------
 
@@ -1391,6 +1965,17 @@ impl App {
             self.redo(1);
             return;
         }
+        // 选中轨基准行高 ±16 px（= `MIN_TRACK_HEIGHT_PX`，`Alt+Shift+↑/↓`）。
+        // Alt+Shift 在 `to_logical` 里没有对应构造子（GUI 表也没有这一格），
+        // 因此它一定走到这里；生效值仍由 `effective_track_height_px` 统一夹紧。
+        if event.modifiers.contains(KeyModifiers::ALT)
+            && event.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(event.code, KeyCode::Up | KeyCode::Down)
+        {
+            let delta = if event.code == KeyCode::Down { -16 } else { 16 };
+            self.nudge_track_height_px(delta);
+            return;
+        }
         // 第二段：Vi 导航层（只吃无修饰/仅 Shift 的字符键）。
         if !modified && let KeyCode::Char(ch) = event.code {
             // 音符视图内的编辑键（三期，TUI 自加；这些键在共享表里是
@@ -1427,6 +2012,37 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+            // 自动化视图：`a` 在光标处按当前生效值设点（T-FIX-76 第 4 项）。
+            if matches!(self.list_view, Some(ListView::Automation { .. })) && ch == 'a' {
+                self.vi.reset();
+                self.add_automation_point_at_cursor();
+                return;
+            }
+            // 打开自动化泳道：`P` = 声相（TUI 自加键；实测共享表里裸 `P`
+            // 是 PassThrough —— GUI 的 `e`/`p` 只认小写；`Ctrl+Alt+A`
+            // 走 GUI 的 `ToggleAutomation`，打开/关闭音量泳道）。
+            if self.list_view.is_none() && ch == 'P' {
+                self.vi.reset();
+                self.open_automation_view(AutomationKind::Pan);
+                return;
+            }
+            // 移轨（显示顺序）：`J`/`K`，计数前缀 = 格数。音符视图里 `J`/`K`
+            // 是移音高（已在上面分流）；这里只接视图未开的情形。
+            if self.list_view.is_none() && matches!(ch, 'J' | 'K') {
+                let count = i32::try_from(self.vi.count().unwrap_or(1)).unwrap_or(1);
+                self.vi.reset();
+                self.move_selected_track(if ch == 'J' { count } else { -count });
+                return;
+            }
+            // 全局高度乘子：`{`/`}` 每档 10%，计数前缀 = 档数（TUI 自加键；
+            // 裸 `[`/`]` 在共享表里是试听，⛔ 不抢）。
+            if self.list_view.is_none() && matches!(ch, '{' | '}') {
+                let count = i32::try_from(self.vi.count().unwrap_or(1)).unwrap_or(1);
+                self.vi.reset();
+                let step = 10_i32.saturating_mul(count);
+                self.nudge_height_percent(if ch == '}' { step } else { -step });
+                return;
             }
             // 片段网格焦点下开音符视图（TUI 自加键）：裸 `n`（共享表
             // PassThrough、Vi 层未占）。视图已开时不重复开。
@@ -1544,6 +2160,13 @@ impl App {
                 self.nudge_mixer(param, i32::from(direction));
             }
             Action::SelectTrackBy(delta) => self.move_selection(i32::from(delta)),
+            // GUI `F5`/`F6`（与 `ui/switch_main_view` 同一对白名单值）：切主视图。
+            Action::ShowView(view) => self.set_view(view),
+            // GUI `Ctrl+Shift+A`（`ToggleAutomation`：泳道可见性开关）→ TUI 的
+            // 等价形态是打开/关闭音量泳道的列表视图（同一"显示自动化"语义）。
+            // ⚠ 实测 `ctrl_alt+a` 在共享表里是 `ToggleAiDrawer`，`ctrl_shift+a`
+            // 才是 `ToggleAutomation` —— 键位以解析器为准，不靠猜。
+            Action::ToggleAutomation => self.toggle_automation_view(),
             Action::ToggleView => {
                 self.focus = self.focus.next();
                 self.log_line(format!("焦点 → {}", self.focus.label()));
@@ -1561,6 +2184,9 @@ impl App {
                 // 同 DeleteSelection 的按视图分流手法）；视图外照旧缩放。
                 if matches!(self.list_view, Some(ListView::Notes { .. })) {
                     self.nudge_selected_note_velocity(10);
+                } else if matches!(self.list_view, Some(ListView::Automation { .. })) {
+                    // 自动化视图：`+` 是值 +1 档（音量 0.5 dB / 声相 0.05）。
+                    self.nudge_automation_value(1);
                 } else {
                     self.bar_cols = (self.bar_cols + 1).min(8);
                 }
@@ -1568,6 +2194,8 @@ impl App {
             Action::ZoomOut => {
                 if matches!(self.list_view, Some(ListView::Notes { .. })) {
                     self.nudge_selected_note_velocity(-10);
+                } else if matches!(self.list_view, Some(ListView::Automation { .. })) {
+                    self.nudge_automation_value(-1);
                 } else {
                     self.bar_cols = self.bar_cols.saturating_sub(1).max(2);
                 }
@@ -1627,6 +2255,7 @@ impl App {
                 match self.list_view {
                     Some(ListView::Notes { .. }) => self.delete_selected_note(),
                     Some(ListView::Pool { .. }) => self.delete_selected_pool_entry(),
+                    Some(ListView::Automation { .. }) => self.remove_automation_point_at_cursor(),
                     None => {
                         if self.focus == Pane::Grid {
                             self.delete_clip_at_cursor();
@@ -1865,6 +2494,61 @@ impl App {
             "pool" => {
                 // :pool —— 打开片段池视图（删条目在视图内 Delete）。
                 self.open_pool_view();
+            }
+            "view" => {
+                // :view session|arrangement —— 与 F5/F6 同一落点（View 白名单同一个）。
+                match rest {
+                    "session" => self.set_view(View::Session),
+                    "arrangement" => self.set_view(View::Arrangement),
+                    "" => self.log_line("用法：:view session|arrangement".to_owned()),
+                    other => {
+                        self.log_line(format!("用法：:view session|arrangement（收到 `{other}`）"));
+                    }
+                }
+            }
+            "move" => {
+                // :move <位置> —— 显示顺序**绝对下标**（0 起，与 `newIndex` 同口径）。
+                match rest.parse::<usize>() {
+                    Ok(index) => self.move_selected_track_to(index),
+                    Err(_) => self.log_line(
+                        "用法：:move <位置>（0 起，与 yeban_move_track 的 newIndex 同口径）"
+                            .to_owned(),
+                    ),
+                }
+            }
+            "height" => {
+                // :height <px> | auto —— 选中轨**基准**高（auto/0 = 取消覆盖，
+                // 与 `ui/set_track_height` 的 heightPx = 0 同一语义）。
+                if rest.is_empty() {
+                    self.log_line("用法：:height <px>（0 或 auto = 取消覆盖）".to_owned());
+                } else if matches!(rest, "auto" | "0") {
+                    self.set_track_height_px(0);
+                } else {
+                    match rest.parse::<u32>() {
+                        Ok(px) => self.set_track_height_px(px),
+                        Err(_) => {
+                            self.log_line("用法：:height <px>（0 或 auto = 取消覆盖）".to_owned());
+                        }
+                    }
+                }
+            }
+            "height%" => {
+                // :height% <n> —— 全局高度乘子（与 GUI 的 `percent` 同一个旋钮）。
+                match rest.parse::<u32>() {
+                    Ok(percent) => self.set_height_percent(percent),
+                    Err(_) => self.log_line("用法：:height% <百分比，100 = 不缩放>".to_owned()),
+                }
+            }
+            "auto" => {
+                // :auto <volume|pan> —— 打开选中轨的音量 / 声相自动化泳道。
+                match rest {
+                    "volume" => self.open_automation_view(AutomationKind::Volume),
+                    "pan" => self.open_automation_view(AutomationKind::Pan),
+                    "" => self.log_line("用法：:auto <volume|pan>".to_owned()),
+                    other => {
+                        self.log_line(format!("用法：:auto <volume|pan>（收到 `{other}`）"));
+                    }
+                }
             }
             "export" => {
                 // 形态：export wav <path> 或 export <path>（默认 wav）。
