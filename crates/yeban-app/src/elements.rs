@@ -3148,6 +3148,61 @@ impl ElementRegistry {
             "音源管理状态行（空 = 无消息）",
             false,
         );
+
+        // ------------------------------------------------------ 原生预制库面板（T-FIX-117）
+        // `ui/dialogs/preset_library.slint` 的 7 个字面量 id。行内「应用到当前轨」
+        // （`"preset-apply-" + row-index`）是模板，今天的成员数取决于用户库里已有多少
+        // 预制；干净工程上用户库为空 ⇒ 0 行 ⇒ 该模板进
+        // `EMPTY_DYNAMIC_TEMPLATES_ALLOWED` 并逐条登记理由（见那张表）。
+        registry.add(
+            "preset-library-dialog",
+            ElementKind::Region,
+            "dialogs/preset_library.slint",
+            "原生预制库",
+            false,
+        );
+        registry.add(
+            "preset-library-panel",
+            ElementKind::Region,
+            "dialogs/preset_library.slint",
+            "原生预制库面板",
+            false,
+        );
+        registry.add(
+            "preset-library-close-button",
+            ElementKind::Button,
+            "dialogs/preset_library.slint",
+            "关闭原生预制库",
+            false,
+        );
+        registry.add(
+            "preset-library-bypass-toggle",
+            ElementKind::Button,
+            "dialogs/preset_library.slint",
+            "旁通当前轨预制",
+            false,
+        );
+        registry.add(
+            "preset-save-name-input",
+            ElementKind::TextInput,
+            "dialogs/preset_library.slint",
+            "新预制名称",
+            false,
+        );
+        registry.add(
+            "preset-save-button",
+            ElementKind::Button,
+            "dialogs/preset_library.slint",
+            "另存当前轨为预制",
+            false,
+        );
+        registry.add(
+            "preset-library-list",
+            ElementKind::List,
+            "dialogs/preset_library.slint",
+            "预制列表",
+            false,
+        );
         registry.add(
             "sound-library-retry-button",
             ElementKind::Button,
@@ -3730,7 +3785,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 42] = [
+    const SLINT_MANIFEST: [&str; 43] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3794,6 +3849,11 @@ mod tests {
         // 缺音源救援面板（Wang 2026-11-19）：隐藏模态，默认关闭 ⇒ 金帧不变。
         // ⚠ 新增一个 .slint 就必须在这张清单里显式登记（同 `sound_library_dialog`）。
         "dialogs/missing_sounds_dialog.slint",
+        // 原生预制库面板（T-FIX-95，commit ff2205116）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        // ⚠ T-FIX-117：文件落地时漏了这张清单与下面的 id 注册表 —— 两条
+        // `elements::tests` 判据在尖端上正是这样红的（见 `slint_manifest_matches_adr_0001_d2`
+        // 与 `slint_accessible_ids_and_registry_cover_each_other`）。
+        "dialogs/preset_library.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {
@@ -4060,6 +4120,13 @@ mod tests {
         // `本提案携带 {n} 条 op`，见 `tests/live_ui_mcp.rs` 的 `[pr-rows]` 那两条。
         ("musical-pr-proposal-", "-item"),
         ("musical-pr-proposal-", "-ops"),
+        // ⭐ T-FIX-117：原生预制库面板的「应用到当前轨」行按钮。
+        // 模板是**单段**（`"preset-apply-" + row-index`，后缀空串）。行为什么叫"今天 0 个"：
+        // 行来自**用户已经存下的预制**（`rows` 由宿主按用户库投影喂入），而干净工程 / 干净
+        // 用户目录里一条预制都没有 ⇒ 列表显示「用户库里还没有预制…」的空态 ⇒ 模板实例化 0 次。
+        // ⛔ 不是"UI 加了 id 却忘了登记"：`.slint` 里 `for … in root.rows` 明写在那儿，
+        // 用户存下第一条预制后同一模板就会实例化。
+        ("preset-apply-", ""),
     ];
 
     /// 这个模板是不是在 [`EMPTY_DYNAMIC_TEMPLATES_ALLOWED`] 里登记过。
