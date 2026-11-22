@@ -21376,7 +21376,6 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     muted: false,
                     soloed: false,
                     armed: false,
-                    meter_peak: 0.50,
                     insert1: "Wavetable MPE".into(),
                     insert2: "Pro-QLinear 8".into(),
                     insert3: "".into(),
@@ -24428,7 +24427,6 @@ fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
                 muted: trk.mute,
                 soloed: trk.solo,
                 armed: false,
-                meter_peak: 0.0,
                 // ⭐ 插入槽 = **该轨真实设备链**（`TrackView::devices` 的前三格）。
                 // 空链时只保留两种**真实**读数：SFZ 采样器绑定路径（若有）与空串；
                 // ⛔ 不再按轨道类型编造 "Wavetable MPE" / "Pro-QLinear 8" /

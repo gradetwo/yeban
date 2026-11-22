@@ -71,7 +71,6 @@ export component MainWindow inherits Window {
             muted: false,
             soloed: false,
             armed: false,
-            meter_peak: 0.65,
             insert1: "Wavetable MPE",
             insert2: "Pro-QLinear 8",
             insert3: "Glue Comp VCA",
@@ -91,7 +90,6 @@ export component MainWindow inherits Window {
             muted: false,
             soloed: false,
             armed: false,
-            meter_peak: 0.72,
             insert1: "Transient Shaper",
             insert2: "Drum Bus Saturator",
             insert3: "Pro-QLinear 8",
@@ -111,7 +109,6 @@ export component MainWindow inherits Window {
             muted: false,
             soloed: false,
             armed: false,
-            meter_peak: 0.45,
             insert1: "Granulator IV",
             insert2: "Shimmer Verb",
             insert3: "Stereo Imager",
@@ -131,7 +128,6 @@ export component MainWindow inherits Window {
             muted: false,
             soloed: false,
             armed: false,
-            meter_peak: 0.58,
             insert1: "Auto-Pitch Zero",
             insert2: "FET 1176 Comp",
             insert3: "Optical LA-2A",
@@ -151,7 +147,6 @@ export component MainWindow inherits Window {
             muted: false,
             soloed: false,
             armed: false,
-            meter_peak: 0.50,
             insert1: "Analog Poly",
             insert2: "PingPong Delay",
             insert3: "HighPass Filter",
@@ -1439,7 +1434,7 @@ export component MainWindow inherits Window {
                     selected-track-pan-value: root.track-pan-values.length > root.safe-selected-idx ? root.track-pan-values[root.safe-selected-idx] : 0.0;
                     selected-track-vol: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].volume_db : 0.0;
                     selected-track-vol-display: root.track-volumes.length > root.safe-selected-idx ? root.track-volumes[root.safe-selected-idx] : "";
-                    selected-track-peak: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].meter_peak : 0.0;
+                    selected-track-peak: root.tracks.length > 0 && root.track-meter-levels.length > root.safe-selected-idx ? root.track-meter-levels[root.safe-selected-idx] : 0.0;
                     selected-track-inserts: root.tracks.length > 0 ? [
                         root.tracks[root.safe-selected-idx].insert1,
                         root.tracks[root.safe-selected-idx].insert2,
@@ -1717,6 +1712,11 @@ export component MainWindow inherits Window {
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
+                // ⭐ 混音台真实接线：通道条与主控电平取自引擎 SPSC（与轨道头/画布同一份），
+                // ⛔ 不再让下坞读 `TrackData.meter_peak` 那个永不更新的占位字段。
+                track-meter-levels: root.track-meter-levels;
+                master-meter-l: root.master-meter-l;
+                master-meter-r: root.master-meter-r;
                 track-volumes: root.track-volumes;
                 master-volume-db: Math.round((-60.0 + root.master-volume-fraction * 66.0) * 10.0) / 10.0;
                 master-volume-display: root.master-volume-display;

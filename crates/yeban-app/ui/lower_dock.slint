@@ -6,6 +6,12 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <color> selected-track-color: Theme.track-synth;
     in-out property <string> focus-track-name: "01. Lead Neuro Bass";
     in-out property <[TrackData]> tracks;
+    // ⭐ 真实电平（引擎电平 SPSC）：与轨道头 / 编曲画布消费的是**同一份**数据。
+    // 通道条电平柱按下标取；master 两柱取主总线读数（控制面已按 60Hz 镜像到
+    // `master-meter-l/r`）。缺数据时取 0（= 下限），不画假值。
+    in property <[float]> track-meter-levels: [];
+    in property <float> master-meter-l: 0.0;
+    in property <float> master-meter-r: 0.0;
     in-out property <int> selected-track-id: 1;
     in-out property <[string]> device-names: [];
     in-out property <[string]> device-ids: [];
@@ -1434,14 +1440,17 @@ export component UnifiedLowerDock inherits Rectangle {
                                     clip: true;
 
                                     Rectangle {
+                                        // ⭐ 真实电平：`track-meter-levels[tidx]`（引擎 SPSC）。
+                                        // ⛔ 不再用 `trk.meter_peak` —— 那是投影层从不更新的
+                                        // 占位字段（`host.rs` 生产路径恒置 0.0），画出来永远是空柱。
                                         x: 0;
-                                        y: parent.height - (trk.meter_peak * parent.height);
+                                        y: parent.height - ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) * parent.height);
                                         width: 6px;
-                                        height: trk.meter_peak * parent.height;
-                                        background: trk.meter_peak > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                        height: (root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) * parent.height;
+                                        background: (root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok;
                                         border-radius: 1px;
                                         // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                        drop-shadow-color: (trk.meter_peak > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
+                                        drop-shadow-color: ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
                                         drop-shadow-offset-x: 0px;
                                         drop-shadow-offset-y: 0px;
                                         drop-shadow-blur: 3px;
@@ -2148,13 +2157,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                             width: 4px;
                                             height: 88px;
                                             Rectangle {
+                                                // ⭐ 真实主总线电平（左）：`master-meter-l` 由控制面
+                                                // 60Hz 从 `apply_meters` 的 master 帧镜像，⛔ 不是常量。
                                                 x: 0;
-                                                y: parent.height - 56px;
+                                                y: parent.height - (root.master-meter-l * parent.height);
                                                 width: 4px;
-                                                height: 56px;
-                                                background: Theme.status-ok;
+                                                height: root.master-meter-l * parent.height;
+                                                background: root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok;
                                                 // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                                drop-shadow-color: Theme.status-ok.with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-color: (root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
                                                 drop-shadow-offset-x: 0px;
                                                 drop-shadow-offset-y: 0px;
                                                 drop-shadow-blur: 3px;
@@ -2164,13 +2175,14 @@ export component UnifiedLowerDock inherits Rectangle {
                                             width: 4px;
                                             height: 88px;
                                             Rectangle {
+                                                // ⭐ 真实主总线电平（右）：同源 `master-meter-r`。
                                                 x: 0;
-                                                y: parent.height - 52px;
+                                                y: parent.height - (root.master-meter-r * parent.height);
                                                 width: 4px;
-                                                height: 52px;
-                                                background: Theme.status-ok;
+                                                height: root.master-meter-r * parent.height;
+                                                background: root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok;
                                                 // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                                drop-shadow-color: Theme.status-ok.with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-color: (root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
                                                 drop-shadow-offset-x: 0px;
                                                 drop-shadow-offset-y: 0px;
                                                 drop-shadow-blur: 3px;

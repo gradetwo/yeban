@@ -4,16 +4,17 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <[TrackData]> tracks;
     // ⭐ D1/D2：轨道行电平柱接**引擎实时电平**（与混音台同一份 `track-meter-levels`）。
     // 以前这里的柱高绑的是 `trk.meter_peak`（工程/演示数据里的静态值），播放时纹丝不动；
-    // 现在只要 `is-playing` 且该轨有实时值就用实时值，否则回落到静态值（保持 1920×1080 golden 不变）。
+    // 现在只要 `is-playing` 且该轨有实时值就用实时值；没有读数时回落到 0（下限），
+    // ⛔ 不再回落到 `TrackData.meter_peak` —— 那个字段已从投影里删除（生产路径恒 0）。
     in property <[float]> meter-levels: [];
     in property <bool> is-playing: false;
-    // 电平值取值：播放中且该轨有实时值 → 用实时值（钳到 0..1）；否则回落到静态 `meter_peak`。
+    // 电平值取值：播放中且该轨有实时值 → 用实时值（钳到 0..1）；否则 0.0（下限）。
     // 用函数而不是内联三元，是为了两处电平柱（第一份/第二份轨道行）共用同一条判据。
     pure function meter-val(i: int) -> float {
         if (root.is-playing && root.meter-levels.length > i) {
             Math.min(1.0, Math.max(0.0, root.meter-levels[i]))
         } else {
-            root.tracks[i].meter_peak
+            0.0
         }
     }
     in property <[string]> track-volumes: [];

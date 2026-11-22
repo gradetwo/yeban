@@ -3303,6 +3303,29 @@ fn render_branch(
                     second[0][frame] += stash_right[frame];
                 }
             }
+            // ⭐ **组总线电平帧**：没有已武装器件、也不在 `processing_bus` 分支的
+            // 总线节点，此前**一次电平都不量** —— 逐轨段跳过了它（那里量的是它
+            // 自己的声源，恒静音），转发段又只在 `processing_bus` 里量 ⇒ 这类
+            // 组总线的电平帧永远不存在（混音台的组通道恒为空柱，与音频是否
+            // 通流无关）。
+            //
+            // 取样点与其它节点**同一个**：**输出级之后、PDC 之前**的完整输出
+            // （此刻躺在 `reverb_scratch`：收入已过 `OutputStage`、自有内容已完成
+            // 并入）。立体声联动口径与原 `processing_bus` 分支一致
+            // （[`MeterBank::measure_bus_stereo`]：峰值取两声道最大）。
+            // 每量子每节点恰好一次 —— `processing_bus` 为真的节点走上面那条，
+            // 这里只补它没覆盖的那一半。
+            if !processing_bus && produced < track_budget {
+                let (first, second) = share.reverb_scratch.split_at_mut(1);
+                let frame = share.bank.measure_bus_stereo(
+                    *node,
+                    quantum,
+                    &first[0][..frames],
+                    &second[0][..frames],
+                );
+                share.scratch_meters[produced] = frame;
+                produced += 1;
+            }
             // ⭐ **stage 22 —— 总线级 PDC 落地**；⭐ **stage 26 —— 逐边**。
             //
             // 位置：**输出级之后、转发之前**（`D` 的定义就是"这个节点的输出晚

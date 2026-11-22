@@ -4400,6 +4400,61 @@ mod tests {
         }
     }
 
+    /// 判据（文本层）：**生产下坞**（`UnifiedLowerDock`）的混音台通道条与主控电平
+    /// 必须消费引擎电平数组，不许再读投影层的占位字段 `TrackData.meter_peak`。
+    ///
+    /// ## 为什么这条判据必须存在
+    ///
+    /// `host.rs` 的生产路径把 `TrackData.meter_peak` **恒置 0.0**（`host.rs` 的
+    /// `TrackData { meter_peak: 0.0, .. }`），因此任何读它的电平柱都是**永久空柱**。
+    /// 下坞混音台此前正是读它 ⇒ 界面表现是"轨道头电平在动、混音台电平不动"，
+    /// 这条假读数会被误判成音频链断点（真实案例：排查实时无声时被它带偏）。
+    /// 本判据把"下坞读的是引擎数组"变成机械事实：
+    ///
+    /// - 正向：通道条绑 `root.track-meter-levels[tidx]`；主控两柱绑
+    ///   `root.master-meter-l` / `root.master-meter-r`（控制面 60Hz 从 master 帧镜像）。
+    /// - 负向（只看非注释行）：不许出现 `trk.meter_peak`；`app.slint` 必须把这两个
+    ///   属性真的透传给 `UnifiedLowerDock`（否则数组在下坞里恒为空 = 另一种假表）。
+    #[test]
+    fn lower_dock_mixer_meters_read_the_engine_arrays() {
+        let dock = std::fs::read_to_string(ui_dir().join("lower_dock.slint"))
+            .expect("读 lower_dock.slint")
+            .replace("\r\n", "\n");
+        for required in [
+            "root.track-meter-levels[tidx]",
+            "root.master-meter-l",
+            "root.master-meter-r",
+            "in property <[float]> track-meter-levels",
+        ] {
+            assert!(
+                dock.contains(required),
+                "lower_dock.slint 必须包含 `{required}`（下坞混音台真实电平契约）"
+            );
+        }
+        let dock_code: String = dock
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !dock_code.contains("trk.meter_peak"),
+            "lower_dock.slint 的代码里不许再读 `trk.meter_peak` —— 生产路径把它恒置 0.0，\
+             画出来永远是空柱"
+        );
+
+        let app = std::fs::read_to_string(ui_dir().join("app.slint")).expect("读 app.slint");
+        for required in [
+            "track-meter-levels: root.track-meter-levels;",
+            "master-meter-l: root.master-meter-l;",
+            "master-meter-r: root.master-meter-r;",
+        ] {
+            assert!(
+                app.contains(required),
+                "app.slint 必须把 `{required}` 透传给生产下坞（否则电平数组在下坞里恒为空）"
+            );
+        }
+    }
+
     /// 判据（文本层）：混音台的**输入面真的存在**，且像素行程常量与 `.slint` 的几何一致。
     ///
     /// ## 它守的是什么（本次的缺口就是它抓的那一格）
