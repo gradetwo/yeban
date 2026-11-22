@@ -1688,9 +1688,10 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_traced_records_the_loud_refusal_step() {
-        // T-FIX-70 × T-FIX-59：异率现场的 trace 必须把第 3 步的响亮拒绝
-        // 写出来 —— 这正是用户回传诊断时要看的那一步。
+    fn negotiate_traced_records_the_resampling_step() {
+        // T-FIX-70 × T-FIX-72：异率现场的 trace 必须把第 3 步的采样率转换
+        // 写出来 —— 这正是用户回传诊断时要看的那一步（T-FIX-59 的响亮
+        // 拒绝已被 T-FIX-72 的实时转换取代，本判据按新裁决改写）。
         let ranges = [fake_range(
             2,
             44_100,
@@ -1699,18 +1700,21 @@ mod tests {
             SampleFormat::F32,
         )];
         let (traced, trace) = negotiate_traced(&ranges, &EngineConfig::default());
-        assert!(matches!(
-            traced,
-            Err(DeviceError::SampleRateMismatch { .. })
-        ));
+        let got = traced.expect("异率协商应成功并标记转换");
+        assert!(got.resampling(), "协商结果应标记采样率转换");
+        assert_eq!(got.source_rate, 48_000);
+        assert_eq!(got.sample_rate, 44_100);
         assert!(
             trace
                 .iter()
-                .any(|line| line.contains("step 3") && line.contains("SampleRateMismatch")),
-            "trace 缺第 3 步拒绝行: {trace:?}"
+                .any(|line| line.contains("step 3") && line.contains("resampling")),
+            "trace 缺第 3 步转换行: {trace:?}"
         );
         let last = trace.last().expect("trace 至少有结果行");
-        assert!(last.contains("failed"), "trace 末行应是失败结果: {last}");
+        assert!(
+            last.contains("result 44100 Hz"),
+            "trace 末行应是成功结果: {last}"
+        );
     }
 
     #[test]
