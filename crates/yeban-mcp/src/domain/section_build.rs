@@ -4424,4 +4424,92 @@ mod tests {
         };
         assert_eq!(data["maxBars"], serde_json::json!(64), "上限必须是字面 64");
     }
+
+    // ------------------------------------------------------------------
+    // ⭐ T-FIX-102（T-FIX-41 遗留票）：`usable_materials` 收口的**钉**
+    //
+    // 前提核实结论（本票**只钉不改**）：当前 main 上 `usable_materials`
+    // （本文件 `fn usable_materials`，`section_build.rs:1031`）已经是
+    // 「MIDI 且 ≥1 音符」口径 —— T-FIX-67 把「空片段不是材料」写成了显式闸门
+    // `if notes.is_empty() { return None }`（`:1041-1044`），靠 `min()?` 副作用
+    // 过滤的老实现早就不在了。因此**没有代码改动**，本判据防止三条口径再被改宽。
+    // ------------------------------------------------------------------
+    #[test]
+    fn usable_materials_excludes_empty_clips_and_audio_but_keeps_non_empty_midi() {
+        let mut project = filled_project();
+        project.clip_pool.clear();
+
+        // ① 空 MIDI 片段（零音符）：不是材料。
+        let empty_id = deterministic_id("t-fix-102:empty-midi");
+        project.clip_pool.insert(
+            empty_id,
+            ClipPoolEntry {
+                id: empty_id,
+                name: "空 MIDI".to_owned(),
+                content: ClipContent::Midi {
+                    notes: BTreeMap::new(),
+                },
+            },
+        );
+
+        // ② 音频片段：不是材料 —— 材料口径只认 MIDI，`notes()` 对 `Audio` 恒 `None`
+        //    （与「空不空」无关，故非空音频也进不来，这条口径一并钉住）。
+        let audio_id = deterministic_id("t-fix-102:audio");
+        project.clip_pool.insert(
+            audio_id,
+            ClipPoolEntry {
+                id: audio_id,
+                name: "音频".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::AssetHash::of_bytes(b"t-fix-102"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+
+        // ③ 非空 MIDI 对照：是材料，根音取最低音高（60 ⇒ 音级 0）。
+        let good_id = deterministic_id("t-fix-102:midi");
+        let note_id = deterministic_id("t-fix-102:note");
+        let mut notes = BTreeMap::new();
+        notes.insert(note_id, MidiNote::new(note_id, 0, 60, 480));
+        project.clip_pool.insert(
+            good_id,
+            ClipPoolEntry {
+                id: good_id,
+                name: "非空 MIDI".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+
+        // 池里三条都在（"空"不等于"池是空的"，报错时池计数要如实）。
+        assert_eq!(
+            project.clip_pool.len(),
+            3,
+            "夹具必须保留三条池条目（空 MIDI / 音频 / 非空 MIDI）"
+        );
+
+        let materials = usable_materials(&project);
+        assert_eq!(
+            materials.len(),
+            1,
+            "只有非空 MIDI 是材料，实际 {:?}",
+            materials.iter().map(|m| m.id).collect::<Vec<_>>()
+        );
+        assert_eq!(materials[0].id, good_id, "唯一材料必须是非空那条");
+        assert_eq!(materials[0].root_pc, 0, "根音取最低音高 60 ⇒ 音级 0");
+
+        // ④ 根音口径再加一条低音对照：55（G）压过 60 ⇒ 音级 7，且最低音不是"第一条"。
+        let g_note = deterministic_id("t-fix-102:note-g");
+        if let Some(entry) = project.clip_pool.get_mut(&good_id)
+            && let ClipContent::Midi { notes } = &mut entry.content
+        {
+            notes.insert(g_note, MidiNote::new(g_note, 0, 55, 480));
+        }
+        let materials = usable_materials(&project);
+        assert_eq!(materials.len(), 1, "加一条音符不改变材料条数");
+        assert_eq!(
+            materials[0].root_pc, 7,
+            "根音必须取最低音高 55 (G) ⇒ 音级 7，而不是首条音符"
+        );
+    }
 }
