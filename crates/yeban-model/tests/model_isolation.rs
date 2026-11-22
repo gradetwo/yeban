@@ -94,6 +94,9 @@ use yeban_model::{EntityId, PPQ, YebanProjectV1};
 ///   229 → 231 条、摘要随之换钉：新增的恰为这两条已声明路径，无新键面，
 ///   不是 MODEL-ISO-001 违规（两字段带 serde default，旧工程照读）。
 /// - `project.default.json`：不变。
+/// - **demo Solo 修复**：`project.filled.json`：`203fbb6c…` → `bad512a0…`；原因 =
+///   `filled_project()` 的 Bass 去掉 `solo_safe: true`，这是既有键的取值变化，
+///   ⛔ 不新增键面，不是 MODEL-ISO-001 违规。
 const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     (
         "project.default.json",
@@ -101,7 +104,7 @@ const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     ),
     (
         "project.filled.json",
-        "203fbb6c3fe36595e83cbedeeb22993977f435965ce2714c974eca7a6ef387ce",
+        "bad512a06197e282591f1165325a104644a2afb51ce6f663f44104f265861055",
     ),
 ];
 
@@ -2096,12 +2099,16 @@ fn session_writers_do_not_rewrite_the_payload_they_are_given() {
 /// 本判据按与生产同形的调用路径取字节，冻结 **sha256 ＋ 长度**两张字面表，
 /// 并附"判据自身有牙"的 `assert_ne!`（R58：同一个 `==` 上成对）。
 /// 重新冻结：`cargo test -p yeban-model --test model_isolation -- --nocapture`。
+///
+/// **demo Solo 修复重钉**：容器 ZIP 5715 → 5716 字节、sha256
+/// `85338413…` → `6a0110b4…`；原因 = `filled_project()` 的 Bass 去掉
+/// `solo_safe: true`，工程 JSON 与 ZIP 成员字节随之各变一处。
 #[test]
 fn history_dag_and_container_zip_bytes_are_frozen() {
     const DAG_SHA256: &str = "54c9212169a07d34e54ab58114090e88d86f06371c53002f91f3295e8c5cbc32";
     const DAG_LEN: usize = 911;
-    const ZIP_SHA256: &str = "85338413093035245a1dd8778cb9cf305d19d686b88bc4b78323b9a70954ae68";
-    const ZIP_LEN: usize = 5715;
+    const ZIP_SHA256: &str = "6a0110b416901b950e70f22ea0a7ad0a1072d3d68343b94269b4cdac854b83dc";
+    const ZIP_LEN: usize = 5716;
 
     let id1 = EntityId::from_str("01J8ZQ00000000000000000001").expect("id1");
     let id2 = EntityId::from_str("01J8ZQ00000000000000000002").expect("id2");

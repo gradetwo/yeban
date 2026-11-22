@@ -1292,7 +1292,22 @@ mod tests {
     /// ① XML 结构良构; ② 音轨名与计数符合预期; ③ 损失表非空且覆盖所有未映射构造。
     #[test]
     fn filled_project_exports_gzip_xml_with_a_complete_loss_table() {
-        let project = filled_project();
+        let mut project = filled_project();
+        // `solo_safe` 是模型能力，但官方 filled 样本不再预置它（否则 UI 没有写入口时
+        // 用户点第一轨的 S 会仍听见 Bass，看起来像 S 失效）。本判据要覆盖
+        // “solo_safe 未映射”的损失条目，因此只在**测试副本**上打开它，
+        // ⛔ 不改官方样本本身。
+        let bass_id = project
+            .tracks
+            .values()
+            .find(|track| track.name == "Bass")
+            .expect("filled 样本必须有 Bass 轨")
+            .id;
+        project
+            .tracks
+            .get_mut(&bass_id)
+            .expect("刚找到的 Bass 轨")
+            .solo_safe = true;
         let export = export_project(&project).expect("导出");
 
         // ---- (a) Gzip → 内存解压 → XML 结构 ----
@@ -1666,7 +1681,12 @@ mod tests {
     /// [`Compression::default`] 下的 deflate 流恰好短 1 字节。
     /// ⚠ 第 298 条三件套: ① 判据自报实测新数（2908）；② 常量改成该数；③ 常量旁写明
     /// "前→后 ＋ 原因"。⛔ 判定逻辑（下面两条 `assert_eq!`）本单**一行未改**、判据一条未删。
-    const ALS_FILLED_BYTES: usize = 2908;
+    ///
+    /// **引脚修订（demo Solo 修复）**: 前 **2908** → 后 **2921**（**+13 字节**）。
+    /// 原因: `filled_project()` 的 Bass 不再预置 `solo_safe: true`，`.als` 的映射损失表
+    /// 少一条 "独奏安全 … 未导出" 记录；同一 [`Compression::default`] 下 deflate 流
+    /// 的字节边界随之移动，压缩后长度变为 2921。
+    const ALS_FILLED_BYTES: usize = 2921;
     /// 同一份字节流的 SHA-256（实测）。
     ///
     /// **引脚修订（任务单 `#145`）**: 前
@@ -1674,7 +1694,12 @@ mod tests {
     /// `09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8`。
     /// 原因同上: `#142` 改动了 `filled_project()` 的样例内容（合成音频字节 ⇒ clip 的
     /// `asset` 哈希 ＋ `project.assets` 索引进入 XML），压缩后的字节流随之变化。
+    ///
+    /// **引脚修订（demo Solo 修复）**: 前
+    /// `09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8` → 后
+    /// `b5290d03bf1cff233d0367533432a8e4bf006cbf41e76745fae5489e8665dc28`。
+    /// 原因同上（Bass 的 `solo_safe` 去掉 ⇒ 映射损失表变化）。
     /// ⚠ 长度与摘要是**两个独立读数**，两者都按同一份实测字节流重钉。
     const ALS_FILLED_SHA256: &str =
-        "09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8";
+        "b5290d03bf1cff233d0367533432a8e4bf006cbf41e76745fae5489e8665dc28";
 }

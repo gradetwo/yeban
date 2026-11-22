@@ -314,7 +314,10 @@ pub fn filled_project() -> YebanProjectV1 {
         pan: 0.0,
         mute: false,
         solo: false,
-        solo_safe: true,
+        // 官方 filled 样本用于试听「第一轨 S」：Bass 不得预置 solo_safe，
+        // 否则 UI 没有写入口（ADR-0049）时，用户点 Lead 的 S 仍能听见 Bass，
+        // 看起来就像第一轨的 S 按钮失效。需要覆盖 solo_safe 的判据请另建夹具。
+        solo_safe: false,
         folder_id: None,
         color: Some("#3366FF".to_owned()),
         ..TrackV3::default()
