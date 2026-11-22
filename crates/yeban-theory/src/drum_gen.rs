@@ -106,6 +106,12 @@ pub enum DrumGenError {
     /// 摇摆越界（来自 [`crate::swing`] 的校验）。
     #[error(transparent)]
     Swing(#[from] TheoryError),
+    /// 鼓组风格预设自身步长或小节数非法（例如手动构造的 `bars == 0` 或道步数不足）。
+    #[error("invalid drum preset: {message}")]
+    InvalidPreset {
+        /// 失败原因。
+        message: &'static str,
+    },
 }
 
 /// 音符时值口径：短促件 120 tick；开镲 480；crash 960。
@@ -173,7 +179,28 @@ pub fn generate_drum_pattern(
     let velocity_factor = 0.55 + 0.45 * (f64::from(params.intensity) / 100.0);
     let total_steps = params.bars as usize * STEPS_PER_BAR;
     let source_steps = preset.bars as usize * STEPS_PER_BAR;
+    if source_steps == 0 {
+        return Err(DrumGenError::InvalidPreset {
+            message: "preset.bars must be >= 1",
+        });
+    }
+    for lane in &preset.lanes {
+        if lane.steps.len() < source_steps {
+            return Err(DrumGenError::InvalidPreset {
+                message: "preset lane has fewer steps than preset.bars * 16",
+            });
+        }
+    }
     let use_fill = params.fill && preset.fill_lanes.is_some() && params.bars >= 2;
+    if use_fill && let Some(fill_lanes) = &preset.fill_lanes {
+        for lane in fill_lanes {
+            if lane.steps.len() < STEPS_PER_BAR {
+                return Err(DrumGenError::InvalidPreset {
+                    message: "preset fill lane has fewer than 16 steps",
+                });
+            }
+        }
+    }
 
     let mut notes: Vec<GeneratedDrumNote> = Vec::new();
     for lane in &preset.lanes {
@@ -656,5 +683,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn invalid_preset_bars_or_short_lane_steps_returns_error_without_panicking() {
+        let styles = crate::drum_preset::factory_drum_styles().expect("factory presets");
+        let mut zero_bars = styles[0].clone();
+        zero_bars.bars = 0;
+        assert!(matches!(
+            generate_drum_pattern(&zero_bars, &DrumGenParams::default()),
+            Err(DrumGenError::InvalidPreset { .. })
+        ));
+
+        let mut short_lane = styles[0].clone();
+        short_lane.lanes[0].steps.pop();
+        assert!(matches!(
+            generate_drum_pattern(&short_lane, &DrumGenParams::default()),
+            Err(DrumGenError::InvalidPreset { .. })
+        ));
+
+        let mut short_fill = styles
+            .iter()
+            .find(|s| s.fill_lanes.is_some())
+            .expect("at least one style has fill lanes")
+            .clone();
+        if let Some(fills) = &mut short_fill.fill_lanes {
+            fills[0].steps.truncate(STEPS_PER_BAR - 1);
+        }
+        assert!(matches!(
+            generate_drum_pattern(
+                &short_fill,
+                &DrumGenParams {
+                    fill: true,
+                    bars: 2,
+                    ..DrumGenParams::default()
+                },
+            ),
+            Err(DrumGenError::InvalidPreset { .. })
+        ));
     }
 }
