@@ -48,9 +48,12 @@ export component StartupChooserDialog inherits Rectangle {
     // 演示分类视图：0 = 唱片架，1 = 堆叠。只影响演示分类，
     // 其他分类不读此状态。
     in-out property <int> demo-view: 0;
-    // 堆叠模式被提到最上层的行号；-1 = 默认（最后一张在顶）。
-    // 点任意露出的封面把它写成该行号，z 序与选中态同步。
+    // 堆叠模式当前在最前（环位槽 0）的行号；-1 = 默认（最后一张
+    // 在最前）。点选不直接改它，而是记目标进 demo-stack-target，
+    // 由堆叠内的 Timer 沿环次序逐格步进到目标（循环移位）。
     in-out property <int> demo-stack-top: -1;
+    // 堆叠模式的步进目标行号；-1 = 空转无目标（已到位）。
+    in-out property <int> demo-stack-target: -1;
 
     callback category-selected(int);
     callback entry-activated(int);
@@ -59,6 +62,20 @@ export component StartupChooserDialog inherits Rectangle {
     callback cancel();
     callback tap-tempo();
     callback cycle-key(int);
+
+    // 堆叠模式点选（循环移位）：收起详情、同步选中态，把被点
+    // 行记为步进目标；顶层行号先物化（-1 时物化为默认的最后
+    // 一行），再由堆叠内的 Timer 逐格把目标转到最前。被点行
+    // 已在最前时目标直接清空、不动。
+    function stack-bring-to-front(row-index: int, entry-index: int) {
+        root.demo-expanded-extra = 0px;
+        root.demo-expanded-index = -1;
+        root.selected-entry = entry-index;
+        if (root.demo-stack-top < 0) {
+            root.demo-stack-top = root.rows.length - 1;
+        }
+        root.demo-stack-target = row-index == root.demo-stack-top ? -1 : row-index;
+    }
 
     background: Tokens.mask-black.with-alpha(0.65);
     clip: true;
@@ -1323,51 +1340,107 @@ export component StartupChooserDialog inherits Rectangle {
                 }
             }
 
-            // 堆叠模式：全部封面错层叠成一摞，与唱片架并存、
-            // 由上方分段控件切换，只影响演示分类。
-            // 倾斜：transform-rotation 按序号确定性轮换
-            // （(i*5) mod 13 - 6 度，落在 -6..+6，不随机），
-            // 刚性旋转不变形。错层：每张按序号错开
-            // step-x/step-y 露边；step 被可用宽高夹住，张数
-            // 越多每张步进越小，整摞不溢出容器。层叠顺序用
-            // z：顶层 z = 100、其余按序号（后画者压前画者，
-            // 再按 z 修正）。点任意露出的封面：写
-            // demo-stack-top 把它提到顶层、写 selected-entry
-            // 同步选中态、并收起详情展开；双击 = 打开，与
-            // 架子模式同一套打开语义。选中专辑的信息块在
-            // 堆叠区下方（第二个 repeater 只画顶层那张），
-            // 不压图；详情展开沿用专辑页字段行与原地展开，
-            // 出现在信息块下方。
+            // 堆叠模式（第二版，Wang 2026-11-23 反馈后重做）：全部
+            // 封面沿一条椭圆环轨松散地散开成一摞，与唱片架并存、
+            // 由上方分段控件切换，只影响演示分类。第一版是等距
+            // 对角错层加 -6..+6 度小倾斜，Wang 评「太规整」；本
+            // 版照 Wang 给的参考图：封面大、重叠深、每张角度明显
+            // 且互不相同，绕一个中心不对齐、不等距地散开，不规
+            // 整才有美感。
+            //
+            // 环位（槽位 slot = (行号 - 顶层行号) 模行数，纯序号
+            // 函数，不随机、同输入同输出、可测试）：槽 0 = 最
+            // 前，落在环心正下方略偏右、角度回正（-2 度）、完整
+            // 显示且最大（256）；其余槽沿椭圆上半弧按序展开，
+            // 极角 theta 自 -spread-l 至 +spread-r 按槽序等分
+            // （左右不对称：3 张以内 76 / 62 度，张数更多时
+            // 118 / 104 度），半径带 slot 派生的确定性抖动
+            // （±9%），每槽尺寸也各不相同（243..258），重叠明
+            // 显深于第一版。旋转角随 theta 走（0.13 倍）再加
+            // slot 抖动，钳在 -12..+12 度。坐标最后钳进舞台：
+            // 行数变化只改 spread 与等分，整摞不溢出；无封面
+            // 占位块同样入环。
+            //
+            // ⚠ 倾斜的可见性边界（实测，2026-11-23）：Slint 的
+            // 软件渲染器不实现 rotate（i-slint-renderer-software
+            // 1.18 lib.rs 的 fn rotate 是空实现、注 TODO
+            // #6068），Transform 元素的 bounding_rect 也不含旋
+            // 转——所以无头截图与控件树包围盒里**看不到倾斜**，
+            // 只有位置与尺寸差异可见；生产端 GPU 渲染器
+            // （femtovg / skia）的 rotate 是真实现的，倾斜在真
+            // 机上生效。判据因此只钉位置 / 尺寸 / 步进，倾斜角
+            // 的正确性由公式与真机目视担保，⛔ 不许拿无头截图
+            // 声称「倾斜已验」。
+            //
+            // 切换 = 循环移位（转盘式）：点任意露出的封面不直
+            // 接换位，而是把目标记进 demo-stack-target，下方
+            // Timer 每 210ms 让顶层沿环次序前进一格，每格全部
+            // 封面同时 animate 到相邻槽位（x / y /
+            // transform-rotation 各 200ms），直到被点封面转到
+            // 最前。选中态在点击时即写 selected-entry（与架子
+            // 同一口径），信息块只跟顶层走、逐格换人；双击 =
+            // 打开，语义不变。切回架子再切回来，top / target
+            // 都留在根上，步进会自己走完，状态 sane。
+            //
+            // 注：Slint 的 Math.sin / Math.cos 入参是 angle 型
+            // （写 theta * 1deg；内建实现再转弧度求值，
+            // i-slint-compiler 1.18 generator/rust.rs 实证），
+            // 别传裸 float、也别按弧度传。
             if root.category == 2 && root.demo-view == 1 : demo-stack := Flickable {
                 x: 0;
                 y: 36px;
                 width: parent.width;
                 height: parent.height - 36px;
                 property <int> count: root.rows.length;
-                property <length> step-x: self.count > 1 ? min(26px, (self.width - 330px) / (self.count - 1)) : 0px;
-                property <length> step-y: self.count > 1 ? min(16px, 72px / (self.count - 1)) : 0px;
-                property <length> pile-x: (self.width - 248px - (self.count - 1) * self.step-x) / 2;
-                property <length> stage-h: 292px + (self.count - 1) * self.step-y;
-                property <int> top: root.demo-stack-top >= 0 ? root.demo-stack-top : self.count - 1;
+                property <length> cx: self.width / 2;
+                property <length> ring-rx: min(150px, max(0px, (self.width - 320px) / 2));
+                property <length> ring-ry: 56px;
+                property <length> ring-cy: 182px;
+                property <float> ring-spread-l: self.count <= 3 ? 76.0 : 118.0;
+                property <float> ring-spread-r: self.count <= 3 ? 62.0 : 104.0;
+                property <length> stage-h: 368px;
+                property <int> top: self.count == 0 ? -1 : (root.demo-stack-top >= 0 ? min(root.demo-stack-top, self.count - 1) : self.count - 1);
                 content-width: self.width;
                 content-height: max(self.height, self.stage-h + 104px + (root.demo-expanded-index == self.top ? root.demo-expanded-extra : 0px));
                 interactive: true;
 
+                // 转盘步进：目标行未到最前就每 210ms 前进一格，
+                // 到位即清目标停转。target 越界（行数变少）时
+                // running 恒假，不会空转。
+                Timer {
+                    interval: 210ms;
+                    running: root.demo-stack-target >= 0 && root.demo-stack-target < demo-stack.count && demo-stack.count > 1 && root.demo-stack-target != demo-stack.top;
+                    triggered => {
+                        root.demo-stack-top = Math.mod(demo-stack.top + 1, demo-stack.count);
+                        if (root.demo-stack-top == root.demo-stack-target) {
+                            root.demo-stack-target = -1;
+                        }
+                    }
+                }
+
                 for row[row-index] in root.rows : Rectangle {
-                    x: demo-stack.pile-x + row-index * demo-stack.step-x;
-                    y: 22px + row-index * demo-stack.step-y;
-                    width: 248px;
-                    height: 248px;
-                    z: row-index == demo-stack.top ? 100 : row-index;
-                    transform-rotation: (Math.mod(row-index * 5, 13) - 6) * 1deg;
+                    property <int> slot: demo-stack.count > 0 ? Math.mod(row-index - demo-stack.top + demo-stack.count, demo-stack.count) : 0;
+                    property <float> frac: demo-stack.count > 2 ? (self.slot - 1) * 1.0 / (demo-stack.count - 2) : 0.5;
+                    property <float> theta: self.slot == 0 ? 0.0 : -demo-stack.ring-spread-l + self.frac * (demo-stack.ring-spread-l + demo-stack.ring-spread-r);
+                    property <float> rf: 1.0 + (Math.mod(self.slot * 37, 5) - 2) * 0.045;
+                    property <length> size: self.slot == 0 ? 256px : 248px + (Math.mod(self.slot * 41, 5) - 2) * 5px;
+                    property <length> dx: self.slot == 0 ? 8px : demo-stack.ring-rx * self.rf * Math.sin(self.theta * 1deg);
+                    property <length> dy: self.slot == 0 ? 30px : -demo-stack.ring-ry * self.rf * Math.cos(self.theta * 1deg);
+                    property <float> rot-deg: self.slot == 0 ? -2.0 : max(-12.0, min(12.0, self.theta * 0.13 + (Math.mod(self.slot * 31, 7) - 3) * 1.2));
+                    x: max(8px, min(demo-stack.width - self.size - 8px, demo-stack.cx + self.dx - self.size / 2));
+                    y: max(6px, min(demo-stack.stage-h - self.size - 6px, demo-stack.ring-cy + self.dy - self.size / 2));
+                    width: self.size;
+                    height: self.size;
+                    z: self.slot == 0 ? 100 : 40 - self.slot;
+                    transform-rotation: self.rot-deg * 1deg;
+                    animate x { duration: 200ms; easing: ease-in-out; }
+                    animate y { duration: 200ms; easing: ease-in-out; }
+                    animate transform-rotation { duration: 200ms; easing: ease-in-out; }
                     accessible-role: list-item;
                     accessible-label: row.label;
                     accessible-id: "startup-row-" + row-index;
                     accessible-action-default => {
-                        root.demo-expanded-extra = 0px;
-                        root.demo-expanded-index = -1;
-                        root.demo-stack-top = row-index;
-                        root.selected-entry = row.entry-index;
+                        root.stack-bring-to-front(row-index, row.entry-index);
                     }
 
                     Rectangle {
@@ -1380,8 +1453,8 @@ export component StartupChooserDialog inherits Rectangle {
                         clip: true;
 
                         if row.has-cover : Image {
-                            width: 248px;
-                            height: 248px;
+                            width: parent.width;
+                            height: parent.height;
                             source: row.cover;
                             image-fit: cover;
                         }
@@ -1393,8 +1466,8 @@ export component StartupChooserDialog inherits Rectangle {
                             background: Tokens.bg-panel-alt;
 
                             Rectangle {
-                                x: 49px;
-                                y: 49px;
+                                x: (parent.width - 150px) / 2;
+                                y: (parent.height - 150px) / 2;
                                 width: 150px;
                                 height: 150px;
                                 border-radius: 75px;
@@ -1404,8 +1477,8 @@ export component StartupChooserDialog inherits Rectangle {
                             }
 
                             Rectangle {
-                                x: 107px;
-                                y: 107px;
+                                x: (parent.width - 34px) / 2;
+                                y: (parent.height - 34px) / 2;
                                 width: 34px;
                                 height: 34px;
                                 border-radius: 17px;
@@ -1421,10 +1494,7 @@ export component StartupChooserDialog inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         clicked => {
-                            root.demo-expanded-extra = 0px;
-                            root.demo-expanded-index = -1;
-                            root.demo-stack-top = row-index;
-                            root.selected-entry = row.entry-index;
+                            root.stack-bring-to-front(row-index, row.entry-index);
                         }
                         double-clicked => {
                             root.entry-activated(row.entry-index);
@@ -1440,7 +1510,7 @@ export component StartupChooserDialog inherits Rectangle {
                 // 声明 y 高 44px、压住顶层封面底边，故改直挂。）
                 for row[row-index] in root.rows : info := Rectangle {
                     property <bool> expanded: root.demo-expanded-index == row-index;
-                    x: demo-stack.pile-x;
+                    x: max(0px, demo-stack.cx - 136px);
                     y: demo-stack.stage-h + 8px;
                     width: 272px;
                     height: 88px + (self.expanded ? row.details-height : 0px);

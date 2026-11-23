@@ -24,10 +24,13 @@
 //!    **不进仓库**）；展开是手风琴：同一时刻只许一张卡展开，
 //!    展开区长在卡内、封面全程可见（无浮层）；
 //! 5. 演示分类另有可切换的**堆叠模式**（与唱片架并存，默认
-//!    唱片架）：封面错层倾斜成一摞，点露出的底层封面把它提到
-//!    顶层并同步选中态，选中信息块在堆叠区下方；堆叠态另落
-//!    `chooser-demos-stack-1x.png` 与 `chooser-demos-stack-3x.png`；
-//!    视图切换只影响演示分类；
+//!    唱片架）：第二版按 Wang 反馈改环轨散布——封面沿椭圆环
+//!    轨松散散开、角度各不相同、重叠深，最前一张在环心回正；
+//!    点任意露出的封面不直接换位，而是沿环次序**循环移位**
+//!    逐格步进，直到被点封面转到最前（选中态同步、信息块跟
+//!    最前走）；环位是序号的纯函数，切去切回逐值不变；堆叠
+//!    态另落 `chooser-demos-stack2-1x.png` 与
+//!    `chooser-demos-stack2-3x.png`；视图切换只影响演示分类；
 //! 6. 文件型 demo 打开 = 未命名副本：会话换成该工程、不记最近、
 //!    源文件字节不变。
 //!
@@ -524,9 +527,64 @@ fn demo_cover_live_window_screenshot() {
         write_png(&assets.join("chooser-demos-expand-card-3x.png"), &crop);
     }
 
-    // ---- 堆叠模式：切换 / 顶层信息块 / 点底层提顶 / 切回架子 --------
+    // ---- 堆叠模式（第二版）：环轨散布 / 确定性 / 循环移位步进 ----
     {
+        use yeban_ui_test_port::image::Rect;
         use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+
+        // 包围盒中心（旋转包围盒关于封面中心对称，中心即封面中心）。
+        let center = |b: Rect| (b.x + b.width as i32 / 2, b.y + b.height as i32 / 2);
+
+        // 等转盘步进走完：反复推进 Slint 的计时器与动画，直到
+        // 目标行的信息块出现（= 它已转到最前）；再多泵 450ms
+        // 让最后一格 200ms 的滑动动画落定，几何才稳。
+        fn wait_stack_top(live: &mut LivePort<yeban_app::ui::MainWindow>, info_id: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                slint::platform::update_timers_and_animations();
+                let found = {
+                    let tree = live.refresh_tree(None).expect("等步进时重抓控件树");
+                    tree.find_by_id(info_id).is_some()
+                };
+                if found {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "堆叠步进 10 秒内未把 {info_id} 转到最前（循环移位未走完）"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let settle_until = std::time::Instant::now() + std::time::Duration::from_millis(450);
+            while std::time::Instant::now() < settle_until {
+                slint::platform::update_timers_and_animations();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        // 点一张背面封面的露边：先现抓它的包围盒，它在最前封面
+        // 的哪一侧，就点哪一侧的中段露条。
+        let click_stack_card =
+            |live: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, front_cx: i32| {
+                let bounds = {
+                    let tree = live.refresh_tree(None).expect("点封面前重抓控件树");
+                    tree.find_by_id(id)
+                        .expect("封面必须在控件树里")
+                        .bounds
+                        .expect("封面必须有几何包围盒")
+                };
+                let (cx, _) = center(bounds);
+                let dx = if cx < front_cx {
+                    24.0
+                } else {
+                    bounds.width as f64 - 24.0
+                };
+                live.dispatch_pointer_down(id, dx, bounds.height as f64 / 2.0, PointerButton::Left)
+                    .expect("背面封面露边必须可按下");
+                live.dispatch_pointer_up(PointerButton::Left)
+                    .expect("释放必须送达");
+            };
+
         // 先收起架子模式里展开的第三张卡，进堆叠时信息块是收起态。
         live.refresh_tree(None).expect("收起前重抓控件树");
         live.dispatch_pointer_down("startup-row-details-2", 26.0, 12.0, PointerButton::Left)
@@ -553,89 +611,212 @@ fn demo_cover_live_window_screenshot() {
                 "演示分类必须有「堆叠」切换钮"
             );
         }
-        // 切到堆叠：默认顶层 = 最后一张（《雨声太吵》），只有它
-        // 的信息块出现；封面是 248 见方（可带旋转包围盒）。
-        // bounds 先拷成自有值，树借用出作用域后再抓帧。
+        // 切到堆叠：默认最前 = 最后一张（《雨声太吵》），只有它
+        // 的信息块出现。三张封面与信息块的包围盒一并拷出。
         live.dispatch_pointer_down("startup-demo-view-stack", 31.0, 10.0, PointerButton::Left)
             .expect("堆叠切换钮必须可按下");
         live.dispatch_pointer_up(PointerButton::Left)
             .expect("释放必须送达");
-        let (cover0_bounds, cover2_bounds, info2_bounds) = {
+        let (b0, b1, b2, info2_bounds) = {
             let tree = live.refresh_tree(None).expect("切堆叠后重抓控件树");
             let info2 = tree
                 .find_by_id("startup-stack-info-2")
-                .expect("堆叠模式默认顶层（第三张）必须有信息块 startup-stack-info-2");
+                .expect("堆叠模式默认最前（第三张）必须有信息块 startup-stack-info-2");
             assert!(
                 info2.label.contains("雨声太吵"),
-                "顶层信息块必须是《雨声太吵》，实际 {}",
+                "最前信息块必须是《雨声太吵》，实际 {}",
                 info2.label
             );
             assert!(
-                tree.find_by_id("startup-stack-info-0").is_none(),
-                "非顶层专辑不得出现信息块"
+                tree.find_by_id("startup-stack-info-0").is_none()
+                    && tree.find_by_id("startup-stack-info-1").is_none(),
+                "非最前专辑不得出现信息块"
             );
-            let cover2 = tree
-                .find_by_id("startup-row-2")
-                .expect("堆叠里必须有第三张封面 startup-row-2");
-            let cover2_bounds = cover2.bounds.expect("封面必须有几何包围盒");
-            assert!(
-                (248..300).contains(&cover2_bounds.height),
-                "堆叠封面应为 248 见方（旋转包围盒略大），实际 height={}",
-                cover2_bounds.height
-            );
-            let cover0 = tree
-                .find_by_id("startup-row-0")
-                .expect("堆叠里必须有第一张封面 startup-row-0");
+            let bounds_of = |id: &str| {
+                tree.find_by_id(id)
+                    .expect("堆叠里封面必须在控件树里")
+                    .bounds
+                    .expect("封面必须有几何包围盒")
+            };
             (
-                cover0.bounds.expect("封面必须有几何包围盒"),
-                cover2_bounds,
+                bounds_of("startup-row-0"),
+                bounds_of("startup-row-1"),
+                bounds_of("startup-row-2"),
                 info2.bounds.expect("信息块必须有几何包围盒"),
             )
         };
-        // 堆叠态截图：整页 1x + 堆叠区（全部封面 ∪ 顶层信息块）3x。
+        let (c0, c1, c2) = (center(b0), center(b1), center(b2));
+        eprintln!(
+            "stack2 环位包围盒：row0 x={} y={} {}x{}，row1 x={} y={} {}x{}，row2（最前） x={} y={} {}x{}",
+            b0.x,
+            b0.y,
+            b0.width,
+            b0.height,
+            b1.x,
+            b1.y,
+            b1.width,
+            b1.height,
+            b2.x,
+            b2.y,
+            b2.width,
+            b2.height
+        );
+        assert!(
+            (248..300).contains(&b2.height),
+            "最前封面边长应为 256（真机旋转包围盒略大），实际 height={}",
+            b2.height
+        );
+        // 不规整要落在尺寸上：三张封面边长互不相同、最前最大。
+        // （包围盒不含旋转——软件渲染器不实现 rotate，见 .slint
+        // 堆叠注释——尺寸差异是无头路径能钉的「不规整」证据。）
+        assert!(
+            b0.height != b1.height && b1.height != b2.height && b0.height != b2.height,
+            "三张封面边长必须互不相同（每槽尺寸各异），实际 {} / {} / {}",
+            b0.height,
+            b1.height,
+            b2.height
+        );
+        assert!(
+            b2.height > b0.height && b2.height > b1.height,
+            "最前封面必须最大，实际最前 {} 对背面 {} / {}",
+            b2.height,
+            b0.height,
+            b1.height
+        );
+        // 环形散布：两张背面封面分列最前封面的左上 / 右上环位，
+        // 不是第一版那种等距对角错层。
+        assert!(
+            c0.0 < c2.0 - 40 && c0.1 < c2.1 - 10,
+            "第一张应在最前封面的左上环位，实际中心 {c0:?} 对最前 {c2:?}"
+        );
+        assert!(
+            c1.0 > c2.0 + 40 && c1.1 < c2.1 - 10,
+            "第二张应在最前封面的右上环位，实际中心 {c1:?} 对最前 {c2:?}"
+        );
+        // 重叠要深：背面封面与最前封面横向交叠超过 60px。
+        assert!(
+            b0.x + b0.width as i32 > b2.x + 60 && b1.x < b2.x + b2.width as i32 - 60,
+            "背面封面必须与最前封面深度重叠：左 [{},{}] 右 [{},{}] 对最前 [{},{}]",
+            b0.x,
+            b0.x + b0.width as i32,
+            b1.x,
+            b1.x + b1.width as i32,
+            b2.x,
+            b2.x + b2.width as i32
+        );
+        // 信息块在最前封面下方、不压图。
+        assert!(
+            info2_bounds.y > b2.y + b2.height as i32 - 4,
+            "信息块必须在堆叠区下方，实际 y={}，最前封面底 {}",
+            info2_bounds.y,
+            b2.y + b2.height as i32
+        );
+        // 确定性：环位是纯序号函数——切去架子再切回堆叠，三张
+        // 封面包围盒逐值不变。
+        live.dispatch_pointer_down("startup-demo-view-shelf", 31.0, 10.0, PointerButton::Left)
+            .expect("唱片架切换钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        live.dispatch_pointer_down("startup-demo-view-stack", 31.0, 10.0, PointerButton::Left)
+            .expect("堆叠切换钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        {
+            let tree = live.refresh_tree(None).expect("切回堆叠后重抓控件树");
+            for (id, before) in [
+                ("startup-row-0", b0),
+                ("startup-row-1", b1),
+                ("startup-row-2", b2),
+            ] {
+                let now = tree
+                    .find_by_id(id)
+                    .expect("封面必须在控件树里")
+                    .bounds
+                    .expect("封面必须有几何包围盒");
+                assert_eq!(
+                    now, before,
+                    "{id} 切去切回后包围盒必须逐值不变（环位确定性）"
+                );
+            }
+        }
+        // 堆叠态截图：整页 1x + 堆叠区（全部封面 ∪ 最前信息块）3x。
         live.window().request_redraw();
         let stack_frame = live.window().capture().expect("堆叠态抓帧");
-        write_png(&assets.join("chooser-demos-stack-1x.png"), &stack_frame);
-        let union_x = cover0_bounds.x.min(cover2_bounds.x).min(info2_bounds.x);
-        let union_y = cover0_bounds.y.min(cover2_bounds.y).min(info2_bounds.y);
-        let union_r = (cover0_bounds.x + cover0_bounds.width as i32)
-            .max(cover2_bounds.x + cover2_bounds.width as i32)
+        write_png(&assets.join("chooser-demos-stack2-1x.png"), &stack_frame);
+        let union_x = b0.x.min(b1.x).min(b2.x).min(info2_bounds.x);
+        let union_y = b0.y.min(b1.y).min(b2.y).min(info2_bounds.y);
+        let union_r = (b0.x + b0.width as i32)
+            .max(b1.x + b1.width as i32)
+            .max(b2.x + b2.width as i32)
             .max(info2_bounds.x + info2_bounds.width as i32);
-        let union_b = (cover0_bounds.y + cover0_bounds.height as i32)
-            .max(cover2_bounds.y + cover2_bounds.height as i32)
+        let union_b = (b0.y + b0.height as i32)
+            .max(b1.y + b1.height as i32)
+            .max(b2.y + b2.height as i32)
             .max(info2_bounds.y + info2_bounds.height as i32);
         let crop = crop_scaled_3x(
             &stack_frame,
-            yeban_ui_test_port::image::Rect {
+            Rect {
                 x: union_x,
                 y: union_y,
                 width: (union_r - union_x) as u32,
                 height: (union_b - union_y) as u32,
             },
         );
-        write_png(&assets.join("chooser-demos-stack-3x.png"), &crop);
-        // 点第一张露出左缘的封面（落点在其左缘中段的露边条内，
-        // 上层封面从 x+26 起盖不到这里）：它必须被提到顶层、
-        // 信息块换成它、选中态同步到条目 0。
-        live.dispatch_pointer_down("startup-row-0", 16.0, 124.0, PointerButton::Left)
-            .expect("底层封面露边必须可按下");
-        live.dispatch_pointer_up(PointerButton::Left)
-            .expect("释放必须送达");
+        write_png(&assets.join("chooser-demos-stack2-3x.png"), &crop);
+        // 循环移位一：点第二张（右上环位）——沿环次序步进两格
+        // （最前 2 → 0 → 1），它转到最前并落在同一最前环位上，
+        // 信息块与选中态同步。
+        click_stack_card(&mut live, "startup-row-1", c2.0);
+        wait_stack_top(&mut live, "startup-stack-info-1");
         {
-            let tree = live.refresh_tree(None).expect("提顶后重抓控件树");
+            let tree = live.refresh_tree(None).expect("移位一后重抓控件树");
             assert!(
-                tree.find_by_id("startup-stack-info-0").is_some(),
-                "点底层封面后它的信息块必须出现（已被提到顶层）"
+                tree.find_by_id("startup-stack-info-0").is_none()
+                    && tree.find_by_id("startup-stack-info-2").is_none(),
+                "移位一后只许最前（第二张）有信息块"
             );
+            let nb1 = tree
+                .find_by_id("startup-row-1")
+                .expect("封面必须在控件树里")
+                .bounds
+                .expect("封面必须有几何包围盒");
+            let nc1 = center(nb1);
             assert!(
-                tree.find_by_id("startup-stack-info-2").is_none(),
-                "提顶后原顶层信息块必须消失（同一时刻只有顶层有信息块）"
+                (nc1.0 - c2.0).abs() <= 6 && (nc1.1 - c2.1).abs() <= 6,
+                "移位一后第二张必须落在原最前环位 {c2:?}，实际 {nc1:?}"
+            );
+        }
+        assert_eq!(
+            live.ui().get_startup_selected_entry(),
+            1,
+            "移位一必须同步选中态到第二张"
+        );
+        // 循环移位二：点第一张——再步进两格（最前 1 → 2 → 0），
+        // 第一张到最前、落同一环位。
+        click_stack_card(&mut live, "startup-row-0", c2.0);
+        wait_stack_top(&mut live, "startup-stack-info-0");
+        {
+            let tree = live.refresh_tree(None).expect("移位二后重抓控件树");
+            assert!(
+                tree.find_by_id("startup-stack-info-1").is_none()
+                    && tree.find_by_id("startup-stack-info-2").is_none(),
+                "移位二后只许最前（第一张）有信息块"
+            );
+            let nb0 = tree
+                .find_by_id("startup-row-0")
+                .expect("封面必须在控件树里")
+                .bounds
+                .expect("封面必须有几何包围盒");
+            let nc0 = center(nb0);
+            assert!(
+                (nc0.0 - c2.0).abs() <= 6 && (nc0.1 - c2.1).abs() <= 6,
+                "移位二后第一张必须落在原最前环位 {c2:?}，实际 {nc0:?}"
             );
         }
         assert_eq!(
             live.ui().get_startup_selected_entry(),
             0,
-            "提顶必须同步选中态到该条目"
+            "移位二必须同步选中态到第一张"
         );
         // 切回唱片架：卡片恢复 272×350 架子形态，堆叠信息块消失。
         live.dispatch_pointer_down("startup-demo-view-shelf", 31.0, 10.0, PointerButton::Left)
