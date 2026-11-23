@@ -1,0 +1,368 @@
+// 夜半 — OTCP 音高校正对话框（Hub #711）。
+//
+// 入口：菜单「编辑 → 音高校正 (OTCP)...」。语义复用 MCP 的
+// `yeban_correct_pitch` / `yeban_correct_pitch_job` / `yeban_correct_pitch_notes`
+// 三条工具：提交参数原样透传（⛔ 界面不造默认 scale ── MCP 缺 `scale` 时给
+// `invalid-parameter-range` 原文），任务号既能提交后自动取到，也能手动填。
+//
+// 音符表：没有任务号时按「选中片段」读 `yeban_correct_pitch_notes` 的 clip 臂；
+// 有任务号时读同一工具的 job 臂。状态行 / 交付行都只显示后端原文，⛔ 不包装错误。
+
+import { Tokens, UiText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
+
+component UiMonoRow inherits Text {
+    in property <string> line: "";
+    text: self.line;
+    font-family: Tokens.font-mono;
+    font-size: Tokens.font-size-xs;
+    color: Tokens.ink-0;
+    vertical-alignment: center;
+    height: 18px;
+}
+
+component SmallButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> accent: false;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    width: 76px;
+    height: 28px;
+    background: hit.has-hover ? (accent ? Tokens.accent : Tokens.bg-raised) : (accent ? Tokens.accent : Tokens.bg-control);
+    border-color: accent ? Tokens.accent : Tokens.line;
+    border-width: 1px;
+    border-radius: 4px;
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: Tokens.font-size-sm;
+        color: Tokens.ink-0;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text: "";
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    height: 28px;
+    background: Tokens.bg-control;
+    border-color: Tokens.line;
+    border-width: 1px;
+    border-radius: 4px;
+    ImeAwareTextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text <=> root.text;
+        font-size: Tokens.font-size-sm;
+        color: Tokens.ink-0;
+        vertical-alignment: center;
+        accessible-role: text-input;
+        accessible-id: root.a11y-id;
+        accessible-label: root.a11y-label;
+    }
+}
+
+export component OtcpDialog inherits Rectangle {
+    in-out property <string> clip-label: "";
+    in-out property <string> job-id: "";
+    in-out property <string> key-root: "0";
+    in-out property <string> scale: "";
+    in-out property <string> mode: "";
+    in-out property <string> tuning-hz: "";
+    in-out property <string> status: "";
+    in-out property <[string]> notes-rows: [];
+
+    callback close();
+    callback submit();
+    callback poll();
+    callback notes();
+    callback deliver();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+    accessible-role: region;
+    accessible-id: "otcp-dialog";
+    accessible-label: @tr("音高校正 (OTCP)");
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    otcp-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        panel := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: Math.max(24px, (root.height - self.height) / 2);
+            width: 680px;
+            height: 520px;
+            background: Tokens.bg-panel;
+            border-color: Tokens.line-strong;
+            border-width: 1px;
+            border-radius: 8px;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    height: 24px;
+                    UiTitleText {
+                        text: "音高校正 (OTCP)";
+                        font-size: Tokens.font-size-lg;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    close-hit := TouchArea {
+                        width: 24px;
+                        accessible-role: button;
+                        accessible-id: "otcp-close-button";
+                        accessible-label: @tr("关闭");
+                        clicked => { root.close(); }
+                        Text {
+                            text: "×";
+                            font-size: 15px;
+                            color: Tokens.ink-1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                UiText {
+                    text: "片段 " + root.clip-label;
+                    font-size: Tokens.font-size-sm;
+                    color: Tokens.ink-1;
+                    height: 18px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "任务号";
+                        width: 62px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        horizontal-stretch: 1;
+
+                        height: 28px;
+
+                        text <=> root.job-id;
+
+                        a11y-id: "otcp-job-id-input";
+
+                        a11y-label: @tr("OTCP 任务号");
+
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "keyRoot";
+                        width: 62px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        width: 90px;
+
+                        height: 28px;
+
+                        text <=> root.key-root;
+
+                        a11y-id: "otcp-key-root-input";
+
+                        a11y-label: @tr("OTCP keyRoot");
+
+                    }
+                    UiText {
+                        text: "scale";
+                        width: 42px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        horizontal-stretch: 1;
+
+                        height: 28px;
+
+                        text <=> root.scale;
+
+                        a11y-id: "otcp-scale-input";
+
+                        a11y-label: @tr("OTCP scale");
+
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "mode";
+                        width: 62px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        width: 130px;
+
+                        height: 28px;
+
+                        text <=> root.mode;
+
+                        a11y-id: "otcp-mode-input";
+
+                        a11y-label: @tr("OTCP mode");
+
+                    }
+                    UiText {
+                        text: "tuningHz";
+                        width: 60px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        width: 92px;
+
+                        height: 28px;
+
+                        text <=> root.tuning-hz;
+
+                        a11y-id: "otcp-tuning-hz-input";
+
+                        a11y-label: @tr("OTCP tuningHz");
+
+                    }
+                    UiText {
+                        text: "空 = snapNotes / 440";
+                        font-size: Tokens.font-size-xs;
+                        color: Tokens.ink-2;
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    SmallButton {
+                        text: "提交校正";
+                        accent: true;
+                        accessible-id: "otcp-submit-button";
+                        clicked => { root.submit(); }
+                    }
+                    SmallButton {
+                        text: "查状态";
+                        accessible-id: "otcp-poll-button";
+                        clicked => { root.poll(); }
+                    }
+                    SmallButton {
+                        text: "读音符表";
+                        accessible-id: "otcp-notes-button";
+                        clicked => { root.notes(); }
+                    }
+                    SmallButton {
+                        text: "取交付";
+                        accessible-id: "otcp-deliver-button";
+                        clicked => { root.deliver(); }
+                    }
+                }
+
+                Rectangle {
+                    height: 54px;
+                    background: Tokens.bg-panel-alt;
+                    border-color: Tokens.line;
+                    border-width: 1px;
+                    border-radius: 4px;
+                    UiText {
+                        x: 8px;
+                        y: 4px;
+                        width: parent.width - 16px;
+                        height: parent.height - 8px;
+                        text: root.status;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-0;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                        accessible-id: "otcp-status";
+                        accessible-label: @tr("OTCP 状态");
+                        accessible-value: root.status;
+                    }
+                }
+
+                UiText {
+                    text: "音符表（index · 片段区间 s · detected→target MIDI · offset cents · corrected）";
+                    font-size: Tokens.font-size-xs;
+                    color: Tokens.ink-1;
+                    height: 16px;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    accessible-role: region;
+                    accessible-id: "otcp-notes-table";
+                    accessible-label: @tr("OTCP 音符表");
+                    background: Tokens.bg-panel-alt;
+                    border-color: Tokens.line;
+                    border-width: 1px;
+                    border-radius: 4px;
+                    clip: true;
+
+                    Flickable {
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                        content-height: Math.max(parent.height, root.notes-rows.length * 19px + 8px);
+                        content-width: parent.width;
+                        interactive: true;
+
+                        VerticalLayout {
+                            x: 6px;
+                            y: 4px;
+                            width: parent.width - 12px;
+                            spacing: 1px;
+                            for row in root.notes-rows : UiMonoRow {
+                                line: row;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

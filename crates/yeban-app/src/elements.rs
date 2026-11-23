@@ -999,6 +999,36 @@ impl ElementRegistry {
             );
         }
 
+        // ---- Hub #711：Songmap Phase 2 A/B 快照（会话态，隐藏于折叠态）----
+        registry.add(
+            "song-overview-capture-a-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "存 A",
+            false,
+        );
+        registry.add(
+            "song-overview-capture-b-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "存 B",
+            false,
+        );
+        registry.add(
+            "song-overview-compare-button",
+            ElementKind::Button,
+            "workspace/song_overview_panel.slint",
+            "对比 A→B",
+            false,
+        );
+        registry.add(
+            "song-overview-ab-status",
+            ElementKind::Text,
+            "workspace/song_overview_panel.slint",
+            "Songmap A/B 对比摘要",
+            false,
+        );
+
         // ------------------------------------------------- 整曲多层总览图（Song Overview Phase 1）
         //
         // 面板本体 `ui/workspace/song_overview_panel.slint`（底部、状态栏之上、可折叠
@@ -1204,6 +1234,162 @@ impl ElementRegistry {
             "先不管",
             false,
         );
+        registry.add(
+            "export-wav-measurement",
+            ElementKind::Text,
+            "dialogs/export_wav_dialog.slint",
+            "导出实测：真峰值 / 积分响度 / LRA",
+            false,
+        );
+        // ---- Hub #711：OTCP 音高校正 / 自动相位对齐（隐藏模态，默认关闭）----
+        registry.add(
+            "otcp-dialog",
+            ElementKind::Region,
+            "dialogs/otcp_dialog.slint",
+            "音高校正 (OTCP)",
+            false,
+        );
+        registry.add(
+            "otcp-close-button",
+            ElementKind::Button,
+            "dialogs/otcp_dialog.slint",
+            "关闭",
+            false,
+        );
+        registry.add(
+            "otcp-job-id-input",
+            ElementKind::TextInput,
+            "dialogs/otcp_dialog.slint",
+            "OTCP 任务号",
+            false,
+        );
+        registry.add(
+            "otcp-key-root-input",
+            ElementKind::TextInput,
+            "dialogs/otcp_dialog.slint",
+            "OTCP keyRoot",
+            false,
+        );
+        registry.add(
+            "otcp-scale-input",
+            ElementKind::TextInput,
+            "dialogs/otcp_dialog.slint",
+            "OTCP scale",
+            false,
+        );
+        registry.add(
+            "otcp-mode-input",
+            ElementKind::TextInput,
+            "dialogs/otcp_dialog.slint",
+            "OTCP mode",
+            false,
+        );
+        registry.add(
+            "otcp-tuning-hz-input",
+            ElementKind::TextInput,
+            "dialogs/otcp_dialog.slint",
+            "OTCP tuningHz",
+            false,
+        );
+        registry.add(
+            "otcp-submit-button",
+            ElementKind::Button,
+            "dialogs/otcp_dialog.slint",
+            "提交校正",
+            false,
+        );
+        registry.add(
+            "otcp-poll-button",
+            ElementKind::Button,
+            "dialogs/otcp_dialog.slint",
+            "查状态",
+            false,
+        );
+        registry.add(
+            "otcp-notes-button",
+            ElementKind::Button,
+            "dialogs/otcp_dialog.slint",
+            "读音符表",
+            false,
+        );
+        registry.add(
+            "otcp-deliver-button",
+            ElementKind::Button,
+            "dialogs/otcp_dialog.slint",
+            "取交付",
+            false,
+        );
+        registry.add(
+            "otcp-status",
+            ElementKind::Text,
+            "dialogs/otcp_dialog.slint",
+            "OTCP 状态",
+            false,
+        );
+        registry.add(
+            "otcp-notes-table",
+            ElementKind::Region,
+            "dialogs/otcp_dialog.slint",
+            "OTCP 音符表",
+            false,
+        );
+        registry.add(
+            "phase-align-dialog",
+            ElementKind::Region,
+            "dialogs/phase_align_dialog.slint",
+            "自动相位对齐",
+            false,
+        );
+        registry.add(
+            "phase-align-close-button",
+            ElementKind::Button,
+            "dialogs/phase_align_dialog.slint",
+            "关闭",
+            false,
+        );
+        registry.add(
+            "phase-align-reference-input",
+            ElementKind::TextInput,
+            "dialogs/phase_align_dialog.slint",
+            "基准轨",
+            false,
+        );
+        registry.add(
+            "phase-align-target-input",
+            ElementKind::TextInput,
+            "dialogs/phase_align_dialog.slint",
+            "目标轨",
+            false,
+        );
+        registry.add(
+            "phase-align-max-lag-input",
+            ElementKind::TextInput,
+            "dialogs/phase_align_dialog.slint",
+            "maxLagMs",
+            false,
+        );
+        registry.add(
+            "phase-align-apply-checkbox",
+            ElementKind::Switch,
+            "dialogs/phase_align_dialog.slint",
+            "apply",
+            false,
+        );
+        registry.add(
+            "phase-align-run-button",
+            ElementKind::Button,
+            "dialogs/phase_align_dialog.slint",
+            "测量并应用",
+            false,
+        );
+        registry.add(
+            "phase-align-status",
+            ElementKind::Text,
+            "dialogs/phase_align_dialog.slint",
+            "相位对齐状态",
+            false,
+        );
+
         // ⚠ 行内 id 必须带**行/槽下标**（`missing-sounds-candidate-{row}-{slot}`）：
         // 早先这里写的是"行内重复 id 是本仓既有的列表口径"，实测代价是运行时控件树在
         // "两条轨（2 行 × 3 候选）"的状态下**直接构造失败**（`DuplicateId`），
@@ -3807,7 +3993,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 43] = [
+    const SLINT_MANIFEST: [&str; 45] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3876,6 +4062,9 @@ mod tests {
         // `elements::tests` 判据在尖端上正是这样红的（见 `slint_manifest_matches_adr_0001_d2`
         // 与 `slint_accessible_ids_and_registry_cover_each_other`）。
         "dialogs/preset_library.slint",
+        // Hub #711：OTCP 音高校正 / 自动相位对齐两框（隐藏模态，默认关闭 ⇒ 金帧不变）。
+        "dialogs/otcp_dialog.slint",
+        "dialogs/phase_align_dialog.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {

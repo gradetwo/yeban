@@ -296,6 +296,10 @@ pub struct WavExportReport {
     /// `0` = 满量程，正值 = 过载；`None` = 测不出（静音或采样率没有核验系数），
     /// ⛔ **不是** `0 dBFS`。
     pub true_peak_dbfs: Option<f32>,
+    /// ⭐ 积分响度（LUFS；与 MCP 同一个 `measure_master`；测不出 ⇒ `None`）。
+    pub integrated_lufs: Option<f32>,
+    /// ⭐ 响度范围（LU；短时响度的 10–95 分位差；测不出 ⇒ `None`）。
+    pub loudness_range_lu: Option<f32>,
     /// ⭐ 余量（dB）= `-true_peak_dbfs`（负值 = 已过载）；测不出 ⇒ `None`。
     pub headroom_db: Option<f32>,
     /// ⭐ 建议的**母带** trim（dB；负值 = 减，`0.0` = 不用减）。
@@ -660,7 +664,11 @@ fn sample_peak(samples: &[f32]) -> f32 {
 /// `channels == 1` ⇒ 同一路喂两个检测器（单声道的真峰值就是它自己）。
 /// `measure_master` 拒绝采样率 / 全零 ⇒ `None`（⛔ 不编造 `0 dBFS`）。
 #[must_use]
-fn measure_true_peak(samples: &[f32], channels: usize, sample_rate: u32) -> Option<f32> {
+fn measure_master_metrics(
+    samples: &[f32],
+    channels: usize,
+    sample_rate: u32,
+) -> (Option<f32>, Option<f32>, Option<f32>) {
     let channels = channels.max(1);
     let frames = samples.len() / channels;
     let mut left = Vec::with_capacity(frames);
@@ -674,11 +682,19 @@ fn measure_true_peak(samples: &[f32], channels: usize, sample_rate: u32) -> Opti
             samples[base]
         });
     }
-    let master = yeban_render::mastering::measure_master(sample_rate, &left, &right)?;
-    master
+    let Some(master) = yeban_render::mastering::measure_master(sample_rate, &left, &right) else {
+        return (None, None, None);
+    };
+    let true_peak = master
         .true_peak_dbtp
         .is_finite()
-        .then_some(master.true_peak_dbtp)
+        .then_some(master.true_peak_dbtp);
+    let integrated = master
+        .integrated_lufs
+        .is_finite()
+        .then_some(master.integrated_lufs);
+    let loudness_range = master.loudness_range_lu.filter(|value| value.is_finite());
+    (true_peak, integrated, loudness_range)
 }
 
 /// 导出失败的原因。
@@ -1157,11 +1173,9 @@ pub fn export_wav_with_sfz_file_and_assets_under(
     //    口径与 MCP 的 `data.clippedSamples` / `truePeakDbfs` / `headroomDb` 逐条相同
     //    （真峰值走**同一个** `measure_master`；`clipped_sample_count` 是同一判据）。
     let clipped_samples = clipped_sample_count(&samples);
-    let (true_peak_dbfs, headroom_db) =
-        match measure_true_peak(&samples, options.channels, options.sample_rate) {
-            Some(peak) => (Some(peak), Some(-peak)),
-            None => (None, None),
-        };
+    let (true_peak_dbfs, integrated_lufs, loudness_range_lu) =
+        measure_master_metrics(&samples, options.channels, options.sample_rate);
+    let headroom_db = true_peak_dbfs.map(|peak| -peak);
     // 建议值的输入：真峰值可测就用它；测不出就如实退到样本峰值（`basis` 逐字说明）。
     let trim_basis = if true_peak_dbfs.is_some() {
         "truePeakDbfs"
@@ -1216,6 +1230,8 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         sfz_decoded: rendered.sfz_decoded,
         clipped_samples,
         true_peak_dbfs,
+        integrated_lufs,
+        loudness_range_lu,
         headroom_db,
         suggested_trim_db: suggested_trim,
         trim_basis_dbfs,
