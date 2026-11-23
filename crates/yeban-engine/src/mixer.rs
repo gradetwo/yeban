@@ -103,7 +103,7 @@ pub use yeban_dsp::limiter::{
     LOOKAHEAD_SAMPLES, Limiter as BusLimiter,
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 /// 母线限制器给**引擎输出**引入的固定延迟（**帧**，与采样率无关）。
 ///
@@ -315,7 +315,44 @@ pub fn apply_stereo_width_position(left: &mut [f32], right: &mut [f32], width: f
 /// 实时路径；0.1 的 `f32` 近似与"先算 dB 再转线性"逐位相同（判据钉住）。
 pub const MONITOR_DIM_GAIN: f32 = 0.1;
 
-/// 控制室监听开关（DIM / MONO / SIDE）的**跨线程共享态**。
+/// 监听总线 A / B（T-FIX-191）。
+///
+/// UI 叫 MON A / MON B（`active-monitor` 是 `"main"` / `"alt"`）；引擎侧叫
+/// 总线 A / B：`A = main`（主监听），`B = alt`（备用监听）。两路各有独立的
+/// 增益 trim 与静音（见 [`MonitorControls`]）；`switch-monitor` 选中的那一路
+/// 喂给输出 —— 切换是**真路由**，不是界面状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MonitorBus {
+    /// 主监听（UI 的 MON A / `active-monitor` 的 `"main"`）。
+    A = 0,
+    /// 备用监听（UI 的 MON B / `active-monitor` 的 `"alt"`）。
+    B = 1,
+}
+
+impl MonitorBus {
+    /// UI 传来的名字（`"main"` / `"alt"`）→ 总线；其它名字返回 `None`
+    ///（调用方原样不动 —— 未知名字 ⛔ 不静默切总线）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "main" => Some(Self::A),
+            "alt" => Some(Self::B),
+            _ => None,
+        }
+    }
+
+    /// 总线 → UI 名字（状态行回显用）。
+    #[must_use]
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::A => "main",
+            Self::B => "alt",
+        }
+    }
+}
+
+/// 控制室监听开关（DIM / MONO / SIDE）与监听总线 A/B 的**跨线程共享态**。
 ///
 /// * **谁写**：控制线程（`yeban-app` 的控制室回调经 `EngineHost` 写）；
 /// * **谁读**：实时线程（`EngineRuntime::process_quantum` 每块读一次快照）；
@@ -328,11 +365,38 @@ pub const MONITOR_DIM_GAIN: f32 = 0.1;
 ///   （见 `EngineHost::monitor_controls`），⛔ 不静默归零。
 /// * **无状态**：三个开关都是逐样本的纯函数（见 [`apply_monitor`]），没有任何滤波器
 ///   状态 ⇒ 关掉的下一个量子输出与从未开过**逐位相同**。
-#[derive(Default)]
+/// * **监听总线（T-FIX-191）**：选中总线＋每路的增益 trim／静音也住在这里，
+///   同样是原子（增益以 `f32` 位型存进 `AtomicU32` —— `Relaxed` 下读到的
+///   永远是某一次完整写入的位型，⛔ 不会撕裂）；默认两路增益均为 1.0（unity）、
+///   均不静音、选中 A —— 未校准前切换是透明的（见判据 B6），可听差异来自
+///   各自独立的 trim／静音校准（判据 B1–B3 证明路由真实）。
 pub struct MonitorControls {
     dim: AtomicBool,
     mono: AtomicBool,
     side: AtomicBool,
+    bus: AtomicU8,
+    bus_a_gain: AtomicU32,
+    bus_b_gain: AtomicU32,
+    bus_a_mute: AtomicBool,
+    bus_b_mute: AtomicBool,
+}
+
+impl Default for MonitorControls {
+    /// 全关、总线 A、两路增益 unity、均不静音的初始态。
+    ///
+    /// 手写 `Default`（不用 derive）：增益的零值是 0.0（静音），⛔ 不是 unity。
+    fn default() -> Self {
+        Self {
+            dim: AtomicBool::new(false),
+            mono: AtomicBool::new(false),
+            side: AtomicBool::new(false),
+            bus: AtomicU8::new(MonitorBus::A as u8),
+            bus_a_gain: AtomicU32::new(1.0f32.to_bits()),
+            bus_b_gain: AtomicU32::new(1.0f32.to_bits()),
+            bus_a_mute: AtomicBool::new(false),
+            bus_b_mute: AtomicBool::new(false),
+        }
+    }
 }
 
 impl MonitorControls {
@@ -352,12 +416,84 @@ impl MonitorControls {
         )
     }
 
-    /// 把另一份的三个标志拷过来（宿主在 `reload` / `open_device` 换代时用）。
+    /// 一次读出**当前选中总线**的增益与静音（实时侧每块读一次，与 [`Self::snapshot`]
+    /// 同一次量子里先后读 —— 总线选择与 trim 之间无跨字段排序契约，读到旧值
+    /// 最多晚一个量子）。
+    #[must_use]
+    pub fn snapshot_bus(&self) -> (MonitorBus, f32, bool) {
+        let bus = self.bus();
+        (bus, self.bus_gain(bus), self.bus_mute(bus))
+    }
+
+    /// 把另一份的三个标志与总线状态拷过来（宿主在 `reload` / `open_device` 换代时用）。
     pub fn copy_from(&self, other: &Self) {
         let (dim, mono, side) = other.snapshot();
         self.set_dim(dim);
         self.set_mono(mono);
         self.set_side(side);
+        self.set_bus(other.bus());
+        self.set_bus_gain(MonitorBus::A, other.bus_gain(MonitorBus::A));
+        self.set_bus_gain(MonitorBus::B, other.bus_gain(MonitorBus::B));
+        self.set_bus_mute(MonitorBus::A, other.bus_mute(MonitorBus::A));
+        self.set_bus_mute(MonitorBus::B, other.bus_mute(MonitorBus::B));
+    }
+
+    /// 选中监听总线（MON A / MON B 回调的落点）。
+    pub fn set_bus(&self, bus: MonitorBus) {
+        self.bus.store(bus as u8, Ordering::Relaxed);
+    }
+
+    /// 当前选中的监听总线（控制面读口；非法位型兜底为 A —— 位型只由本模块写，
+    /// 正常情况下到不了这里）。
+    #[must_use]
+    pub fn bus(&self) -> MonitorBus {
+        match self.bus.load(Ordering::Relaxed) {
+            1 => MonitorBus::B,
+            _ => MonitorBus::A,
+        }
+    }
+
+    /// 某路总线的增益 trim（校准口；当前 UI 未暴露，由判据与后续校准面调用）。
+    ///
+    /// 非法值（非有限／负）钳到 0.0（静音、安全值）再存 —— 实时侧读到的永远
+    /// 是可用的增益。
+    pub fn set_bus_gain(&self, bus: MonitorBus, gain: f32) {
+        let gain = if gain.is_finite() && gain >= 0.0 {
+            gain
+        } else {
+            0.0
+        };
+        match bus {
+            MonitorBus::A => self.bus_a_gain.store(gain.to_bits(), Ordering::Relaxed),
+            MonitorBus::B => self.bus_b_gain.store(gain.to_bits(), Ordering::Relaxed),
+        }
+    }
+
+    /// 某路总线的增益 trim 当前值（控制面读口）。
+    #[must_use]
+    pub fn bus_gain(&self, bus: MonitorBus) -> f32 {
+        let bits = match bus {
+            MonitorBus::A => self.bus_a_gain.load(Ordering::Relaxed),
+            MonitorBus::B => self.bus_b_gain.load(Ordering::Relaxed),
+        };
+        f32::from_bits(bits)
+    }
+
+    /// 某路总线的静音（校准口）。
+    pub fn set_bus_mute(&self, bus: MonitorBus, mute: bool) {
+        match bus {
+            MonitorBus::A => self.bus_a_mute.store(mute, Ordering::Relaxed),
+            MonitorBus::B => self.bus_b_mute.store(mute, Ordering::Relaxed),
+        }
+    }
+
+    /// 某路总线的静音当前值（控制面读口）。
+    #[must_use]
+    pub fn bus_mute(&self, bus: MonitorBus) -> bool {
+        match bus {
+            MonitorBus::A => self.bus_a_mute.load(Ordering::Relaxed),
+            MonitorBus::B => self.bus_b_mute.load(Ordering::Relaxed),
+        }
     }
 
     /// DIM 开关（`true` = 输出 −20 dB）。
@@ -438,6 +574,39 @@ pub fn apply_monitor(left: &mut [f32], right: &mut [f32], dim: bool, mono: bool,
             *l *= MONITOR_DIM_GAIN;
             *r *= MONITOR_DIM_GAIN;
         }
+    }
+}
+
+/// 监听总线级（T-FIX-191）：把**当前选中总线**的增益 trim／静音作用到一对立体声缓冲上。
+///
+/// 落点与 [`apply_monitor`] 同一处（`process_quantum`，监听总线最末端），跑在
+/// DIM/MONO/SIDE **之前**：总线增益是该路监听的校准 trim、静音是该路的 mute；
+/// 下游的 DIM/MONO/SIDE 是监听段的全局处理，对选中的那一路生效。
+/// 顺序是**约定**（判据逐位钉住组合结果）：标量增益与 DIM/MONO/SIDE 在数学上
+/// 可交换（只差 1 ulp 以内的浮点舍入），故定死"总线级先定走哪路、该路多响，
+/// 监听开关再对选中的路做差分／下混／衰减" —— 路由在前、处理在后，读起来
+/// 就是信号链本身。
+///
+/// * `gain`：选中总线的 trim（默认 1.0；`== 1.0` 时整段跳过、一个样本都不碰）；
+/// * `mute`：选中总线静音 ⇒ 双声道写 0（⛔ 不是"跳过" —— 静音必须真的出 0）。
+///
+/// 实时约束与 [`apply_monitor`] 同条：逐样本只有乘法／写 0，**零分配、零锁、
+/// 零 I/O、零除法、零超越函数** [MUST-GATE-001]。两缓冲长度不同时只处理共同
+/// 前缀（`zip` 语义）。
+pub fn apply_monitor_bus(left: &mut [f32], right: &mut [f32], gain: f32, mute: bool) {
+    if mute {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = 0.0;
+            *r = 0.0;
+        }
+        return;
+    }
+    if gain == 1.0 {
+        return;
+    }
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        *l *= gain;
+        *r *= gain;
     }
 }
 
@@ -1194,5 +1363,91 @@ mod tests {
             (true, false, true),
             "拷贝后两份是独立原子 ⇒ 旧份再改不影响新份"
         );
+    }
+
+    /// T-FIX-191：总线选择与每路增益／静音的读写、名字映射与跨代拷贝。
+    #[test]
+    fn monitor_bus_state_names_and_copy_across_generations() {
+        // 默认：总线 A、两路增益 unity、均不静音。
+        let controls = MonitorControls::new();
+        assert_eq!(controls.bus(), MonitorBus::A, "默认须选中总线 A");
+        assert_eq!(
+            controls.bus_gain(MonitorBus::A),
+            1.0,
+            "A 路默认增益须为 1.0"
+        );
+        assert_eq!(
+            controls.bus_gain(MonitorBus::B),
+            1.0,
+            "B 路默认增益须为 1.0"
+        );
+        assert!(!controls.bus_mute(MonitorBus::A) && !controls.bus_mute(MonitorBus::B));
+        assert_eq!(controls.snapshot_bus(), (MonitorBus::A, 1.0, false));
+
+        // 名字映射：只有 "main"/"alt" 有效，其它名字不切总线。
+        assert_eq!(MonitorBus::from_name("main"), Some(MonitorBus::A));
+        assert_eq!(MonitorBus::from_name("alt"), Some(MonitorBus::B));
+        assert_eq!(MonitorBus::from_name("bogus"), None);
+        assert_eq!(MonitorBus::from_name(""), None);
+        assert_eq!(MonitorBus::A.as_name(), "main");
+        assert_eq!(MonitorBus::B.as_name(), "alt");
+
+        // 两路增益／静音独立：改 B 不动 A。
+        controls.set_bus(MonitorBus::B);
+        controls.set_bus_gain(MonitorBus::B, 0.5);
+        controls.set_bus_mute(MonitorBus::A, true);
+        assert_eq!(controls.bus(), MonitorBus::B);
+        assert_eq!(controls.bus_gain(MonitorBus::B), 0.5);
+        assert_eq!(
+            controls.bus_gain(MonitorBus::A),
+            1.0,
+            "改 B 路增益 ⛔ 不动 A 路"
+        );
+        assert!(controls.bus_mute(MonitorBus::A));
+        assert!(!controls.bus_mute(MonitorBus::B));
+        assert_eq!(controls.snapshot_bus(), (MonitorBus::B, 0.5, false));
+
+        // 非法增益钳到 0.0（静音、安全值）。
+        controls.set_bus_gain(MonitorBus::B, f32::NAN);
+        assert_eq!(controls.bus_gain(MonitorBus::B), 0.0);
+        controls.set_bus_gain(MonitorBus::B, -2.0);
+        assert_eq!(controls.bus_gain(MonitorBus::B), 0.0);
+        controls.set_bus_gain(MonitorBus::B, 0.5);
+
+        // 换代拷贝带走总线选择与两路增益／静音。
+        let next = MonitorControls::new();
+        next.copy_from(&controls);
+        assert_eq!(next.bus(), MonitorBus::B);
+        assert_eq!(next.bus_gain(MonitorBus::B), 0.5);
+        assert_eq!(next.bus_gain(MonitorBus::A), 1.0);
+        assert!(next.bus_mute(MonitorBus::A));
+        assert!(!next.bus_mute(MonitorBus::B));
+    }
+
+    /// T-FIX-191：`apply_monitor_bus` 的公式逐位校验（增益乘法、静音写 0、
+    /// unity 跳过）。
+    #[test]
+    fn monitor_bus_gain_mute_and_unity_skip_are_bit_exact() {
+        let orig_left = [0.4f32, -0.8, 0.0, 1.0];
+        let orig_right = [-0.2f32, 0.6, 0.0, -1.0];
+        let bits = |buf: &[f32]| buf.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+
+        // 增益 0.5 ⇒ 双声道逐位 == 原值 × 0.5。
+        let (mut left, mut right) = (orig_left, orig_right);
+        apply_monitor_bus(&mut left, &mut right, 0.5, false);
+        assert_eq!(bits(&left), bits(&[0.2f32, -0.4, 0.0, 0.5]));
+        assert_eq!(bits(&right), bits(&[-0.1f32, 0.3, 0.0, -0.5]));
+
+        // 静音 ⇒ 双声道全写 0（与增益无关）。
+        let (mut left, mut right) = (orig_left, orig_right);
+        apply_monitor_bus(&mut left, &mut right, 0.5, true);
+        assert_eq!(bits(&left), bits(&[0.0f32; 4]));
+        assert_eq!(bits(&right), bits(&[0.0f32; 4]));
+
+        // unity 且不静音 ⇒ 一个样本都不碰。
+        let (mut left, mut right) = (orig_left, orig_right);
+        apply_monitor_bus(&mut left, &mut right, 1.0, false);
+        assert_eq!(bits(&left), bits(&orig_left));
+        assert_eq!(bits(&right), bits(&orig_right));
     }
 }

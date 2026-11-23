@@ -119,7 +119,7 @@ use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareM
 use yeban_engine::insert::strip_source_index;
 use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::mixer::{MonitorControls, PanLaw, centered_pan_gains};
+use yeban_engine::mixer::{MonitorBus, MonitorControls, PanLaw, centered_pan_gains};
 use yeban_engine::param::{
     MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT,
     TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
@@ -2561,6 +2561,41 @@ impl EngineHost {
     /// SIDE 开关写进引擎（控制室回调的落点）。
     pub fn set_monitor_side(&self, side: bool) {
         self.monitor_controls.set_side(side);
+    }
+
+    /// 监听总线选择写进引擎（MON A/B 回调的落点；`&self` 即可 —— 原子，⛔ 不需要
+    /// 运行时在控制线程手里；设备腿上也生效）。
+    pub fn set_monitor_bus(&self, bus: MonitorBus) {
+        self.monitor_controls.set_bus(bus);
+    }
+
+    /// 当前选中的监听总线（控制面读口）。
+    #[must_use]
+    pub fn monitor_bus(&self) -> MonitorBus {
+        self.monitor_controls.bus()
+    }
+
+    /// 某路监听总线的增益 trim 写进引擎（校准口；当前 UI 未暴露，由判据与后续
+    /// 校准面调用；非法值由 `MonitorControls` 钳到安全值）。
+    pub fn set_monitor_bus_gain(&self, bus: MonitorBus, gain: f32) {
+        self.monitor_controls.set_bus_gain(bus, gain);
+    }
+
+    /// 某路监听总线的增益 trim 当前值（控制面读口）。
+    #[must_use]
+    pub fn monitor_bus_gain(&self, bus: MonitorBus) -> f32 {
+        self.monitor_controls.bus_gain(bus)
+    }
+
+    /// 某路监听总线的静音写进引擎（校准口；当前 UI 未暴露）。
+    pub fn set_monitor_bus_mute(&self, bus: MonitorBus, mute: bool) {
+        self.monitor_controls.set_bus_mute(bus, mute);
+    }
+
+    /// 某路监听总线的静音当前值（控制面读口）。
+    #[must_use]
+    pub fn monitor_bus_mute(&self, bus: MonitorBus) -> bool {
+        self.monitor_controls.bus_mute(bus)
     }
 
     /// 把宿主记住的监听开关拷进新运行时的那一份，并把宿主的句柄换成新运行时的

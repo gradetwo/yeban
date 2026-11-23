@@ -45,6 +45,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
+use yeban_engine::mixer::MonitorBus;
 use yeban_engine::transport::TransportReading;
 use yeban_model::{EntityId, YebanProjectV1};
 
@@ -25744,11 +25745,19 @@ pub fn wire_aether_actions(
     });
 
     // ⑮ monitor-switch: 从引擎读当前输出设备, 写 status-selection(真实设备读数, 非编造)。
+    // ⭐ T-FIX-191：MON A/B **真正切换监听总线**（生产路径）。`.slint` 的
+    // `mon_a_touch` / `mon_b_touch` 先把组件内的 `active-monitor` 置
+    // "main"/"alt" 再调本回调 ⇒ `mon` 就是用户选的那一路；这里先把它写进
+    // 引擎的监听总线选择（原子；设备腿上也生效），再读设备名写状态行。
+    // 未知名字 ⛔ 不切总线（只显示，不改路由）。
     ui.on_monitor_switch({
         let w = weak.clone();
         let engine = Rc::clone(&engine);
         move |mon| {
             if let Some(ui) = w.upgrade() {
+                if let Some(bus) = MonitorBus::from_name(mon.as_str()) {
+                    engine.borrow().set_monitor_bus(bus);
+                }
                 let device = engine
                     .borrow()
                     .device_name()

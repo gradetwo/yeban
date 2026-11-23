@@ -258,7 +258,7 @@ use crate::insert::{
 use crate::level::MAX_LINEAR_MAGNITUDE;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
-use crate::mixer::{BusLimiter, MonitorControls, PanLaw, apply_monitor};
+use crate::mixer::{BusLimiter, MonitorControls, PanLaw, apply_monitor, apply_monitor_bus};
 use crate::param::{
     ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT, TRACK_PAN_LEFT_SLOT,
     TRACK_PAN_RIGHT_SLOT,
@@ -5080,7 +5080,13 @@ impl EngineRuntime {
             // 导出文件逐位不受监听开关影响（判据：`tests/monitor_controls.rs` 的 M5）。
             // 三开关全关时 `apply_monitor` 一个样本都不碰 ⇒ 默认态输出逐位不变；
             // 开关是无状态的纯函数 ⇒ 关掉的下一个量子与从未开过逐位相同。
+            // ⭐ 监听总线 A/B（T-FIX-191）：总线级跑在 DIM/MONO/SIDE **之前**
+            // （路由在前、处理在后；见 `mixer::apply_monitor_bus` 的顺序约定）。
+            // 总线选择与 trim／静音与三开关住在同一份 `MonitorControls` 里，
+            // 同一个 `monitor_bypass` 一并旁通（判据：`tests/monitor_bus.rs` 的 B5）。
             if !self.monitor_bypass {
+                let (_bus, bus_gain, bus_mute) = self.monitor.snapshot_bus();
+                apply_monitor_bus(&mut left[..n], &mut right[..n], bus_gain, bus_mute);
                 let (dim, mono, side) = self.monitor.snapshot();
                 apply_monitor(&mut left[..n], &mut right[..n], dim, mono, side);
             }
