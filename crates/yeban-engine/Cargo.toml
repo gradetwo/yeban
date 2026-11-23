@@ -33,6 +33,13 @@ device = ["dep:cpal"]
 cpal = { workspace = true, optional = true }
 rtrb.workspace = true
 thiserror.workspace = true
+# [ROAD-M2-001] 实时线程优先级（src/rt_priority.rs）的平台 syscall 面：Linux
+# sched_setscheduler / macOS mach thread_policy（Mach extern 只在 apple cfg 内自声明）。
+# `libc` 依赖由管理侧 T-FIX-93 任务单明文裁决准许（2026-11-24，DAW 惯例），
+# 同时解锁 docs/ledger/engine-rt-notes.md §5.2 needs N3。
+# 版本对齐 Cargo.lock 在树的 0.2.190；根 [workspace.dependencies] 无 libc 登记，
+# 故本 crate 显式写版本（与「不自带版本号」惯例的偏离在此声明理由）。
+libc = "0.2.190"
 # 电平口径（峰值/峰值保持/RMS/平滑 RMS/dBFS/钳位/取最新 + 4× 真峰值）的**唯一实现**。
 # 它从本 crate 的 `src/level.rs` 上移到 `yeban-dsp`（纯数学、零重依赖），engine 只做
 # `pub use` 再导出，绝不保留第二份实现 [ARCH-UI-002, ROAD-M2-008]。依赖形态写

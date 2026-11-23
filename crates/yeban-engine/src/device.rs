@@ -28,11 +28,15 @@
 //!
 //! ## 与规范的两处**明确缺口**（见 `docs/ledger/engine-rt-notes.md` §4）
 //!
-//! - **[ROAD-M2-001] 实时线程优先级未实现**：cpal 0.18 的 `realtime` feature 只覆盖
+//! - **[ROAD-M2-001] 实时线程优先级已实现**（2026-11-24，T-FIX-93 第 1 项）：
+//!   [`crate::rt_priority`] —— Linux `sched_setscheduler` / macOS
+//!   `thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY)`，结构化响亮失败；
+//!   `libc` 依赖经管理侧 T-FIX-93 裁决准许（解锁 `engine-rt-notes.md` §5.2 N3）。
+//!   cpal 0.18 的 `realtime` feature 只覆盖
 //!   WASAPI / AAudio / PipeWire / JACK（`src/host/{wasapi,aaudio,pipewire,jack}/`），
-//!   macOS CoreAudio 与 Linux-ALSA 路径没有任何开关（CoreAudio 由内核自行提升 RT 约束）。
-//!   自行实现需要 `pthread_setschedparam`（也就是新的 `libc` 依赖）——
-//!   那属于**依赖图裁决**，不由本工作线单独决定。
+//!   macOS CoreAudio 与 Linux-ALSA 路径由本模块接管。
+//!   **线程覆盖边界**：cpal 自有回调线程无注入钩子，由宿主在自有线程上显式调用，
+//!   详见 [`crate::rt_priority`] 模块文档。
 //! - **独占模式**：cpal 0.18 没有 WASAPI Exclusive 的 API（规范 §3.1 提到要用
 //!   `wasapi` crate 实现）。[`ShareMode::PreferExclusive`] 会降级为共享并如实记录，
 //!   [`ShareMode::RequireExclusive`] 返回 [`DeviceError::ExclusiveModeUnsupported`] ——

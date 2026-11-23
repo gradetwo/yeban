@@ -121,10 +121,12 @@
 //!    （[`transport::TransportState::Recording`] 已预留但没有入口）、
 //!    循环播放、BPM 自动化、时间码显示（UI 侧只做了"从引擎读数格式化"）。
 //!    边界见 `docs/ledger/transport-engine-notes.md`。
-//! 2. **实时线程优先级**（[ROAD-M2-001]）未实现，理由见 `device` 模块文档与
-//!    `docs/ledger/engine-rt-notes.md` §4：cpal 0.18 的 `realtime` feature 只覆盖
-//!    WASAPI / AAudio / PipeWire / JACK，macOS 与 Linux-ALSA 路径没有开关，
-//!    自行写 `pthread_setschedparam` 需要新的 `libc` 依赖（属于依赖图裁决）。
+//! 2. **实时线程优先级**（[ROAD-M2-001]）**已实现**（2026-11-24，T-FIX-93 第 1 项）：
+//!    [`rt_priority`] 模块 —— Linux `sched_setscheduler` / macOS
+//!    `thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY)`，结构化响亮失败，
+//!    `libc` 依赖经管理侧 T-FIX-93 裁决准许（解锁 `engine-rt-notes.md` §5.2 N3）。
+//!    **线程覆盖边界不变**：cpal 0.18 自有回调线程无注入钩子，由宿主在自有线程上显式调用；
+//!    Windows 走 cpal `realtime` feature（WASAPI）。
 //! 3. **独占模式**（WASAPI Exclusive）cpal 0.18 无 API；`ShareMode::RequireExclusive`
 //!    会返回明确错误而不是假装成功。
 //! 4. **采样格式**只支持 `f32`（协商失败会返回 `device::DeviceError`），
@@ -166,6 +168,7 @@ pub mod resample;
 pub mod ring;
 pub mod routing;
 pub mod rt;
+pub mod rt_priority;
 pub mod rt_probe;
 pub mod sfz_instrument;
 pub mod snapshot;

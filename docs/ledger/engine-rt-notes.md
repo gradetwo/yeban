@@ -300,7 +300,7 @@ impl CompensationBank {
 | :--- | :--- | :--- |
 | N1 | 根内部 path 依赖的通配豁免 | ✅ **已解决**（ADR-0001 D21 `allow-wildcard-paths = true`）；本线已还原为 `workspace = true` |
 | N2 | `ARCH-PDC-001` 的 `DeviceDefinition::latency_samples` | ✅ **已解决**（main `8f40290`）；本线改为从模型读取 |
-| N3 | [ROAD-M2-001] RT 优先级方案（`realtime` feature？新 `libc`？平台分支？） | **待裁决**（依赖图 + 平台 `unsafe` 审计） |
+| N3 | [ROAD-M2-001] RT 优先级方案（`realtime` feature？新 `libc`？平台分支？） | ✅ **已解决**（2026-11-24，T-FIX-93 第 1 项：管理侧任务单明文准许 `libc` 依赖；实现落在 `src/rt_priority.rs`——Linux `sched_setscheduler` / macOS `thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY)` + 自声明 Mach extern（模块文档含审计注记），结构化响亮失败；判据 `tests/rt_priority.rs` 4 条，非特权环境 EPERM 分支实测通过，macOS 腿编译覆盖靠 CI） |
 | N4 | 是否引入 `loom`/`miri` 流程来机械化验证无锁回收 | **待裁决**（新依赖 = 根清单改动） |
 | N5 | 独占模式是否引 `wasapi` crate（规范 §3.1 提到） | **待裁决** |
 
