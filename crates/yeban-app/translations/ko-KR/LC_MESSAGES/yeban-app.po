@@ -2370,3 +2370,131 @@ msgstr "  ·  공장"
 
 msgid "  ·  用户"
 msgstr "  ·  사용자"
+
+# --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
+
+msgid "+ 插件与 ARA…"
+msgstr "+ 플러그인 & ARA…"
+
+msgid "ARA 会话静音开关"
+msgstr "ARA 세션 음소거 스위치"
+
+msgid "ARA 循环次数"
+msgstr "ARA 반복 횟수"
+
+msgid "ARA 插件路径"
+msgstr "ARA 플러그인 경로"
+
+msgid "ARA 渲染块大小"
+msgstr "ARA 렌더 블록 크기"
+
+msgid "ARA 渲染输出路径"
+msgstr "ARA 렌더 출력 경로"
+
+msgid "ARA 渲染进度 {}%"
+msgstr "ARA 렌더 진행률 {}%"
+
+msgid "ARA 绑定 / 查询 / 渲染"
+msgstr "ARA 바인딩 / 조회 / 렌더"
+
+msgid "ARA 输入 wav 路径"
+msgstr "ARA 입력 wav 경로"
+
+msgid "ARA 速度 BPM"
+msgstr "ARA 템포 BPM"
+
+msgid "VST3 插件"
+msgstr "VST3 플러그인"
+
+msgid "wav 路径"
+msgstr "wav 경로"
+
+msgid "不静音"
+msgstr "음소거 해제"
+
+msgid "关闭插件与 ARA 面板"
+msgstr "플러그인 & ARA 패널 닫기"
+
+msgid "块大小"
+msgstr "블록 크기"
+
+msgid "尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。"
+msgstr "아직 스캔하지 않았습니다. 「스캔」을 눌러 로컬 VST3 플러그인을 읽으세요. 불량 플러그인은 빨간 실패 행으로 목록에 남습니다."
+
+msgid "循环"
+msgstr "반복"
+
+msgid "打开插件与 ARA 面板"
+msgstr "플러그인 & ARA 패널 열기"
+
+msgid "扫描"
+msgstr "스캔"
+
+msgid "扫描 VST3 插件"
+msgstr "VST3 플러그인 스캔"
+
+msgid "插件"
+msgstr "플러그인"
+
+msgid "插件与 ARA"
+msgstr "플러그인 & ARA"
+
+msgid "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"
+msgstr "플러그인 & ARA: 스캔 / 로드 / 바인딩 / 조회 / 렌더"
+
+msgid "插件路径"
+msgstr "플러그인 경로"
+
+msgid "未选中插件"
+msgstr "선택된 플러그인 없음"
+
+msgid "查询"
+msgstr "조회"
+
+msgid "查询结果显示在这里。"
+msgstr "조회 결과가 여기에 표시됩니다."
+
+msgid "查询选中 ARA 会话"
+msgstr "선택한 ARA 세션 조회"
+
+msgid "渲染"
+msgstr "렌더"
+
+msgid "渲染选中 ARA 会话为 WAV"
+msgstr "선택한 ARA 세션을 WAV로 렌더"
+
+msgid "目标轨：{}"
+msgstr "대상 트랙: {}"
+
+msgid "绑定"
+msgstr "바인딩"
+
+msgid "绑定 ARA 会话"
+msgstr "ARA 세션 바인딩"
+
+msgid "装载到当前轨"
+msgstr "현재 트랙에 로드"
+
+msgid "装载选中的插件到当前轨"
+msgstr "선택한 플러그인을 현재 트랙에 로드"
+
+msgid "设备机架内"
+msgstr "장치 랙 내"
+
+msgid "输出 wav"
+msgstr "출력 wav"
+
+msgid "还没有 ARA 会话。下面填插件与 wav，点「绑定」。"
+msgstr "아직 ARA 세션이 없습니다. 아래에 플러그인과 wav를 입력하고 「바인딩」을 누르세요."
+
+msgid "静音"
+msgstr "음소거"
+
+msgid "额外扫描目录（多个用分号分隔）"
+msgstr "추가 스캔 디렉터리(여러 개는 세미콜론으로 구분)"
+
+msgid "可用"
+msgstr "사용 가능"
+
+msgid "失败"
+msgstr "실패"

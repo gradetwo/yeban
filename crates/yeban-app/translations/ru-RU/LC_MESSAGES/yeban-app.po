@@ -2370,3 +2370,131 @@ msgstr "  ·  Заводской"
 
 msgid "  ·  用户"
 msgstr "  ·  Пользовательский"
+
+# --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
+
+msgid "+ 插件与 ARA…"
+msgstr "+ Плагин и ARA…"
+
+msgid "ARA 会话静音开关"
+msgstr "Переключатель mute сессии ARA"
+
+msgid "ARA 循环次数"
+msgstr "Количество циклов ARA"
+
+msgid "ARA 插件路径"
+msgstr "Путь к плагину ARA"
+
+msgid "ARA 渲染块大小"
+msgstr "Размер блока рендера ARA"
+
+msgid "ARA 渲染输出路径"
+msgstr "Путь вывода рендера ARA"
+
+msgid "ARA 渲染进度 {}%"
+msgstr "Прогресс рендера ARA {}%"
+
+msgid "ARA 绑定 / 查询 / 渲染"
+msgstr "ARA: привязка / запрос / рендер"
+
+msgid "ARA 输入 wav 路径"
+msgstr "Путь к входному wav ARA"
+
+msgid "ARA 速度 BPM"
+msgstr "Темп BPM ARA"
+
+msgid "VST3 插件"
+msgstr "Плагины VST3"
+
+msgid "wav 路径"
+msgstr "Путь к wav"
+
+msgid "不静音"
+msgstr "Без mute"
+
+msgid "关闭插件与 ARA 面板"
+msgstr "Закрыть панель плагинов и ARA"
+
+msgid "块大小"
+msgstr "Размер блока"
+
+msgid "尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。"
+msgstr "Сканирование ещё не выполнено. Нажмите «Сканировать», чтобы прочитать локальные плагины VST3; неисправные плагины останутся в списке красными строками ошибок."
+
+msgid "循环"
+msgstr "Цикл"
+
+msgid "打开插件与 ARA 面板"
+msgstr "Открыть панель плагинов и ARA"
+
+msgid "扫描"
+msgstr "Сканировать"
+
+msgid "扫描 VST3 插件"
+msgstr "Сканировать плагины VST3"
+
+msgid "插件"
+msgstr "Плагин"
+
+msgid "插件与 ARA"
+msgstr "Плагин и ARA"
+
+msgid "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"
+msgstr "Плагин и ARA: сканирование / загрузка / привязка / запрос / рендер"
+
+msgid "插件路径"
+msgstr "Путь к плагину"
+
+msgid "未选中插件"
+msgstr "Плагин не выбран"
+
+msgid "查询"
+msgstr "Запрос"
+
+msgid "查询结果显示在这里。"
+msgstr "Результаты запроса появятся здесь."
+
+msgid "查询选中 ARA 会话"
+msgstr "Запросить выбранную сессию ARA"
+
+msgid "渲染"
+msgstr "Рендер"
+
+msgid "渲染选中 ARA 会话为 WAV"
+msgstr "Рендерить выбранную сессию ARA в WAV"
+
+msgid "目标轨：{}"
+msgstr "Целевая дорожка: {}"
+
+msgid "绑定"
+msgstr "Привязать"
+
+msgid "绑定 ARA 会话"
+msgstr "Привязать сессию ARA"
+
+msgid "装载到当前轨"
+msgstr "Загрузить в текущую дорожку"
+
+msgid "装载选中的插件到当前轨"
+msgstr "Загрузить выбранный плагин в текущую дорожку"
+
+msgid "设备机架内"
+msgstr "В стойке устройств"
+
+msgid "输出 wav"
+msgstr "Выходной wav"
+
+msgid "还没有 ARA 会话。下面填插件与 wav，点「绑定」。"
+msgstr "Сессий ARA пока нет. Введите плагин и wav ниже и нажмите «Привязать»."
+
+msgid "静音"
+msgstr "Mute"
+
+msgid "额外扫描目录（多个用分号分隔）"
+msgstr "Дополнительные каталоги сканирования (несколько — через точку с запятой)"
+
+msgid "可用"
+msgstr "Доступно"
+
+msgid "失败"
+msgstr "Сбой"

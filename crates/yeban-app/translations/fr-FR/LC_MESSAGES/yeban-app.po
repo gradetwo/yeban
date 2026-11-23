@@ -2370,3 +2370,131 @@ msgstr "  ·  Usine"
 
 msgid "  ·  用户"
 msgstr "  ·  Utilisateur"
+
+# --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
+
+msgid "+ 插件与 ARA…"
+msgstr "+ Plug-in et ARA…"
+
+msgid "ARA 会话静音开关"
+msgstr "Interrupteur de sourdine de la session ARA"
+
+msgid "ARA 循环次数"
+msgstr "Nombre de boucles ARA"
+
+msgid "ARA 插件路径"
+msgstr "Chemin du plug-in ARA"
+
+msgid "ARA 渲染块大小"
+msgstr "Taille de bloc de rendu ARA"
+
+msgid "ARA 渲染输出路径"
+msgstr "Chemin de sortie du rendu ARA"
+
+msgid "ARA 渲染进度 {}%"
+msgstr "Progression du rendu ARA {} %"
+
+msgid "ARA 绑定 / 查询 / 渲染"
+msgstr "ARA : lier / interroger / rendre"
+
+msgid "ARA 输入 wav 路径"
+msgstr "Chemin du wav d'entrée ARA"
+
+msgid "ARA 速度 BPM"
+msgstr "Tempo BPM ARA"
+
+msgid "VST3 插件"
+msgstr "Plug-ins VST3"
+
+msgid "wav 路径"
+msgstr "Chemin du wav"
+
+msgid "不静音"
+msgstr "Sans sourdine"
+
+msgid "关闭插件与 ARA 面板"
+msgstr "Fermer le panneau Plug-in et ARA"
+
+msgid "块大小"
+msgstr "Taille de bloc"
+
+msgid "尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。"
+msgstr "Pas encore analysé. Cliquez sur « Analyser » pour lire les plug-ins VST3 locaux ; les plug-ins défectueux restent dans la liste sous forme de lignes rouges en échec."
+
+msgid "循环"
+msgstr "Boucle"
+
+msgid "打开插件与 ARA 面板"
+msgstr "Ouvrir le panneau Plug-in et ARA"
+
+msgid "扫描"
+msgstr "Analyser"
+
+msgid "扫描 VST3 插件"
+msgstr "Analyser les plug-ins VST3"
+
+msgid "插件"
+msgstr "Plug-in"
+
+msgid "插件与 ARA"
+msgstr "Plug-in et ARA"
+
+msgid "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"
+msgstr "Plug-in et ARA : analyser / charger / lier / interroger / rendre"
+
+msgid "插件路径"
+msgstr "Chemin du plug-in"
+
+msgid "未选中插件"
+msgstr "Aucun plug-in sélectionné"
+
+msgid "查询"
+msgstr "Interroger"
+
+msgid "查询结果显示在这里。"
+msgstr "Les résultats de la requête s'affichent ici."
+
+msgid "查询选中 ARA 会话"
+msgstr "Interroger la session ARA sélectionnée"
+
+msgid "渲染"
+msgstr "Rendre"
+
+msgid "渲染选中 ARA 会话为 WAV"
+msgstr "Rendre la session ARA sélectionnée en WAV"
+
+msgid "目标轨：{}"
+msgstr "Piste cible : {}"
+
+msgid "绑定"
+msgstr "Lier"
+
+msgid "绑定 ARA 会话"
+msgstr "Lier la session ARA"
+
+msgid "装载到当前轨"
+msgstr "Charger dans la piste actuelle"
+
+msgid "装载选中的插件到当前轨"
+msgstr "Charger le plug-in sélectionné dans la piste actuelle"
+
+msgid "设备机架内"
+msgstr "Dans le rack d'appareils"
+
+msgid "输出 wav"
+msgstr "Wav de sortie"
+
+msgid "还没有 ARA 会话。下面填插件与 wav，点「绑定」。"
+msgstr "Aucune session ARA pour l'instant. Saisissez un plug-in et un wav ci-dessous, puis cliquez sur « Lier »."
+
+msgid "静音"
+msgstr "Sourdine"
+
+msgid "额外扫描目录（多个用分号分隔）"
+msgstr "Répertoires d'analyse supplémentaires (séparez-en plusieurs par des points-virgules)"
+
+msgid "可用"
+msgstr "Disponible"
+
+msgid "失败"
+msgstr "Échec"

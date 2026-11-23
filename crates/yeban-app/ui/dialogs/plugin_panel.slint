@@ -324,7 +324,7 @@ export component PluginPanelDialog inherits Rectangle {
                                         }
                                         UiText {
                                             width: 42px;
-                                            text: row.usable ? "可用" : "失败";
+                                            text: row.usable ? @tr("可用") : @tr("失败");
                                             color: row.usable ? Tokens.gold : Tokens.skin-arm;
                                             font-size: 9px;
                                             font-weight: 700;

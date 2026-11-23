@@ -2370,3 +2370,131 @@ msgstr "  ·  Werks-Preset"
 
 msgid "  ·  用户"
 msgstr "  ·  Benutzer"
+
+# --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
+
+msgid "+ 插件与 ARA…"
+msgstr "+ Plug-in & ARA…"
+
+msgid "ARA 会话静音开关"
+msgstr "ARA-Session-Stummschalter"
+
+msgid "ARA 循环次数"
+msgstr "ARA-Schleifenanzahl"
+
+msgid "ARA 插件路径"
+msgstr "ARA-Plug-in-Pfad"
+
+msgid "ARA 渲染块大小"
+msgstr "ARA-Render-Blockgröße"
+
+msgid "ARA 渲染输出路径"
+msgstr "ARA-Render-Ausgabepfad"
+
+msgid "ARA 渲染进度 {}%"
+msgstr "ARA-Render-Fortschritt {}%"
+
+msgid "ARA 绑定 / 查询 / 渲染"
+msgstr "ARA Binden / Abfragen / Rendern"
+
+msgid "ARA 输入 wav 路径"
+msgstr "ARA-Eingabe-WAV-Pfad"
+
+msgid "ARA 速度 BPM"
+msgstr "ARA-Tempo BPM"
+
+msgid "VST3 插件"
+msgstr "VST3-Plug-ins"
+
+msgid "wav 路径"
+msgstr "WAV-Pfad"
+
+msgid "不静音"
+msgstr "Stummschaltung aufheben"
+
+msgid "关闭插件与 ARA 面板"
+msgstr "Plug-in- & ARA-Panel schließen"
+
+msgid "块大小"
+msgstr "Blockgröße"
+
+msgid "尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。"
+msgstr "Noch nicht gescannt. Klicken Sie auf „Scannen“, um lokale VST3-Plug-ins einzulesen; fehlerhafte Plug-ins bleiben als rote Fehlerzeilen in der Liste."
+
+msgid "循环"
+msgstr "Schleife"
+
+msgid "打开插件与 ARA 面板"
+msgstr "Plug-in- & ARA-Panel öffnen"
+
+msgid "扫描"
+msgstr "Scannen"
+
+msgid "扫描 VST3 插件"
+msgstr "VST3-Plug-ins scannen"
+
+msgid "插件"
+msgstr "Plug-in"
+
+msgid "插件与 ARA"
+msgstr "Plug-in & ARA"
+
+msgid "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"
+msgstr "Plug-in & ARA: Scannen / Laden / Binden / Abfragen / Rendern"
+
+msgid "插件路径"
+msgstr "Plug-in-Pfad"
+
+msgid "未选中插件"
+msgstr "Kein Plug-in ausgewählt"
+
+msgid "查询"
+msgstr "Abfragen"
+
+msgid "查询结果显示在这里。"
+msgstr "Abfrageergebnisse erscheinen hier."
+
+msgid "查询选中 ARA 会话"
+msgstr "Ausgewählte ARA-Session abfragen"
+
+msgid "渲染"
+msgstr "Rendern"
+
+msgid "渲染选中 ARA 会话为 WAV"
+msgstr "Ausgewählte ARA-Session als WAV rendern"
+
+msgid "目标轨：{}"
+msgstr "Zielspur: {}"
+
+msgid "绑定"
+msgstr "Binden"
+
+msgid "绑定 ARA 会话"
+msgstr "ARA-Session binden"
+
+msgid "装载到当前轨"
+msgstr "In aktuelle Spur laden"
+
+msgid "装载选中的插件到当前轨"
+msgstr "Ausgewähltes Plug-in in aktuelle Spur laden"
+
+msgid "设备机架内"
+msgstr "Im Geräterack"
+
+msgid "输出 wav"
+msgstr "Ausgabe-WAV"
+
+msgid "还没有 ARA 会话。下面填插件与 wav，点「绑定」。"
+msgstr "Noch keine ARA-Sessions. Unten Plug-in und WAV eingeben, dann auf „Binden“ klicken."
+
+msgid "静音"
+msgstr "Stumm"
+
+msgid "额外扫描目录（多个用分号分隔）"
+msgstr "Zusätzliche Scan-Verzeichnisse (mehrere durch Semikolon trennen)"
+
+msgid "可用"
+msgstr "Verfügbar"
+
+msgid "失败"
+msgstr "Fehlgeschlagen"

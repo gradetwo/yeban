@@ -2370,3 +2370,131 @@ msgstr "  ·  ファクトリ"
 
 msgid "  ·  用户"
 msgstr "  ·  ユーザー"
+
+# --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
+
+msgid "+ 插件与 ARA…"
+msgstr "+ プラグイン & ARA…"
+
+msgid "ARA 会话静音开关"
+msgstr "ARA セッションのミュートスイッチ"
+
+msgid "ARA 循环次数"
+msgstr "ARA ループ回数"
+
+msgid "ARA 插件路径"
+msgstr "ARA プラグインのパス"
+
+msgid "ARA 渲染块大小"
+msgstr "ARA レンダーブロックサイズ"
+
+msgid "ARA 渲染输出路径"
+msgstr "ARA レンダー出力パス"
+
+msgid "ARA 渲染进度 {}%"
+msgstr "ARA レンダー進捗 {}%"
+
+msgid "ARA 绑定 / 查询 / 渲染"
+msgstr "ARA バインド / クエリ / レンダー"
+
+msgid "ARA 输入 wav 路径"
+msgstr "ARA 入力 wav パス"
+
+msgid "ARA 速度 BPM"
+msgstr "ARA テンポ BPM"
+
+msgid "VST3 插件"
+msgstr "VST3 プラグイン"
+
+msgid "wav 路径"
+msgstr "wav パス"
+
+msgid "不静音"
+msgstr "ミュート解除"
+
+msgid "关闭插件与 ARA 面板"
+msgstr "プラグイン & ARA パネルを閉じる"
+
+msgid "块大小"
+msgstr "ブロックサイズ"
+
+msgid "尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。"
+msgstr "未スキャンです。「スキャン」をクリックしてローカル VST3 プラグインを読み込みます。不良プラグインは赤い失敗行としてリストに残ります。"
+
+msgid "循环"
+msgstr "ループ"
+
+msgid "打开插件与 ARA 面板"
+msgstr "プラグイン & ARA パネルを開く"
+
+msgid "扫描"
+msgstr "スキャン"
+
+msgid "扫描 VST3 插件"
+msgstr "VST3 プラグインをスキャン"
+
+msgid "插件"
+msgstr "プラグイン"
+
+msgid "插件与 ARA"
+msgstr "プラグイン & ARA"
+
+msgid "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"
+msgstr "プラグイン & ARA：スキャン / ロード / バインド / クエリ / レンダー"
+
+msgid "插件路径"
+msgstr "プラグインのパス"
+
+msgid "未选中插件"
+msgstr "プラグインが選択されていません"
+
+msgid "查询"
+msgstr "クエリ"
+
+msgid "查询结果显示在这里。"
+msgstr "クエリ結果はここに表示されます。"
+
+msgid "查询选中 ARA 会话"
+msgstr "選択中の ARA セッションをクエリ"
+
+msgid "渲染"
+msgstr "レンダー"
+
+msgid "渲染选中 ARA 会话为 WAV"
+msgstr "選択中の ARA セッションを WAV にレンダー"
+
+msgid "目标轨：{}"
+msgstr "対象トラック：{}"
+
+msgid "绑定"
+msgstr "バインド"
+
+msgid "绑定 ARA 会话"
+msgstr "ARA セッションをバインド"
+
+msgid "装载到当前轨"
+msgstr "現在のトラックにロード"
+
+msgid "装载选中的插件到当前轨"
+msgstr "選択中のプラグインを現在のトラックにロード"
+
+msgid "设备机架内"
+msgstr "デバイスラック内"
+
+msgid "输出 wav"
+msgstr "出力 wav"
+
+msgid "还没有 ARA 会话。下面填插件与 wav，点「绑定」。"
+msgstr "ARA セッションはまだありません。下にプラグインと wav を入力し、「バインド」をクリックしてください。"
+
+msgid "静音"
+msgstr "ミュート"
+
+msgid "额外扫描目录（多个用分号分隔）"
+msgstr "追加スキャンディレクトリ（複数はセミコロンで区切る）"
+
+msgid "可用"
+msgstr "使用可能"
+
+msgid "失败"
+msgstr "失敗"
