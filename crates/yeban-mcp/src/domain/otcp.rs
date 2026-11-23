@@ -325,6 +325,8 @@ pub(crate) fn apply_deliver(
             "CAS 哈希不一致（内部错误：登记返回的哈希与计划时的哈希不同）",
         ));
     }
+    // 兜底预检：这批 op 若含绑定变更，绑定当刻的缺样本要如实进响应。
+    let sampler_warnings = super::sampler_warnings_for_ops(domain, &draft.ops);
     let mut response = super::apply_propose(
         domain,
         draft,
@@ -334,6 +336,7 @@ pub(crate) fn apply_deliver(
         merge_commit_message,
         None,
         &[],
+        &sampler_warnings,
     )?;
     let proposal_id = match &response {
         ToolResponse::Success { data } => data

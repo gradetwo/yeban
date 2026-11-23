@@ -1475,6 +1475,13 @@ pub enum Plan {
         /// 内容寻址。`dryRun` 不走 `apply` ⇒ 不登记；其余提案工具恒 `None`，
         /// 行为逐字不变。
         sfz_load: Option<Box<sfz::SfzLoad>>,
+        /// ⭐ T-FIX-48 后续 ①：本批**新绑上**（或改绑）的采样器在绑定当刻的缺样本预检。
+        ///
+        /// 口径（管理侧裁决）：工具结果警告是**主承载面** —— 类比 Logic Pro，缺样本
+        /// 在操作当时报告；GUI 状态区只读回执里的同一份数组，⛔ 不另设 GUI 专属状态。
+        /// 与 [`Self::warnings`] 同一条纪律：只在 `plan` 阶段算一次，`dryRun` 预览与
+        /// 真正创建读同一份 ⇒ 不可能各说一套。⛔ 不阻断提案（绑定本身是合法的）。
+        sampler_warnings: Vec<embed_samples::MissingSample>,
         /// ⭐ 第五份报告 A-3：`yeban_edit_notes` 的 `setParam`（`DeviceParam`）
         /// 在**编译期**命中的参数回显（`notes::ParamEcho` 的 JSON 形状）。
         ///
@@ -2313,6 +2320,7 @@ impl Plan {
                 warnings,
                 auto_merge,
                 param_echoes,
+                sampler_warnings,
                 ..
             } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
@@ -2348,6 +2356,24 @@ impl Plan {
                 preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
                 // ⭐ #178：预览与真正创建提案用的是**同一份** `warnings`（规划期算好的）。
                 preview.insert("warnings".to_owned(), Value::Array(warnings.clone()));
+                // ⭐ T-FIX-48 后续 ①：绑定当刻缺样本预检，预览与响应同一份。
+                preview.insert(
+                    "samplerWarnings".to_owned(),
+                    Value::Array(
+                        sampler_warnings
+                            .iter()
+                            .map(|item| {
+                                serde_json::json!({
+                                    "trackId": item.track_id,
+                                    "binding": item.binding,
+                                    "sample": item.sample,
+                                    "reason": item.reason,
+                                    "detail": item.detail,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
                 // ⭐ [ADR-0029] D5：`dryRun` 的承诺（一位都不改）优先级更高 ⇒
                 // **不落盘、不合并**，但如实标出"真跑这一步会顺带合并"。
                 // 缺省路径（无 `autoMerge`）预览逐字节不变（键**只在 `true` 时出现**）。
@@ -3714,6 +3740,11 @@ fn propose_draft(
         &ops,
         domain.active.as_ref().map(|active| active.path.as_path()),
     );
+    // ⭐ T-FIX-48 后续 ①：绑定当刻的缺样本预检也在**模拟施加之后**的工程上做
+    // （同批 `setTrackSampler` 才看得见新绑定），且只算这一次。
+    // 注：T-FIX-154 已把同一预检的 op 驱动版并进 `warnings[]`；这里是
+    // 顶层 `samplerWarnings[]` 用的换绑比对版（只报本次新绑的轨）。
+    let sampler_warnings = sampler_binding_warnings_for_changed_tracks(domain, project, &simulated);
     let base_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     Ok(Plan::Propose {
         draft: Box::new(ProposalDraft {
@@ -3729,6 +3760,7 @@ fn propose_draft(
         auto_merge: arg_bool(call, "autoMerge", false),
         merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
         sfz_load: None,
+        sampler_warnings,
         param_echoes: Vec::new(),
     })
 }
@@ -7331,6 +7363,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             merge_commit_message,
             sfz_load,
             param_echoes,
+            sampler_warnings,
         } => apply_propose(
             domain,
             *draft,
@@ -7340,6 +7373,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             merge_commit_message,
             sfz_load.map(|load| *load),
             &param_echoes,
+            &sampler_warnings,
         ),
         Plan::Merge {
             proposal_id,
@@ -7857,20 +7891,9 @@ fn apply_save(
         "bytes": embeds.presets.bytes,
         "includedUserPresets": embeds.presets.included,
     });
-    // ⭐ T-FIX-151：缺失样本清单进 **apply 面**回执（与 plan/preview 面同形）。
-    let missing_samples = serde_json::json!({
-        "count": embeds.samples.missing.len(),
-        "items": embeds.samples.missing
-            .iter()
-            .map(|item| serde_json::json!({
-                "trackId": item.track_id,
-                "binding": item.binding,
-                "sample": item.sample,
-                "reason": item.reason,
-                "detail": item.detail,
-            }))
-            .collect::<Vec<_>>(),
-    });
+    // ⭐ T-FIX-151：缺失样本清单进 **apply 面**回执，与 plan/preview 面同一形状。
+    // 两条分支都带：跳过落盘时"这次会缺什么"同样是要给的读数。
+    let missing_samples = missing_samples_value(&embeds.samples.missing);
     if !force && !changed {
         return Ok(ToolResponse::success(serde_json::json!({
             "saved": false,
@@ -8022,6 +8045,7 @@ pub(crate) fn apply_propose(
     merge_commit_message: Option<String>,
     sfz_load: Option<sfz::SfzLoad>,
     param_echoes: &[Value],
+    sampler_warnings: &[embed_samples::MissingSample],
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -8129,6 +8153,26 @@ pub(crate) fn apply_propose(
         object.insert(
             "resolvedParams".to_owned(),
             Value::Array(param_echoes.to_vec()),
+        );
+        // ⭐ T-FIX-48 后续 ①：绑定当刻的缺样本预检，**恒带**（没换绑定 ⇒ 空数组）。
+        // 元素形状与保存侧 `missingSamples.items[]` 同源（同一个
+        // [`embed_samples::MissingSample`]），GUI 只读这一份、不另设状态。
+        object.insert(
+            "samplerWarnings".to_owned(),
+            Value::Array(
+                sampler_warnings
+                    .iter()
+                    .map(|item| {
+                        serde_json::json!({
+                            "trackId": item.track_id,
+                            "binding": item.binding,
+                            "sample": item.sample,
+                            "reason": item.reason,
+                            "detail": item.detail,
+                        })
+                    })
+                    .collect(),
+            ),
         );
     }
 
@@ -8451,6 +8495,162 @@ fn proposal_warnings(
     // T-FIX-154：绑定期预检（只警告、不阻断）。
     warnings.extend(sampler_binding_warnings(project_path, ops));
     warnings
+}
+
+/// 绑定当刻的**缺样本预检**（T-FIX-48 后续 ①）。
+///
+/// 对**本批真的换了绑定**的每条轨（`before` 与 `after` 的 `sampler.path` 不同，
+/// 含新绑、改绑；解绑不查），按 `yeban_load_sfz` **同一条**装载路读一遍 SFZ，
+/// 只把**读不到的东西**摘出来：SFZ 本身读不到 ⇒ `sfz_missing`；样本读不到 /
+/// 格式不认 / 读不动 ⇒ 逐条 `sample_missing` / `sample_unsupported` /
+/// `sample_unreadable`（键 = `sample=` 原串，细节 = 装载器给的原因串）。
+///
+/// 口径（管理侧裁决）：
+/// - **不阻断** —— 绑定本身是合法的，缺样本要说到位，但不能因此拒绝提案；
+/// - **只报本次新绑的** —— 未变的绑定不重复预检（一次提案只买一次读盘）；
+/// - **与保存侧同形** —— 复用 [`embed_samples::MissingSample`]，`reason` 词表
+///   与 `missingSamples.items[]` 同一套，GUI 只读回执、不另设状态；
+/// - **预算照 `SampleLimits::default()`** —— 与 `yeban_load_sfz` 缺省同一口径；
+///   被预算截断的样本记 `NotLoaded`（⛔ 不当成缺失，免得把"没读"说成"没有"）。
+fn sampler_binding_warnings_for_changed_tracks(
+    domain: &Domain,
+    before: &YebanProjectV1,
+    after: &YebanProjectV1,
+) -> Vec<embed_samples::MissingSample> {
+    let project_path = domain.active_path().unwrap_or_else(|| Path::new("."));
+    let mut out = Vec::new();
+    for (track_id, track) in &after.tracks {
+        let Some(sampler) = track.sampler.as_ref() else {
+            continue;
+        };
+        let unchanged = before
+            .tracks
+            .get(track_id)
+            .and_then(|old| old.sampler.as_ref())
+            .is_some_and(|old| old.path == sampler.path);
+        if unchanged {
+            continue;
+        }
+        let track_text = track_id.to_canonical_string();
+        let path = match render::resolve_sampler_path(&sampler.path, project_path) {
+            Ok(path) => path,
+            Err(fault) => {
+                out.push(embed_samples::MissingSample {
+                    track_id: track_text,
+                    binding: sampler.path.clone(),
+                    sample: None,
+                    reason: "sfz_missing",
+                    detail: fault_message(&fault),
+                });
+                continue;
+            }
+        };
+        let load = match sfz::load(
+            &path,
+            48_000.0,
+            0,
+            false,
+            sfz::SampleLimits::default(),
+            &BTreeMap::new(),
+        ) {
+            Ok(load) => load,
+            Err(fault) => {
+                out.push(embed_samples::MissingSample {
+                    track_id: track_text,
+                    binding: sampler.path.clone(),
+                    sample: None,
+                    reason: "sfz_unreadable",
+                    detail: fault_message(&fault),
+                });
+                continue;
+            }
+        };
+        for (sample, disposition) in &load.sample_dispositions {
+            let reason = match disposition {
+                sfz::SampleDisposition::NotFound => "sample_missing",
+                sfz::SampleDisposition::Unsupported => "sample_unsupported",
+                sfz::SampleDisposition::Other => "sample_unreadable",
+                // 读到了 / 本次按需装载没读 ⇒ 不是"缺"，不进警告。
+                sfz::SampleDisposition::Loaded | sfz::SampleDisposition::NotLoaded => continue,
+            };
+            // 键与保存侧**同一个**：`embedded_sample_key`（绑定目录 ＋ `sample=` 原串，
+            // 词法折叠）—— 否则同一份缺失在两张回执上会有两种拼法。
+            let key = sfz::embedded_sample_key(&sampler.path, sample);
+            let detail = load
+                .sample_failures
+                .iter()
+                .find(|failure| failure.contains(sample.as_str()))
+                .cloned()
+                .unwrap_or_else(|| format!("{reason}: `{sample}`"));
+            out.push(embed_samples::MissingSample {
+                track_id: track_text.clone(),
+                binding: sampler.path.clone(),
+                sample: Some(key),
+                reason,
+                detail,
+            });
+        }
+    }
+    out
+}
+
+/// 不经过 [`propose_draft`] 的两条提案路（OTCP 交付、相位自动对齐）的兜底预检。
+///
+/// 这两条路自己已经模拟过 op 批（失败就早退了），但没把模拟后的工程留在手上；
+/// 这里只为**真的含绑定变更**的批次再模拟一次（其余批次零成本返回空），
+/// 口径与 [`sampler_binding_warnings_for_changed_tracks`] 逐字相同。
+fn sampler_warnings_for_ops(domain: &Domain, ops: &[Op]) -> Vec<embed_samples::MissingSample> {
+    let binds = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::SetTrackSampler {
+                new_sampler: Some(_),
+                ..
+            }
+        )
+    });
+    if !binds {
+        return Vec::new();
+    }
+    let Some(project) = domain.active_project() else {
+        return Vec::new();
+    };
+    let mut simulated = project.clone();
+    let batch = Op::Batch {
+        ops: ops.to_vec(),
+        description: String::new(),
+    };
+    if batch.apply(&mut simulated).is_err() {
+        // 真正施加时会响亮失败；预检这里不抢在它前面造第二条错误路径。
+        return Vec::new();
+    }
+    sampler_binding_warnings_for_changed_tracks(domain, project, &simulated)
+}
+
+/// [`Fault`] 的人读文本（领域失败取 `message`，实现级状况取 JSON-RPC 报文）。
+fn fault_message(fault: &Fault) -> String {
+    match fault {
+        Fault::Domain { message, .. } => message.clone(),
+        Fault::Impl { error } => format!("{error:?}"),
+    }
+}
+
+/// 缺样本项 → 响应里的 `{count, items[]}`（保存侧 `missingSamples` 与提案侧
+/// `samplerWarnings[]` 共用同一份元素形状）。
+fn missing_samples_value(items: &[embed_samples::MissingSample]) -> Value {
+    serde_json::json!({
+        "count": items.len(),
+        "items": items
+            .iter()
+            .map(|item| serde_json::json!({
+                "trackId": item.track_id,
+                "binding": item.binding,
+                "sample": item.sample,
+                "reason": item.reason,
+                "detail": item.detail,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// 一条音轨**自己**"有没有东西可发声"的**实测读数**。

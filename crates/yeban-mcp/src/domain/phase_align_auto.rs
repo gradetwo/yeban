@@ -529,6 +529,8 @@ pub(crate) fn apply_phase_align_auto(
     let Some(draft) = draft else {
         return Ok(ToolResponse::success(data));
     };
+    // 兜底预检：这批 op 若含绑定变更，绑定当刻的缺样本要如实进响应。
+    let sampler_warnings = super::sampler_warnings_for_ops(domain, &draft.ops);
     let response = super::apply_propose(
         domain,
         *draft,
@@ -538,6 +540,7 @@ pub(crate) fn apply_phase_align_auto(
         merge_commit_message,
         None,
         &[],
+        &sampler_warnings,
     )?;
     // 提案响应 data 是对象：把测量键并进去（键集合无交集，见模块文档）。
     match response {

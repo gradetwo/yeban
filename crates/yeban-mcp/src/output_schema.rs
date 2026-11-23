@@ -518,6 +518,26 @@ fn proposal_warning_items() -> Value {
     })
 }
 
+/// 缺样本条目的形状（T-FIX-48 后续）：保存侧 `missingSamples.items[]` 与提案侧
+/// `samplerWarnings[]` **共用同一份**（两边都产自 `embed_samples::MissingSample`，
+/// 字段与 `reason` 词表同源 ⇒ 写成一份，⛔ 不各抄一遍）。
+#[must_use]
+fn missing_sample_items() -> Value {
+    json!({
+        "type": "object",
+        "required": ["trackId", "binding", "sample", "reason", "detail"],
+        "properties": {
+            "trackId": {"type": "string"},
+            "binding": {"type": "string"},
+            // `None` = 缺的是 SFZ 定义文件本身；有值 = 具体 `sample=` 原串。
+            "sample": {"type": ["string", "null"]},
+            "reason": {"type": "string"},
+            "detail": {"type": "string"}
+        },
+        "additionalProperties": false
+    })
+}
+
 /// 母带 `warnings[]` 的逐条形状：⛔ 只声明 `code` + `hint` 这两条**两条来源都有**的键。
 /// 其余键的差别不是"没想到"，是**未证**：`clipping_warning` 的 `truePeakDbfs` / `headroomDb`
 /// 走 `json_f32(Option<f32>)`，缺读数时是 `null`（顶层那两条正是这么声明的），
@@ -1509,6 +1529,7 @@ fn propose_section() -> Value {
             "willCreate",
             "warnings",
             "proposal",
+            "samplerWarnings",
         ],
         json!({
             "created": {"type": "boolean"},
@@ -1520,6 +1541,7 @@ fn propose_section() -> Value {
             "willCreate": will_create_roster(),
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
+            "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},
             "merge": merge_shape_roster()
         }),
@@ -1563,6 +1585,7 @@ fn edit_notes() -> Value {
             "willCreate",
             "warnings",
             "proposal",
+            "samplerWarnings",
         ],
         json!({
             "created": {"type": "boolean"},
@@ -1577,6 +1600,7 @@ fn edit_notes() -> Value {
                 "items": proposal_warning_items()
             },
             "proposal": proposal_detail_schema(),
+            "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},
             "merge": merge_shape_roster(),
             "resolvedParams": {
@@ -1622,6 +1646,7 @@ fn set_macro() -> Value {
             "willCreate",
             "warnings",
             "proposal",
+            "samplerWarnings",
         ],
         json!({
             "created": {"type": "boolean"},
@@ -1633,6 +1658,7 @@ fn set_macro() -> Value {
             "willCreate": will_create_roster(),
             "warnings": {"type": "array", "items": proposal_warning_items()},
             "proposal": proposal_detail_schema(),
+            "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},
             "merge": merge_shape_roster()
         }),
