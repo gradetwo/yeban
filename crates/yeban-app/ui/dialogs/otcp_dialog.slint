@@ -42,6 +42,9 @@ component SmallButton inherits Rectangle {
         vertical-alignment: center;
     }
     hit := TouchArea {
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => { root.clicked(); }
         clicked => { root.clicked(); }
     }
 }
@@ -141,6 +144,7 @@ export component OtcpDialog inherits Rectangle {
                         accessible-role: button;
                         accessible-id: "otcp-close-button";
                         accessible-label: @tr("关闭");
+                        accessible-action-default => { root.close(); }
                         clicked => { root.close(); }
                         Text {
                             text: "×";

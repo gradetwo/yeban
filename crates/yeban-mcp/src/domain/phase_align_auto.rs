@@ -345,11 +345,6 @@ pub fn measure_phase_alignment(
     let lag = measurement.lag_samples_rounded;
     let mut data = measurement_data(provider.name(), reference, target, max_lag_ms, &measurement);
     let data_object = data.as_object_mut().expect("measurement_data 恒为对象");
-    if lag == 0 && !measurement.polarity_inverted {
-        data_object.insert("applied".to_owned(), Value::from(false));
-        data_object.insert("appliedDelay".to_owned(), Value::Null);
-        data_object.insert("appliedPolarity".to_owned(), Value::Null);
-    }
     if apply && lag != 0 && measurement.correlation.abs() < APPLY_MIN_CORRELATION {
         return Err(Fault::domain_with_data(
             ErrorCode::Conflict,
@@ -421,7 +416,10 @@ pub fn measure_phase_alignment(
             "invertAfter": !old_invert,
         });
     }
-    data_object.insert("applied".to_owned(), Value::from(apply));
+    data_object.insert(
+        "applied".to_owned(),
+        Value::from(apply && (lag != 0 || measurement.polarity_inverted)),
+    );
     data_object.insert("appliedDelay".to_owned(), applied_delay);
     data_object.insert("appliedPolarity".to_owned(), applied_polarity);
     let title = format!(

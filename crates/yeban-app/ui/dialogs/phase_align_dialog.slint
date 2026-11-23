@@ -29,6 +29,9 @@ component PhaseButton inherits Rectangle {
         vertical-alignment: center;
     }
     hit := TouchArea {
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => { root.clicked(); }
         clicked => { root.clicked(); }
     }
 }
@@ -121,6 +124,7 @@ export component PhaseAlignDialog inherits Rectangle {
                         accessible-role: button;
                         accessible-id: "phase-align-close-button";
                         accessible-label: @tr("关闭");
+                        accessible-action-default => { root.close(); }
                         clicked => { root.close(); }
                         Text {
                             text: "×";
@@ -229,6 +233,7 @@ export component PhaseAlignDialog inherits Rectangle {
                             accessible-role: checkbox;
                             accessible-id: "phase-align-apply-checkbox";
                             accessible-label: @tr("apply");
+                            accessible-action-default => { root.apply = !root.apply; }
                             clicked => { root.apply = !root.apply; }
                         }
                     }

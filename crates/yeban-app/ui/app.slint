@@ -1876,6 +1876,7 @@ export component MainWindow inherits Window {
                             accessible-role: button;
                             accessible-id: "song-overview-capture-a-button";
                             accessible-label: @tr("存 A");
+                            accessible-action-default => { root.song-overview-capture-a(); }
                             clicked => { root.song-overview-capture-a(); }
                         }
                     }
@@ -1898,6 +1899,7 @@ export component MainWindow inherits Window {
                             accessible-role: button;
                             accessible-id: "song-overview-capture-b-button";
                             accessible-label: @tr("存 B");
+                            accessible-action-default => { root.song-overview-capture-b(); }
                             clicked => { root.song-overview-capture-b(); }
                         }
                     }
@@ -1920,6 +1922,7 @@ export component MainWindow inherits Window {
                             accessible-role: button;
                             accessible-id: "song-overview-compare-button";
                             accessible-label: @tr("对比 A→B");
+                            accessible-action-default => { root.song-overview-compare-ab(); }
                             clicked => { root.song-overview-compare-ab(); }
                         }
                     }

@@ -225,6 +225,23 @@ fn polarity_inversion_flips_target() {
 }
 
 #[test]
+fn zero_lag_without_polarity_is_not_applied() {
+    let mut dispatcher = dispatcher_with_stub(measurement(0, 0.9, false));
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_auto_align_tracks",
+        align_args(json!({})),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert_eq!(data["lagSamples"], 0, "{data}");
+    assert_eq!(data["applied"], false, "{data}");
+    assert_eq!(data["appliedDelay"], Value::Null, "{data}");
+    assert_eq!(data["appliedPolarity"], Value::Null, "{data}");
+    assert_eq!(proposal_count(&mut dispatcher), 0);
+}
+
+#[test]
 fn low_correlation_refuses_to_apply() {
     let mut dispatcher = dispatcher_with_stub(measurement(50, 0.2, false));
     let result = call_tool(
