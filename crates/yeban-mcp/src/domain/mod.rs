@@ -1385,6 +1385,8 @@ pub struct HostSaveOutcome {
     pub include_user_presets: bool,
     /// 工程内容摘要（规范化 JSON 的 SHA-256）。
     pub digest: String,
+    /// T-FIX-154：本次保存遇到的缺失样本（与 MCP apply 回执 missingSamples 同源同形状）。
+    pub missing_samples: Vec<embed_samples::MissingSample>,
 }
 
 /// 一次已经校验过的执行计划（**只读计算的产物**）。
@@ -3707,7 +3709,11 @@ fn propose_draft(
         .map_err(|failure| error::from_model("提案结果校验", &failure))?;
     // ⭐ #178：警告在**模拟施加之后**的工程上求值（同批里给这条轨摆片段 ⇒ 不误报），
     // 且只算这一次：预览与响应共用这份读数。
-    let warnings = proposal_warnings(&simulated, &ops);
+    let warnings = proposal_warnings(
+        &simulated,
+        &ops,
+        domain.active.as_ref().map(|active| active.path.as_path()),
+    );
     let base_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     Ok(Plan::Propose {
         draft: Box::new(ProposalDraft {
@@ -7036,6 +7042,9 @@ pub fn host_save_project(
         embedded_preset_bytes,
         proposals_digest,
     } = material;
+    // T-FIX-154：内嵌收集在下面两个分支里会被部分移动（map / added / pruned），
+    // 所以在分支**之前**把缺失清单取出来，供两处 HostSaveOutcome 共用。
+    let missing_samples = embedded.missing.clone();
     if !force && !changed {
         return Ok(HostSaveOutcome {
             path: target.to_path_buf(),
@@ -7047,6 +7056,7 @@ pub fn host_save_project(
             embedded_preset_bytes,
             include_user_presets: true,
             digest,
+            missing_samples,
         });
     }
     store::write_project_atomic(target, &bytes)?;
@@ -7075,6 +7085,7 @@ pub fn host_save_project(
         embedded_preset_bytes,
         include_user_presets: true,
         digest,
+        missing_samples,
     })
 }
 
@@ -8322,9 +8333,80 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
 }
 
 /// 本次提案的完整 `warnings[]`（`#175` 的未识别参数名 ＋ `#178` 的"设备落在静音轨上"）。
-fn proposal_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
+/// T-FIX-154：**绑定期**采样器预检 —— 逐条 `SetTrackSampler` 算缺失样本警告。
+///
+/// 只产警告、**从不阻断**绑定：解析不到 SFZ（`sfz_missing`）或 SFZ 里引用的样本读不到
+/// （`sample_missing`）都记一条，交给 op 结果的 `warnings[]` 响亮报告。
+fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Value> {
+    let Some(project_path) = project_path else {
+        return Vec::new();
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for op in ops {
+        let Op::SetTrackSampler {
+            track_id,
+            new_sampler,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let Some(binding) = new_sampler.as_ref() else {
+            continue;
+        };
+        let track = track_id.to_canonical_string();
+        match render::resolve_sampler_path(&binding.path, project_path) {
+            Err(error) => out.push(serde_json::json!({
+                "kind": "samplerBinding",
+                "trackId": track,
+                "binding": binding.path,
+                "sample": Value::Null,
+                "reason": "sfz_missing",
+                "detail": format!("{error:?}"),
+            })),
+            Ok(path) => match sfz::load(
+                &path,
+                48_000.0,
+                0,
+                false,
+                sfz::SampleLimits::default(),
+                &BTreeMap::new(),
+            ) {
+                Err(error) => out.push(serde_json::json!({
+                    "kind": "samplerBinding",
+                    "trackId": track,
+                    "binding": binding.path,
+                    "sample": Value::Null,
+                    "reason": "sfz_missing",
+                    "detail": format!("{error:?}"),
+                })),
+                Ok(load) => {
+                    for failure in load.sample_failures {
+                        out.push(serde_json::json!({
+                            "kind": "samplerBinding",
+                            "trackId": track,
+                            "binding": binding.path,
+                            "sample": Value::Null,
+                            "reason": "sample_missing",
+                            "detail": failure,
+                        }));
+                    }
+                }
+            },
+        }
+    }
+    out
+}
+
+fn proposal_warnings(
+    project: &YebanProjectV1,
+    ops: &[Op],
+    project_path: Option<&Path>,
+) -> Vec<Value> {
     let mut warnings = effect_param_warnings(ops);
     warnings.extend(device_on_silent_track_warnings(project, ops));
+    // T-FIX-154：绑定期预检（只警告、不阻断）。
+    warnings.extend(sampler_binding_warnings(project_path, ops));
     warnings
 }
 
@@ -9855,6 +9937,34 @@ mod tests {
         assert_eq!(preview["commitCountAfter"], 2);
         assert_eq!(preview["wouldApply"], true);
         assert_eq!(preview["projectChanges"], false, "提案不改工程内容");
+    }
+
+    /// T-FIX-154：绑定期预检 —— 缺失样本产生 sample_missing 警告，绑定本身不被阻断。
+    #[test]
+    fn sampler_binding_precheck_reports_missing_sample() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sampler-precheck-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::write(dir.join("kit.sfz"), "<region> sample=gone.wav key=60\n").expect("写 SFZ");
+        let absolute = dir.join("kit.sfz").to_string_lossy().into_owned();
+        let binding: yeban_model::SamplerBinding =
+            serde_json::from_value(serde_json::json!({ "path": absolute })).expect("绑定");
+        let op = Op::SetTrackSampler {
+            track_id: yeban_model::EntityId::new(),
+            old_sampler: None,
+            new_sampler: Some(binding),
+        };
+        let warnings = sampler_binding_warnings(Some(&dir), std::slice::from_ref(&op));
+        assert!(
+            warnings
+                .iter()
+                .any(|item| item.get("reason").and_then(Value::as_str) == Some("sample_missing")),
+            "缺样本必须产生 sample_missing 警告: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
