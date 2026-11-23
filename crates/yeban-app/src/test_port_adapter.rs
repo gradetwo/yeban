@@ -916,7 +916,14 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
     // （`host_to_painted` 是唯一换算；宿主收到后由 `painted_to_host` 搬回）。
     let scroll = ui.get_roll_scroll_x();
     let width = slint::ComponentHandle::window(ui).size().width as f32;
-    let visible = view.visible_notes(scroll, width);
+    // 注入坐标必须与 host **画音符**用的同一口径：自 a4a7b08 起 `apply_view` 会按当前
+    // 作用域把卷帘取景到内容音高（此处 `filled_project` 的选中轨 ⇒ base 58，非默认 60），
+    // 并把可见 ys 重投影到该 base。若仍用 `visible_notes` 的默认 base ys 去注入，点击就落在
+    // UI 实际绘制音符上方 3 个泳道 ⇒ 恒不中（本用例两测红因）。读 UI 实际 base 重投影一次，
+    // 与 `host::apply_view` 的 `reproject_note_ys_with_base` 同一函数、同一常量。
+    let roll_base = ui.get_roll_base_pitch().clamp(0, 112) as u8;
+    let mut visible = view.visible_notes(scroll, width);
+    view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, roll_base);
     assert!(!visible.is_empty(), "夹具在初始窗口内必须有音符");
     let (cx, cy) = host_to_painted(
         visible.positions[0] + visible.widths[0] / 2.0,
@@ -931,7 +938,8 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
 
     // 牙: 点在音符**下半截**（相对顶部 +9px）也必须命中 —— 若宿主的高度常量小于 `.slint` 的
     // `height: 10px`, 这一条会红（第 501 轮我第一次写 6.0, 只有这条能抓到）。
-    let bottom = view.visible_notes(scroll, width);
+    let mut bottom = view.visible_notes(scroll, width);
+    view.reproject_note_ys_with_base(&bottom.ulids, &mut bottom.ys, roll_base);
     let (bx, by) = host_to_painted(
         bottom.positions[0] + bottom.widths[0] / 2.0,
         bottom.ys[0] + 9.0,
@@ -1025,9 +1033,18 @@ fn published_viewport_bounds_agree_with_the_window_they_came_from() {
         "区间必须有序"
     );
 
-    let (min_pitch, max_pitch) = view.visible_pitch_range(16);
-    assert_eq!(ui.get_roll_min_pitch(), i32::from(min_pitch));
-    assert_eq!(ui.get_roll_max_pitch(), i32::from(max_pitch));
+    // 音高上下界必须与**当前取景窗口**一致。自 a4a7b08 起 `apply_view` 按作用域内容重设
+    // `roll-base-pitch`（本夹具选中轨 ⇒ 58，非默认 60），再据此发布 min/max = base..base+15。
+    // 旧断言拿 `view.visible_pitch_range(16)`（默认 base 60）当来源，与发布值相差一个 base ⇒ 恒红。
+    // 这里改为校验两者接线一致：min 必须等于 UI 实际取景基音，max 必须是它 +15（钳到 127）。
+    // 取景 base 本身算得对不对由 `aether_piano_roll.rs` 的独立判据钉住，不在本用例重复。
+    let base = ui.get_roll_base_pitch();
+    assert_eq!(ui.get_roll_min_pitch(), base, "下界必须来自当前取景基音");
+    assert_eq!(
+        ui.get_roll_max_pitch(),
+        (base + 15).min(127),
+        "上界必须来自当前取景基音"
+    );
     assert!(
         ui.get_roll_min_pitch() <= ui.get_roll_max_pitch(),
         "音高区间必须有序"
