@@ -911,6 +911,16 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
+                        // ⭐ T-FIX-122：`transport-stop-button` 落到活键；动作与
+                        // `btn_stop_touch.clicked` 逐字相同（播放/录音中=停，否则=归零）。
+                        accessible-role: button;
+                        accessible-id: "transport-stop-button";
+                        accessible-label: @tr("停止 (回到起始点)");
+                        accessible-action-default => {
+                            if root.is-playing { root.toggle-play(); }
+                            else if root.is-recording { root.toggle-rec(); }
+                            else { root.rewind(); }
+                        }
                         // 权重分级（2026-11-19 实测）：停止的方符是 9×9 实心块，却用
                         // skin-text-strong（近白）常亮 —— 空转时它就是整条走带上最重
                         // 的一块，压过了绿三角的播放与红圆的录音（两级语义本来就该
@@ -947,6 +957,13 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 36px;
                         height: 24px;
                         border-radius: 3px;
+                        // ⭐ T-FIX-122：把死文件 `transport.slint` 里的 `transport-play-button`
+                        // 落到**真的被实例化**的这颗键上（a11y 树新增一个按钮节点，
+                        // ⛔ 不改任何可见帧、不改点击语义）。
+                        accessible-role: button;
+                        accessible-id: "transport-play-button";
+                        accessible-label: @tr("播放 / 暂停 (Space)");
+                        accessible-action-default => { root.toggle-play(); }
                         // 扁平档：未播放 = 透明（只有绿三角），悬停才浮出淡绿底；拟物档
                         // 保留常亮软触面。播放态两档都用同色实心底（状态必须一眼可见）。
                         background: root.is-playing
@@ -974,6 +991,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
+                        // ⭐ T-FIX-122：`transport-record-button` 落到活键（同一 `toggle-record` 落点）。
+                        accessible-role: button;
+                        accessible-id: "transport-record-button";
+                        accessible-label: @tr("录音");
+                        accessible-action-default => { root.toggle-record(); }
                         // 同播放键：扁平档空转透明，只有红圆；悬停浮出淡红底。
                         background: root.is-recording
                             ? Tokens.skin-arm
@@ -1051,6 +1073,12 @@ export component TransportHeaderBar inherits Rectangle {
                     // LCD Bar.Beat.Tick
                     Rectangle {
                         height: 24px;
+                        // ⭐ T-FIX-122：`transport-timecode` 落到这块只读读数（⛔ 不是可点键：
+                        // 它的 TouchArea 没有 `clicked`，屏读器应读成文本而不是按钮）。
+                        accessible-role: text;
+                        accessible-id: "transport-timecode";
+                        accessible-label: @tr("主时间码");
+                        accessible-value: root.timecode-text;
                         VerticalLayout {
                             alignment: center;
                             spacing: 0px;

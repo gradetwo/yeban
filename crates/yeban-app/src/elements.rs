@@ -238,24 +238,46 @@ impl ElementRegistry {
         }
 
         // ------------------------------------------------------------ 顶栏走带
+        //
+        // ⭐ T-FIX-122（2026-11-23）：`transport.slint` 是**死文件**（全仓没有任何
+        // `.slint` import 它；`app.slint:8` 只 import `transport_bar.slint` 的
+        // `TransportHeaderBar`）。本段 4 条已按"一个 id 一颗真键"落到活文件：
+        //   `transport-play-button` / `transport-stop-button` /
+        //   `transport-record-button`（三颗走带键）与 `transport-timecode`（只读读数）。
+        //
+        // ⚠ 剩下 11 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
+        // 的节点，比指向死文件更假）：
+        //   * `transport-save-button` / `transport-metronome-button`：顶栏今天没有这两颗键
+        //     （保存走宿主菜单；节拍器只有 `app.slint` 的菜单项与快捷键）；
+        //   * `transport-branch-button` / `transport-commit-button` / `transport-revert-button`：
+        //     顶栏没有可见键，且 `the_remaining_transport_document_actions_are_not_wired_today`
+        //     已登记"能力不存在 / 未接线"；
+        //   * `transport-ai-proposal-badge` / `transport-ai-drawer-button`：顶栏没有 AI 徽章
+        //     与抽屉入口（AI 侧入口在 `app.slint` 的 `ai-rail-*`）；
+        //   * `transport-view-arrangement-button` / `transport-view-session-button` /
+        //     `transport-view-toggle-button`：顶栏的 persona 键**不是**这三个视图开关
+        //     （语义不同，⛔ 不硬套），视图切换今天只在命令层；
+        //   * `transport-bpm-field`：活控件是"点击循环 124/128/140"的**只读读数**，
+        //     登记写的是 `ElementKind::TextInput` —— 类型对不上，硬套会把一个不可输入的
+        //     读数标成输入框（屏读器会尝试编辑）。要改口径或真接输入，那是**另一票**的能力裁决。
         registry.add(
             "transport-play-button",
             ElementKind::Button,
-            "transport.slint",
+            "transport_bar.slint",
             "播放 / 暂停 (Space)",
             false,
         );
         registry.add(
             "transport-stop-button",
             ElementKind::Button,
-            "transport.slint",
+            "transport_bar.slint",
             "停止 (回到起始点)",
             false,
         );
         registry.add(
             "transport-record-button",
             ElementKind::Button,
-            "transport.slint",
+            "transport_bar.slint",
             "录音",
             false,
         );
@@ -287,7 +309,7 @@ impl ElementRegistry {
         registry.add(
             "transport-timecode",
             ElementKind::Text,
-            "transport.slint",
+            "transport_bar.slint",
             "主时间码",
             true,
         );
