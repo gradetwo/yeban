@@ -7181,6 +7181,7 @@ dependencies = [
  "yeban-midi",
  "yeban-midi-io",
  "yeban-model",
+ "yeban-plugin-host",
  "yeban-render",
  "yeban-sfz",
  "yeban-theory",

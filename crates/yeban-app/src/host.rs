@@ -26245,3 +26245,643 @@ pub fn wire_missing_sounds_dialog(
         }
     });
 }
+
+// ===========================================================================
+// 插件与 ARA 面板（T-FIX-83）
+// ===========================================================================
+//
+// 五条 GUI 入口的宿主侧：扫描与渲染在后台线程，结果经 channel 回 UI 线程；
+// 装载走 `UndoPort::commit_ops` 的普通 GUI 编辑路径；ARA 会话 registry 由本
+// 面板持有（与 MCP 的 `Domain` registry 互不共享，二者都是同一 `yeban-plugin-host`
+// 的调用者）。
+//
+// ⛔ 本文件不复制插件扫描 / 验证加载 / ARA 打开的实现：它们全在
+// `plugin_panel.rs` → `yeban-plugin-host`。
+
+#[derive(Clone, Debug)]
+struct AraRowState {
+    id: String,
+    factory: String,
+    state: String,
+    detail: String,
+}
+
+enum AraRenderMessage {
+    Done {
+        id: String,
+        session: yeban_plugin_host::AraSession,
+        summary: crate::plugin_panel::AraRenderSummary,
+    },
+    Failed {
+        id: String,
+        session: yeban_plugin_host::AraSession,
+        error: String,
+    },
+}
+
+#[derive(Default)]
+struct PluginPanelState {
+    rows: Vec<crate::plugin_panel::PluginRow>,
+    selected: Option<usize>,
+    scan_rx: Option<std::sync::mpsc::Receiver<crate::plugin_panel::ScanReport>>,
+    ara: crate::plugin_panel::AraRegistry,
+    ara_rows: Vec<AraRowState>,
+    selected_ara: Option<usize>,
+    render_rx: Option<std::sync::mpsc::Receiver<AraRenderMessage>>,
+}
+
+fn plugin_ui_rows(rows: &[crate::plugin_panel::PluginRow]) -> Vec<crate::ui::PluginRowData> {
+    rows.iter()
+        .map(|row| crate::ui::PluginRowData {
+            name: row.title().into(),
+            meta: row.meta().into(),
+            state: row.state().into(),
+            path: row.path.clone().into(),
+            class_id: row.class_id.clone().into(),
+            kind: row.kind.clone().into(),
+            usable: row.usable,
+            ara: row.ara,
+        })
+        .collect()
+}
+
+fn ara_ui_rows(rows: &[AraRowState]) -> Vec<crate::ui::AraRowData> {
+    rows.iter()
+        .map(|row| crate::ui::AraRowData {
+            id: row.id.clone().into(),
+            factory: row.factory.clone().into(),
+            state: row.state.clone().into(),
+            detail: row.detail.clone().into(),
+        })
+        .collect()
+}
+
+fn plugin_set_rows(
+    ui: &MainWindow,
+    state: &mut PluginPanelState,
+    report: crate::plugin_panel::ScanReport,
+) {
+    let first_usable = report.rows.iter().position(|row| row.usable);
+    state.rows = report.rows;
+    state.selected = first_usable;
+    ui.set_plugin_rows(ModelRc::new(VecModel::from(plugin_ui_rows(&state.rows))));
+    ui.set_plugin_selected_row(first_usable.map_or(-1, |index| index as i32));
+    ui.set_plugin_scan_status(
+        format!(
+            "扫描 {} 个类：{} 可用，{} 失败",
+            state.rows.len(),
+            report.usable,
+            report.failed
+        )
+        .into(),
+    );
+    if let Some(index) = first_usable {
+        ui.set_ara_plugin_path(state.rows[index].path.clone().into());
+    }
+}
+
+fn plugin_target_label(ui: &MainWindow, port: Option<&UndoPort>) -> String {
+    let Some(port) = port else {
+        return "（无活跃工程）".to_owned();
+    };
+    let Some(project) = port.try_project() else {
+        return "（无活跃工程）".to_owned();
+    };
+    display_track(ui, &project)
+        .map(|track| track.name.clone())
+        .unwrap_or_else(|| "（没有选中音轨）".to_owned())
+}
+
+fn ara_state_from_query(query: &str) -> String {
+    if query.contains("分析 可用") {
+        "分析可用".to_owned()
+    } else if query.contains("分析 未完成") {
+        "分析未完成".to_owned()
+    } else {
+        "已绑定".to_owned()
+    }
+}
+
+/// 插件与 ARA 面板的唯一接线点（`main.rs::wire_callbacks` 调用）。
+///
+/// `port` 允许 `None`：没有撤销会话时扫描 / 查询 / 绑定 / 渲染仍可用，只有
+/// “装载到轨”会如实拒绝（与鼓机弹窗同一条纪律，⛔ 不静默降级）。
+pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    let weak = ui.as_weak();
+    let state = Rc::new(RefCell::new(PluginPanelState::default()));
+
+    ui.on_open_plugin_panel({
+        let weak = weak.clone();
+        let port = port.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_plugin_panel_open(true);
+            ui.set_plugin_target_label(plugin_target_label(&ui, port.as_deref()).into());
+            ui.set_plugin_error("".into());
+            ui.set_plugin_notice("".into());
+            if ui.get_ara_out_path().is_empty() {
+                ui.set_ara_out_path(
+                    std::env::temp_dir()
+                        .join("yeban-ara-render.wav")
+                        .to_string_lossy()
+                        .to_string()
+                        .into(),
+                );
+            }
+            let state_borrow = state.borrow();
+            if let Some(index) = state_borrow.selected
+                && let Some(row) = state_borrow.rows.get(index)
+            {
+                ui.set_ara_plugin_path(row.path.clone().into());
+            }
+        }
+    });
+
+    ui.on_plugin_close({
+        let weak = weak.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_plugin_panel_open(false);
+            }
+        }
+    });
+
+    ui.on_plugin_scan({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if state.borrow().scan_rx.is_some() {
+                ui.set_plugin_scan_status("扫描尚未结束…".into());
+                return;
+            }
+            let paths = ui.get_plugin_scan_paths().to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            state.borrow_mut().scan_rx = Some(rx);
+            ui.set_plugin_scan_status("扫描中…（后台读取本机插件目录）".into());
+            ui.set_plugin_error("".into());
+            let worker_weak = weak.clone();
+            std::thread::spawn(move || {
+                let report = crate::plugin_panel::scan(&paths);
+                let _ = tx.send(report);
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_plugin_scan_drain_requested();
+                });
+            });
+        }
+    });
+
+    ui.on_plugin_scan_drain_requested({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let received = {
+                let mut state = state.borrow_mut();
+                let Some(rx) = state.scan_rx.as_ref() else {
+                    return;
+                };
+                match rx.try_recv() {
+                    Ok(report) => {
+                        state.scan_rx = None;
+                        Some(Ok(report))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        state.scan_rx = None;
+                        Some(Err(()))
+                    }
+                }
+            };
+            match received {
+                Some(Ok(report)) => {
+                    plugin_set_rows(&ui, &mut state.borrow_mut(), report);
+                }
+                Some(Err(())) => {
+                    ui.set_plugin_scan_status("扫描线程异常结束；没有结果可显示".into());
+                }
+                None => {}
+            }
+        }
+    });
+
+    ui.on_plugin_select({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move |index: i32| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let state_borrow = state.borrow();
+            let Some(row) = state_borrow.rows.get(index) else {
+                return;
+            };
+            ui.set_plugin_selected_row(index as i32);
+            ui.set_ara_plugin_path(row.path.clone().into());
+            ui.set_plugin_error("".into());
+            ui.set_plugin_notice(format!("已选中: {}", row.title()).into());
+        }
+    });
+
+    ui.on_plugin_load({
+        let weak = weak.clone();
+        let port = port.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(port) = port.as_deref() else {
+                ui.set_plugin_error("没有撤销会话，插件装载未提交".into());
+                return;
+            };
+            let row = {
+                let state_borrow = state.borrow();
+                state_borrow
+                    .selected
+                    .and_then(|index| state_borrow.rows.get(index))
+                    .cloned()
+            };
+            let Some(row) = row else {
+                ui.set_plugin_error("请先选择一个可用的插件".into());
+                return;
+            };
+            if !row.usable {
+                ui.set_plugin_error(format!("插件不可用，拒绝装载: {}", row.state()).into());
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                ui.set_plugin_error("没有活跃工程，插件装载未提交".into());
+                return;
+            };
+            let Some(track) = display_track(&ui, &project) else {
+                ui.set_plugin_error("当前没有可装载的轨道".into());
+                return;
+            };
+            let track_id = track.id;
+            let track_name = track.name.clone();
+            let slot_index = track.devices.len();
+            ui.set_plugin_error("".into());
+            ui.set_plugin_notice("正在验证加载插件…".into());
+            let device = match crate::plugin_panel::load_device(
+                &row.path,
+                Some(row.class_name.as_str()),
+                &row.kind,
+            ) {
+                Ok(device) => device,
+                Err(error) => {
+                    ui.set_plugin_error(error.into());
+                    ui.set_plugin_notice("".into());
+                    return;
+                }
+            };
+            let device_name = device.name.clone();
+            let ops = vec![yeban_model::Op::InsertDevice {
+                track_id,
+                slot_index,
+                device,
+            }];
+            let commit_label = format!("load plugin: {device_name} -> {track_name}");
+            match port.commit_ops(now_ms(), &commit_label, ops) {
+                Ok(_) => {
+                    ui.set_plugin_notice(format!("已装载 {device_name} → {track_name}").into());
+                    ui.set_plugin_target_label(track_name.into());
+                    refresh_undo_window(&ui, port, true);
+                }
+                Err(error) => {
+                    ui.set_plugin_error(format!("插件装载提交被拒绝: {error}").into());
+                    ui.set_plugin_notice("".into());
+                }
+            }
+        }
+    });
+
+    ui.on_ara_select({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move |index: i32| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let state_borrow = state.borrow();
+            let Some(row) = state_borrow.ara_rows.get(index) else {
+                return;
+            };
+            ui.set_ara_selected_row(index as i32);
+            ui.set_ara_status(format!("已选中会话 {}", row.id).into());
+            ui.set_ara_result(row.detail.clone().into());
+        }
+    });
+
+    ui.on_ara_bind({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let plugin_path = ui.get_ara_plugin_path().to_string();
+            let wav_path = ui.get_ara_wav_path().to_string();
+            if plugin_path.trim().is_empty() {
+                ui.set_ara_status("`pluginPath` 是必填实参".into());
+                return;
+            }
+            if wav_path.trim().is_empty() {
+                ui.set_ara_status("`wavPath` 是必填实参".into());
+                return;
+            }
+            let tempo = match crate::plugin_panel::parse_tempo(ui.get_ara_tempo().as_str()) {
+                Ok(value) => value,
+                Err(error) => {
+                    ui.set_ara_status(error.into());
+                    return;
+                }
+            };
+            let loops = match crate::plugin_panel::parse_loop_iterations(ui.get_ara_loop().as_str())
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    ui.set_ara_status(error.into());
+                    return;
+                }
+            };
+            let summary = {
+                let mut state_borrow = state.borrow_mut();
+                match state_borrow.ara.bind(
+                    plugin_path.as_str(),
+                    None,
+                    wav_path.as_str(),
+                    tempo,
+                    loops,
+                    ui.get_ara_muted(),
+                ) {
+                    Ok(summary) => summary,
+                    Err(error) => {
+                        ui.set_ara_status(error.into());
+                        ui.set_ara_result("".into());
+                        return;
+                    }
+                }
+            };
+            let mut state_borrow = state.borrow_mut();
+            state_borrow.ara_rows.push(AraRowState {
+                id: summary.id.clone(),
+                factory: format!(
+                    "{} v{} · {}Hz · {} 帧",
+                    summary.factory_name,
+                    summary.factory_version,
+                    summary.sample_rate,
+                    summary.frames
+                ),
+                state: "已绑定".to_owned(),
+                detail: String::new(),
+            });
+            let index = state_borrow.ara_rows.len() - 1;
+            state_borrow.selected_ara = Some(index);
+            ui.set_ara_rows(ModelRc::new(VecModel::from(ara_ui_rows(
+                &state_borrow.ara_rows,
+            ))));
+            ui.set_ara_selected_row(index as i32);
+            ui.set_ara_status(format!("已绑定 {}", summary.id).into());
+            ui.set_ara_query_result("".into());
+            ui.set_ara_result(
+                format!(
+                    "{} v{} · {} 帧 @ {} Hz · 循环 {} · {}",
+                    summary.factory_name,
+                    summary.factory_version,
+                    summary.frames,
+                    summary.sample_rate,
+                    summary.loop_iterations,
+                    if summary.muted { "静音" } else { "不静音" }
+                )
+                .into(),
+            );
+        }
+    });
+
+    ui.on_ara_query({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let id = {
+                let state_borrow = state.borrow();
+                state_borrow
+                    .selected_ara
+                    .and_then(|index| state_borrow.ara_rows.get(index))
+                    .map(|row| row.id.clone())
+            };
+            let Some(id) = id else {
+                ui.set_ara_status("请先选择一个 ARA 会话".into());
+                return;
+            };
+            let query = {
+                let state_borrow = state.borrow();
+                match state_borrow.ara.query(&id) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        ui.set_ara_status(error.into());
+                        ui.set_ara_result("".into());
+                        return;
+                    }
+                }
+            };
+            let mut state_borrow = state.borrow_mut();
+            let new_state = ara_state_from_query(&query);
+            if let Some(index) = state_borrow.selected_ara
+                && let Some(row) = state_borrow.ara_rows.get_mut(index)
+            {
+                row.state = new_state;
+                row.detail = query.clone();
+            }
+            ui.set_ara_rows(ModelRc::new(VecModel::from(ara_ui_rows(
+                &state_borrow.ara_rows,
+            ))));
+            ui.set_ara_status("查询完成".into());
+            ui.set_ara_query_result(query.into());
+        }
+    });
+
+    ui.on_ara_render({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if state.borrow().render_rx.is_some() {
+                ui.set_ara_status("ARA 渲染尚未结束…".into());
+                return;
+            }
+            let (id, session) = {
+                let mut state_borrow = state.borrow_mut();
+                let Some(index) = state_borrow.selected_ara else {
+                    ui.set_ara_status("请先选择一个 ARA 会话".into());
+                    return;
+                };
+                let Some(row) = state_borrow.ara_rows.get(index) else {
+                    ui.set_ara_status("请先选择一个 ARA 会话".into());
+                    return;
+                };
+                let id = row.id.clone();
+                match state_borrow.ara.take(&id) {
+                    Some(session) => (id, session),
+                    None => {
+                        ui.set_ara_status(format!("没有 ARA 会话 `{id}`").into());
+                        return;
+                    }
+                }
+            };
+            let block_frames =
+                match crate::plugin_panel::parse_block_frames(ui.get_ara_block_frames().as_str()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let mut state_borrow = state.borrow_mut();
+                        state_borrow.ara.restore(id, session);
+                        ui.set_ara_status(error.into());
+                        return;
+                    }
+                };
+            let out_path = ui.get_ara_out_path().to_string();
+            if out_path.trim().is_empty() {
+                let mut state_borrow = state.borrow_mut();
+                state_borrow.ara.restore(id, session);
+                ui.set_ara_status("`outPath` 是必填实参".into());
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            state.borrow_mut().render_rx = Some(rx);
+            ui.set_ara_progress(0.05);
+            ui.set_ara_status("ARA 渲染中…（后台线程）".into());
+            ui.set_ara_result("".into());
+            let worker_weak = weak.clone();
+            let id_for_worker = id.clone();
+            std::thread::spawn(move || {
+                let mut session = session;
+                let message = match crate::plugin_panel::render_taken(
+                    &mut session,
+                    &id_for_worker,
+                    &out_path,
+                    block_frames,
+                ) {
+                    Ok(summary) => AraRenderMessage::Done {
+                        id: id_for_worker,
+                        session,
+                        summary,
+                    },
+                    Err(error) => AraRenderMessage::Failed {
+                        id: id_for_worker,
+                        session,
+                        error,
+                    },
+                };
+                let _ = tx.send(message);
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_ara_render_drain_requested();
+                });
+            });
+        }
+    });
+
+    ui.on_ara_render_drain_requested({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let message = {
+                let mut state_borrow = state.borrow_mut();
+                let Some(rx) = state_borrow.render_rx.as_ref() else {
+                    return;
+                };
+                match rx.try_recv() {
+                    Ok(message) => {
+                        state_borrow.render_rx = None;
+                        Some(Ok(message))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        state_borrow.render_rx = None;
+                        Some(Err(()))
+                    }
+                }
+            };
+            match message {
+                Some(Ok(AraRenderMessage::Done {
+                    id,
+                    session,
+                    summary,
+                })) => {
+                    let mut state_borrow = state.borrow_mut();
+                    state_borrow.ara.restore(id, session);
+                    if let Some(index) = state_borrow.selected_ara
+                        && let Some(row) = state_borrow.ara_rows.get_mut(index)
+                    {
+                        row.state = "渲染完成".to_owned();
+                        row.detail = format!(
+                            "{} · {} 帧 · {} 字节 · 峰值 {:.4} · 非零 {} 帧",
+                            summary.out_path,
+                            summary.frames,
+                            summary.bytes,
+                            summary.peak,
+                            summary.nonzero_frames
+                        );
+                    }
+                    ui.set_ara_rows(ModelRc::new(VecModel::from(ara_ui_rows(
+                        &state_borrow.ara_rows,
+                    ))));
+                    ui.set_ara_progress(1.0);
+                    ui.set_ara_status(format!("渲染完成：{}", summary.out_path).into());
+                    ui.set_ara_result(
+                        format!(
+                            "{} · {} 帧 · {} 字节 · 峰值 {:.4} · 非零 {} 帧 · blob {} 字节 / {}",
+                            summary.out_path,
+                            summary.frames,
+                            summary.bytes,
+                            summary.peak,
+                            summary.nonzero_frames,
+                            summary.blob_bytes,
+                            summary.blob_sha256
+                        )
+                        .into(),
+                    );
+                }
+                Some(Ok(AraRenderMessage::Failed { id, session, error })) => {
+                    let mut state_borrow = state.borrow_mut();
+                    state_borrow.ara.restore(id, session);
+                    if let Some(index) = state_borrow.selected_ara
+                        && let Some(row) = state_borrow.ara_rows.get_mut(index)
+                    {
+                        row.state = "渲染失败".to_owned();
+                    }
+                    ui.set_ara_rows(ModelRc::new(VecModel::from(ara_ui_rows(
+                        &state_borrow.ara_rows,
+                    ))));
+                    ui.set_ara_progress(0.0);
+                    ui.set_ara_status(error.into());
+                }
+                Some(Err(())) => {
+                    ui.set_ara_progress(0.0);
+                    ui.set_ara_status("ARA 渲染线程异常结束；会话未恢复".into());
+                }
+                None => {}
+            }
+        }
+    });
+}

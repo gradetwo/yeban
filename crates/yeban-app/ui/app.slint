@@ -1,9 +1,9 @@
-import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
+import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, PluginRowData, AraRowData, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
 // ⭐ 审计 #20：`ImeState` 必须进这份 `export` 列表。
 // `export global` 只让**同一 .slint 文档树内**的组件可见；Rust 侧
 // `ui.global::<ImeState>()` 要拿到的类型，只有在被**本文件导出**后才会出现在
 // `crate::ui` 模块里（未导出时 E0432: no `ImeState` in `ui`）。
-export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
+export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, ImeState, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, PluginRowData, AraRowData, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow, PresetRowData } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -24,6 +24,7 @@ import { OnboardingOverlay } from "dialogs/onboarding_overlay.slint";
 import { LessonsDrawer } from "dialogs/lessons_drawer.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { DrumGenDialog } from "dialogs/drum_gen_dialog.slint";
+import { PluginPanelDialog } from "dialogs/plugin_panel.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
 import { PresetLibraryDialog } from "dialogs/preset_library.slint";
 import { StartupChooserDialog } from "dialogs/startup_chooser.slint";
@@ -549,6 +550,28 @@ export component MainWindow inherits Window {
     in-out property <int> drum-gen-style-index: 0;
     in-out property <string> drum-gen-swing: "";
     in-out property <string> drum-gen-target-label: "";
+    // 插件与 ARA 面板（T-FIX-83）：入口在设备机架；默认关着 ⇒ 默认帧不变。
+    in-out property <[PluginRowData]> plugin-rows: [];
+    in-out property <int> plugin-selected-row: -1;
+    in-out property <string> plugin-scan-paths: "";
+    in-out property <string> plugin-scan-status: "";
+    in-out property <string> plugin-target-label: "";
+    in-out property <string> plugin-error: "";
+    in-out property <string> plugin-notice: "";
+    in-out property <bool> plugin-panel-open: false;
+    in-out property <[AraRowData]> ara-rows: [];
+    in-out property <int> ara-selected-row: -1;
+    in-out property <string> ara-plugin-path: "";
+    in-out property <string> ara-wav-path: "";
+    in-out property <string> ara-tempo: "120";
+    in-out property <string> ara-loop: "1";
+    in-out property <bool> ara-muted: false;
+    in-out property <string> ara-out-path: "";
+    in-out property <string> ara-block-frames: "1024";
+    in-out property <string> ara-status: "";
+    in-out property <string> ara-query-result: "";
+    in-out property <string> ara-result: "";
+    in-out property <float> ara-progress: 0.0;
     in-out property <string> engine-error: "";
     // ⭐ 这条提醒是否「需要用户动手」（默认 true）。
     // false = 环境降级（没有可用音频输出设备）：播放静音、编辑与导出照常，
@@ -994,6 +1017,20 @@ export component MainWindow inherits Window {
     callback onboarding-skip();
     callback open-audio-settings();
     callback open-drum-gen();
+    // 插件与 ARA（T-FIX-83）：扫描 / 选中 / 装载 / ARA 绑定 / 查询 / 渲染。
+    // 两个 drain 是后台线程回主线程的排空 ping（扫描与渲染各自一条）；
+    // 界面不等待，宿主在排空回调里写结果。
+    callback open-plugin-panel();
+    callback plugin-scan();
+    callback plugin-scan-drain-requested();
+    callback plugin-select(int);
+    callback plugin-load();
+    callback plugin-close();
+    callback ara-bind();
+    callback ara-select(int);
+    callback ara-query();
+    callback ara-render();
+    callback ara-render-drain-requested();
     callback open-export-wav();
     callback open-humanize();
     callback open-project();
@@ -1838,8 +1875,10 @@ export component MainWindow inherits Window {
                 device-track-label: root.device-track-label;
                 macro-count: root.macro-names.length;
                 macro-panel-open: root.macro-panel-open;
+                plugin-panel-open: root.plugin-panel-open;
 
                 open-macro-panel => { root.macro-panel-open = true; }
+                open-plugin-panel => { root.plugin-panel-open = true; }
 
                 device-bypass-toggle(id) => { root.device-bypass-toggle(id); }
                 device-remove(id) => { root.device-remove(id); }
@@ -2276,6 +2315,43 @@ export component MainWindow inherits Window {
             style-picked(i) => { root.drum-gen-style-picked(i); }
             apply => { root.apply-drum-gen(); }
             close => { root.close-drum-gen(); }
+        }
+
+        // Visible Plugin & ARA Modal Dialog（T-FIX-83；入口在设备机架）
+        if root.plugin-panel-open : PluginPanelDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            plugin-rows: root.plugin-rows;
+            plugin-selected-row <=> root.plugin-selected-row;
+            scan-paths <=> root.plugin-scan-paths;
+            scan-status: root.plugin-scan-status;
+            target-label: root.plugin-target-label;
+            plugin-error <=> root.plugin-error;
+            plugin-notice: root.plugin-notice;
+            ara-rows: root.ara-rows;
+            ara-selected-row <=> root.ara-selected-row;
+            ara-plugin-path <=> root.ara-plugin-path;
+            ara-wav-path <=> root.ara-wav-path;
+            ara-tempo <=> root.ara-tempo;
+            ara-loop <=> root.ara-loop;
+            ara-muted <=> root.ara-muted;
+            ara-out-path <=> root.ara-out-path;
+            ara-block-frames <=> root.ara-block-frames;
+            ara-status: root.ara-status;
+            ara-query-result: root.ara-query-result;
+            ara-result: root.ara-result;
+            ara-progress: root.ara-progress;
+            scan => { root.plugin-scan(); }
+            select-plugin(i) => { root.plugin-select(i); }
+            load-plugin => { root.plugin-load(); }
+            bind-ara => { root.ara-bind(); }
+            select-ara(i) => { root.ara-select(i); }
+            query-ara => { root.ara-query(); }
+            render-ara => { root.ara-render(); }
+            close => { root.plugin-close(); }
         }
 
         // Visible Template Chooser Modal Dialog（从模板新建）

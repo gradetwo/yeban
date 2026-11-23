@@ -24,6 +24,10 @@ export component UnifiedLowerDock inherits Rectangle {
     in property <int> macro-count: 0;
     in-out property <bool> macro-panel-open: false;
     callback open-macro-panel();
+    // 插件与 ARA 面板（T-FIX-83）：入口在设备区的本地操作行；本组件只画按钮，
+    // 面板本体与数据全在 `dialogs/plugin_panel.slint` / 宿主。
+    in-out property <bool> plugin-panel-open: false;
+    callback open-plugin-panel();
 
     callback device-bypass-toggle(string);
     callback device-remove(string);
@@ -383,6 +387,37 @@ export component UnifiedLowerDock inherits Rectangle {
                         Rectangle {
                             height: 22px;
                             border-radius: 3px;
+                            background: root.plugin-panel-open
+                                ? Theme.accent.with-alpha(0.22)
+                                : (dock-plugin-btn.has-hover ? Tokens.line : Tokens.bg-lane2);
+                            border-width: 1px;
+                            border-color: root.plugin-panel-open ? Theme.accent : Tokens.line;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: @tr("插件");
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
+                                    color: root.plugin-panel-open ? Theme.accent : Tokens.skin-text-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            accessible-role: button;
+                            accessible-id: "plugin-panel-open-button";
+                            accessible-label: @tr("打开插件与 ARA 面板");
+                            accessible-action-default => { root.open-plugin-panel(); }
+                            dock-plugin-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.open-plugin-panel(); }
+                            }
+                            TooltipBubble { text: @tr("插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染"); is-visible: dock-plugin-btn.has-hover; tip-offset-y: 26px; }
+                        }
+
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
                             background: dock-rev-btn.has-hover ? Tokens.line : Tokens.bg-lane2;
                             border-width: 1px;
                             border-color: Tokens.line;
@@ -626,6 +661,26 @@ export component UnifiedLowerDock inherits Rectangle {
                                     mouse-cursor: MouseCursor.pointer;
                                     clicked => { root.execute-action("load-sfz"); }
                                 }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 24px;
+                            border-radius: 3px;
+                            background: empty_add_plugin.has-hover ? Theme.accent.with-alpha(0.25) : Tokens.bg-lane2;
+                            border-width: 1px;
+                            border-color: Theme.accent.with-alpha(0.45);
+                            HorizontalLayout {
+                                alignment: center;
+                                Text { text: @tr("+ 插件与 ARA…"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: Tokens.skin-text-strong; vertical-alignment: center; }
+                            }
+                            accessible-role: button;
+                            accessible-id: "plugin-panel-empty-open-button";
+                            accessible-label: @tr("打开插件与 ARA 面板");
+                            accessible-action-default => { root.open-plugin-panel(); }
+                            empty_add_plugin := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.open-plugin-panel(); }
                             }
                         }
                     }

@@ -174,6 +174,9 @@ pub mod sfz_load;
 // `ROAD-M4-008` 选项 (a) 第三片：GUI 的保存路径与领域 MCP 参与**同一把**建议锁。
 // 它没有 feature 门：`--save-as` 在**默认构建**里也是写路径（见该模块的文档）。
 pub mod project_lock;
+// ⭐ **插件与 ARA 面板的纯 Rust 侧**（T-FIX-83）：扫描 / 验证加载 / ARA registry。
+// 与 MCP 工具同一套 `yeban-plugin-host` 校验与错误原文；Slint 写属性在 host。
+pub mod plugin_panel;
 // AI 提案抽屉的**读面**（`Domain.proposals` → 界面属性, ⛔ 不发明第二份权威）。
 // 没有 feature 门：默认构建里它读不到来源, 于是恒给"没有来源"那句**真话**（见模块文档）。
 pub mod proposals;

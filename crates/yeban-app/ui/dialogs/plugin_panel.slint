@@ -1,0 +1,645 @@
+// 夜半 (Yeban) — 插件与 ARA 面板（T-FIX-83，四方对齐 GUI 补齐批 2）
+//
+// 入口在**既有设备机架**的本地操作行（`lower_dock.slint` 的「插件」按钮）与
+// 空设备链的「+ 插件」按钮；本文件不是一级导航，不新增侧栏分类。
+//
+// 五个 GUI 入口：
+//   1. VST3 扫描：`扫描` 按钮 → 宿主后台线程 `Host::scan`，行内同时显示
+//      “可用”与“失败: 原文”，并给总数 / 可用 / 失败三个读数；
+//   2. VST3 装载：选中一行 → `装载到当前轨`，走 `Host::load(_effect)` 的
+//      同一验证加载；失败原文进红色 `plugin-error`，⛔ 不换默认插件；
+//   3. ARA 绑定：插件路径 + wav 路径 + tempo / loop / muted → `绑定`；
+//   4. ARA 查询：选中会话 → `查询`，分析可用性 / region / head-tail / 音符数可见；
+//   5. ARA 渲染：输出路径 + blockFrames → `渲染`，进度条 + 状态 + 结果摘要。
+//
+// 数据面全由宿主 `host::wire_plugin_panel` 单向写；本文件不读工程、不解析
+// 数值、不写文件。扫描 / 加载的校验与错误原文由 `plugin_panel.rs` 接住。
+
+import { Tokens, UiText, UiMonoText, PluginRowData, AraRowData, ImeAwareTextInput } from "../tokens.slint";
+
+component PanelButton inherits Rectangle {
+    in property <string> label: "";
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 26px;
+    accessible-role: button;
+    border-radius: Tokens.radius-sm;
+    background: !self.enabled
+        ? Tokens.bg-lane
+        : (self.primary ? Tokens.gold.with-alpha(btn.has-hover ? 0.34 : 0.24) : Tokens.bg-lane2);
+    border-width: 1px;
+    border-color: !self.enabled
+        ? Tokens.line
+        : (self.primary ? Tokens.gold.with-alpha(0.72) : Tokens.line-strong);
+    opacity: self.enabled ? 1.0 : 0.55;
+
+    UiText {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: root.enabled ? (root.primary ? Tokens.gold : Tokens.ink-0) : Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    // UI-A11Y-003：无障碍动作与鼠标点击必须落在同一个判断与回调上。
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    btn := TouchArea {
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component FieldLabel inherits UiText {
+    height: 16px;
+    color: Tokens.ink-2;
+    font-size: Tokens.font-size-xs;
+    vertical-alignment: center;
+}
+
+component PanelInput inherits Rectangle {
+    height: 24px;
+    accessible-role: text-input;
+    background: Tokens.bg-lane;
+    border-radius: Tokens.radius-sm;
+    border-width: 1px;
+    border-color: Tokens.line;
+    in-out property <string> text <=> input.text;
+    input := ImeAwareTextInput {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        font-family: Tokens.font-mono;
+        font-size: 10px;
+        color: Tokens.ink-0;
+        vertical-alignment: center;
+        single-line: true;
+    }
+}
+
+export component PluginPanelDialog inherits Rectangle {
+    in property <[PluginRowData]> plugin-rows: [];
+    in-out property <int> plugin-selected-row: -1;
+    in-out property <string> scan-paths: "";
+    in property <string> scan-status: "";
+    in property <string> target-label: "";
+    in-out property <string> plugin-error: "";
+    in property <string> plugin-notice: "";
+
+    in property <[AraRowData]> ara-rows: [];
+    in-out property <int> ara-selected-row: -1;
+    in-out property <string> ara-plugin-path: "";
+    in-out property <string> ara-wav-path: "";
+    in-out property <string> ara-tempo: "120";
+    in-out property <string> ara-loop: "1";
+    in-out property <bool> ara-muted: false;
+    in-out property <string> ara-out-path: "";
+    in-out property <string> ara-block-frames: "1024";
+    in property <string> ara-status: "";
+    in-out property <string> ara-query-result: "";
+    in property <string> ara-result: "";
+    in property <float> ara-progress: 0.0;
+
+    callback scan();
+    callback select-plugin(int);
+    callback load-plugin();
+    callback bind-ara();
+    callback select-ara(int);
+    callback query-ara();
+    callback render-ara();
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.72);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "plugin-panel-dialog";
+    accessible-label: @tr("插件与 ARA");
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 40px, 1180px);
+        height: min(parent.height - 40px, 760px);
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line-strong;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "plugin-panel";
+        accessible-label: @tr("插件与 ARA");
+
+        // ------------------------------------------------------------ 标题
+        UiText {
+            x: Tokens.space-6;
+            y: 0;
+            width: parent.width - 120px;
+            height: 44px;
+            text: @tr("插件与 ARA");
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-md;
+            font-weight: 700;
+            vertical-alignment: center;
+            accessible-role: text;
+            accessible-id: "plugin-panel-title";
+        }
+
+        UiText {
+            x: parent.width - 140px;
+            y: 0;
+            width: 100px;
+            height: 44px;
+            text: @tr("设备机架内");
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            x: parent.width - 40px;
+            y: 9px;
+            width: 26px;
+            height: 26px;
+            border-radius: Tokens.radius-sm;
+            background: close-touch.has-hover ? Tokens.bg-lane : transparent;
+            border-width: 1px;
+            border-color: close-touch.has-hover ? Tokens.line : transparent;
+            accessible-role: button;
+            accessible-id: "plugin-panel-close";
+            accessible-label: @tr("关闭插件与 ARA 面板");
+            accessible-action-default => { root.close(); }
+            UiText {
+                x: 0; y: 0; width: parent.width; height: parent.height;
+                text: "×"; color: Tokens.ink-0; font-size: 16px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            close-touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.close(); }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-6;
+            y: 44px;
+            width: parent.width - 40px;
+            height: 1px;
+            background: Tokens.line;
+        }
+
+        // ------------------------------------------------------------ 双栏主体
+        HorizontalLayout {
+            x: Tokens.space-6;
+            y: 52px;
+            width: parent.width - 40px;
+            height: parent.height - 68px;
+            spacing: Tokens.space-6;
+
+            // ======================================================= 左：VST3
+            VerticalLayout {
+                width: 470px;
+                spacing: 8px;
+
+                UiText {
+                    height: 20px;
+                    text: @tr("VST3 插件");
+                    color: Tokens.ink-0;
+                    font-size: Tokens.font-size-sm;
+                    font-weight: 700;
+                }
+
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 6px;
+                    PanelInput {
+                        horizontal-stretch: 1;
+                        text <=> root.scan-paths;
+                        accessible-id: "plugin-scan-paths";
+                        accessible-label: @tr("额外扫描目录（多个用分号分隔）");
+                    }
+                    PanelButton {
+                        width: 74px;
+                        label: @tr("扫描");
+                        primary: true;
+                        accessible-id: "plugin-scan-button";
+                        accessible-label: @tr("扫描 VST3 插件");
+                        clicked => { root.scan(); }
+                    }
+                }
+
+                UiMonoText {
+                    height: 18px;
+                    text: root.scan-status;
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-id: "plugin-scan-status";
+                }
+
+                Rectangle {
+                    height: 200px;
+                    background: Tokens.bg-lane;
+                    border-radius: Tokens.radius-sm;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+                    clip: true;
+
+                    if root.plugin-rows.length == 0 : UiText {
+                        x: 12px;
+                        y: 12px;
+                        width: parent.width - 24px;
+                        height: 40px;
+                        text: @tr("尚未扫描。点「扫描」读取本机 VST3；坏插件会以红色失败行留在列表里。");
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        wrap: word-wrap;
+                    }
+
+                    Flickable {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+
+
+                        VerticalLayout {
+                            width: root.plugin-rows.length == 0 ? parent.width : parent.width - 12px;
+                            spacing: 0px;
+
+                            for row[idx] in root.plugin-rows : Rectangle {
+                                height: 38px;
+                                width: parent.width;
+                                background: root.plugin-selected-row == idx
+                                    ? Tokens.gold.with-alpha(0.16)
+                                    : (row-touch.has-hover ? Tokens.bg-lane2 : transparent);
+                                border-width: 1px;
+                                border-color: root.plugin-selected-row == idx ? Tokens.gold.with-alpha(0.55) : transparent;
+                                clip: true;
+
+                                accessible-role: list-item;
+                                accessible-id: "plugin-row-" + idx;
+                                accessible-label: row.name + "，" + row.state;
+                                accessible-action-default => { root.select-plugin(idx); }
+
+                                VerticalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    padding-top: 3px;
+                                    spacing: 1px;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        UiText {
+                                            horizontal-stretch: 1;
+                                            text: row.name;
+                                            color: Tokens.ink-0;
+                                            font-size: Tokens.font-size-xs;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        UiText {
+                                            width: 42px;
+                                            text: row.usable ? "可用" : "失败";
+                                            color: row.usable ? Tokens.gold : Tokens.skin-arm;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            horizontal-alignment: right;
+                                        }
+                                    }
+                                    UiMonoText {
+                                        height: 13px;
+                                        text: row.meta + " · " + row.state;
+                                        color: row.usable ? Tokens.ink-2 : Tokens.skin-arm;
+                                        font-size: 8.5px;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                row-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.select-plugin(idx); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                UiMonoText {
+                    height: 16px;
+                    text: root.plugin-selected-row >= 0 && root.plugin-selected-row < root.plugin-rows.length
+                        ? root.plugin-rows[root.plugin-selected-row].path
+                        : @tr("未选中插件");
+                    color: Tokens.ink-2;
+                    font-size: 8.5px;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-id: "plugin-selected-path";
+                }
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 6px;
+                    UiText {
+                        horizontal-stretch: 1;
+                        text: @tr("目标轨：{}", root.target-label);
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                    }
+                    PanelButton {
+                        width: 116px;
+                        label: @tr("装载到当前轨");
+                        primary: true;
+                        enabled: root.plugin-selected-row >= 0
+                            && root.plugin-selected-row < root.plugin-rows.length
+                            && root.plugin-rows[root.plugin-selected-row].usable;
+                        accessible-id: "plugin-load-button";
+                        accessible-label: @tr("装载选中的插件到当前轨");
+                        clicked => { root.load-plugin(); }
+                    }
+                }
+
+                UiText {
+                    height: 30px;
+                    text: root.plugin-error != "" ? root.plugin-error : root.plugin-notice;
+                    color: root.plugin-error != "" ? Tokens.skin-arm : Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-id: "plugin-result-line";
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Tokens.line;
+            }
+
+            // ======================================================= 右：ARA
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 7px;
+
+                UiText {
+                    height: 20px;
+                    text: @tr("ARA 绑定 / 查询 / 渲染");
+                    color: Tokens.ink-0;
+                    font-size: Tokens.font-size-sm;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 92px;
+                    background: Tokens.bg-lane;
+                    border-radius: Tokens.radius-sm;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+                    clip: true;
+
+                    if root.ara-rows.length == 0 : UiText {
+                        x: 10px; y: 10px; width: parent.width - 20px; height: 30px;
+                        text: @tr("还没有 ARA 会话。下面填插件与 wav，点「绑定」。");
+                        color: Tokens.ink-2; font-size: Tokens.font-size-xs; wrap: word-wrap;
+                    }
+
+                    Flickable {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            width: parent.width;
+                            for row[idx] in root.ara-rows : Rectangle {
+                                height: 28px;
+                                width: parent.width;
+                                background: root.ara-selected-row == idx
+                                    ? Tokens.gold.with-alpha(0.16)
+                                    : (ara-touch.has-hover ? Tokens.bg-lane2 : transparent);
+                                border-width: 1px;
+                                border-color: root.ara-selected-row == idx ? Tokens.gold.with-alpha(0.55) : transparent;
+
+                                accessible-role: list-item;
+                                accessible-id: "ara-session-row-" + idx;
+                                accessible-label: row.id + "，" + row.state;
+                                accessible-action-default => { root.select-ara(idx); }
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    UiMonoText {
+                                        width: 64px;
+                                        text: row.id;
+                                        color: Tokens.ink-0;
+                                        font-size: 9px;
+                                        vertical-alignment: center;
+                                    }
+                                    UiText {
+                                        horizontal-stretch: 1;
+                                        text: row.factory;
+                                        color: Tokens.ink-1;
+                                        font-size: Tokens.font-size-xs;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    UiText {
+                                        width: 90px;
+                                        text: row.state;
+                                        color: Tokens.ink-2;
+                                        font-size: 9px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                ara-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.select-ara(idx); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 6px;
+                    FieldLabel { width: 62px; text: @tr("插件路径"); }
+                    PanelInput {
+                        horizontal-stretch: 1;
+                        text <=> root.ara-plugin-path;
+                        accessible-id: "ara-plugin-path";
+                        accessible-label: @tr("ARA 插件路径");
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 6px;
+                    FieldLabel { width: 62px; text: @tr("wav 路径"); }
+                    PanelInput {
+                        horizontal-stretch: 1;
+                        text <=> root.ara-wav-path;
+                        accessible-id: "ara-wav-path";
+                        accessible-label: @tr("ARA 输入 wav 路径");
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 6px;
+                    FieldLabel { width: 62px; text: @tr("速度 BPM"); }
+                    PanelInput {
+                        width: 58px;
+                        text <=> root.ara-tempo;
+                        accessible-id: "ara-tempo";
+                        accessible-label: @tr("ARA 速度 BPM");
+                    }
+                    FieldLabel { width: 50px; text: @tr("循环"); }
+                    PanelInput {
+                        width: 46px;
+                        text <=> root.ara-loop;
+                        accessible-id: "ara-loop";
+                        accessible-label: @tr("ARA 循环次数");
+                    }
+                    PanelButton {
+                        width: 64px;
+                        label: root.ara-muted ? @tr("不静音") : @tr("静音");
+                        accessible-id: "ara-muted";
+                        accessible-label: @tr("ARA 会话静音开关");
+                        clicked => { root.ara-muted = !root.ara-muted; }
+                    }
+                    PanelButton {
+                        width: 70px;
+                        label: @tr("绑定");
+                        primary: true;
+                        accessible-id: "ara-bind-button";
+                        accessible-label: @tr("绑定 ARA 会话");
+                        clicked => { root.bind-ara(); }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 6px;
+                    PanelButton {
+                        width: 70px;
+                        label: @tr("查询");
+                        enabled: root.ara-selected-row >= 0 && root.ara-selected-row < root.ara-rows.length;
+                        accessible-id: "ara-query-button";
+                        accessible-label: @tr("查询选中 ARA 会话");
+                        clicked => { root.query-ara(); }
+                    }
+                    UiText {
+                        horizontal-stretch: 1;
+                        text: root.ara-status;
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        accessible-role: text;
+                        accessible-id: "ara-status-line";
+                    }
+                }
+
+                UiText {
+                    height: 54px;
+                    text: root.ara-query-result != "" ? root.ara-query-result : @tr("查询结果显示在这里。");
+                    color: root.ara-query-result != "" ? Tokens.ink-1 : Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-id: "ara-query-result";
+                }
+
+                Rectangle { height: 1px; background: Tokens.line; }
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 6px;
+                    FieldLabel { width: 62px; text: @tr("输出 wav"); }
+                    PanelInput {
+                        horizontal-stretch: 1;
+                        text <=> root.ara-out-path;
+                        accessible-id: "ara-out-path";
+                        accessible-label: @tr("ARA 渲染输出路径");
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 6px;
+                    FieldLabel { width: 62px; text: @tr("块大小"); }
+                    PanelInput {
+                        width: 70px;
+                        text <=> root.ara-block-frames;
+                        accessible-id: "ara-block-frames";
+                        accessible-label: @tr("ARA 渲染块大小");
+                    }
+                    PanelButton {
+                        width: 84px;
+                        label: @tr("渲染");
+                        enabled: root.ara-selected-row >= 0
+                            && root.ara-selected-row < root.ara-rows.length
+                            && root.ara-progress <= 0.0;
+                        accessible-id: "ara-render-button";
+                        accessible-label: @tr("渲染选中 ARA 会话为 WAV");
+                        clicked => { root.render-ara(); }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 8px;
+                        background: Tokens.bg-lane;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: Tokens.line;
+                        Rectangle {
+                            height: parent.height;
+                            width: parent.width * root.ara-progress;
+                            background: root.ara-progress >= 1.0 ? Tokens.gold : Tokens.gold.with-alpha(0.72);
+                            border-radius: 4px;
+                            accessible-role: progress-indicator;
+                            accessible-id: "ara-render-progress";
+                            accessible-label: @tr("ARA 渲染进度 {}%", Math.round(root.ara-progress * 100.0));
+                        }
+                    }
+                }
+
+                UiText {
+                    height: 40px;
+                    text: root.ara-result != "" ? root.ara-result : root.ara-status;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-id: "ara-render-result";
+                }
+            }
+        }
+    }
+}

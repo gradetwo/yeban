@@ -108,6 +108,10 @@ yeban-dsp = { workspace = true }
 # 只写 `{ workspace = true }`, 不写 version (ADR-0001 D5)。
 yeban-decode = { workspace = true }
 
+# 插件与 ARA 面板（T-FIX-83）：GUI 直接复用 `yeban-plugin-host` 的扫描 /
+# 验证加载 / ARA 会话；与 MCP 同一个宿主层，⛔ 不另造插件加载器。
+yeban-plugin-host = { workspace = true }
+
 # ---------------------------------------------------------------------------
 # yeban-engine: 实时引擎的**只读消费面** (电平 SPSC + 快照), app-mixer 工作线
 # ---------------------------------------------------------------------------

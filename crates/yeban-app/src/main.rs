@@ -1488,6 +1488,9 @@ fn wire_callbacks(
     // `on_*` 是覆盖语义 ⇒ 留着就会把 `wire_proposal_drawer` 刚接好的写入口**静默擦掉**，
     // 而日志里那句"未接线"照旧打出来（写面接了、注册被自己盖掉，界面上按下去什么都不发生）。
     host::wire_proposal_drawer(ui, proposal_source);
+    // ⭐ 插件与 ARA 面板（T-FIX-83）：设备机架的「插件」入口。扫描 / 渲染
+    // 在后台线程，装载走普通 `commit_ops`；没有撤销会话时装载如实拒绝。
+    host::wire_plugin_panel(ui, undo.clone());
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo.clone());

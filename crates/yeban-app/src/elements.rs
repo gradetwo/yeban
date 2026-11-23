@@ -3203,6 +3203,192 @@ impl ElementRegistry {
             false,
         );
 
+        // ------------------------------------------------------ 插件与 ARA 面板（T-FIX-83）
+        // 入口在既有设备机架的本地操作行（`lower_dock.slint`），面板住隐藏模态
+        // `dialogs/plugin_panel.slint`；五个动作与 MCP 同语义、同错误原文。
+        registry.add(
+            "plugin-panel-open-button",
+            ElementKind::Button,
+            "lower_dock.slint",
+            "插件与 ARA：扫描 / 装载 / 绑定 / 查询 / 渲染",
+            false,
+        );
+        registry.add(
+            "plugin-panel-empty-open-button",
+            ElementKind::Button,
+            "lower_dock.slint",
+            "空设备链的 + 插件入口",
+            false,
+        );
+        registry.add(
+            "plugin-panel-dialog",
+            ElementKind::Region,
+            "dialogs/plugin_panel.slint",
+            "插件与 ARA 面板（隐藏模态）",
+            false,
+        );
+        registry.add(
+            "plugin-panel",
+            ElementKind::Region,
+            "dialogs/plugin_panel.slint",
+            "插件与 ARA 面板主体",
+            false,
+        );
+        registry.add(
+            "plugin-panel-title",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "插件与 ARA 面板标题",
+            false,
+        );
+        registry.add(
+            "plugin-panel-close",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "关闭插件与 ARA 面板",
+            false,
+        );
+        registry.add(
+            "plugin-scan-paths",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "插件扫描路径（每行一条）",
+            false,
+        );
+        registry.add(
+            "plugin-scan-button",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "扫描 VST3 插件",
+            false,
+        );
+        registry.add(
+            "plugin-scan-status",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "插件扫描状态与计数",
+            false,
+        );
+        registry.add(
+            "plugin-result-line",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "插件装载结果（失败时原文）",
+            false,
+        );
+        registry.add(
+            "plugin-selected-path",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "当前选中的插件路径",
+            false,
+        );
+        registry.add(
+            "plugin-load-button",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "装载选中插件到当前轨",
+            false,
+        );
+        registry.add(
+            "ara-plugin-path",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 插件路径",
+            false,
+        );
+        registry.add(
+            "ara-wav-path",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 音频路径",
+            false,
+        );
+        registry.add(
+            "ara-tempo",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 速度 BPM",
+            false,
+        );
+        registry.add(
+            "ara-loop",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 循环次数",
+            false,
+        );
+        registry.add(
+            "ara-muted",
+            ElementKind::Switch,
+            "dialogs/plugin_panel.slint",
+            "ARA 静音",
+            false,
+        );
+        registry.add(
+            "ara-bind-button",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "绑定 ARA 会话",
+            false,
+        );
+        registry.add(
+            "ara-query-button",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "查询选中 ARA 会话",
+            false,
+        );
+        registry.add(
+            "ara-status-line",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "ARA 绑定状态（失败时原文）",
+            false,
+        );
+        registry.add(
+            "ara-query-result",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "ARA 查询结果",
+            false,
+        );
+        registry.add(
+            "ara-out-path",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 渲染输出路径",
+            false,
+        );
+        registry.add(
+            "ara-block-frames",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ARA 渲染块大小",
+            false,
+        );
+        registry.add(
+            "ara-render-button",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "渲染选中 ARA 会话",
+            false,
+        );
+        registry.add(
+            "ara-render-progress",
+            ElementKind::ProgressIndicator,
+            "dialogs/plugin_panel.slint",
+            "ARA 渲染进度",
+            false,
+        );
+        registry.add(
+            "ara-render-result",
+            ElementKind::Text,
+            "dialogs/plugin_panel.slint",
+            "ARA 渲染结果（失败时原文）",
+            false,
+        );
+
         // ------------------------------------------------------ 原生预制库面板（T-FIX-117）
         // `ui/dialogs/preset_library.slint` 的 7 个字面量 id。行内「应用到当前轨」
         // （`"preset-apply-" + row-index`）是模板，今天的成员数取决于用户库里已有多少
@@ -3902,7 +4088,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 43] = [
+    const SLINT_MANIFEST: [&str; 44] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3971,6 +4157,8 @@ mod tests {
         // `elements::tests` 判据在尖端上正是这样红的（见 `slint_manifest_matches_adr_0001_d2`
         // 与 `slint_accessible_ids_and_registry_cover_each_other`）。
         "dialogs/preset_library.slint",
+        // 插件与 ARA 面板（T-FIX-83）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/plugin_panel.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {
@@ -4244,6 +4432,10 @@ mod tests {
         // ⛔ 不是"UI 加了 id 却忘了登记"：`.slint` 里 `for … in root.rows` 明写在那儿，
         // 用户存下第一条预制后同一模板就会实例化。
         ("preset-apply-", ""),
+        // T-FIX-83：插件扫描结果与 ARA 会话表的行模板。行来自运行时扫描 / 绑定结果，
+        // 静态注册表不持插件数据 ⇒ 干净启动 0 行；扫描到插件或绑定会话后同一模板即实例化。
+        ("plugin-row-", ""),
+        ("ara-session-row-", ""),
     ];
 
     /// 这个模板是不是在 [`EMPTY_DYNAMIC_TEMPLATES_ALLOWED`] 里登记过。
