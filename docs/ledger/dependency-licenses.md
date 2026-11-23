@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `c8d819d6fbf08eb2`
+- `Cargo.lock` SHA-256（前 16 位）: `9faf35b554cef2c4`
 - 外部依赖包数: **694**（不含 30 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -227,7 +227,7 @@
 | `foreign-types` | `0.5.0` | `MIT/Apache-2.0` | 传递 | — |
 | `foreign-types-macros` | `0.2.4` | `MIT/Apache-2.0` | 传递 | — |
 | `foreign-types-shared` | `0.3.1` | `MIT/Apache-2.0` | 传递 | — |
-| `form_urlencoded` | `1.2.2` | `MIT OR Apache-2.0` | 传递 | — |
+| `form_urlencoded` | `1.2.3` | `MIT OR Apache-2.0` | 传递 | — |
 | `futures` | `0.3.34` | `MIT OR Apache-2.0` | 传递 | — |
 | `futures-channel` | `0.3.34` | `MIT OR Apache-2.0` | 传递 | — |
 | `futures-core` | `0.3.34` | `MIT OR Apache-2.0` | 传递 | — |
@@ -620,7 +620,7 @@
 | `unty` | `0.0.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `ureq` | `3.5.2` | `MIT OR Apache-2.0` | 直接 | `yeban-app` |
 | `ureq-proto` | `0.7.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `url` | `2.5.8` | `MIT OR Apache-2.0` | 传递 | — |
+| `url` | `2.5.9` | `MIT OR Apache-2.0` | 传递 | — |
 | `usvg` | `0.48.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `utf8-zero` | `0.8.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `utf8_iter` | `1.0.4` | `Apache-2.0 OR MIT` | 传递 | — |
