@@ -2219,7 +2219,7 @@ impl Plan {
                 changed,
                 assets,
                 history_commits,
-                embedded: _,
+                embedded,
                 embedded_preset_count,
                 embedded_preset_bytes,
                 include_user_presets,
@@ -2241,6 +2241,24 @@ impl Plan {
                 preview.insert("force".to_owned(), Value::from(*force));
                 preview.insert("changed".to_owned(), Value::from(*changed));
                 preview.insert("atomic".to_owned(), Value::from(true));
+                // ⭐ T-FIX-48：缺失样本不再拒存——但在回执里点名（轨道 ＋ 绑定 ＋ 样本键）。
+                let missing = &embedded.missing;
+                preview.insert(
+                    "missingSamples".to_owned(),
+                    serde_json::json!({
+                        "count": missing.len(),
+                        "items": missing
+                            .iter()
+                            .map(|item| serde_json::json!({
+                                "trackId": item.track_id,
+                                "binding": item.binding,
+                                "sample": item.sample,
+                                "reason": item.reason,
+                                "detail": item.detail,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }),
+                );
                 preview.insert(
                     "embeddedPresets".to_owned(),
                     serde_json::json!({

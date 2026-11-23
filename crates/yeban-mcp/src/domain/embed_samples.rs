@@ -49,6 +49,24 @@ pub struct EmbeddedCollection {
     pub added: BTreeMap<AssetHash, Vec<u8>>,
     /// 旧表里新表不再引用、且不在工程 `assets` 里的哈希（调用方从池里删）。
     pub pruned: Vec<AssetHash>,
+    /// 本次**没找到**的样本项（T-FIX-48：不再让一个缺失样本拒存整个工程，
+    /// 改为记在这里随保存回执响亮报告）。
+    pub missing: Vec<MissingSample>,
+}
+
+/// 一条缺失样本的登记（轨道 ＋ 绑定 ＋ 具体样本键）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSample {
+    /// 绑定这个采样器的轨道身份（规范文本）。
+    pub track_id: String,
+    /// 轨道上记录的采样器路径（工程里的绑定原样）。
+    pub binding: String,
+    /// 缺失的样本键（`None` = SFZ 定义文件本身缺失）。
+    pub sample: Option<String>,
+    /// 机器可读原因：`sfz_missing` / `sample_missing`。
+    pub reason: &'static str,
+    /// 人读细节（原错误文本）。
+    pub detail: String,
 }
 
 /// 对一份工程做保存侧内嵌收集（⛔ 不写盘、不改工程 —— 只算出产物，调用方安装）。
@@ -67,6 +85,7 @@ pub fn collect(
     assets: &BTreeMap<AssetHash, Vec<u8>>,
 ) -> Result<EmbeddedCollection, Fault> {
     let mut map: BTreeMap<String, String> = BTreeMap::new();
+    let mut missing: Vec<MissingSample> = Vec::new();
     let mut added: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
     for (track_id, track) in &project.tracks {
         let Some(binding) = track.sampler.as_ref().map(|sampler| sampler.path.as_str()) else {
@@ -75,21 +94,35 @@ pub fn collect(
         // ① SFZ 文本：盘上优先，否则已内嵌复用，否则响亮失败。
         let (text, disk_path) = match super::render::resolve_sampler_path(binding, project_path) {
             Ok(disk) => {
-                let bytes = super::store::read_bounded(&disk, 16 * 1024 * 1024, binding).map_err(
-                    |error| sampler_unreadable(binding, format!("读采样器定义文件失败: {error:?}")),
-                )?;
+                let bytes = match super::store::read_bounded(&disk, 16 * 1024 * 1024, binding) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        missing.push(MissingSample {
+                            track_id: track_id.to_canonical_string(),
+                            binding: binding.to_owned(),
+                            sample: None,
+                            reason: "sfz_missing",
+                            detail: format!("读采样器定义文件失败: {error:?}"),
+                        });
+                        continue;
+                    }
+                };
                 let text = String::from_utf8(bytes).map_err(|error| {
                     sampler_unreadable(binding, format!("采样器定义文件不是合法 UTF-8: {error}"))
                 })?;
                 (text, Some(disk))
             }
             Err(_) => {
-                let bytes = embedded_bytes(project, assets, binding).ok_or_else(|| {
-                    sampler_unreadable(
-                        binding,
-                        "磁盘上找不到采样器定义文件，工程里也没有内嵌副本".to_owned(),
-                    )
-                })?;
+                let Some(bytes) = embedded_bytes(project, assets, binding) else {
+                    missing.push(MissingSample {
+                        track_id: track_id.to_canonical_string(),
+                        binding: binding.to_owned(),
+                        sample: None,
+                        reason: "sfz_missing",
+                        detail: "磁盘上找不到采样器定义文件，工程里也没有内嵌副本".to_owned(),
+                    });
+                    continue;
+                };
                 let text = String::from_utf8(bytes).map_err(|error| {
                     sampler_unreadable(
                         binding,
@@ -112,20 +145,23 @@ pub fn collect(
         map.insert(binding.to_owned(), sfz_hash.as_str().to_owned());
         added.insert(sfz_hash, text.as_bytes().to_vec());
         for (raw, key) in triggered {
-            let bytes = resolve_sample_bytes(
+            let Some(bytes) = resolve_sample_bytes(
                 project_path,
                 disk_path.as_deref(),
                 &raw,
                 &key,
                 project,
                 assets,
-            )
-            .ok_or_else(|| {
-                sampler_unreadable(
-                    binding,
-                    format!("谱子触发的样本找不到: `{raw}`（键 `{key}`）"),
-                )
-            })?;
+            ) else {
+                missing.push(MissingSample {
+                    track_id: track_id.to_canonical_string(),
+                    binding: binding.to_owned(),
+                    sample: Some(key),
+                    reason: "sample_missing",
+                    detail: format!("谱子触发的样本找不到: `{raw}`"),
+                });
+                continue;
+            };
             let hash = AssetHash::of_bytes(&bytes);
             map.insert(key, hash.as_str().to_owned());
             added.insert(hash, bytes);
@@ -139,7 +175,12 @@ pub fn collect(
         .filter_map(|hash_text| AssetHash::parse(hash_text).ok())
         .filter(|hash| !new_hashes.contains(hash.as_str()) && !project.assets.contains_key(hash))
         .collect();
-    Ok(EmbeddedCollection { map, added, pruned })
+    Ok(EmbeddedCollection {
+        map,
+        added,
+        pruned,
+        missing,
+    })
 }
 
 /// 保存前容器上限预检。
@@ -458,9 +499,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 缺触发样本 ⇒ 保存被拒绝（响亮失败，不静默跳过该轨）。
+    /// T-FIX-48：缺触发样本**不再拒存**——登记进 `missing` 并继续（Logic 口径）。
     #[test]
-    fn collect_fails_loudly_on_missing_triggered_sample() {
+    fn missing_triggered_sample_is_recorded_not_fatal() {
         let dir = std::env::temp_dir().join(format!(
             "yeban-embed-collect-missing-{}-{}",
             std::process::id(),
@@ -471,21 +512,49 @@ mod tests {
         let binding = "assets/samples/kit/001.sfz";
         let project = project_with_notes(uid(1013), &[(60, 100)], binding);
         let project_path = dir.join("proj.yeban");
-        let error = collect(&project, &project_path, &BTreeMap::new()).expect_err("缺样本必须失败");
-        let Fault::Domain { message, data, .. } = error else {
-            panic!("必须是领域失败");
-        };
+        let collected = collect(&project, &project_path, &BTreeMap::new())
+            .expect("缺失样本不得拒存整个工程（T-FIX-48）");
+        assert_eq!(
+            collected.missing.len(),
+            1,
+            "必须登记一条缺失: {collected:?}"
+        );
+        let item = &collected.missing[0];
+        assert_eq!(item.reason, "sample_missing");
         assert!(
-            message.contains("gone.wav"),
-            "失败消息必须点名缺失的样本: {message}"
+            item.detail.contains("gone.wav"),
+            "缺失细节必须点名样本: {}",
+            item.detail
         );
         assert_eq!(
-            data.as_ref()
-                .and_then(|value| value.get("reason"))
-                .and_then(|value| value.as_str()),
-            Some("samplerUnreadable"),
-            "reason 必须复用 samplerUnreadable（不新增 fault 词汇）"
+            collected.map.get(binding).map(String::as_str),
+            Some(AssetHash::of_bytes(sfz_text.as_bytes()).as_str()),
+            "SFZ 文本照常进表（缺的只是样本字节）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-48：SFZ 定义文件本身缺失也**不拒存**——记一条 `sfz_missing`。
+    #[test]
+    fn missing_sfz_file_is_recorded_not_fatal() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-embed-collect-nosfz-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let binding = "assets/samples/kit/never-written.sfz";
+        let project = project_with_notes(uid(1015), &[(60, 100)], binding);
+        let project_path = dir.join("proj.yeban");
+        let collected = collect(&project, &project_path, &BTreeMap::new())
+            .expect("SFZ 缺失不得拒存整个工程（T-FIX-48）");
+        assert_eq!(
+            collected.missing.len(),
+            1,
+            "必须登记一条缺失: {collected:?}"
+        );
+        assert_eq!(collected.missing[0].reason, "sfz_missing");
+        assert_eq!(collected.missing[0].binding, binding);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
