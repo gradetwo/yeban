@@ -6655,13 +6655,12 @@ pub enum MeterPump {
     },
 }
 
-/// 播放跟进（T-FIX-110）的**提前量**：新左界落在播放头左侧「可见宽的 10%」处。
-///
-/// 为什么取比例而不是「一小节」：跟进是**纯像素**决策，本函数手里没有拍号 / 小节宽
-/// （那是 `bar-width-px`，随缩放变、还要跨拍号换算）。用可见宽的比例则与缩放无关、
-/// 与拍号无关，且一眼能验：1000px 视口 ⇒ 播放头停在左起 100px。取 10% 也是"翻页"
-/// 与"贴边"之间的折中 —— 贴边会让用户刚好在翻页后看不清刚过去的内容。
-const FOLLOW_LEAD_RATIO: f32 = 0.10;
+// 播放跟进（T-FIX-110）的**落点**：翻页后播放头落在**左缘**，不留提前量。
+//
+// 口径来源：Logic Pro 经典 Catch（Wang 2026-11-23 裁决，按 Logic 口径改）——
+// 视图不动，播放头走到右缘时整页跳一次，播放头回到左缘重新往右走，跳距约一个
+// 可视宽度。此前 T-FIX-110 取「可见宽 10%」提前量（翻页后播放头停在左起 10%），
+// 与 Logic 不一致，已按裁决改为左缘。居中平滑的 Scroll in Play 是另一条线，不在此。
 
 /// 判断「用户手动滚开」的容差（逻辑像素）。小于它的差值视作同一偏移 ——
 /// `.slint` 的 `length` 是 `f32`，`apply_view` 写回的值与再读出来的值必须能对上，
@@ -6675,8 +6674,8 @@ const FOLLOW_SCROLL_EPSILON: f32 = 0.5;
 /// | 没在播放 | `None` | 停止 / 暂停时视图不许自己动（要求 3） |
 /// | 用户已手动滚开（`engaged == false`） | `None` | 不与用户抢视图（要求 2） |
 /// | 播放头在可见区内 | `None` | 界内不动（要求 3 的反面：别每跳都追） |
-/// | 播放头越过右界 | `Some(播放头 − 提前量)` | 翻页跟进（要求 1） |
-/// | 播放头落在左界之外 | `Some(播放头 − 提前量)` | 同一个式子的另一侧：循环回卷 / 起播时视图停在别处，都得把播放头拉回可见区 |
+/// | 播放头越过右界 | `Some(播放头)` | 翻页跟进（要求 1）：新偏移 = 播放头，播放头落在左缘（Logic 经典 Catch） |
+/// | 播放头落在左界之外 | `Some(播放头)` | 同一个式子的另一侧：循环回卷 / 起播时视图停在别处，都得把播放头拉回左缘 |
 ///
 /// 返回值已夹到 `>= 0`（时间轴之前没有内容）。`viewport_px <= 0`（编曲区没显示 /
 /// 布局未定）一律 `None` —— 零宽视口下"越界"恒成立，跟进会变成每跳把偏移清零。
@@ -6699,9 +6698,9 @@ fn follow_scroll(
         0.0
     };
     // 可见区 = `[scroll_x, scroll_x + viewport_px]`（时间线内容帧）。
+    // Logic 经典 Catch 落点：新偏移 = 播放头本身，翻页后播放头贴左缘。
     if playhead_px > scroll_x + viewport_px || playhead_px < scroll_x {
-        let lead = viewport_px * FOLLOW_LEAD_RATIO;
-        return Some((playhead_px - lead).max(0.0));
+        return Some(playhead_px.max(0.0));
     }
     None
 }
@@ -20939,24 +20938,24 @@ mod tests {
         assert_eq!(super::master_track_id(&port), None);
     }
 
-    /// **T-FIX-110 判据 ①**：越界翻页 —— 播放头越过可见区右界，新左界落在播放头
-    /// 之前「可见宽的 10%」处，播放头因此重新可见。
+    /// **T-FIX-110 判据 ①（2026-11-23 按 Logic 经典 Catch 改落点）**：越界翻页 ——
+    /// 播放头越过可见区右界，新偏移 = 播放头本身，播放头落在**左缘**。
     ///
     /// 数字手算过（不是"跑一遍把结果抄进来"）：视口 1000px，偏移 0 ⇒ 可见区 [0, 1000]；
-    /// 播放头 1005px 出界 ⇒ 新偏移 = 1005 − 100 = 905，播放头落在屏上 `1005−905 = 100px`
-    /// 处，正是 10% 的提前量。
+    /// 播放头 1005px 出界 ⇒ 新偏移 = 1005，播放头落在屏上 `1005−1005 = 0px` 处（左缘）。
+    /// 此前口径是 10% 提前量（新偏移 905），已按 Wang 裁决改 Logic 口径。
     #[test]
     fn arrangement_follow_pages_when_the_playhead_leaves_the_right_edge() {
         assert_eq!(
             super::follow_scroll(1005.0, 0.0, 1000.0, true, true),
-            Some(905.0)
+            Some(1005.0)
         );
         // 恰好压在右界上（1000.0）仍算**看见**（播放头是一根线，不是一段）⇒ 不动。
         assert_eq!(super::follow_scroll(1000.0, 0.0, 1000.0, true, true), None);
         // 出界 1px 就翻页：判据不许有"再等等"的模糊地带。
         assert_eq!(
             super::follow_scroll(1001.0, 0.0, 1000.0, true, true),
-            Some(901.0)
+            Some(1001.0)
         );
     }
 
@@ -21003,9 +21002,9 @@ mod tests {
         // 起播（上升沿）+ 界内 ⇒ 允许跟进，但还没写过偏移。
         assert!(follow.observe(true, 0.0));
         assert_eq!(follow.written, None);
-        // 翻页写 905。
-        follow.commit(905.0);
-        assert!(follow.observe(true, 905.0), "自己写下的偏移不算用户滚动");
+        // 翻页写 1005（Logic 落点：新偏移 = 播放头）。
+        follow.commit(1005.0);
+        assert!(follow.observe(true, 1005.0), "自己写下的偏移不算用户滚动");
         // 用户滚到 1500 ⇒ 脱开，之后播放头再怎么越界都不跟。
         assert!(!follow.observe(true, 1500.0));
         assert!(!follow.observe(true, 1500.0));
@@ -21020,23 +21019,23 @@ mod tests {
         assert_eq!(follow.written, None);
         assert_eq!(
             super::follow_scroll(9999.0, 1500.0, 1000.0, true, follow.engaged),
-            Some(9899.0),
-            "9999 − 10% × 1000 = 9899（重新挂上之后，视图停在哪儿都会跟过去）"
+            Some(9999.0),
+            "新偏移 = 播放头 9999（Logic 左缘落点；重新挂上之后，视图停在哪儿都会跟过去）"
         );
     }
 
-    /// 左侧越界（循环回卷 / 起播时视图停在后面）：同一个式子拉回可见区，且夹到 `>= 0`。
+    /// 左侧越界（循环回卷 / 起播时视图停在后面）：同一个式子拉回左缘。
     #[test]
     fn arrangement_follow_pulls_back_on_a_loop_wrap_and_clamps_at_zero() {
-        // 循环回卷：偏移 3000，播放头跳回 100 ⇒ 新左界 = 100 − 100 = 0。
+        // 循环回卷：偏移 3000，播放头跳回 100 ⇒ 新偏移 = 100（播放头落左缘）。
         assert_eq!(
             super::follow_scroll(100.0, 3000.0, 1000.0, true, true),
-            Some(0.0)
+            Some(100.0)
         );
-        // 提前量大于播放头位置时不许出现负偏移（时间轴之前没有内容）。
+        // 播放头在时间轴头部附近同样落左缘，偏移不许为负（时间轴之前没有内容）。
         assert_eq!(
             super::follow_scroll(30.0, 900.0, 1000.0, true, true),
-            Some(0.0)
+            Some(30.0)
         );
         // 播放头在左界上（== scroll-x）算可见。
         assert_eq!(super::follow_scroll(900.0, 900.0, 1000.0, true, true), None);
