@@ -1,4 +1,4 @@
-import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
+import { Theme, PersonaMode, Tokens, TooltipBubble, ImeAwareTextInput } from "tokens.slint";
 
 // =========================================================================
 // UNIFIED VECTOR ICONS (1.2px - 1.5px Stroke, Geometric, Professional DAW Style)
@@ -605,6 +605,10 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <string> timecode-text: "003.02.01";
     in-out property <int> bpm-val: 124;
     in-out property <string> bpm-display: "124.00";
+    in-out property <bool> bpm-editing: false;
+    // 单击三档循环要等过双击窗口再执行；双击第二次释放时清掉这个待办，
+    // 否则真实双击会先循环一次再进入编辑。500ms 覆盖平台的默认双击间隔。
+    private property <bool> bpm-cycle-pending: false;
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
@@ -629,6 +633,8 @@ export component TransportHeaderBar inherits Rectangle {
     callback toggle-loop();
     callback rewind();
     callback change-bpm(int);
+    callback bpm-commit(string);
+    callback bpm-field-focus-changed(bool);
     callback change-scale(string);
     callback hot-swap-buffer(int);
     callback select-persona(PersonaMode);
@@ -640,6 +646,19 @@ export component TransportHeaderBar inherits Rectangle {
     // 二期质感: 栏体走 §10 面板刷 (flat = Theme.header-bg 本身)。
     background: Tokens.texture-physical ? Tokens.panel-brush : Theme.header-bg;
     border-color: Theme.border-subtle;
+
+    // 非视觉元素：只负责把单击循环从双击手势里让出来。
+    bpm-click-timer := Timer {
+        interval: 500ms;
+        running: root.bpm-cycle-pending;
+        triggered => {
+            if (root.bpm-cycle-pending) {
+                root.bpm-cycle-pending = false;
+                let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124);
+                root.change-bpm(next-bpm);
+            }
+        }
+    }
 
     HorizontalLayout {
         padding-left: 12px;
@@ -1117,42 +1136,95 @@ export component TransportHeaderBar inherits Rectangle {
 
                     Rectangle { width: 1px; height: 16px; background: Tokens.line; }
 
-                    // BPM
+                    // BPM：读数同时是可编辑输入面（双击 / Tab 聚焦进入编辑），
+                    // 单击仍保留 124/128/140 三档快捷循环。文本由宿主投影的
+                    // `bpm-display` 提供，编辑只把原样文本交给 `bpm-commit`；
+                    // 解析、区间校验与 SetTempo 全在宿主，界面不解析数字。
                     Rectangle {
                         height: 24px;
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 0px;
-                            Text {
-                                text: "TEMPO";
-                                font-family: Tokens.font-mono;
-                                font-size: 8.5px;
-                                letter-spacing: 0.4px;
-                                color: Tokens.skin-text-dim;
-                                font-weight: 400;
+                        width: 54px;
+                        accessible-role: button;
+                        accessible-id: "transport-tempo-button";
+                        accessible-label: @tr("工程主速度: 点击循环切换 (124/128/140 BPM)，双击输入任意速度");
+                        accessible-action-default => {
+                            root.bpm-cycle-pending = true;
+                        }
+                        Text {
+                            y: 0px;
+                            width: parent.width;
+                            text: "TEMPO";
+                            font-family: Tokens.font-mono;
+                            font-size: 8.5px;
+                            letter-spacing: 0.4px;
+                            color: Tokens.skin-text-dim;
+                            font-weight: 400;
+                        }
+                        // T-FIX-161 的无障碍读数节点保留：非编辑态显示权威读数，
+                        // 编辑态让位给真正的输入面（两者同高同位，不画两遍字）。
+                        Text {
+                            y: 10px;
+                            width: parent.width;
+                            height: 14px;
+                            visible: !root.bpm-editing;
+                            text: root.bpm-display;
+                            accessible-role: text;
+                            accessible-id: "transport-tempo-value";
+                            accessible-label: root.bpm-display;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                            font-family: Tokens.font-mono;
+                            font-size: 12px;
+                            color: Theme.track-drum;
+                            font-weight: 400;
+                        }
+                        // 双向绑定：用户的草稿能写回显示属性；宿主重投影时又从同一属性
+                        // 写回权威读数。普通态由覆盖点击区拦截，聚焦即进入编辑；
+                        // 编辑态不设 read-only，避免焦点已到控件却敲不进去。
+                        bpm-input := ImeAwareTextInput {
+                            y: 10px;
+                            width: parent.width;
+                            height: 14px;
+                            text <=> root.bpm-display;
+                            accessible-role: text-input;
+                            accessible-id: "transport-bpm-field";
+                            accessible-label: @tr("速度 BPM");
+                            accessible-value: root.bpm-display;
+                            font-family: Tokens.font-mono;
+                            font-size: 12px;
+                            // 非编辑态由上面的 T-FIX-161 读数 Text 显示同一字符串；
+                            // 输入框本身保持在场（无障碍树可寻址），只把字形藏掉。
+                            color: root.bpm-editing ? Theme.track-drum : transparent;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                            single-line: true;
+                            changed has-focus => {
+                                root.bpm-editing = self.has-focus;
+                                root.bpm-field-focus-changed(self.has-focus);
                             }
-                            // 同上：`99.00` / `128.00` / `140.00` 位数不同会让相邻列来回移动。
-                            Text {
-                                text: root.bpm-display;
-                                accessible-role: text;
-                                accessible-id: "transport-tempo-value";
-                                accessible-label: root.bpm-display;
-                                width: 54px;
-                                horizontal-alignment: left;
-                                font-family: Tokens.font-mono;
-                                font-size: 12px;
-                                color: Theme.track-drum;
-                                font-weight: 400;
+                            accepted => {
+                                root.bpm-commit(self.text);
+                                // 宿主已同步把权威读数写回 `bpm-display`；即使非法输入
+                                // 得到的是同一个值，也要显式丢掉控件内部的旧草稿。
+                                self.text = root.bpm-display;
+                                root.bpm-editing = false;
                             }
                         }
                         bpm_touch := TouchArea {
+                            visible: !root.bpm-editing;
                             mouse-cursor: MouseCursor.pointer;
                             clicked => {
-                                let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124);
-                                root.change-bpm(next-bpm);
+                                root.bpm-cycle-pending = true;
+                            }
+                            double-clicked => {
+                                root.bpm-cycle-pending = false;
+                                root.bpm-editing = true;
+                                bpm-input.focus();
                             }
                         }
-                        TooltipBubble { text: @tr("工程主速度: 点击循环切换 (124/128/140 BPM)"); is-visible: bpm_touch.has-hover; }
+                        TooltipBubble {
+                            text: @tr("工程主速度: 单击循环切换 (124/128/140 BPM)，双击输入任意速度");
+                            is-visible: bpm_touch.has-hover && !root.bpm-editing;
+                        }
                     }
 
                     // F2：分隔线随 KEY/SCALE 一起离场（读数在 ⋯ 弹出层里）。

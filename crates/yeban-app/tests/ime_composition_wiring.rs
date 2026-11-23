@@ -201,9 +201,9 @@ fn every_reachable_text_input_is_ime_aware() {
         );
     }
     assert_eq!(
-        aware, 21,
-        "`ImeAwareTextInput` 实例数必须是 21（23 处声明 − 未编译的 `transport.slint` 1 处 \
-         − 已被 `left_panel.slint` 取代且无人 import 的 `sidebar.slint` 1 处），实际 {aware}"
+        aware, 24,
+        "`ImeAwareTextInput` 实例数必须是 24（4c247d99 尖端可达 23 处 + T-FIX-162 新增的走带 TEMPO 输入 1 处；\
+         未编译的 `transport.slint` 与 `sidebar.slint` 不在 import 图里），实际 {aware}"
     );
 }
 

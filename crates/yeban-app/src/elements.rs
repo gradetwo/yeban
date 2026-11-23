@@ -248,8 +248,10 @@ impl ElementRegistry {
         //   `transport-play-button` / `transport-stop-button` /
         //   `transport-record-button` / `transport-loop-button`（四颗走带键）与
         //   `transport-timecode`（只读读数）。
+        // T-FIX-161 的 `transport-tempo-value` 与 T-FIX-162 的 `transport-bpm-field` /
+        // `transport-tempo-button` 也都落在同一个活文件。
         //
-        // ⚠ 剩下 11 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
+        // ⚠ 剩下 10 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
         // 的节点，比指向死文件更假）：
         //   * `transport-save-button` / `transport-metronome-button`：顶栏今天没有这两颗键
         //     （保存走宿主菜单；节拍器只有 `app.slint` 的菜单项与快捷键）；
@@ -260,10 +262,9 @@ impl ElementRegistry {
         //     与抽屉入口（AI 侧入口在 `app.slint` 的 `ai-rail-*`）；
         //   * `transport-view-arrangement-button` / `transport-view-session-button` /
         //     `transport-view-toggle-button`：顶栏的 persona 键**不是**这三个视图开关
-        //     （语义不同，⛔ 不硬套），视图切换今天只在命令层；
-        //   * `transport-bpm-field`：活控件是"点击循环 124/128/140"的**只读读数**，
-        //     登记写的是 `ElementKind::TextInput` —— 类型对不上，硬套会把一个不可输入的
-        //     读数标成输入框（屏读器会尝试编辑）。要改口径或真接输入，那是**另一票**的能力裁决。
+        //     （语义不同，⛔ 不硬套），视图切换今天只在命令层。
+        //   `transport-bpm-field` 已由 T-FIX-162 落到 `transport_bar.slint` 的可编辑
+        //   输入面，不再是只读读数，登记随之下移为真实 TextInput。
         registry.add(
             "transport-play-button",
             ElementKind::Button,
@@ -315,11 +316,19 @@ impl ElementRegistry {
             "保存工程",
             "顶栏没有保存键；保存走宿主菜单",
         );
-        registry.add_known_absent(
+        registry.add(
             "transport-bpm-field",
             ElementKind::TextInput,
+            "transport_bar.slint",
             "速度 BPM",
-            "活顶栏的 BPM 只是只读读数（点击循环 124/128/140），不是 TextInput",
+            false,
+        );
+        registry.add(
+            "transport-tempo-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "工程主速度：单击循环切换，双击输入任意速度",
+            false,
         );
         registry.add(
             "transport-timecode",

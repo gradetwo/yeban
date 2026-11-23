@@ -226,6 +226,28 @@ fn count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
+/// T-FIX-162：回调声明 / 宿主注册都不等于"活 UI 有触发点"。
+///
+/// 必须同时钉住 `app.slint` import 的 `transport_bar.slint` 里的输入控件
+/// `accepted` 调用与 `app.slint` 的转发；否则 `bpm-commit` 仍是死线。
+fn assert_bpm_commit_has_live_trigger(app: &str) {
+    let transport = read("ui/transport_bar.slint");
+    assert!(
+        app.contains("import { TransportHeaderBar } from \"transport_bar.slint\";"),
+        "app.slint 必须 import 带 TEMPO 输入面的 transport_bar.slint"
+    );
+    assert!(
+        transport.contains("bpm-input := ImeAwareTextInput")
+            && transport.contains("accepted =>")
+            && transport.contains("root.bpm-commit(self.text)"),
+        "TEMPO 输入面必须在 accepted 时触发 bpm-commit"
+    );
+    assert!(
+        app.contains("bpm-commit(value) => { root.bpm-commit(value); }"),
+        "app.slint 必须把 TransportHeaderBar.bpm-commit 转发到根回调"
+    );
+}
+
 /// ①（对照臂）：焦点事件从未发过 ⇒ 保护门是假的 ⇒ 注入照常写。
 #[test]
 fn a_re_projection_writes_the_field_when_nothing_is_being_edited() {
@@ -262,6 +284,7 @@ fn a_re_projection_writes_the_field_when_nothing_is_being_edited() {
         aether_host.contains("set_bpm_field_editing"),
         "宿主接线层必须注册 set_bpm_field_editing"
     );
+    assert_bpm_commit_has_live_trigger(&aether_app);
 }
 
 /// ②（本票的正面）：编辑中 ⇒ 草稿活着，而同一次注入的**别的**格子照常落地。

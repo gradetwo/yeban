@@ -1477,7 +1477,7 @@ export component MainWindow inherits Window {
                 is-looping: root.is-looping;
                 timecode-text: root.timecode-text;
                 bpm-val: root.bpm-val;
-                bpm-display: root.bpm-display;
+                bpm-display <=> root.bpm-display;
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
@@ -1511,6 +1511,8 @@ export component MainWindow inherits Window {
                 rewind() => { root.transport-rewind(); }
                 revert-to-last-commit => { root.revert-to-last-commit(); }
                 change-bpm(b) => { root.transport-set-bpm(b); }
+                bpm-commit(value) => { root.bpm-commit(value); }
+                bpm-field-focus-changed(focused) => { root.ime-focus-changed(focused); }
                 change-scale(s) => { root.transport-set-scale(s); }
                 hot-swap-buffer(smp) => {
                     root.buffer-samples = smp;
