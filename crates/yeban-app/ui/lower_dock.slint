@@ -14,6 +14,9 @@ export component UnifiedLowerDock inherits Rectangle {
     in property <float> master-meter-r: 0.0;
     in-out property <int> selected-track-id: 1;
     in-out property <[string]> device-names: [];
+    // ⭐ C2：逐台真实参数曲线（420×100 SVG Path；与 device-names 同索引集）。
+    // 空串 = 该台不是 EQ / 动态压缩器（或投影尚无曲线）⇒ 卡片保留显式占位。
+    in-out property <[string]> device-curve-svgs: [];
     in-out property <[string]> device-ids: [];
     in-out property <[bool]> device-bypassed: [];
     in-out property <[string]> device-recognised: [];
@@ -833,13 +836,38 @@ export component UnifiedLowerDock inherits Rectangle {
                                 LineTo { x: -19; y: 64; }
                             }
 
-                            // 占位：卡片频响尚未接真实设备参数（⛔ 不画常量曲线冒充
-                            // EQ / 压缩响应）。上面的中心线就是唯一可见的基准，
-                            // 这里明确标「示意 · 未连接参数」。
+                            // ⭐ C2：真实设备曲线。EQ 走 `calculate_eq_curve_svg`
+                            // （EqParams::response_db），压缩走 `calculate_comp_curve_svg`
+                            // 的硬拐点传递曲线；两者与左侧检查器同一批纯函数。
+                            // 空串 ⇒ 该台没有 EQ/压缩曲线 ⇒ 保留显式占位，⛔ 不画常量。
+                            Path {
+                                visible: idx < root.device-curve-svgs.length
+                                    && root.device-curve-svgs[idx] != "";
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                // T-FIX-112: keep the curve above the ACTIVE/#N row
+                                // (y=46px). The well is 64px high; 42px leaves 4px
+                                // clearance for the 1.6px stroke.
+                                height: 42px;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: 420;
+                                viewbox-height: 100;
+                                fit: ImageFit.fill;
+                                commands: idx < root.device-curve-svgs.length
+                                    ? root.device-curve-svgs[idx] : "";
+                                stroke: root.selected-track-color;
+                                stroke-width: 1.6px;
+                                fill: transparent;
+                            }
+
                             Text {
                                 x: 8px;
                                 y: 3px;
-                                text: @tr("曲线示意 · 未连接参数");
+                                text: idx < root.device-curve-svgs.length
+                                    && root.device-curve-svgs[idx] != ""
+                                    ? @tr("实测曲线") : @tr("曲线示意 · 未连接参数");
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 // ⭐ WCAG AA：同 arrangement「▶ 试听」，8px 小字不得低于 Tokens.ink-2。

@@ -271,7 +271,12 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 ///
 /// 一格 `macro-mapping-summaries`（与 `macro-names` 同索引集，每宏一行摘要）。
 /// 消费者只在默认关着的右侧宏抽屉 ⇒ 默认帧（抽屉未打开）一位不变。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 66;
+/// ## 66 → 67 的追加（C2，line/fix75-eq-comp-curves，T-FIX-112 重编号，2026-11-22）
+///
+/// `device-curve-svgs` 是设备链逐台真实参数曲线（EQ 频响 / 压缩传递曲线），与
+/// `device-names` 同索引集、在 `apply_view` 每帧路径上重写。默认演示工程没有
+/// EQ/压缩设备 ⇒ 数组每项为空串、`Path` 不画 ⇒ 默认帧逐像素不变，⛔ 无需重录基准。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 67;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -555,7 +560,12 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 66;
 /// 同索引集投影：每宏一行 `"音量 +6 · 声相 -0.5"`，空映射 ⇒ 空串）。消费者只在
 /// 默认关着的右侧宏抽屉（`macro-panel-open`，由下舱「宏 (N)」按钮打开）⇒
 /// 默认帧（未打开）一位不变。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 124;
+/// ## 124 → 125 的追加（C2，line/fix75-eq-comp-curves，T-FIX-112 重编号，2026-11-22）
+///
+/// `ui.set_device_curve_svgs(...)` 是设备链逐台真实曲线的唯一注入点（与
+/// `device-names` 同住 `apply_view`）。默认工程没有 EQ/压缩设备 ⇒ 每项空串，
+/// 卡片 `Path` 隐藏 ⇒ 默认帧不变。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 125;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -627,6 +637,8 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     // ⭐ 任务单 `#157`：设备效果链（Tab 3）的四个平行数组同样在 `apply_view` 的每帧路径上
     // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
     push!("device-names", get_device_names);
+    // ⭐ C2：逐台真实参数曲线（与 `device-names` 同索引集，每帧重写）。
+    push!("device-curve-svgs", get_device_curve_svgs);
     // ⭐ 任务单 `#163`：每台的**设备身份**（删除按钮按身份寻址）—— 与上面同索引集，
     // 也在 `apply_view` 的每帧路径上 ⇒ 必须计入这份清单。
     push!("device-ids", get_device_ids);

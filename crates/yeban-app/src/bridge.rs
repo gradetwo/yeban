@@ -1628,6 +1628,13 @@ pub struct DeviceRowView {
     /// "未识别"= 引擎的 `insert.rs` 不认这个拼写 ⇒ 写进设备也**不会**生效
     /// （`effect_params` 的模块文档逐字写着这一点）。
     pub unrecognised: String,
+    /// ⭐ **C2**：这台设备的真实参数曲线（420×100 SVG Path）；非 EQ / 非动态压缩器
+    /// ⇒ 空串（界面保持显式占位，⛔ 不画常量曲线冒充）。
+    ///
+    /// EQ 走 `yeban_dsp::shaping::EqParams::response_db`（`calculate_eq_curve_svg`），
+    /// 动态压缩器走 `calculate_comp_curve_svg` 的硬拐点传递曲线 —— 与左侧检查器 /
+    /// 设备机架的曲线**同一批纯函数**，⛔ UI 不另算一份。
+    pub curve_svg: String,
 }
 
 impl DeviceRowView {
@@ -5506,6 +5513,20 @@ impl ViewState {
             .collect()
     }
 
+    /// ⭐ **C2**：设备链每一格的**真实参数曲线**（420×100 SVG Path，与
+    /// [`Self::device_names`] 同索引集）。
+    ///
+    /// EQ ⇒ 三段塑形的真实幅频响应；动态压缩器 ⇒ 真实传递曲线；其余设备 ⇒ 空串。
+    /// 投影已在 [`device_rack_projection`] 里算好（每帧一次，43 个采样点），
+    /// ⛔ Slint 不重算、⛔ 不画常量曲线。
+    #[must_use]
+    pub fn device_curve_svgs(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .map(|row| row.curve_svg.clone())
+            .collect()
+    }
+
     /// ⭐ 任务单 `#180`：**主总线**设备链每一格的显示名（与下面三个数组**同索引集**）。
     ///
     /// 口径与 [`Self::device_names`] **逐字相同**，只是主语换成 [`Self::master_devices`]
@@ -7000,6 +7021,45 @@ pub fn master_device_track(project: &YebanProjectV1) -> Option<&TrackV3> {
         .filter(|track| track.kind == TrackKind::Master)
 }
 
+/// 单台设备的真实参数曲线（C2）：
+/// * 识别组 `eq` ⇒ 三段塑形幅频响应（`yeban_dsp::shaping::EqParams::response_db`）；
+/// * 识别组 `dynamics` ⇒ 压缩器硬拐点传递曲线；
+/// * 其余设备 ⇒ 空串（无"EQ/压缩曲线"语义，界面保留显式占位）。
+///
+/// 参数来源与 [`eq_curve_projection`] / [`project_compressor_curve`] 同一份
+/// `DeviceDefinition`；⛔ 不在 UI / Slint 侧重算。
+fn device_curve_svg(device: &DeviceDefinition) -> String {
+    let mut is_eq = false;
+    let mut is_dynamics = false;
+    for param in &device.params {
+        if let Some((group, _)) = crate::effect_params::recognise(&param.name) {
+            match group.id {
+                "eq" => is_eq = true,
+                "dynamics" => is_dynamics = true,
+                _ => {}
+            }
+        }
+    }
+    if is_eq {
+        let (params, cutoff) = extract_eq_params_from_device(Some(device));
+        return calculate_eq_curve_svg(&params, cutoff);
+    }
+    if is_dynamics {
+        let ratio = device
+            .params
+            .iter()
+            .find(|param| param.name == "ratio")
+            .map_or(4.0, |param| param.value);
+        let threshold = device
+            .params
+            .iter()
+            .find(|param| param.name == "threshold_db" || param.name == "threshold")
+            .map_or(-18.0, |param| param.value);
+        return calculate_comp_curve_svg(threshold, ratio);
+    }
+    String::new()
+}
+
 /// 设备链 + EQ 旋钮的投影本体（[`ViewState`] 与宿主提交路径**共用**这一份口径）。
 ///
 /// 返回 `(展示标题, 设备行, 第一格 eq_low_gain)`。
@@ -7089,6 +7149,7 @@ fn device_rack_projection(
             bypassed: device.bypassed,
             recognised,
             unrecognised,
+            curve_svg: device_curve_svg(device),
         });
     }
     (format!("轨 {} · 设备链", track.name), devices, eq_low_gain)
@@ -7917,6 +7978,80 @@ mod tests {
         assert!((val1 - 10.8).abs() < 0.5);
         assert!(opt2.is_some());
         assert_eq!(opt2.unwrap().0, "eq_low_freq");
+    }
+
+    #[test]
+    fn device_curve_svgs_are_computed_from_each_devices_real_params() {
+        let mut project = demo_project();
+        let target_id = device_rack_track(&project)
+            .expect("演示工程必须有非主总线轨")
+            .id;
+        {
+            let track = project.tracks.get_mut(&target_id).expect("目标轨");
+            track
+                .devices
+                .push(builtin_effect_device(BuiltinEffect::Eq).expect("EQ 契约组"));
+            track
+                .devices
+                .push(builtin_effect_device(BuiltinEffect::Compressor).expect("动态契约组"));
+        }
+
+        let view = ViewState::from_project(&project).expect("投影");
+        let names = view.device_names();
+        let curves = view.device_curve_svgs();
+        assert_eq!(curves.len(), names.len(), "曲线数组必须与设备名同索引集");
+        let eq_index = names.iter().position(|name| name == "EQ").expect("EQ 行");
+        let comp_index = names
+            .iter()
+            .position(|name| name == "压缩器")
+            .expect("压缩器行");
+        assert!(
+            !curves[eq_index].is_empty() && curves[eq_index].starts_with("M 0.0 "),
+            "EQ 行必须带真实频响路径"
+        );
+        assert!(
+            !curves[comp_index].is_empty() && curves[comp_index].starts_with("M 0.0 "),
+            "压缩器行必须带真实传递曲线路径"
+        );
+        assert!(
+            curves.iter().any(String::is_empty),
+            "非 EQ/压缩设备必须留空串（界面保留显式占位）"
+        );
+
+        // 参数变化 ⇒ 曲线跟随（不是把默认值算一次就冻住）。
+        {
+            let track = project.tracks.get_mut(&target_id).expect("目标轨");
+            let eq = track
+                .devices
+                .iter_mut()
+                .find(|device| device.name == "EQ")
+                .expect("EQ 设备");
+            eq.params
+                .iter_mut()
+                .find(|param| param.name == "eq_low_gain")
+                .expect("eq_low_gain")
+                .value = 12.0;
+            let comp = track
+                .devices
+                .iter_mut()
+                .find(|device| device.name == "压缩器")
+                .expect("压缩器设备");
+            comp.params
+                .iter_mut()
+                .find(|param| param.name == "ratio")
+                .expect("ratio")
+                .value = 10.0;
+        }
+        let changed = ViewState::from_project(&project).expect("投影");
+        let changed_curves = changed.device_curve_svgs();
+        assert_ne!(
+            changed_curves[eq_index], curves[eq_index],
+            "EQ 增益变了，曲线必须跟着变"
+        );
+        assert_ne!(
+            changed_curves[comp_index], curves[comp_index],
+            "压缩比变了，曲线必须跟着变"
+        );
     }
 
     #[test]

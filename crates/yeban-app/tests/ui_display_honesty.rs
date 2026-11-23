@@ -60,7 +60,8 @@ fn no_fabricated_waveform_or_eq_curves_are_drawn() {
 /// **判据 ②**：**未接真实数据**的替代方案必须是**明确标注的占位**，而不是又一条假曲线。
 /// `EQ CURVE` 卡片已接 `bridge::calculate_eq_curve_svg` 的真实曲线（0dB 缺省仍是
 /// 基准线）⇒ 它不再属于占位，改由 `ui_unfixed_list_regression.rs` 钉住实数据链路；
-/// 其余四处（波形 / BUS COMP / 机架卡片 / 通道条 EQ）仍未接，继续要求「示意」标注。
+/// 设备机架卡片（C2）已接 `bridge::device_curve_svgs`（逐台 EQ 频响 / 压缩传递曲线），
+/// 非 EQ/压缩设备仍保留显式占位；波形 / BUS COMP / 通道条 EQ 仍未接，继续要求「示意」标注。
 #[test]
 fn placeholders_are_explicitly_labelled_as_schematic() {
     assert!(code_lines(ARRANGEMENT).contains("波形待分析 · 示意"));
@@ -68,6 +69,11 @@ fn placeholders_are_explicitly_labelled_as_schematic() {
     assert!(code_lines(LEFT_PANEL).contains("commands: root.eq-curve-svg"));
     assert!(!code_lines(LEFT_PANEL).contains("EQ CURVE · 示意"));
     assert!(code_lines(LEFT_PANEL).contains("BUS COMP · 示意"));
+    // 设备卡片的真实曲线必须由投影属性驱动；占位文案只作为空串兜底。
+    assert!(
+        code_lines(LOWER_DOCK).contains("root.device-curve-svgs[idx]"),
+        "设备卡片必须消费逐台真实曲线属性"
+    );
     assert!(code_lines(LOWER_DOCK).contains("曲线示意 · 未连接参数"));
     assert!(code_lines(LOWER_DOCK).contains("EQ · 示意"));
 }

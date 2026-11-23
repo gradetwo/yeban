@@ -542,6 +542,9 @@ export component MainWindow inherits Window {
     in-out property <bool> device-insert-available: false;
     in-out property <string> device-insert-reason: "";
     in-out property <[string]> device-names: [];
+    // ⭐ C2：设备链逐台真实参数曲线（与 device-names 同索引集；空串 = 该台没有可画的
+    // EQ/压缩曲线 ⇒ 卡片保留显式占位）。唯一写者是 host::apply_view。
+    in-out property <[string]> device-curve-svgs: [];
     in-out property <[string]> device-recognised: [];
     in-out property <string> device-track-label: "";
     in-out property <[string]> device-unrecognised: [];
@@ -2139,6 +2142,7 @@ export component MainWindow inherits Window {
                 device-ids: root.device-ids;
                 device-bypassed: root.device-bypassed;
                 device-recognised: root.device-recognised;
+                device-curve-svgs: root.device-curve-svgs;
                 device-track-label: root.device-track-label;
                 macro-count: root.macro-names.length;
                 macro-panel-open: root.macro-panel-open;

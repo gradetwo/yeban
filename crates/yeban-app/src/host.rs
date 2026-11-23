@@ -450,6 +450,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_ids(strings(&view.device_ids()));
     ui.set_device_bypassed(booleans(&view.device_bypassed()));
     ui.set_device_recognised(strings(&view.device_recognised()));
+    // ⭐ C2：设备链每台的真实参数曲线（EQ 频响 / 压缩传递曲线）。与 `device-names`
+    // 同索引集；非 EQ/非动态设备是空串 ⇒ 卡片保留显式占位。每帧重算一次。
+    ui.set_device_curve_svgs(strings(&view.device_curve_svgs()));
     ui.set_device_unrecognised(strings(&view.device_unrecognised()));
     // ⭐ 任务单 `#180`：**主总线**设备链 —— 设备架面板的第二段（可编辑面：装 / 删）。
     // 四个平行数组同索引集（名字 / 身份 / 已识别 / 未识别）＋ 三个标量（标题 / 可用性 /
