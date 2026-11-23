@@ -3365,6 +3365,45 @@ impl ElementRegistry {
             "卷帘右键菜单：量化…",
             false,
         );
+        // T-FIX-166：编曲区选定轨道头的右键菜单（Logic Pro 轨道头口径）。
+        // 与卷帘两项同族：默认不显示（只在轨道头右键按下时弹出），因此不进默认帧；
+        // 每一项都只落到**已存在**的操作（删轨 / 录音臂 / 建轨 / 效果槽）。
+        for (id, label) in [
+            (
+                "arrangement-track-context-arm",
+                "编曲轨道头右键菜单：录音准备开/关",
+            ),
+            (
+                "arrangement-track-context-delete",
+                "编曲轨道头右键菜单：删除当前选中轨道",
+            ),
+            (
+                "arrangement-track-context-add-midi",
+                "编曲轨道头右键菜单：新建 MIDI 乐器轨",
+            ),
+            (
+                "arrangement-track-context-add-audio",
+                "编曲轨道头右键菜单：新建音频轨",
+            ),
+            (
+                "arrangement-track-context-add-aux",
+                "编曲轨道头右键菜单：新建辅助发送轨",
+            ),
+            (
+                "arrangement-track-context-instrument-eq",
+                "编曲轨道头右键菜单：插入参量均衡 EQ",
+            ),
+            (
+                "arrangement-track-context-instrument-reverb",
+                "编曲轨道头右键菜单：插入空间混响 Reverb",
+            ),
+            (
+                "arrangement-track-context-instrument-compressor",
+                "编曲轨道头右键菜单：插入动态压缩 Compressor",
+            ),
+        ] {
+            registry.add(id, ElementKind::Button, "arrangement.slint", label, false);
+        }
 
         registry
     }

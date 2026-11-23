@@ -1,5 +1,46 @@
 import { Theme, TrackData, TimelineBlockData, Tokens, TooltipBubble } from "tokens.slint";
 
+// T-FIX-166：轨道头右键菜单的单条。`a11y-id` 必须是**调用点字面量**——仓库的
+// `slint_accessible_ids_and_registry_cover_each_other` 会逐行扫 `a11y-id:` 并和
+// `elements.rs` 注册表双向对账；写成 `for` 循环里的 `accessible-id: opt.a11y`
+// 会让静态扫描看不到成员（实测红：注册表有 8 条、ui/ 一条都找不到）。
+component TrackContextMenuItem inherits Rectangle {
+    in property <string> a11y-id;
+    in property <string> label;
+    callback activate();
+
+    height: 30px;
+    border-radius: 4px;
+    background: item-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
+    accessible-role: button;
+    accessible-id: root.a11y-id;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.activate();
+    }
+
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.label;
+        font-family: Tokens.font-ui;
+        font-size: Tokens.font-size-xs;
+        color: item-touch.has-hover ? Tokens.skin-text-strong : Tokens.ink-1;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    item-touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            root.activate();
+        }
+    }
+}
+
 export component ArrangementViewport inherits Rectangle {
     in-out property <[TrackData]> tracks;
     // ⭐ D1/D2：轨道行电平柱接**引擎实时电平**（与混音台同一份 `track-meter-levels`）。
@@ -125,6 +166,40 @@ export component ArrangementViewport inherits Rectangle {
     /// 点击时间线块：只报**摆放身份**（`host::wire_clip_scope` 用它把卷帘作用域切到该片段）。
     in-out property <int> local-menu-track-id: 0;
     in-out property <string> active-local-menu: ""; // "", "tracks", "instrument"
+
+    // T-FIX-166：选中轨道头的右键菜单（Logic Pro 轨道头口径）。
+    // `track-context-track-id` 是**菜单作用的轨道身份**（不是下标）；右键未选中轨时
+    // 先把该轨选中再开菜单，因此菜单条目全部走已有「作用于选中轨」的真实操作。
+    property <int> track-context-track-id: 0;
+    property <bool> track-context-armed: false;
+    // 弹出位置是 **ArrangementViewport 局部坐标**（与卷帘右键菜单同款；菜单 250×248，
+    // 贴边时向内收，不得被窗口边缘裁掉）。
+    property <length> track-context-menu-x: 0px;
+    property <length> track-context-menu-y: 0px;
+
+    function open-track-context-menu(track-id: int, armed: bool, local-x: length, local-y: length) {
+        if root.selected-track-id != track-id {
+            root.select-track(track-id);
+        }
+        root.track-context-track-id = track-id;
+        root.track-context-armed = armed;
+        root.track-context-menu-x = Math.min(root.width - 250px, Math.max(0px, local-x));
+        root.track-context-menu-y = Math.min(root.height - 248px, Math.max(0px, local-y));
+        track-context-popup.show();
+    }
+
+    function activate-track-context-item(kind: string, action: string) {
+        track-context-popup.close();
+        if kind == "arm" {
+            root.toggle-arm(root.track-context-track-id);
+        } else if kind == "instrument" {
+            root.track-instrument-change(root.track-context-track-id, action);
+        } else {
+            // delete / add-midi / add-audio / add-bus 都走**既有** execute-action 表；
+            // 右键按下时已经选中目标轨 ⇒ 删轨 / 建轨的落点就是这条轨。
+            root.execute-action(action);
+        }
+    }
 
     callback track-pan-change(int, float);
     callback track-volume-change(int, float);
@@ -1111,6 +1186,17 @@ export component ArrangementViewport inherits Rectangle {
 
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right
+                                        && event.kind == PointerEventKind.down {
+                                        root.open-track-context-menu(
+                                            trk.id,
+                                            trk.armed,
+                                            (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
+                                            arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
+                                        );
+                                    }
+                                }
                                 scroll-event(event) => {
                                     root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
@@ -1749,6 +1835,17 @@ export component ArrangementViewport inherits Rectangle {
 
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right
+                                        && event.kind == PointerEventKind.down {
+                                        root.open-track-context-menu(
+                                            trk.id,
+                                            trk.armed,
+                                            (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
+                                            arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
+                                        );
+                                    }
+                                }
                                 scroll-event(event) => {
                                     root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
@@ -2441,4 +2538,71 @@ export component ArrangementViewport inherits Rectangle {
                 }
             }
         }
+
+    // T-FIX-166：选中轨道头的右键上下文菜单。与卷帘右键菜单同范式 ——
+    // `PopupWindow` + `close-on-click-outside`，点外关闭；默认不显示、不占命中、
+    // 不进默认帧。条目只接**已存在**的操作（删轨 / 录音臂 / 建轨 / 效果槽），
+    // 没有重命名轨道的现成回调 ⇒ 不在这里编造入口（回执中如实登记为缺口）。
+    track-context-popup := PopupWindow {
+        x: root.track-context-menu-x;
+        y: root.track-context-menu-y;
+        width: 250px;
+        height: 248px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            clip: true;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 0px;
+
+                // 录音臂是**开/关**（文案随当前轨道状态切换，两条 msgid 都已在词表里）。
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-arm";
+                    label: root.track-context-armed ? @tr("取消录音准备 [R]") : @tr("录音准备 (Arm) [R]");
+                    activate => { root.activate-track-context-item("arm", ""); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-delete";
+                    label: @tr("删除当前选中轨道");
+                    activate => { root.activate-track-context-item("action", "track-delete"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-add-midi";
+                    label: @tr("+ 新建 MIDI 乐器轨");
+                    activate => { root.activate-track-context-item("action", "track-add-midi"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-add-audio";
+                    label: @tr("+ 新建音频轨");
+                    activate => { root.activate-track-context-item("action", "track-add-audio"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-add-aux";
+                    label: @tr("+ 新建辅助发送轨");
+                    activate => { root.activate-track-context-item("action", "track-add-bus"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-instrument-eq";
+                    label: @tr("效果槽 • 插入 参量均衡 EQ");
+                    activate => { root.activate-track-context-item("instrument", "fx:eq"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-instrument-reverb";
+                    label: @tr("效果槽 • 插入 空间混响 Reverb");
+                    activate => { root.activate-track-context-item("instrument", "fx:reverb"); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-instrument-compressor";
+                    label: @tr("效果槽 • 插入 动态压缩 Compressor");
+                    activate => { root.activate-track-context-item("instrument", "fx:compressor"); }
+                }
+            }
+        }
+    }
 }
