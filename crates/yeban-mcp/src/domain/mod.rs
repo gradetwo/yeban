@@ -7820,6 +7820,20 @@ fn apply_save(
         "bytes": embeds.presets.bytes,
         "includedUserPresets": embeds.presets.included,
     });
+    // ⭐ T-FIX-151：缺失样本清单进 **apply 面**回执（与 plan/preview 面同形）。
+    let missing_samples = serde_json::json!({
+        "count": embeds.samples.missing.len(),
+        "items": embeds.samples.missing
+            .iter()
+            .map(|item| serde_json::json!({
+                "trackId": item.track_id,
+                "binding": item.binding,
+                "sample": item.sample,
+                "reason": item.reason,
+                "detail": item.detail,
+            }))
+            .collect::<Vec<_>>(),
+    });
     if !force && !changed {
         return Ok(ToolResponse::success(serde_json::json!({
             "saved": false,
@@ -7830,6 +7844,7 @@ fn apply_save(
             "format": store::DOCUMENT_FORMAT,
             "projectDigest": digest,
             "embeddedPresets": embedded_presets,
+            "missingSamples": missing_samples.clone(),
         })));
     }
     store::write_project_atomic(path, bytes)?;
@@ -7863,6 +7878,7 @@ fn apply_save(
         "projectDigest": digest,
         "forced": force,
         "embeddedPresets": embedded_presets,
+        "missingSamples": missing_samples,
     })))
 }
 
