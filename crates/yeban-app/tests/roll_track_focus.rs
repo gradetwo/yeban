@@ -58,9 +58,15 @@ fn roll_focus_sets_scroll_and_pitch_window() {
         "跨度超出 16 行时必须居中（否则只露一端）"
     );
     // 音频轨 / 空轨守卫：没有 MIDI 音域可对齐 ⇒ 一位不动
+    // ⭐ T-FIX-214：T-FIX-200 把守卫重构为两段 let-else（音域一段、首音符一段），
+    //    旧的单行形式已不存在；两段各一次 return false，行为不变。
     assert!(
-        h.contains("let (Some(start_tick), Some(lo), Some(hi)) = (first_note_tick, lo, hi)"),
-        "必须有「无 MIDI 音符 ⇒ return false」的守卫"
+        h.contains("let (Some(lo), Some(hi)) = (lo, hi) else {"),
+        "必须有「无 MIDI 音符 ⇒ return false」的守卫（音域段）"
+    );
+    assert!(
+        h.contains("let Some(start_tick) = first_note_tick_on_track(project, tid) else {"),
+        "必须有「无 MIDI 音符 ⇒ return false」的守卫（首音符段）"
     );
     // ⭐ T-FIX-193 D4：横向落点取**首个音符** tick（摆放 start 加音符片段内坐标），
     // ⛔ 不是摆放起点 —— 尼龙·扫弦摆放 start=0 而首音符在 80636。
