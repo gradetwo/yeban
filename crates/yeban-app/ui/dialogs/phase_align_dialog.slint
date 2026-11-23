@@ -13,6 +13,7 @@ component PhaseButton inherits Rectangle {
     callback clicked();
     accessible-role: button;
     accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
     width: 110px;
     height: 28px;
     background: hit.has-hover ? (accent ? Tokens.accent : Tokens.bg-raised) : (accent ? Tokens.accent : Tokens.bg-control);
@@ -29,9 +30,6 @@ component PhaseButton inherits Rectangle {
         vertical-alignment: center;
     }
     hit := TouchArea {
-        accessible-role: button;
-        accessible-label: root.text;
-        accessible-action-default => { root.clicked(); }
         clicked => { root.clicked(); }
     }
 }
@@ -115,7 +113,7 @@ export component PhaseAlignDialog inherits Rectangle {
                 HorizontalLayout {
                     height: 24px;
                     UiTitleText {
-                        text: "自动相位对齐";
+                        text: @tr("自动相位对齐");
                         font-size: Tokens.font-size-lg;
                         horizontal-stretch: 1;
                     }
@@ -137,7 +135,7 @@ export component PhaseAlignDialog inherits Rectangle {
                 }
 
                 UiText {
-                    text: "轨可填 ULID，也可填轨名（大小写不敏感精确匹配）。maxLagMs 空 = 50。";
+                    text: @tr("轨可填 ULID，也可填轨名（大小写不敏感精确匹配）。maxLagMs 空 = 50。");
                     font-size: Tokens.font-size-xs;
                     color: Tokens.ink-1;
                     height: 16px;
@@ -147,7 +145,7 @@ export component PhaseAlignDialog inherits Rectangle {
                     spacing: 8px;
                     height: 30px;
                     UiText {
-                        text: "基准轨";
+                        text: @tr("基准轨");
                         width: 54px;
                         font-size: Tokens.font-size-sm;
                         color: Tokens.ink-1;
@@ -171,7 +169,7 @@ export component PhaseAlignDialog inherits Rectangle {
                     spacing: 8px;
                     height: 30px;
                     UiText {
-                        text: "目标轨";
+                        text: @tr("目标轨");
                         width: 54px;
                         font-size: Tokens.font-size-sm;
                         color: Tokens.ink-1;
@@ -224,7 +222,7 @@ export component PhaseAlignDialog inherits Rectangle {
                             x: 8px;
                             width: parent.width - 16px;
                             height: parent.height;
-                            text: (root.apply ? "☑ apply 补偿" : "☐ apply 补偿");
+                            text: (root.apply ? @tr("☑ apply 补偿") : @tr("☐ apply 补偿"));
                             font-size: Tokens.font-size-sm;
                             color: Tokens.ink-0;
                             vertical-alignment: center;
@@ -246,7 +244,7 @@ export component PhaseAlignDialog inherits Rectangle {
                     spacing: 8px;
                     height: 30px;
                     PhaseButton {
-                        text: root.apply ? "测量并应用" : "只测量";
+                        text: root.apply ? @tr("测量并应用") : @tr("只测量");
                         accent: root.apply;
                         accessible-id: "phase-align-run-button";
                         clicked => { root.run(); }

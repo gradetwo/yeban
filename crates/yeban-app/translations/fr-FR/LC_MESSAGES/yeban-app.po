@@ -2378,7 +2378,6 @@ msgid "  ·  用户"
 msgstr "  ·  Utilisateur"
 
 # --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
-
 msgid "+ 插件与 ARA…"
 msgstr "+ Plug-in et ARA…"
 
@@ -2504,3 +2503,130 @@ msgstr "Disponible"
 
 msgid "失败"
 msgstr "Échec"
+
+# --- T-FIX-165: Songmap A/B + OTCP / phase-align dialogs ---
+msgid "存 A"
+msgstr "Enregistrer A"
+
+msgid "存 B"
+msgstr "Enregistrer B"
+
+msgid "对比 A→B"
+msgstr "Comparer A→B"
+
+msgid "对比"
+msgstr "Comparer"
+
+msgid "A/B：先存 A 与 B，再对比"
+msgstr "A/B : enregistrez A et B, puis comparez"
+
+msgid "Songmap A/B 对比摘要"
+msgstr "Résumé de comparaison A/B Songmap"
+
+msgid "实测 · 尚未导出（导出后显示真峰值与 LUFS）"
+msgstr "Mesuré · pas encore exporté (le pic réel et le LUFS apparaissent après l'export)"
+
+msgid "导出实测：真峰值 / 积分响度 / LRA"
+msgstr "Mesures d'export : pic réel / sonie intégrée / LRA"
+
+msgid "音高校正 (OTCP)"
+msgstr "Correction de hauteur (OTCP)"
+
+msgid "音高校正 (OTCP)..."
+msgstr "Correction de hauteur (OTCP)..."
+
+msgid "片段 "
+msgstr "Clip "
+
+msgid "任务号"
+msgstr "ID de tâche"
+
+msgid "OTCP 任务号"
+msgstr "ID de tâche OTCP"
+
+msgid "空 = snapNotes / 440"
+msgstr "vide = snapNotes / 440"
+
+msgid "提交校正"
+msgstr "Envoyer la correction"
+
+msgid "查状态"
+msgstr "Vérifier l'état"
+
+msgid "读音符表"
+msgstr "Lire la table de notes"
+
+msgid "取交付"
+msgstr "Récupérer la livraison"
+
+msgid "音符表（index · 片段区间 s · detected→target MIDI · offset cents · corrected）"
+msgstr "Table de notes (index · plage de clip s · detected→target MIDI · offset cents · corrected)"
+
+msgid "自动相位对齐"
+msgstr "Alignement de phase automatique"
+
+msgid "自动相位对齐..."
+msgstr "Alignement de phase automatique..."
+
+msgid "轨可填 ULID，也可填轨名（大小写不敏感精确匹配）。maxLagMs 空 = 50。"
+msgstr "Une piste accepte un ULID ou un nom de piste (correspondance exacte insensible à la casse). maxLagMs vide = 50."
+
+msgid "基准轨"
+msgstr "Piste de référence"
+
+msgid "目标轨"
+msgstr "Piste cible"
+
+msgid "☑ apply 补偿"
+msgstr "☑ apply compensation"
+
+msgid "☐ apply 补偿"
+msgstr "☐ apply compensation"
+
+msgid "测量并应用"
+msgstr "Mesurer et appliquer"
+
+msgid "只测量"
+msgstr "Mesurer seulement"
+
+msgid "apply"
+msgstr "apply"
+
+msgid "maxLagMs"
+msgstr "maxLagMs"
+
+msgid "关闭"
+msgstr "Fermer"
+
+msgid "采样率"
+msgstr "Fréquence d'échantillonnage"
+
+msgid "重试"
+msgstr "Réessayer"
+
+msgid "确认删除"
+msgstr "Confirmer la suppression"
+
+msgid "相位对齐状态"
+msgstr "État de l'alignement de phase"
+
+msgid "音源管理状态"
+msgstr "État de la bibliothèque de sons"
+
+msgid "OTCP keyRoot"
+msgstr "OTCP keyRoot"
+
+msgid "OTCP mode"
+msgstr "OTCP mode"
+
+msgid "OTCP scale"
+msgstr "OTCP scale"
+
+msgid "OTCP tuningHz"
+msgstr "OTCP tuningHz"
+
+msgid "OTCP 状态"
+msgstr "État OTCP"
+
+msgid "OTCP 音符表"
+msgstr "Table de notes OTCP"

@@ -2378,7 +2378,6 @@ msgid "  ·  用户"
 msgstr "  ·  User"
 
 # --- dialogs/plugin_panel.slint (T-FIX-83, T-FIX-156 rework) ---
-
 msgid "+ 插件与 ARA…"
 msgstr "+ Plugin & ARA…"
 
@@ -2504,3 +2503,130 @@ msgstr "Available"
 
 msgid "失败"
 msgstr "Failed"
+
+# --- T-FIX-165: Songmap A/B + OTCP / phase-align dialogs ---
+msgid "存 A"
+msgstr "Save A"
+
+msgid "存 B"
+msgstr "Save B"
+
+msgid "对比 A→B"
+msgstr "Compare A→B"
+
+msgid "对比"
+msgstr "Compare"
+
+msgid "A/B：先存 A 与 B，再对比"
+msgstr "A/B: save A and B first, then compare"
+
+msgid "Songmap A/B 对比摘要"
+msgstr "Songmap A/B comparison summary"
+
+msgid "实测 · 尚未导出（导出后显示真峰值与 LUFS）"
+msgstr "Measured · not exported yet (true peak and LUFS appear after export)"
+
+msgid "导出实测：真峰值 / 积分响度 / LRA"
+msgstr "Export measurements: true peak / integrated loudness / LRA"
+
+msgid "音高校正 (OTCP)"
+msgstr "Pitch Correction (OTCP)"
+
+msgid "音高校正 (OTCP)..."
+msgstr "Pitch Correction (OTCP)..."
+
+msgid "片段 "
+msgstr "Clip "
+
+msgid "任务号"
+msgstr "Job ID"
+
+msgid "OTCP 任务号"
+msgstr "OTCP job ID"
+
+msgid "空 = snapNotes / 440"
+msgstr "empty = snapNotes / 440"
+
+msgid "提交校正"
+msgstr "Submit correction"
+
+msgid "查状态"
+msgstr "Check status"
+
+msgid "读音符表"
+msgstr "Read note table"
+
+msgid "取交付"
+msgstr "Fetch delivery"
+
+msgid "音符表（index · 片段区间 s · detected→target MIDI · offset cents · corrected）"
+msgstr "Note table (index · clip span s · detected→target MIDI · offset cents · corrected)"
+
+msgid "自动相位对齐"
+msgstr "Auto phase alignment"
+
+msgid "自动相位对齐..."
+msgstr "Auto phase alignment..."
+
+msgid "轨可填 ULID，也可填轨名（大小写不敏感精确匹配）。maxLagMs 空 = 50。"
+msgstr "A track accepts a ULID or a track name (case-insensitive exact match). Empty maxLagMs = 50."
+
+msgid "基准轨"
+msgstr "Reference track"
+
+msgid "目标轨"
+msgstr "Target track"
+
+msgid "☑ apply 补偿"
+msgstr "☑ apply compensation"
+
+msgid "☐ apply 补偿"
+msgstr "☐ apply compensation"
+
+msgid "测量并应用"
+msgstr "Measure and apply"
+
+msgid "只测量"
+msgstr "Measure only"
+
+msgid "apply"
+msgstr "apply"
+
+msgid "maxLagMs"
+msgstr "maxLagMs"
+
+msgid "关闭"
+msgstr "Close"
+
+msgid "采样率"
+msgstr "Sample rate"
+
+msgid "重试"
+msgstr "Retry"
+
+msgid "确认删除"
+msgstr "Confirm deletion"
+
+msgid "相位对齐状态"
+msgstr "Phase alignment status"
+
+msgid "音源管理状态"
+msgstr "Sound library status"
+
+msgid "OTCP keyRoot"
+msgstr "OTCP keyRoot"
+
+msgid "OTCP mode"
+msgstr "OTCP mode"
+
+msgid "OTCP scale"
+msgstr "OTCP scale"
+
+msgid "OTCP tuningHz"
+msgstr "OTCP tuningHz"
+
+msgid "OTCP 状态"
+msgstr "OTCP status"
+
+msgid "OTCP 音符表"
+msgstr "OTCP note table"

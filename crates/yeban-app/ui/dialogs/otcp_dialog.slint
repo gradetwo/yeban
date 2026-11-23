@@ -26,6 +26,7 @@ component SmallButton inherits Rectangle {
     callback clicked();
     accessible-role: button;
     accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
     width: 76px;
     height: 28px;
     background: hit.has-hover ? (accent ? Tokens.accent : Tokens.bg-raised) : (accent ? Tokens.accent : Tokens.bg-control);
@@ -42,9 +43,6 @@ component SmallButton inherits Rectangle {
         vertical-alignment: center;
     }
     hit := TouchArea {
-        accessible-role: button;
-        accessible-label: root.text;
-        accessible-action-default => { root.clicked(); }
         clicked => { root.clicked(); }
     }
 }
@@ -134,7 +132,7 @@ export component OtcpDialog inherits Rectangle {
                 HorizontalLayout {
                     height: 24px;
                     UiTitleText {
-                        text: "音高校正 (OTCP)";
+                        text: @tr("音高校正 (OTCP)");
                         font-size: Tokens.font-size-lg;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
@@ -157,7 +155,7 @@ export component OtcpDialog inherits Rectangle {
                 }
 
                 UiText {
-                    text: "片段 " + root.clip-label;
+                    text: @tr("片段 ") + root.clip-label;
                     font-size: Tokens.font-size-sm;
                     color: Tokens.ink-1;
                     height: 18px;
@@ -167,7 +165,7 @@ export component OtcpDialog inherits Rectangle {
                     spacing: 8px;
                     height: 30px;
                     UiText {
-                        text: "任务号";
+                        text: @tr("任务号");
                         width: 62px;
                         font-size: Tokens.font-size-sm;
                         color: Tokens.ink-1;
@@ -272,7 +270,7 @@ export component OtcpDialog inherits Rectangle {
 
                     }
                     UiText {
-                        text: "空 = snapNotes / 440";
+                        text: @tr("空 = snapNotes / 440");
                         font-size: Tokens.font-size-xs;
                         color: Tokens.ink-2;
                         horizontal-stretch: 1;
@@ -283,23 +281,23 @@ export component OtcpDialog inherits Rectangle {
                     spacing: 8px;
                     height: 30px;
                     SmallButton {
-                        text: "提交校正";
+                        text: @tr("提交校正");
                         accent: true;
                         accessible-id: "otcp-submit-button";
                         clicked => { root.submit(); }
                     }
                     SmallButton {
-                        text: "查状态";
+                        text: @tr("查状态");
                         accessible-id: "otcp-poll-button";
                         clicked => { root.poll(); }
                     }
                     SmallButton {
-                        text: "读音符表";
+                        text: @tr("读音符表");
                         accessible-id: "otcp-notes-button";
                         clicked => { root.notes(); }
                     }
                     SmallButton {
-                        text: "取交付";
+                        text: @tr("取交付");
                         accessible-id: "otcp-deliver-button";
                         clicked => { root.deliver(); }
                     }
@@ -328,7 +326,7 @@ export component OtcpDialog inherits Rectangle {
                 }
 
                 UiText {
-                    text: "音符表（index · 片段区间 s · detected→target MIDI · offset cents · corrected）";
+                    text: @tr("音符表（index · 片段区间 s · detected→target MIDI · offset cents · corrected）");
                     font-size: Tokens.font-size-xs;
                     color: Tokens.ink-1;
                     height: 16px;
