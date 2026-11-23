@@ -156,7 +156,9 @@ use yeban_engine::sfz_instrument::{
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
+use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::is_builtin_silence_sample;
+use yeban_sfz::instrument::resolve_sample_under_root;
 use yeban_sfz::notation::{NotationDetection, NotationMissReason};
 use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
@@ -527,7 +529,10 @@ pub fn load_sfz_adapted(
     let adaptation = instrument
         .adapt_notation(
             &|sample_path| {
-                let resolved = resolve_sample_path(path, Path::new(sample_path));
+                // ⭐ T-FIX-126：逃逸样本**不进证据集**（⛔ 不判根外文件的 `smpl`）。
+                let Ok(resolved) = resolve_sample_path(path, Path::new(sample_path)) else {
+                    return None;
+                };
                 if !is_wav_suffix(&resolved) {
                     return None;
                 }
@@ -1203,8 +1208,13 @@ pub fn build_region_samples(instrument: &SfzInstrument, sfz_path: &Path) -> Regi
                 loop_points: None,
             }
         } else {
-            let resolved = resolve_sample_path(sfz_path, Path::new(&raw));
-            match read_sample_file(&resolved) {
+            // ⭐ T-FIX-126：逃逸 ⇒ 与读不到走**同一个**回退分支（原因带 `escapes` 原文）。
+            let outcome = resolve_sample_path(sfz_path, Path::new(&raw))
+                .map_err(|error| error.to_string())
+                .and_then(|resolved| {
+                    read_sample_file(&resolved).map_err(|error| error.to_string())
+                });
+            match outcome {
                 Ok((in_memory, _, det)) => {
                     line = det;
                     in_memory
@@ -1271,8 +1281,11 @@ pub fn region_sample_for(
         ));
     };
     let raw = Path::new(&sample);
-    let resolved = resolve_sample_path(sfz_path, raw);
-    match read_sample_file(&resolved) {
+    // ⭐ T-FIX-126：解析错与读错并成**同一条** Err 文案（回退正弦仍然响亮）。
+    let outcome = resolve_sample_path(sfz_path, raw)
+        .map_err(|error| error.to_string())
+        .and_then(|resolved| read_sample_file(&resolved).map_err(|error| error.to_string()));
+    match outcome {
         Ok((in_memory, _frames, describe)) => Some((in_memory, describe)),
         Err(error) => {
             // 如实回退：读不到 ⇒ 内存正弦，并把原因写进来源文案（⛔ 不假装读到了文件）。
@@ -1290,16 +1303,71 @@ pub fn region_sample_for(
 /// ⭐ 任务单 `#205`：`\` 先按**分隔符**归一成 `/`（见 [`normalize_sample_path`]），
 /// 然后再判相对／绝对。⭐ 这是**唯一**的归一插入点：`--sfz` 的探测／导出
 /// （[`region_sample_for`]）与摊平表管线（[`decode_sfz_plan`]）都经过这里。
-fn resolve_sample_path(sfz_path: &Path, sample: &Path) -> PathBuf {
-    let normalized = normalize_sample_path(sample);
-    let normalized = normalized.as_ref();
-    if normalized.is_absolute() || is_windows_drive_absolute(normalized) {
-        normalized.to_path_buf()
-    } else {
-        sfz_path.parent().map_or_else(
-            || normalized.to_path_buf(),
-            |parent| parent.join(normalized),
-        )
+/// ⛔ **不允许**在这里"补一个 join 就算"：交 [`resolve_sample_under_root`]（根内 canonicalize
+/// 判定），那是 yeban-sfz 侧唯一收口。
+///
+/// # Errors
+///
+/// 逃逸（`..` 组件 / Windows 驱动器相对路径 / 规范化后落在根外，含符号链接）⇒
+/// [`SfzError::SampleEscape`]；路径不可规范化（不存在、权限不足）或含 NUL ⇒
+/// [`SfzError::SampleInvalidPath`]。调用方必须**响亮**处理（⛔ 不许静默回退成"能读"）。
+fn resolve_sample_path(sfz_path: &Path, sample: &Path) -> Result<PathBuf, SfzError> {
+    // ⚠ `normalize_sample_path` 交的是 `Cow<Path>`：词法判定（`C:x` / `C:/x`）与
+    //    `resolve_sample_under_root`（吃 `&str`）都要看**字符串**形态，这里一次定成
+    //    `String`，避免在两种视图之间来回转换。
+    let normalized = normalize_sample_path(sample)
+        .into_owned()
+        .to_string_lossy()
+        .into_owned();
+    let root = sfz_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    // ⚠ 词法归一（`\` ⇒ `/`）在 `resolve_sample_under_root` 内部**再做一遍**：那个函数
+    //    是独立 API（yeban-sfz 外部也要用），不能依赖调用方先归一。
+    //
+    // ⭐ 先把两种 Windows 形**就地**判死（口径与 yeban-sfz 的 `validate_sample_path`
+    //    逐条对齐）：`C:/x` ⇒ `SampleAbsolutePath`；`C:x`（驱动器相对，Windows 上落点是
+    //    "该盘的当前目录"，⛔ 不可约束）⇒ `SampleEscape`。否则这两类在 Unix 上会被拼成
+    //    `<sfzdir>/C:/x` 这种作者没写过的路径。
+    if is_windows_drive_absolute(Path::new(&normalized)) {
+        return Err(SfzError::SampleAbsolutePath {
+            path: sample.display().to_string(),
+        });
+    }
+    if normalized.as_bytes().get(1) == Some(&b':')
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+    {
+        return Err(SfzError::SampleEscape {
+            path: sample.display().to_string(),
+        });
+    }
+    resolve_sample_under_root(&root, &normalized)
+}
+
+/// 解析失败时的**可判别理由**（`#83` 口径）：逃逸 ⇒ `Unreadable`；"本来就没有这个文件"
+/// 仍记 `NotFound`（否则既有计数口径会整体漂移）。
+fn classify_resolve_error(sfz_path: &Path, raw: &str, error: &SfzError) -> SampleReadFailure {
+    match error {
+        SfzError::SampleEscape { .. } | SfzError::SampleAbsolutePath { .. } => {
+            SampleReadFailure::Unreadable
+        }
+        _ => {
+            let normalized = normalize_sample_path(Path::new(raw));
+            let lexical = sfz_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+                .join(normalized.as_ref());
+            if lexical.is_file() {
+                SampleReadFailure::Unreadable
+            } else {
+                SampleReadFailure::NotFound
+            }
+        }
     }
 }
 
@@ -1797,7 +1865,20 @@ pub fn decode_sfz_plan_with_override(
         if is_builtin_silence_sample(raw) {
             continue;
         }
-        let resolved = resolve_sample_path(sfz_path, Path::new(raw));
+        // ⭐ T-FIX-126：逃逸 ⇒ **不解析**、不进提供表，但如实登记（理由可判别）。
+        let resolved = match resolve_sample_path(sfz_path, Path::new(raw)) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let failure = UnreadableSample {
+                    path: raw.clone(),
+                    reason: classify_resolve_error(sfz_path, raw, &error),
+                    detail: error.to_string(),
+                };
+                referenced_failures.push((raw.clone(), failure.reason));
+                unreadable_sample_reasons.push(failure);
+                continue;
+            }
+        };
         match decode_sample_classified(&resolved) {
             Ok((sample, _frames, _describe)) => provided.push((raw.clone(), sample)),
             // ⭐ 读不到 ⇒ **不放进提供表**（⇒ 引擎按缺样本处理），但把原因**如实登记**
@@ -2553,61 +2634,73 @@ mod tests {
     // ⭐ 任务单 `#205`：SFZ 样本路径里的 Windows 反斜杠
     // -----------------------------------------------------------------------
 
-    /// 判据 1（读数表）：`\` 是**分隔符**；相对路径拼在 SFZ 目录之后。
+    /// 判据 1（读数表）：`\` 是**分隔符**；相对路径在**根内**解析成真路径。
     ///
-    /// 数什么：`resolve_sample_path` 的返回值（一个路径，字符串形态）。单位 = 路径。
+    /// ⭐ T-FIX-126 之后的语义：`resolve_sample_path` 不再只做词法 join —— 它交
+    /// [`yeban_sfz::instrument::resolve_sample_under_root`]，返回值是 **canonical 真路径**
+    /// （所以断言一律贴 `canonicalize` 后的目录）。
     #[test]
     fn a_backslash_in_a_sample_path_is_a_separator() {
-        let base = Path::new("sfzdir/inst.sfz");
-        // #203 的逐字样例（dsmolken-double-bass）。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("arco\\arco_c4_mf_down.wav")),
-            PathBuf::from("sfzdir/arco/arco_c4_mf_down.wav"),
-        );
-        // 两级（karoryfer-pastabass 的 `samples\linguine\…`）。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("samples\\linguine\\db2_vl1_rr1.wav")),
-            PathBuf::from("sfzdir/samples/linguine/db2_vl1_rr1.wav"),
-        );
-        // `default_path` 先拼前缀（vsco2ce 的形态）：拼接后的整串仍由同一处归一覆盖。
-        assert_eq!(
-            resolve_sample_path(
-                base,
-                Path::new("Woodwinds\\Bassoon\\stac\\PSBassoon_A1.wav")
+        let dir = std::fs::canonicalize(temp_dir("bslash-lex")).expect("canonicalize dir");
+        let base = dir.join("inst.sfz");
+        let relatives = [
+            ("arco\\arco_c4_mf_down.wav", "arco/arco_c4_mf_down.wav"),
+            (
+                "samples\\linguine\\db2_vl1_rr1.wav",
+                "samples/linguine/db2_vl1_rr1.wav",
             ),
-            PathBuf::from("sfzdir/Woodwinds/Bassoon/stac/PSBassoon_A1.wav"),
-        );
-        // `\\`：SFZ 没有转义语法 ⇒ 两个分隔符 ⇒ 两个 `/`（OS 折叠，行为与 `a/b` 同）。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("a\\\\b.wav")),
-            PathBuf::from("sfzdir/a//b.wav"),
-        );
-        // 正斜杠（本来就好）逐字不变。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("arco/c4.wav")),
-            PathBuf::from("sfzdir/arco/c4.wav"),
-        );
+            (
+                "Woodwinds\\Bassoon\\stac\\PSBassoon_A1.wav",
+                "Woodwinds/Bassoon/stac/PSBassoon_A1.wav",
+            ),
+            // `\\`：SFZ 没有转义语法 ⇒ 两个分隔符 ⇒ OS 折叠成同一个。
+            ("a\\\\b.wav", "a/b.wav"),
+            ("arco/c4.wav", "arco/c4.wav"),
+        ];
+        for (_, expected_rel) in relatives {
+            let parent = Path::new(expected_rel).parent().expect("parent");
+            std::fs::create_dir_all(dir.join(parent)).expect("建样本目录");
+            std::fs::write(dir.join(expected_rel), b"RIFF").expect("写样本");
+        }
+        for (raw, expected_rel) in relatives {
+            assert_eq!(
+                resolve_sample_path(base, Path::new(raw)).expect("根内相对路径必须可解析"),
+                dir.join(expected_rel),
+                "`{raw}` 必须解析成根内真路径 `{expected_rel}`",
+            );
+        }
     }
 
-    /// 判据 1（绝对路径的处置）：`/x/y` 与 `C:\…`／UNC 各自**不拼** SFZ 目录。
+    /// 判据 1（逃逸/外来绝对路径）：⛔ 一律 `Err`，且理由**可判别**。
     #[test]
-    fn absolute_sample_paths_are_not_joined_to_the_sfz_directory() {
-        let base = Path::new("sfzdir/inst.sfz");
-        // POSIX 绝对：原样（既有口径）。
-        #[cfg(unix)]
+    fn escaping_and_foreign_absolute_sample_paths_are_rejected() {
+        let dir = std::fs::canonicalize(temp_dir("bslash-escape")).expect("canonicalize dir");
+        let base = dir.join("inst.sfz");
+        let cases = [
+            ("../../../etc/passwd", "dotdot"),
+            ("samples/../../out.wav", "dotdot-mid"),
+            ("C:\\dir\\kick.wav", "drive-absolute"),
+            ("C:kick.wav", "drive-relative"),
+            ("c:foo.wav", "drive-relative-lower"),
+            ("/x/y/kick.wav", "posix-absolute-outside"),
+        ];
+        for (raw, tag) in cases {
+            let error = resolve_sample_path(base, Path::new(raw))
+                .expect_err(&format!("`{raw}`（{tag}）必须被拒绝"));
+            assert!(
+                matches!(
+                    error,
+                    SfzError::SampleEscape { .. } | SfzError::SampleAbsolutePath { .. }
+                ),
+                "`{raw}`（{tag}）应落逃逸类错误，实际 {error:?}"
+            );
+        }
+        // 根内 POSIX 绝对路径**仍然允许**（`#205` 语义：先解析再判包含）。
+        let inside = dir.join("kick.wav");
+        std::fs::write(&inside, b"RIFF").expect("写样本");
         assert_eq!(
-            resolve_sample_path(base, Path::new("/x/y/kick.wav")),
-            PathBuf::from("/x/y/kick.wav"),
-        );
-        // Windows 盘符绝对：归一成 `C:/…` 后按**外来绝对路径**原样交出（⛔ 拼 SFZ 目录）。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("C:\\dir\\kick.wav")),
-            PathBuf::from("C:/dir/kick.wav"),
-        );
-        // UNC：`\\server\share` ⇒ `//server/share`（本身以 `/` 开头 ⇒ absolute）。
-        assert_eq!(
-            resolve_sample_path(base, Path::new("\\\\server\\share\\kick.wav")),
-            PathBuf::from("//server/share/kick.wav"),
+            resolve_sample_path(base, &inside).expect("根内绝对路径必须可解析"),
+            inside,
         );
     }
 

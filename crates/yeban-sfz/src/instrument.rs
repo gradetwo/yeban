@@ -28,6 +28,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
@@ -1402,12 +1403,97 @@ pub fn validate_sample_path(sample: &str) -> Result<(), SfzError> {
             path: sample.to_owned(),
         });
     }
+    // ⭐ T-FIX-126：Windows **驱动器相对**路径（`C:foo.wav`、`c:..\x`）既不是
+    // POSIX 绝对路径，也不是合法相对路径 —— 它在 Windows 上相对"该盘的当前目录"，
+    // 落点由运行环境决定，无法被 SFZ 根目录约束。旧判据只拦 `C:/`（第 3 字节是 `/`），
+    // 于是 `C:foo.wav` 会走到"相对 SFZ 目录"分支，拼出 `<sfzdir>/C:foo.wav` 这种
+    // 作者没写过的路径，且在 Windows 上被解释成盘符相对路径 ⇒ 穿越。一律响亮拒绝。
+    if normalized.as_bytes().get(1) == Some(&b':')
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+    {
+        return Err(SfzError::SampleEscape {
+            path: sample.to_owned(),
+        });
+    }
     if normalized.split('/').any(|component| component == "..") {
         return Err(SfzError::SampleEscape {
             path: sample.to_owned(),
         });
     }
     Ok(())
+}
+
+/// ⭐ T-FIX-126：把一条 `sample=` 解析成**根内**的规范化真路径（⛔ 桌面端唯一收口）。
+///
+/// 与 [`validate_sample_path`] 的分工：
+/// * 词法层（本函数先做）：NUL、`..` 组件、Windows **驱动器绝对/相对**路径一律拒绝；
+/// * 文件系统层（本函数独家）：`root` 与候选路径各自 `canonicalize`，候选必须以
+///   **规范化后的 root 为前缀**（逐组件比较，`/root` 不会误配 `/rootx`）—— 这是唯一能
+///   拦住"看不见 `..` 也照样出根"那类逃逸的口径：指向根外的**符号链接**、以及
+///   经链接再回退的 `root/link/../../out`。
+///
+/// 与 [`validate_sample_path`] 的**不同**：本函数**允许**根内绝对路径（先解析再判包含），
+/// 因为桌面端既有语义是"绝对路径原样使用"（`#205`）；只要它规范化后落在根内就照常加载。
+///
+/// # Errors
+///
+/// * [`SfzError::SampleInvalidPath`]：NUL，或 `root` / 候选路径无法 `canonicalize`
+///   （不存在、权限不足）—— 后者**不再**被当成"读不到就回退"的静默路径，调用方必须
+///   响亮登记；
+/// * [`SfzError::SampleEscape`]：`..` 组件、Windows 驱动器**绝对**（`C:/x`）或**相对**
+///   （`C:x`）路径，或规范化后落在 `root` 之外。
+pub fn resolve_sample_under_root(root: &Path, sample: &str) -> Result<PathBuf, SfzError> {
+    if sample.is_empty() {
+        return Err(SfzError::SampleInvalidPath {
+            path: sample.to_owned(),
+        });
+    }
+    if sample.contains('\0') {
+        return Err(SfzError::SampleInvalidPath {
+            path: sample.to_owned(),
+        });
+    }
+    let normalized = sample.replace('\\', "/");
+    if normalized.split('/').any(|component| component == "..") {
+        return Err(SfzError::SampleEscape {
+            path: sample.to_owned(),
+        });
+    }
+    if normalized.as_bytes().get(1) == Some(&b':')
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+    {
+        return Err(SfzError::SampleEscape {
+            path: sample.to_owned(),
+        });
+    }
+    let root_canon = root
+        .canonicalize()
+        .map_err(|_| SfzError::SampleInvalidPath {
+            path: root.display().to_string(),
+        })?;
+    let lexical = Path::new(&normalized);
+    let candidate = if lexical.is_absolute() {
+        lexical.to_path_buf()
+    } else {
+        root_canon.join(lexical)
+    };
+    let candidate_canon = candidate
+        .canonicalize()
+        .map_err(|_| SfzError::SampleInvalidPath {
+            path: candidate.display().to_string(),
+        })?;
+    if !candidate_canon.starts_with(&root_canon) {
+        return Err(SfzError::SampleEscape {
+            path: sample.to_owned(),
+        });
+    }
+    Ok(candidate_canon)
 }
 
 /// ⭐ **CC 种子表的唯一合并实现**：文件 `<control> set_ccN` 初值 ⊕ 用户显式

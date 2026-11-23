@@ -571,10 +571,27 @@ impl SfzPlan {
         let instrument = yeban_sfz::parse_sources(&sources, &limits)
             .map_err(|error| format!("SFZ 解析失败: {error}"))?;
         let mut regions = Vec::new();
+        let mut escape_count = 0_usize;
+        let mut escapes: Vec<String> = Vec::new();
         for region in instrument.regions() {
-            // `sample=` 可能是 Windows 写法（`..\Samples\...`）：先归一化分隔符再拼目录。
-            let joined = region.sample_path().replace('\\', "/");
-            let sample_path = parent.join(&joined);
+            // ⭐ T-FIX-126：`sample=` ⛔ 不是"归一化分隔符再拼目录"那么简单 —— 同一份
+            //     文本里的 `..`、`C:x`、指向根外的符号链接都会把后续的**读盘**（乃至
+            //     回写循环点时对目标文件的操作）带到 SFZ 根之外。统一交 yeban-sfz 的
+            //     `resolve_sample_under_root`（根内 canonicalize 判定），失败即**响亮**
+            //     收集，⛔ 不静默跳过（静默跳过会让用户以为"这份 SFZ 里没有这条 region"）。
+            let sample_path = match yeban_sfz::instrument::resolve_sample_under_root(
+                parent,
+                region.sample_path().as_ref(),
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    escape_count += 1;
+                    if escapes.len() < 5 {
+                        escapes.push(error.to_string());
+                    }
+                    continue;
+                }
+            };
             regions.push(SfzRegion {
                 sample_path,
                 pitch_keycenter: region.pitch_keycenter,
@@ -586,6 +603,12 @@ impl SfzPlan {
                 loop_start: region.loop_start,
                 loop_end: region.loop_end,
             });
+        }
+        if escape_count > 0 {
+            return Err(format!(
+                "SFZ 里有 {escape_count} 条 `sample=` 逃出根目录（已拒绝读取）：{}",
+                escapes.join(" | ")
+            ));
         }
         Ok(Self {
             source: path.to_path_buf(),
