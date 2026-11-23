@@ -10,15 +10,17 @@
 //! * SFZ 文本逐字节原样进 CAS（⛔ 不重写 `sample=` 行）；`sample=*silence` 不是
 //!   文件、⛔ 不进集；含 `#include` 的 SFZ 整轨跳过（展开后的片段无法用单文件键索引）。
 //!
-//! ## 字节来源（盘上优先，已内嵌复用，缺了响亮失败）
+//! ## 字节来源（盘上优先，已内嵌复用，缺了记 missing）
 //!
 //! * SFZ：`resolve_sampler_path`（工程目录 ⇒ 库根 ⇒ 仓库根 ⇒ cwd）找到 ⇒ 读盘；
 //!   找不到 ⇒ 工程旧映射表里的副本（跨机重存时 SFZ 已不在盘上）；两者皆无 ⇒
-//!   响亮失败（`samplerUnreadable`），⛔ 不跳过该轨继续存。
+//!   登记 [`MissingSample`]（`reason = "sfz_missing"`），跳过该轨继续存，不拒存。
 //! * 样本：磁盘 SFZ 腿 ⇒ `resolve_sample_path`（SFZ 所在目录 ＋ `sample=` 原串，
 //!   与渲染同一条）；已内嵌 SFZ 腿 ⇒ 键的四档候选（与 `resolve_sampler_path`
 //!   同一条顺序，见 [`resolve_key_disk`]）；盘上找不到 ⇒ 旧映射表复用；皆无 ⇒
-//!   响亮失败。
+//!   登记 [`MissingSample`]（`reason = "sample_missing"`），不拒存。
+//! * 真正会 [`Fault`] 的只有读到的 SFZ 不是合法 UTF-8、触发集解析失败等
+//!   不可解析错误；缺文件只进 `missing`，由保存回执统一点名。
 //!
 //! ## 剪枝
 //!
@@ -76,9 +78,9 @@ pub struct MissingSample {
 ///
 /// # Errors
 ///
-/// SFZ 读不到 / 不是 UTF-8 / 解析失败 / 谱子触发的样本在盘上与旧表里都找不到 ⇒
-/// [`Fault`]（`samplerUnreadable`，含绑定路径与缺失的键 —— 保存被拒绝，
-/// ⛔ 不静默跳过该轨）。
+/// SFZ 文本不是合法 UTF-8 / 触发集解析失败等不可解析错误 ⇒ [`Fault`]
+/// （`samplerUnreadable`，含绑定路径）；SFZ 文件或触发样本缺失 ⇒ 只登记到
+/// [`EmbeddedCollection::missing`]，保存仍成功（T-FIX-48 口径）。
 pub fn collect(
     project: &YebanProjectV1,
     project_path: &Path,

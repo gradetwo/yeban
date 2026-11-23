@@ -3558,17 +3558,20 @@ struct SaveMaterial {
 /// 保存时一并算内嵌（[`embed_samples::collect`]）：写出的工程带
 /// `embedded_samples` 表、容器带触发样本 ＋ SFZ 文本；会话里的工程本身不动 ——
 /// 表与资产的安装是 apply 阶段的事（[`apply_save`] / [`host_save_project`]）。
-/// 缺触发样本或超容器上限 ⇒ 保存被拒绝（响亮失败，⛔ 不写半成品）。
+/// 缺触发样本只登记到 `missingSamples` 随保存回执报告，保存仍成功（T-FIX-48）；
+/// 超容器上限等真正的结构错误才拒绝保存（⛔ 不写半成品）。
 ///
 /// `include_user_presets = false` 时内嵌预制数为 0（设计稿 §5：用户可选择不导出）。
 ///
 /// # Errors
 ///
-/// 没有活跃工程、内嵌收集失败、工程 / 图谱序列化失败、上限预检失败、容器层拒绝、
-/// 或引用的用户预制查不到（响亮拒绝保存，不静默写出缺件工程）。
+/// 没有活跃工程、内嵌收集真正失败（SFZ 非法 UTF-8 / 触发集解析失败等）、
+/// 工程 / 图谱序列化失败、上限预检失败、容器层拒绝、或引用的用户预制查不到
+/// （响亮拒绝保存，不静默写出缺件工程）；缺样本本身不在 [`Fault`] 里。
 fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMaterial, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
-    // ① 收集内嵌（逐音触发集 ＋ SFZ 文本）；缺样本 ⇒ 响亮失败，保存被拒绝。
+    // ① 收集内嵌（逐音触发集 ＋ SFZ 文本）；缺样本 ⇒ 记入 missing，随回执
+    // `missingSamples` 报告，保存继续（T-FIX-48 口径）。
     let collected = embed_samples::collect(&active.project, &active.path, &active.assets)?;
     // ② 带内嵌表的工程副本（会话里的工程本身不动 —— 安装是 apply 阶段的事）。
     let mut project = active.project.clone();
