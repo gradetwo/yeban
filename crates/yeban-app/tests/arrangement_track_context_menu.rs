@@ -237,6 +237,120 @@ fn right_click_header_selects_then_opens_all_items_and_clicks_outside_closes() {
     );
 }
 
+/// 判据③（T-FIX-166 补：**右置**轨道头分支）：`Theme.track-headers-on-right = true`
+/// 时右键右侧轨道头同样先选中、弹齐 8 项、点删除真的删轨。
+///
+/// 同时钉住判据缺口本身：旧判据的固定落点（`LANES` 的 `x = 20`）在右置布局里落在
+/// **时间线**，⛔ 不会弹出轨道菜单 —— 修前那一版测试正是因此只覆盖了左置分支。
+#[test]
+fn right_placed_headers_open_the_same_context_menu_and_delete_the_track() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    // 右置头是产品支持的布局（`persona == AbletonLive` 的默认，也可手动切换）：
+    // 直接切主题全局属性，而不是另造一份窗口 —— 判据要覆盖的就是**同一棵树**的镜像分支。
+    window
+        .global::<yeban_app::ui::Theme<'_>>()
+        .set_track_headers_on_right(true);
+    assert!(
+        window
+            .global::<yeban_app::ui::Theme<'_>>()
+            .get_track_headers_on_right(),
+        "右置布局必须已生效（否则本判据测的还是左置分支）"
+    );
+    window.window().request_redraw();
+
+    let first_id = window.get_tracks().row_data(0).expect("首轨").id;
+    let second_id = window.get_tracks().row_data(1).expect("第二轨").id;
+    window.set_selected_track_index(first_id);
+    assert_ne!(first_id, second_id, "演示工程至少两条可选轨");
+
+    // ① 对照：旧判据的固定落点（x = 20）在右置布局下是**时间线** ⇒ 不弹轨道菜单。
+    //    这一条就是「旧测试覆盖不到右置分支」的机械证明。
+    let lanes = node_bounds(&mut plane, 1, LANES);
+    let ys = window.get_track_ys();
+    let heights = window.get_track_heights();
+    let row_y = ys.row_data(1).expect("行顶") + heights.row_data(1).expect("行高") / 2.0;
+    let legacy_x = 20.0;
+    move_to(
+        &mut plane,
+        2,
+        lanes["x"].as_f64().expect("x") + legacy_x,
+        lanes["y"].as_f64().expect("y") + f64::from(row_y),
+    );
+    pointer_down_at(&mut plane, 3, LANES, legacy_x, f64::from(row_y), "right");
+    pointer_up(&mut plane, 4, "right");
+    assert!(
+        !tree_has(&mut plane, 5, "arrangement-track-context-delete"),
+        "右置布局下 x = 20 落在时间线，不该弹出轨道右键菜单（旧判据的固定落点）"
+    );
+
+    // ② 真实右置轨道头（画布右缘向左 `headers-width` 那一列的中点）右键 ⇒ 选中第二轨。
+    let headers = f64::from(window.get_track_headers_width());
+    let right_x = lanes["width"].as_f64().expect("lanes width") - headers / 2.0;
+    move_to(
+        &mut plane,
+        10,
+        lanes["x"].as_f64().expect("x") + right_x,
+        lanes["y"].as_f64().expect("y") + f64::from(row_y),
+    );
+    pointer_down_at(&mut plane, 11, LANES, right_x, f64::from(row_y), "right");
+    pointer_up(&mut plane, 12, "right");
+    assert_eq!(
+        window.get_selected_track_index(),
+        second_id,
+        "右置轨道头右键未选中轨必须先选中该轨（与左置同一口径）"
+    );
+    for (offset, id) in MENU_ITEMS.iter().enumerate() {
+        assert!(
+            tree_has(&mut plane, 20 + offset as i64, id),
+            "右置轨道头右键菜单打开时必须含条目 `{id}`"
+        );
+    }
+
+    // ③ 点删除（条目默认无障碍动作 = 鼠标点击的同一落点）⇒ 权威工程轨道数减一。
+    let before = port.project().tracks.len();
+    find_by_accessible_id(&window, "arrangement-track-context-delete")
+        .expect("右置布局下删除条目必须在运行时树里")
+        .invoke_accessible_default_action();
+    assert_eq!(
+        port.project().tracks.len(),
+        before - 1,
+        "右置轨道头菜单的「删除」必须真的删掉一条轨"
+    );
+    assert!(
+        !tree_has(&mut plane, 40, "arrangement-track-context-delete"),
+        "点条目后菜单必须关闭"
+    );
+}
+
+/// 判据④（源串）：左 / 右两套镜像都必须保留**右置偏移**的坐标口径。
+///
+/// 行为判据（③）只能证明“点在右置头时菜单会弹”，看不出菜单**定位**公式是否在两套
+/// 镜像里漂移（例如右置分支误用左置的 `0px` 起点）。这里机械钉住两件事：
+/// ① 两份 `open-track-context-menu(...)` 的 x 都用 `Theme.track-headers-on-right ?
+///    root.width - root.headers-width : 0px` 做基底；② 镜像对没有多出第三处（避免有人
+/// 复制一份新分支却漏改）。
+#[test]
+fn both_header_mirrors_keep_the_right_side_offset_in_the_popup_origin() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/arrangement.slint"),
+    )
+    .expect("读 arrangement.slint");
+    let marker = "Theme.track-headers-on-right ? root.width - root.headers-width : 0px";
+    assert_eq!(
+        source.matches(marker).count(),
+        2,
+        "左 / 右两套轨道头必须各用一次右置偏移作为菜单 x 基底（多一处或漏一处都说明镜像漂了）"
+    );
+    assert_eq!(
+        source.matches("root.open-track-context-menu(").count(),
+        2,
+        "轨道右键入口必须恰好两处（左置 / 右置镜像各一）"
+    );
+}
+
 /// 判据②：菜单「删除当前选中轨道」真的提交删轨（权威工程轨道数减一）。
 #[test]
 fn delete_item_really_removes_the_track_from_the_authority() {
