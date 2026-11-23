@@ -2024,6 +2024,12 @@ msgstr "세부 정보"
 msgid "收起"
 msgstr "접기"
 
+msgid "唱片架"
+msgstr "선반"
+
+msgid "堆叠"
+msgstr "스택"
+
 msgid "调号"
 msgstr "조표"
 

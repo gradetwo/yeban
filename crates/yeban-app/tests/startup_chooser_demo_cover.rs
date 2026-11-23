@@ -23,7 +23,12 @@
 //!    `chooser-demos-expand-card-3x.png`（都在素材目录里，
 //!    **不进仓库**）；展开是手风琴：同一时刻只许一张卡展开，
 //!    展开区长在卡内、封面全程可见（无浮层）；
-//! 5. 文件型 demo 打开 = 未命名副本：会话换成该工程、不记最近、
+//! 5. 演示分类另有可切换的**堆叠模式**（与唱片架并存，默认
+//!    唱片架）：封面错层倾斜成一摞，点露出的底层封面把它提到
+//!    顶层并同步选中态，选中信息块在堆叠区下方；堆叠态另落
+//!    `chooser-demos-stack-1x.png` 与 `chooser-demos-stack-3x.png`；
+//!    视图切换只影响演示分类；
+//! 6. 文件型 demo 打开 = 未命名副本：会话换成该工程、不记最近、
 //!    源文件字节不变。
 //!
 //! 素材目录：优先读环境变量 `YEBAN_DEMOS_DIR`，缺省回落到仓库同级
@@ -517,6 +522,141 @@ fn demo_cover_live_window_screenshot() {
         write_png(&assets.join("chooser-demos-expand-1x.png"), &expand_frame);
         let crop = crop_scaled_3x(&expand_frame, card_bounds);
         write_png(&assets.join("chooser-demos-expand-card-3x.png"), &crop);
+    }
+
+    // ---- 堆叠模式：切换 / 顶层信息块 / 点底层提顶 / 切回架子 --------
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        // 先收起架子模式里展开的第三张卡，进堆叠时信息块是收起态。
+        live.refresh_tree(None).expect("收起前重抓控件树");
+        live.dispatch_pointer_down("startup-row-details-2", 26.0, 12.0, PointerButton::Left)
+            .expect("详情按钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        // 视图切换控件只在演示分类出现：切到最近分类必须消失，
+        // 切回演示分类必须回来。（ui 借用只活在语句内，不跨
+        // refresh_tree 的可变借用。）
+        live.ui().invoke_startup_category_selected(1);
+        {
+            let tree = live.refresh_tree(None).expect("切分类后重抓控件树");
+            assert!(
+                tree.find_by_id("startup-demo-view-stack").is_none()
+                    && tree.find_by_id("startup-demo-view-shelf").is_none(),
+                "视图切换只许在演示分类出现，其他分类不得出现"
+            );
+        }
+        live.ui().invoke_startup_category_selected(2);
+        {
+            let tree = live.refresh_tree(None).expect("切回演示分类后重抓控件树");
+            assert!(
+                tree.find_by_id("startup-demo-view-stack").is_some(),
+                "演示分类必须有「堆叠」切换钮"
+            );
+        }
+        // 切到堆叠：默认顶层 = 最后一张（《雨声太吵》），只有它
+        // 的信息块出现；封面是 248 见方（可带旋转包围盒）。
+        // bounds 先拷成自有值，树借用出作用域后再抓帧。
+        live.dispatch_pointer_down("startup-demo-view-stack", 31.0, 10.0, PointerButton::Left)
+            .expect("堆叠切换钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        let (cover0_bounds, cover2_bounds, info2_bounds) = {
+            let tree = live.refresh_tree(None).expect("切堆叠后重抓控件树");
+            let info2 = tree
+                .find_by_id("startup-stack-info-2")
+                .expect("堆叠模式默认顶层（第三张）必须有信息块 startup-stack-info-2");
+            assert!(
+                info2.label.contains("雨声太吵"),
+                "顶层信息块必须是《雨声太吵》，实际 {}",
+                info2.label
+            );
+            assert!(
+                tree.find_by_id("startup-stack-info-0").is_none(),
+                "非顶层专辑不得出现信息块"
+            );
+            let cover2 = tree
+                .find_by_id("startup-row-2")
+                .expect("堆叠里必须有第三张封面 startup-row-2");
+            let cover2_bounds = cover2.bounds.expect("封面必须有几何包围盒");
+            assert!(
+                (248..300).contains(&cover2_bounds.height),
+                "堆叠封面应为 248 见方（旋转包围盒略大），实际 height={}",
+                cover2_bounds.height
+            );
+            let cover0 = tree
+                .find_by_id("startup-row-0")
+                .expect("堆叠里必须有第一张封面 startup-row-0");
+            (
+                cover0.bounds.expect("封面必须有几何包围盒"),
+                cover2_bounds,
+                info2.bounds.expect("信息块必须有几何包围盒"),
+            )
+        };
+        // 堆叠态截图：整页 1x + 堆叠区（全部封面 ∪ 顶层信息块）3x。
+        live.window().request_redraw();
+        let stack_frame = live.window().capture().expect("堆叠态抓帧");
+        write_png(&assets.join("chooser-demos-stack-1x.png"), &stack_frame);
+        let union_x = cover0_bounds.x.min(cover2_bounds.x).min(info2_bounds.x);
+        let union_y = cover0_bounds.y.min(cover2_bounds.y).min(info2_bounds.y);
+        let union_r = (cover0_bounds.x + cover0_bounds.width as i32)
+            .max(cover2_bounds.x + cover2_bounds.width as i32)
+            .max(info2_bounds.x + info2_bounds.width as i32);
+        let union_b = (cover0_bounds.y + cover0_bounds.height as i32)
+            .max(cover2_bounds.y + cover2_bounds.height as i32)
+            .max(info2_bounds.y + info2_bounds.height as i32);
+        let crop = crop_scaled_3x(
+            &stack_frame,
+            yeban_ui_test_port::image::Rect {
+                x: union_x,
+                y: union_y,
+                width: (union_r - union_x) as u32,
+                height: (union_b - union_y) as u32,
+            },
+        );
+        write_png(&assets.join("chooser-demos-stack-3x.png"), &crop);
+        // 点第一张露出左缘的封面（落点在其左缘中段的露边条内，
+        // 上层封面从 x+26 起盖不到这里）：它必须被提到顶层、
+        // 信息块换成它、选中态同步到条目 0。
+        live.dispatch_pointer_down("startup-row-0", 16.0, 124.0, PointerButton::Left)
+            .expect("底层封面露边必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        {
+            let tree = live.refresh_tree(None).expect("提顶后重抓控件树");
+            assert!(
+                tree.find_by_id("startup-stack-info-0").is_some(),
+                "点底层封面后它的信息块必须出现（已被提到顶层）"
+            );
+            assert!(
+                tree.find_by_id("startup-stack-info-2").is_none(),
+                "提顶后原顶层信息块必须消失（同一时刻只有顶层有信息块）"
+            );
+        }
+        assert_eq!(
+            live.ui().get_startup_selected_entry(),
+            0,
+            "提顶必须同步选中态到该条目"
+        );
+        // 切回唱片架：卡片恢复 272×350 架子形态，堆叠信息块消失。
+        live.dispatch_pointer_down("startup-demo-view-shelf", 31.0, 10.0, PointerButton::Left)
+            .expect("唱片架切换钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        {
+            let tree = live.refresh_tree(None).expect("切回架子后重抓控件树");
+            let card2 = tree
+                .find_by_id("startup-row-2")
+                .expect("切回架子后必须有第三张卡 startup-row-2");
+            assert_eq!(
+                card2.bounds.expect("卡必须有几何包围盒").height,
+                350,
+                "切回唱片架后卡片必须恢复 350 高"
+            );
+            assert!(
+                tree.find_by_id("startup-stack-info-0").is_none(),
+                "架子模式不得残留堆叠信息块"
+            );
+        }
     }
 
     // ---- 打开语义：未命名副本、不记最近、源文件字节不变 --------------

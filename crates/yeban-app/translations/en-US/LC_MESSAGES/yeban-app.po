@@ -2024,6 +2024,12 @@ msgstr "Details"
 msgid "收起"
 msgstr "Collapse"
 
+msgid "唱片架"
+msgstr "Shelf"
+
+msgid "堆叠"
+msgstr "Stack"
+
 msgid "调号"
 msgstr "Key Signature"
 

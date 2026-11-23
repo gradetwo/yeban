@@ -2993,6 +2993,31 @@ impl ElementRegistry {
                 false,
             );
         }
+        // 演示分类视图切换（唱片架 / 堆叠）与堆叠模式的选中
+        // 信息块（堆叠实验，只在演示分类里出现）。
+        registry.add(
+            "startup-demo-view-shelf",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "演示分类视图切换：唱片架",
+            false,
+        );
+        registry.add(
+            "startup-demo-view-stack",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "演示分类视图切换：堆叠",
+            false,
+        );
+        for row_index in 0..crate::startup_chooser::CHOOSER_MAX_ROWS {
+            registry.add(
+                &format!("startup-stack-info-{row_index}"),
+                ElementKind::Text,
+                "dialogs/startup_chooser.slint",
+                &format!("堆叠模式第 {row_index} 行的选中信息块"),
+                false,
+            );
+        }
         registry.add(
             "startup-chooser-empty-state",
             ElementKind::Text,

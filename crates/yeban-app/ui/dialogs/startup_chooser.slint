@@ -45,6 +45,12 @@ export component StartupChooserDialog inherits Rectangle {
     // -1 / 0px = 全收起。同一时刻只许一张卡展开。
     in-out property <int> demo-expanded-index: -1;
     in-out property <length> demo-expanded-extra: 0px;
+    // 演示分类视图：0 = 唱片架，1 = 堆叠。只影响演示分类，
+    // 其他分类不读此状态。
+    in-out property <int> demo-view: 0;
+    // 堆叠模式被提到最上层的行号；-1 = 默认（最后一张在顶）。
+    // 点任意露出的封面把它写成该行号，z 序与选中态同步。
+    in-out property <int> demo-stack-top: -1;
 
     callback category-selected(int);
     callback entry-activated(int);
@@ -992,12 +998,94 @@ export component StartupChooserDialog inherits Rectangle {
             // ⛔ 不用盖住原卡的浮层（Wang 2026-11-23 亲验否决），
             // ⛔ 不上主面。手风琴口径：展开状态只存根上的
             // demo-expanded-index 一处，同一时刻只许一张卡展开。
-            // 演示分类的行恒为条目行（kind == 2），无分组标题行。
-            if root.category == 2 : demo-shelf := Flickable {
+            // 演示分类视图切换（分段小控件）：只在演示分类
+            // 出现，只切换演示分类的呈现，默认唱片架。
+            if root.category == 2 : Rectangle {
                 x: 0;
                 y: 0;
                 width: parent.width;
-                height: parent.height;
+                height: 36px;
+
+                Rectangle {
+                    x: 12px;
+                    y: 6px;
+                    width: 132px;
+                    height: 24px;
+                    background: Tokens.bg-panel;
+                    border-radius: Tokens.radius-sm;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+
+                    Rectangle {
+                        x: 2px;
+                        y: 2px;
+                        width: 63px;
+                        height: 20px;
+                        background: root.demo-view == 0 ? Tokens.bg-raised : transparent;
+                        border-radius: Tokens.radius-sm;
+                        accessible-role: button;
+                        accessible-label: @tr("唱片架");
+                        accessible-id: "startup-demo-view-shelf";
+                        accessible-action-default => {
+                            root.demo-view = 0;
+                        }
+
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("唱片架");
+                            color: root.demo-view == 0 ? Tokens.ink-0 : Tokens.ink-2;
+                            font-size: Tokens.font-size-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.demo-view = 0;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        x: 67px;
+                        y: 2px;
+                        width: 63px;
+                        height: 20px;
+                        background: root.demo-view == 1 ? Tokens.bg-raised : transparent;
+                        border-radius: Tokens.radius-sm;
+                        accessible-role: button;
+                        accessible-label: @tr("堆叠");
+                        accessible-id: "startup-demo-view-stack";
+                        accessible-action-default => {
+                            root.demo-view = 1;
+                        }
+
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("堆叠");
+                            color: root.demo-view == 1 ? Tokens.ink-0 : Tokens.ink-2;
+                            font-size: Tokens.font-size-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                root.demo-view = 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 演示分类的行恒为条目行（kind == 2），无分组标题行。
+            if root.category == 2 && root.demo-view == 0 : demo-shelf := Flickable {
+                x: 0;
+                y: 36px;
+                width: parent.width;
+                height: parent.height - 36px;
                 property <int> cols: max(1, Math.floor((self.width - 20px) / 300px));
                 property <int> grid-rows: max(1, Math.floor((root.rows.length + self.cols - 1) / self.cols));
                 // 展开卡所在的行（展开状态存根上的
@@ -1233,6 +1321,251 @@ export component StartupChooserDialog inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // 堆叠模式：全部封面错层叠成一摞，与唱片架并存、
+            // 由上方分段控件切换，只影响演示分类。
+            // 倾斜：transform-rotation 按序号确定性轮换
+            // （(i*5) mod 13 - 6 度，落在 -6..+6，不随机），
+            // 刚性旋转不变形。错层：每张按序号错开
+            // step-x/step-y 露边；step 被可用宽高夹住，张数
+            // 越多每张步进越小，整摞不溢出容器。层叠顺序用
+            // z：顶层 z = 100、其余按序号（后画者压前画者，
+            // 再按 z 修正）。点任意露出的封面：写
+            // demo-stack-top 把它提到顶层、写 selected-entry
+            // 同步选中态、并收起详情展开；双击 = 打开，与
+            // 架子模式同一套打开语义。选中专辑的信息块在
+            // 堆叠区下方（第二个 repeater 只画顶层那张），
+            // 不压图；详情展开沿用专辑页字段行与原地展开，
+            // 出现在信息块下方。
+            if root.category == 2 && root.demo-view == 1 : demo-stack := Flickable {
+                x: 0;
+                y: 36px;
+                width: parent.width;
+                height: parent.height - 36px;
+                property <int> count: root.rows.length;
+                property <length> step-x: self.count > 1 ? min(26px, (self.width - 330px) / (self.count - 1)) : 0px;
+                property <length> step-y: self.count > 1 ? min(16px, 72px / (self.count - 1)) : 0px;
+                property <length> pile-x: (self.width - 248px - (self.count - 1) * self.step-x) / 2;
+                property <length> stage-h: 292px + (self.count - 1) * self.step-y;
+                property <int> top: root.demo-stack-top >= 0 ? root.demo-stack-top : self.count - 1;
+                content-width: self.width;
+                content-height: max(self.height, self.stage-h + 104px + (root.demo-expanded-index == self.top ? root.demo-expanded-extra : 0px));
+                interactive: true;
+
+                for row[row-index] in root.rows : Rectangle {
+                    x: demo-stack.pile-x + row-index * demo-stack.step-x;
+                    y: 22px + row-index * demo-stack.step-y;
+                    width: 248px;
+                    height: 248px;
+                    z: row-index == demo-stack.top ? 100 : row-index;
+                    transform-rotation: (Math.mod(row-index * 5, 13) - 6) * 1deg;
+                    accessible-role: list-item;
+                    accessible-label: row.label;
+                    accessible-id: "startup-row-" + row-index;
+                    accessible-action-default => {
+                        root.demo-expanded-extra = 0px;
+                        root.demo-expanded-index = -1;
+                        root.demo-stack-top = row-index;
+                        root.selected-entry = row.entry-index;
+                    }
+
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: Tokens.bg-panel;
+                        border-radius: Tokens.radius-md;
+                        border-width: 1px;
+                        border-color: Tokens.line;
+                        clip: true;
+
+                        if row.has-cover : Image {
+                            width: 248px;
+                            height: 248px;
+                            source: row.cover;
+                            image-fit: cover;
+                        }
+
+                        // 无封面（内置 demo）：CD 盘面占位块同样入摞。
+                        if !row.has-cover : Rectangle {
+                            width: parent.width;
+                            height: parent.height;
+                            background: Tokens.bg-panel-alt;
+
+                            Rectangle {
+                                x: 49px;
+                                y: 49px;
+                                width: 150px;
+                                height: 150px;
+                                border-radius: 75px;
+                                background: Tokens.bg-raised;
+                                border-width: 1px;
+                                border-color: Tokens.line-strong;
+                            }
+
+                            Rectangle {
+                                x: 107px;
+                                y: 107px;
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 17px;
+                                background: Tokens.bg-panel-alt;
+                                border-width: 1px;
+                                border-color: Tokens.line-strong;
+                            }
+                        }
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => {
+                            root.demo-expanded-extra = 0px;
+                            root.demo-expanded-index = -1;
+                            root.demo-stack-top = row-index;
+                            root.selected-entry = row.entry-index;
+                        }
+                        double-clicked => {
+                            root.entry-activated(row.entry-index);
+                        }
+                    }
+                }
+
+                // 选中（顶层）专辑的信息块：repeater 体即信息块
+                // 本体，非顶层 visible:false（不渲染、不进无障碍
+                // 树）；位于堆叠区下方，不压图。内容与架子卡
+                // 文字块同构：标题 / 曲风 / BPM 小字 / 详情入口。
+                // （先前用「高 0 锚点 + if 内嵌」时信息块落点比
+                // 声明 y 高 44px、压住顶层封面底边，故改直挂。）
+                for row[row-index] in root.rows : info := Rectangle {
+                    property <bool> expanded: root.demo-expanded-index == row-index;
+                    x: demo-stack.pile-x;
+                    y: demo-stack.stage-h + 8px;
+                    width: 272px;
+                    height: 88px + (self.expanded ? row.details-height : 0px);
+                    visible: row-index == demo-stack.top;
+                    accessible-role: text;
+                    accessible-label: row.label;
+                    accessible-id: "startup-stack-info-" + row-index;
+
+                        UiText {
+                            x: 12px;
+                            y: 2px;
+                            width: 248px;
+                            height: 26px;
+                            text: row.label;
+                            color: Tokens.ink-0;
+                            font-size: Tokens.font-size-xl;
+                            overflow: elide;
+                        }
+
+                        UiText {
+                            x: 12px;
+                            y: 32px;
+                            width: 248px;
+                            height: 20px;
+                            text: row.genre;
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-md;
+                            overflow: elide;
+                        }
+
+                        UiText {
+                            x: 12px;
+                            y: 58px;
+                            width: 120px;
+                            height: 18px;
+                            text: row.bpm-label;
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-sm;
+                            overflow: elide;
+                        }
+
+                        Rectangle {
+                            x: 208px;
+                            y: 52px;
+                            width: 52px;
+                            height: 24px;
+                            background: Tokens.bg-panel-alt;
+                            border-radius: Tokens.radius-sm;
+                            accessible-role: button;
+                            accessible-id: "startup-row-details-" + row-index;
+                            accessible-label: info.expanded ? @tr("收起") : @tr("详情");
+                            accessible-action-default => {
+                                // 顺序同架子卡：先 extra 后 index。
+                                root.demo-expanded-extra = info.expanded ? 0px : row.details-height;
+                                root.demo-expanded-index = info.expanded ? -1 : row-index;
+                            }
+
+                            UiText {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                text: info.expanded ? @tr("收起") : @tr("详情");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-sm;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => {
+                                    root.demo-expanded-extra = info.expanded ? 0px : row.details-height;
+                                    root.demo-expanded-index = info.expanded ? -1 : row-index;
+                                }
+                            }
+                        }
+
+                        // 详情展开区：信息块下方原地展开，字段行
+                        // 与架子卡完全一致（宿主 details-height
+                        // 同一估算）。
+                        if info.expanded : Rectangle {
+                            x: 12px;
+                            y: 88px;
+                            width: 248px;
+                            height: row.details-height;
+                            accessible-role: text;
+                            accessible-id: "startup-row-details-panel-" + row-index;
+                            accessible-label: row.details;
+
+                            VerticalLayout {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                spacing: 4px;
+
+                                Rectangle {
+                                    height: 1px;
+                                    background: Tokens.line;
+                                }
+
+                                for dr in row.detail-rows : HorizontalLayout {
+                                    spacing: 8px;
+
+                                    UiText {
+                                        width: 72px;
+                                        text: dr.label;
+                                        color: Tokens.ink-2;
+                                        font-size: Tokens.font-size-sm;
+                                        overflow: elide;
+                                    }
+
+                                    UiText {
+                                        horizontal-stretch: 1;
+                                        text: dr.value;
+                                        color: Tokens.ink-0;
+                                        font-size: Tokens.font-size-md;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
             }
 
             // 空态（分类专属文案；演示分类恒有两条、不会落到这里）

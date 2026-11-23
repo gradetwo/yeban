@@ -2024,6 +2024,12 @@ msgstr "Detalles"
 msgid "收起"
 msgstr "Contraer"
 
+msgid "唱片架"
+msgstr "Estante"
+
+msgid "堆叠"
+msgstr "Pila"
+
 msgid "调号"
 msgstr "Armadura"
 
