@@ -616,6 +616,15 @@ export component ArrangementView inherits Rectangle {
                 if event.modifiers.shift || event.modifiers.alt {
                     root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
                     accept
+                } else if event.delta-x != 0px {
+                    // ⭐ T-FIX-111：无修饰的**横向**双指滑动交给宿主，走与钢琴卷帘
+                    // 完全同一条映射（advance_scroll(scroll-x, -delta-x)，见
+                    // host::wire_arrangement_wheel 与 install_roll_scroll）。
+                    // 此前无修饰滚动一律 reject ⇒ 横向只有 Shift+滚轮能动，
+                    // macOS 触控板横滑被丢掉，两块画布手感不一致。
+                    // 纵向仍 reject 给下方 Flickable（内容高 = 轨道行高）。
+                    root.arrangement-wheel(event.delta-x, 0px, false, false);
+                    accept
                 } else {
                     reject
                 }
@@ -783,6 +792,15 @@ export component ArrangementView inherits Rectangle {
             scroll-event(event) => {
                 if event.modifiers.shift || event.modifiers.alt {
                     root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                } else if event.delta-x != 0px {
+                    // ⭐ T-FIX-111：无修饰的**横向**双指滑动交给宿主，走与钢琴卷帘
+                    // 完全同一条映射（advance_scroll(scroll-x, -delta-x)，见
+                    // host::wire_arrangement_wheel 与 install_roll_scroll）。
+                    // 此前无修饰滚动一律 reject ⇒ 横向只有 Shift+滚轮能动，
+                    // macOS 触控板横滑被丢掉，两块画布手感不一致。
+                    // 纵向仍 reject 给下方 Flickable（内容高 = 轨道行高）。
+                    root.arrangement-wheel(event.delta-x, 0px, false, false);
                     accept
                 } else {
                     reject
@@ -1100,6 +1118,10 @@ export component ArrangementView inherits Rectangle {
         scroll-event(event) => {
             if event.modifiers.shift || event.modifiers.alt {
                 root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                accept
+            } else if event.delta-x != 0px {
+                // ⭐ T-FIX-111：同车道/包头两处，无修饰横向双指交给宿主（与卷帘同一条映射）。
+                root.arrangement-wheel(event.delta-x, 0px, false, false);
                 accept
             } else {
                 reject
