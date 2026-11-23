@@ -835,20 +835,20 @@ export component StartupChooserDialog inherits Rectangle {
             accessible-id: "startup-chooser-list";
             accessible-label: @tr("启动选择器条目列表");
 
-            Flickable {
+            if root.category != 2 : Flickable {
                 x: 0;
                 y: 0;
                 width: parent.width;
                 height: parent.height;
                 content-width: self.width;
-                content-height: max(self.height, root.rows.length * (root.category == 2 ? 76px : 36px));
+                content-height: max(self.height, root.rows.length * 36px);
                 interactive: true;
 
                 for row[row-index] in root.rows : Rectangle {
                     x: 0;
-                    y: row-index * (root.category == 2 ? 76px : 36px);
+                    y: row-index * 36px;
                     width: parent.width;
-                    height: root.category == 2 ? 76px : 36px;
+                    height: 36px;
                     clip: true;
 
                     // 条目行（kind == 2）：可点；单击选中、双击打开。
@@ -872,23 +872,23 @@ export component StartupChooserDialog inherits Rectangle {
                         if row.has-cover : Rectangle {
                             x: 6px;
                             y: 6px;
-                            width: 64px;
-                            height: 64px;
+                            width: 24px;
+                            height: 24px;
                             border-radius: Tokens.radius-md;
                             clip: true;
 
                             Image {
-                                width: 64px;
-                                height: 64px;
+                                width: 24px;
+                                height: 24px;
                                 source: row.cover;
                                 image-fit: cover;
                             }
                         }
 
                         UiText {
-                            x: row.has-cover ? 82px : Tokens.space-6;
-                            y: root.category == 2 ? 20px : 1px;
-                            width: parent.width - (row.has-cover ? 98px : 32px);
+                            x: row.has-cover ? 38px : Tokens.space-6;
+                            y: 1px;
+                            width: parent.width - (row.has-cover ? 54px : 32px);
                             height: 19px;
                             text: row.label;
                             color: Tokens.ink-1;
@@ -897,9 +897,9 @@ export component StartupChooserDialog inherits Rectangle {
                         }
 
                         UiText {
-                            x: row.has-cover ? 82px : Tokens.space-6;
-                            y: root.category == 2 ? 39px : 20px;
-                            width: parent.width - (row.has-cover ? 98px : 32px);
+                            x: row.has-cover ? 38px : Tokens.space-6;
+                            y: 20px;
+                            width: parent.width - (row.has-cover ? 54px : 32px);
                             height: 14px;
                             text: row.detail;
                             color: Tokens.ink-2;
@@ -967,6 +967,215 @@ export component StartupChooserDialog inherits Rectangle {
                             font-size: row.kind == 0 ? Tokens.font-size-sm : Tokens.font-size-xs;
                             vertical-alignment: center;
                             overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // ---- 演示分类：唱片架平铺（实验改版，Wang 2026-11-23 定）----
+            // 每条 demo 是一张专辑卡：大封面在上（248×248），标题 /
+            // 曲风 / 弱化 BPM 在封面下方；每行卡片下方横贯一条架
+            // 板带，专辑之间分隔明显、一眼数得清。技术信息（轨道
+            // 数 / 小节数 / 时长）只从卡片右下角的「详情」入口展开
+            // 成卡内浮层，⛔ 不上主面。演示分类的行恒为条目行
+            // （kind == 2），无分组标题行。
+            if root.category == 2 : demo-shelf := Flickable {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                property <int> cols: max(1, Math.floor((self.width - 20px) / 300px));
+                property <int> grid-rows: max(1, Math.floor((root.rows.length + self.cols - 1) / self.cols));
+                content-width: self.width;
+                content-height: max(self.height, self.grid-rows * 398px + 16px);
+                interactive: true;
+
+                // 架板带：每行一条，横贯整行，像唱片架的隔板。
+                for gr in demo-shelf.grid-rows : Rectangle {
+                    x: 12px;
+                    y: 380px + gr * 398px;
+                    width: parent.width - 24px;
+                    height: 12px;
+                    background: Tokens.bg-panel-alt;
+                    border-radius: Tokens.radius-sm;
+                }
+
+                for row[row-index] in root.rows : card := Rectangle {
+                    property <bool> show-details: false;
+                    x: 24px + Math.mod(row-index, demo-shelf.cols) * 300px;
+                    y: 20px + Math.floor(row-index / demo-shelf.cols) * 398px;
+                    width: 272px;
+                    height: 350px;
+                    background: root.selected-entry == row.entry-index ? Tokens.bg-raised
+                        : card-touch.has-hover ? Tokens.bg-panel-alt : Tokens.bg-panel;
+                    border-radius: Tokens.radius-lg;
+                    border-width: root.selected-entry == row.entry-index ? 2px : 1px;
+                    border-color: root.selected-entry == row.entry-index ? Tokens.accent : Tokens.line;
+                    clip: true;
+                    accessible-role: list-item;
+                    accessible-id: "startup-row-" + row-index;
+                    accessible-label: row.label;
+                    accessible-action-default => { root.selected-entry = row.entry-index; }
+
+                    // 整卡点击层声明在最前：其后声明的「详情」按钮与
+                    // 详情浮层的 TouchArea 叠在它上面、优先吃点击；
+                    // 文字与封面不吃事件，点击落到这一层 = 选中，
+                    // 双击 = 打开（与列表行同一套语义）。
+                    card-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.selected-entry = row.entry-index; }
+                        double-clicked => { root.entry-activated(row.entry-index); }
+                    }
+
+                    // 大封面（真实加载的同名图，方形 cover 裁切不变形）。
+                    if row.has-cover : Rectangle {
+                        x: 12px;
+                        y: 12px;
+                        width: 248px;
+                        height: 248px;
+                        border-radius: Tokens.radius-md;
+                        clip: true;
+
+                        Image {
+                            width: 248px;
+                            height: 248px;
+                            source: row.cover;
+                            image-fit: cover;
+                        }
+                    }
+
+                    // 无封面（内置 demo）：CD 盘面占位，不编造封面图。
+                    if !row.has-cover : Rectangle {
+                        x: 12px;
+                        y: 12px;
+                        width: 248px;
+                        height: 248px;
+                        background: Tokens.bg-panel-alt;
+                        border-radius: Tokens.radius-md;
+
+                        Rectangle {
+                            x: 49px;
+                            y: 49px;
+                            width: 150px;
+                            height: 150px;
+                            border-radius: 75px;
+                            background: Tokens.bg-raised;
+                            border-width: 1px;
+                            border-color: Tokens.line-strong;
+                        }
+
+                        Rectangle {
+                            x: 107px;
+                            y: 107px;
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 17px;
+                            background: Tokens.bg-panel-alt;
+                            border-width: 1px;
+                            border-color: Tokens.line-strong;
+                        }
+                    }
+
+                    // 标题（最大）—— 封面下方，⛔ 不压图。
+                    UiText {
+                        x: 12px;
+                        y: 270px;
+                        width: 248px;
+                        height: 26px;
+                        text: row.label;
+                        color: Tokens.ink-0;
+                        font-size: Tokens.font-size-xl;
+                        overflow: elide;
+                    }
+
+                    // 曲风 / 风格（一行，正常字号；无曲风时留空占位，
+                    // 保卡片对齐）。
+                    UiText {
+                        x: 12px;
+                        y: 300px;
+                        width: 248px;
+                        height: 20px;
+                        text: row.genre;
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-md;
+                        overflow: elide;
+                    }
+
+                    // BPM（小字弱化，最多这一项技术信息）。
+                    UiText {
+                        x: 12px;
+                        y: 324px;
+                        width: 120px;
+                        height: 18px;
+                        text: row.bpm-label;
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-sm;
+                        overflow: elide;
+                    }
+
+                    // 「详情」小入口：点开在卡内列出轨道数 / 小节数 /
+                    // 时长（宿主实读实算），再点任意处收起。
+                    Rectangle {
+                        x: 208px;
+                        y: 318px;
+                        width: 52px;
+                        height: 24px;
+                        background: Tokens.bg-panel-alt;
+                        border-radius: Tokens.radius-sm;
+                        accessible-role: button;
+                        accessible-id: "startup-row-details-" + row-index;
+                        accessible-label: @tr("详情");
+                        accessible-action-default => { card.show-details = true; }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("详情");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { card.show-details = true; }
+                        }
+                    }
+
+                    // 详情浮层（卡内展开，实底不透明，点任意处收起）。
+                    if card.show-details : Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: Tokens.bg-raised;
+                        accessible-role: text;
+                        accessible-id: "startup-row-details-panel-" + row-index;
+                        accessible-label: row.details;
+
+                        UiText {
+                            x: Tokens.space-6;
+                            y: Tokens.space-6;
+                            width: parent.width - 32px;
+                            height: parent.height - 32px;
+                            text: row.details;
+                            color: Tokens.ink-0;
+                            font-size: Tokens.font-size-md;
+                            wrap: word-wrap;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { card.show-details = false; }
                         }
                     }
                 }

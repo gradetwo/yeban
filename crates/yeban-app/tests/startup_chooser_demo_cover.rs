@@ -4,12 +4,19 @@
 //! 用真实素材（《雨声太吵》工程 + Wang 上传的专辑图）验证：
 //!
 //! 1. `YEBAN_DEMOS_DIR` 指向素材目录时，演示工程分类多出一条文件型
-//!    demo，标题与轨道数从容器真实读出（「雨声太吵」/ 非主总线 7 轨）；
+//!    demo，标题与 BPM 从容器真实读出（「雨声太吵」/ 129 BPM）；
+//!    曲风容器里没有字段，取自同名旁挂 `yusheng.meta.json` 的
+//!    `genre`（「Grunge-Pop」，该值转录自容器 `author` 字段
+//!    「雨窗 · Rain-window Grunge-Pop（4:24 版）」里的风格名）；
 //! 2. 该行 `has-cover` 为真（宿主用 `Image::load_from_path` 真实加载
 //!    了同名封面），两条内置 demo 无封面；
-//! 3. 整页渲染落盘 `chooser-demos-1x.png`，第三行区域裁出放大 3 倍
-//!    落盘 `chooser-demos-row-3x.png`（都在素材目录里，**不进仓库**）；
-//! 4. 文件型 demo 打开 = 未命名副本：会话换成该工程、不记最近、
+//! 3. 卡片主面**没有**轨道数（`detail` 为空），轨道数 / 小节数 /
+//!    时长只在 `details` 里（7 条轨道 / 146 小节 / 时长 4:32，
+//!    全部实读实算）；
+//! 4. 整页渲染落盘 `chooser-demos-tile-1x.png`，文件型 demo 卡片
+//!    区域裁出放大 3 倍落盘 `chooser-demos-tile-card-3x.png`
+//!    （都在素材目录里，**不进仓库**）；
+//! 5. 文件型 demo 打开 = 未命名副本：会话换成该工程、不记最近、
 //!    源文件字节不变。
 //!
 //! 素材目录：优先读环境变量 `YEBAN_DEMOS_DIR`，缺省回落到仓库同级
@@ -108,6 +115,12 @@ fn demo_cover_live_window_screenshot() {
     let assets = assets_dir();
     let demo_file = assets.join("yusheng.yeban");
     let cover_file = assets.join("yusheng-cover.png");
+    let meta_file = assets.join("yusheng.meta.json");
+    assert!(
+        meta_file.is_file(),
+        "实验素材缺失: {} 不在（先把曲风旁挂放进素材目录）",
+        meta_file.display()
+    );
     assert!(
         demo_file.is_file(),
         "实验素材缺失: {} 不在（先把 demo 工程放进素材目录）",
@@ -227,33 +240,88 @@ fn demo_cover_live_window_screenshot() {
             "雨声太吵",
             "文件型 demo 标题必须从容器真实读出"
         );
+        assert_eq!(
+            rows[2].genre.as_str(),
+            "Grunge-Pop",
+            "文件型 demo 曲风必须来自旁挂 yusheng.meta.json 的 genre"
+        );
+        assert_eq!(
+            rows[2].bpm_label.as_str(),
+            "129 BPM",
+            "文件型 demo 的 BPM 必须从容器实读"
+        );
         assert!(
-            rows[2].detail.contains("7 条轨道"),
-            "文件型 demo 副文字必须是非主总线轨道数，实际 {}",
+            rows[2].detail.is_empty(),
+            "卡片主面不得出现轨道数等技术信息，实际 detail={}",
             rows[2].detail
+        );
+        assert!(
+            rows[2].details.contains("7 条轨道"),
+            "详情里必须有实读的非主总线轨道数，实际 {}",
+            rows[2].details
+        );
+        assert!(
+            rows[2].details.contains("146 小节"),
+            "详情里必须有实算的小节数，实际 {}",
+            rows[2].details
+        );
+        assert!(
+            rows[2].details.contains("时长 4:32"),
+            "详情里必须有实算的时长，实际 {}",
+            rows[2].details
         );
         assert!(rows[2].has_cover, "文件型 demo 必须带上真实加载的封面");
     }
 
-    // ---- 整帧截图 ------------------------------------------------------
+    // ---- 整帧截图（架子在顶部：第一行两张卡 + 架板带） ----------------
     live.window().request_redraw();
     let frame = live.window().capture().expect("抓帧");
-    let full_png = assets.join("chooser-demos-1x.png");
+    let full_png = assets.join("chooser-demos-tile-1x.png");
     write_png(&full_png, &frame);
 
-    // ---- 第三行裁图（控件树几何定位，放大 3 倍） ----------------------
-    let bounds = {
+    // ---- 滚轮把架子滚到第三张卡完整入镜，再裁图 ----------------------
+    // 对话框可视高度只容得下一行多，第三张卡（第二行）在视口外，
+    // 直接按包围盒裁会裁到视口外的底图。照
+    // `tests/arrangement_vertical_scroll.rs` 的符号口径：看下面
+    // 的行送负 delta。
+    {
         let tree = live.refresh_tree(None).expect("重抓控件树");
+        let list_node = tree
+            .find_by_id("startup-chooser-list")
+            .expect("控件树里必须有列表区 startup-chooser-list");
+        let list_bounds = list_node.bounds.expect("列表区必须有几何包围盒");
+        live.window()
+            .dispatch(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(
+                    (list_bounds.x + list_bounds.width as i32 / 2) as f32,
+                    (list_bounds.y + list_bounds.height as i32 / 2) as f32,
+                ),
+                delta_x: 0.0,
+                delta_y: -400.0,
+            });
+    }
+    live.window().request_redraw();
+    let frame = live.window().capture().expect("滚动后抓帧");
+
+    // ---- 文件型 demo 卡片裁图（控件树几何定位，放大 3 倍） ------------
+    let bounds = {
+        let tree = live.refresh_tree(None).expect("滚动后重抓控件树");
         let row_node = tree
             .find_by_id("startup-row-2")
-            .expect("控件树里必须有第三行 startup-row-2");
-        row_node.bounds.expect("第三行必须有几何包围盒")
+            .expect("控件树里必须有第三张卡 startup-row-2");
+        row_node.bounds.expect("第三张卡必须有几何包围盒")
     };
+    assert!(
+        bounds.y >= 0 && bounds.y + bounds.height as i32 <= frame.size().height as i32,
+        "滚动后第三张卡必须完整入镜，实际 y={} height={}",
+        bounds.y,
+        bounds.height
+    );
     let crop = crop_scaled_3x(&frame, bounds);
-    let crop_png = assets.join("chooser-demos-row-3x.png");
+    let crop_png = assets.join("chooser-demos-tile-card-3x.png");
     write_png(&crop_png, &crop);
     eprintln!(
-        "demo-cover: 整帧 {} ({}x{})，第三行包围盒 x={} y={} {}x{}，裁图 {} ({}x{})",
+        "demo-cover: 整帧 {} ({}x{})，第三张卡包围盒 x={} y={} {}x{}，裁图 {} ({}x{})",
         full_png.display(),
         frame.size().width,
         frame.size().height,
@@ -265,6 +333,27 @@ fn demo_cover_live_window_screenshot() {
         crop.size().width,
         crop.size().height,
     );
+
+    // ---- 详情入口：真实点击展开浮层 + 展开态截图 ----------------------
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        live.refresh_tree(None).expect("点详情前重抓控件树");
+        live.dispatch_pointer_down("startup-row-details-2", 26.0, 12.0, PointerButton::Left)
+            .expect("详情按钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        let tree = live.refresh_tree(None).expect("展开后重抓控件树");
+        assert!(
+            tree.find_by_id("startup-row-details-panel-2").is_some(),
+            "点「详情」后控件树里必须出现详情浮层 startup-row-details-panel-2"
+        );
+        live.window().request_redraw();
+        let details_frame = live.window().capture().expect("展开后抓帧");
+        write_png(
+            &assets.join("chooser-demos-tile-details-1x.png"),
+            &details_frame,
+        );
+    }
 
     // ---- 打开语义：未命名副本、不记最近、源文件字节不变 --------------
     {

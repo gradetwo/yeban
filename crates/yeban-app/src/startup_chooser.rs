@@ -25,9 +25,11 @@
 //!
 //! 环境变量 [`DEMOS_DIR_ENV`] 指向一个目录时，`gather` 在两条内置
 //! 样本之后追加扫描该目录：每个 `*.yeban` 文件是一条文件型 demo，
-//! 标题与轨道数从容器真实读取（[`read_project_container`]），读不
-//! 出来的文件**响亮报错并跳过**（⛔ 不编造标题）；封面是与工程同名
-//! 的 `.png` / `.jpg`，或同名加 `-cover` 后缀的 `.png` / `.jpg`。
+//! 标题、BPM 与跨度从容器真实读取（[`read_project_container`]），
+//! 读不出来的文件**响亮报错并跳过**（⛔ 不编造标题）；封面是与工程
+//! 同名的 `.png` / `.jpg`，或同名加 `-cover` 后缀的 `.png` / `.jpg`。
+//! 曲风容器里没有字段，由同名旁挂 `<stem>.meta.json` 的 `genre`
+//! 提供（缺失即不显示，⛔ 不编造）。
 //! 环境变量未设 ⇒ 行为与没有本实验时完全一致。文件型 demo 打开时
 //! 从磁盘真实加载归档，同样走未命名副本口径（不记最近、不回写源
 //! 文件）。
@@ -46,7 +48,8 @@
 //! ## 宿主写入的闭集标签（九语）
 //!
 //! 行模型里有几处宿主生成的常驻显示文本（最近条目的相对时间与
-//! 「文件已不存在」、演示条目的轨道数、调号名）：与模板来源分组
+//! 「文件已不存在」、演示条目「详情」里的轨道数/小节数/时长、调号
+//! 名）：与模板来源分组
 //! 标题（`templates::TemplateSource::group_label_for`）同一口径 ——
 //! 按当前语言从九语闭集取名，本模块内单测看守。其余文字（分类名、
 //! 字段名、按钮）都在 .slint 侧走 `@tr` 词表。用户内容（文件名、
@@ -92,14 +95,23 @@ pub enum DemoSource {
 }
 
 /// 一条演示工程。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DemoEntry {
     /// 来源（打开时按它取归档）。
     pub source: DemoSource,
     /// 工程标题（样本工程自带 / 文件型从容器读出，原样显示）。
     pub title: String,
-    /// 非主总线轨道数。
+    /// 非主总线轨道数（只进卡片「详情」，不上卡片主面）。
     pub track_count: usize,
+    /// 曲风/风格（文件型 demo 读同名旁挂 `<stem>.meta.json` 的
+    /// `genre`；容器本身没有曲风字段，缺失即 `None`，卡片不编造）。
+    pub genre: Option<String>,
+    /// 工程速度（样本工程 / 容器自带 `bpm`，实读）。
+    pub bpm: f64,
+    /// 全曲小节数（按片段末端 tick 与拍号实算，只进「详情」）。
+    pub bars: usize,
+    /// 全曲时长（秒，按片段末端 tick 与 bpm 实算，只进「详情」）。
+    pub duration_secs: f64,
     /// 封面图路径（文件型 demo 的同名图片；内置样本恒 `None`）。
     pub cover: Option<PathBuf>,
 }
@@ -140,6 +152,7 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
         .into_iter()
         .map(|sample| {
             let project = sample.project();
+            let (bars, duration_secs) = demo_span(&project);
             DemoEntry {
                 source: DemoSource::Builtin(sample),
                 title: project.title.clone(),
@@ -148,6 +161,10 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
                     .keys()
                     .filter(|id| **id != project.master_bus_track_id)
                     .count(),
+                genre: None,
+                bpm: project.bpm,
+                bars,
+                duration_secs,
                 cover: None,
             }
         })
@@ -231,6 +248,7 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
             ]
         })
         .find(|candidate| candidate.is_file());
+    let (bars, duration_secs) = demo_span(project);
     Ok(DemoEntry {
         source: DemoSource::File(path.to_path_buf()),
         title: project.title.clone(),
@@ -239,8 +257,61 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
             .keys()
             .filter(|id| **id != project.master_bus_track_id)
             .count(),
+        genre: read_sidecar_genre(path, stem),
+        bpm: project.bpm,
+        bars,
+        duration_secs,
         cover,
     })
+}
+
+/// 全曲跨度实算：取全部轨道片段末端 tick 的最大值，按拍号换
+/// 小节、按 bpm 换秒。无片段 ⇒ (0, 0.0)，「详情」里不列这两项。
+fn demo_span(project: &YebanProjectV1) -> (usize, f64) {
+    let end_tick = project
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .map(|clip| clip.start_tick.saturating_add(clip.duration_ticks))
+        .max()
+        .unwrap_or(0);
+    let ticks_per_bar =
+        yeban_model::ids::PPQ.saturating_mul(u64::from(project.time_signature.numerator.max(1)));
+    let bars = if ticks_per_bar == 0 {
+        0
+    } else {
+        usize::try_from(end_tick.div_ceil(ticks_per_bar)).unwrap_or(usize::MAX)
+    };
+    let duration_secs = if project.bpm > 0.0 {
+        end_tick as f64 / yeban_model::ids::PPQ as f64 / project.bpm * 60.0
+    } else {
+        0.0
+    };
+    (bars, duration_secs)
+}
+
+/// 曲风旁挂（实验）：容器没有曲风字段，风格由工程同目录的
+/// `<stem>.meta.json` 提供（`{"genre": "..."}`）。文件缺失 ⇒
+/// `None`（卡片不显示曲风行）；文件在但解析失败 ⇒ **响亮**报错
+/// 并按无曲风处理，⛔ 不编造。
+fn read_sidecar_genre(path: &Path, stem: &str) -> Option<String> {
+    let meta_path = path.with_file_name(format!("{stem}.meta.json"));
+    let text = std::fs::read_to_string(&meta_path).ok()?;
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => value
+            .get("genre")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|genre| !genre.is_empty())
+            .map(str::to_owned),
+        Err(error) => {
+            eprintln!(
+                "startup-chooser: 曲风旁挂 `{}` 解析失败: {error}",
+                meta_path.display()
+            );
+            None
+        }
+    }
 }
 
 /// 从磁盘真实加载一份文件型 demo 的完整归档（打开语义用）。
@@ -295,6 +366,13 @@ pub struct ChooserRow {
     pub label: String,
     /// 副文字（路径＋时间 / 轨道数；标题行为空）。
     pub detail: String,
+    /// 曲风/风格（只演示条目有；其余行为空串）。
+    pub genre: String,
+    /// 弱化速度行（如 `129 BPM`；只演示条目有，其余行为空串）。
+    pub bpm_label: String,
+    /// 「详情」展开文本（多行：轨道数 / 小节数 / 时长；只演示
+    /// 条目有，其余行为空串）。
+    pub details: String,
     /// 条目行指向其分类数据表的下标；标题行为 `None`。
     pub entry_index: Option<usize>,
     /// 条目是否可点（最近条目文件已不存在 ⇒ false；标题行恒 false）。
@@ -308,6 +386,9 @@ fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
         kind,
         label,
         detail: String::new(),
+        genre: String::new(),
+        bpm_label: String::new(),
+        details: String::new(),
         entry_index: None,
         enabled: false,
         cover: None,
@@ -335,6 +416,9 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
                 kind: ChooserRowKind::Entry,
                 label: entry.name.clone(),
                 detail,
+                genre: String::new(),
+                bpm_label: String::new(),
+                details: String::new(),
                 entry_index: Some(index),
                 enabled: entry.exists,
                 cover: None,
@@ -343,7 +427,9 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
         .collect()
 }
 
-/// 「演示工程」分类的行模型：标题是工程自带标题，副文字是轨道数。
+/// 「演示工程」分类的行模型（唱片架卡片口径，Wang 2026-11-23
+/// 定）：主面只留标题、曲风与弱化的 BPM；轨道数等技术信息只进
+/// 「详情」展开文本，⛔ 不上主面。
 #[must_use]
 pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
     entries
@@ -352,12 +438,73 @@ pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
         .map(|(index, entry)| ChooserRow {
             kind: ChooserRowKind::Entry,
             label: entry.title.clone(),
-            detail: tracks_label(lang, entry.track_count),
+            detail: String::new(),
+            genre: entry.genre.clone().unwrap_or_default(),
+            bpm_label: bpm_label(entry.bpm),
+            details: demo_details_label(lang, entry),
             entry_index: Some(index),
             enabled: true,
             cover: entry.cover.clone(),
         })
         .collect()
+}
+
+/// 卡片上的弱化速度行（语言中立写法：整数不带小数尾巴）。
+#[must_use]
+pub fn bpm_label(bpm: f64) -> String {
+    if bpm.fract().abs() < f64::EPSILON {
+        format!("{bpm:.0} BPM")
+    } else {
+        format!("{bpm:.1} BPM")
+    }
+}
+
+/// 卡片「详情」展开文本：轨道数 / 小节数 / 时长，逐行一条，
+/// 全部实读实算（九语闭集标签与 [`tracks_label`] 同口径）。
+#[must_use]
+pub fn demo_details_label(lang: Language, entry: &DemoEntry) -> String {
+    let mut lines = vec![tracks_label(lang, entry.track_count)];
+    if entry.bars > 0 {
+        lines.push(bars_label(lang, entry.bars));
+    }
+    if entry.duration_secs > 0.0 {
+        lines.push(duration_label(lang, entry.duration_secs));
+    }
+    lines.join("\n")
+}
+
+/// 「N 小节」（演示条目「详情」，九语闭集）。
+#[must_use]
+pub fn bars_label(lang: Language, count: usize) -> String {
+    match lang {
+        Language::ZhCn => format!("{count} 小节"),
+        Language::EnUs => format!("{count} bars"),
+        Language::FrFr => format!("{count} mesures"),
+        Language::EsEs => format!("{count} compases"),
+        Language::PtBr => format!("{count} compassos"),
+        Language::JaJp => format!("{count} 小節"),
+        Language::KoKr => format!("{count}마디"),
+        Language::RuRu => format!("тактов: {count}"),
+        Language::DeDe => format!("{count} Takte"),
+    }
+}
+
+/// 「时长 M:SS」（演示条目「详情」，九语闭集；时分秒写法语言中立）。
+#[must_use]
+pub fn duration_label(lang: Language, secs: f64) -> String {
+    let total = secs.round() as u64;
+    let clock = format!("{}:{:02}", total / 60, total % 60);
+    match lang {
+        Language::ZhCn => format!("时长 {clock}"),
+        Language::EnUs => format!("Length {clock}"),
+        Language::FrFr => format!("Durée {clock}"),
+        Language::EsEs => format!("Duración {clock}"),
+        Language::PtBr => format!("Duração {clock}"),
+        Language::JaJp => format!("長さ {clock}"),
+        Language::KoKr => format!("길이 {clock}"),
+        Language::RuRu => format!("длительность {clock}"),
+        Language::DeDe => format!("Dauer {clock}"),
+    }
 }
 
 /// 模板分类（工厂 / 我的）的行模型：只取该来源的条目，按
@@ -389,6 +536,9 @@ pub fn template_rows(entries: &[TemplateEntry], source: TemplateSource) -> Vec<C
             kind: ChooserRowKind::Entry,
             label: entry.name.clone(),
             detail: String::new(),
+            genre: String::new(),
+            bpm_label: String::new(),
+            details: String::new(),
             entry_index: Some(index),
             enabled: true,
             cover: None,
@@ -745,6 +895,8 @@ mod tests {
             assert_eq!(key_signature_label(None, lang), "—");
             assert!(!missing_file_label(lang).is_empty());
             assert!(!tracks_label(lang, 3).is_empty());
+            assert!(!bars_label(lang, 3).is_empty());
+            assert!(!duration_label(lang, 90.0).is_empty());
             assert!(!relative_time_label(lang, 10_000, 10_000).is_empty());
         }
         assert_eq!(key_signature_label(c_major, Language::ZhCn), "C 大调");

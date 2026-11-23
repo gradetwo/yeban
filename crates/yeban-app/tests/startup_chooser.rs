@@ -181,8 +181,12 @@ fn gather_collects_demos_and_templates() {
     assert!(
         demo_rows
             .iter()
-            .any(|row| row.detail.contains(&format!("{filled_tracks} 条轨道"))),
-        "演示行模型的轨道数必须与 filled 样本现数一致，实际 {demo_rows:?}"
+            .any(|row| row.details.contains(&format!("{filled_tracks} 条轨道"))),
+        "演示行模型「详情」里的轨道数必须与 filled 样本现数一致，实际 {demo_rows:?}"
+    );
+    assert!(
+        demo_rows.iter().all(|row| row.detail.is_empty()),
+        "演示行主面不得带轨道数等技术信息（detail 恒空），实际 {demo_rows:?}"
     );
 
     let factory_rows = template_rows(&data.templates, TemplateSource::Factory);
