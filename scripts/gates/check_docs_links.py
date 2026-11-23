@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -67,11 +68,22 @@ INLINE_CODE_RE = re.compile(r"(`+)(?!\s)(.+?)(?<!\s)\1")
 
 
 def markdown_files() -> list[Path]:
+    """遍历时剪枝 SKIP_DIRS（target/ 可有 11G / 3.6 万文件）。
+
+    ⛔ 不能 `REPO.rglob("*.md")` 之后再过滤：rglob 会先把整棵树走一遍，
+    本仓实测 target/ 11G ⇒ 门禁 60s 不返回。用 os.walk 在进入目录前剪枝。
+    每个候选仍过 rel_parts()（内部 resolve），保留原有的去重语义。
+    """
     out: list[Path] = []
-    for path in REPO.rglob("*.md"):
-        if any(part in SKIP_DIRS for part in rel_parts(path)):
-            continue
-        out.append(path)
+    for dirpath, dirnames, filenames in os.walk(REPO):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            if not name.endswith(".md"):
+                continue
+            path = Path(dirpath) / name
+            if any(part in SKIP_DIRS for part in rel_parts(path)):
+                continue
+            out.append(path)
     return sorted(out)
 
 
