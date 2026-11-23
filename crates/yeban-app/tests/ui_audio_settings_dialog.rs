@@ -129,9 +129,13 @@ fn panel_callbacks_are_wired_end_to_end() {
     ] {
         assert!(app.contains(property), "MainWindow 必须声明 {property}");
     }
+    // T-FIX-131：`if` 门控改为 `visible:` 门控（`if` 内声明的 id 在组件作用域不可见，
+    // `focus-audio-settings-dialog` 无法引用）。意图不变：默认关着 ⇒ 不可见 ⇒
+    // 不入运行树、不画像素 ⇒ 默认帧不变（行为由 `tests/modal_focus_entry.rs`
+    // 的入口/关闭断言与默认帧判据钉住，这里只钉接线语法）。
     assert!(
-        app.contains("if root.audio-settings-open : AudioSettingsDialog"),
-        "面板必须只在 audio-settings-open 时实例化（默认关着 ⇒ 默认帧不变）"
+        app.contains("visible: root.audio-settings-open;"),
+        "面板必须只在 audio-settings-open 时可见（默认关着 ⇒ 默认帧不变）"
     );
 }
 

@@ -15179,17 +15179,22 @@ fn apply_action(
         // `Cmd/Ctrl+F`：把键盘焦点交给左栏搜索框（D-UI-18，界面决定）。
         //
         // ⚠ 焦点**不是属性** ⇒ 这里是"命令一次 Slint"，不是"写一个状态"：唯一实现 =
-        // `ui.invoke_focus_sidebar_search()`（`app.slint` 的 `public function`，里面只有
-        // `sidebar-search-input.focus()`）。
-        // ⭐ 折叠态先展开：写的仍是 `Action::ToggleSidebar` 那**同一个**属性
-        // `sidebar-collapsed`（唯一写者是 `wire_view_callbacks` 与本臂 ⇒ 不新增真相源），
-        // 因为框在折叠时 `visible: false`，取焦落不下去。
+        // `ui.invoke_focus_sidebar_search()`（`app.slint` 的 `public function`，经左栏
+        // `left-panel.focus-search()` 落到 `browser_search_input.focus()`；注意不是
+        // `ui/sidebar.slint` 那个 `Sidebar.focus-search()`—— 那个组件今天没有实例进树）。
+        // ⭐ 左栏若关着就先展开（与 `Action::ToggleBrowser` 同一语义）：搜索框在
+        // `show-left-inspector = false` 时不在场，取焦落不下去。`sidebar-collapsed`
+        // 也一并展开（与 `Action::ToggleSidebar` 同一个属性），但注意它在 `.slint` 侧
+        // **没有读者**、并不真的管显隐（T-FIX-131 甄别），真正管显隐的是 `show-left-inspector`。
         // ⭐ 返回值 = **焦点真的落地了吗**：读数 `sidebar-search-focused` 是 Slint 焦点的
-        // 镜像（`app.slint`），窄栏（`compact` ⇒ 框根本不在场）时它保持 `false` ⇒ 本键
-        // **不消费**（⛔ 不假装成功，与本文件"引擎拒绝 ⇒ 放行"的既有取向一致）。
+        // 镜像（`app.slint` 直接绑左栏的 `search-has-focus`）；框不在场时它保持 `false`
+        // ⇒ 本键**不消费**（⛔ 不假装成功，与本文件"引擎拒绝 ⇒ 放行"的既有取向一致）。
         Action::FocusSidebarSearch => {
             if ui.get_sidebar_collapsed() {
                 ui.set_sidebar_collapsed(false);
+            }
+            if !ui.get_show_left_inspector() {
+                ui.set_show_left_inspector(true);
             }
             ui.invoke_focus_sidebar_search();
             ui.get_sidebar_search_focused()
@@ -24279,6 +24284,33 @@ fn resolve_device_param_target(
         })
 }
 
+/// 新 UI 的 `FocusScope`（`key-handler` / 各模态陷阱）把逻辑键交给 `trigger-shortcut`；
+/// 这里把它原样转给 `key-action`（`wire_keys` 的 `on_key_action`：`resolve_logical` +
+/// `apply_action`）。修饰位取 Slint `KeyboardModifiers`（`alt`/`control`/`shift`/`meta`），
+/// `control` 对应 `key-action` 的 `ctrl` 参数。
+///
+/// 生产（`main.rs` 的 `wire_aether_actions`）与无头判据（`live_surface.rs` 的
+/// `build_live_ui_with`）调的是**同一个**函数：判据的平台按键（`dispatch_key_press`）
+/// 与用户真键盘走同一条链；⛔ 不在判据侧再抄一份转发器。测试装配仍不跑
+/// `wire_aether_actions` 的其余部分（走带按钮 / 轨道动作等生产桥接）。
+pub fn wire_trigger_shortcut(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_trigger_shortcut({
+        let w = weak.clone();
+        move |text, event| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_key_action(
+                    text,
+                    event.modifiers.shift,
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                    event.modifiers.meta,
+                );
+            }
+        }
+    });
+}
+
 /// 生产桥接层: 把**全部 33 个新 UI 独有回调**注册到真实 handler。
 ///
 /// 落点分三类, ⛔ 没有一个是 toast / 静默:
@@ -24376,22 +24408,8 @@ pub fn wire_aether_actions(
             }
         }
     });
-    // 新 UI 的 FocusScope 把逻辑键交给这里; 修饰位取 Slint KeyboardModifiers
-    // (alt/control/shift/meta), control 对应 key-action 的 ctrl 参数。
-    ui.on_trigger_shortcut({
-        let w = weak.clone();
-        move |text, event| {
-            if let Some(ui) = w.upgrade() {
-                ui.invoke_key_action(
-                    text,
-                    event.modifiers.shift,
-                    event.modifiers.control,
-                    event.modifiers.alt,
-                    event.modifiers.meta,
-                );
-            }
-        }
-    });
+    // 平台按键的转发（`trigger-shortcut` → `key-action`）：见 `wire_trigger_shortcut`。
+    wire_trigger_shortcut(ui);
 
     // ---- 轨道 / 混音 (新 UI 传 1-based TrackData.id, 旧回调要 0-based 索引) ----
     ui.on_track_toggle_mute({

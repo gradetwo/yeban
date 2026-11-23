@@ -429,14 +429,18 @@ export component MainWindow inherits Window {
     in-out property <bool> musical-pr-resolve-available: false;
     in-out property <string> musical-pr-resolve-reason: "";
 
-    // main 版 public function: 新 UI 无对应旧控件, 保留 invoke_* 入口为空实现
-    public function focus-sidebar-search() { }
-    public function focus-undo-tree-trap() { }
+    // 焦点入口（T-FIX-131）：每只模态 / 搜索框各有**一个**取焦函数，宿主打开时同步调用
+    // （⛔ 不用 `.slint` 的 `changed` 处理器：它要等事件循环下一拍，而无头判据设置属性后
+    // 并不跑循环 ⇒ 焦点会停在原地，与 `host.rs` 里导出弹窗那一处同一个理由）。
+    // 各自落到对话框组件已有的取焦函数上（陷阱 `FocusScope` + 首格），⛔ 不在 `MainWindow`
+    // 里再抄一份"焦点在哪"。
+    public function focus-sidebar-search() { left-panel.focus-search(); }
+    public function focus-undo-tree-trap() { undo-tree-dialog.focus-trap(); }
     public function focus-shortcut-layer() { key-handler.focus(); }
-    public function focus-humanize-dialog() { }
-    public function focus-drum-gen-dialog() { }
-    public function focus-export-wav-dialog() { }
-    public function focus-audio-settings-dialog() { }
+    public function focus-humanize-dialog() { humanize-dialog.focus-first-field(); }
+    public function focus-drum-gen-dialog() { drum-gen-dialog.focus-first-field(); }
+    public function focus-export-wav-dialog() { export-wav-dialog.focus-first-field(); }
+    public function focus-audio-settings-dialog() { audio-settings-dialog.focus-first-control(); }
 
     // ⛔ 2026-11-23 (T-FIX-143)：下面这批属性在 `.slint` 侧**零读者**（声明行是唯一出现），
     //   宿主仍按 snake_case setter 写入 ⇒ 写进去不产生任何界面效果。保留仅为不打断宿主调用，
@@ -466,7 +470,9 @@ export component MainWindow inherits Window {
     in-out property <string> audio-input-level-text: "";
     in-out property <int> audio-output-device-index: 0;
     in-out property <[string]> audio-output-device-labels: [];
-    in-out property <int> audio-settings-focused-control: 0;
+    // 焦点读数（T-FIX-131）：从 Slint 自己的 `has-focus` 推导，⛔ 不是第三份写态。
+    // 弹窗关着 ⇒ 对应的实例不在树里 ⇒ 读数回到对话框自己的默认值（`-1` / `false`）。
+    in-out property <int> audio-settings-focused-control: audio-settings-dialog.focused-control;
     in-out property <bool> audio-settings-open: false;
     in-out property <[string]> asset-pool-details: [];
     in-out property <[string]> asset-pool-kinds: [];
@@ -535,6 +541,7 @@ export component MainWindow inherits Window {
     in-out property <string> drum-gen-complexity: "";
     in-out property <string> drum-gen-error: "";
     in-out property <bool> drum-gen-fill: true;
+    in-out property <int> drum-gen-focused-control: drum-gen-dialog.focused-control;
     in-out property <string> drum-gen-intensity: "";
     in-out property <bool> drum-gen-open: false;
     in-out property <[DrumStyleRow]> drum-gen-rows: [];
@@ -553,8 +560,8 @@ export component MainWindow inherits Window {
     // BUS COMP 真实压缩传递曲线（空串 = 无压缩器 ⇒ 卡片保持「示意」）。
     in-out property <string> comp-curve-svg: "";
     in-out property <string> export-wav-bit-depth: "24";
-    in-out property <int> export-wav-focused-control: 0;
-    in-out property <int> export-wav-focused-field: 0;
+    in-out property <int> export-wav-focused-control: export-wav-dialog.focused-control;
+    in-out property <int> export-wav-focused-field: export-wav-dialog.focused-field;
     in-out property <bool> export-wav-limiter: false;
     in-out property <bool> export-wav-open: false;
     in-out property <string> export-wav-path: "";
@@ -562,8 +569,8 @@ export component MainWindow inherits Window {
     in-out property <string> export-wav-seconds: "";
     in-out property <string> humanize-error: "";
     in-out property <int> humanize-focus-section: 0;
-    in-out property <int> humanize-focused-control: 0;
-    in-out property <int> humanize-focused-field: 0;
+    in-out property <int> humanize-focused-control: humanize-dialog.focused-control;
+    in-out property <int> humanize-focused-field: humanize-dialog.focused-field;
     in-out property <string> humanize-grid: "";
     in-out property <bool> humanize-open: false;
     in-out property <string> humanize-seed: "";
@@ -731,14 +738,14 @@ export component MainWindow inherits Window {
     in-out property <float> send-gain-min-db: 0.0;
     in-out property <bool> shaper-available: false;
     in-out property <string> shaper-info: @tr("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)");
-    in-out property <bool> shortcut-layer-focused: false;
+    in-out property <bool> shortcut-layer-focused: key-handler.has-focus;
     in-out property <int> sidebar-category: 0;
     in-out property <bool> sidebar-collapsed: false;
     in-out property <string> sidebar-empty-reason: "";
     in-out property <int> sidebar-item: 0;
     in-out property <[string]> sidebar-items: [];
     in-out property <string> sidebar-search: "";
-    in-out property <bool> sidebar-search-focused: false;
+    in-out property <bool> sidebar-search-focused: left-panel.search-has-focus;
     in-out property <bool> sidechain-available: false;
     in-out property <string> sidechain-key-label: @tr("侧链键源: 无 (点击切换)");
     in-out property <[color]> song-overview-band-colors: [];
@@ -841,7 +848,7 @@ export component MainWindow inherits Window {
     in-out property <int> undo-node-count: 0;
     in-out property <int> undo-node-hidden: 0;
     in-out property <[string]> undo-node-labels: [];
-    in-out property <bool> undo-tree-focus-trapped: false;
+    in-out property <bool> undo-tree-focus-trapped: undo-tree-dialog.focus-trapped;
     in-out property <bool> undo-tree-open: false;
     in-out property <int> undo-undone: 0;
     in-out property <bool> velocity-drag-active: false;
@@ -1468,13 +1475,31 @@ export component MainWindow inherits Window {
             }
 
             // 2. MIDDLE MAIN WORKSPACE (Zone A + Zone B + Zone C + Zone D)
-            if !root.console-maximized : HorizontalLayout {
+            // T-FIX-131：`if` 改为 `visible:` 门控（与弹窗同理）—— `if` 内声明的 id
+            // 在组件作用域不可见，`MainWindow` 够不到左栏实例 `left-panel`，搜索取焦
+            // 只能走 `changed` 脉冲（实测：绑定惰性求值，处理器不触发，见
+            // `tests/search_focus_key.rs`）。隐藏时以 max-height 压到 0 高
+            // （`vertical-stretch` 在最大化时本已是 0），不占布局空间（与 `if` 等价）；
+            // 子元素不可见 ⇒ 不画像素、不入运行树。
+            HorizontalLayout {
+                visible: !root.console-maximized;
                 spacing: 0px;
                 vertical-stretch: (root.console-maximized || root.song-overview-fullscreen) ? 0 : Tokens.workspace-stretch;
+                // 最大化时行高必须压到 0：`max-height` 单独压不住，布局以内容最小高
+                // （154px）为底 —— `min` 盖过 `max`（实测：只写 max-height 时控制台顶栏
+                // 只上移到 y=243 而不是 y=89）。`154px` 是左栏的内容最小高（子页签条
+                // 34px + 检查器/浏览器最小高 120px，见 `left_panel.slint`）；若那两处改了，
+                // 这里必须跟着改（`tests/console_maximize.rs` 把最大化顶栏钉在 y=89）。
+                min-height: root.console-maximized ? 0px : 154px;
+                max-height: root.console-maximized ? 0px : 100000px;
 
                 // Zone A: Dual Inspector & Browser (Left, Resizable [min: 200px, max: 380px])
-                if root.show-left-inspector : ZoneBrowserAndInspector {
-                    panel-width: root.left-panel-width;
+                // T-FIX-131：`if` 改为 `visible:` 门控（与弹窗同理）—— `if` 内声明
+                // 的 left-panel 在组件作用域不可见，focus-sidebar-search() 无法引用；
+                // 隐藏时 panel-width 压到 0，不占布局空间（与 `if` 等价）。
+                left-panel := ZoneBrowserAndInspector {
+                    visible: root.show-left-inspector;
+                    panel-width: root.show-left-inspector ? root.left-panel-width : 0px;
                     active-tab: root.left-panel-tab;
                     has-region: root.has-region;
                     region-title: root.region-title;
@@ -2144,8 +2169,11 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Visible Export WAV Modal Dialog
-        if root.export-wav-open : ExportWavDialog {
+        // T-FIX-131：`if` 门控改为 `visible:` 门控 —— `if` 内声明的 id 在组件
+        // 作用域不可见，focus-* 函数无法引用；`visible: false` 的元素不入运行树、
+        // 不画像素（与 `if` 等价），且弹窗为绝对定位，不占布局空间。
+        export-wav-dialog := ExportWavDialog {
+            visible: root.export-wav-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2163,7 +2191,8 @@ export component MainWindow inherits Window {
 
         // ⭐ 音频设置面板（T-FIX-71）：默认关着 ⇒ 默认帧不变；打开时宿主
         // 刷新枚举并供数（`host::wire_audio_settings`）。
-        if root.audio-settings-open : AudioSettingsDialog {
+        audio-settings-dialog := AudioSettingsDialog {
+            visible: root.audio-settings-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2184,7 +2213,8 @@ export component MainWindow inherits Window {
         }
 
         // Visible Undo Tree Time-Machine Modal Dialog
-        if root.undo-tree-open : UndoTreeModal {
+        undo-tree-dialog := UndoTreeModal {
+            visible: root.undo-tree-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2206,7 +2236,8 @@ export component MainWindow inherits Window {
         }
 
         // Visible Humanize / Quantize Modal Dialog
-        if root.humanize-open : HumanizeDialog {
+        humanize-dialog := HumanizeDialog {
+            visible: root.humanize-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2225,7 +2256,8 @@ export component MainWindow inherits Window {
         }
 
         // Visible Drum Machine Generator Modal Dialog（line/drum-machine-p1）
-        if root.drum-gen-open : DrumGenDialog {
+        drum-gen-dialog := DrumGenDialog {
+            visible: root.drum-gen-open;
             z: 9600;
             x: 0px;
             y: 0px;

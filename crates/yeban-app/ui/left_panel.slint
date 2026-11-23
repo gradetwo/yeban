@@ -112,6 +112,25 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <bool> show-group-channel: true;
 
     in-out property <string> search-query: "";
+
+    /// `Cmd/Ctrl+F` 的落点（D-UI-18）：把键盘焦点交给搜索框。唯一调用者是
+    /// `MainWindow.focus-sidebar-search()`（宿主 `Action::FocusSidebarSearch` 臂先展开
+    /// 左栏再调这里；T-FIX-131 起主工作区行以 `visible:` 门控，`MainWindow` 能直接
+    /// 调到本实例）。先看 `root.visible`：左栏收起时搜索框不在场，不取焦、不谎报
+    /// （⛔ 不给不可见控件调 `.focus()`，上游对此无承诺）。
+    public function focus-search() {
+        // 搜索框只在浏览器页签存在：先切页签（经 switch-tab 回调走
+        // left-panel-tab → active-tab 绑定，不直接写 active-tab），再聚焦。
+        if (root.visible) {
+            root.switch-tab("browser");
+            browser_search_input.focus();
+        }
+    }
+
+    /// 上面那次取焦的**读数**：Slint 的焦点不在控件树里，因此镜像成属性
+    /// （与 `app.slint` 的 `shortcut-layer-focused` 同款；唯一读者 = 宿主与无头判据）。
+    /// 含义恰好等于"用户看得见的那个框正持有键盘"。
+    out property <bool> search-has-focus: browser_search_input.has-focus;
     // 分组：all | instrument | sample | preset | effect
     // （对齐 Logic Pro 13 的"统一浏览器"：采样/乐器/预设/效果链/本机位置都在一个入口里，
     //  不再让"音色库 / 采样池 / 设备机架 / 预设菜单"分散成四个入口。）
@@ -1321,9 +1340,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         }
 
         // TAB 2: SMART TAG BROWSER
-        if root.active-tab == "browser" : browser_flick := Flickable {
+        // T-FIX-131：`if` 改为 `visible:` 门控（与 app.slint 弹窗同理）—— `if` 内
+        // 声明的 browser_search_input 在组件作用域不可见，focus-search() 无法引用。
+        // 隐藏时以 min/max-height 压到 0 高，不占布局空间（与 `if` 等价）。
+        browser_flick := Flickable {
+            visible: root.active-tab == "browser";
             vertical-stretch: 1;
-            min-height: 120px;
+            min-height: root.active-tab == "browser" ? 120px : 0px;
+            max-height: root.active-tab == "browser" ? 100000px : 0px;
             content-width: self.width;
             content-height: Math.max(self.height, browser_body.preferred-height);
 
