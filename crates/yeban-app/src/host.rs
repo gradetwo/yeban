@@ -15493,6 +15493,38 @@ fn apply_action(
             refresh_undo_window(ui, port, matches!(action, Action::Undo | Action::Redo));
             true
         }
+        // `Cmd/Ctrl+A`：**全选**当前作用域里的音符（ISS-MWTFLI5C-10E44F）。
+        //
+        // 作用域与 `apply_view` 的可见集同一条（选中片段 → 选中轨 → 全部）：全选就
+        // 是"把用户此刻**看得见**的那批音符一次选中"，⛔ 不跨作用域偷偷选他没看的。
+        // 选区是视图态（写 `selected-ulids` / 标志 / 计数 + 状态栏），⛔ 不进撤销栈。
+        // 空作用域 ⇒ 清空选区仍然**消费**这一键（与 `SaveProject` 的"结果要留在界面"
+        // 同取向：全选的语义是"选中全部"，全部为空就是空集，不是"这一键没意义"）。
+        Action::SelectAllNotes => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let Ok(view) = ViewState::from_project(&project) else {
+                return false;
+            };
+            let width = slint::ComponentHandle::window(ui).size().width as f32;
+            let scroll = ui.get_roll_scroll_x();
+            let scope = roll_scope(ui, &view);
+            let visible = view.visible_notes_scoped(scroll, width, scope);
+            let ids: Vec<slint::SharedString> =
+                visible.ulids.iter().map(|id| id.as_str().into()).collect();
+            let count = i32::try_from(ids.len()).unwrap_or(i32::MAX);
+            let selected: Vec<String> = visible.ulids.clone();
+            let flags = crate::input::flags_for_ids(&selected, &visible.ulids);
+            ui.set_selected_note_count(count);
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
+            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
+            publish_status_bar(ui, &view);
+            true
+        }
         // `Delete` / `Backspace`：删除**当前选区**（`[UI-NOTE-003]`）。
         //
         // 语义（三条都是决定, 不是意外）：
@@ -17805,6 +17837,51 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     install_roll_scroll(ui, view, Some(Rc::clone(port)));
 }
 
+/// 框选命中（ISS-MWTFLI5C-10E44F）：矩形与音符矩形**相交**即命中（rubberband 口径），
+/// 与 [`ViewState::hit_test_visible_scoped_with_base`] 同一套坐标/作用域/基音换算。
+///
+/// 返回**投影顺序**（音符在 `view.notes` 里的先后）的身份列表；调用方负责去重写入选区。
+///
+/// 8 个参数就是这条几何口径的全部输入（坐标帧 + 作用域 + 基音），与
+/// `hit_test_visible_scoped_with_base`（7 个）同族，仅多一个"矩形终点"；拆结构体
+/// 只会让唯一调用点多一层构造。
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn roll_marquee_hits(
+    view: &ViewState,
+    scroll_x: f32,
+    viewport_width: f32,
+    start: (f32, f32),
+    end: (f32, f32),
+    note_height: f32,
+    clip_scope: Option<&str>,
+    base_pitch: u8,
+) -> Vec<String> {
+    let left_edge = scroll_x.max(0.0);
+    let min_x = start.0.min(end.0);
+    let max_x = start.0.max(end.0);
+    let min_y = start.1.min(end.1);
+    let max_y = start.1.max(end.1);
+    let mut hits = Vec::new();
+    for index in view.notes_visible_in(scroll_x, viewport_width) {
+        let note = &view.notes[index];
+        if clip_scope.is_some_and(|scope| note.clip_id.as_str() != scope) {
+            continue;
+        }
+        let left = note.x - left_edge;
+        let right = left + note.width;
+        let note_y = if base_pitch == crate::bridge::PITCH_LANE_BASE {
+            note.y
+        } else {
+            crate::bridge::pitch_lane_y_with_base(note.pitch, base_pitch)
+        };
+        if right >= min_x && left <= max_x && note_y + note_height >= min_y && note_y <= max_y {
+            hits.push(note.id.clone());
+        }
+    }
+    hits
+}
+
 /// `[UI-NOTE-003]` 卷帘点击的**唯一派发器**（`src/**` 里 `ui.on_clicked(` 只有这一处写者）。
 ///
 /// # 派发顺序（顺序本身是契约）
@@ -17851,12 +17928,27 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
     // 同一次 `painted_to_host`）：`clicked` 传 `double_click = false`，`double-clicked` 传 `true`。
     // 这是**两个** Slint 回调（Slint 一个回调只留一个 handler），但派发逻辑**只有这一份**
     // ⇒ 双击不会长成第二条命中路径。
-    let dispatch: Rc<dyn Fn(f32, f32, bool)> =
-        Rc::new(move |x: f32, y: f32, double_click: bool| {
+    // 框选回调与点击派发器**各自持一份**（`Weak` / `Rc` 都不是 `Copy`，先克隆再 move）。
+    let weak_for_marquee = weak.clone();
+    let selection_for_marquee = Rc::clone(&selection);
+    let port_for_marquee = port.clone();
+    let dispatch: Rc<dyn Fn(f32, f32, bool, bool)> =
+        Rc::new(move |x: f32, y: f32, double_click: bool, additive: bool| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // ⭐ 选区事实源是界面属性 `selected-ulids`：Cmd+A / 框选会从**别处**改它，
+            //    每次派发前先把内存镜像同步回来，否则下一次 Shift 单击会基于陈旧集合
+            //    做 toggle（把刚全选的 30 颗覆盖成 1 颗）。
+            {
+                use slint::Model as _;
+                let mut sel = selection.borrow_mut();
+                sel.clear();
+                for id in ui.get_selected_ulids().iter() {
+                    sel.insert(id.as_str());
+                }
+            }
             let scroll = ui.get_roll_scroll_x();
             let width = slint::ComponentHandle::window(&ui).size().width as f32;
             // 界面报的是**绘制坐标**（相对 `PianoRoll` 根：琴键列 56px ＋ 内缩 12px，表头 28px 之下），
@@ -17943,6 +18035,15 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let (selected_count, selected_ids, note_flags) = {
                 let mut sel = selection.borrow_mut();
                 match hit {
+                    // ⭐ Shift/Cmd 单击 = **toggle**（累加 / 取消一颗）；裸单击仍是替换。
+                    Some(index) if additive => {
+                        let id = &view.notes[index].id;
+                        if sel.contains(id) {
+                            sel.remove(id);
+                        } else {
+                            sel.insert(id);
+                        }
+                    }
                     Some(index) => sel.select_only(&view.notes[index].id),
                     None => sel.clear(),
                 }
@@ -18148,11 +18249,66 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
         });
     {
         let dispatch = Rc::clone(&dispatch);
-        ui.on_clicked(move |x, y| dispatch(x, y, false));
+        ui.on_clicked(move |x, y, additive| dispatch(x, y, false, additive));
     }
     {
         let dispatch = Rc::clone(&dispatch);
-        ui.on_double_clicked(move |x, y| dispatch(x, y, true));
+        ui.on_double_clicked(move |x, y| dispatch(x, y, true, false));
+    }
+    // ⭐ 框选（ISS-MWTFLI5C-10E44F）：界面只报矩形两端（绘制帧）+ 加选标志；命中判定走
+    //    纯函数 [`roll_marquee_hits`]，选区写入与单击共用同一批界面属性与状态栏刷新。
+    {
+        let weak = weak_for_marquee;
+        let selection = selection_for_marquee;
+        let port = port_for_marquee;
+        ui.on_roll_marquee(move |x1, y1, x2, y2, additive| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let (x1, y1) = crate::bridge::painted_to_host(x1, y1);
+            let (x2, y2) = crate::bridge::painted_to_host(x2, y2);
+            let Some(project) = port.as_ref().and_then(|port| port.try_project()) else {
+                return;
+            };
+            let Ok(view) = ViewState::from_project(&project) else {
+                return;
+            };
+            let scroll = ui.get_roll_scroll_x();
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            let scope = roll_scope(&ui, &view);
+            let hits = roll_marquee_hits(
+                &view,
+                scroll,
+                width,
+                (x1, y1),
+                (x2, y2),
+                NOTE_HEIGHT_PX,
+                scope,
+                roll_base_pitch(&ui),
+            );
+            let (count, ids, flags) = {
+                let mut sel = selection.borrow_mut();
+                if !additive {
+                    sel.clear();
+                }
+                for id in &hits {
+                    sel.insert(id);
+                }
+                let count = i32::try_from(sel.len()).unwrap_or(i32::MAX);
+                let ids: Vec<slint::SharedString> =
+                    sel.iter().map(|id| id.as_str().into()).collect();
+                let visible = view.visible_notes_scoped(scroll, width, scope);
+                let flags = crate::input::flags_for_ids(
+                    &sel.iter().cloned().collect::<Vec<_>>(),
+                    &visible.ulids,
+                );
+                (count, ids, flags)
+            };
+            ui.set_selected_note_count(count);
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
+            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
+            publish_status_bar(&ui, &view);
+        });
     }
 }
 

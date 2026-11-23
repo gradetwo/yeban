@@ -353,7 +353,7 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
         let host_x = tick_to_px(tick, DEFAULT_TICKS_PER_PIXEL).expect("tick px") as f32 + 1.0;
         let host_y = pitch_lane_y(pitch) + 6.0;
         let (px, py) = host_to_painted(host_x, host_y);
-        ui.invoke_clicked(px, py);
+        ui.invoke_clicked(px, py, false);
     }
 
     // 选中钢琴轨同样自动建段并填入柱式和弦低音+和声

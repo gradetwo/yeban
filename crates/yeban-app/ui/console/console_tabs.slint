@@ -39,7 +39,8 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> roll-edit-status: "";
     // 透传卷帘的滚动手势。
     callback scroll-requested(length);
-    callback clicked(length, length);
+    callback clicked(length, length, bool);
+    callback roll-marquee(length, length, length, length, bool);
     // `[UI-NOTE-003]` §3.3 aux 列的**双击**透传（力度工具 = 恢复默认力度 100）。
     // 与 `clicked` 逐字同款：本组件只透传坐标，工具门 / 命中 / 提交全在宿主派发器里。
     callback double-clicked(length, length);
@@ -448,8 +449,9 @@ export component ConsoleTabs inherits Rectangle {
         active-tool: root.active-tool;
         edit-status: root.roll-edit-status;
         scroll-requested(d) => { root.scroll-requested(d); }
-        clicked(x, y) => { root.clicked(x, y); }
+        clicked(x, y, additive) => { root.clicked(x, y, additive); }
         double-clicked(x, y) => { root.double-clicked(x, y); }
+        roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
         tool-selected(tool) => { root.tool-selected(tool); }
         note-drag-grab(x, y) => { root.note-drag-grab(x, y); }
         note-drag-move(x, y) => { root.note-drag-move(x, y); }

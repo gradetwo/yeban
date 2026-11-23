@@ -952,7 +952,8 @@ export component MainWindow inherits Window {
     callback back-to-arrangement();
     callback bpm-commit(string);
     callback browse-export-wav-path();
-    callback clicked(length, length);
+    callback clicked(length, length, bool);
+    callback roll-marquee(length, length, length, length, bool);
     callback clip-create();
     callback clip-double-click(string);
     callback clip-drag-cancel();
@@ -2074,8 +2075,9 @@ export component MainWindow inherits Window {
                 velocity-changed(id, vel) => { root.piano-note-velocity(id, vel); }
                 console-maximize-toggle => { root.console-maximize-toggle(); }
                 scroll-requested(d) => { root.scroll-requested(d); }
-                clicked(x, y) => { root.clicked(x, y); }
+                clicked(x, y, additive) => { root.clicked(x, y, additive); }
                 double-clicked(x, y) => { root.double-clicked(x, y); }
+                roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
                 tool-selected(tool) => { root.tool-selected(tool); }
                 note-drag-grab(x, y) => { return root.note-drag-grab(x, y); }
                 note-drag-move(x, y) => { root.note-drag-move(x, y); }

@@ -145,7 +145,7 @@ fn piano_roll_shows_the_selected_clip_and_edits_reach_the_project() {
     ui.set_active_tool(2);
     let x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 40.0;
     let y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 3.0 + 4.0;
-    ui.invoke_clicked(x, y);
+    ui.invoke_clicked(x, y, false);
     let notes_after = note_count(&undo.try_project().unwrap());
     assert!(
         notes_after > notes_before,
@@ -308,7 +308,7 @@ fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
     ui.set_active_tool(2);
     let draw_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 20.0;
     let draw_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 15.0 + 4.0;
-    ui.invoke_clicked(draw_x, draw_y);
+    ui.invoke_clicked(draw_x, draw_y, false);
     let updated = undo.try_project().expect("工程");
     let has_c3 = updated
         .clip_pool
@@ -576,7 +576,7 @@ fn piano_roll_auditions_and_inserts_notes_when_track_has_no_midi_clip_no_synth_o
     ui.set_active_tool(2);
     let draw_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 24.0;
     let draw_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 10.0 + 4.0;
-    ui.invoke_clicked(draw_x, draw_y);
+    ui.invoke_clicked(draw_x, draw_y, false);
     let after_draw = undo.try_project().expect("工程存在");
     assert_eq!(note_count(&after_draw), notes_before + 1);
     assert_eq!(
@@ -935,7 +935,7 @@ fn piano_roll_auto_clip_insert_never_overlaps_existing_placements() {
     ui.set_active_tool(2);
     let click_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 12.0;
     let click_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 4.0 + 4.0;
-    ui.invoke_clicked(click_x, click_y);
+    ui.invoke_clicked(click_x, click_y, false);
     let after_a = undo.try_project().expect("工程存在");
     let track_a = &after_a.tracks[&track_a_id];
     assert_eq!(track_a.clips.len(), 2, "Track A 应新建 1 条前置片段");
@@ -1186,7 +1186,7 @@ fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
 
     ui.set_roll_scroll_x(scroll_px);
     ui.set_active_tool(2); // Pencil
-    ui.invoke_clicked(painted_x, painted_y);
+    ui.invoke_clicked(painted_x, painted_y, false);
 
     let after_insert = undo.try_project().expect("落笔后工程");
     let track = after_insert
@@ -1290,7 +1290,7 @@ fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
     let (split_painted_x, split_painted_y) = host_to_painted(split_px - scroll_px + 1.0, split_y);
     ui.set_selected_clip_ulid(post_gap_placement.id.to_canonical_string().into());
     ui.set_active_tool(3); // Knife
-    ui.invoke_clicked(split_painted_x, split_painted_y);
+    ui.invoke_clicked(split_painted_x, split_painted_y, false);
 
     let after_split = undo.try_project().expect("切分后工程");
     let split_notes = after_split

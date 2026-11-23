@@ -49,8 +49,12 @@ export component PianoRoll inherits Rectangle {
     /// `[UI-NOTE-001 / UI-NOTE-002]` 双指触控板/鼠标滚轮二维滚动（`delta-x, delta-y, shift, alt`）：
     /// 横向平移时间轴、纵向滑动音高视口（0..127 全音域）、`Alt/Option` 横向缩放。
     callback roll-wheel(length, length, bool, bool);
-    // `[UI-NOTE-003]` 左键单击：只**报告坐标**, 命中与选区由 Rust 侧决定（账本第 495/496 轮）。
-    callback clicked(length, length);
+    // `[UI-NOTE-003]` 左键单击：只**报告坐标** + 加选标志, 命中与选区由 Rust 侧决定
+    // （账本第 495/496 轮）。`additive` = 按下时按着 Shift/Cmd ⇒ 宿主做 toggle（累加/取消）。
+    callback clicked(length, length, bool);
+    // ⭐ 框选（ISS-MWTFLI5C-10E44F）：选择工具在空白处拖拽 ⇒ 报矩形两端（绘制帧）
+    // + 加选标志；命中与选区写入全在宿主（`host::install_roll_click` 的 on_roll_marquee）。
+    callback roll-marquee(length, length, length, length, bool);
     // `[UI-NOTE-003]` §3.3 工具矩阵 aux 列的**双击**入口（力度工具 = "双击恢复默认力度 100"）。
     // 与 `clicked` **同一绘制帧、同一个命中面**：界面只报告坐标；工具门 / 命中测试 /
     // "恰好一个原子 `Op::ModifyNoteVelocity`"全在宿主派发器里（⛔ 界面不判断工具）。
@@ -712,6 +716,16 @@ export component PianoRoll inherits Rectangle {
     property <length> drag-origin-y: 0px;
     property <bool> drag-moved: false;
     property <bool> note-dragging: false;
+    // ⭐ 框选草稿（ISS-MWTFLI5C-10E44F）：只在选择工具的空白拖拽期存在；
+    // `marquee-active == false` ⇒ 不画、不命中、默认帧逐像素不变。
+    property <bool> marquee-active: false;
+    property <bool> marquee-additive: false;
+    property <length> marquee-origin-x: 0px;
+    property <length> marquee-origin-y: 0px;
+    property <length> marquee-x: 0px;
+    property <length> marquee-y: 0px;
+    property <length> marquee-w: 0px;
+    property <length> marquee-h: 0px;
     // ⭐ 右键菜单的弹出位置（卷帘局部坐标，右键按下那一刻写；菜单宽 150px、高 64px，
     // 贴边时向内收 —— 菜单不得被窗口边缘裁掉）。
     property <length> context-menu-x: 0px;
@@ -758,12 +772,44 @@ export component PianoRoll inherits Rectangle {
                     // 接管 ⇒ ⛔ 不滚动（两条手势通道互斥，⛔ 不双重处理）。
                     root.note-dragging = root.note-drag-grab(self.mouse-x, self.mouse-y);
                     root.dragging = !root.note-dragging;
+                    // ⭐ 选择工具（1）+ 空白（宿主没接管音符拖动）⇒ 框选，⛔ 不滚动。
+                    // 其它工具与"按在音符上"一律保持原语义（滚动 / 拖音符）。
+                    if !root.note-dragging && root.active-tool == 1 {
+                        root.dragging = false;
+                        root.marquee-active = true;
+                        root.marquee-additive = event.modifiers.shift;
+                        root.marquee-origin-x = self.mouse-x;
+                        root.marquee-origin-y = self.mouse-y;
+                        root.marquee-x = self.mouse-x;
+                        root.marquee-y = self.mouse-y;
+                        root.marquee-w = 0px;
+                        root.marquee-h = 0px;
+                    } else {
+                        root.marquee-active = false;
+                    }
                 }
             } else if event.kind == PointerEventKind.up {
                 if root.audition-active-row >= 0 {
                     let prev = root.audition-active-row;
                     root.audition-active-row = -1;
                     root.piano-key-released(prev);
+                } else if root.marquee-active {
+                    // ⭐ 框选收尾：拖过阈值 ⇒ 上抛矩形给宿主做命中；没拖 ⇒ 当一次空白单击
+                    // （清空选区）。两条都**不滚动**、不写工程。
+                    let additive = root.marquee-additive;
+                    let moved = root.drag-moved;
+                    let x1 = root.marquee-origin-x;
+                    let y1 = root.marquee-origin-y;
+                    root.marquee-active = false;
+                    root.marquee-w = 0px;
+                    root.marquee-h = 0px;
+                    root.dragging = false;
+                    root.drag-moved = false;
+                    if moved {
+                        root.roll-marquee(x1, y1, self.mouse-x, self.mouse-y, additive);
+                    } else {
+                        root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
+                    }
                 } else {
                     root.dragging = false;
                     if root.note-dragging {
@@ -773,11 +819,11 @@ export component PianoRoll inherits Rectangle {
                             root.note-drag-release(self.mouse-x, self.mouse-y);
                         } else {
                             // 没越阈值 ⇒ 这一抬是一次**单击**（选择工具点音符 = 选中它）。
-                            root.clicked(self.mouse-x, self.mouse-y);
+                            root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
                         }
                     } else if !root.drag-moved {
                         // 空白处：只有**没越阈值**的抬起才算一次单击（选中 / 清除选区）。
-                        root.clicked(self.mouse-x, self.mouse-y);
+                        root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
                     }
                     root.drag-moved = false;
                 }
@@ -808,6 +854,14 @@ export component PianoRoll inherits Rectangle {
                         if root.drag-moved {
                             root.note-drag-move(self.mouse-x, self.mouse-y);
                         }
+                    } else if root.marquee-active {
+                        // ⭐ 框选草稿：越阈值后按"起点↔当前"重算矩形（两个方向都归一）。
+                        if root.drag-moved {
+                            root.marquee-x = Math.min(root.marquee-origin-x, self.mouse-x);
+                            root.marquee-y = Math.min(root.marquee-origin-y, self.mouse-y);
+                            root.marquee-w = Math.max(root.marquee-origin-x, self.mouse-x) - root.marquee-x;
+                            root.marquee-h = Math.max(root.marquee-origin-y, self.mouse-y) - root.marquee-y;
+                        }
                     } else if root.dragging {
                         root.scroll-requested(root.drag-last-x - self.mouse-x);
                         root.drag-last-x = self.mouse-x;
@@ -823,6 +877,12 @@ export component PianoRoll inherits Rectangle {
                 }
                 root.dragging = false;
                 root.drag-moved = false;
+                if root.marquee-active {
+                    // 框选草稿与其它草稿同一纪律：cancel ⇒ 丢弃，⛔ 不改选区。
+                    root.marquee-active = false;
+                    root.marquee-w = 0px;
+                    root.marquee-h = 0px;
+                }
                 if root.note-dragging {
                     root.note-dragging = false;
                     root.note-drag-cancel();
@@ -838,6 +898,18 @@ export component PianoRoll inherits Rectangle {
         double-clicked => {
             root.double-clicked(self.mouse-x, self.mouse-y);
         }
+    }
+
+    // ⭐ 框选矩形（ISS-MWTFLI5C-10E44F）：只有 `marquee-active` 时才画一帧，
+    //    默认帧（false）不产生任何像素；无 TouchArea ⇒ 不抢指针事件。
+    if root.marquee-active : Rectangle {
+        x: root.marquee-x;
+        y: root.marquee-y;
+        width: root.marquee-w;
+        height: root.marquee-h;
+        background: Tokens.selection.with-alpha(0.18);
+        border-color: Tokens.selection;
+        border-width: 1px;
     }
 
     // ⭐ 右键上下文菜单（`PopupWindow`，Slint 1.18 原生弹出层，与 std `ComboBox`

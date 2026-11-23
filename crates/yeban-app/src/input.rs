@@ -892,6 +892,21 @@ pub enum Action {
     ToggleRecord,
     /// `Delete`/`Backspace`: 删除选中的音符 / 选区 / 音轨。
     DeleteSelection,
+    /// `Cmd/Ctrl+A`: **全选**当前卷帘作用域里的音符（ISS-MWTFLI5C-10E44F）。
+    ///
+    /// 落点是 `host::apply_action` 的 `SelectAllNotes` 臂：按 `roll_scope`（选中片段
+    /// → 选中轨 → 全部）取**当前可见**的 `visible_notes_scoped`，把身份写进
+    /// `selected-ulids`（视图态，⛔ 不进工程 / 撤销栈），与单击 / 框选共用同一份
+    /// 选区属性与同一条状态栏刷新。
+    ///
+    /// ## 键位选择（三条事实）
+    ///
+    /// 1. `command()` 分支里裸 `a`（`shift=false, alt=false`）此前**一格都没有** ——
+    ///    既有两格是 `Cmd/Ctrl+Shift+A`（切自动化）与 `Cmd/Ctrl+Alt+A`（AI 抽屉），
+    ///    加裸 `a` 不覆盖任何既有绑定；
+    /// 2. 裸 `a` 从未绑定（第 6 步没有 `a`）⇒ 不动工具 / 走带；
+    /// 3. 文本框聚焦时整体放行（策略表第 2 步）—— 与 `Cmd/Ctrl+S` / `Cmd/Ctrl+Z` 同口径。
+    SelectAllNotes,
     /// `[UI-NOTE-005]` §3.5 项 1–2：把**当前选区**的音符按一档步长平移。
     ///
     /// `step` 决定轴与幅度（见 [`NudgeStep`]），`direction` 是 `-1` / `+1`。
@@ -1335,6 +1350,9 @@ impl InputContext {
                 }
                 // **界面决定**（⛔ 不是规范点名）：AI 抽屉的键盘入口。
                 // `a` 在 `Cmd/Ctrl+Alt` 组合里此前一格都没有；`Shift` 变体仍放行。
+                // ⭐ 裸 `Cmd/Ctrl+A` = 卷帘全选（此前这一格是空的；Shift/Alt 两格
+                //    分别属于自动化与 AI 抽屉，本格不覆盖它们）。
+                (Key::Character('a'), false, false) => Resolution::Action(Action::SelectAllNotes),
                 (Key::Character('a'), false, true) => Resolution::Action(Action::ToggleAiDrawer),
                 (Key::Character('a'), true, false) => Resolution::Action(Action::ToggleAutomation),
                 // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**

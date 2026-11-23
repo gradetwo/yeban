@@ -107,7 +107,8 @@ export component UnifiedLowerDock inherits Rectangle {
     callback console-maximize-toggle();
     // 真实 PianoRoll 的回调（与 host::wire_roll_edit 注册的旧回调同名，只做透传）。
     callback scroll-requested(length);
-    callback clicked(length, length);
+    callback clicked(length, length, bool);
+    callback roll-marquee(length, length, length, length, bool);
     callback double-clicked(length, length);
     callback tool-selected(int);
     callback note-drag-grab(length, length) -> bool;
@@ -2416,8 +2417,9 @@ export component UnifiedLowerDock inherits Rectangle {
                 show-velocity-lane: root.show-velocity;
 
                 scroll-requested(d) => { root.scroll-requested(d); }
-                clicked(x, y) => { root.clicked(x, y); }
+                clicked(x, y, additive) => { root.clicked(x, y, additive); }
                 double-clicked(x, y) => { root.double-clicked(x, y); }
+                roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
                 tool-selected(tool) => { root.tool-selected(tool); }
                 note-drag-grab(x, y) => { return root.note-drag-grab(x, y); }
                 note-drag-move(x, y) => { root.note-drag-move(x, y); }

@@ -929,7 +929,7 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
         visible.positions[0] + visible.widths[0] / 2.0,
         visible.ys[0] + 3.0,
     );
-    ui.invoke_clicked(cx, cy);
+    ui.invoke_clicked(cx, cy, false);
     assert_eq!(
         ui.get_selected_note_count(),
         1,
@@ -944,7 +944,7 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
         bottom.positions[0] + bottom.widths[0] / 2.0,
         bottom.ys[0] + 9.0,
     );
-    ui.invoke_clicked(bx, by);
+    ui.invoke_clicked(bx, by, false);
     assert_eq!(
         ui.get_selected_note_count(),
         1,
@@ -976,7 +976,7 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
     }
 
     // 点明显空白 ⇒ 清空。
-    ui.invoke_clicked(cx, cy - 500.0);
+    ui.invoke_clicked(cx, cy - 500.0, false);
     assert_eq!(ui.get_selected_note_count(), 0, "点空白必须清空选区");
 }
 
