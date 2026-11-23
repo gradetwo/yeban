@@ -1097,6 +1097,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param("macroIndex", "integer", true, "宏索引"),
             param("value", "number", true, "目标值"),
             param(
+                "mappings",
+                "array",
+                false,
+                "整体替换该宏的映射列表 (T-FIX-93 同批): 每项 = {\"target\": <AutomationTarget 同形载荷, 例如 {\"TrackVolume\":{\"trackId\":\"…\"}}> , \"depth\": <目标单位振幅, #297>}。提供时在值调整的级联展开之后追加 Op::SetMacroMappings (old = 文档现值, 陈旧载荷在模型层逐项相等校验; 空数组 = 清空全部映射, 一等状态); 缺省 / null = 不动映射",
+            ),
+            param(
                 INCLUDE_OPS_PARAM,
                 "boolean",
                 false,

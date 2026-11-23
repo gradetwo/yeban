@@ -105,8 +105,9 @@ use serde_json::{Map, Value};
 use yeban_model::container::ContainerLimits;
 use yeban_model::preset::Preset;
 use yeban_model::{
-    AssetHash, ClipContent, CommitDraft, CommitGraph, DeviceDefinition, DeviceKind, EntityId, Op,
-    OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3, YebanProjectV1,
+    AssetHash, ClipContent, CommitDraft, CommitGraph, DeviceDefinition, DeviceKind, EntityId,
+    MacroMapping, Op, OpOrigin, PluginBinding, SessionRuntimeState, StampedOp, TrackV3,
+    YebanProjectV1,
 };
 
 use yeban_plugin_host::{
@@ -4320,13 +4321,36 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     #[allow(clippy::cast_possible_truncation)]
     let value = value as f32;
     let macro_plan = macros::plan(project, &track_id, macro_index, value)?;
+    let mut ops = macro_plan.ops;
+    // T-FIX-93 同批：可选 `mappings` 参数 → 追加 `Op::SetMacroMappings`
+    // （在值调整的级联展开之后生效；后续旋钮移动按新映射级联）。
+    // `None` / `null` = 不动映射（逐字节不变的历史行为）。
+    match call.arguments.get("mappings") {
+        None | Some(Value::Null) => {}
+        Some(raw) => {
+            let new_mappings: Vec<MacroMapping> =
+                serde_json::from_value(raw.clone()).map_err(|error| {
+                    Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`mappings` 解析失败: {error}"),
+                        serde_json::json!({ "detail": error.to_string() }),
+                    )
+                })?;
+            ops.extend(macros::plan_set_macro_mappings(
+                project,
+                &track_id,
+                macro_index,
+                new_mappings,
+            )?);
+        }
+    }
     propose_draft(
         domain,
         project,
         "macro",
         format!("宏调整: 音轨 {track_id} 宏 #{macro_index} → {value}"),
         format!("set_macro {track_id}#{macro_index}"),
-        macro_plan.ops,
+        ops,
         call,
     )
 }

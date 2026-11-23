@@ -46,7 +46,9 @@
 
 use serde_json::Value;
 
-use yeban_model::{AutomationPoint, AutomationTarget, CurveType, EntityId, Op, YebanProjectV1};
+use yeban_model::{
+    AutomationPoint, AutomationTarget, CurveType, EntityId, MacroMapping, Op, YebanProjectV1,
+};
 
 use super::error::{Fault, from_model};
 use super::ids::deterministic_id;
@@ -97,6 +99,58 @@ impl MacroPlan {
             "ops": ops_to_value(&self.ops),
         })
     }
+}
+
+/// 规划一次宏映射的整体替换（`Op::SetMacroMappings`；T-FIX-93 同批，解锁宏映射面板改绑）。
+///
+/// 陈旧载荷在**模型层**校验（`old` 必须与文档现值逐项相等），域层只提前给两个响亮错误：
+/// 轨/下标不存在（与 [`plan`] 同款）与 `depth` 非有限。
+///
+/// # Errors
+///
+/// - 音轨不存在 → `TRACK_NOT_FOUND`；
+/// - `macroIndex` 越界 → `INDEX_OUT_OF_BOUNDS`；
+/// - 任一映射 `depth` 非有限 → `INVALID_PARAMETER_RANGE`；
+/// - 模拟施加后模型层校验失败 → [`super::error::code_for_model`] 契约码。
+pub fn plan_set_macro_mappings(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    macro_index: usize,
+    new_mappings: Vec<MacroMapping>,
+) -> Result<Vec<Op>, Fault> {
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("音轨查找", &error))?;
+    if macro_index >= track.macros.len() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::IndexOutOfBounds,
+            format!(
+                "宏下标 {macro_index} 越界: 音轨 {track_id} 只有 {} 个宏",
+                track.macros.len()
+            ),
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "macroIndex": macro_index,
+                "macroCount": track.macros.len(),
+            }),
+        ));
+    }
+    for mapping in &new_mappings {
+        if !mapping.depth.is_finite() {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("映射 depth 必须有限, 实际 {}", mapping.depth),
+                serde_json::json!({ "depth": mapping.depth }),
+            ));
+        }
+    }
+    let old_mappings = track.macros[macro_index].mappings.clone();
+    Ok(vec![Op::SetMacroMappings {
+        track_id: *track_id,
+        macro_index,
+        old_mappings,
+        new_mappings,
+    }])
 }
 
 /// 规划一次宏调整（含级联自动化展开）。
@@ -235,6 +289,64 @@ mod tests {
             .find(|track| !track.macros.is_empty())
             .expect("样本里必须有带宏的音轨")
             .id
+    }
+
+    /// T-FIX-93 同批：`plan_set_macro_mappings` 产出的 op 自带**文档现值**作 `old`，
+    /// 直接 `apply` 成功且映射被整体替换（接线判据；陈旧载荷语义由模型层判据钉住）。
+    #[test]
+    fn mappings_plan_builds_an_applicable_op_with_current_state_as_old() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let new_mappings = vec![MacroMapping {
+            target: AutomationTarget::TrackVolume { track_id },
+            depth: 6.0,
+        }];
+
+        let ops = plan_set_macro_mappings(&project, &track_id, 0, new_mappings.clone())
+            .expect("合法规划");
+        assert_eq!(ops.len(), 1, "映射替换规划恰好一条 op");
+        let Op::SetMacroMappings {
+            track_id: op_track,
+            macro_index,
+            old_mappings,
+            new_mappings: op_new,
+        } = &ops[0]
+        else {
+            panic!("必须是 SetMacroMappings, 实际 {:?}", ops[0].name());
+        };
+        assert_eq!(*op_track, track_id);
+        assert_eq!(*macro_index, 0);
+        assert_eq!(
+            *old_mappings,
+            project.track(&track_id).expect("lead").macros[0].mappings,
+            "old 必须逐项等于文档现值（陈旧载荷校验的输入）"
+        );
+        assert_eq!(*op_new, new_mappings);
+
+        let mut doc = project.clone();
+        ops[0].apply(&mut doc).expect("op 必须可应用");
+        assert_eq!(
+            doc.track(&track_id).expect("lead").macros[0].mappings,
+            new_mappings,
+            "应用后映射被整体替换"
+        );
+    }
+
+    /// 域层提前响亮：`depth` 非有限在规划期就报 `INVALID_PARAMETER_RANGE`（不冒泡成泛错误）。
+    #[test]
+    fn mappings_plan_rejects_non_finite_depth_loudly() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let result = plan_set_macro_mappings(
+            &project,
+            &track_id,
+            0,
+            vec![MacroMapping {
+                target: AutomationTarget::TrackVolume { track_id },
+                depth: f32::NAN,
+            }],
+        );
+        assert!(result.is_err(), "非有限 depth 必须被拒");
     }
 
     #[test]

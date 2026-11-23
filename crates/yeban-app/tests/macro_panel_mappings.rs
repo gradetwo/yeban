@@ -158,14 +158,16 @@ fn the_panel_is_reachable_from_the_live_window() {
     );
 }
 
-/// `Op` 枚举体内**没有** `mappings` 字样 ⇒ 宏映射没有写入通路。
+/// `Op` 枚举体**有** `SetMacroMappings` 变体 ⇒ 宏映射的写入通路已存在。
 ///
-/// 这不是"暂时没接"：`Op::SetMacro` 的载荷只有 `old_val` / `new_val`
-/// （`crates/yeban-model/src/ops.rs`）。`TrackV3::macros` 的唯一非空构造点是
-/// 模型自己的规范样本与建工程模板 ⇒ GUI 侧不存在能对得上的写入口，
-/// 因此面板只呈现级联，⛔ 不提供建立 / 改绑 / 删除。
+/// 历史：T-FIX-88 发现缺口（本判据旧版断言 `!enum_body.contains("mappings")`）；
+/// T-FIX-93 同批（2026-11-24）落地 `Op::SetMacroMappings`（陈旧载荷校验 =
+/// `old_mappings` 逐项相等），MCP 工具面经 `yeban_set_macro` 的可选 `mappings`
+/// 参数接线。**仍然有效的纪律**：GUI 改映射必须走 `Op` 这条唯一写入载体
+/// （`ADR-0031` D1），不许绕过它直接改内存模型 —— 面板的建立 / 改绑 / 删除
+/// 入口接线即本判据的下一步（T-FIX-88 承接方）。
 #[test]
-fn the_op_enum_has_no_macro_mapping_write_path() {
+fn the_op_enum_has_a_macro_mapping_write_path() {
     let ops = read("../yeban-model/src/ops.rs");
     // ⚠ 锚点必须带花括号：`pub enum Op` 是 `pub enum OpOrigin` 的前缀，
     // 只按前缀找会截到 `OpOrigin` 的体内（那里的第一个断言会"恰好"通过）。
@@ -178,8 +180,12 @@ fn the_op_enum_has_no_macro_mapping_write_path() {
     let enum_body = &body[..end];
 
     assert!(
-        !enum_body.contains("mappings"),
-        "`Op` 里出现了 mappings ⇒ 宏映射的写入通路变了，请同步面板的建立/改绑/删除入口与台账"
+        enum_body.contains("SetMacroMappings"),
+        "`Op` 里没有 SetMacroMappings ⇒ 宏映射写路径被移除了，请同步面板与台账"
+    );
+    assert!(
+        enum_body.contains("old_mappings") && enum_body.contains("new_mappings"),
+        "SetMacroMappings 必须带陈旧载荷校验的 old/new 载荷"
     );
     assert!(
         enum_body.contains("SetMacro"),

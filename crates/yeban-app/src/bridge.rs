@@ -1808,19 +1808,21 @@ pub fn macro_depth_display(depth: f32) -> String {
     format!("{depth:+}")
 }
 
-/// 为什么界面**不提供**宏映射的建立 / 改绑 / 删除 —— 一句话事实，带落点。
+/// 宏映射的写入状态锚点（历史 + 现状，带落点）。
 ///
-/// `Op::SetMacro` 的载荷只有 `old_val` / `new_val`（`crates/yeban-model/src/ops.rs:1273`），
-/// `Op` 全集里没有任何变体能写 `MacroParameter::name` 或 `MacroParameter::mappings`
-/// （判据 `tests/macro_mapping_has_no_write_path.rs`）。GUI 若自己改内存模型，
+/// **写路径已存在**（2026-11-24，T-FIX-93 同批）：`Op::SetMacroMappings`
+/// （`crates/yeban-model/src/ops.rs`，陈旧载荷校验 = `old_mappings` 逐项相等），
+/// MCP 侧经 `yeban_set_macro` 的可选 `mappings` 参数接线。
+/// **面板现状**：宏映射面板仍未接建立 / 改绑 / 删除入口（T-FIX-88 承接方接线）；
+/// 在那之前 GUI 若自己改内存模型，
 /// 就等于绕过 `Op` 这条唯一写入载体（`ADR-0031` D1 的同一条纪律）⇒ 会造出第二真理源。
-pub const MACRO_MAPPING_NO_WRITE_PATH: &str =
-    "宏映射没有写入通路：Op 全集没有能改 MacroParameter::mappings 的变体";
+pub const MACRO_MAPPING_NO_WRITE_PATH: &str = "宏映射编辑入口未接线（写路径已存在：Op::SetMacroMappings，待面板接入；在那之前不许绕过 Op 直改模型）";
 
-/// 宏映射写入缺口的文档锚点（让 `grep` 从一个名字找到判据）。
+/// 宏映射写路径状态的文档锚点（让 `grep` 从一个名字找到现状与判据）。
 ///
-/// 本函数不执行任何事，只把"为什么只读"钉在类型旁边；判据见
-/// `crates/yeban-app/tests/macro_mapping_has_no_write_path.rs`。
+/// 本函数不执行任何事；判据见
+/// `crates/yeban-app/tests/macro_panel_mappings.rs`（写路径存在性）与
+/// `crates/yeban-app/src/host.rs` 的映射面板接线（待 T-FIX-88 承接方）。
 #[must_use]
 pub fn macro_mapping_writes_are_absent() -> &'static str {
     MACRO_MAPPING_NO_WRITE_PATH

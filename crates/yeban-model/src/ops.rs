@@ -1280,6 +1280,23 @@ pub enum Op {
         /// 修改后位置 0.0..=1.0。
         new_val: f32,
     },
+    /// 整体替换宏的映射列表（宏映射的建立 / 改绑 / 删除都走这一个变体）。
+    ///
+    /// 陈旧载荷校验与 [`Op::SetMacro`] 同契约：`old_mappings` 必须与文档现值
+    /// **逐项相等**，否则 [`ModelError::OpStateMismatch`]（见 [`Op::precondition`]）。
+    /// 空列表是一等状态 = 清空全部映射（⛔ 不是"丢失"）。
+    /// T-FIX-93 同批（2026-11-24）解除 `bridge::MACRO_MAPPING_NO_WRITE_PATH`
+    /// 所记录的写入口缺口（宏映射面板改绑路径的前提）。
+    SetMacroMappings {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 宏下标。
+        macro_index: usize,
+        /// 修改前的映射列表（必须与文档现值逐项相等）。
+        old_mappings: Vec<crate::project::MacroMapping>,
+        /// 修改后的映射列表（逐项过 [`MacroMapping::validate`]）。
+        new_mappings: Vec<crate::project::MacroMapping>,
+    },
     /// 新增或更新一个自动化点。
     SetAutomationPoint {
         /// 自动化泳道目标。
@@ -1504,6 +1521,7 @@ impl Op {
             Self::SetTrackTune { .. } => "SetTrackTune",
             Self::SetTrackPolarity { .. } => "SetTrackPolarity",
             Self::SetMacro { .. } => "SetMacro",
+            Self::SetMacroMappings { .. } => "SetMacroMappings",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
             Self::RemoveAutomationPoint { .. } => "RemoveAutomationPoint",
             Self::SetAutomationLane { .. } => "SetAutomationLane",
@@ -2494,6 +2512,21 @@ impl Op {
                 }
                 validate_macro_value(*new_val)
             }
+            Self::SetMacroMappings {
+                track_id,
+                macro_index,
+                old_mappings,
+                new_mappings,
+            } => {
+                let current = read_macro_parameter(doc, track_id, *macro_index)?;
+                if current.mappings != *old_mappings {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                for mapping in new_mappings {
+                    mapping.validate()?;
+                }
+                Ok(())
+            }
             Self::SetAutomationPoint {
                 target,
                 point_id,
@@ -3191,6 +3224,17 @@ impl Op {
                 old_val: *new_val,
                 new_val: *old_val,
             },
+            Self::SetMacroMappings {
+                track_id,
+                macro_index,
+                old_mappings,
+                new_mappings,
+            } => Self::SetMacroMappings {
+                track_id: *track_id,
+                macro_index: *macro_index,
+                old_mappings: new_mappings.clone(),
+                new_mappings: old_mappings.clone(),
+            },
             Self::SetAutomationPoint {
                 target,
                 point_id,
@@ -3842,6 +3886,18 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetMacroMappings {
+                track_id,
+                macro_index,
+                new_mappings,
+                ..
+            } => {
+                let track = doc.track_mut(track_id)?;
+                if let Some(macro_parameter) = track.macros.get_mut(*macro_index) {
+                    macro_parameter.mappings = new_mappings.clone();
+                }
+                Ok(())
+            }
             Self::SetAutomationPoint {
                 target,
                 point_id,
@@ -4090,11 +4146,19 @@ fn read_macro(
     track_id: &EntityId,
     macro_index: usize,
 ) -> Result<f32, ModelError> {
+    Ok(read_macro_parameter(doc, track_id, macro_index)?.value)
+}
+
+/// 读一个宏参数的完整结构（[`read_macro`] 只取 `value`，这个取全部）。
+fn read_macro_parameter<'a>(
+    doc: &'a YebanProjectV1,
+    track_id: &EntityId,
+    macro_index: usize,
+) -> Result<&'a crate::project::MacroParameter, ModelError> {
     let track = doc.track(track_id)?;
     track
         .macros
         .get(macro_index)
-        .map(|macro_parameter| macro_parameter.value)
         .ok_or(ModelError::MacroIndexOutOfRange {
             index: macro_index,
             len: track.macros.len(),
@@ -4932,6 +4996,15 @@ mod tests {
                 old_val: 0.5,
                 new_val: 0.75,
             },
+            Op::SetMacroMappings {
+                track_id: f.lead,
+                macro_index: 0,
+                old_mappings: Vec::new(),
+                new_mappings: vec![crate::project::MacroMapping {
+                    target: AutomationTarget::TrackVolume { track_id: f.lead },
+                    depth: 6.0,
+                }],
+            },
             Op::SetAutomationPoint {
                 target: target_volume,
                 point_id: fixture_id(80),
@@ -5081,6 +5154,7 @@ mod tests {
             "SetTrackTune",
             "SetTrackPolarity",
             "SetMacro",
+            "SetMacroMappings",
             "SetAutomationPoint",
             "RemoveAutomationPoint",
             "SetAutomationLane",
@@ -7094,7 +7168,8 @@ mod tests {
         assert_eq!(doc, snapshot, "失败的 apply 绝不能改文档");
     }
 
-    /// "旧值必须与文档现值**逐位**相同"是三个入口（`SetParam` / `SetMacro` /
+    /// "旧值必须与文档现值**逐位**相同"是几个入口（`SetParam` / `SetMacro` /
+    /// `SetMacroMappings`（列表逐项相等）/
     /// `SetRoutingGain`）共用的契约，而 `-0.0` 与 `+0.0` 的**位**不同。
     ///
     /// 实测：把 `left.to_bits() == right.to_bits()` 换成 `left == right` 时，全仓判据
@@ -11147,7 +11222,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 64] = [
+        const FROZEN: [(&str, &[&str]); 65] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -11188,6 +11263,7 @@ mod tests {
             ("SetKeySignature", &["key_signature"]),
             ("SetLyrics", &["lyrics"]),
             ("SetMacro", &["tracks"]),
+            ("SetMacroMappings", &["tracks"]),
             ("SetNoteExpression", &["clip_pool"]),
             ("SetNotePitchBendPoint", &["clip_pool"]),
             ("SetNotePitchShape", &["clip_pool"]),
@@ -11421,7 +11497,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 64] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 65] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -11462,6 +11538,7 @@ mod tests {
             ("SetKeySignature", &["key_signature"]),
             ("SetLyrics", &["lyrics"]),
             ("SetMacro", &["value"]),
+            ("SetMacroMappings", &["mappings"]),
             (
                 "SetNoteExpression",
                 &["micro_timing_ticks", "probability", "ratchet"],

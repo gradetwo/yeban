@@ -632,6 +632,16 @@
         },
         {
           "required": [
+            "SetMacroMappings"
+          ],
+          "properties": {
+            "SetMacroMappings": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetAutomationPoint"
           ],
           "properties": {
