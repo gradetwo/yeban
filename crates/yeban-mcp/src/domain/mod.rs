@@ -8306,13 +8306,33 @@ pub(crate) fn incomplete_drum_note_names(device: &DeviceDefinition) -> Option<Ve
     }
 }
 
+/// 逐条**深度遍历** `ops`：遇到 [`Op::Batch`] 就按批内顺序递归进去。
+///
+/// `Op::Batch` 是模型的一等原子批处理（`crates/yeban-model/src/ops.rs`），提案的
+/// `ops` 里嵌套 `Batch` 是合法形态（宿主一次提交就是一条 `Batch`）。三个 warning
+/// helper 原来各自只匹配顶层 `Op`、`Batch` 一律 `continue` ⇒ 批内警告全静默，
+/// 批量提交比逐条提交更不透明。共用这一条遍历：
+///
+/// - **保持施加顺序**（先序、批内原位展开）；
+/// - 每条叶子 op **恰好访问一次**（不重复计数）；
+/// - `Batch` 外壳本身不带载荷，只向下走、不回调。
+fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
+    for op in ops {
+        if let Op::Batch { ops: inner, .. } = op {
+            walk_ops(inner, visit);
+        } else {
+            visit(op);
+        }
+    }
+}
+
 /// ⚠ `code` 不是故障码（`reason`），它只是这条警告的稳定标识 ——
 /// 调用**没有**失败，工程也照旧没变。
 fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
     let mut warnings = Vec::new();
-    for op in ops {
+    walk_ops(ops, &mut |op| {
         let Op::InsertDevice { device, .. } = op else {
-            continue;
+            return;
         };
         for param in &device.params {
             if crate::effect_params::recognise(&param.name).is_some() {
@@ -8328,7 +8348,7 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
                          可用的拼写逐字见本条的 knownParams",
             }));
         }
-    }
+    });
     warnings
 }
 
@@ -8337,25 +8357,48 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
 ///
 /// 只产警告、**从不阻断**绑定：解析不到 SFZ（`sfz_missing`）或 SFZ 里引用的样本读不到
 /// （`sample_missing`）都记一条，交给 op 结果的 `warnings[]` 响亮报告。
+///
+/// 批内（`Op::Batch`）的 `SetTrackSampler` 同样逐条算（[`walk_ops`]）。
+///
+/// ## 没有工程路径时（`project_path: None`）
+///
+/// 绝对绑定**不需要**工程目录解析（[`render::resolve_sampler_path`] 对绝对路径只试它
+/// 自己），所以照常查；只有**相对**绑定在无工程路径时无从解析 —— 记一条
+/// `reason: "path_unresolved"` 而不是静默丢（"没查"与"缺文件"不是一回事）。
 fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Value> {
-    let Some(project_path) = project_path else {
-        return Vec::new();
-    };
     let mut out: Vec<Value> = Vec::new();
-    for op in ops {
+    walk_ops(ops, &mut |op| {
         let Op::SetTrackSampler {
             track_id,
             new_sampler,
             ..
         } = op
         else {
-            continue;
+            return;
         };
         let Some(binding) = new_sampler.as_ref() else {
-            continue;
+            return;
         };
         let track = track_id.to_canonical_string();
-        match render::resolve_sampler_path(&binding.path, project_path) {
+        let resolved = match project_path {
+            Some(project_path) => Some(render::resolve_sampler_path(&binding.path, project_path)),
+            None if Path::new(&binding.path).is_absolute() => {
+                Some(render::resolve_sampler_path(&binding.path, Path::new(".")))
+            }
+            None => None,
+        };
+        let Some(resolved) = resolved else {
+            out.push(serde_json::json!({
+                "kind": "samplerBinding",
+                "trackId": track,
+                "binding": binding.path,
+                "sample": Value::Null,
+                "reason": "path_unresolved",
+                "detail": "没有工程路径: 相对绑定无法按工程目录解析（未查文件, 不等于样本缺失）",
+            }));
+            return;
+        };
+        match resolved {
             Err(error) => out.push(serde_json::json!({
                 "kind": "samplerBinding",
                 "trackId": track,
@@ -8394,7 +8437,7 @@ fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Valu
                 }
             },
         }
-    }
+    });
     out
 }
 
@@ -8544,29 +8587,29 @@ fn count_u64(value: usize) -> u64 {
 /// 那个读数只有渲染期才有（`sources[].audioClipsUnrendered` 已如实报出）。
 fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
     let mut warnings = Vec::new();
-    for op in ops {
+    walk_ops(ops, &mut |op| {
         let Op::InsertDevice {
             track_id, device, ..
         } = op
         else {
-            continue;
+            return;
         };
         let Some(track) = project.tracks.get(track_id) else {
-            continue;
+            return;
         };
         // 主总线永不报：本轨 0 片段是结构使然，且离线渲染里它的设备链跑在
         // "求和之后 → 插入"，旧规则对主总线必报是误报。
         if track.id == project.master_bus_track_id {
-            continue;
+            return;
         }
         let survey = survey_track_playable(project, track);
         if survey.sounding_placements > 0 {
-            continue;
+            return;
         }
         // 经路由入边（传递闭包）连到可发声源的总线轨也不报：汇总进来的音频
         // 同样会过它的设备链；只有上游也全静音时才报。
         if track_has_sounding_upstream(project, track.id, &mut BTreeSet::new()) {
-            continue;
+            return;
         }
         // 两句话都只陈述**实测到的**事实：0 摆放与"有摆放但都发不出声"不是一回事，
         // 用同一句话会把前者的"没有任何片段"说成假话。
@@ -8587,7 +8630,7 @@ fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<
             "triggeringNotes": survey.triggering_notes,
             "hint": hint,
         }));
-    }
+    });
     warnings
 }
 
@@ -9965,6 +10008,209 @@ mod tests {
             "缺样本必须产生 sample_missing 警告: {warnings:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-2201：`Op::Batch` 内的 `InsertDevice` 也必须出警告（含 Batch 套 Batch）。
+    ///
+    /// 修前三个 helper 都是"只匹配顶层 Op"的循环，`Batch` 直接 `continue` ⇒ 批内
+    /// 拼错的参数名整批静默。这里的 op 故意套两层 Batch，同时钉住递归。
+    #[test]
+    fn effect_param_warnings_walks_nested_batches() {
+        let device = DeviceDefinition {
+            id: EntityId::new(),
+            name: "Yeban EQ".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![yeban_model::ParameterValue {
+                name: "cutof".to_owned(),
+                value: 1200.0,
+                unit: None,
+            }],
+            latency_samples: 0,
+            plugin: None,
+        };
+        let insert = Op::InsertDevice {
+            track_id: EntityId::new(),
+            slot_index: 0,
+            device,
+        };
+        let nested = Op::Batch {
+            ops: vec![Op::Batch {
+                ops: vec![insert],
+                description: "inner".to_owned(),
+            }],
+            description: "outer".to_owned(),
+        };
+        let warnings = effect_param_warnings(std::slice::from_ref(&nested));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "批内一条未识别参数名必须恰好报一次: {warnings:?}"
+        );
+        assert_eq!(warnings[0]["code"], "unrecognisedEffectParam");
+        assert_eq!(warnings[0]["paramName"], "cutof", "{warnings:?}");
+    }
+
+    /// T-FIX-2201：`Op::Batch` 内的绝对 SFZ ＋ 缺失 wav ⇒ 必须产出 `sample_missing`。
+    #[test]
+    fn sampler_binding_warnings_walks_batches_for_absolute_binding() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sampler-batch-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::write(dir.join("kit.sfz"), "<region> sample=gone.wav key=60\n").expect("写 SFZ");
+        let absolute = dir.join("kit.sfz").to_string_lossy().into_owned();
+        let binding: yeban_model::SamplerBinding =
+            serde_json::from_value(serde_json::json!({ "path": absolute })).expect("绑定");
+        let op = Op::SetTrackSampler {
+            track_id: yeban_model::EntityId::new(),
+            old_sampler: None,
+            new_sampler: Some(binding),
+        };
+        let batch = Op::Batch {
+            ops: vec![op],
+            description: "批量绑定采样器".to_owned(),
+        };
+        let warnings = sampler_binding_warnings(Some(&dir), std::slice::from_ref(&batch));
+        assert!(
+            warnings
+                .iter()
+                .any(|item| item.get("reason").and_then(Value::as_str) == Some("sample_missing")),
+            "批内缺样本必须产生 sample_missing 警告: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-2201：没有工程路径（`project_path = None`）时**绝对**绑定仍要检查。
+    ///
+    /// 绝对路径不需要工程目录解析（`resolve_sampler_path` 对它只试它自己）；修前
+    /// 这里在函数开头整体 `return Vec::new()`，于是一条缺失样本被静默吞掉。
+    #[test]
+    fn sampler_binding_warnings_checks_absolute_binding_without_project_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sampler-noproject-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::write(dir.join("kit.sfz"), "<region> sample=gone.wav key=60\n").expect("写 SFZ");
+        let absolute = dir.join("kit.sfz").to_string_lossy().into_owned();
+        let binding: yeban_model::SamplerBinding =
+            serde_json::from_value(serde_json::json!({ "path": absolute })).expect("绑定");
+        let op = Op::SetTrackSampler {
+            track_id: yeban_model::EntityId::new(),
+            old_sampler: None,
+            new_sampler: Some(binding),
+        };
+        let warnings = sampler_binding_warnings(None, std::slice::from_ref(&op));
+        assert!(
+            warnings
+                .iter()
+                .any(|item| item.get("reason").and_then(Value::as_str) == Some("sample_missing")),
+            "无工程路径时绝对绑定缺样本也必须报 sample_missing: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-2201：相对绑定 ＋ 无工程路径 ⇒ 明确登记 `path_unresolved`，**不静默**。
+    #[test]
+    fn sampler_binding_warnings_marks_relative_binding_unresolved_without_project_path() {
+        let binding: yeban_model::SamplerBinding =
+            serde_json::from_value(serde_json::json!({ "path": "assets/samples/tmp/kit.sfz" }))
+                .expect("绑定");
+        let op = Op::SetTrackSampler {
+            track_id: yeban_model::EntityId::new(),
+            old_sampler: None,
+            new_sampler: Some(binding),
+        };
+        let warnings = sampler_binding_warnings(None, std::slice::from_ref(&op));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "相对绑定在无工程路径时必须登记一条: {warnings:?}"
+        );
+        assert_eq!(warnings[0]["reason"], "path_unresolved", "{warnings:?}");
+    }
+
+    /// T-FIX-2201：`Op::Batch` 内装在静音轨上的设备同样要出 `deviceOnSilentTrack`。
+    ///
+    /// 正对照：同一条 op 不包 Batch（候选 `Aux Reverb` 就是 0 摆放）行为不变；
+    /// 包在 Batch 里也必须报；装在有发声摆放的 `Lead` 上（批内 / 批外）都不报。
+    #[test]
+    fn device_on_silent_track_warnings_walks_batches() {
+        // `filled_project` 的每条轨都有内容（Aux 也有 Lead 的 SendToAux 入边）⇒
+        // 这里把 Lead 的摆放清空，造一条**确定**的 0 摆放且无入边的轨作正样本，
+        // 再拿仍有一条音频摆放的 Bass 作负对照。
+        let mut project = yeban_model::samples::filled_project();
+        let lead_id = project
+            .tracks
+            .values()
+            .find(|track| track.name == "Lead")
+            .expect("fixture 的 Lead")
+            .id;
+        project
+            .tracks
+            .get_mut(&lead_id)
+            .expect("Lead")
+            .clips
+            .clear();
+        let silent = project.tracks.get(&lead_id).expect("Lead");
+        let sounding = project
+            .tracks
+            .values()
+            .find(|track| track.name == "Bass")
+            .expect("fixture 的 Bass");
+        let device = |name: &str| DeviceDefinition {
+            id: EntityId::new(),
+            name: name.to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: Vec::new(),
+            latency_samples: 0,
+            plugin: None,
+        };
+        let silent_op = Op::InsertDevice {
+            track_id: silent.id,
+            slot_index: 0,
+            device: device("Yeban Comp"),
+        };
+        let batch = Op::Batch {
+            ops: vec![silent_op.clone()],
+            description: "批量装设备".to_owned(),
+        };
+        let wrapped = device_on_silent_track_warnings(&project, std::slice::from_ref(&batch));
+        assert_eq!(
+            wrapped.len(),
+            1,
+            "批内装在静音轨上的设备必须报一条: {wrapped:?}"
+        );
+        assert_eq!(wrapped[0]["code"], "deviceOnSilentTrack", "{wrapped:?}");
+        assert_eq!(wrapped[0]["trackId"], silent.id.to_canonical_string());
+        // 批外行为不变：同一条 op 单发也报；装在有发声摆放的轨上（批内/批外）都不报。
+        assert_eq!(
+            device_on_silent_track_warnings(&project, std::slice::from_ref(&silent_op)).len(),
+            1
+        );
+        let sounding_op = Op::InsertDevice {
+            track_id: sounding.id,
+            slot_index: 0,
+            device: device("Yeban Comp"),
+        };
+        assert!(
+            device_on_silent_track_warnings(&project, std::slice::from_ref(&sounding_op))
+                .is_empty()
+        );
+        let sounding_batch = Op::Batch {
+            ops: vec![sounding_op],
+            description: "批量装设备".to_owned(),
+        };
+        assert!(
+            device_on_silent_track_warnings(&project, std::slice::from_ref(&sounding_batch))
+                .is_empty(),
+            "有发声摆放的轨不该报"
+        );
     }
 
     #[test]
