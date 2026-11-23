@@ -353,10 +353,11 @@ mod tests {
             .render_block(context(0, 1_024, 2), &mut out)
             .expect("渲染");
         assert!(
-            source
-                .events
-                .iter()
-                .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 0, .. })),
+            !source.events.is_empty()
+                && source
+                    .events
+                    .iter()
+                    .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 0, .. })),
             "向后 seek 后必须重新发出第 0 个音符的 on，否则丢音"
         );
         let mut out = vec![0.0_f32; 2_048 * 2];
@@ -364,10 +365,11 @@ mod tests {
             .render_block(context(1_024, 2_048, 2), &mut out)
             .expect("渲染");
         assert!(
-            source
-                .events
-                .iter()
-                .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 1, .. })),
+            !source.events.is_empty()
+                && source
+                    .events
+                    .iter()
+                    .any(|event| matches!(event.kind, MidiEventKind::NoteOn { note_id: 1, .. })),
             "后续块仍应按游标顺序发出第 1 个音符"
         );
     }
