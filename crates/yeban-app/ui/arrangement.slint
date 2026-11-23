@@ -1056,7 +1056,17 @@ export component ArrangementViewport inherits Rectangle {
                 // 内容高只由轨道投影决定。两者分开，`content-height > height` 才能在
                 // 轨道装不下时成立 —— 滚轮与滚动条都靠这个判据。
                 content-height: root.sheet-height + 42px + 46px;
-                interactive: true;
+                // ⭐ 框选优先于拖拽滚动（Wang 2026-11-18 口径）：空白车道拖拽 =
+                // 橡皮筋框选，⛔ 不做拖拽滚动；滚动只走滚轮 / Shift+滚轮 / 滚动条
+                //（滚轮与滚动条不依赖本面的拖拽手势：前者冒泡给 Flickable 自身
+                // 的 PointerScrolled，后者直接写 `content-y`）。
+                // `interactive: true` 时内容一旦高出视口（演示工程 6 轨内容
+                // 424px；b5e1b00d 加的 Songmap A/B 条把视口从 436px 压到
+                // 406px ⇒ 刚好溢出），Flickable 会把纵向拖拽认领为滚动、给车道
+                // TouchArea 发 `cancel` ⇒ 框选永远到不了宿主（ISS-MWTNA3DX）。
+                // 关掉拖拽手势后滚轮与滚动条照常工作（`arrangement_vertical_scroll`
+                // 4/4），框选在任何轨道数下都不再被抢。
+                interactive: false;
                 // ─── 轨道区背景网格（铺满整块车道区）──────────────────
                 // 2026-11-18 口径（负责人）：
                 //   ① **轨道头列是纯色面**，不许出现任何格线（横向/纵向都不许）；

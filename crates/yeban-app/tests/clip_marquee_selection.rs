@@ -33,6 +33,7 @@ use yeban_app::host::{self, clip_marquee_hits};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_model::{EntityId, TrackKind, TrackV3};
 use yeban_ui_test_port::render::LivePort;
 use yeban_ui_test_port::{Permission, PointerButton, Size, UiTestPort as _};
 
@@ -303,4 +304,99 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
         "",
         "主选中必须随之为空"
     );
+}
+
+/// 框选在**内容高出视口**时仍成立（回归 ISS-MWTNA3DX）。
+///
+/// 演示工程 6 轨内容 424px；b5e1b00d 加 Songmap A/B 条后视口 406px ⇒ 刚好溢出，
+/// Flickable 把纵向拖拽认领为滚动、给车道 TouchArea 发 `cancel` ⇒ 框选永远到不了
+/// 宿主。本判据用 12 轨工程（内容 760px）钉住：无论视口多高、内容溢出多少，
+/// 空白拖拽都必须框选——与主判据同款拖拽，只换工程。
+#[test]
+fn blank_drag_selects_clips_when_content_overflows_viewport() {
+    let mut project = demo_project();
+    for index in 0..6 {
+        let id = EntityId::new();
+        project.tracks.insert(
+            id,
+            TrackV3 {
+                id,
+                name: format!("高轨 {index}"),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            },
+        );
+    }
+    let view = ViewState::from_project(&project).expect("十二轨工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let mut port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<clip-marquee-tall>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开"),
+    ));
+    let live_view = Rc::new(RefCell::new(view.clone()));
+    host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    port.refresh_tree(None).expect("必须能抓控件树");
+
+    let bounds = port
+        .tree()
+        .find_by_id(FLICKABLE)
+        .expect("控件树里必须有编曲滚动面")
+        .bounds
+        .expect("滚动面必须有几何");
+    let origin_x = f64::from(port.ui().get_track_headers_width()) + 5.0;
+    let visible_tx_max = (bounds.width as f32) - (origin_x as f32) - 24.0;
+    // 内容必溢出：12 轨 × 56px + 88px 垫高 ≫ 视口。
+    assert!(
+        view.track_sheet_height() + 88.0 > bounds.height as f32,
+        "十二轨内容必须高出视口（否则本判据钉不住溢出态）：内容 {} vs 视口 {}",
+        view.track_sheet_height() + 88.0,
+        bounds.height
+    );
+
+    let (start_track, sx, sy) = blank_start(&view, visible_tx_max);
+    let target = view
+        .clips
+        .iter()
+        .find(|c| {
+            let (x, _, w, _) = block_rect(&view, c);
+            c.track_index != start_track && x + w / 2.0 < visible_tx_max
+        })
+        .expect("演示工程必须有异轨可见片段可作框选目标");
+    let (tx0, ty0, tw, th) = block_rect(&view, target);
+    let (ex, ey) = (tx0 + tw / 2.0, ty0 + th / 2.0);
+
+    port.dispatch_pointer_down(
+        FLICKABLE,
+        origin_x + f64::from(sx),
+        f64::from(sy),
+        PointerButton::Left,
+    )
+    .expect("空白车道必须可按下");
+    for step in 1..=3 {
+        let t = f64::from(step) / 3.0;
+        port.dispatch_pointer_move(
+            f64::from(bounds.x) + origin_x + f64::from(sx) + (f64::from(ex - sx)) * t,
+            f64::from(bounds.y) + f64::from(sy) + (f64::from(ey - sy)) * t,
+        )
+        .expect("拖动必须送达");
+    }
+    port.dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+
+    let expected = clip_marquee_hits(&view, sx, sy, ex, ey);
+    assert!(
+        expected.contains(&target.placement_id),
+        "框选矩形必须命中目标片段（判据自身的几何复算）：{expected:?}"
+    );
+    let selected: Vec<String> = port
+        .ui()
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(selected, expected, "内容溢出时松手后选区集必须 == 命中集");
 }
