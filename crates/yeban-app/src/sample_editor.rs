@@ -1019,4 +1019,26 @@ mod tests {
         assert_eq!(plan.regions[1].loop_end, 800);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// ⭐ T-FIX-184：根外绝对路径**文件不存在**时，FIX 3 的“缺样本不致命”不得把它
+    /// 洗进计划 —— 整份 SFZ 必须打不开（响亮），⛔ 不能带着逃逸路径 `Ok`。
+    #[test]
+    fn missing_absolute_sample_outside_root_fails_the_plan() {
+        let dir = temp_dir("escape-abs-missing");
+        let outside = temp_dir("escape-abs-outside").join("not-there.wav");
+        assert!(!outside.exists(), "夹具必须不存在");
+        let sfz = dir.join("inst.sfz");
+        std::fs::write(
+            &sfz,
+            format!("<region> sample={} pitch_keycenter=60\n", outside.display()),
+        )
+        .expect("写夹具 SFZ");
+
+        let error = match SfzPlan::load(&sfz) {
+            Ok(_) => panic!("根外绝对路径缺失必须让整份 SFZ 打不开"),
+            Err(error) => error,
+        };
+        assert!(error.contains("逃出根目录"), "实际 {error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

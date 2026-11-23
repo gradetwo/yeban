@@ -28,7 +28,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
@@ -1444,7 +1444,9 @@ pub fn validate_sample_path(sample: &str) -> Result<(), SfzError> {
 ///   （不存在、权限不足）—— 后者**不再**被当成"读不到就回退"的静默路径，调用方必须
 ///   响亮登记；
 /// * [`SfzError::SampleEscape`]：`..` 组件、Windows 驱动器**绝对**（`C:/x`）或**相对**
-///   （`C:x`）路径，或规范化后落在 `root` 之外。
+///   （`C:x`）路径，或规范化后落在 `root` 之外；⭐ **根外绝对路径即使文件当前不存在**
+///   也判逃逸（`canonicalize` 失败时退到词法根前缀检查）——"缺失"不能把根外路径洗成
+///   可进计划的 `SampleInvalidPath`（T-FIX-184）。
 pub fn resolve_sample_under_root(root: &Path, sample: &str) -> Result<PathBuf, SfzError> {
     if sample.is_empty() {
         return Err(SfzError::SampleInvalidPath {
@@ -1477,23 +1479,63 @@ pub fn resolve_sample_under_root(root: &Path, sample: &str) -> Result<PathBuf, S
         .map_err(|_| SfzError::SampleInvalidPath {
             path: root.display().to_string(),
         })?;
-    let lexical = Path::new(&normalized);
+    let lexical = lexical_path(Path::new(&normalized));
     let candidate = if lexical.is_absolute() {
-        lexical.to_path_buf()
+        lexical.clone()
     } else {
-        root_canon.join(lexical)
+        root_canon.join(&lexical)
     };
-    let candidate_canon = candidate
-        .canonicalize()
-        .map_err(|_| SfzError::SampleInvalidPath {
-            path: candidate.display().to_string(),
-        })?;
+    let candidate_canon = match candidate.canonicalize() {
+        Ok(canon) => canon,
+        Err(_) => {
+            // ⭐ T-FIX-184：`canonicalize` 失败**不等于**“只是缺文件”—— 根外绝对路径
+            //     此刻同样没有文件系统证据。若不先做词法根检查，它会以
+            //     `SampleInvalidPath` 返回，调用方（`sample_editor` 的 FIX 3 非致命
+            //     分支）就会把它 `parent.join(raw)` 收回计划、随后按该路径读盘 ⇒
+            //     根目录约束被“文件当前不存在”绕开（TOCTOU / 网络盘上尤其危险）。
+            //     root 已 `canonicalize` 成功（存在），所以这里只判**词法**前缀。
+            if lexical.is_absolute() && !absolute_within_root(&lexical, root, &root_canon) {
+                return Err(SfzError::SampleEscape {
+                    path: sample.to_owned(),
+                });
+            }
+            return Err(SfzError::SampleInvalidPath {
+                path: candidate.display().to_string(),
+            });
+        }
+    };
     if !candidate_canon.starts_with(&root_canon) {
         return Err(SfzError::SampleEscape {
             path: sample.to_owned(),
         });
     }
     Ok(candidate_canon)
+}
+
+/// 词法归一：只丢 `CurDir`（`.`）组件，⛔ 不碰文件系统、⛔ 不折叠 `..`
+/// （`..` 在本模块的入口已被判成逃逸）。
+fn lexical_path(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect()
+}
+
+/// 词法上判断一条**绝对**路径是否落在 `root` 内（仅用于“候选不存在”的兜底）。
+///
+/// 两个参照都算根内：`root` 的规范化真路径（消除符号链接差异），以及 `root` 自身
+/// 的绝对词法形态（用户写的绝对路径可能经由 root 路径上的符号链接，例如
+/// `/tmp` ⇒ `/private/tmp`）。两者都不匹配 ⇒ 根外。
+fn absolute_within_root(absolute: &Path, root: &Path, root_canon: &Path) -> bool {
+    let absolute = lexical_path(absolute);
+    if absolute.starts_with(root_canon) {
+        return true;
+    }
+    let lexical_root = if root.is_absolute() {
+        Some(root.to_path_buf())
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(root))
+    };
+    lexical_root.is_some_and(|root_lex| absolute.starts_with(lexical_path(&root_lex)))
 }
 
 /// ⭐ **CC 种子表的唯一合并实现**：文件 `<control> set_ccN` 初值 ⊕ 用户显式

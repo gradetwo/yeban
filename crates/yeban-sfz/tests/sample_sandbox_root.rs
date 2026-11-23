@@ -79,6 +79,38 @@ fn absolute_sample_outside_root_is_escape() {
     );
 }
 
+/// ⭐ T-FIX-184：根外绝对路径**文件不存在**时仍必须是 [`SfzError::SampleEscape`]。
+///
+/// 修前 `canonicalize` 先失败 ⇒ 返回 `SampleInvalidPath`；`sample_editor` 的 FIX 3
+/// 非致命分支据此 `parent.join(raw)` 把根外路径收回计划，随后按它读盘 ⇒ 根目录约束
+/// 被“文件当前不存在”绕开。
+#[test]
+fn missing_absolute_sample_outside_root_is_escape() {
+    let root = temp_root("absout-missing");
+    let outside = temp_root("outside-missing").join("not-there.wav");
+    assert!(!outside.exists(), "夹具必须不存在");
+    let error = resolve_sample_under_root(&root, &outside.display().to_string())
+        .expect_err("根外绝对路径即使不存在也必须判逃逸");
+    assert!(
+        matches!(error, SfzError::SampleEscape { .. }),
+        "实际 {error:?}"
+    );
+}
+
+/// 正对照（FIX 3 口径不变）：**根内**绝对路径缺失仍是 `SampleInvalidPath`，
+/// 由调用方决定是否非致命。
+#[test]
+fn missing_absolute_sample_inside_root_stays_invalid_path() {
+    let root = temp_root("absin-missing");
+    let inside = root.join("not-there.wav");
+    let error = resolve_sample_under_root(&root, &inside.display().to_string())
+        .expect_err("根内缺失仍报错（非致命口径由调用方决定）");
+    assert!(
+        matches!(error, SfzError::SampleInvalidPath { .. }),
+        "实际 {error:?}"
+    );
+}
+
 #[test]
 fn symlink_escape_is_rejected() {
     #[cfg(unix)]
