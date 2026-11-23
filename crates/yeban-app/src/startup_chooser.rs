@@ -17,14 +17,14 @@
 //! | :--- | :--- | :--- |
 //! | 新建工程 | 空工程 + Details（真实字段） | 未命名新工程 |
 //! | 最近 | 设置里的最近清单（[`crate::settings`]） | 按路径打开原文件 |
-//! | 演示工程 | 内置样本（`default` / `filled`）＋可选文件型 demo（见下） | 未命名副本（样本无磁盘文件） |
+//! | 演示工程 | 文件型 demo（见下；内置样本已按 Wang 2026-11-23 裁决移出清单） | 未命名副本 |
 //! | 工程模板 | 工厂模板目录（[`crate::templates`]） | 未命名副本，永不回写 |
 //! | 我的模板 | 用户模板目录（[`crate::templates`]） | 未命名副本，永不回写 |
 //!
 //! ## 文件型 demo（实验，`YEBAN_DEMOS_DIR`）
 //!
-//! 环境变量 [`DEMOS_DIR_ENV`] 指向一个目录时，`gather` 在两条内置
-//! 样本之后追加扫描该目录：每个 `*.yeban` 文件是一条文件型 demo，
+//! 环境变量 [`DEMOS_DIR_ENV`] 指向一个目录时，`gather` 扫描该
+//! 目录作为演示清单的唯一来源：每个 `*.yeban` 文件是一条文件型 demo，
 //! 标题、BPM 与跨度从容器真实读取（[`read_project_container`]），
 //! 读不出来的文件**响亮报错并跳过**（⛔ 不编造标题）；封面是与工程
 //! 同名的 `.png` / `.jpg`，或同名加 `-cover` 后缀的 `.png` / `.jpg`。
@@ -32,7 +32,8 @@
 //! 提供（`genre` / `released` / `description` / `credits` /
 //! `copyright` / `license` / `website`，全可选，缺失即不列该行，
 //! ⛔ 不编造）。
-//! 环境变量未设 ⇒ 行为与没有本实验时完全一致。文件型 demo 打开时
+//! 环境变量未设 ⇒ 演示清单为空（内置样本已移出清单，见上）。
+//! 文件型 demo 打开时
 //! 从磁盘真实加载归档，同样走未命名副本口径（不记最近、不回写源
 //! 文件）。
 //!
@@ -88,6 +89,9 @@ pub struct RecentEntry {
 pub const DEMOS_DIR_ENV: &str = "YEBAN_DEMOS_DIR";
 
 /// 一条演示工程的来源：内置样本，或磁盘上的工程文件（实验）。
+/// 演示清单自 Wang 2026-11-23 裁决后只由文件型条目构成（见
+/// [`gather`]），`Builtin` 变体保留在闭集里、宿主打开臂照常处理
+/// 它，只是不再有产出方。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DemoSource {
     /// 内置样本（打开时按它构造归档）。
@@ -112,7 +116,7 @@ pub struct DemoEntry {
     /// `genre`；容器本身没有曲风字段，缺失即 `None`，卡片不编造）。
     pub genre: Option<String>,
     /// 旁挂 meta（专辑页字段：发布日期 / 简介 / 制作名单 / 版权 /
-    /// 许可 / 作者网站；只有文件型 demo 有旁挂文件，内置样本恒
+    /// 许可 / 作者网站；只有文件型 demo 有旁挂文件，无旁挂时恒
     /// 全缺失。曲风也在旁挂里，与 `genre` 字段同源）。
     pub meta: DemoMeta,
     /// 工程速度（样本工程 / 容器自带 `bpm`，实读）。
@@ -121,7 +125,7 @@ pub struct DemoEntry {
     pub bars: usize,
     /// 全曲时长（秒，按片段末端 tick 与 bpm 实算，只进「详情」）。
     pub duration_secs: f64,
-    /// 封面图路径（文件型 demo 的同名图片；内置样本恒 `None`）。
+    /// 封面图路径（文件型 demo 的同名图片；无同名图片时 `None`）。
     pub cover: Option<PathBuf>,
 }
 
@@ -131,15 +135,16 @@ pub struct DemoEntry {
 pub struct ChooserData {
     /// 最近清单（最近在前）。
     pub recent: Vec<RecentEntry>,
-    /// 演示工程（内置两条在前，其后是 [`DEMOS_DIR_ENV`] 扫描出的
-    /// 文件型 demo；环境变量未设时只有内置两条）。
+    /// 演示工程（只有 [`DEMOS_DIR_ENV`] 扫描出的文件型 demo；
+    /// 环境变量未设时为空。内置样本已按 Wang 2026-11-23 裁决
+    /// 移出本清单）。
     pub demos: Vec<DemoEntry>,
     /// 全部模板（工厂在前，与 [`list_templates`] 同序）。
     pub templates: Vec<TemplateEntry>,
 }
 
 /// 汇集选择器数据：最近清单来自设置（存在性当场查），演示来自
-/// 内置样本，模板来自两个模板根目录的当场扫描。
+/// 文件型 demo 目录的当场扫描，模板来自两个模板根目录的当场扫描。
 #[must_use]
 pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
     let recent = settings
@@ -157,29 +162,13 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
             opened_at_unix_ms: entry.opened_at_unix_ms,
         })
         .collect();
-    let mut demos: Vec<DemoEntry> = [Sample::Default, Sample::Filled]
-        .into_iter()
-        .map(|sample| {
-            let project = sample.project();
-            let (bars, duration_secs) = demo_span(&project);
-            DemoEntry {
-                source: DemoSource::Builtin(sample),
-                title: project.title.clone(),
-                track_count: project
-                    .tracks
-                    .keys()
-                    .filter(|id| **id != project.master_bus_track_id)
-                    .count(),
-                author: author_name(&project.author),
-                genre: None,
-                meta: DemoMeta::default(),
-                bpm: project.bpm,
-                bars,
-                duration_secs,
-                cover: None,
-            }
-        })
-        .collect();
+    // 演示清单只剩文件型 demo（Wang 2026-11-23 15:11 终定）：两个
+    // 系统内置样本（`default` / `filled`）不再进选择页清单。样本
+    // 本体不受影响——CLI `--sample` 与 `ProjectSource::Sample` 仍可
+    // 打开它们；`DemoSource::Builtin` 变体与宿主打开臂保留（类型
+    // 闭集不缩），只是本函数不再产出。环境变量未设 ⇒ 清单为空，
+    // 演示分类如实显示空清单，⛔ 不拿内置样本回填。
+    let mut demos: Vec<DemoEntry> = Vec::new();
     if let Some(dir) = std::env::var_os(DEMOS_DIR_ENV)
         && !dir.is_empty()
     {

@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use yeban_app::cli::{Language, StartupRoute};
 use yeban_app::settings::{RecentProject, Settings};
 use yeban_app::startup_chooser::{
-    ChooserRowKind, NewProjectDetails, demo_rows, gather, recent_rows, template_rows,
+    ChooserRowKind, DemoEntry, DemoMeta, DemoSource, NewProjectDetails, demo_rows, gather,
+    recent_rows, template_rows,
 };
 use yeban_app::templates::{TemplateRoots, TemplateSource};
 
@@ -150,8 +151,10 @@ fn recent_rows_keep_order_and_disable_missing_files() {
     );
 }
 
-/// 汇集：演示工程恒为内置两条（轨道数与模型样本现数一致）；模板
-/// 按来源分组、条目下标指全量清单。
+/// 汇集：演示清单只有文件型条目（内置样本已按 Wang 2026-11-23
+/// 裁决移出清单，无 demos 目录时为空）；行模型的轨道数口径用
+/// filled 样本实数构造的文件型条目核；模板按来源分组、条目
+/// 下标指全量清单。
 #[test]
 fn gather_collects_demos_and_templates() {
     let scratch = Scratch::new();
@@ -170,19 +173,37 @@ fn gather_collects_demos_and_templates() {
     write_project_file(&user_template);
 
     let data = gather(&Settings::default(), &roots);
-    assert_eq!(data.demos.len(), 2, "演示工程 = 内置样本 default + filled");
+    assert!(
+        data.demos
+            .iter()
+            .all(|demo| matches!(demo.source, DemoSource::File(_))),
+        "演示清单不得有内置条目（内置样本已移出选择页），实际 {:?}",
+        data.demos
+    );
     let filled = yeban_model::samples::filled_project();
     let filled_tracks = filled
         .tracks
         .keys()
         .filter(|id| **id != filled.master_bus_track_id)
         .count();
-    let demo_rows = demo_rows(&data.demos, Language::ZhCn);
+    let filled_entry = DemoEntry {
+        source: DemoSource::File(PathBuf::from("filled.yeban")),
+        title: filled.title.clone(),
+        track_count: filled_tracks,
+        author: None,
+        genre: None,
+        meta: DemoMeta::default(),
+        bpm: filled.bpm,
+        bars: 0,
+        duration_secs: 0.0,
+        cover: None,
+    };
+    let demo_rows = demo_rows(&[filled_entry], Language::ZhCn);
     assert!(
         demo_rows
             .iter()
             .any(|row| row.details.contains(&format!("轨道数 {filled_tracks}"))),
-        "演示行模型「详情」里的轨道数必须与 filled 样本现数一致，实际 {demo_rows:?}"
+        "演示行模型「详情」里的轨道数必须与条目实数一致，实际 {demo_rows:?}"
     );
     assert!(
         demo_rows.iter().all(|row| row.detail.is_empty()),
@@ -262,15 +283,36 @@ fn startup_chooser_live_window_flow() {
     }
     let template_bytes = std::fs::read(&template_path).expect("读模板字节");
     let ghost_path = scratch.join("不存在.yeban");
+    // 文件型 demo 夹具：filled 样本写成 `.yeban` 放进演示目录
+    // （演示清单已无内置条目，§5 的打开腿走文件型 demo）。
+    let demos_dir = scratch.join("demos");
+    std::fs::create_dir_all(&demos_dir).expect("建演示目录");
+    let demo_file_path = demos_dir.join("填充演示.yeban");
+    {
+        let archive = yeban_model::container::ProjectArchive {
+            project: yeban_model::samples::filled_project(),
+            history_dag: Vec::new(),
+            proposals: None,
+            assets: yeban_model::samples::filled_project_assets(),
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        };
+        yeban_app::save::save_archive_file(&archive, &demo_file_path).expect("写演示工程");
+    }
 
     // 设置文件隔离到临时路径，并预置一条失效的最近记录。
     let settings_path = scratch.join("settings.json");
-    // SAFETY: 本测试二进制内只有本条判据碰设置文件（其余判据都走
-    // 显式 Settings 值），且活窗口判据全文件只有一条。
+    // SAFETY: 本测试二进制内只有本条判据碰设置文件与演示目录
+    // 环境变量（其余判据都走显式 Settings 值），且活窗口判据
+    // 全文件只有一条。
     unsafe {
         std::env::set_var(
             yeban_app::settings::SETTINGS_PATH_ENV,
             settings_path.as_os_str(),
+        );
+        std::env::set_var(
+            yeban_app::startup_chooser::DEMOS_DIR_ENV,
+            demos_dir.as_os_str(),
         );
     }
     yeban_app::settings::record_recent_project(&ghost_path, NOW_MS - 60_000);
@@ -466,19 +508,29 @@ fn startup_chooser_live_window_flow() {
         "新工程必须是空工程形状（只有主总线）"
     );
 
-    // ---- 5. 演示工程：filled 样本以未命名副本打开 -------------------------
+    // ---- 5. 演示工程：文件型 demo 以未命名副本打开 -------------------------
     ui.set_startup_chooser_open(true);
     ui.invoke_startup_category_selected(2);
     let rows = ui.get_startup_rows();
-    assert_eq!(rows.iter().count(), 2, "演示分类恒有两条");
-    ui.invoke_startup_entry_activated(1);
+    assert_eq!(
+        rows.iter().count(),
+        1,
+        "演示分类只有文件型一条（内置样本已移出清单）"
+    );
+    let filled = yeban_model::samples::filled_project();
+    let demo_row = rows.iter().next().expect("演示行必须在");
+    assert_eq!(
+        demo_row.label.as_str(),
+        filled.title.as_str(),
+        "演示行标题必须从容器实读"
+    );
+    ui.invoke_startup_entry_activated(0);
     assert!(!ui.get_startup_chooser_open(), "演示打开后选择器必须关");
     let demo_project = undo.project();
-    let filled = yeban_model::samples::filled_project();
     assert_eq!(
         demo_project.tracks.len(),
         filled.tracks.len(),
-        "演示打开的必须是 filled 样本那份工程（轨道数对上）"
+        "演示打开的必须是文件里那份 filled 工程（轨道数对上）"
     );
     assert_eq!(
         yeban_app::settings::load().recent_projects.len(),

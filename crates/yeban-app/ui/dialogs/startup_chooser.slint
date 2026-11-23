@@ -46,8 +46,9 @@ export component StartupChooserDialog inherits Rectangle {
     in-out property <int> demo-expanded-index: -1;
     in-out property <length> demo-expanded-extra: 0px;
     // 演示分类视图：0 = 唱片架，1 = 堆叠。只影响演示分类，
-    // 其他分类不读此状态。
-    in-out property <int> demo-view: 0;
+    // 其他分类不读此状态。默认堆叠（Wang 2026-11-23 15:11
+    // 终定：堆叠留用并作默认，唱片架切换保留）。
+    in-out property <int> demo-view: 1;
     // 堆叠模式当前在最前（环位槽 0）的行号；-1 = 默认（最后一张
     // 在最前）。点选不直接改它，而是记目标进 demo-stack-target，
     // 由堆叠内的 Timer 沿环次序逐格步进到目标（循环移位）。
@@ -1016,7 +1017,9 @@ export component StartupChooserDialog inherits Rectangle {
             // ⛔ 不上主面。手风琴口径：展开状态只存根上的
             // demo-expanded-index 一处，同一时刻只许一张卡展开。
             // 演示分类视图切换（分段小控件）：只在演示分类
-            // 出现，只切换演示分类的呈现，默认唱片架。
+            // 出现，只切换演示分类的呈现，默认堆叠。堆叠一侧
+            // 只画图标、不显示「堆叠」二字（Wang 2026-11-23
+            // 15:12 补定）；唱片架一侧文字保留。
             if root.category == 2 : Rectangle {
                 x: 0;
                 y: 0;
@@ -1072,20 +1075,57 @@ export component StartupChooserDialog inherits Rectangle {
                         background: root.demo-view == 1 ? Tokens.bg-raised : transparent;
                         border-radius: Tokens.radius-sm;
                         accessible-role: button;
+                        // 图标-only 段（Wang 2026-11-23 15:12：
+                        // 界面不显示「堆叠」二字）。accessible-label
+                        // 是读屏器的控件名、不是界面显示文字，图标
+                        // 按钮必须留名，故保留。
                         accessible-label: @tr("堆叠");
                         accessible-id: "startup-demo-view-stack";
                         accessible-action-default => {
                             root.demo-view = 1;
                         }
+                        property <color> glyph-color: root.demo-view == 1 ? Tokens.ink-0 : Tokens.ink-2;
 
-                        Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: @tr("堆叠");
-                            color: root.demo-view == 1 ? Tokens.ink-0 : Tokens.ink-2;
-                            font-size: Tokens.font-size-sm;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        // 堆叠字形：三张错落叠放的卡片（后卡只描
+                        // 边、中卡垫底色遮住后卡边线、前卡实填），
+                        // 居中于与文字段等宽的 63px 段内。
+                        Rectangle {
+                            x: (parent.width - 20px) / 2;
+                            y: 2px;
+                            width: 20px;
+                            height: 16px;
+
+                            Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                width: 13px;
+                                height: 11px;
+                                border-width: 1px;
+                                border-color: glyph-color;
+                                border-radius: 2px;
+                            }
+
+                            Rectangle {
+                                x: 3.5px;
+                                y: 2.5px;
+                                width: 13px;
+                                height: 11px;
+                                background: root.demo-view == 1 ? Tokens.bg-raised : Tokens.bg-panel;
+                                border-width: 1px;
+                                border-color: glyph-color;
+                                border-radius: 2px;
+                            }
+
+                            Rectangle {
+                                x: 7px;
+                                y: 5px;
+                                width: 13px;
+                                height: 11px;
+                                background: glyph-color;
+                                border-width: 1px;
+                                border-color: glyph-color;
+                                border-radius: 2px;
+                            }
                         }
 
                         TouchArea {

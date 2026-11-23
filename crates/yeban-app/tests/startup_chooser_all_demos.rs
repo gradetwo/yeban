@@ -18,15 +18,16 @@
 //! 条目标题一律容器 `title` 实读（八个工程的 title 本就是干净
 //! 歌名，无版本/声别后缀）；曲风等无出处的字段留空、不编造。
 //!
-//! 产出四张证据图（素材目录根，不进仓库）：
-//! `chooser-alldemos-shelf-1x.png` / `chooser-alldemos-shelf-3x.png`
-//! （唱片架整帧 + 第一张文件型卡裁图）、
-//! `chooser-alldemos-stack-1x.png` / `chooser-alldemos-stack-3x.png`
-//! （堆叠整帧 + 全部封面 ∪ 信息块裁图）。注意：选择器对话框
-//! 可视区只有 2 列 × 约 1.3 行，架子初始帧只看得见两条内置
-//! demo；本轮要看的是新 demo 的效果，故架子 1x 取**滚到文件型
-//! demo 占满视口**的一帧（初始帧只含内置两条这一事实记在
-//! 回执里，不拿它充数）。
+//! 终轮口径（Wang 2026-11-23 15:11/15:12 裁决）：演示清单只剩
+//! 这 8 条文件型 demo（两个系统内置 demo 已从选择页拿掉）；
+//! 打开演示分类的第一帧就是**堆叠默认视图**；切换控件上不显示
+//! 「堆叠」二字（图标-only，靠证据图目视核）。
+//!
+//! 产出三张证据图（素材目录根，不进仓库）：
+//! `chooser-final-stack-1x.png`（打开演示分类的第一帧，堆叠
+//! 默认视图整帧）、`chooser-final-stack-3x.png`（全部封面 ∪
+//! 信息块裁图）、`chooser-final-shelf-1x.png`（点唱片架段切到
+//! 唱片架后的一帧）。
 //!
 //! 平台约束与 `tests/startup_chooser_demo_cover.rs` 同款：一个
 //! 文件只建一次活窗口。素材不在 ⇒ 本判据**响亮失败**。
@@ -267,13 +268,9 @@ fn all_demos_live_window_screenshots() {
         ui.set_startup_chooser_open(true);
         ui.invoke_startup_category_selected(2);
         let rows: Vec<_> = ui.get_startup_rows().iter().collect();
-        assert_eq!(rows.len(), 10, "演示分类 = 内置两条 + 文件型八条");
-        assert!(
-            !rows[0].has_cover && !rows[1].has_cover,
-            "内置 demo 不得有封面"
-        );
+        assert_eq!(rows.len(), 8, "演示分类 = 文件型八条（内置样本已移出清单）");
         for (offset, expected) in expected_file_titles.iter().enumerate() {
-            let row = &rows[offset + 2];
+            let row = &rows[offset];
             assert_eq!(
                 row.label.as_str(),
                 *expected,
@@ -290,8 +287,8 @@ fn all_demos_live_window_screenshots() {
             );
         }
         // 曲风：只有《雨声太吵》有旁挂出处，其余留空、不编造。
-        assert_eq!(rows[9].genre.as_str(), "Grunge-Pop", "雨声太吵曲风来自旁挂");
-        for row in &rows[2..9] {
+        assert_eq!(rows[7].genre.as_str(), "Grunge-Pop", "雨声太吵曲风来自旁挂");
+        for row in &rows[0..7] {
             assert!(
                 row.genre.is_empty(),
                 "《{}》无曲风出处，卡面曲风必须留空，实际 {}",
@@ -317,55 +314,10 @@ fn all_demos_live_window_screenshots() {
         }
     }
 
-    // ---- 唱片架：滚到第一张文件型卡完整入镜，整帧 1x + 裁 3x --------
-    // 对话框可视区只有 2 列，初始帧只含内置两条；先滚动让文件型
-    // demo 占满视口，再用同一帧出 1x 与裁图。
-    let card_bounds = {
-        let mut bounds = None;
-        let mut frame = None;
-        for _ in 0..4 {
-            {
-                let tree = live.refresh_tree(None).expect("重抓控件树");
-                if let Some(node) = tree.find_by_id("startup-row-2") {
-                    bounds = node.bounds;
-                }
-            }
-            live.window().request_redraw();
-            frame = Some(live.window().capture().expect("抓帧"));
-            let b = bounds.expect("第一张文件型卡必须在控件树里");
-            let f = frame.as_ref().expect("帧必须已抓");
-            if b.y >= 0 && b.y + b.height as i32 <= f.size().height as i32 {
-                break;
-            }
-            let tree = live.refresh_tree(None).expect("滚动前重抓控件树");
-            let list_node = tree
-                .find_by_id("startup-chooser-list")
-                .expect("控件树里必须有列表区 startup-chooser-list");
-            let lb = list_node.bounds.expect("列表区必须有几何包围盒");
-            live.window()
-                .dispatch(slint::platform::WindowEvent::PointerScrolled {
-                    position: slint::LogicalPosition::new(
-                        (lb.x + lb.width as i32 / 2) as f32,
-                        (lb.y + lb.height as i32 / 2) as f32,
-                    ),
-                    delta_x: 0.0,
-                    delta_y: -400.0,
-                });
-        }
-        let f = frame.expect("帧必须已抓");
-        write_png(&assets.join("chooser-alldemos-shelf-1x.png"), &f);
-        bounds.expect("第一张文件型卡必须有几何包围盒")
-    };
-    live.window().request_redraw();
-    let shelf_frame2 = live.window().capture().expect("滚动后抓帧");
-    let crop = crop_scaled_3x(&shelf_frame2, card_bounds);
-    write_png(&assets.join("chooser-alldemos-shelf-3x.png"), &crop);
-    eprintln!(
-        "all-demos shelf: 第一张文件型卡包围盒 x={} y={} {}x{}",
-        card_bounds.x, card_bounds.y, card_bounds.width, card_bounds.height
-    );
-
-    // ---- 堆叠：切视图 + 环位几何 + 信息块跟随 -------------------------
+    // ---- 默认视图 = 堆叠：第一帧就是堆叠（不点任何切换钮） ---------
+    // 堆叠为默认视图的判据形态：不碰切换控件，切进演示分类后
+    // 最前信息块（最后一行《雨声太吵》）必须已在控件树里——
+    // 架子形态没有信息块，它在场即证明当前是堆叠视图。
     let center = |b: Rect| (b.x + b.width as i32 / 2, b.y + b.height as i32 / 2);
     fn wait_stack_top(live: &mut LivePort<yeban_app::ui::MainWindow>, info_id: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
@@ -391,23 +343,19 @@ fn all_demos_live_window_screenshots() {
         }
     }
 
-    live.dispatch_pointer_down("startup-demo-view-stack", 31.0, 10.0, PointerButton::Left)
-        .expect("堆叠切换钮必须可按下");
-    live.dispatch_pointer_up(PointerButton::Left)
-        .expect("释放必须送达");
-    // 默认最前 = 最后一行（《雨声太吵》，行 9）。等它落定。
-    wait_stack_top(&mut live, "startup-stack-info-9");
+    // 默认最前 = 最后一行（《雨声太吵》，行 7）。等它落定。
+    wait_stack_top(&mut live, "startup-stack-info-7");
     let (cover_bounds, info_bounds) = {
         let tree = live.refresh_tree(None).expect("堆叠态重抓控件树");
         let info = tree
-            .find_by_id("startup-stack-info-9")
-            .expect("默认最前（《雨声太吵》）必须有信息块 startup-stack-info-9");
+            .find_by_id("startup-stack-info-7")
+            .expect("默认最前（《雨声太吵》）必须有信息块 startup-stack-info-7");
         assert!(
             info.label.contains("雨声太吵"),
             "最前信息块必须是《雨声太吵》，实际 {}",
             info.label
         );
-        for index in 0..9 {
+        for index in 0..7 {
             assert!(
                 tree.find_by_id(&format!("startup-stack-info-{index}"))
                     .is_none(),
@@ -415,7 +363,7 @@ fn all_demos_live_window_screenshots() {
             );
         }
         let mut bounds = Vec::new();
-        for index in 0..10 {
+        for index in 0..8 {
             let node = tree
                 .find_by_id(&format!("startup-row-{index}"))
                 .unwrap_or_else(|| panic!("堆叠里第 {index} 张封面必须在控件树里"));
@@ -429,7 +377,7 @@ fn all_demos_live_window_screenshots() {
             b.x, b.y, b.width, b.height
         );
     }
-    let front = cover_bounds[9];
+    let front = cover_bounds[7];
     assert!(
         info_bounds.y > front.y + front.height as i32 - 4,
         "信息块必须在堆叠区下方、不压最前封面，实际 y={}，最前封面底 {}",
@@ -449,10 +397,12 @@ fn all_demos_live_window_screenshots() {
         );
     }
 
-    // ---- 堆叠截图：整帧 1x + 全部封面 ∪ 信息块裁 3x -------------------
+    // ---- 第一帧截图：整帧 1x + 全部封面 ∪ 信息块裁 3x ---------------
+    // 此帧未点过任何切换钮，就是打开演示分类的第一帧（堆叠
+    // 默认视图）；切换控件上无「堆叠」二字靠本帧目视核。
     live.window().request_redraw();
     let stack_frame = live.window().capture().expect("堆叠态抓帧");
-    write_png(&assets.join("chooser-alldemos-stack-1x.png"), &stack_frame);
+    write_png(&assets.join("chooser-final-stack-1x.png"), &stack_frame);
     let union_x = cover_bounds
         .iter()
         .map(|b| b.x)
@@ -486,7 +436,7 @@ fn all_demos_live_window_screenshots() {
             height: (union_b - union_y) as u32,
         },
     );
-    write_png(&assets.join("chooser-alldemos-stack-3x.png"), &crop);
+    write_png(&assets.join("chooser-final-stack-3x.png"), &crop);
 
     // ---- 循环移位抽查：点第 0 行（槽位 1，左环位露边）转到最前 ------
     {
@@ -526,4 +476,28 @@ fn all_demos_live_window_screenshots() {
             "移位后第 0 行必须落在原最前环位 ({fcx},{fcy})，实际 ({ncx},{ncy})"
         );
     }
+
+    // ---- 切到唱片架：整帧一帧（8 条都在清单里） ----------------------
+    live.dispatch_pointer_down("startup-demo-view-shelf", 31.0, 10.0, PointerButton::Left)
+        .expect("唱片架切换钮必须可按下");
+    live.dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+    {
+        let tree = live.refresh_tree(None).expect("切到唱片架后重抓控件树");
+        assert!(
+            tree.find_by_id("startup-stack-info-0").is_none(),
+            "架子模式不得残留堆叠信息块"
+        );
+        let card0 = tree
+            .find_by_id("startup-row-0")
+            .expect("切到唱片架后必须有第一张卡 startup-row-0");
+        assert_eq!(
+            card0.bounds.expect("卡必须有几何包围盒").height,
+            350,
+            "唱片架卡片必须恢复 350 高"
+        );
+    }
+    live.window().request_redraw();
+    let shelf_frame = live.window().capture().expect("唱片架态抓帧");
+    write_png(&assets.join("chooser-final-shelf-1x.png"), &shelf_frame);
 }

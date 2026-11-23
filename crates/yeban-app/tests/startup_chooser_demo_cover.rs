@@ -1,15 +1,17 @@
 //! 实验判据：**文件型 demo + 封面图**（exp/demo-cover，Wang 点题，
 //! 只做实验、不合入）。
 //!
-//! 用真实素材（《雨声太吵》工程 + Wang 上传的专辑图）验证：
+//! 用真实素材（三条文件型 demo 工程 + 专辑图）验证：
 //!
-//! 1. `YEBAN_DEMOS_DIR` 指向素材目录时，演示工程分类多出一条文件型
-//!    demo，标题与 BPM 从容器真实读出（「雨声太吵」/ 129 BPM）；
-//!    曲风容器里没有字段，取自同名旁挂 `yusheng.meta.json` 的
-//!    `genre`（「Grunge-Pop」，该值转录自容器 `author` 字段
+//! 1. `YEBAN_DEMOS_DIR` 指向夹具目录时，演示工程分类就是文件型
+//!    demo 三条（内置样本已按 Wang 2026-11-23 裁决移出清单），
+//!    标题与 BPM 从容器真实读出（「下一个路口」66 /「那个午后」
+//!    65.6 /「雨声太吵」129 BPM）；《雨声太吵》的曲风容器里没有
+//!    字段，取自同名旁挂 `yusheng.meta.json` 的 `genre`
+//!    （「Grunge-Pop」，该值转录自容器 `author` 字段
 //!    「雨窗 · Rain-window Grunge-Pop（4:24 版）」里的风格名）；
-//! 2. 该行 `has-cover` 为真（宿主用 `Image::load_from_path` 真实加载
-//!    了同名封面），两条内置 demo 无封面；
+//! 2. 三行 `has-cover` 都为真（宿主用 `Image::load_from_path`
+//!    真实加载了同名封面）；
 //! 3. 卡片主面**没有**轨道数（`detail` 为空）；专辑页字段只进
 //!    「详情」展开区的带标签行（`detail_rows`），按专辑页顺序
 //!    排列、**有数据才出现该行**：《雨声太吵》实读实算 + 旁挂
@@ -24,7 +26,9 @@
 //!    **不进仓库**）；展开是手风琴：同一时刻只许一张卡展开，
 //!    展开区长在卡内、封面全程可见（无浮层）；
 //! 5. 演示分类另有可切换的**堆叠模式**（与唱片架并存，默认
-//!    唱片架）：第二版按 Wang 反馈改环轨散布——封面沿椭圆环
+//!    堆叠，Wang 2026-11-23 15:11 终定；判据进场先验默认堆叠、
+//!    再切唱片架走架子段、最后切回堆叠验环轨）：第二版按 Wang
+//!    反馈改环轨散布——封面沿椭圆环
 //!    轨松散散开、角度各不相同、重叠深，最前一张在环心回正；
 //!    点任意露出的封面不直接换位，而是沿环次序**循环移位**
 //!    逐格步进，直到被点封面转到最前（选中态同步、信息块跟
@@ -35,8 +39,11 @@
 //!    源文件字节不变。
 //!
 //! 素材目录：优先读环境变量 `YEBAN_DEMOS_DIR`，缺省回落到仓库同级
-//! 的 `exp-demo-cover-assets/`。素材不在 ⇒ 本判据**响亮失败**
-//! （实验夹具缺失不许静默跳过）。
+//! 的 `exp-demo-cover-assets/`；判据把三条文件型 demo（《雨声
+//! 太吵》在素材根、《下一个路口》《那个午后》在 `all-demos/`）
+//! 拷进临时演示目录、按路径序命名，再把 `YEBAN_DEMOS_DIR` 指到
+//! 该临时目录。素材不在 ⇒ 本判据**响亮失败**（实验夹具缺失不许
+//! 静默跳过）。
 //!
 //! 平台约束与 `tests/startup_chooser.rs` 同款：一个文件只建一次
 //! 活窗口。
@@ -56,7 +63,7 @@ fn assets_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../exp-demo-cover-assets")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../exp-demo-cover-assets")
 }
 
 /// 临时目录（`Drop` 时清理）。形态照 `tests/startup_chooser.rs`。
@@ -146,9 +153,52 @@ fn demo_cover_live_window_screenshot() {
         "实验素材缺失: {} 不在（先把专辑图放进素材目录）",
         cover_file.display()
     );
-    let demo_bytes_before = std::fs::read(&demo_file).expect("读源工程字节");
+    // 另外两条文件型 demo 的素材在 `all-demos/` 里。
+    let all_demos = assets.join("all-demos");
+    for name in [
+        "下一个路口_女声.yeban",
+        "下一个路口_女声-cover.png",
+        "那个午后_男声.yeban",
+        "那个午后_男声-cover.png",
+    ] {
+        assert!(
+            all_demos.join(name).is_file(),
+            "实验素材缺失: {} 不在",
+            all_demos.join(name).display()
+        );
+    }
 
     let scratch = Scratch::new();
+    // 演示目录夹具：三条文件型 demo 拷进临时目录并按路径序命名
+    // （01 / 02 / yusheng），扫描序 = 下一个路口 / 那个午后 /
+    // 雨声太吵，《雨声太吵》仍是最后一条（本判据多数断言以它
+    // 为对象）。标题与 BPM 都从容器实读，改名不影响读数。
+    let demos_fixture = scratch.dir.join("demos");
+    std::fs::create_dir_all(&demos_fixture).expect("建演示目录夹具");
+    let copy_fixture = |from: &Path, to_name: &str| {
+        std::fs::copy(from, demos_fixture.join(to_name)).expect("拷演示夹具");
+    };
+    copy_fixture(&all_demos.join("下一个路口_女声.yeban"), "01-lukou.yeban");
+    copy_fixture(
+        &all_demos.join("下一个路口_女声-cover.png"),
+        "01-lukou-cover.png",
+    );
+    copy_fixture(&all_demos.join("那个午后_男声.yeban"), "02-wuhou.yeban");
+    copy_fixture(
+        &all_demos.join("那个午后_男声-cover.png"),
+        "02-wuhou-cover.png",
+    );
+    copy_fixture(&demo_file, "yusheng.yeban");
+    copy_fixture(&cover_file, "yusheng-cover.png");
+    copy_fixture(&meta_file, "yusheng.meta.json");
+    // 《雨声太吵》包内自带的样本树（samples/bass、samples/drums）
+    // 与工程同级：打开时引擎按工程相对路径摊平 SFZ，夹具目录里
+    // 必须同样摆着这一份，链到素材原件即可（只读）。
+    std::os::unix::fs::symlink(assets.join("samples"), demos_fixture.join("samples"))
+        .expect("链演示夹具样本目录");
+    let demo_file = demos_fixture.join("yusheng.yeban");
+    let demo_bytes_before = std::fs::read(&demo_file).expect("读源工程字节");
+
     let roots = TemplateRoots {
         factory: scratch.dir.join("factory"),
         user: scratch.dir.join("user"),
@@ -162,7 +212,7 @@ fn demo_cover_live_window_screenshot() {
         );
         std::env::set_var(
             yeban_app::startup_chooser::DEMOS_DIR_ENV,
-            assets.as_os_str(),
+            demos_fixture.as_os_str(),
         );
     }
 
@@ -247,9 +297,35 @@ fn demo_cover_live_window_screenshot() {
         ui.set_startup_chooser_open(true);
         ui.invoke_startup_category_selected(2);
         let rows: Vec<_> = ui.get_startup_rows().iter().collect();
-        assert_eq!(rows.len(), 3, "演示分类 = 内置两条 + 文件型一条");
-        assert!(!rows[0].has_cover, "内置 demo 不得有封面");
-        assert!(!rows[1].has_cover, "内置 demo 不得有封面");
+        assert_eq!(rows.len(), 3, "演示分类 = 文件型三条（内置样本已移出清单）");
+        assert_eq!(
+            rows[0].label.as_str(),
+            "下一个路口",
+            "第一条标题必须从容器真实读出"
+        );
+        assert_eq!(
+            rows[0].bpm_label.as_str(),
+            "66 BPM",
+            "第一条 BPM 必须从容器实读"
+        );
+        assert!(
+            rows[0].has_cover,
+            "第一条文件型 demo 必须带上真实加载的封面"
+        );
+        assert_eq!(
+            rows[1].label.as_str(),
+            "那个午后",
+            "第二条标题必须从容器真实读出"
+        );
+        assert_eq!(
+            rows[1].bpm_label.as_str(),
+            "65.6 BPM",
+            "第二条 BPM 必须从容器实读"
+        );
+        assert!(
+            rows[1].has_cover,
+            "第二条文件型 demo 必须带上真实加载的封面"
+        );
         assert_eq!(
             rows[2].label.as_str(),
             "雨声太吵",
@@ -308,35 +384,54 @@ fn demo_cover_live_window_screenshot() {
             "详情纯文本（无障碍标签）里必须有实读的作者，实际 {}",
             rows[2].details
         );
-        // 内置 demo：样本工程自带 author（实读
-        // "Yeban Project Contributors"，无 `·` 注记段，整段即
-        // 作者名）；无曲风、无旁挂 ⇒ 其余专辑页字段不出现。
-        let builtin_labels: Vec<String> = rows[0]
+        // 第一条（《下一个路口》）：无旁挂 meta ⇒ 曲风留空、曲风
+        // 行不出现；容器实读实算的轨道数行照常出现，其余无数据源
+        // 的专辑页字段整行不出现（⛔ 不编造）。
+        assert!(
+            rows[0].genre.is_empty(),
+            "《下一个路口》无旁挂，卡面曲风必须留空，实际 {}",
+            rows[0].genre
+        );
+        let first_labels: Vec<String> = rows[0]
             .detail_rows
             .iter()
             .map(|row| row.label.to_string())
             .collect();
         assert!(
-            builtin_labels.iter().any(|label| label == "轨道数"),
-            "内置 demo 详情必须有实算的轨道数行，实际 {builtin_labels:?}"
-        );
-        let builtin_author = rows[0]
-            .detail_rows
-            .iter()
-            .find(|row| row.label.as_str() == "作者")
-            .map(|row| row.value.to_string());
-        assert_eq!(
-            builtin_author.as_deref(),
-            Some("Yeban Project Contributors"),
-            "内置 demo 作者必须实读样本工程 author 字段"
+            first_labels.iter().any(|label| label == "轨道数"),
+            "文件型 demo 详情必须有实算的轨道数行，实际 {first_labels:?}"
         );
         for absent in ["曲风", "版权声明", "许可协议", "作者网站"] {
             assert!(
-                !builtin_labels.iter().any(|label| label == absent),
-                "内置 demo 无 {absent} 数据源，不许出现该行，实际 {builtin_labels:?}"
+                !first_labels.iter().any(|label| label == absent),
+                "《下一个路口》无 {absent} 数据源，不许出现该行，实际 {first_labels:?}"
             );
         }
         assert!(rows[2].has_cover, "文件型 demo 必须带上真实加载的封面");
+    }
+
+    // ---- 默认视图 = 堆叠（Wang 2026-11-23 15:11 终定）：刚切进
+    // 演示分类时最前信息块（最后一张《雨声太吵》）已在；随后点
+    // 唱片架段切到架子形态，走下面的架子段判据。 ----------------
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        let tree = live.refresh_tree(None).expect("切进演示分类后重抓控件树");
+        assert!(
+            tree.find_by_id("startup-stack-info-2").is_some(),
+            "演示分类默认必须是堆叠视图（最前信息块在）"
+        );
+        // 「堆叠」二字不上界面（Wang 2026-11-23 15:12）靠截图
+        // 目视核：控件树的 label 是 accessible-label（读屏名，
+        // 图标-only 按钮必须留名），树上分不出可见文字与读屏名，
+        // 故此处只断言切换段在场，可见文字留给证据图亲验。
+        assert!(
+            tree.find_by_id("startup-demo-view-stack").is_some(),
+            "演示分类必须有堆叠切换段（图标-only）"
+        );
+        live.dispatch_pointer_down("startup-demo-view-shelf", 31.0, 10.0, PointerButton::Left)
+            .expect("唱片架切换钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
     }
 
     // ---- 整帧截图（架子在顶部：第一行两张卡 + 架板带） ----------------
@@ -840,22 +935,57 @@ fn demo_cover_live_window_screenshot() {
         }
     }
 
-    // ---- 打开语义：未命名副本、不记最近、源文件字节不变 --------------
+    // ---- 打开语义 ------------------------------------------------------
+    // 《雨声太吵》的吉他轨引用系统音源库 karoryfer-emilyguitar
+    // （assets/samples/karoryfer-emilyguitar/emily_basic.sfz）。
+    // 该库装没装决定打开的成败，两条路都钉死真实行为：
+    // - 在（探引擎实际会搜的四处根）：打开成功——选择器关、会话
+    //   换成该工程、不记最近、源文件字节不变；
+    // - 不在（本机即如此）：引擎换代必须响亮失败——选择器保持
+    //   打开、模块回执点名缺失的 SFZ 文件、不记最近、源文件
+    //   字节不变（默认不能静默）。
+    // 「文件型 demo 打开成未命名副本」的成功语义另有
+    // startup_chooser 判据用自包含工程全环境钉死，不在此重复。
+    let emily_sfz = "karoryfer-emilyguitar/emily_basic.sfz";
+    let emily_roots = [
+        demos_fixture.join("assets/samples"),
+        std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join(".local/share/yeban/samples"))
+            .unwrap_or_default(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/samples"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/samples"),
+    ];
+    let emily_installed = emily_roots
+        .iter()
+        .any(|root| root.join(emily_sfz).is_file());
     {
         let ui = live.ui();
         ui.invoke_startup_entry_activated(2);
-        assert!(
-            !ui.get_startup_chooser_open(),
-            "文件型 demo 打开后选择器必须关；模块回执: {}；当前会话标题: {}",
-            ui.get_module_status(),
-            undo.project().title
-        );
+        if emily_installed {
+            assert!(
+                !ui.get_startup_chooser_open(),
+                "文件型 demo 打开后选择器必须关；模块回执: {}；当前会话标题: {}",
+                ui.get_module_status(),
+                undo.project().title
+            );
+            assert_eq!(
+                undo.project().title,
+                "雨声太吵",
+                "会话必须换成文件型 demo 那份工程"
+            );
+        } else {
+            assert!(
+                ui.get_startup_chooser_open(),
+                "缺系统音源库时打开必须失败且选择器保持打开；模块回执: {}",
+                ui.get_module_status()
+            );
+            let status = ui.get_module_status();
+            assert!(
+                status.contains("open-demo") && status.contains("emily_basic.sfz"),
+                "失败回执必须点名缺失的 SFZ（响亮失败）；模块回执: {status}"
+            );
+        }
     }
-    assert_eq!(
-        undo.project().title,
-        "雨声太吵",
-        "会话必须换成文件型 demo 那份工程"
-    );
     assert_eq!(
         yeban_app::settings::load().recent_projects.len(),
         0,
