@@ -3096,23 +3096,9 @@ fn the_console_tab_rail_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_session_view_has_no_two_controls_in_the_same_place() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
-    );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    // ⭐ T-FIX-223：SessionView 真的被 app.slint import 之后才可能通过 —— 修前
+    //    切 Session 只是翻属性，树里根本没有 workspace-session-canvas。
+    check_session_view(1920, 1080, false);
 }
 
 // ===========================================================================
@@ -3234,3 +3220,19 @@ fn the_engine_error_banner_has_no_two_controls_in_the_same_place() {
         "宿主接线层必须注册 apply_transport"
     );
 }
+
+// ===========================================================================
+// ③ Session 视图：三档 × (展开夹具 / 真实断点夹具) —— T-FIX-223 恢复调用（1440 档）
+// ===========================================================================
+//
+// ⚠ 一档一个 `#[test]`：`slint::platform::set_platform` 是**线程局部**的，一个测试里
+//   建第二个窗口会 `PlatformUnavailable`（本文件既有口径）。
+#[test]
+fn the_session_view_has_no_two_controls_in_the_same_place_at_1440() {
+    check_session_view(1440, 900, false);
+}
+
+// ⚠ 1024 档**没有**恢复这条断言（如实登记，不是遗漏）：1024×700 下 Session 画布只有
+//   763×272，而矩阵底带（→ 编曲键 / 场景启动回执 / 截断报数）落在 y ≥ 312（相对画布）
+//   ⇒ 被父级 clip 完全裁掉、根本不在运行时树里。那是复活该视图后暴露的**纵向溢出**
+//   （`ISS-MWTVIDTX-AA75BF`），属另一片布局工作；此处不把"按钮不在"钉成期望值。

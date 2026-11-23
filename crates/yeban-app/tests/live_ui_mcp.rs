@@ -1067,42 +1067,112 @@ fn hostile_levels_never_render_as_nan_in_the_control_tree() {
     );
 }
 
-/// 判据 8（**管理动作 1/3**）：`ui/switch_main_view` 真的切了主视图，树跟着换。
+/// `ui/node` 是否存在（运行时树查询；`is_error()` 与"节点不在树里"是同一件事，
+/// 见 `live_ui_mcp` 的既有口径：`ui/node` 找不到节点就返回错误）。
+fn node_exists(plane: &mut LiveControlPlane, seq: i64, id: &str) -> bool {
+    !plane
+        .plane()
+        .try_line(&yeban_ui_mcp::live::request_line(
+            seq,
+            "ui/node",
+            Some(serde_json::json!({ "elementId": id })),
+        ))
+        .is_error()
+}
+
+/// 判据 8（**管理动作 1/3**）：`ui/switch_main_view` 真的切了主视图，**运行时树**跟着换。
+///
+/// 修前（ISS-MWTUMQ6G-24FC2B）：`arrangement-view` 只有声明、活界面没有消费方 ⇒
+/// 切到 session 后 `workspace-session-canvas` 从未出现，画面停在编曲视图，而宿主的
+/// 四处编辑守卫已经按 `!arrangement-view` 生效（看得见的剪辑删不掉）。本判据现在是
+/// **真实树断言**（不再查源码字符串），双向各断一次，并用 F5 / F6 钉住键盘路径的回读。
 #[test]
 fn admin_switch_main_view_really_switches_the_live_view() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use serde_json::json;
+    use yeban_ui_mcp::methods::METHOD_SWITCH_MAIN_VIEW;
+
+    let project = yeban_model::samples::filled_project();
+    let ui = build_live_ui_with(&project, &options(Permission::Administrative, 0))
+        .expect("活界面 + Tier-1 执行面");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let mut plane = ui.into_control_plane(Permission::Administrative);
+
+    // 默认：编曲画布在树里、Session 画布不在。
     assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+        node_exists(&mut plane, 1, "workspace-arrangement-canvas"),
+        "默认视图必须在运行时树里含 `workspace-arrangement-canvas`"
     );
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        !node_exists(&mut plane, 2, "workspace-session-canvas"),
+        "默认视图不许在运行时树里含 `workspace-session-canvas`"
+    );
+
+    // ① 管理动作：切 session ⇒ 属性回读 false，树里两个画布互换。
+    let switched = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        3,
+        METHOD_SWITCH_MAIN_VIEW,
+        Some(json!({ "view": "session" })),
+    ));
+    assert!(
+        !switched.is_error(),
+        "`ui/switch_main_view` 必须成功: {switched:?}"
     );
     assert!(
-        aether_app.contains("> ai-drawer-open:"),
-        "新 UI 契约面必须声明 > ai-drawer-open:"
+        !window.get_arrangement_view(),
+        "切 session 后 `arrangement-view` 的回读必须是 false"
     );
     assert!(
-        aether_host.contains("set_ai_drawer_open"),
-        "宿主接线层必须注册 set_ai_drawer_open"
+        node_exists(&mut plane, 4, "workspace-session-canvas"),
+        "切 session 后运行时树必须含 `workspace-session-canvas`（修前这里永远不在）"
     );
     assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
+        !node_exists(&mut plane, 5, "workspace-arrangement-canvas"),
+        "切 session 后编曲画布必须从运行时树里消失（两画布互斥）"
     );
+
+    // ② 反向：切回 arrangement ⇒ 树再换回来。
+    let back = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+        6,
+        METHOD_SWITCH_MAIN_VIEW,
+        Some(json!({ "view": "arrangement" })),
+    ));
+    assert!(!back.is_error(), "切回编曲必须成功: {back:?}");
     assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
+        window.get_arrangement_view(),
+        "切回编曲后 `arrangement-view` 的回读必须是 true"
     );
+    assert!(node_exists(&mut plane, 7, "workspace-arrangement-canvas"));
+    assert!(!node_exists(&mut plane, 8, "workspace-session-canvas"));
+
+    // ③ 键盘路径（`F5` / `F6`）：属性回读与树状态必须一致 —— 修前 F5 只翻属性、
+    //   画面不动，正是"看得见的剪辑删不掉"的来源。
+    assert!(window.invoke_key_action("\u{f708}".into(), false, false, false, false));
+    assert!(
+        !window.get_arrangement_view(),
+        "F5 后 `arrangement-view` 必须是 false"
+    );
+    assert!(node_exists(&mut plane, 9, "workspace-session-canvas"));
+    assert!(!node_exists(&mut plane, 10, "workspace-arrangement-canvas"));
+    assert!(window.invoke_key_action("\u{f709}".into(), false, false, false, false));
+    assert!(
+        window.get_arrangement_view(),
+        "F6 后 `arrangement-view` 必须是 true"
+    );
+    assert!(node_exists(&mut plane, 11, "workspace-arrangement-canvas"));
+    assert!(!node_exists(&mut plane, 12, "workspace-session-canvas"));
+
+    // ④ `Tab`（`ToggleView`）：同一属性的翻转键，回读与树必须同步。
+    assert!(window.invoke_key_action("\u{0009}".into(), false, false, false, false));
+    assert!(
+        !window.get_arrangement_view(),
+        "Tab 后 `arrangement-view` 必须是 false"
+    );
+    assert!(node_exists(&mut plane, 13, "workspace-session-canvas"));
+    assert!(!node_exists(&mut plane, 14, "workspace-arrangement-canvas"));
+    assert!(window.invoke_key_action("\u{0009}".into(), false, false, false, false));
+    assert!(window.get_arrangement_view(), "再按 Tab 必须翻回 true");
+    assert!(node_exists(&mut plane, 15, "workspace-arrangement-canvas"));
+    assert!(!node_exists(&mut plane, 16, "workspace-session-canvas"));
 }
 
 /// 判据 9（**管理动作 2/3**）：`ui/force_save` 真的写了盘，写出来的能被容器读回。

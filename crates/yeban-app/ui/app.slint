@@ -9,6 +9,9 @@ import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
 import { HybridClipMatrixDrawer } from "clip_matrix.slint";
 import { ArrangementViewport } from "arrangement.slint";
+// ⭐ T-FIX-223：Session 视图复活（`workspace/session_view.slint` 此前从未被 import ⇒
+//   F5/F6 只翻属性、画面不变，编辑却被宿主的 `arrangement-view` 守卫禁掉）。
+import { SessionView } from "workspace/session_view.slint";
 import { ControlRoomMeters } from "control_room.slint";
 import { UnifiedLowerDock } from "lower_dock.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
@@ -1695,8 +1698,11 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Zone C: Center Linear Arrangement & Track Headers
-                ArrangementViewport {
+                // Zone C: 中央主视图 —— Arrangement / Session **互斥**（T-FIX-223）。
+                // ⚠ 两个分支必须同时存在：只翻 `arrangement-view` 而界面没有消费方时，
+                //   画面停在编曲视图、宿主的四处 `if !arrangement-view { return }` 却已
+                //   生效 ⇒ 看得见的剪辑删不掉（ISS-MWTUMQ6G-24FC2B）。
+                if root.arrangement-view : ArrangementViewport {
                     horizontal-stretch: 1;
                     headers-width <=> root.track-headers-width;
                     show-chord-track <=> root.show-chord-track;
@@ -1769,6 +1775,24 @@ export component MainWindow inherits Window {
                     mixer-pan-release(idx) => { root.mixer-pan-release(idx); }
                     mixer-pan-reset(idx) => { root.mixer-pan-reset(idx); }
                     execute-action(id) => { root.command-execute(id); }
+                }
+
+                // Session 视图：同一格（`horizontal-stretch: 1`），与编曲视图互斥。
+                // 输入全部来自宿主的既有注入（场景名 / 轨道名 / 场景色标 / 当前场景 /
+                // 启动回执），⛔ 不在界面里自造数据；两个动作都转发到根回调，落点分别是
+                // `host::wire_scene_launch` 与 `host::wire_view_callbacks` 的
+                // `back-to-arrangement`（写 `arrangement-view = true`）。
+                if !root.arrangement-view : SessionView {
+                    horizontal-stretch: 1;
+                    scenes: root.scene-names;
+                    tracks: root.track-names;
+                    scene-colors: root.scene-colors;
+                    scene-color-labels: root.scene-color-labels;
+                    current-scene-index: root.current-scene-index;
+                    current-scene-name: root.current-scene-name;
+                    scene-launch-status: root.scene-launch-status;
+                    scene-launch(i) => { root.scene-launch(i); }
+                    back-to-arrangement => { root.back-to-arrangement(); }
                 }
 
                 // Zone C-to-D Resizing Splitter Bar
