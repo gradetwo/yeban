@@ -258,7 +258,7 @@ use crate::insert::{
 use crate::level::MAX_LINEAR_MAGNITUDE;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
-use crate::mixer::{BusLimiter, PanLaw};
+use crate::mixer::{BusLimiter, MonitorControls, PanLaw, apply_monitor};
 use crate::param::{
     ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT, TRACK_PAN_LEFT_SLOT,
     TRACK_PAN_RIGHT_SLOT,
@@ -3584,6 +3584,31 @@ pub struct EngineRuntime {
     ///   ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B ⇒ 45 888 B
     ///   （见 `tests/bus_insert.rs` 的尺寸判据）。
     band_solo: BandSoloFilter,
+    /// ⭐ **控制室监听开关（T-FIX-190）**：DIM / MONO / SIDE 的跨线程共享态
+    /// （[`crate::mixer::MonitorControls`]）。
+    ///
+    /// 落点在 [`Self::process_quantum`]：`band_solo` 之后、写出到声卡之前
+    /// （电平计量在 `render_block` 里已按未处理的混音计完 ⇒ 监听开关不污染
+    /// 电平读数；离线渲染走 [`Self::monitor_bypass`] 旁通 ⇒ 不污染导出文件）。
+    ///
+    /// * **挥发性会话运行态**（与 `band_solo` 同层）：⛔ 不进快照、不进工程、
+    ///   不进撤销栈；`reload` 建新运行时由宿主把旧值拷过去（见
+    ///   `EngineHost::monitor_controls`），⛔ 不静默归零。
+    /// * **成本**：三开关全关时 `apply_monitor` 是空操作（⛔ 不读不写），输出逐位不变；
+    ///   开关打开时每块多至 3 次逐样本乘加（SIDE 差分、MONO 下混、DIM 增益），
+    ///   原子读每块一次（`Relaxed`），零分配、零锁、零 I/O [MUST-GATE-001]。
+    /// * **尺寸**：`Arc` 8 B ＋ `bool` 1 B，实测 **＋0 B**（全落进既有对齐填充，
+    ///   `size_of::<EngineRuntime>()` 仍是 47 904 B，见 `tests/bus_insert.rs` 的
+    ///   `b5_sizes_stay_under_the_192_kib_red_line` 钉数）；仍远低于 200 KiB 红线。
+    monitor: Arc<MonitorControls>,
+    /// ⭐ **监听旁通（T-FIX-190）**：离线渲染（`EngineHost::render_into`）在自己的
+    /// 循环里把它置 `true` ⇒ `process_quantum` 跳过监听级；设备回调与控制泵送
+    /// 永远是 `false` ⇒ 监听开关只作用于"听到的"那条路。
+    ///
+    /// 控制线程私有（⛔ 不进实时路径读以外的任何地方）：`render_into` 要求运行时
+    /// 在控制线程手里（设备腿活跃时它恒返回 0）⇒ 置位/复位与渲染在同一线程，
+    /// ⛔ 不存在与音频回调的竞态。
+    monitor_bypass: bool,
     scratch_events: [EngineEvent; SCRATCH_EVENTS],
     scratch_meters: [MeterFrame; SCRATCH_METERS],
     /// 单轨渲染结果（声相之前、单声道）。复用同一个缓冲，避免每轨一份。
@@ -4504,6 +4529,10 @@ impl EngineRuntime {
                 band_solo,
                 BandSoloFilter::new(armed_reverb_sample_rate as f32)
             );
+            // ⭐ 控制室监听开关（T-FIX-190）：构造期全关；宿主在 `reload` /
+            // `open_device` 换代时把旧值拷进来（见 `EngineHost::monitor_controls`）。
+            put!(monitor, Arc::new(MonitorControls::new()));
+            put!(monitor_bypass, false);
             put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
             put!(scratch_meters, [MeterFrame::default(); SCRATCH_METERS]);
             put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
@@ -4902,6 +4931,30 @@ impl EngineRuntime {
         self.band_solo.band().map(|band| band as u8)
     }
 
+    /// 控制室监听开关的共享句柄（T-FIX-190）。
+    ///
+    /// 与 [`Self::transport_mirror`] 同一条镜面纪律：宿主在构造期（`fresh_runtime`）
+    /// 把它克隆出来 ⇒ 控制线程经这份 `Arc` 写开关，实时线程经运行时里那一份读；
+    /// 设备腿上运行时归 cpal 回调线程所有时，控制面仍能写（原子，⛔ 不需要 `&mut`）。
+    #[must_use]
+    pub const fn monitor_controls(&self) -> &Arc<MonitorControls> {
+        &self.monitor
+    }
+
+    /// 离线渲染旁通（T-FIX-190）：`true` ⇒ `process_quantum` 跳过监听级。
+    ///
+    /// 唯一写者是 `EngineHost::render_into`（它要求运行时在控制线程手里）⇒
+    /// 本函数是 `&mut self` 方法（⛔ 不走原子），调用方负责在自己的循环前后复位。
+    pub fn set_monitor_bypass(&mut self, bypass: bool) {
+        self.monitor_bypass = bypass;
+    }
+
+    /// 当前旁通值（判据读口）。
+    #[must_use]
+    pub const fn monitor_bypass(&self) -> bool {
+        self.monitor_bypass
+    }
+
     /// 当前是否有排队的场景启动。
     #[must_use]
     pub const fn has_pending_scene_launch(&self) -> bool {
@@ -5015,6 +5068,22 @@ impl EngineRuntime {
             let n = frames.min(left.len());
             self.band_solo
                 .process_in_place(&mut left[..n], &mut right[..n]);
+            // ⭐ 控制室监听（T-FIX-190）：DIM / MONO / SIDE，监听总线**最末端**
+            // （`band_solo` 之后、写出到声卡之前）。
+            //
+            // 位置取这里的三条理由：① 电平已在 `render_block` 里按未处理的混音计完
+            // ⇒ 监听开关不污染电平读数；② 限制器已在 `render_block` 里跑完 ⇒
+            // DIM 不会把限制器喂饱、MONO/SIDE 不会改限制器的立体声联动；
+            // ③ 本函数是**唯一**的渲染出口（设备回调、控制泵送、离线渲染都经这里）
+            // ⇒ 监听级只有这一个落点，⛔ 不存在第二条"听到的"路径。
+            // 离线渲染（`EngineHost::render_into`）置 `monitor_bypass` ⇒ 跳过本级，
+            // 导出文件逐位不受监听开关影响（判据：`tests/monitor_controls.rs` 的 M5）。
+            // 三开关全关时 `apply_monitor` 一个样本都不碰 ⇒ 默认态输出逐位不变；
+            // 开关是无状态的纯函数 ⇒ 关掉的下一个量子与从未开过逐位相同。
+            if !self.monitor_bypass {
+                let (dim, mono, side) = self.monitor.snapshot();
+                apply_monitor(&mut left[..n], &mut right[..n], dim, mono, side);
+            }
             // 单声道（`channels == 1`）写 `(L + R) · 0.5` 下混（裁决：Wang
             // 2026-11-20；见上方函数文档与判据文件模块文档 §4 发现 1（已修））；
             // `channels >= 2` 维持映射：第 0 路 = 左、其余路 = 右。

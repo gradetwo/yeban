@@ -103,6 +103,8 @@ pub use yeban_dsp::limiter::{
     LOOKAHEAD_SAMPLES, Limiter as BusLimiter,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// 母线限制器给**引擎输出**引入的固定延迟（**帧**，与采样率无关）。
 ///
 /// 等于 [`LOOKAHEAD_SAMPLES`] = **33 帧** @48 kHz ≈ **0.688 ms**：前瞻环长就是写位置
@@ -303,6 +305,138 @@ pub fn apply_stereo_width_position(left: &mut [f32], right: &mut [f32], width: f
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l *= gain_l;
             *r *= gain_r;
+        }
+    }
+}
+
+/// 控制室 DIM 的线性增益：**−20 dB**（`10^(-20/20) = 0.1`）。
+///
+/// 常量写死 0.1 而不是现场算 `10f32.powf(-1.0)`：`powf` 属超越函数类，⛔ 不进
+/// 实时路径；0.1 的 `f32` 近似与"先算 dB 再转线性"逐位相同（判据钉住）。
+pub const MONITOR_DIM_GAIN: f32 = 0.1;
+
+/// 控制室监听开关（DIM / MONO / SIDE）的**跨线程共享态**。
+///
+/// * **谁写**：控制线程（`yeban-app` 的控制室回调经 `EngineHost` 写）；
+/// * **谁读**：实时线程（`EngineRuntime::process_quantum` 每块读一次快照）；
+/// * **为什么是原子布尔**：设备腿上运行时归 cpal 回调线程所有，控制面拿不到
+///   `&mut EngineRuntime` ⇒ 开关只能走共享原子（与 [`crate::transport::TransportMirror`]
+///   的镜面纪律同一条：`Relaxed` 足够——标志是"下一块就生效"的量规，不参与任何
+///   跨标志的排序契约；读到旧值最多晚一个量子，⛔ 不会撕裂）。
+/// * **挥发性会话运行态**（与 [`crate::rt::EngineRuntime`] 的 `band_solo` 同层）：
+///   ⛔ 不进快照、不进工程、不进撤销栈；`reload` 建新运行时由宿主把旧值拷过去
+///   （见 `EngineHost::monitor_controls`），⛔ 不静默归零。
+/// * **无状态**：三个开关都是逐样本的纯函数（见 [`apply_monitor`]），没有任何滤波器
+///   状态 ⇒ 关掉的下一个量子输出与从未开过**逐位相同**。
+#[derive(Default)]
+pub struct MonitorControls {
+    dim: AtomicBool,
+    mono: AtomicBool,
+    side: AtomicBool,
+}
+
+impl MonitorControls {
+    /// 全关的初始态。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 一次读出三个标志（实时侧每块读一次；`Relaxed` 见结构体文档）。
+    #[must_use]
+    pub fn snapshot(&self) -> (bool, bool, bool) {
+        (
+            self.dim.load(Ordering::Relaxed),
+            self.mono.load(Ordering::Relaxed),
+            self.side.load(Ordering::Relaxed),
+        )
+    }
+
+    /// 把另一份的三个标志拷过来（宿主在 `reload` / `open_device` 换代时用）。
+    pub fn copy_from(&self, other: &Self) {
+        let (dim, mono, side) = other.snapshot();
+        self.set_dim(dim);
+        self.set_mono(mono);
+        self.set_side(side);
+    }
+
+    /// DIM 开关（`true` = 输出 −20 dB）。
+    pub fn set_dim(&self, dim: bool) {
+        self.dim.store(dim, Ordering::Relaxed);
+    }
+
+    /// MONO 开关（`true` = `(L+R)/2` 送双声道）。
+    pub fn set_mono(&self, mono: bool) {
+        self.mono.store(mono, Ordering::Relaxed);
+    }
+
+    /// SIDE 开关（`true` = 双声道都送 `L−R`）。
+    pub fn set_side(&self, side: bool) {
+        self.side.store(side, Ordering::Relaxed);
+    }
+
+    /// DIM 当前值（控制面读口）。
+    #[must_use]
+    pub fn dim(&self) -> bool {
+        self.dim.load(Ordering::Relaxed)
+    }
+
+    /// MONO 当前值（控制面读口）。
+    #[must_use]
+    pub fn mono(&self) -> bool {
+        self.mono.load(Ordering::Relaxed)
+    }
+
+    /// SIDE 当前值（控制面读口）。
+    #[must_use]
+    pub fn side(&self) -> bool {
+        self.side.load(Ordering::Relaxed)
+    }
+}
+
+/// 控制室监听处理：把 DIM / MONO / SIDE 三个开关作用到一对立体声缓冲上。
+///
+/// 落点在 [`crate::rt::EngineRuntime::process_quantum`]（监听总线末端，`band_solo`
+/// 之后、写出到声卡之前；母线电平已在 `render_block` 里按未处理的混音计完 ⇒
+/// 监听开关**不污染电平读数**；离线渲染（`EngineHost::render_into`）走旁通 ⇒
+/// 监听开关**不污染导出文件**）。
+///
+/// 顺序是**契约**的一部分（浮点乘法不满足结合律，且 MONO/SIDE 不交换）：
+/// **先 SIDE、后 MONO、最后 DIM**。SIDE 先算差分（`L−R`）再下混 ⇒
+/// SIDE+MONO 同时开仍是差分信号（可听）；反过来（先 MONO 后 SIDE）会把
+/// `(L+R)/2` 的左右相减得 **0** ⇒ 双开变静音，那是错的。
+/// DIM 是纯标量增益，放最后（差分/下混在满刻度上算，精度最好）。
+///
+/// * `side`：两声道都写 `L−R`（`S = L−R`，即"只听差分"）；
+/// * `mono`：两声道都写 `(L+R)/2`（与单声道下混 `(L+R)·0.5` 同式）；
+/// * `dim`：两声道各乘 [`MONITOR_DIM_GAIN`]（−20 dB）。
+///
+/// 实时约束：逐样本只有加/减/乘（每帧至多 3 次乘加），**零分配、零锁、零 I/O、零除法、
+/// 零超越函数** [MUST-GATE-001]。三开关全关时**整段跳过、一个样本都不碰**
+/// ⇒ 默认态的输出与接线前**逐位相同**（与 `pan_bus` / `scale_bus` 的跳过口径同一条）。
+/// 两缓冲长度不同时只处理共同前缀（`zip` 语义，与 [`apply_stereo_width_position`] 同条）。
+pub fn apply_monitor(left: &mut [f32], right: &mut [f32], dim: bool, mono: bool, side: bool) {
+    if !dim && !mono && !side {
+        return;
+    }
+    if side {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let s = *l - *r;
+            *l = s;
+            *r = s;
+        }
+    }
+    if mono {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let m = (*l + *r) * 0.5;
+            *l = m;
+            *r = m;
+        }
+    }
+    if dim {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= MONITOR_DIM_GAIN;
+            *r *= MONITOR_DIM_GAIN;
         }
     }
 }
@@ -937,6 +1071,128 @@ mod tests {
         assert!(
             close(&left, &right),
             "position 非有限时 width 级必须照常生效：{left:?} vs {right:?}"
+        );
+    }
+
+    /// T-FIX-190：控制室监听三开关的公式本身（逐位钉）。
+    ///
+    /// * DIM：每样本 `== 原值 × 0.1`（逐位），且 RMS 恰好 −20 dB；
+    /// * MONO：双声道都 `== (L+R)×0.5`（逐位）；
+    /// * SIDE：双声道都 `== L−R`（逐位）；
+    /// * 全关：逐位不动（跳过分支的证据）；
+    /// * 顺序：SIDE+MONO 双开 == 先 SIDE 后 MONO（差分信号），⛔ 不是先 MONO
+    ///   后 SIDE 的 0（双开变静音是错的）。
+    #[test]
+    fn monitor_switches_apply_the_specified_formulas_bit_exactly() {
+        let orig_left = [0.8f32, -0.4, 0.2, 0.0];
+        let orig_right = [0.2f32, 0.6, -0.3, 0.5];
+        let bits = |buf: &[f32]| buf.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        let run = |dim: bool, mono: bool, side: bool| {
+            let mut left = orig_left;
+            let mut right = orig_right;
+            apply_monitor(&mut left, &mut right, dim, mono, side);
+            (left, right)
+        };
+
+        // ① 全关 ⇒ 逐位不动。
+        let (left, right) = run(false, false, false);
+        assert_eq!(bits(&left), bits(&orig_left), "全关时左声道必须逐位不动");
+        assert_eq!(bits(&right), bits(&orig_right), "全关时右声道必须逐位不动");
+
+        // ② DIM ⇒ 每样本逐位等于原值 × 0.1。
+        let (left, right) = run(true, false, false);
+        let expect_l: Vec<f32> = orig_left.iter().map(|v| v * MONITOR_DIM_GAIN).collect();
+        let expect_r: Vec<f32> = orig_right.iter().map(|v| v * MONITOR_DIM_GAIN).collect();
+        assert_eq!(
+            bits(&left),
+            bits(&expect_l),
+            "DIM 左声道必须逐位 == 原值×0.1"
+        );
+        assert_eq!(
+            bits(&right),
+            bits(&expect_r),
+            "DIM 右声道必须逐位 == 原值×0.1"
+        );
+        assert_eq!(MONITOR_DIM_GAIN, 0.1, "DIM 增益必须是 0.1（−20 dB）");
+        let rms = |buf: &[f32]| {
+            (buf.iter()
+                .map(|v| f64::from(*v) * f64::from(*v))
+                .sum::<f64>()
+                / buf.len() as f64)
+                .sqrt()
+        };
+        let ratio_db = 20.0 * (rms(&left) / rms(&orig_left)).log10();
+        println!("[mixer] DIM 实测衰减 = {ratio_db:.3} dB（须为 −20 dB）");
+        assert!(
+            (ratio_db + 20.0).abs() < 1e-4,
+            "DIM 必须恰好 −20 dB，实测 {ratio_db} dB"
+        );
+
+        // ③ MONO ⇒ 双声道都逐位等于 (L+R)×0.5。
+        let (left, right) = run(false, true, false);
+        let expect: Vec<f32> = orig_left
+            .iter()
+            .zip(orig_right.iter())
+            .map(|(l, r)| (l + r) * 0.5)
+            .collect();
+        assert_eq!(bits(&left), bits(&expect), "MONO 左声道必须逐位 == (L+R)/2");
+        assert_eq!(
+            bits(&right),
+            bits(&expect),
+            "MONO 右声道必须逐位 == (L+R)/2"
+        );
+
+        // ④ SIDE ⇒ 双声道都逐位等于 L−R。
+        let (left, right) = run(false, false, true);
+        let expect: Vec<f32> = orig_left
+            .iter()
+            .zip(orig_right.iter())
+            .map(|(l, r)| l - r)
+            .collect();
+        assert_eq!(bits(&left), bits(&expect), "SIDE 左声道必须逐位 == L−R");
+        assert_eq!(bits(&right), bits(&expect), "SIDE 右声道必须逐位 == L−R");
+
+        // ⑤ 顺序：SIDE+MONO 双开 == 先 SIDE 后 MONO（仍是差分信号），且 ⛔ 不是 0。
+        let (left, right) = run(false, true, true);
+        let expect: Vec<f32> = orig_left
+            .iter()
+            .zip(orig_right.iter())
+            .map(|(l, r)| l - r)
+            .collect();
+        assert_eq!(bits(&left), bits(&expect), "SIDE+MONO 双开必须仍是差分信号");
+        assert_eq!(
+            bits(&right),
+            bits(&expect),
+            "SIDE+MONO 双开必须仍是差分信号"
+        );
+        assert!(
+            left.iter().any(|v| *v != 0.0),
+            "SIDE+MONO 双开 ⛔ 不许变静音（先 MONO 后 SIDE 会得 0）"
+        );
+    }
+
+    /// T-FIX-190：`MonitorControls` 的读写与跨代拷贝。
+    #[test]
+    fn monitor_controls_share_state_and_copy_across_generations() {
+        let controls = MonitorControls::new();
+        assert_eq!(controls.snapshot(), (false, false, false), "初始须全关");
+        controls.set_dim(true);
+        controls.set_side(true);
+        assert_eq!(controls.snapshot(), (true, false, true));
+        assert!(controls.dim() && !controls.mono() && controls.side());
+
+        let next = MonitorControls::new();
+        next.copy_from(&controls);
+        assert_eq!(
+            next.snapshot(),
+            (true, false, true),
+            "换代拷贝必须原样带走三标志"
+        );
+        controls.set_dim(false);
+        assert_eq!(
+            next.snapshot(),
+            (true, false, true),
+            "拷贝后两份是独立原子 ⇒ 旧份再改不影响新份"
         );
     }
 }

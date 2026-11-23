@@ -24905,26 +24905,39 @@ pub fn wire_aether_actions(
         }
     });
 
+    // ⭐ T-FIX-190：控制室三开关**真正接进引擎监听输出级**（生产路径）。
+    //
+    // `.slint` 先翻 `is-dim/is-mono/is-side`（与 MainWindow 的 `control-room-*`
+    // 属性双向绑定），再调本回调 ⇒ 这里读到的就是**翻转后的新值**，直接写进引擎
+    // 的监听开关（原子；设备腿上也生效）。`update_control_room_status` 只留状态
+    // 字符串＋toast（显示面不变）。下坞 `master-toggle-mono` 翻属性后调
+    // `invoke_control_room_toggle_mono` ⇒ 走同一条回调，MONO 臂一并覆盖。
     ui.on_control_room_toggle_dim({
         let w = weak.clone();
+        let engine = Rc::clone(&engine);
         move || {
             if let Some(ui) = w.upgrade() {
+                engine.borrow().set_monitor_dim(ui.get_control_room_dim());
                 update_control_room_status(&ui, "DIM");
             }
         }
     });
     ui.on_control_room_toggle_mono({
         let w = weak.clone();
+        let engine = Rc::clone(&engine);
         move || {
             if let Some(ui) = w.upgrade() {
+                engine.borrow().set_monitor_mono(ui.get_control_room_mono());
                 update_control_room_status(&ui, "MONO");
             }
         }
     });
     ui.on_control_room_toggle_side({
         let w = weak.clone();
+        let engine = Rc::clone(&engine);
         move || {
             if let Some(ui) = w.upgrade() {
+                engine.borrow().set_monitor_side(ui.get_control_room_side());
                 update_control_room_status(&ui, "SIDE");
             }
         }

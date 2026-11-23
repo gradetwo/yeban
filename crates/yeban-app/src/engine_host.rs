@@ -119,7 +119,7 @@ use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareM
 use yeban_engine::insert::strip_source_index;
 use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::mixer::{PanLaw, centered_pan_gains};
+use yeban_engine::mixer::{MonitorControls, PanLaw, centered_pan_gains};
 use yeban_engine::param::{
     MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT,
     TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
@@ -914,6 +914,16 @@ pub struct EngineHost {
     events: Option<EventSender>,
     /// RT → UI 的走带读数镜面（与 `EngineRuntime` 里那一份是**同一个** `Arc`）。
     transport_mirror: Option<std::sync::Arc<TransportMirror>>,
+    /// ⭐ **控制室监听开关（T-FIX-190）**：DIM / MONO / SIDE 的跨线程共享态
+    /// （与 `EngineRuntime` 里那一份是**同一个** `Arc`，在 `fresh_runtime` 里
+    /// 克隆出来、**在运行时被 move 走之前**，与 `transport_mirror` 同一条镜面纪律）。
+    ///
+    /// 方向与走带镜面**相反**：这里是 UI → 引擎（控制线程写、实时线程读）。
+    /// 设备腿（`open_device` 成功）之后 `runtime` 是 `None` ⇒ 开关只能走这份
+    /// `Arc`（原子，⛔ 不需要 `&mut EngineRuntime`）。
+    /// `reload` / `open_device` 换代时把旧值拷进新运行时的那一份（见
+    /// [`Self::sync_monitor_controls`]），⛔ 不静默归零。
+    monitor_controls: std::sync::Arc<MonitorControls>,
     /// ⭐ **stage 25**：`EngineStats` 的跨线程只读镜像（与运行时里那一份是**同一个**
     /// `Arc`，在 `fresh_runtime` 里克隆出来、**在运行时被 move 走之前**）。
     ///
@@ -1486,6 +1496,10 @@ impl EngineHost {
         }
         let stats = runtime.stats();
 
+        // ⭐ T-FIX-190：换代之前把监听开关拷进新运行时（之后它就归控制线程 /
+        // 设备回调所有，宿主再也拿不到 `&mut`）。
+        self.sync_monitor_controls(&runtime);
+
         // 第 4 步：装机（旧的一代在这里整体被替换；它持有的快照由 `SnapshotReader`
         // 的退役队列回收 —— 本线程内不会有积压，因此 `drain` 一次即可）。
         self.slot = Some(slot);
@@ -1628,6 +1642,10 @@ impl EngineHost {
             let written = events.publish(&resume);
             debug_assert_eq!(written, 1, "交接的 Play 必须被通道接受");
         }
+
+        // ⭐ T-FIX-190：交给设备回调之前把监听开关拷进新运行时（之后宿主再也
+        // 拿不到 `&mut EngineRuntime`，开关只能走这份 `Arc`）。
+        self.sync_monitor_controls(&runtime);
 
         // 3) 开设备（失败 ⇒ 手里那一代一位不动）：把已装箱的运行时直接移入回调，
         // 避免在调用栈上按值搬运整份 EngineRuntime。
@@ -2519,6 +2537,44 @@ impl EngineHost {
         &self.journal
     }
 
+    /// 控制室监听开关的共享句柄（T-FIX-190；与 `EngineRuntime` 里那一份是
+    /// **同一个** `Arc`）。
+    ///
+    /// 控制线程经它写开关（原子）；实时线程经运行时里那一份读。设备腿上运行时
+    /// 归 cpal 回调线程所有时，这份句柄仍可写。
+    #[must_use]
+    pub fn monitor_controls(&self) -> std::sync::Arc<MonitorControls> {
+        std::sync::Arc::clone(&self.monitor_controls)
+    }
+
+    /// DIM 开关写进引擎（控制室回调的落点；`&self` 即可 —— 原子，⛔ 不需要
+    /// 运行时在控制线程手里）。
+    pub fn set_monitor_dim(&self, dim: bool) {
+        self.monitor_controls.set_dim(dim);
+    }
+
+    /// MONO 开关写进引擎（控制室回调与下坞 `master-toggle-mono` 的共同落点）。
+    pub fn set_monitor_mono(&self, mono: bool) {
+        self.monitor_controls.set_mono(mono);
+    }
+
+    /// SIDE 开关写进引擎（控制室回调的落点）。
+    pub fn set_monitor_side(&self, side: bool) {
+        self.monitor_controls.set_side(side);
+    }
+
+    /// 把宿主记住的监听开关拷进新运行时的那一份，并把宿主的句柄换成新运行时的
+    /// 那一份（T-FIX-190；与 `transport_mirror` 的"构造期克隆"同一条镜面纪律）。
+    ///
+    /// 必须在运行时被 move 走（装机 / 交给设备回调）**之前**调：之后控制面就再也
+    /// 拿不到 `&mut EngineRuntime` 了。换代不静默归零：用户开着 DIM 换工程 / 换
+    /// 设备，DIM 仍是开的（与界面属性一致）。
+    fn sync_monitor_controls(&mut self, runtime: &EngineRuntime) {
+        let controls = std::sync::Arc::clone(runtime.monitor_controls());
+        controls.copy_from(&self.monitor_controls);
+        self.monitor_controls = controls;
+    }
+
     /// 是否有一代活着的引擎（走带命令只有在这种情况下才发得出去）。
     ///
     /// ⚠ 设备腿活跃时 `runtime` 是 `None`（它在 cpal 回调线程上），因此这里的判据
@@ -2838,11 +2894,17 @@ impl EngineHost {
         let Some(runtime) = self.runtime.as_mut() else {
             return 0;
         };
+        // ⭐ T-FIX-190：离线渲染旁通监听级 —— DIM/MONO/SIDE 是"听到的"那条路的
+        // 开关，⛔ 不许进导出文件（`--midi-in-render` 也经这里落盘）。设备腿活跃时
+        // 本函数恒返回 0（运行时不在手里）⇒ 置位/复位与渲染在同一线程，⛔ 无竞态。
+        let bypass = runtime.monitor_bypass();
+        runtime.set_monitor_bypass(true);
         for index in 0..quanta {
             let start = usize::try_from(index).unwrap_or(0) * block;
             let end = start + block;
             runtime.process_quantum(&mut out[start..end], channels);
         }
+        runtime.set_monitor_bypass(bypass);
         quanta
     }
 
