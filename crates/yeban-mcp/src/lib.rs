@@ -126,7 +126,12 @@
 //! ```
 
 #![deny(missing_docs)]
-#![forbid(unsafe_code)]
+// T-FIX-135：Windows TokenFile 必须在**同一个文件句柄**上完成
+// GetFileInformationByHandle / GetSecurityInfo / ReadFile，并调用
+// MoveFileExW 做原子替换。Win32 调用只能是 unsafe；把允许面从 crate 级
+// `forbid` 收紧为 `deny`，唯一例外是 `security::win_acl`（该模块逐条
+// 封装 unsafe，外部只看到安全函数）。其余模块仍禁止 unsafe。
+#![deny(unsafe_code)]
 
 pub mod dispatch;
 pub mod domain;

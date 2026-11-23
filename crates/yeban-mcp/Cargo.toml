@@ -119,6 +119,20 @@ yeban-record.workspace = true
 # 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
 libm.workspace = true
+# Windows TokenFile：OS 熵源的安全封装。`getrandom` 已在工作区
+# `Cargo.lock` 里（0.3.4），这里只增加一条成员依赖边，不新增第三方包。
+getrandom = "0.3.4"
+
+[target.'cfg(windows)'.dependencies]
+# Windows TokenFile 的单句柄打开、SID allowlist、原子替换。
+# 选 0.59 与树里已有的 windows-sys 版本对齐；只开实际用到的 Win32 feature。
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # ⭐ `#223` 判据用：`yeban-decode` 的 `testfix` 用**代码生成**最小 FLAC / OGG 字节
