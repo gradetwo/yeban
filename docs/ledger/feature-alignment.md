@@ -1,4 +1,4 @@
-# 四方对齐矩阵（系统 / GUI / MCP / TUI，98 行）
+# 四方对齐矩阵（系统 / GUI / MCP / TUI，99 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 GUI 侧暴露了没有、在 MCP 侧暴露了没有、在 TUI 侧暴露了没有，四者错位在哪、为什么、谁来补、什么时候补"**。
@@ -35,12 +35,12 @@
 - 系统+GUI+TUI（MCP无）：5 行
 - 系统+MCP+TUI（GUI无）：3 行
 - 系统+GUI（MCP、TUI无）：2 行
-- 系统+MCP（GUI、TUI无）：22 行
+- 系统+MCP（GUI、TUI无）：23 行
 - 系统+TUI（GUI、MCP无）：1 行
 - 仅系统：11 行
 - 仅计划（系统也未实现）：6 行
 - 前端独有（系统没有）：4 行
-- **合计：98 行**
+- **合计：99 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -217,7 +217,7 @@
 | 外部软件联动（如 iZotope RX）与 `notify` 热重载（≤500ms） | 无｜`crates/yeban-services/src/lib.rs` 是 10 行纯文档占位（`pub fn` / `pub struct` 命中 0）；`ARCH-EXT-*` 无代码 | 无｜无 | 无｜无 | 无｜未到期 | 原因：完全未实现；计划：`yeban-services` 线（`ARCH-EXT-*`）；状态：未到期 |
 | MLS Ping 声学脉冲延迟校准 | 无｜`crates/yeban-services/src/lib.rs` 只有文档占位；`grep -rn -i "mls\|ping" docs/ledger/audio-latency-notes.md` 命中 0 | 无｜无 | 无｜无 | 无｜未到期 | 原因：完全未实现（与 `BASELINE-005` 的"机器就绪、门禁仍 PENDING"是两件事）；计划：`yeban-services` 线；状态：未到期 |
 | ASIO 可选特性与反向 VST3 打包（`yeban-vst`） | 无｜`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 0（`docs/ledger/phase-status.md` §1 `ROAD-M-1-004`）；`crates/yeban-vst/src/lib.rs` 是 11 行占位且 `[dependencies]` 为空（`ROAD-M-1-003`） | 无｜无 | 无｜无 | 无｜人类决策中 | 原因：法务确认未做（`HD-34`），且没有 `asio` 特性可标 `unverified`；反向打包属 `[v2.0.0]`；计划：人类法务签字 + v2.0.0；状态：人类决策中 ⚠ **2026-10-22 就地更正（读数）**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 实测 **1** 命中（`crates/yeban-midi-io/Cargo.toml:18` 的注释「`asio`/`experimental-*` 同族处理」），**不是 0**。**结论与读数分开**：结论「`asio` 未定义、不引入」**仍成立**（唯一命中是说明性注释，不是特性声明）；而「命中 0」为假。 |
-| 待合并提案列表 | 待接线｜`crates/yeban-mcp/src/domain/mod.rs` 的 `Domain.proposals: BTreeMap<EntityId, Proposal>`（内存记录，`Plan::ListProposals` 只读回传；`src/output_schema.rs` 给五个主力工具发布 `outputSchema`） | 无｜无提案列表面板 | 有｜`yeban_list_proposals`（可选 `kind`；出参 `proposals[]` / `openCount` / `totalCount` / `mergeTool`） | 原因：`#174` 验收发现提案不跨进程且无法列出 ⇒ 进程崩溃后成孤儿；计划：本工具让同一进程内可发现与可恢复，⛔ 不承诺跨进程恢复（记录不进 `project.json`）；状态：已实现 |
+| 待合并提案列表 | 已实现｜`crates/yeban-mcp/src/domain/mod.rs` 的 `Domain.proposals: BTreeMap<EntityId, Proposal>`（内存记录，`Plan::ListProposals` 只读回传；`src/output_schema.rs` 给五个主力工具发布 `outputSchema`） | 无｜无提案列表面板 | 有｜`yeban_list_proposals`（可选 `kind`；出参 `proposals[]` / `openCount` / `totalCount` / `mergeTool`） | 无｜无提案列表 | 原因：`#174` 验收发现提案不跨进程且无法列出 ⇒ 进程崩溃后成孤儿；计划：本工具让同一进程内可发现与可恢复，⛔ 不承诺跨进程恢复（记录不进 `project.json`）；状态：待接线 |
 | VST3 插件扫描（`yeban_scan_plugins`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:100`（`scan`，枚举目录、打开库、逐个实例化探针）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1813`（`yeban_scan_plugins`；⚠ 2026-11-14 就地更正：旧记 `:1807`，`line/device-param-name`（`97107ad92`）在 tools.rs:1291 处插入 `paramName` 参数注册代码（净 +6 行）⇒ `name: "yeban_scan_plugins"` 现位于第 1813 行） | 无｜无插件扫描面板 | 有｜`yeban_scan_plugins`（`paths`，可选数组；不给则只扫环境变量与平台标准路径） | 无｜无插件扫描 | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
 | VST3 插件装载（`yeban_load_plugin`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:153`（`load`，打开插件、按类指名、验证激活）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1836`（`yeban_load_plugin`；⚠ 2026-11-14 就地更正：旧记 `:1830`，`line/device-param-name`（`97107ad92`）在 tools.rs:1291 处插入 `paramName` 参数注册代码（净 +6 行）⇒ `name: "yeban_load_plugin"` 现位于第 1836 行） | 无｜无插件装载面板 | 有｜`yeban_load_plugin`（`trackId` / `pluginPath` 必填；`pluginId` / `autoMerge` / `mergeCommitMessage` 可选） | 无｜无插件装载 | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
 | ARA 绑定（`yeban_ara_bind`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:1517`（`open`，模块加载、ARA 类名配对、文档图构建）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1890`（`yeban_ara_bind`；⚠ 2026-11-14 就地更正：旧记 `:1884`，`line/device-param-name`（`97107ad92`）在 tools.rs:1291 处插入 `paramName` 参数注册代码（净 +6 行）⇒ `name: "yeban_ara_bind"` 现位于第 1890 行） | 无｜无 ARA 面板 | 有｜`yeban_ara_bind`（`pluginPath` / `wavPath` 必填；`pluginId` / `tempoBpm` / `loopIterations` / `muted` 可选）；`yeban_ara_unbind`（`sessionId` 必填，解绑并释放 ARA 会话） | 无｜无 ARA | 原因：ARA2 宿主原型，UI 侧无 ARA 面板；计划：UI ARA 面板待排期；状态：待接线 |
