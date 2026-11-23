@@ -278,8 +278,14 @@ fn demo_span(project: &YebanProjectV1) -> (usize, f64) {
         .map(|clip| clip.start_tick.saturating_add(clip.duration_ticks))
         .max()
         .unwrap_or(0);
-    let ticks_per_bar =
-        yeban_model::ids::PPQ.saturating_mul(u64::from(project.time_signature.numerator.max(1)));
+    // T-FIX-168：每小节 tick = PPQ × 4 × 分子 ÷ 分母。分母不是固定 4 —— 6/8 的一小节
+    // 是 6 个八分音符（3 拍 × 2），按旧式「只乘分子」会算成 6 个四分音符 ⇒ 小节数减半。
+    let numerator = u64::from(project.time_signature.numerator.max(1));
+    let denominator = u64::from(project.time_signature.denominator.max(1));
+    let ticks_per_bar = yeban_model::ids::PPQ
+        .saturating_mul(4)
+        .saturating_mul(numerator)
+        / denominator;
     let bars = if ticks_per_bar == 0 {
         0
     } else {
@@ -1115,6 +1121,44 @@ fn days_ago_label(lang: Language, n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// T-FIX-168：小节数必须按拍号**分母**换算（6/8 末端 6×PPQ ⇒ 2 小节）。
+    #[test]
+    fn demo_span_counts_bars_with_the_time_signature_denominator() {
+        let mut project = yeban_model::samples::filled_project();
+        project.time_signature = yeban_model::project::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        let span = 6 * yeban_model::ids::PPQ;
+        for track in project.tracks.values_mut() {
+            for clip in track.clips.values_mut() {
+                clip.start_tick = 0;
+                clip.duration_ticks = span;
+            }
+        }
+        let (bars, _secs) = super::demo_span(&project);
+        assert_eq!(bars, 2, "6/8 且末端 6×PPQ 必须是 2 小节");
+    }
+
+    /// 4/4 回归：末端 4×PPQ 仍是 1 小节（改动不许动既有口径）。
+    #[test]
+    fn demo_span_keeps_four_four_bars() {
+        let mut project = yeban_model::samples::filled_project();
+        project.time_signature = yeban_model::project::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let span = 4 * yeban_model::ids::PPQ;
+        for track in project.tracks.values_mut() {
+            for clip in track.clips.values_mut() {
+                clip.start_tick = 0;
+                clip.duration_ticks = span;
+            }
+        }
+        let (bars, _) = super::demo_span(&project);
+        assert_eq!(bars, 1, "4/4 且末端 4×PPQ 必须仍是 1 小节");
+    }
+
     use super::*;
 
     #[test]
