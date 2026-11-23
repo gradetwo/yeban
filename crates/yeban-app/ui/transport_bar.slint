@@ -1024,6 +1024,14 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
+                        // T-FIX-173：LOOP 是真实可点控件，补与同栏 stop/play/record
+                        // 相同的无障碍三件套；label 带开关状态，屏读器不再只看到空节点。
+                        accessible-role: button;
+                        accessible-id: "transport-loop-button";
+                        accessible-label: root.is-looping
+                            ? @tr("循环播放开关：开 (C)")
+                            : @tr("循环播放开关：关 (C)");
+                        accessible-action-default => { root.toggle-loop(); }
                         background: root.is-looping ? Theme.accent.with-alpha(0.22) : (btn_loop_touch.has-hover ? Tokens.bg-lane2 : transparent);
                         border-width: root.is-looping ? 1px : (btn_loop_touch.has-hover ? 1px : 0);
                         border-color: root.is-looping ? Theme.accent.with-alpha(0.70) : Tokens.line-strong;

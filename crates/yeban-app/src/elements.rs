@@ -6304,6 +6304,58 @@ mod tests {
         );
     }
 
+    /// T-FIX-173：LOOP 是真实可点的走带控件，必须像 stop/play/record 一样
+    /// 在无障碍树上有一个 button 节点，并且 `accessible-action-default` 与
+    /// `clicked` 落在**同一个** `root.toggle-loop()`（不是挂个空动作）。
+    ///
+    /// 这条是上一条通用判据的定点补强：通用判据只检查**已有 role 块**里
+    /// 的点击，LOOP 在修复前连 role 都没有，所以不会红；定点判据把
+    /// “transport-loop-button 必须存在”本身钉住。
+    #[test]
+    fn the_transport_loop_button_has_a_role_id_and_real_action() {
+        let (rel, text) = slint_sources()
+            .into_iter()
+            .find(|(rel, _)| rel == "transport_bar.slint")
+            .expect("ui/transport_bar.slint 必须在 slint 清单里");
+        assert_eq!(rel, "transport_bar.slint");
+        let code = code_only(&text);
+        let lines: Vec<&str> = code.lines().collect();
+        let blocks = role_blocks(&lines);
+        let block = blocks
+            .iter()
+            .find(|block| {
+                lines[block.start..=block.end]
+                    .iter()
+                    .any(|line| line.contains("transport-loop-button"))
+            })
+            .expect("LOOP 必须声明 accessible-role + accessible-id");
+        assert_eq!(block.role, "button", "{} 的 LOOP role", rel);
+        let block_text = lines[block.start..=block.end].join("\n");
+        assert!(
+            block_text.contains("accessible-label:"),
+            "LOOP 必须有非空 accessible-label"
+        );
+        let clicks: Vec<String> = arrow_bodies(&code, "clicked", 0)
+            .into_iter()
+            .filter(|(line, _)| block.start < *line && *line <= block.end)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            clicks,
+            vec!["root.toggle-loop();".to_owned()],
+            "LOOP 的点击落点必须是 root.toggle-loop()"
+        );
+        let actions: Vec<String> =
+            arrow_bodies(&block_text, "accessible-action-default", block.start)
+                .into_iter()
+                .map(|(_, body)| body)
+                .collect();
+        assert_eq!(
+            actions, clicks,
+            "LOOP 的 accessible-action-default 必须与 clicked 同落点"
+        );
+    }
+
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
     ///
     /// 已排序（`BTreeMap` 口径的确定性: 判据的期望值不依赖文件系统迭代顺序）。
