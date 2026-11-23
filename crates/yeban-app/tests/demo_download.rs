@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use yeban_app::demo_download::{
-    CancelFlag, DEMOS, DownloadError, DownloadEvent, cover_url, download_to, part_path, project_url,
+    CancelFlag, DEMOS, DownloadError, DownloadEvent, cover_url, download_to, encode_segment,
+    part_path, project_url,
 };
 
 /// 起一个只回答 `requests` 次的极简 HTTP 服务器；返回 (基址, 收到的请求路径列表句柄)。
@@ -59,14 +60,36 @@ fn manifest_lists_eight_unique_demos() {
     dirs.dedup();
     assert_eq!(dirs.len(), 8, "子目录必须两两不同");
     let base = "http://example.invalid/base";
+    // ⭐ T-FIX-158 返工：清单必须与 gradetwo/yeban-extras 的 `demos/` **逐字**对应
+    //    （目录名就是歌名；工程/封面的文件名带 `_男声` / `_叙事版` 等后缀），
+    //    且中文段一律百分号编码 —— http 1.5 的 URI 不接受 ≥127 的字节。
+    let spec = DEMOS
+        .iter()
+        .find(|spec| spec.title == "雨声太吵")
+        .expect("清单必须有《雨声太吵》");
     assert_eq!(
-        project_url(base, &DEMOS[0]),
-        "http://example.invalid/base/rain-too-loud/雨声太吵.yeban"
+        project_url(base, spec),
+        "http://example.invalid/base/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5.yeban"
     );
     assert_eq!(
-        cover_url(base, &DEMOS[0]),
-        "http://example.invalid/base/rain-too-loud/雨声太吵.png"
+        cover_url(base, spec),
+        "http://example.invalid/base/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5-cover.png"
     );
+    // 每条 URL 都必须是纯 ASCII（否则 ureq 在发请求前就解析失败），工程名都以 `.yeban` 结尾。
+    for spec in &DEMOS {
+        let url = project_url(base, spec);
+        assert!(url.is_ascii(), "URL 必须纯 ASCII: {url}");
+        assert!(
+            spec.file.ends_with(".yeban"),
+            "工程名必须以 .yeban 结尾: {}",
+            spec.file
+        );
+        assert!(
+            spec.cover.ends_with("-cover.png") || spec.cover.ends_with("-cover.jpg"),
+            "封面名必须是真实后缀: {}",
+            spec.cover
+        );
+    }
 }
 
 #[test]
@@ -149,5 +172,68 @@ fn network_failure_is_loud_and_retry_succeeds() {
     let url = format!("{base}/demo/d.yeban");
     download_to(&url, &target, &CancelFlag::new(), |_| {}).expect("重试必须成功");
     assert!(target.is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ⭐ T-FIX-158 返工：**中文目录名的真实 demo** 必须在上线路径里百分号编码。
+///
+/// 修前清单是手编的 ASCII 目录（`rain-too-loud`），真实 extras 是中文目录 + 带后缀
+/// 文件名；且中文不编码时 `http` crate 在解析 URI 阶段就拒绝（≥127 字节），
+/// 一个字节都发不出去。本判据从夹具服务器**收到的请求行**读回线上路径。
+#[test]
+fn chinese_demo_paths_are_encoded_on_the_wire_and_download() {
+    let body = b"PK\x03\x04chinese-demo".to_vec();
+    let (base, seen) = serve(body.clone(), 1);
+    let root = temp_root("cn");
+    let spec = DEMOS
+        .iter()
+        .find(|spec| spec.title == "回头路")
+        .expect("清单必须有《回头路》");
+    let url = project_url(&base, spec);
+    let target = root.join("demo").join(spec.file);
+    let path = download_to(&url, &target, &CancelFlag::new(), |_| {})
+        .expect("中文路径必须能下载（URI 已编码）");
+    assert_eq!(path, target);
+    assert_eq!(std::fs::read(&target).expect("读回"), body);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "必须恰好一次请求: {seen:?}");
+    assert_eq!(
+        seen[0],
+        format!(
+            "/{}/{}",
+            encode_segment(spec.dir),
+            encode_segment(spec.file)
+        ),
+        "线上路径必须是编码后的目录/文件名"
+    );
+    assert!(
+        !seen[0].contains('回'),
+        "线上路径不得含未编码中文: {seen:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ⭐ T-FIX-158 返工：中文路径的下载被取消后**不留任何残留**（正式文件与 `.part` 都没有）。
+#[test]
+fn cancelled_chinese_path_download_leaves_no_residue() {
+    let root = temp_root("cn-cancel");
+    let spec = DEMOS
+        .iter()
+        .find(|spec| spec.title == "回头路")
+        .expect("清单必须有《回头路》");
+    // 用活着的夹具：`download_to` 在读到第一个块时才看取消位（与既有取消判据同一条路径）。
+    let (base, _seen) = serve(b"PK\x03\x04cn-cancel".to_vec(), 1);
+    let url = project_url(&base, spec);
+    let target = root.join("demo").join(spec.file);
+    let cancel = CancelFlag::new();
+    cancel.cancel();
+    let error = download_to(&url, &target, &cancel, |_| {}).expect_err("取消必须失败");
+    assert_eq!(error.0, DownloadError::Cancelled);
+    assert!(!target.exists(), "取消不得留下正式文件");
+    assert!(!part_path(&target).exists(), "取消不得留下 .part");
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(root.join("demo"))
+        .map(|entries| entries.map(|entry| entry.expect("目录项").path()).collect())
+        .unwrap_or_default();
+    assert!(leftovers.is_empty(), "取消后目录必须为空: {leftovers:?}");
     let _ = std::fs::remove_dir_all(&root);
 }

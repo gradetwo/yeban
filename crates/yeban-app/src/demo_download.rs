@@ -28,51 +28,51 @@ pub struct DemoSpec {
 /// 8 首内置远程 demo（与 gradetwo/yeban-extras 的 demos/ 逐项对应）。
 pub const DEMOS: [DemoSpec; 8] = [
     DemoSpec {
-        dir: "rain-too-loud",
+        dir: "雨声太吵",
         file: "雨声太吵.yeban",
-        cover: "雨声太吵.png",
+        cover: "雨声太吵-cover.png",
         title: "雨声太吵",
     },
     DemoSpec {
-        dir: "tide",
-        file: "潮.yeban",
-        cover: "潮.png",
+        dir: "潮",
+        file: "潮_切片版.yeban",
+        cover: "潮_切片版-cover.png",
         title: "潮",
     },
     DemoSpec {
-        dir: "weightless",
-        file: "失重.yeban",
-        cover: "失重.png",
+        dir: "失重",
+        file: "失重_切片版.yeban",
+        cover: "失重_切片版-cover.png",
         title: "失重",
     },
     DemoSpec {
-        dir: "aphasia",
-        file: "失语.yeban",
-        cover: "失语.png",
+        dir: "失语",
+        file: "失语_叙事版.yeban",
+        cover: "失语_叙事版-cover.jpg",
         title: "失语",
     },
     DemoSpec {
-        dir: "whisper",
-        file: "呢喃.yeban",
-        cover: "呢喃.png",
+        dir: "呢喃",
+        file: "呢喃_叙事版.yeban",
+        cover: "呢喃_叙事版-cover.jpg",
         title: "呢喃",
     },
     DemoSpec {
-        dir: "next-crossing",
-        file: "下一个路口.yeban",
-        cover: "下一个路口.png",
+        dir: "下一个路口",
+        file: "下一个路口_女声.yeban",
+        cover: "下一个路口_女声-cover.png",
         title: "下一个路口",
     },
     DemoSpec {
-        dir: "road-back",
-        file: "回头路.yeban",
-        cover: "回头路.png",
+        dir: "回头路",
+        file: "回头路_男声.yeban",
+        cover: "回头路_男声-cover.png",
         title: "回头路",
     },
     DemoSpec {
-        dir: "that-afternoon",
-        file: "那个午后.yeban",
-        cover: "那个午后.png",
+        dir: "那个午后",
+        file: "那个午后_男声.yeban",
+        cover: "那个午后_男声-cover.png",
         title: "那个午后",
     },
 ];
@@ -90,13 +90,42 @@ pub fn remote_base() -> String {
 /// 某首 demo 的工程下载 URL。
 #[must_use]
 pub fn project_url(base: &str, spec: &DemoSpec) -> String {
-    format!("{}/{}/{}", base.trim_end_matches('/'), spec.dir, spec.file)
+    format!(
+        "{}/{}/{}",
+        base.trim_end_matches('/'),
+        encode_segment(spec.dir),
+        encode_segment(spec.file)
+    )
+}
+
+/// 路径段百分号编码（非 ASCII 与控制字符全部转义）。
+///
+/// http 1.5 的 URI 只接受 ASCII（127 以上非法）；中文目录名不编码时 ureq 在
+/// agent.get() 处就解析失败，一个字节都不会发出。
+#[must_use]
+pub fn encode_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.as_bytes() {
+        let ch = *byte;
+        if ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'.' | b'_' | b'~') {
+            out.push(ch as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{ch:02X}"));
+        }
+    }
+    out
 }
 
 /// 某首 demo 的封面下载 URL。
 #[must_use]
 pub fn cover_url(base: &str, spec: &DemoSpec) -> String {
-    format!("{}/{}/{}", base.trim_end_matches('/'), spec.dir, spec.cover)
+    format!(
+        "{}/{}/{}",
+        base.trim_end_matches('/'),
+        encode_segment(spec.dir),
+        encode_segment(spec.cover)
+    )
 }
 
 /// 下载进度事件（UI 按它更新卡片）。
@@ -260,8 +289,11 @@ where
             "下载内容不是合法的工程容器".to_owned(),
         ));
     }
-    std::fs::rename(&part, target)
-        .map_err(|error| (DownloadError::Io, format!("改名失败: {error}")))?;
+    if let Err(error) = std::fs::rename(&part, target) {
+        // 改名失败也清掉半成品。
+        let _ = std::fs::remove_file(&part);
+        return Err((DownloadError::Io, format!("改名失败: {error}")));
+    }
     notify(DownloadEvent::Finished(target.to_path_buf()));
     Ok(target.to_path_buf())
 }
