@@ -2021,6 +2021,9 @@ msgstr "Partir d'un projet vierge (sans titre ; l'emplacement se choisit à l'en
 msgid "详情"
 msgstr "Détails"
 
+msgid "收起"
+msgstr "Replier"
+
 msgid "调号"
 msgstr "Armure"
 

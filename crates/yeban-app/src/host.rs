@@ -10306,6 +10306,16 @@ fn apply_startup_category(
                 genre: row.genre.clone().into(),
                 bpm_label: row.bpm_label.clone().into(),
                 details: row.details.clone().into(),
+                detail_rows: ModelRc::new(VecModel::from(
+                    row.detail_rows
+                        .iter()
+                        .map(|detail_row| crate::ui::StartupChooserDetailRow {
+                            label: detail_row.label.clone().into(),
+                            value: detail_row.value.clone().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                details_height: row.details_height_px as f32,
                 entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
                 enabled: row.enabled,
                 has_cover,

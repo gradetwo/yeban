@@ -2021,6 +2021,9 @@ msgstr "Começar com um projeto em branco (sem título; o local é escolhido ao 
 msgid "详情"
 msgstr "Detalhes"
 
+msgid "收起"
+msgstr "Recolher"
+
 msgid "调号"
 msgstr "Armadura de clave"
 

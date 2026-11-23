@@ -181,7 +181,7 @@ fn gather_collects_demos_and_templates() {
     assert!(
         demo_rows
             .iter()
-            .any(|row| row.details.contains(&format!("{filled_tracks} 条轨道"))),
+            .any(|row| row.details.contains(&format!("轨道数 {filled_tracks}"))),
         "演示行模型「详情」里的轨道数必须与 filled 样本现数一致，实际 {demo_rows:?}"
     );
     assert!(

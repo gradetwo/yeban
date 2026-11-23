@@ -2021,6 +2021,9 @@ msgstr "Mit einem leeren Projekt beginnen (unbenannt; Speicherort wird beim Sich
 msgid "详情"
 msgstr "Details"
 
+msgid "收起"
+msgstr "Einklappen"
+
 msgid "调号"
 msgstr "Tonartvorzeichen"
 

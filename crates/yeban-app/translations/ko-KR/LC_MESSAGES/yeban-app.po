@@ -2021,6 +2021,9 @@ msgstr "빈 프로젝트로 시작 (제목 없음, 저장할 때 위치 선택)"
 msgid "详情"
 msgstr "세부 정보"
 
+msgid "收起"
+msgstr "접기"
+
 msgid "调号"
 msgstr "조표"
 

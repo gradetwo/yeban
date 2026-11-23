@@ -28,8 +28,10 @@
 //! 标题、BPM 与跨度从容器真实读取（[`read_project_container`]），
 //! 读不出来的文件**响亮报错并跳过**（⛔ 不编造标题）；封面是与工程
 //! 同名的 `.png` / `.jpg`，或同名加 `-cover` 后缀的 `.png` / `.jpg`。
-//! 曲风容器里没有字段，由同名旁挂 `<stem>.meta.json` 的 `genre`
-//! 提供（缺失即不显示，⛔ 不编造）。
+//! 曲风等专辑页字段容器里没有，由同名旁挂 `<stem>.meta.json`
+//! 提供（`genre` / `released` / `description` / `credits` /
+//! `copyright` / `license` / `website`，全可选，缺失即不列该行，
+//! ⛔ 不编造）。
 //! 环境变量未设 ⇒ 行为与没有本实验时完全一致。文件型 demo 打开时
 //! 从磁盘真实加载归档，同样走未命名副本口径（不记最近、不回写源
 //! 文件）。
@@ -103,9 +105,16 @@ pub struct DemoEntry {
     pub title: String,
     /// 非主总线轨道数（只进卡片「详情」，不上卡片主面）。
     pub track_count: usize,
+    /// 作者（容器 `author` 字段实读，经 [`author_name`] 切出作者
+    /// 名；空 ⇒ `None`，详情不列作者行）。
+    pub author: Option<String>,
     /// 曲风/风格（文件型 demo 读同名旁挂 `<stem>.meta.json` 的
     /// `genre`；容器本身没有曲风字段，缺失即 `None`，卡片不编造）。
     pub genre: Option<String>,
+    /// 旁挂 meta（专辑页字段：发布日期 / 简介 / 制作名单 / 版权 /
+    /// 许可 / 作者网站；只有文件型 demo 有旁挂文件，内置样本恒
+    /// 全缺失。曲风也在旁挂里，与 `genre` 字段同源）。
+    pub meta: DemoMeta,
     /// 工程速度（样本工程 / 容器自带 `bpm`，实读）。
     pub bpm: f64,
     /// 全曲小节数（按片段末端 tick 与拍号实算，只进「详情」）。
@@ -161,7 +170,9 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
                     .keys()
                     .filter(|id| **id != project.master_bus_track_id)
                     .count(),
+                author: author_name(&project.author),
                 genre: None,
+                meta: DemoMeta::default(),
                 bpm: project.bpm,
                 bars,
                 duration_secs,
@@ -249,6 +260,7 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
         })
         .find(|candidate| candidate.is_file());
     let (bars, duration_secs) = demo_span(project);
+    let meta = read_sidecar_meta(path, stem);
     Ok(DemoEntry {
         source: DemoSource::File(path.to_path_buf()),
         title: project.title.clone(),
@@ -257,7 +269,9 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
             .keys()
             .filter(|id| **id != project.master_bus_track_id)
             .count(),
-        genre: read_sidecar_genre(path, stem),
+        author: author_name(&project.author),
+        genre: meta.genre.clone(),
+        meta,
         bpm: project.bpm,
         bars,
         duration_secs,
@@ -290,26 +304,73 @@ fn demo_span(project: &YebanProjectV1) -> (usize, f64) {
     (bars, duration_secs)
 }
 
-/// 曲风旁挂（实验）：容器没有曲风字段，风格由工程同目录的
-/// `<stem>.meta.json` 提供（`{"genre": "..."}`）。文件缺失 ⇒
-/// `None`（卡片不显示曲风行）；文件在但解析失败 ⇒ **响亮**报错
-/// 并按无曲风处理，⛔ 不编造。
-fn read_sidecar_genre(path: &Path, stem: &str) -> Option<String> {
+/// 作者名切法：容器 `author` 是自由文本注记，常把作者名与风格 /
+/// 版本注记写在同一段里（《雨声太吵》实测为
+/// `雨窗 · Rain-window Grunge-Pop（4:24 版）`）。专辑页的「作者」
+/// 只取首个 `·` 之前的段并去两端空白；整段为空 ⇒ `None`
+/// （详情不列作者行），⛔ 不从注记段里猜作者。
+fn author_name(author: &str) -> Option<String> {
+    author
+        .split('·')
+        .next()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+/// 旁挂 meta（实验）：容器没有的专辑页字段由工程同目录的
+/// `<stem>.meta.json` 提供（`genre` / `released` / `description` /
+/// `credits` / `copyright` / `license` / `website`，全部可选）。
+/// 文件缺失 ⇒ 全 `None`（对应详情行不出现）；文件在但解析失败
+/// ⇒ **响亮**报错并按全缺失处理，⛔ 不编造。字段不是非空字符串
+/// ⇒ 按缺失处理。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DemoMeta {
+    /// 曲风/风格（同时是卡片主面的曲风行来源）。
+    pub genre: Option<String>,
+    /// 发布日期（原文显示，如 `2026-11-20`）。
+    pub released: Option<String>,
+    /// 简介。
+    pub description: Option<String>,
+    /// 制作名单。
+    pub credits: Option<String>,
+    /// 版权声明。
+    pub copyright: Option<String>,
+    /// 许可协议。
+    pub license: Option<String>,
+    /// 作者网站（只展示 URL 文本）。
+    pub website: Option<String>,
+}
+
+fn read_sidecar_meta(path: &Path, stem: &str) -> DemoMeta {
     let meta_path = path.with_file_name(format!("{stem}.meta.json"));
-    let text = std::fs::read_to_string(&meta_path).ok()?;
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(value) => value
-            .get("genre")
+    let Some(text) = std::fs::read_to_string(&meta_path).ok() else {
+        return DemoMeta::default();
+    };
+    let field = |value: &serde_json::Value, key: &str| {
+        value
+            .get(key)
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
-            .filter(|genre| !genre.is_empty())
-            .map(str::to_owned),
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => DemoMeta {
+            genre: field(&value, "genre"),
+            released: field(&value, "released"),
+            description: field(&value, "description"),
+            credits: field(&value, "credits"),
+            copyright: field(&value, "copyright"),
+            license: field(&value, "license"),
+            website: field(&value, "website"),
+        },
         Err(error) => {
             eprintln!(
-                "startup-chooser: 曲风旁挂 `{}` 解析失败: {error}",
+                "startup-chooser: 旁挂 meta `{}` 解析失败: {error}",
                 meta_path.display()
             );
-            None
+            DemoMeta::default()
         }
     }
 }
@@ -357,6 +418,16 @@ impl ChooserRowKind {
     }
 }
 
+/// 演示卡片「详情」展开区里的一行：标签（弱化显示）+ 值。
+/// 只由 [`demo_detail_rows`] 产出（专辑页顺序、有数据才有行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoDetailRow {
+    /// 字段标签（九语闭集，见 [`detail_field_label`]）。
+    pub label: String,
+    /// 字段值（实读实算 / 旁挂原文）。
+    pub value: String,
+}
+
 /// 选择器内容区的一行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChooserRow {
@@ -370,9 +441,13 @@ pub struct ChooserRow {
     pub genre: String,
     /// 弱化速度行（如 `129 BPM`；只演示条目有，其余行为空串）。
     pub bpm_label: String,
-    /// 「详情」展开文本（多行：轨道数 / 小节数 / 时长；只演示
-    /// 条目有，其余行为空串）。
+    /// 「详情」展开文本（`details` 行的纯文本拼法，供无障碍标签；
+    /// 只演示条目有，其余行为空串）。
     pub details: String,
+    /// 「详情」展开区的带标签行（专辑页构成，只演示条目有）。
+    pub detail_rows: Vec<DemoDetailRow>,
+    /// 展开区高度估算（px，界面层据此把卡片长高；非演示行 0）。
+    pub details_height_px: u32,
     /// 条目行指向其分类数据表的下标；标题行为 `None`。
     pub entry_index: Option<usize>,
     /// 条目是否可点（最近条目文件已不存在 ⇒ false；标题行恒 false）。
@@ -389,6 +464,8 @@ fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
         genre: String::new(),
         bpm_label: String::new(),
         details: String::new(),
+        detail_rows: Vec::new(),
+        details_height_px: 0,
         entry_index: None,
         enabled: false,
         cover: None,
@@ -419,6 +496,8 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
                 genre: String::new(),
                 bpm_label: String::new(),
                 details: String::new(),
+                detail_rows: Vec::new(),
+                details_height_px: 0,
                 entry_index: Some(index),
                 enabled: entry.exists,
                 cover: None,
@@ -428,23 +507,32 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
 }
 
 /// 「演示工程」分类的行模型（唱片架卡片口径，Wang 2026-11-23
-/// 定）：主面只留标题、曲风与弱化的 BPM；轨道数等技术信息只进
-/// 「详情」展开文本，⛔ 不上主面。
+/// 定）：主面只留标题、曲风与弱化的 BPM；专辑页字段只进「详情」
+/// 展开区（带标签行，见 [`demo_detail_rows`]），⛔ 不上主面。
 #[must_use]
 pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
     entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| ChooserRow {
-            kind: ChooserRowKind::Entry,
-            label: entry.title.clone(),
-            detail: String::new(),
-            genre: entry.genre.clone().unwrap_or_default(),
-            bpm_label: bpm_label(entry.bpm),
-            details: demo_details_label(lang, entry),
-            entry_index: Some(index),
-            enabled: true,
-            cover: entry.cover.clone(),
+        .map(|(index, entry)| {
+            let detail_rows = demo_detail_rows(lang, entry);
+            ChooserRow {
+                kind: ChooserRowKind::Entry,
+                label: entry.title.clone(),
+                detail: String::new(),
+                genre: entry.genre.clone().unwrap_or_default(),
+                bpm_label: bpm_label(entry.bpm),
+                details: detail_rows
+                    .iter()
+                    .map(|row| format!("{} {}", row.label, row.value))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                details_height_px: detail_rows_height_px(&detail_rows),
+                detail_rows,
+                entry_index: Some(index),
+                enabled: true,
+                cover: entry.cover.clone(),
+            }
         })
         .collect()
 }
@@ -459,18 +547,214 @@ pub fn bpm_label(bpm: f64) -> String {
     }
 }
 
-/// 卡片「详情」展开文本：轨道数 / 小节数 / 时长，逐行一条，
-/// 全部实读实算（九语闭集标签与 [`tracks_label`] 同口径）。
+/// 详情字段（专辑详情页的构成与顺序，Wang 2026-11-23 定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailField {
+    Author,
+    Genre,
+    Released,
+    Duration,
+    Bars,
+    Tracks,
+    Description,
+    Credits,
+    Copyright,
+    License,
+    Website,
+}
+
+/// 详情字段标签（九语闭集；时长 / 小节 / 轨道的词根与
+/// [`duration_label`] / [`bars_label`] / [`tracks_label`] 同源）。
+/// ⚠ 非中文译文按既有词汇拼成，未经专业复核（实验口径）。
+fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
+    use DetailField as F;
+    use Language as L;
+    match (lang, field) {
+        (L::ZhCn, F::Author) => "作者",
+        (L::ZhCn, F::Genre) => "曲风",
+        (L::ZhCn, F::Released) => "发布日期",
+        (L::ZhCn, F::Duration) => "时长",
+        (L::ZhCn, F::Bars) => "小节数",
+        (L::ZhCn, F::Tracks) => "轨道数",
+        (L::ZhCn, F::Description) => "简介",
+        (L::ZhCn, F::Credits) => "制作名单",
+        (L::ZhCn, F::Copyright) => "版权声明",
+        (L::ZhCn, F::License) => "许可协议",
+        (L::ZhCn, F::Website) => "作者网站",
+        (L::EnUs, F::Author) => "Author",
+        (L::EnUs, F::Genre) => "Genre",
+        (L::EnUs, F::Released) => "Release date",
+        (L::EnUs, F::Duration) => "Length",
+        (L::EnUs, F::Bars) => "Bars",
+        (L::EnUs, F::Tracks) => "Tracks",
+        (L::EnUs, F::Description) => "About",
+        (L::EnUs, F::Credits) => "Credits",
+        (L::EnUs, F::Copyright) => "Copyright",
+        (L::EnUs, F::License) => "License",
+        (L::EnUs, F::Website) => "Website",
+        (L::FrFr, F::Author) => "Artiste",
+        (L::FrFr, F::Genre) => "Genre",
+        (L::FrFr, F::Released) => "Date de sortie",
+        (L::FrFr, F::Duration) => "Durée",
+        (L::FrFr, F::Bars) => "Mesures",
+        (L::FrFr, F::Tracks) => "Pistes",
+        (L::FrFr, F::Description) => "Présentation",
+        (L::FrFr, F::Credits) => "Crédits",
+        (L::FrFr, F::Copyright) => "Droits d'auteur",
+        (L::FrFr, F::License) => "Licence",
+        (L::FrFr, F::Website) => "Site web",
+        (L::EsEs, F::Author) => "Artista",
+        (L::EsEs, F::Genre) => "Género",
+        (L::EsEs, F::Released) => "Fecha de lanzamiento",
+        (L::EsEs, F::Duration) => "Duración",
+        (L::EsEs, F::Bars) => "Compases",
+        (L::EsEs, F::Tracks) => "Pistas",
+        (L::EsEs, F::Description) => "Sinopsis",
+        (L::EsEs, F::Credits) => "Créditos",
+        (L::EsEs, F::Copyright) => "Derechos de autor",
+        (L::EsEs, F::License) => "Licencia",
+        (L::EsEs, F::Website) => "Sitio web",
+        (L::PtBr, F::Author) => "Artista",
+        (L::PtBr, F::Genre) => "Gênero",
+        (L::PtBr, F::Released) => "Data de lançamento",
+        (L::PtBr, F::Duration) => "Duração",
+        (L::PtBr, F::Bars) => "Compassos",
+        (L::PtBr, F::Tracks) => "Faixas",
+        (L::PtBr, F::Description) => "Sinopse",
+        (L::PtBr, F::Credits) => "Créditos",
+        (L::PtBr, F::Copyright) => "Direitos autorais",
+        (L::PtBr, F::License) => "Licença",
+        (L::PtBr, F::Website) => "Site",
+        (L::JaJp, F::Author) => "アーティスト",
+        (L::JaJp, F::Genre) => "ジャンル",
+        (L::JaJp, F::Released) => "リリース日",
+        (L::JaJp, F::Duration) => "長さ",
+        (L::JaJp, F::Bars) => "小節",
+        (L::JaJp, F::Tracks) => "トラック",
+        (L::JaJp, F::Description) => "紹介",
+        (L::JaJp, F::Credits) => "クレジット",
+        (L::JaJp, F::Copyright) => "著作権",
+        (L::JaJp, F::License) => "ライセンス",
+        (L::JaJp, F::Website) => "ウェブサイト",
+        (L::KoKr, F::Author) => "아티스트",
+        (L::KoKr, F::Genre) => "장르",
+        (L::KoKr, F::Released) => "발매일",
+        (L::KoKr, F::Duration) => "길이",
+        (L::KoKr, F::Bars) => "마디",
+        (L::KoKr, F::Tracks) => "트랙",
+        (L::KoKr, F::Description) => "소개",
+        (L::KoKr, F::Credits) => "크레딧",
+        (L::KoKr, F::Copyright) => "저작권",
+        (L::KoKr, F::License) => "라이선스",
+        (L::KoKr, F::Website) => "웹사이트",
+        (L::RuRu, F::Author) => "Автор",
+        (L::RuRu, F::Genre) => "Жанр",
+        (L::RuRu, F::Released) => "Дата выпуска",
+        (L::RuRu, F::Duration) => "Длительность",
+        (L::RuRu, F::Bars) => "Такты",
+        (L::RuRu, F::Tracks) => "Дорожки",
+        (L::RuRu, F::Description) => "Аннотация",
+        (L::RuRu, F::Credits) => "Создатели",
+        (L::RuRu, F::Copyright) => "Авторские права",
+        (L::RuRu, F::License) => "Лицензия",
+        (L::RuRu, F::Website) => "Сайт",
+        (L::DeDe, F::Author) => "Künstler",
+        (L::DeDe, F::Genre) => "Genre",
+        (L::DeDe, F::Released) => "Veröffentlichungsdatum",
+        (L::DeDe, F::Duration) => "Dauer",
+        (L::DeDe, F::Bars) => "Takte",
+        (L::DeDe, F::Tracks) => "Spuren",
+        (L::DeDe, F::Description) => "Kurzbeschreibung",
+        (L::DeDe, F::Credits) => "Mitwirkende",
+        (L::DeDe, F::Copyright) => "Urheberrecht",
+        (L::DeDe, F::License) => "Lizenz",
+        (L::DeDe, F::Website) => "Website",
+    }
+}
+
+/// 卡片「详情」展开区的带标签行（专辑详情页口径，Wang
+/// 2026-11-23 定）：按 作者 / 曲风 / 发布日期 / 时长 / 小节数 /
+/// 轨道数 / 简介 / 制作名单 / 版权声明 / 许可协议 / 作者网站 的
+/// 顺序排列，**有数据才出现该行**，无数据整行不出现、不留空
+/// 占位。数据来源：作者与时长 / 小节数 / 轨道数是容器实读实算；
+/// 其余字段容器没有，统一走旁挂 meta（见 [`DemoMeta`]）。
 #[must_use]
-pub fn demo_details_label(lang: Language, entry: &DemoEntry) -> String {
-    let mut lines = vec![tracks_label(lang, entry.track_count)];
-    if entry.bars > 0 {
-        lines.push(bars_label(lang, entry.bars));
-    }
+pub fn demo_detail_rows(lang: Language, entry: &DemoEntry) -> Vec<DemoDetailRow> {
+    let mut rows: Vec<DemoDetailRow> = Vec::new();
+    let mut push = |field: DetailField, value: Option<String>| {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            rows.push(DemoDetailRow {
+                label: detail_field_label(lang, field).to_owned(),
+                value,
+            });
+        }
+    };
+    push(DetailField::Author, entry.author.clone());
+    push(DetailField::Genre, entry.genre.clone());
+    push(DetailField::Released, entry.meta.released.clone());
     if entry.duration_secs > 0.0 {
-        lines.push(duration_label(lang, entry.duration_secs));
+        push(
+            DetailField::Duration,
+            Some(duration_clock(entry.duration_secs)),
+        );
     }
-    lines.join("\n")
+    if entry.bars > 0 {
+        push(DetailField::Bars, Some(entry.bars.to_string()));
+    }
+    push(DetailField::Tracks, Some(entry.track_count.to_string()));
+    push(DetailField::Description, entry.meta.description.clone());
+    push(DetailField::Credits, entry.meta.credits.clone());
+    push(DetailField::Copyright, entry.meta.copyright.clone());
+    push(DetailField::License, entry.meta.license.clone());
+    push(DetailField::Website, entry.meta.website.clone());
+    rows
+}
+
+/// 展开区高度估算（px，界面层据此把卡片长高、本行架板与下方
+/// 专辑下移）：与 .slint 侧展开区的版式常数对账——分界线 1 +
+/// 线后间距 4 + 每行（估算行数 × 18）+ 行间距 4 × (n − 1) +
+/// 底部留白 10。值列可用宽 = 卡内宽 248 − 标签列 72 − 间距 8
+/// = 168px；12px 字体的字宽估算：宽字（CJK 等）12px、窄字
+/// 6px，即每行约 28 个窄字单位。估算偏大只多留白、偏小会裁
+/// 字，宁可略偏大。
+fn detail_rows_height_px(rows: &[DemoDetailRow]) -> u32 {
+    if rows.is_empty() {
+        return 0;
+    }
+    let mut total: u32 = 1 + 4 + 10;
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            total += 4;
+        }
+        let units: u32 = row
+            .value
+            .chars()
+            .map(|c| if is_wide_char(c) { 2 } else { 1 })
+            .sum();
+        let lines = units.max(1).div_ceil(28);
+        total += lines * 18;
+    }
+    total
+}
+
+/// 字宽估算用的宽字判定（CJK 表意 / 假名 / 谚文 / 全角段）。
+fn is_wide_char(c: char) -> bool {
+    matches!(c,
+        '\u{1100}'..='\u{11FF}'   // 谚文字母
+        | '\u{2E80}'..='\u{9FFF}' // CJK 部首 / 假名 / 表意
+        | '\u{A000}'..='\u{A4CF}' // 彝文
+        | '\u{AC00}'..='\u{D7A3}' // 谚文音节
+        | '\u{F900}'..='\u{FAFF}' // CJK 兼容表意
+        | '\u{FF00}'..='\u{FF60}' // 全角形
+        | '\u{20000}'..='\u{2FA1F}')
+}
+
+/// 时长时钟写法（`4:32`，语言中立；带标签的整句见
+/// [`duration_label`]）。
+#[must_use]
+pub fn duration_clock(secs: f64) -> String {
+    let total = secs.round() as u64;
+    format!("{}:{:02}", total / 60, total % 60)
 }
 
 /// 「N 小节」（演示条目「详情」，九语闭集）。
@@ -492,8 +776,7 @@ pub fn bars_label(lang: Language, count: usize) -> String {
 /// 「时长 M:SS」（演示条目「详情」，九语闭集；时分秒写法语言中立）。
 #[must_use]
 pub fn duration_label(lang: Language, secs: f64) -> String {
-    let total = secs.round() as u64;
-    let clock = format!("{}:{:02}", total / 60, total % 60);
+    let clock = duration_clock(secs);
     match lang {
         Language::ZhCn => format!("时长 {clock}"),
         Language::EnUs => format!("Length {clock}"),
@@ -539,6 +822,8 @@ pub fn template_rows(entries: &[TemplateEntry], source: TemplateSource) -> Vec<C
             genre: String::new(),
             bpm_label: String::new(),
             details: String::new(),
+            detail_rows: Vec::new(),
+            details_height_px: 0,
             entry_index: Some(index),
             enabled: true,
             cover: None,

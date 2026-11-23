@@ -2021,6 +2021,9 @@ msgstr "空白のプロジェクトから始める（無題、保存時に場所
 msgid "详情"
 msgstr "詳細"
 
+msgid "收起"
+msgstr "折りたたむ"
+
 msgid "调号"
 msgstr "調号"
 

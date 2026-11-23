@@ -1442,6 +1442,14 @@ export struct TemplateChooserRow {
     entry-index: int,
 }
 
+// 演示卡片「详情」展开区里的一行（`crate::startup_chooser::
+// DemoDetailRow` 的界面投影）：标签弱化、值正常字号；只有演示
+// 条目有行，其余行恒为空模型。
+export struct StartupChooserDetailRow {
+    label: string,
+    value: string,
+}
+
 // 启动工程选择器的一行（`crate::startup_chooser::ChooserRow` 的界面投影）。
 // `kind` 的整数编码与 `startup_chooser::ChooserRowKind::code()` 同值：
 // 0 = 曲风标题、1 = 子曲风标题、2 = 条目。`entry-index` 只在 kind == 2
@@ -1451,6 +1459,8 @@ export struct TemplateChooserRow {
 // `has-cover` / `cover` 是演示工程分类的封面图（文件型 demo 实验）：
 // 只有宿主真实加载到封面文件的条目 `has-cover` 才为真，`cover` 是
 // 已解码的图像；其余行恒为 false + 空图，渲染侧据此决定画不画。
+// `detail-rows` / `details-height` 是演示卡「详情」原地展开区的
+// 带标签行与高度估算（宿主实算，界面不自己算），非演示行恒空 / 0。
 export struct StartupChooserRow {
     kind: int,
     label: string,
@@ -1458,6 +1468,8 @@ export struct StartupChooserRow {
     genre: string,
     bpm-label: string,
     details: string,
+    detail-rows: [StartupChooserDetailRow],
+    details-height: length,
     entry-index: int,
     enabled: bool,
     has-cover: bool,

@@ -2975,6 +2975,24 @@ impl ElementRegistry {
                 false,
             );
         }
+        // 演示卡「详情 / 收起」钮与卡内详情展开区（唱片架实验，
+        // 只在演示分类的卡片里出现）：与行同界逐号登记。
+        for row_index in 0..crate::startup_chooser::CHOOSER_MAX_ROWS {
+            registry.add(
+                &format!("startup-row-details-{row_index}"),
+                ElementKind::Button,
+                "dialogs/startup_chooser.slint",
+                &format!("演示卡第 {row_index} 行的详情展开钮"),
+                false,
+            );
+            registry.add(
+                &format!("startup-row-details-panel-{row_index}"),
+                ElementKind::Text,
+                "dialogs/startup_chooser.slint",
+                &format!("演示卡第 {row_index} 行的详情展开区"),
+                false,
+            );
+        }
         registry.add(
             "startup-chooser-empty-state",
             ElementKind::Text,

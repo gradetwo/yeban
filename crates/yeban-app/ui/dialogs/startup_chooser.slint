@@ -39,6 +39,13 @@ export component StartupChooserDialog inherits Rectangle {
     // ---- 纯界面状态（宿主可预置，如取证帧要展开 Details） ------------------
     in-out property <bool> details-open: false;
 
+    // 唱片架手风琴（纯界面状态）：当前展开详情的演示卡序号与它
+    // 长高的量（= 该行的 details-height，由卡片自己的「详情 /
+    // 收起」钮在切换时写入，架子层据此重排本行架板与下方专辑）。
+    // -1 / 0px = 全收起。同一时刻只许一张卡展开。
+    in-out property <int> demo-expanded-index: -1;
+    in-out property <length> demo-expanded-extra: 0px;
+
     callback category-selected(int);
     callback entry-activated(int);
     callback new-project();
@@ -975,10 +982,17 @@ export component StartupChooserDialog inherits Rectangle {
             // ---- 演示分类：唱片架平铺（实验改版，Wang 2026-11-23 定）----
             // 每条 demo 是一张专辑卡：大封面在上（248×248），标题 /
             // 曲风 / 弱化 BPM 在封面下方；每行卡片下方横贯一条架
-            // 板带，专辑之间分隔明显、一眼数得清。技术信息（轨道
-            // 数 / 小节数 / 时长）只从卡片右下角的「详情」入口展开
-            // 成卡内浮层，⛔ 不上主面。演示分类的行恒为条目行
-            // （kind == 2），无分组标题行。
+            // 板带，专辑之间分隔明显、一眼数得清。专辑页字段
+            // （作者 / 曲风 / 发布日期 / 时长 / 小节数 / 轨道数 /
+            // 简介 / 制作名单 / 版权声明 / 许可协议 / 作者网站）
+            // 只从卡片右下角的「详情」入口在**原地折叠展开**：
+            // 详情区长在同一张卡内部、既有文字块下方，是带标签
+            // 的行列（标签弱化、值正常字号，有数据才出现该行）；
+            // 卡片随展开行数长高、本行架板与下方专辑顺势下移；
+            // ⛔ 不用盖住原卡的浮层（Wang 2026-11-23 亲验否决），
+            // ⛔ 不上主面。手风琴口径：展开状态只存根上的
+            // demo-expanded-index 一处，同一时刻只许一张卡展开。
+            // 演示分类的行恒为条目行（kind == 2），无分组标题行。
             if root.category == 2 : demo-shelf := Flickable {
                 x: 0;
                 y: 0;
@@ -986,14 +1000,19 @@ export component StartupChooserDialog inherits Rectangle {
                 height: parent.height;
                 property <int> cols: max(1, Math.floor((self.width - 20px) / 300px));
                 property <int> grid-rows: max(1, Math.floor((root.rows.length + self.cols - 1) / self.cols));
+                // 展开卡所在的行（展开状态存根上的
+                // demo-expanded-index；无展开时为 -1，下移条件都
+                // 另带 demo-expanded-index >= 0 守卫，不靠 -1 恒假）。
+                property <int> expanded-row: root.demo-expanded-index < 0 ? -1 : Math.floor(root.demo-expanded-index / self.cols);
                 content-width: self.width;
-                content-height: max(self.height, self.grid-rows * 398px + 16px);
+                content-height: max(self.height, self.grid-rows * 398px + 16px + (root.demo-expanded-index >= 0 ? root.demo-expanded-extra : 0px));
                 interactive: true;
 
-                // 架板带：每行一条，横贯整行，像唱片架的隔板。
+                // 架板带：每行一条，横贯整行，像唱片架的隔板；
+                // 展开行及其下方的架板随展开量下移。
                 for gr in demo-shelf.grid-rows : Rectangle {
                     x: 12px;
-                    y: 380px + gr * 398px;
+                    y: 380px + gr * 398px + (root.demo-expanded-index >= 0 && demo-shelf.expanded-row <= gr ? root.demo-expanded-extra : 0px);
                     width: parent.width - 24px;
                     height: 12px;
                     background: Tokens.bg-panel-alt;
@@ -1001,11 +1020,12 @@ export component StartupChooserDialog inherits Rectangle {
                 }
 
                 for row[row-index] in root.rows : card := Rectangle {
-                    property <bool> show-details: false;
+                    // 本卡是否展开（与根上 demo-expanded-index 对读）。
+                    property <bool> expanded: root.demo-expanded-index == row-index;
                     x: 24px + Math.mod(row-index, demo-shelf.cols) * 300px;
-                    y: 20px + Math.floor(row-index / demo-shelf.cols) * 398px;
+                    y: 20px + Math.floor(row-index / demo-shelf.cols) * 398px + (root.demo-expanded-index >= 0 && demo-shelf.expanded-row < Math.floor(row-index / demo-shelf.cols) ? root.demo-expanded-extra : 0px);
                     width: 272px;
-                    height: 350px;
+                    height: 350px + (self.expanded ? row.details-height : 0px);
                     background: root.selected-entry == row.entry-index ? Tokens.bg-raised
                         : card-touch.has-hover ? Tokens.bg-panel-alt : Tokens.bg-panel;
                     border-radius: Tokens.radius-lg;
@@ -1017,8 +1037,8 @@ export component StartupChooserDialog inherits Rectangle {
                     accessible-label: row.label;
                     accessible-action-default => { root.selected-entry = row.entry-index; }
 
-                    // 整卡点击层声明在最前：其后声明的「详情」按钮与
-                    // 详情浮层的 TouchArea 叠在它上面、优先吃点击；
+                    // 整卡点击层声明在最前：其后声明的「详情 / 收起」
+                    // 按钮的 TouchArea 叠在它上面、优先吃点击；
                     // 文字与封面不吃事件，点击落到这一层 = 选中，
                     // 双击 = 打开（与列表行同一套语义）。
                     card-touch := TouchArea {
@@ -1115,8 +1135,10 @@ export component StartupChooserDialog inherits Rectangle {
                         overflow: elide;
                     }
 
-                    // 「详情」小入口：点开在卡内列出轨道数 / 小节数 /
-                    // 时长（宿主实读实算），再点任意处收起。
+                    // 「详情 / 收起」小入口：点击在原地展开 / 收起
+                    // 下方详情区（卡片按该行 details-height 长高 /
+                    // 复原）；展开状态写根上的 demo-expanded-*，
+                    // 展开另一张卡时当前张自动收起（手风琴）。
                     Rectangle {
                         x: 208px;
                         y: 318px;
@@ -1126,15 +1148,21 @@ export component StartupChooserDialog inherits Rectangle {
                         border-radius: Tokens.radius-sm;
                         accessible-role: button;
                         accessible-id: "startup-row-details-" + row-index;
-                        accessible-label: @tr("详情");
-                        accessible-action-default => { card.show-details = true; }
+                        accessible-label: card.expanded ? @tr("收起") : @tr("详情");
+                        accessible-action-default => {
+                            // ⚠ 顺序要紧：先写 extra 再写 index。
+                            // index 一变 card.expanded 绑定立刻翻转，
+                            // 第二行读到的就是新值、会把 extra 写反。
+                            root.demo-expanded-extra = card.expanded ? 0px : row.details-height;
+                            root.demo-expanded-index = card.expanded ? -1 : row-index;
+                        }
 
                         UiText {
                             x: 0;
                             y: 0;
                             width: parent.width;
                             height: parent.height;
-                            text: @tr("详情");
+                            text: card.expanded ? @tr("收起") : @tr("详情");
                             color: Tokens.ink-1;
                             font-size: Tokens.font-size-sm;
                             horizontal-alignment: center;
@@ -1145,37 +1173,63 @@ export component StartupChooserDialog inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             width: parent.width;
                             height: parent.height;
-                            clicked => { card.show-details = true; }
+                            clicked => {
+                                // 顺序同 accessible-action-default：
+                                // 先 extra 后 index，防 expanded 翻转读反。
+                                root.demo-expanded-extra = card.expanded ? 0px : row.details-height;
+                                root.demo-expanded-index = card.expanded ? -1 : row-index;
+                            }
                         }
                     }
 
-                    // 详情浮层（卡内展开，实底不透明，点任意处收起）。
-                    if card.show-details : Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width;
-                        height: parent.height;
-                        background: Tokens.bg-raised;
+                    // 详情展开区（原地折叠展开）：长在同一张卡内部、
+                    // 既有文字块（标题 / 曲风 / BPM 行）下方，卡片
+                    // 高度已由 expanded 绑定按 details-height 长高；
+                    // 封面与文字块全程可见、不被覆盖。内容是带标签
+                    // 的专辑页行列：标签弱化、值正常字号；行高与
+                    // 间距常数与宿主 detail_rows_height_px 对账
+                    // （分界线 1 + 间距 4 + 行 18/行 + 底部 10）。
+                    if card.expanded : Rectangle {
+                        x: 12px;
+                        y: 350px;
+                        width: 248px;
+                        height: row.details-height;
                         accessible-role: text;
                         accessible-id: "startup-row-details-panel-" + row-index;
                         accessible-label: row.details;
 
-                        UiText {
-                            x: Tokens.space-6;
-                            y: Tokens.space-6;
-                            width: parent.width - 32px;
-                            height: parent.height - 32px;
-                            text: row.details;
-                            color: Tokens.ink-0;
-                            font-size: Tokens.font-size-md;
-                            wrap: word-wrap;
-                        }
-
-                        TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
+                        VerticalLayout {
+                            x: 0;
+                            y: 0;
                             width: parent.width;
-                            height: parent.height;
-                            clicked => { card.show-details = false; }
+                            spacing: 4px;
+
+                            // 与上方文字块之间的一条分界线，标明展开
+                            // 区是这张卡自己的下半截，不是另一张卡。
+                            Rectangle {
+                                height: 1px;
+                                background: Tokens.line;
+                            }
+
+                            for dr in row.detail-rows : HorizontalLayout {
+                                spacing: 8px;
+
+                                UiText {
+                                    width: 72px;
+                                    text: dr.label;
+                                    color: Tokens.ink-2;
+                                    font-size: Tokens.font-size-sm;
+                                    overflow: elide;
+                                }
+
+                                UiText {
+                                    horizontal-stretch: 1;
+                                    text: dr.value;
+                                    color: Tokens.ink-0;
+                                    font-size: Tokens.font-size-md;
+                                    wrap: word-wrap;
+                                }
+                            }
                         }
                     }
                 }

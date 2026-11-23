@@ -2021,6 +2021,9 @@ msgstr "Start from a blank project (untitled; choose where to save later)"
 msgid "详情"
 msgstr "Details"
 
+msgid "收起"
+msgstr "Collapse"
+
 msgid "调号"
 msgstr "Key Signature"
 
