@@ -134,6 +134,8 @@ export component MissingSoundsDialog inherits Rectangle {
         height: parent.height;
     }
 
+    // 键盘（D-UI-19 / T-FIX-182）：Esc 关闭；`Tab` / `Shift+Tab` 在两格
+    //（✕ / 「先不管」）之间闭环 —— 与另存为模板同款陷阱。
     trap := FocusScope {
         x: 0;
         y: 0;
@@ -142,7 +144,17 @@ export component MissingSoundsDialog inherits Rectangle {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         key-pressed(event) => {
-            if (event.text == "\u{1b}") {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
                 root.close();
                 accept
             } else {
@@ -198,6 +210,22 @@ export component MissingSoundsDialog inherits Rectangle {
                 accessible-id: "missing-sounds-close-button";
                 accessible-label: @tr("先不管，关掉");
                 accessible-action-default => { root.close(); }
+
+                missing-sounds-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
 
                 UiText {
                     x: 0;
@@ -362,6 +390,22 @@ export component MissingSoundsDialog inherits Rectangle {
                 accessible-label: @tr("先不管");
                 accessible-action-default => { root.close(); }
 
+                missing-sounds-later-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
                 UiText {
                     x: 0;
                     y: 0;
@@ -380,6 +424,47 @@ export component MissingSoundsDialog inherits Rectangle {
                     clicked => { root.close(); }
                 }
             }
+        }
+    }
+
+    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182）-------------------------------
+    /// 两格里哪一格正持有键盘：`0` ✕ 关闭 / `1` 「先不管」/ `-1` 不在模态内。
+    /// 行内候选按钮今天没有 `FocusScope` ⇒ 不在轮转表里（⛔ 不是漏网：给动态行
+    /// 加取焦是另一票，见回执）；`Tab` 只在这两格之间闭环。
+    out property <int> focused-control:
+        missing-sounds-close-focus.has-focus ? 0
+        : missing-sounds-later-focus.has-focus ? 1
+        : -1;
+
+    /// 打开时由宿主调用：焦点落 ✕ 关闭（首个可聚焦控件）。
+    public function focus-first-control() {
+        missing-sounds-close-focus.focus();
+    }
+
+    /// 两格的**唯一**一张「序号 → 控件」表。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            missing-sounds-close-focus.focus();
+        } else if (index == 1) {
+            missing-sounds-later-focus.focus();
+        }
+    }
+
+    /// `Tab`：✕ → 「先不管」→ 回 ✕。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else {
+            root.focus-first-control();
+        }
+    }
+
+    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else {
+            root.focus-control(1);
         }
     }
 }

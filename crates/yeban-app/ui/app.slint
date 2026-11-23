@@ -444,6 +444,10 @@ export component MainWindow inherits Window {
     public function focus-drum-gen-dialog() { drum-gen-dialog.focus-first-field(); }
     public function focus-export-wav-dialog() { export-wav-dialog.focus-first-field(); }
     public function focus-audio-settings-dialog() { audio-settings-dialog.focus-first-control(); }
+    // T-FIX-182：T-FIX-131 漏掉的三只 —— 与上面五只同一落点。
+    public function focus-template-save-dialog() { template-save-dialog.focus-first-field(); }
+    public function focus-sound-library-dialog() { sound-library-dialog.focus-first-control(); }
+    public function focus-missing-sounds-dialog() { missing-sounds-dialog.focus-first-control(); }
 
     // ⛔ 2026-11-23 (T-FIX-143)：下面这批属性在 `.slint` 侧**零读者**（声明行是唯一出现），
     //   宿主仍按 snake_case setter 写入 ⇒ 写进去不产生任何界面效果。保留仅为不打断宿主调用，
@@ -625,6 +629,8 @@ export component MainWindow inherits Window {
     // 由宿主写（`host::wire_sound_library_dialog`），形态与对话框文件头
     // 的数据契约一致；默认全空 + 关着 ⇒ 默认帧不变。
     in-out property <bool> sound-library-open: false;
+    // 焦点读数（T-FIX-182）：与上面五只同款，从 Slint 自己的 `has-focus` 推导。
+    in-out property <int> sound-library-focused-control: sound-library-dialog.focused-control;
     in-out property <[string]> sound-installed-ids: [];
     in-out property <[string]> sound-installed-names: [];
     in-out property <[string]> sound-installed-locations: [];
@@ -652,6 +658,8 @@ export component MainWindow inherits Window {
     // 有轨的音源没装好，就把"哪条轨缺什么 + 换成哪件同类"摆到眼前。
     // 平行数组同样全部由宿主写（`host::wire_missing_sounds_dialog`）。
     in-out property <bool> missing-sounds-open: false;
+    // 焦点读数（T-FIX-182）：与上面五只同款，从 Slint 自己的 `has-focus` 推导。
+    in-out property <int> missing-sounds-focused-control: missing-sounds-dialog.focused-control;
     in-out property <int> missing-row-count: 0;
     in-out property <string> missing-sounds-summary: "";
     in-out property <[string]> missing-track-names: [];
@@ -851,6 +859,8 @@ export component MainWindow inherits Window {
     in-out property <string> template-save-hint: "";
     in-out property <string> template-save-name: "";
     in-out property <bool> template-save-open: false;
+    // 焦点读数（T-FIX-182）：与上面五只同款，从 Slint 自己的 `has-focus` 推导。
+    in-out property <int> template-save-focused-control: template-save-dialog.focused-control;
     in-out property <string> template-save-style: "";
     in-out property <string> template-save-substyle: "";
     in-out property <string> timecode: "001.01.000";
@@ -2329,7 +2339,9 @@ export component MainWindow inherits Window {
                     accessible-role: button;
                     accessible-id: "engine-error-open-sound-library";
                     accessible-label: @tr("去音源管理");
-                    accessible-action-default => { root.sound-library-open = true; }
+                    // T-FIX-182：⛔ 不直接 `sound-library-open = true` —— 那会跳过
+                    // `on_open_sound_library` 的五步准备与取焦（`host.rs` 的警告同款）。
+                    accessible-action-default => { root.open-sound-library(); }
                     Text {
                         width: parent.width; height: parent.height;
                         text: @tr("去音源管理");
@@ -2340,7 +2352,7 @@ export component MainWindow inherits Window {
                     TouchArea {
                         mouse-cursor: MouseCursor.pointer;
                         width: parent.width; height: parent.height;
-                        clicked => { root.sound-library-open = true; }
+                        clicked => { root.open-sound-library(); }
                     }
                 }
                 Rectangle {
@@ -2596,7 +2608,10 @@ export component MainWindow inherits Window {
         }
 
         // Visible Save-As-Template Modal Dialog（另存为模板）
-        if root.template-save-open : SaveAsTemplateDialog {
+        // T-FIX-182：`if` 改为 `visible:` 门控（与 T-FIX-131 的五只同理）——
+        // `if` 内声明的 id 在组件作用域不可见，`focus-template-save-dialog()` 无法引用。
+        template-save-dialog := SaveAsTemplateDialog {
+            visible: root.template-save-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2610,12 +2625,17 @@ export component MainWindow inherits Window {
             exists <=> root.template-save-exists;
             confirm => { root.confirm-save-as-template(); }
             overwrite => { root.confirm-template-overwrite(); }
-            close => { root.template-save-open = false; }
+            // T-FIX-182：`Esc` / ✕ 关窗 ⇒ 焦点复位回快捷键层（与五只模态的宿主
+            // `close-*` 回调同一语义；本只没有宿主 `close` 回调，关窗本就写在
+            // `.slint` 里 ⇒ 复位也写在这里，不另起回调）。
+            close => { root.template-save-open = false; root.focus-shortcut-layer(); }
         }
 
         // Visible Sound Library Manager Dialog（line/sound-library-manager）
         // 缺音源救援面板：只在"真的有轨的音源没装好"时出现（默认关着）。
-        if root.missing-sounds-open : MissingSoundsDialog {
+        // T-FIX-182：`if` 改为 `visible:` 门控（与 T-FIX-131 的五只同理）。
+        missing-sounds-dialog := MissingSoundsDialog {
+            visible: root.missing-sounds-open;
             z: 9400;
             row-count: root.missing-row-count;
             x: 0px;
@@ -2645,7 +2665,9 @@ export component MainWindow inherits Window {
             download-original(row) => { root.missing-download-original(row); }
         }
 
-        if root.sound-library-open : SoundLibraryDialog {
+        // T-FIX-182：`if` 改为 `visible:` 门控（与 T-FIX-131 的五只同理）。
+        sound-library-dialog := SoundLibraryDialog {
+            visible: root.sound-library-open;
             z: 9600;
             x: 0px;
             y: 0px;
@@ -2671,7 +2693,9 @@ export component MainWindow inherits Window {
             retry-pack-id: root.sound-library-retry-id;
             target-track-name: root.sound-library-target-name;
             search-text <=> root.sound-library-search;
-            close => { root.close-sound-library(); }
+            // T-FIX-182：`visible:` 门控下组件不重建 ⇒ 关窗时显式清掉确认态
+            //（`if` 门控时代是重建带来的复位，见对话框文件头的删除确认一节）。
+            close => { sound-library-dialog.reset-confirm-state(); root.close-sound-library(); }
             refresh-catalog => { root.sound-library-refresh-catalog(); }
             download-pack(id) => { root.sound-library-download(id); }
             delete-library(id) => { root.sound-library-delete(id); }

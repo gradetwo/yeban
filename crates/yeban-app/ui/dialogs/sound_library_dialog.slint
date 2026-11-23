@@ -99,8 +99,8 @@ export component SoundLibraryDialog inherits Rectangle {
         height: parent.height;
     }
 
-    // 键盘：Esc 关闭（模态持有 Esc）；各按钮自带 FocusScope 支持
-    // Return / Space 激活（与人性化对话框的按钮同款）。
+    // 键盘（D-UI-19 / T-FIX-182）：Esc 关闭（模态持有 Esc）；`Tab` /
+    // `Shift+Tab` 在两格（搜索框 / ✕）之间闭环 —— 与另存为模板同款陷阱。
     sound-library-trap := FocusScope {
         x: 0;
         y: 0;
@@ -109,7 +109,17 @@ export component SoundLibraryDialog inherits Rectangle {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         key-pressed(event) => {
-            if (event.text == "\u{1b}") {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
                 root.close();
                 accept
             } else {
@@ -172,6 +182,22 @@ export component SoundLibraryDialog inherits Rectangle {
                 accessible-id: "sound-library-close-button";
                 accessible-label: @tr("关闭音源管理");
                 accessible-action-default => { root.close(); }
+
+                sound-library-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
 
                 UiText {
                     x: 0;
@@ -908,5 +934,53 @@ export component SoundLibraryDialog inherits Rectangle {
                 }
             }
         }
+    }
+
+    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182）-------------------------------
+    /// 两格里哪一格正持有键盘：`0` 搜索框 / `1` ✕ 关闭 / `-1` 不在模态内。
+    /// 行内按钮（删除 / 下载 / 用到当前轨）今天没有 `FocusScope` ⇒ 不在轮转表里
+    /// （⛔ 不是漏网：给动态行加取焦是另一票，见回执）；`Tab` 只在这两格之间闭环。
+    out property <int> focused-control:
+        sound-library-search-input.has-focus ? 0
+        : sound-library-close-focus.has-focus ? 1
+        : -1;
+
+    /// 打开时由宿主调用：焦点落搜索框（首个可聚焦控件）。
+    public function focus-first-control() {
+        sound-library-search-input.focus();
+    }
+
+    /// 两格的**唯一**一张「序号 → 控件」表。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            sound-library-search-input.focus();
+        } else if (index == 1) {
+            sound-library-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：搜索框 → ✕ → 回搜索框。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else {
+            root.focus-first-control();
+        }
+    }
+
+    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else {
+            root.focus-control(1);
+        }
+    }
+
+    /// 关窗时由 `MainWindow` 的 `close` 回调调用：`visible:` 门控下组件不重建，
+    /// 确认态不会自己复位（`if` 门控时代是重建带来的）⇒ 这里显式清掉。
+    public function reset-confirm-state() {
+        root.confirm-delete-id = "";
+        root.doctor-confirm-id = "";
     }
 }

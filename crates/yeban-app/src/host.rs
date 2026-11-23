@@ -10270,6 +10270,9 @@ pub fn wire_project_templates(
             ui.set_template_save_error(String::new().into());
             ui.set_template_save_exists(false);
             ui.set_template_save_open(true);
+            // T-FIX-182：打开即取焦（与五只已修模态同一顺序：先置位、再同步取焦；
+            // ⛔ 不用 `changed`，无头判据不跑事件循环时它不触发）。
+            ui.invoke_focus_template_save_dialog();
         });
     }
 
@@ -12788,6 +12791,8 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             publish_library_target(&ui);
             ui.set_sound_catalog_state(0);
             ui.set_sound_library_open(true);
+            // T-FIX-182：打开即取焦（与五只已修模态同一顺序）。
+            ui.invoke_focus_sound_library_dialog();
             start_catalog_fetch();
         });
     }
@@ -12807,8 +12812,10 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             }
             // 从救援面板过来的（还有没解决的轨）⇒ 关掉音源管理就把面板还给他：
             // 下载没成 / 用户放弃，都不该让他"找不到刚才那个面板"。
+            // T-FIX-182：还回来的面板同样要同步取焦（与初次打开同一顺序）。
             if rescue_rows_remaining() {
                 ui.set_missing_sounds_open(true);
+                ui.invoke_focus_missing_sounds_dialog();
             }
         });
     }
@@ -26368,7 +26375,12 @@ pub fn wire_missing_sounds_dialog(
 ) {
     let rows: MissingRows = Rc::new(RefCell::new(items));
     publish_missing_rows(ui, &rows);
-    ui.set_missing_sounds_open(!rows.borrow().is_empty());
+    // T-FIX-182：有缺失 ⇒ 打开即取焦（与五只已修模态同一顺序；空 ⇒ 不开也不取焦）。
+    let should_open = !rows.borrow().is_empty();
+    ui.set_missing_sounds_open(should_open);
+    if should_open {
+        ui.invoke_focus_missing_sounds_dialog();
+    }
     // 把"活引用"交给下载完成那一跳：点了「下载」之后**不用再点第二次**。
     RESCUE_SINK.with(|slot| {
         *slot.borrow_mut() = Some(RescueSink {
@@ -26474,13 +26486,19 @@ pub fn wire_missing_sounds_dialog(
     });
 
     // ---- 先不管 ------------------------------------------------------------
+    // T-FIX-182：关窗 ⇒ 焦点复位回快捷键层（与音源管理的 `on_close_sound_library`
+    // 同一写法；`Esc` / ✕ 都走这条回调）。
     ui.on_missing_close({
         let weak = ui.as_weak();
         move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            let was_open = ui.get_missing_sounds_open();
             ui.set_missing_sounds_open(false);
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
         }
     });
 }
