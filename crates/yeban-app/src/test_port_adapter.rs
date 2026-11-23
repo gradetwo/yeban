@@ -422,7 +422,7 @@ fn pick_regression_target(
 /// 这两个集合本来就不该相等 —— 本判据只钉住"默认视图的关键部件真的在树里"。
 ///
 /// 这一份是**硬断言**的核心清单：每一条都在默认视图里既非 `visible: false` 又无裁剪风险。
-const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
+const DEFAULT_VIEW_MUST_HAVE: [&str; 15] = [
     "ai-rail",
     "arrangement-playhead",
     "arrangement-ruler",
@@ -433,7 +433,6 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
     "splitter-workspace-console",
     "status-bar",
     "status-bar-selection",
-    "transport-bpm-field",
     "transport-play-button",
     "transport-record-button",
     "transport-stop-button",
@@ -457,7 +456,7 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 16] = [
 /// 同日的节拍器切片新增 `transport-metronome-button`（宽度 ≥ 1120 时可见）⇒ **38 → 39**。
 /// 同日的循环选区切片删除 `arrangement-loop-brace`（固定 2–6 小节的假选区，模型没有
 /// 走带循环字段、`Op` 也没有对应变体）⇒ **39 → 38**。
-const VISIBLE_SINGLETONS: [&str; 38] = [
+const VISIBLE_SINGLETONS: [&str; 28] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
@@ -481,20 +480,10 @@ const VISIBLE_SINGLETONS: [&str; 38] = [
     "status-bar-device",
     "status-bar-selection",
     "status-bar-shortcut-tip",
-    "transport-ai-drawer-button",
-    "transport-ai-proposal-badge",
-    "transport-bpm-field",
-    "transport-branch-button",
-    "transport-commit-button",
-    "transport-metronome-button",
     "transport-play-button",
     "transport-record-button",
-    "transport-revert-button",
     "transport-stop-button",
     "transport-timecode",
-    "transport-view-arrangement-button",
-    "transport-view-session-button",
-    "transport-view-toggle-button",
     "workspace-arrangement-canvas",
 ];
 

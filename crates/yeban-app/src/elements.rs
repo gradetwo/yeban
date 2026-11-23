@@ -135,6 +135,9 @@ pub struct ElementMeta {
     pub label: String,
     /// `[UI-MCP-002]` 是否为每帧跳变的高频刷新区域 (截图比对前必须置黑)。
     pub dynamic_region: bool,
+    /// T-FIX-155：该语义 ID 今天没有活控件（只存在于死文件 transport.slint 的登记）。
+    /// component 此时存的是缺席原因，不是文件名；component_paths_point_at_real_slint_files 跳过它。
+    pub known_absent: bool,
 }
 
 /// 语义元素注册表: `BTreeMap<id, ElementMeta>`。
@@ -283,28 +286,25 @@ impl ElementRegistry {
         );
         // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
         // 宽档（≥1120）才画；窄档仍可从键盘拨动（同一个宿主落点）。
-        registry.add(
+        registry.add_known_absent(
             "transport-metronome-button",
             ElementKind::Button,
-            "transport.slint",
             "节拍器 (Cmd/Ctrl + Alt + N)",
-            false,
+            "顶栏没有节拍器控件",
         );
         // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
         // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。
-        registry.add(
+        registry.add_known_absent(
             "transport-save-button",
             ElementKind::Button,
-            "transport.slint",
             "保存工程",
-            false,
+            "顶栏没有保存键；保存走宿主菜单",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-bpm-field",
             ElementKind::TextInput,
-            "transport.slint",
             "速度 BPM",
-            false,
+            "活顶栏的 BPM 只是只读读数（点击循环 124/128/140），不是 TextInput",
         );
         registry.add(
             "transport-timecode",
@@ -313,64 +313,53 @@ impl ElementRegistry {
             "主时间码",
             true,
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-branch-button",
             ElementKind::Combobox,
-            "transport.slint",
             "当前分支",
-            false,
+            "分支切换未接线（见 module_actions.slint 注释）",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-commit-button",
             ElementKind::Button,
-            "transport.slint",
             "提交当前编辑为一个 Commit",
-            false,
+            "提交未接线（见 module_actions.slint 注释）",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-revert-button",
             ElementKind::Button,
-            "transport.slint",
             "回滚到上一个 Commit",
-            false,
+            "回滚未接线（见 module_actions.slint 注释）",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-ai-proposal-badge",
             ElementKind::Button,
-            "transport.slint",
-            // 2026-10-08（诚实性审计）：这里原写 `"AI 编曲提案待审查"` —— 那是一个**没有
-            // 数据源的状态声明**，与 `ui/transport.slint` 的假读数同源。徽章现在只声明
-            // 它的真实动作（`open-ai-proposals` → 打开提案抽屉），标签随之改为动作描述。
             "打开 AI 编曲提案审核抽屉",
-            false,
+            "顶栏没有 AI 徽章（AI 侧入口在 app.slint 的 ai-rail-*）",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-view-session-button",
             ElementKind::Tab,
-            "transport.slint",
             "Session 触发矩阵 (F5)",
-            false,
+            "顶栏没有视图切换键",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-view-arrangement-button",
             ElementKind::Tab,
-            "transport.slint",
             "Arrangement 时间轴 (F6)",
-            false,
+            "顶栏没有视图切换键",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-view-toggle-button",
             ElementKind::Button,
-            "transport.slint",
             "切换 Session / Arrangement (Tab, 仅画布聚焦时)",
-            false,
+            "顶栏没有视图切换键",
         );
-        registry.add(
+        registry.add_known_absent(
             "transport-ai-drawer-button",
             ElementKind::Button,
-            "transport.slint",
             "AI 协作栏抽屉",
-            false,
+            "顶栏没有 AI 抽屉键",
         );
         // ⭐ 窄窗溢出（Wang 2026-11-17 裁决 F2）：`transport_bar.slint` 的 ⋯ 钮与
         // 弹出层三行。只在 `overflow` 档在场；注册表按"无条件声明"登记
@@ -3404,8 +3393,28 @@ impl ElementRegistry {
             component,
             label: label.to_owned(),
             dynamic_region,
+            known_absent: false,
         });
         assert!(previous.is_none(), "语义元素 ID 重复: {id}");
+    }
+
+    /// T-FIX-155：登记一条今天没有活控件的语义 ID（原登记指向死文件）。
+    pub fn add_known_absent(
+        &mut self,
+        id: &str,
+        kind: ElementKind,
+        label: &str,
+        reason: &'static str,
+    ) {
+        let previous = self.insert(ElementMeta {
+            id: id.to_owned(),
+            kind,
+            component: reason,
+            label: label.to_owned(),
+            dynamic_region: false,
+            known_absent: true,
+        });
+        debug_assert!(previous.is_none(), "语义 ID 重复登记: {id}");
     }
 
     /// 按 ID 精确查找。
@@ -3824,6 +3833,10 @@ mod tests {
     fn component_paths_point_at_real_slint_files() {
         let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
         for meta in registry().iter() {
+            // T-FIX-155：known_absent 的 component 存的是缺席原因，不是文件名。
+            if meta.known_absent {
+                continue;
+            }
             let path = ui_dir.join(meta.component);
             assert!(
                 path.is_file(),
