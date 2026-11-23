@@ -267,7 +267,6 @@ export component MainWindow inherits Window {
     in-out property <bool> control-room-dim: false;
     in-out property <bool> control-room-mono: false;
     in-out property <bool> control-room-side: false;
-    in-out property <float> control-room-monitor: 0.78;
 
     public function apply-dock-tab(t: string) {
         Theme.active-dock-tab = t;
@@ -439,6 +438,14 @@ export component MainWindow inherits Window {
     public function focus-export-wav-dialog() { }
     public function focus-audio-settings-dialog() { }
 
+    // ⛔ 2026-11-23 (T-FIX-143)：下面这批属性在 `.slint` 侧**零读者**（声明行是唯一出现），
+    //   宿主仍按 snake_case setter 写入 ⇒ 写进去不产生任何界面效果。保留仅为不打断宿主调用，
+    //   **勿再接线**；确认宿主不再写入后应整条删除。清单：
+    //   clip-drag-origin-x / note-drag-origin-x / note-drag-origin-y / startup-key-index /
+    //   timecode-ticks-bar / timecode-ticks-beat / track-height-drag-start-px / track-height-drag-start-y /
+    //   track-height-override-ids / track-height-override-pxs / track-reorder-start-y / track-reorder-track /
+    //   velocity-drag-active。另：同批只声明零引用属性里 control-room-monitor / console-fixed /
+    //   splitter-dragging / splitter-press-y 已在本单一并删除（逐条见交付回执）。
     // ---- 契约兼容面: 新 UI 视觉组件树保留, 数据/控制面与 main 对齐 ----
     // 由 main 版 MainWindow 顶层 property/callback 声明机械补全: 字面量初值原样保留,
     // 绑定表达式(依赖旧组件树)改用类型默认值。host.rs 接线层与判据的唯一契约面。
@@ -501,7 +508,6 @@ export component MainWindow inherits Window {
     in-out property <bool> compact: self.width < Tokens.breakpoint-full-hd * 1px;
     in-out property <bool> compressor-available: false;
     in-out property <string> compressor-info: @tr("压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB");
-    in-out property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
     in-out property <int> console-height-px: 0;
     in-out property <length> console-height-readout: 0px;
     in-out property <int> console-tab: 0;
@@ -758,8 +764,6 @@ export component MainWindow inherits Window {
     in-out property <[float]> song-overview-tension: [];
     in-out property <[color]> song-overview-tension-colors: [];
     in-out property <int> song-overview-total-bars: 0;
-    in-out property <bool> splitter-dragging: false;
-    in-out property <length> splitter-press-y: 0px;
     in-out property <int> startup-category: 0;
     in-out property <bool> startup-chooser-open: false;
     in-out property <bool> startup-details-open: false;
