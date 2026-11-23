@@ -1502,6 +1502,11 @@ fn wire_callbacks(
     // `wire_song_overview`）。装配时已经按活工程算过一次真实数据并注入；
     // 换工程会重跑 `wire_callbacks`（`main.rs` 的 `after` 闭包），于是接线 +
     // 刷新各再跑一次 —— 这里的刷新是换工程后的那一次（缓存命中，不重算）。
+    // ⭐ Hub #711：OTCP / 相位对齐两框。相位 provider 需要工程目录 ⇒ 在
+    // `engine` 被 `wire_song_overview` 消费前先取一份。
+    let phase_align_project_dir = engine.borrow().project_dir().map(|path| path.to_path_buf());
+    yeban_app::otcp_gui::wire_otcp_dialog(ui, undo.clone());
+    yeban_app::phase_align_gui::wire_phase_align_dialog(ui, undo.clone(), phase_align_project_dir);
     let overview_state =
         yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
     // 换工程后的那一次刷新（缓存命中，不重算）；回执只作装配期诊断，这里不展开用。

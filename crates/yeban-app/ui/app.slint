@@ -17,6 +17,8 @@ import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { MacroPanel } from "dialogs/macro_panel.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 import { AudioSettingsDialog } from "dialogs/audio_settings_dialog.slint";
+import { OtcpDialog } from "dialogs/otcp_dialog.slint";
+import { PhaseAlignDialog } from "dialogs/phase_align_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { ManualDialog } from "dialogs/help_manual.slint";
 import { ShortcutsDialog } from "dialogs/help_shortcuts.slint";
@@ -587,10 +589,29 @@ export component MainWindow inherits Window {
     in-out property <int> export-wav-focused-field: export-wav-dialog.focused-field;
     in-out property <bool> export-wav-limiter: false;
     in-out property <bool> export-wav-open: false;
+    // 导出后实测行（真峰值 / 积分响度 / LRA），由 host 写。
+    in-out property <string> export-wav-measurement: "";
     in-out property <string> export-wav-path: "";
     in-out property <string> export-wav-sample-rate: "auto";
     in-out property <string> export-wav-seconds: "";
     in-out property <string> humanize-error: "";
+    // OTCP 音高校正对话框（Hub #711）：参数 / 任务号 / 音符表全部由宿主写。
+    in-out property <bool> otcp-open: false;
+    in-out property <string> otcp-clip-label: "";
+    in-out property <string> otcp-job-id: "";
+    in-out property <string> otcp-key-root: "0";
+    in-out property <string> otcp-scale: "";
+    in-out property <string> otcp-mode: "";
+    in-out property <string> otcp-tuning-hz: "";
+    in-out property <string> otcp-status: "";
+    in-out property <[string]> otcp-notes-rows: [];
+    // 自动相位对齐对话框（Hub #711）。
+    in-out property <bool> phase-align-open: false;
+    in-out property <string> phase-align-reference: "";
+    in-out property <string> phase-align-target: "";
+    in-out property <string> phase-align-max-lag-ms: "";
+    in-out property <bool> phase-align-apply: true;
+    in-out property <string> phase-align-status: "";
     in-out property <int> humanize-focus-section: 0;
     in-out property <int> humanize-focused-control: humanize-dialog.focused-control;
     in-out property <int> humanize-focused-field: humanize-dialog.focused-field;
@@ -786,6 +807,7 @@ export component MainWindow inherits Window {
     in-out property <string> song-overview-key-signature: "";
     in-out property <[float]> song-overview-lufs: [];
     in-out property <string> song-overview-profile: @tr("均衡");
+    in-out property <string> song-overview-ab-status: "";
     in-out property <[string]> song-overview-ruler-labels: [];
     in-out property <[float]> song-overview-score-dyn: [];
     in-out property <[string]> song-overview-section-names: [];
@@ -1035,6 +1057,15 @@ export component MainWindow inherits Window {
     callback open-humanize();
     callback open-project();
     callback open-quantize();
+    callback open-otcp();
+    callback close-otcp();
+    callback otcp-submit();
+    callback otcp-poll();
+    callback otcp-notes();
+    callback otcp-deliver();
+    callback open-phase-align();
+    callback close-phase-align();
+    callback run-phase-align();
     // 音源管理（line/sound-library-manager）：菜单命令 `open-sound-library`
     // 打开；其余四个是对话框发回宿主的动作与异步排空 ping（接线见
     // `host::wire_sound_library_dialog`）。
@@ -1085,6 +1116,9 @@ export component MainWindow inherits Window {
     callback sidebar-search-changed(string);
     callback sidechain-cycle();
     callback song-overview-band-solo-requested(int);
+    callback song-overview-capture-a();
+    callback song-overview-capture-b();
+    callback song-overview-compare-ab();
     callback song-overview-hover(float);
     callback song-overview-layer-solo(int);
     callback song-overview-layer-toggle(int);
@@ -1176,6 +1210,7 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("音符量化 (Quantize 1/16)..."); activated => { root.command-execute("open-quantize"); } }
             MenuItem { title: @tr("音符人性化 (Humanize)..."); activated => { root.command-execute("open-humanize"); } }
             MenuItem { title: @tr("鼓机生成 (Drums)..."); activated => { root.command-execute("open-drum-gen"); } }
+            MenuItem { title: @tr("音高校正 (OTCP)..."); activated => { root.command-execute("open-otcp"); } }
             MenuSeparator {}
             MenuItem { title: @tr("AI 编曲提案抽屉 (Musical PR)..."); activated => { root.command-execute("toggle-musical-pr"); } }
         }
@@ -1192,6 +1227,8 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("给当前轨插入 动态压缩 Compressor"); activated => { root.command-execute("insert-compressor"); } }
             MenuSeparator {}
             MenuItem { title: @tr("均分所有轨道高度"); activated => { root.command-execute("normalize-heights"); } }
+            MenuSeparator {}
+            MenuItem { title: @tr("自动相位对齐..."); activated => { root.command-execute("open-phase-align"); } }
         }
         Menu {
             title: @tr("走带");
@@ -1800,6 +1837,104 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // 2.5 SONGMAP A/B BAR（Hub #711）：只放 A/B 对比动作，不铺整块总览
+            // 面板（整面板实例在 1600px 窗口下既会触发纵向 binding loop，也把
+            // Slint codegen 从分钟级拖到 20 分钟以上）。入口就近安放在工作区上沿。
+            if !root.console-maximized : Rectangle {
+                height: 30px;
+                background: Tokens.bg-panel;
+                border-color: Theme.border-subtle;
+                border-width: 1px;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Songmap A/B";
+                        font-size: Tokens.font-size-xs;
+                        color: Tokens.ink-1;
+                        vertical-alignment: TextVerticalAlignment.center;
+                    }
+
+                    Rectangle {
+                        width: 62px;
+                        height: 22px;
+                        background: Tokens.bg-control;
+                        border-color: Tokens.line;
+                        border-width: 1px;
+                        border-radius: 4px;
+                        Text {
+                            text: "存 A";
+                            font-size: Tokens.font-size-xs;
+                            color: Tokens.ink-0;
+                            horizontal-alignment: TextHorizontalAlignment.center;
+                            vertical-alignment: TextVerticalAlignment.center;
+                        }
+                        TouchArea {
+                            accessible-role: button;
+                            accessible-id: "song-overview-capture-a-button";
+                            accessible-label: @tr("存 A");
+                            clicked => { root.song-overview-capture-a(); }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 62px;
+                        height: 22px;
+                        background: Tokens.bg-control;
+                        border-color: Tokens.line;
+                        border-width: 1px;
+                        border-radius: 4px;
+                        Text {
+                            text: "存 B";
+                            font-size: Tokens.font-size-xs;
+                            color: Tokens.ink-0;
+                            horizontal-alignment: TextHorizontalAlignment.center;
+                            vertical-alignment: TextVerticalAlignment.center;
+                        }
+                        TouchArea {
+                            accessible-role: button;
+                            accessible-id: "song-overview-capture-b-button";
+                            accessible-label: @tr("存 B");
+                            clicked => { root.song-overview-capture-b(); }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 84px;
+                        height: 22px;
+                        background: Tokens.bg-control;
+                        border-color: Tokens.line;
+                        border-width: 1px;
+                        border-radius: 4px;
+                        Text {
+                            text: "对比 A→B";
+                            font-size: Tokens.font-size-xs;
+                            color: Tokens.ink-0;
+                            horizontal-alignment: TextHorizontalAlignment.center;
+                            vertical-alignment: TextVerticalAlignment.center;
+                        }
+                        TouchArea {
+                            accessible-role: button;
+                            accessible-id: "song-overview-compare-button";
+                            accessible-label: @tr("对比 A→B");
+                            clicked => { root.song-overview-compare-ab(); }
+                        }
+                    }
+
+                    Text {
+                        text: root.song-overview-ab-status;
+                        font-size: Tokens.font-size-xs;
+                        color: Tokens.ink-2;
+                        vertical-alignment: TextVerticalAlignment.center;
+                        horizontal-stretch: 1;
+                        overflow: TextOverflow.elide;
+                    }
+                }
+            }
+
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK (Resizable Height & Fullscreen Maximize)
             if (root.show-lower-dock || root.console-maximized) : UnifiedLowerDock {
                 console-maximized: root.console-maximized;
@@ -1967,7 +2102,7 @@ export component MainWindow inherits Window {
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     vertical-alignment: center;
-                    overflow: elide;
+                    overflow: TextOverflow.elide;
                 }
 
                 // 收起（把四个读数清空；下一次动作又会写回来）。
@@ -1981,7 +2116,7 @@ export component MainWindow inherits Window {
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     horizontal-alignment: center;
-                    vertical-alignment: center;
+                    vertical-alignment: TextVerticalAlignment.center;
                     accessible-role: button;
                     accessible-id: "module-receipt-dismiss";
                     accessible-label: @tr("收起这条提示");
@@ -2102,9 +2237,9 @@ export component MainWindow inherits Window {
                         font-size: 10px;
                         font-weight: 600;
                         color: Tokens.skin-text-strong;
-                        vertical-alignment: center;
+                        vertical-alignment: TextVerticalAlignment.center;
                         wrap: word-wrap;
-                        overflow: elide;
+                        overflow: TextOverflow.elide;
                     }
                 }
 
@@ -2128,7 +2263,7 @@ export component MainWindow inherits Window {
                         font-size: 10.5px;
                         color: Tokens.skin-text-body;
                         horizontal-alignment: center;
-                        vertical-alignment: center;
+                        vertical-alignment: TextVerticalAlignment.center;
                     }
                     TouchArea {
                         clicked => {
@@ -2177,8 +2312,8 @@ export component MainWindow inherits Window {
                         width: parent.width; height: parent.height;
                         text: @tr("提醒：{}", root.engine-error);
                         font-family: Tokens.font-ui; font-size: 11px; font-weight: 600; color: Tokens.ink-0;
-                        vertical-alignment: center;
-                        overflow: elide;
+                        vertical-alignment: TextVerticalAlignment.center;
+                        overflow: TextOverflow.elide;
                     }
                 }
                 Rectangle {
@@ -2196,8 +2331,8 @@ export component MainWindow inherits Window {
                         width: parent.width; height: parent.height;
                         text: @tr("去音源管理");
                         font-family: Tokens.font-ui; font-size: 10px; font-weight: 700; color: Tokens.ink-0;
-                        horizontal-alignment: center; vertical-alignment: center;
-                        overflow: elide;
+                        horizontal-alignment: center; vertical-alignment: TextVerticalAlignment.center;
+                        overflow: TextOverflow.elide;
                     }
                     TouchArea {
                         mouse-cursor: MouseCursor.pointer;
@@ -2207,7 +2342,7 @@ export component MainWindow inherits Window {
                 }
                 Rectangle {
                     width: 20px; height: 20px; y: 8px; border-radius: 3px; background: transparent;
-                    Text { text: "×"; font-size: 13px; color: Tokens.ink-0; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "×"; font-size: 13px; color: Tokens.ink-0; horizontal-alignment: center; vertical-alignment: TextVerticalAlignment.center; }
                     TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.engine-error = ""; } }
                 }
             }
@@ -2228,6 +2363,7 @@ export component MainWindow inherits Window {
             bit-depth <=> root.export-wav-bit-depth;
             seconds <=> root.export-wav-seconds;
             limiter <=> root.export-wav-limiter;
+            measurement <=> root.export-wav-measurement;
             run => { root.export-wav(); }
             close => { root.close-export-wav(); }
             browse-path => { root.browse-export-wav-path(); }
@@ -2254,6 +2390,44 @@ export component MainWindow inherits Window {
             input-picked(i) => { root.audio-input-picked(i); }
             refresh-devices => { root.audio-refresh-devices(); }
             play-test-tone => { root.audio-play-test-tone(); }
+        }
+
+        // OTCP 音高校正（Hub #711）
+        if root.otcp-open : OtcpDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            clip-label: root.otcp-clip-label;
+            job-id: root.otcp-job-id;
+            key-root: root.otcp-key-root;
+            scale: root.otcp-scale;
+            mode: root.otcp-mode;
+            tuning-hz: root.otcp-tuning-hz;
+            status: root.otcp-status;
+            notes-rows: root.otcp-notes-rows;
+            close => { root.close-otcp(); }
+            submit => { root.otcp-submit(); }
+            poll => { root.otcp-poll(); }
+            notes => { root.otcp-notes(); }
+            deliver => { root.otcp-deliver(); }
+        }
+
+        // 自动相位对齐（Hub #711）
+        if root.phase-align-open : PhaseAlignDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            reference: root.phase-align-reference;
+            target: root.phase-align-target;
+            max-lag-ms: root.phase-align-max-lag-ms;
+            apply: root.phase-align-apply;
+            status: root.phase-align-status;
+            close => { root.close-phase-align(); }
+            run => { root.run-phase-align(); }
         }
 
         // Visible Undo Tree Time-Machine Modal Dialog
@@ -2652,7 +2826,7 @@ export component MainWindow inherits Window {
                         font-size: Tokens.font-size-xs;
                         font-weight: 600;
                         color: Tokens.skin-text-strong;
-                        vertical-alignment: center;
+                        vertical-alignment: TextVerticalAlignment.center;
                     }
                 }
             }

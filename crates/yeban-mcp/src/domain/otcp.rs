@@ -108,7 +108,7 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
     let predict_only = super::arg_bool(call, "predictOnly", false);
     let note_ops = parse_note_ops(call)?;
     let project = require_active(domain)?;
-    let (source_asset, license) = resolve_clip(project, &track_id, &clip_id)?;
+    resolve_clip(project, &track_id, &clip_id)?;
     check_double_correction(project, &track_id)?;
     if call.is_dry_run() {
         return Ok(Plan::OtcpSubmit {
@@ -126,16 +126,72 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
             }),
         });
     }
+    let outcome = submit_correction(
+        project,
+        |hash| domain.asset(hash).map(<[u8]>::to_vec),
+        track_id,
+        clip_id,
+        key_root,
+        scale,
+        mode,
+        tuning_hz,
+        auto_merge,
+        predict_only,
+        note_ops,
+    )?;
+    Ok(Plan::OtcpSubmit { data: outcome.data })
+}
+
+/// 提交结果：任务身份 + 与 MCP 成功响应同形的 `data`。
+pub struct OtcpSubmitOutcome {
+    /// 新任务 id。
+    pub job_id: String,
+    /// 提交回执（`jobId` / `status` / `server` / `notesBefore` / `receiptPath` / `note`）。
+    pub data: Value,
+}
+
+/// 提交一次 OTCP 校正（MCP `plan_correct_pitch` 与 GUI 共用）。
+///
+/// 参数已由调用方完成类型/值域校验；本函数只做工程侧定位、双重校正检查、
+/// 源音频制备、任务目录/收据/索引落盘与后台线程派生。
+///
+/// # Errors
+///
+/// 片段不存在 / 非音频 / 双重校正 / 源资产无许可 / 字节不在池里 / 解码失败 /
+/// 立体声 / 二进制未配置 / 并发槽满 / 收据或索引写失败 / 线程派生失败。
+#[allow(clippy::too_many_arguments)]
+pub fn submit_correction(
+    project: &yeban_model::YebanProjectV1,
+    asset: impl FnOnce(&AssetHash) -> Option<Vec<u8>>,
+    track_id: EntityId,
+    clip_id: EntityId,
+    key_root: u8,
+    scale: String,
+    mode: String,
+    tuning_hz: f32,
+    auto_merge: bool,
+    predict_only: bool,
+    note_ops: Vec<Value>,
+) -> Result<OtcpSubmitOutcome, Fault> {
+    let (source_asset, license) = resolve_clip(project, &track_id, &clip_id)?;
+    check_double_correction(project, &track_id)?;
     let job_id = EntityId::new().to_canonical_string();
     let config = OtcpConfig::default();
-    // 源音频制备在二进制检查之前：源问题（非音频 / 立体声 / 解码失败）
-    // 先于"二进制未配置"报出，且立体声判据无需二进制在位。
+    let source_bytes = asset(&source_asset).ok_or_else(|| {
+        fault_for(&OtcpError::with_data(
+            "otcpContentGone",
+            format!("源资产 {source_asset} 的字节不在会话 CAS 池里（工程未完整加载）"),
+            serde_json::json!({
+                "job_id": job_id,
+                "content_id": clip_id.to_canonical_string(),
+            }),
+        ))
+    })?;
     let (source_wav, source_duration_secs) = prepare_source_wav(
-        domain,
+        &source_bytes,
         &config,
         &job_id,
         project,
-        &source_asset,
         &track_id,
         &clip_id,
     )?;
@@ -175,8 +231,6 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
         source_asset_hash: source_asset.as_str().to_owned(),
         source_license: license,
     };
-    // 顺序是修复的关键：先落初始收据与索引，再派生 worker。worker 一旦开跑就可能
-    // 很快写 succeeded/failed；反过来（先 spawn 后补 initial）会让终态被 running 覆盖。
     if let Err(error) = write_initial_receipt(&config, &request) {
         let _ = fs::remove_dir_all(config.job_dir(&job_id));
         return Err(fault_for(&error));
@@ -190,7 +244,6 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
     if thread::Builder::new()
         .name(format!("otcp-{job_id}"))
         .spawn(move || {
-            // 槽跟着线程走：线程结束（含 panic）时 Drop 归还；并发计数不泄漏。
             let _slot = slot;
             let driver = OtcpDriver::new(worker_config);
             let _ = driver.correct_clip(worker_request);
@@ -205,7 +258,8 @@ pub fn plan_correct_pitch(domain: &Domain, call: &ToolCall) -> Result<Plan, Faul
             serde_json::json!({ "job_id": job_id }),
         )));
     }
-    Ok(Plan::OtcpSubmit {
+    Ok(OtcpSubmitOutcome {
+        job_id: job_id.clone(),
         data: serde_json::json!({
             "jobId": job_id,
             "status": "running",
@@ -291,6 +345,174 @@ pub fn plan_correct_pitch_notes(domain: &Domain, call: &ToolCall) -> Result<Plan
             "note": "这是 OpenTune 检测到的音符，不是夜半乐谱（会过分割）；无任务时报 otcpNotesUnavailable，不返回空表",
         }),
     })
+}
+
+/// 轮询任务：与 MCP `yeban_correct_pitch_job` 同一份收据投影。
+///
+/// `project` 只影响 `delivery` 字段：`None` ⇒ `pending/noActiveProject`；
+/// `Some` ⇒ 先跑 [`delivery_parts`] 的同一套冲突检查，再标 `ready`。
+/// **不建提案**（GUI 拿到 `ready` 后走 [`delivery_parts`] 直接提交）。
+///
+/// # Errors
+///
+/// 收据损坏 / 导出文件丢失 / 片段已删 / 资产已变。
+pub fn job_data(
+    job_id: &str,
+    project: Option<&yeban_model::YebanProjectV1>,
+) -> Result<Value, Fault> {
+    let config = OtcpConfig::default();
+    let receipt = OtcpDriver::new(config.clone())
+        .read_receipt(job_id)
+        .map_err(|error| fault_for(&error))?;
+    if receipt.status != "succeeded" {
+        return Ok(job_summary(&config, &receipt));
+    }
+    let mut data = succeeded_data(&config, &receipt)?;
+    let Some(object) = data.as_object_mut() else {
+        return Ok(data);
+    };
+    if receipt.dry_run {
+        object.insert(
+            "delivery".to_owned(),
+            serde_json::json!({ "ready": false, "reason": "dryRun" }),
+        );
+        object.insert(
+            "note".to_owned(),
+            Value::from("dryRun：只做音符预测，未导出、未交付"),
+        );
+        return Ok(data);
+    }
+    if receipt.delivered_proposal_id.is_some() {
+        object.insert(
+            "delivery".to_owned(),
+            serde_json::json!({ "ready": false, "reason": "alreadyDelivered" }),
+        );
+        object.insert(
+            "note".to_owned(),
+            Value::from("已交付（重复轮询不再重复建提案）"),
+        );
+        return Ok(data);
+    }
+    match project {
+        None => {
+            object.insert(
+                "delivery".to_owned(),
+                serde_json::json!({ "pending": true, "reason": "noActiveProject" }),
+            );
+            object.insert(
+                "note".to_owned(),
+                Value::from("任务已成功，但当前无活跃工程，交付待定；打开工程后重轮询即可交付"),
+            );
+        }
+        Some(project) => {
+            delivery_parts(project, &receipt)?;
+            object.insert("delivery".to_owned(), serde_json::json!({ "ready": true }));
+        }
+    }
+    Ok(data)
+}
+
+/// 收据里的音符表（校正后优先，否则校正前）。
+fn notes_data(receipt: &JobReceipt) -> Value {
+    let notes = if receipt.notes_after.is_empty() {
+        &receipt.notes_before
+    } else {
+        &receipt.notes_after
+    };
+    serde_json::json!({
+        "jobId": receipt.job_id,
+        "contentId": receipt.content_id,
+        "tuningHz": receipt.tuning_hz,
+        "totalCount": notes.len(),
+        "notes": notes_json(notes),
+        "note": "这是 OpenTune 检测到的音符，不是夜半乐谱（会过分割）；无任务时报 otcpNotesUnavailable，不返回空表",
+    })
+}
+
+/// 按任务号读音符表（MCP `yeban_correct_pitch_notes` 的 `contentId` 分支同形）。
+///
+/// # Errors
+///
+/// 收据不存在 / 损坏。
+pub fn notes_data_for_job(job_id: &str) -> Result<Value, Fault> {
+    let config = OtcpConfig::default();
+    let receipt = OtcpDriver::new(config)
+        .read_receipt(job_id)
+        .map_err(|error| fault_for(&error))?;
+    Ok(notes_data(&receipt))
+}
+
+/// 按片段读最近一次任务的音符表（MCP `yeban_correct_pitch_notes` 的 `trackId+clipId` 分支同形）。
+///
+/// # Errors
+///
+/// 片段没有任务收据 / 收据损坏。
+pub fn notes_data_for_clip(track_id: &EntityId, clip_id: &EntityId) -> Result<Value, Fault> {
+    let config = OtcpConfig::default();
+    let job_id = read_clip_index(&config, track_id, clip_id)?;
+    let receipt = OtcpDriver::new(config)
+        .read_receipt(&job_id)
+        .map_err(|error| fault_for(&error))?;
+    Ok(notes_data(&receipt))
+}
+
+/// 交付前拿取字节与 op（GUI 直接提交；MCP 走提案）。
+///
+/// 状态门与收据门都在这里：未成功 ⇒ `otcpNotReady` / 失败 ⇒ `otcpRenderFailed`；
+/// 干跑 ⇒ `otcpNotReady`；已交付 ⇒ `otcpRevisionConflict`。
+///
+/// # Errors
+///
+/// 任务未成功 / 失败 / 干跑 / 已交付 / [`delivery_parts`] 的全部冲突。
+pub fn delivery_for_job(
+    project: &yeban_model::YebanProjectV1,
+    job_id: &str,
+) -> Result<OtcpDeliveryParts, Fault> {
+    let config = OtcpConfig::default();
+    let receipt = OtcpDriver::new(config)
+        .read_receipt(job_id)
+        .map_err(|error| fault_for(&error))?;
+    match receipt.status.as_str() {
+        "succeeded" => {}
+        "failed" | "cancelled" => {
+            return Err(fault_for(&OtcpError::with_data(
+                "otcpRenderFailed",
+                format!("任务 {job_id} 已失败（{}），交付不可取", receipt.status),
+                serde_json::json!({ "job_id": job_id }),
+            )));
+        }
+        status => {
+            return Err(fault_for(&OtcpError::with_data(
+                "otcpNotReady",
+                format!("任务 {job_id} 尚未完成（{status}），交付不可取"),
+                serde_json::json!({ "job_id": job_id }),
+            )));
+        }
+    }
+    if receipt.dry_run {
+        return Err(fault_for(&OtcpError::with_data(
+            "otcpNotReady",
+            format!("任务 {job_id} 是 dryRun（只做音符预测），没有导出可交付"),
+            serde_json::json!({ "job_id": job_id }),
+        )));
+    }
+    if receipt.delivered_proposal_id.is_some() {
+        return Err(fault_for(&OtcpError::with_data(
+            "otcpRevisionConflict",
+            format!("任务 {job_id} 已交付，不能重复交付"),
+            serde_json::json!({ "job_id": job_id }),
+        )));
+    }
+    delivery_parts(project, &receipt)
+}
+
+/// GUI 直提交成功后记交付收据（`delivery_id` 用 `gui-direct` 哨兵）。
+///
+/// # Errors
+///
+/// 收据不存在 / 写失败。
+pub fn mark_job_delivered(job_id: &str, delivery_id: &str) -> Result<(), Fault> {
+    mark_delivered(&OtcpConfig::default(), job_id, delivery_id).map_err(|error| fault_for(&error))
 }
 
 // ===========================================================================
@@ -602,6 +824,11 @@ fn parse_key_root(call: &ToolCall) -> Result<u8, Fault> {
                 "`keyRoot` 必须是 0–11 的整数（C=0）",
             )
         })?;
+    validate_key_root(value)
+}
+
+/// 与 [`parse_key_root`] 同一个值域与同一条错误原文（GUI 直接给整数时走这里）。
+pub fn validate_key_root(value: u64) -> Result<u8, Fault> {
     if value > 11 {
         return Err(Fault::domain(
             ErrorCode::InvalidParameterRange,
@@ -619,6 +846,11 @@ fn parse_scale(call: &ToolCall) -> Result<String, Fault> {
             "`scale` 必须是音阶名（major | minor | chromatic | harmonicMinor | dorian | mixolydian | pentatonicMajor | pentatonicMinor）",
         )
     })?;
+    validate_scale(scale)
+}
+
+/// 与 [`parse_scale`] 同一个值域与同一条错误原文。
+pub fn validate_scale(scale: &str) -> Result<String, Fault> {
     if VALID_SCALES.contains(&scale) {
         Ok(scale.to_owned())
     } else {
@@ -633,7 +865,11 @@ fn parse_scale(call: &ToolCall) -> Result<String, Fault> {
 
 /// `mode`：缺省 `snapNotes`；v1 只执行它。
 fn parse_mode(call: &ToolCall) -> Result<String, Fault> {
-    let mode = super::arg_str(call, "mode").unwrap_or("snapNotes");
+    validate_mode(super::arg_str(call, "mode").unwrap_or("snapNotes"))
+}
+
+/// 与 [`parse_mode`] 同一个值域与同一条错误原文。
+pub fn validate_mode(mode: &str) -> Result<String, Fault> {
     match mode {
         "snapNotes" => Ok(mode.to_owned()),
         "regenerate" | "notesOnly" => Err(Fault::domain(
@@ -651,11 +887,16 @@ fn parse_mode(call: &ToolCall) -> Result<String, Fault> {
 
 /// `tuningHz`：有限正数，缺省 440。
 fn parse_tuning_hz(call: &ToolCall) -> Result<f32, Fault> {
-    let value = call
-        .arguments
-        .get("tuningHz")
-        .and_then(Value::as_f64)
-        .unwrap_or(440.0);
+    validate_tuning_hz(
+        call.arguments
+            .get("tuningHz")
+            .and_then(Value::as_f64)
+            .unwrap_or(440.0),
+    )
+}
+
+/// 与 [`parse_tuning_hz`] 同一个值域与同一条错误原文。
+pub fn validate_tuning_hz(value: f64) -> Result<f32, Fault> {
     if !value.is_finite() || value <= 0.0 || value > 20_000.0 {
         return Err(Fault::domain(
             ErrorCode::InvalidParameterRange,
@@ -806,24 +1047,13 @@ fn find_opentune_device(track: &TrackV3) -> Option<&yeban_model::DeviceDefinitio
 ///
 /// 返回（源 WAV 绝对路径，时长秒）。
 fn prepare_source_wav(
-    domain: &Domain,
+    bytes: &[u8],
     config: &OtcpConfig,
     job_id: &str,
     project: &yeban_model::YebanProjectV1,
-    source_asset: &AssetHash,
     track_id: &EntityId,
     clip_id: &EntityId,
 ) -> Result<(PathBuf, f64), Fault> {
-    let bytes = domain.asset(source_asset).ok_or_else(|| {
-        fault_for(&OtcpError::with_data(
-            "otcpContentGone",
-            format!("源资产 {source_asset} 的字节不在会话 CAS 池里（工程未完整加载）"),
-            serde_json::json!({
-                "job_id": job_id,
-                "content_id": clip_id.to_canonical_string(),
-            }),
-        ))
-    })?;
     let source_not_wav = |detail: String| {
         fault_for(&OtcpError::with_data(
             "otcpSourceNotWav",
@@ -1084,57 +1314,32 @@ fn proposal_summary(domain: &Domain, proposal_id: &str) -> Value {
         )
 }
 
-/// 成功任务的 plan：干跑 ⇒ 只回数据；已交付 ⇒ 只回数据；否则建交付计划。
-fn plan_succeeded_job(
-    domain: &Domain,
-    config: &OtcpConfig,
+/// GUI / headless 交付所需的片段、字节与标题。
+pub struct OtcpDeliveryParts {
+    /// `SetAsset + SetClipAsset` 两条 op（已模拟校验）。
+    pub ops: Vec<Op>,
+    /// 校正后的 WAV 字节。
+    pub asset_bytes: Vec<u8>,
+    /// 交付提交标题。
+    pub title: String,
+    /// 片段 id（响应与错误载荷用）。
+    pub clip_id: EntityId,
+    /// 音轨 id（响应与错误载荷用）。
+    pub track_id: EntityId,
+}
+
+/// 读收据 → 校验片段仍在 / 资产未变 / 导出文件仍在 → 造交付 op 与字节。
+///
+/// 错误原文与 [`plan_correct_pitch_job`] 的交付分支逐字相同；GUI 直接复用本函数，
+/// ⛔ 不另写一套冲突检查。
+///
+/// # Errors
+///
+/// 收据损坏 / 片段已删 / 片段已不是音频 / 资产已变 / 导出文件丢失。
+pub fn delivery_parts(
+    project: &yeban_model::YebanProjectV1,
     receipt: &JobReceipt,
-) -> Result<Plan, Fault> {
-    let mut data = succeeded_data(config, receipt)?;
-    if receipt.dry_run {
-        if let Some(object) = data.as_object_mut() {
-            object.insert(
-                "note".to_owned(),
-                Value::from("dryRun：只做音符预测，未导出、未交付"),
-            );
-        }
-        return Ok(Plan::OtcpJob { data });
-    }
-    if let Some(proposal_id) = &receipt.delivered_proposal_id {
-        if let Some(object) = data.as_object_mut() {
-            object.insert("proposal".to_owned(), proposal_summary(domain, proposal_id));
-            object.insert(
-                "note".to_owned(),
-                Value::from("已交付（重复轮询不再重复建提案）"),
-            );
-        }
-        return Ok(Plan::OtcpJob { data });
-    }
-    if let Some(proposal_id) = find_existing_proposal(domain, &receipt.job_id) {
-        // 上一轮建了提案但收据没记上：补记（写失败也不拦本次轮询，下次再补）。
-        let _ = mark_delivered(config, &receipt.job_id, &proposal_id);
-        if let Some(object) = data.as_object_mut() {
-            object.insert(
-                "proposal".to_owned(),
-                proposal_summary(domain, &proposal_id),
-            );
-            object.insert("note".to_owned(), Value::from("已交付（上一轮收据补记）"));
-        }
-        return Ok(Plan::OtcpJob { data });
-    }
-    let Ok(project) = require_active(domain) else {
-        if let Some(object) = data.as_object_mut() {
-            object.insert(
-                "delivery".to_owned(),
-                serde_json::json!({ "pending": true, "reason": "noActiveProject" }),
-            );
-            object.insert(
-                "note".to_owned(),
-                Value::from("任务已成功，但当前无活跃工程，交付待定；打开工程后重轮询即可交付"),
-            );
-        }
-        return Ok(Plan::OtcpJob { data });
-    };
+) -> Result<OtcpDeliveryParts, Fault> {
     let track_id = EntityId::from_str(&receipt.track_id).map_err(|error| {
         fault_for(&OtcpError::protocol(format!(
             "收据音轨 id 损坏（{}）：{error}",
@@ -1157,11 +1362,10 @@ fn plan_succeeded_job(
             }),
         ))
     };
-    let track = project
+    project
         .tracks
         .get(&track_id)
         .ok_or_else(|| gone(format!("音轨 {track_id} 已不在工程里，交付无法定位片段")))?;
-    let _ = track;
     let clip = project
         .clip_pool
         .get(&clip_id)
@@ -1220,7 +1424,6 @@ fn plan_succeeded_job(
             new_asset: new_hash,
         },
     ];
-    // 模拟：整批 op 必须能在当前工程上干净地施加（与 `propose_draft` 同一款）。
     let mut simulated = project.clone();
     Op::Batch {
         ops: ops.clone(),
@@ -1231,13 +1434,81 @@ fn plan_succeeded_job(
     simulated
         .validate()
         .map_err(|failure| error::from_model("交付结果校验", &failure))?;
+    Ok(OtcpDeliveryParts {
+        ops,
+        asset_bytes,
+        title: delivery_title(&receipt.job_id),
+        clip_id,
+        track_id,
+    })
+}
+
+/// 成功任务的 plan：干跑 ⇒ 只回数据；已交付 ⇒ 只回数据；否则建交付计划。
+fn plan_succeeded_job(
+    domain: &Domain,
+    config: &OtcpConfig,
+    receipt: &JobReceipt,
+) -> Result<Plan, Fault> {
+    let mut data = succeeded_data(config, receipt)?;
+    if receipt.dry_run {
+        if let Some(object) = data.as_object_mut() {
+            object.insert(
+                "note".to_owned(),
+                Value::from("dryRun：只做音符预测，未导出、未交付"),
+            );
+        }
+        return Ok(Plan::OtcpJob { data });
+    }
+    if let Some(proposal_id) = &receipt.delivered_proposal_id {
+        if let Some(object) = data.as_object_mut() {
+            object.insert("proposal".to_owned(), proposal_summary(domain, proposal_id));
+            object.insert(
+                "note".to_owned(),
+                Value::from("已交付（重复轮询不再重复建提案）"),
+            );
+        }
+        return Ok(Plan::OtcpJob { data });
+    }
+    if let Some(proposal_id) = find_existing_proposal(domain, &receipt.job_id) {
+        // 上一轮建了提案但收据没记上：补记（写失败也不拦本次轮询，下次再补）。
+        let _ = mark_delivered(config, &receipt.job_id, &proposal_id);
+        if let Some(object) = data.as_object_mut() {
+            object.insert(
+                "proposal".to_owned(),
+                proposal_summary(domain, &proposal_id),
+            );
+            object.insert("note".to_owned(), Value::from("已交付（上一轮收据补记）"));
+        }
+        return Ok(Plan::OtcpJob { data });
+    }
+    let Ok(project) = require_active(domain) else {
+        if let Some(object) = data.as_object_mut() {
+            object.insert(
+                "delivery".to_owned(),
+                serde_json::json!({ "pending": true, "reason": "noActiveProject" }),
+            );
+            object.insert(
+                "note".to_owned(),
+                Value::from("任务已成功，但当前无活跃工程，交付待定；打开工程后重轮询即可交付"),
+            );
+        }
+        return Ok(Plan::OtcpJob { data });
+    };
+    let delivery = delivery_parts(project, receipt)?;
+    let OtcpDeliveryParts {
+        ops,
+        asset_bytes,
+        title,
+        clip_id,
+        track_id,
+    } = delivery;
     let base_commit = domain.active_head().ok_or_else(|| {
         Fault::domain(ErrorCode::Conflict, "主分支没有头提交（提交图谱未初始化）")
     })?;
     let base_digest = super::store::digest_of(super::store::serialize_project(project)?.as_bytes());
     let draft = ProposalDraft {
         kind: "otcp-correct",
-        title: delivery_title(&receipt.job_id),
+        title,
         description: format!(
             "OTCP 音高校正：片段 {clip_id}（音轨 {track_id}）换校正后资产；旧资产保留（历史仍引用）"
         ),

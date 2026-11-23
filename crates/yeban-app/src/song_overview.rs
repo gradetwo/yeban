@@ -78,6 +78,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
@@ -87,10 +88,9 @@ use crate::host::{apply_transport, apply_view, project_with_view_state, set_roll
 use crate::sfz_load::{
     SfzRoots, build_region_samples, load_sfz_with_instrument, resolve_sampler_path,
 };
-use std::collections::BTreeMap;
-
 use crate::ui::MainWindow;
 use crate::undo::UndoPort;
+use std::collections::BTreeMap;
 use yeban_dsp::song_overview::{
     AnalysisOptions, DENSITY_ANCHOR_NOTES_PER_SEC, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS,
     TensionProfile, analyze_song_overview_with_options,
@@ -98,6 +98,14 @@ use yeban_dsp::song_overview::{
 use yeban_model::song_overview::score_input_from_project;
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample};
 use yeban_render::song_overview::{RenderSettings, SongOverviewCache, cached_overview};
+
+use yeban_mcp::domain::compare_snapshots::compare_snapshots;
+use yeban_mcp::domain::error::Fault;
+use yeban_mcp::domain::song_overview::{
+    Profile, Resolution, SongOverviewProvider, SongOverviewRequest, rounded,
+};
+use yeban_mcp::output_schema::{SongOverview as McpSongOverview, SongOverviewDiff};
+use yeban_mcp::song_overview_provider::{ProviderContext, RealSongOverviewProvider};
 
 /// 频率层频段数（设计稿 §4.1：8 频段音乐职能倍频程）。
 pub const BAND_COUNT: usize = 8;
@@ -740,6 +748,15 @@ pub struct RefreshReport {
     pub error: Option<String>,
 }
 
+/// A/B 快照：两次「存快照」各自捕获的完整 MCP 总览（`schema_version` 同版）。
+#[derive(Default)]
+pub struct AbCompare {
+    /// 快照 A（修改前）。
+    pub a: Option<McpSongOverview>,
+    /// 快照 B（修改后）。
+    pub b: Option<McpSongOverview>,
+}
+
 /// 总览面板的活态（`wire_song_overview` 的返回值，`Rc<RefCell>` 单一事实源）。
 pub struct SongOverviewLive {
     /// 当前注入面板的那份 view-model（回调闭包读它算悬停读数）。
@@ -756,6 +773,8 @@ pub struct SongOverviewLive {
     /// 段落期望张力等级表（Phase 2，设计稿 §3.5）：段落名 → 1–5 级；
     /// 只活在本次分析请求的会话态里，不写工程。
     pub expected_levels: BTreeMap<String, u8>,
+    /// A/B 快照（Phase 2 对比面；两次捕获都走同一份 `RealSongOverviewProvider`）。
+    pub compare: AbCompare,
 }
 
 /// SFZ 武装输入（`cached_overview` 的 provider）：磁盘腿。
@@ -965,7 +984,57 @@ fn reproject_after_zoom(ui: &MainWindow, port: &Option<Rc<UndoPort>>) {
     apply_view(ui, &view, width, ui.get_roll_scroll_x());
 }
 
-/// 把总览面板的 7 条回调接到引擎 / 视图态上。
+/// 捕获当前工程的**完整** MCP 总览快照（A/B 对比用）。
+///
+/// 与 `yeban_get_song_overview` 同一份 `RealSongOverviewProvider`、同一个
+/// `SongOverviewRequest`（`bar` 分辨率 + 当前曲风档 + 当前期望等级表），
+/// `RenderMode::Full` ⇒ 有音频时是真实渲染，不是界面近似。快照回复走
+/// `rounded`（与工具响应同一个取整函数）。
+fn capture_compare_snapshot(state: &SongOverviewLive) -> Result<McpSongOverview, String> {
+    let Some(port) = &state.port else {
+        return Err("没有打开的工程（撤销端口未装配）".to_owned());
+    };
+    let Some(project) = port.try_project() else {
+        return Err("没有打开的工程".to_owned());
+    };
+    let assets = port.assets().into_iter().collect::<BTreeMap<_, _>>();
+    let provider = RealSongOverviewProvider::new(ProviderContext::shared(
+        state.project_dir.clone(),
+        Arc::new(assets),
+    ));
+    let request = SongOverviewRequest {
+        resolution: Resolution::Bar,
+        profile: Profile::from_name(state.profile.as_str()).unwrap_or_default(),
+        expected_levels: state.expected_levels.clone(),
+    };
+    provider
+        .overview(&project, &request)
+        .map(rounded)
+        .map_err(|error| fault_message(&error))
+}
+
+/// 领域失败的人话：`message` 原样透出（与 MCP 回执逐字一致）。
+fn fault_message(fault: &Fault) -> String {
+    match fault {
+        Fault::Domain { message, .. } => message.clone(),
+        Fault::Impl { error } => format!("{error:?}"),
+    }
+}
+
+fn ab_summary(diff: &SongOverviewDiff) -> String {
+    format!(
+        "A→B · 比 {} 小节 · 变 {} · 增 {} 删 {} · Δ张力 {:.2} · ΔLUFS {:.1} LU · Δ频段 {:.1} dB",
+        diff.summary.bars_compared,
+        diff.summary.bars_changed,
+        diff.summary.bars_added,
+        diff.summary.bars_removed,
+        diff.summary.max_abs_tension_delta,
+        diff.summary.max_abs_lufs_delta,
+        diff.summary.max_abs_band_delta_db,
+    )
+}
+
+/// 把总览面板的回调接到引擎 / 视图态上。
 ///
 /// 参数与产品装配同源：`engine` 是 `host::wire_transport` 拿的**同一个**
 /// `Rc<RefCell<EngineHost>>`（点总览图与点标尺作用在同一条走带上），`view` 是
@@ -978,6 +1047,8 @@ fn reproject_after_zoom(ui: &MainWindow, port: &Option<Rc<UndoPort>>) {
 ///
 /// 返回活态的单一事实源：装配时已经按活工程算过一次真实数据并注入；换工程后调
 /// [`refresh_song_overview`]（传这份 `Rc`）即可更新数据，⛔ 不用重接回调。
+/// 返回会话态（快照 A/B、缓存、预设档）的唯一持有者；换工程时调用方
+/// （`main::wire_callbacks`）会再走一次并刷新。
 pub fn wire_song_overview(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
@@ -992,6 +1063,7 @@ pub fn wire_song_overview(
         project_dir,
         profile: TensionProfile::Default,
         expected_levels: BTreeMap::new(),
+        compare: AbCompare::default(),
     }));
     // 装配时按活工程算一次真实数据并注入（`refresh_song_overview` 在内）。
     // 回执只作装配期诊断：缓存命中/回退已由刷新写进日志，这里不展开用。
@@ -1266,6 +1338,81 @@ pub fn wire_song_overview(
                 }
             }
             let _ = refresh_song_overview(&ui, &view.borrow(), &state);
+        }
+    });
+
+    // Phase 2 A/B 快照：两次捕获都是完整 MCP 总览（同一份 provider / 同一个
+    // `SongOverviewRequest`），对比走 `compare_snapshots::diff_overviews` 的纯函数。
+    // 快照本身留在 `SongOverviewLive::compare`，不写工程、不进撤销栈。
+    let weak = ui.as_weak();
+    ui.on_song_overview_capture_a({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let result = capture_compare_snapshot(&state.borrow());
+            match result {
+                Ok(overview) => {
+                    let bars = overview.bar_series.len();
+                    state.borrow_mut().compare.a = Some(overview);
+                    ui.set_song_overview_ab_status(format!("A 已存 · {bars} 小节").into());
+                }
+                Err(message) => {
+                    ui.set_song_overview_ab_status(format!("存 A 失败：{message}").into());
+                }
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_song_overview_capture_b({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let result = capture_compare_snapshot(&state.borrow());
+            match result {
+                Ok(overview) => {
+                    let bars = overview.bar_series.len();
+                    state.borrow_mut().compare.b = Some(overview);
+                    ui.set_song_overview_ab_status(format!("B 已存 · {bars} 小节").into());
+                }
+                Err(message) => {
+                    ui.set_song_overview_ab_status(format!("存 B 失败：{message}").into());
+                }
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_song_overview_compare_ab({
+        let weak = weak.clone();
+        let state = Rc::clone(&state);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let live = state.borrow();
+            let (Some(a), Some(b)) = (live.compare.a.as_ref(), live.compare.b.as_ref()) else {
+                ui.set_song_overview_ab_status("先存 A 与 B，再对比".into());
+                return;
+            };
+            let diff = match compare_snapshots(a, b) {
+                Ok(diff) => diff,
+                Err(fault) => {
+                    let message = fault_message(&fault);
+                    drop(live);
+                    ui.set_song_overview_ab_status(format!("对比失败：{message}").into());
+                    return;
+                }
+            };
+            let summary = ab_summary(&diff);
+            drop(live);
+            ui.set_song_overview_ab_status(summary.into());
         }
     });
 

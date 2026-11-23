@@ -208,6 +208,9 @@ pub mod sound_library;
 // 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。
 // 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。
 pub mod song_overview;
+// ⭐ Hub #711：OTCP 音高校正 / 自动相位对齐的 GUI 接线（复用 yeban-mcp 领域函数）。
+pub mod otcp_gui;
+pub mod phase_align_gui;
 // 工程模板机制（照 Logic：模板 = 存进模板目录的工程文件；三级分类
 // 曲风 / 子曲风 / 模板名；纯函数层，界面接线在 `host::wire_project_templates`）。
 pub mod templates;
