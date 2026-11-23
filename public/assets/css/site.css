@@ -138,13 +138,14 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
-/* 页眉单独放宽：英文导航 7 项 + 两组切换在 1120 内容宽下溢出，切换组被挤到第二行 */
-.site-header .wrap { max-width: 1200px; }
+/* 页眉单独放宽：长译文语言 (ru/fr/es/de) 的导航 7 项 + 两组切换在 1200 内容宽下仍溢出，
+   切换组被挤到第二行；放宽到 1360 并配合下方收紧与 1240 堆叠断点，九种语言恒定一行 */
+.site-header .wrap { max-width: 1360px; }
 
 .header-inner {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   min-height: 68px;
   flex-wrap: wrap;
 }
@@ -173,15 +174,16 @@ code {
 
 .site-nav {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   margin-left: auto;
   flex-wrap: wrap;
 }
 .site-nav a {
   color: var(--text-soft);
-  padding: 7px 9px;
+  padding: 6px 7px;
   border-radius: var(--radius-sm);
-  font-size: 0.94rem;
+  font-size: 0.92rem;
+  white-space: nowrap;
   transition: background var(--dur) ease, color var(--dur) ease;
 }
 .site-nav a:hover {
@@ -190,7 +192,7 @@ code {
   text-decoration: none;
 }
 
-.controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.controls { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .segmented {
   display: inline-flex;
@@ -429,12 +431,24 @@ code {
 
 /* ------------------------------------------------------------ responsive */
 
+/* 中等宽度: 再收紧一级字号与内边距, 保住一行 */
+@media (max-width: 1400px) {
+  .site-nav a { font-size: 0.88rem; padding: 6px 6px; }
+  .segmented button { padding: 4px 8px; }
+  .lang-select { padding: 6px 8px; }
+}
+
+/* 1280px 以下: 一行放不下全部语言 (ru 在 1250 仍差一口气), 改走设计的堆叠布局
+   (导航整行置于第二行), 九种语言表现一致, 不再出现"有的语言换行、有的不换"。 */
+@media (max-width: 1280px) {
+  .site-nav { order: 3; width: 100%; margin-left: 0; }
+  .controls { margin-left: auto; }
+}
+
 @media (max-width: 900px) {
   .hero-grid { grid-template-columns: 1fr; }
   .hero-art { order: -1; justify-content: flex-start; }
   .hero-logo { width: min(220px, 60%); }
-  .site-nav { order: 3; width: 100%; margin-left: 0; }
-  .controls { margin-left: auto; }
   .section { padding: 56px 0; }
   .hero { padding: 48px 0 36px; }
 }
