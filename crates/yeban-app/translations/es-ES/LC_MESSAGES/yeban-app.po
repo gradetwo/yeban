@@ -248,6 +248,12 @@ msgstr "Volver a 001.01.000"
 msgid "循环播放开关 (C)"
 msgstr "Activar bucle (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "Bucle: activado (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "Bucle: desactivado (C)"
+
 msgid "节拍器开关"
 msgstr "Activar metrónomo"
 

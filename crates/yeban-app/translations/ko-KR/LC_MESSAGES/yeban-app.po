@@ -248,6 +248,12 @@ msgstr "001.01.000으로 복귀"
 msgid "循环播放开关 (C)"
 msgstr "반복 재생 전환 (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "반복 재생: 켜짐 (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "반복 재생: 꺼짐 (C)"
+
 msgid "节拍器开关"
 msgstr "메트로놈 전환"
 

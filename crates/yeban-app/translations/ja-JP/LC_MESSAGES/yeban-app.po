@@ -248,6 +248,12 @@ msgstr "001.01.000へ戻る"
 msgid "循环播放开关 (C)"
 msgstr "ループ再生切替 (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "ループ再生：オン (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "ループ再生：オフ (C)"
+
 msgid "节拍器开关"
 msgstr "メトロノーム切替"
 

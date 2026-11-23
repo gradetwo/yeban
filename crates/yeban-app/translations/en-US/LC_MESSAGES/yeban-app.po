@@ -248,6 +248,12 @@ msgstr "Return to 001.01.000"
 msgid "循环播放开关 (C)"
 msgstr "Toggle Loop (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "Loop Playback Switch: On (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "Loop Playback Switch: Off (C)"
+
 msgid "节拍器开关"
 msgstr "Toggle Metronome"
 

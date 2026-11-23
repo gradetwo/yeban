@@ -248,6 +248,12 @@ msgstr "Auf 001.01.000 zurücksetzen"
 msgid "循环播放开关 (C)"
 msgstr "Schleife umschalten (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "Schleife: Ein (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "Schleife: Aus (C)"
+
 msgid "节拍器开关"
 msgstr "Metronom umschalten"
 

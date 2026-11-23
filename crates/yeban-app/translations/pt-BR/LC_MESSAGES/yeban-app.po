@@ -248,6 +248,12 @@ msgstr "Voltar a 001.01.000"
 msgid "循环播放开关 (C)"
 msgstr "Ativar/desativar loop (C)"
 
+msgid "循环播放开关：开 (C)"
+msgstr "Loop: ligado (C)"
+
+msgid "循环播放开关：关 (C)"
+msgstr "Loop: desligado (C)"
+
 msgid "节拍器开关"
 msgstr "Ativar/desativar metrônomo"
 

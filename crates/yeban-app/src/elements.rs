@@ -244,9 +244,10 @@ impl ElementRegistry {
         //
         // ⭐ T-FIX-122（2026-11-23）：`transport.slint` 是**死文件**（全仓没有任何
         // `.slint` import 它；`app.slint:8` 只 import `transport_bar.slint` 的
-        // `TransportHeaderBar`）。本段 4 条已按"一个 id 一颗真键"落到活文件：
+        // `TransportHeaderBar`）。本段 5 条已按"一个 id 一颗真键"落到活文件：
         //   `transport-play-button` / `transport-stop-button` /
-        //   `transport-record-button`（三颗走带键）与 `transport-timecode`（只读读数）。
+        //   `transport-record-button` / `transport-loop-button`（四颗走带键）与
+        //   `transport-timecode`（只读读数）。
         //
         // ⚠ 剩下 11 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
         // 的节点，比指向死文件更假）：
@@ -282,6 +283,20 @@ impl ElementRegistry {
             ElementKind::Button,
             "transport_bar.slint",
             "录音",
+            false,
+        );
+        // ⭐ T-FIX-181：LOOP 键（`transport_bar.slint` 的 `btn_loop`）。T-FIX-173
+        // 只在 .slint 侧补了无障碍三件套，注册表漏了这一条 ⇒
+        // `slint_accessible_ids_and_registry_cover_each_other` 在基线即红。
+        // 标签是静态概括：.slint 侧的 `accessible-label` 是随 `is-looping` 变化的
+        // 动态值（`@tr("循环播放开关：开 (C)")` / `@tr("循环播放开关：关 (C)")`），
+        // 无法逐字相同 —— 取 play 键 "播放 / 暂停 (Space)" 的同款写法，把两态并成
+        // 一条（toast-banner 的动态 label 同款处置，见 elements.rs 约 499 行）。
+        registry.add(
+            "transport-loop-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "循环播放开关：开 / 关 (C)",
             false,
         );
         // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
