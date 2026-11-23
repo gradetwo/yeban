@@ -83,6 +83,12 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 128px;
+    // T-FIX-152 曲式段落带：数据来自 ViewState.sections，宿主经 apply_view 注入
+    // section-names / section-colors / section-positions / section-widths。
+    in property <[string]> section-names: [];
+    in property <[color]> section-colors: [];
+    in property <[length]> section-positions: [];
+    in property <[length]> section-widths: [];
     // 拍位来源：投影的拍号分子（`bridge::ViewState::time_signature_numerator`），
     // 宿主在 `apply_view` 与小节读数同批写入。标尺拍刻度与车道拍线共用这一份
     // 读数（Wang 2026-11-17：网格以拍为常显基本单位，每拍一刻度 / 一线）。
@@ -429,6 +435,32 @@ export component ArrangementViewport inherits Rectangle {
 
                     VerticalLayout {
                         spacing: 0px;
+
+                        // T-FIX-152：曲式段落带（18px）——按小节范围绘制，名字可读、色标来自工程。
+                        Rectangle {
+                            // 无段落数据的工程高度为 0 ⇒ 既有布局/基准帧一位不动。
+                            height: root.section-names.length > 0 ? 18px : 0px;
+                            clip: true;
+                            background: Tokens.bg-shell;
+                            for section-name[section-index] in root.section-names : Rectangle {
+                                x: (section-index < root.section-positions.length ? root.section-positions[section-index] : 0px) - root.scroll-x;
+                                width: section-index < root.section-widths.length ? root.section-widths[section-index] : 0px;
+                                height: parent.height;
+                                background: section-index < root.section-colors.length ? root.section-colors[section-index] : Theme.accent;
+                                border-width: 1px;
+                                border-color: Tokens.divider-row;
+                                Text {
+                                    x: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height;
+                                    text: section-name;
+                                    font-size: 11px;
+                                    color: Tokens.ink-1;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
 
                         // Ruler (24px) - Spans across 24 bars (High contrast WCAG AA labels)
                         // 标尺带 (负责人 2026-11-16 四条之 4): 底比编曲区浅一档;
