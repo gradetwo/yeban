@@ -2483,7 +2483,12 @@ fn render_branch(
         None
     };
     for id in current.tracks().keys() {
-        if *id == master || produced >= track_budget {
+        // T-FIX-123（M2-D3/P0）：`track_budget` = scratch_meters.len()-1 只约束**电平打点
+        // 写入**，⛔ 不得约束音频渲染。旧写法把 `produced >= track_budget` 放进这条
+        // 整轨 `continue`，于是第 256 条及以后的轨不合成、不放片段、不走插入链、不进
+        // 路由求和 ⇒ 无声。现在只跳过 master；预算打点在下面各写点单独按
+        // `produced < track_budget` 保护，渲染/路由对**全部**轨执行。
+        if *id == master {
             continue;
         }
         let track = *id;
@@ -2716,7 +2721,10 @@ fn render_branch(
         // ⭐ 任务单 `#158`：**处理型总线**的电平帧改在 3a⁗ **插入之后**计量
         // （读"发送之和 ＋ 自己的声源"，仍是单声道、仍是"插入之后"的口径）；
         // 这里跳过 ⇒ 每量子每节点仍然**恰好一次**（`MeterBank::measure` 的契约）。
-        if !process_bus_inserts && !metered_at_forward {
+        // T-FIX-123：`track_budget` 只在这里约束**打点写入**。超预算的轨照常渲染/路由，
+        // 只是不把电平帧写进 `scratch_meters`（容量只有 SCRATCH_METERS 个槽）。
+        // 溢流已在循环前按 `metered_tracks - track_budget` 一次性记过，这里不重复记丢。
+        if !process_bus_inserts && !metered_at_forward && produced < track_budget {
             // ⭐ stage 4：分声道轨的电平取样点取"两声道里绝对值较大的那个"（峰值口径）；
             //   单声道轨仍读 `track_scratch`，一位不动。借 `reverb_scratch[0]` 当临时格
             //   （它在下面声相段才会被写，此处空闲），⛔ 不新增任何缓冲。
