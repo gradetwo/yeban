@@ -9411,13 +9411,27 @@ fn saved_status_text(
     by_authority: bool,
     missing: &[String],
 ) -> String {
-    let note = if missing.is_empty() {
-        String::new()
-    } else {
-        format!("；缺失 {} 件样本，首条原因：{}", missing.len(), missing[0])
-    };
+    // ⭐ T-FIX-159 复验否决：回执格宽是 480px 硬钉（`status_bar.slint` 的
+    //     `tip-width = min(480px, width - 612px)`，`overflow: elide`）—— 宽度不能动，
+    //     能动的只有**文案里的顺序**。缺失样本的附言（件数 ＋ 首条原因）是本回执里
+    //     最需要被读到的一段，所以放到**最前面**：省略号只裁尾部，裁到的是路径 /
+    //     字节数，⛔ 不会把 `sample_missing: gone.wav` 裁成 `sampl…`。
+    //     无缺失时逐字沿用旧文案（既有判据与用户习惯都不变）。
+    if missing.is_empty() {
+        return format!(
+            "已保存 {bytes} 字节 → {}（{}）",
+            path.display(),
+            if by_authority {
+                "经控制面会话写盘（唯一写者）"
+            } else {
+                "本地原子写"
+            }
+        );
+    }
     format!(
-        "已保存 {bytes} 字节 → {}（{}{note}）",
+        "缺失 {} 件样本，首条原因：{} · 已保存 {bytes} 字节 → {}（{}）",
+        missing.len(),
+        missing[0],
         path.display(),
         if by_authority {
             "经控制面会话写盘（唯一写者）"
@@ -20684,6 +20698,7 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+
     /// T-FIX-154：保存回执必须点名缺失样本（件数 + 首条原因），且不影响"保存成功"。
     #[test]
     fn save_status_names_missing_samples_without_failing_the_save() {
@@ -20696,6 +20711,32 @@ mod tests {
         assert!(text.contains("已保存 123 字节"), "{text}");
         assert!(text.contains("缺失 1 件样本"), "{text}");
         assert!(text.contains("sample_missing: gone.wav"), "{text}");
+        // ⭐ T-FIX-159 复验否决：附言必须在**路径之前** —— 回执格 480px + `overflow: elide`
+        //    只能裁尾；附言排在路径后面时，真实路径一长就把它裁成 `sampl…`。
+        assert!(
+            text.starts_with("缺失 1 件样本"),
+            "附言必须排在最前: {text}"
+        );
+        let arrow = text.find('→').expect("回执必须有 →");
+        let reason = text.find("sample_missing: gone.wav").expect("首条原因");
+        assert!(
+            reason < arrow,
+            "首条原因必须在 → 之前（省略号只裁尾）: {text}"
+        );
+        // 真实路径（长目录 + 中文文件名）同样：箭头之前必须已经完整写出附言。
+        let long_path =
+            std::path::Path::new("/Users/someone/Music/yeban/非常长的工程目录名/项目文件.yeban");
+        let long = super::saved_status_text(
+            long_path,
+            123_456,
+            true,
+            &["sample_missing: gone.wav".to_owned()],
+        );
+        let arrow = long.find('→').expect("回执必须有 →");
+        assert!(
+            long[..arrow].contains("缺失 1 件样本，首条原因：sample_missing: gone.wav"),
+            "真实路径下箭头之前必须完整写出附言: {long}"
+        );
 
         let clean = super::saved_status_text(std::path::Path::new("/tmp/x.yeban"), 1, false, &[]);
         assert!(!clean.contains("缺失"), "无缺失时逐字沿用旧文案: {clean}");
