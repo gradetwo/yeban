@@ -1384,8 +1384,14 @@ msgstr "휴머나이즈 · 퀀타이즈"
 msgid "关闭人性化与量化"
 msgstr "휴머나이즈 및 퀀타이즈 닫기"
 
-msgid "人性化（整片段）"
-msgstr "휴머나이즈 (전체 클립)"
+msgid "人性化"
+msgstr "휴머나이즈"
+
+msgid "将作用于选区 {} 颗音符"
+msgstr "선택한 {}개 음표에 적용"
+
+msgid "将作用于整片段"
+msgstr "전체 클립에 적용"
 
 msgid "时值抖动量（tick）"
 msgstr "타이밍 지터량 (tick)"
@@ -1407,9 +1413,6 @@ msgstr "선택한 클립에 휴머나이즈 적용"
 
 msgid "应用人性化"
 msgstr "휴머나이즈 적용"
-
-msgid "量化（整片段）"
-msgstr "퀀타이즈 (전체 클립)"
 
 msgid "网格（tick）"
 msgstr "그리드 (tick)"

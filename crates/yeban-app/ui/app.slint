@@ -621,6 +621,8 @@ export component MainWindow inherits Window {
     in-out property <int> humanize-focused-field: humanize-dialog.focused-field;
     in-out property <string> humanize-grid: "";
     in-out property <bool> humanize-open: false;
+    // T-FIX-206：对话框的作用范围（宿主在打开前写）：0 = 整片段，N > 0 = 选区 N 颗音符。
+    in-out property <int> humanize-scope-count: 0;
     in-out property <string> humanize-seed: "";
     in-out property <string> humanize-strength: "";
     in-out property <string> humanize-time-jitter: "";
@@ -2483,6 +2485,7 @@ export component MainWindow inherits Window {
             strength <=> root.humanize-strength;
             error <=> root.humanize-error;
             focus-section: root.humanize-focus-section;
+            scope-count <=> root.humanize-scope-count;
             apply-humanize => { root.apply-humanize(); }
             apply-quantize => { root.apply-quantize(); }
             close => { root.close-humanize(); }

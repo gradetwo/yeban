@@ -44,6 +44,9 @@ export component HumanizeDialog inherits Rectangle {
     in-out property <string> error: "";
     // ---- 打开时焦点落哪个区段：0 = 人性化，1 = 量化（宿主在打开前写）--------
     in-out property <int> focus-section: 0;
+    // ---- 作用范围（宿主在打开前写）：0 = 整片段，N > 0 = 选区 N 颗音符 ---------
+    // ⛔ 无 accessible-id ⇒ 运行时寻址面不变（与两只区段标题同款）。
+    in-out property <int> scope-count: 0;
 
     callback apply-humanize();
     callback apply-quantize();
@@ -97,9 +100,9 @@ export component HumanizeDialog inherits Rectangle {
 
         Rectangle {
             x: (root.width - 560px) / 2;
-            y: (root.height - 360px) / 2;
+            y: (root.height - 380px) / 2;
             width: 560px;
-            height: 360px;
+            height: 380px;
             background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
             border-radius: Tokens.radius-lg;
             border-width: 1px;
@@ -168,20 +171,33 @@ export component HumanizeDialog inherits Rectangle {
                 }
             }
 
-            // ------------------------------------------------------------ 人性化
+            // ------------------------------------------------------------ 作用范围
+            // T-FIX-206：对话框打开时宿主按卷帘选区写 `scope-count`；有选区时
+            // 两只应用只动选区内的音符，空选区时保持整片段口径。
             UiText {
                 x: Tokens.space-6;
                 y: 48px;
                 width: parent.width - 48px;
                 height: 16px;
-                text: @tr("人性化（整片段）");
+                text: root.scope-count > 0 ? @tr("将作用于选区 {} 颗音符", root.scope-count) : @tr("将作用于整片段");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            // ------------------------------------------------------------ 人性化
+            UiText {
+                x: Tokens.space-6;
+                y: 68px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: @tr("人性化");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
             }
 
             UiText {
                 x: Tokens.space-6;
-                y: 72px;
+                y: 92px;
                 width: 160px;
                 height: 16px;
                 text: @tr("时值抖动量（tick）");
@@ -191,7 +207,7 @@ export component HumanizeDialog inherits Rectangle {
 
             humanize-time-input := ImeAwareTextInput {
                 x: Tokens.space-6;
-                y: 92px;
+                y: 112px;
                 width: 160px;
                 height: 24px;
                 text <=> root.time-jitter;
@@ -210,7 +226,7 @@ export component HumanizeDialog inherits Rectangle {
 
             UiText {
                 x: Tokens.space-6 + 176px;
-                y: 72px;
+                y: 92px;
                 width: 160px;
                 height: 16px;
                 text: @tr("力度抖动量（±n）");
@@ -220,7 +236,7 @@ export component HumanizeDialog inherits Rectangle {
 
             humanize-velocity-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 176px;
-                y: 92px;
+                y: 112px;
                 width: 160px;
                 height: 24px;
                 text <=> root.velocity-jitter;
@@ -239,7 +255,7 @@ export component HumanizeDialog inherits Rectangle {
 
             UiText {
                 x: Tokens.space-6 + 352px;
-                y: 72px;
+                y: 92px;
                 width: 160px;
                 height: 16px;
                 text: @tr("基础种子（缺省工程种子）");
@@ -249,7 +265,7 @@ export component HumanizeDialog inherits Rectangle {
 
             humanize-seed-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 352px;
-                y: 92px;
+                y: 112px;
                 width: 160px;
                 height: 24px;
                 text <=> root.seed;
@@ -268,7 +284,7 @@ export component HumanizeDialog inherits Rectangle {
 
             UiText {
                 x: Tokens.space-6;
-                y: 124px;
+                y: 144px;
                 width: parent.width - 48px;
                 height: 16px;
                 accessible-role: text;
@@ -282,7 +298,7 @@ export component HumanizeDialog inherits Rectangle {
 
             Rectangle {
                 x: Tokens.space-6;
-                y: 148px;
+                y: 168px;
                 width: 160px;
                 height: 32px;
                 background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
@@ -332,17 +348,17 @@ export component HumanizeDialog inherits Rectangle {
             // ------------------------------------------------------------ 量化
             UiText {
                 x: Tokens.space-6;
-                y: 196px;
+                y: 216px;
                 width: parent.width - 48px;
                 height: 16px;
-                text: @tr("量化（整片段）");
+                text: @tr("量化");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
             }
 
             UiText {
                 x: Tokens.space-6;
-                y: 220px;
+                y: 240px;
                 width: 160px;
                 height: 16px;
                 text: @tr("网格（tick）");
@@ -352,7 +368,7 @@ export component HumanizeDialog inherits Rectangle {
 
             quantize-grid-input := ImeAwareTextInput {
                 x: Tokens.space-6;
-                y: 240px;
+                y: 260px;
                 width: 160px;
                 height: 24px;
                 text <=> root.grid;
@@ -371,7 +387,7 @@ export component HumanizeDialog inherits Rectangle {
 
             UiText {
                 x: Tokens.space-6 + 176px;
-                y: 220px;
+                y: 240px;
                 width: 160px;
                 height: 16px;
                 text: @tr("强度（0–100%）");
@@ -381,7 +397,7 @@ export component HumanizeDialog inherits Rectangle {
 
             quantize-strength-input := ImeAwareTextInput {
                 x: Tokens.space-6 + 176px;
-                y: 240px;
+                y: 260px;
                 width: 160px;
                 height: 24px;
                 text <=> root.strength;
@@ -400,7 +416,7 @@ export component HumanizeDialog inherits Rectangle {
 
             Rectangle {
                 x: Tokens.space-6;
-                y: 280px;
+                y: 300px;
                 width: 160px;
                 height: 32px;
                 background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
@@ -450,7 +466,7 @@ export component HumanizeDialog inherits Rectangle {
             // ------------------------------------------------------------ 失败行
             Rectangle {
                 x: Tokens.space-6;
-                y: 324px;
+                y: 344px;
                 width: parent.width - 48px;
                 height: 16px;
                 clip: true;

@@ -1384,8 +1384,14 @@ msgstr "ヒューマナイズ・クオンタイズ"
 msgid "关闭人性化与量化"
 msgstr "ヒューマナイズとクオンタイズを閉じる"
 
-msgid "人性化（整片段）"
-msgstr "ヒューマナイズ（クリップ全体）"
+msgid "人性化"
+msgstr "ヒューマナイズ"
+
+msgid "将作用于选区 {} 颗音符"
+msgstr "{} 個の選択されたノートに適用"
+
+msgid "将作用于整片段"
+msgstr "クリップ全体に適用"
 
 msgid "时值抖动量（tick）"
 msgstr "タイミングジッター量（tick）"
@@ -1407,9 +1413,6 @@ msgstr "選択中のクリップへヒューマナイズを適用"
 
 msgid "应用人性化"
 msgstr "ヒューマナイズを適用"
-
-msgid "量化（整片段）"
-msgstr "クオンタイズ（クリップ全体）"
 
 msgid "网格（tick）"
 msgstr "グリッド（tick）"

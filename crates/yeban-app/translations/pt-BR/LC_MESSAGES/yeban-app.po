@@ -1384,8 +1384,14 @@ msgstr "Humanizar · Quantizar"
 msgid "关闭人性化与量化"
 msgstr "Fechar Humanizar e Quantizar"
 
-msgid "人性化（整片段）"
-msgstr "Humanizar (clip inteiro)"
+msgid "人性化"
+msgstr "Humanizar"
+
+msgid "将作用于选区 {} 颗音符"
+msgstr "Aplica-se a {} notas selecionadas"
+
+msgid "将作用于整片段"
+msgstr "Aplica-se ao clipe inteiro"
 
 msgid "时值抖动量（tick）"
 msgstr "Quantidade de jitter de timing (ticks)"
@@ -1407,9 +1413,6 @@ msgstr "Aplicar Humanizar ao clip selecionado"
 
 msgid "应用人性化"
 msgstr "Aplicar Humanizar"
-
-msgid "量化（整片段）"
-msgstr "Quantizar (clip inteiro)"
 
 msgid "网格（tick）"
 msgstr "Grade (ticks)"

@@ -6,7 +6,7 @@
 //! | 环 | 位置 |
 //! | :--- | :--- |
 //! | 输入面 | `ui/console/piano_roll.slint` 的右键 `PopupWindow`（语义 ID `piano-roll-context-menu-humanize` / `piano-roll-context-menu-quantize`），**默认不显示** ⇒ 默认帧一位不变 |
-//! | 弹窗 | `ui/dialogs/humanize_dialog.slint`（五格文本 + 两枚应用 + 关闭 + 错误行） |
+//! | 弹窗 | `ui/dialogs/humanize_dialog.slint`（五格文本 + 两枚应用 + 关闭 + 错误行 + 作用范围行） |
 //! | 上抛 | `console_tabs.slint` ⇒ `app.slint`（`humanize-requested` / `quantize-requested`，只透传） |
 //! | 宿主消费 | `src/host.rs` 的 `wire_humanize_dialog`：打开时播种（基础种子缺省 = 工程 `rng_seed`）、应用时按 MCP 同一口径解析、一次 `commit_ops`（一步撤销）、重投影卷帘 |
 //! | 共享算术 | `yeban_model::clip_ops::{humanize_note, quantize_tick}`（`yeban-mcp` 的 `compile` 与宿主调**同一份**；交叉对照臂钉住） |

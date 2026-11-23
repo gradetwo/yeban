@@ -11685,6 +11685,21 @@ fn parse_humanize_u64(text: &str, label: &str) -> Result<u64, String> {
         .map_err(|_| format!("{label}不是有效的非负整数：{trimmed}"))
 }
 
+/// 卷帘音符选区 → 两只 op 构造器的选区参数（T-FIX-206）。
+///
+/// `selected-ulids` 解析成身份集；空选区 ⇒ `None`（整片段口径）。
+/// 解析失败的条目直接丢掉（`delete_ops_for` 同款口径）；陈旧 / 外来身份
+/// 由 op 构造器的交集再滤一遍。
+fn selected_note_ids_for_ops(ui: &MainWindow) -> Option<std::collections::BTreeSet<EntityId>> {
+    use std::collections::BTreeSet;
+    let ids: BTreeSet<EntityId> = ui
+        .get_selected_ulids()
+        .iter()
+        .filter_map(|raw| raw.parse::<EntityId>().ok())
+        .collect();
+    if ids.is_empty() { None } else { Some(ids) }
+}
+
 /// 钢琴卷帘右键菜单的人性化 / 量化对话框（`ui/dialogs/humanize_dialog.slint`）的接线。
 ///
 /// 与 [`wire_module_actions_with_capture`] 的导出对话框**同一结构**：打开时播种
@@ -11734,6 +11749,8 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             seed_humanize_fields(&ui, port_for_seed.as_ref());
             ui.set_humanize_error("".into());
             ui.set_humanize_focus_section(0);
+            // T-FIX-206：打开时按卷帘选区写作用范围（0 = 整片段）。
+            ui.set_humanize_scope_count(ui.get_selected_note_count());
             ui.set_humanize_open(true);
             ui.invoke_focus_humanize_dialog();
         });
@@ -11749,6 +11766,8 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             seed_humanize_fields(&ui, port_for_seed.as_ref());
             ui.set_humanize_error("".into());
             ui.set_humanize_focus_section(1);
+            // T-FIX-206：打开时按卷帘选区写作用范围（0 = 整片段）。
+            ui.set_humanize_scope_count(ui.get_selected_note_count());
             ui.set_humanize_open(true);
             ui.invoke_focus_humanize_dialog();
         });
@@ -11821,6 +11840,7 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 seed,
                 time_jitter,
                 velocity_jitter,
+                selected_note_ids_for_ops(&ui).as_ref(),
             ) {
                 Ok(ops) => ops,
                 Err(msg) => {
@@ -11888,6 +11908,7 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 ui.get_selected_clip_ulid().as_str(),
                 grid,
                 strength_permille,
+                selected_note_ids_for_ops(&ui).as_ref(),
             ) {
                 Ok(ops) => ops,
                 Err(msg) => {
@@ -18975,12 +18996,18 @@ pub fn clip_delete_ops_for(
 /// `humanize_note` —— 传原始种子会让同一种子的两轨抖动逐位相同。
 /// 旧值全部从**当前文档**读（模型前置条件逐字段比较旧值，⛔ 不采信调用方声明）。
 /// 解析不到选中剪辑 / 不是 MIDI 片段 ⇒ 返回 `Err(界面文案)`（调用方响亮失败，⛔ 不提交）。
+///
+/// T-FIX-206：`selected_note_ids` 为 `Some` 非空时只处理与片段音符的**交集**；
+/// `None` / 空集时保持整片段口径（向后兼容：MCP 与既有判据走的仍是整片段
+/// 展开）。选区内的音符仍用片段内的**原序号**作抖动下标 —— 同一颗音符在
+/// 选区展开里拿到的抖动与整片段展开时逐位相同。
 pub fn humanize_clip_ops_for(
     project: &yeban_model::YebanProjectV1,
     selected_clip_ulid: &str,
     seed: u64,
     time_jitter_ticks: u64,
     velocity_jitter: u8,
+    selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
 ) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
     let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
         return Err("未选中剪辑");
@@ -18995,6 +19022,14 @@ pub fn humanize_clip_ops_for(
     let effective_seed = yeban_model::clip_ops::derive_track_seed(seed, &track_id);
     let mut ops = Vec::with_capacity(notes.len() * 2);
     for (index, (note_id, note)) in notes.iter().enumerate() {
+        // T-FIX-206：有选区时只动交集；`continue` 在取下标之前 ⇒ 序号仍是
+        // 片段内的原序号（与整片段展开逐位一致）。
+        if let Some(ids) = selected_note_ids
+            && !ids.is_empty()
+            && !ids.contains(note_id)
+        {
+            continue;
+        }
         let (micro, velocity) = yeban_model::clip_ops::humanize_note(
             note,
             effective_seed,
@@ -19030,11 +19065,15 @@ pub fn humanize_clip_ops_for(
 /// 才产一条 `Op::SetNoteTiming`（已在格上的音符不产生 op）；强度经
 /// [`yeban_model::clip_ops::quantize_tick`] 的线性插值。空展开 ⇒ 空 `Vec`
 /// （调用方据此给明文、⛔ 不提交空批次）。
+///
+/// T-FIX-206：`selected_note_ids` 为 `Some` 非空时只处理与片段音符的**交集**；
+/// `None` / 空集时保持整片段口径（向后兼容）。
 pub fn quantize_clip_ops_for(
     project: &yeban_model::YebanProjectV1,
     selected_clip_ulid: &str,
     grid_ticks: u64,
     strength_permille: u16,
+    selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
 ) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
     let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
         return Err("未选中剪辑");
@@ -19048,6 +19087,13 @@ pub fn quantize_clip_ops_for(
     };
     let mut ops = Vec::new();
     for (note_id, note) in notes.iter() {
+        // T-FIX-206：有选区时只动交集（不属于本片段的身份直接滤掉）。
+        if let Some(ids) = selected_note_ids
+            && !ids.is_empty()
+            && !ids.contains(note_id)
+        {
+            continue;
+        }
         let snapped =
             yeban_model::clip_ops::quantize_tick(note.start_tick, grid_ticks, strength_permille);
         if snapped != note.start_tick {
