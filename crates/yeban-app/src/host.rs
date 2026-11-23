@@ -10280,12 +10280,34 @@ fn apply_startup_category(
     let model: Vec<crate::ui::StartupChooserRow> = rows
         .iter()
         .take(crate::startup_chooser::CHOOSER_MAX_ROWS)
-        .map(|row| crate::ui::StartupChooserRow {
-            kind: row.kind.code(),
-            label: row.label.clone().into(),
-            detail: row.detail.clone().into(),
-            entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
-            enabled: row.enabled,
+        .map(|row| {
+            // 封面在宿主侧真实加载（文件型 demo 实验）：加载失败
+            // **响亮**报错并降级为无封面行，⛔ 不静默吞。
+            let (has_cover, cover) = match &row.cover {
+                Some(path) => match slint::Image::load_from_path(path) {
+                    Ok(image) => (true, image),
+                    Err(error) => {
+                        let message = format!("演示封面 `{}` 加载失败: {error}", path.display());
+                        eprintln!("startup-chooser: {message}");
+                        let receipt = module_receipt(
+                            "startup-chooser",
+                            &module_error_fields("cover-load", &message),
+                        );
+                        module_trace("startup-chooser", std::time::Instant::now(), &receipt);
+                        (false, slint::Image::default())
+                    }
+                },
+                None => (false, slint::Image::default()),
+            };
+            crate::ui::StartupChooserRow {
+                kind: row.kind.code(),
+                label: row.label.clone().into(),
+                detail: row.detail.clone().into(),
+                entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
+                enabled: row.enabled,
+                has_cover,
+                cover,
+            }
         })
         .collect();
     ui.set_startup_rows(ModelRc::new(VecModel::from(model)));
@@ -10459,25 +10481,56 @@ pub fn wire_startup_chooser(
                         );
                         return;
                     };
-                    let sample = demo.sample;
-                    let mut project = sample.project();
-                    project.record_creation_time(yeban_model::project::now_unix_ms());
-                    let archive = yeban_model::container::ProjectArchive {
-                        project,
-                        history_dag: Vec::new(),
-                        proposals: None,
-                        assets: sample.assets(),
-                        embedded_presets: Vec::new(),
-                        load_notes: Vec::new(),
-                    };
-                    let label = match sample {
-                        crate::cli::Sample::Default => "sample:default",
-                        crate::cli::Sample::Filled => "sample:filled",
-                        crate::cli::Sample::Empty => "sample:empty",
-                    };
-                    match untitled.open_archive_runtime(&ui, label, &archive, None) {
-                        Ok(()) => done(&ui, "demo", format!("source={label}")),
-                        Err(message) => fail(&ui, "open-demo", &message),
+                    match demo.source {
+                        crate::startup_chooser::DemoSource::Builtin(sample) => {
+                            let mut project = sample.project();
+                            project.record_creation_time(yeban_model::project::now_unix_ms());
+                            let archive = yeban_model::container::ProjectArchive {
+                                project,
+                                history_dag: Vec::new(),
+                                proposals: None,
+                                assets: sample.assets(),
+                                embedded_presets: Vec::new(),
+                                load_notes: Vec::new(),
+                            };
+                            let label = match sample {
+                                crate::cli::Sample::Default => "sample:default",
+                                crate::cli::Sample::Filled => "sample:filled",
+                                crate::cli::Sample::Empty => "sample:empty",
+                            };
+                            match untitled.open_archive_runtime(&ui, label, &archive, None) {
+                                Ok(()) => done(&ui, "demo", format!("source={label}")),
+                                Err(message) => fail(&ui, "open-demo", &message),
+                            }
+                        }
+                        crate::startup_chooser::DemoSource::File(path) => {
+                            // 文件型 demo（实验）：从磁盘真实加载归档，
+                            // 走与内置 demo 相同的未命名副本装入路径
+                            // （不记最近、不回写源文件）。
+                            match crate::startup_chooser::load_file_demo_archive(&path) {
+                                Ok(mut archive) => {
+                                    archive
+                                        .project
+                                        .record_creation_time(yeban_model::project::now_unix_ms());
+                                    let label = format!("file:{}", path.display());
+                                    // 工程目录必须传下去：工程里的相对
+                                    // SFZ / 样本路径以工程文件所在目录
+                                    // 为根解析（demo 包的 samples/ 就在
+                                    // 工程旁边），传 None 会让引擎换代
+                                    // 在摊平 SFZ 时找不到文件。
+                                    match untitled.open_archive_runtime(
+                                        &ui,
+                                        &label,
+                                        &archive,
+                                        path.parent(),
+                                    ) {
+                                        Ok(()) => done(&ui, "demo", format!("source={label}")),
+                                        Err(message) => fail(&ui, "open-demo", &message),
+                                    }
+                                }
+                                Err(message) => fail(&ui, "load-demo", &message),
+                            }
+                        }
                     }
                 }
                 STARTUP_CATEGORY_FACTORY | STARTUP_CATEGORY_USER => {

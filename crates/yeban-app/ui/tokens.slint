@@ -1448,12 +1448,17 @@ export struct TemplateChooserRow {
 // 时有效，指向该分类数据表的下标（模板分类是全量模板清单下标）；
 // 标题行恒为 -1。`enabled = false` 的条目置灰不可点（最近清单里文件
 // 已不存在的工程）。`detail` 是副文字（路径 + 相对时间 / 轨道数）。
+// `has-cover` / `cover` 是演示工程分类的封面图（文件型 demo 实验）：
+// 只有宿主真实加载到封面文件的条目 `has-cover` 才为真，`cover` 是
+// 已解码的图像；其余行恒为 false + 空图，渲染侧据此决定画不画。
 export struct StartupChooserRow {
     kind: int,
     label: string,
     detail: string,
     entry-index: int,
     enabled: bool,
+    has-cover: bool,
+    cover: image,
 }
 
 // 帮助系统（line/onboarding-help）：手册渲染行。level 与 src/manual.rs 的

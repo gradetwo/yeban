@@ -17,9 +17,20 @@
 //! | :--- | :--- | :--- |
 //! | 新建工程 | 空工程 + Details（真实字段） | 未命名新工程 |
 //! | 最近 | 设置里的最近清单（[`crate::settings`]） | 按路径打开原文件 |
-//! | 演示工程 | 内置样本（`default` / `filled`） | 未命名副本（样本无磁盘文件） |
+//! | 演示工程 | 内置样本（`default` / `filled`）＋可选文件型 demo（见下） | 未命名副本（样本无磁盘文件） |
 //! | 工程模板 | 工厂模板目录（[`crate::templates`]） | 未命名副本，永不回写 |
 //! | 我的模板 | 用户模板目录（[`crate::templates`]） | 未命名副本，永不回写 |
+//!
+//! ## 文件型 demo（实验，`YEBAN_DEMOS_DIR`）
+//!
+//! 环境变量 [`DEMOS_DIR_ENV`] 指向一个目录时，`gather` 在两条内置
+//! 样本之后追加扫描该目录：每个 `*.yeban` 文件是一条文件型 demo，
+//! 标题与轨道数从容器真实读取（[`read_project_container`]），读不
+//! 出来的文件**响亮报错并跳过**（⛔ 不编造标题）；封面是与工程同名
+//! 的 `.png` / `.jpg`，或同名加 `-cover` 后缀的 `.png` / `.jpg`。
+//! 环境变量未设 ⇒ 行为与没有本实验时完全一致。文件型 demo 打开时
+//! 从磁盘真实加载归档，同样走未命名副本口径（不记最近、不回写源
+//! 文件）。
 //!
 //! ## Details 只放真实字段（普查结论）
 //!
@@ -41,9 +52,10 @@
 //! 字段名、按钮）都在 .slint 侧走 `@tr` 词表。用户内容（文件名、
 //! 模板分类名、工程标题）原样显示、不翻译。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use yeban_model::YebanProjectV1;
+use yeban_model::container::{ContainerLimits, read_project_container};
 use yeban_model::project::{KeySignature, SampleRate, TimeSignature};
 
 use crate::cli::{Language, Sample};
@@ -67,15 +79,29 @@ pub struct RecentEntry {
     pub exists: bool,
 }
 
-/// 一条演示工程（内置样本）。
+/// 文件型 demo 目录的环境变量名（实验开关，见模块文档）。
+pub const DEMOS_DIR_ENV: &str = "YEBAN_DEMOS_DIR";
+
+/// 一条演示工程的来源：内置样本，或磁盘上的工程文件（实验）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DemoSource {
+    /// 内置样本（打开时按它构造归档）。
+    Builtin(Sample),
+    /// 磁盘上的 `.yeban` 文件（打开时从磁盘真实加载归档）。
+    File(PathBuf),
+}
+
+/// 一条演示工程。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemoEntry {
-    /// 样本身份（打开时按它构造归档）。
-    pub sample: Sample,
-    /// 工程标题（样本工程自带，原样显示）。
+    /// 来源（打开时按它取归档）。
+    pub source: DemoSource,
+    /// 工程标题（样本工程自带 / 文件型从容器读出，原样显示）。
     pub title: String,
     /// 非主总线轨道数。
     pub track_count: usize,
+    /// 封面图路径（文件型 demo 的同名图片；内置样本恒 `None`）。
+    pub cover: Option<PathBuf>,
 }
 
 /// 选择器开屏时汇集的全部数据（汇集一次，分类切换只读不重扫 ——
@@ -84,7 +110,8 @@ pub struct DemoEntry {
 pub struct ChooserData {
     /// 最近清单（最近在前）。
     pub recent: Vec<RecentEntry>,
-    /// 演示工程（固定两条：`default` 与 `filled`）。
+    /// 演示工程（内置两条在前，其后是 [`DEMOS_DIR_ENV`] 扫描出的
+    /// 文件型 demo；环境变量未设时只有内置两条）。
     pub demos: Vec<DemoEntry>,
     /// 全部模板（工厂在前，与 [`list_templates`] 同序）。
     pub templates: Vec<TemplateEntry>,
@@ -109,26 +136,126 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
             opened_at_unix_ms: entry.opened_at_unix_ms,
         })
         .collect();
-    let demos = [Sample::Default, Sample::Filled]
+    let mut demos: Vec<DemoEntry> = [Sample::Default, Sample::Filled]
         .into_iter()
         .map(|sample| {
             let project = sample.project();
             DemoEntry {
-                sample,
+                source: DemoSource::Builtin(sample),
                 title: project.title.clone(),
                 track_count: project
                     .tracks
                     .keys()
                     .filter(|id| **id != project.master_bus_track_id)
                     .count(),
+                cover: None,
             }
         })
         .collect();
+    if let Some(dir) = std::env::var_os(DEMOS_DIR_ENV)
+        && !dir.is_empty()
+    {
+        demos.extend(scan_file_demos(Path::new(&dir)));
+    }
     ChooserData {
         recent,
         demos,
         templates: list_templates(roots),
     }
+}
+
+/// 扫描文件型 demo 目录（实验）：每个 `*.yeban` 文件一条，标题与
+/// 轨道数从容器真实读取；读不出的文件**响亮报错并跳过**（⛔ 不
+/// 编造）；与工程同名的 `.png` / `.jpg` 是封面。条目按路径排序，
+/// ⛔ 不依赖 `read_dir` 的文件系统顺序。
+fn scan_file_demos(dir: &Path) -> Vec<DemoEntry> {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(error) => {
+            eprintln!(
+                "startup-chooser: 文件型 demo 目录 `{}` 读不了: {error}",
+                dir.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in read_dir {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "yeban") {
+                    paths.push(path);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "startup-chooser: 文件型 demo 目录 `{}` 有条目读不了: {error}",
+                    dir.display()
+                );
+            }
+        }
+    }
+    paths.sort();
+    let mut demos = Vec::new();
+    for path in paths {
+        match load_demo_entry(&path) {
+            Ok(entry) => demos.push(entry),
+            Err(message) => {
+                eprintln!("startup-chooser: 文件型 demo 跳过: {message}");
+            }
+        }
+    }
+    demos
+}
+
+/// 从磁盘真实读取一条文件型 demo 的标题与轨道数（整包读容器 ——
+/// 实验口径，见回执）。读不出 ⇒ `Err` 写明原因，调用方响亮跳过。
+fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("`{}` 读不了: {error}", path.display()))?;
+    let archive = read_project_container(&bytes, &ContainerLimits::default())
+        .map_err(|error| format!("`{}` 不是可读的工程容器: {error}", path.display()))?;
+    let project = &archive.project;
+    // 封面候选（先到先得）：同名图、同名 + `-cover` 后缀图。
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let cover = ["png", "jpg"]
+        .iter()
+        .flat_map(|ext| {
+            [
+                path.with_extension(ext),
+                path.with_file_name(format!("{stem}-cover.{ext}")),
+            ]
+        })
+        .find(|candidate| candidate.is_file());
+    Ok(DemoEntry {
+        source: DemoSource::File(path.to_path_buf()),
+        title: project.title.clone(),
+        track_count: project
+            .tracks
+            .keys()
+            .filter(|id| **id != project.master_bus_track_id)
+            .count(),
+        cover,
+    })
+}
+
+/// 从磁盘真实加载一份文件型 demo 的完整归档（打开语义用）。
+///
+/// # Errors
+///
+/// 文件读不了或容器不合法时返回写明原因的错误，调用方走既有
+/// fail 回执路径响亮报错。
+pub fn load_file_demo_archive(
+    path: &Path,
+) -> Result<yeban_model::container::ProjectArchive, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("`{}` 读不了: {error}", path.display()))?;
+    read_project_container(&bytes, &ContainerLimits::default())
+        .map_err(|error| format!("`{}` 不是可读的工程容器: {error}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +299,8 @@ pub struct ChooserRow {
     pub entry_index: Option<usize>,
     /// 条目是否可点（最近条目文件已不存在 ⇒ false；标题行恒 false）。
     pub enabled: bool,
+    /// 封面图路径（只有文件型 demo 条目有；其余行一律 `None`）。
+    pub cover: Option<PathBuf>,
 }
 
 fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
@@ -181,6 +310,7 @@ fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
         detail: String::new(),
         entry_index: None,
         enabled: false,
+        cover: None,
     }
 }
 
@@ -207,6 +337,7 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
                 detail,
                 entry_index: Some(index),
                 enabled: entry.exists,
+                cover: None,
             }
         })
         .collect()
@@ -224,6 +355,7 @@ pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
             detail: tracks_label(lang, entry.track_count),
             entry_index: Some(index),
             enabled: true,
+            cover: entry.cover.clone(),
         })
         .collect()
 }
@@ -259,6 +391,7 @@ pub fn template_rows(entries: &[TemplateEntry], source: TemplateSource) -> Vec<C
             detail: String::new(),
             entry_index: Some(index),
             enabled: true,
+            cover: None,
         });
     }
     rows

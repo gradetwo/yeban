@@ -841,14 +841,14 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 content-width: self.width;
-                content-height: max(self.height, root.rows.length * 36px);
+                content-height: max(self.height, root.rows.length * (root.category == 2 ? 76px : 36px));
                 interactive: true;
 
                 for row[row-index] in root.rows : Rectangle {
                     x: 0;
-                    y: row-index * 36px;
+                    y: row-index * (root.category == 2 ? 76px : 36px);
                     width: parent.width;
-                    height: 36px;
+                    height: root.category == 2 ? 76px : 36px;
                     clip: true;
 
                     // 条目行（kind == 2）：可点；单击选中、双击打开。
@@ -866,10 +866,29 @@ export component StartupChooserDialog inherits Rectangle {
                             root.selected-entry = row.entry-index;
                         }
 
+                        // 封面图（文件型 demo 实验）：装饰元素，不设
+                        // accessible-id。圆角靠外层 Rectangle 的
+                        // border-radius + clip 裁切（Image 本身不裁圆角）。
+                        if row.has-cover : Rectangle {
+                            x: 6px;
+                            y: 6px;
+                            width: 64px;
+                            height: 64px;
+                            border-radius: Tokens.radius-md;
+                            clip: true;
+
+                            Image {
+                                width: 64px;
+                                height: 64px;
+                                source: row.cover;
+                                image-fit: cover;
+                            }
+                        }
+
                         UiText {
-                            x: Tokens.space-6;
-                            y: 1px;
-                            width: parent.width - 32px;
+                            x: row.has-cover ? 82px : Tokens.space-6;
+                            y: root.category == 2 ? 20px : 1px;
+                            width: parent.width - (row.has-cover ? 98px : 32px);
                             height: 19px;
                             text: row.label;
                             color: Tokens.ink-1;
@@ -878,9 +897,9 @@ export component StartupChooserDialog inherits Rectangle {
                         }
 
                         UiText {
-                            x: Tokens.space-6;
-                            y: 20px;
-                            width: parent.width - 32px;
+                            x: row.has-cover ? 82px : Tokens.space-6;
+                            y: root.category == 2 ? 39px : 20px;
+                            width: parent.width - (row.has-cover ? 98px : 32px);
                             height: 14px;
                             text: row.detail;
                             color: Tokens.ink-2;
