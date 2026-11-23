@@ -11,7 +11,7 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（可寻址） | `console-maximize-button` 在树里、角色 = `Button`、标签与注册表逐字一致；装配态 `console-maximized == false` |
+//! | ①（可寻址） | `console-maximize-button` 在树里、角色 = `Button`、标签是注册表原文在当前区域的译文；装配态 `console-maximized == false` |
 //! | ②（真点击 → 真布局） | 注入一次真实指针点击 ⇒ 属性 `false → true`，**重抓树**后控制台高、工作区矮（⛔ 不是只看属性） |
 //! | ③（还原） | 再点一次 ⇒ 属性回 `false`，几何回到点击前的读数 |
 //! | ④（回调路径） | `invoke_console_maximize_toggle()` 与点击落到**同一个**属性（纯视图态：本装配没有 `UndoPort`） |
@@ -93,7 +93,10 @@ fn a_real_click_on_the_console_maximize_button_maximizes_the_console() {
 
     let (mut port, _view) = live_window();
 
-    // ① 可寻址：按钮在树里、角色 Button、标签与注册表逐字一致；装配态未最大化。
+    // ① 可寻址：按钮在树里、角色 Button、标签是注册表原文在当前区域的译文；
+    // 装配态未最大化。注册表存的是 @tr 的中文原文，运行时标签是它的译文 ——
+    // 默认区域（en_US）下逐字比中文原文必红（T-FIX-171：111 行曾在此 panic），
+    // 故按当前区域取对应译文再比，几何断言不受区域影响。
     let registry = ElementRegistry::demo();
     let meta = registry
         .get("console-maximize-button")
@@ -108,7 +111,11 @@ fn a_real_click_on_the_console_maximize_button_maximizes_the_console() {
         .find_by_id("console-maximize-button")
         .expect("运行时树里必须有 console-maximize-button");
     assert_eq!(button.role.as_str(), "button", "树里角色必须是 button");
-    assert_eq!(button.label, meta.label, "树里标签必须与注册表逐字一致");
+    assert_eq!(
+        button.label,
+        expected_label_for_current_locale(&meta.label),
+        "树里标签必须是注册表原文在当前区域的译文"
+    );
     assert!(
         !port.ui().get_console_maximized(),
         "装配态 console-maximized == false"
@@ -191,4 +198,103 @@ fn code_only(text: &str) -> String {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// 注册表标签（`@tr` 的中文原文）在当前区域应有的样子。
+///
+/// 窗口的 `@tr` 绑定由 Slint 首帧按系统 locale 自动选词；
+/// [`yeban_app::settings::detect_system_language`] 是那次自动选择的
+/// Rust 侧同义复述（见 `settings.rs` 的口径注释），故它算出的语言就是
+/// 窗口实际用的语言。源语言 zh-CN 没有词表目录，期望值就是原文；
+/// 其余八语从 `translations/<lang>/LC_MESSAGES/yeban-app.po` 取 msgstr
+/// （解析口径与 `tests/i18n_coverage.rs` 的 `parse_po` 同款）。
+fn expected_label_for_current_locale(registry_label: &str) -> String {
+    let lang = yeban_app::settings::detect_system_language();
+    if lang == yeban_app::cli::Language::ZhCn {
+        return registry_label.to_string();
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "translations/{}/LC_MESSAGES/yeban-app.po",
+        lang.name()
+    ));
+    let po = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读 {} 失败: {e}", path.display()));
+    po_translation(&po, registry_label).unwrap_or_else(|| {
+        panic!(
+            "词表 {} 里找不到 msgid {registry_label:?} 的译文",
+            path.display()
+        )
+    })
+}
+
+/// 从 .po 文本里取一条 msgid 的 msgstr（`msgid "..."` / `msgstr "..."` 加
+/// `"..."` 续行；行首 `#` 注释与空行断开续行——与 `i18n_coverage.rs` 同款）。
+fn po_translation(po: &str, wanted: &str) -> Option<String> {
+    let mut current_id: Option<String> = None;
+    let mut current_str: Option<String> = None;
+    let mut mode: Option<&str> = None;
+    for raw_line in po.lines() {
+        let line = raw_line.trim();
+        if let Some(rest) = line.strip_prefix("msgid ") {
+            if current_id.as_deref() == Some(wanted) {
+                return current_str;
+            }
+            current_id = Some(po_string_value(rest));
+            current_str = None;
+            mode = Some("id");
+        } else if let Some(rest) = line.strip_prefix("msgstr ") {
+            current_str = Some(po_string_value(rest));
+            mode = Some("str");
+        } else if line.starts_with('"') {
+            let value = po_string_value(line);
+            match mode {
+                Some("id") => {
+                    if let Some(id) = &mut current_id {
+                        id.push_str(&value);
+                    }
+                }
+                Some("str") => {
+                    if let Some(s) = &mut current_str {
+                        s.push_str(&value);
+                    }
+                }
+                _ => {}
+            }
+        } else if line.is_empty() || line.starts_with('#') {
+            mode = None;
+        }
+    }
+    if current_id.as_deref() == Some(wanted) {
+        return current_str;
+    }
+    None
+}
+
+/// 取一行 PO 字符串字面量（`"..."`）的解析值（与 `i18n_coverage.rs` 同款）。
+fn po_string_value(text: &str) -> String {
+    let text = text.trim();
+    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
+        po_unescape(&text[1..text.len() - 1])
+    } else {
+        String::new()
+    }
+}
+
+/// 还原 PO 转义序列（与 `i18n_coverage.rs` 的 `unescape` 同款）。
+fn po_unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
