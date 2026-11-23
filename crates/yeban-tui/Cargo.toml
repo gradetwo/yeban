@@ -21,6 +21,11 @@ path = "src/main.rs"
 # (engine_host / open / save / render_core / export_wav / cli::shortcut_rows /
 # input::InputContext)。Slint 被链接但从不初始化。
 yeban-app = { workspace = true }
+# 保存前与 `yeban_save_project` 共用同一份触发样本收集（T-FIX-160）：
+# `embed_samples::collect` 是保存侧内嵌口径的唯一实现，TUI 不另写一份。
+# 该依赖已是 `yeban-app` 默认 `in-process-mcp` 路径里的成员；这里显式声明
+# 只是为了在 TUI 源码里直接调用，不新增第三方包。
+yeban-mcp = { workspace = true }
 yeban-model = { workspace = true }
 yeban-engine = { workspace = true }
 # 鼓机生成（T-FIX-82①）：风格预置与生成层与 GUI/MCP 同一份 `yeban-theory`；

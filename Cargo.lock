@@ -7356,6 +7356,7 @@ dependencies = [
  "yeban-app",
  "yeban-diagnostics",
  "yeban-engine",
+ "yeban-mcp",
  "yeban-model",
  "yeban-theory",
 ]

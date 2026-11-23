@@ -599,6 +599,49 @@ pub struct App {
     automation_project_pending: bool,
 }
 
+/// 保存前把当前工程实际触发的样本收进归档（T-FIX-160）。
+///
+/// 与 `yeban_save_project` 共用 [`yeban_mcp::domain::embed_samples::collect`]：
+/// 刷新 `embedded_samples` 表、合并 `added`、剪掉 `pruned`，并保留旧归档里的
+/// 提交图谱 / 提案 / 内嵌预制 / 装载留痕。返回缺失样本数（保存仍成功，回执点名）。
+fn prepare_archive_for_save(
+    project: YebanProjectV1,
+    project_path: &Path,
+    base: Option<&ProjectArchive>,
+) -> Result<(ProjectArchive, usize), String> {
+    let assets: BTreeMap<AssetHash, Vec<u8>> = base
+        .map(|archive| archive.assets.iter().cloned().collect())
+        .unwrap_or_default();
+    let collected = yeban_mcp::domain::embed_samples::collect(&project, project_path, &assets)
+        .map_err(|error| format!("保存失败：内嵌采样收集失败：{error:?}"))?;
+    let yeban_mcp::domain::embed_samples::EmbeddedCollection {
+        map,
+        added,
+        pruned,
+        missing,
+    } = collected;
+    let mut merged = assets;
+    for (hash, bytes) in added {
+        merged.insert(hash, bytes);
+    }
+    for hash in pruned {
+        merged.remove(&hash);
+    }
+    let mut project = project;
+    project.embedded_samples = map;
+    let mut archive = base.cloned().unwrap_or_else(|| ProjectArchive {
+        project: project.clone(),
+        history_dag: Vec::new(),
+        proposals: None,
+        assets: Vec::new(),
+        embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
+    });
+    archive.project = project;
+    archive.assets = merged.into_iter().collect();
+    Ok((archive, missing.len()))
+}
+
 impl App {
     /// 以演示工程起一个新会话（无文件路径）。
     ///
@@ -2690,28 +2733,49 @@ impl App {
         self.save_to(&path)
     }
 
-    /// 保存到指定路径（有归档走全保真 `save_archive_file`，否则 `save_project_file`）。
+    /// 保存到指定路径。
+    ///
+    /// 与 MCP/GUI 的 `yeban_save_project` 共用 `embed_samples::collect`：先把当前
+    /// 音符实际触发的新样本收进归档、刷新 `embedded_samples` 表与资产池，再走
+    /// **唯一**的归档写入口 [`yeban_app::save::save_archive_file`]。
     ///
     /// # Errors
-    /// 写盘失败时返回错误文本。
+    /// 内嵌收集失败（SFZ 不可读 / 非法 UTF-8 / 解析失败）或写盘失败时返回错误文本。
     pub fn save_to(&mut self, path: &Path) -> Result<String, String> {
-        if let Some(archive) = &mut self.archive {
-            // 工程与提交图谱一次从端口读出（同一版），重开时历史可恢复；
-            // 资产池不动（本线不新增资产，装载时的资产原样保留）。
-            archive.project = self.port.project();
-            archive.history_dag = yeban_model::commit::encode_history_dag(&self.port.graph());
-            yeban_app::save::save_archive_file(archive, path)
-                .map_err(|error| format!("保存失败：{error}"))?;
-        } else {
-            yeban_app::save::save_project_file(&self.project, path)
-                .map_err(|error| format!("保存失败：{error}"))?;
+        let source_path = self.project_path.as_deref().unwrap_or(path);
+        let mut project = self.port.project();
+        // 端口工程只持有用户编辑；内嵌表由保存侧维护。若上一次保存已把新样本
+        // 内嵌，仍要从归档表里复用——否则盘上样本消失后重存会把它剪掉。
+        if let Some(archive) = &self.archive {
+            project.embedded_samples = archive.project.embedded_samples.clone();
         }
+        let (archive_with_embeds, missing_samples) =
+            prepare_archive_for_save(project, source_path, self.archive.as_ref())?;
+        let mut archive = archive_with_embeds;
+        archive.history_dag = yeban_model::commit::encode_history_dag(&self.port.graph());
+        yeban_app::save::save_archive_file(&archive, path)
+            .map_err(|error| format!("保存失败：{error}"))?;
+        // 落盘成功后再换内存里的归档：失败时保留旧池，下一次保存仍可复用。
+        self.project.embedded_samples = archive.project.embedded_samples.clone();
+        // 引擎宿主的字节来源也换成刚写出的资产池：保存后再重载引擎时，
+        // 新内嵌的样本不依赖原盘上文件仍然存在。
+        let asset_bytes: BTreeMap<AssetHash, Vec<u8>> = archive.assets.iter().cloned().collect();
+        self.host
+            .set_audio_asset_source(Box::new(move |hash: &AssetHash| {
+                asset_bytes.get(hash).cloned()
+            }));
+        self.archive = Some(archive);
         self.project_path = Some(path.to_path_buf());
         if let Some(dir) = path.parent() {
             self.host.set_project_dir(Some(dir.to_path_buf()));
         }
         self.dirty = false;
-        Ok(format!("已保存 {}", path.display()))
+        let missing = if missing_samples == 0 {
+            String::new()
+        } else {
+            format!("；{missing_samples} 个样本缺失，未内嵌")
+        };
+        Ok(format!("已保存 {}{missing}", path.display()))
     }
 
     /// 离线导出 WAV（生产渲染路径：引擎乐器，非最小音源）。
@@ -4451,5 +4515,107 @@ mod tests {
         app.execute_command("sessions open 1");
         assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
         assert!(!app.dirty, "opened session is clean");
+    }
+
+    /// T-FIX-160：保存前必须把当前音符实际触发的样本收进归档；旧实现只搬
+    /// `archive.assets`，新增触发样本永远不进容器。
+    #[test]
+    fn save_collects_new_triggered_samples_into_the_archive() {
+        use std::fs;
+
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "yeban-tui-embed-save-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        let _cleanup = TempDir(root.clone());
+        let kit = root.join("proj/assets/samples/kit");
+        fs::create_dir_all(&kit).expect("建采样目录");
+        fs::write(kit.join("001.sfz"), "<region> sample=tone60.wav key=60\n").expect("写 SFZ");
+        let frames = [0_i16; 4800];
+        let mut wav = Vec::with_capacity(44 + frames.len() * 2);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + (frames.len() * 2) as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&96_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&((frames.len() * 2) as u32).to_le_bytes());
+        for frame in frames {
+            wav.extend_from_slice(&frame.to_le_bytes());
+        }
+        fs::write(kit.join("tone60.wav"), wav).expect("写 WAV");
+
+        let mut project = yeban_model::samples::filled_project();
+        let lead = project
+            .tracks
+            .iter()
+            .find(|(_, track)| track.name == "Lead")
+            .map(|(id, _)| *id)
+            .expect("filled_project 必须有 Lead 轨");
+        let mut clip_ids = Vec::new();
+        for placement in project
+            .tracks
+            .get_mut(&lead)
+            .expect("Lead")
+            .clips
+            .values_mut()
+        {
+            placement.start_tick = 0;
+            placement.duration_ticks = 960;
+            placement.loop_config = yeban_model::LoopConfig::default();
+            clip_ids.push(placement.clip_id);
+        }
+        for clip_id in clip_ids {
+            if let Some(entry) = project.clip_pool.get_mut(&clip_id)
+                && let ClipContent::Midi { notes } = &mut entry.content
+            {
+                notes.clear();
+                notes.insert(EntityId::new(), MidiNote::new(EntityId::new(), 0, 60, 960));
+            }
+        }
+        project.tracks.get_mut(&lead).expect("Lead").sampler = Some(yeban_model::SamplerBinding {
+            note_octave_override: None,
+            path: "assets/samples/kit/001.sfz".to_owned(),
+        });
+        project.validate().expect("夹具工程必须合法");
+
+        let song = root.join("proj/song.yeban");
+        let (archive, missing) =
+            prepare_archive_for_save(project, &song, None).expect("保存前收集");
+        assert_eq!(missing, 0, "夹具里的样本都在盘上，不应报缺失");
+        assert!(
+            archive
+                .project
+                .embedded_samples
+                .contains_key("assets/samples/kit/001.sfz"),
+            "SFZ 文本必须进 embedded_samples 表: {:?}",
+            archive.project.embedded_samples
+        );
+        assert!(
+            archive
+                .project
+                .embedded_samples
+                .contains_key("assets/samples/kit/tone60.wav"),
+            "当前音符触发的新样本必须进 embedded_samples 表: {:?}",
+            archive.project.embedded_samples
+        );
+        assert!(
+            archive.assets.len() >= 2,
+            "SFZ 文本与 WAV 字节都必须进资产池: {:?}",
+            archive.assets
+        );
     }
 }
