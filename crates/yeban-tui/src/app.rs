@@ -593,6 +593,10 @@ pub struct App {
     /// ⭐ P0-7：上一次发布因解码转后台而延后 —— 每跳 `tick` 重试发布，
     /// 就绪（或失败）后清掉（重试细节见 `publish_snapshot`）。
     publish_deferred: bool,
+    /// 自动化采样缓存需要换一份工程：构造后的首跳、以及每次 [`Self::sync_from_port`]
+    /// 之后置位。`tick` 只在置位这一跳把工程交给 `publish_automation(Some(..))`，
+    /// 其余各跳传 `None`（复用 `EngineHost` 的缓存，与 GUI 的 R68 口径一致）。
+    automation_project_pending: bool,
 }
 
 impl App {
@@ -709,6 +713,7 @@ impl App {
             last_export: None,
             audio_revision: 0,
             publish_deferred: false,
+            automation_project_pending: true,
         };
         app.refresh_track_ids();
         app.report_audio_issues();
@@ -832,6 +837,16 @@ impl App {
         self.retry_deferred_publish();
         self.report_audio_issues();
         let _ = self.host.heartbeat();
+        // 自动化采样必须每跳发生（与 GUI 的 `ProductionLoop::tick` 同一条纪律）：
+        // 工程缓存只在首跳/编辑后换一份，其余各跳传 `None` 复用缓存；若每跳都传
+        // `Some`，16 ms 一跳会克隆整份工程并清空去重表，代价与 GUI 不一致。
+        if self.automation_project_pending {
+            self.automation_project_pending = false;
+            let project = self.project.clone();
+            let _ = self.host.publish_automation(Some(&project));
+        } else {
+            let _ = self.host.publish_automation(None);
+        }
         if let Some(collector) = &mut self.collector {
             let mut scratch = [MeterFrame::default(); 128];
             let drained = collector.drain_latest(&mut scratch);
@@ -922,6 +937,8 @@ impl App {
     /// 以撤销端口的当前版刷新本地镜像（提交/撤销/重做后必走）。
     fn sync_from_port(&mut self) {
         self.project = self.port.project();
+        // 镜像换了 ⇒ 自动化缓存也要换一份；下一次 `tick` 用 `Some` 重新种子。
+        self.automation_project_pending = true;
         self.refresh_track_ids();
         // 音符视图的对象若已不在池中（撤销删池条目等），关掉视图，
         // ⛔ 不留一个指向不存在片段的编辑面。
@@ -2127,11 +2144,19 @@ impl App {
         }
     }
 
-    /// 当前泳道在**光标 tick** 处的三态读数（走模型唯一求值入口）。
+    /// 当前泳道在**选中点精确 tick** 处的三态读数（走模型唯一求值入口）。
+    ///
+    /// 没有选中的点（空泳道）时回退到小节光标 tick，保持“开视图即可设点”的
+    /// 原有行为；一旦有选中点，读数必须跟着点的精确 tick，不能跟着小节光标走
+    /// —— 小节光标只到小节边界，`tick=1920` 的点会读成 `tick=0`。
     #[must_use]
     pub fn automation_readout(&self) -> Option<AutomationReadout> {
+        self.automation_readout_at(self.automation_edit_tick())
+    }
+
+    /// 在指定 tick 处构造三态读数（只读；不发编辑）。
+    fn automation_readout_at(&self, tick: u64) -> Option<AutomationReadout> {
         let target = self.automation_target()?;
-        let tick = self.automation_cursor_tick();
         let automation_value = self.project.automation_value_at(&target, tick).ok()?;
         let static_value = target.static_value(&self.project).ok()?;
         let (effective_value, source) = match automation_value {
@@ -2145,6 +2170,20 @@ impl App {
             effective_value,
             source,
         })
+    }
+
+    /// 自动化视图当前选中的采样点（按 `(tick, 点身份)` 序；视图未开或空泳道为 `None`）。
+    fn selected_automation_point(&self) -> Option<AutomationPoint> {
+        let Some(ListView::Automation { selected, .. }) = self.list_view else {
+            return None;
+        };
+        self.automation_points().get(selected).copied()
+    }
+
+    /// 自动化编辑/删除使用的精确 tick：有选中点读 `point.tick`，否则读小节光标。
+    fn automation_edit_tick(&self) -> u64 {
+        self.selected_automation_point()
+            .map_or_else(|| self.automation_cursor_tick(), |point| point.tick)
     }
 
     /// 光标所在的 tick（小节光标 × 每小节 tick）。
@@ -2179,12 +2218,20 @@ impl App {
         Some((domain.min(), domain.max()))
     }
 
-    /// 在光标 tick 写一个自动化点（一条 `Op::SetAutomationPoint`，可撤销）。
+    /// 在**选中点的精确 tick** 写一个自动化点（没有选中点时退回小节光标；
+    /// 一条 `Op::SetAutomationPoint`，可撤销）。
     ///
     /// 与 `yeban_edit_automation` 同一条值域闸门：非有限或越出有效值域 ⇒
     /// **响亮拒绝**（⛔ 不夹紧 —— 夹紧会让"用户写的值"与"落盘的值"不一致）。
     /// 同 tick 的点按**既有身份**更新（与 MCP 的"重复写入是更新，不是堆积"同一承诺）。
     pub fn set_automation_value(&mut self, value: f32) {
+        let tick = self.automation_edit_tick();
+        self.set_automation_value_at(tick, value);
+    }
+
+    /// [`Self::set_automation_value`] 的显式 tick 版本；`add_automation_point_at_cursor`
+    /// 必须落在小节光标，而不是被选中的别的点。
+    fn set_automation_value_at(&mut self, tick: u64, value: f32) {
         let Some(target) = self.automation_target() else {
             self.log_line("先开自动化视图（p 音量 / P 声相 / :auto ...），再设点".to_owned());
             return;
@@ -2198,7 +2245,6 @@ impl App {
             ));
             return;
         }
-        let tick = self.automation_cursor_tick();
         if !value.is_finite() {
             self.log_line(format!("值 {value} 不是有限数：拒绝写点"));
             return;
@@ -2276,22 +2322,18 @@ impl App {
         self.automation_target().map(kind_of)
     }
 
-    /// 删除光标 tick 处的自动化点（`Op::RemoveAutomationPoint`，可撤销）。
+    /// 删除当前选中的自动化点（按选中点的**精确 `point.tick`**，不再按小节截断；
+    /// `Op::RemoveAutomationPoint`，可撤销）。
     pub fn remove_automation_point_at_cursor(&mut self) {
         let Some(target) = self.automation_target() else {
             self.log_line("先开自动化视图（p 音量 / P 声相），再删点".to_owned());
             return;
         };
-        let tick = self.automation_cursor_tick();
-        let Some(point) = self.project.automation_lane(&target).and_then(|lane| {
-            lane.points
-                .values()
-                .find(|point| point.tick == tick)
-                .copied()
-        }) else {
-            self.log_line(format!("光标 tick {tick} 处没有自动化点"));
+        let Some(point) = self.selected_automation_point() else {
+            self.log_line("当前没有选中的自动化点：先用 j/k 在泳道里选一行".to_owned());
             return;
         };
+        let tick = point.tick;
         self.commit_edit(
             "tui: remove automation point",
             vec![Op::RemoveAutomationPoint {
@@ -2303,13 +2345,17 @@ impl App {
         );
     }
 
-    /// 在光标 tick 处按**当前生效值**落一个点（`a`）：把"此刻听起来的样子"钉下来。
+    /// 在小节光标 tick 处按**当前生效值**落一个点（`a`）：把"此刻听起来的样子"钉下来。
+    ///
+    /// 注意：这里读的是小节光标处的值，**不是**选中点处的值；`a` 的语义是
+    /// “在光标处设点”，不能因为别的点被选中就把点写到那个点上。
     pub fn add_automation_point_at_cursor(&mut self) {
-        let Some(readout) = self.automation_readout() else {
+        let tick = self.automation_cursor_tick();
+        let Some(readout) = self.automation_readout_at(tick) else {
             self.log_line("先开自动化视图（p 音量 / P 声相），再设点".to_owned());
             return;
         };
-        self.set_automation_value(readout.effective_value);
+        self.set_automation_value_at(tick, readout.effective_value);
     }
 
     fn automation_unit_symbol(&self) -> &'static str {
@@ -3984,6 +4030,68 @@ mod tests {
         assert_eq!(after.retire_pending, 0);
         assert_eq!(after.pruned, EDITS);
         assert_eq!(after.retire_dropped, EDITS);
+    }
+
+    #[test]
+    fn tick_publishes_automation_to_the_engine() {
+        let mut app = App::with_demo().expect("demo app");
+        let before = app.host.automation_counts();
+        app.tick();
+        let after = app.host.automation_counts();
+        assert!(
+            after.0 > before.0,
+            "TUI 的 tick 必须每跳调用 publish_automation（before={before:?}, after={after:?}）"
+        );
+        assert_eq!(
+            app.host
+                .automation_project()
+                .map(|project| project.title.as_str()),
+            Some(app.project.title.as_str()),
+            "首跳必须把当前工程交给自动化缓存"
+        );
+    }
+
+    #[test]
+    fn automation_selection_edits_and_deletes_the_exact_tick() {
+        let mut app = App::with_demo().expect("demo app");
+        app.selected = 0;
+        app.cursor_bar = 0;
+        app.open_automation_view(AutomationKind::Volume);
+        let points = app.automation_points();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[1].tick, 1920, "演示轨 0 的中间点应在半小节");
+        assert_eq!(app.cursor_bar, 0);
+        let point_at_zero = points[0];
+        let point_at_half_bar = points[1];
+
+        // 选中半小节里的点：小节光标只能到小节边界（0），但读数与编辑必须用精确 tick。
+        app.view_move_selection(1);
+        assert_eq!(app.cursor_bar, 0, "小节光标仍是 0 —— 这正是截断现场");
+        let readout = app.automation_readout().expect("读数");
+        assert_eq!(readout.tick, 1920);
+        assert_eq!(readout.automation_value, Some(point_at_half_bar.value));
+
+        app.nudge_automation_value(1);
+        let after = app.automation_points();
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[0].tick, point_at_zero.tick, "tick=0 的点必须原样保留");
+        assert_eq!(after[0].value, point_at_zero.value);
+        assert_eq!(after[1].tick, 1920);
+        assert!(
+            after[1].value > point_at_half_bar.value,
+            "`+` 必须改 1920 的点，而不是 0 的点"
+        );
+
+        // Delete 也必须按选中点的精确 tick 删，不能回到小节起点删 tick=0。
+        app.remove_automation_point_at_cursor();
+        let after_delete = app.automation_points();
+        assert_eq!(after_delete.len(), 2);
+        assert!(
+            after_delete.iter().all(|point| point.tick != 1920),
+            "被删的必须是选中的 1920 点：{after_delete:?}"
+        );
+        assert_eq!(after_delete[0].tick, 0);
+        assert_eq!(after_delete[0].value, point_at_zero.value);
     }
 
     #[test]
