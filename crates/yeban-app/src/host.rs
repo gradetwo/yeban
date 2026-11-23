@@ -9657,7 +9657,15 @@ impl PortOpenProject {
         let view = project_with_view_state(&project, ui)
             .map_err(|error| format!("`{label}` 换会话后投影失败: {error}"))?;
         let width = slint::ComponentHandle::window(ui).size().width as f32;
-        let scroll_x = ui.get_roll_scroll_x();
+        // ③d ⭐ T-FIX-2392：**横向**落点与 D4 同口径 —— 默认选中轨首个音符的 tick。
+        //     修前这里沿用 `ui.get_roll_scroll_x()`（新窗口为 0 / 上一工程的旧值），
+        //     于是《回头路》鼓刷军鼓（首音符 89280）打开瞬间视口内没有音符、看着是空的。
+        //     无 MIDI 音符 / 空工程 ⇒ 0（不报错、不 panic）。
+        //     只动打开路径：选轨路径的横向落点仍由 `roll_focus_on_track` 负责。
+        let scroll_x = default_selected_track_id(&project)
+            .and_then(|track_id| first_note_tick_on_track(&project, track_id))
+            .map_or(0.0, |tick| roll_scroll_for_tick(ui, tick));
+        ui.set_roll_scroll_x(scroll_x);
         apply_view(ui, &view, width, scroll_x);
         // ⑤ 引擎换代：新快照 / 新队列 / 新的电平消费端。
         //
@@ -23615,6 +23623,34 @@ fn reframe_roll_pitch_if_scope_changed(ui: &MainWindow, view: &ViewState) {
 /// - 音频轨 / 空轨（无 MIDI 音符）⇒ 一位不动。
 ///
 /// 返回 `true` = 横向滚动被改过（调用方应重读 `roll_scroll_x` 再 `apply_view`）。
+/// 某条轨**首个音符**的绝对 tick（摆放起点 ＋ 音符片段内 tick 的最小值）。
+///
+/// ⭐ T-FIX-193 D4 与 T-FIX-2392（打开工程）**共用这一份口径**：横向落点取首个
+/// 音符，⛔ 不是摆放起点 —— 摆放可以从 0 起而首个音符在很后面（尼龙·扫弦 start=0、
+/// 首音符 80636；《回头路》鼓刷军鼓首音符 89280）。
+///
+/// 无 MIDI 音符（音频轨 / 空轨 / 悬空片段引用）⇒ `None`；调用方按 0 处理，不 panic。
+fn first_note_tick_on_track(
+    project: &yeban_model::YebanProjectV1,
+    track_id: yeban_model::EntityId,
+) -> Option<u64> {
+    let track = project.tracks.get(&track_id)?;
+    let mut first: Option<u64> = None;
+    for placement in track.clips.values() {
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        let yeban_model::project::ClipContent::Midi { notes } = &entry.content else {
+            continue;
+        };
+        for note in notes.values() {
+            let absolute = placement.start_tick.saturating_add(note.start_tick);
+            first = Some(first.map_or(absolute, |tick| tick.min(absolute)));
+        }
+    }
+    first
+}
+
 fn roll_focus_on_track(
     ui: &MainWindow,
     project: &yeban_model::YebanProjectV1,
@@ -23626,10 +23662,8 @@ fn roll_focus_on_track(
     let Some(track) = project.tracks.get(&tid) else {
         return false;
     };
-    // ⭐ T-FIX-193 D4：横向落点取**首个音符**，⛔ 不是摆放起点 —— 摆放可以
-    //    从 0 开始而首个音符在很后面（尼龙·扫弦：start=0，首音符 tick 80636），
-    //    按摆放起点滚动后窗口内音符数仍是 0。音符 tick 是片段内坐标 ⇒ 加摆放起点。
-    let mut first_note_tick: Option<u64> = None;
+    // ⭐ T-FIX-193 D4：横向落点取**首个音符**（[`first_note_tick_on_track`]），
+    //    ⛔ 不是摆放起点 —— 摆放可以从 0 起而音符在很后面。
     let mut lo: Option<u8> = None;
     let mut hi: Option<u8> = None;
     for placement in track.clips.values() {
@@ -23643,13 +23677,14 @@ fn roll_focus_on_track(
             continue;
         }
         for note in notes.values() {
-            let absolute = placement.start_tick.saturating_add(note.start_tick);
-            first_note_tick = Some(first_note_tick.map_or(absolute, |tick| tick.min(absolute)));
             lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
             hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
         }
     }
-    let (Some(start_tick), Some(lo), Some(hi)) = (first_note_tick, lo, hi) else {
+    let (Some(lo), Some(hi)) = (lo, hi) else {
+        return false;
+    };
+    let Some(start_tick) = first_note_tick_on_track(project, tid) else {
         return false;
     };
     let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;

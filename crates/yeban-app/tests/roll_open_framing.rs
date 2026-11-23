@@ -227,5 +227,38 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
         "摆放 start=0 但首音符在 80636 ⇒ 滚动量必须 > 0"
     );
 
+    // ⑤ ⭐ T-FIX-2392：**打开工程**的横向落点也要落在首音符（《回头路》鼓刷军鼓 89280）。
+    let mut e = yeban_model::samples::filled_project();
+    let e_lead = track_named(&e, "Lead");
+    set_midi_notes(&mut e, e_lead, &[(89_280, 60)]);
+    set_lead_placement_start(&mut e, e_lead, 0);
+    let path_e = write_container(&dir, "e.yeban", &e);
+    runtime
+        .open_runtime(ui, path_e.to_str().expect("路径"))
+        .expect("打开 E");
+    let tpp = host::roll_ticks_per_pixel(ui);
+    let expected =
+        (yeban_app::bridge::tick_to_px(89_280, tpp).expect("像素换算") as f32 - 16.0).max(0.0);
+    assert!(
+        (ui.get_roll_scroll_x() - expected).abs() < 1.0,
+        "打开工程后横向落点必须是默认轨首音符（期望 {expected}，实际 {}）（T-FIX-2392）",
+        ui.get_roll_scroll_x()
+    );
+
+    // ⑥ 对照：没有任何 MIDI 音符的工程 ⇒ 横向落 0（不报错、不 panic）。
+    let mut f = yeban_model::samples::filled_project();
+    // `filled_project` 里只有 Lead 有 MIDI 片段（Bass 是音频轨、Aux 为空）⇒ 清空它就够了。
+    let f_lead = track_named(&f, "Lead");
+    set_midi_notes(&mut f, f_lead, &[]);
+    let path_f = write_container(&dir, "f.yeban", &f);
+    runtime
+        .open_runtime(ui, path_f.to_str().expect("路径"))
+        .expect("打开无音符工程不得失败");
+    assert_eq!(
+        ui.get_roll_scroll_x(),
+        0.0,
+        "无 MIDI 音符时横向落点必须是 0"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
