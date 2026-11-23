@@ -313,6 +313,13 @@ impl ElementRegistry {
             "主时间码",
             true,
         );
+        registry.add(
+            "transport-tempo-value",
+            ElementKind::Text,
+            "transport_bar.slint",
+            "走带 TEMPO 读数",
+            false,
+        );
         registry.add_known_absent(
             "transport-branch-button",
             ElementKind::Combobox,

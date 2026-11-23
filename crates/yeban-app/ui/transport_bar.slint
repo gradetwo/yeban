@@ -604,6 +604,7 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <bool> is-looping: true;
     in-out property <string> timecode-text: "003.02.01";
     in-out property <int> bpm-val: 124;
+    in-out property <string> bpm-display: "124.00";
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
@@ -1124,7 +1125,10 @@ export component TransportHeaderBar inherits Rectangle {
                             }
                             // 同上：`99.00` / `128.00` / `140.00` 位数不同会让相邻列来回移动。
                             Text {
-                                text: "" + root.bpm-val + ".00";
+                                text: root.bpm-display;
+                                accessible-role: text;
+                                accessible-id: "transport-tempo-value";
+                                accessible-label: root.bpm-display;
                                 width: 54px;
                                 horizontal-alignment: left;
                                 font-family: Tokens.font-mono;

@@ -8421,6 +8421,22 @@ mod tests {
         }
     }
 
+    /// 判据 6b: 小数 BPM 的显示字符串保留两位小数，不得先四舍五入成整数。
+    #[test]
+    fn fractional_bpm_display_keeps_two_decimals() {
+        let mut project = filled_project();
+        for (bpm, expected) in [(124.5_f64, "124.50"), (124.05_f64, "124.05")] {
+            project.bpm = bpm;
+            let view = ViewState::from_project(&project).expect("投影");
+            assert_eq!(view.bpm_display, expected, "bpm-display 必须保留两位小数");
+            assert_eq!(
+                view.bpm_millis,
+                bpm_millis(bpm),
+                "bpm_millis 必须保留千分位"
+            );
+        }
+    }
+
     /// 判据 6: 字段映射 —— `filled_project()` 的每一个被投影用到的模型字段都进了视图。
     #[test]
     fn filled_project_maps_every_model_field_the_view_consumes() {
