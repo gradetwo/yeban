@@ -116,6 +116,7 @@ fn crop_scaled_3x(
     out
 }
 
+#[ignore = "requires external exp-demo-cover-assets fixture (not in the Git tree)"]
 #[test]
 fn demo_cover_live_window_screenshot() {
     use std::cell::RefCell;
