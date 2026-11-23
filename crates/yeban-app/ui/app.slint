@@ -1953,6 +1953,10 @@ export component MainWindow inherits Window {
 
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK (Resizable Height & Fullscreen Maximize)
             if (root.show-lower-dock || root.console-maximized) : UnifiedLowerDock {
+                // ⭐ T-FIX-215：下坞 MONO 与控制室共用**同一份**状态。修前这里没绑，
+                //   下坞有独立 `master-mono`：先用控制室开 MONO，下坞按钮仍显示灭，
+                //   点它会把按钮点亮却把实际监听关掉（灯与声音相反）。
+                master-mono: root.control-room-mono;
                 console-maximized: root.console-maximized;
                 // ⚠ 本轮试过把这里改成"按 root.height 封顶"或"工作区先让位"两种写法：
                 //   · 用 `root.height` 计算 ⇒ Slint 报 9 条 binding loop（高度互喂）；

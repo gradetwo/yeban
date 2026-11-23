@@ -157,6 +157,10 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <float> bus-volume-db: -1.0;
     in-out property <float> master-volume-db: -0.3;
     in property <string> master-volume-display: "";
+    // ⭐ T-FIX-215：MONO 是**总输出监听状态**，唯一事实源是主窗口的 `control-room-mono`
+    //   （控制室 `is-mono <=> control-room-mono`）。本组件不再持有独立状态：`app.slint`
+    //   实例化时把本属性绑到 `root.control-room-mono`，点击只发 `master-toggle-mono`
+    //   （⛔ 不许本地先翻一次 —— 绑定后再翻会变成“翻两次 = 不变”）。
     in-out property <bool> master-mono: false;
     private property <bool> bus-dragging: false;
     private property <length> bus-drag-start-y: 0px;
@@ -2122,10 +2126,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: 1px;
                                         background: Tokens.bevel-dark;
                                     }
+                                    // ⭐ T-FIX-215：亮灭由绑定驱动（`master-mono` 就是
+                                    //   `control-room-mono`），点击只发动作；⛔ 本地翻一次会让
+                                    //   “按钮亮 + 实际监听灭”。
+                                    accessible-role: button;
+                                    accessible-id: "dock-master-mono";
+                                    accessible-label: @tr("总输出单声道监听切换 [MONO]");
+                                    // ⭐ 按钮亮灭的可读投影（`[UI-TEST-001]` 语义属性，⛔ 不数像素）：
+                                    //   它就是主窗口的 `control-room-mono`，与控制室同一个布尔。
+                                    accessible-checked: root.master-mono;
+                                    accessible-action-default => {
+                                        root.execute-action("master-toggle-mono");
+                                    }
                                     master_mono_touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => {
-                                            root.master-mono = !root.master-mono;
                                             root.execute-action("master-toggle-mono");
                                         }
                                     }

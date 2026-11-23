@@ -32,6 +32,7 @@ use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_engine::device::render_callback;
 use yeban_model::YebanProjectV1;
 use yeban_ui_test_port::Size;
+use yeban_ui_test_port::inspect::{find_by_accessible_id, property_of};
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
 
@@ -148,6 +149,89 @@ fn mono_toggle_and_master_mono_action_set_the_engine_flag() {
         !ui.get_control_room_mono(),
         "C2 下坞臂翻回后界面属性也须为关"
     );
+}
+
+/// 下坞 MONO 按钮的**实际**亮灭读数（`[UI-TEST-001]` 语义属性）。
+///
+/// 读的是按钮元素的 `accessible-checked`（它本身绑在 `master-mono` 上），⛔ 不读像素、
+/// 也不借用主窗口的 `control-room-mono` —— 判据要证的就是"按钮自己的状态"。
+fn dock_mono_checked(window: &yeban_app::ui::MainWindow) -> bool {
+    let handle = find_by_accessible_id(window, "dock-master-mono").expect(
+        "下坞 MONO 按钮必须在控件树里（accessible-id = dock-master-mono；入口不在可见分支或 ID 改了）",
+    );
+    match property_of(&handle, "checked")
+        .expect("按钮必须声明 accessible-checked")
+        .as_str()
+    {
+        "true" => true,
+        "false" => false,
+        other => panic!("checked 只能取 true/false，实得 {other}"),
+    }
+}
+
+/// 点**真实下坞按钮**（无障碍默认动作 = 鼠标点击的同一落点）。
+fn press_dock_mono(window: &yeban_app::ui::MainWindow) {
+    find_by_accessible_id(window, "dock-master-mono")
+        .expect("下坞 MONO 按钮必须在控件树里")
+        .invoke_accessible_default_action();
+}
+
+/// C7（T-FIX-215）：下坞 MONO 与控制室是**同一份**状态，按钮亮灭不得与实际监听相反。
+///
+/// 修前：下坞有独立 `master-mono`，先用控制室开 MONO ⇒ 下坞按钮仍显示灭；点它会把按钮
+/// 点亮、却把实际监听关掉（灯与声音相反）。
+#[test]
+fn dock_mono_button_shares_the_control_room_state() {
+    let (live, engine, _project) = live_window();
+    let ui = live.ui();
+    // 下坞 MONO 在混音台页（`if active-tab == "mixer" || "stacked"` 分支里）⇒ 先切到那一页，
+    // 否则按钮根本不在控件树里（切页是用户看得见的一步，不是测试专用行为）。
+    ui.invoke_apply_dock_tab("mixer".into());
+    assert!(
+        !engine.borrow().monitor_controls().mono(),
+        "初始 MONO 标志须为关"
+    );
+    assert!(
+        !dock_mono_checked(ui),
+        "初始下坞 MONO 按钮必须是灭（与控制室同一状态）"
+    );
+
+    // ① 从**控制室**开 MONO ⇒ 下坞按钮必须同时亮。
+    ui.set_control_room_mono(true);
+    ui.invoke_control_room_toggle_mono();
+    assert!(
+        engine.borrow().monitor_controls().mono(),
+        "控制室开 MONO ⇒ 引擎 MONO 标志必须为开"
+    );
+    assert!(
+        dock_mono_checked(ui),
+        "控制室开 MONO ⇒ 下坞按钮必须亮（修前它是灭的，灯与声音相反）"
+    );
+
+    // ② 点**下坞按钮** ⇒ 引擎 MONO 必须真翻一次（开→关），两个界面布尔相等。
+    press_dock_mono(ui);
+    assert!(
+        !engine.borrow().monitor_controls().mono(),
+        "点下坞 MONO ⇒ 引擎 MONO 必须真翻一次（开→关）"
+    );
+    assert!(
+        !dock_mono_checked(ui),
+        "点完下坞按钮必须灭（⛔ 不能出现“按钮亮、监听灭”）"
+    );
+    assert_eq!(
+        dock_mono_checked(ui),
+        ui.get_control_room_mono(),
+        "两个界面表示的布尔必须相等"
+    );
+
+    // ③ 再点一次 ⇒ 翻回开；仍相等（钉住"只翻一次"，⛔ 翻两次 = 不变）。
+    press_dock_mono(ui);
+    assert!(
+        engine.borrow().monitor_controls().mono(),
+        "第二次点下坞 MONO 必须翻回开（若本地又翻一次属性，这里会不变）"
+    );
+    assert!(dock_mono_checked(ui), "第二次点击后下坞按钮必须亮");
+    assert_eq!(dock_mono_checked(ui), ui.get_control_room_mono());
 }
 
 /// C3：SIDE 开关从活窗口真的写进引擎。

@@ -3411,6 +3411,19 @@ impl ElementRegistry {
             false,
         );
 
+        // ------------------------------------------------------ 下坞主控 MONO（T-FIX-215）
+        // 与**控制室**共用同一份监听状态：`.slint` 的 `master-mono` 绑到
+        // `control-room-mono`，按钮的 `accessible-checked` 就是那个布尔。
+        // 空 `.slint` 条件分支（混音台页未激活）时它不在控件树里 —— 这是页的事实，
+        // ⛔ 不是"登记了却没实现"（同一注册表里 `plugin-panel-*` 也是同型入口）。
+        registry.add(
+            "dock-master-mono",
+            ElementKind::Button,
+            "lower_dock.slint",
+            "总输出单声道监听切换 [MONO]",
+            false,
+        );
+
         // ------------------------------------------------------ 插件与 ARA 面板（T-FIX-83）
         // 入口在既有设备机架的本地操作行（`lower_dock.slint`），面板住隐藏模态
         // `dialogs/plugin_panel.slint`；五个动作与 MCP 同语义、同错误原文。
