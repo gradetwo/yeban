@@ -117,6 +117,22 @@ impl Host {
         Self::validate_plugin_path_in_roots(path, &Self::all_search_paths(&[]))
     }
 
+    /// 规范根内包含判定（[`Self::validate_plugin_path`] 与
+    /// [`Self::validate_scan_dir`] 共用）：任一根规范化后是 `canonical` 的
+    /// 前缀 ⇒ 通过；否则返回规范根清单供报错（规范化失败的根不计入清单）。
+    fn canonical_roots_containing(canonical: &Path, roots: &[PathBuf]) -> Result<(), Vec<PathBuf>> {
+        let mut canonical_roots: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            if let Ok(canonical_root) = root.canonicalize() {
+                if canonical.starts_with(&canonical_root) {
+                    return Ok(());
+                }
+                canonical_roots.push(canonical_root);
+            }
+        }
+        Err(canonical_roots)
+    }
+
     /// [`Self::validate_plugin_path`] 的可注入根版本（单测用；生产走
     /// 环境变量＋平台标准根）。
     fn validate_plugin_path_in_roots(path: &str, roots: &[PathBuf]) -> Result<PathBuf, HostError> {
@@ -134,25 +150,60 @@ impl Host {
                 "`{path}` 无法规范化（路径不存在或不可达）: {error}"
             ))
         })?;
-        let mut canonical_roots: Vec<PathBuf> = Vec::new();
-        for root in roots {
-            if let Ok(canonical_root) = root.canonicalize() {
-                if canonical.starts_with(&canonical_root) {
-                    return Ok(canonical);
-                }
-                canonical_roots.push(canonical_root);
-            }
+        match Self::canonical_roots_containing(&canonical, roots) {
+            Ok(()) => Ok(canonical),
+            Err(canonical_roots) => Err(HostError::InvalidPluginPath(format!(
+                "`{path}`（规范路径 {}）不在任何插件根内；允许根：{}。\
+                 要加载根外插件，先把其目录加入环境变量 YEBAN_VST3_PATHS",
+                canonical.display(),
+                canonical_roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            ))),
         }
-        Err(HostError::InvalidPluginPath(format!(
-            "`{path}`（规范路径 {}）不在任何插件根内；允许根：{}。\
-             要加载根外插件，先把其目录加入环境变量 YEBAN_VST3_PATHS",
-            canonical.display(),
-            canonical_roots
-                .iter()
-                .map(|root| root.display().to_string())
-                .collect::<Vec<_>>()
-                .join("、"),
-        )))
+    }
+
+    /// 扫描目录校验（T-FIX-125）：调用方额外给的扫描目录必须落在某个插件根内。
+    ///
+    /// 与 [`Self::validate_plugin_path`] 同一条 containment 口径
+    /// （`canonicalize`＋规范根前缀），只是不做扩展名检查（目录不是插件文件）。
+    /// 不存在的目录 ⇒ [`HostError::InvalidPluginPath`]；调用方
+    /// （`yeban_scan_plugins`）按 [`Self::scan`] 的口径静默跳过不存在的目录，
+    /// 只对真实存在的目录把关 —— 不存在的目录走不到 dlopen，没有风险。
+    ///
+    /// # Errors
+    ///
+    /// 目录不存在／不可达、不在任何插件根内 ⇒
+    /// [`HostError::InvalidPluginPath`]（消息列出实参路径与允许根清单）。
+    pub fn validate_scan_dir(path: &Path) -> Result<PathBuf, HostError> {
+        Self::validate_scan_dir_in_roots(path, &Self::all_search_paths(&[]))
+    }
+
+    /// [`Self::validate_scan_dir`] 的可注入根版本（单测用；生产走
+    /// 环境变量＋平台标准根）。
+    fn validate_scan_dir_in_roots(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, HostError> {
+        let canonical = path.canonicalize().map_err(|error| {
+            HostError::InvalidPluginPath(format!(
+                "`{}` 无法规范化（目录不存在或不可达）: {error}",
+                path.display()
+            ))
+        })?;
+        match Self::canonical_roots_containing(&canonical, roots) {
+            Ok(()) => Ok(canonical),
+            Err(canonical_roots) => Err(HostError::InvalidPluginPath(format!(
+                "扫描目录 `{}`（规范路径 {}）不在任何插件根内；允许根：{}。\
+                 要扫描根外目录，先把其目录加入环境变量 YEBAN_VST3_PATHS",
+                path.display(),
+                canonical.display(),
+                canonical_roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            ))),
+        }
     }
 
     /// 扫描目录：发现候选、逐个加载验证、失败记原因继续。
@@ -540,6 +591,68 @@ mod tests {
             Some(PathBuf::from("stub:sine")),
             "stub: 桩不是文件路径，应原样放行"
         );
+    }
+
+    #[test]
+    fn validate_scan_dir_accepts_in_root_dir_and_subdir() {
+        let root = p05_test_dir("scan-accept");
+        let sub = root.join("nested");
+        std::fs::create_dir_all(&sub).expect("建根内子目录");
+        let roots = vec![root.clone()];
+        assert_eq!(
+            Host::validate_scan_dir_in_roots(&root, &roots).ok(),
+            root.canonicalize().ok(),
+            "插件根自身应放行并返回规范路径"
+        );
+        assert_eq!(
+            Host::validate_scan_dir_in_roots(&sub, &roots).ok(),
+            sub.canonicalize().ok(),
+            "根内子目录应放行并返回规范路径"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn validate_scan_dir_rejects_outside_and_missing_dir() {
+        let root = p05_test_dir("scan-root");
+        let outside = p05_test_dir("scan-outside");
+        let roots = vec![root.clone()];
+        assert!(
+            matches!(
+                Host::validate_scan_dir_in_roots(&outside, &roots),
+                Err(HostError::InvalidPluginPath(_))
+            ),
+            "根外目录必须被拒绝"
+        );
+        let missing = root.join("does-not-exist");
+        assert!(
+            matches!(
+                Host::validate_scan_dir_in_roots(&missing, &roots),
+                Err(HostError::InvalidPluginPath(_))
+            ),
+            "不存在的目录必须被拒绝（调用方按 scan 口径静默跳过，不把本错误当失败）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_scan_dir_rejects_symlink_escape() {
+        let root = p05_test_dir("scan-linkroot");
+        let outside = p05_test_dir("scan-linkoutside");
+        let link = root.join("escape");
+        std::os::unix::fs::symlink(&outside, &link).expect("建逃逸符号链接");
+        let roots = vec![root.clone()];
+        assert!(
+            matches!(
+                Host::validate_scan_dir_in_roots(&link, &roots),
+                Err(HostError::InvalidPluginPath(_))
+            ),
+            "根内符号链接指向根外目录必须被拒绝（校验在规范形态上做）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

@@ -6061,6 +6061,10 @@ fn plan_list_instruments_directory(directory: &str) -> Result<Plan, Fault> {
 /// 失败的候选是**数据**（`usable: false` + `error`），不是调用失败 —— 扫描的
 /// 意义就是把坏插件点名，而不是被第一个坏插件打断。
 ///
+/// T-FIX-125：调用方给的目录在进 `Host::scan`（逐个候选 dlopen）之前必须先过
+/// 插件根白名单（[`guard_scan_dir`]）：真实存在但在根外的目录响亮拒绝；
+/// 不存在的目录仍按 `Host::scan` 的口径静默跳过（走不到 dlopen，没有风险）。
+///
 /// 响应形状：一行 = 一个类（同一模块的多类各占一行）；模块级失败（打不开／
 /// 无工厂／无类）时类字段为空、单独占一行。`usable` 是**类级**探针结论
 /// （模块级 `usable()` 只用于“至少一类通过”的粗判断，不直接当行读数）。
@@ -6074,7 +6078,11 @@ fn plan_scan_plugins(call: &ToolCall) -> Result<Plan, Fault> {
                     format!("`paths` 的每一项都必须是路径字符串，实际收到 {item}"),
                 )
             })?;
-            paths.push(PathBuf::from(dir));
+            let dir_path = PathBuf::from(dir);
+            if dir_path.exists() {
+                guard_scan_dir(&dir_path)?;
+            }
+            paths.push(dir_path);
         }
     }
     let mut plugins: Vec<Value> = Vec::new();
@@ -6163,6 +6171,24 @@ fn guard_plugin_path(path: &str) -> Result<(), Fault> {
                 }),
             )
         })
+}
+
+/// 扫描目录准入门（T-FIX-125）：`yeban_scan_plugins` 调用方给的目录先过
+/// [`Host::validate_scan_dir`]（`canonicalize`＋白名单根 containment）；
+/// 不过门 ⇒ `INVALID_PARAMETER_RANGE` + `pluginPathNotAllowed` 响亮拒绝，
+/// 不许放行到 `Host::scan` 的 dlopen。调用方只在目录真实存在时调本函数；
+/// 不存在的目录按 `Host::scan` 的口径静默跳过。
+fn guard_scan_dir(path: &Path) -> Result<(), Fault> {
+    Host::validate_scan_dir(path).map(|_| ()).map_err(|error| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("扫描目录校验失败，拒绝扫描: {error}"),
+            serde_json::json!({
+                "reason": "pluginPathNotAllowed",
+                "pluginPath": path.display().to_string(),
+            }),
+        )
+    })
 }
 
 fn ara_host_error(error: HostError) -> Fault {

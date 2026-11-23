@@ -6160,6 +6160,20 @@ fn build_source(
                 .plugin
                 .as_ref()
                 .expect("hosted_effect_index 只指向带绑定的设备");
+            // T-FIX-125：工程 AST 里的绑定路径在 dlopen 之前必须先过插件路径
+            // 准入门（与 `yeban_load_plugin` 同一条 `validate_plugin_path`
+            // 白名单）；不过门 ⇒ 与加载失败同一条 RENDER_FAILED /
+            // `pluginEffectLoad` 响亮拒绝，⛔ 不许拿恶意工程的路径直接 dlopen。
+            yeban_plugin_host::Host::validate_plugin_path(&binding.path).map_err(|error| {
+                render_failed(
+                    format!("效果器装载失败: {error}"),
+                    serde_json::json!({
+                        "reason": "pluginEffectLoad",
+                        "pluginPath": binding.path,
+                        "pluginId": binding.class,
+                    }),
+                )
+            })?;
             let instance =
                 yeban_plugin_host::Host::load_effect(&binding.path, binding.class.as_deref())
                     .map_err(|error| {
@@ -6569,6 +6583,19 @@ fn build_source(
                 .plugin
                 .as_ref()
                 .expect("hosted_plugin_index 只指向带绑定的设备");
+            // T-FIX-125：与效果器线同一条白名单（见上）：工程 AST 里的绑定路径
+            // 在 dlopen 之前必须先过 `validate_plugin_path`；不过门 ⇒ 同一条
+            // RENDER_FAILED / `pluginLoad` 响亮拒绝。
+            yeban_plugin_host::Host::validate_plugin_path(&binding.path).map_err(|error| {
+                render_failed(
+                    format!("插件装载失败: {error}"),
+                    serde_json::json!({
+                        "reason": "pluginLoad",
+                        "pluginPath": binding.path,
+                        "pluginId": binding.class,
+                    }),
+                )
+            })?;
             let instance = yeban_plugin_host::Host::load(&binding.path, binding.class.as_deref())
                 .map_err(|error| {
                 render_failed(
