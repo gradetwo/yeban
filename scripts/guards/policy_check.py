@@ -1067,30 +1067,31 @@ def g20_adr_index_matches_adr_files() -> list[Violation]:
     return bad
 
 
-def g21_dsp_no_std_transcendentals() -> list[Violation]:
-    """[ARCH-DET-001] `yeban-dsp` 生产代码禁止直接调用 std 浮点超越函数（统一走 `libm`）。"""
+def g21_no_std_transcendentals_in_dsp_and_engine() -> list[Violation]:
+    """[ARCH-DET-001] `yeban-dsp` + `yeban-engine` 生产代码禁止直接调用 std 浮点超越函数（统一走 `libm`）。"""
     bad: list[Violation] = []
-    target = REPO / "crates" / "yeban-dsp" / "src"
-    if not target.is_dir():
-        return bad
     pattern = re.compile(
         r"\.(?:sin|cos|tan|sinh|cosh|tanh|asin|acos|atan|atan2|exp|exp2|exp_m1|"
         r"ln|ln_1p|log|log2|log10|powf|powi|cbrt|hypot|sin_cos)\s*\("
     )
-    for path in sorted(target.rglob("*.rs")):
-        body = strip_cfg_test_items(path.read_text(encoding="utf-8"))
-        for lineno, line in enumerate(body.splitlines(), start=1):
-            if is_comment_line(line):
-                continue
-            code = _strip_code(line)
-            if pattern.search(code):
-                bad.append(
-                    (
-                        "G21",
-                        f"{rel(path)}:{lineno}",
-                        f"yeban-dsp 生产路径禁止直接调用 std 超越函数，应改用 `libm::*`: {line.strip()}",
+    for crate in ("yeban-dsp", "yeban-engine"):
+        target = REPO / "crates" / crate / "src"
+        if not target.is_dir():
+            continue
+        for path in sorted(target.rglob("*.rs")):
+            body = strip_cfg_test_items(path.read_text(encoding="utf-8"))
+            for lineno, line in enumerate(body.splitlines(), start=1):
+                if is_comment_line(line):
+                    continue
+                code = _strip_code(line)
+                if pattern.search(code):
+                    bad.append(
+                        (
+                            "G21",
+                            f"{rel(path)}:{lineno}",
+                            f"{crate} 生产路径禁止直接调用 std 超越函数，应改用 `libm::*`: {line.strip()}",
+                        )
                     )
-                )
     return bad
 
 
@@ -1125,8 +1126,8 @@ GUARDS = {
         g20_adr_index_matches_adr_files,
     ),
     "G21": (
-        "[ARCH-DET-001] yeban-dsp 生产代码禁止调用 std 超越函数（统一走 libm）",
-        g21_dsp_no_std_transcendentals,
+        "[ARCH-DET-001] yeban-dsp / yeban-engine 生产代码禁止调用 std 超越函数（统一走 libm）",
+        g21_no_std_transcendentals_in_dsp_and_engine,
     ),
 }
 

@@ -4222,8 +4222,8 @@ impl LfoSpan<'_> {
             }
         }
         (
-            (pitch_cents / 1200.0).exp2(),
-            10.0f32.powf(amp_db / 20.0),
+            libm::exp2f(pitch_cents / 1200.0),
+            libm::powf(10.0, amp_db / 20.0),
             fil_cents,
             res_db,
         )
@@ -8651,7 +8651,7 @@ pub(crate) fn mix_span_into<'a>(
                 filter_base_hz
             };
             if base > 0.0 {
-                let mut target = base * (cents / 1200.0).exp2();
+                let mut target = base * libm::exp2f(cents / 1200.0);
                 // ⭐ `cutoff_delta_hz == 0.0` ⇒ `+ 0.0` 在 binary32 下**逐位不变**
                 // ⇒ 无 `cutoff_onccN` 的工程与接线前逐位相同。
                 target += cutoff_delta_hz;
@@ -8681,7 +8681,7 @@ pub(crate) fn mix_span_into<'a>(
         }
         if let Some(pitch) = egs.pitch.as_mut() {
             let level = pitch.advance(pitch.abs_base() + written as u64);
-            pitch_mult *= (level * pitch.depth() / 1200.0).exp2();
+            pitch_mult *= libm::exp2f(level * pitch.depth() / 1200.0);
         }
         let frac = *position - index as f32;
         // ⚠ `next`（⭐ 钳位腿上是最后一帧）⛔ 不是 `index + 1`：越界读一次都不允许。
@@ -9436,7 +9436,7 @@ impl PitchTrack {
         if !cents.is_finite() {
             return 1.0;
         }
-        (cents / 1200.0).exp2()
+        libm::exp2f(cents / 1200.0)
     }
 }
 
@@ -9446,7 +9446,7 @@ impl PitchTrack {
 /// `cents == 0.0` ⇒ 乘子恰 `1.0`（IEEE 精确）⇒ 输出逐位不变。
 fn bend_ratio(cents: f32) -> f32 {
     if cents.is_finite() {
-        (cents / 1200.0).exp2()
+        libm::exp2f(cents / 1200.0)
     } else {
         1.0
     }

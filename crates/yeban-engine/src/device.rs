@@ -1573,7 +1573,7 @@ impl TestToneState {
         Self {
             phase: 0.0,
             phase_step: 2.0 * core::f64::consts::PI * TEST_TONE_FREQ_HZ / f64::from(sample_rate),
-            amplitude: 10.0_f64.powf(TEST_TONE_LEVEL_DBFS / 20.0) as f32,
+            amplitude: libm::pow(10.0, TEST_TONE_LEVEL_DBFS / 20.0) as f32,
             frames_done: 0,
             total_frames: (TEST_TONE_SECONDS * f64::from(sample_rate)).round() as u64,
         }
@@ -1601,7 +1601,7 @@ pub fn test_tone_callback(state: &mut TestToneState, data: &mut [f32], channels:
     let channels = usize::from(channels.max(1));
     for frame in data.chunks_exact_mut(channels) {
         let value = if state.frames_done < state.total_frames {
-            let value = state.amplitude * state.phase.sin() as f32;
+            let value = state.amplitude * libm::sin(state.phase) as f32;
             state.phase += state.phase_step;
             if state.phase >= 2.0 * core::f64::consts::PI {
                 state.phase -= 2.0 * core::f64::consts::PI;
