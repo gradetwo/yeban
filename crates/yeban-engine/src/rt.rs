@@ -2922,7 +2922,7 @@ fn render_branch(
             // （`#158` 的既有口径，一字不动）。
             if let Some(stash_index) = routing.slot_of(&track) {
                 if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
-                    let (left_source, right_source) = if stereo_track {
+                    let (left_source, right_source) = if pair_track {
                         (
                             &share.track_scratch[..frames],
                             &share.track_scratch_r[..frames],
@@ -2934,7 +2934,7 @@ fn render_branch(
                         )
                     };
                     let (stash_left, stash_right) = share.node_stash[stash_index].stereo_mut();
-                    if stereo_track {
+                    if pair_track {
                         render_panned_pair_into_smoothed(
                             &mut stash_left[..frames],
                             &mut stash_right[..frames],
@@ -2960,7 +2960,7 @@ fn render_branch(
                         (share.pan_gains[index].1, share.pan_gains[index].2)
                     });
                     let (stash_left, stash_right) = share.node_stash[stash_index].stereo_mut();
-                    if stereo_track {
+                    if pair_track {
                         render_panned_pair_into(
                             &mut stash_left[..frames],
                             &mut stash_right[..frames],
