@@ -10992,7 +10992,7 @@ fn save_first_through_the_existing_entry(ui: &MainWindow) -> Result<(), String> 
 /// `YEBAN_UI_RECORD_SECONDS`（默认 8.0 —— 与 CLI 的 `--export-wav` 默认 8 秒同档）。
 ///
 /// ⭐ **导出 MIDI**（第六条入口，任务单 `#90` 甲）的落盘路径 = `export_midi`，缺省
-/// `ui-export.mid`（与 `export_wav` 的 `ui-export.wav` 同款落在当前工作目录）。
+/// 三档（T-FIX-167 起与 `export_wav` 同款：env > 工程目录 > 相对 `ui-export.mid`）。
 /// ⚠ 它**没有**位深 / 采样率 / 时长这类参数 —— SMF 的 PPQ 与格式由投影与**共享**编码器
 /// 决定（`crate::export_midi::export_project_to_file`，与 CLI 的 `--export-midi`
 /// 是**同一个**函数）。
@@ -11071,16 +11071,18 @@ impl ModulePaths {
         Self::from_env_for_project(None)
     }
 
-    /// 与 [`from_env`](Self::from_env) 相同，但 `export_wav` 多一条工程目录缺省
-    /// （审评 2026-10-31，P2-3）：
+    /// 与 [`from_env`](Self::from_env) 相同，但 `export_wav` 与 `export_midi`
+    /// 各多一条工程目录缺省（WAV：审评 2026-10-31，P2-3；MIDI：T-FIX-167 补齐 ——
+    /// 此前 MIDI 只有 env / 相对缺省两档，从文件打开的工程导出 MIDI 也落在进程 cwd，
+    /// 实机上常是安装目录、写不进去）：
     ///
-    /// - 环境变量 `YEBAN_UI_EXPORT_WAV_PATH` 已给（非空）⇒ 原样（最高优先）；
-    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + `ui-export.wav`
-    ///   （能规范化就规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，⛔ 不为缺省
-    ///   路径去拦整个接线）；
-    /// - 否则（新建未保存工程）⇒ 保持相对缺省 `ui-export.wav`（落进程 cwd，旧行为）。
+    /// - 环境变量已给（非空）⇒ 原样（最高优先）；
+    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + `ui-export.wav` /
+    ///   `ui-export.mid`（能规范化就规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，
+    ///   ⛔ 不为缺省路径去拦整个接线）；
+    /// - 否则（新建未保存工程）⇒ 保持相对缺省（落进程 cwd，旧行为）。
     ///
-    /// 只改 `export_wav`：其余三条路径仍是 env / 缺省两档（审评只问了导出 WAV）。
+    /// 其余三条路径仍是 env / 缺省两档。
     #[must_use]
     pub fn from_env_for_project(project_dir: Option<&std::path::Path>) -> Self {
         let defaults = Self::default();
@@ -11102,21 +11104,32 @@ impl ModulePaths {
         // 本函数只做"读环境变量 / 给缺省值"，超出 `MAX_SECONDS` 的值会让那条路
         // 如实返回 `InvalidSeconds`（⭐ 与 CLI 完全同一条判定）。
         let midi_in_seconds = seconds_from("YEBAN_UI_MIDI_IN_SECONDS", defaults.midi_in_seconds);
-        // ⭐ 审评 2026-10-31（P2-3）：`export_wav` 的三档优先级 ——
+        // ⭐ 三档优先级（审评 2026-10-31 P2-3 给 WAV 的那一份，T-FIX-167 给 MIDI 补齐）：
         // env > 工程目录 > 相对缺省（见 `from_env_for_project` 的文档）。
-        let export_wav = match read("YEBAN_UI_EXPORT_WAV_PATH") {
-            Some(path) => path,
-            None => match project_dir {
-                Some(dir) => {
-                    let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-                    base.join("ui-export.wav")
-                }
-                None => defaults.export_wav,
-            },
-        };
+        let tiered =
+            |env_name: &str, file_name: &str, default: std::path::PathBuf| match read(env_name) {
+                Some(path) => path,
+                None => match project_dir {
+                    Some(dir) => {
+                        let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                        base.join(file_name)
+                    }
+                    None => default,
+                },
+            };
+        let export_wav = tiered(
+            "YEBAN_UI_EXPORT_WAV_PATH",
+            "ui-export.wav",
+            defaults.export_wav,
+        );
+        let export_midi = tiered(
+            "YEBAN_UI_EXPORT_MIDI_PATH",
+            "ui-export.mid",
+            defaults.export_midi,
+        );
         Self {
             export_wav,
-            export_midi: read("YEBAN_UI_EXPORT_MIDI_PATH").unwrap_or(defaults.export_midi),
+            export_midi,
             import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
             load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
             record_wav: read("YEBAN_UI_RECORD_WAV_PATH").unwrap_or(defaults.record_wav),
@@ -11378,12 +11391,26 @@ fn humanize_module_receipt(receipt: &str) -> String {
     let field = |key: &str| -> Option<String> {
         let start = rest.find(&format!("{key}="))? + key.len() + 1;
         let tail = &rest[start..];
-        let end = tail.find(':').unwrap_or(tail.len());
-        Some(tail[..end].trim().trim_matches('"').to_owned())
+        // ⭐ T-FIX-167：`message="…"` 是引号值，里面常带 `:`（`失败: No such file…`）——
+        // 按 `:` 切会把原因拦腰截断。引号值取到闭合引号（与 `#321` 的 `field_of` 同款），
+        // 非引号值仍按 `:` 切（旧行为）。
+        let raw = if let Some(quoted) = tail.strip_prefix('"') {
+            let end = quoted.find('"').unwrap_or(quoted.len());
+            &quoted[..end]
+        } else {
+            let end = tail.find(':').unwrap_or(tail.len());
+            &tail[..end]
+        };
+        Some(raw.trim().trim_matches('"').to_owned())
     };
     let action = field("action").unwrap_or_default();
     let action_zh = match action.as_str() {
         "export-wav" => "导出 WAV",
+        // ⭐ T-FIX-167：`export-midi` 此前不在表里 ⇒ 成功也只剩「上一步操作完成」、
+        // 失败也只剩「上一步操作没做成」，原因永不显示。`export-stems` 目前走 toast
+        // 通道不经过回执，仍先登记 —— 哪天它走回执，直接有人话，不用再补表。
+        "export-midi" => "导出 MIDI",
+        "export-stems" => "导出分轨",
         "import-midi" => "导入 MIDI",
         "open-project" => "打开工程",
         "load-sfz" => "装载音源",
@@ -11396,10 +11423,14 @@ fn humanize_module_receipt(receipt: &str) -> String {
     let message = field("message").unwrap_or_default();
     let verdict = if ok { "完成" } else { "没做成" };
     if action_zh.is_empty() {
+        // ⭐ T-FIX-167：不认识的 action 也不能把失败原因吞掉 —— 成功维持现状，
+        // 失败必须带出 message（有 message 才缀，否则仍是旧的那一句）。
         return if ok {
             "上一步操作完成".to_owned()
-        } else {
+        } else if message.is_empty() {
             "上一步操作没做成".to_owned()
+        } else {
+            format!("上一步操作没做成 · {message}")
         };
     }
     if message.is_empty() {
@@ -20685,6 +20716,34 @@ mod tests {
             humanize_module_receipt("module:action=nonsense:outcome=ok"),
             "上一步操作完成"
         );
+        // ⭐ T-FIX-167：`export-midi` 必须进对照表（成功有人话、失败带原因），
+        // 不认识的 action 失败时也不许再把 message 吞掉。
+        assert_eq!(
+            humanize_module_receipt(
+                "module:action=export-midi:outcome=ok:path=ui-export.mid:bytes=206"
+            ),
+            "导出 MIDI 完成"
+        );
+        assert_eq!(
+            humanize_module_receipt(
+                "module:action=export-midi:outcome=error:error=export-midi:message=\"写临时文件失败: No such file or directory (os error 2)\""
+            ),
+            "导出 MIDI 没做成 · 写临时文件失败: No such file or directory (os error 2)"
+        );
+        assert_eq!(
+            humanize_module_receipt("module:action=export-stems:outcome=ok"),
+            "导出分轨 完成"
+        );
+        assert_eq!(
+            humanize_module_receipt(
+                "module:action=nonsense:outcome=error:error=x:message=\"磁盘满了\""
+            ),
+            "上一步操作没做成 · 磁盘满了"
+        );
+        assert_eq!(
+            humanize_module_receipt("module:action=nonsense:outcome=error:error=x"),
+            "上一步操作没做成"
+        );
         // 不是回执（例如纯文本提示）⇒ 原样返回，⛔ 不吞掉用户要看的字。
         assert_eq!(
             humanize_module_receipt("录音已经完成，文件已写进工程"),
@@ -24770,6 +24829,10 @@ pub fn wire_aether_actions(
     ui.on_command_execute({
         let w = weak.clone();
         let port = Rc::clone(&port);
+        // ⭐ T-FIX-167：分轨臂读真实工程目录（见下）；`engine` 是生产那同一个
+        // `Rc<RefCell<EngineHost>>`（`engine_handle`），打开/另存为时已写下
+        // `project_dir`，点击时现读 ⇒ 换工程之后不陈旧。
+        let engine = Rc::clone(&engine);
         move |cmd| {
             if let Some(ui) = w.upgrade() {
                 let w = w.clone();
@@ -24813,9 +24876,16 @@ pub fn wire_aether_actions(
                             ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
                             return;
                         };
-                        // `project_path` 只用于解析 SFZ 相对路径（与 CLI 同口径）；
-                        // 本入口没有工程落盘路径 ⇒ 用输出目录下的占位（绝对 SFZ 不受影响）。
-                        let project_path = out_dir.join("project.yeban");
+                        // ⭐ T-FIX-167：`project_path` 只用于解析 SFZ 相对路径（与 CLI
+                        // 同口径）—— 工程从文件打开时用**真实目录**（`EngineHost` 的
+                        // `project_dir`，点击时现读），否则（新建未保存、目录未知）仍用
+                        // 输出目录下的占位（旧行为）。占位会让「只放在工程文件旁边」的
+                        // 相对 SFZ 在四档解析里全军覆没 ⇒ 渲染失败 ⇒ 分轨导不出。
+                        let project_path = engine
+                            .borrow()
+                            .project_dir()
+                            .map(|dir| dir.join("project.yeban"))
+                            .unwrap_or_else(|| out_dir.join("project.yeban"));
                         let worker = w.clone();
                         let out_for_msg = out_dir.clone();
                         let _ = std::thread::spawn(move || {
