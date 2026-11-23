@@ -6,7 +6,7 @@
 //! 「其它地方类似处理」= 选轨（`on_track_select`）与选片段（`on_clip_select`）统一联动。
 //!
 //! 实现：`host::roll_focus_on_track`（选轨回调里调用）——
-//! 遍历该轨 `clips` 的 MIDI 音符求 pitch min/max 与最早 `start_tick`，
+//! 遍历该轨 `clips` 的 MIDI 音符求 pitch min/max 与**最早音符** `start_tick`（摆放起点 + 音符 tick），
 //! 跨度 < 16 半音时 base = lo - min(2, 余量)（全部可见）；
 //! 跨度 ≥ 16 时居中并如实提示「超出 16 行窗口，可纵向滚动」。
 //!
@@ -59,8 +59,14 @@ fn roll_focus_sets_scroll_and_pitch_window() {
     );
     // 音频轨 / 空轨守卫：没有 MIDI 音域可对齐 ⇒ 一位不动
     assert!(
-        h.contains("let (Some(start_tick), Some(lo), Some(hi)) = (first_start, lo, hi)"),
+        h.contains("let (Some(start_tick), Some(lo), Some(hi)) = (first_note_tick, lo, hi)"),
         "必须有「无 MIDI 音符 ⇒ return false」的守卫"
+    );
+    // ⭐ T-FIX-193 D4：横向落点取**首个音符** tick（摆放 start 加音符片段内坐标），
+    // ⛔ 不是摆放起点 —— 尼龙·扫弦摆放 start=0 而首音符在 80636。
+    assert!(
+        h.contains("placement.start_tick.saturating_add(note.start_tick)"),
+        "横向落点必须由摆放起点 + 音符 tick 得出"
     );
 }
 

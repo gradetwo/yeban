@@ -9495,6 +9495,37 @@ pub trait OpenProjectRuntime {
 pub type OpenProjectAfter =
     Rc<dyn Fn(&MainWindow, &YebanProjectV1, &str, &ViewState) -> Result<(), String>>;
 
+/// ⭐ T-FIX-193 D3：新工程打开时的**默认选中轨** —— 身份序第一条**有 MIDI 音符**
+/// 的非主总线轨；一条都没有 ⇒ `None`（由 `display_track` 回落到旧口径：身份序第一条
+/// 非主总线轨）。
+///
+/// 理由不是"好看"：民谣三首（回头路 / 下一个路口 / 那个午后）的首轨是音频轨
+/// 「人声·参考」，812–1446 个 MIDI 音符全在别的轨上 ⇒ 按身份序选中首轨，打开第一眼
+/// 的卷帘必然空。
+///
+/// "有 MIDI 音符"按**实测内容**判：该轨任一摆放指向的片段是 `ClipContent::Midi`
+/// 且 `notes` 非空。空 MIDI 片段 / 音频片段都不算。
+fn default_selected_track_id(
+    project: &yeban_model::YebanProjectV1,
+) -> Option<yeban_model::EntityId> {
+    let has_notes = |track: &yeban_model::project::TrackV3| {
+        track.clips.values().any(|placement| {
+            project
+                .clip_pool
+                .get(&placement.clip_id)
+                .is_some_and(|entry| {
+                    matches!(&entry.content, yeban_model::project::ClipContent::Midi { notes } if !notes.is_empty())
+                })
+        })
+    };
+    project
+        .tracks
+        .values()
+        .filter(|track| track.id != project.master_bus_track_id)
+        .find(|track| has_notes(track))
+        .map(|track| track.id)
+}
+
 /// **产品形态**的「打开工程」：工程的权威是那个 [`UndoPort`]（打开 = 换掉它里面的会话）。
 ///
 /// 任务单 `#93`：`run_gui` 接的就是这一个。判据接的也是**同一个**结构（`production: None`），
@@ -9562,8 +9593,8 @@ impl PortOpenProject {
     ) -> Result<(), String> {
         let project = archive.project.clone();
         // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
-        //    用的是与 ③ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
-        let view = project_with_view_state(&project, ui)
+        //    用的是与 ④ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
+        project_with_view_state(&project, ui)
             .map_err(|error| format!("`{label}` 投影失败（当前工程一位没动）: {error}"))?;
         // ③ 换会话（「打开一个工程 = **新会话**」的唯一实现）。
         //    权威后端在场 / 根提交被模型拒绝 ⇒ 到这里就返回：界面与引擎都还没碰。
@@ -9574,7 +9605,25 @@ impl PortOpenProject {
             archive.assets.clone(),
             now_ms(),
         )?;
-        // ④ 注入界面（唯一注入点）—— 视图态从**当前窗口**读回（行高 / 缩放不因换工程清零）。
+        // ③b ⭐ T-FIX-193：换工程必须**重置卷帘取景键**。键里只有 `track:{id}` /
+        //     `clip:{id}`（见 `roll_scope_key_and_range`），而 demo 与仓库夹具共用同一批
+        //     `01J8ZQ…` 身份序（《雨声太吵》贝斯轨 = `filled_project` 首轨）⇒ 不重置就会
+        //     认为"作用域没变"，音高窗口停在**上一个工程**的取景值（实测 58，应为 31）。
+        //     取景状态是视图态（⛔ 不进工程 / 撤销栈），换工程即失效。
+        ui.set_roll_framed_scope("".into());
+        // ③c ⭐ T-FIX-193 D3：新工程的**默认选中轨**优先"有 MIDI 音符"的轨 ——
+        //     民谣三首（回头路 / 下一个路口 / 那个午后）首轨是音频轨「人声·参考」，
+        //     按身份序选中它 ⇒ 打开第一眼卷帘必然全空。找不到 MIDI 轨时清空选中，
+        //     交给既有回落（`display_track` = 身份序第一条非主总线轨）。
+        ui.set_selected_track_id(
+            default_selected_track_id(&project)
+                .map_or_else(String::new, |id| id.to_canonical_string())
+                .into(),
+        );
+        // ④ 注入界面（唯一注入点）—— 选中态已换成新工程默认轨，这里重新投影一次；
+        //    其余视图态仍从**当前窗口**读回（行高 / 缩放不因换工程清零）。
+        let view = project_with_view_state(&project, ui)
+            .map_err(|error| format!("`{label}` 换会话后投影失败: {error}"))?;
         let width = slint::ComponentHandle::window(ui).size().width as f32;
         let scroll_x = ui.get_roll_scroll_x();
         apply_view(ui, &view, width, scroll_x);
@@ -23435,7 +23484,7 @@ fn reframe_roll_pitch_if_scope_changed(ui: &MainWindow, view: &ViewState) {
     }
 }
 
-/// 选轨时的**卷帘精准联动**：把卷帘横向滚到该轨首个 MIDI 片段，纵向把
+/// 选轨时的**卷帘精准联动**：把卷帘横向滚到该轨**首个音符**（⛔ 不是摆放起点 —— 摆放可以从 0 起而音符在很后面），纵向把
 /// `roll_base_pitch` 对齐到该轨音符范围（`roll-min-pitch` 由随后的
 /// `apply_view` 按 base 推出）。
 ///
@@ -23455,7 +23504,10 @@ fn roll_focus_on_track(
     let Some(track) = project.tracks.get(&tid) else {
         return false;
     };
-    let mut first_start: Option<u64> = None;
+    // ⭐ T-FIX-193 D4：横向落点取**首个音符**，⛔ 不是摆放起点 —— 摆放可以
+    //    从 0 开始而首个音符在很后面（尼龙·扫弦：start=0，首音符 tick 80636），
+    //    按摆放起点滚动后窗口内音符数仍是 0。音符 tick 是片段内坐标 ⇒ 加摆放起点。
+    let mut first_note_tick: Option<u64> = None;
     let mut lo: Option<u8> = None;
     let mut hi: Option<u8> = None;
     for placement in track.clips.values() {
@@ -23468,14 +23520,14 @@ fn roll_focus_on_track(
         if notes.is_empty() {
             continue;
         }
-        first_start =
-            Some(first_start.map_or(placement.start_tick, |s| s.min(placement.start_tick)));
         for note in notes.values() {
+            let absolute = placement.start_tick.saturating_add(note.start_tick);
+            first_note_tick = Some(first_note_tick.map_or(absolute, |tick| tick.min(absolute)));
             lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
             hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
         }
     }
-    let (Some(start_tick), Some(lo), Some(hi)) = (first_start, lo, hi) else {
+    let (Some(start_tick), Some(lo), Some(hi)) = (first_note_tick, lo, hi) else {
         return false;
     };
     let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
