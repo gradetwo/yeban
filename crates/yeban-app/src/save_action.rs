@@ -171,6 +171,9 @@ pub enum SaveOutcome {
         /// 这条读数存在的理由与 `ui/force_save` 回执里的 `writtenByAuthority` 相同：
         /// "这条保存走了哪条路"必须是**可断言的**，而不是注释里的声明。
         by_authority: bool,
+        /// T-FIX-154：本次保存遇到的缺失样本（"reason: detail" 逐条），来自
+        /// `HostSaveOutcome.missing_samples`；本地原子写路径恒为空。
+        missing: Vec<String>,
     },
     /// 拒绝了 / 失败了，且**什么都没写**。`stage` 是本模块自己的分类（判据与界面都读它）。
     Failed {
@@ -244,6 +247,11 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
                 path: saved.path,
                 bytes: saved.bytes,
                 by_authority: true,
+                missing: saved
+                    .missing_samples
+                    .iter()
+                    .map(|item| format!("{}: {}", item.reason, item.detail))
+                    .collect(),
             },
             Err(fault) => SaveOutcome::Failed {
                 stage: SaveStage::Authority,
@@ -262,6 +270,7 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
     // （见 `save::save_archive_file` 的文档），因此这是一条落点，不是两条会漂移的路。
     match save_archive_file(&request.archive, target) {
         Ok(report) => SaveOutcome::Saved {
+            missing: Vec::new(),
             path: report.path,
             bytes: report.bytes,
             by_authority: false,

@@ -9402,22 +9402,40 @@ pub fn wire_save_with_engine(
 ///
 /// 成功与失败用**同一**条路径写界面（只有文字与颜色不同）—— 于是"失败时忘了刷新界面"
 /// 这种错法不存在；而"成功时说的话"与"失败时说的话"都能在控件树里读到。
+/// T-FIX-154：保存成功回执的**唯一**文案构造点。
+///
+/// 缺失样本不阻断保存，但必须在回执里响亮点名（件数 ＋ 首条原因）；无缺失时逐字沿用旧文案。
+fn saved_status_text(
+    path: &std::path::Path,
+    bytes: usize,
+    by_authority: bool,
+    missing: &[String],
+) -> String {
+    let note = if missing.is_empty() {
+        String::new()
+    } else {
+        format!("；缺失 {} 件样本，首条原因：{}", missing.len(), missing[0])
+    };
+    format!(
+        "已保存 {bytes} 字节 → {}（{}{note}）",
+        path.display(),
+        if by_authority {
+            "经控制面会话写盘（唯一写者）"
+        } else {
+            "本地原子写"
+        }
+    )
+}
+
 fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome) {
     let (status, ok) = match outcome {
         crate::save_action::SaveOutcome::Saved {
             path,
             bytes,
             by_authority,
+            missing,
         } => (
-            format!(
-                "已保存 {bytes} 字节 → {}（{}）",
-                path.display(),
-                if *by_authority {
-                    "经控制面会话写盘（唯一写者）"
-                } else {
-                    "本地原子写"
-                }
-            ),
+            saved_status_text(path, *bytes, *by_authority, missing),
             true,
         ),
         crate::save_action::SaveOutcome::Failed { message, .. } => {
@@ -20666,6 +20684,23 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+    /// T-FIX-154：保存回执必须点名缺失样本（件数 + 首条原因），且不影响"保存成功"。
+    #[test]
+    fn save_status_names_missing_samples_without_failing_the_save() {
+        let text = super::saved_status_text(
+            std::path::Path::new("/tmp/x.yeban"),
+            123,
+            true,
+            &["sample_missing: gone.wav".to_owned()],
+        );
+        assert!(text.contains("已保存 123 字节"), "{text}");
+        assert!(text.contains("缺失 1 件样本"), "{text}");
+        assert!(text.contains("sample_missing: gone.wav"), "{text}");
+
+        let clean = super::saved_status_text(std::path::Path::new("/tmp/x.yeban"), 1, false, &[]);
+        assert!(!clean.contains("缺失"), "无缺失时逐字沿用旧文案: {clean}");
+        assert!(clean.contains("本地原子写"), "{clean}");
+    }
 
     /// ⭐⭐ **判据（T-FIX-71，选择器清单）**：第一项恒为「系统默认」；
     /// 选择在枚举里 ⇒ 选中它；选择不在枚举里 ⇒ 追加「（未连接）」行并
