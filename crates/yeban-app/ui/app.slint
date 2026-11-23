@@ -670,6 +670,10 @@ export component MainWindow inherits Window {
     in-out property <bool> playing: false;
     in-out property <bool> recording: false;
     in-out property <int> roll-base-pitch: 60;
+    // 卷帘音高窗口已取景的作用域键（clip:<片段池身份> / track:<轨身份> / all）；
+    // 宿主 apply_view 据它判断作用域是否变化——变了才按新作用域内容重取景，
+    // 没变则尊重滚轮/八度平移的手动窗口。⛔ 界面不写它（宿主唯一写者）。
+    in-out property <string> roll-framed-scope: "";
     in-out property <string> roll-edit-status: "";
     in-out property <[bool]> roll-lane-is-white: [
         false, true, false, true, true, false, true, false, true, false, true, true, false, true, false, true

@@ -232,7 +232,10 @@ fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
     ui.invoke_clip_select(placement_id.into());
 
     // 1. Real hold-and-release piano key audition while transport is stopped.
-    ui.invoke_piano_key_pressed(15); // C4 (60)
+    // ⭐ 作用域取景（2026-11-23）：开局基音按内容取景为 58（filled_project 音区
+    // 60–72），C4（60）所在车道 = 底行 15 − (60 − base) = 13，不再是旧默认 60 下的 15。
+    let c4_lane = 15 - (60 - ui.get_roll_base_pitch());
+    ui.invoke_piano_key_pressed(c4_lane); // C4 (60)
     assert!(ui.get_module_status_succeeded());
     assert!(ui.get_module_status().as_str().contains("C4"));
 
@@ -256,7 +259,7 @@ fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
         .fold(0.0_f32, |a, b| a.max(b.abs()));
     assert!(sustain_peak > 1e-4, "持续按住尚未松手时仍应有音频输出");
 
-    ui.invoke_piano_key_released(15);
+    ui.invoke_piano_key_released(c4_lane);
     let tail_quanta =
         ((48_000 * 2) / yeban_app::engine_host::EngineHost::quantum_frames().max(1)) as u64;
     engine.borrow_mut().pump(tail_quanta);
@@ -272,13 +275,16 @@ fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
     );
 
     // 2. Octave shift changes pitch labels, range readout, note Y projections, and pencil pitch.
+    // ⭐ 开局基音 58（作用域取景），-12 后为 46（Bb2），不再是旧默认 60 下的 48（C3）。
     let ys_c4: Vec<f32> = ui.get_note_ys().iter().collect();
     ui.invoke_piano_roll_octave_shift(-12);
-    assert_eq!(ui.get_roll_base_pitch(), 48);
-    assert_eq!(ui.get_roll_pitch_range_label().as_str(), "C3 – Eb4");
+    assert_eq!(ui.get_roll_base_pitch(), 46);
+    assert_eq!(ui.get_roll_pitch_range_label().as_str(), "Bb2 – C#4");
+    // ⭐ 琴键列标签走升号表（ipn_note_name：46 = A#2），与区间读数（Bb2）用的
+    // 降号表不是同一套命名——两处断言按各自真实表写。
     assert_eq!(
         ui.get_roll_lane_key_labels().row_data(15).unwrap().as_str(),
-        "C3"
+        "A#2"
     );
     let ys_c3: Vec<f32> = ui.get_note_ys().iter().collect();
     if !ys_c4.is_empty() && !ys_c3.is_empty() {
@@ -381,7 +387,9 @@ fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll
         .row_data(target_note_idx)
         .unwrap_or(0.0);
     let ys_before: Vec<f32> = ui.get_note_ys().iter().collect();
-    assert_eq!(ui.get_roll_base_pitch(), 60);
+    // ⭐ 作用域取景（2026-11-23）：打开工程即按内容取景，filled_project 音区 60–72
+    // ⇒ 基音 58（不再是旧默认 60）。
+    assert_eq!(ui.get_roll_base_pitch(), 58);
     assert_eq!(ui.get_roll_scroll_x(), 0.0);
 
     // 1. 双指左右滑动（delta_x != 0，无修饰）平滑滚动时间轴
@@ -426,8 +434,8 @@ fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll
     });
     assert_eq!(
         ui.get_roll_base_pitch(),
-        58,
-        "向下滚动 28px (=2*14px) 必须使基音下降 2 半音 (60->58)"
+        56,
+        "向下滚动 28px (=2*14px) 必须使基音下降 2 半音 (58->56)"
     );
     let ys_after: Vec<f32> = ui.get_note_ys().iter().collect();
     if !ys_before.is_empty() && !ys_after.is_empty() {
@@ -443,13 +451,13 @@ fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll
         delta_x: 0.0,
         delta_y: -6.0,
     });
-    assert_eq!(ui.get_roll_base_pitch(), 58);
+    assert_eq!(ui.get_roll_base_pitch(), 56);
     live.window().dispatch(WindowEvent::PointerScrolled {
         position: grid_pt,
         delta_x: 0.0,
         delta_y: -10.0,
     });
-    assert_eq!(ui.get_roll_base_pitch(), 57);
+    assert_eq!(ui.get_roll_base_pitch(), 55);
 
     // 4. 对角线双指手势同时推进横向与纵向
     live.window().dispatch(WindowEvent::PointerScrolled {
@@ -458,7 +466,7 @@ fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll
         delta_y: 28.0,
     });
     assert!((ui.get_roll_scroll_x() - 64.0).abs() < 0.5);
-    assert_eq!(ui.get_roll_base_pitch(), 59);
+    assert_eq!(ui.get_roll_base_pitch(), 57);
 
     // 5. 覆盖全 MIDI 0..=127 音域（base_pitch 夹紧在 0..=112）
     for _ in 0..10 {
@@ -737,15 +745,17 @@ fn piano_roll_preserves_pitch_bounds_and_octave_direction_across_horizontal_scro
         roll_bounds.y as f32 + (roll_bounds.height as f32 * 0.5),
     );
 
-    // 1. Scroll down 12 semitones to base_pitch = 48 (C3..D#4)
+    // 1. Scroll down 12 semitones from the framed start base 58 (⭐ 作用域取景，
+    // 2026-11-23：filled_project 音区 60–72 ⇒ 开局基音 58，不再是旧默认 60)
+    // to base_pitch = 46 (Bb2..Db4)
     live.window().dispatch(WindowEvent::PointerScrolled {
         position: grid_pt,
         delta_x: 0.0,
         delta_y: -168.0,
     });
-    assert_eq!(live.ui().get_roll_base_pitch(), 48);
-    assert_eq!(live.ui().get_roll_min_pitch(), 48);
-    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+    assert_eq!(live.ui().get_roll_base_pitch(), 46);
+    assert_eq!(live.ui().get_roll_min_pitch(), 46);
+    assert_eq!(live.ui().get_roll_max_pitch(), 61);
     let frame_before_hscroll = live.window().capture().expect("横向滚动前抓帧");
 
     // 2. Subsequent horizontal wheel/trackpad scroll and note creation must keep roll_min_pitch / roll_max_pitch intact
@@ -755,8 +765,8 @@ fn piano_roll_preserves_pitch_bounds_and_octave_direction_across_horizontal_scro
         delta_y: 0.0,
     });
     assert!((live.ui().get_roll_scroll_x() - 60.0).abs() < 0.5);
-    assert_eq!(live.ui().get_roll_min_pitch(), 48);
-    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+    assert_eq!(live.ui().get_roll_min_pitch(), 46);
+    assert_eq!(live.ui().get_roll_max_pitch(), 61);
 
     // Verify rendered grid lines and notes in piano-roll-grid actually shift horizontally
     let frame_after_hscroll = live.window().capture().expect("卷帘横向滚动后抓帧");
@@ -778,27 +788,27 @@ fn piano_roll_preserves_pitch_bounds_and_octave_direction_across_horizontal_scro
     );
 
     live.ui().invoke_piano_note_create(20, 4);
-    assert_eq!(live.ui().get_roll_base_pitch(), 48);
-    assert_eq!(live.ui().get_roll_min_pitch(), 48);
-    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+    assert_eq!(live.ui().get_roll_base_pitch(), 46);
+    assert_eq!(live.ui().get_roll_min_pitch(), 46);
+    assert_eq!(live.ui().get_roll_max_pitch(), 61);
 
-    // 3. Scroll down below 24 (base_pitch = 10), then press 八- (must NOT jump up to 24) and 八+ (clean +12 -> 22)
+    // 3. Scroll down below 24 (base_pitch = 8), then press 八- (must NOT jump up to 24) and 八+ (clean +12 -> 20)
     live.window().dispatch(WindowEvent::PointerScrolled {
         position: grid_pt,
         delta_x: 0.0,
         delta_y: -(38.0 * 14.0),
     });
-    assert_eq!(live.ui().get_roll_base_pitch(), 10);
+    assert_eq!(live.ui().get_roll_base_pitch(), 8);
     live.ui().invoke_piano_roll_octave_shift(-12);
     assert_eq!(
         live.ui().get_roll_base_pitch(),
-        10,
+        8,
         "base_pitch < 24 时点 八- 不得反方向跳回 24"
     );
     live.ui().invoke_piano_roll_octave_shift(12);
-    assert_eq!(live.ui().get_roll_base_pitch(), 22);
-    assert_eq!(live.ui().get_roll_min_pitch(), 22);
-    assert_eq!(live.ui().get_roll_max_pitch(), 37);
+    assert_eq!(live.ui().get_roll_base_pitch(), 20);
+    assert_eq!(live.ui().get_roll_min_pitch(), 20);
+    assert_eq!(live.ui().get_roll_max_pitch(), 35);
 }
 
 fn assert_no_overlapping_clips(track: &yeban_model::project::TrackV3) {
@@ -1105,7 +1115,9 @@ fn piano_roll_audio_track_auditions_with_drums_only_or_muted_midi_and_syncs_trac
 #[test]
 fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
     use std::collections::BTreeMap;
-    use yeban_app::bridge::{DEFAULT_TICKS_PER_PIXEL, host_to_painted, pitch_lane_y, tick_to_px};
+    use yeban_app::bridge::{
+        DEFAULT_TICKS_PER_PIXEL, host_to_painted, pitch_lane_y_with_base, tick_to_px,
+    };
     use yeban_app::export_wav::{WavExportOptions, export_wav};
     use yeban_render::wav::read_plain_wav_mono_f32;
 
@@ -1167,7 +1179,9 @@ fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
     let scroll_px = tick_to_px(scroll_tick, DEFAULT_TICKS_PER_PIXEL).expect("scroll px") as f32;
     let target_px = tick_to_px(target_tick, DEFAULT_TICKS_PER_PIXEL).expect("target px") as f32;
     let host_x = target_px - scroll_px + 1.0;
-    let host_y = pitch_lane_y(64) + 6.0;
+    // ⭐ 作用域取景（2026-11-23）：打开工程即按内容取景，基音不再恒为旧默认 60。
+    // 落笔/落刀 y 必须按**调用时刻的当前基音**算，否则 y 与实际音符错位。
+    let host_y = pitch_lane_y_with_base(64, ui.get_roll_base_pitch() as u8) + 6.0;
     let (painted_x, painted_y) = host_to_painted(host_x, host_y);
 
     ui.set_roll_scroll_x(scroll_px);
@@ -1269,8 +1283,11 @@ fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
     );
 
     // 剪刀切分：在时间线 10080 tick 处落刀，应把 [5760..6720) 切成 [5760..6240) 与 [6240..6720)。
+    // ⭐ 落笔后选中轨只剩一颗 64 号音，取景已把基音重取到 62——落刀 y 必须按此刻
+    // 的当前基音重算（沿用落笔时的 host_y 会偏 2 行、刀落空）。
     let split_px = tick_to_px(10_080, DEFAULT_TICKS_PER_PIXEL).expect("split px") as f32;
-    let (split_painted_x, split_painted_y) = host_to_painted(split_px - scroll_px + 1.0, host_y);
+    let split_y = pitch_lane_y_with_base(64, ui.get_roll_base_pitch() as u8) + 6.0;
+    let (split_painted_x, split_painted_y) = host_to_painted(split_px - scroll_px + 1.0, split_y);
     ui.set_selected_clip_ulid(post_gap_placement.id.to_canonical_string().into());
     ui.set_active_tool(3); // Knife
     ui.invoke_clicked(split_painted_x, split_painted_y);

@@ -1506,9 +1506,14 @@ export component ArrangementViewport inherits Rectangle {
                                 // 矩形**背景填充失效**（只剩边缘几像素有底色，内部纯黑、文字与音符
                                 // 条全不见；2048/8192/16384px 均正常，18688px 复现）。这里把每个块
                                 // 裁到视口内再交给渲染器：x/width 取与 [0, root.width] 的交集，
-                                // 内容层用 -raw-x 补偿，于是文字仍停在片段的**真实起点**（起点在
-                                // 视口外时被父级 clip 正常裁掉），语义不变。
+                                // 内容层按 (raw-x − vis-x) 补偿（恒 ≤ 0），于是文字仍停在片段的
+                                // **真实起点**（起点在视口外时被父级 clip 正常裁掉），语义不变。
                                 // ⛔ 不是"截断宽度"：截断会让块在滚动到后半段时提前消失。
+                                // ⚠ 2026-11-23 实证修复：补偿曾写成 max(0, −raw-x) 且宽度同步
+                                // 缩短 ⇒ 起点滚出左界的片段，其名字与整条波形被推向右侧并压缩
+                                // 进可见区右段（滚动越深推得越远，双指左滑时内容反而右移）；
+                                // 短片段（起点在屏内）不触发，长工程单片段（《失语》88 小节）
+                                // 一滚就错位。现行公式下起点在屏内时补偿恒 0，行为与旧版一致。
                                 property <length> blk-raw-x: blk.start_px - root.scroll-x;
                                 property <length> blk-vis-x: Math.max(blk-raw-x, 0px);
                                 property <length> blk-vis-r: Math.min(blk-raw-x + blk.width_px, root.width);
@@ -1538,10 +1543,13 @@ export component ArrangementViewport inherits Rectangle {
                                     clip: true;
 
                                     VerticalLayout {
-                                        // 内容层随片段真实起点位移（起点在视口左侧外时 x 为正），
-                                        // 宽度相应缩短；超出可见区的内容由本块的 clip 裁掉。
-                                        x: Math.max(0px, -blk-raw-x);
-                                        width: Math.max(2px, (blk-vis-r - blk-vis-x) - Math.max(0px, -blk-raw-x));
+                                        // 内容层锚在片段的真实起点：块已被裁到视口内（x = vis-x），
+                                        // 内容层相对块的偏移 = raw-x − vis-x（起点在屏内时为 0，
+                                        // 在左界外时为负），宽度保持片段全长；超出可见区的内容
+                                        // 由本块的 clip 裁掉。⛔ 不得写成正偏移 + 缩短宽度——那会
+                                        // 把名字与波形压缩进可见区右段（2026-11-23 实证修复）。
+                                        x: blk-raw-x - blk-vis-x;
+                                        width: blk.width_px;
                                         padding: 4px;
                                         spacing: 2px;
                                         alignment: space-between;
@@ -1582,9 +1590,12 @@ export component ArrangementViewport inherits Rectangle {
                                             // 色由 blk.guide-color 给——与峰值柱同出投影层
                                             // 派生（轨道色同色相浅色版，bridge::clip_marker_color）
                                             Rectangle {
-                                                x: 0px;
+                                                // 只画可见段：内容层已恢复片段全长，高缩放下整线
+                                                // 可达 18K px+，会重蹈块背景的填充失效（2026-11-19
+                                                // 实测）；直线只画可见段与整条被裁像素无区别。
+                                                x: Math.max(0px, blk-vis-x - blk-raw-x - 4px);
                                                 y: parent.height / 2;
-                                                width: parent.width;
+                                                width: Math.max(0px, Math.min(parent.width - self.x, blk-vis-r - blk-vis-x));
                                                 height: 1px;
                                                 background: blk.guide-color;
                                             }
@@ -1636,9 +1647,10 @@ export component ArrangementViewport inherits Rectangle {
                                             // blk.guide-color 给，口径同波形基准线——
                                             // 同出投影层同色相派生）
                                             Rectangle {
-                                                x: 0px;
+                                                // 只画可见段：同波形基准线（内容层全长下防填充失效）。
+                                                x: Math.max(0px, blk-vis-x - blk-raw-x - 4px);
                                                 y: parent.height / 2;
-                                                width: parent.width;
+                                                width: Math.max(0px, Math.min(parent.width - self.x, blk-vis-r - blk-vis-x));
                                                 height: 1px;
                                                 background: blk.guide-color;
                                             }

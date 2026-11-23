@@ -628,6 +628,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
     ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
     // 纵向：泳道数 16 与 `piano_roll.slint` 的 `for lane_index in 16` 一致（第 202 轮记录了它的来源问题）。
+    // ⭐ 作用域取景（2026-11-23）：先按当前作用域（片段/轨/全部）校正音高窗口，
+    // 再读 base 算 min/max 与 y——作用域刚变时本帧就用新窗口，⛔ 不留一帧陈旧窗口。
+    // 作用域没变时本调用一位不动，下面的「保留当前音高视野」口径原样成立。
+    reframe_roll_pitch_if_scope_changed(ui, view);
     // 先读当前卷帘音域基音：纵向滚轮/八度平移之后若只横向滚动或编辑音符，必须保留当前的 min/max 音高视野。
     let roll_base = roll_base_pitch(ui);
     let (min_pitch, max_pitch) = if roll_base == crate::bridge::PITCH_LANE_BASE {
@@ -23229,6 +23233,79 @@ fn roll_scroll_for_tick(ui: &MainWindow, start_tick: u64) -> f32 {
     (px - 16.0).max(0.0)
 }
 
+/// 把卷帘音高窗口取景到 `[lo, hi]`（**唯一**的取景公式落点：选轨联动与
+/// `apply_view` 的作用域取景都经这里，⛔ 不许出现第二处
+/// `apply_roll_pitch_range(roll_base_for_pitch_range(..))`）。
+fn frame_roll_pitch_to_range(ui: &MainWindow, lo: u8, hi: u8) {
+    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
+}
+
+/// 当前卷帘作用域的**取景键 + 音高范围**：作用域优先级与 `apply_view` 的音符
+/// 收窄同一条（选中片段 > 选中轨 > 全部）。范围取该作用域**全部**音符（不按
+/// 时间窗裁剪——取景是「这条轨/这个片段的音都在哪」，与横向滚动无关）。
+fn roll_scope_key_and_range(ui: &MainWindow, view: &ViewState) -> (String, Option<(u8, u8)>) {
+    let (key, allowed): (String, Option<std::collections::BTreeSet<&str>>) =
+        if let Some(scope) = roll_scope(ui, view) {
+            (
+                format!("clip:{scope}"),
+                Some(std::collections::BTreeSet::from([scope])),
+            )
+        } else if let Some(track_id) = view.selected_track.as_deref() {
+            match view.tracks.iter().position(|track| track.id == track_id) {
+                Some(index) => {
+                    let allowed = view
+                        .clips
+                        .iter()
+                        .filter(|clip| clip.track_index == index)
+                        .map(|clip| clip.clip_id.as_str())
+                        .collect();
+                    (format!("track:{track_id}"), Some(allowed))
+                }
+                None => ("all".to_string(), None),
+            }
+        } else {
+            ("all".to_string(), None)
+        };
+    let mut lo: Option<u8> = None;
+    let mut hi: Option<u8> = None;
+    for note in &view.notes {
+        if allowed
+            .as_ref()
+            .is_some_and(|set| !set.contains(note.clip_id.as_str()))
+        {
+            continue;
+        }
+        lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
+        hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
+    }
+    (key, lo.zip(hi))
+}
+
+/// ⭐ **作用域变了才重取景**（2026-11-23 Wang 实证）：此前音高窗口是粘性
+/// 状态——只有「点轨道头选一条 MIDI 轨」一条路（[`roll_focus_on_track`]）会
+/// 改它；打开工程、选音频轨、选轨后又滚轮平移过，都让窗口停在历史位置。
+/// 后果：《雨声太吵》贝斯/鼓音高 28–50 在默认窗口 60–75 之外 ⇒ 卷帘全空；
+/// 《失语》全音频轨无一物可取景，窗口停在 C1 一带，看起来与选中轨毫无关系。
+///
+/// 现行口径（照 Wang 定：按轨道内容显示、音符居中、不固定范围）：
+/// `apply_view` 每次先算当前作用域键，与 `roll-framed-scope` 比——
+/// - 变了 ⇒ 按新作用域的音高范围取景（公式同选轨联动）；作用域无音符
+///   （音频轨/空轨）⇒ 回中性窗口（默认 base），⛔ 不留上一作用域的陈旧窗口；
+/// - 没变 ⇒ 一位不动（滚轮/八度平移的手动窗口在同一作用域内保持）。
+fn reframe_roll_pitch_if_scope_changed(ui: &MainWindow, view: &ViewState) {
+    let (key, range) = roll_scope_key_and_range(ui, view);
+    if ui.get_roll_framed_scope().as_str() == key {
+        return;
+    }
+    ui.set_roll_framed_scope(key.into());
+    match range {
+        Some((lo, hi)) => frame_roll_pitch_to_range(ui, lo, hi),
+        None => {
+            apply_roll_pitch_range(ui, crate::bridge::PITCH_LANE_BASE);
+        }
+    }
+}
+
 /// 选轨时的**卷帘精准联动**：把卷帘横向滚到该轨首个 MIDI 片段，纵向把
 /// `roll_base_pitch` 对齐到该轨音符范围（`roll-min-pitch` 由随后的
 /// `apply_view` 按 base 推出）。
@@ -23274,7 +23351,7 @@ fn roll_focus_on_track(
     };
     let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
     let span = hi.saturating_sub(lo);
-    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
+    frame_roll_pitch_to_range(ui, lo, hi);
     if span >= lane_count {
         ui.set_module_status(
             format!(
