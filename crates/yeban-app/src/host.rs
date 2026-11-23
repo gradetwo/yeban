@@ -18045,6 +18045,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                         }
                     }
                     Some(index) => sel.select_only(&view.notes[index].id),
+                    // ⭐ T-FIX-213 F3（管理侧裁决）：Shift/Cmd + 空白 = **保留选区**；
+                    //    只有裸单击空白才是"清除选区"。
+                    None if additive => {}
                     None => sel.clear(),
                 }
                 let count = i32::try_from(sel.len()).unwrap_or(i32::MAX);
@@ -18120,6 +18123,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     >::new(
                     ))));
                     ui.set_selected_note_count(0);
+                    // ⭐ T-FIX-213：界面属性清了，派发器镜像也必须清 —— 否则下一次
+                    //    加选框选会把已删音符的幽灵 id 从镜像里带回计数。
+                    selection.borrow_mut().clear();
                     reproject_roll(&ui, port, width, scroll);
                 }
                 // `[UI-NOTE-003]` 剪刀的**左键单击**：沿吸附网格竖线把**指针下那一颗**音符
@@ -18205,6 +18211,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     >::new(
                     ))));
                     ui.set_selected_note_count(0);
+                    // ⭐ T-FIX-213：界面属性清了，派发器镜像也必须清 —— 否则下一次
+                    //    加选框选会把已删音符的幽灵 id 从镜像里带回计数。
+                    selection.borrow_mut().clear();
                     reproject_roll(&ui, port, width, scroll);
                 }
                 // `[UI-NOTE-003]` **力度工具的单击 / 双击**。
@@ -18265,6 +18274,20 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            // ⭐ T-FIX-213（204 复验否决 V1）：选区事实源是界面属性 `selected-ulids`，
+            //    `Cmd+A`（`SelectAllNotes` 臂）只写界面、不碰本镜像 ⇒ 框选前必须像单击
+            //    派发器那样**先从界面重建镜像**，否则 additive 并集是在陈旧（空/旧）
+            //    集合上做的，Cmd+A 的全选会被一次框选吞掉。
+            //    同一段同步也覆盖"橡皮擦/剪刀在派发器内清空 `selected-ulids` 却不碰镜像"
+            //    这条同根路径（被删音符的幽灵 id 不会再被下一次并集带回计数）。
+            {
+                use slint::Model as _;
+                let mut sel = selection.borrow_mut();
+                sel.clear();
+                for id in ui.get_selected_ulids().iter() {
+                    sel.insert(id.as_str());
+                }
+            }
             let (x1, y1) = crate::bridge::painted_to_host(x1, y1);
             let (x2, y2) = crate::bridge::painted_to_host(x2, y2);
             let Some(project) = port.as_ref().and_then(|port| port.try_project()) else {

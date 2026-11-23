@@ -139,12 +139,37 @@ fn marquee_selects_three_notes_and_delete_removes_them_in_one_undo_step() {
         "Shift 单击未选音符必须加选"
     );
 
-    // ── ③ Cmd/Ctrl+A 全选（作用域 = 全部可见）⇒ 仍是 3 颗（幂等）。
+    // ── ③ 先裸单击一颗（镜像 = 1，与界面 1 对齐），再用 Cmd/Ctrl+A 全选。
+    //    这样界面属性 = 3 而派发器镜像 = 1 —— 正是 204 复验否决 V1 的现场。
+    ui.invoke_clicked(cx, cy, false);
+    assert_eq!(ui.get_selected_note_count(), 1, "裸单击必须先塌到 1 颗");
     ui.invoke_key_action("a".into(), false, true, false, false);
     assert_eq!(
         ui.get_selected_note_count(),
         3,
         "Cmd/Ctrl+A 必须全选作用域内音符"
+    );
+
+    // ── ③b T-FIX-213 V1：Cmd+A 之后**加选框选**仍必须是并集（镜像先从界面同步）。
+    //    只框住中间那一颗 ⇒ 并集仍是 3 颗；旧实现（镜像为空）会把它算成 1 颗。
+    let (mx1, my1) = host_to_painted(visible.positions[1] - 4.0, visible.ys[1] - 4.0);
+    let (mx2, my2) = host_to_painted(
+        visible.positions[1] + visible.widths[1] + 4.0,
+        visible.ys[1] + 14.0,
+    );
+    ui.invoke_roll_marquee(mx1, my1, mx2, my2, true);
+    assert_eq!(
+        ui.get_selected_note_count(),
+        3,
+        "Cmd+A 后加选框选必须保持并集（3 颗），⛔ 不能丢掉全选"
+    );
+
+    // ── ③c T-FIX-213 F3：Shift/Cmd + 空白 = **保留选区**（管理侧裁决）。
+    ui.invoke_clicked(1400.0, 800.0, true);
+    assert_eq!(
+        ui.get_selected_note_count(),
+        3,
+        "Shift 单击空白必须保留选区，不清空"
     );
 
     // ── ④ Delete：一次删 3 颗；一次撤销全部回来。
