@@ -37,6 +37,22 @@ export component SessionView inherits Rectangle {
         max(0, floor((root.width - 112px) / 1px / 128)),
     );
 
+    // ⭐ T-FIX-226：**纵向自适应**（与上面的 `visible-track-count` 同一思路）。
+    //
+    // 1024×700 的画布只有 272px 高，而底带（→ 编曲键 / 场景启动回执 / 截断报数）
+    // 原来按 `32 + 68 × 场景数` 固定下移 ⇒ 4 场景时落在相对 y ≥ 312，被根 `clip`
+    // 整块裁掉（不在运行时树里）：最小窗口下没有可见的返回入口，两条响亮登记也看不见。
+    //
+    // ⛔ 不用纵向 Flickable：那会让"底带可达"依赖滚动位置，而本轮判据要的是
+    //   "打开即在树里、可点"；且既有 `#190` 的轨道截断就是同一套"只画装得下的"口径。
+    //
+    // 预算：首行 32px + 每场景 68px + 底带 86px（返回键 28 + 间隔 8 + 报数 16 ＋
+    // 回执 16 与余量）⇒ `floor((height − 118) / 68)`，至少留 1 行。
+    property <int> visible-scene-count: min(
+        root.scenes.length,
+        max(1, floor((root.height - 118px) / 1px / 68)),
+    );
+
     callback back-to-arrangement();
     // ⭐ 任务单 `#283`：场景按钮**真的**激发（下标由导航循环给出）。
     // 宿主落点：`host::wire_scene_launch` → `EngineHost::queue_scene_launch`
@@ -95,7 +111,8 @@ export component SessionView inherits Rectangle {
         x: 8px + 128px * track_index;
         y: 32px;
         width: 120px;
-        height: 68px * root.scenes.length;
+        // 列背景只铺到**实际画出的**场景行（`T-FIX-226` 纵向自适应）。
+        height: 68px * root.visible-scene-count;
         background: Tokens.bg-shell;
         border-radius: Tokens.radius-sm;
         // ⭐ `#190`：与包头行同一批列（包头不画的列，插槽也不画）。
@@ -121,6 +138,8 @@ export component SessionView inherits Rectangle {
             border-width: 1px;
             border-color: Tokens.line;
             clip: true;
+            // ⭐ `T-FIX-226`：装不下的场景行不画（与轨道列同一口径）。
+            visible: scene_index < root.visible-scene-count;
             accessible-role: list-item;
             accessible-id: "slot-" + track_index + "-" + scene_index + "-cell";
             accessible-label: root.tracks[track_index] + " · " + scene_name;
@@ -178,6 +197,8 @@ export component SessionView inherits Rectangle {
         y: 32px + 68px * scene_index;
         width: 104px;
         height: 64px;
+        // ⭐ `T-FIX-226`：纵向自适应 —— 装不下的场景不画（底带因此回到画布内）。
+        visible: scene_index < root.visible-scene-count;
         // ⭐ `#283`：**当前场景**高亮（读宿主的 `current-scene-index`；默认 `-1`
         // ⇒ 基准帧与接线前逐像素相同）。
         background: Tokens.texture-physical ? ((scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.raised-brush : Tokens.panel-alt-brush) : ((scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.bg-raised : Tokens.bg-panel-alt);
@@ -232,7 +253,7 @@ export component SessionView inherits Rectangle {
     // 规范 §2.2: 仅在 Session 即兴触发后浮现。骨架里先常驻 (状态机等引擎)。
     Rectangle {
         x: 8px + 128px * root.visible-track-count;
-        y: 32px + 68px * root.scenes.length + 8px;
+        y: 32px + 68px * root.visible-scene-count + 8px;
         width: 104px;
         height: 28px;
         background: Tokens.texture-physical ? ((back_area.pressed || back_area.has-hover) ? Tokens.raised-brush : Tokens.void-brush) : ((back_area.pressed || back_area.has-hover) ? Tokens.bg-raised : Tokens.bg-void);
@@ -268,7 +289,7 @@ export component SessionView inherits Rectangle {
     // 位置：返回键（28px）之下再让 34px，⛔ 不压返回键、也不压截断报数那一行。
     Rectangle {
         x: 8px + 128px * root.visible-track-count;
-        y: 32px + 68px * root.scenes.length + 62px;
+        y: 32px + 68px * root.visible-scene-count + 62px;
         width: 320px;
         height: 16px;
         accessible-role: text;
@@ -296,21 +317,23 @@ export component SessionView inherits Rectangle {
     // 被推出画布、被 `clip` 吃掉，用户看不到。现在只画装得下的列，并**说出还有几轨**
     // （数字来自 `tracks.length − visible-track-count`，不是估计）。⛔ 不静默截断。
     // 位置：插槽矩阵与「→ 编曲」键**下方**（`+44px` 让开 28px 的返回键），⛔ 不压任何控件。
-    if root.tracks.length > root.visible-track-count : Rectangle {
+    // ⭐ `T-FIX-226`：截断报数现在同时覆盖**纵向**（场景行装不下）—— 两者共用同一条
+    //   文本（`⛔ 不静默截断` 对两个轴同一条纪律）。只有一种截断时措辞逐字不变。
+    if root.tracks.length > root.visible-track-count || root.scenes.length > root.visible-scene-count : Rectangle {
         x: 8px;
-        y: 32px + 68px * root.scenes.length + 44px;
-        width: 200px;
+        y: 32px + 68px * root.visible-scene-count + 44px;
+        width: 320px;
         height: 16px;
         accessible-role: text;
         accessible-id: "session-track-truncation-note";
-        accessible-label: @tr("还有 {} 轨未显示", root.tracks.length - root.visible-track-count);
+        accessible-label: root.tracks.length > root.visible-track-count && root.scenes.length > root.visible-scene-count ? @tr("还有 {} 轨未显示 · 还有 {} 个场景未显示", root.tracks.length - root.visible-track-count, root.scenes.length - root.visible-scene-count) : (root.tracks.length > root.visible-track-count ? @tr("还有 {} 轨未显示", root.tracks.length - root.visible-track-count) : @tr("还有 {} 个场景未显示", root.scenes.length - root.visible-scene-count));
 
         UiMonoText {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: @tr("还有 {} 轨未显示", root.tracks.length - root.visible-track-count);
+            text: root.tracks.length > root.visible-track-count && root.scenes.length > root.visible-scene-count ? @tr("还有 {} 轨未显示 · 还有 {} 个场景未显示", root.tracks.length - root.visible-track-count, root.scenes.length - root.visible-scene-count) : (root.tracks.length > root.visible-track-count ? @tr("还有 {} 轨未显示", root.tracks.length - root.visible-track-count) : @tr("还有 {} 个场景未显示", root.scenes.length - root.visible-scene-count));
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             overflow: elide;

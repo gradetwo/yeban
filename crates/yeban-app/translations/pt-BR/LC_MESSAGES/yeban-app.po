@@ -2633,3 +2633,9 @@ msgstr "Status OTCP"
 
 msgid "OTCP 音符表"
 msgstr "Tabela de notas OTCP"
+
+# --- T-FIX-226: session view vertical truncation ---
+msgid "还有 {} 个场景未显示"
+msgstr "{} cenas adicionais não exibidas"
+msgid "还有 {} 轨未显示 · 还有 {} 个场景未显示"
+msgstr "{} faixas e {} cenas adicionais não exibidas"

@@ -1932,6 +1932,13 @@ fn session_track_capacity(canvas_width: u32) -> usize {
     (canvas_width.saturating_sub(112) / 128) as usize
 }
 
+/// ③ 画布装得下的**场景行数** —— 与 `session_view.slint` 的 `visible-scene-count`
+/// **同一条算式**（`T-FIX-226`）：首行 32 ＋ 每场景 68 ＋ 底带 86 ⇒
+/// `n = floor((画布高 − 118) / 68)`，至少 1。
+fn session_scene_capacity(canvas_height: u32) -> usize {
+    (canvas_height.saturating_sub(118) / 68).max(1) as usize
+}
+
 /// ④ 主总线第二段（演示工程 / 0 台设备）的 6 个叶子控件。
 /// `master-device-eq-panel` 是 `groupbox`（包住自己的 value / slider / reason）⇒ 容器组。
 /// `master-device-rack-empty` 在场（0 台）。
@@ -2376,17 +2383,23 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
 
     let compact = live.ui().get_compact();
     // ⭐ `#190`：清单按**画布装得下的列数**生成（演示工程 6 轨、4 个场景）。
+    // ⭐ `T-FIX-226`：纵向同理 —— 画布高不够时只画装得下的场景（1024×700 ⇒ 2 行），
+    //   清单与截断报数都按**实际画出**的场景数算。
     let capacity = session_track_capacity(pane.2);
     let total = 6;
     let visible = capacity.min(total);
-    let expected = session_controls(visible, total, 4);
+    let scene_total = 4;
+    let scene_capacity = session_scene_capacity(pane.3);
+    let scenes = scene_capacity.min(scene_total);
+    let expected = session_controls(visible, total, scenes);
     let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
     // 场景卡按设计包住自己的色标 ⇒ 从叶子集里摘掉，进下面的容器组。
-    let excluded = scene_card_buttons(4);
+    let excluded = scene_card_buttons(scenes);
     let label = format!(
         "#190 Session {width}x{height} breakpoint={breakpoint} compact={compact} \
-         画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列",
-        pane.2
+         画布 {}x{}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列；场景容量 {scene_capacity} 行 / \
+         显示 {scenes} 行",
+        pane.2, pane.3
     );
     report_line(&assert_pairwise_excluding(
         &tree,
@@ -2396,7 +2409,28 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
         &excluded,
         &label,
     ));
-    assert_scene_cards(&tree, 4, &label);
+    assert_scene_cards(&tree, scenes, &label);
+
+    // ---- ⭐ T-FIX-226 验收②：底带三件必须在运行时树里。
+    //   修前 1024×700 下它们落在相对 y ≥ 312（画布高 272）⇒ 被根 `clip` 整块裁掉，
+    //   最小窗口里没有可见的"返回编曲"入口、两条响亮登记也看不见。
+    for id in [
+        "session-back-to-arrangement-button",
+        "session-scene-launch-status",
+    ] {
+        assert!(
+            tree.find_by_id(id).is_some(),
+            "[T-FIX-226 Session {width}x{height}] 底带 `{id}` 必须在运行时树里"
+        );
+    }
+    // 装不下的场景行**不画**（不是"画出去被裁一半"）：热区跟着消失，且截断报数说出数量。
+    for hidden in scenes..scene_total {
+        assert!(
+            tree.find_by_id(&format!("scene-launch-{hidden}-button"))
+                .is_none(),
+            "[T-FIX-226 Session {width}x{height}] 第 {hidden} 场景行装不下 ⇒ 不许半截留在树里"
+        );
+    }
 
     // ---- 判据 ①：装不下的列**不画**（不是画出去被 `clip` 掉、用户看不见）。
     if visible < total {
@@ -2425,54 +2459,69 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
         pane.0 + pane.2 as i32
     );
 
-    // ---- 判据 ②：演示工程 6 轨：显示 < 6 时必须有截断报数，否则不许喊狼来了。
-    if visible < total {
-        let note = tree
-            .find_by_id("session-track-truncation-note")
-            .expect("显示列数 < 6 ⇒ 必须有截断报数");
-        assert_eq!(
-            note.label,
-            format!("还有 {} 轨未显示", total - visible),
-            "[#190 Session {width}x{height}] 截断报数文案必须逐字"
-        );
-        report_line(&format!(
-            "[#190 Session {width}x{height}] 画布 {}px / 容量 {capacity} 列 / 显示 {visible} 列 / \
-             场景列 (x={} y={} w={} h={}) 右沿 {} ≤ 画布右沿 {}；截断报数 {:?}",
-            pane.2,
-            scene_header.0,
-            scene_header.1,
-            scene_header.2,
-            scene_header.3,
-            scene_header.0 + scene_header.2 as i32,
-            pane.0 + pane.2 as i32,
-            note.label
-        ));
-    } else {
-        assert!(
-            tree.find_by_id("session-track-truncation-note").is_none(),
-            "[#190 Session {width}x{height}] 显示 {visible}/6 列 ⇒ 截断报数不许在场"
-        );
-        report_line(&format!(
-            "[#190 Session {width}x{height}] 画布 {}px / 容量 {capacity} 列 / 显示 {visible} 列 / \
-             场景列 (x={} y={} w={} h={}) 右沿 {} ≤ 画布右沿 {}；{total} 轨全显示 ⇒ 无截断提示",
-            pane.2,
-            scene_header.0,
-            scene_header.1,
-            scene_header.2,
-            scene_header.3,
-            scene_header.0 + scene_header.2 as i32,
-            pane.0 + pane.2 as i32,
-        ));
+    // ---- 判据 ②：截断报数（横向轨道 ＋ `T-FIX-226` 的纵向场景）必须逐字、且不许喊狼来了。
+    let tracks_left = total - visible;
+    let scenes_left = scene_total - scenes;
+    let expected_note = match (tracks_left > 0, scenes_left > 0) {
+        (true, true) => Some(format!(
+            "还有 {tracks_left} 轨未显示 · 还有 {scenes_left} 个场景未显示"
+        )),
+        (true, false) => Some(format!("还有 {tracks_left} 轨未显示")),
+        (false, true) => Some(format!("还有 {scenes_left} 个场景未显示")),
+        (false, false) => None,
+    };
+    match expected_note {
+        Some(expected_text) => {
+            let note = tree
+                .find_by_id("session-track-truncation-note")
+                .expect("有装不下的轨道/场景 ⇒ 必须有截断报数");
+            assert_eq!(
+                note.label, expected_text,
+                "[#190/T-FIX-226 Session {width}x{height}] 截断报数文案必须逐字"
+            );
+            report_line(&format!(
+                "[#190 Session {width}x{height}] 画布 {}x{}px / 容量 {capacity} 列 / 显示 {visible} 列 / \
+                 场景 {scene_capacity} 行 / 显示 {scenes} 行 / 场景列 (x={} y={} w={} h={}) 右沿 {} ≤ \
+                 画布右沿 {}；截断报数 {:?}",
+                pane.2,
+                pane.3,
+                scene_header.0,
+                scene_header.1,
+                scene_header.2,
+                scene_header.3,
+                scene_header.0 + scene_header.2 as i32,
+                pane.0 + pane.2 as i32,
+                note.label
+            ));
+        }
+        None => {
+            assert!(
+                tree.find_by_id("session-track-truncation-note").is_none(),
+                "[#190/T-FIX-226 Session {width}x{height}] 全都装得下 ⇒ 截断报数不许在场"
+            );
+            report_line(&format!(
+                "[#190 Session {width}x{height}] 画布 {}x{}px / 全装得下 ⇒ 无截断提示",
+                pane.2, pane.3
+            ));
+        }
     }
 
-    // ---- 折叠档（⭐ `#195` 之后只有 1024 / 800）：画布 `窗口宽 − 36`（右栏是抽屉、不占位）。
-    // ⭐ `#195` 阈值 `1920 → 1180`：1440 现在**展开**（画布 920 = 窗口宽 − 240 − 280）⇒
-    // 这条断言的口径从"所有`breakpoint`夹具"收窄成"真的 `compact` 的档"。
+    // ---- 折叠档不变量（⭐ `T-FIX-226` 修正口径）
+    //
+    // 旧断言是 `画布宽 == 窗口宽 − 36` —— 那是**侧栏折叠成 36px 图标导轨**那一版的算式。
+    // 活窗口实测（1024×700）：画布 `(261, 89, 763, 272)` ⇒ 左沿 261（240 侧栏 ＋ 缝隙）、
+    // 右沿 1024 正好贴窗口右沿。旧算式与现行布局不符，且这条断言此前从未被执行过
+    // （`check_session_view` 零调用）。改成不依赖某一版侧栏宽的不变量。
     if breakpoint && compact {
         assert_eq!(
-            pane.2,
-            width - 36,
-            "[#189 Session {width}x{height}] 折叠态画布宽必须是 `窗口宽 − 36`"
+            pane.0 + pane.2 as i32,
+            width as i32,
+            "[#189/T-FIX-226 Session {width}x{height}] 紧凑档画布右沿必须贴窗口右沿"
+        );
+        assert!(
+            pane.0 > 0,
+            "[#189/T-FIX-226 Session {width}x{height}] 画布左沿必须在侧栏之后（实得 {}）",
+            pane.0
         );
     }
 }
@@ -3232,7 +3281,10 @@ fn the_session_view_has_no_two_controls_in_the_same_place_at_1440() {
     check_session_view(1440, 900, false);
 }
 
-// ⚠ 1024 档**没有**恢复这条断言（如实登记，不是遗漏）：1024×700 下 Session 画布只有
-//   763×272，而矩阵底带（→ 编曲键 / 场景启动回执 / 截断报数）落在 y ≥ 312（相对画布）
-//   ⇒ 被父级 clip 完全裁掉、根本不在运行时树里。那是复活该视图后暴露的**纵向溢出**
-//   （`ISS-MWTVIDTX-AA75BF`），属另一片布局工作；此处不把"按钮不在"钉成期望值。
+// ⭐ T-FIX-226：1024 档**恢复**（`ISS-MWTVIDTX-AA75BF` 已修）。修前该档画布 763×272，
+//   底带（→ 编曲键 / 场景回执 / 截断报数）落在相对 y ≥ 312 被整块裁掉；现在
+//   `visible-scene-count` 按画布高只画装得下的场景（1024 ⇒ 2 行），底带回到画布内。
+#[test]
+fn the_session_view_has_no_two_controls_in_the_same_place_at_1024() {
+    check_session_view(1024, 700, true);
+}
