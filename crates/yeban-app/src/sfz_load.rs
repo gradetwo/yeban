@@ -2664,7 +2664,7 @@ mod tests {
         }
         for (raw, expected_rel) in relatives {
             assert_eq!(
-                resolve_sample_path(base, Path::new(raw)).expect("根内相对路径必须可解析"),
+                resolve_sample_path(&base, Path::new(raw)).expect("根内相对路径必须可解析"),
                 dir.join(expected_rel),
                 "`{raw}` 必须解析成根内真路径 `{expected_rel}`",
             );
@@ -2682,10 +2682,9 @@ mod tests {
             ("C:\\dir\\kick.wav", "drive-absolute"),
             ("C:kick.wav", "drive-relative"),
             ("c:foo.wav", "drive-relative-lower"),
-            ("/x/y/kick.wav", "posix-absolute-outside"),
         ];
         for (raw, tag) in cases {
-            let error = resolve_sample_path(base, Path::new(raw))
+            let error = resolve_sample_path(&base, Path::new(raw))
                 .expect_err(&format!("`{raw}`（{tag}）必须被拒绝"));
             assert!(
                 matches!(
@@ -2695,11 +2694,25 @@ mod tests {
                 "`{raw}`（{tag}）应落逃逸类错误，实际 {error:?}"
             );
         }
+        // 根外绝对路径必须先有真实文件，才能穿过 canonicalize 到达前缀检查；
+        // 用根目录同级的临时目录，避免依赖 Unix `/x/y` 或 Windows `C:\\x\\y` 可写。
+        let outside_dir = temp_dir("bslash-escape-outside");
+        let outside = outside_dir.join("kick.wav");
+        std::fs::write(&outside, b"RIFF").expect("写根外绝对路径夹具");
+        // 先 canonicalize，拿到与根同一形态的真路径；否则 Windows 的 `C:...`
+        // 会在词法层被判成 SampleAbsolutePath，走不到“根外”前缀检查。
+        let outside = std::fs::canonicalize(&outside).expect("canonicalize 根外夹具");
+        let error = resolve_sample_path(&base, &outside).expect_err("根外绝对路径必须拒绝");
+        assert!(
+            matches!(error, SfzError::SampleEscape { .. }),
+            "根外绝对路径必须是 SampleEscape（⛔ 不是 SampleInvalidPath）: {error:?}"
+        );
+        std::fs::remove_dir_all(&outside_dir).ok();
         // 根内 POSIX 绝对路径**仍然允许**（`#205` 语义：先解析再判包含）。
         let inside = dir.join("kick.wav");
         std::fs::write(&inside, b"RIFF").expect("写样本");
         assert_eq!(
-            resolve_sample_path(base, &inside).expect("根内绝对路径必须可解析"),
+            resolve_sample_path(&base, &inside).expect("根内绝对路径必须可解析"),
             inside,
         );
     }

@@ -579,19 +579,26 @@ impl SfzPlan {
             //     回写循环点时对目标文件的操作）带到 SFZ 根之外。统一交 yeban-sfz 的
             //     `resolve_sample_under_root`（根内 canonicalize 判定），失败即**响亮**
             //     收集，⛔ 不静默跳过（静默跳过会让用户以为"这份 SFZ 里没有这条 region"）。
-            let sample_path = match yeban_sfz::instrument::resolve_sample_under_root(
-                parent,
-                region.sample_path().as_ref(),
-            ) {
-                Ok(resolved) => resolved,
-                Err(error) => {
-                    escape_count += 1;
-                    if escapes.len() < 5 {
-                        escapes.push(error.to_string());
+            let raw = region.sample_path();
+            let sample_path =
+                match yeban_sfz::instrument::resolve_sample_under_root(parent, raw.as_ref()) {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        // FIX 3：只有逃逸类错误是 fatal；缺文件（SampleInvalidPath）仍把
+                        // 路径记进计划，由下游读取步骤报告 NotFound，不能让整份 SFZ 打不开。
+                        if matches!(
+                            error,
+                            yeban_sfz::SfzError::SampleEscape { .. }
+                                | yeban_sfz::SfzError::SampleAbsolutePath { .. }
+                        ) {
+                            escape_count += 1;
+                            if escapes.len() < 5 {
+                                escapes.push(error.to_string());
+                            }
+                        }
+                        parent.join(raw.as_ref())
                     }
-                    continue;
-                }
-            };
+                };
             regions.push(SfzRegion {
                 sample_path,
                 pitch_keycenter: region.pitch_keycenter,
@@ -966,5 +973,50 @@ fn process_one(job: &mut SampleJob, options: &SampleEditCliOptions, target_rms: 
         layers: layer_rows,
         status: "ok",
         reason: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sample-editor-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    /// T-FIX-141 FIX 3：缺样本只记录路径，⛔ 不能让整份 SFZ 打不开。
+    ///
+    /// `SampleInvalidPath`（`canonicalize` 失败的最常见来源就是文件不存在）不是逃逸，
+    /// 计划仍要加载，其它 region 的 loop point 必须保留。
+    #[test]
+    fn missing_sample_still_loads_and_keeps_loop_points() {
+        let dir = temp_dir("missing-sample");
+        let sfz = dir.join("inst.sfz");
+        std::fs::write(
+            &sfz,
+            "<region> sample=missing-a.wav pitch_keycenter=60 lokey=60 hikey=64 \
+             lovel=1 hivel=127 loop_mode=loop_continuous loop_start=100 loop_end=900\n\
+             <region> sample=missing-b.wav pitch_keycenter=67 lokey=65 hikey=72 \
+             lovel=1 hivel=127 loop_mode=loop_continuous loop_start=200 loop_end=800\n",
+        )
+        .expect("写夹具 SFZ");
+
+        let plan = SfzPlan::load(&sfz).expect("缺样本不得让整份 SFZ 打不开");
+        assert_eq!(plan.regions.len(), 2, "两条 region 都必须留在计划里");
+        assert!(plan.regions[0].sample_path.ends_with("missing-a.wav"));
+        assert!(plan.regions[1].sample_path.ends_with("missing-b.wav"));
+        assert_eq!(plan.regions[0].loop_start, 100);
+        assert_eq!(plan.regions[0].loop_end, 900);
+        assert_eq!(plan.regions[1].loop_start, 200);
+        assert_eq!(plan.regions[1].loop_end, 800);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
