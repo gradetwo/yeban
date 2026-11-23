@@ -116,7 +116,8 @@ impl Rig {
 
 /// ①：真实指针点章节卡片中心 ⇒ 引擎到该段起点，且动作日志恰加一条 `SeekTicks`。
 #[test]
-fn clicking_a_section_card_seeks_to_its_start() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_a_section_card_seeks_to_its_start() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -138,7 +139,8 @@ fn clicking_a_section_card_seeks_to_its_start() {
 
 /// ②：无障碍默认动作（不点像素）⇒ 与指针 down 同一个落点。
 #[test]
-fn the_section_card_default_action_seeks_too() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_section_card_default_action_seeks_too() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

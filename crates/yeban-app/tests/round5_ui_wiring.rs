@@ -80,7 +80,8 @@ fn with_redo_history() -> (live::LiveUi, Rc<UndoPort>) {
 }
 
 #[test]
-fn the_redo_button_reaches_the_same_undo_port_and_changes_the_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_redo_button_reaches_the_same_undo_port_and_changes_the_project() {
     // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -105,7 +106,9 @@ fn the_redo_button_reaches_the_same_undo_port_and_changes_the_project() {
 // =========================================================================
 
 #[test]
-fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registry() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registry()
+{
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -130,7 +133,8 @@ fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registr
 // =========================================================================
 
 #[test]
-fn the_undo_tree_trap_accepts_both_tab_and_backtab() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_undo_tree_trap_accepts_both_tab_and_backtab() {
     // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -155,7 +159,8 @@ fn the_undo_tree_trap_accepts_both_tab_and_backtab() {
 // =========================================================================
 
 #[test]
-fn the_piano_roll_status_value_is_the_same_expression_as_its_visible_text() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_piano_roll_status_value_is_the_same_expression_as_its_visible_text() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

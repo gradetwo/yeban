@@ -172,7 +172,8 @@ fn project_with_master_only() -> YebanProjectV1 {
 // 判据 ①：加 MIDI 轨 = Δ1 ＋ 读回（轨数 +1、kind、到 master 的边）
 // ===========================================================================
 #[test]
-fn creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -212,7 +213,8 @@ fn creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
 // 判据 ①b（⭐ 缺陷 `D-UI-4` 的反面）：**只有 MIDI 轨**自带内置乐器
 // ===========================================================================
 #[test]
-fn creating_an_audio_track_leaves_the_device_chain_empty() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_creating_an_audio_track_leaves_the_device_chain_empty() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -252,7 +254,8 @@ fn creating_an_audio_track_leaves_the_device_chain_empty() {
 // 判据 ②：加 AuxReturn 轨 = Δ1 ＋ "新建发送"从灰变可用
 // ===========================================================================
 #[test]
-fn adding_an_aux_return_track_commits_once_and_unlocks_the_send_button() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_adding_an_aux_return_track_commits_once_and_unlocks_the_send_button() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -292,7 +295,8 @@ fn adding_an_aux_return_track_commits_once_and_unlocks_the_send_button() {
 // 判据 ③：删轨 = Δ1 ＋ 读回（轨数 −1 ＋ 边数相应减）
 // ===========================================================================
 #[test]
-fn deleting_the_displayed_track_commits_once_and_drops_its_edges_and_node() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_deleting_the_displayed_track_commits_once_and_drops_its_edges_and_node() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -332,7 +336,8 @@ fn deleting_the_displayed_track_commits_once_and_drops_its_edges_and_node() {
 // 判据 ④：主总线不可删（禁用 ＋ 逐字原因 ＋ 直接调用也 Δ0）
 // ===========================================================================
 #[test]
-fn the_master_bus_cannot_be_deleted_even_by_calling_the_callback_directly() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_bus_cannot_be_deleted_even_by_calling_the_callback_directly() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -372,7 +377,8 @@ fn the_master_bus_cannot_be_deleted_even_by_calling_the_callback_directly() {
 // 判据 ⑤：删发送 = Δ1 ＋ 读回（边数 −1）
 // ===========================================================================
 #[test]
-fn removing_a_send_commits_once_and_drops_the_edge() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_removing_a_send_commits_once_and_drops_the_edge() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -412,7 +418,8 @@ fn removing_a_send_commits_once_and_drops_the_edge() {
 // 判据 ⑥：防重复发送（同源同目的地再点 ⇒ Δ0 ＋ 逐字原因）
 // ===========================================================================
 #[test]
-fn a_duplicate_send_is_refused_and_costs_zero_commits() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_duplicate_send_is_refused_and_costs_zero_commits() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -466,7 +473,8 @@ fn matching_edges(project: &YebanProjectV1, source: EntityId, destination: Entit
 // 判据 ⑦ 的另一半（源码腿）：四个手势由**投影 / 回调**驱动，⛔ 不是第二份写死列表
 // ===========================================================================
 #[test]
-fn the_track_actions_are_wired_to_the_projection_not_a_fixed_list() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_track_actions_are_wired_to_the_projection_not_a_fixed_list() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

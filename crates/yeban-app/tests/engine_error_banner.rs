@@ -294,7 +294,8 @@ impl Fixture {
 ///   `value` 断言红；
 /// * 把 `visible: text != ""` 去掉 ⇒ ① 段红（没有错误时它也在树里）。
 #[test]
-fn a_bad_engine_publish_shows_the_banner_and_a_good_one_clears_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_bad_engine_publish_shows_the_banner_and_a_good_one_clears_it() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -345,7 +346,8 @@ fn a_bad_engine_publish_shows_the_banner_and_a_good_one_clears_it() {
 /// * **注入 ②**（`EnginePublishOutcome::Unchanged` 分支改成 `ui.set_engine_error("")`）
 ///   ⇒ 第二跳之后横幅不在树里。
 #[test]
-fn an_unchanged_tick_does_not_wipe_the_banner() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unchanged_tick_does_not_wipe_the_banner() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -379,7 +381,8 @@ fn an_unchanged_tick_does_not_wipe_the_banner() {
 /// * 起引擎后连跳两跳（都没编辑）：横幅两跳都不在树里；
 /// * 提交一条**读得到**的 SFZ（一次**成功**的发布）后再跳：仍不在树里。
 #[test]
-fn an_error_free_session_never_shows_the_banner() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_error_free_session_never_shows_the_banner() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

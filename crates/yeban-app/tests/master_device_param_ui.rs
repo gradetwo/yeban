@@ -286,7 +286,8 @@ fn render(project: &YebanProjectV1, quanta: usize) -> (Vec<f32>, EngineStats) {
 // 判据 ①：旁通 = Δ1 且作用于 master（展示轨的对应设备**不变**）
 // ===========================================================================
 #[test]
-fn the_master_bypass_gesture_lands_on_the_master_and_commits_exactly_once() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_bypass_gesture_lands_on_the_master_and_commits_exactly_once() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -326,7 +327,8 @@ fn the_master_bypass_gesture_lands_on_the_master_and_commits_exactly_once() {
 // 判据 ② ＋ ④：滑块 = Δ1 且作用于 master；同位置再按 ⇒ Δ0
 // ===========================================================================
 #[test]
-fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -366,7 +368,8 @@ fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
 // 判据 ⑤：旁通真的关掉处理（`master_insert_frames` 有设备 = 帧数；旁通 = 0）
 // ===========================================================================
 #[test]
-fn the_master_bypass_really_stops_master_processing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_bypass_really_stops_master_processing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -406,7 +409,8 @@ fn the_master_bypass_really_stops_master_processing() {
 // 判据 ⑥：无 master 设备 ⇒ 滑块 / 开关不出现 ＋ 逐字原因
 // ===========================================================================
 #[test]
-fn no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -446,7 +450,8 @@ fn no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
 // 判据 ⑦b：新增控件全在第二段的矩形内（运行时几何读数，x + width ≤ 1384）
 // ===========================================================================
 #[test]
-fn the_new_master_controls_live_inside_the_second_segment() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_new_master_controls_live_inside_the_second_segment() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

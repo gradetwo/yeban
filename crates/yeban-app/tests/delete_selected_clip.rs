@@ -205,7 +205,8 @@ fn select_notes(window: &MainWindow, ids: &[String]) {
 /// 这一臂存在的理由：后面每一条都按"删掉 A、B 必须还在"来断言。若夹具只有一条摆放、
 /// 或投影漏了几条，那些断言会**因为前提不成立而空转**（看起来绿，其实什么都没比）。
 #[test]
-fn the_fixture_has_several_placements_and_the_ui_paints_all_of_them() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_fixture_has_several_placements_and_the_ui_paints_all_of_them() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -250,7 +251,8 @@ fn the_fixture_has_several_placements_and_the_ui_paints_all_of_them() {
 /// · `selected-clip-ulid` 的**字符长度** 从身份变成 0（选中的对象已不存在）；
 /// · `clip-{A}-header` 在运行时树里的**存在性** 由真变假，`clip-{B}-header` 仍为真。
 #[test]
-fn backspace_on_a_selected_clip_placement_removes_exactly_that_placement() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_backspace_on_a_selected_clip_placement_removes_exactly_that_placement() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -291,7 +293,8 @@ fn backspace_on_a_selected_clip_placement_removes_exactly_that_placement() {
 /// 这条是"反过来会怎样"的防线：卷帘的作用域正是那条选中剪辑，若剪辑优先，用户指着
 /// 几颗音符按下一键会带走**整个**剪辑（数据损失，且一步撤销也未必找得回正确的粒度）。
 #[test]
-fn note_selection_out_rank_the_clip_deletion() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_note_selection_out_rank_the_clip_deletion() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -330,7 +333,9 @@ fn note_selection_out_rank_the_clip_deletion() {
 /// ④ 视图门控：Session 视图里那一次按键**不消费、不提交**，而**同一份选中态**回到
 /// 编曲视图后立刻删得掉 —— 两臂只差 `arrangement-view`，于是差值只能归因于这道门。
 #[test]
-fn a_selection_left_over_from_the_arrangement_view_is_not_deleted_in_session_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_selection_left_over_from_the_arrangement_view_is_not_deleted_in_session_view()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -371,7 +376,8 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_deleted_in_session_vie
 /// 与 `delete_ops_for` 同一取向："把键吞掉却什么都不做，比不处理更糟" —— 调用方读到
 /// `consumed = false` 才知道这条绑定今天没活儿，而 `true` ＋ 零改动是**谎报**。
 #[test]
-fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stale_or_illegal_clip_ulid_is_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -420,7 +426,8 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 /// **才**重投影 —— 只有走这条，下面两句"回到 / 离开绘制清单"才是真判据。
 /// 注入写法与 `live_ui_mcp.rs` 里已绿的 `Cmd+Z` 判据逐位一致（`text, shift, ctrl, alt, meta`）。
 #[test]
-fn one_undo_puts_the_placement_back_byte_for_byte() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_one_undo_puts_the_placement_back_byte_for_byte() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -462,7 +469,8 @@ fn one_undo_puts_the_placement_back_byte_for_byte() {
 /// 源码纪律部分钉的是"写入面只有一处"：日后若长出第二个构造点，两个地方就可能对
 /// "删的是哪条摆放"给出不同答案 —— 那正是本文件要防的分叉形状。
 #[test]
-fn clip_delete_ops_for_is_the_only_remove_clip_placement_construction_site() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clip_delete_ops_for_is_the_only_remove_clip_placement_construction_site() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -501,7 +509,8 @@ fn clip_delete_ops_for_is_the_only_remove_clip_placement_construction_site() {
 /// ⑧ 投影层前提复核：`ViewState` 的池子过滤口径与本判据无关，但**视图构造**必须能投影
 /// 删除后的工程（否则宿主提交后重投影会 panic —— 那是"模型删了、画面崩了"的另一种坏）。
 #[test]
-fn the_view_state_projects_a_project_with_the_placement_removed() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_view_state_projects_a_project_with_the_placement_removed() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

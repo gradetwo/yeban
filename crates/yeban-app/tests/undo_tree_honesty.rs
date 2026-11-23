@@ -150,7 +150,8 @@ fn assignment_lines(source: &str, name: &str) -> Vec<String> {
 ///    不得是固定的 `for … in 6` —— 固定循环加空数组会在界面上留六张空卡片。
 /// 4. **空态 / 截断报数**：两个状态都必须有稳定的语义 ID（用户可见，不是注释）。
 #[test]
-fn the_undo_tree_declares_no_demo_history_nodes() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_undo_tree_declares_no_demo_history_nodes() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -186,7 +187,8 @@ fn the_undo_tree_declares_no_demo_history_nodes() {
 ///    `undo_tree_projection(port)`，而该函数读 `port.graph()` + `graph.ancestry(` ——
 ///    即数据来自 `CommitGraph`，不是宿主另造的一份列表。
 #[test]
-fn the_undo_tree_node_properties_have_exactly_one_writer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_undo_tree_node_properties_have_exactly_one_writer() {
     // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -230,7 +232,8 @@ fn the_undo_tree_node_properties_have_exactly_one_writer() {
 /// 4. `accessible-role: button` 必须配一个真的 `TouchArea` + 回调，且 `app.slint`
 ///    把它转到**已存在**的那个宿主动作（`open-musical-pr`）。
 #[test]
-fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -278,7 +281,8 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
 /// 行为侧的端到端证据住在 `tests/live_ui_mcp.rs` 的
 /// [`escape_closes_the_time_machine_modal_for_real`]（真事件源注入 `Escape`）。
 #[test]
-fn the_time_machine_escape_hint_matches_a_real_close_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_time_machine_escape_hint_matches_a_real_close_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

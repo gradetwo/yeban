@@ -95,7 +95,8 @@ fn assemble_interactive(project: &yeban_model::project::YebanProjectV1) -> live:
 
 /// 判据 ①（**默认构建，无需装配窗口**）：端口词表与宿主唯一解析点同源。
 #[test]
-fn every_port_chord_key_reaches_the_single_parse_point_of_the_host() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_port_chord_key_reaches_the_single_parse_point_of_the_host() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -117,7 +118,8 @@ fn every_port_chord_key_reaches_the_single_parse_point_of_the_host() {
 
 /// 判据 ②（**默认构建**）：经**端口**注入 `Shift+Z` ⇒ 卷帘真的缩放到全曲。
 #[test]
-fn injecting_shift_z_through_the_port_fits_the_whole_project_into_the_viewport() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_injecting_shift_z_through_the_port_fits_the_whole_project_into_the_viewport() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -140,7 +142,8 @@ fn injecting_shift_z_through_the_port_fits_the_whole_project_into_the_viewport()
 /// 判据 ③（**默认构建**）：策略表里"未被点名 ⇒ 放行"的那一格必须报 `consumed == false`，
 /// 并且**一位状态都不动**。
 #[test]
-fn an_unbound_chord_reports_not_consumed_and_leaves_everything_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unbound_chord_reports_not_consumed_and_leaves_everything_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

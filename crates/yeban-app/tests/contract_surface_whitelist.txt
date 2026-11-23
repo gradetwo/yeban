@@ -1,0 +1,4 @@
+# T-FIX-142 元判据白名单（tests/contract_surface_meta.rs）。
+# 一行一条：file.rs::fn_name  # 降级理由
+# 只有「名字含行为动词、但函数体确实只能做源码契约断言」的用例才允许进来，
+# 且必须写清为什么不能恢复成 build_live_ui_with / live:: 的真实断言。

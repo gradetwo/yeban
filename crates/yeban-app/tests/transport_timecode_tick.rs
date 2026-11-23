@@ -92,7 +92,8 @@ fn expected_timecode(window: &Window, position_ticks: u64) -> String {
 /// 若 `ProductionLoop::tick` 不调 `apply_transport`（修前的形状），第一跳之后
 /// `ui_timecode` 恒为 `001.01.000` ⇒ 第一次逐跳比较就红。
 #[test]
-fn timecode_moves_while_the_transport_runs() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_timecode_moves_while_the_transport_runs() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -117,7 +118,8 @@ fn timecode_moves_while_the_transport_runs() {
 /// 若心跳只在 `playing` 时刷新（一种很容易写出来的"优化"），停止之后界面会停在
 /// **停止前**那一帧的时间码 ⇒ 本判据红。
 #[test]
-fn one_tick_after_stop_shows_the_engines_position() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_one_tick_after_stop_shows_the_engines_position() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

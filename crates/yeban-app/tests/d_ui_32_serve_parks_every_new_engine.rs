@@ -194,7 +194,8 @@ fn body_of<'a>(code: &'a str, header: &str) -> &'a str {
 
 /// ① 换代之后本装配读起来必须是**停住**的，而且只为此发过**一条**命令。
 #[test]
-fn a_freshly_started_engine_is_parked() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_freshly_started_engine_is_parked() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -224,7 +225,8 @@ fn a_freshly_started_engine_is_parked() {
 
 /// ② 用户第一次按播放得到的是**起播**（修前那次按下是"停"）。
 #[test]
-fn the_first_press_of_play_starts_instead_of_stopping() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_first_press_of_play_starts_instead_of_stopping() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -254,7 +256,8 @@ fn the_first_press_of_play_starts_instead_of_stopping() {
 
 /// ③ 没人按任何东西 ⇒ 播放头⛔ 不许自己走（自由跑的形状就是每量子推进）。
 #[test]
-fn the_playhead_does_not_walk_by_itself() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_playhead_does_not_walk_by_itself() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -284,7 +287,8 @@ fn the_playhead_does_not_walk_by_itself() {
 
 /// ④ 第二代也一样停住，而且命令计数器是**每一代自己的**（跨代累加是误读）。
 #[test]
-fn each_new_generation_is_parked_and_counts_its_own_commands() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_each_new_generation_is_parked_and_counts_its_own_commands() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -314,7 +318,8 @@ fn each_new_generation_is_parked_and_counts_its_own_commands() {
 
 /// ⑤ 换工程那一处换代站点也停住（与 `main.rs` 打开工程那一段同一形态）。
 #[test]
-fn a_project_switch_parks_the_new_generation() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_project_switch_parks_the_new_generation() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -344,7 +349,8 @@ fn a_project_switch_parks_the_new_generation() {
 
 /// ⑥ 没有引擎的那台装配：⛔ 不许假装"我停住过"，读数一路是冷的。
 #[test]
-fn without_an_engine_the_park_stays_honest_and_silent() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_an_engine_the_park_stays_honest_and_silent() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -374,7 +380,8 @@ fn without_an_engine_the_park_stays_honest_and_silent() {
 
 /// ⑦ 机械防线：修法留在**控制面**，⛔ 不搬进 `EngineHost::reload`，⛔ 不搬进引擎默认值。
 #[test]
-fn reload_alone_still_hands_back_a_free_running_transport() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_reload_alone_still_hands_back_a_free_running_transport() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -404,7 +411,8 @@ fn reload_alone_still_hands_back_a_free_running_transport() {
 
 /// ⑧ 出处纪律（⛔ 不开窗口）：停住落在**唯一的换代入口**里，且两族都在。
 #[test]
-fn the_park_lives_in_the_single_generation_entry_point() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_park_lives_in_the_single_generation_entry_point() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

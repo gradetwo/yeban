@@ -317,7 +317,8 @@ fn explicit_seed_that_differs(
 
 /// 判据 ①：右键菜单的两项存在、能点开对话框；打开时种子预填工程 `rng_seed`。
 #[test]
-fn the_context_menu_items_exist_and_open_the_dialog() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_context_menu_items_exist_and_open_the_dialog() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -355,7 +356,8 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
 
 /// 判据 ②：人性化用**显式种子**、且同一份种子两次结果相同、一次撤销回到应用前。
 #[test]
-fn humanize_applies_with_the_explicit_seed_and_is_deterministic() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_humanize_applies_with_the_explicit_seed_and_is_deterministic() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -393,7 +395,8 @@ fn humanize_applies_with_the_explicit_seed_and_is_deterministic() {
 
 /// 判据 ③：量化把离格音符吸到网格；强度 0 ⇒ 什么都不改、弹窗不关、给明文。
 #[test]
-fn quantize_snaps_off_grid_notes_and_strength_zero_changes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_quantize_snaps_off_grid_notes_and_strength_zero_changes_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -431,7 +434,8 @@ fn quantize_snaps_off_grid_notes_and_strength_zero_changes_nothing() {
 
 /// 判据 ④：未选中剪辑 / 非法输入 ⇒ 响亮失败、弹窗不关、工程一位不动。
 #[test]
-fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -470,7 +474,8 @@ fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
 /// 判据 ⑤：右键抬起不得触发左键点击 —— 先选中一个音符，右键按 + 抬之后
 /// 选区与音符数必须一位不动（若抬起落进左键 `up` 分支，空地点击会清掉选区）。
 #[test]
-fn right_click_release_does_not_fire_a_left_click() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_right_click_release_does_not_fire_a_left_click() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -512,7 +517,8 @@ fn right_click_release_does_not_fire_a_left_click() {
 /// 这是「同一份实现」的证据：两条路（MCP 工具与 UI 菜单）调的是同一批共享算术，
 /// ⛔ 不是各写一份展开。
 #[test]
-fn host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -217,7 +217,8 @@ impl Rig {
 /// * ② 定位**释放声部池**：seek 前 `poly_active_voices >= 1`、seek 后 = 0；
 /// * ③ 修复的是**游标**：定位后 `notes_triggered` 必须再前进（修复前它一步不动）。
 #[test]
-fn space_stop_space_rewind_space_plays_with_sound() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_space_stop_space_rewind_space_plays_with_sound() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -247,7 +248,8 @@ fn space_stop_space_rewind_space_plays_with_sound() {
 
 /// 判据 2：**停止按钮**回 0（`Stop + SeekTicks(0)`）后 `Space` ⇒ 必须出声。
 #[test]
-fn stop_button_rewind_then_space_plays_with_sound() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_stop_button_rewind_then_space_plays_with_sound() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -281,7 +283,8 @@ fn stop_button_rewind_then_space_plays_with_sound() {
 /// * 播放中：`GoToBeginning` ⇒ `on_stop` ＋ `on_toggle_play` ⇒
 ///   `[Stop, SeekTicks(0), Play]`（`#227` 的逐字读数）。
 #[test]
-fn both_return_paths_play_with_sound() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_both_return_paths_play_with_sound() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -315,7 +318,8 @@ fn both_return_paths_play_with_sound() {
 /// `SeekTicks` 这一条命令。修复前的实测：这一格 `2048 / 0.249923`，而三条回 0
 /// 路径全是 `0 / 0.000000` ⇒ **seek 是破坏者**，不是引擎不出声。
 #[test]
-fn stopping_and_resuming_without_a_seek_was_already_audible() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_stopping_and_resuming_without_a_seek_was_already_audible() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -358,7 +362,8 @@ fn stopping_and_resuming_without_a_seek_was_already_audible() {
 /// `probability = 0.75` 在**确定性判定**下被丢弃 —— 从 0 播过 72000..76800 帧
 /// 实测非零 = **0** ⇒ 那个位置本来就没声，拿它当证据会误导。
 #[test]
-fn forward_seek_plays_and_backward_seek_now_also_plays() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_forward_seek_plays_and_backward_seek_now_also_plays() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

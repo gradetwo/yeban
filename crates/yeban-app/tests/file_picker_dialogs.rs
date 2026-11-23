@@ -347,7 +347,8 @@ impl Fixture {
 ///   磁盘上什么都没有 ⇒ 本判据红；
 /// * 把 `.slint` 的 `save-project` 回调摘掉 ⇒ `calls == 0`。
 #[test]
-fn saving_without_an_assembly_time_target_asks_the_picker_and_writes_there() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_saving_without_an_assembly_time_target_asks_the_picker_and_writes_there() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -391,7 +392,8 @@ fn saving_without_an_assembly_time_target_asks_the_picker_and_writes_there() {
 /// * `save-status` **仍是空串**（⛔ 没有被写成"保存失败"）；
 /// * 目录里**没有**任何文件被创建。
 #[test]
-fn cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -445,7 +447,8 @@ fn cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
 /// * 另存为走"装配期目标优先"⇒ 新文件不存在 / 旧文件被改写 ⇒ 第一段红；
 /// * 另存为之后不把挑中的路径记成当前目标 ⇒ 第二段红（保存写回旧文件、新文件没有回来）。
 #[test]
-fn saving_as_asks_the_picker_and_retargets_subsequent_saves() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_saving_as_asks_the_picker_and_retargets_subsequent_saves() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -499,7 +502,8 @@ fn saving_as_asks_the_picker_and_retargets_subsequent_saves() {
 /// * 把浏览做成"选完直接提交" ⇒ 中间那一段的 `undoable == 0` / `sampler == None` 红
 ///   （本仓要的是"浏览只填框"）。
 #[test]
-fn browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -550,7 +554,8 @@ fn browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it() {
 /// 它**不经过**对话框：手敲那条路走的是 `mixer-sampler-set` 回调（注入 ② 没碰它），
 /// 而 `NoPicker` 那条路由定义就是"永远 `None`"（注入 ① 改的是"问不问"，不是"回什么"）。
 #[test]
-fn the_text_box_and_the_cli_path_stay_usable_without_any_dialog() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_text_box_and_the_cli_path_stay_usable_without_any_dialog() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -589,7 +594,9 @@ fn the_text_box_and_the_cli_path_stay_usable_without_any_dialog() {
 /// ⭐ 存入相对化（Wang 2026-11-01 定）：手敲库根下绝对路径 ＋ SET ⇒ 存入值是
 /// `assets/samples/…` 相对形式（UI 路径走 `commit_sampler_binding`，与 CLI 同一条归一化）。
 #[test]
-fn typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relative_form() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relative_form()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -644,7 +651,8 @@ fn typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relati
 /// 打开工程的实现（`--open` 只在启动时读一次），因此本单⛔ **不声称**给 GUI 加了
 /// 可点的打开入口 —— 那会改默认帧（需重录 `tests/golden/linux/**`），是**另一个缺口**。
 #[test]
-fn opening_a_project_through_the_picker_swaps_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_opening_a_project_through_the_picker_swaps_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

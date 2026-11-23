@@ -214,7 +214,8 @@ fn track_ids(project: &YebanProjectV1, view: &ViewState) -> Vec<EntityId> {
 /// 因此引擎真的逐轨合成。生产 `run_gui` 启动时会 `stop()`（界面初始态是 `playing: false`），
 /// 那时电平恒为显示下限 —— 同一条链，只是读数落在另一端。
 #[test]
-fn production_loop_start_adopts_the_engine_meter_consumer() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_loop_start_adopts_the_engine_meter_consumer() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -250,7 +251,8 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
 /// 只能靠注入 —— 判据 1 读到的就是引擎自己发布的非注入读数。本条判据保留注入，
 /// 理由是**分辨力**（已知幅度 ⇒ 逐位对账），不是"引擎不发声"。就地改正。
 #[test]
-fn production_tick_writes_known_levels_into_the_slint_properties() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_tick_writes_known_levels_into_the_slint_properties() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -276,7 +278,8 @@ fn production_tick_writes_known_levels_into_the_slint_properties() {
 /// tick。这正是"控制面 `yeban_open_project` 换了工程、而持有 tick 的那一段还拿着旧投影"
 /// 的形态。`apply_meters` 的长度契约（`.slint` 按下标取）因此不能被违反。
 #[test]
-fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_tick_does_not_inject_when_the_window_track_count_disagrees() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -307,7 +310,8 @@ fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
 ///   `100px * root.track-meter-levels[track_index]`，只有控制台 Tab = 1 才在控件树里）。
 ///   要判"接上了没有"，靠的是本文件前三条判据，以及下一条**混音台档**的像素判据。
 #[test]
-fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -332,7 +336,8 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
 /// 这是"电平落在像素上"的判据：同一份投影、同一个窗口，先抓一帧，再驱动 8 跳
 /// （真引擎），再抓一帧 —— 两帧必须不同，并给出不同像素数与包围盒。
 #[test]
-fn the_mixer_console_frame_changes_when_the_meter_leg_runs() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_mixer_console_frame_changes_when_the_meter_leg_runs() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -248,7 +248,8 @@ fn project_with_track(volume_db: f32) -> YebanProjectV1 {
 }
 
 #[test]
-fn the_gui_export_reports_clipping_only_when_the_master_clips() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_gui_export_reports_clipping_only_when_the_master_clips() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -289,7 +290,8 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
 /// `clipping_note` 也是引号值；修后 `field_of("channels")` 只认顶层字段，`None`，
 /// 而引号值仍**保留引号**返回（本文件既有约定）。
 #[test]
-fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -273,7 +273,8 @@ fn registry_kind_after(els: &str, needle: &str) -> Option<&'static str> {
 // =========================================================================
 
 #[test]
-fn every_addressable_node_declares_an_explicit_accessible_role() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_addressable_node_declares_an_explicit_accessible_role() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -298,7 +299,8 @@ fn every_addressable_node_declares_an_explicit_accessible_role() {
 // =========================================================================
 
 #[test]
-fn the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -323,7 +325,8 @@ fn the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
 // =========================================================================
 
 #[test]
-fn round6_adds_no_new_addressable_ids_or_value_readouts() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_round6_adds_no_new_addressable_ids_or_value_readouts() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -348,7 +351,8 @@ fn round6_adds_no_new_addressable_ids_or_value_readouts() {
 // =========================================================================
 
 #[test]
-fn the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

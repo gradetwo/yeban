@@ -18,7 +18,8 @@ const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const APP: &str = include_str!("../ui/app.slint");
 
 #[test]
-fn sidechain_cycling_and_connecting_creates_valid_ops() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_sidechain_cycling_and_connecting_creates_valid_ops() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -39,7 +40,8 @@ fn sidechain_cycling_and_connecting_creates_valid_ops() {
 }
 
 #[test]
-fn compressor_cycling_and_dynamics_readout() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_compressor_cycling_and_dynamics_readout() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -60,7 +62,8 @@ fn compressor_cycling_and_dynamics_readout() {
 }
 
 #[test]
-fn builtin_effect_compressor_contract() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_builtin_effect_compressor_contract() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -81,7 +84,8 @@ fn builtin_effect_compressor_contract() {
 }
 
 #[test]
-fn slint_ratchets_are_strictly_preserved() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_slint_ratchets_are_strictly_preserved() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -102,7 +106,8 @@ fn slint_ratchets_are_strictly_preserved() {
 }
 
 #[test]
-fn viewstate_contains_dynamics_and_sidechain_properties() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_viewstate_contains_dynamics_and_sidechain_properties() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

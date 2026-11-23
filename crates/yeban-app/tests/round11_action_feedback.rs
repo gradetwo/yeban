@@ -132,7 +132,8 @@ fn lines_after(src: &str, marker: &str, count: usize) -> String {
 /// ① 全仓手型光标收官：逐文件精确分布 + 全仓棘轮 = 50。
 /// 删任一处 ⇒ 少一次，红；别处又加 ⇒ 多一次，也红。
 #[test]
-fn all_clickable_controls_now_show_a_pointer_cursor() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_all_clickable_controls_now_show_a_pointer_cursor() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -155,7 +156,8 @@ fn all_clickable_controls_now_show_a_pointer_cursor() {
 /// ② 主窗口分隔条终于看得出能拖：全仓唯一 1 处 `row-resize`，
 /// 且必须落在 `splitter-touch` 内 —— 它是 `accessible-role: slider` 的垂直调整控件。
 #[test]
-fn the_splitter_is_discoverable_as_a_resizable_control() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_splitter_is_discoverable_as_a_resizable_control() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -177,7 +179,8 @@ fn the_splitter_is_discoverable_as_a_resizable_control() {
 
 /// ③ 前两轮的成果一位未动：grab 7 / has-hover 32 / cursor_total 58 逐文件对账。
 #[test]
-fn the_grab_and_hover_inventories_are_untouched() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_grab_and_hover_inventories_are_untouched() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -200,7 +203,8 @@ fn the_grab_and_hover_inventories_are_untouched() {
 /// ④ 画布手势面刻意零光标：语义混合（点选/画音符/拖滚动/双击复位），
 /// 给单一光标会把「能拖」误标成「能点」。
 #[test]
-fn canvas_gesture_surfaces_still_have_no_cursor() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_canvas_gesture_surfaces_still_have_no_cursor() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -224,7 +228,8 @@ fn canvas_gesture_surfaces_still_have_no_cursor() {
 /// Slint 源码取证见文档头：disabled 时 `ForwardAndIgnore`，光标根本不生效
 /// ⇒ 可用才显示手型、禁用保持默认箭头，⛔ 不误导、⛔ 不假装「禁止」提示。
 #[test]
-fn disabled_buttons_do_not_pretend_to_be_clickable() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_disabled_buttons_do_not_pretend_to_be_clickable() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -247,7 +252,8 @@ fn disabled_buttons_do_not_pretend_to_be_clickable() {
 /// ⑥ 零新增可寻址节点 / 无障碍读数 / 唯一强调色：本轮 8 个改动文件逐文件对账
 /// （＋人性化弹窗 1 案：12 ID / 5 读数）。
 #[test]
-fn zero_new_addressable_nodes_or_readouts() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_zero_new_addressable_nodes_or_readouts() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -269,7 +275,8 @@ fn zero_new_addressable_nodes_or_readouts() {
 
 /// ⑦ 刻意不做的边界：无动作占位、A/B 撤回的 M/S 字色、× 关闭键反馈、piano_roll。
 #[test]
-fn the_deliberate_boundaries_are_still_intact() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_deliberate_boundaries_are_still_intact() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

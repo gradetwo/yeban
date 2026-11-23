@@ -42,7 +42,8 @@ const F8: &str = "\u{f70b}";
 const F9: &str = "\u{f70c}";
 
 #[test]
-fn f7_f8_f9_reach_the_three_console_tabs() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_f7_f8_f9_reach_the_three_console_tabs() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -73,7 +73,8 @@ fn scratch() -> PathBuf {
 /// ① 选中 ⇒ 路径写回；② 请求构造逐字对账；③ 无后缀补 `.wav`；
 /// ④ 取消一位不动；⑤ 只填框、不导出、不写回执。
 #[test]
-fn browsing_an_export_path_fills_the_box_without_writing_or_exporting() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_browsing_an_export_path_fills_the_box_without_writing_or_exporting() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -117,7 +118,8 @@ fn browsing_an_export_path_fills_the_box_without_writing_or_exporting() {
 /// `invoke_key_action`（Slint 派发快捷键的回调），带修饰位**到不了**
 /// `FocusScope.key-pressed`；`dispatch_key_press` 又不带修饰位。
 #[test]
-fn the_keyboard_entry_is_declared_and_wired() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_keyboard_entry_is_declared_and_wired() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

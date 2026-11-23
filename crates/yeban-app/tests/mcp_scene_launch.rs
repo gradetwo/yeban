@@ -180,7 +180,8 @@ impl Fixture {
 }
 
 #[test]
-fn the_tool_queues_and_the_engine_applies_at_the_bar_boundary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tool_queues_and_the_engine_applies_at_the_bar_boundary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -201,7 +202,8 @@ fn the_tool_queues_and_the_engine_applies_at_the_bar_boundary() {
 }
 
 #[test]
-fn the_four_quantisation_tiers_land_on_the_documented_blocks() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_four_quantisation_tiers_land_on_the_documented_blocks() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -222,7 +224,8 @@ fn the_four_quantisation_tiers_land_on_the_documented_blocks() {
 }
 
 #[test]
-fn without_a_tool_call_nothing_launches() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_a_tool_call_nothing_launches() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -243,7 +246,8 @@ fn without_a_tool_call_nothing_launches() {
 }
 
 #[test]
-fn dry_run_queues_nothing_and_an_unknown_scene_is_loud() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dry_run_queues_nothing_and_an_unknown_scene_is_loud() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -264,7 +268,8 @@ fn dry_run_queues_nothing_and_an_unknown_scene_is_loud() {
 }
 
 #[test]
-fn without_the_host_attached_the_tool_is_a_loud_engine_unavailable_error() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_the_host_attached_the_tool_is_a_loud_engine_unavailable_error() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

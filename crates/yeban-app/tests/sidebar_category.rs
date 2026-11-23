@@ -87,7 +87,8 @@ fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect)
 }
 
 #[test]
-fn clicking_a_sidebar_category_switches_the_view_state_and_the_highlight() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_a_sidebar_category_switches_the_view_state_and_the_highlight() {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
     let aether_app = std::fs::read_to_string(

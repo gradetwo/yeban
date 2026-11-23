@@ -124,7 +124,8 @@ fn enclosing_block<'a>(src: &'a str, masked: &str, id: &str) -> &'a str {
 
 /// ① 切换态必须**画给人看**，且默认帧逐字回落到原来的底色 / 字色。
 #[test]
-fn toggle_buttons_show_their_state_without_changing_the_default_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_toggle_buttons_show_their_state_without_changing_the_default_frame() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -163,7 +164,8 @@ fn toggle_buttons_show_their_state_without_changing_the_default_frame() {
 /// ② 每个目标 `TouchArea` 都必须显式命名，且那个名字真的驱动了视觉反馈表达式。
 /// 未命名 ⇒ `has-hover` / `pressed` 无从引用（Slint 编译期也会红，这里是源码级早报）。
 #[test]
-fn every_target_touch_area_is_named_and_drives_a_visual_feedback() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_target_touch_area_is_named_and_drives_a_visual_feedback() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -202,7 +204,8 @@ fn every_target_touch_area_is_named_and_drives_a_visual_feedback() {
 /// ③ 默认帧零位移：所有新增三元的 false 分支逐字等于改动前的静态 token。
 /// 计数用 `assert_eq!` 而不是「至少」—— 多一条就是有人偷偷改了默认帧或加了第二套口径。
 #[test]
-fn default_frame_falls_back_to_the_original_tokens() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_frame_falls_back_to_the_original_tokens() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -241,7 +244,8 @@ fn default_frame_falls_back_to_the_original_tokens() {
 /// ④ 源码顺序：全屏臂必须排在 AI 抽屉臂之前（只在 `Action::Cancel` 段内比对，
 /// 避免命中文件别处的同名 getter）。
 #[test]
-fn escape_exits_fullscreen_before_the_ai_drawer_in_the_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_exits_fullscreen_before_the_ai_drawer_in_the_source() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -288,7 +292,8 @@ fn escape_exits_fullscreen_before_the_ai_drawer_in_the_source() {
 /// 抽屉臂在前 ⇒ `ai-drawer-open` 被翻成 false。`invoke_toggle_ai_drawer` 在本夹具
 /// 有产品同一个注册者（`ai_drawer_key_ui.rs` 已证），故这个观测是真的。
 #[test]
-fn escape_combination_prefers_fullscreen_in_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_combination_prefers_fullscreen_in_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

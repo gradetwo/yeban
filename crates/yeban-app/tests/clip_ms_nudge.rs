@@ -134,7 +134,8 @@ fn select_clip(window: &MainWindow, ulid: &str) {
 
 /// ① 夹具前提：音频与 MIDI 摆放各至少一条、编曲视图在前、纯函数与宿主臂同一条换算。
 #[test]
-fn the_fixture_has_an_audio_and_a_midi_placement_in_arrangement_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_fixture_has_an_audio_and_a_midi_placement_in_arrangement_view() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -172,7 +173,8 @@ fn the_fixture_has_an_audio_and_a_midi_placement_in_arrangement_view() {
 
 /// ② `Cmd/Ctrl+Shift+→` ⇒ 音频摆放 +48 采样（48 kHz 下 1 ms），提交 +1，选中态留下，可连按。
 #[test]
-fn cmd_ctrl_shift_right_moves_the_selected_audio_clip_by_one_millisecond() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_ctrl_shift_right_moves_the_selected_audio_clip_by_one_millisecond() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -210,7 +212,9 @@ fn cmd_ctrl_shift_right_moves_the_selected_audio_clip_by_one_millisecond() {
 
 /// ③ 0.1 ms 档：`Cmd/Ctrl+Shift+Alt+→` ⇒ +5 采样（4.8 四舍五入）；`←` ⇒ −48 / −5。
 #[test]
-fn cmd_ctrl_shift_alt_right_moves_the_selected_audio_clip_by_a_tenth_of_a_millisecond() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_ctrl_shift_alt_right_moves_the_selected_audio_clip_by_a_tenth_of_a_millisecond()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -248,7 +252,8 @@ fn cmd_ctrl_shift_alt_right_moves_the_selected_audio_clip_by_a_tenth_of_a_millis
 
 /// ④ 作用域：选中 MIDI 片段、或没有选中时，同一把键不消费、0 提交。
 #[test]
-fn the_ms_nudge_keys_are_not_consumed_for_a_midi_clip_or_with_no_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ms_nudge_keys_are_not_consumed_for_a_midi_clip_or_with_no_selection() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -286,7 +291,9 @@ fn the_ms_nudge_keys_are_not_consumed_for_a_midi_clip_or_with_no_selection() {
 
 /// ⑤ 视图门控：Session 视图里同一份选中态不消费、0 提交；回编曲视图立刻生效。
 #[test]
-fn a_selection_left_over_from_the_arrangement_view_is_not_nudged_in_session_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_selection_left_over_from_the_arrangement_view_is_not_nudged_in_session_view()
+{
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -324,7 +331,8 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_nudged_in_session_view
 
 /// ⑥ 一步撤销 ＋ redo：`Undo` 将工程逐字节放回，`Redo` 再移过去。
 #[test]
-fn undo_puts_the_clip_offset_back_and_redo_moves_it_again() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_undo_puts_the_clip_offset_back_and_redo_moves_it_again() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

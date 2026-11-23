@@ -227,7 +227,8 @@ fn diff_split(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> (u64, u64) {
 /// "按 `clip-ulids` 的位置取那一格"的读法都会越界；而起点若有**任何**一格已经是 `true`，
 /// ③ 的"默认帧无需重录"就是空话。
 #[test]
-fn the_fixture_starts_unmuted_and_the_ui_carries_one_reading_per_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_fixture_starts_unmuted_and_the_ui_carries_one_reading_per_clip() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -268,7 +269,8 @@ fn the_fixture_starts_unmuted_and_the_ui_carries_one_reading_per_clip() {
 /// 这一臂同时钉住"写权威"与"把结果送回界面"两个方向：只断言工程会放过
 /// "提交完不重投影"（模型改了、包头还亮着）这一类坏 —— 所以 `clip-mutes` 那一格必须一起断。
 #[test]
-fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -309,7 +311,8 @@ fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
 /// 这一臂把 ② 的"读数跟上"再往前推一格：属性写了不等于用户看得见。而"翻回来帧逐字节
 /// 相同"钉的是**开关**语义（⛔ 不是单向的"打上静音标记"—— 那会留下擦不掉的痕迹）。
 #[test]
-fn the_muted_state_is_drawn_on_that_clips_header_and_only_there() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_muted_state_is_drawn_on_that_clips_header_and_only_there() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -350,7 +353,8 @@ fn the_muted_state_is_drawn_on_that_clips_header_and_only_there() {
 /// 这条是"反过来会怎样"的防线：两把键共享同一个字符 `m`，若分叉成"任意一把都翻两者"，
 /// 用户想静音一条剪辑会顺手改掉整条轨的出声状态（或反之），而那**看起来**只是"按了一下 M"。
 #[test]
-fn bare_m_still_toggles_the_track_and_never_the_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_bare_m_still_toggles_the_track_and_never_the_clip() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -388,7 +392,8 @@ fn bare_m_still_toggles_the_track_and_never_the_clip() {
 
 /// ⑤ 视图门控：Session 视图里那一键**不消费、不提交**，而**同一份选中态**回编曲视图立刻翻面。
 #[test]
-fn a_selection_left_over_from_the_arrangement_view_is_not_muted_in_session_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_selection_left_over_from_the_arrangement_view_is_not_muted_in_session_view() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -428,7 +433,8 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_muted_in_session_view(
 ///
 /// 与 `clip_delete_ops_for` / `delete_ops_for` 同一取向："把键吞掉却什么都不做，比不处理更糟"。
 #[test]
-fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stale_or_illegal_clip_ulid_is_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -472,7 +478,8 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 /// 把"画面其实跟得上"误判成"撤销没画回来"。键路径经 [`apply_action`] 的
 /// `Action::Undo | Action::Redo` 那一臂，末尾 `refresh_undo_window(ui, port, true)` 才重投影。
 #[test]
-fn one_undo_unmutes_the_placement_byte_for_byte() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_one_undo_unmutes_the_placement_byte_for_byte() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -514,7 +521,8 @@ fn one_undo_unmutes_the_placement_byte_for_byte() {
 /// 源码纪律部分钉的是"写入面只有一处"：日后若长出第二个构造点，两处就可能对"翻的是哪条摆放"
 /// 给出不同答案 —— 那正是本文件要防的分叉形状。
 #[test]
-fn clip_mute_ops_for_is_the_only_set_clip_placement_muted_construction_site() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clip_mute_ops_for_is_the_only_set_clip_placement_muted_construction_site() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -552,7 +560,8 @@ fn clip_mute_ops_for_is_the_only_set_clip_placement_muted_construction_site() {
 
 /// ⑨ 投影层前提复核：静音列与绘制清单**同源同序**（否则 ② 的"按位置取那一格"会指错剪辑）。
 #[test]
-fn the_projection_orders_the_mute_column_by_the_same_identity_as_the_paint_list() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_projection_orders_the_mute_column_by_the_same_identity_as_the_paint_list() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

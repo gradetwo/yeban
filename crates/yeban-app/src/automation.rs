@@ -1521,8 +1521,10 @@ mod tests {
     /// 里断言；本机不编译 Slint，因此这里断言的是注册表 ↔ `.slint` 文本模板的覆盖关系
     /// （由 `elements::slint_accessible_ids_and_registry_cover_each_other` 承担主体，
     /// 这里再加一条"泳道族 == 泳道数"的正面断言）。
+    // ⚠ 行为断言已降级（T-FIX-142）：本用例的守护对象是**从未被 import** 的 `workspace/arrangement_view.slint`，
+    // 活树 `arrangement.slint` 里自动化泳道计数为 0 ⇒ 它守的不是运行时行为；死文件与注册表归 T-FIX-144。
     #[test]
-    fn registry_carries_one_element_per_lane() {
+    fn contract_surface_registry_carries_one_element_per_lane() {
         let demo = ViewState::demo();
         let registry = crate::elements::ElementRegistry::from_view(&demo);
         let lane_ids: Vec<&str> = registry
@@ -1744,8 +1746,9 @@ mod tests {
     /// 1. 界面里**没有任何**行算术（`42px + 56px *` 等形态全部禁止）；
     /// 2. 行几何读的是投影注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`；
     /// 3. 宿主 `host.rs` **真的注入**了这四个数组（属性写了没人注入 = 空数组 = 界面静默变形）。
+    // ⚠ 行为断言已降级（T-FIX-142）：同上，本用例读的是死文件原文；真正缺口（菜单仍报「已展开自动化泳道」）归 T-FIX-130 / T-FIX-144。
     #[test]
-    fn lane_element_ids_match_the_slint_template() {
+    fn contract_surface_lane_element_ids_match_the_slint_template() {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
         let source = std::fs::read_to_string(ui.join("workspace/arrangement_view.slint"))
             .expect("读 arrangement_view.slint");

@@ -198,7 +198,8 @@ fn select_first_track(ui: &MainWindow, project: &YebanProjectV1) -> yeban_model:
 // ① 不卡：点击回调立刻返回，探针在别的线程上跑
 // ===========================================================================
 #[test]
-fn clicking_a_slow_instrument_returns_before_the_probe_finishes() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_a_slow_instrument_returns_before_the_probe_finishes() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -230,7 +231,8 @@ fn clicking_a_slow_instrument_returns_before_the_probe_finishes() {
 // ② 拒绝有原因：缺样本 / SFZ 读不出来 —— 逐字进控件树，⛔ 不再"没反应"
 // ===========================================================================
 #[test]
-fn a_refused_install_says_why_in_the_control_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_refused_install_says_why_in_the_control_tree() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -262,7 +264,8 @@ fn a_refused_install_says_why_in_the_control_tree() {
 // ③ 结构证据：探针在 `thread::spawn` 的闭包里；投影里没有探针
 // ===========================================================================
 #[test]
-fn the_probe_lives_on_a_worker_thread_and_never_in_apply_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_probe_lives_on_a_worker_thread_and_never_in_apply_view() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -294,7 +297,8 @@ fn the_probe_lives_on_a_worker_thread_and_never_in_apply_view() {
 // ④ CLI：一次看清"哪些能装"（逐条原因 ＋ 末行汇总）
 // ===========================================================================
 #[test]
-fn the_cli_probe_instruments_readout_lists_ok_and_fail_with_reasons() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_cli_probe_instruments_readout_lists_ok_and_fail_with_reasons() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -347,7 +351,8 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// ⚠ 它**不**替代 `tests/golden/linux/**` 的平台基准（本机是 macOS，那 5 张是 Linux
 /// 托管 runner 的产物）。它证的是"新属性不可能改变默认帧的像素"这一条**因果**。
 #[test]
-fn the_1920_default_frame_is_byte_identical_with_and_without_the_status() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_1920_default_frame_is_byte_identical_with_and_without_the_status() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -163,7 +163,8 @@ fn probe_shot(plane: &mut LiveControlPlane) -> ScreenshotProbe {
 
 /// 判据 ①（§3.6 第一条）：拖动面有**稳定语义 ID**，且它在**控件树 JSON** 里可见。
 #[test]
-fn the_scroll_area_has_a_stable_semantic_id_visible_in_the_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_scroll_area_has_a_stable_semantic_id_visible_in_the_tree() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -193,7 +194,8 @@ fn the_scroll_area_has_a_stable_semantic_id_visible_in_the_tree() {
 
 /// 判据 ②（§3.6 核心）：**不双重计数** ＋ **两个方向** ＋ **`up` 之后不再累加**。
 #[test]
-fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_drag_reports_exactly_the_delta_sum_in_both_directions() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -227,7 +229,8 @@ fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
 /// `capture()` 属于 **`LiveUi`**（`live_surface.rs` 的 `impl LiveUi`，1282–1355），
 /// ⛔ **不属于** `LiveControlPlane`（impl 起于 1556）—— 本判据第一版正是在这里编译失败（CI 已判决）。
 #[test]
-fn the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

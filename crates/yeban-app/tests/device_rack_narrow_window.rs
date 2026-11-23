@@ -246,7 +246,8 @@ fn fingerprint(live: &LivePort<MainWindow>, label: &str) -> u64 {
 // 判据 ①：1440×900（仓里 15 个界面判据的默认窗口）两段全可见
 // ===========================================================================
 #[test]
-fn both_segments_are_inside_a_1440x900_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_both_segments_are_inside_a_1440x900_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -286,7 +287,8 @@ fn both_segments_are_inside_a_1440x900_window() {
 // 判据 ②：1920×1080 逐格不变（`#180` / `#181` 注册值）
 // ===========================================================================
 #[test]
-fn the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -326,7 +328,8 @@ fn the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
 // 判据 ③：1280×800（极窄档）—— 两段仍在窗口内，且互不重叠
 // ===========================================================================
 #[test]
-fn both_segments_fit_a_1280x800_window_without_overlapping() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_both_segments_fit_a_1280x800_window_without_overlapping() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -366,7 +369,8 @@ fn both_segments_fit_a_1280x800_window_without_overlapping() {
 // 判据 ④：1440×900 下三个手势各一次提交
 // ===========================================================================
 #[test]
-fn the_three_gestures_still_commit_exactly_once_at_1440x900() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_three_gestures_still_commit_exactly_once_at_1440x900() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -406,7 +410,8 @@ fn the_three_gestures_still_commit_exactly_once_at_1440x900() {
 // 源码腿：反向腿钉住的两处写法（⛔ 不靠回忆）
 // ===========================================================================
 #[test]
-fn the_layout_probes_pin_the_two_sources() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_layout_probes_pin_the_two_sources() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

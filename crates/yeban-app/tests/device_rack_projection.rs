@@ -188,7 +188,8 @@ fn live_window_with_undo(
 // 判据 ①：假数据已删（**源码派生**，不需要窗口）
 // ===========================================================================
 #[test]
-fn the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -228,7 +229,8 @@ fn the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
 // 判据 ②：投影是派生的（两个不同设备数的夹具 ⇒ 面板条目数随之变）
 // ===========================================================================
 #[test]
-fn the_rack_follows_the_projected_device_chain() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_rack_follows_the_projected_device_chain() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -268,7 +270,8 @@ fn the_rack_follows_the_projected_device_chain() {
 // 判据 ③：空态可判（无设备 ⇒ 逐字文案 ＋ 条目数 0）
 // ===========================================================================
 #[test]
-fn an_empty_chain_shows_the_empty_state_and_zero_rows() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_empty_chain_shows_the_empty_state_and_zero_rows() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -319,7 +322,8 @@ fn device_id_at(window: &MainWindow, index: usize) -> slint::SharedString {
 // 判据 ④：旁通手势 = 恰好一次提交
 // ===========================================================================
 #[test]
-fn the_bypass_gesture_commits_exactly_once() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_bypass_gesture_commits_exactly_once() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -359,7 +363,8 @@ fn the_bypass_gesture_commits_exactly_once() {
 // 判据 ⑤：EQ 滑块 = 恰好一次提交，且值真的进了 `TrackV3::devices`
 // ===========================================================================
 #[test]
-fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_eq_slider_commits_exactly_once_and_writes_the_model() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -399,7 +404,8 @@ fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
 // 判据 ⑦：无头可判 —— Tab 3 真有一张非黑、多色的截图
 // ===========================================================================
 #[test]
-fn the_device_tab_renders_a_non_black_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_device_tab_renders_a_non_black_frame() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -439,7 +445,8 @@ fn the_device_tab_renders_a_non_black_frame() {
 // 判据 ⑧（任务单 `#173`）：主总线的设备链进了**只读**投影，可编辑面不越轨
 // ===========================================================================
 #[test]
-fn the_master_chain_is_projected_without_touching_the_editable_rack() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_chain_is_projected_without_touching_the_editable_rack() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

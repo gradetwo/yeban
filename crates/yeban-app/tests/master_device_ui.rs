@@ -273,7 +273,8 @@ fn rms(samples: &[f32]) -> f64 {
 // 判据 ① ＋ ③ ＋ ④：装到 master（不是展示轨）＋ 恰好一次提交 ＋ 读回参数
 // ===========================================================================
 #[test]
-fn the_insert_gesture_lands_on_the_master_and_commits_exactly_once() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_insert_gesture_lands_on_the_master_and_commits_exactly_once() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -305,7 +306,8 @@ fn the_insert_gesture_lands_on_the_master_and_commits_exactly_once() {
 // 判据 ② ＋ ③：删的也是 master（不是展示轨）＋ 恰好一次提交
 // ===========================================================================
 #[test]
-fn the_remove_gesture_lands_on_the_master_and_commits_exactly_once() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_remove_gesture_lands_on_the_master_and_commits_exactly_once() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -337,7 +339,9 @@ fn the_remove_gesture_lands_on_the_master_and_commits_exactly_once() {
 // 判据 ③：主总线设备的已识别 / 未识别显示（与展示轨**同一套**）
 // ===========================================================================
 #[test]
-fn the_master_rack_shows_recognised_and_unrecognised_params_like_the_display_track() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_rack_shows_recognised_and_unrecognised_params_like_the_display_track()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -369,7 +373,8 @@ fn the_master_rack_shows_recognised_and_unrecognised_params_like_the_display_tra
 // 判据 ⑤：装完真的会处理音频（结构读数 ＋ 峰值变化）
 // ===========================================================================
 #[test]
-fn the_master_chain_processes_every_frame_after_the_ui_insert() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_chain_processes_every_frame_after_the_ui_insert() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -401,7 +406,8 @@ fn the_master_chain_processes_every_frame_after_the_ui_insert() {
 // 判据 ⑥：空态／禁用（无 master ／ 无展示轨 ⇒ 各自的逐字原因，⛔ 不静默）
 // ===========================================================================
 #[test]
-fn the_master_gestures_are_disabled_with_verbatim_reasons() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_gestures_are_disabled_with_verbatim_reasons() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

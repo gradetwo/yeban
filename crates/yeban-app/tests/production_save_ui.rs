@@ -140,7 +140,8 @@ fn lane_element_ids(project: &yeban_model::YebanProjectV1) -> Vec<String> {
 /// 第 3 步是这条判据的**承重步**：它不经过 `live_surface.rs`（测试目标的装配），
 /// 用的是产品二进制里那一个 `host::wire_save`。
 #[test]
-fn the_production_window_save_entry_writes_through_the_mounted_authority() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_production_window_save_entry_writes_through_the_mounted_authority() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -335,7 +335,8 @@ fn resolve_bare(key: LogicalKey, focus: Focus) -> Resolution {
 
 /// ①（清点）：字面量解析出的承诺多重集逐字等于钉死的九把；段数与未知段也钉住。
 #[test]
-fn the_tip_line_promises_exactly_the_pinned_keys() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tip_line_promises_exactly_the_pinned_keys() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -399,7 +400,8 @@ fn parsed_promise_id(promise: &Parsed) -> String {
 
 /// ②（兑现·画布）：九把键在画布焦点下都解析出期望的那个 `Action`。
 #[test]
-fn every_promised_key_resolves_to_the_pinned_action_on_the_canvas() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_promised_key_resolves_to_the_pinned_action_on_the_canvas() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -425,7 +427,8 @@ fn every_promised_key_resolves_to_the_pinned_action_on_the_canvas() {
 /// 归 ①（身份串里就带限定语）。这里若读钉表，"把 `(画布聚焦时)` 从文案里删掉"会**只红在 ①**，
 /// 而 ③ 这个名字会绿着说谎（实测：删掉限定语后 ③ 的旧写法照样通过）。
 #[test]
-fn the_focus_qualifier_in_the_text_matches_the_gate_in_the_key_table() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_focus_qualifier_in_the_text_matches_the_gate_in_the_key_table() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -447,7 +450,8 @@ fn the_focus_qualifier_in_the_text_matches_the_gate_in_the_key_table() {
 
 /// ④（文本域口径）：九把键在文本域聚焦下全部放行 —— 这是**现状**，⛔ 算兑现。
 #[test]
-fn the_tip_line_says_nothing_about_text_fields_and_the_table_passes_through() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tip_line_says_nothing_about_text_fields_and_the_table_passes_through() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -469,7 +473,8 @@ fn the_tip_line_says_nothing_about_text_fields_and_the_table_passes_through() {
 
 /// ⑤（画的 == 扫的）：那串默认值必须真的上屏，且⛔ 有第二个写者。
 #[test]
-fn the_scanned_literal_is_the_one_drawn_and_has_no_second_writer() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_scanned_literal_is_the_one_drawn_and_has_no_second_writer() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -491,7 +496,8 @@ fn the_scanned_literal_is_the_one_drawn_and_has_no_second_writer() {
 
 /// ⑥（一段⛔ 两把键）：每段只许有一个词表键名来源。
 #[test]
-fn each_segment_promises_exactly_one_key_spelling() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_each_segment_promises_exactly_one_key_spelling() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -513,7 +519,8 @@ fn each_segment_promises_exactly_one_key_spelling() {
 
 /// ⑦（注册表仍在）：语义 ID 还在登记面里 ⇒ 整格被删也会红。
 #[test]
-fn the_tip_cell_is_still_registered_for_the_control_plane() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tip_cell_is_still_registered_for_the_control_plane() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -547,7 +554,9 @@ fn the_tip_cell_is_still_registered_for_the_control_plane() {
 /// 三条腿各自会把什么读红，写在断言消息里 ⇒ 将来无论"补上 A/B 能力"还是"改文案"，
 /// 都必须回到本文件重新对账，⛔ 一边悄悄漂。
 #[test]
-fn the_tip_promises_two_bound_but_dead_keys_and_that_over_promise_is_pinned_as_a_reading() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tip_promises_two_bound_but_dead_keys_and_that_over_promise_is_pinned_as_a_reading()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

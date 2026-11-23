@@ -188,7 +188,8 @@ fn write_container(dir: &Path, name: &str, project: &yeban_model::YebanProjectV1
 }
 
 #[test]
-fn the_gui_open_project_entry_really_swaps_the_current_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_gui_open_project_entry_really_swaps_the_current_project() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

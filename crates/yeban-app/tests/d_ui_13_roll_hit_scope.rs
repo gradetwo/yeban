@@ -412,8 +412,9 @@ fn target_in(view: &ViewState, edited: EntityId, shadow: EntityId) -> Target {
 
 /// 判据 ①（纯投影层，⛔ 不建窗口）：不分作用域解析到**没画出来**的那颗，分作用域解析到正在编辑的那颗。
 #[test]
-fn the_unscoped_hit_test_returns_the_shadowing_note_while_the_scoped_one_returns_the_editing_note()
-{
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_unscoped_hit_test_returns_the_shadowing_note_while_the_scoped_one_returns_the_editing_note()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -454,7 +455,8 @@ fn the_unscoped_hit_test_returns_the_shadowing_note_while_the_scoped_one_returns
 /// 它把 ②③④ 的红定位到"作用域"这一条：同一个注入点、同一份装配，唯一区别是
 /// `selected-clip-ulid` 为空。若这条也点不到任何东西，说明坏的是坐标 / 夹具而不是作用域。
 #[test]
-fn an_unselected_roll_still_targets_the_topmost_drawn_note() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unselected_roll_still_targets_the_topmost_drawn_note() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -495,7 +497,8 @@ fn an_unselected_roll_still_targets_the_topmost_drawn_note() {
 /// **修复前必红**：`install_roll_click` 事后过滤 ⇒ 命中变 `None` ⇒ `selected-note-count` 停在 0
 /// （实测活体症状：橡皮擦点 6 个剪辑的音符中心，5 个"点不点得中 = ❌ 无"）。
 #[test]
-fn a_click_on_a_shadowed_note_in_the_selected_clip_selects_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_click_on_a_shadowed_note_in_the_selected_clip_selects_it() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -533,7 +536,8 @@ fn a_click_on_a_shadowed_note_in_the_selected_clip_selects_it() {
 
 /// 判据 ③：同一个点换橡皮擦 ⇒ 权威工程里**只**删正在编辑剪辑的那颗，影子一颗不少。
 #[test]
-fn the_eraser_click_deletes_the_shadowed_note_of_the_selected_clip_only() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_eraser_click_deletes_the_shadowed_note_of_the_selected_clip_only() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -574,7 +578,8 @@ fn the_eraser_click_deletes_the_shadowed_note_of_the_selected_clip_only() {
 /// **修复前必红**：`begin_note_drag` 连事后过滤都没有 ⇒ 抓的是影子那颗 ⇒ 靶子一位没动、
 /// 影子被移动（用户视角：拖 A 的结果是听不见的 B 变了，而画面上 A 纹丝不动）。
 #[test]
-fn a_note_drag_grabs_the_visible_note_not_the_shadowing_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_note_drag_grabs_the_visible_note_not_the_shadowing_one() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

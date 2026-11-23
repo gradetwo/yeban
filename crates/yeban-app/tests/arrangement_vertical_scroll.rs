@@ -222,7 +222,8 @@ impl Rig {
 
 /// ① + ②：向下滚轮 = 看下面的行；仍在树里的每一行恰好上移该距离。
 #[test]
-fn wheel_scroll_moves_rows_up_by_the_delta() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_wheel_scroll_moves_rows_up_by_the_delta() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -244,7 +245,8 @@ fn wheel_scroll_moves_rows_up_by_the_delta() {
 
 /// ③：滚到底 ⇒ 末行可达；继续滚 ⇒ 夹紧（快照不变）。
 #[test]
-fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -266,7 +268,8 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
 
 /// ④：滚动只动行区 —— 标尺与章节卡片的 y 逐位不变。
 #[test]
-fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_scrolling_does_not_move_the_ruler_or_the_section_cards() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -288,7 +291,8 @@ fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
 
 /// ⑤：内容不高出可视区（演示工程 6 轨）⇒ 滚轮一位不动。
 #[test]
-fn short_projects_do_not_scroll() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_short_projects_do_not_scroll() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

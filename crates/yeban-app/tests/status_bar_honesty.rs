@@ -205,7 +205,8 @@ fn code_only(line: &str) -> &str {
 /// 另加一条转发断言：`ui/app.slint` 必须把两格传给 `StatusBar`。少传一处，
 /// 状态栏就静默回落到默认值 —— 那正是本票修掉的那类"假话"。
 #[test]
-fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
     // 新 UI 重构: 旧 status bar 的静态文本断言不再成立; 核对契约面与宿主接线仍在。
     let app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -480,7 +481,8 @@ fn the_empty_selection_text_has_exactly_one_wording() {
 /// 正确的动作是**先**把读数的出处写清楚、再决定要不要放回界面（并重录基准），
 /// 而不是默默把它变回一个数字。
 #[test]
-fn no_dsp_load_reading_exists_in_the_app_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_no_dsp_load_reading_exists_in_the_app_source() {
     // 新 UI 重构: 旧 status bar 的静态文本断言不再成立; 核对契约面与宿主接线仍在。
     let app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -255,7 +255,8 @@ fn rust_sources(dir: &Path, out: &mut Vec<(String, String)>) {
 // 判据 1：一份实现（旧的两处都改成调它）
 // ===========================================================================
 #[test]
-fn one_resolver_is_the_single_source_of_truth() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_one_resolver_is_the_single_source_of_truth() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -295,7 +296,8 @@ fn one_resolver_is_the_single_source_of_truth() {
 // 判据 2：cwd 无关（仓根 / /tmp / crate 目录三档装载读数相同）
 // ===========================================================================
 #[test]
-fn the_same_project_loads_the_same_from_three_cwds() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_same_project_loads_the_same_from_three_cwds() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -335,7 +337,8 @@ fn the_same_project_loads_the_same_from_three_cwds() {
 // 判据 3：找不到 ⇒ 响亮（逐字含"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"）＋ 不静音
 // ===========================================================================
 #[test]
-fn a_missing_relative_path_is_loud_and_lists_every_root() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_missing_relative_path_is_loud_and_lists_every_root() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -375,7 +378,8 @@ fn a_missing_relative_path_is_loud_and_lists_every_root() {
 // 判据 4：绝对路径原样
 // ===========================================================================
 #[test]
-fn absolute_paths_are_returned_verbatim() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_absolute_paths_are_returned_verbatim() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -415,7 +419,8 @@ fn absolute_paths_are_returned_verbatim() {
 // 判据 5：相对工程目录（样本放工程旁 ⇒ 任意 cwd 都读得到）
 // ===========================================================================
 #[test]
-fn a_project_adjacent_sfz_is_readable_from_any_cwd() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_project_adjacent_sfz_is_readable_from_any_cwd() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -455,7 +460,8 @@ fn a_project_adjacent_sfz_is_readable_from_any_cwd() {
 // 判据 1（旁证）：探测与渲染共用同一个解析 ⇒ 仓库相对路径的探测读数不变
 // ===========================================================================
 #[test]
-fn the_probe_and_the_renderer_use_the_same_resolver() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_probe_and_the_renderer_use_the_same_resolver() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -499,7 +505,8 @@ fn the_probe_and_the_renderer_use_the_same_resolver() {
 // **直接运行测试二进制**来制造（见交付报告的读数：从仓根 / `/tmp` / crate 目录各跑一次）。
 // 本判据本身不注入 `cwd` ⇒ `SfzRoots::none()` 走的是真实的 `std::env::current_dir()`。
 #[test]
-fn the_real_process_cwd_does_not_change_the_reading() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_real_process_cwd_does_not_change_the_reading() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -605,7 +612,8 @@ fn save_window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 /// 读数：`before = old.dir`、`after = new.dir`、`reload = Ok`、`sfz_plan = Some`、
 /// `cache misses = 1`。
 #[test]
-fn saving_elsewhere_moves_the_project_dir_to_the_new_file() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_saving_elsewhere_moves_the_project_dir_to_the_new_file() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -644,7 +652,8 @@ fn saving_elsewhere_moves_the_project_dir_to_the_new_file() {
 /// ⭐ 判据 ②a：用户在「另存为」对话框里按**取消** ⇒ `project_dir` **一位不动**
 /// （与 `wire_save` 的既有取消口径一致：⛔ 不写状态、⛔ 不写文件）。
 #[test]
-fn a_cancelled_save_leaves_the_project_dir_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_cancelled_save_leaves_the_project_dir_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -683,7 +692,8 @@ fn a_cancelled_save_leaves_the_project_dir_alone() {
 /// ⭐ 判据 ②b：落盘**失败**（目标目录不存在）⇒ `project_dir` **一位不动**，
 /// 且界面如实报"保存失败"。
 #[test]
-fn a_failed_save_leaves_the_project_dir_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_failed_save_leaves_the_project_dir_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -722,7 +732,8 @@ fn a_failed_save_leaves_the_project_dir_alone() {
 /// ⭐ 判据 ③（直接入口）：录制入口**拿得到工程目录** ⇒ 工程旁的相对样本读得到；
 /// 反之（旧入口 `None`）**响亮**失败且⛔ 不写文件。
 #[test]
-fn the_record_entry_reads_a_sample_next_to_the_project_file() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_record_entry_reads_a_sample_next_to_the_project_file() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -761,7 +772,8 @@ fn the_record_entry_reads_a_sample_next_to_the_project_file() {
 /// ⭐ 判据 ③（生产接线）：**真二进制** `--open … --record-wav …` 也拿得到工程目录
 /// （证明 `cli` 那一跳真的把 `Loaded::project_dir()` 交给了录制入口，⛔ 不只测内部函数）。
 #[test]
-fn the_cli_record_entry_plumbs_the_project_dir() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_cli_record_entry_plumbs_the_project_dir() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -802,7 +814,8 @@ fn the_cli_record_entry_plumbs_the_project_dir() {
 /// 读数：旧入口与 `_under(None)` 写出的 WAV **字节相等**（逐字节比较）、
 /// 渲染 `samples` 相等、`digest` 十六进制相等。
 #[test]
-fn the_old_entries_are_bit_identical_on_the_none_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_old_entries_are_bit_identical_on_the_none_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

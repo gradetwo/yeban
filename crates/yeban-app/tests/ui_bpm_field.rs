@@ -45,7 +45,8 @@ fn displayed(bpm: f64) -> String {
 }
 
 #[test]
-fn the_bpm_field_commits_exactly_one_set_tempo_on_enter() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_bpm_field_commits_exactly_one_set_tempo_on_enter() {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
     let aether_app = std::fs::read_to_string(

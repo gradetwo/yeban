@@ -177,7 +177,8 @@ fn live_window(view: &ViewState, console_tab: i32) -> LivePort<MainWindow> {
 // 判据 ①：面板存在且可无障碍访问（源码派生 ＋ 注册表 ＋ 运行时树）
 // ===========================================================================
 #[test]
-fn the_asset_pool_panel_is_declared_and_addressable() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_asset_pool_panel_is_declared_and_addressable() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -201,7 +202,8 @@ fn the_asset_pool_panel_is_declared_and_addressable() {
 // 判据 ②：空态可判（0 素材 ⇒ 逐字文案 ＋ 条目数 0）
 // ===========================================================================
 #[test]
-fn an_empty_pool_shows_the_empty_state_and_zero_rows() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_empty_pool_shows_the_empty_state_and_zero_rows() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -225,7 +227,8 @@ fn an_empty_pool_shows_the_empty_state_and_zero_rows() {
 // 判据 ③：录音 clip 可见（plan_recording ＋ 一次 AddClip ⇒ 面板里出现那一行）
 // ===========================================================================
 #[test]
-fn a_recorded_clip_appears_in_the_panel_with_its_asset_prefix() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_recorded_clip_appears_in_the_panel_with_its_asset_prefix() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -249,7 +252,8 @@ fn a_recorded_clip_appears_in_the_panel_with_its_asset_prefix() {
 // 判据 ④：投影是派生不是硬编码（两个不同素材 ⇒ 2 行；改注入 1 条 ⇒ 1 行）
 // ===========================================================================
 #[test]
-fn the_row_count_follows_the_clip_pool_instead_of_a_hardcoded_number() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_row_count_follows_the_clip_pool_instead_of_a_hardcoded_number() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

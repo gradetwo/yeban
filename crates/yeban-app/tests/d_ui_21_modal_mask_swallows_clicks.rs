@@ -94,7 +94,9 @@ fn present(port: &mut Port, id: &str) -> bool {
 }
 
 #[test]
-fn an_open_modal_swallows_pointer_clicks_that_would_otherwise_reach_the_layer_below() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_open_modal_swallows_pointer_clicks_that_would_otherwise_reach_the_layer_below()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -139,7 +141,8 @@ fn first_touch_area_block(source: &str) -> String {
 }
 
 #[test]
-fn each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

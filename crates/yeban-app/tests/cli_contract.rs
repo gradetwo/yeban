@@ -182,7 +182,8 @@ fn write_real_container(dir: &Path, name: &str) -> PathBuf {
 
 /// 判据 B1: `--help` 与 `--version` 走短路路径、退出码 0、内容是真的。
 #[test]
-fn help_and_version_are_real_and_short_circuit() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_help_and_version_are_real_and_short_circuit() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -204,7 +205,8 @@ fn help_and_version_are_real_and_short_circuit() {
 
 /// 判据 B2: 无头握手行**恰好**出现一次，且工程来源被明写。
 #[test]
-fn headless_handshake_appears_exactly_once_and_names_the_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_headless_handshake_appears_exactly_once_and_names_the_source() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -229,7 +231,8 @@ fn headless_handshake_appears_exactly_once_and_names_the_source() {
 /// 这条判据的价值在于它真的能变红：哨兵失效 ⇒ 进程会去开窗口 —— 在无显示器环境
 /// 直接失败，在有显示器环境进阻塞事件循环（由 [`RUN_TIMEOUT`] 变成一次响亮失败）。
 #[test]
-fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -257,7 +260,8 @@ fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
 /// 所以"取样对象真的是空工程"必须在同一条进程命令上被钉住 —— 单元判据证明不了 argv 与
 /// 二进制一致。`tracks-all` **含**主总线，因此普通轨数 = `tracks-all - master-track`。
 #[test]
-fn empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -289,7 +293,8 @@ fn empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
 /// `non-black-pixels>0` + `distinct-colors>=2`（像素伪造不了）。任何一项退化成 0 / false，
 /// 这条就红 —— 那正是"没建树"与"未生效"两种失败的样子。
 #[test]
-fn headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -311,7 +316,8 @@ fn headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() 
 
 /// 判据 B3: `--open` 真容器 ⇒ 打印的读数与工程一致（轨道 / 音符 / 历史 / 资产）。
 #[test]
-fn open_reports_the_real_project_counts() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_open_reports_the_real_project_counts() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -333,7 +339,8 @@ fn open_reports_the_real_project_counts() {
 
 /// 判据 B4: 坏输入 ⇒ **非零退出码 + 精确原因**，不是 panic、不是空工程。
 #[test]
-fn broken_inputs_exit_non_zero_without_panicking() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_broken_inputs_exit_non_zero_without_panicking() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -356,7 +363,8 @@ fn broken_inputs_exit_non_zero_without_panicking() {
 /// 判据 B5: `--open` + `--save-as` ⇒ 落盘文件能被公开入口读回，且**归档等价**；
 /// 两次保存的字节完全相同（确定性）。
 #[test]
-fn save_as_round_trips_and_is_deterministic_from_the_real_binary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_save_as_round_trips_and_is_deterministic_from_the_real_binary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -378,7 +386,8 @@ fn save_as_round_trips_and_is_deterministic_from_the_real_binary() {
 
 /// 判据 B6: `--save-as` 不给 `--open` ⇒ 保存演示工程，并且**在输出里明说**这一点。
 #[test]
-fn save_as_without_open_says_it_saved_the_demo_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_save_as_without_open_says_it_saved_the_demo_project() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -400,7 +409,8 @@ fn save_as_without_open_says_it_saved_the_demo_project() {
 
 /// 判据 B7: 未知开关 / 缺取值 ⇒ 退出码 2 + **用法提示**（不许静默忽略）。
 #[test]
-fn unknown_switches_exit_two_with_usage_on_stderr() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_unknown_switches_exit_two_with_usage_on_stderr() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -433,7 +443,8 @@ fn unknown_switches_exit_two_with_usage_on_stderr() {
 /// `tests/in_process_mcp.rs`（真环回 socket 上的完整往返）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
-fn default_artifact_refuses_the_in_process_mcp_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_in_process_mcp_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -463,7 +474,8 @@ fn default_artifact_refuses_the_in_process_mcp_switch() {
 /// 建控件树 + 绑 socket（那是产品行为，不是用法错误），所以判据必须 cfged out。
 #[cfg(not(feature = "ui-mcp-http"))]
 #[test]
-fn default_artifact_refuses_the_ui_mcp_http_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_ui_mcp_http_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -490,7 +502,8 @@ fn default_artifact_refuses_the_ui_mcp_http_switch() {
 /// 并**点名**缺的是哪个 feature。
 #[cfg(not(feature = "experimental-logic-export"))]
 #[test]
-fn default_artifact_refuses_the_experimental_logic_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_experimental_logic_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -520,7 +533,8 @@ fn default_artifact_refuses_the_experimental_logic_switch() {
 /// `export_als_writes_a_gzip_document_and_prints_the_loss_summary`。
 #[cfg(not(feature = "experimental-als-export"))]
 #[test]
-fn default_artifact_refuses_the_experimental_als_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_experimental_als_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -552,7 +566,8 @@ fn default_artifact_refuses_the_experimental_als_switch() {
 /// `tests/song_overview_export.rs`（它拿批处理出口与工具出口逐字节对账）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
-fn default_artifact_refuses_the_song_overview_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_song_overview_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -582,7 +597,8 @@ fn default_artifact_refuses_the_song_overview_switch() {
 /// `tests/apply_ops.rs`（改名走 `--save-as` 回读即是新名）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
-fn default_artifact_refuses_the_apply_ops_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_apply_ops_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -612,7 +628,8 @@ fn default_artifact_refuses_the_apply_ops_switch() {
 /// `tests/export_stems.rs`（每条轨各得一个有效 32-bit Float WAV）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
-fn default_artifact_refuses_the_export_stems_switch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_default_artifact_refuses_the_export_stems_switch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -634,7 +651,8 @@ fn default_artifact_refuses_the_export_stems_switch() {
 
 /// 判据 B8: `--export-elements` 与 `--dump-elements` 同源（同一批行、同一个字节数）。
 #[test]
-fn export_elements_matches_dump_elements() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_elements_matches_dump_elements() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -657,7 +675,8 @@ fn export_elements_matches_dump_elements() {
 /// 判据 B9: 只读目录下 `--save-as` ⇒ 退出码 4，且**原文件一字未改**（原子替换的可观测后果）。
 #[cfg(unix)]
 #[test]
-fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -691,7 +710,8 @@ fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
 ///    `--open` 进来的那个容器 ⇒ "写没写"在字节上看得见，不是同一份内容的自证）；
 /// 3. 释放锁之后**同一条命令必须成功**，且排他持有者把自己的锁文件收走。
 #[test]
-fn save_as_is_refused_while_the_project_lock_is_held() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_save_as_is_refused_while_the_project_lock_is_held() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -714,7 +734,8 @@ fn save_as_is_refused_while_the_project_lock_is_held() {
 /// 判据 B10（**反转**）: 裸 `project.json` 必须被**明确拒绝** —— 容器是唯一工程格式
 /// （ADR-0001 D43）。旧判据在这里断言"能打开 + `format=project-json`"。
 #[test]
-fn open_rejects_a_bare_project_json_with_a_precise_reason() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_open_rejects_a_bare_project_json_with_a_precise_reason() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -736,7 +757,8 @@ fn open_rejects_a_bare_project_json_with_a_precise_reason() {
 
 /// 判据 B11: `--print-shortcuts` 是无窗口路径，且退出 0（CI 与人核对策略表的入口）。
 #[test]
-fn print_shortcuts_is_a_batch_command() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_print_shortcuts_is_a_batch_command() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -780,7 +802,8 @@ fn print_shortcuts_is_a_batch_command() {
 /// "有没有落地实现", 而不是"当前这个装配有没有接上它"。真实窗口上的消费 / 拒绝由
 /// `tests/live_ui_mcp.rs` 的判据 16 用真事件源直接见证。
 #[test]
-fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -807,7 +830,8 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
 /// `implemented` 改回 `false`）⇒ 这里立刻红。B11b 也覆盖这一条, 但它的失败信息是
 /// "三面之一分叉"; 本判据的失败信息直接点名"删除被回退了"。
 #[test]
-fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -838,7 +862,8 @@ fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
 /// 运行时语义（空选区 / 空工程时**不消费**）由 `tests/live_ui_mcp.rs` 的判据 Z1
 /// 用真事件源见证 —— 本判据只回答"这个动作有没有落点"。
 #[test]
-fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -869,7 +894,8 @@ fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
 /// 空选区**不消费**）由 `tests/live_ui_mcp.rs` 的端到端判据用真事件源见证 ——
 /// 本判据只回答"这个动作有没有落点"。
 #[test]
-fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -922,7 +948,8 @@ fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
 /// `the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change` 用真事件源见证
 /// （那里 `Shift+Enter` 仍然不消费 —— 那一台装配没有提案来源，本判据说的是"有没有落点"）。
 #[test]
-fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -946,7 +973,8 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
 /// 逐音符与工程一致，`MThd` 的 PPQ 字段是 960，且两次导出逐字节相同
 /// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。
 #[test]
-fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -977,7 +1005,8 @@ fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
 /// 会挂在 [`RUN_TIMEOUT`] 上并被 kill）。因此本判据钉的是**路由谓词**本身，
 /// 而不是导出实现（实现早有 `--headless` 下的正面判据）。
 #[test]
-fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_wav_runs_on_the_windowless_path_from_the_real_binary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1009,7 +1038,9 @@ fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
 /// ③ `--wav-*` 单独给（没有 `--export-wav`）⇒ 用法错误退出码 **2**，
 ///    ⛔ 不是"静默忽略"（本仓对修饰开关的一贯纪律）。
 #[test]
-fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1033,7 +1064,8 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
 /// 同一工程缺省导出与 `--render-threads 4` 导出的文件逐字节相同
 /// （固定顺序汇聚；非法值已由上一判据第 ④ 节覆盖）。
 #[test]
-fn export_wav_render_threads_change_only_time_not_bytes() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_wav_render_threads_change_only_time_not_bytes() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1061,7 +1093,8 @@ fn export_wav_render_threads_change_only_time_not_bytes() {
 /// - 重复给同一开关 = 用法错误；
 /// - 真二进制：演示工程 `--loudness-target -16` ⇒ 退出码 0 且 stdout 多一行 `loudness:`。
 #[test]
-fn export_wav_loudness_switches_are_guarded_and_reach_the_target() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_wav_loudness_switches_are_guarded_and_reach_the_target() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1084,7 +1117,8 @@ fn export_wav_loudness_switches_are_guarded_and_reach_the_target() {
 /// 判据 B13: `--export-midi` 的失败语义与既有 CLI 一致 —— 非容器输入 ⇒ 退出码 **3**
 /// 且一个字节都不写；目标不可写 ⇒ 退出码 **5**、精确原因、**不留下半个文件**。
 #[test]
-fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1111,7 +1145,8 @@ fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
 /// 这里证"**没被映射的东西真的被说出来了**" —— 只打印一个计数不算交付。
 #[cfg(feature = "experimental-als-export")]
 #[test]
-fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1144,7 +1179,8 @@ fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
 /// 拍号/速度/region 名/音符，因此这里也钉住"它确实带着供体"这一条。
 #[cfg(feature = "experimental-logic-export")]
 #[test]
-fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1177,7 +1213,8 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
 /// ⚠ 本条**不**调用 `open -a`：真开 Logic 是人的事（本文件只跑无窗口参数）。
 #[cfg(feature = "experimental-logic-export")]
 #[test]
-fn export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1208,7 +1245,8 @@ fn export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
 /// 四个片段是**跨模块契约**（`yeban_render::logic` 的 3 轨打开范围常量 ⇄ 本判据）。
 #[cfg(feature = "experimental-logic-export")]
 #[test]
-fn export_logic_loss_table_names_the_donor_timbres_and_the_device_chain_gap() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_export_logic_loss_table_names_the_donor_timbres_and_the_device_chain_gap() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -97,7 +97,8 @@ fn crate_source(name: &str) -> String {
 // 判据 ①：装配里存在保存腿（源码腿 —— 默认档就能跑）
 // ===========================================================================
 #[test]
-fn the_control_plane_assembly_registers_the_save_callback() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_control_plane_assembly_registers_the_save_callback() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -122,7 +123,8 @@ fn the_control_plane_assembly_registers_the_save_callback() {
 // ===========================================================================
 #[cfg(feature = "ui-mcp-http")]
 #[test]
-fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

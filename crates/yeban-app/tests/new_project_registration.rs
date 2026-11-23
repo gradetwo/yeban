@@ -198,7 +198,8 @@ fn check_new_project_registration(
 
 /// 真判据（LF 工作树 ＝ macOS / Linux 的读数）。
 #[test]
-fn the_new_project_button_is_registered_accessible_and_upward_only() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_new_project_button_is_registered_accessible_and_upward_only() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -224,7 +225,8 @@ fn the_new_project_button_is_registered_accessible_and_upward_only() {
 /// ⚠ 这条腿守的是「判据不依赖行尾」：若 [`lf`] 被删或漏接某一份源码，它立刻变红
 /// （macOS 上就能跑出 Windows 的字节形态）。
 #[test]
-fn the_criterion_holds_on_a_windows_crlf_checkout() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_criterion_holds_on_a_windows_crlf_checkout() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

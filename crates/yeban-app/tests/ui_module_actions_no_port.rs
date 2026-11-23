@@ -159,7 +159,9 @@ fn field_of(receipt: &str, key: &str) -> String {
 }
 
 #[test]
-fn without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_still_work() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_still_work()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -201,7 +203,8 @@ fn without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_stil
 /// `2"`（把闭合引号也带进值里）而不是"缺席"。修后必须是 `None`，而 `loss_detail`
 /// 仍是整串（引号内的 `=` 不切）。
 #[test]
-fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

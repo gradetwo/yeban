@@ -173,7 +173,8 @@ fn options_with_limiter(project: &YebanProjectV1, limiter: bool) -> WavExportOpt
 }
 
 #[test]
-fn the_gui_limiter_switch_reaches_the_master_bus_and_the_receipt_says_so() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_gui_limiter_switch_reaches_the_master_bus_and_the_receipt_says_so() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -215,7 +216,8 @@ fn the_gui_limiter_switch_reaches_the_master_bus_and_the_receipt_says_so() {
 /// 不需要 `slint::platform` 的位置上（`gui_export_clipping.rs` 的干净臂走的是
 /// 整条 GUI 路，红的时候分不清是宿主没发还是平台没装起来）。
 #[test]
-fn the_readouts_are_emitted_whether_the_limiter_is_on_or_off() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_readouts_are_emitted_whether_the_limiter_is_on_or_off() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

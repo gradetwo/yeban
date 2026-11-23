@@ -228,7 +228,8 @@ fn count(haystack: &str, needle: &str) -> usize {
 
 /// ①（对照臂）：焦点事件从未发过 ⇒ 保护门是假的 ⇒ 注入照常写。
 #[test]
-fn a_re_projection_writes_the_field_when_nothing_is_being_edited() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_re_projection_writes_the_field_when_nothing_is_being_edited() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -266,7 +267,8 @@ fn a_re_projection_writes_the_field_when_nothing_is_being_edited() {
 
 /// ②（本票的正面）：编辑中 ⇒ 草稿活着，而同一次注入的**别的**格子照常落地。
 #[test]
-fn the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -313,7 +315,8 @@ fn the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
 /// 鼠标那条腿（`mixer-mute-toggle(int)`）不受这张表管，且同样落到
 /// `commit_ops` → `refresh_undo_window(.., true)` ⇒ 它才是本缺陷在真窗口里的形状。
 #[test]
-fn a_document_edit_from_a_mouse_click_does_not_lose_the_draft() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_document_edit_from_a_mouse_click_does_not_lose_the_draft() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -351,7 +354,8 @@ fn a_document_edit_from_a_mouse_click_does_not_lose_the_draft() {
 
 /// ④（不失永久分叉）：焦点退出后，下一次注入把框里写回权威读数。
 #[test]
-fn leaving_the_field_restores_the_authority_reading() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_leaving_the_field_restores_the_authority_reading() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -389,7 +393,8 @@ fn leaving_the_field_restores_the_authority_reading() {
 
 /// ⑤（回车**解决**草稿）：被拒 ⇒ 写回权威；合法 ⇒ 归一化。两条都在焦点仍在框里时做。
 #[test]
-fn enter_resolves_the_draft_on_both_the_reject_and_the_accept_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_enter_resolves_the_draft_on_both_the_reject_and_the_accept_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -427,7 +432,8 @@ fn enter_resolves_the_draft_on_both_the_reject_and_the_accept_path() {
 
 /// ⑥（前提取证）：画布那三层**够不到**焦点 ⇒ 点剪辑不会让文本框失焦。
 #[test]
-fn the_canvas_layers_take_no_focus_so_a_click_cannot_leave_the_text_field() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_canvas_layers_take_no_focus_so_a_click_cannot_leave_the_text_field() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -465,7 +471,8 @@ fn the_canvas_layers_take_no_focus_so_a_click_cannot_leave_the_text_field() {
 
 /// ⑦（出处纪律）：写点唯一、门只有两个写者与一个读者、`.slint` 只有那一格声明。
 #[test]
-fn the_write_points_stay_singular() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_write_points_stay_singular() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

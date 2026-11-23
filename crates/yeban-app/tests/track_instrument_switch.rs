@@ -278,7 +278,8 @@ fn select_track(window: &MainWindow, track: EntityId) {
 // ① 列表内容：长度 / 名字 / 投影 / 控件树
 // ===========================================================================
 #[test]
-fn the_list_is_what_the_library_has_and_the_view_and_tree_follow_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_list_is_what_the_library_has_and_the_view_and_tree_follow_it() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -331,7 +332,8 @@ fn intersects(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 // ② + ③ + ④ 点击 / 换轨 / 撤销
 // ===========================================================================
 #[test]
-fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -363,7 +365,8 @@ fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
 // ⑤ 能出声的证据：CLI `--track-sampler` ＋ `--export-wav` 的样本来源读数
 // ===========================================================================
 #[test]
-fn the_cli_equivalent_installs_the_instrument_and_the_export_reads_real_samples() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_cli_equivalent_installs_the_instrument_and_the_export_reads_real_samples() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

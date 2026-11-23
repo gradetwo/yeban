@@ -188,7 +188,8 @@ fn code_only(source: &str) -> String {
 }
 
 #[test]
-fn a_metronome_press_writes_the_document_and_leaves_the_engine_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_metronome_press_writes_the_document_and_leaves_the_engine_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -217,7 +218,8 @@ fn a_metronome_press_writes_the_document_and_leaves_the_engine_alone() {
 }
 
 #[test]
-fn the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -251,7 +253,8 @@ fn the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
 /// 按**按钮**那一路的运行期版本在 `tests/d_ui_30_serve_transport_is_wired.rs` 的 ⑤
 /// —— 自 `D-UI-30` 起本装配自己接了 `host::wire_transport`，那颗按钮有注册者了。
 #[test]
-fn the_button_and_the_key_share_one_landing_point_in_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_button_and_the_key_share_one_landing_point_in_source() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -280,7 +283,8 @@ fn the_button_and_the_key_share_one_landing_point_in_source() {
 }
 
 #[test]
-fn a_metronome_press_without_a_session_in_the_live_assembly_is_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_metronome_press_without_a_session_in_the_live_assembly_is_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -311,7 +315,8 @@ fn a_metronome_press_without_a_session_in_the_live_assembly_is_not_consumed() {
 /// ⑩ 出处纪律（⛔ 不开窗口）：文档提交只有一个落点、镜面校正只挂在发布那两跳、
 /// 换代那条路只剩「无会话」那一支。
 #[test]
-fn the_document_is_the_only_metronome_landing_point_with_a_session() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_document_is_the_only_metronome_landing_point_with_a_session() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

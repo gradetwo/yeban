@@ -701,7 +701,8 @@ fn write_sites(body: &str) -> usize {
 
 /// **断言 ①**：视口裁剪把可见音符数钉在 240 上下。
 #[test]
-fn viewport_clipping_pins_the_number_of_visible_notes() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_viewport_clipping_pins_the_number_of_visible_notes() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -742,7 +743,8 @@ fn viewport_clipping_pins_the_number_of_visible_notes() {
 /// 数 per-note 循环：谁给每个音符再加一个图元（第三条 `for … in root.note-ulids`），这条红。
 /// 数固定循环：`5` / `16` / `16` / `16` 一变，`FIXED_ROLL_PRIMITIVES = 64` 的依据就变了。
 #[test]
-fn roll_primitive_formula_has_exactly_one_loop_per_note_family() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_roll_primitive_formula_has_exactly_one_loop_per_note_family() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -780,7 +782,8 @@ fn roll_primitive_formula_has_exactly_one_loop_per_note_family() {
 
 /// **断言 ②**：运行时控件树里真的有 2N 个卷帘图元（不是"源码里写着 2N"）。
 #[test]
-fn roll_primitives_at_runtime_are_pinned_by_the_viewport() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_roll_primitives_at_runtime_are_pinned_by_the_viewport() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -818,7 +821,8 @@ fn roll_primitives_at_runtime_are_pinned_by_the_viewport() {
 
 /// **断言 ③**：每帧注入的"重建"量不得增长（源码写入点 + 运行期模型实例）。
 #[test]
-fn per_frame_injection_does_not_grow() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_per_frame_injection_does_not_grow() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -49,7 +49,8 @@ fn code_lines(source: &str) -> String {
 /// （`.slint` 的 `accessible-id` 没登记）—— 但那条契约判红的是"不一致"，本判据钉的是
 /// "**两边都没有**"，两者不重复。
 #[test]
-fn ai_suggestion_overlay_is_not_drawn_anymore() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_ai_suggestion_overlay_is_not_drawn_anymore() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -79,7 +80,8 @@ fn ai_suggestion_overlay_is_not_drawn_anymore() {
 /// 真落地时的顺序（`.slint` 注释里也写着）：先有槽位来源（投影 → 注入平行数组），
 /// 再把底色 / 文字 / 选中**分别**绑到真实读数上；在那之前三处一律不编。
 #[test]
-fn session_slots_do_not_fabricate_occupancy_or_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_session_slots_do_not_fabricate_occupancy_or_selection() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

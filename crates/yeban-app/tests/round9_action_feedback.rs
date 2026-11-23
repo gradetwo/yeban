@@ -127,7 +127,8 @@ const SLINT_FILES: &[(&str, &str)] = &[
 /// ① 曲风预设键必须显式命名 `TouchArea`，且整条反馈表达式**逐字**存在 ⇒
 /// false 分支逐字回落到改动前的 `bg-panel` / `line`（默认帧零像素位移）。
 #[test]
-fn profile_key_is_named_and_shows_hover_and_pressed_feedback() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_profile_key_is_named_and_shows_hover_and_pressed_feedback() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -151,7 +152,8 @@ fn profile_key_is_named_and_shows_hover_and_pressed_feedback() {
 /// `target-cycle` 那块 `TouchArea` 内；光标不进渲染帧 ⇒ 零像素位移，
 /// 且仍是「不进无障碍树」的纯指针控件（⛔ 不新增 `accessible-id`）。
 #[test]
-fn section_label_click_target_is_discoverable_without_new_pixels() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_section_label_click_target_is_discoverable_without_new_pixels() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -173,7 +175,8 @@ fn section_label_click_target_is_discoverable_without_new_pixels() {
 
 /// ③ 「返回编曲」不再是全仓唯一只有 `pressed` 的半套真按钮。
 #[test]
-fn back_to_arrangement_button_is_no_longer_half_wired() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_back_to_arrangement_button_is_no_longer_half_wired() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -197,7 +200,8 @@ fn back_to_arrangement_button_is_no_longer_half_wired() {
 /// 并复核第七/八轮扩钉值与本轮一致。
 /// 删任一反馈 ⇒ 少一次，红；新增反馈不登记 ⇒ 多一次，也红。
 #[test]
-fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_hover_inventory_and_round7_round8_pins_stay_consistent() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -220,7 +224,8 @@ fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
 /// ⑤ 零新增可寻址节点 / 无障碍读数：被改的两个文件逐字对账。
 /// `TouchArea` 命名与 `mouse-cursor` 都**不**进运行时控件树。
 #[test]
-fn no_new_addressable_nodes_or_second_readouts() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_no_new_addressable_nodes_or_second_readouts() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -244,7 +249,8 @@ fn no_new_addressable_nodes_or_second_readouts() {
 /// 全都维持原状。改这些不是「顺手」，而是要连带改本判据、`live_ui_mcp.rs`、
 /// `round7_interaction_feedback.rs` 与 `song_overview.rs` 的叙述。
 #[test]
-fn the_deliberate_boundaries_are_still_intact() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_deliberate_boundaries_are_still_intact() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

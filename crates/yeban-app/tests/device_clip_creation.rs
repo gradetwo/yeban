@@ -147,7 +147,8 @@ fn contract_spec(name: &str) -> (f32, f32, f32) {
 // 判据 ①：装 EQ = Δ1 ＋ 读回（设备 +1 / kind / 非空 params / eq_low_gain）
 // ===========================================================================
 #[test]
-fn inserting_an_eq_commits_once_and_the_chain_carries_eq_low_gain() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_inserting_an_eq_commits_once_and_the_chain_carries_eq_low_gain() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -187,7 +188,8 @@ fn inserting_an_eq_commits_once_and_the_chain_carries_eq_low_gain() {
 // 判据 ②：装完 `#157` 的滑块可用（拖动 ⇒ 读回值变）
 // ===========================================================================
 #[test]
-fn the_eq_slider_is_available_and_editable_after_installing_the_eq() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_eq_slider_is_available_and_editable_after_installing_the_eq() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -227,7 +229,8 @@ fn the_eq_slider_is_available_and_editable_after_installing_the_eq() {
 // 判据 ③：装混响 = Δ1 ＋ 读回 `reverb_*`
 // ===========================================================================
 #[test]
-fn inserting_a_reverb_commits_once_and_installs_the_reverb_params() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_inserting_a_reverb_commits_once_and_installs_the_reverb_params() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -267,7 +270,8 @@ fn inserting_a_reverb_commits_once_and_installs_the_reverb_params() {
 // 判据 ④：删设备 = Δ1 ＋ 读回（设备数 −1、身份消失）
 // ===========================================================================
 #[test]
-fn removing_a_device_commits_once_and_shrinks_the_chain() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_removing_a_device_commits_once_and_shrinks_the_chain() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -307,7 +311,8 @@ fn removing_a_device_commits_once_and_shrinks_the_chain() {
 // 判据 ⑤：建空的 MIDI 片段 = Δ1 ＋ 读回（池 +1 / 轨 clips +1 / 0 / 15360 / Ok）
 // ===========================================================================
 #[test]
-fn creating_an_empty_clip_commits_once_and_places_four_bars_at_zero() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_creating_an_empty_clip_commits_once_and_places_four_bars_at_zero() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -347,7 +352,8 @@ fn creating_an_empty_clip_commits_once_and_places_four_bars_at_zero() {
 // 判据 ⑥：空态 / 禁用（无展示轨 ⇒ 禁用 ＋ 逐字原因 ＋ 直接调用 Δ0）
 // ===========================================================================
 #[test]
-fn the_action_buttons_are_disabled_with_a_verbatim_reason_without_a_track() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_action_buttons_are_disabled_with_a_verbatim_reason_without_a_track() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -387,7 +393,8 @@ fn the_action_buttons_are_disabled_with_a_verbatim_reason_without_a_track() {
 // 判据 ⑦：完整一首的头四步（新建工程 → 加轨 → 装设备 → 建 clip）
 // ===========================================================================
 #[test]
-fn the_empty_project_can_grow_a_track_a_device_and_a_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_empty_project_can_grow_a_track_a_device_and_a_clip() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -427,7 +434,8 @@ fn the_empty_project_can_grow_a_track_a_device_and_a_clip() {
 // 纯函数腿：`builtin_effect_device` 的缺省值来自契约（不依赖窗口）
 // ===========================================================================
 #[test]
-fn the_builtin_devices_take_every_default_from_the_shared_contract() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_builtin_devices_take_every_default_from_the_shared_contract() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

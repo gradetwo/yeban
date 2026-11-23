@@ -88,7 +88,8 @@ const TRACK_AND_MASTER_HIT_RECTS: [HitRect<'_>; 4] = [
 
 /// ① 四块命中面各自绑对自己的回调，几何一位没动。
 #[test]
-fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_each_mixer_hit_rect_binds_its_own_double_click_reset() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -110,7 +111,8 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
 
 /// ② 四个回调从组件一路转发到 `MainWindow`，每一段**恰好**一次。
 #[test]
-fn the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -132,7 +134,8 @@ fn the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
 
 /// ③ 宿主四条臂：先清手势、后提交，而且写的是自己那一格。
 #[test]
-fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -154,7 +157,8 @@ fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
 
 /// ④ 中性值只有一处定义：落点唯一、`0.0` 只出现一次。
 #[test]
-fn the_neutral_value_is_defined_in_exactly_one_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_neutral_value_is_defined_in_exactly_one_place() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

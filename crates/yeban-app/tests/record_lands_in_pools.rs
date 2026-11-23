@@ -187,7 +187,8 @@ fn record_once(
 
 /// ⭐⭐ **判据 ① ② ③**：停录 ⇒ `clip_pool` +1 ＋ 资产进池 ⇒ 保存 ⇒ 重新打开**都还在**。
 #[test]
-fn a_finished_recording_lands_in_the_clip_pool_and_the_container_asset_pool() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_finished_recording_lands_in_the_clip_pool_and_the_container_asset_pool() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -230,7 +231,8 @@ fn a_finished_recording_lands_in_the_clip_pool_and_the_container_asset_pool() {
 /// 开始（= `--open` 读回归档之后 `UndoPort::replace_assets` 的那条腿，
 /// `main.rs` 的装配点）。
 #[test]
-fn an_opened_project_keeps_its_assets_when_it_is_saved_again() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_opened_project_keeps_its_assets_when_it_is_saved_again() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -269,7 +271,8 @@ fn an_opened_project_keeps_its_assets_when_it_is_saved_again() {
 /// ⭐⭐ **判据 ④**：0 帧录音（`pushed=0`）⇒ ⛔ **不提交** `AddClip`、⛔ 不进资产池，
 /// 而 `#130` 的**响亮**错误仍在（停录成功 ≠ 录到了东西）。
 #[test]
-fn a_zero_frame_recording_never_reaches_the_clip_pool_or_the_asset_pool() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_zero_frame_recording_never_reaches_the_clip_pool_or_the_asset_pool() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -310,7 +313,8 @@ fn a_zero_frame_recording_never_reaches_the_clip_pool_or_the_asset_pool() {
 /// 它与上面两条判据正交：不需要窗口、不需要设备、不需要会话 ⇒ 无桌面会话也能判
 /// "字节 → 资产 → clip"这一跳。
 #[test]
-fn the_pure_planner_reads_the_wav_bytes_without_any_session() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_pure_planner_reads_the_wav_bytes_without_any_session() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -349,7 +353,8 @@ fn the_pure_planner_reads_the_wav_bytes_without_any_session() {
 /// 引用 `SaveRequest` 的资产池构造器：证明保存请求**能**带池（⛔ 不是只有结构体字面量）。
 /// 这条在编译期就是证据；运行时只断言字段真的落到了归档上。
 #[test]
-fn a_save_request_can_carry_the_session_asset_pool() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_save_request_can_carry_the_session_asset_pool() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

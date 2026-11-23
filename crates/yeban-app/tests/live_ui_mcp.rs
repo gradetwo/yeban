@@ -83,7 +83,8 @@ fn write_artifact_bytes(name: &str, bytes: &[u8]) -> String {
 
 /// 判据 1（**本工作线的核心**）：真实窗口上的四步端到端读数，且数据来自工程。
 #[test]
-fn live_control_plane_reads_the_project_backed_window_end_to_end() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_live_control_plane_reads_the_project_backed_window_end_to_end() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -121,7 +122,8 @@ fn live_control_plane_reads_the_project_backed_window_end_to_end() {
 
 /// 判据 2：运行时树与**投影注册表**的双向覆盖（`[UI-TEST-001]` / `[ARCH-UI-005]`）。
 #[test]
-fn live_control_plane_coverage_matches_the_projected_registry() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_live_control_plane_coverage_matches_the_projected_registry() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -159,7 +161,8 @@ fn live_control_plane_coverage_matches_the_projected_registry() {
 
 /// 判据 3：生产模式下 `ui:inject` 在**真实执行面**上也被硬禁（403），且只读能力不受影响。
 #[test]
-fn production_plane_hard_denies_injection_on_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_plane_hard_denies_injection_on_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -197,7 +200,8 @@ fn production_plane_hard_denies_injection_on_the_live_window() {
 
 /// 判据 4：测试模式 + `Interactive` ⇒ 事件注入真的落进活窗口（§12.4）。
 #[test]
-fn interactive_test_mode_plane_injects_into_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_interactive_test_mode_plane_injects_into_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -500,7 +504,8 @@ fn scratch_dir(tag: &str) -> PathBuf {
 
 /// 判据 5（**混音台**）：通道条数 == 工程轨道数；**同一个活窗口**换工程 ⇒ 名字/数值/像素全变。
 #[test]
-fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -561,7 +566,8 @@ fn mixer_channel_strips_follow_the_projected_project_on_the_same_window() {
 /// | 把提交从 `release` 挪到 `drag`（"拖动不原子"） | `src/host.rs` 的 `on_mixer_fader_drag` | ① 段：`拖动之后 undoable == 0` 与 `工程字段仍是起点值` 两条同时红 |
 /// | 删掉 `wire_mixer_edit(&window, undo)` | `src/live_surface.rs` | 四段一起红（没有任何 `.slint` 回调被接到端口上） |
 #[test]
-fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -633,7 +639,8 @@ fn the_mixer_strip_writes_volume_pan_mute_and_solo_back_into_the_project() {
 /// | 把主控的提交从 `release` 挪到 `drag`（"主控拖动不原子"） | `src/host.rs` 的 `on_mixer_master_fader_drag` | ① 步：`undoable` 不再是 0 ⇒ 红 |
 /// | 让主控 `Escape` 走提交 | `src/host.rs` 的 `cancel_mixer_gesture` | ④ 步：`undoable` 涨到 1、工程字段被改 ⇒ 红 |
 #[test]
-fn the_master_strip_writes_volume_and_pan_back_into_the_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_strip_writes_volume_and_pan_back_into_the_project() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -696,7 +703,8 @@ fn the_master_strip_writes_volume_and_pan_back_into_the_project() {
 /// | 摘掉 `cancel_mixer_gesture` 里的 `preview_target_volume` 写回 | `src/host.rs` | ② 步：文本仍是 `-33.2` ⇒ 红 |
 /// | 让取消走提交（`cancel_mixer_gesture` 里 `commit_ops`） | `src/host.rs` | ② 步：`undoable` 涨到 1、工程字段被改 ⇒ 红 |
 #[test]
-fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -740,7 +748,8 @@ fn escape_cancels_the_mixer_fader_and_pan_drag_without_committing() {
 /// `LiveUi::capture` 是 `ui/screenshot` 内部用的**同一个** `capture_tier1`，因此这里
 /// 不需要第二套像素路径，也**不碰 golden**（比的是同一次运行的两帧）。
 #[test]
-fn a_committed_mixer_fader_gesture_changes_the_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_committed_mixer_fader_gesture_changes_the_frame() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -785,7 +794,8 @@ fn a_committed_mixer_fader_gesture_changes_the_frame() {
 /// 比的是**同一次运行**的两帧，**不碰 golden**，也不用尺寸当证据
 /// （本仓 PNG 是存储式 deflate，1920×1080 恒为 6,222,418 字节）。
 #[test]
-fn a_committed_master_fader_gesture_changes_the_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_committed_master_fader_gesture_changes_the_frame() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -843,7 +853,8 @@ fn a_committed_master_fader_gesture_changes_the_frame() {
 /// | 心跳里跳过 `publish_project`（"编辑不发布"） | `src/main.rs` / `engine_tick` | 第 3 行的读数仍是 `-3.2` ⇒ 红 |
 /// | 心跳里跳过 `prune`（"发布了不回收"） | `EngineHost::heartbeat` | 第 2 跳 `released == 0` / `pending_len == 1` ⇒ 红 |
 #[test]
-fn a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -924,7 +935,8 @@ fn master_readings(project: &YebanProjectV1) -> (f32, f32) {
 /// 判据同时钉住两边：文本**逐字**相等（`"0.0"` / `"-6.0"` / `"-120.0"`），以及
 /// 未取整的浮点值与解析式相差 < 1e-3 dB。只断言其中一个都会漏掉一类错。
 #[test]
-fn mixer_meter_labels_match_the_injected_frames() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_meter_labels_match_the_injected_frames() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -990,7 +1002,8 @@ fn mixer_meter_labels_match_the_injected_frames() {
 /// 4. **反证**：把长度对齐回去，面板里那帧必须重新进界面（⇒ 上面那条读数不是
 ///    "这条腿永远不注入"）。
 #[test]
-fn the_live_surface_meter_leg_reports_a_length_mismatch_and_skips_the_injection() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_live_surface_meter_leg_reports_a_length_mismatch_and_skips_the_injection() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1031,7 +1044,8 @@ fn the_live_surface_meter_leg_reports_a_length_mismatch_and_skips_the_injection(
 /// 这里故意绕过引擎的生产侧钳位（直接构造 `NaN` 帧），因为消费侧必须自己也是安全的：
 /// 引擎的防线挡不住"测试注入 / 上游回归"这两类输入。
 #[test]
-fn hostile_levels_never_render_as_nan_in_the_control_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_hostile_levels_never_render_as_nan_in_the_control_tree() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1069,7 +1083,8 @@ fn hostile_levels_never_render_as_nan_in_the_control_tree() {
 
 /// 判据 8（**管理动作 1/3**）：`ui/switch_main_view` 真的切了主视图，树跟着换。
 #[test]
-fn admin_switch_main_view_really_switches_the_live_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_admin_switch_main_view_really_switches_the_live_view() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1107,7 +1122,8 @@ fn admin_switch_main_view_really_switches_the_live_view() {
 
 /// 判据 9（**管理动作 2/3**）：`ui/force_save` 真的写了盘，写出来的能被容器读回。
 #[test]
-fn admin_force_save_really_writes_a_readable_container() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_admin_force_save_really_writes_a_readable_container() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1161,7 +1177,8 @@ fn admin_force_save_really_writes_a_readable_container() {
 /// `filled`（3 条非主总线轨）与 `demo`（6 条）互不相同 ⇒ "轨道数真的变了"是一个有分辨力的
 /// 读数；两者都带真实摆放，因此换工程后像素**必须**变。
 #[test]
-fn admin_open_project_swaps_the_whole_projection_through_the_control_plane() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_admin_open_project_swaps_the_whole_projection_through_the_control_plane() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1208,7 +1225,8 @@ fn admin_open_project_swaps_the_whole_projection_through_the_control_plane() {
 /// 默认值取自既有工具 `yeban_close_project` 的 `saveFirst`（`arg_bool(call, "saveFirst", true)`）
 /// —— 不是本切片发明的口径。
 #[test]
-fn open_project_refuses_to_discard_unsaved_work_when_there_is_no_save_target() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_open_project_refuses_to_discard_unsaved_work_when_there_is_no_save_target() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1260,7 +1278,8 @@ fn open_project_refuses_to_discard_unsaved_work_when_there_is_no_save_target() {
 /// 这一跳会**直接 panic**（不是静默串轨）。本判据另外把两个长度**读出来**逐个断言，
 /// 因为"没 panic"与"长度真的相等"不是同一句话。
 #[test]
-fn open_project_keeps_the_meter_arrays_aligned_with_the_track_rows() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_open_project_keeps_the_meter_arrays_aligned_with_the_track_rows() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1319,7 +1338,8 @@ fn open_project_keeps_the_meter_arrays_aligned_with_the_track_rows() {
 /// | 4 | 用**后续读者**读同一个文件 | 新泳道**在**文件里 ⇒ 写的是权威那一版，不是陈旧缓存 |
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_gui_force_save_while_mounted_writes_through_the_authority() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_gui_force_save_while_mounted_writes_through_the_authority() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1360,7 +1380,8 @@ fn a_gui_force_save_while_mounted_writes_through_the_authority() {
 /// 副作用链（每一步都可观测）：注入 0.0 dBFS 的电平 ⇒ `ui/tree` 读得到 ⇒ 重建引擎 ⇒
 /// **新的**电平队列被采纳、旧读数作废 ⇒ `ui/tree` 读回下限。
 #[test]
-fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1398,7 +1419,8 @@ fn admin_reload_engine_rebuilds_and_resets_the_meter_tap() {
 
 /// 判据 11（**管理动作的失败路径**）：引擎重建失败必须**如实报错**，不许假成功。
 #[test]
-fn admin_reload_engine_reports_a_real_failure_honestly() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_admin_reload_engine_reports_a_real_failure_honestly() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1436,7 +1458,8 @@ fn admin_reload_engine_reports_a_real_failure_honestly() {
 
 /// 判据 12（**生产模式**）：三个管理动作在**生产模式**下按 scope 被拒，且没有副作用。
 #[test]
-fn production_mode_rejects_the_three_admin_actions_by_scope() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_mode_rejects_the_three_admin_actions_by_scope() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1492,7 +1515,8 @@ fn production_mode_rejects_the_three_admin_actions_by_scope() {
 /// - `MainWindow.arrangement-view` 的回读（经 `ui/switch_main_view` 的回执）；
 /// - 引擎代数（`ui/reload_engine` 的回执 `generation` 必须是**第一次**真调用推进的 1，而不是 2）。
 #[test]
-fn dry_run_leaves_the_live_window_and_the_disk_untouched() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dry_run_leaves_the_live_window_and_the_disk_untouched() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1533,7 +1557,8 @@ fn dry_run_leaves_the_live_window_and_the_disk_untouched() {
 ///
 /// 两个方向都断言：非合成 → 合成 → 非合成（含"焦点离开文本域自动结束合成"的既有语义）。
 #[test]
-fn ime_composition_is_observable_on_the_live_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_ime_composition_is_observable_on_the_live_window() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1590,7 +1615,8 @@ fn ime_composition_is_observable_on_the_live_window() {
 /// 因此判据只能驱动到 `.slint` 回调这一格。原因与取舍写在
 /// `docs/ledger/app-projection-notes.md` 的 needs 里，本判据的 `report_line` 也会打印它。
 #[test]
-fn ime_composition_flows_from_the_slint_event_source_into_the_control_plane() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_ime_composition_flows_from_the_slint_event_source_into_the_control_plane() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1632,7 +1658,8 @@ fn ime_composition_flows_from_the_slint_event_source_into_the_control_plane() {
 /// `-32005`（"这条能力在这个装配上没接线"）；`dryRun` 必须报**同一件事**，
 /// 而不是给一份看起来成功的预览（领域侧 dryRun 的口径就是"只做参数与领域合法性校验"）。
 #[test]
-fn dry_run_reports_the_same_failure_as_the_real_save() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dry_run_reports_the_same_failure_as_the_real_save() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1698,7 +1725,8 @@ fn dry_run_reports_the_same_failure_as_the_real_save() {
 /// 3. `invoke_key_action` 直接驱动 `.slint` 回调那一格：已绑定的键被消费、未绑定的键
 ///    与"这个装配没有撤销会话"的 `Cmd+Z` 如实 `reject`（不假装处理了）。
 #[test]
-fn a_logical_key_shortcut_from_the_event_source_reaches_the_host_action() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_logical_key_shortcut_from_the_event_source_reaches_the_host_action() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1811,7 +1839,8 @@ fn mcp_call(address: std::net::SocketAddr, bearer: &str, body: &str) -> serde_js
 ///   被改轨道的投影带栈，第 5b 步变红。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1858,7 +1887,8 @@ fn an_mcp_mutation_reaches_the_live_ui_projection_through_the_single_authority()
 /// 会把后者当成"恒真的断言"而拒绝（`-D warnings`）。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn the_lane_diff_tolerance_stays_bounded() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_lane_diff_tolerance_stays_bounded() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1938,7 +1968,8 @@ fn project_note_ids(project: &YebanProjectV1) -> Vec<String> {
 /// ⇒ 第 3 步的修订号停在 `r+1`（GUI 写的是**另一个**会话），第 4 步 `Unchanged`、泳道仍在树里。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_gui_action_and_a_session_action_share_one_projection_through_the_authority() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_gui_action_and_a_session_action_share_one_projection_through_the_authority() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1993,7 +2024,8 @@ fn a_gui_action_and_a_session_action_share_one_projection_through_the_authority(
 /// ⇒ 第 3 步权威工程里音符数不变 ⇒ 本判据立刻红。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2165,7 +2197,8 @@ fn assemble_track_height_drag() -> (
 /// 未给数字 ⇒ 本仓登记的工程选择；理由见常量文档）。这里取的 120/150% 落在区间内，
 /// 因此断言的是"公式"，不是夹紧。
 #[test]
-fn track_height_view_state_reaches_the_injected_row_geometry() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_track_height_view_state_reaches_the_injected_row_geometry() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2218,7 +2251,8 @@ fn track_height_view_state_reaches_the_injected_row_geometry() {
 /// | 摘掉 `host::wire_track_height_drag` 里的 `set_track_height_override` | `src/host.rs` | 同上 |
 /// | 摘掉 `end_track_height_drag` 里的 `set_track_height_drag_active(false)` | `src/host.rs` | 收尾断言红（粘住的拖拽态） |
 #[test]
-fn the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2265,7 +2299,8 @@ fn the_track_header_drag_gesture_changes_the_row_geometry_and_ends_cleanly() {
 /// 把 `apply_action` 里的 `Action::Cancel => cancel_track_height_drag(ui, undo)` 摘掉：
 /// `Escape` 回到"未实现 ⇒ 放行"的老行为，行高**留在 116px** ⇒ 本判据红。
 #[test]
-fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2313,7 +2348,8 @@ fn escape_cancels_the_track_height_drag_and_restores_the_starting_height() {
 /// | ③ | 下标越界的 `grab` | 索引越界时猜第一条轨道（高度被改到别的轨上） |
 /// | ④ | 手势进行中、**另一个下标**发来的 `move` | 多指 / 事件串扰把高度改到别的轨上 |
 #[test]
-fn a_stray_drag_event_without_a_grab_never_touches_the_row_geometry() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stray_drag_event_without_a_grab_never_touches_the_row_geometry() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2367,7 +2403,8 @@ fn a_stray_drag_event_without_a_grab_never_touches_the_row_geometry() {
 /// - **非法参数用既有错误码**（D25）：负数是 `-32602 INVALID_PARAMS`、不是轨道头是 `-32006`；
 /// - 权限层：`ui/methods` 里它的 `requiredScope` 是 `ui:inject`（`Interactive` 层）。
 #[test]
-fn the_set_track_height_method_reaches_the_injected_row_geometry() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_set_track_height_method_reaches_the_injected_row_geometry() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2427,7 +2464,8 @@ fn the_set_track_height_method_reaches_the_injected_row_geometry() {
 /// 从 `apply_row_geometry` 里删掉 `set_clip_ys` / `set_clip_heights` ⇒ 窗口上的
 /// `clip-ys` 停在旧值、投影给了新值 ⇒ 本判据红。
 #[test]
-fn the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2471,7 +2509,8 @@ fn the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
 /// （`track-ys` / `track-heights` / `clip-ys` / `clip-heights` / 自动化带与折线）
 /// 必须与加手势之前**逐位相同**。
 #[test]
-fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2520,7 +2559,8 @@ fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
 ///    产品必须用 `RunMode::Production`（`ui:inject` 族硬禁）。这条判据把那个差别钉住：
 ///    在**同一条**真实执行面上，注入被硬拒而管理族照常授权。
 #[test]
-fn production_plane_denies_injection_and_really_switches_the_live_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_production_plane_denies_injection_and_really_switches_the_live_view() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2565,7 +2605,8 @@ fn production_plane_denies_injection_and_really_switches_the_live_view() {
 /// 端点路径那一条还有第二个理由：`ui/*` 与领域 MCP 接**不同**的路径，
 /// 接错端口时人应当能一眼看出来（`/ui-mcp` vs `/mcp`）。
 #[test]
-fn the_ui_mcp_http_switch_literals_match_the_ui_mcp_crate() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ui_mcp_http_switch_literals_match_the_ui_mcp_crate() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2654,7 +2695,9 @@ fn model_note_count(project: &YebanProjectV1) -> usize {
 /// 把 `apply_action` 的 `DeleteSelection` 分支摘掉（或让按键被吞却不提交）⇒ ② 步读数不变。
 /// 把整批拆成 k 次 `commit_ops`（非原子）⇒ ③ 步只回来 1 个。
 #[test]
-fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restores_all() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_backspace_deletes_the_selection_through_the_event_source_and_one_undo_restores_all()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2730,7 +2773,9 @@ fn backspace_deletes_the_selection_through_the_event_source_and_one_undo_restore
 /// | 让副本复用原文的 `id` | `src/host.rs` 的 `duplicate_ops_for` | ② 步为 0：`AddNote::precondition` 以 `DuplicateEntityId` 拒绝整批 |
 /// | 把整批拆成 k 次 `commit_ops` | `src/host.rs` 的 `Duplicate` 分支 | ③ 步只回来 1 条, 且 ② 步 `commit_count` 变成 `+k` |
 #[test]
-fn cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_all() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_all()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2773,7 +2818,8 @@ fn cmd_d_duplicates_the_selection_one_grid_to_the_right_and_one_undo_restores_al
 /// 因此"删除进的是同一个会话"由 `apply_revision` 的前进来见证, 而不是由本地端口自证。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2965,7 +3011,8 @@ fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
 /// 那一条是渲染帧 sha256 的 A/B（`live-port-filled-project-unmasked-1920x1080.png`，
 /// 6,222,418 字节），见账本当轮条目的"像素影响"。
 #[test]
-fn the_view_state_callbacks_really_change_the_view_state() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_view_state_callbacks_really_change_the_view_state() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3019,7 +3066,8 @@ fn the_view_state_callbacks_really_change_the_view_state() {
 /// 这里用 `LiveUi::pump_meters()`（既有的"电平轮询腿"：抽干 → 注入 → **重抓树**），
 /// 因为它是**唯一**不需要 `UndoPort`、也不改工程的重抓触发点。
 #[test]
-fn the_view_state_properties_drive_the_runtime_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_view_state_properties_drive_the_runtime_tree() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3085,7 +3133,8 @@ fn the_view_state_properties_drive_the_runtime_tree() {
 /// "确实没有提案"在界面上就是同一件事 —— 那一句 `src/proposals.rs` 的单元判据
 /// `empty_reason_distinguishes_no_source_from_no_proposal` 钉住，这里钉的是它在真树里的那一半。
 #[test]
-fn the_musical_pr_drawer_shows_an_honest_empty_state() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_musical_pr_drawer_shows_an_honest_empty_state() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3157,7 +3206,8 @@ fn the_musical_pr_drawer_shows_an_honest_empty_state() {
 /// - 把 `resolve-available` 写成 `true` ⇒ 最后两格反向变红（假按钮回到树里、原因卡消失）。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3246,7 +3296,8 @@ fn a_real_proposal_from_the_authority_is_visible_in_the_opened_drawer() {
 /// - 合并后不夹紧选中 ⇒ 第⑦步红（陈旧身份留着，下一次按下就打向一条不存在的提案）。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3313,7 +3364,8 @@ fn selecting_a_row_lights_up_accept_and_it_really_merges_the_proposal() {
 /// - 拒绝没夹紧 ⇒ 第⑥步红（上一句解释赖在屏上）。
 #[cfg(feature = "in-process-mcp")]
 #[test]
-fn a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_refused_accept_puts_the_authoritys_own_sentence_on_the_drawer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3400,7 +3452,8 @@ fn demo_undo_literal_hits(tree: &ControlTree) -> Vec<String> {
 /// `chain.len().min(UNDO_TREE_MAX_NODES)` 得到，`node-hidden` 由同一长度的
 /// `saturating_sub` 得到 ⇒ 两个读数的和必须**恰好**等于 `CommitGraph::ancestry` 的长度。
 #[test]
-fn the_undo_tree_shows_the_real_commit_chain() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_undo_tree_shows_the_real_commit_chain() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3452,7 +3505,8 @@ fn the_undo_tree_shows_the_real_commit_chain() {
 /// deflate，1920×1080 恒为 6,222,418 字节 ⇒ 尺寸证明不了内容）。命题②（打开时光机之后）
 /// 是同一帧的差异像素数与包围盒 —— 两个命题分开陈述，不可互相代替。
 #[test]
-fn unwritten_undo_tree_shows_an_honest_empty_state_at_runtime() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_unwritten_undo_tree_shows_an_honest_empty_state_at_runtime() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3501,7 +3555,8 @@ fn unwritten_undo_tree_shows_an_honest_empty_state_at_runtime() {
 ///    → `open-ai-proposals` → `app.slint` → `open-musical-pr` → 宿主写 `musical-pr-open`）
 ///    真的打开提案抽屉 —— 因此 `accessible-role: button` 不再是空承诺。
 #[test]
-fn the_ai_badge_has_a_real_action_and_no_fake_state_at_runtime() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_badge_has_a_real_action_and_no_fake_state_at_runtime() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3558,7 +3613,8 @@ fn the_ai_badge_has_a_real_action_and_no_fake_state_at_runtime() {
 /// 只点一个的话，"行号 → 工具"的换算错了（例如 `tool_index` 与 `tool_index + 1` 混用）
 /// 有一半的组合看不出来。五行逐个点 ⇒ 行号口径与 `Tool::digit`（`1`..`5`）的对账是完整的。
 #[test]
-fn the_piano_roll_tool_buttons_change_the_active_tool_at_runtime() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_piano_roll_tool_buttons_change_the_active_tool_at_runtime() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3632,7 +3688,8 @@ fn tool_matrix_checked(plane: &mut LiveControlPlane) -> Vec<(String, Option<bool
 /// 不证明：像素长什么样 —— 底色 / 字色那两条绑定与 `accessible-checked` 共用同一个
 /// `tool_index` 比较，但本机不重录分平台 Golden（像素判据在 Linux 的 `real_ui_tier1.rs` 上跑）。
 #[test]
-fn the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3692,7 +3749,8 @@ fn the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit() {
 /// 只看标签的话，"点击根本没生效"也能让标签断言通过（历史里那条消息还是旧提交的）。
 /// 工程侧读数（模型里的 `TrackV3::mute`）证明这一击真的落了地 ⇒ 标签确实是这一击写下的。
 #[test]
-fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3752,7 +3810,8 @@ fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
 /// （按下 → 移动 → 松手 → Slint 命中测试 → `.slint` 的 `TouchArea` → 回调 → 宿主写属性），
 /// 与用户点那一下是同一条链。
 #[test]
-fn a_tree_read_sees_a_click_that_just_happened() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_tree_read_sees_a_click_that_just_happened() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3802,7 +3861,8 @@ fn a_tree_read_sees_a_click_that_just_happened() {
 /// ⚠ 断言**不是**计时（墙钟随机器浮动，不适合做判据）：它数的是**事件次数**，
 /// 因此是确定性的。
 #[test]
-fn a_tree_read_does_not_rasterize_a_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_tree_read_does_not_rasterize_a_frame() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3852,7 +3912,8 @@ fn a_tree_read_does_not_rasterize_a_frame() {
 /// | 重抓一次运行时树 | `LiveUi::pump_meters()` 一次（抽干 → 注入 → 全树内省） | ms（墙钟） |
 /// | 树规模 | `tree_snapshot().len()` | 节点数 |
 #[test]
-fn a_tree_regrab_costs_one_introspection_not_one_full_render() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_tree_regrab_costs_one_introspection_not_one_full_render() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3984,7 +4045,8 @@ fn select_ulids(window: &yeban_app::ui::MainWindow, ids: &[String]) {
 /// | 换算改成**向下取整**（`span / px`） | `src/bridge.rs` 的 `ticks_per_pixel_to_fit` | 全选那一步 `3360 / 1920` 的向下取整 = `1`，期望 `2` ⇒ 红（**这一步是"向上取整"的牙**；`3841 / 1920` 那条边界由 `bridge` 的单元判据钉住） |
 /// | 选区总览不写 `scroll-x` | `src/host.rs` 的 `zoom_action` | 最后一步 `roll-scroll-x` 期望 `2880`、实得 `0` ⇒ 红 |
 #[test]
-fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -4070,7 +4132,8 @@ fn zoom_shortcuts_reach_the_projection_and_an_empty_selection_is_not_consumed() 
 ///   闸）⇒ 本判据的第一格变红（没有写来源的装配里键被消费, 而什么都没发生）。
 /// - 把阳性对照用的 `B` 摘掉 ⇒ 本判据的阳性对照步变红（说明探针失灵，而不是"引擎安静"）。
 #[test]
-fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -4142,7 +4205,8 @@ fn the_ai_suggestion_and_audition_keys_are_rejected_without_any_state_change() {
 /// 把 `host.rs` 的 `Action::Cancel` 分支里那段 `CloseUndoTree` 落点删掉（或把
 /// `undo_tree_open()` 的判定改成恒 `false`）⇒ ② 的端口读数与 ③ 的树读数**同时**变红。
 #[test]
-fn escape_closes_the_time_machine_modal_for_real() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_closes_the_time_machine_modal_for_real() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -4193,7 +4257,8 @@ fn escape_closes_the_time_machine_modal_for_real() {
 /// 判据：双击推子 / 声相 ⇒ 工程与界面**同时**回中性（`0 dB` / 中央），并且
 /// ③ 已经在中性位时**不产生**任何提交、⑤ 复位与拖动共用**同一条**撤销栈。
 #[test]
-fn a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -4233,7 +4298,8 @@ fn a_double_click_reset_moves_the_fader_and_pan_to_neutral() {
 /// 两条交错都跑：清零之后那一次孤立的 `release` 既不提交、也不许把标志留在 `true`。
 /// 同一窗口里另证**主控**那两条（寻址按身份、视图态是两个标量属性）。
 #[test]
-fn a_double_click_reset_leaves_no_sticky_gesture() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_double_click_reset_leaves_no_sticky_gesture() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

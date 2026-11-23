@@ -214,7 +214,8 @@ fn remove_master_device(port: &UndoPort, slot: usize) {
 // 判据 ①／⑤：正常路径不变 —— 身份、Δ1、邻居不动、来回各 Δ1
 // ===========================================================================
 #[test]
-fn display_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_display_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -251,7 +252,8 @@ fn display_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
 }
 
 #[test]
-fn master_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_master_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -291,7 +293,8 @@ fn master_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
 // 判据 ②／③：窗口真的关了（删）—— Δ0 ＋ 逐字原因，⛔ 不作用到另一台
 // ===========================================================================
 #[test]
-fn display_bypass_rejects_a_removed_identity_with_delta_zero() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_display_bypass_rejects_a_removed_identity_with_delta_zero() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -328,7 +331,9 @@ fn display_bypass_rejects_a_removed_identity_with_delta_zero() {
 }
 
 #[test]
-fn display_bypass_after_an_insert_still_hits_the_same_device_not_the_new_slot_owner() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_display_bypass_after_an_insert_still_hits_the_same_device_not_the_new_slot_owner()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -365,7 +370,8 @@ fn display_bypass_after_an_insert_still_hits_the_same_device_not_the_new_slot_ow
 }
 
 #[test]
-fn master_bypass_rejects_a_removed_identity_with_delta_zero() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_master_bypass_rejects_a_removed_identity_with_delta_zero() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -405,7 +411,8 @@ fn master_bypass_rejects_a_removed_identity_with_delta_zero() {
 // 判据 ④：EQ 腿的窗口 —— 按身份重解析（删 ⇒ 拒绝；插 ⇒ 仍改那一台）
 // ===========================================================================
 #[test]
-fn eq_grab_rejects_a_removed_identity_with_delta_zero() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_eq_grab_rejects_a_removed_identity_with_delta_zero() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -442,7 +449,8 @@ fn eq_grab_rejects_a_removed_identity_with_delta_zero() {
 }
 
 #[test]
-fn eq_grab_after_an_insert_still_writes_the_same_device() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_eq_grab_after_an_insert_still_writes_the_same_device() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -479,7 +487,8 @@ fn eq_grab_after_an_insert_still_writes_the_same_device() {
 }
 
 #[test]
-fn master_eq_grab_rejects_a_removed_identity_with_delta_zero() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_master_eq_grab_rejects_a_removed_identity_with_delta_zero() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

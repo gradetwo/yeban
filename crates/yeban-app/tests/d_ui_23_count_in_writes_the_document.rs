@@ -194,7 +194,8 @@ fn code_only(source: &str) -> String {
 }
 
 #[test]
-fn a_count_in_press_writes_the_authoritative_document_and_is_reversible() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_count_in_press_writes_the_authoritative_document_and_is_reversible() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -231,7 +232,8 @@ fn a_count_in_press_writes_the_authoritative_document_and_is_reversible() {
 }
 
 #[test]
-fn a_count_in_press_without_an_undo_session_is_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_count_in_press_without_an_undo_session_is_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -269,7 +271,8 @@ fn a_count_in_press_without_an_undo_session_is_not_consumed() {
 
 /// ⑧ 取数口径（⛔ 不开窗口）：录音那条腿的优先级 —— 活文档 > 装配期快照 > 不知道。
 #[test]
-fn the_record_leg_prefers_the_live_document_over_the_assembly_snapshot() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_record_leg_prefers_the_live_document_over_the_assembly_snapshot() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -308,7 +311,8 @@ fn the_record_leg_prefers_the_live_document_over_the_assembly_snapshot() {
 /// ⑨ 出处纪律（⛔ 不开窗口）：文档级提交只有一个落点、取数只有一个口径、
 /// 换代那条路真的被拆掉了。
 #[test]
-fn the_document_is_the_only_count_in_landing_point() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_document_is_the_only_count_in_landing_point() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

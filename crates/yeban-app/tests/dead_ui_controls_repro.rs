@@ -144,7 +144,8 @@ impl Rig {
 
 /// ① 折叠键：桌面尺寸 1280x670 下点一次 ⇒ 必须展开（collapsed=false，面板 104 px）。
 #[test]
-fn fold_button_click_at_desktop_size_expands_the_panel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_fold_button_click_at_desktop_size_expands_the_panel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -182,7 +183,8 @@ fn fold_button_click_at_desktop_size_expands_the_panel() {
 
 /// ① 对照：1440x900 下点折叠键 ⇒ 必须展开（判据 ⑫ 的同款，预期绿）。
 #[test]
-fn fold_button_click_at_control_size_expands_the_panel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_fold_button_click_at_control_size_expands_the_panel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -220,7 +222,8 @@ fn fold_button_click_at_control_size_expands_the_panel() {
 
 /// ① 能量胶囊：桌面尺寸下点一次 ⇒ show-energy 翻转为 false；再点 ⇒ 恢复 true。
 #[test]
-fn energy_pill_click_at_desktop_size_toggles_the_layer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_energy_pill_click_at_desktop_size_toggles_the_layer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -258,7 +261,8 @@ fn energy_pill_click_at_desktop_size_toggles_the_layer() {
 
 /// ② 铅笔按钮：桌面尺寸下点“2 铅笔”中心 ⇒ active-tool 必须是 2。
 #[test]
-fn pencil_button_click_at_desktop_size_selects_the_pencil_tool() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_pencil_button_click_at_desktop_size_selects_the_pencil_tool() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -297,7 +301,8 @@ fn pencil_button_click_at_desktop_size_selects_the_pencil_tool() {
 /// ② 回调直调对照：直接 invoke tool-selected(2) ⇒ active-tool 必须是 2。
 /// （本条绿而上一条红 ⇒ 断点在命中测试，不在宿主臂。）
 #[test]
-fn invoking_tool_selected_directly_selects_the_pencil_tool() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_invoking_tool_selected_directly_selects_the_pencil_tool() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -335,7 +340,8 @@ fn invoking_tool_selected_directly_selects_the_pencil_tool() {
 
 /// ② 平台按键对照：启动后立即按数字键 `2` ⇒ active-tool 必须是 2。
 #[test]
-fn digit_key_2_at_startup_selects_the_pencil_tool() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_digit_key_2_at_startup_selects_the_pencil_tool() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -374,7 +380,8 @@ fn digit_key_2_at_startup_selects_the_pencil_tool() {
 /// ② 焦点探针：点一次卷帘画布空白处后，快捷键层是否还持有焦点？再按 `2` 是否还切换？
 /// （桌面复现顺序：先点画布空白格、再按 `2`；本条钉住那一次点击对焦点与键路的影响。）
 #[test]
-fn digit_key_2_after_a_canvas_click_still_selects_the_pencil_tool() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_digit_key_2_after_a_canvas_click_still_selects_the_pencil_tool() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -413,7 +420,8 @@ fn digit_key_2_after_a_canvas_click_still_selects_the_pencil_tool() {
 /// ③ 回调直调对照：直接 invoke key-action("h", shift, ctrl) ⇒ 时光机必须打开。
 /// （本条绿 ⇒ key-action → resolve → OpenTimeMachine → 端口翻转整条回调链是通的。）
 #[test]
-fn invoking_key_action_ctrl_shift_h_opens_the_undo_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_invoking_key_action_ctrl_shift_h_opens_the_undo_tree() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -451,7 +459,8 @@ fn invoking_key_action_ctrl_shift_h_opens_the_undo_tree() {
 
 /// ③ 焦点探针：点一次卷帘画布后，快捷键层焦点是否还在？（与 ② 的探针同一问题、另一量纲。）
 #[test]
-fn shortcut_layer_keeps_focus_after_a_canvas_click() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_shortcut_layer_keeps_focus_after_a_canvas_click() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -496,7 +505,8 @@ fn shortcut_layer_keeps_focus_after_a_canvas_click() {
 /// `FocusScope`（`app.slint:846`，Transport 不在其子树内），再也收不到键。
 /// 本条是修法判据：修前红（焦点不回来，按 `2` 不切换），修后绿。
 #[test]
-fn bpm_submit_returns_focus_to_shortcut_layer_and_restores_digit_keys() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_bpm_submit_returns_focus_to_shortcut_layer_and_restores_digit_keys() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -535,7 +545,8 @@ fn bpm_submit_returns_focus_to_shortcut_layer_and_restores_digit_keys() {
 /// ②③ 同上：非法值提交（“abc”）同样是“编辑结束”，焦点也必须回来。
 /// （`wire_bpm_commit` 的非法值路直接 `return`，回焦必须放在公共入口才覆盖它。）
 #[test]
-fn bpm_submit_with_invalid_value_returns_focus_to_shortcut_layer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_bpm_submit_with_invalid_value_returns_focus_to_shortcut_layer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

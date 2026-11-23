@@ -371,7 +371,8 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
 
 /// 判据 1：源码接线核验 —— 确保 MixerConsole、ConsoleTabs 与 MainWindow 的 track-select 完全闭环。
 #[test]
-fn slint_source_wirings_cover_mixer_track_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_slint_source_wirings_cover_mixer_track_selection() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -409,7 +410,8 @@ fn slint_source_wirings_cover_mixer_track_selection() {
 
 /// 判据 2：运行时通道条选轨与设备架联动闭环验证（夜半 30 轨规模与拓扑）。
 #[test]
-fn mixer_track_selection_syncs_with_host_and_device_rack() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_track_selection_syncs_with_host_and_device_rack() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -447,7 +449,8 @@ fn mixer_track_selection_syncs_with_host_and_device_rack() {
 
 /// 判据 3：夜半工程（真实文件或等价全量合成夹具）加载、拓扑对账与音轨/剪辑类型内省。
 #[test]
-fn nightfall_scale_project_load_and_clip_content_differentiation() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_nightfall_scale_project_load_and_clip_content_differentiation() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -485,7 +488,8 @@ fn nightfall_scale_project_load_and_clip_content_differentiation() {
 
 /// 判据 4：Logic Pro 对齐的视图快捷切换（X 混音台、E/P 卷帘、A 自动化）与水平/垂直缩放。
 #[test]
-fn logic_pro_workflow_view_toggles_and_zoom() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_logic_pro_workflow_view_toggles_and_zoom() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -523,7 +527,8 @@ fn logic_pro_workflow_view_toggles_and_zoom() {
 
 /// 判据 5：双击剪辑直达钢琴卷帘（Logic Pro 对齐）。
 #[test]
-fn logic_pro_workflow_clip_double_click_opens_piano_roll() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_logic_pro_workflow_clip_double_click_opens_piano_roll() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -561,7 +566,8 @@ fn logic_pro_workflow_clip_double_click_opens_piano_roll() {
 
 /// 判据 6：Cmd+D 复制选中的剪辑与 Cmd+T 在光标处切分选中的剪辑（Logic Pro 对齐）。
 #[test]
-fn logic_pro_workflow_clip_split_and_duplicate() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_logic_pro_workflow_clip_split_and_duplicate() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -599,7 +605,8 @@ fn logic_pro_workflow_clip_split_and_duplicate() {
 
 /// 判据 7：轨道重命名与录音就绪 (Arm) 交互闭环。
 #[test]
-fn logic_pro_workflow_track_rename_and_arm() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_logic_pro_workflow_track_rename_and_arm() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

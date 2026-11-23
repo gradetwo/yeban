@@ -164,7 +164,8 @@ const TOOL_BUTTON_IDS: [&str; 5] = [
 ///    点击交给滚动手势面（"点了没反应"会以另一种形态回来）；
 /// 4. 点击上报的行号必须就是 `tool_index + 1`（与 `active-tool` / `Tool::digit` 同一口径）。
 #[test]
-fn every_piano_roll_tool_button_is_a_real_click_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_piano_roll_tool_button_is_a_real_click_source() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -198,7 +199,8 @@ fn every_piano_roll_tool_button_is_a_real_click_source() {
 ///    `crate::input::Tool::from_digit` 还原成工具、随后调用 `apply_action`。
 ///    多出来的第二处就是第二个真相源。
 #[test]
-fn the_tool_selected_callback_is_forwarded_by_every_component_in_the_chain() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_tool_selected_callback_is_forwarded_by_every_component_in_the_chain() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -241,7 +243,8 @@ fn the_tool_selected_callback_is_forwarded_by_every_component_in_the_chain() {
 /// 为什么计数是 2 而不是 1：`B`（铅笔 ⇄ 箭头）与 `1`..`5` 是规范里两个不同的动作，
 /// 它们**共用** `active-tool` 这一个属性。本判据把"恰好这两个"钉死。
 #[test]
-fn active_tool_still_has_exactly_the_two_host_writers() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_active_tool_still_has_exactly_the_two_host_writers() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -280,7 +283,8 @@ fn active_tool_still_has_exactly_the_two_host_writers() {
 /// 本判据把"只有一个写者"和"两段都在同一个闭包里"都钉死；第二条防止有人把它拆回两个写者
 /// （拆开就必然把选区或工具语义中的一半挤掉）。
 #[test]
-fn roll_click_has_exactly_one_dispatcher_writer() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_roll_click_has_exactly_one_dispatcher_writer() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

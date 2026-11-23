@@ -354,7 +354,8 @@ impl Rig {
 /// `arrow_keys_resolve_to_the_four_spec_nudge_steps` 要求 `Cmd/Ctrl+←/→`
 /// 归 caret 语义、必须放行，故快捷键路改走 `Cmd+=` / `Cmd+-`。）
 #[test]
-fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_zoom_button_shortcut_and_slider_change_horizontal_zoom() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -376,7 +377,8 @@ fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
 
 /// ②：纵向缩放方向按 Logic（`Cmd+↓` = 放大、`Cmd+↑` = 缩小），往返精确。
 #[test]
-fn cmd_down_up_change_vertical_zoom_in_logic_direction() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_down_up_change_vertical_zoom_in_logic_direction() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -398,7 +400,8 @@ fn cmd_down_up_change_vertical_zoom_in_logic_direction() {
 
 /// ③：`Cmd+Shift+↓/↑` 移动选中轨、提交数 +1；两端停住且不消费、提交数不动。
 #[test]
-fn cmd_shift_arrows_move_selected_track_and_stop_at_the_ends() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_shift_arrows_move_selected_track_and_stop_at_the_ends() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -420,7 +423,8 @@ fn cmd_shift_arrows_move_selected_track_and_stop_at_the_ends() {
 
 /// ④：包头名称区拖动 ⇒ 松手恰好提交一次；拖动中插入线在树里；小拖零提交；`Escape` 取消。
 #[test]
-fn header_drag_moves_track_once_and_escape_cancels() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_header_drag_moves_track_once_and_escape_cancels() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -442,7 +446,8 @@ fn header_drag_moves_track_once_and_escape_cancels() {
 
 /// ⑤：`Shift+滚轮` = 横向滚动（剪辑等量左移、包头不动）；无修饰滚轮 ⇒ 横向一位不动。
 #[test]
-fn shift_wheel_scrolls_horizontally_and_moves_clips() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_shift_wheel_scrolls_horizontally_and_moves_clips() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -464,7 +469,8 @@ fn shift_wheel_scrolls_horizontally_and_moves_clips() {
 
 /// ⑥：`Option+滚轮` = 纵向缩放、`Option+Shift+滚轮` = 横向缩放（不是横向滚动）。
 #[test]
-fn option_wheel_zooms_and_option_shift_wheel_zooms_horizontally() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_option_wheel_zooms_and_option_shift_wheel_zooms_horizontally() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -491,7 +497,8 @@ fn option_wheel_zooms_and_option_shift_wheel_zooms_horizontally() {
 /// Shift+滚轮 / 滚动条。本判据的车道拖动一半自此失效（横向滚动条一半不变）；
 /// 框选语义由 `tests/clip_marquee_selection.rs` 钉住。
 #[test]
-fn scrollbar_and_lane_drag_scroll_horizontally() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_scrollbar_and_lane_drag_scroll_horizontally() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

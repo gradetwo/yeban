@@ -323,7 +323,8 @@ fn install_fixture(port: &UndoPort, fixture: &AudioFixture, message: &str) -> St
 // `#165` ①：清单为空 ＋ 原因可见 ＋ 按钮数 0
 // ===========================================================================
 #[test]
-fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -347,7 +348,8 @@ fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
 // `#164` 正路：装一份**带样本**的夹具 = Δ1 ＋ 逐字读回 ＋ 投影可见
 // ===========================================================================
 #[test]
-fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -371,7 +373,8 @@ fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
 // `#164` 换乐器 = Δ1（重复装同一份 = Δ0）
 // ===========================================================================
 #[test]
-fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -395,7 +398,9 @@ fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
 // `#164` ⑤：无展示轨 ⇒ 禁用 ＋ 逐字原因 ＋ 直接调用 Δ0
 // ===========================================================================
 #[test]
-fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_nothing()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -419,7 +424,8 @@ fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_not
 // `#164` ②：装乐器 ＋ 1 个音符 ⇒ 引擎渲染非静音（夹具 SFZ ＋ 真 WAV）
 // ===========================================================================
 #[test]
-fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -443,7 +449,8 @@ fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output(
 // `#165` ②③：缺样本 ⇒ 装不掉，且这条轨**仍然有声**（逐位相同）
 // ===========================================================================
 #[test]
-fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -467,7 +474,8 @@ fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
 // `#165` 谓词唯一：可装清单 = 候选 × `sfz_samples_present`（同一条读取路径）
 // ===========================================================================
 #[test]
-fn the_sample_presence_predicate_is_the_shared_decode_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_sample_presence_predicate_is_the_shared_decode_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -17,7 +17,8 @@ const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint")
 const APP: &str = include_str!("../ui/app.slint");
 
 #[test]
-fn automation_write_mode_cycling() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_automation_write_mode_cycling() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -38,7 +39,8 @@ fn automation_write_mode_cycling() {
 }
 
 #[test]
-fn automation_lane_click_and_point_editing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_automation_lane_click_and_point_editing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -59,7 +61,8 @@ fn automation_lane_click_and_point_editing() {
 }
 
 #[test]
-fn automation_recording_generation() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_automation_recording_generation() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -80,7 +83,8 @@ fn automation_recording_generation() {
 }
 
 #[test]
-fn slint_ratchets_and_tokens_preserved() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_slint_ratchets_and_tokens_preserved() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

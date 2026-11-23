@@ -280,7 +280,8 @@ impl Fixture {
 /// * **注入 ①**（`wire_mixer_sampler` 没被调用）⇒ 第 ③ 段红（模型一位没动，
 ///   `value` 在 SET 之后仍是敲进去的草稿、CLR 之后不回到空串）。
 #[test]
-fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -321,7 +322,8 @@ fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() 
 /// * **注入 ①**（`wire_mixer_edit` 不再调 `wire_mixer_sampler`）⇒ 第 ② 段红
 ///   （模型一位没动 ⇒ 心跳发布的是**没有绑定**的那份 ⇒ 摊平表恒 `None`）。
 #[test]
-fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -358,7 +360,8 @@ fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
 ///   ⇒ `publish_error` 恒 `None`、`published_revision` 也是 `None` ⇒ 本判据第 ① 段红。
 ///   ⚠ 那正是修之前的形态："失败"与"没改动"在读数上**一模一样**。
 #[test]
-fn a_missing_sfz_path_is_an_observable_publish_error() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_missing_sfz_path_is_an_observable_publish_error() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -393,7 +396,8 @@ fn a_missing_sfz_path_is_an_observable_publish_error() {
 /// 它是"这条 UI 面**只**在用户真的改了绑定时才动工程"的反向对照：注入 ①（UI 不提交）
 /// 或注入 ②（恢复 `.ok()`）都不会碰到它 —— 两条注入都改不动一个"本来就没有变化"的读数。
 #[test]
-fn an_unbound_sampler_stays_a_noop_through_the_ui() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unbound_sampler_stays_a_noop_through_the_ui() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

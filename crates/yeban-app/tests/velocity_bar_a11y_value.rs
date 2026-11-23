@@ -66,7 +66,9 @@ fn model_velocity(project: &YebanProjectV1, ulid: &str) -> u8 {
 }
 
 #[test]
-fn every_velocity_bar_reports_its_own_projected_velocity_to_the_accessibility_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_velocity_bar_reports_its_own_projected_velocity_to_the_accessibility_tree()
+ {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

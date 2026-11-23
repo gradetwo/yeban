@@ -184,7 +184,8 @@ fn invoke(args: &[&str]) -> Run {
 /// `--theme` 的全部合法取值都必须被接受，而且报告里的 `requested=` 必须是**回读**到的
 /// 请求值（不是命令行原样抄一遍 —— 那样判据证明不了解析真的发生了）。
 #[test]
-fn every_valid_theme_value_is_accepted_and_reported() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_valid_theme_value_is_accepted_and_reported() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -214,7 +215,8 @@ fn every_valid_theme_value_is_accepted_and_reported() {
 /// 为什么"静默回退到默认主题"不可接受：那会让"我说了 material"与"其实渲染的是
 /// `default`(yeban 调色板)"长得一模一样 —— 正是本仓库最忌讳的一类假绿。
 #[test]
-fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -249,7 +251,8 @@ fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
 /// 而"用户看到的用法文本与错误信息里也真的列了这些名字"是**另一个**观测面 ——
 /// 少了它，`accepted_names()` 可以被改成只给判据看的一份漂亮列表。
 #[test]
-fn the_yeban_alias_resolves_to_the_default_theme_everywhere() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_yeban_alias_resolves_to_the_default_theme_everywhere() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -278,7 +281,8 @@ fn the_yeban_alias_resolves_to_the_default_theme_everywhere() {
 ///
 /// 观测面是文本（不碰 Slint）：与 ⑤ 同一份源码, 因此可以在同一个文件里独立成条测试。
 #[test]
-fn the_default_theme_is_the_slint_initial_value() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_default_theme_is_the_slint_initial_value() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -346,7 +350,8 @@ fn demo_view_and_scene() -> (yeban_app::bridge::ViewState, DemoScene) {
 /// ③ Slint 1.18.1 的上限被**如实**登记：四个内建风格名共享同一个编译进来的 `Palette`，
 ///    因此它们彼此相等 —— 判据把这件事写成断言，而不是回避它。
 #[test]
-fn the_effective_palette_follows_the_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_effective_palette_follows_the_selection() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -651,7 +656,8 @@ fn token_literals(source: &str, token: &str) -> Vec<String> {
 /// 表里的 inkmoor / plume 值与判据 ④ 是**同一份数字的两个独立观测面**（一个读源码、
 /// 一个读活组件）；两条判据抓的是**不同**的漂移（见文件头的说明）。
 #[test]
-fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_theme_palette_literals_in_the_source_are_the_measured_ones() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -683,7 +689,8 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
 /// `transport-record-button` —— 也就是它画在录音键上。旧落点同时被**反向**钉住：
 /// AI 徽章最近的那条 `border-color` 必须是 `Tokens.ai-suggestion`，不许再是 `accent`。
 #[test]
-fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -727,7 +734,8 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
 /// 录音功能色），所以"全界面只有一个暖色相"**不是**他们的规格；他们的规格是
 /// "只有一个暖**强调**色"。这条判据写的就是那句话。
 #[test]
-fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -764,7 +772,8 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
 ///   ④ 旧落点冷下来 —— `ai-suggestion`（AI 徽章的新描边色）必须是冷色相;
 ///   ⑤ 功能色不许顶替 —— `accent` 不许等于 `record-red`（否则只是改了个名）。
 #[test]
-fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -790,7 +799,9 @@ fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
 /// 观测面是**真进程的 stdout**（不碰 Slint）：`--print-theme` 属于无窗口路径
 /// （`Options::batch()`），因此它读不到 token 值 —— 它报的是**出处**，值由 ③/④/⑤ 钉。
 #[test]
-fn print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake_one()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -820,7 +831,8 @@ fn print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake
 /// `Rectangle`，一个上游控件都没有），所以它很容易被"顺手加一个投影好看一点"打破，
 /// 而那种改动不会撞上任何既有判据。
 #[test]
-fn the_ui_uses_no_shadow_and_no_gradient_brush() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ui_uses_no_shadow_and_no_gradient_brush() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -918,7 +930,8 @@ fn strip_slint_comments(text: &str) -> String {
 /// ⭐ 反例臂（三条 `!`）同样是判据的一部分：⛔ 不许把"任何 `.slint`"都算命中，
 /// 否则"修好"会退化成"永远返回 true"。
 #[test]
-fn the_path_suffix_helper_accepts_both_separators() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_path_suffix_helper_accepts_both_separators() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -951,7 +964,8 @@ fn the_path_suffix_helper_accepts_both_separators() {
 /// 产出反斜杠** ⇒ "Windows 上真的会红"这条物理事实**本机验不了**；但"**判定本身与分隔符无关**"
 /// 可以用**内存样例**证明，⭐ 而样例**必须含反斜杠那侧**（否则它证明不了任何东西）。
 #[test]
-fn the_path_helpers_are_separator_agnostic() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_path_helpers_are_separator_agnostic() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -972,7 +986,8 @@ fn the_path_helpers_are_separator_agnostic() {
 }
 
 #[test]
-fn no_call_site_compares_ui_paths_with_a_bare_separator_literal() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_no_call_site_compares_ui_paths_with_a_bare_separator_literal() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

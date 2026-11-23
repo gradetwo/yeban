@@ -223,7 +223,8 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
 /// ① 15 个主操作按钮的 `TouchArea` 必须显式命名，且那个名字**真的**驱动
 /// `has-hover`；整条背景表达式逐字存在 ⇒ false 分支逐字回落到原底色。
 #[test]
-fn every_primary_action_button_has_a_named_hover_aware_touch_area() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_primary_action_button_has_a_named_hover_aware_touch_area() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -247,7 +248,8 @@ fn every_primary_action_button_has_a_named_hover_aware_touch_area() {
 /// 删掉任一反馈 ⇒ 少一次，红；新增反馈而不更新判据 ⇒ 多一次，也红。
 /// 这同时把第七轮那 11 处反馈一起钉住（⛔ 不允许「补新的、丢旧的」）。
 #[test]
-fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -271,7 +273,8 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
 /// `TouchArea` 命名**不**进运行时控件树（只有 `accessible-id` 进树），
 /// 因此本轮对 `ui/tree` 的读数一位不动。
 #[test]
-fn no_new_addressable_nodes_or_value_readouts_were_added() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_no_new_addressable_nodes_or_value_readouts_were_added() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -295,7 +298,8 @@ fn no_new_addressable_nodes_or_value_readouts_were_added() {
 /// ⛔ 不碰 `Tokens.accent`（`theme_selection.rs` ⑥ 钉死全仓恰好一次、
 /// 且落在录音键 ● 的 `color:`）与 `Tokens.bg-control`（只住 transport 保存键）。
 #[test]
-fn the_single_accent_and_bg_control_landings_are_untouched() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_single_accent_and_bg_control_landings_are_untouched() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -319,7 +323,8 @@ fn the_single_accent_and_bg_control_landings_are_untouched() {
 /// `visible` / 第七轮计数门禁，全都必须维持原状。改这些不是「顺手」，
 /// 而是要连带改本判据、`live_ui_mcp.rs` 与第七轮叙述 —— 棘轮的意义就在这里。
 #[test]
-fn the_deliberate_boundaries_are_still_intact() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_deliberate_boundaries_are_still_intact() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

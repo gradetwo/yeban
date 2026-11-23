@@ -695,7 +695,8 @@ fn resolve_bare(key: LogicalKey, focus: Focus) -> Resolution {
 
 /// ①（清点）：两个承诺源扫出的和弦**多重集**恰好是钉值清单。
 #[test]
-fn the_printed_chords_are_exactly_the_pinned_inventory() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_printed_chords_are_exactly_the_pinned_inventory() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -717,7 +718,8 @@ fn the_printed_chords_are_exactly_the_pinned_inventory() {
 
 /// ②（承诺兑现）：每一把印出来的和弦都必须被键表解析成**期望的那个**动作。
 #[test]
-fn every_printed_chord_resolves_to_an_action() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_printed_chord_resolves_to_an_action() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -739,7 +741,8 @@ fn every_printed_chord_resolves_to_an_action() {
 
 /// ③（反面事实）：`Cmd/Ctrl + 反斜杠`⛔ 是任何人的承诺，因为它⛔ 被键表实现。
 #[test]
-fn the_backslash_chord_stays_unimplemented_and_unpromised() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_backslash_chord_stays_unimplemented_and_unpromised() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -761,7 +764,8 @@ fn the_backslash_chord_stays_unimplemented_and_unpromised() {
 
 /// ④（本票那一格）：AI 抽屉按钮的 label 逐字 = 真绑的那把；登记名⛔ 带第二处承诺。
 #[test]
-fn the_ai_drawer_button_promises_the_bound_chord() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_drawer_button_promises_the_bound_chord() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -783,7 +787,8 @@ fn the_ai_drawer_button_promises_the_bound_chord() {
 
 /// ⑤（两源不漂移）：登记名里带键位承诺（和弦或裸键）的那几格，必须与某条 `.slint` 字面逐字相同。
 #[test]
-fn registry_names_cannot_diverge_from_the_markup() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_registry_names_cannot_diverge_from_the_markup() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -805,7 +810,8 @@ fn registry_names_cannot_diverge_from_the_markup() {
 
 /// ⑥（扫描面完整）：磁盘上真实存在的 `.slint` 必须都在编译期清单里。
 #[test]
-fn every_slint_file_on_disk_is_in_the_embedded_inventory() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_slint_file_on_disk_is_in_the_embedded_inventory() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -827,7 +833,8 @@ fn every_slint_file_on_disk_is_in_the_embedded_inventory() {
 
 /// ⑦（承诺写全）：字面里出现修饰词就必须写成完整的 `修饰词 + 键名`；键名必须在词表里。
 #[test]
-fn every_key_hint_is_a_complete_promise() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_key_hint_is_a_complete_promise() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -849,7 +856,8 @@ fn every_key_hint_is_a_complete_promise() {
 
 /// ⑧（上下文口径）：文本框聚焦时 DAW 热键整体放行 —— 守卫数的是**画布**口径。
 #[test]
-fn the_promise_is_scored_against_the_canvas_context_only() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_promise_is_scored_against_the_canvas_context_only() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -871,7 +879,8 @@ fn the_promise_is_scored_against_the_canvas_context_only() {
 
 /// ⑨（裸键承诺）：括号里印出来的**裸键**也必须被键表解析成钉住的那个动作。
 #[test]
-fn every_printed_bare_key_is_bound() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_printed_bare_key_is_bound() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -897,7 +906,8 @@ fn every_printed_bare_key_is_bound() {
 /// ⛔ 写限定语的裸键 ⇒ 在 `MainCanvas` 与 `Other`（推子/旋钮/标签）两条腿上都必须兑现。
 /// 少了后半，"哪儿都生效"的承诺会被读成"只在画布生效"而**空绿**。
 #[test]
-fn the_focus_caveat_in_the_text_is_the_key_tables_behavior() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_focus_caveat_in_the_text_is_the_key_tables_behavior() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

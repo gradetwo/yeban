@@ -85,7 +85,8 @@ fn crate_source(name: &str) -> String {
 // 判据 ①：serve 侧给出端口（源码腿 —— 默认档就能跑）
 // ===========================================================================
 #[test]
-fn the_serve_path_hands_the_write_surface_an_undo_port() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_serve_path_hands_the_write_surface_an_undo_port() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -109,7 +110,8 @@ fn the_serve_path_hands_the_write_surface_an_undo_port() {
 // 判据 ②：会话配方保真 —— `history.dag` 读得回来，坏数据不许降级
 // ===========================================================================
 #[test]
-fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -134,7 +136,8 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
 // ===========================================================================
 #[cfg(feature = "ui-mcp-http")]
 #[test]
-fn an_injected_click_on_the_serve_surface_moves_the_project_and_lands_on_disk() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_injected_click_on_the_serve_surface_moves_the_project_and_lands_on_disk() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -171,7 +171,8 @@ impl Fixture {
 /// 独立变色：把 `session_view.slint` 的 `TouchArea.clicked` 摘掉 ⇒ 本判据的 applied 恒 0，
 /// 红在 `left: 0 / right: 1`。
 #[test]
-fn a_real_click_on_the_scene_button_launches_it_in_the_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_real_click_on_the_scene_button_launches_it_in_the_engine() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -195,7 +196,8 @@ fn a_real_click_on_the_scene_button_launches_it_in_the_engine() {
 ///
 /// 没有它，"≥ 1" 可能来自夹具装配（例如 `reload` 自己发过一次启动）。
 #[test]
-fn without_a_click_nothing_launches() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_a_click_nothing_launches() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -220,7 +222,8 @@ fn without_a_click_nothing_launches() {
 /// 独立变色：把 `wire_scene_launch` 里的 `quantization: view.launch_quantization` 写死成
 /// `Bar` ⇒ 本判据红在"第一块必须生效，实测 750 块"。
 #[test]
-fn the_off_quantisation_from_the_projection_is_honoured() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_off_quantisation_from_the_projection_is_honoured() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -245,7 +248,8 @@ fn the_off_quantisation_from_the_projection_is_honoured() {
 /// 前后值逐字给出：点击前 `None`，点击后 `Some(场景 0)`；完整重投影之后回到 `None`
 /// （换工程 ⇒ 不带着旧场景），同时界面属性 `current-scene-index` 也回到 `-1`。
 #[test]
-fn the_current_scene_is_a_session_readout_not_a_projection_product() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_current_scene_is_a_session_readout_not_a_projection_product() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -274,7 +278,8 @@ fn the_current_scene_is_a_session_readout_not_a_projection_product() {
 /// `controls_without_any_click_source_are_exactly_the_known_empty_ones` 同一份事实的
 /// **正面**一侧）：那条证"清单外的都没有"，这条证"移出去的那一个真的有动作"。
 #[test]
-fn the_scene_button_is_really_clickable_and_the_actionless_list_is_honest() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_scene_button_is_really_clickable_and_the_actionless_list_is_honest() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

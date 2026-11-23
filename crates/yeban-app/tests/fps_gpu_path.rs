@@ -203,7 +203,8 @@ fn assert_instrument_pins(example: &str) {
 /// 只放在它里面，常规 `cargo test` 就**永远不执行**这些 PIN。本条不需要窗口、不需要 GPU、
 /// 不产生任何数字，因此能在每次 `cargo test -p yeban-app --tests` 里跑。
 #[test]
-fn baseline_003_instrument_pins_hold_without_a_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_baseline_003_instrument_pins_hold_without_a_window() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -224,7 +225,8 @@ fn baseline_003_instrument_pins_hold_without_a_window() {
 }
 
 #[test]
-fn baseline_003_reading_comes_from_the_gpu_path() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_baseline_003_reading_comes_from_the_gpu_path() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

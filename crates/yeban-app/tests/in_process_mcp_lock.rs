@@ -264,7 +264,8 @@ fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()
 /// 父进程运行时它既是"另一个进程的 yeban-mcp"，也是一个 `#[test]`：
 /// 直接被 `cargo test` 跑到时（没有环境变量）它**立刻返回**，不做任何事。
 #[test]
-fn lock_child_process_opens_the_project_and_holds_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_lock_child_process_opens_the_project_and_holds_it() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -294,7 +295,8 @@ fn lock_child_process_opens_the_project_and_holds_it() {
 /// —— 不是"挂上去但悄悄不取锁"。拿掉持有者之后**同一份挂载必须成功**，
 /// 且模式是 `SharedRead`：这证明拒绝的原因就是那把锁，而不是别的偶发失败。
 #[test]
-fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -326,7 +328,8 @@ fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
 /// 3. 另一个进程只**读** ⇒ 成功（共享读锁的语义，证明取的不是排他锁）；
 /// 4. 读者退出 + 控制面停机 ⇒ 写者不再被挡（RAII 释放，锁挂在挂载生命周期上）。
 #[test]
-fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -365,7 +368,9 @@ fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
 /// 3. `SIGKILL` 掉持有者（内核释放建议锁）⇒ 同一条保存**必须成功**；
 /// 4. 成功的那一次换掉了内容，且不留残留 `.yeban.lock`（排他持有者 `Drop` 收走）。
 #[test]
-fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -400,7 +405,8 @@ fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclus
 /// 2. 停机（RAII 释放）⇒ 同一条保存必须成功；
 /// 3. 成功之后内容真的换了，且锁文件被收走。
 #[test]
-fn a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -118,7 +118,8 @@ fn assert_tier(label: &str, got: (bool, u32, bool, usize), compact: bool) {
 // 判据 ①–④：同一实例上真 resize 扫五档（800 / 1024 / 1180 / 1440 / 1920），再回到 1920
 // ===========================================================================
 #[test]
-fn the_compact_breakpoint_follows_the_real_window_width() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_compact_breakpoint_follows_the_real_window_width() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -142,7 +143,8 @@ fn the_compact_breakpoint_follows_the_real_window_width() {
 // 判据 ⑤：两个不同尺寸的窗口**出生**时就不同（⛔ 不靠"先建 1920 再 resize"）
 // ===========================================================================
 #[test]
-fn windows_born_at_1024_and_1920_start_in_their_own_breakpoint() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_windows_born_at_1024_and_1920_start_in_their_own_breakpoint() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

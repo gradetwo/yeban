@@ -161,7 +161,8 @@ fn bar_line_px(window: &MainWindow, index: usize) -> f32 {
 
 /// ① 标尺上那一次按下，把定位命令发给了**本装配自己的**宿主（判据侧一行接线都没做）。
 #[test]
-fn a_ruler_press_seeks_the_assemblys_own_host() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_ruler_press_seeks_the_assemblys_own_host() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -199,7 +200,8 @@ fn a_ruler_press_seeks_the_assemblys_own_host() {
 
 /// ② 「定位到第 N 小节」是等差阶梯，且解析失败一条都不发。
 #[test]
-fn the_bar_number_ladder_is_evenly_spaced() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_bar_number_ladder_is_evenly_spaced() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -237,7 +239,8 @@ fn the_bar_number_ladder_is_evenly_spaced() {
 
 /// ③ 网格两端是**夹紧**：⛔ 不回绕、⛔ 不越过投影右缘。
 #[test]
-fn the_grid_edges_clamp_and_never_wrap() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_grid_edges_clamp_and_never_wrap() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -275,7 +278,8 @@ fn the_grid_edges_clamp_and_never_wrap() {
 
 /// ④ 章节卡片按下去 = 投影里那一段的起点，而且**不碰文档**。
 #[test]
-fn section_cards_seek_to_the_projected_start_and_commit_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_section_cards_seek_to_the_projected_start_and_commit_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -313,7 +317,8 @@ fn section_cards_seek_to_the_projected_start_and_commit_nothing() {
 
 /// ⑤ 换工程之后，定位读的是**新**投影（冻结的装配期快照在这一条上必然红）。
 #[test]
-fn a_project_switch_moves_the_grid_that_seek_reads() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_project_switch_moves_the_grid_that_seek_reads() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -351,7 +356,8 @@ fn a_project_switch_moves_the_grid_that_seek_reads() {
 
 /// ⑥ 场景按钮写的就是执行面读的那**同一格**投影（⛔ 两份投影各说一套）。
 #[test]
-fn a_scene_launch_writes_the_shared_cell_and_the_interface() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_scene_launch_writes_the_shared_cell_and_the_interface() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -389,7 +395,8 @@ fn a_scene_launch_writes_the_shared_cell_and_the_interface() {
 
 /// ⑦ 没有引擎的那台装配：按下之后⛔ 不假装切换过（冷读数，一路都是 `0` / 如实回执）。
 #[test]
-fn without_an_engine_no_seek_moves_nothing_and_the_receipt_stays_honest() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_an_engine_no_seek_moves_nothing_and_the_receipt_stays_honest() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -427,7 +434,8 @@ fn without_an_engine_no_seek_moves_nothing_and_the_receipt_stays_honest() {
 
 /// ⑧ 出处纪律（⛔ 不开窗口）：三条接线各一处、投影只有一格、执行面自己零算术零命令。
 #[test]
-fn the_execution_surface_wires_seek_once_and_keeps_one_projection_cell() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_execution_surface_wires_seek_once_and_keeps_one_projection_cell() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

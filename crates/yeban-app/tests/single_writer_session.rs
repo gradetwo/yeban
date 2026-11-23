@@ -163,7 +163,8 @@ fn lane_element_ids(project: &yeban_model::YebanProjectV1) -> Vec<String> {
 /// ③ 宿主保存动作写出的内容**持久化**且被后续读者读回；④ 工具面的 `yeban_save_project`
 /// 与它是**同一个**写会话（同一个 `read_only` 门），因此不是第二个写者。
 #[test]
-fn a_writable_session_is_the_only_writer_and_its_save_persists() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_writable_session_is_the_only_writer_and_its_save_persists() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -192,7 +193,8 @@ fn a_writable_session_is_the_only_writer_and_its_save_persists() {
 /// **都被拒**，且工程字节**逐字节未变**；会话停机后同一条本地保存必须成功
 /// （证明拒绝的原因就是那把锁）。
 #[test]
-fn the_local_gui_save_cannot_write_while_a_writable_session_lives() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_local_gui_save_cannot_write_while_a_writable_session_lives() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -220,7 +222,8 @@ fn the_local_gui_save_cannot_write_while_a_writable_session_lives() {
 /// 上调用它必须 `Err`，且**一个字节都不写**。这条把"宿主保存动作可用 ⟺ 会话可写"
 /// 变成可失败的断言 —— 否则"单一写者"可以靠"谁能调谁就写"来伪造。
 #[test]
-fn the_host_save_action_is_refused_on_a_read_only_session() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_host_save_action_is_refused_on_a_read_only_session() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -263,7 +266,8 @@ fn the_host_save_action_is_refused_on_a_read_only_session() {
 /// ② 落盘字节数等于回执数字；③ 后续读者从**磁盘**读回的是**会话当前那一版**
 /// （新泳道在文件里 —— 若它写的是宿主缓存，新泳道不会在）。
 #[test]
-fn the_production_save_dispatches_through_the_writable_authority() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_production_save_dispatches_through_the_writable_authority() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -290,7 +294,8 @@ fn the_production_save_dispatches_through_the_writable_authority() {
 /// 只读会话（共享读锁 **不**挡本地排他写）时**真的写进去** —— 那就是第二个写者。
 /// 因此断言分两半：回执是 `Failed{stage: Authority}`，且**字节逐字节未变**。
 #[test]
-fn the_production_save_refuses_on_a_read_only_authority_without_falling_back() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_production_save_refuses_on_a_read_only_authority_without_falling_back() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

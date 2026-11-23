@@ -110,7 +110,8 @@ fn master_only(mut project: YebanProjectV1) -> YebanProjectV1 {
 
 /// B1：`Alt+↓` / `Alt+↑` 逐条走完选中态，两端**停住但仍消费**，且不产生任何提交。
 #[test]
-fn alt_up_down_walk_the_track_selection_and_stop_at_the_ends() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_alt_up_down_walk_the_track_selection_and_stop_at_the_ends() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -150,7 +151,9 @@ fn alt_up_down_walk_the_track_selection_and_stop_at_the_ends() {
 /// 身份表里的**邻居下标**且两端**夹紧**（`wire_track_select` 的查表口径），
 /// ⛔ 不是旁路写属性、也不把越界下标漏给回调。
 #[test]
-fn the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour_index() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour_index()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -189,7 +192,8 @@ fn the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour
 /// B3：邻居组合 —— `Alt+Shift+↓` 未绑定 ⇒ 放行；`Cmd/Ctrl+Alt+↓` 是**音量微调**
 /// ⇒ 消费但选中态不动（两族键各走各的臂）。
 #[test]
-fn neighbour_combinations_leave_the_selection_alone() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_neighbour_combinations_leave_the_selection_alone() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -227,7 +231,8 @@ fn neighbour_combinations_leave_the_selection_alone() {
 
 /// B4：只有主总线（`track-ids` 为空）⇒ 两向都**不消费**（⛔ 不吞键），选中态保持空串。
 #[test]
-fn without_any_track_the_track_keys_are_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_any_track_the_track_keys_are_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

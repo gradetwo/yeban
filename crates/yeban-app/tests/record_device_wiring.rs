@@ -347,7 +347,8 @@ fn read_codes(path: &std::path::Path) -> (u16, u32, Vec<i32>) {
 /// 同一串样本）的**差**，单位 = i24 码，容差 **0**；外加"峰值"读数（单位 = i24 码）
 /// 用来证明**不是静音**（今天的行为是整段全 0）。
 #[test]
-fn the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -378,7 +379,8 @@ fn the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
 /// ⭐ **判据 ②**：`Recorder` **也**从同一个工厂缝拿源，且报告行 `source=` **如实**
 /// （⛔ 不再是写死的 `ui-record-button(no-device-input)`）。
 #[test]
-fn the_recorder_takes_its_source_from_the_factory_and_reports_its_label() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_recorder_takes_its_source_from_the_factory_and_reports_its_label() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -409,7 +411,8 @@ fn the_recorder_takes_its_source_from_the_factory_and_reports_its_label() {
 /// ⭐ **判据 ③**：真设备源的**形状**本身 —— 环空返回 0（⛔ 不补静音）、有数据按**交错序**取出、
 /// 句柄的生命期跟着源。
 #[test]
-fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -443,7 +446,8 @@ fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence()
 /// (a) 工厂被调用**恰好 1 次**；(b) 界面落点收到**非空**错误文本；
 /// (c) `recording` 保持 `false`；(d) **目标路径上没有文件**。
 #[test]
-fn an_unopenable_device_fails_loudly_and_writes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_unopenable_device_fails_loudly_and_writes_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -479,7 +483,8 @@ fn an_unopenable_device_fails_loudly_and_writes_nothing() {
 /// 本判据⛔ 不声称"空文件不该存在"（那是 `Recorder` 的既有语义，本单没改）——
 /// 它钉的是**可见性**：人可以不知道文件在哪，但不该不知道"这次一帧都没录到"。
 #[test]
-fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -516,7 +521,8 @@ fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
 /// `pressing_the_record_button_starts_and_stops_a_session` 实测红）。
 /// 现在的口径：`InputSource::channels()` 是权威 ⇒ 环 / 切块 / WAV 头一致地用**协商值**。
 #[test]
-fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -549,7 +555,8 @@ fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
 /// ⚠ 这一条存在的意义：若它缺席，判据 ① 的"逐码相等"也可能是"管道把什么都写成 0"
 /// 而恰好对上。而且它把"录到静音"钉成**一个被选中的腿**，⛔ 不是"没人喂"的偶然。
 #[test]
-fn the_explicit_silence_leg_is_still_available_and_records_silence() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_explicit_silence_leg_is_still_available_and_records_silence() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -582,7 +589,8 @@ fn the_explicit_silence_leg_is_still_available_and_records_silence() {
 /// 量什么：帧号斜坡腿的**首个落盘样本**反推出来的帧索引（单位 = 帧），必须落在
 /// `[count_in − block, count_in]` 里 —— 即"预备拍期间照拉、⛔ 不追录"。
 #[test]
-fn the_count_in_reading_is_identical_on_both_legs() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_count_in_reading_is_identical_on_both_legs() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -630,7 +638,8 @@ fn the_count_in_reading_is_identical_on_both_legs() {
 /// `record_device::DeviceInputFactory::open` 的环宽改回 `options.channels`
 /// ⇒ ⑥ 那条真设备判据立刻红（实测 `拉取 0 帧 / 落盘 0 帧`）。
 #[test]
-fn a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -663,7 +672,8 @@ fn a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
 /// 判法：把"选择值"当**参数**传进 `input_factory_for`（纯函数），读工厂自己的 `label()`。
 /// ⛔ 不调用 `open()`（那会在有声卡的机器上真的打开麦克风）。
 #[test]
-fn the_product_default_factory_is_the_device_leg() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_product_default_factory_is_the_device_leg() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -782,7 +792,9 @@ impl RecordOutcomePort for BorrowProbeOutcome {
 /// 不是断言失败，因此它同时证明"修前确实持借跨了界面写"。修后起录 / 停录各一次落点，
 /// 两次都必须落在借外。
 #[test]
-fn the_record_callback_releases_the_recorder_borrow_before_writing_the_interface() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_record_callback_releases_the_recorder_borrow_before_writing_the_interface()
+{
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -816,7 +828,8 @@ fn the_record_callback_releases_the_recorder_borrow_before_writing_the_interface
 /// 与 `#212` 的 `toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_borrowed`
 /// 同形：手工持借模拟"同一线程上已有一份借"，回调必须走 `try_borrow_mut()` 的失败臂。
 #[test]
-fn a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -850,7 +863,8 @@ fn a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
 /// 进程内重定向既不可靠也会吞掉别人的输出。子进程用 libtest 的 `--exact` 只跑那一条，
 /// 父进程读回它的 stderr —— 这是"**一行**"这个数量事实的直接证据。
 #[test]
-fn a_held_recorder_borrow_emits_exactly_one_stderr_line() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_held_recorder_borrow_emits_exactly_one_stderr_line() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -880,7 +894,8 @@ fn a_held_recorder_borrow_emits_exactly_one_stderr_line() {
 
 /// 判据 ③ 的**子进程角色**（正常跑也通过；父判据用 `--exact` 只跑它并读 stderr）。
 #[test]
-fn record_borrow_degrade_child_when_invoked_directly() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_record_borrow_degrade_child_when_invoked_directly() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -46,7 +46,8 @@ fn commit_fixture(port: &UndoPort) -> Op {
 /// MCP 侧的同名判据断言"工具路径 = 原始工程"，两条合起来就得到
 /// "UI 路径 = MCP 路径"（同一串字节，同一个 `undo_session`）。
 #[test]
-fn the_ui_path_matches_the_shared_implementation_byte_for_byte() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ui_path_matches_the_shared_implementation_byte_for_byte() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -68,7 +69,8 @@ fn the_ui_path_matches_the_shared_implementation_byte_for_byte() {
 
 /// 判据 ⑨：**"点击"⇒ 工程真的回退了一版**（动作日志是证据，不是控件树）。
 #[test]
-fn a_click_really_rolls_the_project_back() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_click_really_rolls_the_project_back() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -90,7 +92,8 @@ fn a_click_really_rolls_the_project_back() {
 
 /// 判据 ⑨：`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H` 整条链都落到同一个实现。
 #[test]
-fn the_cmd_z_chain_reaches_the_model() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_cmd_z_chain_reaches_the_model() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -112,7 +115,8 @@ fn the_cmd_z_chain_reaches_the_model() {
 
 /// 判据 ⑫：打开**另一个**工程 = 新会话 ⇒ 不能撤到上一个工程的状态。
 #[test]
-fn a_new_project_open_starts_a_fresh_undo_session() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_new_project_open_starts_a_fresh_undo_session() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -134,7 +138,8 @@ fn a_new_project_open_starts_a_fresh_undo_session() {
 
 /// 判据 ⑪：撤销 → 保存（真容器）→ 重开 ⇒ 与内存态一致；游标不落盘但可推导。
 #[test]
-fn saved_after_an_undo_reopens_to_the_same_bytes() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_saved_after_an_undo_reopens_to_the_same_bytes() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -156,7 +161,8 @@ fn saved_after_an_undo_reopens_to_the_same_bytes() {
 
 /// 判据 ⑩：撤销之后工程仍然通过 `validate()`（路由 / 自动化 / 片段池）。
 #[test]
-fn the_project_still_validates_after_a_ui_undo() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_project_still_validates_after_a_ui_undo() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -178,7 +184,8 @@ fn the_project_still_validates_after_a_ui_undo() {
 
 /// 判据：显示态（能否撤销 / 还能撤几步 / 提交数）**来自模型读数**。
 #[test]
-fn the_display_state_comes_from_the_model_readings() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_display_state_comes_from_the_model_readings() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -200,7 +207,8 @@ fn the_display_state_comes_from_the_model_readings() {
 
 /// 判据：撤销之后**投影**拿到的是回退后的工程（界面画的是回退后那一版）。
 #[test]
-fn the_projection_after_a_ui_undo_is_the_rolled_back_project() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_projection_after_a_ui_undo_is_the_rolled_back_project() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -222,7 +230,8 @@ fn the_projection_after_a_ui_undo_is_the_rolled_back_project() {
 
 /// 判据：`--open` 的真实来源标签会进撤销会话（报告行可核对）。
 #[test]
-fn the_session_label_comes_from_the_project_source() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_session_label_comes_from_the_project_source() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -244,7 +253,8 @@ fn the_session_label_comes_from_the_project_source() {
 
 /// 判据：`OpOrigin` 与会话作者如实落在提交上（撤销重做**不**产生新提交）。
 #[test]
-fn undo_and_redo_never_add_commits() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_undo_and_redo_never_add_commits() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -697,7 +697,8 @@ fn check_geometry(width: u32, height: u32) {
 }
 
 #[test]
-fn the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -740,7 +741,8 @@ fn the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
 /// `field_of("format") == "1 channels=2\""`（各自把闭合引号也带进值里）。
 /// 修后两者都必须是 `None`，而 `loss_detail` 仍是整串（引号内的 `=` 不切）。
 #[test]
-fn quoted_values_do_not_expose_their_inner_keys_to_the_top_level() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_quoted_values_do_not_expose_their_inner_keys_to_the_top_level() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -778,7 +780,8 @@ fn quoted_values_do_not_expose_their_inner_keys_to_the_top_level() {
 
 /// `#321` 负向判据：缺席 ⇒ `field_of` 仍 panic（⛔ 不返回空串，⛔ 不返回 `None`）。
 #[test]
-fn a_key_inside_quotes_is_still_absent_for_the_panicking_getter() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_key_inside_quotes_is_still_absent_for_the_panicking_getter() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -817,7 +820,8 @@ fn a_key_inside_quotes_is_still_absent_for_the_panicking_getter() {
 /// `#321` 契约：回执**没有转义** ⇒ 第一个 `"` 就是闭合引号；值里带 `"` 会让其后的
 /// 字段不可达（`None`）。这条把取舍钉死（⛔ silently 猜第二个引号）。
 #[test]
-fn the_first_closing_quote_is_the_contract_and_an_inner_quote_hides_the_rest() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_first_closing_quote_is_the_contract_and_an_inner_quote_hides_the_rest() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -202,7 +202,8 @@ fn project_with_aux_but_no_send() -> (YebanProjectV1, EntityId) {
 // 判据 ①：发送行来自投影（两个不同发送数 ⇒ 条目数随之变）
 // ===========================================================================
 #[test]
-fn the_send_rows_follow_the_projected_edges() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_send_rows_follow_the_projected_edges() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -242,7 +243,8 @@ fn the_send_rows_follow_the_projected_edges() {
 // 判据 ②：空态（无发送 ⇒ 逐字文案 ＋ 条目数 0）
 // ===========================================================================
 #[test]
-fn an_empty_send_list_shows_the_empty_state_and_zero_rows() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_empty_send_list_shows_the_empty_state_and_zero_rows() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -282,7 +284,8 @@ fn an_empty_send_list_shows_the_empty_state_and_zero_rows() {
 // 判据 ③：改增益 = 恰好一次提交，且值真的进了 `RoutingGraph`
 // ===========================================================================
 #[test]
-fn the_send_gain_gesture_commits_exactly_once_and_writes_the_model() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_send_gain_gesture_commits_exactly_once_and_writes_the_model() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -322,7 +325,8 @@ fn the_send_gain_gesture_commits_exactly_once_and_writes_the_model() {
 // 判据 ④：新建发送 = 恰好一次提交，且引擎能消费这条边
 // ===========================================================================
 #[test]
-fn the_create_send_gesture_commits_exactly_once_and_the_engine_consumes_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_create_send_gesture_commits_exactly_once_and_the_engine_consumes_it() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -362,7 +366,8 @@ fn the_create_send_gesture_commits_exactly_once_and_the_engine_consumes_it() {
 // 判据 ⑤：无 aux 时禁用 ＋ 原因逐字可见（点了也不提交）
 // ===========================================================================
 #[test]
-fn a_project_without_an_aux_return_disables_creation_and_says_why() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_project_without_an_aux_return_disables_creation_and_says_why() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -402,7 +407,8 @@ fn a_project_without_an_aux_return_disables_creation_and_says_why() {
 // 源码腿：发送条由投影驱动（不是第二份写死的列表）
 // ===========================================================================
 #[test]
-fn the_send_strip_is_driven_by_the_projection_not_a_fixed_list() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_send_strip_is_driven_by_the_projection_not_a_fixed_list() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

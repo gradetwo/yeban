@@ -169,7 +169,8 @@ impl Drop for InterpreterEnv {
 
 /// 判据 ①：三平台路径公式逐字 ＋ 环境变量覆盖生效（下载落点也用它）。
 #[test]
-fn the_library_root_is_a_preset_platform_path_and_the_environment_wins() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_library_root_is_a_preset_platform_path_and_the_environment_wins() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -192,7 +193,8 @@ fn the_library_root_is_a_preset_platform_path_and_the_environment_wins() {
 /// 判据 ②：样本放库根 ⇒ **相对路径**（逐字是仓库内形态）从库根解析成功；
 /// 找不到时"试过"列表逐字是 `库根 ⇒ 仓库根 ⇒ cwd`。
 #[test]
-fn the_parser_reads_a_relative_path_from_the_library_root() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_parser_reads_a_relative_path_from_the_library_root() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -214,7 +216,8 @@ fn the_parser_reads_a_relative_path_from_the_library_root() {
 
 /// 判据 ③：`sfz_samples_present` 认库根 ⇒ "装乐器"清单 **0 → 2**。
 #[test]
-fn the_presence_predicate_and_the_install_list_follow_the_library() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_presence_predicate_and_the_install_list_follow_the_library() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -244,7 +247,8 @@ fn sample_references(text: &str) -> Vec<String> {
 
 /// 判据 ④：未安装时控件树里逐字有提示 ＋ 下载按钮在场（无头可判）。
 #[test]
-fn the_uninstalled_library_is_words_plus_a_button() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_uninstalled_library_is_words_plus_a_button() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -329,7 +333,8 @@ fn file_url(path: &Path) -> String {
 
 /// 判据 ⑤ ＋ ⑦：假清单 ＋ `file://` 假源 ⇒ 下载 3 / 校验通过 3 / 失败 0，⛔ 不联网。
 #[test]
-fn a_fake_manifest_and_file_source_download_and_verify() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_fake_manifest_and_file_source_download_and_verify() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -351,7 +356,8 @@ fn a_fake_manifest_and_file_source_download_and_verify() {
 
 /// 判据 ⑥：一个文件的 sha256 不符 ⇒ 退出码 `1`、失败数 `1`、**不写安装戳**（旧戳被删）。
 #[test]
-fn a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -377,7 +383,8 @@ fn a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
 /// （覆盖值是**唯一**解释器，⛔ 不回退）。这条判据在三平台都跑：Windows 上就是
 /// `python3` / `py -3` / `python` 全都没有的那种机器。
 #[test]
-fn a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -405,7 +412,8 @@ fn a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
 /// 由 `samples.rs` 的纯函数判据与判据 Ⓐ 覆盖）。
 #[cfg(unix)]
 #[test]
-fn a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -431,7 +439,8 @@ fn a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
 /// 这条判据逐字复刻 `#202` 的 Windows 腿读数：`exit_code == 1` 但 stdout 里没有汇总行。
 #[cfg(unix)]
 #[test]
-fn an_interpreter_that_dies_before_the_receipt_is_not_a_byte_mismatch() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_an_interpreter_that_dies_before_the_receipt_is_not_a_byte_mismatch() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

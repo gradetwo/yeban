@@ -223,7 +223,8 @@ fn dump(rows: &[(String, Bounds)], label: &str) -> String {
 // 判据 ①＋②＋③：七档逐档 —— 两段不相交 / 第一段相对化 / 都在窗口内
 // ===========================================================================
 #[test]
-fn the_two_segments_never_intersect_and_never_leave_the_window() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_two_segments_never_intersect_and_never_leave_the_window() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -408,7 +409,8 @@ fn check_width(width: u32, height: u32) {
 // 判据 ④：1024×800 下三个手势各一次提交
 // ===========================================================================
 #[test]
-fn the_three_gestures_still_commit_exactly_once_at_1024x800() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_three_gestures_still_commit_exactly_once_at_1024x800() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -440,7 +442,8 @@ fn the_three_gestures_still_commit_exactly_once_at_1024x800() {
 // 判据 ⑤：1920×1080 的 24 个注册节点逐格不变 ＋ 指纹读数
 // ===========================================================================
 #[test]
-fn the_1920x1080_geometry_is_still_the_registered_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_1920x1080_geometry_is_still_the_registered_one() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

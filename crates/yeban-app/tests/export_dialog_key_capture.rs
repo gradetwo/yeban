@@ -99,7 +99,8 @@ const FIELD_IDS: [&str; 4] = [
 ];
 
 #[test]
-fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
     let aether_app = std::fs::read_to_string(
@@ -140,7 +141,8 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
 ///   `DIALOG_IDS` 同提交跟上；本条纪律的本意「新增必须同提交登记」不变。）
 ///   都一位不改（`tests/export_dialog_modal_closure.rs` 的 `DIALOG_IDS` 同口径）。
 #[test]
-fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

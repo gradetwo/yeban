@@ -204,7 +204,8 @@ impl Rig {
 
 /// ① + ②：点在第 3 条小节线上 ⇒ 引擎真的到第 3 小节起点，且落点与点击同列。
 #[test]
-fn clicking_the_third_bar_line_seeks_to_that_bar() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_the_third_bar_line_seeks_to_that_bar() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -226,7 +227,8 @@ fn clicking_the_third_bar_line_seeks_to_that_bar() {
 
 /// ③：缩放换了 ⇒ 点击的列换了，但**同一格小节**仍是同一个 tick（换算用投影的缩放）。
 #[test]
-fn the_click_follows_the_projection_zoom_not_a_constant() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_click_follows_the_projection_zoom_not_a_constant() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -248,7 +250,8 @@ fn the_click_follows_the_projection_zoom_not_a_constant() {
 
 /// ④：点出网格右缘 ⇒ 夹在右缘（最后一条小节线右边那一整格的末端）。
 #[test]
-fn a_click_right_of_the_drawn_grid_clamps_to_its_right_edge() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_click_right_of_the_drawn_grid_clamps_to_its_right_edge() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -270,7 +273,8 @@ fn a_click_right_of_the_drawn_grid_clamps_to_its_right_edge() {
 
 /// ⑤：非有限的指针读数 ⇒ **不响应**（位置与动作日志一位都不动）。
 #[test]
-fn a_non_finite_pointer_reading_moves_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_non_finite_pointer_reading_moves_nothing() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -292,7 +296,8 @@ fn a_non_finite_pointer_reading_moves_nothing() {
 
 /// ⑥：定位只搬位置 ⇒ 走带状态不变（播放中点标尺不会起播也不会停播）。
 #[test]
-fn seeking_from_the_ruler_keeps_the_transport_state() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_seeking_from_the_ruler_keeps_the_transport_state() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -314,7 +319,8 @@ fn seeking_from_the_ruler_keeps_the_transport_state() {
 
 /// ⑦（`U-07 R1`）：线间点击 ⇒ 吸附到最近的小节线（平局向更晚一侧）。
 #[test]
-fn clicking_between_two_bars_snaps_to_the_nearest_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_between_two_bars_snaps_to_the_nearest_one() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -336,7 +342,8 @@ fn clicking_between_two_bars_snaps_to_the_nearest_one() {
 
 /// ⑧（`U-07 R3`）：按住拖动 ⇒ 连续定位（down 一条 + move 一条），落点是移动后的那一小节。
 #[test]
-fn dragging_across_the_ruler_seeks_continuously() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dragging_across_the_ruler_seeks_continuously() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -358,7 +365,8 @@ fn dragging_across_the_ruler_seeks_continuously() {
 
 /// ⑨（`U-07 R2`）：标尺的无障碍增减 / `SetValue` ⇒ 不为指针的"第 N 小节"入口。
 #[test]
-fn the_ruler_accessible_actions_seek_by_bar() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ruler_accessible_actions_seek_by_bar() {
     // 新 UI 重构: 旧标尺带视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -384,7 +392,8 @@ fn the_ruler_accessible_actions_seek_by_bar() {
 
 /// 左端 = 工程起点：负的 x ⇒ 0（夹紧，⛔ 不回绕）。
 #[test]
-fn a_negative_column_seeks_to_the_start() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_negative_column_seeks_to_the_start() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -408,7 +417,8 @@ fn a_negative_column_seeks_to_the_start() {
 ///
 /// 这里把小节长度传 `1`（吸附的恒等元）⇒ 只测像素列的**截断**口径，与吸附无关。
 #[test]
-fn the_column_is_truncated_like_the_projection_division() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_column_is_truncated_like_the_projection_division() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -430,7 +440,8 @@ fn the_column_is_truncated_like_the_projection_division() {
 
 /// 右端 = 网格右缘；非有限 ⇒ `None`（不响应）。
 #[test]
-fn a_column_past_the_grid_clamps_and_a_non_finite_one_is_refused() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_column_past_the_grid_clamps_and_a_non_finite_one_is_refused() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -452,7 +463,8 @@ fn a_column_past_the_grid_clamps_and_a_non_finite_one_is_refused() {
 
 /// ⑦ 的纯函数侧：线间点击 ⇒ 最近小节线；平局向更晚一侧（`bridge::snap_tick` 的口径）。
 #[test]
-fn a_click_between_bars_snaps_to_the_nearest_bar_and_ties_move_later() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_click_between_bars_snaps_to_the_nearest_bar_and_ties_move_later() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -474,7 +486,8 @@ fn a_click_between_bars_snaps_to_the_nearest_bar_and_ties_move_later() {
 
 /// ⑨ 的纯函数侧：`± steps × 一小节`，夹在 `[0, span]`，⛔ 不回绕。
 #[test]
-fn stepping_moves_whole_bars_and_clamps() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_stepping_moves_whole_bars_and_clamps() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -496,7 +509,8 @@ fn stepping_moves_whole_bars_and_clamps() {
 
 /// ⑨ 的纯函数侧：小节号 **1 起**；越界 / 溢出 ⇒ 右缘。
 #[test]
-fn a_bar_number_is_one_based_and_clamps_to_the_grid() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_bar_number_is_one_based_and_clamps_to_the_grid() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -518,7 +532,8 @@ fn a_bar_number_is_one_based_and_clamps_to_the_grid() {
 
 /// 网格右缘：溢出 ⇒ 饱和（真实工程到不了；⛔ 不回绕成小数）。
 #[test]
-fn the_grid_right_edge_is_the_line_count_times_one_bar() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_grid_right_edge_is_the_line_count_times_one_bar() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -54,7 +54,8 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 
 /// ① 运行时控件树：三格的 `value` 就是各自的可见文本。
 #[test]
-fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -92,7 +93,8 @@ fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
 
 /// ② 声明面（⛔ 不开窗口）：三格各有一条绑定、与可见文本同源、静态名字不许退化。
 #[test]
-fn every_target_readout_binds_the_same_property_as_its_visible_text() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_target_readout_binds_the_same_property_as_its_visible_text() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

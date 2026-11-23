@@ -453,7 +453,8 @@ fn check_tier(width: u32, height: u32) {
 // 判据 ①＋②＋③＋⑤：三档 —— 空态与按钮不重叠 / 段内两两不相交 / 原因不被裁
 // ===========================================================================
 #[test]
-fn the_empty_label_and_the_create_button_never_overlap() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_empty_label_and_the_create_button_never_overlap() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -477,7 +478,8 @@ fn the_empty_label_and_the_create_button_never_overlap() {
 // 判据 ④（另一条腿）：有 aux、无发送 ⇒ 按钮可用，点一次 Δcommit = 1
 // ===========================================================================
 #[test]
-fn the_create_button_still_commits_exactly_once_when_an_aux_track_exists() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_create_button_still_commits_exactly_once_when_an_aux_track_exists() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

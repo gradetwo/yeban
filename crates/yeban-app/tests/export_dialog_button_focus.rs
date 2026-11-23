@@ -148,7 +148,8 @@ fn assert_nonempty_file(path: &Path) {
 }
 
 #[test]
-fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
     let aether_app = std::fs::read_to_string(
@@ -186,7 +187,8 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
 /// 其中就引用着这些字面量（`root.run()` / `Key.Return` / `focus-on-click: false`），
 /// 数原文会把解释当成实现。同一条教训实测于 run `41516839490`（`search_focus_key.rs` ⑤）。
 #[test]
-fn the_rotation_table_is_single_sourced_and_no_new_control_becomes_addressable() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_rotation_table_is_single_sourced_and_no_new_control_becomes_addressable() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

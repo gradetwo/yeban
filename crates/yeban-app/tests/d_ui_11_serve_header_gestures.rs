@@ -207,7 +207,8 @@ fn exception<'a>(name: &str, list: &[(&'a str, &'a str)]) -> Option<&'a str> {
 // 判据 ①：两份接线清单机械对账（默认档，⛔ 不编译 Slint）
 // ===========================================================================
 #[test]
-fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -427,7 +428,8 @@ impl Rig {
 // 判据 ②：真指针点轨道行 ⇒ 选中态真的动
 // ===========================================================================
 #[test]
-fn a_real_pointer_click_on_a_track_header_selects_it_on_the_serve_surface() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_real_pointer_click_on_a_track_header_selects_it_on_the_serve_surface() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -467,7 +469,9 @@ fn a_real_pointer_click_on_a_track_header_selects_it_on_the_serve_surface() {
 // 判据 ③：选好轨再「新建剪辑」⇒ 摆放落在被选中的那条轨（钉住创作现场的症状）
 // ===========================================================================
 #[test]
-fn a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -507,7 +511,9 @@ fn a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one
 // 判据 ④：`Alt+↓` 在这份装配上真的换轨（⛔ 不许只报 `consumed = true`）
 // ===========================================================================
 #[test]
-fn alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consumed()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -547,7 +553,8 @@ fn alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consum
 // 判据 ⑤：按住行头向上拖 ⇒ 那一行的行高真的变（`wire_track_height_drag`）
 // ===========================================================================
 #[test]
-fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

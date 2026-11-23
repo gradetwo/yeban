@@ -145,7 +145,8 @@ fn string_column(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
 
 /// A1：一格 = 音量 1.0 dB / 声相 0.1，且 `direction` **只取符号**。
 #[test]
-fn mixer_nudge_delta_is_one_display_step_per_param() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_nudge_delta_is_one_display_step_per_param() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -183,7 +184,8 @@ fn mixer_nudge_delta_is_one_display_step_per_param() {
 
 /// A2：恰好一条 `Op::SetParam`、寻址到**被选中那轨**、`old_val` 与现值**逐位**相同。
 #[test]
-fn mixer_nudge_ops_target_the_selected_track_with_bitwise_old_val() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_nudge_ops_target_the_selected_track_with_bitwise_old_val() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -221,7 +223,8 @@ fn mixer_nudge_ops_target_the_selected_track_with_bitwise_old_val() {
 
 /// A3：两端夹紧 ⇒ 端点上返回**空**；夹的是**界面量程**。
 #[test]
-fn mixer_nudge_ops_clamp_at_the_ends_of_what_the_fader_can_show() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_nudge_ops_clamp_at_the_ends_of_what_the_fader_can_show() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -259,7 +262,8 @@ fn mixer_nudge_ops_clamp_at_the_ends_of_what_the_fader_can_show() {
 
 /// A4：陈旧 / 解析不出的身份 ⇒ 空 `Vec`（不猜"大概是第一条轨"）。
 #[test]
-fn mixer_nudge_ops_refuse_a_stale_or_unparsable_identity() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_mixer_nudge_ops_refuse_a_stale_or_unparsable_identity() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -327,7 +331,8 @@ fn live_with_keys_and_select(project: &YebanProjectV1) -> (MainWindow, Rc<UndoPo
 
 /// B1：`Cmd/Ctrl+Alt+↑/↓` 改的是**选中轨**的音量，工程与推子读数一起动。
 #[test]
-fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -365,7 +370,8 @@ fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
 
 /// B2：`Cmd/Ctrl+Alt+←/→` 动的是**声相那一格**，且一格 = 显示上的一格。
 #[test]
-fn cmd_ctrl_alt_left_right_moves_the_pan_by_one_display_step() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_cmd_ctrl_alt_left_right_moves_the_pan_by_one_display_step() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -403,7 +409,8 @@ fn cmd_ctrl_alt_left_right_moves_the_pan_by_one_display_step() {
 
 /// B3：没有选中轨 ⇒ 四个方向**都不消费**、0 提交、工程逐位不变。
 #[test]
-fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -446,7 +453,8 @@ fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
 /// 工程已经不是那一份。写者仍然只有 `host::wire_track_select` 一个（本判据⛔ 走它，
 /// 因为要走它就得先有一个含旧身份的窗口）。
 #[test]
-fn a_stale_selection_after_a_project_swap_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stale_selection_after_a_project_swap_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -38,7 +38,8 @@ use yeban_ui_test_port::port::Permission;
 const A: &str = "a";
 
 #[test]
-fn ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -80,7 +81,8 @@ fn ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
 /// 提案"—— 拒绝仍只有 `musical-pr-reject-button`。判据落在**生产同一个** `wire_keys`
 /// 上：抽屉关着时 `Escape` 必须如实放行（`tests/live_ui_mcp.rs` 对这条放行也有断言）。
 #[test]
-fn escape_closes_the_open_ai_drawer_and_then_passes_through() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_closes_the_open_ai_drawer_and_then_passes_through() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

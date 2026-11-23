@@ -324,7 +324,8 @@ fn outside_forensics(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> Strin
 /// * 音符选区若非空，`Shift+←/→` 会走**音符**那一臂 ⇒ 本文件所有"剪辑被裁剪"的断言都会空转；
 /// * 时长若小于一档网格，② 的 `+网格` 与 ④ 的"缩到下限"都无从构造。
 #[test]
-fn the_fixture_starts_with_no_note_selection_and_paints_every_placement() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_fixture_starts_with_no_note_selection_and_paints_every_placement() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -365,7 +366,8 @@ fn the_fixture_starts_with_no_note_selection_and_paints_every_placement() {
 /// 这一臂钉"写权威"＋"结果回到读数"两个方向，并逐字段钉住那条 op 的**范围**：
 /// `SetClipPlacementDuration` 只写 `duration_ticks` ⇒ 起点 / 静音 / 循环配置一位都不许动。
 #[test]
-fn shift_right_lengthens_exactly_the_selected_placement_by_one_grid() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_shift_right_lengthens_exactly_the_selected_placement_by_one_grid() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -403,7 +405,8 @@ fn shift_right_lengthens_exactly_the_selected_placement_by_one_grid() {
 
 /// ②b 反向：`Shift+←` 把同一条摆放**缩短一个网格**（同一个动作的另一格键）。
 #[test]
-fn shift_left_shortens_the_selected_placement_by_the_same_grid() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_shift_left_shortens_the_selected_placement_by_the_same_grid() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -451,7 +454,8 @@ fn shift_left_shortens_the_selected_placement_by_the_same_grid() {
 ///   多出来的 8px 会**露出新的字**。2026-11-03 实测红在此处：203 个改变像素全落在 `y < 110`
 ///   的包头带内（并集只从 110 起），实现一位没错。⛔ 把区域退回"整个编曲区"就变成空判据。
 #[test]
-fn the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -493,7 +497,8 @@ fn the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
 /// ⛔ 不能看"这一批 op 是否为空"。后者的形状是"用户指着 1 tick 的音符按 `Shift+←`，
 /// 音符没动，剪辑被顺手裁短了" —— 一次按键带走另一个用户**没指着**的对象。
 #[test]
-fn the_note_scope_wins_and_a_floor_bound_note_never_leaks_into_the_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_note_scope_wins_and_a_floor_bound_note_never_leaks_into_the_clip() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -531,7 +536,9 @@ fn the_note_scope_wins_and_a_floor_bound_note_never_leaks_into_the_clip() {
 
 /// ⑤ 视图门控：Session 视图里这一键**不消费、不提交**，而**同一份选中态**回编曲视图立刻生效。
 #[test]
-fn a_selection_left_over_from_the_arrangement_view_is_not_resized_in_session_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_selection_left_over_from_the_arrangement_view_is_not_resized_in_session_view()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -571,7 +578,8 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_resized_in_session_vie
 ///
 /// 与 `clip_delete_ops_for` / `clip_mute_ops_for` 同一取向："把键吞掉却什么都不做，比不处理更糟"。
 #[test]
-fn a_stale_or_illegal_clip_ulid_is_not_resized() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stale_or_illegal_clip_ulid_is_not_resized() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -616,7 +624,8 @@ fn a_stale_or_illegal_clip_ulid_is_not_resized() {
 /// `refresh_undo_window(ui, port, true)` ⇒ 这一臂才**真的**能断言"画面跟着回退"。
 /// 注入写法（`("z", shift, ctrl, alt, meta)`）与 `live_ui_mcp.rs` 里已绿的 `Cmd+Z` 判据逐位一致。
 #[test]
-fn one_undo_restores_the_duration_byte_for_byte() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_one_undo_restores_the_duration_byte_for_byte() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -654,7 +663,9 @@ fn one_undo_restores_the_duration_byte_for_byte() {
 
 /// ⑧ **纯函数**逐字段对账 ＋ **源码纪律**（构造点恰好一处）。
 #[test]
-fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_site() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_site()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -695,7 +706,9 @@ fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_si
 /// ② / ③ 都在读 `clip-widths`，它们依赖"按 `clip-ulids` 的位置取宽度不会取错剪辑"。
 /// 这条在纯投影层（⛔ 不起窗口）逐条钉住它。
 #[test]
-fn the_projection_orders_the_width_column_by_the_same_identity_as_the_paint_list() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_projection_orders_the_width_column_by_the_same_identity_as_the_paint_list()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

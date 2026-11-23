@@ -259,7 +259,8 @@ fn click_in_roll_by_id_at(plane: &mut LiveControlPlane, seq: i64, hit_x: f32, hi
 
 /// 判据 ①（§3.6）：按语义 ID 注入一次铅笔点击 ⇒ **恰好一个**新音符，且 tick / pitch 与坐标换算一致。
 #[test]
-fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -307,7 +308,9 @@ fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
 /// 帧控制臂（下一条判据）在**同一份旧代码**上**也红**（它断言宿主坐标数字点不到），
 /// 两条一起才把缺陷定位到"少了一次 `bridge::painted_to_host`"而不是坐标 / 夹具坏了。
 #[test]
-fn clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -351,7 +354,8 @@ fn clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_
 /// 修复前这条判据红（旧宿主把数字当宿主帧用，于是选中了靶子），修复后绿。
 /// ⛔ 断言只看"靶子不在选区里"，不假定选区一定为空 —— 换回来的点可能压到别的音符上。
 #[test]
-fn a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -394,7 +398,8 @@ fn a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
 /// `wire_roll_edit` 后装的 handler 把选区 handler 覆盖了。本判据在上一轮修复前后都绿；
 /// 在本票的帧修复前后也都绿（它走的是同一个派发器里的同一条换算）。
 #[test]
-fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_a_note_without_wire_roll_edit_still_selects_it() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -437,7 +442,8 @@ fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
 /// 自己写明的方式**更新**而来：唯一派发器把橡皮擦接到了 [`yeban_app::host::delete_ops_for`]
 /// （与键盘 `Delete` 同一个"选区身份 → 待提交批"解析点），所以"点击不删"的登记到此为止。
 #[test]
-fn the_eraser_click_deletes_the_note_under_the_cursor() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_eraser_click_deletes_the_note_under_the_cursor() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -709,7 +715,8 @@ fn target_note(
 /// 判据 (a)：选择工具在音符上拖动 ⇒ 权威工程的 `start_tick` 与 `pitch` 按**吸附后的
 /// 指针位移**改变，且**时值一位不动**（是"移动"不是"改时值"）。
 #[test]
-fn move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -747,7 +754,8 @@ fn move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
 
 /// 判据 (b)：音符拖动**不**顺带滚动；控制臂 = **同一次装配里**的空白处拖动照旧滚动。
 #[test]
-fn move_arm_b_a_note_drag_does_not_scroll_the_roll() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_move_arm_b_a_note_drag_does_not_scroll_the_roll() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -788,7 +796,9 @@ fn move_arm_b_a_note_drag_does_not_scroll_the_roll() {
 /// ⚠ 本判据在**未接移动臂**的代码上**空转绿**（选择工具本来就不写工程）—— 它的对照
 /// 不在"修复前 / 修复后"，而在"**取消这条收尾路径**在不在"（见文件末"怎么变红"）。
 #[test]
-fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -834,7 +844,8 @@ fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_noth
 /// （`crates/yeban-ui-test-port/src/render.rs` 的线程约束），一个测试里调两次 `assemble()`
 /// 会以 `PlatformUnavailable { "The platform has already been initialized." }` 红 —— 实测过。
 #[test]
-fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -894,7 +905,8 @@ fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
 ///    与 `drag-moved` 仍为真 ⇒ 这一 `up` 会走 `note-drag-release` 提交一个 op；
 ///    它仍报 0 才是"取消确实到达了控件的抓取通道"的机械证据。
 #[test]
-fn pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -934,7 +946,8 @@ fn pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
 ///
 /// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
 #[test]
-fn move_arm_d_exactly_one_history_entry_per_gesture() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_move_arm_d_exactly_one_history_entry_per_gesture() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -984,7 +997,8 @@ fn move_arm_d_exactly_one_history_entry_per_gesture() {
 /// **它不证明什么**：行为（一行注释就能让字面计数 ≥1）⇒ 行为由 (a)–(d) 管；也不证明
 /// 每条 `ToolDrag` 变体都被消费（`AdjustVelocity` **故意**仍未被消费，见交付报告）。
 #[test]
-fn move_arm_e_the_drag_taxonomy_gains_a_production_consumer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_move_arm_e_the_drag_taxonomy_gains_a_production_consumer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1049,7 +1063,8 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// 因此"滚动一下 = 插入一个音符"这条缺陷路径不再存在。
 /// **它不证明什么**：其它工具（剪刀 / 橡皮擦 / 力度）的**拖拽**语义 —— 那些仍未接线。
 #[test]
-fn a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1321,7 +1336,8 @@ fn drag_velocity_to_lane_y(
 /// 判据 (a)：力度工具把某根柱竖直拖到一条车道内 y ⇒ 权威工程的力度 = **判据自己按车道几何
 /// 算出的绝对数**（不是"起点加增量"，也不是从被测代码读回来的数）。
 #[test]
-fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1367,7 +1383,8 @@ fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
 /// ⇒ 单击力度柱不但选不中，还会把已有选区**清掉**（比"点了没反应"更糟）。
 /// 靶子由 [`velocity_target`] 从**运行时包围盒**给出，与被测代码不共享几何假设。
 #[test]
-fn velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1419,7 +1436,8 @@ fn velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
 /// ⛔ 它**不证明**像素：读的是窗口上的草稿属性，不是截图。柱高与草稿值的关系由
 /// `piano_roll.slint` 的 `28px * velocity_reading` 表达（由 `bridge.rs` 的文本守卫对账）。
 #[test]
-fn velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1457,7 +1475,8 @@ fn velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() 
 
 /// 判据 (b)：拖到车道上沿之外 ⇒ **恰好 127**；拖到下沿之下 ⇒ **恰好 0**（夹紧，⛔ 不越界）。
 #[test]
-fn velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1497,7 +1516,8 @@ fn velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
 ///
 /// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
 #[test]
-fn velocity_arm_c_exactly_one_history_entry_per_gesture() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_c_exactly_one_history_entry_per_gesture() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1543,7 +1563,9 @@ fn velocity_arm_c_exactly_one_history_entry_per_gesture() {
 /// 三条断言同时红（实测读数见交付报告）。它证明的是**这条收尾路径真的在链上**，
 /// ⛔ 不证明"取消在任何夹具下都能还原"（草稿从未进过工程，见判据 (c) 的提交计数）。
 #[test]
-fn velocity_arm_d_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_d_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1616,7 +1638,8 @@ fn code_only(source: &str) -> String {
 /// **它不证明什么**：可达性 —— 一个 `if false { ToolDrag::AdjustVelocity }` 也能让它绿；
 /// 真正"拖得动"由 (a)–(d) 用真实指针注入管。也**不证明**其余三个变体没被误接。
 #[test]
-fn velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1669,7 +1692,8 @@ fn velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
 /// **它不证明什么**：空白处的 marquee / 框选语义（仍未裁决，本切片不实现）；
 /// 也不证明"单击空白仍然清空选区"（那是另一条判据的事，本文件不重复）。
 #[test]
-fn a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1850,7 +1874,8 @@ fn painted_target_note(
 /// 为什么靶子必须是 0 力度：那颗音符的柱高是 0px、`velocity_bar_at` 也拒绝它
 /// ⇒ 拖拽臂**够不着**；双击是规范给它的恢复路径。100 力度音符上的双击由 (b) 的第二拍管。
 #[test]
-fn velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1889,7 +1914,8 @@ fn velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
 /// 判据 (b)：一次双击 = **恰好一个**原子 op（一次提交 / 一步撤销），
 /// 而**已经是 100** 的音符上再双击 = **0** 个 op（⛔ 不写空编辑）。
 #[test]
-fn velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1930,7 +1956,8 @@ fn velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
 /// ⚠ 它在**修复前的代码上也是绿的**（旧代码什么都不做）—— 控制臂证明的是"没有假阳性"，
 /// 不是"能力存在"。能力由 (a)/(b) 管。
 #[test]
-fn velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1970,7 +1997,9 @@ fn velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() 
 ///
 /// ⚠ 与 (c1) 同款：它在**修复前的代码上也是绿的** —— 控制臂只排除假阳性。
 #[test]
-fn velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2180,7 +2209,8 @@ fn knife_target(
 /// - 切分**期**的画面（无截图判据）；
 /// - 网格竖线的**绘制**位置（本判据断言的是模型里的 tick，不是像素）。
 #[test]
-fn a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2229,7 +2259,8 @@ fn a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
 /// - 撤销**之后**的重做（由既有撤销判据管）；
 /// - 界面在撤销后的重投影（本判据只读权威工程的字节）。
 #[test]
-fn b_knife_split_is_one_atomic_commit_and_one_undo_step() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_b_knife_split_is_one_atomic_commit_and_one_undo_step() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2271,7 +2302,8 @@ fn b_knife_split_is_one_atomic_commit_and_one_undo_step() {
 ///
 /// 它断言的是"没有假阳性"（点了空白不该切任何东西），**不是**能力存在。能力由 (a)/(b) 管。
 #[test]
-fn c1_a_knife_click_on_blank_space_changes_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_c1_a_knife_click_on_blank_space_changes_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2323,7 +2355,8 @@ fn c1_a_knife_click_on_blank_space_changes_nothing() {
 /// 时值（例如导入的 MIDI）会让吸附点**落到终点之后**，那时若用减法算右半时值会 u64 下溢
 /// （debug 下 panic）；`split_tick <= start` 的 `<=` 同理守着左半。
 #[test]
-fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2519,7 +2552,9 @@ fn assemble_for_arrow_nudge() -> (
 /// - ⚠ 它用 `invoke_key_action` 注入**修饰组合**（端口表达不了 chord —— 仓库既有的
 ///   `Shift+Space` 判据是同一格）。真实事件源那一半由 `arrow_nudge_d_focus_*` 补。
 #[test]
-fn arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec_amount() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec_amount()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2580,7 +2615,8 @@ fn arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec
 ///   `process_key_input`，但本判据没有注入 `repeat: true` 的变体）；
 /// - ⛔ 不证明提交里的 op **类型**（只证明历史前进一次 + 工程字节可逆）。
 #[test]
-fn arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2633,7 +2669,8 @@ fn arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
 ///
 /// ⛔ 不证明"有选区时会动"（那是 (a)）；⛔ 不证明夹紧（那是 (c2)）。
 #[test]
-fn arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2691,7 +2728,8 @@ fn arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
 /// - ⛔ 不证明音高轴的夹紧（这里只走 tick 轴；音高轴的纯函数读数在 `host.rs` 的单元判据里）；
 /// - ⛔ 不证明"上界"（`u64::MAX`）那一半 —— 夹具里没有任何音符接近时钟顶端。
 #[test]
-fn arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2763,7 +2801,8 @@ fn arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing()
 ///   `for_each_keys!` 表把 `NamedKey::ArrowRight` 映到同一个码位 —— 那是**读**出来的，不是本判据观测的）；
 /// - ⛔ 不证明带修饰组合的真实事件（`Shift` 那一格由下一条判据观测；`Alt` 端口**表达不了**）。
 #[test]
-fn arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2814,7 +2853,9 @@ fn arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
 /// - ⛔ 不证明 `Alt` 组合（端口表达不了 —— 那两格由判据 (a) 经回调那一格观测）；
 /// - ⛔ 不证明真实键盘的按下/释放顺序。
 #[test]
-fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_octave() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_octave()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2881,7 +2922,8 @@ fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_
 /// - ⛔ 不证明像素；
 /// - ⛔ 不证明幅度**常量**的来源（期望值 240 来自模型 PPQ/4，与 `NUDGE_GRID_TICKS_EXPECTED` 同源）。
 #[test]
-fn arrow_duration_resize_e_shift_arrows_change_only_the_selected_durations() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_arrow_duration_resize_e_shift_arrows_change_only_the_selected_durations() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3090,7 +3132,8 @@ fn assemble_with_project(
 
 /// 判据 (a)：展示轨 A **没有**覆盖该 tick 的片段、B **有** ⇒ 铅笔**不得**写到 B。
 #[test]
-fn a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3128,7 +3171,8 @@ fn a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick()
 
 /// 判据 (b)：展示轨 A **有**覆盖 ⇒ 写到**它**（B 也有覆盖，但 B 一位不动）。
 #[test]
-fn a_pencil_click_writes_to_the_displayed_track_not_a_covered_later_track() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_pencil_click_writes_to_the_displayed_track_not_a_covered_later_track() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3166,7 +3210,8 @@ fn a_pencil_click_writes_to_the_displayed_track_not_a_covered_later_track() {
 
 /// 判据 (c)：**单轨**工程 —— 两条规则指向同一条轨，结果与改前逐值相同。
 #[test]
-fn a_single_track_project_keeps_the_pre_166_pencil_result() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_single_track_project_keeps_the_pre_166_pencil_result() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3248,7 +3293,9 @@ fn note_rect_in_tree(plane: &mut LiveControlPlane, seq: i64, ulid: &str) -> bool
 /// "事件没送到"造成的假绿）；③ 拖动之后那个音符**仍在树里** ⇒ 重投影用的是此刻的工程；
 /// ④ 拖动⛔ 不改工程、⛔ 不插新音符（`up` 只在未越阈值时才 fired `clicked`）。
 #[test]
-fn a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot()
+ {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

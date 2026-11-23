@@ -91,7 +91,8 @@ fn project_bytes(project: &YebanProjectV1) -> Vec<u8> {
 // 判据 ①③⑥：三处面板同一次解析（纯投影，不需要窗口）
 // ===========================================================================
 #[test]
-fn the_panels_serve_the_selected_track_not_always_the_first_one() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_panels_serve_the_selected_track_not_always_the_first_one() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -131,7 +132,8 @@ fn the_panels_serve_the_selected_track_not_always_the_first_one() {
 // 判据 ④：兜底的三条路径（未选 / 被删 / 被撤销掉）都不崩
 // ===========================================================================
 #[test]
-fn a_missing_selection_falls_back_to_the_first_track_without_panicking() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_missing_selection_falls_back_to_the_first_track_without_panicking() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -171,7 +173,9 @@ fn a_missing_selection_falls_back_to_the_first_track_without_panicking() {
 // 判据 ④③（端口腿）：删轨 / 撤销掉选中的轨
 // ===========================================================================
 #[test]
-fn deleting_or_undoing_the_selected_track_falls_back_through_the_authoritative_port() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_deleting_or_undoing_the_selected_track_falls_back_through_the_authoritative_port()
+ {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -211,7 +215,8 @@ fn deleting_or_undoing_the_selected_track_falls_back_through_the_authoritative_p
 // 判据 ②⑦：点轨道头选中 **⛔ 不是提交**（真实窗口 + 无障碍默认动作）
 // ===========================================================================
 #[test]
-fn clicking_the_track_header_changes_the_panels_and_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_the_track_header_changes_the_panels_and_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -251,7 +256,8 @@ fn clicking_the_track_header_changes_the_panels_and_commits_nothing() {
 // 判据 ④③（撤销掉"新建的轨"）：选中轨被撤销掉 ⇒ 回落
 // ===========================================================================
 #[test]
-fn undoing_the_creation_of_the_selected_track_falls_back() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_undoing_the_creation_of_the_selected_track_falls_back() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -291,7 +297,8 @@ fn undoing_the_creation_of_the_selected_track_falls_back() {
 // 判据 ⑤：铅笔写到**选中轨**的片段里（真实点击派发器）
 // ===========================================================================
 #[test]
-fn the_pencil_writes_into_the_selected_tracks_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_pencil_writes_into_the_selected_tracks_clip() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -331,7 +338,8 @@ fn the_pencil_writes_into_the_selected_tracks_clip() {
 // 判据 ⑦（源码腿）：手势落在**既有控件**上，且默认帧没有新像素
 // ===========================================================================
 #[test]
-fn the_selection_gesture_reuses_the_existing_track_header() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_selection_gesture_reuses_the_existing_track_header() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -371,7 +379,8 @@ fn the_selection_gesture_reuses_the_existing_track_header() {
 // 判据 ③（另一条腿）：同一次解析 —— `display_track` 是唯一实现
 // ===========================================================================
 #[test]
-fn there_is_exactly_one_selection_resolution() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_there_is_exactly_one_selection_resolution() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

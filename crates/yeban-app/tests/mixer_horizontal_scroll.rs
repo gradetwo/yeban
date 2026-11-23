@@ -248,7 +248,8 @@ impl Rig {
 
 /// ① + ②：向右滚轮 = 看后面的通道；仍在树里的每一条恰好左移该距离，滚回去逐位复原。
 #[test]
-fn wheel_scroll_moves_strips_left_and_reveals_later_tracks() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_wheel_scroll_moves_strips_left_and_reveals_later_tracks() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -270,7 +271,8 @@ fn wheel_scroll_moves_strips_left_and_reveals_later_tracks() {
 
 /// ③ + ④：滚到底 ⇒ 末条通道与其推子可达、三块侧面板回来；继续滚 ⇒ 夹紧。
 #[test]
-fn scrolling_to_the_end_clamps_and_reveals_the_last_strip_and_the_panels() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_scrolling_to_the_end_clamps_and_reveals_the_last_strip_and_the_panels() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -292,7 +294,8 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_strip_and_the_panels() {
 
 /// ⑤：纵向滚轮不动混音台（`content-height: self.height` ⇒ 上游不接这个方向）。
 #[test]
-fn vertical_wheel_does_not_scroll_the_console() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_vertical_wheel_does_not_scroll_the_console() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -314,7 +317,8 @@ fn vertical_wheel_does_not_scroll_the_console() {
 
 /// ⑥：主控通道条不随滚动 —— 它的 x 在起点、滚动后、到底时逐位相同。
 #[test]
-fn scrolling_does_not_move_the_master_strip() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_scrolling_does_not_move_the_master_strip() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -336,7 +340,8 @@ fn scrolling_does_not_move_the_master_strip() {
 
 /// ⑧：内容不宽出视口（演示工程 6 轨）⇒ 滚轮一位不动。
 #[test]
-fn few_tracks_do_not_scroll() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_few_tracks_do_not_scroll() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

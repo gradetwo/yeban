@@ -59,7 +59,8 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow, ViewState) {
 /// ① 运行时：`MainWindow.track-kinds` 逐字等于 `ViewState::track_kinds()`，
 /// 且与 `track-names` 同索引集（`apply_view` 一次注入，⛔ 没有第二份）。
 #[test]
-fn the_projected_track_kinds_reach_the_window_under_the_same_index() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_projected_track_kinds_reach_the_window_under_the_same_index() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -90,7 +91,8 @@ fn the_projected_track_kinds_reach_the_window_under_the_same_index() {
 /// ② 声明面：属性 / 转发 / setter 三段闭环，且 `track-kinds` 只走
 /// `MainWindow → ArrangementView`（⛔ 不进 `ConsoleTabs → MixerConsole` 注入集合）。
 #[test]
-fn the_injection_is_declared_forwarded_and_written_by_the_host() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_injection_is_declared_forwarded_and_written_by_the_host() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -121,7 +123,9 @@ fn the_injection_is_declared_forwarded_and_written_by_the_host() {
 /// ③ 视觉面 + 纯视觉边界：色板 / 徽标读的是**注入属性**，三类各有独立配色与文字，
 /// 且三个节点不引入任何可寻址 / 手势 / 回调面 ⇒ 运行时控件树不增节点。
 #[test]
-fn the_header_reads_injected_kinds_and_the_visual_nodes_stay_out_of_the_control_tree() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_header_reads_injected_kinds_and_the_visual_nodes_stay_out_of_the_control_tree()
+ {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
     // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
     let aether_app = std::fs::read_to_string(

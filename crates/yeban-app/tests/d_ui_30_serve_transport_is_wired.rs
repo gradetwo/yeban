@@ -183,7 +183,8 @@ fn code_only(source: &str) -> String {
 
 /// ① 那颗**播放**按钮把命令发给了本装配自己的宿主（判据侧一行接线都没做）。
 #[test]
-fn the_play_button_drives_the_assemblys_own_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_play_button_drives_the_assemblys_own_engine() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -221,7 +222,8 @@ fn the_play_button_drives_the_assemblys_own_engine() {
 
 /// ② 那颗**停止**按钮 = 停住**并**回起点（`Stop` + `SeekTicks(0)`）。
 #[test]
-fn the_stop_button_stops_and_rewinds_through_the_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_stop_button_stops_and_rewinds_through_the_engine() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -259,7 +261,8 @@ fn the_stop_button_stops_and_rewinds_through_the_engine() {
 
 /// ③ `#227` 的连按语义（第二次停、第三次回起点、第四次才是新的起播）在本装配里可达。
 #[test]
-fn the_double_tap_rewind_lands_on_the_same_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_double_tap_rewind_lands_on_the_same_engine() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -297,7 +300,8 @@ fn the_double_tap_rewind_lands_on_the_same_engine() {
 
 /// ④ `Space` 那条**键路**（`wire_keys` → `apply_action` → `invoke_toggle_play`）真的落到同一个宿主。
 #[test]
-fn the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -335,7 +339,8 @@ fn the_space_key_reaches_the_engine_instead_of_only_being_consumed() {
 
 /// ⑤ 那颗**节拍器**按钮在有会话时写的是文档（`D-UI-29` ⑧ 那条源码纪律的运行期版本）。
 #[test]
-fn the_metronome_button_writes_the_document_instead_of_swapping_the_engine() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_metronome_button_writes_the_document_instead_of_swapping_the_engine() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -373,7 +378,8 @@ fn the_metronome_button_writes_the_document_instead_of_swapping_the_engine() {
 
 /// ⑥ 换工程**重接**一次：初值跟着新工程走，且 Slint 的覆盖语义 ⇒ 不是第二个注册者。
 #[test]
-fn applying_a_new_project_rewires_the_transport_exactly_once() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_applying_a_new_project_rewires_the_transport_exactly_once() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -411,7 +417,8 @@ fn applying_a_new_project_rewires_the_transport_exactly_once() {
 
 /// ⑦ 没有引擎的那台装配：按下之后⛔ 不假装切换过（冷读数，一路都是 `false`）。
 #[test]
-fn without_an_engine_a_press_leaves_every_reading_stopped() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_without_an_engine_a_press_leaves_every_reading_stopped() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -449,7 +456,8 @@ fn without_an_engine_a_press_leaves_every_reading_stopped() {
 
 /// ⑧ 出处纪律（⛔ 不开窗口）：接线在装配里、宿主只有一份、执行面自己不发送走带命令。
 #[test]
-fn the_execution_surface_wires_once_and_never_sends_transport_itself() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_execution_surface_wires_once_and_never_sends_transport_itself() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

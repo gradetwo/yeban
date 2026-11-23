@@ -37,7 +37,8 @@ use yeban_app::undo::{UiAction, UndoPort, UndoSession};
 use yeban_ui_test_port::port::Permission;
 
 #[test]
-fn the_master_mute_and_solo_buttons_commit_one_op_each() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_mute_and_solo_buttons_commit_one_op_each() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

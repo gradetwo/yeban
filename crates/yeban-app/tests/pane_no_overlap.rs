@@ -816,7 +816,8 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
 // 判据 ①（钢琴卷帘）：三档，段内非容器控件两两不相交
 // ===========================================================================
 #[test]
-fn the_piano_roll_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_piano_roll_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -840,7 +841,8 @@ fn the_piano_roll_has_no_two_controls_in_the_same_place() {
 // 判据 ②（调音台）：三档，段内非容器控件两两不相交 ＋ 窄档竖排几何
 // ===========================================================================
 #[test]
-fn the_mixer_console_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_mixer_console_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -864,7 +866,8 @@ fn the_mixer_console_has_no_two_controls_in_the_same_place() {
 // 判据 ③（素材池）：三档，段内非容器控件两两不相交
 // ===========================================================================
 #[test]
-fn the_asset_pool_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_asset_pool_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -888,7 +891,8 @@ fn the_asset_pool_has_no_two_controls_in_the_same_place() {
 // 判据 ④（走带）：三档，顶栏带内非容器控件两两不相交
 // ===========================================================================
 #[test]
-fn the_transport_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_transport_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1682,7 +1686,8 @@ fn check_ai_rail(width: u32, height: u32) {
 // 判据 ⑤（设备链卡片区）：三档 ＋ 三种夹具
 // ===========================================================================
 #[test]
-fn the_device_card_chain_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_device_card_chain_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1706,7 +1711,8 @@ fn the_device_card_chain_has_no_two_controls_in_the_same_place() {
 // 判据 ②（装乐器行）：三档
 // ===========================================================================
 #[test]
-fn the_instrument_install_row_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_instrument_install_row_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1730,7 +1736,8 @@ fn the_instrument_install_row_has_no_two_controls_in_the_same_place() {
 // 判据 ③（轨路由四键区）：三档 ＋ 只有主总线（原因行）一档
 // ===========================================================================
 #[test]
-fn the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1754,7 +1761,8 @@ fn the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
 // 判据 ④（编曲画布）：三档，分组两两不相交
 // ===========================================================================
 #[test]
-fn the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1778,7 +1786,8 @@ fn the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
 // 判据 ⑤（状态栏）：三档 × (提示态 / 保存回执态)
 // ===========================================================================
 #[test]
-fn the_status_bar_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_status_bar_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1802,7 +1811,8 @@ fn the_status_bar_has_no_two_controls_in_the_same_place() {
 // 判据 ⑥（AI 右栏）：三档
 // ===========================================================================
 #[test]
-fn the_ai_rail_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_ai_rail_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3047,7 +3057,8 @@ fn check_engine_error_banner(width: u32, height: u32) {
 // ① 左栏：三档 × (展开夹具 / 真实断点夹具)
 // ===========================================================================
 #[test]
-fn the_sidebar_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_sidebar_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3071,7 +3082,8 @@ fn the_sidebar_has_no_two_controls_in_the_same_place() {
 // ② 控制台导轨带 ＋ splitter 带：三档
 // ===========================================================================
 #[test]
-fn the_console_tab_rail_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_console_tab_rail_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3095,7 +3107,8 @@ fn the_console_tab_rail_has_no_two_controls_in_the_same_place() {
 // ③ Session 视图：三档 × (展开夹具 / 真实断点夹具)
 // ===========================================================================
 #[test]
-fn the_session_view_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_session_view_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3119,7 +3132,8 @@ fn the_session_view_has_no_two_controls_in_the_same_place() {
 // ③b ⭐ `#190` Session 7 轨：截断报数 ＋ 段内 0 相交
 // ===========================================================================
 #[test]
-fn the_session_view_reports_tracks_that_did_not_fit() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_session_view_reports_tracks_that_did_not_fit() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3143,7 +3157,8 @@ fn the_session_view_reports_tracks_that_did_not_fit() {
 // ④ 主总线第二段段内：三档 × 三种夹具
 // ===========================================================================
 #[test]
-fn the_master_device_segment_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_master_device_segment_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3167,7 +3182,8 @@ fn the_master_device_segment_has_no_two_controls_in_the_same_place() {
 // ⑤ 时光机：三档 × (6 节点 / 空链)
 // ===========================================================================
 #[test]
-fn the_undo_tree_modal_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_undo_tree_modal_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3191,7 +3207,8 @@ fn the_undo_tree_modal_has_no_two_controls_in_the_same_place() {
 // ⑥ 提案抽屉：三档（零提案）
 // ===========================================================================
 #[test]
-fn the_musical_pr_drawer_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_musical_pr_drawer_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3215,7 +3232,8 @@ fn the_musical_pr_drawer_has_no_two_controls_in_the_same_place() {
 // ⑦ 引擎错误横幅：三档
 // ===========================================================================
 #[test]
-fn the_engine_error_banner_has_no_two_controls_in_the_same_place() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_engine_error_banner_has_no_two_controls_in_the_same_place() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

@@ -562,7 +562,8 @@ impl Rig {
 /// 折叠态下画布（`visible: !collapsed`）连同播放头 / 视口框 / 右缘把手一起
 /// 不进树；悬停提示框初始不可见，悬停后才出现，见 ⑪。
 #[test]
-fn panel_defaults_to_collapsed_22px_on_small_viewports() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_panel_defaults_to_collapsed_22px_on_small_viewports() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -586,7 +587,8 @@ fn panel_defaults_to_collapsed_22px_on_small_viewports() {
 /// UI 数组与活态 view-model 逐位一致；dsp 跨度 3 小节，第 3 小节起静音垫条；
 /// LUFS 只有第 1 小节有读数——演示工程唯一的音频是 kick，落在第 1 小节）。
 #[test]
-fn real_data_reaches_the_panel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_real_data_reaches_the_panel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -612,7 +614,8 @@ fn real_data_reaches_the_panel() {
 /// tick = 5.25 小节 ⇒ 最近的是第 5 小节起点 19200。点在小节正中（5.5/16）会
 /// 平局向后落到第 6 小节起点 —— 那是吸附的定义，不是本片的 bug。
 #[test]
-fn clicking_canvas_seeks_to_the_clicked_bar() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_canvas_seeks_to_the_clicked_bar() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -634,7 +637,8 @@ fn clicking_canvas_seeks_to_the_clicked_bar() {
 
 /// ④：点落在视口框体内的 2.25/16 处 ⇒ 照样落到第 2 小节起点（框体 ⛔ 不吞轻点）。
 #[test]
-fn clicking_inside_the_viewport_lens_still_seeks() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_inside_the_viewport_lens_still_seeks() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -656,7 +660,8 @@ fn clicking_inside_the_viewport_lens_still_seeks() {
 
 /// ⑤：点两缘 ⇒ 夹紧（最右列 ⇒ 全曲末端 16 × 3840；最左列 ⇒ 0）。
 #[test]
-fn clicking_canvas_edges_clamps_to_the_span() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_canvas_edges_clamps_to_the_span() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -678,7 +683,8 @@ fn clicking_canvas_edges_clamps_to_the_span() {
 
 /// ⑥：视口框几何 = 滚动 / 缩放公式（30 与 60 两档，误差 ±2 px）。
 #[test]
-fn viewport_lens_matches_scroll_and_zoom() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_viewport_lens_matches_scroll_and_zoom() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -703,7 +709,8 @@ fn viewport_lens_matches_scroll_and_zoom() {
 /// 换算：100 画布 px = 100/752 × 61440 = 8170 tick；÷ 30 tick/px = 272 px。
 /// 框体本身在画布上只移 100 px（它是缩略图），编排视图滚的是等价的 272 px。
 #[test]
-fn dragging_the_lens_body_scrolls_the_arrangement() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dragging_the_lens_body_scrolls_the_arrangement() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -725,7 +732,8 @@ fn dragging_the_lens_body_scrolls_the_arrangement() {
 
 /// ⑧：拖框右缘向右 40 px ⇒ 缩放 30 → 34（±1），第 5 条小节线列位跟着变。
 #[test]
-fn dragging_the_lens_right_edge_zooms_and_reprojects() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_dragging_the_lens_right_edge_zooms_and_reprojects() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -747,7 +755,8 @@ fn dragging_the_lens_right_edge_zooms_and_reprojects() {
 
 /// ⑨：点 `[能量]` 胶囊 ⇒ `show-energy` 翻 false、树上 `checked` 翻 false；再点 ⇒ 恢复。
 #[test]
-fn clicking_the_energy_pill_hides_and_restores_the_layer() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_the_energy_pill_hides_and_restores_the_layer() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -769,7 +778,8 @@ fn clicking_the_energy_pill_hides_and_restores_the_layer() {
 
 /// ⑩：双击 `[情绪]` 胶囊 ⇒ 只剩情绪层可见；再双击 ⇒ 四层全可见。
 #[test]
-fn double_clicking_a_pill_solos_then_restores_all_layers() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_double_clicking_a_pill_solos_then_restores_all_layers() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -792,7 +802,8 @@ fn double_clicking_a_pill_solos_then_restores_all_layers() {
 /// ㉗：Alt+点 Low-Mid 频段行 ⇒ 独奏该频段（走带一位不动、金框进树）；再 Alt+点同一行 ⇒ 关闭；
 /// 无 Alt 点同一点 ⇒ 跳转、不独奏。
 #[test]
-fn alt_clicking_a_band_row_solos_it_and_plain_click_seeks() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_alt_clicking_a_band_row_solos_it_and_plain_click_seeks() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -814,7 +825,8 @@ fn alt_clicking_a_band_row_solos_it_and_plain_click_seeks() {
 
 /// ⑪：无按下移动到第 7 小节上 ⇒ 悬停读数出现（含小节号、LUFS、张力、前两频段）。
 #[test]
-fn hovering_the_canvas_shows_the_bar_readout() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_hovering_the_canvas_shows_the_bar_readout() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -836,7 +848,8 @@ fn hovering_the_canvas_shows_the_bar_readout() {
 
 /// ⑫：折叠键往返 —— 默认已折叠 22 px，点 ⇒ 展开 104 px，再点 ⇒ 回 22 px。
 #[test]
-fn collapse_button_folds_the_panel_to_22px_and_back() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_collapse_button_folds_the_panel_to_22px_and_back() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -864,7 +877,8 @@ fn collapse_button_folds_the_panel_to_22px_and_back() {
 /// 仍在正确位置（画布随窗口变宽、视口框重算）。
 /// 1440×900 默认折叠：先截折叠态（底部 46 行），再展开截 1:1 与 3x。
 #[test]
-fn visual_acceptance_1x_and_3x() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_visual_acceptance_1x_and_3x() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -886,7 +900,8 @@ fn visual_acceptance_1x_and_3x() {
 
 /// ⑭：1920×1080（全展开档）默认展开：12 个 ID 在场、面板 104 px。
 #[test]
-fn panel_defaults_to_expanded_104px_on_full_hd() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_panel_defaults_to_expanded_104px_on_full_hd() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -908,7 +923,8 @@ fn panel_defaults_to_expanded_104px_on_full_hd() {
 
 /// ⑮：第二次 `refresh_song_overview` 命中缓存、数据逐位相同、走全量路。
 #[test]
-fn second_refresh_hits_the_cache_and_keeps_real_data() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_second_refresh_hits_the_cache_and_keeps_real_data() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -940,7 +956,8 @@ fn second_refresh_hits_the_cache_and_keeps_real_data() {
 /// `seek-area.has-hover`（Slint 1.18.1 在 `MouseEvent::Exit` 时置 false），
 /// 宿主仍是 `hover-visible` 的唯一写者，界面不造第二份状态。
 #[test]
-fn hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -962,7 +979,8 @@ fn hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
 
 /// ⑰ [PATCH UI-A11Y-005]：折叠键的状态、缩放把手的档位必须走无障碍值通道。
 #[test]
-fn the_two_controls_expose_their_state_through_the_accessibility_value_channel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_two_controls_expose_their_state_through_the_accessibility_value_channel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -984,7 +1002,8 @@ fn the_two_controls_expose_their_state_through_the_accessibility_value_channel()
 
 /// ⑱ 声明面防回潮：退出条件、同源绑定、静态名字、通道计数逐字钉住。
 #[test]
-fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1011,7 +1030,8 @@ fn the_declarations_stay_honest_and_the_hover_exit_condition_is_pinned() {
 /// 跳转，见 ④）。拖框滚动的期望值按实测画布宽算（⑦ 的公式换宽：100/画布宽
 /// ×61440÷30），⛔ 不写死 142 —— 画布宽若不是 1440，期望值跟着错才是诚实的。
 #[test]
-fn fullscreen_button_expands_the_panel_and_keeps_all_four_interactions() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_fullscreen_button_expands_the_panel_and_keeps_all_four_interactions() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1034,7 +1054,8 @@ fn fullscreen_button_expands_the_panel_and_keeps_all_four_interactions() {
 /// ⑳：`Esc` 退出全屏 —— 真事件源经 `wire_keys` → `Action::Cancel` 级联；
 /// 非全屏态再按 `Esc` ⇒ 不折叠、不展开、无任何视图态变化。
 #[test]
-fn escape_exits_fullscreen_and_passes_through_when_not_fullscreen() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_escape_exits_fullscreen_and_passes_through_when_not_fullscreen() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1057,7 +1078,9 @@ fn escape_exits_fullscreen_and_passes_through_when_not_fullscreen() {
 /// ㉑：全屏与折叠协调 —— 全屏态点折叠键 ⇒ 退出全屏并落到 22 px；
 /// 折叠态点全屏键 ⇒ 进入全屏且 `collapsed` 清零（两者不同时为真）。
 #[test]
-fn collapse_while_fullscreen_folds_to_22px_and_fullscreen_from_collapsed_expands() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_collapse_while_fullscreen_folds_to_22px_and_fullscreen_from_collapsed_expands()
+{
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1086,7 +1109,8 @@ fn collapse_while_fullscreen_folds_to_22px_and_fullscreen_from_collapsed_expands
 /// 10 MiB 上限，stored deflate 不压缩，AGENTS.md §2 红线 9）⇒ 3x 只写三张
 /// 局部裁剪（左上 controls、右上胶囊 + 读数、底部条带），各在上限内；整幅只留 1:1。
 #[test]
-fn fullscreen_visual_acceptance_1x_and_3x() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_fullscreen_visual_acceptance_1x_and_3x() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1118,7 +1142,8 @@ fn fullscreen_visual_acceptance_1x_and_3x() {
 /// ㉓：点 `[预设]` 键 ⇒ 档名 均衡 → 管弦 → 电子 → 均衡循环；管弦档张力数组与
 /// 活态逐位一致且至少一小节与缺省档不同；回到缺省档后张力逐位恢复。
 #[test]
-fn profile_button_cycles_presets_and_changes_tension() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_profile_button_cycles_presets_and_changes_tension() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1142,7 +1167,8 @@ fn profile_button_cycles_presets_and_changes_tension() {
 /// 包络带 = 该等级的带、偏离超 0.15 的小节告警、悬停读数含偏离量、走带一位不动；
 /// 6 次点击回到无标注。
 #[test]
-fn section_label_cycles_expected_level_and_flags_deviation() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_section_label_cycles_expected_level_and_flags_deviation() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1165,7 +1191,8 @@ fn section_label_cycles_expected_level_and_flags_deviation() {
 /// ㉕：UI `score-dyn` 数组与活态逐位一致；第 0 小节有起音 ⇒ 力度大于 0；
 /// 垫条区（第 3 小节起）力度为 0；无标注时包络列全哨兵、无告警、档名 "均衡"。
 #[test]
-fn score_dyn_reaches_the_panel_and_is_nonzero_on_the_first_bar() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_score_dyn_reaches_the_panel_and_is_nonzero_on_the_first_bar() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1192,7 +1219,8 @@ fn score_dyn_reaches_the_panel_and_is_nonzero_on_the_first_bar() {
 /// 1:1 面板区 = 窗口底部 128 行（面板 104 + 状态栏 24）；3x = 最近邻放大
 /// （1440×128 ⇒ 4320×384，约 5.0 MB，在 10 MiB 产物上限内）。
 #[test]
-fn phase2_visual_acceptance_1x_and_3x() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_phase2_visual_acceptance_1x_and_3x() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

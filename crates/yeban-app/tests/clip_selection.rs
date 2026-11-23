@@ -150,7 +150,8 @@ fn diff_split_allowed(before: &Rgb8Image, after: &Rgb8Image, allowed: &[Rect]) -
 }
 
 #[test]
-fn clicking_a_clip_header_selects_exactly_that_clip() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_clicking_a_clip_header_selects_exactly_that_clip() {
     // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

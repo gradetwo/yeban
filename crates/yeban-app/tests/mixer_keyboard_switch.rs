@@ -155,7 +155,8 @@ fn bool_column(model: &slint::ModelRc<bool>) -> Vec<bool> {
 
 /// A1：恰好一条 op、寻址**被选中那轨**、`new == !old`（两个开关各证一次）。
 #[test]
-fn toggle_ops_are_one_op_that_flips_the_named_field() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_toggle_ops_are_one_op_that_flips_the_named_field() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -193,7 +194,8 @@ fn toggle_ops_are_one_op_that_flips_the_named_field() {
 
 /// A2：陈旧 / 解析不出的身份 ⇒ 空 `Vec`（不猜"大概是第一条轨"）。
 #[test]
-fn toggle_ops_refuse_a_stale_or_unparsable_identity() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_toggle_ops_refuse_a_stale_or_unparsable_identity() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -257,7 +259,8 @@ fn live_with_keys_and_select(project: &YebanProjectV1) -> (MainWindow, Rc<UndoPo
 
 /// B1：裸 `m` 只动静音、裸 `s` 只动独奏；每次按键 = 一步撤销；`Cmd+Z` 逐步撤回。
 #[test]
-fn bare_m_and_s_toggle_only_their_own_switch_on_the_selected_track() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_bare_m_and_s_toggle_only_their_own_switch_on_the_selected_track() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -295,7 +298,8 @@ fn bare_m_and_s_toggle_only_their_own_switch_on_the_selected_track() {
 
 /// B2：没有选中轨 ⇒ 两键**都不消费**、0 提交、工程与两列逐位不变。
 #[test]
-fn with_no_selected_track_the_mute_and_solo_keys_are_not_consumed() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_with_no_selected_track_the_mute_and_solo_keys_are_not_consumed() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -337,7 +341,8 @@ fn with_no_selected_track_the_mute_and_solo_keys_are_not_consumed() {
 /// 会到达的那个状态 —— 换工程 / 控制面关工程之后，写者把属性留在了旧身份上，而端口的
 /// 工程已经不是那一份。写者仍然只有 `host::wire_track_select` 一个。
 #[test]
-fn a_stale_selection_after_a_project_swap_commits_nothing() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_stale_selection_after_a_project_swap_commits_nothing() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

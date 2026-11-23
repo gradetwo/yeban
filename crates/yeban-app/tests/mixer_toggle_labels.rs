@@ -138,7 +138,8 @@ fn names_a_view(literal: &str) -> bool {
 /// 路径 4（两个入口都在）因此是这一条的**结构性**补充：它证明错位的根因**今天仍然存在**，
 /// 而不是靠文本形状猜出来的。
 #[test]
-fn the_two_mixer_toggle_labels_do_not_name_a_view() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_two_mixer_toggle_labels_do_not_name_a_view() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -172,7 +173,8 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
 /// 这些**今天仍然是真话**（它们各自只有一个入口：卷帘编辑 / 调音台推子）。一刀切会把它们
 /// 一起判红，而正确的处理是"等它们各自出现第二个入口时再改" —— 那属于另一票。
 #[test]
-fn the_old_source_prefixed_toggle_labels_are_gone_from_src() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_old_source_prefixed_toggle_labels_are_gone_from_src() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

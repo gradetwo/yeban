@@ -50,7 +50,8 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 
 /// ① 运行时控件树：四格的 `value` 就是各自的可见文本。
 #[test]
-fn status_bar_texts_are_readable_through_the_accessibility_value_channel() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_status_bar_texts_are_readable_through_the_accessibility_value_channel() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -80,7 +81,8 @@ fn status_bar_texts_are_readable_through_the_accessibility_value_channel() {
 
 /// ③ 声明面（⛔ 不开窗口）：四格各有一条 `accessible-value`，且注册表标签逐字同步。
 #[test]
-fn every_declared_status_bar_readout_has_an_accessible_value_binding() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_declared_status_bar_readout_has_an_accessible_value_binding() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

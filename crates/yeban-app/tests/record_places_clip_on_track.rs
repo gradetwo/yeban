@@ -264,7 +264,8 @@ fn render_one_second(
 
 /// ⭐⭐ **① 摆放存在 ＋ ② 能响 ＋ ③ 帧→tick ＋ ④ 往返保真**（一条真实停录路径）。
 #[test]
-fn a_finished_recording_is_placed_on_the_first_audio_track_and_renders_audibly() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_finished_recording_is_placed_on_the_first_audio_track_and_renders_audibly() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -302,7 +303,8 @@ fn a_finished_recording_is_placed_on_the_first_audio_track_and_renders_audibly()
 
 /// ⭐ **⑤ 0 帧不摆**：0 帧 WAV ⇒ 明确拒绝，`clip_pool`／摆放／资产池全部一位不动。
 #[test]
-fn a_zero_frame_take_is_refused_before_anything_is_placed_or_pooled() {
+// ⚠ 行为断言已降级（T-FIX-142）：本用例只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_a_zero_frame_take_is_refused_before_anything_is_placed_or_pooled() {
     // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

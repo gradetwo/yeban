@@ -139,7 +139,8 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
 /// **焦点值**那一半（限制在模态内／关闭后回到打开者）由 `tests/undo_tree_focus_trap.rs` 覆盖，
 /// 本判据**不**引用它的读数来声称自己验证了焦点。
 #[test]
-fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
     // 新 UI 重构: 旧 undo-tree-modal/panel 不再进控件树; 核对视图态属性 + 宿主接线。
     let (window, _plane) = assemble();
     let aether_app = std::fs::read_to_string(
@@ -176,8 +177,9 @@ fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
 /// ② **Tab 的候选顺序 = 视觉/逻辑顺序**：把主要区域按其**几何**排成 `(y, x)` 序，
 ///    断言该序列**不重复、不跳过**五区，且**自上而下**单调 —— 这就是"顺序与视觉一致"的
 ///    可机械检查的那一半（"焦点实际跳到哪"那一半因没有读数而**未覆盖**，见上）。
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
 #[test]
-fn the_tab_order_candidates_follow_the_visual_order_and_tab_injection_is_safe() {
+fn contract_surface_the_tab_order_candidates_follow_the_visual_order_and_tab_injection_is_safe() {
     let (_window, mut plane) = assemble();
     for _ in 0..8 {
         let pressed = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
@@ -220,7 +222,8 @@ fn the_tab_order_candidates_follow_the_visual_order_and_tab_injection_is_safe() 
 /// 2. 把某节点的 `accessible-role` 改成 `KNOWN_ROLES` 之外 ⇒ 第 3 条断言红；
 /// 3. 让一个**可见**节点失去 `accessible-label`（或新增无标签的可寻址节点）⇒ 第 4 条断言红。
 #[test]
-fn every_addressable_node_carries_a_semantic_id_and_a_non_empty_accessible_name() {
+// ⚠ 行为断言已降级（T-FIX-142）：只核对契约面/源码声明存在，行为本身未测。
+fn contract_surface_every_addressable_node_carries_a_semantic_id_and_a_non_empty_accessible_name() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
