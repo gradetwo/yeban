@@ -1,0 +1,279 @@
+// 夜半 — 自动相位对齐对话框（Hub #711）。
+//
+// 入口：菜单「轨道 → 自动相位对齐...」。语义复用 MCP 的
+// `yeban_auto_align_tracks`：基准轨 / 目标轨 / maxLagMs / apply 四个参数原样透传，
+// 轨解析先按 ULID、再按轨名（大小写不敏感精确匹配）；同轨拒绝、非数字原文报错。
+// 测量值（lagSamples / lagMs / 相关系数 / 置信度 / 已补偿延迟与极性）只显示后端原文。
+
+import { Tokens, UiText, UiTitleText, ImeAwareTextInput } from "../tokens.slint";
+
+component PhaseButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> accent: false;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    width: 110px;
+    height: 28px;
+    background: hit.has-hover ? (accent ? Tokens.accent : Tokens.bg-raised) : (accent ? Tokens.accent : Tokens.bg-control);
+    border-color: accent ? Tokens.accent : Tokens.line;
+    border-width: 1px;
+    border-radius: 4px;
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: Tokens.font-size-sm;
+        color: Tokens.ink-0;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text: "";
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    height: 28px;
+    background: Tokens.bg-control;
+    border-color: Tokens.line;
+    border-width: 1px;
+    border-radius: 4px;
+    ImeAwareTextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text <=> root.text;
+        font-size: Tokens.font-size-sm;
+        color: Tokens.ink-0;
+        vertical-alignment: center;
+        accessible-role: text-input;
+        accessible-id: root.a11y-id;
+        accessible-label: root.a11y-label;
+    }
+}
+
+export component PhaseAlignDialog inherits Rectangle {
+    in-out property <string> reference: "";
+    in-out property <string> target: "";
+    in-out property <string> max-lag-ms: "";
+    in-out property <bool> apply: true;
+    in-out property <string> status: "";
+
+    callback close();
+    callback run();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+    accessible-role: region;
+    accessible-id: "phase-align-dialog";
+    accessible-label: @tr("自动相位对齐");
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        panel := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: Math.max(24px, (root.height - self.height) / 2);
+            width: 560px;
+            height: 330px;
+            background: Tokens.bg-panel;
+            border-color: Tokens.line-strong;
+            border-width: 1px;
+            border-radius: 8px;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    height: 24px;
+                    UiTitleText {
+                        text: "自动相位对齐";
+                        font-size: Tokens.font-size-lg;
+                        horizontal-stretch: 1;
+                    }
+                    close-hit := TouchArea {
+                        width: 24px;
+                        accessible-role: button;
+                        accessible-id: "phase-align-close-button";
+                        accessible-label: @tr("关闭");
+                        clicked => { root.close(); }
+                        Text {
+                            text: "×";
+                            font-size: 15px;
+                            color: Tokens.ink-1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                UiText {
+                    text: "轨可填 ULID，也可填轨名（大小写不敏感精确匹配）。maxLagMs 空 = 50。";
+                    font-size: Tokens.font-size-xs;
+                    color: Tokens.ink-1;
+                    height: 16px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "基准轨";
+                        width: 54px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        horizontal-stretch: 1;
+
+                        height: 28px;
+
+                        text <=> root.reference;
+
+                        a11y-id: "phase-align-reference-input";
+
+                        a11y-label: @tr("基准轨");
+
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "目标轨";
+                        width: 54px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        horizontal-stretch: 1;
+
+                        height: 28px;
+
+                        text <=> root.target;
+
+                        a11y-id: "phase-align-target-input";
+
+                        a11y-label: @tr("目标轨");
+
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    UiText {
+                        text: "maxLagMs";
+                        width: 54px;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-1;
+                    }
+                    Field {
+
+                        width: 110px;
+
+                        height: 28px;
+
+                        text <=> root.max-lag-ms;
+
+                        a11y-id: "phase-align-max-lag-input";
+
+                        a11y-label: @tr("maxLagMs");
+
+                    }
+                    apply-hit := Rectangle {
+                        width: 118px;
+                        height: 26px;
+                        background: Tokens.bg-control;
+                        border-color: Tokens.line;
+                        border-width: 1px;
+                        border-radius: 4px;
+                        Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height;
+                            text: (root.apply ? "☑ apply 补偿" : "☐ apply 补偿");
+                            font-size: Tokens.font-size-sm;
+                            color: Tokens.ink-0;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            accessible-role: checkbox;
+                            accessible-id: "phase-align-apply-checkbox";
+                            accessible-label: @tr("apply");
+                            clicked => { root.apply = !root.apply; }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 30px;
+                    PhaseButton {
+                        text: root.apply ? "测量并应用" : "只测量";
+                        accent: root.apply;
+                        accessible-id: "phase-align-run-button";
+                        clicked => { root.run(); }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    background: Tokens.bg-panel-alt;
+                    border-color: Tokens.line;
+                    border-width: 1px;
+                    border-radius: 4px;
+                    UiText {
+                        x: 8px;
+                        y: 6px;
+                        width: parent.width - 16px;
+                        height: parent.height - 12px;
+                        text: root.status;
+                        font-size: Tokens.font-size-sm;
+                        color: Tokens.ink-0;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                        accessible-id: "phase-align-status";
+                        accessible-label: @tr("相位对齐状态");
+                        accessible-value: root.status;
+                    }
+                }
+            }
+        }
+    }
+}

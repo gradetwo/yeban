@@ -223,13 +223,8 @@ fn parse_required_entity_id(call: &ToolCall, key: &str) -> Result<EntityId, Faul
     }
 }
 
-/// `maxLagMs`：有限且 > 0，换算采样后 ≤ ±4800；返回搜索窗（采样）。
-fn parse_max_lag_samples(call: &ToolCall, sample_rate_hz: u32) -> Result<usize, Fault> {
-    let value = call
-        .arguments
-        .get("maxLagMs")
-        .and_then(Value::as_f64)
-        .unwrap_or(DEFAULT_MAX_LAG_MS);
+/// `maxLagMs` 值域校验（MCP 与 GUI 共用同一套错误原文）。
+pub fn max_lag_samples_from_ms(value: f64, sample_rate_hz: u32) -> Result<usize, Fault> {
     if !value.is_finite() || value <= 0.0 {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -285,19 +280,37 @@ fn measurement_data(
     })
 }
 
-/// `yeban_auto_align_tracks`。
-pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
-    let project = require_active(domain)?;
-    let reference = parse_required_entity_id(call, "referenceTrackId")?;
-    let target = parse_required_entity_id(call, "targetTrackId")?;
+/// 相位对齐结果：响应 data + 可直接提交的 ops / 标题 / 说明。
+pub struct PhaseAlignAutoOutcome {
+    /// 与 MCP 测量响应同形的 data（含 `applied` / `appliedDelay` / `appliedPolarity`）。
+    pub data: Value,
+    /// `SetTrackDelay` / `SetTrackPolarity`（`apply=false` 时仍生成，供“将会补偿”展示）。
+    pub ops: Vec<Op>,
+    /// 提案标题。
+    pub title: String,
+    /// 提案说明（中文单段）。
+    pub description: String,
+}
+
+/// 测量并计算补偿（MCP `plan_auto_align_tracks` 与 GUI 共用）。
+///
+/// 校验顺序与 MCP 相同：`maxLagMs` → 两轨存在 → 两轨不同 → provider 测量 →
+/// 低相关门（仅 apply）→ 补偿窗。`apply=false` 仍返回完整测量与“将会补偿”。
+///
+/// # Errors
+///
+/// `maxLagMs` 越界 / 轨不存在 / 同轨 / provider 未注入 / 测量失败 /
+/// 低相关拒绝 / 补偿超窗。
+pub fn measure_phase_alignment(
+    project: &YebanProjectV1,
+    provider: &dyn PhaseAlignAutoProvider,
+    reference: EntityId,
+    target: EntityId,
+    max_lag_ms: f64,
+    apply: bool,
+) -> Result<PhaseAlignAutoOutcome, Fault> {
     let sample_rate_hz = project.audio_config.sample_rate.hz();
-    let max_lag_ms = call
-        .arguments
-        .get("maxLagMs")
-        .and_then(Value::as_f64)
-        .unwrap_or(DEFAULT_MAX_LAG_MS);
-    let max_lag_samples = parse_max_lag_samples(call, sample_rate_hz)?;
-    let apply = arg_bool(call, "apply", true);
+    let max_lag_samples = max_lag_samples_from_ms(max_lag_ms, sample_rate_hz)?;
     let reference_track = project.tracks.get(&reference).ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::TrackNotFound,
@@ -328,63 +341,16 @@ pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super:
             }),
         ));
     }
-    if call.is_dry_run() {
-        // dryRun：只校验参数与存在性，不调 provider、不测量、不建提案。
-        let mut data = serde_json::json!({
-            "wouldMeasure": true,
-            "dryRun": true,
-            "referenceTrackId": reference.to_canonical_string(),
-            "targetTrackId": target.to_canonical_string(),
-            "maxLagMs": max_lag_ms,
-            "apply": apply,
-            "sampleRateHz": sample_rate_hz,
-        });
-        if let Some(object) = data.as_object_mut() {
-            object.insert("applied".to_owned(), Value::from(false));
-        }
-        return Ok(super::Plan::PhaseAlignAuto {
-            data,
-            draft: None,
-            include_ops: include_ops(call),
-            warnings: Vec::new(),
-            auto_merge: false,
-            merge_commit_message: None,
-        });
-    }
-    let provider = domain.phase_align_auto_provider().ok_or_else(|| {
-        Fault::domain_with_data(
-            ErrorCode::Conflict,
-            "本会话没有相位测量 provider：宿主既没有注入 provider、也没有装上本 crate \
-             自带的真实 provider，yeban_auto_align_tracks 无法测量。",
-            serde_json::json!({
-                "reason": PROVIDER_UNAVAILABLE_REASON,
-                "form": "stdio",
-                "providerAttached": false,
-                "hint": "宿主应在启动时经 Domain::set_phase_align_auto_provider 注入 provider，\
-                         或调用 Domain::install_real_providers 装上自带实现\
-                         （独立 stdio 二进制与 yeban-app 都已这样接线）",
-            }),
-        )
-    })?;
     let measurement = provider.measure(project, reference, target, max_lag_samples)?;
     let lag = measurement.lag_samples_rounded;
     let mut data = measurement_data(provider.name(), reference, target, max_lag_ms, &measurement);
     let data_object = data.as_object_mut().expect("measurement_data 恒为对象");
-    // 无事可做：lag 0 且无反转 ⇒ 即使 apply: true 也不建空提案。
     if lag == 0 && !measurement.polarity_inverted {
         data_object.insert("applied".to_owned(), Value::from(false));
         data_object.insert("appliedDelay".to_owned(), Value::Null);
         data_object.insert("appliedPolarity".to_owned(), Value::Null);
-        return Ok(super::Plan::PhaseAlignAuto {
-            data,
-            draft: None,
-            include_ops: include_ops(call),
-            warnings: Vec::new(),
-            auto_merge: arg_bool(call, "autoMerge", false),
-            merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
-        });
     }
-    if apply && measurement.correlation.abs() < APPLY_MIN_CORRELATION {
+    if apply && lag != 0 && measurement.correlation.abs() < APPLY_MIN_CORRELATION {
         return Err(Fault::domain_with_data(
             ErrorCode::Conflict,
             format!(
@@ -400,7 +366,6 @@ pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super:
             }),
         ));
     }
-    // 补偿：只延时先到的那条轨（正延时）。lag > 0 ⇒ 目标轨晚到 ⇒ 延基准轨。
     let (delay_track, delay_track_name, compensation) = if lag > 0 {
         (reference, reference_track.name.clone(), lag)
     } else {
@@ -459,18 +424,6 @@ pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super:
     data_object.insert("applied".to_owned(), Value::from(apply));
     data_object.insert("appliedDelay".to_owned(), applied_delay);
     data_object.insert("appliedPolarity".to_owned(), applied_polarity);
-    if !apply {
-        return Ok(super::Plan::PhaseAlignAuto {
-            data,
-            draft: None,
-            include_ops: include_ops(call),
-            warnings: Vec::new(),
-            auto_merge: arg_bool(call, "autoMerge", false),
-            merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
-        });
-    }
-    // 走提案路径：先由 propose_draft 模拟 + 校验，再把 Propose 变体换成
-    // PhaseAlignAuto（测量 data 随身带；apply 时再并进提案响应）。
     let title = format!(
         "自动相位对齐：{} 对 {}",
         target_track.name, reference_track.name
@@ -493,26 +446,141 @@ pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super:
     if measurement.polarity_inverted {
         description.push_str(&format!("；目标轨 {} 极性翻转", target_track.name));
     }
-    let plan = super::propose_draft(domain, project, "notes", title, description, ops, call)?;
-    let super::Plan::Propose {
-        draft,
-        include_ops,
-        warnings,
-        auto_merge,
-        merge_commit_message,
-        ..
-    } = plan
-    else {
-        unreachable!("propose_draft 恒返回 Plan::Propose");
-    };
-    Ok(super::Plan::PhaseAlignAuto {
+    Ok(PhaseAlignAutoOutcome {
         data,
-        draft: Some(draft),
-        include_ops,
-        warnings,
-        auto_merge,
-        merge_commit_message,
+        ops,
+        title,
+        description,
     })
+}
+
+/// `yeban_auto_align_tracks`。
+pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super::Plan, Fault> {
+    let project = require_active(domain)?;
+    let reference = parse_required_entity_id(call, "referenceTrackId")?;
+    let target = parse_required_entity_id(call, "targetTrackId")?;
+    let sample_rate_hz = project.audio_config.sample_rate.hz();
+    let max_lag_ms = call
+        .arguments
+        .get("maxLagMs")
+        .and_then(Value::as_f64)
+        .unwrap_or(DEFAULT_MAX_LAG_MS);
+    let _ = max_lag_samples_from_ms(max_lag_ms, sample_rate_hz)?;
+    let apply = arg_bool(call, "apply", true);
+    if !project.tracks.contains_key(&reference) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::TrackNotFound,
+            format!("基准轨 {reference} 不在工程里"),
+            serde_json::json!({
+                "reason": "trackNotFound",
+                "trackId": reference.to_canonical_string(),
+            }),
+        ));
+    }
+    if !project.tracks.contains_key(&target) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::TrackNotFound,
+            format!("目标轨 {target} 不在工程里"),
+            serde_json::json!({
+                "reason": "trackNotFound",
+                "trackId": target.to_canonical_string(),
+            }),
+        ));
+    }
+    if reference == target {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`referenceTrackId` 与 `targetTrackId` 不能是同一条轨：自己与自己没有时差可测",
+            serde_json::json!({
+                "reason": "sameReferenceAndTarget",
+                "trackId": reference.to_canonical_string(),
+            }),
+        ));
+    }
+    if call.is_dry_run() {
+        let mut data = serde_json::json!({
+            "wouldMeasure": true,
+            "dryRun": true,
+            "referenceTrackId": reference.to_canonical_string(),
+            "targetTrackId": target.to_canonical_string(),
+            "maxLagMs": max_lag_ms,
+            "apply": apply,
+            "sampleRateHz": sample_rate_hz,
+        });
+        if let Some(object) = data.as_object_mut() {
+            object.insert("applied".to_owned(), Value::from(false));
+        }
+        return Ok(super::Plan::PhaseAlignAuto {
+            data,
+            draft: None,
+            include_ops: include_ops(call),
+            warnings: Vec::new(),
+            auto_merge: false,
+            merge_commit_message: None,
+        });
+    }
+    let provider = domain.phase_align_auto_provider().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::Conflict,
+            "本会话没有相位测量 provider：宿主既没有注入 provider、也没有装上本 crate \
+             自带的真实 provider，yeban_auto_align_tracks 无法测量。",
+            serde_json::json!({
+                "reason": PROVIDER_UNAVAILABLE_REASON,
+                "form": "stdio",
+                "providerAttached": false,
+                "hint": "宿主应在启动时经 Domain::set_phase_align_auto_provider 注入 provider，\
+                         或调用 Domain::install_real_providers 装上自带实现\
+                         （独立 stdio 二进制与 yeban-app 都已这样接线）",
+            }),
+        )
+    })?;
+    let outcome = measure_phase_alignment(
+        project,
+        provider.as_ref(),
+        reference,
+        target,
+        max_lag_ms,
+        apply,
+    )?;
+    if apply && !outcome.ops.is_empty() {
+        let plan = super::propose_draft(
+            domain,
+            project,
+            "notes",
+            outcome.title,
+            outcome.description,
+            outcome.ops,
+            call,
+        )?;
+        let super::Plan::Propose {
+            draft,
+            include_ops,
+            warnings,
+            auto_merge,
+            merge_commit_message,
+            ..
+        } = plan
+        else {
+            unreachable!("propose_draft 恒返回 Plan::Propose");
+        };
+        Ok(super::Plan::PhaseAlignAuto {
+            data: outcome.data,
+            draft: Some(draft),
+            include_ops,
+            warnings,
+            auto_merge,
+            merge_commit_message,
+        })
+    } else {
+        Ok(super::Plan::PhaseAlignAuto {
+            data: outcome.data,
+            draft: None,
+            include_ops: include_ops(call),
+            warnings: Vec::new(),
+            auto_merge: arg_bool(call, "autoMerge", false),
+            merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
+        })
+    }
 }
 
 /// `Plan::PhaseAlignAuto` 的施加：有 draft 时先建提案，再把测量数据并进

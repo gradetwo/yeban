@@ -119,6 +119,9 @@ export component ExportWavDialog inherits Rectangle {
     // ⚠ 它是**每次调用**的导出修饰量（任务单 `#302` 的硬边界：⛔ 不进
     // `project.schema.json`）⇒ 本控件**不**产生 `Op`、**不**进撤销栈、⛔ 不改工程。
     in-out property <bool> limiter: false;
+    // 导出后的实测行（真峰值 / 积分响度 / LRA），空串 = 尚未导出。
+    // 宿主 `host::export_measurement_line` 写；界面⛔ 不自算。
+    in-out property <string> measurement: "";
 
     callback run();
     callback close();
@@ -209,7 +212,7 @@ export component ExportWavDialog inherits Rectangle {
             x: (root.width - 560px) / 2;
             y: (root.height - 320px) / 2;
             width: 560px;
-            height: 320px;
+            height: 344px;
             background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
             border-radius: Tokens.radius-lg;
             border-width: 1px;
@@ -572,10 +575,37 @@ export component ExportWavDialog inherits Rectangle {
                 }
             }
 
-            // ------------------------------------------------------------ 说明行
+            // ------------------------------------------------------------ 实测行（Hub #711）
+            // 引擎的 `mastering::measure_master` 已给真峰值 / 积分响度 / LRA；
+            // 这里只呈现宿主算好的那一行，⛔ 不在这里重算、不写假数字。
             Rectangle {
                 x: Tokens.space-6;
                 y: 220px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "export-wav-measurement";
+                accessible-label: @tr("导出实测：真峰值 / 积分响度 / LRA");
+                accessible-value: root.measurement;
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.measurement == "" ? @tr("实测 · 尚未导出（导出后显示真峰值与 LUFS）") : root.measurement;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+
+            // ------------------------------------------------------------ 说明行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 240px;
                 width: parent.width - 48px;
                 height: 16px;
                 clip: true;

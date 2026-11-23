@@ -11394,6 +11394,22 @@ fn clipping_warning_line(clipped_samples: u64, suggested_trim_db: f32) -> String
     )
 }
 
+/// 导出成功后的**实测行**：真峰值 / 积分响度 / 响度范围。
+///
+/// 三个值都来自 `WavExportReport`（`measure_master` 一次算出的同一批读数）；
+/// 测不出就写「未测出」，⛔ 不拿 `0` 伪装。
+fn export_measurement_line(
+    true_peak_dbfs: Option<f32>,
+    integrated_lufs: Option<f32>,
+    loudness_range_lu: Option<f32>,
+) -> String {
+    let true_peak = true_peak_dbfs.map_or_else(|| "未测出".to_owned(), |v| format!("{v:.1} dBFS"));
+    let integrated =
+        integrated_lufs.map_or_else(|| "未测出".to_owned(), |v| format!("{v:.1} LUFS"));
+    let range = loudness_range_lu.map_or_else(|| "未测出".to_owned(), |v| format!("{v:.1} LU"));
+    format!("实测 · 真峰值 {true_peak} · 积分响度 {integrated} · LRA {range}")
+}
+
 /// `YEBAN_UI_MODULE_TRACE=1` 时把每一步的墙钟读数打到 stderr。
 ///
 /// 为什么要有它：本机纪律禁止在这里跑基准，而"经 UI 触发一次动作要多久"是交付读数。
@@ -13322,6 +13338,7 @@ pub fn wire_module_actions_with_capture(
                     }
                 }
             }
+            ui.set_export_wav_measurement("实测 · 尚未导出（导出后显示真峰值与 LUFS）".into());
             ui.set_export_wav_open(true);
             // `D-UI-19`（`[UI-A11Y-003]` §7.3 第 1 条）：遮罩盖住整帧 ⇒ 键盘也必须进来。
             // 在这一处同步取焦（⛔ 不用 `.slint` 的 `changed` 处理器：它要等事件循环
@@ -13450,7 +13467,7 @@ pub fn wire_module_actions_with_capture(
                     sfz,
                 );
                 let _ = weak2.upgrade_in_event_loop(move |ui| {
-                    let (receipt, ok, clipping_warning, success_line) = match result {
+                    let (receipt, ok, clipping_warning, success_line, measurement) = match result {
                         Ok(report) => {
                             // ⭐ `T-FIX-57`：落地路径先单独取一份 —— 成功提示条要
                             // 把它**整条**写给用户看（见 `report_export_success`）。
@@ -13488,6 +13505,18 @@ pub fn wire_module_actions_with_capture(
                                         .headroom_db
                                         .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
                                 ),
+                                format!(
+                                    "integrated_lufs={}",
+                                    report
+                                        .integrated_lufs
+                                        .map_or_else(|| "null".to_owned(), |v| format!("{v:.3}"))
+                                ),
+                                format!(
+                                    "loudness_range_lu={}",
+                                    report
+                                        .loudness_range_lu
+                                        .map_or_else(|| "null".to_owned(), |v| format!("{v:.2}"))
+                                ),
                             ];
                             // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
                             // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
@@ -13517,11 +13546,17 @@ pub fn wire_module_actions_with_capture(
                                 )
                             };
                             let success_line = format!("导出 WAV 完成 · {landed}");
+                            let measurement = export_measurement_line(
+                                report.true_peak_dbfs,
+                                report.integrated_lufs,
+                                report.loudness_range_lu,
+                            );
                             (
                                 module_receipt("export-wav", &fields),
                                 true,
                                 warning,
                                 Some(success_line),
+                                measurement,
                             )
                         }
                         Err(error) => (
@@ -13532,6 +13567,7 @@ pub fn wire_module_actions_with_capture(
                             false,
                             String::new(),
                             None,
+                            String::new(),
                         ),
                     };
                     apply_module_receipt_with_clipping_warning(
@@ -13544,6 +13580,9 @@ pub fn wire_module_actions_with_capture(
                     // 带完整路径的提示条（失败⛔ 不走这条，维持既有口径）。
                     if let Some(line) = &success_line {
                         report_export_success(&ui, line);
+                    }
+                    if !measurement.is_empty() {
+                        ui.set_export_wav_measurement(measurement.into());
                     }
                     module_trace("export-wav", started, &receipt);
                 });
@@ -23771,6 +23810,8 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "redo-step" => ui.invoke_redo_step(),
         "toggle-undo-tree" => ui.invoke_toggle_undo_tree(),
         "open-quantize" => ui.invoke_open_quantize(),
+        "open-otcp" => ui.invoke_open_otcp(),
+        "open-phase-align" => ui.invoke_open_phase_align(),
         "open-humanize" => ui.invoke_open_humanize(),
         "open-drum-gen" => ui.invoke_open_drum_gen(),
         "open-sound-library" => ui.invoke_open_sound_library(),

@@ -292,7 +292,7 @@ impl OverviewSession {
     ///
     /// provider 的 `Fault` 原文（经 [`OverviewExportError::Render`] 透出）：
     /// 采样器读不到 / 渲染失败。失败不留缓存条目（与工具侧共享缓存同口径）。
-    fn compute(
+    pub(crate) fn compute(
         &mut self,
         project: &YebanProjectV1,
         mode: RenderMode,

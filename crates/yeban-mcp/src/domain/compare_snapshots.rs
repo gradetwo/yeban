@@ -421,6 +421,19 @@ pub fn diff_overviews(a: &SongOverview, b: &SongOverview) -> SongOverviewDiff {
     }
 }
 
+/// 校验两份快照并按同一口径求 Diff（GUI 与 `compare_song_snapshots` 共用）。
+///
+/// # Errors
+///
+/// 与 [`plan_compare_song_snapshots`] 的前三步逐字一致：行键非法
+/// （`invalidSnapshot`）、两版不可比（`snapshotMismatch`）。
+pub fn compare_snapshots(a: &SongOverview, b: &SongOverview) -> Result<SongOverviewDiff, Fault> {
+    validate_snapshot(a, "snapshot_a")?;
+    validate_snapshot(b, "snapshot_b")?;
+    check_compatible(a, b)?;
+    Ok(diff_overviews(a, b))
+}
+
 /// `compare_song_snapshots` 的只读规划（不要求活跃工程、不调 provider）。
 ///
 /// # Errors
@@ -431,10 +444,7 @@ pub fn diff_overviews(a: &SongOverview, b: &SongOverview) -> SongOverviewDiff {
 pub fn plan_compare_song_snapshots(call: &ToolCall) -> Result<Plan, Fault> {
     let a = arg_snapshot(call, "snapshot_a")?;
     let b = arg_snapshot(call, "snapshot_b")?;
-    validate_snapshot(&a, "snapshot_a")?;
-    validate_snapshot(&b, "snapshot_b")?;
-    check_compatible(&a, &b)?;
-    let diff = diff_overviews(&a, &b);
+    let diff = compare_snapshots(&a, &b)?;
     let data = serde_json::to_value(diff).map_err(|error| {
         Fault::domain(
             ErrorCode::IoError,
@@ -767,5 +777,28 @@ mod tests {
         let data = data.as_ref().expect("fault 必须带 data");
         assert_eq!(data["reason"], "invalidSnapshot");
         assert_eq!(data["snapshot"], "snapshot_a");
+    }
+
+    #[test]
+    fn direct_compare_keeps_mcp_fault_semantics() {
+        let invalid = overview(vec![row(0, 0.5, -14.0, 0.0)]);
+        let error = compare_snapshots(&invalid, &invalid).expect_err("小节号 0 必须拒绝");
+        let Fault::Domain { data, .. } = &error else {
+            panic!("期望领域失败，得到 {error:?}");
+        };
+        let data = data.as_ref().expect("fault 必须带 data");
+        assert_eq!(data["reason"], "invalidSnapshot");
+        assert_eq!(data["snapshot"], "snapshot_a");
+
+        let a = overview(vec![row(1, 0.5, -14.0, 0.0)]);
+        let mut b = a.clone();
+        b.schema_version = "1.0".to_string();
+        let error = compare_snapshots(&a, &b).expect_err("版本不等必须拒绝");
+        let Fault::Domain { data, .. } = &error else {
+            panic!("期望领域失败，得到 {error:?}");
+        };
+        let data = data.as_ref().expect("fault 必须带 data");
+        assert_eq!(data["reason"], "snapshotMismatch");
+        assert_eq!(data["field"], "schema_version");
     }
 }
