@@ -2836,6 +2836,80 @@ export component MainWindow inherits Window {
             use-pack(id) => { root.sound-library-use-pack(id); }
         }
 
+        // Visible AI 提案抽屉（T-FIX-304）：`ai-drawer-open` 此前只被声明、从未被渲染，
+        // `Cmd/Ctrl+Alt+A`、`on_toggle_ai_drawer` 与 `Esc` 收面板三处入口都指向空气。
+        // 这里把覆盖层实例化回来（紧凑档右侧 288px），内容只做「入口」——真正的提案
+        // 审核面板仍是 `MusicalPrDrawer`（两者合并前，本层只负责把用户送到那里）。
+        if root.ai-drawer-open : Rectangle {
+            z: 9600;
+            x: root.width - 300px;
+            y: 52px;
+            width: 288px;
+            height: Math.max(180px, root.height - 150px);
+            background: Tokens.bg-panel;
+            border-width: 1px;
+            border-color: Tokens.gold;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                Text {
+                    text: "AI 提案";
+                    color: Tokens.gold;
+                    font-size: 14px;
+                }
+                Text {
+                    text: "待审提案 " + root.musical-pr-proposal-count + " 条";
+                    color: Tokens.ink-1;
+                    font-size: 12px;
+                }
+                Text {
+                    text: "提案审核面板已并入 Musical PR 抽屉。";
+                    color: Tokens.ink-1;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    height: 32px;
+                    background: root.musical-pr-proposal-count > 0 ? Tokens.gold : Tokens.bg-raised;
+                    border-radius: 4px;
+
+                    Text {
+                        text: "打开提案审核";
+                        color: Tokens.bg-void;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.ai-drawer-open = false;
+                            root.musical-pr-open = true;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 32px;
+                    background: Tokens.bg-raised;
+                    border-radius: 4px;
+
+                    Text {
+                        text: "关闭";
+                        color: Tokens.ink-0;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => { root.toggle-ai-drawer(); }
+                    }
+                }
+            }
+        }
+
         // Visible Musical PR Drawer
         if root.musical-pr-open : musical_pr_drawer := MusicalPrDrawer {
             z: 9550;

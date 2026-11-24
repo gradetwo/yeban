@@ -7959,7 +7959,7 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 /// | :--- | :--- | :--- |
 /// | `toggle-view` | `arrangement-view` | `ArrangementView` / `SessionView` 的 `visible` 互斥互换 |
 /// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
-/// | `toggle-ai-drawer` | `ai-drawer-open` | `compact` 断点下 280px AI 抽屉的 `visible` |
+/// | `toggle-ai-drawer` | `ai-drawer-open` | `app.slint` 里 288px AI 抽屉覆盖层的 `visible`（T-FIX-304 起真实存在） |
 /// | `open-musical-pr` | `musical-pr-open` **＋九个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
 /// | `select-ai-proposal` / `accept-ai-proposal` / `reject-ai-proposal` | `musical-pr-selected-id` 等九个属性（外加领域的提案状态） | 同样**不在本函数**：三条都在 [`wire_proposal_drawer`] 注册 —— 后两条是界面上**唯一**能改领域的地方 |
 /// | `select-sidebar-category` | —— | **不在本函数**：换分类 ⇒ 条目数组跟着换 ⇒ 见 [`wire_sidebar_contents`]（钳位用**当次条数**，⛔ 不是常量） |
@@ -15658,13 +15658,15 @@ fn apply_action(
             // ⚠ **前置**只有"全屏开着"这一格：`Esc` 在非全屏态是直通（不折叠面板、
             // 不展开面板）—— 折叠键有自己的按钮，`Esc` 不兼任折叠（`elements.rs`
             // 的注记：一键两义须有裁决；本条的裁决是 `Esc` 只退全屏，不碰折叠）。
-            // ⭐ [PATCH UI-FEEDBACK-01]：这一臂**必须**在 AI 抽屉之前。此前注释断言
-            // "抽屉与全屏不会同开（抽屉在右栏，全屏时右栏已塌掉）"，但 `app.slint`
-            // 的 compact 抽屉是**根级覆盖层**（`visible: root.compact && root.ai-drawer-open`，
-            // 不含 `!song-overview-fullscreen`）：全屏时主工作区虽塌掉，它仍浮在画布
-            // 右侧 ⇒ 两者可以同开。若抽屉臂在前，这种组合态下按 `Esc` 会先关一个悬在
-            // 画布上的抽屉，全屏却纹丝不动 —— 用户按了"退出全屏"的键却没退出。
-            // 全屏是更外层的视图态，优先收；抽屉留待第二次 `Esc`。
+            // ⭐ [PATCH UI-FEEDBACK-01／T-FIX-304 勘误]：这一臂**必须**在 AI 抽屉之前。
+            // 旧注释断言"抽屉在右栏、全屏时右栏已塌掉 ⇒ 两者不会同开"，还提到一层
+            // `visible: root.compact && root.ai-drawer-open` 的覆盖层 —— 那层覆盖层当时
+            // **已不存在**（`ai-drawer-open` 是零引用属性），现由 T-FIX-304 在
+            // `app.slint` 重新实例化为根级覆盖层（`if root.ai-drawer-open : Rectangle`，
+            // 不含 `!song-overview-fullscreen`）：全屏时它仍浮在画布右侧 ⇒ 两者可以同开。
+            // 若抽屉臂在前，这种组合态下按 `Esc` 会先关一个悬在画布上的抽屉，全屏却纹丝
+            // 不动 —— 用户按了"退出全屏"的键却没退出。全屏是更外层的视图态，优先收；
+            // 抽屉留待第二次 `Esc`。
             if ui.get_song_overview_fullscreen() {
                 ui.invoke_song_overview_toggle_fullscreen();
                 return true;
