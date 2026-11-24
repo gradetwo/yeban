@@ -29,8 +29,8 @@ fn read(relative: &str) -> String {
 #[test]
 fn the_sound_library_sits_above_the_rescue_panel() {
     let app = read("ui/app.slint");
-    let rescue_z = z_after(&app, "if root.missing-sounds-open : MissingSoundsDialog {");
-    let library_z = z_after(&app, "if root.sound-library-open : SoundLibraryDialog {");
+    let rescue_z = z_after(&app, "missing-sounds-dialog := MissingSoundsDialog {");
+    let library_z = z_after(&app, "sound-library-dialog := SoundLibraryDialog {");
     assert!(
         library_z > rescue_z,
         "音源管理（z={library_z}）必须盖在救援面板（z={rescue_z}）上面 —— \
@@ -113,8 +113,8 @@ fn the_error_banner_lets_its_message_shrink_instead_of_overlapping() {
     let block: Vec<&str> = app[start..].lines().take(70).collect();
     let block = block.join("\n");
     assert!(
-        block.contains("overflow: elide"),
-        "横幅消息必须 `overflow: elide`（否则与右侧按钮叠字）：\n{block}"
+        block.contains("overflow: TextOverflow.elide"),
+        "横幅消息必须 `overflow: TextOverflow.elide`（否则与右侧按钮叠字）：\n{block}"
     );
     assert!(
         block.contains("clip: true"),

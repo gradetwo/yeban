@@ -27,8 +27,9 @@ fn settings_menu_has_sound_library_entry_with_host_landing() {
     );
 }
 
-/// ② 对话框被 import 并在 `sound-library-open` 为真时挂载（默认关着，
+/// ② 对话框被 import 并由 `sound-library-open` 以 `visible:` 门控（默认关着，
 /// 默认帧不变），且把宿主的平行数组与四条回调都接上。
+/// （T-FIX-182 起 `if` 条件挂载已改为 `visible:` 门控。）
 #[test]
 fn dialog_is_imported_and_mounted() {
     assert!(
@@ -36,8 +37,12 @@ fn dialog_is_imported_and_mounted() {
         "app.slint 必须 import 音源管理对话框"
     );
     assert!(
-        APP.contains("if root.sound-library-open : SoundLibraryDialog"),
-        "对话框必须挂在 sound-library-open 条件下"
+        APP.contains("sound-library-dialog := SoundLibraryDialog {"),
+        "对话框必须以 `sound-library-dialog` 挂载"
+    );
+    assert!(
+        APP.contains("visible: root.sound-library-open;"),
+        "对话框必须由 sound-library-open 以 `visible:` 门控"
     );
     for binding in [
         "installed-names: root.sound-installed-names",

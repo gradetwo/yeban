@@ -150,8 +150,13 @@ fn missing_sfz_opens_the_library_through_the_same_path_as_the_menu() {
     );
 
     // 面板与宿主的语义 id 仍是同一份（打开的是**那个**对话框，不是另画一个）。
+    // T-FIX-182 起挂载改用 `visible:` 门控，`if` 条件挂载写法已不存在。
     assert!(
-        APP_SLINT.contains("if root.sound-library-open : SoundLibraryDialog"),
-        "音源管理仍由 `sound-library-open` 挂载"
+        APP_SLINT.contains("sound-library-dialog := SoundLibraryDialog {"),
+        "音源管理对话框必须以 `sound-library-dialog` 挂载"
+    );
+    assert!(
+        APP_SLINT.contains("visible: root.sound-library-open;"),
+        "音源管理仍由 `sound-library-open` 门控（visible:）"
     );
 }
