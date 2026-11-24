@@ -1294,7 +1294,7 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("最大化/还原底部控制台"); activated => { root.command-execute("toggle-maximize-dock"); } }
             MenuItem { title: @tr("显隐左侧通道检查器 (I)"); activated => { root.command-execute("toggle-inspector"); } }
             MenuItem { title: @tr("打开浏览器 · 音色/采样/预设/效果 (⇧⌘B)"); activated => { root.command-execute("toggle-browser"); } }
-            MenuItem { title: @tr("显隐 Clip 激发矩阵 (Tab)"); activated => { root.command-execute("toggle-clip-matrix"); } }
+            MenuItem { title: @tr("显隐 Clip 激发矩阵"); activated => { root.command-execute("toggle-clip-matrix"); } }
             MenuItem { title: @tr("显示 / 隐藏和弦轨"); activated => { root.command-execute("toggle-chord-lane"); } }
             MenuItem { title: @tr("显示 / 隐藏自动化泳道 (A)"); activated => { root.command-execute("toggle-automation"); } }
             MenuSeparator {}

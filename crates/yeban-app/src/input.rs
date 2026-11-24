@@ -1384,8 +1384,9 @@ impl InputContext {
                 // 新建 MIDI 轨（界面决定）：`n` 在 Cmd/Ctrl 组此前只有 `+Alt`（节拍器）
                 // 一条 ⇒ `Cmd/Ctrl+N` 这格空闲。Logic 的 Option+Cmd+N 在本仓被节拍器占用。
                 (Key::Character('n'), false, false) => Resolution::Action(Action::NewTrack),
-                // Logic Pro 工作流：Cmd+T 剪辑切分
-                (Key::Character('t'), false, false) => Resolution::Action(Action::SplitAtPlayhead),
+                // T-FIX-356 债：面板文案把 Ctrl+T 写成"新增轨道" ⇒ 按标签绑定
+                // （切分仍可由菜单 / 工具入口触发；⛔ 不保留一个文案说了却不做的键）。
+                (Key::Character('t'), false, false) => Resolution::Action(Action::NewTrack),
                 // 横向缩放：Cmd+= / Cmd++ / Cmd+-（`=`/`-` 备用，见第 6 步）
                 (Key::Character('='), false, false) | (Key::Character('+'), _, false) => {
                     Resolution::Action(Action::ZoomIn)
@@ -1438,6 +1439,8 @@ impl InputContext {
         //    `Cmd/Ctrl+Alt+Shift+方向` 的既有口径一致：新绑的键只占**它点名的那一格**。
         if modifiers.alt {
             return match key {
+                // T-FIX-356 债：下层叠放标签提示"设备堆叠 [Alt+S]"。
+                Key::Character('s') => Resolution::Action(Action::SelectConsoleTab { index: 3 }),
                 Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
                 Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
                 Key::UpArrow if !modifiers.shift => Resolution::Action(Action::SelectTrackBy(-1)),
@@ -1457,6 +1460,8 @@ impl InputContext {
         // 5. Shift 组合。
         if modifiers.shift {
             return match key {
+                // T-FIX-356 债：面板文案"切换底栏：设备机架"承诺 Shift+Tab。
+                Key::Tab => Resolution::Action(Action::SelectConsoleTab { index: 2 }),
                 Key::Space => Resolution::Action(Action::ResumeFromCursor),
                 Key::Enter => Resolution::Action(Action::AcceptAiSuggestion),
                 Key::Character('z') => Resolution::Action(Action::ZoomToFit),
@@ -1564,10 +1569,10 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NudgeClipMs, NudgeMixerChannel,
-        NudgeSelection, OpenProject, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration,
-        ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy,
-        ShowView, SplitAtPlayhead, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
+        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NewTrack, NudgeClipMs,
+        NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause, Redo,
+        ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab,
+        SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
         ToggleConsoleMaximize, ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool,
         ToggleRecord, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo,
         VerticalZoomIn, VerticalZoomOut, ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
@@ -1629,9 +1634,9 @@ mod tests {
         );
         assert_eq!(ctx.resolve(KeyC, Modifiers::none()), Act(ToggleCycle));
 
-        // 2. Logic clip split
-        assert_eq!(ctx.resolve(KeyT, Modifiers::meta()), Act(SplitAtPlayhead));
-        assert_eq!(ctx.resolve(KeyT, Modifiers::ctrl()), Act(SplitAtPlayhead));
+        // 2. T-FIX-356 债：面板文案把 Ctrl/Cmd+T 写成"新增轨道" ⇒ 键按文案走。
+        assert_eq!(ctx.resolve(KeyT, Modifiers::meta()), Act(NewTrack));
+        assert_eq!(ctx.resolve(KeyT, Modifiers::ctrl()), Act(NewTrack));
 
         // 3. Horizontal zoom
         assert_eq!(ctx.resolve(Equal, Modifiers::none()), Act(ZoomIn));
@@ -2672,6 +2677,15 @@ mod tests {
         assert_eq!(
             canvas().resolve_logical(LKey::Tab, Modifiers::none()),
             Act(ToggleView)
+        );
+        // T-FIX-356 债：文案承诺的底栏切换键必须真的解出对应标签。
+        assert_eq!(
+            canvas().resolve_logical(LKey::Tab, Modifiers::shift()),
+            Act(SelectConsoleTab { index: 2 })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::Character('s'), Modifiers::alt()),
+            Act(SelectConsoleTab { index: 3 })
         );
         assert_eq!(
             canvas().resolve_logical(LKey::F5, Modifiers::none()),

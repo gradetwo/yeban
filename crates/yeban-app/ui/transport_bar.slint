@@ -1619,7 +1619,7 @@ export component TransportHeaderBar inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 Text {
-                    text: "Ctrl+K";
+                    text: "";
                     font-family: Tokens.font-mono;
                     font-size: 9px;
                     font-weight: 400;
@@ -1631,7 +1631,7 @@ export component TransportHeaderBar inherits Rectangle {
                     mouse-cursor: MouseCursor.pointer;
                     clicked => { root.open-cmd-palette(); }
                 }
-                TooltipBubble { text: @tr("快捷命令面板 [Ctrl+K]"); is-visible: touch_cmd.has-hover; tip-offset-x: -30px; }
+                TooltipBubble { text: @tr("快捷命令面板"); is-visible: touch_cmd.has-hover; tip-offset-x: -30px; }
             }
 
             // Group J: Architecture insights toggle
