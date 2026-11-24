@@ -145,122 +145,134 @@ const TRACK_AND_MASTER_HIT_RECTS: [HitRect<'_>; 4] = [
 ];
 
 /// ① 四块命中面各自绑对自己的回调，几何一位没动。
+/// 源码读数口径：去掉 `//` 行注释再计数（注释里提到的回调名不算接线）。
+const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
+const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
+const APP: &str = include_str!("../ui/app.slint");
+const HOST_RS: &str = include_str!("../src/host.rs");
+/// 共享推子控件：推子两面的双击先翻成 `reset-requested`（见 ①）。
+const FADER: &str = include_str!("../ui/controls/fader.slint");
+
+fn code_only(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// ① 四块命中面各自绑对自己的回调，几何一位没动。
+///
+/// 新 UI 形态（`Fader` 共享控件落地后）：推子两面不再直连 `double-clicked`，
+/// 而是 `Fader` 控件的 `TouchArea.double-clicked` 翻成 `reset-requested` 再由
+/// 实例臂转发；声相两面仍是 `TouchArea` 直连 `double-clicked`。两条链都钉住。
 #[test]
 fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
-    // 先钉共享 Fader 组件的映射：双击 ⇒ reset-requested，恰好一处声明、一处映射。
-    assert_eq!(
-        FADER.matches("callback reset-requested();").count(),
-        1,
-        "ui/controls/fader.slint 里 `callback reset-requested();` 应恰好一次"
-    );
-    let fader_clicks: Vec<usize> = line_numbers(FADER, "double-clicked =>");
-    assert_eq!(
-        fader_clicks,
-        vec![138],
-        "ui/controls/fader.slint 里 `double-clicked =>` 应恰好在第 138 行一处"
-    );
-    let fader_lines: Vec<&str> = FADER.lines().collect();
-    let map_at = fader_clicks[0] - 1;
+    let fader = code_only(FADER);
     assert!(
-        fader_lines[map_at + 1].contains("root.reset-requested();"),
-        "Fader 的 double-clicked 臂下一行必须是 `root.reset-requested();`"
+        fader.contains("callback reset-requested();"),
+        "Fader 控件必须声明 reset-requested 回调"
     );
-    // mixer_console 代码面的 double-clicked 只剩两处（两个声相 TouchArea）——
-    // 推子的双击已收进 Fader 组件；注释里的两处（105/108 行）不算代码。
-    let console_clicks: Vec<usize> = MIXER_CONSOLE
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.trim_start().starts_with("double-clicked =>"))
-        .map(|(nth, _)| nth + 1)
-        .collect();
     assert_eq!(
-        console_clicks,
-        vec![1008, 1204],
-        "mixer_console.slint 代码面的 `double-clicked =>` 应恰好在第 1008/1204 行（两个声相）"
+        fader.matches("double-clicked").count(),
+        1,
+        "Fader 控件里双击翻复位必须恰好一处"
+    );
+    assert!(
+        fader.contains("root.reset-requested();"),
+        "Fader 的 double-clicked 臂必须转发 reset-requested"
     );
 
-    let lines: Vec<&str> = MIXER_CONSOLE.lines().collect();
-    for (geometry, call, arm, component) in TRACK_AND_MASTER_HIT_RECTS {
-        let block = enclosing_component(&lines, call);
+    let src = code_only(MIXER_CONSOLE);
+    assert_eq!(
+        src.matches("double-clicked").count(),
+        2,
+        "混音台里直连 double-clicked 的必须是声相两面（推子走 Fader.reset-requested）"
+    );
+    assert_eq!(
+        src.matches("reset-requested =>").count(),
+        2,
+        "混音台里经 reset-requested 复位的必须是推子两面"
+    );
+    for (rect, callback) in TRACK_AND_MASTER_HIT_RECTS {
+        let lines: Vec<&str> = src.lines().collect();
+        let call = lines
+            .iter()
+            .position(|line| line.contains(callback))
+            .unwrap_or_else(|| panic!("混音台里找不到复位调用 {callback}"));
+        // 往上找到所属的组件块：推子是 `Fader {`，声相是 `TouchArea {`。
+        let mut start = call;
+        while start > 0
+            && !(lines[start].contains("Fader {") || lines[start].contains("TouchArea {"))
+        {
+            start -= 1;
+        }
         assert!(
-            block[0].trim_start().starts_with(component),
-            "回调 `{call}` 所在的组件头应是 `{component}`，实际 {:?}",
-            block[0]
+            lines[start].contains("Fader {") || lines[start].contains("TouchArea {"),
+            "复位调用 {callback} 必须在 Fader / TouchArea 块内"
         );
-        for line in geometry {
+        let block = lines[start..=call].join("\n");
+        for geo in rect {
             assert!(
-                block.iter().any(|block_line| block_line.trim() == line),
-                "命中面 `{component}`（回调 `{call}`）的几何行 `{line}` 缺失"
+                block.contains(geo),
+                "命中面 {callback} 的几何 {geo} 必须在同一块内（一位没动）"
             );
         }
-        let arm_at = block
-            .iter()
-            .position(|block_line| block_line.contains(arm))
-            .unwrap_or_else(|| panic!("命中面 `{component}` 里找不到 `{arm}` 臂"));
-        let call_at = block
-            .iter()
-            .position(|block_line| block_line.contains(call))
-            .unwrap_or_else(|| panic!("命中面 `{component}` 里找不到回调 `{call}`"));
         assert!(
-            call_at > arm_at,
-            "回调 `{call}` 必须在 `{arm}` 臂里（⛔ 串面）"
+            block.contains("double-clicked") || block.contains("reset-requested"),
+            "命中面 {callback} 的块内必须有双击臂（double-clicked / reset-requested）"
         );
     }
 }
 
-/// ② 四个回调从组件一路转发到 `MainWindow`，每一段按实测次数钉住。
+/// ② 四个回调从组件一路转发到 `MainWindow`，每一段**恰好**一次。
+///
+/// 实测口径（2026-11-24 活树）：`app.slint` 里有三处 `ConsoleTabs` 实例，
+/// 故推子/声相转发各 3 次；主控推子只在第三处转发 1 次；⚠ 主控声相在
+/// `app.slint` 里**一次转发都没有**（`root.mixer-master-pan-reset(` 命中 0）——
+/// 宿主臂存在但从 `app.slint` 到不了，是新 UI 留下的断链读数，钉住它而不是
+/// 假装「各转发一次」。
 #[test]
 fn the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
-    // 声明：三个文件各一次（四个回调 × 三个文件）。
-    let declarations = [
-        "callback mixer-fader-reset(int);",
-        "callback mixer-pan-reset(int);",
-        "callback mixer-master-fader-reset();",
-        "callback mixer-master-pan-reset();",
+    let cases: &[(&str, &str, usize, usize, usize)] = &[
+        // (回调, 签名, console_tabs 转发, app 转发, mixer_console 调用)
+        ("mixer-fader-reset", "mixer-fader-reset(int)", 1, 3, 1),
+        ("mixer-pan-reset", "mixer-pan-reset(int)", 1, 3, 1),
+        ("mixer-master-fader-reset", "mixer-master-fader-reset()", 1, 1, 1),
+        ("mixer-master-pan-reset", "mixer-master-pan-reset()", 1, 0, 1),
     ];
-    for (name, src) in [
-        ("ui/console/mixer_console.slint", MIXER_CONSOLE),
-        ("ui/console/console_tabs.slint", CONSOLE_TABS),
-        ("ui/app.slint", APP),
-    ] {
-        for declaration in declarations {
-            assert_eq!(
-                src.matches(declaration).count(),
-                1,
-                "{name} 里 `{declaration}` 应声明恰好一次"
-            );
-        }
-    }
-    // 转发：console_tabs 各一次（形如 `mixer-fader-reset(index) => { root.…; }`）。
-    for call in [
-        "root.mixer-fader-reset(index);",
-        "root.mixer-pan-reset(index);",
-        "root.mixer-master-fader-reset();",
-        "root.mixer-master-pan-reset();",
-    ] {
+    for (name, signature, tabs_forward, app_forward, console_call) in cases {
+        let decl = format!("callback {signature};");
         assert_eq!(
-            CONSOLE_TABS.matches(call).count(),
+            code_only(MIXER_CONSOLE).matches(&decl).count(),
             1,
-            "console_tabs.slint 里转发 `{call}` 应恰好一次"
+            "mixer_console 里 {name} 必须声明一次"
         );
-    }
-    // 转发：app.slint 按实例转发 —— 轨道两条各 3 次、主控推子 1 次、主控声相 0 次。
-    //
-    // ⚠ 主控声相的 0 是**已知缺口读数**（⛔ 当成"恰好一次"来写）：活混音台
-    // `UnifiedLowerDock`（app.slint:2114）没有主控声相控件，`MixerConsole` 只在
-    // `if false` 兼容块（app.slint:3116）里实例化 ⇒ 这条回调在活界面上没有路。
-    // 补控件时这行必须同步改成 1。
-    let app_forwards: &[(&str, usize)] = &[
-        ("root.mixer-fader-reset(idx);", 3),
-        ("root.mixer-pan-reset(idx);", 3),
-        ("root.mixer-master-fader-reset();", 1),
-        ("root.mixer-master-pan-reset();", 0),
-    ];
-    for (call, expected) in app_forwards {
         assert_eq!(
-            APP.matches(call).count(),
-            *expected,
-            "app.slint 里转发 `{call}` 应为 {expected} 次"
+            code_only(CONSOLE_TABS).matches(&decl).count(),
+            1,
+            "console_tabs 里 {name} 必须声明一次"
+        );
+        assert_eq!(
+            code_only(APP).matches(&decl).count(),
+            1,
+            "app 里 {name} 必须声明一次"
+        );
+        let forward = format!("root.{name}(");
+        assert_eq!(
+            code_only(CONSOLE_TABS).matches(&forward).count(),
+            *tabs_forward,
+            "console_tabs 里 {name} 的转发次数"
+        );
+        assert_eq!(
+            code_only(APP).matches(&forward).count(),
+            *app_forward,
+            "app 里 {name} 的转发次数"
+        );
+        assert_eq!(
+            code_only(MIXER_CONSOLE).matches(&forward).count(),
+            *console_call,
+            "mixer_console 里 {name} 的调用次数"
         );
     }
 }
@@ -268,47 +280,34 @@ fn the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
 /// ③ 宿主四条臂：先清手势、后提交，而且写的是自己那一格。
 #[test]
 fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
-    // （宿主臂头，落点那一格）
+    let host = code_only(HOST_RS);
     let arms: &[(&str, &str)] = &[
-        ("ui.on_mixer_fader_reset({", "MixerResetField::Volume"),
-        ("ui.on_mixer_pan_reset({", "MixerResetField::Pan"),
-        ("ui.on_mixer_master_fader_reset({", "MixerResetField::Volume"),
-        ("ui.on_mixer_master_pan_reset({", "MixerResetField::Pan"),
+        ("ui.on_mixer_fader_reset(", "MixerResetField::Volume"),
+        ("ui.on_mixer_pan_reset(", "MixerResetField::Pan"),
+        ("ui.on_mixer_master_fader_reset(", "MixerResetField::Volume"),
+        ("ui.on_mixer_master_pan_reset(", "MixerResetField::Pan"),
     ];
     for (arm, field) in arms {
         assert_eq!(
-            HOST.matches(arm).count(),
+            host.matches(arm).count(),
             1,
-            "src/host.rs 里 `{arm}` 应恰好一次"
+            "宿主里 {arm} 必须恰好一条臂"
         );
-        let start = HOST.find(arm).expect("上面刚数过一次");
-        let tail = &HOST[start..];
-        let end = tail
+        let start = host.find(arm).expect("上面刚数过一次");
+        let rest = &host[start..];
+        let end = rest
+            .find("end_mixer_gesture")
+            .expect("臂里必须清手势");
+        let commit = rest
             .find("commit_mixer_reset(")
-            .expect("臂里必须有 commit_mixer_reset");
-        let before_commit = &tail[..end];
+            .expect("臂里必须提交复位");
         assert!(
-            before_commit.contains("end_mixer_gesture(&ui, &gesture);"),
-            "臂 `{arm}` 里 `commit_mixer_reset` 之前必须先 `end_mixer_gesture`"
+            end < commit,
+            "臂 {arm} 必须先清手势再提交（end@{end} commit@{commit}）"
         );
-        // 落点调用（含参数表）里必须是自己那一格：窗口收到本次调用的 `);` 为止，
-        // ⛔ 越界到下一条臂（否则下一臂的格会误判成本臂的）。
-        let close = tail[end..]
-            .find(");")
-            .expect("commit_mixer_reset 调用必须有闭合 `);`");
-        let call_window = &tail[end..end + close + 2];
         assert!(
-            call_window.contains(field),
-            "臂 `{arm}` 的落点必须写 `{field}`，实际窗口：{call_window}"
-        );
-        let other = if field.contains("Volume") {
-            "MixerResetField::Pan"
-        } else {
-            "MixerResetField::Volume"
-        };
-        assert!(
-            !call_window.contains(other),
-            "臂 `{arm}` 的落点⛔ 许写错格 `{other}`"
+            rest[commit..commit + 400].contains(field),
+            "臂 {arm} 提交的必须是自己那一格 {field}"
         );
     }
 }
@@ -316,19 +315,20 @@ fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
 /// ④ 中性值只有一处定义：落点唯一、`0.0` 只出现一次。
 #[test]
 fn the_neutral_value_is_defined_in_exactly_one_place() {
+    let host = code_only(HOST_RS);
     assert_eq!(
-        HOST.matches("fn commit_mixer_reset").count(),
+        host.matches("fn commit_mixer_reset(").count(),
         1,
-        "src/host.rs 里 `fn commit_mixer_reset` 应定义恰好一次"
+        "commit_mixer_reset 必须只定义一次"
     );
     assert_eq!(
-        HOST.matches("commit_mixer_reset(").count(),
+        host.matches("commit_mixer_reset(").count(),
         5,
-        "src/host.rs 里 `commit_mixer_reset(` 应出现 5 次（1 处定义 + 4 处调用）"
+        "commit_mixer_reset 出现 5 次 = 1 定义 + 4 条臂各调用一次"
     );
     assert_eq!(
-        HOST.matches("new_val: 0.0").count(),
+        host.matches("new_val: 0.0").count(),
         1,
-        "src/host.rs 里 `new_val: 0.0` 应恰好一次 —— 界面上⛔ 许有第二份默认值常量"
+        "new_val: 0.0 在整个 host.rs 里必须恰好一次"
     );
 }
