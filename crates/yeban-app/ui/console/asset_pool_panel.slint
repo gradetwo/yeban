@@ -4,7 +4,8 @@
 //   - [UI-TEST-001] §12.2: 关键节点必须有稳定的 `accessible-id`；本面板的语义 ID 由
 //     `src/elements.rs` 的注册表与运行时控件树两侧对账。
 //   - [UI-MCP-003]: 5 张 Linux 基准只覆盖**默认帧**（控制台 Tab 0 = 钢琴卷帘）。
-//     本面板住在 `MixerConsole`（Tab 1）里 ⇒ 默认帧**一个像素都不画**，基准不需要重录。
+//     本面板住在活下坞 `UnifiedLowerDock` 的混音台档（Tab 1）里 ⇒ 默认帧**一个像素都不画**，基准不需要重录。
+//     （T-FIX-356 之前它只住在死掉的 `MixerConsole`/`ConsoleTabs` 链里，活界面上根本没有。）
 //
 // 数据流方向（与 `mixer_console.slint` 的 `track-*` 数组同一条纪律）:
 //   三个 `in` 数组由 `src/host.rs` 的 `apply_view` 单向注入，**唯一**事实源是

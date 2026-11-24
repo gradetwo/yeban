@@ -1,5 +1,6 @@
 import { Theme, TrackData, PianoStepRow, PianoRollNote, Tokens, TooltipBubble } from "tokens.slint";
 import { PianoRoll } from "console/piano_roll.slint";
+import { AssetPoolPanel } from "console/asset_pool_panel.slint";
 
 export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> active-tab: "devices"; // "devices" | "mixer" | "pianoroll" | "stacked"
@@ -10,6 +11,11 @@ export component UnifiedLowerDock inherits Rectangle {
     // 通道条电平柱按下标取；master 两柱取主总线读数（控制面已按 60Hz 镜像到
     // `master-meter-l/r`）。缺数据时取 0（= 下限），不画假值。
     in property <[float]> track-meter-levels: [];
+    // ⭐ T-FIX-356：素材池（`#133`）—— 三个平行数组由 `host::apply_view` 单向注入
+    // （与死掉的 `MixerConsole` 的旧透传同口径；唯一事实源是 `ViewState::asset_pool`）。
+    in property <[string]> asset-pool-names: [];
+    in property <[string]> asset-pool-kinds: [];
+    in property <[string]> asset-pool-details: [];
     in property <float> master-meter-l: 0.0;
     in property <float> master-meter-r: 0.0;
     in-out property <int> selected-track-id: 1;
@@ -95,6 +101,9 @@ export component UnifiedLowerDock inherits Rectangle {
     callback mixer-master-fader-drag(length);
     callback mixer-master-fader-release();
     callback mixer-master-fader-reset();
+    // ⭐ T-FIX-356：素材池「导入音频」—— 面板只报"按了"，原样上抛给 MainWindow 的
+    // `import-audio`（唯一落点 `host::wire_import_audio`，生产路径已接线）。
+    callback import-audio();
     callback execute-action(string);
     callback set-wt-pos(int);
     callback set-wt-cutoff(int);
@@ -2006,6 +2015,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                         }
+                    }
+
+                    // ⭐ T-FIX-356：素材池面板（`#133`）—— 它以前只住在死掉的
+                    // `MixerConsole`/`ConsoleTabs` 链（`app.slint` 里 `if false`）里，活混音台
+                    // 一直没有 ⇒ 判据 ①③④ 在活树上无物可测。座位：通道条 + BUS + 空槽之后、
+                    // MASTER 之前（MASTER 仍由下面的空格钉在右沿）；只在 mixer 档实例化
+                    // （Tab 0 = 卷帘里没有它；stacked 档不带它）。默认帧仍一个像素都不画。
+                    if root.active-tab == "mixer" : AssetPoolPanel {
+                        width: 216px;
+                        // ⛔ 不写 `height: parent.height`（布局里那是绑定环：父高由子高算出）；
+                        // 与相邻通道条同款 `vertical-stretch: 1` 撑满窗格高。
+                        vertical-stretch: 1;
+                        asset-pool-names: root.asset-pool-names;
+                        asset-pool-kinds: root.asset-pool-kinds;
+                        asset-pool-details: root.asset-pool-details;
+                        import-audio => { root.import-audio(); }
                     }
 
                     // ⭐ T-FIX-64（走查 #13 收尾）：MASTER 必须**钉在右沿**，不是

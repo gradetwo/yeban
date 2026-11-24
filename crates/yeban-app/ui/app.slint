@@ -2168,6 +2168,12 @@ export component MainWindow inherits Window {
                 // ⭐ 混音台真实接线：通道条与主控电平取自引擎 SPSC（与轨道头/画布同一份），
                 // ⛔ 不再让下坞读 `TrackData.meter_peak` 那个永不更新的占位字段。
                 track-meter-levels: root.track-meter-levels;
+                // ⭐ T-FIX-356：素材池（`#133`）—— 三个数组与导入回调透传给活下坞
+                // （以前只透传给死掉的 `ConsoleTabs` 链；`apply_view` 早就在写这三个数组）。
+                asset-pool-names: root.asset-pool-names;
+                asset-pool-kinds: root.asset-pool-kinds;
+                asset-pool-details: root.asset-pool-details;
+                import-audio => { root.import-audio(); }
                 master-meter-l: root.master-meter-l;
                 master-meter-r: root.master-meter-r;
                 track-volumes: root.track-volumes;
