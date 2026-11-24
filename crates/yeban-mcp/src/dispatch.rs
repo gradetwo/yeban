@@ -3,7 +3,7 @@
 //! ## 管线（顺序本身是判据）
 //!
 //! ```text
-//! 1. method 解析            tools/list | tools/call | 其它(-32601)
+//! 1. method 解析            tools/list | tools/call | initialize | ping | 其它(-32601)
 //! 2. token 鉴权             缺 token / 错 token / 形状非法 → 401 (硬拒, 不回退放开)
 //! 3. 工具解析               name 不在契约枚举 → -32004
 //! 4. scope 检查 + 生产硬禁   ui:inject 在生产模式 → 403 (且**不依赖** token 是否正确)
@@ -67,6 +67,8 @@ pub const METHOD_TOOLS_LIST: &str = "tools/list";
 pub const METHOD_TOOLS_CALL: &str = "tools/call";
 /// MCP 握手方法名（`[ROAD-M4-002]`）。协议要求客户端的第一条请求就是它。
 pub const METHOD_INITIALIZE: &str = "initialize";
+/// MCP 探活方法名。协议要求收到 `ping` 的实现必须回响应（空 result），健康检查依赖它。
+pub const METHOD_PING: &str = "ping";
 
 /// 客户端未给 `params.protocolVersion` 时本仓声明的协议版本。
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -439,6 +441,15 @@ impl Dispatcher {
                     return denied(&denial);
                 }
                 (200, Ok(Self::initialize_result(request)))
+            }
+            METHOD_PING => {
+                // 与握手/清单同档: 探活不携带领域状态, 但仍要求鉴权（本仓一律鉴权的表面积不变）。
+                if let Err(denial) =
+                    authenticate(&self.expected_token, context.credential, context.channel)
+                {
+                    return denied(&denial);
+                }
+                (200, Ok(serde_json::json!({})))
             }
             other => {
                 let error = ErrorObject::method_not_found(other);
@@ -816,6 +827,49 @@ mod tests {
         let outcome = dispatcher.handle(Channel::Http, Some(&auth), &request);
         assert_eq!(outcome.http_status, 404);
         assert_eq!(outcome.error_code(), Some(jsonrpc::METHOD_NOT_FOUND));
+    }
+
+    /// MCP 规范：收到 `ping` 必须回响应（空 result），健康检查依赖它；不能落进
+    /// `-32601` 方法不存在。请求 `id` 回显。
+    ///
+    /// 注入（实测红）：删掉 [`evaluate`] 的 `METHOD_PING` 分支 ⇒ 本判据红（-32601/404）。
+    #[test]
+    fn ping_replies_an_empty_result_with_the_request_id_echoed() {
+        let mut dispatcher = dispatcher();
+        let auth = bearer(&dispatcher);
+        let request = Request::parse(r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#).expect("解析");
+        let outcome = dispatcher.handle(Channel::Http, Some(&auth), &request);
+        assert_eq!(outcome.http_status, 200);
+        assert_eq!(outcome.error_code(), None);
+        let response = outcome.response.expect("响应");
+        assert_eq!(response.id, Id::Number(7), "ping 的 id 必须回显");
+        let result = response.result_value().expect("result");
+        assert_eq!(result, &serde_json::json!({}), "探活 result 必须是空对象");
+    }
+
+    /// `ping` 与 tools/list / `initialize` 同一档鉴权：不携带领域状态，但仍要求鉴权。
+    #[test]
+    fn ping_is_authenticated_like_the_handshake_methods() {
+        let mut dispatcher = dispatcher();
+        let request = Request::parse(r#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#).expect("解析");
+        // Http 通道缺 token ⇒ 401（与 tools/list / initialize 同档硬拒）。
+        let outcome = dispatcher.handle(Channel::Http, None, &request);
+        assert_eq!(outcome.http_status, 401);
+        // 无头 stdio 通道不带 Authorization 头也走到实现（与既有 stdio 判据同语义）⇒ 200 + 空 result。
+        let outcome = dispatcher.handle_line(
+            Channel::Stdio,
+            None,
+            r#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#,
+        );
+        assert_eq!(outcome.http_status, 200);
+        assert_eq!(
+            outcome
+                .response
+                .expect("响应")
+                .result_value()
+                .expect("result"),
+            &serde_json::json!({})
+        );
     }
 
     #[test]
