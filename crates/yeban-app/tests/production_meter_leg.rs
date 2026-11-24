@@ -851,6 +851,32 @@ fn probe_meter_gate_tmp() {
         }
         eprintln!("PROBE wells x {lo}..{hi} first-vs-forced: n={n} y={ymin}..{ymax}");
     }
+    // 真实电平（8 跳后）vs first：在井列 x 480..505 变了多少、在哪几行？
+    {
+        let mut per_col = [0usize; 25];
+        let mut per_row = [0usize; 6];
+        for y in 0..first.height() {
+            for x in 480..505u32 {
+                let o = (y as usize * first.stride()) + (x as usize * 3);
+                if first.pixels()[o..o + 3] != after_image.pixels()[o..o + 3] {
+                    per_col[(x - 480) as usize] += 1;
+                    let row = (y.saturating_sub(173) / 54).min(5) as usize;
+                    per_row[row] += 1;
+                }
+            }
+        }
+        eprintln!("PROBE real first-vs-after wells x480..505 per_col={per_col:?} per_row={per_row:?}");
+        let mut per_col_f = [0usize; 25];
+        for y in 0..first.height() {
+            for x in 480..505u32 {
+                let o = (y as usize * first.stride()) + (x as usize * 3);
+                if first.pixels()[o..o + 3] != forced.pixels()[o..o + 3] {
+                    per_col_f[(x - 480) as usize] += 1;
+                }
+            }
+        }
+        eprintln!("PROBE forced first-vs-forced wells per_col={per_col_f:?}");
+    }
     // 地面真相：本窗口里轨道头 / 标尺带 / 编曲画布的真实包围盒。
     use yeban_ui_test_port::port::UiTestPort;
     let mut window = window;
