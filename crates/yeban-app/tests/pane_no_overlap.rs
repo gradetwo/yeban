@@ -2377,6 +2377,12 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
     } else {
         live_window((width, height), 0)
     };
+    // ⭐ T-FIX-228（T-FIX-226 复验否决）：本判据把截断报数的期望文案写死成中文 ⇒ 必须
+    //   **先钉语言**。`build_main_window_with_console_tab` 不走启动路径的 `apply_language`，
+    //   Slint 会按系统 locale 自动选词表（英文系统上首帧就是英文，见 host.rs 的
+    //   `apply_language` 文档）⇒ 同一棵树、同一份断言在 `LANG=en_US.UTF-8` 下会读到
+    //   `"1 more tracks and 2 more scenes not shown"`。产品代码不动，只把测试前提钉死。
+    host::apply_language(live.ui(), yeban_app::cli::Language::ZhCn);
     live.ui().set_arrangement_view(false);
     let tree = runtime_tree(live.ui());
     let pane = bounds(&tree, "workspace-session-canvas");
