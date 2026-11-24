@@ -2635,3 +2635,16 @@ msgstr "提案レビューパネルは Musical PR ドロワーに統合されま
 
 msgid "打开提案审核"
 msgstr "提案レビューを開く"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "保存して終了"
+
+msgid "有未保存的改动"
+msgstr "保存されていない変更があります"
+
+msgid "直接退出（放弃改动）"
+msgstr "保存せずに終了（変更を破棄）"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "終了前に保存しますか？今すぐ終了すると、保存されていない変更は失われます。"

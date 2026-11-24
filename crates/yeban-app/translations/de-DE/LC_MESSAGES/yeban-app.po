@@ -2635,3 +2635,16 @@ msgstr "Das Vorschlagsprüfungs-Panel wurde in die Musical-PR-Schublade integrie
 
 msgid "打开提案审核"
 msgstr "Vorschlagsprüfung öffnen"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "Speichern und beenden"
+
+msgid "有未保存的改动"
+msgstr "Es gibt ungespeicherte Änderungen"
+
+msgid "直接退出（放弃改动）"
+msgstr "Beenden ohne Speichern (Änderungen verwerfen)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "Vor dem Beenden speichern? Wenn Sie jetzt beenden, gehen Ihre ungespeicherten Änderungen verloren."

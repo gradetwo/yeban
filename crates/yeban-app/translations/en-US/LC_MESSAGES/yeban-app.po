@@ -2635,3 +2635,16 @@ msgstr "The proposal review panel has been merged into the Musical PR drawer."
 
 msgid "打开提案审核"
 msgstr "Open Proposal Review"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "Save and Quit"
+
+msgid "有未保存的改动"
+msgstr "You have unsaved changes"
+
+msgid "直接退出（放弃改动）"
+msgstr "Quit Without Saving (Discard Changes)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "Save before quitting? Quitting now will discard your unsaved changes."

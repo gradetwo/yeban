@@ -2635,3 +2635,16 @@ msgstr "Le panneau de révision des propositions a été intégré au tiroir Mus
 
 msgid "打开提案审核"
 msgstr "Ouvrir la révision des propositions"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "Enregistrer et quitter"
+
+msgid "有未保存的改动"
+msgstr "Vous avez des modifications non enregistrées"
+
+msgid "直接退出（放弃改动）"
+msgstr "Quitter sans enregistrer (abandonner les modifications)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "Enregistrer avant de quitter ? Quitter maintenant ignorera vos modifications non enregistrées."

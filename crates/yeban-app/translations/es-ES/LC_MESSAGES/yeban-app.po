@@ -2635,3 +2635,16 @@ msgstr "El panel de revisión de propuestas se ha integrado en el cajón Musical
 
 msgid "打开提案审核"
 msgstr "Abrir revisión de propuestas"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "Guardar y salir"
+
+msgid "有未保存的改动"
+msgstr "Tienes cambios sin guardar"
+
+msgid "直接退出（放弃改动）"
+msgstr "Salir sin guardar (descartar cambios)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "¿Guardar antes de salir? Salir ahora descartará tus cambios sin guardar."

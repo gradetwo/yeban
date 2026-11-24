@@ -2635,3 +2635,16 @@ msgstr "O painel de revisão de propostas foi integrado à gaveta Musical PR."
 
 msgid "打开提案审核"
 msgstr "Abrir revisão de propostas"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "Salvar e sair"
+
+msgid "有未保存的改动"
+msgstr "Você tem alterações não salvas"
+
+msgid "直接退出（放弃改动）"
+msgstr "Sair sem salvar (descartar alterações)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "Salvar antes de sair? Sair agora descartará suas alterações não salvas."

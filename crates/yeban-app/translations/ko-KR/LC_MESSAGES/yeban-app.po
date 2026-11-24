@@ -2635,3 +2635,16 @@ msgstr "제안 검토 패널이 Musical PR 서랍에 통합되었습니다."
 
 msgid "打开提案审核"
 msgstr "제안 검토 열기"
+
+# --- T-FIX-342: T-FIX-208 quit unsaved guard msgids ---
+msgid "保存并退出"
+msgstr "저장 후 종료"
+
+msgid "有未保存的改动"
+msgstr "저장되지 않은 변경 사항이 있습니다"
+
+msgid "直接退出（放弃改动）"
+msgstr "저장하지 않고 종료(변경 사항 버리기)"
+
+msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
+msgstr "종료 전에 저장할까요? 지금 종료하면 저장되지 않은 변경 사항이 사라집니다."
