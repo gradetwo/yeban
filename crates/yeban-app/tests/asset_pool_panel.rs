@@ -458,12 +458,12 @@ fn the_row_count_follows_the_clip_pool_instead_of_a_hardcoded_number() {
     ));
 }
 
-/// 临时探针（T-FIX-356 收尾调试）：Tab 切换 vs 直接建 Tab 1 —— 跑完即删。
+/// 临时探针 A（T-FIX-356 收尾调试）：直接建 Tab 1 的窗口 —— 跑完即删。
+/// ⚠ 每个测试只能建一个 LivePort（第二次 install 返回 PlatformUnavailable），故分两个测试。
 #[test]
-fn probe_asset_pool_tab_switch_tmp() {
+fn probe_asset_pool_direct_tab1_tmp() {
     let project = filled_project();
     let view = ViewState::from_project(&project).expect("投影");
-    // A：直接建 Tab 1 的窗口。
     let port1 = live_window(&view, 1);
     let tree1 = runtime_tree(port1.ui());
     eprintln!(
@@ -472,7 +472,19 @@ fn probe_asset_pool_tab_switch_tmp() {
         tree1.contains("asset-pool-panel"),
         port1.ui().get_console_tab()
     );
-    // B：建 Tab 0，再 set_console_tab(1)。
+    let mixer_nodes: Vec<String> = tree1
+        .iter()
+        .map(|n| n.id.clone())
+        .filter(|id| id.contains("mixer") || id.contains("console") || id.contains("asset"))
+        .collect();
+    eprintln!("PROBE direct-tab-1 mixer/console/asset ids: {mixer_nodes:?}");
+}
+
+/// 临时探针 B（T-FIX-356 收尾调试）：建 Tab 0 再 set_console_tab(1) —— 跑完即删。
+#[test]
+fn probe_asset_pool_switch_tab1_tmp() {
+    let project = filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
     let port0 = live_window(&view, 0);
     eprintln!("PROBE before switch: console-tab={}", port0.ui().get_console_tab());
     port0.ui().set_console_tab(1);
@@ -483,7 +495,6 @@ fn probe_asset_pool_tab_switch_tmp() {
         tree0.len(),
         tree0.contains("asset-pool-panel")
     );
-    // C：树里到底有哪些 mixer 档节点？
     let mixer_nodes: Vec<String> = tree0
         .iter()
         .map(|n| n.id.clone())
