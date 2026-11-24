@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 303 | 1286 | `41d4d2f7614ad60cc9e276d1114c5a2c443f2cab6c282adfa46967bf296af0dd` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 308 | 1316 | `624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -197,7 +197,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 299] = [
+pub const GOLDEN_REASONS: [&str; 304] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetChannelLayout",
@@ -558,6 +558,16 @@ pub const GOLDEN_REASONS: [&str; 299] = [
     // 无活跃工程时 `yeban_correct_pitch_job` 只回 `delivery.pending`，
     // 键集是 {pending, reason}。
     "noActiveProject",
+    // ⭐ T-FIX-249（本支）：保存 / 投放侧 5 条已存在但黄金表漏登的 reason。
+    // `alreadyDelivered` / `dryRun` 是 OTCP 「交付」子对象的说明性字段（形状
+    // `{ready:false, reason}`，因标识符形状 ⇒ 进主表）；`path_unresolved` /
+    // `sfz_missing` / `sample_missing` 是保存侧 `missingSamples.items[]` 的
+    // 分类（`sampler_binding_warnings` 的三个出口）。
+    "alreadyDelivered",
+    "dryRun",
+    "path_unresolved",
+    "sample_missing",
+    "sfz_missing",
 ];
 
 /// 本平台（64 位 `usize`）**不可达**的 `reason`，逐条给机械理由。
@@ -1578,7 +1588,9 @@ struct DynamicReasonSite {
     retires_when: &'static str,
 }
 
-/// 生产区实测 **4 次出现 / 4 个 distinct 表达式**（2026-10-28：`reject_unknown_keys` /
+/// 生产区实测 **12 次出现 / 7 个 distinct 表达式**（2026-11-24 T-FIX-249 在
+/// `4ab08005` 上重测：output_schema 的类型声明 2 次、`item.reason` 4 次，
+/// 其余 5 个表达式各 1 次。2026-10-28：`reject_unknown_keys` /
 /// `read_non_empty_string` 的 3 处转发站点已改由 [`PROPAGATED_REASON_SITES`] 传播出值 ⇒
 /// 6 → 3；⭐ 十工具面（`#176` 扩到十）在 `output_schema.rs` 加了**一处 schema 类型声明**
 /// ⇒ 3 → 4；那一条**不产出任何值**（它只是把值域声明成 `string`），词源仍是
@@ -1586,7 +1598,7 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 6] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1618,14 +1630,30 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 6] = [
     DynamicReasonSite {
         file: "output_schema.rs",
         expr: "{\"type\": \"string\"}",
-        occurrences: 1,
-        forwards: "`yeban_reject_proposal` 成功响应的 **outputSchema 类型声明**（`json!` 里 `reason` \
-                   键后面的那个类型节点）⇒ 本站点**一个值都不产出**：它只声明\"长形状里那个 `reason` \
-                   是字符串\"。真正的值由 `domain/mod.rs` 的 `apply_reject` 站点给出（本表**第二条**，\
-                   入参原样入库再回读），词表已经在那一条上登记过。",
-        retires_when: "把这条声明改成**闭合词表**（`\"enum\": [...]` 或 `\"const\"`）⇒ 本站点成为可解析\
-                       的字面站点，本登记项必须删掉；或者 schema 不再广播 `reason` 键（长形状去掉）\
-                       同理退役。",
+        occurrences: 2,
+        forwards: "两处 **outputSchema 类型声明**（`json!` 里 `reason` 键后面的那个类型节点）：\
+                   `missing_sample_items()`（保存侧 `missingSamples.items[]` 与提案侧 \
+                   `samplerWarnings[]` 共用）与 `reject_proposal()`。⇒ 本站点**一个值都不产出**：\
+                   它只声明\"那个 `reason` 是字符串\"。真正的值由 `domain/mod.rs` 的 \
+                   `sampler_binding_warnings` / `apply_reject` 站点给出（各自的值/分类在本表\
+                   或 `GOLDEN_REASONS` 上登记）。",
+        retires_when: "把这两条声明改成**闭合词表**（`\"enum\": [...]` 或 `\"const\"`）⇒ 本站点成为\
+                       可解析的字面站点，本登记项必须删掉；或者 schema 不再广播 `reason` 键\
+                       （长形状去掉）同理退役。",
+    },
+    // ⭐ T-FIX-249：保存侧 / 提案侧缺样本条目（同一个 `embed_samples::MissingSample`
+    // 形状）在 `domain/mod.rs` 的 4 个 `json!` 站点把 `item.reason` 原样播出。
+    DynamicReasonSite {
+        file: "domain/mod.rs",
+        expr: "item.reason",
+        occurrences: 4,
+        forwards: "`MissingSample.reason` 是 `String`（由 `embed_samples::collect` 在运行时按\
+                   路径/SFZ/样本三种失败分类写入，值分别是 `path_unresolved` / `sfz_missing` / \
+                   `sample_missing`）；四个站点（保存预览、提案预览、提案回执、保存回执）\
+                   都原样转发同一个字段 ⇒ 静态扫描器只看见 `item.reason`，看不见值。",
+        retires_when: "把 `MissingSample.reason` 改成闭合枚举，且四个站点都用同一份 `as_str()`\
+                       字面表（或扫描器能解析该枚举）时退役；届时这三条值由字面站点覆盖，\
+                       本登记项必须删掉。",
     },
     // ⭐ SVS：`domain/svs.rs` 里两处 `"reason": reason` 变量站点（同一 (file, expr) 键，出现 2 次）。
     DynamicReasonSite {
@@ -1659,9 +1687,18 @@ struct ReasonArgumentNameUse {
     why: &'static str,
 }
 
-/// 生产区实测 **4 处**（2026-10-25 #340 开工 3 处；2026-11-14 B2 加第 4 处）：
+/// 生产区实测 **5 处**（2026-10-25 #340 开工 3 处；2026-11-14 B2 加第 4 处；
+/// 2026-11-24 T-FIX-249 加 `missing_sample_items()` 的 `required` 键名清单第 5 处）：
 /// 它们都不是故障数据的 reason 值。
-const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
+const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
+    ReasonArgumentNameUse {
+        file: "output_schema.rs",
+        marker: "\"required\": [\"trackId\", \"binding\", \"sample\", \"reason\", \"detail\"]",
+        occurrences: 1,
+        why: "T-FIX-249：`missing_sample_items()` 的 outputSchema **必填键名清单**里的 \
+              `reason`；它只声明字段名，不产出值。真正的值由 `domain/mod.rs` 的 \
+              `sampler_binding_warnings` 站点给出（已登记为动态站点）。",
+    },
     ReasonArgumentNameUse {
         file: "tools.rs",
         marker: "param(\"reason\", \"string\"",
@@ -1796,17 +1833,23 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
 // 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
 // 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 356;
+// ⭐ T-FIX-249（2026-11-24，`4ab08005` 实测）：把黄金表漏登的 5 条 reason 与
+// 缺样本载荷补齐后，扫描器读数在本尖端为 字面 353 ＋ `let` 2 ＋ 运行时 12 ＋
+// 传播 3 ＝ 键站点 **370**；总出现 **375** ＝ 370 ＋ 参数名 **5**。运行时 12
+// 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
+// （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
+// ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
+const REASON_OCCURRENCES_TOTAL: usize = 375;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 352;
-const REASON_LITERAL_SITES_TOTAL: usize = 340;
+const REASON_KEY_SITES_TOTAL: usize = 370;
+const REASON_LITERAL_SITES_TOTAL: usize = 353;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 7;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 12;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
-const REASON_ARGUMENT_NAME_TOTAL: usize = 4;
+const REASON_ARGUMENT_NAME_TOTAL: usize = 5;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
 /// 任何 `Unclassified` **都点名 file:line**；陈旧的登记项同样变红。
@@ -2125,7 +2168,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 299] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 304] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -3187,6 +3230,22 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 299] = [
         &["build_commit", "job_id", "missing_capabilities", "reason"],
     ),
     ("noActiveProject", &["pending", "reason"]),
+    // ⭐ T-FIX-249：OTCP 交付子对象（`domain/otcp.rs`）与保存侧缺样本分类
+    // （`domain/mod.rs` 的 `sampler_binding_warnings`，三处字面站点同键集）。
+    ("alreadyDelivered", &["ready", "reason"]),
+    ("dryRun", &["ready", "reason"]),
+    (
+        "path_unresolved",
+        &["binding", "detail", "kind", "reason", "sample", "trackId"],
+    ),
+    (
+        "sample_missing",
+        &["binding", "detail", "kind", "reason", "sample", "trackId"],
+    ),
+    (
+        "sfz_missing",
+        &["binding", "detail", "kind", "reason", "sample", "trackId"],
+    ),
 ];
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
@@ -3208,6 +3267,7 @@ pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 4] = [
             "bytes",
             "embeddedPresets",
             "format",
+            "missingSamples",
             "path",
             "projectDigest",
             "reason",
@@ -3624,13 +3684,20 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// `reachableIntegratedLufs` / `reachability` 两键（可达响度上限与"目标不可达"
 /// 诊断；`mix < 1` 时点名干声绕过削波器）⇒ reason 数不变（303），规范行数
 /// 1286 → **1288**（2 键行）。新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ T-FIX-249（本支）：保存侧缺样本分类 `path_unresolved` / `sfz_missing` /
+/// `sample_missing` 与 OTCP 交付说明 `alreadyDelivered` / `dryRun` 五条**一直**
+/// 在生产区发射、黄金表却漏登（词表 299 → **304**、含 4 条说明性 reason 的
+/// 规范面 303 → **308**）；`Skipped` 回执多带 `missingSamples` 一键 ⇒ 规范行数
+/// 1288 → **1316**（5 reason 行 ＋ 22 键行 ＋ 1 键行）。新摘要
+/// `624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "803e84eb61bc3cb14e18fcd35b565e0cc119b5807d13584b0a6d1e81306d60d0";
+    "624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 303;
+pub const REASON_SURFACE_REASONS: usize = 308;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1288;
+pub const REASON_SURFACE_LINES: usize = 1316;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
