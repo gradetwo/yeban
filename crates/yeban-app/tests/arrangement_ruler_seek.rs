@@ -524,3 +524,31 @@ fn the_grid_right_edge_is_the_line_count_times_one_bar() {
     assert_eq!(host::ruler_span_ticks(0, 3_840), 0);
     assert_eq!(host::ruler_span_ticks(usize::MAX, u64::MAX), u64::MAX);
 }
+
+/// 临时探针（T-FIX-356 收尾调试）：指针路径 vs 回调路径，跑完即删。
+#[test]
+fn probe_ruler_pointer_path_tmp() {
+    let mut rig = Rig::new();
+    let node = rig.port.tree().find_by_id(RULER).expect("ruler in tree");
+    eprintln!("PROBE ruler bounds: {:?}", node.bounds);
+    eprintln!(
+        "PROBE bar_positions[0..5]: {:?} scroll_x={} tpp={}",
+        rig.ui().get_bar_positions().iter().take(5).collect::<Vec<_>>(),
+        rig.ui().get_roll_scroll_x(),
+        host::roll_ticks_per_pixel(rig.ui())
+    );
+    rig.ui().invoke_ruler_seek(384.0f32);
+    eprintln!(
+        "PROBE after direct invoke_ruler_seek(384): position={} journal={}",
+        rig.position(),
+        rig.journal_len()
+    );
+    let before = rig.journal_len();
+    rig.click_ruler(384.0);
+    eprintln!(
+        "PROBE after click_ruler(384): position={} journal={} (before={})",
+        rig.position(),
+        rig.journal_len(),
+        before
+    );
+}
