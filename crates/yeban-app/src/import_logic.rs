@@ -1288,6 +1288,7 @@ mod tests {
                 path: PathBuf::from("out.yeban"),
                 bytes: 1,
                 temp_name: "tmp".to_owned(),
+                durability: crate::save::Durability::Durable,
             },
         };
         let text = report.lines().join("\n");
@@ -1358,6 +1359,7 @@ mod tests {
                 path: PathBuf::from("out.yeban"),
                 bytes: 1,
                 temp_name: "tmp".to_owned(),
+                durability: crate::save::Durability::Durable,
             },
         };
         let text = report.lines().join("\n");

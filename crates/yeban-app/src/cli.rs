@@ -4624,6 +4624,22 @@ pub enum CliError {
         /// 落盘 / 容器层的原样裁决。
         source: SaveError,
     },
+    /// `--save-as` **已提交**但目录项未确认持久化（T-FIX-324）。
+    ///
+    /// 与 [`Self::Save`] 的本质区别：`rename` 已经成功，目标文件**已经是新字节**，
+    /// 旧文件已经不存在 —— 只差"目录项刷下去"这一层确认。所以这一档：
+    /// stdout 仍照常打批处理行（含 `saved:` 行与 `committed=true durability=warning`
+    /// 警告行，见 [`Self::lines`]），退出码非零（[`EXIT_SAVE`]）；
+    /// ⛔ 不与真正未写盘的"保存失败"共用一句文案（[`finish`] 会把本变体的行
+    /// 照常上 stdout 而不是只往 stderr 丢一行）。
+    SaveCommittedNotDurable {
+        /// 目标路径。
+        path: PathBuf,
+        /// 要上 stdout 的全部行（已算好的批处理行 + `saved:` 行 + 警告行）。
+        lines: Vec<String>,
+        /// 持久化警告文案（说清"文件已替换，但目录项未确认持久化"）。
+        detail: String,
+    },
     /// `--export-elements` 失败。
     Export {
         /// 目标路径。
@@ -4872,7 +4888,7 @@ impl CliError {
             //（WAV 落盘失败 ⇒ `EXIT_EXPORT`，其余 ⇒ `EXIT_OPEN`）⇒ ⛔ 不在这里再写第二张表。
             Self::MidiNotes { source } => source.exit_code(),
             Self::Usage(_) => EXIT_USAGE,
-            Self::Save { .. } => EXIT_SAVE,
+            Self::Save { .. } | Self::SaveCommittedNotDurable { .. } => EXIT_SAVE,
             Self::Record { .. } => EXIT_EXPORT,
             Self::Export { .. }
             | Self::ExportMidi { .. }
@@ -4903,6 +4919,12 @@ impl fmt::Display for CliError {
             Self::Save { path, source } => {
                 write!(formatter, "保存到 `{}` 失败: {source}", path.display())
             }
+            Self::SaveCommittedNotDurable { path, detail, .. } => write!(
+                formatter,
+                "保存到 `{}` 已提交，但目录项未确认持久化: {detail} \
+                 (committed=true durability=warning)",
+                path.display()
+            ),
             Self::Export { path, source } => write!(
                 formatter,
                 "导出元素清单到 `{}` 失败: {source}",
@@ -5063,6 +5085,7 @@ impl std::error::Error for CliError {
             Self::ExportLogic { source, .. } => Some(source),
             Self::Usage(_)
             | Self::Ui { .. }
+            | Self::SaveCommittedNotDurable { .. }
             | Self::HeadlessIdleNotBatch
             | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
@@ -7521,6 +7544,18 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         lines.push(saved_line(&report, &loaded));
+        // ⭐ T-FIX-324：rename 成功但目录项未确认持久化 ⇒ **不是保存失败**。
+        // stdout 仍要拿到全部批处理行（含 `saved:` 行）+ 一行明确的
+        // `committed=true durability=warning`；退出码非零（[`EXIT_SAVE`]）。
+        // ⛔ 不与真正未写盘的 [`CliError::Save`] 共用一句"保存失败"。
+        if let Some(warning) = report.durability.warning() {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            return Err(CliError::SaveCommittedNotDurable {
+                path: path.clone(),
+                lines,
+                detail: warning.to_owned(),
+            });
+        }
     }
 
     Ok(lines)
@@ -7916,6 +7951,14 @@ pub fn finish(result: Result<Vec<String>, CliError>) -> ExitCode {
             emit(&lines);
             ExitCode::from(EXIT_OK)
         }
+        // ⭐ T-FIX-324：已提交但目录项未确认持久化 ⇒ 批处理行（含 `saved:` 行与
+        // `committed=true durability=warning` 行）照常上 **stdout**，退出码非零 ——
+        // 与真正未写盘（只有 stderr 一行）走两条不同的路，脚本两侧都能靠 stdout 判读。
+        Err(ref error @ CliError::SaveCommittedNotDurable { ref lines, .. }) => {
+            emit(lines);
+            eprintln!("yeban-app: {error}");
+            ExitCode::from(error.exit_code())
+        }
         Err(error) => {
             eprintln!("yeban-app: {error}");
             ExitCode::from(error.exit_code())
@@ -8291,6 +8334,69 @@ mod tests {
             crate::open::open_project_archive_file(&source, &ProjectOpenOptions::default())
                 .expect("源容器");
         assert_eq!(read_back, before, "另存为必须逐字段保真");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 33.5（T-FIX-324）：rename 成功但**目录项刷盘失败** ⇒ stdout 仍有
+    // `saved:` 行 + `committed=true durability=warning` 行，退出码非零
+    // （`EXIT_SAVE`），且目标文件已经是新内容 —— ⛔ 不与真正未写盘共用"保存失败"。
+    // ------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_with_directory_sync_warning_is_committed_not_failed() {
+        let dir = scratch_dir("dirsync");
+        let (source, _) = write_container_file(&dir, "in.yeban");
+        let target = dir.join("out.yeban");
+        std::fs::write(&target, b"stale bytes").expect("先放旧内容");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--save-as".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_SAVE);
+        let CliError::SaveCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 SaveCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("saved:")),
+            "stdout 必须仍有 saved: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(
+            !text.contains("保存失败"),
+            "⛔ 不与真正未写盘共用一句'保存失败': {text}"
+        );
+        // 目标文件已经是新内容（不是 stale bytes），且是可读的合法容器。
+        let bytes = std::fs::read(&target).expect("读回");
+        assert_ne!(
+            bytes,
+            b"stale bytes".as_slice(),
+            "目录刷盘失败不得回滚已替换的文件内容"
+        );
+        assert!(
+            crate::open::open_project_archive_file(&target, &ProjectOpenOptions::default()).is_ok(),
+            "目标文件必须是可读的合法容器"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

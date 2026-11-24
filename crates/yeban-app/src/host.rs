@@ -10087,11 +10087,14 @@ pub fn wire_save_with_engine(
 /// T-FIX-154：保存成功回执的**唯一**文案构造点。
 ///
 /// 缺失样本不阻断保存，但必须在回执里响亮点名（件数 ＋ 首条原因）；无缺失时逐字沿用旧文案。
+/// T-FIX-324：持久化警告（已提交但目录项未确认）同样不阻断保存 —— 回执必须说
+/// "已保存（持久化警告：…）"，⛔ 不说"保存失败"（磁盘上已是新内容）。
 fn saved_status_text(
     path: &std::path::Path,
     bytes: usize,
     by_authority: bool,
     missing: &[String],
+    warning: Option<&str>,
 ) -> String {
     // ⭐ T-FIX-159 复验否决：回执格宽是 480px 硬钉（`status_bar.slint` 的
     //     `tip-width = min(480px, width - 612px)`，`overflow: elide`）—— 宽度不能动，
@@ -10100,6 +10103,19 @@ fn saved_status_text(
     //     字节数，⛔ 不会把 `sample_missing: gone.wav` 裁成 `sampl…`。
     //     无缺失时逐字沿用旧文案（既有判据与用户习惯都不变）。
     if missing.is_empty() {
+        // T-FIX-324：持久化警告放最前（与缺失样本同理由 —— 宽度被 480px 硬钉，
+        // 省略号只裁尾部，裁的是路径/字节数，不是最需要被读到的那段）。
+        if let Some(warning) = warning {
+            return format!(
+                "已保存（持久化警告：{warning}）· {bytes} 字节 → {}（{}）",
+                path.display(),
+                if by_authority {
+                    "经控制面会话写盘（唯一写者）"
+                } else {
+                    "本地原子写"
+                }
+            );
+        }
         return format!(
             "已保存 {bytes} 字节 → {}（{}）",
             path.display(),
@@ -10130,8 +10146,9 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
             bytes,
             by_authority,
             missing,
+            warning,
         } => (
-            saved_status_text(path, *bytes, *by_authority, missing),
+            saved_status_text(path, *bytes, *by_authority, missing, warning.as_deref()),
             true,
         ),
         crate::save_action::SaveOutcome::Failed { message, .. } => {
@@ -24621,6 +24638,7 @@ mod tests {
             123,
             true,
             &["sample_missing: gone.wav".to_owned()],
+            None,
         );
         assert!(text.contains("已保存 123 字节"), "{text}");
         assert!(text.contains("缺失 1 件样本"), "{text}");
@@ -24645,6 +24663,7 @@ mod tests {
             123_456,
             true,
             &["sample_missing: gone.wav".to_owned()],
+            None,
         );
         let arrow = long.find('→').expect("回执必须有 →");
         assert!(
@@ -24652,9 +24671,36 @@ mod tests {
             "真实路径下箭头之前必须完整写出附言: {long}"
         );
 
-        let clean = super::saved_status_text(std::path::Path::new("/tmp/x.yeban"), 1, false, &[]);
+        let clean =
+            super::saved_status_text(std::path::Path::new("/tmp/x.yeban"), 1, false, &[], None);
         assert!(!clean.contains("缺失"), "无缺失时逐字沿用旧文案: {clean}");
         assert!(clean.contains("本地原子写"), "{clean}");
+    }
+
+    /// T-FIX-324：持久化警告（已提交但目录项未确认）必须说"已保存（持久化警告：…）"，
+    /// ⛔ 不说"保存失败"（磁盘上已是新内容；旧文案会误导用户重试 / 另存 / 回滚落点）。
+    #[test]
+    fn durability_warning_status_says_saved_not_failed() {
+        let text = super::saved_status_text(
+            std::path::Path::new("/tmp/x.yeban"),
+            7,
+            false,
+            &[],
+            Some("文件已替换，但目录项未确认持久化（刷目录 `/tmp` 失败: 注入）"),
+        );
+        assert!(text.contains("已保存"), "{text}");
+        assert!(text.contains("持久化警告"), "{text}");
+        assert!(
+            text.contains("目录项未确认持久化"),
+            "警告原文必须完整进回执: {text}"
+        );
+        assert!(!text.contains("保存失败"), "警告不是失败: {text}");
+        // ⭐ 回执格 480px + elide：'已保存（持久化警告' 必须排在路径之前（省略号只裁尾）。
+        let arrow = text.find('→').expect("回执必须有 →");
+        assert!(
+            text[..arrow].contains("持久化警告"),
+            "警告必须在 → 之前: {text}"
+        );
     }
 
     /// ⭐⭐ **判据（T-FIX-71，选择器清单）**：第一项恒为「系统默认」；

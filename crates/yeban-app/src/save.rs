@@ -77,6 +77,45 @@ pub struct SaveReport {
     pub bytes: usize,
     /// 用过的临时文件名（**保存成功后它不应再存在**；判据会去查）。
     pub temp_name: String,
+    /// 持久化读数（T-FIX-324）：文件内容是否连同**目录项**一起落盘。
+    pub durability: Durability,
+}
+
+/// 一次成功保存的持久化读数（T-FIX-324）。
+///
+/// `rename` 成功 ⇒ 目标文件**已经**换成了新字节 —— 这件事不会因为随后的目录刷盘
+/// 失败而回退（磁盘上旧内容已经不存在）。因此“rename 成功、刷目录失败”**不是**
+/// 保存失败（那意味着“什么都没写”），而是“已提交、持久化未确认”：调用方应当
+/// 把它当成一次成功的保存并更新自己的落点状态，同时把警告如实转给用户。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Durability {
+    /// 文件内容与目录项都已落盘（rename 后的刷目录成功；`Windows` 分支不刷目录，
+    /// 也归这里 —— 与模块文档“目录刷盘只在 Unix 执行”一致）。
+    Durable,
+    /// 文件内容已落盘（`rename` 成功），但**目录项**持久化未能确认（Unix 刷目录失败）。
+    ///
+    /// 断电后文件可能回退到旧内容 —— 这是“持久化警告”，不是保存失败；调用方
+    /// （界面 / `CLI`）必须把它与真正的“什么都没写”分开显示。
+    Warning {
+        /// 给用户看的一句话（带目录路径与底层错误，说清“文件已替换”这个事实）。
+        message: String,
+    },
+}
+
+impl Durability {
+    /// 警告文案（[`Durability::Durable`] 恒为 [`Option::None`]）。
+    ///
+    /// 不是 `const fn`：`Some(message)` 要把 `&String` 解引用成 `&str`，而
+    /// `String` 的 deref 转换在常量求值里不可用（E0015）。调用方全在运行时上下文
+    /// （`run_batch` 的批处理行、`save_action` 的落点映射、`host` 的回执文案），
+    /// 没有任何 `const` 初始化点依赖它。
+    #[must_use]
+    pub fn warning(&self) -> Option<&str> {
+        match self {
+            Self::Durable => None,
+            Self::Warning { message } => Some(message),
+        }
+    }
 }
 
 /// 保存失败的原因（**每一种都如实上报**，绝不"写了个空文件也算成功"）。
@@ -534,6 +573,14 @@ pub fn write_file_atomically(
 
     // 第 3.5 步（Unix 追加）：把**目录项**也刷下去，否则"文件在了"这件事本身可能还在
     // 页缓存里。Windows 分支不猜（见模块文档）。
+    //
+    // ⭐ T-FIX-324：这一步失败**不再**报 `SaveError::Io { action: "刷盘目录" }`。
+    // `rename` 已经成功 ⇒ 目标文件已经是新字节，旧文件已经不存在 —— 这不是
+    // "保存失败"（那意味着"什么都没写"，调用方会回滚界面 / 保留旧落点，与磁盘分叉），
+    // 而是"已提交但目录项未确认持久化"：照常返回 [`Ok`]，把警告装进
+    // [`SaveReport::durability`]，由调用方（界面 / CLI）如实显示。
+    #[cfg(unix)]
+    let mut durability = Durability::Durable;
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
         let dir = if parent.as_os_str().is_empty() {
@@ -541,12 +588,13 @@ pub fn write_file_atomically(
         } else {
             parent
         };
-        if let Err(source) = File::open(dir).and_then(|handle| handle.sync_all()) {
-            return Err(SaveError::Io {
-                path: dir.to_path_buf(),
-                action: "刷盘目录",
-                source,
-            });
+        if let Err(source) = sync_directory(dir) {
+            durability = Durability::Warning {
+                message: format!(
+                    "文件已替换，但目录项未确认持久化（刷目录 `{}` 失败: {source}）",
+                    dir.display()
+                ),
+            };
         }
     }
 
@@ -554,7 +602,34 @@ pub fn write_file_atomically(
         path,
         bytes: bytes.len(),
         temp_name,
+        #[cfg(unix)]
+        durability,
+        #[cfg(not(unix))]
+        durability: Durability::Durable,
     })
+}
+
+/// 第 3.5 步的本体（Unix）：打开目录并 `sync_all`。
+///
+/// 抽成函数只为判据可注入（T-FIX-324：rename 成功 + 刷目录失败的用例）；
+/// 生产路径行为不变。
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        if DIR_SYNC_INJECTION.with(std::cell::Cell::get) {
+            return Err(std::io::Error::other("注入的目录刷盘失败（判据）"));
+        }
+    }
+    File::open(dir).and_then(|handle| handle.sync_all())
+}
+
+// 判据注入缝（仅测试构建）：置 `true` 后 [`sync_directory`] 直接返回错误。
+// 线程局部 ⇒ 并行测试互不干扰。
+#[cfg(all(test, unix))]
+thread_local! {
+    pub(crate) static DIR_SYNC_INJECTION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 /// 写临时文件 + `sync_all`（`[ARCH-SEC-004]` 的第 1、2 步）。
@@ -975,5 +1050,60 @@ mod tests {
             .find(|(hash, _)| **hash == hash_first)
             .expect("hash_first 在输出里");
         assert_eq!(kept.1, first_again.as_slice(), "重复哈希留最后一次出现的值");
+    }
+
+    /// 判据 8（T-FIX-324）：`rename` 成功、**刷目录失败** ⇒ 返回 `Ok` + 持久化警告，
+    /// 目标文件字节已经是新内容；**不是** `SaveError`（"保存失败"意味着什么都没写，
+    /// 而此刻磁盘上已经是新文件 —— 归成失败会让调用方把落点状态留在旧值）。
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_directory_sync_is_committed_with_a_warning() {
+        let dir = scratch_dir("dirsync");
+        let path = dir.join("warned.yeban");
+        std::fs::write(&path, b"old bytes that must be replaced").expect("先放旧内容");
+
+        DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = save_project_file(&demo_project(), &path);
+        DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let report = result.expect("rename 已成功 ⇒ 保存已提交，不是失败");
+        let Durability::Warning { message } = &report.durability else {
+            panic!("必须是 Durability::Warning, 实际: {:?}", report.durability);
+        };
+        assert!(
+            message.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {message}"
+        );
+
+        // 目标文件字节已经更新（旧内容不在了，且是可读的合法容器）。
+        let bytes = std::fs::read(&path).expect("读回");
+        assert_ne!(
+            bytes,
+            b"old bytes that must be replaced".as_slice(),
+            "目录刷盘失败不得回滚已替换的文件内容"
+        );
+        assert!(
+            open_project_file(&path).is_ok(),
+            "替换后的文件必须是可读的容器"
+        );
+        // rename 已发生 ⇒ 临时文件不该留下。
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(TEMP_INFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "目录里残留了临时文件: {leftovers:?}");
+    }
+
+    /// 判据 8 的反面（T-FIX-324）：注入关掉时同一目标保存必须仍是 `Durable`。
+    #[cfg(unix)]
+    #[test]
+    fn a_normal_save_reports_durable() {
+        let dir = scratch_dir("durable");
+        let path = dir.join("quiet.yeban");
+        let report = save_project_file(&demo_project(), &path).expect("保存");
+        assert_eq!(report.durability, Durability::Durable);
+        assert!(report.durability.warning().is_none());
     }
 }

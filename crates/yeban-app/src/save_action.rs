@@ -240,6 +240,13 @@ pub enum SaveOutcome {
         /// T-FIX-154：本次保存遇到的缺失样本（"reason: detail" 逐条），来自
         /// `HostSaveOutcome.missing_samples`；本地原子写路径恒为空。
         missing: Vec<String>,
+        /// T-FIX-324：持久化警告（"已提交但目录项未确认持久化"）；完全落盘时为 [`Option::None`]。
+        ///
+        /// 有警告**仍是** [`SaveOutcome::Saved`]：磁盘上已经是新内容，调用方（界面
+        /// `save_target` / 引擎落点）应照常更新，只是把警告如实转给用户 ——
+        /// ⛔ 不回滚、⛔ 不说"保存失败"。权威会话路径恒为 [`Option::None`]
+        /// （控制面的 `store::write_project_atomic` 不刷目录，不走这条读数）。
+        warning: Option<String>,
     },
     /// 拒绝了 / 失败了，且**什么都没写**。`stage` 是本模块自己的分类（判据与界面都读它）。
     Failed {
@@ -318,6 +325,7 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
                     .iter()
                     .map(|item| format!("{}: {}", item.reason, item.detail))
                     .collect(),
+                warning: None,
             },
             Err(fault) => SaveOutcome::Failed {
                 stage: SaveStage::Authority,
@@ -350,6 +358,8 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
             path: report.path,
             bytes: report.bytes,
             by_authority: false,
+            // T-FIX-324：rename 成功但刷目录失败 ⇒ 已提交 + 持久化警告（不是失败）。
+            warning: report.durability.warning().map(str::to_owned),
         },
         Err(error) => SaveOutcome::Failed {
             stage: SaveStage::Local,
