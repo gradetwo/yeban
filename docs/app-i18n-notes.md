@@ -28,6 +28,11 @@ i18n：单一词表按中文原文精确匹配、默认中文、其余八语显�
 | ui/dialogs/macro_panel.slint | 7 | 6 | ui/workspace/session_view.slint | 15 | 11 |
 |  |  |  | ui/workspace/song_overview_panel.slint | 30 | 28 |
 
+> ⚠ 死文件提示（T-FIX-230）：上表中的 `ui/module_actions.slint`（16）、`ui/sidebar.slint`（13）、
+> `ui/transport.slint`（18）、`ui/workspace/arrangement_view.slint`（25）、
+> `ui/workspace/song_overview_panel.slint`（30）**均已不在活树中**（从未被 `app.slint` import），
+> 这些 `@tr` 串不进入任何活界面、也不会出现在运行时语言包里。清单与替换表见 `docs/DEAD-SLINT-FILES.md`。
+
 形态分类（按唯一串计）：
 
 - 纯标签/提示串（直接 `@tr()` 包裹即可）：约 500 条；

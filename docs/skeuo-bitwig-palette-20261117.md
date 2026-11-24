@@ -101,8 +101,8 @@ Bitwig 截图色板；19:00 修正：控件与硬件面的物理质感透叠保�
 | `tokens.slint` `soft-sheen` | 白 0.09 | 按键顶光 |
 | `tokens.slint` 阴影 alpha | 黑 0.38 / 0.55 / 0.32 | 面板/控件/按下态落影 |
 | `controls/fader.slint:120` | 白 0.28（仅 physical） | 推子帽中线 |
-| `controls/knob.slint:103` | `ink-2` 0.62（physical 档） | 未扫过刻度段 |
-| `controls/knob.slint:192` | `bg-panel` 0.55 | 禁用罩（仅禁用态） |
+| `controls/knob.slint:103` | `ink-2` 0.62（physical 档） | 未扫过刻度段 ⚠ 死文件（不在活树，改动无效） |
+| `controls/knob.slint:192` | `bg-panel` 0.55 | 禁用罩（仅禁用态） ⚠ 死文件（不在活树，改动无效） |
 | `controls/led_meter.slint:95/97/109` | 分区色 0.13 / 0.20、白 0.55 | 电平未亮段/亮段辉光/段面 gloss（信息面，两模式同） |
 
 ## 5. 编辑区域透叠清点（19:00 口径：只清点编辑区域）
@@ -114,7 +114,7 @@ Bitwig 截图色板；19:00 修正：控件与硬件面的物理质感透叠保�
 | :-- | :-- | :-- |
 | `console/piano_roll.slint` | with-alpha / opacity / 8 位 hex 均为 0 处 | 已实色，无点可清 |
 | `workspace/session_view.slint` | 同上 0 处 | 已实色，无点可清 |
-| `workspace/song_overview_panel.slint:253` | LUFS 能量柱 `opacity 0.22` | 数据层叠画，既有登记类，不改 |
+| `workspace/song_overview_panel.slint:253` | LUFS 能量柱 `opacity 0.22` | 数据层叠画，既有登记类，不改 ⚠ 死文件（不在活树，改动无效） |
 | 同上 `:278/:290` | 包络带 0.20 / 偏离告警 0.18 | 同上 |
 | 同上 `:302` | 张力线深色护城河 0.55 | 线条衬底，既有登记类，不改 |
 | 同上 `:360/:422/:477` | 视口窗 0.10 / 拖拽手柄 0.7 / 读数牌 0.92 | 视口指示与读数牌，既有登记类，不改 |

@@ -700,9 +700,9 @@ yeban/
     │   ├── Cargo.toml              # features = ["ui-test-port", "slint/renderer-skia"]
     │   ├── ui/                     # .slint 声明式矢量界面定义文件 (源码随发布包分发)
     │   │   ├── app.slint           # 主窗口网格与多标签导轨
-    │   │   ├── transport.slint     # 走带控制器与时间码显示
-    │   │   ├── pianoroll.slint     # 虚拟化钢琴卷帘交互组件
-    │   │   └── mixer.slint         # 通道条与多通道调音台
+    │   │   ├── transport_bar.slint # 走带控制器与时间码显示（`transport.slint` 已不在活树中，改动无效）
+    │   │   ├── console/piano_roll.slint  # 虚拟化钢琴卷帘交互组件（`pianoroll.slint` 不存在）
+    │   │   └── console/mixer_console.slint # 通道条与多通道调音台（`mixer.slint` 不存在）
     │   └── src/                    # Slint 属性绑定与后台事件调度 (支持无头跳过 run_event_loop)
     │
     ├── yeban-model/                # [引擎核心] 960 PPQ 数据模型、ULID、Op 操作日志与撤销树 (零 GUI 依赖)

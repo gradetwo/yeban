@@ -1,3 +1,8 @@
+> **勘误（Superseded 范围限定）**：本文 `D2`／`D4`／`D5` 落点里的 `crates/yeban-app/ui/sidebar.slint`
+> **已不在活树中**（从未被 `app.slint` import，照它改不会渲染、判据也不会红）。活树对应文件是
+> `ui/left_panel.slint`；死文件清单与替换表见 `docs/DEAD-SLINT-FILES.md`、
+> 工单 `T-FIX-230`／issue `ISS-MWTZ0R8T-BE7904`。本文其余裁决与历史正文保持原样，不作改写。
+
 # ADR-0051 — 左侧资源栏「预置」分类：模型层**没有预置载体**（`preset` 零命中），而 theory 里躺着 182 条**只读**流派预设；要不要把那个库当作这个分类的事实源 ＝ 语义裁决，非机械活
 
 - **状态**: **Proposed**（待人类批准；⛔ 集成者代签。本票**不改任何代码**，只把 `line/sidebar-library`

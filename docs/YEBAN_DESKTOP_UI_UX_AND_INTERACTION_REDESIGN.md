@@ -341,11 +341,11 @@ stateDiagram-v2
 ```
 crates/yeban-app/ui/
 ├── app.slint                        # 主窗口容器 (全局网格与多标签导轨)
-├── transport.slint                  # 走带控制条与时间码液晶屏
-├── sidebar.slint                    # 左侧 323 款 SFZ 采样与合成器资源树
+├── transport_bar.slint              # 走带控制条与时间码液晶屏（活树；`transport.slint` 已不在活树中，改动无效）
+├── left_panel.slint                 # 左侧 323 款 SFZ 采样与合成器资源树（活树；`sidebar.slint` 已不在活树中，改动无效）
 ├── workspace/
 │   ├── session_view.slint           # Session 触发矩阵与场景一键激发器
-│   └── arrangement_view.slint       # 线性编曲时间轴与轨道包头
+│   └── arrangement.slint            # 线性编曲时间轴与轨道包头（活树；`arrangement_view.slint` 已不在活树中，改动无效）
 ├── console/
 │   ├── console_tabs.slint           # 底部控制台 Tab 导轨
 │   ├── piano_roll.slint             # 虚拟化 MIDI 钢琴卷帘
@@ -485,5 +485,5 @@ YEBAN_UI_TEST_PORT=9315 \
 | `SSIM ≥ 0.98` 与"关键静态视觉缺陷可 **100%** 灵敏检出" | SSIM 对**细长条、等亮度换色**近乎免疫，**不能**保证"任何可见差异都会红"。判据因此挑**成块 + 亮度差大**的变化；"100%"这个措辞应读作"**在选定判据下**的关键缺陷可检出" | D23 | `yeban-ui-test-port` 的注入实测 |
 | "按操作系统独立维护基准图集" + "配置字体降级链" | 两句**互相矛盾**（分平台 Golden 意味着字体差异已被吸收，就不再需要降级链）。裁决：**不捆绑 CJK 字体**（依赖系统字体覆盖，以维持"单二进制 < 25 MB"），CI 显式安装 `fonts-noto-cjk` 并断言"汉字非 tofu"；Golden 按平台独立维护 | D24 | CI 字体渲染实测 |
 | UI 控制面六级 scope 覆盖"界面状态写" | 六级 scope（`ui:read`/`ui:screenshot`/`ui:inject`/`app:save`/`app:reload-engine`/`app:admin`）**没有**"界面状态写"这一级；`ui/switch_main_view` 因此挂在 `app:admin` 下。端口三级 `Permission` 与网络六级 `Scope` **保持两套**（前者是能力，后者是授权） | D29 | `yeban-ui-mcp` 的 scope 矩阵 |
-| 轨道颜色只写"十六进制颜色" | 明确定义为：可选 `#` + **3 位或 6 位**十六进制（大小写不敏感，3 位按 CSS 规则展开）；**非法或缺省一律回退 `#2C3A63`**（= `Tokens.line-strong`，由判据直读 `tokens.slint` 对账）。只有**一处**解析实现 | HD-22 | `crates/yeban-app/src/bridge.rs` + `arrangement_view.slint` 的色标判据 |
+| 轨道颜色只写"十六进制颜色" | 明确定义为：可选 `#` + **3 位或 6 位**十六进制（大小写不敏感，3 位按 CSS 规则展开）；**非法或缺省一律回退 `#2C3A63`**（= `Tokens.line-strong`，由判据直读 `tokens.slint` 对账）。只有**一处**解析实现 | HD-22 | `crates/yeban-app/src/bridge.rs` + `arrangement.slint` 的色标判据（`arrangement_view.slint` 已不在活树，见 `docs/DEAD-SLINT-FILES.md`） |
 | `.yeban.lock` 的持有者信息与心跳 | 持有者信息**跨进程读在 Windows 上不可用**（`LockFileEx` 是强制锁）⇒ `PROJECT_LOCKED` 载荷用 `holderMetadata ∈ {available, unavailable-on-this-platform, unavailable}` **如实**表达；**不做心跳抢占**（建议锁本身即活体证据），心跳只进诊断载荷 | D31, HD-29 | `yeban-mcp` 的 Windows 门禁实测 |
