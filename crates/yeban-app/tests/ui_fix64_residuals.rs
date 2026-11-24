@@ -7,13 +7,18 @@
 //! | :-- | :--- | :--- |
 //! | ① | `app.slint` 的提示条 Timer 触发时必须**清文案** | 只清 `show-floating-toast`（横幅可见条件是「有文案」，旧写法自动收走从未生效） |
 //! | ② | 走查点名的两处字形残留不得复现 | `startup_chooser.slint` / `song_overview_panel.slint` 里再出现 `▾` / `▸` 字面量（UI 字体无此字形，必须画 Path 三角） |
+//!
+//! ⚠ 2026-11-24（T-FIX-356）：判据 ②b 已随死文件 `ui/workspace/song_overview_panel.slint`
+//! 一起删除——它守的那把折叠键只活在那个死文件里，活树里没有对应物可重定向（
+//! `grep "总览（已折叠）"` 在活文件里零命中）。删的不是"放宽"，是"守的对象不存在了"；
+//! ②a（启动选择器，活文件）与 ①③ 一位未动。
 //! | ③ | 下坞混音面 MASTER 条之前必须有可伸缩空格 | MASTER 紧跟末条通道左排、右沿留空（走查 #13） |
 
 #![allow(unused)]
 
 const APP: &str = include_str!("../ui/app.slint");
 const STARTUP_CHOOSER: &str = include_str!("../ui/dialogs/startup_chooser.slint");
-const SONG_OVERVIEW_PANEL: &str = include_str!("../ui/workspace/song_overview_panel.slint");
+// ⚠ `SONG_OVERVIEW_PANEL` 常量已随判据 ②b 删除（死文件，见 `docs/DEAD-SLINT-FILES.md`）。
 const LOWER_DOCK: &str = include_str!("../ui/lower_dock.slint");
 
 /// 判据 ①：自动收走必须清文案 —— Timer 的 `triggered` 块里要有
@@ -45,23 +50,6 @@ fn startup_chooser_draws_its_collapse_arrow() {
     assert!(
         STARTUP_CHOOSER.contains("M 0 1.5 L 7 1.5 L 3.5 5.5 Z"),
         "折叠箭头必须是与 left_panel 同一门手艺的 7×7 Path 三角"
-    );
-}
-
-/// 判据 ②b：总览面板折叠键同上；无障碍值改用文字说状态，不借字形。
-#[test]
-fn song_overview_collapse_key_draws_its_arrow() {
-    assert!(
-        !SONG_OVERVIEW_PANEL.contains('▾') && !SONG_OVERVIEW_PANEL.contains('▸'),
-        "song_overview_panel 不得再出现 ▾ / ▸ 字面量（可见文本与 @tr 都算）"
-    );
-    assert!(
-        SONG_OVERVIEW_PANEL.contains("@tr(\"总览（已折叠）\")"),
-        "无障碍值必须用文字说清折叠态"
-    );
-    assert!(
-        SONG_OVERVIEW_PANEL.contains("M 1.5 0 L 5.5 3.5 L 1.5 7 Z"),
-        "折叠态三角必须是画出来的 Path"
     );
 }
 
