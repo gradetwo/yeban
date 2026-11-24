@@ -114,7 +114,18 @@ fn scratch_dir() -> PathBuf {
 
 fn write_container(dir: &std::path::Path, name: &str, project: &YebanProjectV1) -> PathBuf {
     let path = dir.join(name);
-    yeban_app::save::save_project_file(project, &path).expect("写出一份真容器");
+    // T-FIX-330：这些工程来自 `filled_project`，音频片段引用运行期合成的 kick。
+    // 打开已改为严格资产核对 ⇒ 夹具必须带上**同一份**资产字节，否则 UI 会正确地
+    // 报 `MissingAsset` / 回执失败（旧夹具正是"缺资产仍静默打开"的温床）。
+    let archive = yeban_model::container::ProjectArchive {
+        project: project.clone(),
+        history_dag: Vec::new(),
+        proposals: None,
+        assets: yeban_model::samples::filled_project_assets(),
+        embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
+    };
+    yeban_app::save::save_archive_file(&archive, &path).expect("写出一份真容器");
     path
 }
 

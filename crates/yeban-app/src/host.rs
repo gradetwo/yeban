@@ -9924,14 +9924,21 @@ impl OpenProjectRuntime for PortOpenProject {
         // ⭐ 任务单 `#132`：读的是**全保真归档**（工程 ＋ `history.dag` ＋ 资产池），
         // ⛔ 不是裸工程 —— 否则运行期换工程之后再保存，新工程的 `assets/{sha256}`
         // 会静默消失（保存写的是端口里那一池，而那一池从没被新归档填过）。
-        let document = crate::open::open_project_document_file(path, &Default::default()).map_err(
-            |error| {
-                format!(
-                    "打开 `{}` 失败（当前工程一位没动）: {error}",
-                    path.display()
-                )
+        // T-FIX-330：生产 UI 的打开是**严格**口径 —— 缺资产不静默开成无声片段，
+        // `MissingAsset` 会经本函数的 `map_err` 进 `module-status` 回执（带首个哈希）。
+        let document = crate::open::open_project_document_file(
+            path,
+            &crate::open::ProjectOpenOptions {
+                strict_missing_assets: true,
+                ..Default::default()
             },
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "打开 `{}` 失败（当前工程一位没动）: {error}",
+                path.display()
+            )
+        })?;
         // ② 起的固定动作与「从归档打开」共用同一段（见下面那个方法）。
         // ⭐ T-FIX-310：`label` 只用于**显示 / 会话名 / 错误串**；真实路径以
         // `&Path` 走完读盘、`project_dir` 与 `after`（保存落点），⛔ 不再经过

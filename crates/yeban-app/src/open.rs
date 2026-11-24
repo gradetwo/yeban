@@ -46,10 +46,12 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use yeban_model::container::{
     ContainerError, ContainerLimits, ProjectArchive, read_project_container,
 };
-use yeban_model::project::YebanProjectV1;
+use yeban_model::project::{ClipContent, YebanProjectV1};
 
 /// 合法 `.yeban` 文件的字节上限：**4 GiB**（`1 << 32`）。
 ///
@@ -69,6 +71,12 @@ pub struct ProjectOpenOptions {
     pub limits: ContainerLimits,
     /// 文件字节上限（默认 [`MAX_PROJECT_FILE_BYTES`]）。
     pub max_file_bytes: u64,
+    /// T-FIX-330：资产引用缺口是否升级为**打开失败**。
+    ///
+    /// `false`（兼容默认）：打开成功，缺口写进 [`ProjectArchive::load_notes`] 与
+    /// [`OpenedProject::asset_audit`]，由调用方显示；`true`（生产 UI / 严格入口）：
+    /// 首个缺口返回 [`OpenError::MissingAsset`]，⛔ 不给"有片段但无声"的工程开门。
+    pub strict_missing_assets: bool,
 }
 
 impl Default for ProjectOpenOptions {
@@ -77,6 +85,7 @@ impl Default for ProjectOpenOptions {
         Self {
             limits: ContainerLimits::default(),
             max_file_bytes: MAX_PROJECT_FILE_BYTES,
+            strict_missing_assets: false,
         }
     }
 }
@@ -104,6 +113,20 @@ pub enum OpenError {
         len: u64,
         /// 上限。
         max: u64,
+    },
+    /// 工程引用了容器资产池里**不存在**的资产（T-FIX-330）。
+    ///
+    /// 典型成因：`project.json` 的 Audio 片段 / `project.assets` 索引 /
+    /// `embedded_samples` / 可解析历史指向了 `assets/{sha256}` 里没有的哈希。
+    /// 旧行为会把它当成"打开成功"、之后引擎注入时才静默跳过 ⇒ 时间轴有片段但播放无声。
+    /// 这里在**打开**这一跳就拒绝，并把首个哈希与引用定位串带进 UI 回执。
+    MissingAsset {
+        /// 首个缺失的资产哈希。
+        hash: yeban_model::AssetHash,
+        /// 引用该哈希的定位串（已排序）。
+        referenced_by: Vec<String>,
+        /// 本次打开一共缺多少个不同资产（首个之外还有几个）。
+        missing_count: usize,
     },
     /// 文件有 ZIP 结构、但被容器层拒绝：**原样**携带 `yeban-model` 的裁决。
     ///
@@ -138,7 +161,7 @@ impl OpenError {
             | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
-            Self::Io { .. } | Self::FileTooLarge { .. } => None,
+            Self::Io { .. } | Self::FileTooLarge { .. } | Self::MissingAsset { .. } => None,
         }
     }
 }
@@ -153,6 +176,15 @@ impl fmt::Display for OpenError {
                 formatter,
                 "`{}` 有 {len} 字节, 超过 `.yeban` 文件上限 {max} 字节 (ZIP32 边界)",
                 path.display()
+            ),
+            Self::MissingAsset {
+                hash,
+                referenced_by,
+                missing_count,
+            } => write!(
+                formatter,
+                "工程引用了 {missing_count} 个缺失资产：首个 `{hash}`（引用: {}）",
+                referenced_by.join(", ")
             ),
             Self::Container(error) => write!(formatter, "容器被拒绝: {error}"),
             Self::NotAYebanContainer { path, container } => write!(
@@ -172,7 +204,7 @@ impl std::error::Error for OpenError {
             | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
-            Self::FileTooLarge { .. } => None,
+            Self::FileTooLarge { .. } | Self::MissingAsset { .. } => None,
         }
     }
 }
@@ -196,7 +228,23 @@ pub fn open_project_archive(
     bytes: &[u8],
     limits: &ContainerLimits,
 ) -> Result<ProjectArchive, OpenError> {
-    Ok(read_project_container(bytes, limits)?)
+    let mut archive = read_project_container(bytes, limits)?;
+    // T-FIX-330：容器读成功只证明 `assets/{sha256}` 的**字节与名字**自洽；
+    // 它不证明工程 / 历史引用的哈希真的在池里。默认形态把缺口写进 `load_notes`
+    // 并随 `OpenedProject.asset_audit` 交给 UI；严格形态（`OpenProjectOptions::
+    // strict_missing_assets`）在 `open_project_archive_file` / `open_project_document_file`
+    // 把它升级为 `OpenError::MissingAsset`。
+    let audit = audit_project_assets(&archive);
+    if !audit.missing.is_empty() {
+        let first = &audit.missing[0];
+        archive.load_notes.push(format!(
+            "资产缺口：工程 / 历史引用了 {} 个不在资产池里的资产；首个 `{}`（引用: {}）",
+            audit.missing.len(),
+            first.hash,
+            first.referenced_by.join(", ")
+        ));
+    }
+    Ok(archive)
 }
 
 /// **纯函数**：容器字节 → `YebanProjectV1`（只要工程文档）。
@@ -228,7 +276,13 @@ pub fn open_project_archive_file(
 ) -> Result<ProjectArchive, OpenError> {
     let path = path.as_ref();
     let bytes = read_capped(path, options.max_file_bytes)?;
-    open_project_archive(&bytes, &options.limits)
+    let archive = open_project_archive(&bytes, &options.limits)?;
+    if options.strict_missing_assets
+        && let Some(error) = strict_missing_asset_error(&archive)
+    {
+        return Err(error);
+    }
+    Ok(archive)
 }
 
 /// 带尺寸闸门的读文件（`metadata` 判一次、读回后再判一次）。
@@ -278,6 +332,41 @@ fn read_capped(path: &Path, max_file_bytes: u64) -> Result<Vec<u8>, OpenError> {
 /// "读法只有一条"这件事写死成事实 —— 判据也据此断言报告里**不可能**出现第二个值。
 pub const DOCUMENT_FORMAT: &str = "yeban-container";
 
+/// 一个**被引用却不在资产池**里的资产（T-FIX-330）。
+///
+/// `referenced_by` 是给人看的定位串：`track:<id>/placement:<id>/clip:<id>`、
+/// `project.assets`、`embedded_samples:<path>`、`history:<commit>/<op>` 等。
+/// 同一哈希的多个引用合并进同一条，不重复报。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingAssetReference {
+    /// 缺失的 CAS 哈希。
+    pub hash: yeban_model::AssetHash,
+    /// 谁引用了它（已排序，便于稳定比较与回执）。
+    pub referenced_by: Vec<String>,
+}
+
+/// 一次打开时的**跨层资产核对**读数（T-FIX-330）。
+///
+/// `missing` 非空时打开会失败（[`OpenError::MissingAsset`]）；成功打开时它恒为空，
+/// 其余字段仍会给出「资产池 / 工程索引 / 引用」三边的多出与缺少，供 UI 与判据读数。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AssetAudit {
+    /// 被引用到的不同资产哈希数（音轨摆放 / `project.assets` / `embedded_samples` / 历史）。
+    pub referenced: usize,
+    /// 容器资产池里的不同资产哈希数。
+    pub pool: usize,
+    /// `project.assets` 索引条目数。
+    pub project_index: usize,
+    /// 被引用但池里没有字节的资产；严格模式下非空 ⇒ 打开失败，默认模式写 `load_notes`。
+    pub missing: Vec<MissingAssetReference>,
+    /// `project.assets` 有索引、但池里没有字节的资产（索引多出，不致命，只作读数）。
+    pub index_without_pool: Vec<yeban_model::AssetHash>,
+    /// 池里有字节、但 `project.assets` 没有登记索引的资产（池多出/索引缺少，不致命）。
+    pub unindexed_pool: Vec<yeban_model::AssetHash>,
+    /// 池里有字节、但当前工程与可解析历史都没有引用的资产（多出，不致命）。
+    pub unreferenced_pool: Vec<yeban_model::AssetHash>,
+}
+
 /// 一次成功的"打开一个文档"：全保真归档 + 文件字节数。
 ///
 /// `file_bytes` 是**从磁盘读到的**字节数（不是 `metadata` 声明值）—— 命令行的
@@ -288,6 +377,8 @@ pub struct OpenedProject {
     pub archive: ProjectArchive,
     /// 实际读入的字节数。
     pub file_bytes: u64,
+    /// T-FIX-330：打开时的跨层资产核对读数（严格模式下成功时 `missing` 必为空）。
+    pub asset_audit: AssetAudit,
 }
 
 /// **命令行的打开入口**：只接受 `.yeban` 容器。
@@ -316,10 +407,19 @@ pub fn open_project_document_file(
     let file_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
 
     match open_project_archive(&bytes, &options.limits) {
-        Ok(archive) => Ok(OpenedProject {
-            archive,
-            file_bytes,
-        }),
+        Ok(archive) => {
+            if options.strict_missing_assets
+                && let Some(error) = strict_missing_asset_error(&archive)
+            {
+                return Err(error);
+            }
+            let asset_audit = audit_project_assets(&archive);
+            Ok(OpenedProject {
+                archive,
+                file_bytes,
+                asset_audit,
+            })
+        }
         Err(OpenError::Container(container)) if !has_zip_signature(&bytes) => {
             Err(OpenError::NotAYebanContainer {
                 path: path.to_path_buf(),
@@ -357,6 +457,133 @@ fn has_zip_signature(bytes: &[u8]) -> bool {
 pub fn open_project_file(path: impl AsRef<Path>) -> Result<YebanProjectV1, OpenError> {
     let archive = open_project_archive_file(path, &ProjectOpenOptions::default())?;
     Ok(archive.project)
+}
+
+/// 收集一个归档里所有**必须能从资产池取到字节**的引用。
+///
+/// 口径（T-FIX-330，逐条可复核）：
+/// - `clip_pool` 的每个 `ClipContent::Audio`；
+/// - `tracks[*].clips[*]` 的摆放（给 `track/placement/clip` 定位串，同一片段多摆一处就多一条引用）；
+/// - `project.embedded_samples` 的哈希值（SFZ / 样本内嵌索引）；
+/// - `history.dag` 中**可解析**的 `AddClip` / `SetClipAsset` / `SetAsset`：历史里的旧资产
+///   仍要能取到字节才能重放撤销；解不开的历史**不阻断打开**（它与现有
+///   `decode_history_dag` 的消费者同口径，坏历史由那条线响亮报错）。
+///
+/// `project.assets` 的索引键**不算**硬引用：它可能保留已删除资产的元数据；
+/// 与池的差集分别记进 [`AssetAudit::index_without_pool`] / [`AssetAudit::unindexed_pool`]。
+fn collect_asset_references(
+    archive: &ProjectArchive,
+) -> BTreeMap<yeban_model::AssetHash, BTreeSet<String>> {
+    let mut refs: BTreeMap<yeban_model::AssetHash, BTreeSet<String>> = BTreeMap::new();
+    let mut add = |hash: &yeban_model::AssetHash, label: String| {
+        refs.entry(hash.clone()).or_default().insert(label);
+    };
+
+    for (clip_id, clip) in &archive.project.clip_pool {
+        if let ClipContent::Audio { asset, .. } = &clip.content {
+            add(asset, format!("clip:{clip_id}"));
+        }
+    }
+    for (track_id, track) in &archive.project.tracks {
+        for (placement_id, placement) in &track.clips {
+            let Some(clip) = archive.project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            if let ClipContent::Audio { asset, .. } = &clip.content {
+                add(
+                    asset,
+                    format!(
+                        "track:{track_id}/placement:{placement_id}/clip:{}",
+                        placement.clip_id
+                    ),
+                );
+            }
+        }
+    }
+    for (path, hash) in &archive.project.embedded_samples {
+        if let Ok(hash) = yeban_model::AssetHash::parse(hash.clone()) {
+            add(&hash, format!("embedded_samples:{path}"));
+        }
+    }
+
+    if let Ok(Some(graph)) = yeban_model::decode_history_dag(&archive.history_dag) {
+        for (commit_id, commit) in &graph.commits {
+            for (index, stamped) in commit.ops.iter().enumerate() {
+                let label = format!("history:{commit_id}/op{index}");
+                match &stamped.op {
+                    yeban_model::Op::AddClip { clip } => {
+                        if let ClipContent::Audio { asset, .. } = &clip.content {
+                            add(asset, format!("{label}/AddClip"));
+                        }
+                    }
+                    yeban_model::Op::SetClipAsset {
+                        old_asset,
+                        new_asset,
+                        ..
+                    } => {
+                        add(old_asset, format!("{label}/SetClipAsset.old"));
+                        add(new_asset, format!("{label}/SetClipAsset.new"));
+                    }
+                    yeban_model::Op::SetAsset { asset_hash, .. } => {
+                        add(asset_hash, format!("{label}/SetAsset"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// 把审计出的缺口升级成**打开失败**；`None` 表示没有缺口。
+fn strict_missing_asset_error(archive: &ProjectArchive) -> Option<OpenError> {
+    let audit = audit_project_assets(archive);
+    let first = audit.missing.first()?;
+    Some(OpenError::MissingAsset {
+        hash: first.hash.clone(),
+        referenced_by: first.referenced_by.clone(),
+        missing_count: audit.missing.len(),
+    })
+}
+
+/// **跨层资产核对**：枚举工程 / 历史里的可解析引用，与容器资产池做双向差集。
+///
+/// 返回读数；`missing` 非空时 [`open_project_archive`] 会把它升级为
+/// [`OpenError::MissingAsset`]（打开失败），而不是让引擎在注入阶段静默跳过。
+#[must_use]
+pub fn audit_project_assets(archive: &ProjectArchive) -> AssetAudit {
+    let refs = collect_asset_references(archive);
+    let pool: BTreeSet<yeban_model::AssetHash> = archive
+        .assets
+        .iter()
+        .map(|(hash, _)| hash.clone())
+        .collect();
+    let project_index: BTreeSet<yeban_model::AssetHash> =
+        archive.project.assets.keys().cloned().collect();
+
+    let mut missing: Vec<MissingAssetReference> = refs
+        .iter()
+        .filter(|(hash, _)| !pool.contains(*hash))
+        .map(|(hash, labels)| MissingAssetReference {
+            hash: hash.clone(),
+            referenced_by: labels.iter().cloned().collect(),
+        })
+        .collect();
+    missing.sort_by(|left, right| left.hash.cmp(&right.hash));
+
+    AssetAudit {
+        referenced: refs.len(),
+        pool: pool.len(),
+        project_index: project_index.len(),
+        missing,
+        index_without_pool: project_index.difference(&pool).cloned().collect(),
+        unindexed_pool: pool.difference(&project_index).cloned().collect(),
+        unreferenced_pool: pool
+            .iter()
+            .filter(|hash| !refs.contains_key(*hash))
+            .cloned()
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -435,13 +662,15 @@ mod tests {
         bytes[local + 30..local + 30 + local_len].copy_from_slice(name.as_bytes());
     }
 
-    /// 造一个真容器（`project.json` + `history.dag` + 一个 CAS 资产）。
+    /// 造一个真容器（`project.json` + `history.dag` + `project` 真正引用的 CAS 资产）。
+    ///
+    /// T-FIX-330：`demo_project` 的音频片段引用运行期合成的 kick；
+    /// 容器必须带上**同一份**字节，否则打开会（正确地）报 `MissingAsset`。
     fn container_bytes() -> (Vec<u8>, YebanProjectV1) {
         let project = demo_project();
-        let asset = b"yeban-open-test-asset".to_vec();
-        let hash = AssetHash::of_bytes(&asset);
-        let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
-        assets.insert(hash, asset);
+        let assets: BTreeMap<AssetHash, Vec<u8>> = yeban_model::samples::demo_project_assets()
+            .into_iter()
+            .collect();
         let bytes =
             yeban_model::container::write_project_container(&project, b"dag-bytes", &assets)
                 .expect("写出真容器");
@@ -469,12 +698,136 @@ mod tests {
         assert_eq!(archive.project, project, "工程文档必须逐字段一致");
         assert_eq!(archive.history_dag, b"dag-bytes", "history.dag 必须保真");
         assert_eq!(archive.assets.len(), 1);
-        assert_eq!(archive.assets[0].1, b"yeban-open-test-asset");
+        assert_eq!(
+            archive.assets[0].1,
+            yeban_model::samples::demo_project_assets()[0].1
+        );
 
         let only_project = open_project_bytes(&bytes, &limits).expect("只要工程的形态");
         assert_eq!(only_project, project);
         assert_eq!(only_project.title, "夜半 Yeban");
         assert!(!only_project.tracks.is_empty());
+    }
+
+    /// T-FIX-330：Audio 片段引用的资产不在池里 ⇒ 默认给**可读 warning**，
+    /// 严格模式（生产 UI）升级为 `OpenError::MissingAsset`，错误带哈希与引用定位。
+    #[test]
+    fn audio_clip_without_pool_bytes_is_a_loud_warning_then_a_strict_error() {
+        let project = demo_project();
+        let asset_hash = project
+            .assets
+            .keys()
+            .next()
+            .expect("demo 工程必须有 kick 资产索引")
+            .clone();
+        let bytes =
+            yeban_model::container::write_project_container(&project, b"", &BTreeMap::new())
+                .expect("写出缺资产的容器");
+
+        let archive = open_project_archive(&bytes, &ContainerLimits::default())
+            .expect("默认模式必须打开并给 warning，而不是只写 stderr");
+        let audit = audit_project_assets(&archive);
+        assert_eq!(audit.missing.len(), 1);
+        let gap = &audit.missing[0];
+        assert_eq!(gap.hash, asset_hash);
+        assert!(
+            gap.referenced_by
+                .iter()
+                .any(|label| label.starts_with("track:")),
+            "引用定位必须能指到轨/摆放: {:?}",
+            gap.referenced_by
+        );
+        assert!(
+            gap.referenced_by
+                .iter()
+                .any(|label| label.starts_with("clip:")),
+            "引用定位必须能指到片段: {:?}",
+            gap.referenced_by
+        );
+        assert!(
+            archive
+                .load_notes
+                .iter()
+                .any(|note| note.contains("资产缺口") && note.contains(&asset_hash.to_string())),
+            "缺口必须进 `load_notes`（UI / CLI 可显示）: {:?}",
+            archive.load_notes
+        );
+
+        let dir =
+            std::env::temp_dir().join(format!("yeban-open-missing-asset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("missing-asset.yeban");
+        std::fs::write(&path, &bytes).expect("写临时容器");
+        let strict = ProjectOpenOptions {
+            strict_missing_assets: true,
+            ..ProjectOpenOptions::default()
+        };
+        match open_project_archive_file(&path, &strict) {
+            Err(OpenError::MissingAsset {
+                hash,
+                referenced_by,
+                missing_count,
+            }) => {
+                assert_eq!(hash, asset_hash);
+                assert_eq!(missing_count, 1);
+                assert!(
+                    referenced_by
+                        .iter()
+                        .any(|label| label.starts_with("track:"))
+                );
+            }
+            other => panic!("严格模式期望 MissingAsset，实测 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-330：池里多出的资产**不**阻断打开，但必须在审计读数里出现。
+    #[test]
+    fn extra_pool_asset_is_reported_in_the_audit_not_rejected() {
+        let project = demo_project();
+        let mut assets: BTreeMap<AssetHash, Vec<u8>> = yeban_model::samples::demo_project_assets()
+            .into_iter()
+            .collect();
+        let extra = b"never-referenced-by-project".to_vec();
+        let extra_hash = AssetHash::of_bytes(&extra);
+        assets.insert(extra_hash.clone(), extra);
+        let bytes = yeban_model::container::write_project_container(&project, b"", &assets)
+            .expect("写出带多余资产的容器");
+
+        let archive = open_project_archive(&bytes, &ContainerLimits::default())
+            .expect("多余池资产不得阻断打开");
+        let audit = audit_project_assets(&archive);
+        assert!(audit.missing.is_empty());
+        assert_eq!(audit.pool, 2);
+        assert_eq!(audit.project_index, 1);
+        assert_eq!(audit.unindexed_pool, vec![extra_hash.clone()]);
+        assert_eq!(audit.unreferenced_pool, vec![extra_hash]);
+    }
+
+    /// T-FIX-330：`project.assets` 比池多出的索引项只作读数，不阻断打开。
+    #[test]
+    fn project_index_without_pool_is_reported_but_not_rejected() {
+        let mut project = yeban_model::samples::default_project();
+        let fake = AssetHash::of_bytes(b"index-only-asset");
+        project.assets.insert(
+            fake.clone(),
+            yeban_model::project::AssetMetadata {
+                hash: fake.clone(),
+                original_path: "samples/index-only.wav".to_owned(),
+                byte_len: 0,
+                media_kind: yeban_model::project::MediaKind::Audio,
+                license: "CC0-1.0".to_owned(),
+            },
+        );
+        let bytes =
+            yeban_model::container::write_project_container(&project, b"", &BTreeMap::new())
+                .expect("写出带孤立索引的容器");
+
+        let archive = open_project_archive(&bytes, &ContainerLimits::default())
+            .expect("孤立索引不得阻断打开");
+        let audit = audit_project_assets(&archive);
+        assert!(audit.missing.is_empty(), "索引项不是硬引用");
+        assert_eq!(audit.index_without_pool, vec![fake]);
     }
 
     /// 判据 18: **截断容器必须报错，绝不"打开成空工程"**。
