@@ -46,7 +46,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{
     BufferSize, Device, Host, SampleFormat, StreamConfig, SupportedBufferSize,
     SupportedStreamConfigRange,
@@ -111,6 +111,171 @@ pub const fn backend_error_kind_name(code: u8) -> &'static str {
         13 => "backend-error",
         14 => "other",
         _ => "unknown",
+    }
+}
+
+/// 这个种类编号是否意味着**端点没了 / 流不再有效**（T-FIX-225）。
+///
+/// 三类：`DeviceChanged`(2, 系统默认端点变了)、`DeviceNotAvailable`(3, 设备消失)、
+/// `StreamInvalidated`(9, 流被后端作废)。它们与 `XRun`(12) 这种"抖动一下还能继续"
+/// 的错误**性质不同**：出现后这条流**永久**不再产出正确的音频，只能重建。
+#[must_use]
+pub const fn is_endpoint_loss_kind(code: u8) -> bool {
+    matches!(code, 2 | 3 | 9)
+}
+
+/// 一条输出流的**端点健康**（控制面按 1 Hz 轮询；T-FIX-225）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EndpointHealth {
+    /// 流仍挂在打开时那台设备上，且（若是默认设备）系统默认端点也没变。
+    Ok,
+    /// 打开时用的是**系统默认**设备，而现在默认端点换成了另一台。
+    ///
+    /// 携带两个 `Display` 形式的设备标识（`"wasapi:{...}"`），给日志与回执读数用。
+    DefaultChanged {
+        /// 打开时的默认端点。
+        from: String,
+        /// 现在的默认端点。
+        to: String,
+    },
+    /// 打开时点名选的那台设备**已经不在**输出设备列表里。
+    DeviceGone {
+        /// 打开时那台设备的标识。
+        id: String,
+    },
+    /// 流自己报了端点失效（见 [`is_endpoint_loss_kind`]）。
+    Invalidated {
+        /// 首条失效错误的名（[`backend_error_kind_name`]）。
+        kind: &'static str,
+    },
+    /// 端点的当前状态**读不出来**（host 不可用 / 设备不报 id）。
+    ///
+    /// ⛔ 不把"读不出来"当成"没问题"：调用方据此**不重建**，但也**不重置**自己的
+    /// 失败计数（否则一个反复消失又读不出来的设备会让退避永远归零）。
+    Unknown,
+}
+
+impl EndpointHealth {
+    /// 是否需要重建流才能恢复。
+    #[must_use]
+    pub const fn needs_rebuild(&self) -> bool {
+        matches!(
+            self,
+            Self::DefaultChanged { .. } | Self::DeviceGone { .. } | Self::Invalidated { .. }
+        )
+    }
+
+    /// 一行机器可读读数（`DEVICE-ENDPOINT ...`；与 `BACKEND-ERRORS` 同款"无空白值"）。
+    #[must_use]
+    pub fn machine_line(&self) -> String {
+        match self {
+            Self::Ok => "DEVICE-ENDPOINT state=ok".to_owned(),
+            Self::DefaultChanged { from, to } => format!(
+                "DEVICE-ENDPOINT state=default-changed from={} to={}",
+                endpoint_token(from),
+                endpoint_token(to),
+            ),
+            Self::DeviceGone { id } => format!(
+                "DEVICE-ENDPOINT state=device-gone id={}",
+                endpoint_token(id),
+            ),
+            Self::Invalidated { kind } => {
+                format!("DEVICE-ENDPOINT state=invalidated kind={kind}")
+            }
+            Self::Unknown => "DEVICE-ENDPOINT state=unknown".to_owned(),
+        }
+    }
+}
+
+/// 把一段文本压成**不含空白**的日志值，但**保留非 ASCII**（T-FIX-225）。
+///
+/// 与 `backend_error_message_token` 的差别：那个把非 `[A-Za-z0-9_.:-]` 的字节一律换成
+/// `_`（`BACKEND-ERRORS` 的既有契约，⛔ 不动）；这一份只压平空白 —— 设备名与错误消息
+/// 大量是中文（`"扬声器 (2- Clouddesk Audio Driver)"`、`"没有可用的默认输出设备"`），
+/// 全压成下划线等于把最有用的信息删掉。仍然是"值里没有空白"，`split_whitespace` 照旧安全。
+fn endpoint_token(text: &str) -> String {
+    if text.is_empty() {
+        return "none".to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        out.push(if ch.is_whitespace() { '_' } else { ch });
+    }
+    out
+}
+
+/// [`OutputStreamHandle::poll_endpoint`] 里**碰 cpal 的那一半**：只在后端线程上执行。
+///
+/// "流自己报失效"这一条与后端无关，调用方已经提前判掉；留在这里的只有两件必须读
+/// 后端的读数：默认端点换了没、点名设备还在不在。
+#[must_use]
+fn poll_endpoint_here(opened_id: Option<&str>, opened_default: bool) -> EndpointHealth {
+    let host = cpal::default_host();
+    if opened_default {
+        let current = host
+            .default_output_device()
+            .and_then(|device| device.id().ok())
+            .map(|id| id.to_string());
+        return classify_endpoint(opened_id, true, current.as_deref(), true, None);
+    }
+
+    // 点名设备：还在不在输出清单里（按 id 比，不按名字比 —— 名字会重）。
+    let present = match opened_id {
+        Some(want) => host
+            .output_devices()
+            .map(|devices| {
+                devices
+                    .into_iter()
+                    .filter_map(|device| device.id().ok())
+                    .any(|id| id.to_string() == want)
+            })
+            .unwrap_or(true),
+        // 打开时也没拿到 id ⇒ 无从判定，宁可报 Unknown 也不谎报 DeviceGone。
+        None => true,
+    };
+    classify_endpoint(opened_id, false, None, present, None)
+}
+
+/// 端点健康的**纯判决**（无 cpal、无系统调用 ⇒ 可在 CI 上逐格覆盖）。
+///
+/// 入参全部是"打开时记下的"与"此刻读到的"，本函数只做比较：
+///
+/// | `lost_kind` | 结论 |
+/// | --- | --- |
+/// | `Some(k)` | `Invalidated { k }` —— 流自己已经作废，别的读数都不必再看 |
+/// | `None` + 打开的是默认设备 + 当前默认不同 | `DefaultChanged` |
+/// | `None` + 当前默认读不到 | `Unknown` |
+/// | `None` + 点名设备不在列表里 | `DeviceGone` |
+#[must_use]
+pub fn classify_endpoint(
+    opened_id: Option<&str>,
+    opened_default: bool,
+    current_default_id: Option<&str>,
+    opened_still_present: bool,
+    lost_kind: Option<u8>,
+) -> EndpointHealth {
+    if let Some(kind) = lost_kind.filter(|kind| is_endpoint_loss_kind(*kind)) {
+        return EndpointHealth::Invalidated {
+            kind: backend_error_kind_name(kind),
+        };
+    }
+    if opened_default {
+        return match (opened_id, current_default_id) {
+            (Some(from), Some(to)) if from != to => EndpointHealth::DefaultChanged {
+                from: from.to_owned(),
+                to: to.to_owned(),
+            },
+            (Some(_), Some(_)) => EndpointHealth::Ok,
+            // 默认端点此刻读不出来（host 掉线 / 设备不报 id）⇒ 不猜。
+            _ => EndpointHealth::Unknown,
+        };
+    }
+    if opened_still_present {
+        return EndpointHealth::Ok;
+    }
+    match opened_id {
+        Some(id) => EndpointHealth::DeviceGone { id: id.to_owned() },
+        None => EndpointHealth::Unknown,
     }
 }
 
@@ -226,6 +391,15 @@ pub struct BackendErrorLog {
     first_kind: AtomicU8,
     first_message_len: AtomicU8,
     first_message: [AtomicU8; BACKEND_ERROR_MESSAGE_MAX],
+    /// **端点失效类**错误的次数（`DeviceChanged` / `DeviceNotAvailable` /
+    /// `StreamInvalidated`，即编号 2 / 3 / 9）。T-FIX-225。
+    ///
+    /// 为什么要单独一个计数：`first_kind` 只记住**首条**错误的种类，而首条常常是
+    /// 无害的 `XRun`（编号 12）—— 拿它判"端点还在不在"会把后面真正的失效吞掉。
+    /// 这一档只数会让流**失去意义**的那三种，因此"是否该重建流"可以只问它。
+    endpoint_lost: AtomicU64,
+    /// 上述三类里**首条**的种类编号（`0` = 还没有过）。
+    endpoint_lost_kind: AtomicU8,
 }
 
 impl Default for BackendErrorLog {
@@ -239,6 +413,8 @@ impl Default for BackendErrorLog {
             first_kind: AtomicU8::new(0),
             first_message_len: AtomicU8::new(0),
             first_message: std::array::from_fn(|_| AtomicU8::new(0)),
+            endpoint_lost: AtomicU64::new(0),
+            endpoint_lost_kind: AtomicU8::new(0),
         }
     }
 }
@@ -258,6 +434,17 @@ impl BackendErrorLog {
             self.stop.fetch_add(1, Ordering::Relaxed);
         } else {
             self.runtime.fetch_add(1, Ordering::Relaxed);
+        }
+        let kind = backend_error_kind_code(error.kind());
+        // T-FIX-225：端点失效类单独记一档（同样零分配：两次原子操作）。
+        if is_endpoint_loss_kind(kind) {
+            self.endpoint_lost.fetch_add(1, Ordering::Relaxed);
+            let _ = self.endpoint_lost_kind.compare_exchange(
+                0,
+                kind,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
         if self
             .first_claimed
@@ -286,6 +473,18 @@ impl BackendErrorLog {
     /// 从这一时刻起，到达的错误回调重新计入**运行期**（`play` 之后用）。
     pub fn begin_run(&self) {
         self.stopping.store(false, Ordering::Release);
+    }
+
+    /// **端点失效**读数的 `(次数, 首条种类编号)`（T-FIX-225）。
+    ///
+    /// 只数会让这条流失去意义的三类：`DeviceChanged`(2) / `DeviceNotAvailable`(3) /
+    /// `StreamInvalidated`(9)。控制面拿它判"要不要重建流"；实时路径只写不算。
+    #[must_use]
+    pub fn endpoint_losses(&self) -> (u64, u8) {
+        (
+            self.endpoint_lost.load(Ordering::Relaxed),
+            self.endpoint_lost_kind.load(Ordering::Relaxed),
+        )
     }
 
     /// 控制面读数（暂停/关流之后读才有意义）。
@@ -523,6 +722,20 @@ pub enum DeviceError {
     /// 后端返回的错误（设备忙、权限不足、配置失效……）。
     #[error("audio backend error: {0}")]
     Backend(#[from] cpal::Error),
+
+    /// ⭐ **建流宿主线程**出了问题（T-FIX-225 返工）。
+    ///
+    /// 三种情形共用一条：线程创建失败、线程在报告读数前 panic、线程已经退出导致
+    /// 控制命令发不出去（此时句柄不该再被当成"能出声"）。
+    ///
+    /// ⚠ 与 [`DeviceError::Backend`] **分开**：后端错误是"设备那边拒绝了"，这一条是
+    /// "我们自己的宿主线程没了"。合并会让"声卡没插"与"线程死了"同一个码，把排查
+    /// 方向带偏（与本枚举其它"分开报错"的裁决同一理由）。
+    #[error("audio stream owner thread failed: {reason}")]
+    OwnerThread {
+        /// 可读原因（含 HRESULT / panic 现场）。
+        reason: String,
+    },
 }
 
 /// 设备的可枚举信息（**非实时路径**：允许分配字符串）。
@@ -564,8 +777,17 @@ fn supported_text(ranges: Result<Vec<SupportedStreamConfigRange>, cpal::Error>) 
 ///
 /// # Errors
 ///
-/// 后端拒绝枚举（例如音频守护进程不可用）→ [`DeviceError::Backend`]。
+/// 后端拒绝枚举（例如音频守护进程不可用）→ [`DeviceError::Backend`]；
+/// 音频后端线程不在 → [`DeviceError::OwnerThread`]。
 pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
+    // ⚠ 必须在**后端线程**上枚举：cpal 的 `IMMDeviceEnumerator` 是进程级单例
+    // （`Devices::new()` 用的就是它），谁先枚举它就把那间公寓绑死。界面线程
+    // 先枚举过，后端线程之后重建流就会跨公寓 ⇒ `RPC_E_CHANGED_MODE`。
+    on_audio_thread(enumerate_output_devices_here)
+}
+
+/// [`enumerate_output_devices`] 的本体：只在后端线程上执行。
+fn enumerate_output_devices_here() -> Result<Vec<DeviceInfo>, DeviceError> {
     let host = cpal::default_host();
     let default_id = host
         .default_output_device()
@@ -599,8 +821,14 @@ pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
 ///
 /// # Errors
 ///
-/// 后端拒绝枚举 → [`DeviceError::Backend`]。
+/// 后端拒绝枚举 → [`DeviceError::Backend`]；音频后端线程不在 →
+/// [`DeviceError::OwnerThread`]。
 pub fn enumerate_input_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
+    on_audio_thread(enumerate_input_devices_here)
+}
+
+/// [`enumerate_input_devices`] 的本体：只在后端线程上执行。
+fn enumerate_input_devices_here() -> Result<Vec<DeviceInfo>, DeviceError> {
     let host = cpal::default_host();
     let default_id = host
         .default_input_device()
@@ -892,6 +1120,15 @@ fn negotiate_inner(
 /// 本函数存在的意义就是把失败现场说全）。⛔ 不建流、不碰 [`EngineRuntime`]。
 #[must_use]
 pub fn trace_output_negotiation(want: &EngineConfig) -> Vec<String> {
+    // 这条 trace 要读默认设备与它的能力（cpal 调用）⇒ 走后端线程，与建流同公寓。
+    let want = *want;
+    backend::dispatch(move || trace_output_negotiation_here(&want))
+        .unwrap_or_else(|| vec!["trace-output: 音频后端线程不在，无法读设备能力".to_owned()])
+}
+
+/// [`trace_output_negotiation`] 的本体：只在后端线程上执行。
+#[must_use]
+fn trace_output_negotiation_here(want: &EngineConfig) -> Vec<String> {
     let host = cpal::default_host();
     let mut lines = vec![format!("trace-output: host {:?}", host.id())];
     let Some(device) = host.default_output_device() else {
@@ -916,6 +1153,14 @@ pub fn trace_output_negotiation(want: &EngineConfig) -> Vec<String> {
 /// [`negotiate_input_traced`]）。
 #[must_use]
 pub fn trace_input_negotiation(want: &EngineConfig) -> Vec<String> {
+    let want = *want;
+    backend::dispatch(move || trace_input_negotiation_here(&want))
+        .unwrap_or_else(|| vec!["trace-input: 音频后端线程不在，无法读设备能力".to_owned()])
+}
+
+/// [`trace_input_negotiation`] 的本体：只在后端线程上执行。
+#[must_use]
+fn trace_input_negotiation_here(want: &EngineConfig) -> Vec<String> {
     let host = cpal::default_host();
     let mut lines = vec![format!("trace-input: host {:?}", host.id())];
     let Some(device) = host.default_input_device() else {
@@ -989,9 +1234,396 @@ fn describe(supported: &[SupportedStreamConfigRange]) -> String {
     text
 }
 
+/// 建流线程的 **COM 公寓**（Windows）。
+///
+/// 为什么必须在这里显式定：`cpal` 的 `host/com.rs` 在**每条线程第一次用到 cpal 时**
+/// 调 `CoInitializeEx(COINIT_APARTMENTTHREADED)`（STA），并且**故意容忍**
+/// `RPC_E_CHANGED_MODE` —— 注释写明这是为了 ASIO SDK 与 winit 的拖放。对一个
+/// "只用来建 WASAPI 流"的专用线程，我们要的恰恰是另一间公寓：WASAPI 取
+/// `IAudioClient` 的 `IMMDevice::Activate` 在 **MTA** 线程上才是稳定姿势，而在已经
+/// 被定成 STA 的线程上会以 `RPC_E_CHANGED_MODE`（`0x80010106`，"无法在设置线程
+/// 模式后对其加以更改"）失败 —— 这正是 T-FIX-225 在界面线程上重建输出流的现场。
+///
+/// 顺序很重要：**先**定 MTA，再让 cpal 碰这条线程 —— cpal 的 STA 请求会拿到
+/// `RPC_E_CHANGED_MODE` 并被它自己忽略（它把这一条当成"已经有公寓了"），线程保持
+/// MTA；反过来（先让 cpal 初始化）线程就固定成 STA，再改不回来。
+#[cfg(windows)]
+mod apartment {
+    use core::ffi::c_void;
+
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoInitializeEx(reserved: *const c_void, coinit: u32) -> i32;
+        fn CoUninitialize();
+    }
+
+    /// `COINIT_MULTITHREADED`。
+    const COINIT_MULTITHREADED: u32 = 0x0;
+    /// `S_OK`：本次调用把这间公寓建起来了。
+    const S_OK: i32 = 0;
+    /// `S_FALSE`：这条线程已经是 MTA（引用计数 +1，仍要配一次 `CoUninitialize`）。
+    const S_FALSE: i32 = 1;
+    /// `0x80010106`：线程的公寓已经被别人定成另一种模式，**改不回来**。
+    const RPC_E_CHANGED_MODE: i32 = -2_147_417_850;
+
+    /// 线程公寓的 RAII 守卫：`Drop` 时按引用计数退还一次 `CoInitializeEx`。
+    pub(super) struct Apartment {
+        /// `S_OK` / `S_FALSE` 都要配一次 `CoUninitialize`；失败时**不能**退。
+        initialized: bool,
+    }
+
+    impl Apartment {
+        /// 把**当前线程**的公寓定成 MTA。
+        ///
+        /// # Errors
+        ///
+        /// 线程已被别人初始化为 STA（`RPC_E_CHANGED_MODE`）或其他 HRESULT 失败 ⇒
+        /// 返回可读原因，调用方报 [`super::DeviceError::OwnerThread`]。
+        pub(super) fn bind() -> Result<Self, String> {
+            // SAFETY: `CoInitializeEx` 的第一个参数按文档必须为 null；
+            // `COINIT_MULTITHREADED` 是合法公寓标志；本调用只影响当前线程。
+            let hr = unsafe { CoInitializeEx(core::ptr::null(), COINIT_MULTITHREADED) };
+            match hr {
+                S_OK | S_FALSE => Ok(Self { initialized: true }),
+                RPC_E_CHANGED_MODE => Err(
+                    "音频建流线程的 COM 公寓已被定成 STA（RPC_E_CHANGED_MODE 0x80010106）"
+                        .to_owned(),
+                ),
+                other => Err(format!(
+                    "音频建流线程初始化 COM 失败：HRESULT 0x{:08X}",
+                    other as u32
+                )),
+            }
+        }
+    }
+
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.initialized {
+                // SAFETY: 与上面成功的那次 `CoInitializeEx` 成对调用。
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    /// 判据用的公寓读数 / 反向初始化（**不导给生产代码**）。
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[link(name = "ole32")]
+        unsafe extern "system" {
+            fn CoGetApartmentType(apartment_type: *mut i32, apartment_qualifier: *mut i32) -> i32;
+        }
+
+        /// `APTTYPE_MTA`（`APTTYPE` 枚举）。
+        const APTTYPE_MTA: i32 = 1;
+        /// `APTTYPE_STA`。
+        const APTTYPE_STA: i32 = 0;
+        /// `APTTYPE_MAINSTA`：进程里的第一条 STA 会被报成"主 STA"而不是 `APTTYPE_STA`
+        /// （本机实测：新线程上 `CoInitializeEx(STA)` 之后 `CoGetApartmentType` 给 3）。
+        const APTTYPE_MAINSTA: i32 = 3;
+        /// `COINIT_APARTMENTTHREADED`。
+        const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+        /// 当前线程的公寓类型；`None` = 这条线程还没初始化 COM。
+        fn apartment_type() -> Option<i32> {
+            let mut kind = -1;
+            let mut qualifier = -1;
+            // SAFETY: 两个出参都是栈上有效地址，函数只写它们。
+            let hr = unsafe { CoGetApartmentType(&mut kind, &mut qualifier) };
+            (hr == S_OK).then_some(kind)
+        }
+
+        /// **判据 1**：`bind()` 之后这条线程真的在 MTA 里。
+        ///
+        /// 红对照：把 `backend::run` 里的 `apartment::Apartment::bind()` 去掉
+        /// （让 cpal 自己去初始化）⇒ 这条线程会被 cpal 定成 STA ⇒ 本判据变红。
+        ///
+        /// ⚠ 判据体直接跑在测试线程上（每条 `#[test]` 本来就有独立 OS 线程）：
+        /// 套一层 `thread::spawn` 会把 panic 消息吞成 `Any { .. }`，红的时候看不出原因。
+        #[test]
+        fn bind_puts_the_thread_into_the_mta() {
+            assert_eq!(apartment_type(), None, "新线程在 bind 之前不该有公寓");
+            let guard = Apartment::bind().expect("MTA 必须能建起来");
+            assert_eq!(
+                apartment_type(),
+                Some(APTTYPE_MTA),
+                "bind() 之后这条线程必须是 MTA —— 否则 cpal 会把它定成 STA，\
+                 重建输出流就会踩 RPC_E_CHANGED_MODE"
+            );
+            drop(guard);
+            assert_eq!(apartment_type(), None, "守卫 Drop 之后公寓必须退掉");
+        }
+
+        /// **判据 2**：线程已经是 STA 时 `bind()` **响亮报错**，⛔ 不静默返回。
+        ///
+        /// 这一条挡的是"有人在这条线程上先用过剪贴板/拖放"：那种情况下 MTA 改不回来，
+        /// 唯一正确的行为是把原因交给调用方（`DeviceError::OwnerThread`），而不是
+        /// 假装成功、等到 `Activate` 再炸。
+        #[test]
+        fn bind_reports_an_already_sta_thread() {
+            // 先手把公寓定成 STA：`bind()` 随后必须失败（MTA 改不回来）。
+            // SAFETY: 与末尾的 `CoUninitialize` 成对；只影响当前测试线程。
+            let hr = unsafe { CoInitializeEx(core::ptr::null(), COINIT_APARTMENTTHREADED) };
+            assert!(hr >= 0, "先手初始化 STA 失败：0x{:08X}", hr as u32);
+            assert!(
+                matches!(apartment_type(), Some(APTTYPE_STA | APTTYPE_MAINSTA)),
+                "先手初始化之后这条线程该是单线程公寓，实际：{:?}",
+                apartment_type()
+            );
+            let error = match Apartment::bind() {
+                Err(error) => error,
+                Ok(_) => panic!("STA 线程上不许静默成功"),
+            };
+            assert!(
+                error.contains("RPC_E_CHANGED_MODE"),
+                "原因必须点名 RPC_E_CHANGED_MODE，实际：{error}"
+            );
+            // SAFETY: 与上面那次 `CoInitializeEx` 成对（失败的 `bind` 不退引用计数）。
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+/// 非 Windows 平台没有 COM 公寓这回事 —— 空守卫，调用方代码零分支。
+#[cfg(not(windows))]
+mod apartment {
+    /// 空守卫（无 Drop 语义）。
+    pub(super) struct Apartment;
+
+    impl Apartment {
+        /// 非 Windows：恒成功。
+        ///
+        /// # Errors
+        ///
+        /// 不会失败（签名与 Windows 版一致，调用方无需 `cfg`）。
+        pub(super) fn bind() -> Result<Self, String> {
+            Ok(Self)
+        }
+    }
+}
+
+/// ⭐ **进程唯一的音频后端线程**：所有 cpal 调用都落在这条线程上。
+///
+/// ## 为什么不"每次建流起一条线程"
+///
+/// [`apartment`] 只保证"这条线程的公寓是我们定的"。单靠它还不够：
+/// cpal 0.18.2 的 WASAPI 后端把 `IMMDeviceEnumerator` 放进**进程级** `OnceLock`
+/// （`cpal-0.18.2/src/host/wasapi/device.rs:1145`，`Devices::new()` 也用同一份），
+/// 谁先碰音频，这份枚举器就永久属于**那间公寓**。
+///
+/// 于是"每次重建流起一条新线程"在实测里是这样：第一次打开成功（枚举器在第一条
+/// 建流线程的公寓里建起来），`audiosrv` 重启后重建 ⇒ 新线程是**另一间**公寓，
+/// `IMMDevice::Activate` 跨公寓调用旧对象 ⇒ `RPC_E_CHANGED_MODE`（`0x80010106`）。
+/// `app-225d.log` 的 6~10 次重试就是这个形状（前 5 次是服务还没起来的
+/// `no_default_output_device_available`）。
+///
+/// 所以本模块把**建流、启流、停流、枚举、默认设备查询、流析构**全部收进这一条
+/// 线程：公寓只有一间，跨公寓不可能发生，"建流在 A 公寓、重建在 B 公寓"这一类
+/// 失败被彻底消除。
+///
+/// ## 已知边界：`audiosrv` 重启后**仍然开不出流**（本票实测，⛔ 不要当成已修）
+///
+/// 一台机器上实测（`#[ignore] fn repro_after_service_restart`，见 `tests` 模块）：
+///
+/// 1. 开一条流并**让它活着**，此时 `sc stop/start audiosrv`；
+/// 2. 同一条后端线程重开 ⇒ `RPC_E_CHANGED_MODE`（`0x80010106`）；
+/// 3. 把旧流**丢掉**再重开 ⇒ 仍然 `RPC_E_CHANGED_MODE`；
+/// 4. 另起一条**新的 MTA 线程**直接问 cpal ⇒ 仍然 `RPC_E_CHANGED_MODE`；
+/// 5. 但**新进程**里同样的调用 ⇒ 成功。
+///
+/// 结论：只要一条**活着的** `IAudioClient` 跨过了 `audiosrv` 重启，这个进程的
+/// WASAPI 状态就被打坏了（枚举仍可读，`Activate` 永远失败）。这不是公寓/线程
+/// 问题（2/3/4 分别在旧线程、清空后、新公寓上失败，5 排除了机器与服务），而是
+/// cpal 0.18.2 把 `IMMDeviceEnumerator` 缓存在**进程级** `OnceLock` 里、且没有任何
+/// 失效/重建入口所致 —— 我们改不了那份缓存。
+///
+/// ⇒ 本模块**不声称**"端点重启后自动恢复出声"。要做到那一步，只有两条路：
+/// ① 换掉 cpal 的 WASAPI 路径（自己建 `IMMDeviceEnumerator`/`IAudioClient`，可随时
+/// 重建枚举器）；② 给 cpal 打补丁让枚举器可失效重建。两条都超出本票范围，见回执。
+///
+/// ## 生命周期
+///
+/// 活到进程结束，不 join、不回收：`cpal::Stream` 只能在这条线程上析构，
+/// 而进程退出时 OS 会回收一切；再造一套"优雅关闭"协议只会多出一片死锁面。
+/// 线程起不来 / 公寓绑不上 ⇒ 立刻返回，通道随之断开 ⇒ 每个
+/// [`dispatch`] 都拿到 `None`，调用方报 [`DeviceError::OwnerThread`]，⛔ 不会
+/// 退化成"看起来打开了、其实没声"。
+mod backend {
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+
+    use cpal::traits::StreamTrait;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Duration;
+
+    use super::{BackendErrorLog, DeviceError, StreamCommand, apartment};
+
+    /// 交给后端线程做的一件事。回执由闭包自己捕获的通道送回。
+    type Job = Box<dyn FnOnce() + Send + 'static>;
+
+    /// 一条活得比建流调用更久的流：**只能**在后端线程上析构。
+    struct Session {
+        stream: cpal::Stream,
+        commands: Receiver<StreamCommand>,
+        errors: Arc<BackendErrorLog>,
+    }
+
+    type Sessions = Arc<Mutex<Vec<Session>>>;
+
+    static JOBS: OnceLock<Sender<Job>> = OnceLock::new();
+    static SESSIONS: OnceLock<Sessions> = OnceLock::new();
+
+    thread_local! {
+        /// 本线程就是后端线程（`dispatch` 据此避免自己给自己发活、死等）。
+        static ON_BACKEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// 轮询间隔：启流/停流回执与"句柄被丢"的延迟上限。
+    const TICK: Duration = Duration::from_millis(2);
+
+    /// 在**后端线程**上跑 `work` 并等结果。
+    ///
+    /// `None` = 后端线程不在（起不来 / 公寓绑不上 / 已经退出）。
+    /// 已经在后端线程上 ⇒ 就地执行（重入安全，不会自己等自己）。
+    pub(super) fn dispatch<T, F>(work: F) -> Option<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        if ON_BACKEND.with(std::cell::Cell::get) {
+            return Some(work());
+        }
+        let jobs = JOBS.get_or_init(spawn);
+        let (reply_tx, reply_rx) = mpsc::channel();
+        jobs.send(Box::new(move || {
+            let _ = reply_tx.send(work());
+        }))
+        .ok()?;
+        reply_rx.recv().ok()
+    }
+
+    /// 把一条已建好的流登记进后端线程（**只许**在后端线程上调用）。
+    pub(super) fn register_session(
+        stream: cpal::Stream,
+        commands: Receiver<StreamCommand>,
+        errors: Arc<BackendErrorLog>,
+    ) {
+        if let Some(sessions) = SESSIONS.get() {
+            lock(sessions).push(Session {
+                stream,
+                commands,
+                errors,
+            });
+        }
+    }
+
+    /// 起线程（惰性、只起一次）。线程起不来时返回的发送端连着一个已经断开的通道，
+    /// 于是 [`dispatch`] 一律 `None`。
+    fn spawn() -> Sender<Job> {
+        let sessions: Sessions = Arc::new(Mutex::new(Vec::new()));
+        let _ = SESSIONS.set(Arc::clone(&sessions));
+        let (tx, rx) = mpsc::channel::<Job>();
+        // `spawn` 失败时闭包（连同 `rx`）被丢弃 ⇒ 通道断开 ⇒ 发送失败。
+        let _ = std::thread::Builder::new()
+            .name("yeban-audio-backend".to_owned())
+            .spawn(move || run(rx, &sessions));
+        tx
+    }
+
+    /// 后端线程主循环：先把公寓定成 MTA，再"服务流命令 → 取一件新活"轮转。
+    fn run(jobs: Receiver<Job>, sessions: &Sessions) {
+        // 公寓绑不上就退出：通道断开，之后每个 `dispatch` 都报 OwnerThread。
+        if apartment::Apartment::bind().is_err() {
+            return;
+        }
+        ON_BACKEND.with(|flag| flag.set(true));
+        loop {
+            serve_sessions(sessions);
+            match jobs.recv_timeout(TICK) {
+                Ok(job) => job(),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// 把每条流上排着的命令执行掉；`Shutdown` / 发送端消失 ⇒ 就地析构这条流。
+    fn serve_sessions(sessions: &Sessions) {
+        let mut guard = lock(sessions);
+        let mut index = 0;
+        while index < guard.len() {
+            let mut finished = false;
+            loop {
+                match guard[index].commands.try_recv() {
+                    Ok(StreamCommand::Play(ack)) => {
+                        guard[index].errors.begin_run();
+                        let result = guard[index].stream.play().map_err(DeviceError::Backend);
+                        let _ = ack.send(result);
+                    }
+                    Ok(StreamCommand::Pause(ack)) => {
+                        guard[index].errors.begin_stop();
+                        let result = guard[index].stream.pause().map_err(DeviceError::Backend);
+                        let _ = ack.send(result);
+                    }
+                    Ok(StreamCommand::Shutdown) => {
+                        finished = true;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+            if finished {
+                // `cpal::Stream` 在这里（后端线程上）析构 —— 这正是它该在的地方。
+                let _ = guard.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// 取锁；中毒（后端线程 panic 过）也继续用，⛔ 不让一次 panic 把音频永久锁死。
+    fn lock(sessions: &Sessions) -> std::sync::MutexGuard<'_, Vec<Session>> {
+        sessions.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+/// 把一段 `Result<T, DeviceError>` 工作送到音频后端线程上跑（见 [`backend`]）。
+///
+/// 所有会碰到 cpal 的公开入口都经这里 —— 包括**枚举**：cpal 的 WASAPI 枚举器是
+/// 进程级单例，谁先枚举谁就把它钉在自己的公寓上，之后的建流/重建流就必须住在
+/// 同一间公寓里（[`backend`] 的模块文档有完整因果链）。
+fn on_audio_thread<T, F>(work: F) -> Result<T, DeviceError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, DeviceError> + Send + 'static,
+{
+    backend::dispatch(work).unwrap_or_else(|| {
+        Err(DeviceError::OwnerThread {
+            reason: "音频后端线程不在（起不来 / 公寓绑不上 / 已退出）".to_owned(),
+        })
+    })
+}
+
 /// 已打开的输出流句柄。
+///
+/// ⭐ **T-FIX-225 返工（`RPC_E_CHANGED_MODE`）之后，本句柄不再持有 `cpal::Stream`。**
+/// 流长在**进程唯一的音频后端线程**上（[`backend`]），句柄只发命令。理由见
+/// [`backend`] 的模块文档；一句话：cpal 的 WASAPI 枚举器是进程级单例，
+/// 只有"所有 cpal 调用都在同一间公寓里"才能保证重建流时 `Activate` 不跨公寓。
+///
+/// 副作用（有意为之）：`OutputStreamHandle` 从 `!Send` 变成 `Send` —— 它现在只是
+/// 一个命令通道 + 一串只读读数，跨线程搬运它就是搬一串数，不再搬 COM 对象。
 pub struct OutputStreamHandle {
-    stream: cpal::Stream,
+    /// 流的命令通道（启流 / 停流 / 收尾）。
+    ///
+    /// ⚠ 断链 = 后端线程已经没了（起不来 / 公寓绑不上 / 已退出）⇒ 调用方拿到
+    /// [`DeviceError::OwnerThread`]，而不是一个"看起来还在、其实没声"的句柄。
+    hosted: HostedStream,
     /// 打开时协商到的那台设备的显示名（`cpal::Device` 的 `Display`；**控制面**读，
     /// 不在实时路径上）。
     device_name: String,
@@ -1001,6 +1633,16 @@ pub struct OutputStreamHandle {
     /// 开关决定打不打印，关闭时输出零差异。
     negotiation_trace: Vec<String>,
     backend_errors: Arc<BackendErrorLog>,
+    /// 打开时那台设备的稳定标识（`cpal::DeviceId` 的 `Display`：`"wasapi:{...}"`）。
+    ///
+    /// `None` = 后端不报 id（`DeviceTrait::id` 报错）。端点健康判决要靠它区分
+    /// "同一台设备改名"与"换了一台设备"—— 显示名会重名，id 不会。T-FIX-225。
+    device_id: Option<String>,
+    /// 打开时选的是不是**系统默认**设备（`device_name == None` 那条路径）。
+    ///
+    /// 只有它才能判定 [`EndpointHealth::DefaultChanged`]：用户点名选了一台设备时，
+    /// 系统默认换到别处**不该**把这条流拽走（那正是 T-FIX-71 的承诺）。
+    opened_default: bool,
 }
 
 impl OutputStreamHandle {
@@ -1041,24 +1683,80 @@ impl OutputStreamHandle {
     ///
     /// 成功后错误回调重新计入**运行期**（`pause` 之后的 `play` 不把新错误算成关闭期）。
     ///
+    /// ⚠ T-FIX-225 返工之后，真正的 `cpal::Stream::play()` 发生在**建流线程**上
+    /// （[`stream_owner_thread`]）：本函数只是发一条命令并等回执。这样 cpal 的每一个
+    /// 调用（建流、启流、停流、析构）都在**同一个** COM 公寓里发生。
+    ///
     /// # Errors
     ///
-    /// 设备消失 / 流失效 → [`DeviceError::Backend`]。
+    /// 设备消失 / 流失效 → [`DeviceError::Backend`]；建流线程已经退出 →
+    /// [`DeviceError::OwnerThread`]。
     pub fn play(&self) -> Result<(), DeviceError> {
-        self.backend_errors.begin_run();
-        self.stream.play()?;
-        Ok(())
+        self.hosted.play()
+    }
+
+    /// 这条流的端点现在还好不好（T-FIX-225；**控制面**按 1 Hz 调，别放进实时路径）。
+    ///
+    /// 三个事实源，按可信度排序：
+    ///
+    /// 1. **流自己报的失效**（[`is_endpoint_loss_kind`]）—— 后端已经明说了，最可信；
+    /// 2. **系统默认端点换了**（只在打开时选的是默认设备时成立）—— 这条流还活着，
+    ///    但它已经不在用户耳朵所在的端点上了（典型：插上耳机，声音还从扬声器出来）；
+    /// 3. **点名设备不见了**（打开时按名选的那条路）—— 流多半已经失效，但 cpal 在
+    ///    某些后端上不报错，于是界面看起来"在播、没声"。
+    ///
+    /// ⚠ 本函数会枚举输出设备（`output_devices()` 有分配），所以**只在控制面**调，
+    /// 不要在回调或高频 tick 里调。
+    #[must_use]
+    pub fn poll_endpoint(&self) -> EndpointHealth {
+        let (lost, lost_kind) = self.backend_errors.endpoint_losses();
+        // `lost > 0` 但种类编号还是 0 不可能发生（同一函数里先存编号后自增），
+        // 为了不给"读到半拍"留歧义，这里把编号也当判据。
+        let lost_kind = (lost > 0 && lost_kind != 0).then_some(lost_kind);
+
+        if lost_kind.is_some() {
+            // 已经失效 ⇒ 不必再枚举设备（省一次分配，也让判决不依赖 host 状态）。
+            return classify_endpoint(
+                self.device_id.as_deref(),
+                self.opened_default,
+                None,
+                true,
+                lost_kind,
+            );
+        }
+
+        // ⚠ 下面这段要读默认端点 / 枚举设备清单 —— `Devices::new()` 用的正是 cpal 的
+        // 进程级枚举器，所以必须走后端线程（同公寓），否则这里每 1 Hz 一次枚举就会
+        // 把枚举器钉在界面线程上，重建流时跨公寓炸 `RPC_E_CHANGED_MODE`。
+        let device_id = self.device_id.clone();
+        let opened_default = self.opened_default;
+        backend::dispatch(move || poll_endpoint_here(device_id.as_deref(), opened_default))
+            // 后端线程不在 ⇒ 读不出来，按 Unknown 处理（⛔ 不当成 Ok）。
+            .unwrap_or(EndpointHealth::Unknown)
+    }
+
+    /// 这条流打开时所用的设备稳定标识（`"wasapi:{...}"`；后端不报 id 时 `None`）。
+    #[must_use]
+    pub fn device_id(&self) -> Option<&str> {
+        self.device_id.as_deref()
+    }
+
+    /// 这条流打开时是不是用的**系统默认**设备。
+    #[must_use]
+    pub const fn opened_default_device(&self) -> bool {
+        self.opened_default
     }
 
     /// 暂停流。**先**把阶段切到关闭/停止期，再暂停 ⇒ 暂停/关流阶段到达的错误单独计。
     ///
+    /// ⚠ 与 [`Self::play`] 同款：真正调 cpal 的是建流线程，本函数发命令等回执。
+    ///
     /// # Errors
     ///
-    /// 后端不支持暂停 → [`DeviceError::Backend`]。
+    /// 后端不支持暂停 → [`DeviceError::Backend`]；建流线程已经退出 →
+    /// [`DeviceError::OwnerThread`]。
     pub fn pause(&self) -> Result<(), DeviceError> {
-        self.backend_errors.begin_stop();
-        self.stream.pause()?;
-        Ok(())
+        self.hosted.pause()
     }
 }
 
@@ -1379,16 +2077,149 @@ pub fn open_output_boxed_named(
 
 /// [`open_output_boxed`] 与 [`open_output_boxed_named`] 的**唯一实现**：
 /// `device_name == None` = 默认设备（现行为）；`Some(名)` = 按名精确选。
+///
+/// ⭐ **T-FIX-225 返工**：真正的 cpal 调用（枚举、协商、`Activate`、建流）不在调用方
+/// 线程上发生，而是在 [`stream_owner_thread`] 里 —— 那条线程的 COM 公寓由我们显式
+/// 定成 MTA（[`apartment::Apartment::bind`]）。原因见模块头「为什么流必须长在自建线程上」。
+///
+/// 失败路径**逐条**与旧版一致：建流失败 → 同一个 [`DeviceError`] 原样返回（不包装、
+/// 不改文案，调用方的分流与文案不受影响）。
 fn open_output_boxed_impl(
     want: &EngineConfig,
-    mut runtime: Box<EngineRuntime>,
+    runtime: Box<EngineRuntime>,
     device_name: Option<&str>,
 ) -> Result<OutputStreamHandle, DeviceError> {
     if want.share_mode == ShareMode::RequireExclusive {
         return Err(DeviceError::ExclusiveModeUnsupported);
     }
+    let want = *want;
+    let device_name = device_name.map(str::to_owned);
+
+    let (commands_tx, commands_rx) = std::sync::mpsc::channel();
+    let wanted = want;
+    let wanted_name = device_name.clone();
+    // ⭐ 整段 cpal 工作（枚举 / 协商 / `Activate` / 建流）都在后端线程上发生，
+    // 建好的流也留在那里（`register_session`）。调用方只拿到读数 + 一条命令通道。
+    let info = backend::dispatch(move || -> Result<StreamInfo, DeviceError> {
+        let opened = open_stream_on_this_thread(&wanted, runtime, wanted_name.as_deref())?;
+        backend::register_session(
+            opened.stream,
+            commands_rx,
+            Arc::clone(&opened.info.backend_errors),
+        );
+        Ok(opened.info)
+    })
+    .ok_or_else(|| DeviceError::OwnerThread {
+        reason: "音频后端线程不在（起不来 / 公寓绑不上 / 已退出）".to_owned(),
+    })??;
+
+    Ok(OutputStreamHandle {
+        hosted: HostedStream {
+            commands: commands_tx,
+        },
+        device_name: info.device_name,
+        negotiated: info.negotiated,
+        negotiation_trace: info.negotiation_trace,
+        backend_errors: info.backend_errors,
+        device_id: info.device_id,
+        opened_default: info.opened_default,
+    })
+}
+
+/// 建流线程向调用方报告的**读数**（不含流本身 —— 流留在后端线程上）。
+struct StreamInfo {
+    device_name: String,
+    negotiated: NegotiatedConfig,
+    negotiation_trace: Vec<String>,
+    backend_errors: Arc<BackendErrorLog>,
+    device_id: Option<String>,
+    opened_default: bool,
+}
+
+/// 建流线程产出的**流 + 读数**：流不出后端线程，读数经 channel 送出去。
+struct OpenedStream {
+    stream: cpal::Stream,
+    info: StreamInfo,
+}
+
+/// 一条流收到的控制命令（[`HostedStream`] 是唯一发送端）。
+enum StreamCommand {
+    /// 启流 + 回执。
+    Play(std::sync::mpsc::Sender<Result<(), DeviceError>>),
+    /// 停流 + 回执。
+    Pause(std::sync::mpsc::Sender<Result<(), DeviceError>>),
+    /// 收尾：后端线程就地析构这条流。
+    Shutdown,
+}
+
+/// **一条流在调用方手里的唯一形态**：一串命令 + 一个"流活在后端线程上"的承诺。
+///
+/// 输出流、输入流、测试音三条路径共用：`cpal::Stream` 是 `!Send`，只能在建它的
+/// 线程上启停与析构；把流换成命令通道之后，句柄本身变成 `Send`，而
+/// "建流 / 启流 / 停流 / 析构都在同一间公寓"这条不变量由 [`backend`] 保证。
+struct HostedStream {
+    commands: std::sync::mpsc::Sender<StreamCommand>,
+}
+
+impl HostedStream {
+    /// 启动这条流。
+    fn play(&self) -> Result<(), DeviceError> {
+        self.request(StreamCommand::Play)
+    }
+
+    /// 暂停这条流。
+    fn pause(&self) -> Result<(), DeviceError> {
+        self.request(StreamCommand::Pause)
+    }
+
+    /// 发一条命令并等后端线程回执。
+    ///
+    /// 两条断链都要报成错误、⛔ 不能当成成功：
+    /// ① 发送端发现线程已经没了（起不来 / 已退出）；
+    /// ② 命令进了队列但回执没回来（线程在回执前崩了）。
+    fn request(
+        &self,
+        make: fn(std::sync::mpsc::Sender<Result<(), DeviceError>>) -> StreamCommand,
+    ) -> Result<(), DeviceError> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        self.commands
+            .send(make(ack_tx))
+            .map_err(|_| DeviceError::OwnerThread {
+                reason: "音频后端线程已退出（命令发不出去）".to_owned(),
+            })?;
+        ack_rx.recv().map_err(|_| DeviceError::OwnerThread {
+            reason: "音频后端线程在回执前退出".to_owned(),
+        })?
+    }
+}
+
+/// 句柄一丢 ⇒ 流必须停：真正的 `cpal::Stream` 析构发生在**后端线程**上
+/// （下一个 2 ms tick 就轮到它），调用方不必为此阻塞。这与"句柄 Drop 停流"
+/// （T-FIX-71 起的约定）一致，而 `Drop` 里 join 一条负责全部音频的长寿线程
+/// 本来就是不可能的。
+impl Drop for HostedStream {
+    fn drop(&mut self) {
+        let _ = self.commands.send(StreamCommand::Shutdown);
+    }
+}
+
+/// 在**后端线程**上完成枚举、协商与建流（T-FIX-225 返工的落点）。
+///
+/// ⚠ 只由 [`backend`] 的线程调用：那条线程的 COM 公寓被显式定成 MTA
+/// （[`apartment::Apartment::bind`]），而且 cpal 的进程级 `IMMDeviceEnumerator`
+/// 也属于这间公寓 —— 这是本函数能成功的前提。在界面线程上直接调用会重新
+/// 踩回 `RPC_E_CHANGED_MODE`（`0x80010106`，本单的起因）。
+fn open_stream_on_this_thread(
+    want: &EngineConfig,
+    mut runtime: Box<EngineRuntime>,
+    device_name: Option<&str>,
+) -> Result<OpenedStream, DeviceError> {
     let host = cpal::default_host();
     let device: Device = select_output_device(&host, device_name)?;
+    // T-FIX-225：打开这一刻就把"是哪台设备、是不是默认设备"记下来 —— 之后判
+    // "端点还对不对"只能靠这两个数与当前读数比，`device` 本身在流建好后没法再问。
+    let device_id = device.id().ok().map(|id| id.to_string());
+    let opened_default = device_name.is_none();
     let device_name = device.to_string();
     let supported: Vec<SupportedStreamConfigRange> = device.supported_output_configs()?.collect();
     let (negotiated, negotiation_trace) = negotiate_traced(&supported, want);
@@ -1449,12 +2280,16 @@ fn open_output_boxed_impl(
         )?
     };
 
-    Ok(OutputStreamHandle {
+    Ok(OpenedStream {
         stream,
-        device_name,
-        negotiated,
-        negotiation_trace,
-        backend_errors,
+        info: StreamInfo {
+            device_name,
+            negotiated,
+            negotiation_trace,
+            backend_errors,
+            device_id,
+            opened_default,
+        },
     })
 }
 
@@ -1508,7 +2343,9 @@ pub fn capture_callback(sender: &mut RecordSender, data: &[f32], channels: u16) 
 ///
 /// 与 [`OutputStreamHandle`] 同构：`stream` 一丢，回调就停 ⇒ "谁持有它"就是生命期事实。
 pub struct InputStreamHandle {
-    stream: cpal::Stream,
+    /// ⭐ **T-FIX-225 返工**：捕获流长在[音频后端线程](backend)上，句柄只持有命令通道
+    /// （`cpal::Stream` 是 `!Send`，且必须在同一间 COM 公寓里启停与析构）。
+    hosted: HostedStream,
     /// 打开时协商到的那台设备的显示名（控制面读，不在实时路径上）。
     device_name: String,
     negotiated: NegotiatedConfig,
@@ -1557,9 +2394,9 @@ impl InputStreamHandle {
     ///
     /// 设备消失 / 流失效 → [`DeviceError::Backend`]。
     pub fn play(&self) -> Result<(), DeviceError> {
-        self.backend_errors.begin_run();
-        self.stream.play()?;
-        Ok(())
+        // 阶段切换（`begin_run`）在后端线程上、紧挨着 `stream.play()` 发生，
+        // 与输出侧同一口径：句柄侧不再抢先改阶段。
+        self.hosted.play()
     }
 
     /// 暂停捕获。**先**把阶段切到关闭/停止期，再暂停。
@@ -1568,9 +2405,7 @@ impl InputStreamHandle {
     ///
     /// 后端不支持暂停 → [`DeviceError::Backend`]。
     pub fn pause(&self) -> Result<(), DeviceError> {
-        self.backend_errors.begin_stop();
-        self.stream.pause()?;
-        Ok(())
+        self.hosted.pause()
     }
 }
 
@@ -1635,12 +2470,63 @@ pub fn open_input_named(
 /// `device_name == None` = 默认输入设备（现行为）；`Some(名)` = 按名精确选。
 fn open_input_impl(
     want: &EngineConfig,
-    mut sender: RecordSender,
+    sender: RecordSender,
     device_name: Option<&str>,
 ) -> Result<InputStreamHandle, DeviceError> {
     if want.share_mode == ShareMode::RequireExclusive {
         return Err(DeviceError::ExclusiveModeUnsupported);
     }
+    let want = *want;
+    let device_name = device_name.map(str::to_owned);
+
+    let (commands_tx, commands_rx) = std::sync::mpsc::channel();
+    // ⭐ 与输出侧同一条不变量：枚举、协商、`Activate`、建流、以及之后的启停与析构
+    // 全部发生在**后端线程**上（那间公寓的 `IMMDeviceEnumerator` 才认得这些对象）。
+    let info = backend::dispatch(move || -> Result<InputStreamInfo, DeviceError> {
+        let opened = open_input_on_backend(&want, sender, device_name.as_deref())?;
+        backend::register_session(
+            opened.stream,
+            commands_rx,
+            Arc::clone(&opened.info.backend_errors),
+        );
+        Ok(opened.info)
+    })
+    .ok_or_else(|| DeviceError::OwnerThread {
+        reason: "音频后端线程不在（起不来 / 公寓绑不上 / 已退出）".to_owned(),
+    })??;
+
+    Ok(InputStreamHandle {
+        hosted: HostedStream {
+            commands: commands_tx,
+        },
+        device_name: info.device_name,
+        negotiated: info.negotiated,
+        negotiation_trace: info.negotiation_trace,
+        backend_errors: info.backend_errors,
+    })
+}
+
+/// 捕获流在**后端线程**上建好之后的读数（流本身留在那条线程上）。
+struct InputStreamInfo {
+    device_name: String,
+    negotiated: NegotiatedConfig,
+    negotiation_trace: Vec<String>,
+    backend_errors: Arc<BackendErrorLog>,
+}
+
+/// 捕获流 + 读数：流不出后端线程。
+struct OpenedInput {
+    stream: cpal::Stream,
+    info: InputStreamInfo,
+}
+
+/// [`open_input_impl`] 的**本体**：只在后端线程上执行（⚠ 在界面线程上调用会踩回
+/// `RPC_E_CHANGED_MODE`，见模块头）。
+fn open_input_on_backend(
+    want: &EngineConfig,
+    mut sender: RecordSender,
+    device_name: Option<&str>,
+) -> Result<OpenedInput, DeviceError> {
     let host = cpal::default_host();
     let device: Device = select_input_device(&host, device_name)?;
     let device_name = device.to_string();
@@ -1671,12 +2557,14 @@ fn open_input_impl(
         Some(STREAM_OPEN_TIMEOUT),
     )?;
 
-    Ok(InputStreamHandle {
+    Ok(OpenedInput {
         stream,
-        device_name,
-        negotiated,
-        negotiation_trace,
-        backend_errors,
+        info: InputStreamInfo {
+            device_name,
+            negotiated,
+            negotiation_trace,
+            backend_errors,
+        },
     })
 }
 
@@ -1760,7 +2648,8 @@ pub fn test_tone_callback(state: &mut TestToneState, data: &mut [f32], channels:
 /// 已打开的**测试音**流句柄（T-FIX-71）：持有它 = 测试音流在场；
 /// 丢弃它 = 流停（测试音播完后由持有方丢弃收尾）。
 pub struct TestToneHandle {
-    stream: cpal::Stream,
+    /// 与输出/输入句柄同一形态：流长在后端线程上，句柄只发命令。
+    hosted: HostedStream,
     device_name: String,
     sample_rate: u32,
     channels: u16,
@@ -1798,8 +2687,7 @@ impl TestToneHandle {
     ///
     /// 后端拒绝启动 → [`DeviceError::Backend`]。
     pub fn play(&self) -> Result<(), DeviceError> {
-        self.stream.play()?;
-        Ok(())
+        self.hosted.play()
     }
 }
 
@@ -1821,6 +2709,48 @@ impl TestToneHandle {
 /// - [`DeviceError::UnsupportedSampleFormat`]：默认配置不是 `f32`；
 /// - [`DeviceError::Backend`]：读配置 / 建流被后端拒绝。
 pub fn play_test_tone(device_name: Option<&str>) -> Result<TestToneHandle, DeviceError> {
+    let device_name = device_name.map(str::to_owned);
+    let (commands_tx, commands_rx) = std::sync::mpsc::channel();
+    let info = backend::dispatch(move || -> Result<TestToneInfo, DeviceError> {
+        let opened = open_test_tone_on_backend(device_name.as_deref())?;
+        backend::register_session(
+            opened.stream,
+            commands_rx,
+            Arc::clone(&opened.info.backend_errors),
+        );
+        Ok(opened.info)
+    })
+    .ok_or_else(|| DeviceError::OwnerThread {
+        reason: "音频后端线程不在（起不来 / 公寓绑不上 / 已退出）".to_owned(),
+    })??;
+
+    Ok(TestToneHandle {
+        hosted: HostedStream {
+            commands: commands_tx,
+        },
+        device_name: info.device_name,
+        sample_rate: info.sample_rate,
+        channels: info.channels,
+        backend_errors: info.backend_errors,
+    })
+}
+
+/// 测试音流在后端线程上建好之后的读数。
+struct TestToneInfo {
+    device_name: String,
+    sample_rate: u32,
+    channels: u16,
+    backend_errors: Arc<BackendErrorLog>,
+}
+
+/// 测试音流 + 读数。
+struct OpenedTestTone {
+    stream: cpal::Stream,
+    info: TestToneInfo,
+}
+
+/// [`play_test_tone`] 的本体：只在后端线程上执行。
+fn open_test_tone_on_backend(device_name: Option<&str>) -> Result<OpenedTestTone, DeviceError> {
     let host = cpal::default_host();
     let device: Device = select_output_device(&host, device_name)?;
     let device_name = device.to_string();
@@ -1850,12 +2780,14 @@ pub fn play_test_tone(device_name: Option<&str>) -> Result<TestToneHandle, Devic
         },
         Some(STREAM_OPEN_TIMEOUT),
     )?;
-    Ok(TestToneHandle {
+    Ok(OpenedTestTone {
         stream,
-        device_name,
-        sample_rate: config.sample_rate(),
-        channels,
-        backend_errors,
+        info: TestToneInfo {
+            device_name,
+            sample_rate: config.sample_rate(),
+            channels,
+            backend_errors,
+        },
     })
 }
 
@@ -2350,6 +3282,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **一次性真机实验**（`#[ignore]`，需要人工停/启 `audiosrv`）：
+    /// 分清"重启后开不出流"到底是**进程级枚举器陈旧**还是**后端线程本地的公寓状态**。
+    ///
+    /// 跑法：`cargo test -p yeban-engine --lib repro_after_service_restart -- --ignored --nocapture`，
+    /// 看到 `REPRO ready` 后停再启 `audiosrv`，然后 `touch restart-done.flag`。
+    #[test]
+    #[ignore = "真机实验：需要外部 stop/start audiosrv"]
+    fn repro_after_service_restart() {
+        // 标记文件的路径由环境变量给（默认系统临时目录）：判据不写死本机路径。
+        let flag = std::env::temp_dir().join("yeban-restart-done.flag");
+        let flag = flag.as_path();
+        std::fs::remove_file(flag).ok();
+        let _ = super::enumerate_output_devices();
+        // ⭐ 关键差别：这一次**把流一直留着**（应用重启重建时，旧流还没死）。
+        let handle = super::open_output(&EngineConfig::default(), default_runtime());
+        eprintln!(
+            "REPRO before: {:?}",
+            handle.as_ref().map(|_| ()).map_err(|e| e.to_string())
+        );
+        let handle = handle.ok();
+        eprintln!(
+            "REPRO ready: stop+start audiosrv, then touch {}",
+            flag.display()
+        );
+        while !flag.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        eprintln!(
+            "REPRO enum-after: {:?}",
+            super::enumerate_output_devices().map(|list| list.len())
+        );
+        eprintln!(
+            "REPRO reopen-with-old-stream-alive: {:?}",
+            super::open_output(&EngineConfig::default(), default_runtime())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        );
+        drop(handle);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        eprintln!(
+            "REPRO reopen-after-dropping-old: {:?}",
+            super::open_output(&EngineConfig::default(), default_runtime())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        );
+        // 关键问题：线程上下文已经中毒之后，**换一条新 MTA 线程**还能不能开流？
+        // 这决定"报废后端线程再起一条"是不是有效修法。
+        let fresh = std::thread::spawn(|| {
+            let _apartment = apartment::Apartment::bind().expect("MTA");
+            let host = cpal::default_host();
+            let Some(device) = host.default_output_device() else {
+                return "no default device".to_owned();
+            };
+            let config = match device.default_output_config() {
+                Ok(config) => config,
+                Err(error) => return format!("default_output_config: {error}"),
+            };
+            match device.build_output_stream::<f32, _, _>(config.config(), |_, _| {}, |_| {}, None)
+            {
+                Ok(_) => "ok".to_owned(),
+                Err(error) => format!("build_output_stream: {error}"),
+            }
+        });
+        eprintln!(
+            "REPRO fresh-thread-after-poison: {:?}",
+            fresh.join().unwrap()
+        );
     }
 
     #[test]
@@ -2863,6 +3864,162 @@ mod tests {
         negotiated.buffer_size = BufferSize::Default;
         assert_eq!(negotiated.buffer_label(), "后端默认");
         assert_eq!(negotiated.nominal_latency_ms(), None);
+    }
+
+    // -------------------------------------------------------------------
+    // T-FIX-225：端点健康（ISS-MWTUUMJU-8BB641）
+    //
+    // 这一组全是**纯判决** + **原子计数**，不碰声卡 ⇒ CI 上无声卡也能跑。
+    // 真实插拔（拔 USB 声卡 / 切蓝牙）**不在**这里的覆盖范围内 —— 那需要一台
+    // 有声卡的机器，见回执里的"待实机"登记。
+    // -------------------------------------------------------------------
+
+    /// 三种失效编号都能触发 `Invalidated`，且**优先于**其它读数。
+    #[test]
+    fn endpoint_loss_kinds_invalidate_the_stream() {
+        for kind in [2_u8, 3, 9] {
+            assert!(is_endpoint_loss_kind(kind), "{kind} 应当算端点失效");
+            let health =
+                classify_endpoint(Some("wasapi:a"), true, Some("wasapi:a"), true, Some(kind));
+            assert_eq!(
+                health,
+                EndpointHealth::Invalidated {
+                    kind: backend_error_kind_name(kind)
+                },
+                "{kind} 必须直接判失效（即使设备看起来还在、默认端点也没变）"
+            );
+            assert!(health.needs_rebuild());
+        }
+    }
+
+    /// `XRun` 不是端点失效：抖动一下还能继续，不许因此重建流（重建会静音一拍）。
+    #[test]
+    fn xrun_is_not_an_endpoint_loss() {
+        assert!(!is_endpoint_loss_kind(12));
+        assert_eq!(
+            classify_endpoint(Some("wasapi:a"), true, Some("wasapi:a"), true, Some(12)),
+            EndpointHealth::Ok
+        );
+    }
+
+    /// 默认端点换了一台 ⇒ `DefaultChanged`，并带上两端的标识（给日志/回执读数）。
+    #[test]
+    fn default_endpoint_change_is_detected() {
+        let health = classify_endpoint(
+            Some("wasapi:speaker"),
+            true,
+            Some("wasapi:headset"),
+            true,
+            None,
+        );
+        assert_eq!(
+            health,
+            EndpointHealth::DefaultChanged {
+                from: "wasapi:speaker".to_owned(),
+                to: "wasapi:headset".to_owned(),
+            }
+        );
+        assert!(health.needs_rebuild());
+    }
+
+    /// 默认端点没变 ⇒ Ok（这是**每次心跳都会走到**的那条，不能误报）。
+    #[test]
+    fn unchanged_default_endpoint_is_ok() {
+        assert_eq!(
+            classify_endpoint(Some("wasapi:a"), true, Some("wasapi:a"), true, None),
+            EndpointHealth::Ok
+        );
+        assert!(!EndpointHealth::Ok.needs_rebuild());
+    }
+
+    /// 读不到当前默认端点 ⇒ `Unknown`：⛔ 不猜成"变了"（会让重建风暴），
+    /// 也不猜成"没变"（那等于把真事件吞掉）。
+    #[test]
+    fn unreadable_default_endpoint_is_unknown() {
+        assert_eq!(
+            classify_endpoint(Some("wasapi:a"), true, None, true, None),
+            EndpointHealth::Unknown
+        );
+        assert!(!EndpointHealth::Unknown.needs_rebuild());
+    }
+
+    /// 点名设备消失 ⇒ `DeviceGone`；还在 ⇒ Ok（T-FIX-71 的"不静默回退"保持不变）。
+    #[test]
+    fn named_device_presence_decides() {
+        assert_eq!(
+            classify_endpoint(Some("wasapi:usb"), false, None, true, None),
+            EndpointHealth::Ok
+        );
+        assert_eq!(
+            classify_endpoint(Some("wasapi:usb"), false, None, false, None),
+            EndpointHealth::DeviceGone {
+                id: "wasapi:usb".to_owned()
+            }
+        );
+        // 打开时没拿到 id ⇒ 无从判定，宁可 Unknown。
+        assert_eq!(
+            classify_endpoint(None, false, None, false, None),
+            EndpointHealth::Unknown
+        );
+    }
+
+    /// **错误日志的失效档**：`XRun` 先到、真失效后到 —— 首条种类仍要认出失效那一条。
+    ///
+    /// 这正是单独立一档的理由：`first_kind` 会被先到的 `XRun` 占住。
+    #[test]
+    fn endpoint_losses_are_counted_independently_of_the_first_error() {
+        let log = BackendErrorLog::new();
+        log.record(&cpal::Error::new(cpal::ErrorKind::Xrun));
+        assert_eq!(log.endpoint_losses(), (0, 0), "XRun 不计入失效档");
+        assert_eq!(
+            log.counts().first.map(|info| info.kind_code()),
+            Some(12),
+            "首条错误仍是 XRun（旧口径不动）"
+        );
+        log.record(&cpal::Error::with_message(
+            cpal::ErrorKind::DeviceNotAvailable,
+            "Device disconnected",
+        ));
+        log.record(&cpal::Error::new(cpal::ErrorKind::StreamInvalidated));
+        let (count, kind) = log.endpoint_losses();
+        assert_eq!(count, 2, "两次失效都要数到");
+        assert_eq!(kind, 3, "首条**失效**的种类是 DeviceNotAvailable");
+        assert_eq!(
+            log.counts().first.map(|info| info.kind_code()),
+            Some(12),
+            "旧口径的首条错误不受影响"
+        );
+    }
+
+    /// 机器可读行里没有空白（与 `BACKEND-ERRORS` 同款约束）；含空格的设备名被压平。
+    #[test]
+    fn endpoint_machine_lines_carry_no_whitespace() {
+        let cases = [
+            EndpointHealth::Ok,
+            EndpointHealth::DefaultChanged {
+                from: "wasapi:Speakers (Realtek)".to_owned(),
+                to: "wasapi:Headset".to_owned(),
+            },
+            EndpointHealth::DeviceGone {
+                id: "wasapi:USB Audio".to_owned(),
+            },
+            EndpointHealth::Invalidated {
+                kind: "device-changed",
+            },
+            EndpointHealth::Unknown,
+        ];
+        for health in cases {
+            let line = health.machine_line();
+            assert!(
+                line.starts_with("DEVICE-ENDPOINT state="),
+                "行首固定：{line}"
+            );
+            assert!(
+                line.split(' ').all(|token| !token.is_empty()),
+                "不许出现连续/首尾空格：{line}"
+            );
+            assert!(!line.contains('\t'), "不许有制表符：{line}");
+        }
     }
 
     /// ⭐⭐ **判据（T-FIX-71，测试音选设备）**：在不存在的设备上播测试音

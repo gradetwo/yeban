@@ -1136,6 +1136,20 @@ impl EngineHost {
         self.device.take().is_some()
     }
 
+    /// 设备腿的**端点健康**（T-FIX-225 / `ISS-MWTUUMJU-8BB641`）。
+    ///
+    /// `None` = 还没有设备腿（控制驱动形态）—— 那种形态没有端点可谈，调用方
+    /// 不该据此做任何事。有设备腿 ⇒ 走
+    /// [`OutputStreamHandle::poll_endpoint`]：流自报失效 / 系统默认端点换了 /
+    /// 点名设备不在场，三者任一都会让本函数返回 `needs_rebuild() == true` 的值。
+    ///
+    /// ⚠ **控制面**读数（会枚举输出设备，有分配）⇒ 只在 UI 心跳的 1 Hz 闸门里调，
+    /// ⛔ 不进音频回调、⛔ 不进每帧路径。
+    #[must_use]
+    pub fn device_health(&self) -> Option<yeban_engine::device::EndpointHealth> {
+        self.device.as_ref().map(OutputStreamHandle::poll_endpoint)
+    }
+
     /// ⭐ ⭐ **把快照里的待摊平表 arm 成摊平表**（任务单 `#80`：`#79` 登记的
     /// "实时／GUI 播放未接线"那半边）。
     ///

@@ -6899,7 +6899,92 @@ pub struct ProductionLoop {
     /// 播放跟进（T-FIX-110）的状态机：Logic 式 Catch，播放头越出可见区就翻页，
     /// 用户手动滚开后脱开，重新起播时恢复。只影响**横向滚动偏移**。
     follow: ArrangementFollow,
+    /// 上一次**成功**开设备腿时用的配置（T-FIX-225）：端点变更后重建流要按**同一份**
+    /// 期望重开（块大小、工程采样率、共享模式都在里面）。⛔ 不存第二份选择 ——
+    /// 设备名仍只住在 `audio_output_device`。
+    last_device_config: Option<yeban_engine::device::EngineConfig>,
+    /// 端点看护（T-FIX-225）：1 Hz 闸门 + 指数退避 + 失败次数。
+    device_watch: DeviceWatch,
 }
+
+/// 端点看护状态（T-FIX-225）。全部是**控制面**数字，不进实时路径。
+#[derive(Debug, Default)]
+struct DeviceWatch {
+    /// 上一次真的去问端点健康的时刻（1 Hz 闸门的基准）。
+    last_check: Option<std::time::Instant>,
+    /// 下一次允许尝试重建的时刻（退避窗口；`None` = 随时可以）。
+    next_attempt: Option<std::time::Instant>,
+    /// **连续**失败次数（成功重建即归零）—— 退避时长与日志读数都看它。
+    failures: u32,
+    /// **连续**读到 `Unknown` 的次数（端点状态读不出来）。
+    ///
+    /// 为什么要它：拔掉/停掉音频服务之后，`default_output_device()` 直接返回 `None`
+    /// —— 判决是 `Unknown`，而单次 `Unknown` 不该触发重建（可能只是枚举抖动）。
+    /// 但**一直**读不到就意味着这条流已经无处可去：本机实测停掉 `audiosrv` 后
+    /// 健康读数从 `ok` 变 `unknown` 再不变，而 cpal 一条错误都没报 ⇒ 用户"没声、
+    /// 没提示、只能重启"——那正是本票要消灭的形态。连续
+    /// [`DEVICE_WATCH_UNKNOWN_LIMIT`] 次读不到 ⇒ 当作失效去重建。
+    unknown_streak: u32,
+    /// 上一次报给日志的状态行（只在**状态变化**时打，避免 1 Hz 刷屏）。
+    last_reported: Option<String>,
+    /// 上一次读到的引擎量子累计数（活性判据的基准）。
+    last_quanta: Option<u64>,
+    /// 连续多少次读到"量子数一动不动"。
+    ///
+    /// 为什么要这条：**流死了但不报错**是真实存在的（本机实测：停掉 `audiosrv`
+    /// 再启回来，端点 id 一位没变、cpal 一条错误都没报，判决是 `ok`，但那条 WASAPI
+    /// 流其实已经不会出声了）。设备腿在跑时回调一定按块推进量子 ⇒ "量子不动"
+    /// 是唯一不依赖后端自报的活性证据。
+    stalled: u32,
+}
+
+/// 第 `failures` 次连续失败之后的重试间隔（T-FIX-225）：1 s → 2 s → 4 s … 封顶 30 s。
+///
+/// 为什么**指数**：设备一时半会儿回不来时（用户拔了 USB 声卡去开会），线性重试会把
+/// 系统设备枚举打满；而第一次必须**立刻**重试 —— "插上耳机立刻出声"是这条功能的
+/// 全部意义，所以 `failures == 1` 时退避仍是 1 s（不是 0，避免同一跳内死循环）。
+fn device_watch_backoff(failures: u32) -> std::time::Duration {
+    // `failures` 是**已经发生**的次数 ⇒ 第一次失败是 1 s（不是 2 s）。
+    let shift = failures.saturating_sub(1).min(5);
+    DEVICE_WATCH_PERIOD
+        .saturating_mul(1_u32 << shift)
+        .min(DEVICE_WATCH_BACKOFF_MAX)
+}
+
+/// 把一段文本压成**不含空白**的日志值（T-FIX-225）。
+///
+/// 与 `yeban_engine::device` 里那份同款（那边是私有的）：`DEVICE-ENDPOINT` 行要能被
+/// `split_whitespace` 安全解析，而设备名里全是空格与括号（`"扬声器 (Realtek(R) Audio)"`）。
+fn device_log_token(text: &str) -> String {
+    if text.is_empty() {
+        return "none".to_owned();
+    }
+    // 只压平空白，保留非 ASCII：设备名与错误消息多半是中文，全压成下划线
+    // 等于把日志里最有用的那一段删掉（本机实测过：`没有可用的默认输出设备`
+    // 变成了一串 `_`）。
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        out.push(if ch.is_whitespace() { '_' } else { ch });
+    }
+    out
+}
+
+/// 端点看护的节拍与退避（T-FIX-225）。
+///
+/// 1 s 是"用户插上耳机到听见声音"的可接受上限；退避上限 30 s 是"设备一直不在场时
+/// 不要把 CPU 和系统设备枚举打满"的下限。两者都是控制面常数，与音频节拍无关。
+const DEVICE_WATCH_PERIOD: std::time::Duration = std::time::Duration::from_secs(1);
+const DEVICE_WATCH_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+/// 连续多少次读到 `Unknown` 才当失效（1 Hz ⇒ 约 3 s）。
+///
+/// 3 是"抖动"与"真没了"的分界：设备枚举偶尔失败一次很常见（尤其是刚切完默认端点
+/// 的那一两拍），而端点真的消失之后读数**不会**再回到 `ok`。
+const DEVICE_WATCH_UNKNOWN_LIMIT: u32 = 3;
+/// 连续多少次读到"量子数没变"就当流已死（1 Hz ⇒ 约 2 s）。
+///
+/// 2 的理由：设备腿在 48 kHz / 256 帧下每秒约 187 个量子，2 s 一滴不进只有一种解释
+/// —— 回调已经不在跑了。留一拍余量是为了躲开"刚开流、第一份镜像还没发布"的那一瞬。
+const DEVICE_WATCH_STALL_LIMIT: u32 = 2;
 
 impl ProductionLoop {
     /// **生产方式**：真的建一代引擎，并把 `reload` 交出的电平**消费端**采纳进来。
@@ -6986,6 +7071,8 @@ impl ProductionLoop {
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
             audio_output_device: None,
             follow: ArrangementFollow::new(),
+            last_device_config: None,
+            device_watch: DeviceWatch::default(),
         })
     }
 
@@ -7001,6 +7088,8 @@ impl ProductionLoop {
             automation_cursor: crate::automation::AUTOMATION_CURSOR_TICK,
             audio_output_device: None,
             follow: ArrangementFollow::new(),
+            last_device_config: None,
+            device_watch: DeviceWatch::default(),
         }
     }
 
@@ -7028,6 +7117,11 @@ impl ProductionLoop {
             .borrow_mut()
             .open_device_on(config, self.audio_output_device.as_deref())?;
         self.meters.adopt(collector);
+        // T-FIX-225：记下这份期望（端点看护重建时按它重开），并把退避清零 ——
+        // 无论这次开设备是谁触发的（启动 / 面板改选 / 看护重建），成功即健康。
+        self.last_device_config = Some(config);
+        self.device_watch.failures = 0;
+        self.device_watch.next_attempt = None;
         Ok(opening)
     }
 
@@ -7041,6 +7135,158 @@ impl ProductionLoop {
     /// 按它开）；写回设置文件是调用方（面板接线）的事，⛔ 本类不碰磁盘。
     pub fn set_audio_output_device(&mut self, name: Option<String>) {
         self.audio_output_device = name;
+    }
+
+    /// **端点看护**（T-FIX-225 / `ISS-MWTUUMJU-8BB641`）：每次心跳调一次，
+    /// 系统默认端点变了、点名设备不在了、或流自己报了失效 ⇒ 按**同一份期望**重建
+    /// 输出流；重建失败则按指数退避重试。
+    ///
+    /// ## 为什么这件事必须在这里做
+    ///
+    /// 重建不是"再开一条流"那么简单：新流要有**自己的**运行时（旧运行时已经 move 进
+    /// 旧回调），还要把走带位置接过去、把电平消费端交接给 UI。这三件事的唯一实现就是
+    /// [`Self::open_device`]（它调 `EngineHost::open_device_on`，后者 1–5 步就是
+    /// "造新端点 → 带位置 → 开流 → 起播 → 装机"）。本函数只是**决定什么时候再走一遍**，
+    /// ⛔ 不复制那条链路。
+    ///
+    /// ## 节流与退避
+    ///
+    /// - **1 Hz**：`poll_endpoint` 会枚举输出设备（有分配），不能每帧问；
+    /// - **失败退避** 1 s → 2 s → 4 s … 封顶 30 s：设备一时半会儿回不来时，
+    ///   不要把 CPU 和系统设备枚举打满；成功一次就归零；
+    /// - 重建成功/失败都在**状态变化时**打一行 `DEVICE-ENDPOINT ...`（控制面日志，
+    ///   ⛔ 不在音频回调里、⛔ 不逐跳刷屏）。
+    ///
+    /// ## ⚠ 已知阻塞（本机实测，2026-11-24，T-FIX-225 回执）
+    ///
+    /// **检测这一半是好的，重建这一半在 Windows 上会被 COM 公寓拦住**：本机
+    /// （Clouddesk VM / DPI 144 / cpal 0.18.2）用「停掉 `audiosrv`」制造真实流失效，
+    /// 看护依次报出 `state=unknown` → `state=stalled` → `action=reopen ok=0`，前几次是
+    /// `no_default_output_device_available`（预期，服务不在），服务启回来之后变成：
+    ///
+    /// ```text
+    /// error=音频设备打开失败:_audio_backend_error:_Failed_to_get_audio_client:
+    ///   无法在设置线程模式后对其加以更改。_(os_error_-2147417850)
+    /// ```
+    ///
+    /// `-2147417850` = `0x80010106` = `RPC_E_CHANGED_MODE`：`IMMDevice::Activate` 要求
+    /// 调用线程的 COM 公寓与当前的不一致。cpal 的 `host/com.rs` 用 **STA**
+    /// （`COINIT_APARTMENTTHREADED`）初始化并**容忍** `RPC_E_CHANGED_MODE`，所以这条
+    /// 错误不是"初始化失败"，而是"激活音频客户端时公寓不对"。
+    ///
+    /// 关键证据：同一会话里**既有的**面板输入测试（T-FIX-71 的代码，不是本票的）
+    /// 也报同一条错误 ⇒ 这不是本函数的调用时机问题，而是"在事件循环线程上重开
+    /// WASAPI 流"这件事本身的平台级障碍。**因此本票不声称"端点变更后自动恢复出声"**：
+    /// 需要先解决公寓/线程模型（或改用 cpal 之外的路），见回执的 blocked 说明。
+    ///
+    /// ## 它不改什么
+    ///
+    /// - 用户**点名**选了设备时，系统默认换到别处**不**触发重建（那正是 T-FIX-71 的承诺：
+    ///   选了谁就用谁）；
+    /// - 工程状态（走带位置、参数自动化、监听开关）由 `open_device_on` 的交接步骤带走，
+    ///   本函数不碰；
+    /// - 没有设备腿（控制驱动形态）时什么都不做 —— 那种形态没有端点可谈。
+    pub fn watch_device(&mut self, now: std::time::Instant) {
+        if self
+            .device_watch
+            .last_check
+            .is_some_and(|last| now.duration_since(last) < DEVICE_WATCH_PERIOD)
+        {
+            return;
+        }
+        self.device_watch.last_check = Some(now);
+        // 没开过设备腿（或从没成功过）⇒ 没有"同一份期望"可复用。
+        let Some(config) = self.last_device_config else {
+            return;
+        };
+        let health = self.engine.borrow().device_health();
+        let Some(health) = health else {
+            return;
+        };
+        // 活性：设备腿在跑就一定在推量子（与是否播放无关，停播也是满速空跑）。
+        let quanta = self
+            .engine
+            .borrow()
+            .engine_stats()
+            .map(|stats| stats.quanta);
+        match (quanta, self.device_watch.last_quanta) {
+            (Some(now_q), Some(previous)) if now_q == previous => {
+                self.device_watch.stalled = self.device_watch.stalled.saturating_add(1);
+            }
+            (Some(_), _) => self.device_watch.stalled = 0,
+            // 读不到统计（控制驱动形态不该走到这里）⇒ 不拿它当证据。
+            (None, _) => {}
+        }
+        self.device_watch.last_quanta = quanta;
+        let stalled = self.device_watch.stalled >= DEVICE_WATCH_STALL_LIMIT;
+
+        // 只在**状态变化**时打日志：1 Hz × 不变的状态会把终端刷满。
+        // "端点看起来没问题、量子却不动"要单独一行 —— 否则日志会出现
+        // `state=ok` 紧跟 `action=reopen` 的自相矛盾。
+        // ⚠ 这一行**不带**逐跳变化的数字（比如已经停了几拍）：它就是去重键，
+        // 带上一个每秒都在变的数 ⇒ 每秒都是一条"新状态"，日志立刻被刷满
+        // （本机实测踩过：`ticks=12,13,14…` 一秒一行）。
+        let line = if stalled && !health.needs_rebuild() {
+            "DEVICE-ENDPOINT state=stalled reason=quanta-not-advancing".to_owned()
+        } else {
+            health.machine_line()
+        };
+        if self.device_watch.last_reported.as_deref() != Some(line.as_str()) {
+            eprintln!("{line}");
+            self.device_watch.last_reported = Some(line);
+        }
+        if !health.needs_rebuild() && !stalled {
+            if matches!(health, yeban_engine::device::EndpointHealth::Unknown) {
+                self.device_watch.unknown_streak =
+                    self.device_watch.unknown_streak.saturating_add(1);
+                if self.device_watch.unknown_streak < DEVICE_WATCH_UNKNOWN_LIMIT {
+                    // 抖动窗口内：不动流（重建会静音一拍），也不清失败计数。
+                    return;
+                }
+                // 一直读不到 ⇒ 按失效处理（见 `DeviceWatch::unknown_streak`）。
+            } else {
+                self.device_watch.unknown_streak = 0;
+                self.device_watch.failures = 0;
+                self.device_watch.next_attempt = None;
+                return;
+            }
+        }
+        if self.device_watch.next_attempt.is_some_and(|at| now < at) {
+            return;
+        }
+        match self.open_device(config) {
+            Ok(opening) => {
+                eprintln!(
+                    "DEVICE-ENDPOINT action=reopen ok=1 device={} attempts={}",
+                    device_log_token(&opening.device_name),
+                    self.device_watch.failures + 1,
+                );
+                self.device_watch.failures = 0;
+                self.device_watch.next_attempt = None;
+                self.device_watch.unknown_streak = 0;
+                self.device_watch.stalled = 0;
+                self.device_watch.last_quanta = None;
+                // 重建之后端点已经换了一台 ⇒ 下一次判决按新设备算，日志也重新开一档。
+                self.device_watch.last_reported = None;
+            }
+            Err(error) => {
+                self.device_watch.failures = self.device_watch.failures.saturating_add(1);
+                let backoff = device_watch_backoff(self.device_watch.failures);
+                eprintln!(
+                    "DEVICE-ENDPOINT action=reopen ok=0 failures={} retry_in_ms={} error={}",
+                    self.device_watch.failures,
+                    backoff.as_millis(),
+                    device_log_token(&error.to_string()),
+                );
+                self.device_watch.next_attempt = Some(now + backoff);
+            }
+        }
+    }
+
+    /// 端点看护的**只读**读数 `(连续失败次数, 下一次允许重试的时刻)`（判据用）。
+    #[must_use]
+    pub fn device_watch_state(&self) -> (u32, Option<std::time::Instant>) {
+        (self.device_watch.failures, self.device_watch.next_attempt)
     }
 
     /// 引擎在这个进程里活没活着（`reload` 成功过）。
@@ -21571,6 +21817,43 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+
+    // -------------------------------------------------------------------
+    // T-FIX-225：端点看护的两个纯函数（真实插拔见回执的"待实机"登记）
+    // -------------------------------------------------------------------
+
+    /// 退避是 1 s → 2 s → 4 s → 8 s → 16 s → 30 s（封顶），且永不返回 0。
+    ///
+    /// 首条必须**立刻**可重试（1 s）—— "插上耳机就出声"是这条功能的全部意义；
+    /// 封顶 30 s —— 设备真不在场时别把系统设备枚举打满。
+    #[test]
+    fn device_watch_backoff_doubles_and_caps() {
+        use std::time::Duration;
+        let secs = |failures| super::device_watch_backoff(failures).as_secs();
+        assert_eq!(secs(1), 1);
+        assert_eq!(secs(2), 2);
+        assert_eq!(secs(3), 4);
+        assert_eq!(secs(4), 8);
+        assert_eq!(secs(5), 16);
+        assert_eq!(secs(6), 30, "封顶 30 s");
+        assert_eq!(secs(u32::MAX), 30, "极端值也不许溢出");
+        // 0 次失败（理论上不该被调用）也给出一个正数间隔，⛔ 不返回 0。
+        assert!(super::device_watch_backoff(0) > Duration::ZERO);
+    }
+
+    /// 日志值里没有空白：设备名 `"扬声器 (2- Clouddesk Audio Driver)"` 会被压平。
+    #[test]
+    fn device_log_token_flattens_device_names() {
+        let token = super::device_log_token("扬声器 (2- Clouddesk Audio Driver)");
+        assert!(!token.is_empty());
+        assert!(
+            token.split_whitespace().count() == 1,
+            "整段必须是一个 token（无空白）：{token}"
+        );
+        assert!(token.contains("扬声器"), "中文必须保留：{token}");
+        assert!(token.contains("Clouddesk"), "ASCII 必须保留：{token}");
+        assert_eq!(super::device_log_token(""), "none");
+    }
 
     /// T-FIX-154：保存回执必须点名缺失样本（件数 + 首条原因），且不影响"保存成功"。
     #[test]

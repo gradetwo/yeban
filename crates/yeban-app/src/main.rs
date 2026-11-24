@@ -696,6 +696,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 host::pump_waveform_analysis(&ui_tick, &port);
                 let mark = EditMark::from_display(&port.display());
                 let mut production = production_tick.borrow_mut();
+                // ⭐ T-FIX-225（`ISS-MWTUUMJU-8BB641`）：**端点看护**。用户插拔耳机、
+                // 拔掉 USB 声卡或切到蓝牙之后，系统默认端点变了而这条流还挂在旧端点上
+                // （轻则继续往失效端点写 = 静音无报错，重则流被后端作废 = 无声且无提示）。
+                // 这里每跳问一次，真正干活被 1 Hz 闸门挡在里面（`poll_endpoint` 会枚举
+                // 输出设备，有分配 ⇒ 不能每帧问）；判定需要重建时用**同一份期望**重开
+                // 设备腿，走带位置/监听开关由 `open_device_on` 的交接步骤带走。
+                production.watch_device(std::time::Instant::now());
                 // "没改就不克隆工程"是这一跳的成本契约 ⇒ 先问标记，再决定要不要 `try_project`。
                 let project = if production.should_publish(mark) {
                     port.try_project()
