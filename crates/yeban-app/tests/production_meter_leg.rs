@@ -739,3 +739,35 @@ fn maybe_write_frame(label: &str, png: &[u8]) {
     std::fs::write(&path, png).expect("写帧");
     report_line(&format!("[meter-leg] 帧已写 {path}"));
 }
+
+/// 临时探针（T-FIX-356 收尾调试）：判据 ④ 两帧差异落在哪 —— 跑完即删。
+#[test]
+fn probe_meter_leg_diff_localization_tmp() {
+    use yeban_ui_test_port::png::encode_rgb8;
+    let project = demo_project();
+    let window = Window::new(&project);
+    let first = window.port.window().capture().expect("Tier-1 截图");
+    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    for _ in 0..8 {
+        production.engine_handle().borrow_mut().drive_audio(1);
+        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
+    }
+    let after_image = window.port.window().capture().expect("Tier-1 截图");
+    let _ = encode_rgb8(&after_image);
+    let (w, h) = (first.width(), first.height());
+    let (lhs, rhs) = (first.pixels(), after_image.pixels());
+    // 每 90px 高的 y 带 + 每 120px 宽的 x 带的差异计数。
+    let mut ybands = [0usize; 12];
+    let mut xbands = [0usize; 16];
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y as usize * first.stride()) + (x as usize * 3);
+            if lhs[o..o + 3] != rhs[o..o + 3] {
+                ybands[(y / 90) as usize] += 1;
+                xbands[(x / 120) as usize] += 1;
+            }
+        }
+    }
+    eprintln!("PROBE ybands(90px): {ybands:?}");
+    eprintln!("PROBE xbands(120px): {xbands:?}");
+}
