@@ -6284,7 +6284,7 @@ fn ara_session_not_found(domain: &Domain, session_id: &str) -> Fault {
 ///
 /// 实参：`pluginPath`（必填）、`pluginId`（可选，不给取首个 ARA 类）、
 /// `wavPath`（必填）、`tempoBpm`（可选，缺省 120，须 > 0）、
-/// `loopIterations`（可选，缺省 1，须 ≥ 1）、`muted`（可选，缺省 false）。
+/// `loopIterations`（可选，缺省 1，须 ≥ 1 且 ≤ `MAX_LOOP_ITERATIONS`）、`muted`（可选，缺省 false）。
 fn plan_ara_bind(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // T-FIX-25 / #24.5：会话数上限在 plan 阶段就查（早于解码 wav / 打开插件），
     // 超限响亮拒绝，不浪费资源、不静默替换旧会话。
@@ -6337,6 +6337,17 @@ fn plan_ara_bind(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             "`loopIterations` 超出范围",
         )
     })?;
+    // ⭐ T-FIX-351：上限与宿主共用**同一个常量**（`MAX_LOOP_ITERATIONS`）。
+    // 在 plan 阶段就拒，避免 `apply` 里先展开十亿个 region 描述把进程打死。
+    if loop_iterations > yeban_plugin_host::ara::MAX_LOOP_ITERATIONS {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`loopIterations` 须 ≤ {}（收到 {loop_iterations}）",
+                yeban_plugin_host::ara::MAX_LOOP_ITERATIONS
+            ),
+        ));
+    }
     let muted = arg_bool(call, "muted", false);
     let pcm = ara::decode_wav_to_pcm(Path::new(wav_path))?;
     // P0-5：插件路径校验不在 plan 做——plan 不打开插件（本函数头注的

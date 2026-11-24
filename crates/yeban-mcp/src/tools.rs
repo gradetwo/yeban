@@ -1981,7 +1981,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "loopIterations",
                 "integer",
                 false,
-                "循环迭代数；缺省 1；须 ≥ 1",
+                "循环迭代数；缺省 1；须 ≥ 1 且 ≤ 4096（上限与宿主 MAX_LOOP_ITERATIONS 同源）",
             ),
             param(
                 "muted",

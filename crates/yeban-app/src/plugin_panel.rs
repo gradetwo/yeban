@@ -486,7 +486,16 @@ pub fn parse_loop_iterations(text: &str) -> Result<usize, String> {
     if value == 0 {
         return Err("`loopIterations` 须 ≥ 1".to_owned());
     }
-    usize::try_from(value).map_err(|_| "`loopIterations` 超出范围".to_owned())
+    let value = usize::try_from(value).map_err(|_| "`loopIterations` 超出范围".to_owned())?;
+    // ⭐ T-FIX-351：与 MCP / 宿主共用同一个上限常量（`yeban_plugin_host::ara::MAX_LOOP_ITERATIONS`）。
+    // 超限在这里就报错（状态栏可见），⛔ 不要放进后台再让宿主 OOM。
+    if value > yeban_plugin_host::ara::MAX_LOOP_ITERATIONS {
+        return Err(format!(
+            "`loopIterations` 须 ≤ {}（收到 {value}）",
+            yeban_plugin_host::ara::MAX_LOOP_ITERATIONS
+        ));
+    }
+    Ok(value)
 }
 
 /// 渲染一个已绑定会话到 f32 立体声 WAV（原子落盘），返回摘要。
@@ -704,6 +713,15 @@ mod tests {
             "`loopIterations` 须 ≥ 1"
         );
         assert_eq!(parse_tempo("0").unwrap_err(), "`tempoBpm` 须为有限正数");
+        // T-FIX-351：GUI 侧超大值与 MCP 同一条上限（超限报错而不是交给宿主 OOM）。
+        assert!(
+            parse_loop_iterations("4097").is_err(),
+            "超过 MAX_LOOP_ITERATIONS 必须被 GUI 拒掉"
+        );
+        assert_eq!(
+            parse_loop_iterations("4096").expect("上限值必须放行"),
+            yeban_plugin_host::ara::MAX_LOOP_ITERATIONS
+        );
         assert_eq!(
             parse_loop_iterations("0").unwrap_err(),
             "`loopIterations` 须 ≥ 1"

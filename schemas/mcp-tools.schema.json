@@ -1964,7 +1964,9 @@
             },
             "loopIterations": {
               "type": "integer",
-              "description": "循环迭代数；缺省 1；须 ≥ 1"
+              "description": "循环迭代数；缺省 1；须 ≥ 1 且 ≤ 4096",
+              "minimum": 1,
+              "maximum": 4096
             },
             "muted": {
               "type": "boolean",

@@ -1372,23 +1372,65 @@ pub struct AraRegionSpec {
     pub duration_in_modification_time: f64,
 }
 
-/// 循环／静音展开：muted ⇒ 0 个 region；否则每次迭代一个 region，
+/// `loopIterations` 的**唯一上限**（T-FIX-351）。
 ///
-/// 播放起点按迭代累进、修改范围恒为整段片段（ghost 语义：同 modification
-/// 的多次摆放，改一处全改；独立编辑须先 clone，见设计 §2.2／§2.3）。
+/// 基线（三者取最小后取整）：
+/// - **内存**：一个 `AraRegionSpec` 是 32 B，4_096 个约 128 KiB；原实现按用户输入
+///   直接 `collect`，`1e9` 次就要先分配约 32 GiB ⇒ 进程 OOM；
+/// - **region 数**：每个 region 要在插件里建一次 `createPlaybackRegion`，4_096 次
+///   已是秒级，再大就是"界面看着死了"；
+/// - **产品**：DAW 里的 ARA loop 极少超过三位数，4_096 已远超实际用法。
+///
+/// 三个入口（MCP `plan_ara_bind`、GUI `parse_loop_iterations`、宿主创建闸门）
+/// **必须**引用同一个常量，⛔ 不许各写一份数字。
+pub const MAX_LOOP_ITERATIONS: usize = 4_096;
+
+/// 第 `iteration` 次迭代的 region 描述（纯函数）。
+///
+/// 播放起点按迭代累进、修改范围恒为整段片段（ghost 语义：同 modification 的
+/// 多次摆放，改一处全改；独立编辑须先 clone，见设计 §2.2／§2.3）。
+#[must_use]
+fn region_spec_for(iteration: usize, clip_duration_seconds: f64) -> AraRegionSpec {
+    AraRegionSpec {
+        start_in_playback_time: iteration as f64 * clip_duration_seconds,
+        duration_in_playback_time: clip_duration_seconds,
+        start_in_modification_time: 0.0,
+        duration_in_modification_time: clip_duration_seconds,
+    }
+}
+
+/// 循环／静音展开：muted ⇒ 0 个 region；否则每次迭代一个 region。
+///
+/// ⚠ 生产路径（[`AraSession::create_regions`]）**不**走这里：它逐条流式创建，
+/// 用 [`effective_region_count`] 在分配前就拒掉超限输入。本函数只为判据与预览
+/// 保留一次性展开形态，调用方须自己保证 `loop_iterations <= MAX_LOOP_ITERATIONS`。
 #[must_use]
 pub fn expand_placement(placement: AraPlacement, clip_duration_seconds: f64) -> Vec<AraRegionSpec> {
     if placement.muted || placement.loop_iterations == 0 {
         return Vec::new();
     }
     (0..placement.loop_iterations)
-        .map(|iteration| AraRegionSpec {
-            start_in_playback_time: iteration as f64 * clip_duration_seconds,
-            duration_in_playback_time: clip_duration_seconds,
-            start_in_modification_time: 0.0,
-            duration_in_modification_time: clip_duration_seconds,
-        })
+        .map(|iteration| region_spec_for(iteration, clip_duration_seconds))
         .collect()
+}
+
+/// 本次摆放要建几个 region；**任何分配之前**先判上限（T-FIX-351）。
+///
+/// # Errors
+///
+/// `loop_iterations > MAX_LOOP_ITERATIONS` ⇒ [`HostError::LoopIterationsTooLarge`]，
+/// 在分配 Vec／建 region 之前返回，⛔ 不允许先展开再检查。
+pub fn effective_region_count(placement: AraPlacement) -> Result<usize, HostError> {
+    if placement.muted {
+        return Ok(0);
+    }
+    if placement.loop_iterations > MAX_LOOP_ITERATIONS {
+        return Err(HostError::LoopIterationsTooLarge {
+            requested: placement.loop_iterations,
+            max: MAX_LOOP_ITERATIONS,
+        });
+    }
+    Ok(placement.loop_iterations)
 }
 
 /// 内容查询返回的音符（`ARAContentNote` 的安全复制；插件侧指针不外泄）。
@@ -1847,10 +1889,12 @@ impl AraSession {
     /// 按当前摆放建全部 playback region（调用方须在编辑事务内调用，
     /// 或由 [`Self::set_placement`] 的事务包装调用）。
     fn create_regions(&mut self) -> Result<(), HostError> {
-        let specs = expand_placement(self.placement, self.clip_duration_seconds);
+        // ⭐ T-FIX-351：上限闸门在**任何分配 / 任何 region 创建之前**。
+        let iterations = effective_region_count(self.placement)?;
         let iface = self.iface()?;
         let controller = self.controller_ref;
-        for (index, spec) in specs.iter().enumerate() {
+        for index in 0..iterations {
+            let spec = region_spec_for(index, self.clip_duration_seconds);
             let region_name =
                 CString::new(format!("{} region {index}", self.clip_name)).unwrap_or_default();
             let props = AraPlaybackRegionProperties {
@@ -2525,6 +2569,57 @@ impl Drop for AraSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loop_iteration_cap_is_enforced_before_any_allocation() {
+        // T-FIX-351：超过上限必须在**分配之前**拒绝（这里是同一闸门 `effective_region_count`）。
+        let over = AraPlacement {
+            loop_iterations: MAX_LOOP_ITERATIONS + 1,
+            muted: false,
+        };
+        match effective_region_count(over) {
+            Err(HostError::LoopIterationsTooLarge { requested, max }) => {
+                assert_eq!(requested, MAX_LOOP_ITERATIONS + 1);
+                assert_eq!(max, MAX_LOOP_ITERATIONS);
+            }
+            Err(other) => panic!("上限拒绝的错误变体不对: {other}"),
+            Ok(_) => panic!("超过上限的摆放不得通过闸门"),
+        }
+
+        // 上限本身可以正常通过；静音仍然是 0 个 region。
+        let at_max = AraPlacement {
+            loop_iterations: MAX_LOOP_ITERATIONS,
+            muted: false,
+        };
+        assert_eq!(
+            effective_region_count(at_max).expect("上限值必须放行"),
+            MAX_LOOP_ITERATIONS
+        );
+        let muted = AraPlacement {
+            loop_iterations: MAX_LOOP_ITERATIONS + 1,
+            muted: true,
+        };
+        assert_eq!(
+            effective_region_count(muted).expect("静音不建 region，不应被上限拦"),
+            0
+        );
+    }
+
+    #[test]
+    fn region_specs_match_iteration_index() {
+        // 流式创建用的纯函数必须与旧的整批展开逐字段一致（否则只是"快"不再"对"）。
+        let specs = expand_placement(
+            AraPlacement {
+                loop_iterations: 3,
+                muted: false,
+            },
+            1.5,
+        );
+        for (index, spec) in specs.iter().enumerate() {
+            let streamed = region_spec_for(index, 1.5);
+            assert_eq!(*spec, streamed, "第 {index} 个 region 与流式版本不一致");
+        }
+    }
 
     #[test]
     fn placement_expansion_loop_and_mute() {

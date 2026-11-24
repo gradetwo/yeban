@@ -44,6 +44,13 @@ pub enum HostError {
     InvalidPluginPath(String),
     /// 状态容器损坏（magic／版本／长度对不上）。
     StateCorrupt(String),
+    /// 循环次数超过上限（T-FIX-351：`loopIterations` 在任何分配前先判）。
+    LoopIterationsTooLarge {
+        /// 用户请求的循环次数。
+        requested: usize,
+        /// 允许的上限（[`crate::ara::MAX_LOOP_ITERATIONS`]）。
+        max: usize,
+    },
     /// 其他宿主侧失败（含系统 I/O 文本）。
     Other(String),
 }
@@ -74,6 +81,9 @@ impl fmt::Display for HostError {
                 "激活态直设参数被拒：参数变化须走每块参数变化通道（停用后可直设）"
             ),
             Self::InvalidPluginPath(detail) => write!(f, "插件路径非法: {detail}"),
+            Self::LoopIterationsTooLarge { requested, max } => {
+                write!(f, "循环次数 {requested} 超过上限 {max}")
+            }
             Self::StateCorrupt(detail) => write!(f, "插件状态容器损坏: {detail}"),
             Self::Other(detail) => write!(f, "{detail}"),
         }
