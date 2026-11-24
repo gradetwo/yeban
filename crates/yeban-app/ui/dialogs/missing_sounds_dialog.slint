@@ -31,6 +31,20 @@ component CandidateButton inherits Rectangle {
 
     callback swap(int, string, string);
     callback open-pack(int, string, string);
+    // 行取焦的进出事件（T-FIX-333）：`FocusScope` 在组件内部，`root` 指不到
+    // 对话框 ⇒ 由宿主（对话框）在实例化处把槽位写进 `focused-row-slot`。
+    callback cell-focus-gained(int);
+    callback cell-focus-lost(int);
+
+    // 三条激活路径（键盘 Return/Space、无障碍默认动作、鼠标点击）共用同一
+    // 个函数 —— 是一条触发路径，不是三条（T-FIX-333）。
+    function activate() {
+        if (root.installed) {
+            root.swap(root.row-index, root.path, root.name);
+        } else {
+            root.open-pack(root.row-index, root.pack-id, root.name);
+        }
+    }
 
     // 候选按钮的宽度跟着名字走。此前写死 150px，长音源名（`Yeban PolySynth Lead` 之类）
     // 被截成 `下载 Yeban PolySy…`，三个候选挤在一起时一眼分不出是哪一个 —— 而这正是
@@ -49,11 +63,25 @@ component CandidateButton inherits Rectangle {
     property <string> id-suffix: "-" + row-index + "-" + slot;
     accessible-id: "missing-sounds-candidate" + self.id-suffix;
     accessible-label: installed ? @tr("换成 {}", root.name) : @tr("下载 {}", root.name);
-    accessible-action-default => {
-        if (root.installed) {
-            root.swap(root.row-index, root.path, root.name);
-        } else {
-            root.open-pack(root.row-index, root.pack-id, root.name);
+    accessible-action-default => { root.activate(); }
+
+    // 行取焦（T-FIX-333，T-FIX-217 同款）：`Tab` 沿树序走进本钮，读数写进
+    // 对话框的 `focused-row-slot`；Return/Space 与鼠标点击走同一条 `activate()`。
+    candidate-focus := FocusScope {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: false;
+        focus-gained(reason) => { root.cell-focus-gained(100 + root.row-index * 10 + root.slot); }
+        focus-lost(reason) => { root.cell-focus-lost(100 + root.row-index * 10 + root.slot); }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                root.activate();
+                accept
+            } else {
+                reject
+            }
         }
     }
 
@@ -74,13 +102,7 @@ component CandidateButton inherits Rectangle {
         mouse-cursor: MouseCursor.pointer;
         width: parent.width;
         height: parent.height;
-        clicked => {
-            if (root.installed) {
-                root.swap(root.row-index, root.path, root.name);
-            } else {
-                root.open-pack(root.row-index, root.pack-id, root.name);
-            }
-        }
+        clicked => { root.activate(); }
     }
 }
 
@@ -134,8 +156,12 @@ export component MissingSoundsDialog inherits Rectangle {
         height: parent.height;
     }
 
-    // 键盘（D-UI-19 / T-FIX-182）：Esc 关闭；`Tab` / `Shift+Tab` 在两格
-    //（✕ / 「先不管」）之间闭环 —— 与另存为模板同款陷阱。
+    // 键盘（D-UI-19 / T-FIX-182 / T-FIX-217 / T-FIX-333）：Esc 关闭；
+    // `Tab` / `Shift+Tab` 在槽位表里闭环 —— 但陷阱只在两端包办：正向到末格
+    // （「先不管」，1）再进 ⇒ 回首格（✕，0）；反向到首格再退 ⇒ 去末格。
+    // 其余一律 `reject`，交给原生 Tab 遍历（行按钮的 FocusScope 按树序排布，
+    // 与槽位表同序 —— 动态行没法从循环外按下标取焦，只能让原生遍历带过去，
+    // 见焦点一节）。`Ctrl/Alt/Meta+Tab` 一律放行（不劫持系统手势）。
     trap := FocusScope {
         x: 0;
         y: 0;
@@ -148,11 +174,19 @@ export component MissingSoundsDialog inherits Rectangle {
                 if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
                     reject
                 } else if (event.text == "\u{19}" || event.modifiers.shift) {
-                    root.focus-previous-control();
-                    accept
+                    if (root.focused-control == 0 || root.focused-control == -1) {
+                        root.focus-control(1);
+                        accept
+                    } else {
+                        reject
+                    }
                 } else {
-                    root.focus-next-control();
-                    accept
+                    if (root.focused-control == 1 || root.focused-control == -1) {
+                        root.focus-first-control();
+                        accept
+                    } else {
+                        reject
+                    }
                 }
             } else if (event.text == "\u{1b}") {
                 root.close();
@@ -301,8 +335,13 @@ export component MissingSoundsDialog inherits Rectangle {
                                 pack-id: root.s1-id[i];
                                 path: root.s1-path[i];
                                 installed: root.s1-installed[i];
-                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                // 换上 ⇒ 这一行随即从列表消失（宿主删行）：焦点若还在本行
+                                // 任一格上，先挪到 ✕（静态锚点），不留死焦点（T-FIX-217 同款，
+                                // 这里按**行**守 —— 鼠标点同行另一格时焦点也在本行）。
+                                swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
                             if root.s2-name[i] != "" : CandidateButton {
@@ -312,8 +351,10 @@ export component MissingSoundsDialog inherits Rectangle {
                                 pack-id: root.s2-id[i];
                                 path: root.s2-path[i];
                                 installed: root.s2-installed[i];
-                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
                             if root.s3-name[i] != "" : CandidateButton {
@@ -323,8 +364,10 @@ export component MissingSoundsDialog inherits Rectangle {
                                 pack-id: root.s3-id[i];
                                 path: root.s3-path[i];
                                 installed: root.s3-installed[i];
-                                swap(r, p, n) => { root.swap-suggested(r, p, n); }
+                                swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
                             // 就想要原音源 ⇒ 去下载（在清单里才出现）
@@ -340,6 +383,26 @@ export component MissingSoundsDialog inherits Rectangle {
                                 accessible-id: "missing-sounds-download-original" + self.row-suffix;
                                 accessible-label: @tr("下载原音源");
                                 accessible-action-default => { root.download-original(i); }
+
+                                // 行取焦（T-FIX-333，T-FIX-217 同款）：槽位 `100+i*10+4`，
+                                // 排在三枚候选之后；下载不删行 ⇒ 动作前不用挪焦点。
+                                download-original-focus := FocusScope {
+                                    x: 0;
+                                    y: 0;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    focus-on-click: false;
+                                    focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 4; }
+                                    focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 4) { root.focused-row-slot = -1; } }
+                                    key-pressed(event) => {
+                                        if (event.text == Key.Return || event.text == Key.Space) {
+                                            root.download-original(i);
+                                            accept
+                                        } else {
+                                            reject
+                                        }
+                                    }
+                                }
 
                                 UiText {
                                     x: 4px;
@@ -427,12 +490,24 @@ export component MissingSoundsDialog inherits Rectangle {
         }
     }
 
-    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182）-------------------------------
-    /// 两格里哪一格正持有键盘：`0` ✕ 关闭 / `1` 「先不管」/ `-1` 不在模态内。
-    /// 行内候选按钮今天没有 `FocusScope` ⇒ 不在轮转表里（⛔ 不是漏网：给动态行
-    /// 加取焦是另一票，见回执）；`Tab` 只在这两格之间闭环。
+    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182 / T-FIX-217 / T-FIX-333）---------
+    /// 行槽位：最近一次取焦的行内按钮写进来的槽位。`focus-gained` 写，
+    /// `focus-lost` 只在值仍是自己时清掉 —— 先失后得 / 先得后失两种顺序都
+    /// 安全；`-1` = 焦点不在任何行按钮上。
+    in-out property <int> focused-row-slot: -1;
+    /// 槽位表（与树序 = Tab 序一致；行按钮的槽位见各行 `focus-gained`）：
+    /// `0` ✕ 关闭 / `1` 「先不管」/ `100+i*10+{1,2,3}` 行 i 的候选（槽 1–3）/
+    /// `100+i*10+4` 行 i 的「下载原音源」/ `-1` 不在模态内。
+    /// 静态锚点（0 / 1）由 `focus-control` 直达；行槽位只能由原生 Tab 遍历
+    /// 到达 —— Slint 无法从 `for` 循环外按下标取焦重复元素（与 T-FIX-217
+    /// 的音源管理同款约束；`focus-control` 调行槽位会被静默忽略，
+    /// ⛔ 不是漏网）。本文件没有 `focus-next-control` / `focus-previous-control`：
+    /// 它们唯一的调用方是陷阱，陷阱现在只在两端包办、中间交给原生遍历。
+    /// （T-FIX-333 之前：行内按钮没有 `FocusScope`，`Tab` 只在 0/1 两格闭环；
+    /// 那句旧注释（"给动态行加取焦是另一票"）随本单作废。）
     out property <int> focused-control:
-        missing-sounds-close-focus.has-focus ? 0
+        root.focused-row-slot >= 0 ? root.focused-row-slot
+        : missing-sounds-close-focus.has-focus ? 0
         : missing-sounds-later-focus.has-focus ? 1
         : -1;
 
@@ -441,30 +516,14 @@ export component MissingSoundsDialog inherits Rectangle {
         missing-sounds-close-focus.focus();
     }
 
-    /// 两格的**唯一**一张「序号 → 控件」表。
+    /// 静态锚点的**唯一**一张表：`0` ✕ / `1` 「先不管」。行槽位（100+）
+    /// 不在这里 —— 它们只能由原生 Tab 遍历到达，调这里会被静默忽略
+    /// （⛔ 不是漏网：见上面 `focused-control` 的注释）。
     public function focus-control(index: int) {
         if (index == 0) {
             missing-sounds-close-focus.focus();
         } else if (index == 1) {
             missing-sounds-later-focus.focus();
-        }
-    }
-
-    /// `Tab`：✕ → 「先不管」→ 回 ✕。
-    public function focus-next-control() {
-        if (root.focused-control == 0) {
-            root.focus-control(1);
-        } else {
-            root.focus-first-control();
-        }
-    }
-
-    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
-    public function focus-previous-control() {
-        if (root.focused-control == 1) {
-            root.focus-control(0);
-        } else {
-            root.focus-control(1);
         }
     }
 }
