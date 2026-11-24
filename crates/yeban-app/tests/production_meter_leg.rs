@@ -834,4 +834,14 @@ fn probe_meter_gate_tmp() {
         "PROBE forced full levels: header-col changed vs after: {}",
         count_changed_in_x(&after_image, &forced, 240, 480)
     );
+    // 地面真相：本窗口里轨道头 / 标尺带 / 编曲画布的真实包围盒。
+    use yeban_ui_test_port::port::UiTestPort;
+    let mut window = window;
+    window.port.refresh_tree(None).expect("重抓控件树");
+    for id in ["track-0-header", "arrangement-ruler", "workspace-arrangement-canvas"] {
+        match window.port.tree().find_by_id(id) {
+            Some(n) => eprintln!("PROBE node {id}: bounds={:?}", n.bounds),
+            None => eprintln!("PROBE node {id}: MISSING"),
+        }
+    }
 }
