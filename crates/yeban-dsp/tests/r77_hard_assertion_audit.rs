@@ -1902,8 +1902,25 @@ fn evidence_row_count(crate_root: &Path, rel: &str) -> u64 {
         .count() as u64
 }
 
+/// 渲染文本的**行数口径**：与 [`evidence_row_count`] 同一谓词（非空、非 `#`
+/// 开头的行数），只不过数的是内存里的渲染结果而不是盘上的提交文件。
+fn rendered_row_count(rendered: &str) -> u64 {
+    rendered
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .count() as u64
+}
+
 /// ⭐ **复算**：按 [`REGISTER_SPECS`] 的口径当场算出全部**可复算**行的现值。
 /// 生成与判据共用它 —— ⛔ 不许两面各写一套（R217②）。
+///
+/// ⭐ **T-FIX-350：一遍收敛**：三个由生成器重写的证据表（硬断言表／整数分类表／
+/// 匹配站点表）的行数，⛔ 不许从盘上的提交文件读 —— libtest 并行跑各判据，
+/// 写模式下同趟的表判据在重写这些文件，复算若读盘就会读到重写前的旧值，
+/// 总表落盘后仍是旧数，验模式只到 30/31，必须再跑第二遍（T-FIX-336 实测）。
+/// 改为直接数各表**渲染函数**的内存结果：复算只依赖源码，与落盘顺序和
+/// 盘上旧表无关，一遍即收敛。器件注入表没有生成器（手工维护 15 行），
+/// 仍从盘上读数，不存在同趟重写，无此 hazard。
 fn recount_register(crate_root: &Path) -> BTreeMap<&'static str, u64> {
     let files = source_files(&crate_root.join(SRC_ROOT));
     let mut raw_assert = 0u64;
@@ -1929,15 +1946,15 @@ fn recount_register(crate_root: &Path) -> BTreeMap<&'static str, u64> {
     out.insert("impl_default_for", impl_default);
     out.insert(
         "rows_hard_assertion_table",
-        evidence_row_count(crate_root, TABLE_PATH),
+        rendered_row_count(&render_table(&audit_tree(crate_root))),
     );
     out.insert(
         "rows_integer_count_categories",
-        evidence_row_count(crate_root, "tests/data/integer_count_categories.txt"),
+        rendered_row_count(&render_integer_bound_table(crate_root)),
     );
     out.insert(
         "rows_src_match_sites",
-        evidence_row_count(crate_root, "tests/data/src_match_sites.txt"),
+        rendered_row_count(&render_match_sites(crate_root)),
     );
     out.insert(
         "rows_device_injection_evidence",
@@ -2071,6 +2088,18 @@ fn the_count_register_matches_the_recount() {
             );
         }
     }
+}
+
+/// ⭐ **T-FIX-350 回归**：[`rendered_row_count`] 与 [`evidence_row_count`]
+/// 必须是同一谓词（非空、非 `#` 开头）—— 复算的行数定义就是"证据表行数"，
+/// 谓词一漂移，总表与表判据就会用两套口径数同一张表（R119 的错）。
+#[test]
+fn rendered_row_count_shares_the_evidence_row_predicate() {
+    let rendered = "# 合计 2 条：a 1 ／ b 1\n# 列：x|y\n\nsrc/a.rs|t|value_bound|assert_eq!(x, 1)\nsrc/b.rs|t|collection_size|assert_eq!(v.len(), 2)\n   \n";
+    assert_eq!(rendered_row_count(rendered), 2, "只数数据行");
+    // 近失对照：表头 `# 合计 99 条` 自带数字也不得计入；空行与纯空白行不得计入。
+    assert_eq!(rendered_row_count("# 合计 99 条\n"), 0);
+    assert_eq!(rendered_row_count("\n   \n\n"), 0);
 }
 
 /// 提交在仓库里的臂覆盖读数表。
