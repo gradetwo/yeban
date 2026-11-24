@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 367 条：collection_size 74 ／ value_bound 276 ／ element_value_bound 6 ／ condition_counter 11
+# 合计 369 条：collection_size 74 ／ value_bound 278 ／ element_value_bound 6 ／ condition_counter 11
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -237,6 +237,8 @@ src/polysynth.rs|an_off_second_oscillator_is_bit_identical|value_bound|assert_eq
 src/polysynth.rs|default_params_match_the_moved_engine_tone|value_bound|assert_eq!(params.osc1(), OscSettings::new(0, 1.0, 0.0)
 src/polysynth.rs|hard_stealing_jumps_more_than_soft_stealing|value_bound|assert!(             hard > soft,             "硬窃取的样本跳变必须更大: 硬 {hard:.6} / 软 {soft:.6}"
 src/polysynth.rs|note_off_pairs_by_the_base_frequency_while_the_note_is_bent|value_bound|assert_eq!(synth.note_off(880.0), 0, "⛔ 880.0（弯后）不是配对键"
+src/polysynth.rs|note_off_picks_the_earliest_start_sample_not_the_lowest_slot|value_bound|assert_eq!(synth.active_voices(), 2, "前置：两个同频活跃声部"
+src/polysynth.rs|note_off_releases_one_of_two_overlapping_same_frequency_voices|value_bound|assert_eq!(synth.active_voices(), 2, "前置：两个同频活跃声部"
 src/polysynth.rs|note_off_releases_only_the_matching_requested_frequency|value_bound|assert_eq!(synth.active_voices(), 1, "前置：一个活跃声部"
 src/polysynth.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(                 mismatch.is_none(),                 "块长 {split} 帧的切分在第 {} 个样本上与整块
 src/polysynth.rs|stealing_is_deterministic|value_bound|assert_eq!(synth.voice_steals(), 1

@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 464 条：float_bits 97 ／ integer_count 367；其中 hard 93 ／ platform 0
+# 合计 466 条：float_bits 97 ／ integer_count 369；其中 hard 93 ／ platform 0
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -319,6 +319,8 @@ float_bits | hard | 2 | - | src/polysynth.rs | bypass_is_not_a_transparent_filte
 integer_count | no_callee | 0 | - | src/polysynth.rs | default_params_match_the_moved_engine_tone
 integer_count | no_callee | 0 | - | src/polysynth.rs | hard_stealing_jumps_more_than_soft_stealing
 integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_pairs_by_the_base_frequency_while_the_note_is_bent
+integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_picks_the_earliest_start_sample_not_the_lowest_slot
+integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_releases_one_of_two_overlapping_same_frequency_voices
 integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_releases_only_the_matching_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | render_is_bit_identical_under_any_block_split
 integer_count | no_callee | 0 | - | src/polysynth.rs | stealing_is_deterministic

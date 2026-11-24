@@ -3,14 +3,14 @@
 # 列：name|value|class|basis
 # 合计 11 条：raw 3 ／ masked 1 ／ structural 5 ／ log_lines 1 ／ runtime_passed 1
 # ⭐ 本文件由 R77_WRITE=1 与其它证据表同趟生成（判据 the_count_register_matches_the_recount），⛔ 不许手改数值；log_lines／runtime_passed 两行是上一轮门禁日志读数，生成时原样保留。
-raw_assert_in_src|2508|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描；生成器按同一口径逐文件计子串出现次数）
-masked_assert_in_src|2487|masked|掩码器：本文件 mask_source 按同一口径计（排除 // 与 /* */ 注释及 "…" 字符串后计 assert；生成与复算共用同一实现，取代仓外脚本）
+raw_assert_in_src|2520|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描；生成器按同一口径逐文件计子串出现次数）
+masked_assert_in_src|2499|masked|掩码器：本文件 mask_source 按同一口径计（排除 // 与 /* */ 注释及 "…" 字符串后计 assert；生成与复算共用同一实现，取代仓外脚本）
 impl_default_for|68|structural|grep -r '^impl Default for' crates/yeban-dsp/src 递归全部 .rs 的行数（`Limiter<W>` 写成 `impl<const W: usize> Default` 故不被该谓词计到）
-rows_hard_assertion_table|464|structural|证据文件行数（去掉 # 表头）
-rows_integer_count_categories|367|structural|证据文件行数（去掉 # 表头）
+rows_hard_assertion_table|466|structural|证据文件行数（去掉 # 表头）
+rows_integer_count_categories|369|structural|证据文件行数（去掉 # 表头）
 rows_src_match_sites|134|structural|证据文件行数（去掉 # 表头）
 rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
-digits_in_comment_fragments|22469|raw|对注释片段（// 与 /* */）内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
-digits_in_string_fragments|2869|raw|对字符串字面量片段内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
+digits_in_comment_fragments|22487|raw|对注释片段（// 与 /* */）内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
+digits_in_string_fragments|2876|raw|对字符串字面量片段内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
 test_result_lines_last_run|28|log_lines|上一轮 test 门日志里 'test result:' 的行数（合入树全量 28 个二进制）
 runtime_passed_last_run|696|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和（合入树全量 696）
