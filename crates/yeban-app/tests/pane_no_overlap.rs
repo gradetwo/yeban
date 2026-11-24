@@ -2340,6 +2340,36 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
     ));
     assert_scene_cards(&tree, scenes, &label);
 
+    // ---- ⭐ T-FIX-260：场景启动回执必须占满矩阵下方整行，右沿落在根右沿 - 8px。
+    //   修前 `x: 8px + 128px * visible-track-count` ＋ 固定 320px ⇒ 三档分别只剩
+    //   约 112 / 144 / 112px 可见，长原因被 elide 截成十来个字符。
+    let launch_status = bounds(&tree, "session-scene-launch-status");
+    assert_eq!(
+        launch_status.0,
+        pane.0 + 8,
+        "[T-FIX-260 Session {width}x{height}] 回执左沿必须贴根左沿 + 8px"
+    );
+    assert_eq!(
+        launch_status.2,
+        pane.2 - 16,
+        "[T-FIX-260 Session {width}x{height}] 回执宽必须是根宽 - 16px"
+    );
+    assert!(
+        launch_status.0 + launch_status.2 as i32 <= pane.0 + pane.2 as i32 - 8,
+        "[T-FIX-260 Session {width}x{height}] 回执右沿 {} 必须 ≤ 根右沿 {} - 8px",
+        launch_status.0 + launch_status.2 as i32,
+        pane.0 + pane.2 as i32
+    );
+    report_line(&format!(
+        "[T-FIX-260 Session {width}x{height}] 场景回执 (x={} y={} w={} h={}) 右沿 {} ≤ 根右沿 {} - 8px",
+        launch_status.0,
+        launch_status.1,
+        launch_status.2,
+        launch_status.3,
+        launch_status.0 + launch_status.2 as i32,
+        pane.0 + pane.2 as i32
+    ));
+
     // ---- ⭐ T-FIX-226 验收②：底带三件必须在运行时树里。
     //   修前 1024×700 下它们落在相对 y ≥ 312（画布高 272）⇒ 被根 `clip` 整块裁掉，
     //   最小窗口里没有可见的"返回编曲"入口、两条响亮登记也看不见。

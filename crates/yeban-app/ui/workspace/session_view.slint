@@ -287,10 +287,15 @@ export component SessionView inherits Rectangle {
     // -------------------------------------------------- 场景启动的**如实回执**（⭐ `#283`）
     // 没有引擎 / 事件环满 ⇒ 宿主写一句逐字原因（默认空串，⛔ 不占视觉空间）。
     // 位置：返回键（28px）之下再让 34px，⛔ 不压返回键、也不压截断报数那一行。
+    // ⭐ `T-FIX-260`：原来 `x` 跟着场景列左沿、`width` 固定 320px ⇒ 回执框从
+    //   104px 宽的场景列向右伸出 216px，三档都被根 `clip` 裁到约 112px，
+    //   `overflow: elide` 再把长原因截成十来个字符。现在改成矩阵左下方整行宽：
+    //   `x: 8px`、`width: root.width - 16px`，右沿恒为根右沿 - 8px；`elide` 只留作
+    //   极端窄画布的兜底，⛔ 不靠它藏掉“没有引擎 / 事件环满”的如实原因。
     Rectangle {
-        x: 8px + 128px * root.visible-track-count;
+        x: 8px;
         y: 32px + 68px * root.visible-scene-count + 62px;
-        width: 320px;
+        width: max(0px, root.width - 16px);
         height: 16px;
         accessible-role: text;
         accessible-id: "session-scene-launch-status";
