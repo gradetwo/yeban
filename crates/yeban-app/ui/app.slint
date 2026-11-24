@@ -1353,6 +1353,24 @@ export component MainWindow inherits Window {
     // Global Key Guard FocusScope
     key-handler := FocusScope {
         key-pressed(event) => {
+            // T-FIX-217：音源管理对话框开着时，Tab / Backtab **放行**（reject），
+            // 不走下面的 `trigger-shortcut` 与末尾的裸 `accept`。
+            //
+            // 为什么必须放行：对话框的焦点陷阱（`sound_library_dialog.slint`）只在
+            // 两端包办轮转（✕→搜索框、搜索框+Shift+Tab→✕），中间格一律 `reject`、
+            // 指望窗口级的原生 Tab 遍历（`focus_next_item()`）走到行按钮。
+            // 但对话框是本 `key-handler` 的子树 —— 事件从陷阱冒泡到这里后，
+            // 末尾的裸 `accept` 会把它吃掉，原生遍历永远跑不到，焦点就钉死在搜索框。
+            // （T-FIX-131/182 的对话框没撞上这一点，是因为它们的陷阱自己用
+            // `focus-control` 把 Tab 全程包办了；`for` 循环里的行按钮没法从外部按
+            // 下标取焦，所以这里只能放行、让原生遍历来走。）
+            // 只在对话框开着且无修饰键时放行：画布上的 Tab（视图切换）与其它
+            // 对话框的行为一律不变；Esc 也不在这里处理（陷阱先接住并 `accept`）。
+            if (root.sound-library-open
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                && (event.text == "\u{9}" || event.text == "\u{19}")) {
+                return reject;
+            }
             root.trigger-shortcut(event.text, event);
             // ⭐ 审计 #20：组字期间**界面层不再追加判断**。
             //

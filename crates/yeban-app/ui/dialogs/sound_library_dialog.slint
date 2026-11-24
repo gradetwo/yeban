@@ -99,8 +99,16 @@ export component SoundLibraryDialog inherits Rectangle {
         height: parent.height;
     }
 
-    // 键盘（D-UI-19 / T-FIX-182）：Esc 关闭（模态持有 Esc）；`Tab` /
-    // `Shift+Tab` 在两格（搜索框 / ✕）之间闭环 —— 与另存为模板同款陷阱。
+    // 键盘（D-UI-19 / T-FIX-182 / T-FIX-217）：Esc 关闭（模态持有 Esc）；
+    // `Tab` / `Shift+Tab` 在槽位表里闭环 —— 但陷阱只在两端包办：正向到末格
+    // （✕，700）再进 ⇒ 回首格（搜索框，0）；反向到首格再退 ⇒ 去末格。其余
+    // 一律 `reject`，交给原生 Tab 遍历（行按钮的 FocusScope 按树序排布，
+    // 与槽位表同序 —— 动态行没法从循环外按下标取焦，只能让原生遍历带过去，
+    // 见焦点一节）。`Ctrl/Alt/Meta+Tab` 一律放行（不劫持系统手势）。
+    // 读数 `-1`（焦点在对话框内却不在任何已登记控件上 —— 正常流程不会出现，
+    // 是兜底）也由陷阱接住：正向 ⇒ 回搜索框，反向 ⇒ 去 ✕。注意：已销毁的行
+    // 按钮上的 Tab 到不了陷阱（焦点死了，冒泡链就断了），所以真正的防死焦点
+    // 靠各按钮动作里先挪焦点，见焦点一节。
     sound-library-trap := FocusScope {
         x: 0;
         y: 0;
@@ -113,11 +121,19 @@ export component SoundLibraryDialog inherits Rectangle {
                 if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
                     reject
                 } else if (event.text == "\u{19}" || event.modifiers.shift) {
-                    root.focus-previous-control();
-                    accept
+                    if (root.focused-control == 0 || root.focused-control == -1) {
+                        root.focus-control(700);
+                        accept
+                    } else {
+                        reject
+                    }
                 } else {
-                    root.focus-next-control();
-                    accept
+                    if (root.focused-control == 700 || root.focused-control == -1) {
+                        root.focus-first-control();
+                        accept
+                    } else {
+                        reject
+                    }
                 }
             } else if (event.text == "\u{1b}") {
                 root.close();
@@ -170,54 +186,6 @@ export component SoundLibraryDialog inherits Rectangle {
                 overflow: elide;
             }
 
-            // 关闭
-            Rectangle {
-                x: parent.width - 36px;
-                y: Tokens.space-4;
-                width: 24px;
-                height: 24px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                accessible-role: button;
-                accessible-id: "sound-library-close-button";
-                accessible-label: @tr("关闭音源管理");
-                accessible-action-default => { root.close(); }
-
-                sound-library-close-focus := FocusScope {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    focus-on-click: false;
-                    key-pressed(event) => {
-                        if (event.text == Key.Return || event.text == Key.Space) {
-                            root.close();
-                            accept
-                        } else {
-                            reject
-                        }
-                    }
-                }
-
-                UiText {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    text: "×";
-                    color: Tokens.ink-1;
-                    font-size: Tokens.font-size-xl;
-                    horizontal-alignment: center;
-                }
-
-                TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    width: parent.width;
-                    height: parent.height;
-                    clicked => { root.close(); }
-                }
-            }
-
             // -------------------------------------------------------- 已安装
             UiText {
                 x: Tokens.space-6;
@@ -241,6 +209,50 @@ export component SoundLibraryDialog inherits Rectangle {
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: right;
                 overflow: elide;
+            }
+
+            // 搜索框（按名字 / 分类 / 许可做子串匹配；空串 = 全部显示）
+            // 树位在已安装列表之前：Tab 序首格必须是搜索框（槽位 0），视觉
+            // 位置不变（y: 300px 仍在「可下载」区，与「全部下载」并排）。
+            Rectangle {
+                x: Tokens.space-6 + 84px;
+                y: 300px;
+                width: Math.max(140px, root.list-w - 84px - 320px);
+                height: 28px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line;
+
+                sound-library-search-input := ImeAwareTextInput {
+                    x: 10px;
+                    y: 0;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text <=> root.search-text;
+                    single-line: true;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    accessible-role: text-input;
+                    accessible-id: "sound-library-search-input";
+                    accessible-label: @tr("搜索音源（名字 / 分类 / 许可）");
+                    accessible-value: root.search-text;
+                    accessible-read-only: false;
+                    edited => { root.filter-changed(self.text); }
+                }
+
+                // 占位提示（只在空串时出现，不挡输入）
+                if root.search-text == "" : UiText {
+                    x: 10px;
+                    y: 0;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: @tr("搜索音源…");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                }
             }
 
             installed-flick := Flickable {
@@ -312,13 +324,35 @@ export component SoundLibraryDialog inherits Rectangle {
                         height: 28px;
                         background: Tokens.bg-void;
                         border-radius: Tokens.radius-sm;
-                        border-width: 1px;
-                        border-color: Tokens.gold-deep;
+                        border-width: row-delete-focus.has-focus ? 2px : 1px;
+                        border-color: row-delete-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                         accessible-role: button;
                         property <string> row-suffix: "-" + i;
                                 accessible-id: "sound-library-delete-button" + self.row-suffix;
                         accessible-label: @tr("删除音源库");
-                        accessible-action-default => { root.confirm-delete-id = root.installed-ids[i]; }
+                        accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 0) { root.focus-first-control(); } root.confirm-delete-id = root.installed-ids[i]; }
+
+                        row-delete-focus := FocusScope {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            focus-on-click: false;
+                            focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 0; }
+                            focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 0) { root.focused-row-slot = -1; } }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    // 本钮随武装马上销毁：先把焦点挪到搜索框，再武装。
+                                    // （同行新出现的确认钮没法直接点名：Slint 不允许跨
+                                    // `if` 分支访问 id；焦点留在将死元素上会死掉。）
+                                    root.focus-first-control();
+                                    root.confirm-delete-id = root.installed-ids[i];
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                        }
 
                         UiText {
                             x: 0;
@@ -335,7 +369,7 @@ export component SoundLibraryDialog inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             width: parent.width;
                             height: parent.height;
-                            clicked => { root.confirm-delete-id = root.installed-ids[i]; }
+                            clicked => { if (root.focused-row-slot == 100 + i * 10 + 0) { root.focus-first-control(); } root.confirm-delete-id = root.installed-ids[i]; }
                         }
                     }
 
@@ -354,12 +388,33 @@ export component SoundLibraryDialog inherits Rectangle {
                             height: 28px;
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
-                            border-width: 1px;
-                            border-color: Tokens.record-red;
+                            border-width: row-delete-confirm-focus.has-focus ? 2px : 1px;
+                            border-color: row-delete-confirm-focus.has-focus ? Tokens.gold : Tokens.record-red;
                             accessible-role: button;
                             accessible-id: "sound-library-delete-confirm-button";
                             accessible-label: @tr("确认删除");
-                            accessible-action-default => { root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
+                            accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 1) { root.focus-first-control(); } root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
+
+                            row-delete-confirm-focus := FocusScope {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                focus-on-click: false;
+                                focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 1; }
+                                focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 1) { root.focused-row-slot = -1; } }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == Key.Space) {
+                                        // 本钮随确认马上销毁：先把焦点挪到搜索框，再删。
+                                        root.focus-first-control();
+                                        root.delete-library(root.installed-ids[i]);
+                                        root.confirm-delete-id = "";
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
 
                             UiText {
                                 x: 0;
@@ -376,7 +431,7 @@ export component SoundLibraryDialog inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 width: parent.width;
                                 height: parent.height;
-                                clicked => { root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
+                                clicked => { if (root.focused-row-slot == 100 + i * 10 + 1) { root.focus-first-control(); } root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
                             }
                         }
 
@@ -387,12 +442,32 @@ export component SoundLibraryDialog inherits Rectangle {
                             height: 28px;
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
-                            border-width: 1px;
-                            border-color: Tokens.gold-deep;
+                            border-width: row-delete-cancel-focus.has-focus ? 2px : 1px;
+                            border-color: row-delete-cancel-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                             accessible-role: button;
                             accessible-id: "sound-library-delete-cancel-button";
                             accessible-label: @tr("取消");
-                            accessible-action-default => { root.confirm-delete-id = ""; }
+                            accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 2) { root.focus-first-control(); } root.confirm-delete-id = ""; }
+
+                            row-delete-cancel-focus := FocusScope {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                focus-on-click: false;
+                                focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 2; }
+                                focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 2) { root.focused-row-slot = -1; } }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == Key.Space) {
+                                        // 本钮随取消马上销毁：先把焦点挪到搜索框，再取消。
+                                        root.focus-first-control();
+                                        root.confirm-delete-id = "";
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
 
                             UiText {
                                 x: 0;
@@ -409,7 +484,7 @@ export component SoundLibraryDialog inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 width: parent.width;
                                 height: parent.height;
-                                clicked => { root.confirm-delete-id = ""; }
+                                clicked => { if (root.focused-row-slot == 100 + i * 10 + 2) { root.focus-first-control(); } root.confirm-delete-id = ""; }
                             }
                         }
                     }
@@ -422,12 +497,32 @@ export component SoundLibraryDialog inherits Rectangle {
                         height: 28px;
                         background: Tokens.bg-void;
                         border-radius: Tokens.radius-sm;
-                        border-width: 1px;
-                        border-color: Tokens.gold-deep;
+                        border-width: row-doctor-focus.has-focus ? 2px : 1px;
+                        border-color: row-doctor-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                         accessible-role: button;
                         accessible-id: "sound-library-doctor-button";
                         accessible-label: @tr("SFZ 体检");
-                        accessible-action-default => { root.doctor-confirm-id = root.installed-ids[i]; }
+                        accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 3) { root.focus-first-control(); } root.doctor-confirm-id = root.installed-ids[i]; }
+
+                        row-doctor-focus := FocusScope {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            focus-on-click: false;
+                            focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 3; }
+                            focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 3) { root.focused-row-slot = -1; } }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    // 本钮随武装马上销毁：先把焦点挪到搜索框，再武装。
+                                    root.focus-first-control();
+                                    root.doctor-confirm-id = root.installed-ids[i];
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                        }
 
                         UiText {
                             x: 0;
@@ -444,7 +539,7 @@ export component SoundLibraryDialog inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             width: parent.width;
                             height: parent.height;
-                            clicked => { root.doctor-confirm-id = root.installed-ids[i]; }
+                            clicked => { if (root.focused-row-slot == 100 + i * 10 + 3) { root.focus-first-control(); } root.doctor-confirm-id = root.installed-ids[i]; }
                         }
                     }
 
@@ -474,12 +569,33 @@ export component SoundLibraryDialog inherits Rectangle {
                             height: 28px;
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
-                            border-width: 1px;
-                            border-color: Tokens.gold-deep;
+                            border-width: row-doctor-confirm-focus.has-focus ? 2px : 1px;
+                            border-color: row-doctor-confirm-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                             accessible-role: button;
                             accessible-id: "sound-library-doctor-confirm-button";
                             accessible-label: @tr("开始检查");
-                            accessible-action-default => { root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+                            accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 4) { root.focus-first-control(); } root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+
+                            row-doctor-confirm-focus := FocusScope {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                focus-on-click: false;
+                                focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 4; }
+                                focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 4) { root.focused-row-slot = -1; } }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == Key.Space) {
+                                        // 本钮随开始检查马上销毁：先把焦点挪到搜索框。
+                                        root.focus-first-control();
+                                        root.doctor-check(root.installed-ids[i]);
+                                        root.doctor-confirm-id = "";
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
 
                             UiText {
                                 x: 0;
@@ -496,7 +612,7 @@ export component SoundLibraryDialog inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 width: parent.width;
                                 height: parent.height;
-                                clicked => { root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+                                clicked => { if (root.focused-row-slot == 100 + i * 10 + 4) { root.focus-first-control(); } root.doctor-check(root.installed-ids[i]); root.doctor-confirm-id = ""; }
                             }
                         }
 
@@ -507,12 +623,33 @@ export component SoundLibraryDialog inherits Rectangle {
                             height: 28px;
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
-                            border-width: 1px;
-                            border-color: Tokens.gold-deep;
+                            border-width: row-doctor-decline-focus.has-focus ? 2px : 1px;
+                            border-color: row-doctor-decline-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                             accessible-role: button;
                             accessible-id: "sound-library-doctor-decline-button";
                             accessible-label: @tr("不用了");
-                            accessible-action-default => { root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+                            accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 5) { root.focus-first-control(); } root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+
+                            row-doctor-decline-focus := FocusScope {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                focus-on-click: false;
+                                focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 5; }
+                                focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 5) { root.focused-row-slot = -1; } }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == Key.Space) {
+                                        // 本钮随表态马上销毁：先把焦点挪到搜索框。
+                                        root.focus-first-control();
+                                        root.doctor-decline(root.installed-ids[i]);
+                                        root.doctor-confirm-id = "";
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
 
                             UiText {
                                 x: 0;
@@ -529,7 +666,7 @@ export component SoundLibraryDialog inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 width: parent.width;
                                 height: parent.height;
-                                clicked => { root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
+                                clicked => { if (root.focused-row-slot == 100 + i * 10 + 5) { root.focus-first-control(); } root.doctor-decline(root.installed-ids[i]); root.doctor-confirm-id = ""; }
                             }
                         }
                     }
@@ -556,48 +693,6 @@ export component SoundLibraryDialog inherits Rectangle {
                 font-size: Tokens.font-size-md;
             }
 
-            // 搜索框（按名字 / 分类 / 许可做子串匹配；空串 = 全部显示）
-            Rectangle {
-                x: Tokens.space-6 + 84px;
-                y: 300px;
-                width: Math.max(140px, root.list-w - 84px - 320px);
-                height: 28px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                border-width: 1px;
-                border-color: Tokens.line;
-
-                sound-library-search-input := ImeAwareTextInput {
-                    x: 10px;
-                    y: 0;
-                    width: parent.width - 20px;
-                    height: parent.height;
-                    text <=> root.search-text;
-                    single-line: true;
-                    color: Tokens.ink-1;
-                    font-size: Tokens.font-size-xs;
-                    vertical-alignment: center;
-                    accessible-role: text-input;
-                    accessible-id: "sound-library-search-input";
-                    accessible-label: @tr("搜索音源（名字 / 分类 / 许可）");
-                    accessible-value: root.search-text;
-                    accessible-read-only: false;
-                    edited => { root.filter-changed(self.text); }
-                }
-
-                // 占位提示（只在空串时出现，不挡输入）
-                if root.search-text == "" : UiText {
-                    x: 10px;
-                    y: 0;
-                    width: parent.width - 20px;
-                    height: parent.height;
-                    text: @tr("搜索音源…");
-                    color: Tokens.ink-2;
-                    font-size: Tokens.font-size-xs;
-                    vertical-alignment: center;
-                }
-            }
-
             // 一键下载全部（清单里还没装的，按顺序逐个下）
             if root.catalog-state == 1 : Rectangle {
                 x: Tokens.space-6 + root.list-w - 300px;
@@ -606,12 +701,30 @@ export component SoundLibraryDialog inherits Rectangle {
                 height: 28px;
                 background: Tokens.bg-raised;
                 border-radius: Tokens.radius-sm;
-                border-width: 1px;
+                border-width: download-all-focus.has-focus ? 2px : 1px;
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "sound-library-download-all-button";
                 accessible-label: @tr("下载全部内置音源");
                 accessible-action-default => { root.download-all(); }
+
+                download-all-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    focus-gained(reason) => { root.focused-row-slot = 300; }
+                    focus-lost(reason) => { if (root.focused-row-slot == 300) { root.focused-row-slot = -1; } }
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.download-all();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
 
                 UiText {
                     x: 0;
@@ -641,12 +754,30 @@ export component SoundLibraryDialog inherits Rectangle {
                 height: 28px;
                 background: Tokens.bg-raised;
                 border-radius: Tokens.radius-sm;
-                border-width: 1px;
+                border-width: catalog-retry-focus.has-focus ? 2px : 1px;
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "sound-library-retry-button";
                 accessible-label: @tr("重试");
                 accessible-action-default => { root.refresh-catalog(); }
+
+                catalog-retry-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    focus-gained(reason) => { root.focused-row-slot = 301; }
+                    focus-lost(reason) => { if (root.focused-row-slot == 301) { root.focused-row-slot = -1; } }
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.refresh-catalog();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
 
                 UiText {
                     x: 0;
@@ -771,13 +902,31 @@ export component SoundLibraryDialog inherits Rectangle {
                         height: 28px;
                         background: Tokens.bg-void;
                         border-radius: Tokens.radius-sm;
-                        border-width: 1px;
-                        border-color: Tokens.gold-deep;
+                        border-width: row-use-focus.has-focus ? 2px : 1px;
+                        border-color: row-use-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
                         accessible-role: button;
                         property <string> row-suffix: "-" + i;
                         accessible-id: "sound-library-use-button" + self.row-suffix;
                         accessible-label: @tr("用这件音源到当前轨");
                         accessible-action-default => { root.use-pack(root.pack-ids[i]); }
+
+                        row-use-focus := FocusScope {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            focus-on-click: false;
+                            focus-gained(reason) => { root.focused-row-slot = 400 + i * 10 + 0; }
+                            focus-lost(reason) => { if (root.focused-row-slot == 400 + i * 10 + 0) { root.focused-row-slot = -1; } }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    root.use-pack(root.pack-ids[i]);
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                        }
 
                         UiText {
                             x: 0;
@@ -846,13 +995,31 @@ export component SoundLibraryDialog inherits Rectangle {
                         height: 28px;
                         background: Tokens.bg-raised;
                         border-radius: Tokens.radius-sm;
-                        border-width: 1px;
+                        border-width: row-download-focus.has-focus ? 2px : 1px;
                         border-color: Tokens.gold;
                         accessible-role: button;
                         property <string> row-suffix: "-" + i;
                                 accessible-id: "sound-library-download-button" + self.row-suffix;
                         accessible-label: @tr("下载音源包");
                         accessible-action-default => { root.download-pack(root.pack-ids[i]); }
+
+                        row-download-focus := FocusScope {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            focus-on-click: false;
+                            focus-gained(reason) => { root.focused-row-slot = 400 + i * 10 + 1; }
+                            focus-lost(reason) => { if (root.focused-row-slot == 400 + i * 10 + 1) { root.focused-row-slot = -1; } }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    root.download-pack(root.pack-ids[i]);
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                        }
 
                         UiText {
                             x: 0;
@@ -906,13 +1073,31 @@ export component SoundLibraryDialog inherits Rectangle {
                     height: 28px;
                     background: Tokens.bg-raised;
                     border-radius: Tokens.radius-sm;
-                    border-width: 1px;
-                    border-color: Tokens.line;
+                    border-width: status-retry-focus.has-focus ? 2px : 1px;
+                    border-color: status-retry-focus.has-focus ? Tokens.gold : Tokens.line;
 
                     accessible-role: button;
                     accessible-id: "sound-library-download-retry-button";
                     accessible-label: @tr("再试一次");
                     accessible-action-default => { root.download-pack(root.retry-pack-id); }
+
+                    status-retry-focus := FocusScope {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        focus-on-click: false;
+                        focus-gained(reason) => { root.focused-row-slot = 600; }
+                        focus-lost(reason) => { if (root.focused-row-slot == 600) { root.focused-row-slot = -1; } }
+                        key-pressed(event) => {
+                            if (event.text == Key.Return || event.text == Key.Space) {
+                                root.download-pack(root.retry-pack-id);
+                                accept
+                            } else {
+                                reject
+                            }
+                        }
+                    }
 
                     UiText {
                         x: 0;
@@ -933,16 +1118,82 @@ export component SoundLibraryDialog inherits Rectangle {
                     }
                 }
             }
+
+            // 关闭（Tab 序末格：槽位 700 —— 放在面板子树的末尾，见焦点一节。
+            // 视觉位置不变：x/y 仍是面板右上角。取焦时 2px 金边是可见指示。）
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: sound-library-close-focus.has-focus ? 2px : 0px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "sound-library-close-button";
+                accessible-label: @tr("关闭音源管理");
+                accessible-action-default => { root.close(); }
+
+                sound-library-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
         }
     }
 
-    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182）-------------------------------
-    /// 两格里哪一格正持有键盘：`0` 搜索框 / `1` ✕ 关闭 / `-1` 不在模态内。
-    /// 行内按钮（删除 / 下载 / 用到当前轨）今天没有 `FocusScope` ⇒ 不在轮转表里
-    /// （⛔ 不是漏网：给动态行加取焦是另一票，见回执）；`Tab` 只在这两格之间闭环。
+    // ---- 焦点读数与轮转（D-UI-19 / T-FIX-182 / T-FIX-217）-------------------
+    /// 行槽位：最近一次取焦的行按钮写进来的槽位。`focus-gained` 写，
+    /// `focus-lost` 只在值仍是自己时清掉 —— 先失后得 / 先得后失两种顺序都
+    /// 安全；`-1` = 焦点不在任何行按钮上。
+    in-out property <int> focused-row-slot: -1;
+    // 注意：行按钮销毁时不发 `focus-lost` —— 武装 / 取消 / 确认翻转状态会重建
+    // 该行按钮，焦点不能留在将死元素上（槽位会 stale，下一次 Tab 会从死焦点
+    // 出发乱走）。解法不在这里：每个会销毁本钮的动作在翻转前先把焦点挪到搜索
+    // 框（静态锚点），见各按钮的 `key-pressed` / `clicked`。
+    /// 槽位表（与树序 = Tab 序一致；行按钮的槽位见各行 `focus-gained`）：
+    /// `0` 搜索框 / `100+i*10+{0..5}` 已安装行（删除 / 确认删除 / 取消 /
+    /// 体检 / 开始检查 / 不用了）/ `300` 全部下载 / `301` 重试目录 /
+    /// `400+i*10+{0,1}` 可下载行（用到当前轨 / 下载）/ `600` 再试一次 /
+    /// `700` ✕ 关闭 / `-1` 不在模态内。
+    /// 静态锚点（0 / 700）由 `focus-control` 直达；行槽位只能由原生 Tab
+    /// 遍历到达 —— Slint 无法从 `for` 循环外按下标取焦重复元素（本文件没有
+    /// `focus-next-control` / `focus-previous-control`：它们唯一的调用方是
+    /// 陷阱，陷阱现在只在两端包办、中间交给原生遍历）。
     out property <int> focused-control:
-        sound-library-search-input.has-focus ? 0
-        : sound-library-close-focus.has-focus ? 1
+        root.focused-row-slot >= 0 ? root.focused-row-slot
+        : sound-library-search-input.has-focus ? 0
+        : sound-library-close-focus.has-focus ? 700
         : -1;
 
     /// 打开时由宿主调用：焦点落搜索框（首个可聚焦控件）。
@@ -950,30 +1201,14 @@ export component SoundLibraryDialog inherits Rectangle {
         sound-library-search-input.focus();
     }
 
-    /// 两格的**唯一**一张「序号 → 控件」表。
+    /// 静态锚点的**唯一**一张表：`0` 搜索框 / `700` ✕。行槽位（100–600）
+    /// 不在这里 —— 它们只能由原生 Tab 遍历到达，调这里会被静默忽略
+    /// （⛔ 不是漏网：见上面 `focused-control` 的注释）。
     public function focus-control(index: int) {
         if (index == 0) {
             sound-library-search-input.focus();
-        } else if (index == 1) {
+        } else if (index == 700) {
             sound-library-close-focus.focus();
-        }
-    }
-
-    /// `Tab`：搜索框 → ✕ → 回搜索框。
-    public function focus-next-control() {
-        if (root.focused-control == 0) {
-            root.focus-control(1);
-        } else {
-            root.focus-first-control();
-        }
-    }
-
-    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
-    public function focus-previous-control() {
-        if (root.focused-control == 1) {
-            root.focus-control(0);
-        } else {
-            root.focus-control(1);
         }
     }
 

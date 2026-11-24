@@ -10,7 +10,9 @@
 //!
 //! T-FIX-182 补上 131 漏掉的三只（另存为模板 / 音源管理 / 缺音源救援），同一份
 //! 契约再加一条：④ `Tab` 在模态内闭环（读数绕回第一格，焦点从未离开弹窗）。
-//! 另存为模板五格全轮、音源管理与缺音源救援各两格；`Shift+Tab` 反向未注入 ——
+//! 另存为模板五格全轮、缺音源救援两格；音源管理是数据相关的整张槽位表
+//! （搜索框 0 → 行按钮 100–600 → ✕ 700，空数据时只剩两格 —— 行按钮的
+//! 完整链路见 `tests/sound_library_row_focus.rs`，T-FIX-217）；`Shift+Tab` 反向未注入 ——
 //! 平台事件通道带不了修饰位，与 `undo_tree_focus_trap.rs` 同款边界（反向分支与
 //! 正向共用同一张 `focus-control` 表，见变异表）。
 //!
@@ -305,8 +307,9 @@ fn the_three_missed_modals_focus_tab_in_a_loop_and_restore_on_esc() {
         !ui.get_shortcut_layer_focused(),
         "音源管理：画布层必须不再同时持有键盘"
     );
-    // `Tab` ×2：搜索框 → ✕ → 绕回搜索框。
-    for expected in [1, 0] {
+    // `Tab` ×2：搜索框 → ✕ → 绕回搜索框。T-FIX-217：✕ 是槽位表的末格（700，
+    // 行按钮占中间槽位 100–600）；空数据时中间没有可聚焦行，Tab 直接到 ✕。
+    for expected in [700, 0] {
         live.dispatch_key_press(KeyCode::Tab)
             .expect("音源管理：注入 Tab");
         assert_eq!(
