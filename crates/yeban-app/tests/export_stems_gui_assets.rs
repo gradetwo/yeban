@@ -154,7 +154,7 @@ fn project_with_audio_clip(asset: AssetHash, bytes: &[u8]) -> YebanProjectV1 {
             id: clip,
             name: "take".to_owned(),
             content: ClipContent::Audio {
-                asset,
+                asset: asset.clone(),
                 gain_db: CLIP_GAIN_DB,
             },
         },
@@ -204,7 +204,7 @@ fn project_with_audio_clip(asset: AssetHash, bytes: &[u8]) -> YebanProjectV1 {
             },
         );
     project.assets.insert(
-        asset,
+        asset.clone(),
         AssetMetadata {
             hash: asset,
             original_path: "samples/take-48000.wav".to_owned(),
@@ -234,7 +234,7 @@ fn gui_export_stems_passes_the_session_asset_pool_to_the_backend() {
     let dir = scratch("gui");
     let bytes = synth_asset(&dir);
     let hash = AssetHash::of_bytes(&bytes);
-    let project = project_with_audio_clip(hash, &bytes);
+    let project = project_with_audio_clip(hash.clone(), &bytes);
 
     let view = ViewState::from_project(&project).expect("工程必须能投影");
     let scene = DemoScene::from_view(&view);
