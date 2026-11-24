@@ -34,6 +34,8 @@ use std::path::PathBuf;
 /// 被扫文件：**编译期固定**（`include_str!`）⇒ ⛔ 不用 `read_dir` 做主体扫描
 /// （外部夹具缺失会真空；`read_dir` 只用于第 ④ 条完整性检查）。
 const SOURCES: &[(&str, &str)] = &[
+    // T-FIX-317 原生模态共振器核心（四模型 + 激励 + 单共振器声部）。
+    ("src/modal.rs", include_str!("../src/modal.rs")),
     // Band-Solo 监听滤波器（follow-ons (a)）：内联测试有两处 `.all(` 断言，
     // 已在 ALLOWLIST 逐条登记理由。
     ("src/band_solo.rs", include_str!("../src/band_solo.rs")),
@@ -156,7 +158,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 38;
+const MIN_SOURCES: usize = 39;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;

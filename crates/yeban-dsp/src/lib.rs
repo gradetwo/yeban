@@ -98,6 +98,8 @@ pub mod loop_window;
 pub mod loudness;
 pub mod math;
 pub mod meter;
+/// 原生模态共振器核心（T-FIX-317）：四模型 + 噪声/mallet 激励 + 单共振器声部。
+pub mod modal;
 pub mod noise;
 pub mod noise_source;
 pub mod oscillator;
