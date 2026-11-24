@@ -464,6 +464,24 @@ fn save_into_a_read_only_directory_keeps_the_original_container_bytes() {
     propose_and_merge(&mut dispatcher, &auth, &track);
     assert!(dispatcher.domain().is_dirty(), "合并之后必须有未保存改动");
     fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o555)).expect("只读化目录");
+    // ⭐ 前提自检：进程若绕过权限位（root / CAP_DAC_OVERRIDE），0o555 只读化无效 ⇒
+    // 「保存必须失败」的夹具无法搭建 —— 红是环境前提失效而非产品缺陷，响亮跳过。
+    let permission_bypassed = {
+        let probe = scratch.dir.join(".readonly-probe");
+        let writable = fs::write(&probe, b"p").is_ok();
+        if writable {
+            fs::remove_file(&probe).ok();
+        }
+        writable
+    };
+    if permission_bypassed {
+        fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o755)).expect("恢复权限");
+        eprintln!(
+            "SKIP(unix-permission-bypass): 本进程写得动 chmod 555 的目录（root/CAP_DAC_OVERRIDE）\
+             ⇒ 只读保存失败夹具前提不成立，本判据跳过（非产品缺陷）"
+        );
+        return;
+    }
     let failed = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o755)).expect("恢复权限");
 

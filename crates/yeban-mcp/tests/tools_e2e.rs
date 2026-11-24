@@ -838,6 +838,24 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
 
     // 把父目录改成只读 —— 临时文件创建必须失败。
     fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o555)).expect("只读化目录");
+    // ⭐ 前提自检：进程若绕过权限位（root / CAP_DAC_OVERRIDE），0o555 只读化无效 ⇒
+    // 「保存必须失败」的夹具无法搭建 —— 红是环境前提失效而非产品缺陷，响亮跳过。
+    let permission_bypassed = {
+        let probe = scratch.dir.join(".readonly-probe");
+        let writable = fs::write(&probe, b"p").is_ok();
+        if writable {
+            fs::remove_file(&probe).ok();
+        }
+        writable
+    };
+    if permission_bypassed {
+        fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o755)).expect("恢复权限");
+        eprintln!(
+            "SKIP(unix-permission-bypass): 本进程写得动 chmod 555 的目录（root/CAP_DAC_OVERRIDE）\
+             ⇒ 只读保存失败夹具前提不成立，本判据跳过（非产品缺陷）"
+        );
+        return;
+    }
     let saved = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     fs::set_permissions(&scratch.dir, fs::Permissions::from_mode(0o755)).expect("恢复权限");
 

@@ -2851,6 +2851,24 @@ fn read_only_output_directory_is_an_io_error_and_keeps_the_previous_file() {
         dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
 
     fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o555)).expect("改成只读");
+    // ⭐ 前提自检：进程若绕过权限位（root / CAP_DAC_OVERRIDE），0o555 只读化无效 ⇒
+    // 「导出必须 IO_ERROR」的夹具无法搭建 —— 红是环境前提失效而非产品缺陷，响亮跳过。
+    let permission_bypassed = {
+        let probe = locked_dir.join(".readonly-probe");
+        let writable = fs::write(&probe, b"p").is_ok();
+        if writable {
+            fs::remove_file(&probe).ok();
+        }
+        writable
+    };
+    if permission_bypassed {
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).expect("恢复权限");
+        eprintln!(
+            "SKIP(unix-permission-bypass): 本进程写得动 chmod 555 的目录（root/CAP_DAC_OVERRIDE）\
+             ⇒ 只读导出失败夹具前提不成立，本判据跳过（非产品缺陷）"
+        );
+        return;
+    }
     let result = call(
         &mut dispatcher,
         &auth,

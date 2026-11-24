@@ -1237,10 +1237,19 @@ mod tests {
             cap + 1,
             "夹具前提: 声明大小必须可读"
         );
-        assert!(
-            fs::read(&path).is_err(),
-            "夹具前提: 这个文件必须读不出来（否则本条区分不了两道闸门）"
-        );
+        // ⭐ 前提自检（R93 语义 + 本判据 :1216 注释登记的"不以 root 跑"前提的机械化）：
+        // 进程若绕过权限位（root / CAP_DAC_OVERRIDE），chmod 000 仍可读 ⇒
+        // "fail-fast vs fs::read" 的区分夹具**无法搭建**。这时的红是夹具前提失效，
+        // 不是产品缺陷 —— 响亮跳过（打印 SKIP），不许静默、也不许把环境问题伪装成回归。
+        if fs::read(&path).is_ok() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).ok();
+            fs::remove_dir_all(&dir).ok();
+            eprintln!(
+                "SKIP(unix-permission-bypass): 本进程读得动 chmod 000 的文件（root/CAP_DAC_OVERRIDE）\
+                 ⇒ fail-fast 区分夹具前提不成立，本判据跳过（非产品缺陷）"
+            );
+            return;
+        }
 
         let fault = load_project_with_limits(&path, &tight).expect_err("超限文件必须被拒绝");
         let value = fault.into_result().expect("领域失败是带内响应");
