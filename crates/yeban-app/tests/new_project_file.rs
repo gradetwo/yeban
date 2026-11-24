@@ -263,3 +263,89 @@ fn the_new_project_clock_is_read_exactly_once() {
         "本单不写 `modified_at`（那是『保存时刷新修改时刻』的另一条裁决）"
     );
 }
+
+// ===========================================================================
+// ⭐ T-FIX-308：新建 ≠ 覆盖
+// ===========================================================================
+
+/// 目标已存在 ⇒ `create_new_project_file` 必须**响亮拒绝**、且一字节都不改。
+#[test]
+fn create_new_project_file_refuses_an_existing_target_and_keeps_its_bytes() {
+    use yeban_app::host::NewProjectError;
+
+    let scratch = Scratch::new();
+    let path = scratch.join("already-here.yeban");
+    // 一个**不是**合法工程归档的哨兵：只要它被改写（哪怕前面几个字节），下断言就红。
+    let sentinel = b"ORIGINAL PROJECT - DO NOT TOUCH\0\0\0";
+    std::fs::write(&path, sentinel).expect("夹具：先放一个已存在文件");
+    let before = std::fs::read(&path).expect("读回原字节");
+
+    let outcome = yeban_app::host::create_new_project_file(&path);
+    assert_eq!(
+        outcome,
+        Err(NewProjectError::Exists { path: path.clone() }),
+        "目标已存在 ⇒ 必须返回**分类型**的 Exists（⛔ 不能复用覆盖式 save_archive_file）"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("文件必须还在"),
+        before,
+        "被拒绝 ⇒ 原字节逐位不变"
+    );
+}
+
+/// 显式覆盖入口是**另一个名字**：只有它能在确认后改写已有目标。
+#[test]
+fn overwrite_new_project_file_is_the_explicit_entry() {
+    let scratch = Scratch::new();
+    let path = scratch.join("to-overwrite.yeban");
+    std::fs::write(&path, b"SENTINEL").expect("夹具：先放一个已存在文件");
+
+    let report =
+        yeban_app::host::overwrite_new_project_file(&path).expect("显式覆盖入口必须真的能覆盖");
+    let after = std::fs::read(&path).expect("读回覆盖后的文件");
+    assert_eq!(
+        after.len(),
+        1187,
+        "覆盖后写出的仍是同一条 1187 B 空工程容器"
+    );
+    assert_eq!(
+        report.bytes as usize,
+        after.len(),
+        "SaveReport 与磁盘读数一致"
+    );
+}
+
+/// 纯裁决：目标不存在 ⇒ Create（confirm 根本不调用）；已存在 ⇒ 只有确认才 Overwrite。
+#[test]
+fn new_project_target_is_a_pure_cancel_or_overwrite_decision() {
+    use std::cell::Cell;
+    use yeban_app::host::NewProjectTarget;
+
+    let scratch = Scratch::new();
+    let fresh = scratch.join("not-there.yeban");
+    let calls = Cell::new(0_u32);
+    assert_eq!(
+        yeban_app::host::new_project_target(&fresh, |_| {
+            calls.set(calls.get() + 1);
+            true
+        }),
+        NewProjectTarget::Create,
+        "目标不存在 ⇒ 直接新建，⛔ 不该弹覆盖确认"
+    );
+    assert_eq!(calls.get(), 0, "confirm 只在目标已存在时调用");
+
+    std::fs::write(&fresh, b"EXISTS").expect("夹具：让目标真的存在");
+    assert_eq!(
+        yeban_app::host::new_project_target(&fresh, |_| false),
+        NewProjectTarget::Cancelled,
+        "用户取消 ⇒ 不写"
+    );
+    assert_eq!(
+        yeban_app::host::new_project_target(&fresh, |p| {
+            assert_eq!(p, fresh.as_path(), "confirm 收到的就是目标路径");
+            true
+        }),
+        NewProjectTarget::Overwrite,
+        "用户确认 ⇒ 才走显式覆盖"
+    );
+}

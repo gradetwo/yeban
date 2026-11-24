@@ -110,6 +110,15 @@ pub enum SaveError {
     /// `Result<_, CliError>` 的尺寸有上限；把 `PathBuf`/`String` 摊在变体里会让整个
     /// crate 的 `Result` 都变大。
     Locked(Box<LockHold>),
+    /// ⭐ **目标已存在**（T-FIX-308）：`save_new_archive_file` 的"不覆盖"语义。
+    ///
+    /// 判定发生在**拿到 `.yeban.lock` 之后**（同一个临界区内），因此两个守规矩的
+    /// 写者不会同时通过检查；`write_file_atomically` 的 `rename` 仍是覆盖式的，
+    /// 但本变体保证"新建"这条路**从不**走到它。
+    TargetExists {
+        /// 已经存在的目标路径。
+        path: PathBuf,
+    },
     /// 本平台没有可用的 OS 建议锁 ⇒ **显式**失败，绝不静默放行并发写。
     LockUnsupported {
         /// 企图写入的工程路径。
@@ -143,6 +152,7 @@ impl SaveError {
         match self {
             Self::Container(error) => Some(error),
             Self::NoFileName { .. }
+            | Self::TargetExists { .. }
             | Self::Io { .. }
             | Self::Locked(_)
             | Self::LockUnsupported { .. } => None,
@@ -176,6 +186,11 @@ impl core::fmt::Display for SaveError {
                 hold.holder_metadata,
                 hold.holder_mode.as_deref().unwrap_or("<unknown>"),
             ),
+            Self::TargetExists { path } => write!(
+                formatter,
+                "目标工程已存在 `{}` ⇒ 新建工程拒绝覆盖（要覆盖请走显式 overwrite 入口）",
+                path.display()
+            ),
             Self::LockUnsupported { path, os, spec_id } => write!(
                 formatter,
                 "平台 `{os}` 没有实现 OS 建议锁 ({spec_id}) ⇒ 拒绝写入 `{}` \
@@ -191,7 +206,10 @@ impl core::error::Error for SaveError {
         match self {
             Self::Container(error) => Some(error),
             Self::Io { source, .. } => Some(source),
-            Self::NoFileName { .. } | Self::Locked(_) | Self::LockUnsupported { .. } => None,
+            Self::NoFileName { .. }
+            | Self::TargetExists { .. }
+            | Self::Locked(_)
+            | Self::LockUnsupported { .. } => None,
         }
     }
 }
@@ -260,7 +278,35 @@ pub fn save_archive_file(
     archive: &ProjectArchive,
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
-    let path = path.as_ref();
+    save_archive_file_with(archive, path.as_ref(), true)
+}
+
+/// ⭐ **新建专用**（T-FIX-308）：与 [`save_archive_file`] 同一条原子写，但
+/// **不覆盖已存在的目标** —— 拿到 `.yeban.lock` 之后先查存在性，已存在 ⇒
+/// [`SaveError::TargetExists`]，**一个字节都不写**。
+///
+/// 为什么检查必须在这里（而不是调用方）：存在性判定与写入之间若不是同一个
+/// 临界区，两个守规矩的窗口都能通过 `path.exists()` 然后先后 `rename` 覆盖。
+/// 本函数把判定放在 `acquire_write_lock` 之后（同一把锁内）⇒ 合作写者之间
+/// 不存在该窗口。⚠ 不合作的外部写者仍可与 `rename` 竞争（OS 级覆盖是原子
+/// 替换）—— 那是"独占创建"要另做跨平台系统调用才能关掉，本单不扩围。
+///
+/// # Errors
+///
+/// 同 [`save_archive_file`]，外加目标已存在 ⇒ [`SaveError::TargetExists`]。
+pub fn save_new_archive_file(
+    archive: &ProjectArchive,
+    path: impl AsRef<Path>,
+) -> Result<SaveReport, SaveError> {
+    save_archive_file_with(archive, path.as_ref(), false)
+}
+
+/// [`save_archive_file`] 与 [`save_new_archive_file`] 的**唯一**实现体。
+fn save_archive_file_with(
+    archive: &ProjectArchive,
+    path: &Path,
+    overwrite: bool,
+) -> Result<SaveReport, SaveError> {
     let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
     for (hash, data) in &archive.assets {
         assets.insert(hash.clone(), data.clone());
@@ -287,6 +333,11 @@ pub fn save_archive_file(
     // 与 [`save_project_file`] 同一条门：`--save-as` 因此与 `ui/force_save`、与
     // 控制面的 `yeban_save_project` 争**同一把** `.yeban.lock`。
     let _lock = acquire_write_lock(path)?;
+    if !overwrite && path.exists() {
+        return Err(SaveError::TargetExists {
+            path: path.to_path_buf(),
+        });
+    }
     write_file_atomically(&bytes, path)
 }
 

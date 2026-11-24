@@ -29,7 +29,7 @@
 // ⇒ 未用到的不是死代码，是**另一个目标**的入口。
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -84,6 +84,10 @@ pub struct ScriptedPicker {
     open: RefCell<Option<PathBuf>>,
     /// `choose_save` 的脚本答案。
     save: RefCell<Option<PathBuf>>,
+    /// ⭐ `confirm_overwrite` 的脚本答案（T-FIX-308；默认 `false` ＝ 取消）。
+    overwrite: Cell<bool>,
+    /// `confirm_overwrite` 被问了几次（判据要断"目标已存在时真的问了"）。
+    overwrite_calls: Cell<usize>,
 }
 
 impl ScriptedPicker {
@@ -92,6 +96,8 @@ impl ScriptedPicker {
             calls: RefCell::new(Vec::new()),
             open: RefCell::new(None),
             save: RefCell::new(None),
+            overwrite: Cell::new(false),
+            overwrite_calls: Cell::new(0),
         })
     }
 
@@ -112,6 +118,28 @@ impl ScriptedPicker {
     /// **取消**（两个方法都回 `None`）—— 语义就是"用户在对话框里按了取消"。
     pub fn cancelling() -> Rc<Self> {
         Self::new()
+    }
+
+    /// ⭐ 保存答案 = 这个路径，且**确认覆盖**（T-FIX-308 的"用户点了确定"）。
+    pub fn answering_save_and_confirming_overwrite(path: impl Into<PathBuf>) -> Rc<Self> {
+        let picker = Self::answering_save(path);
+        picker.overwrite.set(true);
+        picker
+    }
+
+    /// ⭐ 保存答案 = 这个路径，但**取消覆盖**（T-FIX-308 的"用户点了取消"）。
+    pub fn answering_save_and_refusing_overwrite(path: impl Into<PathBuf>) -> Rc<Self> {
+        Self::answering_save(path)
+    }
+
+    /// ⭐ `confirm_overwrite` 被问了几次（T-FIX-308）。
+    pub fn overwrite_call_count(&self) -> usize {
+        self.overwrite_calls.get()
+    }
+
+    /// ⭐ 改下一次 `confirm_overwrite` 的答案（同一窗口先取消后确认两腿用）。
+    pub fn set_overwrite_answer(&self, yes: bool) {
+        self.overwrite.set(yes);
     }
 
     /// 某一类请求被问了几次（`"open"` / `"save"`）。
@@ -143,5 +171,10 @@ impl FilePicker for ScriptedPicker {
     fn choose_save(&self, request: &PickerRequest) -> Option<PathBuf> {
         self.calls.borrow_mut().push(("save", request.clone()));
         self.save.borrow().clone()
+    }
+
+    fn confirm_overwrite(&self, _path: &Path) -> bool {
+        self.overwrite_calls.set(self.overwrite_calls.get() + 1);
+        self.overwrite.get()
     }
 }

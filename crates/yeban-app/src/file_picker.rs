@@ -31,6 +31,9 @@
 //!
 //! 1. **本模块不验证路径**：不查存在性、不查可写、不建目录。那是 `open.rs` /
 //!    `save.rs` 的各自契约（它们**已经**有那些检查与错误分类）。
+//!    ⭐ T-FIX-308 起本模块**只多**一个能力面 [`FilePicker::confirm_overwrite`]：
+//!    它问"要不要覆盖"，但**不判**路径合法性（存在性由 `host::new_project_target`
+//!    裁决、写入由 `save::save_new_archive_file` 在锁内复核）。
 //! 2. **`rfd` 的对话框是阻塞式的**（`pick_file()` 在 UI 线程上开一个**模态**原生窗口）。
 //!    本仓把它接在**用户按下按钮的那一跳**上（不是在 60Hz 心跳里），因此"阻塞主循环"
 //!    的语义就是"模态对话框本来就是模态的" —— ⛔ 与 `#86` 甲那条"⛔ 不阻塞主循环"
@@ -125,6 +128,20 @@ pub trait FilePicker {
     fn can_prompt(&self) -> bool {
         true
     }
+
+    /// ⭐ **目标已存在时的显式覆盖确认**（T-FIX-308）。
+    ///
+    /// 只在 [`crate::host::new_project_target`] 判定"目标已存在"时问一次：
+    /// `true` = 用户确认覆盖，`false` = 取消 / 无法确认。
+    ///
+    /// 默认 **`false`**（保守）：没有确认能力的装配**不许**覆盖已有工程 ——
+    /// 把默认值写成 `true` 会让"未来某个 picker 没实现确认"变成静默覆盖。
+    /// 产品实现 [`NativeFilePicker`] 弹一次原生 `MessageDialog`；判据的脚本实现
+    /// 按脚本回答（见 `tests/common` 的 `ScriptedPicker`）。
+    fn confirm_overwrite(&self, path: &Path) -> bool {
+        let _ = path;
+        false
+    }
 }
 
 /// **产品实现**：`rfd`（系统原生对话框）。
@@ -143,6 +160,23 @@ pub struct NativeFilePicker;
 impl FilePicker for NativeFilePicker {
     fn choose_open(&self, request: &PickerRequest) -> Option<PathBuf> {
         build(request).pick_file()
+    }
+
+    /// ⭐ 原生覆盖确认（T-FIX-308）：`Ok` 才允许覆盖；`Cancel` / 关窗都是"不覆盖"。
+    ///
+    /// ⚠ 它不是保存对话框自带的那一次"是否替换"：那一条是平台实现细节，
+    /// 本仓**不能**把它当契约（脚本假实现 / 其它 picker 可以绕开）。
+    fn confirm_overwrite(&self, path: &Path) -> bool {
+        rfd::MessageDialog::new()
+            .set_title("工程已存在")
+            .set_description(format!(
+                "{} 已存在。要用一份新的空白工程覆盖它吗？",
+                path.display()
+            ))
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .set_level(rfd::MessageLevel::Warning)
+            .show()
+            == rfd::MessageDialogResult::Ok
     }
 
     fn choose_save(&self, request: &PickerRequest) -> Option<PathBuf> {
