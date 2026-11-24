@@ -484,15 +484,13 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
             } else {
                 break;
             }
-            if !key_direct {
-                if let Some((next_token, next_flag)) = find_modifier(&chars[p..]) {
-                    command |= next_flag == ModifierFlag::Command;
-                    alt |= next_flag == ModifierFlag::Alt;
-                    shift |= next_flag == ModifierFlag::Shift;
-                    last_was_glyph = is_glyph_modifier(next_token);
-                    pos = p + next_token.chars().count();
-                    continue;
-                }
+            if !key_direct && let Some((next_token, next_flag)) = find_modifier(&chars[p..]) {
+                command |= next_flag == ModifierFlag::Command;
+                alt |= next_flag == ModifierFlag::Alt;
+                shift |= next_flag == ModifierFlag::Shift;
+                last_was_glyph = is_glyph_modifier(next_token);
+                pos = p + next_token.chars().count();
+                continue;
             }
             let mut end = p;
             while chars.get(end).is_some_and(|c| !is_key_stop(*c)) {
@@ -640,7 +638,7 @@ fn resolve_on_canvas(chord: &Chord) -> Vec<(&'static str, Resolution)> {
 ///   也没有任何别的 `KeyK` 接线 ⇒ 按下去什么都不会发生，且 `Action` 里连"打开命令面板"这
 ///   个变体都不存在 ⇒ 期望动作只能记 `None`；实测 `PassThrough`。
 /// - `Ctrl+T` ×1：命令面板"新增轨道"（`modals.slint:17`）—— 键表给出 `SplitAtPlayhead`
-///  （在播放头处切分），⛔ 是加轨道 ⇒ 文案承诺与绑定错位；实测 `SplitAtPlayhead`。
+///   （在播放头处切分），⛔ 是加轨道 ⇒ 文案承诺与绑定错位；实测 `SplitAtPlayhead`。
 /// - `Shift+Tab` ×1：命令面板"切换底栏：设备机架"（`modals.slint:14`）—— 键表第 5 步
 ///   `shift` 分支没有 `Tab` 臂 ⇒ 画布上是 `PassThrough`（`Tab` 那条臂只认无修饰的 `Tab`）。
 /// - `Alt+S` ×1：底栏堆叠标签提示 `[Alt+S]`（`lower_dock.slint:230`）—— 画布上

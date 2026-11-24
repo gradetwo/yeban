@@ -379,13 +379,17 @@ fn scrolling_does_not_move_the_canvas_or_the_lanes() {
         header_x_before,
         "包头只纵向移动，x 不变（滚后首行是第 {first_visible} 行）"
     );
-    // 段落带与标尺带是画布内的非寻址绘制（无 accessible-id），不在树里 ——
-    // 它们不随行区内容滚动的事实由画布几何不动 + 行区内容 y 移动（判据②）共同覆盖。
+    // 标尺带已随 T-FIX-356 Group B 回到活树（`arrangement-ruler`，slider，U-07 R2）：
+    // 它是画布顶部的可调定位器，不随行区内容滚动（画布几何不动已覆盖）；
+    // 段落卡仍是死文件里的旧节点，不进树。
     let tree = rig.port.tree();
     assert!(
-        tree.find_by_id("arrangement-ruler").is_none()
-            && tree.find_by_id("section-0-card").is_none(),
-        "旧标尺 / 段落卡节点不进控件树（已随死文件删掉）"
+        tree.find_by_id("arrangement-ruler").is_some(),
+        "标尺带必须在活树里（T-FIX-356 已恢复为 slider）"
+    );
+    assert!(
+        tree.find_by_id("section-0-card").is_none(),
+        "段落卡节点仍不进控件树（已随死文件删掉）"
     );
 }
 

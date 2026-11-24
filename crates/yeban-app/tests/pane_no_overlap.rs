@@ -19,7 +19,7 @@
 //! | ③ 两两不相交 | 每段：排除容器后**逐对**断言包围盒不相交（半开区间，边贴边不算），三档全是 0 | 证"同一段内没有第二处重叠"；⛔ 不证与段外邻居（`#184` 管段间） |
 //! | ④ 容器排除 | 见 [`is_container_role`]：`region` / `groupbox` / `list` / `tab-list` / `main` / `complementary`。**`list-item` 不排**（这四段里它是叶子内容：音符矩形、素材行） | 证"排的是按设计包住子节点的容器"；⛔ 不排 `list-item` 是有意的（与 `#185` 的发送行相反） |
 //! | ⑤ 不许假绿 | 每段先断言"必须在场的 id 一个不少"＋"控件数恰好等于清单"；1024 档走带徽章**按设计隐藏**（不是扫不到），并断言替代入口 `ai-rail-musical-pr-button` 在树里 | 证"0 相交不是 0 控件换来的" |
-//! | ⑥ 预算 | 控件数逐档不变：钢琴卷帘 `20`、走带 `6`（1920 档）/`7`（1440/1024 档，多的是溢出钮）；调音台 `73`、素材池 `4`、设备架 / 轨路由 / 主总线段 / AI 右栏的旧 id **全是 0 个活节点**（注册表登记数不变 —— 死的是界面，不是登记） | 证"没有靠删控件换绿" |
+//! | ⑥ 预算 | 控件数逐档不变：钢琴卷帘 `20`、走带 `6`（1920 档）/`7`（1440/1024 档，多的是溢出钮）；调音台 `69` 个旧 id、设备架 / 轨路由 / 主总线段 / AI 右栏的旧 id **全是 0 个活节点**（注册表登记数不变 —— 死的是界面，不是登记）；素材池 `4` 个活节点（T-FIX-356 已入住活下坞） | 证"没有靠删控件换绿" |
 //!
 //! ## 发现（`#186` 的实测；数字是逻辑像素包围盒 `(x, y, w, h)`）
 //!
@@ -346,7 +346,8 @@ const ASSET_CONTROLS: &[&str] = &[
     "asset-pool-row-1-row",
 ];
 
-/// 调音台的 73 个控件：3 个模块入口 ＋ 6 个主控控件 ＋ 4 个素材池控件 ＋ 6 条通道条 × 10。
+/// 调音台的 69 个旧控件：3 个模块入口 ＋ 6 个主控控件 ＋ 6 条通道条 × 10。
+/// （素材池 4 个已随 T-FIX-356 入住活下坞，见 `check_asset_pool`，不再是死 id。）
 fn mixer_controls() -> Vec<String> {
     let mut ids: Vec<String> = vec![
         "module-export-midi-button".to_owned(),
@@ -359,7 +360,6 @@ fn mixer_controls() -> Vec<String> {
         "mixer-master-meter".to_owned(),
         "mixer-master-fader".to_owned(),
     ];
-    ids.extend(ASSET_CONTROLS.iter().map(|id| (*id).to_owned()));
     for track in 0..6 {
         for suffix in [
             "pan",
@@ -376,7 +376,7 @@ fn mixer_controls() -> Vec<String> {
             ids.push(format!("track-{track}-{suffix}"));
         }
     }
-    assert_eq!(ids.len(), 73, "调音台控件清单长度变了 ⇒ 判据口径要重核");
+    assert_eq!(ids.len(), 69, "调音台控件清单长度变了 ⇒ 判据口径要重核");
     ids
 }
 
@@ -784,7 +784,7 @@ fn check_piano_roll(width: u32, height: u32) -> (usize, usize) {
 
 /// 调音台（旧 `ConsoleTabs` 的 `MixerConsole`）：**0 个活节点**。
 ///
-/// 四边契约面：73 个 id 全在注册表里（角色＋组件文件逐字）＋ 死文件声明 ＋
+/// 四边契约面：69 个 id 全在注册表里（角色＋组件文件逐字）＋ 死文件声明 ＋
 /// `ConsoleTabs` 被 `if false` 门住 ＋ 活树缺席。活的替代面是 Tab 1 下控制台的
 /// 导轨带：导轨区里只有 4 个非容器节点（3 个导轨键 ＋ 主输出单声道钮），逐对不相交。
 fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
@@ -801,14 +801,6 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
     for id in mixer_controls() {
         let (kind, component) = if id == "mixer-console" {
             (ElementKind::Region, "console/mixer_console.slint")
-        } else if id.starts_with("asset-pool-") {
-            let kind = match id.as_str() {
-                "asset-pool-panel" => ElementKind::Region,
-                "asset-pool-count" => ElementKind::Text,
-                "asset-pool-import-button" => ElementKind::Button,
-                _ => ElementKind::ListItem,
-            };
-            (kind, "console/asset_pool_panel.slint")
         } else if id.starts_with("module-") {
             (ElementKind::Button, "console/mixer_console.slint")
         } else if id.starts_with("mixer-master-") {
@@ -867,7 +859,6 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
         "ui/console/mixer_console.slint",
         "\"track-\" + track_index + \"-sampler-path\"",
     );
-    dead_slint_declares("ui/console/asset_pool_panel.slint", "asset-pool-panel");
 
     // ---- 活的替代面：Tab 1 下控制台导轨区 —— 只有 4 个非容器节点，逐对不相交。
     // （混音推子条是无语义 id 的 TouchArea，不进控件树 —— 见报告 §3。）
@@ -899,16 +890,19 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
     (controls, 0)
 }
 
-/// 素材池（旧 `ConsoleTabs` 的 `AssetPoolPanel`）：**0 个活节点**。
+/// 素材池（⭐ T-FIX-356 起**已入住活下坞**的混音台档，不再是死段）：4 个活节点。
 ///
-/// 四边契约面（同调音台）＋ 模型侧：演示工程的 `clip_pool` 仍有 2 条
-/// （素材池死的是**界面**，不是模型里的素材）。
+/// 活段契约面：注册表登记（角色＋组件文件＋标签逐字，源语言）＋ 面板文件声明 ＋
+/// 活树在场（面板＋4 个子节点）＋ 4 个非容器节点在面板内两两不相交。
+/// 模型侧：演示工程的 `clip_pool` 仍有 2 条（素材池活的是界面，模型一直有素材）。
+/// 运行时标签是 en-US 翻译（`2 Assets`），与注册表源语言标签（`素材 2 条`）不同 ——
+/// 见 `arrangement_ruler_seek.rs` 的 i18n 说明；这里只钉注册表标签，不钉运行时标签。
 fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
     let project = yeban_model::samples::demo_project();
     assert_eq!(
         project.clip_pool.len(),
         2,
-        "演示工程的 clip_pool 必须是 2 条（素材池死的是界面，不是模型）"
+        "演示工程的 clip_pool 必须是 2 条（素材池活的是界面，模型一直有素材）"
     );
     let view = ViewState::from_project(&project).expect("夹具工程必须能投影");
     let registry = ElementRegistry::from_view(&view);
@@ -926,35 +920,66 @@ fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
             ),
             _ => (ElementKind::ListItem, ""),
         };
-        if label.is_empty() {
-            // 行 id（`asset-pool-row-{i}-row`）的标签带素材名 —— 这里只钉角色＋组件＋缺席。
-            let meta = registry
-                .get(id)
-                .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
-            assert_eq!(meta.kind, kind, "`{id}` 在注册表里的角色必须是 {kind:?}");
+        let meta = registry
+            .get(id)
+            .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
+        assert_eq!(meta.kind, kind, "`{id}` 在注册表里的角色必须是 {kind:?}");
+        assert_eq!(
+            meta.component, "console/asset_pool_panel.slint",
+            "`{id}` 在注册表里登记的组件文件必须是 console/asset_pool_panel.slint"
+        );
+        if !label.is_empty() {
             assert_eq!(
-                meta.component, "console/asset_pool_panel.slint",
-                "`{id}` 在注册表里登记的组件文件必须是 console/asset_pool_panel.slint"
-            );
-        } else {
-            dead_id_contract(
-                &registry,
-                &tree,
-                id,
-                kind,
-                "console/asset_pool_panel.slint",
-                label,
+                meta.label, label,
+                "`{id}` 在注册表里的标签必须逐字一致（实测 {:?}）",
+                meta.label
             );
         }
         assert!(
-            tree.find_by_id(id).is_none(),
-            "活树里不许再有 `{id}`（它只活在 `console/asset_pool_panel.slint` 里）"
+            tree.find_by_id(id).is_some(),
+            "活树里必须有 `{id}`（T-FIX-356 已入住活下坞混音台档）"
         );
     }
+    // 面板本身：注册表登记（Region）＋ 活树在场；声明仍在原文件里（该文件已活，不再是死文件）。
+    let panel_meta = registry
+        .get("asset-pool-panel")
+        .expect("asset-pool-panel 必须在注册表里");
+    assert_eq!(
+        panel_meta.kind,
+        ElementKind::Region,
+        "素材池面板在注册表里的角色必须是 Region"
+    );
+    assert!(
+        tree.find_by_id("asset-pool-panel").is_some(),
+        "活树里必须有 asset-pool-panel（T-FIX-356 已入住活下坞混音台档）"
+    );
     dead_slint_declares("ui/console/asset_pool_panel.slint", "asset-pool-panel");
+    // 活段几何：4 个非容器节点全在面板内、两两不相交（探针实测三档皆然；
+    // 面板 (630, 784/604/504, 216, 258)，节点相对偏移固定，见合并收据）。
+    let panel = bounds(&tree, "asset-pool-panel");
+    for id in ASSET_CONTROLS {
+        assert_inside(
+            &tree,
+            id,
+            "asset-pool-panel",
+            &format!("素材池 {width}x{height}"),
+        );
+    }
+    let pairwise = assert_pairwise(
+        &tree,
+        panel,
+        Selection::Intersect,
+        &[
+            "asset-pool-count",
+            "asset-pool-import-button",
+            "asset-pool-row-0-row",
+            "asset-pool-row-1-row",
+        ],
+        &format!("#186 素材池活面 {width}x{height}"),
+    );
+    report_line(&pairwise);
     report_line(&format!(
-        "[#186 素材池 {width}x{height}] {} 个旧 id 全是注册表登记＋死文件声明＋`if false` 门住＋活树缺席；模型 clip_pool 仍是 2 条",
-        ASSET_CONTROLS.len()
+        "[#186 素材池 {width}x{height}] 4 个活节点全是注册表登记＋面板文件声明＋活树在场＋面板内 0 相交；模型 clip_pool 仍是 2 条",
     ));
     (ASSET_CONTROLS.len(), 0)
 }
@@ -1146,7 +1171,7 @@ fn project_with_seven_tracks() -> YebanProjectV1 {
 /// ⭐ T-FIX-356：旧段的几何清单（`CARD_AREA_*` / `INSTRUMENT_ROW` / `ROUTING_*` /
 /// `AI_RAIL_*` / `MASTER_LEAVES_*` / `section_cards_for`）已删 —— 那些段今天
 /// 0 个活节点，清单改由各段的契约面判据（注册表登记 ＋ 死文件声明 ＋ `if false`
-/// 门住 ＋ 活树缺席）覆盖；清单本身见 `mixer_controls()`（调音台 73 个 id 的生成器）
+/// 门住 ＋ 活树缺席）覆盖；清单本身见 `mixer_controls()`（调音台 69 个 id 的生成器）
 ///
 /// ⑤ 状态栏：默认（没按过保存）⇒ 快捷键提示那一格在场。
 const STATUS_BAR_DEFAULT: &[&str] = &[
@@ -1532,10 +1557,9 @@ fn check_arrangement(width: u32, height: u32) {
         "[#187 编曲画布 {width}x{height}] 画布底沿必须 = 分隔线顶沿"
     );
 
-    // ---- 死件：注册表登记在死文件里，活树里没有。
+    // ---- 死件：注册表登记在死文件里，活树里没有；标尺带除外（已随 T-FIX-356 回到活树）。
     let registry = registry_for(&yeban_model::samples::demo_project());
     for id in [
-        "arrangement-ruler",
         "arrangement-playhead",
         "section-0-card",
         "track-0-color-swatch",
@@ -1545,13 +1569,25 @@ fn check_arrangement(width: u32, height: u32) {
             "[#187 编曲画布 {width}] 活树里不许再有 `{id}`（它只活在死文件里）"
         );
     }
+    // 标尺带已随 T-FIX-356 Group B 回到活树（slider，U-07 R2）：在场 ＋ 落在画布内。
+    // 角色由 `arrangement_ruler_seek.rs` ⑨ 钉（slider）；这里只钉在场 ＋ 几何。
+    assert!(
+        tree.find_by_id("arrangement-ruler").is_some(),
+        "[#187 编曲画布 {width}] 活树里必须有 arrangement-ruler（T-FIX-356 已恢复）"
+    );
+    assert_inside(
+        &tree,
+        "arrangement-ruler",
+        "workspace-arrangement-canvas",
+        &format!("编曲画布 {width}"),
+    );
     assert_eq!(
         registry
             .get("arrangement-ruler")
             .expect("标尺带必须在注册表里")
             .component,
         "workspace/arrangement_view.slint",
-        "标尺带在注册表里登记的组件文件必须是死文件 `workspace/arrangement_view.slint`"
+        "标尺带在注册表里登记的组件文件必须是死文件 `workspace/arrangement_view.slint`（⚠ 该指针已陈旧：活声明现居 `ui/arrangement.slint`，见合并收据）"
     );
 
     // ---- ④-1 轨道头（容器组）：两两不相交。1024 档只有 5 行在树里

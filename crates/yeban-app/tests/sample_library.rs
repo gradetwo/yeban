@@ -229,7 +229,7 @@ fn the_library_root_is_a_preset_platform_path_and_the_environment_wins() {
 }
 
 /// 判据 ②：样本放库根 ⇒ **相对路径**（逐字是仓库内形态）从库根解析成功；
-/// 找不到时"试过"列表逐字是 `库根 ⇒ 仓库根 ⇒ cwd`。
+/// 找不到时"试过"列表逐字是 `库根 ⇒ 仓库根 ⇒ cwd`（cwd 与仓库根相同时去重）。
 #[test]
 fn the_parser_reads_a_relative_path_from_the_library_root() {
     let _guard = ENV_LOCK
@@ -252,15 +252,17 @@ fn the_parser_reads_a_relative_path_from_the_library_root() {
         resolved.display()
     );
 
-    // 找不到 ⇒ 逐字列出试过的根（工程目录未给 ⇒ 库根 / 仓库根 / cwd 三条）。
+    // 找不到 ⇒ 逐字列出试过的根（工程目录未给 ⇒ 库根 / 仓库根 / cwd 三条；
+    // cwd 与仓库根相同时解析器去重 ⇒ 期望先去重，顺序仍是 库根 ⇒ 仓库根 ⇒ cwd）。
     let missing = "assets/samples/yeban196-fixture/missing.sfz";
     let error = resolve_sampler_path(missing, SfzRoots::none()).expect_err("找不到必须报错");
     let cwd = std::env::current_dir().expect("进程 cwd");
-    let expected = [
+    let mut expected = vec![
         library.join("yeban196-fixture/missing.sfz"),
         repo_root().join(missing),
         cwd.join(missing),
     ];
+    expected.dedup();
     assert_eq!(
         error.tried(),
         expected.as_slice(),
