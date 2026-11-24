@@ -1,6 +1,6 @@
 //! **卷帘多音符选区入口**回归判据（T-FIX-204 / ISS-MWTFLI5C-10E44F）。
 //!
-//! 三条入口：① 空白拖拽框选（选择工具）；② Shift 单击 toggle；③ Cmd/Ctrl+A 全选。
+//! 三条入口：① 空白拖拽框选（选择工具）；② Shift/Ctrl/Cmd 单击 toggle；③ Cmd/Ctrl+A 全选。
 //! 判据只看可观测读数：`selected-note-count` / `selected-ulids`，再用 Delete 键验证
 //! “框选 3 颗 ⇒ 一次删 3 颗 ⇒ 一次撤销全部回来”。
 //!
@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use slint::Model;
 use yeban_app::bridge::{ViewState, host_to_painted};
@@ -17,8 +18,9 @@ use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::project::ClipContent;
 use yeban_model::{EntityId, MidiNote, YebanProjectV1};
+use yeban_ui_test_port::Rect;
 use yeban_ui_test_port::Size;
-use yeban_ui_test_port::port::Permission;
+use yeban_ui_test_port::port::{KeyCode, Permission, PointerButton, UiTestPort as _};
 use yeban_ui_test_port::render::LivePort;
 
 const WINDOW: Size = Size::new(1440, 900);
@@ -78,7 +80,7 @@ fn marquee_selects_three_notes_and_delete_removes_them_in_one_undo_step() {
             .expect("打开撤销会话"),
     ));
     let scene = DemoScene::from_view(&view);
-    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
+    let mut live = LivePort::new(WINDOW, Permission::Interactive, None, || {
         host::build_main_window(&view, &scene)
     })
     .expect("Tier-1 平台");
@@ -189,6 +191,164 @@ fn marquee_selects_three_notes_and_delete_removes_them_in_one_undo_step() {
         3,
         "一次撤销必须把 3 颗全部恢复（原子 Batch）"
     );
+    // ── ⑤ T-FIX-220：真实 Ctrl/Meta 指针事件 + 真实 Ctrl 框选。
+    //    这里不能再用 `invoke_clicked(..., true)` 绕过 Slint 的修饰位解析；
+    //    `KeyCode::Control` / `KeyCode::Meta` 按下后保持修饰态，指针事件从
+    //    `piano_roll.slint` 的 `event.modifiers` 读到它，和用户真按 Ctrl/Cmd 同链。
+    //    先裸点空白把选区清空。
+    live.ui().invoke_clicked(1400.0, 800.0, false);
+    let p0 = host_to_painted(
+        visible.positions[0] + visible.widths[0] / 2.0,
+        visible.ys[0] + 3.0,
+    );
+    let p1 = host_to_painted(
+        visible.positions[1] + visible.widths[1] / 2.0,
+        visible.ys[1] + 3.0,
+    );
+    pointer_click(&mut live, Some(KeyCode::Control), p0.0, p0.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        1,
+        "Ctrl 单击第一颗必须选中 1 颗"
+    );
+    pointer_click(&mut live, Some(KeyCode::Control), p1.0, p1.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        2,
+        "Ctrl 单击第二颗必须加选到 2 颗"
+    );
+    pointer_click(&mut live, Some(KeyCode::Control), p0.0, p0.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        1,
+        "Ctrl 再点第一颗必须 toggle 掉它，只留第二颗"
+    );
+    pointer_click(&mut live, Some(KeyCode::Meta), p0.0, p0.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        2,
+        "Meta/Cmd 单击未选中的第一颗必须加选到 2 颗"
+    );
+    pointer_click(&mut live, Some(KeyCode::Meta), p0.0, p0.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        1,
+        "Meta/Cmd 再点第一颗必须 toggle 掉它，只留第二颗"
+    );
+
+    // Ctrl 框选并集：先 Ctrl 点第一颗 ⇒ 1 颗；再用 Ctrl 框住第二颗 ⇒ 必须保住第一颗、加进第二颗。
+    live.ui().invoke_clicked(1400.0, 800.0, false);
+    pointer_click(&mut live, Some(KeyCode::Control), p0.0, p0.1);
+    assert_eq!(
+        live.ui().get_selected_note_count(),
+        1,
+        "Ctrl 框选前先选中第一颗"
+    );
+    let note_left = visible.positions[1];
+    let note_right = note_left + visible.widths[1];
+    // 起点固定在琴键列右侧的空白竖带（x=64，网格内、不是琴键列），纵坐标在所有音符上方；
+    // 终点必须跨过第二颗音符：音符在起点右侧时向右框，贴着左边界（left < 64）时向左框。
+    let start_x = 64.0;
+    let end_x = if note_left >= start_x {
+        note_right + 20.0
+    } else {
+        (note_left - 20.0).max(0.0)
+    };
+    let (mx1, my1) = host_to_painted(start_x, min_y);
+    let (mx2, my2) = host_to_painted(end_x, visible.ys[1] + 20.0);
+    let before_ids: Vec<String> = live
+        .ui()
+        .get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(before_ids.len(), 1, "Ctrl 框选前先选中第一颗");
+    pointer_marquee(&mut live, Some(KeyCode::Control), mx1, my1, mx2, my2);
+    let after_ids: Vec<String> = live
+        .ui()
+        .get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert!(
+        after_ids.len() > 1,
+        "Ctrl 框选必须至少加进一颗新音符（并集，而不是塌成单颗）：{after_ids:?}"
+    );
+    for id in &before_ids {
+        assert!(
+            after_ids.contains(id),
+            "Ctrl 框选必须保留框选前已选中的 {id}（T-FIX-220）：{after_ids:?}"
+        );
+    }
+}
+
+/// 真实指针手势用的 `piano-roll` 根元素包围盒；`dispatch_pointer_down` 的偏移是元素局部，
+/// `dispatch_pointer_move` 的坐标是窗口绝对（见 `LivePort::dispatch_pointer_move_impl`）。
+fn piano_roll_rect<T: slint::ComponentHandle>(live: &LivePort<T>) -> Rect {
+    live.tree()
+        .find_by_id("piano-roll")
+        .expect("piano-roll 必须在控件树里")
+        .bounds
+        .expect("piano-roll 必须有几何")
+}
+
+/// 真实左键单击（可选按住一个加选修饰键）。按下时修饰键已经在
+/// `WindowEvent::KeyPressed` 里置位，抬起后才释放 —— 与用户按住 Ctrl/Meta 点一下同一条事件链。
+fn pointer_click<T: slint::ComponentHandle>(
+    live: &mut LivePort<T>,
+    modifier: Option<KeyCode>,
+    x: f32,
+    y: f32,
+) {
+    if let Some(key) = modifier {
+        live.dispatch_key_press(key).expect("按下修饰键");
+    }
+    live.dispatch_pointer_down(
+        "piano-roll",
+        f64::from(x),
+        f64::from(y),
+        PointerButton::Left,
+    )
+    .expect("按下左键");
+    live.dispatch_pointer_up(PointerButton::Left)
+        .expect("抬起左键");
+    if let Some(key) = modifier {
+        live.dispatch_key_release(key).expect("释放修饰键");
+    }
+    // 同一位置连续点击会被 Slint 的 `ClickState` 判成双击（`click_interval` 内、10px 内），
+    // 从而走 `on_double_clicked` 而不是 `on_clicked`；本判据要单击语义，隔开一个窗口。
+    std::thread::sleep(Duration::from_millis(600));
+}
+
+fn pointer_marquee<T: slint::ComponentHandle>(
+    live: &mut LivePort<T>,
+    modifier: Option<KeyCode>,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+) {
+    let rect = piano_roll_rect(live);
+    if let Some(key) = modifier {
+        live.dispatch_key_press(key).expect("按下修饰键");
+    }
+    live.dispatch_pointer_down(
+        "piano-roll",
+        f64::from(x1),
+        f64::from(y1),
+        PointerButton::Left,
+    )
+    .expect("按下左键");
+    live.dispatch_pointer_move(
+        f64::from(rect.x) + f64::from(x2),
+        f64::from(rect.y) + f64::from(y2),
+    )
+    .expect("拖到矩形终点");
+    live.dispatch_pointer_up(PointerButton::Left)
+        .expect("抬起左键");
+    if let Some(key) = modifier {
+        live.dispatch_key_release(key).expect("释放修饰键");
+    }
 }
 
 /// 界面侧的接线是“空白拖拽 = 框选”的**唯一**手势来源：这条判据钉住三件事——
@@ -207,8 +367,14 @@ fn slint_wires_blank_drag_to_marquee_only_for_the_select_tool() {
         "拖过阈值必须上抛 roll-marquee"
     );
     assert!(
-        source.contains("root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);"),
-        "单击必须把 Shift 状态一起上报（toggle 语义）"
+        source.contains("root.pointer-additive = event.modifiers.shift")
+            && source.contains("|| event.modifiers.control")
+            && source.contains("|| event.modifiers.meta"),
+        "按下时必须同时识别 Shift / Ctrl / Meta 三个加选修饰键"
+    );
+    assert!(
+        source.contains("root.clicked(self.mouse-x, self.mouse-y, root.pointer-additive);"),
+        "单击必须上报按下时算好的加选状态（toggle 语义）"
     );
     assert!(
         source.contains("if root.marquee-active {"),

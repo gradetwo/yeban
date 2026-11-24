@@ -719,6 +719,9 @@ export component PianoRoll inherits Rectangle {
     // ⭐ 框选草稿（ISS-MWTFLI5C-10E44F）：只在选择工具的空白拖拽期存在；
     // `marquee-active == false` ⇒ 不画、不命中、默认帧逐像素不变。
     property <bool> marquee-active: false;
+    // ⭐ 按下时的加选修饰位（Shift / Ctrl / Meta 任一）：单击、空白单击与框选**同一份**；
+    // 按下时算一次，抬起前松开修饰键也保持本次手势的加选语义（T-FIX-220）。
+    property <bool> pointer-additive: false;
     property <bool> marquee-additive: false;
     property <length> marquee-origin-x: 0px;
     property <length> marquee-origin-y: 0px;
@@ -757,6 +760,9 @@ export component PianoRoll inherits Rectangle {
                     context-menu-popup.show();
                 }
             } else if event.kind == PointerEventKind.down {
+                root.pointer-additive = event.modifiers.shift
+                    || event.modifiers.control
+                    || event.modifiers.meta;
                 if self.mouse-x < 56px && self.mouse-y >= 28px {
                     root.audition-active-row = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
                     root.dragging = false;
@@ -777,7 +783,7 @@ export component PianoRoll inherits Rectangle {
                     if !root.note-dragging && root.active-tool == 1 {
                         root.dragging = false;
                         root.marquee-active = true;
-                        root.marquee-additive = event.modifiers.shift;
+                        root.marquee-additive = root.pointer-additive;
                         root.marquee-origin-x = self.mouse-x;
                         root.marquee-origin-y = self.mouse-y;
                         root.marquee-x = self.mouse-x;
@@ -808,7 +814,7 @@ export component PianoRoll inherits Rectangle {
                     if moved {
                         root.roll-marquee(x1, y1, self.mouse-x, self.mouse-y, additive);
                     } else {
-                        root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
+                        root.clicked(self.mouse-x, self.mouse-y, root.pointer-additive);
                     }
                 } else {
                     root.dragging = false;
@@ -819,11 +825,11 @@ export component PianoRoll inherits Rectangle {
                             root.note-drag-release(self.mouse-x, self.mouse-y);
                         } else {
                             // 没越阈值 ⇒ 这一抬是一次**单击**（选择工具点音符 = 选中它）。
-                            root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
+                            root.clicked(self.mouse-x, self.mouse-y, root.pointer-additive);
                         }
                     } else if !root.drag-moved {
                         // 空白处：只有**没越阈值**的抬起才算一次单击（选中 / 清除选区）。
-                        root.clicked(self.mouse-x, self.mouse-y, event.modifiers.shift);
+                        root.clicked(self.mouse-x, self.mouse-y, root.pointer-additive);
                     }
                     root.drag-moved = false;
                 }

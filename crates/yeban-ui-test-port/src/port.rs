@@ -215,6 +215,8 @@ pub enum KeyCode {
     Control,
     /// Alt 单键（修饰键；按下后保持修饰态，直到显式释放 —— 供 Alt+点这类组合注入）。
     Alt,
+    /// Meta / Cmd 单键（修饰键；按下后保持修饰态，直到显式释放 —— 供 Cmd+点这类组合注入）。
+    Meta,
     /// Shift+Enter chord：采纳 AI 提案。
     ShiftEnter,
     /// 任意单个字符（字母数字等）。
@@ -238,6 +240,7 @@ impl KeyCode {
             "shift" => Self::Shift,
             "ctrl" | "control" => Self::Control,
             "alt" => Self::Alt,
+            "meta" | "cmd" | "command" => Self::Meta,
             "shift+enter" | "shift+return" => Self::ShiftEnter,
             _ => {
                 let mut chars = normalized.chars();
@@ -266,6 +269,7 @@ impl KeyCode {
             Self::Shift => "Shift".to_owned(),
             Self::Control => "Ctrl".to_owned(),
             Self::Alt => "Alt".to_owned(),
+            Self::Meta => "Meta".to_owned(),
             Self::ShiftEnter => "Shift+Enter".to_owned(),
             Self::Character(ch) => ch.to_string(),
         }
@@ -642,7 +646,7 @@ pub trait UiTestPort {
     /// 注入键盘按下（`Interactive`）。
     fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError>;
 
-    /// 注入键盘释放（`Interactive`）。只对**修饰键**有意义（Alt / Shift / Ctrl 的按下
+    /// 注入键盘释放（`Interactive`）。只对**修饰键**有意义（Alt / Shift / Ctrl / Meta 的按下
     /// 会保持修饰态 —— 见 `render.rs` 的 `ShiftEnter` 臂注：只按下不释放会让后续按键
     /// 一直被当成组合，那是一条隐蔽的状态泄漏）。
     ///
@@ -1148,6 +1152,8 @@ mod tests {
             ("Backspace", KeyCode::Backspace),
             ("Alt", KeyCode::Alt),
             ("alt", KeyCode::Alt),
+            ("Meta", KeyCode::Meta),
+            ("Cmd", KeyCode::Meta),
             ("a", KeyCode::Character('a')),
             ("7", KeyCode::Character('7')),
         ] {

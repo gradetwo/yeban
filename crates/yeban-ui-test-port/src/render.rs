@@ -609,6 +609,7 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
             KeyCode::Shift => self.window.key_press(Key::Shift),
             KeyCode::Control => self.window.key_press(Key::Control),
             KeyCode::Alt => self.window.key_press(Key::Alt),
+            KeyCode::Meta => self.window.key_press(Key::Meta),
             KeyCode::ShiftEnter => {
                 // 修饰键必须**用完就放**：只按下不释放会让后续按键一直被当成 Shift 组合,
                 // 那是一条隐蔽的状态泄漏。
@@ -629,6 +630,7 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
             KeyCode::Alt => self.window.key_release(Key::Alt),
             KeyCode::Shift => self.window.key_release(Key::Shift),
             KeyCode::Control => self.window.key_release(Key::Control),
+            KeyCode::Meta => self.window.key_release(Key::Meta),
             other => {
                 return Err(PortError::Rejected {
                     message: format!(
