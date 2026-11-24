@@ -320,6 +320,7 @@ fn plugin_device(kind: DeviceKind, path: &str, class: Option<&str>) -> DeviceDef
         plugin: Some(PluginBinding {
             path: path.to_owned(),
             class: class.map(str::to_owned),
+            state: Vec::new(),
         }),
     }
 }

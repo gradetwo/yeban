@@ -6653,6 +6653,7 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                     .map(str::to_owned)
                     .unwrap_or_else(|| instance.name().to_owned()),
             ),
+            state: Vec::new(),
         }),
     };
     let title = format!("装载插件: {} → {}", device.name, track.name);

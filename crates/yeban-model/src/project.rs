@@ -491,6 +491,19 @@ pub struct PluginBinding {
     pub path: String,
     /// 类指名（类名或 CID 十六进制；`None` = 取首个乐器类，由宿主在加载时解析）。
     pub class: Option<String>,
+    /// ⭐ **插件状态容器字节**（T-FIX-345）：`YBPGST01` 的完整编码（处理器 blob
+    /// ＋控制器 blob），由 `yeban_plugin_host::PluginState::encode` 产出。
+    ///
+    /// 空 `Vec` = **没有保存过状态**（旧工程 / 新装插件）⇒ 加载时保持插件默认值，
+    /// ⛔ 不当作"状态为空"去 restore。非空字节在加载 / 离线渲染前必须解码并
+    /// `restore_state`；解码失败要**响亮**报错（⛔ 不静默回默认）。
+    ///
+    /// 为什么落在 `PluginBinding` 而不是 `DeviceDefinition`：状态属于"这台插件
+    /// 实例"，与 `path` / `class` 是同一组身份（设备槽位可以换插件，状态必须
+    /// 跟着绑定走）；`DeviceDefinition` 的内置设备没有插件状态，放在它上面会
+    /// 允许"有状态但没有插件"的非法组合。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state: Vec<u8>,
 }
 
 /// 设备定义（设备链中的一格）。

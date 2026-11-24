@@ -499,6 +499,7 @@ fn correct_pitch_refuses_double_correction() {
         plugin: Some(PluginBinding {
             path: "OpenTune.vst3".to_owned(),
             class: None,
+            state: Vec::new(),
         }),
     };
     let device_id = device.id.to_canonical_string();

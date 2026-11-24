@@ -187,7 +187,7 @@ pub fn load_device(
     kind: &str,
 ) -> Result<DeviceDefinition, String> {
     guard_plugin_path(path)?;
-    let (instance, device_kind): (Box<dyn PluginInstance>, DeviceKind) = match kind {
+    let (mut instance, device_kind): (Box<dyn PluginInstance>, DeviceKind) = match kind {
         "instrument" => (
             Host::load(path, class).map_err(|error| format!("插件验证加载失败: {error}"))?,
             DeviceKind::ExternalInstrument,
@@ -203,6 +203,17 @@ pub fn load_device(
         }
     };
     let instance_name = instance.name().to_owned();
+    // ⭐ T-FIX-345：装载即抓一次插件自己的状态（处理器 + 控制器 blob），随设备
+    // 绑定一起进工程。当前 GUI 还没有常驻插件编辑器 ⇒ 这里抓到的是**装载时刻**
+    // 的状态；将来编辑器持有活实例后，保存工程前应再调用同一个 `save_state`。
+    // 抓取失败不让"装载"变成失败（插件本身可用），但**响亮**登记，⛔ 静默吞。
+    let state = match instance.save_state() {
+        Ok(state) => state.encode(),
+        Err(error) => {
+            eprintln!("[yeban-app] 插件状态抓取失败（工程将保存为空状态，重开回默认）: {error}");
+            Vec::new()
+        }
+    };
     Ok(DeviceDefinition {
         id: EntityId::new(),
         name: instance_name.clone(),
@@ -213,6 +224,7 @@ pub fn load_device(
         plugin: Some(PluginBinding {
             path: path.to_owned(),
             class: Some(class.map_or(instance_name, str::to_owned)),
+            state,
         }),
     })
 }

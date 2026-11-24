@@ -215,6 +215,10 @@ struct Tune {
     effect_stub: bool,
     /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
     effect_bad_path: bool,
+    /// ⭐ T-FIX-345：给 `stub:gain` 绑定的已保存状态（空 = 插件默认）。
+    effect_state: Vec<u8>,
+    /// ⭐ T-FIX-345：把 `effect_state` 填成损坏容器（验证响亮拒绝）。
+    effect_state_corrupt: bool,
     /// ⭐ OpenTune 真插件线（Job 1c）：音轨挂真 OpenTune bundle 作外部效果器
     /// （路径取 `OPENTUNE_VST3_PATH`，缺省 `~/.vst3/OpenTune.vst3`）。
     /// 只在 `#[ignore]` 的真插件判据里用，不进 CI。
@@ -237,6 +241,8 @@ impl Default for Tune {
             clip_offset_samples: 0,
             effect_stub: false,
             effect_bad_path: false,
+            effect_state: Vec::new(),
+            effect_state_corrupt: false,
             effect_opentune: false,
         }
     }
@@ -299,6 +305,11 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             plugin: Some(PluginBinding {
                 path: "stub:gain".to_owned(),
                 class: None,
+                state: if tune.effect_state_corrupt {
+                    vec![0xDE, 0xAD, 0xBE, 0xEF]
+                } else {
+                    tune.effect_state.clone()
+                },
             }),
         });
     }
@@ -313,6 +324,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             plugin: Some(PluginBinding {
                 path: "/definitely/not/a/plugin.so".to_owned(),
                 class: None,
+                state: Vec::new(),
             }),
         });
     }
@@ -334,6 +346,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             plugin: Some(PluginBinding {
                 path: bundle,
                 class: Some("OpenTune".to_owned()),
+                state: Vec::new(),
             }),
         });
     }
@@ -437,6 +450,18 @@ fn build_with(
     // 判据 8 钉住的护栏。这里从产物路径派生一个同目录的假工程路径即可。
     let project_path = path.with_extension("project.yeban");
     render::build(project, &project_path, &request, NOW_MS, assets)
+}
+
+/// T-FIX-345：按 `YBPGST01` 容器格式拼一段插件状态（与 `PluginState::encode` 同形）。
+fn plugin_state_bytes(processor: &[u8], controller: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"YBPGST01");
+    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(&(processor.len() as u32).to_le_bytes());
+    out.extend_from_slice(processor);
+    out.extend_from_slice(&(controller.len() as u32).to_le_bytes());
+    out.extend_from_slice(controller);
+    out
 }
 
 /// 默认实参：48 kHz / wav / 不做归一化。
@@ -4050,6 +4075,59 @@ fn a_hosted_effect_passes_audio_through_and_leaves_the_receipt() {
         worst <= tolerance,
         "直通效果器不得改样本：最大偏差 {worst} > 容差 {tolerance}"
     );
+}
+
+/// ⭐ T-FIX-345：工程里保存的插件状态必须在离线渲染前恢复。
+///
+/// `stub:gain` 的处理器状态是 4 字节 f32 增益；状态 = 0.5 ⇒ 恒定 0.5 素材
+/// 应渲染成 0.25（而不是默认 1.0 的 0.5）。这条同时证明"状态确实进了装载
+/// 路径"，而不只是模型里存了一份字节。
+#[test]
+fn a_saved_plugin_state_is_restored_before_offline_render() {
+    let scratch = Scratch::new("effect-state-restored");
+    let samples = constant(480, 0.5);
+    let tune = Tune {
+        effect_stub: true,
+        effect_state: plugin_state_bytes(&0.5_f32.to_le_bytes(), &[]),
+        ..Default::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let artifact =
+        build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染必须成功");
+    let rendered = payload_samples(&artifact);
+    let tolerance = 2.0 / 8_388_608.0;
+    let mut worst = 0.0f32;
+    for sample in rendered.iter().take(samples.len()) {
+        worst = worst.max((sample - 0.25).abs());
+    }
+    assert!(
+        worst <= tolerance,
+        "状态 0.5 必须在渲染前恢复（0.5 素材 × 0.5 增益 = 0.25），最大偏差 {worst}"
+    );
+}
+
+/// ⭐ T-FIX-345：状态容器损坏 ⇒ 渲染**响亮**拒绝，⛔ 不静默按默认状态出干声。
+#[test]
+fn a_corrupt_saved_plugin_state_fails_the_render_loudly() {
+    let scratch = Scratch::new("effect-state-corrupt");
+    let samples = constant(480, 0.5);
+    let tune = Tune {
+        effect_stub: true,
+        effect_state_corrupt: true,
+        ..Default::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let fault = build_with(&fixture.project, &pool(&fixture), &out, args(&out))
+        .expect_err("损坏的插件状态必须让渲染失败");
+    assert_eq!(fault.domain_code(), Some(ErrorCode::RenderFailed));
+    let value = fault.into_result().expect("带内");
+    assert_eq!(
+        value["error"]["data"]["reason"], "pluginState",
+        "失败原因必须指向插件状态，实为 {value}"
+    );
+    assert!(!out.exists(), "失败时不得留下产物");
 }
 
 /// 效果器线 [②]：坏绑定（打不开的插件路径）的轨在渲染构造期响亮失败，

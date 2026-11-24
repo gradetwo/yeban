@@ -512,12 +512,12 @@ use yeban_decode::{DecodeError, DecodeOptions, resample_interleaved};
 use yeban_model::music::{RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AssetHash, AutomationTarget, AutomationWriteMode, ClipContent, DeviceKind, EntityId, PPQ,
-    RoutingKind, SampleRate, TrackV3, YebanProjectV1,
+    PluginBinding, RoutingKind, SampleRate, TrackV3, YebanProjectV1,
 };
 use yeban_render::dither::{BitDepth, DitherRng, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
-use yeban_plugin_host::PluginInstance;
+use yeban_plugin_host::{PluginInstance, PluginState};
 use yeban_render::engine_source::{
     ArmedSfzInput, ArmedSfzSample, EngineSourceError, EngineTimbre, EngineTrackSource,
     LaneSplitSource,
@@ -6174,7 +6174,7 @@ fn build_source(
                     }),
                 )
             })?;
-            let instance =
+            let mut instance =
                 yeban_plugin_host::Host::load_effect(&binding.path, binding.class.as_deref())
                     .map_err(|error| {
                         render_failed(
@@ -6186,6 +6186,8 @@ fn build_source(
                             }),
                         )
                     })?;
+            // T-FIX-345：保存过的状态必须在离线渲染前恢复（空 = 默认）。
+            restore_binding_state(instance.as_mut(), binding, "pluginState")?;
             Some(instance)
         }
         None => None,
@@ -6596,17 +6598,21 @@ fn build_source(
                     }),
                 )
             })?;
-            let instance = yeban_plugin_host::Host::load(&binding.path, binding.class.as_deref())
-                .map_err(|error| {
-                render_failed(
-                    format!("插件装载失败: {error}"),
-                    serde_json::json!({
-                        "reason": "pluginLoad",
-                        "pluginPath": binding.path,
-                        "pluginId": binding.class,
-                    }),
-                )
-            })?;
+            let mut instance =
+                yeban_plugin_host::Host::load(&binding.path, binding.class.as_deref()).map_err(
+                    |error| {
+                        render_failed(
+                            format!("插件装载失败: {error}"),
+                            serde_json::json!({
+                                "reason": "pluginLoad",
+                                "pluginPath": binding.path,
+                                "pluginId": binding.class,
+                            }),
+                        )
+                    },
+                )?;
+            // T-FIX-345：保存过的状态必须在激活 / 渲染前恢复（空 = 默认）。
+            restore_binding_state(instance.as_mut(), binding, "pluginState")?;
             // 声相取引擎源同一条等功率半边（`centered_pan_gains`）；轨增益由
             // 插件源内部按调度表的 `track_gain()` 乘（与引擎路径同一口径）。
             let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
@@ -6759,6 +6765,40 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// `RENDER_FAILED` 的简写（带结构化原因，便于调用方自纠）。
 fn render_failed(message: impl Into<String>, data: Value) -> Fault {
     Fault::domain_with_data(ErrorCode::RenderFailed, message, data)
+}
+
+/// ⭐ T-FIX-345：把工程里保存的插件状态恢复到**刚装载**的实例。
+///
+/// 空字节 = 旧工程 / 从未保存过状态 ⇒ **不调用** `restore_state`（保持插件默认值）。
+/// 非空但解码 / 恢复失败 ⇒ `RENDER_FAILED` ＋ `reason: pluginState`，⛔ 不静默回默认。
+fn restore_binding_state(
+    instance: &mut dyn PluginInstance,
+    binding: &PluginBinding,
+    reason: &'static str,
+) -> Result<(), Fault> {
+    if binding.state.is_empty() {
+        return Ok(());
+    }
+    let state = PluginState::decode(&binding.state).map_err(|error| {
+        render_failed(
+            format!("插件状态损坏，拒绝按默认状态渲染: {error}"),
+            serde_json::json!({
+                "reason": reason,
+                "pluginPath": binding.path,
+                "pluginId": binding.class,
+            }),
+        )
+    })?;
+    instance.restore_state(&state).map_err(|error| {
+        render_failed(
+            format!("插件状态恢复失败，拒绝按默认状态渲染: {error}"),
+            serde_json::json!({
+                "reason": reason,
+                "pluginPath": binding.path,
+                "pluginId": binding.class,
+            }),
+        )
+    })
 }
 
 /// 单次渲染的帧数上限闸门（⭐ `#252`：**显式帧数**与**工程末端推导**共用这一处）。
