@@ -1158,10 +1158,7 @@ mod tests {
         );
         let mut mcp_ids: Vec<&str> = FACTORY_PRESETS.iter().map(|(id, _)| *id).collect();
         mcp_ids.sort();
-        let mut model_ids: Vec<&str> = yeban_model::preset::FACTORY_PRESET_IDS
-            .iter()
-            .copied()
-            .collect();
+        let mut model_ids: Vec<&str> = yeban_model::preset::FACTORY_PRESET_IDS.to_vec();
         model_ids.sort();
         assert_eq!(
             mcp_ids, model_ids,
