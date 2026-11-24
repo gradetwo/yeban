@@ -484,6 +484,7 @@ fn scan_still_skips_missing_caller_dir_silently() {
     );
     assert_eq!(out["status"], "success", "不存在的目录仍应静默跳过: {out}");
     let plugins = out["data"]["plugins"].as_array().expect("plugins 数组");
+    assert_eq!(plugins.len(), 0, "不存在的目录不得产出扫描行: {out}");
     assert!(
         plugins
             .iter()

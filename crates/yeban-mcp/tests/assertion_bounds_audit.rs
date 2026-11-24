@@ -116,6 +116,10 @@ const SOURCES: &[(&str, &str)] = &[
     ),
     ("tests/render_master.rs", include_str!("render_master.rs")),
     (
+        "tests/render_plugin_whitelist.rs",
+        include_str!("render_plugin_whitelist.rs"),
+    ),
+    (
         "tests/section_material_clips.rs",
         include_str!("section_material_clips.rs"),
     ),
@@ -137,11 +141,11 @@ const SOURCES: &[(&str, &str)] = &[
     ("tests/tools_e2e.rs", include_str!("tools_e2e.rs")),
 ];
 
-/// 被扫文件数的下界（R93：**下界绑在同一集合根上**，且**等于当前行数**）。
+/// 被扫文件数的精确清单长度（R93：清单必须与登记数逐条对账）。
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
-/// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 28;
+/// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有精确长度能拦住这种**单向**偷工。
+const MIN_SOURCES: usize = 34;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -647,9 +651,11 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
         "every_all_assertion_in_this_crate_is_bounded_or_allowlisted",
         "entered",
     );
-    assert!(
-        SOURCES.len() >= MIN_SOURCES,
-        "被扫文件数 {} 必须 ≥ {MIN_SOURCES}（R93：下界绑在同一集合根上）",
+    // 精确清单长度：删掉任何一条登记都必须红，不能靠“下界”留下缩水空间。
+    assert_eq!(
+        SOURCES.len(),
+        MIN_SOURCES,
+        "被扫文件数 {} 必须等于 {MIN_SOURCES}（R93：清单长度必须与登记数精确对账）",
         SOURCES.len()
     );
 
