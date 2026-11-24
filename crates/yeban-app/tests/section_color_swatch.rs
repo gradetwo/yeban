@@ -99,7 +99,7 @@ fn band_sample_pixel(port: &LivePort<yeban_app::ui::MainWindow>, x: u32, y: u32)
 
 #[test]
 fn section_color_swatches_carry_the_projected_color() {
-    let (port, view) = live_window();
+    let (mut port, view) = live_window();
     let section_count = view.sections.len();
     let registry = ElementRegistry::from_view(&view);
 
