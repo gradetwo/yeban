@@ -1375,22 +1375,27 @@ export component MainWindow inherits Window {
                 && (event.text == "\u{9}" || event.text == "\u{19}")) {
                 return reject;
             }
-            // T-FIX-219：导出弹窗开着时，DAW 快捷键**放行**（reject），不走下面的
-            // `trigger-shortcut` 与各条界面层开关。
+            // T-FIX-289：任一模态开着时，DAW 快捷键**放行**（reject），不走下面的
+            // `trigger-shortcut` 与各条界面层开关 —— `T-FIX-219` 的导出对话框守卫
+            // 推广到全部六只模态（导出 / 音源管理 / 缺音源救援 / 另存为模板 /
+            // 人性化 / 鼓机）：它们共用同一条漏键路径（按钮格 `reject` → 陷阱
+            // `reject` → 冒泡到本 `key-handler` → `trigger-shortcut` 当成画布
+            // 工具切换吃掉）。
             //
-            // 为什么必须放行：弹窗的焦点陷阱（`export_wav_dialog.slint`）只接 Tab /
-            // Backtab / Ctrl+O / Esc，其余裸键一律 `reject` 指望"往上冒出本组件无人接"。
-            // 但对话框是本 `key-handler` 的子树 —— 事件从陷阱冒泡到这里后，
-            // `trigger-shortcut` 会把数字键（`1`-`5`）当成画布工具切换吃掉，`Space` 会
-            // 触发走带 —— 焦点停在按钮格上时，模态"持键盘"的承诺就破了
-            // （`tests/export_dialog_button_focus.rs` 的 ⑨ 就是这么红的；陷阱里那句
-            // "无人接"只对快捷键层那个 `FocusScope` 成立，⛔ 不是对本 `key-handler`）。
-            // 只在弹窗开着且无修饰键时放行：`Esc` 不在这里处理（陷阱先接住并 `accept`；
-            // 焦点在弹窗外时宿主的 `Action::Cancel` 臂仍是兜底 ⇒ `Esc` 必须能下来）。
-            // 下面这张表与本处理器消费的键**逐一对应**（`trigger-shortcut` 的那一份 +
-            // 界面层 `i` / `h` / `t` / `d` / `F3` / `F4` / `F7` / `F8` / `F9`），
-            // 新快捷键加进来时这里要同步 —— 否则它会在弹窗的按钮格上漏出去。
-            if (root.export-wav-open
+            // （rebase：219 的导出单臂已删 —— 本集中守卫覆盖导出在内，见回执 §3。）
+            // 为什么集中一处（路线 A）：六只模态的漏键机制完全相同，逐只加 `if` 臂
+            // 会把同一张键表抄六遍 —— 下一只模态、下一个新快捷键都要改六处，正是
+            // 219 只修一只、其余五只继续漏的根源。以后：
+            //   ① 新快捷键加进来时，把它同步进下面这张键表（与 T-FIX-219 同约定）；
+            //   ② 新模态加 `*-open` 标志时，把它同步进下面这张模态表。
+            // 只在任一模态开着且无修饰键时放行：`Esc` 不在这里处理（陷阱先接住并
+            // `accept`；焦点在弹窗外时宿主的 `Action::Cancel` 臂仍是兜底 ⇒ `Esc`
+            // 必须能下来）。`Tab` / `Backtab` 与 T-FIX-217 同理（放行给原生遍历）。
+            // 键表与 T-FIX-219 同款（`trigger-shortcut` 的那一份 + 界面层 `i` /
+            // `h` / `t` / `d` / `F3` / `F4` / `F7` / `F8` / `F9`）。
+            if ((root.export-wav-open || root.sound-library-open
+                    || root.missing-sounds-open || root.template-save-open
+                    || root.humanize-open || root.drum-gen-open)
                 && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
                 && (event.text == "\u{9}" || event.text == "\u{19}"
                     || event.text == " " || event.text == Key.Space
