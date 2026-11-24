@@ -91,7 +91,7 @@ pub fn collect(
         let Some(binding) = track.sampler.as_ref().map(|sampler| sampler.path.as_str()) else {
             continue;
         };
-        // ① SFZ 文本：盘上优先，否则已内嵌复用，否则响亮失败。
+        // ① SFZ 文本：盘上优先，否则已内嵌复用，否则记 missing 跳过该轨继续存。
         let (text, disk_path) = match super::render::resolve_sampler_path(binding, project_path) {
             Ok(disk) => {
                 let bytes = match super::store::read_bounded(&disk, 16 * 1024 * 1024, binding) {
@@ -275,7 +275,7 @@ fn embedded_bytes(
 }
 
 /// 一份触发样本的字节：盘上优先（与渲染同一条解析），旧表复用次之，皆无 ⇒ `None`
-/// （调用方响亮失败）。
+/// （调用方记 missing）。
 ///
 /// * 磁盘 SFZ 腿：`resolve_sample_path`（SFZ 所在目录 ＋ `sample=` 原串）。
 /// * 已内嵌 SFZ 腿：键的四档候选（工程目录 ⇒ 库根 ⇒ 仓库根 ⇒ cwd，见
