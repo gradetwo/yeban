@@ -687,6 +687,13 @@ export component ArrangementViewport inherits Rectangle {
                             }
 
                             TouchArea {
+                                // ⭐ T-FIX-356：新 UI 重构时丢了这两行几何 ⇒ 本面是 0×0，
+                                // 标尺带在新 UI 里**点不动**（与死文件
+                                // `ui/workspace/arrangement_view.slint` 的 ruler 同款：
+                                // `width: parent.width; height: parent.height;`）。
+                                // 零视觉：只恢复命中面积，⛔ 不画任何东西、不改点击语义。
+                                width: parent.width;
+                                height: parent.height;
                                 mouse-cursor: MouseCursor.pointer;
                                 pointer-event(event) => {
                                     if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
