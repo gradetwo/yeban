@@ -5,7 +5,10 @@
 //! ⛔ **不从本文件读**被判的字符串：ID 与无障碍名都从
 //! `src/elements.rs` 的 `registry.add(…)` 条目**解析**出来，回调名又从 ID 按
 //! `module-{动作}-button` 的族规则**算**出来；`.slint` 三处（混音台 / 控制台 / 主窗口）
-//! 与宿主 `src/host.rs` 的接线逐条对账。本文件只提供**解析与重算**，不提供文本
+//! 与宿主 `src/host.rs` 的接线逐条对账 —— 其中主窗口**只有声明、没有转发**
+//! （`new-project` 的转发只在死文件 `console_tabs.slint` 里；`app.slint` 里唯一的
+//! `new-project =>` 是启动选择器调 `startup-new-project` 的另一条，见 §③）。
+//! 本文件只提供**解析与重算**，不提供文本
 //! （与 `tests/roll_injection_registration.rs` 同一口径）。
 //!
 //! ## 判定量（每个数字都有单位）
@@ -14,7 +17,7 @@
 //! | :--- | :--- | :--- |
 //! | 注册表条目 | `src/elements.rs` 里 `"module-new-project-button"` 的 `registry.add` | 条 |
 //! | 上抛点 | `.slint` 里 `root.<动作>();` 的出现次数（点击源 + 默认无障碍动作） | 处 |
-//! | 转发点 | `console_tabs.slint` / `app.slint` 里 `callback` 与 `=> { root.…; }` | 处 |
+//! | 转发点 | `console_tabs.slint` 里 `callback` 与 `=> { root.…; }`（主窗口无转发，见 §③） | 处 |
 //! | 宿主接线 | `host.rs::wire_new_project` 里三件复用的调用点 | 处 |
 //!
 //! ## ⭐ 平台无关：**行尾不是被判对象**（任务单 `#137`）
@@ -164,11 +167,30 @@ fn check_new_project_registration(
         "`ui/console/console_tabs.slint` 缺少 `{action}` 的转发"
     );
 
-    // ---- ③ 主窗口：声明 + 转发（事件源的**唯一**落点 = 宿主 `wire_new_project`）----
+    // ---- ③ 主窗口：声明在，但**没有**根级转发 —— 转发链死在控制台容器里 ----
+    // `ui/app.slint:1067` 声明 `callback new-project();`，但没有任何活 `.slint`
+    // 把它往 `root.new-project()` 转：`app.slint` 里唯一的 `new-project =>` 是
+    // 启动选择器自己的那条（`:2782`，`new-project => { root.startup-new-project(); }`，
+    // 调的是**另一个**回调 `startup-new-project`，不是 `new-project`）。
+    // 真的转发在死文件里：`console_tabs.slint:582-583`（`root.new-project();`）＋
+    // 死按钮 `mixer_console.slint:446-463`。旧断言（app.slint 里有
+    // `new-project => {\n root.new-project();` 的跨行转发）是假的 ——
+    // `ConsoleTabs` 被 `if false` 门住后，这条链在活树里永远走不通。
+    // 诚实形态：声明在 ＋ 主窗口里**没有** `root.new-project();` ＋ 启动选择器的
+    // 那条是另一个动作（防把两条 `new-project` 混成一条）＋ 宿主仍直接接了
+    // `on_new_project`（`host.rs:10217`，落点活着，见 §④）。
     assert!(app.contains(&callback), "`ui/app.slint` 缺少 `{callback}`");
     assert!(
-        app.contains(&format!("{action} => {{\n                root.{action}();")),
-        "`ui/app.slint` 缺少 `{action}` 的转发"
+        !app.contains("root.new-project();"),
+        "`ui/app.slint` 不许出现 `root.new-project();` —— 主窗口没有往 `new-project` 的转发（转发只在死文件 `console_tabs.slint:582-583` 里）"
+    );
+    assert!(
+        app.contains("new-project => { root.startup-new-project(); }"),
+        "`ui/app.slint` 里启动选择器的 `new-project => { root.startup-new-project(); }` 必须在 —— 它是另一个动作（`startup-new-project`），不是本条的 `new-project`"
+    );
+    assert!(
+        host.contains("ui.on_new_project("),
+        "`host.rs` 里 `wire_new_project` 必须仍注册 `ui.on_new_project`（回调的落点活着）"
     );
 
     // ---- ④ 宿主：`wire_new_project` 真的接了那三件事（对话框 / 落盘 / 换工程）----

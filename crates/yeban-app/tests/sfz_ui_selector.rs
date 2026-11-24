@@ -380,7 +380,8 @@ fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() 
 }
 
 /// ⭐ 判据二（**端到端，本单最有价值的一条**）：经 **UI** 提交 `SetTrackSampler`
-/// ⇒ 模型变 ⇒ **下一跳心跳**把快照换成"该轨摊平表非空、待摊平表为空"。
+/// ⇒ 模型变 ⇒ **接下来的心跳**把快照换成"该轨摊平表非空、待摊平表为空"
+/// （后台解码就绪后那一跳；P0-7 异步装载 ⇒ 第一跳可能 `Deferred`，见 §③）。
 ///
 /// 复用 `#80` 的可判段（`sfz_plan` 的 `region_count` / `memory_bytes` /
 /// `missing_sample_paths` 与 `sfz_pending().len()`），因此"用户能设它、且真的生效"
@@ -428,10 +429,31 @@ fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
         "⭐ UI 提交之后模型里的 `sampler` 必须真的变"
     );
 
-    // ---- ③ 下一跳心跳：编辑 ⇒ 发声 ----
-    let tick = fx.heartbeat();
+    // ---- ③ 接下来的心跳：编辑 ⇒ 发声 ----
+    // ⚠ 不是"下一跳"：P0-7 异步装载 —— 提交后第一跳的 `arm_precheck` 发现缓存未命中
+    // 的解码尚未就绪，`publish_project` 回 `Deferred`，`last_mark` 不推进，
+    // `published_revision` 仍是 `None`（`engine_host.rs:1709-1756`，
+    // `live_surface.rs:663` 把 Deferred 映成 published=None、error=None）。
+    // 下一跳自动重试；后台 `arm_worker` 解码就绪后那一跳才真正发布。按生产 60Hz
+    // 节律轮询（120 跳 × 16ms ≈ 2s），`publish_error` 一出现就立刻失败（不等满 2s）。
+    let mut tick = fx.heartbeat();
+    let mut hops = 1;
+    while tick.published_revision.is_none() {
+        assert!(
+            tick.publish_error.is_none(),
+            "好的路径不该失败: {:?}",
+            tick.publish_error
+        );
+        assert!(
+            hops < 120,
+            "120 跳（≈2s）后仍没发布：后台解码没就绪或 `arm_worker` 没跑起来"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        tick = fx.heartbeat();
+        hops += 1;
+    }
     report_line(&format!(
-        "[sfz-ui/e2e] 心跳: published={:?} error={:?}；快照摊平表={:?} 待摊平={:?}",
+        "[sfz-ui/e2e] 心跳 {hops} 跳后发布: published={:?} error={:?}；快照摊平表={:?} 待摊平={:?}",
         tick.published_revision,
         tick.publish_error,
         fx.live.engine_sfz_plan_readings(&fx.lead),
@@ -444,7 +466,7 @@ fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
     );
     assert!(
         tick.published_revision.is_some(),
-        "⭐ UI 的编辑必须经这一跳真的换一份快照"
+        "⭐ UI 的编辑必须经心跳真的换一份快照"
     );
     let (regions, memory_bytes, missing) = fx
         .live

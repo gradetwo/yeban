@@ -19,7 +19,7 @@
 //! | ③ 两两不相交 | 每段：排除容器后**逐对**断言包围盒不相交（半开区间，边贴边不算），三档全是 0 | 证"同一段内没有第二处重叠"；⛔ 不证与段外邻居（`#184` 管段间） |
 //! | ④ 容器排除 | 见 [`is_container_role`]：`region` / `groupbox` / `list` / `tab-list` / `main` / `complementary`。**`list-item` 不排**（这四段里它是叶子内容：音符矩形、素材行） | 证"排的是按设计包住子节点的容器"；⛔ 不排 `list-item` 是有意的（与 `#185` 的发送行相反） |
 //! | ⑤ 不许假绿 | 每段先断言"必须在场的 id 一个不少"＋"控件数恰好等于清单"；1024 档走带徽章**按设计隐藏**（不是扫不到），并断言替代入口 `ai-rail-musical-pr-button` 在树里 | 证"0 相交不是 0 控件换来的" |
-//! | ⑥ 预算 | 控件数逐档不变：钢琴卷帘 `18`、走带 `6`（1920 档）/`7`（1440/1024 档，多的是溢出钮）；调音台 `73`、素材池 `4`、设备架 / 轨路由 / 主总线段 / AI 右栏的旧 id **全是 0 个活节点**（注册表登记数不变 —— 死的是界面，不是登记） | 证"没有靠删控件换绿" |
+//! | ⑥ 预算 | 控件数逐档不变：钢琴卷帘 `20`、走带 `6`（1920 档）/`7`（1440/1024 档，多的是溢出钮）；调音台 `73`、素材池 `4`、设备架 / 轨路由 / 主总线段 / AI 右栏的旧 id **全是 0 个活节点**（注册表登记数不变 —— 死的是界面，不是登记） | 证"没有靠删控件换绿" |
 //!
 //! ## 发现（`#186` 的实测；数字是逻辑像素包围盒 `(x, y, w, h)`）
 //!
@@ -241,7 +241,7 @@
 //!
 //! | 段 | 活树实测（2026-11-24） |
 //! | :--- | :--- |
-//! | 钢琴卷帘 | 18 个控件（6 音符 → **5** 个：A2 那条不在演示工程里；`piano-roll-status` 标签是英文 `"Piano Roll Snap & Range Status"`） |
+//! | 钢琴卷帘 | 20 个控件（6 音符 → **5** 个：A2 那条不在演示工程里；`piano-roll-status` 标签是英文 `"Piano Roll Snap & Range Status"`；另有音域键 `pitch-range-down/up` 各 1） |
 //! | 走带 | 带 = `y ∈ [40, 92)`（40px 标题栏之下）；常驻 6 个 ＋ 溢出钮只在 1440/1024 档（1920 档没有它）；其余 11 个旧 id 只活在注册表 `known_absent` 登记里 |
 //! | 调音台 / 素材池 / 设备架 / 轨路由 / 主总线段 | **0 个活节点**：注册表登记 ＋ 死 `.slint` 声明 ＋ `if false` 门住 ＋ 活树缺席（四边契约面判据）；活的替代面是下控制台导轨带（见下） |
 //! | AI 右栏 | **0 个活节点**：同上四边；死按钮 `ai-rail-musical-pr-button` 的回调 `open-musical-pr()` 仍能打开真的 `MusicalPrDrawer` |
@@ -323,6 +323,8 @@ const PIANO_CONTROLS: &[&str] = &[
     "piano-roll-tool-eraser-button",
     "piano-roll-status",
     "piano-roll-playhead",
+    "pitch-range-down",
+    "pitch-range-up",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A3-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1B0-rect",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1C7-rect",
@@ -770,8 +772,10 @@ fn check_piano_roll(width: u32, height: u32) -> (usize, usize) {
             .label,
         "Piano Roll Snap & Range Status"
     );
-    // 18 个控件（工具 5 ＋ 状态 1 ＋ 播放头 1 ＋ 音符 5 ＋ 力度条 6）；
-    // 对数由 `len()` 自证，不手算。
+    // 20 个控件（工具 5 ＋ 状态 1 ＋ 播放头 1 ＋ 音域 2 ＋ 音符 5 ＋ 力度条 6）；
+    // 音域键 `pitch-range-down/up`（2026-11-24 探针：三档全在，标签
+    // "Shift Range Down/Up One Octave"）—— 旧清单漏了它俩，`assert_pairwise`
+    // 的计数比对会把它们报成"树里多出"。对数由 `len()` 自证，不手算。
     (
         PIANO_CONTROLS.len(),
         PIANO_CONTROLS.len() * (PIANO_CONTROLS.len() - 1) / 2,
@@ -1340,21 +1344,46 @@ fn check_device_card_area(
     dead_slint_declares("ui/console/device_rack.slint", "device-rack");
     dead_slint_declares("ui/console/device_rack.slint", "device-rack-empty");
 
-    // ---- 活的替代面：Tab 2 下控制台导轨区 —— 只有 3 个非容器节点，逐对不相交。
+    // ---- 活的替代面：Tab 2 下控制台导轨区 —— 导轨键逐对不相交。
+    // 空链时插件面板是空面板，`ui/lower_dock.slint:686` 的"＋ 插件与 ARA…"开钮
+    // `plugin-panel-empty-open-button` 会进树（1920 档实测在场；小档内容区短、
+    // 它被裁剪出树 ⇒ 不进两两判据，但只要在场就必须进，防"空面板的键与导轨键重叠"）。
+    // 有设备时空面板不存在 ⇒ 它必须全程缺席。
     let rail = bounds(&tree, "console-tab-rail");
+    let mut rail_controls: Vec<&str> = vec![
+        "console-maximize-button",
+        "macro-open-button",
+        "plugin-panel-open-button",
+    ];
+    let empty_plugin_button = tree
+        .find_by_id("plugin-panel-empty-open-button")
+        .map(bounds_of);
+    match (device_count, empty_plugin_button) {
+        (0, Some(button)) => {
+            assert!(
+                intersect(rail, button),
+                "[#187 卡片区 {tag} {width}x{height}] 空链的插件开钮在树里却落在导轨区外: {button:?}（导轨区 {rail:?}）"
+            );
+            rail_controls.push("plugin-panel-empty-open-button");
+        }
+        (0, None) => {}
+        (_, Some(button)) => {
+            panic!(
+                "[#187 卡片区 {tag} {width}x{height}] 有 {device_count} 台设备时空插件面板的开钮不该在场: {button:?}"
+            );
+        }
+        (_, None) => {}
+    }
+    let rail_count = rail_controls.len();
     report_line(&assert_pairwise(
         &tree,
         rail,
         Selection::Intersect,
-        &[
-            "console-maximize-button",
-            "macro-open-button",
-            "plugin-panel-open-button",
-        ],
+        &rail_controls,
         &format!("#187 设备链活面 {tag} {width}x{height}"),
     ));
     report_line(&format!(
-        "[#187 卡片区 {tag} {width}x{height}] 设备链旧 id 全是注册表登记＋死文件声明＋`if false` 门住＋活树缺席；模型设备 {device_count} 台不变；活导轨区 3 节点 0 相交"
+        "[#187 卡片区 {tag} {width}x{height}] 设备链旧 id 全是注册表登记＋死文件声明＋`if false` 门住＋活树缺席；模型设备 {device_count} 台不变；活导轨区 {rail_count} 节点 0 相交"
     ));
 }
 
@@ -1763,10 +1792,16 @@ fn check_ai_rail(width: u32, height: u32) {
     }
 
     // ---- 活的替代面：死按钮的回调 `open-musical-pr()` 仍能打开真的提案抽屉。
+    // `live_window_for` 只调 `build_main_window_with_console_tab`，不装
+    // `wire_proposal_drawer` —— 而 `open-musical-pr` 的**唯一**注册者在
+    // `wire_proposal_drawer`（`host.rs:7984`，`wire_view_callbacks` 里明确排除），
+    // 不装它直调回调就是空操作（2026-11-24 实测：抽屉打不开）。先装真的接线
+    // （`ProposalSource::none()`：零提案，与探针的空抽屉夹具一致），再调回调。
     assert!(
         tree.find_by_id("musical-pr-drawer").is_none(),
         "[#187 AI 右栏 {width}] 默认态提案抽屉必须不在树里"
     );
+    host::wire_proposal_drawer(live.ui(), yeban_app::proposals::ProposalSource::none());
     live.ui().invoke_open_musical_pr();
     let drawer_tree = runtime_tree(live.ui());
     assert!(
@@ -2025,10 +2060,6 @@ const MUSICAL_PR_EMPTY: &[&str] = &[
     "musical-pr-diff-legend",
     "musical-pr-empty-state",
 ];
-
-/// ⑦ 引擎错误横幅 —— 横幅本身 ＋ 横幅里新加的"去声音库"键（2026-11-24 活树实测，
-/// `engine-error-open-sound-library` 在横幅右端、`(W−168, 99, 112, 22)`）。
-const BANNER: &[&str] = &["engine-error-banner", "engine-error-open-sound-library"];
 
 /// 断点按**窗口宽**的活窗口（`#189` 的 compact 夹具）。
 ///
@@ -2934,12 +2965,18 @@ fn check_engine_error_banner(width: u32, height: u32) {
         (16, 92, width - 32, 36),
         "[#189 错误横幅 {width}x{height}] 横幅必须是 (16, 92, W−32, 36)"
     );
-    report_line(&assert_pairwise_owned(
-        &tree,
-        banner,
-        "engine-error-",
-        BANNER,
-        &format!("#189 错误横幅 {width}x{height}"),
+    // 横幅这组只有 2 个节点，且键是横幅的**子节点**（包容，不是并列）⇒ 不能把它俩
+    // 放进同一张两两表：`assert_pairwise_owned` 会把"键落在横幅内"报成重叠
+    // （2026-11-24 实测：`engine-error-banner` (16,92,1888,36) ⟂
+    // `engine-error-open-sound-library` (1752,99,112,22) —— 后者是前者的子节点）。
+    // 这组的两两关系由下面两条覆盖：横幅 ⟂ 每个状态栏控件（判据 ⑤）＋ 键整个落在
+    // 横幅内（`assert_inside`，文件末尾）。此处只报数，防"整段消失 ⇒ 0 相交"。
+    assert!(
+        tree.find_by_id("engine-error-open-sound-library").is_some(),
+        "[#189 错误横幅 {width}x{height}] 横幅里的键 `engine-error-open-sound-library` 必须在场"
+    );
+    report_line(&format!(
+        "[#189 错误横幅 {width}x{height}] 横幅 2 节点（横幅＋内键，包容关系，不进两两表）0 相交"
     ));
 
     let node = tree

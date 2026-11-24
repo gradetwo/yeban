@@ -12,7 +12,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（可寻址） | 四个入口按钮 + 小节标题 + 状态行共 6 个语义 ID 都**在运行时控件树里**，角色符合登记；初始回执是**空**（不是一个编造的读数） |
-//! | ②（状态按预期变） | 按下入口 ⇒ `MainWindow.module-status` 变成结构化回执，字段（路径 / 帧数 / 采样率 / 区域数 / 来源 / `origin=midi-input`）逐条对上；目标文件真的落盘、字节数与回执一致 |
+//! | ②（状态按预期变） | 按下入口 ⇒ `MainWindow.module-status` 变成结构化回执，字段（路径 / 帧数 / 采样率 / 区域数 / 来源 / `origin=midi-input`）逐条对上；目标文件真的落盘、字节数与回执一致 —— **导出是例外**：它的回执在 Tier-1 上恒空（无 event loop proxy），断言面是落盘 WAV 的头字段 ＋ 数据段哈希 |
 //! | ③（错误路径不 panic） | SFZ 源不存在 ⇒ 回执是 `outcome=error` + 稳定错误码，进程**不** panic，**不留半成品** |
 //! | ④（**硬件 MIDI 输入**，第五条入口） | 默认档 ⇒ 回执点名 `feature-disabled` 且措辞里带 `cargo build … --features midi-input`；`midi-input` 档 ⇒ 回执**结构化**（`ok` 或非 `feature-disabled` 的错误码）、进程**不** panic。⭐ 同一份判据在**两条 CI 腿**上各跑一次（`test` 与 `test (midi-input 特性)`）|
 //! | ⑤（跨线程那一跳） | 注入替身把"采集在飞"窗口拉住 ⇒ 中间态可观察、第二次触发被拒、替身读数逐字段进界面 |
@@ -20,17 +20,24 @@
 //!
 //! ## 判据 ② 的核心断言：装载过的 SFZ 真的改变了导出的音源
 //!
-//! 先 `load-sfz`（成功 ⇒ `wired_to_export=yes`），再 `export-wav`：第二次导出的回执里
-//! `source=` 必须带 `sfz`。这是"四个模块**接起来**了"（而不是四个独立按钮）的机械证据。
+//! 先 `load-sfz`（成功 ⇒ `wired_to_export=yes`），再 `export-wav`：第二次导出的
+//! WAV 数据段哈希必须与第一次（引擎-only）不同。这是"四个模块**接起来**了"
+//! （而不是四个独立按钮）的机械证据。
+//!
+//! ⚠ 导出**不读回执**：`export-wav` 在工作线程里跑，回执只经 `upgrade_in_event_loop`
+//! 写回 —— Tier-1 平台没有 event loop proxy ⇒ 回执永不到（见 [`wait_for_wav_export`]）。
+//! 导出成功的断言面是**落盘的 WAV 本身**（44 字节头字段 ＋ 数据段哈希）；
+//! 导入 / 装载 / 录音 / MIDI 输入仍是同步回执（`apply_module_receipt` 在 UI 线程上直接写）。
 //!
 //! ## 这条判据怎么变红
 //!
 //! - `.slint` 改了 / 删了任何一个 `accessible-id`，或 `elements.rs` 没跟上 ⇒ 判据 ① 红
 //!   （`elements.rs` 的 `slint_accessible_ids_and_registry_cover_each_other` 会在
 //!   **纯 Rust** 侧先红一次，两侧独立）；
-//! - `host::wire_module_actions` 不装回调 / 装错 arm ⇒ 回执仍为空 ⇒ 判据 ② 红；
+//! - `host::wire_module_actions` 不装回调 / 装错 arm ⇒ 导入 / 装载 / 录音的回执仍为空
+//!   ⇒ 判据 ② 红（导出是例外：它的回执在 Tier-1 上恒空，红的条件是"没落盘 / 头字段不对"）；
 //! - 目标路径不读 `ModulePaths`（界面写死）⇒ 判据 ② 断言的是**那个**路径 ⇒ 红；
-//! - 把 `load-sfz` 的乐器丢掉（不交给导出）⇒ 判据 ② 的 `source=…sfz…` 断言红；
+//! - 把 `load-sfz` 的乐器丢掉（不交给导出）⇒ 两次导出的数据段哈希相同 ⇒ 判据 ② 红；
 //! - 错误分支 panic（`.unwrap()` / `.expect()`）⇒ 判据 ③ 在**进程级**红。
 //!
 //! ## 依赖从哪来（红线 6 没有被削弱）
@@ -298,6 +305,94 @@ fn assert_nonempty_file(path: &Path) {
     );
 }
 
+/// 导出 WAV 的 44 字节 RIFF 头读数（判据 ②-0 / ②-2 的断言面）。
+struct WavHeader {
+    frames: u64,
+    sample_rate: u32,
+    channels: u16,
+    bits: u16,
+    bytes: u64,
+    /// 数据段的 FNV-1a 哈希 —— 两次导出的音频内容是否不同，只拿它比（⛔ 不逐字节比整文件）。
+    data_hash: u64,
+}
+
+/// 等导出工作线程把 WAV 写完，再读头。
+///
+/// ⚠ 为什么不读回执：`export-wav` 的导出在工作线程里跑（性能实测 P1-A），回执只
+/// 经 `upgrade_in_event_loop` 写回界面 —— 而 Tier-1 平台**没有 event loop proxy**
+/// ⇒ 那一步恒返回 `Err`、回执永不到（本文件判据 ④-a 的同一条登记）。
+/// 所以导出成功的断言面是**落盘的 WAV 本身**（头字段 ＋ 数据段哈希），不是状态行；
+/// 状态行恒空是平台限制的钉死事实（见 ②-0 的断言），不是"没按过"。
+/// 等的是"文件在 ＋ 大小连续两次读数不变"（防读到写一半的文件），上限 60s。
+fn wait_for_wav_export(path: &Path) -> WavHeader {
+    let mut last_len: Option<u64> = None;
+    let mut stable_rounds = 0;
+    let mut header = None;
+    for _ in 0..600 {
+        if let Ok(bytes) = std::fs::read(path) {
+            let len = bytes.len() as u64;
+            if len >= 44 && Some(len) == last_len {
+                stable_rounds += 1;
+                if stable_rounds >= 2 {
+                    header = Some(parse_wav_header(&bytes, len));
+                    break;
+                }
+            } else {
+                stable_rounds = 0;
+            }
+            last_len = Some(len);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    header.unwrap_or_else(|| {
+        panic!(
+            "60s 内导出没落盘或没写完 {}（最后一次读到的大小: {last_len:?}）",
+            path.display()
+        )
+    })
+}
+
+/// 44 字节 RIFF 头：`RIFF`/`WAVE` 魔数 ＋ 声道数（@22）＋ 采样率（@24）＋
+/// 位深（@34）＋ 数据段字节数（@40）⇒ 帧数 ＝ 数据段字节 ÷ 每帧字节。
+fn parse_wav_header(bytes: &[u8], len: u64) -> WavHeader {
+    assert!(
+        bytes.len() >= 44,
+        "WAV 头至少 44 字节（实得 {}）",
+        bytes.len()
+    );
+    assert_eq!(&bytes[0..4], b"RIFF", "不是 RIFF 文件");
+    assert_eq!(&bytes[8..12], b"WAVE", "不是 WAVE 文件");
+    let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
+    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
+    let bits = u16::from_le_bytes([bytes[34], bytes[35]]);
+    let data_bytes = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as u64;
+    assert!(channels > 0, "声道数必须是正数");
+    assert!(
+        bits > 0 && bits % 8 == 0,
+        "位深必须是 8 的倍数（实得 {bits}）"
+    );
+    let frame_bytes = u64::from(channels) * u64::from(bits) / 8;
+    assert_eq!(
+        data_bytes,
+        len - 44,
+        "数据段字节数 {data_bytes} 必须等于文件大小 {len} 减 44 字节头"
+    );
+    // FNV-1a（64 位）：只取数据段的哈希当"内容指纹"，头部时间戳类字段不参与。
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in &bytes[44..] {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    WavHeader {
+        frames: data_bytes / frame_bytes,
+        sample_rate,
+        channels,
+        bits,
+        bytes: len,
+        data_hash: hash,
+    }
+}
+
 #[test]
 fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state() {
     let scratch = Scratch::new();
@@ -481,35 +576,32 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
 
     // ---- ②-0 导出 WAV（还没装载 SFZ ⇒ 音源是引擎乐器）----
     ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
-    assert!(
-        ui.get_module_status_succeeded(),
-        "导出 WAV 应当成功: {receipt}"
-    );
-    assert_eq!(field_of(&receipt, "action"), "export-wav", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
+    // ⚠ 回执**恒空**：导出在工作线程里跑，回执只经 `upgrade_in_event_loop` 写回，
+    // Tier-1 平台没有 event loop proxy ⇒ 那一步恒 `Err`、回执永不到（见
+    // [`wait_for_wav_export`]）。所以这里不断言回执字段 —— 断言面是落盘的 WAV：
+    // 头字段（帧数 / 采样率 / 声道 / 位深 / 字节数）＋ 状态行恒空（平台限制的钉死事实）。
+    // 回执里的 `action`/`outcome`/`path`/`source` 在本测试里**不可验证**，不是"没测"，
+    // 是平台接不到 —— `source` 的"还没装 SFZ ⇒ 不是 SFZ"由 ②-2 的反向对照覆盖
+    // （两次导出的数据段哈希必须不同 ⇒ 第二次真的走了 SFZ）。
+    let header = wait_for_wav_export(&export);
+    assert_eq!(header.frames, 384000, "默认 8 秒 @48kHz");
+    assert_eq!(header.sample_rate, 48000, "采样率");
+    assert_eq!(header.channels, 2, "声道数");
+    assert_eq!(header.bits, 24, "位深");
     assert_eq!(
-        field_of(&receipt, "path"),
-        export.display().to_string(),
-        "{receipt}"
+        header.bytes,
+        std::fs::metadata(&export).expect("导出文件").len(),
+        "头 ＋ 数据段必须等于磁盘上的字节数"
     );
-    assert_eq!(field_of(&receipt, "frames"), "384000", "默认 8 秒 @48kHz");
-    assert_eq!(field_of(&receipt, "sample_rate"), "48000", "{receipt}");
-    assert_eq!(field_of(&receipt, "channels"), "2", "{receipt}");
-    assert_eq!(field_of(&receipt, "bits"), "24", "{receipt}");
-    assert!(
-        !field_of(&receipt, "source").contains("sfz"),
-        "还没装载 SFZ ⇒ 音源不该声称是 SFZ: {receipt}"
+    assert_eq!(
+        ui.get_module_status(),
+        "",
+        "导出回执在 Tier-1 上恒为空（`upgrade_in_event_loop` 无 event loop proxy ⇒ 永不到）；\
+         若它突然非空，说明平台接上了事件循环 —— 那时应改回断言回执字段"
     );
+    assert!(!ui.get_module_status_succeeded());
     assert_nonempty_file(&export);
-    assert_eq!(
-        std::fs::metadata(&export)
-            .expect("导出文件")
-            .len()
-            .to_string(),
-        field_of(&receipt, "bytes"),
-        "回执报的字节数必须等于磁盘上的字节数"
-    );
+    let engine_only_hash = header.data_hash;
 
     // ---- ②-1 装载 SFZ：区域数 + 一次音符探测 + `wired_to_export=yes` ----
     ui.invoke_load_sfz();
@@ -545,15 +637,20 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     );
 
     // ---- ②-2 再导出一次：音源必须变成那份 SFZ（四个模块真的接起来了）----
+    // 先删掉 ②-0 的产物再按 —— 否则"文件在 ＋ 大小稳定"会立刻命中旧文件，
+    // 等不到第二次写入。断言面同样是落盘的 WAV（回执恒空，见 ②-0）：
+    // 头字段仍是 8 秒 @48kHz / 立体声 / 24-bit，但数据段哈希必须与引擎-only 那份
+    // 不同 ⇒ 第二次导出真的走了刚装载的 SFZ（`wired_to_export=yes` 的落点）。
+    std::fs::remove_file(&export).expect("删掉 ②-0 的导出产物，等第二次写入");
     ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
-    assert!(
-        ui.get_module_status_succeeded(),
-        "装载 SFZ 之后的导出应当成功: {receipt}"
-    );
-    assert!(
-        field_of(&receipt, "source").contains("sfz"),
-        "装载过 SFZ 之后，导出的音源必须是那份 SFZ（否则四个入口只是四个独立按钮）: {receipt}"
+    let header = wait_for_wav_export(&export);
+    assert_eq!(header.frames, 384000, "默认 8 秒 @48kHz");
+    assert_eq!(header.sample_rate, 48000, "采样率");
+    assert_eq!(header.channels, 2, "声道数");
+    assert_eq!(header.bits, 24, "位深");
+    assert_ne!(
+        header.data_hash, engine_only_hash,
+        "装载过 SFZ 之后，导出的音频内容必须与引擎-only 那份不同（否则四个入口只是四个独立按钮）"
     );
 
     // ---- ②-3 导入 MIDI：音符进了工程、来源是 midi-input、可撤销 ----

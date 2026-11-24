@@ -270,7 +270,11 @@ fn the_gui_export_midi_entry_really_writes_a_smf_and_reports_it() {
     // ⭐ 活树里没有 `mixer-console`（`ConsoleTabs` 只剩 `if false` 兼容块）⇒
     // 用活信号验切换：`console-tab` 读数翻成 1，且调音台档才有的 `dock-master-mono`
     // 进树（Tab 0 里没有它）。
-    window.set_console_tab(1);
+    // ⚠ 不能只 `set_console_tab(1)`：控制台内容跟的是 `Theme.active-dock-tab`，
+    // 它只由 `apply-dock-tab` 写（`ui/app.slint:290` 的 `public function`；
+    // 只置 `console-tab` 时 `dock-master-mono` 仍不在树里，2026-11-24 实测）。
+    // 走产品同一条入口（`host.rs:25097` 与 `aether_real_project_live.rs:458` 同款）。
+    window.invoke_apply_dock_tab("mixer".into());
     assert_eq!(
         window.get_console_tab(),
         1,

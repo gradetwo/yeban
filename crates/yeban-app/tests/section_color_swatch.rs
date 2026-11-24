@@ -156,9 +156,12 @@ fn section_color_swatches_carry_the_projected_color() {
     }
 
     // ---- ④ 像素：采样段落带（合法色 / 非法回退）----
-    // 段落带几何（窗口坐标）：画布顶沿 + 泳道区顶沿偏移（和弦行 22px + 间隙）+
-    // 18px 带高中点；x = 时间轴原点（轨道头右沿 + 5px 分隔条）+ 该段投影列 +
-    // 段宽的 3/4（段名文本左对齐在 6px 处，3/4 点一定是纯底色）。
+    // 段落带几何（窗口坐标）：画布顶沿 + 9 = 18px 带高中点（带在画布顶沿，
+    // 填色 y = 画布顶沿+1..17，上下各 1px 边框）；x = 时间轴原点（轨道头右沿 +
+    // 5px 分隔条）+ 该段投影列 + 段宽的 3/4（段名文本左对齐在 6px 处，3/4 点一定是纯底色）。
+    // ⚠ 旧式子（画布顶沿 ＋ 泳道区顶沿偏移 ＋ 9）采到的是 y=124 的泳道区背景
+    // （2026-11-24 探针列剖面：y=89 边框、90..105 带填色、106 边框、107..113
+    // 底壳色、115 起泳道区）；泳道区顶沿与段落带无关，带就贴着画布顶沿。
     let canvas = tree
         .find_by_id("workspace-arrangement-canvas")
         .expect("控件树里必须有编曲画布")
@@ -169,13 +172,8 @@ fn section_color_swatches_carry_the_projected_color() {
         .expect("控件树里必须有轨道头")
         .bounds
         .expect("轨道头必须有几何");
-    let lanes = tree
-        .find_by_id("arr-lanes-flickable")
-        .expect("控件树里必须有泳道区")
-        .bounds
-        .expect("泳道区必须有几何");
     let origin_x = header.x + header.width as i32 + 5;
-    let band_y = canvas.y + (lanes.y - canvas.y) + 9;
+    let band_y = canvas.y + 9;
     let sample = |index: usize| -> [u8; 3] {
         let section = &view.sections[index];
         let x = origin_x + (section.x + section.width * 0.75) as i32;

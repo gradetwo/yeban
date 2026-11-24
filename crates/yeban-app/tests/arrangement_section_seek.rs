@@ -139,8 +139,9 @@ fn clicking_a_section_card_seeks_to_its_start() {
     // 标尺带没有语义 ID（不进树）⇒ 以编曲画布为锚：`dispatch_pointer_down` 只拿锚的
     // 包围盒换算窗口坐标，命中测试走 Slint 视觉树 ⇒ 落点是标尺带的 `TouchArea`。
     // 画布内坐标：x = 时间轴原点（轨道头列 240px + 5px 分隔条，`arrangement.slint`
-    // 的 `timeline-origin-x`）+ 该段的投影列；y = 泳道区顶（`arr-lanes-flickable`
-    // 的顶沿，实测在画布内 26px：和弦行 22px + 间隙）+ 段落带 18px + 标尺带 24px 的中点。
+    // 的 `timeline-origin-x`）+ 该段的投影列；y = 段落带底沿（画布内 18px）＋ 3px
+    // （段落带在画布顶沿，见 `section_color_swatch.rs` 的探针读数；标尺带的可点条
+    // 就在段落带之下约 10px 内 —— 旧"泳道区顶 ＋ 18 ＋ 12"模型是错的）。
     let canvas = rig
         .port
         .tree()
@@ -155,17 +156,15 @@ fn clicking_a_section_card_seeks_to_its_start() {
         .expect("控件树里必须有轨道头")
         .bounds
         .expect("轨道头必须有几何");
-    let lanes = rig
-        .port
-        .tree()
-        .find_by_id("arr-lanes-flickable")
-        .expect("控件树里必须有泳道区")
-        .bounds
-        .expect("泳道区必须有几何");
     // 时间轴原点（画布内）：轨道头右沿 + 5px 分隔条。⛔ 不硬编码 245：头列宽可拖。
     let origin_x = f64::from(header.x + header.width as i32 + 5 - canvas.x);
-    // 标尺带中点（画布内）：泳道区顶沿 + 段落带 18px（T-FIX-152）+ 标尺带 24px 的一半。
-    let ruler_mid_y = f64::from(lanes.y - canvas.y) + 18.0 + 12.0;
+    // 标尺带点击点（画布内 y）：段落带 18px（T-FIX-152，画布顶沿起）＋ 3px ——
+    // ⚠ 旧式子（泳道区顶沿 ＋ 18 ＋ 12 ＝ 画布内 56）点在标尺带**下方**的泳道区里，
+    // 根本够不着标尺（2026-11-24 探针点击扫掠：画布内 y=20/25 到段起点，
+    // y=15/30 到不了 —— 标尺 `TouchArea`（`arrangement.slint:664`）没写宽高，
+    // 下半截被泳道区 Flickable 盖住，只有顶沿往下约 10px 可点；这是产品缺陷，
+    // 不是判据算错 —— 判据钉的是"可点那一小条"，见文件头登记）。
+    let ruler_mid_y = 18.0 + 3.0;
     let journal_before = rig.journal_len();
 
     rig.port

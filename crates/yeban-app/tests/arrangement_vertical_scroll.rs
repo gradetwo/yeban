@@ -16,7 +16,7 @@
 //! | ②（向下滚两个行距 ⇒ 仍在树里的每一行上移该距离） | `PointerScrolled{delta_y=-2×行距}` ⇒ 两次快照交集的每个包头 y 恰好减该距离，且更大索引的行进入树中；再向上滚同样距离 ⇒ 快照复原（⚠ 符号：上游把 `content-y` 夹在 `[h−ch, 0]` 且 delta **不取反** ⇒ 静止位上正 `delta_y` 被夹回 0，什么也不动） |
 //! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
 //! | ④（画布 / 泳道区不动） | 滚动只动行区**内容**：`workspace-arrangement-canvas` 与 `arr-lanes-flickable` 自身的几何逐位不变，包头 x 也不变（旧标尺 `arrangement-ruler` 与段落卡 `section-0-card` 已随死文件删掉，不再进控件树） |
-//! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
+//! | ⑤（内容不高 ⇒ 一位不动） | 5 轨夹具滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移）—— ⚠ 6 轨的演示工程内容高 422 ＞ 视口 406，会合法地滚 16px，不是这个判据的夹具 |
 //! | ⑥（前置：内容高注入到位） | 主窗口的 `arrangement-sheet-height` = 夹具最后一行底沿 − 行区上沿，且**高出窗口** —— 没有它，上游 `Flickable` 的 `is_allowed_scroll_direction` 恒 false ⇒ 滚轮被**静默忽略并转发给父级**（`41208446082` 那票"一位都不动"的红就有两个独立原因：内容高别名 + 滚轮符号，见账本 §4） |
 //!
 //! ## 边界（不许当成已证）
@@ -82,6 +82,33 @@ fn project_with_24_extra_tracks() -> YebanProjectV1 {
             },
         );
     }
+    project
+}
+
+/// 5 轨夹具（判据⑤）：演示工程去掉末轨"打击"（T6）。
+///
+/// 为什么是 5 轨不是 6 轨：6 轨时 sheet=334，内容高 = 334＋42＋46＝422，比
+/// 1440×900 档的行区视口 406 高 **16px** ⇒ Flickable 合法地滚 16px
+/// （2026-11-24 实测：6 行齐齐上移 16px）—— 判据⑤证的就不是"不溢出"。
+/// 5 轨时 sheet=278，内容高 366 ＜ 406，真贴合。
+/// 去掉的是末轨：剪辑只落在前三轨（`samples.rs` 的 placements 是 slot 0/1/2），
+/// 末轨无剪辑；路由边 R6（T6→主总线）与路由节点一并摘掉，防悬空边。
+fn project_with_5_tracks() -> YebanProjectV1 {
+    let mut project = demo_project();
+    let removed = *project.tracks.keys().last().expect("演示工程必须有轨");
+    let removed_name = project
+        .tracks
+        .get(&removed)
+        .expect("末轨必须在场")
+        .name
+        .clone();
+    assert_eq!(removed_name, "打击", "去掉的必须是末轨（无剪辑的那条）");
+    project.tracks.remove(&removed);
+    project
+        .routing_graph
+        .edges
+        .retain(|_, edge| edge.source_node != removed && edge.destination_node != removed);
+    project.routing_graph.nodes.retain(|node| *node != removed);
     project
 }
 
@@ -184,7 +211,7 @@ impl Rig {
         let window_height = WINDOW.height as f32;
         assert!(
             injected < window_height,
-            "演示工程内容高 {injected} 必须不高出窗口 {window_height}，否则判据⑤证的不是'不溢出'"
+            "夹具内容高 {injected} 必须不高出窗口 {window_height}，否则判据⑤证的不是'不溢出'"
         );
     }
 
@@ -340,10 +367,17 @@ fn scrolling_does_not_move_the_canvas_or_the_lanes() {
         lanes_before,
         "泳道区自身不随行区滚动"
     );
+    // ⚠ 滚 400px 后 track-0 已被虚拟化出树（判据③证过），不能再读它的包头 ——
+    // 读**滚后仍在树里的首行**：所有包头 x 相同（头列宽固定），x 不变即"只纵向移动"。
+    let (first_visible, _) = rig
+        .visible_rows()
+        .first()
+        .copied()
+        .expect("滚动后必有可见行");
     assert_eq!(
-        rig.bounds_of("track-0-header").x,
+        rig.bounds_of(&format!("track-{first_visible}-header")).x,
         header_x_before,
-        "包头只纵向移动，x 不变"
+        "包头只纵向移动，x 不变（滚后首行是第 {first_visible} 行）"
     );
     // 段落带与标尺带是画布内的非寻址绘制（无 accessible-id），不在树里 ——
     // 它们不随行区内容滚动的事实由画布几何不动 + 行区内容 y 移动（判据②）共同覆盖。
@@ -355,11 +389,22 @@ fn scrolling_does_not_move_the_canvas_or_the_lanes() {
     );
 }
 
-/// ⑤：内容不高出可视区（演示工程 6 轨）⇒ 滚轮一位不动。
+/// ⑤：内容不高出可视区（5 轨夹具）⇒ 滚轮一位不动。
+///
+/// ⚠ 6 轨的演示工程**不是**这个判据的夹具：内容高 422 ＞ 视口 406，Flickable
+/// 合法地滚 16px（见 [`project_with_5_tracks`]）。这里钉真门：内容高
+/// （sheet＋42＋46）必须小于行区视口高（`arr-lanes-flickable` 的现读高），
+/// 再滚轮验"一位不动"。
 #[test]
 fn short_projects_do_not_scroll() {
-    let mut rig = Rig::with_project(demo_project());
+    let mut rig = Rig::with_project(project_with_5_tracks());
     rig.assert_content_fits();
+    let content = rig.sheet_height() + 42.0 + 46.0;
+    let viewport = rig.bounds_of("arr-lanes-flickable").height as f32;
+    assert!(
+        content < viewport,
+        "5 轨夹具内容高 {content} 必须小于行区视口高 {viewport}，否则判据⑤证的不是'不溢出'"
+    );
 
     let before: Vec<i32> = (0..rig.view.tracks.len())
         .map(|index| rig.y_of(&format!("track-{index}-header")))
