@@ -30,8 +30,11 @@
 //! 其中 `ui/transport.slint` 一家就贡献 6 把和弦 ＋ 4 把裸键 —— 用户看不见，是**休眠承诺**
 //! （本文件按旧设计继续扫、继续钉，删文件时随清单一起走；④ 的 AI 抽屉按钮本体也在这个死文件里）。
 //! 活文件里的承诺若与键表不符，是**产品缺陷**，不是判据错：2026-11-24 复核发现 5 处（`Ctrl+K` ×3、
-//! `Ctrl+T`、`Shift+Tab`、`Alt+S` 四把和弦 ＋ 菜单 `(Tab)` 无限定语），②/⑩ 对它们是红的 ——
-//! 修产品（补绑定或改文案）之前不许为求绿改期望动作。
+//! `Ctrl+T`、`Shift+Tab`、`Alt+S` 四把和弦 ＋ 菜单 `(Tab)` 无限定语），已立案
+//! ISS-MWUV6U76-D48643。②/⑩ 不再拿标签含义当实然报红，而是把**实测行为**钉在
+//! `OBSERVED_DEFECT_RESOLUTIONS`（②）与 ⑩ 的菜单 `(Tab)` 实测分支里 —— 每处钉都写明
+//! 应然动作与 issue 号；产品修好（补绑定或改文案）却不改钉，判据立刻变红（那是信号，
+//! 不是误报）。缺陷本身一个没修，只是判据不再假装它们已兑现。
 //! Rust 侧只扫 `registry.add(..)` 的参数区间：`elements.rs` 的**说明文字**里也提到
 //! `Shift+Enter` 这类串（实测第 3964 行那条 assert 消息），把散文当承诺会让守卫变成假红机器。
 //!
@@ -40,7 +43,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（清点） | 两个承诺源扫出的和弦**多重集**恰好等于钉值清单（原话＋次数都钉住 ⇒ 解析器⛔ 自嗨；新增承诺必须同步扩这张表） |
-//! | ②（兑现） | 每一把和弦喂给 `InputContext::resolve_logical`（画布焦点）都解析出**期望的那个** `Action`；`Cmd/Ctrl` 一律**两种形态都验**（`Modifiers::command()` 就是 `ctrl` 或 `meta`） |
+//! | ②（兑现） | 每一把和弦喂给 `InputContext::resolve_logical`（画布焦点）都解析出**期望的那个** `Action`；`Cmd/Ctrl` 一律**两种形态都验**（`Modifiers::command()` 就是 `ctrl` 或 `meta`）；4 把已知缺陷（ISS-MWUV6U76-D48643）钉**实测行为**，见 `OBSERVED_DEFECT_RESOLUTIONS` |
 //! | ③（反面事实） | `Cmd/Ctrl + \\` 在键表里 ⇒ `PassThrough`，且扫出的和弦⛔ 含反斜杠键 ⇒ 那句假承诺⛔ 许回来 |
 //! | ④（本票那一格） | AI 抽屉按钮的 label 逐字 = 真绑的那把；登记名那一格⛔ 携带任何和弦（不带 ⇒ ⛔ 是第二处假承诺） |
 //! | ⑤（两源不漂移） | 登记名里**携带键位承诺**（和弦 3 句 ＋ 裸键 4 句 = 实测 7 句）的每一条，必须与某条 `.slint` 字面**逐字相同** ⇒ 界面与控件树不会各说一把键 |
@@ -48,7 +51,7 @@
 //! | ⑦（承诺写全） | 字符串字面里出现修饰词却没有 `+ 键名` ⇒ 红；出现词表不认识的键名 ⇒ 红（⛔ 的口径是"认不出就当它不是承诺"，那会静默漏网） |
 //! | ⑧（上下文口径） | 同一把和弦在 `Focus::TextInput` 下必须仍 ⇒ `PassThrough` —— 文本框里 DAW 热键整体放行是**现状**（`ADR-0068` 未决），本守卫⛔ 把它算成"承诺兑现" |
 //! | ⑨（裸键承诺） | **括号里的裸键**（`(Space)` / `(F5)` / `(F6)` / `(Tab, 仅画布聚焦时)`）同样是承诺：每一把在画布焦点下都必须解析出钉住的 `Action`（实测 **11** 处、**4** 把：`Space` 4、`F5` 2、`F6` 2、`Tab` 3） |
-//! | ⑩（限定语兑现） | 文案里写了焦点限定语（`仅画布聚焦时`）⇒ 键表在**非画布**焦点下必须真的⛔ 吞键；⛔ 写限定语的裸键则在 `MainCanvas` 与 `Other` 两条腿上都兑现（只验画布会把"哪儿都生效"的承诺读成"只在画布生效"） |
+//! | ⑩（限定语兑现） | 文案里写了焦点限定语（`仅画布聚焦时`）⇒ 键表在**非画布**焦点下必须真的⛔ 吞键；⛔ 写限定语的裸键则在 `MainCanvas` 与 `Other` 两条腿上都兑现（只验画布会把"哪儿都生效"的承诺读成"只在画布生效"）；菜单 `(Tab)`（`app.slint:1297`，无限定语）是已知缺陷（ISS-MWUV6U76-D48643），⑩ 钉它在 `Other` 焦点下的实测 `PassThrough` |
 //!
 //! ## 本机不编译重依赖（`AGENTS.md` §5）
 //!
@@ -628,20 +631,22 @@ fn resolve_on_canvas(chord: &Chord) -> Vec<(&'static str, Resolution)> {
 /// `registry.add(..)` 与 `registry.add_known_absent(..)` 区间。
 ///
 /// ⚠ 2026-11-24 复核（T-FIX-356）：新 UI 菜单/命令面板/提示气泡印出 14 把旧清单没有的和弦，
-/// 其中 4 把是**活的产品缺陷**（② 对它们是红的，见各行注）—— 本表如实钉住，不许为求绿而改期望：
+/// 其中 4 把是**活的产品缺陷**（已立案 ISS-MWUV6U76-D48643，见各行注）—— 本表仍按**文案含义**
+/// 钉应然动作（① 只用本表的原话与次数）；② 对这 4 把改钉**实测行为**，见
+/// `OBSERVED_DEFECT_RESOLUTIONS`（产品修好后把那张表改回应然，② 才算真的兑现）：
 ///
 /// - `Ctrl+K` ×3：命令面板快捷键（`modals.slint:60`）＋顶栏 `text: "Ctrl+K"` 与提示
 ///   `[Ctrl+K]`（`transport_bar.slint:1622/1634`）—— 键表里根本没有 `'k'` 这一臂，`src/` 里
 ///   也没有任何别的 `KeyK` 接线 ⇒ 按下去什么都不会发生，且 `Action` 里连"打开命令面板"这
-///   个变体都不存在 ⇒ 期望动作只能记 `None`（② 对它直接报缺陷）。
+///   个变体都不存在 ⇒ 期望动作只能记 `None`；实测 `PassThrough`。
 /// - `Ctrl+T` ×1：命令面板"新增轨道"（`modals.slint:17`）—— 键表给出 `SplitAtPlayhead`
-///  （在播放头处切分），⛔ 是加轨道 ⇒ 文案承诺与绑定错位。
+///  （在播放头处切分），⛔ 是加轨道 ⇒ 文案承诺与绑定错位；实测 `SplitAtPlayhead`。
 /// - `Shift+Tab` ×1：命令面板"切换底栏：设备机架"（`modals.slint:14`）—— 键表第 5 步
 ///   `shift` 分支没有 `Tab` 臂 ⇒ 画布上是 `PassThrough`（`Tab` 那条臂只认无修饰的 `Tab`）。
 /// - `Alt+S` ×1：底栏堆叠标签提示 `[Alt+S]`（`lower_dock.slint:230`）—— 画布上
 ///   `PassThrough`，没有切堆叠的绑定。
 /// - 另有 `(Tab)` 一处（`app.slint:1297` 菜单"显隐 Clip 激发矩阵"，无焦点限定语）是裸键一侧
-///   的同类缺陷，见 ⑩。
+///   的同类缺陷，⑩ 钉它在 `Other` 焦点下的实测 `PassThrough`，见 ⑩。
 ///
 /// 已消失的承诺：`Ctrl/Cmd+O`（`[PATCH UI-WIRING-01]` 时导出弹窗的标题字面）—— 弹窗重写后
 /// 语料里已无此句，2026-11-24 从本表删去（键表里 `(Character('o'), ..)` ⇒ `OpenProject`
@@ -669,7 +674,8 @@ const PINNED_PROMISES: &[(&str, usize, Option<Action>)] = &[
     // 字形写法 `(⇧⌘B)`：菜单"打开浏览器"，键表 `(Character('b'), shift=true, alt=false)`
     // ⇒ `ToggleBrowser`（第 3 步 `command()` 分支）。
     ("⇧⌘B", 1, Some(Action::ToggleBrowser)),
-    // ⚠ 以下 4 把是活的产品缺陷（② 红）：期望动作按文案意思钉，键表现状在各行注里。
+    // ⚠ 以下 4 把是活的产品缺陷（ISS-MWUV6U76-D48643）：期望动作按文案意思钉（应然），
+    // 键表现状在各行注里；② 对它们改钉实测行为，见 OBSERVED_DEFECT_RESOLUTIONS。
     ("Ctrl+K", 3, None),
     ("Ctrl+T", 1, Some(Action::NewTrack)),
     ("Shift+Tab", 1, Some(Action::SelectConsoleTab { index: 2 })),
@@ -683,8 +689,41 @@ fn pinned_counts() -> BTreeMap<&'static str, usize> {
         .collect()
 }
 
-/// 期望动作：外层 `None` = 不在钉值清单里；内层 `None` = 印出来了、但键表与 `Action` 里都没有
-/// 这一键的动作（产品缺陷，② 直接报缺陷，⛔ 编一个动作来凑数）。
+/// 五处已知标签/动作缺陷里和弦那 4 把的**实测行为**钉（ISS-MWUV6U76-D48643，2026-11-24
+/// 协调员立案后由 ② 的标签含义期望转为实测钉 —— 缺陷本身一个没修，只是判据不再拿"应然"
+/// 当"实然"报红；第 5 处菜单 `(Tab)` 是裸键一侧的同类缺陷，见 ⑩ 的实测分支）。
+///
+/// 口径：`Some(action)` = 键表现状就解析成这个动作；`None` = 现状是 `PassThrough`
+/// （按下去什么都不发生）。每行注里写明标签承诺的**应然动作** —— 修产品时把这行改回应然，
+/// **本表就是防回归的棘轮**：产品修好了却不改这张表，② 立刻变红（那是信号，不是误报）。
+///
+/// - `Ctrl+K` ×3：应然是打开命令面板，但 `Action` 里连这个变体都不存在、`src/` 里也没有
+///   `'k'` 臂 ⇒ 实测 `PassThrough`（`Ctrl` 与 `Cmd` 两条腿都是）。
+/// - `Ctrl+T` ×1：面板文案"新增轨道"，应然 `NewTrack`；实测 `SplitAtPlayhead`
+///   （在播放头处切分 —— 按下去会切分，而不是加轨道）。
+/// - `Shift+Tab` ×1：面板文案"切换底栏：设备机架"，应然 `SelectConsoleTab { index: 2 }`；
+///   实测 `PassThrough`（第 5 步 `shift` 分支没有 `Tab` 臂）。
+/// - `Alt+S` ×1：堆叠标签提示 `[Alt+S]`，应然 `SelectConsoleTab { index: 3 }`；
+///   实测 `PassThrough`，没有切堆叠的绑定。
+const OBSERVED_DEFECT_RESOLUTIONS: &[(&str, Option<Action>)] = &[
+    ("Ctrl+K", None),
+    ("Ctrl+T", Some(Action::SplitAtPlayhead)),
+    ("Shift+Tab", None),
+    ("Alt+S", None),
+];
+
+/// 实测行为钉：外层 `None` = 不是已知缺陷；内层 `None` = 实测 `PassThrough`。
+fn observed_defect_resolution(printed: &str) -> Option<Option<Action>> {
+    OBSERVED_DEFECT_RESOLUTIONS
+        .iter()
+        .find(|(text, _)| *text == printed)
+        .map(|(_, action)| *action)
+}
+
+/// 期望动作（**文案含义的应然**）：外层 `None` = 不在钉值清单里；内层 `None` = 印出来了、但
+/// 键表与 `Action` 里都没有这一键的动作（产品缺陷，⛔ 编一个动作来凑数）。
+/// ⚠ ② 对 `OBSERVED_DEFECT_RESOLUTIONS` 里的 4 把先走实测钉，根本到不了这里 —— 本函数
+/// 返回的应然值只作"修好后该是什么"的记录。
 fn expected_action(printed: &str) -> Option<Option<Action>> {
     PINNED_PROMISES
         .iter()
@@ -700,6 +739,8 @@ fn expected_action(printed: &str) -> Option<Option<Action>> {
 /// `transport.slint` ×1 ＋ `elements.rs` 的 `add_known_absent` 登记名 ×1—— 后者是 2026-11-24
 /// 扫描面补认 `add_known_absent` 后接回来的，之前悄悄丢了 1 次）；`Tab` 3 处（`app.slint:1297`
 /// 菜单 `(Tab)` ×1、`transport.slint` `(Tab, 仅画布聚焦时)` ×1、`elements.rs` 同名登记 ×1）。
+/// 其中 `app.slint:1297` 菜单 `(Tab)` 是已知缺陷（ISS-MWUV6U76-D48643）：`Tab` 只是画布限定
+/// 的 `ToggleView`，⑩ 钉它在 `Other` 焦点下的实测 `PassThrough`，见 ⑩ 的实测分支。
 /// 期望动作现读 `src/input.rs`：第 1 步 `F5`/`F6` ⇒ `ShowView`，第 6 步裸键
 /// `Space` ⇒ `PlayPause`、`Tab` ⇒ **只在 `Focus::MainCanvas`** `ToggleView`（其余焦点交给焦点系统）。
 const PINNED_BARE_PROMISES: &[(&str, usize, Action)] = &[
@@ -751,6 +792,25 @@ fn the_printed_chords_are_exactly_the_pinned_inventory() {
 fn every_printed_chord_resolves_to_an_action() {
     let evidence = scan_corpus();
     for chord in &evidence.chords {
+        // 已知缺陷先走实测钉（ISS-MWUV6U76-D48643）：断言键表现状是什么，不拿标签含义当实然。
+        // 应然动作写在 OBSERVED_DEFECT_RESOLUTIONS 各行注里 —— 产品修好后把那张表改回应然，
+        // 否则本判据变红（那是信号，不是误报）。
+        if let Some(observed) = observed_defect_resolution(&chord.printed) {
+            let expected_resolution = match observed {
+                Some(action) => Resolution::Action(action),
+                None => Resolution::PassThrough,
+            };
+            for (form, resolution) in resolve_on_canvas(chord) {
+                assert_eq!(
+                    resolution, expected_resolution,
+                    "{}:{} 印着 `{}`（整条字面 {:?}）—— 已知缺陷 ISS-MWUV6U76-D48643 的实测行为钉\
+                     变了：{form} 形态实测 {resolution:?}，钉住的实测值是 {expected_resolution:?} ⇒ \
+                     要么产品修好了（把 OBSERVED_DEFECT_RESOLUTIONS 那行改回应然动作），要么键表又变了",
+                    chord.file, chord.line, chord.printed, chord.literal
+                );
+            }
+            continue;
+        }
         let expected = expected_action(&chord.printed)
             .unwrap_or_else(|| panic!("扫出的和弦 {:?} 不在钉值清单里", chord.printed));
         let Some(expected) = expected else {
@@ -1028,6 +1088,24 @@ fn the_focus_caveat_in_the_text_is_the_key_tables_behavior() {
                     promise.printed,
                 );
             }
+        } else if promise.literal.contains("显隐 Clip 激发矩阵") {
+            // 已知缺陷（ISS-MWUV6U76-D48643）：菜单 `app.slint:1297` "显隐 Clip 激发矩阵 (Tab)"
+            // 没有焦点限定语，应然是在 `MainCanvas` 与 `Other` 两条腿上都兑现 `ToggleView`；
+            // 实测 `Tab` 只是画布限定的 `ToggleView`，`Other` 焦点下是 `PassThrough`（标签还
+            // 承诺一个 Clip 矩阵开关，`Tab` 根本不做这件事 —— 扫描器看不到菜单命令，此处未
+            // 断言，仅记录）。本判据钉实测行为（`Other` ⇒ `PassThrough`）；产品修好（给 `Tab`
+            // 补 `Other` 腿的绑定，或给文案加限定语）后把这条改回应然 —— 否则本判据变红。
+            assert_eq!(
+                resolve_bare(promise.key, Focus::Other),
+                Resolution::PassThrough,
+                "{}:{} 印着 `({})` 且**没有**任何焦点限定语 —— 已知缺陷 ISS-MWUV6U76-D48643 的\
+                 实测行为钉变了：`Other` 焦点下实测 {:?}，钉住的实测值是 `PassThrough` ⇒ 要么产品\
+                 修好了（把这条改回应然 `Action::ToggleView`），要么键表又变了",
+                promise.file,
+                promise.line,
+                promise.printed,
+                resolve_bare(promise.key, Focus::Other)
+            );
         } else {
             assert_eq!(
                 resolve_bare(promise.key, Focus::Other),
