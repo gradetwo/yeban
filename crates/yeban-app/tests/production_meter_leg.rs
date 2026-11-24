@@ -792,4 +792,20 @@ fn probe_meter_leg_diff_localization_tmp() {
         .collect();
     eprintln!("PROBE hot_cols(>20): {hot_cols:?}");
     eprintln!("PROBE top_rows: {row_counts_top:?}");
+    // 左侧两根竖线是什么：列出覆盖 (76,300) 与 (153,300) 的全部可寻址节点 + 时间码节点。
+    window.port.refresh_tree(None).expect("重抓控件树");
+    for (px, py) in [(76, 300), (153, 300), (660, 60)] {
+        for n in window.port.tree().iter() {
+            if let Some(b) = n.bounds {
+                if px >= b.x && px < b.x + b.width as i32 && py >= b.y && py < b.y + b.height as i32 {
+                    eprintln!("PROBE covers ({px},{py}): {} role={:?} bounds={:?}", n.id, n.role, b);
+                }
+            }
+        }
+    }
+    for n in window.port.tree().iter() {
+        if n.id.contains("timecode") || n.id.contains("playhead") {
+            eprintln!("PROBE timecode/playhead node: {} bounds={:?}", n.id, n.bounds);
+        }
+    }
 }
