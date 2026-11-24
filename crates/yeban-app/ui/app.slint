@@ -1737,6 +1737,18 @@ export component MainWindow inherits Window {
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
                     sheet-height: root.arrangement-sheet-height;
+                    // ⭐ T-FIX-227：自动化泳道接进**活**编曲视图（修前 `arrangement.slint`
+                    //   里 `automation` 命中 0 ⇒ 9 个投影属性只写不读、Ctrl+Shift+A 无变化）。
+                    automation-visible: root.automation-visible;
+                    automation-lane-target-keys: root.automation-lane-target-keys;
+                    automation-lane-track-indexes: root.automation-lane-track-indexes;
+                    automation-lane-labels: root.automation-lane-labels;
+                    automation-lane-axis-labels: root.automation-lane-axis-labels;
+                    automation-lane-band-ys: root.automation-lane-band-ys;
+                    automation-lane-band-heights: root.automation-lane-band-heights;
+                    automation-lane-read-enabled: root.automation-lane-read-enabled;
+                    automation-lane-badges: root.automation-lane-badges;
+                    automation-path-commands: root.automation-path-commands;
                     scroll-x: root.roll-scroll-x * 1px;
                     selected-clip-ulid: root.selected-clip-ulid;
                     selected-clip-ulids: root.selected-clip-ulids;
@@ -1749,6 +1761,8 @@ export component MainWindow inherits Window {
                         root.selected-track-index = t-id;
                         root.track-selected(t-id);
                     }
+                    // ⭐ T-FIX-227：泳道点击的落点是宿主既有 `wire_automation_lane_click`。
+                    automation-lane-click(x, y) => { root.automation-lane-click(x, y); }
                     toggle-mute(t-id) => { root.track-toggle-mute(t-id); }
                     toggle-solo(t-id) => { root.track-toggle-solo(t-id); }
                     toggle-arm(t-id) => { root.track-toggle-arm(t-id); }
