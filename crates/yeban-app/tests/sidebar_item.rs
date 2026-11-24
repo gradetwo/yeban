@@ -6,9 +6,9 @@
 //! 宿主 `sidebar_item` 三条字符串核对）。数据面仍活：条目投影经
 //! `host::inject_sidebar` 注入 `MainWindow.sidebar-items`，选中态写
 //! `MainWindow.sidebar-item`。活窗口辅助里命名已删语义 ID 的 `present_items`
-//! 随本次删除一并移除；其余通用辅助（`live_window` / `bounds_of` / `swatch_of` /
-//! `click` / `fixtures` / `install_fake_library`）是迁移留下的死代码，不引用已删
-//! 面板，留待后续清理（见收据）。
+//! 随本次删除一并移除；通用辅助（`live_window` / `bounds_of` / `swatch_of` /
+//! `click`）已由 T-FIX-395 删除（见收据）；`fixtures` / `install_fake_library` 是
+//! 数据夹具，T-FIX-395 按简报保留（见收据）。
 //!
 //! **左侧资源栏条目 = 投影，选中态 = 视图态** —— 端到端判据。
 //!
@@ -58,34 +58,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use yeban_app::bridge::{self, ViewState};
-use yeban_app::elements::{ElementKind, ElementRegistry};
-use yeban_app::host;
 use yeban_app::samples::{MANIFEST_RELATIVE, SAMPLE_LIBRARY_ENV};
-use yeban_app::scene::DemoScene;
-use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::{Permission, PointerButton, Rect, Size, UiTestPort as _};
-
-/// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
-const WINDOW: Size = Size::new(1440, 900);
-
-/// 去掉 `//` 行注释与行尾注释后的**代码文本**（⑥ 的三条读都先过这里）。
-///
-/// 为什么必须去注释：本票把「删掉了哪条假数字」写进了 `sidebar.slint` 的注释里
-/// （审计留痕，与 `src/elements.rs` 的 `code_only` 同一口径）。探针若把注释也算成
-/// "界面里的字面量"，`!contains("SFZ · 323")` 就会红在**留痕本身**上 —— 那等于逼作者
-/// 不写留痕，与本仓库的纪律相反。⚠ 这一格同时是**反向**防线：注释里出现的
-/// `for … in root.items` 之类代码形状也不许算作"接上了"。
-fn code_only(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| match line.split_once("//") {
-            Some((code, _comment)) => code,
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// 夹具乐器：`assets/samples/manifest.json` 里的三个 `id`（逐字）。
 ///
@@ -179,60 +152,6 @@ fn install_fake_library() {
         unsafe { std::env::set_var(SAMPLE_LIBRARY_ENV, &dir) };
         dir
     });
-}
-
-fn live_window() -> (LivePort<yeban_app::ui::MainWindow>, ViewState) {
-    install_fake_library();
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-    // 生产接线（`main.rs` 与无头装配调的是**同一个**函数）。
-    host::wire_view_callbacks(port.ui());
-    // ⭐ 条目 / 分类的**取数**接线：`host::wire_sidebar_contents`（钳位读当次投影条数）。
-    host::wire_sidebar_contents(
-        port.ui(),
-        std::rc::Rc::new(std::cell::RefCell::new(view.clone())),
-    );
-    (port, view)
-}
-
-fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
-    port.refresh_tree(None)
-        .expect("必须能重抓控件树")
-        .find_by_id(id)
-        .unwrap_or_else(|| panic!("运行时控件树里找不到 `{id}`"))
-        .bounds
-        .unwrap_or_else(|| panic!("`{id}` 必须有几何包围盒"))
-}
-
-/// 抓一帧，取某个条目内部一点的 RGB。
-///
-/// 采样点取「左内边距 3px、垂直居中」：条目文字从 `space-3`（6px）开始左对齐，
-/// 垂直中心远离 `radius-sm`（2px）圆角 ⇒ 该点只可能是纯背景色。
-/// ⚠ 采样点必须避开**文字**：字形覆盖率随平台系统字体而变（CI run `40969319851`
-/// 实测：条目 0 的首字形在 `x+6` 处有抗锯齿像素，踩上文字就把字体栅格差异带进了
-/// 「选中色搬家」等式）。
-fn swatch_of(port: &LivePort<yeban_app::ui::MainWindow>, bounds: Rect) -> [u8; 3] {
-    let image = port.window().capture().expect("Tier-1 截图");
-    let x = u32::try_from(bounds.x + 3).expect("条目在窗口内");
-    let y = bounds.y + i32::try_from(bounds.height / 2).expect("高度是正数");
-    let y = u32::try_from(y).expect("条目在窗口内");
-    image
-        .pixel(x, y)
-        .unwrap_or_else(|| panic!("采样点 ({x}, {y}) 必须在 {WINDOW:?} 帧内"))
-}
-
-fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect) {
-    let x = f64::from(bounds.width) / 2.0;
-    let y = f64::from(bounds.height) / 2.0;
-    port.dispatch_pointer_down(id, x, y, PointerButton::Left)
-        .expect("指针按下必须落到活窗口");
-    port.dispatch_pointer_up(PointerButton::Left)
-        .expect("指针释放必须落到活窗口");
 }
 
 // ⭐ T-FIX-218：`present_items` 已删 —— 它在运行时树里找已删的

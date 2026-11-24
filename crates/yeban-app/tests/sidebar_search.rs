@@ -9,7 +9,7 @@
 //! `sidebar-search` 双向绑定。活窗口辅助里命名已删语义 ID 的两处（`FIELD` /
 //! `present_items`）随本次删除一并移除；其余通用辅助（`live_window` /
 //! `bounds_of` / `click` / `oracle` / `pick_fragment` / `pick_mismatch_suffix` /
-//! `code_only`）是迁移留下的死代码，不引用已删面板，留待后续清理（见收据）。
+//! `code_only`）是迁移留下的死代码，不引用已删面板，已由 T-FIX-395 删除（见收据）。
 //!
 //! **左侧资源栏的搜索框：真输入框 ＋ 真过滤**（任务单 `D-UI-14`）—— 端到端判据。
 //!
@@ -51,145 +51,8 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒ 装**窗口**的
 //! `#[test]` 本文件只有一个；另一个 `#[test]` 只做纯函数对账（⛔ 不碰 Slint）。
 
-#![allow(unused)]
-use yeban_app::bridge::{self, SidebarCategoryContent, ViewState};
-use yeban_app::elements::{ElementKind, ElementRegistry};
-use yeban_app::host;
-use yeban_app::scene::DemoScene;
-use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::{KeyCode, Permission, PointerButton, Rect, Size, UiTestPort as _};
-
-/// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
-const WINDOW: Size = Size::new(1440, 900);
-
-/// 去掉 `//` 行注释与行尾注释后的**代码文本**（⑨ 的每一条读都先过这里）。
-///
-/// 与 `tests/sidebar_item.rs` 同一口径：注释里的"曾经长什么样"（留痕）不许被当成
-/// "现在接上了"，也不许被当成"还有那份假数据"。
-fn code_only(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| match line.split_once("//") {
-            Some((code, _comment)) => code,
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn live_window() -> (LivePort<yeban_app::ui::MainWindow>, ViewState) {
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-    // 生产接线（`main.rs` / 无头装配 / 本判据调的是**同一个**函数）。
-    host::wire_view_callbacks(port.ui());
-    host::wire_sidebar_contents(
-        port.ui(),
-        std::rc::Rc::new(std::cell::RefCell::new(view.clone())),
-    );
-    (port, view)
-}
-
-fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
-    port.refresh_tree(None)
-        .expect("必须能重抓控件树")
-        .find_by_id(id)
-        .unwrap_or_else(|| panic!("运行时控件树里找不到 `{id}`"))
-        .bounds
-        .unwrap_or_else(|| panic!("`{id}` 必须有几何包围盒"))
-}
-
-fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect) {
-    let x = f64::from(bounds.width) / 2.0;
-    let y = f64::from(bounds.height) / 2.0;
-    port.dispatch_pointer_down(id, x, y, PointerButton::Left)
-        .expect("指针按下必须落到活窗口");
-    port.dispatch_pointer_up(PointerButton::Left)
-        .expect("指针释放必须落到活窗口");
-}
-
 // ⭐ T-FIX-218：`present_items` 已删 —— 它在运行时树里找已删的
 // `sidebar-item-{i}`（`ui/sidebar.slint` 已删，无调用者）。
-
-/// 独立 oracle：小写子串 `contains`，保序。⚠ 它**不是**把
-/// `bridge::filter_sidebar_content` 的输出抄一遍（那是自我确认），而是用标准库
-/// 把"子串过滤"这句话本身表达出来。
-fn oracle(items: &[String], query: &str) -> Vec<String> {
-    if query.is_empty() {
-        return items.to_vec();
-    }
-    let needle = query.to_lowercase();
-    items
-        .iter()
-        .filter(|name| name.to_lowercase().contains(&needle))
-        .cloned()
-        .collect()
-}
-
-/// 从夹具名字里挑一个**只命中一部分**条目的 ASCII 片段。
-///
-/// ⛔ 不写死 `"9"` 之类的字面量：素材池的内容由 `filled_project()` 决定，写死的片段
-/// 会在上游换夹具时**静默失效**（片段命中全部条目 ⇒ 过滤"看起来"没起作用，而断言
-/// `rows == oracle` 依然绿）。这里扫遍每条名字的 ASCII 字母数字串的所有窗口，
-/// 取第一个"命中数在 `(0, 条数)` 开区间内"的片段；找不到就**响亮地**失败。
-fn pick_fragment(items: &[String]) -> String {
-    let lower: Vec<String> = items.iter().map(|name| name.to_lowercase()).collect();
-    let mut candidates: Vec<String> = Vec::new();
-    for name in &lower {
-        let mut run: Vec<char> = Vec::new();
-        let mut runs: Vec<Vec<char>> = Vec::new();
-        for ch in name.chars() {
-            if ch.is_ascii_alphanumeric() {
-                run.push(ch);
-            } else if !run.is_empty() {
-                runs.push(std::mem::take(&mut run));
-            }
-        }
-        if !run.is_empty() {
-            runs.push(run);
-        }
-        for letters in runs {
-            for len in 1..=letters.len() {
-                for start in 0..=(letters.len() - len) {
-                    let window: String = letters[start..start + len].iter().collect();
-                    if !candidates.contains(&window) {
-                        candidates.push(window);
-                    }
-                }
-            }
-        }
-    }
-    for candidate in &candidates {
-        let matched = lower
-            .iter()
-            .filter(|name| name.contains(candidate.as_str()))
-            .count();
-        if matched > 0 && matched < items.len() {
-            return candidate.clone();
-        }
-    }
-    panic!(
-        "夹具的 {} 条素材池名字里找不到「只命中一部分」的 ASCII 片段：{items:?} \
-         ⇒ 本判据需要至少两条、且至少一条含 ASCII 字母数字的资源池投影（改夹具请连本判据一起看）",
-        items.len()
-    );
-}
-
-/// 挑一个字符 `ch`，使 `fragment + ch` **一条都不命中**（⑤ 的输入，同样不写死）。
-fn pick_mismatch_suffix(items: &[String], fragment: &str) -> char {
-    let lower: Vec<String> = items.iter().map(|name| name.to_lowercase()).collect();
-    for ch in 'a'..='z' {
-        let probe = format!("{fragment}{ch}");
-        if !lower.iter().any(|name| name.contains(probe.as_str())) {
-            return ch;
-        }
-    }
-    panic!("26 个字母全都能与 `{fragment}` 拼成一次命中 ⇒ 夹具形态与本判据的前提不符：{items:?}");
-}
 
 #[test]
 fn typing_in_the_sidebar_search_field_filters_the_injected_projection() {

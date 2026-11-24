@@ -7,7 +7,7 @@
 //! 分类号经 `select-sidebar-category` 交宿主钳位后写 `MainWindow.sidebar-category`。
 //! 活窗口辅助里与已删注册表标签逐字的 `CATEGORY_LABELS` 随本次删除一并移除；其余
 //! 通用辅助（`live_window` / `bounds_of` / `swatch_of` / `click`）是迁移留下的
-//! 死代码，不引用已删面板，留待后续清理（见收据）。
+//! 死代码，不引用已删面板，已由 T-FIX-395 删除（见收据）。
 //!
 //! **左侧资源栏分类切换**（`sidebar-category-{0,1,2}-button`）—— 端到端判据。
 //!
@@ -33,69 +33,8 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/console_maximize.rs` / `tests/ui_bpm_field.rs` 同款）。
 
-#![allow(unused)]
-use yeban_app::bridge::ViewState;
-use yeban_app::elements::{ElementKind, ElementRegistry};
-use yeban_app::host;
-use yeban_app::scene::DemoScene;
-use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::{Permission, PointerButton, Rect, Size, UiTestPort as _};
-
-/// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
-const WINDOW: Size = Size::new(1440, 900);
-
 // ⭐ T-FIX-218：`CATEGORY_LABELS` 已删 —— 它与已删的 `sidebar-category-{i}-button`
 // 注册表标签逐字一致（`elements.rs` 里那族登记已随 `ui/sidebar.slint` 一起删除），无调用者。
-fn live_window() -> (LivePort<yeban_app::ui::MainWindow>, ViewState) {
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-    // 生产接线（`main.rs` 与无头装配调的是**同一个**函数）。
-    host::wire_view_callbacks(port.ui());
-    // ⭐ 分类 / 条目点击现在住在 `host::wire_sidebar_contents`（换分类 ⇒ 条目数组跟着换，
-    // 需要一份投影）。判据接的是**同一个**函数，⛔ 不是另一条捷径。
-    host::wire_sidebar_contents(
-        port.ui(),
-        std::rc::Rc::new(std::cell::RefCell::new(view.clone())),
-    );
-    (port, view)
-}
-
-fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
-    port.refresh_tree(None)
-        .expect("必须能重抓控件树")
-        .find_by_id(id)
-        .unwrap_or_else(|| panic!("运行时控件树里找不到 `{id}`"))
-        .bounds
-        .unwrap_or_else(|| panic!("`{id}` 必须有几何包围盒"))
-}
-
-/// 抓一帧，取某个标签内部一点的 RGB。
-///
-/// 采样点取「左内边距 6px、垂直居中」：避开圆角（`radius-sm`）与居中文字。
-fn swatch_of(port: &LivePort<yeban_app::ui::MainWindow>, bounds: Rect) -> [u8; 3] {
-    let image = port.window().capture().expect("Tier-1 截图");
-    let x = u32::try_from(bounds.x + 6).expect("分类标签在窗口内");
-    let y = bounds.y + i32::try_from(bounds.height / 2).expect("高度是正数");
-    let y = u32::try_from(y).expect("分类标签在窗口内");
-    image
-        .pixel(x, y)
-        .unwrap_or_else(|| panic!("采样点 ({x}, {y}) 必须在 {WINDOW:?} 帧内"))
-}
-
-fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect) {
-    let x = f64::from(bounds.width) / 2.0;
-    let y = f64::from(bounds.height) / 2.0;
-    port.dispatch_pointer_down(id, x, y, PointerButton::Left)
-        .expect("指针按下必须落到活窗口");
-    port.dispatch_pointer_up(PointerButton::Left)
-        .expect("指针释放必须落到活窗口");
-}
-
 #[test]
 fn clicking_a_sidebar_category_switches_the_view_state_and_the_highlight() {
     // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。

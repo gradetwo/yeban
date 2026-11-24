@@ -4081,15 +4081,6 @@ pub fn library_instrument_names() -> Vec<String> {
 // 投影路径不跑探针）；乐器分类只读 [`library_instruments`]（清单 × 库根，不读样本）。
 // ---------------------------------------------------------------------------
 
-/// 侧栏资源分类的**固定顺序**（下标 = `MainWindow.sidebar-category`）。
-///
-/// ⚠ T-FIX-218：它曾是 `elements.rs` 注册表与 `sidebar.slint` 分类标签的唯一来源；
-/// 那族登记与旧面板已删，如今它是分类词汇表（供 [`sidebar_category_content`] 与
-/// 宿主钳位按下标取数）。各 `.slint` 里的同字面量（`"乐器"` / `"采样"` / `"预置"`）
-/// 是手抄 `@tr` —— 改分类名须同步改它们与 8 个 po 词条，⛔ 不再各写一份
-/// `["乐器", "采样", "预置"]` 的第二份 Rust 常量。
-pub const SIDEBAR_CATEGORIES: [&str; 3] = ["乐器", "采样", "预置"];
-
 /// 乐器分类**空**时的理由 —— 逐字复用既有常量（[`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]），
 /// ⛔ 不再编第二套说法。无头 / CI 环境就是这一档。
 pub const SIDEBAR_EMPTY_INSTRUMENTS_REASON: &str = INSTRUMENT_INSTALL_NO_BUILTIN_REASON;

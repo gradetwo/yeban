@@ -8205,7 +8205,7 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
     ui.set_module_status_succeeded(true);
 }
 
-/// 左侧资源栏的分类数（3，见 `bridge::SIDEBAR_CATEGORIES`；旧 `ui/sidebar.slint`
+/// 左侧资源栏的分类数（3；旧 `ui/sidebar.slint`
 /// 的 `for category_index in 3` 已随文件删除，见 T-FIX-218）。
 ///
 /// 宿主用它钳位点击回调：越界请求（例如 `invoke_select_sidebar_category(7)`）落不到界面上。

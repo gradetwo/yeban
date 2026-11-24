@@ -197,7 +197,7 @@ impl ElementRegistry {
         // [`crate::bridge::sidebar_category_content`] 的投影仍由宿主
         // `host::inject_sidebar` 注入 `MainWindow.sidebar-items`（左栏搜索框经
         // `sidebar-search` 双向绑定），那条链路由 `tests/sidebar_*.rs` 的契约面
-        // 判据钉住。`SIDEBAR_CATEGORIES`（`bridge.rs`）仍是分类词汇表（3 项）。
+        // 判据钉住。
 
         // ------------------------------------------------------------ 顶栏走带
         //
