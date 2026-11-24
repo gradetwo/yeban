@@ -6,7 +6,9 @@
 //! - 那个文件同时是 `[[test]] name = "test_port_adapter"`，挂在
 //!   `required-features = ["ui-test-port"]` 后面。该 feature 默认关闭，而 CI 目前没有任何
 //!   一步启用它（`.github/workflows/ci.yml` 里那一步被集成者按纪律暂时移除），
-//!   于是它**从未被编译过** —— commit `66b002c` / run 37223586792 的实测就是 8 处编译错误。
+//!   于是它**曾长期没有被编译**；commit `66b002c` / run 37223586792 当时的实测是 8 处编译错误
+//!   —— ⚠ 那是当时的状态，2026-11-24 实测该目标已能通过
+//!   `cargo check -p yeban-app --test test_port_adapter --features ui-test-port`。
 //! - 本目标是 `tests/` 下的**自动发现**集成测试，`cargo test -p yeban-app --all-targets`
 //!   一定会编译并运行它；依赖通过 `[dev-dependencies] yeban-ui-test-port` 提供。
 //! - dev-dependencies **不进入** release 构建：`cargo build -p yeban-app`（含 `--release`）

@@ -286,6 +286,10 @@ rfd = { workspace = true }
 
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
+#
+# ⚠ `ui-test-port` 是**测试目标开关**, 不是产品能力开关: 它只给下面的
+# `[[test]] test_port_adapter` 当 `required-features`, `src/` 内零 `cfg` 命中。
+# 名字里的 "port" 指那条无头 UI 自动化测试端口, 只在该测试目标里被 `#[path]` 装进来。
 ui-test-port = ["dep:yeban-ui-test-port"]
 
 # `test-support`: ⭐ **判据注入开关**（T-FIX-303）。
@@ -363,15 +367,20 @@ experimental-logic-import = ["yeban-render/experimental-logic-import"]
 # ---------------------------------------------------------------------------
 # dev-dependencies: 让真实界面的 Tier-1 判据**真的被执行**
 # ---------------------------------------------------------------------------
-# 为什么需要这一条 (实测, 不是偏好):
-#   1. `src/test_port_adapter.rs` 同时是 `[[test]] test_port_adapter` 的源码, 而那个目标
-#      挂在 `required-features = ["ui-test-port"]` 后面 —— 该 feature 默认关闭,
-#      且 CI 目前没有任何一步启用它 (集成者按纪律暂时移除了那一步);
-#   2. 后果: 那条判据**从未被编译过**。commit 66b002c / run 37223586792 的实测是
-#      `cargo test -p yeban-app --features ui-test-port` 直接编译失败 (8 处错误);
-#   3. 于是新增 `tests/real_ui_tier1.rs`: 一个**自动发现**的集成测试目标,
+# 为什么需要这一条 (现状, 2026-11-24 实测):
+#   1. `src/test_port_adapter.rs` 同时是 `[[test]] test_port_adapter` 的源码, 那个目标
+#      挂在 `required-features = ["ui-test-port"]` 后面。⭐ `ui-test-port` 的**真实语义**
+#      就是这一个 `[[test]]` 目标的开关 —— 它在 `src/` 里 `cfg(feature = "ui-test-port")`
+#      **零命中**, ⛔ 不给产品库加任何能力 (别把它当功能开关读)。
+#   2. CI 目前没有任何一步启用它, 所以默认 `cargo test` 不会编译那条目标。
+#      ⚠ 历史坑 (已不成立): commit 66b002c / run 37223586792 曾实测
+#      `cargo test -p yeban-app --features ui-test-port` 编译失败 (8 处错误) ——
+#      那是那时的状态, 后续改动已修掉; 现在
+#      `cargo check -p yeban-app --test test_port_adapter --features ui-test-port` 通过。
+#      这里保留的是"CI 未启用", ⛔ 不是"编译不过"。
+#   3. 主力判据走 `tests/real_ui_tier1.rs`: 一个**自动发现**的集成测试目标,
 #      `cargo test -p yeban-app --all-targets` 一定会跑它。它用 `#[path]` 引入同一份判据源码,
-#      依赖只可能来自这里。
+#      依赖只可能来自这里。两条路径都保留。
 #
 # 为什么不违反"内省能力不进默认构建" (AGENTS.md §2 红线 6 的精神):
 #   dev-dependencies **只**参与 test/example/bench 目标的构建, 不参与 `cargo build`

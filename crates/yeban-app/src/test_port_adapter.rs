@@ -15,8 +15,11 @@
 //!
 //! 为什么必须有第 2 个入口（实测，不是偏好）：第一个入口挂在默认关闭的 feature 后面，
 //! 而 CI 目前没有任何一步启用该 feature（`.github/workflows/ci.yml` 里那一步被集成者
-//! 按纪律暂时移除），于是**它从未被编译过** —— commit `66b002c` / run 37223586792 的
-//! 实测就是 8 处编译错误（`image` 未绑定 ×6、`report_evidence` / `report_capability` 缺 `use`）。
+//! 按纪律暂时移除），于是它**曾长期没有被编译**；commit `66b002c` / run 37223586792 当时
+//! 的实测是 8 处编译错误（`image` 未绑定 ×6、`report_evidence` / `report_capability` 缺 `use`）。
+//! ⚠ 那是**当时**的状态：2026-11-24 实测
+//! `cargo check -p yeban-app --test test_port_adapter --features ui-test-port` **已通过**，
+//! 8 处错误被后续改动修掉了；现在缺的只是"CI 启用这一步"，⛔ 不是"编译不过"。
 //! dev-dependencies **不进入** release 构建，因此 `AGENTS.md` §2 红线 6 与
 //! `Cargo.toml` 里"内省能力不进默认构建"的契约没有被削弱（`cargo build -p yeban-app`
 //! 的依赖图不变，可用 `cargo tree -p yeban-app -e normal` 核验）。
