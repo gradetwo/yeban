@@ -25890,6 +25890,13 @@ pub fn wire_aether_actions(
                             .project_dir()
                             .map(|dir| dir.join("project.yeban"))
                             .unwrap_or_else(|| out_dir.join("project.yeban"));
+                        // ⭐ T-FIX-188：资产池与保存同一来源（`UndoPort::assets()`）——
+                        //   装配点（`main.rs` 的 `--open` / `open_archive_runtime`）已把
+                        //   归档的 `assets/{sha256}` 换进这只端口；空池会让内嵌样本
+                        //   的轨静音（`render::resolve_asset`：索引有、池里无 ⇒ 登记 + 静音）。
+                        //   与 CLI（`cli.rs` 的 `&loaded.archive.assets`）和 TUI
+                        //   （`yeban-tui` 的 `archive.assets.clone()`）同口径。⛔ 不写死空池。
+                        let assets = port.assets();
                         let worker = w.clone();
                         let out_for_msg = out_dir.clone();
                         let _ = std::thread::spawn(move || {
@@ -25898,7 +25905,7 @@ pub fn wire_aether_actions(
                                 &project_path,
                                 &out_dir,
                                 None,
-                                &[],
+                                &assets,
                             );
                             let _ = worker.upgrade_in_event_loop(move |ui| match result {
                                 Ok(report) => ui.set_toast_message(
