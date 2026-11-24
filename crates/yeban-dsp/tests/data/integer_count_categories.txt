@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 353 条：collection_size 72 ／ value_bound 267 ／ element_value_bound 5 ／ condition_counter 9
+# 合计 362 条：collection_size 72 ／ value_bound 273 ／ element_value_bound 6 ／ condition_counter 11
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -174,6 +174,13 @@ src/meter.rs|true_peak_oversampling_is_either_eight_or_sixteen|value_bound|asser
 src/meter.rs|true_peak_sees_the_intersample_overshoot|value_bound|assert!(             (sample_peak - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,        
 src/meter.rs|true_peak_steady_state_underread_is_within_the_documented_budget|value_bound|assert!(                 reading >= floor,                 "8× 在 f={frequency}·fs 的稳态读数是 {
 src/meter.rs|zero_input_is_negative_infinity_or_floor_never_nan|value_bound|assert_eq!(reading.peak_dbfs(), f32::NEG_INFINITY
+src/modal.rs|a_single_resonator_voice_maps_note_and_velocity|element_value_bound|assert!(low_out.iter().any(|s| s.abs() > 1e-5), "A3 必须真的发声"
+src/modal.rs|beam_law_morphs_string_to_quadratic|condition_counter|assert!((beam_ratio(n, 0.0) - f).abs() < 1e-4, "mix=0 是柔弦"
+src/modal.rs|configured_resonator_respects_the_mode_cap|value_bound|assert!(r.active_modes() > 0 && r.active_modes() <= MAX_MODES
+src/modal.rs|damping_ramp_and_gain_compensation_are_bounded|value_bound|assert!((modal_damping(1.0, 0.01, 0.02) - 0.01).abs() < 1e-6
+src/modal.rs|membrane_and_plate_laws_match_the_cookbook|condition_counter|assert!((membrane_ratio(m, n, a) - libm::sqrtf(mf) / libm::sqrtf(2.0)).abs() < 1e-4
+src/modal.rs|string_law_is_harmonic_with_stiffness_stretch|value_bound|assert!((plain - k as f32).abs() < 1e-4, "B=0 必须是谐波列"
+src/modal.rs|two_d_index_enumerates_each_pair_once|value_bound|assert_eq!(             first,             vec![                 (1, 1),                 (
 src/noise.rs|a_corner_below_the_documented_floor_is_folded_onto_the_floor|value_bound|assert_eq!(render(below), at_floor, "转折频率 {below} Hz 必须折到 1 Hz"
 src/noise.rs|brown_falls_at_six_db_per_octave|value_bound|assert!(             (measured + 6.0).abs() < 0.8,             "brown slope should be abou
 src/noise.rs|pink_falls_at_three_db_per_octave|value_bound|assert!(             (measured + 3.0).abs() < 0.6,             "pink slope should be about
@@ -351,8 +358,10 @@ src/vocal_timemap.rs|render_identity_is_deterministic|collection_size|assert_eq!
 src/vocal_timemap.rs|render_same_seed_deterministic_across_seeds|value_bound|assert_eq!(seed0_a, seed0_b, "seed 0 renders must be identical"
 src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"
 src/voice_filter.rs|allpass_is_flat_in_magnitude|value_bound|assert!(db.abs() < 0.2, "{f} Hz 处应平坦（≈0 dB），实测 {db}"
+src/voice_filter.rs|gain_filters_shape_the_spectrum|value_bound|assert!((at - 12.0).abs() < 0.5, "pkf_2p 峰值应 ≈ +12 dB，实测 {at}"
 src/voice_filter.rs|one_pole_lowpass|value_bound|assert!((y - 1.0).abs() < 1e-3, "阶跃终值应趋近 1，实测 {y}"
 src/voice_filter.rs|poisoned_middle_section_recovers_cleanly|value_bound|assert_eq!(section.v1, 0.0
 src/voice_filter.rs|resonance_is_the_gain_at_cutoff|value_bound|assert!(                 (at_cutoff - 12.0).abs() < 0.5,                 "{kind:?} 在截止处应约 
+src/voice_filter.rs|retune_cutoff_keeps_the_gain|value_bound|assert!(             (at - 12.0).abs() < 0.6,             "retune 后峰值仍应 ≈ +12 dB，实测 {at}"
 src/voice_filter.rs|tdf2_matches_transfer_function_and_retunes_without_spike|value_bound|assert!((y0 - filter.sections[0].b0).abs() < 1e-7
-src/voice_filter.rs|voice_filter_size_is_pinned|value_bound|assert_eq!(std::mem::size_of::<VoiceFilter>(), 96
+src/voice_filter.rs|voice_filter_size_is_pinned|value_bound|assert_eq!(std::mem::size_of::<VoiceFilter>(), 100

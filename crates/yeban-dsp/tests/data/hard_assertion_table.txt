@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 448 条：float_bits 95 ／ integer_count 353；其中 hard 92 ／ platform 0
+# 合计 459 条：float_bits 97 ／ integer_count 362；其中 hard 93 ／ platform 0
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -244,6 +244,15 @@ integer_count | no_callee | 0 | - | src/meter.rs | true_peak_oversampling_is_eit
 integer_count | no_callee | 0 | - | src/meter.rs | true_peak_sees_the_intersample_overshoot
 integer_count | no_callee | 0 | - | src/meter.rs | true_peak_steady_state_underread_is_within_the_documented_budget
 integer_count | no_callee | 0 | - | src/meter.rs | zero_input_is_negative_infinity_or_floor_never_nan
+integer_count | no_callee | 0 | - | src/modal.rs | a_single_resonator_voice_maps_note_and_velocity
+integer_count | no_callee | 0 | - | src/modal.rs | beam_law_morphs_string_to_quadratic
+integer_count | no_callee | 0 | - | src/modal.rs | configured_resonator_respects_the_mode_cap
+integer_count | no_callee | 0 | - | src/modal.rs | damping_ramp_and_gain_compensation_are_bounded
+float_bits | no_callee | 0 | - | src/modal.rs | impulse_response_is_audible_decaying_and_bit_deterministic
+integer_count | no_callee | 0 | - | src/modal.rs | membrane_and_plate_laws_match_the_cookbook
+float_bits | hard | 2 | - | src/modal.rs | noise_burst_is_deterministic_and_finite
+integer_count | no_callee | 0 | - | src/modal.rs | string_law_is_harmonic_with_stiffness_stretch
+integer_count | no_callee | 0 | - | src/modal.rs | two_d_index_enumerates_each_pair_once
 integer_count | no_callee | 0 | - | src/noise.rs | a_corner_below_the_documented_floor_is_folded_onto_the_floor
 float_bits | hard | 3 | - | src/noise.rs | a_second_seed_and_the_zero_seed_are_frozen_bit_for_bit
 integer_count | no_callee | 0 | - | src/noise.rs | brown_falls_at_six_db_per_octave
@@ -446,9 +455,11 @@ integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_same_seed_dete
 integer_count | no_callee | 0 | - | src/vocal_timemap.rs | render_silence_stays_silence
 integer_count | no_callee | 0 | - | src/voice_filter.rs | allpass_is_flat_in_magnitude
 float_bits | hard | 3 | - | src/voice_filter.rs | bypass_is_bit_exact
-float_bits | hard | 12 | - | src/voice_filter.rs | non_finite_input_and_poisoned_state_recover_cleanly
+integer_count | no_callee | 0 | - | src/voice_filter.rs | gain_filters_shape_the_spectrum
+float_bits | hard | 15 | - | src/voice_filter.rs | non_finite_input_and_poisoned_state_recover_cleanly
 integer_count | no_callee | 0 | - | src/voice_filter.rs | one_pole_lowpass
 integer_count | no_callee | 0 | - | src/voice_filter.rs | poisoned_middle_section_recovers_cleanly
 integer_count | no_callee | 0 | - | src/voice_filter.rs | resonance_is_the_gain_at_cutoff
+integer_count | no_callee | 0 | - | src/voice_filter.rs | retune_cutoff_keeps_the_gain
 integer_count | no_callee | 0 | - | src/voice_filter.rs | tdf2_matches_transfer_function_and_retunes_without_spike
 integer_count | no_callee | 0 | - | src/voice_filter.rs | voice_filter_size_is_pinned
