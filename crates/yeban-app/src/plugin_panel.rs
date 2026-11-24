@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use yeban_decode::{DecodeOptions, decode_path};
 use yeban_model::{AssetHash, DeviceDefinition, DeviceKind, EntityId, PluginBinding};
 use yeban_plugin_host::ara::{AraClip, AraClipKind, AraPlacement, AraSession};
-use yeban_plugin_host::{Host, PluginInstance, PluginKind};
+use yeban_plugin_host::{Host, PluginInstance, PluginKind, PluginState};
 
 use crate::save::write_file_atomically;
 
@@ -187,6 +187,161 @@ pub fn guard_plugin_path(path: &str) -> Result<(), String> {
     Host::validate_plugin_path(path)
         .map(|_| ())
         .map_err(|error| format!("插件路径校验失败，拒绝加载: {error}"))
+}
+
+/// JSFX 选择入口的路径门（GUI 专用；MCP 不接 VST3，见 T-FIX-362 的关单裁决）。
+///
+/// 规则：必须存在、必须是文件、后缀必须是 `.jsfx`（大小写不敏感）；通过后返回
+/// **规范化绝对路径**（ysfx 的 `path` 属性要求完整路径）。
+///
+/// # Errors
+///
+/// 不存在 / 不是文件 / 后缀不对 / 规范化失败 ⇒ 带原文的响亮错误。
+pub fn guard_jsfx_path(path: &str) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("JSFX 路径为空：请选择一个 .jsfx 文件".to_owned());
+    }
+    let candidate = Path::new(path);
+    if !candidate.exists() {
+        return Err(format!("JSFX 文件不存在: {path}"));
+    }
+    if !candidate.is_file() {
+        return Err(format!("JSFX 路径不是文件: {path}"));
+    }
+    let is_jsfx = candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsfx"));
+    if !is_jsfx {
+        return Err(format!("不是 .jsfx 文件: {path}"));
+    }
+    std::fs::canonicalize(candidate)
+        .map(|absolute| absolute.to_string_lossy().into_owned())
+        .map_err(|error| format!("JSFX 路径规范化失败: {error}"))
+}
+
+/// 写一个 JUCE `ValueTree` 字符串：UTF-8 后跟 NUL（无长度前缀）。
+fn vt_write_string(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(text.as_bytes());
+    out.push(0);
+}
+
+/// JUCE `OutputStream::writeCompressedInt`（非负值；7 字节上限内）。
+///
+/// 低字节在前，首字节是字节数（负数会置 0x80；本处只写非负值）。
+fn vt_write_compressed_int(out: &mut Vec<u8>, value: i32) {
+    let mut un = value.unsigned_abs();
+    let mut data = [0u8; 5];
+    let mut num = 0usize;
+    while un > 0 && num < 4 {
+        num += 1;
+        data[num] = (un & 0xFF) as u8;
+        un >>= 8;
+    }
+    let mut first = num as u8;
+    if value < 0 {
+        first |= 0x80;
+    }
+    out.push(first);
+    out.extend_from_slice(&data[1..=num]);
+}
+
+/// JUCE `var` 的整数编码：长度 5（压缩串 + marker + int32），小端 `int32`。
+fn vt_write_var_int(out: &mut Vec<u8>, value: i32) {
+    vt_write_compressed_int(out, 5);
+    out.push(1); // varMarker_Int
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+/// JUCE `var` 的字符串编码：压缩长度 = UTF-8 字节数 + 2（含 NUL 与 marker），
+/// marker 5，随后 UTF-8 与 NUL。
+fn vt_write_var_string(out: &mut Vec<u8>, text: &str) {
+    let len = text.len() + 1;
+    vt_write_compressed_int(out, i32::try_from(len + 1).unwrap_or(i32::MAX));
+    out.push(5); // varMarker_String
+    vt_write_string(out, text);
+}
+
+/// 构造 ysfx 的最小 VST3 状态：`ValueTree("ysfx")` 只带 `version=1` 与 `path`。
+///
+/// 这正是 ysfx `setStateInformation` 认的格式（`plugin/processor.cpp`）：
+/// 没有 `state` 子节点时按路径重新加载 JSFX 本体，滑块取默认值。
+#[must_use]
+pub fn ysfx_state_blob(jsfx_path: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    vt_write_string(&mut out, "ysfx");
+    vt_write_compressed_int(&mut out, 2); // 两个属性：version / path
+    vt_write_string(&mut out, "version");
+    vt_write_var_int(&mut out, 1);
+    vt_write_string(&mut out, "path");
+    vt_write_var_string(&mut out, jsfx_path);
+    vt_write_compressed_int(&mut out, 0); // 没有子节点
+    out
+}
+
+/// 装载 ysfx 并把所选 JSFX 以 VST3 `setState` 注入，返回**规范状态**的设备定义。
+///
+/// 只有 GUI 侧会调用；MCP 的 `yeban_load_plugin` 保持 `state: Vec::new()` 不动
+/// （T-FIX-362 已关单，MCP 不接 VST3）。注入后立刻 `save_state`，把插件自己写回的
+/// 状态（而不是我们手搓的 blob）落进 [`PluginBinding::state`]，保证重载一致。
+///
+/// # Errors
+///
+/// 路径门失败、所选插件不是 ysfx、`setState`/`getState` 失败；⛔ 不静默回退到空宿主。
+pub fn load_device_with_jsfx(
+    path: &str,
+    class: Option<&str>,
+    kind: &str,
+    jsfx_path: &str,
+) -> Result<DeviceDefinition, String> {
+    guard_plugin_path(path)?;
+    let absolute_jsfx = guard_jsfx_path(jsfx_path)?;
+    let class_name = class.unwrap_or_default();
+    if !class_name.to_ascii_lowercase().contains("ysfx") {
+        return Err(format!(
+            "所选插件不是 ysfx（class={class_name}），拒绝注入 JSFX"
+        ));
+    }
+    let (mut instance, device_kind): (Box<dyn PluginInstance>, DeviceKind) = match kind {
+        "instrument" => (
+            Host::load(path, class).map_err(|error| format!("插件验证加载失败: {error}"))?,
+            DeviceKind::ExternalInstrument,
+        ),
+        "effect" => (
+            Host::load_effect(path, class).map_err(|error| format!("插件验证加载失败: {error}"))?,
+            DeviceKind::ExternalEffect,
+        ),
+        other => {
+            return Err(format!(
+                "`kind` 只能是 instrument 或 effect，实为 `{other}`"
+            ));
+        }
+    };
+    let blob = ysfx_state_blob(&absolute_jsfx);
+    instance
+        .restore_state(&PluginState {
+            processor: blob,
+            controller: Vec::new(),
+        })
+        .map_err(|error| format!("ysfx 注入 JSFX 失败（{absolute_jsfx}）: {error}"))?;
+    let state = instance
+        .save_state()
+        .map_err(|error| format!("ysfx 状态回读失败（注入未落盘）: {error}"))?
+        .encode();
+    let instance_name = instance.name().to_owned();
+    Ok(DeviceDefinition {
+        id: EntityId::new(),
+        name: instance_name.clone(),
+        kind: device_kind,
+        bypassed: false,
+        params: Vec::new(),
+        latency_samples: instance.latency_samples(),
+        plugin: Some(PluginBinding {
+            path: path.to_owned(),
+            class: Some(class.map_or(instance_name, str::to_owned)),
+            state,
+        }),
+    })
 }
 
 /// 验证加载一个插件并返回将落进工程的设备定义。
@@ -783,5 +938,39 @@ mod tests {
         let error = registry.query("ara-99").expect_err("空 registry 必须拒绝");
         assert!(error.contains("没有 ARA 会话 `ara-99`"), "{error}");
         assert!(error.contains("已登记：无"), "{error}");
+    }
+
+    #[test]
+    fn ysfx_state_blob_carries_the_jsfx_path_in_value_tree_form() {
+        let blob = ysfx_state_blob("/tmp/tone.jsfx");
+        assert_eq!(&blob[..5], b"ysfx\0");
+        // 根节点：2 个属性（version / path），0 个子节点。
+        assert_eq!(blob[5], 1, "压缩整数首字节 = 数据字节数");
+        assert_eq!(blob[6], 2, "随后是值 2");
+        assert!(blob.windows(8).any(|w| w == b"version\0"));
+        assert!(blob.windows(5).any(|w| w == b"path\0"));
+        assert!(blob.windows(14).any(|w| w == b"/tmp/tone.jsfx"));
+        assert_eq!(*blob.last().unwrap(), 0, "根节点必须写明 0 个子节点");
+    }
+
+    #[test]
+    fn jsfx_path_gate_is_loud_for_every_failure() {
+        let dir = std::env::temp_dir().join(format!("yeban-jsfx-gate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("tone.jsfx");
+        std::fs::write(&good, "desc:x\n@sample\nspl0=0;\n").unwrap();
+        let not_jsfx = dir.join("tone.txt");
+        std::fs::write(&not_jsfx, "x").unwrap();
+
+        let canonical = guard_jsfx_path(good.to_string_lossy().as_ref()).unwrap();
+        assert!(canonical.ends_with("tone.jsfx"));
+        let missing = guard_jsfx_path(&dir.join("missing.jsfx").to_string_lossy()).unwrap_err();
+        assert!(missing.contains("不存在"), "{missing}");
+        let wrong = guard_jsfx_path(not_jsfx.to_string_lossy().as_ref()).unwrap_err();
+        assert!(wrong.contains("不是 .jsfx"), "{wrong}");
+        let empty = guard_jsfx_path("  ").unwrap_err();
+        assert!(empty.contains("路径为空"), "{empty}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

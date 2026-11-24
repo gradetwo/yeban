@@ -3331,6 +3331,20 @@ impl ElementRegistry {
             false,
         );
         registry.add(
+            "plugin-jsfx-path",
+            ElementKind::TextInput,
+            "dialogs/plugin_panel.slint",
+            "ysfx JSFX 文件路径（可选，仅 GUI）",
+            false,
+        );
+        registry.add(
+            "plugin-jsfx-browse",
+            ElementKind::Button,
+            "dialogs/plugin_panel.slint",
+            "选择 ysfx 的 JSFX 文件",
+            false,
+        );
+        registry.add(
             "plugin-result-line",
             ElementKind::Text,
             "dialogs/plugin_panel.slint",

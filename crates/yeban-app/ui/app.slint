@@ -591,6 +591,7 @@ export component MainWindow inherits Window {
     in-out property <[PluginRowData]> plugin-rows: [];
     in-out property <int> plugin-selected-row: -1;
     in-out property <string> plugin-scan-paths: "";
+    in-out property <string> plugin-jsfx-path: "";
     in-out property <string> plugin-scan-status: "";
     in-out property <string> plugin-target-label: "";
     in-out property <string> plugin-error: "";
@@ -1113,6 +1114,7 @@ export component MainWindow inherits Window {
     callback open-plugin-panel();
     callback plugin-scan();
     callback plugin-scan-drain-requested();
+    callback pick-plugin-jsfx();
     callback plugin-select(int);
     callback plugin-load();
     callback plugin-close();
@@ -2745,6 +2747,7 @@ export component MainWindow inherits Window {
             plugin-rows: root.plugin-rows;
             plugin-selected-row <=> root.plugin-selected-row;
             scan-paths <=> root.plugin-scan-paths;
+            jsfx-path <=> root.plugin-jsfx-path;
             scan-status: root.plugin-scan-status;
             target-label: root.plugin-target-label;
             plugin-error <=> root.plugin-error;
@@ -2763,6 +2766,7 @@ export component MainWindow inherits Window {
             ara-result: root.ara-result;
             ara-progress: root.ara-progress;
             scan => { root.plugin-scan(); }
+            pick-jsfx => { root.pick-plugin-jsfx(); }
             select-plugin(i) => { root.plugin-select(i); }
             load-plugin => { root.plugin-load(); }
             bind-ara => { root.ara-bind(); }

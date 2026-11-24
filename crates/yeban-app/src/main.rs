@@ -1549,6 +1549,7 @@ fn wire_callbacks(
     // ⭐ 插件与 ARA 面板（T-FIX-83）：设备机架的「插件」入口。扫描 / 渲染
     // 在后台线程，装载走普通 `commit_ops`；没有撤销会话时装载如实拒绝。
     host::wire_plugin_panel(ui, undo.clone());
+    host::wire_plugin_jsfx_browse(ui, Rc::new(yeban_app::file_picker::NativeFilePicker));
     // ⭐ `[UI-NOTE-001]` 剪辑选中态 ⇒ 卷帘作用域：与无头装配（`live_surface.rs`）调的是
     // **同一个** `host::wire_clip_scope`（选中是视图态，写属性 + 重注入，⛔ 不 `commit_ops`）。
     host::wire_clip_scope(ui, Rc::clone(&view), undo.clone());

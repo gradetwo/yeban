@@ -96,6 +96,7 @@ export component PluginPanelDialog inherits Rectangle {
     in property <[PluginRowData]> plugin-rows: [];
     in-out property <int> plugin-selected-row: -1;
     in-out property <string> scan-paths: "";
+    in-out property <string> jsfx-path: "";
     in property <string> scan-status: "";
     in property <string> target-label: "";
     in-out property <string> plugin-error: "";
@@ -118,6 +119,7 @@ export component PluginPanelDialog inherits Rectangle {
     callback scan();
     callback select-plugin(int);
     callback load-plugin();
+    callback pick-jsfx();
     callback bind-ara();
     callback select-ara(int);
     callback query-ara();
@@ -262,8 +264,26 @@ export component PluginPanelDialog inherits Rectangle {
                     accessible-id: "plugin-scan-status";
                 }
 
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 6px;
+                    PanelInput {
+                        horizontal-stretch: 1;
+                        text <=> root.jsfx-path;
+                        accessible-id: "plugin-jsfx-path";
+                        accessible-label: @tr("ysfx JSFX 文件路径（可选，仅 GUI）");
+                    }
+                    PanelButton {
+                        width: 74px;
+                        label: @tr("选择…");
+                        accessible-id: "plugin-jsfx-browse";
+                        accessible-label: @tr("选择一个 .jsfx 文件注入 ysfx");
+                        clicked => { root.pick-jsfx(); }
+                    }
+                }
+
                 Rectangle {
-                    height: 200px;
+                    height: 160px;
                     background: Tokens.bg-lane;
                     border-radius: Tokens.radius-sm;
                     border-width: 1px;

@@ -2656,3 +2656,18 @@ msgstr "Beenden ohne Speichern (Änderungen verwerfen)"
 
 msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
 msgstr "Vor dem Beenden speichern? Wenn Sie jetzt beenden, gehen Ihre ungespeicherten Änderungen verloren."
+
+# --- T-FIX-363: ysfx JSFX injection msgids ---
+msgid "ysfx JSFX 文件路径（可选，仅 GUI）"
+msgstr "ysfx-JSFX-Dateipfad (optional, nur GUI)"
+
+msgid "选择…"
+msgstr "Auswählen…"
+
+msgid "选择一个 .jsfx 文件注入 ysfx"
+msgstr ".jsfx-Datei zum Einspeisen in ysfx auswählen"
+
+# --- T-FIX-301 follow-up: overview analysis status msgid (pre-existing gap on main) ---
+msgid "总览分析状态（纯谱面回退 / 渲染失败原因）"
+msgstr "Status der Übersicht-Analyse (nur Partitur-Fallback / Grund für Renderfehler)"
+

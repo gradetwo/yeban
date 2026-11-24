@@ -2656,3 +2656,18 @@ msgstr "保存せずに終了（変更を破棄）"
 
 msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
 msgstr "終了前に保存しますか？今すぐ終了すると、保存されていない変更は失われます。"
+
+# --- T-FIX-363: ysfx JSFX injection msgids ---
+msgid "ysfx JSFX 文件路径（可选，仅 GUI）"
+msgstr "ysfx JSFX ファイルパス（任意、GUI のみ）"
+
+msgid "选择…"
+msgstr "選択…"
+
+msgid "选择一个 .jsfx 文件注入 ysfx"
+msgstr ".jsfx ファイルを選択して ysfx に注入"
+
+# --- T-FIX-301 follow-up: overview analysis status msgid (pre-existing gap on main) ---
+msgid "总览分析状态（纯谱面回退 / 渲染失败原因）"
+msgstr "概要分析ステータス（譜面のみのフォールバック / レンダリング失敗の理由）"
+

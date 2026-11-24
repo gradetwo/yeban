@@ -2656,3 +2656,18 @@ msgstr "Sair sem salvar (descartar alterações)"
 
 msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
 msgstr "Salvar antes de sair? Sair agora descartará suas alterações não salvas."
+
+# --- T-FIX-363: ysfx JSFX injection msgids ---
+msgid "ysfx JSFX 文件路径（可选，仅 GUI）"
+msgstr "Caminho do arquivo JSFX do ysfx (opcional, apenas GUI)"
+
+msgid "选择…"
+msgstr "Escolher…"
+
+msgid "选择一个 .jsfx 文件注入 ysfx"
+msgstr "Escolha um arquivo .jsfx para injetar no ysfx"
+
+# --- T-FIX-301 follow-up: overview analysis status msgid (pre-existing gap on main) ---
+msgid "总览分析状态（纯谱面回退 / 渲染失败原因）"
+msgstr "Estado da análise da visão geral (fallback somente partitura / motivo da falha de renderização)"
+

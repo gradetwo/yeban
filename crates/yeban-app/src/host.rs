@@ -3388,6 +3388,28 @@ pub fn wire_mixer_sampler_browse(ui: &MainWindow, picker: Rc<dyn crate::file_pic
     });
 }
 
+/// GUI 专用：为 ysfx 挑一个 `.jsfx` 文件并填进插件面板的输入框。
+///
+/// 与 [`wire_mixer_sampler_browse`] 同一条纪律：取消 ⇒ 一位不动；路径原样填，
+/// 存在性 / 后缀 / 能否注入都在**装载那一刻**由 `plugin_panel::load_device_with_jsfx`
+/// 响亮裁决（⛔ 不在挑文件时静默预检、⛔ 不把取消写成错误）。
+/// ⚠ 仅 GUI：MCP 不接 VST3（T-FIX-362 已关单）。
+pub fn wire_plugin_jsfx_browse(ui: &MainWindow, picker: Rc<dyn crate::file_picker::FilePicker>) {
+    let weak = ui.as_weak();
+    ui.on_pick_plugin_jsfx(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let request = crate::file_picker::PickerRequest::open("选择 ysfx 的 JSFX 文件")
+            .with_extensions(["jsfx"]);
+        let Some(path) = picker.choose_open(&request) else {
+            return;
+        };
+        ui.set_plugin_jsfx_path(SharedString::from(path.to_string_lossy().as_ref()));
+    });
+}
+
 /// ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出对话框 `Ctrl/Cmd+O` 路径浏览的唯一接线**。
 ///
 /// ## 补的是哪一条线（不是新能力）
@@ -31547,10 +31569,16 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             let Some(row) = state_borrow.rows.get(index) else {
                 return;
             };
+            let path = row.path.clone();
+            let title = row.title();
+            drop(state_borrow);
+            // 选中态必须同时写回装载侧读的 `selected`：只改 UI 属性会让「装载」永远用
+            // 扫描后的默认可用行（首个可用插件），点别的行看似选中、实际装的是另一支。
+            state.borrow_mut().selected = Some(index);
             ui.set_plugin_selected_row(index as i32);
-            ui.set_ara_plugin_path(row.path.clone().into());
+            ui.set_ara_plugin_path(path.into());
             ui.set_plugin_error("".into());
-            ui.set_plugin_notice(format!("已选中: {}", row.title()).into());
+            ui.set_plugin_notice(format!("已选中: {title}").into());
         }
     });
 
@@ -31594,16 +31622,33 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             let slot_index = track.devices.len();
             ui.set_plugin_error("".into());
             ui.set_plugin_notice("正在验证加载插件…".into());
-            let device = match crate::plugin_panel::load_device(
-                &row.path,
-                Some(row.class_name.as_str()),
-                &row.kind,
-            ) {
-                Ok(device) => device,
-                Err(error) => {
-                    ui.set_plugin_error(error.into());
-                    ui.set_plugin_notice("".into());
-                    return;
+            let jsfx_path = ui.get_plugin_jsfx_path().to_string();
+            let device = if jsfx_path.trim().is_empty() {
+                match crate::plugin_panel::load_device(
+                    &row.path,
+                    Some(row.class_name.as_str()),
+                    &row.kind,
+                ) {
+                    Ok(device) => device,
+                    Err(error) => {
+                        ui.set_plugin_error(error.into());
+                        ui.set_plugin_notice("".into());
+                        return;
+                    }
+                }
+            } else {
+                match crate::plugin_panel::load_device_with_jsfx(
+                    &row.path,
+                    Some(row.class_name.as_str()),
+                    &row.kind,
+                    &jsfx_path,
+                ) {
+                    Ok(device) => device,
+                    Err(error) => {
+                        ui.set_plugin_error(error.into());
+                        ui.set_plugin_notice("".into());
+                        return;
+                    }
                 }
             };
             let device_name = device.name.clone();
