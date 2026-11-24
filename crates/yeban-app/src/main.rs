@@ -978,6 +978,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                         Some(Rc::clone(&engine_after)),
                         Some(Rc::new(project.clone())),
                     );
+                    // ③-b 最后再装一次生产回调层。`wire_callbacks` 会重跑
+                    // `wire_view_callbacks`，其中轨道 MUTE/SOLO/ARM、控制室
+                    // DIM/MONO/SIDE、走带等同名回调是 UI-only 版本；Slint 的 on_*
+                    // 是覆盖语义，不在这里按启动顺序补回 aether 层，它们会把启动时
+                    // 接好的真实引擎/Op handler 静默擦掉（T-FIX-270）。
+                    host::rewire_aether_actions_after_project_switch(
+                        ui,
+                        Rc::clone(&port_after),
+                        Rc::clone(&engine_after),
+                        Rc::clone(&view_after),
+                    );
                     // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
                     engine_after
                         .borrow_mut()

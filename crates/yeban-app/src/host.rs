@@ -25343,6 +25343,25 @@ pub fn wire_trigger_shortcut(ui: &MainWindow) {
 ///
 /// `engine` 与 `view` 由生产装配(`main.rs`)与活窗口判据传同一个句柄; 试听/监听
 /// 走真实引擎事件与设备读数, 编辑一律走 [`UndoPort`] 而不是直接改 UI 数组。
+///
+/// 换工程后必须再调一次本函数接管的这一层：`main.rs` 的 `after` 闭包会重跑
+/// [`crate::host::wire_view_callbacks`] 等旧回调，而 Slint 的 `on_*` 是覆盖语义。
+/// 旧回调里同名的那批（轨道 MUTE/SOLO/ARM、控制室 DIM/MONO/SIDE、走带等）是
+/// UI-only 版本，只重跑旧回调会把启动时这里接好的真实 handler 静默擦掉。
+pub fn rewire_aether_actions_after_project_switch(
+    ui: &MainWindow,
+    port: Rc<UndoPort>,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    // 混音台写入面（MUTE/SOLO/推子）闭包着 `UndoPort`，也必须换成换工程后的新端口；
+    // 否则 aether 层的 `on_track_toggle_mute` 会转发给旧端口上的 `on_mixer_mute_toggle`。
+    wire_mixer_edit(ui, &port);
+    wire_aether_actions(ui, port, engine, view);
+}
+
+/// 生产窗口最后一道回调层：用 `on_*` 覆盖语义把新 UI 独有回调接到真实
+/// handler / 引擎 / Op。启动装配与换工程后的重装都必须以本函数收尾。
 pub fn wire_aether_actions(
     ui: &MainWindow,
     port: Rc<UndoPort>,
