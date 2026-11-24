@@ -245,7 +245,7 @@ test the_ui_path_matches_the_shared_implementation_byte_for_byte ... ok
 ```
 thread 'undo_session::tests::no_second_undo_implementation_exists_in_the_workspace' panicked:
 生产代码里出现了第二份撤销实现:
-…/crates/yeban-mcp/src/domain/undo_alt.rs:19 出现 `apply_inverse` —— 生产代码里不许有第二份反向应用实现
+…/crates/yeban-mcp/src/domain/undo_alt.rs:19 出现 `apply_inverse` —— 生产代码里不许有第二份反向应用实现（⚠ 2026-11-25 就地更正（ISS-MWU02D74 行号审计）：`undo_alt.rs` 文件**已删除**——该审计发现已整改，`domain/mod.rs:20` 现明文「撤销一律由 `Op::invert` / `Op::apply_inverse` 提供」；引证失效为整改结果，非文档漂移）
 test result: FAILED. 0 passed; 1 failed
 ```
 

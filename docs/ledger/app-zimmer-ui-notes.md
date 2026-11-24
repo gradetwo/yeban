@@ -677,7 +677,7 @@ match port.as_ref().and_then(|p| p.try_project())
 - **两个装配点都装**：`build_main_window_with_console_tab`（`host.rs:12273`，无端口）与
   `wire_roll_edit`（`host.rs:10865`，带端口）⇒ 产品进程与无头面不可能只接一半。
 
-### 22.4 判据（`crates/yeban-app/tests/roll_edit_tools.rs:4363`）
+### 22.4 判据（`crates/yeban-app/tests/roll_edit_tools.rs:4363`；⚠ 2026-11-25 就地更正（ISS-MWU02D74 行号审计）：现位于 `:3251`）
 
 `a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot`
 —— 走**生产装配顺序**（`assemble()` 里就调 `wire_roll_edit`，⛔ 不是测试自己拼的半边）：
