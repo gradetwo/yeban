@@ -11177,9 +11177,11 @@ fn save_first_through_the_existing_entry(ui: &MainWindow) -> Result<(), String> 
 /// `crate::import_midi::destination`）。⚠ 界面**没有**开关、**没有**轨道选择器；
 /// ⛔ CLI 自己的默认值一位不动（`--midi-in` 单给仍然是只读诊断）。
 ///
-/// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-export.mid` / `ui-import.mid` /
-/// `ui-instrument.sfz` / `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带
+/// 缺省值落在**当前工作目录**下（`ui-export.wav`，仅此一条仍是旧口径），⛔ **不**落到系统临时目录：后者的路径里带
 /// 随机分量，会让回执行不可复现，而"回执里的路径"正是判据要断言的东西。
+/// 其余四条（T-FIX-179 起）：无工程落点时缺省改走**文档目录 `Yeban/` 下的绝对路径**
+/// （见 [`ModulePaths::from_env_for_project`]），⛔ 不再落进程 cwd —— 从 Finder
+/// 双击 .app / 桌面快捷方式启动时 cwd 可能是 `/`、`C:\Windows\System32` 等不可写目录。
 ///
 /// ⚠ 边界（`[PATCH UI-WIRING-01]` 更正，如实登记）：本结构**只负责给缺省路径**，
 /// ⛔ 不认识文件对话框。`#86` 乙的 [`crate::file_picker::FilePicker`] 能力面早已存在，
@@ -11230,6 +11232,50 @@ impl Default for ModulePaths {
     }
 }
 
+/// 用户文档目录（`dirs::document_dir` 的口径，不引新依赖：三个平台各几行 env
+/// 读法，与 [`crate::settings::config_dir`] 同款）。
+/// Windows：`%USERPROFILE%\Documents`；macOS：`$HOME/Documents`；
+/// Linux：`$XDG_DOCUMENTS_DIR`（若设了）否则 `$HOME/Documents`。
+fn document_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("USERPROFILE").map(|home| std::path::PathBuf::from(home).join("Documents"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Documents"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(dir) = std::env::var_os("XDG_DOCUMENTS_DIR")
+            && !dir.is_empty()
+        {
+            return Some(std::path::PathBuf::from(dir));
+        }
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Documents"))
+    }
+}
+
+/// GUI 模块入口的无工程缺省根：文档目录下的 `Yeban` 子目录。
+fn yeban_documents_dir() -> Option<std::path::PathBuf> {
+    document_dir().map(|dir| dir.join("Yeban"))
+}
+
+/// 缺省绝对路径的父目录（文档目录 `Yeban/`）不存在时建出来 —— **只**对缺省
+/// 绝对路径做：显式 env 路径 / 工程目录路径一律不动（T-FIX-167 臂 2：目标目录
+/// 不存在时写盘必须失败，且人话行必须带出失败原因）。建目录失败时不另报错，
+/// 随后的写盘会以带绝对目标的错误如实失败。
+///
+/// `pub` 是有意的：GUI 的两个写入口（导出 MIDI / 录音）与判据共用这一条，
+/// 判据不另写一份"建目录"逻辑。
+pub fn ensure_default_parent_dir(target: &std::path::Path) {
+    if let Some(parent) = target.parent()
+        && Some(parent) == yeban_documents_dir().as_deref()
+    {
+        let _ = std::fs::create_dir_all(parent);
+    }
+}
+
 impl ModulePaths {
     /// 从环境变量读覆盖值；未设的项用 [`ModulePaths::default`]。
     ///
@@ -11247,12 +11293,15 @@ impl ModulePaths {
     /// 实机上常是安装目录、写不进去）：
     ///
     /// - 环境变量已给（非空）⇒ 原样（最高优先）；
-    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + `ui-export.wav` /
-    ///   `ui-export.mid`（能规范化就规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，
-    ///   ⛔ 不为缺省路径去拦整个接线）；
-    /// - 否则（新建未保存工程）⇒ 保持相对缺省（落进程 cwd，旧行为）。
+    /// - 否则工程有文件落点（`project_dir = Some`）⇒ 该目录 + 文件名（能规范化就
+    ///   规范化成绝对路径；规范化失败 ⇒ 用原目录拼接，⛔ 不为缺省路径去拦整个接线）；
+    /// - 否则（新建未保存工程）⇒ `export_wav` 保持相对缺省（落进程 cwd，旧行为，
+    ///   T-FIX-179 不动它）；其余四条（T-FIX-179）⇒ 文档目录 `Yeban/` 下的绝对路径
+    ///   （见 [`document_dir`]），⛔ 不再落进程 cwd。
     ///
-    /// 其余三条路径仍是 env / 缺省两档。
+    /// 其余三条路径在 T-FIX-179 之前是 env / 缺省两档；现在与 `export_wav` /
+    /// `export_midi` 同款三档（env > 工程目录 > 绝对缺省），只是第三档的形态不同
+    /// （绝对路径而非相对名）。
     #[must_use]
     pub fn from_env_for_project(project_dir: Option<&std::path::Path>) -> Self {
         let defaults = Self::default();
@@ -11287,12 +11336,28 @@ impl ModulePaths {
                     None => default,
                 },
             };
+        // ⭐ T-FIX-179：其余四条与上面同款三档，只是第三档是**绝对**缺省
+        // （文档目录 `Yeban/<file_name>`），⛔ 不落进程 cwd；文档目录不可知时
+        // 才退回相对缺省（旧行为）。`export_wav` 不动（见上）。
+        let tiered_absolute =
+            |env_name: &str, file_name: &str, default: std::path::PathBuf| match read(env_name) {
+                Some(path) => path,
+                None => match project_dir {
+                    Some(dir) => {
+                        let base = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                        base.join(file_name)
+                    }
+                    None => yeban_documents_dir()
+                        .map(|dir| dir.join(file_name))
+                        .unwrap_or(default),
+                },
+            };
         let export_wav = tiered(
             "YEBAN_UI_EXPORT_WAV_PATH",
             "ui-export.wav",
             defaults.export_wav,
         );
-        let export_midi = tiered(
+        let export_midi = tiered_absolute(
             "YEBAN_UI_EXPORT_MIDI_PATH",
             "ui-export.mid",
             defaults.export_midi,
@@ -11300,9 +11365,21 @@ impl ModulePaths {
         Self {
             export_wav,
             export_midi,
-            import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
-            load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
-            record_wav: read("YEBAN_UI_RECORD_WAV_PATH").unwrap_or(defaults.record_wav),
+            import_midi: tiered_absolute(
+                "YEBAN_UI_IMPORT_MIDI_PATH",
+                "ui-import.mid",
+                defaults.import_midi,
+            ),
+            load_sfz: tiered_absolute(
+                "YEBAN_UI_LOAD_SFZ_PATH",
+                "ui-instrument.sfz",
+                defaults.load_sfz,
+            ),
+            record_wav: tiered_absolute(
+                "YEBAN_UI_RECORD_WAV_PATH",
+                "ui-record.wav",
+                defaults.record_wav,
+            ),
             record_seconds,
             midi_in_port: std::env::var("YEBAN_UI_MIDI_IN_PORT")
                 .ok()
@@ -13925,6 +14002,10 @@ pub fn wire_module_actions_with_capture(
                 module_trace("export-midi", started, &receipt);
                 return;
             };
+            // ⭐ T-FIX-179：缺省绝对路径（文档目录 `Yeban/`）的父目录不存在时
+            // 先建出来，否则 `write_file_atomically` 的同目录临时文件写不进去；
+            // 显式路径不动（目标目录不存在必须失败，见 T-FIX-167 臂 2）。
+            ensure_default_parent_dir(&target);
             let (receipt, ok, success_line) =
                 match crate::export_midi::export_project_to_file(&project, &target) {
                     Ok(report) => {
@@ -14098,7 +14179,13 @@ pub fn wire_module_actions_with_capture(
                 open_sound_library_for_missing_sfz(&ui);
                 let receipt = module_receipt(
                     "load-sfz",
-                    &module_error_fields("sfz-missing", "还没有指定 SFZ 文件"),
+                    &module_error_fields(
+                        "sfz-missing",
+                        &format!(
+                            "还没有指定 SFZ 文件（缺省路径 {} 不存在）",
+                            source.display()
+                        ),
+                    ),
                 );
                 apply_module_receipt(&ui, &receipt, false);
                 report_notice(
@@ -14170,6 +14257,8 @@ pub fn wire_module_actions_with_capture(
             // 环容量跟着时长走：默认的 1 秒环在 8 秒请求下会**故意**丢帧（`record_wav.rs`
             // 的实测教训），而界面入口的语义是"把这段录完"，不是"演示丢弃"。
             options.capacity_frames = ((seconds * options.sample_rate as f32) as usize).max(1);
+            // ⭐ T-FIX-179：与导出 MIDI 同款 —— 缺省绝对路径的父目录不存在时先建出来。
+            ensure_default_parent_dir(&target);
             let (receipt, ok) = match crate::record_wav::record_test_tone(&target, &options) {
                 Ok(report) => (
                     module_receipt(
