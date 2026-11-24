@@ -208,6 +208,8 @@ pub enum PhysicalKey {
     Backspace,
     /// `Delete` —— 删除选区。
     Delete,
+    /// `F3` —— 直达控制台「设备堆叠」标签（**界面决定**，⛔ 规范未点名）。
+    F3,
     /// `F5` —— 直达 Session 视图。
     F5,
     /// `F6` —— 直达 Arrangement 视图。
@@ -290,6 +292,7 @@ impl PhysicalKey {
             Self::Enter => LogicalKey::Enter,
             Self::Backspace => LogicalKey::Backspace,
             Self::Delete => LogicalKey::Delete,
+            Self::F3 => LogicalKey::F3,
             Self::F5 => LogicalKey::F5,
             Self::F6 => LogicalKey::F6,
             Self::F7 => LogicalKey::F7,
@@ -360,6 +363,8 @@ pub enum LogicalKey {
     Backspace,
     /// `Delete`（`"\u{7f}"`）。
     Delete,
+    /// `F3`（`"\u{f706}"`）—— 直达控制台「设备堆叠」标签。
+    F3,
     /// `F5`（`"\u{f708}"`）—— 直达 Session 视图。
     F5,
     /// `F6`（`"\u{f709}"`）—— 直达 Arrangement 视图。
@@ -414,6 +419,7 @@ impl LogicalKey {
             '\u{f701}' => Self::DownArrow,
             '\u{f702}' => Self::LeftArrow,
             '\u{f703}' => Self::RightArrow,
+            '\u{f706}' => Self::F3,
             '\u{f708}' => Self::F5,
             '\u{f709}' => Self::F6,
             '\u{f70a}' => Self::F7,
@@ -779,18 +785,18 @@ pub enum Action {
     ToggleView,
     /// `F5`/`F6`/`Alt+1`/`Alt+2`: 直达某个视图。
     ShowView(View),
-    /// `F7`/`F8`/`F9`: 直达底部控制台的某个标签（**界面决定**，⛔ 规范未点名）。
+    /// `F3`/`F7`/`F8`/`F9`: 直达底部控制台的某个标签（**界面决定**，⛔ 规范未点名）。
     ///
     /// `index` 是 [`crate::scene::CONSOLE_TABS`] 的**下标**（0 卷帘 / 1 调音台 /
-    /// 2 设备效果链）—— 标签顺序的唯一事实源是那张表，⛔ 这里不另造一份词表。
+    /// 2 设备效果链 / 3 设备堆叠）—— 标签顺序的唯一事实源是那张表，⛔ 这里不另造一份词表。
     ///
     /// 落点是 `ui.set_console_tab(index)`：鼠标点标签导轨与屏读器
     /// `accessible-action-default` 改的是同一个 `active-tab` 绑定（`console_tabs.slint`
     /// 的文件头数据流说明：本组件只上抛 `select-*`，由 MainWindow 决定新值）。
     ///
-    /// ⚠ 这三个键**不在**「全局无冲突备选快捷键」那一档：它们走第 6 步（无修饰单键），
+    /// ⚠ 这四个键**不在**「全局无冲突备选快捷键」那一档：它们走第 6 步（无修饰单键），
     /// 照常受文本域 / IME 策略约束 —— 规范 §2.2 点名的全局备选只有 `F5`/`F6` 两个视图键。
-    /// 键位理由：`F` 键在任何键盘布局下都产出同一个私有区文本（`\u{f70a}`–`\u{f70c}`，
+    /// 键位理由：`F` 键在任何键盘布局下都产出同一个私有区文本（`\u{f706}`、`\u{f70a}`–`\u{f70c}`，
     /// 见 Slint `i-slint-common-1.18.1/key_codes.rs`），因此 GUI 路径不依赖布局，
     /// 也不像 `Alt+数字` 那样会被 Option/AltGr 改写成符号。
     SelectConsoleTab {
@@ -1488,10 +1494,15 @@ impl InputContext {
 
         // 6. 无修饰单键。
         match key {
-            // **界面决定**（⛔ 规范未点名）：`F7`/`F8`/`F9` 直达底部控制台的三个标签。
+            // **界面决定**（⛔ 规范未点名）：`F3`/`F7`/`F8`/`F9` 直达底部控制台的四个标签。
             // 刻意住在第 6 步而**不是**第 1 步：规范 §2.2 的「全局无冲突备选」只点名
             // `F5`/`F6` 两个视图键 ⇒ 控制台标签照常受文本域 / IME 策略约束（第 2 步先行）。
             // 带修饰的变体（`Cmd/Ctrl+F7` 等）落到上面各步的 `PassThrough`。
+            // `F3` 补的是第四格「设备堆叠」（`CONSOLE_TABS[3]`；命令面板 `tab-stacked`
+            // 的 shortcut 文案就是 `F3`，T-FIX-377）—— 此前它在解析表里没有臂，
+            // 界面层却有一条 `F3 → 混音控制台最大化` 的旧臂（app.slint），两者说的不是
+            // 同一个动作；本单把界面层那条也改成「设备堆叠」，两层同解。
+            Key::F3 => Resolution::Action(Action::SelectConsoleTab { index: 3 }),
             Key::F7 => Resolution::Action(Action::SelectConsoleTab { index: 0 }),
             Key::F8 => Resolution::Action(Action::SelectConsoleTab { index: 1 }),
             Key::F9 => Resolution::Action(Action::SelectConsoleTab { index: 2 }),
@@ -1580,8 +1591,8 @@ mod tests {
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
     use PhysicalKey::{
-        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Equal, Escape, F5,
-        F6, F7, F8, F9, KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyH, KeyM, KeyN, KeyO, KeyP, KeyR,
+        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Equal, Escape, F3,
+        F5, F6, F7, F8, F9, KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyH, KeyM, KeyN, KeyO, KeyP, KeyR,
         KeyS, KeyT, KeyX, KeyZ, LeftArrow, Minus, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
@@ -2168,7 +2179,7 @@ mod tests {
         assert_eq!(text_field().resolve(KeyR, Modifiers::none()), PassThrough);
     }
 
-    /// 判据：`F7`/`F8`/`F9` = 直达控制台三个标签（**界面决定**，⛔ 不是规范点名）。
+    /// 判据：`F3`/`F7`/`F8`/`F9` = 直达控制台四个标签（**界面决定**，⛔ 不是规范点名）。
     ///
     /// 四条子句：
     /// 1. **两条入口同解**为 [`Action::SelectConsoleTab`]（物理码 / 逻辑键 —— `N2` 裁决 (1)）；
@@ -2177,19 +2188,32 @@ mod tests {
     /// 3. 带修饰的变体仍放行（`Cmd/Ctrl+F7` / `Shift+F7` / `Alt+F7` 都没有被点名）；
     /// 4. **文本域 / IME 策略优先于它们** —— 与 `F5`/`F6` 的全局档**不同**：
     ///    输入框里是 `PassThrough`、合成态是 `ConsumedByIme`。
+    ///
+    /// `F3` 是第四格「设备堆叠」（T-FIX-377：命令面板 `tab-stacked` 的 shortcut
+    /// 文案就是 `F3`，此前解析表里没有臂，界面层却有一条 `F3 → 混音控制台最大化`
+    /// 的旧臂，两层说的不是同一个动作 —— 本单把两层都改成「设备堆叠」）。
     #[test]
-    fn f7_f8_f9_pick_console_tabs_and_stay_behind_the_text_policy() {
-        // ① + ② 两条入口同解，且下标覆盖 `scene::CONSOLE_TABS` 的全部三格。
-        assert_eq!(crate::scene::CONSOLE_TABS.len(), 3);
-        for (index, key) in [(0u8, F7), (1u8, F8), (2u8, F9)] {
+    fn f3_f7_f8_f9_pick_console_tabs_and_stay_behind_the_text_policy() {
+        // ① + ② 两条入口同解，且下标覆盖 `scene::CONSOLE_TABS` 的全部四格。
+        assert_eq!(crate::scene::CONSOLE_TABS.len(), 4);
+        for (name, index, key) in [
+            ("F3", 3u8, F3),
+            ("F7", 0u8, F7),
+            ("F8", 1u8, F8),
+            ("F9", 2u8, F9),
+        ] {
             assert_eq!(
                 canvas().resolve(key, Modifiers::none()),
                 Act(SelectConsoleTab { index }),
-                "物理码入口：F{} 必须解出下标 {index}",
-                index + 7
+                "物理码入口：{name} 必须解出下标 {index}"
             );
         }
-        for (index, text) in [(0u8, "\u{f70a}"), (1u8, "\u{f70b}"), (2u8, "\u{f70c}")] {
+        for (index, text) in [
+            (3u8, "\u{f706}"),
+            (0u8, "\u{f70a}"),
+            (1u8, "\u{f70b}"),
+            (2u8, "\u{f70c}"),
+        ] {
             assert_eq!(
                 canvas().resolve_logical(
                     LogicalKey::from_text(text).expect("F 键文本"),
@@ -2207,14 +2231,17 @@ mod tests {
             Modifiers::alt(),
         ] {
             assert_eq!(canvas().resolve(F7, modifiers), PassThrough);
+            assert_eq!(canvas().resolve(F3, modifiers), PassThrough);
         }
 
         // ④ 文本域策略**先行**：输入框里放行，合成态被吞。
         assert_eq!(text_field().resolve(F7, Modifiers::none()), PassThrough);
+        assert_eq!(text_field().resolve(F3, Modifiers::none()), PassThrough);
         let mut composing = InputContext::new();
         composing.set_focus(TextInput);
         composing.begin_composition();
         assert_eq!(composing.resolve(F8, Modifiers::none()), ConsumedByIme);
+        assert_eq!(composing.resolve(F3, Modifiers::none()), ConsumedByIme);
     }
 
     /// D-UI-18 的 **A 层**（纯解析）：`Cmd/Ctrl+F` 解出"把键盘焦点交给左栏搜索框"。
@@ -2620,8 +2647,9 @@ mod tests {
         assert_eq!(LogicalKey::from_text("\u{7f}"), Some(LKey::Delete));
         assert_eq!(LogicalKey::from_text("\u{f708}"), Some(LKey::F5));
         assert_eq!(LogicalKey::from_text("\u{f709}"), Some(LKey::F6));
-        // 控制台标签三键 —— 取值来自 Slint `key_codes.rs` 的私有区序列
-        // （`F7` = `\u{f70a}`、`F8` = `\u{f70b}`、`F9` = `\u{f70c}`）。
+        // 控制台标签四键 —— 取值来自 Slint `key_codes.rs` 的私有区序列
+        // （`F3` = `\u{f706}`、`F7` = `\u{f70a}`、`F8` = `\u{f70b}`、`F9` = `\u{f70c}`）。
+        assert_eq!(LogicalKey::from_text("\u{f706}"), Some(LKey::F3));
         assert_eq!(LogicalKey::from_text("\u{f70a}"), Some(LKey::F7));
         assert_eq!(LogicalKey::from_text("\u{f70b}"), Some(LKey::F8));
         assert_eq!(LogicalKey::from_text("\u{f70c}"), Some(LKey::F9));

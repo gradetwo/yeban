@@ -93,11 +93,11 @@ pub const CLIP_ULIDS: [&str; CLIP_COUNT] = [
     "01J8Z5Q0R7K3M9X2V4B6N8P1H3",
 ];
 
-/// 底部控制台的三个标签。
+/// 底部控制台的四个标签。
 ///
 /// `name` 就是语义 ID 里的 `{tab_name}` —— `[UI-TEST-001]` 要求它是稳定的小写连字符串,
 /// 因此这里同时是「Rust 侧注册表」与「`.slint` 侧 `tab-names` 默认值」的事实源。
-pub const CONSOLE_TABS: [ConsoleTab; 3] = [
+pub const CONSOLE_TABS: [ConsoleTab; 4] = [
     ConsoleTab {
         name: "piano-roll",
         label: "钢琴卷帘",
@@ -109,6 +109,10 @@ pub const CONSOLE_TABS: [ConsoleTab; 3] = [
     ConsoleTab {
         name: "devices",
         label: "设备机架",
+    },
+    ConsoleTab {
+        name: "stacked",
+        label: "设备堆叠",
     },
 ];
 

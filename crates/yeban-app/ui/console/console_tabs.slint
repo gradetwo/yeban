@@ -18,7 +18,7 @@ import { DeviceRack } from "device_rack.slint";
 export component ConsoleTabs inherits Rectangle {
     in property <int> active-tab: 0;
     // tab_name 就是语义 ID 里的 {tab_name}, 只允许小写与连字符
-    in property <[string]> tab-names: ["piano-roll", "mixer", "devices"];
+    in property <[string]> tab-names: ["piano-roll", "mixer", "devices", "stacked"];
     in property <[string]> tab-labels: [@tr("钢琴卷帘"), @tr("混音控制台"), @tr("设备机架")];
     // 卷帘的音符身份 / 力度 / 位置 —— 由 MainWindow 从投影透传（本组件不解释它们）。
     // `note-positions` / `note-ys` / `note-widths` 都是投影算好的逻辑像素：

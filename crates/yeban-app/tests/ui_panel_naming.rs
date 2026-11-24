@@ -121,17 +121,21 @@ fn command_palette_uses_the_canonical_names() {
     }
 }
 
-/// **判据 ④**：`--print-shortcuts` 的 F7/F8/F9 标签与页签同名。
+/// **判据 ④**：`--print-shortcuts` 的 F3/F7/F8/F9 标签与页签同名。
 #[test]
 fn shortcut_table_labels_match_the_dock_tabs() {
     let c = code_lines(CLI);
+    assert!(c.contains("F3 → 控制台「设备堆叠」"));
     assert!(c.contains("F7 → 控制台「钢琴卷帘」"));
     assert!(c.contains("F8 → 控制台「混音控制台」"));
     assert!(c.contains("F9 → 控制台「设备机架」"));
     assert!(c.contains("控制台页签：钢琴卷帘 / 混音控制台 / 设备机架"));
     // ADR-0074 R1：X 不再在「界面直达键」段，改由 SHORTCUTS 主表列出。
     assert!(c.contains("X → 打开底部混音控制台"));
-    assert!(c.contains("#   F3              混音控制台最大化 / 还原"));
+    // T-FIX-377：F3 不再是「混音控制台最大化 / 还原」（界面层旧臂），而是第四个
+    // 控制台页签直达（设备堆叠），与 F7/F8/F9 同款。
+    assert!(c.contains("#   F3              控制台页签：设备堆叠"));
+    assert!(!c.contains("混音控制台最大化 / 还原"));
     assert!(!c.contains("打开底部混音台"));
     assert!(!c.contains("混音台最大化"));
 }

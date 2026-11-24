@@ -27,7 +27,7 @@ fn code_lines(source: &str) -> String {
         .join("\n")
 }
 
-/// **判据 ①**：F7/F8/F9 按文档直达三个控制台页签（控件体检 §2.2）。
+/// **判据 ①**：F3/F7/F8/F9 按文档直达四个控制台页签（控件体检 §2.2）。
 #[test]
 fn f7_f8_f9_open_the_three_documented_console_tabs() {
     let s = code_lines(APP);
@@ -41,6 +41,23 @@ fn f7_f8_f9_open_the_three_documented_console_tabs() {
     assert!(s.contains("apply-dock-tab(\"pianoroll\")"));
     assert!(s.contains("apply-dock-tab(\"mixer\")"));
     assert!(s.contains("apply-dock-tab(\"devices\")"));
+    // T-FIX-377：F3 也是页签直达（第四格「设备堆叠」），不再是混音控制台最大化。
+    assert!(s.contains("if (event.text == Key.F3)"));
+    assert!(s.contains("apply-dock-tab(\"stacked\")"));
+    let f3_start = s.find("if (event.text == Key.F3)").expect("F3 臂必须存在");
+    let f3_end = s[f3_start..]
+        .find("if (event.text == Key.F7)")
+        .map(|offset| f3_start + offset)
+        .expect("F3 臂之后必须有 F7 臂");
+    let f3_arm = &s[f3_start..f3_end];
+    assert!(
+        f3_arm.contains("apply-dock-tab(\"stacked\")"),
+        "F3 臂必须直达「设备堆叠」页签"
+    );
+    assert!(
+        !f3_arm.contains("console-maximize-toggle"),
+        "F3 臂不得再碰控制台最大化（那是旧臂的行为；最大化走 Ctrl+Alt+M 与最大化按钮）"
+    );
 }
 
 /// **判据 ②**：页签 tooltip 承诺的 `[D]` / `[F4]` 真的有绑定（控件体检 §2.3）。
@@ -93,6 +110,11 @@ fn printed_shortcuts_list_the_ui_direct_keys() {
             "--print-shortcuts 的界面直达键段漏了 {key}"
         );
     }
+    // T-FIX-377：F3 那一行不再是旧臂的「混音控制台最大化 / 还原」。
+    assert!(
+        !c.contains("混音控制台最大化"),
+        "--print-shortcuts 不应再把 F3 说成混音控制台最大化"
+    );
 }
 
 /// **判据 ⑥**：同一块面板命名统一（报告 §5.12）。

@@ -1491,20 +1491,19 @@ export component MainWindow inherits Window {
                 Theme.show-tooltips = !Theme.show-tooltips;
                 return accept;
             }
+            // F3 = 控制台「设备堆叠」标签直达，与 input.rs 的 SelectConsoleTab{3}
+            // （--print-shortcuts 官方口径）一致。⛔ 不再是「混音控制台最大化」：
+            // 命令面板 tab-stacked 的 shortcut 文案就是 F3（T-FIX-377），此前界面层
+            // 这条臂与文案说的不是同一个动作；混音控制台最大化仍可走 Ctrl+Alt+M
+            // （ToggleConsoleMaximize）与控制台最大化按钮。
             if (event.text == Key.F3) {
-                if (root.console-maximized && Theme.active-dock-tab == "mixer") {
-                    root.console-maximize-toggle();
-                } else {
-                    root.show-lower-dock = true;
-                    root.apply-dock-tab("mixer");
-                    if (!root.console-maximized) {
-                        root.console-maximize-toggle();
-                    }
-                }
+                root.show-lower-dock = true;
+                root.apply-dock-tab("stacked");
                 return accept;
             }
             // F7/F8/F9 = 控制台三个页签直达，与 input.rs 的
             // SelectConsoleTab{0/1/2}（--print-shortcuts 官方口径）一致。
+            // F3 的「设备堆叠」在上一个分支，同款写法（T-FIX-377）。
             // ⛔ 不再一律打开「最大化后的钢琴卷帘」（控件体检 §2.2）。
             if (event.text == Key.F7) {
                 root.show-lower-dock = true;
