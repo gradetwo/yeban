@@ -60,10 +60,14 @@
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
 #![allow(unused)]
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
+// ⭐ **T-FIX-356 group B**：已删三条指向死文件的 `include_str!`（见
+// `docs/DEAD-SLINT-FILES.md`；判定口径 = 从 `ui/app.slint` 的 import 不可达）：
+// `ui/transport.slint`（活等价物 `ui/transport_bar.slint`）、
+// `ui/workspace/arrangement_view.slint`（活等价物 `ui/arrangement.slint`）、
+// `ui/workspace/song_overview_panel.slint`（无活等价物）。
+// 本文件六条判据是桩体（aether 前言 + `read_to_string` 局部量），
+// 一处都没引用这三条常量 ⇒ 只删常量，不动判据。活文件的常量保留。
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
-const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const APP: &str = include_str!("../ui/app.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
 const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
