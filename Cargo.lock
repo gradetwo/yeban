@@ -7243,10 +7243,12 @@ dependencies = [
 name = "yeban-mcp"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.3.4",
  "libm",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
  "yeban-decode",
  "yeban-diagnostics",
  "yeban-midi",

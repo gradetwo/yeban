@@ -109,7 +109,8 @@ signalsmith-stretch = { version = "0.1.3", default-features = false }
 realfft = { version = "3.5.0", default-features = false }
 # 原生文件选择对话框（仅被 yeban-app 消费，MIT/Apache-2.0）。
 rfd = { version = "0.17.2" }
-# Windows OTCP 进程存活检查（yeban-otcp target.cfg(windows) 消费，MIT/Apache-2.0）。
+# Windows OTCP 进程存活检查（yeban-otcp target.cfg(windows) 消费，MIT/Apache-2.0）；
+# 同时供 yeban-mcp 的 Windows TokenFile（单句柄打开 / SID allowlist / 原子替换）继承。
 windows-sys = { version = "0.61" }
 # 屏幕工作区读取（T-FIX-224，yeban-app 按平台消费）：
 #   · Linux 走 X11 根窗口属性 `_NET_WORKAREA` —— x11-dl 是**运行时 dlopen**，
@@ -120,6 +121,9 @@ windows-sys = { version = "0.61" }
 x11-dl = { version = "2.21.0" }
 objc2 = { version = "0.6.4" }
 objc2-app-kit = { version = "0.3.2" }
+# OS 熵源（yeban-mcp 的 Windows TokenFile 用，MIT OR Apache-2.0）。树里本来就有
+# 0.3.4 作为传递依赖，登记到根表只是让成员能写 `workspace = true`（G08 要求继承）。
+getrandom = { version = "0.3.4" }
 
 # 夜半自身 crate (workspace 内部路径依赖的唯一登记处)
 yeban-model = { path = "crates/yeban-model" }

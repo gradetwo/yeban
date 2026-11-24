@@ -29,16 +29,20 @@
 //! 高熵来源只读 Unix 的 `/dev/urandom`（纯 `std::fs`）；读不到时 **fail-closed**
 //! 报错，不再退回确定性 splitmix64 混合器（`SystemTime` 纳秒 + PID + 栈地址 +
 //! 原子计数器）—— 令牌是 UI 控制面的唯一凭据，弱令牌不可接受（T-FIX-32）。
-//! 不需要 `rand` / `getrandom` / `libc`（`docs/adr/ADR-0001` D20/D21 的零新增依赖
-//! 倾向）：`O_NOFOLLOW` 用按平台钉死的 ABI 常量交给 `OpenOptionsExt::custom_flags`。
+//! Unix 不需要 `rand` / `getrandom` / `libc`：`O_NOFOLLOW` 用按平台钉死的 ABI
+//! 常量交给 `OpenOptionsExt::custom_flags`。Windows 使用工作区 `Cargo.lock`
+//! 已有的 `getrandom 0.3.4`（OS 后端，不新增第三方包）填满 32 字节。
 //! symlink / 检查后被替换 / 权限不是 `0600` 一律拒绝；非 Unix / 非 Windows 平台上
 //! [`TokenFile::save`] / [`TokenFile::load`] 返回
 //! [`SecurityError::UnsupportedPlatform`] —— **明确拒绝，而不是静默放过**。
 //!
-//! [PATCH] Windows 例外：它没有权限位，但**有 ACL**。因此 Windows 上走
-//! `icacls /inheritance:r` + 只授当前用户读，并**读回**真实 ACL 判定
-//! （`win_acl::is_owner_only`）—— 语义等价于 `0600`，收不紧仍然 fail-closed。
-//! 同一个补丁把 Windows 的熵源从"退回确定性回退"改成 `RandomState`（OS 播种，见 `fill_os_random` 的 Windows 实现说明）。
+//! [PATCH] Windows 例外：它没有权限位，但**有 ACL**。因此 Windows 上用**同一个
+//! 文件句柄**完成 `GetFileInformationByHandle` / `GetSecurityInfo` / `ReadFile`，
+//! 保存时用 `SetEntriesInAclW` + `SetSecurityInfo` 构造只含当前用户 SID 的
+//! allowlist DACL（当前用户读/写/删除，其他主体无 ACE），并置 protected；
+//! 落盘用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` 原子替换 —— 语义
+//! 等价于 `0600`，收不紧仍然 fail-closed。Windows 熵源改为 `getrandom`（OS
+//! 播种，见 `fill_os_random` 的 Windows 实现说明）。
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -49,8 +53,12 @@ use std::fs;
 use std::io::Read as _;
 #[cfg(any(unix, windows))]
 use std::io::Write as _;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
 use serde::{Deserialize, Serialize};
 
@@ -1025,20 +1033,21 @@ impl TokenFile {
 
     /// Windows：用 owner-only ACL **等价**落实 `0600`，收不紧就 fail-closed。
     ///
-    /// POSIX 的 `0600` 在 Windows 上没有权限位可写，[PATCH] 因此这里做的是
-    /// **语义等价**而不是放宽：
-    /// 1. 临时文件 `create_new`（与 Unix 同一套三段式落盘，不会有半截文件）；
-    /// 2. `icacls /inheritance:r` 断掉**全部**继承 ACE（SYSTEM / Administrators /
-    ///    Users 随之消失），再 `/grant:r "<user>:R"` 只给**当前用户**读；
-    /// 3. `icacls` **读回**再判一遍（[`win_acl::is_owner_only`]）—— 只要还能看到
-    ///    `Everyone` / `BUILTIN\Users` / `Authenticated Users` 这类宽主体，就
-    ///    **拒绝发布令牌**，不让"权限收不紧"变成一条静默通过的路径；
-    /// 4. 目标已存在时先删再 rename（Windows 的 `rename` 不覆盖既有文件），
-    ///    因此这一步**不是**原子替换 —— 代价写在下面，由读侧的内容校验兜住。
+    /// POSIX 的 `0600` 在 Windows 上没有权限位可写，因此这里做的是**语义等价**
+    /// 而不是放宽：
+    /// 1. 同目录临时文件 `create_new`，写完 `sync_all()`（FlushFileBuffers 等价）；
+    /// 2. 在**同一个临时文件句柄**上用 SID allowlist 设 DACL：只给当前用户
+    ///    读/写/删除（至少含 `FILE_GENERIC_READ`），并置
+    ///    `PROTECTED_DACL_SECURITY_INFORMATION`；
+    /// 3. 仍在同一个句柄上读回 DACL 复核（[`win_acl::is_owner_only_handle`]）：
+    ///    除当前用户 SID 的 allow ACE 外不能有第二个 allow ACE，DACL 必须
+    ///    protected 且没有继承 ACE；
+    /// 4. 复核通过后才关闭临时文件，用 `MoveFileExW(REPLACE_EXISTING |
+    ///    WRITE_THROUGH)` 替换目标 —— 不再先 `remove_file` 再 `rename`。
     ///
     /// # Errors
     ///
-    /// `icacls` 不可用 / 权限收不紧 / I/O 失败。
+    /// SID 取不到 / ACL 收不紧 / 原子替换失败 / I/O 失败。失败路径保留目标原文件。
     #[cfg(windows)]
     pub fn save(&self, token: &BearerToken) -> Result<(), SecurityError> {
         let path_text = self.path.display().to_string();
@@ -1060,28 +1069,27 @@ impl TokenFile {
         ));
 
         let written = (|| -> Result<(), SecurityError> {
-            {
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&temp)
-                    .map_err(io)?;
-                file.write_all(token.expose().as_bytes()).map_err(io)?;
-                file.write_all(b"\n").map_err(io)?;
-                file.sync_all().map_err(io)?;
-            }
-            win_acl::restrict_owner_read(&temp)?;
-            if !win_acl::is_owner_only(&temp)? {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .access_mode(FILE_ALL_ACCESS)
+                .create_new(true)
+                .open(&temp)
+                .map_err(io)?;
+            file.write_all(token.expose().as_bytes()).map_err(io)?;
+            file.write_all(b"\n").map_err(io)?;
+            file.sync_all().map_err(io)?;
+
+            let handle = win_acl::file_handle(&file);
+            win_acl::restrict_owner_read_handle(handle, &self.path)?;
+            if !win_acl::is_owner_only_handle(handle, &self.path)? {
                 return Err(SecurityError::InsecureTokenPermissions {
                     path: path_text.clone(),
                     mode: 0,
                     expected: TOKEN_FILE_MODE,
                 });
             }
-            if self.path.exists() {
-                fs::remove_file(&self.path).map_err(io)?;
-            }
-            fs::rename(&temp, &self.path).map_err(io)
+            drop(file);
+            win_acl::replace_atomically(&temp, &self.path)
         })();
 
         if written.is_err() {
@@ -1176,36 +1184,23 @@ impl TokenFile {
         BearerToken::parse(&text)
     }
 
-    /// Windows：读取令牌，并用**读回 ACL** 代替 `0600` 位校验。
+    /// Windows：读取令牌，并在**同一个文件句柄**上完成安全判定。
     ///
-    /// 判定对象与 Unix 那条逐字同义："这个文件是不是只有属主能读"。差别只在
-    /// 取证方式 —— Windows 没有权限位，因此 [`win_acl::is_owner_only`] 去问
-    /// `icacls`，只要还能看到 `Everyone` / `BUILTIN\Users` 这类宽主体就报
-    /// [`SecurityError::InsecureTokenPermissions`]（`mode: 0` 表示"平台没有这个
-    /// 数值"，而不是"权限是 000"）。
+    /// 判定对象与 Unix 那条逐字同义："这个文件是不是只有属主能读"。Windows
+    /// 没有权限位，因此这里用 `GetSecurityInfo` 读回 DACL，按**当前用户 SID**
+    /// 做 allowlist 判定；不再调用 `icacls`、也不再按路径二次 `read_to_string`。
+    ///
+    /// `open_no_reparse` 用一次 `CreateFileW`（Rust `OpenOptions`）打开，
+    /// `FILE_FLAG_OPEN_REPARSE_POINT` + `FILE_ATTRIBUTE_REPARSE_POINT` 双重拒绝
+    /// symlink/junction；之后的属性、ACL、内容读取全部针对同一个句柄。
     ///
     /// # Errors
     ///
-    /// 路径是符号链接、ACL 不是 owner-only、内容不是 64 位十六进制、I/O 失败。
+    /// 路径是 reparse point、ACL 不是 owner-only、内容不是 64 位十六进制、I/O 失败。
     #[cfg(windows)]
     pub fn load(&self) -> Result<BearerToken, SecurityError> {
         let path_text = self.path.display().to_string();
-        let io = |source: std::io::Error| SecurityError::Io {
-            path: path_text.clone(),
-            source,
-        };
-        let link_meta = fs::symlink_metadata(&self.path).map_err(io)?;
-        if link_meta.file_type().is_symlink() {
-            return Err(SecurityError::TokenPathIsSymlink { path: path_text });
-        }
-        if !win_acl::is_owner_only(&self.path)? {
-            return Err(SecurityError::InsecureTokenPermissions {
-                path: path_text,
-                mode: 0,
-                expected: TOKEN_FILE_MODE,
-            });
-        }
-        let text = fs::read_to_string(&self.path).map_err(io)?;
+        let text = win_acl::read_verified(&self.path)?;
         if text.trim().is_empty() {
             return Err(SecurityError::MalformedTokenFile {
                 path: path_text,
@@ -1233,30 +1228,33 @@ impl TokenFile {
     ///
     /// 返回 `(令牌, 是否新建)`。
     ///
-    /// ## 失败语义（本轮修复）
+    /// ## 失败语义（T-FIX-135 收紧）
     ///
-    /// `exists()` 只用来区分"**路径上什么都没有**"与"**路径上有东西**"。
-    /// - 没有东西 ⇒ 生成并**原子**落盘（[`TokenFile::save`]）；
-    /// - 有东西但不可用 ⇒ **拒绝启动**（权限不安全 / 空文件 / 半截文件 / 非法内容），
-    ///   并把路径写进错误信息。
+    /// 这里**不再**用 `exists()` 做安全判断：先直接 `load()`，只有底层
+    /// `CreateFileW` 返回 `NotFound` 才生成新令牌；symlink / 悬空 symlink /
+    /// 权限不安全 / 空文件 / 半截文件一律沿 `load()` 的错误返回，绝不静默重建。
     ///
     /// **为什么是拒绝而不是重新生成**：这个文件可能正被另一个进程（`yeban-app`
     /// 的 `--enable-ui-mcp-http`，或另一个 `yeban-mcp --enable-mcp-http`）用来鉴权。
     /// 静默换掉令牌会让那个进程的已授权客户端全部开始 401。拒绝是可恢复的：
     /// 人确认没有进程在用之后删掉文件，下次启动就重新生成（判据 D 钉住这条路）。
-    /// 这条语义与既有的"权限不安全就拒绝读"完全同向，只是把校验面从权限位扩到内容。
     ///
     /// # Errors
     ///
     /// 同 [`TokenFile::load`] / [`TokenFile::save`]。
     pub fn load_or_create(&self) -> Result<(BearerToken, bool), SecurityError> {
-        if self.path.exists() {
-            return Ok((self.load()?, false));
+        match self.load() {
+            Ok(token) => Ok((token, false)),
+            Err(SecurityError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                // fail-closed: 熵源不可用时直接返回错误，绝不落盘弱令牌。
+                let generated = BearerToken::try_generate()?;
+                self.save(&generated.token)?;
+                Ok((generated.token, true))
+            }
+            Err(error) => Err(error),
         }
-        // fail-closed: 熵源不可用时直接返回错误，绝不落盘弱令牌。
-        let generated = BearerToken::try_generate()?;
-        self.save(&generated.token)?;
-        Ok((generated.token, true))
     }
 }
 
@@ -1285,168 +1283,419 @@ pub fn fill_os_random(_buf: &mut [u8]) -> Result<(), SecurityError> {
 
 /// Windows 上的 OS 熵源。
 ///
-/// [PATCH] 之前这里走 `UnsupportedPlatform`，`BearerToken::generate` 于是退回
-/// [`fill_deterministic`]（时间 + PID + 栈地址），令牌**不是**不可预测的 ——
-/// 而它是 UI 控制面的唯一凭据。
-///
-/// ## 为什么不是 `BCryptGenRandom`
-///
-/// 那个调用必须写 `unsafe` 块，而本 crate 的 `#![forbid(unsafe_code)]` 是一条
-/// 红线；为一条令牌就把它开个洞不值得。这里改用 `std` 自己那条**已经被 OS 播种**
-/// 的哈希键：`RandomState::new()` 的键来自 `std` 的 OS 随机源
-/// （Windows 上即 `RtlGenRandom`），每次 `build_hasher()` 得到的 SipHash 都以
-/// 这对**不可预测**的键为种子。于是"没有 `unsafe`、没有新依赖、种子来自 OS"
-/// 三件事同时成立。
-///
-/// 诚实登记它的边界：这是**带随机种子的哈希**，不是密码学 KDF。它够用于
-/// "本机进程间的一次性凭据"，**不**用于会话密钥 —— 与本模块自始的定位一致。
+/// T-FIX-135 前这里用 `RandomState` 的 SipHash 输出拼字节；那只是一种
+/// 带随机种子的哈希，不是 OS 的 256-bit 随机源。现在直接走 `getrandom`
+/// 的 Windows 后端（BCryptGenRandom / RtlGenRandom），一次填满调用方给的
+/// 整个缓冲区；失败 fail-closed，绝不退回确定性混合器。
 ///
 /// # Errors
 ///
-/// 不产生错误（`Result` 保留是为了与 Unix 腿同一签名）。
+/// `getrandom` 返回错误（例如 Windows 随机源不可用）时返回
+/// [`SecurityError::EntropyUnavailable`]。
 #[cfg(windows)]
 pub fn fill_os_random(buf: &mut [u8]) -> Result<(), SecurityError> {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher as _, Hasher as _};
-
-    let seed = RandomState::new();
-    let mut written = 0usize;
-    while written < buf.len() {
-        let mut hasher = seed.build_hasher();
-        hasher.write_u64(TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed));
-        let digest = hasher.finish().to_le_bytes();
-        for byte in &digest {
-            if written == buf.len() {
-                break;
-            }
-            buf[written] = *byte;
-            written += 1;
-        }
-    }
-    Ok(())
+    getrandom::fill(buf).map_err(|error| SecurityError::EntropyUnavailable(error.to_string()))
 }
 
-/// Windows 上"`0600` 等价"的唯一实现点：`icacls` 断继承 + 只授当前用户读，
-/// 并且每次判定都**读回**真实 ACL，而不是相信刚才那条命令的退出码。
+/// Windows 上"`0600` 等价"的唯一实现点。
+///
+/// T-FIX-135 把这条腿从 `icacls` 文本 + 主体名黑名单改成**句柄上的 SID
+/// allowlist**：`GetSecurityInfo` 读 DACL，`GetExplicitEntriesFromAclW` 逐条
+/// 比较当前用户 SID；保存时用 `SetEntriesInAclW` + `SetSecurityInfo` 只授
+/// 当前用户读/写/删除，并置 protected。所有 unsafe 调用都关在这个模块里，
+/// 外部只调用安全包装。
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod win_acl {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::fs::File;
+    use std::io::{self, Read};
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
 
-    use super::SecurityError;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetSecurityInfo,
+        SE_FILE_OBJECT, SetEntriesInAclW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+    };
+    use windows_sys::Win32::Security::{
+        ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetTokenInformation, INHERITED_ACE, NO_INHERITANCE,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    /// 宽主体名单 —— 出现任何一个就说明"这个文件不止属主能读"。
-    /// 比对时按 `icacls` 里 `DOMAIN\Name:(R)` 的**主体部分**做不区分大小写的包含判定。
-    const BROAD_PRINCIPALS: [&str; 7] = [
-        "Everyone",
-        "BUILTIN\\Users",
-        "Authenticated Users",
-        "INTERACTIVE",
-        "ANONYMOUS LOGON",
-        "NT AUTHORITY\\NETWORK",
-        "NETWORK SERVICE",
-    ];
+    use super::{SecurityError, TOKEN_FILE_MODE};
 
     fn io_error(path: &Path, message: impl Into<String>) -> SecurityError {
         SecurityError::Io {
             path: path.display().to_string(),
-            source: std::io::Error::other(message.into()),
+            source: io::Error::other(message.into()),
         }
     }
 
-    /// `icacls` 的绝对路径（T-FIX-32）：裸名 `Command::new("icacls")` 会走
-    /// PATH + 当前目录搜索，一份同目录同名 `icacls.exe` 就能劫持"权限收紧"这道
-    /// 安全关口。固定到 `%SystemRoot%\System32\icacls.exe`；`SystemRoot` 缺失时
-    /// 退回 Windows 标准位置 `C:\Windows`（系统保护目录，普通用户不可写）。
-    fn icacls_program() -> PathBuf {
-        std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .filter(|root| !root.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
-            .join("System32")
-            .join("icacls.exe")
-    }
-
-    fn icacls(path: &Path, args: &[&str]) -> Result<String, SecurityError> {
-        let output = Command::new(icacls_program())
-            .arg(path)
-            .args(args)
-            .output()
-            .map_err(|error| io_error(path, format!("icacls 无法执行: {error}")))?;
-        if !output.status.success() {
-            return Err(io_error(
-                path,
-                format!(
-                    "icacls {args:?} 失败 ({}) : {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
+    fn last_error(path: &Path, what: impl Into<String>) -> SecurityError {
+        let what = what.into();
+        SecurityError::Io {
+            path: path.display().to_string(),
+            source: io::Error::other(format!("{what}: {}", io::Error::last_os_error())),
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// 当前用户名（`USERNAME`）。没有它就没法写 owner-only ACL ⇒ 直接拒绝。
-    fn current_user(path: &Path) -> Result<String, SecurityError> {
-        std::env::var("USERNAME")
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| io_error(path, "环境变量 USERNAME 缺失, 无法把令牌收成 owner-only"))
+    fn status_error(path: &Path, what: impl Into<String>, status: u32) -> SecurityError {
+        let what = what.into();
+        SecurityError::Io {
+            path: path.display().to_string(),
+            source: io::Error::other(format!(
+                "{what}: {}",
+                io::Error::from_raw_os_error(status as i32)
+            )),
+        }
     }
 
-    /// 断继承 → 只授当前用户读。两步都跑完才算成功。
-    pub(super) fn restrict_owner_read(path: &Path) -> Result<(), SecurityError> {
-        let user = current_user(path)?;
-        // `/inheritance:r`：删掉所有**继承**来的 ACE（SYSTEM / Administrators / Users）。
-        icacls(path, &["/inheritance:r"])?;
-        // `/grant:r`：替换掉该主体既有的显式授权，只留 `R`。
-        icacls(path, &["/grant:r", &format!("{user}:R")])?;
+    pub(super) fn file_handle(file: &File) -> HANDLE {
+        file.as_raw_handle() as HANDLE
+    }
+
+    /// 当前进程令牌里的用户 SID；它的缓冲区必须和 `sid` 一起活到 ACL 调用结束。
+    #[allow(dead_code)]
+    struct CurrentSid {
+        buffer: Vec<usize>,
+        sid: PSID,
+    }
+
+    fn current_sid(path: &Path) -> Result<CurrentSid, SecurityError> {
+        let mut token: HANDLE = null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(last_error(path, "OpenProcessToken 失败"));
+        }
+        let result = current_sid_inner(token, path);
+        unsafe {
+            CloseHandle(token);
+        }
+        result
+    }
+
+    fn current_sid_inner(token: HANDLE, path: &Path) -> Result<CurrentSid, SecurityError> {
+        let mut needed = 0u32;
+        let status = unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut needed) };
+        if status == 0 && needed == 0 {
+            return Err(last_error(path, "GetTokenInformation(TokenUser) 失败"));
+        }
+        let units = (needed as usize).div_ceil(size_of::<usize>()).max(1);
+        let mut buffer = vec![0usize; units];
+        let mut written = 0u32;
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                needed,
+                &mut written,
+            )
+        } == 0
+        {
+            return Err(last_error(path, "GetTokenInformation(TokenUser) 读取失败"));
+        }
+        if written < size_of::<TOKEN_USER>() as u32 {
+            return Err(io_error(path, "TokenUser 返回长度不足"));
+        }
+        let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+        if user.User.Sid.is_null() {
+            return Err(io_error(path, "TokenUser 返回空 SID"));
+        }
+        Ok(CurrentSid {
+            buffer,
+            sid: user.User.Sid,
+        })
+    }
+
+    fn is_reparse_or_directory(path: &Path, attributes: u32) -> Result<(), SecurityError> {
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(SecurityError::TokenPathIsSymlink {
+                path: path.display().to_string(),
+            });
+        }
+        if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            return Err(SecurityError::NotARegularFile {
+                path: path.display().to_string(),
+                reason: String::from("令牌路径不是普通文件"),
+            });
+        }
         Ok(())
     }
 
-    /// 读回 ACL 判"是不是只有属主能读"。
-    ///
-    /// 判定口径：**没有**任何宽主体 ACE，**且**至少有一条属于当前用户的 ACE。
-    /// `icacls` 输出形如
-    /// `session.token DESKTOP-XX\Administrator:(R)` / `              BUILTIN\Users:(RX)`，
-    /// 因此按 `:(` 切出主体名再比。
-    pub(super) fn is_owner_only(path: &Path) -> Result<bool, SecurityError> {
-        let user = current_user(path)?;
-        let report = icacls(path, &[])?;
-        let mut has_owner = false;
-        for line in report.lines() {
-            let Some((principal, _rights)) = line.split_once(":(") else {
-                continue;
-            };
-            // 路径本身在最左，取最后一段当作主体（`DESKTOP-XX\Administrator`）。
-            let principal = principal.trim();
-            let principal = principal
-                .rsplit(char::is_whitespace)
-                .next()
-                .unwrap_or(principal);
-            let upper = principal.to_ascii_uppercase();
-            if BROAD_PRINCIPALS
-                .iter()
-                .any(|broad| upper.contains(&broad.to_ascii_uppercase()))
-            {
+    /// 用一次 `CreateFileW` 打开，禁止跟随 reparse point，并在同一个句柄上验属性。
+    pub(super) fn open_no_reparse(path: &Path) -> Result<File, SecurityError> {
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = options.open(path).map_err(|source| SecurityError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file_handle(&file), &mut info) } == 0 {
+            return Err(last_error(path, "GetFileInformationByHandle 失败"));
+        }
+        is_reparse_or_directory(path, info.dwFileAttributes)?;
+        Ok(file)
+    }
+
+    /// 只读打开后在同一句柄上验属性 + ACL；测试与 `TokenFile::load` 共用。
+    pub(super) fn read_verified(path: &Path) -> Result<String, SecurityError> {
+        let file = open_no_reparse(path)?;
+        read_verified_file(file, path)
+    }
+
+    fn read_verified_file(mut file: File, path: &Path) -> Result<String, SecurityError> {
+        if !is_owner_only_handle(file_handle(&file), path)? {
+            return Err(SecurityError::InsecureTokenPermissions {
+                path: path.display().to_string(),
+                mode: 0,
+                expected: TOKEN_FILE_MODE,
+            });
+        }
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .map_err(|source| SecurityError::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+        Ok(text)
+    }
+
+    /// 确定性 TOCTOU 回归钩子：打开后、读 ACL/内容前执行一次攻击动作。
+    #[cfg(test)]
+    pub(super) fn read_verified_with_hook(
+        path: &Path,
+        hook: impl FnOnce(),
+    ) -> Result<String, SecurityError> {
+        let file = open_no_reparse(path)?;
+        hook();
+        read_verified_file(file, path)
+    }
+
+    /// 在同一个临时文件句柄上设 DACL：只给当前用户 SID `FILE_GENERIC_READ`。
+    pub(super) fn restrict_owner_read_handle(
+        handle: HANDLE,
+        path: &Path,
+    ) -> Result<(), SecurityError> {
+        let user = current_sid(path)?;
+        let mut entry: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+        entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE;
+        entry.grfAccessMode = GRANT_ACCESS;
+        entry.grfInheritance = NO_INHERITANCE;
+        entry.Trustee.pMultipleTrustee = null_mut();
+        entry.Trustee.MultipleTrusteeOperation = 0;
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        entry.Trustee.ptstrName = user.sid as *mut u16;
+
+        let mut new_acl: *mut ACL = null_mut();
+        let status = unsafe { SetEntriesInAclW(1, &entry, null(), &mut new_acl) };
+        if status != 0 {
+            return Err(status_error(path, "SetEntriesInAclW 失败", status));
+        }
+        let status = unsafe {
+            SetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                new_acl,
+                null_mut(),
+            )
+        };
+        if !new_acl.is_null() {
+            unsafe {
+                LocalFree(new_acl as HLOCAL);
+            }
+        }
+        if status != 0 {
+            return Err(status_error(path, "SetSecurityInfo 失败", status));
+        }
+        let _ = &user.buffer;
+        Ok(())
+    }
+
+    /// 读回 DACL：DACL protected、无继承 ACE，且 allow ACE 只有当前用户 SID。
+    pub(super) fn is_owner_only_handle(handle: HANDLE, path: &Path) -> Result<bool, SecurityError> {
+        let user = current_sid(path)?;
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        let mut dacl: *mut ACL = null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err(status_error(path, "GetSecurityInfo 失败", status));
+        }
+        let result = is_owner_only_dacl(path, descriptor, dacl, &user);
+        if !descriptor.is_null() {
+            unsafe {
+                LocalFree(descriptor as HLOCAL);
+            }
+        }
+        let _ = &user.buffer;
+        result
+    }
+
+    fn is_owner_only_dacl(
+        path: &Path,
+        descriptor: PSECURITY_DESCRIPTOR,
+        dacl: *mut ACL,
+        user: &CurrentSid,
+    ) -> Result<bool, SecurityError> {
+        if descriptor.is_null() {
+            return Err(io_error(path, "GetSecurityInfo 返回空 security descriptor"));
+        }
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(last_error(path, "GetSecurityDescriptorControl 失败"));
+        }
+        if control & SE_DACL_PROTECTED == 0 {
+            return Ok(false);
+        }
+
+        let mut present = 0i32;
+        let mut defaulted = 0i32;
+        let mut dacl_from_descriptor: *mut ACL = null_mut();
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor,
+                &mut present,
+                &mut dacl_from_descriptor,
+                &mut defaulted,
+            )
+        } == 0
+        {
+            return Err(last_error(path, "GetSecurityDescriptorDacl 失败"));
+        }
+        if present == 0 {
+            return Ok(false);
+        }
+        let dacl = if dacl_from_descriptor.is_null() {
+            dacl
+        } else {
+            dacl_from_descriptor
+        };
+        if dacl.is_null() {
+            return Ok(false);
+        }
+
+        // 拒绝任何继承 ACE；protected 标志之外再钉一层。
+        let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                &mut info as *mut _ as *mut _,
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+        {
+            return Err(last_error(path, "GetAclInformation 失败"));
+        }
+        for index in 0..info.AceCount {
+            let mut ace: *mut core::ffi::c_void = null_mut();
+            if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+                return Err(last_error(path, "GetAce 失败"));
+            }
+            let header = unsafe { &*(ace as *const ACE_HEADER) };
+            if header.AceFlags & (INHERITED_ACE as u8) != 0 {
                 return Ok(false);
             }
-            if upper.ends_with(&format!("\\{}", user.to_ascii_uppercase()))
-                || upper == user.to_ascii_uppercase()
-            {
+        }
+
+        let mut count = 0u32;
+        let mut entries: *mut EXPLICIT_ACCESS_W = null_mut();
+        let status = unsafe { GetExplicitEntriesFromAclW(dacl, &mut count, &mut entries) };
+        if status != 0 {
+            return Err(status_error(
+                path,
+                "GetExplicitEntriesFromAclW 失败",
+                status,
+            ));
+        }
+        let mut has_owner = false;
+        let mut has_other_allow = false;
+        for index in 0..count as usize {
+            let entry = unsafe { &*entries.add(index) };
+            if entry.grfAccessMode == DENY_ACCESS {
+                continue;
+            }
+            if entry.Trustee.TrusteeForm != TRUSTEE_IS_SID || entry.Trustee.ptstrName.is_null() {
+                has_other_allow = true;
+                continue;
+            }
+            let sid = entry.Trustee.ptstrName as PSID;
+            if unsafe { EqualSid(user.sid, sid) } == 0 {
+                has_other_allow = true;
+            } else if entry.grfAccessPermissions & FILE_GENERIC_READ == FILE_GENERIC_READ {
                 has_owner = true;
             }
         }
-        Ok(has_owner)
+        if !entries.is_null() {
+            unsafe {
+                LocalFree(entries as HLOCAL);
+            }
+        }
+        Ok(!has_other_allow && has_owner)
+    }
+
+    /// 路径版，只给测试使用；内部仍是先打开句柄再判定。
+    #[cfg(test)]
+    pub(super) fn is_owner_only(path: &Path) -> Result<bool, SecurityError> {
+        let file = open_no_reparse(path)?;
+        is_owner_only_handle(file_handle(&file), path)
+    }
+
+    /// `MoveFileExW` 原子替换；temp 与目标同目录，目标不会出现缺失窗口。
+    pub(super) fn replace_atomically(source: &Path, target: &Path) -> Result<(), SecurityError> {
+        let source_wide: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let target_wide: Vec<u16> = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+        if unsafe { MoveFileExW(source_wide.as_ptr(), target_wide.as_ptr(), flags) } == 0 {
+            return Err(last_error(target, "MoveFileExW 原子替换失败"));
+        }
+        Ok(())
     }
 }
 
-/// 进程内单调计数器（保证同一纳秒内的多次生成长度不同的输出）。
-///
-/// T-FIX-32 后生产路径（Unix）不再走确定性回退，只有 Windows 熵源与测试构建
-/// 用到它，故收紧 cfg，避免 Unix 非测试构建里成为死代码触发 `-D warnings`。
-#[cfg(any(windows, test))]
+/// 进程内单调计数器；仅测试构建使用（生产 Windows 已走 OS 熵源）。
+#[cfg(test)]
 static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 确定性回退熵源：splitmix64 混合"时间 + PID + 栈地址 + 计数器"。
@@ -2332,6 +2581,143 @@ mod tests {
         assert!(super::win_acl::is_owner_only(file.path()).expect("读回 ACL"));
         let loaded = file.load().expect("Windows 上应当读得回来");
         assert_eq!(loaded.expose(), token.expose());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn token_file_save_replaces_existing_target_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-replace-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = TokenFile::new(dir.join(TOKEN_FILE_NAME));
+        file.save(&fixture_token(0x70)).expect("预置旧令牌");
+        file.save(&fixture_token(0x71)).expect("替换已有令牌");
+        assert_eq!(
+            file.load().expect("替换后仍可读").expose(),
+            fixture_token(0x71).expose()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn token_file_with_builtin_administrators_acl_is_refused_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-acl-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = TokenFile::new(dir.join(TOKEN_FILE_NAME));
+        file.save(&fixture_token(0x5b)).expect("预置令牌");
+        let icacls = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\Windows"))
+            .join("System32")
+            .join("icacls.exe");
+        let status = std::process::Command::new(icacls)
+            .arg(file.path())
+            .args(["/grant", "*S-1-5-32-544:(R)"])
+            .status()
+            .expect("icacls 可执行");
+        assert!(
+            status.success(),
+            "测试准备：给 BUILTIN\\Administrators 加读 ACE 失败"
+        );
+        assert!(
+            !super::win_acl::is_owner_only(file.path()).expect("读回 ACL"),
+            "ACL 含 BUILTIN\\Administrators 时必须判为非 owner-only"
+        );
+        let error = file.load().expect_err("含宽主体 ACL 时 load 必须拒绝");
+        assert!(matches!(
+            error,
+            SecurityError::InsecureTokenPermissions { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn token_file_dangling_symlink_is_refused_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-link-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("建目录");
+        let link = dir.join("session.token");
+        let target = dir.join("missing-target");
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            // 未开开发者模式 / 无 symlink 权限的 Windows 上跳过，不掩盖其它断言。
+            eprintln!("跳过：当前环境不允许创建 symlink");
+            return;
+        }
+        let error = TokenFile::new(&link)
+            .load_or_create()
+            .expect_err("悬空 symlink 必须 fail-closed，不能生成/替换");
+        assert!(
+            matches!(error, SecurityError::TokenPathIsSymlink { .. }),
+            "应当明确报 TokenPathIsSymlink，实际: {error:?}"
+        );
+        assert!(!target.exists(), "load_or_create 不得创建 symlink 目标");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn save_failure_keeps_existing_target_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-save-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = TokenFile::new(dir.join(TOKEN_FILE_NAME));
+        let old = fixture_token(0x61);
+        let new = fixture_token(0x62);
+        file.save(&old).expect("预置旧令牌");
+        // 用一个不共享删除的读句柄占住目标，MoveFileExW 必然失败。
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(file.path())
+            .expect("占住目标文件");
+        let error = file.save(&new).expect_err("目标被占用时 save 必须失败");
+        assert!(matches!(error, SecurityError::Io { .. }));
+        drop(held);
+        assert_eq!(
+            file.load().expect("旧令牌必须仍可用").expose(),
+            old.expose(),
+            "save 失败不得留下缺失/半截目标"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn load_reads_the_original_handle_after_path_swap() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-token-win-toctou-{}-{:x}",
+            std::process::id(),
+            TOKEN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = TokenFile::new(dir.join(TOKEN_FILE_NAME));
+        let original = fixture_token(0x71);
+        let decoy = fixture_token(0x72);
+        file.save(&original).expect("预置原令牌");
+        let replacement_text = format!("{}\n", decoy.expose());
+
+        // 打开之后、ACL/读取之前，删掉路径并换成一个不同的合法令牌文件。
+        // 如果 load 还按路径二次读取，就会读到 0x72；单句柄实现必须仍读到 0x71。
+        let text = super::win_acl::read_verified_with_hook(file.path(), || {
+            std::fs::remove_file(file.path()).expect("确定性删除原路径");
+            std::fs::write(file.path(), replacement_text).expect("确定性写入替换令牌");
+        })
+        .expect("同一句柄读取应成功");
+        assert_eq!(text.trim(), original.expose());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
