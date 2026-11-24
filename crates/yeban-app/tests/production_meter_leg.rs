@@ -834,6 +834,23 @@ fn probe_meter_gate_tmp() {
         "PROBE forced full levels: header-col changed vs after: {}",
         count_changed_in_x(&after_image, &forced, 240, 480)
     );
+    // 修正后的轨道头列（头宽 240，井在右端 x~493..501）：数一下那一列到底变没变。
+    for (lo, hi) in [(480u32, 505u32), (261u32, 501u32)] {
+        let mut ymin = u32::MAX;
+        let mut ymax = 0u32;
+        let mut n = 0usize;
+        for y in 0..first.height() {
+            for x in lo..hi {
+                let o = (y as usize * first.stride()) + (x as usize * 3);
+                if first.pixels()[o..o + 3] != forced.pixels()[o..o + 3] {
+                    ymin = ymin.min(y);
+                    ymax = ymax.max(y);
+                    n += 1;
+                }
+            }
+        }
+        eprintln!("PROBE wells x {lo}..{hi} first-vs-forced: n={n} y={ymin}..{ymax}");
+    }
     // 地面真相：本窗口里轨道头 / 标尺带 / 编曲画布的真实包围盒。
     use yeban_ui_test_port::port::UiTestPort;
     let mut window = window;
