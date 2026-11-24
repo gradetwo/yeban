@@ -745,7 +745,7 @@ fn maybe_write_frame(label: &str, png: &[u8]) {
 fn probe_meter_leg_diff_localization_tmp() {
     use yeban_ui_test_port::png::encode_rgb8;
     let project = demo_project();
-    let window = Window::new(&project);
+    let mut window = Window::new(&project);
     let first = window.port.window().capture().expect("Tier-1 截图");
     let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
     for _ in 0..8 {
