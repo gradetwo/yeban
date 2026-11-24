@@ -10108,9 +10108,7 @@ v127=1
             ("<region>sample=a.wav fil2_keytrack=1201", "fil2_keytrack"),
             ("<region>sample=a.wav fil2_veltrack=9601", "fil2_veltrack"),
         ] {
-            let error = parse_text(text, &Default::default())
-                .err()
-                .expect("must be an error");
+            let error = parse_text(text, &Default::default()).expect_err("must be an error");
             let got = match &error {
                 SfzError::FloatOutOfRange { opcode, .. } => opcode.clone(),
                 SfzError::IntegerOutOfRange { opcode, .. } => opcode.clone(),
