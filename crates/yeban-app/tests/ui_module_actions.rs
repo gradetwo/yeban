@@ -13,7 +13,7 @@
 //! | :--- | :--- |
 //! | ①（可寻址） | 四个入口按钮 + 小节标题 + 状态行共 6 个语义 ID 都**在运行时控件树里**，角色符合登记；初始回执是**空**（不是一个编造的读数） |
 //! | ②（状态按预期变） | 按下入口 ⇒ `MainWindow.module-status` 变成结构化回执，字段（路径 / 帧数 / 采样率 / 区域数 / 来源 / `origin=midi-input`）逐条对上；目标文件真的落盘、字节数与回执一致 —— **导出是例外**：它的回执在 Tier-1 上恒空（无 event loop proxy），断言面是落盘 WAV 的头字段 ＋ 数据段哈希 |
-//! | ③（错误路径不 panic） | SFZ 源不存在 ⇒ 回执是 `outcome=error` + 稳定错误码，进程**不** panic，**不留半成品** |
+//! | ③（错误路径不 panic） | SFZ 源不存在 ⇒ 状态行是人话提示 + 错误级 toast + 音源管理真的打开，进程**不** panic，**不留半成品**（⚠ 结构化回执先被写、随即被 `report_notice` 覆盖，终态断言面是提示 + toast，不是回执字段；错误码 `sfz-missing` 只进日志） |
 //! | ④（**硬件 MIDI 输入**，第五条入口） | 默认档 ⇒ 回执点名 `feature-disabled` 且措辞里带 `cargo build … --features midi-input`；`midi-input` 档 ⇒ 回执**结构化**（`ok` 或非 `feature-disabled` 的错误码）、进程**不** panic。⭐ 同一份判据在**两条 CI 腿**上各跑一次（`test` 与 `test (midi-input 特性)`）|
 //! | ⑤（跨线程那一跳） | 注入替身把"采集在飞"窗口拉住 ⇒ 中间态可观察、第二次触发被拒、替身读数逐字段进界面 |
 //! | ⑥（**采到的音符真的进谱面**） | `the_gui_midi_in_entry_writes_the_captured_notes_into_the_score`：注入一对 note-on / note-off ⇒ 工程音符数 +1、key = 60、`start_tick`/时值按 960PPQ 对得上、`OpOrigin::MidiInput`、状态行报出写入条数；**负臂**：零条消息 ⇒ 计数不变且不产生提交 |
@@ -1160,6 +1160,13 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     // =====================================================================
     // SFZ 源**不存在**：走**同一个**活窗口，换一条不存在的来源
     // （`wire_module_actions_with` 是 `wire_module_actions` 的显式参数版，同一条实现）。
+    // ⚠ 终态不是结构化回执：宿主先写结构化回执（`error=sfz-missing`，
+    // `host.rs:14394` 的 `module_error_fields`），随后 `report_notice`
+    // （`host.rs:11752`，`set_module_status`）把它**覆盖**成人话提示，同时发一条
+    // 错误级 toast、打开音源管理。所以 ③ 的断言面是**覆盖后的终态**，不是回执字段：
+    // 状态行 = 那句人话、成功位 false、toast 同文且错误级、音源管理真的打开了。
+    // 结构化错误码 `sfz-missing` 只进 `module_trace` 日志，不在界面上留痕 ——
+    // 旧断言（`error=sfz-load`）两个地方都过期了（码名变了；回执也被覆盖了）。
     let missing = scratch.join("does-not-exist.sfz");
     yeban_app::host::wire_module_actions_with(
         ui,
@@ -1181,16 +1188,24 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         !ui.get_module_status_succeeded(),
         "SFZ 不存在时**不得**报成功: {receipt}"
     );
-    assert_eq!(field_of(&receipt, "action"), "load-sfz", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "error", "{receipt}");
     assert_eq!(
-        field_of(&receipt, "error"),
-        "sfz-load",
-        "稳定错误码: {receipt}"
+        receipt,
+        "「装载 SFZ 音源」需要先有一个 .sfz 文件。已为你打开音源管理：在列表里选一个音源下载，装好后点「用上」就能绑到这条轨。",
+        "缺 SFZ 时状态行必须是那句人话提示（`report_notice` 覆盖了结构化回执）"
+    );
+    assert_eq!(
+        ui.get_toast_message().as_str(),
+        receipt.as_str(),
+        "toast 必须与状态行是同一串字节"
+    );
+    assert!(ui.get_toast_is_error(), "缺 SFZ 的 toast 必须是错误级");
+    assert!(
+        ui.get_show_floating_toast(),
+        "缺 SFZ 的 toast 必须真的浮出来"
     );
     assert!(
-        receipt.contains(&missing.display().to_string()),
-        "错误回执必须点名是哪一条路径: {receipt}"
+        ui.get_sound_library_open(),
+        "缺 SFZ 时音源管理必须真的打开（`open_sound_library_for_missing_sfz` 走 `on_open_sound_library`）"
     );
     assert!(
         !scratch.join("never-written.wav").exists(),
