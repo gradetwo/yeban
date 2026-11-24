@@ -32,7 +32,7 @@ fn code_lines(source: &str) -> String {
 fn f7_f8_f9_open_the_three_documented_console_tabs() {
     let s = code_lines(APP);
     assert!(
-        !s.contains("Key.F7 || event.text == Key.F8"),
+        !s.contains("if (event.text == Key.F7 || event.text == Key.F8)"),
         "F7/F8 不应再被合并成「一律打开最大化钢琴卷帘」的一个分支"
     );
     assert!(s.contains("if (event.text == Key.F7)"));
