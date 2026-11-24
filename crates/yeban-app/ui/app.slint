@@ -1813,6 +1813,8 @@ export component MainWindow inherits Window {
                     playhead-ticks: root.playhead-ticks;
                     ticks-per-pixel: root.roll-ticks-per-pixel;
                     playhead-px: root.playhead-px;
+                    // ⭐ T-FIX-356：标尺带 `accessible-value` 的时间码（与下坞同款转发）。
+                    playhead-timecode: root.timecode;
                     is-looping: root.is-looping;
                     // ⭐ D1/D2：把引擎实时电平与播放态喂给轨道行电平柱（混音台早就用同一份数据）。
                     meter-levels: root.track-meter-levels;
@@ -1880,6 +1882,10 @@ export component MainWindow inherits Window {
                     add-track() => { root.track-add-requested(); }
                     audition-chord(name) => { root.chord-audition(name); }
                     ruler-seek(pos) => { root.ruler-seek(pos); }
+                    // ⭐ T-FIX-356：标尺带的屏读器入口（`U-07 R2`）——宿主回调早已注册，
+                    // 只差界面这一跳（与 `ruler-seek` 同款转发）。
+                    ruler-step(steps) => { root.ruler-step(steps); }
+                    ruler-seek-bar(v) => { root.ruler-seek-bar(v); }
                     scrub-timeline(pos) => { root.ruler-seek(pos - root.roll-scroll-x * 1px); }
                     arrangement-wheel(dx, dy, shift, alt) => {
                         root.arrangement-wheel(dx, dy, shift, alt);

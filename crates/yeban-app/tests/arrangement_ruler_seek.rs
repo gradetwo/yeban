@@ -42,6 +42,18 @@
 //! - 没有真实音频设备：`ProductionLoop::start_with_audio_source(.., 0, None)` 与控制面
 //!   驱动的 `pump` 让 `seek` 在 CI 的无显卡/无声卡环境里同样生效。
 //!
+//! ⚠ **2026-11-24（T-FIX-356）收尾**：本文件 ①–⑨ 在 `f87d30a4` 被掏成契约检查
+//!（只断言 `callback ruler-seek(` / `on_ruler_seek` 存在），纯函数 7 条在
+//! `a8533bd0` 被掏成空 stub —— 两次掏空都与"新 UI"同一批。恢复时实测发现
+//! 活树 `ui/arrangement.slint` 的标尺带丢了整段 a11y（无 `accessible-id`、
+//! 无 `accessible-action-*`，`ruler-step` / `ruler-seek-bar` 回调也没声明；
+//! `app.slint` 只转发了 `ruler-seek`），而宿主 `wire_ruler_seek` 三条回调
+//! 早已注册、注册表也一直登记着 `arrangement-ruler` —— 断的是界面这一跳。
+//! 本票补上最小生产修复（`arrangement.slint`：`playhead-timecode` 属性、
+//! 两回调、标尺带 `slider` + 三动作；`app.slint`：转发三项），与死文件
+//! `ui/workspace/arrangement_view.slint` 的 ruler 逐字同款；零视觉（只加语义
+//! 属性）。副作用唯一一处：全仓可寻址节点 447 → 448（`round6` ① 已同步）。
+//!
 //! ## 平台约束
 //!
 //! `slint::platform::set_platform` 线程局部、每线程一次 ⇒ 每个建窗口的 `#[test]` 只建
@@ -63,7 +75,8 @@ use yeban_ui_test_port::{Permission, PointerButton, Size, UiTestPort as _};
 
 /// 与其余 Tier-1 判据同款。
 const WINDOW: Size = Size::new(1440, 900);
-/// 标尺带的语义 ID（`elements.rs` 已注册，本片**不**新增节点）。
+/// 标尺带的语义 ID（`elements.rs` 已注册；T-FIX-356 收尾把它落回活树
+/// `ui/arrangement.slint` 的标尺带——此前只在死文件里有，活树里没有）。
 const RULER: &str = "arrangement-ruler";
 /// 标尺带的纵向中点：带高 22px ⇒ `11.0` 必然落在带内（横向才是本片的变量）。
 const RULER_MID_Y: f64 = 11.0;

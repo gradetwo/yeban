@@ -62,6 +62,10 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <[TimelineBlockData]> timeline-blocks;
     in-out property <int> selected-track-id: 1;
     in property <int> playhead-ticks: 0;
+    // ⭐ T-FIX-356：标尺带的 `accessible-value`（当前走带位置的时间码）——
+    // 与死文件 `ui/workspace/arrangement_view.slint` 的 ruler 同款（`app.slint`
+    // 从 `root.timecode` 转发；不接则回落到默认值，⛔ 不影响定位）。
+    in property <string> playhead-timecode: "001.01.000";
     in property <int> ticks-per-pixel: 30;
     in-out property <length> playhead-px: (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px;
     in-out property <bool> is-looping: false;
@@ -186,6 +190,11 @@ export component ArrangementViewport inherits Rectangle {
     callback add-track();
     callback audition-chord(string);
     callback ruler-seek(length);
+    // ⭐ T-FIX-356：标尺带的屏读器入口（`U-07 R2`）——与死文件
+    // `ui/workspace/arrangement_view.slint` 的 ruler 同款；宿主 `wire_ruler_seek`
+    // 三条回调早已注册（`on_ruler_step` / `on_ruler_seek_bar`），只差界面这一跳。
+    callback ruler-step(int);
+    callback ruler-seek-bar(string);
     callback scrub-timeline(length);
     /// 滚轮分流：`shift` = 横向滚动、`alt` = 纵向缩放、`shift+alt` = 横向缩放。
     /// 无修饰由界面 `reject` ⇒ 冒泡给 `Flickable` 做纵向滚动。
@@ -542,6 +551,22 @@ export component ArrangementViewport inherits Rectangle {
                         // 扁平支用十一版定值 (见下方 background 行注释)。
                         Rectangle {
                             height: 24px;
+                            // ⭐ T-FIX-356：标尺是一个**可调定位器**（scrubber），不是只读文本 ⇒
+                            // 角色 `slider`（与死文件 `ui/workspace/arrangement_view.slint`
+                            // 的 ruler 逐字同款；新 UI 重构时丢了整段 a11y，注册表
+                            // `elements.rs` 里 `arrangement-ruler` 一直登记着，活树里却
+                            // 没有 ⇒ `tests/arrangement_ruler_seek.rs` ⑨ 与指针注入全红）。
+                            // 三个无障碍动作给出"定位到第 N 小节"的**非指针**入口：
+                            // 增减 = 上 / 下一小节，SetValue = 输入小节号（1 起，宿主解析）。
+                            // `accessible-value` 报的是**当前走带位置**（与时间码同一个引擎读数）。
+                            // 零视觉：只加语义属性，⛔ 不改任何像素、不改点击语义。
+                            accessible-role: slider;
+                            accessible-id: "arrangement-ruler";
+                            accessible-label: @tr("小节与拍标尺");
+                            accessible-value: root.playhead-timecode;
+                            accessible-action-increment => { root.ruler-step(1); }
+                            accessible-action-decrement => { root.ruler-step(-1); }
+                            accessible-action-set-value(v) => { root.ruler-seek-bar(v); }
                             // 标尺带底 (裁决甲): 拟物支 = main 令牌形态
                             // `Tokens.ruler-brush`; 扁平支 = 十一版定值
                             // #1d2733 (Wang 2026-11-17 三版口径: 与车道底

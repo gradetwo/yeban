@@ -75,8 +75,8 @@
 //! ## 诚实登记
 //!
 //! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value`（③ 逐文件钉住）；
-//!   全仓 447 个可寻址节点由 `round6_addressable_roles.rs` ① 照旧覆盖（2026-11-24
-//!   复核值），这里**不**重复钉那个解析口径。
+//!   全仓 448 个可寻址节点由 `round6_addressable_roles.rs` ① 照旧覆盖（2026-11-24
+//!   复核值；`arrangement_ruler_seek` 收尾时 +1，见该文件），这里**不**重复钉那个解析口径。
 //! * ⛔ 本文件刻意不用 `.all(` 适配器（`assertion_bounds_audit.rs` 的登记守卫
 //!   会要求扩 `SOURCES`）；全是纯源码文本判据，不装 Slint 平台、不碰活窗口。
 //! * 本机 `real_ui_tier1` 的两条 golden 逐字节断言因字体 / 渲染环境差异仍红，

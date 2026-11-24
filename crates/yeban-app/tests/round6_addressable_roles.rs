@@ -2,12 +2,14 @@
 //!
 //! ## 本轮要证的三句话
 //!
-//! 1. **全仓闭环**：`ui/**/*.slint` 的 **447 个可寻址节点块**（带 `accessible-id`
-//!    的元素；2026-11-24 T-FIX-356 复核时从 round6 的 238 长到 447）里，本轮之前恰好有 **4 个**没写显式 `accessible-role`；补齐后
+//! 1. **全仓闭环**：`ui/**/*.slint` 的 **448 个可寻址节点块**（带 `accessible-id`
+//!    的元素；2026-11-24 T-FIX-356 复核时从 round6 的 238 长到 447，
+//!    同日收尾又 +1：`arrangement_ruler_seek` 把死文件才有的
+//!    `arrangement-ruler` 落回活树 `ui/arrangement.slint`）里，本轮之前恰好有 **4 个**没写显式 `accessible-role`；补齐后
 //!    **0 缺口**。本判据把「有 id ⇒ 必须有显式 role」升级为**全仓常驻门禁**，
 //!    以后谁新增可寻址节点却忘了 role，立刻红。
 //!
-//!    ⚠ **2026-11-24（T-FIX-356）复核时 0 缺口的承诺已漂移**：活树 447 个节点里
+//!    ⚠ **2026-11-24（T-FIX-356）复核时 0 缺口的承诺已漂移**：活树 448 个节点里
 //!    **23 个**（5 个文件，多为 round6 之后新增的对话框）又缺显式 role ——
 //!    ① 不再谎称 0，而是把这 23 处钉成**已知缺口清单**（口径同 `d_ui_27` ⑧：
 //!    读数在、谎言不在；新增或悄悄修掉任一处都会红）。给这 23 处补 role 是后续
@@ -65,7 +67,7 @@ const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
 
 /// 全仓可寻址节点总数（单位：个）—— 2026-11-24 从活树重算（round6 的 238 已陈旧）。
-const EXPECTED_ADDRESSABLE_NODES: usize = 447;
+const EXPECTED_ADDRESSABLE_NODES: usize = 448;
 
 /// 缺显式 `accessible-role` 的节点清单（单位：处）—— 2026-11-24 从活树重算。
 ///
