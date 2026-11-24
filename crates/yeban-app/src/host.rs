@@ -14754,6 +14754,9 @@ pub struct MidiInState {
     /// ⇒ UI 线程可以"一条音符 = 一次提交"（⭐ 弹一个音 = 一步撤销）。
     /// ⚠ 容量与语义见 [`crate::midi_in::NoteLane`]（512 条，满则如实计数）。
     note_lane: crate::midi_in::NoteLane,
+    /// ⭐ **提交被拒的累计条数**（⭐ 与 `note_lane.refused()` 的"车道装不下"分开记账）：
+    /// `commit_live_notes` 每次拿到 `Err(_)` 就 ＋1；⛔ 不混进车道溢出计数。
+    note_commit_refused: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// ⭐ **实时腿的落点**（音轨 ＋ 片段）：由 UI 线程在装配时解析一次，
     /// 提交音符时按它构造 `Op::AddNote`（⭐ `EntityId` 是纯数据 ⇒ 可跨线程读）。
     /// ⚠ 注入采集替身的判据路径是 `None` ⇒ 实时腿整体不生效（既有判据一位不改）。
@@ -14782,8 +14785,25 @@ pub struct LiveNoteCommitReport {
     pub refused: usize,
     /// 提交之后车道的积压条数（⭐ 限流必须**看得见**）。
     pub pending: usize,
-    /// 收不下的**累计**条数（⭐ ⛔ 不静默丢）。
+    /// **提交被拒**的累计条数（⭐ 与车道溢出分开记账）。
     pub refused_cumulative: u64,
+    /// 车道**收不下**的累计条数（⭐ 与提交拒绝分开记账）。
+    pub lane_refused_cumulative: u64,
+}
+
+/// ⭐ 提交拒绝的**界面可见**提示；本跳没有拒绝时返回 `None`。
+///
+/// 主循环把 `Some` 写到 `module-midi-in-status`（红色状态行）并打一条 `eprintln!`；
+/// ⛔ 不把拒绝塞进 `note_lane.refused()` 的读数里。
+#[must_use]
+pub fn live_note_commit_status(report: &LiveNoteCommitReport) -> Option<String> {
+    if report.refused == 0 {
+        return None;
+    }
+    Some(format!(
+        "midi-in：实时音符提交被拒 {} 条（累计 {}；车道溢出 {}）",
+        report.refused, report.refused_cumulative, report.lane_refused_cumulative
+    ))
 }
 
 impl core::fmt::Debug for MidiInState {
@@ -14809,6 +14829,7 @@ impl MidiInState {
             live: crate::midi_in::LiveLane::new(),
             live_fields: std::sync::Arc::new(std::sync::Mutex::new(None)),
             note_lane: crate::midi_in::NoteLane::new(),
+            note_commit_refused: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             note_target: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -14839,6 +14860,13 @@ impl MidiInState {
     #[must_use]
     pub fn note_lane_refused(&self) -> u64 {
         self.note_lane.refused()
+    }
+
+    /// ⭐ 提交被拒的累计条数（⭐ 与车道溢出分开）。
+    #[must_use]
+    pub fn note_commit_refused(&self) -> u64 {
+        self.note_commit_refused
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// ⭐ 记下**实时腿的落点**（装配时由 UI 线程解析一次）。
@@ -14891,11 +14919,19 @@ impl MidiInState {
             ) {
                 Ok(_) => report.committed = 1,
                 // ⚠ 拒绝 ⇒ 计数并**不再放回**（放回会让下一跳重试同一条而卡住心跳）。
-                Err(_) => report.refused = 1,
+                // ⭐ 拒绝数与车道溢出**分开**累计：这里只动 `note_commit_refused`。
+                Err(_) => {
+                    report.refused = 1;
+                    self.note_commit_refused
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         report.pending = self.note_lane.pending();
-        report.refused_cumulative = self.note_lane.refused();
+        report.refused_cumulative = self
+            .note_commit_refused
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.lane_refused_cumulative = self.note_lane.refused();
         report
     }
 
@@ -15027,9 +15063,14 @@ pub fn apply_pending_midi_in(
             match land_captured_notes(port, &captured) {
                 Ok(landing) => {
                     let mut fields = midi_in_ok_fields(&report);
-                    if let Some(live) = live_fields {
+                    if let Some(mut live) = live_fields {
                         // ⭐ 实时腿的读数（`live-*`）：说清"这一次有多少事件在**窗口内**
                         // 就进了引擎的音符路径"，⛔ 不夸大（`live-refused` 也一并给）。
+                        // ⭐ 提交拒绝与车道溢出**分开**出现在收尾回执里。
+                        live.push(format!(
+                            "live-note-commit-refused={}",
+                            state.note_commit_refused()
+                        ));
                         fields.extend(live);
                     }
                     match landing {

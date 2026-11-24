@@ -789,7 +789,14 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                             clip_id,
                             now_ms: host::now_ms,
                         };
-                        let _ = state.commit_live_notes(&target);
+                        let report = state.commit_live_notes(&target);
+                        // ⭐ 提交被模型拒绝时**不再静默**：状态行变红并给累计读数；
+                        // ⚠ 拒绝数与车道溢出分开（见 `LiveNoteCommitReport`）。
+                        if let Some(status) = host::live_note_commit_status(&report) {
+                            eprintln!("[yeban-app] {status}");
+                            ui_tick.set_module_midi_in_status(status.into());
+                            ui_tick.set_module_midi_in_status_succeeded(false);
+                        }
                     }
                     // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
                     // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
