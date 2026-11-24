@@ -354,8 +354,22 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 界面保持 .slint 初值（含 persona 派生的面板显隐初值），不强行覆盖。
     // 写回在事件循环结束时（见本函数末尾）；`--headless-idle` 路径不经
     // 这里 —— 它按场景视口定尺寸做见证测量，恢复真实布局会污染读数。
-    if let Some(layout) = yeban_app::settings::load().layout {
-        host::apply_window_layout(&ui, &layout);
+    //
+    // [T-FIX-224] 窗口几何的收口两条路各走一条：
+    //   · 有已存几何 ⇒ `apply_window_layout` 内部按**物理**口径夹（那份几何就是
+    //     物理像素），夹不进就推回工作区内；
+    //   · 没有已存几何（含"存了布局但没存几何"）⇒ 这里按**逻辑**口径把
+    //     `.slint` 的 preferred 1600×920 收进工作区。
+    // 两条都必须发生在 `run()` 之前：之后再收，用户会先看到一帧溢出。
+    match yeban_app::settings::load().layout {
+        Some(layout) => {
+            let has_geometry = layout.window.is_some();
+            host::apply_window_layout(&ui, &layout);
+            if !has_geometry {
+                host::fit_window_to_work_area(&ui);
+            }
+        }
+        None => host::fit_window_to_work_area(&ui),
     }
 
     // T-FIX-299：启动期攒下的设置警告（损坏的设置文件、启动时的最近

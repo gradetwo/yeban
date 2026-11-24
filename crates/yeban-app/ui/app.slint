@@ -47,8 +47,21 @@ export component MainWindow inherits Window {
     forward-focus: key-handler;
     preferred-width: 1600px;
     preferred-height: 920px;
-    min-width: 1200px;
-    min-height: 700px;
+    // [T-FIX-224 / ISS-MWTUUI0U-3599DC] 最小尺寸从**常量**改成**可写属性**。
+    //
+    // 理由：Slint 把 `min-width/min-height` 交给 winit 当最小内尺寸，最小内尺寸
+    // 是硬约束 —— 屏幕工作区扣掉非客户区后比它俩还小时，`set_size` 会被**静默
+    // 夹回去**。本机实测（144 DPI、工作区 2266×1086、非客户区 22×86）：可用
+    // 内容高只有 1000 物理 = 666.7 逻辑，而 `min-height: 700px` 把请求的 686
+    // 夹成了 700 ⇒ 窗口外框 1136 仍溢出 50px，收敛看起来"没生效"。
+    //
+    // 默认值不变（1200×700），只有 `host::fit_window_to_work_area` 在工作区装
+    // 不下时才临时调低 —— 大屏上行为逐像素不变。
+    min-width: root.window-min-width;
+    min-height: root.window-min-height;
+    // 唯一来源：默认值就是原来那两个常量，Rust 侧只在工作区装不下时往下调。
+    in-out property <length> window-min-width: 1200px;
+    in-out property <length> window-min-height: 700px;
 
     // View & Track State
     in-out property <int> roll-min-tick: 0;

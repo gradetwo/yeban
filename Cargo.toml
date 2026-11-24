@@ -107,6 +107,15 @@ realfft = { version = "3.5.0", default-features = false }
 rfd = { version = "0.17.2" }
 # Windows OTCP 进程存活检查（yeban-otcp target.cfg(windows) 消费，MIT/Apache-2.0）。
 windows-sys = { version = "0.61" }
+# 屏幕工作区读取（T-FIX-224，yeban-app 按平台消费）：
+#   · Linux 走 X11 根窗口属性 `_NET_WORKAREA` —— x11-dl 是**运行时 dlopen**，
+#     不引入链接期依赖，没有 libX11.so 的机器上也编得过（打开失败即 None）。
+#   · macOS 走 `NSScreen.visibleFrame` —— objc2 / objc2-app-kit 都是 winit 0.30
+#     已经在用的那一支（`Cargo.lock` 里本来就有），本票只加了一条直接依赖边，
+#     没有新增包 ⇒ 许可面不变（包数不变，只是直接边多了三条）。
+x11-dl = { version = "2.21.0" }
+objc2 = { version = "0.6.4" }
+objc2-app-kit = { version = "0.3.2" }
 
 # 夜半自身 crate (workspace 内部路径依赖的唯一登记处)
 yeban-model = { path = "crates/yeban-model" }

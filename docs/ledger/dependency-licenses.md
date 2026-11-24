@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `3ef427cb8df98e0c`
+- `Cargo.lock` SHA-256（前 16 位）: `eadd6ea7509d1b1b`
 - 外部依赖包数: **694**（不含 30 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -378,10 +378,10 @@
 | `num_enum_derive` | `0.7.6` | `BSD-3-Clause OR MIT OR Apache-2.0` | 传递 | — |
 | `num_threads` | `0.1.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `objc-sys` | `0.3.5` | `MIT` | 传递 | — |
-| `objc2` | `0.5.2` | `MIT` | 传递 | — |
-| `objc2` | `0.6.4` | `MIT` | 传递 | — |
-| `objc2-app-kit` | `0.2.2` | `MIT` | 传递 | — |
-| `objc2-app-kit` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
+| `objc2` | `0.5.2` | `MIT` | 直接 | `yeban-app` |
+| `objc2` | `0.6.4` | `MIT` | 直接 | `yeban-app` |
+| `objc2-app-kit` | `0.2.2` | `MIT` | 直接 | `yeban-app` |
+| `objc2-app-kit` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 直接 | `yeban-app` |
 | `objc2-audio-toolbox` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
 | `objc2-avf-audio` | `0.3.2` | `Zlib OR Apache-2.0 OR MIT` | 传递 | — |
 | `objc2-cloud-kit` | `0.2.2` | `MIT` | 传递 | — |
@@ -673,11 +673,11 @@
 | `windows-numerics` | `0.3.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-result` | `0.4.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-strings` | `0.5.1` | `MIT OR Apache-2.0` | 传递 | — |
-| `windows-sys` | `0.48.0` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp` |
-| `windows-sys` | `0.52.0` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp` |
-| `windows-sys` | `0.59.0` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp` |
-| `windows-sys` | `0.60.2` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp` |
-| `windows-sys` | `0.61.2` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp` |
+| `windows-sys` | `0.48.0` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-otcp` |
+| `windows-sys` | `0.52.0` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-otcp` |
+| `windows-sys` | `0.59.0` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-otcp` |
+| `windows-sys` | `0.60.2` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-otcp` |
+| `windows-sys` | `0.61.2` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-otcp` |
 | `windows-targets` | `0.48.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-targets` | `0.52.6` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-targets` | `0.53.5` | `MIT OR Apache-2.0` | 传递 | — |
@@ -711,7 +711,7 @@
 | `wl-clipboard-rs` | `0.9.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `write-fonts` | `0.50.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `writeable` | `0.6.4` | `Unicode-3.0` | 传递 | — |
-| `x11-dl` | `2.21.0` | `MIT` | 传递 | — |
+| `x11-dl` | `2.21.0` | `MIT` | 直接 | `yeban-app` |
 | `x11rb` | `0.13.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `x11rb-protocol` | `0.13.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `xattr` | `1.6.1` | `MIT OR Apache-2.0` | 传递 | — |

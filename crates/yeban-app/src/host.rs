@@ -21177,8 +21177,29 @@ pub fn apply_window_layout(ui: &MainWindow, layout: &crate::settings::WindowLayo
     ui.set_sidebar_collapsed(layout.sidebar_collapsed);
     if let Some(window) = layout.window {
         let handle = ui.window();
-        handle.set_size(slint::PhysicalSize::new(window.width, window.height));
-        handle.set_position(slint::PhysicalPosition::new(window.x, window.y));
+        // [T-FIX-224] 恢复的几何是**物理**像素，可能来自另一块屏（或同一块屏
+        // 改过 DPI）：先按主屏工作区夹一次再写回，否则"恢复布局"自己就能把
+        // 窗口顶到屏幕外 —— 与 `.slint` 常量溢出是同一种病。
+        // 最大化时尺寸由窗口管理器决定 ⇒ 只还原 `maximized`，不夹（夹了也会被
+        // WM 覆盖，白白多一次 `set_size` 抖动）。
+        let (size, position) = if window.maximized {
+            ((window.width, window.height), (window.x, window.y))
+        } else {
+            crate::work_area::fit_physical_rect(
+                (window.width, window.height),
+                (window.x, window.y),
+                crate::work_area::client_area_physical().unwrap_or(
+                    crate::work_area::PhysicalArea {
+                        x: 0,
+                        y: 0,
+                        width: 0,
+                        height: 0,
+                    },
+                ),
+            )
+        };
+        handle.set_size(slint::PhysicalSize::new(size.0, size.1));
+        handle.set_position(slint::PhysicalPosition::new(position.0, position.1));
         handle.set_maximized(window.maximized);
     }
 }
@@ -21231,17 +21252,83 @@ pub fn save_window_layout(ui: &MainWindow) {
 
 /// 「设置 → 恢复默认布局」的落点（菜单回调 `reset-window-layout` 的
 /// 唯一处理器）：面板回到 .slint 初值（[`crate::settings::WindowLayout`]
-/// 的 `Default`），窗口取消最大化并回到 preferred 尺寸（1600×920，
-/// 位置没有默认值的概念 ⇒ 不动），同时把已存布局清掉 —— 之后即使
-/// 崩溃退出，下次启动也没有旧布局可恢复。语言选择不经此路，不受影响。
+/// 的 `Default`），窗口取消最大化并回到 preferred 尺寸（1600×920 **收进
+/// 主屏工作区之后**，见 [`crate::work_area`]；位置没有默认值的概念 ⇒ 不动），
+/// 同时把已存布局清掉 —— 之后即使崩溃退出，下次启动也没有旧布局可恢复。
+/// 语言选择不经此路，不受影响。
 pub fn reset_window_layout(ui: &MainWindow) {
     apply_window_layout(ui, &crate::settings::WindowLayout::default());
     let handle = ui.window();
     handle.set_maximized(false);
-    handle.set_size(slint::LogicalSize::new(1600.0, 920.0));
+    // [T-FIX-224] 这里原来是写死的 1600×920 —— 与 `.slint` 的 preferred 同一个
+    // 常量，同一个病：130% / 150% 的小屏上「恢复默认布局」会把窗口重新顶出屏幕。
+    // 口径与启动一致：装得下就是 1600×920，装不下按工作区收。
+    let (width, height) = crate::work_area::fit_preferred(handle.scale_factor())
+        .unwrap_or(crate::work_area::PREFERRED);
+    align_min_size(ui, width, height);
+    handle.set_size(slint::LogicalSize::new(width as f32, height as f32));
     crate::settings::store_layout(None);
     // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）。
     report_pending_settings_warnings(ui);
+}
+
+/// 让 Slint 的窗口最小尺寸不与目标尺寸打架（T-FIX-224）。
+///
+/// `.slint` 的 `min-width/min-height` 是 winit 的**最小内尺寸**，比目标尺寸大时
+/// `set_size` 会被静默夹回去（不是报错，是"设了但没生效"）。这里把两个属性设成
+/// `min(默认下限, 目标尺寸)`：
+///
+/// - 目标尺寸 ≥ 默认下限（大屏 / 正常屏）⇒ 写的就是默认值，值不变、后端无动作；
+/// - 目标尺寸 < 默认下限（小屏装不下）⇒ 跟着目标一起降，`set_size` 才真的生效。
+///
+/// 两个属性在 `ui/app.slint` 里声明（`window-min-width` / `window-min-height`），
+/// 由 `min-width` / `min-height` 单向读取。
+fn align_min_size(ui: &MainWindow, width: f64, height: f64) {
+    let min_width = width.min(crate::work_area::MIN.0);
+    let min_height = height.min(crate::work_area::MIN.1);
+    // 生成的 setter 收 `sp::Coord`（= f32 逻辑像素），不是 `slint::LogicalLength`
+    // —— 后者在 1.18 的公开 API 里没有导出。
+    ui.set_window_min_width(min_width as f32);
+    ui.set_window_min_height(min_height as f32);
+}
+
+/// 启动时把窗口收进主屏工作区（T-FIX-224，`ISS-MWTUUI0U-3599DC`）。
+///
+/// 为什么是**启动**而不是运行期反复校正：窗口首次显示用 `.slint` 的
+/// `preferred-width/height`，运行期再收会让用户先看到一帧溢出、再看着窗口缩一下；
+/// 而且运行期反复校正会和用户的拖动/跨屏摆放打架（本模块只按主屏算，
+/// 用户把窗口拖到副屏后不该被拽回来）。
+///
+/// 只在**真的装不下**时才 `set_size`：大屏（工作区 ≥ 1600×920 逻辑）上连一次
+/// 多余的窗口操作都不发，行为与本票之前逐字节一致。
+///
+/// 没有已存布局时由 `main.rs` 调用一次；有布局时 [`apply_window_layout`] 内部
+/// 已经把几何夹过（走物理口径），不需要再调这里。
+pub fn fit_window_to_work_area(ui: &MainWindow) {
+    let handle = ui.window();
+    let Some((width, height)) = crate::work_area::fit_preferred(handle.scale_factor()) else {
+        // 本平台没有可靠的工作区信号（Wayland 等）⇒ 保持 `.slint` preferred，
+        // 与本票之前的行为一致。
+        return;
+    };
+    // [T-FIX-224] 最小尺寸必须先跟着放，否则后面那次 `set_size` 是白做的：
+    // Slint 把 `.slint` 的 `min-width/min-height` 交给 winit 当最小内尺寸，
+    // 而那是硬约束 —— 本机实测按工作区算出来的 686 逻辑高被**静默夹回** 700
+    // （窗口外框因此仍是 1136，溢出工作区 50px，看起来"收敛完全没生效"）。
+    align_min_size(ui, width, height);
+    if crate::work_area::PREFERRED == (width, height) {
+        // 装得下就是 1600×920：一次窗口操作都不发，行为与本票之前逐像素一致。
+        return;
+    }
+    handle.set_size(slint::LogicalSize::new(width as f32, height as f32));
+    // 位置也要落进可用区：窗口管理器默认是**按整屏**居中/摆放的，屏幕比工作区
+    // 高一个任务栏时，几何刚好塞满的窗口仍会有一截压在任务栏上（本机实测：
+    // 客户区收到 1496×666 后若不管位置，底沿仍在工作区之外）。居中是"没有已存
+    // 布局"时唯一说得过去的位置 —— 用户没表达过偏好，别给他贴边。
+    if let Some(area) = crate::work_area::primary_logical(handle.scale_factor()) {
+        let (x, y) = area.center_for((width, height));
+        handle.set_position(slint::LogicalPosition::new(x as f32, y as f32));
+    }
 }
 
 /// 当前界面语言的进程内记录（[`apply_language`] 是唯一写者，默认 zh-CN）。

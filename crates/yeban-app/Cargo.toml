@@ -424,5 +424,38 @@ required-features = ["ui-test-port"]
 #       以及 slint-build-1.18.1 源码 src/lib.rs:53-57 的 compile_error! 分支。
 slint-build = { workspace = true, features = ["compat-1-18"] }
 
+# ---------------------------------------------------------------------------
+# 屏幕工作区读取（T-FIX-224，src/work_area.rs 的三个平台臂）
+#
+# 为什么按平台而不是无条件依赖: 每一条只在对应目标上编得过/有意义 ——
+# x11-dl 的 dlopen 与 objc2 的 ObjC 运行时都只在该平台存在。
+# 三个包在 `Cargo.lock` 里**本来就有**（winit 0.30 的传递依赖），本票只加了
+# 直接依赖边 ⇒ 包集合与许可面不变（包数仍是 694），但「直接/传递」这一列变了，
+# 所以已按纪律重新生成 `docs/ledger/dependency-licenses.md`（--check 会对账）。
+# ---------------------------------------------------------------------------
+[target.'cfg(windows)'.dependencies]
+# SPI_GETWORKAREA（工作区）与 GetDpiForSystem（缩放比）—— 两者都只认主屏/系统值，
+# 因此口径同源，不会出现"工作区取主屏、缩放取副屏"的混算。
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# NSScreen.visibleFrame（已扣菜单栏与 Dock 的点口径）× backingScaleFactor。
+# `default-features = false` + 只开 `NSScreen`: 该特性自己会把
+# objc2-foundation 的 NSArray/NSGeometry/NSString 等子特性带上（见
+# objc2-app-kit-0.3.2 的 `[features] NSScreen = [...]`），不需要全量默认集。
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true, default-features = false, features = [
+    "std",
+    "NSScreen",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 根窗口属性 `_NET_WORKAREA`（4×CARDINAL）。运行时 dlopen libX11.so.6。
+x11-dl = { workspace = true }
+
 [lints]
 workspace = true

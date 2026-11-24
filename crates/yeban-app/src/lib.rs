@@ -215,6 +215,10 @@ pub mod phase_align_gui;
 // 曲风 / 子曲风 / 模板名；纯函数层，界面接线在 `host::wire_project_templates`）。
 pub mod templates;
 pub mod undo;
+// 屏幕工作区读取与窗口尺寸收敛（T-FIX-224 / ISS-MWTUUI0U-3599DC）：
+// `.slint` 的 preferred 1600×920 是常量，与屏幕无关 ⇒ 150% DPI 小屏上底部
+// 动作行与状态栏落屏外。本模块只读工作区、只算尺寸，调用点在 `host`。
+pub mod work_area;
 // ⭐ ADR-0076 B1：音频片段波形峰值的会话缓存（后台解码 + 固定分辨率信封）。
 pub mod waveform_cache;
 

@@ -7166,6 +7166,8 @@ name = "yeban-app"
 version = "0.0.1"
 dependencies = [
  "libm",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "serde",
  "serde_json",
@@ -7173,6 +7175,8 @@ dependencies = [
  "slint",
  "slint-build",
  "ureq",
+ "windows-sys 0.61.2",
+ "x11-dl",
  "yeban-app",
  "yeban-decode",
  "yeban-diagnostics",
