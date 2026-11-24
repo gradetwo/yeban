@@ -202,8 +202,12 @@ export component ExportWavDialog inherits Rectangle {
                 root.close();
                 accept
             } else {
-                // 其余一律 `reject`：往上冒出本组件无人接，而快捷键层⛔ 不是祖先
-                // ⇒ 模态开着时 DAW 收不到键 —— 这正是本票要证的"捕获"。
+                // 其余一律 `reject`：往上冒出本组件后，`app.slint` 的 `key-handler`
+                // （本对话框的祖先）有一条 `T-FIX-219` 守卫 —— 导出弹窗开着时它把
+                // DAW 快捷键也放行（`reject`），于是模态开着时 DAW 收不到键 ——
+                // 这正是本票要证的"捕获"。⚠ 别把这句读成"冒泡后无人接"：
+                // `key-handler` 就是那个祖先，捕获是两处合力（陷阱 `reject` +
+                // `key-handler` 守卫），缺一处数字键就会漏到画布工具上。
                 reject
             }
         }

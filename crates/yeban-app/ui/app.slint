@@ -1375,6 +1375,39 @@ export component MainWindow inherits Window {
                 && (event.text == "\u{9}" || event.text == "\u{19}")) {
                 return reject;
             }
+            // T-FIX-219：导出弹窗开着时，DAW 快捷键**放行**（reject），不走下面的
+            // `trigger-shortcut` 与各条界面层开关。
+            //
+            // 为什么必须放行：弹窗的焦点陷阱（`export_wav_dialog.slint`）只接 Tab /
+            // Backtab / Ctrl+O / Esc，其余裸键一律 `reject` 指望"往上冒出本组件无人接"。
+            // 但对话框是本 `key-handler` 的子树 —— 事件从陷阱冒泡到这里后，
+            // `trigger-shortcut` 会把数字键（`1`-`5`）当成画布工具切换吃掉，`Space` 会
+            // 触发走带 —— 焦点停在按钮格上时，模态"持键盘"的承诺就破了
+            // （`tests/export_dialog_button_focus.rs` 的 ⑨ 就是这么红的；陷阱里那句
+            // "无人接"只对快捷键层那个 `FocusScope` 成立，⛔ 不是对本 `key-handler`）。
+            // 只在弹窗开着且无修饰键时放行：`Esc` 不在这里处理（陷阱先接住并 `accept`；
+            // 焦点在弹窗外时宿主的 `Action::Cancel` 臂仍是兜底 ⇒ `Esc` 必须能下来）。
+            // 下面这张表与本处理器消费的键**逐一对应**（`trigger-shortcut` 的那一份 +
+            // 界面层 `i` / `h` / `t` / `d` / `F3` / `F4` / `F7` / `F8` / `F9`），
+            // 新快捷键加进来时这里要同步 —— 否则它会在弹窗的按钮格上漏出去。
+            if (root.export-wav-open
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                && (event.text == "\u{9}" || event.text == "\u{19}"
+                    || event.text == " " || event.text == Key.Space
+                    || event.text == "r" || event.text == "R"
+                    || event.text == "c" || event.text == "C"
+                    || event.text == "1" || event.text == "2"
+                    || event.text == "3" || event.text == "4"
+                    || event.text == "5" || event.text == "b" || event.text == "B"
+                    || event.text == "i" || event.text == "I"
+                    || event.text == "h" || event.text == "H"
+                    || event.text == "t" || event.text == "T"
+                    || event.text == "d" || event.text == "D"
+                    || event.text == Key.F3 || event.text == Key.F4
+                    || event.text == Key.F7 || event.text == Key.F8
+                    || event.text == Key.F9)) {
+                return reject;
+            }
             root.trigger-shortcut(event.text, event);
             // ⭐ 审计 #20：组字期间**界面层不再追加判断**。
             //
