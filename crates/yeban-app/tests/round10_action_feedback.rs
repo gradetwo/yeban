@@ -89,32 +89,10 @@ const UNDO_TREE_MODAL: &str = include_str!("../ui/dialogs/undo_tree_modal.slint"
 const HOST_RS: &str = include_str!("../src/host.rs");
 const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
 
-/// 全仓 `.slint` 清单：与 `round8_action_feedback.rs`、`round9_action_feedback.rs`、
-/// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST` 同一份
-/// 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
-const SLINT_FILES: &[(&str, &str)] = &[
-    ("app.slint", APP),
-    ("transport.slint", TRANSPORT),
-    ("module_actions.slint", MODULE_ACTIONS),
-    ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    ("tokens.slint", include_str!("../ui/tokens.slint")),
-    ("workspace/session_view.slint", SESSION_VIEW),
-    ("workspace/arrangement_view.slint", ARRANGEMENT),
-    ("workspace/song_overview_panel.slint", SONG_OVERVIEW),
-    ("console/console_tabs.slint", CONSOLE_TABS),
-    ("console/piano_roll.slint", PIANO_ROLL),
-    ("console/mixer_console.slint", MIXER_CONSOLE),
-    ("console/device_rack.slint", DEVICE_RACK),
-    (
-        "console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER),
-    ("dialogs/macro_panel.slint", MACRO_PANEL),
-    ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG),
-    ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG),
-    ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL),
-];
+// ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
+// 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
+// 的唯一登记是 `yeban_app::elements::SLINT_MANIFEST`；需要全仓语料时从它派生，
+// ⛔ 不许再手写第二份名单。
 
 /// ① 覆盖层 11 个可点控件补齐手型光标：逐文件精确计数 + 全仓棘轮 = 13。
 /// ⭐ 第十一轮 `[PATCH UI-FEEDBACK-05]` 把全仓手型光标扩到 50（只扩不放宽，

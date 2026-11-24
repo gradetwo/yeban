@@ -1662,6 +1662,417 @@ fn the_count_register_carries_a_class_and_a_basis_for_every_number() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ T-FIX-327：计数总表**生成化**（`R77_WRITE=1` 同趟生成 ＋ 复算判据）
+// ---------------------------------------------------------------------------
+//
+// ⚠ **为什么**：总表原先是**手写**的 —— T-FIX-139 普查实测 11 个数里至少 6 处过期
+// （三张证据表的行数 424／332／124 vs 实测 448／353／134，其余 raw／masked／
+// structural／digits 各行亦有漂移），而唯一的复算工具是**仓外脚本**
+// （`~/workspace/tools/dsp-mask-count.py`，不在仓库里、别人跑不了）。
+// ⇒ 与其它证据表同款形态：**生成器与复算判据共用同一份实现**（[`recount_register`]），
+// `R77_WRITE=1` 时与其它证据表**同趟**重写本文件；不带变量时逐行复算比对。
+//
+// ⚠ **两行复算不了**：`test_result_lines_last_run`（log_lines）与
+// `runtime_passed_last_run`（runtime_passed）是**上一轮 test 门日志**的读数 ——
+// 判据运行中拿不到上一轮的完整日志，⛔ 不许假装能算。生成时这两行**原样保留**
+// 提交在仓库里的现值（其依据列本来就写明是"上一轮"读数），复算判据只验其
+// **存在与口径**，数值由跑完整 test 门的人更新 —— 与臂覆盖表的"能力边界"同款诚实。
+
+/// 掩码扫描的产物：注释与字符串字面量被**等长空白**替换后的源码（换行保留），
+/// 以及两类片段内的数字字符数。
+struct MaskScan {
+    /// 掩码后的源码（口径与计数都以它为准）。
+    code: String,
+    /// 注释片段（`//` 与 `/* */`）内的数字字符数（Unicode 数字类）。
+    comment_digits: u64,
+    /// 字符串字面量片段（普通 `"…"` 与原始 `r#"…"#`）内的数字字符数。
+    string_digits: u64,
+}
+
+/// ⭐ **计数口径的唯一实现**（生成与复算共用，取代仓外脚本）：
+/// 状态机扫源码 —— `//` 行注释、**可嵌套**的 `/* */` 块注释、`"…"` 字符串
+/// （`\` 转义跳一字）、`r#*"…"#*` 原始字符串、字符字面量（`'x'`／`'\n'` 形态；
+/// 生命期 `'a` 不算）。注释与字符串片段一律按**等长空白**掩码（换行保留），
+/// 片段内的数字字符（`char::is_numeric`）分别计数。
+fn mask_source(text: &str) -> MaskScan {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut code = String::with_capacity(text.len());
+    let mut comment_digits = 0u64;
+    let mut string_digits = 0u64;
+    let blank = |code: &mut String, frag: &str| {
+        for ch in frag.chars() {
+            code.push(if ch == '\n' { '\n' } else { ' ' });
+        }
+    };
+    let digits = |frag: &str| frag.chars().filter(|c| c.is_numeric()).count() as u64;
+    let mut i = 0usize;
+    while i < n {
+        let rest = &text[i..];
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map(|p| i + p).unwrap_or(n);
+            let frag = &text[i..end];
+            comment_digits += digits(frag);
+            blank(&mut code, frag);
+            i = end;
+        } else if rest.starts_with("/*") {
+            let mut depth = 0usize;
+            let mut j = i;
+            while j < n {
+                if text[j..].starts_with("/*") {
+                    depth += 1;
+                    j += 2;
+                } else if text[j..].starts_with("*/") {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += text[j..].chars().next().unwrap().len_utf8();
+                }
+            }
+            let frag = &text[i..j];
+            comment_digits += digits(frag);
+            blank(&mut code, frag);
+            i = j;
+        } else if rest.starts_with('"')
+            || (rest.starts_with('r')
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+                && {
+                    let after = &rest[1..];
+                    let hashes = after.chars().take_while(|c| *c == '#').count();
+                    after[hashes..].starts_with('"')
+                })
+        {
+            // 普通字符串或原始字符串：定位**字面量整体**的字节范围与**内容**范围。
+            let (lit_end, content) = if rest.starts_with('"') {
+                let mut j = i + 1;
+                while j < n {
+                    let c = text[j..].chars().next().unwrap();
+                    if c == '\\' {
+                        j += 1;
+                        if j < n {
+                            j += text[j..].chars().next().unwrap().len_utf8();
+                        }
+                        continue;
+                    }
+                    if c == '"' {
+                        j += 1;
+                        break;
+                    }
+                    j += c.len_utf8();
+                }
+                (j, &text[i + 1..j.saturating_sub(1).max(i + 1)])
+            } else {
+                let after = &rest[1..];
+                let hashes = after.chars().take_while(|c| *c == '#').count();
+                let open = i + 1 + hashes; // `"` 的字节位置
+                let closer = format!("\"{}", "#".repeat(hashes));
+                let content_start = open + 1;
+                let close_at = text[content_start..]
+                    .find(&closer)
+                    .map(|p| content_start + p)
+                    .unwrap_or(n);
+                (
+                    (close_at + closer.len()).min(n),
+                    &text[content_start..close_at],
+                )
+            };
+            string_digits += digits(content);
+            blank(&mut code, &text[i..lit_end]);
+            i = lit_end;
+        } else if rest.starts_with('\'') {
+            // 字符字面量 `'x'`／`'\n'` 才掩码；生命期 `'a` 原样保留。
+            let chars: Vec<char> = rest.chars().take(4).collect();
+            let lit_len = match chars.as_slice() {
+                [_, c, '\'', ..] if *c != '\\' => Some(1 + c.len_utf8() + 1),
+                [_, '\\', c, '\'', ..] => Some(1 + 1 + c.len_utf8() + 1),
+                _ => None,
+            };
+            if let Some(len) = lit_len {
+                blank(&mut code, &text[i..i + len]);
+                i += len;
+            } else {
+                let c = rest.chars().next().unwrap();
+                code.push(c);
+                i += c.len_utf8();
+            }
+        } else {
+            let c = rest.chars().next().unwrap();
+            code.push(c);
+            i += c.len_utf8();
+        }
+    }
+    MaskScan {
+        code,
+        comment_digits,
+        string_digits,
+    }
+}
+
+/// 总表的一行定义：名、口径、依据。**顺序即文件里的行序**。
+struct RegisterSpec {
+    /// 行名（`name` 列）。
+    name: &'static str,
+    /// 口径（`class` 列，五类之一）。
+    class: &'static str,
+    /// 依据（`basis` 列）。
+    basis: &'static str,
+    /// 是否可由本判据**当场复算**（log_lines／runtime_passed 两行不可，见节首说明）。
+    recountable: bool,
+}
+
+/// 总表的 11 行定义（口径与依据的**唯一出处**；数值不在这里，数值靠复算）。
+const REGISTER_SPECS: &[RegisterSpec] = &[
+    RegisterSpec {
+        name: "raw_assert_in_src",
+        class: "raw",
+        basis: "grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描；生成器按同一口径逐文件计子串出现次数）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "masked_assert_in_src",
+        class: "masked",
+        basis: "掩码器：本文件 mask_source 按同一口径计（排除 // 与 /* */ 注释及 \"…\" 字符串后计 assert；生成与复算共用同一实现，取代仓外脚本）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "impl_default_for",
+        class: "structural",
+        basis: "grep -r '^impl Default for' crates/yeban-dsp/src 递归全部 .rs 的行数（`Limiter<W>` 写成 `impl<const W: usize> Default` 故不被该谓词计到）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "rows_hard_assertion_table",
+        class: "structural",
+        basis: "证据文件行数（去掉 # 表头）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "rows_integer_count_categories",
+        class: "structural",
+        basis: "证据文件行数（去掉 # 表头）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "rows_src_match_sites",
+        class: "structural",
+        basis: "证据文件行数（去掉 # 表头）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "rows_device_injection_evidence",
+        class: "structural",
+        basis: "证据文件行数（去掉 # 表头）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "digits_in_comment_fragments",
+        class: "raw",
+        basis: "对注释片段（// 与 /* */）内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "digits_in_string_fragments",
+        class: "raw",
+        basis: "对字符串字面量片段内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）",
+        recountable: true,
+    },
+    RegisterSpec {
+        name: "test_result_lines_last_run",
+        class: "log_lines",
+        basis: "上一轮 test 门日志里 'test result:' 的行数（合入树全量 28 个二进制）",
+        recountable: false,
+    },
+    RegisterSpec {
+        name: "runtime_passed_last_run",
+        class: "runtime_passed",
+        basis: "上一轮 test 门 'test result:' 行的 passed 求和（合入树全量 696）",
+        recountable: false,
+    },
+];
+
+/// 证据文件的**行数口径**：非空、非 `#` 开头的行数（与本文件其它证据表的读法一致）。
+fn evidence_row_count(crate_root: &Path, rel: &str) -> u64 {
+    let (text, _) = read_evidence_text(&crate_root.join(rel));
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .count() as u64
+}
+
+/// ⭐ **复算**：按 [`REGISTER_SPECS`] 的口径当场算出全部**可复算**行的现值。
+/// 生成与判据共用它 —— ⛔ 不许两面各写一套（R217②）。
+fn recount_register(crate_root: &Path) -> BTreeMap<&'static str, u64> {
+    let files = source_files(&crate_root.join(SRC_ROOT));
+    let mut raw_assert = 0u64;
+    let mut masked_assert = 0u64;
+    let mut impl_default = 0u64;
+    let mut comment_digits = 0u64;
+    let mut string_digits = 0u64;
+    for path in &files {
+        let src = normalize_source(&fs::read_to_string(path).unwrap_or_default());
+        raw_assert += src.matches("assert").count() as u64;
+        impl_default += src
+            .lines()
+            .filter(|l| l.starts_with("impl Default for"))
+            .count() as u64;
+        let scan = mask_source(&src);
+        masked_assert += scan.code.matches("assert").count() as u64;
+        comment_digits += scan.comment_digits;
+        string_digits += scan.string_digits;
+    }
+    let mut out = BTreeMap::new();
+    out.insert("raw_assert_in_src", raw_assert);
+    out.insert("masked_assert_in_src", masked_assert);
+    out.insert("impl_default_for", impl_default);
+    out.insert(
+        "rows_hard_assertion_table",
+        evidence_row_count(crate_root, TABLE_PATH),
+    );
+    out.insert(
+        "rows_integer_count_categories",
+        evidence_row_count(crate_root, "tests/data/integer_count_categories.txt"),
+    );
+    out.insert(
+        "rows_src_match_sites",
+        evidence_row_count(crate_root, "tests/data/src_match_sites.txt"),
+    );
+    out.insert(
+        "rows_device_injection_evidence",
+        evidence_row_count(
+            crate_root,
+            "tests/data/device_default_injection_evidence.txt",
+        ),
+    );
+    out.insert("digits_in_comment_fragments", comment_digits);
+    out.insert("digits_in_string_fragments", string_digits);
+    out
+}
+
+/// 把总表渲染成确定性文本。`preserved` 给不可复算两行的**现值**（生成时从
+/// 提交在仓库里的现文件原样保留；复算时不参与渲染）。
+fn render_count_register(
+    recount: &BTreeMap<&'static str, u64>,
+    preserved: &BTreeMap<String, u64>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# 计数口径总表（R224③）：每个数字必须带**口径列**与**依据**\n");
+    out.push_str("# 口径五类：masked（排除注释/字符串后计）｜raw（全文原样计）｜structural（结构性条目数）｜log_lines（日志行数）｜runtime_passed（运行期 passed 求和）\n");
+    out.push_str("# 列：name|value|class|basis\n");
+    out.push_str(
+        "# 合计 11 条：raw 3 ／ masked 1 ／ structural 5 ／ log_lines 1 ／ runtime_passed 1\n",
+    );
+    out.push_str("# ⭐ 本文件由 R77_WRITE=1 与其它证据表同趟生成（判据 the_count_register_matches_the_recount），⛔ 不许手改数值；log_lines／runtime_passed 两行是上一轮门禁日志读数，生成时原样保留。\n");
+    for spec in REGISTER_SPECS {
+        let value = if spec.recountable {
+            recount[spec.name]
+        } else {
+            preserved[spec.name]
+        };
+        out.push_str(&format!(
+            "{}|{}|{}|{}\n",
+            spec.name, value, spec.class, spec.basis
+        ));
+    }
+    out
+}
+
+/// 解析已提交的总表：`name → (value, class)`。
+fn parse_count_register(text: &str) -> BTreeMap<String, (u64, String)> {
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('|').collect();
+        assert_eq!(cols.len(), 4, "总表每行必须 4 列：{line}");
+        out.insert(
+            cols[0].to_string(),
+            (
+                cols[1].parse::<u64>().expect("总表值必须是数字"),
+                cols[2].to_string(),
+            ),
+        );
+    }
+    out
+}
+
+/// ⭐ **T-FIX-327 复算判据**：总表的每个**可复算**数字必须与当场复算一致；
+/// 行集与口径必须与 [`REGISTER_SPECS`] 逐字一致（多一行、少一行、改口径都红）。
+/// `R77_WRITE=1` 时**同趟生成**（与其它证据表一样：写完回读验幂等后返回）。
+#[test]
+fn the_count_register_matches_the_recount() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let register_path = crate_root.join(COUNT_REGISTER_PATH);
+    let (committed_text, _) = read_evidence_text(&register_path);
+    let committed = parse_count_register(&committed_text);
+    let recount = recount_register(&crate_root);
+
+    // ⭐ 非真空下界（R93／R100）：扫描域与读数都必须有余量，⛔ 不许空转成绿。
+    let files = source_files(&crate_root.join(SRC_ROOT)).len();
+    assert!(
+        files >= 20,
+        "扫描域太小：只读到 {files} 个源文件（地板 20）"
+    );
+    assert!(
+        recount["raw_assert_in_src"] > recount["masked_assert_in_src"],
+        "raw 必须大于 masked（掩码确实去掉了东西）：raw {} vs masked {}",
+        recount["raw_assert_in_src"],
+        recount["masked_assert_in_src"]
+    );
+    assert!(
+        recount["digits_in_comment_fragments"] >= 1000,
+        "注释数字太少：{}（地板 1000）—— 掩码器可能退化",
+        recount["digits_in_comment_fragments"]
+    );
+
+    if std::env::var("R77_WRITE").is_ok() {
+        let preserved: BTreeMap<String, u64> = REGISTER_SPECS
+            .iter()
+            .filter(|s| !s.recountable)
+            .map(|s| {
+                let (value, _) = committed
+                    .get(s.name)
+                    .unwrap_or_else(|| panic!("现总表里找不到不可复算行 {}，无从保留", s.name));
+                (s.name.to_string(), *value)
+            })
+            .collect();
+        let rendered = render_count_register(&recount, &preserved);
+        fs::write(&register_path, &rendered).expect("写计数总表");
+        // ⭐ R111③：写完立刻回读，确认落盘内容与刚渲染的一致（幂等）。
+        let back = fs::read_to_string(&register_path).expect("回读计数总表");
+        assert_eq!(back, rendered, "计数总表写入后回读不一致");
+        return;
+    }
+
+    assert_eq!(
+        committed.len(),
+        REGISTER_SPECS.len(),
+        "总表行数必须与定义一致（{} 行 vs 定义 {} 行）",
+        committed.len(),
+        REGISTER_SPECS.len()
+    );
+    for spec in REGISTER_SPECS {
+        let (value, class) = committed
+            .get(spec.name)
+            .unwrap_or_else(|| panic!("总表里找不到行 {}", spec.name));
+        assert_eq!(
+            *class, spec.class,
+            "总表行 {} 的口径漂移（表 {class} vs 定义 {}）",
+            spec.name, spec.class
+        );
+        if spec.recountable {
+            assert_eq!(
+                *value, recount[spec.name],
+                "总表行 {} 的数值过期（表 {value} vs 复算 {}）：先跑 cargo fmt，再用 R77_WRITE=1 重生成",
+                spec.name, recount[spec.name]
+            );
+        }
+    }
+}
+
 /// 提交在仓库里的臂覆盖读数表。
 const ARM_COVERAGE_PATH: &str = "tests/data/arm_coverage.txt";
 

@@ -69,60 +69,10 @@ const HOST_RS: &str = include_str!("../src/host.rs");
 const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
 const MUSICAL_PR_DRAWER: &str = include_str!("../ui/dialogs/musical_pr_drawer.slint");
 
-/// 全仓 `.slint` 清单：与 `round8_action_feedback.rs::SLINT_FILES`、
-/// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST`
-/// 同一份 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
-const SLINT_FILES: &[(&str, &str)] = &[
-    ("app.slint", APP),
-    ("transport.slint", TRANSPORT),
-    ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
-    ("tokens.slint", include_str!("../ui/tokens.slint")),
-    ("workspace/session_view.slint", SESSION_VIEW),
-    ("workspace/arrangement_view.slint", ARRANGEMENT),
-    ("workspace/song_overview_panel.slint", SONG_OVERVIEW),
-    (
-        "console/console_tabs.slint",
-        include_str!("../ui/console/console_tabs.slint"),
-    ),
-    (
-        "console/piano_roll.slint",
-        include_str!("../ui/console/piano_roll.slint"),
-    ),
-    (
-        "console/mixer_console.slint",
-        include_str!("../ui/console/mixer_console.slint"),
-    ),
-    (
-        "console/device_rack.slint",
-        include_str!("../ui/console/device_rack.slint"),
-    ),
-    (
-        "console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER),
-    (
-        "dialogs/undo_tree_modal.slint",
-        include_str!("../ui/dialogs/undo_tree_modal.slint"),
-    ),
-    (
-        "dialogs/export_wav_dialog.slint",
-        include_str!("../ui/dialogs/export_wav_dialog.slint"),
-    ),
-    (
-        "dialogs/humanize_dialog.slint",
-        include_str!("../ui/dialogs/humanize_dialog.slint"),
-    ),
-    (
-        "dialogs/macro_panel.slint",
-        include_str!("../ui/dialogs/macro_panel.slint"),
-    ),
-    (
-        "module_actions.slint",
-        include_str!("../ui/module_actions.slint"),
-    ),
-];
+// ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
+// 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
+// 的唯一登记是 `yeban_app::elements::SLINT_MANIFEST`；需要全仓语料时从它派生，
+// ⛔ 不许再手写第二份名单。
 
 /// ① 曲风预设键必须显式命名 `TouchArea`，且整条反馈表达式**逐字**存在 ⇒
 /// false 分支逐字回落到改动前的 `bg-panel` / `line`（默认帧零像素位移）。

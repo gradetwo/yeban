@@ -3641,7 +3641,8 @@ pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String>
 // 出厂预置（嵌入文本与磁盘文件同一格式）
 // ---------------------------------------------------------------------------
 
-/// 出厂 10 风格的嵌入源（id 与文件一一对应）。
+/// 出厂风格的嵌入源（id 与文件一一对应；条数不写死在注释里 ——
+/// 由判据 `factory_sources_match_the_drum_styles_directory` 与目录当场对账）。
 const FACTORY_SOURCES: [(&str, &str); 14] = [
     ("trap", include_str!("../drum_styles/trap.json")),
     ("drill", include_str!("../drum_styles/drill.json")),
@@ -4087,6 +4088,37 @@ mod tests {
             [0,1,0],[0,1,0],[105,1,1],[0,1,0],[0,1,0],[80,1,1],[0,1,0],[0,1,0]
         ]}]
     }"#;
+
+    /// ⭐ **T-FIX-327 完整性对账**：嵌入清单 [`FACTORY_SOURCES`] 必须与
+    /// `drum_styles/` 目录里的 `.json` 文件**逐个对上**（read_dir 当场点名）。
+    /// 此前只有手写清单、没有对账：往目录里加一个新风格 JSON 而忘了登记，
+    /// 它会**静默**不被加载（目录有、产品里没有）；反方向（登记了却删了文件）
+    /// 靠 include_str! 编译期报错兜底，本判据管的是加方向与改名漂移。
+    #[test]
+    fn factory_sources_match_the_drum_styles_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("drum_styles");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("读 drum_styles 目录失败 {}: {e}", dir.display()))
+            .map(|entry| entry.expect("drum_styles 目录项").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .map(|path| {
+                path.file_stem()
+                    .expect("json 文件必有主名")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<String> = FACTORY_SOURCES
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        embedded.sort();
+        assert_eq!(
+            on_disk, embedded,
+            "drum_styles/ 目录的 .json 与 FACTORY_SOURCES 登记不一致：加文件必须同时登记，改名必须两边同改"
+        );
+    }
 
     #[test]
     fn parses_minimal_preset() {

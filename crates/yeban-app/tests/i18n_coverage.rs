@@ -423,3 +423,31 @@ fn checker_catches_synthetic_violations() {
     )];
     assert!(unrouted_violations(&comment_only).is_empty());
 }
+
+/// ⭐ **T-FIX-327 完整性对账**：[`TARGET_LOCALES`] 必须与 `translations/`
+/// 目录里的语言目录**逐个对上**（read_dir 当场点名）。此前只有手写清单、
+/// 没有对账：新增一个语言目录而忘了把它加进清单，那个语言的词表会**静默**
+/// 不被任何判据检查（缺条、孤儿条、空译全都看不见）；反方向（清单里有、
+/// 目录被删）靠 `po_source_for_locale` 读文件 panic 兜底，本判据管加方向。
+#[test]
+fn target_locales_match_the_translations_directory() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("translations");
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("读 translations 目录失败 {}: {e}", dir.display()))
+        .map(|entry| entry.expect("translations 目录项").path())
+        .filter(|path| path.is_dir())
+        .map(|path| {
+            path.file_name()
+                .expect("目录必有名字")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    on_disk.sort();
+    let mut expected: Vec<String> = TARGET_LOCALES.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        on_disk, expected,
+        "translations/ 目录的语言集与 TARGET_LOCALES 不一致：加语言必须同时登记进 TARGET_LOCALES"
+    );
+}

@@ -1116,3 +1116,56 @@ pub fn parse_embedded_presets(
 pub fn embedded_preset_id(entry_name: &str) -> Option<String> {
     preset_id_from_embedded_entry(entry_name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⭐ **T-FIX-327 完整性对账**：三处登记必须逐个对上 ——
+    /// ① `assets/presets/` 目录里的 `.json` 文件（read_dir 当场点名）；
+    /// ② 本模块内嵌的 [`FACTORY_PRESETS`]（标识末段 = 文件主名）；
+    /// ③ `yeban_model::preset::FACTORY_PRESET_IDS` 的标识清单。
+    /// 此前只有两份手写清单、没有对账：往目录里加一个新预制 JSON 而忘了登记，
+    /// 它会**静默**不随产品出现；两份清单之间漂移（改了一处漏了另一处）同样没人判。
+    #[test]
+    fn factory_presets_match_the_assets_presets_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/presets");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("读 assets/presets 目录失败 {}: {e}", dir.display()))
+            .map(|entry| entry.expect("assets/presets 目录项").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .map(|path| {
+                path.file_stem()
+                    .expect("json 文件必有主名")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        on_disk.sort();
+        let mut embedded_files: Vec<String> = FACTORY_PRESETS
+            .iter()
+            .map(|(id, _)| {
+                id.rsplit(':')
+                    .next()
+                    .expect("工厂预制标识必有末段")
+                    .to_owned()
+            })
+            .collect();
+        embedded_files.sort();
+        assert_eq!(
+            on_disk, embedded_files,
+            "assets/presets/ 目录的 .json 与 FACTORY_PRESETS 内嵌登记不一致：加文件必须同时登记"
+        );
+        let mut mcp_ids: Vec<&str> = FACTORY_PRESETS.iter().map(|(id, _)| *id).collect();
+        mcp_ids.sort();
+        let mut model_ids: Vec<&str> = yeban_model::preset::FACTORY_PRESET_IDS
+            .iter()
+            .copied()
+            .collect();
+        model_ids.sort();
+        assert_eq!(
+            mcp_ids, model_ids,
+            "FACTORY_PRESETS 与 yeban_model::FACTORY_PRESET_IDS 两份登记漂移：改一处必须同改另一处"
+        );
+    }
+}

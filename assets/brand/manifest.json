@@ -114,6 +114,17 @@
       "attribution_required": false
     },
     {
+      "id": "brand-png-yeban-moon-keyed-64.png",
+      "name": "yeban-moon-keyed-64.png",
+      "relative_path": "assets/brand/png/yeban-moon-keyed-64.png",
+      "sha256": "f4bf2323fd1c464663cf1cfe3f2438876a5e3998e7c1e9e7d9c3ec592fd596a5",
+      "size_bytes": 3497,
+      "license": "GPL-3.0-only AND LicenseRef-Yeban-Trademark",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false
+    },
+    {
       "id": "brand-yeban-dark-128.svg",
       "name": "yeban-dark-128.svg",
       "relative_path": "assets/brand/yeban-dark-128.svg",

@@ -80,60 +80,10 @@ const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint")
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 
-/// 全仓 `.slint` 清单：与 `round6_addressable_roles.rs::SLINT_FILES`、
-/// `src/elements.rs::SLINT_MANIFEST` 同一份 19 文件口径（编译期固定）。
-/// ② 的「全仓 `has-hover` 总数」用它做主体扫描，⛔ 不用 `read_dir` 空转成绿。
-const SLINT_FILES: &[(&str, &str)] = &[
-    ("app.slint", APP),
-    ("transport.slint", TRANSPORT),
-    ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
-    ("tokens.slint", include_str!("../ui/tokens.slint")),
-    (
-        "workspace/session_view.slint",
-        include_str!("../ui/workspace/session_view.slint"),
-    ),
-    ("workspace/arrangement_view.slint", ARRANGEMENT),
-    ("workspace/song_overview_panel.slint", SONG_OVERVIEW),
-    ("console/console_tabs.slint", CONSOLE_TABS),
-    (
-        "console/piano_roll.slint",
-        include_str!("../ui/console/piano_roll.slint"),
-    ),
-    (
-        "console/mixer_console.slint",
-        include_str!("../ui/console/mixer_console.slint"),
-    ),
-    (
-        "console/device_rack.slint",
-        include_str!("../ui/console/device_rack.slint"),
-    ),
-    (
-        "console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    (
-        "dialogs/musical_pr_drawer.slint",
-        include_str!("../ui/dialogs/musical_pr_drawer.slint"),
-    ),
-    (
-        "dialogs/undo_tree_modal.slint",
-        include_str!("../ui/dialogs/undo_tree_modal.slint"),
-    ),
-    (
-        "dialogs/export_wav_dialog.slint",
-        include_str!("../ui/dialogs/export_wav_dialog.slint"),
-    ),
-    (
-        "dialogs/humanize_dialog.slint",
-        include_str!("../ui/dialogs/humanize_dialog.slint"),
-    ),
-    (
-        "dialogs/macro_panel.slint",
-        include_str!("../ui/dialogs/macro_panel.slint"),
-    ),
-    ("module_actions.slint", MODULE_ACTIONS),
-];
+// ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
+// 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
+// 的唯一登记是 `yeban_app::elements::SLINT_MANIFEST`；需要全仓语料时从它派生，
+// ⛔ 不许再手写第二份名单。
 
 /// 本轮 15 个目标按钮：`(文件, 源码, TouchArea 名, 默认帧原底色)`。
 /// `orig` 是**改动前那一行的静态 token**，false 分支必须逐字等于它。

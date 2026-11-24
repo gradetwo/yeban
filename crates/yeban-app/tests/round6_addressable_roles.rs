@@ -37,9 +37,10 @@
 //! `accessible-id` 的字样、字符串里的花括号都不算结构），再做大括号配对；每个
 //! `{...}` 块只取**本层**文本（更深层子块的内容丢弃），本层含 `accessible-id:`
 //! 即为可寻址节点，本层必须**同时**含 `accessible-role:`。
-//! 清单用编译期固定的 `include_str!`（与 `elements.rs::SLINT_MANIFEST` 同款纪律，
-//! ⛔ 不用 `read_dir` 做主体扫描，避免夹具缺失导致真空），并由第 ④ 条判据把
-//! 两份清单钉成同步。
+//! 被扫文件用编译期固定的 `include_str!` 逐个具名（与 `elements.rs::SLINT_MANIFEST`
+//! 同款纪律，⛔ 不用 `read_dir` 做主体扫描，避免夹具缺失导致真空）。⭐ T-FIX-327：
+//! 本文件原先另有一份手抄全仓名单冒充与注册表同步（实际 18 vs 45 且无人消费），
+//! 已删除 —— 全仓名单的唯一登记是 `elements::SLINT_MANIFEST`。
 //!
 //! ## 平台约束与其它纪律
 //!
@@ -48,71 +49,10 @@
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
 #![allow(unused)]
-/// 被扫文件：**编译期固定**，与 `src/elements.rs` 的 `SLINT_MANIFEST: [&str; 19]`
-/// 逐字对应。UI 加一个 `.slint` 文件必须同时扩这两处（第 ④ 条判据会判红）。
-const SLINT_FILES: &[(&str, &str)] = &[
-    ("app.slint", include_str!("../ui/app.slint")),
-    ("transport.slint", include_str!("../ui/transport.slint")),
-    ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
-    ("tokens.slint", include_str!("../ui/tokens.slint")),
-    (
-        "workspace/session_view.slint",
-        include_str!("../ui/workspace/session_view.slint"),
-    ),
-    (
-        "workspace/arrangement_view.slint",
-        include_str!("../ui/workspace/arrangement_view.slint"),
-    ),
-    (
-        "workspace/song_overview_panel.slint",
-        include_str!("../ui/workspace/song_overview_panel.slint"),
-    ),
-    (
-        "console/console_tabs.slint",
-        include_str!("../ui/console/console_tabs.slint"),
-    ),
-    (
-        "console/piano_roll.slint",
-        include_str!("../ui/console/piano_roll.slint"),
-    ),
-    (
-        "console/mixer_console.slint",
-        include_str!("../ui/console/mixer_console.slint"),
-    ),
-    (
-        "console/device_rack.slint",
-        include_str!("../ui/console/device_rack.slint"),
-    ),
-    (
-        "console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    (
-        "dialogs/musical_pr_drawer.slint",
-        include_str!("../ui/dialogs/musical_pr_drawer.slint"),
-    ),
-    (
-        "dialogs/undo_tree_modal.slint",
-        include_str!("../ui/dialogs/undo_tree_modal.slint"),
-    ),
-    (
-        "dialogs/export_wav_dialog.slint",
-        include_str!("../ui/dialogs/export_wav_dialog.slint"),
-    ),
-    (
-        "dialogs/humanize_dialog.slint",
-        include_str!("../ui/dialogs/humanize_dialog.slint"),
-    ),
-    (
-        "dialogs/macro_panel.slint",
-        include_str!("../ui/dialogs/macro_panel.slint"),
-    ),
-    (
-        "module_actions.slint",
-        include_str!("../ui/module_actions.slint"),
-    ),
-];
+// ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
+// 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
+// 的唯一登记是 `yeban_app::elements::SLINT_MANIFEST`；需要全仓语料时从它派生，
+// ⛔ 不许再手写第二份名单。
 
 const ELEMENTS_RS: &str = include_str!("../src/elements.rs");
 const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");

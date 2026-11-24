@@ -52,76 +52,25 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 
-/// 承诺源 A：界面源，**编译期固定**（`include_str!`）。
+/// 承诺源 A：界面源。
 ///
-/// ⚠ 口径来自 `tests/assertion_bounds_audit.rs`：主体扫描⛔ 用 `read_dir` —— 目录读不到
-/// 或文件缺失会**空转成绿**；`read_dir` 只留给 ⑥ 那条完整性对账。
-const SLINT_SOURCES: &[(&str, &str)] = &[
-    ("ui/app.slint", include_str!("../ui/app.slint")),
-    (
-        "ui/console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    (
-        "ui/console/console_tabs.slint",
-        include_str!("../ui/console/console_tabs.slint"),
-    ),
-    (
-        "ui/console/device_rack.slint",
-        include_str!("../ui/console/device_rack.slint"),
-    ),
-    (
-        "ui/console/mixer_console.slint",
-        include_str!("../ui/console/mixer_console.slint"),
-    ),
-    (
-        "ui/console/piano_roll.slint",
-        include_str!("../ui/console/piano_roll.slint"),
-    ),
-    (
-        "ui/dialogs/export_wav_dialog.slint",
-        include_str!("../ui/dialogs/export_wav_dialog.slint"),
-    ),
-    (
-        "ui/dialogs/humanize_dialog.slint",
-        include_str!("../ui/dialogs/humanize_dialog.slint"),
-    ),
-    (
-        "ui/dialogs/macro_panel.slint",
-        include_str!("../ui/dialogs/macro_panel.slint"),
-    ),
-    (
-        "ui/dialogs/musical_pr_drawer.slint",
-        include_str!("../ui/dialogs/musical_pr_drawer.slint"),
-    ),
-    (
-        "ui/dialogs/undo_tree_modal.slint",
-        include_str!("../ui/dialogs/undo_tree_modal.slint"),
-    ),
-    (
-        "ui/module_actions.slint",
-        include_str!("../ui/module_actions.slint"),
-    ),
-    // ⭐ T-FIX-218：`ui/sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
-    (
-        "ui/status_bar.slint",
-        include_str!("../ui/status_bar.slint"),
-    ),
-    ("ui/tokens.slint", include_str!("../ui/tokens.slint")),
-    ("ui/transport.slint", include_str!("../ui/transport.slint")),
-    (
-        "ui/workspace/arrangement_view.slint",
-        include_str!("../ui/workspace/arrangement_view.slint"),
-    ),
-    (
-        "ui/workspace/session_view.slint",
-        include_str!("../ui/workspace/session_view.slint"),
-    ),
-    (
-        "ui/workspace/song_overview_panel.slint",
-        include_str!("../ui/workspace/song_overview_panel.slint"),
-    ),
-];
+/// ⭐ **T-FIX-327 起由注册表派生，⛔ 不再手写名单**：文件集 =
+/// `yeban_app::elements::SLINT_MANIFEST`（全仓 `.slint` 的唯一登记，由 `elements`
+/// 判据与磁盘双向钉住），内容按名读盘 —— 文件缺失即 `panic`（⛔ 不空转成绿；
+/// `read_dir` 仍只留给 ⑥ 的完整性对账）。此前这里手抄 18 个文件、清单外 27 个
+/// 文件从未进过扫描面，注释却谎称与 `SLINT_MANIFEST`「`[&str; 19]`」同一份 —— 已改正。
+/// 文件标签随注册表口径由 `ui/app.slint` 改为 `app.slint`（只出现在失败消息里）。
+fn slint_sources() -> Vec<(&'static str, String)> {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    yeban_app::elements::SLINT_MANIFEST
+        .iter()
+        .map(|name| {
+            let source = std::fs::read_to_string(ui_dir.join(name))
+                .unwrap_or_else(|e| panic!("读 ui/{name} 失败：{e}"));
+            (*name, source)
+        })
+        .collect()
+}
 
 /// 承诺源 B：控件登记表（`registry.add(id, kind, file, name, ..)`）。
 const REGISTRY_FILE: &str = "src/elements.rs";
@@ -545,8 +494,8 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
 /// 两个承诺源的全部证据。
 fn scan_corpus() -> Evidence {
     let mut out = Evidence::default();
-    for (file, source) in SLINT_SOURCES {
-        for literal in literals(source) {
+    for (file, source) in slint_sources() {
+        for literal in literals(&source) {
             out.absorb(chords_in_literal(file, literal.line, &literal.text));
         }
     }
@@ -566,7 +515,7 @@ fn scan_corpus() -> Evidence {
 
 /// `.slint` 一侧的全部字面原文（⑤ 用它比逐字相同）。
 fn slint_literals() -> BTreeSet<String> {
-    SLINT_SOURCES
+    slint_sources()
         .iter()
         .flat_map(|(_, source)| literals(source))
         .map(|literal| literal.text)

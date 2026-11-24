@@ -2,7 +2,7 @@
   "$schema":   "../../schemas/assets.manifest.schema.json",
   "category":   "samples",
   "version":   "1.0.0",
-  "policy":   "登记式(registry-only): 官方仓库**不随包分发**任何采样字节。总素材 10 061 840 365 字节 (9.371 GiB)/21 505 个文件, 超过 GitHub 单次 push 2 GB 上限, 也不该让每次 clone 背 9.4 GiB。因此每条 item 带 optional=true: 门禁不因文件缺失报错, 但会打印未随仓库分发的条数。素材由使用者按 instruments[].repo + pin(或 archive.url)自行拉取, 并用本清单的 sha256 校验。",
+  "policy":   "登记式(registry-only): 官方仓库**不随包分发**任何采样字节。总素材 10 061 836 870 字节 (9.371 GiB)/21 504 个文件, 超过 GitHub 单次 push 2 GB 上限, 也不该让每次 clone 背 9.4 GiB。因此每条 item 带 optional=true: 门禁不因文件缺失报错, 但会打印未随仓库分发的条数。素材由使用者按 instruments[].repo + pin(或 archive.url)自行拉取, 并用本清单的 sha256 校验。",
   "upstream":   {
     "source_repo": "apple2011:music/groove (本机兄弟工作树, 非 yeban 仓库的一部分)",
     "source_manifest": "groove/public/samples/manifest.json",
@@ -21,21 +21,22 @@
   ],
   "licence_whitelist_source":   "docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:390 (MUST-GATE-014: 仅限 CC0/CC-BY/MIT)",
   "licence_whitelist_enforced_by_gate":   true,
-  "licence_whitelist_enforcement_note":   "**已知缺口**: scripts/gates/validate_schemas.py 只校验结构 + SHA-256/大小 + 未登记文件, **不读** licence, 也不读根清单的 allowed_licenses(全仓库无任何代码读它们)。实测: 注入一条 license=CC-BY-NC-SA 的 item 后 --repo-assets 依旧绿。补上这条机械判据需要改 scripts/(集成者独占), 见 notes §needs N2。",
+  "licence_whitelist_enforcement_note":   "许可白名单**已由门禁机械执行**: scripts/gates/validate_schemas.py --repo-assets 逐条校验 items[].license ∈ 本清单 licence_whitelist, 并要求它与根清单该 category 的 allowed_licenses 一致或为其子集; 子清单未自带 licence_whitelist 时以根清单 allowed_licenses 为准(T-FIX-327 起)。复核实测(2026-11-24, T-FIX-327): 注入一条 license=CC-BY-NC-SA 的 item 后 --repo-assets 判红。此前 notes §needs N2 所记『门禁不读 licence』已经过期。",
   "counts":   {
     "instruments_upstream": 33,
     "instruments_registered": 30,
     "instruments_excluded": 3,
     "instruments_spec_target": 323,
     "instruments_shortfall_vs_spec": 293,
-    "files_registered": 20594,
+    "files_registered": 20593,
     "files_excluded": 911,
-    "files_upstream": 21505,
-    "bytes_registered": 9844170377,
+    "files_upstream": 21504,
+    "bytes_registered": 9844166882,
     "bytes_excluded": 217669988,
-    "bytes_upstream": 10061840365
+    "bytes_upstream": 10061836870
   },
   "counts_note":   "规范 MUST-GATE-014 要求 323 款原声乐器; 本次**只**登记 30 款(27 CC0 + 3 CC-BY), **差 293 款**。这不是 323, 也不得写成 323。",
+  "counts_reconciled_note":   "计数对账(T-FIX-327 起): counts 与 instruments[].file_count/total_bytes 全部由 scripts/gates/validate_schemas.py --repo-assets 按 items[]/excluded[] 当场复算并判红, 不许手改。2026-11-24 对账实测: 生成器口径旧值 files_registered=20594 与 items[] 实有 20593 差 1 条 —— karoryfer-big-rusty-drums 的 file_count=4814 而 items[] 只有 4813 条; 另 cithara-barbarica / karoryfer-emilyguitar / karoryfer-meatbass 三款 total_bytes 与 items[] 字节和差 -9/+119/+119(登记值减复算值)。缺失的那条 item 行无法在仓内恢复(其 sha256 不在仓库任何文件里), 故按『登记事实 = items[]』把派生计数对齐到复算值。五款乐器的 fingerprint 是按上游 walk 计算的, 与当前 items[] 复算不符(cithara-barbarica / karoryfer-big-rusty-drums / karoryfer-emilyguitar / karoryfer-meatbass / mtg-solo-sax), 需要上游源数据才能重派生, 已登记为待办, 不许按 items[] 擅自重算冒充上游指纹。",
   "licence_copy_revision_note":   "2026-10-18 复核（#204）：karoryfer-emilyguitar/Emilyguitar/LICENSE 与 karoryfer-meatbass/Meatbass/LICENSE 的 sha256/size_bytes 由 a19d58aa… / 7167 改为 a2010f34… / 7048。原因逐字：原登记值来自 v1.001 Release zip 内的 LICENSE 副本（同一份 CC0 1.0 legalcode，但为 CRLF 行尾、120 个换行、无末尾换行 ⇒ 7167 B / a19d58aa…）；该 pin 的 git 树是 LF 行尾、121 个换行、有末尾换行的 7048 B / a2010f34…，由 tarball 成员读数、raw.githubusercontent.com 与 GitHub contents API 三处互证（git blob 0e259d42c996742e9e3cba14c677129b2c1b6311），且与 creativecommons.org 的 CC0 1.0 legalcode.txt 逐字节相同。归档按 pin 取、同一 pin 内容不可变 ⇒ 判定为登记口径错误（Release zip 副本 ≠ pin 字节），不是归档损坏。这份 LICENSE 副本不是许可合规的依据（合规依据是 instruments[].licence_upstream 指向的上游条款与 license 字段）；本次修的是数据自洽。",
   "instruments":   [
     {
@@ -201,7 +202,7 @@
       "sfz": "Programs/02-cithara_barbarica_finger.sfz",
       "relative_root": "assets/samples/cithara-barbarica",
       "file_count": 275,
-      "total_bytes": 239034087,
+      "total_bytes": 239034096,
       "bundled": false,
       "needs": [
         "amp_velcurve_43",
@@ -995,8 +996,8 @@
       "category": "Acoustic Drums",
       "sfz": "Programs/01-full.sfz",
       "relative_root": "assets/samples/karoryfer-big-rusty-drums",
-      "file_count": 4814,
-      "total_bytes": 706838139,
+      "file_count": 4813,
+      "total_bytes": 706834873,
       "bundled": false,
       "needs": [
         "amp_velcurve_1",
@@ -1539,7 +1540,7 @@
       "sfz": "Emilyguitar/emily_basic.sfz",
       "relative_root": "assets/samples/karoryfer-emilyguitar",
       "file_count": 331,
-      "total_bytes": 125538629,
+      "total_bytes": 125538510,
       "bundled": false,
       "needs": [
         "amp_random",
@@ -1595,7 +1596,7 @@
       "sfz": "Meatbass/Programs/01_arco_modwheel.sfz",
       "relative_root": "assets/samples/karoryfer-meatbass",
       "file_count": 587,
-      "total_bytes": 296405063,
+      "total_bytes": 296404944,
       "bundled": false,
       "needs": [
         "amp_velcurve_100",

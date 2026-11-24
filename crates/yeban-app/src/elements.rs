@@ -4071,6 +4071,100 @@ pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 9] = [
     ("musical-pr-resolve-reason", "musical_pr_resolve_reason"),
 ];
 
+// =====================================================================
+
+/// ADR-0001 D2 的 UI 文件清单。多一个/少一个都必须在这里显式改, 否则测试变红 ——
+///
+/// ⭐ **T-FIX-327**：本清单是全仓 `.slint` 文件的**唯一登记**，已由测试模块
+/// 提升为模块级 `pub` 常量。集成判据需要全仓语料时一律从这里**派生**
+/// （`yeban_app::elements::SLINT_MANIFEST`），⛔ 不许再在判据文件里手写第二份名单
+/// —— 那正是本单修掉的漂移源（五份 18 文件手抄名单 vs 本清单 45 文件）。
+/// 这样"UI/UX §8 的 11 个文件"就不是一句注释, 而是一条会被机械检查的约定。
+///
+/// `module_actions.slint`（14 号）是**四个模块入口**那一票加的：导出 WAV / 导入 MIDI /
+/// 装载 SFZ / 录音。它是**新增的独立组件**（不是往 `transport.slint` 里塞）——
+/// 理由是顶栏那三个文档键与录音键的"无点击处理器"被本文件自己的两条判据钉着
+/// （承载 `[ARCH-REC-001]` 的声卡录音缺口），本票不动它们。
+///
+/// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
+/// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
+/// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
+pub const SLINT_MANIFEST: [&str; 45] = [
+    "app.slint",
+    "transport.slint",
+    "status_bar.slint",
+    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
+    // 主题层: 规范缺口, 由本工作线登记 (不在 ADR-0001 D2 的 11 个之内)
+    "tokens.slint",
+    "workspace/session_view.slint",
+    "workspace/arrangement_view.slint",
+    // 整曲多层总览图面板（`line/songmap-overview` Phase 1）：独立组件。
+    // UI 加一个文件就必须在清单里显式改（与 `module_actions.slint` /
+    // `console/asset_pool_panel.slint` 同一条纪律）。
+    "workspace/song_overview_panel.slint",
+    "console/console_tabs.slint",
+    "console/piano_roll.slint",
+    "console/mixer_console.slint",
+    "console/device_rack.slint",
+    // 素材池面板（任务单 `#133`）。
+    "console/asset_pool_panel.slint",
+    "dialogs/musical_pr_drawer.slint",
+    "dialogs/undo_tree_modal.slint",
+    // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/export_wav_dialog.slint",
+    // 帮助系统四件（`line/onboarding-help`）：用户手册 / 快捷键速查 / 新手引导 /
+    // 教学课程，全部默认关闭 ⇒ 金帧不变。
+    "dialogs/help_manual.slint",
+    "dialogs/help_shortcuts.slint",
+    "dialogs/onboarding_overlay.slint",
+    "dialogs/lessons_drawer.slint",
+    // 人性化 / 量化选项框（`line/humanize-ui-entry`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/humanize_dialog.slint",
+    // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/sound_library_dialog.slint",
+    // 鼓机生成对话框（`line/drum-machine-p1`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/drum_gen_dialog.slint",
+    // 音频设置对话框（T-FIX-71）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/audio_settings_dialog.slint",
+    // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
+    "dialogs/macro_panel.slint",
+    // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/save_as_template.slint",
+    "dialogs/template_chooser.slint",
+    // 启动工程选择器（`line/startup-chooser`）：全窗模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/startup_chooser.slint",
+    // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
+    "module_actions.slint",
+    // 共享控件库（`line/ui-skeuo-theme` 一期）：Knob / Fader / LedMeter /
+    // PushButton / ToggleSwitch —— 试点迁移的定义真移到了这里，清单同步登记。
+    "controls/fader.slint",
+    "controls/knob.slint",
+    "controls/led_meter.slint",
+    "controls/push_button.slint",
+    "controls/toggle_switch.slint",
+    // 桌面 UI 重构组件清单
+    "arrangement.slint",
+    "clip_matrix.slint",
+    "control_room.slint",
+    "left_panel.slint",
+    "lower_dock.slint",
+    "modals.slint",
+    "transport_bar.slint",
+    // 缺音源救援面板（Wang 2026-11-19）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    // ⚠ 新增一个 .slint 就必须在这张清单里显式登记（同 `sound_library_dialog`）。
+    "dialogs/missing_sounds_dialog.slint",
+    // 原生预制库面板（T-FIX-95，commit ff2205116）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    // ⚠ T-FIX-117：文件落地时漏了这张清单与下面的 id 注册表 —— 两条
+    // `elements::tests` 判据在尖端上正是这样红的（见 `slint_manifest_matches_adr_0001_d2`
+    // 与 `slint_accessible_ids_and_registry_cover_each_other`）。
+    "dialogs/preset_library.slint",
+    // 插件与 ARA 面板（T-FIX-83）：隐藏模态，默认关闭 ⇒ 金帧不变。
+    "dialogs/plugin_panel.slint",
+    // Hub #711：OTCP 音高校正 / 自动相位对齐两框（隐藏模态，默认关闭 ⇒ 金帧不变）。
+    "dialogs/otcp_dialog.slint",
+    "dialogs/phase_align_dialog.slint",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4282,94 +4376,6 @@ mod tests {
     // =====================================================================
     // 与 `ui/` 的**双向**契约: 这是本地唯一能做的 "UI 变更双重验证" 前置检查。
     // 真正的无头控件树断言 + 截图比对在 CI 上由 yeban-ui-test-port 完成。
-    // =====================================================================
-
-    /// ADR-0001 D2 的 UI 文件清单。多一个/少一个都必须在这里显式改, 否则测试变红 ——
-    /// 这样"UI/UX §8 的 11 个文件"就不是一句注释, 而是一条会被机械检查的约定。
-    ///
-    /// `module_actions.slint`（14 号）是**四个模块入口**那一票加的：导出 WAV / 导入 MIDI /
-    /// 装载 SFZ / 录音。它是**新增的独立组件**（不是往 `transport.slint` 里塞）——
-    /// 理由是顶栏那三个文档键与录音键的"无点击处理器"被本文件自己的两条判据钉着
-    /// （承载 `[ARCH-REC-001]` 的声卡录音缺口），本票不动它们。
-    ///
-    /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
-    /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
-    /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 45] = [
-        "app.slint",
-        "transport.slint",
-        "status_bar.slint",
-        // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
-        // 主题层: 规范缺口, 由本工作线登记 (不在 ADR-0001 D2 的 11 个之内)
-        "tokens.slint",
-        "workspace/session_view.slint",
-        "workspace/arrangement_view.slint",
-        // 整曲多层总览图面板（`line/songmap-overview` Phase 1）：独立组件。
-        // UI 加一个文件就必须在清单里显式改（与 `module_actions.slint` /
-        // `console/asset_pool_panel.slint` 同一条纪律）。
-        "workspace/song_overview_panel.slint",
-        "console/console_tabs.slint",
-        "console/piano_roll.slint",
-        "console/mixer_console.slint",
-        "console/device_rack.slint",
-        // 素材池面板（任务单 `#133`）。
-        "console/asset_pool_panel.slint",
-        "dialogs/musical_pr_drawer.slint",
-        "dialogs/undo_tree_modal.slint",
-        // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/export_wav_dialog.slint",
-        // 帮助系统四件（`line/onboarding-help`）：用户手册 / 快捷键速查 / 新手引导 /
-        // 教学课程，全部默认关闭 ⇒ 金帧不变。
-        "dialogs/help_manual.slint",
-        "dialogs/help_shortcuts.slint",
-        "dialogs/onboarding_overlay.slint",
-        "dialogs/lessons_drawer.slint",
-        // 人性化 / 量化选项框（`line/humanize-ui-entry`）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/humanize_dialog.slint",
-        // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/sound_library_dialog.slint",
-        // 鼓机生成对话框（`line/drum-machine-p1`）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/drum_gen_dialog.slint",
-        // 音频设置对话框（T-FIX-71）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/audio_settings_dialog.slint",
-        // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
-        "dialogs/macro_panel.slint",
-        // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/save_as_template.slint",
-        "dialogs/template_chooser.slint",
-        // 启动工程选择器（`line/startup-chooser`）：全窗模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/startup_chooser.slint",
-        // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
-        "module_actions.slint",
-        // 共享控件库（`line/ui-skeuo-theme` 一期）：Knob / Fader / LedMeter /
-        // PushButton / ToggleSwitch —— 试点迁移的定义真移到了这里，清单同步登记。
-        "controls/fader.slint",
-        "controls/knob.slint",
-        "controls/led_meter.slint",
-        "controls/push_button.slint",
-        "controls/toggle_switch.slint",
-        // 桌面 UI 重构组件清单
-        "arrangement.slint",
-        "clip_matrix.slint",
-        "control_room.slint",
-        "left_panel.slint",
-        "lower_dock.slint",
-        "modals.slint",
-        "transport_bar.slint",
-        // 缺音源救援面板（Wang 2026-11-19）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        // ⚠ 新增一个 .slint 就必须在这张清单里显式登记（同 `sound_library_dialog`）。
-        "dialogs/missing_sounds_dialog.slint",
-        // 原生预制库面板（T-FIX-95，commit ff2205116）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        // ⚠ T-FIX-117：文件落地时漏了这张清单与下面的 id 注册表 —— 两条
-        // `elements::tests` 判据在尖端上正是这样红的（见 `slint_manifest_matches_adr_0001_d2`
-        // 与 `slint_accessible_ids_and_registry_cover_each_other`）。
-        "dialogs/preset_library.slint",
-        // 插件与 ARA 面板（T-FIX-83）：隐藏模态，默认关闭 ⇒ 金帧不变。
-        "dialogs/plugin_panel.slint",
-        // Hub #711：OTCP 音高校正 / 自动相位对齐两框（隐藏模态，默认关闭 ⇒ 金帧不变）。
-        "dialogs/otcp_dialog.slint",
-        "dialogs/phase_align_dialog.slint",
-    ];
 
     fn ui_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui")

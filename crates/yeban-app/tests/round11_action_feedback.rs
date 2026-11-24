@@ -75,32 +75,10 @@ const EXPORT_WAV_DIALOG: &str = include_str!("../ui/dialogs/export_wav_dialog.sl
 const HUMANIZE_DIALOG: &str = include_str!("../ui/dialogs/humanize_dialog.slint");
 const UNDO_TREE_MODAL: &str = include_str!("../ui/dialogs/undo_tree_modal.slint");
 
-/// 全仓 `.slint` 清单：与 `round8` / `round9` / `round10`、
-/// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST`
-/// 同一份 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
-const SLINT_FILES: &[(&str, &str)] = &[
-    ("app.slint", APP),
-    ("transport.slint", TRANSPORT),
-    ("module_actions.slint", MODULE_ACTIONS),
-    ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    ("tokens.slint", include_str!("../ui/tokens.slint")),
-    ("workspace/session_view.slint", SESSION_VIEW),
-    ("workspace/arrangement_view.slint", ARRANGEMENT),
-    ("workspace/song_overview_panel.slint", SONG_OVERVIEW),
-    ("console/console_tabs.slint", CONSOLE_TABS),
-    ("console/piano_roll.slint", PIANO_ROLL),
-    ("console/mixer_console.slint", MIXER_CONSOLE),
-    ("console/device_rack.slint", DEVICE_RACK),
-    (
-        "console/asset_pool_panel.slint",
-        include_str!("../ui/console/asset_pool_panel.slint"),
-    ),
-    ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER),
-    ("dialogs/macro_panel.slint", MACRO_PANEL),
-    ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG),
-    ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG),
-    ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL),
-];
+// ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
+// 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
+// 的唯一登记是 `yeban_app::elements::SLINT_MANIFEST`；需要全仓语料时从它派生，
+// ⛔ 不许再手写第二份名单。
 
 /// 从标记行开始取 `count` 行。⛔ 刻意用 `lines()` 逐行拼接，不用字节算术切片：
 /// 上游 `39c9d2e0` 刚修过 `round9` 判据在 Windows CRLF 检出下

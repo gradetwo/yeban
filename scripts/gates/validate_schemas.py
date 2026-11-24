@@ -95,6 +95,86 @@ def rel(path: pathlib.Path) -> str:
         return str(path)
 
 
+def verify_manifest_counts(manifest_path: Path, doc: dict, problems: list[str]) -> None:
+    """复算清单的**派生计数**并与登记值对账（T-FIX-327：计数生成口径从文档搬进门禁）。
+
+    为什么需要这一步: `assets/samples/manifest.json` 的 `counts` 与
+    `instruments[].file_count/total_bytes` 是**生成器在上游 walk 时算出的派生值**,
+    生成器原文只存在于 `docs/ledger/samples-attribution-notes.md` 的附录里 ——
+    登记事实（`items[]`）后来被逐条修订（许可副本、SFZ 修复都会改 size_bytes）,
+    派生值却没人重算, 于是漂移**不会让任何门禁变红**: 实测 `files_registered`
+    登记 20594 而 `items[]` 实有 20593（karoryfer-big-rusty-drums 差 1 条）,
+    另有三款乐器的 `total_bytes` 与 items 字节和不符。
+
+    ⇒ 口径（与文档生成器同一套算术, 但**只用仓内事实复算**）:
+      - `counts.files_registered` = `len(items)`; `bytes_registered` = items 的 size_bytes 和;
+      - `counts.instruments_registered/excluded` = `len(instruments)/len(excluded)`;
+      - `counts.files_excluded/bytes_excluded` = excluded 的 file_count/total_bytes 和;
+      - `counts.files_upstream/bytes_upstream` = registered + excluded（用**复算后**的 registered）;
+      - 每款 `instruments[].file_count/total_bytes` = 该乐器 items 的条数 / 字节和
+        （按 `items[].instrument == instruments[].id` 归属）。
+    只判带 `counts` 块的清单（目前只有 samples）; 声明了的键才判, 缺键不判。
+    ⚠ `instruments[].fingerprint` **不在**复算范围: 它是按上游 walk 计算的来源指纹,
+    与当前 items 复算不符的五款已在清单的 `counts_reconciled_note` 里登记为待办,
+    ⛔ 不许在这里按 items 擅自重算冒充上游指纹。
+    """
+    counts = doc.get("counts")
+    if not isinstance(counts, dict):
+        return
+    items = [i for i in doc.get("items", []) if isinstance(i, dict)]
+    instruments = [i for i in doc.get("instruments", []) if isinstance(i, dict)]
+    excluded = [e for e in doc.get("excluded", []) if isinstance(e, dict)]
+
+    def size_of(entry: dict) -> int:
+        size = entry.get("size_bytes")
+        return size if isinstance(size, int) else 0
+
+    def expect(key: str, actual: int) -> None:
+        declared = counts.get(key)
+        if isinstance(declared, int) and declared != actual:
+            problems.append(
+                f"{rel(manifest_path)}: counts.{key} 登记 {declared}, 按 items[]/excluded[] "
+                f"复算 {actual} —— 计数是派生值, 必须与登记事实一致（生成口径见本函数）"
+            )
+
+    files_registered = len(items)
+    bytes_registered = sum(size_of(i) for i in items)
+    files_excluded = sum(
+        e.get("file_count") if isinstance(e.get("file_count"), int) else 0 for e in excluded
+    )
+    bytes_excluded = sum(
+        e.get("total_bytes") if isinstance(e.get("total_bytes"), int) else 0 for e in excluded
+    )
+    expect("files_registered", files_registered)
+    expect("bytes_registered", bytes_registered)
+    expect("instruments_registered", len(instruments))
+    expect("instruments_excluded", len(excluded))
+    expect("files_excluded", files_excluded)
+    expect("bytes_excluded", bytes_excluded)
+    expect("files_upstream", files_registered + files_excluded)
+    expect("bytes_upstream", bytes_registered + bytes_excluded)
+
+    per_instrument: dict[str, list[int]] = {}
+    for item in items:
+        slot = per_instrument.setdefault(item.get("instrument"), [0, 0])
+        slot[0] += 1
+        slot[1] += size_of(item)
+    for inst in instruments:
+        actual_files, actual_bytes = per_instrument.get(inst.get("id"), [0, 0])
+        declared_files = inst.get("file_count")
+        if isinstance(declared_files, int) and declared_files != actual_files:
+            problems.append(
+                f"{rel(manifest_path)}: instruments[{inst.get('id')}].file_count 登记 "
+                f"{declared_files}, 按 items[] 复算 {actual_files} —— 派生值必须与登记事实一致"
+            )
+        declared_bytes = inst.get("total_bytes")
+        if isinstance(declared_bytes, int) and declared_bytes != actual_bytes:
+            problems.append(
+                f"{rel(manifest_path)}: instruments[{inst.get('id')}].total_bytes 登记 "
+                f"{declared_bytes}, 按 items[] 复算 {actual_bytes} —— 派生值必须与登记事实一致"
+            )
+
+
 def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
     """校验仓库里**自己的**资产清单, 并逐项重算 SHA-256 与磁盘字节对账。
 
@@ -104,9 +184,11 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
     于是"资产必须登记许可与 SHA-256"(AGENTS.md 红线 9)这条纪律**没有任何机械保护**:
     清单可以写错、可以漏项、可以指向不存在的文件, 而全部门禁依旧绿。
 
-    这里做两件事:
+    这里做三件事:
     1. 用 `assets.manifest.schema.json` 校验清单**本身**的结构;
-    2. **逐项重算 SHA-256 与 size_bytes**, 与磁盘上的真实字节比对 —— 这是"登记"与"事实"的对账。
+    2. **逐项重算 SHA-256 与 size_bytes**, 与磁盘上的真实字节比对 —— 这是"登记"与"事实"的对账;
+    3. **复算派生计数**（[`verify_manifest_counts`]）—— `counts` 与每款乐器的
+       file_count/total_bytes 必须与 `items[]` 当场复算一致（T-FIX-327）。
     """
     from jsonschema import Draft202012Validator
 
@@ -221,24 +303,31 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
         # 红线 2 是"许可合规", 而一条只写在清单里、没人读的白名单等于没有。
         # ⇒ 口径: 用**子清单自己声明的** `licence_whitelist` 逐条判, 并要求它与根清单该 category
         #   的 `allowed_licenses` **一致或为其子集**（两处声明不能各说各话）。
-        whitelist = doc.get("licence_whitelist")
+        #
+        # T-FIX-327 补漏: 此前只有**自带** `licence_whitelist` 的子清单才会被判 ——
+        # screenshots / brand 两份清单没有这个键, 于是它们的条目许可**从未被判过**,
+        # 尽管根清单给它们声明了 `allowed_licenses`（brand 甚至根本不在根清单里,
+        # 已在本单补上指针）。⇒ 子清单没自带时, 以根清单该 category 的
+        # `allowed_licenses` 为白名单判据; 两处都缺（如 models）才跳过。
+        # ⚠ 不依赖作用域里的 `root_doc`（它只在处理根清单时被赋值, 子清单轮次可能是 None ——
+        # 第一版就踩了这个坑）。这里**自己加载**根清单, 让校验与调用顺序无关。
+        root_manifest = REPO / "assets" / "manifest.json"
+        root_of_truth = root_doc
+        if not isinstance(root_of_truth, dict) and root_manifest.is_file():
+            try:
+                root_of_truth = json.loads(root_manifest.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                root_of_truth = None
+        root_lists = {
+            entry.get("category"): entry.get("allowed_licenses")
+            for entry in (root_of_truth or {}).get("sub_manifests", [])
+        }
+        root_allowed = root_lists.get(doc.get("category"))
+        own_whitelist = doc.get("licence_whitelist")
+        whitelist = own_whitelist if own_whitelist is not None else root_allowed
         if whitelist is not None:
-            # ⚠ 不依赖作用域里的 `root_doc`（它只在处理根清单时被赋值, 子清单轮次可能是 None ——
-            # 第一版就踩了这个坑）。这里**自己加载**根清单, 让校验与调用顺序无关。
-            root_manifest = REPO / "assets" / "manifest.json"
-            root_of_truth = root_doc
-            if not isinstance(root_of_truth, dict) and root_manifest.is_file():
-                try:
-                    root_of_truth = json.loads(root_manifest.read_text(encoding="utf-8"))
-                except json.JSONDecodeError:
-                    root_of_truth = None
-            root_lists = {
-                entry.get("category"): entry.get("allowed_licenses")
-                for entry in (root_of_truth or {}).get("sub_manifests", [])
-            }
-            root_allowed = root_lists.get(doc.get("category"))
-            if root_allowed is not None:
-                extra = sorted(set(whitelist) - set(root_allowed))
+            if own_whitelist is not None and root_allowed is not None:
+                extra = sorted(set(own_whitelist) - set(root_allowed))
                 if extra:
                     problems.append(
                         f"{rel(manifest_path)}: 子清单的 licence_whitelist 含根清单 "
@@ -309,6 +398,7 @@ def verify_repo_asset_manifests(schemas: dict, problems: list[str]) -> None:
                 )
                 continue
             checked += 1
+        verify_manifest_counts(manifest_path, doc, problems)
         note = f"(另有 {optional_missing} 项 optional 资产未随仓库分发)" if optional_missing else ""
         print(f"[ok] {rel(manifest_path)}: {checked}/{len(items)} 条资产的 SHA-256 与磁盘一致{note}")
 
