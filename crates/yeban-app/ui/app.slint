@@ -827,7 +827,13 @@ export component MainWindow inherits Window {
     in-out property <string> sidechain-key-label: @tr("侧链键源: 无 (点击切换)");
     in-out property <[color]> song-overview-band-colors: [];
     in-out property <int> song-overview-band-solo: -1;
-    in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
+    // T-FIX-372：高度臂不能读 `self.height` —— Slint 布局下沉会把它编译为根
+    // VerticalLayout 布局缓存 1 号格的高度（= 窗口高 − 40px，实测翻转点在窗口高
+    // 1120px 处），1920×1080 时读到 1040px < 1080px，于是任何宽度下都翻不过来；
+    // `root.height` 同理（各弹窗的同款表达式也读缓存）。宽度臂不动（它直读
+    // WindowItem.width）。窗口真高 = key-handler 的 y + 高：该 FocusScope 占满
+    // 顶栏以下整块区域（y = 1 号格起点，底边即窗口底边），故高度臂改读两者之和。
+    in-out property <bool> song-overview-collapsed: self.width < 1920px || key-handler.absolute-position.y + key-handler.height < 1080px;
     in-out property <[float]> song-overview-density-duty: [];
     in-out property <[float]> song-overview-density-perc: [];
     in-out property <[float]> song-overview-density-pitched: [];
