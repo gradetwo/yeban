@@ -4583,7 +4583,8 @@ mod tests {
                 && let ClipContent::Midi { notes } = &mut entry.content
             {
                 notes.clear();
-                notes.insert(EntityId::new(), MidiNote::new(EntityId::new(), 0, 60, 960));
+                let note_id = EntityId::new();
+                notes.insert(note_id, MidiNote::new(note_id, 0, 60, 960));
             }
         }
         project.tracks.get_mut(&lead).expect("Lead").sampler = Some(yeban_model::SamplerBinding {
