@@ -1377,10 +1377,13 @@ mod win_acl {
 
     fn current_sid(path: &Path) -> Result<CurrentSid, SecurityError> {
         let mut token: HANDLE = null_mut();
+        // SAFETY: `GetCurrentProcess()` returns the pseudo-handle for the current process,
+        // and `&mut token` is a valid out-pointer for `OpenProcessToken`.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
             return Err(last_error(path, "OpenProcessToken 失败"));
         }
         let result = current_sid_inner(token, path);
+        // SAFETY: `token` was opened by `OpenProcessToken` above and is closed exactly once.
         unsafe {
             CloseHandle(token);
         }
@@ -1389,6 +1392,7 @@ mod win_acl {
 
     fn current_sid_inner(token: HANDLE, path: &Path) -> Result<CurrentSid, SecurityError> {
         let mut needed = 0u32;
+        // SAFETY: Passing a null buffer with length 0 queries the required byte size into `needed`.
         let status = unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut needed) };
         if status == 0 && needed == 0 {
             return Err(last_error(path, "GetTokenInformation(TokenUser) 失败"));
@@ -1396,6 +1400,7 @@ mod win_acl {
         let units = (needed as usize).div_ceil(size_of::<usize>()).max(1);
         let mut buffer = vec![0usize; units];
         let mut written = 0u32;
+        // SAFETY: `buffer` is usize-aligned and has at least `needed` writable bytes.
         if unsafe {
             GetTokenInformation(
                 token,
@@ -1411,6 +1416,8 @@ mod win_acl {
         if written < size_of::<TOKEN_USER>() as u32 {
             return Err(io_error(path, "TokenUser 返回长度不足"));
         }
+        // SAFETY: `buffer` is usize-aligned (>= align_of::<TOKEN_USER>()) and `GetTokenInformation`
+        // wrote at least `size_of::<TOKEN_USER>()` initialized bytes into it.
         let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
         if user.User.Sid.is_null() {
             return Err(io_error(path, "TokenUser 返回空 SID"));
@@ -1447,7 +1454,9 @@ mod win_acl {
             path: path.display().to_string(),
             source,
         })?;
+        // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain Win32 C struct where all-zero is valid.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `file_handle(&file)` is a live Win32 file handle and `&mut info` is valid.
         if unsafe { GetFileInformationByHandle(file_handle(&file), &mut info) } == 0 {
             return Err(last_error(path, "GetFileInformationByHandle 失败"));
         }
@@ -1495,6 +1504,7 @@ mod win_acl {
         path: &Path,
     ) -> Result<(), SecurityError> {
         let user = current_sid(path)?;
+        // SAFETY: `EXPLICIT_ACCESS_W` is a plain Win32 C struct where all-zero is valid.
         let mut entry: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
         entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE;
         entry.grfAccessMode = GRANT_ACCESS;
@@ -1506,10 +1516,13 @@ mod win_acl {
         entry.Trustee.ptstrName = user.sid as *mut u16;
 
         let mut new_acl: *mut ACL = null_mut();
+        // SAFETY: `&entry` points to 1 initialized `EXPLICIT_ACCESS_W` whose SID outlives this call,
+        // and `&mut new_acl` receives the `LocalAlloc`-allocated ACL.
         let status = unsafe { SetEntriesInAclW(1, &entry, null(), &mut new_acl) };
         if status != 0 {
             return Err(status_error(path, "SetEntriesInAclW 失败", status));
         }
+        // SAFETY: `handle` is a valid open file handle and `new_acl` was returned by `SetEntriesInAclW`.
         let status = unsafe {
             SetSecurityInfo(
                 handle,
@@ -1522,6 +1535,7 @@ mod win_acl {
             )
         };
         if !new_acl.is_null() {
+            // SAFETY: `new_acl` was allocated by `SetEntriesInAclW` and is freed exactly once.
             unsafe {
                 LocalFree(new_acl as HLOCAL);
             }
@@ -1538,6 +1552,7 @@ mod win_acl {
         let user = current_sid(path)?;
         let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
         let mut dacl: *mut ACL = null_mut();
+        // SAFETY: `handle` is a valid open file handle; `dacl` and `descriptor` are valid out-pointers.
         let status = unsafe {
             GetSecurityInfo(
                 handle,
@@ -1555,6 +1570,7 @@ mod win_acl {
         }
         let result = is_owner_only_dacl(path, descriptor, dacl, &user);
         if !descriptor.is_null() {
+            // SAFETY: `descriptor` was allocated by `GetSecurityInfo` and is freed exactly once.
             unsafe {
                 LocalFree(descriptor as HLOCAL);
             }
@@ -1574,6 +1590,7 @@ mod win_acl {
         }
         let mut control = 0u16;
         let mut revision = 0u32;
+        // SAFETY: `descriptor` is non-null and valid for the duration of `is_owner_only_dacl`.
         if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
             return Err(last_error(path, "GetSecurityDescriptorControl 失败"));
         }
@@ -1584,6 +1601,7 @@ mod win_acl {
         let mut present = 0i32;
         let mut defaulted = 0i32;
         let mut dacl_from_descriptor: *mut ACL = null_mut();
+        // SAFETY: `descriptor` is valid and all out-pointers are stack-allocated.
         if unsafe {
             GetSecurityDescriptorDacl(
                 descriptor,
@@ -1608,7 +1626,9 @@ mod win_acl {
         }
 
         // 拒绝任何继承 ACE；protected 标志之外再钉一层。
+        // SAFETY: `ACL_SIZE_INFORMATION` is a plain Win32 C struct where all-zero is valid.
         let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `dacl` is non-null and owned by `descriptor`, and `info` matches `AclSizeInformation`.
         if unsafe {
             GetAclInformation(
                 dacl,
@@ -1622,9 +1642,11 @@ mod win_acl {
         }
         for index in 0..info.AceCount {
             let mut ace: *mut core::ffi::c_void = null_mut();
+            // SAFETY: `index < info.AceCount` for the valid `dacl`.
             if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
                 return Err(last_error(path, "GetAce 失败"));
             }
+            // SAFETY: Every ACE returned by `GetAce` starts with an initialized `ACE_HEADER`.
             let header = unsafe { &*(ace as *const ACE_HEADER) };
             if header.AceFlags & (INHERITED_ACE as u8) != 0 {
                 return Ok(false);
@@ -1633,6 +1655,7 @@ mod win_acl {
 
         let mut count = 0u32;
         let mut entries: *mut EXPLICIT_ACCESS_W = null_mut();
+        // SAFETY: `dacl` is valid; `count` and `entries` are valid out-pointers.
         let status = unsafe { GetExplicitEntriesFromAclW(dacl, &mut count, &mut entries) };
         if status != 0 {
             return Err(status_error(
@@ -1644,6 +1667,7 @@ mod win_acl {
         let mut has_owner = false;
         let mut has_other_allow = false;
         for index in 0..count as usize {
+            // SAFETY: `GetExplicitEntriesFromAclW` populated `count` contiguous `EXPLICIT_ACCESS_W` items.
             let entry = unsafe { &*entries.add(index) };
             if entry.grfAccessMode == DENY_ACCESS {
                 continue;
@@ -1653,6 +1677,7 @@ mod win_acl {
                 continue;
             }
             let sid = entry.Trustee.ptstrName as PSID;
+            // SAFETY: `user.sid` is backed by `user.buffer` and `sid` is a valid non-null ACE SID.
             if unsafe { EqualSid(user.sid, sid) } == 0 {
                 has_other_allow = true;
             } else if entry.grfAccessPermissions & FILE_GENERIC_READ == FILE_GENERIC_READ {
@@ -1660,6 +1685,7 @@ mod win_acl {
             }
         }
         if !entries.is_null() {
+            // SAFETY: `entries` was allocated by `GetExplicitEntriesFromAclW` and is freed once.
             unsafe {
                 LocalFree(entries as HLOCAL);
             }
@@ -1687,6 +1713,7 @@ mod win_acl {
             .chain(std::iter::once(0))
             .collect();
         let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+        // SAFETY: `source_wide` and `target_wide` are NUL-terminated UTF-16 buffers valid for this call.
         if unsafe { MoveFileExW(source_wide.as_ptr(), target_wide.as_ptr(), flags) } == 0 {
             return Err(last_error(target, "MoveFileExW 原子替换失败"));
         }

@@ -1142,6 +1142,10 @@ mod tests {
             })
             .collect();
         on_disk.sort();
+        assert!(
+            !on_disk.is_empty() && on_disk.len() >= 1,
+            "assets/presets/ 目录必须非空（R93 非真空下界）"
+        );
         let mut embedded_files: Vec<String> = FACTORY_PRESETS
             .iter()
             .map(|(id, _)| {
