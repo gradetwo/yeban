@@ -397,7 +397,7 @@ yeban-ui-test-port = { workspace = true }
 # ⛔ 不进 `cargo build` / `--release` 的依赖图（核验：`cargo tree -p yeban-app -e normal`
 # 里没有第二个 `yeban-app`）。`UndoPort` 是具体类型而非 trait ⇒ "commit_ops 返回 Err"
 # 的替身只能靠这个编译门，否则那条可见回执出口没法被真的走一遍。
-yeban-app = { path = ".", features = ["test-support"] }
+yeban-app = { workspace = true, features = ["test-support"] }
 
 # ---------------------------------------------------------------------------
 # ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)
