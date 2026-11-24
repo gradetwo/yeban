@@ -534,37 +534,3 @@ fn the_grid_right_edge_is_the_line_count_times_one_bar() {
     assert_eq!(host::ruler_span_ticks(0, 3_840), 0);
     assert_eq!(host::ruler_span_ticks(usize::MAX, u64::MAX), u64::MAX);
 }
-
-/// 临时探针（T-FIX-356 收尾调试）：指针路径 vs 回调路径，跑完即删。
-#[test]
-fn probe_ruler_pointer_path_tmp() {
-    let mut rig = Rig::new();
-    rig.port.refresh_tree(None).expect("重抓控件树");
-    let node = rig.port.tree().find_by_id(RULER).expect("ruler in tree");
-    eprintln!("PROBE ruler bounds: {:?}", node.bounds);
-    let (bx, by) = node.bounds.map(|b| (b.x, b.y)).unwrap_or((0, 0));
-    let (cx, cy) = (bx + 384, by + 11);
-    // 覆盖点击点的全部可寻址节点（自顶向下看谁挡在前面）。
-    for n in rig.port.tree().iter() {
-        if let Some(b) = n.bounds {
-            if cx >= b.x && cx < b.x + b.width as i32 && cy >= b.y && cy < b.y + b.height as i32 {
-                eprintln!("PROBE covers ({cx},{cy}): {} role={:?} bounds={:?}", n.id, n.role, b);
-            }
-        }
-    }
-    rig.ui().invoke_ruler_seek(384.0f32);
-    eprintln!(
-        "PROBE after direct invoke_ruler_seek(384): position={} journal={}",
-        rig.position(),
-        rig.journal_len()
-    );
-    for (lx, ly) in [(100.0, 11.0), (384.0, 5.0), (384.0, 11.0), (384.0, 20.0), (800.0, 11.0)] {
-        let before = rig.journal_len();
-        rig.click_ruler_at(lx, ly);
-        eprintln!(
-            "PROBE click ({lx},{ly}): position={} journal={} (before={before})",
-            rig.position(),
-            rig.journal_len()
-        );
-    }
-}
