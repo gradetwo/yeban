@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `36370fca629a2acc`
+- `Cargo.lock` SHA-256（前 16 位）: `70e840ecb580d6d2`
 - 外部依赖包数: **694**（不含 30 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -663,7 +663,7 @@
 | `winapi-util` | `0.1.11` | `Unlicense OR MIT` | 传递 | — |
 | `winapi-x86_64-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | 传递 | — |
 | `windowfunctions` | `0.1.1` | `MIT` | 传递 | — |
-| `windows` | `0.62.2` | `MIT OR Apache-2.0` | 传递 | — |
+| `windows` | `0.62.2` | `MIT OR Apache-2.0` | 直接 | `yeban-engine` |
 | `windows-collections` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-core` | `0.62.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-future` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |

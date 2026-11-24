@@ -46,7 +46,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     BufferSize, Device, Host, SampleFormat, StreamConfig, SupportedBufferSize,
     SupportedStreamConfigRange,
@@ -209,6 +209,17 @@ fn endpoint_token(text: &str) -> String {
 /// "流自己报失效"这一条与后端无关，调用方已经提前判掉；留在这里的只有两件必须读
 /// 后端的读数：默认端点换了没、点名设备还在不在。
 #[must_use]
+/// [`OutputStreamHandle::poll_endpoint`] 的本体：只在后端线程上执行。
+///
+/// Windows 上走自研枚举器（[`wasapi_output::poll_endpoint`]）：读数必须与**打开那条流**
+/// 用的是同一套 id 与同一份"什么算失效"的口径，而 cpal 的枚举器在本票之后已经不参与
+/// 输出腿了。
+#[cfg(windows)]
+fn poll_endpoint_here(opened_id: Option<&str>, opened_default: bool) -> EndpointHealth {
+    wasapi_output::poll_endpoint(opened_id, opened_default)
+}
+
+#[cfg(not(windows))]
 fn poll_endpoint_here(opened_id: Option<&str>, opened_default: bool) -> EndpointHealth {
     let host = cpal::default_host();
     if opened_default {
@@ -473,6 +484,20 @@ impl BackendErrorLog {
     /// 从这一时刻起，到达的错误回调重新计入**运行期**（`play` 之后用）。
     pub fn begin_run(&self) {
         self.stopping.store(false, Ordering::Release);
+    }
+
+    /// **端点失效读数作废**（T-FIX-409）：自研 WASAPI 腿在**同一条流**上原地重建
+    /// 成功之后调用。
+    ///
+    /// 为什么必须清：界面侧 1 Hz 看护读的就是 [`Self::endpoint_losses`]。若不清，
+    /// 一条已经重建好、正在出声的流会被判成 `Invalidated`，于是看护每秒再换一次流
+    /// —— 重建反倒成了抖动源。⚠ 只清这一档：`runtime` / `stop` 的累计次数是
+    /// "这条流出过多少事"的事实，⛔ 不清（清了就等于改写历史）。
+    pub fn clear_endpoint_loss(&self) {
+        // 先清种类再清次数：读者是"先读次数、后读种类"，且以 `lost > 0` 为前提，
+        // 这个顺序只会让中间态读成"还没失效"，⛔ 不会读出"失效但种类未知"。
+        self.endpoint_lost_kind.store(0, Ordering::Release);
+        self.endpoint_lost.store(0, Ordering::Release);
     }
 
     /// **端点失效**读数的 `(次数, 首条种类编号)`（T-FIX-225）。
@@ -787,6 +812,17 @@ pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
 }
 
 /// [`enumerate_output_devices`] 的本体：只在后端线程上执行。
+/// [`enumerate_output_devices`] 的本体：只在后端线程上执行。
+///
+/// Windows 上由自研 WASAPI 腿回答（[`wasapi_output::enumerate_outputs`]）：输出设备的
+/// 名字 / id / 混音格式必须与**打开那条流**读到的完全同源，否则"设置里选了 A、
+/// 实际开到 B"这类错位会在两套枚举之间悄悄发生。
+#[cfg(windows)]
+fn enumerate_output_devices_here() -> Result<Vec<DeviceInfo>, DeviceError> {
+    wasapi_output::enumerate_outputs()
+}
+
+#[cfg(not(windows))]
 fn enumerate_output_devices_here() -> Result<Vec<DeviceInfo>, DeviceError> {
     let host = cpal::default_host();
     let default_id = host
@@ -879,6 +915,11 @@ pub fn pick_named_device_index(names: &[String], want: &str) -> Option<usize> {
 /// - `Some(name)` ⇒ 在宿主枚举里按 [`pick_named_device_index`] 精确命中；
 ///   枚举不到 ⇒ [`DeviceError::NamedOutputDeviceUnavailable`]（点名，
 ///   ⛔ 不回退默认）；枚举本身被后端拒绝 ⇒ [`DeviceError::Backend`]。
+///
+/// ⚠ T-FIX-409 之后**只在非 Windows 上用**：Windows 的输出腿由
+/// [`wasapi_output::probe`] 选设备（同一份 [`pick_named_device_index`] 政策，
+/// 只是枚举器来自自研腿）。留着它是因为输入腿与非 Windows 输出腿仍走 cpal。
+#[cfg(not(windows))]
 fn select_output_device(host: &Host, want_name: Option<&str>) -> Result<Device, DeviceError> {
     let Some(want) = want_name else {
         return host
@@ -1127,6 +1168,16 @@ pub fn trace_output_negotiation(want: &EngineConfig) -> Vec<String> {
 }
 
 /// [`trace_output_negotiation`] 的本体：只在后端线程上执行。
+///
+/// Windows 上走自研腿同一个 `probe`（[`wasapi_output::trace_output`]）—— trace 里写
+/// 的设备与真正会被打开的设备**必然**是同一台（同一个函数算出来的）。
+#[cfg(windows)]
+#[must_use]
+fn trace_output_negotiation_here(want: &EngineConfig) -> Vec<String> {
+    wasapi_output::trace_output(want)
+}
+
+#[cfg(not(windows))]
 #[must_use]
 fn trace_output_negotiation_here(want: &EngineConfig) -> Vec<String> {
     let host = cpal::default_host();
@@ -1233,6 +1284,20 @@ fn describe(supported: &[SupportedStreamConfigRange]) -> String {
     }
     text
 }
+
+/// **自研 WASAPI 输出腿**（T-FIX-409，T-FIX-225/251 链的裁决 A）。
+///
+/// 存在的唯一理由：cpal 0.18.2 把 `IMMDeviceEnumerator` 缓存在**进程级**
+/// `OnceLock` 里（`cpal-0.18.2/src/host/wasapi/device.rs:1145`），没有失效/重建
+/// 入口 ⇒ 只要一条活着的 `IAudioClient` 跨过 `audiosrv` 重启，这个进程的
+/// `Activate` 就永远失败（`RPC_E_CHANGED_MODE`），只有新进程能恢复（251 的四组
+/// 对照实验）。本模块把枚举器**当一次性对象**用：每次枚举 / 打开 / 重建都新起一个，
+/// 用完即弃，"重建"于是等价于"新进程"。
+///
+/// 覆盖范围：Windows 上的**输出**腿（枚举、打开、渲染、重建、端点健康读数）。
+/// 输入腿与测试音的格式协商仍走 cpal —— 见模块文档的分工表。
+#[cfg(windows)]
+mod wasapi_output;
 
 /// 建流线程的 **COM 公寓**（Windows）。
 ///
@@ -1462,18 +1527,17 @@ mod apartment {
 mod backend {
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 
-    use cpal::traits::StreamTrait;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
-    use super::{BackendErrorLog, DeviceError, StreamCommand, apartment};
+    use super::{BackendErrorLog, StreamCommand, apartment};
 
     /// 交给后端线程做的一件事。回执由闭包自己捕获的通道送回。
     type Job = Box<dyn FnOnce() + Send + 'static>;
 
     /// 一条活得比建流调用更久的流：**只能**在后端线程上析构。
     struct Session {
-        stream: cpal::Stream,
+        stream: super::Hosted,
         commands: Receiver<StreamCommand>,
         errors: Arc<BackendErrorLog>,
     }
@@ -1514,7 +1578,7 @@ mod backend {
 
     /// 把一条已建好的流登记进后端线程（**只许**在后端线程上调用）。
     pub(super) fn register_session(
-        stream: cpal::Stream,
+        stream: super::Hosted,
         commands: Receiver<StreamCommand>,
         errors: Arc<BackendErrorLog>,
     ) {
@@ -1543,9 +1607,16 @@ mod backend {
     /// 后端线程主循环：先把公寓定成 MTA，再"服务流命令 → 取一件新活"轮转。
     fn run(jobs: Receiver<Job>, sessions: &Sessions) {
         // 公寓绑不上就退出：通道断开，之后每个 `dispatch` 都报 OwnerThread。
-        if apartment::Apartment::bind().is_err() {
+        //
+        // ⚠ 守卫必须**一直持有到线程结束**（T-FIX-409 修）：`Apartment` 的 `Drop` 会
+        // `CoUninitialize`，所以写成 `if Apartment::bind().is_err() { return }` 会在
+        // 绑成功的那一刻就把这间公寓拆掉 —— 之后本线程的每个 COM 调用都报
+        // `CO_E_NOTINITIALIZED(0x800401F0)`。cpal 自己会 `CoInitializeEx`，所以这条
+        // 错误在 251 的 cpal 腿上一直被掩盖着；自研 WASAPI 腿（[`wasapi_output`]）
+        // 不自己初始化、直接吃这条线程的公寓，于是第一次就把它撞出来了。
+        let Ok(_apartment) = apartment::Apartment::bind() else {
             return;
-        }
+        };
         ON_BACKEND.with(|flag| flag.set(true));
         loop {
             serve_sessions(sessions);
@@ -1567,12 +1638,12 @@ mod backend {
                 match guard[index].commands.try_recv() {
                     Ok(StreamCommand::Play(ack)) => {
                         guard[index].errors.begin_run();
-                        let result = guard[index].stream.play().map_err(DeviceError::Backend);
+                        let result = guard[index].stream.play();
                         let _ = ack.send(result);
                     }
                     Ok(StreamCommand::Pause(ack)) => {
                         guard[index].errors.begin_stop();
-                        let result = guard[index].stream.pause().map_err(DeviceError::Backend);
+                        let result = guard[index].stream.pause();
                         let _ = ack.send(result);
                     }
                     Ok(StreamCommand::Shutdown) => {
@@ -1821,15 +1892,39 @@ pub fn callback_gap_frames(
     let Some(previous) = previous_playback else {
         return 0;
     };
+    callback_gap_frames_for(
+        playback.checked_duration_since(previous),
+        expected_frames,
+        sample_rate,
+    )
+}
+
+/// **已经量出间隔**的跳跃帧数（纯函数；T-FIX-409）。
+///
+/// 为什么要有这一层：cpal 腿拿到的是 `StreamInstant`，自研 WASAPI 腿只有墙上时钟
+/// 测出的 [`Duration`] —— 但"多少帧算掉帧"的口径**只能有一份**，否则两条腿的
+/// xrun 读数会各说各话。于是口径落在这里，[`callback_gap_frames`] 只是它的
+/// "先做差"前缀。
+///
+/// 口径与 [`callback_gap_frames`] 逐位相同：
+/// - `elapsed = None`（没有参照 / 时钟回退）⇒ `0`；
+/// - `expected_frames == 0` 或 `sample_rate == 0` ⇒ `0`；
+/// - 否则 `elapsed × sample_rate` 取整帧后减去 `expected_frames`（饱和到 0）。
+#[must_use]
+pub fn callback_gap_frames_for(
+    elapsed: Option<Duration>,
+    expected_frames: usize,
+    sample_rate: u32,
+) -> u64 {
+    let Some(elapsed) = elapsed else {
+        return 0;
+    };
     let Ok(expected_frames) = u64::try_from(expected_frames) else {
         return 0;
     };
     if expected_frames == 0 || sample_rate == 0 {
         return 0;
     }
-    let Some(elapsed) = playback.checked_duration_since(previous) else {
-        return 0;
-    };
     let elapsed_frames = elapsed.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000;
     let elapsed_frames = u64::try_from(elapsed_frames).unwrap_or(u64::MAX);
     elapsed_frames.saturating_sub(expected_frames)
@@ -1881,8 +1976,24 @@ pub fn render_callback_observed(
     let channels = usize::from(channels.max(1));
     let expected_frames = data.len() / channels;
     let gap = observer.observe(info.timestamp().playback, expected_frames);
+    render_callback_with_gap(runtime, data, channels as u16, gap);
+}
+
+/// **已算出跳跃帧数**的输出回调体（T-FIX-409）：自研 WASAPI 腿没有
+/// `cpal::OutputCallbackInfo` 可递（时间戳由它自己的 [`wasapi_output::GapClock`] 从
+/// 墙上时钟取），但"先记账、再渲染"这一步必须与 cpal 腿**同一份**代码。
+///
+/// 于是这条腿不是"另一个回调"，而是同一个回调的**后半段**：
+/// [`render_callback_observed`] = 取时间戳 ⇒ 本函数；自研腿 = 取间隔 ⇒ 本函数。
+/// ⛔ 别把 `record_callback_gap` 抄第二份到自研腿里 —— 那样两边的 xrun 口径就会漂。
+pub fn render_callback_with_gap(
+    runtime: &mut EngineRuntime,
+    data: &mut [f32],
+    channels: u16,
+    gap: u64,
+) {
     runtime.record_callback_gap(gap);
-    render_callback(runtime, data, channels as u16);
+    render_callback(runtime, data, channels);
 }
 
 /// ⭐ **带采样率转换的输出回调状态**（T-FIX-72）：设备率 ≠ 工程率时，
@@ -2022,6 +2133,18 @@ pub fn render_callback_converted_observed(
     let channels_usize = usize::from(channels.max(1));
     let expected_frames = data.len() / channels_usize;
     let gap = observer.observe(info.timestamp().playback, expected_frames);
+    render_callback_converted_with_gap(state, data, channels, gap);
+}
+
+/// **已算出跳跃帧数**的异率输出回调体（T-FIX-409）—— 与
+/// [`render_callback_with_gap`] 同款：两条腿共用"先记账、再渲染"这一段，
+/// 只有"跳跃帧数从哪来"不同。
+pub fn render_callback_converted_with_gap(
+    state: &mut ConvertedOutput,
+    data: &mut [f32],
+    channels: u16,
+    gap: u64,
+) {
     state.runtime.record_callback_gap(gap);
     render_callback_converted(state, data, channels);
 }
@@ -2147,8 +2270,46 @@ struct StreamInfo {
 
 /// 建流线程产出的**流 + 读数**：流不出后端线程，读数经 channel 送出去。
 struct OpenedStream {
-    stream: cpal::Stream,
+    stream: Hosted,
     info: StreamInfo,
+}
+
+/// **真正持有设备的那一半流**：谁建的流，就在谁的线程上启停与析构。
+///
+/// 两条腿的差别只在"由谁建"：
+///
+/// | 变体 | 谁建 | 用在哪 |
+/// | --- | --- | --- |
+/// | [`Self::Cpal`] | cpal | 输入腿（全平台）、**非 Windows** 的输出腿 |
+/// | [`Self::Wasapi`] | [`wasapi_output`] | Windows 输出腿（T-FIX-409） |
+///
+/// ⚠ 两个变体的内部对象都**不是** `Send`/跨线程可用的普通数据：`cpal::Stream` 只能在
+/// 建它的线程上启停析构，自研腿的 `StreamHandle` 则自带渲染线程（命令通道是 `Send`）。
+/// 它们一律留在 [`backend`] 的线程上（或自研腿自己的渲染线程上），⛔ 不进调用方的句柄。
+enum Hosted {
+    Cpal(cpal::Stream),
+    #[cfg(windows)]
+    Wasapi(wasapi_output::StreamHandle),
+}
+
+impl Hosted {
+    /// 启流（`cpal` 的流默认是停的，必须显式启）。
+    fn play(&self) -> Result<(), DeviceError> {
+        match self {
+            Self::Cpal(stream) => stream.play().map_err(DeviceError::Backend),
+            #[cfg(windows)]
+            Self::Wasapi(handle) => handle.play(),
+        }
+    }
+
+    /// 停流。
+    fn pause(&self) -> Result<(), DeviceError> {
+        match self {
+            Self::Cpal(stream) => stream.pause().map_err(DeviceError::Backend),
+            #[cfg(windows)]
+            Self::Wasapi(handle) => handle.pause(),
+        }
+    }
 }
 
 /// 一条流收到的控制命令（[`HostedStream`] 是唯一发送端）。
@@ -2212,12 +2373,72 @@ impl Drop for HostedStream {
     }
 }
 
-/// 在**后端线程**上完成枚举、协商与建流（T-FIX-225 返工的落点）。
+/// 在**后端线程**上完成选设备、协商与建流 —— **Windows 输出腿**（自研 WASAPI，
+/// T-FIX-409）。
+///
+/// 与下面的 cpal 腿只差一件事：**枚举器不缓存**。`probe` 与 `open` 各自新建一个
+/// `IMMDeviceEnumerator`，流自己的渲染线程在重建时再新建一个 ⇒ `audiosrv` 重启之后
+/// 不用换进程就能恢复出声（251 的四组对照实验证明 cpal 腿做不到：进程级 `OnceLock`
+/// 里的那份枚举器没有失效入口）。
+///
+/// 协商口径一字未改：仍然只把"设备当前的混音格式"当成唯一一条可协商范围（共享模式
+/// 的诚实答案），引擎恒按 f32 渲染，设备侧的 16/24/32 位换算只在
+/// [`wasapi_output`] 的 `write_frames` 一处发生。
+#[cfg(windows)]
+fn open_stream_on_this_thread(
+    want: &EngineConfig,
+    runtime: Box<EngineRuntime>,
+    device_name: Option<&str>,
+) -> Result<OpenedStream, DeviceError> {
+    let target = wasapi_output::probe(device_name)?;
+    // T-FIX-225 的口径：打开这一刻就记下"哪台设备、是不是默认"，之后判端点只能靠它。
+    let opened_default = device_name.is_none();
+    let (negotiated, negotiation_trace) = negotiate_traced(&target.supported, want);
+    let negotiated = negotiated?;
+    let channels = negotiated.channels;
+    let backend_errors = Arc::new(BackendErrorLog::new());
+    let info = StreamInfo {
+        device_name: target.device_name.clone(),
+        negotiated,
+        negotiation_trace,
+        backend_errors: Arc::clone(&backend_errors),
+        device_id: target.device_id.clone(),
+        opened_default,
+    };
+
+    // 两条腿与 cpal 版同构：等率直通 / 异率转换。差别只在"跳跃帧数从哪来"——
+    // 自研腿没有 `cpal::OutputCallbackInfo`，由渲染线程的墙上时钟给（同一口径的
+    // 纯函数算，见 [`callback_gap_frames_for`]）。
+    let converter = crate::resample::RateConverter::new(
+        info.negotiated.source_rate,
+        info.negotiated.sample_rate,
+        channels,
+    );
+    let fill: wasapi_output::Fill = if let Some(converter) = converter {
+        let mut state = ConvertedOutput::from_converter(*runtime, converter, channels);
+        Box::new(move |data: &mut [f32], channels: u16, gap: u64| {
+            render_callback_converted_with_gap(&mut state, data, channels, gap);
+        })
+    } else {
+        let mut runtime = *runtime;
+        Box::new(move |data: &mut [f32], channels: u16, gap: u64| {
+            render_callback_with_gap(&mut runtime, data, channels, gap);
+        })
+    };
+    let stream = wasapi_output::open(target, fill, backend_errors)?;
+    Ok(OpenedStream {
+        stream: Hosted::Wasapi(stream),
+        info,
+    })
+}
+
+/// 在**后端线程**上完成枚举、协商与建流（T-FIX-225 返工的落点；**非 Windows** 的 cpal 腿）。
 ///
 /// ⚠ 只由 [`backend`] 的线程调用：那条线程的 COM 公寓被显式定成 MTA
 /// （[`apartment::Apartment::bind`]），而且 cpal 的进程级 `IMMDeviceEnumerator`
 /// 也属于这间公寓 —— 这是本函数能成功的前提。在界面线程上直接调用会重新
 /// 踩回 `RPC_E_CHANGED_MODE`（`0x80010106`，本单的起因）。
+#[cfg(not(windows))]
 fn open_stream_on_this_thread(
     want: &EngineConfig,
     mut runtime: Box<EngineRuntime>,
@@ -2525,7 +2746,7 @@ struct InputStreamInfo {
 
 /// 捕获流 + 读数：流不出后端线程。
 struct OpenedInput {
-    stream: cpal::Stream,
+    stream: Hosted,
     info: InputStreamInfo,
 }
 
@@ -2567,7 +2788,7 @@ fn open_input_on_backend(
     )?;
 
     Ok(OpenedInput {
-        stream,
+        stream: Hosted::Cpal(stream),
         info: InputStreamInfo {
             device_name,
             negotiated,
@@ -2754,11 +2975,44 @@ struct TestToneInfo {
 
 /// 测试音流 + 读数。
 struct OpenedTestTone {
-    stream: cpal::Stream,
+    stream: Hosted,
     info: TestToneInfo,
 }
 
-/// [`play_test_tone`] 的本体：只在后端线程上执行。
+/// [`play_test_tone`] 的本体：只在后端线程上执行 —— **Windows**（自研 WASAPI，T-FIX-409）。
+///
+/// 与 cpal 腿的两点差别，都是"自研腿能做的更少假设"：
+///
+/// 1. 混音格式不是 f32（16/24/32 位整数）时**不再拒绝**：设备侧换算已在
+///    [`wasapi_output`] 的 `write_frames` 一处完成，测试音照样放得出来。
+///    ⇒ 这条赢回的能力是"16 位共享模式设备也能测"。
+/// 2. 配置口径仍是**设备混音格式**（采样率/通道数随设备），⛔ 不走工程协商 ——
+///    测试音测的是"这台设备本身通不通"。
+#[cfg(windows)]
+fn open_test_tone_on_backend(device_name: Option<&str>) -> Result<OpenedTestTone, DeviceError> {
+    let target = wasapi_output::probe(device_name)?;
+    let sample_rate = target.sample_rate;
+    let channels = target.channels;
+    let backend_errors = Arc::new(BackendErrorLog::new());
+    let mut state = TestToneState::new(sample_rate);
+    let fill: wasapi_output::Fill = Box::new(move |data: &mut [f32], channels: u16, _gap: u64| {
+        test_tone_callback(&mut state, data, channels);
+    });
+    let info = TestToneInfo {
+        device_name: target.device_name.clone(),
+        sample_rate,
+        channels,
+        backend_errors: Arc::clone(&backend_errors),
+    };
+    let stream = wasapi_output::open(target, fill, backend_errors)?;
+    Ok(OpenedTestTone {
+        stream: Hosted::Wasapi(stream),
+        info,
+    })
+}
+
+/// [`play_test_tone`] 的本体：只在后端线程上执行（**非 Windows** 的 cpal 腿）。
+#[cfg(not(windows))]
 fn open_test_tone_on_backend(device_name: Option<&str>) -> Result<OpenedTestTone, DeviceError> {
     let host = cpal::default_host();
     let device: Device = select_output_device(&host, device_name)?;
@@ -2790,7 +3044,7 @@ fn open_test_tone_on_backend(device_name: Option<&str>) -> Result<OpenedTestTone
         Some(STREAM_OPEN_TIMEOUT),
     )?;
     Ok(OpenedTestTone {
-        stream,
+        stream: Hosted::Cpal(stream),
         info: TestToneInfo {
             device_name,
             sample_rate: config.sample_rate(),
@@ -3360,6 +3614,93 @@ mod tests {
             "REPRO fresh-thread-after-poison: {:?}",
             fresh.join().unwrap()
         );
+    }
+
+    /// **判据 D**（T-FIX-409，真机）：从**公开句柄**看，`audiosrv` 重启之后这条流
+    /// 自己回来了 —— `poll_endpoint()` 回到 [`EndpointHealth::Ok`]、失效读数归零，
+    /// 而错误计数里留下了"确实死过一次"的痕迹。
+    ///
+    /// 为什么要看这一面：界面侧 1 Hz 端点看护读的就是 `poll_endpoint()`。
+    /// 自研腿在**同一条流**上重建成功之后若不清失效读数，看护会把一条正在出声的
+    /// 流判成 `Invalidated` 并每秒重建一次 —— 重建反成了抖动源。
+    ///
+    /// 红对照（两条都能让它变红）：
+    /// 1. 去掉重建成功那一刻的 `clear_endpoint_loss()` ⇒ 一直停在 `Invalidated`；
+    /// 2. 掐掉 [`StreamThread::on_lost`] 的重建分支 ⇒ 同样停在 `Invalidated`。
+    ///
+    /// `cargo test -p yeban-engine --lib output_stream_endpoint_health_recovers_after_an_audio_service_restart -- --ignored --nocapture`
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "真机判据：需要管理员权限停/启 audiosrv"]
+    fn output_stream_endpoint_health_recovers_after_an_audio_service_restart() {
+        let handle = match open_output(&EngineConfig::default(), default_runtime()) {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("SKIP：开不出默认输出设备（{error}）");
+                return;
+            }
+        };
+        handle.play().expect("启流必须成功");
+        assert_eq!(
+            handle.poll_endpoint(),
+            EndpointHealth::Ok,
+            "启流之后端点必须是健康的"
+        );
+        super::wasapi_output::restart_audio_service_for_tests().expect("重启 audiosrv 必须成功");
+        let began = std::time::Instant::now();
+        let budget = Duration::from_secs(30);
+        let mut saw_loss = false;
+        // 「恢复」= **连续 1 s** 读到 `Ok`。⛔ 不能一读到 `Ok` 就过：服务启动
+        // 过程中刚重建好的流会被再打一次（实测 t≈1.5 s 读数 `(6, 9)`、
+        // t≈2.3 s 才真正稳住），一读到 `Ok` 就判过会把过渡期当成恢复。
+        let mut stable_since: Option<std::time::Instant> = None;
+        let mut health = handle.poll_endpoint();
+        let mut recovered: Option<Duration> = None;
+        while began.elapsed() < budget {
+            health = handle.poll_endpoint();
+            if health.needs_rebuild() {
+                saw_loss = true;
+                stable_since = None;
+            } else if matches!(health, EndpointHealth::Ok) {
+                let since = *stable_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= Duration::from_secs(1) {
+                    recovered = Some(began.elapsed());
+                    break;
+                }
+            } else {
+                stable_since = None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let elapsed = recovered.unwrap_or_else(|| began.elapsed());
+        eprintln!(
+            "RECOVERED after {:?} ms, health={:?}, backend_errors={}",
+            recovered.map(|elapsed| elapsed.as_millis()),
+            health,
+            handle.backend_errors()
+        );
+        assert!(
+            recovered.is_some(),
+            "25 s 内必须稳定回到 Ok（实际 {health:?}）"
+        );
+        assert!(
+            saw_loss,
+            "重启期间必须真的读到过端点失效（否则这条判据没被打到）"
+        );
+        assert!(
+            matches!(health, EndpointHealth::Ok),
+            "重建成功后端点读数必须回到 Ok，实际 {health:?}"
+        );
+        assert!(
+            elapsed < budget,
+            "恢复耗时 {} ms 必须远小于 Windows 内部超时（约 579000 ms）",
+            elapsed.as_millis()
+        );
+        assert!(
+            handle.backend_errors() > 0,
+            "错误计数必须留下这次失效的痕迹（否则不是'死而复生'）"
+        );
+        drop(handle);
     }
 
     #[test]

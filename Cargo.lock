@@ -7233,6 +7233,7 @@ dependencies = [
  "libm",
  "rtrb",
  "thiserror 2.0.21",
+ "windows",
  "yeban-dsp",
  "yeban-model",
  "yeban-record",

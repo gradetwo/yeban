@@ -20,7 +20,9 @@ path = "src/lib.rs"
 [features]
 default = ["device"]
 # 打开 cpal 声卡宿主 (`src/device.rs` 与 `src/rt.rs` 里的设备相关部分)。
-device = ["dep:cpal"]
+# `dep:windows` 只在 Windows 上真的会被构建（见下面的 target 段）：它是输出腿的
+# 自研 WASAPI 后端（T-FIX-409）的接口绑定。
+device = ["dep:cpal", "dep:windows"]
 
 [dependencies]
 # 版本全部来自根 [workspace.dependencies] 的登记, 本 crate **不**自带版本号, 也不需要 hoist。
@@ -62,6 +64,26 @@ yeban-model.workspace = true
 # 为何不重：`yeban-sfz` 的外部依赖只有 `thiserror`（见其 Cargo.toml）⇒ 不引入重依赖。
 yeban-sfz.workspace = true
 yeban-record.workspace = true
+
+# Windows 输出腿的自研 WASAPI 后端（T-FIX-409，`src/device/wasapi_output.rs`）。
+#
+# 为什么是**接口级**绑定（`windows`）而不是 `windows-sys`：`windows-sys` 只导出
+# 句柄与常量，没有 `IMMDeviceEnumerator` / `IAudioClient` 的 vtable —— 而本票的
+# 全部要点就是"枚举器由我们持有、可以随时丢掉重建"。
+#
+# 只在 `cfg(windows)` 上声明、且 optional：非 Windows 的构建（CI 的 Linux/macOS）
+# 不会因此多编一个 crate；`device` feature 是它的唯一消费者。
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 
 [lints]
 workspace = true

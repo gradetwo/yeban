@@ -112,6 +112,12 @@ rfd = { version = "0.17.2" }
 # Windows OTCP 进程存活检查（yeban-otcp target.cfg(windows) 消费，MIT/Apache-2.0）；
 # 同时供 yeban-mcp 的 Windows TokenFile（单句柄打开 / SID allowlist / 原子替换）继承。
 windows-sys = { version = "0.61" }
+# 自研 WASAPI 输出后端（T-FIX-409，yeban-engine 的 `cfg(windows)` 专属消费，
+# MIT OR Apache-2.0）。为什么不用 `windows-sys`：那一支只有句柄与常量，**没有接口**
+# —— 本票要用的是 `IMMDeviceEnumerator` / `IAudioClient` / `IAudioRenderClient` 的
+# vtable（按需重建枚举器、`Activate`、`GetMixFormat`、`Initialize`）。
+# 0.62.2 本来就在树里（其它分支的传递依赖），本票只加一条直接边 ⇒ 包数不变。
+windows = { version = "0.62.2" }
 # 屏幕工作区读取（T-FIX-224，yeban-app 按平台消费）：
 #   · Linux 走 X11 根窗口属性 `_NET_WORKAREA` —— x11-dl 是**运行时 dlopen**，
 #     不引入链接期依赖，没有 libX11.so 的机器上也编得过（打开失败即 None）。
