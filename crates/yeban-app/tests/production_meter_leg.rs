@@ -793,6 +793,7 @@ fn probe_meter_leg_diff_localization_tmp() {
     eprintln!("PROBE hot_cols(>20): {hot_cols:?}");
     eprintln!("PROBE top_rows: {row_counts_top:?}");
     // 左侧两根竖线是什么：列出覆盖 (76,300) 与 (153,300) 的全部可寻址节点 + 时间码节点。
+    use yeban_ui_test_port::port::UiTestPort;
     window.port.refresh_tree(None).expect("重抓控件树");
     for (px, py) in [(76, 300), (153, 300), (660, 60)] {
         for n in window.port.tree().iter() {
