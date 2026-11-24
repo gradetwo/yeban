@@ -804,9 +804,12 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     //
     // ⚠ 这一条证的是"采集进行中时 UI 线程仍能响应查询"，⛔ 不是"事件循环没被占住"
     // 的直接证据（后者在无头环境里不可确定性判定，见文件头的登记）。
+    // ⚠ 查的必须是**活** id：旧清单（`module-midi-in-button` / `module-midi-in-status`）
+    // 是死按钮 —— 判据 ① 刚证过它们不在活树里，这里再查它们就是自相矛盾。
+    // 换成常驻活节点（状态栏 ＋ 控制台导轨）；证的仍是同一件事：树可查询。
     {
         let (fresh, _json) = plane.plane().tree().expect("采集中控件树必须仍可读");
-        for id in ["module-midi-in-button", "module-midi-in-status"] {
+        for id in ["status-bar", "console-tab-rail"] {
             assert!(
                 fresh.find(id).is_some(),
                 "采集中 `{id}` 必须仍在运行时树里（共 {} 条节点）",
@@ -941,14 +944,15 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "在飞期间的第二次触发必须被明确拒绝: {rejected}"
     );
     // ② 在飞期间：控件树仍可查询（这一条与 ④-b 一起构成"UI 线程没被占死"的结构证据）
+    // ⚠ 同 ④-b：`module-midi-in-button` 已死，查常驻活节点 `status-bar`。
     {
         let (fresh, _json) = plane
             .plane()
             .tree()
             .expect("在飞期间控件树必须仍可读（UI 线程没被采集占死）");
         assert!(
-            fresh.find("module-midi-in-button").is_some(),
-            "在飞期间那个按钮必须仍在运行时树里（共 {} 条节点）",
+            fresh.find("status-bar").is_some(),
+            "在飞期间状态栏必须仍在运行时树里（共 {} 条节点）",
             fresh.count
         );
     }
