@@ -43,7 +43,7 @@
 const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const APP: &str = include_str!("../ui/app.slint");
-const HOST: &str = include_str!("../src/host.rs");
+const HOST_RS: &str = include_str!("../src/host.rs");
 const FADER: &str = include_str!("../ui/controls/fader.slint");
 
 /// 返回 `source` 里含 `needle` 的**行号**（1 基，按文档顺序）。
@@ -146,13 +146,6 @@ const TRACK_AND_MASTER_HIT_RECTS: [HitRect<'_>; 4] = [
 
 /// ① 四块命中面各自绑对自己的回调，几何一位没动。
 /// 源码读数口径：去掉 `//` 行注释再计数（注释里提到的回调名不算接线）。
-const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
-const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
-const APP: &str = include_str!("../ui/app.slint");
-const HOST_RS: &str = include_str!("../src/host.rs");
-/// 共享推子控件：推子两面的双击先翻成 `reset-requested`（见 ①）。
-const FADER: &str = include_str!("../ui/controls/fader.slint");
-
 fn code_only(source: &str) -> String {
     source
         .lines()
@@ -194,7 +187,7 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
         2,
         "混音台里经 reset-requested 复位的必须是推子两面"
     );
-    for (rect, callback) in TRACK_AND_MASTER_HIT_RECTS {
+    for (rect, callback, arm, component) in TRACK_AND_MASTER_HIT_RECTS {
         let lines: Vec<&str> = src.lines().collect();
         let call = lines
             .iter()
@@ -208,28 +201,35 @@ fn each_mixer_hit_rect_binds_its_own_double_click_reset() {
             start -= 1;
         }
         assert!(
-            lines[start].contains("Fader {") || lines[start].contains("TouchArea {"),
-            "复位调用 {callback} 必须在 Fader / TouchArea 块内"
+            lines[start].contains(&format!("{component} {{")),
+            "复位调用 {callback} 的组件头必须是 {component}，实际 {}",
+            lines[start].trim()
         );
         let block = lines[start..=call].join("\n");
+        assert!(
+            block.contains(arm),
+            "命中面 {callback} 的块内必须有它自己的臂 {arm}（⛔ 串面）"
+        );
         for geo in rect {
             assert!(
                 block.contains(geo),
                 "命中面 {callback} 的几何 {geo} 必须在同一块内（一位没动）"
             );
         }
-        assert!(
-            block.contains("double-clicked") || block.contains("reset-requested"),
-            "命中面 {callback} 的块内必须有双击臂（double-clicked / reset-requested）"
-        );
     }
 }
 
 /// ② 四个回调从组件一路转发到 `MainWindow`，每一段**恰好**一次。
 ///
-/// 实测口径（2026-11-24 活树）：`app.slint` 里有三处 `ConsoleTabs` 实例，
-/// 故推子/声相转发各 3 次；主控推子只在第三处转发 1 次；⚠ 主控声相在
-/// `app.slint` 里**一次转发都没有**（`root.mixer-master-pan-reset(` 命中 0）——
+/// 实测口径（2026-11-24 活树）：`app.slint` 里三个转发点**不是**三个
+/// `ConsoleTabs` 实例 —— `ConsoleTabs` 只在 `if false` 兼容块
+/// （`app.slint:3116`）里实例化一次、从不进入活树；三个转发点分别是
+/// `ZoneBrowserAndInspector`（`left-panel`，`app.slint:1686`，转发
+/// `mixer-fader-reset`/`mixer-pan-reset`）、`ArrangementViewport`
+/// （`app.slint:1800`，同上）与 `UnifiedLowerDock`（`app.slint:2114`，
+/// 另加 `mixer-master-fader-reset`）。故轨道两条各 **3** 次、主控推子
+/// **1** 次；⚠ 主控声相在 `app.slint` 里**一次转发都没有**
+/// （`root.mixer-master-pan-reset(` 命中 0）——
 /// 宿主臂存在但从 `app.slint` 到不了，是新 UI 留下的断链读数，钉住它而不是
 /// 假装「各转发一次」。
 #[test]
