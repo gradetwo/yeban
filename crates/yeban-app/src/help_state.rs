@@ -211,8 +211,11 @@ pub fn load() -> HelpState {
     if folded != settings.help {
         let mut merged = settings;
         merged.help = folded.clone();
-        // 折入落盘失败不挡读取：本次先按折入结果走，下次启动再试。
-        let _ = crate::settings::save(&merged);
+        // 折入落盘失败不挡读取：本次先按折入结果走，下次启动再试；但失败
+        // 必须让用户看见（T-FIX-299）：记进设置警告台账，UI 侧取走展示。
+        if let Err(error) = crate::settings::save(&merged) {
+            crate::settings::record_save_failure("帮助状态折入", &error);
+        }
     }
     folded
 }

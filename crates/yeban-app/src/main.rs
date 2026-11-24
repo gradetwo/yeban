@@ -358,6 +358,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         host::apply_window_layout(&ui, &layout);
     }
 
+    // T-FIX-299：启动期攒下的设置警告（损坏的设置文件、启动时的最近
+    // 工程记录失败、帮助状态折入失败）在这里展示。建窗末尾已调过一次
+    // （幂等：取走即清空），这里是第二道 —— 覆盖建窗后、布局应用前
+    // 这段的读操作可能新记的警告。
+    host::report_pending_settings_warnings(&ui);
+
     // 走带与电平都要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁事件通道 +
     // 电平 SPSC + 量子驱动）。`ProductionLoop::start` 做两件事，第二件是本票修的缺口：
     //

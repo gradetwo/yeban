@@ -3732,6 +3732,8 @@ pub fn wire_audio_settings(
                 name.as_deref(),
                 state.borrow().input_name.as_deref(),
             );
+            // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）；设备切换本身照常进行。
+            report_pending_settings_warnings(&ui);
             production.borrow_mut().set_audio_output_device(name);
             // 立即按新选择重开设备腿（有工程时）。失败 ⇒ 旧腿仍在跑，
             // 状态行写明原因 + 错误 toast，⛔ 不假装切换成功。
@@ -3785,6 +3787,8 @@ pub fn wire_audio_settings(
                 production.borrow().audio_output_device(),
                 name.as_deref(),
             );
+            // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）。
+            report_pending_settings_warnings(&ui);
             restart_audio_input_test(&ui, &state);
         });
     }
@@ -9930,7 +9934,8 @@ pub fn wire_open_project(
             Ok(()) => {
                 // 打开成功 ⇒ 记进「最近打开」（line/startup-chooser 的
                 // 第三键）：启动选择器的「最近」分类读的就是这份清单。
-                // 失败只在设置模块里响亮 eprintln，⛔ 不把打开改判失败。
+                // 写回失败不把打开改判失败，但会以错误级常驻提示展示
+                // （本回调末尾的 [`report_pending_settings_warnings`]）。
                 crate::settings::record_recent_project(
                     std::path::Path::new(&path),
                     yeban_model::project::now_unix_ms(),
@@ -9962,6 +9967,9 @@ pub fn wire_open_project(
         }
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("open-project", started, &receipt);
+        // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
+        // 让警告成为本次打开的最后一条可见反馈。
+        report_pending_settings_warnings(&ui);
     });
 }
 
@@ -10176,6 +10184,9 @@ pub fn wire_new_project(
         }
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("new-project", started, &receipt);
+        // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
+        // 让警告成为本次新建的最后一条可见反馈。
+        report_pending_settings_warnings(&ui);
     });
 }
 
@@ -10650,6 +10661,9 @@ pub fn wire_startup_chooser(
                                 yeban_model::project::now_unix_ms(),
                             );
                             done(&ui, "recent", format!("path={path}"));
+                            // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299），
+                            // 放在回执之后（`done` 已写回执）。
+                            report_pending_settings_warnings(&ui);
                         }
                         Err(message) => fail(&ui, "open-recent", &message),
                     }
@@ -10857,6 +10871,9 @@ pub fn wire_startup_chooser(
                     );
                     apply_module_receipt(&ui, &receipt, true);
                     module_trace("startup-chooser", started, &receipt);
+                    // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299），
+                    // 放在回执之后。
+                    report_pending_settings_warnings(&ui);
                 }
                 Err(message) => {
                     let receipt = module_receipt(
@@ -11607,6 +11624,22 @@ pub fn report_notice(ui: &MainWindow, text: &str, error: bool) {
     ui.set_toast_message(text.into());
     ui.set_toast_is_error(error);
     ui.set_show_floating_toast(true);
+}
+
+/// 把设置模块攒下的待发警告（写回失败 / 设置文件损坏，T-FIX-299）一次
+/// 取走，逐条用 [`report_notice`]（错误级常驻：提示条 ＋ 模块回执行
+/// 同时写）展示；无待发警告时什么都不做。调用方在每次设置写回动作
+/// 之后调一次（见 `apply_language_and_save` 等）；启动时建窗末尾与
+/// `main.rs` 各调一次，把启动期攒下的警告（损坏文件、启动时的最近
+/// 工程记录失败、帮助状态折入失败）也展示出来。取走即清空，重复调
+/// 用不会重复展示。返回本次展示的条数（调用方据此别再声称“已存入”）。
+pub fn report_pending_settings_warnings(ui: &MainWindow) -> usize {
+    let warnings = crate::settings::take_pending_warnings();
+    let shown = warnings.len();
+    for warning in warnings {
+        report_notice(ui, &warning.message, true);
+    }
+    shown
 }
 
 /// 导出成功的**可见**回执（`T-FIX-57`）：在 `apply_module_receipt*` 写完状态栏
@@ -20895,11 +20928,13 @@ pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
 
 /// 用户在菜单里显式选语言的入口：先 [`apply_language`]，再把选择写回
 /// 设置文件（见 [`crate::settings::save_language`]）。写回失败不影响
-/// 本次切换（设置模块只打印一行 stderr）；启动路径不走这里
+/// 本次切换，但会以错误级常驻提示展示（见
+/// [`report_pending_settings_warnings`]）；启动路径不走这里
 /// （`--lang` 临时覆盖与自动检测都不写回，见 `apply_language` 的文档）。
 pub fn apply_language_and_save(ui: &MainWindow, lang: crate::cli::Language) {
     apply_language(ui, lang);
     crate::settings::save_language(lang);
+    report_pending_settings_warnings(ui);
 }
 
 /// 调试输出开关的界面侧**唯一**写入口（T-FIX-70）：只写主菜单
@@ -20980,6 +21015,11 @@ pub fn snapshot_window_layout(ui: &MainWindow) -> crate::settings::WindowLayout 
 /// 但尺寸/位置/属性仍可读）。快照经 [`crate::settings::store_layout`]
 /// 落盘，语言字段由设置的读-改-写保住。崩溃退出不经这里 ⇒ 下次启动
 /// 仍用上上次的布局（偏好数据，口径与语言一致）。
+///
+/// T-FIX-299 留白：这里**不**调 [`report_pending_settings_warnings`] ——
+/// 窗口已隐藏，提示写了也看不见；写回失败只留在 stderr 行里（设置模块
+/// 的 `record_save_failure` 仍打印）。进程退出后待发台账随之消失，
+/// 下次启动不会再提示这一次的失败。
 pub fn save_window_layout(ui: &MainWindow) {
     crate::settings::store_layout(Some(snapshot_window_layout(ui)));
 }
@@ -20995,6 +21035,8 @@ pub fn reset_window_layout(ui: &MainWindow) {
     handle.set_maximized(false);
     handle.set_size(slint::LogicalSize::new(1600.0, 920.0));
     crate::settings::store_layout(None);
+    // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）。
+    report_pending_settings_warnings(ui);
 }
 
 /// 当前界面语言的进程内记录（[`apply_language`] 是唯一写者，默认 zh-CN）。
@@ -21117,9 +21159,17 @@ pub fn build_main_window_with_console_tab(
             crate::debug_out::set_enabled(enabled);
             apply_debug_output(&ui, enabled);
             crate::settings::save_debug_output(enabled);
+            // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）；开关本身已在本会话生效。
+            // 下面那行 stdout 按实际落盘结果措辞（⛔ 写回失败时不许再声称“已存入”）。
+            let warnings_shown = report_pending_settings_warnings(&ui);
             println!(
-                "[yeban-app] 调试输出已{}（已存入设置，下次启动继续生效）",
-                if enabled { "开启" } else { "关闭" }
+                "[yeban-app] 调试输出已{}（{}）",
+                if enabled { "开启" } else { "关闭" },
+                if warnings_shown == 0 {
+                    "已存入设置，下次启动继续生效"
+                } else {
+                    "写回设置失败，下次启动会回到旧值"
+                },
             );
             if enabled {
                 // 刚开启就先给一份当前设备枚举 —— 菜单开启的当下没有
@@ -21160,6 +21210,11 @@ pub fn build_main_window_with_console_tab(
     install_roll_scroll(&ui, view_snapshot, None);
     install_window_height_signal(&ui);
     wire_aether_callbacks(&ui);
+
+    // T-FIX-299：启动期攒下的设置警告（损坏的设置文件、启动时的最近
+    // 工程记录失败、帮助状态折入失败）在这里第一次有窗口可展示；
+    // `main.rs` 在布局应用后还会再调一次（幂等：取走即清空）。
+    report_pending_settings_warnings(&ui);
 
     Ok(ui)
 }
@@ -24666,6 +24721,9 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
                     "[走带] 滚动跟随：经典 Catch（播放头贴左缘）"
                 },
             );
+            // 写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在 toast 之后，
+            // 让警告成为本次手势的最后一条可见反馈。
+            report_pending_settings_warnings(ui);
         }
         // 预备拍开关（清单 P1-8）：走与 Ctrl+Alt+D 完全相同的链
         // （解析表 -> apply_action），不另写一份 toggle 逻辑

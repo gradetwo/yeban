@@ -31,8 +31,10 @@
 //! 布局键被忽略、语言选择不丢；新构建读旧文件时 `layout` 缺失 ⇒ 没有
 //! 已存布局。`help` 键同理（见 [`parse_help_state`] 的逐字段容错，
 //! 只有它自带的 `version` 高于本构建所识时整份回默认 —— 那是旧独立
-//! 文件留下的语义）。读不到 / 读坏 ⇒ 当作"什么都没存过"，不报错、
-//! 不崩溃（设置文件是偏好，不是工程数据）。
+//! 文件留下的语义）。读不到（文件不存在）⇒ 当作"什么都没存过"，不报错、
+//! 不崩溃（设置文件是偏好，不是工程数据）；读坏（读不出 / 解析失败 /
+//! 顶层不是对象）⇒ 同样回默认、不崩溃，但记一条待发警告（UI 侧展示，
+//! 见 [`take_pending_warnings`]），损坏文件先备份再丢弃（T-FIX-299）。
 //!
 //! 布局（[`WindowLayout`]）逐字段容错：单字段类型错 / 越界只让该字段
 //! 落回默认值（尺寸按 .slint 拖拽同界钳位、标签页只认闭集），不连坐
@@ -45,6 +47,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::cli::Language;
 use crate::help_state::HelpState;
@@ -56,6 +59,67 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// 测试隔离环境变量（见模块文档）。
 pub const SETTINGS_PATH_ENV: &str = "YEBAN_SETTINGS_PATH";
+
+/// 一条待展示的设置警告（T-FIX-299）。
+///
+/// 设置写回失败 / 设置文件损坏时，设置模块只把失败记在这里 —— 调用方
+/// 不失败（设定已在本会话生效），UI 侧由 [`take_pending_warnings`]
+/// 取走并经 `host::report_notice` 以错误级常驻提示展示。无窗口路径
+/// （CLI / headless）下它只留在 stderr 行里（见 [`record_save_failure`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsWarning {
+    /// 展示给用户的完整文案（含“本次已生效、下次启动会回退”与原因）。
+    pub message: String,
+}
+
+/// 待发设置警告台账（进程内；取走即清空，见 [`take_pending_warnings`]）。
+static PENDING_WARNINGS: Mutex<Vec<SettingsWarning>> = Mutex::new(Vec::new());
+
+fn record_warning(message: String) {
+    let mut pending = PENDING_WARNINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.push(SettingsWarning { message });
+}
+
+/// 取走全部待发设置警告（取后台账清空）。UI 侧在每次设置写回动作之后
+/// 与启动建窗后调一次；无警告时返回空。
+#[must_use]
+pub fn take_pending_warnings() -> Vec<SettingsWarning> {
+    let mut pending = PENDING_WARNINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::mem::take(&mut *pending)
+}
+
+/// 把一次设置写回失败记进待发警告（同时保留 stderr 行：无窗口 / CLI
+/// 路径的唯一可见处）。调用方不失败 —— 设定已在本会话生效，只是下次
+/// 启动会回到旧值（T-FIX-299：此前这里只打印一行 stderr，桌面双击启动
+/// 的用户看不到终端，下次启动静默回退）。
+pub fn record_save_failure(what: &str, error: &io::Error) {
+    let message = format!("{what}写回设置失败：已在本会话生效，但下次启动会回到旧值（{error}）");
+    eprintln!("[yeban-app] {message}");
+    record_warning(message);
+}
+
+/// 把一份已损坏的设置文件备份到同目录（`settings.json.corrupt-<毫秒>`），
+/// 返回备份路径；rename 与 copy 都失败时返回 `None`（原文件一位未动）。
+fn backup_corrupt_settings_file(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let file_name = path.file_name()?.to_string_lossy().into_owned();
+    let backup = path.with_file_name(format!("{file_name}.corrupt-{millis}"));
+    if std::fs::rename(path, &backup).is_ok() {
+        return Some(backup);
+    }
+    // rename 失败（例如同名备份已存在）：退回 copy，拷走再删原文件。
+    if std::fs::copy(path, &backup).is_ok() {
+        let _ = std::fs::remove_file(path);
+        return Some(backup);
+    }
+    None
+}
 
 /// 设置内容：`language`（i18n 线）＋ `layout`（窗口布局线）＋
 /// `recent_projects`（启动选择器线）＋ `help`（新手引导线，存储并入）＋
@@ -259,17 +323,65 @@ pub fn settings_path() -> PathBuf {
         .join(SETTINGS_FILE_NAME)
 }
 
-/// 从 `path` 读设置：文件不存在 / 解析失败 ⇒ 默认设置（全 `None`），
-/// 调用方按"什么都没存过"处理；单字段的容错见 [`parse_layout`] 与
-/// `language` 的九语闭集校验。
+/// 从 `path` 读设置：文件不存在 ⇒ 默认设置（全 `None`），调用方按
+/// “什么都没存过”处理；文件在但读不出来 / 解析失败 / 顶层不是对象 ⇒
+/// 同样回默认、不崩溃，但记一条待发警告（UI 侧展示，见
+/// [`take_pending_warnings`]），损坏文件先备份到同目录再丢弃
+/// （T-FIX-299：此前读坏也静默回默认，下次启动用户只看到旧选择被清空）。
+/// 单字段的容错见 [`parse_layout`] 与 `language` 的九语闭集校验。
 #[must_use]
 pub fn load_from(path: &std::path::Path) -> Settings {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Settings::default();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        // 首次启动：没有文件就是“什么都没存过”，不警告。
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Settings::default();
+        }
+        Err(error) => {
+            // 文件在但读不出来（权限等）：原文件一位未动，记警告。
+            record_warning(format!(
+                "设置文件无法读取（{}），已用默认设置，原文件未改动：{error}",
+                path.display()
+            ));
+            return Settings::default();
+        }
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Settings::default();
+    let value = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            let backup = backup_corrupt_settings_file(path);
+            let message = match &backup {
+                Some(backup) => format!(
+                    "设置文件已损坏（{}），已用默认设置，原文件已备份到 {}。",
+                    path.display(),
+                    backup.display()
+                ),
+                None => format!(
+                    "设置文件已损坏（{}），已用默认设置，原文件备份失败，原文件未动：{error}",
+                    path.display()
+                ),
+            };
+            record_warning(message);
+            return Settings::default();
+        }
     };
+    if !value.is_object() {
+        // 顶层不是对象：保存端永远写对象，见到的只能是损坏文件。
+        let backup = backup_corrupt_settings_file(path);
+        let message = match &backup {
+            Some(backup) => format!(
+                "设置文件已损坏（{}），已用默认设置，原文件已备份到 {}。",
+                path.display(),
+                backup.display()
+            ),
+            None => format!(
+                "设置文件已损坏（{}），已用默认设置，原文件备份失败，原文件未动。",
+                path.display()
+            ),
+        };
+        record_warning(message);
+        return Settings::default();
+    }
     Settings {
         language: value
             .get("language")
@@ -715,62 +827,64 @@ pub fn save(settings: &Settings) -> io::Result<()> {
 }
 
 /// 存下一次显式语言选择：先读出现有设置（保住后续线加的字段），再改
-/// `language` 写回。写失败只打印、不让调用方把一次切换变失败
-/// （语言已应用，设置下次再存）。
+/// `language` 写回。写失败记一条待发警告（UI 侧展示）、不让调用方把
+/// 一次切换变失败（语言已应用，设置下次再存，见 [`record_save_failure`]）。
 pub fn save_language(lang: Language) {
     let mut settings = load();
     settings.language = Some(lang);
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 语言选择写回设置失败（下次启动仍走旧选择）: {error}");
+        record_save_failure("语言选择", &error);
     }
 }
 
 /// 把一次「打开了这个工程文件」记进最近清单：先读出现有设置
 /// （保住 `language` / `layout`），再 [`touch_recent_project`] 写回。
-/// 与 [`save_language`] 同款契约：写失败只打印，不让调用方把一次
-/// 打开变失败（工程已经打开，最近清单下次再记）。
+/// 与 [`save_language`] 同款契约：写失败记一条待发警告（UI 侧展示），
+/// 不让调用方把一次打开变失败（工程已经打开，最近清单下次再记）。
 pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
     let mut settings = load();
     settings.recent_projects =
         touch_recent_project(&settings.recent_projects, path, opened_at_unix_ms);
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 最近工程清单写回设置失败（下次启动的「最近」会少这一条）: {error}");
+        record_save_failure("最近工程清单", &error);
     }
 }
 
 /// 存下调试输出开关（主菜单「设置 → 调试输出」触发）：先读出现有设置
 /// （保住其余键），再改 `debug_output` 写回。与 [`save_language`] 同款
-/// 契约：写失败只打印，不让调用方把一次切换变失败（开关已在本会话
-/// 生效，设置下次再存）。
+/// 契约：写失败记一条待发警告（UI 侧展示），不让调用方把一次切换变失败
+/// （开关已在本会话生效，设置下次再存）。
 pub fn save_debug_output(enabled: bool) {
     let mut settings = load();
     settings.debug_output = enabled;
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 调试输出开关写回设置失败（下次启动仍走旧值）: {error}");
+        record_save_failure("调试输出开关", &error);
     }
 }
 
 /// 存下音频设备选择（「设置 → 音频」面板触发，T-FIX-71）：先读出现有
 /// 设置（保住其余键），再改两个设备名写回。`None` = 该方向用系统默认
-/// （键不落盘）。与 [`save_debug_output`] 同款契约：写失败只打印，
-/// 不让调用方把一次选择变失败（选择已在本会话生效，设置下次再存）。
+/// （键不落盘）。与 [`save_debug_output`] 同款契约：写失败记一条待发
+/// 警告（UI 侧展示），不让调用方把一次选择变失败（选择已在本会话生效，
+/// 设置下次再存）。
 pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
     let mut settings = load();
     settings.audio_output_device = output.map(str::to_owned);
     settings.audio_input_device = input.map(str::to_owned);
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 音频设备选择写回设置失败（下次启动仍走旧选择）: {error}");
+        record_save_failure("音频设备选择", &error);
     }
 }
 
 /// 存下编曲视图跟随模式（T-FIX-157）：`true` = Scroll in Play（播放头钉中央），
 /// `false` = 经典 Catch（播放头贴左缘）。与 [`save_debug_output`] 同款契约：
-/// 先读出现有设置（保住其余键），写失败只打印，不把一次切换变失败。
+/// 先读出现有设置（保住其余键），写失败记一条待发警告（UI 侧展示），
+/// 不把一次切换变失败。
 pub fn save_scroll_in_play(enabled: bool) {
     let mut settings = load();
     settings.scroll_in_play = enabled;
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 跟随模式写回设置失败（下次启动仍走旧值）: {error}");
+        record_save_failure("跟随模式", &error);
     }
 }
 
@@ -786,13 +900,13 @@ pub fn resolve_debug_output(cli_debug: bool, log_file_given: bool, stored: bool)
 
 /// 存下（`Some`）或清掉（`None`，恢复默认布局用）窗口布局：先读出
 /// 现有设置（保住 `language`），再改 `layout` 写回。与 [`save_language`]
-/// 同款契约：写失败只打印，不让调用方把一次退出/重置变失败
-///（布局已应用或已退出，设置下次再存）。
+/// 同款契约：写失败记一条待发警告（UI 侧展示），不让调用方把一次退出/
+/// 重置变失败（布局已应用或已退出，设置下次再存）。
 pub fn store_layout(layout: Option<WindowLayout>) {
     let mut settings = load();
     settings.layout = layout;
     if let Err(error) = save(&settings) {
-        eprintln!("[yeban-app] 窗口布局写回设置失败（下次启动仍走旧布局）: {error}");
+        record_save_failure("窗口布局", &error);
     }
 }
 
@@ -1113,20 +1227,79 @@ mod tests {
     }
 
     /// 容错：缺文件 / 坏 JSON / 未知语言值 ⇒ 一律当作"没有已存选择"。
+    /// T-FIX-299：坏 JSON 不再静默 —— 记一条待发警告，原文件备份后丢弃；
+    /// 缺文件与未知语言值仍是静默容错（前者是首次启动，后者是逐字段容错）。
     #[test]
     fn settings_load_tolerates_missing_corrupt_and_unknown() {
         let dir = test_dir("tolerates");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
+        let _ = take_pending_warnings();
         let missing = dir.join("missing.json");
         assert_eq!(load_from(&missing), Settings::default());
+        assert!(
+            take_pending_warnings().is_empty(),
+            "缺文件是首次启动，不警告"
+        );
         let corrupt = dir.join("corrupt.json");
         std::fs::write(&corrupt, "{ not json").expect("写坏文件");
         assert_eq!(load_from(&corrupt), Settings::default());
+        let warnings = take_pending_warnings();
+        assert_eq!(warnings.len(), 1, "坏文件必须记一条警告");
+        assert!(
+            warnings[0].message.contains("已损坏") && warnings[0].message.contains("备份"),
+            "警告须点名损坏与备份：{}",
+            warnings[0].message
+        );
+        assert!(!corrupt.exists(), "损坏文件必须被移走（备份后丢弃）");
+        let mut backups: Vec<_> = std::fs::read_dir(&dir)
+            .expect("读临时目录")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("corrupt.json.corrupt-"))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "恰好留一份备份");
+        let backup = backups.pop().expect("一份备份");
+        assert_eq!(
+            std::fs::read_to_string(&backup).expect("备份必须能读"),
+            "{ not json",
+            "备份须是原文件原样"
+        );
+        // 备份后文件已不在 ⇒ 第二次读是“缺文件”，不再警告。
+        assert_eq!(load_from(&corrupt), Settings::default());
+        assert!(take_pending_warnings().is_empty(), "备份后不再重复警告");
         let unknown = dir.join("unknown.json");
         std::fs::write(&unknown, "{\"version\": 1, \"language\": \"xx-YY\"}").expect("写未知语言");
         assert_eq!(load_from(&unknown), Settings::default());
+        assert!(
+            take_pending_warnings().is_empty(),
+            "未知语言值是逐字段容错，不警告"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写回失败的记账本体：`record_save_failure` 同时保留 stderr 行与
+    /// 一条待发警告（文案须点名“本次已生效、下次启动会回退”）；取走即清空。
+    #[test]
+    fn record_save_failure_queues_one_warning_with_rollback_wording() {
+        let _ = take_pending_warnings();
+        record_save_failure(
+            "语言选择",
+            &io::Error::new(io::ErrorKind::PermissionDenied, "拒绝访问"),
+        );
+        let warnings = take_pending_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].message.contains("语言选择")
+                && warnings[0].message.contains("已在本会话生效")
+                && warnings[0].message.contains("下次启动会回到旧值"),
+            "警告文案须点名事项与回退：{}",
+            warnings[0].message
+        );
+        assert!(take_pending_warnings().is_empty(), "取走即清空，不重复展示");
     }
 
     /// 一份与默认值处处不同的布局（每个字段都离开初值，往返才验得住）。
