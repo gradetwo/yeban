@@ -11,7 +11,7 @@
 //! | # | 断言 | 弄红它的改动 |
 //! | :--- | :--- | :--- |
 //! | ① | `arrangement-timeline-px` > 0 且 **小于** 窗口宽 | 回调不接线 / 直接把窗口宽当可见宽（后者会让播放头在包头底下消失 240px 才翻页） |
-//! | ② | 播放中播放头越过右界 ⇒ 偏移**增大**，且播放头回到可见区内、落在左起 10% 处 | 删掉 `tick` 里的跟进调用 / 提前量改成 0（贴边） |
+//! | ② | 播放中播放头越过右界 ⇒ 偏移**增大**，且播放头回到可见区内、贴左缘 | 删掉 `tick` 里的跟进调用 / 落点不再等于播放头 |
 //! | ③ | 用户手动改偏移 ⇒ 之后再越界也**不动** | 去掉 `observe` 的脱开判定（抢视图） |
 //! | ④ | 停住 ⇒ 不动；重新起播 ⇒ 立刻跟过去 | 去掉上升沿重挂（脱开一次就永久失效） |
 //!
@@ -118,9 +118,28 @@ fn production_engine_stopped(production: &ProductionLoop) {
 
 /// 强制一次渲染 pass（`.slint` 的 `length` 绑定要真的被求值过，才有几何可读）。
 ///
-/// ⚠ 不拿控件树当"已布局"的证据：新 UI 重构后视觉元素不再进无障碍树
-/// （`tests/automation_labels_follow_playhead.rs` 的注释记着这一条）。
+/// ⚠ 只抓控件树**不够**：`refresh_tree` 走 `tree_from_element_root`，不跑 Slint 的
+/// 布局 pass，于是 `arrangement.slint` 的 `timeline-width = width - headers - 5`
+/// 从未被求值，`changed timeline-width` 回调不触发，根属性 `arrangement-timeline-px`
+/// 一直停在 0（T-FIX-255）。与生产事件循环同一条路径：先 `capture()` 逼一帧布局，
+/// 让绑定求值并回调写回根属性，再重抓树。
+///
+/// ⚠ 仍不拿控件树当"已布局"的证据：新 UI 重构后视觉元素不再进无障碍树
+/// （`tests/automation_labels_follow_playhead.rs` 的注释记着这一条）；这里抓树只为
+/// 让 `ui()` 上的几何属性经渲染 pass 求值，读的是 `get_arrangement_timeline_px()` 根属性。
 fn port_refresh(port: &mut LivePort<MainWindow>) {
+    // `LivePort::new` 里 `show()` + `resize()` 的首次布局不会触发
+    // `ArrangementViewport` 的 `changed timeline-width` 回调（Slint 测试平台下
+    // 首次求值不计作"变化"），根属性停在 0。一次真实的尺寸变化再重绘才会
+    // 让绑定重新求值、回调把几何写回根（T-FIX-255，探针实测 0 → 934）。
+    port.window()
+        .resize(Size::new(WINDOW.width - 40, WINDOW.height))
+        .expect("探测性 resize");
+    port.window()
+        .capture()
+        .expect("必须能重绘一帧以求值几何绑定");
+    port.window().resize(WINDOW).expect("复原窗口尺寸");
+    port.window().capture().expect("复原后必须能再重绘一帧");
     let _ = port.refresh_tree(None).expect("必须能抓控件树");
 }
 
@@ -152,7 +171,7 @@ fn playback_pages_the_arrangement_and_backs_off_when_the_user_scrolls() {
         "界内不许动（起播这一跳的播放头在 0，可见）"
     );
 
-    // ── ② 播放头越过右界 ⇒ 翻页，播放头回到左起 10% ───────────────────────────
+    // ── ② 播放头越过右界 ⇒ 翻页，播放头贴左缘（Logic 经典 Catch）───────────────
     // 位置取一个**肯定在视口外**的 tick：可见宽 1000px 时，`4 × 1000px` 处的 30 tick/px
     // 换算必然出界。这里用可见宽现算，不写死像素。
     let far_ticks = u64::try_from((timeline * 4.0) as i64).expect("正数") * 30;
@@ -163,10 +182,12 @@ fn playback_pages_the_arrangement_and_backs_off_when_the_user_scrolls() {
         after > before,
         "播放头出界后偏移必须增大（before={before}, after={after}）"
     );
-    let expected = (rig.playhead_px() - timeline * 0.10).max(0.0);
+    // T-FIX-255：4d20c9c 把落点对齐 Logic 经典 Catch —— 新偏移 = 播放头本身，
+    // 播放头贴左缘（屏上 x=0），不再是旧实现里的「播放头 − 可见宽 10%」。
+    let expected = rig.playhead_px().max(0.0);
     assert!(
         (after - expected).abs() <= 1.0,
-        "新左界必须是「播放头 − 可见宽的 10%」（实得 {after}，期望 {expected}）"
+        "新左界必须等于播放头本身（左缘 Catch；实得 {after}，期望 {expected}）"
     );
     let on_screen = rig.playhead_px() - after;
     report_line(&format!(
@@ -180,8 +201,8 @@ fn playback_pages_the_arrangement_and_backs_off_when_the_user_scrolls() {
         "翻页后播放头必须回到可见区（屏上 x={on_screen}，可见区 0..={timeline}）"
     );
     assert!(
-        (on_screen - timeline * 0.10).abs() <= 1.0,
-        "翻页后播放头应落在左起 10% 处（实得 {on_screen}）"
+        on_screen.abs() <= 1.0,
+        "翻页后播放头应贴左缘（Logic 经典 Catch，屏上 x≈0；实得 {on_screen}）"
     );
 
     // ── ③ 用户手动滚开 ⇒ 不再抢视图 ─────────────────────────────────────────
@@ -219,9 +240,9 @@ fn playback_pages_the_arrangement_and_backs_off_when_the_user_scrolls() {
         resumed > user_px,
         "重新起播必须重新挂上 Catch（user_px={user_px}, resumed={resumed}）"
     );
-    let expected = (rig.playhead_px() - rig.timeline_px() * 0.10).max(0.0);
+    let expected = rig.playhead_px().max(0.0);
     assert!(
         (resumed - expected).abs() <= 1.0,
-        "重播后的落点同一条式子（实得 {resumed}，期望 {expected}）"
+        "重播后的落点同一条式子：左缘 Catch，偏移=播放头（实得 {resumed}，期望 {expected}）"
     );
 }
