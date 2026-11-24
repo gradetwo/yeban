@@ -32,6 +32,9 @@
 //! ⑤ `Esc` 关弹窗 ⇒ 焦点复位回快捷键层；⑥ 再按 `1` ⇒ 工具切到 1（守卫只在
 //! 模态开着时生效，关了就恢复）。
 //!
+//! 另加一则扩表模拟（T-FIX-343）：往键表里插约 900 字节新键行，窗口量法仍绿
+//! —— 旧 3000 字节固定窗口在同样插入下会红（标记到 reject 超 3000 字节）。
+//!
 //! ## 判别力（改动 ⇒ 红；缺行就说明那条断言本来就是空的）
 //!
 //! | 若改成 | 本判据 |
@@ -42,6 +45,7 @@
 //! | 守卫改成连 `Esc` 也拦 | ⑤ 红（`Esc` 关不掉弹窗） |
 //! | 守卫改成有修饰键也拦 | 本文件测不到（修饰位注不进来）⇒ 如实登记在边界里 |
 //! | 守卫放到 `trigger-shortcut` 之后 | 六条全红（快捷键已先被消费） |
+//! | 键表再扩约 900 字节 | 旧 3000 字节窗口红（reject 被推出窗口）、新窗口绿（本票新增的扩表模拟） |
 //!
 //! ## 已知边界（如实登记，⛔ 不假装覆盖）
 //!
@@ -352,28 +356,49 @@ fn drum_gen_modal_holds_digits_on_its_apply_button() {
     report_line("modal-guard drum-gen: digits 1-5 held, esc-closed, 1 restores tool 1");
 }
 
-/// 表纪律（⛔ 不开窗口）：`T-FIX-289` 守卫恰好一处，模态表里六只齐全、键表里
-/// 五个数字齐全，且守卫在 `trigger-shortcut` 之前（之后就拦不住了）。
-#[test]
-fn the_guard_lists_all_six_modals_and_all_five_digits_before_trigger_shortcut() {
-    let app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
+fn read_app_slint() -> String {
+    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"))
+        .expect("读 app.slint")
+}
+
+/// 守卫窗口（T-FIX-343）：从 `T-FIX-289` 标记起，量到守卫臂的 `return reject;`
+/// 行尾再加固定余量。
+///
+/// 旧量法是固定 3000 字节：键表一扩就过期——T-FIX-332 扩表后标记到 reject 已
+/// 约 2175 字节（余量约 825），再加约 900 字节键行就把 reject 推出窗口，判据
+/// 红的原因不是行为坏了，而是窗口常数不够大。新量法跟表长走：表再长，窗口
+/// 终点也跟着 reject 往后挪；扩表模拟（本文件末尾）先在旧量法下红过，见回执。
+///
+/// 余量取 512 字节：盖住守卫臂的收尾 `}` 与 reject 行后可能追加的几行注释；
+/// 不到守卫体（约 2.2 KB）的四分之一，窗口仍收在守卫邻域内。余量那段尾巴
+/// （`}`、`trigger-shortcut` 调用、组字注释）经核实不含六模态、五个数字、
+/// reject 任一被断言串，断言仍由守卫体本身满足，不是尾巴凑出来的。窗口不是
+/// 无界的：它止于 reject 行尾 + 余量；标记全文件恰好一处（本文件另一断言），
+/// 别处同名标记混不进来。
+///
+/// reject 行缺失 ⇒ 这里直接 panic（判据红），不是静默放过。
+fn guard_window(app: &str) -> &str {
     let marker = "T-FIX-289";
-    assert_eq!(
-        app.matches(marker).count(),
-        1,
-        "T-FIX-289 守卫注释必须恰好一处（集中一处，⛔ 不得多处各抄一份）"
-    );
     let start = app.find(marker).expect("T-FIX-289 标记");
-    // 字节窗口须落在字符边界上：app.slint 是 UTF-8，start + 3000 可能切在汉字中间
-    // 而直接切片会 panic（rebase 后字节偏移一动就暴露）。窗口仍是 3000 字节，向下取整到边界。
-    let mut end = (start + 3000).min(app.len());
+    let reject_end = start
+        + app[start..]
+            .find("return reject;")
+            .expect("守卫必须以 reject 放行")
+        + "return reject;".len();
+    // 字节窗口须落在字符边界上：app.slint 是 UTF-8，窗口终点可能切在汉字中间
+    // 而直接切片会 panic。终点向下取整到边界。
+    let mut end = (reject_end + 512).min(app.len());
     while !app.is_char_boundary(end) {
         end -= 1;
     }
-    let guard = &app[start..end];
+    &app[start..end]
+}
+
+/// 守卫窗口内必须有的内容（六模态 + 五个数字 + reject），表纪律与扩表模拟
+/// 共用——扩表模拟测的是同一套断言，不是另一套。窗口本身就锚在 reject 行尾，
+/// 下面那条 reject 断言是意图复述；reject 缺失时 `guard_window` 先 panic，
+/// 同样是红。
+fn assert_guard_contents(guard: &str) {
     for flag in [
         "export-wav-open",
         "sound-library-open",
@@ -394,6 +419,21 @@ fn the_guard_lists_all_six_modals_and_all_five_digits_before_trigger_shortcut() 
         guard.contains("return reject;"),
         "守卫必须以 reject 放行（⛔ 不是 accept 吃掉）"
     );
+}
+
+/// 表纪律（⛔ 不开窗口）：`T-FIX-289` 守卫恰好一处，模态表里六只齐全、键表里
+/// 五个数字齐全，且守卫在 `trigger-shortcut` 之前（之后就拦不住了）。
+#[test]
+fn the_guard_lists_all_six_modals_and_all_five_digits_before_trigger_shortcut() {
+    let app = read_app_slint();
+    let marker = "T-FIX-289";
+    assert_eq!(
+        app.matches(marker).count(),
+        1,
+        "T-FIX-289 守卫注释必须恰好一处（集中一处，⛔ 不得多处各抄一份）"
+    );
+    let guard = guard_window(&app);
+    assert_guard_contents(guard);
     let guard_at = app.find(marker).expect("T-FIX-289 标记");
     let trigger_at = app
         .find("root.trigger-shortcut(event.text, event);")
@@ -401,5 +441,69 @@ fn the_guard_lists_all_six_modals_and_all_five_digits_before_trigger_shortcut() 
     assert!(
         guard_at < trigger_at,
         "守卫必须在 trigger-shortcut 之前（之后就拦不住了）"
+    );
+}
+
+/// 扩表模拟（T-FIX-343）：往键表里插约 900 字节新键行后，窗口量法仍绿。
+/// 旧 3000 字节固定窗口在同样插入下会红（标记到 reject 约 3065 字节）——本
+/// 判据就是那条旧窗口的回归网：它先在旧量法下红过，见回执。
+#[test]
+fn the_guard_window_survives_a_key_table_expansion() {
+    let app = read_app_slint();
+    // 插入点：键表里的 `Key.F9` 行之后、reject 之前——与真实扩表（T-FIX-305
+    // 在同表追加 F5/F6、Return、方向键等）同位置、同写法；插入行不含任何
+    // 被断言的字符串（六模态、五个数字、reject、trigger-shortcut），断言
+    // 只能由原守卫体满足，不能由插入行凑出来。
+    let anchor = "|| event.text == Key.F9\n";
+    let at = app.find(anchor).expect("键表锚点 Key.F9 行") + anchor.len();
+    let extra = concat!(
+        "                    || event.text == Key.F10 || event.text == Key.F11\n",
+        "                    || event.text == Key.F12\n",
+        "                    || event.text == \"j\" || event.text == \"J\"\n",
+        "                    || event.text == \"k\" || event.text == \"K\"\n",
+        "                    || event.text == \"l\" || event.text == \"L\"\n",
+        "                    || event.text == \";\" || event.text == \":\"\n",
+        "                    || event.text == \",\" || event.text == \".\"\n",
+        "                    || event.text == \"/\" || event.text == \"?\"\n",
+        "                    || event.text == Key.Home || event.text == Key.End\n",
+        "                    || event.text == Key.PageUp || event.text == Key.PageDown\n",
+        "                    || event.text == Key.Insert\n",
+        "                    || event.text == \"u\" || event.text == \"U\"\n",
+        "                    || event.text == \"o\" || event.text == \"O\"\n",
+        "                    || event.text == \"n\" || event.text == \"N\"\n",
+        "                    || event.text == \"g\" || event.text == \"G\"\n",
+    );
+    // 模拟必须够强：插入量 ≥900 字节，且标记到 reject 超过旧窗口 3000 字节——
+    // 否则本判据测不到旧窗口的毛病（插入被谁悄悄缩短就先红在这里）。
+    assert!(extra.len() >= 900, "模拟扩表量必须 ≥900 字节");
+    let mut expanded = String::with_capacity(app.len() + extra.len());
+    expanded.push_str(&app[..at]);
+    expanded.push_str(extra);
+    expanded.push_str(&app[at..]);
+    let marker = "T-FIX-289";
+    let start = expanded.find(marker).expect("T-FIX-289 标记");
+    let reject_at = expanded[start..]
+        .find("return reject;")
+        .expect("守卫必须以 reject 放行")
+        + start;
+    assert!(
+        reject_at - start > 3000,
+        "模拟扩表必须把 reject 推出旧 3000 字节窗口（当前 {} 字节），否则测不到旧窗口的毛病",
+        reject_at - start
+    );
+    // 同一套窗口量法 + 同一套断言，在扩表后的文本上必须全绿。
+    assert_eq!(
+        expanded.matches(marker).count(),
+        1,
+        "T-FIX-289 守卫注释必须恰好一处"
+    );
+    let guard = guard_window(&expanded);
+    assert_guard_contents(guard);
+    let trigger_at = expanded
+        .find("root.trigger-shortcut(event.text, event);")
+        .expect("trigger-shortcut 调用");
+    assert!(
+        start < trigger_at,
+        "扩表后守卫必须仍在 trigger-shortcut 之前"
     );
 }
