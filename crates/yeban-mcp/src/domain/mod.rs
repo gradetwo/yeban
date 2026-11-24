@@ -4305,7 +4305,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = arg_id(call, "trackId")?;
-    let macro_index = arg_u64(call, "macroIndex")?.unwrap_or(0);
+    let macro_index = arg_u64(call, "macroIndex")?.ok_or_else(|| {
+        Fault::domain(ErrorCode::InvalidParameterRange, "`macroIndex` 是必填参数")
+    })?;
     let macro_index = usize::try_from(macro_index).map_err(|_| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,

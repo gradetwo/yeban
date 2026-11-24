@@ -2941,6 +2941,78 @@ fn set_macro_checks_track_index_and_value_range() {
 }
 
 #[test]
+fn set_macro_missing_macro_index_is_rejected_at_tool_boundary() {
+    let scratch = Scratch::new("macro-missing-index-tool");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let before = dispatcher.domain().project_digest();
+
+    // 公共 `tools/call` 入口：契约层（`ToolCall::validate_arguments`）先于领域
+    // 拦下缺参，返回 JSON-RPC `-32602`，不产生提案、不改工程。
+    let (status, outcome) = call_raw(
+        &mut dispatcher,
+        &auth,
+        "yeban_set_macro",
+        json!({ "trackId": track, "value": 0.5 }),
+    );
+    assert_eq!(status, 400, "缺必填 macroIndex 必须是 HTTP 400 参数错误");
+    let error = outcome.expect_err("缺必填 macroIndex 不得进入领域");
+    assert_eq!(
+        error.code, -32602,
+        "参数错误码必须是 JSON-RPC INVALID_PARAMS"
+    );
+    let detail = error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("detail"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        detail.contains("macroIndex"),
+        "错误详情必须点名 macroIndex: {error:?}"
+    );
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        0,
+        "缺参不得生成 SetMacro 提案"
+    );
+    assert_eq!(
+        dispatcher.domain().project_digest(),
+        before,
+        "缺参不得改写工程"
+    );
+}
+
+/// 规划器边界：`ToolCall` 的字段是公开的，领域层也可能收到未经契约层校验的调用；
+/// 缺 `macroIndex` 必须在规划器里报 `INVALID_PARAMETER_RANGE`，⛔ 不许静默当成宏 #0。
+#[test]
+fn set_macro_missing_macro_index_is_rejected_at_planner_boundary() {
+    let scratch = Scratch::new("macro-missing-index-planner");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let arguments = json!({ "trackId": track, "value": 0.5 });
+    let call = yeban_mcp::tools::ToolCall {
+        tool: yeban_mcp::tools::tool("yeban_set_macro").expect("yeban_set_macro 必须已注册"),
+        arguments: arguments.as_object().expect("arguments 必须是对象").clone(),
+    };
+
+    let fault = yeban_mcp::domain::plan(dispatcher.domain(), &call)
+        .expect_err("缺 macroIndex 的 set_macro 不得规划成功");
+    assert_eq!(
+        fault.domain_code(),
+        Some(ErrorCode::InvalidParameterRange),
+        "缺 macroIndex 必须报 INVALID_PARAMETER_RANGE: {fault:?}"
+    );
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        0,
+        "缺参不得生成 SetMacro 提案"
+    );
+}
+
+#[test]
 fn move_track_moves_a_track_in_display_order_and_merges() {
     let scratch = Scratch::new("move-track");
     let (mut dispatcher, auth) = dispatcher();
