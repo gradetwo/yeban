@@ -2617,3 +2617,18 @@ msgid "还有 {} 个场景未显示"
 msgstr "{} escenas más sin mostrar"
 msgid "还有 {} 轨未显示 · 还有 {} 个场景未显示"
 msgstr "{} pistas y {} escenas más sin mostrar"
+
+msgid "音频设置说明"
+msgstr "Ayuda de configuración de audio"
+
+msgid "AI 提案"
+msgstr "Propuestas de IA"
+
+msgid "待审提案 {} 条"
+msgstr "{} propuestas pendientes"
+
+msgid "提案审核面板已并入 Musical PR 抽屉。"
+msgstr "El panel de revisión de propuestas se ha integrado en el cajón Musical PR."
+
+msgid "打开提案审核"
+msgstr "Abrir revisión de propuestas"
