@@ -59,19 +59,26 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// 把 `$HOME` 指到临时目录（用户预制库随之搬家），析构时恢复。
 struct HomeGuard {
-    old: Option<String>,
+    old_home: Option<String>,
+    old_userprofile: Option<String>,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl HomeGuard {
     fn redirect(dir: &Path) -> Self {
         let lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let old = std::env::var("HOME").ok();
-        // SAFETY: 持 ENV_LOCK；本测试进程内没有其它线程在此时改 `$HOME`。
+        let old_home = std::env::var("HOME").ok();
+        let old_userprofile = std::env::var("USERPROFILE").ok();
+        // SAFETY: 持 ENV_LOCK；本测试进程内没有其它线程在此时改 `$HOME` / `$USERPROFILE`。
         unsafe {
             std::env::set_var("HOME", dir);
+            std::env::set_var("USERPROFILE", dir);
         }
-        Self { old, _lock: lock }
+        Self {
+            old_home,
+            old_userprofile,
+            _lock: lock,
+        }
     }
 }
 
@@ -79,9 +86,13 @@ impl Drop for HomeGuard {
     fn drop(&mut self) {
         // SAFETY: 与 `redirect` 同一条理由；恢复的是进入时读到的原值。
         unsafe {
-            match &self.old {
+            match &self.old_home {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
+            }
+            match &self.old_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
             }
         }
     }
