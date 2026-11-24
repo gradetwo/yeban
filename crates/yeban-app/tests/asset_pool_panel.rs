@@ -226,7 +226,13 @@ fn the_asset_pool_panel_is_declared_and_addressable() {
          覆盖的那一帧；面板必须住在 Tab 1（本机无法重录 Linux 基准）"
     );
 
-    port.ui().set_console_tab(1);
+    // ⚠ T-FIX-356 活树注：这里不能用 `set_console_tab(1)` —— 探针证明，建窗后
+    // 再调它只改 `console-tab` 的读数，`changed console-tab` 那条到
+    // `Theme.active-dock-tab` 的同步走不到下坞（树一位不动）；而 `apply-dock-tab`
+    //（生产里 X/P 键走的同一条路）直接写全局 + `console-tab`，下坞立刻切到 mixer。
+    // 钉的是"切到 Tab 1 后面板在场"，不是同步机制本身；`set_console_tab` 的同步
+    // 链另有跟进项（见组报告），⛔ 不在本票里重排标签状态机。
+    port.ui().invoke_apply_dock_tab("mixer".into());
     let tab1 = runtime_tree(port.ui());
     let panel = tab1.find_by_id("asset-pool-panel").unwrap_or_else(|| {
         panic!(
@@ -456,58 +462,4 @@ fn the_row_count_follows_the_clip_pool_instead_of_a_hardcoded_number() {
         tree_one.with_prefix("asset-pool-row-").count(),
         count_one.label
     ));
-}
-
-/// 临时探针 A（T-FIX-356 收尾调试）：直接建 Tab 1 的窗口 —— 跑完即删。
-/// ⚠ 每个测试只能建一个 LivePort（第二次 install 返回 PlatformUnavailable），故分两个测试。
-#[test]
-fn probe_asset_pool_direct_tab1_tmp() {
-    let project = filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let port1 = live_window(&view, 1);
-    let tree1 = runtime_tree(port1.ui());
-    eprintln!(
-        "PROBE direct-tab-1: tree={} panel={} console-tab={}",
-        tree1.len(),
-        tree1.contains("asset-pool-panel"),
-        port1.ui().get_console_tab()
-    );
-    let mixer_nodes: Vec<String> = tree1
-        .iter()
-        .map(|n| n.id.clone())
-        .filter(|id| id.contains("mixer") || id.contains("console") || id.contains("asset"))
-        .collect();
-    eprintln!("PROBE direct-tab-1 mixer/console/asset ids: {mixer_nodes:?}");
-}
-
-/// 临时探针 B（T-FIX-356 收尾调试）：建 Tab 0 再 set_console_tab(1) —— 跑完即删。
-#[test]
-fn probe_asset_pool_switch_tab1_tmp() {
-    let project = filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let port0 = live_window(&view, 0);
-    eprintln!("PROBE before switch: console-tab={}", port0.ui().get_console_tab());
-    port0.ui().set_console_tab(1);
-    eprintln!("PROBE after switch: console-tab={}", port0.ui().get_console_tab());
-    let tree0 = runtime_tree(port0.ui());
-    eprintln!(
-        "PROBE switched-to-1: tree={} panel={}",
-        tree0.len(),
-        tree0.contains("asset-pool-panel")
-    );
-    // 对照：走 apply-dock-tab（生产里 X/P 键的另一条路）能不能切过去？
-    port0.ui().invoke_apply_dock_tab("mixer".into());
-    let tree0b = runtime_tree(port0.ui());
-    eprintln!(
-        "PROBE apply-dock-tab mixer: tree={} panel={} console-tab={}",
-        tree0b.len(),
-        tree0b.contains("asset-pool-panel"),
-        port0.ui().get_console_tab()
-    );
-    let mixer_nodes: Vec<String> = tree0
-        .iter()
-        .map(|n| n.id.clone())
-        .filter(|id| id.contains("mixer") || id.contains("console") || id.contains("asset"))
-        .collect();
-    eprintln!("PROBE switched tree mixer/console/asset ids: {mixer_nodes:?}");
 }
