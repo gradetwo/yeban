@@ -9282,6 +9282,88 @@ mod tests {
         .expect("合法的工具调用")
     }
 
+    /// 判据（T-FIX-361）：`plan_ara_bind` 的 `loopIterations` 上界是**常驻**判据，
+    /// 与宿主共用 `MAX_LOOP_ITERATIONS`（⛔ 不另写第二份 4096）。
+    ///
+    /// 红线用法：删掉 `plan_ara_bind` 里 `> MAX_LOOP_ITERATIONS` 那一块 ⇒ 本判据红
+    /// （4097 会一路走到解码 wav，报出来的就不是这个码/这段话）。
+    #[test]
+    fn plan_ara_bind_enforces_the_loop_iteration_cap() {
+        use yeban_plugin_host::ara::MAX_LOOP_ITERATIONS;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-ara-cap-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav = dir.join("cap.wav");
+        // 16-bit 单声道 48 kHz、4 帧 —— 上界内的那一例要真的走完解码，不能靠"文件不存在"蒙过去。
+        let samples: [i16; 4] = [0, 1_000, -1_000, 0];
+        let data_len = u32::try_from(samples.len() * 2).expect("长度");
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&wav, &bytes).expect("写 wav 夹具");
+
+        // ⚠ 直接构造 `ToolCall`：走 `from_params` 会被 schema 的 `maximum: 4096` 先挡下，
+        // 那条判据要钉的是**plan 里那道闸门**，不是 schema。
+        let spec = crate::tools::tool("yeban_ara_bind").expect("yeban_ara_bind 在注册表里");
+        let ara_call = |iterations: u64| {
+            let mut arguments = Map::new();
+            arguments.insert(
+                "pluginPath".to_owned(),
+                Value::String("/nonexistent/plugin.vst3".to_owned()),
+            );
+            arguments.insert(
+                "wavPath".to_owned(),
+                Value::String(wav.to_string_lossy().into_owned()),
+            );
+            arguments.insert("loopIterations".to_owned(), Value::from(iterations));
+            ToolCall {
+                tool: spec,
+                arguments,
+            }
+        };
+
+        let over = MAX_LOOP_ITERATIONS as u64 + 1;
+        let fault = plan(&Domain::new(), &ara_call(over)).expect_err("超上界必须在 plan 阶段被拒");
+        assert!(
+            matches!(
+                &fault,
+                Fault::Domain {
+                    code: ErrorCode::InvalidParameterRange,
+                    message,
+                    ..
+                } if message.contains("loopIterations")
+                    && message.contains(&MAX_LOOP_ITERATIONS.to_string())
+            ),
+            "拒绝必须点名 loopIterations 与上限 {MAX_LOOP_ITERATIONS}，实际: {fault:?}"
+        );
+
+        // 正好等于上限 ⇒ 放行（落到 `Plan::AraBind`，插件打开留给 apply）。
+        let at_cap =
+            plan(&Domain::new(), &ara_call(MAX_LOOP_ITERATIONS as u64)).expect("上限本身必须放行");
+        assert!(
+            matches!(at_cap, Plan::AraBind { .. }),
+            "上限值应规划成 AraBind，实际: {at_cap:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 一份**真 WAV**（16-bit 单声道 48 kHz, 4 帧）—— `yeban_import_audio` 的规划会真的解码它。
     ///
     /// ⚠ 用**自己的独占临时目录**（`unique_path()` 之外的新目录）。CI 实测教训：
