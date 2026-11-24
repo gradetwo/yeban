@@ -298,6 +298,13 @@ pub struct PlaybackSpec {
     /// 该 region 的 `resonance`（dB，原样；缺省
     /// [`crate::RESONANCE_DEFAULT_DB`]）。
     pub resonance: f32,
+    /// ⭐ 该 region 的 `fil_gain`（dB，原样；缺省
+    /// [`crate::FIL_GAIN_DEFAULT_DB`] ＝ 0）。
+    ///
+    /// 只有 `lsh` / `hsh` / `peq` 三种 ARIA 类型消费它（架子/峰值增益）；
+    /// 对其它类型原样带出、不生效。消费方配置声部滤波器时与
+    /// [`PlaybackSpec::fil_type`] / [`PlaybackSpec::resonance`] 一起传入。
+    pub fil_gain: f32,
     /// 滤波静态族的**有效截止频率**（Hz）：`cutoff` 经 `fil_keytrack` /
     /// `fil_veltrack` 在触发音符/力度上折算后的值，就是
     /// [`Region::filter_cutoff`] 的读数（见 [`filter_cutoff_hz`]）。
@@ -840,6 +847,7 @@ impl<'a> Region<'a> {
             fil_type: self.fil_type,
             cutoff: self.cutoff,
             resonance: self.resonance,
+            fil_gain: self.fil_gain,
             filter_cutoff: self.filter_cutoff(note, velocity),
             effect_sends: self.effect_sends,
             fileg: self.fileg,
@@ -1048,7 +1056,7 @@ mod tests {
     #[test]
     fn playback_spec_carries_the_filter_family() {
         let instrument = parse_text(
-            "<region>sample=a.wav cutoff=1000 fil_type=hpf_4p resonance=6 \
+            "<region>sample=a.wav cutoff=1000 fil_type=hpf_4p resonance=6 fil_gain=2.5 \
              fil_keytrack=100 fil_keycenter=60",
             &Default::default(),
         )
@@ -1057,6 +1065,7 @@ mod tests {
         assert_eq!(spec.fil_type, crate::instrument::FilterType::Highpass4p);
         assert_eq!(spec.cutoff, Some(1000.0), "原始 cutoff 原样带出");
         assert_eq!(spec.resonance, 6.0);
+        assert_eq!(spec.fil_gain, 2.5, "fil_gain 原样带出");
         // 有效值已折键位跟踪：+12 键 × 100 音分/键 ⇒ ×2。
         assert!(close(spec.filter_cutoff.expect("enabled"), 2000.0, 0.01));
         // 无 `cutoff` 的 region：filter_cutoff 为 None（消费方走直通）。
@@ -1646,6 +1655,7 @@ mod tests {
                             fil_type: crate::instrument::FIL_TYPE_DEFAULT,
                             cutoff: None,
                             resonance: crate::instrument::RESONANCE_DEFAULT_DB,
+                            fil_gain: crate::instrument::FIL_GAIN_DEFAULT_DB,
                             fil_keytrack: crate::instrument::FIL_KEYTRACK_DEFAULT,
                             fil_keycenter: crate::instrument::FIL_KEYCENTER_DEFAULT,
                             fil_veltrack: crate::instrument::FIL_VELTRACK_DEFAULT,

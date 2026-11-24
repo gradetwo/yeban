@@ -953,17 +953,21 @@
 //! * **信号序**：插值采样 → 滤波 → `× gain × fade × env`
 //!   （[`mix_span_into`] 内，全仓唯一的逐样本循环，三条路共用）。
 //! * **状态持有**：递推状态是**声部状态** ⇒ 放池侧 `SfzVoicePool::filters`
-//!   （每槽一只，88 B），`SfzVoice` **不加字段**（判据 `S9` 仍 40 B）；
+//!   （每槽一只，100 B），`SfzVoice` **不加字段**（判据 `S9` 仍 40 B）；
 //!   配置时机 ＝ 直接落槽/硬窃取在触发期、软窃取在提升期（用被提升
 //!   声部自己的区域/音高/力度，⛔ 无 pending 侧数组）、淡出段沿用
 //!   victim 自己那只、退休时复位直通。一次性路径（离线/摊平）每
 //!   region 新建一只（状态自零起 ＝ note-on 语义）。
-//! * **类型子集**：实现 10 个（v1 六个 ＋ `lpf_4p`/`hpf_4p`/`lpf_6p`/`hpf_6p`
-//!   级联）；其余规范值（`*_sv` / `pkf_2p` / `lsh` / `hsh` / `peq` /
-//!   `comb` / `pink` / `bpf_1p` / `brf_1p` / `apf_1p`）在 `yeban-sfz`
-//!   解析期**响亮报错**，⛔ 不静默近似（清单与理由见 [`FilterType`]）。
-//! * **不在本线**：`fil2_*` 第二滤波器、`fil_random`、`fil_gain`、
-//!   `fil_mode`、EQ 族 —— 审计报告 §8 子集外，不扩围。
+//! * ⭐ **类型支持（T-FIX-278）**：规范 23 个 `fil_type` 值**全部能解析**；
+//!   其中 15 个有 DSP 实现（v1 六个 ＋ `lpf_4p`/`hpf_4p`/`lpf_6p`/`hpf_6p`
+//!   级联 ＋ `apf_1p` ＋ `pkf_2p`/`lsh`/`hsh`/`peq`）；另 8 个（`*_sv` /
+//!   `bpf_1p` / `brf_1p` / `comb` / `pink`）**已识别但未实现** ⇒ 本层
+//!   **直通**，控制面装载回执的 `unsupportedFilterTypes[]` 点名（⛔ 不静默
+//!   近似，⛔ 也不再让整份乐器装载失败）。规范外字符串仍是解析期响亮
+//!   `InvalidOption`。清单与理由见 [`FilterType`]。
+//! * **不在本线**：`fil2_*` 第二滤波器（兄弟单 T-FIX-279）、`fil_random`、
+//!   `fil_mode`、EQ 族 —— 审计报告 §8 子集外，不扩围。`fil_gain` 已随
+//!   增益型（`lsh`/`hsh`/`peq`）接上。
 //!
 //! # ⭐ 区域声相（`pan`，stage 1：分声道通路）
 //!
@@ -3082,9 +3086,13 @@ impl SfzInstrument {
                     base_cutoff_hz: base_hz.unwrap_or(0.0),
                 };
                 let mut filter = match base_hz {
-                    Some(hz) => {
-                        configured_voice_filter(region.fil_type, hz, region.resonance, engine_hz)
-                    }
+                    Some(hz) => configured_voice_filter(
+                        region.fil_type,
+                        hz,
+                        region.resonance,
+                        region.fil_gain,
+                        engine_hz,
+                    ),
                     None => VoiceFilter::BYPASSED,
                 };
                 // ⭐ LFO（SFZ LFO 片）：离线路由 [`region_lfo_defs`] 现场归约
@@ -4933,9 +4941,11 @@ pub struct PreparedRegion {
     amp_keycenter: i32,
     /// ⭐ **滤波器类型**（`fil_type`，缺省 `lpf_2p`）。
     ///
-    /// 解析与取值域在 `yeban-sfz` 里**已落地**（[`Region::fil_type`]，
-    /// 未实现的规范值是响亮 `InvalidOption`）⇒ 本字段只把那份枚举搬进
-    /// 摊平表，⛔ 不新增解析。消费见 [`Self::voice_filter`]。
+    /// 解析与取值域在 `yeban-sfz` 里**已落地**（[`Region::fil_type`]）：
+    /// **规范内的 23 个值全部能解析**（T-FIX-278），其中 8 个已识别但未实现
+    /// （[`FilterType::is_implemented`] 为 false）⇒ [`Self::voice_filter`]
+    /// 直通、控制面装载回执点名；规范外字符串仍是响亮 `InvalidOption`。
+    /// 本字段只把那份枚举搬进摊平表，⛔ 不新增解析。
     fil_type: FilterType,
     /// ⭐ **滤波截止频率**（`cutoff`，**Hz**；`None` ＝ 滤波禁用）。
     ///
@@ -4947,6 +4957,12 @@ pub struct PreparedRegion {
     /// ⭐ **滤波谐振**（`resonance`，**dB**，缺省 0）。口径同
     /// [`Self::cutoff`]（[`Region::resonance`]，越界响亮报错）。
     resonance: f32,
+    /// ⭐ **滤波增益**（`fil_gain`，**dB**，ARIA，缺省 0）。
+    ///
+    /// 口径同 [`Self::cutoff`]（[`Region::fil_gain`]：规范无 Range ⇒ 只验
+    /// 有限浮点）。只被 `lsh` / `hsh` / `peq` 消费（架子/峰值增益）；
+    /// [`Self::voice_filter`] 把它交给 dsp 侧，⛔ 不在这里折算。
+    fil_gain: f32,
     /// ⭐ **滤波键位跟踪量**（`fil_keytrack`，**音分/键**，缺省 0）。
     /// 与 [`Self::fil_keycenter`] / [`Self::fil_veltrack`] 一起喂
     /// [`yeban_sfz::playback::filter_cutoff_hz`]（与离线
@@ -5178,6 +5194,15 @@ impl PreparedRegion {
         self.resonance
     }
 
+    /// ⭐ **滤波增益**（`fil_gain`，dB，原样；缺省 0）。
+    ///
+    /// 只有 `lsh` / `hsh` / `peq` 消费它；`pkf_2p` 的峰值增益取
+    /// [`Self::resonance`]（见 `yeban-sfz` 的 `FilterType` 文档）。
+    #[must_use]
+    pub const fn fil_gain(&self) -> f32 {
+        self.fil_gain
+    }
+
     /// ⭐ **滤波键位跟踪量**（`fil_keytrack`，音分/键，原样）。
     #[must_use]
     pub const fn fil_keytrack(&self) -> i32 {
@@ -5211,7 +5236,13 @@ impl PreparedRegion {
         let Some(hz) = self.base_cutoff_hz(note, velocity) else {
             return VoiceFilter::BYPASSED;
         };
-        configured_voice_filter(self.fil_type, hz, self.resonance, sample_rate)
+        configured_voice_filter(
+            self.fil_type,
+            hz,
+            self.resonance,
+            self.fil_gain,
+            sample_rate,
+        )
     }
 
     /// ⭐ 本区域在 (note, velocity) 上的**静态有效截止**（Hz；
@@ -7621,6 +7652,7 @@ fn flatten_regions(
                 fil_type: region.fil_type,
                 cutoff: region.cutoff,
                 resonance: region.resonance,
+                fil_gain: region.fil_gain,
                 fil_keytrack: region.fil_keytrack,
                 fil_keycenter: region.fil_keycenter,
                 fil_veltrack: region.fil_veltrack,
@@ -8288,33 +8320,60 @@ impl EnvRun {
     }
 }
 
-/// ⭐ **滤波类型映射 ＋ 系数配置**（SFZ 滤波静态族）：`yeban-sfz` 的
-/// [`FilterType`] 与 `yeban-dsp` 的 [`VoiceFilterKind`] 一一对应
+/// ⭐ **滤波类型映射**（SFZ 滤波静态族）：`yeban-sfz` 的 [`FilterType`]
+/// 与 `yeban-dsp` 的 [`VoiceFilterKind`] 的对应表
 /// （两个 crate 互不依赖，映射只能住在引擎层）。
 ///
+/// 有 DSP 实现的 15 个返回 `Some`；规范内**已识别但未实现**的 8 个
+/// （`bpf_1p` / `brf_1p` / `*_sv` / `comb` / `pink`）返回 `None` ⇒
+/// 调用方**直通**，控制面装载回执点名（见 `FilterType` 文档）。⛔ 不拿
+/// RBJ 冒充近似拓扑。
+fn voice_filter_kind(fil_type: FilterType) -> Option<VoiceFilterKind> {
+    match fil_type {
+        FilterType::Lowpass1p => Some(VoiceFilterKind::Lowpass1p),
+        FilterType::Highpass1p => Some(VoiceFilterKind::Highpass1p),
+        FilterType::Lowpass2p => Some(VoiceFilterKind::Lowpass2p),
+        FilterType::Highpass2p => Some(VoiceFilterKind::Highpass2p),
+        FilterType::Bandpass2p => Some(VoiceFilterKind::Bandpass2p),
+        FilterType::Bandreject2p => Some(VoiceFilterKind::Bandreject2p),
+        FilterType::Allpass1p => Some(VoiceFilterKind::Allpass1p),
+        FilterType::Peak2p => Some(VoiceFilterKind::Peak2p),
+        FilterType::Lowpass4p => Some(VoiceFilterKind::Lowpass4p),
+        FilterType::Highpass4p => Some(VoiceFilterKind::Highpass4p),
+        FilterType::Lowpass6p => Some(VoiceFilterKind::Lowpass6p),
+        FilterType::Highpass6p => Some(VoiceFilterKind::Highpass6p),
+        FilterType::LowShelf => Some(VoiceFilterKind::LowShelf),
+        FilterType::HighShelf => Some(VoiceFilterKind::HighShelf),
+        FilterType::Peaking => Some(VoiceFilterKind::Peaking),
+        FilterType::Bpf1p
+        | FilterType::Brf1p
+        | FilterType::Lpf2pSv
+        | FilterType::Hpf2pSv
+        | FilterType::Bpf2pSv
+        | FilterType::Brf2pSv
+        | FilterType::Comb
+        | FilterType::Pink => None,
+    }
+}
+
+/// ⭐ **滤波类型映射 ＋ 系数配置**（SFZ 滤波静态族）。
+///
 /// 离线 [`Region::filter_cutoff`] 与摊平 [`PreparedRegion::voice_filter`]
-/// 两条路共用本函数 ⇒ 类型映射只有一份（⛔ 不许两份实现）。
-/// `cutoff_hz` 必须是**已折算**的有效截止（钳制在 dsp 侧）。
+/// 两条路共用本函数 ⇒ 类型映射与系数配置各只有一份（⛔ 不许两份实现）。
+/// `cutoff_hz` 必须是**已折算**的有效截止（钳制在 dsp 侧）；`gain_db` 是
+/// `fil_gain`（只被 `lsh` / `hsh` / `peq` 消费）。
 fn configured_voice_filter(
     fil_type: FilterType,
     cutoff_hz: f32,
     resonance_db: f32,
+    gain_db: f32,
     sample_rate: f32,
 ) -> VoiceFilter {
-    let kind = match fil_type {
-        FilterType::Lowpass1p => VoiceFilterKind::Lowpass1p,
-        FilterType::Highpass1p => VoiceFilterKind::Highpass1p,
-        FilterType::Lowpass2p => VoiceFilterKind::Lowpass2p,
-        FilterType::Highpass2p => VoiceFilterKind::Highpass2p,
-        FilterType::Bandpass2p => VoiceFilterKind::Bandpass2p,
-        FilterType::Bandreject2p => VoiceFilterKind::Bandreject2p,
-        FilterType::Lowpass4p => VoiceFilterKind::Lowpass4p,
-        FilterType::Highpass4p => VoiceFilterKind::Highpass4p,
-        FilterType::Lowpass6p => VoiceFilterKind::Lowpass6p,
-        FilterType::Highpass6p => VoiceFilterKind::Highpass6p,
-        FilterType::Allpass1p => VoiceFilterKind::Allpass1p,
-    };
-    VoiceFilter::configured(kind, cutoff_hz, resonance_db, sample_rate)
+    match voice_filter_kind(fil_type) {
+        Some(kind) => VoiceFilter::configured(kind, cutoff_hz, resonance_db, gain_db, sample_rate),
+        // 已识别、未实现：声明了截止也直通（能力报告在控制面，⛔ 不在这里造近似）。
+        None => VoiceFilter::BYPASSED,
+    }
 }
 
 /// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点 ＋ 幅度包络）。

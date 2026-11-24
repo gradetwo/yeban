@@ -107,8 +107,8 @@ use yeban_render::wav::{read_plain_wav_f32, read_plain_wav_f32_from_bytes};
 use yeban_sfz::PlayDirection;
 use yeban_sfz::SampleEnd;
 use yeban_sfz::instrument::{
-    AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, OffMode, Region, Trigger, TriggerEvent,
-    amp_random_gain, rt_decay_gain, trigger_rand,
+    AMPLITUDE_DEFAULT_PERCENT, CcGate, FilterType, Instrument, OffMode, Region, Trigger,
+    TriggerEvent, amp_random_gain, rt_decay_gain, trigger_rand,
 };
 use yeban_sfz::modulation::{
     AmpegParam, CcMod, ModTarget, bake_cc_mods, tune_ratio_with_baked, volume_ratio_with_baked,
@@ -1081,6 +1081,14 @@ pub struct RegionSummary {
     pub velocity_high: u8,
     /// 根音（`pitch_keycenter`）。
     pub pitch_keycenter: i32,
+    /// ⭐ 滤波类型（`fil_type` 的规范名，见 [`FilterType::name`]；缺省
+    /// `lpf_2p`）。规范内 23 个值都能解析；`filterImplemented: false` 的
+    /// 类型**滤波直通**（能力报告，见 [`SfzLoad::unsupported_filter_types`]）。
+    pub filter_type: FilterType,
+    /// ⭐ 滤波增益（`fil_gain`，dB，原样；缺省 0）。
+    ///
+    /// 只被 `lsh` / `hsh` / `peq` 消费；其它类型原样回显、不生效。
+    pub filter_gain_db: f32,
     /// 是否由音符触发（`key=-1` 时为 `false`）。
     pub trigger_by_note: bool,
     /// 该区域是否要求循环（`loop_mode` 命中且窗口有效）——本实现**不**展开循环。
@@ -1118,6 +1126,9 @@ impl RegionSummary {
             "keyRange": [self.key_low, self.key_high],
             "velocityRange": [self.velocity_low, self.velocity_high],
             "pitchKeycenter": self.pitch_keycenter,
+            "filterType": self.filter_type.name(),
+            "filterImplemented": self.filter_type.is_implemented(),
+            "filterGainDb": self.filter_gain_db,
             "triggerByNote": self.trigger_by_note,
             "loops": self.loops,
             "builtinSilence": self.builtin_silence,
@@ -1619,6 +1630,43 @@ impl SfzLoad {
         warnings
     }
 
+    /// ⭐ **能力报告**（T-FIX-278）：规范内但本仓**未实现**的 `fil_type`。
+    ///
+    /// 逐类型聚合（类型名 → 区域下标，BTreeMap ⇒ 名字升序、下标升序；下标即
+    /// `regionDetails[].index`）。空 ⇒ 全部类型都有 DSP 实现。
+    ///
+    /// ⚠ **这些区域照样装载**（解析成功、采样/包络照旧），只有滤波器**直通**
+    /// —— 本函数的作用是让调用方知道"这个类型没生效"，⛔ 不是第二条失败通道。
+    /// 修前这 12 个规范值直接 `InvalidOption` ⇒ **整份乐器无法装载**（ISS
+    /// ISS-MWU4GFOJ-47EAFF 的病根）：合法 SFZ 文件不该因为用了规范类型而全盘拒绝。
+    #[must_use]
+    pub fn unsupported_filter_types(&self) -> Vec<serde_json::Value> {
+        let mut by_type: std::collections::BTreeMap<&'static str, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for region in &self.regions {
+            if !region.filter_type.is_implemented() {
+                by_type
+                    .entry(region.filter_type.name())
+                    .or_default()
+                    .push(region.index);
+            }
+        }
+        by_type
+            .into_iter()
+            .map(|(name, regions)| {
+                serde_json::json!({
+                    "type": name,
+                    "regionCount": regions.len(),
+                    "regions": regions,
+                    "supported": false,
+                    "hint": format!(
+                        "fil_type={name} 是 SFZ 规范值，但本仓尚未实现该滤波器拓扑 ⇒ 这些区域的滤波**直通**（采样与包络照常发声）；导入前请改用已实现类型，或在混音侧补等效 EQ。"
+                    ),
+                })
+            })
+            .collect()
+    }
+
     /// 真调用响应的 `data`。
     #[must_use]
     pub fn response_data(&self) -> serde_json::Value {
@@ -1652,6 +1700,12 @@ impl SfzLoad {
             "contentAddressed": true,
             "reused": self.reused,
         });
+        // ⭐ T-FIX-278：规范内未实现的 fil_type 在这里**显式点名**（只在命中时
+        // 出现，免得给普通回执添噪声）；区域照样装载、滤波直通。
+        let unsupported = self.unsupported_filter_types();
+        if !unsupported.is_empty() {
+            data["unsupportedFilterTypes"] = serde_json::Value::Array(unsupported);
+        }
         // ⭐ 用户初始 CC 只在非空时回显（不带参装载的回执与改前逐字一致）；
         // 复用登记时回报的是**登记时**的那份（与 `path` / `sampleHz` 同口径）。
         if !self.initial_cc.is_empty() {
@@ -1694,6 +1748,10 @@ impl SfzLoad {
                 "reused": self.reused,
             },
         });
+        let unsupported = self.unsupported_filter_types();
+        if !unsupported.is_empty() {
+            data["unsupportedFilterTypes"] = serde_json::Value::Array(unsupported);
+        }
         if !self.initial_cc.is_empty() {
             data["initialCc"] = initial_cc_value(&self.initial_cc);
         }
@@ -3045,6 +3103,8 @@ fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
         velocity_low: region.lovel,
         velocity_high: region.hivel,
         pitch_keycenter: region.pitch_keycenter,
+        filter_type: region.fil_type,
+        filter_gain_db: region.fil_gain,
         trigger_by_note: region.trigger_by_note,
         loops: region
             .playback_spec(

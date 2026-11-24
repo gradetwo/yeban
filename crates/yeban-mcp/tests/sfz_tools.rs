@@ -1434,3 +1434,150 @@ fn load_sfz_census_follows_set_cc_initial_values() {
     assert_eq!(warnings[0]["code"], "sfzCcGatedSilence");
     assert_eq!(warnings[0]["count"], 2);
 }
+
+// ---------------------------------------------------------------------------
+// 判据 h：⭐ T-FIX-278 —— 规范 23 个 fil_type 全部可装载，
+//          未实现的 8 个按类型点名（⛔ 不是装载失败），未知值仍响亮拒绝
+// ---------------------------------------------------------------------------
+
+/// 规范 23 个 `fil_type` 的**规范名**（顺序即 sfzformat 的列出序）。
+const SPEC_FILTER_TYPES: [&str; 23] = [
+    "lpf_1p",
+    "hpf_1p",
+    "lpf_2p",
+    "hpf_2p",
+    "bpf_2p",
+    "brf_2p",
+    "bpf_1p",
+    "brf_1p",
+    "apf_1p",
+    "lpf_2p_sv",
+    "hpf_2p_sv",
+    "bpf_2p_sv",
+    "brf_2p_sv",
+    "pkf_2p",
+    "lpf_4p",
+    "hpf_4p",
+    "lpf_6p",
+    "hpf_6p",
+    "comb",
+    "pink",
+    "lsh",
+    "hsh",
+    "peq",
+];
+
+/// ⭐ 修前这 12 个规范值落进 `InvalidOption` ⇒ **整份乐器无法装载**；
+/// 修后：23 个全部 `loaded:true`，逐区域读数正确；8 个未实现类型在
+/// `data.unsupportedFilterTypes[]` 里按类型点名（区域下标指向 regionDetails），
+/// 4 个增益型（pkf_2p/lsh/hsh/peq）**不**出现在该表里（它们有 DSP 实现）。
+#[test]
+fn every_spec_filter_type_loads_and_only_unimplemented_ones_are_named() {
+    let scratch = Scratch::new("filter-types");
+    let mut body = String::new();
+    for (index, name) in SPEC_FILTER_TYPES.iter().enumerate() {
+        // `*silence` 不读盘 ⇒ 回执里不会混进样本失败；每区域一键，避免抢音。
+        body.push_str(&format!(
+            "<region> sample=*silence key={index} fil_type={name} cutoff=1000 fil_gain=3\n"
+        ));
+    }
+    let path = scratch.write_sfz("all-filter-types.sfz", &body);
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    assert_eq!(data["loaded"], true, "{data}");
+    assert_eq!(data["regions"], 23, "23 个规范类型必须全部装载: {data}");
+
+    let details = data["regionDetails"].as_array().expect("regionDetails");
+    assert_eq!(details.len(), 23, "{data}");
+    for (index, name) in SPEC_FILTER_TYPES.iter().enumerate() {
+        assert_eq!(details[index]["filterType"], *name, "第 {index} 条读数");
+        assert_eq!(
+            details[index]["filterGainDb"], 3.0,
+            "第 {index} 条 fil_gain 原样带出"
+        );
+        let implemented = !matches!(
+            *name,
+            "bpf_1p"
+                | "brf_1p"
+                | "lpf_2p_sv"
+                | "hpf_2p_sv"
+                | "bpf_2p_sv"
+                | "brf_2p_sv"
+                | "comb"
+                | "pink"
+        );
+        assert_eq!(
+            details[index]["filterImplemented"], implemented,
+            "`{name}` 的实现标记"
+        );
+    }
+
+    // 未实现的 8 个：按类型名升序（BTreeMap），每条指向自己的区域下标。
+    let unsupported = data["unsupportedFilterTypes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("必须出现 unsupportedFilterTypes: {data}"));
+    let named: Vec<&str> = unsupported
+        .iter()
+        .map(|entry| entry["type"].as_str().expect("type"))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            "bpf_1p",
+            "bpf_2p_sv",
+            "brf_1p",
+            "brf_2p_sv",
+            "comb",
+            "hpf_2p_sv",
+            "lpf_2p_sv",
+            "pink"
+        ],
+        "⛔ 只点名未实现的 8 个（实现过的 pkf_2p/lsh/hsh/peq 不许出现）"
+    );
+    for entry in unsupported {
+        assert_eq!(entry["regionCount"], 1, "{entry}");
+        assert_eq!(entry["supported"], false, "{entry}");
+        let region = entry["regions"][0].as_u64().expect("regions[0]");
+        let expected_type = SPEC_FILTER_TYPES[region as usize];
+        assert_eq!(entry["type"], expected_type, "区域下标必须指回自己的类型");
+        assert!(
+            entry["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains(expected_type)),
+            "hint 必须点名类型: {entry}"
+        );
+    }
+
+    // 反向对照：统一文件里的 4 个增益型**全都有 DSP 实现**（不该被点名）。
+    for name in ["pkf_2p", "lsh", "hsh", "peq"] {
+        assert!(
+            !named.contains(&name),
+            "`{name}` 有 DSP 实现，不许进 unsupportedFilterTypes"
+        );
+    }
+
+    // 规范外未知值仍然是**响亮**的领域错误（⛔ 与规范内未实现混为一谈）。
+    let bogus = scratch.write_sfz(
+        "bogus-filter-type.sfz",
+        "<region> sample=*silence fil_type=bogus\n",
+    );
+    let rejected = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": bogus.display().to_string() }),
+    );
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{rejected}"
+    );
+    assert_eq!(
+        rejected["error"]["data"]["reason"], "sfzParseFailed",
+        "{rejected}"
+    );
+}

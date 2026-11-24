@@ -37,13 +37,26 @@
 //! * **带通**：RBJ 恒 0 dB 峰值增益形（`b = (α, 0, −α)`）；**带阻**：
 //!   RBJ 陷波形（`b = (1, −2cos, 1)`）。两者的 Q 由 `resonance` 同式给出
 //!   （决定带宽/陷宽）。
+//! * ⭐ **增益型（`pkf_2p` / `lsh` / `hsh` / `peq`；T-FIX-278）**：
+//!   `pkf_2p` 是 RBJ 峰值 EQ，**峰值增益 ＝ `resonance`**（本仓"截止频率处峰值
+//!   增益"的统一定义；SFZ v2 没有给它的 gain opcode），`Q` 取常量 [`PKF_Q`]
+//!   （v2 同样没有带宽 opcode ⇒ 实现口径，明记）；`lsh` / `hsh` 是 RBJ 低/高架
+//!   （斜率 `S = 1`，与 [`crate::shaping::Biquad`] 同一套公式），`peq` 是 RBJ
+//!   峰值 EQ（增益 ＝ `fil_gain`、`Q = 10^(resonance/20)`，与带通同式）。
+//!   增益参数是 [`VoiceFilter::configured`] 的 `gain_db` 入参；对非增益型它
+//!   **不参与**系数（只存进配置供 `retune` 复用）。
+//!   规范内的另外 8 个类型（`*_sv` / `bpf_1p` / `brf_1p` / `comb` / `pink`）
+//!   ⛔ **不映射**到本模块的 kind：引擎侧直通并在装载回执里点名（⛔ 不拿 RBJ
+//!   冒充近似拓扑）。
 //! * **频率钳制**（系数域，⛔ 不回写调用方的原始 Hz）：有效截止在系数
 //!   计算时钳进 `[1 Hz, 0.495 × sr]`。上界是双二阶稳定域的必需
 //!   （f0 必须 < Nyquist）；下界避免极低频下 f32 系数退化。钳制只影响
 //!   系数，不影响 `yeban-sfz` 报告的原始/有效 Hz 读数。
 //! * **防御性归一**：`sample_rate` 走 [`sanitise_sample_rate`]；
 //!   `resonance_db` 钳进规范域 `[0, 40]`（解析层已保证，此处只为手工
-//!   调用兜底）；`cutoff_hz` 为 NaN ⇒ 直通（⛔ 不让 NaN 进递推）。
+//!   调用兜底）；`gain_db` 钳进 `[−96, 96]` dB（规范**没有给** `fil_gain`
+//!   的 Range ⇒ 这只防荒谬值把 `A` 推到 inf，不是发明值域）；
+//!   `cutoff_hz` 为 NaN ⇒ 直通（⛔ 不让 NaN 进递推）。
 //!
 //! # 直通逐位恒等
 //!
@@ -65,6 +78,17 @@ const RESONANCE_DB_RANGE: (f32, f32) = (0.0, 40.0);
 /// Q 的下限（与 [`crate::shaping::Biquad`] 的 `q.max(0.05)` 同值）：
 /// 防 `alpha = sin/(2Q)` 在 Q→0 时爆掉。
 const MIN_Q: f32 = 0.05;
+/// ⭐ 增益型滤波（架子/峰值）的防御性钳制域（dB）。
+///
+/// SFZ 的 `fil_gain` 规范表**没有给 Range** ⇒ 解析层只验有限浮点；这里钳到
+/// ±96 dB 只为防荒谬值把 `A = 10^(g/40)` 推到 inf（⛔ 不是发明规范值域，
+/// 与 `resonance_db` 的兜底同口径）。
+const GAIN_DB_RANGE: (f32, f32) = (-96.0, 96.0);
+/// ⭐ `pkf_2p`（二阶峰值 EQ）的 Q：SFZ v2 没有给它的带宽 opcode ⇒ 实现口径。
+///
+/// `Q = 1`（约 1 倍频程带宽的峰值），与 `peq` 的"resonance 定 Q"不同 ——
+/// `pkf_2p` 的 `resonance` 全部用于峰值增益，见模块文档。
+const PKF_Q: f32 = 1.0;
 
 /// SFZ 滤波器类型在本 crate 的镜像（与 `yeban-sfz` 的 `FilterType`
 /// 一一对应；映射由引擎层做，本 crate ⛔ 不依赖 `yeban-sfz`）。
@@ -92,6 +116,14 @@ pub enum VoiceFilterKind {
     Highpass6p,
     /// ⭐ `apf_1p`：一阶全通（SFZ v2 选项）。幅度恒 0 dB，只改相位。
     Allpass1p,
+    /// ⭐ `pkf_2p`：二阶峰值 EQ（峰值增益 ＝ `resonance`，Q ＝ [`PKF_Q`]）。
+    Peak2p,
+    /// ⭐ `lsh`：低架 EQ（ARIA；架子增益 ＝ `gain_db`，斜率 S = 1）。
+    LowShelf,
+    /// ⭐ `hsh`：高架 EQ（ARIA；架子增益 ＝ `gain_db`，斜率 S = 1）。
+    HighShelf,
+    /// ⭐ `peq`：参数均衡（ARIA；峰值增益 ＝ `gain_db`，Q 由 `resonance` 给）。
+    Peaking,
 }
 
 impl VoiceFilterKind {
@@ -105,7 +137,11 @@ impl VoiceFilterKind {
             | VoiceFilterKind::Lowpass2p
             | VoiceFilterKind::Highpass2p
             | VoiceFilterKind::Bandpass2p
-            | VoiceFilterKind::Bandreject2p => 1,
+            | VoiceFilterKind::Bandreject2p
+            | VoiceFilterKind::Peak2p
+            | VoiceFilterKind::LowShelf
+            | VoiceFilterKind::HighShelf
+            | VoiceFilterKind::Peaking => 1,
             VoiceFilterKind::Lowpass4p | VoiceFilterKind::Highpass4p => 2,
             VoiceFilterKind::Lowpass6p | VoiceFilterKind::Highpass6p => 3,
         }
@@ -126,6 +162,10 @@ impl VoiceFilterKind {
             VoiceFilterKind::Lowpass6p => 9,
             VoiceFilterKind::Highpass6p => 10,
             VoiceFilterKind::Allpass1p => 11,
+            VoiceFilterKind::Peak2p => 12,
+            VoiceFilterKind::LowShelf => 13,
+            VoiceFilterKind::HighShelf => 14,
+            VoiceFilterKind::Peaking => 15,
         }
     }
 
@@ -144,6 +184,10 @@ impl VoiceFilterKind {
             9 => Some(VoiceFilterKind::Lowpass6p),
             10 => Some(VoiceFilterKind::Highpass6p),
             11 => Some(VoiceFilterKind::Allpass1p),
+            12 => Some(VoiceFilterKind::Peak2p),
+            13 => Some(VoiceFilterKind::LowShelf),
+            14 => Some(VoiceFilterKind::HighShelf),
+            15 => Some(VoiceFilterKind::Peaking),
             _ => None,
         }
     }
@@ -257,6 +301,62 @@ impl Section {
         self.set(a, 1.0, 0.0, 1.0, a, 0.0);
     }
 
+    /// ⭐ RBJ 峰值均衡（`peq` / `pkf_2p`）：中心 `freq`、带宽 `q`、
+    /// 峰值增益 `gain_db`（与 [`crate::shaping::Biquad::peaking`] 同式）。
+    ///
+    /// `A = 10^(gain_db/40)`；`gain_db == 0` ⇒ `A = 1` ⇒ 分子分母相同
+    /// （响应恰 0 dB，与不写该类型时的直通读数一致）。
+    fn peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
+        let a = libm::powf(10.0, gain_db / 40.0);
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = libm::sincosf(w0);
+        let alpha = sin / (2.0 * q.max(MIN_Q));
+        self.set(
+            1.0 + alpha * a,
+            -2.0 * cos,
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * cos,
+            1.0 - alpha / a,
+        );
+    }
+
+    /// ⭐ RBJ 低架（`lsh`），斜率 `S = 1`（与
+    /// [`crate::shaping::Biquad::low_shelf`] 同式，⛔ 不另立一套）。
+    fn low_shelf(&mut self, sample_rate: f32, freq: f32, gain_db: f32) {
+        let a = libm::powf(10.0, gain_db / 40.0);
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = libm::sincosf(w0);
+        let alpha = sin * 0.5 * core::f32::consts::SQRT_2;
+        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
+        self.set(
+            a * ((a + 1.0) - (a - 1.0) * cos + two_sqrt_a_alpha),
+            2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
+            a * ((a + 1.0) - (a - 1.0) * cos - two_sqrt_a_alpha),
+            (a + 1.0) + (a - 1.0) * cos + two_sqrt_a_alpha,
+            -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+            (a + 1.0) + (a - 1.0) * cos - two_sqrt_a_alpha,
+        );
+    }
+
+    /// ⭐ RBJ 高架（`hsh`），斜率 `S = 1`（与
+    /// [`crate::shaping::Biquad::high_shelf`] 同式）。
+    fn high_shelf(&mut self, sample_rate: f32, freq: f32, gain_db: f32) {
+        let a = libm::powf(10.0, gain_db / 40.0);
+        let w0 = TAU * (freq / sample_rate);
+        let (sin, cos) = libm::sincosf(w0);
+        let alpha = sin * 0.5 * core::f32::consts::SQRT_2;
+        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
+        self.set(
+            a * ((a + 1.0) + (a - 1.0) * cos + two_sqrt_a_alpha),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+            a * ((a + 1.0) + (a - 1.0) * cos - two_sqrt_a_alpha),
+            (a + 1.0) - (a - 1.0) * cos + two_sqrt_a_alpha,
+            2.0 * ((a - 1.0) - (a + 1.0) * cos),
+            (a + 1.0) - (a - 1.0) * cos - two_sqrt_a_alpha,
+        );
+    }
+
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
         let x = if x.is_finite() { x } else { 0.0 };
@@ -281,9 +381,9 @@ impl Section {
 
 /// 一只声部的静态滤波器：至多 3 节级联，单声道，`Copy`。
 ///
-/// 尺寸 96 B（3 节 × 28 B ＋ 节数标记 ＋ 自带配置三标量；SFZ 包络族片
-/// 为 [`VoiceFilter::retune_cutoff`] 加的 (类型码, 谐振, 采样率) ——
-/// 滤波静态族时是 88 B，净增 8 B：类型码占原对齐空隙），可整数组放进声部池侧
+/// 尺寸 **100 B**（3 节 × 28 B ＋ 节数标记 ＋ 自带配置四标量；SFZ 包络族片
+/// 为 [`VoiceFilter::retune_cutoff`] 加的 (类型码, 谐振, 采样率)，T-FIX-278
+/// 再加增益型的 `gain_db` —— 滤波静态族时是 88 B），可整数组放进声部池侧
 /// （引擎 `SfzVoicePool`），⛔ 不进逐声部结构体本身。
 /// 构造只有两条路：[`VoiceFilter::BYPASSED`]（直通）与
 /// [`VoiceFilter::configured`]（按参数算系数、状态清零 ＝ note-on 语义）；
@@ -296,6 +396,9 @@ pub struct VoiceFilter {
     kind_code: u8,
     /// ⭐ 配置时的谐振（dB，已钳进规范域；retune 时原样复用）。
     resonance_db: f32,
+    /// ⭐ 配置时的 `fil_gain`（dB，已钳进防御域；retune 时原样复用）。
+    /// 只有 `lsh` / `hsh` / `peq` 消费它（`pkf_2p` 用谐振当峰值增益）。
+    gain_db: f32,
     /// ⭐ 配置时的采样率（已 [`sanitise_sample_rate`]；retune 时原样复用）。
     sample_rate: f32,
 }
@@ -307,19 +410,25 @@ impl VoiceFilter {
         active: 0,
         kind_code: 0,
         resonance_db: 0.0,
+        gain_db: 0.0,
         sample_rate: 0.0,
     };
 
-    /// 按 (类型, 有效截止 Hz, 谐振 dB, 采样率) 配置一只新滤波器
+    /// 按 (类型, 有效截止 Hz, 谐振 dB, 增益 dB, 采样率) 配置一只新滤波器
     /// （递推状态清零）。参数的防御性归一见模块文档。
     ///
     /// `cutoff_hz` 是**已折算**的有效截止（键位/力度跟踪由调用方经
     /// `yeban-sfz` 的 `filter_cutoff_hz` 折好），本函数只做系数域钳制。
+    ///
+    /// ⭐ `gain_db` 是 SFZ 的 `fil_gain`（ARIA）：只有 `lsh` / `hsh` / `peq`
+    /// 消费；`pkf_2p` 的峰值增益取 `resonance_db`（见模块文档）；对其余类型
+    /// 只存进配置、⛔ 不进系数。
     #[must_use]
     pub fn configured(
         kind: VoiceFilterKind,
         cutoff_hz: f32,
         resonance_db: f32,
+        gain_db: f32,
         sample_rate: f32,
     ) -> VoiceFilter {
         if cutoff_hz.is_nan() {
@@ -329,6 +438,11 @@ impl VoiceFilter {
         let freq = cutoff_hz.clamp(MIN_CUTOFF_HZ, sample_rate * MAX_CUTOFF_FRACTION);
         let db = if resonance_db.is_finite() {
             resonance_db.clamp(RESONANCE_DB_RANGE.0, RESONANCE_DB_RANGE.1)
+        } else {
+            0.0
+        };
+        let gain = if gain_db.is_finite() {
+            gain_db.clamp(GAIN_DB_RANGE.0, GAIN_DB_RANGE.1)
         } else {
             0.0
         };
@@ -342,6 +456,7 @@ impl VoiceFilter {
         // **归一后**的值 ⇒ retune 重跑 `configured` 幂等、系数逐位相同）。
         filter.kind_code = kind.code();
         filter.resonance_db = db;
+        filter.gain_db = gain;
         filter.sample_rate = sample_rate;
         for section in filter.sections.iter_mut().take(sections) {
             match kind {
@@ -357,6 +472,13 @@ impl VoiceFilter {
                 VoiceFilterKind::Bandreject2p => section.bandreject(sample_rate, freq, q),
                 // ⭐ `apf_1p`：一阶全通不吃 `resonance`（没有峰），与 1p 低通/高通同口径。
                 VoiceFilterKind::Allpass1p => section.allpass_1p(sample_rate, freq),
+                // ⭐ 增益型（T-FIX-278）：`pkf_2p` 的峰值增益取谐振（v2 无
+                // gain opcode、Q 取常量）；三只 ARIA 类型取 `fil_gain`，
+                // `peq` 的谐振转成带宽（Q，与带通同式）。
+                VoiceFilterKind::Peak2p => section.peaking(sample_rate, freq, PKF_Q, db),
+                VoiceFilterKind::LowShelf => section.low_shelf(sample_rate, freq, gain),
+                VoiceFilterKind::HighShelf => section.high_shelf(sample_rate, freq, gain),
+                VoiceFilterKind::Peaking => section.peaking(sample_rate, freq, q, gain),
             }
         }
         filter
@@ -397,7 +519,13 @@ impl VoiceFilter {
             (self.sections[1].v1, self.sections[1].v2),
             (self.sections[2].v1, self.sections[2].v2),
         ];
-        *self = VoiceFilter::configured(kind, cutoff_hz, resonance_db, self.sample_rate);
+        *self = VoiceFilter::configured(
+            kind,
+            cutoff_hz,
+            resonance_db,
+            self.gain_db,
+            self.sample_rate,
+        );
         for (section, (v1, v2)) in self.sections.iter_mut().zip(states) {
             section.v1 = if v1.is_finite() { v1 } else { 0.0 };
             section.v2 = if v2.is_finite() { v2 } else { 0.0 };
@@ -479,11 +607,11 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// 尺寸钉：3 节 × 28 B ＋ `active`/`kind_code` 各 1 B ＋ 对齐 2 B ＋
-    /// 配置两标量 × 4 B = **96 B**（滤波静态族时 88 B；包络族片自带配置
-    /// 三标量里的类型码占的是原对齐空隙，净增只有谐振/采样率 8 B）。
+    /// 配置四标量 × 4 B = **100 B**（滤波静态族时 88 B；包络族片加谐振/采样率
+    /// 到 96 B，T-FIX-278 再加增益型的 `gain_db` 到 100 B）。
     #[test]
     fn voice_filter_size_is_pinned() {
-        assert_eq!(std::mem::size_of::<VoiceFilter>(), 96);
+        assert_eq!(std::mem::size_of::<VoiceFilter>(), 100);
     }
 
     /// 第一判据：直通逐位恒等（含符号位与 NaN 之外的任意位型）。
@@ -501,12 +629,89 @@ mod tests {
     /// 低通压高频、放行低频；高通反之（2p，resonance 0）。
     #[test]
     fn lowpass_and_highpass_shape_the_spectrum() {
-        let lp = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 1_000.0, 0.0, SR);
+        let lp = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 1_000.0, 0.0, 0.0, SR);
         assert!(lp.response_db(100.0, SR) > -1.0, "低频应近乎无损");
         assert!(lp.response_db(8_000.0, SR) < -30.0, "高频应被压下");
-        let hp = VoiceFilter::configured(VoiceFilterKind::Highpass2p, 1_000.0, 0.0, SR);
+        let hp = VoiceFilter::configured(VoiceFilterKind::Highpass2p, 1_000.0, 0.0, 0.0, SR);
         assert!(hp.response_db(8_000.0, SR) > -1.0);
         assert!(hp.response_db(100.0, SR) < -30.0);
+    }
+
+    /// ⭐ T-FIX-278：峰值/架子三种增益型真的按 dB 改变频响。
+    #[test]
+    fn gain_filters_shape_the_spectrum() {
+        // `pkf_2p`：峰值增益 ＝ `resonance`（+12 dB @ 1 kHz，Q ＝ PKF_Q）。
+        let pkf = VoiceFilter::configured(VoiceFilterKind::Peak2p, 1_000.0, 12.0, 0.0, SR);
+        let at = pkf.response_db(1_000.0, SR);
+        assert!((at - 12.0).abs() < 0.5, "pkf_2p 峰值应 ≈ +12 dB，实测 {at}");
+        assert!(
+            pkf.response_db(100.0, SR).abs() < 1.5,
+            "远离中心应接近 0 dB"
+        );
+        assert!(
+            pkf.response_db(10_000.0, SR).abs() < 1.5,
+            "远离中心应接近 0 dB"
+        );
+
+        // `peq`：`gain_db` 定峰值、`resonance` 定带宽（Q ≈ 2）⇒ 中心 +9 dB。
+        let peq = VoiceFilter::configured(VoiceFilterKind::Peaking, 1_000.0, 6.0, 9.0, SR);
+        let at = peq.response_db(1_000.0, SR);
+        assert!((at - 9.0).abs() < 0.6, "peq 峰值应 ≈ +9 dB，实测 {at}");
+
+        // `lsh`：低架 +12 dB 抬低频、不碰高频。
+        let lsh = VoiceFilter::configured(VoiceFilterKind::LowShelf, 1_000.0, 0.0, 12.0, SR);
+        assert!(
+            lsh.response_db(50.0, SR) > 10.0,
+            "低架在 50 Hz 应接近 +12 dB，实测 {}",
+            lsh.response_db(50.0, SR)
+        );
+        assert!(
+            lsh.response_db(12_000.0, SR).abs() < 1.0,
+            "低架在高频应 ≈ 0 dB，实测 {}",
+            lsh.response_db(12_000.0, SR)
+        );
+
+        // `hsh`：高架 −12 dB 压高频、不碰低频。
+        let hsh = VoiceFilter::configured(VoiceFilterKind::HighShelf, 1_000.0, 0.0, -12.0, SR);
+        assert!(
+            hsh.response_db(12_000.0, SR) < -10.0,
+            "高架在 12 kHz 应接近 −12 dB，实测 {}",
+            hsh.response_db(12_000.0, SR)
+        );
+        assert!(
+            hsh.response_db(50.0, SR).abs() < 1.0,
+            "高架在低频应 ≈ 0 dB，实测 {}",
+            hsh.response_db(50.0, SR)
+        );
+
+        // 0 dB 增益 ⇒ 恒等（响应 0 dB）：只识别类型、不把增益接进系数的
+        // 反例在这里会红（改 `peq` 的增益入参会立刻偏离）。
+        for kind in [
+            VoiceFilterKind::Peak2p,
+            VoiceFilterKind::LowShelf,
+            VoiceFilterKind::HighShelf,
+            VoiceFilterKind::Peaking,
+        ] {
+            let flat = VoiceFilter::configured(kind, 1_000.0, 0.0, 0.0, SR);
+            for freq in [50.0, 1_000.0, 12_000.0] {
+                assert!(
+                    flat.response_db(freq, SR).abs() < 0.05,
+                    "{kind:?} 在 0 dB 增益下 @{freq} 必须 ≈ 0 dB"
+                );
+            }
+        }
+    }
+
+    /// ⭐ T-FIX-278：`retune` 保留增益（改截止不能把架子/峰值增益弄丢）。
+    #[test]
+    fn retune_cutoff_keeps_the_gain() {
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Peaking, 1_000.0, 0.0, 12.0, SR);
+        filter.retune_cutoff(2_000.0);
+        let at = filter.response_db(2_000.0, SR);
+        assert!(
+            (at - 12.0).abs() < 0.6,
+            "retune 后峰值仍应 ≈ +12 dB，实测 {at}"
+        );
     }
 
     /// 谐振语义：截止频率处的增益 ≈ resonance dB（单节与级联同口径）。
@@ -517,7 +722,7 @@ mod tests {
             VoiceFilterKind::Lowpass4p,
             VoiceFilterKind::Lowpass6p,
         ] {
-            let filter = VoiceFilter::configured(kind, 1_000.0, 12.0, SR);
+            let filter = VoiceFilter::configured(kind, 1_000.0, 12.0, 0.0, SR);
             let at_cutoff = filter.response_db(1_000.0, SR);
             assert!(
                 (at_cutoff - 12.0).abs() < 0.5,
@@ -529,19 +734,19 @@ mod tests {
     /// 级联更陡：6p 在阻带比 2p 压得更深。
     #[test]
     fn cascades_are_steeper() {
-        let lp2 = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 1_000.0, 0.0, SR);
-        let lp6 = VoiceFilter::configured(VoiceFilterKind::Lowpass6p, 1_000.0, 0.0, SR);
+        let lp2 = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 1_000.0, 0.0, 0.0, SR);
+        let lp6 = VoiceFilter::configured(VoiceFilterKind::Lowpass6p, 1_000.0, 0.0, 0.0, SR);
         assert!(lp6.response_db(4_000.0, SR) < lp2.response_db(4_000.0, SR) - 20.0);
     }
 
     /// 带通只放行中心附近；带阻只压中心。
     #[test]
     fn bandpass_and_bandreject() {
-        let bp = VoiceFilter::configured(VoiceFilterKind::Bandpass2p, 1_000.0, 0.0, SR);
+        let bp = VoiceFilter::configured(VoiceFilterKind::Bandpass2p, 1_000.0, 0.0, 0.0, SR);
         assert!(bp.response_db(1_000.0, SR) > -3.0);
         assert!(bp.response_db(100.0, SR) < -15.0);
         assert!(bp.response_db(10_000.0, SR) < -15.0);
-        let br = VoiceFilter::configured(VoiceFilterKind::Bandreject2p, 1_000.0, 0.0, SR);
+        let br = VoiceFilter::configured(VoiceFilterKind::Bandreject2p, 1_000.0, 0.0, 0.0, SR);
         assert!(br.response_db(1_000.0, SR) < -30.0);
         assert!(br.response_db(100.0, SR) > -3.0);
     }
@@ -549,7 +754,7 @@ mod tests {
     /// 一阶低通：直流增益 1、高频渐衰（斜率比二阶缓）。
     #[test]
     fn one_pole_lowpass() {
-        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass1p, 1_000.0, 0.0, SR);
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass1p, 1_000.0, 0.0, 0.0, SR);
         // 阶跃响应单调趋近 1（直流增益 1）。
         let mut y = 0.0;
         for _ in 0..48_000 {
@@ -566,14 +771,14 @@ mod tests {
     /// ⭐ `apf_1p`：幅度**平坦**（全频段 ≈ 0 dB），只改相位。
     #[test]
     fn allpass_is_flat_in_magnitude() {
-        let filter = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 12.0, SR);
+        let filter = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 12.0, 0.0, SR);
         assert!(!filter.is_bypassed());
         for f in [50.0, 200.0, 1_000.0, 5_000.0, 12_000.0] {
             let db = filter.response_db(f, SR);
             assert!(db.abs() < 0.2, "{f} Hz 处应平坦（≈0 dB），实测 {db}");
         }
         // 相位确实被改（幅度不变 ⇒ 与直通在逐样本上不同，但能量有界）。
-        let mut ap = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, SR);
+        let mut ap = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, 0.0, SR);
         let mut peak = 0.0f32;
         for i in 0..4_800usize {
             let x = (TAU * 1_000.0 * i as f32 / SR).sin();
@@ -587,7 +792,7 @@ mod tests {
             "全通不应改变幅度，峰值实测 {peak}"
         );
         // 与直通不是同一条路：脉冲输入的首样本输出 = `a ≠ 0`（直通则恒等 1）。
-        let mut fresh = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, SR);
+        let mut fresh = VoiceFilter::configured(VoiceFilterKind::Allpass1p, 1_000.0, 0.0, 0.0, SR);
         let y0 = fresh.process(1.0);
         assert!(
             y0.is_finite() && y0 != 0.0,
@@ -598,7 +803,8 @@ mod tests {
     /// 逐样本稳定性：极端谐振（40 dB）＋脉冲输入，输出有界、无 NaN。
     #[test]
     fn impulse_response_decays_without_nan() {
-        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 5_000.0, 40.0, SR);
+        let mut filter =
+            VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 5_000.0, 40.0, 0.0, SR);
         let mut peak_tail = 0.0f32;
         for i in 0..48_000 {
             let x = if i == 0 { 1.0 } else { 0.0 };
@@ -614,7 +820,7 @@ mod tests {
     /// 截止越过 Nyquist 时钳到 0.495×sr：低通近乎全通（但不是直通位型）。
     #[test]
     fn cutoff_above_nyquist_is_clamped_not_bypassed() {
-        let filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 96_000.0, 0.0, SR);
+        let filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 96_000.0, 0.0, 0.0, SR);
         assert!(!filter.is_bypassed());
         assert!(filter.response_db(1_000.0, SR) > -1.0);
     }
@@ -622,14 +828,14 @@ mod tests {
     /// NaN 截止 ⇒ 直通（防御性归一，模块文档明记）。
     #[test]
     fn nan_cutoff_falls_back_to_bypass() {
-        let filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, f32::NAN, 0.0, SR);
+        let filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, f32::NAN, 0.0, 0.0, SR);
         assert!(filter.is_bypassed());
     }
 
     #[test]
     fn tdf2_matches_transfer_function_and_retunes_without_spike() {
         // 验证 TDF-II 首样本输出等于 b0 * x，且 24 dB 谐振下 retune_cutoff 不出现剧烈瞬态过冲。
-        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 500.0, 24.0, SR);
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass2p, 500.0, 24.0, 0.0, SR);
         let y0 = filter.process(1.0);
         assert!((y0 - filter.sections[0].b0).abs() < 1e-7);
 
@@ -655,8 +861,8 @@ mod tests {
 
     #[test]
     fn non_finite_input_and_poisoned_state_recover_cleanly() {
-        let mut f_bad = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, SR);
-        let mut f_zero = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, SR);
+        let mut f_bad = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, 0.0, SR);
+        let mut f_zero = VoiceFilter::configured(VoiceFilterKind::Lowpass4p, 1_000.0, 6.0, 0.0, SR);
         let bad_seq = [
             f32::NAN,
             f32::INFINITY,
@@ -694,7 +900,7 @@ mod tests {
         // 回归钉（T-CI-FIX-1）：毒状态不在链头时，整只滤波器仍须返回 0 并清零
         // 全部在用节。节级守卫只清本节，毒 sections[1] 时下游节的残留状态
         // 同样会漏出声——与链头中毒是同一根因的不同落点。
-        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass6p, 1_000.0, 6.0, SR);
+        let mut filter = VoiceFilter::configured(VoiceFilterKind::Lowpass6p, 1_000.0, 6.0, 0.0, SR);
         for _ in 0..16 {
             assert!(filter.process(0.25).is_finite());
         }

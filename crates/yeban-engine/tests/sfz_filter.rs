@@ -12,7 +12,9 @@
 //! | F5 | `fil_keytrack` 生效：高键的截止被推高 ⇒ 高频内容回来 | RMS 比（同 region、两键对照） |
 //! | F6 | 池跨块延续：两块渲染 == 一块渲染逐位（滤波递推状态写回正确） | 逐位 |
 //! | F7 | 窃取/提升路径不 panic 且出声（提升期现场配置滤波） | 有限、非静音 |
-//! | F8 | 摊平表原样带出六个标量 | `PreparedRegion` 访问器 |
+//! | F8 | 摊平表原样带出六个标量（＋`fil_gain`） | `PreparedRegion` 访问器 |
+//! | F9 | ⭐ 增益型 `pkf_2p`/`lsh`/`hsh`/`peq` 真的改变频响 | 中心频率正弦的 RMS 比 |
+//! | F10 | ⭐ 8 个未实现规范类型解析成功且直通（读数正确、能力标记 false） | 逐位 ＋ 访问器 |
 //!
 //! 夹具 PCM 是 **Nyquist 交替**（`+0.5, −0.5, …`）：全部能量在最高频，
 //! 低通开/关的差别最大；`pitch_keytrack=0` 让所有键的速率恰为 1
@@ -258,7 +260,7 @@ fn f7_steal_promotion_configures_the_filter() {
 #[test]
 fn f8_prepared_region_carries_the_filter_scalars() {
     let sfz = SfzInstrument::load(
-        "<region> sample=a.wav cutoff=1000 resonance=6 fil_type=hpf_4p \
+        "<region> sample=a.wav cutoff=1000 resonance=6 fil_type=hpf_4p fil_gain=-3.5 \
          fil_keytrack=100 fil_keycenter=52 fil_veltrack=-1200"
             .to_owned(),
         &Default::default(),
@@ -269,7 +271,104 @@ fn f8_prepared_region_carries_the_filter_scalars() {
     assert_eq!(region.fil_type(), FilterType::Highpass4p);
     assert_eq!(region.cutoff(), Some(1000.0));
     assert_eq!(region.resonance(), 6.0);
+    assert_eq!(region.fil_gain(), -3.5, "fil_gain 原样带出");
     assert_eq!(region.fil_keytrack(), 100);
     assert_eq!(region.fil_keycenter(), 52);
     assert_eq!(region.fil_veltrack(), -1200);
+}
+
+/// ⭐ F9（T-FIX-278）：四种增益型滤波**真的生效**（不是只把报错改成了通过）。
+///
+/// 每个类型都拿**中心频率的正弦**做 RMS 比：+12 dB ⇒ ≈ ×4，−12 dB ⇒ ≈ ×0.25。
+/// 夹具用 0.1 s 的 1 kHz / 100 Hz / 12 kHz 正弦（pitch_keytrack=0 ⇒ 速率 1）。
+#[test]
+fn f9_gain_filter_types_actually_filter() {
+    let one_k = InMemorySample::sine(1_000.0, HZ, PCM);
+    let flat_1k = render_pool(REGION, &one_k, 60);
+
+    // pkf_2p：resonance 就是峰值增益（+12 dB @ 1 kHz）。
+    let pkf = render_pool(
+        "<region> sample=a.wav pitch_keytrack=0 cutoff=1000 fil_type=pkf_2p resonance=12",
+        &one_k,
+        60,
+    );
+    let ratio = rms(&pkf[512..]) / rms(&flat_1k[512..]);
+    assert!(
+        ratio > 3.0,
+        "⭐ pkf_2p(+12 dB) 应把 1 kHz 抬到 ≈ ×4，实测比 {ratio}"
+    );
+
+    // peq：fil_gain 定峰值（+12 dB @ 1 kHz）。
+    let peq = render_pool(
+        "<region> sample=a.wav pitch_keytrack=0 cutoff=1000 fil_type=peq resonance=0 fil_gain=12",
+        &one_k,
+        60,
+    );
+    let ratio = rms(&peq[512..]) / rms(&flat_1k[512..]);
+    assert!(
+        ratio > 3.0,
+        "⭐ peq(+12 dB) 应把 1 kHz 抬到 ≈ ×4，实测比 {ratio}"
+    );
+
+    // lsh：低架 +12 dB 抬 100 Hz（截止 1 kHz 的低架在起点以下 ≈ +12 dB）。
+    let low = InMemorySample::sine(100.0, HZ, PCM);
+    let flat_low = render_pool(REGION, &low, 60);
+    let lsh = render_pool(
+        "<region> sample=a.wav pitch_keytrack=0 cutoff=1000 fil_type=lsh fil_gain=12",
+        &low,
+        60,
+    );
+    let ratio = rms(&lsh[512..]) / rms(&flat_low[512..]);
+    assert!(
+        ratio > 3.0,
+        "⭐ lsh(+12 dB) 应把 100 Hz 抬到 ≈ ×4，实测比 {ratio}"
+    );
+
+    // hsh：高架 −12 dB 压 12 kHz。
+    let high = InMemorySample::sine(12_000.0, HZ, PCM);
+    let flat_high = render_pool(REGION, &high, 60);
+    let hsh = render_pool(
+        "<region> sample=a.wav pitch_keytrack=0 cutoff=1000 fil_type=hsh fil_gain=-12",
+        &high,
+        60,
+    );
+    let ratio = rms(&hsh[512..]) / rms(&flat_high[512..]);
+    assert!(
+        ratio < 0.35,
+        "⭐ hsh(−12 dB) 应把 12 kHz 压到 ≈ ×0.25，实测比 {ratio}"
+    );
+}
+
+/// ⭐ F10（T-FIX-278）：8 个已识别、未实现的规范类型**解析成功且直通**
+/// （⛔ 不再让整份乐器装载失败），读数仍逐值正确；控制面据
+/// FilterType::is_implemented 点名（见 yeban_load_sfz 的判据）。
+#[test]
+fn f10_unimplemented_spec_types_parse_and_pass_through() {
+    let plain = render_pool(REGION, &nyquist(), 60);
+    for name in [
+        "bpf_1p",
+        "brf_1p",
+        "lpf_2p_sv",
+        "hpf_2p_sv",
+        "bpf_2p_sv",
+        "brf_2p_sv",
+        "comb",
+        "pink",
+    ] {
+        let text = format!("<region> sample=a.wav pitch_keytrack=0 cutoff=200 fil_type={name}");
+        let rendered = render_pool(&text, &nyquist(), 60);
+        assert_eq!(
+            bits(&plain),
+            bits(&rendered),
+            "⭐ {name} 已识别但未实现 ⇒ 必须直通（与裸 region 逐位相同）"
+        );
+        let sfz = SfzInstrument::load(text, &Default::default()).expect("规范值必须解析成功");
+        let prepared = PreparedSfz::prepare(&sfz, &nyquist(), HZ).expect("摊平必须成功");
+        let region = &prepared.regions()[0];
+        assert_eq!(region.fil_type().name(), name);
+        assert!(
+            !region.fil_type().is_implemented(),
+            "{name} 必须登记为未实现"
+        );
+    }
 }

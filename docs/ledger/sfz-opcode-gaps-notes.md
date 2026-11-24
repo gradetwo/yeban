@@ -270,7 +270,7 @@ loop_end == 0（一个点都没写）  ⇒ 用样本的 (start, end)
 | :--- | :--- | :--- |
 | `pitch_offset` 未实现 | **规范没有这个 opcode**（音高偏移由 `transpose` / `tune` / `note_offset` / `octave_offset` 承担；全站没有 `pitch_offset` 页） | 从缺口表**撤下**（旧结论是误判，⛔ 不为不存在的 opcode 造实现） |
 | `<sample>` 段头 / `count` 未建模 | `<sample>` 是**内嵌样本数据**（Rapture 专有，spec 原文："Allows to embed sample data directly in SFZ files"），**不是**"一个 region 挂多份采样"的容器 | 维持不建模：段头落 [`Warning::IgnoredHeader`]（已有告警），⛔ 不是静默 |
-| `apf_1p` 不在白名单 | `fil_type` 的 v2 选项本就有 `apf_1p`（另有一整排：`bpf_1p` / `brf_1p` / `*_sv` / `pkf_2p` / `comb` / `pink`，ARIA 的 `lsh` / `hsh` / `peq`，以及二阶串联的 `fil2_type`） | **已补**：`FilterType::Allpass1p` ＋ `VoiceFilterKind::Allpass1p`（一阶全通，幅度平坦、只改相位）；其余值**维持响亮拒绝**（`InvalidOption` 的允许值清单已同步成 11 个） |
+| `apf_1p` 不在白名单 | `fil_type` 的 v2 选项本就有 `apf_1p`（另有一整排：`bpf_1p` / `brf_1p` / `*_sv` / `pkf_2p` / `comb` / `pink`，ARIA 的 `lsh` / `hsh` / `peq`，以及二阶串联的 `fil2_type`） | **已补**：`FilterType::Allpass1p` ＋ `VoiceFilterKind::Allpass1p`（一阶全通，幅度平坦、只改相位）。⭐ **2026-11-24 T-FIX-278 再修订**：这一条当时的"其余值维持响亮拒绝"是**错的** —— 12 个规范值被拒 ⇒ 整份乐器装载失败（ISS `ISS-MWU4GFOJ-47EAFF`）。现白名单与规范 **23 个值逐个对齐**：15 个有 DSP 实现（再加 `pkf_2p` / `lsh` / `hsh` / `peq`，其中 ARIA 三型吃 `fil_gain`），8 个（`bpf_1p` / `brf_1p` / `*_sv` / `comb` / `pink`）**已识别未实现** ⇒ 滤波直通、`yeban_load_sfz` 的 `data.unsupportedFilterTypes[]` 点名；规范外未知值仍 `InvalidOption` |
 
 ### §5.5 `<effect>`：**声明了但不处理，现在会告警**
 

@@ -12,8 +12,9 @@
 //! （`pitch_keycenter` 默认 60、`lokey` 0、`hikey` 127、`lovel` 0、`hivel` 127、
 //! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`lorand` 0、`hirand` 1、
 //! `tune` 0、`transpose` 0、`pitch_keytrack` 100、`amp_keytrack` 0、`amp_keycenter` 60、
-//! `fil_type` `lpf_2p`、`resonance` 0、`fil_keytrack` 0、`fil_keycenter` 60、
-//! `fil_veltrack` 0；`cutoff` **无数值缺省**——缺失即滤波禁用，见 [`Region::cutoff`]）。
+//! `fil_type` `lpf_2p`、`resonance` 0、`fil_gain` 0、`fil_keytrack` 0、
+//! `fil_keycenter` 60、`fil_veltrack` 0；`cutoff` **无数值缺省**——缺失即滤波禁用，
+//! 见 [`Region::cutoff`]）。
 //!
 //! ## ⚠ 三处**登记在案**的缺省偏离（⛔ 不是静默降级）
 //!
@@ -117,7 +118,7 @@ impl PlayDirection {
     pub const ALLOWED: &'static str = "forward, reverse";
 }
 
-/// 滤波器类型（`fil_type` opcode，SFZ v1/v2，默认 `lpf_2p`）。
+/// 滤波器类型（`fil_type` opcode，SFZ v1/v2/ARIA，默认 `lpf_2p`）。
 ///
 /// 出处：<https://sfzformat.com/opcodes/fil_type/>。v1 选项六个
 /// （`lpf_1p` / `hpf_1p` / `lpf_2p` / `hpf_2p` / `bpf_2p` / `brf_2p`）；
@@ -125,14 +126,30 @@ impl PlayDirection {
 /// `bpf_2p_sv` / `brf_2p_sv` / `pkf_2p` / `lpf_4p` / `hpf_4p` / `lpf_6p` /
 /// `hpf_6p` / `comb` / `pink`；ARIA 追加 `lsh` / `hsh` / `peq`。
 ///
-/// ⭐ **本仓实现子集（11 个）**：v1 六个 ＋ v2 的 `lpf_4p` / `hpf_4p` /
-/// `lpf_6p` / `hpf_6p`（RBJ 双二阶节级联，见 `yeban-dsp` 的 `VoiceFilter`）
-/// ＋ `apf_1p`（一阶全通，2026-11-19 补：幅度平坦、只改相位）。
-/// 其余规范值**响亮报错**（[`SfzError::InvalidOption`]），⛔ 不静默替换成近似
-/// 类型：`*_sv` 是状态变量拓扑（与 RBJ 的相位/谐振行为不同，另立项）、
-/// `pkf_2p` / `lsh` / `hsh` / `peq` 依赖 `fil_gain`（不在滤波静态族一期
-/// 范围）、`comb` / `pink` 不是截止频率型滤波、`bpf_1p` / `brf_1p`
-/// 语料罕见（另立项）。
+/// ⭐ **全部 23 个规范值都能解析**（2026-11-24，T-FIX-278）：白名单
+/// [`Self::OPTIONS`] 与规范逐个对齐 —— 合法 SFZ 乐器⛔ 不会因为用了某个规范
+/// 滤波器类型而**整份装载失败**。其中 **15 个有 DSP 实现**（v1 六个 ＋
+/// `lpf_4p` / `hpf_4p` / `lpf_6p` / `hpf_6p` ＋ `apf_1p` ＋ `pkf_2p` /
+/// `lsh` / `hsh` / `peq`）；另 8 个**已识别但未实现**（[`Self::is_implemented`]
+/// 为 `false`）：`bpf_1p` / `brf_1p` / `lpf_2p_sv` / `hpf_2p_sv` /
+/// `bpf_2p_sv` / `brf_2p_sv` / `comb` / `pink`。
+///
+/// ⚠ **未实现类型 ≠ 未知类型**：规范外的未知字符串仍然**响亮报错**
+/// （[`SfzError::InvalidOption`]）；规范内但未实现的 8 个则**解析成功**，
+/// [`Region::fil_type`] 原样保留，DSP 侧**直通**，控制面装载回执
+/// （`yeban_load_sfz` 的 `unsupportedFilterTypes[]`）**显式点名**该类型与区域数。
+/// 理由：⛔ 不拿 RBJ 冒充近似拓扑 —— `*_sv` 是状态变量拓扑（相位/谐振与 RBJ
+/// 不同）、`comb` / `pink` 不是截止频率型滤波、`bpf_1p` / `brf_1p` 语料罕见，
+/// 各自另立项。
+///
+/// 系数口径（规范只给类型名与白名单，系数设计属实现口径，本仓明记）：
+/// * `pkf_2p`：RBJ 峰值 EQ，**峰值增益 ＝ `resonance`**（本仓"截止处峰值增益"
+///   的统一定义；v2 没有给它的 gain opcode），`Q = 1`（v2 无带宽 opcode ⇒
+///   常量，见 `yeban-dsp` 的 `PKF_Q`）；
+/// * `lsh` / `hsh` / `peq`（ARIA）：增益取 [`Region::fil_gain`]（规范正文逐字
+///   "used by the additional ARIA extension filter types lsh … hsh … peq"），
+///   `peq` 的 `resonance` 再定带宽（Q ＝ `10^(dB/20)`，与带通同式），架子
+///   斜率固定 `S = 1`（与 `yeban-dsp` 的通道条 EQ 同一套 RBJ 公式）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterType {
     /// `lpf_1p`：一阶低通（单极点 RC 形）。
@@ -163,10 +180,36 @@ pub enum FilterType {
     /// 白名单，不给系数设计 ⇒ 系数是实现口径，本仓明记）。
     /// `resonance` 对一阶全通无意义（没有峰），与 1p 低通/高通同口径忽略。
     Allpass1p,
+    /// `bpf_1p`：一阶带通（SFZ v2）。**已识别、未实现**（滤波直通）。
+    Bpf1p,
+    /// `brf_1p`：一阶带阻（SFZ v2）。**已识别、未实现**（滤波直通）。
+    Brf1p,
+    /// `lpf_2p_sv`：二阶低通，状态变量拓扑（SFZ v2）。**已识别、未实现**。
+    Lpf2pSv,
+    /// `hpf_2p_sv`：二阶高通，状态变量拓扑（SFZ v2）。**已识别、未实现**。
+    Hpf2pSv,
+    /// `bpf_2p_sv`：二阶带通，状态变量拓扑（SFZ v2）。**已识别、未实现**。
+    Bpf2pSv,
+    /// `brf_2p_sv`：二阶带阻，状态变量拓扑（SFZ v2）。**已识别、未实现**。
+    Brf2pSv,
+    /// ⭐ `pkf_2p`：二阶峰值 EQ（SFZ v2）。峰值增益 ＝ `resonance`（dB）。
+    Peak2p,
+    /// `comb`：梳状滤波（SFZ v2，延迟 ＝ 1/cutoff）。**已识别、未实现**。
+    Comb,
+    /// `pink`：粉噪整形（SFZ v2）。**已识别、未实现**。
+    Pink,
+    /// ⭐ `lsh`：低架 EQ（ARIA）。架子增益 ＝ `fil_gain`（dB）。
+    LowShelf,
+    /// ⭐ `hsh`：高架 EQ（ARIA）。架子增益 ＝ `fil_gain`（dB）。
+    HighShelf,
+    /// ⭐ `peq`：参数均衡（ARIA）。峰值增益 ＝ `fil_gain`（dB），
+    /// `resonance` 定带宽（Q ＝ `10^(dB/20)`）。
+    Peaking,
 }
 
 impl FilterType {
-    /// 白名单（`opcode=value` 的大小写不敏感匹配集合）。
+    /// 白名单（`opcode=value` 的大小写不敏感匹配集合；**与规范 23 个值逐个
+    /// 对齐**，顺序即 <https://sfzformat.com/opcodes/fil_type/> 的列出序）。
     pub const OPTIONS: &'static [(&'static str, FilterType)] = &[
         ("lpf_1p", FilterType::Lowpass1p),
         ("hpf_1p", FilterType::Highpass1p),
@@ -174,17 +217,86 @@ impl FilterType {
         ("hpf_2p", FilterType::Highpass2p),
         ("bpf_2p", FilterType::Bandpass2p),
         ("brf_2p", FilterType::Bandreject2p),
+        ("bpf_1p", FilterType::Bpf1p),
+        ("brf_1p", FilterType::Brf1p),
+        ("apf_1p", FilterType::Allpass1p),
+        ("lpf_2p_sv", FilterType::Lpf2pSv),
+        ("hpf_2p_sv", FilterType::Hpf2pSv),
+        ("bpf_2p_sv", FilterType::Bpf2pSv),
+        ("brf_2p_sv", FilterType::Brf2pSv),
+        ("pkf_2p", FilterType::Peak2p),
         ("lpf_4p", FilterType::Lowpass4p),
         ("hpf_4p", FilterType::Highpass4p),
         ("lpf_6p", FilterType::Lowpass6p),
         ("hpf_6p", FilterType::Highpass6p),
-        ("apf_1p", FilterType::Allpass1p),
+        ("comb", FilterType::Comb),
+        ("pink", FilterType::Pink),
+        ("lsh", FilterType::LowShelf),
+        ("hsh", FilterType::HighShelf),
+        ("peq", FilterType::Peaking),
     ];
 
-    /// 用于错误信息的允许值列表（**只列本仓实现的子集**：未实现值与
-    /// 未知值同样报错，差别只在调用方查文档时的登记说明，见枚举文档）。
-    pub const ALLOWED: &'static str =
-        "lpf_1p, hpf_1p, lpf_2p, hpf_2p, bpf_2p, brf_2p, lpf_4p, hpf_4p, lpf_6p, hpf_6p, apf_1p";
+    /// 用于错误信息的允许值列表（**全部 23 个规范值**：只有规范外的未知
+    /// 字符串才报错；规范内未实现的 8 个解析成功后由控制面点名，见枚举文档）。
+    pub const ALLOWED: &'static str = "lpf_1p, hpf_1p, lpf_2p, hpf_2p, bpf_2p, brf_2p, bpf_1p, \
+         brf_1p, apf_1p, lpf_2p_sv, hpf_2p_sv, bpf_2p_sv, brf_2p_sv, pkf_2p, lpf_4p, hpf_4p, \
+         lpf_6p, hpf_6p, comb, pink, lsh, hsh, peq";
+
+    /// 规范名（`fil_type=` 的字符串；与 [`Self::OPTIONS`] 一一对应）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            FilterType::Lowpass1p => "lpf_1p",
+            FilterType::Highpass1p => "hpf_1p",
+            FilterType::Lowpass2p => "lpf_2p",
+            FilterType::Highpass2p => "hpf_2p",
+            FilterType::Bandpass2p => "bpf_2p",
+            FilterType::Bandreject2p => "brf_2p",
+            FilterType::Bpf1p => "bpf_1p",
+            FilterType::Brf1p => "brf_1p",
+            FilterType::Allpass1p => "apf_1p",
+            FilterType::Lpf2pSv => "lpf_2p_sv",
+            FilterType::Hpf2pSv => "hpf_2p_sv",
+            FilterType::Bpf2pSv => "bpf_2p_sv",
+            FilterType::Brf2pSv => "brf_2p_sv",
+            FilterType::Peak2p => "pkf_2p",
+            FilterType::Lowpass4p => "lpf_4p",
+            FilterType::Highpass4p => "hpf_4p",
+            FilterType::Lowpass6p => "lpf_6p",
+            FilterType::Highpass6p => "hpf_6p",
+            FilterType::Comb => "comb",
+            FilterType::Pink => "pink",
+            FilterType::LowShelf => "lsh",
+            FilterType::HighShelf => "hsh",
+            FilterType::Peaking => "peq",
+        }
+    }
+
+    /// ⭐ 本仓是否有该类型的 DSP 实现。
+    ///
+    /// `false` ⇒ 解析成功但滤波**直通**，控制面装载回执必须在
+    /// `unsupportedFilterTypes[]` 里点名（⛔ 不能靠解析失败替代能力报告）。
+    #[must_use]
+    pub const fn is_implemented(self) -> bool {
+        matches!(
+            self,
+            FilterType::Lowpass1p
+                | FilterType::Highpass1p
+                | FilterType::Lowpass2p
+                | FilterType::Highpass2p
+                | FilterType::Bandpass2p
+                | FilterType::Bandreject2p
+                | FilterType::Allpass1p
+                | FilterType::Peak2p
+                | FilterType::Lowpass4p
+                | FilterType::Highpass4p
+                | FilterType::Lowpass6p
+                | FilterType::Highpass6p
+                | FilterType::LowShelf
+                | FilterType::HighShelf
+                | FilterType::Peaking
+        )
+    }
 }
 
 /// region 收到的 MIDI 事件：`trigger` 门控的**事件口径**。
@@ -480,6 +592,20 @@ pub const FIL_TYPE_DEFAULT: FilterType = FilterType::Lowpass2p;
 /// 出处逐字 <https://sfzformat.com/opcodes/resonance/> 的表行
 /// （`resonance`｜SFZ v1｜float｜**Default = 0**｜Range = 0 to 40｜Unit = dB）。
 pub const RESONANCE_DEFAULT_DB: f32 = 0.0;
+
+/// ⭐ **`fil_gain` 的规范缺省**：**0** dB。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/fil_gain/> 的表行
+/// （`fil_gain`｜ARIA｜float｜**Default = 0**｜Range 空白｜dB）。同页正文：
+/// "Gain for lsh, hsh and peq filter types" —— 只有三种 ARIA 类型消费它；
+/// `pkf_2p` 的峰值增益走 `resonance`（v2 没有给它的 gain opcode）。
+///
+/// ⚠ 规范**没有给 Range**（表里那一格是空白）⇒ 解析层只验"有限浮点"
+/// （[`SfzError::NonFiniteFloat`]），⛔ 不发明值域；DSP 侧对荒谬值做防御性
+/// 钳制（见 `yeban-dsp` 的 `GAIN_DB_RANGE`），与 `resonance` 的兜底同口径。
+/// 缺省 0 dB ⇒ 架子/峰值滤波的系数退化为恒等（响应 0 dB），与不写该 opcode
+/// 逐位相同。
+pub const FIL_GAIN_DEFAULT_DB: f32 = 0.0;
 
 /// `resonance` 的规范取值下界（dB；格式页 Range `0 to 40`）。
 ///
@@ -1106,6 +1232,18 @@ pub struct Region<'a> {
     /// 级联型（`lpf_4p` 等）把总 dB 在各节均分，使截止处**总**峰值增益
     /// 等于本字段。换算在 `yeban-dsp` 的 `VoiceFilter::configure`。
     pub resonance: f32,
+    /// ⭐ `fil_gain`：架子/峰值增益（**dB**，ARIA，缺省
+    /// [`FIL_GAIN_DEFAULT_DB`] ＝ 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/fil_gain/>（Type = float、
+    /// Default = 0、Range 空白、Unit = dB；"Gain for lsh, hsh and peq filter
+    /// types"）。消费方只有三种 ARIA 类型：`lsh` / `hsh` 的架子增益、
+    /// `peq` 的峰值增益（见 [`FilterType`] 文档）。对其它类型**不生效**
+    /// （原样保留，⛔ 不因类型不同而丢弃）。
+    ///
+    /// 缺失 ⇒ 0 dB ⇒ 架子/峰值系数退化为恒等（响应 0 dB）；解析只验有限
+    /// 浮点（规范无 Range），荒谬值的防御性钳制在 `yeban-dsp` 的系数域。
+    pub fil_gain: f32,
     /// `fil_keytrack`：键位 → 截止频率的跟踪量（**音分/键**，规范范围
     /// 0..=1200，缺省 [`FIL_KEYTRACK_DEFAULT`] ＝ 0）。
     ///
@@ -3094,8 +3232,8 @@ pub(crate) fn build_region<'a>(
         1200,
         PITCH_KEYTRACK_DEFAULT,
     )?;
-    // ---- 滤波静态族（`fil_type` / `cutoff` / `resonance` / `fil_keytrack` /
-    //      `fil_keycenter` / `fil_veltrack`） ----
+    // ---- 滤波静态族（`fil_type` / `cutoff` / `resonance` / `fil_gain` /
+    //      `fil_keytrack` / `fil_keycenter` / `fil_veltrack`） ----
     // 规范：`fil_type` Default = lpf_2p；`cutoff` Default = **filter disabled**
     // （无数值缺省 ⇒ `Option`，缺失 = `None`）；`resonance` Default = 0、
     // Range = 0 to 40 dB；`fil_keytrack` Default = 0、Range = 0 to 1200 音分；
@@ -3140,6 +3278,13 @@ pub(crate) fn build_region<'a>(
             db
         }
         None => RESONANCE_DEFAULT_DB,
+    };
+    // ⭐ `fil_gain`（ARIA，dB，Default = 0、Range 空白）：只验有限浮点
+    // （`as_f32` 已挡 NaN/Inf）；消费方是 `lsh` / `hsh` / `peq`，见
+    // [`FilterType`] 文档。⛔ 不发明值域、⛔ 不因缺省而丢掉该字段。
+    let fil_gain = match scopes.get("fil_gain") {
+        Some(value) => value.as_f32()?,
+        None => FIL_GAIN_DEFAULT_DB,
     };
     let fil_keytrack = read_i32(
         &scopes,
@@ -3396,6 +3541,7 @@ pub(crate) fn build_region<'a>(
             fil_type,
             cutoff,
             resonance,
+            fil_gain,
             fil_keytrack,
             fil_keycenter,
             fil_veltrack,
@@ -5143,6 +5289,7 @@ mod tests {
             fil_type: FIL_TYPE_DEFAULT,
             cutoff: None,
             resonance: RESONANCE_DEFAULT_DB,
+            fil_gain: FIL_GAIN_DEFAULT_DB,
             fil_keytrack: FIL_KEYTRACK_DEFAULT,
             fil_keycenter: FIL_KEYCENTER_DEFAULT,
             fil_veltrack: FIL_VELTRACK_DEFAULT,
@@ -9936,13 +10083,11 @@ v127=1
                 "`{text}` 必须 Err(IntegerOutOfRange)，实得 {outcome:?}"
             );
         }
-        // 未实现的规范 fil_type 与未知值同样响亮报错（⛔ 不静默近似）。
+        // ⭐ T-FIX-278：**规范外**的未知 fil_type 仍响亮报错（⛔ 与规范内
+        // 未实现的 8 个混为一谈 —— 后者解析成功后由控制面点名）。
         for text in [
-            "<region>sample=a.wav fil_type=lpf_2p_sv",
-            "<region>sample=a.wav fil_type=pkf_2p",
-            "<region>sample=a.wav fil_type=comb",
-            "<region>sample=a.wav fil_type=lsh",
             "<region>sample=a.wav fil_type=bogus",
+            "<region>sample=a.wav fil_type=lpf_9p",
         ] {
             let outcome = parse_text(text, &Default::default());
             assert!(
@@ -9964,6 +10109,87 @@ v127=1
                 "`{text}` 在规范域边界内，必须解析成功"
             );
         }
+    }
+
+    /// ⭐ T-FIX-278：全部 23 个规范 `fil_type` 值都能解析、读数逐值正确。
+    ///
+    /// 修前有 12 个规范值落进 `InvalidOption` ⇒ 整份乐器装载失败；修后
+    /// **规范外**字符串仍是响亮错误，规范内的 8 个未实现类型被识别（DSP 直通，
+    /// 由控制面装载回执点名 —— 见 `yeban_load_sfz` 的 `unsupportedFilterTypes`）。
+    #[test]
+    fn every_specification_filter_type_parses_and_reads_back() {
+        assert_eq!(FilterType::OPTIONS.len(), 23, "规范 23 个值");
+        let mut names = std::collections::BTreeSet::new();
+        let mut implemented = 0usize;
+        for (name, expected) in FilterType::OPTIONS {
+            assert!(names.insert(*name), "`{name}` 重复登记");
+            assert_eq!(expected.name(), *name, "name() 与白名单必须一一对应");
+            let text = format!("<region>sample=a.wav fil_type={name} cutoff=1000");
+            let region = first_region(&text);
+            assert_eq!(region.fil_type, *expected, "`{name}` 读数必须逐值正确");
+            assert_eq!(region.cutoff, Some(1000.0));
+            if expected.is_implemented() {
+                implemented += 1;
+            }
+        }
+        assert_eq!(implemented, 15, "有 DSP 实现的共 15 个");
+        // 8 个已识别但未实现：解析成功 ≠ 报错，但能力标记必须为 false。
+        for name in [
+            "bpf_1p",
+            "brf_1p",
+            "lpf_2p_sv",
+            "hpf_2p_sv",
+            "bpf_2p_sv",
+            "brf_2p_sv",
+            "comb",
+            "pink",
+        ] {
+            let text = format!("<region>sample=a.wav fil_type={name}");
+            let region = first_region(&text);
+            assert!(
+                !region.fil_type.is_implemented(),
+                "`{name}` 必须登记为未实现（控制面据此点名）"
+            );
+        }
+        // 规范外字符串不许借"识别"混进来。
+        for text in [
+            "<region>sample=a.wav fil_type=pkf_4p",
+            "<region>sample=a.wav fil_type=lsh_2p",
+            "<region>sample=a.wav fil_type=",
+        ] {
+            assert!(
+                matches!(
+                    parse_text(text, &Default::default()),
+                    Err(SfzError::InvalidOption { .. })
+                ),
+                "`{text}` 必须 Err(InvalidOption)"
+            );
+        }
+    }
+
+    /// ⭐ T-FIX-278：`fil_gain`（ARIA，dB）解析、缺省与作用域继承。
+    #[test]
+    fn fil_gain_is_read_verbatim_and_inherits() {
+        assert_eq!(
+            first_region("<region>sample=a.wav").fil_gain,
+            FIL_GAIN_DEFAULT_DB,
+            "规范缺省 0 dB"
+        );
+        let explicit = first_region("<region>sample=a.wav fil_type=lsh cutoff=150 fil_gain=-6.5");
+        assert_eq!(explicit.fil_gain, -6.5);
+        assert_eq!(explicit.fil_type, FilterType::LowShelf);
+        let inherited =
+            first_region("<global>fil_gain=3\n<region>sample=a.wav fil_type=hsh cutoff=800");
+        assert_eq!(inherited.fil_gain, 3.0, "作用域链与其它 opcode 相同");
+        // 非有限值是响亮错误（规范无 Range，只验有限）。
+        assert!(matches!(
+            parse_text("<region>sample=a.wav fil_gain=NaN", &Default::default()),
+            Err(SfzError::NonFiniteFloat { .. })
+        ));
+        assert!(matches!(
+            parse_text("<region>sample=a.wav fil_gain=inf", &Default::default()),
+            Err(SfzError::NonFiniteFloat { .. })
+        ));
     }
 
     #[test]
