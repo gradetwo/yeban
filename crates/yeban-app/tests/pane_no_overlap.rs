@@ -786,7 +786,7 @@ fn check_piano_roll(width: u32, height: u32) -> (usize, usize) {
 ///
 /// 四边契约面：69 个 id 全在注册表里（角色＋组件文件逐字）＋ 死文件声明 ＋
 /// `ConsoleTabs` 被 `if false` 门住 ＋ 活树缺席。活的替代面是 Tab 1 下控制台的
-/// 导轨带：导轨区里只有 4 个非容器节点（3 个导轨键 ＋ 主输出单声道钮），逐对不相交。
+/// 导轨带：导轨区里有 8 个非容器节点（3 个导轨键 ＋ 主输出单声道钮 ＋ 素材池 4 个——面板落在导轨区内），逐对不相交。
 fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
     let project = yeban_model::samples::demo_project();
     let registry = registry_for(&project);
@@ -860,8 +860,9 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
         "\"track-\" + track_index + \"-sampler-path\"",
     );
 
-    // ---- 活的替代面：Tab 1 下控制台导轨区 —— 只有 4 个非容器节点，逐对不相交。
     // （混音推子条是无语义 id 的 TouchArea，不进控件树 —— 见报告 §3。）
+    // 活的替代面：Tab 1 下控制台导轨区 —— 8 个非容器节点（4 导轨键 ＋ 素材池 4 个），逐对不相交。
+    // 素材池面板 (630, 784, 216, 258) 落在导轨区 (0, 736, 1920, 320) 内，故其 4 个子节点也与导轨带相交。
     let rail = bounds(&tree, "console-tab-rail");
     let dock = assert_pairwise(
         &tree,
@@ -872,6 +873,10 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
             "macro-open-button",
             "plugin-panel-open-button",
             "dock-master-mono",
+            "asset-pool-count",
+            "asset-pool-import-button",
+            "asset-pool-row-0-row",
+            "asset-pool-row-1-row",
         ],
         &format!("#186 调音台活面 {width}x{height}"),
     );
@@ -879,13 +884,13 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
     let mono = bounds(&tree, "dock-master-mono");
     assert_eq!(
         (mono.0, mono.1 - rail.1),
-        (641, 94),
-        "[#186 {width}x{height}] 主输出单声道钮必须在导轨区内 (641, 导轨顶沿+94)"
+        (863, 94),
+        "[#186 {width}x{height}] 主输出单声道钮必须在导轨区内 (863, 导轨顶沿+94)——素材池面板右沿 846，钮在其右 17px"
     );
 
     let controls = mixer_controls().len();
     report_line(&format!(
-        "[#186 调音台 {width}x{height}] {controls} 个旧 id 全是注册表登记＋死文件声明＋`if false` 门住＋活树缺席；活导轨区 4 节点 0 相交"
+        "[#186 调音台 {width}x{height}] {controls} 个旧 id 全是注册表登记＋死文件声明＋`if false` 门住＋活树缺席；活导轨区 8 节点 0 相交"
     ));
     (controls, 0)
 }
@@ -1591,7 +1596,7 @@ fn check_arrangement(width: u32, height: u32) {
     );
 
     // ---- ④-1 轨道头（容器组）：两两不相交。1024 档只有 5 行在树里
-    // （第 6 行 y=437..491 落在画布底沿 421 之外 —— 被裁出树，不是被删）。
+    // （第 6 行 y=453..507 落在画布底沿 421 之外 —— 被裁出树，不是被删）。
     let visible_headers: Vec<&str> = TRACK_HEADERS
         .iter()
         .copied()
@@ -1613,12 +1618,25 @@ fn check_arrangement(width: u32, height: u32) {
 
     // ---- ④-2 头内子节点（叶子组）：两两不相交 ＋ 各自落在自己的头里。
     // 头内只有静音 / 独奏 / 录音臂三个键 —— `track-*-color-swatch` 已死（头内没有色标节点）。
+    // 1024 档第 5 行（track-4）只有头在树里、三个键被画布底沿裁出树
+    // （头 y=397..451 与画布底沿 421 相交，键 y=425..445 全在底沿之外 —— B 的顶栏修整
+    // 让轨道整体下移 16px，修前键 y=409..429 与底沿相交故在树里）——
+    // 子节点清单按在场过滤，并钉死每档的条数（1920/1440 档 18 条，1024 档 12 条）。
     let mut child_ids: Vec<String> = Vec::new();
     for track in 0..visible_headers.len() {
         for suffix in ["mute-button", "solo-button", "arm-button"] {
-            child_ids.push(format!("track-{track}-{suffix}"));
+            let id = format!("track-{track}-{suffix}");
+            if tree.find_by_id(&id).is_some() {
+                child_ids.push(id);
+            }
         }
     }
+    let expected_children = if width < 1440 { 12 } else { 18 };
+    assert_eq!(
+        child_ids.len(),
+        expected_children,
+        "[#187 编曲画布 {width}] 在树里的轨道头子节点必须是 {expected_children} 个（1024 档 track-4 的三个键被画布底沿裁出树）"
+    );
     let child_refs: Vec<&str> = child_ids.iter().map(String::as_str).collect();
     let label = format!("编曲画布 轨道头子节点 {width}x{height}");
     report_line(&assert_ids_pairwise(&tree, &child_refs, &label));
@@ -1626,6 +1644,9 @@ fn check_arrangement(width: u32, height: u32) {
         let header = format!("track-{track}-header");
         for suffix in ["mute-button", "solo-button", "arm-button"] {
             let child = format!("track-{track}-{suffix}");
+            if tree.find_by_id(&child).is_none() {
+                continue; // 1024 档 track-4 的键被画布底沿裁出树（条数已在上文钉死）
+            }
             assert_inside(
                 &tree,
                 &child,

@@ -164,7 +164,6 @@ struct Rig {
     /// 与 `main.rs` 传给 `wire_clip_scope` / `wire_ruler_seek` 的**同一种**活投影句柄。
     view: Rc<RefCell<ViewState>>,
     port: LivePort<MainWindow>,
-    project: yeban_model::YebanProjectV1,
     /// 真实数据的单一事实源（换工程后调 `refresh_song_overview` 即更新）。
     _state: Rc<RefCell<song_overview::SongOverviewLive>>,
 }
@@ -205,8 +204,8 @@ impl Rig {
         // 全屏态才消费（⑳）。除 `wire_keys` 外还必须接 `wire_trigger_shortcut`
         // （`trigger-shortcut` → `key-action` 的转发）：只接前者时键到不了宿主，
         // `Esc` 在测试台上是彻底的空操作（2026-11-24 复核实测）。
-        // `InputContext` 是新建的（与 `main.rs` 同款）；`project.clone()` 须在
-        // `project` 移进结构体之前克隆。
+        // `InputContext` 是新建的（与 `main.rs` 同款）；`project.clone()` 各处
+        // 克隆后，`project` 本体不再由 Rig 持有（clippy：死字段，故不进结构体）。
         host::wire_trigger_shortcut(port.ui());
         host::wire_keys(
             port.ui(),
@@ -222,7 +221,6 @@ impl Rig {
             engine,
             view: live_view,
             port,
-            project,
             _state: state,
         };
         // 控件树先抓一次（判据读树前不再依赖旧的缓存快照）。
@@ -397,7 +395,9 @@ fn nonblack_fraction(frame: &Rgb8Image) -> f64 {
     let total = frame.pixels().len() / 3;
     let nonblack = frame
         .pixels()
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
         .count();
     nonblack as f64 / total as f64
