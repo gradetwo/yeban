@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use yeban_app::bridge::ViewState;
+use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::engine_host::EditMark;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_engine::snapshot::EngineSnapshot;
