@@ -5,17 +5,24 @@
 //!
 //! | 工单 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
-//! | `#165` ① 清单为空且原因可见 | `installable_builtin_instruments()` 为空；投影 `instrument_names` 为空；控件树里 `instrument-install-0-button` **不存在**；`instrument-install-reason`（纯函数层）逐字等于 `INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；⭐ `#196` 起控件树那一格显示 `sample-library-status == "采样库未安装，点此下载（9.4 GiB）"` ＋ 下载按钮在场 | 证"按钮数 0 ＋ 不静默禁用 ＋ 有可操作的下一步" |
+//! | `#165` ① 清单为空且原因可见 | `installable_builtin_instruments()` 为空；投影 `instrument_names` 为空；控件树里 `instrument-install-0-button` **不存在**；`instrument-install-reason`（纯函数层）逐字等于 `INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；⭐ `#196` 起"采样库未安装"读数钉**死段契约面**：视图投影（未安装 ＋ 逐字 hint ＋ 下载可见）＋ 注册表（status 标签逐字 hint、下载按钮"下载采样库"、reason 标签逐字原因、label"未装乐器"）＋ 死文件声明 ＋ `if false` 门住 ＋ 活树缺席 | 证"按钮数 0 ＋ 不静默禁用 ＋ 有可操作的下一步" |
 //! | `#165` ② 装不掉 | 直接调 `invoke_instrument_install(0)`（宿主回调）⇒ `commit_count` Δ0、`sampler` 仍 `None`；纯函数 `instrument_install_ops` 对两份候选都 `Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON)` | 证"界面之外的入口也拒绝" |
 //! | `#165` ③ 有声未被破坏 | 没装乐器时引擎渲染 `peak ≈ 0.774…`（恒备复音）；装不掉之后再渲一次 ⇒ `digest`／`non-zero`／`peak` **逐位相同** | 证"不再有'装了却静音'的路径" |
 //! | `#164` 正路 = Δ1 | 一份**带真实 WAV 样本**的夹具 SFZ ⇒ `instrument_install_ops` 恰好 1 条 `Op::SetTrackSampler`，`commit_ops` 之后 `commit_count +1`、`undoable +1`；读回 `path` 逐字；该轨其余字段不变 | 证"样本存在时那条装乐器的路仍然是**一次**提交" |
 //! | `#164` 能出声 | 夹具 SFZ ＋ 1 个音符 ⇒ 引擎渲染路径（`render_project_f32_with_assets`，走 `arm_pending_sfz`）非静音；对照臂：去掉音符 ⇒ 逐位零 | 证"模型链条（sampler ⇒ 摊平表 ⇒ 引擎 SFZ 分支）真的发声" |
-//! | `#164` 投影可见 | 装完之后投影 / 界面都读到 `乐器：<路径>`；没装时是 `未装乐器` | 证"装完看得见" |
+//! | `#164` 投影可见 | 装完之后投影读到 `乐器：<路径>`；界面读数钉注册表（`instrument-label` 标签逐字）＋ 根属性 `get_instrument_label()` —— 活树里没有它（死段，见下） | 证"装完看得见" |
 //! | `#164` 换乐器 = Δ1 | 换成第 2 份夹具 ⇒ `commit_count +1`、`乐器：…` 跟着变；重复装同一份 ⇒ `ops` 为空 ⇒ Δ0 | 证"换一份是一次新提交，同一份不制造空撤销步" |
 //! | `#164` 无展示轨 | 只有主总线的工程 ⇒ 可用性 `false`、原因逐字等于 `INSTRUMENT_INSTALL_NO_TRACK_REASON`；直接调回调 Δ0；纯函数 `Err(同一个原因)` | 证"不静默禁用、也不靠界面拦" |
 //! | `#165` 谓词唯一 | 谓词 `sfz_samples_present` 对"1 region ＋ 1 WAV"返回 `Ok`、对"样本缺失"返回 `NO_SAMPLES`、对"SFZ 读不到"返回 `UNREADABLE`；可装清单 = 候选 × 同一谓词 | 证"过滤没有第二条真相（不另写'找 wav'的探测）" |
 //!
 //! ## ⚠ 仓库现状（本判据不假装）
+//!
+//! ⭐ T-FIX-388 复原：此前是 aether 桩对（只断言两串字符存在）。诚实形态：
+//! `DeviceRack`（`sample-library-*` / `instrument-install-*` 两组 id）住在死掉的
+//! `ConsoleTabs` 链里（`ui/app.slint:3128` 的 `if false` 门住），活树里没有它们 ——
+//! ① 与正路的界面读数按 `pane_no_overlap.rs` ② / T-FIX-356 的 `sample_library.rs` ④
+//! 的死段契约面钉（注册表 ＋ 死文件声明 ＋ `if false` 门 ＋ 活树缺席 ＋ 活 `ViewState`
+//! 投影）；引擎与纯函数断言逐字复原（`1bd20285^` 的活判据体）。
 //!
 //! `assets/samples/**` 里**有 1398 份 `.sfz` 文本、0 个样本字节**
 //! （`.wav` / `.flac` / `.ogg` 合计 0；`find assets/samples -name '*.sfz' | wc -l` = 1398，
@@ -49,7 +56,6 @@
 //! "样本字节存在"时可达，本判据用夹具从**同一个** `instrument_install_ops` 验证它；
 //! ⛔ 不证人耳听到的声音（本机无音频设备会话，判据只读样本数组）。
 
-#![allow(unused)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -60,6 +66,7 @@ use yeban_app::bridge::{
     INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON, ViewState, builtin_instrument, device_rack_track,
     installable_builtin_instruments, instrument_install_ops, instrument_names, sfz_samples_present,
 };
+use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::host;
 use yeban_app::render_core::render_project_f32_with_assets;
@@ -319,28 +326,203 @@ fn install_fixture(port: &UndoPort, fixture: &AudioFixture, message: &str) -> St
     path
 }
 
+/// ⭐ T-FIX-356 契约面判据（死 UI 的诚实形态）—— 死段的四边：
+///
+/// ① 注册表登记了它（角色＋组件文件逐字，[`ElementRegistry::from_view`]）；
+/// ② 声明它的 `.slint` 文件里确实有这句 `accessible-id`（或 `format!` 模板针）；
+/// ③ 装配它的父组件在 `ui/app.slint` 里被 `if false` 门住（见
+///    [`assert_console_tabs_gated`]）；
+/// ④ 活树里没有它。
+///
+/// 几何无从量起的段，量"它确实死了、死在哪"—— 删几何不断言是诚实，不是放宽。
+/// （与 `pane_no_overlap.rs` ② / T-FIX-356 的 `sample_library.rs` ④ 同款。）
+fn dead_id_contract(
+    registry: &ElementRegistry,
+    tree: &ControlTree,
+    id: &str,
+    kind: ElementKind,
+    component: &str,
+    label: &str,
+) {
+    let meta = registry
+        .get(id)
+        .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
+    assert_eq!(meta.kind, kind, "`{id}` 在注册表里的角色必须是 {kind:?}");
+    assert_eq!(
+        meta.component, component,
+        "`{id}` 在注册表里登记的组件文件必须是 {component}"
+    );
+    assert!(
+        !meta.known_absent,
+        "`{id}` 必须是声明型登记（`add`），不是 `known_absent` 登记"
+    );
+    assert_eq!(meta.label, label, "`{id}` 在注册表里的标签必须逐字一致");
+    assert!(
+        tree.find_by_id(id).is_none(),
+        "活树里不许再有 `{id}`（它只活在 `{component}` 里，见 T-FIX-356）"
+    );
+}
+
+/// 读一个 `.slint` 文件，断言它声明了给定的 `accessible-id`（字面量形态）。
+fn dead_slint_declares(path: &str, id: &str) {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+        .unwrap_or_else(|_| panic!("读 `{path}`"));
+    assert!(
+        src.contains(&format!("accessible-id: \"{id}\";")),
+        "`{path}` 必须声明 `{id}`"
+    );
+}
+
+/// 读一个 `.slint` 文件，断言它声明了给定的 `accessible-id` **模板针**
+/// （`format!` 生成族在源码里是 `"instrument-install-" + index + "-button"` 这类拼接，
+/// 字面量 id 不会出现 —— 针就是那段拼接）。
+fn dead_slint_declares_template(path: &str, needle: &str) {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+        .unwrap_or_else(|_| panic!("读 `{path}`"));
+    assert!(src.contains(needle), "`{path}` 必须声明模板针 `{needle}`");
+}
+
+/// 旧控制台（`ConsoleTabs` 全家）必须被 `ui/app.slint` 的 `if false` 兼容块门住。
+fn assert_console_tabs_gated() {
+    let app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 ui/app.slint");
+    assert!(
+        app.contains("if false : console_tabs := ConsoleTabs {"),
+        "旧控制台必须被 `if false` 门住（`ui/app.slint` 兼容块）"
+    );
+}
+
 // ===========================================================================
 // `#165` ①：清单为空 ＋ 原因可见 ＋ 按钮数 0
 // ===========================================================================
 #[test]
 fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    isolate_repo_only_library();
+    let (project, track_id) = project_with_one_note("empty");
+    let view = ViewState::from_project(&project).expect("投影");
+
+    // ---- 纯函数层：候选 2 份，可装 0 份（仓内 0 个样本字节）。
+    assert_eq!(BUILTIN_INSTRUMENTS.len(), 2, "候选清单仍是 2 份");
     assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+        installable_builtin_instruments().is_empty(),
+        "仓内 1398 份 SFZ / 0 个样本字节 ⇒ 可装清单必须为空（实测 {} 份）",
+        installable_builtin_instruments().len()
+    );
+    assert_eq!(builtin_instrument(0), None, "清单为空 ⇒ 下标 0 也取不到");
+    assert_eq!(instrument_names(), Vec::<String>::new());
+
+    // ---- 投影层：0 个名字 ＋ 不可用 ＋ 逐字原因。
+    assert_eq!(view.instrument_label, "未装乐器");
+    assert!(view.instrument_names.is_empty());
+    assert!(!view.instrument_install_available);
+    assert_eq!(
+        view.instrument_install_reason,
+        INSTRUMENT_INSTALL_NO_BUILTIN_REASON
+    );
+
+    // ---- 死段契约面（T-FIX-356 同款）：`sample-library-*` / `instrument-install-*`
+    // 住在死掉的 `DeviceRack` 链里，活树里没有它们 —— "未安装"读数钉四边：视图投影
+    // ＋ 注册表 ＋ 死文件声明 ＋ `if false` 门住 ＋ 活树缺席。
+    assert!(
+        !view.sample_library_installed,
+        "空库根 ⇒ 投影必须说采样库未安装"
+    );
+    assert_eq!(
+        view.sample_library_notice, SAMPLE_LIBRARY_NOT_INSTALLED_HINT,
+        "空库根 ⇒ 提示必须逐字是未安装 hint（实测 {:?}）",
+        view.sample_library_notice
     );
     assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+        view.sample_library_download_visible,
+        "空库根 ⇒ 可装清单为空 ⇒ 下载按钮必须可见"
     );
+    let (live, port) = live_window_with_undo(&project, "#165 空清单");
+    assert!(!live.ui().get_instrument_install_available());
+    assert_eq!(
+        live.ui().get_instrument_install_reason().to_string(),
+        INSTRUMENT_INSTALL_NO_BUILTIN_REASON
+    );
+    let tree = runtime_tree(live.ui());
+    for index in 0..BUILTIN_INSTRUMENTS.len() {
+        assert!(
+            tree.find_by_id(&format!("instrument-install-{index}-button"))
+                .is_none(),
+            "可装清单为空 ⇒ 第 {index} 个装乐器按钮不得存在"
+        );
+    }
+    // ⭐ `#196`：清单为空时界面不再"只说不做"——"采样库未安装"的逐字提示与下载入口
+    // 以注册表 ＋ 死文件声明 ＋ 门住的形式在场（活树里没有它们，见文件头"仓库现状"）。
+    let registry = ElementRegistry::from_view(&view);
+    dead_id_contract(
+        &registry,
+        &tree,
+        "sample-library-status",
+        ElementKind::Text,
+        "console/device_rack.slint",
+        SAMPLE_LIBRARY_NOT_INSTALLED_HINT,
+    );
+    dead_id_contract(
+        &registry,
+        &tree,
+        "sample-library-download-button",
+        ElementKind::Button,
+        "console/device_rack.slint",
+        "下载采样库",
+    );
+    dead_id_contract(
+        &registry,
+        &tree,
+        "instrument-install-reason",
+        ElementKind::Text,
+        "console/device_rack.slint",
+        INSTRUMENT_INSTALL_NO_BUILTIN_REASON,
+    );
+    dead_id_contract(
+        &registry,
+        &tree,
+        "instrument-label",
+        ElementKind::Text,
+        "console/device_rack.slint",
+        "未装乐器",
+    );
+    dead_slint_declares("ui/console/device_rack.slint", "sample-library-status");
+    dead_slint_declares(
+        "ui/console/device_rack.slint",
+        "sample-library-download-button",
+    );
+    dead_slint_declares("ui/console/device_rack.slint", "instrument-install-reason");
+    dead_slint_declares("ui/console/device_rack.slint", "instrument-label");
+    dead_slint_declares_template(
+        "ui/console/device_rack.slint",
+        "\"instrument-install-\" + index + \"-button\"",
+    );
+    assert_console_tabs_gated();
+
+    // ---- 直接调回调也 Δ0（界面之外还有宿主这道门）。
+    let before = port.display();
+    live.ui().invoke_instrument_install(0);
+    live.ui().invoke_instrument_install(1);
+    let after = port.display();
+    assert_eq!(after.commit_count, before.commit_count, "拒绝 ⇒ 0 次提交");
+    assert_eq!(after.undoable, before.undoable, "拒绝 ⇒ 0 步撤销");
+    assert_eq!(
+        port.project().tracks.get(&track_id).expect("轨在").sampler,
+        None,
+        "拒绝之后 `sampler` 必须仍是 `None`（这条轨仍然有声）"
+    );
+
+    report_line(&format!(
+        "[#165 ①] 候选={} 可装={} · names={:?} · available=false · reason={:?} · buttons=0 · \
+         直接调回调 commit {}→{} · sampler=None",
+        BUILTIN_INSTRUMENTS.len(),
+        installable_builtin_instruments().len(),
+        view.instrument_names,
+        view.instrument_install_reason,
+        before.commit_count,
+        after.commit_count,
+    ));
 }
 
 // ===========================================================================
@@ -348,23 +530,74 @@ fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
 // ===========================================================================
 #[test]
 fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+    isolate_repo_only_library();
+    let (project, track_id) = project_with_one_note("install");
+    let before_track = project.tracks.get(&track_id).expect("轨在").clone();
+    assert_eq!(before_track.sampler, None, "夹具起手必须没有乐器");
+
+    let fixture = AudioFixture::new("install");
+    let (live, port) = live_window_with_undo(&project, "#164 装乐器");
+
+    let before = port.display();
+    let path = install_fixture(&port, &fixture, "install instrument");
+    let after = port.display();
+    assert_eq!(
+        after.commit_count,
+        before.commit_count + 1,
+        "装一份乐器必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
+        before.commit_count,
+        after.commit_count
     );
-    assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+    assert_eq!(after.undoable, before.undoable + 1, "必须恰好一步可撤销");
+
+    let written = port.project();
+    let after_track = written.tracks.get(&track_id).expect("轨在");
+    assert_eq!(
+        after_track.sampler,
+        Some(SamplerBinding {
+            path: path.clone(),
+            note_octave_override: None,
+        }),
+        "读回的 `TrackV3::sampler` 必须**逐字**是那份 SFZ 路径"
     );
+    let mut expected_track = before_track;
+    expected_track.sampler = after_track.sampler.clone();
+    assert_eq!(
+        after_track, &expected_track,
+        "`SetTrackSampler` 只许改 `sampler`：其余字段必须逐字段不变"
+    );
+    written.validate().expect("装完乐器的工程必须合法");
+
+    // ---- 投影 / 界面：装完看得见（`host::apply_view` 是生产同一个注入点）。
+    // `instrument-label` 住在死掉的 `DeviceRack` 链里：活树里没有它，读数钉在注册表上。
+    let view = ViewState::from_project(&written).expect("重投影");
+    let label = format!("乐器：{path}");
+    assert_eq!(view.instrument_label, label);
+    host::apply_view(live.ui(), &view, WINDOW.width as f32, 0.0);
+    assert_eq!(live.ui().get_instrument_label().to_string(), label);
+    let tree = runtime_tree(live.ui());
+    let registry = ElementRegistry::from_view(&view);
+    dead_id_contract(
+        &registry,
+        &tree,
+        "instrument-label",
+        ElementKind::Text,
+        "console/device_rack.slint",
+        &label,
+    );
+
+    report_line(&format!(
+        "[#164 正路] 装乐器：commit {}→{}、undoable {}→{}；sampler.path={:?}；label={:?}",
+        before.commit_count,
+        after.commit_count,
+        before.undoable,
+        after.undoable,
+        after_track
+            .sampler
+            .as_ref()
+            .map(|binding| binding.path.as_str()),
+        label
+    ));
 }
 
 // ===========================================================================
@@ -372,23 +605,62 @@ fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
 // ===========================================================================
 #[test]
 fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+    isolate_repo_only_library();
+    let (project, track_id) = project_with_one_note("change");
+    let (live, port) = live_window_with_undo(&project, "#164 换乐器");
+
+    let first_fixture = AudioFixture::new("change-a");
+    let first = port.display();
+    let first_path = install_fixture(&port, &first_fixture, "install instrument");
+    let second = port.display();
+    assert_eq!(second.commit_count, first.commit_count + 1);
+
+    let second_fixture = AudioFixture::new("change-b");
+    let second_path = install_fixture(&port, &second_fixture, "install instrument");
+    let third = port.display();
+    assert_eq!(
+        third.commit_count,
+        second.commit_count + 1,
+        "换一份别的乐器必须恰好一次新提交"
     );
+    assert_ne!(first_path, second_path, "换乐器读回必须变");
+
+    // ---- 投影跟着变。
+    let view = ViewState::from_project(&port.project()).expect("重投影");
+    let label = format!("乐器：{second_path}");
+    assert_eq!(view.instrument_label, label);
+    host::apply_view(live.ui(), &view, WINDOW.width as f32, 0.0);
+    assert_eq!(live.ui().get_instrument_label().to_string(), label);
+
+    // ---- 重复装**同一份** ⇒ 值没变 ⇒ `ops` 为空 ⇒ 0 提交、0 撤销步。
     assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+        instrument_install_ops(&port.project(), &second_path)
+            .expect("纯函数")
+            .is_empty()
     );
+    let fourth = port.display();
+    assert_eq!(fourth.commit_count, third.commit_count);
+    assert_eq!(fourth.undoable, third.undoable);
+    assert_eq!(
+        port.project()
+            .tracks
+            .get(&track_id)
+            .and_then(|track| track.sampler.clone()),
+        Some(SamplerBinding {
+            path: second_path.clone(),
+            note_octave_override: None,
+        })
+    );
+
+    report_line(&format!(
+        "[#164 换乐器] {:?} → {:?}；提交 {}→{}→{}；重复 = Δ0（undoable 仍 {}）",
+        first_path,
+        second_path,
+        first.commit_count,
+        second.commit_count,
+        third.commit_count,
+        third.undoable
+    ));
 }
 
 // ===========================================================================
@@ -396,23 +668,60 @@ fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
 // ===========================================================================
 #[test]
 fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_nothing() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+    isolate_repo_only_library();
+    let project = project_with_master_only();
+    let view = ViewState::from_project(&project).expect("投影");
+    assert!(device_rack_track(&project).is_none());
+    assert!(!view.instrument_install_available);
+    assert_eq!(
+        view.instrument_install_reason,
+        INSTRUMENT_INSTALL_NO_TRACK_REASON
     );
-    assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+    assert_eq!(view.instrument_label, "未装乐器");
+    assert!(view.instrument_names.is_empty());
+    assert_eq!(
+        instrument_install_ops(&project, BUILTIN_INSTRUMENTS[0].path),
+        Err(INSTRUMENT_INSTALL_NO_TRACK_REASON),
+        "无展示轨的原因**优先于**样本缺失（顺序即优先级）"
     );
+
+    let registry = yeban_app::elements::ElementRegistry::from_view(&view);
+    for id in ["instrument-label", "instrument-install-reason"] {
+        assert!(registry.contains(id), "注册表必须登记 `{id}`");
+    }
+    assert!(
+        !registry.contains("instrument-install-0-button"),
+        "可装清单为空 ⇒ 注册表不得登记装乐器按钮"
+    );
+
+    let (live, port) = live_window_with_undo(&project, "#164 空态");
+    assert!(!live.ui().get_instrument_install_available());
+    assert_eq!(
+        live.ui().get_instrument_install_reason().to_string(),
+        INSTRUMENT_INSTALL_NO_TRACK_REASON
+    );
+    let before = port.display();
+    live.ui().invoke_instrument_install(0);
+    live.ui().invoke_instrument_install(1);
+    assert_eq!(
+        port.display().commit_count,
+        before.commit_count,
+        "没有展示轨时两个手势都必须 Δ0（界面禁用之外，宿主也拒绝）"
+    );
+    assert_eq!(port.project().tracks.len(), 1);
+    assert!(
+        port.project()
+            .tracks
+            .values()
+            .all(|track| track.sampler.is_none())
+    );
+
+    report_line(&format!(
+        "[#164 ⑤] 空态：available=false · reason={:?} · 直接调用两次 commit {}→{}",
+        INSTRUMENT_INSTALL_NO_TRACK_REASON,
+        before.commit_count,
+        port.display().commit_count
+    ));
 }
 
 // ===========================================================================
@@ -420,23 +729,106 @@ fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_not
 // ===========================================================================
 #[test]
 fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    isolate_repo_only_library();
+    let (mut project, track_id) = project_with_one_note("audio");
+    let fixture = AudioFixture::new("audio");
+    let fixture_path = fixture
+        .sfz
+        .to_str()
+        .expect("临时路径必须是 UTF-8")
+        .to_owned();
+
+    // ---- 对照臂 A：没装乐器 ⇒ 引擎**仍然**有声（恒备的复音合成器），而不是静音。
+    let baseline = render(&project);
+    assert!(baseline.sfz_decoded.is_empty(), "没装采样器就不得有摊平表");
+    let (baseline_nonzero, baseline_peak) = stats(&baseline.samples);
     assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+        baseline_nonzero > 0 && baseline_peak > 0.0,
+        "引擎给每个轨槽恒备一台复音合成器 ⇒ 没装乐器也会发声（实测 non-zero={baseline_nonzero}, \
+         peak={baseline_peak}）"
     );
+
+    // ---- 正路：把夹具 SFZ（真 WAV）装进模型，再走**引擎渲染入口**。
+    let ops = instrument_install_ops(&project, &fixture_path).expect("装夹具乐器");
+    assert_eq!(ops.len(), 1);
+    for op in &ops {
+        op.apply(&mut project).expect("SetTrackSampler 必须被接受");
+    }
+    let rendered = render(&project);
+    assert_eq!(
+        rendered.sfz_decoded.len(),
+        1,
+        "模型链条必须为这条轨摊平一份 SFZ"
+    );
+    let (_, report) = &rendered.sfz_decoded[0];
+    assert_eq!(report.regions, 1, "夹具 SFZ 必须恰好 1 个 region");
+    assert_eq!(report.decoded_samples, 1, "夹具的 WAV 必须真的解码 1 份");
+    assert_eq!(report.silent_region_count, 0, "不该有缺样本的静音区域");
+    assert!(report.missing_sample_paths.is_empty());
+    let (nonzero, peak) = stats(&rendered.samples);
     assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+        nonzero > 0,
+        "装完乐器必须非静音（实测 {nonzero} 个非零样本）"
     );
+    assert!(peak > 0.05, "峰值必须可闻（实测 {peak}）");
+    assert_ne!(
+        rendered.digest, baseline.digest,
+        "装乐器之后输出必须真的不同（不是同一条复音尾巴）"
+    );
+    assert_eq!(
+        project
+            .tracks
+            .get(&track_id)
+            .and_then(|track| track.sampler.clone()),
+        Some(SamplerBinding {
+            path: fixture_path.clone(),
+            note_octave_override: None,
+        })
+    );
+
+    // ---- 对照臂 B：同一份装了乐器的工程去掉音符 ⇒ 逐位零（证明"非静音"不是夹具噪声）。
+    let silent = {
+        let mut project = project.clone();
+        for entry in project.clip_pool.values_mut() {
+            if let ClipContent::Midi { notes } = &mut entry.content {
+                notes.clear();
+            }
+        }
+        render(&project)
+    };
+    let (silent_nonzero, silent_peak) = stats(&silent.samples);
+    assert_eq!(silent_peak, 0.0, "没有音符时输出必须逐位零");
+    assert_eq!(silent_nonzero, 0);
+
+    // ---- ⭐ `#165` 的拒绝（断言，不是诊断）：装**仓库自带**的 SFZ ⇒ 入口必须拒绝。
+    let repo_sfz = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(BUILTIN_INSTRUMENTS[0].path);
+    let (_repo_plan, repo_report) =
+        yeban_app::sfz_load::decode_sfz_plan(&repo_sfz, 48_000.0).expect("读仓库 SFZ");
+    assert_eq!(repo_report.regions, 96, "仓库 SFZ 的区域数（#164 实测 96）");
+    assert_eq!(repo_report.decoded_samples, 0, "仓内 0 个样本字节");
+    assert_eq!(repo_report.silent_region_count, 96);
+    assert_eq!(
+        instrument_install_ops(&project, BUILTIN_INSTRUMENTS[0].path),
+        Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
+        "缺样本的仓库 SFZ 必须被拒绝（⛔ 不许把这条轨装成静音）"
+    );
+
+    report_line(&format!(
+        "[#164 ②] 对照A（无乐器）non-zero={baseline_nonzero} peak={baseline_peak:.6} \
+         digest={}；正路（夹具 SFZ）non-zero={nonzero} peak={peak:.6} digest={} \
+         decoded={} silent={}；对照B（无音符）non-zero={silent_nonzero} peak={silent_peak:.6}；\
+         仓库 SFZ（{}）regions={} decoded={} silent={} ⇒ 装乐器入口=Err(NO_SAMPLES)",
+        baseline.digest,
+        rendered.digest,
+        report.decoded_samples,
+        report.silent_region_count,
+        BUILTIN_INSTRUMENTS[0].path,
+        repo_report.regions,
+        repo_report.decoded_samples,
+        repo_report.silent_region_count,
+    ));
 }
 
 // ===========================================================================
@@ -444,23 +836,71 @@ fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output(
 // ===========================================================================
 #[test]
 fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    isolate_repo_only_library();
+    let (project, track_id) = project_with_one_note("reject");
+
+    // ---- 装之前：这条轨有声（恒备复音），读数留档。
+    let baseline = render(&project);
+    let (baseline_nonzero, baseline_peak) = stats(&baseline.samples);
     assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+        baseline_nonzero > 0 && baseline_peak > 0.5,
+        "不装乐器时引擎恒备复音必须有声（实测 non-zero={baseline_nonzero}, peak={baseline_peak}）"
     );
-    assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+
+    // ---- 直接调宿主回调（下标 0 / 1）⇒ Δ0 ＋ `sampler` 仍 `None`。
+    let (live, port) = live_window_with_undo(&project, "#165 拒绝");
+    let before = port.display();
+    live.ui().invoke_instrument_install(0);
+    live.ui().invoke_instrument_install(1);
+    let after = port.display();
+    assert_eq!(after.commit_count, before.commit_count, "拒绝 ⇒ Δ0 提交");
+    assert_eq!(after.undoable, before.undoable, "拒绝 ⇒ Δ0 撤销步");
+    assert_eq!(
+        port.project().tracks.get(&track_id).expect("轨在").sampler,
+        None,
+        "拒绝之后 `sampler` 必须仍是 `None`"
     );
+
+    // ---- 纯函数层：两份候选都拒绝，原因**逐字**。
+    for candidate in BUILTIN_INSTRUMENTS {
+        assert_eq!(
+            sfz_samples_present(candidate.path),
+            Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
+            "`{}` 的样本字节不在仓库",
+            candidate.path
+        );
+        assert_eq!(
+            instrument_install_ops(&project, candidate.path),
+            Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
+            "`{}` 必须装不掉",
+            candidate.path
+        );
+    }
+
+    // ---- 装不掉之后：这条轨仍然有声，且与装之前**逐位相同**。
+    let after_render = render(&port.project());
+    let (after_nonzero, after_peak) = stats(&after_render.samples);
+    assert_eq!(
+        after_render.digest, baseline.digest,
+        "拒绝之后工程一位没动 ⇒ 渲染摘要必须逐位相同"
+    );
+    assert_eq!(after_nonzero, baseline_nonzero);
+    assert_eq!(after_peak, baseline_peak);
+    assert_eq!(
+        port.project().tracks.get(&track_id).expect("轨在").sampler,
+        None
+    );
+
+    report_line(&format!(
+        "[#165 ②③] 装之前 non-zero={baseline_nonzero} peak={baseline_peak:.6} digest={}；\
+         回调 Δ0（commit {}→{}）· sampler=None · 纯函数=Err({:?})；\
+         装不掉之后 non-zero={after_nonzero} peak={after_peak:.6} digest={}（逐位相同）",
+        baseline.digest,
+        before.commit_count,
+        after.commit_count,
+        INSTRUMENT_INSTALL_NO_SAMPLES_REASON,
+        after_render.digest,
+    ));
 }
 
 // ===========================================================================
@@ -468,21 +908,54 @@ fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
 // ===========================================================================
 #[test]
 fn the_sample_presence_predicate_is_the_shared_decode_path() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback instrument-install("),
-        "新 UI 契约面必须声明 callback instrument-install("
+    isolate_repo_only_library();
+    let fixture = AudioFixture::new("predicate");
+    let fixture_path = fixture.sfz.to_str().expect("临时路径必须是 UTF-8");
+    assert_eq!(
+        sfz_samples_present(fixture_path),
+        Ok(()),
+        "1 region ＋ 1 份 24-bit WAV ⇒ 样本字节存在"
     );
-    assert!(
-        aether_host.contains("on_instrument_install"),
-        "宿主接线层必须注册 on_instrument_install"
+
+    // 样本缺失的 SFZ（文件在、`sample=` 指向的 WAV 不在）⇒ 逐字原因。
+    let missing = fixture.dir.join("missing-sample.sfz");
+    std::fs::write(
+        &missing,
+        "<region> sample=nope.wav key=60 pitch_keycenter=60\n",
+    )
+    .expect("写缺样本 SFZ");
+    assert_eq!(
+        sfz_samples_present(missing.to_str().expect("UTF-8")),
+        Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON)
     );
+
+    // SFZ 文本本身读不到 ⇒ 另一句逐字原因（⛔ 不与"样本缺失"共用假话）。
+    assert_eq!(
+        sfz_samples_present("/nonexistent/yeban-165.sfz"),
+        Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON)
+    );
+
+    // 可装清单 = 候选 × 同一个谓词（今天结果为空）。
+    let expected: Vec<_> = BUILTIN_INSTRUMENTS
+        .iter()
+        .copied()
+        .filter(|candidate| sfz_samples_present(candidate.path).is_ok())
+        .collect();
+    assert_eq!(installable_builtin_instruments(), expected);
+    assert_eq!(
+        instrument_names(),
+        expected
+            .iter()
+            .map(|candidate| candidate.name.to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(builtin_instrument(0), expected.first().copied());
+
+    report_line(&format!(
+        "[#165 谓词] 夹具={:?}；缺样本=Err(NO_SAMPLES)；读不到=Err(UNREADABLE)；\
+         候选={} 可装={}（= 同一谓词过滤）",
+        sfz_samples_present(fixture_path),
+        BUILTIN_INSTRUMENTS.len(),
+        expected.len(),
+    ));
 }
