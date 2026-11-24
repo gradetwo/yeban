@@ -181,17 +181,13 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     host::wire_track_select(ui, &port);
 
     // ① 打开 A：单音 58（跨度 0）⇒ base = 58 − 2 = 56。
-    runtime
-        .open_runtime(ui, path_a.to_str().expect("路径"))
-        .expect("打开 A");
+    runtime.open_runtime(ui, &path_a).expect("打开 A");
     assert_eq!(ui.get_roll_base_pitch(), 56, "打开 A 后应按 58 取景");
     let scope_a = ui.get_roll_framed_scope().to_string();
     assert!(scope_a.starts_with("track:"), "A 的取景键: {scope_a}");
 
     // ② D2：打开 B（同一批轨道身份、音符 31）⇒ 必须重取景到 29，⛔ 不停在 56。
-    runtime
-        .open_runtime(ui, path_b.to_str().expect("路径"))
-        .expect("打开 B");
+    runtime.open_runtime(ui, &path_b).expect("打开 B");
     assert_eq!(
         ui.get_roll_base_pitch(),
         29,
@@ -199,9 +195,7 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     );
 
     // ③ D3：打开 C（首轨音频）⇒ 默认选中第二轨 MIDI，而不是身份序首条音频轨。
-    runtime
-        .open_runtime(ui, path_c.to_str().expect("路径"))
-        .expect("打开 C");
+    runtime.open_runtime(ui, &path_c).expect("打开 C");
     assert_eq!(
         ui.get_selected_track_id().to_string(),
         c_midi_id.to_canonical_string(),
@@ -210,9 +204,7 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     assert_eq!(ui.get_roll_base_pitch(), 29, "C 的 MIDI 轨是 31 ⇒ base 29");
 
     // ④ D4：打开 D 后选轨 ⇒ 横向滚到首音符 tick 80636（⛔ 不是摆放 0）。
-    runtime
-        .open_runtime(ui, path_d.to_str().expect("路径"))
-        .expect("打开 D");
+    runtime.open_runtime(ui, &path_d).expect("打开 D");
     ui.invoke_track_select(track_index(&d, d_lead));
     let tpp = host::roll_ticks_per_pixel(ui);
     let expected = yeban_app::bridge::tick_to_px(80_636, tpp).expect("像素换算");
@@ -233,9 +225,7 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     set_midi_notes(&mut e, e_lead, &[(89_280, 60)]);
     set_lead_placement_start(&mut e, e_lead, 0);
     let path_e = write_container(&dir, "e.yeban", &e);
-    runtime
-        .open_runtime(ui, path_e.to_str().expect("路径"))
-        .expect("打开 E");
+    runtime.open_runtime(ui, &path_e).expect("打开 E");
     let tpp = host::roll_ticks_per_pixel(ui);
     let expected =
         (yeban_app::bridge::tick_to_px(89_280, tpp).expect("像素换算") as f32 - 16.0).max(0.0);
@@ -252,7 +242,7 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     set_midi_notes(&mut f, f_lead, &[]);
     let path_f = write_container(&dir, "f.yeban", &f);
     runtime
-        .open_runtime(ui, path_f.to_str().expect("路径"))
+        .open_runtime(ui, &path_f)
         .expect("打开无音符工程不得失败");
     assert_eq!(
         ui.get_roll_scroll_x(),

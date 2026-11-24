@@ -207,7 +207,7 @@ fn all_demos_live_window_screenshots() {
                     target: if untitled {
                         None
                     } else {
-                        Some(PathBuf::from(path))
+                        Some(path.to_path_buf())
                     },
                     project: project.clone(),
                 },

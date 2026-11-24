@@ -41,12 +41,12 @@ use yeban_ui_test_port::port::Permission;
 
 /// 只记录"被要求打开哪个路径"的假 runtime（⛔ 不真的换工程 / 不碰端口）。
 struct RecordingRuntime {
-    opened: RefCell<Vec<String>>,
+    opened: RefCell<Vec<PathBuf>>,
 }
 
 impl host::OpenProjectRuntime for RecordingRuntime {
-    fn open_runtime(&self, _ui: &MainWindow, path: &str) -> Result<(), String> {
-        self.opened.borrow_mut().push(path.to_owned());
+    fn open_runtime(&self, _ui: &MainWindow, path: &std::path::Path) -> Result<(), String> {
+        self.opened.borrow_mut().push(path.to_path_buf());
         Ok(())
     }
 }
@@ -124,7 +124,7 @@ fn an_existing_new_project_target_is_only_overwritten_after_confirmation() {
     assert_eq!(picker.overwrite_call_count(), 2, "第二次仍要问确认");
     assert_eq!(
         runtime.opened.borrow().as_slice(),
-        &[target.to_string_lossy().into_owned()],
+        std::slice::from_ref(&target),
         "确认 ⇒ runtime 打开的就是刚覆盖的那个路径"
     );
     let written = std::fs::read(&target).expect("覆盖后的文件必须存在");

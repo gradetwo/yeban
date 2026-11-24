@@ -160,8 +160,8 @@ pub struct Settings {
 /// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentProject {
-    /// 工程文件的路径（打开时用户给的那条，原样保存；显示名由
-    /// 消费方从路径派生，⛔ 不在这里另存一份会漂移的名字）。
+    /// 工程文件的**规范化绝对路径**（最近清单的身份键）：显示名由消费方
+    /// 从路径派生，⛔ 不在这里另存一份会漂移的名字。
     pub path: std::path::PathBuf,
     /// 最近一次打开的时刻（Unix 毫秒）。
     pub opened_at_unix_ms: u64,
@@ -169,6 +169,19 @@ pub struct RecentProject {
 
 /// 最近清单的上限：超出时从尾部（最旧）丢弃。
 pub const RECENT_PROJECTS_MAX: usize = 10;
+
+/// T-FIX-310：路径身份统一为**规范化绝对路径**。
+///
+/// 最近清单是"同一份工程只占一格"的集合 ⇒ 去重键必须先绝对化、再尽量
+/// canonicalize（消掉 `./`、`../`、符号链接与相对路径的写法差异）。
+/// 工程文件此时通常已存在；canonicalize 失败（例如条目已失效）退回
+/// `std::path::absolute`，它仍会得到绝对路径而不碰文件系统。
+/// 显示名**不**参与这里：它由消费方从 `path` 派生。
+fn recent_project_identity(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// 把一次打开记进最近清单（纯函数）：同路径旧记录先摘掉，新记录插到
 /// 最前，超出上限从尾部丢弃。顺序即显示顺序（最近在前）。
@@ -178,13 +191,14 @@ pub fn touch_recent_project(
     path: &std::path::Path,
     opened_at_unix_ms: u64,
 ) -> Vec<RecentProject> {
+    let path = recent_project_identity(path);
     let mut out: Vec<RecentProject> = Vec::with_capacity(list.len() + 1);
     out.push(RecentProject {
-        path: path.to_path_buf(),
+        path: path.clone(),
         opened_at_unix_ms,
     });
     for entry in list {
-        if entry.path != path {
+        if recent_project_identity(&entry.path) != path {
             out.push(entry.clone());
         }
     }
@@ -417,6 +431,72 @@ fn parse_audio_device_name(root: &serde_json::Value, key: &str) -> Option<String
         .map(str::to_owned)
 }
 
+/// 把一条最近工程记录写成 JSON：UTF-8 路径保留可读的 `path`；
+/// Unix 上另外写 `path_bytes`（`OsStrExt::as_bytes`），保证非 UTF-8 路径
+/// 可**逐字节**回读。两者同时存在时，解析器优先 `path_bytes`。
+#[cfg(unix)]
+fn recent_project_to_json(entry: &RecentProject) -> Option<serde_json::Value> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut object = serde_json::Map::new();
+    if let Some(text) = entry.path.to_str() {
+        object.insert(
+            "path".to_owned(),
+            serde_json::Value::String(text.to_owned()),
+        );
+    }
+    object.insert(
+        "path_bytes".to_owned(),
+        serde_json::Value::Array(
+            entry
+                .path
+                .as_os_str()
+                .as_bytes()
+                .iter()
+                .map(|byte| serde_json::json!(byte))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "opened_at_unix_ms".to_owned(),
+        serde_json::json!(entry.opened_at_unix_ms),
+    );
+    Some(serde_json::Value::Object(object))
+}
+
+/// 非 Unix 平台没有可移植的 `OsStr` 字节表示 ⇒ 只写 UTF-8 `path`；
+/// 非 UTF-8 路径在这些平台上本来也无法由原生 picker 产生。
+#[cfg(not(unix))]
+fn recent_project_to_json(entry: &RecentProject) -> Option<serde_json::Value> {
+    let text = entry.path.to_str()?;
+    Some(serde_json::json!({
+        "path": text,
+        "opened_at_unix_ms": entry.opened_at_unix_ms,
+    }))
+}
+
+/// 从一条最近记录里取回路径：优先 `path_bytes`（Unix 逐字节），
+/// 缺失时兼容旧的 `path` 字符串；`path_bytes` 形状坏 ⇒ 只丢这一条。
+fn recent_project_path_from_json(item: &serde_json::Value) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    if let Some(bytes) = item.get("path_bytes") {
+        use std::os::unix::ffi::OsStringExt;
+        let array = bytes.as_array()?;
+        let mut out = Vec::with_capacity(array.len());
+        for value in array {
+            out.push(u8::try_from(value.as_u64()?).ok()?);
+        }
+        if out.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(std::ffi::OsString::from_vec(out)));
+    }
+    let path = item.get("path").and_then(|value| value.as_str())?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(path))
+}
+
 /// 解析 `recent_projects` 键：键缺失 / 不是数组 ⇒ 空清单；逐条容错
 /// （单条形状坏只丢那一条，不连坐整份清单）；重复路径只留第一条
 /// （清单语义上最近在前，第一条就是最近的那次）；超出上限截断。
@@ -426,14 +506,10 @@ fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
     };
     let mut out: Vec<RecentProject> = Vec::new();
     for item in items {
-        let Some(path) = item.get("path").and_then(|v| v.as_str()) else {
+        let Some(path) = recent_project_path_from_json(item) else {
             continue;
         };
-        if path.is_empty()
-            || out
-                .iter()
-                .any(|entry: &RecentProject| entry.path.as_os_str() == path)
-        {
+        if out.iter().any(|entry| entry.path == path) {
             continue;
         }
         let opened_at_unix_ms = item
@@ -441,7 +517,7 @@ fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         out.push(RecentProject {
-            path: std::path::PathBuf::from(path),
+            path: recent_project_identity(&path),
             opened_at_unix_ms,
         });
         if out.len() >= RECENT_PROJECTS_MAX {
@@ -785,11 +861,14 @@ pub fn prune_recent_projects(list: &[RecentProject]) -> Vec<RecentProject> {
 }
 
 /// ⭐ 从最近清单**移除一条**（T-FIX-312）：读-改-写同一条默认路径，
-/// 保住 `language` / `layout` 等其它字段。路径按**逐字节相等**匹配
-/// （不做规范化：清单里存的就是用户当时给的那条路径）。
+/// 保住 `language` / `layout` 等其它字段。路径按**规范化身份**匹配
+/// （与 [`touch_recent_project`] 的去重键同一条口径）。
 pub fn forget_recent_project(path: &std::path::Path) {
+    let path = recent_project_identity(path);
     let mut settings = load();
-    settings.recent_projects.retain(|entry| entry.path != path);
+    settings
+        .recent_projects
+        .retain(|entry| recent_project_identity(&entry.path) != path);
     if let Err(error) = save(&settings) {
         eprintln!("[yeban-app] 从最近清单移除写回失败（下次启动仍在）: {error}");
     }
@@ -825,12 +904,7 @@ pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result
         let items: Vec<serde_json::Value> = settings
             .recent_projects
             .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "path": entry.path.to_string_lossy(),
-                    "opened_at_unix_ms": entry.opened_at_unix_ms,
-                })
-            })
+            .filter_map(recent_project_to_json)
             .collect();
         object.insert(
             "recent_projects".to_owned(),
@@ -1687,6 +1761,31 @@ mod tests {
         );
     }
 
+    /// T-FIX-310：最近清单去重键 = 规范化绝对路径。
+    /// `dir/./a.yeban` 与 `dir/a.yeban` 是同一条工程 ⇒ 只占一格。
+    #[test]
+    fn touch_recent_project_normalizes_path_identity() {
+        let dir =
+            std::env::temp_dir().join(format!("yeban-settings-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let file = dir.join("a.yeban");
+        std::fs::write(&file, b"x").expect("写文件");
+        let canonical = std::fs::canonicalize(&file).expect("文件已存在");
+        let weird = dir.join(".").join("a.yeban");
+
+        let list = touch_recent_project(&[], &weird, 1);
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0].path, canonical,
+            "记录时必须先绝对化 + canonicalize（显示名不参与身份）"
+        );
+        let list = touch_recent_project(&list, &file, 2);
+        assert_eq!(list.len(), 1, "同一工程的两种写法只能占一格");
+        assert_eq!(list[0].opened_at_unix_ms, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn recent_projects_round_trip_and_tolerant_parse() {
         let dir =
@@ -1726,6 +1825,57 @@ mod tests {
         assert_eq!(parsed.recent_projects.len(), 2);
         assert_eq!(parsed.recent_projects[0].opened_at_unix_ms, 5);
         assert_eq!(parsed.recent_projects[1].opened_at_unix_ms, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-310：最近清单里的非 UTF-8 路径必须**逐字节**往返；
+    /// `path_bytes` 坏掉的单条只丢自己，不连坐同文件里的其它条目。
+    #[cfg(unix)]
+    #[test]
+    fn recent_projects_round_trip_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-settings-recent-non-utf8-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let non_utf8 = dir.join(std::ffi::OsString::from_vec(vec![
+            b'b', b'a', b'd', b'-', 0xFF, b'.', b'y', b'e', b'b', b'a', b'n',
+        ]));
+        let settings = Settings {
+            recent_projects: vec![
+                RecentProject {
+                    path: non_utf8.clone(),
+                    opened_at_unix_ms: 42,
+                },
+                RecentProject {
+                    path: std::path::PathBuf::from("/music/ok.yeban"),
+                    opened_at_unix_ms: 7,
+                },
+            ],
+            ..Default::default()
+        };
+        save_to(&path, &settings).expect("写设置");
+        let back = load_from(&path);
+        assert_eq!(
+            back.recent_projects, settings.recent_projects,
+            "非 UTF-8 路径必须可逆回读（⛔ 不能被 to_string_lossy 换成 �）"
+        );
+
+        // `path_bytes` 形状坏（300 不是字节）⇒ 只丢这一条；下一条 UTF-8 仍读得出。
+        std::fs::write(
+            &path,
+            r#"{"version":1,"recent_projects":[
+                {"path_bytes":[98,97,100,300],"opened_at_unix_ms":1},
+                {"path":"/music/ok.yeban","opened_at_unix_ms":2}
+            ]}"#,
+        )
+        .expect("写坏设置");
+        let parsed = load_from(&path);
+        assert_eq!(parsed.recent_projects.len(), 1, "坏条目不得连坐其余条目");
+        assert_eq!(parsed.recent_projects[0].opened_at_unix_ms, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

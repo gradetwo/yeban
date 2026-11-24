@@ -397,7 +397,7 @@ fn startup_chooser_live_window_flow() {
                     target: if untitled {
                         None
                     } else {
-                        Some(PathBuf::from(path))
+                        Some(path.to_path_buf())
                     },
                     project: project.clone(),
                 },

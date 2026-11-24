@@ -9866,7 +9866,7 @@ pub trait OpenProjectRuntime {
     /// # Errors
     ///
     /// 给用户看的完整原因（**非空**）。调用方原样写进 `module-status` 回执。
-    fn open_runtime(&self, ui: &MainWindow, path: &str) -> Result<(), String>;
+    fn open_runtime(&self, ui: &MainWindow, path: &std::path::Path) -> Result<(), String>;
 }
 
 /// 换工程之后**装配方最后一跳**的签名：`(ui, 新工程, 新落点, 新投影)`。
@@ -9874,7 +9874,7 @@ pub trait OpenProjectRuntime {
 /// 单独起一个别名的两个理由：① `clippy::type_complexity`（`-D warnings` 下是硬错误）；
 /// ② 这**是**一条契约（调用方要拿哪四样东西）—— 别名比内联的函数类型好读。
 pub type OpenProjectAfter =
-    Rc<dyn Fn(&MainWindow, &YebanProjectV1, &str, &ViewState) -> Result<(), String>>;
+    Rc<dyn Fn(&MainWindow, &YebanProjectV1, &std::path::Path, &ViewState) -> Result<(), String>>;
 
 /// ⭐ T-FIX-193 D3：新工程打开时的**默认选中轨** —— 身份序第一条**有 MIDI 音符**
 /// 的非主总线轨；一条都没有 ⇒ `None`（由 `display_track` 回落到旧口径：身份序第一条
@@ -9929,21 +9929,26 @@ pub struct PortOpenProject {
 }
 
 impl OpenProjectRuntime for PortOpenProject {
-    fn open_runtime(&self, ui: &MainWindow, path: &str) -> Result<(), String> {
+    fn open_runtime(&self, ui: &MainWindow, path: &std::path::Path) -> Result<(), String> {
         // ① 读盘（唯一读取核心）。读失败 ⇒ 到这里就返回：下面一个字节都没改。
         //
         // ⭐ 任务单 `#132`：读的是**全保真归档**（工程 ＋ `history.dag` ＋ 资产池），
         // ⛔ 不是裸工程 —— 否则运行期换工程之后再保存，新工程的 `assets/{sha256}`
         // 会静默消失（保存写的是端口里那一池，而那一池从没被新归档填过）。
-        let document = crate::open::open_project_document_file(path, &Default::default())
-            .map_err(|error| format!("打开 `{path}` 失败（当前工程一位没动）: {error}"))?;
+        let document = crate::open::open_project_document_file(path, &Default::default()).map_err(
+            |error| {
+                format!(
+                    "打开 `{}` 失败（当前工程一位没动）: {error}",
+                    path.display()
+                )
+            },
+        )?;
         // ② 起的固定动作与「从归档打开」共用同一段（见下面那个方法）。
-        self.open_archive_runtime(
-            ui,
-            path,
-            &document.archive,
-            std::path::Path::new(path).parent(),
-        )
+        // ⭐ T-FIX-310：`label` 只用于**显示 / 会话名 / 错误串**；真实路径以
+        // `&Path` 走完读盘、`project_dir` 与 `after`（保存落点），⛔ 不再经过
+        // `to_string_lossy` —— 否则非 UTF-8 工程会被静默改写成 `�`。
+        let label = path.display().to_string();
+        self.open_archive_runtime(ui, &label, &document.archive, path.parent(), Some(path))
     }
 }
 
@@ -9971,6 +9976,9 @@ impl PortOpenProject {
         label: &str,
         archive: &yeban_model::container::ProjectArchive,
         project_dir: Option<&std::path::Path>,
+        // T-FIX-310：真实来源路径（打开/文件型 demo 给出）；内置 demo / 未命名
+        // 新建没有磁盘来源 ⇒ `None`，`after` 只拿到显示用的 `label`。
+        source_path: Option<&std::path::Path>,
     ) -> Result<(), String> {
         let project = archive.project.clone();
         // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
@@ -10126,7 +10134,12 @@ impl PortOpenProject {
             }
         }
         // ⑥ 装配方自己的那一跳（心跳对齐基准 / 保存落点 / 静态快照）。
-        (self.after)(ui, &project, label, &view)?;
+        (self.after)(
+            ui,
+            &project,
+            source_path.unwrap_or_else(|| std::path::Path::new(label)),
+            &view,
+        )?;
         if let Some(error) = reload_error {
             // 界面已经换了新工程 ⇒ 这一句**如实**说明"播放侧还是上一版"（不静默）。
             return Err(format!(
@@ -10190,7 +10203,8 @@ pub fn wire_open_project(
             // 取消：什么都不做（⛔ 不写回执、⛔ 不动工程），见上面的文档。
             return;
         };
-        let path = path.to_string_lossy().into_owned();
+        // T-FIX-310：⛔ 不再 `to_string_lossy` —— `path` 保持 `PathBuf`，
+        // 读盘 / 最近清单 / `after` 的保存落点都拿**原字节**。
         // ② 先保存（可选）：唯一的保存入口就是那个回调。
         if save_first && let Err(message) = save_first_through_the_existing_entry(&ui) {
             let receipt =
@@ -10206,16 +10220,13 @@ pub fn wire_open_project(
                 // 第三键）：启动选择器的「最近」分类读的就是这份清单。
                 // 写回失败不把打开改判失败，但会以错误级常驻提示展示
                 // （本回调末尾的 [`report_pending_settings_warnings`]）。
-                crate::settings::record_recent_project(
-                    std::path::Path::new(&path),
-                    yeban_model::project::now_unix_ms(),
-                );
+                crate::settings::record_recent_project(&path, yeban_model::project::now_unix_ms());
                 (
                     module_receipt(
                         "open-project",
                         &[
                             "outcome=ok".to_owned(),
-                            format!("path={path}"),
+                            format!("path={}", path.display()),
                             // **回读**（不是回显入参）：界面此刻的轨道行数。
                             format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
                             format!("savedFirst={save_first}"),
@@ -10492,7 +10503,7 @@ pub fn wire_new_project(
         };
         // 与 `wire_save` **同一条**后缀口径：用户敲了 `demo` ⇒ 写 `demo.yeban`。
         let path = crate::file_picker::with_default_extension(path, "yeban");
-        let path = path.to_string_lossy().into_owned();
+        // T-FIX-310：保持 `PathBuf` 全保真；`to_string_lossy` 只允许出现在最终显示。
         // ⭐ ③ 目标已存在？先问一次**显式确认**（T-FIX-308）。
         //
         // 这一段是"新建"与"覆盖"的分界线：不存在 ⇒ 走不覆盖的 create；存在且用户
@@ -10500,9 +10511,7 @@ pub fn wire_new_project(
         // 用户确认 ⇒ 才走名字就写着 overwrite 的那个入口。⛔ 不把平台保存对话框的
         // "是否替换"当成契约 —— 脚本假实现 / 控制面装配都可能直接返回已有路径。
         let mut overwritten = false;
-        let write = match new_project_target(std::path::Path::new(&path), |target| {
-            picker.confirm_overwrite(target)
-        }) {
+        let write = match new_project_target(&path, |target| picker.confirm_overwrite(target)) {
             NewProjectTarget::Cancelled => return,
             NewProjectTarget::Create => {
                 create_new_project_file(&path).map_err(|error| error.to_string())
@@ -10529,13 +10538,10 @@ pub fn wire_new_project(
         let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
             Ok(()) => {
                 // 新建并打开成功 ⇒ 同样记进「最近打开」（它就是一次打开）。
-                crate::settings::record_recent_project(
-                    std::path::Path::new(&path),
-                    yeban_model::project::now_unix_ms(),
-                );
+                crate::settings::record_recent_project(&path, yeban_model::project::now_unix_ms());
                 let mut fields = vec![
                     "outcome=ok".to_owned(),
-                    format!("path={path}"),
+                    format!("path={}", path.display()),
                     format!("bytes={bytes}"),
                     // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
                     format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
@@ -10551,7 +10557,10 @@ pub fn wire_new_project(
                     "new-project",
                     &module_error_fields(
                         "swap",
-                        &format!("已写出 `{path}`（{bytes} 字节），但换成新工程失败: {message}"),
+                        &format!(
+                            "已写出 `{}`（{bytes} 字节），但换成新工程失败: {message}",
+                            path.display()
+                        ),
                     ),
                 ),
                 false,
@@ -10670,7 +10679,7 @@ pub fn wire_project_templates(
                 return;
             };
             ui.set_template_chooser_open(false);
-            let path = entry.path.to_string_lossy().into_owned();
+            let path = entry.path.clone();
             let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
                 Ok(()) => (
                     module_receipt(
@@ -10687,7 +10696,7 @@ pub fn wire_project_templates(
                             format!("style={}", entry.style),
                             format!("substyle={}", entry.substyle),
                             format!("name={}", entry.name),
-                            format!("path={path}"),
+                            format!("path={}", path.display()),
                             // **回读**（不是回显入参）：界面此刻的轨道行数。
                             format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
                         ],
@@ -11034,14 +11043,14 @@ pub fn wire_startup_chooser(
                         );
                         return;
                     }
-                    let path = entry.path.to_string_lossy().into_owned();
+                    let path = entry.path.clone();
                     match titled.open_runtime(&ui, &path) {
                         Ok(()) => {
                             crate::settings::record_recent_project(
-                                std::path::Path::new(&path),
+                                &path,
                                 yeban_model::project::now_unix_ms(),
                             );
-                            done(&ui, "recent", format!("path={path}"));
+                            done(&ui, "recent", format!("path={}", path.display()));
                             // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299），
                             // 放在回执之后（`done` 已写回执）。
                             report_pending_settings_warnings(&ui);
@@ -11076,7 +11085,7 @@ pub fn wire_startup_chooser(
                                 crate::cli::Sample::Filled => "sample:filled",
                                 crate::cli::Sample::Empty => "sample:empty",
                             };
-                            match untitled.open_archive_runtime(&ui, label, &archive, None) {
+                            match untitled.open_archive_runtime(&ui, label, &archive, None, None) {
                                 Ok(()) => done(&ui, "demo", format!("source={label}")),
                                 Err(message) => fail(&ui, "open-demo", &message),
                             }
@@ -11101,6 +11110,7 @@ pub fn wire_startup_chooser(
                                         &label,
                                         &archive,
                                         path.parent(),
+                                        Some(&path),
                                     ) {
                                         Ok(()) => done(&ui, "demo", format!("source={label}")),
                                         Err(message) => fail(&ui, "open-demo", &message),
@@ -11121,9 +11131,9 @@ pub fn wire_startup_chooser(
                         );
                         return;
                     };
-                    let path = entry.path.to_string_lossy().into_owned();
+                    let path = entry.path.clone();
                     match untitled.open_runtime(&ui, &path) {
-                        Ok(()) => done(&ui, "template", format!("path={path}")),
+                        Ok(()) => done(&ui, "template", format!("path={}", path.display())),
                         Err(message) => fail(&ui, "open-template", &message),
                     }
                 }
@@ -11199,7 +11209,7 @@ pub fn wire_startup_chooser(
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
             };
-            match untitled.open_archive_runtime(&ui, "new-project", &archive, None) {
+            match untitled.open_archive_runtime(&ui, "new-project", &archive, None, None) {
                 Ok(()) => {
                     ui.set_startup_chooser_open(false);
                     let receipt = module_receipt(
@@ -11243,11 +11253,10 @@ pub fn wire_startup_chooser(
                 // 取消：留在选择器里，什么都不做（与 wire_open_project 同口径）。
                 return;
             };
-            let path = path.to_string_lossy().into_owned();
             match titled.open_runtime(&ui, &path) {
                 Ok(()) => {
                     crate::settings::record_recent_project(
-                        std::path::Path::new(&path),
+                        &path,
                         yeban_model::project::now_unix_ms(),
                     );
                     ui.set_startup_chooser_open(false);
@@ -11256,7 +11265,7 @@ pub fn wire_startup_chooser(
                         &[
                             "outcome=ok".to_owned(),
                             "via=file".to_owned(),
-                            format!("path={path}"),
+                            format!("path={}", path.display()),
                             format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
                         ],
                     );

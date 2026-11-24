@@ -969,7 +969,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             Rc::new(
                 move |ui: &yeban_app::ui::MainWindow,
                       project: &yeban_model::YebanProjectV1,
-                      path: &str,
+                      path: &std::path::Path,
                       view: &yeban_app::bridge::ViewState|
                       -> Result<(), String> {
                     // ① 心跳对齐基准。
@@ -985,7 +985,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                             target: if untitled {
                                 None
                             } else {
-                                Some(std::path::PathBuf::from(path))
+                                Some(path.to_path_buf())
                             },
                             project: project.clone(),
                         },

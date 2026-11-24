@@ -257,7 +257,7 @@ fn demo_cover_live_window_screenshot() {
                     target: if untitled {
                         None
                     } else {
-                        Some(PathBuf::from(path))
+                        Some(path.to_path_buf())
                     },
                     project: project.clone(),
                 },
