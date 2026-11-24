@@ -6342,10 +6342,18 @@ impl EngineRuntime {
             // ⭐ **应用本量子的 CC64 跃变**（本片）：快照已借出 ⇒ 每条有摊平表的轨都能
             // 拿到 `prepared()`，`set_sustain_pedal` 在**松开**时会逐个 `release_note` ＋
             // `trigger_pedal_up`（与 `note_off_with_sources` 同一套语义）。
-            // ⚠ 只处理"有 SFZ 表"的轨：没有采样器音源的轨本来就没有释放族。
+            //
+            // ⭐ **纯合成器/鼓机轨也要应用**（T-FIX-274）：踏板是演奏状态，与"本轨有没有
+            // 采样器音源"无关。以前只遍历 `current.sfz()` ⇒ 没有 SFZ 的轨根本收不到
+            // CC64，实时松键照样立刻 `note_off`（= 本条单子的缺陷）。
+            // ⚠ 两趟遍历是安全的：`set_sustain_pedal` 只在**状态真的变化**时干活，
+            // 第二趟对第一趟处理过的轨是空操作（见该方法的早退判据）。
             if let Some(down) = pedal_transition {
                 for (track, plan) in current.sfz() {
                     synth.set_sustain_pedal(*track, down, Some(plan.prepared()));
+                }
+                for track in current.tracks().keys() {
+                    synth.set_sustain_pedal(*track, down, None);
                 }
             }
 

@@ -1229,6 +1229,23 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         0
     }
 
+    /// ⭐ **这个请求频率上还有声部吗**（零分配、零锁；T-FIX-274）。
+    ///
+    /// 踏板踩下时引擎要判断"这次松键到底挂住了什么"：有 ⇒ 记挂起位并算作命中，
+    /// 没有 ⇒ ⛔ 不记（否则踏板抬起时会去放一个不存在的键，`orphan_note_offs`
+    /// 这类诊断读数也会跟着虚增）。
+    ///
+    /// ⚠ 匹配口径与 [`Self::note_off`] **逐字相同**（`freq_hz` 精确相等，含
+    /// `pending_freq_hz` 那条支路）—— 两个方法对"同频"的判断必须一致，否则
+    /// "记了挂起却放不掉"会在实时路径上留下卡住的音。
+    #[must_use]
+    pub fn holds(&self, freq_hz: f32) -> bool {
+        self.voices.iter().any(|voice| {
+            (voice.active && voice.freq_hz == freq_hz)
+                || (voice.pending.is_some() && voice.pending_freq_hz == freq_hz)
+        })
+    }
+
     /// 回收"已过终点且包络已静音"的声部（快照边界的游标校正一并做）。
     ///
     /// 仍在释放段的声部**保留** —— 快照切换不得切断在鸣的音符。

@@ -1258,6 +1258,26 @@ struct TrackSlot {
     live_sfz: bool,
     /// 停止态存在由实时 `NoteOn` 触发的鼓机试听击音（与时间轴回放尾巴隔离）。
     live_drum: bool,
+    /// ⭐ **实时 CC64 的踏板状态**（T-FIX-274）。
+    ///
+    /// 为什么放在**槽**上、而不是只放在 [`SfzVoicePool`] 里：踏板是**演奏状态**，
+    /// 与"本轨用哪种音源"无关。此前只有 SFZ 池记这个位 ⇒ 纯复音轨根本没有踏板
+    /// 状态，实时 CC64 对合成器完全无效（本票的缺口）。
+    ///
+    /// ⚠ 与池里那份**同源**（都只由 [`SynthEngine::set_sustain_pedal`] 写）：两处都在，
+    /// 是因为 SFZ 的释放族（`release` / `release_key`）要用池自己那份判谓词，
+    /// 而合成器支路要用槽这份。
+    pedal_down: bool,
+    /// ⭐ 踏板踩下期间**已经松开**的键（T-FIX-274）：踏板抬起时逐个 `note_off`。
+    ///
+    /// 定长 `[bool; 128]`（⛔ 无分配 ⇒ 实时路径可写）；下标就是 MIDI 音高。
+    /// 键重新按下时清位（它不再是"等踏板放掉"的挂起键）。
+    ///
+    /// ⚠ **一个音高一位就够**：`note_on_with_sources` 对同频会先 `note_off` 再触发
+    /// （抢占同一槽）⇒ 同一个 pitch 上不会同时存在两个"被踏板挂起"的声部。
+    /// 将来若支持同音多声部叠加，这里必须换成**计数器**，否则踏板抬起只能放掉一个
+    /// （另一个会永久卡在 Sustain）。
+    pedal_pending: [bool; 128],
 }
 
 impl TrackSlot {
@@ -1278,6 +1298,9 @@ impl TrackSlot {
             live_position: 0,
             live_sfz: false,
             live_drum: false,
+            // ⭐ 空槽没有踏板状态（T-FIX-274）：槽被复用给另一条轨时不许继承旧踏板。
+            pedal_down: false,
+            pedal_pending: [false; 128],
         }
     }
 }
@@ -1935,6 +1958,8 @@ impl SynthEngine {
         }
 
         let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
+        // ⭐ 键又按下了 ⇒ 它不再是"等踏板放掉"的挂起键（T-FIX-274）。
+        self.slots[index].pedal_pending[usize::from(pitch)] = false;
         // ⭐ 池满 ⇒ 这一次会走窃取路径（⭐ 触发**之前**量，⭐ 触发之后就不是"满"了）。
         let pool_full = self.slots[index].synth.active_voices() >= VOICES_PER_TRACK;
         // ⭐ 同 pitch 重触发：⭐ 先松、⭐ 再触发（⭐ 裁定：⭐ 抢占同一槽）。
@@ -1966,8 +1991,22 @@ impl SynthEngine {
         };
         let mut released = false;
         let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
-        if self.slots[index].synth.note_off(freq_hz) > 0 {
+        if self.slots[index].pedal_down {
+            // ⭐ **踏板踩下**（T-FIX-274）：键松开**不**停止声部，只记挂起 —— 与 SFZ
+            // 支路"attack 声部不停，等踏板"同一条语义。真正的释放发生在踏板抬起
+            // （[`Self::set_sustain_pedal`]）。
+            //
+            // ⚠ 返回值口径**不变**：只有"确实有同频声部被这次松键挂住"才算命中。
+            // 否则调用方会把它记成孤儿松键（`orphan_note_offs` 是诊断读数，⛔ 不虚增）。
+            if self.slots[index].synth.holds(freq_hz) {
+                self.slots[index].pedal_pending[usize::from(pitch)] = true;
+                released = true;
+            }
+        } else if self.slots[index].synth.note_off(freq_hz) > 0 {
             released = true;
+            // 没踩踏板时不该有挂起位；顺手清掉（轨道换过音源、早前的踏板没抬起来
+            // 这类残留），⛔ 不让它在下一次踏板抬起时误放一个刚松的键。
+            self.slots[index].pedal_pending[usize::from(pitch)] = false;
         }
         if let Some((_, params)) = self.drum_slots[index] {
             if self.slots[index].live_drum && params.notes().voice_for(pitch).is_some() {
@@ -2031,7 +2070,12 @@ impl SynthEngine {
     /// `sfz` 是**该轨当前**的摊平表（踏板松开那一刻建释放声部要用它）；`None` ⇒
     /// 只能清挂起位（没有区域表就建不出声部，⛔ 不猜）。
     ///
-    /// 返回踏板松开时新建的释放声部数。零分配、零锁、零 I/O ⇒ 可在实时路径调用。
+    /// ⭐ **踏板是演奏状态，与音源无关**（T-FIX-274）：本方法对**纯复音轨**同样生效
+    /// （`sfz = None`），把踏板踩下期间松开的合成器键挂起，抬起时逐个 `note_off`。
+    /// 状态没变（重复踩下/重复抬起）⇒ 直接返回 `0`，⛔ 不做任何工作。
+    ///
+    /// 返回踏板松开时**新建的**释放声部数（只有 SFZ 会建声部；合成器支路只是让
+    /// 已有声部进 Release，不计入）。零分配、零锁、零 I/O ⇒ 可在实时路径调用。
     pub fn set_sustain_pedal(
         &mut self,
         track: EntityId,
@@ -2041,10 +2085,25 @@ impl SynthEngine {
         let Some(index) = self.slot_index(track) else {
             return 0;
         };
-        if !self.slots[index].sfz.set_pedal(down) {
+        // ⚠ 顺序：先取池的"这次是不是抬起"，再写两处状态 —— 池的返回值是它自己
+        // 那份状态机的跃变，与本方法末尾的早退判据不是同一件事。
+        let pool_released = self.slots[index].sfz.set_pedal(down);
+        let was_down = self.slots[index].pedal_down;
+        self.slots[index].pedal_down = down;
+        if down || !(was_down || pool_released) {
+            // 踩下（或状态没变）⇒ 没有要放掉的键。
             return 0;
         }
-        // 踏板松开：逐个放掉挂起的键。
+        // 踏板松开 ①：复音支路 —— 把踩踏板期间松开的键真正送进 Release。
+        for pitch in 0..128u8 {
+            if !self.slots[index].pedal_pending[usize::from(pitch)] {
+                continue;
+            }
+            self.slots[index].pedal_pending[usize::from(pitch)] = false;
+            let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
+            self.slots[index].synth.note_off(freq_hz);
+        }
+        // 踏板松开 ②：SFZ 支路 —— 逐个放掉挂起的键（原样）。
         let now = self.position;
         let mut created = 0usize;
         for pitch in 0..128u8 {
@@ -2319,6 +2378,24 @@ impl SynthEngine {
         self.slot_index(track).map(|index| self.slots[index].tone)
     }
 
+    /// ⭐ **实时踏板的读数**（T-FIX-274）：`(踏板是否踩下, 被踏板挂起的键数)`。
+    ///
+    /// `None` = 该轨没有占槽或不在本快照里（与 [`Self::tone_params`] 同口径）。
+    /// 判据用它钉"踏板抬起后挂起表清空 / `seek` 后清空"，⛔ 不必从音频反推。
+    #[must_use]
+    pub fn debug_pedal_state(&self, track: EntityId) -> Option<(bool, usize)> {
+        self.slot_index(track).map(|index| {
+            (
+                self.slots[index].pedal_down,
+                self.slots[index]
+                    .pedal_pending
+                    .iter()
+                    .filter(|pending| **pending)
+                    .count(),
+            )
+        })
+    }
+
     /// 声部池的诊断转储（**仅 debug 构建**；`tests/` 判据用来定位"为什么没有窃取"）。
     ///
     /// 返回 `(活跃, end_sample, 包络阶段, 淡出剩余)`，逐条来自该槽器件的
@@ -2411,6 +2488,11 @@ impl SynthEngine {
         for slot in &mut self.slots {
             slot.synth.reset();
             slot.sfz.silence();
+            // ⭐ 定位 = 全部声部放掉 ⇒ 踏板的挂起表也没有意义了（T-FIX-274）：
+            // 不清就会在**下一次**踏板抬起时放掉一批早已被 `reset` 的键位（无害但
+            // 会让"挂起表已清空"的读数说谎），并且让 `pedal_down` 与真实演奏脱节。
+            slot.pedal_down = false;
+            slot.pedal_pending = [false; 128];
             slot.live_position = position;
             slot.live_sfz = false;
             slot.live_drum = false;
@@ -2594,6 +2676,27 @@ impl SynthEngine {
                     self.slots[index].live_position = self.position;
                 }
                 None => self.track_drops = self.track_drops.saturating_add(1),
+            }
+        }
+
+        // ⭐ **快照切换**：本快照里**不存在**的轨道不再有踏板语义（T-FIX-274）。
+        //
+        // 为什么必须在这里收尾：踏板抬起是**外部事件**，轨道被移除/换了音源之后它
+        // 可能永远不来了；留在挂起表里的键会一直占着声部（用户听到的是"有个音卡住"）。
+        // ⚠ 只放掉**被踏板挂起的**那些键，仍被按住的键照旧保留 —— 与"声部状态跨快照
+        // 连续"同口径（`begin_snapshot` 不释放声部池）。
+        for slot in &mut self.slots {
+            if slot.present || !slot.assigned {
+                continue;
+            }
+            slot.pedal_down = false;
+            for pitch in 0..128u8 {
+                if !slot.pedal_pending[usize::from(pitch)] {
+                    continue;
+                }
+                slot.pedal_pending[usize::from(pitch)] = false;
+                slot.synth
+                    .note_off(yeban_dsp::math::note_to_hz(f32::from(pitch)));
             }
         }
 
