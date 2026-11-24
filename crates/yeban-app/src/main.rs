@@ -1003,6 +1003,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                         Rc::clone(&engine_after),
                         Rc::clone(&view_after),
                     );
+                    // ③-c 重绑纯编辑面：这些 handler 闭包着启动期 `UndoPort`，
+                    // `wire_callbacks` 不含它们；不重跑会把 Op 写进旧撤销会话（T-FIX-323）。
+                    host::wire_edit_surfaces(ui, &port_after);
                     // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
                     engine_after
                         .borrow_mut()
@@ -1107,63 +1110,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_tool_select(&ui, Some(Rc::clone(&undo_port)));
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
-    // `[UI-NOTE-003]` 卷帘编辑入口（铅笔）：与撤销端口共用同一实现 ⇒ 可撤销是构造上的。
-    host::wire_roll_edit(&ui, &undo_port);
-    // 编曲剪辑平移：拖动期只写草稿（`clip-drag-*`），松手才 `commit_ops` **一次**
-    // `Op::MoveClipPlacement` —— 与混音台 / 卷帘移动臂同一条纪律。
-    host::wire_clip_drag(&ui, &undo_port);
-    // `ADR-0004` S1 的**纵向入口**：轨道头按住并上下拖动 ⇒ 改这一轨的行高。
-    //
-    // 高度是**视图态**（不进 `.yeban`、不进 schema），因此它落到的不是 `UndoPort::perform`
-    // 而是 `host::set_track_height_override`（唯一 setter）+ 用同一个端口重投影；
-    // 端口在这里的作用与 `wire_roll_edit` 逐字相同：给出此刻权威的工程。
-    // `Escape`（`Action::Cancel`）也经同一个 `wire_keys` 端口取消这一拖（见 `apply_action`）。
-    host::wire_track_height_drag(&ui, &undo_port);
-    // ⭐ 任务单 `#192`：轨道头点击 ⇒ **选中这条轨**（编辑器视图态）。
-    //
-    // 与行高同一条纪律：选中态不进 `.yeban`、不进 `projectDigest`、不进撤销栈 ⇒
-    // 落点是 `ui.set_selected-track-id`（唯一写点）+ 用同一个端口重投影，
-    // ⛔ 不调用 `UndoPort::commit_ops`。端口在这里只用来取"此刻权威的工程"。
-    host::wire_track_select(&ui, &undo_port);
-    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放控件 / 移轨 / 横向滚动
-    // （与 `live_surface.rs` 的无头装配调**同一个**函数 ⇒ 两条执行面不分叉）。
-    host::wire_zoom_controls(&ui, &undo_port);
-    host::wire_track_reorder(&ui, &undo_port);
-    host::wire_arrangement_wheel(&ui, &undo_port);
-    host::wire_arrangement_hscroll(&ui, &undo_port);
-    host::wire_track_rename(&ui, &undo_port);
-    host::wire_track_arm(&ui);
-    host::wire_automation_lane_click(&ui, &undo_port);
-    // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。
-    //
-    // 工程内容是**领域内容** ⇒ 走 `Op` + `UndoPort`（`ADR-0005`）：拖动期间只写视图态，
-    // 松手 / 点击才 `commit_ops` **一次**，因此一次拖动 = 一步可撤销的编辑。
-    // 与 `wire_roll_edit` 共用同一个 `UndoPort`（唯一可变权威）。
-    host::wire_mixer_edit(&ui, &undo_port);
-    // ⭐ 设备效果链（控制台 Tab 3）的**写入面**（任务单 `#157`）：旁通开关 + 一格
-    // `eq_low_gain` 滑块。与混音台同一条纪律 —— 拖动期只写视图态，松手 / 点击才
-    // `commit_ops` **一次**（一次手势 = 一步可撤销的编辑），且共用同一个 `UndoPort`。
-    host::wire_device_rack(&ui, &undo_port);
-    // ⭐ 发送条（控制台 Tab 3 的同一面板）的**写入面**（任务单 `#159`）：改发送增益 ＋
-    // 新建发送。与设备机架 / 混音台同一条纪律 —— 拖动期只写视图态，松手 / 点击才
-    // `commit_ops` **一次**，且共用同一个 `UndoPort`（工程内容走 `Op`，`ADR-0005`）。
-    host::wire_send_strip(&ui, &undo_port);
-    // ⭐ 宏面板（Tab 3 头部「宏 (N)」打开的右侧抽屉）的**写入面**：一个滑块手势 =
-    // **恰好一次** `commit_ops`（一个 `Op::SetMacro`），与上面三条同一条纪律 ——
-    // 拖动期只写视图态，松手才提交，共用同一个 `UndoPort`（`ADR-0005`）。
-    host::wire_macro_panel(&ui, &undo_port);
-    // ⭐ 走带条 BPM 敲入（回车 / `accepted`）的**写入面**：一次回车 = **恰好一次**
-    // `commit_ops`（一个 `Op::SetTempo`）。解析 / 区间校验 / 同值判重都在宿主里做，
-    // 界面只把原样文本交出来 ⇒ 与 `wire_mixer_sampler` 的"界面不解析数字"同一条纪律。
-    host::wire_bpm_commit(&ui, &undo_port);
-    // ⭐ 轨 / 路由（控制台 Tab 3 的**同一面板**）的**写入面**（任务单 `#160`）：
-    // 三个建轨按钮 ＋ 删除展示轨。与上面三条同一条纪律 —— 每个手势**恰好一次**
-    // `commit_ops`（建轨 / 删轨各自打包成一个 `Op::Batch`），共用同一个 `UndoPort`。
-    host::wire_track_strip(&ui, &undo_port);
-    // ⭐ 建空的 MIDI 片段（控制台 Tab 3 的**同一面板**，任务单 `#163`）：一次点击 =
-    // **恰好一次** `commit_ops`（`AddClip` ＋ `AddClipPlacement` 一个原子批次），
-    // 共用同一个 `UndoPort`。设备的增删在同一条面板的 `host::wire_device_rack` 里。
-    host::wire_clip_create(&ui, &undo_port);
+    // 纯编辑面统一接线（T-FIX-323）：启动与换工程 `after` 共用同一份清单。
+    host::wire_edit_surfaces(&ui, &undo_port);
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与其余接线同款 ——
     // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。

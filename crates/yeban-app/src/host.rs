@@ -25450,6 +25450,38 @@ pub fn wire_trigger_shortcut(ui: &MainWindow) {
     });
 }
 
+/// 换工程后可重跑的“编辑面”接线（T-FIX-323）。
+///
+/// 这些回调的闭包都捕获 `UndoPort`，且注册在启动装配期；换工程只跑
+/// [`crate::host::wire_view_callbacks`] 等旧回调不会重绑它们，`on_*` 覆盖语义下
+/// 最后一次注册仍是启动期端口 ⇒ 编辑会落到旧撤销会话。启动装配与换工程 `after`
+/// 必须调**同一个**本函数，避免两份清单分叉。
+///
+/// 只收**纯编辑面**：卷帘 / 片段拖动 / 轨道头 / 选中 / 缩放 / 移轨 / 滚动 /
+/// 重命名 / ARM / 自动化车道 / 混音台 / 设备机架 / 发送条 / 宏 / BPM / 轨路由 /
+/// 建片段。模块入口、对话框、文件选择器与音频设置另有工程目录 / 引擎 / 生产循环
+/// 依赖，不在本函数内（它们仍按启动期装配，见 `main.rs` 的注释）。
+pub fn wire_edit_surfaces(ui: &MainWindow, port: &Rc<UndoPort>) {
+    wire_roll_edit(ui, port);
+    wire_clip_drag(ui, port);
+    wire_track_height_drag(ui, port);
+    wire_track_select(ui, port);
+    wire_zoom_controls(ui, port);
+    wire_track_reorder(ui, port);
+    wire_arrangement_wheel(ui, port);
+    wire_arrangement_hscroll(ui, port);
+    wire_track_rename(ui, port);
+    wire_track_arm(ui);
+    wire_automation_lane_click(ui, port);
+    wire_mixer_edit(ui, port);
+    wire_device_rack(ui, port);
+    wire_send_strip(ui, port);
+    wire_macro_panel(ui, port);
+    wire_bpm_commit(ui, port);
+    wire_track_strip(ui, port);
+    wire_clip_create(ui, port);
+}
+
 /// 生产桥接层: 把**全部 33 个新 UI 独有回调**注册到真实 handler。
 ///
 /// 落点分三类, ⛔ 没有一个是 toast / 静默:
