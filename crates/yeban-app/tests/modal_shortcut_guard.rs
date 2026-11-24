@@ -367,7 +367,13 @@ fn the_guard_lists_all_six_modals_and_all_five_digits_before_trigger_shortcut() 
         "T-FIX-289 守卫注释必须恰好一处（集中一处，⛔ 不得多处各抄一份）"
     );
     let start = app.find(marker).expect("T-FIX-289 标记");
-    let guard = &app[start..start + 3000];
+    // 字节窗口须落在字符边界上：app.slint 是 UTF-8，start + 3000 可能切在汉字中间
+    // 而直接切片会 panic（rebase 后字节偏移一动就暴露）。窗口仍是 3000 字节，向下取整到边界。
+    let mut end = (start + 3000).min(app.len());
+    while !app.is_char_boundary(end) {
+        end -= 1;
+    }
+    let guard = &app[start..end];
     for flag in [
         "export-wav-open",
         "sound-library-open",
