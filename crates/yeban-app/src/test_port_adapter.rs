@@ -422,14 +422,15 @@ fn pick_regression_target(
 /// 这两个集合本来就不该相等 —— 本判据只钉住"默认视图的关键部件真的在树里"。
 ///
 /// 这一份是**硬断言**的核心清单：每一条都在默认视图里既非 `visible: false` 又无裁剪风险。
-const DEFAULT_VIEW_MUST_HAVE: [&str; 15] = [
+/// ⭐ T-FIX-218：`"sidebar"` 已删（`ui/sidebar.slint` 删除，旧 `Sidebar` 组件
+/// 不再进树；左栏现为 `left_panel.slint` 浏览器页，无语义 ID）⇒ 清单 **15 → 14**。
+const DEFAULT_VIEW_MUST_HAVE: [&str; 14] = [
     "ai-rail",
     "arrangement-playhead",
     "arrangement-ruler",
     "console-tab-rail",
     "piano-roll",
     "piano-roll-grid",
-    "sidebar",
     "splitter-workspace-console",
     "status-bar",
     "status-bar-selection",
@@ -456,7 +457,10 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 15] = [
 /// 同日的节拍器切片新增 `transport-metronome-button`（宽度 ≥ 1120 时可见）⇒ **38 → 39**。
 /// 同日的循环选区切片删除 `arrangement-loop-brace`（固定 2–6 小节的假选区，模型没有
 /// 走带循环字段、`Op` 也没有对应变体）⇒ **39 → 38**。
-const VISIBLE_SINGLETONS: [&str; 28] = [
+/// ⭐ T-FIX-218：`ui/sidebar.slint` 删除 ⇒ `sidebar` / `sidebar-collapse-button` /
+/// `sidebar-search-field` 三条单例随旧面板删除（左栏现为 `left_panel.slint` 浏览器页，
+/// 无语义 ID）⇒ 分母 **28 → 25**。
+const VISIBLE_SINGLETONS: [&str; 25] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
@@ -471,9 +475,6 @@ const VISIBLE_SINGLETONS: [&str; 28] = [
     "piano-roll-playhead",
     "piano-roll-status",
     "piano-roll-velocity-lane",
-    "sidebar",
-    "sidebar-collapse-button",
-    "sidebar-search-field",
     "splitter-workspace-console",
     "status-bar",
     "status-bar-chord",
@@ -494,15 +495,16 @@ const MIN_SINGLETON_COVERAGE_PERCENT: usize = 90;
 ///
 /// 这是"不管上游怎么展开 `for`，语义寻址必须至少可用"的最低要求 —— 比"实例数必须等于 N"
 /// 弱，比"整族不判"强。实测计数（含全部实例）作为观察值打印，不进断言。
-const VISIBLE_FAMILY_MEMBERS: [&str; 11] = [
+const VISIBLE_FAMILY_MEMBERS: [&str; 10] = [
     "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
     "note-01J8Z5Q0R7K3M9X2V4B6N8P1A2-rect",
     "piano-roll-tool-select-button",
     "section-0-card",
-    "sidebar-category-0-button",
-    // ⭐ `sidebar-item-0` **不在本清单**（任务单 `#133`）：这一族今天由**投影**决定，
-    // 库根没装样本 ⇒ 分类 0 就是 0 行 ⇒ "必有一个成员"会变成一条**要求演示数据**的判据。
-    // 它改住在下面那段跟着投影走的断言里（有行 ⇒ `sidebar-item-0`，空 ⇒ `sidebar-empty`）。
+    // ⭐ T-FIX-218：`"sidebar-category-0-button"` 已删（`ui/sidebar.slint` 删除，
+    // 分类按钮族随旧面板删除）⇒ 清单 **11 → 10**。旧注：`sidebar-item-0` 曾不在本清单
+    // （任务单 `#133`：那一族由投影决定，库根没装样本 ⇒ 分类 0 就是 0 行）；如今整个
+    // 侧栏条目族（`sidebar-item-{i}` / `sidebar-empty`）都已随旧面板删除，投影仍由
+    // 宿主注入 `MainWindow.sidebar-items`，见 `tests/sidebar_*.rs` 的契约面判据。
     "tab-piano-roll-button",
     "track-0-header",
     "track-0-mute-button",
@@ -766,7 +768,7 @@ fn build_demo_main_window(
 /// 三个状态各截一张（都是同一个活窗口实例，尺寸都是规范的 ≥1920 全展开网格 1920×1080）：
 /// A 默认演示视图（Arrangement + 全展开）、B `compact` 断点、C Session 视图。
 /// 只截一张的话，"13 个 `.slint` 被渲染过"这句话对 `session_view.slint` 与
-/// `sidebar.slint` 的折叠分支仍然是未验证的。
+/// 左栏的折叠分支仍然是未验证的（`sidebar.slint` 已删，见 T-FIX-218）。
 #[test]
 fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
     // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
@@ -2816,7 +2818,8 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
 ///
 /// ## 注入证明（破坏 ⇒ 抓字面红行）
 ///
-/// 把 `ui/sidebar.slint` 的 `accessible-label` 改回 `root.compact ? "" : …` ⇒ 第二遍
+/// 历史注入证明（`ui/sidebar.slint` 已删，见 T-FIX-218，该注入今已不可复现）：
+/// 当时把该文件的 `accessible-label` 改回 `root.compact ? "" : …` ⇒ 第二遍
 /// （`compact = true`）立刻红，红行里点名 `sidebar-item-0`（第 2 个读数）。
 /// 见交付报告的注入实测。
 #[test]

@@ -1,3 +1,12 @@
+//! ⭐ T-FIX-218 退役注：本文件所有活窗口判据已在新 UI 重构（`21f70fd1`）时退役为
+//! 契约面字符串判据（每个 `#[test]` 体首行都有"新 UI 重构"注）；下面判据表与各测试
+//! 头注描述的运行时读数（节点数、`sidebar` 宽 240→36、`sidebar-search-field`
+//! 在场性等）是**历史记录**，不是现行断言。`ui/sidebar.slint` 已在 T-FIX-218 删除
+//! （旧 `Sidebar` 组件无人 import、不参与编译），`sidebar` /
+//! `sidebar-collapse-button` / `sidebar-search-field` 这些运行时节点在任何树里都
+//! 已不存在；`toggle-sidebar` 视图态（`sidebar-collapsed` 属性）仍活，由宿主
+//! `Action::ToggleSidebar` 写，契约面由各测试的字符串核对钉住。
+//!
 //! **真实界面上的 UI 控制面** —— 端到端判据（`cargo test -p yeban-app --all-targets` 会跑它）。
 //!
 //! 这一条工作线要证明的事只有一句：**AI 能在活的 `MainWindow` 上看见界面**。

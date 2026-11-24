@@ -1,3 +1,14 @@
+//! ⭐ T-FIX-218 退役注：本文件头注的活窗口判据 ①–⑤（运行时树里的
+//! `sidebar-category-{0,1,2}-button`）已在新 UI 重构（`21f70fd1`）时退役为契约面
+//! 字符串判据；`ui/sidebar.slint` 本身也在 T-FIX-218 删除（旧 `Sidebar` 组件无人
+//! import、不参与编译）。下面头注是**历史记录**，不是现行断言 —— 现行断言只有文件
+//! 末尾那一个 `#[test]`（`callback select-sidebar-category(` /
+//! `> sidebar-category:` / 宿主 `sidebar_category` 三条字符串核对）。数据面仍活：
+//! 分类号经 `select-sidebar-category` 交宿主钳位后写 `MainWindow.sidebar-category`。
+//! 活窗口辅助里与已删注册表标签逐字的 `CATEGORY_LABELS` 随本次删除一并移除；其余
+//! 通用辅助（`live_window` / `bounds_of` / `swatch_of` / `click`）是迁移留下的
+//! 死代码，不引用已删面板，留待后续清理（见收据）。
+//!
 //! **左侧资源栏分类切换**（`sidebar-category-{0,1,2}-button`）—— 端到端判据。
 //!
 //! ## 本文件要证的句子
@@ -33,9 +44,8 @@ use yeban_ui_test_port::{Permission, PointerButton, Rect, Size, UiTestPort as _}
 /// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
 const WINDOW: Size = Size::new(1440, 900);
 
-/// 三个分类的语义名（与 `elements.rs` 注册表逐字一致）。
-const CATEGORY_LABELS: [&str; 3] = ["资源分类 乐器", "资源分类 采样", "资源分类 预置"];
-
+// ⭐ T-FIX-218：`CATEGORY_LABELS` 已删 —— 它与已删的 `sidebar-category-{i}-button`
+// 注册表标签逐字一致（`elements.rs` 里那族登记已随 `ui/sidebar.slint` 一起删除），无调用者。
 fn live_window() -> (LivePort<yeban_app::ui::MainWindow>, ViewState) {
     let project = yeban_model::samples::filled_project();
     let view = ViewState::from_project(&project).expect("夹具必须能投影");

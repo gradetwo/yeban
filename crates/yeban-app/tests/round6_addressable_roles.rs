@@ -54,7 +54,7 @@ const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", include_str!("../ui/app.slint")),
     ("transport.slint", include_str!("../ui/transport.slint")),
     ("status_bar.slint", include_str!("../ui/status_bar.slint")),
-    ("sidebar.slint", include_str!("../ui/sidebar.slint")),
+    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
     ("tokens.slint", include_str!("../ui/tokens.slint")),
     (
         "workspace/session_view.slint",

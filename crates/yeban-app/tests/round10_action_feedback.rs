@@ -72,7 +72,8 @@
 const APP: &str = include_str!("../ui/app.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
-const SIDEBAR: &str = include_str!("../ui/sidebar.slint");
+// ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译），
+// 此处原先的 `SIDEBAR` 常量随之删除。
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
@@ -95,7 +96,6 @@ const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", APP),
     ("transport.slint", TRANSPORT),
     ("module_actions.slint", MODULE_ACTIONS),
-    ("sidebar.slint", SIDEBAR),
     ("status_bar.slint", include_str!("../ui/status_bar.slint")),
     ("tokens.slint", include_str!("../ui/tokens.slint")),
     ("workspace/session_view.slint", SESSION_VIEW),

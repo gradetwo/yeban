@@ -28,94 +28,19 @@
 //! - ⛔ 不证：1920 基准帧（见 `#191` / `#195` 的 1920 帧哈希对照，不在本文件里）。
 
 #![allow(unused)]
-use yeban_app::bridge::ViewState;
-use yeban_app::host;
-use yeban_app::scene::DemoScene;
-use yeban_app::ui::MainWindow;
-use yeban_ui_test_port::Size;
-use yeban_ui_test_port::inspect::tree_from_element_root;
-use yeban_ui_test_port::port::Permission;
-use yeban_ui_test_port::render::{LivePort, report_line};
-use yeban_ui_test_port::tree::ControlTree;
+// ⭐ T-FIX-218：活窗口辅助已删（见下），本文件不再引用 `yeban_app` / `yeban_ui_test_port`。
 
-/// 生产窗口的唯一构造入口（`run_gui` 用的同一条）。
-fn build(size: Size) -> LivePort<MainWindow> {
-    let view = ViewState::demo();
-    let scene = DemoScene::from_view(&view);
-    LivePort::new(size, Permission::ReadOnly, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口")
-}
-
-fn runtime_tree(window: &MainWindow) -> ControlTree {
-    let json = tree_from_element_root(window, None)
-        .expect("运行时控件树")
-        .dump_json();
-    ControlTree::from_json(&json).expect("JSON 必须能被同一套校验读回")
-}
-
-fn sidebar_width(tree: &ControlTree) -> u32 {
-    tree.find_by_id("sidebar")
-        .expect("`sidebar` 必须在场")
-        .bounds
-        .expect("可见控件必须有几何")
-        .width
-}
-
-fn search_field_in_tree(tree: &ControlTree) -> bool {
-    tree.contains("sidebar-search-field")
-}
-
-fn right_rail_count(tree: &ControlTree) -> usize {
-    tree.ids().filter(|id| *id == "ai-rail").count()
-}
-
-/// 一次 resize ＋ 一次 `Resized` 事件后的**完整读数**。
-///
-/// 先 `capture()` 强制 Slint 跑一遍布局（与生产的事件循环同一条路径），然后重抓树；
-/// 这样几何断言的读数不是"上一次布局"的陈旧值。
-fn observe(port: &LivePort<MainWindow>, label: &str) -> (bool, u32, bool, usize) {
-    port.window().capture().expect("resize 之后必须能重绘一帧");
-    let tree = runtime_tree(port.ui());
-    let compact = port.ui().get_compact();
-    let sidebar = sidebar_width(&tree);
-    let search = search_field_in_tree(&tree);
-    let rails = right_rail_count(&tree);
-    let window = port.window().size();
-    report_line(&format!(
-        "[#195 {label}] 窗口 {}×{} ⇒ compact={compact}；sidebar 宽={sidebar}；\
-         `sidebar-search-field` 在场={search}；`ai-rail`={rails}",
-        window.width, window.height
-    ));
-    (compact, sidebar, search, rails)
-}
-
-/// 一档的**全部**期望值（断点值 / 左栏宽 / 展开态节点 / 常驻右栏）。
-fn assert_tier(label: &str, got: (bool, u32, bool, usize), compact: bool) {
-    let (got_compact, sidebar, search, rails) = got;
-    let want_sidebar = if compact { 36 } else { 240 };
-    let want_rails = usize::from(!compact);
-    assert_eq!(
-        got_compact, compact,
-        "[#195 {label}] compact 读数必须 {compact}（阈值 1180：`width < 1180`）"
-    );
-    assert_eq!(
-        sidebar, want_sidebar,
-        "[#195 {label}] 左栏宽必须 {want_sidebar}px（compact={compact}）"
-    );
-    assert_eq!(
-        search, !compact,
-        "[#195 {label}] `sidebar-search-field` 的在场性必须恰好是 `!compact`"
-    );
-    assert_eq!(
-        rails, want_rails,
-        "[#195 {label}] 常驻 `ai-rail` 的个数必须 {want_rails}（窗口宽 >= 1180 时它常驻）"
-    );
-}
+// ⭐ T-FIX-218：本文件的活窗口辅助（`build` / `runtime_tree` / `sidebar_width` /
+// `search_field_in_tree` / `right_rail_count` / `observe` / `assert_tier`）已删 ——
+// 它们只服务已迁移的活窗口判据（新 UI 重构后两条测试均为契约面字符串判据），
+// 其中 `sidebar_width` / `search_field_in_tree` 读的是已删 `ui/sidebar.slint`
+// 的 `sidebar` / `sidebar-search-field`。左栏几何的断点行为（`compact` 绑定与
+// 240/36 栏宽）现由 `left_panel.slint` 承载，契约面由本文件两条测试钉住
+// （`> compact:` / `set_compact`）。
 
 // ===========================================================================
-// 判据 ①–④：同一实例上真 resize 扫五档（800 / 1024 / 1180 / 1440 / 1920），再回到 1920
+// 判据 ①–④（新 UI 重构后为契约面字符串判据；活窗口版已随 `Sidebar` 退役，见上注）：
+// `> compact:` 声明 + 宿主 `set_compact` 接线仍在
 // ===========================================================================
 #[test]
 fn the_compact_breakpoint_follows_the_real_window_width() {
@@ -139,7 +64,7 @@ fn the_compact_breakpoint_follows_the_real_window_width() {
 }
 
 // ===========================================================================
-// 判据 ⑤：两个不同尺寸的窗口**出生**时就不同（⛔ 不靠"先建 1920 再 resize"）
+// 判据 ⑤（新 UI 重构后为契约面字符串判据；活窗口版已随 `Sidebar` 退役，见上注）
 // ===========================================================================
 #[test]
 fn windows_born_at_1024_and_1920_start_in_their_own_breakpoint() {

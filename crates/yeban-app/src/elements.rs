@@ -185,60 +185,19 @@ impl ElementRegistry {
         let mut registry = Self::default();
 
         // ------------------------------------------------------------ 外壳
-        registry.add(
-            "sidebar",
-            ElementKind::Complementary,
-            "sidebar.slint",
-            "左侧资源浏览器与资产库",
-            false,
-        );
-        registry.add(
-            "sidebar-collapse-button",
-            ElementKind::Button,
-            "sidebar.slint",
-            "收起 / 展开左侧资源栏",
-            false,
-        );
-        registry.add(
-            "sidebar-search-field",
-            ElementKind::TextInput,
-            "sidebar.slint",
-            "搜索资源",
-            false,
-        );
-        for (index, label) in crate::bridge::SIDEBAR_CATEGORIES.iter().enumerate() {
-            registry.add(
-                &format!("sidebar-category-{index}-button"),
-                ElementKind::Tab,
-                "sidebar.slint",
-                &format!("资源分类 {label}"),
-                false,
-            );
-        }
-        // ⭐ 条目族是**派生**的（旧版这里写死 `for index in 0..8` 并给 8 条合成标签
-        // "资源条目 {i}"，而 `.slint` 那边内联的是 8 个仓里不存在的乐器名 —— 两边各写
-        // 一份、谁也不对账）。现在注册表与画面**同源**：同一个
-        // [`crate::bridge::sidebar_category_content`]，同一张 [`ViewState`]，
-        // 默认帧的分类 = 0（乐器）。空 ⇒ 登记 `sidebar-empty` 的**理由**而不是 0 条幽灵。
-        let sidebar = crate::bridge::sidebar_category_content(view, 0);
-        if sidebar.is_empty() {
-            registry.add(
-                "sidebar-empty",
-                ElementKind::Text,
-                "sidebar.slint",
-                &sidebar.empty_reason,
-                false,
-            );
-        }
-        for (index, name) in sidebar.items.iter().enumerate() {
-            registry.add(
-                &format!("sidebar-item-{index}"),
-                ElementKind::ListItem,
-                "sidebar.slint",
-                name,
-                false,
-            );
-        }
+        //
+        // ⭐ T-FIX-218：旧侧栏（`ui/sidebar.slint` 的 `Sidebar` 组件）已删 ——
+        // 它早已被 `ui/left_panel.slint` 的浏览器页取代、无人 `import`、不参与
+        // 编译（见 `ui/tokens.slint` 的 `ImeAwareTextInput` 注释），`sidebar` /
+        // `sidebar-collapse-button` / `sidebar-search-field` /
+        // `sidebar-category-{i}-button` / `sidebar-empty` / `sidebar-item-{i}`
+        // 这族语义 ID 在任何 `.slint` 里都不再存在 ⇒ 注册表里也不登记（覆盖判据
+        // `slint_accessible_ids_and_registry_cover_each_other` 要求注册表与
+        // `.slint` 双向覆盖，留着就是幽灵条目）。数据面不受影响：
+        // [`crate::bridge::sidebar_category_content`] 的投影仍由宿主
+        // `host::inject_sidebar` 注入 `MainWindow.sidebar-items`（左栏搜索框经
+        // `sidebar-search` 双向绑定），那条链路由 `tests/sidebar_*.rs` 的契约面
+        // 判据钉住。`SIDEBAR_CATEGORIES`（`bridge.rs`）仍是分类词汇表（3 项）。
 
         // ------------------------------------------------------------ 顶栏走带
         //
@@ -4336,11 +4295,11 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 46] = [
+    const SLINT_MANIFEST: [&str; 45] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
-        "sidebar.slint",
+        // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
         // 主题层: 规范缺口, 由本工作线登记 (不在 ADR-0001 D2 的 11 个之内)
         "tokens.slint",
         "workspace/session_view.slint",
@@ -4491,7 +4450,7 @@ mod tests {
     ///
     /// 三种形态:
     /// - 纯字面量: 必须完全相等;
-    /// - 单段模板 `"sidebar-item-" + i`: 必须是该前缀且后面还有东西;
+    /// - 单段模板 `"preset-apply-" + i`: 必须是该前缀且后面还有东西;
     /// - 多段模板 `"track-" + i + "-fader"`: 首段前缀 + 末段后缀 + 中间段按序出现。
     ///
     /// ⚠ 单段模板的一个例外（2026-11-19，行内重复 id 修复的副产物）：当字面前缀
@@ -4500,7 +4459,7 @@ mod tests {
     /// `missing-sounds-candidate-1-2`），而注册表只登记族名 `missing-sounds-candidate`
     /// （一行里三枚候选语义相同，注册表按族登记）。此时"完全等于族名"也是合法配对，
     /// 否则两个方向会互相打架：注册表说"族存在"，.slint 说"实例比族名长"。
-    /// 以 `-` 结尾的旧写法（`"sidebar-item-" + i`）**不享受**这个例外 —— 那意味着
+    /// 以 `-` 结尾的旧写法（`"preset-apply-" + i`）**不享受**这个例外 —— 那意味着
     /// 右侧多半忘了拼后缀，族名与实例混为一谈正是 `DuplicateId` 的来源。
     fn id_matches_pattern(segments: &[String], is_template: bool, id: &str) -> bool {
         let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
@@ -4564,7 +4523,7 @@ mod tests {
         // 形态判据**复用** `empty_dynamic_template_is_documented`（后缀空串 ⇒ 单段模板
         // `"前缀-" + i`；后缀非空 ⇒ 双段模板 `"前缀-" + i + "-后缀"`），⛔ 不在这里重抄：
         // 这条防陈旧检查原先硬写了 `segments.len() == 2`，于是给清单加一条**单段**例外
-        // （`sidebar-item-`）就把它自己判成"模板不存在"—— 两处规则必须同源。
+        // （`preset-apply-`）就把它自己判成"模板不存在"—— 两处规则必须同源。
         for (first, last) in EMPTY_DYNAMIC_TEMPLATES_ALLOWED {
             assert!(
                 patterns.iter().any(|(_, segments, is_template)| {
@@ -4649,20 +4608,14 @@ mod tests {
     /// ⚠ 例外必须**逐条**写理由，并且 `.slint` 里必须真有这个模板
     /// （同一判据的上半段机械检查）。
     ///
-    /// ⭐ **侧栏条目族加入本清单**（`("sidebar-item-", "")`，**单段**模板 = 后缀写空串）：
-    /// 它的成员来自 [`crate::bridge::sidebar_category_content`] 的**默认帧分类 0（乐器）**，
-    /// 而 CI / 无头机器上采样库根没有下载 ⇒ 清单为空 ⇒ 模板实例化 0 次。这与 `#165`
-    /// 那条完全同构（同一个"库没下载"的事实现象，只是另一族）。⛔ 不是静默放行 ——
-    /// "条数与投影同源"由 `model_driven_families_scope_is_exact` 末尾的派生断言钉住，
-    /// 空态另有 `sidebar-empty` 注册与判据。
+    /// ⭐ T-FIX-218：侧栏条目族（`("sidebar-item-", "")`）已随 `ui/sidebar.slint`
+    /// 一起删 —— 模板在 `ui/` 里已不存在，留着这条例外会触发"例外清单里的模板
+    /// 在 ui/ 里不存在"的机械检查。投影本身还在（`sidebar_category_content` →
+    /// `MainWindow.sidebar-items`），只是不再有对应语义 ID。
     const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[
         (
             "instrument-install-",
             "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
-        ),
-        (
-            "sidebar-item-",
-            "", // 库根无样本 ⇒ 分类 0 今天 0 条（单段模板 `"sidebar-item-" + i`）
         ),
         // ⭐ `UI-A11Y-004`（2026-10-30 抽屉接权威）：提案**行**的两条模板。
         // 为什么"今天 0 个成员"是真的而不是漏登记：注册表由**工程投影**
@@ -4899,7 +4852,6 @@ mod tests {
             assert!(is_model_driven_family(id), "`{id}` 应当被判为投影驱动");
         }
         for id in [
-            "sidebar-category-0-button",
             "device-rack",
             "musical-pr-drawer",
             "undo-tree-modal",
@@ -4915,33 +4867,25 @@ mod tests {
         }
         assert!(!is_model_driven_family(""));
 
-        // ⭐ 侧栏条目族**不再是静态部件**（旧断言"注册表里必有 `sidebar-item-0`"是
-        // 写死 8 条那一份的镜子）：条数由 [`crate::bridge::sidebar_category_content`]
-        // 派生，与 `.slint` 画的条目**同源**。⚠ 它不在 [`MODEL_DRIVEN_FAMILIES`] 里 ——
-        // 那张表是前缀表，加 `"sidebar-"` 会把 `sidebar` / `sidebar-collapse-button` /
-        // `sidebar-search-field` / `sidebar-category-{i}-button` 一起误判成工程驱动
-        // （与 `device-` 同一处置，见 `from_view` 文档）。
-        let sidebar = crate::bridge::sidebar_category_content(&ViewState::demo(), 0);
-        assert_eq!(
-            registry.with_prefix("sidebar-item-").count(),
-            sidebar.len(),
-            "注册表的 `sidebar-item-*` 条数必须等于投影条数（派生，⛔ 不是写死的 8）"
+        // ⭐ T-FIX-218：侧栏族已不在注册表里 —— `ui/sidebar.slint` 连同它的
+        // `sidebar` / `sidebar-collapse-button` / `sidebar-search-field` /
+        // `sidebar-category-{i}-button` / `sidebar-empty` / `sidebar-item-{i}`
+        // 一起删了（旧面板无人 import、不参与编译）。上面那条"静态部件"清单里
+        // 的 `sidebar-category-0-button` 与下面这段派生断言（条数与投影同源、
+        // 空态登记、标签逐字）随之删除：它们钉的是注册表派生，注册表里没有这一
+        // 族就无从钉起。投影本身没动 ——
+        // [`crate::bridge::sidebar_category_content`] 仍由宿主
+        // `host::inject_sidebar` 注入 `MainWindow.sidebar-items`，那条链路由
+        // `tests/sidebar_*.rs` 的契约面判据钉住；且注册表里必须一个 `sidebar-*`
+        // 都不剩（否则覆盖判据方向 1 会报"在 ui/ 里找不到模板"）。
+        assert!(
+            registry.with_prefix("sidebar-").next().is_none(),
+            "注册表里不许再有 `sidebar-*`（旧侧栏面板已删，见 T-FIX-218）"
         );
-        assert_eq!(
-            registry.contains("sidebar-empty"),
-            sidebar.is_empty(),
-            "`sidebar-empty` 只在投影为空时登记 —— 与 `.slint` 的\
-             `visible: root.items.length == 0` 同判据"
+        assert!(
+            !registry.contains("sidebar"),
+            "注册表里不许再有 `sidebar`（旧侧栏面板已删，见 T-FIX-218）"
         );
-        for (index, name) in sidebar.items.iter().enumerate() {
-            let meta = registry
-                .get(&format!("sidebar-item-{index}"))
-                .unwrap_or_else(|| panic!("缺少 `sidebar-item-{index}`"));
-            assert_eq!(
-                meta.label, *name,
-                "注册表标签必须是投影的显示名逐字（⛔ 不是合成标签 `资源条目 {{i}}`）"
-            );
-        }
     }
 
     #[test]

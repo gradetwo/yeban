@@ -624,7 +624,6 @@ msgstr "Clip vide"
 msgid "+ 点击添加新轨道"
 msgstr "+ Cliquer pour ajouter une piste"
 
-
 msgid "创建新音频或MIDI轨道"
 msgstr "Créer une piste audio ou MIDI"
 
@@ -1628,35 +1627,8 @@ msgstr "Abandonner"
 
 # --- sidebar.slint ---
 
-msgid "搜索乐器 / 采样 / 预置"
-msgstr "Rechercher des instruments / échantillons / presets"
-
-msgid "左侧资源浏览器与资产库"
-msgstr "Navigateur de ressources et bibliothèque de ressources à gauche"
-
-msgid "资源库"
-msgstr "Bibliothèque de ressources"
-
-msgid "展开左侧资源栏"
-msgstr "Déplier la barre de ressources à gauche"
-
-msgid "收起左侧资源栏"
-msgstr "Replier la barre de ressources à gauche"
-
-msgid "搜索资源"
-msgstr "Rechercher des ressources"
-
-msgid "资源分类 {}"
-msgstr "Catégorie de ressources {}"
-
-msgid "乐器"
-msgstr "Instruments"
-
 msgid "采样"
 msgstr "Échantillons"
-
-msgid "预置"
-msgstr "Presets"
 
 # --- workspace/session_view.slint ---
 

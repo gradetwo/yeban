@@ -624,7 +624,6 @@ msgstr "빈 클립"
 msgid "+ 点击添加新轨道"
 msgstr "+ 클릭하여 새 트랙 추가"
 
-
 msgid "创建新音频或MIDI轨道"
 msgstr "새 오디오 또는 MIDI 트랙 만들기"
 
@@ -1628,35 +1627,8 @@ msgstr "버리기"
 
 # --- sidebar.slint ---
 
-msgid "搜索乐器 / 采样 / 预置"
-msgstr "악기 / 샘플 / 프리셋 검색"
-
-msgid "左侧资源浏览器与资产库"
-msgstr "왼쪽 리소스 브라우저 및 에셋 라이브러리"
-
-msgid "资源库"
-msgstr "리소스 라이브러리"
-
-msgid "展开左侧资源栏"
-msgstr "왼쪽 리소스 바 펼치기"
-
-msgid "收起左侧资源栏"
-msgstr "왼쪽 리소스 바 접기"
-
-msgid "搜索资源"
-msgstr "리소스 검색"
-
-msgid "资源分类 {}"
-msgstr "리소스 카테고리 {}"
-
-msgid "乐器"
-msgstr "악기"
-
 msgid "采样"
 msgstr "샘플"
-
-msgid "预置"
-msgstr "프리셋"
 
 # --- workspace/session_view.slint ---
 

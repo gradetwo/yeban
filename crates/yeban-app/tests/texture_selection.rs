@@ -581,7 +581,8 @@ fn the_track_area_follows_the_four_ui_rulings() {
         ("clip_matrix.slint", "text: \"Clip 激发矩阵\""),
         ("control_room.slint", "text: \"监听控制室\""),
         ("control_room.slint", "text: \"MONITOR MATRIX\""),
-        ("sidebar.slint", "text: \"资源库\""),
+        // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译），
+        // 这条"资源库"删除钉随文件一起删除 —— `read()` 会对缺失文件 panic。
         ("console/asset_pool_panel.slint", "text: \"素材池\""),
         (
             "console/device_rack.slint",
@@ -637,7 +638,7 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
     // 本节后段的回平专钉）。
     let phase3_files = [
         "control_room.slint",
-        "sidebar.slint",
+        // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
         "modals.slint",
         "dialogs/export_wav_dialog.slint",
         "dialogs/humanize_dialog.slint",
@@ -686,11 +687,8 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
             "background: Tokens.recess-dark;",
             "控制室表井必须有凹陷深线",
         ),
-        (
-            "sidebar.slint",
-            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;",
-            "sidebar 根底走 panel-brush",
-        ),
+        // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译），
+        // "sidebar 根底走 panel-brush" 这枚代表钉随文件一起删除。
         (
             "modals.slint",
             "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel-alt;",

@@ -7917,7 +7917,8 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
     ui.set_module_status_succeeded(true);
 }
 
-/// 左侧资源栏的分类数（`ui/sidebar.slint` 的 `for category_index in 3`）。
+/// 左侧资源栏的分类数（3，见 `bridge::SIDEBAR_CATEGORIES`；旧 `ui/sidebar.slint`
+/// 的 `for category_index in 3` 已随文件删除，见 T-FIX-218）。
 ///
 /// 宿主用它钳位点击回调：越界请求（例如 `invoke_select_sidebar_category(7)`）落不到界面上。
 ///
@@ -8086,8 +8087,8 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
 ///
 /// ## 搜索为什么也住在这里（以及它为什么⛔ 不写回那个串）
 ///
-/// 子串匹配只可能住在 Rust（Slint 1.18.1 的字符串内置集没有 `contains`，实测见
-/// `ui/sidebar.slint` 的 `search-text` 处清单）。`sidebar-search-changed` 的落点是
+/// 子串匹配只可能住在 Rust（Slint 1.18.1 的字符串内置集没有 `contains`）。
+/// `sidebar-search-changed` 的落点是
 /// **重算投影并重注入**，⛔ 不是 `set_sidebar_search` —— 那份字的唯一写者是输入框的
 /// 两向绑定 `text <=> root.sidebar-search`，宿主再写一次就与绑定互为回路。
 /// 于是本回调带进来的那份字**就是**界面上那份（不依赖"读属性时绑定已经传播完"这个
@@ -15428,7 +15429,7 @@ fn apply_action(
         // ⚠ 焦点**不是属性** ⇒ 这里是"命令一次 Slint"，不是"写一个状态"：唯一实现 =
         // `ui.invoke_focus_sidebar_search()`（`app.slint` 的 `public function`，经左栏
         // `left-panel.focus-search()` 落到 `browser_search_input.focus()`；注意不是
-        // `ui/sidebar.slint` 那个 `Sidebar.focus-search()`—— 那个组件今天没有实例进树）。
+        // 已删的旧 `Sidebar.focus-search()`（`ui/sidebar.slint`，见 T-FIX-218））。
         // ⭐ 左栏若关着就先展开（与 `Action::ToggleBrowser` 同一语义）：搜索框在
         // `show-left-inspector = false` 时不在场，取焦落不下去。`sidebar-collapsed`
         // 也一并展开（与 `Action::ToggleSidebar` 同一个属性），但注意它在 `.slint` 侧

@@ -1834,38 +1834,13 @@ const CONSOLE_RAIL: &[&str] = &[
     "console-maximize-button",
 ];
 
-/// ① 左栏的**可见控件清单**（按态与**投影条数**生成；⛔ 不再是写死的 13 / 9）。
+/// ⭐ T-FIX-218：旧左栏清单生成器 `sidebar_controls` 已删 —— 它按已删的
+/// `ui/sidebar.slint`（`sidebar-collapse-button` / `sidebar-search-field` /
+/// `sidebar-category-{i}-button` / `sidebar-empty` / `sidebar-item-{i}`）
+/// 生成可见控件清单，无调用者（活窗口版左栏判据 `check_sidebar` 一并删除；
+/// 左栏判据现为 `the_sidebar_has_no_two_controls_in_the_same_place` 的
+/// 契约面字符串判据，见该测试头注）。
 ///
-/// ⭐ 任务单 `#sidebar-library`：条目族 `sidebar-item-{i}` 从"内联 8 条演示数据"改成
-/// 宿主注入的投影数组 ⇒ 本清单必须跟着投影走。判据口径：
-/// - 展开态（240px）：折叠键 ＋ 搜索框 ＋ `SIDEBAR_CATEGORIES.len()` 个分类 ＋
-///   `items` 个条目；`items == 0` 时条目位换成**一个** `sidebar-empty`（它的
-///   `visible: !compact && items.length == 0` 与画面同源）；
-/// - 折叠态（36px）：只剩折叠键 + 条目（搜索框与分类按设计 `visible: false`，
-///   `sidebar-empty` 也带 `!compact` ⇒ 不在场）。
-///
-/// ⚠ 本文件的 `live_window*` 一律先过 [`isolate_uninstalled_library`]（`#205`）⇒ 库根
-/// 指向不存在的路径 ⇒ 分类 0 在**任何**机器上都是 0 条；调用点会把这条断言钉住。
-fn sidebar_controls(compact: bool, items: usize) -> Vec<String> {
-    let mut ids = vec!["sidebar-collapse-button".to_string()];
-    if !compact {
-        ids.push("sidebar-search-field".to_string());
-        for category in 0..yeban_app::bridge::SIDEBAR_CATEGORIES.len() {
-            ids.push(format!("sidebar-category-{category}-button"));
-        }
-    }
-    if items == 0 {
-        if !compact {
-            ids.push("sidebar-empty".to_string());
-        }
-    } else {
-        for index in 0..items {
-            ids.push(format!("sidebar-item-{index}"));
-        }
-    }
-    ids
-}
-
 /// ③ Session 视图的控件清单（⭐ `#190` 起**按画布装得下的列数**生成）：
 /// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景色标 ＋ 场景列头
 /// ＋ 返回编曲键 ＋（`visible < total` 时）截断报数 ＋ ⭐ `#283` 的场景启动回执
@@ -2250,64 +2225,12 @@ fn assert_container_clear_of(
 }
 
 // ===========================================================================
-// ① 左栏 `sidebar*`：展开 / 折叠两态 × 三档
-// ===========================================================================
-fn check_sidebar(width: u32, height: u32, breakpoint: bool) {
-    isolate_uninstalled_library();
-    let live = if breakpoint {
-        live_window_at_breakpoint(yeban_model::samples::demo_project(), (width, height), 0)
-    } else {
-        live_window((width, height), 0)
-    };
-    let compact = live.ui().get_compact();
-    // ⭐ 清单**由投影生成**（与画面同一个取数口 `bridge::sidebar_category_content`，
-    // 默认帧的分类 = 0 乐器）。⛔ 不再抄一份 13 / 9 的字面清单。
-    let sidebar = yeban_app::bridge::sidebar_category_content(&ViewState::demo(), 0);
-    assert!(
-        sidebar.is_empty(),
-        "[#189 左栏 {width}x{height}] 本文件的库根被 `isolate_uninstalled_library()` \
-         钉到不存在的路径（`#205`）⇒ 分类 0 必须是 **0 条**；实际 {} 条 ⇒ 隔离失效，\
-         清单会跟着漂",
-        sidebar.len()
-    );
-    let generated = sidebar_controls(compact, sidebar.len());
-    let expected: Vec<&str> = generated.iter().map(String::as_str).collect();
-    let tree = runtime_tree(live.ui());
-    let pane = bounds(&tree, "sidebar");
-    assert_eq!(
-        pane.2,
-        if compact { 36 } else { 240 },
-        "[#189 左栏 {width}x{height} breakpoint={breakpoint}] 栏宽与 `compact={compact}` 不一致"
-    );
-    report_line(&assert_pairwise(
-        &tree,
-        pane,
-        Selection::Intersect,
-        &expected,
-        &format!("#189 左栏 {width}x{height} breakpoint={breakpoint} compact={compact}"),
-    ));
-
-    // ---- 防假绿：折叠态隐藏的是**两个入口族**，不是整栏消失。
-    let collapse = tree
-        .find_by_id("sidebar-collapse-button")
-        .expect("折叠键三档都必须在场");
-    assert_eq!(
-        collapse.label,
-        if compact {
-            "展开左侧资源栏"
-        } else {
-            "收起左侧资源栏"
-        },
-        "[#189 左栏 {width}x{height}] 折叠键的无障碍名必须随态切换"
-    );
-    for id in ["sidebar-search-field", "sidebar-category-0-button"] {
-        assert_eq!(
-            tree.find_by_id(id).is_some(),
-            !compact,
-            "[#189 左栏 {width}x{height}] `{id}` 的在场性必须恰好等于 `!compact`"
-        );
-    }
-}
+// ⭐ T-FIX-218：旧左栏活窗口判据 `check_sidebar` 已删 —— 它在已删的
+// `ui/sidebar.slint` 树里找 `sidebar` / `sidebar-collapse-button` /
+// `sidebar-search-field` / `sidebar-category-0-button`，无调用者（活窗口版
+// 左栏判据随 `Sidebar` 组件一起退役；左栏现为 `left_panel.slint` 浏览器页，
+// 契约面判据见 `the_sidebar_has_no_two_controls_in_the_same_place`）。
+// `live_window_at_breakpoint` 仍被 Session 视图判据使用，保留。
 
 // ===========================================================================
 // ② 控制台标签导轨带 ＋ splitter 带

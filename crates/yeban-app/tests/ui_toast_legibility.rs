@@ -6,8 +6,9 @@
 //!
 //! 修复是最小零布局改动：给该 Text 加 `wrap: word-wrap`（两行 10px 字仍在
 //! 34px 气泡内），elide 仅作超出两行后的兜底。默认帧不渲染 toast ⇒ 不动
-//! golden 基准。`wrap` + `overflow: elide` 同块用法在 `ui/sidebar.slint:310`
-//! 已有编译通过的先例。
+//! golden 基准。`wrap` + `overflow: elide` 同块用法在 `ui/app.slint:2286`
+//!（toast-message 文本，`overflow: TextOverflow.elide` 拼法）已有编译通过的先例
+//! —— 原先引用的 `ui/sidebar.slint:310` 已随旧侧栏删除（T-FIX-218）。
 //!
 //! 本判据只读 `.slint` 源码文本（⛔ 不编译 Slint），把「ToastBanner 的
 //! toast 文案 Text 必须允许换行」钉住：有人把 wrap 删回单行 elide 即变红。
@@ -38,7 +39,7 @@ fn toast_banner_text_wraps_instead_of_single_line_elide() {
     );
 }
 
-/// **判据 ②**：换行与 elide 兜底同时保留（与 ui/sidebar.slint:310 同一口径）。
+/// **判据 ②**：换行与 elide 兜底同时保留（与 ui/app.slint:2286 同一口径）。
 #[test]
 fn toast_banner_keeps_elide_as_overflow_fallback() {
     let body = toast_banner_body();

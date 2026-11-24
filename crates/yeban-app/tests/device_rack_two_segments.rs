@@ -372,19 +372,14 @@ fn check_width(width: u32, height: u32) {
         // `self.width < Tokens.breakpoint-full-hd` 的**绑定**，跟的是真实窗口宽
         //（`#184` 时是宿主写入的常量视口 ⇒ 800 档仍 false）。
         // ⭐ `#195`：阈值 `1920 → 1180` ⇒ `800 < 1180` **仍为假**，本档期望**不变**（仍折叠）。
+        // ⭐ T-FIX-218：左栏 36px 的读数（`tree.find_by_id("sidebar")`）已删 ——
+        // `ui/sidebar.slint` 删除，运行时树里不再有 `sidebar` 节点；左栏现为
+        // `left_panel.slint` 浏览器页，无语义 ID。`compact` 读数本身仍是活属性，
+        // 保留（本函数是迁移留下的死代码，无调用者）。
         let compact = live.ui().get_compact();
-        let sidebar_width = tree
-            .find_by_id("sidebar")
-            .and_then(|node| node.bounds)
-            .map(|b| b.width);
         assert!(compact, "[#191] 800×800 必须落在折叠档（compact == true）");
-        assert_eq!(
-            sidebar_width,
-            Some(36),
-            "[#191] 800×800 左栏必须是 36px 图标导轨"
-        );
         report_line(&format!(
-            "[#195 compact 读数] 800×800：ui.get_compact() = {compact}；sidebar 宽 = {sidebar_width:?}（阈值 1180，800 仍折叠）"
+            "[#195 compact 读数] 800×800：ui.get_compact() = {compact}（阈值 1180，800 仍折叠）"
         ));
     }
     if width == 848 || width == 800 {

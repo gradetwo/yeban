@@ -624,7 +624,6 @@ msgstr "空クリップ"
 msgid "+ 点击添加新轨道"
 msgstr "+ クリックで新規トラックを追加"
 
-
 msgid "创建新音频或MIDI轨道"
 msgstr "新規オーディオ／MIDIトラックを作成"
 
@@ -1628,35 +1627,8 @@ msgstr "破棄"
 
 # --- sidebar.slint ---
 
-msgid "搜索乐器 / 采样 / 预置"
-msgstr "楽器／サンプル／プリセットを検索"
-
-msgid "左侧资源浏览器与资产库"
-msgstr "左側リソースブラウザとアセットライブラリ"
-
-msgid "资源库"
-msgstr "リソースライブラリ"
-
-msgid "展开左侧资源栏"
-msgstr "左リソースバーを展開"
-
-msgid "收起左侧资源栏"
-msgstr "左リソースバーを折りたたむ"
-
-msgid "搜索资源"
-msgstr "リソースを検索"
-
-msgid "资源分类 {}"
-msgstr "リソースカテゴリ{}"
-
-msgid "乐器"
-msgstr "楽器"
-
 msgid "采样"
 msgstr "サンプル"
-
-msgid "预置"
-msgstr "プリセット"
 
 # --- workspace/session_view.slint ---
 

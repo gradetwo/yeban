@@ -1,3 +1,16 @@
+//! ⭐ T-FIX-218 退役注：本文件头注的活窗口判据 ①–⑨（运行时树里的
+//! `sidebar-search-field` / `sidebar-item-{i}` / `sidebar-empty`）已在新 UI 重构
+//! （`21f70fd1`）时退役为契约面字符串判据；`ui/sidebar.slint` 本身也在
+//! T-FIX-218 删除（旧 `Sidebar` 组件无人 import、不参与编译）。下面头注是
+//! **历史记录**（判据曾经证什么），不是现行断言 —— 现行断言只有文件末尾那一个
+//! `#[test]`（`callback sidebar-search-changed(` / `> sidebar-search:` /
+//! 宿主 `sidebar_search_changed` / `sidebar_search` 四条字符串核对）。数据面仍活：
+//! 投影经 `host::inject_sidebar` 注入 `MainWindow.sidebar-items`，搜索串经
+//! `sidebar-search` 双向绑定。活窗口辅助里命名已删语义 ID 的两处（`FIELD` /
+//! `present_items`）随本次删除一并移除；其余通用辅助（`live_window` /
+//! `bounds_of` / `click` / `oracle` / `pick_fragment` / `pick_mismatch_suffix` /
+//! `code_only`）是迁移留下的死代码，不引用已删面板，留待后续清理（见收据）。
+//!
 //! **左侧资源栏的搜索框：真输入框 ＋ 真过滤**（任务单 `D-UI-14`）—— 端到端判据。
 //!
 //! ## 本文件要证的句子
@@ -49,9 +62,6 @@ use yeban_ui_test_port::{KeyCode, Permission, PointerButton, Rect, Size, UiTestP
 /// 与其余 Tier-1 判据同款（1440 宽 ⇒ `compact` 断点之外，资源栏是展开态）。
 const WINDOW: Size = Size::new(1440, 900);
 
-/// 搜索框的语义 id（注册表与运行时共用这一份措辞）。
-const FIELD: &str = "sidebar-search-field";
-
 /// 去掉 `//` 行注释与行尾注释后的**代码文本**（⑨ 的每一条读都先过这里）。
 ///
 /// 与 `tests/sidebar_item.rs` 同一口径：注释里的"曾经长什么样"（留痕）不许被当成
@@ -102,32 +112,8 @@ fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect)
         .expect("指针释放必须落到活窗口");
 }
 
-/// 树里**在场**的条目（`(id, 无障碍名)`，按下标升序且连续）。与 `tests/sidebar_item.rs` 同款。
-fn present_items(port: &mut LivePort<yeban_app::ui::MainWindow>) -> Vec<String> {
-    let tree = port.refresh_tree(None).expect("重抓");
-    let mut found: Vec<(usize, String)> = Vec::new();
-    for node in tree.iter() {
-        let Some(rest) = node.id.strip_prefix("sidebar-item-") else {
-            continue;
-        };
-        let Ok(index) = rest.parse::<usize>() else {
-            continue;
-        };
-        found.push((index, node.label.clone()));
-    }
-    found.sort_by_key(|(index, _)| *index);
-    found
-        .into_iter()
-        .enumerate()
-        .map(|(position, (index, label))| {
-            assert_eq!(
-                position, index,
-                "条目 id 必须是**连续**下标（0..条数）：第 {position} 位实际是第 {index} 条"
-            );
-            label
-        })
-        .collect()
-}
+// ⭐ T-FIX-218：`present_items` 已删 —— 它在运行时树里找已删的
+// `sidebar-item-{i}`（`ui/sidebar.slint` 已删，无调用者）。
 
 /// 独立 oracle：小写子串 `contains`，保序。⚠ 它**不是**把
 /// `bridge::filter_sidebar_content` 的输出抄一遍（那是自我确认），而是用标准库

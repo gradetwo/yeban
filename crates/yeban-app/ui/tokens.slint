@@ -1163,11 +1163,11 @@ export global ImeState {
 // 统一的敲入控件: 继承内置 `TextInput`（与 `UiText inherits Text` 同一范式）,
 // 因此**属性、事件、无障碍角色全部原样保留**（`accessible_role()` 仍是
 // `AccessibleRole::TextInput`，`yeban-ui-test-port` 的 role 判据因此不受影响）;
-// 22 个调用点只换类型名, 其余一位不动。它只做一件事: 把两条 `changed` 搬进 `ImeState`。
+// 25 个调用点只换类型名, 其余一位不动。它只做一件事: 把两条 `changed` 搬进 `ImeState`。
 //
-// ⚠ 22 = **全仓**替换处数（含 `sidebar.slint` 那 1 处 —— 该文件已被 `left_panel.slint`
-// 取代、无人 `import`，因此不参与编译）；`app.slint` **可达**的实例数是 21，
-// 由 `tests/ime_composition_wiring.rs` 的普查判据钉住。
+// ⚠ 25 = `app.slint` **可达**的实例数（原 21；e1a48559 → 66b4eaa1 间新增 4 处，
+// 基线 66b4eaa1 上已是 25；`sidebar.slint` 的 1 处已随文件删除，见 T-FIX-218，
+// 本就不计入可达数），由 `tests/ime_composition_wiring.rs` 的普查判据钉住。
 //
 // ⚠ `has-focus` 是**边沿**信号: 焦点在 A→B 之间切换时 Slint 先清 A（false）再
 // 置 B（true）, 因此布尔量不会停在"没人聚焦"的假象上。焦点随组件销毁一起释放时

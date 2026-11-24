@@ -130,6 +130,7 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
 /// ⚠ **实测更正（本机读数）**：打开模态之后，模态之外的三个主区
 /// （`sidebar` / `piano-roll` / `transport-play-button`）**仍然可寻址**（86 → 91 节点，只多不少）
 /// ⇒ "**焦点陷阱**"**不能**在寻址面上证明（它不是"节点消失"）。
+/// （`sidebar` 已随 `ui/sidebar.slint` 删除，见 T-FIX-218；该读数为旧面板在场时的实测。）
 /// 因此本判据只断言三件**可观测**的事：
 /// ① 打开（写 `undo-tree-open`，**与 `host.rs` 同一个开关**）⇒ `undo-tree-modal` 与
 ///    `undo-tree-panel` **出现**在树里（86 ⇒ 91）；

@@ -44,7 +44,8 @@
 //!   `show-left-inspector`（T-FIX-131 起左栏实例以 `visible:` 门控于它）。④ 改为
 //!   同时置两个属性、断言三个读数（左栏重现 + `sidebar-collapsed` 写回 + 焦点落地）。
 //! * ⑦ 的"compact 断点"旧版写的是 `sidebar.slint` 的 `if (!root.compact)`：那个组件
-//!   今天**没有实例进树**（T-FIX-131 甄别），`compact` 这道闸在活树里不存在。⑦ 改为
+//!   今天**没有实例进树**（T-FIX-131 甄别；T-FIX-218 起该组件已随 `ui/sidebar.slint`
+//!   删除），`compact` 这道闸在活树里不存在。⑦ 改为
 //!   活树里真实的"不在场"—— `show-left-inspector = false`，且在 Slint 层直接调函数
 //!   （绕开宿主臂的先展开），断言左栏**仍收起**且焦点不动。⛔ 本条证的是"承诺写在自
 //!   己的代码里"（`focus-search()` 先看 `root.visible`），与 ⑤ 的"焦点路由恰好一处"

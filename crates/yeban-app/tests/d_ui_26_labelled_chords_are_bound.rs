@@ -102,7 +102,7 @@ const SLINT_SOURCES: &[(&str, &str)] = &[
         "ui/module_actions.slint",
         include_str!("../ui/module_actions.slint"),
     ),
-    ("ui/sidebar.slint", include_str!("../ui/sidebar.slint")),
+    // ⭐ T-FIX-218：`ui/sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译）。
     (
         "ui/status_bar.slint",
         include_str!("../ui/status_bar.slint"),

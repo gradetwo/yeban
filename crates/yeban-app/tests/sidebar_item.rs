@@ -1,3 +1,15 @@
+//! ⭐ T-FIX-218 退役注：本文件头注的活窗口判据 ①–⑥（运行时树里的
+//! `sidebar-item-{i}` / `sidebar-empty`）已在新 UI 重构（`21f70fd1`）时退役为契约面
+//! 字符串判据；`ui/sidebar.slint` 本身也在 T-FIX-218 删除（旧 `Sidebar` 组件无人
+//! import、不参与编译）。下面头注是**历史记录**，不是现行断言 —— 现行断言只有文件
+//! 末尾那一个 `#[test]`（`callback select-sidebar-item(` / `> sidebar-item:` /
+//! 宿主 `sidebar_item` 三条字符串核对）。数据面仍活：条目投影经
+//! `host::inject_sidebar` 注入 `MainWindow.sidebar-items`，选中态写
+//! `MainWindow.sidebar-item`。活窗口辅助里命名已删语义 ID 的 `present_items`
+//! 随本次删除一并移除；其余通用辅助（`live_window` / `bounds_of` / `swatch_of` /
+//! `click` / `fixtures` / `install_fake_library`）是迁移留下的死代码，不引用已删
+//! 面板，留待后续清理（见收据）。
+//!
 //! **左侧资源栏条目 = 投影，选中态 = 视图态** —— 端到端判据。
 //!
 //! ## 本文件要证的句子
@@ -223,35 +235,8 @@ fn click(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str, bounds: Rect)
         .expect("指针释放必须落到活窗口");
 }
 
-/// 树里**在场**的条目（`(id, 无障碍名)`，按 id 下标升序）。
-///
-/// ⚠ 数的是**运行时树**，⛔ 不是注册表、⛔ 不是任何常量 —— 本判据要证的正是"画面
-/// 跟着投影走"。下标必须连续（0..条数），否则说明有条目被跳过或残留。
-fn present_items(port: &mut LivePort<yeban_app::ui::MainWindow>) -> Vec<(String, String)> {
-    let tree = port.refresh_tree(None).expect("重抓");
-    let mut found: Vec<(usize, String, String)> = Vec::new();
-    for node in tree.iter() {
-        let Some(rest) = node.id.strip_prefix("sidebar-item-") else {
-            continue;
-        };
-        let Ok(index) = rest.parse::<usize>() else {
-            continue;
-        };
-        found.push((index, node.id.clone(), node.label.clone()));
-    }
-    found.sort_by_key(|(index, _, _)| *index);
-    found
-        .into_iter()
-        .enumerate()
-        .map(|(position, (index, id, label))| {
-            assert_eq!(
-                position, index,
-                "条目 id 必须是**连续**下标（0..条数）：第 {position} 位实际是 `{id}`"
-            );
-            (id, label)
-        })
-        .collect()
-}
+// ⭐ T-FIX-218：`present_items` 已删 —— 它在运行时树里找已删的
+// `sidebar-item-{i}`（`ui/sidebar.slint` 已删，无调用者）。
 
 #[test]
 fn sidebar_items_are_the_projection_and_clicking_one_moves_only_the_view_state() {

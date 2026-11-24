@@ -17,7 +17,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（唯一汇聚点） | `ui/tokens.slint` 的 `ImeState` 同时给出**当前值**（两个属性）与**变化**（两个回调）；`ImeAwareTextInput` 继承内置 `TextInput` 且两条 `changed` 都搬 |
-//! | ②（没有裸框回流） | `app.slint` 可达的 9 个文件里 `TextInput {` **零**出现、`ImeAwareTextInput {` 恰好 21 个（审计口径：23 处声明 − 未编译的 `transport.slint` 那 1 处 − 已被 `left_panel.slint` 取代、无人 import 的 `sidebar.slint` 那 1 处） |
+//! | ②（没有裸框回流） | `app.slint` 可达的 9 个文件里 `TextInput {` **零**出现、`ImeAwareTextInput {` 恰好 25 个（审计口径：26 处声明 − 未编译的 `transport.slint` 那 1 处裸 `TextInput`；`sidebar.slint` 已删，见 T-FIX-218） |
 //! | ③（宿主直连 global） | `host.rs` 注册的是 `ImeState.on_composition_changed` / `on_focus_changed`（Slint 1.18.1 的连接语句只接受元素 id，别名已弃用） |
 //! | ④（门放在交接之后） | `key-handler` 里 `ImeState.composing` 的判断在 `root.trigger-shortcut` **之后** —— 否则 F5/F6 会被连坐吞掉（`resolve_logical` 第 1 步先结算它们） |
 //!
@@ -188,22 +188,29 @@ fn every_reachable_text_input_is_ime_aware() {
         bare.is_empty(),
         "这些可达文件里还有裸 `TextInput`（组字期间按键会漏到热键层）: {bare:?}"
     );
-    // 口径自洽：那两个被扣掉的文件必须**确实**不在 import 图里。哪天有人把
-    // `sidebar.slint` 接回 `app.slint`，这里的数字就会自己变红，而不是悄悄少统计一个框。
+    // 口径自洽：那个被扣掉的文件必须**确实**不在 import 图里。哪天有人把
+    // `transport.slint` 接回 `app.slint`，这里的数字就会自己变红，而不是悄悄少统计一个框。
+    // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件），不再参与口径；可达实例数
+    // 21 → 25 —— 这 4 处是 e1a48559 → 66b4eaa1 之间新增的可达输入框，基线
+    // 66b4eaa1 上已是 25（本票基线验证：原样跑本测试同样报实际 25），与本次删除
+    // 无关（`sidebar.slint` 不在 import 图里，它的 1 处本来就不计入可达数）。
+    // 审计口径的声明数因而由 23 变为 26（可达 25 处 + 未编译的 `transport.slint`
+    // 1 处裸 `TextInput`）。
     let reachable_names: Vec<String> = reachable
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    for excluded in ["transport.slint", "sidebar.slint"] {
+    {
+        let excluded = "transport.slint";
         assert!(
             !reachable_names.iter().any(|n| n == excluded),
             "`{excluded}` 已进入 `app.slint` 的 import 图 —— 口径里的 −1 不再成立，请连同上面的实例数一起更新"
         );
     }
     assert_eq!(
-        aware, 21,
-        "`ImeAwareTextInput` 实例数必须是 21（23 处声明 − 未编译的 `transport.slint` 1 处 \
-         − 已被 `left_panel.slint` 取代且无人 import 的 `sidebar.slint` 1 处），实际 {aware}"
+        aware, 25,
+        "`ImeAwareTextInput` 实例数必须是 25（26 处声明 − 未编译的 `transport.slint` 1 处裸 \
+         `TextInput`；`sidebar.slint` 已删，见 T-FIX-218），实际 {aware}"
     );
 }
 

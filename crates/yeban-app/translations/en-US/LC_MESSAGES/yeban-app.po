@@ -624,7 +624,6 @@ msgstr "Empty Clip"
 msgid "+ 点击添加新轨道"
 msgstr "+ Click to Add a Track"
 
-
 msgid "创建新音频或MIDI轨道"
 msgstr "Create a New Audio or MIDI Track"
 
@@ -1628,35 +1627,8 @@ msgstr "Discard"
 
 # --- sidebar.slint ---
 
-msgid "搜索乐器 / 采样 / 预置"
-msgstr "Search Instruments / Samples / Presets"
-
-msgid "左侧资源浏览器与资产库"
-msgstr "Left Resource Browser & Asset Library"
-
-msgid "资源库"
-msgstr "Resource Library"
-
-msgid "展开左侧资源栏"
-msgstr "Expand the Left Resource Bar"
-
-msgid "收起左侧资源栏"
-msgstr "Collapse the Left Resource Bar"
-
-msgid "搜索资源"
-msgstr "Search Resources"
-
-msgid "资源分类 {}"
-msgstr "Resource Category {}"
-
-msgid "乐器"
-msgstr "Instruments"
-
 msgid "采样"
 msgstr "Samples"
-
-msgid "预置"
-msgstr "Presets"
 
 # --- workspace/session_view.slint ---
 

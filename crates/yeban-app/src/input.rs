@@ -1043,7 +1043,8 @@ pub enum Action {
     /// `Cmd/Ctrl+F`: 把**键盘焦点**交给左栏资源搜索框（D-UI-18，界面决定）。
     ///
     /// ⚠ **补的是"摸不到键盘"这一格，不是"没有输入框"**：搜索框自 D-UI-14 起是
-    /// 真 `TextInput`（`ui/sidebar.slint` 的 `sidebar-search-input`），鼠标点进去能敲；
+    /// 真 `TextInput`（`ui/left_panel.slint` 的 `browser_search_input`；旧
+    /// `ui/sidebar.slint` 的 `sidebar-search-input` 已删，见 T-FIX-218），鼠标点进去能敲；
     /// 但 `Tab` 在画布上被解析成 [`Self::ToggleView`]（`[UI-A11Y-003]` §7.3 第 1 条
     /// 要求的"严密的 Tab 序列"在仓库里是**另一票**，⛔ 不在本动作里改它），而画布
     /// 键处理器 `accept` 之后 Slint 不再做焦点轮转 ⇒ 纯键盘用户**永远进不到任何文本框**

@@ -3,8 +3,9 @@
 //!
 //! ## 为什么只挑这三处
 //!
-//! 全项目还有不少 `accessible-label` **已经绑了动态文本**的控件（例如 `sidebar-empty`
-//! 的 `root.empty-reason`、`asset-pool-count` 的拼接）—— 它们的名字本身就是内容，
+//! 全项目还有不少 `accessible-label` **已经绑了动态文本**的控件（例如
+//! `asset-pool-count` 的拼接；旧 `sidebar-empty` 的 `root.empty-reason` 已随
+//! `ui/sidebar.slint` 删除，见 T-FIX-218）—— 它们的名字本身就是内容，
 //! 再补 `value` 只会让屏读器把同一串字念两遍。真正符合
 //! `tests/status_bar_accessible_values.rs` 范式的是「label 是静态名字、可见文本是动态读数、
 //! 却没有 `value`」那一类；扫描全部 `.slint` 后落到这三处：
