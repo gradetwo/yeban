@@ -1291,6 +1291,15 @@ export component ArrangementViewport inherits Rectangle {
                             accessible-action-default => { root.track-select(idx); }
                             accessible-action-increment => { root.track-reorder-step(idx, 1); }
                             accessible-action-decrement => { root.track-reorder-step(idx, -1); }
+                            // `[UI-A11Y-003]` §7.3：展开动作 = 徽章 `[v]` 的点击落点（选中这条轨并切换
+                            // 乐器本地菜单）。徽章 `TouchArea` 自己没有角色，而 `accessible-action-*`
+                            // 只能挂在有角色的元素上 ⇒ 落点挂在包头元素块里（T-FIX-335；静音 / 独奏 /
+                            // 录音准备三处各有自己的 `button` 角色块，见下）。
+                            accessible-action-expand => {
+                                root.select-track(trk.id);
+                                root.local-menu-track-id = trk.id;
+                                root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
+                            }
                             // 轨道头选中呈现 (裁决甲, Wang 2026-11-17 19:58):
                             // 质感三元。拟物支 = main 形态 (选中 accent
                             // α0.10 底 + α0.80 边, 未选中 track-head-brush);
@@ -1449,6 +1458,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.muted ? Tokens.skin-mute : (m-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.muted ? Tokens.skin-mute : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-mute-button";
+                                            accessible-label: @tr("轨道 {} 静音", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.muted;
+                                            accessible-action-default => { root.toggle-mute(trk.id); }
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
@@ -1479,6 +1497,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.soloed ? Tokens.skin-mute : (s-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.soloed ? Tokens.skin-mute : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-solo-button";
+                                            accessible-label: @tr("轨道 {} 独奏", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.soloed;
+                                            accessible-action-default => { root.toggle-solo(trk.id); }
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
@@ -1509,6 +1536,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.armed ? Tokens.skin-arm : (r-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.armed ? Tokens.skin-arm : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-arm-button";
+                                            accessible-label: @tr("轨道 {} 录音准备", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.armed;
+                                            accessible-action-default => { root.toggle-arm(trk.id); }
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
@@ -2119,6 +2155,15 @@ export component ArrangementViewport inherits Rectangle {
                             accessible-action-default => { root.track-select(idx); }
                             accessible-action-increment => { root.track-reorder-step(idx, 1); }
                             accessible-action-decrement => { root.track-reorder-step(idx, -1); }
+                            // `[UI-A11Y-003]` §7.3：展开动作 = 徽章 `[v]` 的点击落点（选中这条轨并切换
+                            // 乐器本地菜单）。徽章 `TouchArea` 自己没有角色，而 `accessible-action-*`
+                            // 只能挂在有角色的元素上 ⇒ 落点挂在包头元素块里（T-FIX-335；静音 / 独奏 /
+                            // 录音准备三处各有自己的 `button` 角色块，见下）。
+                            accessible-action-expand => {
+                                root.select-track(trk.id);
+                                root.local-menu-track-id = trk.id;
+                                root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
+                            }
                             // 选中头底与边框同左头 (裁决甲质感三元: 拟物支
                             // main 形态, 扁平支十一版定值 #293645 / 边框
                             // Theme.border-subtle, 七版 #16232b 与纯白边框
@@ -2266,6 +2311,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.muted ? Tokens.skin-mute : (m-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.muted ? Tokens.skin-mute : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-mute-button";
+                                            accessible-label: @tr("轨道 {} 静音", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.muted;
+                                            accessible-action-default => { root.toggle-mute(trk.id); }
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
@@ -2295,6 +2349,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.soloed ? Tokens.skin-mute : (s-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.soloed ? Tokens.skin-mute : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-solo-button";
+                                            accessible-label: @tr("轨道 {} 独奏", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.soloed;
+                                            accessible-action-default => { root.toggle-solo(trk.id); }
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
@@ -2324,6 +2387,15 @@ export component ArrangementViewport inherits Rectangle {
                                             background: trk.armed ? Tokens.skin-arm : (r-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
                                             border-color: trk.armed ? Tokens.skin-arm : Tokens.skin-hairline;
+                                            // `[UI-A11Y-003]` §7.3：按钮角色 + 动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
+                                            // T-FIX-335：包头 Rectangle 挂了 `list-item` 角色后，这处点击落入其元素块，
+                                            // 须有自己的角色块，否则 `every_clickable_…` 否决（死文件同款形态）。
+                                            accessible-role: button;
+                                            accessible-id: "track-" + idx + "-arm-button";
+                                            accessible-label: @tr("轨道 {} 录音准备", trk.name);
+                                            accessible-checkable: true;
+                                            accessible-checked: trk.armed;
+                                            accessible-action-default => { root.toggle-arm(trk.id); }
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
