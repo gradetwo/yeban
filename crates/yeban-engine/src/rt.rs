@@ -2528,7 +2528,9 @@ fn render_branch(
         // ⭐⭐ **stage 4（实时源侧声相）**：只在这条轨是"**干净轨**"时切分声道通路 ——
         // 全部条件缺一不可，任一不成立就**整段退回**原来的单声道流水线（逐位不变）：
         //
-        // * 摊平表里真的有声相（静态 `pan` 或 `pan_onccN`）—— 否则没有意义；
+        // * 摊平表里真的需要分声道 —— 静态 `pan`、`pan_onccN`，**或**样本本身
+        //   带多声道（`has_multichannel_samples()`）：后者即使区域声相全中性，
+        //   单声道通路也只读声道 0，右声道会整段丢失（T-FIX-242）；
         // * 没有音频摆放（`audio_clip_schedule` 为 `None`）：片段源是单声道的，
         //   分成两条要额外决定"片段怎么进立体声图"，不属于本片；
         // * 没有已武装插入器件 / 不是处理型总线：插入链与压缩器都是**有状态**的
@@ -2552,8 +2554,13 @@ fn render_branch(
         // ⚠ 这些条件都是**读**（零分配、零锁）⇒ 判不成立时不花任何额外代价。
         let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
         let stereo_track = running
-            && prepared_sfz
-                .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
+            && prepared_sfz.is_some_and(|plan| {
+                plan.regions_with_pan() > 0
+                    || plan.regions_with_cc_pan() > 0
+                    // ⭐ T-FIX-242：样本自带右声道时，区域声相全中性也必须走分声道；
+                    // 否则单声道通路只取声道 0，右声道整段丢失。
+                    || plan.has_multichannel_samples()
+            })
             && current.audio_clip_schedule(&track).is_none()
             // ⭐ stage 11–14：四级插入器件（通道条／混响／卷积／采样延迟）**全部**
             // 有立体声入口 ⇒ 不再按"有无插入"排除；只剩"处理型总线"这一条。

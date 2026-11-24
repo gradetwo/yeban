@@ -188,3 +188,80 @@ fn a_panned_sfz_region_keeps_left_silent_through_an_armed_insert_device() {
         "pan=0 时左缓冲必须出声（反向腿，证明 leg 1/2 的『左 0』来自声相）：{centred_left_peak}"
     );
 }
+
+/// ⭐ T-FIX-242：**没有区域声相的多声道样本**也必须选择分声道通路。
+///
+/// # 为什么必须有这条
+///
+/// `stereo_track` 旧条件只看 `regions_with_pan()` / `regions_with_cc_pan()`；
+/// 样本自带右声道、区域 `pan=0` 时它是 `false` ⇒ 走 `render_track_with_cc`
+/// （单声道）⇒ 只读声道 0，右声道整段丢失。`sfz_pan_insert_joint` 原来的
+/// `mono` 反向腿只覆盖**单声道样本**，抓不到这一维。
+///
+/// 本判据用左右电平不同的双声道样本：修复前 `stereo_track_frames == 0` 且
+/// 左右输出相同；修复后每量子恰 `＋frames`，左右输出必须不同。
+#[test]
+fn a_neutral_multichannel_sample_selects_the_stereo_path() {
+    fn stereo_sample() -> InMemorySample {
+        const FRAMES: usize = 48_000;
+        let mut pcm = Vec::with_capacity(FRAMES * 2);
+        for _ in 0..FRAMES {
+            pcm.push(0.4);
+            pcm.push(-0.3);
+        }
+        InMemorySample {
+            channels: 2,
+            pcm: Arc::new(pcm),
+            sample_hz: 48_000.0,
+            loop_points: None,
+        }
+    }
+
+    fn render_sample_leg(sample: &InMemorySample) -> support::Render {
+        let fixture = note_project(&NOTES);
+        let track = fixture.track;
+        let plan = plan_with_pan(None, sample);
+        let snapshot = EngineSnapshot::from_project(&fixture.project, 1)
+            .expect("工程快照")
+            .with_sfz(track, plan);
+        render_snapshot(snapshot, QUANTA)
+    }
+
+    let stereo = render_sample_leg(&stereo_sample());
+    let mono = render_sample_leg(&dc_sample(0.4, 48_000));
+    let expected_stereo_frames = (QUANTA * yeban_engine::block::DEFAULT_BLOCK_FRAMES) as u64;
+    let peak = |pcm: &[f32]| pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    let bits = |pcm: &[f32]| -> Vec<u32> { pcm.iter().map(|s| s.to_bits()).collect() };
+
+    println!(
+        "[T-FIX-242] 多声道无 pan：stereo_track_frames={}（期望 {expected_stereo_frames}）、\
+         左峰={:.6}、右峰={:.6}；单声道对照 stereo_track_frames={}",
+        stereo.stats.stereo_track_frames,
+        peak(&stereo.left),
+        peak(&stereo.right),
+        mono.stats.stereo_track_frames,
+    );
+
+    assert_eq!(
+        stereo.stats.stereo_track_frames, expected_stereo_frames,
+        "样本 channels>1 且区域声相全中性 ⇒ 必须走分声道通路（每量子恰好 ＋frames）"
+    );
+    assert_eq!(
+        mono.stats.stereo_track_frames, 0,
+        "单声道样本在同条件下仍走单声道通路（反向腿）"
+    );
+    assert!(
+        peak(&stereo.left) > 0.01 && peak(&stereo.right) > 0.01,
+        "两个声道都必须真的出声（否则『左右不同』可能只是右边全哑）"
+    );
+    assert_ne!(
+        bits(&stereo.left),
+        bits(&stereo.right),
+        "右声道必须保留样本自己的内容（旧路径只读声道 0 ⇒ 两声道相同）"
+    );
+    assert_ne!(
+        stereo.fingerprint(),
+        mono.fingerprint(),
+        "多声道样本与单声道样本的输出必须不同（证明样本真的按双声道进图）"
+    );
+}
