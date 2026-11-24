@@ -51,6 +51,10 @@ sha2 = { version = "0.11.0" }
 # docs/ledger/model-core-provenance.md §2。
 rand_xoshiro = { version = "0.8.1" }
 libm = { version = "0.2.16" }
+# [ROAD-M2-001] 实时线程优先级（yeban-engine/src/rt_priority.rs）的平台 syscall 面：
+# `libc` 由管理侧 T-FIX-93 任务单明文裁决准许（2026-11-24，DAW 惯例），
+# 版本对齐 Cargo.lock 在树的 0.2.190；根清单登记、本 crate 经 workspace 继承（T-FIX-222，G08）。
+libc = { version = "0.2.190" }
 
 # --- 测试与门禁 ---
 # proptest 默认开启 fork/timeout (依赖 rusty-fork + 进程 fork), 对纯数据模型属性测试

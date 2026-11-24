@@ -13,6 +13,7 @@ use yeban_engine::rt_priority::{
     set_current_thread_realtime, validate_time_constraint,
 };
 
+#[cfg(target_os = "linux")]
 #[test]
 fn invalid_priority_is_rejected_before_any_syscall() {
     let spec = RtPrioritySpec {
