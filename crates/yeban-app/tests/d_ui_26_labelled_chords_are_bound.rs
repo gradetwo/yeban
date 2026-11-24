@@ -23,7 +23,15 @@
 //! `Arrangement 时间轴 (F6)` / `切换 Session / Arrangement (Tab, 仅画布聚焦时)`），
 //! 七句都**逐字等于**对应 `.slint` 里的那条字面 ⇒ 今天一致，但它是**下一个** `D-UI-26` 的温床
 //! （改 label 忘改登记名 ⇒ 界面与控件树各说一把键）。本守卫把两边**一起**扫，并把"不许漂移"
-//! 钉成 ⑤。
+//! 钉成 ⑤。⚠ 2026-11-24：7 句里有 4 句（节拍器和弦 ＋ `F5`/`F6`/`Tab` 三句裸键）已从 `add` 搬家
+//! 到 `registry.add_known_absent(..)`，扫描面同步认了后者才没丢数（见 `REGISTRY_ADD_MARK` 注）。
+//!
+//! ⚠ 死文件口径（T-FIX-356）：扫描面 `SLINT_MANIFEST` 含 6 个死文件（`docs/DEAD-SLINT-FILES.md`），
+//! 其中 `ui/transport.slint` 一家就贡献 6 把和弦 ＋ 4 把裸键 —— 用户看不见，是**休眠承诺**
+//! （本文件按旧设计继续扫、继续钉，删文件时随清单一起走；④ 的 AI 抽屉按钮本体也在这个死文件里）。
+//! 活文件里的承诺若与键表不符，是**产品缺陷**，不是判据错：2026-11-24 复核发现 5 处（`Ctrl+K` ×3、
+//! `Ctrl+T`、`Shift+Tab`、`Alt+S` 四把和弦 ＋ 菜单 `(Tab)` 无限定语），②/⑩ 对它们是红的 ——
+//! 修产品（补绑定或改文案）之前不许为求绿改期望动作。
 //! Rust 侧只扫 `registry.add(..)` 的参数区间：`elements.rs` 的**说明文字**里也提到
 //! `Shift+Enter` 这类串（实测第 3964 行那条 assert 消息），把散文当承诺会让守卫变成假红机器。
 //!
@@ -36,10 +44,10 @@
 //! | ③（反面事实） | `Cmd/Ctrl + \\` 在键表里 ⇒ `PassThrough`，且扫出的和弦⛔ 含反斜杠键 ⇒ 那句假承诺⛔ 许回来 |
 //! | ④（本票那一格） | AI 抽屉按钮的 label 逐字 = 真绑的那把；登记名那一格⛔ 携带任何和弦（不带 ⇒ ⛔ 是第二处假承诺） |
 //! | ⑤（两源不漂移） | 登记名里**携带键位承诺**（和弦 3 句 ＋ 裸键 4 句 = 实测 7 句）的每一条，必须与某条 `.slint` 字面**逐字相同** ⇒ 界面与控件树不会各说一把键 |
-//! | ⑥（扫描面完整） | 磁盘上真实存在的 `.slint` 文件必须都在**编译期嵌入**的清单里（口径同 `tests/assertion_bounds_audit.rs`：主体扫描用 `include_str!`，`read_dir` 只做完整性对账） |
+//! | ⑥（扫描面完整） | 磁盘上真实存在的 `.slint` 文件必须都在 `SLINT_MANIFEST` 里（`read_dir` 递归对账；反向由 `slint_sources()` 读盘 panic + 个数对账覆盖） |
 //! | ⑦（承诺写全） | 字符串字面里出现修饰词却没有 `+ 键名` ⇒ 红；出现词表不认识的键名 ⇒ 红（⛔ 的口径是"认不出就当它不是承诺"，那会静默漏网） |
 //! | ⑧（上下文口径） | 同一把和弦在 `Focus::TextInput` 下必须仍 ⇒ `PassThrough` —— 文本框里 DAW 热键整体放行是**现状**（`ADR-0068` 未决），本守卫⛔ 把它算成"承诺兑现" |
-//! | ⑨（裸键承诺） | **括号里的裸键**（`(Space)` / `(F5)` / `(F6)` / `(Tab, 仅画布聚焦时)`）同样是承诺：每一把在画布焦点下都必须解析出钉住的 `Action`（实测 **8** 处、**4** 把） |
+//! | ⑨（裸键承诺） | **括号里的裸键**（`(Space)` / `(F5)` / `(F6)` / `(Tab, 仅画布聚焦时)`）同样是承诺：每一把在画布焦点下都必须解析出钉住的 `Action`（实测 **11** 处、**4** 把：`Space` 4、`F5` 2、`F6` 2、`Tab` 3） |
 //! | ⑩（限定语兑现） | 文案里写了焦点限定语（`仅画布聚焦时`）⇒ 键表在**非画布**焦点下必须真的⛔ 吞键；⛔ 写限定语的裸键则在 `MainCanvas` 与 `Other` 两条腿上都兑现（只验画布会把"哪儿都生效"的承诺读成"只在画布生效"） |
 //!
 //! ## 本机不编译重依赖（`AGENTS.md` §5）
@@ -77,7 +85,12 @@ const REGISTRY_FILE: &str = "src/elements.rs";
 const REGISTRY_SOURCE: &str = include_str!("../src/elements.rs");
 
 /// 登记一格的起始标记：只有落在 `registry.add(..)` 参数区间里的字面才算承诺源 B。
+/// ⭐ 2026-11-24 起另认 `registry.add_known_absent(..)`：那 11 格登记名里有 4 句键位承诺
+/// （`节拍器 (Cmd/Ctrl + Alt + N)` / `Session 触发矩阵 (F5)` / `Arrangement 时间轴 (F6)` /
+/// `切换 Session / Arrangement (Tab, 仅画布聚焦时)`）—— 它们从 `add` 搬家后，旧扫描面悄悄丢了
+/// 它们（`Cmd/Ctrl + Alt + N` 2→1、`F5`/`F6` 2→1），本标记把它們接回来。
 const REGISTRY_ADD_MARK: &str = "registry.add(";
+const REGISTRY_ADD_KNOWN_ABSENT_MARK: &str = "registry.add_known_absent(";
 
 /// 和弦里认识的修饰词。⚠ **必须按声明顺序**（最长优先）匹配：`Cmd/Ctrl` 要抢在 `Cmd` 前面。
 const MODIFIER_TOKENS: &[(&str, ModifierFlag)] = &[
@@ -91,6 +104,10 @@ const MODIFIER_TOKENS: &[(&str, ModifierFlag)] = &[
     ("⌥", ModifierFlag::Alt),
     ("Alt", ModifierFlag::Alt),
     ("Shift", ModifierFlag::Shift),
+    // 字形修饰词（macOS 写法，见 `app.slint` 菜单 `(⇧⌘B)`）：`⇧` = Shift，
+    // `⌃` = Control（此处并进 Command 那条腿：键表问的是 `Modifiers::command()`）。
+    ("⇧", ModifierFlag::Shift),
+    ("⌃", ModifierFlag::Command),
 ];
 
 /// 键名词表（多字符名，以及 `↑` 这类单字符但⛔ 是 ASCII 字母的键名）。
@@ -119,8 +136,8 @@ const KEY_WORDS: &[(&str, LogicalKey)] = &[
     ("→", LogicalKey::RightArrow),
 ];
 
-/// 键名 token 的终止字符集：空白、成对括号、中点（`·` 是仓库里分隔提示的写法）、引号、分号。
-const KEY_STOPS: &[char] = &[' ', '(', ')', '·', '"', ';'];
+/// 键名 token 的终止字符集：空白、成对括号、中点（`·` 是仓库里分隔提示的写法）、引号、分号、方括号（`[Ctrl+K]` 这类提示写法里的 `]` ⛔ 读进键名）。
+const KEY_STOPS: &[char] = &[' ', '(', ')', '·', '"', ';', '[', ']'];
 
 /// **裸键**承诺词表（⑨/⑩ 的对象：括号里单独一把不带修饰词的键）。
 ///
@@ -322,10 +339,18 @@ fn literals(source: &str) -> Vec<Literal> {
             }
             continue;
         }
-        if starts_with_at(&chars, i, REGISTRY_ADD_MARK) {
+        if starts_with_at(&chars, i, REGISTRY_ADD_MARK)
+            || starts_with_at(&chars, i, REGISTRY_ADD_KNOWN_ABSENT_MARK)
+        {
             spans_seen += 1;
             add_span = Some(spans_seen);
-            i += REGISTRY_ADD_MARK.chars().count();
+            // `add_known_absent(` 比 `add(` 长：按实际命中的那条标记前进。
+            let mark_len = if starts_with_at(&chars, i, REGISTRY_ADD_KNOWN_ABSENT_MARK) {
+                REGISTRY_ADD_KNOWN_ABSENT_MARK.chars().count()
+            } else {
+                REGISTRY_ADD_MARK.chars().count()
+            };
+            i += mark_len;
             continue;
         }
         if c == '"' {
@@ -410,6 +435,12 @@ fn bare_promises(file: &'static str, line: usize, literal: &str) -> Vec<BareProm
 }
 
 /// 从**一段字符串字面**里扫出所有和弦承诺（与所有"写坏了的键位提示"）。
+/// 单字非 ASCII 的修饰词 token（`⌘` / `⌥` / `⇧` / `⌃`）—— 字形和弦里它们之间、以及它们与键名
+/// 之间都不写 `+`（`(⇧⌘B)`），见 `chords_in_literal`。
+fn is_glyph_modifier(token: &str) -> bool {
+    token.chars().count() == 1 && !token.is_ascii()
+}
+
 fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence {
     let chars: Vec<char> = literal.chars().collect();
     let mut out = Evidence::default();
@@ -423,6 +454,7 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
         let mut command = flag == ModifierFlag::Command;
         let mut alt = flag == ModifierFlag::Alt;
         let mut shift = flag == ModifierFlag::Shift;
+        let mut last_was_glyph = is_glyph_modifier(token);
         let mut pos = i + token.chars().count();
         let mut parsed: Option<LogicalKey> = None;
         let mut unknown: Option<String> = None;
@@ -431,19 +463,33 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
             while chars.get(p) == Some(&' ') {
                 p += 1;
             }
-            if chars.get(p) != Some(&'+') {
+            // 字形和弦（`(⇧⌘B)`）：上一节是字形修饰词时，下一节字形修饰词可直接续接（不要 `+`）。
+            let glyph_next = last_was_glyph
+                && find_modifier(&chars[p..])
+                    .is_some_and(|(next_token, _)| is_glyph_modifier(next_token));
+            let mut key_direct = false;
+            if glyph_next {
+                // 不消费 `+`，直接走到下面的修饰词提取。
+            } else if chars.get(p) == Some(&'+') {
+                p += 1;
+                while chars.get(p) == Some(&' ') {
+                    p += 1;
+                }
+            } else if last_was_glyph {
+                // 字形修饰词后直接跟键名（`⇧⌘B` 的 `B`）：跳过 `+`，走键名提取。
+                key_direct = true;
+            } else {
                 break;
             }
-            p += 1;
-            while chars.get(p) == Some(&' ') {
-                p += 1;
-            }
-            if let Some((next_token, next_flag)) = find_modifier(&chars[p..]) {
-                command |= next_flag == ModifierFlag::Command;
-                alt |= next_flag == ModifierFlag::Alt;
-                shift |= next_flag == ModifierFlag::Shift;
-                pos = p + next_token.chars().count();
-                continue;
+            if !key_direct {
+                if let Some((next_token, next_flag)) = find_modifier(&chars[p..]) {
+                    command |= next_flag == ModifierFlag::Command;
+                    alt |= next_flag == ModifierFlag::Alt;
+                    shift |= next_flag == ModifierFlag::Shift;
+                    last_was_glyph = is_glyph_modifier(next_token);
+                    pos = p + next_token.chars().count();
+                    continue;
+                }
             }
             let mut end = p;
             while chars.get(end).is_some_and(|c| !is_key_stop(*c)) {
@@ -575,24 +621,59 @@ fn resolve_on_canvas(chord: &Chord) -> Vec<(&'static str, Resolution)> {
 /// ①/② 的钉值清单：`(界面上印出来的原话, 次数, 期望动作)`。
 ///
 /// ⚠ 这张表是**棘轮**：新增一处印出来的和弦，就必须在这里添一行（否则 ① 的多重集对账先红）。
-/// 期望动作逐条现读 `src/input.rs` 的键表（第 3 步 `command()` 分支、第 5 步 `shift` 分支），
-/// ⛔ 靠文案猜。次数按**两个承诺源**合并算：`elements.rs` 的登记名与 `.slint` 的 label 各一份。
-const PINNED_PROMISES: &[(&str, usize, Action)] = &[
-    ("Cmd/Ctrl + Alt + N", 2, Action::ToggleMetronome),
-    ("Cmd/Ctrl + Alt + A", 1, Action::ToggleAiDrawer),
-    ("Cmd+Z", 3, Action::Undo),
-    ("Shift+Enter", 3, Action::AcceptAiSuggestion),
-    // ⭐ `[PATCH UI-WIRING-01]`：导出 WAV 弹窗的路径标题新印了 `Ctrl/Cmd+O`
-    // （`ui/dialogs/export_wav_dialog.slint` 的 `text:` 字面 ⇒ ① 的多重集对账要求
-    // 这里同步添一行，否则就是「新增的承诺没有判据」）。
-    // 期望动作按**画布口径**逐字现读 `src/input.rs` 第 3 步 `command()` 分支：
-    // `(Character('o'), shift=false, alt=false) => Action::OpenProject`（`Ctrl` 与 `Cmd`
-    // 两条腿都命中）。⚠ 语境复用（如实登记，⛔ 不假装是同一件事）：导出弹窗打开时
-    // `export-trap` 把这一键 `accept` 吞掉、改做「浏览输出路径」
-    // （`host::wire_export_wav_browse`），画布收不到键（`D-UI-19`）⇒ 两处**都有动作**，
-    // ⛔ 不是"念出来却什么都不会发生"的空承诺；本清单钉的是画布键表那一侧。
-    // 次数 = 1（只有那一行标题字面；`elements.rs` 登记名没有这一句）。
-    ("Ctrl/Cmd+O", 1, Action::OpenProject),
+/// 期望动作按**文案承诺的意思**定、再逐条现读 `src/input.rs` 的键表核对（第 3 步 `command()`
+/// 分支、第 5 步 `shift` 分支），⛔ 靠文案猜、⛔ 按键表反推（那会把"印着 A、按下去是 B"洗成绿）。
+/// 次数按**两个承诺源**合并算：`elements.rs` 的登记名与 `.slint` 的 label 各一份。
+/// 扫描面 = `SLINT_MANIFEST` 全 45 个文件（含 6 个死文件，见文件头注）＋ `elements.rs` 的
+/// `registry.add(..)` 与 `registry.add_known_absent(..)` 区间。
+///
+/// ⚠ 2026-11-24 复核（T-FIX-356）：新 UI 菜单/命令面板/提示气泡印出 14 把旧清单没有的和弦，
+/// 其中 4 把是**活的产品缺陷**（② 对它们是红的，见各行注）—— 本表如实钉住，不许为求绿而改期望：
+///
+/// - `Ctrl+K` ×3：命令面板快捷键（`modals.slint:60`）＋顶栏 `text: "Ctrl+K"` 与提示
+///   `[Ctrl+K]`（`transport_bar.slint:1622/1634`）—— 键表里根本没有 `'k'` 这一臂，`src/` 里
+///   也没有任何别的 `KeyK` 接线 ⇒ 按下去什么都不会发生，且 `Action` 里连"打开命令面板"这
+///   个变体都不存在 ⇒ 期望动作只能记 `None`（② 对它直接报缺陷）。
+/// - `Ctrl+T` ×1：命令面板"新增轨道"（`modals.slint:17`）—— 键表给出 `SplitAtPlayhead`
+///  （在播放头处切分），⛔ 是加轨道 ⇒ 文案承诺与绑定错位。
+/// - `Shift+Tab` ×1：命令面板"切换底栏：设备机架"（`modals.slint:14`）—— 键表第 5 步
+///   `shift` 分支没有 `Tab` 臂 ⇒ 画布上是 `PassThrough`（`Tab` 那条臂只认无修饰的 `Tab`）。
+/// - `Alt+S` ×1：底栏堆叠标签提示 `[Alt+S]`（`lower_dock.slint:230`）—— 画布上
+///   `PassThrough`，没有切堆叠的绑定。
+/// - 另有 `(Tab)` 一处（`app.slint:1297` 菜单"显隐 Clip 激发矩阵"，无焦点限定语）是裸键一侧
+///   的同类缺陷，见 ⑩。
+///
+/// 已消失的承诺：`Ctrl/Cmd+O`（`[PATCH UI-WIRING-01]` 时导出弹窗的标题字面）—— 弹窗重写后
+/// 语料里已无此句，2026-11-24 从本表删去（键表里 `(Character('o'), ..)` ⇒ `OpenProject`
+/// 那一臂还在，只是界面不再向用户承诺它）。
+const PINNED_PROMISES: &[(&str, usize, Option<Action>)] = &[
+    // 死文件 `transport.slint` 的休眠承诺（用户看不见，见文件头注；删文件时随清单一起走）。
+    ("Cmd/Ctrl + Alt + N", 2, Some(Action::ToggleMetronome)),
+    ("Cmd/Ctrl + Alt + A", 1, Some(Action::ToggleAiDrawer)),
+    ("Cmd+Z", 3, Some(Action::Undo)),
+    ("Shift+Enter", 3, Some(Action::AcceptAiSuggestion)),
+    // 活菜单 `app.slint`：文件（保存/另存为）、编辑（撤销/重做/复制/粘贴/剪切）、轨道（新建轨）、
+    // 传输（预备拍 `Ctrl+Alt+D`）。
+    ("Ctrl+S", 1, Some(Action::SaveProject)),
+    ("Ctrl+Shift+S", 1, Some(Action::SaveProjectAs)),
+    ("Ctrl+Z", 1, Some(Action::Undo)),
+    ("Ctrl+Shift+Z", 1, Some(Action::Redo)),
+    ("Ctrl+C", 1, Some(Action::CopyClipboard)),
+    ("Ctrl+V", 1, Some(Action::PasteClipboard)),
+    ("Ctrl+X", 1, Some(Action::CutClipboard)),
+    ("Ctrl+N", 1, Some(Action::NewTrack)),
+    ("Ctrl+Alt+D", 1, Some(Action::ToggleCountIn)),
+    // 底栏最大化提示（两种写法是同一把键，原话照抄）。
+    ("Cmd/Ctrl+Alt+M", 1, Some(Action::ToggleConsoleMaximize)),
+    ("Ctrl+Alt+M", 1, Some(Action::ToggleConsoleMaximize)),
+    // 字形写法 `(⇧⌘B)`：菜单"打开浏览器"，键表 `(Character('b'), shift=true, alt=false)`
+    // ⇒ `ToggleBrowser`（第 3 步 `command()` 分支）。
+    ("⇧⌘B", 1, Some(Action::ToggleBrowser)),
+    // ⚠ 以下 4 把是活的产品缺陷（② 红）：期望动作按文案意思钉，键表现状在各行注里。
+    ("Ctrl+K", 3, None),
+    ("Ctrl+T", 1, Some(Action::NewTrack)),
+    ("Shift+Tab", 1, Some(Action::SelectConsoleTab { index: 2 })),
+    ("Alt+S", 1, Some(Action::SelectConsoleTab { index: 3 })),
 ];
 
 fn pinned_counts() -> BTreeMap<&'static str, usize> {
@@ -602,7 +683,9 @@ fn pinned_counts() -> BTreeMap<&'static str, usize> {
         .collect()
 }
 
-fn expected_action(printed: &str) -> Option<Action> {
+/// 期望动作：外层 `None` = 不在钉值清单里；内层 `None` = 印出来了、但键表与 `Action` 里都没有
+/// 这一键的动作（产品缺陷，② 直接报缺陷，⛔ 编一个动作来凑数）。
+fn expected_action(printed: &str) -> Option<Option<Action>> {
     PINNED_PROMISES
         .iter()
         .find(|(text, _, _)| *text == printed)
@@ -611,14 +694,19 @@ fn expected_action(printed: &str) -> Option<Action> {
 
 /// ⑨/⑩ 的钉值清单：`(裸键名, 次数, 画布焦点下期望的动作)`。
 ///
-/// 次数同样按**两个承诺源**合并算（`.slint` 的 label ＋ `elements.rs` 的登记名各一份，实测各 4 处
-/// ⇒ 每把 2 次）。期望动作现读 `src/input.rs`：第 1 步 `F5`/`F6` ⇒ `ShowView`，第 6 步裸键
+/// 次数按**两个承诺源**合并算（`.slint` 的 label ＋ `elements.rs` 的登记名各一份）。
+/// 2026-11-24 复核（T-FIX-356）：`Space` 4 处（`app.slint` 菜单 ×1、`transport.slint` ×1、
+/// `transport_bar.slint` ×1、`elements.rs` 登记名 ×1）；`F5`/`F6` 各 2 处（死文件
+/// `transport.slint` ×1 ＋ `elements.rs` 的 `add_known_absent` 登记名 ×1—— 后者是 2026-11-24
+/// 扫描面补认 `add_known_absent` 后接回来的，之前悄悄丢了 1 次）；`Tab` 3 处（`app.slint:1297`
+/// 菜单 `(Tab)` ×1、`transport.slint` `(Tab, 仅画布聚焦时)` ×1、`elements.rs` 同名登记 ×1）。
+/// 期望动作现读 `src/input.rs`：第 1 步 `F5`/`F6` ⇒ `ShowView`，第 6 步裸键
 /// `Space` ⇒ `PlayPause`、`Tab` ⇒ **只在 `Focus::MainCanvas`** `ToggleView`（其余焦点交给焦点系统）。
 const PINNED_BARE_PROMISES: &[(&str, usize, Action)] = &[
-    ("Space", 2, Action::PlayPause),
+    ("Space", 4, Action::PlayPause),
     ("F5", 2, Action::ShowView(View::Session)),
     ("F6", 2, Action::ShowView(View::Arrangement)),
-    ("Tab", 2, Action::ToggleView),
+    ("Tab", 3, Action::ToggleView),
 ];
 
 fn pinned_bare_counts() -> BTreeMap<&'static str, usize> {
@@ -645,199 +733,269 @@ fn resolve_bare(key: LogicalKey, focus: Focus) -> Resolution {
 /// ①（清点）：两个承诺源扫出的和弦**多重集**恰好是钉值清单。
 #[test]
 fn the_printed_chords_are_exactly_the_pinned_inventory() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let evidence = scan_corpus();
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        !evidence.chords.is_empty(),
+        "一把都没扫出来 ⇒ 扫描面失效（先看 ⑥ 的完整性对账，⛔ 把空集当成绿）"
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+    assert_eq!(
+        evidence.counts(),
+        pinned_counts(),
+        "界面上印出来的和弦多重集与钉值清单不符 ⇒ 新增的承诺要同步扩 PINNED_PROMISES\
+         （原话与次数都算），⛔ 让新承诺没有判据"
     );
 }
 
 /// ②（承诺兑现）：每一把印出来的和弦都必须被键表解析成**期望的那个**动作。
 #[test]
 fn every_printed_chord_resolves_to_an_action() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
-    );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    let evidence = scan_corpus();
+    for chord in &evidence.chords {
+        let expected = expected_action(&chord.printed)
+            .unwrap_or_else(|| panic!("扫出的和弦 {:?} 不在钉值清单里", chord.printed));
+        let Some(expected) = expected else {
+            panic!(
+                "{}:{} 印着 `{}`（整条字面 {:?}）—— 键表里根本没有这一键的动作（画布上是 `PassThrough`），                 且 `Action` 里也没有对应的动作变体 ⇒ 这是**产品缺陷**（D-UI-26 新例），⛔ 是判据错：                 要么给这一键补绑定（＋补 `Action` 变体），要么把文案里的键位提示拿掉。修好之前本判据保持红。",
+                chord.file, chord.line, chord.printed, chord.literal
+            );
+        };
+        let forms = resolve_on_canvas(chord);
+        assert!(
+            !forms.is_empty(),
+            "{}:{} 的 `{}` 一条形态都没验 ⇒ 扫描器与键表的对接失效",
+            chord.file,
+            chord.line,
+            chord.printed
+        );
+        for (form, resolution) in forms {
+            assert_eq!(
+                resolution,
+                Resolution::Action(expected),
+                "{}:{} 印着 `{}`（整条字面 {:?}）—— {form} 形态在键表里解析成 {resolution:?}，\
+                 期望 `Action::{expected:?}` ⇒ 念出来却什么都不会发生",
+                chord.file,
+                chord.line,
+                chord.printed,
+                chord.literal
+            );
+        }
+    }
 }
 
 /// ③（反面事实）：`Cmd/Ctrl + 反斜杠`⛔ 是任何人的承诺，因为它⛔ 被键表实现。
 #[test]
 fn the_backslash_chord_stays_unimplemented_and_unpromised() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
-    );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    let context = InputContext::new();
+    for command_form in [false, true] {
+        let modifiers = Modifiers {
+            ctrl: command_form,
+            shift: false,
+            alt: false,
+            meta: command_form,
+        };
+        assert_eq!(
+            context.resolve_logical(LogicalKey::Character('\\'), modifiers),
+            Resolution::PassThrough,
+            "`Cmd/Ctrl + \\` 在键表里有了动作（形态 {command_form}）—— 那本票的修法要改写：\
+             要么⭐ 这就是第二把干同一件事的键（得先按界面决定裁一遍），要么文案得跟着改"
+        );
+    }
+    for chord in scan_corpus().chords {
+        assert_ne!(
+            chord.key,
+            LogicalKey::Character('\\'),
+            "{}:{} 又把 `Cmd/Ctrl + 反斜杠` 印成了对用户的承诺：{chord:?}",
+            chord.file,
+            chord.line
+        );
+    }
 }
 
 /// ④（本票那一格）：AI 抽屉按钮的 label 逐字 = 真绑的那把；登记名⛔ 带第二处承诺。
 #[test]
 fn the_ai_drawer_button_promises_the_bound_chord() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    const LABEL: &str = "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)";
+    const BUTTON_ID: &str = "transport-ai-drawer-button";
+    const TRANSPORT: &str = "transport.slint";
+
+    let transport = slint_sources()
+        .into_iter()
+        .find(|(file, _)| *file == TRANSPORT)
+        .map(|(_, source)| source)
+        .expect("清单里必须有 transport.slint");
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        transport.contains(LABEL),
+        "AI 抽屉按钮的 label⛔ 与键表同源（`src/input.rs` 第 3 步的 `(Character('a'), false, \
+         true)` 那一臂 ⇒ `Action::ToggleAiDrawer`）"
     );
+    let promises: Vec<Chord> = literals(&transport)
+        .iter()
+        .flat_map(|literal| chords_in_literal(TRANSPORT, literal.line, &literal.text).chords)
+        .collect();
+    assert_eq!(
+        promises
+            .iter()
+            .filter(|chord| chord.key == LogicalKey::Character('a'))
+            .count(),
+        1,
+        "transport 里向用户承诺「呼出 AI 抽屉」的键位不是恰好一处：{promises:?}"
+    );
+
+    let name = registry_name(BUTTON_ID)
+        .unwrap_or_else(|| panic!("`{REGISTRY_FILE}` 的登记表里必须登记着 {BUTTON_ID:?} 那一格"));
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        chords_in_literal(REGISTRY_FILE, 0, &name).chords.is_empty(),
+        "`{REGISTRY_FILE}` 给 {BUTTON_ID:?} 的登记名开始携带和弦：{name:?} ⇒ 那它就是第二处承诺，\
+         必须与 `.slint` 的 label 同源并进 ① 的清单"
     );
 }
 
 /// ⑤（两源不漂移）：登记名里带键位承诺（和弦或裸键）的那几格，必须与某条 `.slint` 字面逐字相同。
 #[test]
 fn registry_names_cannot_diverge_from_the_markup() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let slint = slint_literals();
+    let evidence = scan_corpus();
+    // 登记名里每一句**键位承诺**（和弦与裸键两类）都必须能在 `.slint` 找到逐字相同的字面。
+    let promises: Vec<(String, String)> = evidence
+        .chords
+        .iter()
+        .filter(|chord| chord.file == REGISTRY_FILE)
+        .map(|chord| (chord.literal.clone(), chord.printed.clone()))
+        .chain(
+            evidence
+                .bare
+                .iter()
+                .filter(|promise| promise.file == REGISTRY_FILE)
+                .map(|promise| (promise.literal.clone(), format!("({})", promise.printed))),
+        )
+        .collect();
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        !promises.is_empty(),
+        "登记表里一句键位承诺都没扫到 ⇒ 承诺源 B 的扫描面失效（⛔ 把空集当成绿）"
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    for (literal, printed) in promises {
+        assert!(
+            slint.contains(&literal),
+            "{REGISTRY_FILE} 的登记名 {literal:?} 携带 `{printed}`，但 `.slint` 里**没有**逐字相同\
+             的字面 ⇒ 界面与控件树各说一把键（`D-UI-26` 那一类缺陷的第二个源头）"
+        );
+    }
 }
 
-/// ⑥（扫描面完整）：磁盘上真实存在的 `.slint` 必须都在编译期清单里。
+/// ⑥（扫描面完整）：磁盘上真实存在的 `.slint` 必须都在 `SLINT_MANIFEST` 里。
+///
+/// ⚠ 前空心版的 ⑥ 本身就是两行弱断言（只读 `app.slint`/`host.rs` 各一处）——
+///
+/// 见组报告；本体重写为真对账：`read_dir` 递归列出 `ui/` 下全部 `.slint`，
+/// 逐个要求进 `yeban_app::elements::SLINT_MANIFEST`；反向（清单项必须在磁盘上）
+/// 由个数对账 + `slint_sources()` 的读盘 panic 双重覆盖。
 #[test]
 fn every_slint_file_on_disk_is_in_the_embedded_inventory() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let manifest = yeban_app::elements::SLINT_MANIFEST;
+    let mut on_disk: Vec<String> = Vec::new();
+    let mut stack = vec![ui_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("读 ui/ 目录") {
+            let entry = entry.expect("读目录项");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "slint") {
+                on_disk.push(
+                    path.strip_prefix(&ui_dir)
+                        .expect("ui/ 下的路径")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        !on_disk.is_empty(),
+        "ui/ 下一个 .slint 都没扫到 ⇒ 扫描面失效"
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+    for file in &on_disk {
+        assert!(
+            manifest.contains(&file.as_str()),
+            "磁盘上的 ui/{file} 不在 SLINT_MANIFEST 里 ⇒ ① 的扫描面漏了它"
+        );
+    }
+    assert_eq!(
+        manifest.len(),
+        on_disk.len(),
+        "SLINT_MANIFEST 有 {} 项，磁盘上有 {} 个 .slint ⇒ 两边对不上",
+        manifest.len(),
+        on_disk.len()
     );
 }
 
 /// ⑦（承诺写全）：字面里出现修饰词就必须写成完整的 `修饰词 + 键名`；键名必须在词表里。
 #[test]
 fn every_key_hint_is_a_complete_promise() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let evidence = scan_corpus();
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        evidence.incomplete.is_empty(),
+        "这些字面提到了修饰词却没接上 `+ 键名`（承诺写坏了，或本守卫的词表需要扩）：{:?}",
+        evidence.incomplete
     );
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        evidence.unknown_keys.is_empty(),
+        "这些和弦里的键名不在 `KEY_WORDS` 词表里：{:?} ⇒ 要么把它加进词表，要么这句文案⛔ \
+         不该印出来（口径：⛔ 让认不出的键名蒙过去，那等于静默漏网）",
+        evidence.unknown_keys
     );
 }
 
 /// ⑧（上下文口径）：文本框聚焦时 DAW 热键整体放行 —— 守卫数的是**画布**口径。
 #[test]
 fn the_promise_is_scored_against_the_canvas_context_only() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
-    );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    // `resolve_logical` 的第 2 步（文本域策略）会把**所有**非合成按键放行，
+    // 因此"印在按钮上的键在输入框里没反应"⛔ 是本票的缺陷（那是 `ADR-0068` 未决的
+    // 规范冲突）。本条把这条口径钉住：⛔ 让 ② 的绿被误解成"任何焦点下都生效"。
+    let mut context = InputContext::new();
+    context.set_focus(Focus::TextInput);
+    for chord in scan_corpus().chords {
+        let modifiers = Modifiers {
+            ctrl: chord.command,
+            shift: chord.shift,
+            alt: chord.alt,
+            meta: false,
+        };
+        assert_eq!(
+            context.resolve_logical(chord.key, modifiers),
+            Resolution::PassThrough,
+            "`{}` 在文本域里竟然被 DAW 吞掉了 —— 这与 `ADR-0068` 登记的现状不符",
+            chord.printed
+        );
+    }
 }
 
 /// ⑨（裸键承诺）：括号里印出来的**裸键**也必须被键表解析成钉住的那个动作。
 #[test]
 fn every_printed_bare_key_is_bound() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+    let evidence = scan_corpus();
+    assert_eq!(
+        evidence.bare_counts(),
+        pinned_bare_counts(),
+        "界面上印出来的裸键多重集与钉值清单不符（实得 {:?}）⇒ 新增的裸键承诺要同步扩 \
+         PINNED_BARE_PROMISES（⛔ 让新承诺没有判据）",
+        evidence.bare_counts()
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    for promise in &evidence.bare {
+        let expected = expected_bare_action(&promise.word)
+            .unwrap_or_else(|| panic!("扫出的裸键 {:?} 不在钉值清单里", promise.word));
+        assert_eq!(
+            resolve_bare(promise.key, Focus::MainCanvas),
+            Resolution::Action(expected),
+            "{}:{} 印着 `({})` —— 画布焦点下键表解析成 {:?}，期望 `Action::{expected:?}` \
+             ⇒ 念出来却什么都不会发生",
+            promise.file,
+            promise.line,
+            promise.printed,
+            resolve_bare(promise.key, Focus::MainCanvas)
+        );
+    }
 }
 
 /// ⑩（限定语兑现）：文案里那句焦点限定语必须**就是**键表的行为。
@@ -847,21 +1005,40 @@ fn every_printed_bare_key_is_bound() {
 /// 少了后半，"哪儿都生效"的承诺会被读成"只在画布生效"而**空绿**。
 #[test]
 fn the_focus_caveat_in_the_text_is_the_key_tables_behavior() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let evidence = scan_corpus();
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        !evidence.bare.is_empty(),
+        "一把裸键承诺都没扫出来 ⇒ 扫描面失效（先看 ⑥ 的完整性对账）"
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
-    );
+    for promise in &evidence.bare {
+        let expected = expected_bare_action(&promise.word)
+            .unwrap_or_else(|| panic!("扫出的裸键 {:?} 不在钉值清单里", promise.word));
+        if promise.canvas_only {
+            for (form, focus) in [
+                ("Other（推子/旋钮/标签）", Focus::Other),
+                ("TextInput（文本域）", Focus::TextInput),
+            ] {
+                assert_eq!(
+                    resolve_bare(promise.key, focus),
+                    Resolution::PassThrough,
+                    "{}:{} 印着 `({})`，键表却在 {form} 焦点下也吞了这把键 ⇒ 文案里那句限定语\
+                     把范围说得比实现窄（用户会以为只有画布能按）",
+                    promise.file,
+                    promise.line,
+                    promise.printed,
+                );
+            }
+        } else {
+            assert_eq!(
+                resolve_bare(promise.key, Focus::Other),
+                Resolution::Action(expected),
+                "{}:{} 印着 `({})` 且**没有**任何焦点限定语 ⇒ 这是对「哪儿都生效」的承诺，\
+                 但键表在 Other（推子/旋钮/标签）焦点下解析成 {:?}，期望 `Action::{expected:?}`",
+                promise.file,
+                promise.line,
+                promise.printed,
+                resolve_bare(promise.key, Focus::Other)
+            );
+        }
+    }
 }
