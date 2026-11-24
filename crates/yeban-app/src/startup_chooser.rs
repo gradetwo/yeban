@@ -881,6 +881,52 @@ impl NewProjectDetails {
         out
     }
 
+    /// 检查 Details 是否在模型合法域内；越界时**响亮**返回原因，
+    /// 交给启动选择器留在 Details 页显示，而不是静默钳值。
+    ///
+    /// 与 [`Self::sanitized`] 的分工：`sanitized` 仍是防御性收口（供
+    /// 程序内部兜底），用户输入的路径必须先过这里。
+    ///
+    /// # Errors
+    ///
+    /// 速度非有限 / 越出 20–999、拍号越界或分母不在 `1/2/4/8/16/32`、
+    /// 调号升降号越出 −7..=7。
+    pub fn validate(&self) -> Result<Self, String> {
+        if !self.bpm.is_finite() {
+            return Err(format!(
+                "速度「{}」不是有限数值，请输入 20–999 的数字",
+                self.bpm
+            ));
+        }
+        if !(20.0..=999.0).contains(&self.bpm) {
+            return Err(format!(
+                "速度「{}」超出允许范围 20–999，新工程没有创建",
+                self.bpm
+            ));
+        }
+        if !(1..=32).contains(&self.time_signature.numerator) {
+            return Err(format!(
+                "拍号分子「{}」超出 1–32，新工程没有创建",
+                self.time_signature.numerator
+            ));
+        }
+        if ![1, 2, 4, 8, 16, 32].contains(&self.time_signature.denominator) {
+            return Err(format!(
+                "拍号分母「{}」不在 1/2/4/8/16/32 之内，新工程没有创建",
+                self.time_signature.denominator
+            ));
+        }
+        if let Some(key) = &self.key_signature
+            && !(-7..=7).contains(&key.sharps_flats)
+        {
+            return Err(format!(
+                "调号升降号「{}」超出 −7..=7，新工程没有创建",
+                key.sharps_flats
+            ));
+        }
+        Ok(*self)
+    }
+
     /// 按 Details 构造一份新工程：以规范空工程为底（0 轨 + 主
     /// 总线），覆盖四个字段，记下创建时间。其余字段与空工程
     /// 逐一相同（标题、种子、元数据口径都不另发明）。
@@ -1286,6 +1332,36 @@ mod tests {
         assert_eq!(project.bpm, 999.0);
         assert_eq!(project.time_signature.numerator, 32);
         assert_eq!(project.time_signature.denominator, 4);
+    }
+
+    #[test]
+    fn validate_rejects_out_of_domain_details_loudly() {
+        let base = NewProjectDetails {
+            bpm: 120.0,
+            key_signature: None,
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            sample_rate: SampleRate::Hz48000,
+        };
+        assert!(base.validate().is_ok());
+        for bpm in [1000.0, f64::NAN, f64::INFINITY] {
+            let error = NewProjectDetails { bpm, ..base }.validate().unwrap_err();
+            assert!(
+                error.contains("新工程没有创建") || error.contains("不是有限"),
+                "{error}"
+            );
+        }
+        let bad_den = NewProjectDetails {
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 3,
+            },
+            ..base
+        };
+        let error = bad_den.validate().unwrap_err();
+        assert!(error.contains("分母"), "{error}");
     }
 
     #[test]

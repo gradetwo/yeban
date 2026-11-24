@@ -546,6 +546,33 @@ fn startup_chooser_live_window_flow() {
         "新工程必须是空工程形状（只有主总线）"
     );
 
+    // ---- 4b. 越界/非有限速度必须响亮拒绝，不得静默钳值 -------------------
+    ui.set_startup_chooser_open(true);
+    ui.invoke_startup_category_selected(0);
+    let title_before_bad_speed = undo.project().title.clone();
+    for bad in ["1000", "NaN", "inf"] {
+        ui.set_startup_tempo_text(bad.into());
+        ui.invoke_startup_new_project();
+        assert!(
+            ui.get_startup_chooser_open(),
+            "速度 {bad} 必须留在 Details 页并报错，不得创建工程"
+        );
+        assert_eq!(
+            undo.project().title,
+            title_before_bad_speed,
+            "速度 {bad} 被拒后当前工程必须一位没动"
+        );
+        assert!(
+            !ui.get_module_status_succeeded(),
+            "速度 {bad} 的失败回执必须标成失败"
+        );
+        let said = ui.get_module_status_text().to_string();
+        assert!(
+            said.contains("新工程没有创建") || said.contains("不是有限"),
+            "速度 {bad} 必须在界面上响亮说明，实际「{said}」"
+        );
+    }
+
     // ---- 5. 演示工程：文件型 demo 以未命名副本打开 -------------------------
     ui.set_startup_chooser_open(true);
     ui.invoke_startup_category_selected(2);

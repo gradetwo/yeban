@@ -10934,6 +10934,16 @@ pub fn wire_startup_chooser(
                     .copied()
                     .unwrap_or(yeban_model::project::SampleRate::Hz48000),
             };
+            let details = match details.validate() {
+                Ok(valid) => valid,
+                Err(error) => {
+                    let receipt =
+                        module_receipt("startup-chooser", &module_error_fields("tempo", &error));
+                    apply_module_receipt(&ui, &receipt, false);
+                    module_trace("startup-chooser", started, &receipt);
+                    return;
+                }
+            };
             let project = details.build_project(yeban_model::project::now_unix_ms());
             let archive = yeban_model::container::ProjectArchive {
                 project,
