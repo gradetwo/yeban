@@ -16102,12 +16102,26 @@ fn apply_action(
             let ops = nudge_ops_for(&project, &selected, delta_tick, delta_pitch);
             if ops.is_empty() {
                 // 没有选区 / 没有可平移的对象 / 整块已在边界上 ⇒ 没有可停靠的编辑, 如实不消费。
+                // ⭐ T-FIX-210：这三种原因用户看到的都是"按了没反应"，得把原因写出来。
+                // 只在**有选区**时才提示（无选区是"没什么可动"，不是拒绝）。
+                if !selected.is_empty() {
+                    let reason = format!(
+                        "选区已到边界：无法再移动（{delta_tick} tick / {delta_pitch} 半音）"
+                    );
+                    ui.set_roll_edit_status(reason.clone().into());
+                    update_toast(ui, reason);
+                }
                 return false;
             }
             if port.commit_ops(now_ms(), "nudge selection", ops).is_err() {
+                // ⭐ T-FIX-210：模型拒绝（越界 / 身份失效）⇒ 写回执，别让用户以为键没生效。
+                let reason = "模型拒绝：选区移动越界或身份已失效";
+                ui.set_roll_edit_status(reason.into());
+                update_toast(ui, reason);
                 return false;
             }
             refresh_undo_window(ui, port, true);
+            clear_own_rejection_status(ui);
             true
         }
         // `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 缩短 / 延长选区音符的**时值**。
@@ -19133,6 +19147,11 @@ fn commit_note_drag(
         return;
     };
     let Some(op) = move_note_op_for(&project, &note, delta_tick, delta_pitch) else {
+        // ⭐ T-FIX-210：解析失败 = 音符身份已失效（已被删 / 不在工程里）⇒ 写回执，
+        // 否则用户只看到"拖了又弹回"。
+        let reason = "音符拖动被拒：音符身份已失效（可能已被删除）";
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
         return;
     };
     if port
@@ -19141,8 +19160,13 @@ fn commit_note_drag(
     {
         // 模型拒绝（结果越界 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // `Op::MoveNote` 是**相对**变换，重试会把同一个增量再加一次。
+        // ⭐ T-FIX-210：拒绝必须出声，否则"弹回"没有原因。
+        let reason = "音符拖动被拒：已到音高上限/下限或已到时间轴边界";
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
         return;
     }
+    clear_own_rejection_status(ui);
     let width = slint::ComponentHandle::window(ui).size().width as f32;
     reproject_roll(ui, port, width, scroll);
 }
@@ -20473,6 +20497,11 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
     {
         // 模型拒绝（前置条件过期 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // 载荷携带 `old_start_tick`，重试要重新读权威工程 —— 那不是本函数的职责。
+        // ⭐ T-FIX-210：剪辑弹回必须出声（走 module-status 三件套，与控制台同一条通道）。
+        let reason = "剪辑移动被拒：前置条件已过期或剪辑已不存在（已恢复原位）";
+        ui.set_module_status(reason.into());
+        ui.set_module_status_text("剪辑未移动".into());
+        ui.set_module_status_succeeded(false);
         return;
     }
     refresh_undo_window(ui, port, true);
@@ -23079,6 +23108,21 @@ use crate::ui::{PianoRollNote, TimelineBlockData, TrackData};
 // ===========================================================================
 // 与上面 main 版接线层的旧回调并存: 旧回调由 main.rs 的 wire_* 装配接真实领域逻辑,
 // 这批负责新 UI 的状态反馈与手势入口; 关键手势在后续切片转发到同一条真实入口。
+
+/// T-FIX-210：编辑**成功**后清掉本单自己写的拒绝文案（⛔ 不碰其他通道的提示）。
+///
+/// 只认本单三条前缀：`选区已到边界` / `模型拒绝：选区` / `音符拖动被拒`。用户在边界上
+/// 按到一次、随后挪成功时，旧的拒绝文案不该继续挂在钢琴卷帘状态行上。
+fn clear_own_rejection_status(ui: &MainWindow) {
+    let current = ui.get_roll_edit_status();
+    let text = current.as_str();
+    if text.starts_with("选区已到边界")
+        || text.starts_with("模型拒绝：选区")
+        || text.starts_with("音符拖动被拒")
+    {
+        ui.set_roll_edit_status("".into());
+    }
+}
 
 fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     let s: SharedString = msg.into();
