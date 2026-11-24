@@ -488,7 +488,7 @@
 | 183 | 截图（Tier-1 软件光栅化）与动态区域遮罩 | TUI 真缺口（backlog） | 台账第 183 行既有读数 |
 | 200 | stdio 传输与独立二进制 | TUI 真缺口（backlog） | `crates/yeban-mcp/src/transport/stdio.rs` 存在 |
 | 201 | 环回 HTTP 传输（127.0.0.1 + Bearer） | TUI 真缺口（backlog） | `crates/yeban-mcp/src/transport/http.rs` 存在 |
-| 202 | 六级 scope 鉴权（`ARCH-SEC-002`） | TUI 真缺口（backlog） | `crates/yeban-mcp/src/security.rs:194`（`pub enum Scope`），`Scope::ALL.len() == 6` 判据 `:1654` |
+| 202 | 六级 scope 鉴权（`ARCH-SEC-002`） | TUI 真缺口（backlog） | `crates/yeban-mcp/src/security.rs:202`（`pub enum Scope`），`Scope::ALL.len() == 6` 判据 `:1930` |
 | 203 | 三级权限分层（ReadOnly / Interactive / Administrative） | TUI 真缺口（backlog） | 台账第 203 行既有读数 |
 | 204 | `dryRun` 与 `idempotencyKey` | 有意取舍（TUI 无写操作面，故不暴露） | 台账第 204 行既有读数 |
 | 205 | 能力发现（工具目录与方法目录） | TUI 真缺口（backlog） | 台账第 205 行既有读数 |
