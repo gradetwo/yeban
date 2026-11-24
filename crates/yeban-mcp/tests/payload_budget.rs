@@ -173,11 +173,19 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     // `"success: commitModel, created, mergeTool, pendingMerge, projectDigest,
     // projectUnchanged, proposal, resolvedParams, unwired, warnings, willCreate"`
     //（11 个数据键，盒上实测）。⇒ 响应 2,900 → **3,098**（合计 3,294 ≤ 4,096）。
+    // ⭐ `samplerWarnings` 恒发（T-FIX-151 item 1，`5346e92d`）：绑定当刻缺样本预检
+    //     与预览/响应同一份，空数组也恒发。增量按**形状**算：data 键
+    //     `"samplerWarnings"`(18) + `:`(1) + `[]`(2) + `,`(1) = **+22 B**；
+    //     信封摘要键名列表新增 `, samplerWarnings`（1+1+16）= **+17 B**。
+    //     ⇒ 响应 3,098 + 39 = **3,137**（合计 3,337 ≤ 4,096）。
+    //     ⚠ 实测读数（本沙箱 cargo 1.99.0 + d0c02893 尖端，2026-11-25）为
+    //     **3,136**，与形状账 3,137 差 1 B —— 以**实测为准**重钉（本判据注释链
+    //     既有纪律：不许顺手改数字，但以 CI/本机读数为准）。ISS-MWU0NIKD。
     assert_eq!(
         reading,
         RoundTripPayload {
             request: 196,
-            response: 3098
+            response: 3136
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );
