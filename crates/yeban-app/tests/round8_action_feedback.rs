@@ -230,7 +230,8 @@ fn every_live_transport_button_has_a_named_hover_aware_touch_area() {
         ),
         "循环键的背景必须逐字是：状态 ? Theme.accent : (悬浮 ? bg-lane2 : transparent)"
     );
-    // 4 个活键带无障碍 id（回滚键没有）；5 键的 TouchArea 都有点击臂。
+    // 4 个活键带无障碍 id（回滚键没有）；id 字面量是字符串，须对原文查
+    // （code_only 会剥掉字符串字面量）。
     for id in [
         "transport-stop-button",
         "transport-play-button",
@@ -238,7 +239,7 @@ fn every_live_transport_button_has_a_named_hover_aware_touch_area() {
         "transport-loop-button",
     ] {
         assert!(
-            bar.contains(&format!("accessible-id: \"{id}\"")),
+            TRANSPORT_BAR.contains(&format!("accessible-id: \"{id}\"")),
             "活走带里必须有 accessible-id {id}"
         );
     }
