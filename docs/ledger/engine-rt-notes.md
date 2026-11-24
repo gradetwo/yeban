@@ -235,7 +235,7 @@ impl CompensationBank {
 | `src/snapshot.rs` | `EngineSnapshot`、`SnapshotSlot`（原子指针 + 锚 + 纪元握手）、`SnapshotReader`、`RetireQueue` | [ARCH-RT-002] [ROAD-M2-002] [ARCH-TOP-002] | 无条件 |
 | `src/meter.rs` | `meter_channel`（高容量有损）、`MeterFrame::measure`、`MeterBoard` | [ARCH-UI-002] [ROAD-M2-008] | 无条件 |
 | `src/rt.rs` | `EngineRuntime::process_quantum`（**不依赖 cpal**）、`EngineStats` | [ARCH-TOP-002] [ARCH-RT-001] [ARCH-RT-003] | 无条件 |
-| `src/device.rs` | `negotiate`（纯函数协商）、`open_output`、`OutputStreamHandle`、`NullBackend` | [ROAD-M2-001] [ARCH-TOP-002] | `device` |
+| `src/device.rs` | `negotiate`（纯函数协商）、`open_output`、`OutputStreamHandle`、`NullBackend`、`callback_gap_frames` / 回调 xrun 观测 | [ROAD-M2-001] [ARCH-TOP-002] | `device` |
 
 ---
 
@@ -281,6 +281,10 @@ impl CompensationBank {
 2. **实时线程优先级 [ROAD-M2-001] 未实现**：cpal 0.18 的 `realtime` feature 只在
    `wasapi`/`aaudio`/`pipewire`/`jack` 出现，macOS 与 Linux-ALSA 路径没有开关。
    自研需要 `pthread_setschedparam`（新 `libc` 依赖）或 macOS `thread_policy_set`。
+   ⭐ **T-FIX-238 的边界**：本线只加了**观测**（相邻 `playback` 时间戳跳跃 ⇒
+   `EngineStats::xrun_count` / `max_gap_frames`，诊断行
+   `device::audio_callback_health_line`），**没有**引入 `libc` / 平台分支 / 优先级
+   提升 ⇒ 第 281 行的缺口仍在，N3 仍待裁决。
 3. **独占模式**：cpal 0.18 无 API。`RequireExclusive` 返回明确错误；`PreferExclusive`
    降级为共享并如实记录在 `NegotiatedConfig::share_mode`。
 4. **只支持 `f32`**：非 `f32` 明确报错，不做静默格式转换（会引入未验证的样本路径）。

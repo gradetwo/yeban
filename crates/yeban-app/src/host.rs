@@ -3541,9 +3541,16 @@ fn refresh_audio_panel(
 fn refresh_audio_status_line(ui: &MainWindow, production: &Rc<RefCell<ProductionLoop>>) {
     let engine = production.borrow().engine_handle();
     let engine = engine.borrow();
-    ui.set_audio_device_status(
-        audio_device_status_line(engine.device_name(), engine.device_negotiated()).into(),
-    );
+    let negotiated = engine.device_negotiated();
+    let mut line = audio_device_status_line(engine.device_name(), negotiated);
+    if let (Some(stats), Some(negotiated)) = (engine.engine_stats(), negotiated) {
+        line.push_str(" · ");
+        line.push_str(&yeban_engine::device::audio_callback_health_line(
+            &stats,
+            negotiated.sample_rate,
+        ));
+    }
+    ui.set_audio_device_status(line.into());
 }
 
 /// （重）开面板的临时输入测试流（T-FIX-71）：经**录音那条真设备工厂**

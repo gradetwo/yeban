@@ -220,6 +220,10 @@ pub struct EngineStatsMirror {
     phase_processed_blocks: AtomicU64,
     pdc_alignment_frames: AtomicU32,
     engine_output_latency_frames: AtomicU32,
+    /// 见 `EngineStats::xrun_count`。
+    xrun_count: AtomicU64,
+    /// 见 `EngineStats::max_gap_frames`。
+    max_gap_frames: AtomicU64,
     metronome_clicks: AtomicU64,
     drum_hits: AtomicU64,
     drum_triggers: AtomicU64,
@@ -311,6 +315,8 @@ impl EngineStatsMirror {
             phase_processed_blocks: AtomicU64::new(0),
             pdc_alignment_frames: AtomicU32::new(0),
             engine_output_latency_frames: AtomicU32::new(0),
+            xrun_count: AtomicU64::new(0),
+            max_gap_frames: AtomicU64::new(0),
             metronome_clicks: AtomicU64::new(0),
             drum_hits: AtomicU64::new(0),
             drum_triggers: AtomicU64::new(0),
@@ -469,6 +475,9 @@ impl EngineStatsMirror {
             .store(stats.pdc_alignment_frames, Ordering::Relaxed);
         self.engine_output_latency_frames
             .store(stats.engine_output_latency_frames, Ordering::Relaxed);
+        self.xrun_count.store(stats.xrun_count, Ordering::Relaxed);
+        self.max_gap_frames
+            .store(stats.max_gap_frames, Ordering::Relaxed);
         self.metronome_clicks
             .store(stats.metronome_clicks, Ordering::Relaxed);
         self.drum_hits.store(stats.drum_hits, Ordering::Relaxed);
@@ -595,6 +604,8 @@ impl EngineStatsMirror {
             phase_processed_blocks: self.phase_processed_blocks.load(Ordering::Relaxed),
             pdc_alignment_frames: self.pdc_alignment_frames.load(Ordering::Relaxed),
             engine_output_latency_frames: self.engine_output_latency_frames.load(Ordering::Relaxed),
+            xrun_count: self.xrun_count.load(Ordering::Relaxed),
+            max_gap_frames: self.max_gap_frames.load(Ordering::Relaxed),
             metronome_clicks: self.metronome_clicks.load(Ordering::Relaxed),
             drum_hits: self.drum_hits.load(Ordering::Relaxed),
             drum_triggers: self.drum_triggers.load(Ordering::Relaxed),
@@ -712,6 +723,8 @@ mod tests {
             phase_processed_blocks: 59,
             pdc_alignment_frames: 45,
             engine_output_latency_frames: 46,
+            xrun_count: 70,
+            max_gap_frames: 71,
             metronome_clicks: 25,
             drum_hits: 26,
             drum_triggers: 47,

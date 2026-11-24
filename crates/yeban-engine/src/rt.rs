@@ -854,6 +854,18 @@ pub struct EngineStats {
     /// 只有显式开启（`from_project_with_limiter(.., true)`）时，`master` 才回填
     /// 母线限制器的 33 帧 [ADR-0001 D44(b)] ⇒ 它比对齐基准大 33。
     pub engine_output_latency_frames: u32,
+    /// **音频回调 xrun 次数**（相邻回调的播放时间戳跳过了超过一个期望缓冲的时长）。
+    ///
+    /// 由设备腿的数据回调在**同一线程**上调用
+    /// [`EngineRuntime::record_callback_gap`] 累加；控制驱动（`NullBackend`）没有
+    /// 回调时间戳 ⇒ 恒为 `0`。它是"回调被调度器拖晚"的**观测**，不是设备后端的
+    /// `Error` 计数（后者见 `device::OutputStreamHandle::backend_errors`）。
+    pub xrun_count: u64,
+    /// **音频回调最大时间戳跳跃**（帧；`0` = 从未观测到 xrun）。
+    ///
+    /// 与 [`Self::xrun_count`] 同源：每次跳跃取 `max`，不回绕、不重置。
+    /// 单位是帧（设备率）⇒ 与设备协商结果的 `sample_rate` 一起读。
+    pub max_gap_frames: u64,
     /// **节拍器累计触发过的咔哒声次数**（[`crate::metronome`]）。
     ///
     /// 与 [`Self::pdc_processed_blocks`] 同族：它把"节拍器真的在打拍子"变成可读的
@@ -3605,7 +3617,8 @@ pub struct EngineRuntime {
     ///   开关打开时每块多至 3 次逐样本乘加（SIDE 差分、MONO 下混、DIM 增益），
     ///   原子读每块一次（`Relaxed`），零分配、零锁、零 I/O [MUST-GATE-001]。
     /// * **尺寸**：`Arc` 8 B ＋ `bool` 1 B，实测 **＋0 B**（全落进既有对齐填充，
-    ///   `size_of::<EngineRuntime>()` 仍是 47 904 B，见 `tests/bus_insert.rs` 的
+    ///   `size_of::<EngineRuntime>()` 仍是 47 920 B（T-FIX-238 加上回调观测的两个
+    ///   `u64` 后从 47 904 升到 47 920），见 `tests/bus_insert.rs` 的
     ///   `b5_sizes_stay_under_the_192_kib_red_line` 钉数）；仍远低于 200 KiB 红线。
     monitor: Arc<MonitorControls>,
     /// ⭐ **监听旁通（T-FIX-190）**：离线渲染（`EngineHost::render_into`）在自己的
@@ -3734,6 +3747,10 @@ pub struct EngineRuntime {
     pdc_alignment_frames: u32,
     /// 见 [`EngineStats::engine_output_latency_frames`]（快照边界覆写；初值 0）。
     engine_output_latency_frames: u32,
+    /// 见 [`EngineStats::xrun_count`]（音频回调线程累加；初值 0）。
+    xrun_count: u64,
+    /// 见 [`EngineStats::max_gap_frames`]（音频回调线程累加；初值 0）。
+    max_gap_frames: u64,
     /// 本快照武装的声相衰减律（`audio_config.pan_law` 的投影）。
     armed_pan_law: PanLaw,
     /// 本快照武装的每轨声相增益 `(左, 右)`（构造期算好，实时侧只做乘法）。
@@ -4609,6 +4626,8 @@ impl EngineRuntime {
             put!(phase_clamped_frames, 0);
             put!(pdc_alignment_frames, 0);
             put!(engine_output_latency_frames, 0);
+            put!(xrun_count, 0);
+            put!(max_gap_frames, 0);
             put!(armed_pan_law, PanLaw::default());
             put!(
                 armed_pan_gains,
@@ -5137,6 +5156,24 @@ impl EngineRuntime {
         self.stats_mirror.publish(&stats);
     }
 
+    /// **记录一次音频回调时间戳跳跃**（设备腿的数据回调线程调用）。
+    ///
+    /// `gap_frames` 是 [`crate::device::callback_gap_frames`] 的读数：
+    /// 相邻 `OutputCallbackInfo::timestamp().playback` 的间隔超过本次缓冲帧数的部分。
+    /// `0`（正常连续）不增加任何计数器；`> 0` 时 `xrun_count +1`、`max_gap_frames = max`。
+    ///
+    /// 实时约束：只做两次 `u64` 比较/自增与一次赋值 —— **零分配、零锁、零 I/O、零日志**
+    /// [红线 7]。它与 [`Self::process_quantum`] 在同一线程上顺序执行，不需要原子量。
+    pub fn record_callback_gap(&mut self, gap_frames: u64) {
+        if gap_frames == 0 {
+            return;
+        }
+        self.xrun_count = self.xrun_count.saturating_add(1);
+        if gap_frames > self.max_gap_frames {
+            self.max_gap_frames = gap_frames;
+        }
+    }
+
     /// 当前累计统计（**只读快照**：无锁、零分配；读它不会影响渲染路径）。
     ///
     /// 它把控制面必须能看见的**引擎健康读数**一并交出（`needs` N2/N5）：
@@ -5228,6 +5265,8 @@ impl EngineRuntime {
             pdc_processed_blocks: self.pdc.processed_blocks(),
             pdc_alignment_frames: self.pdc_alignment_frames,
             engine_output_latency_frames: self.engine_output_latency_frames,
+            xrun_count: self.xrun_count,
+            max_gap_frames: self.max_gap_frames,
             metronome_clicks: self.metronome.clicks(),
             drum_hits: self.synth.drum_hits(),
             // 鼓机器件**自己**的四个计数器：与上面那条只差一次字段汇总

@@ -1085,6 +1085,95 @@ pub fn render_callback(runtime: &mut EngineRuntime, data: &mut [f32], channels: 
     runtime.process_quantum(data, channels);
 }
 
+/// **相邻回调播放时间戳的跳跃帧数**（纯函数，便于无声卡单测）。
+///
+/// 入参：上一次 `OutputCallbackInfo::timestamp().playback`（首回调为 `None`）、
+/// 本次播放时间戳、本次缓冲**期望帧数**、设备采样率（Hz）。
+///
+/// 口径：`elapsed_frames = playback 间隔 × sample_rate`；返回值是
+/// `elapsed_frames − expected_frames` 的**饱和差**（`0` = 没有跳跃）。
+///
+/// - 首回调（`previous = None`）⇒ `0`（没有参照，不报假 xrun）；
+/// - 时间戳回退/非单调（`checked_duration_since` 为 `None`）⇒ `0`（不把时钟回拨
+///   当成掉帧）；
+/// - `expected_frames == 0` 或 `sample_rate == 0` ⇒ `0`（读数无效，不编数字）。
+///
+/// ⚠ 设备后端可能在缓冲边界上有 ±1 帧的取整抖动；本函数按**整数帧**向下取整，
+/// 只有真正超过一个完整缓冲的间隔才算跳跃。返回值单位是**帧**（不是毫秒）。
+#[must_use]
+pub fn callback_gap_frames(
+    previous_playback: Option<cpal::StreamInstant>,
+    playback: cpal::StreamInstant,
+    expected_frames: usize,
+    sample_rate: u32,
+) -> u64 {
+    let Some(previous) = previous_playback else {
+        return 0;
+    };
+    let Ok(expected_frames) = u64::try_from(expected_frames) else {
+        return 0;
+    };
+    if expected_frames == 0 || sample_rate == 0 {
+        return 0;
+    }
+    let Some(elapsed) = playback.checked_duration_since(previous) else {
+        return 0;
+    };
+    let elapsed_frames = elapsed.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000;
+    let elapsed_frames = u64::try_from(elapsed_frames).unwrap_or(u64::MAX);
+    elapsed_frames.saturating_sub(expected_frames)
+}
+
+/// **回调时间戳观测器**（每个输出流一个；住在 cpal 数据回调的闭包里）。
+///
+/// 只保存上一次播放时间戳与设备采样率；[`Self::observe`] 只用整数算术，
+/// **零分配、零锁、零 I/O**（红线 7）。
+pub struct CallbackGapObserver {
+    sample_rate: u32,
+    previous_playback: Option<cpal::StreamInstant>,
+}
+
+impl CallbackGapObserver {
+    /// 新建观测器（首个回调没有参照）。
+    #[must_use]
+    pub const fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            previous_playback: None,
+        }
+    }
+
+    /// 观察一次回调并把本次播放时间戳记为下一次的参照；返回跳跃帧数。
+    pub fn observe(&mut self, playback: cpal::StreamInstant, expected_frames: usize) -> u64 {
+        let gap = callback_gap_frames(
+            self.previous_playback,
+            playback,
+            expected_frames,
+            self.sample_rate,
+        );
+        self.previous_playback = Some(playback);
+        gap
+    }
+}
+
+/// **带时间戳观测的等率输出回调体** —— [`open_output`] 的直通腿调用它。
+///
+/// 顺序固定：先算跳跃（纯算术）⇒ [`EngineRuntime::record_callback_gap`] 记账
+/// ⇒ 仍然只调用 [`render_callback`] 渲染。⛔ 不改变渲染输出、⛔ 不分配/加锁/打印。
+pub fn render_callback_observed(
+    runtime: &mut EngineRuntime,
+    data: &mut [f32],
+    channels: u16,
+    info: &cpal::OutputCallbackInfo,
+    observer: &mut CallbackGapObserver,
+) {
+    let channels = usize::from(channels.max(1));
+    let expected_frames = data.len() / channels;
+    let gap = observer.observe(info.timestamp().playback, expected_frames);
+    runtime.record_callback_gap(gap);
+    render_callback(runtime, data, channels as u16);
+}
+
 /// ⭐ **带采样率转换的输出回调状态**（T-FIX-72）：设备率 ≠ 工程率时，
 /// [`open_output`] 的闭包持有的就是它（而不是裸的 [`EngineRuntime`]）。
 ///
@@ -1207,6 +1296,47 @@ pub fn render_callback_converted(state: &mut ConvertedOutput, data: &mut [f32], 
     }
 }
 
+/// **带时间戳观测的异率输出回调体** —— [`open_output`] 的转换腿调用它。
+///
+/// 与 [`render_callback_observed`] 同一条顺序：先算跳跃并记账，再走
+/// [`render_callback_converted`]（渲染仍只经 [`render_callback`]）。帧数按**设备率**
+/// 的交错缓冲计算（`data.len() / channels`），与 cpal 的播放时间戳同一时基。
+pub fn render_callback_converted_observed(
+    state: &mut ConvertedOutput,
+    data: &mut [f32],
+    channels: u16,
+    info: &cpal::OutputCallbackInfo,
+    observer: &mut CallbackGapObserver,
+) {
+    let channels_usize = usize::from(channels.max(1));
+    let expected_frames = data.len() / channels_usize;
+    let gap = observer.observe(info.timestamp().playback, expected_frames);
+    state.runtime.record_callback_gap(gap);
+    render_callback_converted(state, data, channels);
+}
+
+/// **音频回调健康读数的一行诊断文本**（UI 状态行/`--latency` 共用同一个纯函数）。
+///
+/// `xrun_count == 0` ⇒ 明确写"连续"；非零时写出次数与最大跳跃帧数，并在
+/// `sample_rate > 0` 时附带毫秒换算。⛔ 不把"后端错误计数"混进来（那是另一个读数）。
+#[must_use]
+pub fn audio_callback_health_line(stats: &EngineStats, sample_rate: u32) -> String {
+    if stats.xrun_count == 0 {
+        return "音频回调：连续（xrun 0）".to_owned();
+    }
+    if sample_rate == 0 {
+        return format!(
+            "音频回调：xrun {} 次 · 最大间隔 {} 帧",
+            stats.xrun_count, stats.max_gap_frames
+        );
+    }
+    let max_ms = stats.max_gap_frames as f64 * 1_000.0 / f64::from(sample_rate);
+    format!(
+        "音频回调：xrun {} 次 · 最大间隔 {} 帧（{max_ms:.1} ms）",
+        stats.xrun_count, stats.max_gap_frames
+    )
+}
+
 /// 以已装箱的 [`EngineRuntime`] 打开默认输出设备，避免在调用栈上按值搬运整份运行时
 /// （见 [`open_output`]）。
 ///
@@ -1284,10 +1414,17 @@ fn open_output_boxed_impl(
     );
     let stream = if let Some(converter) = converter {
         let mut state = ConvertedOutput::from_converter(*runtime, converter, channels);
+        let mut gap_observer = CallbackGapObserver::new(negotiated.sample_rate);
         device.build_output_stream::<f32, _, _>(
             stream_config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                render_callback_converted(&mut state, data, channels);
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                render_callback_converted_observed(
+                    &mut state,
+                    data,
+                    channels,
+                    info,
+                    &mut gap_observer,
+                );
             },
             move |error: cpal::Error| {
                 error_counter_converted.record(&error);
@@ -1295,10 +1432,11 @@ fn open_output_boxed_impl(
             Some(STREAM_OPEN_TIMEOUT),
         )?
     } else {
+        let mut gap_observer = CallbackGapObserver::new(negotiated.sample_rate);
         device.build_output_stream::<f32, _, _>(
             stream_config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                render_callback(&mut runtime, data, channels);
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                render_callback_observed(&mut runtime, data, channels, info, &mut gap_observer);
             },
             move |error: cpal::Error| {
                 error_counter.record(&error);
@@ -2735,6 +2873,70 @@ mod tests {
         assert!(
             matches!(error, DeviceError::NamedOutputDeviceUnavailable { ref name } if name == absent),
             "错误必须是点名的 NamedOutputDeviceUnavailable，实际 {error:?}"
+        );
+    }
+
+    /// **判据（T-FIX-238）**：相邻回调播放时间戳的跳跃换算成帧。
+    ///
+    /// 48 kHz、期望 480 帧：连续 10 ms ⇒ 0；晚到 30 ms ⇒ 960 帧；
+    /// 首回调/时钟回退/零期望 ⇒ 0（不报假 xrun）。
+    #[test]
+    fn callback_gap_frames_measures_only_real_timestamp_jumps() {
+        let base = cpal::StreamInstant::new(10, 0);
+        let on_time = base
+            .checked_add(Duration::from_millis(10))
+            .expect("10 ms 可表示");
+        let late = base
+            .checked_add(Duration::from_millis(30))
+            .expect("30 ms 可表示");
+        assert_eq!(
+            callback_gap_frames(None, on_time, 480, 48_000),
+            0,
+            "首个回调没有参照 ⇒ 不报 xrun"
+        );
+        assert_eq!(
+            callback_gap_frames(Some(base), on_time, 480, 48_000),
+            0,
+            "连续回调（10 ms = 480 帧）⇒ 0"
+        );
+        assert_eq!(
+            callback_gap_frames(Some(base), late, 480, 48_000),
+            960,
+            "30 ms = 1440 帧，减去期望 480 ⇒ 跳跃 960 帧"
+        );
+        assert_eq!(
+            callback_gap_frames(Some(on_time), base, 480, 48_000),
+            0,
+            "时间戳回退不是掉帧，不计数"
+        );
+        assert_eq!(
+            callback_gap_frames(Some(base), late, 0, 48_000),
+            0,
+            "期望帧数为 0 ⇒ 读数无效，不编数字"
+        );
+    }
+
+    /// **判据（T-FIX-238）**：诊断行在无 xrun / 有 xrun 两种状态下都说人话，
+    /// 且毫秒换算只在采样率有效时出现。
+    #[test]
+    fn callback_health_line_reports_xruns_with_a_millisecond_reading() {
+        let clean = EngineStats::default();
+        assert_eq!(
+            audio_callback_health_line(&clean, 48_000),
+            "音频回调：连续（xrun 0）"
+        );
+        let lagging = EngineStats {
+            xrun_count: 3,
+            max_gap_frames: 240,
+            ..EngineStats::default()
+        };
+        assert_eq!(
+            audio_callback_health_line(&lagging, 48_000),
+            "音频回调：xrun 3 次 · 最大间隔 240 帧（5.0 ms）"
+        );
+        assert_eq!(
+            audio_callback_health_line(&lagging, 0),
+            "音频回调：xrun 3 次 · 最大间隔 240 帧"
         );
     }
 }
