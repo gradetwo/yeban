@@ -324,11 +324,15 @@ export component AudioSettingsDialog inherits Rectangle {
             }
 
             // ------------------------------------------------------------ 状态行
+            // T-FIX-153：状态行文本由宿主拼出（设备名 + 采样率 + 声道 + 缓冲 +
+            // 名义时延 + 重采样提示），长设备名/错误会超过原来的 36px（2 行）被
+            // `clip` 裁掉。加高到 60px（约 4 行 10px 字），长状态与"未接线/错误"
+            // 都能完整读到；仍保留 `clip` 与 `word-wrap`，超出 4 行的极端串不越界。
             Rectangle {
                 x: Tokens.space-6;
                 y: 180px;
                 width: parent.width - 48px;
-                height: 36px;
+                height: 60px;
                 clip: true;
 
                 accessible-role: text;
@@ -348,19 +352,26 @@ export component AudioSettingsDialog inherits Rectangle {
             }
 
             // ------------------------------------------------------------ 输入电平
+            // T-FIX-153：标签与读数原来都在 y=228（同一行），读数是整宽右对齐，
+            // 长错误文本（如"输入不可用：<很长错误>"）会向左压到标签上造成重叠。
+            // 拆成两行：标签独占一行，读数另起一行左对齐并给足整宽（可 elide），
+            // 两者 y 相差一行高度，不再相交。
             UiText {
                 x: Tokens.space-6;
-                y: 228px;
-                width: 200px;
+                y: 246px;
+                width: parent.width - 48px;
                 height: 16px;
                 text: @tr("输入电平（面板打开期间）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                accessible-role: text;
+                accessible-id: "audio-input-level-label";
+                accessible-label: @tr("输入电平（面板打开期间）");
             }
 
             Rectangle {
                 x: Tokens.space-6;
-                y: 228px;
+                y: 264px;
                 width: parent.width - 48px;
                 height: 16px;
 
@@ -376,13 +387,14 @@ export component AudioSettingsDialog inherits Rectangle {
                     text: root.input-level-text;
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
-                    horizontal-alignment: right;
+                    horizontal-alignment: left;
+                    overflow: elide;
                 }
             }
 
             Rectangle {
                 x: Tokens.space-6;
-                y: 250px;
+                y: 284px;
                 width: parent.width - 48px;
                 height: 14px;
                 background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
@@ -401,9 +413,10 @@ export component AudioSettingsDialog inherits Rectangle {
             }
 
             // ------------------------------------------------------------ 测试与刷新
+            // T-FIX-153：为状态行/电平拆行让位，整组下移到 y=306（仍在面板内）。
             Rectangle {
                 x: Tokens.space-6;
-                y: 286px;
+                y: 306px;
                 width: 160px;
                 height: 32px;
                 background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
@@ -453,7 +466,7 @@ export component AudioSettingsDialog inherits Rectangle {
 
             Rectangle {
                 x: Tokens.space-6 + 176px;
-                y: 286px;
+                y: 306px;
                 width: 140px;
                 height: 32px;
                 background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
@@ -502,15 +515,21 @@ export component AudioSettingsDialog inherits Rectangle {
             }
 
             // ------------------------------------------------------------ 说明行
+            // T-FIX-153：原文案约 100 字，在 30px（2 行）里 word-wrap 首行就被
+            // 挤掉/裁断。下移到 y=352 并加高到 84px（约 5 行 10px 字），整段
+            // 说明能完整换行显示；352+84=436 < 面板底 472，不越界。
             UiText {
                 x: Tokens.space-6;
-                y: 336px;
+                y: 352px;
                 width: parent.width - 48px;
-                height: 30px;
+                height: 84px;
                 text: @tr("设备选择会存入设置，下次启动按所选设备打开；所选设备不在场时会响亮报错，不会静默改用默认设备。状态行中的缓冲毫秒为名义值（缓冲帧数 ÷ 采样率），非实测往返延迟。");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 wrap: word-wrap;
+                accessible-role: text;
+                accessible-id: "audio-settings-explainer";
+                accessible-label: @tr("音频设置说明");
             }
 
             // ------------------------------------------------------------ 输出清单（展开时）

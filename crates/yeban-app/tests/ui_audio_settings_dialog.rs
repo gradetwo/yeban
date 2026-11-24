@@ -6,7 +6,7 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（控件与注册表一致） | 面板 9 个静态语义 ID 全部在 `.slint` 里以声明的角色出现，且全部登记进元素注册表、类型一致、来源文件一致 |
+//! | ①（控件与注册表一致） | 面板 11 个静态语义 ID 全部在 `.slint` 里以声明的角色出现，且全部登记进元素注册表、类型一致、来源文件一致 |
 //! | ②（回调链完整） | 面板 5 条回调在组件里声明、在 `app.slint` 的实例化处接上 `MainWindow` 的同名回调、`MainWindow` 声明了它们、宿主 `wire_audio_settings` 注册了全部 `on_*` 落点 |
 //! | ③（入口真的存在） | 「设置」菜单有「音频...」项 → 命令 `open-audio-settings` → 宿主命令分发表有该臂 → `invoke_open_audio_settings`；`main.rs` 真的调用了 `wire_audio_settings` |
 //! | ④（焦点闭环五格） | 面板有 `focused-control` 推导（五格）、`focus-control` 表覆盖 0..=4、trap 里 `Tab` 轮转与 `Esc` 关闭都在 |
@@ -32,13 +32,15 @@ fn source(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("读 {} 失败: {error}", path.display()))
 }
 
-const DIALOG_IDS: [(&str, ElementKind); 9] = [
+const DIALOG_IDS: [(&str, ElementKind); 11] = [
     ("audio-settings-dialog", ElementKind::Region),
     ("audio-settings-panel", ElementKind::Region),
     ("audio-output-selector", ElementKind::Combobox),
     ("audio-input-selector", ElementKind::Combobox),
     ("audio-device-status", ElementKind::Text),
     ("audio-input-level-text", ElementKind::Text),
+    ("audio-input-level-label", ElementKind::Text),
+    ("audio-settings-explainer", ElementKind::Text),
     ("audio-test-tone-button", ElementKind::Button),
     ("audio-refresh-devices-button", ElementKind::Button),
     ("audio-settings-close-button", ElementKind::Button),

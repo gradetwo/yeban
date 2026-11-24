@@ -2642,6 +2642,22 @@ impl ElementRegistry {
             "输入电平读数（dB，面板打开期间由临时输入流喂）",
             false,
         );
+        // ⭐ `T-FIX-153`：标签与读数拆成两行（原来同一行长错误会重叠），
+        // 标签与说明行各给语义 ID 供运行时几何判据寻址。
+        registry.add(
+            "audio-input-level-label",
+            ElementKind::Text,
+            "dialogs/audio_settings_dialog.slint",
+            "输入电平标签（T-FIX-153：与读数分行，不再重叠）",
+            false,
+        );
+        registry.add(
+            "audio-settings-explainer",
+            ElementKind::Text,
+            "dialogs/audio_settings_dialog.slint",
+            "音频设置说明行（T-FIX-153：加高到 84px，长文案不再被裁）",
+            false,
+        );
         registry.add(
             "audio-test-tone-button",
             ElementKind::Button,
