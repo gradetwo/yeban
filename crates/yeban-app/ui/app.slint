@@ -1770,6 +1770,8 @@ export component MainWindow inherits Window {
                     scroll-x: root.roll-scroll-x * 1px;
                     selected-clip-ulid: root.selected-clip-ulid;
                     selected-clip-ulids: root.selected-clip-ulids;
+                    clip-drag-ulid: root.clip-drag-ulid;
+                    clip-drag-preview-dx: root.clip-drag-preview-dx;
                     timeline-block-selected: root.timeline-block-selected;
                     // T-FIX-110：把时间线可见宽报给根（本元素在 `if !console-maximized`
                     // 里面，条件元素里的 id 无法从根作用域引用 ⇒ 只能自下而上报）。
@@ -1793,7 +1795,14 @@ export component MainWindow inherits Window {
                     }
                     zoom-h-step(zoom-in) => { root.zoom-h-step(zoom-in); }
                     zoom-v-step(zoom-in) => { root.zoom-v-step(zoom-in); }
+                    // ⭐ T-FIX-234：片段手势（拖动 / 双击 / 空白新建）与两个草稿属性。
                     clip-select(clip-ulid) => { root.clip-select(clip-ulid); }
+                    clip-create() => { root.clip-create(); }
+                    clip-double-click(clip-ulid) => { root.clip-double-click(clip-ulid); }
+                    clip-drag-grab(clip-ulid, local-x) => { return root.clip-drag-grab(clip-ulid, local-x); }
+                    clip-drag-move(clip-ulid, local-x) => { root.clip-drag-move(clip-ulid, local-x); }
+                    clip-drag-release(clip-ulid, local-x) => { root.clip-drag-release(clip-ulid, local-x); }
+                    clip-drag-cancel() => { root.clip-drag-cancel(); }
                     clip-marquee-select(x1, y1, x2, y2, additive) => { root.clip-marquee-select(x1, y1, x2, y2, additive); }
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }

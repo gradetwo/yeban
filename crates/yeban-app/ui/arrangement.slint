@@ -122,6 +122,14 @@ export component ArrangementViewport inherits Rectangle {
     /// 与 `timeline-blocks` 同序同长的选中标志（宿主重算）；长度不一致时
     /// 块高亮回落到只认主选中（投影刚换、标志未跟上的那一帧不许误亮）。
     in property <[bool]> timeline-block-selected: [];
+    // ---- 剪辑拖动（T-FIX-234）：拖动期只写这两个草稿属性，松手才提交一次 Op ----
+    // clip-drag-ulid = 正在拖的摆放身份（空串 = 没有手势）；preview-dx = 宿主算好的
+    // 预览位移（逻辑像素，已吸附）。拖动面上的指针坐标系因此保持稳定（见 clip-…-body）。
+    in-out property <string> clip-drag-ulid: "";
+    in-out property <float> clip-drag-preview-dx: 0.0;
+    private property <bool> clip-dragging: false;
+    private property <length> clip-drag-origin-x: 0px;
+    private property <bool> clip-drag-moved: false;
 
     // ---- 自动化泳道（`T-FIX-227`：从死文件 `workspace/arrangement_view.slint` 搬进活视图）----
     //
@@ -242,6 +250,13 @@ export component ArrangementViewport inherits Rectangle {
     callback mixer-pan-reset(int);
     callback execute-action(string);
     callback clip-select(string);
+    // ⭐ T-FIX-234：活视图的片段手势（拖动 / 双击 / 空白处新建）。
+    callback clip-create();
+    callback clip-double-click(string);
+    callback clip-drag-grab(string, length) -> bool;
+    callback clip-drag-move(string, length);
+    callback clip-drag-release(string, length);
+    callback clip-drag-cancel();
     /// 框选收尾：矩形四边（x = **时间轴像素帧**，与 `blk.start_px` 同帧；
     /// y = Flickable 内容帧，与 `track-ys` 同帧；未归一化）+ 加选标志。
     /// 界面只做坐标帧换算，命中判定在宿主。
@@ -1608,6 +1623,8 @@ export component ArrangementViewport inherits Rectangle {
                             // 起点所在车道的 TouchArea 靠指针捕获继续收 move/up，
                             // 因此跨车道拖拽的坐标仍在本面局部帧里，换算用本行偏移。
                             TouchArea {
+                                // ⭐ T-FIX-234：空白车道双击 = 新建一个空 MIDI 片段（宿主 wire_clip_create）。
+                                double-clicked => { root.clip-create(); }
                                 pointer-event(event) => {
                                     if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                                         root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
@@ -1672,7 +1689,9 @@ export component ArrangementViewport inherits Rectangle {
                                 // 进可见区右段（滚动越深推得越远，双指左滑时内容反而右移）；
                                 // 短片段（起点在屏内）不触发，长工程单片段（《失语》88 小节）
                                 // 一滚就错位。现行公式下起点在屏内时补偿恒 0，行为与旧版一致。
-                                property <length> blk-raw-x: blk.start_px - root.scroll-x;
+                                // T-FIX-234：拖动期只有被拖的那一条加预览位移（宿主已吸附）。
+                                property <length> blk-raw-x: blk.start_px - root.scroll-x
+                                    + (blk.clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px);
                                 property <length> blk-vis-x: Math.max(blk-raw-x, 0px);
                                 property <length> blk-vis-r: Math.min(blk-raw-x + blk.width_px, root.width);
                                 if blk.track_id == trk.id && blk-vis-r > blk-vis-x : Rectangle {
@@ -1699,6 +1718,12 @@ export component ArrangementViewport inherits Rectangle {
                                     border-width: blk.clip_ulid != "" && (blk.clip_ulid == root.selected-clip-ulid || (root.timeline-block-selected.length == root.timeline-blocks.length && root.timeline-block-selected[blk_idx])) ? 2px : 0px;
                                     border-color: Tokens.skin-text-strong;
                                     clip: true;
+                                    accessible-role: list-item;
+                                    accessible-id: "clip-" + blk.clip_ulid + "-header";
+                                    accessible-label: @tr("剪辑 {}", blk.label);
+                                    accessible-item-selectable: true;
+                                    accessible-item-selected: blk.clip_ulid != "" && (blk.clip_ulid == root.selected-clip-ulid || (root.timeline-block-selected.length == root.timeline-blocks.length && root.timeline-block-selected[blk_idx]));
+                                    accessible-action-default => { root.clip-select(blk.clip_ulid); }
 
                                     VerticalLayout {
                                         // 内容层锚在片段的真实起点：块已被裁到视口内（x = vis-x），
@@ -1847,15 +1872,60 @@ export component ArrangementViewport inherits Rectangle {
                                     // 加的片段顶光/底影已撤销, 片段本体就是数据色
                                     // (轨道色 + alpha, 信息编码), 两套主题同形。
 
-                                    // ⭐ 点击片段 = 选中该**摆放**：卷帘作用域随 `clip-select` 切到它
-                                    // （⛔ 不再"所有轨道的全部音符混在一起"）。
-                                    TouchArea {
+                                    // ⭐ T-FIX-234：片段拖动面（语义 ID clip-<ulid>-body）。外层矩形随预览位移右移，
+                                    // 本体反向抵消 ⇒ 拖动面的**绝对几何不动**（mouse-x 的坐标系稳定，位移读数不会自我抵消）。
+                                    Rectangle {
+                                        x: blk.clip_ulid == root.clip-drag-ulid ? 0px - root.clip-drag-preview-dx * 1px : 0px;
+                                        y: 0px;
                                         width: parent.width;
                                         height: parent.height;
-                                        mouse-cursor: MouseCursor.pointer;
-                                        clicked => { root.clip-select(blk.clip_ulid); }
-                                        scroll-event(event) => {
-                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                        background: transparent;
+                                        accessible-role: region;
+                                        accessible-id: "clip-" + blk.clip_ulid + "-body";
+                                        accessible-label: @tr("剪辑拖动面 {}", blk.label);
+                                    
+                                        TouchArea {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            mouse-cursor: MouseCursor.pointer;
+                                    
+                                            pointer-event(event) => {
+                                                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                                    root.clip-drag-origin-x = self.mouse-x;
+                                                    root.clip-drag-moved = false;
+                                                    root.clip-dragging = root.clip-drag-grab(blk.clip_ulid, self.mouse-x);
+                                                } else if event.kind == PointerEventKind.up {
+                                                    if root.clip-dragging {
+                                                        root.clip-dragging = false;
+                                                        if root.clip-drag-moved {
+                                                            root.clip-drag-release(blk.clip_ulid, self.mouse-x);
+                                                        } else {
+                                                            root.clip-drag-cancel();
+                                                            root.clip-select(blk.clip_ulid);
+                                                        }
+                                                    }
+                                                    root.clip-drag-moved = false;
+                                                } else if event.kind == PointerEventKind.move {
+                                                    if !root.clip-drag-moved
+                                                        && ((self.mouse-x - root.clip-drag-origin-x) > 4px
+                                                            || (root.clip-drag-origin-x - self.mouse-x) > 4px) {
+                                                        root.clip-drag-moved = true;
+                                                    }
+                                                    if root.clip-dragging && root.clip-drag-moved {
+                                                        root.clip-drag-move(blk.clip_ulid, self.mouse-x);
+                                                    }
+                                                } else {
+                                                    root.clip-dragging = false;
+                                                    root.clip-drag-moved = false;
+                                                    root.clip-drag-cancel();
+                                                }
+                                            }
+                                    
+                                            double-clicked => { root.clip-double-click(blk.clip_ulid); }
+                                    
+                                            scroll-event(event) => {
+                                                root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                            }
                                         }
                                     }
                                 }
