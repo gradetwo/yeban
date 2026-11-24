@@ -770,4 +770,26 @@ fn probe_meter_leg_diff_localization_tmp() {
     }
     eprintln!("PROBE ybands(90px): {ybands:?}");
     eprintln!("PROBE xbands(120px): {xbands:?}");
+    // 高差异列（>20px 的 x 列）+ 顶行（y<90）逐行计数：区分竖线（播放头）与数字（时间码）。
+    let mut col_counts = [0usize; 1920];
+    let mut row_counts_top = [0usize; 90];
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y as usize * first.stride()) + (x as usize * 3);
+            if lhs[o..o + 3] != rhs[o..o + 3] {
+                col_counts[x as usize] += 1;
+                if y < 90 {
+                    row_counts_top[y as usize] += 1;
+                }
+            }
+        }
+    }
+    let hot_cols: Vec<(u32, usize)> = col_counts
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c > 20)
+        .map(|(x, c)| (x as u32, *c))
+        .collect();
+    eprintln!("PROBE hot_cols(>20): {hot_cols:?}");
+    eprintln!("PROBE top_rows: {row_counts_top:?}");
 }
