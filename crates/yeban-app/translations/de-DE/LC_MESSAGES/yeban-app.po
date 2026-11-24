@@ -770,6 +770,9 @@ msgstr "Gerät bypassen"
 msgid "从轨道设备链移除"
 msgstr "Aus der Gerätekette der Spur entfernen"
 
+msgid "实测曲线"
+msgstr "Gemessene Kurve"
+
 msgid "曲线示意 · 未连接参数"
 msgstr "Kurvenvorschau · Parameter nicht verbunden"
 

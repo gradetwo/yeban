@@ -844,12 +844,24 @@ export component UnifiedLowerDock inherits Rectangle {
                                 visible: idx < root.device-curve-svgs.length
                                     && root.device-curve-svgs[idx] != "";
                                 x: 0;
-                                y: 0;
+                                // T-FIX-178: keep the curve out of the label glyph box.
+                                // The "实测曲线" label sits at y=3px with an 8px font
+                                // (glyph box ~y=3..11px). Before this fix the curve
+                                // started at y=0, so at +12dB (viewbox y=16.7) it
+                                // rendered at ~7px, straight through the label
+                                // (24 curve pixels inside the glyph box at 1x).
+                                // The curve now starts at y=15px: even a clamped
+                                // viewbox y=0 point renders at 15px, its 1.6px stroke
+                                // topping at 14.2px, clear of the label. Height 27px
+                                // keeps the bottom at 42px, so the 4px clearance to
+                                // the ACTIVE/#N row (y=46px) from T-FIX-112 is kept.
+                                y: 15px;
                                 width: parent.width;
                                 // T-FIX-112: keep the curve above the ACTIVE/#N row
-                                // (y=46px). The well is 64px high; 42px leaves 4px
-                                // clearance for the 1.6px stroke.
-                                height: 42px;
+                                // (y=46px). The well is 64px high; the curve bottom
+                                // at 15px + 27px = 42px leaves 4px clearance for the
+                                // 1.6px stroke.
+                                height: 27px;
                                 viewbox-x: 0;
                                 viewbox-y: 0;
                                 viewbox-width: 420;

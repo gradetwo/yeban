@@ -770,6 +770,9 @@ msgstr "Bypass Device"
 msgid "从轨道设备链移除"
 msgstr "Remove from the Track's Device Chain"
 
+msgid "实测曲线"
+msgstr "Measured Curve"
+
 msgid "曲线示意 · 未连接参数"
 msgstr "Curve Preview · Parameter Not Connected"
 
