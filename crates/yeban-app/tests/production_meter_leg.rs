@@ -809,4 +809,21 @@ fn probe_meter_leg_diff_localization_tmp() {
             eprintln!("PROBE timecode/playhead node: {} bounds={:?}", n.id, n.bounds);
         }
     }
+    // 两条未认领的竖带（x 151..156、x 840..960）的 y 范围。
+    for (lo, hi) in [(145u32, 160u32), (840u32, 960u32)] {
+        let mut ymin = u32::MAX;
+        let mut ymax = 0u32;
+        let mut n = 0usize;
+        for y in 0..h {
+            for x in lo..hi {
+                let o = (y as usize * first.stride()) + (x as usize * 3);
+                if lhs[o..o + 3] != rhs[o..o + 3] {
+                    ymin = ymin.min(y);
+                    ymax = ymax.max(y);
+                    n += 1;
+                }
+            }
+        }
+        eprintln!("PROBE strip x {lo}..{hi}: n={n} y={ymin}..{ymax}");
+    }
 }
