@@ -495,6 +495,15 @@ fn probe_asset_pool_switch_tab1_tmp() {
         tree0.len(),
         tree0.contains("asset-pool-panel")
     );
+    // 对照：走 apply-dock-tab（生产里 X/P 键的另一条路）能不能切过去？
+    port0.ui().invoke_apply_dock_tab("mixer".into());
+    let tree0b = runtime_tree(port0.ui());
+    eprintln!(
+        "PROBE apply-dock-tab mixer: tree={} panel={} console-tab={}",
+        tree0b.len(),
+        tree0b.contains("asset-pool-panel"),
+        port0.ui().get_console_tab()
+    );
     let mixer_nodes: Vec<String> = tree0
         .iter()
         .map(|n| n.id.clone())
