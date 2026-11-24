@@ -1337,8 +1337,13 @@ mod apartment {
 
         /// **判据 1**：`bind()` 之后这条线程真的在 MTA 里。
         ///
-        /// 红对照：把 `backend::run` 里的 `apartment::Apartment::bind()` 去掉
-        /// （让 cpal 自己去初始化）⇒ 这条线程会被 cpal 定成 STA ⇒ 本判据变红。
+        /// 红对照（**实测咬合**，T-FIX-251 复验后改对）：把 `bind()` 里的
+        /// `COINIT_MULTITHREADED` 换成 `COINIT_APARTMENTTHREADED`（或删掉那次
+        /// `CoInitializeEx`）⇒ 这条测试线程的公寓不再是 MTA ⇒ 本判据变红；恢复后绿。
+        ///
+        /// ⛔ 不要拿"去掉 `backend::run` 里的 `Apartment::bind()`"当红对照：判据体跑在
+        /// **测试线程**上，那条改动只影响 `yeban-audio-backend` 线程，本判据照旧绿。
+        /// 251 首交回执 §2.4 正是这么写错的，本条注释按实测改正。
         ///
         /// ⚠ 判据体直接跑在测试线程上（每条 `#[test]` 本来就有独立 OS 线程）：
         /// 套一层 `thread::spawn` 会把 panic 消息吞成 `Any { .. }`，红的时候看不出原因。
@@ -1361,6 +1366,10 @@ mod apartment {
         /// 这一条挡的是"有人在这条线程上先用过剪贴板/拖放"：那种情况下 MTA 改不回来，
         /// 唯一正确的行为是把原因交给调用方（`DeviceError::OwnerThread`），而不是
         /// 假装成功、等到 `Activate` 再炸。
+        ///
+        /// 红对照（**实测咬合**）：让 `bind()` 的 `RPC_E_CHANGED_MODE` 分支返回
+        /// `Ok(Self { initialized: true })`（即吞掉这个错误）⇒ 本判据的
+        /// `Ok(_) => panic!` 命中 ⇒ 变红；恢复后绿。
         #[test]
         fn bind_reports_an_already_sta_thread() {
             // 先手把公寓定成 STA：`bind()` 随后必须失败（MTA 改不回来）。
