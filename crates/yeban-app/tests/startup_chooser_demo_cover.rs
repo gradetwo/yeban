@@ -195,7 +195,11 @@ fn demo_cover_live_window_screenshot() {
     // 《雨声太吵》包内自带的样本树（samples/bass、samples/drums）
     // 与工程同级：打开时引擎按工程相对路径摊平 SFZ，夹具目录里
     // 必须同样摆着这一份，链到素材原件即可（只读）。
+    #[cfg(unix)]
     std::os::unix::fs::symlink(assets.join("samples"), demos_fixture.join("samples"))
+        .expect("链演示夹具样本目录");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(assets.join("samples"), demos_fixture.join("samples"))
         .expect("链演示夹具样本目录");
     let demo_file = demos_fixture.join("yusheng.yeban");
     let demo_bytes_before = std::fs::read(&demo_file).expect("读源工程字节");
