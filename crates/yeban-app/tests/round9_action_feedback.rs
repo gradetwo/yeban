@@ -184,12 +184,12 @@ fn back_to_arrangement_button_is_no_longer_half_wired() {
     )
     .expect("读 host.rs");
     assert!(
-        aether_app.contains("callback toggle-ai-drawer("),
-        "新 UI 契约面必须声明 callback toggle-ai-drawer("
+        aether_app.contains("callback back-to-arrangement("),
+        "新 UI 契约面必须声明 callback back-to-arrangement("
     );
     assert!(
-        aether_host.contains("on_toggle_ai_drawer"),
-        "宿主接线层必须注册 on_toggle_ai_drawer"
+        aether_host.contains("on_back_to_arrangement"),
+        "宿主接线层必须注册 on_back_to_arrangement"
     );
 }
 
