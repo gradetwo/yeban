@@ -4,7 +4,9 @@
 //!
 //! 状态纪律：引导与课程状态以 `help_state` 的落盘文件为唯一事实源，
 //! 每次动作都是「读 → 改 → 写」一轮（文件极小，不做内存缓存，避免两份
-//! 状态漂移）；落盘失败只降级为本次会话不持久化，⛔ 不挡界面。
+//! 状态漂移）；落盘失败只降级为本次会话不持久化，⛔ 不挡界面——但失败
+//! 必须被用户看见（T-FIX-311）：写失败时按落点走 `report_notice` 错误级
+//! 常驻提示或课程反馈区，⛔ 不许只打 stderr 就当没发生。
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -200,7 +202,7 @@ pub fn apply_onboarding_step(ui: &MainWindow, index: usize) {
 pub fn onboarding_next(ui: &MainWindow) {
     let index = usize::try_from(ui.get_onboarding_step_index()).unwrap_or(0);
     if index + 1 >= tour_steps().len() {
-        update_state(|state| state.onboarding_finished = true);
+        update_state(ui, |state| state.onboarding_finished = true);
         ui.set_onboarding_open(false);
     } else {
         apply_onboarding_step(ui, index + 1);
@@ -222,14 +224,25 @@ pub fn onboarding_skip(ui: &MainWindow) {
 
 /// 「不再显示」：落盘 dismissed 并关层。
 pub fn onboarding_dismiss_forever(ui: &MainWindow) {
-    update_state(|state| state.onboarding_dismissed = true);
+    update_state(ui, |state| state.onboarding_dismissed = true);
     ui.set_onboarding_open(false);
 }
 
-fn update_state(edit: impl FnOnce(&mut HelpState)) {
+/// 落盘失败的可见文案（与 [`crate::host::report_notice`] 的错误级口径一致）：
+/// 本次已生效、下次启动可能回退——用户必须看见这句话，⛔ 不许只打 stderr。
+fn save_failure_message(what: &str, error: &help_state::HelpStateError) -> String {
+    format!("{what}未能保存：本次已生效，但下次启动可能回退（{error}）")
+}
+
+fn update_state(ui: &MainWindow, edit: impl FnOnce(&mut HelpState)) {
     let mut state = help_state::load();
     edit(&mut state);
-    let _ = help_state::save(&state);
+    // T-FIX-311：写失败走 report_notice 错误级常驻提示（引导层随即关闭，
+    // 课程反馈区看不见，只能走提示条 + toast）；本次仍按改后状态走。
+    if let Err(error) = help_state::save(&state) {
+        eprintln!("[yeban-app] 新手引导设置落盘失败（下次启动可能回退）: {error}");
+        crate::host::report_notice(ui, &save_failure_message("新手引导设置", &error), true);
+    }
 }
 
 // --------------------------------------------------------------------- 课程
@@ -275,8 +288,15 @@ pub fn start_lesson(ui: &MainWindow, port: &Rc<UndoPort>, lesson_id: &str) {
             current_step: 0,
         });
     }
-    let _ = help_state::save(&state);
-    ui.set_lesson_feedback(SharedString::from(""));
+    // T-FIX-311：写失败不静默——课程反馈区写明本次已生效、下次启动可能
+    // 回退；开课本身不失败（进行中课程按内存状态走）。
+    match help_state::save(&state) {
+        Ok(()) => ui.set_lesson_feedback(SharedString::from("")),
+        Err(error) => {
+            eprintln!("[yeban-app] 学习进度落盘失败（下次启动可能回退）: {error}");
+            ui.set_lesson_feedback(SharedString::from(save_failure_message("学习进度", &error)));
+        }
+    }
     refresh_lessons(ui, port);
 }
 
@@ -311,8 +331,18 @@ pub fn check_current_step(ui: &MainWindow, port: &Rc<UndoPort>) {
         } else if let Some(active) = state.active_lesson.as_mut() {
             active.current_step = next;
         }
-        let _ = help_state::save(&state);
-        ui.set_lesson_feedback(SharedString::from(""));
+        // T-FIX-311：写失败不静默——课程反馈区写明本次已生效、下次启动可能
+        // 回退；步已在内存里推进（判定过了），不因落盘失败回滚。
+        match help_state::save(&state) {
+            Ok(()) => ui.set_lesson_feedback(SharedString::from("")),
+            Err(error) => {
+                eprintln!("[yeban-app] 学习进度落盘失败（下次启动可能回退）: {error}");
+                ui.set_lesson_feedback(SharedString::from(save_failure_message(
+                    "学习进度",
+                    &error,
+                )));
+            }
+        }
     } else {
         ui.set_lesson_step_progress(SharedString::from(verdict.progress.as_str()));
         ui.set_lesson_feedback(SharedString::from(format!(
