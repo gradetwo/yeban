@@ -700,6 +700,10 @@ export component MainWindow inherits Window {
     // （见 `bridge::MACRO_MAPPING_NO_WRITE_PATH` 与判据 `macro_mapping_has_no_write_path`）。
     in-out property <[string]> macro-mapping-summaries: [];
     in-out property <bool> metronome-on: false;
+    // T-FIX-157：编曲视图跟随模式。false = 经典 Catch（播放头贴左缘）；
+    // true = Scroll in Play（播放头钉中央、逐跳平滑滚动）。宿主装配时从设置
+    // 读初值，tick 每跳同步到跟随状态机；切换由走带按钮翻转、宿主落盘。
+    in-out property <bool> scroll-in-play: false;
     in-out property <bool> mixer-drag-active: false;
     in-out property <string> module-clipping-warning: "";
     in-out property <string> module-import-losses: "";

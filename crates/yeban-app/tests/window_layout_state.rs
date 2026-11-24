@@ -115,6 +115,7 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
         debug_output: false,
         audio_output_device: None,
         audio_input_device: None,
+        scroll_in_play: false,
     })
     .expect("预置设置文件必须写成功");
 

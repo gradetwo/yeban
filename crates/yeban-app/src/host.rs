@@ -3588,6 +3588,9 @@ pub fn wire_audio_settings(
     port: Rc<UndoPort>,
 ) {
     let stored = crate::settings::load();
+    // T-FIX-157：编曲跟随模式的装配初值（与音频设备选择同批读出的本机设置）。
+    // ⛔ 不由 `apply_view` 写：它是播放偏好、不是工程投影，切换走命令分发表落盘。
+    ui.set_scroll_in_play(stored.scroll_in_play);
     let state = Rc::new(RefCell::new(AudioPanelState {
         output_names: vec![None],
         input_names: vec![None],
@@ -6707,6 +6710,43 @@ fn follow_scroll(
     None
 }
 
+// ── T-FIX-157：Logic「Scroll in Play」居中平滑跟随 ──────────────────────────
+//
+// 与经典 Catch（[`follow_scroll`]：播放头越过右缘才整页跳、落在左缘）不同，
+// Scroll in Play 把播放头**钉在可见区中央**，视图随播放**逐跳平滑滚动**：
+// 每一跳的新偏移 = 播放头位置 − 半个可视宽（夹到 ≥0，时间轴之前无内容）。
+//
+// 只在偏移**真的需要变化**时才返回 `Some`（差值 > [`FOLLOW_SCROLL_EPSILON`]），
+// 否则 `None` —— 这样播放头停在中央不动的跳不会触发 `apply_view`
+// （`tests/perf_draw_budget.rs` 钉住"不能每跳重写几十个属性"）。
+// 零/负/非有限视口与 NaN 播放头一律 `None`（布局未定 ⇒ 不跟）。
+fn follow_scroll_centered(
+    playhead_px: f32,
+    scroll_x: f32,
+    viewport_px: f32,
+    is_playing: bool,
+    engaged: bool,
+) -> Option<f32> {
+    if !is_playing || !engaged {
+        return None;
+    }
+    if !(viewport_px.is_finite() && viewport_px > 0.0) || !playhead_px.is_finite() {
+        return None;
+    }
+    let scroll_x = if scroll_x.is_finite() {
+        scroll_x.max(0.0)
+    } else {
+        0.0
+    };
+    // 播放头钉中央：新偏移 = 播放头 − 半视口，夹到 ≥0。
+    let target = (playhead_px - viewport_px / 2.0).max(0.0);
+    if (target - scroll_x).abs() > FOLLOW_SCROLL_EPSILON {
+        Some(target)
+    } else {
+        None
+    }
+}
+
 /// 播放跟进的**状态机**（`ProductionLoop` 的字段）——把"这一跳该不该跟"从 `tick` 里
 /// 拿出来，好让它不建窗口就能被测（判据见 `arrangement_follow_*`）。
 ///
@@ -6723,16 +6763,27 @@ struct ArrangementFollow {
     engaged: bool,
     written: Option<f32>,
     was_playing: bool,
+    /// T-FIX-157：`false` = 经典 Catch（[`follow_scroll`]，播放头贴左缘）；
+    /// `true` = Scroll in Play（[`follow_scroll_centered`]，播放头钉中央、平滑滚动）。
+    /// 两种模式共用同一套 `observe` 挂/脱语义（用户手动滚开一律脱开）。
+    centered: bool,
 }
 
 impl ArrangementFollow {
-    /// 装配态：还没播过 ⇒ 未挂、没写过偏移。
+    /// 装配态：还没播过 ⇒ 未挂、没写过偏移；默认经典 Catch（左缘）。
     const fn new() -> Self {
         Self {
             engaged: false,
             written: None,
             was_playing: false,
+            centered: false,
         }
+    }
+
+    /// 切换跟随模式（设置变化经宿主调用）。切换时**不**立刻改变偏移，
+    /// 下一跳按新模式决策；不重置 `engaged`/`written`（用户仍在播放中）。
+    fn set_centered(&mut self, centered: bool) {
+        self.centered = centered;
     }
 
     /// 一跳的**决策**：返回"这一跳允许跟进吗"。
@@ -7135,18 +7186,25 @@ impl ProductionLoop {
         // 变成常态，那正是 `tests/perf_draw_budget.rs` 钉住的东西。翻页一分钟才几次。
         let running = transport.state.is_running();
         let current = ui.get_roll_scroll_x();
-        if self.follow.observe(running, current)
-            && let Some(next) = follow_scroll(
-                ui.get_playhead_px(),
-                current,
-                ui.get_arrangement_timeline_px(),
-                running,
-                true,
-            )
-        {
-            let width = slint::ComponentHandle::window(ui).size().width as f32;
-            apply_view(ui, view, width, next);
-            self.follow.commit(next);
+        // T-FIX-157：MainWindow 的 `scroll-in-play` 是模式的唯一 UI 写态，
+        // 每跳同步到状态机（读一个 bool 成本极低）；装配初值与按钮翻转都写它。
+        self.follow.set_centered(ui.get_scroll_in_play());
+        if self.follow.observe(running, current) {
+            let centered = self.follow.centered;
+            let playhead = ui.get_playhead_px();
+            let viewport = ui.get_arrangement_timeline_px();
+            // T-FIX-157：按模式选落点 —— 经典 Catch（越界整页跳、播放头贴左缘）
+            // 或 Scroll in Play（播放头钉中央、逐跳平滑滚动）。
+            let next = if centered {
+                follow_scroll_centered(playhead, current, viewport, running, true)
+            } else {
+                follow_scroll(playhead, current, viewport, running, true)
+            };
+            if let Some(next) = next {
+                let width = slint::ComponentHandle::window(ui).size().width as f32;
+                apply_view(ui, view, width, next);
+                self.follow.commit(next);
+            }
         }
         // ⭐ `D-UI-29`：**节拍器镜面跟着这一跳换上的那一代快照**（与 `apply_transport`
         // 同一处、同一条"借外写界面"的纪律）。`None`（标记没变 / 发布失败）⇒ 一位不动。
@@ -21593,6 +21651,80 @@ mod tests {
         );
     }
 
+    // ── T-FIX-157：Scroll in Play 居中平滑跟随判据 ─────────────────────────
+
+    /// 播放头钉中央：新偏移 = 播放头 − 半视口（视口 1000 ⇒ 半视口 500）。
+    /// 播放头 700 ⇒ 目标偏移 200（播放头落在屏上 700−200=500px = 正中央）。
+    #[test]
+    fn scroll_in_play_pins_the_playhead_at_the_center() {
+        assert_eq!(
+            super::follow_scroll_centered(700.0, 0.0, 1000.0, true, true),
+            Some(200.0)
+        );
+        // 已经居中（偏移 200、播放头 700）⇒ 这一跳不动（避免每跳 apply_view）。
+        assert_eq!(
+            super::follow_scroll_centered(700.0, 200.0, 1000.0, true, true),
+            None
+        );
+        // 播放头前移到 701 ⇒ 目标 201，差 1px > eps ⇒ 平滑跟一小步。
+        assert_eq!(
+            super::follow_scroll_centered(701.0, 200.0, 1000.0, true, true),
+            Some(201.0)
+        );
+    }
+
+    /// 起播区（播放头 < 半视口）夹到 0 —— 时间轴之前没内容，不能滚成负数。
+    #[test]
+    fn scroll_in_play_clamps_at_zero_near_the_start() {
+        assert_eq!(
+            super::follow_scroll_centered(100.0, 500.0, 1000.0, true, true),
+            Some(0.0)
+        );
+        // 已在 0、播放头 100（可见区内在左半）⇒ 目标仍是 0 ⇒ 不动。
+        assert_eq!(
+            super::follow_scroll_centered(100.0, 0.0, 1000.0, true, true),
+            None
+        );
+    }
+
+    /// 与经典 Catch 同款：停止 / 用户脱开 / 零或坏视口一律不跟。
+    #[test]
+    fn scroll_in_play_respects_stop_user_and_bad_viewport() {
+        assert_eq!(
+            super::follow_scroll_centered(900.0, 0.0, 1000.0, false, true),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll_centered(900.0, 0.0, 1000.0, true, false),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll_centered(900.0, 0.0, 0.0, true, true),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll_centered(900.0, 0.0, -10.0, true, true),
+            None
+        );
+        assert_eq!(
+            super::follow_scroll_centered(f32::NAN, 0.0, 1000.0, true, true),
+            None
+        );
+    }
+
+    /// 模式切换只改 `centered`，不重置挂/脱状态（用户仍在播放中）。
+    #[test]
+    fn arrangement_follow_mode_switch_preserves_engagement() {
+        let mut follow = super::ArrangementFollow::new();
+        assert!(follow.observe(true, 0.0)); // 起播 ⇒ 挂上
+        assert!(!follow.centered); // 默认经典 Catch
+        follow.set_centered(true);
+        assert!(follow.centered);
+        assert!(follow.engaged, "切模式不许把已挂的 Catch 脱开");
+        follow.set_centered(false);
+        assert!(!follow.centered);
+    }
+
     #[test]
     fn advance_scroll_accumulates_and_clamps_at_zero() {
         // 判据: 累加生效, 且**不滚到时间轴之前**（负增量在 0 处停住, 不会变成负数）。
@@ -24390,6 +24522,21 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
             ui.invoke_key_action("c".into(), false, false, false, false);
         }
         "transport-metronome" => ui.invoke_toggle_metronome(),
+        // T-FIX-157：Scroll in Play 模式切换（播放头钉中央、逐跳平滑滚动）。
+        // 翻转 MainWindow 属性（tick 每跳同步到跟随状态机），并落盘持久化。
+        "transport-scroll-in-play" | "toggle-scroll-in-play" => {
+            let next = !ui.get_scroll_in_play();
+            ui.set_scroll_in_play(next);
+            crate::settings::save_scroll_in_play(next);
+            update_toast(
+                ui,
+                if next {
+                    "[走带] 滚动跟随：Scroll in Play（播放头居中）"
+                } else {
+                    "[走带] 滚动跟随：经典 Catch（播放头贴左缘）"
+                },
+            );
+        }
         // 预备拍开关（清单 P1-8）：走与 Ctrl+Alt+D 完全相同的链
         // （解析表 -> apply_action），不另写一份 toggle 逻辑
         // （Action::ToggleCountIn 的唯一落点在 apply_action）。

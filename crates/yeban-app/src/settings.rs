@@ -87,6 +87,10 @@ pub struct Settings {
     /// 用户选定的**输入**设备显示名（T-FIX-71）：与输出侧同款语义，
     /// `None` = 系统默认输入设备。
     pub audio_input_device: Option<String>,
+    /// T-FIX-157：编曲视图的跟随模式。`false`（默认）= Logic 经典 Catch
+    /// （播放头贴左缘、越界整页跳）；`true` = Scroll in Play（播放头钉中央、
+    /// 视图逐跳平滑滚动）。键缺失与 `false` 同义（默认行为不变）。
+    pub scroll_in_play: bool,
 }
 
 /// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
@@ -284,6 +288,11 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         // 每次启动都撞一遍"指定设备不在场"的响亮错误。
         audio_output_device: parse_audio_device_name(&value, "audio_output_device"),
         audio_input_device: parse_audio_device_name(&value, "audio_input_device"),
+        // T-FIX-157：键缺失 / 非布尔 ⇒ 默认经典 Catch（行为不变）。
+        scroll_in_play: value
+            .get("scroll_in_play")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -690,6 +699,9 @@ pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result
             serde_json::Value::String(name.clone()),
         );
     }
+    if settings.scroll_in_play {
+        object.insert("scroll_in_play".to_owned(), serde_json::json!(true));
+    }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
     let tmp = path.with_extension("json.tmp");
@@ -748,6 +760,17 @@ pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
     settings.audio_input_device = input.map(str::to_owned);
     if let Err(error) = save(&settings) {
         eprintln!("[yeban-app] 音频设备选择写回设置失败（下次启动仍走旧选择）: {error}");
+    }
+}
+
+/// 存下编曲视图跟随模式（T-FIX-157）：`true` = Scroll in Play（播放头钉中央），
+/// `false` = 经典 Catch（播放头贴左缘）。与 [`save_debug_output`] 同款契约：
+/// 先读出现有设置（保住其余键），写失败只打印，不把一次切换变失败。
+pub fn save_scroll_in_play(enabled: bool) {
+    let mut settings = load();
+    settings.scroll_in_play = enabled;
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 跟随模式写回设置失败（下次启动仍走旧值）: {error}");
     }
 }
 
@@ -950,6 +973,7 @@ mod tests {
             debug_output: false,
             audio_output_device: None,
             audio_input_device: None,
+            scroll_in_play: false,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -991,6 +1015,36 @@ mod tests {
         // 键形状坏（字符串而非布尔）⇒ 当作没开过，不连坐其它键。
         std::fs::write(&path, r#"{"version":1,"debug_output":"yes"}"#).expect("写坏形状");
         assert!(!load_from(&path).debug_output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-157：Scroll in Play 跟随模式持久化往返。开启落 `scroll_in_play`
+    /// 键、读回为真；默认（经典 Catch）不落键、读回为假；坏形状不连坐。
+    #[test]
+    fn scroll_in_play_roundtrip_through_a_temp_file() {
+        let dir = test_dir("scroll-in-play");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings {
+            scroll_in_play: true,
+            ..Settings::default()
+        };
+        save_to(&path, &settings).expect("临时目录写设置必须成功");
+        let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
+        assert!(
+            text.contains("\"scroll_in_play\": true"),
+            "开启时须落 scroll_in_play 键: {text}"
+        );
+        assert_eq!(load_from(&path), settings);
+        save_to(&path, &Settings::default()).expect("写默认设置");
+        let text = std::fs::read_to_string(&path).expect("读回文件");
+        assert!(
+            !text.contains("scroll_in_play"),
+            "默认（经典 Catch）不许写 scroll_in_play 键: {text}"
+        );
+        assert!(!load_from(&path).scroll_in_play);
+        std::fs::write(&path, r#"{"version":1,"scroll_in_play":"yes"}"#).expect("写坏形状");
+        assert!(!load_from(&path).scroll_in_play);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1115,6 +1169,7 @@ mod tests {
             debug_output: false,
             audio_output_device: None,
             audio_input_device: None,
+            scroll_in_play: false,
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -1358,6 +1413,7 @@ mod tests {
             debug_output: false,
             audio_output_device: None,
             audio_input_device: None,
+            scroll_in_play: false,
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。
