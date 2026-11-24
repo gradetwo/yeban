@@ -60,9 +60,9 @@
 //! | [`device_param`] | 设备参数落点表：三个器件族的字段枚举 ＋ 拼写表 ＋ 与器件同次的钳制（`read`/`store`/`sanitise`）| 从 `yeban_render::inserts` 下移（依赖方向 `render → engine → dsp`）|
 //! | [`drums`] | 4 音色鼓机（底鼓/军鼓/踩镲/拍手）的**合成配方** + 定容槽位池 + 确定性窃取 + 3 ms 指数淡出 + 闭镲 choke 开镲。⚠ **不是** 808/909 电路建模（未实现清单见该模块 §0.1） | 新写 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001] |
 //! | [`vocal_chunk`] | 静音感知分块：只在静音段内落刀的渲染 chunk 边界规划 + 分块渲染（硬切／lead-in 交叠）+ 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P1-2] |
-//! | [`vocal_key_detect`] | K-S 调式检测：F0 轨迹 → 调式（根音＋大／小）与置信度（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P2-2] |
+//! | `vocal_key_detect`（仅测试编译） | K-S 调式检测：F0 轨迹 → 调式（根音＋大／小）与置信度（**离线限定**）。⛔ **产品构建不编译、零调用点**（T-FIX-258） | 新写 [vocaledit Phase 2 P2-2] |
 //! | [`vocal_per_note_eq`] | 逐音符 EQ 粒度：指定音符区间内单峰值频段增益，区间外逐位不变（**离线限定**） | 新写 [vocaledit Phase 2 P2-1] |
-//! | [`vocal_pitch_route`] | 75 音分混合移调路由：DSP 腿（P1-1 移调器）＋神经腿（后端 trait，未配置大声失败）＋逐 chunk 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P0-1] |
+//! | `vocal_pitch_route`（仅测试编译） | 75 音分混合移调路由：DSP 腿（P1-1 移调器）＋神经腿（后端 trait，未配置大声失败）＋逐 chunk 收据（**离线限定**）。⛔ **产品构建不编译、零调用点**；`ADR-0070` D1 明写「不接它的神经后端 trait、不进渲染链」（T-FIX-258） | 新写 [vocaledit Phase 2 P0-1] |
 //! | [`vocal_pitch_shift`] | 周期重采样移调器：逐样本类 PSOLA 修音 + snap／valid 开关 + 逐 chunk 收据（**离线限定**，不进实时回调） | 新写 [vocaledit Phase 2 P1-1] |
 //! | [`vocal_refine`] | 本地声学边界精修器：±80 ms 窗内 VOP/起音/收音精修 + F0/HNR/置信度 + 换气分段 + ad-lib 检出（**离线限定**） | 新写 [ADR-0067] |
 //! | [`vocal_timemap`] | 连续流式 timemap 人声对齐：单实例拉伸渲染 + VOP 锚定映射构造 + 门检 verdict（**离线限定**，不进实时回调） | 新写 [ADR-0067] |
@@ -114,9 +114,13 @@ pub mod song_overview;
 pub mod song_overview_report;
 pub mod tape;
 pub mod vocal_chunk;
-pub mod vocal_key_detect;
+// ⛔ T-FIX-258：本模块全仓零调用点，且 `ADR-0070` D1 明写不接它的神经后端 trait。
+// 产品构建（含 release）**不编译**它；判据仍随 `cargo test -p yeban-dsp --lib` 跑。
+#[cfg(test)]
+mod vocal_key_detect;
 pub mod vocal_per_note_eq;
-pub mod vocal_pitch_route;
+#[cfg(test)]
+mod vocal_pitch_route;
 pub mod vocal_pitch_shift;
 pub mod vocal_refine;
 pub mod vocal_timemap;

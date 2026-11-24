@@ -229,7 +229,7 @@ pub enum ChunkRoute {
     Passthrough,
     /// 本 chunk 走了神经声码器重合成（P0-1 路由：块内任一有声帧
     /// |偏差| ≥ 路由阈值）。移调器自身永不产生本路由，只由
-    /// [`crate::vocal_pitch_route::HybridPitchRouter`] 标记。
+    /// `HybridPitchRouter` 标记（该模块仅测试编译，见 T-FIX-258）。
     NeuralVocoder,
 }
 
@@ -245,7 +245,7 @@ pub struct ChunkReceipt {
     /// 本 chunk 的最大 |偏差|（音分）：移调器直用时等于
     /// `|cents_applied|`；P0-1 路由层覆写为块内有声帧实测的最大
     /// |偏差|（路由决策的依据，见
-    /// [`crate::vocal_pitch_route::chunk_needs_vocoder`]）。
+    /// `chunk_needs_vocoder`；该模块仅测试编译，见 T-FIX-258）。
     pub max_abs_deviation_cents: f32,
     /// 检测器 valid 标志（调用方传入的浊音判定）。
     pub voiced: bool,
