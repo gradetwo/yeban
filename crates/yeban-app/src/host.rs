@@ -7945,6 +7945,28 @@ pub fn record_count_in(
 /// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
 ///
 /// ```text
+thread_local! {
+    // 本线程录音器（T-FIX-391）：wire_record_at 的局部 Rc 在这里留一份借阅点，
+    // 工程切换 / 退出路径才能判断"是否正在录音"。⛔ 不持有第二份录音状态。
+    static RECORDER_FOR_SWITCH: RefCell<Option<Rc<RefCell<crate::record_wav::Recorder>>>> =
+        const { RefCell::new(None) };
+}
+
+/// ⭐ 当前是否真的在录音（读录音器本身，⛔ 不读界面属性）。
+pub fn recording_in_progress() -> bool {
+    RECORDER_FOR_SWITCH.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|recorder| {
+                recorder
+                    .try_borrow()
+                    .ok()
+                    .map(|recorder| recorder.is_recording())
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// 按录音键 ──▶ Recorder::start_with_factory(plan.path, plan.options, factory, 预备拍)
 ///                     │                                     │
 ///                     │  ① 工厂开不了 ⇒ RecordError::Source ─┘（⭐ 响亮失败：无文件、不置 recording）
@@ -8032,6 +8054,7 @@ pub fn wire_record_at(
     playhead_tick: Rc<dyn Fn() -> u64>,
 ) -> Rc<RefCell<crate::record_wav::Recorder>> {
     let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
+    RECORDER_FOR_SWITCH.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&recorder)));
     // ⭐ 闭包要持有句柄、函数末尾还要把它**原样**交回去 ⇒ 先克隆（`Rc` 计数 +1）。
     let recorder_cell = Rc::clone(&recorder);
     // ⭐ 闭包要读工程算预备拍 ⇒ 先克隆（`Rc` 计数 +1）。
@@ -9972,6 +9995,22 @@ impl PortOpenProject {
         archive: &yeban_model::container::ProjectArchive,
         project_dir: Option<&std::path::Path>,
     ) -> Result<(), String> {
+        // ⭐ T-FIX-391：录音进行中**拦住**工程切换（口径 b）。
+        // 录音器由 wire_record_at 的局部 Rc 持有，旧 take 的落点绑定当前
+        // UndoPort/工程；一旦换会话，停录会把旧 take 落到新工程。选口径 b：
+        // 不静默停录（不替用户决定 take 归属），也不换工程，旧工程与录音
+        // 状态都保持不变；用户先按录音键停录（现有 stop→land 路径落到旧工程）
+        // 再切换。界面 recording 与录音器真实状态因此不可能分叉。
+        if crate::host::recording_in_progress() {
+            let message = "录音进行中，已拒绝切换工程（当前工程与录音都未动）。请先按录音键停录，让这条 take 落到当前工程后再打开/新建工程。";
+            ui.set_module_status(message.into());
+            ui.set_module_status_text(message.into());
+            ui.set_module_status_succeeded(false);
+            ui.set_toast_message(message.into());
+            ui.set_toast_is_error(true);
+            ui.set_show_floating_toast(true);
+            return Err(message.to_owned());
+        }
         let project = archive.project.clone();
         // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
         //    用的是与 ④ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
@@ -26433,6 +26472,11 @@ pub fn wire_aether_actions(
                     // 是唯一正确的出口；`hide()` 先做是为了把"点菜单到进程结束"之间
                     // 的空窗时间压到最短（视觉上不会留一个白框）。
                     "app-quit" => {
+                        // ⭐ T-FIX-391：退出前若有录音，先走现有 stop→land 路径把
+                        // take 落进当前工程；⛔ 不让未完成录音随进程消失。
+                        if recording_in_progress() {
+                            ui.invoke_record_wav();
+                        }
                         // `hide()` 返回 `Result`：退出路径上藏不住窗口不算致命，
                         // 但也不能 `.unwrap()`（窗口已被系统收走时会 panic）。
                         let _ = ui.window().hide();
