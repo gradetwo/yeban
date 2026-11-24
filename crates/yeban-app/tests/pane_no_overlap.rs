@@ -2783,6 +2783,7 @@ fn check_master_device_truncation(width: u32, height: u32, device_count: usize) 
         model_devices, device_count,
         "[#190 主总线容量 {device_count} 台 {width}x{height}] 夹具的设备数必须是 {device_count}"
     );
+    let registry = registry_for(&project);
     let live = live_window_for(project, (width, height), 2);
     let tree = runtime_tree(live.ui());
     assert_eq!(
@@ -2790,7 +2791,6 @@ fn check_master_device_truncation(width: u32, height: u32, device_count: usize) 
         device_count,
         "[#190 主总线容量 {device_count} 台 {width}x{height}] 注入的设备数必须仍是 {device_count}（⛔ 显示层不许改模型）"
     );
-    let registry = registry_for(&project);
     assert!(
         tree.find_by_id("master-device-rack").is_none(),
         "[#190 主总线容量 {device_count} 台 {width}x{height}] 活树里不许再有 `master-device-rack`"
