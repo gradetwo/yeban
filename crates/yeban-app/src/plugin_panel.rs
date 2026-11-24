@@ -263,6 +263,12 @@ impl AraRegistry {
         self.sessions.keys().cloned().collect()
     }
 
+    /// ⭐ 清空全部会话（T-FIX-349 的工程边界；与 MCP 的 `ara_sessions.clear()` 同义）。
+    /// 旧 sessionId 从此不再存在 ⇒ 查询/渲染都会明确失败，⛔ 不跨工程复用。
+    pub fn clear(&mut self) {
+        self.sessions.clear();
+    }
+
     /// 从 registry 取出一个会话（渲染后台线程移动用）。
     #[must_use]
     pub fn take(&mut self, id: &str) -> Option<AraSession> {

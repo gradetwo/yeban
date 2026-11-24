@@ -9740,6 +9740,9 @@ impl PortOpenProject {
             archive.assets.clone(),
             now_ms(),
         )?;
+        // ⭐ T-FIX-349：工程边界清 ARA 会话（与 MCP `reset_history` 同义）。
+        // 打开 / 新建 / 模板副本都走本函数 ⇒ 只有这一处清会话，⛔ 不另起生命周期。
+        reset_plugin_panel_for_project_switch(ui);
         // ③b ⭐ T-FIX-193：换工程必须**重置卷帘取景键**。键里只有 `track:{id}` /
         //     `clip:{id}`（见 `roll_scope_key_and_range`），而 demo 与仓库夹具共用同一批
         //     `01J8ZQ…` 身份序（《雨声太吵》贝斯轨 = `filled_project` 首轨）⇒ 不重置就会
@@ -27508,19 +27511,33 @@ struct AraRowState {
 
 enum AraRenderMessage {
     Done {
+        generation: u64,
         id: String,
         session: yeban_plugin_host::AraSession,
         summary: crate::plugin_panel::AraRenderSummary,
     },
     Failed {
+        generation: u64,
         id: String,
         session: yeban_plugin_host::AraSession,
         error: String,
     },
 }
 
+impl AraRenderMessage {
+    /// 发起渲染时的工程代际（T-FIX-349）。换工程后旧代际的消息一律作废。
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Done { generation, .. } | Self::Failed { generation, .. } => *generation,
+        }
+    }
+}
+
 #[derive(Default)]
 struct PluginPanelState {
+    /// ⭐ 工程代际（T-FIX-349）：打开 / 新建工程时 +1；ARA 会话与在飞渲染都绑定
+    /// 这个代际，旧代际的 sessionId / 回调结果不得进入新工程。
+    generation: u64,
     rows: Vec<crate::plugin_panel::PluginRow>,
     selected: Option<usize>,
     scan_rx: Option<std::sync::mpsc::Receiver<crate::plugin_panel::ScanReport>>,
@@ -27528,6 +27545,42 @@ struct PluginPanelState {
     ara_rows: Vec<AraRowState>,
     selected_ara: Option<usize>,
     render_rx: Option<std::sync::mpsc::Receiver<AraRenderMessage>>,
+}
+
+thread_local! {
+    /// 本线程最后一个插件 / ARA 面板状态（生产单窗口；判据每线程一个）。
+    static PLUGIN_PANEL_STATE: RefCell<Option<Rc<RefCell<PluginPanelState>>>> =
+        const { RefCell::new(None) };
+}
+
+/// ⭐ **工程边界：作废全部 ARA 会话**（T-FIX-349）。
+///
+/// open_archive_runtime 在换会话成功后调用（打开 / 新建 / 模板副本都走那里）：
+/// 代际 +1，清空 ara / ara_rows / selected_ara，丢弃在飞渲染的接收端，并把界面
+/// 读数复位。与 MCP Domain::reset_history 的 ara_sessions.clear() +
+/// ara_next_id = 1 是同一条"工程边界清会话"语义。
+///
+/// 旧 sessionId 清空后不再存在于 registry ⇒ 查询/渲染都找不到；在飞渲染的回调
+/// 带旧代际，drain 时直接丢弃，⛔ 不会把旧工程会话 restore 回新工程。
+pub fn reset_plugin_panel_for_project_switch(ui: &MainWindow) {
+    let Some(state) = PLUGIN_PANEL_STATE.with(|slot| slot.borrow().clone()) else {
+        return;
+    };
+    {
+        let mut state_borrow = state.borrow_mut();
+        state_borrow.generation = state_borrow.generation.wrapping_add(1);
+        state_borrow.ara.clear();
+        state_borrow.ara_rows.clear();
+        state_borrow.selected_ara = None;
+        state_borrow.render_rx = None;
+    }
+    let empty: Vec<crate::ui::AraRowData> = Vec::new();
+    ui.set_ara_rows(ModelRc::new(VecModel::from(empty)));
+    ui.set_ara_selected_row(-1);
+    ui.set_ara_status("".into());
+    ui.set_ara_query_result("".into());
+    ui.set_ara_result("".into());
+    ui.set_ara_progress(0.0);
 }
 
 fn plugin_ui_rows(rows: &[crate::plugin_panel::PluginRow]) -> Vec<crate::ui::PluginRowData> {
@@ -27609,6 +27662,7 @@ fn ara_state_from_query(query: &str) -> String {
 pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
     let weak = ui.as_weak();
     let state = Rc::new(RefCell::new(PluginPanelState::default()));
+    PLUGIN_PANEL_STATE.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&state)));
 
     ui.on_open_plugin_panel({
         let weak = weak.clone();
@@ -28004,6 +28058,8 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 ui.set_ara_status("`outPath` 是必填实参".into());
                 return;
             }
+            // ⭐ T-FIX-349：渲染消息绑发起时的工程代际；换工程后旧消息作废。
+            let generation = state.borrow().generation;
             let (tx, rx) = std::sync::mpsc::channel();
             state.borrow_mut().render_rx = Some(rx);
             ui.set_ara_progress(0.05);
@@ -28020,11 +28076,13 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                     block_frames,
                 ) {
                     Ok(summary) => AraRenderMessage::Done {
+                        generation,
                         id: id_for_worker,
                         session,
                         summary,
                     },
                     Err(error) => AraRenderMessage::Failed {
+                        generation,
                         id: id_for_worker,
                         session,
                         error,
@@ -28062,11 +28120,18 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                     }
                 }
             };
+            // ⭐ T-FIX-349：代际不符 ⇒ 结果属于已关闭工程，直接丢弃（⛔ restore）。
+            if let Some(Ok(message)) = &message
+                && message.generation() != state.borrow().generation
+            {
+                return;
+            }
             match message {
                 Some(Ok(AraRenderMessage::Done {
                     id,
                     session,
                     summary,
+                    ..
                 })) => {
                     let mut state_borrow = state.borrow_mut();
                     state_borrow.ara.restore(id, session);
@@ -28102,7 +28167,9 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                         .into(),
                     );
                 }
-                Some(Ok(AraRenderMessage::Failed { id, session, error })) => {
+                Some(Ok(AraRenderMessage::Failed {
+                    id, session, error, ..
+                })) => {
                     let mut state_borrow = state.borrow_mut();
                     state_borrow.ara.restore(id, session);
                     if let Some(index) = state_borrow.selected_ara
