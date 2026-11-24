@@ -9711,6 +9711,13 @@ pub fn wire_save_with_engine(
                 .borrow_mut()
                 .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
         }
+        // ⭐ T-FIX-208：**只有落盘成功**（Saved）才把保存点前移到当前头。
+        // 失败 / 取消绝不动它 —— 否则"存失败却被当成已存"会把未保存改动静默丢掉。
+        // 头从活端口现读（与保存读的是同一个会话）；没有活端口时记 None（空基线）。
+        if matches!(outcome, crate::save_action::SaveOutcome::Saved { .. }) {
+            let head = live_port.as_ref().and_then(|live| live.display().head);
+            crate::dirty_guard::mark_saved(head);
+        }
     });
 
     // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：界面上**没有按钮**，
@@ -26832,11 +26839,21 @@ pub fn wire_aether_actions(
                     // 是唯一正确的出口；`hide()` 先做是为了把"点菜单到进程结束"之间
                     // 的空窗时间压到最短（视觉上不会留一个白框）。
                     "app-quit" => {
-                        // `hide()` 返回 `Result`：退出路径上藏不住窗口不算致命，
-                        // 但也不能 `.unwrap()`（窗口已被系统收走时会 panic）。
-                        let _ = ui.window().hide();
-                        if let Err(err) = slint::quit_event_loop() {
-                            ui.set_toast_message(format!("[退出] 事件循环未退出：{err}").into());
+                        // ⭐ T-FIX-208：有未保存改动先拦一下，弹三选框让用户选
+                        // 「保存并退出 / 直接退出 / 取消」，⛔ 不再一键丢掉全部编辑。
+                        // 判据走 crate::dirty_guard —— 与保存点同一个真源（head 指针）。
+                        // 未安装保存点的判据装配里 current_is_dirty 恒 false ⇒ 逐位沿用旧行为。
+                        if crate::dirty_guard::current_is_dirty(port.display().head) {
+                            ui.set_quit_confirm_open(true);
+                        } else {
+                            // `hide()` 返回 `Result`：退出路径上藏不住窗口不算致命，
+                            // 但也不能 `.unwrap()`（窗口已被系统收走时会 panic）。
+                            let _ = ui.window().hide();
+                            if let Err(err) = slint::quit_event_loop() {
+                                ui.set_toast_message(
+                                    format!("[退出] 事件循环未退出：{err}").into(),
+                                );
+                            }
                         }
                     }
                     // ⭐ 帮助菜单四入口（line/onboarding-help）：落点全在
@@ -29049,6 +29066,116 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             }
         }
     });
+}
+
+// ===========================================================================
+// ⭐ T-FIX-208：退出 / 关窗的「未保存改动」保护（数据丢失级）
+// ===========================================================================
+//
+// ## 这一格补的是什么
+//
+// 「退出 Yeban」与窗口关闭按钮此前都直接 `quit_event_loop()` / 关窗，
+// 全仓没有任何工程脏标记 ⇒ 单次误按即可丢掉全部未保存编辑。打开工程那一路
+// 有 `saveFirst = true` 保护，退出路径却没有任何等价物 —— 本函数补的正是
+// 这条不对称。
+//
+// ## 判据来自哪里（⛔ 不新造第二份状态）
+//
+// 「脏不脏」由 `crate::dirty_guard` 用**提交头指针**比对判定：保存成功那一刻
+// 记下 `saved_head`，此后 `display().head != saved_head` 即脏。撤销回到保存点
+// 头指针相同 ⇒ 自动不脏（这是任何"另设 dirty=true 布尔"都做不到的）。
+// 保存成功时的记账在 `wire_save_with_engine` 的 `Saved` 分支里。
+//
+// ## 三条出口，全部复用既有实现
+//
+// - 保存并退出：走**同一个** `invoke_save_project()`（与 `save_first_through_the_existing_entry`
+//   同款），成功后记账 + 退出；失败留在框里（⛔ 不假装成功）。
+// - 直接退出：沿用 app-quit 的原出口（`hide()` + `slint::quit_event_loop()`）。
+// - 取消：只关框，工程一位不动。
+//
+// ## 未安装时零干扰
+//
+// 判据 / 无头装配若不调本函数，`dirty_guard` 的线程槽为空，`current_is_dirty`
+// 恒 false ⇒ app-quit 与窗口关闭行为与改动前逐位一致（既有判据不受影响）。
+///
+/// 装配退出保护的保存点与三选出口（详见上方模块级说明）。
+pub fn wire_quit_guard(ui: &MainWindow, port: &Rc<UndoPort>) {
+    // 保存点初值 = 装配这一刻的头：从文件打开的工程此刻就是"已保存"态，
+    // 新工程 / 无工程 head 为 None（空基线）—— 两者都不该在启动瞬间就弹框。
+    let saved = Rc::new(crate::dirty_guard::SavedHead::new());
+    saved.mark_saved(port.display().head);
+    crate::dirty_guard::install(Rc::clone(&saved));
+
+    let weak = ui.as_weak();
+
+    // 真正退出：沿用 app-quit 的唯一出口（hide + quit_event_loop）。
+    let quit_now = move || {
+        let _ = slint::quit_event_loop();
+    };
+
+    // ① 保存并退出：复用既有保存入口，成功才退。
+    {
+        let w = weak.clone();
+        let exit = quit_now;
+        ui.on_quit_save_and_exit(move || {
+            let Some(ui) = w.upgrade() else { return };
+            // 与 save_first 同款：先清读数 → 触发那一个保存回调 → 读结果。
+            // 保存回调内部（wire_save_with_engine）在 Saved 分支已 mark_saved。
+            ui.set_save_succeeded(false);
+            ui.set_save_status(slint::SharedString::new());
+            ui.invoke_save_project();
+            if ui.get_save_succeeded() {
+                ui.set_quit_confirm_open(false);
+                let _ = ui.window().hide();
+                exit();
+            } else {
+                // 保存失败 / 没落盘：留在框里，响亮给出下一步，⛔ 不假装退出成功。
+                let status = ui.get_save_status().to_string();
+                ui.set_save_status(
+                    format!("{status} · 下一步：先关掉占用工程文件的程序再试，或选「直接退出（放弃改动）」").into(),
+                );
+            }
+        });
+    }
+
+    // ② 直接退出（放弃改动）：关框 + 走唯一出口。
+    {
+        let w = weak.clone();
+        let exit = quit_now;
+        ui.on_quit_discard_and_exit(move || {
+            let Some(ui) = w.upgrade() else { return };
+            ui.set_quit_confirm_open(false);
+            let _ = ui.window().hide();
+            exit();
+        });
+    }
+
+    // ③ 取消：只关框，工程一位不动。
+    {
+        let w = weak.clone();
+        ui.on_quit_cancel(move || {
+            if let Some(ui) = w.upgrade() {
+                ui.set_quit_confirm_open(false);
+            }
+        });
+    }
+
+    // ④ 窗口关闭按钮：dirty 时拦下（KeepWindowShown + 弹框），干净时放行。
+    //    on_close_requested 必须同步返回，故这里只做"判断 + 弹框"，真正的
+    //    退出在三选 callback 里完成（与菜单 app-quit 同一组出口）。
+    {
+        let w = weak.clone();
+        let p = Rc::clone(port);
+        ui.window().on_close_requested(move || {
+            if let Some(ui) = w.upgrade()
+                && crate::dirty_guard::current_is_dirty(p.display().head)
+            {
+                ui.set_quit_confirm_open(true);
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
 }
 
 #[cfg(test)]
