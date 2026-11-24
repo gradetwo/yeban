@@ -214,6 +214,10 @@ fn the_asset_pool_panel_is_declared_and_addressable() {
 
     // ---- 运行时树：Tab 0（默认帧）里没有它；Tab 1 里有它且可寻址 ----
     let port = live_window(&view, 0);
+    // ⭐ T-FIX-356：先钉语言。`build_main_window_with_console_tab` 不走启动路径的
+    // `apply_language`，Slint 按系统 locale 选词表（盒子是英文系统，首帧就是英文）⇒
+    // 中文逐字断言必须先把语言钉成中文（与 `pane_no_overlap.rs` 同一条纪律）。
+    host::apply_language(port.ui(), yeban_app::cli::Language::ZhCn);
     let tab0 = runtime_tree(port.ui());
     report_line(&format!(
         "[#133 ①] Tab 0 运行时树 {} 条；含 asset-pool-panel = {}",
@@ -296,6 +300,7 @@ fn an_empty_pool_shows_the_empty_state_and_zero_rows() {
     assert_eq!(view.asset_pool.len(), 0, "空池必须投影成空 Vec");
 
     let port = live_window(&view, 1);
+    host::apply_language(port.ui(), yeban_app::cli::Language::ZhCn);
     assert!(
         model_rows(port.ui()).is_empty(),
         "界面上的 `asset-pool-names` 必须为空"
@@ -371,6 +376,7 @@ fn a_recorded_clip_appears_in_the_panel_with_its_asset_prefix() {
     );
 
     let port = live_window(&view, 1);
+    host::apply_language(port.ui(), yeban_app::cli::Language::ZhCn);
     assert_eq!(
         model_rows(port.ui()),
         vec![row.name.clone()],
@@ -427,6 +433,7 @@ fn the_row_count_follows_the_clip_pool_instead_of_a_hardcoded_number() {
 
     // 同一窗口先注入 2 条的投影，再注入 1 条的投影（走的是**唯一**注入实现 `apply_view`）。
     let port = live_window(&view_two, 1);
+    host::apply_language(port.ui(), yeban_app::cli::Language::ZhCn);
     assert_eq!(model_rows(port.ui()).len(), 2);
     let tree_two = runtime_tree(port.ui());
     assert_eq!(tree_two.with_prefix("asset-pool-row-").count(), 2);
