@@ -335,6 +335,11 @@ export component MainWindow inherits Window {
     callback dock-tab-selected(string);
     callback zone-toggle(string);
     callback command-execute(string);
+    // T-FIX-208 退出保护三选（接线 host::wire_quit_guard）：
+    // 保存并退出 / 直接退出（放弃改动）/ 取消（回到工程）。
+    callback quit-save-and-exit();
+    callback quit-discard-and-exit();
+    callback quit-cancel();
     callback normalize-track-heights();
     callback monitor-switch(string);
     callback device-param-changed(string, string, float);
@@ -781,6 +786,9 @@ export component MainWindow inherits Window {
     in-out property <string> sample-library-status: "";
     in-out property <string> save-status: "";
     in-out property <bool> save-succeeded: false;
+    // T-FIX-208：退出保护三选框（有未保存改动时拦「退出 / 关窗」）。
+    // 唯一写者是宿主（host::wire_quit_guard）：dirty 置 true，三选后复位 false。
+    in-out property <bool> quit-confirm-open: false;
     in-out property <[string]> scene-color-labels: [];
     in-out property <[color]> scene-colors: [];
     in-out property <string> scene-launch-status: "";
@@ -1533,6 +1541,12 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
+                // T-FIX-208：退出三选框开着时 `Esc` = 取消退出（回到工程），
+                // 优先级最高 —— 用户在这个框上最可能反悔，绝不能让 Esc 穿透去关窗。
+                if (root.quit-confirm-open) {
+                    root.quit-cancel();
+                    return accept;
+                }
                 // 启动选择器开着时 `Esc` = 取消启动（宿主关弹窗并退
                 // 出事件循环），先于下面的一切关闭动作。
                 if (root.startup-chooser-open) {
@@ -2762,6 +2776,93 @@ export component MainWindow inherits Window {
             save-preset(name) => { root.preset-save(name); }
             bypass-toggle(bypassed) => { root.preset-bypass-toggle(bypassed); }
             close => { root.preset-library-open = false; }
+        }
+
+        // T-FIX-208 退出保护三选框：有未保存改动且用户点「退出 / 关窗」时，
+        // 宿主置 `quit-confirm-open=true`，本层盖在最上面，逼用户三选其一。
+        // ⚠ 只用普通元素、不设 accessible-id —— 不进 `live_surface` 测试装配的
+        //    控件树，因此不牵动 a11y 注册表判据（本层行为由静态接线判据钉住）。
+        if root.quit-confirm-open : Rectangle {
+            z: 9800; // 高于启动选择器（9700）：退出确认必须在最顶层。
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: rgba(0, 0, 0, 78%);
+            Rectangle {
+                x: (parent.width - 460px) / 2;
+                y: (parent.height - 210px) / 2;
+                width: 460px;
+                height: 210px;
+                background: Tokens.bg-panel;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold-deep;
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: @tr("有未保存的改动");
+                        color: Tokens.ink-0;
+                        font-size: Tokens.font-size-lg;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: @tr("退出前要先保存吗？直接退出会丢掉这次未保存的改动。");
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            min-height: 38px;
+                            background: Tokens.gold-deep;
+                            border-radius: Tokens.radius-sm;
+                            TouchArea {
+                                clicked => { root.quit-save-and-exit(); }
+                            }
+                            Text {
+                                text: @tr("保存并退出");
+                                color: Tokens.ink-0;
+                                font-size: Tokens.font-size-sm;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            min-height: 38px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            TouchArea {
+                                clicked => { root.quit-discard-and-exit(); }
+                            }
+                            Text {
+                                text: @tr("直接退出（放弃改动）");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-sm;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            min-height: 38px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            TouchArea {
+                                clicked => { root.quit-cancel(); }
+                            }
+                            Text {
+                                text: @tr("取消");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-sm;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Visible Startup Chooser Modal Dialog（启动工程选择器，
