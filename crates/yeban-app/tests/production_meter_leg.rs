@@ -585,26 +585,28 @@ fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
 }
 
 /// 判据 4（**像素，命题一**）：默认外观（编曲视图那一帧）逐字节可复现，
-/// 而且**不随电平腿变化** —— 因为这一档的电平柱没有画出东西。
+/// 而且**电平腿真的落到编曲视图的像素上** —— 只落到轨道行电平柱的井里。
 ///
 /// ⚠ **两个命题必须分开**（本仓库明文警告过这一类误读）：
 ///
 /// - "默认帧逐字节可复现" 说的是**外观的确定性**；
-/// - "默认帧不随电平变" 说的是**这一档画面里没有电平条画出来** —— 它**不**蕴含"电平没接上"。
+/// - "默认帧随电平变" 说的是**这一档画面里有电平条在画** —— 它**不**蕴含"电平没接上"。
 ///   恰恰相反：电平条住在**混音台那一档**（`ui/console/mixer_console.slint:255` 的
 ///   `100px * root.track-meter-levels[track_index]`，只有控制台 Tab = 1 才在控件树里）。
 ///   要判"接上了没有"，靠的是本文件前三条判据，以及下一条**混音台档**的像素判据。
 ///
-/// ⚠ **活树修正（T-FIX-356，`before == after` 在活树上是错的）**：新 UI 的编曲视图
-/// 也有轨道行电平柱（D1/D2，`ui/arrangement.slint:46`：`meter-val()` 接同一份
-/// `track-meter-levels`），但它们只在 `is-playing` 时才跟随实时电平；本窗口没有按播放
-/// （`is-playing == false`），柱子恒在下限。驱动 8 跳后帧**确实**变了 —— 但变的不是
-/// 电平柱，而是走带：播放头（编曲 506→508、钢琴卷帘 76→77）、时间码区走带按钮簇、
-/// 左坞一块 6×96 的走带标记 —— 实测 3,936 像素，两次探针运行逐像素相同。
-/// 所以本条的活树判据是：**电平柱的家（轨道头列 x 240..480）逐像素相同**，且总变化有界
-/// （走带 paint）；"帧一位不动"的旧写法在新 UI 上会把走带误判成电平泄漏。
+/// ⚠ **活树反转（T-FIX-356）：旧写法 `before == after` 在活树上是错的，而且错在两边。**
+/// 旧前提"编曲视图不含电平条"已被 D1/D2 推翻（`ui/arrangement.slint:46`：轨道行电平柱
+/// `meter-val()` 接同一份 `track-meter-levels`），而旧断言失败时帧变了 3,936 像素 ——
+/// 探针逐像素分解证明，其中只有 **72 像素是电平**（0 号轨的井：x 486..489 × 18px 高，
+/// 电平 0.93 × 20px 井深；其余 5 轨电平为 0），剩下 3,864 像素全是走带（编曲播放头
+/// 506→508、钢琴卷帘播放头 76→77、走带按钮簇、左坞 6×96 走带标记）。强制把 6 轨电平
+/// 打满到 1.0 的对照也证实：井列每轨恰好多出 15px × 4 列，且只在井列（x 486..489）。
+/// 所以本条的活树判据是**正面的**：电平腿必须在轨道头列里画出来（> 0），但只能画在井里
+/// （井外一像素都不许动），且总变化有界（< 5,000）。"帧一位不动"在新 UI 上会把走带
+/// 误判成电平泄漏，也会把真画出来的电平柱当成不存在。
 #[test]
-fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
+fn the_default_frame_is_byte_reproducible_and_the_row_meters_follow_live_levels() {
     use yeban_ui_test_port::png::encode_rgb8;
 
     let project = demo_project();
@@ -662,27 +664,35 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
         lit > 0,
         "这 8 跳里至少有一跳的电平必须离开下限（否则本条没有搭建出前提）"
     );
-    // 前提：本窗口没有按播放 ⇒ 轨道行电平柱恒在下限（`meter-val()` 的 `is-playing` 门）。
+    // 前提：引擎自由跑 ⇒ 走带读数把 `is-playing` 置真，`meter-val()` 的门才打开。
+    // 若此项变假，行电平柱会恒在下限，下面的"井里必须有变化"会跟着红 —— 先报前提。
     assert!(
-        !window.ui().get_is_playing(),
-        "本条的前提是窗口未播放；一旦播放，轨道行电平柱就该动，判据要跟着改"
+        window.ui().get_is_playing(),
+        "本条的前提是驱动后 is-playing 为真（引擎自由跑）；若为假，行电平柱的门就没打开"
     );
-    // 判据（活树版）：电平柱的家 —— 轨道头列（x 240..480，含 5px 分隔缝）—— 必须逐像素相同。
-    // 电平柱是 6px 宽的井，住在轨道头里；那一列一位不动 ⇒ 电平腿没有在这一档画出任何东西。
-    let header_changed = count_changed_in_x(&first, &after_image, 240, 480);
+    // 判据（活树版）：轨道头列（`track-0-header` 实测 x 261 宽 240 ⇒ 261..501）必须
+    // 有变化 —— 电平腿真的画到了编曲视图；但变化只能在井里（x 484..492，含 ±2px 余量），
+    // 井外一像素都不许动。实测：只有 0 号轨的井变了 72 像素（x 486..489 × 18px）。
+    let header_changed = count_changed_in_x(&first, &after_image, 261, 501);
+    assert!(
+        (1..=150).contains(&header_changed),
+        "轨道头列必须有电平 paint（实测 72 像素：只有 0 号轨有电平），且不得超过一只井的量：变了 {header_changed} 像素"
+    );
+    let outside_well = count_changed_in_x(&first, &after_image, 261, 484)
+        + count_changed_in_x(&first, &after_image, 492, 501);
     assert_eq!(
-        header_changed, 0,
-        "轨道头列（电平柱的家）必须逐像素相同：电平动了、柱子没画 ⇒ 接线没漏到这一档；变了 {header_changed} 像素"
+        outside_well, 0,
+        "轨道头列里井以外的像素必须一位不动（电平只能落到井里）：井外变了 {outside_well} 像素"
     );
-    // 反空转 + 有界：驱动必须真的推动了画面（播放头/时间码在走），且变化只是走带 paint
-    // （实测 3,936 像素；电平柱一旦画出来，单轨就 ≥ 6×20，上限 5,000 把它挡在外面）。
+    // 反空转 + 有界：驱动必须真的推动了画面（播放头/时间码在走），且总变化只是
+    // 走带 paint + 一只井（实测 3,936 像素）。
     assert!(
         changed > 0,
-        "驱动 8 跳后画面必须有走带变化（否则本条没有真的驱动引擎）"
+        "驱动 8 跳后画面必须有变化（否则本条没有真的驱动引擎）"
     );
     assert!(
         changed < 5_000,
-        "帧变化必须只是走带 paint（实测 3,936 像素）：不同像素 {changed} 个，包围盒 {bbox:?}"
+        "帧变化必须只是走带 paint + 行电平柱（实测 3,936 像素）：不同像素 {changed} 个，包围盒 {bbox:?}"
     );
 }
 
@@ -789,102 +799,4 @@ fn maybe_write_frame(label: &str, png: &[u8]) {
     let path = format!("{prefix}-{label}.png");
     std::fs::write(&path, png).expect("写帧");
     report_line(&format!("[meter-leg] 帧已写 {path}"));
-}
-
-/// 临时探针（T-FIX-356 收尾调试）：判据 ④ 里 is-playing/电平/轨道头列的变化 —— 跑完即删。
-#[test]
-fn probe_meter_gate_tmp() {
-    let project = demo_project();
-    let window = Window::new(&project);
-    eprintln!(
-        "PROBE before: is-playing={} levels={:?}",
-        window.ui().get_is_playing(),
-        window.levels()
-    );
-    let first = window.port.window().capture().expect("Tier-1 截图");
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
-    for i in 0..8 {
-        production.engine_handle().borrow_mut().drive_audio(1);
-        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
-        eprintln!(
-            "PROBE tick #{i}: is-playing={} levels={:?} peaks={:?}",
-            window.ui().get_is_playing(),
-            window.levels(),
-            window.peak_labels()
-        );
-    }
-    let after_image = window.port.window().capture().expect("Tier-1 截图");
-    eprintln!(
-        "PROBE header-col changed x240..480: {}",
-        count_changed_in_x(&first, &after_image, 240, 480)
-    );
-    // 对照：显式把电平打满 + is-playing=true，再抓一帧 —— 柱子到底能不能画出来？
-    window.ui().set_is_playing(true);
-    window
-        .ui()
-        .set_track_meter_levels(slint::ModelRc::new(slint::VecModel::from(vec![
-            1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0,
-        ])));
-    let forced = window.port.window().capture().expect("Tier-1 截图");
-    eprintln!(
-        "PROBE forced full levels: header-col changed x240..480 vs first: {}",
-        count_changed_in_x(&first, &forced, 240, 480)
-    );
-    eprintln!(
-        "PROBE forced full levels: header-col changed vs after: {}",
-        count_changed_in_x(&after_image, &forced, 240, 480)
-    );
-    // 修正后的轨道头列（头宽 240，井在右端 x~493..501）：数一下那一列到底变没变。
-    for (lo, hi) in [(480u32, 505u32), (261u32, 501u32)] {
-        let mut ymin = u32::MAX;
-        let mut ymax = 0u32;
-        let mut n = 0usize;
-        for y in 0..first.height() {
-            for x in lo..hi {
-                let o = (y as usize * first.stride()) + (x as usize * 3);
-                if first.pixels()[o..o + 3] != forced.pixels()[o..o + 3] {
-                    ymin = ymin.min(y);
-                    ymax = ymax.max(y);
-                    n += 1;
-                }
-            }
-        }
-        eprintln!("PROBE wells x {lo}..{hi} first-vs-forced: n={n} y={ymin}..{ymax}");
-    }
-    // 真实电平（8 跳后）vs first：在井列 x 480..505 变了多少、在哪几行？
-    {
-        let mut per_col = [0usize; 25];
-        let mut per_row = [0usize; 6];
-        for y in 0..first.height() {
-            for x in 480..505u32 {
-                let o = (y as usize * first.stride()) + (x as usize * 3);
-                if first.pixels()[o..o + 3] != after_image.pixels()[o..o + 3] {
-                    per_col[(x - 480) as usize] += 1;
-                    let row = (y.saturating_sub(173) / 54).min(5) as usize;
-                    per_row[row] += 1;
-                }
-            }
-        }
-        eprintln!("PROBE real first-vs-after wells x480..505 per_col={per_col:?} per_row={per_row:?}");
-        let mut per_col_f = [0usize; 25];
-        for y in 0..first.height() {
-            for x in 480..505u32 {
-                let o = (y as usize * first.stride()) + (x as usize * 3);
-                if first.pixels()[o..o + 3] != forced.pixels()[o..o + 3] {
-                    per_col_f[(x - 480) as usize] += 1;
-                }
-            }
-        }
-        eprintln!("PROBE forced first-vs-forced wells per_col={per_col_f:?}");
-    }
-    // 地面真相：本窗口里轨道头 / 标尺带 / 编曲画布的真实包围盒。
-    use yeban_ui_test_port::port::UiTestPort;
-    let mut window = window;
-    window.port.refresh_tree(None).expect("重抓控件树");
-    for id in ["track-0-header", "arrangement-ruler", "workspace-arrangement-canvas"] {
-        match window.port.tree().find_by_id(id) {
-            Some(n) => eprintln!("PROBE node {id}: bounds={:?}", n.bounds),
-            None => eprintln!("PROBE node {id}: MISSING"),
-        }
-    }
 }
