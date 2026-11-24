@@ -368,7 +368,10 @@ fn no_new_addressable_nodes_or_second_readouts() {
     for (_, src) in slint_sources() {
         readout_total += src.matches("accessible-value:").count();
     }
-    assert_eq!(readout_total, 63, "全仓读数总数 63");
+    // ⚠ T-FIX-356 合并重钉：63→64 —— 同票 Group B 给标尺带补了
+    // `accessible-value: root.playhead-timecode;`（`ui/arrangement.slint`，U-07 R2）；
+    // 合入前实测 left 64。
+    assert_eq!(readout_total, 64, "全仓读数总数 64");
 }
 
 /// ⑦ 刻意不做的边界：Esc 级联顺序、三个抽屉 `visible`、静音态档名、

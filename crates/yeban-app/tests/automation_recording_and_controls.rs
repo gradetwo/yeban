@@ -177,17 +177,21 @@ fn automation_recording_generation() {
 fn slint_ratchets_and_tokens_preserved() {
     // ⭐ 计数从活树现测（基线 835375d4，2026-11-24）：`ui/arrangement.slint`（活文件，
     // 旧 `arrangement_view.slint` 已死）+ `ui/app.slint`。`accessible-value:` 在这两
-    // 份文件里是 0 —— 新 UI 里读数绑定住在叶子组件（`status_bar.slint` 等），
+    // 份文件里本是 0 —— 新 UI 里读数绑定住在叶子组件（`status_bar.slint` 等），
     // 不在这两份根文件里；0 钉的是"没有读数绑定被悄悄搬回根文件"。
+    // ⚠ T-FIX-356 合并重钉：arrangement ID 16→17、读数 0→1 —— 同票 Group B 给标尺带
+    // 补了 `accessible-id: "arrangement-ruler"` 与 `accessible-value:
+    // root.playhead-timecode;`（U-07 R2）：标尺时间码是唯一获准进根文件的读数，
+    // 其余读数仍须住在叶子组件；合入前实测 ID left 17。
     assert_eq!(
         ARRANGEMENT.matches("accessible-id:").count(),
-        16,
-        "arrangement.slint 可寻址 ID 严格保持 16"
+        17,
+        "arrangement.slint 可寻址 ID 严格保持 17（含标尺带 arrangement-ruler）"
     );
     assert_eq!(
         ARRANGEMENT.matches("accessible-value:").count(),
-        0,
-        "arrangement.slint 读数严格保持 0（读数绑定住在叶子组件）"
+        1,
+        "arrangement.slint 读数严格保持 1（仅标尺带时间码，见上注）"
     );
     assert_eq!(
         ARRANGEMENT

@@ -470,7 +470,10 @@ fn the_production_save_dispatches_through_the_writable_authority() {
         panic!("可写会话上生产保存入口必须成功，实际: {outcome:?}");
     };
     assert!(*by_authority, "有权威时保存必须走那个会话（不是本地路径）");
-    assert!(missing.is_empty(), "夹具样本齐全，保存不该报缺失样本：{missing:?}");
+    assert!(
+        missing.is_empty(),
+        "夹具样本齐全，保存不该报缺失样本：{missing:?}"
+    );
     assert_eq!(path, &project_path, "落点必须是请求给的那个文件");
     assert_eq!(
         std::fs::metadata(&project_path).expect("文件在").len(),

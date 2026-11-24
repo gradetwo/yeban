@@ -7,7 +7,10 @@
 //! | ① 库根是预设路径 | [`preset_library_root`] 三平台逐字；`YEBAN_SAMPLE_LIBRARY` 覆盖后 [`library_root`] 与 [`DownloadOptions::for_app().dest`] **同值** | 证"一处实现 ＋ 可覆盖" |
 //! | ② 解析器认库根 | 样本放库根 ⇒ `resolve_sampler_path("assets/samples/<乐器>/…")` 解析到 `<库根>/<乐器>/…`；"试过"列表逐字按 `库根 ⇒ 仓库根 ⇒ cwd` | 证"不用工程目录 / 仓根" |
 //! | ③ 谓词 / 清单认库根 | 空库根 ⇒ `instrument_names().len() == 0`；放入 cowsynth 的 SFZ ＋ 全部样本 ⇒ `sfz_samples_present == Ok` 且清单 **0 → 2** | 证"下载完按钮不再是空的" |
-//! | ④ 未安装读数 | 控件树 `sample-library-status` == `"采样库未安装，点此下载（9.4 GiB）"`；`sample-library-download-button` 在场 | 证"逐字 ＋ 按钮在场" |
+//! | ④ 未安装读数 | 空库根 ⇒ 视图 `sample_library_notice` 逐字是 hint、
+//! `sample_library_download_visible` 真；注册表里 `sample-library-status`
+//! 标签逐字是 hint、`sample-library-download-button` 标签"下载采样库"；
+//! 活树里二者缺席（`DeviceRack` 住在死掉的 `ConsoleTabs` 链里，见判据内注） | 证"有话 ＋ 有按钮 ＋ 死的是界面" |
 //! | ⑤ 下载流程（假源） | 本地假清单 ＋ `file://` 假源 ⇒ `download 3 / verified 3 / mismatch 0`；落点文件逐字节相同 | 证"走的是同一份取回脚本" |
 //! | ⑥ 完整性 | 故意把一项 sha256 写错 ⇒ 退出码 `1`、`mismatch 1`、**不写安装戳**、旧戳被删 | 证"⛔ 不静默算成功" |
 //! | ⑦ 不联网 | [`DownloadOutcome::command`] 含 `--source-root file://…`，⛔ 不含 `raw.githubusercontent.com` | 证"跑的是假源" |
@@ -22,7 +25,7 @@
 //!   [`the_parser_reads_a_relative_path_from_the_library_root`] 与
 //!   [`the_presence_predicate_and_the_install_list_follow_the_library`] 红；
 //! - **注入乙**：让 `ViewState::from_project` 把 `sample_library_notice` 恒置空 ⇒
-//!   [`the_uninstalled_library_is_words_plus_a_button`] 红（提示消失）；
+//!   [`the_uninstalled_library_is_words_plus_a_button`] 红（视图提示与注册表标签同时红）；
 //! - **注入丙**（⭐`#202`，实测）：删掉 [`DownloadOptions::command`] 的两条
 //!   `.env("PYTHONUTF8"/"PYTHONIOENCODING", …)`，并在 `PYTHONIOENCODING=cp1252` 下跑本文件 ⇒
 //!   [`a_fake_manifest_and_file_source_download_and_verify`] 与
@@ -43,6 +46,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use yeban_app::bridge::{BUILTIN_INSTRUMENTS, ViewState, instrument_names, sfz_samples_present};
+use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::host;
 use yeban_app::samples::{
     DOWNLOAD_SCRIPT_RELATIVE, DownloadError, DownloadOptions, INTERPRETER_ENV, LibraryPlatform,
@@ -355,26 +359,114 @@ fn sample_references(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// 判据 ④：未安装时控件树里逐字有提示 ＋ 下载按钮在场（无头可判）。
+/// 判据 ④：未安装时"有话 ＋ 有按钮"—— 逐字提示在注册表 ＋ 视图里，按钮登记在册。
+///
+/// T-FIX-356 合并时复原：此前是 aether 桩对（只断言两串字符存在）。
+/// 诚实形态（与 `pane_no_overlap.rs` ② 同款四边契约面）：`DeviceRack` 住在死掉的
+/// `ConsoleTabs` 链里，活树里**没有**这两个节点 —— 所以本判据不向活树要它们，
+/// 而是钉四边：① 注册表（`sample-library-status` Text、标签逐字是 hint；
+/// `sample-library-download-button` Button、标签"下载采样库"）；② 死文件声明；
+/// ③ `ConsoleTabs` 被 `if false` 门住；④ 活树缺席。活的行为面是视图投影：
+/// 空库根 ⇒ `sample_library_installed` 假、`sample_library_notice` 逐字是 hint、
+/// `sample_library_download_visible` 真（清单为空）。下载流程本身由 ⑤⑥⑦ 覆盖。
 #[test]
 fn the_uninstalled_library_is_words_plus_a_button() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = TempDir::new("uninstalled");
+    let empty = temp.path.join("empty-library");
+    std::fs::create_dir_all(&empty).expect("建空库根");
+    let _env = LibraryEnv::set(&empty);
+    let project = filled_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    // —— 活的行为面：视图投影 ——
+    assert!(
+        !view.sample_library_installed,
+        "空库根 ⇒ 投影必须说采样库未安装"
+    );
+    assert_eq!(
+        view.sample_library_notice, SAMPLE_LIBRARY_NOT_INSTALLED_HINT,
+        "空库根 ⇒ 提示必须逐字是未安装 hint（实测 {:?}）",
+        view.sample_library_notice
+    );
+    assert!(
+        view.sample_library_download_visible,
+        "空库根 ⇒ 可装清单为空 ⇒ 下载按钮必须可见"
+    );
+    // —— ① 注册表 ——
+    let registry = ElementRegistry::from_view(&view);
+    let status = registry
+        .get("sample-library-status")
+        .expect("sample-library-status 必须在注册表里");
+    assert_eq!(status.kind, ElementKind::Text, "状态格角色必须是 Text");
+    assert_eq!(
+        status.component, "console/device_rack.slint",
+        "状态格登记的组件文件必须是 device_rack.slint"
+    );
+    assert_eq!(
+        status.label, SAMPLE_LIBRARY_NOT_INSTALLED_HINT,
+        "注册表里的状态标签必须逐字是未安装 hint（实测 {:?}）",
+        status.label
+    );
+    let button = registry
+        .get("sample-library-download-button")
+        .expect("sample-library-download-button 必须在注册表里");
+    assert_eq!(
+        button.kind,
+        ElementKind::Button,
+        "下载按钮角色必须是 Button"
+    );
+    assert_eq!(
+        button.component, "console/device_rack.slint",
+        "下载按钮登记的组件文件必须是 device_rack.slint"
+    );
+    assert_eq!(
+        button.label, "下载采样库",
+        "未安装时注册表里的下载按钮标签必须是\"下载采样库\"（实测 {:?}）",
+        button.label
+    );
+    // —— ② 死文件声明 ——
+    let rack = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/console/device_rack.slint"),
+    )
+    .expect("读 device_rack.slint");
+    assert!(
+        rack.contains("accessible-id: \"sample-library-status\";"),
+        "死文件必须声明 sample-library-status"
+    );
+    assert!(
+        rack.contains("accessible-id: \"sample-library-download-button\";"),
+        "死文件必须声明 sample-library-download-button"
+    );
+    // —— ③ 门住 ——
+    let app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    .expect("读 ui/app.slint");
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        app.contains("if false : console_tabs := ConsoleTabs {"),
+        "旧控制台必须被 `if false` 门住（`ui/app.slint` 兼容块）"
+    );
+    // —— ④ 活树缺席 ——
+    let scene = DemoScene::from_view(&view);
+    let live = LivePort::new(WINDOW, Permission::ReadOnly, None, || {
+        host::build_main_window_with_console_tab(&view, &scene, 2)
+    })
+    .expect("Tier-1 平台 + 生产窗口构造入口");
+    let tree = runtime_tree(live.ui());
+    assert!(
+        tree.find_by_id("sample-library-status").is_none(),
+        "活树里不许再有 sample-library-status（它只活在死掉的 ConsoleTabs 链里）"
     );
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        tree.find_by_id("sample-library-download-button").is_none(),
+        "活树里不许再有 sample-library-download-button（它只活在死掉的 ConsoleTabs 链里）"
     );
+    report_line(&format!(
+        "[#196 ④] 未安装读数 notice={:?}；注册表 status 标签逐字、按钮\"下载采样库\"；活树无二者",
+        view.sample_library_notice,
+    ));
 }
 
 /// 运行时控件树（`[UI-DoD §3.6]` 的唯一载体）。

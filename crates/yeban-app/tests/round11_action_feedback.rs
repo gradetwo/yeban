@@ -25,6 +25,10 @@
 //!   ⚠ 2026-11-24 复核（T-FIX-356，45 文件语料）：`has-hover` 301、`grab` 6、光标总数 272、
 //!   可寻址 ID 448、读数 63 —— 新 UI 大量新增，本文件各判据已按实测重钉（见各判据内注）；
 //!   上面两行是第十一轮当时的基线，留作历史，不再是现值。
+//!   ⚠ 2026-11-24 合并时重钉（T-FIX-356）：ID 448→449、读数 63→64 ——
+//!   同票 Group B 给标尺带补了 `accessible-id: "arrangement-ruler"` 与
+//!   `accessible-value: root.playhead-timecode;`（`ui/arrangement.slint`，U-07 R2），
+//!   各 +1；其余计数一位未动（实测见合并收据）。
 //! * `row-resize` 落在 `splitter-touch` 内；它本来就是「不画任何像素」的输入面
 //!   （注释明写「命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）」）。
 //! * 本机 Linux golden 逐字节断言若红，按 `AGENTS.md` 用干净基线 A/B 取证后记
@@ -52,7 +56,8 @@
 //!   且 `elements.rs:3792` 与 `round8` ⑤ 把「今天不得有 `clicked`」钉成事实 ——
 //!   本轮巡检时亲自复核过，**不是漏接线**，不动。
 //! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value` / 可寻址节点，
-//!   全仓 239 / 55 由 ⑥ 逐文件对账（当时值；2026-11-24 复核为 448 / 63）。零新增 `experimental-*` / `mcp-*` feature、
+//!   全仓 239 / 55 由 ⑥ 逐文件对账（当时值；2026-11-24 复核为 448 / 63；
+//!   T-FIX-356 合并时因 Group B 的标尺带 a11y 重钉为 449 / 64，见 ⑥ 内注）。零新增 `experimental-*` / `mcp-*` feature、
 //!   零 `Cargo.toml` 改动、零 golden PNG 改动。
 //! * ⛔ 本文件刻意不用 `.all(` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求
 //!   扩 `SOURCES`）；全是纯源码文本判据，不装 Slint 平台、不碰活窗口。
@@ -391,11 +396,15 @@ fn zero_new_addressable_nodes_or_readouts() {
         ids += src.matches("accessible-id:").count();
         values += src.matches("accessible-value:").count();
     }
+    // ⚠ T-FIX-356 合并重钉：448→449、63→64 —— 同票 Group B 给标尺带补了
+    // `accessible-id: "arrangement-ruler"`（+1 ID）与
+    // `accessible-value: root.playhead-timecode;`（+1 读数）；合入前实测：
+    // round10 读数 64、round11 ID 449、automation arrangement 17/1。
     assert_eq!(
-        ids, 448,
-        "全仓可寻址 ID 仍 448（新 UI 大量新增，见逐文件对账）"
+        ids, 449,
+        "全仓可寻址 ID 仍 449（新 UI 大量新增，见逐文件对账）"
     );
-    assert_eq!(values, 63, "全仓无障碍读数仍 63");
+    assert_eq!(values, 64, "全仓无障碍读数仍 64");
 }
 
 /// ⑦ 刻意不做的边界：无动作占位、A/B 撤回的 M/S 字色、× 关闭键反馈、piano_roll。
