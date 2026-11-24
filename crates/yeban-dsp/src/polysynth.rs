@@ -1232,12 +1232,20 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 回收"已过终点且包络已静音"的声部（快照边界的游标校正一并做）。
     ///
     /// 仍在释放段的声部**保留** —— 快照切换不得切断在鸣的音符。
-    /// ⭐ **松开**某个频率上的音符：把**请求频率等于 `freq_hz`** 的活跃声部送进 release
-    /// （⭐ 器件里"松键"的既有入口是 [`Adsr::gate_off`]）。
+    /// ⭐ **松开**某个频率上的**一个**音符：把**请求频率等于 `freq_hz`** 的活跃声部中
+    /// **最早触发的那一个**送进 release（⭐ 器件里"松键"的既有入口是 [`Adsr::gate_off`]）。
     ///
-    /// ⚠ **口径（合并，⛔ 不区分原因）**：返回"⭐ 被送进 release 的声部数"；返回 `0`
-    /// 表示**没有匹配的活跃声部** —— 本方法**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"；
-    /// 调用方（引擎的 `orphan_note_offs`）按这个**合并口径**登记。
+    /// ⚠ **一次松键只释放一个声部**（T-FIX-275）：同频重叠时（实时试听/实时 MIDI 上
+    /// 两个同音同时按住）"一次松键 = 一个键"，⛔ 不能把另一个仍按住的音符一起送进
+    /// 释放段 —— 那会把正在发声的音提前截短。要放掉第二个就再调一次。
+    ///
+    /// ⚠ **选择是全序的**（任何平台同解）：先比 `start_sample`（⭐ 最早触发者优先），
+    /// 并列比声部下标（⭐ 下标最小者优先）。
+    ///
+    /// ⚠ **口径（合并，⛔ 不区分原因）**：返回 `1` = 命中了同频声部（⭐ 仍在按住的
+    /// 挑一个放掉；⭐ 同频声部**全在释放段**时维持旧口径，幂等地再 `gate_off` 最先那个）；
+    /// 返回 `0` 表示**没有同频活跃声部** —— 本方法**不区分**"⭐ 从未存在过"与
+    /// "⭐ 已被窃取/⭐ 已换音"；调用方（引擎的 `orphan_note_offs`）按这个**合并口径**登记。
     ///
     /// ⚠ 配对用**请求频率**（触发时记下的 `NoteEvent::freq_hz`）⇒ ⭐ 两侧是**同一个算式**
     /// 的同一个值 ⇒ ⭐ **精确相等是有意的**（⛔ 近似匹配会让两条不同的音互相误松）。
@@ -1257,23 +1265,61 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     ///
     /// **实时路径**：零分配、零锁、零 I/O。
     pub fn note_off(&mut self, freq_hz: f32) -> u32 {
-        let mut released = 0u32;
-        for voice in &mut self.voices {
+        // ⭐ 第一支路（现频率）：只挑**一个** —— 优先"仍在按住"（未进 Release）的声部，
+        // `start_sample` 最小者，并列取下标最小者。⛔ 不要遍历即释放：同频重叠时
+        // 那会把另一个仍按住的音符一起截短（T-FIX-275）。
+        let mut victim: Option<(u64, usize)> = None;
+        for (index, voice) in self.voices.iter().enumerate() {
+            if !voice.active || voice.freq_hz != freq_hz || voice.env.stage() == AdsrStage::Release
+            {
+                continue;
+            }
+            let key = (voice.start_sample, index);
+            if victim.is_none_or(|current| key < current) {
+                victim = Some(key);
+            }
+        }
+        // ⭐ 同频声部**全都在释放段**（单声部重复松键、同 pitch 重触发的"先松再触发"）：
+        // 维持旧口径 —— 仍命中最先那个并报 1（`gate_off` 幂等），⛔ 不让调用方的
+        // `retriggered` 判定从 true 掉成 false。
+        if victim.is_none() {
+            for (index, voice) in self.voices.iter().enumerate() {
+                if !voice.active || voice.freq_hz != freq_hz {
+                    continue;
+                }
+                let key = (voice.start_sample, index);
+                if victim.is_none_or(|current| key < current) {
+                    victim = Some(key);
+                }
+            }
+        }
+        if let Some((_, index)) = victim {
+            self.voices[index].env.gate_off();
+            return 1;
+        }
+        // ⭐ 第二支路（挂起音符）：语义不变 —— ⛔ 不现在 `gate_off`，只**记下**，
+        // 由提升点在新包络上补；同样只挑一个，排序键用挂起音符自己的 `start_sample`。
+        let mut pending: Option<(u64, usize)> = None;
+        for (index, voice) in self.voices.iter().enumerate() {
             if !voice.active {
                 continue;
             }
-            if voice.freq_hz == freq_hz {
-                voice.env.gate_off();
-                released = released.saturating_add(1);
-            } else if voice.pending.is_some() && voice.pending_freq_hz == freq_hz {
-                // ⭐ 挂起音符自己的释放：⭐ 声部还没提升 ⇒ ⭐ 现在 `gate_off` 会打在
-                // 被窃取者那只 3 ms 的淡出包络上（⭐ 语义错），⭐ 所以只**记下**，
-                // 由提升点在新包络上补。
-                voice.pending_released = true;
-                released = released.saturating_add(1);
+            let Some(note) = voice.pending.as_ref() else {
+                continue;
+            };
+            if voice.pending_freq_hz != freq_hz {
+                continue;
+            }
+            let key = (note.start_sample, index);
+            if pending.is_none_or(|current| key < current) {
+                pending = Some(key);
             }
         }
-        released
+        if let Some((_, index)) = pending {
+            self.voices[index].pending_released = true;
+            return 1;
+        }
+        0
     }
 
     /// 回收**已结束**的声部：包络已回到 `Idle` 且 `end_sample <= position` 的声部空槽化
@@ -1772,6 +1818,81 @@ mod tests {
             synth.active_voices(),
             0,
             "⭐ 松键后声部必须能被回收（⛔ 不是挂音）"
+        );
+    }
+
+    /// 判据（T-FIX-275）：**同频重叠**时一次 `note_off` 只释放**一个**声部 ——
+    /// 最早触发的那个（`start_sample` 最小，并列取下标最小），另一个仍按住的音符
+    /// **不得**被送进释放段；重复松键才逐个放掉。
+    ///
+    /// 修前行为：`note_off` 遍历整个声部池，同频即 `gate_off` ⇒ 一次松键把两个
+    /// 同音声部一起截短（实时试听/实时 MIDI 的同音重叠现场）。
+    #[test]
+    fn note_off_releases_one_of_two_overlapping_same_frequency_voices() {
+        let tables = tables();
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(PolySynthParams::new(), &tables);
+        // 两个请求频率相同的声部，起点不同：0（早）与 96（晚）。
+        synth.note_on(NoteEvent::new(0, u64::MAX, 440.0, 1.0), &tables);
+        synth.note_on(NoteEvent::new(96, u64::MAX, 440.0, 0.8), &tables);
+        assert_eq!(synth.active_voices(), 2, "前置：两个同频活跃声部");
+
+        // 一次松键 ⇒ 只放掉最早触发的那个；另一个必须还在鸣（⛔ 不是 Release）。
+        assert_eq!(synth.note_off(440.0), 1, "一次松键只能释放一个声部");
+        let first = synth.debug_voice(0).expect("声部 0");
+        let second = synth.debug_voice(1).expect("声部 1");
+        assert_eq!(
+            first.2,
+            AdsrStage::Release,
+            "最早触发的声部（start_sample=0，落在 0 号槽）必须进 Release：{first:?}"
+        );
+        assert!(
+            matches!(
+                second.2,
+                AdsrStage::Attack | AdsrStage::Decay | AdsrStage::Sustain
+            ),
+            "另一个同频声部必须仍按住（⛔ 被一起截短）：{second:?}"
+        );
+
+        // 第二次松键才放掉第二个；第三次没有可放的了。
+        assert_eq!(synth.note_off(440.0), 1, "第二次松键释放第二个声部");
+        assert_eq!(
+            synth.debug_voice(1).map(|voice| voice.2),
+            Some(AdsrStage::Release),
+            "第二个声部这次必须进 Release"
+        );
+        assert_eq!(
+            synth.note_off(440.0),
+            1,
+            "两个同频声部全在 Release ⇒ 维持旧口径：重复松键仍命中最先那个（gate_off 幂等）"
+        );
+        assert_eq!(synth.active_voices(), 2, "释放 ≠ 回收：两个声部都还在池里");
+    }
+
+    /// 判据（T-FIX-275 配套）：选择键是 `start_sample` **而不是**池内下标 ——
+    /// 后触发但先占用小下标的声部，⛔ 不许抢在更早触发的声部前面被放掉。
+    #[test]
+    fn note_off_picks_the_earliest_start_sample_not_the_lowest_slot() {
+        let tables = tables();
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(PolySynthParams::new(), &tables);
+        // 先占池 0 号槽但起点晚；再占池 1 号槽但起点早。
+        synth.note_on(NoteEvent::new(480, u64::MAX, 440.0, 1.0), &tables);
+        synth.note_on(NoteEvent::new(0, u64::MAX, 440.0, 1.0), &tables);
+        assert_eq!(synth.active_voices(), 2, "前置：两个同频活跃声部");
+
+        assert_eq!(synth.note_off(440.0), 1, "一次松键只能释放一个");
+        assert_eq!(
+            synth.debug_voice(1).map(|voice| voice.2),
+            Some(AdsrStage::Release),
+            "start_sample 更小的 1 号槽必须被选中（⛔ 按下标挑 0 号槽）"
+        );
+        assert!(
+            matches!(
+                synth.debug_voice(0).map(|voice| voice.2),
+                Some(AdsrStage::Attack | AdsrStage::Decay | AdsrStage::Sustain)
+            ),
+            "起点更晚的 0 号槽必须仍在按住"
         );
     }
 
