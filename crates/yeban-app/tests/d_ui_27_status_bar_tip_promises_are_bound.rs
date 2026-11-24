@@ -569,10 +569,7 @@ fn the_tip_promises_two_bound_but_dead_keys_and_that_over_promise_is_pinned_as_a
     for promise in PROMISES {
         let action = promise.expected_action();
         let implemented = action_has_implementation(action);
-        let expected = !matches!(
-            action,
-            Action::AuditionMain | Action::AuditionProposal
-        );
+        let expected = !matches!(action, Action::AuditionMain | Action::AuditionProposal);
         assert_eq!(
             implemented, expected,
             "键 {:?}（动作 {action:?}）的 action_has_implementation 读数应为 {expected} —— \

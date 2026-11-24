@@ -338,7 +338,10 @@ fn the_single_accent_and_bg_control_landings_are_untouched() {
         accent += code.matches("Tokens.accent").count();
         control += code.matches("Tokens.bg-control").count();
     }
-    assert_eq!(accent, 29, "全仓 Tokens.accent 数漂移：活树 {accent} 处，钉死 29 处");
+    assert_eq!(
+        accent, 29,
+        "全仓 Tokens.accent 数漂移：活树 {accent} 处，钉死 29 处"
+    );
     assert_eq!(
         control, 9,
         "全仓 Tokens.bg-control 数漂移：活树 {control} 处，钉死 9 处"

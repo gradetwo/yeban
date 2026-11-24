@@ -334,9 +334,8 @@ fn the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
             layer.contains(&format!("accessible-role: {role};")),
             "节点 `{needle}` 的声明面 role 必须是 `{role}`，本层文本：{layer}"
         );
-        let kind = registry_kind_after(ELEMENTS_RS, registry_id).unwrap_or_else(|| {
-            panic!("注册表里找不到 `{registry_id}` 的 ElementKind")
-        });
+        let kind = registry_kind_after(ELEMENTS_RS, registry_id)
+            .unwrap_or_else(|| panic!("注册表里找不到 `{registry_id}` 的 ElementKind"));
         assert_eq!(
             kind, *role,
             "节点 `{registry_id}`：声明面 role `{role}` 与注册表 kind 映射 `{kind}` 不一致"
@@ -393,11 +392,7 @@ fn the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
     let mut sorted = judged.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(
-        sorted.len(),
-        judged.len(),
-        "清单里有重复条目：{judged:?}"
-    );
+    assert_eq!(sorted.len(), judged.len(), "清单里有重复条目：{judged:?}");
     for name in &judged {
         assert!(
             name.ends_with(".slint"),

@@ -91,11 +91,7 @@ fn enclosing_component<'a>(lines: &[&'a str], needle: &str) -> Vec<&'a str> {
             break;
         }
     }
-    assert!(
-        depth == 0,
-        "组件块从第 {} 行起没有闭合",
-        start + 1
-    );
+    assert!(depth == 0, "组件块从第 {} 行起没有闭合", start + 1);
     lines[start..=end].to_vec()
 }
 
@@ -238,8 +234,20 @@ fn the_four_reset_callbacks_forward_to_the_main_window_exactly_once_each() {
         // (回调, 签名, console_tabs 转发, app 转发, mixer_console 调用)
         ("mixer-fader-reset", "mixer-fader-reset(int)", 1, 3, 1),
         ("mixer-pan-reset", "mixer-pan-reset(int)", 1, 3, 1),
-        ("mixer-master-fader-reset", "mixer-master-fader-reset()", 1, 1, 1),
-        ("mixer-master-pan-reset", "mixer-master-pan-reset()", 1, 0, 1),
+        (
+            "mixer-master-fader-reset",
+            "mixer-master-fader-reset()",
+            1,
+            1,
+            1,
+        ),
+        (
+            "mixer-master-pan-reset",
+            "mixer-master-pan-reset()",
+            1,
+            0,
+            1,
+        ),
     ];
     for (name, signature, tabs_forward, app_forward, console_call) in cases {
         let decl = format!("callback {signature};");
@@ -288,19 +296,11 @@ fn every_host_reset_arm_clears_the_gesture_before_committing_its_own_field() {
         ("ui.on_mixer_master_pan_reset(", "MixerResetField::Pan"),
     ];
     for (arm, field) in arms {
-        assert_eq!(
-            host.matches(arm).count(),
-            1,
-            "宿主里 {arm} 必须恰好一条臂"
-        );
+        assert_eq!(host.matches(arm).count(), 1, "宿主里 {arm} 必须恰好一条臂");
         let start = host.find(arm).expect("上面刚数过一次");
         let rest = &host[start..];
-        let end = rest
-            .find("end_mixer_gesture")
-            .expect("臂里必须清手势");
-        let commit = rest
-            .find("commit_mixer_reset(")
-            .expect("臂里必须提交复位");
+        let end = rest.find("end_mixer_gesture").expect("臂里必须清手势");
+        let commit = rest.find("commit_mixer_reset(").expect("臂里必须提交复位");
         assert!(
             end < commit,
             "臂 {arm} 必须先清手势再提交（end@{end} commit@{commit}）"

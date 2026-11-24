@@ -59,7 +59,8 @@ fn sidechain_cycling_and_connecting_creates_valid_ops() {
         "第一轮必须恰好连一条侧链边"
     );
     assert!(
-        !ops.iter().any(|op| matches!(op, Op::DisconnectRouting { .. })),
+        !ops.iter()
+            .any(|op| matches!(op, Op::DisconnectRouting { .. })),
         "初始无边时不该有断开"
     );
     for op in &ops {
@@ -88,9 +89,11 @@ fn sidechain_cycling_and_connecting_creates_valid_ops() {
     assert_eq!(label, "侧链键源: 无 (点击切换)");
     assert!(avail);
     assert!(
-        !project.routing_graph.edges.values().any(|edge| {
-            edge.kind == RoutingKind::Sidechain && edge.destination_node == track
-        }),
+        !project
+            .routing_graph
+            .edges
+            .values()
+            .any(|edge| { edge.kind == RoutingKind::Sidechain && edge.destination_node == track }),
         "完整一轮之后入边必须断干净"
     );
 }
@@ -160,16 +163,17 @@ fn compressor_cycling_and_dynamics_readout() {
     );
 
     // 三路动态读数：压缩器 / 限制器 / 瞬态塑形器。
-    let (comp_info, comp_avail) =
-        project_compressor_info(&project, project.tracks.get(&track));
+    let (comp_info, comp_avail) = project_compressor_info(&project, project.tracks.get(&track));
     assert!(comp_info.contains("压缩器:"), "压缩器读数：{comp_info}");
     assert!(comp_avail);
     let (lim_info, lim_avail) = project_limiter_info(&project, project.tracks.get(&track));
     assert!(lim_info.contains("限制器:"), "限制器读数：{lim_info}");
     assert!(lim_avail);
-    let (shaper_info, shaper_avail) =
-        project_shaper_info(&project, project.tracks.get(&track));
-    assert!(shaper_info.contains("瞬态塑形:"), "塑形器读数：{shaper_info}");
+    let (shaper_info, shaper_avail) = project_shaper_info(&project, project.tracks.get(&track));
+    assert!(
+        shaper_info.contains("瞬态塑形:"),
+        "塑形器读数：{shaper_info}"
+    );
     assert!(shaper_avail);
 
     // 无轨 / 主总线两档空态。
@@ -178,10 +182,7 @@ fn compressor_cycling_and_dynamics_readout() {
         ("侧链键源: 无可显示的音轨".to_owned(), false)
     );
     assert_eq!(
-        project_sidechain_info(
-            &project,
-            project.tracks.get(&project.master_bus_track_id)
-        ),
+        project_sidechain_info(&project, project.tracks.get(&project.master_bus_track_id)),
         ("侧链键源: 主总线不可侧链".to_owned(), false)
     );
     assert_eq!(
@@ -216,19 +217,17 @@ fn builtin_effect_compressor_contract() {
         "内置压缩器必须带 ratio 参数"
     );
     assert!(
-        device.params.iter().any(|p| p.name == "threshold_db" || p.name == "threshold"),
+        device
+            .params
+            .iter()
+            .any(|p| p.name == "threshold_db" || p.name == "threshold"),
         "内置压缩器必须带阈值参数"
     );
 
     // 没有压缩器的轨：第一轮是插入内置压缩器（不是空手而归）。
     let mut project = filled_project();
     let track = first_display_track(&project);
-    project
-        .tracks
-        .get_mut(&track)
-        .expect("轨")
-        .devices
-        .clear();
+    project.tracks.get_mut(&track).expect("轨").devices.clear();
     let ops = compressor_cycle_ratio_ops(&project, track);
     assert_eq!(ops.len(), 1, "无压缩器的轨第一轮恰好一条插入 Op");
     assert!(
@@ -257,12 +256,17 @@ fn slint_ratchets_are_strictly_preserved() {
     // 四路读数的默认值逐字钉死（界面未投影时的空态文案）。
     for (property, literal) in [
         ("sidechain-key-label", "侧链键源: 无 (点击切换)"),
-        ("compressor-info", "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB"),
+        (
+            "compressor-info",
+            "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB",
+        ),
         ("limiter-info", "限制器: 阈值 -0.1 dBTP · 状态 正常"),
         ("shaper-info", "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)"),
     ] {
         assert!(
-            DEVICE_RACK.contains(&format!("in property <string> {property}: @tr(\"{literal}\");")),
+            DEVICE_RACK.contains(&format!(
+                "in property <string> {property}: @tr(\"{literal}\");"
+            )),
             "device_rack 里 {property} 的默认值必须逐字是 {literal}"
         );
     }
@@ -278,7 +282,10 @@ fn slint_ratchets_are_strictly_preserved() {
         );
     }
     // 两条循环回调各声明一次、各转发一次；四路读数各绑一次文本。
-    for callback in ["callback sidechain-cycle();", "callback compressor-cycle-ratio();"] {
+    for callback in [
+        "callback sidechain-cycle();",
+        "callback compressor-cycle-ratio();",
+    ] {
         assert_eq!(
             DEVICE_RACK.matches(callback).count(),
             1,
