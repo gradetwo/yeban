@@ -358,6 +358,14 @@ pub struct UndoPort {
     /// 那份字节里有没有资产池，不属于本端口能决定的事。本池只服务**本地活会话**的保存
     /// （`crate::host::wire_save` 的 `live_port` 那条腿）。
     assets: RefCell<Vec<(AssetHash, Vec<u8>)>>,
+    /// ⭐ 判据注入开关（T-FIX-303）：非零 ⇒ 下一次 `commit_ops*` 无条件返回
+    /// [`UndoRefusal::Model`]。
+    ///
+    /// 只由 `test-support` feature 编译（`yeban-app` 的自引用 dev-dependency 打开），
+    /// ⛔ 不进任何生产构建：`UndoPort` 是具体类型而不是 trait，测试无法替换实现，
+    /// 而"模型拒绝 ⇒ 可见回执"这条出口必须被**真的走一遍**。
+    #[cfg(feature = "test-support")]
+    refuse_next_commit: Cell<bool>,
 }
 
 impl UndoPort {
@@ -370,6 +378,8 @@ impl UndoPort {
             open: Cell::new(false),
             last_origin: RefCell::new(None),
             assets: RefCell::new(Vec::new()),
+            #[cfg(feature = "test-support")]
+            refuse_next_commit: Cell::new(false),
         }
     }
 
@@ -389,7 +399,20 @@ impl UndoPort {
             open: Cell::new(false),
             last_origin: RefCell::new(None),
             assets: RefCell::new(Vec::new()),
+            #[cfg(feature = "test-support")]
+            refuse_next_commit: Cell::new(false),
         }
+    }
+
+    /// ⭐ **判据注入**（T-FIX-303）：让**下一次** `commit_ops` / `commit_ops_with_origin`
+    /// 无条件返回 [`UndoRefusal::Model`]（工程一位不改）。
+    ///
+    /// 只服务 `tests/rejection_feedback.rs`：它要证"模型拒绝 ⇒ 提示条 ＋ 模块回执"这条
+    /// 出口，而 `UndoPort` 是具体类型 ⇒ 只能用这个开关做替身。⛔ 生产构建没有它
+    /// （`test-support` feature 只由本 crate 的 dev-dependency 打开）。
+    #[cfg(feature = "test-support")]
+    pub fn refuse_next_commit_for_test(&self) {
+        self.refuse_next_commit.set(true);
     }
 
     /// 用一份归档资产池**替换**会话的池（打开工程 = 新会话 ⇒ 换一池）。
@@ -648,6 +671,14 @@ impl UndoPort {
         message: &str,
         ops: Vec<Op>,
     ) -> Result<EntityId, UndoRefusal> {
+        // ⭐ T-FIX-303 判据注入：一次性开关，拒绝发生在**任何状态改动之前**
+        // （origin / 会话 / 工程都不动），与真实模型拒绝的可观测形状一致。
+        #[cfg(feature = "test-support")]
+        if self.refuse_next_commit.replace(false) {
+            return Err(UndoRefusal::Model {
+                detail: "injected refusal for criteria (test-support)".to_owned(),
+            });
+        }
         // `OpOrigin` 不是 `Copy`（它还带载荷）⇒ 记一份克隆，原值继续交给提交请求。
         *self.last_origin.borrow_mut() = Some(origin.clone());
         // 先绑定再 match：`match &mut *self.session.borrow_mut() { .. }` 的 `RefMut`

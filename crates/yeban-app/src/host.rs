@@ -1869,7 +1869,9 @@ pub fn wire_track_rename(ui: &MainWindow, port: &Rc<UndoPort>) {
             new_name,
         };
         if port.commit_ops(now_ms(), "rename track", vec![op]).is_err() {
-            eprintln!("[yeban-app] 轨道重命名提交被拒绝");
+            // ⭐ T-FIX-303：模型拒绝必须有**看得见**的出口（桌面双击启动看不到
+            // stderr）。提示条与模块回执一起写，措辞由 [`report_rejected`] 统一。
+            report_rejected(&ui, "轨道重命名");
             return;
         }
         refresh_undo_window(&ui, &port, true);
@@ -5009,6 +5011,8 @@ impl DeviceTarget {
 fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_id: EntityId) {
     let Some(project) = port.try_project() else {
         eprintln!("[yeban-app] 设备旁通：权威会话此刻没有活跃工程");
+        // ⭐ T-FIX-303：预检拒绝也走可见出口（此前只有 stderr，桌面用户看不到）。
+        report_rejected(ui, "旁通切换");
         return;
     };
     let ops = match target {
@@ -5027,6 +5031,9 @@ fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_
         Ok(ops) => ops,
         Err(reason) => {
             eprintln!("[yeban-app] {log_label}旁通被拒绝：{reason}");
+            // ⭐ T-FIX-303：设备身份查不到 / 链被改坏 ⇒ 预检拒绝，必须让用户看见
+            // （提示条 ＋ 模块回执）；逐字原因仍留在 stderr 供诊断。
+            report_rejected(ui, "旁通切换");
             refresh_undo_window(ui, port, true);
             return;
         }
@@ -11496,7 +11503,7 @@ pub fn report_rejected(ui: &MainWindow, action: &str) {
     report_notice(
         ui,
         &format!(
-            "{action}没有生效：这一步被拒绝了，工程没有变化。再试一次；如果仍然不行，说明这个操作当前不适用。"
+            "{action}没有生效：这一步被模型拒绝了，工程没有变化。再试一次；如果仍然不行，说明这个操作当前不适用。"
         ),
         true,
     );
@@ -15622,6 +15629,8 @@ fn apply_action(
                 return delete_selected_clip_placement(ui, port, &project);
             }
             if port.commit_ops(now_ms(), "delete selection", ops).is_err() {
+                // ⭐ T-FIX-303：键盘动作的模型拒绝也要有可见回执（⛔ 只 return false）。
+                report_rejected(ui, "删除选区");
                 return false;
             }
             // 被删的身份已经不存在 ⇒ 选区必须清空, 否则 `selected-note-count` 会停在旧值上
@@ -15668,6 +15677,7 @@ fn apply_action(
                     .commit_ops(now_ms(), "duplicate selection", ops)
                     .is_err()
                 {
+                    report_rejected(ui, "复制选区");
                     return false;
                 }
                 refresh_undo_window(ui, port, true);
@@ -15857,6 +15867,7 @@ fn apply_action(
                 .commit_ops(now_ms(), "resize selection duration", ops)
                 .is_err()
             {
+                report_rejected(ui, "调整选区时长");
                 return false;
             }
             refresh_undo_window(ui, port, true);
@@ -15971,6 +15982,7 @@ fn apply_action(
                 .commit_ops(now_ms(), mixer_switch_commit_message(switch), ops)
                 .is_err()
             {
+                report_rejected(ui, "静音/独奏切换");
                 return false;
             }
             refresh_undo_window(ui, port, true);

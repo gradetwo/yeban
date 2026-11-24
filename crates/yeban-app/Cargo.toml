@@ -288,6 +288,11 @@ rfd = { workspace = true }
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
 
+# `test-support`: ⭐ **判据注入开关**（T-FIX-303）。
+# 只编译 `UndoPort::refuse_next_commit_for_test`（模型拒绝的替身）；由下面的
+# 自引用 dev-dependency 打开，⛔ 不在 `default`、⛔ 不进任何生产构建。
+test-support = []
+
 # `default`: ⭐ 2026-11-12 负责人裁决 —— `in-process-mcp` **默认开**（含其
 # 转发的 `yeban-mcp/mcp-http` 监听代码）。此前它被 MUST-GATE-009 与守卫名单
 # 点名默认关；裁决记录见 ADR-0072。运行时第二道开关不变：不带
@@ -377,6 +382,13 @@ experimental-logic-import = ["yeban-render/experimental-logic-import"]
 # (feature 仍能把它拉进 lib/bin 的构建图; 这里只是让测试目标无论如何都拿得到它)。
 [dev-dependencies]
 yeban-ui-test-port = { workspace = true }
+
+# ⭐ 自引用 dev-dependency（T-FIX-303）：**只为测试目标**打开 `test-support`。
+# Cargo 支持包把自身列为 dev-dependency；它只参与 test/example/bench 目标的构建，
+# ⛔ 不进 `cargo build` / `--release` 的依赖图（核验：`cargo tree -p yeban-app -e normal`
+# 里没有第二个 `yeban-app`）。`UndoPort` 是具体类型而非 trait ⇒ "commit_ops 返回 Err"
+# 的替身只能靠这个编译门，否则那条可见回执出口没法被真的走一遍。
+yeban-app = { path = ".", features = ["test-support"] }
 
 # ---------------------------------------------------------------------------
 # ui-mcp: UI 控制面 —— **只**在测试目标里接线 (live-port 工作线)
