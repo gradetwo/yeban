@@ -35,12 +35,20 @@
 //!
 //! # 本期边界
 //!
-//! 双共振器耦合、Audio In、GUI、预置**不在本期**（见第二期建议写在交付回执）。
+//! 第二期（T-FIX-337）已加双共振器并联耦合（简正频率分裂）；
+//! Audio In 侧链、GUI 参数面、预置**不在本期**（见第二期建议写在交付回执）。
 
 use core::f32::consts::PI;
 
 /// 每共振器的分音上限（RipplerX 同款；本模块固定，不随参数改变）。
 pub const MAX_MODES: usize = 64;
+
+/// 双共振器耦合强度上限（环路增益 `k²·|R₁||R₂|` 必须远小于 1）。
+pub const COUPLING_MAX: f32 = 0.2;
+/// 第二共振器音高比下界（0.25 = 低两个八度）。
+pub const COUPLING_RATIO_MIN: f32 = 0.25;
+/// 第二共振器音高比上界（4 = 高两个八度）。
+pub const COUPLING_RATIO_MAX: f32 = 4.0;
 
 /// 板模型的增益补偿参考阻尼比（MechanOdd "Plate"）。
 const ZETA_REF_PLATE: f32 = 0.01;
@@ -261,6 +269,11 @@ pub struct ModalParams {
     pub pickup_y: f32,
     /// 激励位置 y（归一化 0..=1；二维模型用）。
     pub excitation_y: f32,
+    /// 双共振器耦合强度 k（0..=[`COUPLING_MAX`]；0 = 退化回第一期单共振器）。
+    pub coupling: f32,
+    /// 第二共振器相对基频的音高比（[`COUPLING_RATIO_MIN`]..=[`COUPLING_RATIO_MAX`]；
+    /// 1.0 = 同频，接近 1 的值即失谐 detune）。
+    pub coupling_ratio: f32,
 }
 
 impl Default for ModalParams {
@@ -275,6 +288,8 @@ impl Default for ModalParams {
             pickup_x: 0.5,
             pickup_y: 0.5,
             excitation_y: 0.5,
+            coupling: 0.0,
+            coupling_ratio: 1.0,
         }
     }
 }
@@ -503,35 +518,59 @@ pub enum ModalExcitation {
     Mallet,
 }
 
-/// 单共振器声部（第一期；双共振器耦合 / Audio In 不在范围）。
+/// 双共振器模态声部（第二期，T-FIX-337）。
 ///
 /// MIDI 音高定基频 `f0 = 440·2^((note-69)/12)`，velocity 定激励强度；
-/// 这两个映射都在 **note-on**（非逐样本）时做，process 只读结果。
+/// 两个映射都在 **note-on**（非逐样本）时做，process 只读结果。
+///
+/// 拓扑 = **并联耦合的简正模态分解**（RipplerX 的 parallel coupling 口径；
+/// MechanOdd 只做数学对照）：
+///
+/// ```text
+/// 两只弹簧耦合振子（k = 归一化耦合强度，f₂ = f₀ · ratio）：
+///   f±² = (f₁² + f₂²)/2 ± sqrt( ((f₁² − f₂²)/2)² + (k · f₁ · f₂)² )
+/// ```
+///
+/// 每只共振器各自渲染一个简正模态（`f₊` / `f₋`），激励并联进入两只，
+/// 输出求和。`k = 0` 时两式退化为 `f₁` / `f₂`，且第二只激励增益为 0 ⇒
+/// `y₂ ≡ 0`、`y₁` 与第一期单共振器**逐位一致**（退化判据）。
+/// `k` 增大时两个简正频率从 `f₀` 对称分开、能量同时进入两只（第二期判据）。
 #[derive(Debug, Clone)]
 pub struct ModalVoice {
     resonator: ModalResonator,
+    resonator_b: ModalResonator,
     noise: NoiseBurst,
     mallet: MalletExciter,
     excitation: ModalExcitation,
+    /// 已钳位的耦合强度（note-on 时从 params 取）。
+    coupling: f32,
+    /// 最近一次 process 的两只输出（诊断 / 判据用，不在实时路径读取）。
+    last_a: f32,
+    last_b: f32,
 }
 
 impl ModalVoice {
     /// 空声部（配置期分配；`note_on` 前 process 输出 0）。
     pub fn new(sample_rate: f32, excitation: ModalExcitation) -> Self {
+        let defaults = ModalParams::default();
         Self {
-            resonator: ModalResonator::configure(
+            resonator: ModalResonator::configure(sample_rate, 440.0, ModalModel::String, &defaults),
+            resonator_b: ModalResonator::configure(
                 sample_rate,
                 440.0,
                 ModalModel::String,
-                &ModalParams::default(),
+                &defaults,
             ),
             noise: NoiseBurst::new(0x9E37_79B9, 512, 0.995),
             mallet: MalletExciter::new(64, 0.5),
             excitation,
+            coupling: 0.0,
+            last_a: 0.0,
+            last_b: 0.0,
         }
     }
 
-    /// note-on：按 MIDI 音高 / velocity 配置共振器与激励（⛔ 不是逐样本路径）。
+    /// note-on：按 MIDI 音高 / velocity 配置两只共振器与激励（⛔ 不是逐样本路径）。
     pub fn note_on(
         &mut self,
         sample_rate: f32,
@@ -542,10 +581,21 @@ impl ModalVoice {
     ) {
         let semitones = i32::from(midi_note) - 69;
         let f0 = 440.0 * libm::powf(2.0, semitones as f32 / 12.0);
-        self.resonator = ModalResonator::configure(sample_rate, f0, model, params);
+        let ratio = params
+            .coupling_ratio
+            .clamp(COUPLING_RATIO_MIN, COUPLING_RATIO_MAX);
+        self.coupling = params.coupling.clamp(0.0, COUPLING_MAX);
+        let (f_plus, f_minus) = coupled_eigenfrequencies(f0, f0 * ratio, self.coupling);
+        self.resonator = ModalResonator::configure(sample_rate, f_plus, model, params);
+        self.resonator_b = ModalResonator::configure(sample_rate, f_minus, model, params);
         let v = f32::from(velocity.clamp(1, 127)) / 127.0;
         self.resonator.set_excitation_gain(v);
+        // 并联耦合：第二只的激励按耦合强度加权（k=0 ⇒ 恒 0，退化可逐位复现）。
+        self.resonator_b.set_excitation_gain(v * self.coupling);
         self.resonator.reset();
+        self.resonator_b.reset();
+        self.last_a = 0.0;
+        self.last_b = 0.0;
         match self.excitation {
             ModalExcitation::NoiseBurst => self.noise.restart(),
             ModalExcitation::Mallet => self.mallet.restart(),
@@ -559,8 +609,38 @@ impl ModalVoice {
             ModalExcitation::NoiseBurst => self.noise.next_sample(),
             ModalExcitation::Mallet => self.mallet.next_sample(),
         };
-        self.resonator.process(source)
+        let a = self.resonator.process(source);
+        let b = self.resonator_b.process(source);
+        self.last_a = a;
+        self.last_b = b;
+        // k=0 时第二只激励增益为 0 ⇒ b ≡ 0；仍显式走退化路径，保证逐位一致。
+        let out = if self.coupling == 0.0 { a } else { a + b };
+        if out.is_finite() { out } else { 0.0 }
     }
+
+    /// 最近一次 process 的两只共振器输出（只读诊断，⛔ 不用于逐样本控制）。
+    pub fn last_outputs(&self) -> (f32, f32) {
+        (self.last_a, self.last_b)
+    }
+
+    /// 当前已钳位的耦合强度（判据用）。
+    pub fn coupling(&self) -> f32 {
+        self.coupling
+    }
+}
+
+/// 并联耦合两只振子的两个简正频率（`k` 已是 0..=[`COUPLING_MAX`]）。
+///
+/// `f±² = (f₁²+f₂²)/2 ± sqrt(((f₁²−f₂²)/2)² + (k·f₁·f₂)²)`；
+/// `k=0` 时精确退化为 `(f₁, f₂)`（`f₁=f₂` 时两者相等，差为 0）。
+fn coupled_eigenfrequencies(f1: f32, f2: f32, k: f32) -> (f32, f32) {
+    let a = 0.5 * (f1 * f1 + f2 * f2);
+    let d = 0.5 * (f1 * f1 - f2 * f2);
+    let c = k * f1 * f2;
+    let root = libm::sqrtf(d * d + c * c);
+    let hi = libm::sqrtf((a + root).max(0.0));
+    let lo = libm::sqrtf((a - root).max(0.0));
+    (hi, lo)
 }
 
 #[cfg(test)]
@@ -724,5 +804,189 @@ mod tests {
             assert!(x.is_finite() && x.abs() <= 1.0);
         }
         assert_eq!(a.next_sample(), 0.0, "burst 结束后必须归零");
+    }
+
+    /// 目标频率处的离散傅里叶幅度（测试专用；非实时路径）。
+    fn magnitude_at(samples: &[f32], freq: f32) -> f32 {
+        let w = 2.0 * core::f32::consts::PI * freq / SR;
+        let mut re = 0.0f32;
+        let mut im = 0.0f32;
+        for (n, s) in samples.iter().enumerate() {
+            re += s * libm::cosf(w * n as f32);
+            im -= s * libm::sinf(w * n as f32);
+        }
+        libm::sqrtf(re * re + im * im)
+    }
+
+    /// 在 `[lo, hi]` 内以 0.5 Hz 步长找最高峰（返回频率与幅度）。
+    fn peak_in(samples: &[f32], lo: f32, hi: f32) -> (f32, f32) {
+        let mut best = (lo, 0.0f32);
+        let mut f = lo;
+        while f <= hi {
+            let m = magnitude_at(samples, f);
+            if m > best.1 {
+                best = (f, m);
+            }
+            f += 0.5;
+        }
+        best
+    }
+
+    fn render_voice(model: ModalModel, k: f32, ratio: f32, frames: usize) -> Vec<f32> {
+        let mut voice = ModalVoice::new(SR, ModalExcitation::Mallet);
+        let params = ModalParams {
+            coupling: k,
+            coupling_ratio: ratio,
+            ..ModalParams::default()
+        };
+        voice.note_on(SR, model, 69, 127, &params);
+        (0..frames).map(|_| voice.process()).collect()
+    }
+
+    #[test]
+    fn coupled_eigenfrequencies_degenerate_at_zero_and_split_with_coupling() {
+        let (hi0, lo0) = coupled_eigenfrequencies(440.0, 440.0, 0.0);
+        assert!((hi0 - 440.0).abs() < 1e-4 && (lo0 - 440.0).abs() < 1e-4);
+        // 失谐比在 k=0 时原样保留。
+        let (hi_d, lo_d) = coupled_eigenfrequencies(440.0, 550.0, 0.0);
+        assert!((hi_d - 550.0).abs() < 1e-4 && (lo_d - 440.0).abs() < 1e-4);
+
+        // 同频耦合：k 越大，两简正频率分得越开（对称于 f0）。
+        let mut previous_split = 0.0f32;
+        for k in [0.02f32, 0.05, 0.1, 0.2] {
+            let (hi, lo) = coupled_eigenfrequencies(440.0, 440.0, k);
+            let split = hi - lo;
+            assert!(split > previous_split, "分裂必须随 k 单调增大");
+            assert!(
+                ((hi * hi + lo * lo) * 0.5 - 440.0 * 440.0).abs() < 1.0,
+                "两简正频率的平方均值必须回到 f0²"
+            );
+            previous_split = split;
+        }
+        // 解析读数与弹簧耦合振子的 √(1±k) 律一致。
+        let (hi, lo) = coupled_eigenfrequencies(440.0, 440.0, 0.1);
+        assert!((hi - 440.0 * libm::sqrtf(1.1)).abs() < 1e-3);
+        assert!((lo - 440.0 * libm::sqrtf(0.9)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn zero_coupling_is_bit_identical_to_the_single_resonator() {
+        let params = ModalParams {
+            coupling: 0.0,
+            ..ModalParams::default()
+        };
+        let mut voice = ModalVoice::new(SR, ModalExcitation::Mallet);
+        voice.note_on(SR, ModalModel::String, 69, 127, &params);
+
+        let mut reference = ModalResonator::configure(SR, 440.0, ModalModel::String, &params);
+        reference.set_excitation_gain(1.0);
+        reference.reset();
+        let mut mallet = MalletExciter::new(64, 0.5);
+        mallet.restart();
+
+        let mut differing_bits = 0usize;
+        for _ in 0..1024 {
+            let source = mallet.next_sample();
+            let expected = reference.process(source);
+            let actual = voice.process();
+            if expected.to_bits() != actual.to_bits() {
+                differing_bits += 1;
+            }
+        }
+        assert_eq!(differing_bits, 0, "k=0 必须与第一期单共振器逐位一致");
+        assert_eq!(voice.coupling(), 0.0);
+    }
+
+    #[test]
+    fn coupling_feeds_energy_into_the_second_resonator() {
+        let mut silent_twin = ModalVoice::new(SR, ModalExcitation::Mallet);
+        silent_twin.note_on(
+            SR,
+            ModalModel::String,
+            69,
+            127,
+            &ModalParams {
+                coupling: 0.0,
+                ..ModalParams::default()
+            },
+        );
+        let mut coupled = ModalVoice::new(SR, ModalExcitation::Mallet);
+        coupled.note_on(
+            SR,
+            ModalModel::String,
+            69,
+            127,
+            &ModalParams {
+                coupling: 0.1,
+                ..ModalParams::default()
+            },
+        );
+
+        let mut silence_energy = 0.0f32;
+        let mut coupled_energy = 0.0f32;
+        for _ in 0..2048 {
+            silent_twin.process();
+            let (_, b0) = silent_twin.last_outputs();
+            silence_energy += b0 * b0;
+            coupled.process();
+            let (_, b1) = coupled.last_outputs();
+            coupled_energy += b1 * b1;
+        }
+        assert_eq!(silence_energy, 0.0, "k=0 时第二只必须完全没有能量");
+        assert!(coupled_energy > 0.0, "k>0 时激励必须并联进入第二只");
+    }
+
+    #[test]
+    fn coupling_splits_the_spectrum_into_two_peaks() {
+        let spectrum = |k: f32| {
+            let x = render_voice(ModalModel::String, k, 1.0, 16_384);
+            let (hi, lo) = coupled_eigenfrequencies(440.0, 440.0, k);
+            (
+                peak_in(&x, lo - 8.0, lo + 8.0),
+                peak_in(&x, hi - 8.0, hi + 8.0),
+            )
+        };
+        let (lo_weak, hi_weak) = spectrum(0.1);
+        let (lo_strong, hi_strong) = spectrum(0.2);
+        // 两个峰都真实存在，且强耦合下分离更宽（不是单峰偏移）。
+        assert!(lo_weak.1 > 0.2 && hi_weak.1 > 0.2, "弱耦合下两峰都必须在");
+        assert!(
+            lo_strong.1 > 0.2 && hi_strong.1 > 0.2,
+            "强耦合下两峰都必须在"
+        );
+        let weak_split = hi_weak.0 - lo_weak.0;
+        let strong_split = hi_strong.0 - lo_strong.0;
+        assert!(
+            weak_split > 10.0,
+            "弱耦合也必须把两峰分开: lo={lo_weak:?} hi={hi_weak:?} split={weak_split}"
+        );
+        assert!(strong_split > weak_split, "耦合越强，两峰分得越开");
+        assert!(
+            hi_strong.0 > hi_weak.0 && lo_strong.0 < lo_weak.0,
+            "两个峰必须对称地向外分开"
+        );
+    }
+
+    #[test]
+    fn coupling_is_finite_and_audible_for_every_model() {
+        for model in [
+            ModalModel::String,
+            ModalModel::Beam,
+            ModalModel::Membrane,
+            ModalModel::Plate,
+        ] {
+            let plain = render_voice(model, 0.0, 1.0, 2048);
+            let coupled = render_voice(model, 0.2, 1.0, 2048);
+            let finite = coupled.iter().filter(|s| s.is_finite()).count();
+            assert_eq!(finite, coupled.len(), "{model:?} 耦合输出必须有限");
+            let peak = coupled.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(peak > 1e-4, "{model:?} 耦合后必须仍然发声");
+            let differing = plain
+                .iter()
+                .zip(coupled.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert!(differing > 0, "{model:?} 耦合必须真的改变输出");
+        }
     }
 }

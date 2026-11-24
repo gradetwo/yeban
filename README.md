@@ -375,6 +375,7 @@ local project (`synth-core`), ported into `yeban-dsp` with per-file provenance r
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) §3.
 
 The native modal-resonator core (`yeban-dsp::modal`) follows the algorithm of [RipplerX](https://github.com/tiagolr/ripplerx) by tiagolr (GPL-3.0, same licence as Yeban; no JUCE framework code transplanted), whose lineage runs through Rippler2 and [Saike's Partials](https://github.com/JoepVanlier/JSFX) (MIT).
+Its dual-resonator stage (T-FIX-337) uses the normal-mode frequencies of two spring-coupled oscillators in a parallel topology; the per-model provenance, parameters and acceptance criteria are in [`docs/ledger/modal-synth.md`](docs/ledger/modal-synth.md).
 Its formulas were cross-checked against the math section of [MechanOdd](https://github.com/odoare/MechanOdd) (math only — code licence undeclared, no code taken); per-model provenance and the full selection audit are in [`docs/ledger/modal-synth.md`](docs/ledger/modal-synth.md).
 
 The full reuse audit — what to lift, what to learn from, what to discard, and the one genuine licence hazard

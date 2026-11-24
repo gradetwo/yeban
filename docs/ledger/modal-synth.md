@@ -49,8 +49,24 @@
 增益补偿、阻尼随频率斜坡、增益补偿钳位、噪声 burst 与 mallet 两个激励、
 单共振器声部（MIDI 音高 → `f0`，velocity → 激励强度）、确定性逐样本 process。
 
-**未做**：双共振器耦合（serial / parallel）、Audio In 侧链、GUI、预置、
-Drumhead / Marimba / Tube / Squared 模型。
+**未做**：Audio In 侧链、GUI、预置、Drumhead / Marimba / Tube / Squared 模型。
+
+## 2.1 第二期（T-FIX-337，2026-11-24）：双共振器并联耦合
+
+- **拓扑**：两只共振器按**弹簧耦合振子的两个简正频率**配置（RipplerX 的
+  parallel-coupling 口径；Chromaphone 专有，不参照其实现）：
+  `f±² = (f₁²+f₂²)/2 ± sqrt(((f₁²−f₂²)/2)² + (k·f₁·f₂)²)`。
+  每只共振器渲染一个简正模态，激励并联进入两只（第二只按 `k` 加权），输出求和。
+- **参数**：`ModalParams.coupling`（0..=`COUPLING_MAX`=0.2）与
+  `ModalParams.coupling_ratio`（`COUPLING_RATIO_MIN`=0.25 ..= `COUPLING_RATIO_MAX`=4，
+  1.0 = 同频，接近 1 的值即失谐）。
+- **退化**：`k=0` 时两式精确退化为 `(f₁, f₂)`，第二只激励增益为 0 ⇒ 输出与第一期
+  单共振器**逐位一致**（`zero_coupling_is_bit_identical_to_the_single_resonator`）。
+- **判据**：简正频率解析式（退化 / 单调分裂 / 平方均值守恒）、能量进入第二只
+  （`coupling_feeds_energy_into_the_second_resonator`）、频谱双峰且分离随 `k` 增大
+  （`coupling_splits_the_spectrum_into_two_peaks`）、四模型有限且发声
+  （`coupling_is_finite_and_audible_for_every_model`）。
+- **实时纪律**：仍零分配、无锁、无 I/O；process 只做两条并行共振器组求和。
 
 ## 3. 第二期建议范围
 
