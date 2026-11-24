@@ -757,7 +757,51 @@ fn help_to_json(state: &HelpState) -> serde_json::Value {
 /// 从默认路径读设置（见 [`load_from`] 的容错口径）。
 #[must_use]
 pub fn load() -> Settings {
-    load_from(&settings_path())
+    let mut settings = load_from(&settings_path());
+    // ⭐ T-FIX-312：启动时把**已经不存在**的最近条目清掉并写回设置。
+    // `load_from` 保持纯读（判据仍可用它读原始文件）；清理只在默认路径的
+    // `load()` 发生，且只有真的变了才写盘（⛔ 不让每次读设置都制造一次写）。
+    let pruned = prune_recent_projects(&settings.recent_projects);
+    if pruned != settings.recent_projects {
+        settings.recent_projects = pruned;
+        if let Err(error) = save(&settings) {
+            eprintln!("[yeban-app] 最近工程清单清理写回失败（下次启动会再试）: {error}");
+        }
+    }
+    settings
+}
+
+/// ⭐ **剔除失效的最近条目**（T-FIX-312；纯函数）。
+///
+/// 判据只有一条：`path.is_file()`。目录 / 不存在 / 无权限都算"失效" ——
+/// 启动选择器里没有可打开的文件就是死行。保留原顺序（最近在前）与上限无关：
+/// 剔除只会**腾出**槽位，新打开的自然能进来。
+#[must_use]
+pub fn prune_recent_projects(list: &[RecentProject]) -> Vec<RecentProject> {
+    list.iter()
+        .filter(|entry| entry.path.is_file())
+        .cloned()
+        .collect()
+}
+
+/// ⭐ 从最近清单**移除一条**（T-FIX-312）：读-改-写同一条默认路径，
+/// 保住 `language` / `layout` 等其它字段。路径按**逐字节相等**匹配
+/// （不做规范化：清单里存的就是用户当时给的那条路径）。
+pub fn forget_recent_project(path: &std::path::Path) {
+    let mut settings = load();
+    settings.recent_projects.retain(|entry| entry.path != path);
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 从最近清单移除写回失败（下次启动仍在）: {error}");
+    }
+}
+
+/// ⭐ **清空最近清单**（T-FIX-312）：写回空数组，⛔ 不再写回死路径。
+pub fn clear_recent_projects() {
+    let mut settings = load();
+    settings.recent_projects.clear();
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 清空最近清单写回失败（下次启动仍在）: {error}");
+    }
 }
 
 /// 把设置写到 `path`（先建父目录，写临时文件再 rename，不留半截文件）。

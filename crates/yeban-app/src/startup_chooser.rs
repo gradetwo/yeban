@@ -150,6 +150,10 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
     let recent = settings
         .recent_projects
         .iter()
+        // ⭐ T-FIX-312：死行不进选择器。设置层 `load()` 会在启动时 prune ＋
+        // 写回；这里再 filter 一次是第二道闸（防止调用方直接传未经 load 的
+        // Settings，或文件在两次读之间被删/移动）。
+        .filter(|entry: &&RecentProject| entry.path.is_file())
         .map(|entry: &RecentProject| RecentEntry {
             name: entry
                 .path

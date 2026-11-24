@@ -107,10 +107,13 @@ fn startup_route_follows_open_argument() {
     );
 }
 
-/// 最近行模型：顺序 = 记录顺序；失效条目置灰且副文字写明原因；
-/// 相对时间跟打开时刻走。
+/// 最近行模型：顺序 = 记录顺序；**失效条目不进选择器**（T-FIX-312，
+/// `gather` 过滤 + 设置层 load 时 prune 写回）；相对时间跟打开时刻走。
+///
+/// `recent_rows` 本身仍保留"置灰"分支（单独传死条目时逐字如实），
+/// 但正常装配路径先把他剔掉，⛔ 不让死行占满 10 槽。
 #[test]
-fn recent_rows_keep_order_and_disable_missing_files() {
+fn recent_rows_keep_order_and_drop_missing_files() {
     let scratch = Scratch::new();
     let alive = scratch.join("活着.yeban");
     write_project_file(&alive);
@@ -129,12 +132,16 @@ fn recent_rows_keep_order_and_disable_missing_files() {
         ..Settings::default()
     };
     let data = gather(&settings, &scratch.roots());
-    assert_eq!(data.recent.len(), 2);
+    assert_eq!(
+        data.recent.len(),
+        1,
+        "T-FIX-312：文件已删除的条目不得再进选择器（⛔ 占位）"
+    );
     assert!(data.recent[0].exists, "在盘上的条目必须判为存在");
-    assert!(!data.recent[1].exists, "不在盘上的条目必须判为不存在");
+    assert_eq!(data.recent[0].path, alive);
 
     let rows = recent_rows(&data.recent, Language::ZhCn, NOW_MS);
-    assert_eq!(rows.len(), 2, "最近清单一条一行");
+    assert_eq!(rows.len(), 1, "最近清单一条一行");
     assert_eq!(rows[0].label, "活着");
     assert!(rows[0].enabled, "存在的条目可点");
     assert!(
@@ -142,12 +149,35 @@ fn recent_rows_keep_order_and_disable_missing_files() {
         "副文字必须带相对时间，实际 {}",
         rows[0].detail
     );
-    assert_eq!(rows[1].label, "已删除");
-    assert!(!rows[1].enabled, "失效条目必须置灰不可点");
+    // 纯行模型层：即使调用方硬塞一条死条目，也必须置灰并写明原因。
+    let dead = [RecentProject {
+        path: ghost,
+        opened_at_unix_ms: 0,
+    }];
+    let data = gather(
+        &Settings {
+            recent_projects: dead.to_vec(),
+            ..Settings::default()
+        },
+        &scratch.roots(),
+    );
+    let rows = recent_rows(&data.recent, Language::ZhCn, NOW_MS);
+    assert!(rows.is_empty(), "gather 对死条目一律过滤");
+    let rows = recent_rows(
+        &[yeban_app::startup_chooser::RecentEntry {
+            name: "已删除".to_owned(),
+            exists: false,
+            path: scratch.join("已删除.yeban"),
+            opened_at_unix_ms: 0,
+        }],
+        Language::ZhCn,
+        NOW_MS,
+    );
+    assert!(!rows[0].enabled, "失效条目在纯行模型层仍必须置灰不可点");
     assert!(
-        rows[1].detail.contains("文件已不存在"),
+        rows[0].detail.contains("文件已不存在"),
         "失效条目的副文字必须写明原因，实际 {}",
-        rows[1].detail
+        rows[0].detail
     );
 }
 
@@ -288,7 +318,11 @@ fn startup_chooser_live_window_flow() {
         yeban_app::save::save_archive_file(&archive, &template_path).expect("写模板甲");
     }
     let template_bytes = std::fs::read(&template_path).expect("读模板字节");
-    let ghost_path = scratch.join("不存在.yeban");
+    // T-FIX-312：最近清单里预置一条**在盘上**的记录。修前这里故意放一条
+    // 死路径来钉"置灰行"；现在 `load()` 会 prune + gather 会 filter，死行
+    // 根本进不了选择器，因此夹具改成活文件（点击/打开在下面的腿里另有覆盖）。
+    let recent_file_path = scratch.join("最近工程.yeban");
+    std::fs::write(&recent_file_path, b"fixture-only").expect("夹具：最近记录在盘上");
     // 文件型 demo 夹具：filled 样本写成 `.yeban` 放进演示目录
     // （演示清单已无内置条目，§5 的打开腿走文件型 demo）。
     let demos_dir = scratch.join("demos");
@@ -321,7 +355,7 @@ fn startup_chooser_live_window_flow() {
             demos_dir.as_os_str(),
         );
     }
-    yeban_app::settings::record_recent_project(&ghost_path, NOW_MS - 60_000);
+    yeban_app::settings::record_recent_project(&recent_file_path, NOW_MS - 60_000);
     assert_eq!(
         yeban_app::settings::load().recent_projects.len(),
         1,
@@ -403,28 +437,26 @@ fn startup_chooser_live_window_flow() {
     );
     ui.set_startup_chooser_open(true);
 
-    // ---- 1. 最近：失效条目置灰，点开只报错、工程不动、弹窗不关 ---------
+    // ---- 1. 最近：在盘上的记录可点；失效记录（纯函数层另测）不进清单 -----
     ui.invoke_startup_category_selected(1);
     let rows = ui.get_startup_rows();
-    assert_eq!(rows.iter().count(), 1, "最近分类应有一条失效记录");
-    let ghost_row = rows.iter().next().expect("第一行");
-    assert!(!ghost_row.enabled, "失效条目必须置灰");
+    assert_eq!(rows.iter().count(), 1, "最近分类应有一条活记录");
+    let recent_row = rows.iter().next().expect("第一行");
+    assert!(recent_row.enabled, "在盘上的条目必须可点");
     assert!(
-        ghost_row.detail.contains("文件已不存在"),
-        "失效条目副文字必须写明原因，实际 {}",
-        ghost_row.detail
+        recent_row.detail.contains("最近工程.yeban"),
+        "副文字必须带路径（相对时间按真实时钟算，不钉字面值），实际 {}",
+        recent_row.detail
     );
     ui.invoke_startup_entry_activated(0);
-    assert!(ui.get_startup_chooser_open(), "点失效条目后选择器不得关");
+    assert!(
+        ui.get_startup_chooser_open(),
+        "点条目只选中，不直接关选择器"
+    );
     assert_eq!(
         undo.fingerprint().as_deref(),
         Some(placeholder_fingerprint.as_str()),
-        "点失效条目后当前工程一位不动"
-    );
-    assert!(
-        ui.get_module_status().contains("recent-missing"),
-        "失效条目回执必须报 recent-missing，实际 {}",
-        ui.get_module_status()
+        "单击条目只选中，当前工程一位不动"
     );
 
     // ---- 2. 打开已有工程…：B 打开且排进最近第一位 ------------------------
@@ -432,12 +464,12 @@ fn startup_chooser_live_window_flow() {
     assert!(!ui.get_startup_chooser_open(), "打开成功后选择器必须关");
     assert_eq!(undo.project().title, "工程B", "会话必须换成工程 B");
     let recent = yeban_app::settings::load().recent_projects;
-    assert_eq!(recent.len(), 2, "打开 B 后最近清单 = B + 失效条目");
+    assert_eq!(recent.len(), 2, "打开 B 后最近清单 = B + 先前那条活记录");
     assert_eq!(
         recent[0].path, project_b_path,
         "刚打开的工程必须排最近第一位"
     );
-    assert_eq!(recent[1].path, ghost_path, "旧条目顺延一位");
+    assert_eq!(recent[1].path, recent_file_path, "旧条目顺延一位");
 
     // ---- 3. 工程模板：未命名副本打开，模板字节不变，不记最近 -------------
     ui.set_startup_chooser_open(true);

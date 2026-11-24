@@ -10775,11 +10775,14 @@ pub fn wire_startup_chooser(
                         return;
                     };
                     if !entry.exists {
+                        // ⭐ T-FIX-312：失效条目不再只报错 —— 顺手从最近清单移除
+                        // 并写回 settings.json，下次启动不再占一格。当前工程仍一位不动。
+                        crate::settings::forget_recent_project(&entry.path);
                         fail(
                             &ui,
                             "recent-missing",
                             &format!(
-                                "`{}` 已不存在，不能打开（当前工程一位没动）",
+                                "`{}` 已不存在，不能打开（当前工程一位没动）；已从最近清单移除",
                                 entry.path.display()
                             ),
                         );
@@ -26084,6 +26087,14 @@ pub fn wire_aether_actions(
                     "help-shortcuts" => crate::help::open_shortcuts(&ui),
                     "help-onboarding" => crate::help::open_onboarding(&ui),
                     "help-lessons" => crate::help::open_lessons(&ui, &port),
+                    // ⭐ T-FIX-312：最近工程清单的清空入口（命令面板 / 菜单
+                    // 走 on_command_execute 的同一个分派点）。单条移除的另一条
+                    // 路由"打开文件失败 ⇒ forget_recent_project"在启动选择器臂里。
+                    "recent-clear" => {
+                        crate::settings::clear_recent_projects();
+                        let notice = "最近工程清单已清空（settings.json 已写回）";
+                        update_toast(&ui, notice);
+                    }
                     other => dispatch_aether_command(&ui, other),
                 }
             }
