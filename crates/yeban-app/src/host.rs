@@ -10045,27 +10045,110 @@ pub fn new_project_archive_with_clock(
     }
 }
 
+/// ⭐ **新建工程落盘的分类型错误**（T-FIX-308）。
+///
+/// 为什么要分型：`Exists` 是**可恢复**的（用户换一个文件名，或在 GUI 里显式确认
+/// 覆盖），而锁被占 / I/O 失败不是。把它压成一句字符串会让调用方只能靠猜。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewProjectError {
+    /// 目标路径已存在；**一个字节都没写**。
+    Exists {
+        /// 已存在的目标路径。
+        path: std::path::PathBuf,
+    },
+    /// 其它失败（容器被拒 / `.yeban.lock` 被占 / I/O）；原文给用户看。
+    Refused(String),
+}
+
+impl core::fmt::Display for NewProjectError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Exists { path } => write!(
+                formatter,
+                "目标工程已存在 `{}` ⇒ 新建工程不会覆盖它（请换一个文件名，或在确认后显式覆盖）",
+                path.display()
+            ),
+            Self::Refused(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl core::error::Error for NewProjectError {}
+
 /// ⭐ **「把一个空工程写到 `path`」的纯函数部分**（任务单 `#129`）—— 无界面、无对话框。
 ///
-/// 落点复用**唯一**的归档写入口 [`crate::save::save_archive_file`]：它与 CLI 的
-/// `--save-as`、与界面的"保存"争**同一把** `.yeban.lock`、走**同一条**原子写
-/// （临时文件 → `sync_all` → `rename` → 刷目录）⇒ 新建出来的文件与 CLI 那条路
-/// **逐字节相同**。
+/// 落点复用**唯一**的归档写入口 [`crate::save::save_new_archive_file`]（T-FIX-308）：
+/// 与 [`crate::save::save_archive_file`] 共用同一条原子写与同一把 `.yeban.lock`，
+/// 区别只有**目标已存在 ⇒ [`NewProjectError::Exists`]、一个字节都不写**。
+/// 新建出来的文件与 CLI 那条路**逐字节相同**。
 ///
 /// # Errors
 ///
-/// 给用户看的完整原因（**非空**）：容器被拒 / `.yeban.lock` 被占 / I/O 失败，原样上报。
+/// [`NewProjectError::Exists`]（目标已存在，可恢复）或 [`NewProjectError::Refused`]
+/// （容器被拒 / 锁被占 / I/O，给用户看的原文）。
 /// 调用方（[`wire_new_project`]）把它写进 `module-status` 回执，⛔ 不静默、⛔ 不假装成功。
 pub fn create_new_project_file(
     path: impl AsRef<std::path::Path>,
+) -> Result<crate::save::SaveReport, NewProjectError> {
+    crate::save::save_new_archive_file(&new_project_archive(), path).map_err(|error| match error {
+        crate::save::SaveError::TargetExists { path } => NewProjectError::Exists { path },
+        other => NewProjectError::Refused(format!("新建工程落盘失败: {other}")),
+    })
+}
+
+/// ⭐ **覆盖写一个空白工程**（T-FIX-308）：**只**在用户对"目标已存在"做过显式确认后调用。
+///
+/// 与 [`create_new_project_file`] **刻意分成两个名字**（不是同义的别名）：新建 =
+/// 不覆盖，覆盖 = 需要一次确认。类型上不给人"顺手把新建当覆盖用"的机会。
+///
+/// # Errors
+///
+/// 给用户看的完整原因（容器被拒 / 锁被占 / I/O）。
+pub fn overwrite_new_project_file(
+    path: impl AsRef<std::path::Path>,
 ) -> Result<crate::save::SaveReport, String> {
     crate::save::save_archive_file(&new_project_archive(), path)
-        .map_err(|error| format!("新建工程落盘失败: {error}"))
+        .map_err(|error| format!("覆盖工程落盘失败: {error}"))
+}
+
+/// ⭐ **新建落点的裁决**（T-FIX-308；纯函数、无对话框）。
+///
+/// 目标不存在 ⇒ [`NewProjectTarget::Create`]；已存在 ⇒ 只有 `confirm(path)` 为真
+/// 才 [`NewProjectTarget::Overwrite`]，否则 [`NewProjectTarget::Cancelled`]。
+///
+/// 把"要不要覆盖"从一个**平台对话框的实现细节**变成一条可判的纯决策：
+/// 调用方（[`wire_new_project`]）把 `picker.confirm_overwrite` 当 `confirm` 传进来，
+/// 判据则可以用闭包注入"取消/确认"两种答案，无需真弹窗。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewProjectTarget {
+    /// 目标不存在 ⇒ 走新建（不覆盖）路径。
+    Create,
+    /// 目标存在且用户确认 ⇒ 走显式覆盖路径。
+    Overwrite,
+    /// 目标存在但用户取消 ⇒ 什么都不做。
+    Cancelled,
+}
+
+/// 见 [`NewProjectTarget`]：`confirm` 只在目标已存在时被调用一次。
+pub fn new_project_target(
+    path: &std::path::Path,
+    confirm: impl FnOnce(&std::path::Path) -> bool,
+) -> NewProjectTarget {
+    if !path.exists() {
+        return NewProjectTarget::Create;
+    }
+    if confirm(path) {
+        NewProjectTarget::Overwrite
+    } else {
+        NewProjectTarget::Cancelled
+    }
 }
 
 /// ⭐ **运行期「新建工程」的唯一接线**（任务单 `#129`）：`.slint` 的 `new-project` 回调 ⇒
-/// 保存对话框（"新工程存到哪里"）⇒ [`create_new_project_file`] ⇒ [`OpenProjectRuntime::open_runtime`]
-/// （**打开工程那条换工程路径**）⇒ **既有**的 `module-status` 回执通道。
+/// 保存对话框（"新工程存到哪里"）⇒ 目标存在时一次**显式覆盖确认**（T-FIX-308）⇒
+/// [`create_new_project_file`]（不覆盖）或 [`overwrite_new_project_file`]（确认后才走）
+/// ⇒ [`OpenProjectRuntime::open_runtime`]（**打开工程那条换工程路径**）⇒ **既有**的
+/// `module-status` 回执通道。
 ///
 /// ## 顺序是承重的（失败时当前工程**一位不动**）
 ///
@@ -10075,8 +10158,15 @@ pub fn create_new_project_file(
 ///    （本仓最忌讳的假读数；任务单 `#129` §1.4 点名要求）。
 /// 2. **问一次保存对话框**：`None`（用户取消）⇒ **什么都不做** —— ⛔ 不写回执、⛔ 不建文件
 ///    （"我不想"与"出错了"是两件事，与 [`wire_save`] / [`wire_open_project`] **逐字一致**）。
-/// 3. **落盘**（[`create_new_project_file`]）：失败 ⇒ **响亮**报 `error=create`，当前工程一位不动。
-/// 4. **换成新工程**：走 [`OpenProjectRuntime::open_runtime`]（与 [`wire_open_project`] **同一个**
+/// 3. **目标已存在？先确认**（T-FIX-308）：[`new_project_target`] 是纯裁决 ——
+///    不存在 ⇒ 新建；存在 ⇒ 调 `FilePicker::confirm_overwrite`，**取消 ⇒ 直接返回**
+///    （⛔ 不写文件、⛔ 不写回执、当前工程一位不动）；确认 ⇒ 才走显式覆盖入口。
+///    ⛔ 平台保存对话框自带的"是否替换"**不是**本仓的契约（脚本假实现 / 其它 picker
+///    可以直接返回已有路径）。
+/// 4. **落盘**（[`create_new_project_file`] / [`overwrite_new_project_file`]）：
+///    失败 ⇒ **响亮**报 `error=create`，当前工程一位不动。覆盖成功时回执带
+///    `overwrite=true`（新建永远不出现这一行）。
+/// 5. **换成新工程**：走 [`OpenProjectRuntime::open_runtime`]（与 [`wire_open_project`] **同一个**
 ///    换工程实现）。它读的是**刚写出的那个文件**（⛔ 不把内存里的对象直接塞进会话）⇒
 ///    "界面上的工程"与"磁盘上的字节"不可能分叉。
 ///    失败 ⇒ 报 `error=swap` 并**点名**文件已经写出（不静默、不假装换成功）。
@@ -10133,8 +10223,27 @@ pub fn wire_new_project(
         // 与 `wire_save` **同一条**后缀口径：用户敲了 `demo` ⇒ 写 `demo.yeban`。
         let path = crate::file_picker::with_default_extension(path, "yeban");
         let path = path.to_string_lossy().into_owned();
-        // ⭐ ③ 落盘（纯函数，唯一的归档写入口）。
-        let bytes = match create_new_project_file(&path) {
+        // ⭐ ③ 目标已存在？先问一次**显式确认**（T-FIX-308）。
+        //
+        // 这一段是"新建"与"覆盖"的分界线：不存在 ⇒ 走不覆盖的 create；存在且用户
+        // 取消 ⇒ 什么都不做（⛔ 不写文件、⛔ 不写回执、当前工程一位不动）；存在且
+        // 用户确认 ⇒ 才走名字就写着 overwrite 的那个入口。⛔ 不把平台保存对话框的
+        // "是否替换"当成契约 —— 脚本假实现 / 控制面装配都可能直接返回已有路径。
+        let mut overwritten = false;
+        let write = match new_project_target(std::path::Path::new(&path), |target| {
+            picker.confirm_overwrite(target)
+        }) {
+            NewProjectTarget::Cancelled => return,
+            NewProjectTarget::Create => {
+                create_new_project_file(&path).map_err(|error| error.to_string())
+            }
+            NewProjectTarget::Overwrite => {
+                overwritten = true;
+                overwrite_new_project_file(&path)
+            }
+        };
+        // ⭐ ③′ 落盘（两个入口都走唯一的归档写入口；区别只在覆盖策略）。
+        let bytes = match write {
             Ok(report) => report.bytes,
             Err(message) => {
                 let receipt = module_receipt(
@@ -10154,19 +10263,18 @@ pub fn wire_new_project(
                     std::path::Path::new(&path),
                     yeban_model::project::now_unix_ms(),
                 );
-                (
-                    module_receipt(
-                        "new-project",
-                        &[
-                            "outcome=ok".to_owned(),
-                            format!("path={path}"),
-                            format!("bytes={bytes}"),
-                            // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
-                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
-                        ],
-                    ),
-                    true,
-                )
+                let mut fields = vec![
+                    "outcome=ok".to_owned(),
+                    format!("path={path}"),
+                    format!("bytes={bytes}"),
+                    // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
+                    format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                ];
+                // ⭐ T-FIX-308：覆盖写必须在回执里**自报**（新建永远不出现这一行）。
+                if overwritten {
+                    fields.push("overwrite=true".to_owned());
+                }
+                (module_receipt("new-project", &fields), true)
             }
             Err(message) => (
                 module_receipt(
