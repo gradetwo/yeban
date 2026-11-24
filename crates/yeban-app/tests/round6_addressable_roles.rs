@@ -228,12 +228,19 @@ fn own_layer_for_needle(src: &str, needle: &str) -> Option<String> {
 /// 在 `elements.rs` 里 `needle` 之后的短窗口内找 `ElementKind::*` 并映射成 role 字面。
 ///
 /// 会跳过「注释里先出现同名字符串」的情形：逐次往后找，直到窗口里真有 kind。
+///
+/// ⚠ T-FIX-356 收尾修正：`needle` 位于字符串字面量内部（如 `"module-actions-title"`），
+///
+/// 窗口若从 `needle` 处截断，首个 `"` 会被误读成字符串的**开**引号、把随后
+/// 的 `ElementKind::Text` 当成串内容抹掉 ⇒ 本判据在提交时恒红（四例全中）。
+/// 修正：窗口从 `needle` 所在行的行首起取，让开引号落进窗口、奇偶性正确。
 fn registry_kind_after(els: &str, needle: &str) -> Option<&'static str> {
     let mut offset = 0;
     while let Some(rel) = els.get(offset..)?.find(needle) {
         let position = offset + rel;
-        let tail = &els[position..];
-        let mut cut = 320_usize.min(tail.len());
+        let line_start = els[..position].rfind('\n').map(|at| at + 1).unwrap_or(0);
+        let tail = &els[line_start..];
+        let mut cut = (320_usize + (position - line_start)).min(tail.len());
         while cut > 0 && !tail.is_char_boundary(cut) {
             cut -= 1;
         }
