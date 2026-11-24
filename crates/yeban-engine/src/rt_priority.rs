@@ -55,6 +55,7 @@ pub enum RtScheduler {
     RoundRobin,
 }
 
+#[cfg(target_os = "linux")]
 impl RtScheduler {
     fn linux_policy(self) -> i32 {
         match self {
@@ -235,8 +236,8 @@ pub fn set_current_thread_realtime(spec: &RtPrioritySpec) -> Result<(), RtPriori
         let fields = validate_time_constraint(&tc)?;
         // THREAD_TIME_CONSTRAINT_POLICY = 2（mach/thread_policy.h 公开常量）。
         const THREAD_TIME_CONSTRAINT_POLICY: u32 = 2;
-        // Mach 公开 ABI（审计注记见模块文档）：integer_t = i32，端口 = u32。
-        extern "C" {
+        // SAFETY: Mach 公开 ABI（审计注记见模块文档）：integer_t = i32，端口 = u32。
+        unsafe extern "C" {
             fn mach_thread_self() -> u32;
             fn thread_policy_set(thread: u32, flavor: u32, policy: *mut i32, count: u32) -> i32;
         }

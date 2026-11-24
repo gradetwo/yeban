@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(report.responses_written, 1, "超长行不得产生回显");
         // 唯一响应来自那条合法行；输出里绝不能出现被放大的 'x' 串。
         assert!(
-            !output.windows(64).any(|w| w.iter().all(|&b| b == b'x')),
+            !output.windows(64).any(|w| w == [b'x'; 64]),
             "输出不得回显超长输入的任何片段（防放大）"
         );
         let text = String::from_utf8(output).expect("UTF-8");
