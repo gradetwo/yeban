@@ -585,15 +585,24 @@ fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
 }
 
 /// 判据 4（**像素，命题一**）：默认外观（编曲视图那一帧）逐字节可复现，
-/// 而且**不随电平腿变化** —— 因为电平条根本不在这一档里。
+/// 而且**不随电平腿变化** —— 因为这一档的电平柱没有画出东西。
 ///
 /// ⚠ **两个命题必须分开**（本仓库明文警告过这一类误读）：
 ///
 /// - "默认帧逐字节可复现" 说的是**外观的确定性**；
-/// - "默认帧不随电平变" 说的是**这一档画面里没有电平条** —— 它**不**蕴含"电平没接上"。
+/// - "默认帧不随电平变" 说的是**这一档画面里没有电平条画出来** —— 它**不**蕴含"电平没接上"。
 ///   恰恰相反：电平条住在**混音台那一档**（`ui/console/mixer_console.slint:255` 的
 ///   `100px * root.track-meter-levels[track_index]`，只有控制台 Tab = 1 才在控件树里）。
 ///   要判"接上了没有"，靠的是本文件前三条判据，以及下一条**混音台档**的像素判据。
+///
+/// ⚠ **活树修正（T-FIX-356，`before == after` 在活树上是错的）**：新 UI 的编曲视图
+/// 也有轨道行电平柱（D1/D2，`ui/arrangement.slint:46`：`meter-val()` 接同一份
+/// `track-meter-levels`），但它们只在 `is-playing` 时才跟随实时电平；本窗口没有按播放
+/// （`is-playing == false`），柱子恒在下限。驱动 8 跳后帧**确实**变了 —— 但变的不是
+/// 电平柱，而是走带：播放头（编曲 506→508、钢琴卷帘 76→77）、时间码区走带按钮簇、
+/// 左坞一块 6×96 的走带标记 —— 实测 3,936 像素，两次探针运行逐像素相同。
+/// 所以本条的活树判据是：**电平柱的家（轨道头列 x 240..480）逐像素相同**，且总变化有界
+/// （走带 paint）；"帧一位不动"的旧写法在新 UI 上会把走带误判成电平泄漏。
 #[test]
 fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
     use yeban_ui_test_port::png::encode_rgb8;
@@ -653,10 +662,52 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
         lit > 0,
         "这 8 跳里至少有一跳的电平必须离开下限（否则本条没有搭建出前提）"
     );
+    // 前提：本窗口没有按播放 ⇒ 轨道行电平柱恒在下限（`meter-val()` 的 `is-playing` 门）。
     assert!(
-        before == after,
-        "编曲视图那一档不含电平条 ⇒ 这一帧**不该**随电平变化（变了说明有别的写入者）: 不同像素 {changed} 个"
+        !window.ui().get_is_playing(),
+        "本条的前提是窗口未播放；一旦播放，轨道行电平柱就该动，判据要跟着改"
     );
+    // 判据（活树版）：电平柱的家 —— 轨道头列（x 240..480，含 5px 分隔缝）—— 必须逐像素相同。
+    // 电平柱是 6px 宽的井，住在轨道头里；那一列一位不动 ⇒ 电平腿没有在这一档画出任何东西。
+    let header_changed = count_changed_in_x(&first, &after_image, 240, 480);
+    assert_eq!(
+        header_changed, 0,
+        "轨道头列（电平柱的家）必须逐像素相同：电平动了、柱子没画 ⇒ 接线没漏到这一档；变了 {header_changed} 像素"
+    );
+    // 反空转 + 有界：驱动必须真的推动了画面（播放头/时间码在走），且变化只是走带 paint
+    // （实测 3,936 像素；电平柱一旦画出来，单轨就 ≥ 6×20，上限 5,000 把它挡在外面）。
+    assert!(
+        changed > 0,
+        "驱动 8 跳后画面必须有走带变化（否则本条没有真的驱动引擎）"
+    );
+    assert!(
+        changed < 5_000,
+        "帧变化必须只是走带 paint（实测 3,936 像素）：不同像素 {changed} 个，包围盒 {bbox:?}"
+    );
+}
+
+/// 指定 x 列区间 `[x0, x1)` 内的不同像素数（`pixel_diff` 的列受限版）。
+fn count_changed_in_x(
+    left: &yeban_ui_test_port::Rgb8Image,
+    right: &yeban_ui_test_port::Rgb8Image,
+    x0: u32,
+    x1: u32,
+) -> usize {
+    assert_eq!(
+        (left.width(), left.height()),
+        (right.width(), right.height())
+    );
+    let (lhs, rhs) = (left.pixels(), right.pixels());
+    let mut changed = 0usize;
+    for y in 0..left.height() {
+        for x in x0..x1 {
+            let offset = (y as usize * left.stride()) + (x as usize * 3);
+            if lhs[offset..offset + 3] != rhs[offset..offset + 3] {
+                changed += 1;
+            }
+        }
+    }
+    changed
 }
 
 /// 判据 5（**像素，命题二**）：**混音台那一档**的画面真的随电平腿变化。
@@ -738,92 +789,4 @@ fn maybe_write_frame(label: &str, png: &[u8]) {
     let path = format!("{prefix}-{label}.png");
     std::fs::write(&path, png).expect("写帧");
     report_line(&format!("[meter-leg] 帧已写 {path}"));
-}
-
-/// 临时探针（T-FIX-356 收尾调试）：判据 ④ 两帧差异落在哪 —— 跑完即删。
-#[test]
-fn probe_meter_leg_diff_localization_tmp() {
-    use yeban_ui_test_port::png::encode_rgb8;
-    let project = demo_project();
-    let mut window = Window::new(&project);
-    let first = window.port.window().capture().expect("Tier-1 截图");
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
-    for _ in 0..8 {
-        production.engine_handle().borrow_mut().drive_audio(1);
-        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
-    }
-    let after_image = window.port.window().capture().expect("Tier-1 截图");
-    let _ = encode_rgb8(&after_image);
-    let (w, h) = (first.width(), first.height());
-    let (lhs, rhs) = (first.pixels(), after_image.pixels());
-    // 每 90px 高的 y 带 + 每 120px 宽的 x 带的差异计数。
-    let mut ybands = [0usize; 12];
-    let mut xbands = [0usize; 16];
-    for y in 0..h {
-        for x in 0..w {
-            let o = (y as usize * first.stride()) + (x as usize * 3);
-            if lhs[o..o + 3] != rhs[o..o + 3] {
-                ybands[(y / 90) as usize] += 1;
-                xbands[(x / 120) as usize] += 1;
-            }
-        }
-    }
-    eprintln!("PROBE ybands(90px): {ybands:?}");
-    eprintln!("PROBE xbands(120px): {xbands:?}");
-    // 高差异列（>20px 的 x 列）+ 顶行（y<90）逐行计数：区分竖线（播放头）与数字（时间码）。
-    let mut col_counts = [0usize; 1920];
-    let mut row_counts_top = [0usize; 90];
-    for y in 0..h {
-        for x in 0..w {
-            let o = (y as usize * first.stride()) + (x as usize * 3);
-            if lhs[o..o + 3] != rhs[o..o + 3] {
-                col_counts[x as usize] += 1;
-                if y < 90 {
-                    row_counts_top[y as usize] += 1;
-                }
-            }
-        }
-    }
-    let hot_cols: Vec<(u32, usize)> = col_counts
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| **c > 20)
-        .map(|(x, c)| (x as u32, *c))
-        .collect();
-    eprintln!("PROBE hot_cols(>20): {hot_cols:?}");
-    eprintln!("PROBE top_rows: {row_counts_top:?}");
-    // 左侧两根竖线是什么：列出覆盖 (76,300) 与 (153,300) 的全部可寻址节点 + 时间码节点。
-    use yeban_ui_test_port::port::UiTestPort;
-    window.port.refresh_tree(None).expect("重抓控件树");
-    for (px, py) in [(76, 300), (153, 300), (660, 60)] {
-        for n in window.port.tree().iter() {
-            if let Some(b) = n.bounds {
-                if px >= b.x && px < b.x + b.width as i32 && py >= b.y && py < b.y + b.height as i32 {
-                    eprintln!("PROBE covers ({px},{py}): {} role={:?} bounds={:?}", n.id, n.role, b);
-                }
-            }
-        }
-    }
-    for n in window.port.tree().iter() {
-        if n.id.contains("timecode") || n.id.contains("playhead") {
-            eprintln!("PROBE timecode/playhead node: {} bounds={:?}", n.id, n.bounds);
-        }
-    }
-    // 两条未认领的竖带（x 151..156、x 840..960）的 y 范围。
-    for (lo, hi) in [(145u32, 160u32), (840u32, 960u32)] {
-        let mut ymin = u32::MAX;
-        let mut ymax = 0u32;
-        let mut n = 0usize;
-        for y in 0..h {
-            for x in lo..hi {
-                let o = (y as usize * first.stride()) + (x as usize * 3);
-                if lhs[o..o + 3] != rhs[o..o + 3] {
-                    ymin = ymin.min(y);
-                    ymax = ymax.max(y);
-                    n += 1;
-                }
-            }
-        }
-        eprintln!("PROBE strip x {lo}..{hi}: n={n} y={ymin}..{ymax}");
-    }
 }
