@@ -60,6 +60,10 @@ AUTO_CI_EXCLUDED = {
         "会经 `yeban-ui-mcp` 把 GUI 控制面拖进每个测试配置（磁盘/时间成本大）；"
         "它由手动档 `gates-manual.yml` 的 `all-features` 档位编译并测试"
     ),
+    "test-support": (
+        "仅暴露集成测试所需的 `pub` 夹具接口，由 `[dev-dependencies] yeban-app = { workspace = true, "
+        "features = [\"test-support\"] }` 在默认 `cargo test --all-targets` 档自动启用，不需要单独 `--features`"
+    ),
 }
 
 
