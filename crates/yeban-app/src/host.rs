@@ -27445,6 +27445,12 @@ pub fn wire_missing_sounds_dialog(
             if empty {
                 ui.set_missing_sounds_open(false);
                 ui.set_engine_error(SharedString::from(""));
+                // ISS-MWUOMH3B-40521F：最后一行换完面板自己走人时，焦点也要复位回
+                // 快捷键层（与 `on_missing_close` 同一写法；否则焦点停在已关对话框
+                // 的 ✕ 上）。其余两处自动关窗点不补：`rescue_after_pack_installed`
+                // 与音源管理"用到当前轨"都发生在音源管理打开、焦点已在馆内时，
+                // 关的只是早已收起的救援面板，复位会把焦点从馆里拽走。
+                ui.invoke_focus_shortcut_layer();
                 report_notice(&ui, "音源都换好了，现在按播放就有声音。", false);
             }
         }

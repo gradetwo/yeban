@@ -316,6 +316,39 @@ fn a_pack_finishing_after_the_rescue_button_binds_the_track_without_a_second_cli
     assert_eq!(sampler.path, pack_path, "绑的必须正是刚装好的那一件");
     assert!(!ui.get_missing_sounds_open(), "都解决了 ⇒ 面板不回来");
     assert_eq!(ui.get_engine_error().to_string(), "", "红字同样要收掉");
+    // ISS-MWUOMH3B-40521F：装好那一跳发生在音源管理打开、焦点已在馆内时；
+    // 救援面板早已收起，这里关的不是"正开着的对话框"，焦点必须留在馆里，
+    // 不能被自动救援拽回快捷键层（故 `rescue_after_pack_installed` 不补复位）。
+    assert!(ui.get_sound_library_open(), "装好之后音源管理仍在前面");
+    assert!(
+        !ui.get_shortcut_layer_focused(),
+        "焦点必须留在音源管理里，不能被自动救援拽回快捷键层"
+    );
+}
+
+/// ⑥（ISS-MWUOMH3B-40521F）：最后一行在对话框里换完、面板自己走人时，
+/// 焦点必须复位回快捷键层（与 Esc / ✕ 手动关窗同一行为）；修前焦点停在
+/// 已关对话框的 ✕ 上（`get_shortcut_layer_focused() == false`）。
+#[test]
+fn swapping_the_last_missing_row_returns_focus_to_the_shortcut_layer() {
+    let (project, _track_id) = project_with_missing_sampler("swap-focus");
+    let fixture = AudioFixture::new("swap-focus");
+    let (live, _port) = live_window(&project, "swap-focus");
+    let ui = live.ui();
+    assert!(ui.get_missing_sounds_open(), "打开工程就该弹出救援面板");
+    assert!(
+        !ui.get_shortcut_layer_focused(),
+        "打开即取焦：焦点必须在对话框里，不在快捷键层"
+    );
+
+    ui.invoke_missing_swap_suggested(0, fixture.path().into(), "Fixture".into());
+
+    assert!(!ui.get_missing_sounds_open(), "全换好后面板自己走人");
+    assert_eq!(ui.get_missing_row_count(), 0, "行数必须归零");
+    assert!(
+        ui.get_shortcut_layer_focused(),
+        "面板自己走人后焦点必须复位回快捷键层（与 Esc 关窗同一行为）"
+    );
 }
 
 /// 清单一遍扫：第一件**本机解析得到 .sfz** 的内置音源。
