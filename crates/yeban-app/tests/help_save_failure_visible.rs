@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Mutex;
 
-use slint::ComponentHandle;
 use yeban_app::bridge::ViewState;
 use yeban_app::help_state::{self, HelpState};
 use yeban_app::host::{self, ProductionLoop};
@@ -109,6 +108,12 @@ fn build_live_window(
     yeban_ui_test_port::render::LivePort<yeban_app::ui::MainWindow>,
     ProductionLoop,
 ) {
+    // T-FIX-328：T-FIX-299 的待发警告台账是进程内全局的（取走即清空），
+    // 本文件 6 条测试共用一个进程；上一条失败测试留下的警告会在建窗时
+    // 被 report_pending_settings_warnings 取走并弹 toast，污染下一条测
+    // 试的窗口。生产进程每次启动台账都是空的，这里先清掉，恢复该不变量。
+    // 各条测试自己的动作都在建窗之后，照常记警告、照常断言。
+    let _ = settings::take_pending_warnings();
     let view = ViewState::from_project(project).expect("工程必须能投影");
     let scene = DemoScene::from_view(&view);
     let production = ProductionLoop::start(project, 0).expect("引擎重建");

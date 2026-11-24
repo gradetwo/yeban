@@ -2,14 +2,23 @@
 //! `MainWindow` 属性，并接住界面上报的回调。由 `host::wire_help_system`
 //! 注册，命令入口（`help-manual` 等四条）也在 host 的命令分发里落到这里。
 //!
-//! 状态纪律：引导与课程状态以 `help_state` 的落盘文件为唯一事实源，
-//! 每次动作都是「读 → 改 → 写」一轮（文件极小，不做内存缓存，避免两份
-//! 状态漂移）；落盘失败只降级为本次会话不持久化，⛔ 不挡界面——但失败
+//! 状态纪律：引导与课程状态以 `help_state` 的落盘文件为跨启动的事实源，
+//! 每次动作都是「读 → 改 → 写」一轮；落盘失败只降级为本次会话不持久化，⛔ 不挡界面——但失败
 //! 必须被用户看见（T-FIX-311）：写失败时按落点走 `report_notice` 错误级
 //! 常驻提示或课程反馈区，⛔ 不许只打 stderr 就当没发生。
+//!
+//! T-FIX-328 修订：落盘失败时磁盘是旧的，进行中的课只在内存里；若每次
+//! 动作仍从磁盘重读，`check_current_step` 会因磁盘上没有 active_lesson
+//! 而直接 return，步永远推不上去。所以本模块另记一份会话态
+//! （[`SESSION_STATE`]，按设置文件路径分键）：改状态的入口每次都把改后
+//! 状态记进来，读状态时有缓存就以缓存为准。同一进程内 HelpState 的唯一
+//! 写入口就是本模块的三处 save，磁盘不可能比缓存新（成功落盘后两者一
+//! 致）；进程外改设置文件需重启才生效。UI 线程调用，不进实时音频回调。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_model::ids::EntityId;
@@ -234,9 +243,31 @@ fn save_failure_message(what: &str, error: &help_state::HelpStateError) -> Strin
     format!("{what}未能保存：本次已生效，但下次启动可能回退（{error}）")
 }
 
+/// T-FIX-328：本会话内最后一次改过的 [`HelpState`]（按设置文件路径分键）。
+/// 见模块头的状态纪律修订：改状态的入口每次都把改后状态记进来。
+static SESSION_STATE: Mutex<BTreeMap<PathBuf, HelpState>> = Mutex::new(BTreeMap::new());
+
+fn remember_session_state(state: &HelpState) {
+    if let Ok(mut guard) = SESSION_STATE.lock() {
+        guard.insert(crate::settings::settings_path(), state.clone());
+    }
+}
+
+/// 取本会话的 [`HelpState`]：有缓存就以缓存为准（见 [`SESSION_STATE`]），
+/// 否则从磁盘读。锁坏了就退回磁盘读，不挡界面。
+fn load_session_state() -> HelpState {
+    if let Ok(guard) = SESSION_STATE.lock()
+        && let Some(cached) = guard.get(&crate::settings::settings_path())
+    {
+        return cached.clone();
+    }
+    help_state::load()
+}
+
 fn update_state(ui: &MainWindow, edit: impl FnOnce(&mut HelpState)) {
-    let mut state = help_state::load();
+    let mut state = load_session_state();
     edit(&mut state);
+    remember_session_state(&state);
     // T-FIX-311：写失败走 report_notice 错误级常驻提示（引导层随即关闭，
     // 课程反馈区看不见，只能走提示条 + toast）；本次仍按改后状态走。
     if let Err(error) = help_state::save(&state) {
@@ -265,7 +296,7 @@ pub fn start_lesson(ui: &MainWindow, port: &Rc<UndoPort>, lesson_id: &str) {
     let Some(lesson) = lessons::lesson(lesson_id) else {
         return;
     };
-    let mut state = help_state::load();
+    let mut state = load_session_state();
     let resuming = state
         .active_lesson
         .as_ref()
@@ -288,6 +319,9 @@ pub fn start_lesson(ui: &MainWindow, port: &Rc<UndoPort>, lesson_id: &str) {
             current_step: 0,
         });
     }
+    // T-FIX-328：先记会话态——落盘失败时磁盘仍是旧的，后面的刷新与
+    // check_current_step 都靠这份内存态找进行中的课。
+    remember_session_state(&state);
     // T-FIX-311：写失败不静默——课程反馈区写明本次已生效、下次启动可能
     // 回退；开课本身不失败（进行中课程按内存状态走）。
     match help_state::save(&state) {
@@ -297,13 +331,13 @@ pub fn start_lesson(ui: &MainWindow, port: &Rc<UndoPort>, lesson_id: &str) {
             ui.set_lesson_feedback(SharedString::from(save_failure_message("学习进度", &error)));
         }
     }
-    refresh_lessons(ui, port);
+    refresh_lessons_with_state(ui, port, &state);
 }
 
 /// 「完成本步（检查）」：对真实工程跑判定。通过才推进并落盘；
 /// 不通过只写反馈（还差什么，数字来自判定器的实测进度），步不推进。
 pub fn check_current_step(ui: &MainWindow, port: &Rc<UndoPort>) {
-    let mut state = help_state::load();
+    let mut state = load_session_state();
     let Some(active) = state.active_lesson.clone() else {
         return;
     };
@@ -331,6 +365,9 @@ pub fn check_current_step(ui: &MainWindow, port: &Rc<UndoPort>) {
         } else if let Some(active) = state.active_lesson.as_mut() {
             active.current_step = next;
         }
+        // T-FIX-328：步推进了就记会话态——落盘失败时下一次检查仍靠这份
+        // 内存态找进行中的课与当前步。
+        remember_session_state(&state);
         // T-FIX-311：写失败不静默——课程反馈区写明本次已生效、下次启动可能
         // 回退；步已在内存里推进（判定过了），不因落盘失败回滚。
         match help_state::save(&state) {
@@ -351,18 +388,24 @@ pub fn check_current_step(ui: &MainWindow, port: &Rc<UndoPort>) {
         )));
         return;
     }
-    refresh_lessons(ui, port);
+    refresh_lessons_with_state(ui, port, &state);
 }
 
 /// 返回课程列表：进行中的课保持落盘状态，列表里显示「进行中」。
 pub fn exit_lesson(ui: &MainWindow) {
-    refresh_lesson_rows(ui, &help_state::load());
+    refresh_lesson_rows(ui, &load_session_state());
     ui.set_lesson_active(false);
 }
 
 fn refresh_lessons(ui: &MainWindow, port: &Rc<UndoPort>) {
-    let state = help_state::load();
-    refresh_lesson_rows(ui, &state);
+    refresh_lessons_with_state(ui, port, &load_session_state());
+}
+
+/// 与 [`refresh_lessons`] 同款，但以调用方手里的内存态为准，不从磁盘重读。
+/// T-FIX-328：落盘失败时磁盘上没有新进度，重读会把刚开的课 / 刚推进的步
+/// 在界面上又关掉；start_lesson / check_current_step 必须按内存态刷新。
+fn refresh_lessons_with_state(ui: &MainWindow, port: &Rc<UndoPort>, state: &HelpState) {
+    refresh_lesson_rows(ui, state);
     match &state.active_lesson {
         Some(active) => match lessons::lesson(&active.lesson_id) {
             Some(lesson) => apply_active_lesson(ui, port, &lesson, active),
