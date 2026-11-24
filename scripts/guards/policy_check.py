@@ -790,48 +790,12 @@ def g15_every_crate_is_classified() -> list[Violation]:
     return bad
 
 
-def g16_no_forbidden_feature_is_defined() -> list[Violation]:
-    """[红线 6 / MUST-GATE-013] `asio` 与 `experimental-vst3` **永不定义**该 feature 名。
-
-    ⭐ R591 的 ADR-0007 登记的限度：`asio` 的"不定义"原本**没有机械守卫**
-    —— 因为它没有 `Cargo.toml` 条目可判，`FORBIDDEN_DEFAULT_FEATURES` 只管
-    "一旦定义则禁进 default"，`G07` 只管"仓库内无 ASIO SDK 文件"。
-    ⇒ 于是"有人新加一个 `asio` feature 但不开默认"在两者下**都不会红**。
-
-    ⭐ 本条补上：任何 `Cargo.toml` 的 `[features]` 里**出现**这两个名字即红。
-    ⚠ 口径依据：`AGENTS.md` 红线 6（⭐ 经 2026-10-15 人类裁决分写为两句）明确
-    `asio` **不定义、不引入**；`experimental-vst3` 同属"尚未定义"类。
-    """
-    bad: list[Violation] = []
-    never_defined = ("asio", "experimental-vst3")
-    for crate in crates():
-        manifest_path = crate / "Cargo.toml"
-        if not manifest_path.is_file():
-            continue
-        manifest = read_manifest(crate)
-        feats = manifest.get("features", {}) or {}
-        if not isinstance(feats, dict):
-            continue
-        for name in never_defined:
-            if name in feats:
-                bad.append(
-                    (
-                        "G16",
-                        rel(manifest_path),
-                        f"红线 6：`{name}` 是**永不定义**的禁止项（见 docs/adr/ADR-0007）"
-                        f" ⇒ 不得在 `[features]` 里定义它",
-                    )
-                )
-            for section, deps in iter_manifest_dep_tables(manifest):
-                if name in deps:
-                    bad.append(
-                        (
-                            "G16",
-                            rel(manifest_path),
-                            f"红线 6：`{name}` 不得作为依赖出现（[{section}]）",
-                        )
-                    )
-    return bad
+# G16 was abolished by Wang's 2026-11-23 ruling (M3-D2): it forbade defining the
+# `experimental-vst3` gate that is the only isolation mechanism for the experimental
+# VST3 host, creating a self-contradiction with yeban-render / yeban-mcp / yeban-app
+# depending unconditionally on yeban-plugin-host. The guard body is removed; the G
+# numbering is NOT renumbered (G17–G21 keep their IDs so census pins stay valid).
+# Abolition is recorded explicitly in docs/adr/ADR-0007 and the ledgers.
 
 
 def g17_hardware_markers_are_ignored() -> list[Violation]:
@@ -1111,7 +1075,6 @@ GUARDS = {
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
     "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
-    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),
     "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),
     "G18": (
         "[交接一致性] 台账的「第 N 条」不得混入外来号族（R777 实测四次）",
@@ -1140,7 +1103,8 @@ def self_test() -> int:
     ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
     或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
     ⭐ 本自检能机械抓住的三件事：
-      ① **注册表完整性**：`G01`…`G21` 一个不缺、且没有空标题／非可调用项；
+      ① **注册表完整性**：`G01`…`G21` 中除已废除的 `G16` 外一个不缺（共 20 条）、
+         且没有空标题／非可调用项；`G16` 若被重新注册则报 FAIL（T-FIX-137）；
       ② **可调用性**：每个 check 函数存在且可调用；
       ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
     ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
@@ -1148,7 +1112,12 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 22)]
+    # T-FIX-137: G16 was abolished (Wang 2026-11-23); keep every other G id stable,
+    # do NOT renumber G17–G21. Pin the exact post-abolition census (20 guards) and
+    # fail loudly if G16 is ever silently reinstated.
+    expected = [f"G{n:02d}" for n in range(1, 22) if n != 16]
+    if "G16" in GUARDS:
+        fails.append("G16 已废除（Wang 2026-11-23 裁决），不得重新注册")
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")

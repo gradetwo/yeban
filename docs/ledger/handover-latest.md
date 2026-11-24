@@ -2184,7 +2184,7 @@ python3 scripts/guards/policy_check.py && bash scripts/gates/run-gates.sh light
 | ⭐ `G13` | **workflow YAML 合法且 job 完整** | ⭐ **CI 自身** |
 | ⭐ `G14` | **shell 脚本 bash 3.2 兼容（禁关联数组）** | ⭐ **门禁可移植性** |
 | ⭐ `G15` | **`crates/*` 每个 crate 都必须被显式分类**（R567 新增）|
-| ⭐ `G16` | **`asio`／`experimental-vst3` 永不定义**（R592 新增；ADR-0007） | 红线 6 |（R567 新增；补 `G02`／`G03`／`G11` 的白名单漏洞） | 红线 3、8 |
+| ~~`G16`~~ | 🔴 **`G16` 已废除（Wang 2026-11-23 裁决，T-FIX-137）**：原「`asio`／`experimental-vst3` 永不定义」中的 `experimental-vst3` 禁令解 M3-D2 悖论后撤销；守卫本体已从 `policy_check.py` 删除，编号不重排（`G17`–`G21` 保持原号），自检钉 20 条 | 历史条目，保留留痕 |
 | ⭐ `G17` | `[HARDWARE]` 标记必须落在 `#[ignore]` 里（人类裁决 R687） | 测试纪律 |
 | ⭐ `G18` | 台账的「第 N 条」不得混入外来号族（R777 实测四次） | 交接一致性 |
 | ⭐ `G19` | **`struct`/`enum` 定义体里不得把值写在类型位置**（`field: None` ⇒ `E0573`）| 可判定的编译错（2026-10-28 `G8n` 实测：补位脚本误插两行，三条代码腿同红）；⚠ `audit_struct_literals.py` 抓不到它（那工具只对账 `PlanOptions` 的键集） |
