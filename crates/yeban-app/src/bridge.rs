@@ -5843,7 +5843,7 @@ impl ViewState {
     ///
     /// 存在理由：`Cmd/Ctrl+M` 拨的就是这一位，而界面必须**看得见**它的结果
     /// （否则"按了没反应"与"没按"逐像素相同）。读点是
-    /// `ui/workspace/arrangement_view.slint` 的 `clip-{ulid}-header` 底色；
+    /// `ui/arrangement.slint` 的 `clip-{ulid}-header` 底色；
     /// 唯一写者是 `host::apply_view`（与 `track-mutes` / `track-solos` 同一族）。
     #[must_use]
     pub fn clip_mutes(&self) -> Vec<bool> {

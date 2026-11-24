@@ -790,7 +790,7 @@ impl ElementRegistry {
         registry.add(
             "workspace-arrangement-canvas",
             ElementKind::Main,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "Arrangement 线性编曲时间轴",
             false,
         );
@@ -809,7 +809,7 @@ impl ElementRegistry {
             registry.add(
                 &format!("section-{section_index}-card"),
                 ElementKind::ListItem,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("章节 {}", section.name),
                 false,
             );
@@ -818,7 +818,7 @@ impl ElementRegistry {
             registry.add(
                 &format!("section-{section_index}-color-swatch"),
                 ElementKind::Image,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("段落色标 {}", section.color_hex),
                 false,
             );
@@ -829,7 +829,7 @@ impl ElementRegistry {
         registry.add(
             "arrangement-ruler",
             ElementKind::Slider,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "小节与拍标尺",
             false,
         );
@@ -837,28 +837,28 @@ impl ElementRegistry {
             registry.add(
                 &format!("track-{track_index}-header"),
                 ElementKind::ListItem,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("轨道包头 {}", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-mute-button"),
                 ElementKind::Button,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("轨道 {} 静音", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-solo-button"),
                 ElementKind::Button,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("轨道 {} 独奏", track.name),
                 false,
             );
             registry.add(
                 &format!("track-{track_index}-arm-button"),
                 ElementKind::Button,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("轨道 {} 录音准备", track.name),
                 false,
             );
@@ -868,7 +868,7 @@ impl ElementRegistry {
             registry.add(
                 &format!("track-{track_index}-color-swatch"),
                 ElementKind::Image,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("轨道色标 {}", track.color_hex),
                 false,
             );
@@ -877,7 +877,7 @@ impl ElementRegistry {
             registry.add(
                 &format!("clip-{}-header", clip.placement_id),
                 ElementKind::ListItem,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("剪辑包头 {clip_index}"),
                 false,
             );
@@ -889,7 +889,7 @@ impl ElementRegistry {
             registry.add(
                 &format!("clip-{}-body", clip.placement_id),
                 ElementKind::Region,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &format!("剪辑拖动面 {}", clip.label),
                 false,
             );
@@ -897,7 +897,7 @@ impl ElementRegistry {
         registry.add(
             "arrangement-playhead",
             ElementKind::Slider,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "走带光标",
             true,
         );
@@ -909,70 +909,70 @@ impl ElementRegistry {
         registry.add(
             "arrangement-zoom-h-out-button",
             ElementKind::Button,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "横向缩小",
             false,
         );
         registry.add(
             "arrangement-zoom-h-slider",
             ElementKind::Slider,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "横向缩放",
             false,
         );
         registry.add(
             "arrangement-zoom-h-in-button",
             ElementKind::Button,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "横向放大",
             false,
         );
         registry.add(
             "arrangement-zoom-v-out-button",
             ElementKind::Button,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "纵向缩小",
             false,
         );
         registry.add(
             "arrangement-zoom-v-slider",
             ElementKind::Slider,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "纵向缩放",
             false,
         );
         registry.add(
             "arrangement-zoom-v-in-button",
             ElementKind::Button,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "纵向放大",
             false,
         );
         registry.add(
             "arrangement-hscroll",
             ElementKind::Slider,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "编曲横向滚动条",
             false,
         );
         registry.add(
             "arrangement-lane-marquee-area",
             ElementKind::Region,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "编曲空车道框选面",
             false,
         );
         registry.add(
             "track-reorder-insertion-line",
             ElementKind::Image,
-            "workspace/arrangement_view.slint",
+            "arrangement.slint",
             "轨道插入位置",
             true,
         );
 
         // ---- 自动化泳道（`line/app-automation-ui`） ----
         //
-        // 每条泳道一个元素：ID 与 `ui/workspace/arrangement_view.slint` 里拼出来的
+        // 每条泳道一个元素：ID 与 `ui/arrangement.slint` 里拼出来的
         // `"track-" + i + "-automation-" + 目标键 + "-lane"` 逐字相同（由
         // `slint_accessible_ids_and_registry_cover_each_other` 双侧对账），标签携带
         // **单位与当前值** —— 于是"AI/判据能读到自动化"不是靠截图猜的。
@@ -983,7 +983,7 @@ impl ElementRegistry {
             registry.add(
                 &lane.element_id,
                 ElementKind::Image,
-                "workspace/arrangement_view.slint",
+                "arrangement.slint",
                 &lane.label,
                 false,
             );
@@ -4817,7 +4817,7 @@ mod tests {
                 .get(&format!("track-{index}-color-swatch"))
                 .unwrap_or_else(|| panic!("缺少 track-{index}-color-swatch"));
             assert_eq!(meta.kind, ElementKind::Image, "色标角色必须是 image");
-            assert_eq!(meta.component, "workspace/arrangement_view.slint");
+            assert_eq!(meta.component, "arrangement.slint");
             assert!(
                 meta.label.contains(label),
                 "色标标签必须携带投影的规范化色标: {} vs {label}",
@@ -4846,6 +4846,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// T-FIX-394: `arrangement-ruler` 的注册指针必须指向活文件 `ui/arrangement.slint`。
+    ///
+    /// 曾经指向死文件 `ui/workspace/arrangement_view.slint`（内容已搬进活视图，
+    /// 见 `docs/DEAD-SLINT-FILES.md`）；把指针改回死文件路径，本判据即红。
+    #[test]
+    fn arrangement_ruler_points_at_the_live_arrangement_file() {
+        let registry = registry();
+        let meta = registry
+            .get("arrangement-ruler")
+            .expect("arrangement-ruler 必须在注册表里");
+        assert_eq!(
+            meta.component, "arrangement.slint",
+            "arrangement-ruler 的指针必须指向活文件 ui/arrangement.slint，死文件 ui/workspace/arrangement_view.slint 早已不在活树中"
+        );
+    }
+
+    /// T-FIX-394: 注册表里不许再出现指向死文件的指针（已登记的余量除外）。
+    ///
+    /// 死文件清单以 `docs/DEAD-SLINT-FILES.md` §1 为准（6 个）。本轮把 22 处
+    /// `workspace/arrangement_view.slint` 指针改成了 `arrangement.slint`；剩下
+    /// 仍指向死文件的两组没有活文件可指 —— `module_actions.slint`（6 处；值已
+    /// 变成 MainWindow 根属性，见 `ui/app.slint:724-727`）与
+    /// `workspace/song_overview_panel.slint`（19 处；面板从未实例化，见
+    /// T-FIX-372 回执 §6）—— 只能逐条登记在余量清单里，不能静默放行。
+    /// 修掉其中一组时必须同步更新本判据；新出现死文件指针时本判据即红。
+    /// 另外：每个指针都必须对应 `ui/` 下真实存在的文件（防 `x.slint` 类幽灵路径）。
+    #[test]
+    fn registry_components_never_point_at_dead_files_except_declared() {
+        const DEAD_FILES: &[&str] = &[
+            "transport.slint",
+            "sidebar.slint",
+            "workspace/arrangement_view.slint",
+            "module_actions.slint",
+            "workspace/song_overview_panel.slint",
+            "controls/knob.slint",
+        ];
+        // 已登记的余量：没有活文件可指，逐条理由见上；修掉一组就同步更新此处。
+        const DECLARED_REMAINDER: &[&str] = &[
+            "module_actions.slint",
+            "workspace/song_overview_panel.slint",
+        ];
+        let ui = ui_dir();
+        let mut remainder: Vec<&str> = Vec::new();
+        for meta in registry().iter() {
+            // `add_known_absent` 的 component 栏是人工备注（例："顶栏没有 AI 抽屉键"），
+            // 不是文件路径 —— 只有 `.slint` 后缀的才是文件指针，备注跳过。
+            if !meta.component.ends_with(".slint") {
+                continue;
+            }
+            assert!(
+                ui.join(meta.component).exists(),
+                "注册表里的 `{}` 指向不存在的文件 `ui/{}`",
+                meta.id,
+                meta.component
+            );
+            if DEAD_FILES.contains(&meta.component) {
+                remainder.push(meta.component);
+            }
+        }
+        remainder.sort_unstable();
+        remainder.dedup();
+        assert_eq!(
+            remainder, DECLARED_REMAINDER,
+            "指向死文件的注册指针与已登记余量不一致：修掉一组要同步更新余量清单，新出现死指针更要先修"
+        );
     }
 
     /// 判据: `MODEL_DRIVEN_FAMILIES` 恰好覆盖投影驱动的族，且**不**覆盖仍是静态的部件。

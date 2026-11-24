@@ -1535,7 +1535,7 @@ mod tests {
             let meta = registry
                 .get(&lane.element_id)
                 .unwrap_or_else(|| panic!("注册表缺少泳道 {}", lane.element_id));
-            assert_eq!(meta.component, "workspace/arrangement_view.slint");
+            assert_eq!(meta.component, "arrangement.slint");
             assert_eq!(meta.kind, crate::elements::ElementKind::Image);
             assert_eq!(meta.label, lane.label, "注册表标签必须与投影逐字一致");
             assert!(!meta.dynamic_region, "自动化曲线不是每帧跳变的区域");
