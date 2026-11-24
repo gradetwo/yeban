@@ -27298,6 +27298,16 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
         sink.pending.retain(|pending| pending.pack_id != pack_id);
         let roots = crate::sfz_load::SfzRoots::none();
         let mut swapped: Vec<String> = Vec::new();
+        // T-FIX-344：先记下各待换轨在**当前行表里的下标**（= 对话框 `for` 的行号；
+        // 行一删下标就变，事后算不出来）。只记真正换上的 —— 没换上的行还在，
+        // 焦点不用挪。
+        let pre_rows: Vec<i32> = sink
+            .rows
+            .borrow()
+            .iter()
+            .map(|item| item.track_index)
+            .collect();
+        let mut deleted_rows: Vec<i32> = Vec::new();
         for target in targets {
             let track_name = sink
                 .rows
@@ -27320,6 +27330,12 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
             if !swap_track_sampler(ui, &sink.port, target.track_index, &path, &target.name) {
                 continue;
             }
+            if let Some(pos) = pre_rows
+                .iter()
+                .position(|&index| index == target.track_index)
+            {
+                deleted_rows.push(i32::try_from(pos).unwrap_or(0));
+            }
             sink.rows
                 .borrow_mut()
                 .retain(|item| item.track_index != target.track_index);
@@ -27331,6 +27347,20 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
         }
         if swapped.is_empty() {
             return;
+        }
+        // T-FIX-344：宿主删行前先挪焦点 —— 与对话框内 swap 守卫（T-FIX-333）
+        // 同一锚点（✕）同一时机（行消失之前）。救援是后台完成的：用户可能在
+        // 音源管理关掉、面板还回来之后又 Tab 回被删的那一行；不挪，
+        // `focused-row-slot` 就指着不存在的行（死焦点），之后 Tab 的读数与
+        // 轮转全错。只在对话框还开着、且焦点确实在被删行里时挪；焦点在幸存
+        // 行 / ✕ / 「先不管」上 ⇒ 不动。
+        if ui.get_missing_sounds_open() {
+            let focused = ui.get_missing_sounds_focused_control();
+            if deleted_rows.iter().any(|&row| {
+                focused >= 100 + row * 10 && focused < 100 + (row + 1) * 10
+            }) {
+                ui.invoke_focus_missing_sounds_dialog();
+            }
         }
         let empty = sink.rows.borrow().is_empty();
         publish_missing_rows(ui, &sink.rows);
