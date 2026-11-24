@@ -13,7 +13,9 @@ use yeban_app::bridge::{
 use yeban_model::samples::filled_project;
 use yeban_model::{AutomationTarget, AutomationWriteMode, Op};
 
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
+/// ⭐ 新 UI 之后编曲视图的活文件是 `ui/arrangement.slint`（`ui/workspace/arrangement_view.slint`
+/// 已死，见 `docs/DEAD-SLINT-FILES.md`）；计数从活树现测（2026-11-24，基线 835375d4）。
+const ARRANGEMENT: &str = include_str!("../ui/arrangement.slint");
 const APP: &str = include_str!("../ui/app.slint");
 
 #[test]
@@ -173,19 +175,69 @@ fn automation_recording_generation() {
 
 #[test]
 fn slint_ratchets_and_tokens_preserved() {
-    // 新 UI 重构: 旧 ratchet 计数(accessible-id / accessible-value / has-hover)不再适用;
-    // 改为机械核对契约面与宿主接线仍在。
-    let app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(app.contains("> playing:"), "契约面必须声明 playing");
-    assert!(
-        host.contains("apply_transport"),
-        "宿主必须注册 apply_transport"
+    // ⭐ 计数从活树现测（基线 835375d4，2026-11-24）：`ui/arrangement.slint`（活文件，
+    // 旧 `arrangement_view.slint` 已死）+ `ui/app.slint`。`accessible-value:` 在这两
+    // 份文件里是 0 —— 新 UI 里读数绑定住在叶子组件（`status_bar.slint` 等），
+    // 不在这两份根文件里；0 钉的是"没有读数绑定被悄悄搬回根文件"。
+    assert_eq!(
+        ARRANGEMENT.matches("accessible-id:").count(),
+        16,
+        "arrangement.slint 可寻址 ID 严格保持 16"
+    );
+    assert_eq!(
+        ARRANGEMENT.matches("accessible-value:").count(),
+        0,
+        "arrangement.slint 读数严格保持 0（读数绑定住在叶子组件）"
+    );
+    assert_eq!(
+        ARRANGEMENT
+            .matches("mouse-cursor: MouseCursor.pointer;")
+            .count(),
+        29,
+        "arrangement.slint 手型光标严格保持 29"
+    );
+    assert_eq!(
+        ARRANGEMENT
+            .matches("mouse-cursor: MouseCursor.grab;")
+            .count(),
+        0,
+        "arrangement.slint 抓手光标保持 0"
+    );
+    assert_eq!(
+        ARRANGEMENT.matches("has-hover").count(),
+        82,
+        "arrangement.slint has-hover 保持 82"
+    );
+    assert_eq!(
+        ARRANGEMENT.matches("Tokens.accent").count(),
+        0,
+        "arrangement.slint 严禁新增 Tokens.accent"
+    );
+
+    // app.slint
+    assert_eq!(
+        APP.matches("accessible-id:").count(),
+        15,
+        "app.slint 的 accessible-id 保持 15 个"
+    );
+    assert_eq!(
+        APP.matches("accessible-value:").count(),
+        0,
+        "app.slint 的 accessible-value 保持 0（读数绑定住在叶子组件）"
+    );
+    assert_eq!(
+        APP.matches("mouse-cursor: MouseCursor.pointer;").count(),
+        2,
+        "app.slint 手型光标保持 2"
+    );
+    assert_eq!(
+        APP.matches("has-hover").count(),
+        5,
+        "app.slint has-hover 保持 5"
+    );
+    assert_eq!(
+        APP.matches("Tokens.accent").count(),
+        0,
+        "app.slint 严禁新增 Tokens.accent"
     );
 }

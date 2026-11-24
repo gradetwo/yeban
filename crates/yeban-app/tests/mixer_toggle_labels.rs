@@ -10,7 +10,7 @@
 //! | 入口 | 文件 | 到宿主的路 |
 //! | :--- | :--- | :--- |
 //! | 调音台通道条 | `ui/console/mixer_console.slint` | `root.mixer-mute-toggle(track_index)` → `MainWindow.mixer-mute-toggle` |
-//! | **编曲视图**轨道头 | `ui/workspace/arrangement_view.slint` | `root.track-mute-toggle(track_index)` → `app.slint` 转给 `root.mixer-mute-toggle(track_index)` |
+//! | **编曲视图**轨道头 | `ui/arrangement.slint` | `root.toggle-mute(trk.id)` → `track-toggle-mute` → 宿主 `invoke_mixer_mute_toggle`（与调音台**同一条**回调） |
 //!
 //! ⇒ 在编曲视图点一下，撤销树的节点却声称那是"混音台"的动作。这条标签对用户是**假话**
 //! （`docs/ledger/integration-rulings-notes.md` 的 R17 行逐字记录了它）。
@@ -117,8 +117,9 @@ fn names_a_view(literal: &str) -> bool {
 /// 2. 两个标签必须**逐字不同**（静音与独奏是两条不同的历史，共用一条会把两者混成一件事）；
 /// 3. 每条标签必须带上它真正改的字段名（`mute` / `solo`）—— 中性不等于含糊，撤销树要让用户
 ///    看出这一步改了什么；
-/// 4. 两个鼠标入口**今天真的都在**：`arrangement_view.slint` 的轨道头点击经 `app.slint` 转到
-///    **同一个** `mixer-mute-toggle` / `mixer-solo-toggle`。没有这一条，本判据钉的是一条
+/// 4. 两个鼠标入口**今天真的都在**：`arrangement.slint` 的轨道头点击经 `app.slint` 的
+///    `track-toggle-mute` / `track-toggle-solo` 转到**同一个** `mixer-mute-toggle` /
+///    `mixer-solo-toggle`（宿主 `invoke_mixer_*_toggle`）。没有这一条，本判据钉的是一条
 ///    不存在的冲突（"假问题"）；
 /// 5. 两个鼠标入口与键盘臂都**真的调**那个共用定义点（否则收拢只是把字面量挪个地方，
 ///    谁都可以绕开它各写一份）。
@@ -216,10 +217,24 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
     );
 
     // ---- 路径 4：两个界面入口今天都在（否则本判据钉的是一条不存在的冲突） ----
-    let arrangement = code_only(&read("ui/workspace/arrangement_view.slint"));
-    for (callback, host_callback) in [
-        ("track-mute-toggle(int)", "mixer-mute-toggle"),
-        ("track-solo-toggle(int)", "mixer-solo-toggle"),
+    // ⭐ 新 UI 之后编曲视图的入口改了形（`ui/arrangement.slint` 的 `toggle-mute(int)` /
+    // `toggle-solo(int)`，报 1-based `TrackData.id`），但落点没变：`app.slint` 转给
+    // `track-toggle-mute` / `track-toggle-solo`，宿主再 `invoke_mixer_mute_toggle` /
+    // `invoke_mixer_solo_toggle` —— 即调音台那条 `wire_mixer_switch` 注册的**同一个**
+    // 回调，标签仍取自共用定义点。
+    let arrangement = code_only(&read("ui/arrangement.slint"));
+    let app = code_only(&read("ui/app.slint"));
+    for (callback, forward, invoke) in [
+        (
+            "toggle-mute(int)",
+            "track-toggle-mute",
+            "invoke_mixer_mute_toggle",
+        ),
+        (
+            "toggle-solo(int)",
+            "track-toggle-solo",
+            "invoke_mixer_solo_toggle",
+        ),
     ] {
         assert!(
             arrangement.contains(&format!("callback {callback};")),
@@ -231,9 +246,14 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
             "编曲视图的 `{}` 必须真的有人调用（声明了不调用 = 第二个入口不存在）",
             callback.split('(').next().unwrap()
         );
+        let name = callback.split('(').next().unwrap();
         assert!(
-            code_only(&read("ui/app.slint")).contains(host_callback),
-            "编曲视图的轨道头开关必须转发到既有的 `{host_callback}`（`app.slint` 的那条转发）"
+            app.contains(&format!("{name}(t-id) => {{ root.{forward}")),
+            "`app.slint` 必须把编曲视图的 `{name}` 转给 `{forward}`"
+        );
+        assert!(
+            host.contains(invoke),
+            "宿主必须把 `{forward}` 转给同一个 `{invoke}`（与调音台入口同一条回调）"
         );
     }
 }

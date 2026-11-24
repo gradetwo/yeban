@@ -309,14 +309,17 @@ fn the_undo_tree_node_properties_have_exactly_one_writer() {
 ///
 /// 1. 假状态字面量（[`BADGE_FALSE_LITERALS`]）不得出现在 `ui/**` 的代码里；
 /// 2. 它也不得出现在 `src/**`（语义注册表的标签会进控制树产物，用户与自动化都读得到）；
-/// 3. 徽章块里不得有 `accessible-value`（任何写死的条数都是编造的读数）；
-/// 4. `accessible-role: button` 必须配一个真的 `TouchArea` + 回调，且 `app.slint`
-///    把它转到**已存在**的那个宿主动作（`open-musical-pr`）。
+/// 3. 旧徽章 id 不得回到活树（它只活在死文件 `ui/transport.slint` 里）；活树里的提案
+///    入口（`ai-rail-musical-pr-button`）块里不得有 `accessible-value`
+///    （任何写死的条数都是编造的读数），条数文案必须是 `musical-pr-proposal-count`
+///    的数据插值；
+/// 4. `accessible-role: button` 必须配一个真的 `TouchArea` + 回调，落到**已存在**的
+///    宿主动作（`open-musical-pr`）。
 #[test]
 fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
-    // ⚠ **行尾归一**：下面用多行字面量 `"\n    }\n"` 切徽章块，而 Windows 工作树
+    // ⚠ **行尾归一**：下面用多行字面量 `"\n    }\n"` 切入口块，而 Windows 工作树
     // （无 `.gitattributes` ＋ `core.autocrlf=true`）里源码字节是 CRLF ⇒ ⛔ 匹配不上。
-    let transport = code_only(&read("ui/transport.slint").replace("\r\n", "\n"));
+    // 因此入口块取自已归一的 `app`（见下）；`all_slint()` 的逐文件扫描不依赖多行字面量。
 
     // ---- 路径 1：ui/ 代码文本
     for (rel, text) in all_slint() {
@@ -339,42 +342,57 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
         );
     }
 
-    // ---- 路径 3 + 4：徽章块的结构
-    let badge_start = transport
-        .find("accessible-id: \"transport-ai-proposal-badge\";")
-        .expect("`transport-ai-proposal-badge` 必须留在 `transport.slint` 里");
-    let badge_end = transport[badge_start..]
-        .find("\n    }\n")
-        .map(|offset| badge_start + offset)
-        .expect("徽章块必须有闭合");
-    let badge = &transport[badge_start..badge_end];
+    // ---- 路径 3 + 4：提案入口的结构（⭐ 新 UI 之后落点变了）----
+    //
+    // 旧徽章 `transport-ai-proposal-badge` 只活在死文件 `ui/transport.slint` 里，
+    // 活树里没有它（`ui/transport_bar.slint` 没有徽章）⇒  paths 3–4 不再读死文件。
+    // 活树里的提案入口是右栏 `ai-rail-musical-pr-button`（`ui/app.slint`），
+    // 条数文案是抽屉里 `musical-pr-proposal-count` 的**数据**读数（默认 0），
+    // 不再有任何写死的条数。
+    let app = code_only(&read("ui/app.slint").replace("\r\n", "\n"));
+    // 死徽章的 id 不许出现在任何活 `.slint` 的代码里（死文件本体与注释除外）。
+    for (rel, text) in all_slint() {
+        if rel == "ui/transport.slint" {
+            continue;
+        }
+        let code = code_only(&text);
+        assert!(
+            !code.contains("transport-ai-proposal-badge"),
+            "{rel}: 旧徽章 id `transport-ai-proposal-badge` 不许回到活树（它只活在死文件里）"
+        );
+    }
+    let button_start = app
+        .find("accessible-id: \"ai-rail-musical-pr-button\";")
+        .expect("`ai-rail-musical-pr-button` 必须留在 `app.slint` 里");
+    let button_end = app[button_start..]
+        .find("\n            }\n")
+        .map(|offset| button_start + offset)
+        .expect("提案入口块必须有闭合");
+    let button = &app[button_start..button_end];
     assert!(
-        !badge.contains("accessible-value"),
-        "徽章块里不得有 `accessible-value`：提案条数今天没有数据源，写死就是编造读数。\n{badge}"
+        !button.contains("accessible-value"),
+        "提案入口块里不得有 `accessible-value`：提案条数今天没有写死读数。\n{button}"
     );
     assert!(
-        badge.contains("text: \"AI提案\""),
-        "徽章的可见文案必须是 `\"AI提案\"`（不得再带「待审查」这类状态声明）"
+        button.contains("accessible-role: button;"),
+        "提案入口必须是 `accessible-role: button`"
     );
     assert!(
-        badge.contains("clicked => { root.open-ai-proposals(); }"),
-        "`accessible-role: button` 必须配一个真的 `TouchArea`（否则是「点了没反应」的假控件）。\n{badge}"
+        button.contains("clicked => { root.open-musical-pr(); }"),
+        "`accessible-role: button` 必须配一个真的 `TouchArea`（否则是「点了没反应」的假控件）。\n{button}"
     );
     assert!(
-        transport.contains("callback open-ai-proposals();"),
-        "`transport.slint` 必须声明 `callback open-ai-proposals();`"
+        app.contains("callback open-musical-pr();"),
+        "`app.slint` 必须声明 `callback open-musical-pr();`"
     );
-
-    // 转发到**已存在**的宿主动作（不另造落点）。
-    let app = code_only(&read("ui/app.slint"));
+    // 条数文案必须是数据读数：`musical-pr-proposal-count` 默认 0，且文案用它插值。
     assert!(
-        app.contains("open-ai-proposals => {") && app.contains("root.open-musical-pr();"),
-        "`app.slint` 必须把 `open-ai-proposals` 转到既有的 `open-musical-pr` \
-         （`musical-pr-open` 的唯一写者仍是宿主）"
+        app.contains("in-out property <int> musical-pr-proposal-count: 0;"),
+        "`musical-pr-proposal-count` 默认必须是 0（没有提案时不许谎报条数）"
     );
     assert!(
-        count(&app, "root.open-musical-pr();") >= 2,
-        "徽章与右栏按钮必须落到**同一个** `open-musical-pr` 回调"
+        app.contains("待审提案 {} 条\", root.musical-pr-proposal-count"),
+        "条数文案必须是 `musical-pr-proposal-count` 的数据插值（⛔ 不是写死的 \"1 条\"）"
     );
 }
 

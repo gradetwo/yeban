@@ -152,6 +152,8 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
         history_dag: Vec::new(),
         assets: Vec::new(),
         embedded_presets: Vec::new(),
+        proposals: None,
+        load_notes: Vec::new(),
     };
     let port = UndoPort::new(
         session_from_archive("<判据: 空 dag>", &fresh, NOW).expect("空条目 = 新会话"),
@@ -175,6 +177,8 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
                 history_dag: edited_dag.clone(),
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
+                proposals: None,
+                load_notes: Vec::new(),
             },
             NOW + 2,
         )
@@ -196,6 +200,8 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
         history_dag: b"{ this is not a CommitGraph".to_vec(),
         assets: Vec::new(),
         embedded_presets: Vec::new(),
+        proposals: None,
+        load_notes: Vec::new(),
     };
     let error = session_from_archive("<判据: 坏 dag>", &broken, NOW)
         .expect_err("非法图谱必须报错，而不是假装开了一条空历史");
@@ -215,6 +221,8 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
             history_dag: zero_dag,
             assets: Vec::new(),
             embedded_presets: Vec::new(),
+            proposals: None,
+            load_notes: Vec::new(),
         },
         NOW,
     )
