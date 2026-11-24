@@ -8,10 +8,9 @@
 //!    不是某个特定结果（结果由环境权限决定，报告里已注明本沙箱实测为 EPERM 分支）。
 //! 3. macOS time-constraint 校验是**纯函数**（任意平台可测）：关系违例先于系统调用拒绝。
 
-use yeban_engine::rt_priority::{
-    MacosTimeConstraint, RtPriorityFailure, RtPrioritySpec, RtScheduler,
-    set_current_thread_realtime, validate_time_constraint,
-};
+use yeban_engine::rt_priority::{MacosTimeConstraint, RtPriorityFailure, validate_time_constraint};
+#[cfg(target_os = "linux")]
+use yeban_engine::rt_priority::{RtPrioritySpec, RtScheduler, set_current_thread_realtime};
 
 #[cfg(target_os = "linux")]
 #[test]
