@@ -818,4 +818,20 @@ fn probe_meter_gate_tmp() {
         "PROBE header-col changed x240..480: {}",
         count_changed_in_x(&first, &after_image, 240, 480)
     );
+    // 对照：显式把电平打满 + is-playing=true，再抓一帧 —— 柱子到底能不能画出来？
+    window.ui().set_is_playing(true);
+    window
+        .ui()
+        .set_track_meter_levels(slint::ModelRc::new(slint::VecModel::from(vec![
+            1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0,
+        ])));
+    let forced = window.port.window().capture().expect("Tier-1 截图");
+    eprintln!(
+        "PROBE forced full levels: header-col changed x240..480 vs first: {}",
+        count_changed_in_x(&first, &forced, 240, 480)
+    );
+    eprintln!(
+        "PROBE forced full levels: header-col changed vs after: {}",
+        count_changed_in_x(&after_image, &forced, 240, 480)
+    );
 }
