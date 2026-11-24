@@ -309,11 +309,6 @@ impl HybridPitchRouter {
         )
     }
 
-    /// 当前路由配置。
-    pub fn route_config(&self) -> &PitchRouteConfig {
-        &self.config
-    }
-
     /// 路由一整段 warped 后单声道音频。
     ///
     /// * `warped`：Phase 1 timemap 对时后的 PCM（单声道 `f32`）。
