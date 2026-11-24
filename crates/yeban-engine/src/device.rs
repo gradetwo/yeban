@@ -2511,7 +2511,7 @@ fn open_stream_on_this_thread(
     };
 
     Ok(OpenedStream {
-        stream,
+        stream: Hosted::Cpal(stream),
         info: StreamInfo {
             device_name,
             negotiated,
