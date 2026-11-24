@@ -2524,6 +2524,11 @@ impl Op {
                 }
                 for mapping in new_mappings {
                     mapping.validate()?;
+                    // T-FIX-254：`MacroMapping::validate()` 只管 depth（拿不到文档），
+                    // 映射 target 必须在这里对**工程文档**对账，拒绝悬空目标
+                    // （track / 路由边 / 设备槽+参数 / 宏下标不存在）。用自动化域
+                    // 唯一的存在性入口 `validate_against`，与自动化泳道同口径。
+                    mapping.target.validate_against(doc)?;
                 }
                 Ok(())
             }

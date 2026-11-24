@@ -143,6 +143,13 @@ pub fn plan_set_macro_mappings(
                 serde_json::json!({ "depth": mapping.depth }),
             ));
         }
+        // T-FIX-254：前置对账映射目标，拒绝悬空目标（track / 路由边 / 设备槽+参数 /
+        // 宏下标不存在）。与自动化泳道同口径，用唯一的存在性入口 validate_against，
+        // 在规划阶段就响亮拒绝，不让悬空 target 走到 Op 提交。
+        mapping
+            .target
+            .validate_against(project)
+            .map_err(|error| from_model("宏映射目标对账", &error))?;
     }
     let old_mappings = track.macros[macro_index].mappings.clone();
     Ok(vec![Op::SetMacroMappings {
@@ -347,6 +354,30 @@ mod tests {
             }],
         );
         assert!(result.is_err(), "非有限 depth 必须被拒");
+    }
+
+    /// T-FIX-254：悬空映射目标在**规划期**就被拒（对工程文档对账），
+    /// 不让它走到 Op 提交。
+    #[test]
+    fn mappings_plan_rejects_dangling_target_loudly() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let ghost = EntityId::new();
+        let fault = plan_set_macro_mappings(
+            &project,
+            &track_id,
+            0,
+            vec![MacroMapping {
+                target: AutomationTarget::TrackVolume { track_id: ghost },
+                depth: 6.0,
+            }],
+        )
+        .expect_err("悬空目标必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::TrackNotFound),
+            "悬空 track 目标应报 TrackNotFound"
+        );
     }
 
     #[test]

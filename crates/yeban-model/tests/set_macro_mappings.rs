@@ -122,6 +122,70 @@ fn non_finite_depth_is_rejected_before_write() {
 }
 
 #[test]
+fn dangling_target_is_rejected_by_precondition_and_document_untouched() {
+    // T-FIX-254：映射 target 必须对工程文档对账，拒绝悬空目标。
+    let mut doc = samples::filled_project();
+    let track_id = track_with_macro(&doc);
+    let current = doc.track(&track_id).expect("lead").macros[0]
+        .mappings
+        .clone();
+    let before = doc.clone();
+
+    // 一个不存在的 EntityId 作目标音轨 —— 悬空引用。
+    let ghost = yeban_model::EntityId::new();
+    let bad = Op::SetMacroMappings {
+        track_id,
+        macro_index: 0,
+        old_mappings: current,
+        new_mappings: vec![MacroMapping {
+            target: AutomationTarget::TrackVolume { track_id: ghost },
+            depth: 1.0,
+        }],
+    };
+    assert!(
+        matches!(
+            bad.apply(&mut doc),
+            Err(yeban_model::ModelError::TrackNotFound { .. })
+        ),
+        "悬空 track 目标必须报 TrackNotFound（由 validate_against 对账）"
+    );
+    assert_eq!(doc, before, "失败的 apply 绝不能改文档");
+}
+
+#[test]
+fn dangling_device_slot_target_is_rejected() {
+    // 另一类悬空：设备槽/参数下标越界。
+    let mut doc = samples::filled_project();
+    let track_id = track_with_macro(&doc);
+    let current = doc.track(&track_id).expect("lead").macros[0]
+        .mappings
+        .clone();
+    let before = doc.clone();
+
+    let bad = Op::SetMacroMappings {
+        track_id,
+        macro_index: 0,
+        old_mappings: current,
+        new_mappings: vec![MacroMapping {
+            target: AutomationTarget::DeviceParam {
+                track_id,
+                slot_index: usize::MAX,
+                param_index: 0,
+            },
+            depth: 1.0,
+        }],
+    };
+    assert!(
+        matches!(
+            bad.apply(&mut doc),
+            Err(yeban_model::ModelError::DeviceSlotOutOfRange { .. })
+        ),
+        "越界设备槽目标必须报 DeviceSlotOutOfRange"
+    );
+    assert_eq!(doc, before, "失败的 apply 绝不能改文档");
+}
+
+#[test]
 fn clearing_all_mappings_is_a_first_class_state_and_reversible() {
     let mut doc = samples::filled_project();
     let track_id = track_with_macro(&doc);
