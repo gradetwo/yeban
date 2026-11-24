@@ -38,11 +38,11 @@ use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_model::samples::filled_project;
+use yeban_ui_test_port::Size;
 use yeban_ui_test_port::inspect::tree_from_element_root;
 use yeban_ui_test_port::port::Permission;
-use yeban_ui_test_port::render::{report_line, LivePort};
+use yeban_ui_test_port::render::{LivePort, report_line};
 use yeban_ui_test_port::tree::ControlTree;
-use yeban_ui_test_port::Size;
 
 const WINDOW: Size = Size::new(1440, 900);
 
