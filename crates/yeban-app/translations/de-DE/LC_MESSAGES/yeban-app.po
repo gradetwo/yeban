@@ -2023,6 +2023,9 @@ msgstr "Tonartvorzeichen"
 msgid "还有更多行未画出"
 msgstr "Weitere Zeilen nicht dargestellt"
 
+msgid "还没有演示工程。"
+msgstr "Noch keine Demo-Projekte."
+
 msgid "还没有最近打开的工程。"
 msgstr "Noch keine zuletzt geöffneten Projekte."
 

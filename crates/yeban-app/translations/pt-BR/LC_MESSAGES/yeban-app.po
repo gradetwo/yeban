@@ -2023,6 +2023,9 @@ msgstr "Armadura de clave"
 msgid "还有更多行未画出"
 msgstr "Mais linhas não exibidas"
 
+msgid "还没有演示工程。"
+msgstr "Ainda não há projetos de demonstração."
+
 msgid "还没有最近打开的工程。"
 msgstr "Ainda não há projetos abertos recentemente."
 

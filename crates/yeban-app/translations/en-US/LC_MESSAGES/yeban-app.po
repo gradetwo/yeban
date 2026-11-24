@@ -2023,6 +2023,9 @@ msgstr "Key Signature"
 msgid "还有更多行未画出"
 msgstr "More rows not shown"
 
+msgid "还没有演示工程。"
+msgstr "No demo projects yet."
+
 msgid "还没有最近打开的工程。"
 msgstr "No recently opened projects yet."
 

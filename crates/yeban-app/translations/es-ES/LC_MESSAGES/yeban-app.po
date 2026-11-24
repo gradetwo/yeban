@@ -2023,6 +2023,9 @@ msgstr "Armadura"
 msgid "还有更多行未画出"
 msgstr "Hay más filas sin mostrar"
 
+msgid "还没有演示工程。"
+msgstr "Aún no hay proyectos de demostración."
+
 msgid "还没有最近打开的工程。"
 msgstr "Aún no hay proyectos abiertos recientemente."
 

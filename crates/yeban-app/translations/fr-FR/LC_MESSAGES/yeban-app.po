@@ -2023,6 +2023,9 @@ msgstr "Armure"
 msgid "还有更多行未画出"
 msgstr "D'autres lignes ne sont pas affichées"
 
+msgid "还没有演示工程。"
+msgstr "Aucun projet de démonstration pour l’instant."
+
 msgid "还没有最近打开的工程。"
 msgstr "Aucun projet ouvert récemment pour le moment."
 

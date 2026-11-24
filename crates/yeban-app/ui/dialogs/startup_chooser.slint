@@ -1688,14 +1688,14 @@ export component StartupChooserDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "startup-chooser-empty-state";
-                accessible-label: root.category == 1 ? @tr("还没有最近打开的工程。") : @tr("此目录中还没有模板。");
+                accessible-label: root.category == 1 ? @tr("还没有最近打开的工程。") : root.category == 2 ? @tr("还没有演示工程。") : @tr("此目录中还没有模板。");
 
                 UiText {
                     x: 0;
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: root.category == 1 ? @tr("还没有最近打开的工程。") : @tr("此目录中还没有模板。");
+                    text: root.category == 1 ? @tr("还没有最近打开的工程。") : root.category == 2 ? @tr("还没有演示工程。") : @tr("此目录中还没有模板。");
                     color: Tokens.ink-2;
                     font-size: Tokens.font-size-sm;
                     overflow: elide;
