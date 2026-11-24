@@ -543,12 +543,12 @@ fn probe_ruler_pointer_path_tmp() {
     let node = rig.port.tree().find_by_id(RULER).expect("ruler in tree");
     eprintln!("PROBE ruler bounds: {:?}", node.bounds);
     let (bx, by) = node.bounds.map(|b| (b.x, b.y)).unwrap_or((0, 0));
-    // 覆盖点击点的全部可寻址节点（自顶向下看谁挡在前面）。
     let (cx, cy) = (bx + 384, by + 11);
+    // 覆盖点击点的全部可寻址节点（自顶向下看谁挡在前面）。
     for n in rig.port.tree().iter() {
         if let Some(b) = n.bounds {
-            if cx >= b.x && cx < b.x + b.width && cy >= b.y && cy < b.y + b.height {
-                eprintln!("PROBE covers ({cx},{cy}): {} role={:?} bounds={b:?}", n.id, n.role, b);
+            if cx >= b.x && cx < b.x + b.width as i32 && cy >= b.y && cy < b.y + b.height as i32 {
+                eprintln!("PROBE covers ({cx},{cy}): {} role={:?} bounds={:?}", n.id, n.role, b);
             }
         }
     }
