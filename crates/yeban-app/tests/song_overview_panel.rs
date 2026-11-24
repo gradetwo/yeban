@@ -109,7 +109,7 @@ use yeban_app::engine_host::EngineHost;
 use yeban_app::host::{self, ProductionLoop};
 use yeban_app::scene::DemoScene;
 use yeban_app::song_overview::{
-    self, SongOverview, BAND_COUNT, LAYER_ENERGY, LAYER_TENSION, band_db_color,
+    self, BAND_COUNT, LAYER_ENERGY, LAYER_TENSION, SongOverview, band_db_color,
     profile_display_name_for,
 };
 use yeban_app::ui::MainWindow;
@@ -117,9 +117,7 @@ use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_dsp::song_overview::{NO_ENVELOPE, NO_LOUDNESS_READING_LUFS};
 use yeban_engine::ring::TransportCommand;
 use yeban_ui_test_port::render::{LivePort, write_artifact};
-use yeban_ui_test_port::{
-    KeyCode, Permission, Rect, Rgb8Image, Size, UiTestPort as _,
-};
+use yeban_ui_test_port::{KeyCode, Permission, Rect, Rgb8Image, Size, UiTestPort as _};
 
 /// 与其余 Tier-1 判据同款。
 const WINDOW: Size = Size::new(1440, 900);
@@ -272,10 +270,7 @@ impl Rig {
     fn assert_ab_buttons_present(&self) {
         let tree = self.port.tree();
         for id in [CAPTURE_A, CAPTURE_B, COMPARE] {
-            assert!(
-                tree.contains(id),
-                "A/B 对比按钮必须在活树里：`{id}`"
-            );
+            assert!(tree.contains(id), "A/B 对比按钮必须在活树里：`{id}`");
         }
     }
 
@@ -522,7 +517,8 @@ fn real_data_reaches_the_panel() {
         "UI 段落名数组必须与活态逐位一致"
     );
     assert_eq!(
-        model_strings(ui.get_song_overview_ruler_labels())[0], "Intro",
+        model_strings(ui.get_song_overview_ruler_labels())[0],
+        "Intro",
         "标尺首项必须是段名 \"Intro\""
     );
     assert!(
@@ -693,11 +689,7 @@ fn dragging_the_lens_body_scrolls_the_arrangement() {
         position_before,
         "滚动编排视图时走带位置一位不动（拖动 ⛔ 不跳转）"
     );
-    assert_eq!(
-        rig.journal_len(),
-        journal_before,
-        "滚动不得写动作日志"
-    );
+    assert_eq!(rig.journal_len(), journal_before, "滚动不得写动作日志");
 }
 
 /// ⑧：viewport-zoom 回调 34 ⇒ 缩放 30 → 34，第 5 条小节线列位跟着变。
@@ -722,11 +714,7 @@ fn dragging_the_lens_right_edge_zooms_and_reprojects() {
         bar5_before,
         "第 5 条小节线列位必须跟着变（重投影）"
     );
-    assert_eq!(
-        rig.position(),
-        position_before,
-        "缩放时走带位置一位不动"
-    );
+    assert_eq!(rig.position(), position_before, "缩放时走带位置一位不动");
 }
 
 /// ⑨：layer-toggle(能量) ⇒ `show-energy` 翻 false、其余三层不动；再调 ⇒ 恢复。
@@ -816,11 +804,7 @@ fn alt_clicking_a_band_row_solos_it_and_plain_click_seeks() {
         7 * BAR_TICKS,
         "无独奏时 seek 回调照常跳转到第 7 小节线"
     );
-    assert_eq!(
-        rig.ui().get_song_overview_band_solo(),
-        -1,
-        "跳转不得独奏"
-    );
+    assert_eq!(rig.ui().get_song_overview_band_solo(), -1, "跳转不得独奏");
 }
 
 /// ⑪：hover 回调 6.5/16 ⇒ 悬停读数出现（含小节号、LUFS、张力、前两频段）。
@@ -870,10 +854,7 @@ fn collapse_button_folds_the_panel_to_22px_and_back() {
         "折叠往返不得顺带进全屏"
     );
     rig.ui().invoke_song_overview_toggle_collapsed();
-    assert!(
-        rig.ui().get_song_overview_collapsed(),
-        "再调一次 ⇒ 回折叠"
-    );
+    assert!(rig.ui().get_song_overview_collapsed(), "再调一次 ⇒ 回折叠");
 }
 
 /// ⑬：视觉验收 1:1 + 3x —— 整帧非黑，三张 PNG 落盘供肉眼验收。
@@ -890,8 +871,7 @@ fn visual_acceptance_1x_and_3x() {
         nonblack_fraction(&collapsed) > 0.9,
         "折叠态整帧必须非黑（>90% 像素非纯黑）"
     );
-    write_artifact("song-overview-collapsed-1x", &collapsed)
-        .expect("折叠态 1:1 必须落盘");
+    write_artifact("song-overview-collapsed-1x", &collapsed).expect("折叠态 1:1 必须落盘");
 
     rig.expand();
     let expanded = rig.capture_frame();
@@ -899,21 +879,13 @@ fn visual_acceptance_1x_and_3x() {
         nonblack_fraction(&expanded) > 0.9,
         "展开态整帧必须非黑（>90% 像素非纯黑）"
     );
-    write_artifact("song-overview-expanded-1x", &expanded)
-        .expect("展开态 1:1 必须落盘");
+    write_artifact("song-overview-expanded-1x", &expanded).expect("展开态 1:1 必须落盘");
 
-    let bottom = Rig::crop(
-        &expanded,
-        0,
-        WINDOW.height - 128,
-        WINDOW.width,
-        128,
-    );
+    let bottom = Rig::crop(&expanded, 0, WINDOW.height - 128, WINDOW.width, 128);
     let triple = Rig::upscale_3x(&bottom);
     assert_eq!(triple.width(), WINDOW.width * 3, "3x 宽必须是 4320");
     assert_eq!(triple.height(), 128 * 3, "3x 高必须是 384");
-    write_artifact("song-overview-expanded-3x", &triple)
-        .expect("展开态底部 3x 必须落盘");
+    write_artifact("song-overview-expanded-3x", &triple).expect("展开态底部 3x 必须落盘");
 }
 
 /// ⑭：1920×1080（全展开档）默认展开：`collapsed` 假；面板 ID 仍不在树里。
@@ -956,22 +928,17 @@ fn panel_defaults_to_expanded_104px_on_full_hd() {
 fn second_refresh_hits_the_cache_and_keeps_real_data() {
     let rig = Rig::new();
     let before = rig.live_data();
-    let first = song_overview::refresh_song_overview(
-        rig.ui(),
-        &rig.view.borrow(),
-        &rig._state,
-    );
+    let first = song_overview::refresh_song_overview(rig.ui(), &rig.view.borrow(), &rig._state);
     assert_eq!(first.bars, TOTAL_BARS, "刷新回执小节数必须是 16");
     assert!(first.cache_hit, "显式刷新必须命中缓存（装配时已算过）");
-    assert!(!first.score_only, "必须走全量路（渲染成功），不是纯谱面回退");
+    assert!(
+        !first.score_only,
+        "必须走全量路（渲染成功），不是纯谱面回退"
+    );
     assert_eq!(first.error, None, "全量刷新必须无失败原文");
     assert_eq!(rig.live_data(), before, "刷新后数据必须逐位相同");
 
-    let second = song_overview::refresh_song_overview(
-        rig.ui(),
-        &rig.view.borrow(),
-        &rig._state,
-    );
+    let second = song_overview::refresh_song_overview(rig.ui(), &rig.view.borrow(), &rig._state);
     assert!(second.cache_hit, "第二次刷新也必须命中缓存");
     assert!(!second.score_only, "第二次也必须走全量路");
     assert_eq!(second.error, None, "第二次必须无失败原文");
@@ -1003,7 +970,10 @@ fn hover_readout_leaves_the_tree_when_the_pointer_exits_the_panel() {
         "悬停后 `hover-visible` 必须是真"
     );
     let first_text = rig.ui().get_song_overview_hover_text().to_string();
-    assert!(first_text.contains("第 7 小节"), "首次悬停读数必须是第 7 小节");
+    assert!(
+        first_text.contains("第 7 小节"),
+        "首次悬停读数必须是第 7 小节"
+    );
 
     // 再悬停到别处：文本跟着变，`hover-visible` 仍真 —— 没有任何清除路径。
     rig.ui().invoke_song_overview_hover(0.5f32 / 16.0);
@@ -1154,11 +1124,7 @@ fn fullscreen_button_expands_the_panel_and_keeps_all_four_interactions() {
     assert_eq!(rig.position(), 5 * BAR_TICKS, "全屏态跳转必须照常");
     // ② 滚动在全屏态下可用。
     rig.ui().invoke_song_overview_viewport_scroll(100.0);
-    assert_eq!(
-        rig.ui().get_roll_scroll_x(),
-        100.0,
-        "全屏态滚动必须照常"
-    );
+    assert_eq!(rig.ui().get_roll_scroll_x(), 100.0, "全屏态滚动必须照常");
     // ③ 胶囊开关在全屏态下可用。
     rig.ui().invoke_song_overview_layer_toggle(LAYER_ENERGY);
     assert!(
@@ -1237,8 +1203,7 @@ fn collapse_while_fullscreen_folds_to_22px_and_fullscreen_from_collapsed_expands
     let rig = Rig::new();
     rig.ui().invoke_song_overview_toggle_fullscreen();
     assert!(
-        rig.ui().get_song_overview_fullscreen()
-            && !rig.ui().get_song_overview_collapsed(),
+        rig.ui().get_song_overview_fullscreen() && !rig.ui().get_song_overview_collapsed(),
         "起点：全屏且展开"
     );
     rig.ui().invoke_song_overview_toggle_collapsed();
@@ -1274,14 +1239,12 @@ fn fullscreen_visual_acceptance_1x_and_3x() {
         nonblack_fraction(&frame) > 0.9,
         "全屏态整帧必须非黑（>90% 像素非纯黑）"
     );
-    write_artifact("song-overview-fullscreen-1x", &frame)
-        .expect("全屏态 1:1 必须落盘");
+    write_artifact("song-overview-fullscreen-1x", &frame).expect("全屏态 1:1 必须落盘");
 
     let left_top = Rig::crop(&frame, 0, 0, 480, 270);
     let left_3x = Rig::upscale_3x(&left_top);
     assert_eq!((left_3x.width(), left_3x.height()), (1440, 810));
-    write_artifact("song-overview-fullscreen-3x-left-top", &left_3x)
-        .expect("全屏 3x 左上必须落盘");
+    write_artifact("song-overview-fullscreen-3x-left-top", &left_3x).expect("全屏 3x 左上必须落盘");
 
     let right_top = Rig::crop(&frame, WINDOW.width - 480, 0, 480, 270);
     let right_3x = Rig::upscale_3x(&right_top);
@@ -1340,7 +1303,8 @@ fn profile_button_cycles_presets_and_changes_tension() {
     rig.ui().invoke_song_overview_profile_cycle();
     assert_eq!(rig.live_data().profile, "default", "调三次 ⇒ 回到缺省档");
     assert_eq!(
-        rig.live_data().tension, default_tension,
+        rig.live_data().tension,
+        default_tension,
         "回到缺省档后张力必须逐位恢复"
     );
     assert_eq!(
@@ -1387,11 +1351,7 @@ fn section_label_cycles_expected_level_and_flags_deviation() {
             .contains("偏离期望带"),
         "悬停读数必须含偏离量"
     );
-    assert_eq!(
-        rig.position(),
-        position_before,
-        "设档时走带一位不动"
-    );
+    assert_eq!(rig.position(), position_before, "设档时走带一位不动");
 
     // 再调 (6 - cycles_to_alert) 次 ⇒ 回到无标注（带哨兵、无告警）。
     for _ in 0..(6 - cycles_to_alert) {
@@ -1432,10 +1392,7 @@ fn score_dyn_reaches_the_panel_and_is_nonzero_on_the_first_bar() {
         live.envelope_lo.iter().all(|lo| *lo == NO_ENVELOPE),
         "无标注时包络列必须全哨兵"
     );
-    assert!(
-        live.envelope_alert.iter().all(|a| !a),
-        "无标注时必须无告警"
-    );
+    assert!(live.envelope_alert.iter().all(|a| !a), "无标注时必须无告警");
     assert_eq!(live.profile, "default", "无标注时档名必须是 default");
     assert_eq!(
         rig.ui().get_song_overview_profile().to_string(),
@@ -1470,10 +1427,8 @@ fn phase2_visual_acceptance_1x_and_3x() {
         "管弦档 + 告警态整帧必须非黑（>90% 像素非纯黑）"
     );
     let bottom = Rig::crop(&frame, 0, WINDOW.height - 128, WINDOW.width, 128);
-    write_artifact("song-overview-phase2-1x", &bottom)
-        .expect("Phase 2 底部 1:1 必须落盘");
+    write_artifact("song-overview-phase2-1x", &bottom).expect("Phase 2 底部 1:1 必须落盘");
     let triple = Rig::upscale_3x(&bottom);
     assert_eq!((triple.width(), triple.height()), (4320, 384));
-    write_artifact("song-overview-phase2-3x", &triple)
-        .expect("Phase 2 底部 3x 必须落盘");
+    write_artifact("song-overview-phase2-3x", &triple).expect("Phase 2 底部 3x 必须落盘");
 }

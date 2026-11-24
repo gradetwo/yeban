@@ -256,7 +256,9 @@ fn vertical_wheel_does_not_scroll_the_console() {
         "门关着时混音台容器必须不在树里（纵向滚轮无物可滚）"
     );
     assert_eq!(
-        MIXER_CONSOLE.matches("content-height: self.height;").count(),
+        MIXER_CONSOLE
+            .matches("content-height: self.height;")
+            .count(),
         1,
         "`content-height: self.height` 必须仍是 1 处（纵向恒不可滚的语义休眠钉住）"
     );
@@ -295,10 +297,7 @@ fn scrolling_does_not_move_the_master_strip() {
         1,
         "主控条 x 仍钉在 `root.width - 112px`（它在容器外面，休眠钉住）"
     );
-    assert_eq!(
-        MASTER_GUTTER, 112,
-        "主控栏位宽常量仍是 112（与源码同值）"
-    );
+    assert_eq!(MASTER_GUTTER, 112, "主控栏位宽常量仍是 112（与源码同值）");
 }
 
 /// ⑧：内容不宽出视口（演示工程）⇒ 滚轮一位不动。
@@ -329,9 +328,6 @@ fn few_tracks_do_not_scroll() {
         1,
         "内容宽公式的窄档 216 / 宽档 438 必须仍是 1 处"
     );
-    assert_eq!(
-        PANELS_WIDE, 438,
-        "宽档侧面板占宽仍是 438（216 + 6 + 216）"
-    );
+    assert_eq!(PANELS_WIDE, 438, "宽档侧面板占宽仍是 438（216 + 6 + 216）");
     assert_eq!(PANELS_NARROW, 216, "窄档侧面板占宽仍是 216");
 }
