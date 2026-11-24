@@ -176,6 +176,16 @@ impl Rig {
             .expect("释放必须送达");
     }
 
+    /// 在标尺带上指定局部点真实按下一次（探针用）。
+    fn click_ruler_at(&mut self, local_x: f64, local_y: f64) {
+        self.port
+            .dispatch_pointer_down(RULER, local_x, local_y, PointerButton::Left)
+            .expect("Interactive 权限下标尺带必须可按下");
+        self.port
+            .dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+    }
+
     /// 在标尺带上真实拖一次：按下 `from_x` → 移到 `to_x` → 松手。
     /// 移动事件的坐标是**窗口绝对坐标**（测试口的 `dispatch_pointer_move` 口径），
     /// 因此用控件树的包围盒把局部 x 换算过去。
@@ -529,26 +539,32 @@ fn the_grid_right_edge_is_the_line_count_times_one_bar() {
 #[test]
 fn probe_ruler_pointer_path_tmp() {
     let mut rig = Rig::new();
+    rig.port.refresh_tree(None).expect("重抓控件树");
     let node = rig.port.tree().find_by_id(RULER).expect("ruler in tree");
     eprintln!("PROBE ruler bounds: {:?}", node.bounds);
-    eprintln!(
-        "PROBE bar_positions[0..5]: {:?} scroll_x={} tpp={}",
-        rig.ui().get_bar_positions().iter().take(5).collect::<Vec<_>>(),
-        rig.ui().get_roll_scroll_x(),
-        host::roll_ticks_per_pixel(rig.ui())
-    );
+    let (bx, by) = node.bounds.map(|b| (b.x, b.y)).unwrap_or((0, 0));
+    // 覆盖点击点的全部可寻址节点（自顶向下看谁挡在前面）。
+    let (cx, cy) = (bx + 384, by + 11);
+    for n in rig.port.tree().iter() {
+        if let Some(b) = n.bounds {
+            if cx >= b.x && cx < b.x + b.width && cy >= b.y && cy < b.y + b.height {
+                eprintln!("PROBE covers ({cx},{cy}): {} role={:?} bounds={b:?}", n.id, n.role, b);
+            }
+        }
+    }
     rig.ui().invoke_ruler_seek(384.0f32);
     eprintln!(
         "PROBE after direct invoke_ruler_seek(384): position={} journal={}",
         rig.position(),
         rig.journal_len()
     );
-    let before = rig.journal_len();
-    rig.click_ruler(384.0);
-    eprintln!(
-        "PROBE after click_ruler(384): position={} journal={} (before={})",
-        rig.position(),
-        rig.journal_len(),
-        before
-    );
+    for (lx, ly) in [(100.0, 11.0), (384.0, 5.0), (384.0, 11.0), (384.0, 20.0), (800.0, 11.0)] {
+        let before = rig.journal_len();
+        rig.click_ruler_at(lx, ly);
+        eprintln!(
+            "PROBE click ({lx},{ly}): position={} journal={} (before={before})",
+            rig.position(),
+            rig.journal_len()
+        );
+    }
 }
