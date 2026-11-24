@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 362 条：collection_size 72 ／ value_bound 273 ／ element_value_bound 6 ／ condition_counter 11
+# 合计 367 条：collection_size 74 ／ value_bound 276 ／ element_value_bound 6 ／ condition_counter 11
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -177,10 +177,15 @@ src/meter.rs|zero_input_is_negative_infinity_or_floor_never_nan|value_bound|asse
 src/modal.rs|a_single_resonator_voice_maps_note_and_velocity|element_value_bound|assert!(low_out.iter().any(|s| s.abs() > 1e-5), "A3 必须真的发声"
 src/modal.rs|beam_law_morphs_string_to_quadratic|condition_counter|assert!((beam_ratio(n, 0.0) - f).abs() < 1e-4, "mix=0 是柔弦"
 src/modal.rs|configured_resonator_respects_the_mode_cap|value_bound|assert!(r.active_modes() > 0 && r.active_modes() <= MAX_MODES
+src/modal.rs|coupled_eigenfrequencies_degenerate_at_zero_and_split_with_coupling|value_bound|assert!((hi0 - 440.0).abs() < 1e-4 && (lo0 - 440.0).abs() < 1e-4
+src/modal.rs|coupling_feeds_energy_into_the_second_resonator|value_bound|assert_eq!(silence_energy, 0.0, "k=0 时第二只必须完全没有能量"
+src/modal.rs|coupling_is_finite_and_audible_for_every_model|collection_size|assert!(peak > 1e-4, "{model:?} 耦合后必须仍然发声"
+src/modal.rs|coupling_splits_the_spectrum_into_two_peaks|value_bound|assert!(lo_weak.1 > 0.2 && hi_weak.1 > 0.2, "弱耦合下两峰都必须在"
 src/modal.rs|damping_ramp_and_gain_compensation_are_bounded|value_bound|assert!((modal_damping(1.0, 0.01, 0.02) - 0.01).abs() < 1e-6
 src/modal.rs|membrane_and_plate_laws_match_the_cookbook|condition_counter|assert!((membrane_ratio(m, n, a) - libm::sqrtf(mf) / libm::sqrtf(2.0)).abs() < 1e-4
 src/modal.rs|string_law_is_harmonic_with_stiffness_stretch|value_bound|assert!((plain - k as f32).abs() < 1e-4, "B=0 必须是谐波列"
 src/modal.rs|two_d_index_enumerates_each_pair_once|value_bound|assert_eq!(             first,             vec![                 (1, 1),                 (
+src/modal.rs|zero_coupling_is_bit_identical_to_the_single_resonator|collection_size|assert_eq!(differing_bits, 0, "k=0 必须与第一期单共振器逐位一致"
 src/noise.rs|a_corner_below_the_documented_floor_is_folded_onto_the_floor|value_bound|assert_eq!(render(below), at_floor, "转折频率 {below} Hz 必须折到 1 Hz"
 src/noise.rs|brown_falls_at_six_db_per_octave|value_bound|assert!(             (measured + 6.0).abs() < 0.8,             "brown slope should be abou
 src/noise.rs|pink_falls_at_three_db_per_octave|value_bound|assert!(             (measured + 3.0).abs() < 0.6,             "pink slope should be about

@@ -1598,7 +1598,7 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 8] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1675,6 +1675,17 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 7] = [
                    `if` 链，看不见结构体字段。",
         retires_when: "把 `empty_schedule_reason` 改成闭合枚举（每个值一个 `as_str()` 常量）\
                        且扫描器能解析该字段的赋值时退役；在此之前它没有可冻结的词表。",
+    },
+    // ⭐ T-FIX-345：`restore_binding_state` 接收 `reason: &'static str` 并在解码/恢复失败两处转发。
+    DynamicReasonSite {
+        file: "domain/render.rs",
+        expr: "reason",
+        occurrences: 2,
+        forwards: "`restore_binding_state` 接收调用方传入的 `reason: &'static str`（`\"pluginState\"`）\
+                   并在插件状态解码失败与恢复失败两处 `render_failed` 中复用；扫描器只认字面量或末参\
+                   单点传播，看不见该辅助函数入参。",
+        retires_when: "把 `restore_binding_state` 拆回内联字面量或扫描器支持通用 `&'static str` 末参\
+                       调用点传播时退役。",
     },
 ];
 
@@ -1839,15 +1850,15 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 375;
+const REASON_OCCURRENCES_TOTAL: usize = 377;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 370;
+const REASON_KEY_SITES_TOTAL: usize = 372;
 const REASON_LITERAL_SITES_TOTAL: usize = 353;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 12;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 5;
 
