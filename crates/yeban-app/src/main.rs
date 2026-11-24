@@ -1212,6 +1212,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         production.borrow().engine_handle(),
         Rc::clone(&view_cell),
     );
+    // ⭐ T-FIX-208：退出 / 关窗前的「未保存改动」保护（数据丢失级）。
+    // 必须在 wire_aether_actions（app-quit 臂）与 wire_save_with_engine（保存记账）
+    // 之后装配：它安装保存点初值 + 三个三选 callback + 窗口 close 拦截。
+    // 保存点初值 = 此刻的 head（从文件打开的工程即"已保存"态），启动瞬间不弹框。
+    host::wire_quit_guard(&ui, &undo_port);
+
     // 新手引导首次启动自动打开（line/onboarding-help）：只在真实装配里判，
     // 无头 / 测试装配不跑这一句；落盘状态说弹过或走完过就不再弹。
     let _ = yeban_app::help::show_onboarding_if_first_launch(&ui);

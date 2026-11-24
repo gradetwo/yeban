@@ -88,6 +88,9 @@ pub mod builtin_sounds;
 // ⭐ **缺音源的友好引导**（打开工程时）：算出"哪条轨缺哪件、能不能一键装回来"。
 pub mod cli;
 pub mod debug_out;
+// ⭐ 工程脏标记的**纯逻辑层**（T-FIX-208）：saved_head 保存点 + 头指针脏判定。
+// 零 Slint 依赖，因此判据能在本机真跑；Slint 属性 / 三选对话框接线都在 host / main。
+pub mod dirty_guard;
 pub mod elements;
 pub mod engine_host;
 pub mod missing_sounds;
