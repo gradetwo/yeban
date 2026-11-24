@@ -897,6 +897,12 @@ export component TransportHeaderBar inherits Rectangle {
                         background: btn_rewind_touch.has-hover ? Tokens.bg-lane2 : transparent;
                         border-width: btn_rewind_touch.has-hover ? 1px : 0;
                         border-color: Tokens.line-strong;
+                        // T-FIX-177：与 stop/play/record 同款三件套；动作与
+                        // `btn_rewind_touch.clicked` 逐字相同（同一 root.rewind()）。
+                        accessible-role: button;
+                        accessible-id: "transport-rewind-button";
+                        accessible-label: @tr("返回工程起点 / 归零 [Return]");
+                        accessible-action-default => { root.rewind(); }
                         IconTransportRewind {
                             icon-color: btn_rewind_touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                         }

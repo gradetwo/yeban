@@ -244,6 +244,15 @@ impl ElementRegistry {
             "录音",
             false,
         );
+        // ⭐ T-FIX-177：REWIND 键（`transport_bar.slint` 的 `btn_rewind`）。
+        // 与 stop/play/record 同款三件套，动作落到同一个 `root.rewind()`。
+        registry.add(
+            "transport-rewind-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "返回工程起点 / 归零 [Return]",
+            false,
+        );
         // ⭐ T-FIX-181：LOOP 键（`transport_bar.slint` 的 `btn_loop`）。T-FIX-173
         // 只在 .slint 侧补了无障碍三件套，注册表漏了这一条 ⇒
         // `slint_accessible_ids_and_registry_cover_each_other` 在基线即红。
@@ -3409,6 +3418,18 @@ impl ElementRegistry {
             "总输出单声道监听切换 [MONO]",
             false,
         );
+
+        // ------------------------------------------------------ 下坞主视图标签（T-FIX-177）
+        // 四个标签是 `tab` 角色，选中态由 `accessible-item-selected` 朗读；
+        // 与 `transport.slint` 的视图切换同一套 tab 口径，但这里是下坞四页。
+        for (id, label) in [
+            ("dock-tab-stacked", "设备堆叠"),
+            ("dock-tab-devices", "设备机架"),
+            ("dock-tab-mixer", "混音控制台"),
+            ("dock-tab-pianoroll", "钢琴卷帘"),
+        ] {
+            registry.add(id, ElementKind::Tab, "lower_dock.slint", label, false);
+        }
 
         // ------------------------------------------------------ 插件与 ARA 面板（T-FIX-83）
         // 入口在既有设备机架的本地操作行（`lower_dock.slint`），面板住隐藏模态

@@ -211,6 +211,14 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         background: root.active-tab == "stacked" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
+                        accessible-role: tab;
+                        accessible-id: "dock-tab-stacked";
+                        accessible-label: @tr("设备堆叠");
+                        accessible-item-index: 0;
+                        accessible-item-count: 4;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: root.active-tab == "stacked";
+                        accessible-action-default => { root.select-tab("stacked"); }
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
@@ -233,6 +241,14 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         background: root.active-tab == "devices" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
+                        accessible-role: tab;
+                        accessible-id: "dock-tab-devices";
+                        accessible-label: @tr("设备机架");
+                        accessible-item-index: 1;
+                        accessible-item-count: 4;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: root.active-tab == "devices";
+                        accessible-action-default => { root.select-tab("devices"); }
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
@@ -255,6 +271,14 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         background: root.active-tab == "mixer" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
+                        accessible-role: tab;
+                        accessible-id: "dock-tab-mixer";
+                        accessible-label: @tr("混音控制台");
+                        accessible-item-index: 2;
+                        accessible-item-count: 4;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: root.active-tab == "mixer";
+                        accessible-action-default => { root.select-tab("mixer"); }
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
@@ -277,6 +301,14 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         background: root.active-tab == "pianoroll" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
+                        accessible-role: tab;
+                        accessible-id: "dock-tab-pianoroll";
+                        accessible-label: @tr("钢琴卷帘");
+                        accessible-item-index: 3;
+                        accessible-item-count: 4;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: root.active-tab == "pianoroll";
+                        accessible-action-default => { root.select-tab("pianoroll"); }
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;

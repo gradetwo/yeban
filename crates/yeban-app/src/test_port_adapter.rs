@@ -427,7 +427,7 @@ fn pick_regression_target(
 /// 这一份是**硬断言**的核心清单：每一条都在默认视图里既非 `visible: false` 又无裁剪风险。
 /// ⭐ T-FIX-218：`"sidebar"` 已删（`ui/sidebar.slint` 删除，旧 `Sidebar` 组件
 /// 不再进树；左栏现为 `left_panel.slint` 浏览器页，无语义 ID）⇒ 清单 **15 → 14**。
-const DEFAULT_VIEW_MUST_HAVE: [&str; 14] = [
+const DEFAULT_VIEW_MUST_HAVE: [&str; 15] = [
     "ai-rail",
     "arrangement-playhead",
     "arrangement-ruler",
@@ -439,6 +439,7 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 14] = [
     "status-bar-selection",
     "transport-play-button",
     "transport-record-button",
+    "transport-rewind-button",
     "transport-stop-button",
     "transport-timecode",
     "workspace-arrangement-canvas",
@@ -463,7 +464,8 @@ const DEFAULT_VIEW_MUST_HAVE: [&str; 14] = [
 /// ⭐ T-FIX-218：`ui/sidebar.slint` 删除 ⇒ `sidebar` / `sidebar-collapse-button` /
 /// `sidebar-search-field` 三条单例随旧面板删除（左栏现为 `left_panel.slint` 浏览器页，
 /// 无语义 ID）⇒ 分母 **28 → 25**。
-const VISIBLE_SINGLETONS: [&str; 25] = [
+// ⭐ T-FIX-177：REWIND 与下坞四个主视图标签补语义节点 ⇒ 25 → 30。
+const VISIBLE_SINGLETONS: [&str; 30] = [
     "ai-rail",
     "ai-rail-diagnose-button",
     "ai-rail-intent-button",
@@ -472,6 +474,10 @@ const VISIBLE_SINGLETONS: [&str; 25] = [
     "arrangement-ruler",
     "console-maximize-button",
     "console-tab-rail",
+    "dock-tab-devices",
+    "dock-tab-mixer",
+    "dock-tab-pianoroll",
+    "dock-tab-stacked",
     "piano-roll",
     "piano-roll-grid",
     "piano-roll-keys",
@@ -486,6 +492,7 @@ const VISIBLE_SINGLETONS: [&str; 25] = [
     "status-bar-shortcut-tip",
     "transport-play-button",
     "transport-record-button",
+    "transport-rewind-button",
     "transport-stop-button",
     "transport-timecode",
     "workspace-arrangement-canvas",
