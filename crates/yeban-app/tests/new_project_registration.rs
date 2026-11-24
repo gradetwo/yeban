@@ -186,7 +186,7 @@ fn check_new_project_registration(
     );
     assert!(
         app.contains("new-project => { root.startup-new-project(); }"),
-        "`ui/app.slint` 里启动选择器的 `new-project => { root.startup-new-project(); }` 必须在 —— 它是另一个动作（`startup-new-project`），不是本条的 `new-project`"
+        "`ui/app.slint` 里启动选择器的 `new-project => {{ root.startup-new-project(); }}` 必须在 —— 它是另一个动作（`startup-new-project`），不是本条的 `new-project`"
     );
     assert!(
         host.contains("ui.on_new_project("),
