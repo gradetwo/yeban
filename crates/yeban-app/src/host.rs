@@ -316,6 +316,18 @@ fn install_window_height_signal(ui: &MainWindow) {
     WINDOW_H_TIMER.with(|slot| *slot.borrow_mut() = Some(timer));
 }
 
+/// 当前 `tracks` 模型与候选行逐行相等（`apply_view` 的重注守卫，T-FIX-232）。
+///
+/// `TrackData` 是 Slint 生成的结构体（`#[derive(PartialEq)]`，见 `tokens.slint:1354`），
+/// 逐行比对即内容比对。长度不同或任一行不同 ⇒ `false`（必须重注）。
+fn tracks_model_equal(ui: &MainWindow, next: &[crate::ui::TrackData]) -> bool {
+    let current = ui.get_tracks();
+    if current.row_count() != next.len() {
+        return false;
+    }
+    (0..next.len()).all(|i| current.row_data(i).as_ref() == next.get(i))
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -681,7 +693,16 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // tracks / timeline-blocks / notes 这三个结构数组 ⇒ 这里从同一份 ViewState
     // 一并注入。导入真工程后看到的轨道/片段/音符因此是投影而非 .slint 演示数据;
     // 混音台提交后的 refresh_undo_window 重调 apply_view, 状态自然跟进。
-    ui.set_tracks(ModelRc::new(VecModel::from(view_to_tracks(view))));
+    //
+    // ⭐ T-FIX-232：轨道行与当前模型逐行相等时**不**重注 `tracks` —— `set_tracks` 会重建
+    // Repeater、连同正在拖拽的包头 `TouchArea` 的指针抓取一起丢掉（`preview_track_volume`
+    // 同款纪律），于是"按下选轨（`wire_track_select` 的 `apply_view`）→ 拖行高 / 重排"
+    // 的 move 再也到不了宿主，拖拽在真机上也是死的（无头实测：去掉选轨重注后 move 才到达）。
+    // 行内容真变了（增删 / 改名 / 改色 / 改音量……）时照旧重注；只跳过内容一位不动的重注。
+    let next_tracks = view_to_tracks(view);
+    if !tracks_model_equal(ui, &next_tracks) {
+        ui.set_tracks(ModelRc::new(VecModel::from(next_tracks)));
+    }
     ui.set_timeline_blocks(ModelRc::new(VecModel::from(view_to_timeline_blocks(view))));
     // 框选标志（结构面，line/blank-drag-selection）：块数组刚被整体替换 ⇒ 与它
     // 同序的 `timeline-block-selected` 必须同帧按选区集重算，⛔ 不许留上一份

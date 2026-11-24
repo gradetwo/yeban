@@ -131,6 +131,17 @@ export component ArrangementViewport inherits Rectangle {
     private property <length> clip-drag-origin-x: 0px;
     private property <bool> clip-drag-moved: false;
 
+    // ---- 轨道头手势（T-FIX-232：从死文件 `workspace/arrangement_view.slint` 搬进活视图）----
+    //
+    // 重排手势态（根 → 视图单向；`preview-index` < 0 ⇒ 不画插入线），与死文件同款口径。
+    // 宿主（`host::wire_track_reorder`）在拖动中写 `preview-index` / `preview-y`，松手提交
+    // 一次 `Op::MoveTrack`；高度手势态仍由宿主持有（`track-height-drag-active` 等在根上，
+    // 见 `app.slint`，视图不另建第二份）。
+    in property <bool> track-reorder-active: false;
+    in property <int> track-reorder-index: -1;
+    in property <int> track-reorder-preview-index: -1;
+    in property <float> track-reorder-preview-y: 0.0;
+
     // ---- 自动化泳道（`T-FIX-227`：从死文件 `workspace/arrangement_view.slint` 搬进活视图）----
     //
     // 九个平行数组全部由 `src/automation.rs` 的投影派生、`host::apply_view` 单向注入；
@@ -163,6 +174,12 @@ export component ArrangementViewport inherits Rectangle {
     property <bool> marquee-additive: false;
 
     callback select-track(int);
+    // ⭐ T-FIX-232：包头手势的直接选轨（死文件 `workspace/arrangement_view.slint:200,713` 同款）。
+    // 0-based 下标 ⇒ 根 `track-select` ⇒ 宿主 `wire_track_select`（写字符串身份 + 1-based
+    // 下标 + `apply_view` 精准联动）。⛔ 不走 `select-track`：那条是 1-based 经 `track-selected`
+    // 再 `invoke_track_select` 的迂回路，其宿主落点 `wire_aether_actions` 在测试装配里不跑，
+    // 包头按下会选不上（实测：`selected-track-index` 变了，`selected-track-id` 仍是 ""）。
+    callback track-select(int);
     callback toggle-mute(int);
     callback toggle-solo(int);
     callback toggle-arm(int);
@@ -250,6 +267,23 @@ export component ArrangementViewport inherits Rectangle {
     callback mixer-pan-reset(int);
     callback execute-action(string);
     callback clip-select(string);
+    // ⭐ T-FIX-232：活视图的轨道头手势（从死文件 `workspace/arrangement_view.slint` 搬进活视图）。
+    // 与 `clip-drag-*` 同一条分工：界面只报**下标 + 指针坐标**，位移换算 / 夹紧 / 提交全在宿主
+    // （`host::wire_track_height_drag` / `host::wire_track_reorder`）。
+    /// 轨道头底边按下：`(轨道下标, 指针在轨道头坐标系里的 y)`。
+    callback track-height-grab(int, length);
+    /// 轨道头底边拖动：同一个下标、同一个坐标系里的当前 y（位移由宿主算）。
+    callback track-height-drag(int, length);
+    /// 轨道头底边收尾：松开 / 指针离开窗口（上游把离开导出成 `PointerEventKind.cancel`）。
+    callback track-height-release(int);
+    /// 轨道头名称区按下：`(轨道下标, 行空间 y = track-ys[下标] + 头内 y)`。
+    callback track-reorder-grab(int, length);
+    /// 轨道头名称区拖动：同一个下标、行空间里的当前 y（插入位置由宿主算）。
+    callback track-reorder-drag(int, length);
+    /// 轨道头名称区收尾：松开 / 指针离开窗口。
+    callback track-reorder-release(int);
+    /// 包头无障碍动作：`(轨道下标, 方向)`（-1 = 上移一格，+1 = 下移一格）⇒ 直接提交。
+    callback track-reorder-step(int, int);
     // ⭐ T-FIX-234：活视图的片段手势（拖动 / 双击 / 空白处新建）。
     callback clip-create();
     callback clip-double-click(string);
@@ -1244,6 +1278,19 @@ export component ArrangementViewport inherits Rectangle {
                         // Left Track Header (if not headers on right)
                         if !Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
+                            // ⭐ T-FIX-232：稳定的自动化元素 ID（`UI-TEST-001` 语义寻址；死文件同款）。
+                            // 无障碍默认动作 = 选中这条轨；增 / 减 = 下移 / 上移一格（落点
+                            // `host::wire_track_reorder` 的 `track-reorder-step`，直接提交）。
+                            accessible-role: list-item;
+                            accessible-id: "track-" + idx + "-header";
+                            accessible-label: @tr("轨道 {}", trk.name);
+                            accessible-item-index: idx;
+                            accessible-item-count: root.tracks.length;
+                            accessible-item-selectable: true;
+                            accessible-item-selected: trk.id == root.selected-track-id;
+                            accessible-action-default => { root.track-select(idx); }
+                            accessible-action-increment => { root.track-reorder-step(idx, 1); }
+                            accessible-action-decrement => { root.track-reorder-step(idx, -1); }
                             // 轨道头选中呈现 (裁决甲, Wang 2026-11-17 19:58):
                             // 质感三元。拟物支 = main 形态 (选中 accent
                             // α0.10 底 + α0.80 边, 未选中 track-head-brush);
@@ -1263,8 +1310,16 @@ export component ArrangementViewport inherits Rectangle {
                                 background: trk.color;
                             }
 
+                            // ⭐ T-FIX-232：轨道头手势（从死文件 `workspace/arrangement_view.slint`
+                            // 搬进活视图；手势分区与死文件逐字一致）。名称区按下 ⇒ 重排（报行空间 y）；
+                            // 底边 6px 按下 ⇒ 高度。按下即选中（一次点击 = 选中这条轨，⛔ 不提交工程）。
+                            // ⚠ 按下时的选中会走 `apply_view` 重注模型、重建包头项 ⇒ 按下那一刻的指针
+                            // 抓取随之失效，`move` / `up` 落到新建的 TouchArea（见下面两条路由注释）。
+                            // 按钮是后置子元素，命中测试先拿到点击，拖拽面只接管剩下的区域。
+                            // 零视觉：`TouchArea` 不画任何东西 ⇒ 默认帧一位不变。
                             TouchArea {
-                                clicked => { root.select-track(trk.id); }
+                                width: parent.width;
+                                height: parent.height;
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right
                                         && event.kind == PointerEventKind.down {
@@ -1274,6 +1329,31 @@ export component ArrangementViewport inherits Rectangle {
                                             (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
                                             arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
                                         );
+                                    } else if event.kind == PointerEventKind.down {
+                                        root.track-select(idx);
+                                        if self.mouse-y < self.height - 6px {
+                                            root.track-reorder-grab(idx, root.track-ys[idx] + self.mouse-y);
+                                        } else {
+                                            root.track-height-grab(idx, self.mouse-y);
+                                        }
+                                    } else if event.kind == PointerEventKind.move {
+                                        if root.track-reorder-active {
+                                            // 重排进行中按**已抓取下标**路由（见死文件注释：按下时的选中会
+                                            // 重建包头项，`move` 可能落在另一行的 TouchArea；行空间 y 仍由
+                                            // 接收头的自身几何算，在哪一行收到都是同一个行空间点）。
+                                            root.track-reorder-drag(root.track-reorder-index, root.track-ys[idx] + self.mouse-y);
+                                        } else {
+                                            // 悬浮的 `move` 不会误改行高：宿主以 `track-height-drag-active`
+                                            // 为唯一读数，孤立的 move 直接 return（见 `host.rs` 注释）。
+                                            root.track-height-drag(idx, self.mouse-y);
+                                        }
+                                    } else {
+                                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条路）。
+                                        if root.track-reorder-active {
+                                            root.track-reorder-release(root.track-reorder-index);
+                                        } else {
+                                            root.track-height-release(idx);
+                                        }
                                     }
                                 }
                                 scroll-event(event) => {
@@ -2025,6 +2105,20 @@ export component ArrangementViewport inherits Rectangle {
                         // Right Track Header (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
+                            // ⭐ T-FIX-232：稳定的自动化元素 ID（`UI-TEST-001` 语义寻址；死文件同款，
+                            // 与左头同一份 ID —— 左右分支互斥，只有一份实例进树）。
+                            // 无障碍默认动作 = 选中这条轨；增 / 减 = 下移 / 上移一格（落点
+                            // `host::wire_track_reorder` 的 `track-reorder-step`，直接提交）。
+                            accessible-role: list-item;
+                            accessible-id: "track-" + idx + "-header";
+                            accessible-label: @tr("轨道 {}", trk.name);
+                            accessible-item-index: idx;
+                            accessible-item-count: root.tracks.length;
+                            accessible-item-selectable: true;
+                            accessible-item-selected: trk.id == root.selected-track-id;
+                            accessible-action-default => { root.track-select(idx); }
+                            accessible-action-increment => { root.track-reorder-step(idx, 1); }
+                            accessible-action-decrement => { root.track-reorder-step(idx, -1); }
                             // 选中头底与边框同左头 (裁决甲质感三元: 拟物支
                             // main 形态, 扁平支十一版定值 #293645 / 边框
                             // Theme.border-subtle, 七版 #16232b 与纯白边框
@@ -2040,8 +2134,16 @@ export component ArrangementViewport inherits Rectangle {
                                 background: trk.color;
                             }
 
+                            // ⭐ T-FIX-232：轨道头手势（从死文件 `workspace/arrangement_view.slint`
+                            // 搬进活视图；手势分区与死文件逐字一致）。名称区按下 ⇒ 重排（报行空间 y）；
+                            // 底边 6px 按下 ⇒ 高度。按下即选中（一次点击 = 选中这条轨，⛔ 不提交工程）。
+                            // ⚠ 按下时的选中会走 `apply_view` 重注模型、重建包头项 ⇒ 按下那一刻的指针
+                            // 抓取随之失效，`move` / `up` 落到新建的 TouchArea（见下面两条路由注释）。
+                            // 按钮是后置子元素，命中测试先拿到点击，拖拽面只接管剩下的区域。
+                            // 零视觉：`TouchArea` 不画任何东西 ⇒ 默认帧一位不变。
                             TouchArea {
-                                clicked => { root.select-track(trk.id); }
+                                width: parent.width;
+                                height: parent.height;
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right
                                         && event.kind == PointerEventKind.down {
@@ -2051,6 +2153,31 @@ export component ArrangementViewport inherits Rectangle {
                                             (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
                                             arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
                                         );
+                                    } else if event.kind == PointerEventKind.down {
+                                        root.track-select(idx);
+                                        if self.mouse-y < self.height - 6px {
+                                            root.track-reorder-grab(idx, root.track-ys[idx] + self.mouse-y);
+                                        } else {
+                                            root.track-height-grab(idx, self.mouse-y);
+                                        }
+                                    } else if event.kind == PointerEventKind.move {
+                                        if root.track-reorder-active {
+                                            // 重排进行中按**已抓取下标**路由（见死文件注释：按下时的选中会
+                                            // 重建包头项，`move` 可能落在另一行的 TouchArea；行空间 y 仍由
+                                            // 接收头的自身几何算，在哪一行收到都是同一个行空间点）。
+                                            root.track-reorder-drag(root.track-reorder-index, root.track-ys[idx] + self.mouse-y);
+                                        } else {
+                                            // 悬浮的 `move` 不会误改行高：宿主以 `track-height-drag-active`
+                                            // 为唯一读数，孤立的 move 直接 return（见 `host.rs` 注释）。
+                                            root.track-height-drag(idx, self.mouse-y);
+                                        }
+                                    } else {
+                                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条路）。
+                                        if root.track-reorder-active {
+                                            root.track-reorder-release(root.track-reorder-index);
+                                        } else {
+                                            root.track-height-release(idx);
+                                        }
                                     }
                                 }
                                 scroll-event(event) => {
@@ -2346,6 +2473,23 @@ export component ArrangementViewport inherits Rectangle {
                             }
                         }
                     }
+                }
+
+                // ⭐ T-FIX-232：轨道重排的插入指示线（死文件 `workspace/arrangement_view.slint` 同款）。
+                //
+                // 2px 金线，y = 宿主算好的插入行顶沿或表底（行空间坐标，与 `track-ys` 同帧），
+                // 满宽（包头列 + 车道，仿 Logic 拖动时的蓝线）。只在重排拖动越过 4px 阈值后出现
+                // （`preview-index >= 0`）；松手 / `Escape` 后宿主清零即消失。草稿期不碰工程。
+                // 只在拖动时存在 ⇒ 默认帧一位不变。
+                if root.track-reorder-preview-index >= 0 : Rectangle {
+                    x: 0px;
+                    y: root.track-reorder-preview-y * 1px;
+                    width: parent.width;
+                    height: 2px;
+                    background: Tokens.gold;
+                    accessible-role: image;
+                    accessible-id: "track-reorder-insertion-line";
+                    accessible-label: @tr("轨道插入位置");
                 }
 
                 // Empty Track Lane Canvas / Add Track Drop Zone (Placed strictly below sheet-height + top offset inside Flickable)

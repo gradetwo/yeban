@@ -1799,6 +1799,11 @@ export component MainWindow inherits Window {
                     // 轨道行几何 / 内容高 / 横向滚动：全部来自投影（同一份事实源）。
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
+                    // ⭐ T-FIX-232：重排手势态（根 → 视图单向；宿主写根属性，视图只读）。
+                    track-reorder-active: root.track-reorder-active;
+                    track-reorder-index: root.track-reorder-index;
+                    track-reorder-preview-index: root.track-reorder-preview-index;
+                    track-reorder-preview-y: root.track-reorder-preview-y;
                     sheet-height: root.arrangement-sheet-height;
                     // ⭐ T-FIX-227：自动化泳道接进**活**编曲视图（修前 `arrangement.slint`
                     //   里 `automation` 命中 0 ⇒ 9 个投影属性只写不读、Ctrl+Shift+A 无变化）。
@@ -1826,6 +1831,10 @@ export component MainWindow inherits Window {
                         root.selected-track-index = t-id;
                         root.track-selected(t-id);
                     }
+                    // ⭐ T-FIX-232：包头手势的直接选轨（死文件同款 0-based 下标 ⇒ 根 `track-select`
+                    // ⇒ 宿主 `wire_track_select`）。与 `select-track` 的迂回路并存：后者经
+                    // `track-selected`，其宿主落点只在产品进程接线，测试装配里不跑。
+                    track-select(idx) => { root.track-select(idx); }
                     // ⭐ T-FIX-227：泳道点击的落点是宿主既有 `wire_automation_lane_click`。
                     automation-lane-click(x, y) => { root.automation-lane-click(x, y); }
                     toggle-mute(t-id) => { root.track-toggle-mute(t-id); }
@@ -1848,6 +1857,14 @@ export component MainWindow inherits Window {
                     clip-drag-move(clip-ulid, local-x) => { root.clip-drag-move(clip-ulid, local-x); }
                     clip-drag-release(clip-ulid, local-x) => { root.clip-drag-release(clip-ulid, local-x); }
                     clip-drag-cancel() => { root.clip-drag-cancel(); }
+                    // ⭐ T-FIX-232：轨道头手势（高度 / 重排）转发到根回调（宿主已接线）。
+                    track-height-grab(idx, y) => { root.track-height-grab(idx, y); }
+                    track-height-drag(idx, y) => { root.track-height-drag(idx, y); }
+                    track-height-release(idx) => { root.track-height-release(idx); }
+                    track-reorder-grab(idx, y) => { root.track-reorder-grab(idx, y); }
+                    track-reorder-drag(idx, y) => { root.track-reorder-drag(idx, y); }
+                    track-reorder-release(idx) => { root.track-reorder-release(idx); }
+                    track-reorder-step(idx, dir) => { root.track-reorder-step(idx, dir); }
                     clip-marquee-select(x1, y1, x2, y2, additive) => { root.clip-marquee-select(x1, y1, x2, y2, additive); }
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }
