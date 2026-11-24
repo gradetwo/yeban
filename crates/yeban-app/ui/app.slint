@@ -1391,7 +1391,7 @@ export component MainWindow inherits Window {
                 && (event.text == "\u{9}" || event.text == "\u{19}")) {
                 return reject;
             }
-            // T-FIX-289：任一模态开着时，DAW 快捷键**放行**（reject），不走下面的
+            // 任一模态开着时，DAW 快捷键**放行**（reject），不走下面的
             // `trigger-shortcut` 与各条界面层开关 —— `T-FIX-219` 的导出对话框守卫
             // 推广到全部六只模态（导出 / 音源管理 / 缺音源救援 / 另存为模板 /
             // 人性化 / 鼓机）：它们共用同一条漏键路径（按钮格 `reject` → 陷阱
@@ -1407,8 +1407,14 @@ export component MainWindow inherits Window {
             // 只在任一模态开着且无修饰键时放行：`Esc` 不在这里处理（陷阱先接住并
             // `accept`；焦点在弹窗外时宿主的 `Action::Cancel` 臂仍是兜底 ⇒ `Esc`
             // 必须能下来）。`Tab` / `Backtab` 与 T-FIX-217 同理（放行给原生遍历）。
-            // 键表与 T-FIX-219 同款（`trigger-shortcut` 的那一份 + 界面层 `i` /
-            // `h` / `t` / `d` / `F3` / `F4` / `F7` / `F8` / `F9`）。
+            // 键表 = T-FIX-219 的那一份（`trigger-shortcut` + 界面层 `i` / `h` /
+            // `t` / `d` / `F3` / `F4` / `F7` / `F8` / `F9`）+ 扩表：宿主 `input.rs`
+            // 的 `resolve_logical` 第 1 步（`F5` / `F6`）与第 6 步（`Return`、
+            // Delete/Backspace、四方向键、`m` / `s` / `x` / `e` / `p` / `z`、
+            // `[` / `]`、`=` / `+` / `-`）消费的裸键。`F5` / `F6` 在第 1 步结算，
+            // 早于文本域 / IME 检查 —— 是最先结算的泄漏者（本处理器后半段那句
+            // "F5/F6 不受影响"说的是组字态下的 `accept` 分支，与本守卫无关）。
+            // （T-FIX-289 集中守卫 + T-FIX-305 扩表；两单判据互补，见各自回执。）
             if ((root.export-wav-open || root.sound-library-open
                     || root.missing-sounds-open || root.template-save-open
                     || root.humanize-open || root.drum-gen-open)
@@ -1425,8 +1431,21 @@ export component MainWindow inherits Window {
                     || event.text == "t" || event.text == "T"
                     || event.text == "d" || event.text == "D"
                     || event.text == Key.F3 || event.text == Key.F4
+                    || event.text == Key.F5 || event.text == Key.F6
                     || event.text == Key.F7 || event.text == Key.F8
-                    || event.text == Key.F9)) {
+                    || event.text == Key.F9
+                    || event.text == Key.Return
+                    || event.text == Key.Delete || event.text == Key.Backspace
+                    || event.text == Key.LeftArrow || event.text == Key.RightArrow
+                    || event.text == Key.UpArrow || event.text == Key.DownArrow
+                    || event.text == "m" || event.text == "M"
+                    || event.text == "s" || event.text == "S"
+                    || event.text == "x" || event.text == "X"
+                    || event.text == "e" || event.text == "E"
+                    || event.text == "p" || event.text == "P"
+                    || event.text == "z" || event.text == "Z"
+                    || event.text == "[" || event.text == "]"
+                    || event.text == "=" || event.text == "+" || event.text == "-")) {
                 return reject;
             }
             root.trigger-shortcut(event.text, event);
