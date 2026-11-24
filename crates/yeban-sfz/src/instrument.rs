@@ -1265,6 +1265,23 @@ pub struct Region<'a> {
     /// 到 127 时截止频率的总偏移（音分），按 `velocity / 127` 线性折算，
     /// 求值见 [`crate::playback::filter_cutoff_hz`]。
     pub fil_veltrack: i32,
+    /// `fil2_type`：**第二级**滤波器类型（SFZ v2，缺省同第一级
+    /// [`FIL_TYPE_DEFAULT`]）。⚠ 第二级是否生效只看 [`Region::cutoff2`]。
+    pub fil2_type: FilterType,
+    /// `cutoff2`：第二级滤波截止（Hz）；`None` ＝ 第二级 **bypass**（缺省）。
+    ///
+    /// 语义与 [`Region::cutoff`] 同源（0 与缺失同义 ⇒ 禁用，见 `playback::filter_cutoff2_hz`）。
+    pub cutoff2: Option<f32>,
+    /// `resonance2`：第二级谐振（dB，0..=40，缺省 0）。
+    pub resonance2: f32,
+    /// `fil2_keytrack`：第二级的键位跟踪量（音分/键，0..=1200，缺省 0）。
+    pub fil2_keytrack: i32,
+    /// `fil2_keycenter`：第二级跟踪锚点键（0..=127，缺省 60）。
+    pub fil2_keycenter: i32,
+    /// `fil2_veltrack`：第二级的力度跟踪量（音分，-9600..=9600，缺省 0）。
+    pub fil2_veltrack: i32,
+    /// `fil2_gain`：第二级滤波之后的增益（**dB**，SFZ v2，缺省 0）。
+    pub fil2_gain: f32,
     /// `bend_up`：弯音轮**向上**时的弯音范围，单位音分（规范缺省
     /// [`BEND_UP_DEFAULT_CENTS`]，范围 -9600..=9600）。
     ///
@@ -3304,6 +3321,67 @@ pub(crate) fn build_region<'a>(
         i64::from(FIL_VELTRACK_MAX),
         FIL_VELTRACK_DEFAULT,
     )?;
+    // ---- 第二级滤波（SFZ v2 fil2_* 族，T-FIX-279）----
+    // 与第一级**同一条口径**：静态值原样存、越界响亮 `Err`、缺省有据。
+    // `cutoff2` 缺失 ⇒ 第二级 bypass（⛔ 不因 `fil2_type` 出现就启用）。
+    let fil2_type = match scopes.get("fil2_type") {
+        Some(value) => value.as_option(FilterType::OPTIONS, FilterType::ALLOWED)?,
+        None => FIL_TYPE_DEFAULT,
+    };
+    let cutoff2 = match scopes.get("cutoff2") {
+        Some(value) => {
+            let hz = value.as_f32()?;
+            if hz < 0.0 {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "cutoff2".to_string(),
+                    value: hz,
+                    min: 0.0,
+                    max: f32::MAX,
+                });
+            }
+            Some(hz)
+        }
+        None => None,
+    };
+    let resonance2 = match scopes.get("resonance2") {
+        Some(value) => {
+            let db = value.as_f32()?;
+            if !(RESONANCE_MIN_DB..=RESONANCE_MAX_DB).contains(&db) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "resonance2".to_string(),
+                    value: db,
+                    min: RESONANCE_MIN_DB,
+                    max: RESONANCE_MAX_DB,
+                });
+            }
+            db
+        }
+        None => RESONANCE_DEFAULT_DB,
+    };
+    let fil2_keytrack = read_i32(
+        &scopes,
+        "fil2_keytrack",
+        i64::from(FIL_KEYTRACK_MIN),
+        i64::from(FIL_KEYTRACK_MAX),
+        FIL_KEYTRACK_DEFAULT,
+    )?;
+    let fil2_keycenter = match scopes.get("fil2_keycenter") {
+        Some(value) => shifted_pitch_center(value.as_note(0, 127)?, note_shift),
+        None => FIL_KEYCENTER_DEFAULT,
+    };
+    let fil2_veltrack = read_i32(
+        &scopes,
+        "fil2_veltrack",
+        i64::from(FIL_VELTRACK_MIN),
+        i64::from(FIL_VELTRACK_MAX),
+        FIL_VELTRACK_DEFAULT,
+    )?;
+    let fil2_gain = match scopes.get("fil2_gain") {
+        Some(value) => value.as_f32()?,
+        None => 0.0,
+    };
     // ---- ⭐ 调制包络（`fileg_*` / `pitcheg_*`；SFZ 包络族片，审计 C19／C20）----
     // 两族同构（[`read_eg`] 一份实现，⛔ 不写两套）：段参走与 `ampeg_*` 同形的
     // 时间／百分比读（缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err）；`depth` 是**整数**
@@ -3545,6 +3623,13 @@ pub(crate) fn build_region<'a>(
             fil_keytrack,
             fil_keycenter,
             fil_veltrack,
+            fil2_type,
+            cutoff2,
+            resonance2,
+            fil2_keytrack,
+            fil2_keycenter,
+            fil2_veltrack,
+            fil2_gain,
             bend_up,
             bend_down,
             volume,
@@ -5293,6 +5378,13 @@ mod tests {
             fil_keytrack: FIL_KEYTRACK_DEFAULT,
             fil_keycenter: FIL_KEYCENTER_DEFAULT,
             fil_veltrack: FIL_VELTRACK_DEFAULT,
+            fil2_type: FIL_TYPE_DEFAULT,
+            cutoff2: None,
+            resonance2: RESONANCE_DEFAULT_DB,
+            fil2_keytrack: FIL_KEYTRACK_DEFAULT,
+            fil2_keycenter: FIL_KEYCENTER_DEFAULT,
+            fil2_veltrack: FIL_VELTRACK_DEFAULT,
+            fil2_gain: 0.0,
             bend_up: BEND_UP_DEFAULT_CENTS,
             bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
@@ -9976,6 +10068,56 @@ v127=1
             ),
             (0, 1.5, 60)
         );
+    }
+
+    #[test]
+    fn second_filter_stage_opcodes_are_parsed_and_gate_on_cutoff2() {
+        // T-FIX-279：fil2_* 族必须被解析（此前全族落 UnknownOpcode 并被静默忽略）。
+        let both = first_region(
+            "<region>sample=a.wav fil_type=lpf_2p cutoff=1200 resonance=6              fil2_type=hpf_2p cutoff2=250 resonance2=3 fil2_keytrack=100              fil2_keycenter=72 fil2_veltrack=-200 fil2_gain=-3.5",
+        );
+        assert_eq!(both.fil2_type, FilterType::Highpass2p);
+        assert_eq!(both.cutoff2, Some(250.0));
+        assert_eq!(both.resonance2, 3.0);
+        assert_eq!(both.fil2_keytrack, 100);
+        assert_eq!(both.fil2_keycenter, 72);
+        assert_eq!(both.fil2_veltrack, -200);
+        assert_eq!(both.fil2_gain, -3.5);
+
+        // 缺省：第二级 bypass（cutoff2 = None），⛔ 不因 fil2_type 出现就启用。
+        let only_type = first_region("<region>sample=a.wav fil2_type=hpf_2p");
+        assert_eq!(only_type.cutoff2, None);
+        assert_eq!(only_type.fil2_type, FilterType::Highpass2p);
+
+        let none = first_region("<region>sample=a.wav");
+        assert_eq!(none.cutoff2, None);
+        assert_eq!(none.fil2_type, FIL_TYPE_DEFAULT);
+        assert_eq!(none.resonance2, RESONANCE_DEFAULT_DB);
+        assert_eq!(none.fil2_keytrack, FIL_KEYTRACK_DEFAULT);
+        assert_eq!(none.fil2_keycenter, FIL_KEYCENTER_DEFAULT);
+        assert_eq!(none.fil2_veltrack, FIL_VELTRACK_DEFAULT);
+        assert_eq!(none.fil2_gain, 0.0);
+    }
+
+    #[test]
+    fn second_filter_stage_out_of_range_values_are_loud_errors() {
+        // 与第一级同口径：越界响亮 Err，⛔ 不钳位、⛔ 不当 warning 吞掉。
+        for (text, opcode) in [
+            ("<region>sample=a.wav cutoff2=-1", "cutoff2"),
+            ("<region>sample=a.wav resonance2=41", "resonance2"),
+            ("<region>sample=a.wav fil2_keytrack=1201", "fil2_keytrack"),
+            ("<region>sample=a.wav fil2_veltrack=9601", "fil2_veltrack"),
+        ] {
+            let error = parse_text(text, &Default::default())
+                .err()
+                .expect("must be an error");
+            let got = match &error {
+                SfzError::FloatOutOfRange { opcode, .. } => opcode.clone(),
+                SfzError::IntegerOutOfRange { opcode, .. } => opcode.clone(),
+                other => panic!("opcode {opcode}: 期望越界错误，实得 {other:?}"),
+            };
+            assert_eq!(got, opcode, "错误必须点名越界的那个 opcode");
+        }
     }
 
     #[test]
