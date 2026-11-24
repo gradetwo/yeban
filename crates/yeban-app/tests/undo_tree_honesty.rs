@@ -151,22 +151,58 @@ fn assignment_lines(source: &str, name: &str) -> Vec<String> {
 /// 4. **空态 / 截断报数**：两个状态都必须有稳定的语义 ID（用户可见，不是注释）。
 #[test]
 fn the_undo_tree_declares_no_demo_history_nodes() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    // ---- 路径 1：全 ui/ 的代码文本
+    let mut leaks: Vec<String> = Vec::new();
+    for (rel, text) in all_slint() {
+        let code = code_only(&text);
+        for literal in DEMO_UNDO_TREE_LITERALS {
+            if code.contains(literal) {
+                leaks.push(format!("{rel}: 代码里出现 `{literal}`"));
+            }
+        }
+    }
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        leaks.is_empty(),
+        "时光机里出现了编造的版本节点名（用户会把它当成真实历史）:\n  {}",
+        leaks.join("\n  ")
+    );
+
+    // ---- 路径 2：属性默认值
+    let modal = code_only(&read("ui/dialogs/undo_tree_modal.slint"));
+    for required in [
+        "in property <int> node-count: 0;",
+        "in property <[string]> node-labels: [];",
+        "in property <int> node-hidden: 0;",
+    ] {
+        assert!(
+            modal.contains(required),
+            "`ui/dialogs/undo_tree_modal.slint` 必须如实声明 `{required}` —— \
+             没有宿主写者时界面必须画空态，而不是六个编造的版本"
+        );
+    }
+
+    // ---- 路径 3：循环规模由数据决定
+    assert!(
+        modal.contains("for node_label[node_index] in root.node-labels"),
+        "节点列表必须由**数据**驱动（`for node_label[node_index] in root.node-labels`）"
     );
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        !modal.contains("for node_index in 6"),
+        "节点列表不得是固定的 `for node_index in 6`（规模必须来自真实提交链）"
+    );
+    assert!(
+        modal.contains("accessible-item-count: root.node-count;"),
+        "每个节点的 `accessible-item-count` 必须等于真实节点数（写死 6 就是假读数）"
+    );
+
+    // ---- 路径 4：空态与截断报数必须是**用户可见**的图元
+    assert!(
+        modal.contains("accessible-id: \"undo-tree-empty-state\""),
+        "链为空时必须有用户可见的空态节点 `undo-tree-empty-state`"
+    );
+    assert!(
+        modal.contains("accessible-id: \"undo-tree-truncation-note\""),
+        "链条比画布长时必须**如实报数**（`undo-tree-truncation-note`），不许静默截断"
     );
 }
 
@@ -187,30 +223,77 @@ fn the_undo_tree_declares_no_demo_history_nodes() {
 ///    即数据来自 `CommitGraph`，不是宿主另造的一份列表。
 #[test]
 fn the_undo_tree_node_properties_have_exactly_one_writer() {
-    // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> undo-node-count:"),
-        "契约面必须声明 > undo-node-count:"
+    let src = all_src_rs();
+    for prop in ["undo-node-count", "undo-node-labels", "undo-node-hidden"] {
+        let setter = format!("set_{}(", prop.replace('-', "_"));
+        assert_eq!(
+            count(&src, &setter),
+            1,
+            "`{setter}` 在 `src/**` 里必须恰好出现一次（唯一写者），实际 {} 次",
+            count(&src, &setter)
+        );
+    }
+
+    let app = code_only(&read("ui/app.slint"));
+    for (prop, ty) in [
+        ("undo-node-count", "int"),
+        ("undo-node-labels", "[string]"),
+        ("undo-node-hidden", "int"),
+    ] {
+        assert!(
+            app.contains(&format!("in-out property <{ty}> {prop}:")),
+            "`MainWindow` 必须声明 `in-out property <{ty}> {prop}: …`（宿主 setter 的唯一落点）"
+        );
+    }
+
+    // 转给弹窗：`app.slint` 里各恰好一条赋值行，且值来自 MainWindow 的属性。
+    assert_eq!(
+        assignment_lines(&app, "node-count").len(),
+        1,
+        "`app.slint` 里 `node-count:` 必须恰好一条赋值行"
+    );
+    assert_eq!(
+        assignment_lines(&app, "node-labels").len(),
+        1,
+        "`app.slint` 里 `node-labels:` 必须恰好一条赋值行"
+    );
+    assert_eq!(
+        assignment_lines(&app, "node-hidden").len(),
+        1,
+        "`app.slint` 里 `node-hidden:` 必须恰好一条赋值行"
     );
     assert!(
-        aether_host.contains("undo_node_count"),
-        "宿主接线层必须注册 undo_node_count"
+        app.contains("node-labels: root.undo-node-labels;"),
+        "`app.slint` 必须把 `root.undo-node-labels` 转给时光机（界面不自带数据）"
     );
     assert!(
-        aether_app.contains("> undo-node-labels:"),
-        "契约面必须声明 > undo-node-labels:"
+        app.contains("node-count: root.undo-node-count;")
+            && app.contains("node-hidden: root.undo-node-hidden;"),
+        "`app.slint` 必须把节点数与截断数一并转给时光机"
+    );
+
+    // 权威路径：唯一写者读的是 `UndoPort::graph()`（`CommitGraph`），不是自造列表。
+    // ⚠ **行尾归一**（任务单 `#137`）：下面按多行字面量 `"\n}\n"` 切函数体，而 Windows
+    // 工作树（无 `.gitattributes` ＋ `core.autocrlf=true`）里源码是 CRLF ⇒ 不归一时
+    // `split` 找不到锚点，`.next()` 会把**整份源码**当成函数体（判据静默变弱，⛔ 不报错）。
+    let host = read("src/host.rs").replace("\r\n", "\n");
+    let apply_undo = host
+        .split("pub fn apply_undo")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("`host.rs` 里必须有 `apply_undo`");
+    assert!(
+        apply_undo.contains("undo_tree_projection(port)"),
+        "`apply_undo` 必须经 `undo_tree_projection` 取真实节点"
     );
     assert!(
-        aether_host.contains("undo_node_labels"),
-        "宿主接线层必须注册 undo_node_labels"
+        host.contains("let graph = port.graph();") && host.contains("graph.ancestry(&head)"),
+        "节点数据必须来自**权威图谱**（`UndoPort::graph()` + `CommitGraph::ancestry`）—— \
+         自己攒一份列表就是第二个权威"
+    );
+    assert!(
+        host.contains("chain.len().saturating_sub(UNDO_TREE_MAX_NODES)"),
+        "被画布截掉的版本数必须由链条长度算出（不是估计值）"
     );
 }
 
@@ -231,22 +314,67 @@ fn the_undo_tree_node_properties_have_exactly_one_writer() {
 ///    把它转到**已存在**的那个宿主动作（`open-musical-pr`）。
 #[test]
 fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    // ⚠ **行尾归一**：下面用多行字面量 `"\n    }\n"` 切徽章块，而 Windows 工作树
+    // （无 `.gitattributes` ＋ `core.autocrlf=true`）里源码字节是 CRLF ⇒ ⛔ 匹配不上。
+    let transport = code_only(&read("ui/transport.slint").replace("\r\n", "\n"));
+
+    // ---- 路径 1：ui/ 代码文本
+    for (rel, text) in all_slint() {
+        let code = code_only(&text);
+        for literal in BADGE_FALSE_LITERALS {
+            assert!(
+                !code.contains(literal),
+                "{rel}: 出现了假状态字面量 `{literal}` —— 提案条数今天没有数据源，\
+                 任何「有几条待审查」的说法都是编造的"
+            );
+        }
+    }
+
+    // ---- 路径 2：注册表标签（`src/**`）
+    let src = all_src_rs();
+    for literal in BADGE_FALSE_LITERALS {
+        assert!(
+            !src.contains(literal),
+            "`src/**` 里还有假状态字面量 `{literal}`（语义注册表会把它写进控制树产物）"
+        );
+    }
+
+    // ---- 路径 3 + 4：徽章块的结构
+    let badge_start = transport
+        .find("accessible-id: \"transport-ai-proposal-badge\";")
+        .expect("`transport-ai-proposal-badge` 必须留在 `transport.slint` 里");
+    let badge_end = transport[badge_start..]
+        .find("\n    }\n")
+        .map(|offset| badge_start + offset)
+        .expect("徽章块必须有闭合");
+    let badge = &transport[badge_start..badge_end];
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        !badge.contains("accessible-value"),
+        "徽章块里不得有 `accessible-value`：提案条数今天没有数据源，写死就是编造读数。\n{badge}"
     );
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        badge.contains("text: \"AI提案\""),
+        "徽章的可见文案必须是 `\"AI提案\"`（不得再带「待审查」这类状态声明）"
+    );
+    assert!(
+        badge.contains("clicked => { root.open-ai-proposals(); }"),
+        "`accessible-role: button` 必须配一个真的 `TouchArea`（否则是「点了没反应」的假控件）。\n{badge}"
+    );
+    assert!(
+        transport.contains("callback open-ai-proposals();"),
+        "`transport.slint` 必须声明 `callback open-ai-proposals();`"
+    );
+
+    // 转发到**已存在**的宿主动作（不另造落点）。
+    let app = code_only(&read("ui/app.slint"));
+    assert!(
+        app.contains("open-ai-proposals => {") && app.contains("root.open-musical-pr();"),
+        "`app.slint` 必须把 `open-ai-proposals` 转到既有的 `open-musical-pr` \
+         （`musical-pr-open` 的唯一写者仍是宿主）"
+    );
+    assert!(
+        count(&app, "root.open-musical-pr();") >= 2,
+        "徽章与右栏按钮必须落到**同一个** `open-musical-pr` 回调"
     );
 }
 
@@ -279,21 +407,33 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
 /// [`escape_closes_the_time_machine_modal_for_real`]（真事件源注入 `Escape`）。
 #[test]
 fn the_time_machine_escape_hint_matches_a_real_close_path() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    // ---- ① 承诺侧：提示在 `.slint` 的代码文本里 ----
+    let modal = code_only(&read("ui/dialogs/undo_tree_modal.slint"));
     assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+        modal.contains("Esc 关闭"),
+        "`ui/dialogs/undo_tree_modal.slint` 的代码里必须有 `Esc 关闭` 这句提示 —— \
+         它是本判据的**前提**：提示不存在时，下面的落点判据就只能自证"
+    );
+
+    // ---- ② 落点侧：`Action::Cancel` 分支真的关得掉时光机 ----
+    let host = code_only(&read("src/host.rs"));
+    let matches = count(&host, "Action::Cancel => {");
+    assert_eq!(
+        matches, 1,
+        "`src/host.rs` 里必须**恰好一条** `Action::Cancel => {{` 分支（实际 {matches} 条）—— \
+         零条说明 `Escape` 没有落点，多于一条说明有第二个真相源"
+    );
+    let arm = host
+        .split("Action::Cancel => {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n        }\n").next())
+        .expect("`Action::Cancel` 分支体");
+    assert!(
+        arm.contains("undo_tree_open()"),
+        "`Action::Cancel` 必须读时光机的**运行态**（`undo_tree_open()`）才能决定要不要关它：{arm}"
     );
     assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+        arm.contains("UiAction::CloseUndoTree"),
+        "`Action::Cancel` 必须把关闭动作下发到**唯一下发点**（`UiAction::CloseUndoTree`）：{arm}"
     );
 }

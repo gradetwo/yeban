@@ -56,59 +56,117 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 /// ① 运行时控件树：三格的 `value` 就是各自的可见文本。
 #[test]
 fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
-    );
-    assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
-    );
-    assert!(
-        aether_app.contains("> current-scene-name:"),
-        "新 UI 契约面必须声明 > current-scene-name:"
-    );
-    assert!(
-        aether_host.contains("set_current_scene_name"),
-        "宿主接线层必须注册 set_current_scene_name"
-    );
-    assert!(
-        aether_app.contains("> scene-launch-status:"),
-        "新 UI 契约面必须声明 > scene-launch-status:"
-    );
-    assert!(
-        aether_host.contains("set_scene_launch_status"),
-        "宿主接线层必须注册 set_scene_launch_status"
-    );
+    let (_tier1, ui) = window();
+    // `app.slint` 的 `SessionView` 是 `visible: !root.arrangement-view`，而
+    // `MainWindow.arrangement-view` 默认 `true` ⇒ 不显式切过去，那两格不进运行时树。
+    ui.set_arrangement_view(false);
+    let tree = tree_from_element_root(&ui, None).expect("运行时控件树");
+
+    // 期望源 = **同一条 MainWindow 属性的运行时 getter**，⛔ 不复制 `.slint` 默认值
+    // （`status_bar_accessible_values.rs` 第一版把默认值硬编码成期望 ⇒ 投影后假红）。
+    let scene_name = ui.get_current_scene_name().to_string();
+    let header = if scene_name.is_empty() {
+        "场景".to_owned()
+    } else {
+        format!("场景 · {scene_name}")
+    };
+
+    for (id, expected) in [
+        ("transport-timecode", ui.get_timecode().to_string()),
+        ("scene-launch-column-header", header),
+        (
+            "session-scene-launch-status",
+            ui.get_scene_launch_status().to_string(),
+        ),
+    ] {
+        let node = tree
+            .find_by_id(id)
+            .unwrap_or_else(|| panic!("控件树里没有可寻址节点 `{id}`"));
+        assert_eq!(
+            node.value.as_deref(),
+            Some(expected.as_str()),
+            "`{id}` 的无障碍值必须等于运行时可见文本 `{expected:?}`（屏读器与 `ui/tree` 读同一串字节）"
+        );
+    }
 }
 
 /// ② 声明面（⛔ 不开窗口）：三格各有一条绑定、与可见文本同源、静态名字不许退化。
 #[test]
 fn every_target_readout_binds_the_same_property_as_its_visible_text() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+    let transport = include_str!("../ui/transport.slint");
+    let session = include_str!("../ui/workspace/session_view.slint");
+
+    for (source, name, binding) in [
+        (
+            transport,
+            "ui/transport.slint",
+            "accessible-value: root.timecode;",
+        ),
+        (
+            session,
+            "ui/workspace/session_view.slint",
+            "accessible-value: root.scene-launch-status;",
+        ),
+        (
+            session,
+            "ui/workspace/session_view.slint",
+            "accessible-value: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
+        ),
+    ] {
+        assert!(
+            source.contains(binding),
+            "`{name}` 必须含绑定 `{binding}` —— 少一条就有一格读不出内容"
+        );
+    }
+
+    // 同源：值绑的表达式与可见 `text` 逐字相同 ⇒ ⛔ 不是第二份真相源。
+    for (source, name, binding) in [
+        (transport, "ui/transport.slint", "text: root.timecode;"),
+        (
+            session,
+            "ui/workspace/session_view.slint",
+            "text: root.scene-launch-status;",
+        ),
+        (
+            session,
+            "ui/workspace/session_view.slint",
+            "text: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
+        ),
+    ] {
+        assert!(
+            source.contains(binding),
+            "`{name}` 的可见文本 `{binding}` 必须与无障碍值同源"
+        );
+    }
+
+    // 静态名字不许被改成「绑动态内容」的旧做法（那样补 value 会重复朗读）。
+    for (source, label) in [
+        (transport, "accessible-label: \"主时间码\";"),
+        (session, "accessible-label: \"场景一键激发列\";"),
+        (session, "accessible-label: \"场景启动状态\";"),
+    ] {
+        assert!(source.contains(label), "静态名字 `{label}` 不许退化");
+    }
+
+    // 只加属性、不新增可寻址节点 ⇒ 控件树清单与 5 张 golden 基准一位不动。
+    assert_eq!(
+        transport.matches("accessible-id:").count(),
+        15,
+        "transport.slint 的可寻址节点数必须是 15（本票 0 新增）"
     );
-    assert!(
-        aether_host.contains("apply_transport"),
-        "宿主接线层必须注册 apply_transport"
+    assert_eq!(
+        session.matches("accessible-id:").count(),
+        9,
+        "session_view.slint 的可寻址节点数必须是 9（本票 0 新增）"
+    );
+    assert_eq!(
+        transport.matches("accessible-value:").count(),
+        4,
+        "transport.slint 的无障碍值必须是 4 条：既有 3 条 ＋ 本票 1 条"
+    );
+    assert_eq!(
+        session.matches("accessible-value:").count(),
+        2,
+        "session_view.slint 的无障碍值必须是 2 条：既有 0 条 ＋ 本票 2 条"
     );
 }

@@ -43,10 +43,12 @@ use yeban_model::samples::filled_project;
 use yeban_ui_test_port::port::Permission;
 
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
-const TRANSPORT: &str = include_str!("../ui/transport.slint");
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
+
+// ⭐ T-FIX-356 死文件清理：`ui/transport.slint` / `ui/workspace/arrangement_view.slint` /
+// `ui/workspace/song_overview_panel.slint` 已不在活树（见 `docs/DEAD-SLINT-FILES.md`），
+// 本文件曾 `include_str!` 它们的三条常量已删 —— 本文件的判据都不读它们
+// （只断言 `app.slint` / `host.rs` 的契约面），删常量不改任何判据。
 
 /// 把 `//` 注释与 `"..."` 字符串内容替换为等长空格（保留花括号结构），供块配平使用。
 /// 四个目标 `.slint` 文件都没有 `/* */` 块注释（已核），故只处理行注释。
