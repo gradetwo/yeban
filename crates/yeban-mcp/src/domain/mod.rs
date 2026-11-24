@@ -10330,6 +10330,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// T-FIX-170：**接线级**判据 —— 绑定期缺样本预检必须真的进提案的 `warnings[]`，
+    /// 而不是只活在 helper 的返回值里。
+    ///
+    /// 走 `yeban_edit_notes` 的真实规划路径（`plan_edit_notes` → `propose_draft` →
+    /// `proposal_warnings`），断言警告的**条数、身份、绑定、原因、细节**。
+    ///
+    /// 红线用法：把 `proposal_warnings` 里
+    /// `warnings.extend(sampler_binding_warnings(project_path, ops));` 这一行注释掉，
+    /// 本判据必须转红。既有 `sampler_binding_precheck_reports_missing_sample` 直调
+    /// helper，删接线仍绿 —— 复验实测的正是这个缺口（T-FIX-154 的接线此前没有任何
+    /// 判据覆盖）。
+    #[test]
+    fn edit_notes_preview_reports_sampler_binding_warnings_end_to_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sampler-wiring-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::write(dir.join("kit.sfz"), "<region> sample=gone.wav key=60\n").expect("写 SFZ");
+        let absolute = dir.join("kit.sfz").to_string_lossy().into_owned();
+        let domain = domain();
+        let track_id = *domain
+            .active_project()
+            .expect("工程")
+            .tracks
+            .keys()
+            .next()
+            .expect("夹具工程至少有一条轨");
+        let track_text = track_id.to_canonical_string();
+        let planned = preview(
+            &domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track_text,
+                    "ops": [{
+                        "kind": "setTrackSampler",
+                        "trackId": track_text,
+                        "sampler": {"path": absolute},
+                    }],
+                }),
+            ),
+        )
+        .expect("预览");
+        assert_eq!(planned["plan"], "propose", "{planned}");
+        assert_eq!(
+            planned["wouldApply"], true,
+            "缺样本只警告、不阻断绑定: {planned}"
+        );
+        let warnings = planned["warnings"]
+            .as_array()
+            .expect("提案响应带 warnings[]");
+        let sampler_warnings: Vec<&Value> = warnings
+            .iter()
+            .filter(|item| item.get("kind").and_then(Value::as_str) == Some("samplerBinding"))
+            .collect();
+        assert_eq!(
+            sampler_warnings.len(),
+            1,
+            "一条缺失样本必须恰好报一次（多报/少报都算接线错）: {warnings:?}"
+        );
+        let warning = sampler_warnings[0];
+        assert_eq!(warning["trackId"].as_str(), Some(track_text.as_str()));
+        assert_eq!(warning["binding"].as_str(), Some(absolute.as_str()));
+        assert_eq!(
+            warning["reason"].as_str(),
+            Some("sample_missing"),
+            "SFZ 读得到、样本读不到 ⇒ sample_missing: {warning}"
+        );
+        assert!(
+            warning["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("gone.wav")),
+            "细节必须点到缺的那个样本: {warning}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// T-FIX-2201：`Op::Batch` 内的 `InsertDevice` 也必须出警告（含 Batch 套 Batch）。
     ///
     /// 修前三个 helper 都是"只匹配顶层 Op"的循环，`Batch` 直接 `continue` ⇒ 批内
