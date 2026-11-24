@@ -790,3 +790,32 @@ fn maybe_write_frame(label: &str, png: &[u8]) {
     std::fs::write(&path, png).expect("写帧");
     report_line(&format!("[meter-leg] 帧已写 {path}"));
 }
+
+/// 临时探针（T-FIX-356 收尾调试）：判据 ④ 里 is-playing/电平/轨道头列的变化 —— 跑完即删。
+#[test]
+fn probe_meter_gate_tmp() {
+    let project = demo_project();
+    let window = Window::new(&project);
+    eprintln!(
+        "PROBE before: is-playing={} levels={:?}",
+        window.ui().get_is_playing(),
+        window.levels()
+    );
+    let first = window.port.window().capture().expect("Tier-1 截图");
+    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    for i in 0..8 {
+        production.engine_handle().borrow_mut().drive_audio(1);
+        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
+        eprintln!(
+            "PROBE tick #{i}: is-playing={} levels={:?} peaks={:?}",
+            window.ui().get_is_playing(),
+            window.levels(),
+            window.peak_labels()
+        );
+    }
+    let after_image = window.port.window().capture().expect("Tier-1 截图");
+    eprintln!(
+        "PROBE header-col changed x240..480: {}",
+        count_changed_in_x(&first, &after_image, 240, 480)
+    );
+}
