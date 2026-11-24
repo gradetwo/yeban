@@ -1536,13 +1536,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "trackId",
                 "string",
                 false,
-                "可选的目标音轨 EntityId (26 字符 ULID)；缺省由 destination 选择第一条非 master 音轨（与 app CLI 的 --import-midi 同一条规则，⛔ 不按片段类型筛选）",
+                "可选的目标音轨 EntityId (26 字符 ULID)；缺省由 destination 选择第一条**带 MIDI 片段**的非 master 音轨（与 app CLI 的 --import-midi 同一条规则；音频片段不会成为目标）",
             ),
             param(
                 "clipId",
                 "string",
                 false,
-                "可选的目标片段 EntityId (26 字符 ULID)；缺省取目标音轨上的第一个摆放；该摆放的片段必须是空的 MIDI 片段（音频片段 ⇒ INVALID_PARAMETER_RANGE，非空 MIDI ⇒ CONFLICT）",
+                "可选的目标片段 EntityId (26 字符 ULID)；缺省取目标音轨上的第一个 **MIDI** 摆放（音频摆放跳过）；该摆放的片段必须是空的 MIDI 片段（音频片段 ⇒ 拒绝，非空 MIDI ⇒ CONFLICT）",
             ),
             param(
                 "splitTracks",

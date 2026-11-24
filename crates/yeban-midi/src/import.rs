@@ -2154,14 +2154,21 @@ pub fn destination(
     project: &YebanProjectV1,
     options: &MidiImportOptions,
 ) -> Result<(EntityId, EntityId), MidiImportError> {
+    // ⭐ T-FIX-355：缺省目标必须**只落在 MIDI 片段上**。
+    // 旧实现取「第一条非 master 音轨」+「该轨第一个摆放」，不看轨类型/片段内容
+    // ⇒ 首轨第一个摆放是音频时，MIDI 音符会被计划写进音频片段（可达路径）。
     let track_id = match options.track_id {
         Some(explicit) => explicit,
-        None => *project
+        None => project
             .tracks
-            .keys()
-            .find(|id| **id != project.master_bus_track_id)
+            .iter()
+            .filter(|(id, _)| **id != project.master_bus_track_id)
+            .find(|(_, track)| first_midi_placement(project, track).is_some())
+            .map(|(id, _)| *id)
             .ok_or_else(|| {
-                MidiImportError::NoDestination("工程里没有非 master 的音轨".to_owned())
+                MidiImportError::NoDestination(
+                    "工程里没有带 MIDI 片段的音轨（音频轨不能作为 MIDI 导入目标）".to_owned(),
+                )
             })?,
     };
     let track = project.tracks.get(&track_id).ok_or_else(|| {
@@ -2171,20 +2178,58 @@ pub fn destination(
         ))
     })?;
     let clip_id = match options.clip_id {
-        Some(explicit) => explicit,
-        None => track
-            .clips
-            .values()
-            .next()
+        Some(explicit) => {
+            // 显式片段必须是**该轨**上的 MIDI 片段；否则响亮拒绝，⛔ 不静默改写目标。
+            let placement = track
+                .clips
+                .values()
+                .find(|placement| placement.clip_id == explicit)
+                .ok_or_else(|| {
+                    MidiImportError::NoDestination(format!(
+                        "片段 `{}` 不是音轨 `{}` 上的摆放",
+                        explicit.to_canonical_string(),
+                        track_id.to_canonical_string()
+                    ))
+                })?;
+            if !is_midi_clip(project, placement.clip_id) {
+                return Err(MidiImportError::NoDestination(format!(
+                    "片段 `{}` 不是 MIDI 片段（音频片段不能承载 MIDI 音符）",
+                    explicit.to_canonical_string()
+                )));
+            }
+            explicit
+        }
+        None => first_midi_placement(project, track)
             .map(|placement| placement.clip_id)
             .ok_or_else(|| {
                 MidiImportError::NoDestination(format!(
-                    "音轨 `{}` 没有任何摆放",
+                    "音轨 `{}` 没有 MIDI 片段（可导入的目标只接受 MIDI 片段）",
                     track_id.to_canonical_string()
                 ))
             })?,
     };
     Ok((track_id, clip_id))
+}
+
+/// 片段池里的这一条是不是 MIDI 内容（音频 / 未知类型一律不是）。
+#[must_use]
+pub fn is_midi_clip(project: &YebanProjectV1, clip_id: EntityId) -> bool {
+    matches!(
+        project.clip_pool.get(&clip_id).map(|entry| &entry.content),
+        Some(yeban_model::ClipContent::Midi { .. })
+    )
+}
+
+/// 该音轨上**第一个 MIDI 片段**的摆放（按 `BTreeMap` 的确定序，跳过音频摆放）。
+#[must_use]
+fn first_midi_placement<'a>(
+    project: &'a YebanProjectV1,
+    track: &'a yeban_model::TrackV3,
+) -> Option<&'a yeban_model::ClipPlacement> {
+    track
+        .clips
+        .values()
+        .find(|placement| is_midi_clip(project, placement.clip_id))
 }
 
 #[cfg(test)]
@@ -3668,14 +3713,13 @@ pub mod tests {
         );
     }
 
-    /// 判据 (`[ARCH-EXT-002]`)：缺省目标是**第一条非 master 音轨**（身份序）的
-    /// **第一个摆放** —— 它**不**按"片段是不是 MIDI"筛选。
+    /// 判据（T-FIX-355 改写）：缺省目标是**第一条带 MIDI 片段的非 master 音轨**上
+    /// 的**第一个 MIDI 摆放**——音频片段既不会被选中，也不允许成为目标。
     ///
-    /// ⚠ 工具面曾把这条规则写成"首条含 MIDI 片段的音轨"（`yeban_import_midi` 的
-    /// `trackId` 描述）；`destination` 不筛类型 ⇒ 描述已改为与代码一致。本判据把
-    /// "不筛选"钉住：首轨的摆放若是音频片段，返回的就是它，类型错误由调用方（MCP）报。
+    /// 旧行为（取首条非主轨的**第一个任意摆放**、不筛类型）已在同一条判据里被替换：
+    /// 那条规则会把 MIDI 音符计划写进音频片段，是把"类型检查"推给调用方的漏洞。
     #[test]
-    fn destination_is_the_first_non_master_track_and_its_first_placement() {
+    fn destination_skips_audio_placements_and_never_targets_them() {
         let project = yeban_model::samples::demo_project();
         let master = project.master_bus_track_id;
         let first_track = *project
@@ -3683,18 +3727,18 @@ pub mod tests {
             .keys()
             .find(|id| **id != master)
             .expect("演示工程有非 master 音轨");
-        let expected_clip = project.tracks[&first_track]
+        let first_midi = project.tracks[&first_track]
             .clips
             .values()
-            .next()
-            .expect("首轨有摆放")
-            .clip_id;
+            .find(|placement| is_midi_clip(&project, placement.clip_id))
+            .map(|placement| placement.clip_id)
+            .expect("演示工程首轨有 MIDI 摆放");
         assert_eq!(
             destination(&project, &MidiImportOptions::default()).expect("缺省目标"),
-            (first_track, expected_clip)
+            (first_track, first_midi)
         );
 
-        // 把首轨的摆放换成**音频**片段：目标照旧是首轨 ＋ 它的第一个摆放。
+        // 把首轨的摆放全换成**音频**片段：缺省目标必须绕开它，落到下一条有 MIDI 的音轨。
         let audio_clip = project
             .clip_pool
             .values()
@@ -3703,31 +3747,47 @@ pub mod tests {
             })
             .expect("演示工程有音频片段");
         let mut swapped = project.clone();
-        swapped
-            .tracks
-            .get_mut(&first_track)
-            .expect("首轨")
-            .clips
-            .clear();
+        let first = swapped.tracks.get_mut(&first_track).expect("首轨");
+        first.clips.clear();
         let placement_id = EntityId::new();
-        swapped
-            .tracks
-            .get_mut(&first_track)
-            .expect("首轨")
-            .clips
-            .insert(
-                placement_id,
-                ClipPlacement {
-                    id: placement_id,
-                    clip_id: audio_clip,
-                    ..ClipPlacement::default()
-                },
-            );
-        assert_eq!(
-            destination(&swapped, &MidiImportOptions::default()).expect("音频首轨也是目标"),
-            (first_track, audio_clip),
-            "destination 不按片段类型筛选（类型检查在调用方）"
+        first.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id: audio_clip,
+                ..ClipPlacement::default()
+            },
         );
+        let resolved = destination(&swapped, &MidiImportOptions::default());
+        match resolved {
+            Ok((track, clip)) => {
+                assert_ne!(track, first_track, "首轨只剩音频摆放，不能仍被选为目标");
+                assert!(
+                    is_midi_clip(&swapped, clip),
+                    "缺省目标必须是 MIDI 片段，实际拿到 {clip:?}"
+                );
+            }
+            Err(MidiImportError::NoDestination(_)) => {
+                // 工程里再没有别的 MIDI 摆放时，结构化拒绝也是合法结果。
+            }
+            Err(other) => panic!("不应出现的错误变体: {other:?}"),
+        }
+
+        // 显式点名**音频片段**当目标 ⇒ 结构化拒绝（不许把 MIDI 写进音频）。
+        let explicit_audio = MidiImportOptions {
+            track_id: Some(first_track),
+            clip_id: Some(audio_clip),
+            ..Default::default()
+        };
+        match destination(&swapped, &explicit_audio) {
+            Err(MidiImportError::NoDestination(message)) => {
+                assert!(
+                    message.contains("不是 MIDI 片段"),
+                    "拒绝文案须点名「不是 MIDI 片段」，实际: {message}"
+                );
+            }
+            other => panic!("显式音频片段必须被拒绝，实际: {other:?}"),
+        }
     }
 
     /// 判据 (`[ARCH-EXT-002]`)：显式 `trackId` / `clipId` 优先；缺少目标时错误**点名**缺什么。
@@ -3736,18 +3796,20 @@ pub mod tests {
         let project = yeban_model::samples::demo_project();
         let master = project.master_bus_track_id;
 
-        let second_track = *project
+        // 演示工程里带 MIDI 摆放的音轨可能不是"第二条非 master 轨"（有的轨只有音频），
+        // 显式目标这一档只关心"身份被原样采纳"，所以取**任意**一条含 MIDI 的音轨。
+        let (second_track, second_clip) = project
             .tracks
-            .keys()
-            .filter(|id| **id != master)
-            .nth(1)
-            .expect("至少两条非 master 音轨");
-        let second_clip = project.tracks[&second_track]
-            .clips
-            .values()
-            .next()
-            .expect("第二条非 master 音轨有摆放")
-            .clip_id;
+            .iter()
+            .filter(|(id, _)| **id != master)
+            .find_map(|(id, track)| {
+                track
+                    .clips
+                    .values()
+                    .find(|placement| is_midi_clip(&project, placement.clip_id))
+                    .map(|placement| (*id, placement.clip_id))
+            })
+            .expect("演示工程有带 MIDI 摆放的非 master 音轨");
         assert_eq!(
             destination(
                 &project,
@@ -3766,7 +3828,7 @@ pub mod tests {
         let error = destination(&master_only, &MidiImportOptions::default())
             .expect_err("只有 master 必须报错");
         assert!(
-            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("没有非 master 的音轨")),
+            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("没有带 MIDI 片段的音轨")),
             "实际: {error:?}"
         );
 
@@ -3777,7 +3839,7 @@ pub mod tests {
         let error = destination(&without_placements, &MidiImportOptions::default())
             .expect_err("没有摆放必须报错");
         assert!(
-            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("没有任何摆放")),
+            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("没有 MIDI 片段") || reason.contains("没有带 MIDI 片段的音轨")),
             "实际: {error:?}"
         );
 

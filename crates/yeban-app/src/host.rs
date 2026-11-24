@@ -11965,9 +11965,19 @@ pub const NO_ACTIVE_PROJECT_CODE: &str = "no-active-project";
 #[must_use]
 pub fn live_note_target_of(
     port: Option<&UndoPort>,
+    track_hint: Option<yeban_model::EntityId>,
 ) -> Option<(yeban_model::EntityId, yeban_model::EntityId)> {
     let project = port?.try_project()?;
-    crate::midi_notes::live_destination(&project).ok()
+    crate::midi_notes::live_destination(&project, track_hint).ok()
+}
+
+/// 界面当前选中的音轨 （`selected-track-ulid`）→ 实体身份；解析不出就是 `None`。
+///
+/// ⭐ T-FIX-355：GUI 导入与实时 MIDI 输入都按"用户当下选中的轨"落点，
+/// 与"缺省第一条非主轨"的旧行为不再分叉。
+#[must_use]
+pub fn selected_track_entity(ui: &MainWindow) -> Option<yeban_model::EntityId> {
+    selected_track_id(ui).and_then(|id| id.parse().ok())
 }
 
 fn module_error_fields(code: &str, message: &str) -> Vec<String> {
@@ -14562,11 +14572,26 @@ pub fn wire_module_actions_with_capture(
                 module_trace("import-midi", started, &receipt);
                 return;
             };
+            // ⭐ T-FIX-355：GUI 导入**必须**吃当前选中的轨 / 片段，而不是永远用
+            // 「第一条非主轨的第一个摆放」。选中片段若不是 MIDI（或是别的轨上的），
+            // 交给 `destination` 的缺省分支回退到该轨第一个 MIDI 摆放。
+            let selected_track = selected_track_entity(&ui);
+            let selected_clip = ui
+                .get_selected_clip_ulid()
+                .as_str()
+                .parse::<yeban_model::EntityId>()
+                .ok()
+                .filter(|id| crate::import_midi::is_midi_clip(&project, *id));
+            let import_options = crate::import_midi::MidiImportOptions {
+                track_id: selected_track,
+                clip_id: selected_clip,
+                ..Default::default()
+            };
             let (receipt, ok, loss_line) = match crate::import_midi::import_midi_file(
                 port,
                 &project,
                 &source,
-                &crate::import_midi::MidiImportOptions::default(),
+                &import_options,
                 now_ms(),
             ) {
                 Ok(report) => {
@@ -14813,7 +14838,7 @@ pub fn wire_module_actions_with_capture(
         // `undo.rs:547`，栈在 `wire_module_actions_with_capture` 的闭包里）。
         let live_note_target: Option<(yeban_model::EntityId, yeban_model::EntityId)> =
             if capture.is_none() {
-                live_note_target_of(port.as_deref())
+                live_note_target_of(port.as_deref(), selected_track_entity(ui))
             } else {
                 None
             };

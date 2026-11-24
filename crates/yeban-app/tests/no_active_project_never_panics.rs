@@ -102,7 +102,8 @@ fn mounted() -> (InProcessMcp, String, UndoPort) {
 ///    不是在测一个永远为空的函数；
 /// 2. 经**真 socket** 调 `yeban_close_project` ⇒ `success`（工程真的关了）；
 /// 3. 关之后：`try_project()` 是 `None`（前提读数）；
-/// 4. 关之后：`live_note_target_of(Some(&port))` 在 `catch_unwind` 里跑 ⇒ **`Ok(None)`**。
+/// 4. 关之后：`live_note_target_of(Some(&port), None)` 在 `catch_unwind` 里跑 ⇒ **`Ok(None)`**。
+///    （第二参是 T-FIX-355 的"选中轨提示"；本判据关心的是"没有工程"那一档，传 `None`。）
 ///    修前这里是 `Err(panic)`，栈落在 `UndoPort::project`。
 #[test]
 fn closing_the_project_does_not_panic_the_reader_side() {
@@ -113,7 +114,7 @@ fn closing_the_project_does_not_panic_the_reader_side() {
         port.try_project().is_some(),
         "前提：刚挂载的端口必须有一份工程"
     );
-    let before = host::live_note_target_of(Some(&port));
+    let before = host::live_note_target_of(Some(&port), None);
     assert!(
         before.is_some(),
         "前提：样本工程有非 master 音轨 ＋ 摆放 ⇒ 实时腿必须有落点"
@@ -137,8 +138,9 @@ fn closing_the_project_does_not_panic_the_reader_side() {
     );
 
     // ---- 4. 真正的断言：解析目标**不许 panic** ----
-    let landed =
-        std::panic::catch_unwind(AssertUnwindSafe(|| host::live_note_target_of(Some(&port))));
+    let landed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        host::live_note_target_of(Some(&port), None)
+    }));
     let landed = match landed {
         Ok(target) => target,
         Err(payload) => panic!(
@@ -158,7 +160,7 @@ fn closing_the_project_does_not_panic_the_reader_side() {
 
     // ---- 5. 端口缺席那一档：同样 `None`，同样不 panic ----
     assert_eq!(
-        host::live_note_target_of(None),
+        host::live_note_target_of(None, None),
         None,
         "没有端口 = 没有落点（与 import-midi 的 no-undo-port 同一档）"
     );

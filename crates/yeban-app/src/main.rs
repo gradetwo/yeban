@@ -787,8 +787,16 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     // ⭐ **已配对音符的提交点**（⭐ 每条音符 = 一次提交 = 一步撤销）。
                     // ⚠ 只在**车道非空**时才动工程（车道空时这一跳的成本与接线前相同）。
                     // ⚠ 判据路径（注入替身）`live_note_target` 是 `None` ⇒ 一位不改。
+                    // ⭐ T-FIX-355：落点**每一跳重新解析**（用户可能刚切换了选中轨/
+                    // 片段）。解析不出来（工程被关、库里没有 MIDI 片段）时才退回装配期
+                    // 那一份快照 —— 后者是判据路径与"装配后立刻弹琴"的兜底。
+                    let live_target = host::live_note_target_of(
+                        Some(port.as_ref()),
+                        host::selected_track_entity(&ui_tick),
+                    )
+                    .or_else(|| state.note_target());
                     if state.note_lane_pending() > 0
-                        && let Some((track_id, clip_id)) = state.note_target()
+                        && let Some((track_id, clip_id)) = live_target
                     {
                         let target = host::LiveNoteCommit {
                             port: &port,

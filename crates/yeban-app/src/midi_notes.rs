@@ -521,11 +521,14 @@ pub fn write_notes(
 /// # Errors
 ///
 /// [`MidiNoteError::Destination`]（没有非 master 音轨，或那条音轨没有任何摆放）。
-pub fn live_destination(project: &YebanProjectV1) -> Result<(EntityId, EntityId), MidiNoteError> {
+pub fn live_destination(
+    project: &YebanProjectV1,
+    track_hint: Option<EntityId>,
+) -> Result<(EntityId, EntityId), MidiNoteError> {
     crate::import_midi::destination(
         project,
         &MidiImportOptions {
-            track_id: None,
+            track_id: track_hint,
             clip_id: None,
             ..Default::default()
         },
@@ -1584,6 +1587,65 @@ mod tests {
         }
     }
 
+    /// 判据（T-FIX-355）：给了**选中轨**的提示，实时落点就落在它上面（该轨的 MIDI 片段），
+    /// ⛔ 不再固定首条非主轨；提示指向音频轨时结构化拒绝，不会把音符写进音频片段。
+    #[test]
+    fn the_live_destination_follows_the_track_hint() {
+        let project = yeban_model::samples::demo_project();
+        let master = project.master_bus_track_id;
+        let (track, clip) = project
+            .tracks
+            .iter()
+            .filter(|(id, _)| **id != master)
+            .find_map(|(id, track)| {
+                track
+                    .clips
+                    .values()
+                    .find(|placement| {
+                        matches!(
+                            project
+                                .clip_pool
+                                .get(&placement.clip_id)
+                                .map(|e| &e.content),
+                            Some(yeban_model::ClipContent::Midi { .. })
+                        )
+                    })
+                    .map(|placement| (*id, placement.clip_id))
+            })
+            .expect("演示工程有带 MIDI 片段的非主轨");
+        assert_eq!(
+            live_destination(&project, Some(track)).expect("提示轨可用"),
+            (track, clip),
+            "实时落点必须跟随选中轨"
+        );
+
+        let audio_only = project
+            .tracks
+            .iter()
+            .filter(|(id, _)| **id != master)
+            .find(|(_, track)| {
+                !track.clips.is_empty()
+                    && track.clips.values().all(|placement| {
+                        !matches!(
+                            project
+                                .clip_pool
+                                .get(&placement.clip_id)
+                                .map(|e| &e.content),
+                            Some(yeban_model::ClipContent::Midi { .. })
+                        )
+                    })
+            })
+            .map(|(id, _)| *id);
+        if let Some(track) = audio_only {
+            let error = live_destination(&project, Some(track))
+                .expect_err("只剩音频摆放的轨不能当 MIDI 落点");
+            assert!(
+                error.to_string().contains("MIDI 片段"),
+                "拒绝文案须点名 MIDI 片段，实际: {error}"
+            );
+        }
+    }
+
     /// ⭐ **接线判据 ①**：车道里有**一条**已配对音符 ⇒ 心跳的一次提交**恰**落**一条**音符，
     /// 且**恰一步**撤销就能把它拿掉（⭐ 这就是"弹一个音 = 一步撤销"）。
     ///
@@ -1593,7 +1655,7 @@ mod tests {
     fn the_live_note_lane_commits_one_note_per_completion() {
         use crate::host::LiveNoteCommit;
         let (state, port, project) = live_state_and_port();
-        let (track, clip) = live_destination(&project).expect("样本工程有落点");
+        let (track, clip) = live_destination(&project, None).expect("样本工程有落点");
         let before = project_note_fields(&port.project());
 
         // 会话线程那一半：把**一条**已配对音符放进车道。
@@ -1640,7 +1702,7 @@ mod tests {
     fn the_live_note_lane_is_silent_without_events() {
         use crate::host::LiveNoteCommit;
         let (state, port, project) = live_state_and_port();
-        let (track, clip) = live_destination(&project).expect("样本工程有落点");
+        let (track, clip) = live_destination(&project, None).expect("样本工程有落点");
         let before = serde_json::to_vec(&port.project()).expect("序列化");
 
         let target = LiveNoteCommit {
