@@ -317,7 +317,12 @@ export component ArrangementViewport inherits Rectangle {
 
         // TOP HEADER ROW: Track header top box + Ruler + Chord Progression Track (Collapsible)
         Rectangle {
-            height: root.show-chord-track ? 54px : 26px;
+            // ⭐ T-FIX-356：顶行高必须装下中列内容（段落带 18px + 标尺带 24px = 42px）。
+            // 旧值 26px 只够"无段落时标尺带 24px + 2px 余量"；工程有段落时内容 42px
+            // 溢出 16px，标尺带下半截被下方的车道 Flickable 盖住 —— 既点不动（命中被
+            // Flickable 抢走，`arrangement_ruler_seek` ①③④⑥⑦⑧ 全红），刻度线也被盖住。
+            // 和弦轨展开时左列 48px < 54px，54px 那档不受影响；无段落时仍是 26px。
+            height: root.show-chord-track ? 54px : (root.section-names.length > 0 ? 42px : 26px);
             // 顶部带底色（Wang 2026-11-16：学 Logic，标尺带比轨道背景浅一档）：
             // 取令牌阶梯里紧邻车道背景 Theme.bg-canvas 的上一档 Theme.bg-panel；
             // 底边显式 1px 分隔线，理顺工具行/标尺与轨道区之间的横线。
