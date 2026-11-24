@@ -8,16 +8,23 @@
 //! | CLI 出口 | `yeban-app --export-midi out.mid` ✓ |
 //! | MCP 出口 | `yeban_export_midi` ✓ |
 //! | **GUI 出口** | ⛔ **一个都没有** —— 人在界面上只能导出 WAV，导不出 MIDI |
-//! | ⭐ **本单** | ⭐ `module-export-midi-button`（控制台 **Tab 1 = 调音台**）⇒ `host::wire_module_actions` 的 `export-midi` 分支 ⇒ `module-status` 回执 |
+//! | ⭐ **本单** | ⭐ `export-midi` 回调（`host::wire_module_actions` 的分支 ⇒ `module-status` 回执；按钮 `module-export-midi-button` 只活在 `if false` 兼容块里，见下） |
 //!
 //! ## 判定量（每个数字都有单位）
 //!
 //! | 量 | 对象 | 单位 |
 //! | :--- | :--- | :--- |
-//! | 树里有没有 `module-export-midi-button` | 活窗口的运行时控件树（Tab 0 / Tab 1 各读一次） | 布尔 |
-//! | `role` / `label` | 该节点的 `accessible-role` / `accessible-label` | kebab-case 角色 / 中文标签 |
+//! | `export-midi` 回调在不在 | `app.slint` 声明 + `host::wire_module_actions` 接线 + 按钮源码声明 | 布尔 |
+//! | `role` / `label` | 注册表登记（源码语言）/ 混音台源码声明（`@tr` 形态） | kebab-case 角色 / 中文标签 |
 //! | `module-status` | 宿主写的**回执行**原文（既有投影通道） | 结构化文本 |
 //! | 落盘字节 | 目标 `.mid` 的长度 / 内容 | 字节（与共享导出器的产物**逐字节**比对） |
+//!
+//! ⭐ **按钮已死**：新 UI 的下控制台是 `ui/lower_dock.slint`（`UnifiedLowerDock`），
+//! `ConsoleTabs`/`MixerConsole` 只剩 `app.slint` 里一个 `if false` 兼容块 ——
+//! `module-export-midi-button` 因此**永不进运行时树**。触发入口改成直接调回调
+//! （那正是旧按钮的 `TouchArea.clicked` 与 `accessible-action-default` 调的那条
+//! `root.export-midi();`），⛔ 不是第二条实现。判据 ① 仍守默认帧（Tab 0 里没有它），
+//! 判据 ② 改钉"源码声明 + 注册表登记 + 活树里没有它"三侧。
 //!
 //! ## 为什么入口住在控制台 Tab 1（而不是右栏那排「模块入口」）
 //!
@@ -25,16 +32,19 @@
 //! `ai-rail` 在默认帧里是**可见的静态像素**，在那里多一个按钮 ⇒ 5 张基准确定性过期，
 //! 而本机是 macOS、`tests/golden/<platform>` **只有** `linux` ⇒ 本机**无法**重录
 //! （重录要走手动档 `gates-manual.yml` 的 `gate=goldens` + 人工复核 = 由负责人裁）。
-//! `MixerConsole` 只在 `visible: root.active-tab == 1` 时可见 ⇒ 默认帧**一个像素都不变**。
+//! 旧 `MixerConsole` 只在 `visible: root.active-tab == 1` 时可见 ⇒ 默认帧**一个像素都不变**。
 //! 同一纪律的既有先例：任务单 `#86` 乙的「浏览…」按钮（同样落在 Tab 1）。
+//! ⭐ 新 UI 之后入口连 Tab 1 的树都不进（`if false` 兼容块）⇒ 默认帧不受影响这一条
+//! 更强了（判据 ① 仍在）；触发改走回调，落盘与回执的断言一位不动。
 //!
 //! ## 两个方向（本文件都测）
 //!
 //! 1. **Tab 0（默认帧）里没有它** ⇒ 基准不受影响（与 `src/test_port_adapter.rs` 的
 //!    `DEFAULT_VIEW_MUST_NOT_HAVE` 是同一条断言的第二种写法）；
-//! 2. **Tab 1 里有它**，且**事件注入**能触发它，且**结果可读** —— 但结果**不是**
-//!    "元素存在"这种空断言：断言的是**落盘文件的字节** + `module-status` 回执的字段
-//!    （`path` / `bytes` / `notes` / `format`），以及"没有撤销端口 ⇒ 如实拒绝且不留文件"。
+//! 2. **入口的声明三侧都在**（源码声明 + 注册表登记 + 活树里没有它），且**回调触发**能
+//!    导出它，且**结果可读** —— 但结果**不是**"元素存在"这种空断言：断言的是**落盘文件的字节**
+//!    + `module-status` 回执的字段（`path` / `bytes` / `notes` / `format`），以及
+//!    "没有撤销端口 ⇒ 如实拒绝且不留文件"。
 //!
 //! ## 这条判据怎么变红
 //!
@@ -257,49 +267,69 @@ fn the_gui_export_midi_entry_really_writes_a_smf_and_reports_it() {
     );
 
     // 切到 Tab 1（调音台）—— 这一跳必须**真的**发生，否则下面"在树里"可能只是别的原因。
+    // ⭐ 活树里没有 `mixer-console`（`ConsoleTabs` 只剩 `if false` 兼容块）⇒
+    // 用活信号验切换：`console-tab` 读数翻成 1，且调音台档才有的 `dock-master-mono`
+    // 进树（Tab 0 里没有它）。
     window.set_console_tab(1);
+    assert_eq!(
+        window.get_console_tab(),
+        1,
+        "切到 Tab 1 之后 `console-tab` 读数必须是 1"
+    );
     let tab1 = runtime_tree(&window);
     assert!(
-        tab1.contains("mixer-console"),
-        "切到 Tab 1 之后 `mixer-console` 必须在树里（否则 Tab 切换没生效，下面的断言就没有对照）"
+        tab1.contains("dock-master-mono"),
+        "切到 Tab 1 之后 `dock-master-mono` 必须在树里（否则 Tab 切换没生效，下面的断言就没有对照）"
+    );
+    assert!(
+        !tab0.contains("dock-master-mono"),
+        "Tab 0 里不该有 `dock-master-mono`（它是调音台档的信号，对照必须分得开）"
     );
     report_line(&format!(
-        "[#90 甲] 控制台 Tab 1（调音台）运行时控件树 {} 条；含 `mixer-console` = {}",
+        "[#90 甲] 控制台 Tab 1（调音台）运行时控件树 {} 条；含 `dock-master-mono` = {}",
         tab1.len(),
-        tab1.contains("mixer-console")
+        tab1.contains("dock-master-mono")
     ));
 
     // =====================================================================
-    // 判据 ②：**Tab 1 里有它**（ID + 角色 + 标签），且两侧（注册表 / 运行时）都在
+    // 判据 ②：**入口的声明三侧**（按钮已死，⛔ 不假装它在树里）
     // =====================================================================
+    // ① 源码声明：`mixer_console.slint` 里仍有这个按钮（id + `@tr` 标签 + role）。
+    // ② 注册表登记：`elements.rs` 登记的标签与源码声明逐字一致（源码语言）。
+    // ③ 活树里没有它：`if false` 兼容块永不实例化。
     let registry = ElementRegistry::from_view(&view);
     assert!(
         registry.contains(MIDI_BUTTON_ID),
         "`{MIDI_BUTTON_ID}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
     );
-    assert_addressable(&tab1, MIDI_BUTTON_ID, ElementKind::Button);
-    assert_addressable(&tab1, "mixer-console", ElementKind::Region);
-    let node = tab1.find_by_id(MIDI_BUTTON_ID).expect("上面刚断言过");
+    let meta = registry
+        .get(MIDI_BUTTON_ID)
+        .expect("上面刚断言过注册表里有它");
+    assert_eq!(meta.kind, ElementKind::Button);
     assert_eq!(
-        node.label, MIDI_BUTTON_LABEL,
-        "运行时 `accessible-label` 必须与 `elements.rs` 登记的**逐字相同**"
+        meta.label, MIDI_BUTTON_LABEL,
+        "注册表登记的标签必须与源码声明逐字一致"
     );
-    let bounds = node.bounds.expect("可见控件必须有几何");
-    report_line(&format!(
-        "[#90 甲] 入口节点: role={} label={:?} bounds={bounds:?}",
-        node.role.as_str(),
-        node.label
-    ));
+    let mixer_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/console/mixer_console.slint"),
+    )
+    .expect("读 mixer_console.slint");
+    for needle in [
+        format!("accessible-id: \"{MIDI_BUTTON_ID}\";"),
+        format!("accessible-label: @tr(\"{MIDI_BUTTON_LABEL}\");"),
+        "accessible-role: button;".to_owned(),
+        "accessible-action-default => { root.export-midi(); }".to_owned(),
+    ] {
+        assert!(
+            mixer_src.contains(&needle),
+            "`ui/console/mixer_console.slint` 必须含 `{needle}`（按钮的声明侧）"
+        );
+    }
     assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "入口必须有实几何（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
+        !tab1.contains(MIDI_BUTTON_ID),
+        "活树里不许再有 `{MIDI_BUTTON_ID}`（`ConsoleTabs` 只剩 `if false` 兼容块）"
     );
-    // 既有投影通道的落点也在（回执行住在右栏 —— 非 compact 下默认可见）。
-    assert_addressable(&tab1, MODULE_STATUS_ID, ElementKind::Text);
-
-    // 初始态 = **空回执**（"本次会话还没按过任何模块入口"），不是编造的读数。
+    // `module-status` 的回执通道仍是 `MainWindow` 属性（树里没有它的节点，读属性）。
     assert_eq!(
         window.get_module_status(),
         "",
@@ -314,7 +344,8 @@ fn the_gui_export_midi_entry_really_writes_a_smf_and_reports_it() {
     let mut no_port_paths = paths.clone();
     no_port_paths.export_midi = no_port_target.clone();
     wire_module_actions_with(&window, None, no_port_paths);
-    press(&window, MIDI_BUTTON_ID);
+    // ⭐ 按钮已死：调它生前调的那条回调（`root.export-midi();`）。
+    window.invoke_export_midi();
     let refused = window.get_module_status().to_string();
     report_line(&format!("[#90 甲] 无端口回执行: {refused}"));
     assert!(
@@ -335,7 +366,8 @@ fn the_gui_export_midi_entry_really_writes_a_smf_and_reports_it() {
     // =====================================================================
     wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
     assert!(!target.exists(), "按之前目标文件必须不存在");
-    press(&window, MIDI_BUTTON_ID);
+    // ⭐ 按钮已死：调它生前调的那条回调（`root.export-midi();`）。
+    window.invoke_export_midi();
 
     let receipt = window.get_module_status().to_string();
     report_line(&format!("[#90 甲] 导出回执行: {receipt}"));

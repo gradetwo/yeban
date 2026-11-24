@@ -364,11 +364,15 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
     let button_start = app
         .find("accessible-id: \"ai-rail-musical-pr-button\";")
         .expect("`ai-rail-musical-pr-button` 必须留在 `app.slint` 里");
+    // 入口块从包着它的 `Rectangle {` 开始（`accessible-role` 在 id 行**之前**）。
+    let rect_start = app[..button_start]
+        .rfind("Rectangle {")
+        .expect("提案入口必须在一个 `Rectangle` 块里");
     let button_end = app[button_start..]
         .find("\n            }\n")
         .map(|offset| button_start + offset)
         .expect("提案入口块必须有闭合");
-    let button = &app[button_start..button_end];
+    let button = &app[rect_start..button_end];
     assert!(
         !button.contains("accessible-value"),
         "提案入口块里不得有 `accessible-value`：提案条数今天没有写死读数。\n{button}"

@@ -2,19 +2,27 @@
 //!
 //! ## 本文件要证的句子
 //!
-//! 编曲视图的每个段落卡左缘有一条 3px 竖条色标，颜色由工程文档的
+//! 编曲视图的曲式段落带（T-FIX-152，18px）每一段的底色由工程文档的
 //! `SectionV3::color` 驱动 —— 合法色按 CSS 惯例解析并规范化，非法 / 缺失回退到
-//! 文档常量。色标的 `accessible-label` 携带规范化 `#RRGGBB`，所以"投影 ↔ 控件树
-//! ↔ 像素"三处读的是同一个读数（`parse_hex_color` 只有一处实现）。
+//! 文档常量。段落带的底色、投影的 `color_hex` 与像素三处读的是同一个读数
+//! （`parse_hex_color` 只有一处实现）。
+//!
+//! ⭐ **色标节点已死**：旧编曲视图的 `section-{i}-card` / `section-{i}-color-swatch`
+//! （3px 竖条）随死文件 `ui/workspace/arrangement_view.slint` 一起删了；新编曲视图
+//! （`ui/arrangement.slint`）的段落带没有 `accessible-id`、没有竖条节点 ——
+//! **整段底色就是色标**（`background: root.section-colors[section-index]`）。
+//! 本判据改钉：① 活树里没有旧节点；② 段落带底色绑定到 `section-colors`（源码）；
+//! ③ 注册表标签与投影逐字一致；④ 像素采样段落带（合法色 / 非法回退）；⑤ 各段带
+//! 互不重叠、落在画布内。
 //!
 //! ## 判据
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（默认视图就有） | 编曲视图（默认帧）下四个色标在场：它们不是 Session 子树的部件 |
-//! | ②（可寻址） | 角色 = `Image`、名称 = 注册表标签（逐字）、几何非零 |
-//! | ③（工程驱动） | 合法色 `#22aa88` ⇒ 标签 `#22AA88`、像素逐位相等；非法 / 缺失 ⇒ 回退常量 |
-//! | ④（几何在卡片内） | 每个色标的包围盒完全落在自己的段落卡里（不是画到别处） |
+//! | ①（旧节点不在树里） | 编曲视图下 `section-{i}-card` / `section-{i}-color-swatch` 都不在运行时树里 |
+//! | ②（底色绑定） | `arrangement.slint` 的段落带 `background` 就是 `section-colors[section-index]` |
+//! | ③（工程驱动） | 合法色 `#22aa88` ⇒ 投影 `#22AA88`、注册表标签 `#22AA88`、像素逐位相等；非法 / 缺失 ⇒ 回退常量 |
+//! | ④（几何在画布内） | 各段带的投影矩形互不重叠、完全落在编曲画布内 |
 //!
 //! ## 平台约束
 //!
@@ -82,14 +90,8 @@ fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
         .unwrap_or_else(|| panic!("`{id}` 必须有几何包围盒"))
 }
 
-fn swatch_sample_pixel(port: &LivePort<yeban_app::ui::MainWindow>, bounds: Rect) -> [u8; 3] {
+fn band_sample_pixel(port: &LivePort<yeban_app::ui::MainWindow>, x: u32, y: u32) -> [u8; 3] {
     let image = port.window().capture().expect("Tier-1 截图");
-    // 3px 宽的竖条：取「x 中点、y 垂直居中」。文字从 `space-3`（6px）开始、
-    // 与竖条不重叠 ⇒ 该点只可能是纯填充色（不会踩到字形栅格）。
-    let x = u32::try_from(bounds.x + i32::try_from(bounds.width / 2).expect("宽度是正数"))
-        .expect("色标在窗口内");
-    let y = u32::try_from(bounds.y + i32::try_from(bounds.height / 2).expect("高度是正数"))
-        .expect("色标在窗口内");
     image
         .pixel(x, y)
         .unwrap_or_else(|| panic!("采样点 ({x}, {y}) 必须在 {WINDOW:?} 帧内"))
@@ -97,43 +99,37 @@ fn swatch_sample_pixel(port: &LivePort<yeban_app::ui::MainWindow>, bounds: Rect)
 
 #[test]
 fn section_color_swatches_carry_the_projected_color() {
-    let (mut port, view) = live_window();
+    let (port, view) = live_window();
     let section_count = view.sections.len();
     let registry = ElementRegistry::from_view(&view);
 
-    // ---- ① + ② 默认（编曲）视图里就在场：角色 / 名称与注册表逐字一致 ----
-    let mut bounds = Vec::with_capacity(section_count);
-    let mut labels = Vec::with_capacity(section_count);
+    // ---- ① 旧节点不在树里（活树里没有段落卡/色标节点）----
+    let tree = port.refresh_tree(None).expect("重抓");
     for index in 0..section_count {
-        let id = format!("section-{index}-color-swatch");
-        let tree = port.refresh_tree(None).expect("重抓");
-        let node = tree
-            .find_by_id(&id)
-            .unwrap_or_else(|| panic!("`{id}` 必须在默认（编曲）视图的运行时树里"));
-        assert_eq!(
-            node.role.as_str(),
-            ElementKind::Image.accessible_role(),
-            "`{id}` 的角色必须与注册表一致"
-        );
-        let meta = registry
-            .get(&id)
-            .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
-        assert_eq!(meta.kind, ElementKind::Image);
-        assert_eq!(
-            node.label.as_str(),
-            meta.label.as_str(),
-            "屏读器读到的色标文本必须与注册表登记的逐字一致"
-        );
-        labels.push(node.label.clone());
-        bounds.push(bounds_of(&mut port, &id));
-        assert!(
-            bounds[index].width > 0 && bounds[index].height > 0,
-            "`{id}` 必须有可见几何: {:?}",
-            bounds[index]
-        );
+        for id in [
+            format!("section-{index}-card"),
+            format!("section-{index}-color-swatch"),
+        ] {
+            assert!(
+                tree.find_by_id(&id).is_none(),
+                "活树里不许再有 `{id}`（它只活在死文件 `ui/workspace/arrangement_view.slint` 里）"
+            );
+        }
     }
 
-    // ---- ③ 工程驱动：合法色 / 非法回退 / 缺失回退 ----
+    // ---- ② 段落带底色绑定到 `section-colors`（源码）----
+    let arrangement = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/arrangement.slint"),
+    )
+    .expect("读 arrangement.slint");
+    assert!(
+        arrangement.contains(
+            "background: section-index < root.section-colors.length ? root.section-colors[section-index] : Theme.accent;"
+        ),
+        "段落带的底色必须是 `root.section-colors[section-index]`（整段底色就是色标）"
+    );
+
+    // ---- ③ 工程驱动：注册表标签与投影逐字一致 ----
     let expected = [
         VALID_SECTION_COLOR_HEX,
         DEFAULT_TRACK_COLOR_HEX,
@@ -141,10 +137,16 @@ fn section_color_swatches_carry_the_projected_color() {
         DEFAULT_TRACK_COLOR_HEX,
     ];
     for (index, hex) in expected.iter().enumerate().take(section_count) {
+        let meta = registry
+            .get(&format!("section-{index}-color-swatch"))
+            .unwrap_or_else(|| {
+                panic!("`section-{index}-color-swatch` 必须在装配时的注册表里（[UI-TEST-001]）")
+            });
+        assert_eq!(meta.kind, ElementKind::Image);
         assert_eq!(
-            labels[index],
+            meta.label,
             format!("段落色标 {hex}"),
-            "段落 {index} 的色标标签必须来自投影（合法色规范化 / 非法与缺失回退）"
+            "段落 {index} 的注册表标签必须来自投影（合法色规范化 / 非法与缺失回退）"
         );
         assert_eq!(
             view.section_color_labels()[index],
@@ -152,13 +154,44 @@ fn section_color_swatches_carry_the_projected_color() {
             "同一读数必须能在投影侧读到"
         );
     }
-    let valid = swatch_sample_pixel(&port, bounds[0]);
+
+    // ---- ④ 像素：采样段落带（合法色 / 非法回退）----
+    // 段落带几何（窗口坐标）：画布顶沿 + 泳道区顶沿偏移（和弦行 22px + 间隙）+
+    // 18px 带高中点；x = 时间轴原点（轨道头右沿 + 5px 分隔条）+ 该段投影列 +
+    // 段宽的 3/4（段名文本左对齐在 6px 处，3/4 点一定是纯底色）。
+    let canvas = tree
+        .find_by_id("workspace-arrangement-canvas")
+        .expect("控件树里必须有编曲画布")
+        .bounds
+        .expect("画布必须有几何");
+    let header = tree
+        .find_by_id("track-0-header")
+        .expect("控件树里必须有轨道头")
+        .bounds
+        .expect("轨道头必须有几何");
+    let lanes = tree
+        .find_by_id("arr-lanes-flickable")
+        .expect("控件树里必须有泳道区")
+        .bounds
+        .expect("泳道区必须有几何");
+    let origin_x = header.x + header.width as i32 + 5;
+    let band_y = canvas.y + (lanes.y - canvas.y) + 9;
+    let sample = |index: usize| -> [u8; 3] {
+        let section = &view.sections[index];
+        let x = origin_x + (section.x + section.width * 0.75) as i32;
+        band_sample_pixel(
+            &port,
+            u32::try_from(x).expect("采样点在窗口内"),
+            u32::try_from(band_y).expect("采样点在窗口内"),
+        )
+    };
+    let valid = sample(0);
     assert_eq!(
         valid,
         [0x22, 0xaa, 0x88],
         "合法色必须真的画出来（像素 == 投影 RGB）"
     );
-    let fallback = swatch_sample_pixel(&port, bounds[1]);
+    let fallback = sample(1);
     assert_eq!(
         fallback,
         [
@@ -174,23 +207,34 @@ fn section_color_swatches_carry_the_projected_color() {
         "投影字段必须与像素同源"
     );
 
-    // ---- ④ 几何在卡片内：色标属于它那一张段落卡 ----
-    for (index, swatch) in bounds.iter().copied().enumerate() {
-        let card = bounds_of(&mut port, &format!("section-{index}-card"));
-        let (sx, sy) = (f64::from(swatch.x), f64::from(swatch.y));
-        let (sw, sh) = (f64::from(swatch.width), f64::from(swatch.height));
-        let (cx, cy) = (f64::from(card.x), f64::from(card.y));
-        let (cw, ch) = (f64::from(card.width), f64::from(card.height));
+    // ---- ⑤ 几何：各段带互不重叠、完全落在编曲画布内 ----
+    let mut prev_end: Option<f32> = None;
+    for (index, section) in view.sections.iter().enumerate() {
         assert!(
-            sx >= cx && sy >= cy && sx + sw <= cx + cw && sy + sh <= cy + ch,
-            "`section-{index}-color-swatch` 必须完全落在 `section-{index}-card` 里: \
-             swatch={swatch:?} card={card:?}"
+            section.width > 0.0,
+            "段落 {index} 的带宽必须是正数（实得 {}）",
+            section.width
+        );
+        if let Some(end) = prev_end {
+            assert!(
+                section.x >= end,
+                "段落 {index} 的带必须从上一段右沿之后开始（x={}，上一段右沿={end}）",
+                section.x
+            );
+        }
+        prev_end = Some(section.x + section.width);
+        let band_left = origin_x as f32 + section.x;
+        let band_right = band_left + section.width;
+        assert!(
+            band_left >= canvas.x as f32 && band_right <= canvas.x as f32 + canvas.width as f32,
+            "段落 {index} 的带必须完全落在编曲画布内（{band_left}..{band_right}，画布 {}..{}）",
+            canvas.x,
+            canvas.x as f32 + canvas.width as f32
         );
     }
 
     report_line(&format!(
-        "[section-color] {section_count} 个段落色标；合法色 {VALID_SECTION_COLOR_HEX} ⇒ 像素 {:?}；\
-         非法 / 缺失 ⇒ 回退 {DEFAULT_TRACK_COLOR_HEX}（像素 {:?}）",
-        valid, fallback
+        "[section-color] {section_count} 个段落带；合法色 {VALID_SECTION_COLOR_HEX} ⇒ 像素 {valid:?}；\
+         非法 / 缺失 ⇒ 回退 {DEFAULT_TRACK_COLOR_HEX}（像素 {fallback:?}）",
     ));
 }

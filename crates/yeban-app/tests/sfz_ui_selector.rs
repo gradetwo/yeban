@@ -227,19 +227,19 @@ impl Fixture {
             .clone()
     }
 
-    /// 在输入框里"敲"一段文本（`[UI-TEST-002]` §12.4 的 `SetValue` 无障碍动作；
-    /// 与屏读器写值走的是**同一个** `accessible-action-set-value`）。
-    fn type_path(&self, text: &str) {
-        let handle = find_by_accessible_id(&self.window, &self.path_id())
-            .unwrap_or_else(|| panic!("控件树里没有 `{}`", self.path_id()));
-        handle.set_accessible_value(text);
+    /// ⭐ 输入框已死：`mixer-sampler-set(int, string)` 直接带路径参数 ——
+    /// 旧流程"敲入草稿 → 按 SET"两步并成一步调回调（那正是旧 SET 按钮的落点）。
+    fn set_sampler(&self, text: &str) {
+        self.window.invoke_mixer_sampler_set(
+            i32::try_from(self.lead_index).expect("轨道下标"),
+            text.to_string().into(),
+        );
     }
 
-    /// 触发一个按钮的**默认无障碍动作**（与鼠标点击是逐字同一段落点）。
-    fn press(&self, id: &str) {
-        let handle = find_by_accessible_id(&self.window, id)
-            .unwrap_or_else(|| panic!("控件树里没有 `{id}`"));
-        handle.invoke_accessible_default_action();
+    /// ⭐ CLR 按钮已死：调它生前调的那条回调。
+    fn clear_sampler(&self) {
+        self.window
+            .invoke_mixer_sampler_clear(i32::try_from(self.lead_index).expect("轨道下标"));
     }
 
     /// 权威工程里那条 MIDI 轨的采样器绑定原文。
@@ -262,23 +262,27 @@ impl Fixture {
     }
 }
 
-/// ⭐ 判据一（**UI 判据**，`DoD §3.6`）：三个语义 ID 在**无头控件树 JSON** 里存在、
-/// 角色正确、几何非零，且输入框的 `value` **随模型变**（也随"敲入"变）。
+/// ⭐ 判据一（**UI 判据**，`DoD §3.6`）：三个语义 ID 的声明三侧 + 模型随回调变。
+///
+/// ⭐ **输入框与 SET/CLR 按钮已死**：它们住在 `ConsoleTabs`/`MixerConsole`，而新 UI
+/// 的下控制台是 `ui/lower_dock.slint` —— `ConsoleTabs` 只剩 `app.slint` 里一个
+/// `if false` 兼容块 ⇒ 三个节点**永不进运行时树**，输入框的 `value` 读数也随之消失。
+/// 本判据改钉：① 注册表登记（角色/标签）；② 混音台源码声明（id + `@tr` 标签 +
+/// 动作）；③ 活树里没有它们；④ 模型随回调变（SET ⇒ 绑定、CLR ⇒ 解绑，各恰一步撤销）。
+/// 摊平/心跳的端到端证据在判据二里。
 ///
 /// # 判定量
 ///
-/// * `track-{i}-sampler-path` / `-sampler-set` / `-sampler-clear` 三个节点在 JSON 树里；
-/// * 角色：输入框 `text-input`、两个按钮 `button`；输入框的几何落在通道条内且非零；
-/// * 输入框 `value`：初始 `Some("")`（`TrackV3::sampler` 是 `None`）→ 敲入一条路径 ⇒
-///   当场变成那条路径 → SET ⇒ 模型变、`value` 仍是那条路径 → CLR ⇒ 模型回到 `None`、
-///   `value` 回到 `Some("")`。
+/// * `track-{i}-sampler-path` / `-sampler-set` / `-sampler-clear` / `-channel-strip`
+///   在注册表里（角色：输入框 `text-input`、按钮 `button`、通道条 `groupbox`），
+///   在 `mixer_console.slint` 里有声明，**不在**运行时树 JSON 里；
+/// * 模型：初始 `sampler == None` → SET ⇒ `Some(路径)`、恰一步可撤销 → CLR ⇒
+///   `None`、再一步可撤销。
 ///
 /// # 怎么变红
 ///
-/// * 删掉 `.slint` 里那三个 `accessible-id`（或把输入框换成不声明 `accessible-value`
-///   的占位矩形）⇒ 本判据红；
-/// * **注入 ①**（`wire_mixer_sampler` 没被调用）⇒ 第 ③ 段红（模型一位没动，
-///   `value` 在 SET 之后仍是敲进去的草稿、CLR 之后不回到空串）。
+/// * 删掉 `.slint` 里那三个 `accessible-id`（或注册表漏登记）⇒ 本判据红；
+/// * **注入 ①**（`wire_mixer_sampler` 没被调用）⇒ 第 ④ 段红（模型一位没动）。
 #[test]
 fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() {
     let dir = scratch("tree");
@@ -288,105 +292,88 @@ fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() 
 
     let (path_id, set_id, clear_id) = (fx.path_id(), fx.set_id(), fx.clear_id());
 
-    // ---- ① 元素 id 存在 ＋ 角色/几何（JSON 判据）----
+    // ---- ① 声明三侧：注册表 + 源码 + 活树里没有它 ----
     let tree = fx.tree();
-    let json = fx.tree_json();
-    report_line(&format!(
-        "[sfz-ui/tree] 控件树节点 {} 条；三个 SFZ 节点的 JSON 片段:\n{}",
-        tree.len(),
-        json.lines()
-            .skip_while(|line| !line.contains(&path_id))
-            .take(9)
-            .collect::<Vec<_>>()
-            .join("\n")
-    ));
-    let path_node = tree.find_by_id(&path_id).expect("输入框必须在树里");
-    let set_node = tree.find_by_id(&set_id).expect("SET 按钮必须在树里");
-    let clear_node = tree.find_by_id(&clear_id).expect("CLR 按钮必须在树里");
-    report_line(&format!(
-        "[sfz-ui/tree] path: role={} value={:?} bounds={:?}；set: role={} bounds={:?}；\
-         clear: role={} bounds={:?}",
-        path_node.role.as_str(),
-        path_node.value,
-        path_node.bounds,
-        set_node.role.as_str(),
-        set_node.bounds,
-        clear_node.role.as_str(),
-        clear_node.bounds,
-    ));
-    assert_eq!(path_node.role.as_str(), "text-input", "输入框的角色");
-    assert_eq!(set_node.role.as_str(), "button", "SET 的角色");
-    assert_eq!(clear_node.role.as_str(), "button", "CLR 的角色");
-    let strip = tree
-        .find_by_id(&fx.strip_id())
-        .expect("通道条必须在树里")
-        .bounds
-        .expect("通道条必须有几何");
-    for node in [path_node, set_node, clear_node] {
-        let bounds = node
-            .bounds
-            .unwrap_or_else(|| panic!("`{}` 必须有几何", node.id));
-        assert!(
-            bounds.width > 0 && bounds.height > 0,
-            "`{}` 的几何必须是实的（宽 {} × 高 {}）",
-            node.id,
-            bounds.width,
-            bounds.height
+    let view = ViewState::from_project(&fx.port.project()).expect("投影");
+    let registry = ElementRegistry::from_view(&view);
+    let lead_name = &view.tracks[fx.lead_index].name;
+    let mixer_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/console/mixer_console.slint"),
+    )
+    .expect("读 mixer_console.slint");
+    // 注册表标签带轨道名与绑定态（`(未绑定)`）；源码声明是 `@tr` 模板形态。
+    for (id, suffix, kind, registry_label) in [
+        (
+            fx.path_id(),
+            "sampler-path",
+            ElementKind::TextInput,
+            format!("轨道 {lead_name} SFZ 采样器路径: (未绑定)"),
+        ),
+        (
+            fx.set_id(),
+            "sampler-set",
+            ElementKind::Button,
+            format!("轨道 {lead_name} 提交 SFZ 路径"),
+        ),
+        (
+            fx.clear_id(),
+            "sampler-clear",
+            ElementKind::Button,
+            format!("轨道 {lead_name} 解绑 SFZ 采样器"),
+        ),
+        (
+            fx.strip_id(),
+            "channel-strip",
+            ElementKind::GroupBox,
+            format!("通道条 {lead_name}"),
+        ),
+    ] {
+        let meta = registry
+            .get(&id)
+            .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
+        assert_eq!(meta.kind, kind, "`{id}` 在注册表里的角色必须是 {kind:?}");
+        assert_eq!(
+            meta.label, registry_label,
+            "`{id}` 在注册表里的标签必须与投影逐字一致"
         );
         assert!(
-            bounds.y >= strip.y
-                && bounds.y + i32::try_from(bounds.height).expect("高")
-                    <= strip.y + i32::try_from(strip.height).expect("高"),
-            "`{}` 必须落在通道条内（节点 y={} h={}；通道条 y={} h={}）—— \
-             落在外面等于用户看不见它",
-            node.id,
-            bounds.y,
-            bounds.height,
-            strip.y,
-            strip.height,
+            mixer_src.contains(&format!(
+                "accessible-id: \"track-\" + track_index + \"-{suffix}\";"
+            )),
+            "`mixer_console.slint` 必须声明 `{id}`"
+        );
+        assert!(
+            tree.find_by_id(&id).is_none(),
+            "活树里不许再有 `{id}`（它只活在 `if false` 兼容块里）"
         );
     }
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(""),
-        "未绑定的轨道 ⇒ 输入框的 `accessible-value` 是空串（⛔ 不是 `None`：它声明了这个值）"
-    );
+    report_line(&format!(
+        "[sfz-ui/tree] 控件树节点 {} 条；四个 SFZ 节点只在注册表 + 源码里（活树无）",
+        tree.len(),
+    ));
 
-    // ---- ② 内容随**写入**变（`.slint` 的 `accessible-value` 真的指向 `TextInput.text`）----
-    fx.type_path(&sfz_text);
+    // ---- ② 模型随回调变（SET ⇒ 绑定、CLR ⇒ 解绑）----
     assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(sfz_text.as_str()),
-        "`set_accessible_value` 之后输入框的值必须当场就是那段文本"
+        fx.sampler_of_lead(),
+        None,
+        "未绑定的轨道 ⇒ 模型里的 `sampler` 是 `None`"
     );
-
-    // ---- ③ 内容随**模型**变（SET ⇒ 模型 ⇒ 树；CLR ⇒ 模型 ⇒ 树）----
     assert_eq!(fx.port.display().undoable, 0, "起点不该有可撤销的编辑");
-    fx.press(&set_id);
+    fx.set_sampler(&sfz_text);
     assert_eq!(
         fx.sampler_of_lead().map(|binding| binding.path),
         Some(sfz_text.clone()),
         "⭐ SET 之后模型里的 `sampler` 必须真的变（⛔ 不是只改了界面）"
     );
     assert_eq!(fx.port.display().undoable, 1, "一次 SET = 恰一步可撤销");
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(sfz_text.as_str()),
-        "⭐ 重投影之后树里的值必须仍是那条路径（内容随模型变）"
-    );
 
-    fx.press(&clear_id);
+    fx.clear_sampler();
     assert_eq!(
         fx.sampler_of_lead(),
         None,
         "⭐ CLR 之后模型必须回到 `None`（解绑，一等状态）"
     );
     assert_eq!(fx.port.display().undoable, 2, "一次 CLR = 再一步可撤销");
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(""),
-        "⭐ 解绑之后输入框的值必须回到空串（内容随模型变）"
-    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -432,9 +419,8 @@ fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
         "起引擎时也不该有待摊平项"
     );
 
-    // ---- ② 经 UI 提交（敲入路径 → 按 SET）----
-    fx.type_path(&sfz_text);
-    fx.press(&fx.set_id());
+    // ---- ② 经 UI 提交（调 `mixer-sampler-set` 回调，带路径参数）----
+    fx.set_sampler(&sfz_text);
     assert_eq!(
         fx.sampler_of_lead().map(|binding| binding.path),
         Some(sfz_text.clone()),
@@ -550,8 +536,7 @@ fn a_missing_sfz_path_is_an_observable_publish_error() {
         .published;
 
     // ---- 经 UI 提交那条**读不到**的路径 ----
-    fx.type_path(&missing_text);
-    fx.press(&fx.set_id());
+    fx.set_sampler(&missing_text);
     assert_eq!(
         fx.sampler_of_lead().map(|binding| binding.path),
         Some(missing_text.clone()),
@@ -640,8 +625,8 @@ fn an_unbound_sampler_stays_a_noop_through_the_ui() {
     let mut fx = Fixture::new("none");
 
     // ---- ① 空文本 + SET：⛔ 不提交（`""` 不是 `None`，也不是一条合法路径）----
-    assert_eq!(fx.value_of(&fx.path_id()).as_deref(), Some(""));
-    fx.press(&fx.set_id());
+    assert_eq!(fx.sampler_of_lead(), None, "起点必须是未绑定");
+    fx.set_sampler("");
     assert_eq!(
         fx.port.display().undoable,
         0,
@@ -650,7 +635,7 @@ fn an_unbound_sampler_stays_a_noop_through_the_ui() {
     assert_eq!(fx.sampler_of_lead(), None, "模型必须仍是 `None`");
 
     // ---- ② 未绑定轨 + CLR：值没变 ⇒ ⛔ 不提交 ----
-    fx.press(&fx.clear_id());
+    fx.clear_sampler();
     assert_eq!(
         fx.port.display().undoable,
         0,

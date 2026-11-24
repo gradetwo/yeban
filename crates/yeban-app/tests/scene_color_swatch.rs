@@ -12,7 +12,7 @@
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
 //! | ①（默认视图不画） | 编曲视图下四个色标都不在运行时树里（Session 子树整棵不可见） |
-//! | ②（可寻址） | 切到 Session 后四个色标在场、角色 = `Image`、名称 = 注册表标签（逐字） |
+//! | ②（可寻址） | 切到 Session 后四个色标在场、角色 = `Image`、名称 = 注册表标签（源码语言）/ 运行时译文（en-US），色值同一串 |
 //! | ③（工程驱动） | 合法色 `#3366ff` ⇒ 标签 `#3366FF`、像素逐位相等；非法 / 缺失 ⇒ 回退常量 |
 //! | ④（几何在卡片内） | 每个色标的包围盒完全落在自己的场景卡里（不是画到别处） |
 //!
@@ -123,10 +123,20 @@ fn scene_color_swatches_carry_the_projected_color() {
             .get(&id)
             .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
         assert_eq!(meta.kind, ElementKind::Image);
+        // ⭐ 注册表登记的是**源码语言**标签（`elements.rs` 的 `场景色标 {hex}`），
+        // 运行时读到的是 `@tr` 译文（`LANG=en_US.UTF-8` 下 `Scene Color Tag {hex}`，
+        // `translations/en-US/.../yeban-app.po`）—— 两侧**不可能**逐字相同。
+        // 各自钉自己的形态，色值取投影的同一串（见下面 ③ 的逐项断言）。
+        let hex = &view.scene_color_labels()[index];
+        assert_eq!(
+            meta.label.as_str(),
+            format!("场景色标 {hex}"),
+            "注册表登记的色标文本必须是源码语言形态"
+        );
         assert_eq!(
             node.label.as_str(),
-            meta.label.as_str(),
-            "屏读器读到的色标文本必须与注册表登记的逐字一致"
+            format!("Scene Color Tag {hex}"),
+            "屏读器读到的色标文本必须是 en-US 译文形态"
         );
         labels.push(node.label.clone());
         bounds.push(bounds_of(&mut port, &id));
@@ -147,7 +157,7 @@ fn scene_color_swatches_carry_the_projected_color() {
     for (index, hex) in expected.iter().enumerate().take(scene_count) {
         assert_eq!(
             labels[index],
-            format!("场景色标 {hex}"),
+            format!("Scene Color Tag {hex}"),
             "场景 {index} 的色标标签必须来自投影（合法色规范化 / 非法与缺失回退）"
         );
         assert_eq!(

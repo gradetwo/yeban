@@ -357,8 +357,13 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     let ui = &window;
 
     // =====================================================================
-    // 判据 ①：每个新入口的 Element ID 在无头控件树里可寻址
+    // 判据 ①：每个新入口的 Element ID —— 注册表 + 源码声明 + 活树里没有它
     // =====================================================================
+    // ⭐ 按钮已死：八个入口住在死文件 `ui/module_actions.slint`（见
+    // `docs/DEAD-SLINT-FILES.md`，无人 import）⇒ 永不进运行时树。
+    // 钉三侧：① 注册表登记了（`elements.rs`）；② 死文件源码里仍有声明
+    // （id + `@tr` 标签 + 动作）；③ 活树里没有它。触发本身（判据 ②）走回调直调，
+    // 证明落点还活着 —— ⛔ 不假装按钮还在树里。
     // 方向 1（强）：运行时有 ⇒ 注册表有 —— 新入口**没有**未登记的 ID。
     let coverage = runtime_tree.coverage_against(plane.registry());
     assert!(
@@ -366,59 +371,95 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "运行时树里出现了注册表没登记的语义 ID（双向契约被破坏）: {:?}",
         coverage.unknown_at_runtime
     );
-    for id in [
-        "module-actions-title",
-        "module-export-wav-button",
-        "module-import-midi-button",
-        "module-load-sfz-button",
-        "module-record-wav-button",
-        "module-last-status",
-        "module-midi-in-button",
-        "module-midi-in-status",
+    let module_actions_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/module_actions.slint"),
+    )
+    .expect("读 ui/module_actions.slint（死文件，声明侧仍在）");
+    let registry = ElementRegistry::from_view(plane.view());
+    for (id, label, kind) in [
+        (
+            "module-actions-title",
+            "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入",
+            ElementKind::Text,
+        ),
+        (
+            "module-export-wav-button",
+            "导出 WAV（打开采样率 / 位深 / 时长选项）",
+            ElementKind::Button,
+        ),
+        (
+            "module-import-midi-button",
+            "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）",
+            ElementKind::Button,
+        ),
+        (
+            "module-load-sfz-button",
+            "装载 SFZ 乐器（报告区域数并探测一个音符）",
+            ElementKind::Button,
+        ),
+        (
+            "module-record-wav-button",
+            "录音（把控制侧测试音录成 24-bit WAV）",
+            ElementKind::Button,
+        ),
+        (
+            "module-midi-in-button",
+            "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）",
+            ElementKind::Button,
+        ),
+        (
+            "module-last-status",
+            "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）",
+            ElementKind::Text,
+        ),
+        (
+            "module-midi-in-status",
+            "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）",
+            ElementKind::Text,
+        ),
     ] {
-        // 静态注册表（`elements.rs`）与运行时树**两侧**都要有：前者 = "登记了"，
-        // 后者 = "真的画出来了"。只查一侧都会漏掉一半缺陷。
-        assert!(
-            ElementRegistry::from_view(plane.view()).contains(id),
-            "`{id}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
+        // 静态注册表（`elements.rs`）登记了：前者 = "登记了"。
+        let meta = registry.get(id).unwrap_or_else(|| {
+            panic!("`{id}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）")
+        });
+        assert_eq!(meta.kind, kind, "`{id}` 在注册表里的角色必须是 {kind:?}");
+        assert_eq!(
+            meta.label, label,
+            "`{id}` 在注册表里的标签必须与源码声明逐字一致"
         );
-    }
-    for id in [
-        "module-export-wav-button",
-        "module-import-midi-button",
-        "module-load-sfz-button",
-        "module-record-wav-button",
-        "module-midi-in-button",
-    ] {
-        assert_addressable(&runtime_tree, id, ElementKind::Button);
-    }
-    // 把这次寻址的**实测读数**打出来（`--nocapture` / CI 日志里能看到具体是哪几个节点，
-    // ⛔ 不是只留一个"断言通过"）：运行时树规模 + 6 个 ID 的角色/标签/包围盒。
-    report_line(&format!(
-        "[ui-modules] 运行时控件树 {} 条；新入口 8 条如下:",
-        runtime_tree.len()
-    ));
-    for id in [
-        "module-actions-title",
-        "module-export-wav-button",
-        "module-import-midi-button",
-        "module-load-sfz-button",
-        "module-record-wav-button",
-        "module-last-status",
-        "module-midi-in-button",
-        "module-midi-in-status",
-    ] {
-        let node = runtime_tree.find_by_id(id).expect("上面刚断言过");
+        // 死文件源码里仍有声明（id + `@tr` 标签）。
+        assert!(
+            module_actions_src.contains(&format!("accessible-id: \"{id}\";")),
+            "`ui/module_actions.slint` 必须声明 `{id}`"
+        );
+        assert!(
+            module_actions_src.contains(&format!("accessible-label: @tr(\"{label}\");")),
+            "`ui/module_actions.slint` 里 `{id}` 的标签必须是 `@tr(\"{label}\")`"
+        );
+        // 活树里没有它（死文件永不实例化）。
+        assert!(
+            runtime_tree.find_by_id(id).is_none(),
+            "活树里不许再有 `{id}`（它只活在死文件 `ui/module_actions.slint` 里）"
+        );
         report_line(&format!(
-            "[ui-modules]   {id} role={} label={:?} bounds={:?}",
-            node.role.as_str(),
-            node.label,
-            node.bounds
+            "[ui-modules]   {id} kind={kind:?} label={label:?} （注册表 + 死文件声明在，活树无）"
         ));
     }
-    assert_addressable(&runtime_tree, "module-actions-title", ElementKind::Text);
-    assert_addressable(&runtime_tree, "module-last-status", ElementKind::Text);
-    assert_addressable(&runtime_tree, "module-midi-in-status", ElementKind::Text);
+    // 五个按钮的默认无障碍动作仍是同一条回调（死文件里的落点名）。
+    for (id, action) in [
+        ("module-export-wav-button", "open-export-wav"),
+        ("module-import-midi-button", "import-midi"),
+        ("module-load-sfz-button", "load-sfz"),
+        ("module-record-wav-button", "record-wav"),
+        ("module-midi-in-button", "midi-in"),
+    ] {
+        assert!(
+            module_actions_src.contains(&format!(
+                "accessible-action-default => {{ root.{action}(); }}"
+            )),
+            "`{id}` 的默认无障碍动作必须是 `root.{action}();`"
+        );
+    }
 
     // 初始态 = **空回执**（"本次会话还没按过任何模块入口"），不是编造的读数。
     assert_eq!(

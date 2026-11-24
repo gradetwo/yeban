@@ -3060,21 +3060,23 @@ fn the_sidebar_has_no_two_controls_in_the_same_place() {
     );
 
     // ---- ③ 注册表两侧一致：旧段已删、新段不进树 ----
-    let registry = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/elements.rs"),
-    )
-    .expect("读 elements.rs");
-    let code_registry: String = registry
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for needle in ["\"sidebar-", "\"left-panel-"] {
-        assert!(
-            !code_registry.contains(needle),
-            "注册表里不许再有 `{needle}` 语义 ID（旧段已删、新段不进树）"
-        );
-    }
+    // 走注册表 API（与 `elements.rs` 自身的 T-FIX-218 断言同一条）—— ⛔ 不扫源码文本：
+    // 源码里 `"sidebar-"` 还会出现在「断言它不存在」的那行自测代码里，文本扫描会假红。
+    let view =
+        ViewState::from_project(&yeban_model::samples::demo_project()).expect("演示工程必须能投影");
+    let registry = yeban_app::elements::ElementRegistry::from_view(&view);
+    assert!(
+        registry.with_prefix("sidebar-").next().is_none(),
+        "注册表里不许再有 `sidebar-*`（旧侧栏面板已删，见 T-FIX-218）"
+    );
+    assert!(
+        !registry.contains("sidebar"),
+        "注册表里不许再有 `sidebar`（旧侧栏面板已删，见 T-FIX-218）"
+    );
+    assert!(
+        registry.with_prefix("left-panel-").next().is_none(),
+        "注册表里不许再有 `left-panel-*`（新左栏不进树）"
+    );
 
     // ---- ④ 活窗口腿：运行时树里同样一个都没有，且画布左沿在左栏右沿之后 ----
     if let Err(payload) = std::thread::spawn(move || {

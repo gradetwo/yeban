@@ -128,11 +128,12 @@ fn check_new_project_registration(
     let callback = format!("callback {action}();");
 
     // ---- ① 混音台：ID / 标签 / role / 两个上抛点（点击源 + 默认无障碍动作）----
+    // ⭐ 标签包了 `@tr`（活树形态），钉 `@tr("…")` 形态；注册表登的仍是源码语言标签。
     for (what, needle) in [
         ("accessible-id", format!("accessible-id: \"{ID}\";")),
         (
             "accessible-label",
-            format!("accessible-label: \"{label}\";"),
+            format!("accessible-label: @tr(\"{label}\");"),
         ),
         ("accessible-role", "accessible-role: button;".to_owned()),
         ("callback", callback.clone()),

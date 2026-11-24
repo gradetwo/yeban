@@ -2,10 +2,11 @@
 //!
 //! ## 被补上的缺口
 //!
-//! `ui/workspace/arrangement_view.slint` 的行区此前是**固定高度**的：轨道数超过可视
-//! 行数之后，第 N 行之后既看不到也点不到（真实工程 28 轨时只有前 ~8 行可达）。
-//! 本片把五个行锚定层（包头 / 车道 / 剪辑 / 剪辑拖动面 / 自动化带）包进一个
-//! `Flickable`，并新增注入属性 `sheet-height`（行区内容高）作为 `content-height`。
+//! 旧编曲视图（`ui/workspace/arrangement_view.slint`，已删）的行区此前是**固定高度**的：
+//! 轨道数超过可视行数之后，第 N 行之后既看不到也点不到（真实工程 28 轨时只有前 ~8 行可达）。
+//! 新编曲视图（`ui/arrangement.slint`）把行锚定层（包头 / 车道 / 剪辑 / 剪辑拖动面 /
+//! 自动化带）包进 `arr_tracks_flickable`（`accessible-id: arr-lanes-flickable`），
+//! 内容高 = 注入属性 `sheet-height` + 42px + 46px（42 = 段落带 18 + 标尺带 24）。
 //!
 //! ## 判据
 //!
@@ -14,7 +15,7 @@
 //! | ①（30 轨 ⇒ 末行不可寻址） | 滚动前 `track-29-header` **不在控件树里**（可视区外的行不可达） |
 //! | ②（向下滚两个行距 ⇒ 仍在树里的每一行上移该距离） | `PointerScrolled{delta_y=-2×行距}` ⇒ 两次快照交集的每个包头 y 恰好减该距离，且更大索引的行进入树中；再向上滚同样距离 ⇒ 快照复原（⚠ 符号：上游把 `content-y` 夹在 `[h−ch, 0]` 且 delta **不取反** ⇒ 静止位上正 `delta_y` 被夹回 0，什么也不动） |
 //! | ③（滚到底 ⇒ 末行可达，且夹紧） | 大幅滚动 ⇒ `track-29-header` 可寻址且 y 落在行区内；再滚一次快照逐位不变（`ensure_in_bound`） |
-//! | ④（标尺 / 章节卡片不动） | 滚动只动行区：`arrangement-ruler` 与 `section-0-card` 的 y 逐位不变 |
+//! | ④（画布 / 泳道区不动） | 滚动只动行区**内容**：`workspace-arrangement-canvas` 与 `arr-lanes-flickable` 自身的几何逐位不变，包头 x 也不变（旧标尺 `arrangement-ruler` 与段落卡 `section-0-card` 已随死文件删掉，不再进控件树） |
 //! | ⑤（内容不高 ⇒ 一位不动） | 演示工程（6 轨）滚轮 ⇒ 所有包头 y 不变（默认帧 / golden 不漂移） |
 //! | ⑥（前置：内容高注入到位） | 主窗口的 `arrangement-sheet-height` = 夹具最后一行底沿 − 行区上沿，且**高出窗口** —— 没有它，上游 `Flickable` 的 `is_allowed_scroll_direction` 恒 false ⇒ 滚轮被**静默忽略并转发给父级**（`41208446082` 那票"一位都不动"的红就有两个独立原因：内容高别名 + 滚轮符号，见账本 §4） |
 //!
@@ -35,10 +36,12 @@
 //!
 //! ## 夹具行数与"为什么不写死 delta"
 //!
-//! 30 行，内容高 1678px（行区上沿在窗口内 y=90）。**行区视口高不是窗口高减去行区上沿** ——
-//! 编排区下面还有底部控制台，实测 1440×900 档只有约 456px（run `41247717524`：固定 400px 的
-//! 探针吃满整个视口 ⇒ 两次快照的交集只剩 1 行，判据②红）。所以判据②的位移量取
-//! **两个行距**（行距从同一份投影的树里现读），并且先把"滚动前行区里至少有 5 行"钉成前置条件。
+//! 30 行，行距 56px，内容高 1680px（`track_sheet_height()` = 末行底沿 − 42）。
+//! 行区上沿 = 泳道区顶沿 + 42（段落带 18 + 标尺带 24）：1440×900 档实测泳道区 y=115 ⇒
+//! 行区上沿 y=157。**行区视口高不是窗口高减去行区上沿** —— 编排区下面还有底部控制台，
+//! 实测 1440×900 档只有 406px（run `41247717524`：固定 400px 的探针吃满整个视口 ⇒
+//! 两次快照的交集只剩 1 行，判据②红）。所以判据②的位移量取**两个行距**（行距从同一份
+//! 投影的树里现读），并且先把"滚动前行区里至少有 5 行"钉成前置条件。
 //! 判据③滚到底用 `100_000`，靠 `ensure_in_bound` 夹紧来证"到底不再动"，与视口高无关。
 //!
 //! ## 平台约束
@@ -58,8 +61,10 @@ use yeban_ui_test_port::render::LivePort;
 use yeban_ui_test_port::{Permission, Size, UiTestPort as _};
 
 const WINDOW: Size = Size::new(1440, 900);
-/// 标尺带高：行区上沿 = 标尺带 y + 22（`automation::TRACK_LANE_TOP_PX = 20 + 22`）。
-const RULER_HEIGHT: i32 = 22;
+/// 行区上沿偏移：泳道区顶沿 + 42 = 段落带 18px + 标尺带 24px
+/// （`automation::TRACK_LANE_TOP_PX = 42.0`；`arrangement.slint` 的
+/// `content-height: root.sheet-height + 42px + 46px` 里的 42 同源）。
+const LANES_TOP_OFFSET: i32 = 42;
 /// 夹具行数：演示工程 6 轨 + 24 条 MIDI 轨。
 const ROWS: usize = 30;
 
@@ -115,9 +120,10 @@ impl Rig {
             .unwrap_or_else(|| panic!("{id} 必须有几何"))
     }
 
-    /// 行区上沿（标尺带底沿）—— 窗口内的**绝对** y。
+    /// 行区上沿（段落带 + 标尺带底沿）—— 窗口内的**绝对** y。
+    /// 段落带与标尺带都不进控件树（无 `accessible-id`），所以从泳道区顶沿 + 42 现算。
     fn rows_top(&self) -> i32 {
-        self.y_of("arrangement-ruler") + RULER_HEIGHT
+        self.y_of("arr-lanes-flickable") + LANES_TOP_OFFSET
     }
 
     fn y_of(&self, id: &str) -> i32 {
@@ -313,25 +319,39 @@ fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
     assert_eq!(rig.visible_rows(), snapshot, "到底之后不再移动（夹紧）");
 }
 
-/// ④：滚动只动行区 —— 标尺与章节卡片的 y 逐位不变。
+/// ④：滚动只动行区**内容** —— 画布与泳道区自身不动，包头 x 也不动。
 #[test]
-fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
+fn scrolling_does_not_move_the_canvas_or_the_lanes() {
     let mut rig = Rig::with_project(project_with_24_extra_tracks());
     rig.assert_content_overflows();
-    let ruler_before = rig.y_of("arrangement-ruler");
-    let card_before = rig.y_of("section-0-card");
+    let canvas_before = rig.bounds_of("workspace-arrangement-canvas");
+    let lanes_before = rig.bounds_of("arr-lanes-flickable");
+    let header_x_before = rig.bounds_of("track-0-header").x;
 
     rig.scroll_rows_down(400);
 
     assert_eq!(
-        rig.y_of("arrangement-ruler"),
-        ruler_before,
-        "标尺不随行区滚动"
+        rig.bounds_of("workspace-arrangement-canvas"),
+        canvas_before,
+        "画布自身不随行区滚动"
     );
     assert_eq!(
-        rig.y_of("section-0-card"),
-        card_before,
-        "章节卡片不随行区滚动"
+        rig.bounds_of("arr-lanes-flickable"),
+        lanes_before,
+        "泳道区自身不随行区滚动"
+    );
+    assert_eq!(
+        rig.bounds_of("track-0-header").x,
+        header_x_before,
+        "包头只纵向移动，x 不变"
+    );
+    // 段落带与标尺带是画布内的非寻址绘制（无 accessible-id），不在树里 ——
+    // 它们不随行区内容滚动的事实由画布几何不动 + 行区内容 y 移动（判据②）共同覆盖。
+    let tree = rig.port.tree();
+    assert!(
+        tree.find_by_id("arrangement-ruler").is_none()
+            && tree.find_by_id("section-0-card").is_none(),
+        "旧标尺 / 段落卡节点不进控件树（已随死文件删掉）"
     );
 }
 

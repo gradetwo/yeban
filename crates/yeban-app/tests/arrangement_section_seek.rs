@@ -1,4 +1,4 @@
-//! `U-05`：**章节卡片 ⇒ 走带定位到该段起点** —— 真实指针 + 无障碍默认动作。
+//! `U-05`：**章节定位 ⇒ 走带到该段起点** —— 真实指针 + 回调直调。
 //!
 //! ## 被补上的缺口（`~/zimmer-ui-mode-report.md` §3.1）
 //!
@@ -12,14 +12,20 @@
 //!   → apply_transport（走带光标 / 时间码的唯一写者）
 //! ```
 //!
-//! ⛔ 不碰工程、不碰撤销栈：定位是会话运行态（`MODEL-ISO-001` 第二层）。
+//! ⭐ **章节卡片已死**：新编曲视图（`ui/arrangement.slint`）的曲式段落带
+//! （T-FIX-152，18px）只有段名文本、没有 `accessible-id`、没有点击源，
+//! `section-{i}-card` 永不进运行时树。两条入口改成活树里有的形态：
+//! ① 真实指针点**标尺带**上该段所在的列（段落带与标尺带同列，`ruler-seek` 吸附到
+//! 该段起点所在的小节线 —— 演示工程的段落都是整小节起止）；② 直接调
+//! `section-seek` 回调（那正是旧卡片调的那条）。⛔ 不碰工程、不碰撤销栈：
+//! 定位是会话运行态（`MODEL-ISO-001` 第二层）。
 //!
 //! ## 判据
 //!
 //! | # | 证的事 |
 //! | :--- | :--- |
-//! | ① | 真实指针点卡片中心 ⇒ 引擎位置 == 该段 `start_tick`，动作日志**恰加一条** `SeekTicks` |
-//! | ② | 无障碍默认动作（不点像素）⇒ 同一条落点（与 `TouchArea` 的 down 同一个回调） |
+//! | ① | 真实指针点标尺带上该段的列 ⇒ 引擎位置 == 该段 `start_tick`，动作日志**恰加一条** `SeekTicks` |
+//! | ② | 调 `section-seek` 回调（不点像素）⇒ 同一条落点（与旧卡片的默认动作同一个回调） |
 //!
 //! ## 平台约束
 //!
@@ -68,6 +74,11 @@ impl Rig {
 
         let live_view = Rc::new(RefCell::new(view));
         host::wire_section_seek(port.ui(), Rc::clone(&engine), Rc::clone(&live_view));
+        // ⭐ 标尺带的落点也要接上（判据 ① 走 `ruler-seek`，与
+        // `tests/arrangement_ruler_seek.rs` 同一套装配）。
+        host::wire_transport(port.ui(), Rc::clone(&engine), None, None);
+        host::wire_ruler_seek(port.ui(), Rc::clone(&engine), Rc::clone(&live_view));
+        host::apply_transport(port.ui(), engine.borrow().transport());
 
         let mut rig = Self {
             _production: production,
@@ -112,31 +123,59 @@ impl Rig {
             .map(|(index, section)| (index, section.start_tick))
             .expect("演示工程必须有起点 > 0 的段落")
     }
+
+    /// 该段在时间轴上的列（投影的 `SectionView.x`，时间轴像素空间）。
+    fn section_x(&self, index: usize) -> f32 {
+        self.view.borrow().sections[index].x
+    }
 }
 
-/// ①：真实指针点章节卡片中心 ⇒ 引擎到该段起点，且动作日志恰加一条 `SeekTicks`。
+/// ①：真实指针点标尺带上该段的列 ⇒ 引擎到该段起点，且动作日志恰加一条 `SeekTicks`。
 #[test]
 fn clicking_a_section_card_seeks_to_its_start() {
     let mut rig = Rig::new();
     let (index, target) = rig.non_zero_section();
-    let card = format!("section-{index}-card");
-    let bounds = rig
+    let section_x = rig.section_x(index);
+    // 标尺带没有语义 ID（不进树）⇒ 以编曲画布为锚：`dispatch_pointer_down` 只拿锚的
+    // 包围盒换算窗口坐标，命中测试走 Slint 视觉树 ⇒ 落点是标尺带的 `TouchArea`。
+    // 画布内坐标：x = 时间轴原点（轨道头列 240px + 5px 分隔条，`arrangement.slint`
+    // 的 `timeline-origin-x`）+ 该段的投影列；y = 泳道区顶（`arr-lanes-flickable`
+    // 的顶沿，实测在画布内 26px：和弦行 22px + 间隙）+ 段落带 18px + 标尺带 24px 的中点。
+    let canvas = rig
         .port
         .tree()
-        .find_by_id(&card)
-        .unwrap_or_else(|| panic!("控件树里必须有 {card}"))
+        .find_by_id("workspace-arrangement-canvas")
+        .expect("控件树里必须有编曲画布")
         .bounds
-        .expect("章节卡片必须有几何才谈得上点击");
+        .expect("画布必须有几何才谈得上点击");
+    let header = rig
+        .port
+        .tree()
+        .find_by_id("track-0-header")
+        .expect("控件树里必须有轨道头")
+        .bounds
+        .expect("轨道头必须有几何");
+    let lanes = rig
+        .port
+        .tree()
+        .find_by_id("arr-lanes-flickable")
+        .expect("控件树里必须有泳道区")
+        .bounds
+        .expect("泳道区必须有几何");
+    // 时间轴原点（画布内）：轨道头右沿 + 5px 分隔条。⛔ 不硬编码 245：头列宽可拖。
+    let origin_x = f64::from(header.x + header.width as i32 + 5 - canvas.x);
+    // 标尺带中点（画布内）：泳道区顶沿 + 段落带 18px（T-FIX-152）+ 标尺带 24px 的一半。
+    let ruler_mid_y = f64::from(lanes.y - canvas.y) + 18.0 + 12.0;
     let journal_before = rig.journal_len();
 
     rig.port
         .dispatch_pointer_down(
-            &card,
-            f64::from(bounds.width) / 2.0,
-            f64::from(bounds.height) / 2.0,
+            "workspace-arrangement-canvas",
+            origin_x + f64::from(section_x),
+            ruler_mid_y,
             PointerButton::Left,
         )
-        .unwrap_or_else(|error| panic!("章节卡片必须可按下: {error:?}"));
+        .unwrap_or_else(|error| panic!("标尺带必须可按下: {error:?}"));
     rig.port
         .dispatch_pointer_up(PointerButton::Left)
         .expect("释放必须送达");
@@ -144,7 +183,7 @@ fn clicking_a_section_card_seeks_to_its_start() {
     assert_eq!(
         rig.position(),
         target,
-        "点章节卡片 ⇒ 走带必须到该段起点（第 {index} 段 = tick {target}）"
+        "点标尺带上第 {index} 段的列 ⇒ 走带必须到该段起点（tick {target}）"
     );
     assert_eq!(
         rig.journal_len(),
@@ -158,18 +197,37 @@ fn clicking_a_section_card_seeks_to_its_start() {
     );
 }
 
-/// ②：无障碍默认动作（不点像素）⇒ 与指针 down 同一个落点。
+/// ②：调 `section-seek` 回调（不点像素）⇒ 与指针 down 同一个落点。
 #[test]
 fn the_section_card_default_action_seeks_too() {
     let rig = Rig::new();
     let (index, target) = rig.non_zero_section();
-    let card = format!("section-{index}-card");
-    let handle =
-        find_by_accessible_id(rig.ui(), &card).unwrap_or_else(|| panic!("{card} 必须可寻址"));
-    handle.invoke_accessible_default_action();
+    // ⭐ 旧卡片的默认动作就是 `root.section-seek(index)`；卡片死了，回调还在：
+    // `app.slint` 声明 `callback section-seek(int);`，`wire_section_seek` 接它。
+    let app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    assert!(
+        app.contains("callback section-seek(int);"),
+        "`app.slint` 必须声明 `callback section-seek(int);`（卡片死了，回调是落点）"
+    );
+    let journal_before = rig.journal_len();
+    rig.ui()
+        .invoke_section_seek(i32::try_from(index).expect("段落下标"));
     assert_eq!(
         rig.position(),
         target,
-        "屏读器 / 自动化不需要点像素坐标就能跳段"
+        "调 `section-seek` 回调 ⇒ 走带必须到该段起点（第 {index} 段 = tick {target}）"
+    );
+    assert_eq!(
+        rig.journal_len(),
+        journal_before + 1,
+        "一次回调 = 一条走带命令"
+    );
+    assert_eq!(
+        rig.last_command(),
+        Some(TransportCommand::SeekTicks(target)),
+        "必须发既有的 `SeekTicks`，⛔ 不新造第二条定位通路"
     );
 }

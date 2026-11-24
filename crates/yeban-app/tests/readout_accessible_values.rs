@@ -64,11 +64,15 @@ fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
 
     // 期望源 = **同一条 MainWindow 属性的运行时 getter**，⛔ 不复制 `.slint` 默认值
     // （`status_bar_accessible_values.rs` 第一版把默认值硬编码成期望 ⇒ 投影后假红）。
+    // ⭐ 活树里列头文案包了 `@tr`（`session_view.slint:179`），测试进程在
+    // `LANG=en_US.UTF-8` 下跑（与 `tests/session_back_to_arrangement.rs` 同款口径）⇒
+    // 运行时读到的就是 en-US 译文（`translations/en-US/LC_MESSAGES/yeban-app.po`：
+    // `场景` → `Scene`、`场景 · {}` → `Scene · {}`），⛔ 不是源码里的中文。
     let scene_name = ui.get_current_scene_name().to_string();
     let header = if scene_name.is_empty() {
-        "场景".to_owned()
+        "Scene".to_owned()
     } else {
-        format!("场景 · {scene_name}")
+        format!("Scene · {scene_name}")
     };
 
     for (id, expected) in [
@@ -93,14 +97,16 @@ fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
 /// ② 声明面（⛔ 不开窗口）：三格各有一条绑定、与可见文本同源、静态名字不许退化。
 #[test]
 fn every_target_readout_binds_the_same_property_as_its_visible_text() {
-    let transport = include_str!("../ui/transport.slint");
+    // ⭐ 走带条的活文件是 `ui/transport_bar.slint`（`ui/transport.slint` 已死）；
+    // 时间码属性也改了名（`root.timecode` → `root.timecode-text`）。
+    let transport = include_str!("../ui/transport_bar.slint");
     let session = include_str!("../ui/workspace/session_view.slint");
 
     for (source, name, binding) in [
         (
             transport,
-            "ui/transport.slint",
-            "accessible-value: root.timecode;",
+            "ui/transport_bar.slint",
+            "accessible-value: root.timecode-text;",
         ),
         (
             session,
@@ -110,7 +116,7 @@ fn every_target_readout_binds_the_same_property_as_its_visible_text() {
         (
             session,
             "ui/workspace/session_view.slint",
-            "accessible-value: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
+            "accessible-value: root.current-scene-name == \"\" ? @tr(\"场景\") : @tr(\"场景 · {}\", root.current-scene-name);",
         ),
     ] {
         assert!(
@@ -121,7 +127,11 @@ fn every_target_readout_binds_the_same_property_as_its_visible_text() {
 
     // 同源：值绑的表达式与可见 `text` 逐字相同 ⇒ ⛔ 不是第二份真相源。
     for (source, name, binding) in [
-        (transport, "ui/transport.slint", "text: root.timecode;"),
+        (
+            transport,
+            "ui/transport_bar.slint",
+            "text: root.timecode-text;",
+        ),
         (
             session,
             "ui/workspace/session_view.slint",
@@ -130,7 +140,7 @@ fn every_target_readout_binds_the_same_property_as_its_visible_text() {
         (
             session,
             "ui/workspace/session_view.slint",
-            "text: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
+            "text: root.current-scene-name == \"\" ? @tr(\"场景\") : @tr(\"场景 · {}\", root.current-scene-name);",
         ),
     ] {
         assert!(
@@ -140,19 +150,22 @@ fn every_target_readout_binds_the_same_property_as_its_visible_text() {
     }
 
     // 静态名字不许被改成「绑动态内容」的旧做法（那样补 value 会重复朗读）。
+    // ⭐ 标签也包了 `@tr`，钉 `@tr(...)` 形态。
     for (source, label) in [
-        (transport, "accessible-label: \"主时间码\";"),
-        (session, "accessible-label: \"场景一键激发列\";"),
-        (session, "accessible-label: \"场景启动状态\";"),
+        (transport, "accessible-label: @tr(\"主时间码\");"),
+        (session, "accessible-label: @tr(\"场景一键激发列\");"),
+        (session, "accessible-label: @tr(\"场景启动状态\");"),
     ] {
         assert!(source.contains(label), "静态名字 `{label}` 不许退化");
     }
 
     // 只加属性、不新增可寻址节点 ⇒ 控件树清单与 5 张 golden 基准一位不动。
+    // ⭐ 计数从活树现测（基线 835375d4）：`transport_bar.slint` 10 个 id / 2 条 value
+    // （旧 `transport.slint` 的 15/4 已死）；`session_view.slint` 仍是 9/2。
     assert_eq!(
         transport.matches("accessible-id:").count(),
-        15,
-        "transport.slint 的可寻址节点数必须是 15（本票 0 新增）"
+        10,
+        "transport_bar.slint 的可寻址节点数必须是 10（本票 0 新增）"
     );
     assert_eq!(
         session.matches("accessible-id:").count(),
@@ -161,8 +174,8 @@ fn every_target_readout_binds_the_same_property_as_its_visible_text() {
     );
     assert_eq!(
         transport.matches("accessible-value:").count(),
-        4,
-        "transport.slint 的无障碍值必须是 4 条：既有 3 条 ＋ 本票 1 条"
+        2,
+        "transport_bar.slint 的无障碍值必须是 2 条"
     );
     assert_eq!(
         session.matches("accessible-value:").count(),

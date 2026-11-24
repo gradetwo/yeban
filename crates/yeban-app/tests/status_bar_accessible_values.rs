@@ -85,31 +85,36 @@ fn status_bar_texts_are_readable_through_the_accessibility_value_channel() {
     // `chord` **没有**宿主写者、也没有 MainWindow 属性 ⇒ 永远停在 `.slint` 的无读数
     // 默认值 `(none)`（`status_bar_honesty.rs` 判据 ① 钉死、判据 ③ 守着"无写者"）。
     // 这一格没有 getter 可对齐，只能按固定形态逐字断言。
+    // ⭐ 绑定包了 `@tr`（`status_bar.slint:212`），测试进程在 `LANG=en_US.UTF-8` 下跑 ⇒
+    // 运行时读到的是 en-US 译文 `Chord (none)`（`translations/en-US/.../yeban-app.po`：
+    // `和弦 {}` → `Chord {}`），⛔ 不是源码里的中文。
     let chord = tree
         .find_by_id("status-bar-chord")
         .expect("控件树里没有 `status-bar-chord`");
     assert_eq!(
         chord.value.as_deref(),
-        Some("和弦 (none)"),
+        Some("Chord (none)"),
         "`chord` 的 `accessible-value` 必须就是那一串无读数可见文本"
     );
 
     // 快捷键提示：`value` 必须非空且与那一串键位承诺同源（⛔ 不硬编码整句，
     // 免得把 `d_ui_27` 的文案判据复制成第二份）。
+    // ⭐ 提示文案也是 en-US 译文（`Space Play/Pause · Tab …`），⛔ 不再含 `空格`。
     let tip = tree
         .find_by_id("status-bar-shortcut-tip")
         .expect("控件树里没有 `status-bar-shortcut-tip`");
     let tip_value = tip.value.as_deref().unwrap_or_default();
     assert!(
-        tip_value.contains("空格") && tip_value.contains("Tab") && !tip_value.trim().is_empty(),
+        tip_value.contains("Space") && tip_value.contains("Tab") && !tip_value.trim().is_empty(),
         "提示的 `value` 必须就是那串可见的键位承诺，实际 {tip_value:?}"
     );
 
     // ② 和弦格的标签必须是**如实描述**（原名"实时和弦识别"是假承诺：app 侧
     // 没有 `yeban-theory` 边、这一格没有宿主写者、永远停在 `(none)`）。
+    // ⭐ 标签也包了 `@tr`，运行时是 en-US 译文。
     assert_eq!(
         chord.label.trim(),
-        "和弦识别（当前版本无读数）",
+        "Chord Recognition (No Reading in This Version)",
         "`chord` 的无障碍名必须如实说明当前版本没有和弦识别读数"
     );
 }
@@ -122,7 +127,7 @@ fn every_declared_status_bar_readout_has_an_accessible_value_binding() {
 
     for binding in [
         "accessible-value: root.selection;",
-        "accessible-value: \"和弦 \" + root.chord;",
+        "accessible-value: @tr(\"和弦 {}\", root.chord);",
         "accessible-value: root.tip;",
         "accessible-value: root.device;",
     ] {
