@@ -117,7 +117,15 @@ pub fn scan(extra_paths: &str) -> ScanReport {
             paths.push(PathBuf::from(trimmed));
         }
     }
-    let descriptors = Host::scan(&paths);
+    scan_paths(&paths)
+}
+
+/// 扫描**给定路径集合**，不叠加 [`Host::default_search_paths`]。
+///
+/// 生产入口 [`scan`] 负责合并默认搜索路径与 GUI 的额外目录；单元测试用本函数
+/// 只扫临时目录，避免开发机默认路径下的真插件把行数断言污染成偶发失败。
+fn scan_paths(paths: &[PathBuf]) -> ScanReport {
+    let descriptors = Host::scan(paths);
     let mut rows = Vec::new();
     for descriptor in descriptors {
         if descriptor.classes.is_empty() {
@@ -664,7 +672,7 @@ mod tests {
         let dir = temp_dir("scan");
         let broken = dir.join("Broken.vst3");
         std::fs::write(&broken, b"not a real vst3").expect("假插件");
-        let report = scan(dir.to_string_lossy().as_ref());
+        let report = scan_paths(std::slice::from_ref(&dir));
         assert_eq!(report.rows.len(), 1, "一个坏模块必须有一行");
         assert!(!report.rows[0].usable);
         assert_eq!(report.failed, 1);
