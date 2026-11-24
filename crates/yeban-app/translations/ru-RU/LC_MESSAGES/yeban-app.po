@@ -1897,6 +1897,9 @@ msgstr "Шаблонов пока нет. Сначала сохраните те
 # --- app.slint (ui-patch-v3) ---
 msgid "提示：{}"
 msgstr "Уведомление: {}"
+
+msgid "关闭提示"
+msgstr "Закрыть уведомление"
 # --- sound_library_dialog.slint / app.slint (line/sound-library-manager) ---
 
 msgid "音源管理..."

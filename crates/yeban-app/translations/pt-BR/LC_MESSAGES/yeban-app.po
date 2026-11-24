@@ -1897,6 +1897,9 @@ msgstr "Ainda não há modelos. Salve primeiro o projeto atual como modelo."
 # --- app.slint (ui-patch-v3) ---
 msgid "提示：{}"
 msgstr "Aviso: {}"
+
+msgid "关闭提示"
+msgstr "Fechar aviso"
 # --- sound_library_dialog.slint / app.slint (line/sound-library-manager) ---
 
 msgid "音源管理..."

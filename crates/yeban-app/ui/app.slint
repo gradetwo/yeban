@@ -2345,6 +2345,16 @@ export component MainWindow inherits Window {
                     background: Tokens.bg-lane2;
                     border-width: 1px;
                     border-color: Tokens.line;
+                    // T-FIX-235：收起键是真实可点控件，补与 LOOP 键相同的无障碍三件套；
+                    // action 与 TouchArea.clicked 同落点（清文案 + 关横幅），屏读器 /
+                    // 键盘用户才能收起提示。T-FIX-173 同型。
+                    accessible-role: button;
+                    accessible-id: "toast-dismiss-button";
+                    accessible-label: @tr("关闭提示");
+                    accessible-action-default => {
+                        root.toast-message = "";
+                        root.show-floating-toast = false;
+                    }
                     Text {
                         width: parent.width;
                         height: parent.height;

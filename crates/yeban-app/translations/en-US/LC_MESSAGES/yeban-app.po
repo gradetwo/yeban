@@ -1897,6 +1897,9 @@ msgstr "There are no templates yet. Save the current project as a template first
 # --- app.slint (ui-patch-v3) ---
 msgid "提示：{}"
 msgstr "Notice: {}"
+
+msgid "关闭提示"
+msgstr "Close Notice"
 # --- sound_library_dialog.slint / app.slint (line/sound-library-manager) ---
 
 msgid "音源管理..."

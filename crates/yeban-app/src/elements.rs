@@ -517,6 +517,17 @@ impl ElementRegistry {
             "提示横幅",
             false,
         );
+        // ⭐ T-FIX-235：toast 收起键（`app.slint` 的 toast 横幅右上角 "×"）。
+        // T-FIX-173 同型：有真实点击却没有无障碍节点，屏读器 / 键盘收不起提示。
+        // label 是静态 @tr("关闭提示")，与注册表逐字相同（toast-banner 的动态
+        // label 同款处置不适用 —— 这里没有动态值）。
+        registry.add(
+            "toast-dismiss-button",
+            ElementKind::Button,
+            "app.slint",
+            "关闭提示",
+            false,
+        );
 
         // ------------------------------------------------------------ AI 协作栏
         registry.add(
@@ -6586,6 +6597,61 @@ mod tests {
         assert_eq!(
             actions, clicks,
             "LOOP 的 accessible-action-default 必须与 clicked 同落点"
+        );
+    }
+
+    /// T-FIX-235：toast 收起键是真实可点的控件，必须像 LOOP 一样在无障碍树
+    /// 上有一个 button 节点，并且 `accessible-action-default` 与 `clicked`
+    /// 落在**同一个**落点（清 toast-message + 关 show-floating-toast）。
+    ///
+    /// 这条是上一条通用判据的定点补强：通用判据只检查**已有 role 块**里
+    /// 的点击，收起键在修复前连 role 都没有，所以不会红；定点判据把
+    /// “toast-dismiss-button 必须存在”本身钉住。
+    #[test]
+    fn the_toast_dismiss_button_has_a_role_id_and_real_action() {
+        let (rel, text) = slint_sources()
+            .into_iter()
+            .find(|(rel, _)| rel == "app.slint")
+            .expect("ui/app.slint 必须在 slint 清单里");
+        assert_eq!(rel, "app.slint");
+        let code = code_only(&text);
+        let lines: Vec<&str> = code.lines().collect();
+        let blocks = role_blocks(&lines);
+        let block = blocks
+            .iter()
+            .filter(|block| {
+                lines[block.start..=block.end]
+                    .iter()
+                    .any(|line| line.contains("toast-dismiss-button"))
+            })
+            // 最内层：外层 toast-banner 块也包含这个 id 字样（嵌套），
+            // 与通用判据同款取法 —— id 属于离它最近的 role 块。
+            .max_by_key(|block| block.start)
+            .expect("toast 收起键必须声明 accessible-role + accessible-id");
+        assert_eq!(block.role, "button", "{} 的 toast 收起键 role", rel);
+        let block_text = lines[block.start..=block.end].join("\n");
+        assert!(
+            block_text.contains("accessible-label:"),
+            "toast 收起键必须有非空 accessible-label"
+        );
+        let clicks: Vec<String> = arrow_bodies(&code, "clicked", 0)
+            .into_iter()
+            .filter(|(line, _)| block.start < *line && *line <= block.end)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            clicks,
+            vec!["root.toast-message = \"\"; root.show-floating-toast = false;".to_owned()],
+            "toast 收起键的点击落点必须是清文案 + 关横幅"
+        );
+        let actions: Vec<String> =
+            arrow_bodies(&block_text, "accessible-action-default", block.start)
+                .into_iter()
+                .map(|(_, body)| body)
+                .collect();
+        assert_eq!(
+            actions, clicks,
+            "toast 收起键的 accessible-action-default 必须与 clicked 同落点"
         );
     }
 

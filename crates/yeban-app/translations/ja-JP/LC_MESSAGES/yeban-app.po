@@ -1897,6 +1897,9 @@ msgstr "まだテンプレートがありません。まず現在のプロジェ
 # --- app.slint (ui-patch-v3) ---
 msgid "提示：{}"
 msgstr "通知：{}"
+
+msgid "关闭提示"
+msgstr "通知を閉じる"
 # --- sound_library_dialog.slint / app.slint (line/sound-library-manager) ---
 
 msgid "音源管理..."
