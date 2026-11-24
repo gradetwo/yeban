@@ -15002,6 +15002,9 @@ pub fn action_has_implementation(action: Action) -> bool {
     // ⚠ **为什么本函数不能也穷尽列名**（实测）：`src/elements.rs:2472` 有一条判据要求
     // `Action::PlayPause` / `Action::ResumeFromCursor` 在 `host.rs` 的**代码区恰好各出现一次**
     //（它证明"两键共用同一个臂"）⇒ ⭐ 在这里把它们**再列一遍**会让那条判据红（实测踩过）。
+    // ⚠ 勘误（T-FIX-259）：下面「未实现」的**理由**只在"按键臂还没接 `audition::start`"
+    // 这一层成立 —— `crate::audition`（490 行）与引擎 `attach_audition_branch` 都是现成的，
+    // 不是"机制一处都不存在"。本条返回值暂不变（默认构建没有提案来源）。
     if let Action::AuditionMain | Action::AuditionProposal = action {
         return false;
     }
@@ -16083,9 +16086,24 @@ fn apply_action(
         Action::VerticalZoomOut => zoom_vertical_step(ui, undo.map(|u| u.as_ref()), false),
         // ## 已知未实现族（规范要求存在、实现一处都没有）
         Action::AuditionMain | Action::AuditionProposal => {
-            // `[ARCH-RT-005]` 的**听觉** A/B 试听：渲染侧有两份可渲染版本，但"按 `[`/`]`
-            // 真的听到瞬切"这条**用户可见承诺**还没接 ⇒ 空前置条件下不消费。
-            // ⚠ 与 `crate::audition` 的**控制面**区分：那一半（准入/拒绝/回基线）已落地。
+            // `[ARCH-RT-005]` 的**听觉** A/B 试听（T-FIX-259）。
+            //
+            // ⚠ **过期的旧理由已更正**：这里曾写「机制一处都不存在 / 原语外部调用点为 0」，
+            // 那是 2026-10-13 的实测。今天：引擎侧 `crates/yeban-engine/src/rt.rs:4812`
+            // `attach_audition_branch` / `has_audition_branch` 与等功率淡化表都在渲染循环里
+            // 被真实使用；宿主侧 `crate::audition`（490 行）的 `start()` 已调
+            // `runtime.attach_audition_branch`，`AuditionStart::Started / Refused` 两态齐全。
+            // 缺的**只剩**两件：① 提案分支来源（默认构建没有提案注册表，见 `mcp_mount`）；
+            // ② 按键臂到 `audition::start` 的接线。
+            //
+            // ⇒ 按下去**出声拒绝**（⛔ 不再静默 `false`：用户在快捷键表里看得见 `[`/`]`，
+            // 静默等于"程序没反应"）。
+            ui.set_toast_message(
+                "A/B 盲听（ARCH-RT-005）尚未接线：试听要并发的提案分支，当前装配没有提案来源"
+                    .into(),
+            );
+            ui.set_toast_is_error(true);
+            ui.set_show_floating_toast(true);
             false
         }
         Action::AcceptAiSuggestion => {
