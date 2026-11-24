@@ -260,6 +260,13 @@ impl AudioClipSpan {
     }
 }
 
+/// 单条轨道音频 span 的容量上限（条）。
+///
+/// 与 [`crate::synth::MAX_NOTES_PER_TRACK`] 同量级：一个 1 tick 循环配数小时
+/// 片段会在投影期展开成百万级 span；超过上限的 span **不物化**，只计入
+/// [`AudioClipSchedule::dropped_spans`]（T-FIX-247）。
+pub const MAX_AUDIO_SPANS_PER_TRACK: usize = 8192;
+
 /// 一条轨道的音频摆放表（`BTreeMap` 的值；⛔ 不含路由/电平语义）。
 ///
 /// `spans` 已按 `(start, end, gain 位型)` 全序排好（[ARCH-DET-002]：浮点加法不满足
@@ -273,6 +280,9 @@ pub struct AudioClipSchedule {
     /// 循环展开后一个摆放 ⇒ N 个 span；报告里的"摆放数"仍读这个字段，
     /// ⛔ 不能拿 `spans.len()` 冒充（`#241` 在 MCP 的 `audioClips` 上踩过同一坑）。
     placements: usize,
+    /// 因 [`MAX_AUDIO_SPANS_PER_TRACK`] 容量上限而没有物化的 span 数
+    /// （T-FIX-247；构造期计数）。
+    dropped_spans: usize,
 }
 
 impl AudioClipSchedule {
@@ -280,6 +290,12 @@ impl AudioClipSchedule {
     #[must_use]
     pub fn spans(&self) -> &[AudioClipSpan] {
         &self.spans
+    }
+
+    /// 因单轨容量上限而没有物化的 span 数（T-FIX-247）。
+    #[must_use]
+    pub const fn dropped_spans(&self) -> usize {
+        self.dropped_spans
     }
 
     /// **span 条数**（循环展开后可能多于摆放数）。
@@ -338,6 +354,7 @@ impl AudioClipSchedule {
 /// | 排序 | `(start, end, source_offset, gain 位型)` 全序 ⇒ 累加顺序确定 [ARCH-DET-002] |
 /// | 声道 | 单声道直读；立体声 `(L+R)/2`（见 [`mix_into`]） |
 /// | 读数 | [`AudioClipSchedule::len`] = span 数；[`AudioClipSchedule::placements`] = **摆放数**（⛔ 两个口径不混） |
+/// | 容量 | 单轨最多物化 [`MAX_AUDIO_SPANS_PER_TRACK`] 个 span；超出部分只计入 [`AudioClipSchedule::dropped_spans`]，不 push（T-FIX-247） |
 ///
 /// ⚠ **只收录非空的轨**：一条音频摆放都没有的工程得到**空表** ⇒ 实时侧整段跳过
 /// ⇒ 输出与接线前**逐位相同**。
@@ -368,6 +385,7 @@ pub fn project_audio_clips_with_tempo(
         );
         let mut spans: Vec<AudioClipSpan> = Vec::new();
         let mut placements = 0usize;
+        let mut dropped_spans = 0usize;
         for placement in track.clips.values() {
             if placement.muted {
                 continue;
@@ -405,8 +423,14 @@ pub fn project_audio_clips_with_tempo(
                 )
                 .unwrap_or(0)
             };
-            let push =
+            let mut push =
                 |spans: &mut Vec<AudioClipSpan>, start: u64, end: u64, source_offset: u64| {
+                    // ⭐ T-FIX-247：先判容量，⛔ 不让一个 1 tick 循环把 Vec 撑到
+                    // 百万级；超出部分只计数、不分配（也不 clone `asset`）。
+                    if spans.len() >= MAX_AUDIO_SPANS_PER_TRACK {
+                        dropped_spans = dropped_spans.saturating_add(1);
+                        return;
+                    }
                     spans.push(AudioClipSpan {
                         start: shift(start),
                         end: shift(end),
@@ -481,7 +505,14 @@ pub fn project_audio_clips_with_tempo(
                 .then(a.source_offset.cmp(&b.source_offset))
                 .then(a.gain.to_bits().cmp(&b.gain.to_bits()))
         });
-        schedules.insert(*id, AudioClipSchedule { spans, placements });
+        schedules.insert(
+            *id,
+            AudioClipSchedule {
+                spans,
+                placements,
+                dropped_spans,
+            },
+        );
     }
 
     schedules

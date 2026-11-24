@@ -21,7 +21,7 @@ mod support;
 
 use std::sync::Arc;
 
-use yeban_engine::audio_clip::{AudioPcm, project_audio_clips};
+use yeban_engine::audio_clip::{AudioPcm, MAX_AUDIO_SPANS_PER_TRACK, project_audio_clips};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{LoopConfig, YebanProjectV1};
 
@@ -360,4 +360,45 @@ fn disabled_covering_and_beyond_are_bit_identical_to_no_loop() {
             "{label} 的每个 span 的 source_offset 都必须是 0"
         );
     }
+}
+
+/// ⭐ T-FIX-247：音频循环展开也必须先按单轨容量截断。
+///
+/// `D=10^7 / loop 0..1` 的 1 tick 周期会计划 10^7 个 span；修前
+/// `project_audio_clips` 会把它们全部 `push` 进 `Vec` 再返回 ⇒ 快照投影
+/// （`from_project` 会调用本函数）直接吃满内存。修后 `spans.len()` 固定
+/// 在 [`MAX_AUDIO_SPANS_PER_TRACK`]，其余只计入 `dropped_spans`。
+#[test]
+fn a_ten_million_tick_one_tick_audio_loop_is_capped_before_materialization() {
+    let mut fixture = audio_clip_project_at(0, 10_000_000, 0.0);
+    set_loop(&mut fixture, looping(0, 1));
+
+    let snapshot = EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("音频循环投影必须在固定上限内完成");
+    let schedule = snapshot
+        .audio_clip_schedule(&fixture.track)
+        .expect("音频轨必须在表里");
+    println!(
+        "[T-FIX-247/audio] spans={} cap={MAX_AUDIO_SPANS_PER_TRACK} drops={} placements={}",
+        schedule.len(),
+        schedule.dropped_spans(),
+        schedule.placements()
+    );
+    assert_eq!(
+        schedule.len(),
+        MAX_AUDIO_SPANS_PER_TRACK,
+        "物化 span 固定在上限"
+    );
+    assert_eq!(
+        schedule.dropped_spans(),
+        10_000_000 - MAX_AUDIO_SPANS_PER_TRACK,
+        "未物化的 span 必须全部计入容量读数"
+    );
+    assert_eq!(schedule.placements(), 1, "摆放数不随展开增长");
+    assert_eq!(snapshot.audio_spans(), MAX_AUDIO_SPANS_PER_TRACK);
+    assert_eq!(
+        snapshot.audio_span_drops(),
+        10_000_000 - MAX_AUDIO_SPANS_PER_TRACK,
+        "快照聚合读数与单轨读数一致"
+    );
 }

@@ -1625,6 +1625,15 @@ impl EngineSnapshot {
         self.audio_clips.values().map(AudioClipSchedule::len).sum()
     }
 
+    /// ⭐ 全快照因单轨音频 span 上限而**未物化**的 span 数（T-FIX-247）。
+    #[must_use]
+    pub fn audio_span_drops(&self) -> usize {
+        self.audio_clips
+            .values()
+            .map(AudioClipSchedule::dropped_spans)
+            .sum()
+    }
+
     /// ⭐ 全快照的音频**摆放数**（`#249`；⛔ 不随循环展开增长）。
     ///
     /// 与 [`Self::audio_spans`] 是两个口径：一个循环摆放 ⇒ `placements = 1`、
@@ -2017,12 +2026,19 @@ fn project_schedules(
                 };
 
                 // ⭐ `#246` / [ADR-0010 D5]：循环展开**只**由 `yeban-model` 决定
-                // （`ClipPlacement::note_copies`）。没有循环计划时它返回原样一遍
+                // （`ClipPlacement::note_copies_limited`）。没有循环计划时它返回原样一遍
                 // ⇒ 本段与展开之前**逐位相同**；副本同样逐遍走下面的 ratchet 与
                 // 容量检查（副本计入 `note_schedule_drops`）。
-                for (copy_start, copy_duration) in
-                    placement.note_copies(note.start_tick, note.duration_ticks)
-                {
+                //
+                // ⭐ T-FIX-247：先按**本轨剩余容量**截断物化，⛔ 不再让
+                // `Vec::with_capacity(repeat.iterations)` 直接信任工程字段。
+                // 被省略的副本只做整数计数，不生成、不遍历 ⇒ `D=10^7 / loop 0..1`
+                // 也只在投影期分配 ≤ `MAX_NOTES_PER_TRACK` 份。
+                let remaining = MAX_NOTES_PER_TRACK.saturating_sub(notes.len());
+                let batch =
+                    placement.note_copies_limited(note.start_tick, note.duration_ticks, remaining);
+                dropped = dropped.saturating_add(batch.omitted.saturating_mul(ratchet));
+                for (copy_start, copy_duration) in batch.copies {
                     let step = (copy_duration / ratchet).max(1);
                     let offset = i128::from(copy_start) + micro;
 

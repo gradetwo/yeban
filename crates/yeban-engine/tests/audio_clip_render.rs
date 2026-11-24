@@ -506,7 +506,7 @@ fn pcm_injection_rejects_unsupported_shapes() {
 /// | :--- | ---: | :--- |
 /// | [`AudioPcm`] | 32 | `Arc<[f32]>` 16（胖指针）＋ `frames` 8 ＋ `sample_rate` 4 ＋ `channels` 2 ＋ 2 填充 |
 /// | [`AudioClipSpan`] | 64 | `start` 8 ＋ `end` 8 ＋ `gain` 4 ＋ `AssetHash`(`String`) 24 ＋ `Option<Arc<AudioPcm>>` 8 ＋ `source_offset` 8（`#249`）＋ 4 填充 |
-/// | [`AudioClipSchedule`] | 32 | 一个 `Vec<AudioClipSpan>` 的头部（24）＋ `placements` 计数 8（`#249`） |
+/// | [`AudioClipSchedule`] | 40 | 一个 `Vec<AudioClipSpan>` 的头部（24）＋ `placements` 计数 8（`#249`）＋ `dropped_spans` 计数 8（T-FIX-247） |
 /// | `EngineSnapshot` | 4528 | 现读（`Tests/sfz_instrument.rs` 的 S9 打印）；本单 ＋32 B（新增一个 `BTreeMap` 字段 24 B ＋ 8 B 布局填充） |
 /// | `EngineRuntime` | 180144 | **＋0 B**（⛔ 没有游标表；余量 196608 − 180144 = 16464 B 不动） |
 ///
@@ -535,8 +535,8 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSpan = start 8 + end 8 + gain 4 + AssetHash 24 + Option<Arc> 8 +          source_offset 8 + 4 填充"
     );
     assert_eq!(
-        schedule, 32,
-        "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
+        schedule, 40,
+        "AudioClipSchedule = Vec 头部 24 + placements 计数 8 + dropped_spans 计数 8"
     );
     assert_eq!(
         runtime, 47_904,

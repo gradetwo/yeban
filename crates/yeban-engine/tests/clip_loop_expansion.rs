@@ -292,3 +292,36 @@ fn s7_large_n_exceeds_the_per_track_cap_and_is_counted() {
         "副本真的计入丢弃计数（⛔ 不是恒 0）"
     );
 }
+
+/// ⭐ T-FIX-247：`D=10^7 / loop 0..1` 的投影必须在**固定上限**内完成。
+///
+/// 修前 `note_copies` 会先 `Vec::with_capacity(10^7)` 再逐份 push，随后才按
+/// `MAX_NOTES_PER_TRACK` 丢弃 ⇒ 快照投影直接吃满内存。修后只物化 8192 份，
+/// 其余用整数计数 ⇒ 投影本身不随 `D` 线性增长。
+#[test]
+fn s8_a_ten_million_tick_one_tick_loop_is_capped_before_materialization() {
+    let (project, track) = fixture(looping(0, 1), &[(0, 1, 60, 100)]);
+    let mut project = project;
+    let placement = project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具轨")
+        .clips
+        .values_mut()
+        .next()
+        .expect("夹具摆放");
+    placement.duration_ticks = 10_000_000;
+
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影必须完成且不 OOM");
+    let scheduled = snapshot.schedule(&track).expect("MIDI 轨必有排程").len();
+    println!(
+        "[engine-loop/T-FIX-247] D=10^7 scheduled={scheduled} drops={}",
+        snapshot.note_schedule_drops()
+    );
+    assert_eq!(scheduled, yeban_engine::synth::MAX_NOTES_PER_TRACK);
+    assert_eq!(
+        snapshot.note_schedule_drops(),
+        10_000_000 - yeban_engine::synth::MAX_NOTES_PER_TRACK as u64,
+        "省略的 9,991,808 份必须全部计入丢弃计数"
+    );
+}

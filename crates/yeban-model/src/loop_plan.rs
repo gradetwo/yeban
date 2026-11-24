@@ -96,31 +96,88 @@ impl ClipPlacement {
     ///
     /// 时值裁到区间末端是**有意的**：不裁的话前一遍的尾音会叠进下一遍，
     /// 分段峰值就不再相等 —— 那正是"只把长度撑长"与"真的重复"的分界。
+    ///
+    /// ⚠ **不受信任的工程时长**（导入/手改文件、`duration_ticks` 无上限）不要直接调本方法：
+    /// 它按完整遍数物化，`D=10^7 / loop 0..1` 会分配 10^7 份。需要容量上限的投影/排程
+    /// 一律用 [`Self::note_copies_limited`]（T-FIX-247）。
     #[must_use]
     pub fn note_copies(&self, note_start: u64, note_duration: u64) -> Vec<(u64, u64)> {
+        self.note_copies_limited(note_start, note_duration, usize::MAX)
+            .copies
+    }
+
+    /// 与 [`Self::note_copies`] 同一张 tick 表，但**最多物化 `max_copies` 份**。
+    ///
+    /// 返回 `(可物化副本, 被省略的副本数)`。省略数按**未物化的有效副本**计，
+    /// 不按 tick 跨度计 ⇒ 调用方可以直接把它累加进容量丢弃计数。
+    ///
+    /// 这条存在的理由：`Vec::with_capacity(repeat.iterations)` 直接信任工程字段，
+    /// 一个 `D = 10^7 / loop 0..1` 的摆放会先在投影期分配 10^7 份副本再按
+    /// `MAX_NOTES_PER_TRACK` 丢弃（OOM/卡死）。本方法把"分配"和"计数"分开：
+    /// 分配只到 `max_copies`，省略只做整数减法，⛔ 不遍历被省略的那一段。
+    #[must_use]
+    pub fn note_copies_limited(
+        &self,
+        note_start: u64,
+        note_duration: u64,
+        max_copies: usize,
+    ) -> NoteCopyBatch {
+        let single = |omitted: u64| NoteCopyBatch {
+            copies: if max_copies == 0 {
+                Vec::new()
+            } else {
+                vec![(note_start, note_duration)]
+            },
+            omitted,
+        };
         let Some(repeat) = self.loop_repeat() else {
-            return vec![(note_start, note_duration)];
+            return single(u64::from(max_copies == 0));
         };
         if note_start < repeat.start_tick {
-            return vec![(note_start, note_duration)];
+            return single(u64::from(max_copies == 0));
         }
         if note_start >= repeat.end_tick {
-            return Vec::new();
+            return NoteCopyBatch {
+                copies: Vec::new(),
+                omitted: 0,
+            };
         }
         let clipped = note_duration.min(repeat.end_tick - note_start);
-        let mut copies = Vec::with_capacity(usize::try_from(repeat.iterations).unwrap_or(0));
-        for iteration in 0..repeat.iterations {
+        if clipped == 0 || note_start >= self.duration_ticks {
+            return NoteCopyBatch {
+                copies: Vec::new(),
+                omitted: 0,
+            };
+        }
+        // 有效副本数：`start < D` 才算。`note_start` 在 `[loop_start, loop_end)`，
+        // 但最后一遍可能超过 `D`，所以不能直接拿 `repeat.iterations`。
+        let total = (self.duration_ticks - note_start).div_ceil(repeat.period_ticks);
+        let materialized = usize::try_from(total).unwrap_or(usize::MAX).min(max_copies);
+        let omitted = total.saturating_sub(u64::try_from(materialized).unwrap_or(u64::MAX));
+        let mut copies = Vec::with_capacity(materialized);
+        for iteration in 0..materialized {
+            #[allow(clippy::cast_possible_truncation)]
+            let iteration = iteration as u64;
             let start = note_start.saturating_add(iteration.saturating_mul(repeat.period_ticks));
-            if start >= self.duration_ticks {
-                break;
-            }
             let duration = clipped.min(self.duration_ticks - start);
             if duration > 0 {
                 copies.push((start, duration));
             }
         }
-        copies
+        NoteCopyBatch { copies, omitted }
     }
+}
+
+/// [`ClipPlacement::note_copies_limited`] 的返回值。
+///
+/// `copies` 是**已物化**的 tick 副本（最多 `max_copies` 份）；`omitted` 是因
+/// 调用方容量上限而没有生成的**有效副本数**（每份本应各占一个音符/脉冲起点）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteCopyBatch {
+    /// 已物化的 `(起点 tick, 时值 tick)` 副本。
+    pub copies: Vec<(u64, u64)>,
+    /// 被省略的有效副本数（⛔ 不包含 `start >= duration_ticks` 的无效遍）。
+    pub omitted: u64,
 }
 
 #[cfg(test)]
@@ -228,6 +285,37 @@ mod tests {
         // 模型层拒绝 `end <= start`；这里防御性返回 None（不下溢、不 panic）。
         assert_eq!(with_bounds(true, 960, 960).loop_repeat(), None);
         assert_eq!(with_bounds(true, 1_920, 960).loop_repeat(), None);
+    }
+
+    /// ⭐ T-FIX-247：`note_copies_limited` 只物化上限内的副本，
+    /// 省略数按有效副本计；小 N 时与 `note_copies` 前缀**逐项相同**。
+    #[test]
+    fn note_copies_limited_caps_materialization_without_losing_the_count() {
+        // 小 N 对照：4 遍、上限 3 ⇒ 前 3 遍原样，省略 1。
+        let placement = placed(looping(0, 480));
+        let batch = placement.note_copies_limited(0, 240, 3);
+        assert_eq!(batch.copies, vec![(0, 240), (480, 240), (960, 240)]);
+        assert_eq!(batch.omitted, 1);
+        // 上限 0 ⇒ 一份都不物化，但省略数仍知道总量（⛔ 不是 0）。
+        let none = placement.note_copies_limited(0, 240, 0);
+        assert!(none.copies.is_empty());
+        assert_eq!(none.omitted, 4);
+        // 超大跨度：D=10^7 / loop 0..1、上限 8192 ⇒ 物化固定 8192，
+        // 省略 10^7 − 8192；另一个 D=10^5 也得到同样的**物化上限**。
+        for duration in [100_000u64, 10_000_000] {
+            let huge = ClipPlacement {
+                duration_ticks: duration,
+                loop_config: looping(0, 1),
+                ..ClipPlacement::default()
+            };
+            let batch = huge.note_copies_limited(0, 1, 8192);
+            assert_eq!(batch.copies.len(), 8192, "物化份数固定在上限");
+            assert_eq!(
+                batch.omitted,
+                duration - 8192,
+                "省略数 = 有效总份数 − 物化份数"
+            );
+        }
     }
 
     /// `note_copies`：区间内的音符复制 N 遍且尾巴裁到区间末端；
