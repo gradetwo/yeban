@@ -174,9 +174,10 @@ fn gather_collects_demos_and_templates() {
 
     let data = gather(&Settings::default(), &roots);
     assert!(
-        data.demos
+        !data
+            .demos
             .iter()
-            .all(|demo| matches!(demo.source, DemoSource::File(_))),
+            .any(|demo| !matches!(demo.source, DemoSource::File(_))),
         "演示清单不得有内置条目（内置样本已移出选择页），实际 {:?}",
         data.demos
     );
@@ -199,6 +200,11 @@ fn gather_collects_demos_and_templates() {
         cover: None,
     };
     let demo_rows = demo_rows(&[filled_entry], Language::ZhCn);
+    assert_eq!(
+        demo_rows.len(),
+        1,
+        "单条演示条目应投影出 1 行，实际 {demo_rows:?}"
+    );
     assert!(
         demo_rows
             .iter()
