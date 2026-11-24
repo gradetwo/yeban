@@ -305,7 +305,7 @@ fn assert_nonempty_file(path: &Path) {
     );
 }
 
-/// 导出 WAV 的 44 字节 RIFF 头读数（判据 ②-0 / ②-2 的断言面）。
+/// 导出 WAV 的 RIFF 头读数（判据 ②-0 / ②-2 的断言面）。
 struct WavHeader {
     frames: u64,
     sample_rate: u32,
@@ -352,20 +352,57 @@ fn wait_for_wav_export(path: &Path) -> WavHeader {
     })
 }
 
-/// 44 字节 RIFF 头：`RIFF`/`WAVE` 魔数 ＋ 声道数（@22）＋ 采样率（@24）＋
-/// 位深（@34）＋ 数据段字节数（@40）⇒ 帧数 ＝ 数据段字节 ÷ 每帧字节。
+/// RIFF 头：按块走（⛔ 不按固定偏移读 `data` 大小）。
+///
+/// 头不是 44 字节：`hound` 在位深 ＞ 16 时写 `WAVEFORMATEXTENSIBLE`
+/// （fmt 块 40 字节 ⇒ 头 68 字节、`data` 大小在偏移 64 处；16-bit 才是
+/// `PCMWAVEFORMAT`、44 字节头、`data` 大小在偏移 40 处）。固定偏移读会把
+/// 24-bit 的声道掩码（`0x3`，立体声）当成数据段大小（2026-11-24 实测：读到 3，
+/// 文件却是 2,304,068 字节）。fmt 前 16 字节两种形态同布局：声道 @+2、采样率 @+4、
+/// 位深 @+14；`data` 块之后不许再有块（`hound` 收尾即停）。
 fn parse_wav_header(bytes: &[u8], len: u64) -> WavHeader {
     assert!(
-        bytes.len() >= 44,
-        "WAV 头至少 44 字节（实得 {}）",
+        bytes.len() >= 12,
+        "WAV 头至少 12 字节（实得 {}）",
         bytes.len()
     );
     assert_eq!(&bytes[0..4], b"RIFF", "不是 RIFF 文件");
     assert_eq!(&bytes[8..12], b"WAVE", "不是 WAVE 文件");
-    let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let bits = u16::from_le_bytes([bytes[34], bytes[35]]);
-    let data_bytes = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as u64;
+    let mut offset = 12usize;
+    let mut fmt: Option<(u16, u32, u16)> = None;
+    let mut data: Option<(usize, u64)> = None;
+    while offset + 8 <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes([
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ]) as usize;
+        let payload = offset + 8;
+        assert!(
+            payload + size <= bytes.len(),
+            "块 {id:?} 越界（payload {payload} + 大小 {size} > 文件 {len}）"
+        );
+        if id == b"fmt " {
+            assert!(size >= 16, "fmt 块至少 16 字节（实得 {size}）");
+            let channels = u16::from_le_bytes([bytes[payload + 2], bytes[payload + 3]]);
+            let sample_rate = u32::from_le_bytes([
+                bytes[payload + 4],
+                bytes[payload + 5],
+                bytes[payload + 6],
+                bytes[payload + 7],
+            ]);
+            let bits = u16::from_le_bytes([bytes[payload + 14], bytes[payload + 15]]);
+            fmt = Some((channels, sample_rate, bits));
+        } else if id == b"data" {
+            data = Some((payload, size as u64));
+            break;
+        }
+        offset = payload + size + (size % 2);
+    }
+    let (channels, sample_rate, bits) = fmt.expect("WAV 里必须有 fmt 块");
+    let (data_start, data_bytes) = data.expect("WAV 里必须有 data 块");
     assert!(channels > 0, "声道数必须是正数");
     assert!(
         bits > 0 && bits % 8 == 0,
@@ -373,13 +410,13 @@ fn parse_wav_header(bytes: &[u8], len: u64) -> WavHeader {
     );
     let frame_bytes = u64::from(channels) * u64::from(bits) / 8;
     assert_eq!(
-        data_bytes,
-        len - 44,
-        "数据段字节数 {data_bytes} 必须等于文件大小 {len} 减 44 字节头"
+        data_start as u64 + data_bytes,
+        len,
+        "数据段必须收在文件尾（data 起点 {data_start} + 大小 {data_bytes} ≠ 文件 {len}）"
     );
     // FNV-1a（64 位）：只取数据段的哈希当"内容指纹"，头部时间戳类字段不参与。
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in &bytes[44..] {
+    for byte in &bytes[data_start..] {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }

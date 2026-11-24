@@ -2979,13 +2979,25 @@ fn check_engine_error_banner(width: u32, height: u32) {
         "[#189 错误横幅 {width}x{height}] 横幅 2 节点（横幅＋内键，包容关系，不进两两表）0 相交"
     ));
 
+    // ---- 判据：横幅的错误原文 ----
+    // ⚠ 横幅节点本身**没有** `accessible-value`（`ui/app.slint:2484-2486` 只有
+    // role + id + label；错误原文在里面一个没有 id 的 `Text` 里，
+    // `text: @tr("提醒：{}", root.engine-error)` ⇒ en-US 下 "Note: 发布快照失败：环满"，
+    // 但那个 `Text` 不进控件树、寻址不到）。旧断言
+    // （`node.value == Some("发布快照失败：环满")`）从没跑到过 —— 之前它前面那张
+    // 两两表先红了。诚实形态：① 属性读数就是设进去的原文（`Text` 绑的就是它）；
+    // ② 横幅标签是 en-US 决议 "Engine Error Banner"（`@tr("引擎错误横幅")`）。
     let node = tree
         .find_by_id("engine-error-banner")
         .expect("横幅必须在场");
     assert_eq!(
-        node.value.as_deref(),
-        Some("发布快照失败：环满"),
-        "[#189 错误横幅 {width}x{height}] `accessible-value` 必须是错误原文"
+        live.ui().get_engine_error().as_str(),
+        "发布快照失败：环满",
+        "[#189 错误横幅 {width}x{height}] 横幅的错误原文必须是设进去的那条（`Text` 绑的就是 `engine-error` 属性）"
+    );
+    assert_eq!(
+        node.label, "Engine Error Banner",
+        "[#189 错误横幅 {width}x{height}] 横幅标签必须是 en-US 决议"
     );
 
     // ---- 判据 ⑤：横幅在顶栏之下（顶沿 92 = 走带带底沿），与 24px 状态栏在纵向
