@@ -87,8 +87,8 @@ msgstr "리니어 편곡 모드 (타임라인 플로우)"
 msgid "混音母带模式 (混音控制台流)"
 msgstr "믹스 및 마스터링 모드 (콘솔 플로우)"
 
-msgid "快捷命令面板 [Ctrl+K]"
-msgstr "명령 팔레트 [Ctrl+K]"
+msgid "快捷命令面板"
+msgstr "명령 팔레트"
 
 msgid "架构透视与热区诊断 [H]"
 msgstr "아키텍처 인사이트 및 핫스팟 진단 [H]"
@@ -296,8 +296,8 @@ msgstr "하단 콘솔 최대화 / 복원"
 msgid "显隐左侧通道检查器 (I)"
 msgstr "왼쪽 채널 인스펙터 표시 / 숨기기 (I)"
 
-msgid "显隐 Clip 激发矩阵 (Tab)"
-msgstr "클립 실행 매트릭스 표시 / 숨기기 (Tab)"
+msgid "显隐 Clip 激发矩阵"
+msgstr "클립 실행 매트릭스 표시 / 숨기기"
 
 msgid "显示 / 隐藏和弦轨"
 msgstr "코드 트랙 표시 / 숨기기"

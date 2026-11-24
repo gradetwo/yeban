@@ -87,8 +87,8 @@ msgstr "Linear Arrangement Mode (Timeline Flow)"
 msgid "混音母带模式 (混音控制台流)"
 msgstr "Mix & Master Mode (Console Flow)"
 
-msgid "快捷命令面板 [Ctrl+K]"
-msgstr "Command Palette [Ctrl+K]"
+msgid "快捷命令面板"
+msgstr "Command Palette"
 
 msgid "架构透视与热区诊断 [H]"
 msgstr "Architecture Insights & Hotspot Diagnostics [H]"
@@ -296,8 +296,8 @@ msgstr "Maximize / Restore Lower Console"
 msgid "显隐左侧通道检查器 (I)"
 msgstr "Toggle Left Channel Inspector (I)"
 
-msgid "显隐 Clip 激发矩阵 (Tab)"
-msgstr "Toggle Clip Launch Matrix (Tab)"
+msgid "显隐 Clip 激发矩阵"
+msgstr "Toggle Clip Launch Matrix"
 
 msgid "显示 / 隐藏和弦轨"
 msgstr "Show / Hide Chord Track"

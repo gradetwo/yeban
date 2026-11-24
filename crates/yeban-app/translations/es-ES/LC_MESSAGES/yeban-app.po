@@ -87,8 +87,8 @@ msgstr "Modo de arreglo lineal (flujo de línea de tiempo)"
 msgid "混音母带模式 (混音控制台流)"
 msgstr "Modo de mezcla y masterización (flujo de consola)"
 
-msgid "快捷命令面板 [Ctrl+K]"
-msgstr "Paleta de comandos [Ctrl+K]"
+msgid "快捷命令面板"
+msgstr "Paleta de comandos"
 
 msgid "架构透视与热区诊断 [H]"
 msgstr "Vista de arquitectura y diagnóstico de zonas activas [H]"
@@ -296,8 +296,8 @@ msgstr "Maximizar / restaurar la consola inferior"
 msgid "显隐左侧通道检查器 (I)"
 msgstr "Mostrar / ocultar el inspector de canal izquierdo (I)"
 
-msgid "显隐 Clip 激发矩阵 (Tab)"
-msgstr "Mostrar / ocultar la matriz de lanzamiento de clips (Tab)"
+msgid "显隐 Clip 激发矩阵"
+msgstr "Mostrar / ocultar la matriz de lanzamiento de clips"
 
 msgid "显示 / 隐藏和弦轨"
 msgstr "Mostrar / ocultar la pista de acordes"

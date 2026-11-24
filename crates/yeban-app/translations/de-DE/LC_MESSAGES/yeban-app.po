@@ -87,8 +87,8 @@ msgstr "Linearer Arrangement-Modus (Timeline-Flow)"
 msgid "混音母带模式 (混音控制台流)"
 msgstr "Mix- & Mastering-Modus (Mischpult-Flow)"
 
-msgid "快捷命令面板 [Ctrl+K]"
-msgstr "Befehlspalette [Ctrl+K]"
+msgid "快捷命令面板"
+msgstr "Befehlspalette"
 
 msgid "架构透视与热区诊断 [H]"
 msgstr "Architektur-Insights & Hotspot-Diagnose [H]"
@@ -296,8 +296,8 @@ msgstr "Untere Konsole maximieren / wiederherstellen"
 msgid "显隐左侧通道检查器 (I)"
 msgstr "Linken Kanal-Inspektor ein-/ausblenden (I)"
 
-msgid "显隐 Clip 激发矩阵 (Tab)"
-msgstr "Clip-Launch-Matrix ein-/ausblenden (Tab)"
+msgid "显隐 Clip 激发矩阵"
+msgstr "Clip-Launch-Matrix ein-/ausblenden"
 
 msgid "显示 / 隐藏和弦轨"
 msgstr "Akkordspur ein-/ausblenden"
