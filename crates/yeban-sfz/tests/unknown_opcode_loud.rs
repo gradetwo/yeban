@@ -106,6 +106,29 @@ fn unknown_names_in_curve_and_effect_sections_warn() {
 }
 
 #[test]
+fn loop_count_and_loop_crossfade_variants_warn_as_unknown() {
+    // ⭐ T-FIX-282：`loop_count` / `loop_crossfade` 的 smoothcc/stepcc/oncc/curvecc
+    // 变体在规范里不存在（两页的 Modulation 表都没有这些行），本仓不实现它们 ⇒
+    // 它们必须按未知 opcode 响亮（⛔ 不静默吃掉）；而两个**本体**名字是认得的，
+    // 不得误报（本体由解析接线，见 `instrument.rs` 的循环段）。
+    let notes = unknown_notes(
+        "<region> sample=a.wav loop_count=3 loop_crossfade=0.01 \
+         loop_count_smoothcc1=1 loop_count_stepcc1=1 loop_count_oncc1=1 loop_count_curvecc1=1 \
+         loop_crossfade_smoothcc1=1 loop_crossfade_stepcc1=1 loop_crossfade_oncc1=1 loop_crossfade_curvecc1=1",
+    );
+    assert_eq!(notes.len(), 8, "八个未做变体各记一条，实得 {notes:?}");
+    for note in &notes {
+        let Warning::UnknownOpcode { name, .. } = note else {
+            panic!("只应有未知 opcode 告警，实得 {note:?}");
+        };
+        assert!(
+            name.starts_with("loop_count_") || name.starts_with("loop_crossfade_"),
+            "告警名必须是变体，实得 {name}"
+        );
+    }
+}
+
+#[test]
 fn a_discarded_region_does_not_report_its_own_names() {
     // 无 `sample` 的段整体丢弃（`RegionWithoutSample` 已响亮）：其表内
     // 名字不逐名报未知 —— 包括认得的 `key` 与不认识的名字都不报；

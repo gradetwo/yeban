@@ -618,11 +618,11 @@ fn r6_sizes_stay_under_the_200_kib_red_line() {
     assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 10_648,
-        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＋ LFO 片 lfo_states 数组（16 槽 × 12 B 的 `LfoVoiceState`）192 B ＝ 4800 B → ⭐ 立体声样本通路片修订：filters_r 数组（16 槽 × 96 B）＋1536 B ＝ 8200 B → ⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304 ⇒ 10504 B → ⭐ `ADR-0077` 效果总线修订：`buses: Option<Box<BusBank>>`（8 B）＋ `bus_builds: u64`（8 B）＝ ＋16 B ⇒ 10520 B → ⭐ T-FIX-278 增益型滤波片修订：`VoiceFilter` 96 → 100 B（新增 `gain_db`）⇒ filters / filters_r 两张表各 ＋64 B ＝ ＋128 ⇒ **10648 B**"
+        pool, 10_776,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＋ LFO 片 lfo_states 数组（16 槽 × 12 B 的 `LfoVoiceState`）192 B ＝ 4800 B → ⭐ 立体声样本通路片修订：filters_r 数组（16 槽 × 96 B）＋1536 B ＝ 8200 B → ⭐ **stage 29 曲线折线片修订：`FadeRamp::knots`（12 段 × 12 B）＋144 B／槽 × 16 槽 ＝ ＋2304 ⇒ 10504 B → ⭐ `ADR-0077` 效果总线修订：`buses: Option<Box<BusBank>>`（8 B）＋ `bus_builds: u64`（8 B）＝ ＋16 B ⇒ 10520 B → ⭐ T-FIX-278 增益型滤波片修订：`VoiceFilter` 96 → 100 B（新增 `gain_db`）⇒ filters / filters_r 两张表各 ＋64 B ＝ ＋128 ⇒ **10648 B → ⭐ T-FIX-282 循环次数片修订：loop_wraps / pending_loop_wraps 两张表（16 槽 × 4 B）各 ＋64 B ＝ ＋128 ⇒ **10776 B**"
     );
     assert_eq!(
-        region, 6_336,
-        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＋ 键盘跟踪 amp_keytrack/amp_keycenter 两字段的 8 B ＋ 滤波片滤波六字段的 24 B ＋ 包络族片 ampeg_delay/ampeg_start 两 f32 与 fileg_eg/pitcheg_eg 两 u16 下标的 32 B ＝ 6256 B（本片：`offset_random` `u32` ＋ `amp_random` `f32` 再 ＋8）＋ 声像族建模补全片 position/width 两 f32 再 ＋8（本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）＝ 6312 B → ⭐ `ADR-0077` 效果总线修订：`effect_sends: [f32; 4]`（＋16 B）⇒ 6328 B → ⭐ T-FIX-278 增益型滤波片修订：`fil_gain: f32`（＋4 B，8 字节对齐后 ＋8）⇒ **6336 B**"
+        region, 6_344,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＋ 键盘跟踪 amp_keytrack/amp_keycenter 两字段的 8 B ＋ 滤波片滤波六字段的 24 B ＋ 包络族片 ampeg_delay/ampeg_start 两 f32 与 fileg_eg/pitcheg_eg 两 u16 下标的 32 B ＝ 6256 B（本片：`offset_random` `u32` ＋ `amp_random` `f32` 再 ＋8）＋ 声像族建模补全片 position/width 两 f32 再 ＋8（本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）＝ 6312 B → ⭐ `ADR-0077` 效果总线修订：`effect_sends: [f32; 4]`（＋16 B）⇒ 6328 B → ⭐ T-FIX-278 增益型滤波片修订：`fil_gain: f32`（＋4 B，8 字节对齐后 ＋8）⇒ **6336 B → ⭐ T-FIX-282 循环次数片修订：loop_count u32 ＋ loop_crossfade_frames u32 ＝ ＋8 ⇒ **6344 B**"
     );
 }

@@ -64,7 +64,7 @@
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码）　⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是本行短标签里的「无字节预算」那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：⭐ 任务单 `#84` 起**字节预算的读数已经落地** —— [`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]（判据 S25～S27）⇒ 今天**有**预算读数、**有**超预算报告 ＋ ⭐ **口径是"引擎只报数、控制侧决定"**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；见下面 `sfz-needs-8` 那一行的 `#84` 登记）。⚠ **本行括注里那两条仍逐字成立**：⛔ **不强制上限**（＝ 括注的「无预算上限」）＋ ⛔ **无流式**（PCM 仍整段 clone 进摊平表、无流式解码）。　⭐ **追加修订段（任务单 `#279`）—— 被修订的是括注里「PCM 仍整段 clone 进摊平表」那半句**：`PreparedSample.pcm` 与 `InMemorySample.pcm` 已改 `Arc<Vec<f32>>`，摊平表用 `Arc::clone` **共享**调用方那份已解码 PCM ⇒ ⛔ 不再整段 clone（同一份 PCM 只有一份字节）；⛔ **无流式解码仍逐字成立**。 |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）。⭐ ⭐ **任务单 `#108` 已接线**：上面这句是**原文保留**（第 278 条，⛔ 一字未删）；`#107` 之后"回调侧没有 CC 状态"这条**理由已不成立**，三条路现在都读探针 —— 见下面「⭐ CC 轴交叉淡化（任务单 `#108`）」一节 |
-//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行尾句里 `direction` 那一支**（⛔ 原文一字未删）：`direction` **已接线**、`pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
+//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行尾句里 `direction` 那一支**（⛔ 原文一字未删）：`direction` **已接线**、`pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节）　⭐ ⭐ **追加修订段（任务单 `T-FIX-282`）—— 被修订的是本行里的循环那一支**（⛔ 原文一字未删）：`loop_count` / `loop_crossfade` **已接线** —— [`PreparedRegion`] 承载 `loop_count` / `loop_crossfade_frames`（解析在 `yeban-sfz` 里；`loop_count` 缺省 0 ＝ 无限，`loop_count=3` ⇒ 循环部分播 4 次 ＋ 尾巴；`loop_crossfade` 缺省 0 ＝ 无淡化）；[`SfzVoicePool`] 池级旁表 `loop_wraps` / `pending_loop_wraps` 记已播回绕次数（⛔ 声部仍 40 B ＋0）；回绕当且仅当 `loop_count == 0 || wraps < loop_count`；淡化只做正向、等功率 sqrt 曲线（见 [`mix_span_into`] 的文档）；`loop_crossfade == 0` ⇒ 与旧输出逐位相同。见判据 `C1`～`C9`（`tests/sfz_loop_count_crossfade.rs`） |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
 //! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan`　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行里 `direction` 那一支**（⛔ 原文一字未删，含上面那句沿革）：`direction` **已接线**、本行只剩 `pan`（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //!
@@ -2964,6 +2964,8 @@ impl SfzInstrument {
                 // 离线/摊平这条路**不窃取**：淡出状态恒为 [`FadeRamp::NONE`]
                 // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
                 let mut fade = FadeRamp::NONE;
+                // ⭐ 循环回绕计数（T-FIX-282）：本区段的局部量（一次性调用不跨段延续）。
+                let mut loop_wraps = 0u32;
                 // ⭐ 包络（任务 `#92`）：与摊平/实时两条路**同一份归约**（[`ampeg_run_from`]）。
                 // ⚠ **这条路的沿革（任务 `#310` 改写本段；原文一字未删的版本见 git 历史）**：
                 //    `#92` 的原理由是"这条路**没有 note-off** ⇒ 只走 起音→保持→衰减→保持
@@ -3117,6 +3119,11 @@ impl SfzInstrument {
                     gain,
                     source_end,
                     loop_window,
+                    // ⭐ 循环次数与接缝淡化（T-FIX-282）：次数原样、淡化秒数按
+                    // **该区域样本**的采样率换算；计数是本区段的局部量。
+                    region.loop_count,
+                    seconds_to_frames(region.loop_crossfade, source.sample_hz),
+                    &mut loop_wraps,
                     &mut fade,
                     &mut env,
                     &mut filter,
@@ -4624,6 +4631,23 @@ pub struct PreparedRegion {
     /// 已把那条差别**变成现实** —— 见模块头的"⭐ 幅度包络"一节与
     /// [`Self::ampeg_release`] 的说明。
     loop_mode: LoopMode,
+    /// ⭐ **循环重复次数**（T-FIX-282：`loop_count`，SFZ v2；`0` ＝ 无限循环，缺省 `0`）。
+    ///
+    /// **总播放次数 ＝ 1 ＋ `loop_count`**（规范逐字，见 `yeban-sfz` 的
+    /// [`yeban_sfz::instrument::Region::loop_count`]）。达到次数后停止回绕、
+    /// 继续播窗口后的尾巴；`one_shot` 没有循环窗口、次数无意义。回绕计数是
+    /// **逐声部**状态（⛔ 不进本表）：见 [`SfzVoicePool::loop_wraps`]，
+    /// 渲染期由 [`mix_span_into`] 的 `loop_wraps` 参数推进。
+    loop_count: u32,
+    /// ⭐ **循环接缝交叉淡化长度**（T-FIX-282：`loop_crossfade` 换算成的**帧**；
+    /// `0` ＝ 硬切，缺省 `0`）。
+    ///
+    /// 换算在摊平期做（`seconds_to_frames(秒, 该区域样本的采样率)`，与
+    /// [`Self::ampeg_attack`] 的"秒原样承载"**不同**：包络的换算点在逐块读数，
+    /// 而接缝淡化是逐样本路径的逐帧读数 —— 摊平期一次换算，⛔ 不进逐样本路径）。
+    /// 超过窗口长度时在渲染期钳到窗口长。反向（`direction=reverse`）⛔ 不做
+    /// 交叉淡化（登记的局限，见 [`mix_span_into`]）。
+    loop_crossfade_frames: u32,
     /// ⭐ **起音时长**（`ampeg_attack`，**秒**；规范 Range 0..=100）。
     ///
     /// ⚠ 单位与口径：本摊平表**原样承载 opcode 的秒 / 百分比**（⛔ 不预先换算成引擎帧）——
@@ -5466,6 +5490,18 @@ impl PreparedRegion {
     #[must_use]
     pub const fn loop_mode(&self) -> LoopMode {
         self.loop_mode
+    }
+
+    /// ⭐ 该区域的**循环重复次数**（T-FIX-282：`loop_count` 原样；`0` ＝ 无限）。
+    #[must_use]
+    pub const fn loop_count(&self) -> u32 {
+        self.loop_count
+    }
+
+    /// ⭐ 该区域的**循环接缝交叉淡化长度**（T-FIX-282：`loop_crossfade` 换算成的帧数；`0` ＝ 硬切）。
+    #[must_use]
+    pub const fn loop_crossfade_frames(&self) -> u32 {
+        self.loop_crossfade_frames
     }
 
     /// ⭐ **有效循环窗口**（本单的接线点）：半开 `[start, end)`；`None` ＝ 按不循环渲染。
@@ -7258,6 +7294,8 @@ impl PreparedSfz {
             let mut lfos = region.lfo_span(self, note, velocity, cc, LfoVoiceState::INERT);
             // ⭐ stage 5：先取静态基准（`&mut egs` 借出之后就读不到了）。
             let filter_base_hz = egs.base_cutoff_hz;
+            // ⭐ 循环回绕计数（T-FIX-282）：本区段的局部量（一次性调用不跨段延续）。
+            let mut loop_wraps = 0u32;
             let region_written = mix_span_into(
                 pcm,
                 usize::from(sample.channels().max(1)),
@@ -7268,6 +7306,10 @@ impl PreparedSfz {
                 gain,
                 source_end,
                 loop_window,
+                // ⭐ 循环次数与接缝淡化（T-FIX-282）：摊平期已换算好的帧数原样带入。
+                region.loop_count(),
+                region.loop_crossfade_frames(),
+                &mut loop_wraps,
                 &mut fade,
                 &mut env,
                 &mut filter,
@@ -7555,6 +7597,11 @@ fn flatten_regions(
                 loop_start: region.loop_start,
                 loop_end: region.loop_end,
                 loop_mode: region.effective_loop_mode(),
+                // ⭐ 循环次数与接缝淡化（T-FIX-282）：次数原样搬运；淡化秒数在
+                // 摊平期按**该区域样本**的采样率换算成帧（`sample_hz` 是本轮
+                // `resolve` 给的 per-region 事实源，与 `rate_per_note` 同源）。
+                loop_count: region.loop_count,
+                loop_crossfade_frames: seconds_to_frames(region.loop_crossfade, sample_hz),
                 // ⭐ 幅度包络（任务单 `#92`）：五个**每区域**参数原样搬进摊平表
                 // （秒 / 百分比 —— ⛔ 不在这里换算成帧：换算在逐块读该区域时用
                 // `engine_hz` 做，见 `PreparedRegion::ampeg_run`）。
@@ -8457,6 +8504,30 @@ fn configured_voice_filter(
 ///   （`position` 远大于 `len` 时 f32 的 ULP 会把 `-= len` 吸收掉）。
 ///   `fmod` 的余数**按定义精确**、逐样本**有界**（一次求余）⇒ 两条风险都不在。
 ///
+/// ## ⭐ 循环次数与接缝交叉淡化（T-FIX-282）
+///
+/// * **`loop_count`**（`0` ＝ 无限）：回绕闸门多一档"次数未耗尽"
+///   （`loop_count == 0 || *loop_wraps < loop_count`）；回绕发生时
+///   `*loop_wraps` 计一次。**总播放次数 ＝ 1 ＋ `loop_count`**（规范逐字，
+///   见 `yeban-sfz` 的 `Region::loop_count`）；次数耗尽后位置照常越过
+///   `loop_end`、继续播窗口后的尾巴到 `source_end`。计数由调用方持有
+///   （离线一次性调用是局部量；实时声部是池侧 [`SfzVoicePool::loop_wraps`]），
+///   ⛔ 不进本函数的静态入参；
+/// * **`loop_crossfade_frames`**（`0` ＝ 硬切）：位置落在
+///   `[loop_end − xf, loop_end)` **且本次回绕会发生**（次数未耗尽 ＋
+///   [`EnvRun::may_wrap`] 允许）时，本帧与"窗口开头同偏移"的那一帧按
+///   **等功率**对混合（fade-out `sqrt(1−t)`、fade-in `sqrt(t)`，与
+///   `yeban-sfz` 的 `crossfade.rs` 同一条口径；sfizz 的正弦缺省与
+///   OpenMPT 的 `pow(x, 0.75)` 见 `Region::loop_crossfade` 的登记）。
+///   混合在插值之后、滤波之前（与干声同一条信号序）；`xf == 0` / 无窗口 /
+///   次数耗尽 / 释放期不回绕 ⇒ 整段跳过、输出**逐位不变**；
+/// * **反向 ⛔ 不做交叉淡化**（登记的局限）：反向的回绕是镜向几何，接缝两侧的
+///   "头/尾"不在同一条线性位置轴上 —— 本单只实现正向，`direction=reverse` 的
+///   区域写了 `loop_crossfade` 也按硬切渲染（⛔ 不静默改语义）；
+/// * **逐位不变的保证**：`loop_count == 0 && loop_crossfade_frames == 0` 时，
+///   回绕闸门多的是一个恒真的整数比较、混合段整段跳过 ⇒ 既有夹具一字不差
+///   （判据 `S33`/`S37`/`S48`/`S52` 与 `sfz_loop_defaults.rs` 的 L1～L4）。
+///
 /// ## ⭐ 钳位（任务单 `#97`：`loop_end == pcm_len` 的窗口**也循环**）
 ///
 /// 窗口终点**恰好等于** `pcm_len` 时（文件用 `loop_end = 总帧数` 表达"循环到结尾"）
@@ -8516,6 +8587,16 @@ pub(crate) fn mix_span_into<'a>(
     gain: f32,
     source_end: u64,
     loop_window: Option<LoopWindow>,
+    // ⭐ **循环重复次数**（T-FIX-282）：`0` ＝ 无限回绕；`> 0` ⇒ 窗口总共播
+    // `1 + loop_count` 次。计数由调用方在 `loop_wraps` 里持有（逐声部状态，
+    // ⛔ 不进本函数的静态入参）；无窗口时两值都读不到。
+    loop_count: u32,
+    // ⭐ **循环接缝交叉淡化长度**（T-FIX-282：帧数；`0` ＝ 硬切）。
+    // 超过窗口长时在循环外钳到窗口长；`0` ⇒ 逐样本路径一项运算都不加。
+    loop_crossfade_frames: u32,
+    // ⭐ **已回绕次数**（T-FIX-282：调用方持有的逐声部计数；回绕发生时
+    // `saturating_add(1)`）。离线一次性调用传局部量；实时声部传池侧数组。
+    loop_wraps: &mut u32,
     fade: &mut FadeRamp,
     env: &mut Option<EnvRun>,
     filter: &mut VoiceFilter,
@@ -8537,6 +8618,10 @@ pub(crate) fn mix_span_into<'a>(
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
     let loop_bounds = loop_window.map(|window| (window.start as f32, window.len() as f32));
+    // ⭐ 接缝淡化帧数钳到窗口长（T-FIX-282；循环外一次，逐样本只读一个 `u32`）。
+    // `loop_window == None` ⇒ 恒 `0`（无窗口可淡化）；`0` ⇒ 下面整段跳过。
+    let crossfade_frames = loop_window.map_or(0, |window| loop_crossfade_frames.min(window.len()));
+    let crossfade_f = crossfade_frames as f32;
     // ⭐ **方向判别**（任务单 `#113`）：唯一的判据就是 `rate` 的符号
     // （[`reduce_travel`] 把 `direction=reverse` 折成"起点 = 区间末尾 ＋ 步进取负"）。
     // ⚠ 这是**一次** `f32` 比较（循环外）⇒ `rate > 0` 那条既有的路一个字节不变。
@@ -8592,14 +8677,27 @@ pub(crate) fn mix_span_into<'a>(
         // ⚠ 正向那一支的**短路次序逐字未变**（⛔ 不在每个样本上多求一次 `may_wrap`）。
         if let Some((loop_start, loop_len)) = loop_bounds {
             if reverse {
-                if *position < loop_start && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
+                if *position < loop_start
+                    // ⭐ 循环次数（T-FIX-282）：与正向同一档闸门（次数耗尽 ⇒ 不回绕、
+                    // 位置照常越过下界、按 `source_end` 退休；`0` ⇒ 无限）。
+                    // 交叉淡化只做正向（见下面的接缝段与函数文档的登记）。
+                    && (loop_count == 0 || *loop_wraps < loop_count)
+                    && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
                 {
                     *position = loop_start + loop_len - (loop_start - *position) % loop_len;
+                    *loop_wraps = loop_wraps.saturating_add(1);
                 }
             } else if *position >= loop_start + loop_len
+                // ⭐ 循环次数（T-FIX-282）：次数耗尽 ⇒ 不回绕、位置照常越过
+                // `loop_end` 去播尾巴；`loop_count == 0` ⇒ 无限（恒真分支）。
+                // 闸门次序：位置 → 次数 → 包络（`may_wrap` 仍是纯谓词，见其文档）。
+                && (loop_count == 0 || *loop_wraps < loop_count)
                 && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
             {
                 *position = loop_start + (*position - loop_start) % loop_len;
+                // ⭐ 回绕发生才计数（`saturating_add`：`u32::MAX` 次后不再涨、
+                // 仍按"耗尽"停绕，⛔ 不回绕成无限）。
+                *loop_wraps = loop_wraps.saturating_add(1);
             }
         }
         let index = *position as usize;
@@ -8750,6 +8848,34 @@ pub(crate) fn mix_span_into<'a>(
         // ＝ R315 时代听到的那一份，⛔ 不下混、不发明规则）。
         let sample = pcm[index * stride + src_channel] * (1.0 - frac)
             + pcm[next * stride + src_channel] * frac;
+        // ⭐ 循环接缝交叉淡化（T-FIX-282）：位置落在 `[loop_end − xf, loop_end)`
+        // 且**本次回绕会发生**（次数未耗尽 ＋ 包络允许）时，把本帧与"窗口开头
+        // 同偏移"的那一帧按等功率对混合（`sqrt` 对，与 `yeban-sfz` 的
+        // `crossfade.rs` 同一条口径）。混合在插值之后、滤波之前做
+        // （与干声同一条信号序）；`xf == 0` / 无窗口 / 反向 / 次数耗尽 /
+        // 释放期不回绕 ⇒ 整段跳过、逐位不变。
+        // ⚠ `t == 0`（区段首帧）时 `sqrt(1) == 1`、`sqrt(0) == 0` ⇒ 本帧逐位不变；
+        // `head_next` 钳到最后一帧（`loop_end == pcm_len` 且 `xf == 窗口长` 时
+        // `head_index + 1` 会落在 PCM 之外，⛔ 不越界读）。
+        let sample = if crossfade_frames > 0
+            && !reverse
+            && let Some((loop_start, loop_len)) = loop_bounds
+            && *position >= loop_start + loop_len - crossfade_f
+            && *position < loop_start + loop_len
+            && (loop_count == 0 || *loop_wraps < loop_count)
+            && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
+        {
+            let t = (*position - (loop_start + loop_len - crossfade_f)) / crossfade_f;
+            let head_pos = *position - loop_len;
+            let head_index = head_pos as usize;
+            let head_frac = head_pos - head_index as f32;
+            let head_next = head_index.saturating_add(1).min(frames.saturating_sub(1));
+            let head = pcm[head_index * stride + src_channel] * (1.0 - head_frac)
+                + pcm[head_next * stride + src_channel] * head_frac;
+            sample * libm::sqrtf(1.0 - t) + head * libm::sqrtf(t)
+        } else {
+            sample
+        };
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
@@ -9234,6 +9360,30 @@ pub struct SfzVoicePool {
     /// ⭐ 挂起声部的音符起始帧（与 [`Self::pending`] 同步写入、提升时同步搬运；
     /// 128 B / 池）。
     pending_note_start: [u64; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **每槽声部的已回绕次数**（T-FIX-282：`loop_count` 的计数器）。
+    ///
+    /// # 为什么在池上而不是在 [`SfzVoice`] 里
+    ///
+    /// 与 [`Self::pitch_shape`] 同一条理由：`SfzVoice` 必须保持 **40 B**
+    /// （判据 `S9`），逐声部的伴随状态放池级**每槽数组**。代价：`[u32; 16]` ＝
+    /// **64 B / 池**。`loop_count == 0`（无限）的区域一次都不读它
+    /// （[`mix_span_into`] 的闸门短路在整数比较上）。
+    ///
+    /// # 生命周期（与 `pitch_shape` / `note_start` 对齐）
+    ///
+    /// * **直接落槽 / 硬窃取**：触发期清零（新声部自 0 次起）；
+    /// * **软窃取挂起**：挂起者**不**预置 —— 提升时由 [`Self::pending_loop_wraps`]
+    ///   搬运（挂起声部在淡出窗口里还没发声 ⇒ 计数恒 0，但 discipline 与
+    ///   `pending_pitch_shape` 同款，⛔ 不留"挂起侧没表"的例外）；
+    /// * **淡出段**：victim 用它自己的那份推进（与 `position` 同一条回写纪律）；
+    /// * **退休**（[`Self::silence_slot`]）：清零（池的 `PartialEq` 是确定性判据
+    ///   的一部分，残留会让两次渲染分家）；
+    /// * **立体声双跑**：进 [`SlotRenderSnapshot`]（左右两遍从同一计数起步，
+    ///   终态取左遍的 —— 与 `position` / `fade` 同一条快照纪律）。
+    loop_wraps: [u32; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **挂起声部的已回绕次数**（与 [`Self::pending`] 同步写入、提升时同步搬运；
+    /// 64 B / 池）。
+    pending_loop_wraps: [u32; SFZ_VOICES_PER_TRACK],
     /// ⭐ **每槽声部的静态滤波器**（SFZ 滤波静态族；`yeban-dsp` 的
     /// [`VoiceFilter`]，88 B × 16 ＝ 1408 B / 池）。
     ///
@@ -9314,6 +9464,10 @@ struct SlotRenderSnapshot {
     pending_pitch_shape: u16,
     note_start: u64,
     pending_note_start: u64,
+    /// ⭐ 每槽的已回绕次数（T-FIX-282；与 `position` 同一条快照纪律）。
+    loop_wraps: u32,
+    /// ⭐ 挂起侧的已回绕次数（T-FIX-282；同上）。
+    pending_loop_wraps: u32,
     porta_frame: u32,
 }
 
@@ -9396,6 +9550,8 @@ impl SfzVoicePool {
             pending_pitch_shape: self.pending_pitch_shape[index],
             note_start: self.note_start[index],
             pending_note_start: self.pending_note_start[index],
+            loop_wraps: self.loop_wraps[index],
+            pending_loop_wraps: self.pending_loop_wraps[index],
             porta_frame: self.porta_frame,
         }
     }
@@ -9413,6 +9569,8 @@ impl SfzVoicePool {
         self.pending_pitch_shape[index] = snapshot.pending_pitch_shape;
         self.note_start[index] = snapshot.note_start;
         self.pending_note_start[index] = snapshot.pending_note_start;
+        self.loop_wraps[index] = snapshot.loop_wraps;
+        self.pending_loop_wraps[index] = snapshot.pending_loop_wraps;
         self.porta_frame = snapshot.porta_frame;
     }
 }
@@ -9424,6 +9582,12 @@ impl SfzVoicePool {
 struct SlotReadings {
     /// 有效循环窗口（[`PreparedRegion::loop_window`] 的归约结果）。
     loop_window: Option<LoopWindow>,
+    /// ⭐ **循环重复次数**（T-FIX-282：[`PreparedRegion::loop_count`] 原样；
+    /// `0` ＝ 无限）。回绕计数在池侧 [`SfzVoicePool::loop_wraps`]，这里只带上限。
+    loop_count: u32,
+    /// ⭐ **循环接缝交叉淡化长度**（T-FIX-282：[`PreparedRegion::loop_crossfade_frames`]；
+    /// `0` ＝ 硬切）。渲染期超过窗口长时钳到窗口长。
+    loop_crossfade_frames: u32,
     /// ⭐ **本块的逐样本增益**（任务单 `#108`）＝ **乐器层**
     /// （[`PreparedRegion::gain_at_with_cc`]：`volume`／力度／键轴／力度轴／**CC 轴**）
     /// **×** **引擎层**（[`SfzVoice::track_gain`]，触发期抄下）。
@@ -9593,6 +9757,8 @@ impl SfzVoicePool {
             pending_pitch_shape: [NO_PITCH_SHAPE; SFZ_VOICES_PER_TRACK],
             note_start: [0; SFZ_VOICES_PER_TRACK],
             pending_note_start: [0; SFZ_VOICES_PER_TRACK],
+            loop_wraps: [0; SFZ_VOICES_PER_TRACK],
+            pending_loop_wraps: [0; SFZ_VOICES_PER_TRACK],
             filters: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
             filters_r: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
             eg_states: [(EgVoiceState::INERT, EgVoiceState::INERT); SFZ_VOICES_PER_TRACK],
@@ -10056,6 +10222,9 @@ impl SfzVoicePool {
                     self.note_start[index] = start_sample;
                     self.pending_pitch_shape[index] = NO_PITCH_SHAPE;
                     self.pending_active[index] = false;
+                    // ⭐ 回绕计数与声部**同刻**清零（新声部自 0 次起；挂起侧同刻清零）。
+                    self.loop_wraps[index] = 0;
+                    self.pending_loop_wraps[index] = 0;
                     self.fade[index] = FadeRamp::NONE;
                     // ⭐ 滤波与声部**同刻**配置（区域 ＋ 本次 note/velocity
                     // 折算，见 [`PreparedRegion::voice_filter`]；无 `cutoff`
@@ -10359,6 +10528,9 @@ impl SfzVoicePool {
             self.pitch_shape[victim] = pitch_shape;
             self.note_start[victim] = note_start;
             self.pending_pitch_shape[victim] = NO_PITCH_SHAPE;
+            // ⭐ 回绕计数随声部一起换（硬窃取：新声部自 0 次起；挂起侧同刻清零）。
+            self.loop_wraps[victim] = 0;
+            self.pending_loop_wraps[victim] = 0;
             self.order[victim] = order;
             self.pending_active[victim] = false;
             self.fade[victim] = FadeRamp::NONE;
@@ -10388,6 +10560,8 @@ impl SfzVoicePool {
         // ⭐ 软窃取：新声部先挂起 ⇒ 弯音伴随状态进挂起侧，提升时再搬进活侧。
         self.pending_pitch_shape[victim] = pitch_shape;
         self.pending_note_start[victim] = note_start;
+        // ⭐ 回绕计数同款进挂起侧（挂起声部还没发声 ⇒ 恒 0；提升时搬运）。
+        self.pending_loop_wraps[victim] = 0;
         self.pending_active[victim] = true;
         self.order[victim] = order;
         self.fade[victim] = fade;
@@ -10780,6 +10954,11 @@ impl SfzVoicePool {
                 readings.gain,
                 voice.source_end,
                 readings.loop_window,
+                // ⭐ 循环次数与接缝淡化（T-FIX-282）：victim 用它自己那份池侧计数推进
+                // （淡出段也照常计；与 `position` 同一条回写纪律）。
+                readings.loop_count,
+                readings.loop_crossfade_frames,
+                &mut self.loop_wraps[index],
                 &mut fade,
                 &mut env,
                 &mut filter,
@@ -10817,6 +10996,8 @@ impl SfzVoicePool {
             // ⭐ 弯音伴随状态随挂起声部一起提升（形状下标 ＋ 起始帧）。
             self.pitch_shape[index] = self.pending_pitch_shape[index];
             self.note_start[index] = self.pending_note_start[index];
+            // ⭐ 回绕计数随挂起声部一起提升（与弯音伴随状态同一条搬运纪律）。
+            self.loop_wraps[index] = self.pending_loop_wraps[index];
             self.pending_active[index] = false;
             self.fade[index] = FadeRamp::NONE;
             // ⭐ 滤波在**提升这一刻**配置：用被提升声部自己的
@@ -10965,6 +11146,10 @@ impl SfzVoicePool {
             readings.gain,
             voice.source_end,
             readings.loop_window,
+            // ⭐ 循环次数与接缝淡化（T-FIX-282）：本槽声部用池侧计数推进。
+            readings.loop_count,
+            readings.loop_crossfade_frames,
+            &mut self.loop_wraps[index],
             &mut fade,
             &mut env,
             &mut filter,
@@ -11140,6 +11325,10 @@ impl SfzVoicePool {
         };
         Some(SlotReadings {
             loop_window,
+            // ⭐ 循环次数与接缝淡化（T-FIX-282）：区域参数、逐块原样带出
+            // （⛔ 不进 `SfzVoice`；`SfzVoice` 仍 40 B，判据 `S9`）。
+            loop_count: region.loop_count(),
+            loop_crossfade_frames: region.loop_crossfade_frames(),
             gain,
             rate,
             limit: end_sample,
@@ -11175,6 +11364,9 @@ impl SfzVoicePool {
         self.pending_pitch_shape[index] = NO_PITCH_SHAPE;
         self.note_start[index] = 0;
         self.pending_note_start[index] = 0;
+        // ⭐ 回绕计数一并退休（理由同上）。
+        self.loop_wraps[index] = 0;
+        self.pending_loop_wraps[index] = 0;
         self.pending_active[index] = false;
         self.fade[index] = FadeRamp::NONE;
         // ⭐ 滤波状态一并退休（理由同上：池相等是确定性判据的一部分）。

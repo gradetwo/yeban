@@ -120,6 +120,9 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
    `off_mode` 出现在 89 个文件（`normal` 占 818 / 909 次）。
    特别地：规范里 `off_time` 默认 **0.006 s**，而 `ARCH-RT-004` 规定窃取淡出 **3 ms** ——
    本实现按 Normative 的 3 ms，且不读 per-region `off_time`（见第 6 节冲突项）。
+   ⭐ **修订（T-FIX-282）**：`loop_count` 已建模（`Region::loop_count`，缺省 0 ＝ 无限；`loop_count=3` ⇒ 循环部分播 4 次 ＋ 尾巴，见 `tests/sfz_loop_count_crossfade.rs` 的 C1）；
+   `loop_crossfade` 同批建模（`Region::loop_crossfade` 秒数，等功率 sqrt 淡化，缺省 0 ＝ 与旧输出逐位相同；反向不做淡化，见 C7）；
+   `count` 仍未建模（本片未把它当作 `loop_count` 的别名）；本条其余部分（`off_mode` / `off_time`）逐字成立。
 4. **`trigger` 的 release 家族只做事件门控**：`release` / `release_key` 的
    「是否存在对应的 attack region」「`rt_decay` 音量缩放」未实现。规范自己写明这一族行为
    「varies considerably between SFZ players」（ARIA / DropZone / rgc 三套语义各不相同），

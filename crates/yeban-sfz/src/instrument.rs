@@ -1027,6 +1027,34 @@ pub struct Region<'a> {
     pub loop_end: u32,
     /// 循环模式。
     pub loop_mode: LoopMode,
+    /// `loop_count`：循环窗口重复的次数（SFZ v2；缺省 `0` ＝ 无限循环）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/loop_count/>（Type = integer，Default N/A，
+    /// Range 空）："The number of times a loop will repeat" —— "**in addition to**
+    /// the time the sample is played unlooped" ⇒ **总播放次数 ＝ 1 ＋ `loop_count`**
+    ///（`loop_count=3` ⇒ 循环部分播 **4** 次；"If the sample contains data after
+    /// the end of the loop, this portion … will be played after all repetitions …
+    /// (assuming no note-off message had been received by then)" ⇒ 次数耗尽后继续
+    /// 播窗口后的尾巴、无 note-off 也能自然结束）。别名 `loopcount`（与 `loopstart` /
+    /// `loopend` 同一条 ARIA 无下划线拼写）。
+    ///
+    /// ⚠ `one_shot` 根本没有循环窗口、次数无意义；`loop_sustain` 只在按住时循环，
+    /// 次数耗尽同样停绕（释放期不循环的既有语义不变）。负值 ⇒ 明确 `Err`
+    ///（`read_u32` 的域 `0..=u32::MAX`）；规范未给上界，⛔ 不发明。
+    pub loop_count: u32,
+    /// `loop_crossfade`：循环接缝的交叉淡化长度（**秒**；SFZ v2；缺省 `0` ＝ 硬切）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/loop_crossfade/>（Type = float，Unit = seconds）：
+    /// "Loop cross fade" —— 给"循环采样里没有预烘交叉淡化"的接缝补淡化。别名
+    /// `loopcrossfade`（同上）。`0` ⇒ 渲染与接线前**逐位相同**；超过窗口长度时在
+    /// 渲染期钳到窗口长（⛔ 不在解析期发明上界）。负值／非有限 ⇒ 明确 `Err`
+    ///（[`read_seconds`]）。
+    ///
+    /// ⚠ 曲线口径（登记的偏离）：sfizz 的缺省是正弦公式 `(1-cos(πx))/2`、OpenMPT
+    /// 是 `pow(x, 0.75)`；本仓按任务书用**等功率**（`sqrt` 对）—— 与本 crate
+    /// [`crate::crossfade`] 的既有口径（fade-in `sqrt(t)`、fade-out `sqrt(1−t)`）
+    /// 同一条，见引擎 `mix_span_into` 的接缝段。
+    pub loop_crossfade: f32,
     // -----------------------------------------------------------------
     // ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）
     //
@@ -3192,6 +3220,13 @@ pub(crate) fn build_region<'a>(
         Some(value) => value.as_option(LoopMode::OPTIONS, LoopMode::ALLOWED)?,
         None => LoopMode::NoLoop,
     };
+    // ⭐ 循环次数与接缝交叉淡化（T-FIX-282）：与上面三字段同一口径（缺失 ⇒ 缺省；
+    // 出现但非法 ⇒ 明确 `Err`）。`loop_count` 的域是 `read_u32` 的 `0..=u32::MAX`；
+    // `loop_crossfade` 走 [`read_seconds`]（⛔ 不走 `read_ampeg_time`：那份有
+    // `AMPEG_TIME_MAX_SECONDS` 的 100 秒上限，是 ampeg 族的域 —— 规范没给
+    // `loop_crossfade` 上界，渲染期按窗口长钳，解析期⛔ 不发明上界）。
+    let loop_count = read_u32(&scopes, "loop_count", Some("loopcount"), 0)?;
+    let loop_crossfade = read_seconds(&scopes, "loop_crossfade", Some("loopcrossfade"), 0.0)?;
 
     // ---- ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）----
     // 五个 opcode 各自独立：**缺失** ⇒ 缺省值（"缺失 ≠ 非法"）；**出现但认不出 / 越界**
@@ -3593,6 +3628,8 @@ pub(crate) fn build_region<'a>(
             loop_start,
             loop_end,
             loop_mode,
+            loop_count,
+            loop_crossfade,
             offset_random,
             ampeg_attack,
             ampeg_hold,
@@ -4218,6 +4255,63 @@ fn read_ampeg_time(
         });
     }
     Ok(seconds)
+}
+
+/// 读一个**无上界**的秒数（T-FIX-282：`loop_crossfade` 用）。
+///
+/// 与 [`read_ampeg_time`] 同一条单位解析（`ms` / `s` / 裸值按秒；大小写不敏感）
+/// 与同一条错误口径（认不出 ⇒ [`SfzError::InvalidFloat`]；非有限 ⇒
+/// [`SfzError::NonFiniteFloat`]；负值 ⇒ [`SfzError::InvalidDuration`]），
+/// 唯独**没有** `AMPEG_TIME_MAX_SECONDS` 的 100 秒上限 —— 那是 ampeg 族的域，
+/// 规范没给 `loop_crossfade` 上界；超长的淡化在渲染期按循环窗口长钳
+/// （见引擎 `mix_span_into` 的接缝段），解析期⛔ 不发明上界。
+/// 别名拼写（`loopcrossfade`）同样登记为已消费（与 [`read_u32`] 同一条纪律）。
+fn read_seconds(
+    scopes: &Scopes<'_, '_>,
+    name: &'static str,
+    alias: Option<&'static str>,
+    fallback: f32,
+) -> Result<f32, SfzError> {
+    let value = scopes
+        .get(name)
+        .or_else(|| alias.and_then(|alias| scopes.get(alias)));
+    if let Some(alias) = alias {
+        scopes.note_consumed(alias);
+    }
+    let Some(value) = value else {
+        return Ok(fallback);
+    };
+    let raw = value.as_str().trim();
+    let (number, scale) = if let Some(number) = strip_unit(raw, "ms") {
+        (number, 1.0e-3_f32)
+    } else if let Some(number) = strip_unit(raw, "s") {
+        (number, 1.0_f32)
+    } else {
+        (raw, 1.0_f32)
+    };
+    let parsed = number
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        });
+    }
+    if parsed < 0.0 {
+        return Err(SfzError::InvalidDuration {
+            line: value.line,
+            opcode: name.to_string(),
+            value: parsed,
+        });
+    }
+    Ok(parsed * scale)
 }
 
 /// 读 `ampeg_sustain`（单位**百分比**）：认 `%` 后缀，⛔ 不认时间后缀。
@@ -5348,6 +5442,8 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
+            loop_count: 0,
+            loop_crossfade: 0.0,
             ampeg_attack: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_hold: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_decay: AMPEG_TIME_DEFAULT_SECONDS,
@@ -10643,6 +10739,59 @@ v127=1
         let region =
             first_region("<region>sample=a.wav loop_mode=loop_continuous loopstart=3 loopend=9");
         assert_eq!((region.loop_start, region.loop_end), (3, 9));
+    }
+
+    #[test]
+    fn loop_count_and_loop_crossfade_are_read_with_aliases() {
+        // ⭐ T-FIX-282：缺省 `loop_count = 0`（无限）／`loop_crossfade = 0.0`（硬切）。
+        let bare = first_region("<region>sample=a.wav loop_mode=loop_continuous");
+        assert_eq!((bare.loop_count, bare.loop_crossfade), (0, 0.0));
+        // 取值与别名（`loopcount` / `loopcrossfade`，与 `loopstart` 同款）。
+        let region = first_region(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_count=3 loop_crossfade=0.01",
+        );
+        assert_eq!((region.loop_count, region.loop_crossfade), (3, 0.01));
+        let aliased = first_region(
+            "<region>sample=a.wav loop_mode=loop_continuous loopcount=5 loopcrossfade=250ms",
+        );
+        // ⚠ `10ms` 的 f32 乘积是 `0.010000001` ≠ 字面 `0.01`；用 250ms（精确 0.25）。
+        assert_eq!((aliased.loop_count, aliased.loop_crossfade), (5, 0.25));
+        // 规范名胜出（与 `the_canonical_spelling_wins_for_every_aliased_opcode` 同口径）。
+        let both = first_region(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_count=3 loopcount=9 \
+             loop_crossfade=0.02 loopcrossfade=0.5",
+        );
+        assert_eq!((both.loop_count, both.loop_crossfade), (3, 0.02));
+    }
+
+    #[test]
+    fn loop_count_and_loop_crossfade_reject_bad_values_loudly() {
+        // 负次数 ⇒ 明确 Err（`read_u32` 的域 `0..=u32::MAX`，⛔ 不钳位、不静默）。
+        let err = parse_text(
+            "<region>sample=a.wav loop_mode=loop_continuous loop_count=-1",
+            &Default::default(),
+        )
+        .expect_err("负 `loop_count` 必须响亮");
+        assert!(err.to_string().contains("loop_count"), "实得 {err}");
+        // 负淡化 ⇒ `InvalidDuration`；非有限／认不出／百分号 ⇒ 各自的明确 Err。
+        for bad in [
+            "loop_crossfade=-0.01",
+            "loop_crossfade=inf",
+            "loop_crossfade=abc",
+            "loop_crossfade=50%",
+        ] {
+            let text = format!("<region>sample=a.wav loop_mode=loop_continuous {bad}");
+            let err =
+                parse_text(&text, &Default::default()).expect_err("非法 `loop_crossfade` 必须响亮");
+            assert!(
+                err.to_string().contains("loop_crossfade"),
+                "`{bad}` 实得 {err}"
+            );
+        }
+        // 超长淡化（> 100 s）⛔ 不在解析期拒载：规范没给上界，渲染期按窗口钳。
+        let long =
+            first_region("<region>sample=a.wav loop_mode=loop_continuous loop_crossfade=250");
+        assert_eq!(long.loop_crossfade, 250.0);
     }
 
     #[test]

@@ -1629,6 +1629,8 @@ mod tests {
                             loop_start: 0,
                             loop_end: 0,
                             loop_mode: LoopMode::NoLoop,
+                            loop_count: 0,
+                            loop_crossfade: 0.0,
                             ampeg_attack: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_hold: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_decay: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
