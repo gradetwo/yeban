@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use yeban_app::sfz_doctor::{DoctorState, doctor_state, format_doctor_readout, mark_declined, run};
+use yeban_app::sfz_doctor::{
+    DoctorState, doctor_state, format_doctor_readout, mark_declined, quarantine_corrupt_record, run,
+};
 use yeban_app::sound_library::InstalledLibrary;
 
 const DIALOG: &str = include_str!("../ui/dialogs/sound_library_dialog.slint");
@@ -38,6 +40,12 @@ fn dialog_and_host_wire_doctor_callbacks() {
         "crate::sfz_doctor::run(",
         "crate::sfz_doctor::mark_declined(",
         "set_sound_installed_doctor_needed",
+        // T-FIX-306：跳过记录落盘失败必须如实报错，坏记录要隔离备份、行内仍提示。
+        "无法保存",
+        "下次仍会提示",
+        "record_error.is_some()",
+        "quarantine_corrupt_record",
+        "DoctorState::Corrupt",
     ] {
         assert!(HOST.contains(needle), "host 缺少：{needle}");
     }
@@ -148,6 +156,10 @@ fn external_library_state_machine_and_repair_roundtrip() {
     );
     let readout = format_doctor_readout("ext-lib", &report);
     assert!(readout.contains("全部可装载"), "读数应报全好：{readout}");
+    assert!(
+        report.record_error.is_none(),
+        "记录落盘成功时 record_error 应为空：{report:?}"
+    );
 
     // 记录已落盘 ⇒ Done，不再提示。
     assert!(lib_dir.join(".sfz-doctor.json").exists());
@@ -167,7 +179,7 @@ fn declined_and_official_are_never_prompted() {
     let lib_dir = make_broken_library(&base);
     let lib = library("user:ext-lib", lib_dir.clone());
 
-    mark_declined(&lib_dir);
+    mark_declined(&lib_dir).expect("跳过记录应能落盘");
     assert_eq!(doctor_state(&lib), DoctorState::Declined);
 
     // 带包标记 ⇒ 官方库，恒 Official（哪怕没有体检记录）。
@@ -178,6 +190,112 @@ fn declined_and_official_are_never_prompted() {
     // 内置 id 同样恒 Official。
     let builtin = library("builtin:ext-lib", lib_dir.clone());
     assert_eq!(doctor_state(&builtin), DoctorState::Official);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-306：跳过记录落盘失败必须返回 Err，且状态绝不能变成 Declined。
+///
+/// 本机以 root 运行，`chmod` 只读目录仍能写 —— 失败目标必须真写不进去：
+/// ① 根本不存在的库目录（`fs::write` 报 ENOENT）；② 记录路径本身已被占成
+/// 目录（`fs::write` 报 EISDIR，root 也写不进去）。两种都是真失败。
+#[test]
+fn declined_record_write_failure_is_reported_and_still_prompts() {
+    let base = temp_dir("decline-fail");
+
+    // ① 库目录不存在：写失败，仍是 Needed（从未表态），绝不"不再提示"。
+    let missing_dir = base.join("no-such-lib");
+    let missing_lib = library("user:no-such-lib", missing_dir.clone());
+    let err = mark_declined(&missing_dir).expect_err("往不存在的目录写记录必须失败");
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(doctor_state(&missing_lib), DoctorState::Needed);
+
+    // ② 记录路径被占成目录：写失败；读记录也失败 ⇒ Corrupt（不是 Declined）。
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+    fs::create_dir_all(lib_dir.join(".sfz-doctor.json")).expect("把记录路径占成目录");
+    let err = mark_declined(&lib_dir).expect_err("记录路径是目录时写记录必须失败");
+    assert_eq!(err.kind(), std::io::ErrorKind::IsADirectory);
+    assert_eq!(doctor_state(&lib), DoctorState::Corrupt);
+    assert!(
+        !lib_dir.join(".sfz-doctor.json").is_file(),
+        "失败时不得留下一份假的 Declined 记录"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-306：体检跑完了，但记录写不进去 ⇒ 报告带 record_error、读数带警告、
+/// 状态不是 Done（下次仍会提示）。
+#[test]
+fn run_record_write_failure_is_visible_in_report() {
+    let base = temp_dir("run-fail");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+    fs::create_dir_all(lib_dir.join(".sfz-doctor.json")).expect("把记录路径占成目录");
+
+    let report = run(&lib_dir);
+    assert!(
+        report.record_error.is_some(),
+        "记录写失败时 record_error 必须带上：{report:?}"
+    );
+    let readout = format_doctor_readout("ext-lib", &report);
+    assert!(
+        readout.contains("记录未能保存"),
+        "读数必须带记录失败的警告：{readout}"
+    );
+    assert!(
+        readout.contains("下次可能再次提示"),
+        "读数必须说明下次仍会提示：{readout}"
+    );
+    // 体检本身的修复仍发生了，但状态绝不能是 Done（记录没存住）。
+    assert_eq!(doctor_state(&lib), DoctorState::Corrupt);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-306：记录文件存在但解析失败 ⇒ Corrupt；隔离备份一次后回到 Needed，
+/// 坏记录留着备查，不删除；重复隔离返回 None。
+#[test]
+fn corrupt_record_is_quarantined_and_reprompts() {
+    let base = temp_dir("corrupt");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+    fs::write(lib_dir.join(".sfz-doctor.json"), "{ 不是 json").expect("写坏记录");
+
+    assert_eq!(doctor_state(&lib), DoctorState::Corrupt);
+
+    let backup = quarantine_corrupt_record(&lib_dir).expect("坏记录应被隔离备份");
+    assert!(backup.exists(), "备份文件应存在：{backup:?}");
+    assert!(
+        backup
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .starts_with(".sfz-doctor.json.corrupt-"),
+        "备份应以 .sfz-doctor.json.corrupt- 开头：{backup:?}"
+    );
+    assert!(
+        !lib_dir.join(".sfz-doctor.json").exists(),
+        "隔离后原坏记录应已改名"
+    );
+    assert_eq!(
+        doctor_state(&lib),
+        DoctorState::Needed,
+        "隔离后回到 Needed，下次提示体检"
+    );
+    assert!(
+        quarantine_corrupt_record(&lib_dir).is_none(),
+        "没有坏记录时隔离应返回 None"
+    );
+
+    // 好记录不受隔离影响。
+    mark_declined(&lib_dir).expect("好记录应能落盘");
+    assert_eq!(doctor_state(&lib), DoctorState::Declined);
+    assert!(
+        quarantine_corrupt_record(&lib_dir).is_none(),
+        "好记录不应被隔离"
+    );
 
     let _ = fs::remove_dir_all(&base);
 }

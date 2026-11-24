@@ -47,9 +47,13 @@ pub enum DoctorState {
     Done,
     /// 用户明确拒绝过：不再提示。
     Declined,
+    /// 记录文件存在但读不出或解析失败：仍需提示，且界面应当先给一次可见警告。
+    Corrupt,
 }
 
 /// 这件库现在是什么状态。判据只看两样东西：包标记与体检记录，⛔ 不读 SFZ 内容。
+/// 记录文件存在但读不出/解析失败时返回 [`DoctorState::Corrupt`]（不是 Needed：
+/// 调用方要先给一次可见警告，并把坏记录隔离备份）。
 #[must_use]
 pub fn doctor_state(library: &InstalledLibrary) -> DoctorState {
     if !library.id.starts_with(USER_ID_PREFIX) {
@@ -59,28 +63,32 @@ pub fn doctor_state(library: &InstalledLibrary) -> DoctorState {
         return DoctorState::Official;
     }
     match read_record(&library.location) {
-        Some(record) => {
+        RecordRead::Ok(record) => {
             if record.get("outcome").and_then(|v| v.as_str()) == Some("declined") {
                 DoctorState::Declined
             } else {
                 DoctorState::Done
             }
         }
-        None => DoctorState::Needed,
+        RecordRead::Missing => DoctorState::Needed,
+        RecordRead::Corrupt => DoctorState::Corrupt,
     }
 }
 
 /// 用户点了「不用了」：落一份 declined 记录，之后 [`doctor_state`] 不再提示。
-pub fn mark_declined(dir: &Path) {
+///
+/// 落盘失败会返回 `Err` —— 调用方必须按失败写状态（不得显示"不再提示"），
+/// 否则下次启动读不到记录又会重新提示（T-FIX-306：`let _ =` 吞掉的假成功）。
+pub fn mark_declined(dir: &Path) -> std::io::Result<()> {
     let record = serde_json::json!({
         "version": 1,
         "outcome": "declined",
         "checked_at_epoch_s": epoch_s(),
     });
-    let _ = fs::write(
+    fs::write(
         dir.join(DOCTOR_RECORD_FILE),
         serde_json::to_string_pretty(&record).unwrap_or_default(),
-    );
+    )
 }
 
 /// 一次被改动的操作码（记录与读数都用它，⛔ 不只报计数）。
@@ -107,6 +115,9 @@ pub struct DoctorReport {
     pub edits: Vec<DoctorEdit>,
     /// 修完仍装不上的文件 + 引擎原样报错（截断到一行）。
     pub still_failing: Vec<(PathBuf, String)>,
+    /// 体检记录落盘失败时的错误（`None` = 记录已写好）。体检本身可能全绿，
+    /// 但记录没存住 ⇒ 下次启动仍会提示，调用方必须把这条报出来（T-FIX-306）。
+    pub record_error: Option<String>,
 }
 
 /// 对一个库目录跑完整体检 + 修复，并把结果写进记录文件。
@@ -213,6 +224,8 @@ pub fn run(root: &Path) -> DoctorReport {
     }
 
     // ---- 记录落盘 ----------------------------------------------------------
+    // T-FIX-306：落盘失败不再 `let _ =` 吞掉 —— 体检本身可能全绿，但记录没
+    // 存住 ⇒ 下次启动仍会提示。失败记进 `record_error`，由调用方报给用户。
     let record = serde_json::json!({
         "version": 1,
         "outcome": "checked",
@@ -222,18 +235,23 @@ pub fn run(root: &Path) -> DoctorReport {
         "edits": report.edits.len(),
         "still_failing": report.still_failing.len(),
     });
-    let _ = fs::write(
+    if let Err(err) = fs::write(
         root.join(DOCTOR_RECORD_FILE),
         serde_json::to_string_pretty(&record).unwrap_or_default(),
-    );
+    ) {
+        report.record_error = Some(one_line_io_error(&err));
+    }
     report
 }
 
 /// 把一次体检结果换算成一行人话（界面状态行口径，与下载读数同一条纪律：
 /// 换算只在产生数据的地方做一次）。
+///
+/// 记录落盘失败时读数尾巴带一句"检查完成，但记录未能保存，下次可能再次提示"，
+/// 调用方应当把它当错误状态显示（T-FIX-306）。
 #[must_use]
 pub fn format_doctor_readout(name: &str, report: &DoctorReport) -> String {
-    if report.still_failing.is_empty() {
+    let mut out = if report.still_failing.is_empty() {
         format!(
             "SFZ Doctor：《{name}》检查完成 —— {} 件乐器全部可装载（建大小写链接 {}、修正操作码 {}）",
             report.files_checked,
@@ -252,14 +270,73 @@ pub fn format_doctor_readout(name: &str, report: &DoctorReport) -> String {
                 .map(|(_, e)| e.as_str())
                 .unwrap_or_default()
         )
+    };
+    if report.record_error.is_some() {
+        out.push_str("；检查完成，但记录未能保存，下次可能再次提示");
     }
+    out
+}
+
+/// 一行 io 错误（截断到 160 字符，写进记录/状态行不撑爆界面）。
+fn one_line_io_error(err: &std::io::Error) -> String {
+    err.to_string().chars().take(160).collect()
 }
 
 // ---------------------------------------------------------------- 记录
 
-fn read_record(dir: &Path) -> Option<serde_json::Value> {
-    let text = fs::read_to_string(dir.join(DOCTOR_RECORD_FILE)).ok()?;
-    serde_json::from_str(&text).ok()
+/// 读体检记录的三种结局：T-FIX-306 之前读失败与"没有记录"都坍缩成 `None`，
+/// 于是坏记录与从未表态无法区分（`doctor_state` 一律回 Needed，静默重提示）。
+/// 现在区分开：`Missing`（文件不存在）与 `Corrupt`（文件存在但读不出/解析失败）。
+enum RecordRead {
+    /// 记录文件不存在。
+    Missing,
+    /// 记录读出并解析成功。
+    Ok(serde_json::Value),
+    /// 记录文件存在，但读不出（权限/目录占位等）或解析失败。
+    Corrupt,
+}
+
+fn read_record(dir: &Path) -> RecordRead {
+    let path = dir.join(DOCTOR_RECORD_FILE);
+    if !path.exists() {
+        return RecordRead::Missing;
+    }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return RecordRead::Corrupt;
+    };
+    match serde_json::from_str(&text) {
+        Ok(value) => RecordRead::Ok(value),
+        Err(_) => RecordRead::Corrupt,
+    }
+}
+
+/// 把一件坏记录隔离备份：改名成 `.sfz-doctor.json.corrupt-<纳秒>`，返回备份路径。
+///
+/// 只有 `doctor_state` 判定为 `Corrupt` 时才调。成功后该目录回到 Needed（下次
+/// 提示体检），坏记录本身留着备查，不删除。改名失败返回 `None`（调用方不报
+/// 告、不反复警告；行内仍提示体检）。
+#[must_use]
+pub fn quarantine_corrupt_record(dir: &Path) -> Option<PathBuf> {
+    if !matches!(read_record(dir), RecordRead::Corrupt) {
+        return None;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut backup = dir.join(format!("{DOCTOR_RECORD_FILE}.corrupt-{nanos}"));
+    for suffix in 1..100 {
+        if !backup.exists() {
+            break;
+        }
+        backup = dir.join(format!("{DOCTOR_RECORD_FILE}.corrupt-{nanos}-{suffix}"));
+    }
+    if backup.exists() {
+        return None;
+    }
+    fs::rename(dir.join(DOCTOR_RECORD_FILE), &backup)
+        .ok()
+        .map(|()| backup)
 }
 
 fn epoch_s() -> u64 {

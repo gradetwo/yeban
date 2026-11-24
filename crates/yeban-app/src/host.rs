@@ -12343,12 +12343,22 @@ fn publish_sound_installed(ui: &MainWindow) {
     let mut sizes = Vec::with_capacity(installed.len());
     let mut deletable = Vec::with_capacity(installed.len());
     let mut doctor_needed = Vec::with_capacity(installed.len());
+    let mut corrupt_names: Vec<String> = Vec::new();
     for library in &installed {
         ids.push(library.id.clone());
         names.push(library.name.clone());
-        doctor_needed.push(
-            crate::sfz_doctor::doctor_state(library) == crate::sfz_doctor::DoctorState::Needed,
-        );
+        // T-FIX-306：坏记录（`Corrupt`）的行同样要提示体检 —— 记录不可信，
+        // 不能当成"已检查/已拒绝"。坏记录在这里隔离备份一次（见下）。
+        let state = crate::sfz_doctor::doctor_state(library);
+        doctor_needed.push(matches!(
+            state,
+            crate::sfz_doctor::DoctorState::Needed | crate::sfz_doctor::DoctorState::Corrupt
+        ));
+        if state == crate::sfz_doctor::DoctorState::Corrupt
+            && crate::sfz_doctor::quarantine_corrupt_record(&library.location).is_some()
+        {
+            corrupt_names.push(library.name.clone());
+        }
         // ⚠ 去掉 Windows 的 `\\?\` 长路径前缀：它对程序有用，对人 **是噪音**
         // （界面上一行 `\\?\C:\...` 看着像出错）。只改显示，不改磁盘上的真实路径。
         let shown = library
@@ -12367,6 +12377,19 @@ fn publish_sound_installed(ui: &MainWindow) {
     ui.set_sound_installed_sizes(strings(&sizes));
     ui.set_sound_installed_deletable(booleans(&deletable));
     ui.set_sound_installed_doctor_needed(booleans(&doctor_needed));
+    // T-FIX-306：坏记录只警告一次 —— 隔离备份成功才报；状态行正显示着更新的
+    // 消息（例如刚点的"已跳过"）时不抢：坏文件已改名，下次刷新状态行空了再报，
+    // 行内体检提示一直在，不会漏。
+    if !corrupt_names.is_empty() && ui.get_sound_library_status().is_empty() {
+        ui.set_sound_library_status(
+            format!(
+                "《{}》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检",
+                corrupt_names.join("、")
+            )
+            .into(),
+        );
+        ui.set_sound_library_status_is_error(true);
+    }
 }
 
 /// 当前已安装条目的 id 全集（一次扫描；包对账按 `user:<包 id>` 比）。
@@ -13568,10 +13591,15 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
                 let report = crate::sfz_doctor::run(&library.location);
-                let outcome = Ok(crate::sfz_doctor::format_doctor_readout(
-                    &library.name,
-                    &report,
-                ));
+                let readout = crate::sfz_doctor::format_doctor_readout(&library.name, &report);
+                // T-FIX-306：体检本身跑完了，但记录没存住 ⇒ 下次启动仍会提示。
+                // 读数尾巴已经带了这句警告，这里走 Err 通道，让排空处把它当错误
+                // 状态（红字）显示，而不是当一次成功的体检报。
+                let outcome = if report.record_error.is_some() {
+                    Err(readout)
+                } else {
+                    Ok(readout)
+                };
                 worker_state.finish_doctor(&library.id, outcome);
                 let _ = worker_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_sound_library_drain_requested();
@@ -13593,11 +13621,27 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 .into_iter()
                 .find(|library| library.id == library_id.as_str());
             if let Some(library) = library {
-                crate::sfz_doctor::mark_declined(&library.location);
-                ui.set_sound_library_status(
-                    format!("已跳过《{}》的 SFZ Doctor 检查（不再提示）", library.name).into(),
-                );
-                ui.set_sound_library_status_is_error(false);
+                // T-FIX-306：跳过记录落盘失败必须如实报错 —— 之前 `mark_declined`
+                // 吞掉 `Err`，界面无条件写"不再提示"，下次启动读不到记录又重提示。
+                match crate::sfz_doctor::mark_declined(&library.location) {
+                    Ok(()) => {
+                        ui.set_sound_library_status(
+                            format!("已跳过《{}》的 SFZ Doctor 检查（不再提示）", library.name)
+                                .into(),
+                        );
+                        ui.set_sound_library_status_is_error(false);
+                    }
+                    Err(err) => {
+                        ui.set_sound_library_status(
+                            format!(
+                                "无法保存《{}》的跳过状态（{}），下次仍会提示",
+                                library.name, err
+                            )
+                            .into(),
+                        );
+                        ui.set_sound_library_status_is_error(true);
+                    }
+                }
             }
             publish_sound_installed(&ui);
         });
@@ -13674,7 +13718,8 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
             }
             if let Some((_library_id, outcome)) = doctor_outcome {
                 // 体检结局：一行读数进状态行（修不了的在读数里如实报），然后
-                // 重扫 —— 记录已落盘，那一行的「体检」钮应当消失。
+                // 重扫 —— 记录落盘成功时那一行的「体检」钮应当消失；记录没存住
+                // 时结局走 Err 通道（红字警告），那一行继续提示体检（T-FIX-306）。
                 match outcome {
                     Ok(text) => {
                         ui.set_sound_library_status(text.into());
