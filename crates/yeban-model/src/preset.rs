@@ -398,15 +398,98 @@ pub fn slug_for_sfz_path(path: &str) -> Option<&'static str> {
     None
 }
 
+/// 用户主目录：Unix 读 `HOME`；Windows 优先读 `USERPROFILE`，其次
+/// `HOME`（兼容 Git Bash/MSYS），再其次 `HOMEDRIVE` + `HOMEPATH`。
+///
+/// 两边都没有可用的绝对路径 ⇒ 响亮拒绝，⛔ 不用空字符串退化成相对当前目录
+/// （否则模板/预制会悄悄落到 cwd，用户找不到）。
+///
+/// # Errors
+///
+/// 未设置主目录，或设置的值不是绝对路径（消息给用户看）。
+pub fn user_home_dir() -> Result<PathBuf, String> {
+    let home = non_empty_env("HOME");
+    let userprofile = non_empty_env("USERPROFILE");
+    let homedrive = non_empty_env("HOMEDRIVE");
+    let homopath = non_empty_env("HOMEPATH");
+    #[cfg(windows)]
+    let platform = HomePlatform::Windows;
+    #[cfg(not(windows))]
+    let platform = HomePlatform::Unix;
+    resolve_home_dir(
+        platform,
+        home.as_deref(),
+        userprofile.as_deref(),
+        homedrive.as_deref(),
+        homopath.as_deref(),
+    )
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// 环境变量读取的纯函数部分：平台裁决与绝对路径校验都在这里，
+/// 测试可注入变量而不触碰进程环境。
+fn resolve_home_dir(
+    platform: HomePlatform,
+    home: Option<&str>,
+    userprofile: Option<&str>,
+    homedrive: Option<&str>,
+    homopath: Option<&str>,
+) -> Result<PathBuf, String> {
+    let candidate = match platform {
+        HomePlatform::Unix => home,
+        HomePlatform::Windows => userprofile.or(home),
+    };
+    if let Some(candidate) = candidate {
+        let path = PathBuf::from(candidate);
+        if !path.is_absolute() {
+            return Err(format!(
+                "用户主目录必须是绝对路径：`{}` 来自 HOME/USERPROFILE，拒绝退化为当前目录",
+                path.display()
+            ));
+        }
+        return Ok(path);
+    }
+    if platform == HomePlatform::Windows
+        && let (Some(drive), Some(path)) = (homedrive, homopath)
+    {
+        let combined = PathBuf::from(format!("{drive}{path}"));
+        if !combined.is_absolute() {
+            return Err(format!(
+                "用户主目录必须是绝对路径：HOMEDRIVE+HOMEPATH 得到 `{}`，拒绝退化为当前目录",
+                combined.display()
+            ));
+        }
+        return Ok(combined);
+    }
+    Err(
+        "无法定位用户主目录：HOME/USERPROFILE 均缺失（Windows 可设 USERPROFILE 或 HOMEDRIVE+HOMEPATH；Unix 可设 HOME），拒绝退化为当前工作目录"
+            .to_owned(),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum HomePlatform {
+    Unix,
+    Windows,
+}
+
 /// 用户预制库默认位置：用户主目录下预制库，抄 Logic
 /// `~/Music/Audio Music Apps/Patches/`（设计稿 §7 已定夺）。
-#[must_use]
-pub fn user_preset_library_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home)
+///
+/// # Errors
+///
+/// 主目录不可解析（见 [`user_home_dir`]）。
+pub fn user_preset_library_dir() -> Result<PathBuf, String> {
+    Ok(user_home_dir()?
         .join("Music")
         .join("Audio Music Apps")
-        .join("Patches")
+        .join("Patches"))
 }
 
 /// 用户工程模板库默认位置：与 [`user_preset_library_dir`] **同源**（同一个
@@ -416,15 +499,17 @@ pub fn user_preset_library_dir() -> PathBuf {
 ///
 /// 模板不是新格式：存进这个目录的 `.yeban` 工程文件就是模板；目录内部按
 /// 「曲风 / 子曲风 / 模板名」三级组织（Wang 2026-11-17 定案）。目录的创建与
-/// 扫描住在 `yeban-app::templates`，本函数只给**位置**（与预制库同一条口径：
-/// 只读 `HOME`，不猜第二条回退路径）。
-#[must_use]
-pub fn user_template_library_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home)
+/// 扫描住在 `yeban-app::templates`，本函数只给**位置**（与预制库同一条
+/// 主目录口径，见 [`user_home_dir`]）。
+///
+/// # Errors
+///
+/// 主目录不可解析（见 [`user_home_dir`]）。
+pub fn user_template_library_dir() -> Result<PathBuf, String> {
+    Ok(user_home_dir()?
         .join("Music")
         .join("Audio Music Apps")
-        .join("Project Templates")
+        .join("Project Templates"))
 }
 
 /// 用户预制标识 `user:<ulid>` → 工程包内嵌条目名 `presets/user/<ulid>.json`。
@@ -652,4 +737,62 @@ pub fn effect_param_pairs(kind: &str, params: &Value) -> Vec<(String, f32)> {
         }
     }
     pairs
+}
+
+#[cfg(test)]
+mod home_dir_tests {
+    use super::{HomePlatform, resolve_home_dir};
+    use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_uses_userprofile_when_home_is_missing() {
+        let resolved = resolve_home_dir(
+            HomePlatform::Windows,
+            None,
+            Some(r"C:\Users\Test"),
+            Some("D:"),
+            Some(r"\Backup"),
+        )
+        .expect("USERPROFILE 应优先于 HOMEDRIVE+HOMEPATH");
+        assert_eq!(resolved, PathBuf::from(r"C:\Users\Test"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_falls_back_to_drive_and_path() {
+        let resolved = resolve_home_dir(
+            HomePlatform::Windows,
+            None,
+            None,
+            Some("D:"),
+            Some(r"\Users\Test"),
+        )
+        .expect("HOMEDRIVE+HOMEPATH 应作为第二回退");
+        assert_eq!(resolved, PathBuf::from(r"D:\Users\Test"));
+    }
+
+    #[test]
+    fn windows_without_home_is_loud() {
+        let error = resolve_home_dir(HomePlatform::Windows, None, None, None, None)
+            .expect_err("HOME/USERPROFILE 均缺失必须响亮拒绝");
+        assert!(
+            error.contains("HOME/USERPROFILE"),
+            "错误须点名缺失变量: {error}"
+        );
+        assert!(error.contains("拒绝退化为当前工作目录"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_uses_home_and_rejects_relative_path() {
+        assert_eq!(
+            resolve_home_dir(HomePlatform::Unix, Some("/home/test"), None, None, None)
+                .expect("Unix HOME"),
+            PathBuf::from("/home/test")
+        );
+        let error = resolve_home_dir(HomePlatform::Unix, Some("relative/home"), None, None, None)
+            .expect_err("相对路径必须拒绝");
+        assert!(error.contains("绝对路径"));
+    }
 }

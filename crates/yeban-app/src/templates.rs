@@ -57,12 +57,15 @@ pub struct TemplateRoots {
 impl TemplateRoots {
     /// 生产装配的两个根：工厂 = 仓根 `assets/templates`，用户 = 与预制库
     /// 同源的 `~/Music/Audio Music Apps/Project Templates`。
-    #[must_use]
-    pub fn production() -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// 用户主目录不可解析时响亮拒绝，⛔ 不退化成 cwd 相对路径。
+    pub fn production() -> Result<Self, String> {
+        Ok(Self {
             factory: factory_template_root(),
-            user: user_template_root(),
-        }
+            user: user_template_root()?,
+        })
     }
 }
 
@@ -77,17 +80,41 @@ pub fn factory_template_root() -> PathBuf {
 
 /// 用户模板目录：[`yeban_model::preset::user_template_library_dir`] 的转发
 /// （位置的唯一定义在模型层，与用户预制库同源）。
-#[must_use]
-pub fn user_template_root() -> PathBuf {
+///
+/// # Errors
+///
+/// 用户主目录不可解析。
+pub fn user_template_root() -> Result<PathBuf, String> {
     yeban_model::preset::user_template_library_dir()
+}
+
+/// 用户模板根必须是绝对路径，且位于解析出的用户主目录下。
+fn validate_user_template_root(root: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err(format!(
+            "用户模板根必须是绝对路径，实际 `{}`；拒绝退化为当前工作目录",
+            root.display()
+        ));
+    }
+    let home = yeban_model::preset::user_home_dir()?;
+    if !root.starts_with(&home) {
+        return Err(format!(
+            "用户模板根必须位于用户主目录 `{}` 下，实际 `{}`",
+            home.display(),
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 /// 确保用户模板根存在（不存在则连同父目录一并创建）。
 ///
 /// # Errors
 ///
-/// 创建失败时回给用户看的完整原因（**非空**）。
+/// 根不是绝对路径、不在用户主目录下，或创建失败时回给用户看的完整原因
+/// （**非空**）。
 pub fn ensure_user_template_root(root: &Path) -> Result<(), String> {
+    validate_user_template_root(root)?;
     std::fs::create_dir_all(root)
         .map_err(|error| format!("创建用户模板目录 `{}` 失败: {error}", root.display()))
 }
@@ -439,6 +466,7 @@ pub fn save_template_archive(
     archive: &yeban_model::container::ProjectArchive,
     overwrite: bool,
 ) -> Result<(PathBuf, usize), SaveTemplateError> {
+    validate_user_template_root(user_root).map_err(SaveTemplateError::Invalid)?;
     let style = validate_template_segment("曲风", style).map_err(SaveTemplateError::Invalid)?;
     let substyle =
         validate_template_segment("子曲风", substyle).map_err(SaveTemplateError::Invalid)?;

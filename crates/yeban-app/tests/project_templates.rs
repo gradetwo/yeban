@@ -38,24 +38,32 @@ use common::ScriptedPicker;
 use yeban_app::file_picker::FilePicker;
 use yeban_app::templates::{
     ChooserRowKind, SaveTemplateError, TemplateRoots, TemplateSource, build_chooser_rows,
-    list_templates, save_template_archive, template_target_path, user_category_hint,
-    validate_template_name, validate_template_segment,
+    ensure_user_template_root, list_templates, save_template_archive, template_target_path,
+    user_category_hint, validate_template_name, validate_template_segment,
 };
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照 `open_project_ui.rs`。
 struct Scratch {
     dir: PathBuf,
+    user_dir: PathBuf,
 }
 
 impl Scratch {
     fn new() -> Self {
+        let id = yeban_model::ids::EntityId::new().to_canonical_string();
         let dir = std::env::temp_dir().join(format!(
-            "yeban-project-templates-{}-{}",
-            std::process::id(),
-            yeban_model::ids::EntityId::new().to_canonical_string()
+            "yeban-project-templates-{}-{id}",
+            std::process::id()
         ));
+        // 用户模板根必须位于用户主目录下（生产同款约束）；测试目录在
+        // Drop 里整棵删除，不污染仓库或用户的其它模板。
+        let user_dir = yeban_model::preset::user_home_dir()
+            .expect("测试机必须能解析用户主目录")
+            .join(".yeban-project-template-tests")
+            .join(format!("{}-{id}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
-        Self { dir }
+        std::fs::create_dir_all(&user_dir).expect("建用户模板测试目录");
+        Self { dir, user_dir }
     }
 
     fn join(&self, name: &str) -> PathBuf {
@@ -65,7 +73,7 @@ impl Scratch {
     fn roots(&self) -> TemplateRoots {
         TemplateRoots {
             factory: self.join("factory"),
-            user: self.join("user"),
+            user: self.user_dir.clone(),
         }
     }
 }
@@ -73,6 +81,7 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_dir_all(&self.user_dir);
     }
 }
 
@@ -94,8 +103,10 @@ fn write_file(path: &Path, bytes: &[u8]) {
 /// 名字是 Logic 的 `Project Templates`。
 #[test]
 fn user_template_dir_shares_the_preset_library_parent() {
-    let templates = yeban_model::preset::user_template_library_dir();
-    let presets = yeban_model::preset::user_preset_library_dir();
+    let templates = yeban_model::preset::user_template_library_dir()
+        .expect("用户主目录必须可解析（Windows 可用 USERPROFILE，Unix 用 HOME）");
+    let presets = yeban_model::preset::user_preset_library_dir()
+        .expect("用户主目录必须可解析（Windows 可用 USERPROFILE，Unix 用 HOME）");
     assert_eq!(
         templates.parent(),
         presets.parent(),
@@ -106,13 +117,49 @@ fn user_template_dir_shares_the_preset_library_parent() {
         Some("Project Templates")
     );
     // 工厂根 = 仓根 assets/templates（与仓内其它随分发资源同一棵树）。
-    let roots = TemplateRoots::production();
+    let roots = TemplateRoots::production().expect("生产模板根必须可解析");
     assert!(
         roots
             .factory
             .ends_with(Path::new("assets").join("templates")),
         "工厂模板根必须是 <仓根>/assets/templates，实际 {}",
         roots.factory.display()
+    );
+    assert!(
+        roots.user.is_absolute(),
+        "生产用户模板根必须是绝对路径，实际 {}",
+        roots.user.display()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_user_template_root_comes_from_userprofile() {
+    let profile = std::env::var("USERPROFILE").expect("Windows 测试机应有 USERPROFILE");
+    let root = yeban_model::preset::user_template_library_dir().expect("用户主目录必须可解析");
+    assert!(
+        root.starts_with(PathBuf::from(profile)),
+        "Windows 模板根必须落在 USERPROFILE 下，实际 {}",
+        root.display()
+    );
+    assert_eq!(
+        root.file_name().and_then(|name| name.to_str()),
+        Some("Project Templates")
+    );
+}
+
+#[test]
+fn user_template_root_rejects_relative_path() {
+    let relative = Path::new("Music")
+        .join("Audio Music Apps")
+        .join("Project Templates");
+    let error = ensure_user_template_root(&relative).expect_err("相对模板根必须拒绝");
+    assert!(error.contains("绝对路径"), "错误须点名绝对路径: {error}");
+    let error = save_template_archive(&relative, "流行", "摇滚", "相对", &archive(), false)
+        .expect_err("相对模板根不得落盘");
+    assert!(
+        matches!(&error, SaveTemplateError::Invalid(message) if message.contains("绝对路径")),
+        "保存也必须拒绝相对根: {error}"
     );
 }
 

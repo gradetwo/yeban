@@ -1074,11 +1074,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             after: make_after(true),
         });
         let open_runtime_untitled: Rc<dyn host::OpenProjectRuntime> = untitled_port.clone();
+        let template_roots =
+            yeban_app::templates::TemplateRoots::production().map_err(cli::CliError::Usage)?;
         host::wire_project_templates(
             &ui,
             Some(Rc::clone(&undo_port)),
             open_runtime_untitled,
-            yeban_app::templates::TemplateRoots::production(),
+            template_roots.clone(),
         );
         // ⭐ **启动工程选择器**（line/startup-chooser，学 Logic
         //    「Choose a Project」的内容与思想）：无 `--open` 启动 ⇒
@@ -1092,7 +1094,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 Rc::new(yeban_app::file_picker::NativeFilePicker),
                 Rc::clone(&open_runtime),
                 Rc::clone(&untitled_port),
-                yeban_app::templates::TemplateRoots::production(),
+                template_roots,
                 yeban_app::startup_chooser::NewProjectDetails::from_project(
                     &loaded.archive.project,
                 ),

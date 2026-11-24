@@ -80,7 +80,7 @@ pub use preset::{
     PRESET_MAX_BYTES, Preset, PresetError, PresetScope, PresetSend, TrackPresetSnapshot,
     TrackPresetState, default_preset_id_for_instrument, embedded_entry_name, instrument_sfz_path,
     is_factory_preset, preset_id_from_embedded_entry, slug_for_sfz_path, strip_param_pairs,
-    user_preset_library_dir, validate_preset_id,
+    user_home_dir, user_preset_library_dir, validate_preset_id,
 };
 pub use project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, AutomationUnit,

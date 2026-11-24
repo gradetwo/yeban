@@ -114,7 +114,7 @@ pub fn resolve_preset(embedded: &BTreeMap<String, Preset>, id: &str) -> Result<P
     if let Some(preset) = embedded.get(id) {
         return Ok(preset.clone());
     }
-    let path = user_preset_path(id);
+    let path = user_preset_path(id)?;
     let bytes = super::store::read_bounded(
         &path,
         16 * 1024 * 1024,
@@ -197,17 +197,25 @@ pub fn auto_load_default_presets(
 }
 
 /// 用户预制标识 → 用户库里的文件路径。
-#[must_use]
-pub fn user_preset_path(id: &str) -> PathBuf {
+///
+/// # Errors
+///
+/// 用户主目录不可解析（不得退化成 cwd 相对路径）。
+pub fn user_preset_path(id: &str) -> Result<PathBuf, Fault> {
     let file = id.strip_prefix("user:").unwrap_or(id);
-    user_preset_library_dir().join(format!("{file}.json"))
+    user_preset_library_dir()
+        .map(|dir| dir.join(format!("{file}.json")))
+        .map_err(|message| Fault::domain(ErrorCode::IoError, message))
 }
 
 /// 读用户预制库里的全部预制（解析失败的逐条记进 `skipped`，不让一条坏文件
 /// 拦住整个列表；列表本身不是写操作）。
 #[must_use]
 pub fn user_library_presets() -> (Vec<(Preset, PathBuf)>, Vec<String>) {
-    let dir = user_preset_library_dir();
+    let dir = match user_preset_library_dir() {
+        Ok(dir) => dir,
+        Err(message) => return (Vec::new(), vec![message]),
+    };
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return (Vec::new(), Vec::new());
     };
@@ -283,11 +291,15 @@ pub fn list_presets_json(kind: &str, instrument: Option<&str>) -> Value {
             }));
         }
     }
+    let user_library_dir = match user_preset_library_dir() {
+        Ok(dir) => dir.display().to_string(),
+        Err(message) => format!("无法定位用户预制库: {message}"),
+    };
     serde_json::json!({
         "presets": rows,
         "count": rows.len(),
         "skipped": skipped,
-        "userLibraryDir": user_preset_library_dir().display().to_string(),
+        "userLibraryDir": user_library_dir,
     })
 }
 
@@ -907,7 +919,7 @@ pub fn build_save_preset(
         }
         None => {
             let id = format!("user:{}", EntityId::new().to_canonical_string());
-            (id.clone(), user_preset_path(&id), false)
+            (id.clone(), user_preset_path(&id)?, false)
         }
     };
     let snapshot = snapshot_track(project, track_id)?;
@@ -994,7 +1006,8 @@ pub fn write_user_preset_file(path: &std::path::Path, preset: &Preset) -> Result
             bytes.len()
         )));
     }
-    let dir = user_preset_library_dir();
+    let dir =
+        user_preset_library_dir().map_err(|message| Fault::domain(ErrorCode::IoError, message))?;
     std::fs::create_dir_all(&dir).map_err(|error| {
         Fault::domain(
             ErrorCode::IoError,
