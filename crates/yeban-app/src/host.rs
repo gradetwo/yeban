@@ -8067,11 +8067,6 @@ pub fn record_count_in_ticks(undo: Option<&UndoPort>, frozen: Option<&YebanProje
     }
 }
 
-/// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
-///
-/// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
-///
-/// ```text
 thread_local! {
     // 本线程录音器（T-FIX-391）：wire_record_at 的局部 Rc 在这里留一份借阅点，
     // 工程切换 / 退出路径才能判断"是否正在录音"。⛔ 不持有第二份录音状态。
@@ -8093,7 +8088,11 @@ pub fn recording_in_progress() -> bool {
             .unwrap_or(false)
     })
 }
-
+/// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
+///
+/// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
+///
+/// ```text
 /// 按录音键 ──▶ Recorder::start_with_factory(plan.path, plan.options, factory, 预备拍)
 ///                     │                                     │
 ///                     │  ① 工厂开不了 ⇒ RecordError::Source ─┘（⭐ 响亮失败：无文件、不置 recording）
