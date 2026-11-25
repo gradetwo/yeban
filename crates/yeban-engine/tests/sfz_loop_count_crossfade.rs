@@ -30,6 +30,7 @@
 //! | C7 | `direction=reverse` ＋ `loop_crossfade` | 与不写淡化**逐位相同**（反向不做淡化，登记的局限） |
 /// | C8 | 实时池（单声道）＋ `loop_count=3` | 最后一帧非零下标恰为 21598，边界反解与 C1 相同 |
 /// | C9 | 实时池（立体声）＋ `loop_count=3` | 左右声道**逐位相同**（双跑快照带回绕计数）＋ 最后一帧非零下标 21598 |
+/// | C10 | 实时池（立体声）＋ `direction=reverse` ＋ `loop_crossfade` | 与不写淡化**逐位相同**、左右声道**逐位相同** ＋ 最后一帧非零下标 21598 |
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -345,4 +346,72 @@ fn c9_stereo_pool_left_and_right_agree_on_loop_count() {
         "⭐ 最后一帧非零下标必须是尾巴末帧；实得 {last_nonzero}"
     );
     assert_c1_boundaries(&left);
+}
+
+/// ⭐ C10：实时池（立体声）＋ `direction=reverse` ＋ `loop_crossfade` ⇒
+/// 与不写淡化逐位相同、左右声道逐位相同、次数语义与 C7/C9 一致。
+///
+/// 立体声池是 C7（单声道离线反向）与 C9（立体声池正向）的交叉点：反向不做淡化
+/// 这一登记的局限（见 C7）必须在双跑快照的立体声腿上同样成立 —— 若右遍的快照
+/// 漏带回绕计数或淡化状态，两声道会在回绕点分家；若反向腿误接淡化，写了淡化的
+/// 渲染会与不写淡化的逐位不同。实测行为（本单钉住）：反向 ＋ 淡化 ＝ 硬切，
+/// 与不写淡化逐位相同；次数语义与 C7 相同（有限次数 ⇒ 自然结束，声部退休）。
+/// 反向覆盖源 9599…1（区间含 `PCM-1`、不含源 0 —— 与正向末帧源 `PCM-2`
+/// 不对称，见 `reduce_travel` 的反向起止），故末帧是源 1、最后一帧非零下标
+/// 与 C9 相同（21598）；反向首帧是源 9599（`PCM-1`）。
+#[test]
+fn c10_stereo_pool_reverse_ignores_crossfade() {
+    let render_stereo = |ops: &str| -> (Vec<f32>, Vec<f32>) {
+        let text = format!("<region> sample=a.wav key=60 pitch_keycenter=60 {ops}");
+        let plan = prepare(&text, &stereo_ramp());
+        let mut pool = SfzVoicePool::empty();
+        // ⚠ 力度 127（增益恰 1.0，见 `render` 的注释）。
+        let created = pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None);
+        assert_eq!(created, 1, "必须建起一个声部");
+        let mut left = vec![0.0f32; OUT];
+        let mut right = vec![0.0f32; OUT];
+        let mut position = 0u64;
+        for (lchunk, rchunk) in left.chunks_mut(BLOCK).zip(right.chunks_mut(BLOCK)) {
+            pool.render_into_stereo_with_probes(&plan, position, lchunk, rchunk, None, None);
+            position += BLOCK as u64;
+        }
+        assert_eq!(
+            pool.active_count(),
+            0,
+            "⭐ 播完后声部必须退休（次数耗尽 ＋ 样本播完）"
+        );
+        (left, right)
+    };
+    let (left_xf, right_xf) = render_stereo(
+        "direction=reverse loop_mode=loop_continuous loop_start=1000 loop_end=5000 loop_count=3 loop_crossfade=0.01",
+    );
+    let (left_plain, right_plain) = render_stereo(
+        "direction=reverse loop_mode=loop_continuous loop_start=1000 loop_end=5000 loop_count=3",
+    );
+    // ① 左右声道逐位相同（双跑快照带回绕计数；反向腿同然）。
+    assert_eq!(
+        left_xf, right_xf,
+        "⭐ 立体声反向双跑的左右声道必须**逐位相同**"
+    );
+    assert_eq!(
+        left_plain, right_plain,
+        "⭐ 立体声反向双跑的左右声道必须**逐位相同**（不写淡化的一路）"
+    );
+    // ② 反向 ＋ 淡化 ⇒ 与不写淡化逐位相同（登记的局限，见 C7）。
+    assert_eq!(
+        left_xf, left_plain,
+        "⭐ 立体声反向写了 `loop_crossfade` 也按硬切渲染（登记的局限）"
+    );
+    // ③ 次数在立体声反向同样生效：有限次数 ⇒ 自然结束（⛔ 不是写满输出）。
+    // 反向播完全程 ＝ 尾巴 ＋ 4×窗口 ＋ 头（共 21599 帧），覆盖源 9599…1。
+    let last_nonzero = left_xf.iter().rposition(|v| *v != 0.0).expect("必须出声");
+    assert_eq!(
+        last_nonzero,
+        HEAD + 4 * LOOP_LEN + TAIL - 1,
+        "⭐ 最后一帧非零下标必须是反向末帧（源 1）；实得 {last_nonzero}"
+    );
+    // 反向首帧是源 9599（`PCM-1`；区间含 `PCM-1`、不含源 0，见本判据文档）。
+    assert_src(&left_xf, 0, PCM - 1, "反向首帧");
+    // 反向末帧是源 1（最后一帧非零下标 21598 的另一面）。
+    assert_src(&left_xf, HEAD + 4 * LOOP_LEN + TAIL - 1, 1, "反向末帧");
 }
