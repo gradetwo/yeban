@@ -103,6 +103,18 @@
 //!   四条键**不是**音源识别键（只写包络的设备仍被跳过），默认值逐字等于器件默认
 //!   ⇒ 不写这四个键的工程与接通前**逐位相同**（判据 E1–E4，见
 //!   `crates/yeban-engine/tests/synth_env.rs`）。仍缺参数名的**模型层规范**这一半没变。
+//! - ⭐ ⭐ **追加修订段（任务单 `T-FIX-277`，台账第 278 条：⛔ 不改上面"包络已投影"
+//!   原文）**：那一条描述的是 `T-FIX-277` **之前**的事实（当时投影只有滤波器三旋钮
+//!   ＋ 六个振荡器键 ＋ 四条包络键，LFO 恒为器件默认"深度 `0` = 关"），现仍逐字保留。
+//!   自 `T-FIX-277` 起 `ToneParams` **还**投影四条**全局 LFO** 参数
+//!   （`lfo_wave` / `lfo_rate_hz` / `lfo_depth` / `lfo_target`），
+//!   [`ToneParams::poly_synth_params`] 在 `with_envelope` 之后调用
+//!   [`PolySynthParams::with_lfo`] ⇒ 工程里写的 LFO 真的进声音（每槽一份全局 LFO，
+//!   所有声部共用；见 [`ToneParams`] 文档"## 全局 LFO"与
+//!   [`yeban_dsp::polysynth`] 模块文档 §10）。
+//!   四条键**不是**音源识别键（只写 LFO 的设备仍被跳过），默认值逐字等于器件默认
+//!   ⇒ 不写这四个键的工程与接通前**逐位相同**（判据 L1–L4，见
+//!   `crates/yeban-engine/tests/synth_lfo.rs`）。仍缺参数名的**模型层规范**这一半没变。
 //! - **没有滑音/弯音/歌词/音素**：`MidiNote::slide`/`pitch_bend_curve`/`phonemes`
 //!   不参与合成；
 //! - ⭐ ⭐ **追加修订段（任务单 `#311b`，台账第 278 条：⛔ 不改上一条原文）**：上一条
@@ -154,9 +166,10 @@
 use yeban_dsp::envelope::AdsrStage;
 use yeban_dsp::filter::LadderFilter;
 use yeban_dsp::math::db_to_gain;
-use yeban_dsp::oscillator::{GLASS, HOLLOW, METALLIC, ORGAN, VOCAL};
+use yeban_dsp::oscillator::{GLASS, HOLLOW, LfoWave, METALLIC, ORGAN, VOCAL};
 use yeban_dsp::polysynth::{
-    NoteEvent, PolySynth, PolySynthParams, PolySynthTables, phase_increment, steal_fade_frames_for,
+    LfoTarget, NoteEvent, PolySynth, PolySynthParams, PolySynthTables, phase_increment,
+    steal_fade_frames_for,
 };
 // ⭐ `#311b`：音高形状的**哨兵**（`u16::MAX`）—— 再导出，让 `crate::snapshot` 与
 // 引擎的判据不必各自写一遍"没有形状"的魔数。
@@ -283,6 +296,43 @@ fn tone_sustain_or_default(value: f32) -> f32 {
     }
 }
 
+/// 全局 LFO 的两个**默认值**（Hz / 深度）—— ⭐ `T-FIX-277`。
+///
+/// 这两个常量**逐字等于**器件 `yeban_dsp::polysynth` 的默认 LFO
+/// （`DEFAULT_LFO_RATE_HZ = 5.0`、`DEFAULT_LFO_DEPTH = 0.0`）。为什么不直接引用器件
+/// 常量：它们是**私有的**（器件只公开 `PolySynthParams::*()` 读数）。
+///
+/// "逐字相等"由判据 `ToneParams::bypass().poly_synth_params() == PolySynthParams::new()`
+/// 钉住（判据 L1，见 `crates/yeban-engine/tests/synth_lfo.rs`）：本层若把任何一个
+/// 默认值写偏，那条等式当场变红。波形与目标的默认值（正弦 / 音高）是枚举，
+/// 没有对应的数值常量。
+const TONE_DEFAULT_LFO_RATE_HZ: f32 = 5.0;
+/// 见 [`TONE_DEFAULT_LFO_RATE_HZ`]。
+const TONE_DEFAULT_LFO_DEPTH: f32 = 0.0;
+
+/// LFO 速率的钳制：非有限或负值 ⇒ 默认，否则钳到 `0.0 ..= 100.0`
+/// （与器件 `PolySynthParams::with_lfo` 同口径；`0.0` 合法 = LFO 冻结）。
+#[must_use]
+fn tone_lfo_rate_or_default(value: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value.min(100.0)
+    } else {
+        TONE_DEFAULT_LFO_RATE_HZ
+    }
+}
+
+/// LFO 深度的钳制：非有限或负值 ⇒ 默认（`0.0` = 关），否则钳到 `0.0 ..= 1200.0`
+/// （与器件 `PolySynthParams::with_lfo` 同口径；量纲按目标解释，见
+/// [`ToneParams::with_lfo`]）。
+#[must_use]
+fn tone_lfo_depth_or_default(value: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value.min(1200.0)
+    } else {
+        TONE_DEFAULT_LFO_DEPTH
+    }
+}
+
 /// 引擎**波形库**的配方顺序（契约，不是实现细节）。
 ///
 /// 数组下标就是 `osc1_wave` / `osc2_wave` 两个参数的**取值**：
@@ -345,9 +395,9 @@ fn wave_index(value: Option<f32>) -> u8 {
 
 /// [`ToneParams::from_devices`] 的**每设备**投影中间量（私有）。
 ///
-/// 十三个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
+/// 十七个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
 /// （与"写了 `0`"不同：`osc2_level = 0` 是"显式关掉第二条支路"，`attack_s = 0`
-/// 是"显式要一条瞬时起振"）。
+/// 是"显式要一条瞬时起振"，`lfo_depth = 0` 是"显式关掉 LFO"）。
 #[derive(Clone, Copy, Default)]
 struct DeviceTone {
     cutoff_hz: Option<f32>,
@@ -363,6 +413,10 @@ struct DeviceTone {
     decay_s: Option<f32>,
     sustain: Option<f32>,
     release_s: Option<f32>,
+    lfo_wave: Option<f32>,
+    lfo_rate_hz: Option<f32>,
+    lfo_depth: Option<f32>,
+    lfo_target: Option<f32>,
 }
 
 impl DeviceTone {
@@ -377,6 +431,11 @@ impl DeviceTone {
     /// 它不回答"这台设备是不是音源"。只写包络键的设备仍然被跳过（`from_devices`
     /// 继续找下一条），因此"接通 ADSR"没有放宽音源判据 —— 既有工程里没有被
     /// 误认成音源的哑设备。
+    ///
+    /// ⭐ `T-FIX-277` 的四条 LFO 键（`lfo_wave` / `lfo_rate_hz` / `lfo_depth` /
+    /// `lfo_target`）**同样不是**识别键，与包络键同一条理由：LFO 是**声部**的
+    /// 修饰，它不回答"这台设备是不是音源"。只写 LFO 键的设备仍然被跳过
+    /// （`from_devices` 继续找下一条），因此"接通 LFO"没有放宽音源判据。
     const fn is_source(&self) -> bool {
         self.cutoff_hz.is_some()
             || self.osc1_wave.is_some()
@@ -389,7 +448,8 @@ impl DeviceTone {
 }
 
 /// 内置音色的**引擎侧**参数投影：一个四极梯形低通的三个旋钮 ＋ 两条振荡器支路
-/// ＋ 振幅包络四个参数（⭐ `T-FIX-273` 接通后四项，见下面"## 振幅包络"）。
+/// ＋ 振幅包络四个参数（⭐ `T-FIX-273` 接通后四项，见下面"## 振幅包络"）
+/// ＋ 全局 LFO 四个参数（⭐ `T-FIX-277` 接通后四项，见下面"## 全局 LFO"）。
 ///
 /// ## 这是临时形状，不是模型层的第二份定义
 ///
@@ -414,9 +474,13 @@ impl DeviceTone {
 ///     {name:"osc2_level", value: 0.5}        ├ attack_s: f32
 ///     {name:"osc2_detune_cents", value: 7}   ├ decay_s: f32
 ///     {name:"attack_s",  value: 0.005}       ├ sustain: f32
-///     {name:"decay_s",   value: 0.08}        └ release_s: f32
-///     {name:"sustain",   value: 0.7}
-///     {name:"release_s", value: 0.05}        ⇒ 本模块的投影整体删除，改成直读字段
+///     {name:"decay_s",   value: 0.08}        ├ release_s: f32
+///     {name:"sustain",   value: 0.7}         ├ lfo_wave: u8
+///     {name:"release_s", value: 0.05}        ├ lfo_rate_hz: f32
+///     {name:"lfo_wave",  value: 0}            ├ lfo_depth: f32
+///     {name:"lfo_rate_hz", value: 5.0}        └ lfo_target: u8
+///     {name:"lfo_depth", value: 0.0}
+///     {name:"lfo_target", value: 0}           ⇒ 本模块的投影整体删除，改成直读字段
 ///   ]
 /// ```
 ///
@@ -429,9 +493,13 @@ impl DeviceTone {
 ///    "引擎侧选不了波形 / 第二条振荡器"这条缺口登记补上的同一类键）；
 ///    ⭐ 四条包络键（`attack_s` / `decay_s` / `sustain` / `release_s`）**不是**识别键
 ///    （理由见 [`DeviceTone::is_source`]），它们跟着**已识别**的那条音源设备一起投影；
-/// 3. 十三个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
+///    ⭐ 四条 LFO 键（`lfo_wave` / `lfo_rate_hz` / `lfo_depth` / `lfo_target`）
+///    **同样不是**识别键（理由见 [`DeviceTone::is_source`]），它们跟着**已识别**的那条
+///    音源设备一起投影；
+/// 3. 十七个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
 ///    `osc1_wave`、`osc2_wave`、`osc1_level`、`osc1_detune_cents`、`osc2_level`、
-///    `osc2_detune_cents`、`attack_s`、`decay_s`、`sustain`、`release_s`；
+///    `osc2_detune_cents`、`attack_s`、`decay_s`、`sustain`、`release_s`、
+///    `lfo_wave`、`lfo_rate_hz`、`lfo_depth`、`lfo_target`；
 /// 4. **一个识别键都没有 ⇒ [`ToneParams::bypass`]**：这是刻意选的默认值，
 ///    因为"模型层没给参数"与"用户把滤波器拧到旁通"在音频上应当同解 ——
 ///    这样既有的（无设备链的）工程逐位不变，也避免了给所有轨道硬塞一个未裁决的音色；
@@ -440,7 +508,9 @@ impl DeviceTone {
 /// 6. 非有限值 ⇒ **该参数**按默认取（截止 `12 kHz`、共振 `0`、驱动 `0`、
 ///    波形下标 `0`、`osc1_level` `1.0`（满）、`osc1_detune_cents` `0.0`、
 ///    `osc2_level` `0.0`（关）、`osc2_detune_cents` `0.0`、`attack_s` `0.005`、
-///    `decay_s` `0.08`、`sustain` `0.7`、`release_s` `0.05`），绝不 `NaN`；
+///    `decay_s` `0.08`、`sustain` `0.7`、`release_s` `0.05`、`lfo_wave` `0`
+///    （正弦）、`lfo_rate_hz` `5.0`、`lfo_depth` `0.0`（关）、`lfo_target` `0`
+///    （音高）），绝不 `NaN`；
 /// 7. **只有振荡器键、没有截止频率** ⇒ 滤波器**整段旁通**，振荡器照常投影
 ///    （不是"截止取成 20 kHz 占位值"——那样状态变量仍会吸收瞬态并染色）。
 ///
@@ -478,6 +548,31 @@ impl DeviceTone {
 ///
 /// 包络系数含 `exp` ⇒ 落在下面的**超越函数类**；接线不改变这一分类。
 ///
+/// ## 全局 LFO（⭐ `T-FIX-277`：`lfo_wave` / `lfo_rate_hz` / `lfo_depth` / `lfo_target`）
+///
+/// 器件侧 [`PolySynthParams::with_lfo`] 与 [`PolySynth`](yeban_dsp::polysynth::PolySynth)
+/// 的每槽一份 LFO 状态早就存在并有单元判据，但**引擎侧**此前没有这四个字段、
+/// `poly_synth_params()` 也从不调用它 ⇒ 所有内置 PolySynth 轨道只能用器件的默认
+/// LFO（深度 `0` = 关），工程里写的 LFO 参数**一个也不进声音**。本票把四条投影接通：
+///
+/// - 参数名（大小写不敏感）：`lfo_wave` / `lfo_rate_hz` / `lfo_depth` / `lfo_target`；
+///   波形与目标的**值是下标**（`f32` 参数先四舍五入、再钳到 `u8`，与 `wave_index`
+///   同款取整口径；`0.5` 四舍五入到 `1`，见判据 L2 的注）：
+///   波形 `0`=正弦 / `1`=三角 / `2`=方波 / `3`=锯齿（`3` 及以上都取锯齿）；
+///   目标 `0`=音高 / `1`=振幅 / `2`=截止频率（`2` 及以上都取截止频率）；
+/// - **默认值 = 器件默认值**（这是"接线不改变既有输出"的全部理由）：
+///   [`TONE_DEFAULT_LFO_RATE_HZ`] `5.0`、[`TONE_DEFAULT_LFO_DEPTH`] `0.0`、
+///   波形正弦、目标音高；不写这四个键的工程与接通之前**逐位相同**（判据 L1）；
+/// - **非法值回落本层默认**：速率非有限或**负值** ⇒ `5.0`，否则钳到 `0.0 ..= 100.0`
+///   （`0.0` 是**合法值** = LFO 冻结在 `shape(wave, 0)` 的常数值上）；深度非有限或
+///   **负值** ⇒ `0.0`（关），否则钳到 `0.0 ..= 1200.0`（量纲按目标解释，见
+///   [`ToneParams::with_lfo`]）；本层因此**从不**把 `NaN`/`inf` 交给器件（判据 L4）；
+/// - LFO 键**不是识别键**：只写 LFO 的设备仍不构成音源（见 [`DeviceTone::is_source`]）；
+/// - **作用域**：每槽一份全局 LFO（所有声部共用，见
+///   [`yeban_dsp::polysynth`] 模块文档 §10）；per-note 颤音不在本票范围。
+///
+/// LFO 系数含 `sinf`（正弦波形）⇒ 落在下面的**超越函数类**；接线不改变这一分类。
+///
 /// ## 确定性分类（[ADR-0001 D32]）
 ///
 /// 构造期 `LadderFilter::configure` 含 `tan(π·fc/fs)`、包络含 `exp`
@@ -502,6 +597,10 @@ pub struct ToneParams {
     decay_s: f32,
     sustain: f32,
     release_s: f32,
+    lfo_wave: LfoWave,
+    lfo_rate_hz: f32,
+    lfo_depth: f32,
+    lfo_target: LfoTarget,
 }
 
 impl ToneParams {
@@ -512,7 +611,8 @@ impl ToneParams {
     ///
     /// 振荡器取**历史默认**：`osc1_level = 1.0`（满）、`osc1_detune_cents = 0.0`、
     /// `osc2_level = 0.0`（关）、`osc2_detune_cents = 0.0`；包络取**器件默认**
-    /// （`0.005` / `0.08` / `0.7` / `0.05` 秒）。
+    /// （`0.005` / `0.08` / `0.7` / `0.05` 秒）；LFO 取**器件默认**
+    /// （正弦 / `5.0` Hz / 深度 `0.0` / 音高目标 ⇒ 关）。
     #[must_use]
     pub const fn bypass() -> Self {
         Self {
@@ -530,6 +630,10 @@ impl ToneParams {
             decay_s: TONE_DEFAULT_DECAY_S,
             sustain: TONE_DEFAULT_SUSTAIN,
             release_s: TONE_DEFAULT_RELEASE_S,
+            lfo_wave: LfoWave::Sine,
+            lfo_rate_hz: TONE_DEFAULT_LFO_RATE_HZ,
+            lfo_depth: TONE_DEFAULT_LFO_DEPTH,
+            lfo_target: LfoTarget::Pitch,
         }
     }
 
@@ -538,7 +642,9 @@ impl ToneParams {
     /// 振荡器取**默认**：`osc1_wave = osc2_wave = 0`（[`HOLLOW`]）、第一条支路满电平
     /// 不失谐、`osc2` 关。要选波形、开第二条支路或给第一条支路设电平/失谐，接着调
     /// [`ToneParams::with_oscillators`] 与 [`ToneParams::with_osc1`]；要改包络接着调
-    /// [`ToneParams::with_envelope`]。包络在这里取**器件默认**（判据 E1 的构造依据）。
+    /// [`ToneParams::with_envelope`]；要改 LFO 接着调 [`ToneParams::with_lfo`]。
+    /// 包络在这里取**器件默认**（判据 E1 的构造依据）；LFO 在这里取**器件默认**
+    /// （判据 L1 的构造依据）。
     #[must_use]
     pub fn new(cutoff_hz: f32, resonance: f32, drive: f32) -> Self {
         Self {
@@ -568,6 +674,10 @@ impl ToneParams {
             decay_s: TONE_DEFAULT_DECAY_S,
             sustain: TONE_DEFAULT_SUSTAIN,
             release_s: TONE_DEFAULT_RELEASE_S,
+            lfo_wave: LfoWave::Sine,
+            lfo_rate_hz: TONE_DEFAULT_LFO_RATE_HZ,
+            lfo_depth: TONE_DEFAULT_LFO_DEPTH,
+            lfo_target: LfoTarget::Pitch,
         }
     }
 
@@ -679,6 +789,33 @@ impl ToneParams {
         self
     }
 
+    /// 设置**全局 LFO**四个参数（**构造期**；非法值退回本层的默认值）。
+    ///
+    /// ⭐ `T-FIX-277`：这是"工程参数真的进声音"的那条投影。器件侧
+    /// [`PolySynthParams::with_lfo`] 早就存在，本层此前没有这四个字段 ⇒ 所有内置
+    /// PolySynth 轨道只能用器件默认 LFO（深度 `0` = 关）。
+    ///
+    /// - `wave`：波形（[`LfoWave`]；正弦/三角/方波/锯齿）；
+    /// - `rate_hz`：速率（Hz）。**非有限或负值** ⇒ [`TONE_DEFAULT_LFO_RATE_HZ`]
+    ///   （`5.0`）；否则钳到 `0.0 ..= 100.0`。`0.0` 是**合法值**（LFO 冻结在
+    ///   `shape(wave, 0)` 的常数值上），与"没写"（`None` ⇒ 默认）不同；
+    /// - `depth`：深度，**量纲按 `target` 解释**：音高目标是**音分**（`0..=1200`）、
+    ///   振幅目标是**线性增益分数**（渲染时再钳到 `0..=1`）、截止频率目标是**八度**
+    ///   （渲染时再钳到 `0..=4`）。**非有限或负值** ⇒ `0.0`（关）；否则钳到
+    ///   `0.0 ..= 1200.0`。`0.0` 是**合法值**（关掉调制），与"没写"不同；
+    /// - `target`：调制目标（[`LfoTarget`]；音高/振幅/截止三者互斥）。
+    ///
+    /// ⚠ 本层**不**做"LFO 与滤波器旁通的联动"：截止频率目标只在滤波器**启用**时
+    /// 才出声（旁通时滤波器一次也不调用）；音高/振幅目标与旁通无关。
+    #[must_use]
+    pub fn with_lfo(mut self, wave: LfoWave, rate_hz: f32, depth: f32, target: LfoTarget) -> Self {
+        self.lfo_wave = wave;
+        self.lfo_rate_hz = tone_lfo_rate_or_default(rate_hz);
+        self.lfo_depth = tone_lfo_depth_or_default(depth);
+        self.lfo_target = target;
+        self
+    }
+
     /// 从模型层的设备链投影（**控制线程**；见本节文档的投影规则）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
@@ -703,6 +840,10 @@ impl ToneParams {
                     "decay_s" => tone.decay_s = Some(param.value),
                     "sustain" => tone.sustain = Some(param.value),
                     "release_s" => tone.release_s = Some(param.value),
+                    "lfo_wave" => tone.lfo_wave = Some(param.value),
+                    "lfo_rate_hz" => tone.lfo_rate_hz = Some(param.value),
+                    "lfo_depth" => tone.lfo_depth = Some(param.value),
+                    "lfo_target" => tone.lfo_target = Some(param.value),
                     _ => {}
                 }
             }
@@ -739,6 +880,12 @@ impl ToneParams {
             tone.decay_s.unwrap_or(TONE_DEFAULT_DECAY_S),
             tone.sustain.unwrap_or(TONE_DEFAULT_SUSTAIN),
             tone.release_s.unwrap_or(TONE_DEFAULT_RELEASE_S),
+        )
+        .with_lfo(
+            LfoWave::from_index(wave_index(tone.lfo_wave)),
+            tone.lfo_rate_hz.unwrap_or(TONE_DEFAULT_LFO_RATE_HZ),
+            tone.lfo_depth.unwrap_or(TONE_DEFAULT_LFO_DEPTH),
+            LfoTarget::from_index(wave_index(tone.lfo_target)),
         )
     }
 
@@ -826,6 +973,30 @@ impl ToneParams {
         self.release_s
     }
 
+    /// 全局 LFO 的波形（⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_wave(&self) -> LfoWave {
+        self.lfo_wave
+    }
+
+    /// 全局 LFO 的速率（Hz；⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_rate_hz(&self) -> f32 {
+        self.lfo_rate_hz
+    }
+
+    /// 全局 LFO 的深度（⭐ `T-FIX-277`；量纲按目标解释，见 [`Self::with_lfo`]）。
+    #[must_use]
+    pub const fn lfo_depth(&self) -> f32 {
+        self.lfo_depth
+    }
+
+    /// 全局 LFO 的调制目标（⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_target(&self) -> LfoTarget {
+        self.lfo_target
+    }
+
     /// 在给定采样率下武装一个滤波器（**构造期**：含 `tan`，超越函数类）。
     #[must_use]
     pub fn filter(&self, sample_rate: f32) -> LadderFilter {
@@ -859,6 +1030,11 @@ impl ToneParams {
     /// 四个字段一律取自本层（已钳制的）字段 ⇒ 不写包络键时是
     /// `0.005 / 0.08 / 0.7 / 0.05`，与 [`PolySynthParams::new`] **逐字段相同**
     /// （判据 E1，它同时钉住"默认值写偏"）。
+    ///
+    /// ⭐ `T-FIX-277`：LFO 在 `with_envelope` **之后**接入（`.with_lfo(..)`），
+    /// 四个字段一律取自本层（已钳制的）字段 ⇒ 不写 LFO 键时是
+    /// 正弦 / `5.0` Hz / `0.0` / 音高目标，与 [`PolySynthParams::new`] **逐字段相同**
+    /// （判据 L1，它同时钉住"默认值写偏"）。
     #[must_use]
     pub fn poly_synth_params(&self) -> PolySynthParams {
         PolySynthParams::new()
@@ -868,6 +1044,12 @@ impl ToneParams {
             )
             .with_filter(self.cutoff_hz, self.resonance, self.drive, self.bypass)
             .with_envelope(self.attack_s, self.decay_s, self.sustain, self.release_s)
+            .with_lfo(
+                self.lfo_wave,
+                self.lfo_rate_hz,
+                self.lfo_depth,
+                self.lfo_target,
+            )
     }
 }
 
@@ -4015,7 +4197,12 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
 /// 数组长度因此从 11 变成 15；判据
 /// `every_consumed_instrument_param_reaches_the_engine_projection` 对每条新名字
 /// 都要求"注入后投影必须变"。
-pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 15] = [
+///
+/// ⭐ `T-FIX-277` 追加四条 LFO 键（`lfo_wave` / `lfo_rate_hz` / `lfo_depth` /
+/// `lfo_target`）：`from_devices` 消费它们、[`ToneParams::poly_synth_params`] 经
+/// [`PolySynthParams::with_lfo`] 把它们送进器件 ⇒ 离线路径**不许**再把它们登记成
+/// "没被求值"。数组长度因此从 15 变成 19；判据同上。
+pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 19] = [
     "cutoff_hz",
     "cutoff",
     "resonance",
@@ -4031,6 +4218,10 @@ pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 15] = [
     "decay_s",
     "sustain",
     "release_s",
+    "lfo_wave",
+    "lfo_rate_hz",
+    "lfo_depth",
+    "lfo_target",
 ];
 
 /// [`CONSUMED_INSTRUMENT_PARAMS`] 的成员判定 **∪** 鼓机键位/旋钮名
@@ -4613,6 +4804,14 @@ mod tests {
             ("decay_s", 0.08),
             ("sustain", 0.7),
             ("release_s", 0.05),
+            // ⭐ `T-FIX-277`：四条 LFO 键进底座（值 = 默认）。注入值 `0.5` 对四个字段
+            // 都远离默认：波形下标 `0.5` 四舍五入到 `1`（三角 ≠ 正弦）、速率
+            // `0.5 ≠ 5.0`、深度 `0.5 ≠ 0.0`、目标下标 `0.5` 四舍五入到 `1`
+            // （振幅 ≠ 音高）⇒ "必须改变"分支不空转。
+            ("lfo_wave", 0.0),
+            ("lfo_rate_hz", 5.0),
+            ("lfo_depth", 0.0),
+            ("lfo_target", 0.0),
         ];
         let device_with = |name: &str, value: f32| {
             let mut params: Vec<yeban_model::ParameterValue> = base

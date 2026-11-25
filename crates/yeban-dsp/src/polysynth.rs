@@ -209,12 +209,67 @@
 //!   （@48 kHz ≈ 1.33 ms）后由网格修正 —— 一段极短的音高毛刺；
 //! - 控制率是 **0.75 kHz**（@48 kHz）：最陡的 1200 cents / 0.5 s ⇒ **3.2 cents/步**。
 //!   听感未测（本机不跑人耳判据）。
+//!
+//! ## 10. ⭐ **全局 LFO**（`T-FIX-277`：`lfo_wave` / `lfo_rate_hz` / `lfo_depth` /
+//! `lfo_target`）
+//!
+//! **作用域（本票的裁决，写进回执与文档）**：**每槽一份全局 LFO** ——
+//! [`crate::oscillator`] 模块文档 §二"所有声部共用一个 LFO"的那一句，
+//! 现在是真的：[`PolySynth`] 持一份 [`Lfo`] 状态，槽里所有声部共用它。
+//! per-note 颤音（每声部一份 LFO）**不在**本票范围：那需要每声部一份状态，
+//! 会动 [`PolyVoice`] 的尺寸钉（见 §9 的尺寸登记），且与"全局"这句来源文档冲突；
+//! 如需 per-note 能力另立一票。
+//!
+//! | 环节 | 落点 |
+//! | :--- | :--- |
+//! | 状态 | [`PolySynth`] 持一份 [`Lfo`]（相位 + 上一值 + one-shot 标志，`Copy`） |
+//! | 参数 | [`PolySynthParams::with_lfo`]：波形 / 速率（Hz）/ 深度 / 目标（互斥） |
+//! | 推进 | 每**发声帧** [`Lfo::process`] 一次（复用现有 DSP，无第二份实现） |
+//! | 应用 | 音高/截止走**绝对位置 64 样本网格**；振幅是逐样本乘数 |
+//!
+//! **量纲（`lfo_depth` 按目标解释）**：音高是**音分**（`0..=1200`，最多一个八度）；
+//! 振幅是**线性增益分数**（渲染时再钳到 `0..=1`，乘数 `1 + depth × LFO 值`，
+//! 钳到 `>= 0`）；截止频率是**八度**（渲染时再钳到 `0..=4`，
+//! `cutoff × 2^(depth × LFO 值)`）。
+//!
+//! **逐位无损**：`depth == 0` 时推进与应用两个分支都不存在，`render` 与接线前
+//! **逐位相同**（判据 `tests/polysynth_lfo.rs` 的 L1）；`depth > 0` 时：
+//!
+//! 1. **推进只看发声帧**：LFO 只在"本帧至少一个声部发声"时推进 ⇒ 推进量是
+//!    "哪些绝对帧在发声"（音符排程的函数），与块切分无关；空渲染调用（early
+//!    return）与块边界都不会让相位漂移（判据 L5/L6：64/128/256 三种切法逐位
+//!    相同；先空渲染再触发与直接触发逐位相同）。
+//! 2. **应用锚在绝对网格**：音高/截止只在 `now % 64 == 0` 的帧应用 ⇒ 逐样本路径
+//!    不加超越函数（与 §9 的音高网格同一控制率 `0.75 kHz`）；淡出窗口内的声部
+//!    不更新（旧音符的最后 3 ms 保持窃取前的状态）；`voice.freq_hz` /
+//!    `osc.level_freq` **永不改写** ⇒ `note_off` 的配对键与 `retune` 仍是 base 频率。
+//! 3. **弯音探针相加不覆盖**：有音高形状的声部，LFO 音分折进探针应用
+//!    （`probe_cents + lfo_cents`，同一口子）；无形状的声部走绝对网格。
+//! 4. **截止是系数重配置**：[`LadderFilter::configure`] 只写系数、不动状态 ⇒
+//!    网格上重配置没有咔哒；共振/驱动取**当前**参数（与 `set_sample_rate` "在响
+//!    声部的滤波器系数用调用时刻的参数重算"同一条纪律）。
+//!
+//! ⚠ 三条登记（⛔ 不声称）：
+//!
+//! - **快照边界改 LFO 参数时，在鸣声部保持最后一次网格弯音值直到重触发**
+//!   （`depth → 0` / 换目标都一样）：与 `set_params` 不动在鸣声部滤波器系数
+//!   同一条纪律 —— 快照参数只影响**新触发**的声部。有音高形状的声部不受影响
+//!   （探针每 64 样本重算总音分，LFO 关掉后下一网格即回到纯探针值）。
+//! - **截止目标要求滤波器启用**：旁通时滤波器一次也不调用，调制无处可落
+//!   （读数仍可由 [`PolySynth::debug_lfo_cutoff_hz`] 读到）。
+//! - **速率上限 `100 Hz`**：超过即钳住；`0.0` 是合法值（LFO 冻结在
+//!   `shape(wave, 0)` 的常数值上，见 [`PolySynthParams::with_lfo`]）。
+//!
+//! **成本**：`depth > 0` 时每发声帧一次 [`Lfo::process`]（正弦含一次 `sinf`，
+//! 其余波形是分支算术）＋ 每帧一次"有无发声声部"扫描（16 声部定长）；
+//! `depth == 0` 时**零额外成本**（分支不存在）。运行期由
+//! `tests/polysynth_rt_zero_alloc.rs` 的观测窗口钉住（零分配）。
 
 use crate::MIN_SAMPLE_RATE;
 use crate::envelope::{Adsr, AdsrStage, STEAL_RELEASE_SECONDS};
 use crate::filter::LadderFilter;
 use crate::math::exp2;
-use crate::oscillator::{HOLLOW, WaveRecipe, Wavetable};
+use crate::oscillator::{HOLLOW, Lfo, LfoWave, WaveRecipe, Wavetable};
 
 /// 一个器件实例的**声部池容量**（复音上限），定长数组的长度。
 ///
@@ -255,6 +310,46 @@ const MAX_DETUNE_CENTS: f32 = 4_800.0;
 /// - 换采样率时 [`OscState::retune`] 先把 `inc` 算回**未弯**值，最迟 `64` 样本
 ///   （@48 kHz ≈ **1.33 ms**）后由本网格修正 —— 登记在模块文档 §8。
 pub const PITCH_UPDATE_SAMPLES: u64 = 64;
+
+/// ⭐ **全局 LFO 的调制网格步长（绝对样本数）** —— `T-FIX-277`.
+///
+/// 与 [`PITCH_UPDATE_SAMPLES`] 同一个数值（`64` ⇒ @48 kHz 控制率 `0.75 kHz`），
+/// 但锚点不同：LFO 网格锚在**绝对位置**（`now % 64 == 0` 的帧），⛔ 不是音符局部
+/// 时间 —— LFO 是**每槽一份**的全局状态（所有声部共用），它的相位只取决于
+/// "哪些绝对帧在发声"，与"哪条音符在响"无关。锚在绝对位置 ⇒ 块切分不变性与
+/// §9 的音高网格同一条论证（见模块文档 §10）。
+pub const LFO_UPDATE_SAMPLES: u64 = 64;
+
+/// ⭐ **全局 LFO 的调制目标**（`T-FIX-277`）。
+///
+/// 三个目标共享同一个 `lfo_depth` 字段，量纲按目标解释（见
+/// [`PolySynthParams::with_lfo`]）：音高是**音分**（`0..=1200`）、振幅是
+/// **线性增益分数**（`0..=1`）、截止频率是**八度**（`0..=4`）。
+/// 目标之间是**互斥**的：同一时刻只调一个目标（设备参数只有一个 `lfo_target` 键）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LfoTarget {
+    /// 音高：`cents = lfo_depth × LFO 值`，经 [`OscState::bend_to`] 改相位增量。
+    Pitch,
+    /// 振幅：逐样本乘数 `1 + lfo_depth × LFO 值`（钳到 `>= 0`）。
+    Amplitude,
+    /// 截止频率：`cutoff × 2^(lfo_depth × LFO 值)`，经声部滤波器重配置。
+    Cutoff,
+}
+
+impl LfoTarget {
+    /// 按**设备参数下标**取目标（⭐ `T-FIX-277`：与 [`LfoWave::from_index`]
+    /// 同口径，引擎侧先用取整口径把 `f32` 参数值化成下标）。
+    ///
+    /// `0` = 音高、`1` = 振幅，`2` 及以上 = 截止频率（越界下标钳到最后一档）。
+    #[must_use]
+    pub const fn from_index(index: u8) -> Self {
+        match index {
+            0 => Self::Pitch,
+            1 => Self::Amplitude,
+            _ => Self::Cutoff,
+        }
+    }
+}
 
 /// 单条振荡器支路的设置（[`PolySynthParams`] 的一半）。
 ///
@@ -353,11 +448,12 @@ impl Default for OscSettings {
     }
 }
 
-/// 器件的**静态参数**：双振荡器 + 声部低通 + 振幅包络。
+/// 器件的**静态参数**：双振荡器 + 声部低通 + 振幅包络 + 全局 LFO（⭐ `T-FIX-277`）。
 ///
 /// 参数只在快照边界或构造期写入，逐样本路径只读它。
 /// 默认值刻意等于上移前 `synth.rs` 的硬编码音色
-/// （`HOLLOW` 波表、旁通滤波器、5 ms 起音 / 80 ms 衰减 / 0.7 延音 / 50 ms 释放）。
+/// （`HOLLOW` 波表、旁通滤波器、5 ms 起音 / 80 ms 衰减 / 0.7 延音 / 50 ms 释放；
+/// LFO 默认深度 `0` ⇒ 默认不调制，输出与接线前逐位相同）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PolySynthParams {
     osc1: OscSettings,
@@ -370,6 +466,14 @@ pub struct PolySynthParams {
     decay_s: f32,
     sustain: f32,
     release_s: f32,
+    /// ⭐ 全局 LFO 的波形（`T-FIX-277`）。
+    lfo_wave: LfoWave,
+    /// ⭐ 全局 LFO 的速率（Hz；`T-FIX-277`）。
+    lfo_rate_hz: f32,
+    /// ⭐ 全局 LFO 的深度（`T-FIX-277`；量纲按目标解释，见 [`Self::with_lfo`]）。
+    lfo_depth: f32,
+    /// ⭐ 全局 LFO 的调制目标（`T-FIX-277`）。
+    lfo_target: LfoTarget,
 }
 
 impl PolySynthParams {
@@ -387,6 +491,10 @@ impl PolySynthParams {
             decay_s: DEFAULT_DECAY_SECONDS,
             sustain: DEFAULT_SUSTAIN,
             release_s: DEFAULT_RELEASE_SECONDS,
+            lfo_wave: LfoWave::Sine,
+            lfo_rate_hz: DEFAULT_LFO_RATE_HZ,
+            lfo_depth: DEFAULT_LFO_DEPTH,
+            lfo_target: LfoTarget::Pitch,
         }
     }
 
@@ -444,6 +552,41 @@ impl PolySynthParams {
             DEFAULT_SUSTAIN
         };
         self.release_s = positive_or(release_s, DEFAULT_RELEASE_SECONDS);
+        self
+    }
+
+    /// 设置全局 LFO（⭐ `T-FIX-277`）。
+    ///
+    /// - `wave`：波形（[`LfoWave`]；正弦/三角/方波/锯齿）；
+    /// - `rate_hz`：速率（Hz）。非有限或负值 ⇒ 默认 [`DEFAULT_LFO_RATE_HZ`]
+    ///   （`5.0`）；钳到 `0.0 ..= 100.0`。`0.0` 是**合法值** = LFO 冻结在
+    ///   `shape(wave, 0)` 那个常数值上（正弦/三角是 `0` ⇒ 无调制，方波是 `1` ⇒
+    ///   恒定偏移），不是"没写"；
+    /// - `depth`：深度，**量纲按 `target` 解释**：音高目标是**音分**
+    ///   （`0..=1200`，即最多一个八度）；振幅目标是**线性增益分数**
+    ///   （渲染时再钳到 `0..=1`）；截止频率目标是**八度**（渲染时再钳到
+    ///   `0..=4`）。非有限或负值 ⇒ `0.0`（关）；钳到 `0.0 ..= 1200.0`。
+    ///   `0.0` 是**合法值** = 关掉调制，渲染路径因此与接线前**逐位相同**
+    ///   （判据 `tests/polysynth_lfo.rs` 的 L1）；
+    /// - `target`：调制目标（[`LfoTarget`]；三者互斥，同一时刻只调一个）。
+    ///
+    /// ⚠ 本层**不**做"LFO 与滤波器旁通的联动"：截止频率目标只在滤波器**启用**时
+    ///   才出声（旁通时滤波器一次也不调用，调制无处可落）；音高/振幅目标与
+    ///   旁通无关。
+    #[must_use]
+    pub fn with_lfo(mut self, wave: LfoWave, rate_hz: f32, depth: f32, target: LfoTarget) -> Self {
+        self.lfo_wave = wave;
+        self.lfo_rate_hz = if rate_hz.is_finite() && rate_hz >= 0.0 {
+            rate_hz.min(100.0)
+        } else {
+            DEFAULT_LFO_RATE_HZ
+        };
+        self.lfo_depth = if depth.is_finite() && depth >= 0.0 {
+            depth.min(1200.0)
+        } else {
+            DEFAULT_LFO_DEPTH
+        };
+        self.lfo_target = target;
         self
     }
 
@@ -506,6 +649,30 @@ impl PolySynthParams {
     pub const fn release_s(&self) -> f32 {
         self.release_s
     }
+
+    /// 全局 LFO 的波形（⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_wave(&self) -> LfoWave {
+        self.lfo_wave
+    }
+
+    /// 全局 LFO 的速率（Hz；⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_rate_hz(&self) -> f32 {
+        self.lfo_rate_hz
+    }
+
+    /// 全局 LFO 的深度（⭐ `T-FIX-277`；量纲按目标解释，见 [`Self::with_lfo`]）。
+    #[must_use]
+    pub const fn lfo_depth(&self) -> f32 {
+        self.lfo_depth
+    }
+
+    /// 全局 LFO 的调制目标（⭐ `T-FIX-277`）。
+    #[must_use]
+    pub const fn lfo_target(&self) -> LfoTarget {
+        self.lfo_target
+    }
 }
 
 impl Default for PolySynthParams {
@@ -529,6 +696,12 @@ const DEFAULT_DECAY_SECONDS: f32 = 0.08;
 const DEFAULT_SUSTAIN: f32 = 0.7;
 /// 默认释放（秒）：50 ms 让"音符终点"在判据里可界。
 const DEFAULT_RELEASE_SECONDS: f32 = 0.05;
+
+/// 默认 LFO 速率（Hz；⭐ `T-FIX-277`）：`5.0` 是常见的颤音速率。
+/// 深度默认 `0` 时它不参与声音，因此这个值只是"写了深度但没写速率"时的 fallback。
+const DEFAULT_LFO_RATE_HZ: f32 = 5.0;
+/// 默认 LFO 深度（⭐ `T-FIX-277`）：`0.0` = 关掉调制。
+const DEFAULT_LFO_DEPTH: f32 = 0.0;
 
 /// 非有限或非正值退回默认值。
 #[must_use]
@@ -1040,6 +1213,13 @@ pub struct PolySynth<const VOICES: usize = VOICES_PER_SLOT> {
     steal_fade_frames: u32,
     voice_steals: u64,
     notes_triggered: u64,
+    /// ⭐ **全局 LFO 的状态**（`T-FIX-277`）：每槽一份，所有声部共用
+    /// （[`crate::oscillator`] 模块文档 §二"所有声部共用一个 LFO"）。
+    ///
+    /// 它是 `Copy` 的标量状态（相位 + 上一值 + one-shot 标志）⇒ 器件保持
+    /// `Copy`，逐样本路径不分配。相位只在**发声帧**推进（见
+    /// [`Self::render_with_pitch`]），`depth == 0` 时一次也不推进。
+    lfo: Lfo,
 }
 
 impl<const VOICES: usize> PolySynth<VOICES> {
@@ -1059,6 +1239,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             steal_fade_frames: steal_fade_frames_for(sample_rate),
             voice_steals: 0,
             notes_triggered: 0,
+            lfo: Lfo::new(),
         }
     }
 
@@ -1213,8 +1394,13 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     }
 
     /// 释放全部声部（走带 seek 的接入点）。不重算参数、不改采样率。
+    ///
+    /// ⭐ `T-FIX-277`：LFO 相位也一起复位 —— seek 是"从新位置重新开始"，
+    /// LFO 从周期起点重走与"重新渲染同一段 ⇒ 同一位模式"同一条纪律；
+    /// 不复位会让"seek 后重渲染"与"从头渲染"的 LFO 相位对不上。
     pub fn reset(&mut self) {
         self.voices = [PolyVoice::IDLE; VOICES];
+        self.lfo.reset();
     }
 
     /// 本器件引入的处理延迟：**恒为 `0` 帧** [ARCH-PDC-001]。
@@ -1637,6 +1823,10 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 3. `voice.freq_hz` / `osc.level_freq` **永不改写** ⇒ [`Self::note_off`] 的配对键与
     ///    [`Self::set_sample_rate`] 的 `retune` 都还是 base 频率。
     ///
+    /// ⭐ 全局 LFO（`T-FIX-277`，见模块文档 §10）：`lfo_depth == 0` 时上面三条
+    /// 逐字成立（LFO 分支不存在）；`depth > 0` 时 LFO 音分只与探针音分**相加**，
+    /// 不改写 `freq_hz` / `level_freq`，也不碰淡出窗口内的声部。
+    ///
     /// **实时路径**：零分配、零释放、零锁、零 I/O（探针是 `&dyn Fn` 借用）。
     pub fn render_with_pitch(
         &mut self,
@@ -1652,10 +1842,43 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         let filter_bypass = self.params.filter_bypass;
         let osc2_on = self.params.osc2.is_on();
         let sample_rate = self.sample_rate;
+        // ⭐ 全局 LFO（`T-FIX-277`）：读进局部量（快照边界之外参数不变），
+        // `depth == 0` 时下面整个 LFO 分支不存在 ⇒ 与接线前逐位相同。
+        let lfo_active = self.params.lfo_depth > 0.0;
+        let lfo_wave = self.params.lfo_wave;
+        let lfo_rate = self.params.lfo_rate_hz;
+        let lfo_depth = self.params.lfo_depth;
+        let lfo_target = self.params.lfo_target;
+        let lfo_amp_active = lfo_active && lfo_target == LfoTarget::Amplitude;
+        let lfo_cutoff_base = self.params.cutoff_hz;
+        let lfo_resonance = self.params.resonance;
+        let lfo_drive = self.params.drive;
         for (frame, output) in out.iter_mut().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             let now = position.saturating_add(frame as u64);
             let mut accumulator = 0.0f32;
+            // --- ⭐ 全局 LFO 的推进（`T-FIX-277`）：每槽一份，所有声部共用 ---
+            //
+            // 只在"本帧至少一个声部发声"时推进一帧（[`Lfo::process`]，复用现有
+            // DSP，不新建第二份）：推进量因此只取决于"哪些绝对帧在发声"
+            // （音符排程的函数），与块切分无关；无声部发声的帧不推进 ⇒ 空渲染
+            // 调用（上面的 early return）与块边界都不会让相位漂移。
+            // 振幅目标是逐样本乘数，在这里随 LFO 值每帧算好（一次乘加，无超越函数）；
+            // 音高/截止目标走下面的绝对网格（§10）。
+            let mut lfo_value = self.lfo.value;
+            let mut lfo_amp = 1.0f32;
+            if lfo_active {
+                let frame_sounds = self
+                    .voices
+                    .iter()
+                    .any(|voice| voice.active && now >= voice.start_sample);
+                if frame_sounds {
+                    lfo_value = self.lfo.process(lfo_wave, lfo_rate, sample_rate);
+                    if lfo_amp_active {
+                        lfo_amp = (1.0 + lfo_depth.min(1.0) * lfo_value).max(0.0);
+                    }
+                }
+            }
             for voice in &mut self.voices {
                 if !voice.active || now < voice.start_sample {
                     continue;
@@ -1709,6 +1932,10 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                     } else {
                         let mut sample =
                             oscillator_sample(tables, voice, osc2_on) * envelope * voice.gain;
+                        // ⭐ `T-FIX-277`：振幅目标是逐样本乘数（上面每帧算好的 `lfo_amp`）。
+                        if lfo_amp_active {
+                            sample *= lfo_amp;
+                        }
                         if !filter_bypass {
                             sample = voice.filter.process(sample);
                         }
@@ -1718,6 +1945,37 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                             *voice = PolyVoice::IDLE;
                         }
                         continue;
+                    }
+                }
+                // --- ⭐ 全局 LFO 的网格应用（`T-FIX-277`）：绝对位置 64 样本 ---
+                //
+                // 只在 `now % 64 == 0` 的帧应用 ⇒ 逐样本路径不加超越函数（与 §9
+                // 的音高网格同一控制率 `0.75 kHz`）；淡出窗口内的声部在上面已经
+                // `continue`，这里见不到它们（旧音符的最后 3 ms 保持窃取前的状态）。
+                // 网格锚在**绝对位置**（不是音符局部时间）⇒ 与块切分无关（§10）。
+                if lfo_active && now.is_multiple_of(LFO_UPDATE_SAMPLES) {
+                    match lfo_target {
+                        LfoTarget::Pitch => {
+                            // 无形状的声部：LFO 音分直接弯；有形状的声部：LFO 音分
+                            // 折进下面的探针应用（两路相加，⛔ 不互相覆盖）。
+                            if voice.pitch_shape == NO_PITCH_SHAPE {
+                                voice.apply_pitch(lfo_depth * lfo_value, sample_rate);
+                            }
+                        }
+                        LfoTarget::Cutoff => {
+                            // 截止频率是声部滤波器的系数：重配置只写系数、不动状态
+                            // （[`LadderFilter::configure`] 的语义）；共振/驱动取
+                            // 当前参数（与"在响声部的滤波器系数用调用时刻的参数重算"
+                            // 同一条纪律，见 [`Self::set_sample_rate`] 的文档第 2 条）。
+                            let octaves = lfo_depth.min(4.0) * lfo_value;
+                            let cutoff = lfo_cutoff_base * exp2(octaves);
+                            voice
+                                .filter
+                                .configure(sample_rate, cutoff, lfo_resonance, lfo_drive);
+                        }
+                        LfoTarget::Amplitude => {
+                            // 振幅是逐样本乘数（上面 `lfo_amp`），不走网格。
+                        }
                     }
                 }
                 // --- ⭐ 音高网格（`#311b`）：音符局部 64 样本，⛔ 不是调用块 ---
@@ -1730,7 +1988,13 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                 {
                     let local = now - voice.start_sample;
                     if local.is_multiple_of(PITCH_UPDATE_SAMPLES) {
-                        voice.apply_pitch(probe(voice.pitch_shape, local), sample_rate);
+                        // ⭐ `T-FIX-277`：LFO 音分与弯音/滑音音分相加（同一口子，
+                        // 不互相覆盖；LFO 不活跃时这里与接线前逐位相同）。
+                        let mut cents = probe(voice.pitch_shape, local);
+                        if lfo_active && lfo_target == LfoTarget::Pitch {
+                            cents += lfo_depth * lfo_value;
+                        }
+                        voice.apply_pitch(cents, sample_rate);
                     }
                 }
                 let gate = now < voice.end_sample;
@@ -1740,6 +2004,10 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                     continue;
                 }
                 let mut sample = oscillator_sample(tables, voice, osc2_on) * envelope * voice.gain;
+                // ⭐ `T-FIX-277`：振幅目标是逐样本乘数（上面每帧算好的 `lfo_amp`）。
+                if lfo_amp_active {
+                    sample *= lfo_amp;
+                }
                 // 声部级低通。**旁通时一次也不调用** ⇒ 逐位恒等
                 //（不是"系数取成透明"，那样状态仍会吸收瞬态）。
                 if !filter_bypass {
@@ -1789,6 +2057,36 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             .iter()
             .find(|voice| voice.active && voice.freq_hz == freq_hz)
             .map(|voice| voice.gain)
+    }
+
+    /// ⭐ **只读取值器**（⛔ 不改行为、⛔ 不加字段）：LFO 目标为截止频率时的
+    /// **当前有效截止频率**（Hz；`T-FIX-277`）。
+    ///
+    /// 读数 = `params.cutoff_hz × 2^(lfo_depth × LFO 当前值)`（深度按八度解释，
+    /// 钳到 `0..=4`；再按 [`LadderFilter::configure`] 的口径钳到
+    /// `20 ..= 0.45 × 采样率`）。`depth == 0` 或目标不是截止频率时返回
+    /// `params.cutoff_hz` 本身（即"没有调制"时的读数）。
+    ///
+    /// 它存在的唯一理由是**判据可读性**：截止频率的调制不像音高/振幅那样能
+    /// 直接从输出波形上量出来（要先过频谱），这个取值器让判据能读**落地**的
+    /// 那个有效截止（判据 `tests/polysynth_lfo.rs` 的 L4）。语义与
+    /// [`Self::debug_voice`] 同族：不分配、不改状态、不参与产物路径。
+    ///
+    /// ⚠ "当前值"是 LFO 上一次推进的那个值：渲染停在哪里，读数就停在那里；
+    /// 没有发声帧推进时它就是上一次发声帧的值（`depth == 0` 时恒为基值）。
+    #[must_use]
+    pub fn debug_lfo_cutoff_hz(&self) -> f32 {
+        let base = self.params.cutoff_hz;
+        if self.params.lfo_depth <= 0.0 || self.params.lfo_target != LfoTarget::Cutoff {
+            return base;
+        }
+        let octaves = self.params.lfo_depth.min(4.0) * self.lfo.value;
+        let effective = base * exp2(octaves);
+        if effective.is_finite() {
+            effective.clamp(20.0, self.sample_rate * 0.45)
+        } else {
+            base
+        }
     }
 
     /// 新建一个"刚起音"的声部（空槽路径与硬窃取路径用）。
