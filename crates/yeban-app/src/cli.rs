@@ -7879,7 +7879,7 @@ fn logic_loss_lines(losses: &[yeban_render::logic::LogicLoss]) -> Vec<String> {
 ///
 /// 幂等：同一哈希已在池里就**不重复登记**（内容寻址 ⇒ 同键必同值）。
 /// [`ProjectArchive::assets`] 的文档要求"按哈希升序"，因此用**二分插入**而不是 `push`
-/// （`save_archive_file` 内部会重建成 `BTreeMap`，但归档自身的形态要守住它声明的不变式）。
+/// （`save_archive_file` 内部按 `BTreeMap` 语义借用去重，但归档自身的形态要守住它声明的不变式）。
 fn register_audio_asset(
     archive: &mut ProjectArchive,
     report: &crate::import_audio::AudioImportReport,

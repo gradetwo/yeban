@@ -54,7 +54,7 @@
 //! 因此它在本机可以用 `rustc --edition 2024 --test` 真跑（见
 //! `docs/ledger/app-mixer-notes.md` §5）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -265,10 +265,12 @@ pub fn save_project_file(
 ///
 /// `history.dag` 与资产池的**内容**由调用方决定（本模块不解释它们，也不替它们做取舍）。
 ///
-/// 已知代价（如实登记）：`write_project_container` 的签名要 `BTreeMap<AssetHash, Vec<u8>>`，
-/// 而 `ProjectArchive::assets` 是 `Vec<(AssetHash, Vec<u8>)>`，因此这里要重建一个
-/// `BTreeMap` —— 大资产池会多一次内存拷贝。要消掉它需要 `yeban-model` 暴露一个
-/// `&[(AssetHash, &[u8])]` 形态的写出面（本条已登记为 notes 的 needs）。
+/// 资产池**不再**重建 `BTreeMap`（T-FIX-460）：`yeban-model` 已有借用形态的写出面
+/// （`write_project_container_with_proposals_borrowed`），本函数经
+/// [`save_archive_parts_file_with`] 直接借用输入切片；重复哈希在借用层按
+/// `BTreeMap` 的语义去重（升序、最后一次出现的值胜出），不复制资产字节。
+/// （旧"已知代价"登记已随本次改动删除；台账 `docs/ledger/app-cli-notes.md` §8
+/// needs-2 的"加一个借用形态写出面"一项现已满足，待集成者划掉。）
 ///
 /// # Errors
 ///
@@ -352,10 +354,35 @@ fn save_archive_file_with(
     )
 }
 
+/// 把 `&[(AssetHash, Vec<u8>)]` 转成写出端要的 `&[(&AssetHash, &[u8])]`（T-FIX-460）。
+///
+/// 只搬运引用，⛔ 不复制资产字节。语义与旧实现（重建成 `BTreeMap`）逐条对齐：
+/// - 按哈希升序；
+/// - 重复哈希只留**最后一次**出现的值（`BTreeMap::insert` 的覆盖语义）；
+/// - 输入顺序不影响输出（写出端还会再排一次，这里排好是让借用层本身就有确定的顺序）。
+///
+/// [`ProjectArchive::assets`] 的文档只要求"按哈希升序"，没有在类型上禁掉重复哈希；
+/// 旧实现对重复输入是"静默取最后一次"，本函数保持同一行为 —— 绝不在这里把
+/// "本可以保存的输入"改成报错（写出端对真正的重名条目仍有重名拒绝兜底，但去重
+/// 之后它到不了那里）。
+fn borrowed_assets_deduped(assets: &[(AssetHash, Vec<u8>)]) -> Vec<(&AssetHash, &[u8])> {
+    let mut seen: BTreeSet<&AssetHash> = BTreeSet::new();
+    let mut borrowed: Vec<(&AssetHash, &[u8])> = Vec::with_capacity(assets.len());
+    // 倒序遍历 ⇒ 每个哈希第一次被 `seen` 接受的，就是它在输入里的最后一次出现。
+    for (hash, data) in assets.iter().rev() {
+        if seen.insert(hash) {
+            borrowed.push((hash, data.as_slice()));
+        }
+    }
+    borrowed.sort_by(|left, right| left.0.cmp(right.0));
+    borrowed
+}
+
 /// [`save_archive_file_with`] 的借用形态：**唯一**实现体，归档形态只是转发。
 ///
-/// 资产池仍按哈希重建成 `BTreeMap`（与旧实现同一处拷贝，见
-/// [`save_archive_file`] 文档登记的已知代价）；工程本身只借用，⛔ 不克隆。
+/// 资产池**直接借用**输入切片（T-FIX-460）：[`borrowed_assets_deduped`] 只搬运引用，
+/// ⛔ 不复制资产字节；重复哈希按 `BTreeMap` 的语义去重（升序、最后一次出现的值胜出），
+/// 因此同一输入的写出字节与旧实现（重建 `BTreeMap`）逐字节相同。工程本身只借用，⛔ 不克隆。
 fn save_archive_parts_file_with(
     project: &YebanProjectV1,
     history_dag: &[u8],
@@ -365,14 +392,7 @@ fn save_archive_parts_file_with(
     path: &Path,
     overwrite: bool,
 ) -> Result<SaveReport, SaveError> {
-    let mut owned_assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
-    for (hash, data) in assets {
-        owned_assets.insert(hash.clone(), data.clone());
-    }
-    let borrowed_assets: Vec<(&AssetHash, &[u8])> = owned_assets
-        .iter()
-        .map(|(hash, data)| (hash, data.as_slice()))
-        .collect();
+    let borrowed_assets = borrowed_assets_deduped(assets);
     let borrowed_presets: Vec<(&str, &[u8])> = embedded_presets
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))
@@ -832,5 +852,128 @@ mod tests {
             "成功的排他保存必须把自己的锁文件收走（不留残留锁）: {}",
             lock_path(&path).display()
         );
+    }
+
+    /// 判据 9（T-FIX-460）：**字节同一性** —— 同一份归档输入，新借用路径写出的容器
+    /// 字节与旧实现（重建成 `BTreeMap` 再借出）**逐字节相同**。
+    ///
+    /// 对照直接用 `yeban-model` 仍保留的 `write_project_container`（`BTreeMap`
+    /// 形态）算出：输入故意**按哈希降序**排列，证明顺序不影响输出；提案段与预制
+    /// 都为空，两条路径调的是同一条写出实现，只差资产形态。
+    #[test]
+    fn borrowed_save_writes_byte_identical_containers_to_the_btreemap_form() {
+        use yeban_model::container::write_project_container;
+        use yeban_model::ids::AssetHash;
+
+        let project = demo_project();
+        let history_dag = b"commit-graph-bytes";
+        let first = b"first-asset-bytes".to_vec();
+        let second = b"second-asset-bytes".to_vec();
+        let third = b"third-asset-bytes".to_vec();
+        let hash_first = AssetHash::of_bytes(&first);
+        let hash_second = AssetHash::of_bytes(&second);
+        let hash_third = AssetHash::of_bytes(&third);
+        assert!(
+            hash_first != hash_second && hash_second != hash_third && hash_first != hash_third,
+            "三个资产的哈希必须互不相同，否则降序排列无意义"
+        );
+        // 故意按哈希降序排列（与写出顺序相反），证明输入顺序不影响输出字节。
+        let mut assets = vec![
+            (hash_first.clone(), first.clone()),
+            (hash_second.clone(), second.clone()),
+            (hash_third.clone(), third.clone()),
+        ];
+        assets.sort_by(|left, right| right.0.cmp(&left.0));
+
+        let mut map: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        for (hash, data) in &assets {
+            map.insert(hash.clone(), data.clone());
+        }
+        let old_bytes =
+            write_project_container(&project, history_dag, &map).expect("旧 BTreeMap 形态写出");
+
+        let dir = scratch_dir("borrowed-identical");
+        let path = dir.join("borrowed.yeban");
+        let report =
+            save_archive_parts_file_with(&project, history_dag, &assets, None, &[], &path, true)
+                .expect("借用路径保存");
+        let new_bytes = std::fs::read(&path).expect("读回");
+        assert_eq!(report.bytes, new_bytes.len());
+        assert_eq!(
+            new_bytes, old_bytes,
+            "借用路径与 BTreeMap 形态的写出字节必须逐字节相同"
+        );
+    }
+
+    /// 判据 10（T-FIX-460）：**重复哈希** —— 输入里同一哈希出现两次时，借用层按
+    /// `BTreeMap` 的语义只留**最后一次**出现的值，保存成功且读回只有一条资产。
+    ///
+    /// 归档类型只在文档里要求"按哈希升序"，没有在类型上禁掉重复；旧实现对此是
+    /// "静默取最后一次"，本判据把这条行为钉住（而不是改成报错）。红对照：
+    /// 去掉去重步骤后，写出端因重名条目拒绝写入，本判据红掉（见回执 §3 的红对照记录）。
+    #[test]
+    fn duplicate_asset_hash_keeps_the_last_value() {
+        use yeban_model::container::read_project_container;
+        use yeban_model::ids::AssetHash;
+
+        let project = demo_project();
+        let kept = b"duplicate-hash-last-value".to_vec();
+        let dropped = b"duplicate-hash-first-value".to_vec();
+        let hash = AssetHash::of_bytes(&kept);
+        // 两条数据的哈希键相同（都是 `kept` 的哈希），但字节不同 —— 只有最后一次
+        // 出现的值会进容器，写出端的哈希校验才通过。
+        let archive = ProjectArchive {
+            project: project.clone(),
+            history_dag: b"commit-graph-bytes".to_vec(),
+            proposals: None,
+            assets: vec![(hash.clone(), dropped), (hash.clone(), kept.clone())],
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        };
+
+        let dir = scratch_dir("duplicate-hash");
+        let path = dir.join("dup.yeban");
+        save_archive_file(&archive, &path).expect("重复哈希的保存必须成功（取最后一次）");
+
+        let bytes = std::fs::read(&path).expect("读回");
+        let read_back =
+            read_project_container(&bytes, &yeban_model::container::ContainerLimits::default())
+                .expect("读回容器");
+        assert_eq!(read_back.assets.len(), 1, "重复哈希必须去重成一条资产");
+        assert_eq!(read_back.assets[0].0, hash);
+        assert_eq!(read_back.assets[0].1, kept, "留下的必须是最后一次出现的值");
+    }
+
+    /// 判据 11（T-FIX-460）：借用层去重函数本身 —— 乱序输入 + 重复哈希 ⇒
+    /// 输出按哈希升序、每哈希一条、重复取最后一次；且全程只借用（返回值借自输入）。
+    #[test]
+    fn borrowed_assets_deduped_sorts_and_keeps_the_last_value() {
+        use yeban_model::ids::AssetHash;
+
+        let first = b"asset-first".to_vec();
+        let second = b"asset-second".to_vec();
+        let third = b"asset-third".to_vec();
+        let hash_first = AssetHash::of_bytes(&first);
+        let hash_second = AssetHash::of_bytes(&second);
+        let hash_third = AssetHash::of_bytes(&third);
+        // 同一哈希出现两次，第二次的值不同但键相同 ⇒ 只留第二次。
+        let first_again = b"asset-first-second-occurrence".to_vec();
+        let input = vec![
+            (hash_third.clone(), third.clone()),
+            (hash_first.clone(), first.clone()),
+            (hash_second.clone(), second.clone()),
+            (hash_first.clone(), first_again.clone()),
+        ];
+        let out = borrowed_assets_deduped(&input);
+        assert_eq!(out.len(), 3, "四个输入、三个不同哈希 ⇒ 三条输出");
+        let hashes: Vec<&AssetHash> = out.iter().map(|(hash, _)| *hash).collect();
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        assert_eq!(hashes, sorted, "输出必须按哈希升序");
+        let kept = out
+            .iter()
+            .find(|(hash, _)| **hash == hash_first)
+            .expect("hash_first 在输出里");
+        assert_eq!(kept.1, first_again.as_slice(), "重复哈希留最后一次出现的值");
     }
 }
