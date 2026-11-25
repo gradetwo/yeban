@@ -151,7 +151,7 @@ fn one_client_session_does_handshake_tools_list_and_a_real_call() {
             1,
             "initialize",
             serde_json::json!({
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2024-11-05",
                 "capabilities": {},
                 "clientInfo": {"name": "yeban-stdio-e2e", "version": env!("CARGO_PKG_VERSION")},
             }),
@@ -190,10 +190,10 @@ fn one_client_session_does_handshake_tools_list_and_a_real_call() {
         "notification 不得占一行响应, 响应必须按请求顺序: {res:?}"
     );
 
-    // ---- ② 握手: 服务端自述 + 回显协议版本 + 声明 tools 能力 ----
+    // ---- ② 握手: 服务端自述 + 协商后的协议版本 + 声明 tools 能力 ----
     let init = &res[0]["result"];
     assert_eq!(init["serverInfo"]["name"], "yeban-mcp", "{init}");
-    assert_eq!(init["protocolVersion"], "2025-06-18", "{init}");
+    assert_eq!(init["protocolVersion"], "2024-11-05", "{init}");
     assert!(init["capabilities"]["tools"].is_object(), "{init}");
 
     // ---- ③ tools/list: 与注册表逐项相同(条数 + 名字 + 顺序) ----

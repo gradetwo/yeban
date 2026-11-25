@@ -73,6 +73,20 @@ pub const METHOD_PING: &str = "ping";
 /// 客户端未给 `params.protocolVersion` 时本仓声明的协议版本。
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// 本仓**实际支持**的 MCP 协议版本，按日期升序排列，最后一项是最高版本。
+///
+/// 只登记已经核过要求的版本；`2025-06-18` 等更新版本在未逐项验证前不得加入，
+/// 避免 `initialize` 向客户端宣称支持一个本服务端并未实现的协议。
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[DEFAULT_PROTOCOL_VERSION];
+
+/// 支持列表按日期升序排列，因此最后一项就是协商回退时使用的最高版本。
+fn highest_supported_protocol_version() -> &'static str {
+    SUPPORTED_PROTOCOL_VERSIONS
+        .last()
+        .copied()
+        .unwrap_or(DEFAULT_PROTOCOL_VERSION)
+}
+
 /// `dryRun` 结果里标记"这是模拟"的字段名。
 pub const DRY_RUN_FLAG: &str = "dryRun";
 
@@ -400,19 +414,38 @@ impl Dispatcher {
 
     /// `[ROAD-M4-002]` MCP 握手响应：协议版本 + 能力 + 服务器自述。
     ///
-    /// 版本策略：客户端给了 `params.protocolVersion` 就**回显**它（协议允许服务端在回应里确定版本），
-    /// 否则用 [`DEFAULT_PROTOCOL_VERSION`]。**不**在这里编造本仓没有的能力。
+    /// 版本策略：只接受 [`SUPPORTED_PROTOCOL_VERSIONS`] 内的客户端值；缺失时用
+    /// [`DEFAULT_PROTOCOL_VERSION`]，未知值回退到本仓支持的最高版本。协商结果
+    /// 连同请求值、支持列表写进 `serverInfo`，使客户端与日志都能查到“为什么不是
+    /// 它请求的那个版本”。**不**在这里编造本仓没有的能力或声明未验证的协议版本。
     fn initialize_result(request: &Request) -> Value {
-        let version = request
+        let requested = request
             .params
             .as_ref()
             .and_then(|p| p.get("protocolVersion"))
             .and_then(Value::as_str)
             .unwrap_or(DEFAULT_PROTOCOL_VERSION);
+        let supported = SUPPORTED_PROTOCOL_VERSIONS.contains(&requested);
+        let negotiated = if supported {
+            requested
+        } else {
+            highest_supported_protocol_version()
+        };
+        if !supported {
+            eprintln!(
+                "[yeban-mcp] initialize: 客户端协议版本 {requested:?} 不受支持；已回退到 {negotiated:?}（支持列表: {SUPPORTED_PROTOCOL_VERSIONS:?}）"
+            );
+        }
         serde_json::json!({
-            "protocolVersion": version,
+            "protocolVersion": negotiated,
             "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "yeban-mcp", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": {
+                "name": "yeban-mcp",
+                "version": env!("CARGO_PKG_VERSION"),
+                "supportedProtocolVersions": SUPPORTED_PROTOCOL_VERSIONS,
+                "requestedProtocolVersion": requested,
+                "protocolVersionSupported": supported,
+            },
         })
     }
 
@@ -1694,28 +1727,90 @@ mod tests {
         let sample = crate::tools::ToolResponse::failure(ErrorCode::IoError, "x").to_value();
         assert_eq!(sample["error"]["code"], "IO_ERROR");
     }
-    /// 缺省协议版本是**线协议字面量**，而且 `initialize` 真的回显它（没给就回缺省）。
+    /// 协议版本协商：缺省/受支持/未知三条路径都只返回本仓支持的版本，并在
+    /// `serverInfo` 留下请求值、支持列表与协商结果。
     ///
-    /// 注入（实测红）：把 [`DEFAULT_PROTOCOL_VERSION`] 改成 `"2024-11-06"` ⇒ 既有判据
-    /// **全绿**（它们只检查"回应里有 `protocolVersion` 这个键"）；本判据红。
+    /// 注入（实测红）：把未知值的分支改回原样回显 ⇒ 本判据红。
     #[test]
-    fn the_default_protocol_version_is_the_wire_literal() {
+    fn initialize_negotiates_a_supported_protocol_version() {
         assert_eq!(DEFAULT_PROTOCOL_VERSION, "2024-11-05");
-        let request = Request::parse(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
+        assert!(!SUPPORTED_PROTOCOL_VERSIONS.is_empty());
+        assert!(SUPPORTED_PROTOCOL_VERSIONS.contains(&DEFAULT_PROTOCOL_VERSION));
+        // 本仓没有逐项验证 2025-06-18 的要求，因此不能把它写进支持列表。
+        assert!(!SUPPORTED_PROTOCOL_VERSIONS.contains(&"2025-06-18"));
+
+        // 缺字段 → DEFAULT_PROTOCOL_VERSION。
+        let missing = Request::parse(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
             .expect("初始化请求");
-        let value = Dispatcher::initialize_result(&request);
+        let value = Dispatcher::initialize_result(&missing);
         assert_eq!(
             value["protocolVersion"], "2024-11-05",
             "缺省必须回线协议的已发布版本: {value}"
         );
-        // 客户端给了就回显它（协议允许服务端在回应里确定版本）。
-        let echoed = Request::parse(
-            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"X"}}"#,
+        assert_eq!(
+            value["serverInfo"]["requestedProtocolVersion"], "2024-11-05",
+            "缺字段时留痕应记录实际采用的缺省值: {value}"
+        );
+        assert_eq!(
+            value["serverInfo"]["protocolVersionSupported"], true,
+            "缺字段走缺省不应被标成不支持: {value}"
+        );
+
+        // 受支持版本 → 原样返回该版本。
+        let supported = Request::parse(
+            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
         )
         .expect("初始化请求");
+        let value = Dispatcher::initialize_result(&supported);
         assert_eq!(
-            Dispatcher::initialize_result(&echoed)["protocolVersion"],
-            "X"
+            value["protocolVersion"], "2024-11-05",
+            "受支持版本必须原样返回: {value}"
+        );
+        assert_eq!(
+            value["serverInfo"]["protocolVersionSupported"], true,
+            "受支持版本应标记为支持: {value}"
+        );
+
+        // 未知版本 → 支持的最高版本，不得回显客户端原文。
+        let unknown = Request::parse(
+            r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"X"}}"#,
+        )
+        .expect("初始化请求");
+        let value = Dispatcher::initialize_result(&unknown);
+        assert_eq!(
+            value["protocolVersion"],
+            highest_supported_protocol_version(),
+            "未知版本必须回退到支持的最高版本: {value}"
+        );
+        assert_ne!(value["protocolVersion"], "X", "不得回显未知版本: {value}");
+        assert_eq!(
+            value["serverInfo"]["requestedProtocolVersion"], "X",
+            "serverInfo 必须保留原始请求值以便排查: {value}"
+        );
+        assert_eq!(
+            value["serverInfo"]["protocolVersionSupported"], false,
+            "未知版本必须标记为不支持: {value}"
+        );
+        assert_eq!(
+            value["serverInfo"]["supportedProtocolVersions"],
+            serde_json::json!(SUPPORTED_PROTOCOL_VERSIONS),
+            "serverInfo 必须列出实际支持列表: {value}"
+        );
+
+        // 2025-06-18 是比 DEFAULT 更新的协议版本，但本仓未验证，必须同样回退。
+        let newer = Request::parse(
+            r#"{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        )
+        .expect("初始化请求");
+        let value = Dispatcher::initialize_result(&newer);
+        assert_eq!(
+            value["protocolVersion"],
+            highest_supported_protocol_version(),
+            "未验证的新协议版本必须回退: {value}"
+        );
+        assert_eq!(
+            value["serverInfo"]["protocolVersionSupported"], false,
+            "未验证的新协议版本不得宣称支持: {value}"
         );
     }
 
