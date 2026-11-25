@@ -99,7 +99,7 @@ fn marquee_selects_three_notes_and_delete_removes_them_in_one_undo_step() {
     let ui_base = ui.get_roll_base_pitch().clamp(0, 112) as u8;
     let scroll = ui.get_roll_scroll_x();
     let width = slint::ComponentHandle::window(ui).size().width as f32;
-    let mut visible = view.visible_notes_scoped(scroll, width, None);
+    let mut visible = view.visible_notes_scoped(scroll, width, None, None);
     view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, ui_base);
     assert_eq!(visible.ulids.len(), 3, "夹具必须 3 颗可见音符");
     let min_x = visible.positions.iter().copied().fold(f32::MAX, f32::min) - 8.0;

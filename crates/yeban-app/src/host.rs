@@ -328,6 +328,24 @@ fn tracks_model_equal(ui: &MainWindow, next: &[crate::ui::TrackData]) -> bool {
     (0..next.len()).all(|i| current.row_data(i).as_ref() == next.get(i))
 }
 
+/// 卷帘当前纵向音高窗口（**唯一**口径）。
+///
+/// 窗口就是 `roll-base-pitch..=base + ROLL_LANE_COUNT - 1`，
+/// 与 `.slint` 的 16 条泳道逐条对应（滚轮/八度平移会移动 base，窗口随之移动）。`apply_view` 与 `Cmd/Ctrl+A`
+/// 共用本函数，⛔ 不在两个调用点各抄一套。
+fn roll_visible_pitch_window(ui: &MainWindow) -> (u8, u8) {
+    let roll_base = roll_base_pitch(ui);
+    // ⛔ 不能拿 `ViewState::visible_pitch_range(16)` 当来源：`pitch_lane` 把窗口外的音高
+    // **钳制**到 0..15，于是它对 16 条泳道恒返回 `0..=127`（T-FIX-216 复核时实测）。
+    // 真实的 16 条泳道窗口就是 base..=base+15，两个调用点都只认这一份。
+    (
+        roll_base,
+        roll_base
+            .saturating_add((ROLL_LANE_COUNT - 1) as u8)
+            .min(127),
+    )
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -593,7 +611,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
     // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
-    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view));
+    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view), None);
     // 作用域优先级：选中片段的摆放（`clip-select`）> 选中轨（兜底）> 全部。
     // 报告反馈③：旧口径在没有选中片段时显示**所有轨**的音符，和"当前轨道"对不上。
     // ⚠ 保留上面那一行**唯一**的 `visible_notes_scoped` 绑定（判据
@@ -651,16 +669,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     reframe_roll_pitch_if_scope_changed(ui, view);
     // 先读当前卷帘音域基音：纵向滚轮/八度平移之后若只横向滚动或编辑音符，必须保留当前的 min/max 音高视野。
     let roll_base = roll_base_pitch(ui);
-    let (min_pitch, max_pitch) = if roll_base == crate::bridge::PITCH_LANE_BASE {
-        view.visible_pitch_range(ROLL_LANE_COUNT)
-    } else {
-        (
-            roll_base,
-            roll_base
-                .saturating_add((ROLL_LANE_COUNT - 1) as u8)
-                .min(127),
-        )
-    };
+    let (min_pitch, max_pitch) = roll_visible_pitch_window(ui);
     ui.set_roll_min_pitch(i32::from(min_pitch));
     ui.set_roll_max_pitch(i32::from(max_pitch));
     if roll_base != crate::bridge::PITCH_LANE_BASE {
@@ -16233,7 +16242,11 @@ fn apply_action(
             let width = slint::ComponentHandle::window(ui).size().width as f32;
             let scroll = ui.get_roll_scroll_x();
             let scope = roll_scope(ui, &view);
-            let visible = view.visible_notes_scoped(scroll, width, scope);
+            // ⭐ T-FIX-216：全选也必须尊重**纵向**音高窗口。只按水平窗口过滤会把
+            // 当前 16 条泳道之外、用户看不见的音高一起选进去，后续 Delete/量化
+            // 会误伤它们。窗口口径与 `apply_view` 共用 `roll_visible_pitch_window`。
+            let pitch_range = roll_visible_pitch_window(ui);
+            let visible = view.visible_notes_scoped(scroll, width, scope, Some(pitch_range));
             let ids: Vec<slint::SharedString> =
                 visible.ulids.iter().map(|id| id.as_str().into()).collect();
             let count = i32::try_from(ids.len()).unwrap_or(i32::MAX);
@@ -18812,7 +18825,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
                 let ids: Vec<slint::SharedString> =
                     sel.iter().map(|id| id.as_str().into()).collect();
-                let visible = view.visible_notes_scoped(scroll, width, scope);
+                let visible = view.visible_notes_scoped(scroll, width, scope, None);
                 let flags = crate::input::flags_for_ids(
                     &sel.iter().cloned().collect::<Vec<_>>(),
                     &visible.ulids,
@@ -19078,7 +19091,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 let count = i32::try_from(sel.len()).unwrap_or(i32::MAX);
                 let ids: Vec<slint::SharedString> =
                     sel.iter().map(|id| id.as_str().into()).collect();
-                let visible = view.visible_notes_scoped(scroll, width, scope);
+                let visible = view.visible_notes_scoped(scroll, width, scope, None);
                 let flags = crate::input::flags_for_ids(
                     &sel.iter().cloned().collect::<Vec<_>>(),
                     &visible.ulids,

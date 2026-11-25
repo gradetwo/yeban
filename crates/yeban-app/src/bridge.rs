@@ -6084,25 +6084,34 @@ impl ViewState {
     /// 没有作用域（`None`）＝ 片段池的全部音符，与作用域落地之前**逐项相同**。
     #[must_use]
     pub fn visible_notes(&self, scroll_x: f32, viewport_width: f32) -> VisibleNotes {
-        self.visible_notes_scoped(scroll_x, viewport_width, None)
+        self.visible_notes_scoped(scroll_x, viewport_width, None, None)
     }
 
     /// 与 [`Self::visible_notes`] 同一条路径，外加**作用域**（片段池条目身份）。
     ///
     /// 作用域非空 ⇒ 只保留 `clip_id` 与该身份**逐字相等**的音符（`[UI-NOTE-001]` 的
-    /// "当前编辑片段"）；空 ⇒ 全部。过滤发生在裁剪**之后**、装数组**之前**，因此六个
-    /// 平行数组仍然共用同一索引集（`ulids` / `velocities` / `positions` / `widths` / `ys` / `rows`）。
+    /// "当前编辑片段"）；空 ⇒ 全部。`pitch_range` 非空 ⇒ 再按闭区间 `min..=max` 裁纵向
+    /// 音高窗口（T-FIX-216：全选不得命中卷帘 16 条泳道之外的音符）；空 ⇒ 不裁。
+    /// 两道过滤都发生在裁剪**之后**、装数组**之前**，因此六个平行数组仍然共用同一索引集
+    /// （`ulids` / `velocities` / `positions` / `widths` / `ys` / `rows`）。
     #[must_use]
     pub fn visible_notes_scoped(
         &self,
         scroll_x: f32,
         viewport_width: f32,
         clip_scope: Option<&str>,
+        pitch_range: Option<(u8, u8)>,
     ) -> VisibleNotes {
         let left = scroll_x.max(0.0);
         let mut indices = self.notes_visible_in(scroll_x, viewport_width);
         if let Some(scope) = clip_scope {
             indices.retain(|&index| self.notes[index].clip_id.as_str() == scope);
+        }
+        if let Some((min_pitch, max_pitch)) = pitch_range {
+            indices.retain(|&index| {
+                let pitch = self.notes[index].pitch;
+                pitch >= min_pitch && pitch <= max_pitch
+            });
         }
         let mut out = VisibleNotes {
             clip_ids: Vec::with_capacity(indices.len()),
@@ -9289,7 +9298,7 @@ mod tests {
         // 三个窗口（含空窗口）：作用域 = 窗口索引集 ∩ 片段，逐条比对。
         for &(scroll, width) in &[(0.0_f32, 10_000.0_f32), (3.0, 6.0), (0.0, 0.0)] {
             let window = view.notes_visible_in(scroll, width);
-            let unscoped = view.visible_notes_scoped(scroll, width, None);
+            let unscoped = view.visible_notes_scoped(scroll, width, None, None);
             assert_eq!(
                 unscoped.ulids.len(),
                 window.len(),
@@ -9311,7 +9320,7 @@ mod tests {
                     .filter(|&&index| &view.notes[index].clip_id == scope)
                     .map(|&index| view.notes[index].id.clone())
                     .collect();
-                let got = view.visible_notes_scoped(scroll, width, Some(scope.as_str()));
+                let got = view.visible_notes_scoped(scroll, width, Some(scope.as_str()), None);
                 assert_eq!(
                     got.ulids, want,
                     "作用域必须等于 窗口 ∩ 片段（scroll={scroll} width={width} scope={scope}）"
@@ -9335,7 +9344,7 @@ mod tests {
         // 全窗口下作用域必须**真的缩小**结果（否则判据对"过滤器没生效"没有牙）。
         let all = view.visible_notes(0.0, 10_000.0);
         for scope in &clip_ids {
-            let scoped = view.visible_notes_scoped(0.0, 10_000.0, Some(scope.as_str()));
+            let scoped = view.visible_notes_scoped(0.0, 10_000.0, Some(scope.as_str()), None);
             assert!(
                 !scoped.ulids.is_empty(),
                 "片段 {scope} 在 10k 宽窗口里必须有音符"
@@ -9350,7 +9359,7 @@ mod tests {
 
         // 过期 / 伪造身份 ⇒ 空结果，⛔ 不退化成"全部"。
         for bogus in ["", "01J8Z5Q0R7K3M9X2V4B6N8P1ZZ"] {
-            let none = view.visible_notes_scoped(0.0, 10_000.0, Some(bogus));
+            let none = view.visible_notes_scoped(0.0, 10_000.0, Some(bogus), None);
             assert!(none.ulids.is_empty(), "未知作用域 {bogus:?} 必须为空");
             assert_eq!(none.positions.len(), 0);
             assert_eq!(none.widths.len(), 0);
@@ -10719,7 +10728,7 @@ mod tests {
 
         if let Some(first_note) = view.notes.first() {
             let shifted_base = 48;
-            let mut visible = view.visible_notes_scoped(0.0, 4000.0, None);
+            let mut visible = view.visible_notes_scoped(0.0, 4000.0, None, None);
             view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, shifted_base);
             let idx = visible
                 .ulids
