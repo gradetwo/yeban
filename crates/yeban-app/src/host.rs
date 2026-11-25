@@ -13204,6 +13204,159 @@ fn publish_sound_installed_snapshot(ui: &MainWindow, snapshot: &SoundInstalledSn
     ui.set_sound_installed_doctor_needed(booleans(&snapshot.doctor_needed));
 }
 
+/// SFZ Doctor 体检流程的状态行文案闭集（T-FIX-454，形态同
+/// `help::HelpSaveFailureSubject`）：体检回调里的三处硬编码中文状态行
+/// （库找不到 / 已有检查在跑 / 正在检查）与读数属同一缺口（同一状态行、
+/// 同一用户动作），一并按当前语言渲染；九语模板表住在本文件，由单测
+/// 逐语看守。库名不译，原样进占位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorRunStatus {
+    /// 按已发布快照找不到这件库。
+    LibraryNotFound,
+    /// 已有另一件音源在检查中。
+    AlreadyChecking,
+    /// 正在检查这件库。
+    Checking,
+}
+
+impl DoctorRunStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, library_name: &str, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::LibraryNotFound => match lang {
+                ZhCn => "找不到这个音源库（列表可能已刷新，请重试）".to_string(),
+                EnUs => {
+                    "Cannot find this sound library (the list may have refreshed; please retry)"
+                        .to_string()
+                }
+                FrFr => {
+                    "Bibliothèque introuvable (la liste a peut-être été actualisée ; veuillez réessayer)"
+                        .to_string()
+                }
+                EsEs => {
+                    "No se encuentra esta biblioteca de sonidos (es posible que la lista se haya actualizado; inténtelo de nuevo)"
+                        .to_string()
+                }
+                PtBr => {
+                    "Não foi possível encontrar esta biblioteca de sons (a lista pode ter sido atualizada; tente novamente)"
+                        .to_string()
+                }
+                JaJp => {
+                    "この音源ライブラリが見つかりません（リストが更新された可能性があります。もう一度お試しください）"
+                        .to_string()
+                }
+                KoKr => {
+                    "이 사운드 라이브러리를 찾을 수 없습니다(목록이 새로고침되었을 수 있습니다. 다시 시도해 주세요)"
+                        .to_string()
+                }
+                RuRu => {
+                    "Эта звуковая библиотека не найдена (список мог обновиться; попробуйте ещё раз)"
+                        .to_string()
+                }
+                DeDe => {
+                    "Diese Sound-Bibliothek wurde nicht gefunden (die Liste wurde möglicherweise aktualisiert; bitte erneut versuchen)"
+                        .to_string()
+                }
+            },
+            Self::AlreadyChecking => match lang {
+                ZhCn => "已有音源在检查中".to_string(),
+                EnUs => "A sound library check is already in progress".to_string(),
+                FrFr => "Une vérification de bibliothèque est déjà en cours".to_string(),
+                EsEs => "Ya hay una verificación de biblioteca en curso".to_string(),
+                PtBr => "Já há uma verificação de biblioteca em andamento".to_string(),
+                JaJp => "すでに音源のチェック中です".to_string(),
+                KoKr => "이미 사운드 라이브러리 검사가 진행 중입니다".to_string(),
+                RuRu => "Проверка библиотеки уже выполняется".to_string(),
+                DeDe => "Eine Bibliotheksprüfung läuft bereits".to_string(),
+            },
+            Self::Checking => match lang {
+                ZhCn => format!("SFZ Doctor 正在检查《{library_name}》…"),
+                EnUs => format!("SFZ Doctor is checking “{library_name}”…"),
+                FrFr => format!("SFZ Doctor vérifie « {library_name} »…"),
+                EsEs => format!("SFZ Doctor está revisando «{library_name}»…"),
+                PtBr => format!("O SFZ Doctor está verificando «{library_name}»…"),
+                JaJp => format!("SFZ Doctor が《{library_name}》をチェック中…"),
+                KoKr => format!("SFZ Doctor가 “{library_name}”을(를) 검사하고 있습니다…"),
+                RuRu => format!("SFZ Doctor проверяет «{library_name}»…"),
+                DeDe => format!("SFZ Doctor prüft „{library_name}“…"),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod doctor_run_status_tests {
+    use super::DoctorRunStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（三处状态行）。
+    #[test]
+    fn doctor_run_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            DoctorRunStatus::LibraryNotFound.text_in("", Language::ZhCn),
+            "找不到这个音源库（列表可能已刷新，请重试）"
+        );
+        assert_eq!(
+            DoctorRunStatus::AlreadyChecking.text_in("", Language::ZhCn),
+            "已有音源在检查中"
+        );
+        assert_eq!(
+            DoctorRunStatus::Checking.text_in("ext-lib", Language::ZhCn),
+            "SFZ Doctor 正在检查《ext-lib》…"
+        );
+    }
+
+    /// 英文态三处逐条钉死。
+    #[test]
+    fn doctor_run_status_en_us_renders_english() {
+        assert_eq!(
+            DoctorRunStatus::LibraryNotFound.text_in("", Language::EnUs),
+            "Cannot find this sound library (the list may have refreshed; please retry)"
+        );
+        assert_eq!(
+            DoctorRunStatus::AlreadyChecking.text_in("", Language::EnUs),
+            "A sound library check is already in progress"
+        );
+        assert_eq!(
+            DoctorRunStatus::Checking.text_in("ext-lib", Language::EnUs),
+            "SFZ Doctor is checking “ext-lib”…"
+        );
+    }
+
+    /// 九语全覆盖：每语三处均有文案；非中文语的模板不含中文残片
+    /// （「找不到」「请重试」「已有」「检查中」「正在检查」）；正在检查
+    /// 的渲染必须含库名。
+    #[test]
+    fn doctor_run_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for status in [
+                DoctorRunStatus::LibraryNotFound,
+                DoctorRunStatus::AlreadyChecking,
+                DoctorRunStatus::Checking,
+            ] {
+                let rendered = status.text_in("ext-lib", lang);
+                if status == DoctorRunStatus::Checking {
+                    assert!(
+                        rendered.contains("ext-lib"),
+                        "{lang:?} 正在检查渲染必须含库名，实际：{rendered}"
+                    );
+                }
+                if lang != Language::ZhCn {
+                    for fragment in ["找不到", "请重试", "已有", "检查中", "正在检查"]
+                    {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 一次**新鲜扫描**里的坏记录提示（T-FIX-306）。
 ///
 /// 只在扫描结局处调：缓存快照重开时只写数组，⛔ 不重复播"已备份"——那次隔离
@@ -14528,16 +14681,28 @@ fn wire_sound_library_dialog_inner(
             let Some((library_name, library_path)) =
                 cached_installed_library(&last_installed, library_id.as_str())
             else {
-                ui.set_sound_library_status("找不到这个音源库（列表可能已刷新，请重试）".into());
+                ui.set_sound_library_status(
+                    DoctorRunStatus::LibraryNotFound
+                        .text_in("", current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
             if !state.begin_doctor() {
-                ui.set_sound_library_status("已有音源在检查中".into());
+                ui.set_sound_library_status(
+                    DoctorRunStatus::AlreadyChecking
+                        .text_in("", current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             }
-            ui.set_sound_library_status(format!("SFZ Doctor 正在检查《{library_name}》…").into());
+            ui.set_sound_library_status(
+                DoctorRunStatus::Checking
+                    .text_in(&library_name, current_language())
+                    .into(),
+            );
             ui.set_sound_library_status_is_error(false);
             let worker_state = state.clone();
             let worker_weak = weak.clone();

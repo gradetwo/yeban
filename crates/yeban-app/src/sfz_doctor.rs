@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::cli::Language;
 use crate::sound_library::{InstalledLibrary, PACK_MARKER_FILE, USER_ID_PREFIX};
 
 /// 体检记录文件名（写在库目录根；扫描时以它判「查过了 / 拒绝过」）。
@@ -249,30 +250,184 @@ pub fn run(root: &Path) -> DoctorReport {
 ///
 /// 记录落盘失败时读数尾巴带一句"检查完成，但记录未能保存，下次可能再次提示"，
 /// 调用方应当把它当错误状态显示（T-FIX-306）。
+///
+/// T-FIX-454：旧实现拼了三条硬编码中文模板，英文态下状态行照样显示中文。
+/// 文案是常驻 UI 显示（体检结局经跨线程槽排空进状态行），按
+/// `docs/app-i18n-notes.md` §4 收尾补记（2026-11-17 裁定）须译；形态与
+/// T-FIX-432 的设置警告同款——模板按当前语言渲染
+/// （[`format_doctor_readout_in`]），九语模板表住在本文件，由单测逐语看守；
+/// 不走 Slint 的 `@tr`/`.po`（`@tr` 是 Slint 编译期宏，Rust 代码调不了；
+/// `.po` 里加一条没有 `@tr` 调用点的词条会被 `i18n_coverage` 的词表精确
+/// 相等判据当孤儿条打红）。库名与引擎报错原文按 §4 口径不译，原样进占位。
+/// 本函数在体检工人线程里调用，[`crate::host::current_language`] 读原子
+/// 变量，线程安全。
 #[must_use]
 pub fn format_doctor_readout(name: &str, report: &DoctorReport) -> String {
+    format_doctor_readout_in(name, report, crate::host::current_language())
+}
+
+/// 在 `lang` 下的完整展示读数。中文态与旧实现逐字相同（单测钉死）；库名与
+/// 引擎报错原文不译，原样进占位。
+#[must_use]
+pub fn format_doctor_readout_in(name: &str, report: &DoctorReport, lang: Language) -> String {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
     let mut out = if report.still_failing.is_empty() {
-        format!(
-            "SFZ Doctor：《{name}》检查完成 —— {} 件乐器全部可装载（建大小写链接 {}、修正操作码 {}）",
-            report.files_checked,
-            report.links_created.len(),
-            report.edits.len()
-        )
+        match lang {
+            ZhCn => format!(
+                "SFZ Doctor：《{name}》检查完成 —— {} 件乐器全部可装载（建大小写链接 {}、修正操作码 {}）",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            EnUs => format!(
+                "SFZ Doctor: “{name}” check complete — all instruments loadable (checked: {}, case links created: {}, opcodes fixed: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            FrFr => format!(
+                "SFZ Doctor : vérification de « {name} » terminée — tous les instruments se chargent ({} vérifiés, liens de casse créés : {}, opcodes corrigés : {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            EsEs => format!(
+                "SFZ Doctor: revisión de «{name}» completada — todos los instrumentos cargan ({} revisados, enlaces de mayúsculas creados: {}, opcodes corregidos: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            PtBr => format!(
+                "SFZ Doctor: verificação de «{name}» concluída — todos os instrumentos carregam ({} verificados, links de maiúsculas criados: {}, opcodes corrigidos: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            JaJp => format!(
+                "SFZ Doctor：《{name}》のチェック完了 —— {} 件の楽器がすべて読み込み可能（大文字小文字リンク {} 件作成、オペコード {} 件修正）",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            KoKr => format!(
+                "SFZ Doctor: “{name}” 검사 완료 — {}개 악기 모두 로드 가능(대소문자 링크 {}개 생성, 오프코드 {}개 수정)",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            RuRu => format!(
+                "SFZ Doctor: проверка «{name}» завершена — все инструменты загружаются (проверено: {}, создано ссылок регистра: {}, исправлено опкодов: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            DeDe => format!(
+                "SFZ Doctor: Prüfung von „{name}“ abgeschlossen — alle Instrumente ladbar (geprüft: {}, Case-Links erstellt: {}, Opcodes korrigiert: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+        }
     } else {
-        format!(
-            "SFZ Doctor：《{name}》已修复大小写链接 {}、操作码 {}；仍有 {} 件装不上（{}）",
-            report.links_created.len(),
-            report.edits.len(),
-            report.still_failing.len(),
-            report
-                .still_failing
-                .first()
-                .map(|(_, e)| e.as_str())
-                .unwrap_or_default()
-        )
+        let first_error = report
+            .still_failing
+            .first()
+            .map(|(_, e)| e.as_str())
+            .unwrap_or_default();
+        match lang {
+            ZhCn => format!(
+                "SFZ Doctor：《{name}》已修复大小写链接 {}、操作码 {}；仍有 {} 件装不上（{}）",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            EnUs => format!(
+                "SFZ Doctor: “{name}” — case links fixed: {}, opcodes fixed: {}; {} still failing to load ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            FrFr => format!(
+                "SFZ Doctor : « {name} » — liens de casse corrigés : {}, opcodes corrigés : {} ; encore {} à charger ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            EsEs => format!(
+                "SFZ Doctor: «{name}» — enlaces de mayúsculas corregidos: {}, opcodes corregidos: {}; aún {} por cargar ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            PtBr => format!(
+                "SFZ Doctor: «{name}» — links de maiúsculas corrigidos: {}, opcodes corrigidos: {}; ainda {} por carregar ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            JaJp => format!(
+                "SFZ Doctor：《{name}》大文字小文字リンク {} 件、オペコード {} 件を修正；{} 件はまだ読み込めません（{}）",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            KoKr => format!(
+                "SFZ Doctor: “{name}” 대소문자 링크 {}개, 오프코드 {}개 수정; {}개는 여전히 로드되지 않음({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            RuRu => format!(
+                "SFZ Doctor: «{name}» — исправлено ссылок регистра: {}, опкодов: {}; не загружается: {} ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+            DeDe => format!(
+                "SFZ Doctor: „{name}“ — Case-Links korrigiert: {}, Opcodes korrigiert: {}; weiterhin nicht ladbar: {} ({})",
+                report.links_created.len(),
+                report.edits.len(),
+                report.still_failing.len(),
+                first_error
+            ),
+        }
     };
     if report.record_error.is_some() {
-        out.push_str("；检查完成，但记录未能保存，下次可能再次提示");
+        out.push_str(match lang {
+            ZhCn => "；检查完成，但记录未能保存，下次可能再次提示",
+            EnUs => {
+                "; check complete, but the record failed to save and you may be prompted again next time"
+            }
+            FrFr => {
+                " ; vérification terminée, mais l’enregistrement n’a pas pu être sauvegardé et pourra être proposé à nouveau la prochaine fois"
+            }
+            EsEs => {
+                "; revisión completada, pero no se pudo guardar el registro y es posible que se le vuelva a avisar la próxima vez"
+            }
+            PtBr => {
+                "; verificação concluída, mas o registro não foi salvo e poderá ser solicitado novamente na próxima vez"
+            }
+            JaJp => {
+                "；チェックは完了しましたが、記録を保存できなかったため、次回再度通知される可能性があります"
+            }
+            KoKr => {
+                "; 검사는 완료되었지만 기록을 저장하지 못해 다음에 다시 알림이 표시될 수 있습니다"
+            }
+            RuRu => {
+                "; проверка завершена, но запись не сохранена, и при следующем запуске может появиться повторное напоминание"
+            }
+            DeDe => {
+                "; Prüfung abgeschlossen, aber der Eintrag konnte nicht gespeichert werden und wird beim nächsten Start möglicherweise erneut gemeldet"
+            }
+        });
     }
     out
 }
@@ -767,4 +922,109 @@ fn parse_regions(path: &Path) -> Vec<Region> {
         }
     }
     regions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Language;
+
+    /// 三场景共用的样本报告：3 件已查、2 条大小写链接、1 处操作码修正。
+    fn sample_report() -> DoctorReport {
+        DoctorReport {
+            files_checked: 3,
+            links_created: vec![PathBuf::from("a.sfz"), PathBuf::from("b.sfz")],
+            edits: vec![DoctorEdit {
+                file: PathBuf::from("a.sfz"),
+                opcode: "tune".to_string(),
+                old: "-109".to_string(),
+                new: "-100".to_string(),
+            }],
+            still_failing: vec![],
+            record_error: None,
+        }
+    }
+
+    /// 仍有 1 件装不上 + 记录落盘失败的样本报告（引擎报错原文 ASCII）。
+    fn failing_report() -> DoctorReport {
+        let mut report = sample_report();
+        report.still_failing = vec![(PathBuf::from("bad.sfz"), "engine error (test)".to_string())];
+        report.record_error = Some("io error (test)".to_string());
+        report
+    }
+
+    /// 中文态与旧实现逐字相同（三场景：全好 / 仍有装不上 / 记录落盘失败尾巴）。
+    #[test]
+    fn format_doctor_readout_zh_cn_is_byte_identical() {
+        assert_eq!(
+            format_doctor_readout_in("ext-lib", &sample_report(), Language::ZhCn),
+            "SFZ Doctor：《ext-lib》检查完成 —— 3 件乐器全部可装载（建大小写链接 2、修正操作码 1）"
+        );
+        let failing = failing_report();
+        assert_eq!(
+            format_doctor_readout_in("ext-lib", &failing, Language::ZhCn),
+            "SFZ Doctor：《ext-lib》已修复大小写链接 2、操作码 1；仍有 1 件装不上（engine error (test)）；检查完成，但记录未能保存，下次可能再次提示"
+        );
+        let mut record_failed = sample_report();
+        record_failed.record_error = Some("io error (test)".to_string());
+        assert_eq!(
+            format_doctor_readout_in("ext-lib", &record_failed, Language::ZhCn),
+            "SFZ Doctor：《ext-lib》检查完成 —— 3 件乐器全部可装载（建大小写链接 2、修正操作码 1）；检查完成，但记录未能保存，下次可能再次提示"
+        );
+    }
+
+    /// 英文态三场景逐条钉死：两模板 + 尾巴，引擎报错原文原样进占位。
+    #[test]
+    fn format_doctor_readout_en_us_renders_english() {
+        assert_eq!(
+            format_doctor_readout_in("ext-lib", &sample_report(), Language::EnUs),
+            "SFZ Doctor: “ext-lib” check complete — all instruments loadable (checked: 3, case links created: 2, opcodes fixed: 1)"
+        );
+        let failing = failing_report();
+        assert_eq!(
+            format_doctor_readout_in("ext-lib", &failing, Language::EnUs),
+            "SFZ Doctor: “ext-lib” — case links fixed: 2, opcodes fixed: 1; 1 still failing to load (engine error (test)); check complete, but the record failed to save and you may be prompted again next time"
+        );
+    }
+
+    /// 九语全覆盖：每语两场景均有读数；非中文语的模板不含中文模板残片
+    /// （「检查完成」「全部可装载」「装不上」「记录未能保存」「下次可能再次提示」
+    /// 「建大小写链接」「修正操作码」「已修复」）；库名与引擎报错原文
+    /// （ASCII 记号）每语原样进占位。
+    #[test]
+    fn format_doctor_readout_all_languages_have_no_chinese_template_residue() {
+        let failing = failing_report();
+        for lang in Language::ALL {
+            for report in [&sample_report(), &failing] {
+                let rendered = format_doctor_readout_in("ext-lib", report, lang);
+                assert!(
+                    rendered.contains("ext-lib"),
+                    "{lang:?} 渲染必须含库名，实际：{rendered}"
+                );
+                if !report.still_failing.is_empty() {
+                    assert!(
+                        rendered.contains("engine error (test)"),
+                        "{lang:?} 仍失败场景渲染必须原样保留引擎报错原文，实际：{rendered}"
+                    );
+                }
+                if lang != Language::ZhCn {
+                    for fragment in [
+                        "检查完成",
+                        "全部可装载",
+                        "装不上",
+                        "记录未能保存",
+                        "下次可能再次提示",
+                        "建大小写链接",
+                        "修正操作码",
+                        "已修复",
+                    ] {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
