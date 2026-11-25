@@ -76,7 +76,6 @@ const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 const APP: &str = include_str!("../ui/app.slint");
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 
 // ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），

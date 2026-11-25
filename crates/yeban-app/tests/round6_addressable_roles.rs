@@ -55,7 +55,6 @@
 // ⛔ 不许再手写第二份名单。
 
 const ELEMENTS_RS: &str = include_str!("../src/elements.rs");
-const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
 
 /// 把 `//` 行注释与 `"..."` 字符串字面量按**等长字节**替换成 ASCII 空格。

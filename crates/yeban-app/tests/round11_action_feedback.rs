@@ -59,11 +59,9 @@
 #![allow(unused)]
 const APP: &str = include_str!("../ui/app.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
-const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译），
 // 此处原先的 `SIDEBAR` 常量随之删除。
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const PIANO_ROLL: &str = include_str!("../ui/console/piano_roll.slint");
 const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");

@@ -60,12 +60,10 @@
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
 #![allow(unused)]
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const APP: &str = include_str!("../ui/app.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
-const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
 const MUSICAL_PR_DRAWER: &str = include_str!("../ui/dialogs/musical_pr_drawer.slint");
 
 // ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），

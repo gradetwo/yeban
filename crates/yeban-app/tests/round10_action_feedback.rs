@@ -71,11 +71,9 @@
 #![allow(unused)]
 const APP: &str = include_str!("../ui/app.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
-const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 // ⭐ T-FIX-218：`sidebar.slint` 已删（旧侧栏组件，无人 import、不参与编译），
 // 此处原先的 `SIDEBAR` 常量随之删除。
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
-const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const PIANO_ROLL: &str = include_str!("../ui/console/piano_roll.slint");
 const MIXER_CONSOLE: &str = include_str!("../ui/console/mixer_console.slint");
@@ -86,7 +84,6 @@ const EXPORT_WAV_DIALOG: &str = include_str!("../ui/dialogs/export_wav_dialog.sl
 const HUMANIZE_DIALOG: &str = include_str!("../ui/dialogs/humanize_dialog.slint");
 const UNDO_TREE_MODAL: &str = include_str!("../ui/dialogs/undo_tree_modal.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
-const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
 
 // ⭐ **T-FIX-327**：本文件原先另有一份手抄的 `SLINT_FILES` 全仓名单（18 文件），
 // 从未被任何判据消费、且与注册表（45 文件）早已漂移 —— 已删除。全仓 `.slint`
