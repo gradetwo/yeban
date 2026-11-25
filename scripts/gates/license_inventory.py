@@ -34,7 +34,20 @@ LOCK = REPO / "Cargo.lock"
 
 
 def lock_digest() -> str:
-    return hashlib.sha256(LOCK.read_bytes()).hexdigest()[:16] if LOCK.is_file() else "no-lock"
+    """`Cargo.lock` 的 SHA-256（前 16 位），**行尾归一后**计算。
+
+    ⚠ 必须先归一再哈希（T-FIX-407）：仓库里的 `Cargo.lock` 是 LF，而 Windows 的
+    `core.autocrlf=true` 会把它检出成 CRLF ⇒ 同一份提交在两个平台算出两个摘要，
+    于是在 Windows 上重新生成的清单，到了 Linux CI 的 `--check` 必然红。
+    T-FIX-341 与 T-FIX-400 两次返工都是这一个根因，不是两次手误。
+
+    摘要要回答的只是"这份清单对应哪一版依赖图"，行尾不在这个问题里 ⇒ 归一无损语义。
+    另一种解法是把 `Cargo.lock -text` 写进 `.gitattributes`（让检出保住 LF）；这里选
+    归一，是因为它不改变任何人工作树里的字节，爆炸半径只有一个函数。
+    """
+    if not LOCK.is_file():
+        return "no-lock"
+    return hashlib.sha256(LOCK.read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:16]
 
 
 def metadata() -> dict:
