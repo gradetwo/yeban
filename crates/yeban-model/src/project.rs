@@ -1196,6 +1196,19 @@ pub struct ClipPlacement {
     /// ⇒ **默认（无偏移）的工程逐字节不变**：本字段为 `None` 时**不落盘**。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_samples: Option<i32>,
+    /// 淡入时长（tick，必须 > 0）。`None` = 不淡入。
+    ///
+    /// T-FIX-374：与 [`Self::fade_out_ticks`] 一起把摆放的两端变成等功率包络，
+    /// 消除拼接硬切。两者可以同时给，但 `fade_in + fade_out <= duration_ticks`
+    /// （否则两个包络会在中间互相吃掉，淡入还没到 1 就开始淡出）。
+    ///
+    /// `Option` + `serde(default)` + `skip_serializing_if` 与 `offset_samples`
+    /// 同一条 D43 豁免 ⇒ 默认（无 fade）的工程**逐字节不变**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_in_ticks: Option<u64>,
+    /// 淡出时长（tick，必须 > 0）。`None` = 不淡出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_out_ticks: Option<u64>,
 }
 
 impl Default for ClipPlacement {
@@ -1208,6 +1221,8 @@ impl Default for ClipPlacement {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         }
     }
 }
@@ -1229,6 +1244,25 @@ impl ClipPlacement {
                 .contains(&offset)
         {
             return Err(ModelError::ClipOffsetOutOfRange { value: offset });
+        }
+        let fade_in = self.fade_in_ticks.unwrap_or(0);
+        let fade_out = self.fade_out_ticks.unwrap_or(0);
+        if self.fade_in_ticks == Some(0) || self.fade_out_ticks == Some(0) {
+            return Err(ModelError::ClipFadeOutOfRange {
+                fade_in_ticks: fade_in,
+                fade_out_ticks: fade_out,
+                duration_ticks: self.duration_ticks,
+            });
+        }
+        if fade_in > self.duration_ticks
+            || fade_out > self.duration_ticks
+            || fade_in.saturating_add(fade_out) > self.duration_ticks
+        {
+            return Err(ModelError::ClipFadeOutOfRange {
+                fade_in_ticks: fade_in,
+                fade_out_ticks: fade_out,
+                duration_ticks: self.duration_ticks,
+            });
         }
         self.loop_config.validate()
     }

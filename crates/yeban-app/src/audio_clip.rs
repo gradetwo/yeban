@@ -58,6 +58,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_engine::synth::{samples_per_tick, tick_to_sample};
+use yeban_model::clip_fade::{ClipFadeInterval, ClipFadeWindow, plan_fade_windows};
 use yeban_model::{AssetHash, ClipContent, EntityId, YebanProjectV1};
 use yeban_render::automation::centered_pan_gains;
 use yeban_render::dither::{BitDepth, PcmBuffer};
@@ -127,7 +128,7 @@ enum ChannelLayout {
 }
 
 /// 一个摆放的**帧区间**与左右增益。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ClipSpan {
     /// 起始帧（含）。
     start: i64,
@@ -140,6 +141,8 @@ struct ClipSpan {
     gain_l: f32,
     /// 右声道增益。
     gain_r: f32,
+    /// T-FIX-374：等功率淡入淡出窗口（绝对帧；`None` = 无 fade，旧行为）。
+    fade_window: Option<Arc<ClipFadeWindow>>,
 }
 
 /// 音频片段音源：把一份**已经解码好**的 PCM 按摆放的帧区间搬进母带。
@@ -236,25 +239,30 @@ impl AudioSource for AudioClipSource {
                     continue;
                 };
                 let source_base = asset_frame * source_channels;
+                let fade_gain = span.fade_window.as_deref().map_or(1.0, |window| {
+                    window.gain_at(u64::try_from(global).unwrap_or(0))
+                });
                 let index = usize::try_from(global - block_start).unwrap_or(0);
                 let out_base = index * channels;
                 match self.layout {
                     ChannelLayout::Identity => {
                         for channel in 0..channels {
                             let gain = channel_gain(span, channel);
-                            out[out_base + channel] += asset.samples[source_base + channel] * gain;
+                            out[out_base + channel] +=
+                                asset.samples[source_base + channel] * gain * fade_gain;
                         }
                     }
                     ChannelLayout::MonoToAll => {
                         let value = asset.samples[source_base];
                         for channel in 0..channels {
-                            out[out_base + channel] += value * channel_gain(span, channel);
+                            out[out_base + channel] +=
+                                value * channel_gain(span, channel) * fade_gain;
                         }
                     }
                     ChannelLayout::StereoToMono => {
                         let mixed =
                             (asset.samples[source_base] + asset.samples[source_base + 1]) * 0.5;
-                        out[out_base] += mixed * span.gain_l;
+                        out[out_base] += mixed * span.gain_l * fade_gain;
                     }
                 }
             }
@@ -382,6 +390,88 @@ pub(crate) fn resolve_track_clips(
     } else {
         0.0
     };
+    // T-FIX-374：先把本轨全部音频摆放的帧区间与显式 fade 收齐，由模型层
+    // 唯一一份 `plan_fade_windows` 规划（含重叠自动等功率交叉淡化），再按
+    // 摆放身份贴回每个 span。
+    let mut fade_entries: Vec<(EntityId, ClipFadeInterval)> = Vec::new();
+    for placement in track.clips.values() {
+        if placement.muted {
+            continue;
+        }
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        if !matches!(entry.content, ClipContent::Audio { .. }) {
+            continue;
+        }
+        let offset = i64::from(placement.offset_samples.unwrap_or(0));
+        let (start, end) = clip_frame_span(
+            placement.start_tick,
+            placement.duration_ticks,
+            project.bpm,
+            sample_rate,
+        );
+        let (start, end) = (
+            start.saturating_add(offset).max(0),
+            end.saturating_add(offset).max(0),
+        );
+        let end = end.max(start.saturating_add(1));
+        let fade_in_frames = placement
+            .fade_in_ticks
+            .map_or(0, |ticks| {
+                tick_frame(
+                    placement.start_tick.saturating_add(ticks),
+                    project.bpm,
+                    sample_rate,
+                )
+                .saturating_sub(tick_frame(placement.start_tick, project.bpm, sample_rate))
+                .max(0)
+            })
+            .min(end - start);
+        let fade_out_frames = placement
+            .fade_out_ticks
+            .map_or(0, |ticks| {
+                tick_frame(
+                    placement
+                        .start_tick
+                        .saturating_add(placement.duration_ticks),
+                    project.bpm,
+                    sample_rate,
+                )
+                .saturating_sub(tick_frame(
+                    placement
+                        .start_tick
+                        .saturating_add(placement.duration_ticks.saturating_sub(ticks)),
+                    project.bpm,
+                    sample_rate,
+                ))
+                .max(0)
+            })
+            .min(end - start);
+        fade_entries.push((
+            placement.id,
+            ClipFadeInterval {
+                start: u64::try_from(start).unwrap_or(0),
+                end: u64::try_from(end).unwrap_or(0),
+                fade_in_frames: u64::try_from(fade_in_frames).unwrap_or(0),
+                fade_out_frames: u64::try_from(fade_out_frames).unwrap_or(0),
+                explicit: placement.fade_in_ticks.is_some() || placement.fade_out_ticks.is_some(),
+            },
+        ));
+    }
+    fade_entries.sort_by_key(|(_, interval)| interval.start);
+    let fade_windows = plan_fade_windows(
+        &fade_entries
+            .iter()
+            .map(|(_, interval)| *interval)
+            .collect::<Vec<_>>(),
+    );
+    let fade_by_placement: BTreeMap<EntityId, Arc<ClipFadeWindow>> = fade_entries
+        .iter()
+        .zip(fade_windows.iter())
+        .filter(|(_, window)| !window.is_empty())
+        .map(|((id, _), window)| (*id, Arc::new(*window)))
+        .collect();
     // 每个资产 → 它在这条轨道上的摆放区间（BTreeMap 的哈希序 = 确定的叠加顺序）。
     let mut per_asset: BTreeMap<AssetHash, (Arc<DecodedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
     // `#241` 的口径：`placements` 数**摆放**，`span_count` 数**循环展开后的区间**。
@@ -441,6 +531,7 @@ pub(crate) fn resolve_track_clips(
             ));
             continue;
         }
+        let fade_window = fade_by_placement.get(&placement.id).map(Arc::clone);
         let (base_start, base_end) = clip_frame_span(
             placement.start_tick,
             placement.duration_ticks,
@@ -488,6 +579,7 @@ pub(crate) fn resolve_track_clips(
                     source_offset: 0,
                     gain_l,
                     gain_r,
+                    fade_window: fade_window.clone(),
                 });
             } else {
                 // 区间之前的内容：播放一遍（素材从 0 开始）。
@@ -498,6 +590,7 @@ pub(crate) fn resolve_track_clips(
                         source_offset: 0,
                         gain_l,
                         gain_r,
+                        fade_window: fade_window.clone(),
                     });
                 }
                 let source_offset = region_start_frames.saturating_sub(base_start_frames);
@@ -516,6 +609,7 @@ pub(crate) fn resolve_track_clips(
                         source_offset,
                         gain_l,
                         gain_r,
+                        fade_window: fade_window.clone(),
                     });
                     iteration = iteration.saturating_add(1);
                 }
@@ -529,6 +623,7 @@ pub(crate) fn resolve_track_clips(
                 source_offset: 0,
                 gain_l,
                 gain_r,
+                fade_window: fade_window.clone(),
             });
         }
         placements_total = placements_total.saturating_add(1);
@@ -1174,6 +1269,7 @@ mod tests {
             source_offset: 0,
             gain_l: 1.0,
             gain_r: 1.0,
+            fade_window: None,
         };
         let context = BlockContext {
             block_index: 0,
@@ -1187,7 +1283,7 @@ mod tests {
             asset: Arc::new(original),
             warped: None,
             layout: ChannelLayout::MonoToAll,
-            spans: vec![span],
+            spans: vec![span.clone()],
         };
         let mut out = vec![0.0_f32; 4];
         plain
@@ -1199,7 +1295,7 @@ mod tests {
             asset: plain.asset.clone(),
             warped: None,
             layout: ChannelLayout::MonoToAll,
-            spans: vec![span],
+            spans: vec![span.clone()],
         }
         .with_warped(Arc::new(warped));
         let mut out = vec![0.0_f32; 4];
@@ -1238,6 +1334,7 @@ mod tests {
                     source_offset: 0,
                     gain_l: 1.0,
                     gain_r: 1.0,
+                    fade_window: None,
                 }],
             }
         }

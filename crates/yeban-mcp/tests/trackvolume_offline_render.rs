@@ -189,6 +189,8 @@ fn fixture_with_lane(on: LaneOn) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8>
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -494,6 +496,8 @@ fn fixture_aux_with_source(
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -515,6 +519,8 @@ fn fixture_aux_with_source(
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -675,6 +681,8 @@ fn fixture_midi_with_lane(with_lane: bool) -> YebanProjectV1 {
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -803,6 +811,8 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -824,6 +834,8 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );

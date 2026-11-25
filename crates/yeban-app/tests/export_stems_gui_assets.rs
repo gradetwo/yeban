@@ -201,6 +201,8 @@ fn project_with_audio_clip(asset: AssetHash, bytes: &[u8]) -> YebanProjectV1 {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
     project.assets.insert(

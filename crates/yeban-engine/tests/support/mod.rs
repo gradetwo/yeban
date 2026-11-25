@@ -256,6 +256,8 @@ pub fn audio_clip_project_at(start_tick: u64, duration_ticks: u64, gain_db: f32)
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
 
@@ -358,6 +360,8 @@ pub fn build(notes: &[NoteSpec], kind: TrackKind, without_clip: bool) -> Fixture
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
     }
@@ -463,6 +467,8 @@ pub fn two_track_project(
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         tracks.insert(track, midi_track);
@@ -613,6 +619,8 @@ fn rebind_sounding_track(id: EntityId) -> (TrackV3, ClipPoolEntry) {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     (track, entry)

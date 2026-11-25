@@ -71,6 +71,8 @@ fn fixture(loop_config: LoopConfig, notes: &[(u64, u64, u8, u8)]) -> (YebanProje
             loop_config,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
 

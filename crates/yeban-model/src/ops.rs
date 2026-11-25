@@ -4352,6 +4352,8 @@ mod tests {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
 
@@ -4485,6 +4487,8 @@ mod tests {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         };
         let new_edge = RoutingEdge {
             id: fresh_edge,
@@ -4669,6 +4673,8 @@ mod tests {
                     loop_config: LoopConfig::default(),
                     muted: false,
                     offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
                 },
             },
             Op::MoveClipPlacement {
@@ -5377,6 +5383,8 @@ mod tests {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         };
         place.apply(&mut chain).expect("摆放新建的片段");
@@ -6119,6 +6127,8 @@ mod tests {
 
         let mut placement = ClipPlacement {
             offset_samples: Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES),
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             ..Default::default()
         };
         assert!(placement.validate().is_ok(), "负边界值必须合法");
@@ -7731,6 +7741,8 @@ mod tests {
                             loop_config: LoopConfig::default(),
                             muted: false,
                             offset_samples: None,
+                            fade_in_ticks: None,
+                            fade_out_ticks: None,
                         },
                     };
                 }
@@ -8269,6 +8281,8 @@ mod tests {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         }
         .apply(&mut doc)

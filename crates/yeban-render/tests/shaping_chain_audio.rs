@@ -141,6 +141,8 @@ fn project(fx: Vec<DeviceDefinition>, chains: Vec<LaneChainDef>) -> (YebanProjec
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.tracks.insert(track, drum_track);

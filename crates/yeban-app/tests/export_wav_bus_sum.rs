@@ -118,6 +118,8 @@ fn midi_track(id: EntityId, name: &str, pitch: u8, velocity: u8) -> (TrackV3, En
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     let mut notes = BTreeMap::new();

@@ -773,6 +773,8 @@ fn plan_placement(
         loop_config: LoopConfig::default(),
         muted: parse_optional_bool("muted", muted_raw)?.unwrap_or(false),
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     };
     placement
         .validate()

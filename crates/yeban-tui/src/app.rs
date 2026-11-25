@@ -1327,6 +1327,8 @@ impl App {
             loop_config: base.loop_config,
             muted: false,
             offset_samples: base.offset_samples,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         };
         self.commit_edit(
             "tui: paste clip",

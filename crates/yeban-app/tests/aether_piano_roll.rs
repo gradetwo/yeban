@@ -851,6 +851,8 @@ fn add_empty_midi_placement(
         loop_config: yeban_model::project::LoopConfig::default(),
         muted: false,
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     };
     port.commit_ops(
         NOW_MS,

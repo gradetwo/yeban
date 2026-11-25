@@ -74,6 +74,8 @@ fn monitor_project(note: NoteSpec, track_pan: f32) -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     tracks.insert(track, track_model);

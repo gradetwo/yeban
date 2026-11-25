@@ -171,6 +171,8 @@ fn project(tune: &Tune, bytes: &[u8], seed: u32) -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.clip_pool.insert(

@@ -109,6 +109,8 @@ fn build_project(
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     tracks.insert(track, lead);

@@ -774,6 +774,8 @@ fn build_project(
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         placements += 1;
@@ -851,6 +853,8 @@ fn build_project(
                     loop_config: LoopConfig::default(),
                     muted: false,
                     offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
                 },
             );
             audio.clips += 1;

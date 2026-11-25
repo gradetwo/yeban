@@ -751,6 +751,8 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         loop_config: LoopConfig::default(),
         muted: false,
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     };
     undo.commit_ops(
         1_700_000_000_002,

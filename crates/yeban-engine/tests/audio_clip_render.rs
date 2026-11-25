@@ -505,7 +505,7 @@ fn pcm_injection_rejects_unsupported_shapes() {
 /// | 对象 | 字节 | 组成 |
 /// | :--- | ---: | :--- |
 /// | [`AudioPcm`] | 32 | `Arc<[f32]>` 16（胖指针）＋ `frames` 8 ＋ `sample_rate` 4 ＋ `channels` 2 ＋ 2 填充 |
-/// | [`AudioClipSpan`] | 64 | `start` 8 ＋ `end` 8 ＋ `gain` 4 ＋ `AssetHash`(`String`) 24 ＋ `Option<Arc<AudioPcm>>` 8 ＋ `source_offset` 8（`#249`）＋ 4 填充 |
+/// | [`AudioClipSpan`] | 72 | `start` 8 ＋ `end` 8 ＋ `gain` 4 ＋ `AssetHash`(`String`) 24 ＋ `Option<Arc<AudioPcm>>` 8 ＋ `source_offset` 8（`#249`）＋ `Option<Arc<ClipFadeWindow>>` 8（T-FIX-374）＋ 4 填充 |
 /// | [`AudioClipSchedule`] | 40 | 一个 `Vec<AudioClipSpan>` 的头部（24）＋ `placements` 计数 8（`#249`）＋ `dropped_spans` 计数 8（T-FIX-247） |
 /// | `EngineSnapshot` | 4528 | 现读（`Tests/sfz_instrument.rs` 的 S9 打印）；本单 ＋32 B（新增一个 `BTreeMap` 字段 24 B ＋ 8 B 布局填充） |
 /// | `EngineRuntime` | 180144 | **＋0 B**（⛔ 没有游标表；余量 196608 − 180144 = 16464 B 不动） |
@@ -531,8 +531,8 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioPcm = Arc<[f32]> 16 + frames 8 + sample_rate 4 + channels 2 + 2 填充"
     );
     assert_eq!(
-        span, 64,
-        "AudioClipSpan = start 8 + end 8 + gain 4 + AssetHash 24 + Option<Arc> 8 +          source_offset 8 + 4 填充"
+        span, 72,
+        "AudioClipSpan = start 8 + end 8 + gain 4 + AssetHash 24 + Option<Arc<AudioPcm>> 8 +          source_offset 8 + Option<Arc<ClipFadeWindow>> 8（T-FIX-374） + 4 填充"
     );
     assert_eq!(
         schedule, 40,
@@ -555,4 +555,51 @@ fn the_shape_costs_are_read_not_hand_written() {
         (4_496..=4_848).contains(&snapshot),
         "EngineSnapshot 上限随逐件＋侧链期 5 放宽到 4848（4736 ＋ lane_chains／lane_schedules 两表各 24 B ＋ RoutingPlan 的 lane 键路由两表各 24 B 与声明/求值计数 16 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
     );
+}
+
+/// T-FIX-374：摆放的显式淡入在**实时**采样路径上真的是一条等功率包络。
+///
+/// 10 tick = 250 帧；第 0 帧增益 0，第 100 帧约 `sqrt(0.4)`，第 250 帧回到 1。
+/// 负数腿：不给 fade 字段的同一摆放，逐位仍是旧的常量 0.5。
+#[test]
+fn placement_fade_ramps_the_realtime_audio_in() {
+    let fixture = audio_clip_project();
+    let rate = fixture_rate(&fixture.project);
+    let pcm = || mono_pcm(0.5, rate as usize, rate);
+
+    let mut faded = fixture.project.clone();
+    let placement = faded
+        .tracks
+        .get_mut(&fixture.track)
+        .expect("音频轨")
+        .clips
+        .values_mut()
+        .next()
+        .expect("一条摆放");
+    placement.fade_in_ticks = Some(10);
+
+    let faded_snapshot = snapshot_with_pcm(&faded, pcm());
+    let rendered = render_snapshot(faded_snapshot, 20);
+    let at = |frame: usize| rendered.left[frame];
+    assert!(
+        at(0).abs() < 1e-6,
+        "第 0 帧 = sqrt(0) = 0（实测 {}）",
+        at(0)
+    );
+    let mid = at(100);
+    let expected_mid = 0.5 * (100.0_f32 / 250.0).sqrt();
+    assert!(
+        (mid - expected_mid).abs() < 1e-5,
+        "第 100 帧必须落在等功率曲线上（期望 {expected_mid}, 实测 {mid}）"
+    );
+    assert!(
+        (at(250) - 0.5).abs() < 1e-6,
+        "淡入结束必须回到素材满值（实测 {}）",
+        at(250)
+    );
+
+    // 旧工程（无 fade）逐位不变：同一夹具不配置 fade，首帧就是 0.5。
+    let plain_snapshot = snapshot_with_pcm(&fixture.project, pcm());
+    let plain = render_snapshot(plain_snapshot, 20);
+    assert!((plain.left[0] - 0.5).abs() < 1e-6);
 }

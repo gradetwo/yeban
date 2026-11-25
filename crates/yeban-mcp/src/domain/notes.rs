@@ -1135,6 +1135,8 @@ pub const PLACEMENT_FIELDS: &[&str] = &[
     LOOP_ENABLED_FIELD,
     LOOP_START_TICK_FIELD,
     LOOP_END_TICK_FIELD,
+    FADE_IN_TICKS_FIELD,
+    FADE_OUT_TICKS_FIELD,
 ];
 
 /// ⭐ `#241`：`add` 摆放的循环开关（`placement.loopEnabled`，可选；缺省 `false`）。
@@ -1158,6 +1160,15 @@ pub const LOOP_START_TICK_FIELD: &str = "loopStartTick";
 /// ⭐ `#241`：循环区间终点（`placement.loopEndTick`，可选；启用时缺省 = 片段内容长度，
 /// 推不出内容长度时 = `durationTicks`）。
 pub const LOOP_END_TICK_FIELD: &str = "loopEndTick";
+
+/// ⭐ T-FIX-374：淡入时长（`placement.fadeInTicks`，可选；tick，必须 > 0）。
+///
+/// 等功率包络只在渲染层施加（`yeban-model::clip_fade` 是唯一一份窗口/曲线定义）；
+/// 本层只搬字面值与校验。与 [`FADE_OUT_TICKS_FIELD`] 之和不得超过 `durationTicks`。
+pub const FADE_IN_TICKS_FIELD: &str = "fadeInTicks";
+
+/// ⭐ T-FIX-374：淡出时长（`placement.fadeOutTicks`，可选；tick，必须 > 0）。
+pub const FADE_OUT_TICKS_FIELD: &str = "fadeOutTicks";
 
 /// `placement.kind` 的字段名（形态判别键，可选；缺省 = [`PLACEMENT_KIND_ADD`]）。
 ///
@@ -1195,6 +1206,8 @@ pub const PLACEMENT_ADD_FIELDS: &[&str] = &[
     LOOP_ENABLED_FIELD,
     LOOP_START_TICK_FIELD,
     LOOP_END_TICK_FIELD,
+    FADE_IN_TICKS_FIELD,
+    FADE_OUT_TICKS_FIELD,
 ];
 
 /// `move` 形态允许的键：判别键 + 被平移的摆放身份 + **新的**起点。
@@ -10255,6 +10268,8 @@ fn compile_inner(
                             loop_config: LoopConfig::default(),
                             muted: false,
                             offset_samples: None,
+                            fade_in_ticks: None,
+                            fade_out_ticks: None,
                         },
                     });
                 }
@@ -12768,6 +12783,8 @@ fn build_placement(
         },
         muted: read_optional_bool(object, "muted")?.unwrap_or(false),
         offset_samples: None,
+        fade_in_ticks: read_optional_u64(object, FADE_IN_TICKS_FIELD)?,
+        fade_out_ticks: read_optional_u64(object, FADE_OUT_TICKS_FIELD)?,
     };
     placement
         .validate()
@@ -21298,6 +21315,8 @@ mod tests {
                 "loopEnabled",
                 "loopStartTick",
                 "loopEndTick",
+                "fadeInTicks",
+                "fadeOutTicks",
             ]
         );
     }
@@ -21435,6 +21454,51 @@ mod tests {
         let value = fault.into_result().expect("带内");
         assert_eq!(value["error"]["data"]["reason"], "durationNotDerivable");
         assert_eq!(value["error"]["data"]["isMidi"], false);
+    }
+
+    /// T-FIX-374：摆放的 fade 字段被接住、能读回，越界响亮拒绝。
+    #[test]
+    fn placement_fade_fields_are_parsed_and_validated() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let placement = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "durationTicks": 960,
+                "fadeInTicks": 10,
+                "fadeOutTicks": 20,
+            })),
+        )
+        .expect("合法 fade")
+        .expect("在场");
+        assert_eq!(placement.fade_in_ticks, Some(10));
+        assert_eq!(placement.fade_out_ticks, Some(20));
+        let json = serde_json::to_value(placement).expect("可序列化");
+        assert_eq!(json["fade_in_ticks"], 10);
+        assert_eq!(json["fade_out_ticks"], 20);
+
+        let zero = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 960, "fadeInTicks": 0})),
+        )
+        .expect_err("0 必须被拒");
+        assert_eq!(zero.domain_code(), Some(ErrorCode::OutOfRange));
+
+        let too_long = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "durationTicks": 960,
+                "fadeInTicks": 600,
+                "fadeOutTicks": 400,
+            })),
+        )
+        .expect_err("和超过时值必须被拒");
+        assert_eq!(too_long.domain_code(), Some(ErrorCode::OutOfRange));
     }
 
     /// 时值 0 在**这一层**就被拒（模型层同样拒绝；这里多给 `field`/`value` 的结构化载荷）。
@@ -21725,12 +21789,13 @@ mod tests {
                 "loopEnabled",
                 "loopStartTick",
                 "loopEndTick",
+                "fadeInTicks",
+                "fadeOutTicks",
             ]
         );
         assert_eq!(PLACEMENT_MOVE_FIELDS, ["kind", "startTick", "placementId"]);
         assert_eq!(PLACEMENT_REMOVE_FIELDS, ["kind", "placementId"]);
-        // `add` 的**内容键**表没有被这次扩展改动（判据 `placement_field_names_are_pinned`
-        // 仍逐字成立）。
+        // `add` 的**内容键**表在 T-FIX-374 增加了两个 fade 键；两张表同步钉住。
         assert_eq!(
             PLACEMENT_FIELDS,
             [
@@ -21741,6 +21806,8 @@ mod tests {
                 "loopEnabled",
                 "loopStartTick",
                 "loopEndTick",
+                "fadeInTicks",
+                "fadeOutTicks",
             ]
         );
         for fields in [PLACEMENT_MOVE_FIELDS, PLACEMENT_REMOVE_FIELDS] {

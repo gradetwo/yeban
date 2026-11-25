@@ -374,6 +374,8 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             } else {
                 Some(tune.clip_offset_samples)
             },
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: tune.loop_config,
         },
     );

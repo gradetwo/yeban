@@ -125,6 +125,8 @@ fn fixture(empty_clip: bool) -> Fixture {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
 
@@ -149,6 +151,8 @@ fn fixture(empty_clip: bool) -> Fixture {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
     }
@@ -355,6 +359,8 @@ fn silent_fixture() -> SilentFixture {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
     project.routing_graph = RoutingGraph {

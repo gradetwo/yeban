@@ -77,6 +77,8 @@ fn syllable_project(notes: &[(u64, u64, Option<&str>)], placement_start: u64) ->
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.tracks.insert(track_id, track);
@@ -482,6 +484,8 @@ fn muted_placements_and_unplaced_clips_do_not_converge() {
                 loop_config: LoopConfig::default(),
                 muted: true,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
     project.validate().expect("夹具合法");

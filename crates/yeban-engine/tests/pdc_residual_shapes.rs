@@ -90,6 +90,8 @@ fn note_track_v(
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     (track, Some(entry))

@@ -147,6 +147,8 @@ fn three_track_project() -> YebanProjectV1 {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -1213,6 +1215,8 @@ fn bus_project() -> YebanProjectV1 {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         let mut notes = BTreeMap::new();

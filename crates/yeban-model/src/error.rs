@@ -125,6 +125,23 @@ pub enum ModelError {
         value: i32,
     },
 
+    /// 摆放的淡入淡出时长越界（T-FIX-374）。
+    ///
+    /// 三条判据：单个 fade 必须 `> 0`（`0` 只会让 `None` 与 `Some(0)` 两种
+    /// 拼法语义相同却逐字段不等）、不得大于 `duration_ticks`、两者之和不得
+    /// 大于 `duration_ticks`（否则淡入还没到 1 就被淡出吃掉）。
+    #[error(
+        "clip fade in {fade_in_ticks} / out {fade_out_ticks} ticks invalid for duration {duration_ticks}"
+    )]
+    ClipFadeOutOfRange {
+        /// 收到的淡入时长（0 表示该字段缺省）。
+        fade_in_ticks: u64,
+        /// 收到的淡出时长（0 表示该字段缺省）。
+        fade_out_ticks: u64,
+        /// 摆放时值。
+        duration_ticks: u64,
+    },
+
     /// 弯音曲线的 tick 不**严格**升序（同一 tick 出现两次也算）。
     #[error("pitch bend ticks are not strictly ascending: {previous} then {tick}")]
     PitchBendTicksNotAscending {

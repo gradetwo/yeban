@@ -97,6 +97,8 @@ fn fixture_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     melody_track.clips.insert(
@@ -113,6 +115,8 @@ fn fixture_project() -> YebanProjectV1 {
             },
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     tracks.insert(melody, melody_track);
@@ -132,6 +136,8 @@ fn fixture_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     tracks.insert(drums, drum_track);
@@ -148,6 +154,8 @@ fn fixture_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     tracks.insert(muted, muted_track);

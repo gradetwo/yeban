@@ -229,6 +229,8 @@ fn fixture(bytes: Vec<u8>, plugin_device: Option<DeviceDefinition>) -> Fixture {
             duration_ticks: ONE_SECOND_TICKS,
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             loop_config: LoopConfig::default(),
         },
     );

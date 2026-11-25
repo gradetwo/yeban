@@ -86,6 +86,8 @@ fn project_with_missing_tracks(
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         };
         let mut track = TrackV3 {
             id: *id,

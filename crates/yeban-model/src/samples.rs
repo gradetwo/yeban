@@ -303,6 +303,8 @@ pub fn filled_project() -> YebanProjectV1 {
             },
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     let audio_placement_id = fixture_id(51);
@@ -332,6 +334,8 @@ pub fn filled_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
 
@@ -910,6 +914,8 @@ pub fn demo_project() -> YebanProjectV1 {
                     loop_config: LoopConfig::default(),
                     muted: false,
                     offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
                 },
             );
         }

@@ -2932,6 +2932,8 @@ pub fn clip_create_ops_on(
         loop_config: LoopConfig::default(),
         muted: false,
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     };
     Ok(vec![
         Op::AddClip { clip },
@@ -3374,6 +3376,8 @@ pub fn drum_gen_ops(
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     });
     Ok(ops)
@@ -3522,6 +3526,8 @@ pub fn audio_clip_placement_ops_on(
         loop_config: LoopConfig::default(),
         muted: false,
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     };
     Ok((
         vec![Op::AddClipPlacement {

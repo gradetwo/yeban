@@ -100,6 +100,8 @@ fn project(track_volume_db: f32, mute: bool) -> (YebanProjectV1, EntityId) {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.clip_pool.insert(

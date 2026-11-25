@@ -85,6 +85,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use thiserror::Error;
+use yeban_model::clip_fade::{ClipFadeInterval, ClipFadeWindow, plan_fade_windows};
 use yeban_model::time_math::TempoMap;
 use yeban_model::{AssetHash, ClipContent, EntityId, YebanProjectV1};
 
@@ -209,6 +210,10 @@ pub struct AudioClipSpan {
     asset: AssetHash,
     /// 已注入的 PCM（共享；`None` ＝ 尚未注入 ⇒ 静音）。
     pcm: Option<Arc<AudioPcm>>,
+    /// T-FIX-374：本摆放的等功率淡入淡出窗口（绝对帧）。
+    ///
+    /// `None` ⇒ 渲染循环里一次乘法都不增加，旧工程逐字节不变。
+    fade_window: Option<Arc<ClipFadeWindow>>,
     /// 本 span 从素材的**第几帧**开始读（`#249` / `[ADR-0010 D4]`）。
     ///
     /// 非循环摆放恒为 `0` ⇒ 与加循环展开之前**逐位相同**；循环展开后每一遍都从
@@ -233,6 +238,12 @@ impl AudioClipSpan {
     #[must_use]
     pub const fn gain(&self) -> f32 {
         self.gain
+    }
+
+    /// 本 span 的等功率淡入淡出窗口（T-FIX-374；`None` = 无 fade）。
+    #[must_use]
+    pub fn fade_window(&self) -> Option<&ClipFadeWindow> {
+        self.fade_window.as_deref()
     }
 
     /// 引用的素材哈希。
@@ -383,6 +394,63 @@ pub fn project_audio_clips_with_tempo(
             any_solo,
             track.volume_db,
         );
+        // T-FIX-374：先把本轨**全部音频摆放**的帧区间与显式 fade 收齐，
+        // 由模型层唯一一份 `plan_fade_windows` 规划（含重叠自动等功率交叉淡化），
+        // 再在逐个摆放构建 span 时按摆放身份贴回窗口。
+        let mut fade_entries: Vec<(EntityId, ClipFadeInterval)> = Vec::new();
+        for placement in track.clips.values() {
+            if placement.muted {
+                continue;
+            }
+            let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            if !matches!(entry.content, ClipContent::Audio { .. }) {
+                continue;
+            }
+            let Some(start) = timebase.sample_at(placement.start_tick) else {
+                continue;
+            };
+            let end_tick = placement
+                .start_tick
+                .saturating_add(placement.duration_ticks.max(1));
+            let Some(end) = timebase.sample_at(end_tick) else {
+                continue;
+            };
+            let end = end.max(start.saturating_add(1));
+            let fade_in_frames = placement
+                .fade_in_ticks
+                .and_then(|ticks| timebase.sample_at(placement.start_tick.saturating_add(ticks)))
+                .map_or(0, |frame| frame.saturating_sub(start).min(end - start));
+            let fade_out_frames = placement
+                .fade_out_ticks
+                .and_then(|ticks| timebase.sample_at(end_tick.saturating_sub(ticks)))
+                .map_or(0, |frame| end.saturating_sub(frame).min(end - start));
+            fade_entries.push((
+                placement.id,
+                ClipFadeInterval {
+                    start,
+                    end,
+                    fade_in_frames,
+                    fade_out_frames,
+                    explicit: placement.fade_in_ticks.is_some()
+                        || placement.fade_out_ticks.is_some(),
+                },
+            ));
+        }
+        fade_entries.sort_by_key(|(_, interval)| interval.start);
+        let fade_windows = plan_fade_windows(
+            &fade_entries
+                .iter()
+                .map(|(_, interval)| *interval)
+                .collect::<Vec<_>>(),
+        );
+        let fade_by_placement: BTreeMap<EntityId, Arc<ClipFadeWindow>> = fade_entries
+            .iter()
+            .zip(fade_windows.iter())
+            .filter(|(_, window)| !window.is_empty())
+            .map(|((id, _), window)| (*id, Arc::new(*window)))
+            .collect();
         let mut spans: Vec<AudioClipSpan> = Vec::new();
         let mut placements = 0usize;
         let mut dropped_spans = 0usize;
@@ -413,6 +481,7 @@ pub fn project_audio_clips_with_tempo(
             // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，负值结果夹到 0
             // （与 `micro_timing_ticks` 负值夹 0 同一条口径）。`source_offset` 与
             // 循环周期是 tick 差值，移位下不变 ⇒ `push` 只移 span 边界，不动那两处。
+            let fade_window = fade_by_placement.get(&placement.id).map(Arc::clone);
             let offset = i64::from(placement.offset_samples.unwrap_or(0));
             let shift = |frame: u64| -> u64 {
                 u64::try_from(
@@ -438,6 +507,7 @@ pub fn project_audio_clips_with_tempo(
                         asset: asset.clone(),
                         pcm: None,
                         source_offset,
+                        fade_window: fade_window.clone(),
                     });
                 };
             match placement.loop_repeat() {
@@ -576,7 +646,12 @@ pub fn mix_into(schedule: &AudioClipSchedule, block_start: u64, out: &mut [f32])
             let Ok(offset) = usize::try_from(offset) else {
                 break;
             };
-            out[offset] += value * span.gain;
+            // T-FIX-374：None ⇒ 走旧的单乘法（逐位不变）；Some ⇒ 再乘一次
+            // 等功率包络（绝对帧，循环展开的每一遍都落在窗口的正确位置）。
+            out[offset] += match span.fade_window.as_deref() {
+                None => value * span.gain,
+                Some(window) => value * span.gain * window.gain_at(frame),
+            };
         }
     }
 }

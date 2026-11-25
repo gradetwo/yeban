@@ -501,6 +501,8 @@ pub fn build_with_clock(
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         });
     }

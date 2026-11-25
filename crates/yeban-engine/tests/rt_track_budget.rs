@@ -51,6 +51,8 @@ fn put_note(track: &mut TrackV3, pool: &mut BTreeMap<EntityId, ClipPoolEntry>, p
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
 }

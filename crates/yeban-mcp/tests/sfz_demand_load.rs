@@ -122,6 +122,8 @@ fn project_with_notes(track_id: EntityId, notes: &[(u8, u8)]) -> YebanProjectV1 
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.tracks.insert(track_id, track);

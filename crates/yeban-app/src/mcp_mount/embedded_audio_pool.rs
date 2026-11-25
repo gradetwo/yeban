@@ -158,6 +158,8 @@ fn the_embedded_mount_carries_the_session_asset_pool_into_the_render() {
                     loop_config: LoopConfig::default(),
                     muted: false,
                     offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
                 },
             },
         ],

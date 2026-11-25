@@ -1758,6 +1758,8 @@ mod tests {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         let mut with_orphan = base.clone();
@@ -2162,6 +2164,8 @@ mod tests {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         project.tracks.insert(track_id, track);

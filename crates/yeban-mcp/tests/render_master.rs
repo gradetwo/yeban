@@ -276,6 +276,8 @@ fn project(spec: &Spec) -> YebanProjectV1 {
                 loop_config: spec.loop_config,
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -370,6 +372,8 @@ fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProje
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -433,6 +437,8 @@ fn many_track_clip_project(tracks: usize) -> YebanProjectV1 {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                fade_in_ticks: None,
+                fade_out_ticks: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -1359,6 +1365,8 @@ fn loud_then_quiet_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     project.tracks.insert(quiet_track, track);
@@ -6145,6 +6153,8 @@ fn two_track_project() -> YebanProjectV1 {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -6520,6 +6530,8 @@ fn the_known_unsupported_list_is_not_decoration() {
                         loop_config: LoopConfig::default(),
                         muted: false,
                         offset_samples: None,
+                        fade_in_ticks: None,
+                        fade_out_ticks: None,
                     },
                 );
             project.validate().expect("夹具合法");
@@ -6591,6 +6603,8 @@ fn the_known_unsupported_list_is_not_decoration() {
                     loop_config: LoopConfig::default(),
                     muted: false,
                     offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
                 },
             );
             project.validate().expect("夹具合法");
@@ -10327,6 +10341,8 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     proj.tracks.insert(orphan, orphan_track);
@@ -10348,6 +10364,8 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     proj.tracks.insert(pruned, pruned_track);

@@ -110,6 +110,8 @@ fn placement(fixture: &Fixture, loop_config: LoopConfig) -> ClipPlacement {
         loop_config,
         muted: false,
         offset_samples: None,
+        fade_in_ticks: None,
+        fade_out_ticks: None,
     }
 }
 

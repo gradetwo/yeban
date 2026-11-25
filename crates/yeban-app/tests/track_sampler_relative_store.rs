@@ -146,6 +146,8 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     let mut notes = BTreeMap::new();

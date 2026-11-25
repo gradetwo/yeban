@@ -85,6 +85,8 @@ fn note_track(id: EntityId, name: &str) -> (TrackV3, ClipPoolEntry) {
             loop_config: LoopConfig::default(),
             muted: false,
             offset_samples: None,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
         },
     );
     (track, entry)
