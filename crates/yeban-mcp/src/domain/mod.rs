@@ -5249,7 +5249,7 @@ fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let (ops, sends_skipped, macros_skipped) =
         preset::build_bypass_ops(project, &track_id, bypassed, &domain.embedded_presets)?;
     let mut description = if bypassed {
-        format!("旁通预制处理：音轨 {track_id}（恢复应用前快照，乐器不变）")
+        format!("旁通预制处理：音轨 {track_id}（恢复应用前快照，含乐器绑定）")
     } else {
         format!("取消预制旁通：音轨 {track_id}（按当前预制重新应用）")
     };
@@ -5268,7 +5268,7 @@ fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // （`build_bypass_ops` 内部走 `build_apply_ops`，含乐器类别），因此与
     // `plan_apply_preset` 走同一条登记构造（`plan_sfz_registration`）备好
     // 装载，提案落地后登记进会话 registry 并播种（回执 `initialCcSeeded`
-    // 回报）。旁通方向不播种：它恢复应用前快照、乐器不变，种子表不归它管。
+    // 回报）。旁通方向不播种：它恢复应用前快照（含乐器绑定），种子表不归它管。
     let seed_load = if bypassed {
         None
     } else {

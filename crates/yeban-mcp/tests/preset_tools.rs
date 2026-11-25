@@ -433,7 +433,7 @@ fn apply_unknown_preset_fails_loudly() {
     );
 }
 
-/// 旁通：恢复 `previous` 快照（设备清零、乐器不动）；取消旁通：预制设备回来。
+/// 旁通：恢复 `previous` 快照（设备清零、**乐器一并回** —— T-FIX-409）；取消旁通：预制设备与乐器回来。
 #[test]
 fn bypass_restores_snapshot_and_reapply_restores_preset() {
     let mut dispatcher = dispatcher_with_project();
@@ -468,11 +468,8 @@ fn bypass_restores_snapshot_and_reapply_restores_preset() {
         Some(true)
     );
     assert!(
-        bypassed
-            .sampler
-            .as_ref()
-            .is_some_and(|sampler| sampler.path.contains(CELLO_SFZ_FRAGMENT)),
-        "旁通只旁通处理，不换乐器: {:?}",
+        bypassed.sampler.is_none(),
+        "旁通必须连乐器一起回：应用前 Bass 没有采样器 ⇒ 旁通后应为 None，实际: {:?}",
         bypassed.sampler
     );
     let _ = call(
@@ -489,6 +486,14 @@ fn bypass_restores_snapshot_and_reapply_restores_preset() {
     assert_eq!(
         restored.preset.as_ref().map(|state| state.bypassed),
         Some(false)
+    );
+    assert!(
+        restored
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.path.contains(CELLO_SFZ_FRAGMENT)),
+        "取消旁通必须按预制重绑乐器: {:?}",
+        restored.sampler
     );
 }
 
@@ -618,6 +623,87 @@ fn create_with_seed_sampler_bypass_removes_preset_devices() {
             .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
         "旁通只旁通处理，不换乐器: {:?}",
         after.sampler
+    );
+}
+
+/// 判据（T-FIX-409）：旁通**连乐器一起回**——应用前没绑采样器的轨，旁通后
+/// 采样器必须回到 `None`（不是仍响预制钢琴）；取消旁通再按预制重绑。
+#[test]
+fn bypass_restores_the_sampler_binding_too() {
+    let scratch = Scratch::new("bypass-sampler");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!(
+                "yeban-mcp-preset-bypass-{}.yeban",
+                std::process::id()
+            )),
+            demo_project(),
+            false,
+        )
+        .expect("注入演示工程");
+
+    let track = track_id(&dispatcher, "鼓");
+    let before = track_snapshot(&dispatcher, "鼓");
+    assert!(
+        before.sampler.is_none(),
+        "前提：演示工程的「鼓」轨没有采样器: {:?}",
+        before.sampler
+    );
+    let before_devices = preset_device_names(&before).len();
+
+    let applied = call(
+        &mut dispatcher,
+        "yeban_apply_preset",
+        serde_json::json!({"trackId": track, "presetId": PIANO_PRESET, "autoMerge": true}),
+    );
+    assert_eq!(applied["autoMerged"], true, "{applied}");
+    let after_apply = track_snapshot(&dispatcher, "鼓");
+    assert!(
+        after_apply
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
+        "应用含乐器的预制后必须绑上钢琴: {:?}",
+        after_apply.sampler
+    );
+
+    let bypassed = call(
+        &mut dispatcher,
+        "yeban_preset_bypass",
+        serde_json::json!({"trackId": track, "bypassed": true, "autoMerge": true}),
+    );
+    assert_eq!(bypassed["autoMerged"], true, "{bypassed}");
+    let after_bypass = track_snapshot(&dispatcher, "鼓");
+    assert_eq!(
+        after_bypass.sampler, before.sampler,
+        "旁通后采样器必须回到应用前（None）: {:?}",
+        after_bypass.sampler
+    );
+    assert_eq!(
+        preset_device_names(&after_bypass).len(),
+        before_devices,
+        "旁通后预制设备数必须回到应用前"
+    );
+
+    let un_bypassed = call(
+        &mut dispatcher,
+        "yeban_preset_bypass",
+        serde_json::json!({"trackId": track, "bypassed": false, "autoMerge": true}),
+    );
+    assert_eq!(un_bypassed["autoMerged"], true, "{un_bypassed}");
+    let after_resume = track_snapshot(&dispatcher, "鼓");
+    assert!(
+        after_resume
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
+        "取消旁通后必须按预制重绑钢琴: {:?}",
+        after_resume.sampler
     );
 }
 

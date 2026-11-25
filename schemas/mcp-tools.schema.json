@@ -2258,7 +2258,7 @@
             },
             "bypassed": {
               "type": "boolean",
-              "description": "true = 旁通（恢复应用前快照），false = 取消旁通（重新应用当前预制）"
+              "description": "true = 旁通（恢复应用前快照，含乐器绑定：应用前没绑采样器就清掉），false = 取消旁通（重新应用当前预制）"
             },
             "includeOps": {
               "type": "boolean",

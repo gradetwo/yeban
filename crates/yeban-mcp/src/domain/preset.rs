@@ -369,7 +369,9 @@ pub struct ApplyPlan {
     pub categories: Vec<String>,
 }
 
-/// 给一条轨拍一张处理快照（只存处理参数，不存采样与乐器绑定）。
+/// 给一条轨拍一张**应用前**快照：处理参数（通道条 / 四件 / 发送 / 宏）＋
+/// **采样器绑定**（T-FIX-409：旁通要连乐器一起回，所以绑定必须进快照；
+/// `None` 本身就是有意义的值 —— 应用前没绑采样器）。
 ///
 /// # Errors
 ///
@@ -423,6 +425,7 @@ pub fn snapshot_track(
         });
     }
     Ok(TrackPresetSnapshot {
+        sampler: track.sampler.clone(),
         strip,
         effects,
         sends,
@@ -491,7 +494,8 @@ fn captured_chain_slots(track: &TrackV3, track_id: &EntityId) -> Vec<usize> {
 /// 把一份预制应用到一条轨的 `Op` 规划（提案路径；不直接改工程）。
 ///
 /// 顺序：先拆旧预制设备（下标降序），再追加新设备，最后写发送增益、
-/// 宏、乐器绑定与 `track.preset`。`previous` 快照取自应用前的轨状态。
+/// 宏、乐器绑定与 `track.preset`。`previous` 快照取自应用前的轨状态
+/// （含采样器绑定，见 [`snapshot_track`]）。
 ///
 /// # Errors
 ///
@@ -769,6 +773,17 @@ pub fn build_bypass_ops(
             ),
         });
         device_len += 1;
+    }
+    // ⭐ T-FIX-409：旁通要真的回到"应用前"，**乐器一起回**。
+    // 应用时有乐器绑定的预制写过 `SetTrackSampler`；这里按快照把绑定恢复成
+    // 「应用前那一个」——`None` 也要发出（把预制带来的绑定清掉），否则内置
+    // 合成器轨旁通后仍响预制钢琴（A/B 听到的不是原轨）。
+    if track.sampler != previous.sampler {
+        ops.push(Op::SetTrackSampler {
+            track_id: *track_id,
+            old_sampler: track.sampler.clone(),
+            new_sampler: previous.sampler.clone(),
+        });
     }
     // 发送恢复到快照里的增益（边不存在则跳过并报告）。
     for send in &previous.sends {

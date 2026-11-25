@@ -548,9 +548,16 @@ pub fn preset_id_from_embedded_entry(name: &str) -> Option<String> {
     Some(format!("user:{ulid}"))
 }
 
-/// 旁通快照：只存**处理参数**，不存采样、不存乐器绑定（设计稿 §2.6）。
+/// 旁通快照：只存**处理参数**与应用前的**采样器绑定**（T-FIX-409），不存采样（设计稿 §2.6）。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrackPresetSnapshot {
+    /// 应用前那条轨的**采样器绑定**（T-FIX-409）。
+    ///
+    /// 旁通要真的回到"应用前"，就必须连乐器一起回。`None` = 应用前没绑采样器
+    /// （内置合成器 / 音频轨），旁通时据此把绑定清掉；`skip_serializing_if` 让
+    /// 旧工程与"没有绑定"的快照逐字节不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<crate::SamplerBinding>,
     /// 应用前那条轨的通道条设备参数（扁平 `name → value` 对象）。
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub strip: serde_json::Map<String, Value>,

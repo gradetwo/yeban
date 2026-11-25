@@ -2267,7 +2267,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         side_effect: SideEffect::ProjectState,
         params: &[
             param("trackId", "string", true, "目标音轨 EntityId（26 字符 ULID）"),
-            param("bypassed", "boolean", true, "true = 旁通（恢复应用前快照），false = 取消旁通（重新应用当前预制）"),
+            param("bypassed", "boolean", true, "true = 旁通（恢复应用前快照，含乐器绑定：应用前没绑采样器就清掉），false = 取消旁通（重新应用当前预制）"),
             param(
                 INCLUDE_OPS_PARAM,
                 "boolean",
