@@ -8350,42 +8350,34 @@ impl RecordControl {
     ///
     /// 工程事实源 = 活端口里的那份（权威），没有 ⇒ 装配期冻结那份；两份都没有
     /// ⇒ [`RecordTarget::NoSelection`]（落点方响亮地拒绝）。
+    ///
+    /// ⭐ T-FIX-459：工程只借不克隆 —— 活端口走 [`UndoPort::with_project`] 借用，
+    /// 回退路径走装配期那份的 `shared.borrow()`；UI 读数先在借用之外取好，纯算
+    /// 走 [`resolve_target_from`]（独立函数而非闭包 —— 两条取工程的路都要调它，
+    /// 闭包传一次就被移走）。
     fn resolve_target(&self) -> crate::record_landing::RecordTarget {
-        use crate::record_landing::{RecordTarget, resolve_record_target};
-        let Some(project) = self
-            .undo
-            .as_ref()
-            .and_then(|port| port.try_project())
-            .or_else(|| self.project.as_ref().map(|shared| shared.borrow().clone()))
-        else {
-            return RecordTarget::NoSelection;
-        };
+        use crate::record_landing::RecordTarget;
         let Some(ui) = self.ui.upgrade() else {
             return RecordTarget::NoSelection;
         };
-        let display_ids = project.display_track_ids();
+        // UI 读数先取好（⛔ 不在工程借用里读 UI）：待录数组／行／选中轨。
         let arms: Vec<bool> = ui.get_track_arms().iter().collect();
         let rows: Vec<_> = ui.get_tracks().iter().collect();
-        let armed: Vec<yeban_model::EntityId> = display_ids
-            .iter()
-            .enumerate()
-            .filter(|(index, id)| {
-                let is_audio = project
-                    .tracks
-                    .get(id)
-                    .is_some_and(|track| track.kind == yeban_model::TrackKind::Audio);
-                if !is_audio {
-                    return false;
-                }
-                let by_arms_array = arms.get(*index).copied().unwrap_or(false);
-                let by_row = rows.get(*index).is_some_and(|row| row.armed);
-                by_arms_array || by_row
-            })
-            .map(|(_, id)| *id)
-            .collect();
         let selected = selected_track_id(&ui)
             .and_then(|id| <yeban_model::EntityId as std::str::FromStr>::from_str(&id).ok());
-        resolve_record_target(&project, &armed, selected)
+        // 活端口 ⇒ 借用读（`Local` 后端零克隆；`Authority` 后端仍给一份快照 ——
+        // 控制面路径的既有文档口径，本单接受）；没有活工程 ⇒ 装配期冻结那份现借现算；
+        // 两份都没有 ⇒ `NoSelection`（落点方响亮地拒绝，⛔ 不新增静默回退）。
+        if let Some(port) = self.undo.as_ref()
+            && let Some(target) =
+                port.with_project(|project| resolve_target_from(project, &arms, &rows, selected))
+        {
+            return target;
+        }
+        if let Some(shared) = self.project.as_ref() {
+            return resolve_target_from(&shared.borrow(), &arms, &rows, selected);
+        }
+        RecordTarget::NoSelection
     }
 
     /// 起录结果的产品落点：失败 ⇒ `recording` 保持 false，错误照常上报。
@@ -8413,6 +8405,41 @@ impl RecordControl {
                 .report(&ui, started.err().map(|error| error.to_string()));
         }
     }
+}
+
+/// ⭐ **纯算**（T-FIX-459）：从**借来的**工程里算出待录音频轨，解析目标轨。
+///
+/// 只读借来的 `project`（⛔ 不持有所有权、⛔ 不克隆）；`arms`／`rows`／`selected`
+/// 是调用方在借用之外取好的 UI 读数（见 `UndoPort::with_project` 的借用纪律：
+/// 闭包／借用期间只做纯读／纯算，UI 读取与目标轨写入都在借外）。
+/// 优先级与 [`crate::record_landing::resolve_record_target`] 逐字相同
+/// （待录 ＞ 选中 ＞ 工程只有一条音频轨；多条且无选择 ⇒ `NoSelection`）。
+fn resolve_target_from(
+    project: &YebanProjectV1,
+    arms: &[bool],
+    rows: &[crate::ui::TrackData],
+    selected: Option<yeban_model::EntityId>,
+) -> crate::record_landing::RecordTarget {
+    use crate::record_landing::resolve_record_target;
+    let display_ids = project.display_track_ids();
+    let armed: Vec<yeban_model::EntityId> = display_ids
+        .iter()
+        .enumerate()
+        .filter(|(index, id)| {
+            let is_audio = project
+                .tracks
+                .get(id)
+                .is_some_and(|track| track.kind == yeban_model::TrackKind::Audio);
+            if !is_audio {
+                return false;
+            }
+            let by_arms_array = arms.get(*index).copied().unwrap_or(false);
+            let by_row = rows.get(*index).is_some_and(|row| row.armed);
+            by_arms_array || by_row
+        })
+        .map(|(_, id)| *id)
+        .collect();
+    resolve_record_target(project, &armed, selected)
 }
 
 /// 建录音器 ＋ 注册录音键；返回录音器句柄（判据读借用状态）与控制端口（走带停止也要用）。
