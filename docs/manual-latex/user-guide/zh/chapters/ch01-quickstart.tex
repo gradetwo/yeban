@@ -1,0 +1,178 @@
+% 夜半用户手册 · 第 1 章样章（中文）
+% T-DOC-001 第一批交付：大纲＋术语表＋第一章样章。
+% 事实来源：README.md、docs/manual/01-overview.md、02-projects.md、
+% crates/yeban-app/src/help.rs（引导步骤）、cli.rs 的 SHORTCUTS。
+
+\chapter{快速上手}
+\label{ch:quickstart}
+
+夜半（Yeban）是一款开源数字音频工作站：纯 Rust 实时音频引擎之上是一套 Slint
+原生图形界面，并对外提供完整的 MCP 工具面。人和 AI 可以在同一个工程里并肩工作。
+本章带你从安装走到第一次导出，全程只用它真实存在的功能。
+
+\section{安装与首次启动}
+
+\subsection{选择安装方式}
+
+最省事的是仓库 \texttt{README.md} 的 Download 表所列的 nightly 安装包（跟随
+\texttt{main} 分支，未签名）：Windows x86\_64 用 MSI，macOS 用 DMG（Apple Silicon
+与 Intel 各一份），Linux 用 DEB（x86\_64 与 arm64 各一份）。便携版
+\texttt{.tar.gz} 与 \texttt{SHA256SUMS} 在 nightly 发布页。
+
+\paragraph{从源码构建} 需要 Rust 1.99.0（由 \texttt{rust-toolchain.toml} 固定，
+\texttt{rustup} 会自动安装）、C++ 编译器与 \texttt{libclang}
+（\texttt{yeban-dsp} 用 bindgen 生成绑定）。Ubuntu/Debian 上的依赖与构建命令：
+
+\begin{verbatim}
+sudo apt-get install -y clang libclang-dev pkg-config libfontconfig1-dev \
+  libfreetype-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev \
+  libx11-dev libgl1-mesa-dev libasound2-dev
+cargo build --release -p yeban-app
+\end{verbatim}
+
+运行用 \texttt{cargo run --release -p yeban-app}；没有显示器的机器加
+\texttt{-- --headless}。内存紧张时用
+\texttt{cargo build --profile release-small -p yeban-app}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.8cm}]
+  \node[box] (a) {安装包 / 源码构建};
+  \node[box, right of=a] (b) {首次启动};
+  \node[box, right of=b] (c) {新手引导};
+  \node[box, right of=c] (d) {建轨与放片段};
+  \node[box, right of=d] (e) {播放试听};
+  \node[box, right of=e] (f) {导出 WAV};
+  \draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
+  \draw[->] (d) -- (e); \draw[->] (e) -- (f);
+\end{tikzpicture}
+\caption{第一章的动手路线：安装 $\to$ 启动 $\to$ 引导 $\to$ 编排 $\to$ 试听 $\to$ 导出}
+\label{fig:ch01-flow}
+\end{figure}
+
+\subsection{首次启动与新手引导}
+
+第一次启动时，应用会自动打开新手引导（落盘状态判定为「该弹」才弹；点过「不再
+显示」或已走完一遍就不会再自动出现）。引导带你认界面：欢迎页、走带栏、轨道区、
+钢琴卷帘、混音控制台，最后是检查器与音色库。每一步都会把界面切到正在讲的那一区。
+之后想再看，从「帮助 $\to$ 新手引导」重开。
+
+\screenshot{ch01-onboarding-tour}{首次启动自动弹出的新手引导卡片，停留在「走带栏」一步}
+
+\section{界面总览}
+
+\subsection{菜单栏与走带栏}
+
+顶部菜单栏共八组：文件、编辑、轨道、走带、混音、视图、诊断、帮助。走带栏在
+窗口最上方：播放 / 暂停（空格）、停止、归零到 \texttt{001.01.000}、循环开关
+（C）、节拍器与预备拍，以及速度（BPM）显示与敲入。走带栏右侧是工作区切换：
+全景、现场激发、线性编曲、混音控制台，数字键 1--4 对应。
+
+\screenshot{ch01-main-window}{内置演示工程打开后的主窗口，标出菜单栏、走带栏、编曲区、检查器、底部控制台}
+
+\subsection{中部：编曲区}
+
+一条轨道一行：左边是轨道头（名称、静音 / 独奏、音量），右边时间轴上摆着片段。
+片段可以拖动、拉边缘改长度、复制（Cmd/Ctrl+C / Cmd/Ctrl+V）、剪切
+（Cmd/Ctrl+X）与删除。上方是小节标尺与段落标记；下方可展开和弦轨与自动化泳道。
+按 Tab 打开 Clip 激发矩阵（Session 视图），按格子触发片段。
+
+\subsection{左侧：检查器与音色库}
+
+左栏上半是通道检查器，显示当前选中轨的通道条与设备参数，按 I 显隐；下半是
+音色库，浏览预置音色与 SFZ 音色库。轨道头工具行最前面是「轨道菜单」按钮，
+汇集本轨的操作。
+
+\subsection{底部控制台与边缘}
+
+底部三个页签：钢琴卷帘（P / F7）、混音控制台（X / F8）、设备机架（F9）；
+F3 把控制台最大化 / 还原。右侧可打开监听控制室（F4 显隐），显示主控监听与
+响度读数。最下方状态栏给出选区信息、实时和弦识别、快捷键提示与音频设备状态；
+再往下是全曲总览面板，用一张图看全曲能量与结构。把鼠标停在控件上会出现悬浮
+提示，按 T 整体开关。
+
+\begin{table}[htbp]
+\centering
+\caption{第一章涉及的键位（规范写法；macOS 为 Cmd+，其余为 Ctrl+）}
+\label{tab:ch01-keys}
+\begin{tabular}{ll}
+\hline
+键位 & 作用 \\
+\hline
+Space & 播放 / 暂停 \\
+Shift+Space & 从光标处续播 \\
+C & 循环播放开关 \\
+Enter & 回到起点 \\
+Tab / F5 & 视图切换 / Session 视图 \\
+F6 & Arrangement 视图 \\
+P / F7 & 钢琴卷帘 \\
+X / F8 & 混音控制台 \\
+F9 & 设备机架 \\
+I & 显隐左侧检查器 \\
+Cmd/Ctrl+S & 保存工程 \\
+Cmd/Ctrl+Shift+S & 另存为 \\
+Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z & 撤销 / 重做 \\
+Cmd/Ctrl+T & 在播放头处切分选中的剪辑 \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{第一个工程}
+
+\subsection{新建，或先用演示工程逛一圈}
+
+工程文件的扩展名是 \texttt{.yeban}，它是唯一的工程格式：一个容器里装着轨道、
+片段、音符、设备链与所用素材。
+
+「文件 $\to$ 新建空白工程」得到一个只有主总线的空工程。如果启动时不指定工程，
+应用会打开一个演示工程（鼓、贝斯、铺底、主音、弦乐、打击乐），方便先逛界面；
+它不是你的作品文件，随便改不会弄丢任何东西。
+
+\subsection{建轨、放片段、播放}
+
+在空工程里，用轨道菜单新建一条音轨；打开音色库挑一个预置音色或 SFZ 音色，
+把音频片段放到时间轴上。按空格播放，走带栏显示当前位置与速度；需要反复听一段
+时按 C 打开循环并框选区间。片段放歪了就拖动改位置、拖边缘改长度；要在播放头
+处切开，选中片段按 Cmd/Ctrl+T。
+
+\screenshot{ch01-first-clip}{空工程里第一条轨道上放好一个片段，播放头停在片段中部}
+
+\subsection{保存与导出}
+
+「文件 $\to$ 保存工程（Cmd/Ctrl+S）」把当前工程写回原文件；
+「文件 $\to$ 另存为（Cmd/Ctrl+Shift+S）」换名字或位置。保存是原子写入，
+写一半断电也不会留下半个文件。
+
+导出整轨 WAV 用「文件」菜单里的导出入口；分轨导出（Stems）会把每条源节点轨
+弹成一个 32-bit Float WAV，写进固定输出目录，并给出一份 \texttt{stems-manifest.json}
+索引与一行导出回执。主总线不出文件，但会在跳过清单里点名——这不是丢轨。
+
+\screenshot{ch01-export-dialog}{导出对话框与导出后的回执/toast 提示}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch01-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+安装与首次启动 & \texttt{getting-started-install} \\
+首次启动与新手引导 & \texttt{getting-started-onboarding} \\
+菜单栏与走带栏 & \texttt{interface-transport} \\
+中部：编曲区 & \texttt{interface-arrangement} \\
+左侧：检查器与音色库 & \texttt{interface-inspector-library} \\
+底部控制台与边缘 & \texttt{interface-console} \\
+新建，或先用演示工程 & \texttt{project-new-demo} \\
+建轨、放片段、播放 & \texttt{project-first-arrange} \\
+保存与导出 & \texttt{project-save-export} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 独立走通「安装 $\to$ 启动 $\to$ 建轨 $\to$ 放片段 $\to$ 播放 $\to$ 导出」全流程，并能说出界面五个主要区域各管什么。
+
+\paragraph{动手练习} 新建一个空工程，在轨道 1 放一段演示音频片段；按空格播放并用 C 循环两小节；用 Cmd/Ctrl+S 保存；导出整轨 WAV 与分轨各一次；最后用「文件 $\to$ 打开 / 恢复工程」重新打开，核对片段还在。

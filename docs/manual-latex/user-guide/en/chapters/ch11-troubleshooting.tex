@@ -1,0 +1,110 @@
+% Yeban User Guide — Chapter 11: Troubleshooting (English)
+% T-DOC-001 chapter-by-chapter delivery, written ahead of the CH11 task (last outline chapter).
+% Sources: docs/manual chapters, AGENTS.md execution discipline, T-FIX-196 memory threshold,
+% app.slint device/diagnostic entries.
+
+\chapter{Troubleshooting}
+\label{ch:troubleshooting}
+
+This chapter is organised by symptom: what you see, then what to rule out. Each section
+moves from the most likely and easiest-to-check cause towards project and device levels;
+change one thing at a time and audition after each. One guiding rule throughout: Yeban
+records key facts in receipts and the status bar — do not conclude from "it looks fine".
+
+\section{No Sound}
+
+Work through these in order, changing only one thing per step and listening after each:
+
+\begin{enumerate}
+  \item \textbf{Transport and playhead}: is playback actually running? Press Space and watch the playhead advance; Shift+Space resumes from the cursor.
+  \item \textbf{Mute / solo}: are Mute or Solo engaged on the track header or in the mixer? If another track is soloed, the current one is silent by design.
+  \item \textbf{Fader and pan}: is the track fader or master fader all the way down? Mix $\to$ Reset Master Fader to 0dB restores the master in one step.
+  \item \textbf{Device chain}: did the instrument load? Is an effect bypassed? Bypassed devices are not the same as deleted ones.
+  \item \textbf{Clip and fades}: is there actually a clip under the playhead? Was it trimmed down to silence, or are its fade-in/fade-out swallowing the whole thing?
+  \item \textbf{Materials present?}: a missing embedded sample is recorded as MissingSample and the track is skipped (saving still succeeds). Check the asset pool for the audio it uses; relative SFZ paths depend on the project directory — a project opened from file uses the real directory, while an unsaved new project uses a placeholder under the output directory, which breaks samples kept only next to the project file.
+  \item \textbf{Control Room}: does the master-bus meter show a level? Level present but nothing heard points to the output device; no level points to the project side.
+\end{enumerate}
+
+\screenshot{ch11-silence-checklist}{The silence checklist as presented in the help panel}
+
+\section{Devices and Drivers}
+
+\subsection{Input device and level}
+
+The recording panel has input-device selection and an input test, so you can confirm a
+signal arrives before actually recording. The recording path uses the project's sample
+rate (48 kHz by default); after changing devices, the next recording uses the new one.
+
+\subsection{Output and latency}
+
+If the project-side meter shows level but you hear nothing, check the system output
+device and the Control Room's master-bus reading. Yeban targets low-latency
+determinism and handles internal plug-in delay compensation; for latency-sensitive
+work, check the device buffer settings first rather than hunting for interface switches.
+
+\subsection{Safe defaults}
+
+Network-listening services (MCP HTTP) bind only the loopback address \texttt{127.0.0.1},
+never \texttt{0.0.0.0}; a default build does not listen at all unless you explicitly pass
+\texttt{--enable-mcp-http} or set \texttt{YEBAN\_MCP\_HTTP=1}. If MCP "won't connect" and
+you are tempted to open up listening, check that runtime switch first — do not change
+the bind address.
+
+\section{A Project Will Not Open}
+
+\begin{enumerate}
+  \item \textbf{Check the file}: \texttt{.yeban} is the only project format. Saving is atomic, so a power cut mid-write usually leaves the previous complete version rather than half a file; try a backup if you have one.
+  \item \textbf{Use the right entry}: File $\to$ Open / Restore Project..., or \texttt{yeban-app --open <path>}; the startup chooser's Recent Projects tab also returns you to prior work.
+  \item \textbf{Are the assets alongside it?}: the project references asset-pool materials by content hash. If you copied only the \texttt{.yeban} file and lost referenced materials, the project opens but those tracks are silent — that is not "won't open".
+  \item \textbf{Export a diagnostic bundle}: Diagnostics $\to$ Export Project Diagnostic Bundle produces a troubleshooting bundle (not artwork audio). Attaching it is far more useful than a vague description when asking for help.
+  \item \textbf{Record errors verbatim}: if the app reports an error code or a missing list, note the original text; do not substitute "it looks like the same problem as last time" for a measurement.
+\end{enumerate}
+
+\section{Performance and Memory Thresholds}
+
+\subsection{Know the threshold}
+
+The app test target is heavy: measured on a 4 GB machine, \texttt{cargo test -p yeban-app}
+is killed by the kernel (rustc SIGKILL) at roughly 35 minutes, yielding no results; moving
+the same kind of assertions into a lighter crate (\texttt{yeban-model}) compiled in about
+1m39s and ran in about 1s. The practical threshold for app-side verification is at least
+8 GB; below it, app-side work can only be static changes — do not claim tests were run.
+
+\subsection{A minimum verification set when resources are tight}
+
+When memory is insufficient, use the smallest set you can actually complete:
+\texttt{cargo fmt --check}, \texttt{cargo check --all-targets} and clippy for the target
+crate. Record what could not run honestly as \texttt{not\_run} with the reason, and let CI
+rerun it on a larger machine. For building, use
+\texttt{cargo build --profile release-small -p yeban-app}; on a headless machine add
+\texttt{--headless}.
+
+\subsection{Only the CI verdict counts}
+
+A local green is only a reference; the final verdict belongs to CI. An unread verdict
+counts as pending, never as "passed". Also avoid treating an overall "success" as proof
+that the target assertions actually ran — confirm the job executed (non-zero duration)
+and its log contains test-result lines.
+
+\section{Help Topic Mapping}
+
+\begin{table}[htbp]
+\centering
+\caption{Sections of this chapter $\to$ in-app help anchors}
+\label{tab:ch11-help}
+\begin{tabular}{ll}
+\hline
+Section & Help topic \\
+\hline
+No sound & \texttt{troubleshoot-silence} \\
+Devices and drivers & \texttt{troubleshoot-devices} \\
+A project will not open & \texttt{troubleshoot-project-open} \\
+Performance and memory thresholds & \texttt{troubleshoot-performance} \\
+Minimum verification and CI verdict & \texttt{troubleshoot-verification} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{What you will be able to do} Work through silence, device and project-open failures symptom by symptom, know the 8 GB threshold and the minimum verification set, and understand that the CI verdict is final.
+
+\paragraph{Hands-on exercise} Reproduce "no sound": mute a track then unmute it, bypass then restore an effect, auditioning after each step and naming which step restored sound; then export a diagnostic bundle and confirm it is a diagnostic file, not the piece; finally run the minimum verification set in a low-memory environment and record the unrunnable items honestly as \texttt{not\_run}.

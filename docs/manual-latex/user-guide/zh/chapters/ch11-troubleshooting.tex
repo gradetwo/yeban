@@ -1,0 +1,104 @@
+% 夜半用户手册 · 第 11 章：故障排查（中文）
+% T-DOC-001 逐章交付（CH11 任务未到前预写；大纲最后一章）。
+% 事实来源：docs/manual 各章、AGENTS.md 执行环境纪律、T-FIX-196 内存门槛、
+% app.slint 设备/诊断入口。
+
+\chapter{故障排查}
+\label{ch:troubleshooting}
+
+这一章按症状组织：先看到什么现象，再逐项排除。每节都按「最可能、最容易验证」
+的顺序排，先动一两个开关试试，再看工程与设备层面。排查时请记住一个总原则：
+夜半会把关键事实记进回执与状态栏，不要凭界面上「看起来正常」下结论。
+
+\section{无声}
+
+按下面的顺序逐项检查，每步只改一处，改完试听：
+
+\begin{enumerate}
+  \item \textbf{走带与播放头}：是否真的在播放？按空格看播放头是否推进；Shift+Space 可从光标处续播。
+  \item \textbf{静音 / 独奏}：轨道头和混音台上的 Mute / Solo 是否被按下？如果别的轨在独奏，当前轨自然不出声。
+  \item \textbf{推子与声像}：该轨音量与主总线推子是否被拉到底？「混音 $\to$ 主控总线推子归 0dB」可一键复位主控。
+  \item \textbf{设备链}：乐器是否加载成功？效果器是否被旁通（Bypass）？旁通的台数不等于删掉的台数。
+  \item \textbf{片段与淡化}：播放头下是否真有片段？片段是否被裁到只剩静音区？首尾淡入淡出是否把整段压没了？
+  \item \textbf{素材是否到位}：内嵌样本缺失时会登记 MissingSample 并跳过该轨（保存仍成功）。检查资产池里有没有用到的音频；相对 SFZ 路径依赖工程目录，工程从文件打开时用真实目录，新建未保存时用输出目录下的占位路径——后者会让「只放在工程旁」的样本解析失败。
+  \item \textbf{监听控制室}：主控监听的读数有没有电平？有电平但耳朵没听到，问题在输出设备；没电平，问题在工程侧。
+\end{enumerate}
+
+\screenshot{ch11-silence-checklist}{无声排查清单在帮助面板中的呈现}
+
+\section{设备与驱动}
+
+\subsection{输入设备与电平}
+
+录音面板里有输入设备选择与输入测试，可以在真正录音前看电平是否进来。录音
+路径与工程采样率一致（缺省 48 kHz）；换设备后，下一次录音即生效。
+
+\subsection{输出与延迟}
+
+听不到声音而工程侧读数正常时，去看系统输出设备与监听控制室的主总线读数。
+夜半追求低延迟确定性，并处理内部插件的延迟补偿；对延迟敏感的场景，优先确认
+设备缓冲设置，而不是在界面里到处找开关。
+
+\subsection{安全默认}
+
+网络监听类服务（MCP HTTP）只绑环回地址 \texttt{127.0.0.1}，不会绑
+\texttt{0.0.0.0}；默认构建不会监听 HTTP，除非显式给 \texttt{--enable-mcp-http}
+或设 \texttt{YEBAN\_MCP\_HTTP=1}。如果你以为「MCP 没连上」而想开放监听，先确认
+这层运行时开关，不要改绑定地址。
+
+\section{工程打不开}
+
+\begin{enumerate}
+  \item \textbf{确认文件本身}：\texttt{.yeban} 是唯一工程格式。保存是原子写入，写一半断电通常留下的是上一个完整版本，而不是半个文件；如果有备份，先试备份。
+  \item \textbf{用正确入口}：「文件 $\to$ 打开 / 恢复工程...」或命令行 \texttt{yeban-app --open <路径>}；启动工程选择器的「最近工程」也能回到上次的工作。
+  \item \textbf{资产是否同行}：工程按内容哈希引用资产池里的素材；只拷了 \texttt{.yeban} 而丢了引用素材时，工程能开但相关轨会无声，不是整个工程打不开。
+  \item \textbf{导出诊断包}：「诊断 $\to$ 导出工程诊断报告包」产出的是排障用的诊断包（不是作品音频）。找人帮忙时附上它，比只描述现象有用得多。
+  \item \textbf{如实记录错误}：如果应用给出错误码或缺失清单，把原文记下来；不要用「看起来像上次那个问题」替代实测读数。
+\end{enumerate}
+
+\section{性能与内存门槛}
+
+\subsection{先知道门槛}
+
+夜半的 app test 目标很重：实测在 4 GB 内存的机器上，\texttt{cargo test -p yeban-app}
+会在约 35 分钟处被内核以 OOM（rustc SIGKILL）终止，拿不到任何测试结果；同类
+判据挪到轻 crate（如 \texttt{yeban-model}）后编译约 1 分 39 秒、执行约 1 秒。
+因此 app 侧验证的硬门槛是至少 8 GB 内存；低于这个值时，app 侧票只能做静态改动，
+不要假装跑过测试。
+
+\subsection{资源不足时的最小验证集}
+
+内存不足时，采用可完成的最小验证集：\texttt{cargo fmt --check}、
+\texttt{cargo check --all-targets}、目标 crate 的 clippy；把无法运行的部分在回执里
+如实写成 \texttt{not\_run} 并说明原因，由 CI 在大机上补跑。构建可用
+\texttt{cargo build --profile release-small -p yeban-app} 减重；无显示器机器加
+\texttt{--headless}。
+
+\subsection{只有 CI 的判决算数}
+
+本地绿灯只是参考，最终判决以 CI 为准；未读回的判决一律记为 pending，不得写成
+「通过」。也不要把「整体 success」当成目标判据真的跑过——要确认目标作业执行过、
+耗时非 0、日志里有测试结果行。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch11-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+无声 & \texttt{troubleshoot-silence} \\
+设备与驱动 & \texttt{troubleshoot-devices} \\
+工程打不开 & \texttt{troubleshoot-project-open} \\
+性能与内存门槛 & \texttt{troubleshoot-performance} \\
+最小验证集与 CI 判决 & \texttt{troubleshoot-verification} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 按症状逐项排除无声、设备与工程打不开的问题，知道 8 GB 的内存门槛与资源不足时的最小验证集，并理解 CI 判决才是最终结论。
+
+\paragraph{动手练习} 复现一次「无声」：把某轨静音后再取消静音、旁通再恢复一个效果器，每步都试听并说出是哪一步恢复了声音；然后导出一次诊断报告包，确认它是诊断文件而不是作品音频；最后在低内存环境下跑一遍最小验证集，把无法运行的项如实记为 not\_run。

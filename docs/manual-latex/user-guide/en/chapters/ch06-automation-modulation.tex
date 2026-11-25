@@ -1,0 +1,119 @@
+% Yeban User Guide — Chapter 6: Automation and Modulation (English)
+% T-DOC-001 chapter-by-chapter delivery, written ahead of the CH06 task.
+% Sources: yeban-model/src/project.rs AutomationWriteMode, bridge.rs automation lanes,
+% cli.rs SHORTCUTS, yeban-dsp/src/oscillator.rs global LFO, docs/manual/05-mixer-effects.md.
+
+\chapter{Automation and Modulation}
+\label{ch:automation-modulation}
+
+Automation lets parameters change over time: draw a curve, or record your movements
+while playing back. This chapter covers showing lanes, what the four write modes mean,
+and the real boundary of modulation in the current build.
+
+\section{Automation Curves and Write Modes}
+
+\subsection{Show the lanes}
+
+Press A in the arrangement area, or use the View automation switch
+(Cmd/Ctrl+Shift+A) to show automation lanes. Each non-master track can have its own
+lanes, arranged by target parameter. A lane holds a polyline whose vertices are
+connected in time order; its horizontal axis aligns with the arrangement timeline, so
+you can read the curve directly against clip positions.
+
+\screenshot{ch06-automation-lanes}{Automation lanes expanded in the arrangement area, showing a parameter curve with vertices}
+
+\subsection{Draw and edit the curve}
+
+A lane's polyline is made of vertices. Adding one gives the parameter a value at a
+point in time; neighbouring vertices are interpolated. Drag a vertex to change its
+time or value; delete one and the curve re-connects across the gap. Curves are saved
+with the project, drive parameters during playback and take effect on export too.
+
+\subsection{The four write modes}
+
+Yeban's model defines four automation write modes; knowing them avoids recording
+curves you did not mean to:
+
+\begin{description}
+  \item[Off] The default. Nothing is written during playback; manual parameter changes do not alter the curve.
+  \item[Write] Once the parameter is changed during playback, writing continues until you explicitly stop.
+  \item[Touch] Writes only while you are physically touching the parameter; releasing stops immediately. Good for a single corrective nudge.
+  \item[Latch] Once touched, writing continues even after you release, until explicitly stopped. Good for locking in a whole fader move.
+\end{description}
+
+\begin{table}[htbp]
+\centering
+\caption{Write modes compared}
+\label{tab:ch06-write-modes}
+\begin{tabular}{ll}
+\hline
+Mode & After you release \\
+\hline
+Off & No writing \\
+Write & Keeps writing (explicit stop) \\
+Touch & Stops immediately \\
+Latch & Keeps writing (explicit stop) \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Parameter Binding and LFO}
+
+\subsection{Bind a parameter}
+
+An automation lane binds to a specific parameter on a specific track: choose the
+target, then draw on that lane. Device parameters (e.g.\ on an insert effect) can also
+be automation targets; insert the device, then pick its parameter in the lane's target
+list. Parameter changes and automation writes share one commit path, so undo restores
+them step by step — you will not get a curve change that the project failed to record.
+
+\subsection{The real LFO boundary}
+
+Yeban's DSP core does implement a \textbf{global LFO} (low-frequency oscillator): one
+shared by all voices, evaluated per block, with selectable waveforms. But note
+carefully: it is \textbf{not yet wired into the synthesizer's modulation inputs}.
+Do not expect to turn an LFO knob in the GUI and get vibrato or filter sweep; those
+modulation paths are still evolving.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.3cm, minimum height=0.8cm}]
+  \node[box] (a) {Pick target};
+  \node[box, right of=a] (b) {Pick write mode};
+  \node[box, right of=b] (c) {Draw / record};
+  \node[box, right of=c] (d) {Playback drives param};
+  \node[box, below of=c] (e) {LFO: in DSP, not wired to synth};
+  \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d);
+  \draw[dashed,->] (c)--(e);
+\end{tikzpicture}
+\caption{Automation flow and the LFO boundary: solid = available path, dashed = modulation not yet wired}
+\label{fig:ch06-automation-flow}
+\end{figure}
+
+For that reason this chapter does not describe vibrato or filter sweep as available
+features. If you cannot find the control in the GUI, it is not wired up yet — you have
+not missed it.
+
+\section{Help Topic Mapping}
+
+\begin{table}[htbp]
+\centering
+\caption{Sections of this chapter $\to$ in-app help anchors}
+\label{tab:ch06-help}
+\begin{tabular}{ll}
+\hline
+Section & Help topic \\
+\hline
+Show the lanes & \texttt{automation-show-lanes} \\
+Draw and edit the curve & \texttt{automation-edit-curve} \\
+Write modes & \texttt{automation-write-modes} \\
+Bind a parameter & \texttt{automation-target-binding} \\
+LFO boundary & \texttt{modulation-lfo-boundary} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{What you will be able to do} Show and edit automation curves, explain Off/Write/Touch/Latch, and know that the LFO exists in the DSP core but is not yet wired into the synthesizer.
+
+\paragraph{Hands-on exercise} Expand an automation lane on a track, select the volume parameter, use Touch mode to nudge the volume while playing and confirm only that touched segment was written; switch back to Off, drag a vertex manually and compare by ear; finally look for an LFO vibrato control and confirm it is not currently provided.
