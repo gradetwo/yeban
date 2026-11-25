@@ -455,7 +455,7 @@ fn save_archive_file_with(
 ) -> Result<SaveReport, SaveError> {
     // ⭐ T-FIX-329（API 硬化）：写盘前的跨层核对 —— Audio 片段引用的资产哈希
     // 必须**同时**在 project.assets 索引与本次写出的 CAS 字节池里；缺一边 ⇒
-    // []，**一个字节都不写**。检查放在字节计算之前
+    // [`SaveError::MissingAsset`]，**一个字节都不写**。检查放在字节计算之前
     // （与"容器被拒时一个文件都不碰"同一哲学，且更早：连容器字节都不算）。
     let missing = missing_audio_assets(archive);
     if !missing.is_empty() {

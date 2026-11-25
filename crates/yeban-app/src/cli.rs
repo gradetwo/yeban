@@ -48,7 +48,7 @@ use std::process::ExitCode;
 
 use yeban_model::EntityId;
 use yeban_model::container::ProjectArchive;
-use yeban_model::project::{SampleRate, TrackV3, YebanProjectV1};
+use yeban_model::project::{AssetMetadata, MediaKind, SampleRate, TrackV3, YebanProjectV1};
 use yeban_render::dither::BitDepth;
 use yeban_render::mastering::{ClipperParams, ExportPreset};
 use yeban_render::midi::MidiFormat;
@@ -7906,31 +7906,64 @@ fn logic_loss_lines(losses: &[yeban_render::logic::LogicLoss]) -> Vec<String> {
     lines
 }
 
-/// 把 `--import-audio` 得到的**容器字节**登记进归档的 CAS 资产池（`assets/{sha256}`）。
+/// 把 `--import-audio` 得到的**容器字节**登记进归档：**CAS 资产池**
+/// （`assets/{sha256}`）与工程的**资产索引**（`project.assets`）两层都写。
 ///
 /// 为什么由 CLI 这一层做（而不是 `crate::import_audio`）：CAS 池的字节**不是** `Op` 的
 /// 载荷（模型的 `Op` 全集没有资产变体），导入层只负责"解码 ＋ 登记片段 ＋ 把字节交回来"
 /// —— 字节落在**哪一个归档**上，是持有归档的调用方的事（这里是 `loaded.archive`）。
 ///
-/// 幂等：同一哈希已在池里就**不重复登记**（内容寻址 ⇒ 同键必同值）。
-/// [`ProjectArchive::assets`] 的文档要求"按哈希升序"，因此用**二分插入**而不是 `push`
-/// （`save_archive_file` 内部按 `BTreeMap` 语义借用去重，但归档自身的形态要守住它声明的不变式）。
+/// ⭐ **两层缺一不可**（T-FIX-384）：T-FIX-329 给 `save_archive_file` 加了写出前的跨层
+/// 核对 —— 每个 `ClipContent::Audio` 的哈希必须**同时**在 `project.assets` 索引与本次写出的
+/// CAS 字节池里，缺一边就 `SaveError::MissingAsset` 且**一个字节都不写**。此前本函数只登记
+/// 字节池，于是"`--import-audio` ＋ `--save-as`"这条产品命令会被自己刚加的核对拒掉
+/// （红字：`Save { source: MissingAsset { .. } }`）。
+///
+/// 两层各自幂等、互不牵连：
+/// - 池按哈希去重（内容寻址 ⇒ 同键必同值），已存在就不重复登记；
+/// - 索引是 `BTreeMap`，用 `entry().or_insert_with()` ⇒ 同键**不覆盖**已有元数据，
+///   第二次导入同一份字节时保留首次登记的 `original_path` / `license` 口径。
+///
+/// ⚠ 池的写入「已存在就早退」**不能**连带跳过索引：两者是独立的两层，池命中而索引缺项
+/// 正是本单要修的那种半登记状态。
+///
+/// [`ProjectArchive::assets`] 的文档要求"按哈希升序"，因此池用**二分插入**而不是 `push`
+/// （`save_archive_file` 内部按 BTreeMap 语义借用去重，但归档自身的形态要守住它声明的不变式）。
 fn register_audio_asset(
     archive: &mut ProjectArchive,
     report: &crate::import_audio::AudioImportReport,
 ) {
-    if archive.assets.iter().any(|(hash, _)| *hash == report.asset) {
-        return;
+    if !archive.assets.iter().any(|(hash, _)| *hash == report.asset) {
+        let index = match archive
+            .assets
+            .binary_search_by(|(hash, _)| hash.as_str().cmp(report.asset.as_str()))
+        {
+            Ok(index) | Err(index) => index,
+        };
+        archive
+            .assets
+            .insert(index, (report.asset.clone(), report.bytes.clone()));
     }
-    let index = match archive
-        .assets
-        .binary_search_by(|(hash, _)| hash.as_str().cmp(report.asset.as_str()))
-    {
-        Ok(index) | Err(index) => index,
-    };
+
+    // ⭐ 索引项。`original_path` 按 `AssetMetadata` 的文档"仅留痕，不参与寻址"⇒ 只取源
+    // 文件**名**：写成整条路径会把导入机的临时目录结构钉进 `.yeban`（同一份内容在两台
+    // 机器上产出的工程就不再逐字节相同，`ARCH-DET-*` 的确定性口径会破）。
+    // `license` 与 `import_logic` 的导入口径同款（`user-imported`）。
+    let original_path = report.path.file_name().map_or_else(
+        || "Media/Audio Files".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     archive
+        .project
         .assets
-        .insert(index, (report.asset.clone(), report.bytes.clone()));
+        .entry(report.asset.clone())
+        .or_insert_with(|| AssetMetadata {
+            hash: report.asset.clone(),
+            original_path,
+            byte_len: u64::try_from(report.bytes.len()).unwrap_or(u64::MAX),
+            media_kind: MediaKind::Audio,
+            license: "user-imported".to_owned(),
+        });
 }
 
 /// 把行打到 stdout（唯一打印点，保证"返回的"与"打印的"逐行一致）。
@@ -10798,6 +10831,151 @@ mod tests {
         assert_eq!(back.sample_rate, 48_000);
         assert_eq!(back.channels, 1);
         assert_eq!(buffer.len(), 100, "帧数 = 100（单声道）");
+    }
+
+    /// **T-FIX-384**：`--import-audio` 必须**两层同时写** —— CAS 字节池（`assets/{sha256}`）
+    /// **与**工程资产索引（`project.assets`）。T-FIX-329 的归档入口在写盘前做跨层核对
+    /// （Audio 引用的哈希要同时在索引与本次写出的池里，缺一边 `MissingAsset` 且不写一个
+    /// 字节）⇒ 只登记池的那条老路径，会把"导入然后另存"这条产品命令自己拒掉。
+    ///
+    /// 本判据钉两件事：
+    /// 1. 另存出来的容器里索引项**存在**且元数据与源字节自洽（hash / byte_len / 类型 /
+    ///    许可 / 文件名），跨层审计的 `unindexed_pool` 与 `index_without_pool` 都为空；
+    /// 2. **同一份字节再导入一次**（打开已含索引项的容器）⇒ 索引仍只有一条、元数据不被
+    ///    第二次导入覆盖 ⇒ 两层各自幂等且互不打架。
+    #[test]
+    fn import_audio_indexes_the_asset_so_the_container_passes_the_cross_layer_check() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+
+        let dir = scratch_dir("import-audio-index");
+        let (source, _project) = write_container_file(&dir, "song.yeban");
+
+        let wav = dir.join("take.wav");
+        let samples: Vec<i16> = (0..64_i16).map(|index| index * 137 - 4_000).collect();
+        yeban_render::wav::write_plain_wav(
+            &wav,
+            &PcmFormat::integer(1, 48_000, 16),
+            &PcmBuffer::Int16(samples),
+        )
+        .expect("写夹具 WAV");
+        let wav_bytes = std::fs::read(&wav).expect("读夹具 WAV");
+        let expected = AssetHash::of_bytes(&wav_bytes);
+
+        // ---- 判据 1：第一次导入 ＋ 另存 ----
+        let first = dir.join("first.yeban");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--import-audio".to_owned(),
+                wav.display().to_string(),
+                "--save-as".to_owned(),
+                first.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("导入＋另存必须成功（只写池的那版在这里 MissingAsset）");
+        assert!(
+            lines.iter().any(|line| line.starts_with("imported-audio:")),
+            "必须有 imported-audio 报告行: {lines:?}"
+        );
+
+        let reopened = crate::open::open_project_archive_file(
+            &first,
+            &crate::open::ProjectOpenOptions::default(),
+        )
+        .expect("回读第一次另存的容器");
+        let metadata = reopened.project.assets.get(&expected).unwrap_or_else(|| {
+            panic!(
+                "工程资产索引必须有该 sha256 的条目，实测索引键={:?}",
+                reopened.project.assets.keys().collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(metadata.hash, expected, "索引项的 hash 必须自指");
+        assert_eq!(
+            metadata.byte_len,
+            u64::try_from(wav_bytes.len()).expect("字节数放得进 u64"),
+            "索引项的 byte_len 必须等于源字节长度"
+        );
+        assert_eq!(
+            metadata.media_kind,
+            yeban_model::project::MediaKind::Audio,
+            "导入的 WAV 是音频资产"
+        );
+        assert_eq!(
+            metadata.license, "user-imported",
+            "许可口径与 `import_logic` 的导入口径同款"
+        );
+        assert_eq!(
+            metadata.original_path, "take.wav",
+            "`original_path` 只留文件名（⛔ 不把导入机的临时目录钉进工程）"
+        );
+
+        let audit = crate::open::audit_project_assets(&reopened);
+        assert!(
+            audit.missing.is_empty(),
+            "引用不得悬空: {:?}",
+            audit.missing
+        );
+        assert!(
+            audit.unindexed_pool.is_empty(),
+            "池里不许有未索引的条目: {:?}",
+            audit.unindexed_pool
+        );
+        assert!(
+            audit.index_without_pool.is_empty(),
+            "索引不许指向池里没有的字节: {:?}",
+            audit.index_without_pool
+        );
+
+        // ---- 判据 2：同一份字节再导入一次 ----
+        let second = dir.join("second.yeban");
+        run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                first.display().to_string(),
+                "--import-audio".to_owned(),
+                wav.display().to_string(),
+                "--save-as".to_owned(),
+                second.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("第二次导入必须成功（两层都幂等）");
+
+        let reopened = crate::open::open_project_archive_file(
+            &second,
+            &crate::open::ProjectOpenOptions::default(),
+        )
+        .expect("回读第二次另存的容器");
+        let same: Vec<_> = reopened
+            .project
+            .assets
+            .iter()
+            .filter(|(hash, _)| **hash == expected)
+            .collect();
+        assert_eq!(same.len(), 1, "同哈希只许一条索引项");
+        let metadata = same[0].1;
+        assert_eq!(
+            metadata.original_path, "take.wav",
+            "第二次导入不许覆盖首次登记的 `original_path`"
+        );
+        assert_eq!(
+            metadata.license, "user-imported",
+            "第二次导入不许覆盖首次登记的 `license`"
+        );
+        assert_eq!(
+            metadata.byte_len,
+            u64::try_from(wav_bytes.len()).expect("字节数放得进 u64"),
+        );
+        let pool_bytes = reopened
+            .assets
+            .iter()
+            .find(|(hash, _)| *hash == expected)
+            .map(|(_, bytes)| bytes.clone())
+            .expect("池里仍有该字节");
+        assert_eq!(pool_bytes, wav_bytes, "池里的字节与源文件逐字节相同");
     }
 
     /// **边界钉**（⛔ 不是能力判据、⛔ 不是"静默忽略是好事"）：`--import-audio` **单独**给
