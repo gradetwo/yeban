@@ -723,25 +723,60 @@ pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockErr
     Ok(guard)
 }
 
+/// 单次打开最多尝试 `create_new` 的次数。
+///
+/// 只为覆盖“`AlreadyExists` 之后、普通 `open` 之前文件被释放者删掉”的窗口；
+/// 不用于吞掉真实 IO 故障（父目录不在等仍在第一次就返回）。
+const LOCK_OPEN_ATTEMPTS: usize = 8;
+
+/// 判据缝：下一次 `create_new` 报 `AlreadyExists` 后删掉锁文件，模拟并发释放。
+/// 只在 `#[cfg(test)]` 存在，生产构建里没有这个静态量。
+#[cfg(test)]
+static DELETE_LOCK_FILE_AFTER_ALREADY_EXISTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 打开（必要时原子创建）锁文件。返回 `(file, 是否由本次创建)`。
+///
+/// `create_new` 报 `AlreadyExists` 后要再 `open` 同一个路径；这两步之间，正在释放的
+/// 排他持有者（[`LockGuard::drop`]）可能 `remove_file`，于是普通 `open` 拿到
+/// `NotFound`。那不是“文件系统坏了”，而是**这次竞争输了**：文件已被释放者删掉，
+/// 回到 `create_new` 重试即可由本次原子创建。最多重试 [`LOCK_OPEN_ATTEMPTS`] 次。
 fn open_lock_file(lock_file: &Path) -> Result<(File, bool), LockError> {
     // Unix 的 `flock` 与 Windows 的 `LockFileEx` 都要求句柄可读或可写；
     // Windows 的 append-only 句柄**锁不住**，因此一律 read + write。
-    match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(lock_file)
-    {
-        Ok(file) => Ok((file, true)),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
+    let mut last_not_found = None;
+    for _ in 0..LOCK_OPEN_ATTEMPTS {
+        match OpenOptions::new()
             .read(true)
             .write(true)
+            .create_new(true)
             .open(lock_file)
-            .map(|file| (file, false))
-            .map_err(LockError::Io),
-        Err(error) => Err(LockError::Io(error)),
+        {
+            Ok(file) => return Ok((file, true)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                #[cfg(test)]
+                if DELETE_LOCK_FILE_AFTER_ALREADY_EXISTS
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let _ = std::fs::remove_file(lock_file);
+                }
+                match OpenOptions::new().read(true).write(true).open(lock_file) {
+                    Ok(file) => return Ok((file, false)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        last_not_found = Some(error);
+                    }
+                    Err(error) => return Err(LockError::Io(error)),
+                }
+            }
+            Err(error) => return Err(LockError::Io(error)),
+        }
     }
+    Err(LockError::Io(last_not_found.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "锁文件在 create_new/open 竞态里反复消失（重试上限已到）",
+        )
+    })))
 }
 
 /// **原子地**把锁内容重写成给定元数据（`ftruncate` + `write` + `fsync`）。
@@ -769,4 +804,38 @@ pub fn read_metadata(project_path: &Path) -> (String, Option<LockMetadata>) {
 #[must_use]
 pub fn read_snapshot(project_path: &Path) -> LockFileSnapshot {
     LockFileSnapshot::read(&lock_path(project_path))
+}
+
+#[cfg(test)]
+mod lock_open_race_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// `create_new` 的 `AlreadyExists` 与随后 `open` 之间，排他持有者可能刚删掉
+    /// 锁文件（`LockGuard::drop`）。`open` 的 `NotFound` 不得原样冒给保存侧：
+    /// 回到 `create_new` 重试，本次应当原子创建成功（`created == true`）。
+    #[test]
+    fn a_lock_file_removed_between_create_new_and_open_is_recreated() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-lock-open-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let path = dir.join("race.yeban.lock");
+        std::fs::write(&path, b"stale-holder").expect("预置锁文件");
+
+        DELETE_LOCK_FILE_AFTER_ALREADY_EXISTS.store(true, Ordering::SeqCst);
+        let (file, created) = open_lock_file(&path).expect("竞态不得变成 NotFound");
+        assert!(
+            created,
+            "文件在 open 前被删 ⇒ 重试的 create_new 应由本次创建"
+        );
+        assert!(path.exists(), "重试成功后锁文件必须在盘上");
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
