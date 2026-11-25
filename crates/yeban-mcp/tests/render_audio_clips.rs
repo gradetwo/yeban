@@ -4042,11 +4042,12 @@ fn a_lane_that_switches_a_statically_disabled_compressor_on_keeps_the_mcp_detect
 /// 逐样本一致（容差同判据 1 的 2 LSB），且 `externalPlugins` 不再登记它
 /// （已被宿主消费）；`sources[].peak` 含效果器输出（恒定 0.5 素材 ⇒ 峰值 0.5）。
 ///
-/// 收据的另一半是既有口径，不是本票的让步：`track_has_unhandled_dsp` 按 kind
-/// 一刀切（任何非旁通外部设备都算），宿主状态不改变它 —— 一期乐器线同样如此
-/// （`externalPlugins` 排除、 `deviceChainDsp` 仍记）。因此本判据断言收据**恰为**
-/// `["deviceChainDsp"]`：效果器被消费（无 `externalPlugins`），而插件内部参数
-/// 不在模型里、离线路径无法核验（`deviceChainDsp` 如实保留）。
+/// 收据的另一半是 T-FIX-417（ADR-0069）改后的口径：已被宿主的那台外部效果器
+/// 不再登记 `externalPlugins` 与 `deviceChainDsp` —— 它被离线路径真的消费了，
+/// 不是"未消费"（`track_has_unhandled_dsp` 把宿主槽位排除在未处理之外，
+/// `hosted_external_device_indices` 是两条登记共用的同一份事实）。因此本判据
+/// 断言收据**恰为** `[]`：效果器被消费（无 `externalPlugins`），且宿主状态
+/// 改变了 kind 口径（一期乐器线同样如此）。
 ///
 /// 增益 ≠ 1 的处理本身由宿主层（夹具 TestGain 0.5）与渲染层（`PluginEffectSource`
 /// 0.5 包装）各自证明；本层证明“装配接上了、没静默丢、没把效果器当未消费登记”。
@@ -4064,8 +4065,8 @@ fn a_hosted_effect_passes_audio_through_and_leaves_the_receipt() {
     let data = artifact.response_data();
     assert_eq!(
         data["unsupported"],
-        json!(["deviceChainDsp"]),
-        "已宿主的效果器不得登记 externalPlugins，但 deviceChainDsp 按既有 kind 口径仍记: {}",
+        json!([]),
+        "已宿主的效果器不得登记 externalPlugins，T-FIX-417 起也不再登记 deviceChainDsp: {}",
         data["unsupported"]
     );
     let peak = data["sources"][0]["peak"].as_f64().expect("峰值读数");
@@ -4213,8 +4214,8 @@ fn estimate_f0_render(samples: &[f32], sample_rate: f64, from_s: f64, to_s: f64)
 
 /// OpenTune 真插件线 [①]：440 Hz 正弦人声测试素材经挂 OpenTune 的轨渲染，
 /// 输出与素材逐样本一致（容差同既有判据的 2 LSB），`sources[].peak` = 0.5，
-/// 收据恰为 `["deviceChainDsp"]`（效果器已被宿主消费，不登记
-/// `externalPlugins`）。默认态 OpenTune 是逐位直通（宿主层实测最大偏差
+/// 收据恰为 `[]`（效果器已被宿主消费，不登记 `externalPlugins`；
+/// T-FIX-417 起也不再登记 `deviceChainDsp`）。默认态 OpenTune 是逐位直通（宿主层实测最大偏差
 /// 0.0），故本判据钉的是“装配接上了、音频真流过、没静默丢”；纠音本身在默认态
 /// 不发生（宿主层 `opentune_real_plugin.rs` 已量：452 Hz 输入末窗仍为
 /// 452.8 Hz），不在此断言纠音。
@@ -4236,8 +4237,8 @@ fn an_opentune_effect_passes_audio_through_and_leaves_the_receipt() {
     let data = artifact.response_data();
     assert_eq!(
         data["unsupported"],
-        json!(["deviceChainDsp"]),
-        "已宿主的 OpenTune 不得登记 externalPlugins: {}",
+        json!([]),
+        "已宿主的 OpenTune 不得登记 externalPlugins，T-FIX-417 起也不再登记 deviceChainDsp: {}",
         data["unsupported"]
     );
     let peak = data["sources"][0]["peak"].as_f64().expect("峰值读数");
