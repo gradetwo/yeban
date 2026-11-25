@@ -449,12 +449,28 @@ fn all_33_aether_callbacks_reach_real_handlers_in_a_live_window() {
         format!("sidebar-search = {}", ui.get_sidebar_search())
     );
 
-    // 28 dock-tab-selected -> console-tab
+    // 28 dock-tab-selected -> console-tab (与 app.slint apply-dock-tab 同序:
+    // pianoroll=0, mixer=1, devices=2, stacked=3; "piano" 是 pianoroll 的别名)
     ui.invoke_dock_tab_selected("pianoroll".into());
+    let pianoroll_tab = ui.get_console_tab();
+    ui.invoke_dock_tab_selected("piano".into());
+    let piano_tab = ui.get_console_tab();
+    ui.invoke_dock_tab_selected("mixer".into());
+    let mixer_tab = ui.get_console_tab();
+    ui.invoke_dock_tab_selected("devices".into());
+    let devices_tab = ui.get_console_tab();
+    ui.invoke_dock_tab_selected("stacked".into());
+    let stacked_tab = ui.get_console_tab();
     hit!(
         "dock-tab-selected",
-        ui.get_console_tab() == 1,
-        format!("console-tab = {}", ui.get_console_tab())
+        pianoroll_tab == 0
+            && piano_tab == 0
+            && mixer_tab == 1
+            && devices_tab == 2
+            && stacked_tab == 3,
+        format!(
+            "console-tab pianoroll={pianoroll_tab} piano={piano_tab} mixer={mixer_tab} devices={devices_tab} stacked={stacked_tab}"
+        )
     );
 
     // 29 zone-toggle -> status-selection(汇总四个真实 show-* 开关)

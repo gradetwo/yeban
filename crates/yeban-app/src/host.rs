@@ -27010,14 +27010,18 @@ pub fn wire_aether_actions(
     });
 
     // ⑬ dock-tab-selected: 写 console-tab(旧控制台与快捷键 F7/F8/F9 的同一读数)。
+    // 映射与 app.slint `apply-dock-tab` / `scene::CONSOLE_TABS` 同序:
+    // pianoroll=0, mixer=1, devices=2, stacked=3; 未知 tab 名不动 console-tab。
     ui.on_dock_tab_selected({
         let w = weak.clone();
         move |tab| {
             if let Some(ui) = w.upgrade() {
                 let index = match tab.as_str() {
-                    "mixer" => 0,
-                    "pianoroll" | "piano" => 1,
-                    _ => 2,
+                    "pianoroll" | "piano" => 0,
+                    "mixer" => 1,
+                    "devices" => 2,
+                    "stacked" => 3,
+                    _ => return,
                 };
                 ui.set_console_tab(index);
             }

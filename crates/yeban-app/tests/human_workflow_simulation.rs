@@ -307,7 +307,7 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
     assert!(send_gain.is_finite(), "Send gain_db={send_gain}");
 
     // 6. 切换停靠栏 + 编排/卷帘二维滚轮 + 缩放
-    // (注：app.slint apply-dock-tab 定义 pianoroll=0, mixer=1, devices=2；与 host::on_dock_tab_selected 的旧 ConsoleTabs 顺序不一致，报告已记录)
+    // (注：app.slint apply-dock-tab 与 host::on_dock_tab_selected 同序 pianoroll=0, mixer=1, devices=2, stacked=3)
     ui.invoke_apply_dock_tab("mixer".into());
     assert_eq!(ui.get_console_tab(), 1);
     ui.invoke_apply_dock_tab("devices".into());
