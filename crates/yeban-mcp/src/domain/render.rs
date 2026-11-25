@@ -3132,6 +3132,15 @@ pub struct RenderArtifact {
     pub render_range: Option<RenderRange>,
     /// **真的参与渲染**的音频片段摆放数（全部源节点合计）。
     pub audio_clips: u64,
+    /// 因为资产字节不在会话池里而**没有**渲染的音频片段摆放数（全部源节点合计）。
+    ///
+    /// 口径与逐源报告 [`SourceReport::audio_clips_unrendered`] 相同（只数"索引
+    /// 有、池里无 ⇒ 登记 + 静音"的摆放；被 `mute` / `solo` 门控的摆放数在
+    /// [`SourceReport::audio_clips_gated`]，**不进**这个数 —— 静音是调用方
+    /// 的明确意图，缺资产是意外，两者不可混账）。分轨导出用它报
+    /// `audioClipsSkipped`：一条分轨的音频片段全是这个口径时，文件还在、
+    /// 却是静音的，toast 必须降级而不是只报"完成"（T-FIX-418）。
+    pub audio_clips_unrendered: u64,
     /// 被**确定性**概率判定判为"不触发"、因而不发声的 MIDI 音符数
     /// （全部源节点合计）[MODEL-AST-005, ARCH-DET-001]。
     ///
@@ -3455,6 +3464,7 @@ impl RenderArtifact {
             serde_json::json!({
                 "wired": true,
                 "clipsRendered": self.audio_clips,
+                "clipsUnrendered": self.audio_clips_unrendered,
                 "assetsReferenced": self.audio_assets.len(),
                 "assets": self
                     .audio_assets
@@ -4472,6 +4482,10 @@ pub fn build(
     // 逐件链未应用数（期 3）：声明 − 本次渲染真的建了分组源的组数。
     let lane_chains_unapplied = lane_chains_declared - lane_chains_applied_total;
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
+    let audio_clips_unrendered: u64 = reports
+        .iter()
+        .map(|report| report.audio_clips_unrendered)
+        .sum();
     let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
     let notes_ratcheted: u64 = reports.iter().map(|report| report.notes_ratcheted).sum();
     let ratchet_pulses: u64 = reports.iter().map(|report| report.ratchet_pulses).sum();
@@ -4501,6 +4515,7 @@ pub fn build(
         // ⭐ 部分渲染区间（9b 步切片时解析；`None` = 全程渲染）。
         render_range,
         audio_clips,
+        audio_clips_unrendered,
         notes_silenced,
         notes_ratcheted,
         ratchet_pulses,

@@ -290,6 +290,15 @@ pub struct StemRow {
     pub source_mute: bool,
     /// 导出**当时**该轨的 `solo` 读数。
     pub source_solo: bool,
+    /// 本条分轨里**真的参与渲染**的音频片段摆放数（T-FIX-418：`artifact.audio_clips`
+    /// 的同一批读数 —— 其它轨在分轨渲染里被静音，它们的摆放数在门控口径里，
+    /// 不进这个数）。
+    pub audio_clips_rendered: u64,
+    /// 本条分轨里因为资产字节不在会话池里而**没有**渲染的音频片段摆放数
+    /// （T-FIX-418：`artifact.audio_clips_unrendered` 的同一批读数 —— 索引有、
+    /// 池里无 ⇒ 登记 + 静音的摆放；文件照常落盘、却是静音的，调用方必须从
+    /// 这个数看出来，而不是只看到"分轨完成"）。
+    pub audio_clips_skipped: u64,
     /// 产物字节数。
     ///
     /// ⚠ **独立于 `artifact.bytes.len()`**：流式落盘（[`export_streaming`]）写完一条
@@ -315,6 +324,8 @@ impl StemRow {
             "bitDepth": self.artifact.bit_depth,
             "channels": self.artifact.channels,
             "frames": self.artifact.frames,
+            "audioClipsRendered": self.audio_clips_rendered,
+            "audioClipsSkipped": self.audio_clips_skipped,
             "container": self.artifact.container_name(),
             "sourceMute": self.source_mute,
             "sourceSolo": self.source_solo,
@@ -420,6 +431,22 @@ impl StemBatch {
     #[must_use]
     pub fn bytes_total(&self) -> usize {
         self.stems.iter().map(|row| row.bytes_len).sum()
+    }
+
+    /// 本批**真的参与渲染**的音频片段摆放数合计（T-FIX-418：各条
+    /// [`StemRow::audio_clips_rendered`] 之和）。
+    #[must_use]
+    pub fn audio_clips_rendered(&self) -> u64 {
+        self.stems.iter().map(|row| row.audio_clips_rendered).sum()
+    }
+
+    /// 本批因为资产字节不在会话池里而**没有**渲染的音频片段摆放数合计
+    /// （T-FIX-418：各条 [`StemRow::audio_clips_skipped`] 之和 —— 口径与
+    /// 轨级 `skipped`（整轨不出文件）**不同**，不重复计数：一条轨只要出了
+    /// 文件就不进 `skipped`，哪怕它的音频片段全是这个口径）。
+    #[must_use]
+    pub fn audio_clips_skipped(&self) -> u64 {
+        self.stems.iter().map(|row| row.audio_clips_skipped).sum()
     }
 
     /// 最长的清洗后文件名的**UTF-8 字节数**（目录名由调用方控制，这里只报自己造的那一段）。
@@ -997,6 +1024,9 @@ fn export_with_sink(
             path: artifact.path.clone(),
             source_mute: source.mute,
             source_solo: source.solo,
+            // ⛔ 先读数再挪走 `artifact`：`bytes_len` 同理（见下方字段注释）。
+            audio_clips_rendered: artifact.audio_clips,
+            audio_clips_skipped: artifact.audio_clips_unrendered,
             bytes_len: artifact.bytes.len(),
             artifact,
         };

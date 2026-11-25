@@ -986,12 +986,13 @@ fn ratchet_roster() -> Value {
     ])
 }
 
-/// ⭐ s31：`data.audio`（8 键）。拼装点唯一（`map.insert("audio", …)`）。
+/// ⭐ s31：`data.audio`（9 键）。拼装点唯一（`map.insert("audio", …)`）。
 #[must_use]
 fn audio_roster() -> Value {
     roster(&[
         ("wired", json!({"type": "boolean", "const": true})),
         ("clipsRendered", json!({"type": "integer"})),
+        ("clipsUnrendered", json!({"type": "integer"})),
         ("assetsReferenced", json!({"type": "integer"})),
         (
             "assets",
@@ -3291,7 +3292,7 @@ mod tests {
             ("request", render_request_roster(), 18),
             ("probability", probability_roster(), 5),
             ("ratchet", ratchet_roster(), 8),
-            ("audio", audio_roster(), 8),
+            ("audio", audio_roster(), 9),
             ("peak", peak_roster(), 8),
             ("normalize", normalize_roster(), 5),
             ("loudness", loudness_roster(), 19),
@@ -3386,7 +3387,7 @@ mod tests {
             "trimmedFrames": 0, "renderedFrames": 48_000, "bytes": 192_044, "clips": 1
         });
         let audio = json!({
-            "wired": true, "clipsRendered": 1, "assetsReferenced": 1,
+            "wired": true, "clipsRendered": 1, "clipsUnrendered": 0, "assetsReferenced": 1,
             "assets": [asset.clone()],
             "supported": "…", "unsupported": "…",
             "resampler": {"method": "…", "specId": "ARCH-DSP-002", "adr": "ADR-0001 D26"},

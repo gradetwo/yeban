@@ -76,6 +76,13 @@ pub struct StemLine {
     pub bit_depth: u16,
     /// 声道数。
     pub channels: u16,
+    /// 本条分轨里**真的参与渲染**的音频片段摆放数（T-FIX-418：
+    /// `StemRow::audio_clips_rendered` 的同一批读数）。
+    pub audio_clips_rendered: u64,
+    /// 本条分轨里因为资产字节不在会话池里而**没有**渲染的音频片段摆放数
+    /// （T-FIX-418：`StemRow::audio_clips_skipped` 的同一批读数 —— 文件照常
+    /// 落盘、却是静音的；toast 必须从这个数看出来）。
+    pub audio_clips_skipped: u64,
 }
 
 /// 一条跳过轨的实测读数（`SkippedTrack::to_value` 的同一批字段）。
@@ -106,6 +113,14 @@ pub struct ExportStemsReport {
     pub basis_frames: u64,
     /// 采样率（Hz，工程采样率）。
     pub sample_rate: u32,
+    /// 本批**真的参与渲染**的音频片段摆放数合计（T-FIX-418：
+    /// `StemBatch::audio_clips_rendered` 的同一批读数）。
+    pub audio_clips_rendered: u64,
+    /// 本批因为资产字节不在会话池里而**没有**渲染的音频片段摆放数合计
+    /// （T-FIX-418：`StemBatch::audio_clips_skipped` 的同一批读数 —— 口径与
+    /// 轨级 `skipped`（整轨不出文件）**不同**，不重复计数；一条轨只要出了文件
+    /// 就不进 `skipped`，哪怕它的音频片段全是这个口径）。
+    pub audio_clips_skipped: u64,
     /// manifest 的落点（`<dir>/stems-manifest.json`，已落盘）。
     pub manifest_path: PathBuf,
 }
@@ -115,18 +130,20 @@ impl ExportStemsReport {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
-            "{RECEIPT_PREFIX} dir={} stems={} skipped={} bytes={} renders={} sampleRate={} bitDepth=32 manifest={}",
+            "{RECEIPT_PREFIX} dir={} stems={} skipped={} bytes={} renders={} sampleRate={} bitDepth=32 audioClipsRendered={} audioClipsSkipped={} manifest={}",
             self.dir.display(),
             self.stems.len(),
             self.skipped.len(),
             self.bytes_total,
             self.renders,
             self.sample_rate,
+            self.audio_clips_rendered,
+            self.audio_clips_skipped,
             self.manifest_path.display(),
         )];
         for stem in &self.stems {
             lines.push(format!(
-                "{STEM_LINE_PREFIX} path={} track={} trackId={} fileName={} bytes={} bitDepth={} channels={}",
+                "{STEM_LINE_PREFIX} path={} track={} trackId={} fileName={} bytes={} bitDepth={} channels={} audioClipsRendered={} audioClipsSkipped={}",
                 stem.path.display(),
                 stem.track,
                 stem.track_id,
@@ -134,6 +151,8 @@ impl ExportStemsReport {
                 stem.bytes,
                 stem.bit_depth,
                 stem.channels,
+                stem.audio_clips_rendered,
+                stem.audio_clips_skipped,
             ));
         }
         for skipped in &self.skipped {
@@ -143,6 +162,37 @@ impl ExportStemsReport {
             ));
         }
         lines
+    }
+}
+
+/// 分轨导出 toast 的**纯文案**（T-FIX-418：GUI 与 CLI 共用同一条判定，判据不
+/// 用起 UI 就能钉死 —— 见 `tests/export_stems_clip_counts.rs`）。
+///
+/// 判定只看**音频片段维度**的未渲染数（`report.audio_clips_skipped`：资产字节
+/// 不在会话池里 ⇒ 登记 + 静音的摆放；文件照常落盘、却是静音的）：
+///
+/// * `skipped == 0` ⇒ 沿用原来的"完成"文案，**一字不改**（`host.rs` 的旧 toast
+///   是 `"[导出] 分轨完成：{} 条（跳过 {}）→ {}"`，这里逐字复述）。
+/// * `skipped > 0` ⇒ 降级为警告：前缀改成"分轨警告"，并在括号里点名未渲染的
+///   片段数 —— 一条分轨的音频片段全被跳过时，用户再也不会只看到"完成"。
+///   括号里仍保留轨级 `skipped` 数（整轨不出文件的轨），两者口径不同，⛔ 不合并。
+#[must_use]
+pub fn toast_message(report: &ExportStemsReport, dir: &std::path::Path) -> String {
+    if report.audio_clips_skipped == 0 {
+        format!(
+            "[导出] 分轨完成：{} 条（跳过 {}）→ {}",
+            report.stems.len(),
+            report.skipped.len(),
+            dir.display(),
+        )
+    } else {
+        format!(
+            "[导出] 分轨警告：{} 条（{} 个音频片段未渲染；跳过 {}）→ {}",
+            report.stems.len(),
+            report.audio_clips_skipped,
+            report.skipped.len(),
+            dir.display(),
+        )
     }
 }
 
@@ -253,6 +303,8 @@ pub fn export_stems(
             bytes: row.bytes_len,
             bit_depth: row.artifact.bit_depth,
             channels: row.artifact.channels as u16,
+            audio_clips_rendered: row.audio_clips_rendered,
+            audio_clips_skipped: row.audio_clips_skipped,
         });
     }
     let mut skipped_out = Vec::with_capacity(batch.skipped.len());
@@ -278,6 +330,8 @@ pub fn export_stems(
         renders: batch.renders,
         basis_frames: batch.basis_frames,
         sample_rate: batch.sample_rate,
+        audio_clips_rendered: batch.audio_clips_rendered(),
+        audio_clips_skipped: batch.audio_clips_skipped(),
         manifest_path,
     })
 }

@@ -26820,13 +26820,11 @@ pub fn wire_aether_actions(
                             );
                             let _ = worker.upgrade_in_event_loop(move |ui| match result {
                                 Ok(report) => ui.set_toast_message(
-                                    format!(
-                                        "[导出] 分轨完成：{} 条（跳过 {}）→ {}",
-                                        report.stems.len(),
-                                        report.skipped.len(),
-                                        out_for_msg.display()
-                                    )
-                                    .into(),
+                                    // T-FIX-418：文案判定收进 `export_stems::toast_message`
+                                    // —— 音频片段有未渲染时降级为"分轨警告"，零未渲染时
+                                    // 仍是原来的"分轨完成"；这里只拼、不再判。
+                                    crate::export_stems::toast_message(&report, &out_for_msg)
+                                        .into(),
                                 ),
                                 Err(err) => {
                                     ui.set_toast_message(format!("[导出] 分轨失败：{err}").into())
