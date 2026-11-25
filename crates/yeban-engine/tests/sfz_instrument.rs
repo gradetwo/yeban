@@ -16645,11 +16645,12 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 1,
             needle: "（[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。",
-            verdict: "仍成立（三个静态 opcode 今天仍不读）",
-            basis: "`yeban-sfz/src/instrument.rs` 的 `scopes.get(..)` 里**没有** `global_volume`／\
-                    `master_volume`／`group_volume` 三个名字 ⇒ `#120`／`#121` 的结构面依据\
-                    （`Scopes::get` 是扁平 first-match、没有 header 维度）**逐字未变**",
-            check: SweepCheck::NotInCode(2, &["global_volume", "master_volume", "group_volume"]),
+            verdict: "已落地（T-FIX-283）：三个静态 opcode 已按各自 header 读取并进入 Region 增益",
+            basis: "T-FIX-283 新增 `Region::scope_gain`（`global_volume`／`master_volume`／\
+                    `group_volume` 三个 dB 值各转线性后相乘），由 `yeban-sfz/src/instrument.rs` 的\
+                    `read_scoped_volume` **只从对应作用域**读取（⛔ 不走 `Scopes::get` 的扁平继承链）\
+                    ⇒ 原句「今天不读它们」只在**接线前**成立；本行保留原文，机械腿改成正例",
+            check: SweepCheck::InCode(2, "scope_gain"),
         },
         SweepRow {
             file: 1,
@@ -17622,5 +17623,55 @@ fn s125_frame_accounting_counts_frames_and_memory_counts_stored_samples() {
         mono_sample.pcm_bytes(),
         256 * 4,
         "单声道存储记账 = 帧数 × 4 B"
+    );
+}
+
+#[test]
+fn tfix283_global_volume_is_applied_to_the_offline_render() {
+    // T-FIX-283：`<global>global_volume=-6` 必须在**离线渲染**里真的生效，
+    // 且只做 6 dB 缩放（与无声明基线逐样本同形）。这是三路（离线/摊平/实时）
+    // 共用 `Region::linear_gain()` 的端到端见证。
+    let plain = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("基线 SFZ 必须解析成功");
+    let quiet_text = "<global>global_volume=-6\n\
+                      <region> sample=a.wav key=60 pitch_keycenter=60\n";
+    let quiet = SfzInstrument::load(quiet_text.to_owned(), &Default::default())
+        .expect("global_volume 必须解析成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let mut plain_out = vec![0.0f32; BLOCK];
+    let mut quiet_out = vec![0.0f32; BLOCK];
+    let plain_frames = plain
+        .render_note_into(&sample, 60, 127, &mut plain_out, 48_000.0)
+        .expect("基线渲染不得报错");
+    let quiet_frames = quiet
+        .render_note_into(&sample, 60, 127, &mut quiet_out, 48_000.0)
+        .expect("层级音量渲染不得报错");
+    assert_eq!(plain_frames, quiet_frames, "两条渲染的帧数必须一致");
+
+    // 摊平路：同一份 `Region::linear_gain()` 烘进 `PreparedRegion::volume_gain`。
+    let prepared = prepare_with(quiet_text, &sample);
+    let flat_gain = prepared.regions()[0].gain_at(60, 127);
+    let expected_gain = 10.0f32.powf(-6.0 / 20.0);
+    assert!(
+        (flat_gain - expected_gain).abs() <= 1.0e-6,
+        "摊平增益必须是 -6 dB，实际 {flat_gain}（期望 {expected_gain}）"
+    );
+
+    let energy = |out: &[f32]| -> f64 {
+        out.iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>()
+    };
+    let plain_energy = energy(&plain_out);
+    let quiet_energy = energy(&quiet_out);
+    assert!(plain_energy > 0.0, "基线必须真的发声");
+    let expected_ratio = 10.0f64.powf(-6.0 / 20.0).powi(2);
+    let actual_ratio = quiet_energy / plain_energy;
+    assert!(
+        (actual_ratio - expected_ratio).abs() <= 1.0e-4,
+        "global_volume=-6 的离线输出能量比必须是 10^(-6/10)，实际 {actual_ratio}（期望 {expected_ratio}）"
     );
 }

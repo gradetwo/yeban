@@ -4600,7 +4600,8 @@ pub struct PreparedRegion {
     /// 从左到右的乘法链，`(K * 淡入) * 淡出` 与 `K * (淡入 * 淡出)` 在 binary32 下
     /// 不一定同值 ⇒ 分开存才能逐位还原该链的结合序。
     velocity_fade_out: [f32; 128],
-    /// `PlaybackSpec::gain`：`volume` 换算出的线性增益（与键/力度无关）。
+    /// `PlaybackSpec::gain`：`volume` 与三个层级静态音量（`global_volume`／
+    /// `master_volume`／`group_volume`）换算出的线性增益（与键/力度无关）。
     volume_gain: f32,
     /// `PlaybackSpec::velocity_gain` 的**每力度**读数（⛔ 不再冻结在力度 100）。
     velocity_gain: [f32; 128],

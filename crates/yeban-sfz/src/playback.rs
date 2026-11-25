@@ -242,11 +242,13 @@ pub struct PlaybackSpec {
     pub pitch_ratio: f32,
     /// 步进比：每输出一个采样前进的源采样个数（已含采样率换算）。
     pub rate: f32,
-    /// 该 region 的 `volume`（dB，原样）。
+    /// 该 region 的 `volume`（dB，原样；⛔ 不含 `global_volume`／`master_volume`／
+    /// `group_volume` 三个层级静态量，它们已在 [`PlaybackSpec::gain`] 里烘成线性乘子）。
     pub volume_db: f32,
-    /// `volume` 换算出的**线性**增益：`10 ^ (volume_db / 20)`。
+    /// `volume` 与层级增益换算出的**线性**增益：
+    /// `10 ^ (volume_db / 20) × Region::scope_gain`。
     ///
-    /// **不含**力度：只折 `volume`。力度 → 振幅在
+    /// **不含**力度：只折 `volume` 与三个层级音量。力度 → 振幅在
     /// [`PlaybackSpec::velocity_gain`]，两者相乘见 [`PlaybackSpec::total_gain`]。
     pub gain: f32,
     /// 该 region 的 `amp_veltrack`（%，原样；缺省
@@ -392,7 +394,8 @@ pub struct PlaybackSpec {
 }
 
 impl PlaybackSpec {
-    /// `volume`、力度、交叉淡化与键位跟踪四段的**合并**线性增益：
+    /// `volume`（含 `global_volume`／`master_volume`／`group_volume` 的层级乘子）、
+    /// 力度、交叉淡化与键位跟踪四段的**合并**线性增益：
     /// `((gain * velocity_gain) * crossfade_gain) * keytrack_gain`。
     ///
     /// 四段刻意分开（见 [`PlaybackSpec::gain`] / [`PlaybackSpec::velocity_gain`] /
@@ -657,7 +660,13 @@ impl<'a> Region<'a> {
         self.pitch_ratio(note) * bend.exp2() as f32
     }
 
-    /// `volume` (dB) → 线性增益：`10 ^ (volume / 20)`。
+    /// `volume` (dB) 与层级增益 → 线性增益：
+    /// `10 ^ (volume / 20) × scope_gain`。
+    ///
+    /// [`Region::scope_gain`] 是 `<global>`／`<master>`／`<group>` 三个静态音量
+    /// （`global_volume`／`master_volume`／`group_volume`）的线性乘积；缺省 `1.0`
+    /// ⇒ 本函数对未声明这三个 opcode 的 region 与接线前**逐位相同**。它⛔ 不是
+    /// `volume` 的别名：`Region::volume` 原样保留，层级乘子只在这里合并。
     ///
     /// 解析路径保证 `volume` 有限（[`crate::parser::OpcodeValue::as_f32`] 拒绝
     /// `NaN` / `±Inf`），因此本函数对解析得到的 region 不会返回 `NaN`。
@@ -665,7 +674,8 @@ impl<'a> Region<'a> {
     /// —— 本 crate **不**发明钳制策略。
     #[must_use]
     pub fn linear_gain(&self) -> f32 {
-        (f64::from(self.volume) * std::f64::consts::LOG2_10 / 20.0).exp2() as f32
+        let volume_gain = (f64::from(self.volume) * std::f64::consts::LOG2_10 / 20.0).exp2() as f32;
+        volume_gain * self.scope_gain
     }
 
     /// `amp_keytrack` 在 `note` 处的**线性**增益因子（见
@@ -1593,6 +1603,108 @@ mod tests {
     }
 
     #[test]
+    fn hierarchical_scope_volumes_are_independent_of_region_volume() {
+        // T-FIX-283：`global_volume` / `master_volume` / `group_volume` 是**三个**
+        // 独立静态 opcode，⛔ 不是 `volume` 的别名。这里 region 自己也有 `volume=-6`，
+        // 必须与三层一起相乘（-24 dB），而 `volume_db` 仍原样只报 region 的 -6。
+        let instrument = parse_text(
+            "<global>global_volume=-6\n\
+             <master>master_volume=-6\n\
+             <group>group_volume=-6\n\
+             <region>sample=a.wav volume=-6",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert!(
+            close(region.scope_gain, 10.0f32.powf(-18.0 / 20.0), 1.0e-6),
+            "三层各 -6 dB ⇒ scope_gain 必须是 -18 dB 的线性值，实际 {}",
+            region.scope_gain
+        );
+        assert_eq!(region.volume, -6.0, "region volume 不得被层级值覆盖");
+        let play = instrument
+            .playback_for(RegionQuery::new(60, 100), RATES_EQUAL)
+            .expect("region matches");
+        assert_eq!(play.spec.volume_db, -6.0, "volume_db 只报 region volume");
+        assert!(
+            close(play.spec.gain, 10.0f32.powf(-24.0 / 20.0), 1.0e-6),
+            "最终增益必须是 region -6 dB × 三层 -18 dB，实际 {}",
+            play.spec.gain
+        );
+    }
+
+    #[test]
+    fn group_and_master_volumes_affect_only_their_own_scope() {
+        // 第一个 master（−6 dB）下有 group A（−6）与 group B（0）；第二个 master（0）
+        // 下只有 group C（0）。global 是 −6。期望：A=-18、B=-12、C=-6 dB。
+        let instrument = parse_text(
+            "<global>global_volume=-6\n\
+             <master>master_volume=-6\n\
+             <group>group_volume=-6\n\
+             <region>sample=a.wav key=60\n\
+             <group>group_volume=0\n\
+             <region>sample=b.wav key=72\n\
+             <master>master_volume=0\n\
+             <group>group_volume=0\n\
+             <region>sample=c.wav key=84",
+            &Default::default(),
+        )
+        .expect("parses");
+        let gains: Vec<f32> = instrument
+            .regions()
+            .iter()
+            .map(Region::linear_gain)
+            .collect();
+        assert!(
+            close(gains[0], 10.0f32.powf(-18.0 / 20.0), 1.0e-6),
+            "group A 必须吃 global+master+group 三层，实际 {}",
+            gains[0]
+        );
+        assert!(
+            close(gains[1], 10.0f32.powf(-12.0 / 20.0), 1.0e-6),
+            "group B 只吃 global+master，实际 {}",
+            gains[1]
+        );
+        assert!(
+            close(gains[2], 10.0f32.powf(-6.0 / 20.0), 1.0e-6),
+            "第二个 master 下的 group C 只吃 global，实际 {}",
+            gains[2]
+        );
+    }
+
+    #[test]
+    fn default_hierarchical_volumes_leave_gain_bitwise_unchanged() {
+        let instrument =
+            parse_text("<region>sample=a.wav volume=-3", &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.scope_gain, 1.0, "三个 opcode 缺省 ⇒ 严格 1.0");
+        let want = (f64::from(-3.0f32) * std::f64::consts::LOG2_10 / 20.0).exp2() as f32;
+        assert_eq!(
+            region.linear_gain(),
+            want,
+            "缺省层级音量必须与接线前的 volume 换算逐位相同"
+        );
+    }
+
+    #[test]
+    fn hierarchical_volume_out_of_range_is_a_loud_error() {
+        for opcode in ["global_volume", "master_volume", "group_volume"] {
+            let header = match opcode {
+                "global_volume" => "global",
+                "master_volume" => "master",
+                _ => "group",
+            };
+            let source = format!("<{header}>{opcode}=-145\n<region>sample=a.wav");
+            let error = parse_text(&source, &Default::default()).expect_err("−145 dB 必须被拒收");
+            let text = error.to_string();
+            assert!(
+                text.contains(opcode) && text.contains("-145"),
+                "`{opcode}=-145` 的错误必须点名 opcode 与值，实际：{text}"
+            );
+        }
+    }
+
+    #[test]
     fn pitch_ratio_is_finite_positive_over_the_parsed_field_ranges() {
         // 字段范围来自 instrument.rs 的字段声明：note 0..=127、pitch_keycenter -127..=127、
         // transpose -127..=127、tune -100..=100（解析期已强制）。
@@ -1671,6 +1783,7 @@ mod tests {
                             bend_up: crate::BEND_UP_DEFAULT_CENTS,
                             bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,
+                            scope_gain: 1.0,
                             amp_random: 0.0,
                             amplitude: crate::instrument::AMPLITUDE_DEFAULT_PERCENT,
                             pan: 0.0,

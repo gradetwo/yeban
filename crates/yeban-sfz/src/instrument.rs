@@ -1332,6 +1332,18 @@ pub struct Region<'a> {
     pub bend_down: i32,
     /// 音量（dB，规范范围 -144..=6；本实现只要求有限）。
     pub volume: f32,
+    /// ⭐ **层级增益**：`<global>` 的 `global_volume`、`<master>` 的 `master_volume`
+    /// 与 `<group>` 的 `group_volume` 三个静态 dB 值各自转成线性后的**乘积**。
+    ///
+    /// 缺省 `1.0`（三个 opcode 都未声明 ⇒ 与接线前逐位相同）。它是一个**独立**
+    /// 乘子，⛔ 不是 [`Region::volume`] 的别名，也⛔ 不参与 `volume` 的作用域继承：
+    /// `region.volume` 仍只记 `<region>`/下层继承链上的 `volume`/`gain` 值；
+    /// 本字段只在 [`Region::linear_gain`] 里与那个值相乘。
+    ///
+    /// 求值点覆盖离线/摊平/实时三条路：离线走 `PlaybackSpec::gain`、摊平走
+    /// `PreparedRegion::volume_gain`（两者都由 [`Region::linear_gain`] 烘入）、
+    /// 实时走 `Region::linear_gain` 同一条公式。
+    pub scope_gain: f32,
     /// ⭐ **随机音量**（`amp_random`，dB，缺省 0）。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/amp_random/> 的表格行：Type = float、
@@ -2869,6 +2881,60 @@ impl<'a> Scopes<'_, 'a> {
             .find_map(|map| map.get(name))
             .map(|value| OpcodeValue::new(name, value.clone(), self.line))
     }
+
+    /// 只在**一个指定作用域**里读 opcode（⛔ 不沿 `region → group → master → global`
+    /// 继承）。用于 `global_volume` / `master_volume` / `group_volume` 这类**名字本身
+    /// 就带作用域**的 opcode：它们的语义是「各自作用域的静态增益」，不是 `volume`
+    /// 的别名，也不能由下层继承覆盖。
+    ///
+    /// 只有该作用域**真的有**这个名字时才登记为已消费；若名字写错作用域（例如把
+    /// `global_volume` 写进 `<region>`），它仍按未知 opcode 走向告警，而不是被
+    /// 这里静默吞掉。
+    fn get_in_scope(&self, map: &OpcodeMap<'a>, name: &'static str) -> Option<OpcodeValue<'a>> {
+        map.get(name).map(|value| {
+            self.note_consumed(name);
+            OpcodeValue::new(name, value.clone(), self.line)
+        })
+    }
+}
+
+/// `global_volume` / `master_volume` / `group_volume` 的规范范围（dB）。
+///
+/// 三页各只有一张表，逐字同域：`| global_volume | ARIA | float | 0 | -144 to 6 | dB |`
+/// （<https://sfzformat.com/opcodes/global_volume/>、
+/// <https://sfzformat.com/opcodes/master_volume/>、
+/// <https://sfzformat.com/opcodes/group_volume/>）。越界是明确的
+/// [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位。
+pub const SCOPED_VOLUME_MIN_DB: f32 = -144.0;
+/// 见 [`SCOPED_VOLUME_MIN_DB`]。
+pub const SCOPED_VOLUME_MAX_DB: f32 = 6.0;
+
+/// 读取一个**作用域专属**的静态音量 opcode，返回 dB（缺省 `0.0`）。
+fn read_scoped_volume(
+    scopes: &Scopes<'_, '_>,
+    map: &OpcodeMap<'_>,
+    opcode: &'static str,
+    line: usize,
+) -> Result<f32, SfzError> {
+    let Some(value) = scopes.get_in_scope(map, opcode) else {
+        return Ok(0.0);
+    };
+    let db = value.as_f32()?;
+    if !(SCOPED_VOLUME_MIN_DB..=SCOPED_VOLUME_MAX_DB).contains(&db) {
+        return Err(SfzError::FloatOutOfRange {
+            line,
+            opcode: opcode.to_string(),
+            value: db,
+            min: SCOPED_VOLUME_MIN_DB,
+            max: SCOPED_VOLUME_MAX_DB,
+        });
+    }
+    Ok(db)
+}
+
+/// dB → 线性振幅，口径与 [`Region::linear_gain`] 完全一致（`2 ^ (dB × log2(10) / 20)`）。
+fn db_to_linear(db: f32) -> f32 {
+    (f64::from(db) * std::f64::consts::LOG2_10 / 20.0).exp2() as f32
 }
 
 /// 把 `<control>` 的移位（`note_offset` + `octave_offset` × 12，单位半音）加到一个
@@ -3452,6 +3518,17 @@ pub(crate) fn build_region<'a>(
         Some(value) => value.as_f32()?,
         None => 0.0,
     };
+    // ⭐ 三个**作用域专属**的静态音量（ARIA 扩展；T-FIX-283）：
+    // `global_volume` / `master_volume` / `group_volume` 各自只从自己的 header 读，
+    // ⛔ 不沿 `region → group → master → global` 继承（否则三个名字会互相覆盖，
+    // 且会把 `global_volume` 误当成 `volume` 的别名）。三个 dB 值各自转线性后相乘，
+    // 缺省 0 dB ⇒ 三个乘子都是 1.0 ⇒ `scope_gain == 1.0`，既有输出逐位不变。
+    let global_volume_db = read_scoped_volume(&scopes, scopes.global, "global_volume", line)?;
+    let master_volume_db = read_scoped_volume(&scopes, scopes.master, "master_volume", line)?;
+    let group_volume_db = read_scoped_volume(&scopes, scopes.group, "group_volume", line)?;
+    let scope_gain = db_to_linear(global_volume_db)
+        * db_to_linear(master_volume_db)
+        * db_to_linear(group_volume_db);
     // ⭐ 随机音量（`amp_random`，dB；本片）：表格行 Default = 0、Range = `0 to 24`；
     // 越界是明确 `FloatOutOfRange`（⛔ 不静默钳位）。求值见 `Region::amp_random_gain`。
     let amp_random = match scopes.get("amp_random") {
@@ -3670,6 +3747,7 @@ pub(crate) fn build_region<'a>(
             bend_up,
             bend_down,
             volume,
+            scope_gain,
             amp_random,
             amplitude,
             pan,
@@ -5484,6 +5562,7 @@ mod tests {
             bend_up: BEND_UP_DEFAULT_CENTS,
             bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
+            scope_gain: 1.0,
             amp_random: 0.0,
             pan: 0.0,
             position: 0.0,
