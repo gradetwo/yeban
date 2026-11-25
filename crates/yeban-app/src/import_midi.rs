@@ -46,6 +46,14 @@ pub struct MidiImportReport {
     pub path: Option<PathBuf>,
     /// 导入的音符条数。
     pub notes: usize,
+    /// ⭐ T-FIX-354：导入后**实际可听**的音符条数（`notes` 的子集）。
+    pub audible_notes: usize,
+    /// ⭐ T-FIX-354：导入后**一遍都排不出来**的音符条数（`notes - audible_notes`）。
+    pub clipped_notes: usize,
+    /// ⭐ T-FIX-354：目标摆放导入**前**的时长（tick）。
+    pub target_duration_ticks: u64,
+    /// ⭐ T-FIX-354：目标摆放容纳全部内容所需的**最小**时长（tick）。
+    pub required_duration_ticks: u64,
     /// 目标音轨。
     pub track_id: EntityId,
     /// 目标片段。
@@ -89,12 +97,21 @@ impl MidiImportReport {
         // ⭐ `#319`：`format=` 起的整段尾部（上下文 ＋ 按音符 ＋ 24 类逐类）由
         // [`MidiImportLosses::loss_detail`] **唯一**格式化；GUI 的 `loss_detail="…"`
         // 字段读的是**同一串** ⇒ 两个出口不可能各说各话（CLI 行逐字不变）。
+        //
+        // ⭐ T-FIX-354：四个时长/可听读数**必须**放在 `origin=` 之前 —— GUI 的
+        // `loss_detail` 逐字等于 CLI 行 `origin=midi-input ` 之后的尾部（`#319`
+        // 判据），尾部一字都不能动；`notes=` 在前 ⇒ 旧的 `field(line, "notes")`
+        // 仍取到第一个 `notes=`（`audibleNotes=` 里的大写 `N` 不会误 match）。
         format!(
-            "imported-midi: path={} notes={} {} track={} clip={} commit={} origin={origin} {}",
+            "imported-midi: path={} notes={} audibleNotes={} clippedNotes={} targetDurationTicks={} requiredDurationTicks={} {} track={} clip={} commit={} origin={origin} {}",
             self.path
                 .as_ref()
                 .map_or_else(|| "<bytes>".to_owned(), |path| path.display().to_string()),
             self.notes,
+            self.audible_notes,
+            self.clipped_notes,
+            self.target_duration_ticks,
+            self.required_duration_ticks,
             // ⭐ `#320`：五个歌词读数由 `MidiLyricCounts` 的 `Display` **唯一**格式化；
             // GUI 的 `lyrics_detail="…"` 打印同一串 ⇒ CLI 行逐字不变。
             self.lyrics,
@@ -126,6 +143,10 @@ pub fn import_midi_bytes(
     Ok(MidiImportReport {
         path: None,
         notes: plan.notes,
+        audible_notes: plan.audible_notes,
+        clipped_notes: plan.clipped_notes,
+        target_duration_ticks: plan.target_duration_ticks,
+        required_duration_ticks: plan.required_duration_ticks,
         track_id: plan.track_id,
         clip_id: plan.clip_id,
         commit,
@@ -243,6 +264,36 @@ mod tests {
         );
     }
 
+    /// 一段单音符 SMF（格式 0、960 PPQ）：一颗 C4 从 tick 0 响到 `end_tick`。
+    fn long_note_smf(end_tick: u32) -> Vec<u8> {
+        fn vlq(mut value: u32) -> Vec<u8> {
+            let mut out = vec![u8::try_from(value & 0x7F).expect("7 bit")];
+            value >>= 7;
+            while value > 0 {
+                out.push(0x80 | u8::try_from(value & 0x7F).expect("7 bit"));
+                value >>= 7;
+            }
+            out.reverse();
+            out
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // 格式 0
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
+        bytes.extend_from_slice(&960u16.to_be_bytes()); // 960 PPQ
+        let mut track: Vec<u8> = Vec::new();
+        track.extend_from_slice(&[0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]); // tempo 500000
+        track.extend_from_slice(&[0x00, 0x90, 0x3C, 0x64]); // note on C4 vel 100
+        track.extend(vlq(end_tick));
+        track.extend_from_slice(&[0x80, 0x3C, 0x40]); // note off
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]); // end of track
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&u32::try_from(track.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&track);
+        bytes
+    }
+
     /// 判据 c（拒绝非法字节）：真的喂一段非 SMF 字节 ⇒ `Parse`，且**不产生任何操作**。
     #[test]
     fn invalid_bytes_are_refused_before_any_operation_is_built() {
@@ -273,6 +324,100 @@ mod tests {
             project.clip_pool.len(),
             "工程必须逐字未变"
         );
+    }
+
+    /// ⭐ T-FIX-354 验收（端到端）：8 小节摆放 ＋ 16 小节 MIDI 经
+    /// [`import_midi_bytes`] 一次提交后摆放撑到 16 小节、音符全在；一次撤销把
+    /// 摆放与音符一起还原（扩展与音符同一批次、可撤销）。
+    #[test]
+    fn import_extends_a_short_placement_and_undo_restores_it() {
+        const EIGHT_BARS: u64 = 8 * 3840;
+        const SIXTEEN_BARS: u64 = 16 * 3840;
+        let mut project = yeban_model::samples::filled_project();
+        let (track_id, clip_id) =
+            destination(&project, &MidiImportOptions::default()).expect("必须有目标");
+        let placement_id = project
+            .tracks
+            .get(&track_id)
+            .expect("目标轨")
+            .clips
+            .values()
+            .find(|placement| placement.clip_id == clip_id)
+            .expect("目标摆放")
+            .id;
+        {
+            let placement = project
+                .tracks
+                .get_mut(&track_id)
+                .expect("目标轨")
+                .clips
+                .get_mut(&placement_id)
+                .expect("目标摆放");
+            placement.duration_ticks = EIGHT_BARS;
+            placement.loop_config = yeban_model::LoopConfig::default();
+        }
+        let session =
+            crate::undo::UndoSession::open("<判据:T-FIX-354>", "yeban-app", project.clone(), 1)
+                .expect("打开会话");
+        let port = crate::undo::UndoPort::new(session);
+
+        let report = import_midi_bytes(
+            &port,
+            &project,
+            &long_note_smf(u32::try_from(SIXTEEN_BARS).expect("16 小节放得进 u32")),
+            &MidiImportOptions::default(),
+            10,
+        )
+        .expect("16 小节 MIDI 必须能导入");
+        assert_eq!(report.notes, 1);
+        assert_eq!(report.audible_notes, 1, "扩展后音符必须可听");
+        assert_eq!(report.clipped_notes, 0);
+        assert_eq!(report.target_duration_ticks, EIGHT_BARS);
+        assert_eq!(report.required_duration_ticks, SIXTEEN_BARS);
+
+        let after = port.project();
+        let placement = after
+            .tracks
+            .get(&track_id)
+            .expect("目标轨")
+            .clips
+            .get(&placement_id)
+            .expect("目标摆放");
+        assert_eq!(
+            placement.duration_ticks, SIXTEEN_BARS,
+            "导入后摆放必须撑到 16 小节"
+        );
+        let notes = after
+            .clip_pool
+            .get(&clip_id)
+            .expect("目标片段")
+            .content
+            .notes()
+            .expect("MIDI 片段");
+        assert_eq!(notes.len(), 5, "原有 4 颗 ＋ 导入 1 颗");
+
+        // 一次撤销 = 回退整个批次（扩展 ＋ 音符一起还原）。
+        port.perform(crate::undo::UiAction::Undo);
+        let undone = port.project();
+        let placement = undone
+            .tracks
+            .get(&track_id)
+            .expect("目标轨")
+            .clips
+            .get(&placement_id)
+            .expect("目标摆放");
+        assert_eq!(
+            placement.duration_ticks, EIGHT_BARS,
+            "撤销后摆放回到 8 小节"
+        );
+        let notes = undone
+            .clip_pool
+            .get(&clip_id)
+            .expect("目标片段")
+            .content
+            .notes()
+            .expect("MIDI 片段");
+        assert_eq!(notes.len(), 4, "撤销后导入的音符也没了");
     }
 }
 

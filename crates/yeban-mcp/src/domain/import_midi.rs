@@ -61,6 +61,14 @@ pub struct MidiImport {
     pub clip_id: EntityId,
     /// 导入的音符条数。
     pub note_count: usize,
+    /// ⭐ T-FIX-354：导入后**实际可听**的音符条数（`note_count` 的子集）。
+    pub audible_notes: usize,
+    /// ⭐ T-FIX-354：导入后**一遍都排不出来**的音符条数。
+    pub clipped_notes: usize,
+    /// ⭐ T-FIX-354：目标摆放导入**前**的时长（tick）。
+    pub target_duration_ticks: u64,
+    /// ⭐ T-FIX-354：目标摆放容纳全部内容所需的**最小**时长（tick）。
+    pub required_duration_ticks: u64,
     /// 歌词读取、归属与丢弃计数。
     pub lyric_counts: MidiLyricCounts,
     /// 音符与歌词以外的逐类丢失统计。
@@ -451,6 +459,10 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
         track_id,
         clip_id,
         note_count: plan.notes,
+        audible_notes: plan.audible_notes,
+        clipped_notes: plan.clipped_notes,
+        target_duration_ticks: plan.target_duration_ticks,
+        required_duration_ticks: plan.required_duration_ticks,
         lyric_counts: plan.lyrics,
         losses: plan.losses,
         adopted_tempo_bpm,
@@ -482,6 +494,13 @@ pub fn describe(import: &MidiImport) -> Value {
         "trackId": import.track_id.to_canonical_string(),
         "clipId": import.clip_id.to_canonical_string(),
         "noteCount": import.note_count,
+        // ⭐ T-FIX-354：`noteCount` 单独不再是"导入成功"的证据 —— 这四个读数
+        // 与 GUI/CLI 回执同一份 `MidiImportPlan`（⛔ 不重算）；扩展 op 在 `ops`
+        // 里与音符同一批次提交（`applied` 为 true 时已含它）。
+        "audibleNotes": import.audible_notes,
+        "clippedNotes": import.clipped_notes,
+        "targetDurationTicks": import.target_duration_ticks,
+        "requiredDurationTicks": import.required_duration_ticks,
         // 与 `MidiLyricCounts` 同口径的五桶：`read == attached + dropped`；
         // `nonUtf8` / `empty` 是**连候选都不是**的两桶（⛔ 猜文本），必须让调用方看见。
         "lyricCounts": {

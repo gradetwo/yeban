@@ -88,7 +88,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::midi::{MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedTrackName};
+use crate::midi::{
+    MidiAuxEventKind, MidiFormat, ParsedMarker, ParsedMidi, ParsedNote, ParsedTrackName,
+};
 use yeban_model::project::{MAX_BPM, MIN_BPM};
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
@@ -574,6 +576,16 @@ pub struct MidiImportPlan {
     pub lyrics: MidiLyricCounts,
     /// ⭐ `#318`：音符/歌词以外的**逐类丢失读数**（⛔ 不沉默地少做）。
     pub losses: MidiImportLosses,
+    /// ⭐ T-FIX-354：目标摆放导入**前**的时长（tick）。
+    pub target_duration_ticks: u64,
+    /// ⭐ T-FIX-354：目标摆放容纳全部内容所需的**最小**时长（tick）
+    /// = max(目标片段现有内容末端，落进目标片段的导入音符末端)。
+    pub required_duration_ticks: u64,
+    /// ⭐ T-FIX-354：导入后**实际可听**的音符条数（`notes` 的子集；按导入后
+    /// 生效的摆放窗口 ＋ 循环展开计，与渲染/引擎同一口径）。
+    pub audible_notes: usize,
+    /// ⭐ T-FIX-354：导入后**一遍都排不出来**的音符条数（`notes - audible_notes`）。
+    pub clipped_notes: usize,
 }
 
 /// 导入失败的原因。
@@ -607,6 +619,68 @@ impl core::error::Error for MidiImportError {}
 pub fn scale_ticks(tick: u64, ppq: u16) -> u64 {
     let ppq = u64::from(ppq.max(1));
     tick.saturating_mul(MODEL_PPQ) / ppq
+}
+
+/// 一颗解析音符在模型时钟里的 `[start, end)`（⭐ 与下面 `Op::AddNote` 的构造
+/// **同一公式**，两处共用 ⇒ 换算改了不可能一处改一处忘）。
+///
+/// `end` 是 `start + duration`（时值至少 1 tick），不是文件 `end_tick` 的直接换算。
+#[must_use]
+fn model_note_span(note: &ParsedNote, ppq: u16) -> (u64, u64) {
+    let start = scale_ticks(note.start_tick, ppq);
+    let end = scale_ticks(note.end_tick.max(note.start_tick + 1), ppq);
+    (
+        start,
+        start.saturating_add(end.saturating_sub(start).max(1)),
+    )
+}
+
+/// ⭐ T-FIX-354：目标摆放的扩展需求（纯函数）。
+///
+/// 返回 `(目标摆放导入前时长, 所需最小时长, 扩展操作)`：
+/// - 所需最小时长 = max(目标片段现有内容末端，落进目标片段的导入音符末端)；
+/// - 所需 ≤ 现有时长 ⇒ 不发操作（⛔ 不发空操作）；
+/// - 所需 > 现有时长 ⇒ 一条 [`Op::SetClipPlacementDuration`]（复用既有变体：
+///   `old_*`/`new_*` 可逆载荷，与音符同一批次提交、一次撤销；⛔ 不另发明机制）。
+///   `insert_note` 只写片段内容、⛔ 不碰 `placement.duration_ticks`，而播放/渲染
+///   按摆放窗口裁剪音符（引擎快照把音符时值裁到 `[start_tick, start_tick +
+///   duration_ticks)`）⇒ 不撑长就等于静默裁掉，这条就是补上那块缺口的。
+/// - 目标摆放不在工程里时（`destination` 已保证它在，防御分支）⇒ 不扩展。
+#[must_use]
+fn placement_extension(
+    project: &YebanProjectV1,
+    dest_track_id: EntityId,
+    dest_clip_id: EntityId,
+    dest_imported_end: u64,
+) -> (u64, u64, Option<Op>) {
+    let existing_end = project
+        .clip_pool
+        .get(&dest_clip_id)
+        .and_then(|entry| entry.content.notes())
+        .map(|notes| {
+            notes
+                .values()
+                .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let required = existing_end.max(dest_imported_end);
+    let Some(placement) = project
+        .tracks
+        .get(&dest_track_id)
+        .and_then(|track| track.clips.values().find(|p| p.clip_id == dest_clip_id))
+    else {
+        return (0, required, None);
+    };
+    let target = placement.duration_ticks;
+    let op = (required > target).then_some(Op::SetClipPlacementDuration {
+        track_id: dest_track_id,
+        placement_id: placement.id,
+        old_duration_ticks: target,
+        new_duration_ticks: required,
+    });
+    (target, required, op)
 }
 
 /// 回执里**安全**的一串。
@@ -1935,6 +2009,26 @@ pub fn plan_midi_import(
     let first_track = note_tracks[0];
     track_destinations.insert(first_track, (dest_track_id, dest_clip_id));
 
+    // ⭐ T-FIX-354：先算目标摆放要不要撑长（⛔ 不是事后补救：扩展 op 必须与音符
+    // 在**同一批次**里，否则中途失败会留下一个"音符已进、摆放仍短"的半成品）。
+    // 落进目标片段的导入音符末端 —— 拆分开时只算首轨（其余轨各建新摆放，见下），
+    // 不拆分时全部音符都落目标片段。
+    let dest_imported_end = parsed
+        .notes
+        .iter()
+        .filter(|note| !options.split_tracks || note.track == first_track)
+        .map(|note| model_note_span(note, parsed.ppq).1)
+        .max()
+        .unwrap_or(0);
+    let (target_duration_ticks, required_duration_ticks, extension_op) =
+        placement_extension(project, dest_track_id, dest_clip_id, dest_imported_end);
+    if let Some(op) = extension_op {
+        ops.push(op);
+    }
+    // ⭐ T-FIX-354：拆分新轨的摆放时值（`track_duration`，已按该轨音符末端取），
+    // 供下面数"实际可听"时当生效窗口用。
+    let mut split_placement_durations: BTreeMap<EntityId, u64> = BTreeMap::new();
+
     // ⭐ ADR-0013 D3：拆分新轨采纳的乐器名 / 程序名条数（首轨不参与，见 D4）。
     let mut instrument_names_attached = 0usize;
     let mut program_names_attached = 0usize;
@@ -1969,6 +2063,9 @@ pub fn plan_midi_import(
                 .max()
                 .unwrap_or(MODEL_PPQ)
                 .max(1);
+            // ⭐ T-FIX-354：新摆放的时值已按该轨音符末端取 ⇒ 该轨音符全在窗口里
+            // （拆分路径不受目标扩展影响，也不需要再补扩展 op）。
+            split_placement_durations.insert(new_clip_id, track_duration);
 
             let clip_name = track_name.clone();
 
@@ -2033,8 +2130,7 @@ pub fn plan_midi_import(
             .copied()
             .unwrap_or((dest_track_id, dest_clip_id));
 
-        let start = scale_ticks(note.start_tick, parsed.ppq);
-        let end = scale_ticks(note.end_tick.max(note.start_tick + 1), parsed.ppq);
+        let (start, end) = model_note_span(note, parsed.ppq);
         let mut model_note = MidiNote::new(
             derive_note_id(),
             start,
@@ -2135,6 +2231,47 @@ pub fn plan_midi_import(
         losses.is_total_loss(),
         "无落点的类别必须仍全损（有落点的十类不受这条约束；⛔ 别删判据）: {losses:?}"
     );
+
+    // ⭐ T-FIX-354：回执读数必须与**实际可听**一致 —— `notes` 单独不再是"导入
+    // 成功"的证据。逐颗音符按导入后生效的摆放窗口 ＋ 循环展开数"有没有至少一遍
+    // 落在窗口里"：目标摆放取扩展后长度（`max(target, required)`）、循环配置
+    // 原样保留；拆分新轨取该轨的 `track_duration`（循环缺省关闭）。
+    // 口径与渲染/引擎**同一函数**（`ClipPlacement::note_copies_limited`，最多物化
+    // 1 份 ⇒ 不信任工程时长也不会爆内存）：无循环时一遍就是原样，起音 `< 长度`
+    // 才可听；有循环时起音落在 `[loop_start, loop_end)` 才有副本，区间之外一律
+    // 零遍（循环本身遮住的音符也如实计入 `clipped_notes`，⛔ 不谎报可听）。
+    let effective_dest_placement = project
+        .tracks
+        .get(&dest_track_id)
+        .and_then(|track| track.clips.values().find(|p| p.clip_id == dest_clip_id))
+        .map(|placement| ClipPlacement {
+            duration_ticks: target_duration_ticks.max(required_duration_ticks),
+            ..*placement
+        });
+    let mut audible_notes = 0usize;
+    for note in &parsed.notes {
+        let (_, target_clip_id) = track_destinations
+            .get(&note.track)
+            .copied()
+            .unwrap_or((dest_track_id, dest_clip_id));
+        let (start, end) = model_note_span(note, parsed.ppq);
+        let duration = end.saturating_sub(start).max(1);
+        let audible = if target_clip_id == dest_clip_id {
+            effective_dest_placement.as_ref().is_some_and(|placement| {
+                placement
+                    .note_copies_limited(start, duration, 1)
+                    .copies
+                    .iter()
+                    .any(|(copy_start, _)| *copy_start < placement.duration_ticks)
+            })
+        } else {
+            split_placement_durations
+                .get(&target_clip_id)
+                .is_some_and(|placement_duration| start < *placement_duration)
+        };
+        audible_notes += usize::from(audible);
+    }
+    let clipped_notes = notes.saturating_sub(audible_notes);
     Ok(MidiImportPlan {
         ops,
         notes,
@@ -2143,6 +2280,10 @@ pub fn plan_midi_import(
         ppq: parsed.ppq,
         lyrics,
         losses,
+        target_duration_ticks,
+        required_duration_ticks,
+        audible_notes,
+        clipped_notes,
     })
 }
 
@@ -5559,6 +5700,217 @@ pub mod metadata_adoption_tests {
             reason.contains("key-signature-out-of-model-range")
                 && reason.contains("sharps_flats=8"),
             "超界原因必须点名: {reason}"
+        );
+    }
+
+    /// ⭐ T-FIX-354 验收（主判据）：8 小节摆放 ＋ 16 小节 MIDI ⇒ 目标摆放必须
+    /// 被撑到 16 小节，全部音符可听；扩展 op 与音符在同一批次里。
+    #[test]
+    fn a_sixteen_bar_midi_extends_an_eight_bar_placement() {
+        const EIGHT_BARS: u64 = 8 * 3840;
+        const SIXTEEN_BARS: u64 = 16 * 3840;
+        let mut project = yeban_model::samples::filled_project();
+        let (track_id, clip_id) =
+            destination(&project, &MidiImportOptions::default()).expect("必须有目标");
+        // 8 小节摆放（循环关掉：循环区间是另一回事，本票只量"摆放长度够不够装"）。
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("目标轨")
+            .clips
+            .values_mut()
+            .find(|placement| placement.clip_id == clip_id)
+            .expect("目标摆放");
+        placement.duration_ticks = EIGHT_BARS;
+        placement.loop_config = yeban_model::LoopConfig::default();
+
+        // 一颗 16 小节长音（0..61440），960 PPQ。
+        let mut parsed = two_notes(960);
+        parsed.notes = vec![ParsedNote {
+            track: 0,
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start_tick: 0,
+            end_tick: SIXTEEN_BARS,
+        }];
+        parsed.end_tick = SIXTEEN_BARS;
+
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("16 小节 MIDI 必须能计划");
+        assert_eq!(
+            plan.target_duration_ticks, EIGHT_BARS,
+            "导入前摆放是 8 小节"
+        );
+        assert_eq!(
+            plan.required_duration_ticks, SIXTEEN_BARS,
+            "需要 16 小节才装得下"
+        );
+        assert_eq!(plan.notes, 1);
+        assert_eq!(plan.audible_notes, 1, "扩展后这颗音符必须可听");
+        assert_eq!(plan.clipped_notes, 0);
+        let extension = plan
+            .ops
+            .iter()
+            .find(|op| matches!(op, Op::SetClipPlacementDuration { .. }))
+            .expect("摆放不够长 ⇒ 必须补扩展 op");
+        assert!(
+            matches!(
+                extension,
+                Op::SetClipPlacementDuration {
+                    old_duration_ticks: EIGHT_BARS,
+                    new_duration_ticks: SIXTEEN_BARS,
+                    ..
+                }
+            ),
+            "扩展 op 必须是 30720 → 61440: {extension:?}"
+        );
+        let ext_pos = plan
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::SetClipPlacementDuration { .. }))
+            .expect("扩展 op 位置");
+        let note_pos = plan
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::AddNote { .. }))
+            .expect("AddNote 位置");
+        assert!(
+            ext_pos < note_pos,
+            "扩展 op 必须在 AddNote 之前（先撑长再落音符）"
+        );
+    }
+
+    /// ⭐ T-FIX-354：短 MIDI 不改变原摆放时长（`required` 以现有内容末端为准，
+    /// 仍短于摆放 ⇒ ⛔ 不发空操作）。
+    #[test]
+    fn a_short_midi_leaves_the_placement_duration_untouched() {
+        let project = yeban_model::samples::filled_project();
+        let parsed = two_notes(960);
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("短 MIDI 必须能计划");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetClipPlacementDuration { .. })),
+            "摆放本来就够长 ⇒ ⛔ 不发扩展 op"
+        );
+        assert_eq!(plan.target_duration_ticks, 3840, "filled 目标摆放是 4 小节");
+        assert_eq!(
+            plan.required_duration_ticks, 3360,
+            "现有内容末端 3360 比导入的 960 更长 ⇒ 以现有为准"
+        );
+        assert_eq!((plan.audible_notes, plan.clipped_notes), (2, 0));
+    }
+
+    /// ⭐ T-FIX-354：拆分路径不受影响 —— 第 0 轨短音落目标片段，第 1 轨 16 小节
+    /// 长音走新建摆放（时值已按该轨音符末端取），谁都不用扩展。
+    #[test]
+    fn split_tracks_are_sized_by_their_own_notes_not_by_the_destination() {
+        let mut parsed = two_notes(960);
+        parsed.tracks = 2;
+        parsed.notes = vec![
+            ParsedNote {
+                track: 0,
+                channel: 0,
+                key: 60,
+                velocity: 100,
+                start_tick: 0,
+                end_tick: 960,
+            },
+            ParsedNote {
+                track: 1,
+                channel: 0,
+                key: 64,
+                velocity: 100,
+                start_tick: 0,
+                end_tick: 16 * 3840,
+            },
+        ];
+        parsed.end_tick = 16 * 3840;
+        let project = yeban_model::samples::filled_project();
+        let plan = plan_midi_import(&project, &parsed, &MidiImportOptions::default())
+            .expect("双轨 MIDI 必须能计划");
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetClipPlacementDuration { .. })),
+            "目标片段只收短音、拆分新摆放已按该轨音符末端取 ⇒ 谁都不用扩展"
+        );
+        assert_eq!(plan.target_duration_ticks, 3840);
+        assert_eq!(plan.required_duration_ticks, 3360);
+        assert_eq!(
+            (plan.audible_notes, plan.clipped_notes),
+            (2, 0),
+            "拆分新摆放 61440 tick ⇒ 长音也可听"
+        );
+        let split_duration = plan
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::AddClipPlacement { placement, .. } => Some(placement.duration_ticks),
+                _ => None,
+            })
+            .expect("拆分必须新建摆放");
+        assert_eq!(
+            split_duration,
+            16 * 3840,
+            "拆分新摆放的时值就是该轨音符末端"
+        );
+    }
+
+    /// ⭐ T-FIX-354：循环区间外的音符一遍都排不出来 ⇒ 如实记 `clipped`，⛔ 不谎报
+    /// 可听（循环不影响所需长度：`required` 仍以内容末端计）。
+    #[test]
+    fn a_note_past_the_loop_end_is_reported_clipped_not_audible() {
+        let mut project = yeban_model::samples::filled_project();
+        let (track_id, clip_id) =
+            destination(&project, &MidiImportOptions::default()).expect("必须有目标");
+        // 摆放 3840 tick，循环只开 0..1920：区间之外的音符一遍都排不出来。
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("目标轨")
+            .clips
+            .values_mut()
+            .find(|placement| placement.clip_id == clip_id)
+            .expect("目标摆放");
+        placement.duration_ticks = 3840;
+        placement.loop_config = yeban_model::LoopConfig {
+            enabled: true,
+            start_tick: 0,
+            end_tick: 1920,
+        };
+        // 一颗起在 2000、止于 2960 的音符（在摆放窗口里，但在循环区间之外）。
+        let mut parsed = two_notes(960);
+        parsed.notes = vec![ParsedNote {
+            track: 0,
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            start_tick: 2000,
+            end_tick: 2960,
+        }];
+        parsed.end_tick = 2960;
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("计划");
+        assert_eq!(
+            (plan.audible_notes, plan.clipped_notes),
+            (0, 1),
+            "循环区间外的音符渲染/引擎都排不出来 ⇒ 如实记 clipped"
+        );
+        assert_eq!(
+            plan.required_duration_ticks, 3360,
+            "现有内容末端仍是 3360（循环不影响所需长度）"
+        );
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetClipPlacementDuration { .. })),
+            "摆放本来就够长 ⇒ 不扩展"
         );
     }
 }

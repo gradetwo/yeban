@@ -14614,6 +14614,12 @@ pub fn wire_module_actions_with_capture(
                                 )
                             ),
                             format!("notes={}", report.notes),
+                            // ⭐ T-FIX-354：时长/可听读数（与 CLI 行、MCP `describe`
+                            // 同一份 `MidiImportReport`；⛔ 不重算）。
+                            format!("audibleNotes={}", report.audible_notes),
+                            format!("clippedNotes={}", report.clipped_notes),
+                            format!("targetDurationTicks={}", report.target_duration_ticks),
+                            format!("requiredDurationTicks={}", report.required_duration_ticks),
                             format!("track={}", report.track_id.to_canonical_string()),
                             format!("clip={}", report.clip_id.to_canonical_string()),
                             format!("commit={}", report.commit.to_canonical_string()),

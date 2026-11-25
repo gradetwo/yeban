@@ -1163,3 +1163,79 @@ fn import_midi_creates_a_placement_on_a_track_that_has_none() {
 
     let _ = fs::remove_file(smf_path);
 }
+
+/// ⭐ T-FIX-354：MCP 显式 `clipId` 同样扩展（与 GUI 共用 `plan_midi_import`）。
+/// 目标片段为空（MCP 要求）、摆放 960 tick，导入 4 颗音符（末端 3360）⇒
+/// 摆放撑到 3360，四个新读数如实上报。
+#[test]
+fn import_midi_with_explicit_clip_id_extends_a_short_placement() {
+    let smf_path = create_test_smf_file();
+    let mut project = project_with_notes(0);
+    let track_id = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("非 master 音轨");
+    // 目标片段：该轨第一个 MIDI 摆放（空片段），摆放缩到 960 tick、循环关掉。
+    let (clip_id, placement_id) = {
+        let track = project.tracks.get(&track_id).expect("音轨");
+        let placement = track
+            .clips
+            .values()
+            .find(|placement| {
+                matches!(
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .map(|entry| &entry.content),
+                    Some(ClipContent::Midi { .. })
+                )
+            })
+            .expect("目标摆放");
+        (placement.clip_id, placement.id)
+    };
+    {
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("音轨")
+            .clips
+            .get_mut(&placement_id)
+            .expect("目标摆放");
+        placement.duration_ticks = 960;
+        placement.loop_config = yeban_model::LoopConfig::default();
+    }
+    let mut dispatcher = dispatcher_with_project(project);
+
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "trackId": track_id.to_canonical_string(),
+            "clipId": clip_id.to_canonical_string(),
+        }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert_eq!(data["noteCount"], 4, "{data}");
+    assert_eq!(data["audibleNotes"], 4, "扩展后 4 颗音符都可听: {data}");
+    assert_eq!(data["clippedNotes"], 0, "{data}");
+    assert_eq!(data["targetDurationTicks"], 960, "{data}");
+    assert_eq!(
+        data["requiredDurationTicks"], 3360,
+        "4 颗音符末端 3360: {data}"
+    );
+
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let placement = project
+        .tracks
+        .get(&track_id)
+        .expect("音轨")
+        .clips
+        .get(&placement_id)
+        .expect("目标摆放");
+    assert_eq!(placement.duration_ticks, 3360, "导入后摆放必须撑到 3360");
+
+    let _ = fs::remove_file(smf_path);
+}
