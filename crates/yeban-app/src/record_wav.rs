@@ -93,6 +93,11 @@ pub struct RecordReport {
     pub bits: u16,
     /// 样本来源的**如实**文案（工程渲染／内存正弦；⛔ 不是声卡）。
     pub source: String,
+    /// ⭐ 捕获开始的走带 tick（T-FIX-239）：调用方在起录时给的
+    /// `起录播放头 + 预备拍 tick`；`None` = 调用方没给（直接用 `Recorder` 的
+    /// 旧路，或 `--record-wav` 这类不走走带的入口）⇒ 落点方按停录播放头回落
+    /// （旧口径，见 `host::RecordControl`）。
+    pub start_tick: Option<u64>,
 }
 
 impl RecordReport {
@@ -100,12 +105,14 @@ impl RecordReport {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "recorded-wav: path={} frames={} dropped={} bytes={} source={}",
+            "recorded-wav: path={} frames={} dropped={} bytes={} source={} start-tick={}",
             self.path.display(),
             self.frames,
             self.dropped,
             self.bytes,
             self.source,
+            self.start_tick
+                .map_or_else(|| "<none>".to_owned(), |tick| tick.to_string()),
         )
     }
 }
@@ -265,6 +272,8 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
         bytes,
         bits: 24,
         source: SOURCE_LABEL.to_owned(),
+        // ⭐ 测试音不走走带 ⇒ 没有起录 tick（T-FIX-239）。
+        start_tick: None,
     })
 }
 
@@ -423,6 +432,23 @@ pub fn count_in_frames(project: &yeban_model::YebanProjectV1, sample_rate: u32) 
     (seconds * f64::from(sample_rate)) as u64
 }
 
+/// ⭐ **预备拍的 tick 长度**（T-FIX-239，[`count_in_frames`] 的 tick 孪生）：
+/// `bars × 拍号分子 × PPQ`。走带位置按 tick 计，帧数按采样率计；起录 tick =
+/// `起录时播放头 + count_in_ticks`（见 `host::RecordControl`）。
+///
+/// ⭐ 与 `count_in_frames` 的**同一条**口径：预备拍期间工作线程照拉、只不推，
+/// 第一帧真正被推入的时刻 = 按下录音键的 tick ＋ 预备拍 tick（⛔ 不是停录时
+/// 播放头在哪）。
+#[must_use]
+pub fn count_in_ticks(project: &yeban_model::YebanProjectV1) -> u64 {
+    let bars = u64::from(project.transport.count_in_bars);
+    if bars == 0 {
+        return 0;
+    }
+    bars.saturating_mul(u64::from(project.time_signature.numerator))
+        .saturating_mul(yeban_model::PPQ)
+}
+
 /// ⭐ **一次录音会话**（⭐ 按钮背后的那一件事）。
 ///
 /// ## 形状（⭐ 为什么是"停录时才落盘"）
@@ -478,6 +504,10 @@ struct RecorderSession {
     channels: u16,
     /// ⭐ 源的**如实**文案（起录时从 `InputSource::label` 取一次 ⇒ 落进报告的 `source=`）。
     source_label: &'static str,
+    /// ⭐ 捕获开始的走带 tick（T-FIX-239）：调用方在起录时给的
+    /// `起录播放头 + 预备拍 tick`；`None` = 调用方没给（旧路）⇒ 停录时原样
+    /// 带回报告，落点方按停录播放头回落（旧口径）。
+    start_tick: Option<u64>,
 }
 
 impl Recorder {
@@ -509,6 +539,10 @@ impl Recorder {
     /// ⛔ **失败时**：不建会话（`is_recording() == false`）、不落盘、不产生任何文件；
     /// 原因原样装进 [`RecordError::Source`]。
     ///
+    /// ⭐ `start_tick`（T-FIX-239）：调用方在起录时给的捕获起点
+    /// （`起录播放头 + 预备拍 tick`）；停录时原样进 [`RecordReport::start_tick`]，
+    /// 落点方按它摆放（⛔ 不再读停录播放头）。`None` = 调用方没给（旧路）。
+    ///
     /// # Errors
     ///
     /// [`RecordError::Source`]（工厂拒绝），以及 [`Self::start`] 的那几条。
@@ -518,13 +552,16 @@ impl Recorder {
         options: &RecordOptions,
         factory: &dyn crate::record_device::InputSourceFactory,
         count_in_frames: u64,
+        start_tick: Option<u64>,
     ) -> Result<(), RecordError> {
         // ⭐ 工厂**恰好调用一次**（判据会数它）：这一处是产品路径上唯一的 `open` 调用点。
         let source = factory.open(options).map_err(RecordError::Source)?;
-        self.start(path, options, source, count_in_frames)
+        self.start(path, options, source, count_in_frames, start_tick)
     }
 
     /// ⭐ **起录**。已有一场会话在手 ⇒ 返回错误（⛔ 不静默覆盖）。
+    ///
+    /// ⭐ `start_tick`（T-FIX-239）：见 [`Self::start_with_factory`]。
     ///
     /// # Errors
     ///
@@ -535,6 +572,7 @@ impl Recorder {
         options: &RecordOptions,
         mut source: Box<dyn InputSource + Send>,
         count_in_frames: u64,
+        start_tick: Option<u64>,
     ) -> Result<(), RecordError> {
         if self.session.is_some() {
             return Err(RecordError::Invalid("已经有一次录音在进行".to_owned()));
@@ -632,6 +670,8 @@ impl Recorder {
             channels,
             // ⭐ **如实**取自源自己（⛔ 不再是一条写死的"no-device-input"文案）。
             source_label,
+            // ⭐ 起录时给的捕获起点 tick（T-FIX-239）：停录时原样带回报告。
+            start_tick,
         });
         Ok(())
     }
@@ -715,6 +755,9 @@ impl Recorder {
             // ⛔ 原来这里写死 `ui-record-button(no-device-input)` —— 设备源接上之后
             // 那句话就**成了假话**（报告行是"这条录音从哪来"的唯一出处）。
             source: session.source_label.to_owned(),
+            // ⭐ 起录时给的捕获起点 tick（T-FIX-239）原样带回报告；
+            // `None` = 调用方没给（旧路）⇒ 落点方按停录播放头回落。
+            start_tick: session.start_tick,
         })
     }
 }
@@ -796,6 +839,8 @@ where
         bytes,
         bits: 24,
         source: "injected-frames".to_owned(),
+        // ⭐ 注入帧不走走带 ⇒ 没有起录 tick（T-FIX-239）。
+        start_tick: None,
     })
 }
 
@@ -960,6 +1005,8 @@ pub fn record_project_under(
         bytes,
         bits: 24,
         source: source_label,
+        // ⭐ 工程渲染录音不走走带 ⇒ 没有起录 tick（T-FIX-239）。
+        start_tick: None,
     })
 }
 
@@ -1501,6 +1548,8 @@ mod device_input_tests {
                     produced: 0,
                 }),
                 0,
+                // ⭐ 直接用 `Recorder` 的旧路 ⇒ 不给起录 tick（T-FIX-239）。
+                None,
             )
             .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1565,6 +1614,8 @@ mod device_input_tests {
                     channels: opts.channels,
                 }),
                 0,
+                // ⭐ 直接用 `Recorder` 的旧路 ⇒ 不给起录 tick（T-FIX-239）。
+                None,
             )
             .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1647,6 +1698,33 @@ mod count_in_tests {
         assert_eq!(count_in_frames(&bad, 48_000), 96_000, "bpm=0 ⇒ 退回 120");
     }
 
+    /// ⭐ **判据 ①'（纯函数、确定性，T-FIX-239）**：预备拍的 **tick** 长度与
+    /// `count_in_frames` 同口径 —— `bars × 拍号分子 × PPQ`。
+    ///
+    /// 1 小节 4/4 ⇒ 4 × 960 = **3840 tick**；2 小节 3/4 ⇒ 2 × 3 × 960 = 5760。
+    /// 起录 tick = 起录时播放头 ＋ 这个数（⛔ 不是停录时播放头在哪）。
+    #[test]
+    fn count_in_ticks_is_computed_from_the_project() {
+        assert_eq!(count_in_ticks(&project_with_bars(0)), 0, "0 小节 ⇒ 0");
+        assert_eq!(
+            count_in_ticks(&project_with_bars(1)),
+            3840,
+            "1 小节 4/4 ⇒ 3840 tick"
+        );
+        assert_eq!(
+            count_in_ticks(&project_with_bars(2)),
+            7680,
+            "2 小节 ⇒ 翻倍（线性）"
+        );
+        let mut three_quarters = project_with_bars(2);
+        three_quarters.time_signature.numerator = 3;
+        assert_eq!(
+            count_in_ticks(&three_quarters),
+            5760,
+            "2 小节 3/4 ⇒ 2 × 3 × 960 tick"
+        );
+    }
+
     /// ⭐ **判据 ②**：⭐ **预备拍期间⛔ 不产生录音内容** —— 且 ⭐ ⭐ **源仍被拉取**（"照拉、只不推"）。
     #[test]
     fn nothing_is_recorded_during_the_count_in_but_the_source_is_still_pulled() {
@@ -1655,7 +1733,7 @@ mod count_in_tests {
         let mut recorder = Recorder::new();
         // 预备拍长到本判据期间**走不完**（10 分钟）⇒ 全程处于预备拍。
         recorder
-            .start(&path, &opts(), ramp(), 48_000 * 600)
+            .start(&path, &opts(), ramp(), 48_000 * 600, None)
             .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(300));
 
@@ -1681,7 +1759,9 @@ mod count_in_tests {
         let _ = std::fs::remove_file(&path);
         let mut recorder = Recorder::new();
         // 预备拍很短（256 帧 ≈ 5.3 ms）⇒ 300 ms 之后必然已经在录。
-        recorder.start(&path, &opts(), ramp(), 256).expect("起录");
+        recorder
+            .start(&path, &opts(), ramp(), 256, None)
+            .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(300));
         let report = recorder.stop().expect("停录");
         assert!(
@@ -1700,7 +1780,9 @@ mod count_in_tests {
         let path = scratch("nocountin");
         let _ = std::fs::remove_file(&path);
         let mut recorder = Recorder::new();
-        recorder.start(&path, &opts(), ramp(), 0).expect("起录");
+        recorder
+            .start(&path, &opts(), ramp(), 0, None)
+            .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(300));
         let report = recorder.stop().expect("停录");
         assert!(
@@ -1713,6 +1795,55 @@ mod count_in_tests {
             count_in_frames(&project_with_bars(0), opts().sample_rate),
             0,
             "控制臂：工程 0 小节 ⇒ 长度 0"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ⑤（T-FIX-239）**：起录时给的 `start_tick` 原样带回报告
+    /// （落点方按它摆放）；没给 ⇒ `None`，摘要里写 `<none>`。
+    #[test]
+    fn start_tick_is_carried_into_the_stop_report() {
+        let path = scratch("starttick");
+        let _ = std::fs::remove_file(&path);
+        let mut recorder = Recorder::new();
+        recorder
+            .start(&path, &opts(), ramp(), 0, Some(12_345))
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let report = recorder.stop().expect("停录");
+        assert_eq!(
+            report.start_tick,
+            Some(12_345),
+            "⭐ 起录时给的 tick 必须原样进报告（⛔ 不许被停录播放头覆盖）"
+        );
+        assert!(
+            report.summary().contains("start-tick=12345"),
+            "⭐ 摘要必须带上 start-tick（实测 {}）",
+            report.summary()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ⑥（T-FIX-239）**：没给 `start_tick` 的旧路 ⇒ 报告里是 `None`
+    ///（落点方按停录播放头回落，旧口径）。
+    #[test]
+    fn start_tick_defaults_to_none_on_the_old_path() {
+        let path = scratch("starttick-none");
+        let _ = std::fs::remove_file(&path);
+        let mut recorder = Recorder::new();
+        recorder
+            .start(&path, &opts(), ramp(), 0, None)
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let report = recorder.stop().expect("停录");
+        assert_eq!(
+            report.start_tick, None,
+            "⭐ 旧路没给起录 tick ⇒ 报告里必须是 None（⛔ 不许编一个 0）"
+        );
+        assert!(
+            report.summary().contains("start-tick=<none>"),
+            "⭐ 摘要必须如实写 <none>（实测 {}）",
+            report.summary()
         );
         let _ = std::fs::remove_file(&path);
     }

@@ -17,8 +17,8 @@
 //! 停录成功（frames > 0）＋ 磁盘上那段 WAV
 //!   ──▶ plan_recording（**纯函数**：读字节 ＋ 解码校验 ＋ 内容哈希 ＋ 派生 `Op::AddClip`）
 //!   ──▶ land_recording_at（薄：读工程 → 规划 → 算摆放 → **一次**提交 → 登记资产池）
-//!         ├─ 目标轨 = 第一条音频轨（BTreeMap 键序）
-//!         ├─ 起点   = 播放头 tick（产品路径 = EngineHost::transport().position_ticks）
+//!         ├─ 目标轨 = 选中的／待录的音频轨（T-FIX-239：⛔ 不再默认第一条音频轨）
+//!         ├─ 起点   = 起录时捕获的 tick（`RecordReport::start_tick`，⛔ 不是停录播放头）
 //!         └─ 长度   = frames_to_ticks_ceil(frames, PPQ, bpm, facts.sample_rate)
 //!   ──▶ UndoPort 的 CAS 池（`assets/{sha256}` 的字节）
 //!   ──▶ host::wire_save 把池写进容器（`ProjectArchive.assets`）
@@ -41,7 +41,9 @@
 //!    本模块**仍然不碰** `.slint`／`apply_view`（绘制预算一位不动）。
 //! 2. ⭐ **L5（frames → tick 摆放）已落地（任务单 `#134`）**：本模块除了 `Op::AddClip`
 //!    ＋ 资产，还在**同一次提交**里写一条 `Op::AddClipPlacement` ⇒ 那段音频真的落在
-//!    **第一条音频轨**的**播放头 tick** 上。帧 → tick 的换算已下移到
+//!    **选中的／待录的音频轨**的**起录 tick** 上（T-FIX-239：起点是起录时捕获的
+//!    `RecordReport::start_tick`，⛔ 不是停录时播放头在哪；目标轨是起录时解析的
+//!    [`RecordTarget`]，⛔ 不再默认第一条音频轨）。帧 → tick 的换算已下移到
 //!    [`yeban_model::time_math::frames_to_ticks_ceil`]（模型层纯函数，app 直接调用，
 //!    ⛔ 不再"够不着 mcp"）；`yeban-mcp` 那份既有实现**保留**并登记为重复实现
 //!    （见模型层模块文档：那条文件被裸 `rustc` 验证脚手架 `#[path]` 引入，
@@ -167,7 +169,8 @@ pub fn plan_recording(
 /// 轨道 id ／ 起点 tick ／ 长度 tick ／ 摆放 id 与 clip id 的对应关系。
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedRecording {
-    /// 目标音轨（今天恒为**第一条音频轨**）。
+    /// 目标音轨（T-FIX-239：起录时解析的 [`RecordTarget`]——选中的／待录的
+    /// 音频轨；工程只有一条音频轨时就是它）。
     pub track_id: EntityId,
     /// 提交进 `TrackV3::clips` 的那条摆放（`id`／`clip_id`／`start_tick`／
     /// `duration_ticks`／`loop_config`／`muted` 逐字段可读）。
@@ -270,6 +273,14 @@ pub enum RecordLandingError {
     },
     /// 提交被会话拒绝（工程与游标一位不动）。
     Refused(String),
+    /// ⭐ 多条音频轨，但没有一条被选中／待录（T-FIX-239）⇒ **响亮地拒绝**，
+    /// ⛔ 不静默落到第一条音频轨。WAV 已落盘（⛔ 不丢），报告会说清原因。
+    NoTargetTrack,
+    /// ⭐ 指定的目标轨不存在、不是音频轨、或就是主总线（T-FIX-239）。
+    TargetTrack {
+        /// 调用方给的那个轨身份。
+        track: EntityId,
+    },
 }
 
 impl std::fmt::Display for RecordLandingError {
@@ -292,6 +303,15 @@ impl std::fmt::Display for RecordLandingError {
                  ⇒ ⛔ 不摆放（时长会错）"
             ),
             Self::Refused(reason) => write!(f, "录音进工程的提交被拒绝: {reason}"),
+            Self::NoTargetTrack => f.write_str(
+                "工程里有多条音频轨，但没有一条被选中／待录 ⇒ 录音已落盘但没有进工程，\
+                 ⛔ 不静默落到第一条音频轨；选中或待录一条音频轨后再录",
+            ),
+            Self::TargetTrack { track } => write!(
+                f,
+                "指定的目标轨 `{}` 不存在、不是音频轨、或就是主总线 ⇒ ⛔ 不摆放",
+                track.to_canonical_string()
+            ),
         }
     }
 }
@@ -304,10 +324,74 @@ impl From<AudioImportError> for RecordLandingError {
     }
 }
 
-/// ⭐ **停录成功之后的落地函数**（播放头取 0 的兼容形态）。
+/// ⭐ **录音落到哪条轨**（T-FIX-239）：起录时由调用方解析一次、停录时原样用。
 ///
-/// 它转调 [`land_recording_at`]，起点 tick 取 `0`。产品路径走后者（录音键发生在
-/// 播放头所在的位置）；保留本函数是为了**不打断**既有调用方与判据的签名。
+/// ⛔ **不再**有"默认第一条音频轨"：多条音频轨时没有选择 ⇒ 响亮地拒绝
+/// （[`RecordLandingError::NoTargetTrack`]），⛔ 不猜。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordTarget {
+    /// 落到这条音频轨。
+    Track(EntityId),
+    /// 工程里**没有**音频轨 ⇒ 软处理：片段照常登记进 `clip_pool`＋资产池，
+    /// 摆放为 `None`（旧口径，见 [`plan_placement`]）。
+    NoAudioTrack,
+    /// 工程里有多条音频轨，但没有一条被选中／待录 ⇒ 响亮地拒绝。
+    NoSelection,
+}
+
+/// 工程里全部音频轨的身份（`BTreeMap` 键序 ⇒ 身份升序，跨进程确定）。
+///
+/// 主总线按构造是 `TrackKind::Master`，不会被选中；这里仍显式排除一次，避免未来
+/// 有工程把主总线误标成 Audio 时把素材摆到唯一的声学出口上。
+#[must_use]
+pub fn audio_track_ids(project: &YebanProjectV1) -> Vec<EntityId> {
+    project
+        .tracks
+        .iter()
+        .filter(|(id, track)| **id != project.master_bus_track_id && track.kind == TrackKind::Audio)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// ⭐ **纯函数**：从"待录的轨 ＋ 选中的轨"解析出本次录音的目标轨（T-FIX-239）。
+///
+/// 优先级（**第一条**命中的胜出）：
+/// 1. **待录**的音频轨（`armed` 里按调用方给的顺序 —— 调用方传 UI 行序）；
+/// 2. **选中**的音频轨（`selected`）；
+/// 3. 工程里**恰好只有一条**音频轨 ⇒ 就是它（没得选 ⇒ 不是"静默猜"）；
+/// 4. 否则 [`RecordTarget::NoSelection`]（响亮地拒绝，⛔ 不落到第一条）。
+///
+/// ⛔ **非音频轨（MIDI／Aux／Master）与不存在的 id 一律跳过**：把音频片段摆到
+/// MIDI 轨上渲染时仍然是静音（`clip_pool` 里那条是 `ClipContent::Audio`），
+/// 那是"看起来摆了、其实听不见"的假成功。
+#[must_use]
+pub fn resolve_record_target(
+    project: &YebanProjectV1,
+    armed: &[EntityId],
+    selected: Option<EntityId>,
+) -> RecordTarget {
+    let audio = audio_track_ids(project);
+    if audio.is_empty() {
+        return RecordTarget::NoAudioTrack;
+    }
+    if let Some(track) = armed.iter().find(|id| audio.contains(id)) {
+        return RecordTarget::Track(*track);
+    }
+    if let Some(track) = selected.filter(|id| audio.contains(id)) {
+        return RecordTarget::Track(track);
+    }
+    if audio.len() == 1 {
+        return RecordTarget::Track(audio[0]);
+    }
+    RecordTarget::NoSelection
+}
+
+/// ⭐ **停录成功之后的落地函数**（播放头取 0、无目标轨的兼容形态）。
+///
+/// 它转调 [`land_recording_at`]，起点 tick 取 `0`、目标轨取
+/// [`RecordTarget::NoAudioTrack`]（片段照常登记，⛔ 不摆放）。
+/// 产品路径走后者；保留本函数是为了**不打断**既有调用方与判据的签名。
+/// （本函数今天没有调用方；见 T-FIX-239 的收据。）
 ///
 /// # Errors
 ///
@@ -317,7 +401,7 @@ pub fn land_recording(
     path: &Path,
     now_ms: u64,
 ) -> Result<RecordedClip, RecordLandingError> {
-    land_recording_at(port, path, now_ms, 0)
+    land_recording_at(port, path, now_ms, 0, RecordTarget::NoAudioTrack)
 }
 
 /// ⭐⭐ **停录成功之后的唯一落地函数**（任务单 `#132` 的 L2＋L3，`#134` 补上 L5）。
@@ -325,14 +409,18 @@ pub fn land_recording(
 /// 顺序是承重的：
 ///
 /// 1. **先**规划（读字节 ＋ 解码校验 ＋ 哈希）；
-/// 2. **再**算摆放（第一条音频轨 ＋ `playhead_tick` 起点 ＋ 帧 → tick 长度）；
+/// 2. **再**算摆放（起录时解析的 [`RecordTarget`] ＋ `start_tick` 起点 ＋ 帧 → tick 长度）；
 /// 3. **一次**提交 `Op::AddClip`（若片段是新的）＋ `Op::AddClipPlacement`；
 /// 4. **最后**才登记资产池 —— 提交被拒时池里不会留下"没有任何片段引用"的孤儿字节。
 ///
 /// ⚠ 两条操作在**同一个** `Vec<Op>` 里 ⇒ 同一次提交、同一份撤销单元：`AddClip`
 /// 的片段**先**进池、`AddClipPlacement` 的摆放**后**引用它（顺序即施加顺序）。
 ///
-/// `playhead_tick` 是摆放起点（来自引擎走带读数；判据给固定值 ⇒ 可复现）。
+/// `start_tick` 是摆放起点（T-FIX-239：调用方在起录时捕获的
+/// `起录播放头 + 预备拍 tick`，见 [`RecordReport::start_tick`]；
+/// ⛔ **不再**是停录时播放头在哪）。`target` 是起录时解析的目标轨
+/// （[`resolve_record_target`]）；多条音频轨且没有选择 ⇒
+/// [`RecordLandingError::NoTargetTrack`]（响亮地拒绝，⛔ 不静默落到第一条）。
 /// **0 帧** ⇒ [`RecordLandingError::EmptyRecording`]，工程一位不动（⛔ 不 AddClip、
 /// ⛔ 不摆放）。
 ///
@@ -342,19 +430,21 @@ pub fn land_recording(
 ///
 /// [`RecordLandingError::NoProject`] / [`RecordLandingError::Plan`] /
 /// [`RecordLandingError::EmptyRecording`] / [`RecordLandingError::Ticks`] /
+/// [`RecordLandingError::NoTargetTrack`] / [`RecordLandingError::TargetTrack`] /
 /// [`RecordLandingError::Refused`]。任何一种都意味着**工程一位没动**（或只有池没变）。
 pub fn land_recording_at(
     port: &crate::undo::UndoPort,
     path: &Path,
     now_ms: u64,
-    playhead_tick: u64,
+    start_tick: u64,
+    target: RecordTarget,
 ) -> Result<RecordedClip, RecordLandingError> {
     let project = port.try_project().ok_or(RecordLandingError::NoProject)?;
     let plan = plan_recording(path, &project)?;
     if plan.facts.frames == 0 {
         return Err(RecordLandingError::EmptyRecording { path: plan.path });
     }
-    let placement = plan_placement(&project, &plan, playhead_tick)?;
+    let placement = plan_placement(&project, &plan, start_tick, target)?;
     let mut ops = plan.ops;
     if let Some(placed) = &placement {
         ops.push(Op::AddClipPlacement {
@@ -386,14 +476,19 @@ pub fn land_recording_at(
     })
 }
 
-/// 摆放的**目的地策略**（任务单 `#134`）：第一条音频轨 ＋ 播放头 tick。
+/// 摆放的**目的地策略**（任务单 `#134`；T-FIX-239 重写了"哪条轨"与"起点"）。
 ///
-/// - **哪条轨**：`project.tracks` 的 `BTreeMap` 键序里**第一条 `TrackKind::Audio`**
-///   （身份升序 ⇒ 跨进程确定）。⛔ 不挑 MIDI／Aux／Master：把音频片段摆到 MIDI 轨上
-///   渲染时仍然是静音（`clip_pool` 里那条是 `ClipContent::Audio`），那是"看起来摆了、
+/// - **哪条轨**：调用方起录时解析的 [`RecordTarget`]（见 [`resolve_record_target`]）。
+///   `Track(id)` ⇒ 校验它存在＋是音频轨＋不是主总线，否则
+///   [`RecordLandingError::TargetTrack`]；`NoAudioTrack` ⇒ `Ok(None)`
+///   （工程里没有音频轨，无处可摆；如实登记，⛔ 不硬塞到别的轨）；
+///   `NoSelection` ⇒ [`RecordLandingError::NoTargetTrack`]（响亮地拒绝，
+///   ⛔ 不静默落到第一条音频轨）。
+///   ⛔ 不挑 MIDI／Aux／Master：把音频片段摆到 MIDI 轨上渲染时仍然是静音
+///   （`clip_pool` 里那条是 `ClipContent::Audio`），那是"看起来摆了、
 ///   其实听不见"的假成功。
-/// - **起点**：调用方给的 `playhead_tick`（产品路径 = `EngineHost::transport().position_ticks`，
-///   即音频时钟；⛔ 不用墙钟）。
+/// - **起点**：调用方给的 `start_tick`（T-FIX-239：起录时捕获的
+///   `起录播放头 + 预备拍 tick`；⛔ 不是停录时播放头在哪）。
 /// - **长度**：`frames_to_ticks_ceil(frames, PPQ, project.bpm, facts.sample_rate)`。
 ///   用**素材自己的**采样率（`facts.sample_rate`）—— `frames` 是它数出来的帧；
 ///   产品路径上它与工程采样率同为 48 kHz（`RecordOptions::default().sample_rate`，
@@ -405,10 +500,22 @@ pub fn land_recording_at(
 fn plan_placement(
     project: &YebanProjectV1,
     plan: &RecordingPlan,
-    playhead_tick: u64,
+    start_tick: u64,
+    target: RecordTarget,
 ) -> Result<Option<PlacedRecording>, RecordLandingError> {
-    let Some(track_id) = first_audio_track(project) else {
-        return Ok(None);
+    let track_id = match target {
+        RecordTarget::Track(id) => {
+            let is_audio = project
+                .tracks
+                .get(&id)
+                .is_some_and(|track| track.kind == TrackKind::Audio);
+            if !is_audio || id == project.master_bus_track_id {
+                return Err(RecordLandingError::TargetTrack { track: id });
+            }
+            id
+        }
+        RecordTarget::NoAudioTrack => return Ok(None),
+        RecordTarget::NoSelection => return Err(RecordLandingError::NoTargetTrack),
     };
     let duration_ticks =
         frames_to_ticks_ceil(plan.facts.frames, PPQ, project.bpm, plan.facts.sample_rate).ok_or(
@@ -423,7 +530,7 @@ fn plan_placement(
         placement: ClipPlacement {
             id: EntityId::new(),
             clip_id: plan.clip.id,
-            start_tick: playhead_tick,
+            start_tick,
             duration_ticks,
             loop_config: LoopConfig::default(),
             muted: false,
@@ -432,18 +539,6 @@ fn plan_placement(
             fade_out_ticks: None,
         },
     }))
-}
-
-/// 工程里**第一条音频轨**的身份（`BTreeMap` 键序 ⇒ 身份升序，跨进程确定）。
-///
-/// 主总线按构造是 `TrackKind::Master`，不会被选中；这里仍显式排除一次，避免未来
-/// 有工程把主总线误标成 Audio 时把素材摆到唯一的声学出口上。
-fn first_audio_track(project: &YebanProjectV1) -> Option<EntityId> {
-    project
-        .tracks
-        .iter()
-        .find(|(id, track)| **id != project.master_bus_track_id && track.kind == TrackKind::Audio)
-        .map(|(id, _)| *id)
 }
 
 #[cfg(test)]
@@ -517,5 +612,117 @@ mod tests {
         assert_eq!(again.clip.id, plan.clip.id, "复用同一条片段");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 两条音频轨的夹具工程：`filled_project` 的 Bass ＋ 新加一条音频轨。
+    fn two_audio_tracks_project() -> (YebanProjectV1, EntityId, EntityId) {
+        let mut project = yeban_model::samples::filled_project();
+        let first = audio_track_ids(&project)[0];
+        let second = EntityId::new();
+        project.tracks.insert(
+            second,
+            yeban_model::TrackV3 {
+                id: second,
+                name: "Vox".to_owned(),
+                kind: TrackKind::Audio,
+                ..yeban_model::TrackV3::default()
+            },
+        );
+        (project, first, second)
+    }
+
+    /// ⭐ **T-FIX-239**：待录的音频轨优先于选中的。
+    #[test]
+    fn armed_audio_track_wins_over_selected() {
+        let (project, first, second) = two_audio_tracks_project();
+        assert_eq!(
+            resolve_record_target(&project, &[second], Some(first)),
+            RecordTarget::Track(second),
+            "⭐ 待录轨必须赢过选中轨"
+        );
+    }
+
+    /// ⭐ **T-FIX-239**：没有待录时，选中的音频轨是目标。
+    #[test]
+    fn selected_audio_track_wins_when_nothing_armed() {
+        let (project, first, second) = two_audio_tracks_project();
+        assert_eq!(
+            resolve_record_target(&project, &[], Some(second)),
+            RecordTarget::Track(second),
+            "⭐ 选中第二条音频轨 ⇒ 必须落到第二条（⛔ 不是键序第一条）"
+        );
+        assert_eq!(
+            resolve_record_target(&project, &[], Some(first)),
+            RecordTarget::Track(first),
+            "⭐ 选中第一条 ⇒ 落到第一条"
+        );
+    }
+
+    /// ⭐ **T-FIX-239**：工程里恰好只有一条音频轨 ⇒ 就是它（没得选 ⇒ 不是"静默猜"）。
+    #[test]
+    fn single_audio_track_is_the_target_without_any_selection() {
+        let project = yeban_model::samples::filled_project();
+        let only = audio_track_ids(&project)[0];
+        assert_eq!(
+            resolve_record_target(&project, &[], None),
+            RecordTarget::Track(only),
+            "⭐ 单音频轨工程不选不待录 ⇒ 仍落到那条轨"
+        );
+    }
+
+    /// ⭐ **T-FIX-239**：多条音频轨、既不选也不待录 ⇒ `NoSelection`
+    ///（落点方响亮地拒绝，⛔ 不落到第一条）。
+    #[test]
+    fn multiple_audio_tracks_without_selection_is_no_selection() {
+        let (project, _, _) = two_audio_tracks_project();
+        assert_eq!(
+            resolve_record_target(&project, &[], None),
+            RecordTarget::NoSelection,
+            "⭐ 两条音频轨、无选择 ⇒ 必须拒绝（⛔ 不许默认第一条）"
+        );
+    }
+
+    /// ⭐ **T-FIX-239**：工程里没有音频轨 ⇒ `NoAudioTrack`（软处理：登记片段、不摆放）。
+    #[test]
+    fn no_audio_track_is_no_audio_track() {
+        let project = yeban_model::samples::default_project();
+        assert_eq!(
+            resolve_record_target(&project, &[], None),
+            RecordTarget::NoAudioTrack,
+            "⭐ 只有主总线的工程 ⇒ 没有音频轨"
+        );
+    }
+
+    /// ⭐ **T-FIX-239**：非音频轨与不存在的 id 一律跳过（⛔ 不摆到 MIDI 轨上假成功）。
+    #[test]
+    fn non_audio_and_stale_ids_are_skipped() {
+        let (project, _, second) = two_audio_tracks_project();
+        let midi = project
+            .tracks
+            .iter()
+            .find(|(_, track)| track.kind == TrackKind::Midi)
+            .map(|(id, _)| *id)
+            .expect("夹具里有一条 MIDI 轨");
+        let stale = EntityId::new();
+        // 待录里只有 MIDI＋不存在的 id ⇒ 都跳过 ⇒ 没有选择。
+        assert_eq!(
+            resolve_record_target(&project, &[midi, stale], Some(midi)),
+            RecordTarget::NoSelection,
+            "⭐ 待录/选中里只有 MIDI 轨与不存在的 id ⇒ 必须拒绝"
+        );
+        // 待录里 MIDI 在前、音频在后 ⇒ 跳过 MIDI，落到音频轨。
+        assert_eq!(
+            resolve_record_target(&project, &[midi, second], None),
+            RecordTarget::Track(second),
+            "⭐ 待录里的 MIDI 轨必须跳过"
+        );
+        // 选中主总线 ⇒ 不是音频轨 ⇒ 跳过；单条音频轨时仍落到那条音频轨。
+        let single = yeban_model::samples::filled_project();
+        let only = audio_track_ids(&single)[0];
+        assert_eq!(
+            resolve_record_target(&single, &[], Some(single.master_bus_track_id)),
+            RecordTarget::Track(only),
+            "⭐ 主总线永远不是目标"
+        );
     }
 }

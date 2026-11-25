@@ -7773,7 +7773,8 @@ pub struct RecordWiring {
     pub factory: Rc<dyn crate::record_device::InputSourceFactory>,
     /// 录音结果落点（生产 = 界面回执）。
     pub outcome: Rc<dyn RecordOutcomePort>,
-    /// 停录落地时的播放头读数。
+    /// 起录时读一次的播放头（T-FIX-239：`toggle()` 在起录那一刻读它 ＋ 预备拍
+    /// tick = 落点起点；⛔ 不再是"停录落地时的播放头读数"）。
     pub playhead_tick: Rc<dyn Fn() -> u64>,
 }
 
@@ -8053,6 +8054,19 @@ pub fn record_count_in(
     }
 }
 
+/// ⭐ **预备拍长度（tick）的唯一取数口径**（T-FIX-239，[`record_count_in`] 的
+/// tick 孪生）：单位＝**tick**，其余口径（端口 > 冻结 > 不知道 ⇒ 0）逐字相同。
+#[must_use]
+pub fn record_count_in_ticks(undo: Option<&UndoPort>, frozen: Option<&YebanProjectV1>) -> u64 {
+    match undo {
+        Some(port) => port.try_project().map_or(0, |live_project| {
+            crate::record_wav::count_in_ticks(&live_project)
+        }),
+        // 没有权威会话（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
+        None => frozen.map_or(0, crate::record_wav::count_in_ticks),
+    }
+}
+
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
 ///
 /// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
@@ -8076,13 +8090,16 @@ pub fn record_count_in(
 /// | `undo` | ⭐ 活会话那个 `Rc<UndoPort>`（`main.rs` 的 `undo_port`） | `None`（只落盘，不提交）或一个探针端口 |
 /// | `outcome` | [`UiRecordOutcome`] | 记录读数的观察端口（内部**仍**转调产品落点） |
 ///
-/// ## ⭐ 停录之后：真的进工程（任务单 `#132` 的 L2＋L3，`#134` 的 L5）
+/// ## ⭐ 停录之后：真的进工程（任务单 `#132` 的 L2＋L3，`#134` 的 L5；T-FIX-239
+/// 改了"起点"与"目标轨"）
 ///
 /// `frames > 0` 且 `undo` 在场 ⇒ 调
 /// [`land_recording_at`](crate::record_landing::land_recording_at)：
 /// 读回**那段 WAV 的字节** ⇒ 按内容哈希登记进会话资产池 ⇒ **一次**提交
 /// `Op::AddClip`（`ClipContent::Audio { asset }`）＋ `Op::AddClipPlacement`
-/// ⇒ `clip_pool` 多一条、**第一条音频轨**的**播放头 tick** 上多一条摆放。
+/// ⇒ `clip_pool` 多一条、起录时选中的／待录的音频轨上、**起录时捕获的 tick**
+/// 多一条摆放（T-FIX-239：起点是 `RecordReport::start_tick`，⛔ 不是停录时
+/// 播放头在哪；目标轨是起录时解析的 `RecordTarget`，⛔ 不再默认第一条音频轨）。
 /// ⛔ 0 帧**不**走这一步：0 帧的 WAV 只有头（`#130` 已让它响亮），把它写进
 /// `clip_pool` 会在工程里留下一条"播放时什么都没有"的片段。
 /// ⛔ `undo` 为 `None` 时也不假装提交过（只打一行如实登记）。
@@ -8105,20 +8122,30 @@ pub fn wire_record(
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
 ) -> Rc<RefCell<crate::record_wav::Recorder>> {
-    // 兼容形态：起点 tick 取 0（见 [`wire_record_at`] 的说明）。
+    // 兼容形态：播放头读数恒为 0 ⇒ 起点 tick = 0 ＋ 预备拍 tick
+    //（见 [`wire_record_at`] 的说明）。
     wire_record_at(ui, project, undo, plan, factory, outcome, Rc::new(|| 0))
 }
 
-/// [`wire_record`] 的**播放头形态**（任务单 `#134`）：停录落点需要一个起点 tick。
+/// [`wire_record`] 的**播放头形态**（任务单 `#134`；T-FIX-239 改了起点的语义）。
 ///
 /// ## 为什么起点是**可注入的读数**（⛔ 不是常量）
 ///
-/// 摆放的 `start_tick` 取"**停录落地这一刻**播放头在哪"（⚠ 不是起录位置：起录位置没有
-/// 被记录，⛔ 不假装知道）。产品路径的播放头 = 引擎
-/// 走带读数 [`EngineHost::transport().position_ticks`](crate::engine_host::EngineHost::transport)
+/// 摆放的 `start_tick` 是**起录那一刻**捕获的（T-FIX-239：`toggle()` 里读一次
+/// 播放头 ＋ 预备拍 tick，存进 [`RecordReport::start_tick`]，停录时原样用；
+/// ⛔ **不再**读停录落地这一刻播放头在哪 —— 走带在录音期间往前走了，落点
+/// 必须还在起录的位置）。产品路径的播放头 = 引擎走带读数
+/// [`EngineHost::transport().position_ticks`](crate::engine_host::EngineHost::transport)
 /// （RT→UI 镜面 = **音频时钟**，⛔ 不用墙钟）⇒ `wire_transport` 用
 /// `Rc::new(move || engine.borrow().transport().position_ticks)` 注入。
 /// 判据给固定值 ⇒ 读数可复现；⛔ 不读环境变量。
+///
+/// ## 目标轨（T-FIX-239）
+///
+/// 起录成功时从 UI 解析一次（待录的音频轨 ＞ 选中的音频轨 ＞ 工程只有一条音频轨；
+/// 多条音频轨且既不选也不待录 ⇒ 停录时响亮地拒绝，⛔ 不静默落到第一条音频轨），
+/// 存进 [`RecordControl`]，停录时原样用。解析见
+/// [`crate::record_landing::resolve_record_target`]。
 ///
 /// 其余语义与 [`wire_record`] 逐字相同（0 帧 ⇒ 不落地；`undo = None` ⇒ 只落盘）。
 ///
@@ -8166,6 +8193,10 @@ struct RecordControl {
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
     playhead_tick: Rc<dyn Fn() -> u64>,
+    /// ⭐ 起录时解析的目标轨（T-FIX-239）：`apply_started` 在起录成功时从 UI
+    /// 解析一次，`apply_stopped` 取走（`take`）后原样用；起录失败／停录后
+    /// 为 `None`（⛔ 不许上一条 take 的目标轨漏进下一条）。
+    target_track: std::cell::Cell<Option<crate::record_landing::RecordTarget>>,
 }
 
 impl RecordControl {
@@ -8208,11 +8239,19 @@ impl RecordControl {
                     project_guard.as_deref(),
                     self.plan.options.sample_rate,
                 );
+                // ⭐ T-FIX-239：起点 tick 在**起录这一刻**捕获一次（播放头 ＋
+                // 预备拍 tick）⇒ 第一帧真正被推入的位置；停录时原样用，
+                // ⛔ 不再读停录时播放头在哪（走带在录音期间往前走了）。
+                let start_tick = (self.playhead_tick)().saturating_add(record_count_in_ticks(
+                    self.undo.as_deref(),
+                    project_guard.as_deref(),
+                ));
                 RecordToggle::Started(recorder.start_with_factory(
                     &self.plan.path,
                     &self.plan.options,
                     self.factory.as_ref(),
                     count_in,
+                    Some(start_tick),
                 ))
             }
         };
@@ -8245,12 +8284,27 @@ impl RecordControl {
                 if report.frames > 0 {
                     match self.undo.as_ref() {
                         Some(port) => {
-                            let playhead = (self.playhead_tick)();
+                            // ⭐ T-FIX-239：起点 = 起录时捕获的 tick（`RecordReport::start_tick`）。
+                            // 只有直接用 `Recorder` 的旧路（报告里没带）才回落到停录播放头
+                            // （旧口径，如实登记在收据里）。
+                            let start_tick = report.start_tick.unwrap_or_else(|| {
+                                eprintln!(
+                                    "[yeban-app] 录音报告没有起录 tick（旧路）⇒ 按停录播放头回落"
+                                );
+                                (self.playhead_tick)()
+                            });
+                            // ⭐ T-FIX-239：目标轨 = 起录时解析的那一份；没解析到
+                            // （例如这条 take 不是经 `toggle()` 起录的）⇒ 停录时现解析一次。
+                            let target = self
+                                .target_track
+                                .take()
+                                .unwrap_or_else(|| self.resolve_target());
                             match crate::record_landing::land_recording_at(
                                 port,
                                 &report.path,
                                 now_ms(),
-                                playhead,
+                                start_tick,
+                                target,
                             ) {
                                 Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),
                                 Err(error) => {
@@ -8283,15 +8337,75 @@ impl RecordControl {
         }
     }
 
+    /// ⭐ **本次 take 的目标轨**（T-FIX-239）：从 UI 的待录状态 ＋ 选中轨解析。
+    ///
+    /// 待录有两个并存的事实源（**取并集**，按显示顺序对齐）：
+    /// - **生产**：`track-arms`（`[bool]`，`wire_track_arm` 维护；`wire_aether_actions`
+    ///   把 `track-toggle-arm` 转发到它）—— 生产装配里待录按钮只写这一处；
+    /// - **旧式**：`ui.get_tracks()` 行里的 `armed`（`wire_aether_callbacks` 的旧
+    ///   处理器翻它；生产装配里它恒为 `false`，只在无头装配／判据窗口里活着）。
+    ///
+    /// 两者任一说"待录" ⇒ 待录。**非音频轨一律跳过**（种类以工程为准，⛔ 不以行文案为准）。
+    /// - 选中：`selected_track_id(ui)`（空串 ⇒ 没有选中）。
+    ///
+    /// 工程事实源 = 活端口里的那份（权威），没有 ⇒ 装配期冻结那份；两份都没有
+    /// ⇒ [`RecordTarget::NoSelection`]（落点方响亮地拒绝）。
+    fn resolve_target(&self) -> crate::record_landing::RecordTarget {
+        use crate::record_landing::{RecordTarget, resolve_record_target};
+        let Some(project) = self
+            .undo
+            .as_ref()
+            .and_then(|port| port.try_project())
+            .or_else(|| self.project.as_ref().map(|shared| shared.borrow().clone()))
+        else {
+            return RecordTarget::NoSelection;
+        };
+        let Some(ui) = self.ui.upgrade() else {
+            return RecordTarget::NoSelection;
+        };
+        let display_ids = project.display_track_ids();
+        let arms: Vec<bool> = ui.get_track_arms().iter().collect();
+        let rows: Vec<_> = ui.get_tracks().iter().collect();
+        let armed: Vec<yeban_model::EntityId> = display_ids
+            .iter()
+            .enumerate()
+            .filter(|(index, id)| {
+                let is_audio = project
+                    .tracks
+                    .get(id)
+                    .is_some_and(|track| track.kind == yeban_model::TrackKind::Audio);
+                if !is_audio {
+                    return false;
+                }
+                let by_arms_array = arms.get(*index).copied().unwrap_or(false);
+                let by_row = rows.get(*index).is_some_and(|row| row.armed);
+                by_arms_array || by_row
+            })
+            .map(|(_, id)| *id)
+            .collect();
+        let selected = selected_track_id(&ui)
+            .and_then(|id| <yeban_model::EntityId as std::str::FromStr>::from_str(&id).ok());
+        resolve_record_target(&project, &armed, selected)
+    }
+
     /// 起录结果的产品落点：失败 ⇒ `recording` 保持 false，错误照常上报。
     fn apply_started(&self, started: Result<(), crate::record_wav::RecordError>) {
         match &started {
-            Ok(()) => eprintln!(
-                "[yeban-app] 开始录音 ⇒ {}（源={}）",
-                self.plan.path.display(),
-                self.factory.label()
-            ),
-            Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
+            Ok(()) => {
+                eprintln!(
+                    "[yeban-app] 开始录音 ⇒ {}（源={}）",
+                    self.plan.path.display(),
+                    self.factory.label()
+                );
+                // ⭐ T-FIX-239：起录成功 ⇒ 目标轨在**这一刻**解析一次（待录／
+                // 选中是起录时的状态，⛔ 不是停录时的）；失败 ⇒ 清掉，不许
+                // 上一条 take 的目标轨漏进下一条。
+                self.target_track.set(Some(self.resolve_target()));
+            }
+            Err(error) => {
+                eprintln!("[yeban-app] 起录失败: {error}");
+                self.target_track.set(None);
+            }
         }
         if let Some(ui) = self.ui.upgrade() {
             ui.set_recording(started.is_ok());
@@ -8321,6 +8435,8 @@ fn install_record_control(
         factory,
         outcome,
         playhead_tick,
+        // ⭐ 起录成功时才解析目标轨（T-FIX-239）；此前没有。
+        target_track: std::cell::Cell::new(None),
     });
     let toggle = Rc::clone(&control);
     ui.on_toggle_record(move || toggle.toggle());

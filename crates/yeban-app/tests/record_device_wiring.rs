@@ -703,7 +703,8 @@ fn a_real_input_device_feeds_the_recorder_through_the_product_factory() {
     let path = scratch("hardware");
     let _ = std::fs::remove_file(&path);
     let mut recorder = Recorder::new();
-    match recorder.start_with_factory(&path, &options, &DeviceInputFactory::default(), 0) {
+    // ⭐ 真机手工判据不走走带 ⇒ 不给起录 tick（T-FIX-239）。
+    match recorder.start_with_factory(&path, &options, &DeviceInputFactory::default(), 0, None) {
         Ok(()) => {
             std::thread::sleep(Duration::from_millis(500));
             let pulled = recorder.pulled_frames();
