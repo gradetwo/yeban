@@ -24,7 +24,7 @@ use serde_json::Value;
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::EntityId;
-use yeban_model::samples::filled_project;
+use yeban_model::samples::{demo_project, filled_project};
 
 const PIANO_PRESET: &str = "sys:salamander-grand:piano-warm-room";
 const CELLO_PRESET: &str = "sys:karoryfer-bigcat-cello:cello-warm-hall";
@@ -570,6 +570,97 @@ fn create_with_seed_sampler_bypass_removes_preset_devices() {
             .is_some_and(|sampler| sampler.path.contains(PIANO_SFZ_FRAGMENT)),
         "旁通只旁通处理，不换乐器: {:?}",
         after.sampler
+    );
+}
+
+/// 判据（T-FIX-390）：`scope:"track"` 不要求采样器 —— 内置合成器 MIDI 轨与音频轨都能存
+/// 整轨快照，预制里乐器记 `internal`、`instrumentSfz` 为空（应用时不重绑采样器）；
+/// `scope:"instrument"` 仍要求已知乐器，但错误必须说清是"内置合成器"还是"音频轨"。
+#[test]
+fn save_track_preset_needs_no_sampler_and_instrument_scope_names_the_real_reason() {
+    let scratch = Scratch::new("track-scope");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!(
+                "yeban-mcp-preset-scope-{}.yeban",
+                std::process::id()
+            )),
+            demo_project(),
+            false,
+        )
+        .expect("注入演示工程（无采样器轨）");
+
+    let midi = track_id(&dispatcher, "鼓");
+    let audio = track_id(&dispatcher, "贝斯");
+
+    // ① 内置合成器 MIDI 轨：整轨快照可存，乐器记 `internal`、sfz 为空。
+    let saved = call(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": midi, "name": "whole-midi", "scope": "track"}),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    assert_eq!(saved["scope"], "track", "{saved}");
+    let parsed: Value = serde_json::from_slice(
+        &std::fs::read(saved["path"].as_str().expect("path")).expect("读库"),
+    )
+    .expect("合法 JSON");
+    assert_eq!(parsed["instrument"], "internal", "{parsed}");
+    assert_eq!(parsed["instrument_sfz"], "", "{parsed}");
+
+    // ② 音频轨：整轨快照同样可存（不再报"未绑定采样器"）。
+    let saved_audio = call(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": audio, "name": "whole-audio", "scope": "track"}),
+    );
+    assert_eq!(saved_audio["saved"], true, "{saved_audio}");
+
+    // ③ `scope:"instrument"`：两档错误各自点名真实原因。
+    let midi_result = call_any(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": midi, "name": "inst-midi", "scope": "instrument"}),
+    );
+    assert_eq!(midi_result["status"], "error", "{midi_result}");
+    assert_eq!(
+        midi_result["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{midi_result}"
+    );
+    let midi_error = midi_result["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        midi_error.contains("内置合成器"),
+        "MIDI 无采样器须点名内置合成器，实际: {midi_error}"
+    );
+    assert!(
+        midi_error.contains("scope") && midi_error.contains("track"),
+        "须给出 `scope:\"track\"` 的出路，实际: {midi_error}"
+    );
+    let audio_result = call_any(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": audio, "name": "inst-audio", "scope": "instrument"}),
+    );
+    assert_eq!(audio_result["status"], "error", "{audio_result}");
+    assert_eq!(
+        audio_result["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{audio_result}"
+    );
+    let audio_error = audio_result["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        audio_error.contains("音频轨"),
+        "音频轨须点名「音频轨」，⛔ 不许说成「无法确定适用乐器」，实际: {audio_error}"
     );
 }
 

@@ -575,7 +575,10 @@ pub fn build_apply_ops(
         applied.push("macros".to_owned());
     }
     // ⑥ 乐器绑定（instrument 类）：只在绑定变化时写。
-    if categories.contains(&"instrument") {
+    // ⭐ T-FIX-390：整轨快照（`instrument_sfz` 为空 / `instrument == "internal"`）
+    // 不携带乐器身份 ⇒ **不重绑**采样器（否则会把内置合成器轨绑到一个空路径）。
+    // 乐器调优仍按原路径写。
+    if categories.contains(&"instrument") && !preset.instrument_sfz.is_empty() {
         let new_sampler = Some(yeban_model::SamplerBinding {
             note_octave_override: None,
             path: preset.instrument_sfz.clone(),
@@ -894,16 +897,41 @@ pub fn build_save_preset(
     if name.trim().is_empty() {
         return Err(preset_fault("`name` 不得为空".to_owned()));
     }
-    let Some(sampler) = &track.sampler else {
-        return Err(preset_fault(format!(
-            "音轨 {track_id} 未绑定采样器，无法确定适用乐器"
-        )));
-    };
-    let Some(slug) = slug_for_sfz_path(&sampler.path) else {
-        return Err(preset_fault(format!(
-            "音轨 {track_id} 绑定的采样器 `{}` 不在工厂乐器登记里，无法另存为预制",
-            sampler.path
-        )));
+    // ⭐ T-FIX-390：`scope:"track"` 是**整轨快照**（设备链 + 发送 + 推子/声相/
+    // mute/solo + 宏），不依赖乐器绑定 ⇒ 内置合成器轨、音频轨都能存。
+    // `scope:"instrument"` 仍然要求"已知乐器"，但错误必须说清是**哪一档**缺什么：
+    // 旧文案把"没有采样器"一律说成"无法确定适用乐器"，对音频轨是误导。
+    let (instrument_slug, instrument_sfz) = match (&track.sampler, scope) {
+        (Some(sampler), _) => match slug_for_sfz_path(&sampler.path) {
+            Some(slug) => (
+                slug.to_owned(),
+                instrument_sfz_path(slug).unwrap_or("").to_owned(),
+            ),
+            None => {
+                // 绑了非工厂登记的文件：整轨快照仍可存（乐器记 `internal`，
+                // 应用时不重绑）；乐器调优没有可移植的乐器身份 ⇒ 拒绝。
+                if scope == PresetScope::Track {
+                    ("internal".to_owned(), String::new())
+                } else {
+                    return Err(preset_fault(format!(
+                        "音轨 {track_id} 绑定的采样器 `{}` 不在工厂乐器登记里，无法另存为乐器预制",
+                        sampler.path
+                    )));
+                }
+            }
+        },
+        (None, PresetScope::Track) => ("internal".to_owned(), String::new()),
+        (None, PresetScope::Instrument) => {
+            let reason = match track.kind {
+                yeban_model::TrackKind::Audio => {
+                    "音频轨没有乐器（音频素材不是乐器），无法另存为乐器预制"
+                }
+                _ => "音轨未绑定采样器（内置合成器轨不登记为可移植的乐器），无法另存为乐器预制",
+            };
+            return Err(preset_fault(format!(
+                "音轨 {track_id} {reason}；整轨快照请用 `scope: \"track\"`"
+            )));
+        }
     };
     let (existing, _) = user_library_presets();
     let duplicate = existing.iter().find(|(preset, _)| preset.name == name);
@@ -940,8 +968,8 @@ pub fn build_save_preset(
         format: yeban_model::preset::PRESET_FORMAT_VERSION,
         id: id.clone(),
         name: name.to_owned(),
-        instrument: slug.to_owned(),
-        instrument_sfz: instrument_sfz_path(slug).unwrap_or("").to_owned(),
+        instrument: instrument_slug,
+        instrument_sfz,
         scope,
         author: String::new(),
         version: "1.0.0".to_owned(),
