@@ -268,12 +268,11 @@ fn write_filled_container(
     let mut project = yeban_model::samples::filled_project();
     mutate(&mut project);
     project.validate().expect("夹具合法");
-    let bytes = write_project_container(
-        &project,
-        b"lyrics-test-history",
-        &std::collections::BTreeMap::new(),
-    )
-    .expect("写出真容器");
+    let assets: std::collections::BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .collect();
+    let bytes =
+        write_project_container(&project, b"lyrics-test-history", &assets).expect("写出真容器");
     let path = dir.join(name);
     std::fs::write(&path, &bytes).expect("写容器");
     path
