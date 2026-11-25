@@ -7,8 +7,8 @@
 //! 真的 argv 进来、真的 stdout/stderr 出去、真的**退出码**。两者不可互相替代 ——
 //! 文档（README / 官网 Quick Start）里写的是命令行，用户拿到的是退出码。
 //!
-//! 二进制的绝对路径由 Cargo 注入（`CARGO_BIN_EXE_<bin name>`）：`cargo test --all-targets`
-//! 会先构建 `yeban-app` 这个 bin 目标再把路径传进来，因此 **CI 的默认门禁**
+//! 二进制的绝对路径在运行期解析（`common::bin_path`，见 `tests/common/mod.rs`）：`cargo test --all-targets`
+//! 会先构建 `yeban-app` 这个 bin 目标，因此 **CI 的默认门禁**
 //! （`.github/workflows/ci.yml` 的 `cargo test --workspace --all-targets`）就会跑到本文件 ——
 //! 不需要任何人记得加一步。
 //!
@@ -43,8 +43,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// 被测二进制的绝对路径（由 Cargo 注入，见模块文档）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行的全部可观测输出。
 #[derive(Debug)]
@@ -72,7 +73,8 @@ fn invoke(args: &[&str]) -> Run {
 
 /// 同 [`invoke`]，但可以额外注入环境变量（`SLINT_BACKEND` 哨兵的判据用）。
 fn invoke_with_env(args: &[&str], env: &[(&str, &str)]) -> Run {
-    let mut command = Command::new(BIN);
+    let bin = bin_path();
+    let mut command = Command::new(&bin);
     command
         .args(args)
         .stdout(Stdio::piped())
@@ -82,7 +84,7 @@ fn invoke_with_env(args: &[&str], env: &[(&str, &str)]) -> Run {
     }
     let mut child = command
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
 
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {

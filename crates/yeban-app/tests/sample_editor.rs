@@ -15,8 +15,9 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::{read_plain_wav_mono_f32, write_plain_wav};
 
-/// 被测二进制（与 `cli_contract.rs` 同一个入口）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 夹具采样率（Hz）。
 const RATE: u32 = 44_100;
@@ -35,7 +36,8 @@ struct Run {
 }
 
 fn run(args: &[&str]) -> Run {
-    let output = Command::new(BIN)
+    let bin = bin_path();
+    let output = Command::new(&bin)
         .args(args)
         .output()
         .expect("启动 yeban-app");

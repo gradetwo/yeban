@@ -32,6 +32,37 @@ use serde_json::Value;
 use yeban_model::CommitGraph;
 use yeban_model::container::write_project_container;
 
+/// 被测真二进制 `yeban-mcp` 的绝对路径 —— **运行期**解析（`T-ISS-MWWLLBW8`）。
+///
+/// 与 `crates/yeban-app/tests/common/mod.rs` 里的 `bin_path()` 是**同一份逻辑的两份
+/// 拷贝**（只差二进制名）：mcp 的测试目标不能引用 app 的测试模块（两边分属不同
+/// crate、没有依赖关系），所以这里留一份本地版；改任一处时请同步另一处。
+/// 机制见那边的文档：编译期 `env!("CARGO_BIN_EXE_…")` 在盒子默认 PATH（rustup
+/// 垫片会吞带连字符的环境变量）下编不过；运行期先读 `std::env::var`，拿不到再
+/// 从测试可执行文件自身的路径推导（`target/<profile>/deps/` 的父目录的父目录
+/// 即 `target/<profile>/`）。两条路都拿不到现成文件 ⇒ 响亮 panic，⛔ 不静默跳过。
+#[must_use]
+fn bin_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_yeban-mcp") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return path;
+        }
+        // 变量在但文件不在（bin 被删了）：不静默用一个不存在的路径，继续走回退。
+    }
+    let exe = std::env::current_exe().expect("取当前测试可执行文件的路径");
+    let profile_dir = exe.parent().and_then(std::path::Path::parent).expect(
+        "测试可执行文件应在 target/<profile>/deps/ 下（current_exe 的父目录的父目录即 <profile>/）",
+    );
+    let path = profile_dir.join("yeban-mcp");
+    assert!(
+        path.is_file(),
+        "找不到真二进制 {}：先跑 `cargo build -p yeban-mcp` 构建一次（`CARGO_BIN_EXE_yeban-mcp` 也未注入，见 `bin_path` 的文档）",
+        path.display()
+    );
+    path
+}
+
 /// 仓库内临时目录(沙箱只允许写工作区; 也避免污染用户 `~/.yeban`)。
 fn scratch() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/e2e-scratch");
@@ -65,7 +96,7 @@ fn registry_names() -> Vec<String> {
 /// 即该 pid **已被回收**, 而 `code() == Some(0)` 表示它是读到 EOF 后自己正常退出的(不是被 `kill`
 /// 杀的、也不是被信号带走的), 也就是**没有留下任何还在跑的东西**。
 fn session(requests: &[String]) -> Vec<Value> {
-    let bin = env!("CARGO_BIN_EXE_yeban-mcp");
+    let bin = bin_path();
     let token = scratch().join(format!("token-{}.txt", std::process::id()));
     let mut child = Command::new(bin)
         .args(["--stdio", "--token-file"])
@@ -1373,7 +1404,7 @@ fn request_and_response_scale_edges_over_stdio() {
 fn run_cli(args: &[&str], stdin: &str) -> (i32, String, String) {
     use std::io::Write as _;
 
-    let bin = env!("CARGO_BIN_EXE_yeban-mcp");
+    let bin = bin_path();
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())

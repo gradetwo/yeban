@@ -33,6 +33,10 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::{read_plain_wav_mono_f32, write_plain_wav};
 
+mod common;
+
+use common::bin_path;
+
 const RATE: u32 = 48_000;
 
 /// 临时夹具目录（`Drop` 删掉自己；⛔ 工作树里不留临时文件）。
@@ -88,7 +92,7 @@ impl Drop for Fixture {
 /// 跑一次真二进制，返回 `recorded-wav:` 那一行、整份 stdout、峰值（线性幅度）。
 fn record(fixture: &Fixture, sfz: Option<&Path>, out: &str) -> (String, String, f32) {
     let wav = fixture.path(out);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_yeban-app"));
+    let mut command = Command::new(bin_path());
     if let Some(sfz) = sfz {
         command.args(["--track-sampler", sfz.to_str().expect("utf8 SFZ 路径")]);
     }

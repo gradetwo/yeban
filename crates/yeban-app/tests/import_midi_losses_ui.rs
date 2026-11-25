@@ -47,8 +47,9 @@ use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::{LivePort, fnv1a64, report_line, write_artifact};
 use yeban_ui_test_port::tree::{ControlNode, ControlTree};
 
-/// 真二进制（与 `tests/midi_round_trip.rs` 同一个入口）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 可见摘要行的语义 ID（`ui/module_actions.slint` ↔ `src/elements.rs` 两处逐字相同）。
 const LOSS_ID: &str = "module-import-losses";
@@ -92,12 +93,13 @@ impl Drop for Scratch {
 }
 
 fn run_cli(args: &[&str]) -> String {
-    let output = Command::new(BIN)
+    let bin = bin_path();
+    let output = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     assert!(
         output.status.success(),
         "`yeban-app {args:?}` 退出码 {:?}; stderr={}",

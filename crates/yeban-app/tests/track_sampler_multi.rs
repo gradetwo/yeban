@@ -57,8 +57,9 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行允许的最长时间（与 `#287` 的判据同一条理由：不许把 CI 挂死）。
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -259,13 +260,14 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
 /// ⚠ 既有 `#287` 的判据用的是旧形状：它的输出小（几千字节），碰不到这条死锁，
 /// 本文件不复制那个隐患。
 fn invoke(args: &[&str]) -> (i32, String, String) {
+    let bin = bin_path();
     use std::io::Read as _;
-    let mut child = Command::new(BIN)
+    let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let stdout = child.stdout.take().expect("stdout 已 piped");
     let stderr = child.stderr.take().expect("stderr 已 piped");
     let drain = |mut pipe: std::process::ChildStdout| {

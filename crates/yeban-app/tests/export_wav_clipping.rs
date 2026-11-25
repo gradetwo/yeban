@@ -40,6 +40,10 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
 
+mod common;
+
+use common::bin_path;
+
 // ---------------------------------------------------------------------------
 // 夹具
 // ---------------------------------------------------------------------------
@@ -639,7 +643,7 @@ fn write_container(dir: &Path, name: &str, project: &YebanProjectV1) -> PathBuf 
 }
 
 fn run_cli(arguments: &[&str]) -> (i32, String, String) {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yeban-app"))
+    let output = std::process::Command::new(bin_path())
         .args(arguments)
         .output()
         .expect("启动 yeban-app");

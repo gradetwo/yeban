@@ -3,7 +3,7 @@
 //!
 //! # 驱动面
 //!
-//! 真二进制（`CARGO_BIN_EXE_yeban-app`）＋子进程 env `YEBAN_SAMPLE_LIBRARY`
+//! 真二进制（`common::bin_path()` 运行时解析）＋子进程 env `YEBAN_SAMPLE_LIBRARY`
 //!（⛔ 不碰本进程环境）；读回走生产打开入口。夹具形状与
 //! `track_sampler_track_selector.rs` 同款（主总线 ＋ MIDI 轨 ＋ aux 轨），目标轨用
 //! `--sampler-track` 显式点名，⛔ 不依赖兜底落点。
@@ -24,8 +24,9 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行允许的最长时间（与 `track_sampler_track_selector` 同一条理由）。
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -210,13 +211,14 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
 
 /// 真二进制执行（子进程 env 可另给；捕获 stdout / stderr；超时 ⇒ 杀掉并失败）。
 fn invoke(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let mut child = Command::new(BIN)
+    let bin = bin_path();
+    let mut child = Command::new(&bin)
         .args(args)
         .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {

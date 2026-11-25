@@ -44,7 +44,7 @@
 //!
 //! ## 本机 vs CI
 //!
-//! 本文件要跑**真二进制**（`CARGO_BIN_EXE_yeban-app`，含 Slint 链接），因此它的
+//! 本文件要跑**真二进制**（`common::bin_path()` 运行时解析，含 Slint 链接），因此它的
 //! 权威判决在 CI；本机 `cargo test -p yeban-app` 在缓存的 target/ 上也可以跑（见台账）。
 //! ⚠ 它**不**依赖 `midi-input` 特性（那个特性只管物理端口 `--midi-in`）⇒ 两档都跑到同一条判据。
 
@@ -63,8 +63,9 @@ use yeban_model::ids::AssetHash;
 use yeban_model::{ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote};
 use yeban_model::{TimeSignature, TrackKind, YebanProjectV1};
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行允许的最长时间（照 `cli_contract.rs` 的口径：⛔ 不许把 CI 挂死）。
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -78,12 +79,13 @@ struct Run {
 }
 
 fn invoke(args: &[&str]) -> Run {
-    let mut child = Command::new(BIN)
+    let bin = bin_path();
+    let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {

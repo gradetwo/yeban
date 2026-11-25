@@ -124,8 +124,9 @@ use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::{ThemeState, Tokens, YebanTheme};
 
-/// 被测二进制的绝对路径（由 Cargo 注入，与 `tests/cli_contract.rs` 同款）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行的硬超时。
 ///
@@ -148,12 +149,13 @@ struct Run {
 
 /// 跑一次真二进制并**带超时**收走它的输出。
 fn invoke(args: &[&str]) -> Run {
-    let mut child = Command::new(BIN)
+    let bin = bin_path();
+    let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait() {
@@ -161,15 +163,15 @@ fn invoke(args: &[&str]) -> Run {
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("`{BIN} {args:?}` 超过 {RUN_TIMEOUT:?} 未退出 —— 它多半进了 GUI 路径");
+                panic!("`{bin:?} {args:?}` 超过 {RUN_TIMEOUT:?} 未退出 —— 它多半进了 GUI 路径");
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(error) => panic!("等待 {BIN} 失败: {error}"),
+            Err(error) => panic!("等待 {bin:?} 失败: {error}"),
         }
     }
     let output = child
         .wait_with_output()
-        .unwrap_or_else(|error| panic!("收取 {BIN} 的输出失败: {error}"));
+        .unwrap_or_else(|error| panic!("收取 {bin:?} 的输出失败: {error}"));
     Run {
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -531,7 +533,7 @@ fn wcag_cases(tokens: &Tokens<'_>) -> [(&'static str, Color, Color, f64); 18] {
 // 两个分支的表达式写反了、或者给某个 token 多加了一层三元但恰好让 brand 那支没变。
 // 一条判据只写一遍自己的观测面, 这里是文本。
 
-/// `ui/` 的绝对路径（`CARGO_MANIFEST_DIR` 由 Cargo 注入, 与 `BIN` 同款）。
+/// `ui/` 的绝对路径（`CARGO_MANIFEST_DIR` 由 Cargo 在编译期注入）。
 const UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 
 /// ⭐ **平台无关的"路径末段"匹配**（判据不许依赖分隔符）。

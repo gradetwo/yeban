@@ -20,8 +20,9 @@ use yeban_model::container::write_project_container;
 use yeban_model::lyrics::LyricLine;
 use yeban_model::samples::default_project;
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行的全部可观测输出。
 #[derive(Debug)]
@@ -40,14 +41,15 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 用给定参数跑一次真二进制（**只用无窗口参数**）。
 fn invoke(args: &[&str]) -> Run {
-    let mut command = Command::new(BIN);
+    let bin = bin_path();
+    let mut command = Command::new(&bin);
     command
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {

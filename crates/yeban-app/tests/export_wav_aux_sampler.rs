@@ -53,8 +53,9 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::{read_plain_wav_mono_f32, write_plain_wav};
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行允许的最长时间（与 `cli_contract` 同一条理由：不许把 CI 挂死）。
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -351,12 +352,13 @@ fn aux_source_only_project() -> YebanProjectV1 {
 
 /// 真二进制的一次执行（只用无窗口参数）。
 fn invoke(args: &[&str]) -> (i32, String, String) {
-    let mut child = Command::new(BIN)
+    let bin = bin_path();
+    let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {

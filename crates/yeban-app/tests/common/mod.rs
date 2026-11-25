@@ -178,3 +178,50 @@ impl FilePicker for ScriptedPicker {
         self.overwrite.get()
     }
 }
+
+/// 被测真二进制 `yeban-app` 的绝对路径 —— **运行期**解析（`T-ISS-MWWLLBW8`）。
+///
+/// ## 为什么不用编译期 `env!("CARGO_BIN_EXE_yeban-app")`
+///
+/// Cargo 会把 `CARGO_BIN_EXE_<bin>` 以环境变量形式传给编译测试目标的 rustc
+/// （指向 `target/<profile>/<bin>`；真工具链下单独 `--test` 也能编过，与本次
+/// 调用是否重编 bin 无关）。但盒子默认 PATH 是 rustup **垫片**：`cargo` /
+/// `rustc` 都是 `/usr/local/bin` 下的垫片，垫片会吞掉带连字符的环境变量，
+/// `CARGO_BIN_EXE_yeban-app` 到不了 rustc，编译期 `env!` 就炸 —— 同一棵树、
+/// 同一 warm target、bin 已在盘上时实测：真工具链 `cargo check --test
+/// midi_round_trip` 过，垫片 exit 101（`ISS-MWWLLBW8` 的复现就是垫片下跑
+/// 出来的）。编译期写法等于把判据绑死在"真工具链"上。
+///
+/// 于是改运行期解析，两条路：
+///
+/// 1. 先读运行期 `std::env::var("CARGO_BIN_EXE_yeban-app")`（cargo 在跑测试
+///    进程时也会注入它，真工具链下这条就够了）；
+/// 2. 拿不到时回退到**测试可执行文件自身的路径**推导：测试二进制在
+///    `target/<profile>/deps/<test>-<hash>`，它的父目录的父目录就是
+///    `target/<profile>/`，真二进制就在那里 —— `cargo test` / `--release` /
+///    自定义 `CARGO_TARGET_DIR` 都成立，垫片下运行期变量同样可能被吞时这条
+///    兜底。
+///
+/// 两条路都拿不到**现成文件** ⇒ 响亮 panic（指明先 `cargo build -p yeban-app`
+/// 构建一次），⛔ 不静默跳过、⛔ 不回退到一个不存在的路径。
+#[must_use]
+pub fn bin_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_yeban-app") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return path;
+        }
+        // 变量在但文件不在（bin 被删了）：不静默用一个不存在的路径，继续走回退。
+    }
+    let exe = std::env::current_exe().expect("取当前测试可执行文件的路径");
+    let profile_dir = exe.parent().and_then(Path::parent).expect(
+        "测试可执行文件应在 target/<profile>/deps/ 下（current_exe 的父目录的父目录即 <profile>/）",
+    );
+    let path = profile_dir.join("yeban-app");
+    assert!(
+        path.is_file(),
+        "找不到真二进制 {}：先跑 `cargo build -p yeban-app` 构建一次（`CARGO_BIN_EXE_yeban-app` 也未注入，见 `bin_path` 的文档）",
+        path.display()
+    );
+    path
+}

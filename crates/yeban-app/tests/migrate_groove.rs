@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use yeban_model::ids::AssetHash;
 
-/// 被测二进制的绝对路径（由 Cargo 注入）。
-const BIN: &str = env!("CARGO_BIN_EXE_yeban-app");
+mod common;
+
+use common::bin_path;
 
 /// 一次子进程执行允许的最长时间（与 `tests/cli_contract.rs` 同一条理由：
 /// 万一某个"无窗口"开关回归进 GUI 路径，这里要**响亮失败**而不是把 CI 挂住）。
@@ -31,12 +32,13 @@ struct Run {
 }
 
 fn invoke_paths(args: &[PathBuf]) -> Run {
-    let mut child = Command::new(BIN)
+    let bin = bin_path();
+    let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("无法执行 {BIN}: {error}"));
+        .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
     let deadline = Instant::now() + RUN_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {
