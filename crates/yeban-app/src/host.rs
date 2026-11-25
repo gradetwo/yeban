@@ -23753,15 +23753,11 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 
-    ui.on_run_acoustic_diagnosis({
-        let weak = weak.clone();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                update_toast(&ui, "[诊断] 声学诊断完成：全频带确定性校验通过");
-            }
-        }
-    });
-
+    // T-FIX-425 (route b): no `on_run_acoustic_diagnosis` registration here.
+    // There is no acoustic analysis in the repo, so this callback must not
+    // show any completion toast; the trace-only registration in
+    // `main::wire_callbacks` remains the sole handler. Do not re-add a
+    // success toast without a real analyser behind it.
     ui.on_export_diagnostics({
         let weak = weak.clone();
         move || {

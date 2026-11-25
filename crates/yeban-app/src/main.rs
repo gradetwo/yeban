@@ -1459,6 +1459,11 @@ fn mount_in_process_mcp(
 ///   最近的既有机制是 `[D56]` 的 `UiAction::ExportDiagnostics`，而 [`host::wire_undo`]
 ///   已经把它接在**另一个**按钮（`diagnostics-export-action`）上，产物是 env/git/日志的
 ///   诊断 zip，不是声学读数 ⇒ 接上去等于用一个无关产物消费掉这一次点击。
+///   2026-11-25（T-FIX-425，路线 b）：在真实声学分析落地前，两个入口已禁用 ——
+///   诊断菜单项 `enabled: false`、AI 轨道诊断键的 `TouchArea` 亦 `enabled: false`
+///   （整条 AI 轨道今天还藏在 `if false` 里）；`host::wire_aether_callbacks` 里那条
+///   假完成 toast 的注册已删除，本回调仍只打 stderr。接真实分析是另立的功能线，
+///   不在本单做；谁真接了就必须把这两处禁用一并解除并更新判据。
 ///
 /// 这条仍然未接的回调登记在 `docs/ledger/feature-alignment.md` 的错位 7。
 ///

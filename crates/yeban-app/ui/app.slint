@@ -1308,7 +1308,7 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: @tr("诊断");
-            MenuItem { title: @tr("执行 AI 声学检查与诊断"); activated => { root.command-execute("run-acoustic-diagnosis"); } }
+            MenuItem { title: @tr("执行 AI 声学检查与诊断"); enabled: false; activated => { root.command-execute("run-acoustic-diagnosis"); } }
             MenuItem { title: @tr("导出工程诊断报告包 (D56)"); activated => { root.command-execute("export-diagnostics"); } }
             MenuSeparator {}
             MenuItem { title: @tr("开启/关闭 悬浮功能提示 (T)"); activated => { root.command-execute("toggle-tooltips"); } }
@@ -3169,7 +3169,7 @@ export component MainWindow inherits Window {
                 accessible-id: "ai-rail-diagnose-button";
                 accessible-label: @tr("声学诊断");
                 accessible-action-default => { root.run-acoustic-diagnosis(); }
-                TouchArea { clicked => { root.run-acoustic-diagnosis(); } }
+                TouchArea { enabled: false; clicked => { root.run-acoustic-diagnosis(); } }
             }
             Rectangle {
                 accessible-role: button;

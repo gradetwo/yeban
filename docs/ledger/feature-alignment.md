@@ -398,6 +398,11 @@
 - **建议处置**：剩余 3 条**不是**缺陷（理由写在 `main.rs` 的 `wire_callbacks` 文档注释里，
   是为了不制造"UI 已经通了"的假象），且它们各自缺的是**能力**（提案的界面表示 / 声学分析器）
   而不是"接线"；在此之前，任何"UI 暴露度"的统计都应把"控件存在"与"回调接线"分开计。
+  ⚠ 2026-11-25 就地加注（T-FIX-425，路线 b）：`run-acoustic-diagnosis` 这一条已按
+  「未实现先禁用」处置 —— 诊断菜单项 `enabled: false`、AI 轨道诊断键 `TouchArea`
+  `enabled: false`（整条 AI 轨道仍藏在 `if false` 里）、`host::wire_aether_callbacks`
+  的假完成 toast 注册已删除；回调本身仍只打 stderr。接真实声学分析是另立的功能线；
+  谁真接了须把两处禁用解除并更新 `crates/yeban-app/tests/acoustic_diagnosis_placeholder.rs` 的判据。
 - **本轮的判据**：`crates/yeban-app/tests/live_ui_mcp.rs` 的
   `the_view_state_callbacks_really_change_the_view_state`（真实点击 ⇒ 属性真的翻）
   与 `the_view_state_properties_drive_the_runtime_tree`（属性 ⇒ 运行时树里 `visible` 真的换）。
