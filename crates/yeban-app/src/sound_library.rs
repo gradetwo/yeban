@@ -980,6 +980,10 @@ pub fn format_size(bytes: u64) -> String {
 /// - 已下超过宣称总量 ⇒ 不写百分号，显式写「宣称 X（超出 Y）」；
 /// - 速度未知（第一个采样点还没有间隔）⇒ 省掉最后一节；
 /// - 进度未知（`percent < 0`）⇒ 不写百分号。
+///
+/// 超宣称总量那一节按当前语言渲染（T-FIX-458，同 454 的
+/// `format_doctor_readout` 形态）：本函数在下载工人线程里调用，
+/// [`crate::host::current_language`] 读原子变量，线程安全。
 #[must_use]
 pub fn format_download_readout(
     percent: i32,
@@ -987,6 +991,26 @@ pub fn format_download_readout(
     total: Option<u64>,
     bytes_per_sec: Option<u64>,
 ) -> String {
+    format_download_readout_in(
+        percent,
+        done,
+        total,
+        bytes_per_sec,
+        crate::host::current_language(),
+    )
+}
+
+/// 在 `lang` 下的下载读数。中文态与旧实现逐字相同（单测钉死）；其余
+/// 三节（百分比、已下/总量、速度）只有数字与单位，与语言无关。
+#[must_use]
+pub fn format_download_readout_in(
+    percent: i32,
+    done: u64,
+    total: Option<u64>,
+    bytes_per_sec: Option<u64>,
+    lang: crate::cli::Language,
+) -> String {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
     // T-FIX-58：分母只代表「宣称总量」；已下超过它时**不是 100% 继续涨**，
     // 而是把异常直接写进读数：不再显示百分号，并点名超出多少。这样即使
     // 服务器没给 Content-Length、目录又登记错，用户也能立刻看出不对劲。
@@ -996,12 +1020,24 @@ pub fn format_download_readout(
         parts.push(format!("{percent}%"));
     }
     match total {
-        Some(total) if total > 0 && done > total => parts.push(format!(
-            "{} / 宣称 {}（超出 {}）",
-            format_size(done),
-            format_size(total),
-            format_size(done - total)
-        )),
+        Some(total) if total > 0 && done > total => {
+            let done_size = format_size(done);
+            let total_size = format_size(total);
+            let over_size = format_size(done - total);
+            parts.push(match lang {
+                ZhCn => format!("{done_size} / 宣称 {total_size}（超出 {over_size}）"),
+                EnUs => format!("{done_size} / declared {total_size} (over by {over_size})"),
+                FrFr => format!("{done_size} / déclaré {total_size} (dépassement de {over_size})"),
+                EsEs => format!("{done_size} / declarado {total_size} (exceso de {over_size})"),
+                PtBr => format!("{done_size} / declarado {total_size} (excesso de {over_size})"),
+                JaJp => format!("{done_size} / 公称 {total_size}（{over_size} 超過）"),
+                KoKr => format!("{done_size} / 공칭 {total_size}({over_size} 초과)"),
+                RuRu => format!("{done_size} / заявлено {total_size} (превышение на {over_size})"),
+                DeDe => {
+                    format!("{done_size} / angegeben {total_size} (um {over_size} überschritten)")
+                }
+            });
+        }
         Some(total) if total > 0 => {
             parts.push(format!("{} / {}", format_size(done), format_size(total)))
         }
@@ -1693,7 +1729,8 @@ mod tests {
 
 #[cfg(test)]
 mod readout_tests {
-    use super::{download_percent, format_download_readout};
+    use super::{download_percent, format_download_readout, format_download_readout_in};
+    use crate::cli::Language;
 
     /// T-FIX-58：已下超过宣称总量时**不许**再钉在 100%.
     /// 用现场数字（945.9 MiB / 422.5 MiB）钉死读数形态。
@@ -1703,16 +1740,54 @@ mod readout_tests {
         let declared = 443_075_501u64; // 422.5 MiB，目录 sizeBytes
         assert_eq!(download_percent(done, Some(declared)), -1);
         assert_eq!(
-            format_download_readout(-1, done, Some(declared), Some(19_713_000)),
+            format_download_readout_in(-1, done, Some(declared), Some(19_713_000), Language::ZhCn),
             "945.9 MiB / 宣称 422.5 MiB（超出 523.3 MiB） · 18.8 MiB/s"
         );
         // 恰好下完才是 100%；超一字节立刻转未知并显式点名超出。
         assert_eq!(download_percent(declared, Some(declared)), 100);
         assert_eq!(download_percent(declared + 1, Some(declared)), -1);
         assert_eq!(
-            format_download_readout(100, declared + 1, Some(declared), None),
+            format_download_readout_in(100, declared + 1, Some(declared), None, Language::ZhCn),
             "422.5 MiB / 宣称 422.5 MiB（超出 1 B）"
         );
+    }
+
+    /// T-FIX-458：超宣称总量那一节英文态逐条钉死（现场数字同上）。
+    #[test]
+    fn over_declared_readout_en_us_renders_english() {
+        let done = 991_800_000u64;
+        let declared = 443_075_501u64;
+        assert_eq!(
+            format_download_readout_in(-1, done, Some(declared), Some(19_713_000), Language::EnUs),
+            "945.9 MiB / declared 422.5 MiB (over by 523.3 MiB) · 18.8 MiB/s"
+        );
+        assert_eq!(
+            format_download_readout_in(100, declared + 1, Some(declared), None, Language::EnUs),
+            "422.5 MiB / declared 422.5 MiB (over by 1 B)"
+        );
+    }
+
+    /// T-FIX-458：九语全覆盖——超宣称总量那一节每语都有文案；非中文语
+    /// 的模板不含中文残片（「宣称」「超出」）；读数必须含已下与宣称量。
+    #[test]
+    fn over_declared_readout_all_languages_have_no_chinese_template_residue() {
+        let done = 991_800_000u64;
+        let declared = 443_075_501u64;
+        for lang in Language::ALL {
+            let rendered = format_download_readout_in(-1, done, Some(declared), None, lang);
+            assert!(
+                rendered.contains("945.9 MiB") && rendered.contains("422.5 MiB"),
+                "{lang:?} 超宣称读数必须含已下与宣称量，实际：{rendered}"
+            );
+            if lang != Language::ZhCn {
+                for fragment in ["宣称", "超出"] {
+                    assert!(
+                        !rendered.contains(fragment),
+                        "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                    );
+                }
+            }
+        }
     }
 
     /// T-FIX-58：无 Content-Length 的 chunked 响应回退目录值时，

@@ -12954,9 +12954,6 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
     }
 }
 
-/// 后台已安装扫描进行中的状态行（重开/刷新时同一句，排空成功时据此清掉）。
-const SOUND_INSTALLED_SCANNING_STATUS: &str = "正在扫描音源库…";
-
 /// 一次已安装库扫描的完整结果（工作线程算好，UI 线程只写属性）。
 ///
 /// 为什么把"体检判定 / 隔离结果 / 显示路径"也搬过来：这些都要读盘或读记录，
@@ -13674,6 +13671,1129 @@ mod sound_installed_warning_tests {
                 if lang != Language::ZhCn {
                     for fragment in ["损坏", "隔离", "备份", "不可信", "下次打开", "提示体检"]
                     {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 音源库下载回调的状态行文案闭集（T-FIX-458，形态同
+/// `DoctorRunStatus`）：单包下载与一键下载全部两个回调里的硬编码中文
+/// 状态行（包找不到 / 已有下载在跑 / 清单还在加载 / 清单已装完 / 开始
+/// 下载提示）与 454/455 的读数属同一缺口（同一状态行、同一用户动作），
+/// 按当前语言渲染；九语模板表住在本文件，由单测逐语看守。包名不译，
+/// 原样进占位；计数口径与 §15 同款（英/法/西/葡/俄/德用「标签：数量」
+/// 形态避单复数错，中/日/韩保持原句式）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundLibraryDownloadStatus {
+    /// 按目录找不到这件包。
+    PackNotFound,
+    /// 已有另一件音源包在下载中。
+    AlreadyDownloading,
+    /// 目录还在加载。
+    CatalogLoading,
+    /// 清单里的音源都已安装。
+    AllInstalled,
+    /// 开始一键下载全部：共约字节数大于 0 才带「共约」一节。
+    Started { total: usize, total_bytes: u64 },
+}
+
+impl SoundLibraryDownloadStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::PackNotFound => match lang {
+                ZhCn => "找不到这个音源包（目录可能已刷新，请重试）".to_string(),
+                EnUs => {
+                    "Cannot find this sound pack (the catalog may have refreshed; please retry)"
+                        .to_string()
+                }
+                FrFr => {
+                    "Pack introuvable (le catalogue a peut-être été actualisé ; veuillez réessayer)"
+                        .to_string()
+                }
+                EsEs => {
+                    "No se encuentra este paquete de sonidos (es posible que el catálogo se haya actualizado; inténtelo de nuevo)"
+                        .to_string()
+                }
+                PtBr => {
+                    "Não foi possível encontrar este pacote de sons (o catálogo pode ter sido atualizado; tente novamente)"
+                        .to_string()
+                }
+                JaJp => {
+                    "この音源パックが見つかりません（カタログが更新された可能性があります。もう一度お試しください）"
+                        .to_string()
+                }
+                KoKr => {
+                    "이 사운드 팩을 찾을 수 없습니다(카탈로그가 새로고침되었을 수 있습니다. 다시 시도해 주세요)"
+                        .to_string()
+                }
+                RuRu => {
+                    "Этот звуковой пакет не найден (каталог мог обновиться; попробуйте ещё раз)"
+                        .to_string()
+                }
+                DeDe => {
+                    "Dieses Sound-Paket wurde nicht gefunden (der Katalog wurde möglicherweise aktualisiert; bitte erneut versuchen)"
+                        .to_string()
+                }
+            },
+            Self::AlreadyDownloading => match lang {
+                ZhCn => "已有音源包在下载中".to_string(),
+                EnUs => "A sound pack download is already in progress".to_string(),
+                FrFr => "Un téléchargement de pack est déjà en cours".to_string(),
+                EsEs => "Ya hay una descarga de paquete en curso".to_string(),
+                PtBr => "Já há um download de pacote em andamento".to_string(),
+                JaJp => "すでに音源パックをダウンロード中です".to_string(),
+                KoKr => "이미 사운드 팩을 다운로드하고 있습니다".to_string(),
+                RuRu => "Загрузка звукового пакета уже выполняется".to_string(),
+                DeDe => "Ein Sound-Paket wird bereits heruntergeladen".to_string(),
+            },
+            Self::CatalogLoading => match lang {
+                ZhCn => "音源清单还在加载，请稍候再试".to_string(),
+                EnUs => "The sound catalog is still loading; please try again shortly"
+                    .to_string(),
+                FrFr => {
+                    "Le catalogue de sons est encore en cours de chargement ; veuillez réessayer dans un instant"
+                        .to_string()
+                }
+                EsEs => {
+                    "El catálogo de sonidos aún se está cargando; inténtelo de nuevo en un momento"
+                        .to_string()
+                }
+                PtBr => {
+                    "O catálogo de sons ainda está carregando; tente novamente em instantes"
+                        .to_string()
+                }
+                JaJp => {
+                    "音源カタログはまだ読み込み中です。しばらくしてからもう一度お試しください".to_string()
+                }
+                KoKr => {
+                    "음원 카탈로그를 아직 불러오고 있습니다. 잠시 후 다시 시도해 주세요".to_string()
+                }
+                RuRu => {
+                    "Каталог звуков всё ещё загружается; попробуйте ещё раз чуть позже".to_string()
+                }
+                DeDe => {
+                    "Der Sound-Katalog wird noch geladen; bitte versuchen Sie es gleich erneut"
+                        .to_string()
+                }
+            },
+            Self::AllInstalled => match lang {
+                ZhCn => "清单里的音源都已安装".to_string(),
+                EnUs => "All sounds in the catalog are already installed".to_string(),
+                FrFr => "Tous les sons du catalogue sont déjà installés".to_string(),
+                EsEs => "Todos los sonidos del catálogo ya están instalados".to_string(),
+                PtBr => "Todos os sons do catálogo já estão instalados".to_string(),
+                JaJp => "カタログ内の音源はすべてインストール済みです".to_string(),
+                KoKr => "카탈로그의 음원이 모두 설치되어 있습니다".to_string(),
+                RuRu => "Все звуки из каталога уже установлены".to_string(),
+                DeDe => "Alle Sounds aus dem Katalog sind bereits installiert".to_string(),
+            },
+            Self::Started { total, total_bytes } => {
+                let size = crate::sound_library::format_size(total_bytes);
+                match lang {
+                    ZhCn => {
+                        if total_bytes > 0 {
+                            format!("开始下载 {total} 个音源（共约 {size}，按顺序进行，可继续用界面）")
+                        } else {
+                            format!("开始下载 {total} 个音源（按顺序进行，可继续用界面）")
+                        }
+                    }
+                    EnUs => {
+                        if total_bytes > 0 {
+                            format!("Starting download — Sounds: {total} (about {size} in total, in order; you can keep using the UI)")
+                        } else {
+                            format!("Starting download — Sounds: {total} (in order; you can keep using the UI)")
+                        }
+                    }
+                    FrFr => {
+                        if total_bytes > 0 {
+                            format!("Téléchargement en cours — Sons : {total} (environ {size} au total, dans l’ordre ; vous pouvez continuer à utiliser l’interface)")
+                        } else {
+                            format!("Téléchargement en cours — Sons : {total} (dans l’ordre ; vous pouvez continuer à utiliser l’interface)")
+                        }
+                    }
+                    EsEs => {
+                        if total_bytes > 0 {
+                            format!("Iniciando la descarga — Sonidos: {total} (unos {size} en total, en orden; puedes seguir usando la interfaz)")
+                        } else {
+                            format!("Iniciando la descarga — Sonidos: {total} (en orden; puedes seguir usando la interfaz)")
+                        }
+                    }
+                    PtBr => {
+                        if total_bytes > 0 {
+                            format!("Iniciando o download — Sons: {total} (cerca de {size} no total, em ordem; você pode continuar usando a interface)")
+                        } else {
+                            format!("Iniciando o download — Sons: {total} (em ordem; você pode continuar usando a interface)")
+                        }
+                    }
+                    JaJp => {
+                        if total_bytes > 0 {
+                            format!("ダウンロード開始：{total} 件の音源（合計約 {size}、順番に進めます。操作は続けられます）")
+                        } else {
+                            format!("ダウンロード開始：{total} 件の音源（順番に進めます。操作は続けられます）")
+                        }
+                    }
+                    KoKr => {
+                        if total_bytes > 0 {
+                            format!("다운로드 시작: 음원 {total}개(총 약 {size}, 순서대로 진행됩니다. 계속 사용할 수 있습니다)")
+                        } else {
+                            format!("다운로드 시작: 음원 {total}개(순서대로 진행됩니다. 계속 사용할 수 있습니다)")
+                        }
+                    }
+                    RuRu => {
+                        if total_bytes > 0 {
+                            format!("Начало загрузки — Звуков: {total} (всего около {size}, по порядку; интерфейсом можно продолжать пользоваться)")
+                        } else {
+                            format!("Начало загрузки — Звуков: {total} (по порядку; интерфейсом можно продолжать пользоваться)")
+                        }
+                    }
+                    DeDe => {
+                        if total_bytes > 0 {
+                            format!("Download wird gestartet — Sounds: {total} (insgesamt ca. {size}, der Reihe nach; die Oberfläche kann weiter benutzt werden)")
+                        } else {
+                            format!("Download wird gestartet — Sounds: {total} (der Reihe nach; die Oberfläche kann weiter benutzt werden)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_library_download_status_tests {
+    use super::SoundLibraryDownloadStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（五处状态行；开始下载两档）。
+    #[test]
+    fn sound_library_download_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundLibraryDownloadStatus::PackNotFound.text_in(Language::ZhCn),
+            "找不到这个音源包（目录可能已刷新，请重试）"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::AlreadyDownloading.text_in(Language::ZhCn),
+            "已有音源包在下载中"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::CatalogLoading.text_in(Language::ZhCn),
+            "音源清单还在加载，请稍候再试"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::AllInstalled.text_in(Language::ZhCn),
+            "清单里的音源都已安装"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::Started {
+                total: 3,
+                total_bytes: 70_000_000
+            }
+            .text_in(Language::ZhCn),
+            "开始下载 3 个音源（共约 66.8 MiB，按顺序进行，可继续用界面）"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::Started {
+                total: 3,
+                total_bytes: 0
+            }
+            .text_in(Language::ZhCn),
+            "开始下载 3 个音源（按顺序进行，可继续用界面）"
+        );
+    }
+
+    /// 英文态五处逐条钉死；开始下载两档。
+    #[test]
+    fn sound_library_download_status_en_us_renders_english() {
+        assert_eq!(
+            SoundLibraryDownloadStatus::PackNotFound.text_in(Language::EnUs),
+            "Cannot find this sound pack (the catalog may have refreshed; please retry)"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::AlreadyDownloading.text_in(Language::EnUs),
+            "A sound pack download is already in progress"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::CatalogLoading.text_in(Language::EnUs),
+            "The sound catalog is still loading; please try again shortly"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::AllInstalled.text_in(Language::EnUs),
+            "All sounds in the catalog are already installed"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::Started {
+                total: 3,
+                total_bytes: 70_000_000
+            }
+            .text_in(Language::EnUs),
+            "Starting download — Sounds: 3 (about 66.8 MiB in total, in order; you can keep using the UI)"
+        );
+        assert_eq!(
+            SoundLibraryDownloadStatus::Started {
+                total: 3,
+                total_bytes: 0
+            }
+            .text_in(Language::EnUs),
+            "Starting download — Sounds: 3 (in order; you can keep using the UI)"
+        );
+    }
+
+    /// 九语全覆盖：每语五处均有文案；非中文语的模板不含中文残片
+    /// （「找不到」「已有」「还在加载」「都已安装」「开始下载」「个音源」
+    /// 「按顺序」「可继续用界面」）。
+    #[test]
+    fn sound_library_download_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for status in [
+                SoundLibraryDownloadStatus::PackNotFound,
+                SoundLibraryDownloadStatus::AlreadyDownloading,
+                SoundLibraryDownloadStatus::CatalogLoading,
+                SoundLibraryDownloadStatus::AllInstalled,
+                SoundLibraryDownloadStatus::Started {
+                    total: 3,
+                    total_bytes: 70_000_000,
+                },
+                SoundLibraryDownloadStatus::Started {
+                    total: 3,
+                    total_bytes: 0,
+                },
+            ] {
+                let rendered = status.text_in(lang);
+                if lang != Language::ZhCn {
+                    for fragment in [
+                        "找不到",
+                        "已有",
+                        "还在加载",
+                        "都已安装",
+                        "开始下载",
+                        "个音源",
+                        "按顺序",
+                        "可继续用界面",
+                    ] {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 下载工人线程里拼出的结局与进度读数文案闭集（T-FIX-458，形态同
+/// `SoundLibraryDownloadStatus`）：单包下载成功结局 / 一键下载全部
+/// 结局汇总（全成 / 有失败）/ 一键下载的进度 tick 读数，均经跨线程槽
+/// 排空进音源库状态行；渲染点在工人线程，`current_language` 读原子
+/// 变量，线程安全（与 454 的 `format_doctor_readout` 同款）。包名与
+/// 首个失败的错误原文按 §4 口径不译，原样进占位；计数口径与 §15 同款
+/// （英/法/西/葡/俄/德用「标签：数量」形态避单复数错）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundLibraryDownloadOutcome {
+    /// 单包下载成功。
+    Installed { name: String },
+    /// 一键下载全部：全部成功。
+    AllDone { done: usize },
+    /// 一键下载全部：有失败（首个失败的错误原文原样进占位）。
+    Partial {
+        done: usize,
+        total: usize,
+        failed: usize,
+        first_error: String,
+    },
+    /// 一键下载的进度 tick 读数（`index` 从 1 计）。
+    Progress {
+        index: usize,
+        total: usize,
+        pack_name: String,
+    },
+}
+
+impl SoundLibraryDownloadOutcome {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::Installed { name } => match lang {
+                ZhCn => format!("已安装：{name}"),
+                EnUs => format!("Installed: {name}"),
+                FrFr => format!("Installé : {name}"),
+                EsEs => format!("Instalado: {name}"),
+                PtBr => format!("Instalado: {name}"),
+                JaJp => format!("インストールしました：{name}"),
+                KoKr => format!("설치했습니다: {name}"),
+                RuRu => format!("Установлено: {name}"),
+                DeDe => format!("Installiert: {name}"),
+            },
+            Self::AllDone { done } => match lang {
+                ZhCn => format!("全部安装完成：{done} 个音源"),
+                EnUs => format!("All installed — Sounds: {done}"),
+                FrFr => format!("Tout est installé — Sons : {done}"),
+                EsEs => format!("Todo instalado — Sonidos: {done}"),
+                PtBr => format!("Tudo instalado — Sons: {done}"),
+                JaJp => format!("すべてインストール完了：{done} 件の音源"),
+                KoKr => format!("모두 설치 완료: 음원 {done}개"),
+                RuRu => format!("Всё установлено — Звуков: {done}"),
+                DeDe => format!("Alles installiert — Sounds: {done}"),
+            },
+            Self::Partial {
+                done,
+                total,
+                failed,
+                first_error,
+            } => match lang {
+                ZhCn => {
+                    format!("完成 {done} / {total}；失败 {failed} 个 —— 首个失败：{first_error}")
+                }
+                EnUs => format!(
+                    "Done: {done} / {total}; Failed: {failed} — First failure: {first_error}"
+                ),
+                FrFr => format!(
+                    "Terminé : {done} / {total} ; Échecs : {failed} — Premier échec : {first_error}"
+                ),
+                EsEs => format!(
+                    "Completado: {done} / {total}; Fallidos: {failed} — Primer fallo: {first_error}"
+                ),
+                PtBr => format!(
+                    "Concluído: {done} / {total}; Falhas: {failed} — Primeira falha: {first_error}"
+                ),
+                JaJp => {
+                    format!("完了：{done} / {total}；失敗 {failed} 件 —— 最初の失敗：{first_error}")
+                }
+                KoKr => {
+                    format!("완료: {done} / {total}; 실패 {failed}개 — 첫 번째 실패: {first_error}")
+                }
+                RuRu => format!(
+                    "Готово: {done} / {total}; Не удалось: {failed} — Первая ошибка: {first_error}"
+                ),
+                DeDe => format!(
+                    "Fertig: {done} / {total}; Fehlgeschlagen: {failed} — Erster Fehler: {first_error}"
+                ),
+            },
+            Self::Progress {
+                index,
+                total,
+                pack_name,
+            } => match lang {
+                ZhCn => format!("第 {index} / {total} 个 · {pack_name}"),
+                EnUs => format!("Item {index} / {total} · {pack_name}"),
+                FrFr => format!("Élément {index} / {total} · {pack_name}"),
+                EsEs => format!("Elemento {index} / {total} · {pack_name}"),
+                PtBr => format!("Item {index} / {total} · {pack_name}"),
+                JaJp => format!("{index} / {total} 個目 · {pack_name}"),
+                KoKr => format!("{index} / {total}번째 · {pack_name}"),
+                RuRu => format!("Позиция {index} / {total} · {pack_name}"),
+                DeDe => format!("Eintrag {index} / {total} · {pack_name}"),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_library_download_outcome_tests {
+    use super::SoundLibraryDownloadOutcome;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（四处读数；错误原文原样进占位）。
+    #[test]
+    fn sound_library_download_outcome_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Installed {
+                name: "ext-pack".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "已安装：ext-pack"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::AllDone { done: 3 }.text_in(Language::ZhCn),
+            "全部安装完成：3 个音源"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Partial {
+                done: 2,
+                total: 3,
+                failed: 1,
+                first_error: "pack-x：connection reset".to_string(),
+            }
+            .text_in(Language::ZhCn),
+            "完成 2 / 3；失败 1 个 —— 首个失败：pack-x：connection reset"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Progress {
+                index: 2,
+                total: 3,
+                pack_name: "ext-pack".to_string(),
+            }
+            .text_in(Language::ZhCn),
+            "第 2 / 3 个 · ext-pack"
+        );
+    }
+
+    /// 英文态四处逐条钉死；错误原文原样进占位。
+    #[test]
+    fn sound_library_download_outcome_en_us_renders_english() {
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Installed {
+                name: "ext-pack".to_string()
+            }
+            .text_in(Language::EnUs),
+            "Installed: ext-pack"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::AllDone { done: 3 }.text_in(Language::EnUs),
+            "All installed — Sounds: 3"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Partial {
+                done: 2,
+                total: 3,
+                failed: 1,
+                first_error: "pack-x：connection reset".to_string(),
+            }
+            .text_in(Language::EnUs),
+            "Done: 2 / 3; Failed: 1 — First failure: pack-x：connection reset"
+        );
+        assert_eq!(
+            SoundLibraryDownloadOutcome::Progress {
+                index: 2,
+                total: 3,
+                pack_name: "ext-pack".to_string(),
+            }
+            .text_in(Language::EnUs),
+            "Item 2 / 3 · ext-pack"
+        );
+    }
+
+    /// 九语全覆盖：每语四处均有文案；非中文语的模板不含中文残片
+    /// （「已安装」「全部安装完成」「个音源」「完成」「失败」「首个失败」
+    /// 「第」）；渲染必须含包名，汇总必须含首个失败原文。
+    #[test]
+    fn sound_library_download_outcome_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            let installed = SoundLibraryDownloadOutcome::Installed {
+                name: "ext-pack".to_string(),
+            }
+            .text_in(lang);
+            let all_done = SoundLibraryDownloadOutcome::AllDone { done: 3 }.text_in(lang);
+            let partial = SoundLibraryDownloadOutcome::Partial {
+                done: 2,
+                total: 3,
+                failed: 1,
+                first_error: "pack-x：connection reset".to_string(),
+            }
+            .text_in(lang);
+            let progress = SoundLibraryDownloadOutcome::Progress {
+                index: 2,
+                total: 3,
+                pack_name: "ext-pack".to_string(),
+            }
+            .text_in(lang);
+            assert!(
+                installed.contains("ext-pack") && progress.contains("ext-pack"),
+                "{lang:?} 结局与进度渲染必须含包名，实际：{installed} / {progress}"
+            );
+            assert!(
+                partial.contains("pack-x：connection reset"),
+                "{lang:?} 汇总渲染必须原样含首个失败原文，实际：{partial}"
+            );
+            if lang != Language::ZhCn {
+                for rendered in [&installed, &all_done, &partial, &progress] {
+                    for fragment in [
+                        "已安装",
+                        "全部安装完成",
+                        "个音源",
+                        "完成",
+                        "失败",
+                        "首个失败",
+                        "第",
+                    ] {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 删除用户库回调的状态行文案闭集（T-FIX-458，形态同
+/// `SoundInstalledWarning`）：删库成功 / 删了正在用的库两处硬编码中文
+/// 状态行与 454/455 的读数属同一缺口（同一状态行、同一用户动作），按当
+/// 前语言渲染；九语模板表住在本文件，由单测逐语看守。库名与轨名不译，
+/// 原样进占位；多件轨名按语言惯用分隔符连接（中/日用「、」，其余用 ", "，
+/// 与 455 同款）；「其余 N 条」按语言拼（中/日/韩用本族量词，其余用
+/// 「(+N more)」形态避单复数错）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundLibraryDeleteStatus {
+    /// 删库成功，被删的库没有轨在用。
+    Deleted { name: String },
+    /// 删了正在用的库：哪些轨会没声。
+    DeletedInUse { name: String, tracks: Vec<String> },
+}
+
+impl SoundLibraryDeleteStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::Deleted { name } => match lang {
+                ZhCn => format!("已删除：{name}"),
+                EnUs => format!("Deleted: {name}"),
+                FrFr => format!("Supprimé : {name}"),
+                EsEs => format!("Eliminado: {name}"),
+                PtBr => format!("Excluído: {name}"),
+                JaJp => format!("削除しました：{name}"),
+                KoKr => format!("삭제했습니다: {name}"),
+                RuRu => format!("Удалено: {name}"),
+                DeDe => format!("Gelöscht: {name}"),
+            },
+            Self::DeletedInUse { name, tracks } => {
+                let separator = match lang {
+                    ZhCn | JaJp => "、",
+                    _ => ", ",
+                };
+                let listed: Vec<&String> = tracks.iter().take(3).collect();
+                let listed = listed
+                    .iter()
+                    .map(|track| track.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(separator);
+                let extra = tracks.len().saturating_sub(3);
+                let rest = if extra > 0 {
+                    match lang {
+                        ZhCn => format!(" 等共 {extra} 条"),
+                        EnUs => format!(" (+{extra} more)"),
+                        FrFr => format!(" (+{extra} de plus)"),
+                        EsEs => format!(" (+{extra} más)"),
+                        PtBr => format!(" (+{extra} a mais)"),
+                        JaJp => format!(" 他 {extra} 件"),
+                        KoKr => format!(" 외 {extra}개"),
+                        RuRu => format!(" (+ещё {extra})"),
+                        DeDe => format!(" (+{extra} weitere)"),
+                    }
+                } else {
+                    String::new()
+                };
+                let count = tracks.len();
+                match lang {
+                    ZhCn => format!(
+                        "已删除「{name}」，但有 {count} 条轨正在用它，现在会没声：{listed}{rest}。下面已筛出这件音源的下载项——点「下载」装回来，或在这些轨上换别的音源。"
+                    ),
+                    EnUs => format!(
+                        "Deleted “{name}”. Tracks using it: {count} — {listed}{rest}. They will now be silent. The download items for this sound have been filtered below — click “Download” to reinstall it, or switch these tracks to another sound."
+                    ),
+                    FrFr => format!(
+                        "« {name} » supprimé. Pistes qui l’utilisent : {count} — {listed}{rest}. Elles seront désormais muettes. Les éléments téléchargeables pour ce son ont été filtrés ci-dessous — cliquez sur « Télécharger » pour le réinstaller, ou remplacez-le sur ces pistes."
+                    ),
+                    EsEs => format!(
+                        "Se eliminó «{name}». Pistas que lo usan: {count} — {listed}{rest}. Ahora quedarán en silencio. Los elementos descargables de este sonido se han filtrado abajo: haz clic en «Descargar» para reinstalarlo, o cambia el sonido de estas pistas por otro."
+                    ),
+                    PtBr => format!(
+                        "«{name}» excluído. Faixas que o utilizam: {count} — {listed}{rest}. Elas ficarão em silêncio agora. Os itens para download deste som foram filtrados abaixo: clique em «Baixar» para reinstalá-lo ou troque o som destas faixas por outro."
+                    ),
+                    JaJp => format!(
+                        "「{name}」を削除しました。ただし {count} 本のトラックが使用中のため音が出なくなります：{listed}{rest}。この音源のダウンロード項目は下に絞り込んであります。「ダウンロード」を押して戻すか、これらのトラックで別の音源に替えてください。"
+                    ),
+                    KoKr => format!(
+                        "“{name}”을(를) 삭제했습니다. 하지만 {count}개 트랙이 사용 중이라 이제 소리가 나지 않습니다: {listed}{rest}. 이 음원의 다운로드 항목은 아래에 걸러져 있습니다. “다운로드”를 눌러 다시 설치하거나, 해당 트랙에서 다른 음원으로 바꾸세요."
+                    ),
+                    RuRu => format!(
+                        "«{name}» удалено. Треков, использующих его: {count} — {listed}{rest}. Теперь они будут без звука. Элементы для загрузки этого звука отфильтрованы ниже — нажмите «Скачать», чтобы установить его заново, или замените звук на этих треках."
+                    ),
+                    DeDe => format!(
+                        "„{name}“ gelöscht. Spuren, die ihn verwenden: {count} — {listed}{rest}. Sie werden jetzt stumm sein. Die Download-Einträge für diesen Sound sind unten gefiltert — klicken Sie auf „Herunterladen“, um ihn wieder zu installieren, oder wechseln Sie auf diesen Spuren zu einem anderen Sound."
+                    ),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_library_delete_status_tests {
+    use super::SoundLibraryDeleteStatus;
+    use crate::cli::Language;
+
+    fn tracks() -> Vec<String> {
+        vec![
+            "Track 1".to_string(),
+            "Track 2".to_string(),
+            "Track 3".to_string(),
+            "Track 4".to_string(),
+        ]
+    }
+
+    /// 中文态与旧实现逐字相同（两处提示；多件轨名用「、」连接，超三条
+    /// 带「等共 N 条」尾巴）。
+    #[test]
+    fn sound_library_delete_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundLibraryDeleteStatus::Deleted {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "已删除：ext-lib"
+        );
+        assert_eq!(
+            SoundLibraryDeleteStatus::DeletedInUse {
+                name: "ext-lib".to_string(),
+                tracks: tracks(),
+            }
+            .text_in(Language::ZhCn),
+            "已删除「ext-lib」，但有 4 条轨正在用它，现在会没声：Track 1、Track 2、Track 3 等共 1 条。下面已筛出这件音源的下载项——点「下载」装回来，或在这些轨上换别的音源。"
+        );
+        assert_eq!(
+            SoundLibraryDeleteStatus::DeletedInUse {
+                name: "ext-lib".to_string(),
+                tracks: tracks()[..2].to_vec(),
+            }
+            .text_in(Language::ZhCn),
+            "已删除「ext-lib」，但有 2 条轨正在用它，现在会没声：Track 1、Track 2。下面已筛出这件音源的下载项——点「下载」装回来，或在这些轨上换别的音源。"
+        );
+    }
+
+    /// 英文态两处逐条钉死；多件轨名用 ", " 连接，超三条带「(+N more)」。
+    #[test]
+    fn sound_library_delete_status_en_us_renders_english() {
+        assert_eq!(
+            SoundLibraryDeleteStatus::Deleted {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::EnUs),
+            "Deleted: ext-lib"
+        );
+        assert_eq!(
+            SoundLibraryDeleteStatus::DeletedInUse {
+                name: "ext-lib".to_string(),
+                tracks: tracks(),
+            }
+            .text_in(Language::EnUs),
+            "Deleted “ext-lib”. Tracks using it: 4 — Track 1, Track 2, Track 3 (+1 more). They will now be silent. The download items for this sound have been filtered below — click “Download” to reinstall it, or switch these tracks to another sound."
+        );
+    }
+
+    /// 九语全覆盖：每语两处均有文案；非中文语的模板不含中文残片
+    /// （「已删除」「条轨」「没声」「下载项」「换别的音源」）；渲染必须含
+    /// 库名与轨名。
+    #[test]
+    fn sound_library_delete_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            let deleted = SoundLibraryDeleteStatus::Deleted {
+                name: "ext-lib".to_string(),
+            }
+            .text_in(lang);
+            let in_use = SoundLibraryDeleteStatus::DeletedInUse {
+                name: "ext-lib".to_string(),
+                tracks: tracks(),
+            }
+            .text_in(lang);
+            assert!(
+                deleted.contains("ext-lib") && in_use.contains("ext-lib"),
+                "{lang:?} 删除提示渲染必须含库名，实际：{deleted} / {in_use}"
+            );
+            assert!(
+                in_use.contains("Track 1") && in_use.contains("Track 3"),
+                "{lang:?} 删在用提示渲染必须含轨名，实际：{in_use}"
+            );
+            if lang != Language::ZhCn {
+                for rendered in [&deleted, &in_use] {
+                    for fragment in ["已删除", "条轨", "没声", "下载项", "换别的音源"]
+                    {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 「用到当前轨」回调的状态行文案闭集（T-FIX-458，形态同
+/// `SoundLibraryDownloadStatus`）：没有撤销会话 / 混音台没有可用的轨 /
+/// 包里没找到能直接用的 .sfz / 已用到某条轨四处硬编码中文状态行与
+/// 454/455 的读数属同一缺口（同一状态行、同一用户动作），按当前语言
+/// 渲染；九语模板表住在本文件，由单测逐语看守。包名与轨名不译，原样
+/// 进占位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundLibraryUsePackStatus {
+    /// 这个装配没有撤销会话。
+    NoUndoSession,
+    /// 混音台还没有可用的轨。
+    NoTrack,
+    /// 包里没找到能直接用的 .sfz。
+    Incomplete { pack_name: String },
+    /// 已用到某条轨。
+    Applied {
+        pack_name: String,
+        track_name: String,
+    },
+}
+
+impl SoundLibraryUsePackStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::NoUndoSession => match lang {
+                ZhCn => "这个装配没有撤销会话，用不了「用到当前轨」。".to_string(),
+                EnUs => {
+                    "This setup has no undo session, so “Use on current track” is unavailable."
+                        .to_string()
+                }
+                FrFr => {
+                    "Cette configuration n’a pas de session d’annulation : « Utiliser sur la piste active » est indisponible."
+                        .to_string()
+                }
+                EsEs => {
+                    "Esta configuración no tiene sesión de deshacer, por lo que «Usar en la pista actual» no está disponible."
+                        .to_string()
+                }
+                PtBr => {
+                    "Esta configuração não tem sessão de desfazer, então «Usar na faixa atual» está indisponível."
+                        .to_string()
+                }
+                JaJp => {
+                    "このセットアップには取り消しセッションがないため、「現在のトラックで使う」は利用できません。"
+                        .to_string()
+                }
+                KoKr => {
+                    "이 설정에는 실행 취소 세션이 없어 “현재 트랙에 사용”을 이용할 수 없습니다."
+                        .to_string()
+                }
+                RuRu => {
+                    "У этой конфигурации нет сеанса отмены, поэтому «Использовать на текущем треке» недоступно."
+                        .to_string()
+                }
+                DeDe => {
+                    "Diese Konfiguration hat keine Rückgängig-Sitzung, daher ist „Auf aktuellem Track verwenden“ nicht verfügbar."
+                        .to_string()
+                }
+            },
+            Self::NoTrack => match lang {
+                ZhCn => "混音台还没有可用的轨：先在混音台选一条轨，再回来点这里。".to_string(),
+                EnUs => {
+                    "The mixer has no usable track yet: pick a track in the mixer first, then come back here."
+                        .to_string()
+                }
+                FrFr => {
+                    "La table de mixage n’a pas encore de piste utilisable : choisissez d’abord une piste dans la table de mixage, puis revenez ici."
+                        .to_string()
+                }
+                EsEs => {
+                    "La mesa de mezclas aún no tiene ninguna pista utilizable: elige primero una pista en la mesa de mezclas y vuelve aquí."
+                        .to_string()
+                }
+                PtBr => {
+                    "O mixer ainda não tem nenhuma faixa utilizável: escolha primeiro uma faixa no mixer e volte aqui."
+                        .to_string()
+                }
+                JaJp => {
+                    "ミキサーにはまだ利用できるトラックがありません。まずミキサーでトラックを選んでから、ここに戻ってください。"
+                        .to_string()
+                }
+                KoKr => {
+                    "믹서에 아직 사용할 수 있는 트랙이 없습니다. 먼저 믹서에서 트랙을 선택한 뒤 여기로 돌아오세요."
+                        .to_string()
+                }
+                RuRu => {
+                    "В микшере пока нет доступных треков: сначала выберите трек в микшере, а затем вернитесь сюда."
+                        .to_string()
+                }
+                DeDe => {
+                    "Das Mischpult hat noch keine verwendbare Spur: Wählen Sie zuerst eine Spur im Mischpult und kommen Sie dann hierher zurück."
+                        .to_string()
+                }
+            },
+            Self::Incomplete { pack_name } => match lang {
+                ZhCn => format!(
+                    "「{pack_name}」装得不完整：包里没找到能直接用的 .sfz。请在混音台手动指定文件。"
+                ),
+                EnUs => format!(
+                    "“{pack_name}” is incompletely installed: no directly usable .sfz was found in the pack. Please specify the file manually in the mixer."
+                ),
+                FrFr => format!(
+                    "« {pack_name} » est installé de façon incomplète : aucun .sfz directement utilisable n’a été trouvé dans le pack. Veuillez indiquer le fichier manuellement dans la table de mixage."
+                ),
+                EsEs => format!(
+                    "«{pack_name}» está instalado de forma incompleta: no se encontró ningún .sfz directamente utilizable en el paquete. Especifica el archivo manualmente en la mesa de mezclas."
+                ),
+                PtBr => format!(
+                    "«{pack_name}» está instalado de forma incompleta: nenhum .sfz diretamente utilizável foi encontrado no pacote. Especifique o arquivo manualmente no mixer."
+                ),
+                JaJp => format!(
+                    "「{pack_name}」のインストールが不完全です。パック内に直接使える .sfz が見つかりませんでした。ミキサーでファイルを手動で指定してください。"
+                ),
+                KoKr => format!(
+                    "“{pack_name}” 설치가 불완전합니다. 팩에서 바로 사용할 수 있는 .sfz를 찾지 못했습니다. 믹서에서 파일을 직접 지정해 주세요."
+                ),
+                RuRu => format!(
+                    "«{pack_name}» установлен не полностью: в пакете не найден .sfz, который можно использовать напрямую. Укажите файл вручную в микшере."
+                ),
+                DeDe => format!(
+                    "„{pack_name}“ ist unvollständig installiert: Im Paket wurde keine direkt verwendbare .sfz gefunden. Bitte geben Sie die Datei manuell im Mischpult an."
+                ),
+            },
+            Self::Applied {
+                pack_name,
+                track_name,
+            } => match lang {
+                ZhCn => format!("已把「{pack_name}」用到「{track_name}」。回到工程按播放就有声音。"),
+                EnUs => format!(
+                    "“{pack_name}” is now used on “{track_name}”. Go back to the project and press play to hear it."
+                ),
+                FrFr => format!(
+                    "« {pack_name} » est désormais utilisé sur « {track_name} ». Retournez au projet et lancez la lecture pour l’entendre."
+                ),
+                EsEs => format!(
+                    "«{pack_name}» ya se usa en «{track_name}». Vuelve al proyecto y pulsa reproducir para escucharlo."
+                ),
+                PtBr => format!(
+                    "«{pack_name}» agora está sendo usado em «{track_name}». Volte ao projeto e pressione reproduzir para ouvi-lo."
+                ),
+                JaJp => format!(
+                    "「{pack_name}」を「{track_name}」で使うようにしました。プロジェクトに戻って再生すると音が聞こえます。"
+                ),
+                KoKr => format!(
+                    "“{pack_name}”을(를) “{track_name}”에서 사용하도록 했습니다. 프로젝트로 돌아가 재생을 누르면 소리가 납니다."
+                ),
+                RuRu => format!(
+                    "«{pack_name}» теперь используется на «{track_name}». Вернитесь к проекту и нажмите воспроизведение, чтобы услышать звук."
+                ),
+                DeDe => format!(
+                    "„{pack_name}“ wird jetzt auf „{track_name}“ verwendet. Gehen Sie zurück zum Projekt und drücken Sie Wiedergabe, um es zu hören."
+                ),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_library_use_pack_status_tests {
+    use super::SoundLibraryUsePackStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（四处状态行）。
+    #[test]
+    fn sound_library_use_pack_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundLibraryUsePackStatus::NoUndoSession.text_in(Language::ZhCn),
+            "这个装配没有撤销会话，用不了「用到当前轨」。"
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::NoTrack.text_in(Language::ZhCn),
+            "混音台还没有可用的轨：先在混音台选一条轨，再回来点这里。"
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::Incomplete {
+                pack_name: "ext-pack".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "「ext-pack」装得不完整：包里没找到能直接用的 .sfz。请在混音台手动指定文件。"
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::Applied {
+                pack_name: "ext-pack".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::ZhCn),
+            "已把「ext-pack」用到「Track 1」。回到工程按播放就有声音。"
+        );
+    }
+
+    /// 英文态四处逐条钉死。
+    #[test]
+    fn sound_library_use_pack_status_en_us_renders_english() {
+        assert_eq!(
+            SoundLibraryUsePackStatus::NoUndoSession.text_in(Language::EnUs),
+            "This setup has no undo session, so “Use on current track” is unavailable."
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::NoTrack.text_in(Language::EnUs),
+            "The mixer has no usable track yet: pick a track in the mixer first, then come back here."
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::Incomplete {
+                pack_name: "ext-pack".to_string()
+            }
+            .text_in(Language::EnUs),
+            "“ext-pack” is incompletely installed: no directly usable .sfz was found in the pack. Please specify the file manually in the mixer."
+        );
+        assert_eq!(
+            SoundLibraryUsePackStatus::Applied {
+                pack_name: "ext-pack".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::EnUs),
+            "“ext-pack” is now used on “Track 1”. Go back to the project and press play to hear it."
+        );
+    }
+
+    /// 九语全覆盖：每语四处均有文案；非中文语的模板不含中文残片
+    /// （「撤销会话」「用到当前轨」「混音台」「可用的轨」「装得不完整」
+    /// 「手动指定」「已把」「按播放就有声音」）；渲染必须含包名与轨名。
+    #[test]
+    fn sound_library_use_pack_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            let no_session = SoundLibraryUsePackStatus::NoUndoSession.text_in(lang);
+            let no_track = SoundLibraryUsePackStatus::NoTrack.text_in(lang);
+            let incomplete = SoundLibraryUsePackStatus::Incomplete {
+                pack_name: "ext-pack".to_string(),
+            }
+            .text_in(lang);
+            let applied = SoundLibraryUsePackStatus::Applied {
+                pack_name: "ext-pack".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(lang);
+            assert!(
+                incomplete.contains("ext-pack") && applied.contains("ext-pack"),
+                "{lang:?} 用到当前轨渲染必须含包名，实际：{incomplete} / {applied}"
+            );
+            assert!(
+                applied.contains("Track 1"),
+                "{lang:?} 已用到轨渲染必须含轨名，实际：{applied}"
+            );
+            if lang != Language::ZhCn {
+                for rendered in [&no_session, &no_track, &incomplete, &applied] {
+                    for fragment in [
+                        "撤销会话",
+                        "用到当前轨",
+                        "混音台",
+                        "可用的轨",
+                        "装得不完整",
+                        "手动指定",
+                        "已把",
+                        "按播放就有声音",
+                    ] {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 音源库扫描的状态行文案闭集（T-FIX-458，形态同
+/// `SoundLibraryDownloadStatus`）：打开音源管理时「正在扫描音源库…」
+/// 与排空处「音源库扫描失败：{error}」两处硬编码中文状态行与 454/455
+/// 的读数属同一缺口（同一状态行、同一用户动作），按当前语言渲染；九语
+/// 模板表住在本文件，由单测逐语看守。扫描失败的错误原文按 §4 口径不
+/// 译，原样进占位。排空处清状态行的比对按九语全量比（任一语的「正在
+/// 扫描」都认），语言中途切换也不留一条僵死的旧提示。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundLibraryScanStatus {
+    /// 正在扫描已安装音源库。
+    Scanning,
+    /// 安装快照扫描整体失败（错误原文原样进占位，不译）。
+    ScanFailed { error: String },
+}
+
+impl SoundLibraryScanStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::Scanning => match lang {
+                ZhCn => "正在扫描音源库…".to_string(),
+                EnUs => "Scanning the sound library…".to_string(),
+                FrFr => "Analyse de la bibliothèque de sons…".to_string(),
+                EsEs => "Escaneando la biblioteca de sonidos…".to_string(),
+                PtBr => "Verificando a biblioteca de sons…".to_string(),
+                JaJp => "音源ライブラリをスキャン中…".to_string(),
+                KoKr => "사운드 라이브러리를 검사하고 있습니다…".to_string(),
+                RuRu => "Сканирование библиотеки звуков…".to_string(),
+                DeDe => "Sound-Bibliothek wird gescannt…".to_string(),
+            },
+            Self::ScanFailed { error } => match lang {
+                ZhCn => format!("音源库扫描失败：{error}"),
+                EnUs => format!("Sound library scan failed: {error}"),
+                FrFr => format!("Échec de l’analyse de la bibliothèque de sons : {error}"),
+                EsEs => format!("Error al escanear la biblioteca de sonidos: {error}"),
+                PtBr => format!("Falha ao verificar a biblioteca de sons: {error}"),
+                JaJp => format!("音源ライブラリのスキャンに失敗しました：{error}"),
+                KoKr => format!("사운드 라이브러리 검사에 실패했습니다: {error}"),
+                RuRu => format!("Не удалось просканировать библиотеку звуков: {error}"),
+                DeDe => format!("Scan der Sound-Bibliothek fehlgeschlagen: {error}"),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_library_scan_status_tests {
+    use super::SoundLibraryScanStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（两处状态行；错误原文原样进占位）。
+    #[test]
+    fn sound_library_scan_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundLibraryScanStatus::Scanning.text_in(Language::ZhCn),
+            "正在扫描音源库…"
+        );
+        assert_eq!(
+            SoundLibraryScanStatus::ScanFailed {
+                error: "permission denied".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "音源库扫描失败：permission denied"
+        );
+    }
+
+    /// 英文态两处逐条钉死；错误原文原样进占位。
+    #[test]
+    fn sound_library_scan_status_en_us_renders_english() {
+        assert_eq!(
+            SoundLibraryScanStatus::Scanning.text_in(Language::EnUs),
+            "Scanning the sound library…"
+        );
+        assert_eq!(
+            SoundLibraryScanStatus::ScanFailed {
+                error: "permission denied".to_string()
+            }
+            .text_in(Language::EnUs),
+            "Sound library scan failed: permission denied"
+        );
+    }
+
+    /// 九语全覆盖：每语两处均有文案；非中文语的模板不含中文残片
+    /// （「正在扫描」「音源库」「扫描失败」）；扫描失败的渲染必须原样含
+    /// 错误原文。
+    #[test]
+    fn sound_library_scan_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            let scanning = SoundLibraryScanStatus::Scanning.text_in(lang);
+            let failed = SoundLibraryScanStatus::ScanFailed {
+                error: "permission denied".to_string(),
+            }
+            .text_in(lang);
+            assert!(
+                failed.contains("permission denied"),
+                "{lang:?} 扫描失败渲染必须原样含错误原文，实际：{failed}"
+            );
+            if lang != Language::ZhCn {
+                for rendered in [&scanning, &failed] {
+                    for fragment in ["正在扫描", "音源库", "扫描失败"] {
                         assert!(
                             !rendered.contains(fragment),
                             "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
@@ -14533,7 +15653,11 @@ fn wire_sound_library_dialog_inner(
             if let Some(snapshot) = cached {
                 publish_sound_installed_snapshot(&ui, &snapshot);
             } else {
-                ui.set_sound_library_status(SOUND_INSTALLED_SCANNING_STATUS.into());
+                ui.set_sound_library_status(
+                    SoundLibraryScanStatus::Scanning
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(false);
             }
             ui.set_sound_library_open(true);
@@ -14620,12 +15744,20 @@ fn wire_sound_library_dialog_inner(
                     .cloned()
             });
             let Some(pack) = pack else {
-                ui.set_sound_library_status("找不到这个音源包（目录可能已刷新，请重试）".into());
+                ui.set_sound_library_status(
+                    SoundLibraryDownloadStatus::PackNotFound
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
             if !state.begin_download() {
-                ui.set_sound_library_status("已有音源包在下载中".into());
+                ui.set_sound_library_status(
+                    SoundLibraryDownloadStatus::AlreadyDownloading
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             }
@@ -14707,7 +15839,12 @@ fn wire_sound_library_dialog_inner(
                         }
                         None => crate::sound_library::download_pack(&pack, &roots, &mut progress),
                     }
-                    .map(|installed| format!("已安装：{}", installed.name))
+                    .map(|installed| {
+                        SoundLibraryDownloadOutcome::Installed {
+                            name: installed.name,
+                        }
+                        .text_in(current_language())
+                    })
                     .map_err(|err| err.message())
                 };
                 worker_state.finish_download(&pack.id, outcome);
@@ -14733,7 +15870,11 @@ fn wire_sound_library_dialog_inner(
                 return;
             };
             let Some(catalog) = last_catalog.borrow().clone() else {
-                ui.set_sound_library_status("音源清单还在加载，请稍候再试".into());
+                ui.set_sound_library_status(
+                    SoundLibraryDownloadStatus::CatalogLoading
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
@@ -14752,12 +15893,20 @@ fn wire_sound_library_dialog_inner(
                 .cloned()
                 .collect();
             if pending.is_empty() {
-                ui.set_sound_library_status("清单里的音源都已安装".into());
+                ui.set_sound_library_status(
+                    SoundLibraryDownloadStatus::AllInstalled
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(false);
                 return;
             }
             if !state.begin_download() {
-                ui.set_sound_library_status("已有音源包在下载中".into());
+                ui.set_sound_library_status(
+                    SoundLibraryDownloadStatus::AlreadyDownloading
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             }
@@ -14765,15 +15914,11 @@ fn wire_sound_library_dialog_inner(
             let total_bytes: u64 = pending
                 .iter()
                 .fold(0u64, |sum, pack| sum.saturating_add(pack.size_bytes));
-            let hint = if total_bytes > 0 {
-                format!(
-                    "开始下载 {total} 个音源（共约 {}，按顺序进行，可继续用界面）",
-                    crate::sound_library::format_size(total_bytes)
-                )
-            } else {
-                format!("开始下载 {total} 个音源（按顺序进行，可继续用界面）")
-            };
-            ui.set_sound_library_status(hint.as_str().into());
+            ui.set_sound_library_status(
+                SoundLibraryDownloadStatus::Started { total, total_bytes }
+                    .text_in(current_language())
+                    .into(),
+            );
             ui.set_sound_library_status_is_error(false);
             ui.set_sound_library_retry_id("".into());
             let worker_state = state.clone();
@@ -14789,7 +15934,12 @@ fn wire_sound_library_dialog_inner(
                     worker_state.set_progress(DownloadTick {
                         pack_id: pack_id.clone(),
                         percent: -1,
-                        readout: format!("第 {} / {} 个 · {}", index + 1, pending.len(), pack.name),
+                        readout: SoundLibraryDownloadOutcome::Progress {
+                            index: index + 1,
+                            total: pending.len(),
+                            pack_name: pack.name.clone(),
+                        }
+                        .text_in(current_language()),
                     });
                     let ping_weak = worker_weak.clone();
                     let _ = ping_weak.upgrade_in_event_loop(|ui| {
@@ -14869,13 +16019,15 @@ fn wire_sound_library_dialog_inner(
                     }
                 }
                 let summary = if failed.is_empty() {
-                    Ok(format!("全部安装完成：{done} 个音源"))
+                    Ok(SoundLibraryDownloadOutcome::AllDone { done }.text_in(current_language()))
                 } else {
-                    Err(format!(
-                        "完成 {done} / {total}；失败 {} 个 —— 首个失败：{}",
-                        failed.len(),
-                        failed.first().cloned().unwrap_or_default()
-                    ))
+                    Err(SoundLibraryDownloadOutcome::Partial {
+                        done,
+                        total,
+                        failed: failed.len(),
+                        first_error: failed.first().cloned().unwrap_or_default(),
+                    }
+                    .text_in(current_language()))
                 };
                 worker_state.finish_download("", summary);
                 let _ = worker_weak.upgrade_in_event_loop(|ui| {
@@ -14923,13 +16075,15 @@ fn wire_sound_library_dialog_inner(
             let affected: Vec<String> = port
                 .as_ref()
                 .and_then(|port| port.try_project())
-                .map(|project| {
-                    crate::sound_library::tracks_using_library(&project, &library_dir)
-                })
+                .map(|project| crate::sound_library::tracks_using_library(&project, &library_dir))
                 .unwrap_or_default();
             match crate::sound_library::delete_library(&roots, library_id.as_str()) {
                 Ok(()) if affected.is_empty() => {
-                    ui.set_sound_library_status(format!("已删除：{display_name}").into());
+                    ui.set_sound_library_status(
+                        SoundLibraryDeleteStatus::Deleted { name: display_name }
+                            .text_in(current_language())
+                            .into(),
+                    );
                     ui.set_sound_library_status_is_error(false);
                 }
                 Ok(()) => {
@@ -14939,17 +16093,12 @@ fn wire_sound_library_dialog_inner(
                     let pack_id = dir_name.to_owned();
                     ui.set_sound_library_search(pack_id.clone().into());
                     ui.invoke_sound_library_filter_changed(pack_id.into());
-                    let listed = affected.iter().take(3).cloned().collect::<Vec<_>>().join("、");
-                    let rest = if affected.len() > 3 {
-                        format!(" 等共 {} 条", affected.len())
-                    } else {
-                        String::new()
-                    };
                     ui.set_sound_library_status(
-                        format!(
-                            "已删除「{display_name}」，但有 {} 条轨正在用它，现在会没声：{listed}{rest}。下面已筛出这件音源的下载项——点「下载」装回来，或在这些轨上换别的音源。",
-                            affected.len(),
-                        )
+                        SoundLibraryDeleteStatus::DeletedInUse {
+                            name: display_name,
+                            tracks: affected,
+                        }
+                        .text_in(current_language())
                         .into(),
                     );
                     ui.set_sound_library_status_is_error(true);
@@ -14963,7 +16112,9 @@ fn wire_sound_library_dialog_inner(
             let removed = {
                 let mut cache = last_installed.borrow_mut();
                 if let Some(snapshot) = cache.as_mut() {
-                    if let Some(index) = snapshot.ids.iter().position(|id| id == library_id.as_str()) {
+                    if let Some(index) =
+                        snapshot.ids.iter().position(|id| id == library_id.as_str())
+                    {
                         snapshot.ids.remove(index);
                         snapshot.names.remove(index);
                         snapshot.locations.remove(index);
@@ -15189,8 +16340,12 @@ fn wire_sound_library_dialog_inner(
                         publish_sound_installed_snapshot(&ui, &snapshot);
                         announce_sound_installed_warnings(&ui, &snapshot);
                         // 只有状态行还停在"正在扫描"时才清；坏记录警告不抢。
-                        if ui.get_sound_library_status().as_str() == SOUND_INSTALLED_SCANNING_STATUS
-                        {
+                        // 比对按九语全量比（任一语的「正在扫描」都认），语言
+                        // 中途切换也不留一条僵死的旧提示。
+                        if crate::cli::Language::ALL.iter().any(|lang| {
+                            ui.get_sound_library_status().as_str()
+                                == SoundLibraryScanStatus::Scanning.text_in(*lang).as_str()
+                        }) {
                             ui.set_sound_library_status("".into());
                             ui.set_sound_library_status_is_error(false);
                         }
@@ -15203,7 +16358,11 @@ fn wire_sound_library_dialog_inner(
                     }
                     Err(error) => {
                         // 整体失败必须红字，⛔ 不伪装成空库成功。
-                        ui.set_sound_library_status(format!("音源库扫描失败：{error}").into());
+                        ui.set_sound_library_status(
+                            SoundLibraryScanStatus::ScanFailed { error }
+                                .text_in(current_language())
+                                .into(),
+                        );
                         ui.set_sound_library_status_is_error(true);
                     }
                 }
@@ -15225,12 +16384,20 @@ fn wire_sound_library_dialog_inner(
                 return;
             };
             let Some(port) = port.clone() else {
-                ui.set_sound_library_status("这个装配没有撤销会话，用不了「用到当前轨」。".into());
+                ui.set_sound_library_status(
+                    SoundLibraryUsePackStatus::NoUndoSession
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
             let Some((index, track_name)) = sound_library_target(&ui) else {
-                ui.set_sound_library_status("混音台还没有可用的轨：先在混音台选一条轨，再回来点这里。".into());
+                ui.set_sound_library_status(
+                    SoundLibraryUsePackStatus::NoTrack
+                        .text_in(current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
@@ -15246,14 +16413,14 @@ fn wire_sound_library_dialog_inner(
                 })
                 .unwrap_or_else(|| pack_id.to_string());
             // 只有真的解析得到 .sfz 才换：⛔ 不写一条猜出来的路径。
-            let Some(path) =
-                crate::missing_sounds::installed_path(pack_id.as_str(), crate::sfz_load::SfzRoots::none())
-            else {
+            let Some(path) = crate::missing_sounds::installed_path(
+                pack_id.as_str(),
+                crate::sfz_load::SfzRoots::none(),
+            ) else {
                 ui.set_sound_library_status(
-                    format!(
-                        "「{pack_name}」装得不完整：包里没找到能直接用的 .sfz。请在混音台手动指定文件。"
-                    )
-                    .into(),
+                    SoundLibraryUsePackStatus::Incomplete { pack_name }
+                        .text_in(current_language())
+                        .into(),
                 );
                 ui.set_sound_library_status_is_error(true);
                 return;
@@ -15276,7 +16443,12 @@ fn wire_sound_library_dialog_inner(
                     ui.set_engine_error(SharedString::from(""));
                 }
                 ui.set_sound_library_status(
-                    format!("已把「{pack_name}」用到「{track_name}」。回到工程按播放就有声音。").into(),
+                    SoundLibraryUsePackStatus::Applied {
+                        pack_name,
+                        track_name,
+                    }
+                    .text_in(current_language())
+                    .into(),
                 );
                 ui.set_sound_library_status_is_error(false);
                 publish_library_target(&ui);
