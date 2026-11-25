@@ -1387,9 +1387,9 @@ impl InputContext {
                 // 新建 MIDI 轨（界面决定）：`n` 在 Cmd/Ctrl 组此前只有 `+Alt`（节拍器）
                 // 一条 ⇒ `Cmd/Ctrl+N` 这格空闲。Logic 的 Option+Cmd+N 在本仓被节拍器占用。
                 (Key::Character('n'), false, false) => Resolution::Action(Action::NewTrack),
-                // T-FIX-356 债：面板文案把 Ctrl+T 写成"新增轨道" ⇒ 按标签绑定
-                // （切分仍可由菜单 / 工具入口触发；⛔ 不保留一个文案说了却不做的键）。
-                (Key::Character('t'), false, false) => Resolution::Action(Action::NewTrack),
+                // ADR-0074 D2（Wang 2026-11-16 确认，Logic Pro R1）：解析表为唯一事实源，
+                // Ctrl+T = 在播放头处切分选中的剪辑（Logic Cmd+T）；新建轨道已有 Cmd/Ctrl+N。
+                (Key::Character('t'), false, false) => Resolution::Action(Action::SplitAtPlayhead),
                 // 横向缩放：Cmd+= / Cmd++ / Cmd+-（`=`/`-` 备用，见第 6 步）
                 (Key::Character('='), false, false) | (Key::Character('+'), _, false) => {
                     Resolution::Action(Action::ZoomIn)
@@ -1577,10 +1577,10 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NewTrack, NudgeClipMs,
-        NudgeMixerChannel, NudgeSelection, OpenProject, OpenTimeMachine, PlayPause, Redo,
-        ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab,
-        SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
+        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NudgeClipMs, NudgeMixerChannel,
+        NudgeSelection, OpenProject, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration,
+        ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy,
+        ShowView, SplitAtPlayhead, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
         ToggleConsoleMaximize, ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool,
         ToggleRecord, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn,
         VerticalZoomOut, ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
@@ -1642,9 +1642,9 @@ mod tests {
         );
         assert_eq!(ctx.resolve(KeyC, Modifiers::none()), Act(ToggleCycle));
 
-        // 2. T-FIX-356 债：面板文案把 Ctrl/Cmd+T 写成"新增轨道" ⇒ 键按文案走。
-        assert_eq!(ctx.resolve(KeyT, Modifiers::meta()), Act(NewTrack));
-        assert_eq!(ctx.resolve(KeyT, Modifiers::ctrl()), Act(NewTrack));
+        // 2. ADR-0074 D2：Ctrl/Cmd+T = 在播放头处切分（Logic Cmd+T）；新建轨道是 Cmd/Ctrl+N。
+        assert_eq!(ctx.resolve(KeyT, Modifiers::meta()), Act(SplitAtPlayhead));
+        assert_eq!(ctx.resolve(KeyT, Modifiers::ctrl()), Act(SplitAtPlayhead));
 
         // 3. Horizontal zoom
         assert_eq!(ctx.resolve(Equal, Modifiers::none()), Act(ZoomIn));
