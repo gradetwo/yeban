@@ -13357,6 +13357,305 @@ mod doctor_run_status_tests {
     }
 }
 
+/// SFZ Doctor 拒绝体检的状态行文案闭集（T-FIX-455，形态同
+/// `DoctorRunStatus`）：拒绝回调里的两处硬编码中文状态行（已跳过 /
+/// 保存跳过状态失败）与 454 的读数属同一缺口（同一状态行、同一用户动作），
+/// 按当前语言渲染；九语模板表住在本文件，由单测逐语看守。库名不译，
+/// 原样进占位；落盘失败的错误原文按 §4 口径不译，原样进占位。拒绝回调
+/// 的第三处「找不到这个音源库」与 `DoctorRunStatus::LibraryNotFound`
+/// 的中文模板逐字相同，不另立表，调用点直接复用那一支。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DoctorDeclineStatus {
+    /// 跳过记录已落盘：不再提示。
+    Declined,
+    /// 跳过记录落盘失败：错误原文原样进占位，不译。
+    DeclineSaveFailed(String),
+}
+
+impl DoctorDeclineStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, library_name: &str, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::Declined => match lang {
+                ZhCn => format!("已跳过《{library_name}》的 SFZ Doctor 检查（不再提示）"),
+                EnUs => format!(
+                    "Skipped the SFZ Doctor check for “{library_name}” (will not ask again)"
+                ),
+                FrFr => format!(
+                    "Vérification SFZ Doctor de « {library_name} » ignorée (ne sera plus proposée)"
+                ),
+                EsEs => format!(
+                    "Se omitió la verificación de SFZ Doctor de «{library_name}» (no se volverá a preguntar)"
+                ),
+                PtBr => format!(
+                    "Verificação do SFZ Doctor de «{library_name}» ignorada (não será perguntado novamente)"
+                ),
+                JaJp => format!(
+                    "《{library_name}》の SFZ Doctor チェックをスキップしました（今後表示しません）"
+                ),
+                KoKr => {
+                    format!("“{library_name}”의 SFZ Doctor 검사를 건너뛰었습니다(다시 묻지 않음)")
+                }
+                RuRu => format!(
+                    "Проверка SFZ Doctor для «{library_name}» пропущена (больше не будет предлагаться)"
+                ),
+                DeDe => format!(
+                    "SFZ-Doctor-Prüfung für „{library_name}“ übersprungen (wird nicht erneut vorgeschlagen)"
+                ),
+            },
+            Self::DeclineSaveFailed(err) => match lang {
+                ZhCn => {
+                    format!("无法保存《{library_name}》的跳过状态（{err}），下次仍会提示")
+                }
+                EnUs => format!(
+                    "Could not save the skip state for “{library_name}” ({err}); you will be asked again next time"
+                ),
+                FrFr => format!(
+                    "Impossible d’enregistrer l’état d’ignorance pour « {library_name} » ({err}) ; il vous sera de nouveau proposé la prochaine fois"
+                ),
+                EsEs => format!(
+                    "No se pudo guardar el estado de omisión de «{library_name}» ({err}); se volverá a preguntar la próxima vez"
+                ),
+                PtBr => format!(
+                    "Não foi possível salvar o estado de ignorar de «{library_name}» ({err}); será perguntado novamente da próxima vez"
+                ),
+                JaJp => format!(
+                    "《{library_name}》のスキップ状態を保存できませんでした（{err}）。次回も表示されます"
+                ),
+                KoKr => format!(
+                    "“{library_name}”의 건너뛰기 상태를 저장할 수 없습니다({err}). 다음에도 다시 묻습니다"
+                ),
+                RuRu => format!(
+                    "Не удалось сохранить состояние пропуска для «{library_name}» ({err}); в следующий раз будет предложено снова"
+                ),
+                DeDe => format!(
+                    "Der Überspringen-Status für „{library_name}“ konnte nicht gespeichert werden ({err}); beim nächsten Mal wird erneut gefragt"
+                ),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod doctor_decline_status_tests {
+    use super::DoctorDeclineStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（两处状态行；错误原文原样进占位）。
+    #[test]
+    fn doctor_decline_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            DoctorDeclineStatus::Declined.text_in("ext-lib", Language::ZhCn),
+            "已跳过《ext-lib》的 SFZ Doctor 检查（不再提示）"
+        );
+        assert_eq!(
+            DoctorDeclineStatus::DeclineSaveFailed("Permission denied (os error 13)".to_string())
+                .text_in("ext-lib", Language::ZhCn),
+            "无法保存《ext-lib》的跳过状态（Permission denied (os error 13)），下次仍会提示"
+        );
+    }
+
+    /// 英文态两处逐条钉死；错误原文原样进占位。
+    #[test]
+    fn doctor_decline_status_en_us_renders_english() {
+        assert_eq!(
+            DoctorDeclineStatus::Declined.text_in("ext-lib", Language::EnUs),
+            "Skipped the SFZ Doctor check for “ext-lib” (will not ask again)"
+        );
+        assert_eq!(
+            DoctorDeclineStatus::DeclineSaveFailed("Permission denied (os error 13)".to_string())
+                .text_in("ext-lib", Language::EnUs),
+            "Could not save the skip state for “ext-lib” (Permission denied (os error 13)); you will be asked again next time"
+        );
+    }
+
+    /// 九语全覆盖：每语两处均有文案；非中文语的模板不含中文残片
+    /// （「已跳过」「无法保存」「下次仍会提示」「不再提示」）；渲染必须含
+    /// 库名，保存失败的渲染必须原样含错误原文。
+    #[test]
+    fn doctor_decline_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            let declined = DoctorDeclineStatus::Declined.text_in("ext-lib", lang);
+            assert!(
+                declined.contains("ext-lib"),
+                "{lang:?} 已跳过渲染必须含库名，实际：{declined}"
+            );
+            let failed = DoctorDeclineStatus::DeclineSaveFailed(
+                "Permission denied (os error 13)".to_string(),
+            )
+            .text_in("ext-lib", lang);
+            assert!(
+                failed.contains("ext-lib") && failed.contains("Permission denied (os error 13)"),
+                "{lang:?} 保存失败渲染必须含库名与错误原文，实际：{failed}"
+            );
+            if lang != Language::ZhCn {
+                for rendered in [&declined, &failed] {
+                    for fragment in ["已跳过", "无法保存", "下次仍会提示", "不再提示"]
+                    {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 一次**新鲜扫描**里的坏记录提示文案闭集（T-FIX-455，形态同
+/// `DoctorRunStatus`）：`announce_sound_installed_warnings` 的两条硬编码
+/// 中文提示（隔离备份失败 / 记录已损坏已备份）经状态行用户可见，与 454
+/// 的读数属同一缺口，按当前语言渲染；九语模板表住在本文件，由单测
+/// 逐语看守。库名不译，原样进占位；多件库名按语言惯用分隔符连接
+/// （中/日用「、」，其余用 ", "）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoundInstalledWarning {
+    /// 记录损坏且隔离备份失败：列表里的记录不可信。
+    QuarantineFailed,
+    /// 记录已损坏、已备份：下次打开仍会提示体检。
+    CorruptBackedUp,
+}
+
+impl SoundInstalledWarning {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, names: &[String], lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        let separator = match lang {
+            ZhCn | JaJp => "、",
+            _ => ", ",
+        };
+        let joined = names.join(separator);
+        match self {
+            Self::QuarantineFailed => match lang {
+                ZhCn => {
+                    format!("《{joined}》的 SFZ Doctor 记录损坏且隔离备份失败，列表里的记录不可信")
+                }
+                EnUs => format!(
+                    "The SFZ Doctor records for “{joined}” are corrupt and the quarantine backup failed; the records in the list cannot be trusted"
+                ),
+                FrFr => format!(
+                    "Les enregistrements SFZ Doctor de « {joined} » sont corrompus et la sauvegarde de quarantaine a échoué ; les enregistrements de la liste ne sont pas fiables"
+                ),
+                EsEs => format!(
+                    "Los registros de SFZ Doctor de «{joined}» están dañados y la copia de seguridad de cuarentena falló; no se puede confiar en los registros de la lista"
+                ),
+                PtBr => format!(
+                    "Os registros do SFZ Doctor de «{joined}» estão corrompidos e o backup de quarentena falhou; não se pode confiar nos registros da lista"
+                ),
+                JaJp => format!(
+                    "《{joined}》の SFZ Doctor 記録が破損し、隔離バックアップに失敗しました。リスト内の記録は信頼できません"
+                ),
+                KoKr => format!(
+                    "“{joined}”의 SFZ Doctor 기록이 손상되었고 격리 백업에 실패했습니다. 목록의 기록을 신뢰할 수 없습니다"
+                ),
+                RuRu => format!(
+                    "Записи SFZ Doctor для «{joined}» повреждены, а резервное копирование в карантин не удалось; записям в списке нельзя доверять"
+                ),
+                DeDe => format!(
+                    "Die SFZ-Doctor-Einträge für „{joined}“ sind beschädigt und die Quarantäne-Sicherung ist fehlgeschlagen; den Einträgen in der Liste kann nicht vertraut werden"
+                ),
+            },
+            Self::CorruptBackedUp => match lang {
+                ZhCn => {
+                    format!("《{joined}》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检")
+                }
+                EnUs => format!(
+                    "The SFZ Doctor records for “{joined}” are corrupt and have been backed up; the check will be offered again next time you open this"
+                ),
+                FrFr => format!(
+                    "Les enregistrements SFZ Doctor de « {joined} » sont corrompus et ont été sauvegardés ; la vérification sera proposée à nouveau à la prochaine ouverture"
+                ),
+                EsEs => format!(
+                    "Los registros de SFZ Doctor de «{joined}» están dañados y se han respaldado; la verificación se ofrecerá de nuevo la próxima vez que se abra"
+                ),
+                PtBr => format!(
+                    "Os registros do SFZ Doctor de «{joined}» estão corrompidos e foram copiados; a verificação será oferecida novamente na próxima abertura"
+                ),
+                JaJp => format!(
+                    "《{joined}》の SFZ Doctor 記録が破損しました。バックアップ済みです。次回開いたときに再度チェックを提示します"
+                ),
+                KoKr => format!(
+                    "“{joined}”의 SFZ Doctor 기록이 손상되어 백업되었습니다. 다음에 열 때 다시 검사를 안내합니다"
+                ),
+                RuRu => format!(
+                    "Записи SFZ Doctor для «{joined}» повреждены и сохранены в резервной копии; при следующем открытии проверка будет предложена снова"
+                ),
+                DeDe => format!(
+                    "Die SFZ-Doctor-Einträge für „{joined}“ sind beschädigt und wurden gesichert; die Prüfung wird beim nächsten Öffnen erneut angeboten"
+                ),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_installed_warning_tests {
+    use super::SoundInstalledWarning;
+    use crate::cli::Language;
+
+    fn names() -> Vec<String> {
+        vec!["ext-lib".to_string(), "other-lib".to_string()]
+    }
+
+    /// 中文态与旧实现逐字相同（两处提示；多件库名用「、」连接）。
+    #[test]
+    fn sound_installed_warning_zh_cn_is_byte_identical() {
+        assert_eq!(
+            SoundInstalledWarning::QuarantineFailed.text_in(&names(), Language::ZhCn),
+            "《ext-lib、other-lib》的 SFZ Doctor 记录损坏且隔离备份失败，列表里的记录不可信"
+        );
+        assert_eq!(
+            SoundInstalledWarning::CorruptBackedUp.text_in(&names(), Language::ZhCn),
+            "《ext-lib、other-lib》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检"
+        );
+    }
+
+    /// 英文态两处逐条钉死；多件库名用 ", " 连接。
+    #[test]
+    fn sound_installed_warning_en_us_renders_english() {
+        assert_eq!(
+            SoundInstalledWarning::QuarantineFailed.text_in(&names(), Language::EnUs),
+            "The SFZ Doctor records for “ext-lib, other-lib” are corrupt and the quarantine backup failed; the records in the list cannot be trusted"
+        );
+        assert_eq!(
+            SoundInstalledWarning::CorruptBackedUp.text_in(&names(), Language::EnUs),
+            "The SFZ Doctor records for “ext-lib, other-lib” are corrupt and have been backed up; the check will be offered again next time you open this"
+        );
+    }
+
+    /// 九语全覆盖：每语两处均有文案；非中文语的模板不含中文残片
+    /// （「损坏」「隔离」「备份」「不可信」「下次打开」「提示体检」）；
+    /// 渲染必须含两件库名。
+    #[test]
+    fn sound_installed_warning_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for status in [
+                SoundInstalledWarning::QuarantineFailed,
+                SoundInstalledWarning::CorruptBackedUp,
+            ] {
+                let rendered = status.text_in(&names(), lang);
+                assert!(
+                    rendered.contains("ext-lib") && rendered.contains("other-lib"),
+                    "{lang:?} 损坏提示渲染必须含库名，实际：{rendered}"
+                );
+                if lang != Language::ZhCn {
+                    for fragment in ["损坏", "隔离", "备份", "不可信", "下次打开", "提示体检"]
+                    {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 一次**新鲜扫描**里的坏记录提示（T-FIX-306）。
 ///
 /// 只在扫描结局处调：缓存快照重开时只写数组，⛔ 不重复播"已备份"——那次隔离
@@ -13364,20 +13663,16 @@ mod doctor_run_status_tests {
 fn announce_sound_installed_warnings(ui: &MainWindow, snapshot: &SoundInstalledSnapshot) {
     if !snapshot.quarantine_failed.is_empty() {
         ui.set_sound_library_status(
-            format!(
-                "《{}》的 SFZ Doctor 记录损坏且隔离备份失败，列表里的记录不可信",
-                snapshot.quarantine_failed.join("、")
-            )
-            .into(),
+            SoundInstalledWarning::QuarantineFailed
+                .text_in(&snapshot.quarantine_failed, current_language())
+                .into(),
         );
         ui.set_sound_library_status_is_error(true);
     } else if !snapshot.corrupt_names.is_empty() && ui.get_sound_library_status().is_empty() {
         ui.set_sound_library_status(
-            format!(
-                "《{}》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检",
-                snapshot.corrupt_names.join("、")
-            )
-            .into(),
+            SoundInstalledWarning::CorruptBackedUp
+                .text_in(&snapshot.corrupt_names, current_language())
+                .into(),
         );
         ui.set_sound_library_status_is_error(false);
     }
@@ -14743,21 +15038,27 @@ fn wire_sound_library_dialog_inner(
                 match crate::sfz_doctor::mark_declined(&library_path) {
                     Ok(()) => {
                         ui.set_sound_library_status(
-                            format!("已跳过《{library_name}》的 SFZ Doctor 检查（不再提示）")
+                            DoctorDeclineStatus::Declined
+                                .text_in(&library_name, current_language())
                                 .into(),
                         );
                         ui.set_sound_library_status_is_error(false);
                     }
                     Err(err) => {
                         ui.set_sound_library_status(
-                            format!("无法保存《{library_name}》的跳过状态（{err}），下次仍会提示")
+                            DoctorDeclineStatus::DeclineSaveFailed(err.to_string())
+                                .text_in(&library_name, current_language())
                                 .into(),
                         );
                         ui.set_sound_library_status_is_error(true);
                     }
                 }
             } else {
-                ui.set_sound_library_status("找不到这个音源库（列表可能已刷新，请重试）".into());
+                ui.set_sound_library_status(
+                    DoctorRunStatus::LibraryNotFound
+                        .text_in("", current_language())
+                        .into(),
+                );
                 ui.set_sound_library_status_is_error(true);
             }
             request_installed_refresh(&ui, &state, &installed_scan);
