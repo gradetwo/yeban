@@ -1,8 +1,11 @@
 // 夜半 (Yeban) — WAV 导出设置对话框
 //
 // 规范来源 (Normative):
-//   - 模块入口「导出 WAV」的**选项面**（`ui/module_actions.slint` 的
-//     `module-export-wav-button`）。它此前直接按宿主解析好的路径导出，界面没有任何
+//   - 模块入口「导出 WAV」的**选项面**（`ui/app.slint:1224` 菜单项
+//     “导出音频 (WAV)...” → `command-execute("open-export-wav")` → 宿主
+//     `src/host.rs:25310`（`dispatch_aether_command`）→ `ui.invoke_open_export_wav()`
+//     → 回调 `open-export-wav`（`ui/app.slint:1096`）；本体 `ExportWavDialog`
+//     由 `ui/app.slint:21` 引入）。它此前直接按宿主解析好的路径导出，界面没有任何
 //     位深 / 采样率 / 时长控件（`src/host.rs` 的 `ModulePaths` 与
 //     `export_wav::WavExportOptions::resolve` 的注释把这一半登记为待做）。
 //   - `[UI-TEST-001]` §12.2: 每个可寻址控件都有稳定语义 ID。
@@ -64,7 +67,8 @@
 // ⚠ 已知边界（如实登记，⛔ 不假装覆盖）：
 // * 打开时焦点落**第一格**（`host` 调 `focus-export-wav-dialog`），关闭时宿主调
 //   既有的 `focus-shortcut-layer` **复位** —— 规范那句"复位至**触发控件**"今天做不到：
-//   触发方 `module-export-wav-button` 不是可聚焦控件（`FocusScope` 都没有），
+//   触发方 `ui/app.slint:1224` 菜单项“导出音频 (WAV)...”不是可聚焦控件
+//   （菜单项没有 `FocusScope`，也没有 `accessible-id`），
 //   复位到"那一个"要先给它建焦点身份，那是另一票。
 // * `D-UI-20` 的两条残留：
 //   1. **点击不改变焦点**（四格都是 `focus-on-click: false`）。焦点的入口只有两个：
