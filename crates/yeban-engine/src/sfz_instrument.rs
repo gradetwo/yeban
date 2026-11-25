@@ -520,7 +520,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节）。⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是这份清单里的 `fileg_*` / `pitcheg_*` 那两项**（⛔ 原文与 `#113` 修订段一字未删）：两族**已接线** —— 静态八参 ＋ `*_vel2*` 由 `yeban-sfz` 的 `read_eg` 解析、引擎以 [`EgRun`]／[`ModEgRun`] 在 [`mix_span_into`] 逐样本调制（`fileg` 调截止、`pitcheg` 调位置步进），判据在 `tests/sfz_eg.rs`；同片还补全了 `ampeg_delay` / `ampeg_start`（解析 ＋ 归约 ＋ 三路求值随 `AmpegParam` 尾加自动跟随）。⛔ **仍未做的是两族的 CC 支**（`*_ccN` / `*_onccN` / `*_curveccN` 不进 `ModTarget`，范围裁决见 `yeban_sfz::eg`）；`off_time` / `pan` 两项**仍未做**（原文对这两项继续成立）。⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面那句里「两族的 CC 支」那一支**（⛔ 原文一字未删）：解析层已落地 —— `*_ccN` / `*_onccN` / `*_curveccN` 进 `ModTarget::Fileg`／`ModTarget::Pitcheg`（`parse_modulation_name` 认 8 参数 × 4 后缀 × 2 族），`EgDef` 携 CC 表、`value_with_cc` 叠加 delta；⛔ **引擎接线仍未做**（逐块求值是 281B／281C）；`off_time` / `pan` 两项原文继续成立；巡检 S118 里这条的 `NotRecognized` 腿翻成 `Recognized`。 ⭐ ⭐ **追加修订段（T-FIX-281B）—— 被修订的是上面那句里「⛔ 引擎接线仍未做（逐块求值是 281B／281C）」那一支**（⛔ 原文一字未删）：**离线那条路已接线** —— `eg_run_from` 增 CC 参数通道（`eg_run_from_with_cc`，八参按探针经 `cc_value_with_baked_and_vel2` 求值，叠加走调用方已烘好的区域调制表，⛔ 不逐块重烘焙曲线），`render_note_with`（经 `render_note_into_with_cc`／`render_note_into_from_samples_with_cc`）已接通；**烘焙表不另建** —— 摊平期 `flatten_regions` 烘的那份区域表（`PreparedRegion.cc_mods`）本来就含 `Fileg`／`Pitcheg` 项（目标过滤，⛔ 不许第二份表），离线那条路复用同一份；⛔ **仍未做的是摊平／实时两条路**（接线是 281C，登记见 `fileg_run`／`pitcheg_run` 与模块头的「CC 调制」一节）；`off_time` / `pan` 两项原文继续成立。 |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节）。⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是这份清单里的 `fileg_*` / `pitcheg_*` 那两项**（⛔ 原文与 `#113` 修订段一字未删）：两族**已接线** —— 静态八参 ＋ `*_vel2*` 由 `yeban-sfz` 的 `read_eg` 解析、引擎以 [`EgRun`]／[`ModEgRun`] 在 [`mix_span_into`] 逐样本调制（`fileg` 调截止、`pitcheg` 调位置步进），判据在 `tests/sfz_eg.rs`；同片还补全了 `ampeg_delay` / `ampeg_start`（解析 ＋ 归约 ＋ 三路求值随 `AmpegParam` 尾加自动跟随）。⛔ **仍未做的是两族的 CC 支**（`*_ccN` / `*_onccN` / `*_curveccN` 不进 `ModTarget`，范围裁决见 `yeban_sfz::eg`）；`off_time` / `pan` 两项**仍未做**（原文对这两项继续成立）。⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面那句里「两族的 CC 支」那一支**（⛔ 原文一字未删）：解析层已落地 —— `*_ccN` / `*_onccN` / `*_curveccN` 进 `ModTarget::Fileg`／`ModTarget::Pitcheg`（`parse_modulation_name` 认 8 参数 × 4 后缀 × 2 族），`EgDef` 携 CC 表、`value_with_cc` 叠加 delta；⛔ **引擎接线仍未做**（逐块求值是 281B／281C）；`off_time` / `pan` 两项原文继续成立；巡检 S118 里这条的 `NotRecognized` 腿翻成 `Recognized`。 ⭐ ⭐ **追加修订段（T-FIX-281B）—— 被修订的是上面那句里「⛔ 引擎接线仍未做（逐块求值是 281B／281C）」那一支**（⛔ 原文一字未删）：**离线那条路已接线** —— `eg_run_from` 增 CC 参数通道（`eg_run_from_with_cc`，八参按探针经 `cc_value_with_baked_and_vel2` 求值，叠加走调用方已烘好的区域调制表，⛔ 不逐块重烘焙曲线），`render_note_with`（经 `render_note_into_with_cc`／`render_note_into_from_samples_with_cc`）已接通；**烘焙表不另建** —— 摊平期 `flatten_regions` 烘的那份区域表（`PreparedRegion.cc_mods`）本来就含 `Fileg`／`Pitcheg` 项（目标过滤，⛔ 不许第二份表），离线那条路复用同一份；⛔ **仍未做的是摊平／实时两条路**（接线是 281C，登记见 `fileg_run`／`pitcheg_run` 与模块头的「CC 调制」一节）；`off_time` / `pan` 两项原文继续成立。 ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「⛔ 仍未做的是摊平／实时两条路」那一支**（⛔ 原文一字未删）：两条路本单已接线 —— `fileg_run_with_cc`／`pitcheg_run_with_cc`（`eg_run_from_with_cc`，叠加走 `PreparedRegion.cc_mods`）；判据 `tests/sfz_eg.rs` 的 E13～E15；`off_time` / `pan` 两项原文继续成立。 |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场）　⭐ ⭐ **追加修订段（任务单 `#279`）—— 被修订的是 ③ 里的「整段 clone …无 `Arc` 共享」**（⛔ 原文一字未删）：`PreparedSample.pcm` 已是 `Arc<Vec<f32>>`、`prepare_with_samples` 只 `Arc::clone` 调用方那份 ⇒ **同一份 PCM 只有一份字节**（⛔ 不再是 N 份），峰值的"第 4 份副本"因此消失；⚠ **仍未做**：流式解码、字节预算的强制执行（本条 ①② 的口径不变）。 |
 //!
@@ -693,6 +693,15 @@
 //!    各有一段同名修订登记；281C 在这里加 `fileg_run_with_cc`／`pitcheg_run_with_cc`
 //!    （与 [`PreparedRegion::ampeg_run_with_cc_and_velocity`] 同形，烘焙表复用
 //!    [`PreparedRegion::cc_modulations`]）。
+//!
+//!    ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面第 2 条里「仍未接线的是摊平／
+//!    实时两条路」那一支**（⛔ 原文一字未删）：两条路本单已接线 ——
+//!    [`PreparedRegion::fileg_run_with_cc`]／[`PreparedRegion::pitcheg_run_with_cc`]
+//!    （与 [`PreparedRegion::ampeg_run_with_cc_and_velocity`] 同形，烘焙表复用
+//!    [`PreparedRegion::cc_modulations`]，⛔ 不另建表、不逐块重烘焙）；三条路
+//!    （离线／实时／摊平）同一份 SFZ ＋ 同一探针 ⇒ 包络逐位一致，判据
+//!    `tests/sfz_eg.rs` 的 E13～E15（E13 实时生效、E14 摊平生效、E15 三路位一致 ＋
+//!    E16 无 CC 红对照）。`off_time` / `pan` 两项原文继续成立。
 //! 3. **⛔ 本单没动的东西**：`PreparedRegion`／`SfzVoice`／`SfzVoicePool`／
 //!    `EngineRuntime` 的尺寸**全 ＋0**（烘焙表是既有那一份、⛔ 没有新字段）；
 //!    `ampeg_*` 的 CC 口径一个字节没碰（`#104`／`#106`／`#107` 的登记整条有效）。
@@ -3096,6 +3105,13 @@ impl SfzInstrument {
                 // **同一份**，⛔ 不第二次烘焙、⛔ 不第二次解曲线）；`cc == None` ⇒
                 // `eg_run_from_with_cc` 原样转交 [`eg_run_from`] ⇒ 与接线前**逐位相同**。
                 // 摊平／实时两条路本单**不接**（281C；见模块头的「CC 调制」一节）。
+                //
+                // ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「摊平／实时两条路
+                // 本单不接（281C）」那一支**（⛔ 原文一字未删）：两条路本单已接线 ——
+                // 摊平（[`PreparedSfz::render_block_into_with_cc`]）与实时
+                // （[`SfzVoicePool`] 的触发路）都经
+                // [`PreparedRegion::fileg_run_with_cc`]／[`PreparedRegion::pitcheg_run_with_cc`]
+                // 走 [`eg_run_from_with_cc`]；判据 `tests/sfz_eg.rs` 的 E13～E15。
                 let base_hz = region.filter_cutoff(note, velocity);
                 // ⭐ stage 6：离线一次性入口也吃 `cutoff_onccN` —— 这一条原来是
                 // stage 5 的**已知偏差**（"只走摊平路径"），现在闭合。
@@ -3912,6 +3928,12 @@ fn eg_run_from_values(values: &[f32; EgParam::COUNT], engine_hz: f32) -> Option<
 /// [`SfzInstrument::render_note_into_with_cc`] ／
 /// [`SfzInstrument::render_note_into_from_samples_with_cc`] 两个公开入口）；
 /// 摊平／实时两条路的接线是 281C（见本模块头的「CC 调制」一节）。
+///
+/// ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「摊平／实时两条路的
+/// 接线是 281C」那一支**（⛔ 原文一字未删）：两条路本单已接线 —— 摊平
+/// （[`PreparedSfz::render_block_into_with_cc`]）与实时（[`SfzVoicePool`] 的触发路）
+/// 都经 [`PreparedRegion::fileg_run_with_cc`]／[`PreparedRegion::pitcheg_run_with_cc`]
+/// 走本函数（叠加走调用方已烘好的区域调制表）；判据 `tests/sfz_eg.rs` 的 E13～E15。
 #[must_use]
 pub fn eg_run_from_with_cc(
     def: &EgDef,
@@ -5498,6 +5520,12 @@ impl PreparedRegion {
     /// （[`SfzVoicePool`] 的触发路）两条路的接线是 **281C**，届时在这里加
     /// `fileg_run_with_cc` / `pitcheg_run_with_cc`（与
     /// [`Self::ampeg_run_with_cc_and_velocity`] 同形）。
+    ///
+    /// ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「摊平／实时两条路
+    /// 的接线是 281C」那一支**（⛔ 原文一字未删）：两条路本单已接线 —— 摊平
+    /// （[`PreparedSfz::render_block_into_with_cc`]）与实时（[`SfzVoicePool`] 的
+    /// 触发路）都改走 [`Self::fileg_run_with_cc`]；判据 `tests/sfz_eg.rs` 的
+    /// E13～E15。`off_time` / `pan` 两项原文继续成立。
     #[must_use]
     pub fn fileg_run(
         &self,
@@ -5511,6 +5539,31 @@ impl PreparedRegion {
             .and_then(|def| eg_run_from(&def, velocity, engine_hz))
     }
 
+    /// ⭐ 本区域在给定力度下的**滤波包络运行束（含 CC）**（T-FIX-281C）：
+    /// 与 [`Self::fileg_run`] 同一份归约，CC 那一支走 [`eg_run_from_with_cc`]。
+    ///
+    /// * `probe == None` ⇒ 原样转交 [`eg_run_from`] ⇒ 与 [`Self::fileg_run`]
+    ///   **逐位相同**（⛔ 没有第二条换算路径）；
+    /// * `probe == Some` ⇒ 八个参数按探针经 [`eg_run_from_with_cc`] 求值，叠加走
+    ///   本区域摊平期已烘好的调制表（[`Self::cc_modulations`]，⛔ 不第二次烘焙、
+    ///   ⛔ 不第二次解曲线）；
+    /// * 族由 [`EgDef::cc_mods`] 的首项定（与 [`eg_run_from_with_cc`] 同款）；
+    /// * 零分配、零锁、零 I/O（纯算术 ＋ 定长切片）⇒ 可在逐块路径调用。
+    #[must_use]
+    pub fn fileg_run_with_cc(
+        &self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        engine_hz: f32,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> Option<EgRun> {
+        self.base_cutoff_hz(note, velocity)?;
+        self.fileg_def(plan).and_then(|def| {
+            eg_run_from_with_cc(&def, velocity, engine_hz, self.cc_modulations(), probe)
+        })
+    }
+
     /// ⭐ 本区域在给定力度下的**音高包络运行束**（透明判定同 [`eg_run_from`]，
     /// 不依赖滤波在场）。
     ///
@@ -5518,10 +5571,36 @@ impl PreparedRegion {
     /// （⛔ 原文一字未删）：与 [`Self::fileg_run`] 同款 —— 本方法是**无 CC**的入口，
     /// `pitcheg_*ccN` 在这里**不生效**；CC 通道与接线范围见 `fileg_run` 的同名修订段
     /// （离线已接、摊平／实时是 281C）。
+    ///
+    /// ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「摊平／实时是 281C」
+    /// 那一支**（⛔ 原文一字未删）：两条路本单已接线 —— 摊平
+    /// （[`PreparedSfz::render_block_into_with_cc`]）与实时（[`SfzVoicePool`] 的
+    /// 触发路）都改走 [`Self::pitcheg_run_with_cc`]；判据 `tests/sfz_eg.rs` 的
+    /// E13～E15。`off_time` / `pan` 两项原文继续成立。
     #[must_use]
     pub fn pitcheg_run(&self, plan: &PreparedSfz, velocity: u8, engine_hz: f32) -> Option<EgRun> {
         self.pitcheg_def(plan)
             .and_then(|def| eg_run_from(&def, velocity, engine_hz))
+    }
+
+    /// ⭐ 本区域在给定力度下的**音高包络运行束（含 CC）**（T-FIX-281C）：
+    /// 与 [`Self::pitcheg_run`] 同一份归约，CC 那一支走 [`eg_run_from_with_cc`]。
+    ///
+    /// 口径与 [`Self::fileg_run_with_cc`] 逐字同款（`probe == None` ⇒ 与
+    /// [`Self::pitcheg_run`] 逐位相同；`probe == Some` ⇒ 八个参数按探针经
+    /// [`eg_run_from_with_cc`] 求值，叠加走本区域摊平期已烘好的调制表
+    /// [`Self::cc_modulations`]；零分配、零锁、零 I/O）。
+    #[must_use]
+    pub fn pitcheg_run_with_cc(
+        &self,
+        plan: &PreparedSfz,
+        velocity: u8,
+        engine_hz: f32,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> Option<EgRun> {
+        self.pitcheg_def(plan).and_then(|def| {
+            eg_run_from_with_cc(&def, velocity, engine_hz, self.cc_modulations(), probe)
+        })
     }
 
     /// ⭐ 本区域有没有**生效的**随机轮替门（与 `yeban-sfz` 的
@@ -7435,12 +7514,18 @@ impl PreparedSfz {
             // [`PreparedRegion::fileg_run`] 的同名修订段与模块头的「CC 调制」一节）——
             // 探针在这里只影响 `ampeg_*`／`tune`／增益／门控，⛔ 不影响两族包络；
             // 接线是 **281C**（与实时路同单）。
+            //
+            // ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「接线是 281C」
+            // 那一支**（⛔ 原文一字未删）：本单已接线 —— 两族包络改走
+            // [`PreparedRegion::fileg_run_with_cc`]／[`PreparedRegion::pitcheg_run_with_cc`]
+            // （与 [`eg_run_from_with_cc`] 同一份求值，叠加走本区域摊平期已烘好的调制表）；
+            // 判据 `tests/sfz_eg.rs` 的 E13～E15。
             let mut egs = EgSpan {
                 fil: region
-                    .fileg_run(self, note, velocity, self.engine_hz)
+                    .fileg_run_with_cc(self, note, velocity, self.engine_hz, cc)
                     .map(|run| ModEgRun::new(run, u64::MAX, 0)),
                 pitch: region
-                    .pitcheg_run(self, velocity, self.engine_hz)
+                    .pitcheg_run_with_cc(self, velocity, self.engine_hz, cc)
                     .map(|run| ModEgRun::new(run, u64::MAX, 0)),
                 base_cutoff_hz: region.base_cutoff_hz(note, velocity).unwrap_or(0.0),
             };
@@ -10770,7 +10855,10 @@ impl SfzVoicePool {
     ///   ① [`PreparedRegion::ampeg_run_with_cc_and_velocity`] ⇒ 区域的
     ///   `ampeg_*ccN`（含 `_onccN` ／ `_curveccN`）按 `base + Σ delta × curve(cc)`
     ///   求值，以及 ② ⭐ 任务单 `#108`：[`PreparedRegion::gain_at_with_cc`] ⇒
-    ///   **CC 轴交叉淡化**按探针求值（两者都是**与离线两条路同一份实现**）。
+    ///   **CC 轴交叉淡化**按探针求值（两者都是**与离线两条路同一份实现**），以及
+    ///   ③ ⭐ T-FIX-281C：[`PreparedRegion::fileg_run_with_cc`] ／
+    ///   [`PreparedRegion::pitcheg_run_with_cc`] ⇒ `fileg_*ccN` ／ `pitcheg_*ccN`
+    ///   按探针求值（与离线／摊平两条路**同一份** [`eg_run_from_with_cc`]）。
     ///
     /// ⚠ **不改区域选择**：`cc` 只到 `slot_readings`，而"这条区域该不该响"由
     /// **摊平期**烧进掩码（[`flatten_regions`]）的键/力度/门控决定
@@ -11509,8 +11597,14 @@ impl SfzVoicePool {
             // 本单（281B）只接了离线那条路；实时接线是 **281C**（与摊平路同单），
             // 届时这里改走 `fileg_run_with_cc` / `pitcheg_run_with_cc`（会话运行态
             // 的 CC 探针，与 `ampeg_run_with_cc_and_velocity` 的实时接法同形）。
-            fil_run: region.fileg_run(plan, voice.note(), voice.velocity(), engine_hz),
-            pitch_run: region.pitcheg_run(plan, voice.velocity(), engine_hz),
+            //
+            // ⭐ ⭐ **追加修订段（T-FIX-281C）—— 被修订的是上面那句里「实时接线是
+            // 281C」那一支**（⛔ 原文一字未删）：本单已接线 —— 这里改走
+            // `fileg_run_with_cc` / `pitcheg_run_with_cc`（会话运行态的 CC 探针，
+            // 与 `ampeg_run_with_cc_and_velocity` 的实时接法同形）；判据
+            // `tests/sfz_eg.rs` 的 E13～E15。
+            fil_run: region.fileg_run_with_cc(plan, voice.note(), voice.velocity(), engine_hz, cc),
+            pitch_run: region.pitcheg_run_with_cc(plan, voice.velocity(), engine_hz, cc),
             base_cutoff_hz: region
                 .base_cutoff_hz(voice.note(), voice.velocity())
                 .unwrap_or(0.0),
