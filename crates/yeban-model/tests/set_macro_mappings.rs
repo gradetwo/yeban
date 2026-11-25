@@ -6,7 +6,8 @@
 //! 3. **非法深度先于落盘被拒** —— `depth` 非有限 ⇒ `NonFiniteValue`，文档一位不动；
 //! 4. **空列表是一等状态** —— 清空全部映射合法（不是"丢失"），且同样可逆。
 //!
-//! 前提事实（T-FIX-93 任务单 + `bridge::MACRO_MAPPING_NO_WRITE_PATH` 旧锚）：此前 `Op`
+//! 前提事实（T-FIX-93 任务单 + `bridge::MACRO_MAPPING_PANEL_NOT_WIRED` 旧锚，
+//! 当时旧名 `MACRO_MAPPING_NO_WRITE_PATH`）：此前 `Op`
 //! 全集没有任何变体能写 `MacroParameter::mappings` —— 本变体就是那个缺口的第一块落地
 //! （model 层；MCP 工具面同批接线；GUI 宏映射面板的改绑入口由 T-FIX-88 的承接方接线）。
 

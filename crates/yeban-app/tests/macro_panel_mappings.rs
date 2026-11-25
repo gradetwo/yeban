@@ -11,13 +11,14 @@
 //! 2. 空映射 ⇒ 摘要为空串（界面画「无映射」，⛔ 不画假箭头）；
 //! 3. 面板**可达**：`app.slint` 里有 `if root.macro-panel-open` 的实例化、
 //!    下舱有 `macro-open-button` 与 `open-macro-panel` 回调；
-//! 4. 写通路**不存在**：`Op` 枚举体内没有任何 `mappings` 字样 ⇒ 界面不能
-//!    提供建立 / 改绑 / 删除（否则就是绕过唯一写入载体造第二真理源）。
+//! 4. 写通路**已存在**（T-FIX-96 落地 `Op::SetMacroMappings`）：判据断言 `Op` 枚举体
+//!    含 `SetMacroMappings` 且带 `old`/`new` 陈旧载荷校验 ⇒ 宏映射的建立 / 改绑 /
+//!    删除有了唯一写入载体；面板入口接线前，⛔ 界面不能绕过它直改内存模型。
 
 use std::path::PathBuf;
 
 use yeban_app::bridge::{
-    MACRO_MAPPING_NO_WRITE_PATH, MacroRowView, ViewState, automation_target_display,
+    MACRO_MAPPING_PANEL_NOT_WIRED, MacroRowView, ViewState, automation_target_display,
     macro_depth_display,
 };
 use yeban_model::YebanProjectV1;
@@ -192,7 +193,7 @@ fn the_op_enum_has_a_macro_mapping_write_path() {
         "前提判据自身失效：SetMacro 变体都找不到，说明切片的锚点不对"
     );
     assert!(
-        !MACRO_MAPPING_NO_WRITE_PATH.is_empty(),
+        !MACRO_MAPPING_PANEL_NOT_WIRED.is_empty(),
         "常量必须给用户一句话事实（回执与台账引用它）"
     );
 }

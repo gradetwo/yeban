@@ -30,8 +30,9 @@ export component MacroPanel inherits Rectangle {
     in property <[string]> macro-value-labels: [];
     /// **级联去向**的一行摘要（`"音量 +6 · 声相 -0.5"`；没有映射 ⇒ 空串）。
     ///
-    /// ⚠ 只读：`MacroMapping` 在 `Op` 全集里没有写入变体（`bridge::MACRO_MAPPING_NO_WRITE_PATH`）
-    /// ⇒ 本面板⛔ 不提供建立 / 改绑 / 删除，只把「这个宏推动谁、推多少」画出来。
+    /// ⚠ 只读：`MacroMapping` 的写路径 `Op::SetMacroMappings` 已存在（T-FIX-96），
+    /// 但面板编辑入口未接线（`bridge::MACRO_MAPPING_PANEL_NOT_WIRED`）
+    /// ⇒ 本面板暂⛔ 不提供建立 / 改绑 / 删除，只把「这个宏推动谁、推多少」画出来。
     in property <[string]> macro-mapping-summaries: [];
 
     // ---------------------------------------------------------------- 写入面

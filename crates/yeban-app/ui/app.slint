@@ -715,8 +715,9 @@ export component MainWindow inherits Window {
     in-out property <[string]> macro-value-labels: [];
     in-out property <[float]> macro-values: [];
     // ⭐ 宏的**级联去向**摘要（下标 = 模型 `macro_index`，与上面三个数组同索引集）。
-    // 只读呈现：`MacroMapping` 在 `Op` 全集里没有写入变体 ⇒ 界面没有建立/改绑/删除入口
-    // （见 `bridge::MACRO_MAPPING_NO_WRITE_PATH` 与判据 `macro_mapping_has_no_write_path`）。
+    // 只读呈现：`MacroMapping` 的写路径 `Op::SetMacroMappings` 已存在（T-FIX-96），
+    // 但面板编辑入口未接线 ⇒ 界面暂无建立/改绑/删除入口
+    // （见 `bridge::MACRO_MAPPING_PANEL_NOT_WIRED` 与判据 `the_op_enum_has_a_macro_mapping_write_path`）。
     in-out property <[string]> macro-mapping-summaries: [];
     in-out property <bool> metronome-on: false;
     // T-FIX-157：编曲视图跟随模式。false = 经典 Catch（播放头贴左缘）；

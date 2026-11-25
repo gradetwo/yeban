@@ -1716,10 +1716,11 @@ fn send_gain_display(gain_db: Option<f32>) -> String {
 
 /// 宏的一条**级联去向**（`MacroMapping`）的显示行。
 ///
-/// ⚠ 只读：`MacroMapping` 在工具面与 `Op` 全集里都**没有**写入变体（见
-/// [`macro_mapping_writes_are_absent`] 的文档与判据），因此这一行只呈现
-/// "这个宏会推动谁、推多少"，⛔ 界面上没有建立 / 改绑 / 删除的入口 ——
-/// 那不是界面偷懒，是写通路在系统层就不存在。
+/// ⚠ 只读：`MacroMapping` 的写路径已在系统层落地（`Op::SetMacroMappings`，T-FIX-96
+/// 同批，见 [`macro_mapping_panel_not_wired`] 的文档与判据），但宏面板的建立 /
+/// 改绑 / 删除入口尚未接线（T-FIX-88 承接方），因此这一行仍只呈现
+/// "这个宏会推动谁、推多少"，⛔ 界面上不许绕过 `Op` 直改模型
+/// —— 那会造出第二真理源。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MacroMappingView {
     /// 目标的一行显示名（[`automation_target_display`]，界面层唯一实现）。
@@ -1823,16 +1824,22 @@ pub fn macro_depth_display(depth: f32) -> String {
 /// **面板现状**：宏映射面板仍未接建立 / 改绑 / 删除入口（T-FIX-88 承接方接线）；
 /// 在那之前 GUI 若自己改内存模型，
 /// 就等于绕过 `Op` 这条唯一写入载体（`ADR-0031` D1 的同一条纪律）⇒ 会造出第二真理源。
-pub const MACRO_MAPPING_NO_WRITE_PATH: &str = "宏映射编辑入口未接线（写路径已存在：Op::SetMacroMappings，待面板接入；在那之前不许绕过 Op 直改模型）";
+pub const MACRO_MAPPING_PANEL_NOT_WIRED: &str = "宏映射编辑入口未接线（写路径已存在：Op::SetMacroMappings，待面板接入；在那之前不许绕过 Op 直改模型）";
 
+/// 旧名存档（ISS-MWTZ18HO 名实对齐）：写路径落地（T-FIX-96）后，`NO_WRITE_PATH` 一名
+/// 与常量值/文档都相牾，故随判据名一并改为 [`MACRO_MAPPING_PANEL_NOT_WIRED`]；
+/// 符号引用已全仓归零，历史叙述中的旧名提法（ops.rs / set_macro_mappings.rs）按
+/// dated record 纪律保留原文。
 /// 宏映射写路径状态的文档锚点（让 `grep` 从一个名字找到现状与判据）。
 ///
 /// 本函数不执行任何事；判据见
 /// `crates/yeban-app/tests/macro_panel_mappings.rs`（写路径存在性）与
 /// `crates/yeban-app/src/host.rs` 的映射面板接线（待 T-FIX-88 承接方）。
+/// 旧名 `macro_mapping_writes_are_absent` 同步作废（见 [`MACRO_MAPPING_PANEL_NOT_WIRED`]
+/// 的改名存档）。
 #[must_use]
-pub fn macro_mapping_writes_are_absent() -> &'static str {
-    MACRO_MAPPING_NO_WRITE_PATH
+pub fn macro_mapping_panel_not_wired() -> &'static str {
+    MACRO_MAPPING_PANEL_NOT_WIRED
 }
 
 /// 宏位置的显示文本（**唯一**的格式化实现）：0.0..=1.0 映射成 `"0%".."100%"`。
