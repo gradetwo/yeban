@@ -211,6 +211,10 @@ struct Tune {
     loop_config: LoopConfig,
     /// ⭐ 手动相位对齐：摆放的采样偏移（`ClipPlacement.offset_samples`，缺省 0 = 无偏移）。
     clip_offset_samples: i32,
+    /// ⭐ T-FIX-374：摆放的**显式**淡入（tick；`None` = 不淡，旧行为）。
+    fade_in_ticks: Option<u64>,
+    /// ⭐ T-FIX-374：摆放的**显式**淡出（tick；`None` = 不淡）。
+    fade_out_ticks: Option<u64>,
     /// ⭐ 效果器线：音轨是否挂一台带 `stub:gain` 绑定的外部效果器（缺省增益 1.0＝直通）。
     effect_stub: bool,
     /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
@@ -239,6 +243,8 @@ impl Default for Tune {
             device_latency: 0,
             loop_config: LoopConfig::default(),
             clip_offset_samples: 0,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
             effect_stub: false,
             effect_bad_path: false,
             effect_state: Vec::new(),
@@ -374,8 +380,8 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             } else {
                 Some(tune.clip_offset_samples)
             },
-            fade_in_ticks: None,
-            fade_out_ticks: None,
+            fade_in_ticks: tune.fade_in_ticks,
+            fade_out_ticks: tune.fade_out_ticks,
             loop_config: tune.loop_config,
         },
     );
@@ -4383,5 +4389,127 @@ fn an_add_track_audio_track_renders_after_import_without_manual_routing() {
         (peak(&rendered_samples) - 0.5f32).abs() < 1.0e-3,
         "素材电平 0.5 必须出现在母带里: 实测 {}",
         peak(&rendered_samples)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 14（T-FIX-440）：片段 fade 必须出现在**母带包络**里，并随 offset 平移
+// ---------------------------------------------------------------------------
+
+/// 等功率淡入在 `elapsed` 帧处的期望电平（唯一口径来自 `yeban_model::clip_fade`）。
+fn fade_in_peak(level: f32, elapsed: usize, length: usize) -> f32 {
+    level * (elapsed as f32 / length as f32).sqrt()
+}
+
+/// 判据 14 [⑭]：`fade_in_ticks` 真的改变**母带包络**，且 `offset_samples` 把整条
+/// 包络平移同一个帧数。
+///
+/// 为什么这条判据必须存在：T-FIX-374 的 fade 窗口在离线母带（`domain::render` 的
+/// `AudioClipSource`）里已经接线，但**没有任何一条判据读过母带包络**——此前所有
+/// 夹具都把 `fade_in_ticks` 写成 `None`。于是"fade 在离线母带里到底生效没有"
+/// 只能从代码推断，而 `#5198`/`#5201` 三个运行时缺陷正是从这种空白里穿过去的。
+///
+/// 三段：
+///
+/// - **(a) 反向腿**：不配 fade ⇒ 第 0 帧就是满值 0.5（证明斜坡不是母带自带的形状）；
+/// - **(b) 正腿**：淡入 200 tick（5000 帧）⇒ 第 0 帧 0、第 2500 帧 `0.5·√0.5`、
+///   第 5000 帧回到 0.5，且区间内**单调不减**；
+/// - **(c) 平移腿**：同一 fade 加 `offset_samples = +2400` ⇒ 前 2400 帧整段静音、
+///   第 2400 帧是包络的第 0 帧、第 4900 帧落在曲线上、第 7400 帧满值。
+///   （`#5198` 修前，引擎侧窗口不随 offset 平移 ⇒ 淡入整段落在静音里。）
+#[test]
+fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
+    /// 24-bit 量化的容差：抖动 ±1 LSB + 四舍五入 0.5 LSB ⇒ 取 2 LSB。
+    const TOLERANCE: f32 = 2.0 / 8_388_608.0;
+    const LEVEL: f32 = 0.5;
+    /// 200 tick @120BPM/960PPQ/48kHz = 5000 帧。
+    const FADE_FRAMES: usize = 5_000;
+
+    let bytes = wav_f32(2, 48_000, &constant(48_000, LEVEL));
+
+    // (a) 反向腿：没有 fade ⇒ 第 0 帧就是满值。
+    let scratch = Scratch::new("fade-absent");
+    let plain = fixture(bytes.clone(), &Tune::default());
+    let out = scratch.join("plain.wav");
+    let artifact = build_with(&plain.project, &pool(&plain), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert_eq!(rendered.len(), 48_000 * 2, "1 秒立体声母带");
+    assert!(
+        (frame_peak(&rendered, 0) - LEVEL).abs() <= TOLERANCE,
+        "不配 fade ⇒ 第 0 帧必须是素材满值（实测 {}）",
+        frame_peak(&rendered, 0)
+    );
+
+    // (b) 正腿：淡入进母带包络。
+    let fade_tune = Tune {
+        fade_in_ticks: Some(200),
+        ..Tune::default()
+    };
+    let faded = fixture(bytes.clone(), &fade_tune);
+    let out = scratch.join("faded.wav");
+    let artifact = build_with(&faded.project, &pool(&faded), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert!(
+        frame_peak(&rendered, 0) <= TOLERANCE,
+        "淡入第 0 帧必须 ≈ 0（实测 {}）",
+        frame_peak(&rendered, 0)
+    );
+    let mut previous = 0.0f32;
+    for frame in [1_000usize, 2_500, 4_000, FADE_FRAMES - 1] {
+        let actual = frame_peak(&rendered, frame);
+        let expected = fade_in_peak(LEVEL, frame, FADE_FRAMES);
+        assert!(
+            (actual - expected).abs() <= TOLERANCE,
+            "第 {frame} 帧必须落在等功率曲线上（期望 {expected}, 实测 {actual}）"
+        );
+        assert!(
+            actual >= previous - TOLERANCE,
+            "淡入区间内包络必须单调不减（第 {frame} 帧 {actual} < 前一点 {previous}）"
+        );
+        previous = actual;
+    }
+    for frame in [FADE_FRAMES, 6_000, 12_000] {
+        assert!(
+            (frame_peak(&rendered, frame) - LEVEL).abs() <= TOLERANCE,
+            "淡入结束之后必须回到满值（第 {frame} 帧 {}）",
+            frame_peak(&rendered, frame)
+        );
+    }
+
+    // (c) 平移腿：offset 把整条包络后移。
+    const SHIFT: usize = 2_400;
+    let shifted_tune = Tune {
+        fade_in_ticks: Some(200),
+        clip_offset_samples: i32::try_from(SHIFT).expect("2400 帧"),
+        ..Tune::default()
+    };
+    let shifted = fixture(bytes, &shifted_tune);
+    let out = scratch.join("shifted.wav");
+    let artifact = build_with(&shifted.project, &pool(&shifted), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    for frame in 0..SHIFT {
+        assert!(
+            frame_peak(&rendered, frame) <= TOLERANCE,
+            "偏移 {SHIFT} 帧 ⇒ 第 {frame} 帧必须仍在片段之前（静音）"
+        );
+    }
+    assert!(
+        frame_peak(&rendered, SHIFT) <= TOLERANCE,
+        "第 {SHIFT} 帧是平移后的包络第 0 帧 ⇒ 增益 0（实测 {}）",
+        frame_peak(&rendered, SHIFT)
+    );
+    for elapsed in [1_000usize, 2_500] {
+        let actual = frame_peak(&rendered, SHIFT + elapsed);
+        let expected = fade_in_peak(LEVEL, elapsed, FADE_FRAMES);
+        assert!(
+            (actual - expected).abs() <= TOLERANCE,
+            "第 {} 帧必须仍落在曲线上（期望 {expected}, 实测 {actual}）",
+            SHIFT + elapsed
+        );
+    }
+    assert!(
+        (frame_peak(&rendered, SHIFT + FADE_FRAMES) - LEVEL).abs() <= TOLERANCE,
+        "平移后的淡入结束必须回到满值（实测 {}）",
+        frame_peak(&rendered, SHIFT + FADE_FRAMES)
     );
 }

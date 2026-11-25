@@ -663,3 +663,73 @@ fn placement_fade_window_follows_the_sample_offset() {
         at(offset + 250)
     );
 }
+
+/// `T-FIX-440`（`#5198` 的**负向腿**）：`offset_samples` 为负时，fade 窗口同样随平移走。
+///
+/// 正偏移那条判据（[`placement_fade_window_follows_the_sample_offset`]）钉住了"窗口
+/// 要往后移"；负偏移是同一个表达式的另一半——平移后起点被夹到 0、窗口起点跟着夹到 0。
+/// 修前窗口仍按**平移前**的 `[250, 500)` 规划，而 span 被推到 `[0, …)` ⇒ 第 0 帧
+/// 直接是素材满值 0.5，淡入整段落在"已经出声"的地方（实时与离线再次不一致）。
+#[test]
+fn placement_fade_window_follows_a_negative_sample_offset() {
+    // 摆在 10 tick（250 帧）；offset = −10 tick ⇒ 平移后起点 0。
+    let mut fixture = audio_clip_project_at(10, 960, 0.0);
+    let rate = fixture_rate(&fixture.project);
+    let offset = tick_to_sample(10, samples_per_tick(fixture.project.bpm, rate))
+        .expect("10 tick 必须能换算成帧");
+    let offset_i32 = i32::try_from(offset).expect("250 帧必须能放进 i32");
+
+    let placement = fixture
+        .project
+        .tracks
+        .get_mut(&fixture.track)
+        .expect("音频轨")
+        .clips
+        .values_mut()
+        .next()
+        .expect("一条摆放");
+    placement.fade_in_ticks = Some(10);
+    placement.offset_samples = Some(-offset_i32);
+
+    let snapshot = snapshot_with_pcm(
+        &fixture.project,
+        mono_pcm(0.5, fixture_rate(&fixture.project) as usize, rate),
+    );
+    let schedule = snapshot
+        .audio_clip_schedule(&fixture.track)
+        .expect("音频轨必须在表里");
+    assert_eq!(
+        schedule.spans()[0].start(),
+        0,
+        "起点 250 帧再前移 250 帧 ⇒ 夹到 0"
+    );
+    assert_eq!(
+        schedule.spans()[0].end(),
+        24_000,
+        "终点 = 10 tick 起 + 960 tick 时值 − 10 tick 偏移 = 24 000 帧（与起点同源平移）"
+    );
+
+    let rendered = render_snapshot(snapshot, 20);
+    let at = |frame: usize| rendered.left[frame];
+    assert!(
+        at(0).abs() < 1e-6,
+        "平移后第 0 帧是淡入的第 0 帧 ⇒ 增益 sqrt(0) = 0（实测 {}）",
+        at(0)
+    );
+    let expected_mid = 0.5 * (100.0_f32 / 250.0).sqrt();
+    assert!(
+        (at(100) - expected_mid).abs() < 1e-5,
+        "第 100 帧必须落在等功率曲线上（期望 {expected_mid}, 实测 {}）",
+        at(100)
+    );
+    assert!(
+        (at(250) - 0.5).abs() < 1e-6,
+        "淡入结束必须回到素材满值（实测 {}）",
+        at(250)
+    );
+    assert!(
+        (at(400) - 0.5).abs() < 1e-6,
+        "淡入之后保持满值直到 span 终点（实测 {}）",
+        at(400)
+    );
+}
