@@ -119,6 +119,7 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/non_finite_never_enters_a_recursion.rs",
         include_str!("non_finite_never_enters_a_recursion.rs"),
     ),
+    ("tests/polysynth_lfo.rs", include_str!("polysynth_lfo.rs")),
     (
         "tests/non_finite_parameters_never_poison_state.rs",
         include_str!("non_finite_parameters_never_poison_state.rs"),

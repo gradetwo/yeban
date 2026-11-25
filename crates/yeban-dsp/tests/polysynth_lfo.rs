@@ -359,6 +359,7 @@ fn lfo_does_not_advance_without_sounding_voices() {
     first.set_params(params, &tables);
     let mut silence = vec![0.0f32; 4800];
     first.render(&tables, 0, &mut silence);
+    assert!(!silence.is_empty());
     assert!(silence.iter().all(|sample| *sample == 0.0));
     first.note_on(NoteEvent::new(4800, 96_000, 440.0, 1.0), &tables);
     let mut out_a = vec![0.0f32; 4800];
