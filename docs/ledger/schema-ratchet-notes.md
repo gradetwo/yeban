@@ -168,6 +168,12 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 `model-no-compat-notes.md` §5.4 与 `tests/schema_ratchet.rs` 的常量表
 （常量现共 36 项）。它们同样受 ④/⑤ 双向反证：删键必须读成功、且不得进任何 `required`。
 
+⚠ **T-FIX-374 fade 两字段（2026-11-25 文档口径补充）**：`tracks[*].clips[*].fade_in_ticks` /
+`fade_out_ticks`（`Option<u64>`，模型 `crates/yeban-model/src/project.rs:1208/1211`）已存在于写入侧，
+`None` 不落盘；`ClipPlacement::validate` 拒绝 `Some(0)` 与越界。但截止本日 `D43_EXEMPT_REQUIRED_PATHS`
+仍为 36 项、`schemas/project.schema.json` 也未声明这两个属性 ⇒ 它们**不在**上表已登记项里，
+不得按“已登记”理解。补齐 schema 与常量需另立 schema 票；本节只写明边界，不改常量、schema 或代码。
+
 ⚠ **第 21 项（UI 轨道交互线，2026-11-07 追加）**：`YebanProjectV1::track_order`
 （`Vec<EntityId>` + `#[serde(default)]` + `skip_serializing_if`，空表不落盘）
 与第 19/20 项**同形** ⇒ 契约里只能声明为可选属性，而既有夹具**刻意不落盘**它
