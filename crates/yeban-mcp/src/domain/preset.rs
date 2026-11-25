@@ -481,12 +481,20 @@ fn captured_chain_id(track_id: &EntityId, index: usize) -> EntityId {
 ///
 /// 判据是身份而不是名字：捕获的设备名保持原样（`EQ` 就是 `EQ`），
 /// 名字不构成可辨认的标记。
+/// 捕获链身份是 `(轨, 插入当时的序号)` 的哈希；用户之后若在链前手工插入
+/// 设备，原设备的**当前下标**会变，但身份不变 ⇒ 必须按「身份集合」匹配，
+/// ⛔ 不能拿当前下标去重算身份（那会漏拆旧链、叠出两台 EQ）。
 fn captured_chain_slots(track: &TrackV3, track_id: &EntityId) -> Vec<usize> {
+    // 捕获链的身份使用过 `0..当前设备数` 里的某个序号；设备只增不减时这个
+    // 范围一定覆盖历史序号。
+    let known: std::collections::BTreeSet<EntityId> = (0..track.devices.len())
+        .map(|index| captured_chain_id(track_id, index))
+        .collect();
     track
         .devices
         .iter()
         .enumerate()
-        .filter(|(index, device)| device.id == captured_chain_id(track_id, *index))
+        .filter(|(_, device)| known.contains(&device.id))
         .map(|(index, _)| index)
         .collect()
 }
@@ -1247,6 +1255,94 @@ pub fn embedded_preset_id(entry_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 判据（T-FIX-415）：捕获链的旧设备身份按「身份集合」认，而不是拿
+    /// **当前下标**重算 —— 用户在链前手工插一台设备后，再应用同一份预制
+    /// 仍必须把旧 EQ 拆掉（否则叠成两台）。
+    #[test]
+    fn captured_chain_is_removed_even_after_a_manual_insert_shifts_slots() {
+        let project = yeban_model::samples::demo_project();
+        let track_id = project
+            .tracks
+            .values()
+            .find(|track| track.name == "主音")
+            .expect("主音")
+            .id;
+        let eq = yeban_model::DeviceDefinition {
+            id: EntityId::new(),
+            name: "EQ".to_owned(),
+            kind: yeban_model::DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![yeban_model::ParameterValue {
+                name: "low_gain".to_owned(),
+                value: 6.0,
+                unit: None,
+            }],
+            latency_samples: 0,
+            plugin: None,
+        };
+        let preset = Preset {
+            format: yeban_model::preset::PRESET_FORMAT_VERSION,
+            id: "user:01TESTCAPTURE0000000000000".to_owned(),
+            name: "capture-shift".to_owned(),
+            instrument: "internal".to_owned(),
+            instrument_sfz: String::new(),
+            scope: PresetScope::Track,
+            author: String::new(),
+            version: "1.0.0".to_owned(),
+            draft: false,
+            strip: serde_json::json!({}),
+            saturation: None,
+            reverb: None,
+            convolution: None,
+            delay: None,
+            sends: Vec::new(),
+            aux: None,
+            mix: None,
+            macros: Vec::new(),
+            cc: BTreeMap::new(),
+            devices: vec![eq],
+        };
+        let plan = build_apply_ops(&project, &track_id, &preset, &["strip"]).expect("规划");
+        let mut after = project.clone();
+        for op in &plan.ops {
+            op.apply(&mut after).expect("施加");
+        }
+        let eq_count = |project: &yeban_model::YebanProjectV1| {
+            project
+                .track(&track_id)
+                .expect("轨")
+                .devices
+                .iter()
+                .filter(|device| device.name == "EQ")
+                .count()
+        };
+        assert_eq!(eq_count(&after), 1, "首次应用后应有一台 EQ");
+
+        // 用户在捕获链**前面**手工插一台设备 ⇒ 旧 EQ 的当前下标 +1，身份不变。
+        let track = after.track_mut(&track_id).expect("轨可写");
+        track.devices.insert(
+            0,
+            yeban_model::DeviceDefinition {
+                id: EntityId::new(),
+                name: "Compressor".to_owned(),
+                kind: yeban_model::DeviceKind::InternalEffect,
+                bypassed: false,
+                params: Vec::new(),
+                latency_samples: 0,
+                plugin: None,
+            },
+        );
+        let plan = build_apply_ops(&after, &track_id, &preset, &["strip"]).expect("二次规划");
+        for op in &plan.ops {
+            op.apply(&mut after).expect("施加");
+        }
+        assert_eq!(
+            eq_count(&after),
+            1,
+            "链前插入设备后旧捕获链仍须被拆掉，不得叠成两台 EQ"
+        );
+    }
 
     /// ⭐ **T-FIX-327 完整性对账**：三处登记必须逐个对上 ——
     /// ① `assets/presets/` 目录里的 `.json` 文件（read_dir 当场点名）；
