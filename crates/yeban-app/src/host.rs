@@ -11520,6 +11520,13 @@ pub fn wire_import_audio(
                     ),
                     // 回读：`false` 只说明池里已有同哈希（幂等命中），不是失败。
                     format!("asset_registered={asset_registered}"),
+                    // ⭐ T-FIX-353：一句话说清「只进素材池、没有摆放」，并带上片段名/路径
+                    // 供用户核对；⛔ 本轮不改摆放语义（不写 `Op::AddClipPlacement`）。
+                    format!(
+                        "message=\"已加入素材池，尚未摆放到轨道 · {}（{}）\"",
+                        report.name,
+                        report.path.display()
+                    ),
                 ];
                 refresh_undo_window(&ui, &port, true);
                 (module_receipt("import-audio", &fields), true)
@@ -12100,6 +12107,9 @@ fn humanize_module_receipt(receipt: &str) -> String {
         "export-midi" => "导出 MIDI",
         "export-stems" => "导出分轨",
         "import-midi" => "导入 MIDI",
+        // ⭐ T-FIX-353：导入音频此前不在表里 ⇒ 成功只显示「上一步操作完成」，
+        // 用户看不出文件去了素材池（时间线零变化），会误判导入失败。
+        "import-audio" => "导入音频",
         "open-project" => "打开工程",
         "load-sfz" => "装载音源",
         "audition" => "试听",
@@ -22053,6 +22063,14 @@ mod tests {
         assert_eq!(
             humanize_module_receipt("module:action=export-stems:outcome=ok"),
             "导出分轨 完成"
+        );
+        // ⭐ T-FIX-353：`import-audio` 必须进表；成功提示要说清「只进素材池、未摆放」，
+        // 并带片段名/路径。兜底句「上一步操作完成」在这里出现即红。
+        assert_eq!(
+            humanize_module_receipt(
+                "module:action=import-audio:outcome=ok:path=/tmp/kick.wav:name=kick.wav:message=\"已加入素材池，尚未摆放到轨道 · kick.wav（/tmp/kick.wav）\""
+            ),
+            "导入音频 完成 · 已加入素材池，尚未摆放到轨道 · kick.wav（/tmp/kick.wav）"
         );
         assert_eq!(
             humanize_module_receipt(
