@@ -1,0 +1,115 @@
+% 夜半用户手册 · 第 4 章：钢琴卷帘（中文）
+% T-DOC-001 逐章交付（CH04 任务未到前预写）。
+% 事实来源：app.slint 卷帘属性与菜单、help.rs 引导步骤、bridge.rs 音高车道映射、
+% docs/manual/04-piano-roll.md、cli.rs SHORTCUTS。
+
+\chapter{钢琴卷帘}
+\label{ch:piano-roll}
+
+钢琴卷帘是写 MIDI 音符的地方：横轴是时间，纵轴是音高。这一章讲怎么打开它、
+怎么画音符、怎么改力度与量化，以及当前版本在拖动上的边界。
+
+\section{打开与视图导航}
+
+\subsection{打开卷帘}
+
+按 P 键，或从底部控制台第一个页签切到钢琴卷帘；F7 也是卷帘页签的直达键。
+选中一条 MIDI 合成器轨上的片段，卷帘就显示那段片段里的音符。
+
+\subsection{看清两个维度}
+
+横轴是时间（以 tick 计，按工程拍号换算成小节与拍）；纵轴是音高，从上到下
+按音高车道排列，左侧有键标签（如 C4、Eb5）作为音高参照。窗口顶部的读数会
+显示当前可见的音高范围。底部是力度泳道，音符的力度用竖条表示。
+
+\screenshot{ch04-roll-overview}{钢琴卷帘全景，标出时间标尺、音高车道与键标签、力度泳道}
+
+\subsection{缩放与取景}
+
+Cmd/Ctrl+↑ / ↓ 做音轨垂直缩放，Cmd/Ctrl+= / - 做时间轴水平缩放。卷帘有
+「取景」概念：可以按当前片段、当前轨或全部内容来定可见范围；超出可见范围的
+高音或低音不会在窗口里画出，切换取景范围即可看到。
+
+\section{音符录入、选择与移动}
+
+\subsection{画音符}
+
+新手引导里说得很直白：\textbf{数字键 2 是绘制工具}，在卷帘上点一下就落一个
+音符。落点由点击位置决定：横向是时间，纵向由 y 坐标反查到对应音高车道。
+画完后可以拖动音符改时间与音高，拖右边缘改长度。
+
+\subsection{选择与拖动}
+
+点一个音符即选中它。当前版本的指针拖动只作用于指针下那一颗音符——即使你
+选中了多颗，拖其中一颗，其余音符不会跟着动。因此「整组拖动」与「整组改
+时值」目前不成立；要批量移动，请分次操作，或等到该能力正式提供。夜半不会
+把未实现的操作伪装成成功。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.2cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+  \node[box] (a) {选片段};
+  \node[box, right of=a] (b) {数字键 2 画音符};
+  \node[box, right of=b] (c) {拖动改音高/时值};
+  \node[box, right of=c] (d) {量化 / 人性化};
+  \node[box, right of=d] (e) {试听};
+  \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
+\end{tikzpicture}
+\caption{卷帘里的常用流程：选片段 $\to$ 画音符 $\to$ 改音高/时值 $\to$ 量化 $\to$ 试听}
+\label{fig:ch04-roll-flow}
+\end{figure}
+
+\section{力度、量化与音阶工具}
+
+\subsection{力度}
+
+底部力度泳道里，每个音符对应一根竖条，高度就是力度值。可以直接在泳道里
+调整单颗音符的力度；拖动时卷帘会给出预览读数。
+
+\subsection{量化与人性化}
+
+「编辑 $\to$ 音符量化 (Quantize 1/16)...」把选中的音符吸附到 1/16 网格；
+「编辑 $\to$ 音符人性化 (Humanize)...」打开一个对话框，可设时间抖动、力度
+抖动、强度与种子等参数，让机械的量化结果更自然。两者都只作用于当前选区。
+
+\screenshot{ch04-humanize-dialog}{人性化对话框，显示时间抖动、力度抖动与强度输入}
+
+\subsection{音阶与和弦工具}
+
+当前版本以音高车道的键标签提供音高参照；独立的音阶/和弦生成工具是否提供，
+以你所用版本的实际界面为准，未出现的入口不要当作已提供。「编辑 $\to$ 鼓机生成
+(Drums)...」则确实存在，可按风格、复杂度、种子生成鼓片段。
+
+\section{步进编辑与和弦辅助}
+
+「步进编辑」在这里指按固定步长逐格写音符的做法：用绘制工具在目标格上点出
+音符，再靠量化把时间收齐。它不是一键生成整段旋律的功能。
+
+对于和弦，当前可做的是在卷帘里把同一时刻的多个音高画成分层音符，再用试听
+核对；自动和弦进行生成不在本章描述范围，未提供的能力不以「已有」表述。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch04-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+打开卷帘 / 两个维度 & \texttt{roll-open-view} \\
+缩放与取景 & \texttt{roll-zoom-framing} \\
+画音符与选择 & \texttt{roll-note-entry} \\
+选择与拖动（单音符边界） & \texttt{roll-note-drag} \\
+力度泳道 & \texttt{roll-velocity-lane} \\
+量化与人性化 & \texttt{roll-quantize-humanize} \\
+音阶与和弦工具 / 步进编辑 & \texttt{roll-scale-step} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 在卷帘里画一段旋律、改力度、量化到 1/16，并说清当前拖动只作用于单颗音符。
+
+\paragraph{动手练习} 在一条 MIDI 轨的片段上打开卷帘，用数字键 2 画一小节 C 大调音阶，在力度泳道把第一个音改强，用「音符量化」收到 1/16，再按空格试听；最后试着拖其中一颗音符，确认其余音符不动。

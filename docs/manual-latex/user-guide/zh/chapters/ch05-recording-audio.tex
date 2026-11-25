@@ -1,0 +1,101 @@
+% 夜半用户手册 · 第 5 章：录音与音频编辑（中文）
+% T-DOC-001 逐章交付（CH05 任务未到前预写）。
+% 事实来源：app.slint 菜单与回调、host.rs 录音接线、record_landing.rs、
+% docs/manual/03-tracks-clips.md、cli.rs SHORTCUTS。
+
+\chapter{录音与音频编辑}
+\label{ch:recording-audio}
+
+这一章讲怎么把外部声音弄进工程：录音、导入、把音频片段摆到轨道上，以及
+最基础的裁剪与淡化。录音与导入的素材都会进入工程资产池，随工程一起走。
+
+\section{录音流程与输入监测}
+
+\subsection{打开录音面板}
+
+「文件 $\to$ 实时录音至 WAV...」打开录音面板。面板里有录音就绪（Arm）开关、
+输入设备选择与输入测试；录音路径使用与工程一致的采样率（工程缺省 48 kHz）。
+按键走带同样受录音状态影响：停录会结束写入，而不是继续偷偷录下去。
+
+\screenshot{ch05-record-panel}{录音面板，显示就绪开关、输入设备选择与电平监测}
+
+\subsection{录音落地}
+
+停录成功后，录到的字节会按真实解码事实（帧数、采样率、声道、位深）落进
+工程资产池，并在接线完整时向工程提交一次「加片段」操作——于是录音结果
+直接出现在时间轴上，而不只是磁盘上的 WAV 文件。若当前装配没有把录音写入面
+接进工程，应用只落盘、不假装提交过；这是无头或诊断形态的既有行为。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.2cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+  \node[box] (a) {选输入设备};
+  \node[box, right of=a] (b) {Arm + 试听电平};
+  \node[box, right of=b] (c) {录音 / 停录};
+  \node[box, right of=c] (d) {字节进资产池};
+  \node[box, right of=d] (e) {片段上时间轴};
+  \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
+\end{tikzpicture}
+\caption{录音落地链路：选设备 $\to$ 就绪监测 $\to$ 录音/停录 $\to$ 资产池 $\to$ 时间轴片段}
+\label{fig:ch05-record-flow}
+\end{figure}
+
+\section{音频片段的裁剪、淡入淡出与交叉淡化}
+
+\subsection{导入与摆放}
+
+「文件 $\to$ 导入音频文件...」把音频读进工程；「轨道 $\to$ 将最新导入音频
+摆放到当前音频轨」把它放到当前音频轨的时间轴上。片段的落点由播放头与当前
+选中轨决定，所以摆放前先确认播放头位置和选中轨，避免片段落到错误的轨或
+位置。
+
+\subsection{裁剪与淡化}
+
+片段放好后，拖左右边缘可以改变它的时间范围：裁掉头部空白或尾部多余部分，
+就是最常用的音频修整。淡入让片段开头从安静渐强，淡出让结尾渐弱；相邻两个
+片段在重叠区间上做交叉淡化，可以让衔接不出现突变。
+
+这些操作的具体入口（片段参数区、右键菜单或编辑菜单）以当前版本界面为准；
+不同版本可能有差异，未出现的控件不要当作已提供。淡化只改变增益包络，不
+改动资产池里的原始字节。
+
+\screenshot{ch05-audio-clip-edges}{一个音频片段，标出左右可拖边缘与淡化手柄}
+
+\subsection{不要被「完成」提示误导}
+
+导出分轨时，量的是实际渲染与跳过情况；如果某条分轨里的音频片段全被跳过，
+回执应如实给出片段跳过计数并将提示降级，而不是仍然只说「分轨完成」。看到
+「完成」时，仍建议对照回执里的计数核对（详见第 8 章）。
+
+\section{素材池与音频资产管理}
+
+录音与导入得到的音频字节都进工程资产池，按内容哈希寻址。它的直接好处是
+工程自带素材：拷走 \texttt{.yeban} 文件，用到的声音会随容器同行，换机器打开
+不会变成无声。
+
+\screenshot{ch05-asset-pool}{资产池面板，列出工程内音频资产与内容哈希}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch05-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+打开录音面板 / 输入监测 & \texttt{record-panel-input} \\
+录音落地 & \texttt{record-landing} \\
+导入与摆放 & \texttt{audio-import-place} \\
+裁剪与淡化 & \texttt{audio-trim-fade} \\
+不要被「完成」提示误导 & \texttt{audio-receipt-honesty} \\
+素材池与音频资产管理 & \texttt{audio-asset-pool} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 完成一次录音并让片段落到目标轨上，导入音频、裁掉首尾、加淡入淡出，并通过回执核对导出结果。
+
+\paragraph{动手练习} 新建一条音频轨，把播放头放到 001.01.000；用「实时录音至 WAV...」录两小节并停录，确认片段出现在时间轴上；裁掉开头空白，给结尾加淡出；再用「导入音频文件...」导入一个素材并用「将最新导入音频摆放到当前音频轨」放到第二条轨；最后导出分轨，对照回执里的片段计数。

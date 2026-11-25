@@ -1,0 +1,188 @@
+% Yeban User Guide — Chapter 1 sample (English)
+% T-DOC-001 first package. Section-by-section counterpart of the Chinese sample.
+% Sources: README.md, docs/manual/01-overview.md, 02-projects.md,
+% crates/yeban-app/src/help.rs, crates/yeban-app/src/cli.rs SHORTCUTS.
+
+\chapter{Getting Started}
+\label{ch:quickstart}
+
+Yeban is an open-source digital audio workstation: a pure-Rust, low-latency real-time
+audio engine with a native Slint GUI and a complete MCP tool surface. A human at the
+desktop and an AI agent can work on the same project side by side. This chapter takes
+you from installation to your first export, using only features that actually exist.
+
+\section{Installation and First Launch}
+
+\subsection{Choose an installation method}
+
+The easiest route is the nightly installers in the Download table of \texttt{README.md}
+(they track \texttt{main} and are unsigned): an MSI for Windows x86\_64, DMG images for
+macOS (Apple Silicon and Intel), and DEB packages for Linux (x86\_64 and arm64).
+Portable \texttt{.tar.gz} archives and \texttt{SHA256SUMS} are on the nightly release page.
+
+\paragraph{Building from source} requires Rust 1.99.0 (pinned by
+\texttt{rust-toolchain.toml}; \texttt{rustup} installs it automatically), a C++
+compiler and \texttt{libclang} (\texttt{yeban-dsp} generates bindings with bindgen).
+On Ubuntu/Debian:
+
+\begin{verbatim}
+sudo apt-get install -y clang libclang-dev pkg-config libfontconfig1-dev \
+  libfreetype-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev \
+  libx11-dev libgl1-mesa-dev libasound2-dev
+cargo build --release -p yeban-app
+\end{verbatim}
+
+Run it with \texttt{cargo run --release -p yeban-app}; add \texttt{-- --headless} on a
+machine without a display. On a memory-tight machine, build with
+\texttt{cargo build --profile release-small -p yeban-app}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.8cm}]
+  \node[box] (a) {Installer / build};
+  \node[box, right of=a] (b) {First launch};
+  \node[box, right of=b] (c) {Onboarding tour};
+  \node[box, right of=c] (d) {Track + clip};
+  \node[box, right of=d] (e) {Audition};
+  \node[box, right of=e] (f) {Export WAV};
+  \draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
+  \draw[->] (d) -- (e); \draw[->] (e) -- (f);
+\end{tikzpicture}
+\caption{The hands-on route: install $\to$ launch $\to$ tour $\to$ arrange $\to$ audition $\to$ export}
+\label{fig:ch01-flow}
+\end{figure}
+
+\subsection{First launch and the onboarding tour}
+
+On first launch the app automatically opens the onboarding tour (only when persisted
+state says it should: it will not reopen once dismissed with ``don't show again'' or
+completed). The tour walks through the welcome page, transport bar, arrangement area,
+piano roll and mixer console, ending with the inspector and sound library. Each step
+navigates the interface to the area it describes. To see it again, use Help $\to$
+Onboarding Tour.
+
+\screenshot{ch01-onboarding-tour}{The onboarding card on first launch, stopped at the ``transport bar'' step}
+
+\section{Interface Overview}
+
+\subsection{Menu bar and transport bar}
+
+The menu bar has eight groups: File, Edit, Track, Transport, Mix, View, Diagnostics
+and Help. The transport bar at the top has play/pause (Space), stop, return to
+\texttt{001.01.000}, cycle toggle (C), metronome and count-in, plus the tempo (BPM)
+display and tap input. On its right is the workspace switcher: Overview, Live Launch,
+Linear Arrangement and Mixer Console, mapped to number keys 1--4.
+
+\screenshot{ch01-main-window}{The main window with the built-in demo project open, labelling the menu bar, transport bar, arrangement area, inspector and bottom console}
+
+\subsection{Centre: the arrangement area}
+
+Each track is a row: the left part is the track header (name, mute/solo, volume), and
+clips sit on the timeline to its right. Clips can be dragged, resized by their edges,
+copied (Cmd/Ctrl+C / Cmd/Ctrl+V), cut (Cmd/Ctrl+X) and deleted. Above are the bar ruler
+and section markers; below you can expand the chord track and automation lanes. Press
+Tab to open the Clip Launch Matrix (Session view) and fire clips from its grid.
+
+\subsection{Left: inspector and sound library}
+
+The upper-left pane is the channel inspector, showing the selected track's channel
+strip and device parameters; I toggles it. The lower-left pane is the sound library,
+where you browse presets and SFZ libraries. The first button in the track-header tool
+row is the Track Menu, collecting all operations for that track.
+
+\subsection{Bottom console and edges}
+
+Three bottom tabs: piano roll (P / F7), mixer console (X / F8) and device rack (F9);
+F3 maximises/restores the console. On the right you can open the Control Room (F4),
+showing master monitoring and loudness readings. The status bar at the bottom shows
+selection info, live chord recognition, shortcut hints and audio-device status; below
+it is the song-overview panel. Hovering over a control shows a tooltip; T toggles them.
+
+\begin{table}[htbp]
+\centering
+\caption{Keys used in this chapter (canonical labels; Cmd+ on macOS, Ctrl+ elsewhere)}
+\label{tab:ch01-keys}
+\begin{tabular}{ll}
+\hline
+Key & Action \\
+\hline
+Space & Play / pause \\
+Shift+Space & Resume from cursor \\
+C & Cycle playback toggle \\
+Enter & Return to start \\
+Tab / F5 & View switch / Session view \\
+F6 & Arrangement view \\
+P / F7 & Piano roll \\
+X / F8 & Mixer console \\
+F9 & Device rack \\
+I & Toggle left inspector \\
+Cmd/Ctrl+S & Save project \\
+Cmd/Ctrl+Shift+S & Save as \\
+Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z & Undo / redo \\
+Cmd/Ctrl+T & Split selected clip at playhead \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Your First Project}
+
+\subsection{Start empty, or tour the demo first}
+
+A project uses the \texttt{.yeban} extension and is the only project format: one
+container holds tracks, clips, notes, device chains and the assets they use.
+
+File $\to$ New Empty Project gives you a project with only the master bus. If you
+launch without specifying a project, the app opens a demo project (drums, bass, pad,
+lead, strings, percussion) so you can look around first; it is not your work file, so
+editing it cannot lose anything of yours.
+
+\subsection{Create a track, place a clip, play}
+
+In an empty project, create an audio track from the Track Menu; pick a preset or SFZ
+instrument in the sound library and place an audio clip on the timeline. Press Space to
+play — the transport shows position and tempo. To loop a passage, press C and select a
+range. If a clip lands in the wrong place, drag it or drag its edge to resize; to split
+it at the playhead, select it and press Cmd/Ctrl+T.
+
+\screenshot{ch01-first-clip}{A clip placed on track 1 of an empty project, with the playhead in the middle of the clip}
+
+\subsection{Save and export}
+
+File $\to$ Save Project (Cmd/Ctrl+S) writes back to the original file;
+File $\to$ Save As (Cmd/Ctrl+Shift+S) changes the name or location. Saving is atomic,
+so a power cut mid-write cannot leave a half-written file.
+
+Full-mix WAV export lives in the File menu. Stem export renders each source-node track
+into a 32-bit Float WAV in a fixed output directory, and produces a
+\texttt{stems-manifest.json} index plus a one-line export receipt. The master bus
+produces no file but is named in the skipped list — that is not a dropped track.
+
+\screenshot{ch01-export-dialog}{The export dialog and the resulting receipt/toast message}
+
+\section{Help Topic Mapping}
+
+\begin{table}[htbp]
+\centering
+\caption{Sections of this chapter $\to$ in-app help anchors}
+\label{tab:ch01-help}
+\begin{tabular}{ll}
+\hline
+Section & Help topic \\
+\hline
+Installation and first launch & \texttt{getting-started-install} \\
+Onboarding tour & \texttt{getting-started-onboarding} \\
+Menu bar and transport bar & \texttt{interface-transport} \\
+Arrangement area & \texttt{interface-arrangement} \\
+Inspector and sound library & \texttt{interface-inspector-library} \\
+Bottom console and edges & \texttt{interface-console} \\
+New project / demo project & \texttt{project-new-demo} \\
+Track, clip and playback & \texttt{project-first-arrange} \\
+Save and export & \texttt{project-save-export} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{What you will be able to do} Complete the whole flow — install, launch, create a track, place a clip, play back and export — and name the five main interface areas.
+
+\paragraph{Hands-on exercise} Create an empty project, place one demo audio clip on track 1; press Space to play and C to loop two bars; save with Cmd/Ctrl+S; export a full-mix WAV and a stem set; finally reopen via File $\to$ Open / Restore and verify the clip is still there.

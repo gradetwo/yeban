@@ -1,0 +1,115 @@
+% 夜半用户手册 · 第 9 章：快捷键与命令速查（中文）
+% T-DOC-001 逐章交付（CH09 任务未到前预写）。
+% 事实来源：cli.rs SHORTCUTS（唯一权威策略表）、help.rs 应用内速查、
+% docs/manual/README.md 写作约束（不手抄第二份键位表）。
+
+\chapter{快捷键与命令速查}
+\label{ch:shortcuts}
+
+夜半有一张**唯一的快捷键策略表**：程序里「帮助 $\to$ 快捷键速查」显示的那张，
+与命令行 \texttt{yeban-app --print-shortcuts} 打印的是同一份。本章按工作流挑出
+常用键做导览，方便记忆；它不是第二份权威表——要查全量键位与落地状态，请
+以应用内速查为准。
+
+\section{与应用内速查同源的策略表}
+
+\subsection{为什么本章不抄一张全表}
+
+策略表随版本演进：哪些键已落地、哪些「键已绑定但宿主尚未实现」，表里都有
+逐行标记。手抄一份很快就会过期，也会把「未实现」误写成「可用」。因此本章
+只做两件事：给出键位的规范写法说明，以及按工作流挑出高频操作。
+
+\subsection{规范写法与平台折叠}
+
+表里保留跨平台的规范写法 \texttt{Cmd/Ctrl+}：macOS 上渲染成 \texttt{Cmd+}，
+其余平台渲染成 \texttt{Ctrl+}。所以你在 Windows 上看到的 \texttt{Ctrl+S}，与
+macOS 上的 \texttt{Cmd+S}，是同一条规范键位。带「（未实现）」标记的键表示
+键已绑定、也能解析出动作，但宿主还没有对应实现，按下会被拒绝——那不是键坏了。
+
+\section{按工作流分组的常用键}
+
+以下键位均取自策略表，按做事的顺序分组。
+
+\subsection{工程与编辑}
+
+\begin{description}
+  \item[Cmd/Ctrl+N] 新建 MIDI 合成器轨。
+  \item[Cmd/Ctrl+O] 打开工程。
+  \item[Cmd/Ctrl+S] 保存工程；Cmd/Ctrl+Shift+S 另存为。
+  \item[Cmd/Ctrl+Z] 撤销；Cmd/Ctrl+Shift+Z 重做。
+  \item[Tab] 视图切换（仅画布聚焦）；F5 Session 视图，F6 Arrangement 视图。
+\end{description}
+
+\subsection{编排与编辑片段}
+
+\begin{description}
+  \item[Space] 播放 / 暂停；Shift+Space 从光标处续播。
+  \item[Enter] 回到起点；C 循环播放开关。
+  \item[Cmd/Ctrl+T] 在播放头处切分选中的剪辑。
+  \item[Cmd/Ctrl+C / V / X] 复制 / 粘贴 / 剪切片段。
+  \item[Cmd/Ctrl+= / -] 时间轴水平放大 / 缩小。
+  \item[Cmd/Ctrl+↑ / ↓] 音轨垂直缩小 / 放大。
+\end{description}
+
+\subsection{底部控制台与面板}
+
+\begin{description}
+  \item[P / F7] 钢琴卷帘；X / F8 混音控制台；F9 设备机架；F3 控制台设备堆叠。
+  \item[I] 显隐左侧检查器。
+  \item[Cmd/Ctrl+Shift+A] 自动化泳道显示。
+  \item[Cmd/Ctrl+Shift+B] 打开统一浏览器（音色/采样/预设/效果）。
+  \item[E] 编辑器视图切换。
+\end{description}
+
+\subsection{录音与其他}
+
+\begin{description}
+  \item[R] 录制开 / 关。
+  \item[Cmd/Ctrl+Shift+H] 时光机。
+  \item[Esc] 关闭命令面板 / 热区透视。
+\end{description}
+
+\subsection{输入法的例外}
+
+在文本输入与 IME 合成态下，除 F5/F6 之外的键都被输入法吞掉，不会触发上面的
+动作——这是刻意的，避免打字时误触快捷键。策略表专门有两列说明「画布聚焦」
+与「文本输入 + IME 合成态」的差别。
+
+\screenshot{ch09-shortcuts-panel}{「帮助 → 快捷键速查」面板，显示规范写法、键位、说明与落地状态列}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.2cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+  \node[box] (a) {帮助 → 快捷键速查};
+  \node[box, right of=a] (b) {--print-shortcuts};
+  \node[box, below of=a] (c) {本章：按工作流导览};
+  \draw[<->] (a)--(b); \draw[->] (a)--(c);
+\end{tikzpicture}
+\caption{权威来源是应用内速查与 \texttt{--print-shortcuts} 的同一张策略表；本章只是导览}
+\label{fig:ch09-shortcut-source}
+\end{figure}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch09-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+与应用内速查同源 / 规范写法 & \texttt{shortcuts-policy-table} \\
+工程与编辑 & \texttt{shortcuts-project-edit} \\
+编排与编辑片段 & \texttt{shortcuts-arrange} \\
+底部控制台与面板 & \texttt{shortcuts-panels} \\
+录音与其他 & \texttt{shortcuts-record-misc} \\
+输入法的例外 & \texttt{shortcuts-ime-exception} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 按工作流找到高频键位，知道 \texttt{Cmd/Ctrl+} 的平台折叠规则，并知道查全量键位要到应用内速查而不是本章。
+
+\paragraph{动手练习} 打开「帮助 $\to$ 快捷键速查」，对照本章挑出三个你最常用但还不熟的键；在命令行运行 \texttt{yeban-app --print-shortcuts}，确认它与面板显示的是同一批键位；最后只用键盘完成一次「打开工程 $\to$ 切分片段 $\to$ 保存」。

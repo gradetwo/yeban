@@ -1,0 +1,117 @@
+% 夜半用户手册 · 第 3 章：轨道与片段（中文）
+% T-DOC-001 逐章交付（CH03 任务未到前预写，待任务到位后提交）。
+% 事实来源：app.slint 菜单与 clip-drag 回调、cli.rs SHORTCUTS、docs/manual/01-overview.md。
+
+\chapter{轨道与片段}
+\label{ch:tracks-clips}
+
+编曲区是夜半的主工作区：一条轨道一行，片段摆在右边的时间轴上。这一章讲怎么
+建轨、怎么摆片段、怎么把一段素材变成你想要的编排。
+
+\section{轨道类型与轨道头}
+
+\subsection{三种轨道}
+
+「轨道」菜单提供三类新建入口：
+
+\begin{itemize}
+  \item \textbf{新建 MIDI 合成器轨（Cmd/Ctrl+N）}：用内置合成器或插件乐器发声，里面放 MIDI 片段。
+  \item \textbf{新建音频轨}：放录音或导入的音频片段。
+  \item \textbf{新建辅助总线轨}：接收其他轨的发送，用于汇总与分组处理。
+\end{itemize}
+
+「删除当前选中轨道」从菜单移除选中的轨。
+
+\subsection{轨道头}
+
+每条轨左边是轨道头：名称、静音 / 独奏开关、音量，以及最前面的「轨道菜单」
+按钮（汇集本轨的操作）。静音让该轨不出声，独奏则只听这一轨；两者都可以在
+混音控制台里同样操作（见第 7 章）。
+
+\screenshot{ch03-track-header}{轨道头特写，标出轨道菜单按钮、名称、静音/独奏与音量}
+
+\section{片段的创建、移动、复制与分割}
+
+\subsection{创建片段}
+
+在一条轨上建立片段后，它出现在时间轴上。片段的内容取决于轨道类型：MIDI 轨上
+是音符（到钢琴卷帘里写，见第 4 章）；音频轨上是音频素材。空 MIDI 片段的长度
+由工程拍号算出（默认 4 小节），拍号非法时应用会报出「拍号非法，无法计算片段
+长度」，不会悄悄造一个长度。
+
+\subsection{移动、拉伸与剪贴}
+
+\begin{itemize}
+  \item \textbf{移动}：拖动片段改位置；拖左右边缘改长度。
+  \item \textbf{复制 / 粘贴 / 剪切}：Cmd/Ctrl+C、Cmd/Ctrl+V、Cmd/Ctrl+X，与菜单「编辑」组一致。
+  \item \textbf{分割}：选中片段后按 Cmd/Ctrl+T，在播放头处切开。
+\end{itemize}
+
+拖动过程有预览：应用会显示片段将要落到的位置，松手才真正写入工程；拖动中可以
+取消，不会留下半途状态。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.0cm, minimum height=0.8cm}]
+  \node[box] (a) {建片段};
+  \node[box, right of=a] (b) {放/拉伸};
+  \node[box, right of=b] (c) {复制成循环};
+  \node[box, right of=c] (d) {播放头切分};
+  \node[box, right of=d] (e) {进入卷帘写音符};
+  \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
+\end{tikzpicture}
+\caption{片段的常用操作链：建片段 $\to$ 摆放 $\to$ 复制 $\to$ 切分 $\to$ 写音符}
+\label{fig:ch03-clip-flow}
+\end{figure}
+
+\section{拉伸、合并与多选编辑}
+
+把片段边缘拉长或缩短只改变它的时间范围，不改变内部音符的音高与相对时序（音频
+片段则改变播放区间）。需要把相邻片段接成一段连续内容时，先对齐边界再合并；
+合并后原来的两个片段变成一个，撤销可以还原。
+
+多选时（按住选择多个片段），复制、剪切、删除等编辑作用于整组；如果一组片段
+只被部分选中，操作范围以选区为准，不会波及未选中的片段。
+
+\screenshot{ch03-multi-select}{编曲区里多选三个片段并整体拖动的预览态}
+
+\section{片段参数与 Clip 激发矩阵}
+
+选中片段后，检查器与片段参数区显示它的身份（名称、所属轨道）与可编辑参数。
+按 Tab 打开 \textbf{Clip 激发矩阵}（Session 视图），界面变成按格子排列的片段：
+点一个格子就触发对应片段，适合现场激发与即兴编排。F5 同样切到 Session 视图，
+F6 回到 Arrangement（线性编曲）视图。
+
+\screenshot{ch03-clip-matrix}{Clip 激发矩阵，格子按轨排列，其中一格正在触发}
+
+\section{跨轨拖动与换轨}
+
+当前版本的片段拖动只改变同一轨内的横向位置；把片段从一个轨拖到另一个轨的
+「换轨」能力仍在演进中（在途单 T-FIX-209）。因此不要把「拖到别的轨上」当作
+已提供的功能：需要放到另一轨时，用复制 / 粘贴到目标轨再删除原片段的稳妥做法，
+直到该能力正式提供。夜半不会把未实现的操作伪装成成功。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch03-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+三种轨道 / 轨道头 & \texttt{tracks-types-header} \\
+创建片段 & \texttt{clips-create} \\
+移动、拉伸与剪贴 & \texttt{clips-move-resize} \\
+拉伸、合并与多选编辑 & \texttt{clips-merge-multiselect} \\
+片段参数与 Clip 激发矩阵 & \texttt{clips-launch-matrix} \\
+跨轨拖动与换轨 & \texttt{clips-cross-track} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 建出三类轨道，摆好并剪出想要的片段结构，用 Clip 激发矩阵触发片段，并知道哪些跨轨操作当前不可用。
+
+\paragraph{动手练习} 新建一条 MIDI 合成器轨和一条音频轨；建一个 4 小节的 MIDI 片段，复制成两小节循环，用 Cmd/Ctrl+T 在播放头切一刀；按 Tab 进 Session 视图点格子触发；最后按 F6 回到编曲视图核对片段还在。

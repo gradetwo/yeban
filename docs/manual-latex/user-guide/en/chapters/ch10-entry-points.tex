@@ -1,0 +1,131 @@
+% Yeban User Guide — Chapter 10: Terminal and Automation Entry Points (English)
+% T-DOC-001 chapter-by-chapter delivery, written ahead of the CH10 task.
+% Sources: README.md, docs/README.md, docs/tool-availability.md,
+% presence of crates/yeban-tui, cli.rs switches. Tool counts are never hand-copied.
+
+\chapter{Terminal and Automation Entry Points}
+\label{ch:entry-points}
+
+The same project can be operated through three entry points: the desktop GUI, a
+terminal TUI and the command line CLI, plus an MCP tool surface for AI agents. They
+share one project model and backend, so they do the same work with different
+interaction styles. This chapter gives one section each and says when to use which.
+
+\section{TUI}
+
+Yeban provides a terminal user interface (TUI) entry point, with source in
+\texttt{crates/yeban-tui}. It serves setups without a graphical desktop, or users who
+prefer working in a terminal, without opening a window; the panels and keys it actually
+offers are documented by that entry point's own help, not hand-copied here where they
+could go stale.
+
+\begin{table}[htbp]
+\centering
+\caption{What each entry point suits}
+\label{tab:ch10-entry-compare}
+\begin{tabular}{ll}
+\hline
+Entry & Best for \\
+\hline
+Desktop GUI & Everyday arranging, notes, mixing, visual feedback \\
+TUI & Terminal environments, no graphical desktop, remote shells \\
+CLI & Batch work, scripts, export, CI \\
+MCP & AI agents editing and querying through tool calls \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{CLI}
+
+\subsection{Read the help first}
+
+The complete switch list and exit codes come from \texttt{yeban-app --help}; this
+chapter is a guide, not a replacement. Common entries:
+
+\begin{description}
+  \item[\texttt{--open <path>}] Open a given project directly (GUI or batch).
+  \item[\texttt{--export-wav}] Export the full mix; pair with \texttt{--loudness-target} and \texttt{--true-peak-ceiling} for mastering. An unreachable target fails loudly rather than silently degrading.
+  \item[\texttt{--export-stems <dir>}] Export stems with the same backend as the MCP tool; track-selection switches can limit it to named tracks.
+  \item[\texttt{--apply-ops}] Commit a file of edit operations as one batch.
+  \item[\texttt{--export-song-overview}] Export the whole-song overview (energy/frequency/density/emotion with an anomaly summary).
+  \item[\texttt{--print-shortcuts}] Print the shortcut policy table (the same source as the GUI's Help $\to$ Shortcuts).
+  \item[\texttt{--headless}] Run on a machine without a display.
+\end{description}
+
+\subsection{Know the feature gates}
+
+Some switches are gated by build features. In a default build the MCP-related
+\texttt{in-process-mcp} is on — but "compiled in" is not "listening": at runtime you
+still need \texttt{--enable-mcp-http} or the environment variable
+\texttt{YEBAN\_MCP\_HTTP=1}. With \texttt{--no-default-features}, calling a gated
+switch yields a usage error naming the feature (exit code 2), never a silent ignore.
+Experimental exports such as \texttt{--export-als} and \texttt{--export-logic} are off
+by default and only compile when requested.
+
+\section{MCP}
+
+\subsection{Two forms, one registry}
+
+MCP has two forms sharing a single \texttt{TOOLS} registry and the same domain
+implementation:
+
+\begin{description}
+  \item[Form A (library form)] Hosted in-process by \texttt{yeban-app}, for an AI agent working on a running DAW; transport is loopback HTTP (\textbf{only} \texttt{127.0.0.1}) or direct in-process calls.
+  \item[Form B (binary form)] A standalone \texttt{yeban-mcp} binary over stdio for batch work without a GUI.
+\end{description}
+
+Network listening binds only the loopback address, never \texttt{0.0.0.0} — a safety
+red line. \texttt{yeban-mcp}'s own \texttt{mcp-http} is never in its default features;
+only the host can forward-enable it.
+
+\screenshot{ch10-mcp-modes}{The two MCP forms: in-app mount over loopback HTTP, standalone binary over stdio}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.2cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.4cm, minimum height=0.9cm}]
+  \node[box] (a) {One TOOLS registry};
+  \node[box, below left=of a] (b) {Form A: in-app mount};
+  \node[box, below right=of a] (c) {Form B: standalone binary};
+  \node[box, below=of b] (d) {Loopback HTTP 127.0.0.1};
+  \node[box, below=of c] (e) {stdio batch};
+  \draw[->] (a)--(b); \draw[->] (a)--(c); \draw[->] (b)--(d); \draw[->] (c)--(e);
+\end{tikzpicture}
+\caption{Both MCP forms share one registry; network listening binds only loopback}
+\label{fig:ch10-mcp-forms}
+\end{figure}
+
+\subsection{Don't trust hand-copied tool counts}
+
+The tool count must be read live from the three constants in
+\texttt{crates/yeban-mcp/src/tools.rs} and the enum in
+\texttt{schemas/mcp-tools.schema.json}: numbers in documentation have gone stale
+repeatedly and old manuals disagree with each other. This chapter deliberately gives
+no concrete number.
+
+Some tools depend on a provider injected by the host (e.g.\ an external SVS singing
+service). Form B has no injector, so calling such a tool returns the
+\texttt{providerUnavailable} contract rather than pretending success.
+
+\section{Help Topic Mapping}
+
+\begin{table}[htbp]
+\centering
+\caption{Sections of this chapter $\to$ in-app help anchors}
+\label{tab:ch10-help}
+\begin{tabular}{ll}
+\hline
+Section & Help topic \\
+\hline
+TUI & \texttt{entry-tui} \\
+CLI: help / common switches & \texttt{entry-cli-switches} \\
+CLI: feature gates & \texttt{entry-cli-features} \\
+MCP: two forms & \texttt{entry-mcp-forms} \\
+MCP: tool counts and providers & \texttt{entry-mcp-tools} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{What you will be able to do} Pick the right entry for the situation, know common CLI switches and feature gates, and explain that both MCP forms share one registry while network listening binds only loopback.
+
+\paragraph{Hands-on exercise} Use \texttt{yeban-app --help} to find the exact stem-export switch, export stems from both the GUI and CLI for the same project and compare receipts; run \texttt{yeban-app --print-shortcuts} against the GUI panel; finally confirm that without \texttt{--enable-mcp-http} the MCP HTTP port is not listening.

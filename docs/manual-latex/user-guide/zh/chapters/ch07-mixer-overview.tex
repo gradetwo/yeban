@@ -1,0 +1,99 @@
+% 夜半用户手册 · 第 7 章：混音台概览（中文）
+% T-DOC-001 逐章交付（CH07 任务未到前预写）。
+% 事实来源：app.slint 混音/send/控制室回调与菜单、docs/manual/05-mixer-effects.md、
+% cli.rs SHORTCUTS。
+
+\chapter{混音台概览}
+\label{ch:mixer-overview}
+
+这一章把信号从一条轨走到主总线的过程串起来：通道条上有什么、插入链按什么
+顺序生效、发送与总线怎么接，以及在哪看主控监听与响度。更细的效果器参数
+不在这里展开。
+
+\section{通道条与插入链}
+
+\subsection{打开混音控制台}
+
+按 X，或从底部控制台切到混音控制台（F8 也是直达键）。每条轨一个通道条，
+最上面的推子是这条轨的音量，旁边有声像、静音 / 独奏，以及这条轨的设备链
+入口。所有轨道最终汇入主总线（Master）。
+
+「混音 $\to$ 主控总线推子归 0dB」把主控推子一键归零——那是主总线的快捷
+入口，不动任何一条轨道的推子。左侧检查器（I）显示的是同一条轨的通道条细节，
+与混音台是同一份状态，改哪边都一样。
+
+\screenshot{ch07-mixer-console}{混音控制台全景，标出通道条、推子、静音/独奏与主总线}
+
+\subsection{设备链：乐器在前，效果在后}
+
+每条轨有一条设备链：乐器在前，效果器在后，顺序就是信号流顺序。底部「设备
+机架」页签（F9）里可以增删设备、开关旁通（Bypass）；旁通是逐台设备的开关，
+关掉一台不等于把它删掉。
+
+「轨道」菜单可以直接给当前轨插入三台常用设备：参量均衡 EQ（修频段）、
+空间混响 Reverb（加空间感）、动态压缩 Compressor（压动态、让声音更靠前）。
+设备参数可以录自动化：在编曲区展开自动化泳道（A），参数随时间变化会被记进
+工程、导出时一并生效（见第 6 章）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, minimum width=2.1cm, minimum height=0.8cm}]
+  \node[box] (a) {音源 / 乐器};
+  \node[box, right of=a] (b) {插入效果 1};
+  \node[box, right of=b] (c) {插入效果 2};
+  \node[box, right of=c] (d) {音量 / 声像};
+  \node[box, right of=d] (e) {主总线};
+  \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
+\end{tikzpicture}
+\caption{一路信号的顺序：乐器 $\to$ 插入效果（按链顺序）$\to$ 推子/声像 $\to$ 主总线}
+\label{fig:ch07-signal-flow}
+\end{figure}
+
+\section{发送、总线与监听控制室}
+
+\subsection{发送与辅助总线}
+
+发送（Send）把一路信号的一份副本送往另一条路径；辅助总线轨（「轨道 $\to$
+新建辅助总线轨」）用来接收这些发送，做汇总或分组处理。发送可以从界面创建与
+移除，增益可调；当创建条件不满足时，界面会给出原因，而不是静默失败。
+
+\screenshot{ch07-sends}{通道条上的发送区，显示目标总线、增益与创建/移除入口}
+
+\subsection{监听控制室}
+
+「混音 $\to$ 显隐 监听控制室 (Control Room)」（快捷键 F4）打开独立的主控
+监听区：看主总线的电平与响度读数，调总音量时不碰任何一条轨道的推子。它和
+底部的混音控制台是两回事：前者管「你听到的总输出」，后者管「每条轨怎么平衡」。
+
+\screenshot{ch07-control-room}{监听控制室面板，显示主总线电平与响度读数}
+
+\section{与混音手册的分工}
+
+本章只给一个概览：怎么找到控件、一路信号大致怎么走、发送与总线怎么接。
+具体效果器的每个参数、取值范围与典型用法，属于另一册《混音与效果》手册；
+那里会逐项对着代码里的真实参数名写。两册口径一致：本章说「在哪里」，分册说
+「怎么调」。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\caption{本章小节 $\to$ 应用内帮助锚点}
+\label{tab:ch07-help}
+\begin{tabular}{ll}
+\hline
+本章小节 & 帮助主题 \\
+\hline
+打开混音控制台 / 通道条 & \texttt{mixer-channel-strip} \\
+设备链：乐器在前效果在后 & \texttt{mixer-insert-chain} \\
+发送与辅助总线 & \texttt{mixer-sends-buses} \\
+监听控制室 & \texttt{mixer-control-room} \\
+与混音手册的分工 & \texttt{mixer-manual-division} \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{本章学完能做什么} 找到通道条与设备链，说清一路信号的顺序，建一条辅助总线并接一个发送，知道主控监听在哪看。
+
+\paragraph{动手练习} 按 X 打开混音控制台，给一条轨插入参量均衡 EQ 并在设备机架里旁通/恢复一次；新建一条辅助总线轨，从原轨创建一个发送并调低增益；按 F4 打开监听控制室看主总线读数；最后把主控推子一键归 0dB，确认各轨推子没被改动。
