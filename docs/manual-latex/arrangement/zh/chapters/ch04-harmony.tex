@@ -1,0 +1,202 @@
+\chapter{和声层：让和弦听得见，又不挡住旋律}
+\label{ch:harmony}
+
+\begin{quote}
+\itshape 和声层不是把和弦按得越满越好；它的工作是让听众听见和声走向，同时把中间让给旋律。
+\end{quote}
+
+\section{和声层的工作}
+\label{sec:harmony-job}
+
+\term{和声层（harmony layer）}{harmony-layer}承担四件事：
+
+\begin{enumerate}
+\item \textbf{让和弦走向可听}：听众不需要知道和弦名字，但必须感到“这一段和上一段不一样”。
+\item \textbf{给旋律支点}：主旋律落在哪个和弦音上，决定这句话是稳、是悬、还是解决。
+\item \textbf{控制织体}：长音铺底、琶音、压缩伴奏，三种织体给同一组和弦完全不同的性格。
+\item \textbf{填空间但不抢频段}：把低频留给贝斯，把中心音区留给主唱，把高音区留给弦乐或主奏。
+\end{enumerate}
+
+和声层最容易犯的错是“什么都想要”：既想铺满低频，又想在中频给厚和弦，还想用高音琶音加花。结果每一层都在，主旋律却没有地方站。
+
+\section{和弦节奏：和弦多久换一次}
+\label{sec:harmonic-rhythm}
+
+\term{和弦节奏（harmonic rhythm）}{harmonic-rhythm}是和弦变化的速率。它比“用了什么和弦”更容易被听众感觉到。
+
+\begin{longtable}{p{0.22\textwidth}p{0.34\textwidth}p{0.36\textwidth}}
+\toprule
+速率 & 听感 & 适用与风险 \\
+\midrule
+\endfirsthead
+\toprule
+速率 & 听感 & 适用与风险 \\
+\midrule
+\endhead
+每小节一次 & 稳、宽、适合叙事 & 主歌、慢歌、铺底；风险是段落之间容易缺变化。 \\
+每两拍一次 & 有推进，和声变化清楚 & 流行副歌、funk；风险是与鼓的密度叠加后显得忙。 \\
+每拍或切分 & 推动强，和声色彩密 & 舞曲、爵士、复杂流行；风险是旋律被和弦变化淹没。 \\
+不规则 & 跟着歌词/句子走 & 叙事、民谣；风险是没有规律，听众抓不住段落。 \\
+\bottomrule
+\end{longtable}
+
+一条实用原则：\textbf{主歌的和声节奏不要比副歌更密。}主歌需要让听众听清故事，副歌才需要把和声变化推上来。若主歌已经每拍换和弦，副歌只能靠加更多声部来对比，容易过载。
+
+\section{排列：密集、开放、转位}
+\label{sec:voicing}
+
+同样四个和弦音，排列方式不同，听感差很远。三个概念先分清：
+
+\begin{itemize}
+\item \textbf{\term{密集排列（close voicing）}{close-voicing}}：和弦音尽量靠近，适合中高频、键盘和弦、琶音；低频用密集排列会糊。
+\item \textbf{\term{开放排列（open voicing）}{open-voicing}}：和弦音拉开，低频与中频分层；适合铺底与弦乐。
+\item \textbf{\term{转位（inversion）}{inversion}}：把根音从最低声部移开，用三音/五音/七音做低音；适合让和声连接更平滑，但不要为了“高级”而每小节乱转。
+\end{itemize}
+
+写和声层时先定两个边界：最低不能低于贝斯的根音区，最高不要压过主旋律的顶音。中间的和弦音怎么排，围绕这两个边界做文章。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \foreach \x/\label in {0/C,2.6/Am,5.2/F,7.8/G} {
+      \draw[gray!40] (\x,0) -- (\x,4.2);
+      \node[font=\scriptsize] at (\x,4.45) {\label};
+    }
+    \foreach \x/\y in {0/1.2,0/1.8,0/2.4,0/3.0, 2.6/1.4,2.6/2.0,2.6/2.6,2.6/3.2, 5.2/1.2,5.2/1.8,5.2/2.4,5.2/3.0, 7.8/1.4,7.8/2.0,7.8/2.6,7.8/3.2} {
+      \fill[yebanblue!70] (\x,\y) circle (0.09);
+    }
+    \draw[very thick, yebanblue] (0,3.0) -- (2.6,3.2) -- (5.2,3.0) -- (7.8,3.2);
+    \node[font=\scriptsize, anchor=west] at (8.1,3.4) {顶音};
+    \node[font=\scriptsize, anchor=west, text width=3.2cm] at (8.1,1.6) {顶音尽量平滑移动，\\不要每小节跳一次。};
+  \end{tikzpicture}
+  \caption{四组和弦的声部排列示意：每一列是一个和弦，粗线标出顶音走向；顶音平滑，内声部才有空间做色彩。}
+  \label{fig:voicing}
+\end{figure}
+
+\begin{tipbox}
+需要更厚的和声时，先加“层数”不如先加“排列宽度”。把密集排列改成开放排列，往往比多叠一个八度更有效，也更不挤主唱。
+\end{tipbox}
+
+\section{三种织体：铺底、琶音、压缩伴奏}
+\label{sec:textures}
+
+\begin{longtable}{p{0.16\textwidth}p{0.30\textwidth}p{0.46\textwidth}}
+\toprule
+织体 & 写法 & 适用与风险 \\
+\midrule
+\endfirsthead
+\toprule
+织体 & 写法 & 适用与风险 \\
+\midrule
+\endhead
+铺底 & 长音/慢速和弦，通常 3—4 个音 & 主歌、副歌的背景和声；风险是低频/中频铺太满，主唱被包住。 \\
+琶音 & 把和弦音按顺序拆开，可有固定 pattern & 电子、流行、钢琴叙事；风险是机械重复，每小节都把和弦拆满。 \\
+压缩伴奏 & 在关键拍给和弦，其余拍留空 & 放克、流行、爵士；风险是与军鼓/贝斯抢同一拍点。 \\
+\bottomrule
+\end{longtable}
+
+三种织体可以并存，但要分主次：一段里通常只有一种是“主织体”，其余两种是补充。主织体决定段落性格，补充织体只加颜色。
+
+\section{写铺底：三到四个音就够}
+\label{sec:pad}
+
+铺底的目标是“托住”，不是“填满”。写法：
+
+\begin{itemize}
+\item \textbf{音数}：3—4 个音足够；七和弦也不需要把七个音都写上，根、三、七（或五）已经能说清色彩。
+\item \textbf{音区}：常见起点 C3—C5；最低不要压到贝斯根音，最高不要盖过主旋律顶音。
+\item \textbf{低音}：不要在每个和弦的低位都堆根音；根音交给贝斯，铺底用三音/五音/七音做低音更干净。
+\item \textbf{顶音}：让顶音尽量平滑移动；顶音每小节大跳，听众会以为那是旋律。
+\item \textbf{持续音}：长音不要从头到尾一动不动；在和弦变化时换音，或在段落边界留一个呼吸。
+\end{itemize}
+
+\section{写琶音：pattern 要服务律动}
+\label{sec:arpeggio}
+
+琶音不是“把和弦拆开就完了”。它有自己的节奏性格：
+
+\begin{itemize}
+\item \textbf{先定速度}：四分、八分、十六分琶音是三种不同密度；主歌用慢的，副歌再用快的。
+\item \textbf{先定音型}：上行、下行、往返、跳进；固定 pattern 容易形成记忆，但连续四小节不变会机械。
+\item \textbf{留空}：每两小节留一拍或半拍，让鼓与贝斯接管；满琶音会把节奏组盖住。
+\item \textbf{力度}：琶音的音符不要全部同一力度；重音落在和弦根/五音或关键拍上，听众才听得出和声骨架。
+\end{itemize}
+
+\section{在夜半里落地}
+\label{sec:harmony-yeban}
+
+\begin{enumerate}
+\item \textbf{看和弦轨。}编曲区下方可展开和弦轨与自动化泳道；先用和弦轨核对每段的和弦变化点，再决定铺底/琶音/伴奏的落点。
+\item \textbf{用钢琴卷帘写和弦。}选中 MIDI 片段，按 P / F7 打开钢琴卷帘；先写 3—4 个和弦音的骨架，再决定是否加色彩音。
+\item \textbf{复制片段时改排列。}Ctrl+C / Ctrl+V 复制和弦片段后，至少改一处：顶音走向、转位、织体密度；不要把同一组排列复制到所有段。
+\item \textbf{设备机架换音色。}铺底、琶音、键盘可以用不同音色；在底部设备机架里换乐器/效果，不要在一条轨上叠三种角色。
+\item \textbf{Solo/Mute 检查频段。}Solo 铺底听它是否盖住主旋律；Mute 铺底听和声是否还能被贝斯/伴奏说清。
+\item \textbf{混音台看中频。}按 X / F8 打开混音台，观察铺底与主唱/主奏的电平；编曲阶段先靠音区和排列避让，不要用 EQ 硬切。
+\end{enumerate}
+
+\screenshot{arrangement-harmony-layer-voicing}{和弦轨、钢琴卷帘里的铺底/琶音排列与混音台中频电平：看清顶音走向和谁在让位}
+
+\section{常见错误与修正}
+\label{sec:harmony-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endhead
+每个和弦都把七个音写满 & 先写根、三、七（或五）；色彩音按需加，不要把所有音都堆上。 \\
+铺底低频压到贝斯 & 把铺底最低音抬到贝斯根音之上；根音交给贝斯。 \\
+铺底顶音盖过主旋律 & 把顶音降到主旋律下方，或改成开放排列；顶音不要和主唱同一音区。 \\
+和弦节奏全曲一样 & 主歌疏、副歌密；按段落调整，不要从头到尾每拍换。 \\
+琶音连续四小节同一 pattern & 每两小节改一次音型或留空；固定 pattern 只用于需要记忆点的段落。 \\
+所有转位都为了“高级” & 转位是为声部连接服务；低音每小节乱跳，听众只会觉得不稳。 \\
+和声层用 EQ 硬切救频段 & 先改排列、音区与织体；EQ 是最后微调，不是编曲替代。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:harmony-exercise}
+
+\begin{exercise}
+取一组四小节和弦（例如 C—Am—F—G），做三次八小节练习：
+\begin{enumerate}
+\item \textbf{铺底版}：每小节一次和弦，每和弦 3—4 个音；顶音尽量平滑，最低音不低于贝斯根音区。
+\item \textbf{琶音版}：把同一组和弦改成八分琶音；每两小节留一拍，力度重音落在根/五音。
+\item \textbf{压缩版}：在关键拍给和弦，军鼓落点留空；与第 3 章的鼓/贝斯骨架对齐。
+\end{enumerate}
+每版都 Solo 铺底/琶音，检查它是否盖住主旋律；再 Mute 它，检查贝斯与伴奏是否还能说清和声。
+\end{exercise}
+
+\section{本章要点}
+\label{sec:harmony-takeaways}
+
+\begin{itemize}
+\item 和声层让和弦走向可听、给旋律支点、控制织体、填空间但不抢频段。
+\item 和弦节奏主歌疏、副歌密；不要全曲一个速率。
+\item 排列优先于堆音：密集/开放/转位为声部连接服务。
+\item 铺底 3—4 个音就够；根音交给贝斯，顶音让给旋律。
+\item 琶音要有速度、音型、留空与力度；不要机械复制。
+\item 编曲阶段先靠音区与排列避让，EQ 只做最后微调。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+本节 & 帮助锚点 \\
+\midrule
+和声层的工作 & \texttt{arrangement-harmony-job} \\
+和弦节奏 & \texttt{arrangement-harmonic-rhythm} \\
+排列：密集、开放、转位 & \texttt{arrangement-voicing} \\
+三种织体 & \texttt{arrangement-textures} \\
+写铺底 & \texttt{arrangement-pad} \\
+写琶音 & \texttt{arrangement-arpeggio} \\
+在夜半里落地 & \texttt{arrangement-harmony-yeban} \\
+常见错误与修正 & \texttt{arrangement-harmony-mistakes} \\
+练习 & \texttt{arrangement-harmony-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

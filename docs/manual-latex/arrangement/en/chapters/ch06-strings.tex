@@ -1,0 +1,209 @@
+\chapter{String Orchestration: Turn Five Parts into One Section}
+\label{ch:strings}
+
+\begin{quote}
+\itshape Strings sound good not because the timbre is ``classy'', but because five parts each have a job: one sings, one pads, one holds the bass, and the inner voices fill the middle.
+\end{quote}
+
+\section{The string section is a team, not one instrument}
+\label{sec:string-section}
+
+The \term{string section}{string-section} consists of Violin I, Violin II, Viola, Cello and Double Bass. They differ in register, colour and role; do not write all five tracks as ``the same chord'':
+
+\begin{itemize}
+\item \textbf{Violin I}: the highest register, usually carrying the lead or the top voice; when the melody is clear, this is the line the listener hears first.
+\item \textbf{Violin II}: below Violin I, filling inner voices, doubling the lead an octave lower, or pairing with the viola in a reply.
+\item \textbf{Viola}: the mid-frequency glue that connects the high violins and the low cello; darker in colour, suited to inner harmony.
+\item \textbf{Cello}: can hold the bass or sing a melody; in the middle register it is often ``the second melody''.
+\item \textbf{Double bass}: pins the root at the bottom and gives the section a floor; it is not suited to fast melodic lines.
+\end{itemize}
+
+The first step in string orchestration is not choosing a patch but writing a five-row \textbf{role chart}: which part sings the lead, which holds the bass, which fills. Without that chart, five tracks easily become five piano scores fighting each other.
+
+\section{Register: put every part in its comfort zone}
+\label{sec:string-ranges}
+
+The following table gives conservative working ranges, not absolute limits:
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.42\textwidth}}
+\toprule
+Part & Working range & Orchestral use \\
+\midrule
+\endfirsthead
+\toprule
+Part & Working range & Orchestral use \\
+\midrule
+\endhead
+Violin I & G3--E7 & Lead, top voice; below G3 it loses brightness \\
+Violin II & G3--C7 & Inner voice, lead an octave lower, dialogue with viola \\
+Viola & C3--A6 & Mid-range connection, inner harmony; do not park it at the bottom \\
+Cello & C2--A5 & Bass, secondary melody, counter-line in the chorus \\
+Double bass & E1--G4 & Root and bass anchor; high notes only for short gestures \\
+\bottomrule
+\end{longtable}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (9.6,0) node[right] {pitch};
+    \foreach \x/\lab in {0/E1,1.2/C2,2.4/G3,3.6/C3,4.8/C4,6.0/C5,7.2/C6,8.4/C7,9.4/E7} {
+      \draw[gray!40] (\x,0.1) -- (\x,3.6);
+      \node[font=\scriptsize, rotate=60, anchor=west] at (\x,0.05) {\lab};
+    }
+    \fill[yebanblue!70] (0.0,2.9) rectangle (8.8,3.25);
+    \fill[yebanblue!45] (2.4,2.25) rectangle (8.2,2.55);
+    \fill[yebanblue!30] (3.2,1.6) rectangle (7.6,1.9);
+    \fill[yebanblue!55] (1.2,0.95) rectangle (7.0,1.25);
+    \fill[gray!45] (0.0,0.3) rectangle (3.5,0.6);
+    \node[font=\scriptsize, anchor=west] at (9.0,3.05) {Violin I};
+    \node[font=\scriptsize, anchor=west] at (9.0,2.38) {Violin II};
+    \node[font=\scriptsize, anchor=west] at (9.0,1.73) {Viola};
+    \node[font=\scriptsize, anchor=west] at (9.0,1.08) {Cello};
+    \node[font=\scriptsize, anchor=west] at (9.0,0.43) {Bass};
+  \end{tikzpicture}
+  \caption{Working ranges of the five string parts; the bars show where each part can stand, not a requirement to fill every note.}
+  \label{fig:string-ranges}
+\end{figure}
+
+Wider is not better. Write Violin I below G3 and the colour turns dull; write the double bass above G4 and a short gesture works, but a long line loses support. Put every part back in its comfort zone before discussing harmony.
+
+\section{The skeleton: lead, bass, inner voices}
+\label{sec:string-skeleton}
+
+The first layer of string orchestration is three things:
+
+\begin{enumerate}
+\item \textbf{Lead}: usually Violin I; in the chorus the cello may take it for a colour change. Do not let all five parts sing the same line.
+\item \textbf{Bass anchor}: cello and double bass hold the root; add the double bass only when more weight is needed. Unison doubling can sound clumsy; the bass may play an octave lower or only on strong beats.
+\item \textbf{Inner voices}: Violin II and viola fill the middle chord tones so the lead and bass do not break apart.
+\end{enumerate}
+
+An eight-bar chorus may be assigned like this:
+
+\begin{longtable}{p{0.22\textwidth}p{0.34\textwidth}p{0.34\textwidth}}
+\toprule
+Part & Chorus bars 1--4 & Chorus bars 5--8 \\
+\midrule
+\endfirsthead
+\toprule
+Part & Chorus bars 1--4 & Chorus bars 5--8 \\
+\midrule
+\endhead
+Violin I & Lead & Lead, final phrase an octave higher \\
+Violin II & Thirds/sixths below the lead & Swap inner roles with viola \\
+Viola & Chord third/fifth & Short answering phrase \\
+Cello & Root and bar-line landings & Root; rises once in the final phrase \\
+Double bass & Root on strong beats & Root on strong beats; no weak-beat upstaging \\
+\bottomrule
+\end{longtable}
+
+This table matters more than ``are the chords right'': it decides whether the listener hears one melody with a band behind it, or five lines masking one another.
+
+\section{Spacing: wide at the bottom, close at the top}
+\label{sec:string-spacing}
+
+String \term{voicing}{voicing} differs from keyboard voicing: when five parts sound at once, a low register crowded too close turns muddy; a high register spread too wide sounds hollow.
+
+\begin{itemize}
+\item \textbf{Wide low register}: leave a fifth or more between cello and double bass so the root and upper parts do not fight.
+\item \textbf{Close high register}: keep the intervals among Violin I, Violin II and viola within a third, sixth or fourth; avoid large leaps that open holes.
+\item \textbf{Inner voices yield}: do not put an inner voice on the same note and rhythm as the lead; let it enter when the lead rests.
+\item \textbf{Avoid voice crossing}: Violin I should not fall below Violin II, and the viola should not sit below the cello for long; crossing confuses who is who.
+\item \textbf{Part count}: three parts (lead, inner, bass) are enough; open all five only in the chorus or climax and keep the verse sparse.
+\end{itemize}
+
+\term{Divisi}{divisi} is a string-specific device: one section splits into two halves. It enriches harmony but thins every part; if unsure, write three parts first, then open the divisi locally in the chorus.
+
+\section{Bowing and texture: make the strings speak}
+\label{sec:string-bowing}
+
+The same notes with different \term{bowing}{bowing} have completely different characters. At least distinguish three:
+
+\begin{itemize}
+\item \textbf{Legato}: notes connect without a break; suited to pads, lyrical lines and long chorus phrases. Long legato needs breath; do not write eight bars as one unbroken line.
+\item \textbf{Pizzicato}: short and granular, suited to light passages or adding colour to the rhythm section. Do not write it too densely or it becomes a second drum kit.
+\item \textbf{Staccato/short notes}: each note starts and stops independently, suited to passages with drive; leave space between short notes or they sound like machine-gun fire.
+\end{itemize}
+
+\term{Tutti}{tutti} and \term{chamber-like}{chamber-like} are two densities: tutti gives every part a voice, suited to the chorus and climax; chamber-like keeps three parts or fewer, suited to the verse and bridge. Alternating the two densities gives more shape than ``thick strings from beginning to end''.
+
+String dynamics are not pulled out with a fader. Shape the ``crescendo--diminuendo'' with note length, density and the velocity lane; leave only final polish to the mix.
+
+\section{Realising it in Yeban}
+\label{sec:string-yeban}
+
+\begin{enumerate}
+\item \textbf{Create five MIDI tracks}: name them Violin I, Violin II, Viola, Cello and Double Bass. Do not put all strings on one track where the parts become invisible.
+\item \textbf{Load SFZ instruments}: use File $\rightarrow$ Load SFZ instrument library... to load a string patch on each track; one part per track, not five parts squeezed into one patch.
+\item \textbf{Write row by row in the piano roll}: press P / F7, write the Violin I lead first, then the cello bass, then the inner voices; change one line at a time.
+\item \textbf{Use the velocity lane for breath}: below the piano roll, draw crescendo/diminuendo into long legato and leave half a beat at phrase ends; do not replace phrasing with a track fader.
+\item \textbf{Use the automation lane for section changes}: expand the automation lane (A) in the arrangement area, lift the strings when the chorus enters and pull them back in the verse; parameter changes are stored in the project and applied on export.
+\item \textbf{Check balance with Solo/Mute}: solo Violin I and confirm the lead stands alone; unmute the inner voices one by one and confirm they do not fight it; finally unmute the rhythm section and confirm the drums do not bury the strings.
+\end{enumerate}
+
+\screenshot{arrangement-string-voicing}{Five string MIDI tracks, piano roll and automation lane on one screen: Violin I lead, cello bass and inner voices visibly layered}
+
+\section{Common mistakes and fixes}
+\label{sec:string-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+All five parts play the lead & Keep only Violin I singing; turn the others into inner voices, bass or answers. \\
+The low register is crowded & Separate cello and double bass by a fifth or more; let the bass hold only the root and strong beats. \\
+Every track writes a full chord & Strings are a section, not five pianos; assign lead, inner voices and bass. \\
+Violin I is written below G3 & Give the low notes to viola/cello; bring the violin back above G3. \\
+Tutti from verse to chorus & Use three parts in the verse and open five in the chorus; density must rise and fall. \\
+Legato without breath & Leave a phrase ending every four bars and shape long lines with the velocity lane. \\
+Inner voices share the lead's rhythm & Offset them by half a beat or use longer notes; enter only when the lead rests. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:string-exercise}
+
+\begin{exercise}
+Write an eight-bar chorus for five string parts:
+\begin{enumerate}
+\item Write only the Violin I lead and the cello root; confirm the melody and bass can stand on their own.
+\item Add Violin II and viola, filling the chord's third and fifth; inner voices must not share the lead's rhythm.
+\item Let the double bass play the root only on strong beats; then check for voice crossing and a crowded low register.
+\item Finally open tutti in chorus bars 5--8 while keeping three parts in the first four bars; use the velocity lane to give the long legato breath.
+\end{enumerate}
+When finished, solo each part: which part can be removed without changing the music? That part is the redundant one.
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:string-takeaways}
+
+\begin{itemize}
+\item The string section is a team of five roles, not one ``string patch''.
+\item Assign roles first: lead, bass anchor, inner voices; then discuss chords.
+\item Put every part in its register; wide at the bottom, close at the top, no voice crossing.
+\item Use three parts in the verse and five in the chorus; alternate tutti and chamber-like density.
+\item Bowing decides character: legato, pizzicato and short notes each have a job.
+\item Realise it in Yeban with five MIDI tracks, SFZ, the velocity lane and automation; the mix is only final polish.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+The string section is a team & \texttt{arrangement-string-section} \\
+Register & \texttt{arrangement-string-ranges} \\
+The skeleton & \texttt{arrangement-string-skeleton} \\
+Spacing & \texttt{arrangement-string-spacing} \\
+Bowing and texture & \texttt{arrangement-string-bowing} \\
+Realising it in Yeban & \texttt{arrangement-string-yeban} \\
+Common mistakes and fixes & \texttt{arrangement-string-mistakes} \\
+Exercise & \texttt{arrangement-string-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

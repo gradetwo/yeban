@@ -1,0 +1,209 @@
+\chapter{弦乐配器：把五条声部写成一支队伍}
+\label{ch:strings}
+
+\begin{quote}
+\itshape 弦乐好听，不是因为“弦乐音色高级”，而是因为五个声部各有各的活：谁唱歌、谁垫和声、谁守低音、谁在中间填空。
+\end{quote}
+
+\section{弦乐组先是一支队伍，不是一件乐器}
+\label{sec:string-section}
+
+\term{弦乐组}{string-section}由第一小提琴、第二小提琴、中提琴、大提琴、低音提琴组成。它们在音区、音色和角色上不同，不能把五条轨都写成“同样的和弦”：
+
+\begin{itemize}
+\item \textbf{第一小提琴}：音区最高，常承担主旋律或最高声部；旋律清楚时，它是听众先听到的那条线。
+\item \textbf{第二小提琴}：低于第一小提琴，常填内声部、加倍主旋律的低八度，或与中提琴组成对答。
+\item \textbf{中提琴}：中频的“胶水”，把高音小提琴和低音大提琴接起来；它的音色比小提琴暗，适合内声部和声。
+\item \textbf{大提琴}：既能守低音，也能唱旋律；在中音区它常是“第二支旋律”。
+\item \textbf{低音提琴}：把根音钉在最低处，让整个弦乐组有地板；它不适合承担快速旋律。
+\end{itemize}
+
+写弦乐配器，第一步不是选音色，而是写一张五行的\textbf{角色分配表}：哪条声部唱主旋律，哪条守低音，哪些填空。没有这张表，五条轨很容易写成五份互相打架的钢琴谱。
+
+\section{音区：先保证每条声部都在自己的“舒服区”}
+\label{sec:string-ranges}
+
+下表是常用音区，按实际可演奏的保守范围写，不作为绝对限制：
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.42\textwidth}}
+\toprule
+声部 & 常用音区 & 配器用途 \\
+\midrule
+\endfirsthead
+\toprule
+声部 & 常用音区 & 配器用途 \\
+\midrule
+\endhead
+第一小提琴 & G3--E7 & 主旋律、最高声部；低于 G3 会失去亮度 \\
+第二小提琴 & G3--C7 & 内声部、主旋律低八度、与中提琴对答 \\
+中提琴 & C3--A6 & 中频连接、内声部和声；不要长期挤在最低处 \\
+大提琴 & C2--A5 & 低音、次旋律、副歌时的对位 \\
+低音提琴 & E1--G4 & 根音与低音锚；高音区只做短句点缀 \\
+\bottomrule
+\end{longtable}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (9.6,0) node[right] {pitch};
+    \foreach \x/\lab in {0/E1,1.2/C2,2.4/G3,3.6/C3,4.8/C4,6.0/C5,7.2/C6,8.4/C7,9.4/E7} {
+      \draw[gray!40] (\x,0.1) -- (\x,3.6);
+      \node[font=\scriptsize, rotate=60, anchor=west] at (\x,0.05) {\lab};
+    }
+    \fill[yebanblue!70] (0.0,2.9) rectangle (8.8,3.25);
+    \fill[yebanblue!45] (2.4,2.25) rectangle (8.2,2.55);
+    \fill[yebanblue!30] (3.2,1.6) rectangle (7.6,1.9);
+    \fill[yebanblue!55] (1.2,0.95) rectangle (7.0,1.25);
+    \fill[gray!45] (0.0,0.3) rectangle (3.5,0.6);
+    \node[font=\scriptsize, anchor=west] at (9.0,3.05) {Violin I};
+    \node[font=\scriptsize, anchor=west] at (9.0,2.38) {Violin II};
+    \node[font=\scriptsize, anchor=west] at (9.0,1.73) {Viola};
+    \node[font=\scriptsize, anchor=west] at (9.0,1.08) {Cello};
+    \node[font=\scriptsize, anchor=west] at (9.0,0.43) {Bass};
+  \end{tikzpicture}
+  \caption{弦乐组五声部的常用音区；条形只表示“能站住的范围”，不代表每首曲子都要占满。}
+  \label{fig:string-ranges}
+\end{figure}
+
+音区不是越宽越好。第一小提琴写到 G3 以下，音色会闷；低音提琴写到 G4 以上，短句可以，长句会失去支撑。先把每条声部放回舒服区，再谈和声。
+
+\section{配器骨架：主旋律、低音、内声部}
+\label{sec:string-skeleton}
+
+弦乐配器的第一层是三件事：
+
+\begin{enumerate}
+\item \textbf{主旋律}：通常交给第一小提琴，或在副歌时交给大提琴换色；不要同时让五条声部都唱同一句旋律。
+\item \textbf{低音锚}：大提琴与低音提琴守住根音，低音提琴只在需要更厚时加入；两件乐器同音重复会显得笨重，低音提琴可低八度或只落强拍。
+\item \textbf{内声部}：第二小提琴与中提琴填和弦的中间音，让主旋律和低音之间不断裂。
+\end{enumerate}
+
+一个八小节副歌可以这样分：
+
+\begin{longtable}{p{0.22\textwidth}p{0.34\textwidth}p{0.34\textwidth}}
+\toprule
+声部 & 副歌第 1--4 小节 & 副歌第 5--8 小节 \\
+\midrule
+\endfirsthead
+\toprule
+声部 & 副歌第 1--4 小节 & 副歌第 5--8 小节 \\
+\midrule
+\endhead
+第一小提琴 & 主旋律 & 主旋律，尾句加高八度 \\
+第二小提琴 & 主旋律下方三度/六度 & 与中提琴交换内声部 \\
+中提琴 & 和弦三音/五音 & 对答短句 \\
+大提琴 & 根音与小节线落点 & 根音，尾句上唱一次 \\
+低音提琴 & 根音，强拍 & 根音，强拍；不在弱拍抢戏 \\
+\bottomrule
+\end{longtable}
+
+这张表比“和弦对不对”更重要：它决定了听众听到的是一条旋律加一片伴奏，还是五条互相遮住的线。
+
+\section{排列：低音要宽，高音要近}
+\label{sec:string-spacing}
+
+弦乐的\term{排列}{voicing}与键盘不同：五条声部同时发声时，低音区如果挤得太近，会糊成一片；高音区如果拉得太开，会显得空。
+
+\begin{itemize}
+\item \textbf{低音区宽}：大提琴与低音提琴之间留出五度以上的空间，让根音和上方声部不打架。
+\item \textbf{高音区近}：第一、第二小提琴与中提琴的音程控制在三度、六度或四度内，避免大跳造成空洞。
+\item \textbf{内声部让路}：内声部不要和主旋律同音、同节奏；主旋律休止时，内声部才填进来。
+\item \textbf{避免声部交叉}：第一小提琴不要低于第二小提琴，中提琴不要长期低于大提琴；交叉会让听众分不清谁是谁。
+\item \textbf{声部数量}：三声部（主旋律、内声部、低音）已经够用；五声部全开只在副歌或高潮，主歌保持稀疏。
+\end{itemize}
+
+\term{分声部}{divisi}是弦乐特有的写法：一个声部内部再分成两半。它能让和声更丰富，但也会让每个声部变薄；没有把握时，先用三声部写作，再在副歌局部展开。
+
+\section{弓法与织体：让弦乐“会说话”}
+\label{sec:string-bowing}
+
+同样的音符，用不同\term{弓法}{bowing}演奏，性格完全不同。写作时至少区分三种：
+
+\begin{itemize}
+\item \textbf{连奏}：音符之间不断开，适合铺底、抒情旋律与副歌的长句；长连奏需要呼吸，不要把八小节写成一条永不换气的线。
+\item \textbf{拨奏}：短促、颗粒清楚，适合轻快段落或给节奏组加颜色；拨奏不要写得太密，否则会变成第二套鼓。
+\item \textbf{顿弓/短音}：每个音符独立起落，适合有推进感的段落；短音之间要留空，否则听起来像机关枪。
+\end{itemize}
+
+\term{全奏}{tutti}与\term{室内乐式}{chamber-like}是两种密度：全奏让五条声部都发声，适合副歌与高潮；室内乐式只留三声部或更少，适合主歌与桥段。两种密度交替，比“从头到尾都是厚弦乐”更有层次。
+
+弦乐的动态不是靠推子硬拉出来的。写作时用音符长度、密度和力度泳道做出“渐强—渐弱”的形状，混音阶段只做最后修饰。
+
+\section{在夜半里落地}
+\label{sec:string-yeban}
+
+\begin{enumerate}
+\item \textbf{先建五条 MIDI 轨}：按第一小提琴、第二小提琴、中提琴、大提琴、低音提琴命名；不要把所有弦乐写进一条轨再看不出声部。
+\item \textbf{装 SFZ 音色}：用「文件 → 装载 SFZ 音色库...」给每条轨装一份弦乐音色；同一条轨只放一个声部，不要把五条声部挤进同一个音色。
+\item \textbf{在钢琴卷帘里按行写}：按 P / F7 打开钢琴卷帘，先写第一小提琴的主旋律，再写大提琴的低音，最后填内声部；每次只写一条，避免五条线同时改。
+\item \textbf{用力度泳道做呼吸}：在卷帘下方给长连奏画渐强/渐弱，句尾留半拍；不要用整轨推子代替乐句起伏。
+\item \textbf{用自动化泳道做段落变化}：在编曲区展开自动化泳道（A），让弦乐在副歌进入时抬起、在主歌退下；参数随时间写进工程，导出时一并生效。
+\item \textbf{用 Solo/Mute 检查平衡}：先 Solo 第一小提琴确认旋律独立，再逐条打开内声部，确认没有抢主旋律；最后打开节奏组，确认弦乐没有被鼓盖住。
+\end{enumerate}
+
+\screenshot{arrangement-string-voicing}{五条弦乐 MIDI 轨、钢琴卷帘与自动化泳道同屏：第一小提琴主旋律、大提琴低音、内声部分层可见}
+
+\section{常见错误与修正}
+\label{sec:string-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+常见错误 & 修正 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正 \\
+\midrule
+\endhead
+五条声部都写主旋律 & 只留第一小提琴唱；其他声部改为内声部、低音或对答。 \\
+低音区挤成一团 & 大提琴与低音提琴拉开五度以上；低音提琴只守根音与强拍。 \\
+每条轨都写完整和弦 & 弦乐是声部组，不是五架钢琴；按主旋律、内声部、低音分工。 \\
+第一小提琴写到 G3 以下 & 把低音交给中提琴/大提琴；小提琴回到 G3 以上。 \\
+从主歌到副歌始终全奏 & 主歌用三声部，副歌再开五声部；密度要有增有减。 \\
+连奏没有呼吸 & 每四小节留一次句尾，长句用力度泳道做出起伏。 \\
+内声部与主旋律同节奏 & 内声部错开半拍或改成更长的音符，主旋律休止时才填。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:string-exercise}
+
+\begin{exercise}
+用八小节副歌写一段五声部弦乐：
+\begin{enumerate}
+\item 先写第一小提琴的主旋律与大提琴的根音，只写这两条；确认旋律与低音能独立成立。
+\item 加第二小提琴与中提琴，填和弦的三音/五音；内声部不要与主旋律同节奏。
+\item 低音提琴只落强拍根音；再检查五条声部有没有交叉、低音区有没有挤在一起。
+\item 最后在副歌第 5--8 小节开一次全奏，前四小节保持三声部；用力度泳道给长连奏留呼吸。
+\end{enumerate}
+写完后用 Solo 逐条听：哪条声部可以删掉而音乐不变？能删的那条，就是配器里多余的。
+\end{exercise}
+
+\section{本章要点}
+\label{sec:string-takeaways}
+
+\begin{itemize}
+\item 弦乐组是五条角色的队伍，不是一件“弦乐音色”。
+\item 先分角色：主旋律、低音锚、内声部；再谈和弦。
+\item 每条声部放回自己的音区；低音宽、高音近，避免声部交叉。
+\item 主歌用三声部，副歌再开五声部；全奏与室内乐式交替。
+\item 弓法决定性格：连奏、拨奏、短音各有用途。
+\item 在夜半里用五条 MIDI 轨、SFZ、力度泳道与自动化落地；混音只做最后修饰。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+小节 & 帮助锚点 \\
+\midrule
+弦乐组先是一支队伍 & \texttt{arrangement-string-section} \\
+音区 & \texttt{arrangement-string-ranges} \\
+配器骨架 & \texttt{arrangement-string-skeleton} \\
+排列 & \texttt{arrangement-string-spacing} \\
+弓法与织体 & \texttt{arrangement-string-bowing} \\
+在夜半里落地 & \texttt{arrangement-string-yeban} \\
+常见错误与修正 & \texttt{arrangement-string-mistakes} \\
+练习 & \texttt{arrangement-string-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

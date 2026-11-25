@@ -1,0 +1,202 @@
+\chapter{The Harmony Layer: Make the Chords Audible Without Covering the Melody}
+\label{ch:harmony}
+
+\begin{quote}
+\itshape The harmony layer is not better because it presses more chord notes. Its job is to let the listener hear the harmonic motion while leaving the middle to the melody.
+\end{quote}
+
+\section{What the harmony layer does}
+\label{sec:harmony-job}
+
+The \term{harmony layer}{harmony-layer} does four things:
+
+\begin{enumerate}
+\item \textbf{Make the chord motion audible}: the listener does not need chord names, but must feel that this section differs from the last.
+\item \textbf{Give the melody a support}: which chord tone the lead lands on decides whether the phrase feels stable, suspended or resolved.
+\item \textbf{Control texture}: a sustained pad, an arpeggio and comping give the same chord progression three different characters.
+\item \textbf{Fill space without stealing registers}: leave the low end to the bass, the centre to the vocal, and the top to strings or the lead.
+\end{enumerate}
+
+The most common harmony-layer mistake is wanting everything at once: fill the low end, put a thick chord in the midrange, and add a high arpeggio. Every layer is present, but the lead has nowhere to stand.
+
+\section{Harmonic rhythm: how often the chord changes}
+\label{sec:harmonic-rhythm}
+
+\term{Harmonic rhythm}{harmonic-rhythm} is the rate of chord change. It is easier for the listener to feel than ``which chords were used''.
+
+\begin{longtable}{p{0.22\textwidth}p{0.34\textwidth}p{0.36\textwidth}}
+\toprule
+Rate & Impression & Use and risk \\
+\midrule
+\endfirsthead
+\toprule
+Rate & Impression & Use and risk \\
+\midrule
+\endhead
+Once per bar & Stable, broad, narrative & Verse, slow song, pad; risk: sections can lack change. \\
+Every two beats & Moving, clear harmonic change & Pop chorus, funk; risk: busy once drum density is added. \\
+Every beat or syncopated & Strong drive, dense colour & Dance, jazz, complex pop; risk: chord motion drowns the melody. \\
+Irregular & Follows lyric or phrase & Narrative, folk; risk: no pattern, the listener loses the section shape. \\
+\bottomrule
+\end{longtable}
+
+A practical rule: \textbf{the verse's harmonic rhythm should not be denser than the chorus's.} The verse must let the listener hear the story; the chorus is where harmonic motion can increase. If the verse already changes chords every beat, the chorus can only contrast by adding more parts, which easily overloads.
+
+\section{Voicing: close, open, inverted}
+\label{sec:voicing}
+
+The same four chord tones sound very different depending on how they are arranged. Three terms first:
+
+\begin{itemize}
+\item \textbf{\term{Close voicing}{close-voicing}}: chord tones sit close together, suitable for mid/high keyboards and arpeggios; close voicing in the low end turns to mud.
+\item \textbf{\term{Open voicing}{open-voicing}}: chord tones are spread out, separating low and mid layers; suitable for pads and strings.
+\item \textbf{\term{Inversion}{inversion}}: the root is moved away from the lowest voice, using the third, fifth or seventh as the bass; useful for smoother voice leading, but do not invert every bar just to sound ``advanced''.
+\end{itemize}
+
+Set two boundaries before writing: the lowest note must not go below the bass root register, and the highest note must not cover the lead's top note. The inner chord tones are arranged around those two boundaries.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \foreach \x/\label in {0/C,2.6/Am,5.2/F,7.8/G} {
+      \draw[gray!40] (\x,0) -- (\x,4.2);
+      \node[font=\scriptsize] at (\x,4.45) {\label};
+    }
+    \foreach \x/\y in {0/1.2,0/1.8,0/2.4,0/3.0, 2.6/1.4,2.6/2.0,2.6/2.6,2.6/3.2, 5.2/1.2,5.2/1.8,5.2/2.4,5.2/3.0, 7.8/1.4,7.8/2.0,7.8/2.6,7.8/3.2} {
+      \fill[yebanblue!70] (\x,\y) circle (0.09);
+    }
+    \draw[very thick, yebanblue] (0,3.0) -- (2.6,3.2) -- (5.2,3.0) -- (7.8,3.2);
+    \node[font=\scriptsize, anchor=west] at (8.1,3.4) {top voice};
+    \node[font=\scriptsize, anchor=west, text width=3.4cm] at (8.1,1.6) {Keep the top voice smooth;\\do not jump it every bar.};
+  \end{tikzpicture}
+  \caption{Voice leading across four chords: each column is a chord, the thick line tracks the top voice. A smooth top voice leaves the inner voices room for colour.}
+  \label{fig:voicing}
+\end{figure}
+
+\begin{tipbox}
+When you need a thicker harmony, widening the voicing is often better than adding another octave. Turning a close voicing into an open one is usually more effective and less likely to crowd the vocal.
+\end{tipbox}
+
+\section{Three textures: pad, arpeggio, comping}
+\label{sec:textures}
+
+\begin{longtable}{p{0.16\textwidth}p{0.30\textwidth}p{0.46\textwidth}}
+\toprule
+Texture & Writing & Use and risk \\
+\midrule
+\endfirsthead
+\toprule
+Texture & Writing & Use and risk \\
+\midrule
+\endhead
+Pad & Sustained or slow chords, usually 3--4 notes & Harmonic background for verse and chorus; risk: too much low/mid energy and the vocal is covered. \\
+Arpeggio & Chord tones played in order, with or without a fixed pattern & Electronic, pop, narrative piano; risk: mechanical repetition, every bar fully arpeggiated. \\
+Comping & Chords on key beats, space elsewhere & Funk, pop, jazz; risk: fighting the snare or bass for the same beat. \\
+\bottomrule
+\end{longtable}
+
+The three textures can coexist, but one must be primary: in a section there is usually one ``main texture'', and the other two are supplements. The main texture decides the section's character; the supplements only add colour.
+
+\section{Writing a pad: three or four notes are enough}
+\label{sec:pad}
+
+A pad's goal is to support, not to fill. Writing rules:
+
+\begin{itemize}
+\item \textbf{Note count}: 3--4 notes are enough; even a seventh chord does not need all seven. Root, third and seventh (or fifth) already state the colour.
+\item \textbf{Register}: a common starting range is C3--C5; the lowest note should not press into the bass root, and the highest should not cover the lead's top note.
+\item \textbf{Low voice}: do not stack the root at the bottom of every chord; leave the root to the bass and use the third, fifth or seventh as the pad's lowest voice.
+\item \textbf{Top voice}: keep it moving smoothly; a top voice that leaps every bar sounds like a melody.
+\item \textbf{Sustain}: do not keep one long note motionless from top to bottom; change it at the chord change or leave a breath at a section boundary.
+\end{itemize}
+
+\section{Writing an arpeggio: the pattern serves the groove}
+\label{sec:arpeggio}
+
+An arpeggio is not ``the chord split into single notes and done''. It has its own rhythmic character:
+
+\begin{itemize}
+\item \textbf{Set the speed first}: quarter-, eighth- and sixteenth-note arpeggios are three different densities; use a slower one in the verse and a faster one in the chorus.
+\item \textbf{Set the pattern}: ascending, descending, back-and-forth, or leaping. A fixed pattern is memorable, but four bars without change becomes mechanical.
+\item \textbf{Leave space}: leave a beat or half beat every two bars so drums and bass can take over; a full arpeggio covers the rhythm section.
+\item \textbf{Velocity}: do not give every arpeggio note the same velocity; place accents on the root/fifth or key beats so the harmonic skeleton is audible.
+\end{itemize}
+
+\section{Realising it in Yeban}
+\label{sec:harmony-yeban}
+
+\begin{enumerate}
+\item \textbf{Look at the chord lane.} The chord lane and automation lane can be expanded below the arrangement area; use the chord lane to check the chord-change points in each section before deciding where the pad, arpeggio or comping lands.
+\item \textbf{Write chords in the piano roll.} Select a MIDI clip and press P / F7 to open the piano roll; write the 3--4 note skeleton first, then decide whether to add colour tones.
+\item \textbf{Change the voicing after copying.} After copying a chord clip with Ctrl+C / Ctrl+V, change at least one thing: top-voice motion, inversion or texture density. Do not copy the same voicing into every section.
+\item \textbf{Change the instrument in the device rack.} Pads, arpeggios and keyboards can use different sounds; change the instrument/effect in the device rack at the bottom instead of stacking three roles on one track.
+\item \textbf{Check registers with Solo/Mute.} Solo the pad and hear whether it covers the lead; mute it and hear whether the bass and comping still make the harmony clear.
+\item \textbf{Watch the midrange in the mixer.} Press X / F8 and compare the pad level with the vocal/lead. Solve it with register and voicing at the arranging stage; do not cut it apart with EQ.
+\end{enumerate}
+
+\screenshot{arrangement-harmony-layer-voicing}{Chord lane, pad/arpeggio voicing in the piano roll and mixer midrange levels: see the top-voice motion and who is making room}
+
+\section{Common mistakes and fixes}
+\label{sec:harmony-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Every chord uses all seven notes & Write root, third and seventh (or fifth) first; add colour tones only as needed. \\
+The pad's low end presses into the bass & Raise the pad's lowest note above the bass root; leave the root to the bass. \\
+The pad's top voice covers the lead & Lower the top voice below the lead, or open the voicing; do not put it in the vocal's register. \\
+One harmonic rhythm for the whole song & Sparse verse, denser chorus; change by section, not every beat from top to bottom. \\
+The arpeggio repeats one pattern for four bars & Change the pattern or leave space every two bars; fixed patterns are for sections that need a hook. \\
+Every inversion is there to sound ``advanced'' & Inversions serve voice leading; a bass that jumps every bar only sounds unstable. \\
+Using EQ to fix the harmony layer's register & Change voicing, register and texture first; EQ is final trimming, not an arranging substitute. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:harmony-exercise}
+
+\begin{exercise}
+Take a four-bar progression (for example C--Am--F--G) and make three eight-bar versions:
+\begin{enumerate}
+\item \textbf{Pad version}: one chord per bar, 3--4 notes per chord; keep the top voice smooth and the lowest note above the bass root register.
+\item \textbf{Arpeggio version}: turn the same progression into eighth-note arpeggios; leave one beat every two bars and put accents on the root/fifth.
+\item \textbf{Comping version}: give chords on key beats, leave the snare's beats open, and align with the drum/bass skeleton from Chapter 3.
+\end{enumerate}
+For each version, solo the pad/arpeggio and check whether it covers the lead; then mute it and check whether bass and comping still make the harmony clear.
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:harmony-takeaways}
+
+\begin{itemize}
+\item The harmony layer makes chord motion audible, supports the melody, controls texture and fills space without stealing registers.
+\item Sparse harmonic rhythm in the verse, denser in the chorus; do not use one rate for the whole song.
+\item Voicing comes before stacking notes: close, open and inverted voicings serve voice leading.
+\item A pad needs only 3--4 notes; leave the root to the bass and the top to the melody.
+\item An arpeggio needs speed, pattern, space and velocity; do not copy it mechanically.
+\item Solve register conflicts with voicing at the arranging stage; EQ is final trimming.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+What the harmony layer does & \texttt{arrangement-harmony-job} \\
+Harmonic rhythm & \texttt{arrangement-harmonic-rhythm} \\
+Voicing: close, open, inverted & \texttt{arrangement-voicing} \\
+Three textures & \texttt{arrangement-textures} \\
+Writing a pad & \texttt{arrangement-pad} \\
+Writing an arpeggio & \texttt{arrangement-arpeggio} \\
+Realising it in Yeban & \texttt{arrangement-harmony-yeban} \\
+Common mistakes and fixes & \texttt{arrangement-harmony-mistakes} \\
+Exercise & \texttt{arrangement-harmony-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

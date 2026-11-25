@@ -1,0 +1,255 @@
+\chapter{实作走查：用两首短歌把全册走一遍}
+\label{ch:walkthrough}
+
+\begin{quote}
+\itshape 编曲不是把十章的知识分别用一次，而是让它们在同一首歌里各就各位。走查就是按段落顺序，把每一层放进去、再检查它有没有抢别人的位置。
+\end{quote}
+
+\section{走查的目标：两首短歌，一条流程}
+\label{sec:walkthrough-goal}
+
+本册最后不写“万能配方”，而是用两首\term{短歌}{short-song}做\term{示范工程}{demo-project}：一首民谣、一首流行。两首都不是商业长度，各十六小节（八小节主歌＋八小节副歌），但走的是同一条流程：
+
+\begin{enumerate}
+\item 写段落表与能量曲线；
+\item 建轨、命名、分配四层角色；
+\item 先做节奏组，再做和声层；
+\item 写主旋律/人声；
+\item 加色彩层（弦乐、木管/铜管、电子）；
+\item 逐段走查、修掉抢位；
+\item 保存工程；
+\item 导出 WAV 与分轨，写交付回执。
+\end{enumerate}
+
+两首示范都不是仓库里预装的工程，而是“按本册方法搭出来的教学设定”；你可以照表在夜半里重建，也可以只拿它当检查清单。
+
+\section{示范一：民谣短歌《窗边》}
+\label{sec:folk-demo}
+
+民谣短歌的配器原则是“少而清楚”：主唱、木吉他、贝斯、轻鼓/打击、弦乐铺底。十六小节的段落表：
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
+\toprule
+小节 & 段落 & 编曲动作 \\
+\midrule
+\endfirsthead
+\toprule
+小节 & 段落 & 编曲动作 \\
+\midrule
+\endhead
+1--8 & 主歌 & 木吉他＋贝斯＋轻鼓；主唱；弦乐不进入 \\
+9--12 & 副歌前半 & 加弦乐铺底、鼓组变完整；主唱仍居中 \\
+13--16 & 副歌后半 & 加一层双唱/和声；弦乐只做长音，不做对位 \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{p{0.20\textwidth}p{0.18\textwidth}p{0.52\textwidth}}
+\toprule
+轨道 & 类型 & 角色与写法 \\
+\midrule
+\endfirsthead
+\toprule
+轨道 & 类型 & 角色与写法 \\
+\midrule
+\endhead
+主唱 & 音频 & 叙事；句尾留一拍，不唱满 \\
+木吉他 & 音频 & 和声骨架；用片段裁剪留出主唱句尾 \\
+贝斯 & MIDI/音频 & 根音；同音重复为主，少大跳 \\
+鼓/打击 & MIDI/音频 & 轻骨架；主歌只留底鼓/军鼓/轻铃鼓 \\
+弦乐 Pad & MIDI & 副歌进；长音铺底，不与主唱同节奏 \\
+双唱/和声 & 音频 & 第 13 小节后进；低三度，不抢主唱音区 \\
+\bottomrule
+\end{longtable}
+
+民谣的能量曲线是“平缓上行”，不要在副歌突然变成电子舞曲。副歌的“更大”来自弦乐铺底、鼓组完整和一层双唱，不是来自更多轨。
+
+\section{示范二：流行短歌《夜行》}
+\label{sec:pop-demo}
+
+流行短歌的配器原则是“每层更清楚”，不是“每层更多”。十六小节：
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
+\toprule
+小节 & 段落 & 编曲动作 \\
+\midrule
+\endfirsthead
+\toprule
+小节 & 段落 & 编曲动作 \\
+\midrule
+\endhead
+1--8 & 主歌 & 鼓＋贝斯＋Pad＋主唱；Pluck 只在句尾 \\
+9--12 & 副歌前半 & 加双唱、Pluck 持续、铜管第 9 小节短重音 \\
+13--16 & 副歌后半 & 加和声、叠唱最后两小节；铜管不再连续 \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{p{0.20\textwidth}p{0.18\textwidth}p{0.52\textwidth}}
+\toprule
+轨道 & 类型 & 角色与写法 \\
+\midrule
+\endfirsthead
+\toprule
+轨道 & 类型 & 角色与写法 \\
+\midrule
+\endhead
+主唱 & 音频 & 歌词优先；副歌抬高但不超过舒服区 \\
+双唱 & 音频 & 同旋律第二次唱；不是复制主唱 \\
+和声 & 音频 & 主唱下方三度；只在副歌 \\
+鼓 & MIDI & 四拍骨架；副歌加密度 \\
+贝斯 & MIDI & 根音；与 Sub 分工 \\
+Pad & MIDI & 中频铺底；副歌打开 Cutoff \\
+Pluck & MIDI & 高音点缀；句尾/空拍，不连续 \\
+铜管 & MIDI & 第 9 小节短重音；一拍半后退出 \\
+\bottomrule
+\end{longtable}
+
+流行短歌的副歌不是“所有轨都打开”，而是“每层都更完整”：鼓更完整、贝斯更稳、Pad 更亮、Pluck 更清楚、人声更厚。轨数可以不变，但每层的角色要更明确。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (10.2,0) node[right] {bars};
+    \draw[->] (0,0) -- (0,3.8) node[above] {energy};
+    \foreach \x/\lab in {0/1,2/3,4/5,6/7,8/9,10/11,12/13,14/15,16/16} {\draw[gray!25] (\x,0.1) -- (\x,3.5); \node[font=\scriptsize] at (\x,0.05) {\lab};}
+    \draw[very thick, yebanblue] (0.0,1.4) -- (2.0,1.6) -- (4.0,1.7) -- (6.0,1.8) -- (8.0,2.7) -- (10.0,2.9) -- (12.0,3.0) -- (14.0,3.1) -- (16.0,3.2);
+    \draw[very thick, orange!80] (0.0,1.2) -- (2.0,1.3) -- (4.0,1.5) -- (6.0,1.6) -- (8.0,2.9) -- (10.0,3.1) -- (12.0,3.2) -- (14.0,3.4) -- (16.0,3.5);
+    \node[font=\scriptsize, yebanblue, anchor=west] at (16.2,3.2) {folk};
+    \node[font=\scriptsize, orange!80, anchor=west] at (16.2,3.5) {pop};
+    \node[font=\scriptsize] at (4.0,0.25) {verse};
+    \node[font=\scriptsize] at (12.0,0.25) {chorus};
+  \end{tikzpicture}
+  \caption{两首短歌的能量曲线：民谣平缓上行，流行在主歌到副歌处抬得更明显；两条都不是“从头到尾一条直线”。}
+  \label{fig:walkthrough-energy}
+\end{figure}
+
+\section{八步走查流程}
+\label{sec:walkthrough-steps}
+
+\subsection*{第一步：段落表与能量曲线}
+先写两张表：段落表（小节、段落、动作）和轨道表（轨、类型、角色）。没有这两张表，后面每加一轨都会变成“先加了再说”。
+
+\subsection*{第二步：建轨与命名}
+按第 1 章的角色卡建轨：节奏、和声、旋律、色彩。每轨用能看懂的名字（“主唱”“贝斯”“Pad”），不要用“轨 1”“轨 2”。
+
+\subsection*{第三步：节奏组}
+先做鼓与贝斯：鼓定时间与律动，贝斯定根盘。两者先 Solo 听，确认底鼓与贝斯根音不抢同一拍。民谣的鼓要轻，流行的鼓可以完整，但都不要在每个十六分填满。
+
+\subsection*{第四步：和声层}
+加木吉他/键盘/Pad：先写和弦走向，再决定织体。民谣用木吉他分解/扫弦，流行用 Pad 铺底；不要一开始就写满五条和声轨。
+
+\subsection*{第五步：主旋律与人声}
+写主旋律或录主唱：先保证歌词清楚、句尾留白。民谣的主唱可以靠木吉他伴奏，流行的主唱需要双唱/和声在后面补；不要用伴唱盖住主唱。
+
+\subsection*{第六步：色彩层}
+按段落加弦乐、木管/铜管、电子 Pluck：只在需要颜色/能量时进入，进入后要能退出。两首短歌都只用一两种色彩，不把全册乐器都用一遍。
+
+\subsection*{第七步：逐段走查}
+按段落表逐段 Solo/Mute：每段有进有出吗？低频只有一个主导吗？主唱歌词清楚吗？过渡有加花/留白吗？每段至少回答一次，不要整首一次性播完就算。
+
+\subsection*{第八步：保存与交付}
+保存工程、导出 WAV、导出分轨，写回执。第七步发现的问题回到对应轨修改，不要用推子硬压。
+
+\section{走查清单}
+\label{sec:walkthrough-checklist}
+
+\begin{longtable}{p{0.36\textwidth}p{0.56\textwidth}}
+\toprule
+检查项 & 通过标准 \\
+\midrule
+\endfirsthead
+\toprule
+检查项 & 通过标准 \\
+\midrule
+\endhead
+段落 & 每段有明确的进入/退出；没有一段是“从头到尾一样” \\
+能量 & 副歌比主歌更完整，而不是仅仅更响 \\
+低频 & Sub/Bass/Kick 只有一个主导；另外两个让路 \\
+主唱 & 每个字清楚；句尾有呼吸；没有被双唱/和声盖住 \\
+和声 & 和弦走向清楚；内声部不与主唱同节奏 \\
+色彩 & 弦乐/木管/铜管/电子只在需要时进入，进入后能退出 \\
+过渡 & 段与段之间有加花、留白、和声过渡或硬切，不是随机切换 \\
+工程 & 轨名可读；片段不丢；保存成功 \\
+导出 & WAV 有采样率/位深/时长；分轨回执报条数与跳过条数 \\
+\bottomrule
+\end{longtable}
+
+\section{保存、导出与交付}
+\label{sec:walkthrough-delivery}
+
+\begin{enumerate}
+\item \textbf{保存工程}：用「文件 → 保存工程（Ctrl+S）」写回原文件，或用「文件 → 另存为（Ctrl+Shift+S）」换名；保存是\term{原子写入}{atomic-write}，写一半断电不会留下半个文件。
+\item \textbf{版本回溯}：用「编辑 → 编曲版本时光机」查看提交链；点任意版本节点可回到那一版；这不是混音版本，是工程编辑历史。
+\item \textbf{导出 WAV}：用「文件 → 导出音频（WAV）...」设输出路径、采样率、位深、导出时长与母线限制器；导出回执会报帧数、真峰值与限制器工作量。
+\item \textbf{导出分轨}：用「文件 → 导出分轨（Stems）...」每条轨单独导一份 WAV；回执报导了几条、跳过几条与输出目录。
+\item \textbf{不要混淆诊断包}：「诊断 → 导出工程诊断报告包」是排障资料，不是音频；交付作品时不要把它当 WAV。
+\item \textbf{写交付回执}：记录工程文件、WAV、分轨目录、采样率/位深、导出时间与跳过项；没有回执的交付，别人无法复核。
+\end{enumerate}
+
+\screenshot{arrangement-walkthrough-folk}{民谣短歌的十六小节工程：主唱、木吉他、贝斯、轻鼓、弦乐 Pad 与双唱轨，按段落表检查进出}
+
+\screenshot{arrangement-walkthrough-pop}{流行短歌的十六小节工程：主唱、双唱、和声、鼓、贝斯、Pad、Pluck、铜管，副歌层次与第 9 小节铜管重音可见}
+
+\section{常见错误与修正}
+\label{sec:walkthrough-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+常见错误 & 修正 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正 \\
+\midrule
+\endhead
+先加轨，后想段落 & 先写段落表与轨道表；每轨必须回答“它在这段做什么”。 \\
+副歌只是更响 & 让每层更完整：鼓、贝斯、Pad、人声各加一点，不是把推子拉高。 \\
+两首示范都用同一套轨 & 民谣少而清楚，流行每层更清楚；按风格改轨道表，不照搬。 \\
+色彩层从头到尾都在 & 色彩只在段落转折/副歌进入；进入后要能退出。 \\
+主唱被双唱/和声盖住 & 主唱居中、音区最高；双唱同旋律，和声降三度；叠唱只最后一遍。 \\
+保存前不检查片段 & 保存前 Solo/Mute 逐段过一遍；片段静音/丢失要当场修。 \\
+把诊断包当交付 & WAV/分轨才是作品；诊断包只用于排障。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:walkthrough-exercise}
+
+\begin{exercise}
+选民谣或流行其中一首，在夜半里搭十六小节：
+\begin{enumerate}
+\item 先写段落表（八小节主歌＋八小节副歌）和轨道表（不超过八条轨）。
+\item 按八步流程做：节奏组→和声层→主旋律/人声→色彩层；每加一轨，Solo 听一次。
+\item 用走查清单逐项打勾；至少修掉一处“抢位”（低频、主唱音区或色彩层常驻）。
+\item 保存工程，导出 WAV 与分轨，写一份交付回执；把工程文件、WAV、分轨目录与回执放在同一目录。
+\end{enumerate}
+完成后回答一个问题：如果只能保留五条轨，你会删哪三条？能答清楚，说明你已经理解每层的作用。
+\end{exercise}
+
+\section{本章要点}
+\label{sec:walkthrough-takeaways}
+
+\begin{itemize}
+\item 走查不是“再听一遍”，而是按段落表逐层检查进出与抢位。
+\item 两首短歌共用一条流程：段落表→轨道表→节奏→和声→人声→色彩→检查→交付。
+\item 民谣少而清楚，流行每层更清楚；风格不同，轨道表不同。
+\item 副歌的“大”来自每层更完整，不是推子更大或轨更多。
+\item 保存是原子写入；导出 WAV 与分轨是两种交付，诊断包不是作品。
+\item 交付必须带回执：工程、WAV、分轨、参数与跳过项都能复核。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+小节 & 帮助锚点 \\
+\midrule
+走查的目标 & \texttt{arrangement-walkthrough-goal} \\
+示范一：民谣短歌 & \texttt{arrangement-folk-demo} \\
+示范二：流行短歌 & \texttt{arrangement-pop-demo} \\
+八步走查流程 & \texttt{arrangement-walkthrough-steps} \\
+走查清单 & \texttt{arrangement-walkthrough-checklist} \\
+保存、导出与交付 & \texttt{arrangement-walkthrough-delivery} \\
+常见错误与修正 & \texttt{arrangement-walkthrough-mistakes} \\
+练习 & \texttt{arrangement-walkthrough-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

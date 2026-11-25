@@ -1,0 +1,205 @@
+\chapter{Electronic and Pop: Build Texture with Layers, Not Patches}
+\label{ch:electronic}
+
+\begin{quote}
+\itshape The ``expensive'' sound of electronic arrangement rarely comes from buying more patches. It comes from each layer doing one job: sub for weight, body for identity, air for detail, rhythm for drive.
+\end{quote}
+
+\section{An electronic timbre is a stack, not one instrument}
+\label{sec:electronic-layers}
+
+In pop and electronic production, one ``synth sound'' is often several layers. Writing them separately is easier to control than cramming every parameter into one patch:
+
+\begin{itemize}
+\item \textbf{Sub layer}: handles the low end and weight, usually in the lowest band; it does not need a complex melody, only stability, pitch and no wobble.
+\item \textbf{Body layer}: carries the timbre's identity, such as the wide pad in the chorus or the lead/pluck; it decides what colour the listener remembers.
+\item \textbf{Air layer}: handles high-frequency detail and sheen, such as short high plucks, noise texture or sparkles at phrase ends; it must not rumble continuously.
+\item \textbf{Rhythm layer}: handles transients and drive, such as electronic drums, short stabs or gaps that imply sidechain; it decides whether the section moves.
+\end{itemize}
+
+These four are functions, not four fixed tracks. One patch can cover two layers, but do not let five patches repeat the same layer; that becomes ``loud'', not ``thick''.
+
+\section{Synth parameters: adjust only what changes the sound}
+\label{sec:synth-params}
+
+Synth panels are long; at the arranging stage, hold four parameters first:
+
+\begin{enumerate}
+\item \textbf{Envelope}: Attack decides whether the note starts with a snap or a fade; Decay/Release decide how long the tail lasts. Short attack suits plucks/stabs, long attack suits pads.
+\item \textbf{Filter}: Cutoff decides brightness, resonance decides how sharp the peak is. Body and sub should not share the same cutoff or they blur into one line.
+\item \textbf{Pitch/oscillator}: sub and bass an octave down, pad in the middle, pluck an octave up; do not start every layer in the same octave.
+\item \textbf{Modulation}: LFO or envelope modulation can give a pad breath and a pluck slight movement; too much modulation becomes ``wobble'', not ``life''.
+\end{enumerate}
+
+More parameters are not better. A pad with slow attack, mid-low cutoff and long release already holds a chorus; turning five knobs to maximum usually yields a sound with no focal point.
+
+\section{Frequency roles: low, body, air each take a band}
+\label{sec:frequency-roles}
+
+\term{Frequency-band division}{frequency-band-division} is the key to keeping electronic arrangement clear:
+
+\begin{longtable}{p{0.18\textwidth}p{0.26\textwidth}p{0.42\textwidth}}
+\toprule
+Layer & Band/register & Writing focus \\
+\midrule
+\endfirsthead
+\toprule
+Layer & Band/register & Writing focus \\
+\midrule
+\endhead
+Sub & Lowest band & Only one of sub and bass leads; the other yields or plays only strong beats \\
+Body & Midrange & Choose one of pad/lead/pluck as identity; do not fill the midrange with three at once \\
+Air & High band & Short phrases, phrase ends, decoration; continuous highs are harsh and mask vocal sibilance \\
+Rhythm & Transients across the spectrum & Drums and stabs provide the ``point''; do not fill every sixteenth \\
+\bottomrule
+\end{longtable}
+
+The low end fails most often: sub, bass and kick all want the bottom, and none is clear. The fix is not more compression but arrangement division: kick owns the transient, bass owns the root, sub adds weight only in long-note sections.
+
+\section{Timbre layering: give each layer its own time shape}
+\label{sec:timbre-layering}
+
+\term{Timbre layering}{timbre-layering} is not stacking two presets; it is giving each layer an independent time shape:
+
+\begin{itemize}
+\item \textbf{Short attack + short release}: plucks, stabs, electronic drums; they provide the ``point''.
+\item \textbf{Long attack + long release}: pads and beds; they provide the ``plane''.
+\item \textbf{Medium attack + long release}: leads and basses; they provide the ``line''.
+\item \textbf{Noise/high short phrases}: air; it provides the ``sheen''.
+\end{itemize}
+
+When point, plane, line and sheen each have one representative in a section, the ear does not tire. If every layer in the chorus is a long note, it sounds like cotton; if every layer is a short point, it sounds like machine-gun fire.
+
+\section{Samples and loops: material, not arrangement}
+\label{sec:sample-loop}
+
+Samples and loops build texture quickly, but they cannot make structure for you:
+
+\begin{itemize}
+\item \textbf{Samples}: import audio into the \term{asset pool}{asset pool} and place it on an audio track; check length, sample rate and tempo alignment first, not stretch as a rescue.
+\item \textbf{Loops}: use copied clips (Ctrl+C / Ctrl+V) to build repeated sections; copying and editing one detail is easier to control than hard-looping one long clip.
+\item \textbf{Material yields}: if a sample loop already contains drums/bass, do not stack another MIDI layer with the same function; low end and transients will fight.
+\item \textbf{Copyright and source}: use only material you have the right to use; keep the source in the project and receipt, and do not treat ``downloaded from the internet'' as automatically usable.
+\end{itemize}
+
+The biggest loop trap is ``one loop from beginning to end''. Treat the loop as a rhythmic skeleton and add one or two MIDI layers for variation: change the pluck in the chorus, drop the drums in the bridge, leave the pad in the outro.
+
+\section{Electronic layers in a pop song: save the verse, give the chorus}
+\label{sec:pop-layers}
+
+The most common energy curve in pop electronic arrangement is:
+
+\begin{enumerate}
+\item \textbf{Verse}: drums + bass + one body patch (pad or pluck) + vocal; the air layer only touches phrase ends.
+\item \textbf{Pre-chorus}: add a rising pad or open the filter to create ``it is coming''; do not open all chorus layers early.
+\item \textbf{Chorus}: all four layers open, but each still has a job; lead and vocal occupy different registers.
+\item \textbf{Bridge}: remove drums or low end, leave pad/sample, let the ear rest; then add the chorus layers back one by one.
+\end{enumerate}
+
+\textbf{The chorus is not ``open every track''; it is ``make every layer clearer''.} If the chorus only gets louder and busier, it feels noisy; if each layer sits in its place, the same track count feels full.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (9.6,0) node[right] {bars};
+    \foreach \x in {1,...,8} {\draw[gray!30] (\x,0.1) -- (\x,3.8); \node[font=\scriptsize] at (\x,0.05) {\x};}
+    \fill[yebanblue!12] (0.2,0.2) rectangle (4.2,3.6);
+    \fill[yebanblue!18] (4.2,0.2) rectangle (8.2,3.6);
+    \node[font=\scriptsize] at (2.2,3.4) {verse};
+    \node[font=\scriptsize] at (6.2,3.4) {chorus};
+    \fill[gray!45] (0.2,2.95) rectangle (8.2,3.25);
+    \fill[yebanblue!55] (0.2,2.15) rectangle (4.2,2.55);
+    \fill[yebanblue!75] (4.2,2.15) rectangle (8.2,2.55);
+    \fill[orange!45] (0.2,1.35) rectangle (4.2,1.75);
+    \fill[orange!70] (4.2,1.35) rectangle (8.2,1.75);
+    \fill[green!35] (0.2,0.55) rectangle (4.2,0.95);
+    \fill[green!55] (4.2,0.55) rectangle (8.2,0.95);
+    \node[font=\scriptsize, anchor=west] at (8.4,3.1) {drums};
+    \node[font=\scriptsize, anchor=west] at (8.4,2.35) {body/pad};
+    \node[font=\scriptsize, anchor=west] at (8.4,1.55) {bass/sub};
+    \node[font=\scriptsize, anchor=west] at (8.4,0.75) {air/pluck};
+  \end{tikzpicture}
+  \caption{Four-layer energy from verse to chorus: the chorus is not an extra track but a more complete version of each layer; air persists only in the chorus.}
+  \label{fig:electronic-layers}
+\end{figure}
+
+\section{Realising it in Yeban}
+\label{sec:electronic-yeban}
+
+\begin{enumerate}
+\item \textbf{Create MIDI synth tracks}: use Track $\rightarrow$ + New MIDI synth track (Ctrl+N), and name them sub, body, air and rhythm; one track carries one layer.
+\item \textbf{Tune patches in the device rack}: adjust synth parameters in the bottom device rack or the left inspector; fix attack/release and cutoff before touching other knobs.
+\item \textbf{Use the automation lane for section changes}: expand the automation lane (A) in the arrangement area and write filter cutoff, volume and other parameters over time; open the chorus and pull back the verse without riding a fader.
+\item \textbf{Import samples and loops}: use File $\rightarrow$ Import audio file... to bring material into the asset pool, then place it on an audio track; keep sample and MIDI tracks separate for Solo/Mute auditioning.
+\item \textbf{Build loops from copied clips}: select a clip, Ctrl+C / Ctrl+V, then drag it to the next section; change one detail after copying, do not duplicate the whole section identically.
+\item \textbf{Use the velocity lane for transients}: give the first note of a pluck/stab full velocity and keep the pad even; do not use one velocity curve for every layer.
+\item \textbf{Accept with Solo/Mute}: solo the low layer and confirm sub/bass/kick do not fight; solo the body and confirm it does not cover the vocal; then unmute all and confirm the air layer appears only at phrase ends.
+\end{enumerate}
+
+\screenshot{arrangement-electronic-layers}{Four MIDI tracks (sub, body, air, rhythm) and one sample track on one screen, with piano roll and automation lane showing chorus layer entrances}
+
+\section{Common mistakes and fixes}
+\label{sec:electronic-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Every synth fills the midrange & Divide sub/body/air; keep one identity in the body layer. \\
+Sub, bass and kick fight for the bottom & Kick owns the transient, bass the root, sub only adds weight in long notes. \\
+Every layer has long attack/release & Add short-attack plucks/stabs for the ``point''; plane and point must coexist. \\
+The chorus simply opens every track & Make each layer fuller and clearer, not more numerous; air persists only in the chorus. \\
+A sample loop makes the structure & Treat the loop as a skeleton and add MIDI variation; do not use one loop for the whole song. \\
+Every layer shares cutoff/envelope & Give body and sub different cutoffs; give pad and pluck different envelopes. \\
+Dense plucks/stabs cover the vocal & Keep only key beats and phrase ends; do not place a point on every sixteenth. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:electronic-exercise}
+
+\begin{exercise}
+Build an eight-bar electronic pop chorus:
+\begin{enumerate}
+\item Create four tracks: sub, body pad, air pluck, electronic drums; one layer per track.
+\item Write the root in the sub layer and a four-beat skeleton in the drums; confirm kick and bass do not fight for the bottom on the same beat.
+\item Give the body pad a long attack/release and keep it in the midrange; write the air pluck only at phrase ends, never continuously.
+\item Use the automation lane to open the pad's cutoff in bar 5; shape the pluck velocity as ``strong first beat, weaker after''.
+\end{enumerate}
+Finally solo the vocal: do the electronic layers cover the lyric? If removing the air layer makes it clearer, it has already done its job.
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:electronic-takeaways}
+
+\begin{itemize}
+\item An electronic timbre is four functions: sub, body, air and rhythm, not four presets.
+\item At the arranging stage adjust only envelope, filter, pitch and modulation; parameters serve music, not a parameter contest.
+\item Sub, body and air each take a band; divide sub/bass/kick before discussing compression.
+\item Timbre layering needs point, plane, line and sheen; not all long notes or all short points.
+\item Samples and loops are material; structure is still yours to write, and a loop needs variation above it.
+\item In Yeban, use synth tracks, the device rack, automation, the asset pool, copied clips and Solo/Mute.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+An electronic timbre is a stack & \texttt{arrangement-electronic-layers} \\
+Synth parameters & \texttt{arrangement-synth-params} \\
+Frequency roles & \texttt{arrangement-frequency-roles} \\
+Timbre layering & \texttt{arrangement-timbre-layering} \\
+Samples and loops & \texttt{arrangement-sample-loop} \\
+Electronic layers in a pop song & \texttt{arrangement-pop-layers} \\
+Realising it in Yeban & \texttt{arrangement-electronic-yeban} \\
+Common mistakes and fixes & \texttt{arrangement-electronic-mistakes} \\
+Exercise & \texttt{arrangement-electronic-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

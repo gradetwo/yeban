@@ -1,0 +1,211 @@
+\chapter{旋律与对位：让一句话被记住，再让第二句接得住}
+\label{ch:melody}
+
+\begin{quote}
+\itshape 旋律不是音符越多越好；先让一句话成立，再决定第二句是重复、回答，还是反驳。
+\end{quote}
+
+\section{旋律的任务}
+\label{sec:melody-job}
+
+旋律层要完成三件事：
+
+\begin{enumerate}
+\item \textbf{给身份}：听众要能在一首歌里认出“这是它的句子”，而不是一段可替换的音阶练习。
+\item \textbf{给方向}：句子要有起、有落、有呼吸；一直停在同一音区会失去方向。
+\item \textbf{给情绪}：同样的歌词，旋律落在大调/小调、高/低音区、长/短句上，情绪完全不同。
+\end{enumerate}
+
+旋律不是孤立存在的。它要落在和声的目标音上，要避开节奏组的重音，要在段落边界留呼吸。先写“句子”，再写“音符”。
+
+\section{动机：短、可记、可变}
+\label{sec:motif}
+
+\term{动机（motif）}{motif}是旋律里最短的可识别单位，通常 2—5 个音。一个好的动机：
+
+\begin{itemize}
+\item \textbf{短}：能在两拍内说完；太长就变成乐句，难以重复。
+\item \textbf{有特征}：一个跳进、一个切分、一个特殊的音色/力度，让人记得住。
+\item \textbf{可变}：能通过移位、倒影、缩短、延长、改变节奏变成新句子，而不是每次原样复制。
+\end{itemize}
+
+\begin{longtable}{p{0.20\textwidth}p{0.36\textwidth}p{0.36\textwidth}}
+\toprule
+变奏手法 & 怎么做 & 风险 \\
+\midrule
+\endfirsthead
+\toprule
+变奏手法 & 怎么做 & 风险 \\
+\midrule
+\endhead
+重复 & 原样再来一次 & 强调记忆；连续三次以上会腻。 \\
+移位 & 整体升高/降低几个音 & 保持轮廓，改变色彩；移得太远会脱离和声。 \\
+倒影 & 上下方向反过来 & 产生“回答”感；听众可能认不出原动机。 \\
+缩短/延长 & 砍掉或增加首尾音 & 改变语气；切得太碎会失去动机特征。 \\
+改节奏 & 保留音高，改时值/重音 & 同一动机换性格；改太多会变成另一个动机。 \\
+\bottomrule
+\end{longtable}
+
+写动机时只选一个特征，不要同时做跳进、切分、装饰音三件事。特征越多，越难记，也越难变奏。
+
+\section{乐句：前句、后句、呼吸}
+\label{sec:phrase}
+
+\term{乐句（phrase）}{phrase}是有起有落的旋律单位，常见长度是 4 或 8 小节。流行歌里最常用的结构是“前句—后句”：
+
+\begin{itemize}
+\item \textbf{\term{前句（antecedent）}{antecedent}}：提出问题、建立期待，常停在一个不稳定音或半终止。
+\item \textbf{\term{后句（consequent）}{consequent}}：回答问题、解决期待，常回到主和弦的目标音。
+\item \textbf{呼吸}：两句之间留半拍到一拍；没有呼吸的旋律，听众听不出句子边界。
+\end{itemize}
+
+一个实用检查：把旋律的每个音唱出来，如果换气只能等到 8 小节结束，句子太长了；如果每两拍就断一次，句子太碎。
+
+\section{轮廓与目标音}
+\label{sec:contour}
+
+\term{轮廓（contour）}{contour}是旋律在音高上的走势：上行、下行、拱形、波浪、阶梯。轮廓决定听众对“这句话往哪走”的直觉。
+
+\begin{itemize}
+\item \textbf{先定轮廓，再填音符}：整首都是一个音区来回，听众会觉得平；整句一直往上冲，副歌就没有空间。
+\item \textbf{目标音}：每句至少有一个\term{目标音（target note）}{target-note}，落在和弦的根/三/五/七上；目标音决定这句话是稳、是悬、还是解决。
+\item \textbf{音区管理}：主歌把中心音区留低一点，副歌再抬；不要从第一句就把最高音用完。
+\item \textbf{跳进之后要回落}：大跳（≥5 半音）之后通常要级进回落，否则听众会觉得悬空；这不是绝对规则，但很稳。
+\end{itemize}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (9.2,0) node[right] {小节};
+    \draw[->] (0,0) -- (0,3.8) node[above] {音区};
+    \draw[very thick, yebanblue] (0.4,1.2) -- (1.0,2.3) -- (1.8,1.8) -- (2.6,2.6) -- (3.4,2.0) -- (4.2,1.5) -- (5.2,1.3);
+    \draw[thick, gray!70, dashed] (0.4,1.4) -- (1.4,1.8) -- (2.4,1.5) -- (3.4,2.2) -- (4.4,1.7) -- (5.2,1.9);
+    \node[font=\scriptsize, align=center] at (0.7,0.5) {动机 A};
+    \node[font=\scriptsize, align=center] at (2.2,0.5) {变奏 A'};
+    \node[font=\scriptsize, align=center] at (3.8,0.5) {对比 B};
+    \node[font=\scriptsize, align=center] at (5.0,0.5) {回归};
+    \node[font=\scriptsize, anchor=west] at (6.0,2.4) {主旋律};
+    \node[font=\scriptsize, anchor=west] at (6.0,1.8) {副旋律（虚线）};
+  \end{tikzpicture}
+  \caption{动机—变奏—对比—回归的轮廓示意；虚线是副旋律，方向常与主旋律相反，避免两条线一起上下。}
+  \label{fig:melody-contour}
+\end{figure}
+
+\section{节奏：重音、留白与歌词}
+\label{sec:melody-rhythm}
+
+旋律的节奏不是“把音符填进格子”，而是“把重音放在该放的字上”：
+
+\begin{itemize}
+\item \textbf{歌词重音}：多音节词的强调音节落在强拍或长音上；不要把重音放在虚词上。
+\item \textbf{切分}：切分能制造推动，但连续切分会失去落点；每句留一个明确的强拍落点。
+\item \textbf{留白}：句子之间、段落之间留空；旋律的“无声”也是编曲的一部分。
+\item \textbf{密度对比}：主歌可以疏，副歌可以密；不要整首同一密度。
+\end{itemize}
+
+\section{对位：第二句怎样接住第一句}
+\label{sec:counterpoint}
+
+\term{对位（counterpoint）}{counterpoint}是两条以上旋律线同时进行、彼此独立又协调。流行歌最常用的不是严格对位，而是三种实用关系：
+
+\begin{enumerate}
+\item \textbf{副旋律}：在主旋律下方或上方写一条独立线，音区错开，节奏不完全同步；不要复制主旋律。
+\item \textbf{呼应句}：主句结束后，另一声部用短句回答；回答句通常 1—2 小节，不抢主句。
+\item \textbf{反向进行}：主旋律上行时副旋律下行，制造张力；不要两条线永远同向。
+\end{enumerate}
+
+\begin{longtable}{p{0.22\textwidth}p{0.36\textwidth}p{0.34\textwidth}}
+\toprule
+写法 & 做什么 & 风险 \\
+\midrule
+\endfirsthead
+\toprule
+写法 & 做什么 & 风险 \\
+\midrule
+\endhead
+副旋律 & 错音区、错节奏，独立成句 & 与主旋律同音区/同节奏，会变成“加倍的旋律”。 \\
+呼应句 & 主句后留 1—2 小节回答 & 回答太长、太强，会抢主句的身份。 \\
+反向进行 & 两条线上下相反 & 为了反向而反向，和声会站不住。 \\
+\bottomrule
+\end{longtable}
+
+对位的底线是“听得清两个角色”：主旋律是主角，副旋律/回答句是配角。两条线都想要主角的音量、音区、密度，听众只会听到一条糊线。
+
+\section{在夜半里落地}
+\label{sec:melody-yeban}
+
+\begin{enumerate}
+\item \textbf{先在钢琴卷帘写单线。}选中 MIDI 片段，按 P / F7 打开钢琴卷帘；先只写主旋律，不要同时写副旋律。
+\item \textbf{复制片段做变奏。}用 Ctrl+C / Ctrl+V 复制动机片段，再改音高/节奏/长度；不要在一条片段里反复手写同一动机。
+\item \textbf{移调与目标音。}选中音符后整体移调，检查每个乐句的目标音是否落在当前和弦的根/三/五/七上；不要为了“高”而整体抬八度。
+\item \textbf{力度泳道。}在钢琴卷帘下方画力度；主歌与副歌的力度层级要分开，句子内部也要有呼吸。
+\item \textbf{副旋律另起一轨。}不要在主旋律轨里叠副旋律；另建 MIDI 轨，音区错开，Solo 检查两条线是否互相听得清。
+\item \textbf{Solo/Mute 验收。}Solo 主旋律，确认它单独成立；再放开副旋律，确认副旋律没有盖住主句；最后放开节奏组，确认重音没有被鼓吃掉。
+\end{enumerate}
+
+\screenshot{arrangement-melody-counterpoint}{钢琴卷帘中的主旋律、副旋律两条轨与力度泳道：看清音区错开、目标音与句子呼吸}
+
+\section{常见错误与修正}
+\label{sec:melody-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endhead
+旋律每个音都落在强拍 & 让弱拍/切分参与，句子才有推动；但每句保留明确落点。 \\
+一句里塞太多音符 & 先删到能唱出来的长度，再用留白与长音做呼吸。 \\
+没有可识别的动机 & 选 2—5 个音做一个特征，再通过重复/变奏展开。 \\
+副旋律复制主旋律 & 错开音区、节奏与轮廓；副旋律要能独立成句。 \\
+两条线永远同向 & 用反向进行制造张力；但反向要服务和声，不要硬反。 \\
+主歌就把最高音用完 & 把高音留到副歌；主歌先在中低音区建立身份。 \\
+用移调代替旋律写作 & 移调只改色彩，不改句子；先改轮廓与节奏。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:melody-exercise}
+
+\begin{exercise}
+写一条 8 小节主旋律和一条 4 小节副旋律：
+\begin{enumerate}
+\item 先用 3 个音写一个动机，要求两拍内说完；再写变奏 A'（移位或改节奏）与对比 B。
+\item 把 8 小节分成前句 4 小节、后句 4 小节；前句停在不稳定音，后句回到主和弦目标音；两句之间留半拍呼吸。
+\item 副旋律另起一轨：主旋律上行时副旋律下行，音区错开；Solo 两条线，确认能同时听清。
+\end{enumerate}
+最后用力度泳道给主歌/副歌各做一层力度差，并记录哪一句的目标音最清楚。
+\end{exercise}
+
+\section{本章要点}
+\label{sec:melody-takeaways}
+
+\begin{itemize}
+\item 旋律先给身份、方向、情绪，再谈音符。
+\item 动机要短、可记、可变；变奏只改一个特征。
+\item 乐句有前句/后句/呼吸；目标音落在和弦音上。
+\item 轮廓先定，再填音符；跳进后通常级进回落。
+\item 对位要让两个角色都听得清：副旋律错音区、错节奏，回答句不抢主句。
+\item 编曲阶段先解决旋律与副旋律的冲突，不要用音量硬压。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+本节 & 帮助锚点 \\
+\midrule
+旋律的任务 & \texttt{arrangement-melody-job} \\
+动机：短、可记、可变 & \texttt{arrangement-motif} \\
+乐句：前句、后句、呼吸 & \texttt{arrangement-phrase} \\
+轮廓与目标音 & \texttt{arrangement-contour} \\
+节奏：重音、留白与歌词 & \texttt{arrangement-melody-rhythm} \\
+对位：第二句怎样接住第一句 & \texttt{arrangement-counterpoint} \\
+在夜半里落地 & \texttt{arrangement-melody-yeban} \\
+常见错误与修正 & \texttt{arrangement-melody-mistakes} \\
+练习 & \texttt{arrangement-melody-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

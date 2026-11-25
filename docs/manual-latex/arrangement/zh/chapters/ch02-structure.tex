@@ -1,0 +1,206 @@
+\chapter{歌曲结构：用段落管理听众的注意力}
+\label{ch:structure}
+
+\begin{quote}
+\itshape 结构不是把歌切成几块，而是决定听众在第几秒听到什么、在哪一秒想继续听下去。
+\end{quote}
+
+\section{结构不是公式，是能量地图}
+\label{sec:structure-map}
+
+写歌的人常问“主歌该多长”“副歌要不要重复”。这些问题没有脱离作品的答案。结构真正要解决的是三件事：
+
+\begin{enumerate}
+\item \textbf{定位}：听众现在在哪个段？旋律、和声与节奏要给出一致的信号。
+\item \textbf{期待}：这一段结束前，听众期待什么？下一段要给到，或故意晚一点给。
+\item \textbf{能量}：这一段比上一段强还是弱？强多少？靠什么强？
+\end{enumerate}
+
+把这三件事画成一张以小节为横轴、以能量为纵轴的图，就是本册说的能量曲线。曲线不是给别人看的审美图，而是编曲时的施工图：它告诉你哪一段该加声部、哪一段该留白、哪一段该换织体。
+
+\section{五个段位的功能}
+\label{sec:section-functions}
+
+流行歌曲最常用的段位是前奏、主歌、\term{预副歌（pre-chorus）}{pre-chorus}、副歌、\term{桥段（bridge）}{bridge}与\term{尾奏（outro）}{outro}。它们不是必须全部出现，但每一个都有明确的工作。
+
+\begin{longtable}{p{0.14\textwidth}p{0.28\textwidth}p{0.20\textwidth}p{0.28\textwidth}}
+\toprule
+段位 & 主要任务 & 能量位置 & 夜半落点 \\
+\midrule
+\endfirsthead
+\toprule
+段位 & 主要任务 & 能量位置 & 夜半落点 \\
+\midrule
+\endhead
+前奏 Intro & 交代音色、速度与情绪，不提前把副歌的招用完 & 低到中 & 4—8 小节；用一条或两条轨建立质感 \\
+主歌 Verse & 讲故事、给信息；和声与节奏相对克制 & 低 & 8 或 16 小节；旋律在中低音区，配器留空间 \\
+预副歌 Pre-chorus & 把期待抬起来，准备进副歌 & 中，逐步上升 & 2—8 小节；加密度、加和声张力，末小节留一个钩子 \\
+副歌 Chorus & 给全曲最容易被记住的句子与最满的和声 & 高 & 8 或 16 小节；主旋律最高、配器最完整 \\
+桥段 Bridge & 换一个角度，制造对比；可以短暂降下去 & 低到中，再抬 & 4—8 小节；换和弦、换节奏或换音色，不要写成第二个主歌 \\
+尾奏 Outro & 收束或淡出，给听众一个结束信号 & 中到低 & 4—8 小节；减层、延长、回到前奏动机 \\
+\bottomrule
+\end{longtable}
+
+短歌可以没有预副歌或桥段；舞曲、民谣、叙事歌的段位长度也会不同。不要为了“像流行歌”硬塞桥段。段位存在的理由，是它要完成的功能；没有功能，就不加。
+
+\section{把能量画成曲线}
+\label{sec:energy-curve}
+
+下面是一张常见的流行歌能量草图。纵轴不是绝对音量，而是“这一段相对上一段有多满”；横轴按段落顺序排列，不按真实小节等比例。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->, thick] (0,0) -- (11.5,0) node[right] {时间};
+    \draw[->, thick] (0,0) -- (0,4.2) node[above] {能量};
+    \draw[very thick, yebanblue] (0.2,1.1) -- (1.2,1.1) -- (1.8,1.5) -- (3.2,1.5) -- (3.8,2.2) -- (5.2,3.3) -- (6.4,3.3) -- (7.0,1.7) -- (8.4,1.7) -- (9.0,3.4) -- (10.2,3.4) -- (10.8,2.0);
+    \node[font=\scriptsize, align=center] at (0.7,0.55) {前奏};
+    \node[font=\scriptsize, align=center] at (2.5,0.55) {主歌};
+    \node[font=\scriptsize, align=center] at (4.5,0.55) {预副歌};
+    \node[font=\scriptsize, align=center] at (5.8,0.55) {副歌};
+    \node[font=\scriptsize, align=center] at (7.7,0.55) {主歌 2};
+    \node[font=\scriptsize, align=center] at (9.6,0.55) {副歌 2};
+    \node[font=\scriptsize, align=center] at (10.8,0.55) {尾奏};
+  \end{tikzpicture}
+  \caption{一张流行歌能量草图：每个段落的“满度”不同，副歌不是唯一的高点，桥段可以主动降下去再抬起来。}
+  \label{fig:energy-curve}
+\end{figure}
+
+画曲线时，至少标四个值：这一段用了多少条轨、主旋律在什么音区、节奏密度多高、和声是简单还是复杂。四项里只动一项，能量变化通常不够明显；四项一起动，又容易失控。下一节的配器预算就是用来控制这个“动几项”的。
+
+一个可操作的验收线：在流行/摇滚的常见写法里，副歌与主歌的 RMS 差做到约 1.5 dB 以上，先当作“能量确实拉开”的粗略自检；这不是所有风格都适用的法律，最终要用参考曲与听感校准。若差不到，先加声部或密度，不要只推总推子。
+
+\section{配器预算：每段加减什么}
+\label{sec:instrumentation-budget}
+
+\term{配器预算（instrumentation budget）}{instrumentation-budget}是一张按段落填的配器表，不是钱表。它让“这一段该加什么”从感觉变成可检查的选择。
+
+\begin{longtable}{p{0.16\textwidth}p{0.10\textwidth}p{0.10\textwidth}p{0.12\textwidth}p{0.12\textwidth}p{0.10\textwidth}p{0.12\textwidth}}
+\toprule
+段位 & 鼓 & 贝斯 & 和声/铺底 & 主旋律 & 弦乐 & 打击 \\
+\midrule
+\endfirsthead
+\toprule
+段位 & 鼓 & 贝斯 & 和声/铺底 & 主旋律 & 弦乐 & 打击 \\
+\midrule
+\endhead
+前奏 & 轻 & 可选 & 1 层 & 动机 & 可选 & 点缀 \\
+主歌 & 基础 & 基础 & 1 层 & 主唱/主奏 & 少 & 少 \\
+预副歌 & 加密 & 加密 & 加张力 & 上行 & 加入长音 & 加入过门 \\
+副歌 & 完整 & 完整 & 2—3 层 & 最高 & 完整 & 完整 \\
+桥段 & 换律动 & 换走向 & 换和弦 & 换角色 & 可撤 & 可撤 \\
+尾奏 & 减 & 减 & 延长 & 收 & 延长 & 收 \\
+\bottomrule
+\end{longtable}
+
+填表时遵守两条：
+
+\begin{itemize}
+\item \textbf{相邻段至少差两项。}主歌到副歌只把鼓推响，听起来仍像同一段；加一条弦乐长音、让贝斯从长音变八分，才会同时改变密度与织体。
+\item \textbf{减法要早于加法。}桥段不是“再加一组新乐器”，而是先撤掉副歌的一半，让听众的耳朵重新有空间；再在桥段后段加回来。
+\end{itemize}
+
+\begin{tipbox}
+配器预算表可以只写在纸上。真正要检查的是工程里的 Mute/Solo 是否和表一致：表上写“副歌加弦乐”，工程里却从头到尾都有弦乐，那表就失效了。
+\end{tipbox}
+
+\section{段落衔接的四种手法}
+\label{sec:transitions}
+
+段落之间不是“切过去”就完了。\term{过渡（transition）}{transition}有四种常用手法，各有适用条件：
+
+\begin{longtable}{p{0.18\textwidth}p{0.32\textwidth}p{0.40\textwidth}}
+\toprule
+手法 & 怎么做 & 什么时候用、风险是什么 \\
+\midrule
+\endfirsthead
+\toprule
+手法 & 怎么做 & 什么时候用、风险是什么 \\
+\midrule
+\endhead
+硬切 & 在强拍或小节线直接换段，不做过门 & 段落对比强、节奏清楚的歌；风险是突然，前一段必须有明确的结束感 \\
+加花 & 用一小节鼓/贝斯/吉他的 fill 把耳朵送进下一段 & 主歌进副歌、预副歌末；风险是每段都加会疲劳，留到关键转场 \\
+和声过渡 & 用共同音、属和弦或转调把两段接起来 & 调性/和声变化大的段落；风险是过度设计，听众只听到“绕” \\
+留白/节奏过门 & 在转场前停半拍、抽掉底鼓或让整个乐队静一下 & 需要强调下一段时；风险是停得太久会像断轨 \\
+\bottomrule
+\end{longtable}
+
+预副歌最值得单独设计：它不需要像副歌一样满，而是要让听众感觉“要来了”。常见做法是末两小节加密和声、抬旋律、加一个上行过门；最后一拍留白，副歌第一拍再全部落下。
+
+\section{在夜半里落地}
+\label{sec:structure-yeban}
+
+把结构写进夜半工程，可以按下面顺序做：
+
+\begin{enumerate}
+\item \textbf{先在纸上排小节。}用 4 或 8 小节作基本块，写下每段起止小节；不要一上来就写音符。
+\item \textbf{在编曲区对齐片段。}编曲区上方有小节编号标尺与\term{段落标记（section marker）}{section-marker}；让每个段的第一个片段落在目标小节，后续段落复制时就不会越界。
+\item \textbf{用 Mute 做减法。}先按配器预算表把所有层摆上，再逐段 Mute 掉不该出现的层，听整体是否真的“减下来”；不要直接删轨，删了很难回头比较。
+\item \textbf{用 Solo 检查主角。}副歌重点听主旋律与主唱；如果 Solo 主旋律时它自己都站不住，先改旋律，不要靠加弦乐掩盖。
+\item \textbf{看总览面板。}夜半的全曲总览面板用一张图看全曲的能量与结构分布；把它和纸上的能量曲线对照，段落长度或密度不对时会很明显。
+\item \textbf{复制片段时改配器。}段落复制（Ctrl+C / Ctrl+V）只解决“音符位置”，不解决“这一段该不该一样”；复制后至少改一处配器、密度或音区。
+\end{enumerate}
+
+\screenshot{arrangement-song-structure-overview}{编曲区小节标尺/段落标记与全曲总览面板对照：看清每段起止和能量分布}
+
+\section{常见错误与修正}
+\label{sec:structure-mistakes}
+
+\begin{longtable}{p{0.32\textwidth}p{0.60\textwidth}}
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endhead
+每段配器一样满 & 按配器预算表做相邻段差异；至少动两项：声部数、密度、音区或和声张力。 \\
+副歌只靠推总音量 & 先加声部/密度/力度；总推子只做最后统一，不负责结构对比。 \\
+桥段写成第二个主歌 & 换和弦、换律动或换音色；桥段的功能是对比，不是重复。 \\
+预副歌太长，像第二段主歌 & 压到 2—4 小节，末小节留钩子；预副歌的任务是抬期待，不是讲新故事。 \\
+前奏把副歌的配器全用完 & 前奏只建立质感与动机；把最满的和声留给副歌。 \\
+转场全靠 riser/音效 & 先用硬切、加花、和声过渡或留白；音效是补充，不是结构本身。 \\
+复制八小节循环铺满全曲 & 每个段至少改一处；用总览面板检查能量曲线是否一条直线。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:structure-exercise}
+
+\begin{exercise}
+选一首你熟悉的 3—5 分钟流行歌，完成下面三件事：
+\begin{enumerate}
+\item 数出它的段位与小节数，画一张能量曲线；标出每段的主旋律音区、鼓的密度、和声层数。
+\item 用夜半建一个 32 小节的结构骨架：前奏 4、主歌 8、副歌 8、主歌 8、副歌 4；只放鼓、贝斯、铺底与主旋律，不写细节。
+\item 按配器预算表给主歌与副歌各做一次 A/B：先 Mute 掉所有“副歌才该有”的层，再逐层加回；记录哪一层让对比最明显，哪一层其实可以删。
+\end{enumerate}
+\end{exercise}
+
+\section{本章要点}
+\label{sec:structure-takeaways}
+
+\begin{itemize}
+\item 结构是能量地图：定位、期待、能量三件事。
+\item 每个段位都有功能；没有功能的段位不要硬塞。
+\item 用能量曲线与配器预算表管理“这一段加什么、减什么”。
+\item 相邻段至少差两项；减法要早于加法。
+\item 转场先用手法，不要先堆音效；复制片段后必须改配器。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+本节 & 帮助锚点 \\
+\midrule
+结构不是公式，是能量地图 & \texttt{arrangement-structure-map} \\
+五个段位的功能 & \texttt{arrangement-section-functions} \\
+把能量画成曲线 & \texttt{arrangement-energy-curve} \\
+配器预算 & \texttt{arrangement-instrumentation-budget} \\
+段落衔接的四种手法 & \texttt{arrangement-transitions} \\
+在夜半里落地 & \texttt{arrangement-structure-yeban} \\
+常见错误与修正 & \texttt{arrangement-structure-mistakes} \\
+练习 & \texttt{arrangement-structure-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

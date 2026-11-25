@@ -1,0 +1,233 @@
+\chapter{Arrangement Overview: Build the Layers First}
+\label{ch:overview}
+
+\begin{quote}
+\itshape Arrangement is not putting the largest number of instruments into the same bar. It is letting each layer say the right thing at the right moment.
+\end{quote}
+
+\section{What arranging actually arranges}
+\label{sec:what-is-arrangement}
+
+A song can be one guitar and one voice, or forty tracks. Both can be well arranged. The difference is not the track count but whether the \textbf{functional layers} are clear. This volume uses four \term{arrangement layers}{arrangement-layer}:
+
+\begin{enumerate}
+\item \textbf{Rhythm layer}: drums, percussion and bass, plus the rhythm guitar or keyboard that carries the groove. It answers ``how does this song move?''
+\item \textbf{Harmony layer}: pads, arpeggios and chordal instruments. It answers ``what harmonic ground does this song stand on?''
+\item \textbf{Melody layer}: lead vocal, lead instrument and counter-melody. It answers ``which sentence should the listener remember?''
+\item \textbf{Colour and atmosphere layer}: synth pads, samples, ambience and sound effects. It answers ``what colour is this song?''
+\end{enumerate}
+
+The four layers are \textbf{functions}, not a fixed instrumentation. One piano can carry harmony and rhythm at once; one synth pad can supply harmony and atmosphere. The test is not ``what instrument is it?'' but ``which layer is it serving right now?''
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (color) at (0,3.3) {\textbf{Colour / atmosphere}: synth pads, samples, ambience, effects};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (melody) at (0,2.2) {\textbf{Melody}: lead vocal, lead instrument, counter-line, answering phrases};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (harmony) at (0,1.1) {\textbf{Harmony}: pads, arpeggios, chordal instruments};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{Rhythm}: drums, percussion, bass, rhythm guitar/keyboard};
+    \draw[->, thick, yebanblue] (rhythm.north) -- (harmony.south);
+    \draw[->, thick, yebanblue] (harmony.north) -- (melody.south);
+    \draw[->, thick, yebanblue] (melody.north) -- (color.south);
+    \node[anchor=west, align=left, text width=3.2cm] at (5.0,1.6) {Bottom to top is not a\\ranking of importance. It is\\``build the skeleton, then\\choose the colour''.};
+  \end{tikzpicture}
+  \caption{The four functional layers of arrangement. They support one another; they are not a track-count leaderboard.}
+  \label{fig:four-layers}
+\end{figure}
+
+\section{The role card: three boxes before writing a part}
+\label{sec:role-card}
+
+Before placing the first note in the piano roll, write a three-box \term{role card}{role-card} for the part. If the three boxes are unclear, no number of notes will keep the parts from colliding.
+
+\begin{longtable}{p{0.20\textwidth}p{0.36\textwidth}p{0.36\textwidth}}
+\toprule
+Box & Question & What goes wrong if it is vague \\
+\midrule
+\endfirsthead
+\toprule
+Box & Question & What goes wrong if it is vague \\
+\midrule
+\endhead
+Function & Is it a root bed, a groove, harmonic filling, a lead, a counter-line or atmosphere? & Two parts fight for one job; the result is thick but muddled. \\
+Register & Roughly where are its low, centre and high notes? & Everything sits in the midrange and the vocal disappears. \\
+Rhythmic character & Sustained bed, even eighths, syncopation, space, or a free phrase? & Every part moves at once and the listener loses the landing point. \\
+\bottomrule
+\end{longtable}
+
+Start registers from the table below, then calibrate against reference records. These are \textbf{starting points}, not prohibitions:
+
+\begin{longtable}{p{0.24\textwidth}p{0.32\textwidth}p{0.36\textwidth}}
+\toprule
+Part & Typical register (MIDI notes) & Note \\
+\midrule
+\endfirsthead
+\toprule
+Part & Typical register (MIDI notes) & Note \\
+\midrule
+\endhead
+Bass & E1--G2 (28--43) & Mostly root notes; frequent excursions above C3 tend to sound melodic and steal focus. \\
+Rhythm guitar & Around the E3--B3 fundamental range & A single-note riff often sounds heavier than full chords; leave a little space every four bars. \\
+Keyboard / pad & C3--C5 & Stay out of the vocal's most comfortable register; leave the middle to the melody. \\
+Lead & The comfortable register of the reference vocal or lead instrument & Do not lift the whole part an octave for ``power''; change density and instrumentation first. \\
+Drums & Low and midrange jobs & Kick carries the low end, snare carries the midrange skeleton; the snare is not the groove's lead voice. \\
+\bottomrule
+\end{longtable}
+
+\begin{tipbox}
+The card does not need to live in the project file. A track name or a note in an empty clip is enough: ``Bass -- root bed -- E1/G2 -- mostly eighths, one beat of space every four bars''. Writing it down is more reliable than stacking tracks by feel.
+\end{tipbox}
+
+\section{Arrange first, mix later}
+\label{sec:arrangement-before-mixing}
+
+Arrangement and mixing solve different problems:
+
+\begin{itemize}
+\item \textbf{Arrangement} decides which sounds exist, in which register, at which moment, and for which function.
+\item \textbf{Mixing} decides how those sounds share level, frequency range, space and dynamics.
+\end{itemize}
+
+The order cannot be reversed. The practical reason: if two parts start in the same register, on the same beat, doing the same job, the mix engineer can only separate them by heavy EQ, hard compression or pushing one far away. The result is thin, artificial and loses the arranging intention. Solve the conflict with register, rhythm and instrumentation first; then mixing can add polish instead of fighting a fire.
+
+\begin{warnbox}
+When something sounds muddy, ask three arrangement questions first: Are these two parts in the same register? Are they doing the same thing on the same beat? Could one of them simply be removed? Only after ruling those out should you reach for EQ and compression.
+\end{warnbox}
+
+\section{Seeing the four layers in Yeban: the six-track demo}
+\label{sec:yeban-demo}
+
+Yeban opens a demo project by default. It is not a tutorial screenshot; it is a real \texttt{YebanProjectV1} with six ordinary tracks and one master bus, which makes it a useful place to watch the four layers separate.
+
+\begin{longtable}{p{0.18\textwidth}p{0.18\textwidth}p{0.56\textwidth}}
+\toprule
+Track & Type & What to observe \\
+\midrule
+\endfirsthead
+\toprule
+Track & Type & What to observe \\
+\midrule
+\endhead
+Drums & MIDI & The rhythm skeleton; the demo solos it by default, which makes the groove easy to hear first. \\
+Bass & Audio & Root motion and low end; together with the drums it decides how the song moves. \\
+Pad & MIDI & The sustained harmonic background; check whether it leaves the midrange to the vocal. \\
+Lead & MIDI & The melody-layer lead; check whether it shares a register with the pad. \\
+Strings & MIDI & Colour and atmosphere, but also able to carry harmony or counterpoint; whether it thickens or steals focus depends on the writing. \\
+Percussion & Audio & Colour and detail in the rhythm layer; muted by default, which makes it useful for A/B. \\
+Master & Master output & The summing point of all tracks; it is not an arrangement layer, but it decides the final impression. \\
+\bottomrule
+\end{longtable}
+
+With the demo open, do three things:
+
+\begin{enumerate}
+\item Press \textbf{Space} and listen to the whole first. Do not solo anything immediately.
+\item In the arrangement area, solo each track in turn and hear what job it does; then mute it and hear what the whole loses.
+\item Open the piano roll (\textbf{P / F7}) and look at which registers the drums, pad and lead occupy; open the mixer (\textbf{X / F8}) and see how much level each part takes.
+\end{enumerate}
+
+This is not passive listening. It is taking a finished piece apart into functional layers. Only when you can take it apart can you build your own.
+
+\screenshot{arrangement-demo-six-tracks}{The six ordinary tracks and master bus of the demo project: solo and mute each track to observe the four layers}
+
+\section{The three-pass method: from an eight-bar skeleton to a full section}
+\label{sec:three-pass}
+
+Do not start at bar one and fill every part at once. Use three passes; each pass solves one problem.
+
+\subsection*{Pass one: skeleton}
+Write the rhythm layer and the harmonic roots first. At minimum: kick and snare placement, a bass root motion, and a pad or keyboard that makes the chord changes audible. Do not write lead ornaments or atmosphere yet. The goal is: \textbf{three or four parts, an eight-bar loop that stands up on its own.}
+
+\subsection*{Pass two: protagonist}
+Write the lead melody or vocal. Use one sound to make the sentence clear; do not stack three tracks at once. When it is written, mute the pad temporarily and check whether the lead stands alone; then unmute the pad and check whether it blocks the lead's centre register.
+
+\subsection*{Pass three: colour}
+Only now add strings, synth pads, percussion detail, counter-melodies and answering phrases. For every added layer, answer: ``which gap does it fill? What does the whole lose if I remove it?'' If you cannot answer, do not add it yet.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass1) at (0,0) {\textbf{Pass 1 -- skeleton}\\drums / bass / harmonic roots\\goal: eight bars stand up};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass2) at (3.7,0) {\textbf{Pass 2 -- protagonist}\\lead melody / vocal\\goal: one sentence is remembered};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass3) at (7.4,0) {\textbf{Pass 3 -- colour}\\strings / synths / percussion\\goal: every layer has a job};
+    \draw[->, thick, yebanblue] (pass1) -- (pass2);
+    \draw[->, thick, yebanblue] (pass2) -- (pass3);
+  \end{tikzpicture}
+  \caption{The three-pass method: each pass adds one class of function, so you can hear who is fighting whom.}
+  \label{fig:three-pass}
+\end{figure}
+
+\section{Energy is not only ``an octave up''}
+\label{sec:energy}
+
+The \term{chorus}{chorus} must feel stronger than the \term{verse}{verse}, but ``stronger'' does not mean transposing every instrument up an octave. A more reliable order is:
+
+\begin{enumerate}
+\item \textbf{Add parts}: verse has drums, bass and pad; chorus adds string sustains, rhythm guitar or a second vocal.
+\item \textbf{Add density}: the verse drums play only key accents; the chorus adds eighth- or sixteenth-note closed hi-hats, and the bass moves from long notes to directed eighths.
+\item \textbf{Add velocity}: let the performance or programming breathe; the chorus sits one controlled level above the verse instead of the whole song sharing one velocity.
+\item \textbf{Consider register last}: an octave lift brightens the sound but most easily crowds the vocal; use it only after the first three moves are not enough.
+\end{enumerate}
+
+This is the judgement order repeated throughout the volume: \textbf{function first, register second, timbre last.} Mixing handles frequency balance and space afterwards.
+
+\section{Common mistakes and fixes}
+\label{sec:overview-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Every part sits in the midrange & Write a register for each part; move the pad away from the vocal centre and put the bass back in the low end. \\
+More tracks must mean ``fuller'' & Remove layers with no function; every layer must answer ``what is missing without it?''. \\
+One flat velocity for the whole song & Leave dynamic room between verse and chorus; a velocity difference is more natural than a pitch difference. \\
+Copy the eight-bar loop from top to bottom & Change at least one thing per section -- instrumentation, density or register -- and check the energy curve at the section markers. \\
+Use EQ and compression to hide arrangement conflicts & Change register, rhythm and part count first; mixing is for adding polish. \\
+The pad covers the lead & Move the pad below or above the lead's centre register; reduce the number of pad voices if necessary. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:overview-exercise}
+
+\begin{exercise}
+Open the Yeban demo project and complete three tasks; write the results on one sheet of paper:
+\begin{enumerate}
+\item Solo and mute each track, then write a three-box role card for each of the six ordinary tracks (function, register, rhythmic character).
+\item Using only drums, bass and pad, build an eight-bar loop; keep the bass mostly on roots and keep the pad out of the vocal's centre register.
+\item Write a four-bar lead over the loop. Then make two comparisons: remove the pad once, and lift the pad one octave once. Which version makes the lead clearer, and why?
+\end{enumerate}
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:overview-takeaways}
+
+\begin{itemize}
+\item Arrange by functional layer: rhythm, harmony, melody, colour and atmosphere.
+\item Write a role card before any part: function, register, rhythmic character.
+\item Arrange first and mix later; do not leave arrangement conflicts for EQ and compression.
+\item Use three passes: skeleton, protagonist, colour; each pass solves one problem.
+\item Build energy with parts, density and velocity first; an octave lift is the last resort.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+What arranging actually arranges & \texttt{arrangement-what-is-arrangement} \\
+The role card & \texttt{arrangement-role-card} \\
+Arrange first, mix later & \texttt{arrangement-before-mixing} \\
+Seeing the four layers in Yeban & \texttt{arrangement-yeban-demo} \\
+The three-pass method & \texttt{arrangement-three-pass} \\
+Energy is not only an octave up & \texttt{arrangement-energy} \\
+Common mistakes and fixes & \texttt{arrangement-common-mistakes} \\
+Exercise & \texttt{arrangement-overview-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}
