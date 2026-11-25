@@ -148,7 +148,7 @@
 //! | ⭐ S116 | ⭐ ⭐ **`ampeg_attack` 三档计数的口径就地可判 ＋ 口径矩阵（≥6 档）＋ `#include` 展开档**（任务单 `#123` 新增；台账第 274／278／289 条） | ① **修订段可判**：引擎模块头必须逐字含「⭐ ⭐ **追加修订段（任务单 `#123`）」／新一节「# ⭐⭐ `ampeg_attack` 三档计数的**口径**（任务单 `#123`）」／三档的口径行（① 家族**子串** ／ ② **不剥注释** token ／ ③ **剥注释** token）／口径声明句「本台账的 `ampeg_attack` 三档口径」，⭐ **原句仍在**（`**2828**` ／ `**844**` ／ `**835**`）；② ⭐ **就地重算三档**（分母 **1397** 份 `assets/samples/**/*.sfz`，对象 ＝ 匹配**次数** ／ 含匹配的**文件数**）：① 子串**⛔ 不剥注释** ＝ **2820 ／ 367**、② `\b…\b\s*=` token **⛔ 不剥注释** ＝ **836 ／ 317**、③ 同 ② **剥** `//` 注释 ＝ **827 ／ 309**；⭐ **②−③ ＝ 9**，那 9 行**逐文件逐行号**钉住（`virtuosity-drums/Programs/mappings/` 的 9 个文件，内容 ＝ `//ampeg_attack=0.001`）；③ ⭐ **口径矩阵 ≥ 6 档**（打印 ＋ 逐档断言）：① 2820 ／ ② 836 ／ ③ 827 ／ ④ 剥注释子串 **2811 ／ 359**（＝ `#122` 勘察到的那个数）／ ⑤ `(^|\s)` 左边界（不剥／剥注释**同值**）**827 ／ 309** ／ ⑥⑦ ⭐ **`#include` 展开后**（解析器尺：`IncludeResolver::resolve` ＋ `SfzSource::text` 拼接）子串 **5225 ／ 362**、token **1045 ／ 323**（`resolve` 成功 **1300** ／ include 失败 **97**；⭐ `#206` 重测：解析器现在展开 `.txt` 与行内 include）／ ⑧ 宏名位 `ampeg_attack$VAR=` **0**、跨行 **0**、大小写不敏感与 ① 同值、⚠ 也剥 `/* */` ＝ **2778 ／ 358**（**口径陷阱**：语料 18 处 `/*` 全在 `//****` 横幅里，不容错的剥法吞掉 9 个文件）；④ **反向腿 ＋ 指纹**：三个承重 `FNV-1a 64` 指纹逐字复跑（`0xa9dec8a87f69106c` ／ `0xd3c2a82076bd8947` ／ `0xa933ddab286bdf5e`）＋ `× 1.0000001` ⇒ **必变**；⭐ 有牙反向腿：模块头里**没有**的句子（「844 与 2828 都复现不出」）⇒ `contains == false`；⑤ **尺寸**：`PreparedRegion=6160` ／ `SfzVoice=40` ／ `SfzVoicePool=1712` ／ `EngineRuntime=180144`（**四个全 ＋0**） |
 //! | ⭐ S115 | ⭐ ⭐ **三格错数的修订可判 ＋ 计数口径逐名可判 ＋ `#120` 的"规范无表"依据**（任务单 `#121` 新增） | ① 三处修订**可判**：三格的原句仍在（`contains`）＋ 三条修订句 `contains`（每条写着**原登记 ⇒ 实测 ＋ 口径 ＋ 命令**）＋ `口径 ＝ …`／`命令 ＝ …` 各 ≥ 3 次；② ⭐ **计数口径逐名可判**：`assets/samples/**/*.sfz` **就地重算**（分母 **1397**）并**逐名打印** `名字 = 次数 ／ 文件数` —— 裸档 **3** 次 ／ **3** 文件（`volume_oncc24` 2／2、`volume_oncc$F2_DIS` 1／1）、前缀档 **47** 次 ／ **30** 文件（9 个 `lfo*_volume_onccNNN`）、家族子串 **50** 次 ／ **33** 文件；⭐ **有牙**：裸档名字必须**全部**以 `volume_oncc` 开头 ⇒ 谁把 `lfo*` 的行数算进裸档，`bare_total == 3` 与这条 `all` 至少一条红；⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**的表逐字相同；③ `#120` 的**"规范无 Modulation 表"**依据（三页各只有一张静态表 ＋ **无任何 `_onccN` 行** ＋ 三个 URL ＋ 三个静态表行）＋ ⭐ **反向腿**（§8.5 段内 `规范有`／`另开单`／`本单不做` 必须 `contains == false`，而非真空由"整份文档里确实有 `另开单`"作证）＋ 结构面 `Scopes::get` 扁平 first-match（`instrument.rs:1550-1555`）⇒ 登记为 **需要新面**；④ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ 三个承重指纹逐字仍在 ＋ `S114` 的 `ABSENT` 反向腿字面量一字未动 |
 //! | ⭐ S117 | ⭐ ⭐ **`gain_ccN` ＝ `volume` 的逐字 delta 行名（**同一个** `ModTarget::Volume` 的第五个拼写）＋ 8 档语料三元组口径 ＋ 单位矩阵 ＋ 解析与域 ＋ 三条路一致 ＋ 病态夹具 ＋ 反向腿 ＋ 尺寸**（任务单 `#124` 新增；§4 七条 —— **本单核心**） | ① **规范逐字 ＋ 归属裁定**（源文本 `contains`）：`gain` 页 Modulation 表逐字行 `\| gain_ccN \|  \| float \| 0 \| -144 to 48 \| dB \|` ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 扩展拼写限定句「only apply to `volume`」＋ 裁定「`gain_ccN` 归 **同一个** `ModTarget::Volume`」（四条理由：规范说同一 opcode／静态别名 `scopes.get("volume").or_else(\|\| scopes.get("gain"))`（`instrument.rs:1730`）／域与单位复用／零新字段）＋ 驳回三条（⛔ `gain_onccN`／⛔ `gain_curveccN`／⛔ `gainccN`）＋ 反向腿（两句不存在的登记必须 `contains == false`，两份源文本各一条）；② ⭐ **语料逐名展开（第 287 条）＋ 三元组口径（第 291 条）**：分母 **1397**，8 档（剥／不剥 `//` 注释 × 左边界任意／行首或空白 × 收／不收 `$` 宏名）**全部同值** —— 裸 `gain_ccN` **0** ／ 裸 `gain_onccN` **0** ／ 裸 `gain_curveccN` **0** ／ 本族之外 **43 次 ／ 35 文件 ／ 7 名**（逐名：`eq1_gain_oncc77` 23／21、`lfo01_eq1gain_oncc114` 7／7、`lfo02_eq1gain_oncc115` 4／4、`lfo01_eq1gain_oncc21` 3／3、`eq1_gain_oncc1` 2／2、`eq2_gain_oncc1` 2／2、`eq3_gain_oncc1` 2／2）；⭐ **有牙**：每个名字都必须**不是**裸档（谁用 `[^a-zA-Z]` 当边界就会把 `lfo02_eq1gain_oncc115` 数成裸 `gain_oncc115`）；⭐ **与 `#119` 登记的异同**：两个 0 **复核成立**，但 `#119` 的「那 14 处全是 `lfo*_eq1gain_onccN`」是**漏计**（另有 `eq*_` 一族 **29 次 ／ 23 文件**）⇒ 第 289 条：**复现不出的如实写**（`gain_oncc` 只有 14 处这个口径本线复现不出：行首/空白 ⇒ 0；任意位置 ⇒ 43）；③ **单位矩阵**：`gain_cc1` 加进"目标 × 后缀"矩阵、行数 `9 → 10`、格数 `36 → 40`、接受／拒绝 `(19, 17) → (20, 20)`（**两个数都从判据里现算**；⛔ 共享常量 `UNIT_MATRIX_ROWS` **仍是 9 行** —— `#117`／`#118`／`#119` 的读数逐字未动）；④ **解析与域**：`gain_cc1`／`gain_cc5` 读得进（静态 `gain=-6` **仍读进** `Region::volume`）、`gain_curvecc5=9` 的曲线下标**一个字节不进表**、越界／`%`／`s`／`ms`／`nan`／`inf` 逐字 `Err`（文本用**原文 opcode 名** `gain_cc1`：`value 49 out of range -144..=48`／`expects a number, got \`50%\``）、闭区间端点 ＋ `+0.0` 读得进、缺省 ⇒ 空表且任意 CC **逐位相同**；⑤ **真的生效 ＋ 三条路一致**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（cc=0 ⇒ 恰 `1.0`；cc=127、6 dB ⇒ `1.9952621`，两个 CC 值输出**不同**）＋ `cc ∈ {0,37,63,127}` 离线 ＝ 摊平 ＝ 实时**逐位相同**＋ 五个**病态臂**（20×48 dB ⇒ `Inf`／20×38 ⇒ 有限极大 `> 1e30`／20×(−39) ⇒ 正次正规／20×(−48) ⇒ 恰 `0` 全零／delta = 0 ⇒ `+0.0` 位型恰 `1.0`）；⑥ **反向腿 ＋ 承重指纹**：去掉 `gain_cc1` 那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个承重指纹逐字复跑（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ ⭐ **别名见证**（裁定 ① 的机械后果）：同一 CC 下 `gain_cc1=6` 与 `volume_oncc1=6` 的乘子**逐位相同**，且既有 `volume_*ccN` 的读数**一字不动**（非空对照：`#119` 的 `volume_oncc1` 那一项仍在、仍走原公式）＋ 混合夹具里 `volume`（CC1）与 `gain`（CC2）两键各走自己的 CC；⑦ **尺寸 ＋ 零分配**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ `ModTarget::COUNT` 仍 **8**（⛔ 不加目标）＋ `ModUnit::Decibels.suffixes() == [""]`，另有 `rt_zero_alloc` 的 `[sfz-gain]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952621 ≠ 1 ＋ 摊平表**真的**承载 1 项） |
-//! | ⭐ S118 | ⭐ **收尾与一致性巡检**（任务单 `#125` 新增；台账第 274／278／280／287 条） | ① `#121` 留下**三处**「`volume_onccN` 只有 **2** 处」的就地指针 ⇒ 三处原句仍在且其后 40 行内**都有**本单修订段（真值 **3 处 ／ 3 文件**；第三处 ＝ `Ixox Flute.sfz:152` 的 `volume_oncc$F2_DIS=-6`）；② ⭐ **「仍未做／另开单／不识别」一族断言的全量复核**：`25` 条（**仍成立 19 ／ 已落地 2 ／ 已过期 4**；SFZ 包络族片把 `fileg_*`／`pitcheg_*` 静态行由「仍成立」翻「已落地」），判据**逐条打印**「文件:行号 ／ 原句摘要 ／ 今天成立与否 ／ 依据」⇒ 清单是否过期**可复核**；⭐ **有牙**：`NotRecognized` 的每一条都真的调 `parse_modulation_name`（谁把某族落地却不更新清单 ⇒ 红）、`NotInCode` 的每一条都剥注释后按**标识符**比（⛔ 注释里的登记不算实现）；③ **三个「另外三个 opcode」的交叉引用** 4 处锚点后 40 行内都点名**真身 ＝ `lfo*_volume_onccN`**；④ **判据文案的自证性清单**：把自己文件里 `` `SELF_SOURCE` `` 的 `.contains(` 条数（现读 **9**）与行号**打印**出来，并给口径（被钉的字符串应从**别的**源码读；`concat!` 拆串只是让 `grep` 看不见、**运行期仍恒真**）＋ ⭐ **只加**两条**派生形**替代（`S114` 索引行与 `VOLUME_FORMS_FIXTURE` 文档的 `#121` 修订标记改成「定位锚点 ＋ 断言计算窗口」）；⑤ **三个承重指纹**（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 必变；⑥ **四个尺寸** `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**全 ＋0**） |
+//! | ⭐ S118 | ⭐ **收尾与一致性巡检**（任务单 `#125` 新增；台账第 274／278／280／287 条） | ① `#121` 留下**三处**「`volume_onccN` 只有 **2** 处」的就地指针 ⇒ 三处原句仍在且其后 40 行内**都有**本单修订段（真值 **3 处 ／ 3 文件**；第三处 ＝ `Ixox Flute.sfz:152` 的 `volume_oncc$F2_DIS=-6`）；② ⭐ **「仍未做／另开单／不识别」一族断言的全量复核**：`25` 条（**仍成立 12 ／ 已落地 4 ／ 已过期 9**；SFZ 包络族片把 `fileg_*`／`pitcheg_*` 静态行由「仍成立」翻「已落地」，T-FIX-281A 把两族 CC 行由「仍成立」翻「已落地」），判据**逐条打印**「文件:行号 ／ 原句摘要 ／ 今天成立与否 ／ 依据」⇒ 清单是否过期**可复核**；⭐ **有牙**：`NotRecognized` 的每一条都真的调 `parse_modulation_name`（谁把某族落地却不更新清单 ⇒ 红）、`NotInCode` 的每一条都剥注释后按**标识符**比（⛔ 注释里的登记不算实现）；③ **三个「另外三个 opcode」的交叉引用** 4 处锚点后 40 行内都点名**真身 ＝ `lfo*_volume_onccN`**；④ **判据文案的自证性清单**：把自己文件里 `` `SELF_SOURCE` `` 的 `.contains(` 条数（现读 **9**）与行号**打印**出来，并给口径（被钉的字符串应从**别的**源码读；`concat!` 拆串只是让 `grep` 看不见、**运行期仍恒真**）＋ ⭐ **只加**两条**派生形**替代（`S114` 索引行与 `VOLUME_FORMS_FIXTURE` 文档的 `#121` 修订标记改成「定位锚点 ＋ 断言计算窗口」）；⑤ **三个承重指纹**（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 必变；⑥ **四个尺寸** `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**全 ＋0**） |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -13558,13 +13558,13 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
     assert_eq!(
         ModTarget::COUNT,
-        14,
+        30,
         "⭐ **声像族建模补全片：尾加 `Position`／`Width` ⇒ 目标数 12 → **14**（既有十二个下标一个都没动）**；\
          历史：⭐ 本片（stage 5）加上 `Cutoff` ⇒ 目标数 11 → **12**（既有十一个下标一个都没动）；\
          历史：⭐ 本片（stage 3）加上 `Pan` ⇒ 目标数 10 → **11**（既有十个下标一个都没动）；\
          历史：⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
          `Delay`／`Start` ⇒ 目标数 10（`Volume` 仍在末尾；`#104`～`#118` 七个目标的**相对序未动**、\
-         绝对下标随 `AmpegParam::COUNT` 派生）**"
+         绝对下标随 `AmpegParam::COUNT` 派生）**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；既有十四个目标的下标一个都没动。"
     );
     assert_eq!(
         ModTarget::ALL[9],
@@ -16325,9 +16325,9 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
     assert_eq!(
         ModTarget::COUNT,
-        14,
+        30,
         "⛔ `#124` ⛔ 不加目标（本片 stage 5 加的是 `Cutoff`：11 → 12；stage 3 加的是 `Pan`：10 → 11）（`gain_ccN` 落**既有**的 `Volume`）；\
-         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**／⭐ **声像族建模补全片修订：`ModTarget` 尾加 `Position`／`Width` ⇒ 目标数 12 → 14**"
+         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**／⭐ **声像族建模补全片修订：`ModTarget` 尾加 `Position`／`Width` ⇒ 目标数 12 → 14**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；`gain_ccN` 仍落既有的 `Volume`，既有十四个目标的下标一个都没动。"
     );
     assert_eq!(ModTarget::ALL[9], ModTarget::Volume);
     assert_eq!(ModTarget::Volume.mod_unit(), ModUnit::Decibels);
@@ -16586,12 +16586,11 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan`",
-            verdict: "仍成立（`*_ccN` 形态未进识别层）",
+            verdict: "已落地（T-FIX-281A：两族 CC 支解析层已落地）",
             basis: "两族的**静态参 ＋ vel2** 已由 SFZ 包络族片落地（见下一行）；\
-                    但 `*_ccN` / `*_onccN` / `*_curveccN` 形态⛔ 不进 `ModTarget`\
-                    （范围裁决见 `yeban_sfz::eg`）⇒ 识别层对 `fileg_attackcc100` \
-                    返回 `None`（单元测试反向腿表里也在）",
-            check: SweepCheck::NotRecognized(&["fileg_attackcc100", "pitcheg_attackcc100"]),
+                    `*_ccN` / `*_onccN` / `*_curveccN` 已进 `ModTarget`（`Fileg`／`Pitcheg`，T-FIX-281A）\
+                    ⇒ 识别层对 `fileg_attackcc100` 返回 `Some`（单元测试正例表里也在）",
+            check: SweepCheck::Recognized(&["fileg_attackcc100", "pitcheg_attackcc100"]),
         },
         SweepRow {
             file: 0,

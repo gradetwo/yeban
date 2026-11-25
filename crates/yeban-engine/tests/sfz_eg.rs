@@ -20,6 +20,12 @@
 //! 范围裁决（见 `yeban_sfz::eg`）：本族只做**静态参 ＋ `vel2`**；`*_ccN` /
 //! `*_onccN` / `*_curveccN` ⛔ 不进 `ModTarget`。`fileg` / `pitcheg` 的释放段
 //! 回到 **start 电平**（静止位偏移），与 `ampeg` 释放归零的既有口径不同。
+//!
+//! ⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「`*_ccN` / `*_onccN` /
+//! `*_curveccN` ⛔ 不进 `ModTarget`」那一支**（⛔ 原文一字未删）：解析层已落地 ——
+//! `fileg_*ccN` / `pitcheg_*ccN` 等 64 形进 `ModTarget::Fileg` / `Pitcheg`，
+//! `EgDef` 带 `cc_mods` 表、`value_with_cc` 叠加 delta（无 CC 时逐位不变）；
+//! 引擎逐块接线是 281B／281C，本单只做解析层 —— 本文件的 E1～E10 仍判引擎消费（静态参 ＋ `vel2`），不含 CC。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

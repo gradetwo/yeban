@@ -698,6 +698,44 @@
 //! 本线也**复现不出**任何"`gain_oncc` 只有 14 处"的口径（左边界取"行首或空白"时是 **0**、
 //! 取"任意位置"时是 **43**）⇒ 本条只登记 **0**（裸档）与 **43**（本族之外）**两个**读数。
 //!
+//! ## 9. ⭐⭐ `fileg` / `pitcheg` 两族（T-FIX-281A）—— **解析层**
+//!
+//! ### 9.1 名字形状（64 种写法 ＝ 8 参数 × 4 后缀 × 2 族）
+//!
+//! 族前缀 ＋ `_` ＋ 参数名 ＋ 四后缀：`fileg_attackcc100` / `fileg_attack_cc100` /
+//! `fileg_attack_oncc100` / `fileg_attack_curvecc100`（`pitcheg` 同构）。
+//! 归 [`ModTarget::Fileg`] / [`ModTarget::Pitcheg`]（一参一目标；下标 14..=21 /
+//! 22..=29，见 [`ModTarget::index`]）。单位与域**随参数**（与
+//! [`crate::eg::EgParam::mod_unit`] / [`crate::eg::EgParam::vel2_range`] 同款，
+//! ⛔ 不新开单位类别、不新开域）：时间类 ＝ 秒 ±100、start／sustain ＝ % ±100、
+//! depth ＝ 音分 ±12000 —— 与各自主 opcode 的 Modulation 表行同域
+//! （规范表见 [`crate::eg`] 的 opcode 表）。
+//!
+//! ### 9.2 不进本族的写法（登记，⛔ 不静默忽略）
+//!
+//! * 裸 `fileg_attack` / `pitcheg_attack`（**静态基准**，由
+//!   [`crate::instrument::read_eg`] 单独读）；
+//! * `fileg_vel2attack` / `pitcheg_vel2attack`（**力度支**，由 `read_eg_vel2`
+//!   单独归约 —— 名字识别**不走** [`parse_modulation_name`]，见 [`crate::eg`]）；
+//! * `*_smoothccN` / `*_stepccN`（落不进四后缀 ⇒ 按未知 opcode 忽略，
+//!   与 `volume` 族同口径）。
+//!
+//! ### 9.3 顺序（机械腿）
+//!
+//! `pitcheg` 支必须在 `pitch` 支**之前**：`pitcheg_…` 以 `pitch` 开头，若先走
+//! `pitch` 支会被 `strip_prefix("cc")?` 挡成 `None`（那支的 `?` 是整函数返回）。
+//! 判据：`pitcheg_attackcc100` 的正例与 `pitch_keycenter` 的反向腿在同一张表里。
+//!
+//! ### 9.4 本单的范围（解析层；引擎接线是 281B／281C）
+//!
+//! 本单只做**解析层**：名字进表（[`parse_modulation_name`]）＋ 归约进区域调制表
+//! （[`crate::instrument::read_cc_mods`]，与既有族**同一份**归约）＋
+//! [`crate::eg::EgDef`] 携 CC 表 ＋ [`crate::eg::EgDef::value_with_cc`] 叠加 delta。
+//! ⛔ **引擎逐块接线不在本单**（281B／281C）：`EgRun`／`ModEgRun` 的逐块重建
+//! 届时读烘焙后的区域调制表（按目标过滤）；实时通路今天仍不读这两族的 CC 状态。
+//! 无 CC 时逐位不变：不含这两族 CC opcode 的区域，其 `EgDef` 与求值**逐位**与接线前相同
+//! （判据含红对照：同一文本去 CC 行 ⇒ `EgDef` 除 CC 表外逐位相同）。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -706,6 +744,7 @@
 //! （插值实现是 [`crate::curve::curve_value_at`] **同一份**，⛔ 没有第二套）。
 
 use crate::curve::{Curve, CurvePoint, curve_value_at};
+use crate::eg::EgParam;
 
 /// `ampeg_*` 参数里可被 CC 调制的那一个。
 ///
@@ -998,6 +1037,29 @@ pub enum ModTarget {
     /// 处理。域 `-100..=100`（与 [`Self::Position`] 同口径）。**加在末尾**
     /// ⇒ 既有十三个目标的下标一个都没动。
     Width,
+    /// ⭐⭐ `fileg`（**滤波包络**；T-FIX-281A 的新目标，`EgParam` 参数化）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位随参数**（时间类 ＝ 秒、start／sustain
+    /// ＝ %、depth ＝ 音分；与 [`crate::eg::EgParam::mod_unit`] 同款）：
+    /// 基准是 [`crate::eg::EgDef::params`]（[`crate::instrument::Region::fileg`]），
+    /// 本目标只贡献**逐块可变的增量**（见 [`crate::eg::EgDef::value_with_cc`]）。
+    ///
+    /// ⚠ 本变体**只由 `fileg_<param><suffix>` 四族**到达（`fileg_attackcc100` /
+    /// `fileg_attack_cc100` / `fileg_attack_oncc100` / `fileg_attack_curvecc100`，
+    /// 8 参数 × 4 后缀 ＝ 32 种写法）；裸 `fileg_attack` 是**静态基准**，⛔ 不是本族
+    /// （由 [`crate::instrument::read_eg`] 单独读）；`fileg_vel2attack` 同样
+    /// ⛔ 不进本族（力度支，由 `read_eg_vel2` 单独归约）。
+    /// **加在末尾** ⇒ 既有十四个目标的下标一个都没动。
+    Fileg(EgParam),
+    /// ⭐⭐ `pitcheg`（**音高包络**；T-FIX-281A 的新目标，与 [`Self::Fileg`] 同构）。
+    ///
+    /// ⚠ 与 [`Self::Fileg`] 同款：承载"调制量 `delta`"、单位随参数、基准是
+    /// [`crate::instrument::Region::pitcheg`]、只贡献逐块可变的增量。
+    /// 只由 `pitcheg_<param><suffix>` 四族到达（8 参数 × 4 后缀 ＝ 32 种写法）；
+    /// 裸 `pitcheg_attack` 与 `pitcheg_vel2attack` 同样 ⛔ 不进本族。
+    /// **加在末尾** ⇒ 既有目标的下标一个都没动（`Fileg` 一族占 14..=21、
+    /// 本族占 22..=29）。
+    Pitcheg(EgParam),
 }
 
 impl ModTarget {
@@ -1018,10 +1080,16 @@ impl ModTarget {
     /// （⛔ 原文一字未删，口径同台账第 278 条）：声像族补上 [`Self::Position`]／
     /// [`Self::Width`] ⇒ 总数变 **14**。⭐ **被修订的只是条目数**：既有十二个
     /// 目标的下标（相对序与绝对序）逐位不变，两名新目标分居末尾两格。
-    pub const COUNT: usize = 14;
+    ///
+    /// ⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面那个总数那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条）：`fileg`／`pitcheg` 两族补上
+    /// [`Self::Fileg`]／[`Self::Pitcheg`]（各 8 参数，一参一目标）⇒ 总数变 **30**。
+    /// ⭐ **被修订的只是条目数**：既有十四个目标的下标（相对序与绝对序）逐位不变，
+    /// 两族各八个目标分居末尾十六格（`Fileg` 14..=21、`Pitcheg` 22..=29）。
+    pub const COUNT: usize = 30;
 
-    /// 全部十四个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 14] = [
+    /// 全部三十个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 30] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -1042,9 +1110,28 @@ impl ModTarget {
         // ⭐⭐ 声像族建模补全片：`position`／`width` 同样**加在末尾** ⇒ 既有十二个下标一个都不动。
         Self::Position,
         Self::Width,
+        // ⭐⭐ T-FIX-281A：`fileg` 一族（8 参数，一参一目标；同样**加在末尾**
+        // ⇒ 既有十四个下标一个都不动）。
+        Self::Fileg(EgParam::Delay),
+        Self::Fileg(EgParam::Start),
+        Self::Fileg(EgParam::Attack),
+        Self::Fileg(EgParam::Hold),
+        Self::Fileg(EgParam::Decay),
+        Self::Fileg(EgParam::Sustain),
+        Self::Fileg(EgParam::Release),
+        Self::Fileg(EgParam::Depth),
+        // ⭐⭐ T-FIX-281A：`pitcheg` 一族（与 `fileg` 同构；同样**加在末尾**）。
+        Self::Pitcheg(EgParam::Delay),
+        Self::Pitcheg(EgParam::Start),
+        Self::Pitcheg(EgParam::Attack),
+        Self::Pitcheg(EgParam::Hold),
+        Self::Pitcheg(EgParam::Decay),
+        Self::Pitcheg(EgParam::Sustain),
+        Self::Pitcheg(EgParam::Release),
+        Self::Pitcheg(EgParam::Depth),
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=13`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=29`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -1056,6 +1143,10 @@ impl ModTarget {
             Self::Cutoff => AmpegParam::COUNT + 4,
             Self::Position => AmpegParam::COUNT + 5,
             Self::Width => AmpegParam::COUNT + 6,
+            // ⭐⭐ T-FIX-281A：两族各占八格（`AmpegParam::COUNT` ＝ 7；
+            // `Fileg` 14..=21、`Pitcheg` 22..=29），格内序 ＝ `EgParam` 声明序。
+            Self::Fileg(param) => AmpegParam::COUNT + 7 + param.index(),
+            Self::Pitcheg(param) => AmpegParam::COUNT + 15 + param.index(),
         }
     }
 
@@ -1077,6 +1168,28 @@ impl ModTarget {
             Self::Cutoff => "cutoff",
             Self::Position => "position",
             Self::Width => "width",
+            // ⭐⭐ T-FIX-281A：两族的目标名 ＝ 族前缀 ＋ `_` ＋ 参数名（与静态
+            // opcode 的拼写逐字一致）。
+            Self::Fileg(param) => match param {
+                EgParam::Delay => "fileg_delay",
+                EgParam::Start => "fileg_start",
+                EgParam::Attack => "fileg_attack",
+                EgParam::Hold => "fileg_hold",
+                EgParam::Decay => "fileg_decay",
+                EgParam::Sustain => "fileg_sustain",
+                EgParam::Release => "fileg_release",
+                EgParam::Depth => "fileg_depth",
+            },
+            Self::Pitcheg(param) => match param {
+                EgParam::Delay => "pitcheg_delay",
+                EgParam::Start => "pitcheg_start",
+                EgParam::Attack => "pitcheg_attack",
+                EgParam::Hold => "pitcheg_hold",
+                EgParam::Decay => "pitcheg_decay",
+                EgParam::Sustain => "pitcheg_sustain",
+                EgParam::Release => "pitcheg_release",
+                EgParam::Depth => "pitcheg_depth",
+            },
         }
     }
 
@@ -1091,7 +1204,9 @@ impl ModTarget {
             | Self::Pan
             | Self::Cutoff
             | Self::Position
-            | Self::Width => None,
+            | Self::Width
+            | Self::Fileg(_)
+            | Self::Pitcheg(_) => None,
         }
     }
 
@@ -1130,6 +1245,9 @@ impl ModTarget {
             // 声像族建模补全片：`position`／`width` 的 Modulation 表 Unit ＝ %（与 `pan` 同一类别，⛔ 不新开）。
             Self::Position => ModUnit::Percent,
             Self::Width => ModUnit::Percent,
+            // ⭐⭐ T-FIX-281A：两族的单位**随参数**（与 `EgParam::mod_unit` 同款，
+            // ⛔ 不新开单位类别）：时间类 ＝ 秒、start／sustain ＝ %、depth ＝ 音分。
+            Self::Fileg(param) | Self::Pitcheg(param) => param.mod_unit(),
         }
     }
 
@@ -1183,6 +1301,11 @@ impl ModTarget {
     ///   "`volume_ccN` is a valid alias for `gain_ccN`" ⇒ 域随被别名的那一行 ——
     ///   与 `Tune` 走的是**同一条口径**）。
     ///
+    /// * ⭐⭐ [`Self::Fileg`] ／ [`Self::Pitcheg`] ⇒ **随参数**（T-FIX-281A）：
+    ///   时间类／`start`／`sustain` ⇒ `-100..=100`、`depth` ⇒ `-12000..=12000` 音分
+    ///   （与 [`crate::eg::EgParam::vel2_range`] 同款 —— 各自主 opcode 的
+    ///   Modulation 表行同域，见 [`crate::eg`] 的规范表）。
+    ///
     /// ⚠ 调用方 [`crate::instrument::read_modulation_delta`] 是**唯一**读它的地方
     /// ⇒ ⛔ 没有第二套域检查、⛔ 没有第二对常数被绕过。
     #[must_use]
@@ -1214,6 +1337,9 @@ impl ModTarget {
             // ±100 的部分没有额外可达值）。
             Self::Position => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
             Self::Width => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            // ⭐⭐ T-FIX-281A：两族的域**随参数**（与 `EgParam::vel2_range` 同款，
+            // ⛔ 不新开域）：时间类／start／sustain ＝ ±100、depth ＝ ±12000 音分。
+            Self::Fileg(param) | Self::Pitcheg(param) => param.vel2_range(),
         }
     }
 }
@@ -1720,6 +1846,59 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
         }
         return Some((ModTarget::Amplitude, form, digits));
     }
+    // ⭐⭐ `fileg` 族（T-FIX-281A）：族前缀 ＋ `_` ＋ 参数名 ＋ 四后缀
+    // （`ccN` / `_ccN` / `_onccN` / `_curveccN`；8 参数 × 4 后缀 ＝ 32 种写法）。
+    // ⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 在 `cc` 之前。
+    // ⚠ 裸 `fileg_attack`（**静态基准**）在这里被 `strip_prefix("cc")?` 挡掉
+    // ⇒ 它**不是**本族的目标（由 [`crate::instrument::read_eg`] 单独读）；
+    // `fileg_vel2attack` 参数名匹配不上 ⇒ 同样不是本族目标；
+    // `fileg_attack_smoothccN`／`fileg_attack_stepccN` 落不进四后缀 ⇒ 按未知
+    // opcode 忽略（与 `volume` 族同口径）。
+    if let Some(tail) = name.strip_prefix("fileg") {
+        let tail = tail.strip_prefix('_')?;
+        let (param, tail) = EgParam::ALL
+            .into_iter()
+            .find_map(|param| tail.strip_prefix(param.name()).map(|rest| (param, rest)))?;
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Fileg(param), form, digits));
+    }
+    // ⭐⭐ `pitcheg` 族（T-FIX-281A）：与 `fileg` **同款**（⛔ 不另开一套）。
+    // ⚠ **顺序**：本支必须在 `pitch` 支**之前** —— `pitcheg_…` 以 `pitch` 开头，
+    // 若先走 `pitch` 支，`strip_prefix("cc")?` 会把 `eg_attackcc100` 挡成 `None`
+    // （`pitch` 支的 `?` 是整函数返回）。`pitcheg` 与 `pitch` 的前缀不相交
+    // （`pitcheg` 多一个 `eg`）⇒ 本支只认 `pitcheg_` 开头的名，`pitch_*` 不受影响。
+    // ⚠ 裸 `pitcheg_attack`／`pitcheg_vel2attack`／`pitcheg_attack_smoothccN`／
+    // `pitcheg_attack_stepccN` 同样不是本族目标（口径与 `fileg` 支逐字同款）。
+    if let Some(tail) = name.strip_prefix("pitcheg") {
+        let tail = tail.strip_prefix('_')?;
+        let (param, tail) = EgParam::ALL
+            .into_iter()
+            .find_map(|param| tail.strip_prefix(param.name()).map(|rest| (param, rest)))?;
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Pitcheg(param), form, digits));
+    }
     // ⭐⭐ `pitch` 族（任务单 `#118`）：规范表行逐字是 `pitch_onccN` / `pitch_curveccN`
     // （模块文档 §7.1）⇒ 与 `tune` 族**同款**的四种后缀识别（⛔ 不另开一套），
     // 并归**同一个目标** [`ModTarget::Tune`] —— 规范那句 "alias" 的机械后果
@@ -2138,7 +2317,12 @@ mod tests {
         // `21`**（以及本数组末尾那一项）—— `#124` 在**末尾**追加第 22 项 `gain_cc9`
         // （`gain_ccN` 与那四个 `volume` 拼写落**同一个目标**）⇒ 行数 `21 → 22`。
         // ⚠ **被修订的只有行数**：`#104`～`#119` 的**前 21 项逐字未动**、归属一个都没改。
-        let cases: [(&str, ModTarget, ModulationForm, &str); 30] = [
+        // ⭐⭐ 追加修订段（T-FIX-281A，台账第 278 条）：**被修订的支 ＝ 上一段末尾的行数
+        // `22`** —— 声像族建模补全片在 `#124` 之后又追加 8 项（`position`／`width`
+        // 各 4 项，见末尾那两组）⇒ 行数先到 `30`；本单在**末尾**追加 64 项
+        // （`fileg`／`pitcheg` 两族：8 参数 × 4 后缀 × 2 族）⇒ 行数 `30 → 94`。
+        // ⚠ **被修订的只有行数**：既有 30 项**逐字未动**、归属一个都没改。
+        let cases: [(&str, ModTarget, ModulationForm, &str); 94] = [
             (
                 "ampeg_attackcc100",
                 ModTarget::Ampeg(AmpegParam::Attack),
@@ -2282,6 +2466,394 @@ mod tests {
                 "11",
             ),
             ("widthcc3", ModTarget::Width, ModulationForm::Delta, "3"),
+            // ⭐⭐ T-FIX-281A：`fileg` 一族 —— 8 参数 × 4 后缀 ＝ 32 种写法全数进表
+            // （族前缀 ＋ `_` ＋ 参数名 ＋ 后缀；CC 号按参数 × 后缀顺序编 1..=32）。
+            (
+                "fileg_delaycc1",
+                ModTarget::Fileg(EgParam::Delay),
+                ModulationForm::Delta,
+                "1",
+            ),
+            (
+                "fileg_delay_cc2",
+                ModTarget::Fileg(EgParam::Delay),
+                ModulationForm::Delta,
+                "2",
+            ),
+            (
+                "fileg_delay_oncc3",
+                ModTarget::Fileg(EgParam::Delay),
+                ModulationForm::Delta,
+                "3",
+            ),
+            (
+                "fileg_delay_curvecc4",
+                ModTarget::Fileg(EgParam::Delay),
+                ModulationForm::Curve,
+                "4",
+            ),
+            (
+                "fileg_startcc5",
+                ModTarget::Fileg(EgParam::Start),
+                ModulationForm::Delta,
+                "5",
+            ),
+            (
+                "fileg_start_cc6",
+                ModTarget::Fileg(EgParam::Start),
+                ModulationForm::Delta,
+                "6",
+            ),
+            (
+                "fileg_start_oncc7",
+                ModTarget::Fileg(EgParam::Start),
+                ModulationForm::Delta,
+                "7",
+            ),
+            (
+                "fileg_start_curvecc8",
+                ModTarget::Fileg(EgParam::Start),
+                ModulationForm::Curve,
+                "8",
+            ),
+            (
+                "fileg_attackcc9",
+                ModTarget::Fileg(EgParam::Attack),
+                ModulationForm::Delta,
+                "9",
+            ),
+            (
+                "fileg_attack_cc10",
+                ModTarget::Fileg(EgParam::Attack),
+                ModulationForm::Delta,
+                "10",
+            ),
+            (
+                "fileg_attack_oncc11",
+                ModTarget::Fileg(EgParam::Attack),
+                ModulationForm::Delta,
+                "11",
+            ),
+            (
+                "fileg_attack_curvecc12",
+                ModTarget::Fileg(EgParam::Attack),
+                ModulationForm::Curve,
+                "12",
+            ),
+            (
+                "fileg_holdcc13",
+                ModTarget::Fileg(EgParam::Hold),
+                ModulationForm::Delta,
+                "13",
+            ),
+            (
+                "fileg_hold_cc14",
+                ModTarget::Fileg(EgParam::Hold),
+                ModulationForm::Delta,
+                "14",
+            ),
+            (
+                "fileg_hold_oncc15",
+                ModTarget::Fileg(EgParam::Hold),
+                ModulationForm::Delta,
+                "15",
+            ),
+            (
+                "fileg_hold_curvecc16",
+                ModTarget::Fileg(EgParam::Hold),
+                ModulationForm::Curve,
+                "16",
+            ),
+            (
+                "fileg_decaycc17",
+                ModTarget::Fileg(EgParam::Decay),
+                ModulationForm::Delta,
+                "17",
+            ),
+            (
+                "fileg_decay_cc18",
+                ModTarget::Fileg(EgParam::Decay),
+                ModulationForm::Delta,
+                "18",
+            ),
+            (
+                "fileg_decay_oncc19",
+                ModTarget::Fileg(EgParam::Decay),
+                ModulationForm::Delta,
+                "19",
+            ),
+            (
+                "fileg_decay_curvecc20",
+                ModTarget::Fileg(EgParam::Decay),
+                ModulationForm::Curve,
+                "20",
+            ),
+            (
+                "fileg_sustaincc21",
+                ModTarget::Fileg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "21",
+            ),
+            (
+                "fileg_sustain_cc22",
+                ModTarget::Fileg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "22",
+            ),
+            (
+                "fileg_sustain_oncc23",
+                ModTarget::Fileg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "23",
+            ),
+            (
+                "fileg_sustain_curvecc24",
+                ModTarget::Fileg(EgParam::Sustain),
+                ModulationForm::Curve,
+                "24",
+            ),
+            (
+                "fileg_releasecc25",
+                ModTarget::Fileg(EgParam::Release),
+                ModulationForm::Delta,
+                "25",
+            ),
+            (
+                "fileg_release_cc26",
+                ModTarget::Fileg(EgParam::Release),
+                ModulationForm::Delta,
+                "26",
+            ),
+            (
+                "fileg_release_oncc27",
+                ModTarget::Fileg(EgParam::Release),
+                ModulationForm::Delta,
+                "27",
+            ),
+            (
+                "fileg_release_curvecc28",
+                ModTarget::Fileg(EgParam::Release),
+                ModulationForm::Curve,
+                "28",
+            ),
+            (
+                "fileg_depthcc29",
+                ModTarget::Fileg(EgParam::Depth),
+                ModulationForm::Delta,
+                "29",
+            ),
+            (
+                "fileg_depth_cc30",
+                ModTarget::Fileg(EgParam::Depth),
+                ModulationForm::Delta,
+                "30",
+            ),
+            (
+                "fileg_depth_oncc31",
+                ModTarget::Fileg(EgParam::Depth),
+                ModulationForm::Delta,
+                "31",
+            ),
+            (
+                "fileg_depth_curvecc32",
+                ModTarget::Fileg(EgParam::Depth),
+                ModulationForm::Curve,
+                "32",
+            ),
+            // ⭐⭐ T-FIX-281A：`pitcheg` 一族 —— 与 `fileg` 同构，32 种写法全数进表
+            // （CC 号 33..=64，与 `fileg` 族不重号，便于逐项定位）。
+            (
+                "pitcheg_delaycc33",
+                ModTarget::Pitcheg(EgParam::Delay),
+                ModulationForm::Delta,
+                "33",
+            ),
+            (
+                "pitcheg_delay_cc34",
+                ModTarget::Pitcheg(EgParam::Delay),
+                ModulationForm::Delta,
+                "34",
+            ),
+            (
+                "pitcheg_delay_oncc35",
+                ModTarget::Pitcheg(EgParam::Delay),
+                ModulationForm::Delta,
+                "35",
+            ),
+            (
+                "pitcheg_delay_curvecc36",
+                ModTarget::Pitcheg(EgParam::Delay),
+                ModulationForm::Curve,
+                "36",
+            ),
+            (
+                "pitcheg_startcc37",
+                ModTarget::Pitcheg(EgParam::Start),
+                ModulationForm::Delta,
+                "37",
+            ),
+            (
+                "pitcheg_start_cc38",
+                ModTarget::Pitcheg(EgParam::Start),
+                ModulationForm::Delta,
+                "38",
+            ),
+            (
+                "pitcheg_start_oncc39",
+                ModTarget::Pitcheg(EgParam::Start),
+                ModulationForm::Delta,
+                "39",
+            ),
+            (
+                "pitcheg_start_curvecc40",
+                ModTarget::Pitcheg(EgParam::Start),
+                ModulationForm::Curve,
+                "40",
+            ),
+            (
+                "pitcheg_attackcc41",
+                ModTarget::Pitcheg(EgParam::Attack),
+                ModulationForm::Delta,
+                "41",
+            ),
+            (
+                "pitcheg_attack_cc42",
+                ModTarget::Pitcheg(EgParam::Attack),
+                ModulationForm::Delta,
+                "42",
+            ),
+            (
+                "pitcheg_attack_oncc43",
+                ModTarget::Pitcheg(EgParam::Attack),
+                ModulationForm::Delta,
+                "43",
+            ),
+            (
+                "pitcheg_attack_curvecc44",
+                ModTarget::Pitcheg(EgParam::Attack),
+                ModulationForm::Curve,
+                "44",
+            ),
+            (
+                "pitcheg_holdcc45",
+                ModTarget::Pitcheg(EgParam::Hold),
+                ModulationForm::Delta,
+                "45",
+            ),
+            (
+                "pitcheg_hold_cc46",
+                ModTarget::Pitcheg(EgParam::Hold),
+                ModulationForm::Delta,
+                "46",
+            ),
+            (
+                "pitcheg_hold_oncc47",
+                ModTarget::Pitcheg(EgParam::Hold),
+                ModulationForm::Delta,
+                "47",
+            ),
+            (
+                "pitcheg_hold_curvecc48",
+                ModTarget::Pitcheg(EgParam::Hold),
+                ModulationForm::Curve,
+                "48",
+            ),
+            (
+                "pitcheg_decaycc49",
+                ModTarget::Pitcheg(EgParam::Decay),
+                ModulationForm::Delta,
+                "49",
+            ),
+            (
+                "pitcheg_decay_cc50",
+                ModTarget::Pitcheg(EgParam::Decay),
+                ModulationForm::Delta,
+                "50",
+            ),
+            (
+                "pitcheg_decay_oncc51",
+                ModTarget::Pitcheg(EgParam::Decay),
+                ModulationForm::Delta,
+                "51",
+            ),
+            (
+                "pitcheg_decay_curvecc52",
+                ModTarget::Pitcheg(EgParam::Decay),
+                ModulationForm::Curve,
+                "52",
+            ),
+            (
+                "pitcheg_sustaincc53",
+                ModTarget::Pitcheg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "53",
+            ),
+            (
+                "pitcheg_sustain_cc54",
+                ModTarget::Pitcheg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "54",
+            ),
+            (
+                "pitcheg_sustain_oncc55",
+                ModTarget::Pitcheg(EgParam::Sustain),
+                ModulationForm::Delta,
+                "55",
+            ),
+            (
+                "pitcheg_sustain_curvecc56",
+                ModTarget::Pitcheg(EgParam::Sustain),
+                ModulationForm::Curve,
+                "56",
+            ),
+            (
+                "pitcheg_releasecc57",
+                ModTarget::Pitcheg(EgParam::Release),
+                ModulationForm::Delta,
+                "57",
+            ),
+            (
+                "pitcheg_release_cc58",
+                ModTarget::Pitcheg(EgParam::Release),
+                ModulationForm::Delta,
+                "58",
+            ),
+            (
+                "pitcheg_release_oncc59",
+                ModTarget::Pitcheg(EgParam::Release),
+                ModulationForm::Delta,
+                "59",
+            ),
+            (
+                "pitcheg_release_curvecc60",
+                ModTarget::Pitcheg(EgParam::Release),
+                ModulationForm::Curve,
+                "60",
+            ),
+            (
+                "pitcheg_depthcc61",
+                ModTarget::Pitcheg(EgParam::Depth),
+                ModulationForm::Delta,
+                "61",
+            ),
+            (
+                "pitcheg_depth_cc62",
+                ModTarget::Pitcheg(EgParam::Depth),
+                ModulationForm::Delta,
+                "62",
+            ),
+            (
+                "pitcheg_depth_oncc63",
+                ModTarget::Pitcheg(EgParam::Depth),
+                ModulationForm::Delta,
+                "63",
+            ),
+            (
+                "pitcheg_depth_curvecc64",
+                ModTarget::Pitcheg(EgParam::Depth),
+                ModulationForm::Curve,
+                "64",
+            ),
         ];
         for (name, target, form, digits) in cases {
             assert_eq!(
@@ -2302,7 +2874,6 @@ mod tests {
             "ampeg_attackcc",
             "ampeg_attackcc1x",
             "ampeg_attack_oncc-1",
-            "fileg_attackcc100",
             "ampeg_attackhdcc100",
             "ampeg_",
             "ampeg_attackcc 100",
@@ -2401,6 +2972,37 @@ mod tests {
             "width_cc-1",
             "positions_oncc1",
             "widths_oncc1",
+            // ⭐⭐ T-FIX-281A：`fileg`／`pitcheg` 两族的**非目标**写法一律 None。
+            // ⚠⭐ 最承重的几条：裸 `fileg_attack`／`pitcheg_attack`（**静态基准** opcode）、
+            // `fileg_vel2attack`／`pitcheg_vel2attack`（**力度支**，不走名字识别）与
+            // `*_smoothccN`／`*_stepccN`（落不进四后缀）必须 None；
+            // ⚠ `filegattackcc100`（缺 `_` 分隔）与 `fileg_attackhdcc100` 同样不是本族。
+            // ⚠ 上面 `"fileg_attackcc100"` 那一项已从这里**移到正例表**（⛔ 移动而非删除）：
+            // T-FIX-281A 起它是**合法**目标（归 `Fileg(Attack)`，见正例表 `"fileg_attackcc9"`）。
+            "fileg_attack",
+            "pitcheg_attack",
+            "fileg_vel2attack",
+            "pitcheg_vel2attack",
+            "fileg_attack_smoothcc100",
+            "fileg_attack_stepcc100",
+            "pitcheg_attack_smoothcc100",
+            "pitcheg_attack_stepcc100",
+            "fileg_attackcc",
+            "pitcheg_attackcc",
+            "fileg_attack_oncc",
+            "pitcheg_attack_oncc",
+            "fileg_attack_curvecc",
+            "pitcheg_attack_curvecc",
+            "fileg_attackcc1x",
+            "pitcheg_attackcc1x",
+            "fileg_attack_oncc-1",
+            "pitcheg_attack_oncc-1",
+            "filegattackcc100",
+            "pitchegattackcc100",
+            "fileg_attackhdcc100",
+            "pitcheg_attackhdcc100",
+            "fileg_attacks_oncc1",
+            "pitcheg_attacks_oncc1",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
         }
@@ -2440,11 +3042,20 @@ mod tests {
         // ⇒ 上面那条 `ALL[5] == Amplitude` 逐位不变。
         // ⛔ **原句（历史，⛔ 不再作为断言）**：
         // `assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);`
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 6], ModTarget::Tune);
+        // ⭐⭐ 追加修订段（T-FIX-281A）—— 被修订的是上面那几条从末尾数的相对钉
+        // （⛔ 原文一字未删，口径同台账第 278 条）：本单把 `Fileg`／`Pitcheg`
+        // 两族（各 8 目标）加在 `Width` **之后** ⇒ "末尾"移到 `Pitcheg(Depth)`；
+        // 既有十四个目标的下标**一个都没动**（以下方 `index()` 的绝对断言为据）。
+        // 从末尾数的相对钉全体后移十六位 —— `Tune` 由 `COUNT - 6` 改钉
+        // `COUNT - 22`、`Volume` 由 `COUNT - 5` 改钉 `COUNT - 21`、`Pan` 由
+        // `COUNT - 4` 改钉 `COUNT - 20`、`Cutoff` 由 `COUNT - 3` 改钉
+        // `COUNT - 19`、`Position` 由 `COUNT - 2` 改钉 `COUNT - 18`、`Width`
+        // 由 `COUNT - 1` 改钉 `COUNT - 17`；两族的边界见本段末尾的新断言。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 22], ModTarget::Tune);
         // ⭐ 本片（stage 3）：`Pan` 加在 `Volume` **之后** ⇒ "末尾"移到 `Pan`，
         // `Volume` 退到 `COUNT − 2`；既有十个目标的下标**一个都没动**。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 5], ModTarget::Volume);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 4], ModTarget::Pan);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 21], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 20], ModTarget::Pan);
         // ⭐ 本片（stage 5）：`Cutoff` 加在 `Pan` **之后** ⇒ "末尾"移到 `Cutoff`；
         // 既有十一个目标的下标**一个都没动**。
         //
@@ -2458,15 +3069,47 @@ mod tests {
         // 改钉 `COUNT - 6`、`Volume` 由 `COUNT - 3` 改钉 `COUNT - 5`、
         // `Pan` 由 `COUNT - 2` 改钉 `COUNT - 4`、本条 `Cutoff` 由
         // `COUNT - 1` 改钉 `COUNT - 3`。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Cutoff);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Position);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Width);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 19], ModTarget::Cutoff);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 18], ModTarget::Position);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 17], ModTarget::Width);
+        // ⭐⭐ T-FIX-281A：两族的边界 —— `Fileg` 占 `COUNT - 16..=COUNT - 9`、
+        // `Pitcheg` 占 `COUNT - 8..=COUNT - 1`（末尾是 `Pitcheg(Depth)`）。
+        assert_eq!(
+            ModTarget::ALL[ModTarget::COUNT - 16],
+            ModTarget::Fileg(EgParam::Delay)
+        );
+        assert_eq!(
+            ModTarget::ALL[ModTarget::COUNT - 9],
+            ModTarget::Fileg(EgParam::Depth)
+        );
+        assert_eq!(
+            ModTarget::ALL[ModTarget::COUNT - 8],
+            ModTarget::Pitcheg(EgParam::Delay)
+        );
+        assert_eq!(
+            ModTarget::ALL[ModTarget::COUNT - 1],
+            ModTarget::Pitcheg(EgParam::Depth)
+        );
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
         assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
         assert_eq!(ModTarget::Pan.index(), AmpegParam::COUNT + 3);
         assert_eq!(ModTarget::Cutoff.index(), AmpegParam::COUNT + 4);
         assert_eq!(ModTarget::Position.index(), AmpegParam::COUNT + 5);
         assert_eq!(ModTarget::Width.index(), AmpegParam::COUNT + 6);
+        // ⭐⭐ T-FIX-281A：两族的下标（绝对值）—— `Fileg` 14..=21、`Pitcheg` 22..=29，
+        // 格内序 ＝ `EgParam` 声明序（`index()` 的 `AmpegParam::COUNT + 7/15` 偏移）。
+        for param in EgParam::ALL {
+            assert_eq!(
+                ModTarget::Fileg(param).index(),
+                14 + param.index(),
+                "{param:?} 的 `Fileg` 下标"
+            );
+            assert_eq!(
+                ModTarget::Pitcheg(param).index(),
+                22 + param.index(),
+                "{param:?} 的 `Pitcheg` 下标"
+            );
+        }
         // ⭐ 声像族两名新目标的单位与域（与 `Pan` 同读数）。
         assert_eq!(ModTarget::Position.name(), "position");
         assert_eq!(ModTarget::Width.name(), "width");
@@ -2484,6 +3127,60 @@ mod tests {
             ModTarget::Width.delta_range(),
             (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
         );
+        // ⭐⭐ T-FIX-281A：两族十六个目标的名字／单位／域（逐参数断言）。
+        // 名字 ＝ 族前缀 ＋ `_` ＋ 参数名；单位与域随参数（时间类 秒 ±100、
+        // start／sustain % ±100、depth 音分 ±12000）；`ampeg()` 一律 `None`
+        // （力度支只服务 `ampeg_*` 一族）。
+        for param in EgParam::ALL {
+            let (unit, range): (ModUnit, (f32, f32)) = match param {
+                EgParam::Delay
+                | EgParam::Attack
+                | EgParam::Hold
+                | EgParam::Decay
+                | EgParam::Release => (ModUnit::Seconds, (-100.0, 100.0)),
+                EgParam::Start | EgParam::Sustain => (ModUnit::Percent, (-100.0, 100.0)),
+                EgParam::Depth => (ModUnit::Cents, (-12000.0, 12000.0)),
+            };
+            for (family, target) in [
+                ("fileg", ModTarget::Fileg(param)),
+                ("pitcheg", ModTarget::Pitcheg(param)),
+            ] {
+                let expected_name = format!("{family}_{}", param.name());
+                assert_eq!(target.name(), expected_name.as_str());
+                assert_eq!(target.ampeg(), None, "{target:?} 不是 ampeg 族");
+                assert_eq!(target.mod_unit(), unit, "{target:?} 的单位");
+                assert_eq!(target.delta_range(), range, "{target:?} 的域");
+                assert_eq!(target.is_time(), unit == ModUnit::Seconds);
+            }
+        }
+        // ⭐⭐ T-FIX-281A：目标过滤真的按 `target` 走 —— `Fileg` 的项 ⛔ 不影响
+        // 任何既有目标，也不影响 `Pitcheg`（同族不同目标 ⇒ 不求和）。
+        let fileg_item = vec![BakedCcMod {
+            target: ModTarget::Fileg(EgParam::Attack),
+            cc: 1,
+            delta: 5.0,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        let (attack, _) = cc_value_with_baked(
+            10.0,
+            ModTarget::Fileg(EgParam::Attack),
+            &fileg_item,
+            &|_| 127,
+        );
+        assert_eq!(attack, 15.0);
+        let (pitcheg_attack, _) = cc_value_with_baked(
+            10.0,
+            ModTarget::Pitcheg(EgParam::Attack),
+            &fileg_item,
+            &|_| 127,
+        );
+        assert_eq!(pitcheg_attack, 10.0, "`pitcheg` 不吃 `fileg` 的项");
+        for param in AmpegParam::ALL {
+            let (other, _) = ampeg_value_with_baked(1.0, param, &fileg_item, &|_| 127);
+            assert_eq!(other, 1.0, "{param:?} 的基准值必须一动不动");
+        }
+        let (amp, _) = cc_value_with_baked(100.0, ModTarget::Amplitude, &fileg_item, &|_| 127);
+        assert_eq!(amp, 100.0, "`amplitude` 也必须一动不动");
         assert_eq!(ModTarget::Tune.name(), "tune");
         assert_eq!(ModTarget::Tune.ampeg(), None);
         assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");

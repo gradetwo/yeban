@@ -3488,8 +3488,13 @@ pub(crate) fn build_region<'a>(
     // 时间／百分比读（缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err）；`depth` 是**整数**
     // 音分（走 [`read_i32`]，带小数点 ⇒ 响亮报错）；`vel2*` 单独归约
     // （[`read_eg_vel2`]）。`*_onccN` 一族⛔ 不在本片（见 [`crate::eg`] 的范围裁决）。
-    let fileg = read_eg(&scopes, "fileg", line, &mut warnings)?;
-    let pitcheg = read_eg(&scopes, "pitcheg", line, &mut warnings)?;
+    // ⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面那句「`*_onccN` 一族
+    // ⛔ 不在本片」**（⛔ 原文一字未删，口径同台账第 278 条）：`*_ccN` / `*_onccN` /
+    // `*_curveccN` 一族**在本片（解析层）** —— 上面 `read_cc_mods` 已归约的区域调制表
+    // 按族滤进各族的 [`EgDef::cc_mods`]（[`eg_cc_mods_for_family`]，⛔ 不重读 opcode）；
+    // 引擎逐块接线是 281B／281C（本单只做解析层）。
+    let fileg = read_eg(&scopes, "fileg", line, &mut warnings, &cc_mods)?;
+    let pitcheg = read_eg(&scopes, "pitcheg", line, &mut warnings, &cc_mods)?;
     // ---- ⭐ LFO 三族 + 可分配 LFO（SFZ LFO 片，审计 C21/C22）----
     // v1 三族同构（[`read_v1_lfo`] 一份实现）：静态四参走带域浮点读
     // （缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err，⛔ 不钳位）；cc/aft 伴随单独
@@ -4668,6 +4673,32 @@ fn eg_opcode_name(prefix: &str, param: EgParam) -> &'static str {
     }
 }
 
+/// 把区域已归约的调制表里属于本族的项滤进 [`EgDef::cc_mods`]（T-FIX-281A）。
+///
+/// ⛔ **不重读 opcode**：归约只有 [`read_cc_mods`] 这一处 —— 两张表（区域表与
+/// 各族的 `EgDef` 表）由同一份归约结果派生，天然一致（同一 `(target, cc)` 键、
+/// 同一钳位、同一曲线下标、同一 `(target, cc)` 升序）。
+/// 项数天然 ≤ [`crate::eg::EG_CC_CAP`]（区域表本身以 `AMPEG_MOD_CAP` 为上限，
+/// 见 [`read_cc_mods`] 的 `TooManyAmpegModulations` 腿）。
+fn eg_cc_mods_for_family(prefix: &str, cc_mods: &[CcMod]) -> [Option<CcMod>; crate::eg::EG_CC_CAP] {
+    let mut table = [None; crate::eg::EG_CC_CAP];
+    let mut count = 0usize;
+    for entry in cc_mods {
+        let is_family = match entry.target {
+            ModTarget::Fileg(_) => prefix == "fileg",
+            ModTarget::Pitcheg(_) => prefix == "pitcheg",
+            _ => false,
+        };
+        if !is_family {
+            continue;
+        }
+        debug_assert!(count < crate::eg::EG_CC_CAP, "一族的项数天然 ≤ 区域表上限");
+        table[count] = Some(*entry);
+        count += 1;
+    }
+    table
+}
+
 /// ⭐ 归约一族调制包络（`fileg_*` 或 `pitcheg_*`；SFZ 包络族片）。
 ///
 /// 与 `ampeg_*` 的读取**同一口径**（⛔ 不另立政策）：
@@ -4677,12 +4708,15 @@ fn eg_opcode_name(prefix: &str, param: EgParam) -> &'static str {
 ///   start ＝ 0、sustain ＝ [`EG_SUSTAIN_DEFAULT_PERCENT`] ＝ **0**）；
 /// * `depth` 是**整数**音分，走 [`read_i32`]（−12000..=12000；带小数 ⇒ 响亮报错，
 ///   与 `fil_keytrack` 同款）；
-/// * `vel2*` 走 [`read_eg_vel2`] 单独归约（与基准分开，与 `ampeg_vel2` 同形）。
+/// * `vel2*` 走 [`read_eg_vel2`] 单独归约（与基准分开，与 `ampeg_vel2` 同形）；
+/// * `*ccN` / `*_onccN` / `*_curveccN` 走 [`eg_cc_mods_for_family`]（T-FIX-281A）：
+///   由调用方已归约的区域调制表按族过滤而来（⛔ 不重读 opcode）。
 fn read_eg(
     scopes: &Scopes<'_, '_>,
     prefix: &'static str,
     line: usize,
     warnings: &mut Vec<Warning>,
+    cc_mods: &[CcMod],
 ) -> Result<EgDef, SfzError> {
     let time = |param: EgParam| {
         read_ampeg_time(
@@ -4718,6 +4752,7 @@ fn read_eg(
     Ok(EgDef {
         params,
         vel2: read_eg_vel2(scopes, prefix, line, warnings)?,
+        cc_mods: eg_cc_mods_for_family(prefix, cc_mods),
     })
 }
 
@@ -11706,6 +11741,129 @@ v127=1
             instrument.amplitude_value_with_cc(region, &|_| 127),
             (25.0, 1)
         );
+    }
+
+    /// ⭐ T-FIX-281A：`fileg_*ccN` / `pitcheg_*ccN` 进表 —— 区域调制表与各族的
+    /// `EgDef` CC 表同源（同一份归约）、`value_with_cc` 叠加 delta、无 CC 时逐位不变。
+    #[test]
+    fn fileg_and_pitcheg_cc_mods_enter_both_tables_and_value_with_cc() {
+        // 两族各写两条 CC 项（不同参数、不同后缀、不同 CC 号）＋ 一条静态基准。
+        // `pitcheg_attack` 同时给 delta 与 curve（同一 `(target, cc)` 键的两分量各自合并）。
+        let text = "<region> sample=a.wav fileg_attack=0.5 fileg_attackcc100=0.5 \
+                    fileg_decay_oncc7=-0.25 pitcheg_attack_oncc3=2 pitcheg_attack_curvecc3=1 \
+                    pitcheg_depthcc1=100\n";
+        let instrument = parse_text(text, &Default::default()).expect("解析");
+        let region = &instrument.regions()[0];
+        // ⭐ 区域调制表：四条都进表（按 `(target, cc)` 升序；`Fileg` 在 `Pitcheg` 之前）。
+        let mods = region.cc_modulations();
+        assert_eq!(mods.len(), 4);
+        assert_eq!(
+            mods.iter().map(|item| item.target).collect::<Vec<_>>(),
+            vec![
+                ModTarget::Fileg(EgParam::Attack),
+                ModTarget::Fileg(EgParam::Decay),
+                ModTarget::Pitcheg(EgParam::Attack),
+                ModTarget::Pitcheg(EgParam::Depth),
+            ]
+        );
+        // ⭐ 各族的 `EgDef` 表：只含本族的项（与区域表同源，⛔ 不是第二份归约）。
+        let fileg_cc: Vec<CcMod> = region.fileg.cc_mods.iter().flatten().copied().collect();
+        assert_eq!(fileg_cc, mods[..2].to_vec());
+        let pitcheg_cc: Vec<CcMod> = region.pitcheg.cc_mods.iter().flatten().copied().collect();
+        assert_eq!(pitcheg_cc, mods[2..].to_vec());
+        // 曲线下标也进了表（`pitcheg_attack` 的 curve ＝ 1，双极）。
+        assert_eq!(pitcheg_cc[0].curve, 1);
+        // ⭐ 静态基准未动：`fileg_attack` 仍是 0.5（CC 项不顶替基准）。
+        assert_eq!(region.fileg.params.attack, 0.5);
+        assert_eq!(region.fileg.value(EgParam::Attack, 127), 0.5);
+        // ⭐ `value_with_cc` 叠加 delta（curve 0 ＝ 线性 0 → 1、curve 1 ＝ 双极 −1 → 1）。
+        let probe = |_: u8| 127u8;
+        assert_eq!(
+            region
+                .fileg
+                .value_with_cc(EgParam::Attack, 127, &probe, Curve::built_in),
+            (1.0, 0),
+            "attack：0.5 ＋ 0.5 × curve0(127) ＝ 1.0"
+        );
+        assert_eq!(
+            region
+                .fileg
+                .value_with_cc(EgParam::Decay, 127, &probe, Curve::built_in),
+            (-0.25, 0),
+            "decay：0 ＋ (−0.25) × curve0(127) ＝ −0.25"
+        );
+        assert_eq!(
+            region
+                .pitcheg
+                .value_with_cc(EgParam::Attack, 127, &probe, Curve::built_in),
+            (2.0, 0),
+            "pitcheg attack：0 ＋ 2 × curve1(127) ＝ 2.0"
+        );
+        assert_eq!(
+            region
+                .pitcheg
+                .value_with_cc(EgParam::Depth, 127, &probe, Curve::built_in),
+            (100.0, 0),
+            "pitcheg depth：0 ＋ 100 × curve0(127) ＝ 100（域 ±12000，未钳位）"
+        );
+        // ⭐ 域：越界的 delta 被钳位（`attack` ±100、`depth` ±12000；与 `read_modulation_delta` 同口径）。
+        let text = "<region> sample=a.wav fileg_attackcc100=200 fileg_depthcc1=13000\n";
+        let instrument = parse_text(text, &Default::default()).expect("解析");
+        let region = &instrument.regions()[0];
+        let fileg_cc: Vec<CcMod> = region.fileg.cc_mods.iter().flatten().copied().collect();
+        assert_eq!(fileg_cc.len(), 2);
+        assert_eq!(fileg_cc[0].delta, 100.0, "`attack` 的 delta 钳到 ＋100");
+        assert_eq!(fileg_cc[1].delta, 12000.0, "`depth` 的 delta 钳到 ＋12000");
+        // ⭐ 作用域链：`<global>` 里的 CC 项穿透下来（`read_cc_mods` 读全部四层作用域）。
+        let text = "<global> fileg_attackcc100=0.5\n<region> sample=a.wav\n";
+        let instrument = parse_text(text, &Default::default()).expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.cc_modulations().len(), 1);
+        assert_eq!(region.fileg.cc_mods.iter().flatten().count(), 1);
+        assert_eq!(region.pitcheg.cc_mods.iter().flatten().count(), 0);
+    }
+
+    /// ⭐ T-FIX-281A：**红对照** —— 无 CC 时逐位不变。
+    /// 同一份静态 ＋ vel2 文本，加 CC 行与不加 CC 行相比：基准 ＋ vel2 ＋ `value()` 逐位相同，
+    /// 差别**只有** CC 表（无 CC 臂的表为空）。
+    #[test]
+    fn eg_cc_mods_do_not_change_anything_without_cc() {
+        let plain = "<region> sample=a.wav fileg_attack=0.5 fileg_decay=1 pitcheg_depth=100 \
+                     fileg_vel2attack=-0.25\n";
+        let with_cc = "<region> sample=a.wav fileg_attack=0.5 fileg_decay=1 pitcheg_depth=100 \
+                       fileg_vel2attack=-0.25 fileg_attackcc100=0.5 pitcheg_depthcc1=100\n";
+        let plain = parse_text(plain, &Default::default()).expect("解析");
+        let with_cc = parse_text(with_cc, &Default::default()).expect("解析");
+        let a = &plain.regions()[0];
+        let b = &with_cc.regions()[0];
+        for param in EgParam::ALL {
+            assert_eq!(
+                a.fileg.value(param, 127),
+                b.fileg.value(param, 127),
+                "fileg {param:?} 的 `value()` 必须逐位相同"
+            );
+            assert_eq!(
+                a.pitcheg.value(param, 127),
+                b.pitcheg.value(param, 127),
+                "pitcheg {param:?} 的 `value()` 必须逐位相同"
+            );
+        }
+        assert_eq!(a.fileg.params, b.fileg.params);
+        assert_eq!(a.fileg.vel2, b.fileg.vel2);
+        assert_eq!(a.pitcheg.params, b.pitcheg.params);
+        assert_eq!(a.pitcheg.vel2, b.pitcheg.vel2);
+        assert_eq!(a.fileg.cc_mods.iter().flatten().count(), 0);
+        assert_eq!(a.pitcheg.cc_mods.iter().flatten().count(), 0);
+        assert_eq!(b.fileg.cc_mods.iter().flatten().count(), 1);
+        assert_eq!(b.pitcheg.cc_mods.iter().flatten().count(), 1);
+        // 无 CC 臂的 `value_with_cc` 与 `value()` 逐位相同（CC 表空 ⇒ 一项算术都不多做）。
+        for param in EgParam::ALL {
+            assert_eq!(
+                a.fileg.value_with_cc(param, 127, &|_| 127, Curve::built_in),
+                (a.fileg.value(param, 127), 0),
+                "fileg {param:?}"
+            );
+        }
     }
 
     /// ⭐ 任务单 `#106`：**五形态的域与单位后缀**（`-100..=100`；时间认 `s`/`ms`、
