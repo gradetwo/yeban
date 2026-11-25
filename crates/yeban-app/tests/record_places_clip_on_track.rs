@@ -30,6 +30,7 @@
 //! （`--export-wav` 与录音侧共用 `render_core`）。走带播放那半属引擎层，本单不改。
 
 #![allow(unused)]
+use slint::Model;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -336,5 +337,37 @@ fn a_zero_frame_take_is_refused_before_anything_is_placed_or_pooled() {
     assert!(
         aether_host.contains("set_save_status"),
         "宿主接线层必须注册 set_save_status"
+    );
+}
+
+/// ⭐ T-FIX-347：落地成功后**当帧**重投影，新片段不等到下一次无关操作。
+///
+/// 旧代码只提交 `Op::AddClipPlacement`、不调 `apply_view` ⇒ `timeline-blocks`
+/// 仍是录音前那一份（本夹具清空过全部摆放，初值 0）；修后停录返回时就必须 > 0。
+#[test]
+fn a_landed_recording_reprojects_the_timeline_without_a_later_action() {
+    let scratch = Scratch::new("t347-reproject");
+    let path = scratch.dir.join("t347-take.wav");
+    let project = fixture_project();
+    let (_tier1, ui, port) = assemble(project.clone());
+
+    assert_eq!(
+        ui.get_timeline_blocks().row_count(),
+        0,
+        "夹具清空摆放 ⇒ 录音前时间线必须是空的"
+    );
+
+    record_once(&ui, &port, &project, &path);
+
+    let placements = port
+        .project()
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .count();
+    assert_eq!(placements, 1, "一次停录必须只落一条摆放");
+    assert!(
+        ui.get_timeline_blocks().row_count() > 0,
+        "停录落地后时间线必须立刻出现新片段，而不是等下一次选轨/编辑"
     );
 }

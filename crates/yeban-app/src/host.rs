@@ -8323,6 +8323,7 @@ impl RecordControl {
             _ => None,
         };
         let mut landing_report: Option<String> = None;
+        let mut landed_in_project = false;
         match &stopped {
             Ok(report) => {
                 eprintln!("[yeban-app] {}", report.summary());
@@ -8351,7 +8352,10 @@ impl RecordControl {
                                 start_tick,
                                 target,
                             ) {
-                                Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),
+                                Ok(landed) => {
+                                    eprintln!("[yeban-app] {}", landed.summary());
+                                    landed_in_project = true;
+                                }
                                 Err(error) => {
                                     landing_report = Some(format!(
                                         "录音已落盘但没有进工程（{}）: {error}",
@@ -8370,6 +8374,12 @@ impl RecordControl {
             Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
         }
         if let Some(ui) = self.ui.upgrade() {
+            // T-FIX-347：录音落地提交走的是 `UndoPort`，不经过控制面的 revision sink。
+            // 成功提交后必须像其它提交路径一样立刻重投影，否则时间线停在录音前，
+            // 新片段要等下一次无关操作才出现。失败 / 0 帧 / 无 UndoPort 都不刷新。
+            if landed_in_project && let Some(port) = self.undo.as_deref() {
+                refresh_undo_window(&ui, port, true);
+            }
             ui.set_recording(false);
             self.outcome.report(
                 &ui,
