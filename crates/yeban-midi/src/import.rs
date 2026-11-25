@@ -2321,24 +2321,44 @@ pub fn destination(
     let clip_id = match options.clip_id {
         Some(explicit) => {
             // 显式片段必须是**该轨**上的 MIDI 片段；否则响亮拒绝，⛔ 不静默改写目标。
-            let placement = track
+            // 例外（T-FIX-405）：池里已有、但全工程尚未摆放的 MIDI 片段 —— T-FIX-41
+            // 自建落点先把空片段放进池、摆放随后才补；它还不是任何轨上的摆放，
+            // 在这里拒绝它等于堵死"往新轨导 MIDI"。只放行"未摆放"的新片段：
+            // 已摆在别的音轨上的片段、不在池里的身份、音频片段仍响亮拒绝。
+            if let Some(placement) = track
                 .clips
                 .values()
                 .find(|placement| placement.clip_id == explicit)
-                .ok_or_else(|| {
-                    MidiImportError::NoDestination(format!(
-                        "片段 `{}` 不是音轨 `{}` 上的摆放",
+            {
+                if !is_midi_clip(project, placement.clip_id) {
+                    return Err(MidiImportError::NoDestination(format!(
+                        "片段 `{}` 不是 MIDI 片段（音频片段不能承载 MIDI 音符）",
+                        explicit.to_canonical_string()
+                    )));
+                }
+                explicit
+            } else if is_midi_clip(project, explicit) && !is_placed_on_any_track(project, explicit)
+            {
+                explicit
+            } else if project.clip_pool.contains_key(&explicit) {
+                if is_midi_clip(project, explicit) {
+                    return Err(MidiImportError::NoDestination(format!(
+                        "片段 `{}` 不是音轨 `{}` 上的摆放（它摆放在别的音轨上）",
                         explicit.to_canonical_string(),
                         track_id.to_canonical_string()
-                    ))
-                })?;
-            if !is_midi_clip(project, placement.clip_id) {
+                    )));
+                }
                 return Err(MidiImportError::NoDestination(format!(
                     "片段 `{}` 不是 MIDI 片段（音频片段不能承载 MIDI 音符）",
                     explicit.to_canonical_string()
                 )));
+            } else {
+                return Err(MidiImportError::NoDestination(format!(
+                    "片段 `{}` 不是音轨 `{}` 上的摆放",
+                    explicit.to_canonical_string(),
+                    track_id.to_canonical_string()
+                )));
             }
-            explicit
         }
         None => first_midi_placement(project, track)
             .map(|placement| placement.clip_id)
@@ -2371,6 +2391,17 @@ fn first_midi_placement<'a>(
         .clips
         .values()
         .find(|placement| is_midi_clip(project, placement.clip_id))
+}
+
+/// 该片段是否已摆放在**任意**音轨上（T-FIX-405：区分"未摆放的新片段"与"摆在别轨的片段"）。
+#[must_use]
+fn is_placed_on_any_track(project: &YebanProjectV1, clip_id: EntityId) -> bool {
+    project.tracks.values().any(|track| {
+        track
+            .clips
+            .values()
+            .any(|placement| placement.clip_id == clip_id)
+    })
 }
 
 #[cfg(test)]
@@ -3995,6 +4026,126 @@ pub mod tests {
         .expect_err("不存在的音轨必须报错");
         assert!(
             matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("不在工程里")),
+            "实际: {error:?}"
+        );
+    }
+
+    /// 判据（T-FIX-405）：显式点名池里已有、但全工程尚未摆放的 **MIDI** 片段 ⇒ 接受。
+    /// 这正是 T-FIX-41 自建落点的形状：空片段先进池、摆放随后才补。f95f0c11
+    /// 把显式分支收紧成"必须是本轨摆放"后，这条路被误杀成 TRACK_NOT_FOUND。
+    /// 但三条拒绝必须原样保留：摆在别的音轨上、音频片段、不在池里的身份。
+    #[test]
+    fn destination_accepts_unplaced_midi_clip_but_rejects_others() {
+        let project = yeban_model::samples::demo_project();
+        let master = project.master_bus_track_id;
+        let track_id = *project
+            .tracks
+            .keys()
+            .find(|id| **id != master)
+            .expect("演示工程有非 master 音轨");
+
+        // 一个池里有、但哪条轨都没摆放的空 MIDI 片段。
+        let fresh = EntityId::new();
+        let mut with_fresh = project.clone();
+        with_fresh.clip_pool.insert(
+            fresh,
+            ClipPoolEntry {
+                id: fresh,
+                name: "fresh".to_owned(),
+                content: ClipContent::Midi {
+                    notes: BTreeMap::new(),
+                },
+            },
+        );
+        assert_eq!(
+            destination(
+                &with_fresh,
+                &MidiImportOptions {
+                    track_id: Some(track_id),
+                    clip_id: Some(fresh),
+                    ..MidiImportOptions::default()
+                },
+            )
+            .expect("未摆放的新 MIDI 片段必须被接受"),
+            (track_id, fresh)
+        );
+
+        // 同一个片段摆到**别的**非 master 音轨上 ⇒ 仍拒绝，点名"不是本轨摆放"。
+        let other_track = *project
+            .tracks
+            .keys()
+            .find(|id| **id != master && **id != track_id)
+            .expect("演示工程至少两条非 master 音轨");
+        let mut cross = with_fresh.clone();
+        let placement_id = EntityId::new();
+        cross
+            .tracks
+            .get_mut(&other_track)
+            .expect("别轨")
+            .clips
+            .insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id: fresh,
+                    ..ClipPlacement::default()
+                },
+            );
+        let error = destination(
+            &cross,
+            &MidiImportOptions {
+                track_id: Some(track_id),
+                clip_id: Some(fresh),
+                ..MidiImportOptions::default()
+            },
+        )
+        .expect_err("摆在别轨的片段必须被拒绝");
+        assert!(
+            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("不是音轨")),
+            "实际: {error:?}"
+        );
+
+        // 不在池里的身份 ⇒ 拒绝，文案与旧版一致（"不是音轨 … 上的摆放"）。
+        let missing = EntityId::new();
+        let error = destination(
+            &project,
+            &MidiImportOptions {
+                track_id: Some(track_id),
+                clip_id: Some(missing),
+                ..MidiImportOptions::default()
+            },
+        )
+        .expect_err("不在池里的片段必须被拒绝");
+        assert!(
+            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("不是音轨")),
+            "实际: {error:?}"
+        );
+
+        // 池里有、但未摆放的**音频**片段 ⇒ 拒绝，点名"不是 MIDI 片段"。
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find_map(|entry| {
+                matches!(&entry.content, ClipContent::Audio { .. }).then_some(entry.id)
+            })
+            .expect("演示工程有音频片段");
+        let mut audio_unplaced = project.clone();
+        for track in audio_unplaced.tracks.values_mut() {
+            track
+                .clips
+                .retain(|_, placement| placement.clip_id != audio_clip);
+        }
+        let error = destination(
+            &audio_unplaced,
+            &MidiImportOptions {
+                track_id: Some(track_id),
+                clip_id: Some(audio_clip),
+                ..MidiImportOptions::default()
+            },
+        )
+        .expect_err("未摆放的音频片段必须被拒绝");
+        assert!(
+            matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("不是 MIDI 片段")),
             "实际: {error:?}"
         );
     }
