@@ -25260,23 +25260,21 @@ fn parse_pitch_name(name: &str) -> Option<u8> {
     u8::try_from(midi).ok().filter(|&p| p <= 127)
 }
 
-fn parse_chord_pitches(chord: &str) -> Vec<u8> {
+fn parse_chord_pitches(chord: &str) -> Result<Vec<u8>, String> {
     let trimmed = chord.trim();
     let mut chars = trimmed.chars();
     let Some(letter) = chars.next() else {
-        return vec![60, 64, 67];
+        return Err("和弦为空".into());
     };
-    let Some(base) = (match letter.to_ascii_uppercase() {
-        'C' => Some(0_i32),
-        'D' => Some(2),
-        'E' => Some(4),
-        'F' => Some(5),
-        'G' => Some(7),
-        'A' => Some(9),
-        'B' => Some(11),
-        _ => None,
-    }) else {
-        return vec![60, 64, 67];
+    let base = match letter.to_ascii_uppercase() {
+        'C' => 0_i32,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return Err(format!("无法识别和弦根音“{chord}”")),
     };
     let mut rest = chars.as_str();
     let accidental: i32 =
@@ -25289,46 +25287,245 @@ fn parse_chord_pitches(chord: &str) -> Vec<u8> {
         } else {
             0
         };
+
+    // 和弦标记里的数字既可能是八度（C4），也可能是和弦构成（C7/C9/C11/C13）。
+    // 这里只在“纯数字且不是 7/9/11/13”时把数字当八度；其余一律交给 quality 解析。
     let digits_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
     let (octave, quality) = if digits_len > 0 {
-        let (oct_str, q) = rest.split_at(digits_len);
-        (oct_str.parse::<i32>().unwrap_or(4), q.trim())
+        let digits = &rest[..digits_len];
+        let tail = &rest[digits_len..];
+        let digits_are_quality = matches!(digits, "7" | "9" | "11" | "13")
+            && (tail.is_empty()
+                || tail.starts_with('#')
+                || tail.starts_with('b')
+                || tail.starts_with('♯')
+                || tail.starts_with('♭')
+                || tail.chars().next().is_some_and(|c| c.is_ascii_alphabetic()));
+        if digits_are_quality {
+            (4_i32, rest.trim())
+        } else {
+            let parsed = digits
+                .parse::<i32>()
+                .map_err(|_| format!("无法解析和弦“{chord}”的八度"))?;
+            (parsed, tail.trim())
+        }
     } else {
-        (4, rest.trim())
+        (4_i32, rest.trim())
     };
+
     let root = (octave + 1) * 12 + base + accidental;
-    let q_lower = quality.to_ascii_lowercase();
-    let intervals: &[i32] = if q_lower.starts_with("dim7") {
-        &[0, 3, 6, 9]
-    } else if q_lower.starts_with("dim") {
-        &[0, 3, 6]
-    } else if q_lower.starts_with("aug") {
-        &[0, 4, 8]
-    } else if q_lower.starts_with("sus2") {
-        &[0, 2, 7]
-    } else if q_lower.starts_with("sus4") {
-        &[0, 5, 7]
-    } else if q_lower.starts_with("maj7") {
-        &[0, 4, 7, 11]
-    } else if q_lower.starts_with("min7") || q_lower.starts_with("m7") {
-        &[0, 3, 7, 10]
-    } else if q_lower.starts_with('7') {
-        &[0, 4, 7, 10]
-    } else if q_lower.starts_with("min")
-        || (q_lower.starts_with('m') && !q_lower.starts_with("maj"))
-    {
-        &[0, 3, 7]
-    } else {
-        &[0, 4, 7]
-    };
-    let pitches: Vec<u8> = intervals
-        .iter()
-        .filter_map(|iv| u8::try_from(root + *iv).ok().filter(|&p| p <= 127))
-        .collect();
+    let intervals = parse_chord_quality(quality, chord)?;
+    let mut pitches = Vec::with_capacity(intervals.len());
+    for interval in intervals {
+        let pitch = root + interval;
+        if !(0..=127).contains(&pitch) {
+            return Err(format!("和弦“{chord}”超出 MIDI 音域"));
+        }
+        pitches.push(pitch as u8);
+    }
     if pitches.is_empty() {
-        vec![60, 64, 67]
+        return Err(format!("和弦“{chord}”没有可用音高"));
+    }
+    Ok(pitches)
+}
+
+fn parse_chord_quality(quality: &str, chord: &str) -> Result<Vec<i32>, String> {
+    let normalized = quality
+        .trim()
+        .to_ascii_lowercase()
+        .replace('♯', "#")
+        .replace('♭', "b");
+    let mut rest = normalized.as_str();
+    if rest.is_empty() {
+        return Ok(vec![0, 4, 7]);
+    }
+
+    let mut intervals = vec![0];
+    let mut major_seventh = false;
+    let mut has_seventh = false;
+    if let Some(r) = rest.strip_prefix("sus2") {
+        intervals.extend([2, 7]);
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("sus4") {
+        intervals.extend([5, 7]);
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("dim7") {
+        intervals.extend([3, 6, 9]);
+        has_seventh = true;
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("dim").or_else(|| rest.strip_prefix('o')) {
+        intervals.extend([3, 6]);
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("aug").or_else(|| rest.strip_prefix('+')) {
+        intervals.extend([4, 8]);
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("maj") {
+        intervals.extend([4, 7]);
+        major_seventh = true;
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("min") {
+        intervals.extend([3, 7]);
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix('m') {
+        intervals.extend([3, 7]);
+        rest = r;
     } else {
-        pitches
+        intervals.extend([4, 7]);
+    }
+
+    // 先吃掉七音；之后才是 9/11/13 与变化音。`maj` 前缀决定大七还是属七。
+    if let Some(r) = rest.strip_prefix("maj7") {
+        intervals.push(11);
+        has_seventh = true;
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix('7') {
+        intervals.push(if major_seventh { 11 } else { 10 });
+        has_seventh = true;
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("maj") {
+        intervals.push(11);
+        has_seventh = true;
+        rest = r;
+    }
+
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("add9") {
+            intervals.push(14);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("sus4") {
+            if intervals.len() >= 3 {
+                intervals[1] = 5;
+                intervals[2] = 7;
+            }
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("sus2") {
+            if intervals.len() >= 3 {
+                intervals[1] = 2;
+                intervals[2] = 7;
+            }
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("9") {
+            ensure_chord_seventh(&mut intervals, &mut has_seventh, major_seventh);
+            intervals.push(14);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("11") {
+            ensure_chord_seventh(&mut intervals, &mut has_seventh, major_seventh);
+            intervals.extend([14, 17]);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("13") {
+            ensure_chord_seventh(&mut intervals, &mut has_seventh, major_seventh);
+            intervals.extend([14, 17, 21]);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix('6') {
+            intervals.push(9);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("#9") {
+            ensure_chord_seventh(&mut intervals, &mut has_seventh, major_seventh);
+            intervals.push(15);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("b9") {
+            ensure_chord_seventh(&mut intervals, &mut has_seventh, major_seventh);
+            intervals.push(13);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("#11") {
+            intervals.push(18);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("b11") {
+            intervals.push(16);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("#13") {
+            intervals.push(22);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("b13") {
+            intervals.push(20);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("#5") {
+            if intervals.len() >= 3 {
+                intervals[2] = 8;
+            }
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("b5") {
+            if intervals.len() >= 3 {
+                intervals[2] = 6;
+            }
+            rest = r;
+        } else {
+            return Err(format!(
+                "无法解析和弦“{chord}”的质量“{quality}”（剩余“{rest}”）"
+            ));
+        }
+    }
+    Ok(intervals)
+}
+
+fn ensure_chord_seventh(intervals: &mut Vec<i32>, has_seventh: &mut bool, major_seventh: bool) {
+    if !*has_seventh {
+        intervals.push(if major_seventh { 11 } else { 10 });
+        *has_seventh = true;
+    }
+}
+
+#[cfg(test)]
+mod chord_pitch_tests {
+    use super::parse_chord_pitches;
+
+    fn pitch_classes(chord: &str) -> Vec<u8> {
+        parse_chord_pitches(chord)
+            .unwrap_or_else(|e| panic!("{chord}: {e}"))
+            .into_iter()
+            .map(|p| p % 12)
+            .collect()
+    }
+
+    #[test]
+    fn chord_lane_demo_labels_match_pitch_classes() {
+        assert_eq!(pitch_classes("Cm9"), vec![0, 3, 7, 10, 2]);
+        assert_eq!(pitch_classes("AbMaj7"), vec![8, 0, 3, 7]);
+        assert_eq!(pitch_classes("Fm11"), vec![5, 8, 0, 3, 7, 10]);
+        assert_eq!(pitch_classes("G7#9"), vec![7, 11, 2, 5, 10]);
+        assert_eq!(pitch_classes("Cm11"), vec![0, 3, 7, 10, 2, 5]);
+    }
+
+    #[test]
+    fn legacy_qualities_do_not_regress() {
+        for (chord, expected) in [
+            ("C", vec![0, 4, 7]),
+            ("Cm", vec![0, 3, 7]),
+            ("Cdim", vec![0, 3, 6]),
+            ("Cdim7", vec![0, 3, 6, 9]),
+            ("Caug", vec![0, 4, 8]),
+            ("Csus2", vec![0, 2, 7]),
+            ("Csus4", vec![0, 5, 7]),
+            ("Cmaj7", vec![0, 4, 7, 11]),
+            ("Cm7", vec![0, 3, 7, 10]),
+            ("C7", vec![0, 4, 7, 10]),
+            ("Cmin7", vec![0, 3, 7, 10]),
+        ] {
+            assert_eq!(pitch_classes(chord), expected, "{chord}");
+        }
+    }
+
+    #[test]
+    fn octave_digits_and_quality_digits_are_distinguished() {
+        let c4 = parse_chord_pitches("C4").expect("C4");
+        let c5 = parse_chord_pitches("C5").expect("C5");
+        assert_eq!(c4[0], 60);
+        assert_eq!(c5[0], 72);
+
+        let c7 = parse_chord_pitches("C7").expect("C7");
+        assert_eq!(c7[0], 60, "C7 的 7 是属七，不是八度 7");
+        assert_eq!(c7.len(), 4);
+
+        let g7s9 = parse_chord_pitches("G7#9").expect("G7#9");
+        assert_eq!(g7s9[0], 67, "G7#9 的 7 不是八度 7");
+        assert_eq!(g7s9.len(), 5);
+    }
+
+    #[test]
+    fn unknown_quality_is_loud() {
+        assert!(parse_chord_pitches("Cfoo").is_err());
+        assert!(parse_chord_pitches("").is_err());
+        assert!(parse_chord_pitches("C13#").is_err());
     }
 }
 
@@ -27592,7 +27789,14 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let pitches = parse_chord_pitches(chord.as_str());
+            let pitches = match parse_chord_pitches(chord.as_str()) {
+                Ok(pitches) => pitches,
+                Err(err) => {
+                    ui.set_module_status(format!("试听: {err}").into());
+                    ui.set_module_status_succeeded(false);
+                    return;
+                }
+            };
             let Some((track, warning)) =
                 resolve_and_prepare_audition_target(&ui, &port, &engine, &pitches)
             else {
