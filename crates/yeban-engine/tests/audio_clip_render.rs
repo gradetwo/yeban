@@ -603,3 +603,63 @@ fn placement_fade_ramps_the_realtime_audio_in() {
     let plain = render_snapshot(plain_snapshot, 20);
     assert!((plain.left[0] - 0.5).abs() < 1e-6);
 }
+
+/// `#5198`：`offset_samples` 平移了 span 边界 ⇒ **fade 窗口的绝对帧必须一起平移**。
+///
+/// 修前：窗口仍按平移前的 `[0, 250)` 规划，span 却被推到 `[250, …)` ⇒ 第 250 帧
+/// 已经出了淡入窗口、直接是素材满值 0.5（尾部同理提前收尾），而离线
+/// `crates/yeban-app/src/audio_clip.rs` 那条路径早把 `offset` 加进了窗口区间 ⇒
+/// 实时与离线两个母带不一致。
+///
+/// 修后：平移同源 ⇒ 第 250 帧（新 span 的第 0 帧）增益 0，第 350 帧落在等功率曲线
+/// 上，第 500 帧（淡入结束）回到 0.5；且 250 帧之前的整段是静音（span 还没开始）。
+#[test]
+fn placement_fade_window_follows_the_sample_offset() {
+    let fixture = audio_clip_project();
+    let rate = fixture_rate(&fixture.project);
+    let pcm = || mono_pcm(0.5, rate as usize, rate);
+    // 10 tick 的采样偏移（用引擎自己的 tick→帧换算，⛔ 不硬编码帧数）。
+    let offset = tick_to_sample(10, samples_per_tick(fixture.project.bpm, rate))
+        .expect("10 tick 必须能换算成帧");
+    let offset_i32 = i32::try_from(offset).expect("250 帧必须能放进 i32");
+
+    let mut shifted = fixture.project.clone();
+    let placement = shifted
+        .tracks
+        .get_mut(&fixture.track)
+        .expect("音频轨")
+        .clips
+        .values_mut()
+        .next()
+        .expect("一条摆放");
+    placement.fade_in_ticks = Some(10);
+    placement.offset_samples = Some(offset_i32);
+
+    let rendered = render_snapshot(snapshot_with_pcm(&shifted, pcm()), 20);
+    let at = |frame: usize| rendered.left[frame];
+    let offset = usize::try_from(offset).expect("250 帧");
+    assert!(
+        silent_in(&rendered, 0, offset),
+        "平移 {} 帧 ⇒ 之前的整段必须是静音（实测首个非零 {:?}）",
+        offset,
+        first_nonzero(&rendered)
+    );
+    assert!(
+        at(offset).abs() < 1e-6,
+        "第 {} 帧是平移后的第 0 帧 ⇒ 淡入增益 sqrt(0) = 0（实测 {}）",
+        offset,
+        at(offset)
+    );
+    let mid = at(offset + 100);
+    let expected_mid = 0.5 * (100.0_f32 / 250.0).sqrt();
+    assert!(
+        (mid - expected_mid).abs() < 1e-5,
+        "第 {} 帧必须仍落在等功率曲线上（期望 {expected_mid}, 实测 {mid}）",
+        offset + 100
+    );
+    assert!(
+        (at(offset + 250) - 0.5).abs() < 1e-6,
+        "淡入结束必须回到素材满值（实测 {}）",
+        at(offset + 250)
+    );
+}

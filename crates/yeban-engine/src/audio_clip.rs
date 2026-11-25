@@ -418,6 +418,8 @@ pub fn project_audio_clips_with_tempo(
                 continue;
             };
             let end = end.max(start.saturating_add(1));
+            // fade **长度**从**平移前**的区间差出来（长度是差值，平移不变），与离线
+            // `crates/yeban-app/src/audio_clip.rs` 的同一段逐条同式。
             let fade_in_frames = placement
                 .fade_in_ticks
                 .and_then(|ticks| timebase.sample_at(placement.start_tick.saturating_add(ticks)))
@@ -426,13 +428,29 @@ pub fn project_audio_clips_with_tempo(
                 .fade_out_ticks
                 .and_then(|ticks| timebase.sample_at(end_tick.saturating_sub(ticks)))
                 .map_or(0, |frame| end.saturating_sub(frame).min(end - start));
+            // ⭐ `#5198`：窗口存的是**绝对帧**（`clip_fade` 模块文档），而 span 的边界
+            // 要按 `offset_samples` 平移（见下方 `shift`）⇒ 窗口的绝对帧必须与 span
+            // **同源平移**，否则实时侧 fade 比音频早 `offset` 帧：淡入整段落在 span
+            // 之前（首帧就是满值）、淡出提前收尾（尾部阶跃），且与离线渲染不一致
+            // （离线那份 `fade_entries` 在入窗口**之前**已经把 `offset` 加进 start/end）。
+            let offset = i64::from(placement.offset_samples.unwrap_or(0));
+            let shift = |frame: u64| -> u64 {
+                u64::try_from(
+                    i64::try_from(frame)
+                        .unwrap_or(i64::MAX)
+                        .saturating_add(offset)
+                        .max(0),
+                )
+                .unwrap_or(0)
+            };
+            let (start, end) = (shift(start), shift(end));
             fade_entries.push((
                 placement.id,
                 ClipFadeInterval {
                     start,
                     end,
-                    fade_in_frames,
-                    fade_out_frames,
+                    fade_in_frames: fade_in_frames.min(end - start),
+                    fade_out_frames: fade_out_frames.min(end - start),
                     explicit: placement.fade_in_ticks.is_some()
                         || placement.fade_out_ticks.is_some(),
                 },
