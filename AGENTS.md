@@ -118,6 +118,13 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
    由集成者独占。详见 [`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md)。
 7. **规范缺口与冲突**：不得私自发明答案，也不得擅自改写 Normative 文档；把裁决写进
    [`docs/adr/`](docs/adr) 并标注 `Proposed`，由人类批准。
+8. **app test 目标内存门槛 ≥ 8 GB**：`cargo test -p yeban-app --test <任意>` 的编译在 4 GB 内存
+   的 Linux 主机上会被内核 OOM killer 以 SIGKILL 终止（约 35 分钟处，拿不到任何测试结果；
+   T-FIX-142/160/173 三份回执各自独立复现）。承担 app 行为验证的节点须提供 ≥ 8 GB 内存；
+   低于门槛时不得宣称 app test 判据已验证，按第 9 条的最小验证集执行并在回执里写明 not_run。
+9. **内存不足时的最小验证集**：`cargo fmt --check`、`cargo check -p <crate> --all-targets`、
+   `cargo clippy -p <crate> --all-targets -- -D warnings`。除这三项外的一律记为 not_run +
+   原因，不得冒充通过；判绿仍以第 5 条为准，须用 `scripts/dev/ci-verdict.sh` 读回 CI 判决。
 
 ## 6. 测量纪律 (Measurement Discipline)
 
