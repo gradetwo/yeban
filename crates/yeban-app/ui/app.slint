@@ -2830,6 +2830,9 @@ export component MainWindow inherits Window {
                             background: Tokens.gold-deep;
                             border-radius: Tokens.radius-sm;
                             TouchArea {
+                                accessible-role: button;
+                                accessible-label: @tr("保存并退出");
+                                accessible-action-default => { root.quit-save-and-exit(); }
                                 clicked => { root.quit-save-and-exit(); }
                             }
                             Text {
@@ -2845,6 +2848,9 @@ export component MainWindow inherits Window {
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
                             TouchArea {
+                                accessible-role: button;
+                                accessible-label: @tr("直接退出（放弃改动）");
+                                accessible-action-default => { root.quit-discard-and-exit(); }
                                 clicked => { root.quit-discard-and-exit(); }
                             }
                             Text {
@@ -2860,6 +2866,9 @@ export component MainWindow inherits Window {
                             background: Tokens.bg-void;
                             border-radius: Tokens.radius-sm;
                             TouchArea {
+                                accessible-role: button;
+                                accessible-label: @tr("取消");
+                                accessible-action-default => { root.quit-cancel(); }
                                 clicked => { root.quit-cancel(); }
                             }
                             Text {
