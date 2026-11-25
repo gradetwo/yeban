@@ -1414,11 +1414,11 @@ fn mount_in_process_mcp(
 /// "撤销一步"按钮由 [`host::wire_undo`] 接到 [`yeban_app::undo::UndoPort`]，
 /// 动作真的会走 `CommitGraph::undo_with`，显示态由 `host::apply_undo` 从模型读数回写。
 ///
-/// **视图态九条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中、Session 返回编曲与
+/// **视图态八条也已经真的接线**（分类切换、控制台 ⤢、资源条目选中、Session 返回编曲与
 /// 剪辑选中陆续落地）：
-/// `toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
+/// `toggle-view` / `toggle-ai-drawer` /
 /// `console-maximize-toggle` / `back-to-arrangement` → [`host::wire_view_callbacks`] →
-/// 分别写 `arrangement-view` / `sidebar-collapsed` / `ai-drawer-open` /
+/// 分别写 `arrangement-view` / `ai-drawer-open` /
 /// `console-maximized` / `arrangement-view`；
 /// `select-sidebar-category` / `select-sidebar-item` / `sidebar-search-changed`
 /// → [`host::wire_sidebar_contents`] →
@@ -1432,7 +1432,7 @@ fn mount_in_process_mcp(
 /// 原先写在 `.slint` 里的 `root.* = !root.*` 翻转**已删除** —— 同一条动作只有一个写者。
 ///
 /// 抽屉那**四条**（`open-musical-pr` / `select-ai-proposal` / `accept-ai-proposal` /
-/// `reject-ai-proposal`）是这九条里搬出去的：它们现在由
+/// `reject-ai-proposal`）是这八条里搬出去的：它们现在由
 /// [`host::wire_proposal_drawer`] 注册（打开抽屉时要**现读**权威那份未合并提案清单再
 /// 注入 —— Slint 的 `on_*` 是覆盖语义，同一个回调只能有一个注册者，因此
 /// [`host::wire_view_callbacks`] 里那一处已删）。

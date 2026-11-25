@@ -270,8 +270,6 @@ pub struct WindowLayout {
     pub console_tab: i32,
     /// 底部控制台是否最大化（占满下半区）。
     pub console_maximized: bool,
-    /// 左侧资源栏是否折叠成图标导轨。
-    pub sidebar_collapsed: bool,
 }
 
 impl Default for WindowLayout {
@@ -295,7 +293,6 @@ impl Default for WindowLayout {
             left_panel_tab: "inspector".to_owned(),
             console_tab: 0,
             console_maximized: false,
-            sidebar_collapsed: false,
         }
     }
 }
@@ -714,8 +711,6 @@ fn parse_layout(root: &serde_json::Value) -> Option<WindowLayout> {
     }
     layout.console_maximized =
         json_bool(object, "console_maximized").unwrap_or(defaults.console_maximized);
-    layout.sidebar_collapsed =
-        json_bool(object, "sidebar_collapsed").unwrap_or(defaults.sidebar_collapsed);
     Some(layout)
 }
 
@@ -781,10 +776,6 @@ fn layout_to_json(layout: &WindowLayout) -> serde_json::Value {
     object.insert(
         "console_maximized".to_owned(),
         serde_json::json!(layout.console_maximized),
-    );
-    object.insert(
-        "sidebar_collapsed".to_owned(),
-        serde_json::json!(layout.sidebar_collapsed),
     );
     serde_json::Value::Object(object)
 }
@@ -1442,7 +1433,6 @@ mod tests {
             left_panel_tab: "browser".to_owned(),
             console_tab: 2,
             console_maximized: true,
-            sidebar_collapsed: true,
         }
     }
 
@@ -1511,8 +1501,7 @@ mod tests {
                     \"clip_matrix_width\": \"wide\",\
                     \"lower_dock_height\": 100.0,\
                     \"left_panel_tab\": \"bogus\",\
-                    \"console_tab\": 7,\
-                    \"sidebar_collapsed\": true\
+                    \"console_tab\": 7\
                 }\
             }",
         )
@@ -1526,7 +1515,6 @@ mod tests {
         assert_eq!(layout.lower_dock_height, 180.0, "越界钳回下界");
         assert_eq!(layout.left_panel_tab, "inspector", "闭集外落回默认");
         assert_eq!(layout.console_tab, 0, "界外落回默认 0");
-        assert!(layout.sidebar_collapsed, "合法字段照常生效");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

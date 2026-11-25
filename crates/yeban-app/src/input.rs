@@ -1044,8 +1044,6 @@ pub enum Action {
     ToggleClipMute,
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
-    /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
-    ToggleSidebar,
     /// `Cmd/Ctrl+F`: 把**键盘焦点**交给左栏资源搜索框（D-UI-18，界面决定）。
     ///
     /// ⚠ **补的是"摸不到键盘"这一格，不是"没有输入框"**：搜索框自 D-UI-14 起是
@@ -1346,7 +1344,6 @@ impl InputContext {
                     Resolution::Action(Action::FocusSidebarSearch)
                 }
                 (Key::Character('b'), true, false) => Resolution::Action(Action::ToggleBrowser),
-                (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，
                 // 见第 6 步；两者靠作用域分开：`selected-track-id` vs `selected-clip-ulid`）。
                 // `m` 在本分支里此前只有 `+Alt` 一条（控制台最大化）⇒ `shift/alt` 都为
@@ -1585,8 +1582,8 @@ mod tests {
         ResizeSelectionDuration, ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab,
         SelectTool, SelectTrackBy, ShowView, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
         ToggleConsoleMaximize, ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool,
-        ToggleRecord, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo,
-        VerticalZoomIn, VerticalZoomOut, ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
+        ToggleRecord, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn,
+        VerticalZoomOut, ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
@@ -1827,10 +1824,9 @@ mod tests {
 
     #[test]
     fn sidebar_and_console_toggles_are_decoupled_from_bare_letters() {
-        assert_eq!(
-            canvas().resolve(KeyB, Modifiers::ctrl_alt()),
-            Act(ToggleSidebar)
-        );
+        // T-FIX-401：`Action::ToggleSidebar` 与 `Cmd/Ctrl+Alt+B` 已随废弃的折叠功能删除；
+        // 该组合键现在不绑定任何动作（放行），裸 `B` 仍是笔刷切换。
+        assert_eq!(canvas().resolve(KeyB, Modifiers::ctrl_alt()), PassThrough);
         assert_eq!(
             canvas().resolve(KeyM, Modifiers::ctrl_alt()),
             Act(ToggleConsoleMaximize)

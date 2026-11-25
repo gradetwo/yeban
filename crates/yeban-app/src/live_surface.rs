@@ -550,11 +550,13 @@ impl LiveAdminSurface {
     /// 那一句是**从既有判据的调用顺序推出来的**，不是实测的结论（原提交信息自己写的是
     /// "**可能**抓到上一帧的可见性"）。本轮把它量了：
     ///
-    /// 1. **行为**：一次真实点击（`toggle-sidebar`，同时改**可见性**与**几何**）之后，
-    ///    不经过任何渲染、只做一次全树内省，`ui/tree` 的节点数 **85→81**、
-    ///    `sidebar-search-field` **在树里 → 不在树里**、`ui/node` 的
-    ///    `sidebar-collapse-button.x` **210→6**（判据
-    ///    `a_tree_read_sees_a_click_that_just_happened` 的字面读数）；
+    /// 1. **行为**：一次真实点击之后，不经过任何渲染、只做一次全树内省，
+    ///    `ui/tree` / `ui/node` 的读数立即反映变化 —— 读方法在返回前会重抓
+    ///    活窗口的树（`UiSurface::refresh_runtime_tree`），不需要一次光栅化
+    ///    来"冲刷布局"。
+    ///    （旧版这里以 `toggle-sidebar` 为例打出的字面读数——节点 **85→81**、
+    ///    `sidebar-search-field` 离树、折叠按钮 `x` **210→6**——随该功能
+    ///    删除而移除，见 T-FIX-401；本条不再贴一组无判据钉住的字面数字。）
     /// 2. **机理**：内省读的是元素的**属性**（`i-slint-backend-testing` 的
     ///    `ElementHandle::absolute_position` / `size` → `ItemRc::geometry`，见上游
     ///    `i-slint-backend-testing-1.18.1/search_api.rs:881` 与 `:893`），而几何在生成的
@@ -2377,11 +2379,12 @@ pub fn build_live_ui_with(
     // 真实指针事件与用户点击走同一条链。它不改工程 ⇒ 只在装配给了端口时把端口一并交给
     // 那**同一个** `Action::SelectTool` 臂（`None` 时照旧写界面属性，与 `wire_keys` 同款）。
     host::wire_tool_select(&window, options.undo.clone());
-    // **纯视图态的四条回调**（`toggle-view` / `toggle-sidebar` / `toggle-ai-drawer` /
+    // **纯视图态的三条回调**（`toggle-view` / `toggle-ai-drawer` /
     // `open-musical-pr`）：与产品进程**同一个**接线函数（`main.rs` 的 `wire_callbacks`
     // 也调它），因此端口注入的点击与用户点击走的是同一条链
     // （真实指针事件 → Slint 命中测试 → `.slint` 的 `TouchArea` → 宿主写属性）。
     // 只有属性写入 ⇒ 不改工程、不需要 `UndoPort`，装配顺序上也不与撤销端口耦合。
+    // （第四条 `toggle-sidebar` 已随废弃的折叠功能删除，见 T-FIX-401。）
     host::wire_view_callbacks(&window);
     // ⭐ 左侧资源栏的条目**取数**（分类 / 条目点击 ⇒ 重注入数组）：与产品进程
     // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_sidebar_contents`，

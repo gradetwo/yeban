@@ -15,7 +15,7 @@
 //!
 //! | 注入 | 预期 |
 //! | :--- | :--- |
-//! | 臂里改成 `ui.invoke_toggle_sidebar()`（错回调） | 本文件红（属性不翻） |
+//! | 臂里改成 `ui.invoke_toggle_view()`（错回调） | 本文件红（属性不翻） |
 //! | 臂里返回 `false`（不消费） | 本文件红（第 ① 条） |
 //! | 删掉 `resolve_logical` 第 3 步的 `Key::Character('a')` | 本文件红（键不消费）＋ `src/input.rs` 那条红 |
 //! | 删掉 `apply_action` 的 `ToggleAiDrawer` 臂 | 编译红（穷尽匹配，⛔ 没有 `_` 兜底） |

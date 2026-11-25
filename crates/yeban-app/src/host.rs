@@ -8225,7 +8225,6 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 /// | 回调 | 唯一写的属性 | 界面侧的可观察后果 |
 /// | :--- | :--- | :--- |
 /// | `toggle-view` | `arrangement-view` | `ArrangementView` / `SessionView` 的 `visible` 互斥互换 |
-/// | `toggle-sidebar` | `sidebar-collapsed` | 左资源栏 240px ↔ 36px 图标导轨（`min/max-width`） |
 /// | `toggle-ai-drawer` | `ai-drawer-open` | `app.slint` 里 288px AI 抽屉覆盖层的 `visible`（T-FIX-304 起真实存在） |
 /// | `open-musical-pr` | `musical-pr-open` **＋九个提案属性** | **不在本函数**：见 [`wire_proposal_drawer`] —— 它打开抽屉，并从唯一可变权威现读未合并提案清单注入 |
 /// | `select-ai-proposal` / `accept-ai-proposal` / `reject-ai-proposal` | `musical-pr-selected-id` 等九个属性（外加领域的提案状态） | 同样**不在本函数**：三条都在 [`wire_proposal_drawer`] 注册 —— 后两条是界面上**唯一**能改领域的地方 |
@@ -8243,9 +8242,9 @@ const CONSOLE_HEIGHT_MAX_PX: i32 = 600;
 ///
 /// ## 为什么这些翻转必须住在这里，而不是 `.slint` 的 `clicked =>` 里
 ///
-/// `arrangement-view` 与 `sidebar-collapsed` 已经有**第二个宿主写者**：
-/// [`apply_action`] 的 `Action::ToggleView` / `Action::ShowView` / `Action::ToggleSidebar`
-/// 写的就是这两个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
+/// `arrangement-view` 已经有**第二个宿主写者**：
+/// [`apply_action`] 的 `Action::ToggleView` / `Action::ShowView`
+/// 写的就是这个属性（`ui/switch_main_view` 也写同一个）。若 `.slint` 的转发块自己再翻转
 /// 一次，同一个动作就有两个真相源；而"界面**不**自己翻转状态"正是 `playing` 那条已经
 /// 付过学费的契约（`ui/app.slint` 的 `toggle-play` 注释、`docs/ledger/feature-alignment.md`
 /// 错位 7）。因此本函数是这十条回调的**唯一**落点，组件里只剩"原样转发"。
@@ -8271,16 +8270,6 @@ pub fn wire_view_callbacks(ui: &MainWindow) {
                 return;
             };
             ui.set_arrangement_view(!ui.get_arrangement_view());
-        }
-    });
-    ui.on_toggle_sidebar({
-        let weak = weak.clone();
-        move || {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
         }
     });
     ui.on_toggle_ai_drawer({
@@ -16075,10 +16064,6 @@ fn apply_action(
             ui.set_console_tab(i32::from(index));
             true
         }
-        Action::ToggleSidebar => {
-            ui.set_sidebar_collapsed(!ui.get_sidebar_collapsed());
-            true
-        }
         // `Cmd/Ctrl+F`：把键盘焦点交给左栏搜索框（D-UI-18，界面决定）。
         //
         // ⚠ 焦点**不是属性** ⇒ 这里是"命令一次 Slint"，不是"写一个状态"：唯一实现 =
@@ -16086,16 +16071,11 @@ fn apply_action(
         // `left-panel.focus-search()` 落到 `browser_search_input.focus()`；注意不是
         // 已删的旧 `Sidebar.focus-search()`（`ui/sidebar.slint`，见 T-FIX-218））。
         // ⭐ 左栏若关着就先展开（与 `Action::ToggleBrowser` 同一语义）：搜索框在
-        // `show-left-inspector = false` 时不在场，取焦落不下去。`sidebar-collapsed`
-        // 也一并展开（与 `Action::ToggleSidebar` 同一个属性），但注意它在 `.slint` 侧
-        // **没有读者**、并不真的管显隐（T-FIX-131 甄别），真正管显隐的是 `show-left-inspector`。
+        // `show-left-inspector = false` 时不在场，取焦落不下去，真正管显隐的是 `show-left-inspector`。
         // ⭐ 返回值 = **焦点真的落地了吗**：读数 `sidebar-search-focused` 是 Slint 焦点的
         // 镜像（`app.slint` 直接绑左栏的 `search-has-focus`）；框不在场时它保持 `false`
         // ⇒ 本键**不消费**（⛔ 不假装成功，与本文件"引擎拒绝 ⇒ 放行"的既有取向一致）。
         Action::FocusSidebarSearch => {
-            if ui.get_sidebar_collapsed() {
-                ui.set_sidebar_collapsed(false);
-            }
             if !ui.get_show_left_inspector() {
                 ui.set_show_left_inspector(true);
             }
@@ -21511,7 +21491,6 @@ pub fn apply_window_layout(ui: &MainWindow, layout: &crate::settings::WindowLayo
     ui.set_left_panel_tab(layout.left_panel_tab.as_str().into());
     ui.set_console_tab(layout.console_tab);
     ui.set_console_maximized(layout.console_maximized);
-    ui.set_sidebar_collapsed(layout.sidebar_collapsed);
     if let Some(window) = layout.window {
         let handle = ui.window();
         // [T-FIX-224] 恢复的几何是**物理**像素，可能来自另一块屏（或同一块屏
@@ -21570,7 +21549,6 @@ pub fn snapshot_window_layout(ui: &MainWindow) -> crate::settings::WindowLayout 
         left_panel_tab: ui.get_left_panel_tab().as_str().to_owned(),
         console_tab: ui.get_console_tab(),
         console_maximized: ui.get_console_maximized(),
-        sidebar_collapsed: ui.get_sidebar_collapsed(),
     }
 }
 

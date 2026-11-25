@@ -25,8 +25,8 @@
 //! ② `Cmd/Ctrl+F` ⇒ 消费（返回值 `true`）⇒ 焦点**搬家**到搜索框，且画布层不再同时持有；
 //!    搜索框在浏览器页签，取焦时页签一并切过去（`left-panel-tab` = `"browser"`）；
 //! ③ 未点名的修饰变体（`Shift+F` / `Alt+F` / 裸 `f`）⇒ ⛔ 不消费、焦点不动；
-//! ④ 收起态：`show-left-inspector = false`（且 `sidebar-collapsed = true`）时按同一键 ⇒
-//!    先展开（左栏重现、`sidebar-collapsed` 写回 `false`）再取焦，三个读数同时兑现；
+//! ④ 收起态：`show-left-inspector = false` 时按同一键 ⇒
+//!    先展开（左栏重现）再取焦，两个读数同时兑现；
 //! ⑤ 文本层接线（源码层）：取焦函数与焦点读数各**恰好一处** —— 证明没有第二份"我以为
 //!    焦点在哪"的状态。计数口径 = **代码行**（`//` 开头的行先删，见 `code_only`）：
 //!    注释里提到方法名不是调用点，把它算进去会假红（实测于 run `41516839490`），
@@ -42,7 +42,9 @@
 //! * ④ 的"折叠态"旧版写的是 `sidebar-collapsed`：那个属性在 `.slint` 侧**没有读者**
 //!   （宿主写、界面不读，T-FIX-131 甄别），写它并不能真的展开左栏；真正管显隐的是
 //!   `show-left-inspector`（T-FIX-131 起左栏实例以 `visible:` 门控于它）。④ 改为
-//!   同时置两个属性、断言三个读数（左栏重现 + `sidebar-collapsed` 写回 + 焦点落地）。
+//!   只置 `show-left-inspector`、断言两个读数（左栏重现 + 焦点落地）。
+//!   （T-FIX-401：`sidebar-collapsed` 属性与 `Action::ToggleSidebar` 已随废弃的折叠功能删除，
+//!   ④ 里那一半置位与写回断言随之删除 —— 折叠态本身从来不是左栏显隐的真相。）
 //! * ⑦ 的"compact 断点"旧版写的是 `sidebar.slint` 的 `if (!root.compact)`：那个组件
 //!   今天**没有实例进树**（T-FIX-131 甄别；T-FIX-218 起该组件已随 `ui/sidebar.slint`
 //!   删除），`compact` 这道闸在活树里不存在。⑦ 改为
@@ -182,9 +184,8 @@ fn cmd_ctrl_f_moves_the_keyboard_focus_into_the_search_box() {
     );
     report_line("search-focus moved: search-focused=true tab=browser");
 
-    // ④ 收起态：左栏收起 + 折叠属性置位 ⇒ 同一键先展开再取焦。
+    // ④ 收起态：左栏收起 ⇒ 同一键先展开再取焦。
     ui.set_show_left_inspector(false);
-    ui.set_sidebar_collapsed(true);
     let consumed = live
         .dispatch_key_chord(&ctrl_f())
         .expect("收起态注入 Cmd/Ctrl+F");
@@ -193,12 +194,8 @@ fn cmd_ctrl_f_moves_the_keyboard_focus_into_the_search_box() {
         ui.get_show_left_inspector(),
         "④ 左栏必须先展开（show-left-inspector=true）"
     );
-    assert!(
-        !ui.get_sidebar_collapsed(),
-        "④ sidebar-collapsed 必须写回 false"
-    );
     assert!(search_focused(&live), "④ 展开后焦点必须落在搜索框");
-    report_line("search-focus collapsed-expanded: panel-shown=true collapsed=false");
+    report_line("search-focus collapsed-expanded: panel-shown=true");
 
     // ⑥ 真平台按键落进已取焦的框里：`b` 变成文本，画笔工具不动。
     live.dispatch_key_press(KeyCode::Character('b'))

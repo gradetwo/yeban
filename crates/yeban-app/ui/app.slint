@@ -817,7 +817,6 @@ export component MainWindow inherits Window {
     in-out property <string> shaper-info: @tr("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)");
     in-out property <bool> shortcut-layer-focused: key-handler.has-focus;
     in-out property <int> sidebar-category: 0;
-    in-out property <bool> sidebar-collapsed: false;
     in-out property <string> sidebar-empty-reason: "";
     in-out property <int> sidebar-item: 0;
     in-out property <[string]> sidebar-items: [];
@@ -1186,7 +1185,6 @@ export component MainWindow inherits Window {
     callback preset-bypass-toggle(bool);
     callback toggle-ai-drawer();
     callback toggle-metronome();
-    callback toggle-sidebar();
     callback toggle-undo-tree();
     callback toggle-view();
     callback tool-selected(int);

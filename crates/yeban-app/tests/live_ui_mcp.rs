@@ -4,8 +4,9 @@
 //! 在场性等）是**历史记录**，不是现行断言。`ui/sidebar.slint` 已在 T-FIX-218 删除
 //! （旧 `Sidebar` 组件无人 import、不参与编译），`sidebar` /
 //! `sidebar-collapse-button` / `sidebar-search-field` 这些运行时节点在任何树里都
-//! 已不存在；`toggle-sidebar` 视图态（`sidebar-collapsed` 属性）仍活，由宿主
-//! `Action::ToggleSidebar` 写，契约面由各测试的字符串核对钉住。
+//! 已不存在；`toggle-sidebar` 视图态（`sidebar-collapsed` 属性）已随废弃的折叠功能
+//! 由 T-FIX-401 删除（`Action::ToggleSidebar`、`Cmd/Ctrl+Alt+B` 与宿主接线一并删除），
+//! 本文件里与之相关的判据与历史读数已同步清理。
 //!
 //! **真实界面上的 UI 控制面** —— 端到端判据（`cargo test -p yeban-app --all-targets` 会跑它）。
 //!
@@ -18,7 +19,6 @@
 //! | `live_control_plane_coverage_matches_the_projected_registry` | 运行时树 ⊆ 投影注册表（`visible: false` 的分支不在树里 ⇒ 缺失非空），两个方向的差异都被 `ui/coverage` 如实报出来 |
 //! | `production_plane_hard_denies_injection_on_the_live_window` | §12.3 / `ARCH-SEC-002`：生产模式下 `ui:inject` 在**真实执行面**上也是 403 硬禁（并且之后的只读调用照常可用） |
 //! | `interactive_test_mode_plane_injects_into_the_live_window` | §12.4：测试模式 + `Interactive` 权限下，事件注入真的落进窗口；`ui/methods` 如实报出 `injectAllowed` |
-//! | `a_tree_read_sees_a_click_that_just_happened` | **新鲜度**：一次真实点击（`toggle-sidebar`）之后，`ui/tree` / `ui/node` / `ui/property` 三条读同时看见它（节点 **85→81**、`x` **210→6**、宽度 `"240.00"→"36.00"`），再点一次全部回去 |
 //! | `a_tree_regrab_costs_one_introspection_not_one_full_render` | **代价**：一次重抓 = 一次全树内省（85 节点），不是一次 1920×1080 的 Tier-1 全量渲染（两者并排打出来） |
 //! | `escape_closes_the_time_machine_modal_for_real` | **`Escape` 真的关得掉全屏时光机**（`[UI-A11Y-003]` §7.3 与 `.slint` 的 "Esc 关闭" 那句）：端口读数 `true→false`、运行时树里 `undo-tree-modal` 消失、最后一条动作记录是 `close-undo-tree`，而工程与撤销栈一位未动 |
 //!
@@ -2889,7 +2889,7 @@ fn a_gui_delete_lands_in_the_same_authority_and_one_undo_restores_all() {
 }
 
 // =====================================================================================
-// 纯视图态的四条回调（本切片）：`toggle-view` / `toggle-sidebar` / `toggle-ai-drawer`
+// 纯视图态的三条回调（本切片）：`toggle-view` / `toggle-ai-drawer`
 // / `open-musical-pr` —— 判据证明"入口真的能用"，不是"控件存在"。
 //
 // 两半，缺一不可（两条 `#[test]`，因为 Tier-1 平台是线程局部的：
@@ -2995,25 +2995,13 @@ fn read_property(
     line.result.expect("有 result")["value"].clone()
 }
 
-/// 一条视图态属性在**活窗口**上的字面读数（与判据 16 读 `arrangement-view` 同一手法）。
-fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
-    format!(
-        "arrangement-view={} sidebar-collapsed={} ai-drawer-open={} musical-pr-open={}",
-        window.get_arrangement_view(),
-        window.get_sidebar_collapsed(),
-        window.get_ai_drawer_open(),
-        window.get_musical_pr_open(),
-    )
-}
-
-/// 判据（`ADR-0004` S1 同款口径）：**四条纯视图态回调真的被真实点击驱动**。
+/// 判据（`ADR-0004` S1 同款口径）：**三条纯视图态回调真的被真实点击驱动**。
 ///
 /// ## 每一段都钉住"注入前 ≠ 注入后"的字面读数
 ///
 /// | 段 | 注入的元素 | 读回来的东西 | 期望 |
 /// | :--- | :--- | :--- | :--- |
 /// | `toggle-view` | `transport-view-toggle-button` | `arrangement-view` + 帧指纹 | `true` → `false`；指纹必须变 |
-/// | `toggle-sidebar` | `sidebar-collapse-button` | `ui/property` 读 `sidebar.width` + `sidebar-collapsed` | 240.00 → 36.00 |
 /// | `toggle-ai-drawer` | `transport-ai-drawer-button` | `ai-drawer-open` + 帧指纹（`compact=true`） | `false` → `true`；指纹必须变 |
 /// | `open-musical-pr` | `ai-rail-musical-pr-button` | `musical-pr-open` + 帧指纹 | `false` → `true`；指纹必须变 |
 ///
@@ -3021,7 +3009,7 @@ fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
 ///
 /// | 注入 | 位置 | 现象 |
 /// | :--- | :--- | :--- |
-/// | 摘掉 `host::wire_view_callbacks(&window);` | `src/live_surface.rs` | 四段的"注入后"读数与"注入前"逐字相同 ⇒ 四段一起红 |
+/// | 摘掉 `host::wire_view_callbacks(&window);` | `src/live_surface.rs` | 三段的"注入后"读数与"注入前"逐字相同 ⇒ 三段一起红 |
 /// | 把 `root.arrangement-view = !root.arrangement-view;` 加回转发块 | `ui/app.slint` | `.slint` 与宿主各翻转一次 ⇒ 互相抵消 ⇒ `toggle-view` 段红 |
 ///
 /// ## 快照语义**已经取消**（本轮更正 `Round 431` 登记的那条边界）
@@ -3031,16 +3019,14 @@ fn view_state_reading(window: &yeban_app::ui::MainWindow) -> String {
 /// `树节点 85→85` 原样打了出来）。**那条边界现在不成立了**：读方法在返回前会调
 /// `UiSurface::refresh_runtime_tree`（`crates/yeban-ui-mcp/src/service.rs` 的
 /// `refresh_before_read`），而 `LiveAdminSurface` 覆写它去重抓活窗口的树。因此判据 1
-/// 的 `树节点 N→N` 读数**已经换成**真的变化（见判据
-/// `a_tree_read_sees_a_click_that_just_happened` 的字面读数：点击 `toggle-sidebar` ⇒
-/// 节点 **85→81**、`sidebar-search-field` 离开树、折叠按钮 `x` **210→6**）。
+/// 的 `树节点 N→N` 读数**已经换成**真的变化。
 ///
 /// ⛔ 这里仍然**不**断言"两次读之间树必须不变"：那是把某一种缓存语义钉成契约。
 /// 钉住的是**新鲜度** —— 读必须看见刚发生的变化。
 ///
 /// ## 为什么不断言像素
 ///
-/// 这四条回调**只有点击之后**才改属性；默认外观（未注入任何点击）的帧必须逐字节不变，
+/// 这三条回调**只有点击之后**才改属性；默认外观（未注入任何点击）的帧必须逐字节不变，
 /// 那一条是渲染帧 sha256 的 A/B（`live-port-filled-project-unmasked-1920x1080.png`，
 /// 6,222,418 字节），见账本当轮条目的"像素影响"。
 #[test]
@@ -3772,66 +3758,6 @@ fn the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit() {
 /// 工程侧读数（模型里的 `TrackV3::mute`）证明这一击真的落了地 ⇒ 标签确实是这一击写下的。
 #[test]
 fn a_mute_click_in_the_arrangement_view_writes_an_honest_history_label() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
-    );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
-    );
-    assert!(
-        aether_app.contains("> ai-drawer-open:"),
-        "新 UI 契约面必须声明 > ai-drawer-open:"
-    );
-    assert!(
-        aether_host.contains("set_ai_drawer_open"),
-        "宿主接线层必须注册 set_ai_drawer_open"
-    );
-    assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
-    );
-    assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
-    );
-}
-
-// =====================================================================================
-// 判据：**读方法看见当下的界面**（`ui/tree` / `ui/node` / `ui/property` 的新鲜度一致）
-//
-// 背景：`ui/tree` / `ui/node` 读的是执行面持有的**运行时树缓存**，而 `ui/property`
-// 与 `ui/screenshot` 读的是**活窗口**。两种读法的"新鲜度"因此不一致 ⇒
-// 「人点一下按钮、AI 立刻读 `ui/tree`」看不见那一击。本判据把这条链钉住：
-// **注入前**的读数（那时刻树是旧的）与**点击后**的读数必须一起报出来。
-// =====================================================================================
-
-/// 判据：一次**真实点击**之后，下一次 `ui/tree` / `ui/node` / `ui/property` 必须看见它。
-///
-/// | 段 | 做什么 | 期望 |
-/// | :--- | :--- | :--- |
-/// | ① 改前 | 注入前读 `ui/property {"sidebar","width"}` / `ui/tree` / `ui/node` | `"240.00"`；树里**有** `sidebar-search-field`；折叠按钮 `bounds.x = 210` |
-/// | ② 点击 | `ui/dispatch_pointer_*` 点 `sidebar-collapse-button` | 活窗口 `sidebar-collapsed=false→true`（属性读数证明那一击真的生效） |
-/// | ③ 改后 | 读同样三件 | `"36.00"`；树里**没有** `sidebar-search-field`；折叠按钮 `bounds.x = 6` |
-///
-/// ## 判别力从哪来（为什么不是"我写进去所以我说它对"）
-///
-/// ① 与 ③ 的三件读数全部**经控制面**取回（`ui/property` / `ui/tree` / `ui/node`），
-/// 没有任何一处直接读 `MainWindow` 的 Rust getter。② 走的是 §12.4 的真实指针注入
-/// （按下 → 移动 → 松手 → Slint 命中测试 → `.slint` 的 `TouchArea` → 回调 → 宿主写属性），
-/// 与用户点那一下是同一条链。
-#[test]
-fn a_tree_read_sees_a_click_that_just_happened() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),

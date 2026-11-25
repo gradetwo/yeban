@@ -57,7 +57,6 @@ fn distinctive_layout() -> WindowLayout {
         left_panel_tab: "browser".to_owned(),
         console_tab: 2,
         console_maximized: true,
-        sidebar_collapsed: true,
     }
 }
 
@@ -83,7 +82,6 @@ fn applied_layout_roundtrips_through_snapshot() {
     assert_eq!(snapshot.left_panel_tab, layout.left_panel_tab);
     assert_eq!(snapshot.console_tab, layout.console_tab);
     assert_eq!(snapshot.console_maximized, layout.console_maximized);
-    assert_eq!(snapshot.sidebar_collapsed, layout.sidebar_collapsed);
     let window = snapshot.window.expect("快照必须带窗口几何");
     let applied = layout.window.expect("应用的布局带窗口几何");
     assert_eq!(window.width, applied.width, "窗口宽（物理像素）须往返");
@@ -144,7 +142,6 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
         defaults.left_panel_tab.as_str()
     );
     assert_eq!(ui.get_console_tab(), defaults.console_tab);
-    assert_eq!(ui.get_sidebar_collapsed(), defaults.sidebar_collapsed);
 
     let after = settings::load();
     assert_eq!(
