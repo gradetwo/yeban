@@ -1060,6 +1060,15 @@ pub enum ModTarget {
     /// **加在末尾** ⇒ 既有目标的下标一个都没动（`Fileg` 一族占 14..=21、
     /// 本族占 22..=29）。
     Pitcheg(EgParam),
+    /// ⭐⭐ **`resonance` 族**（T-FIX-280）：滤波**谐振**的 CC 调制量，单位 **dB**，
+    /// delta 域按规范页表 `-40..=40`（[`MIN_RESONANCE_MODULATION_DELTA`] /
+    /// [`MAX_RESONANCE_MODULATION_DELTA`]）。
+    ///
+    /// ⚠ **裸 `resonance=` 不是本族**：那是静态基准（`Region::resonance`），
+    /// 本目标只承载**逐块可变的增量**，与 [`Self::Cutoff`] 承载 Hz 增量同一口径。
+    ///
+    /// ⚠ **加在末尾**（下标 30）⇒ 既有三十个目标的下标一个都不动（求和序逐位不变）。
+    Resonance,
 }
 
 impl ModTarget {
@@ -1086,10 +1095,14 @@ impl ModTarget {
     /// [`Self::Fileg`]／[`Self::Pitcheg`]（各 8 参数，一参一目标）⇒ 总数变 **30**。
     /// ⭐ **被修订的只是条目数**：既有十四个目标的下标（相对序与绝对序）逐位不变，
     /// 两族各八个目标分居末尾十六格（`Fileg` 14..=21、`Pitcheg` 22..=29）。
-    pub const COUNT: usize = 30;
+    ///
+    /// ⭐ ⭐ **追加修订段（T-FIX-280）—— 被修订的是上面那个总数那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条）：尾加 [`Self::Resonance`] ⇒ 总数变 **31**。
+    /// ⭐ **被修订的只是条目数**：既有三十个目标的下标（相对序与绝对序）逐位不变。
+    pub const COUNT: usize = 31;
 
-    /// 全部三十个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 30] = [
+    /// 全部三十一个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 31] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -1129,9 +1142,11 @@ impl ModTarget {
         Self::Pitcheg(EgParam::Sustain),
         Self::Pitcheg(EgParam::Release),
         Self::Pitcheg(EgParam::Depth),
+        // ⭐⭐ T-FIX-280 的新增目标（⛔ 加在末尾 ⇒ 既有三十个下标一个都不动）。
+        Self::Resonance,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=29`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=30`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -1147,6 +1162,7 @@ impl ModTarget {
             // `Fileg` 14..=21、`Pitcheg` 22..=29），格内序 ＝ `EgParam` 声明序。
             Self::Fileg(param) => AmpegParam::COUNT + 7 + param.index(),
             Self::Pitcheg(param) => AmpegParam::COUNT + 15 + param.index(),
+            Self::Resonance => AmpegParam::COUNT + 23,
         }
     }
 
@@ -1190,6 +1206,7 @@ impl ModTarget {
                 EgParam::Release => "pitcheg_release",
                 EgParam::Depth => "pitcheg_depth",
             },
+            Self::Resonance => "resonance",
         }
     }
 
@@ -1206,7 +1223,8 @@ impl ModTarget {
             | Self::Position
             | Self::Width
             | Self::Fileg(_)
-            | Self::Pitcheg(_) => None,
+            | Self::Pitcheg(_)
+            | Self::Resonance => None,
         }
     }
 
@@ -1248,6 +1266,8 @@ impl ModTarget {
             // ⭐⭐ T-FIX-281A：两族的单位**随参数**（与 `EgParam::mod_unit` 同款，
             // ⛔ 不新开单位类别）：时间类 ＝ 秒、start／sustain ＝ %、depth ＝ 音分。
             Self::Fileg(param) | Self::Pitcheg(param) => param.mod_unit(),
+            // T-FIX-280：`resonance` 页 Modulation 表 Unit ＝ dB（与 `volume` 同一类别）。
+            Self::Resonance => ModUnit::Decibels,
         }
     }
 
@@ -1340,6 +1360,13 @@ impl ModTarget {
             // ⭐⭐ T-FIX-281A：两族的域**随参数**（与 `EgParam::vel2_range` 同款，
             // ⛔ 不新开域）：时间类／start／sustain ＝ ±100、depth ＝ ±12000 音分。
             Self::Fileg(param) | Self::Pitcheg(param) => param.vel2_range(),
+            // T-FIX-280：`resonance` 页 Modulation 表 Range ＝ `-40 to 40`（Unit ＝ dB），
+            // 与静态 `resonance=` 的 `0..=40` **不是同一个域** —— delta 是**增量**，
+            // 负值合法（把谐振往下拉）。静态那一侧的钳制在 `VoiceFilter::configured`。
+            Self::Resonance => (
+                MIN_RESONANCE_MODULATION_DELTA,
+                MAX_RESONANCE_MODULATION_DELTA,
+            ),
         }
     }
 }
@@ -1365,6 +1392,16 @@ pub const MIN_CUTOFF_MODULATION_DELTA: f32 = -24000.0;
 
 /// `cutoff_*ccN` 的 `delta` 上界（见 [`MIN_CUTOFF_MODULATION_DELTA`]）。
 pub const MAX_CUTOFF_MODULATION_DELTA: f32 = 24000.0;
+
+/// ⭐⭐ `resonance_*ccN` 的 `delta` 下界（T-FIX-280）。
+///
+/// 出处：<https://sfzformat.com/opcodes/resonance/> 的 Modulation 表行
+/// `Range = -40 to 40`、`Unit = dB`。⚠ 与静态 `resonance=` 的 `0..=40`
+/// **不是同一个域**：这里是**增量**，负值合法（把谐振拉低）。
+pub const MIN_RESONANCE_MODULATION_DELTA: f32 = -40.0;
+
+/// `resonance_*ccN` 的 `delta` 上界（见 [`MIN_RESONANCE_MODULATION_DELTA`]）。
+pub const MAX_RESONANCE_MODULATION_DELTA: f32 = 40.0;
 
 /// ⭐⭐ `amplitude_*ccN` 的 `delta` 下界（任务单 `#206`）：**负无穷**（只受
 /// finite 检查约束）。
@@ -1830,6 +1867,30 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Cutoff, form, digits));
+    }
+    // ⭐⭐ `resonance` 族（T-FIX-280）：与 `cutoff`／`pan`／`amplitude` **同款**的四后缀
+    // 识别（⛔ 不另开一套）。裸 `resonance=`（静态基准）被 `strip_prefix("cc")?` 挡掉 ⇒
+    // 不是本族目标；`resonance_smoothccN`／`resonance_stepccN` 落不进四后缀 ⇒
+    // 仍按未知 opcode 响亮告警（本单不静默吞，见回执 §2）。
+    // ⚠ **`resonance2_*` 不归本族**（第二滤波器，兄弟单 T-FIX-279）：前缀后紧跟数字 ⇒
+    // 这里直接放弃，行为与接线前一致（未知 opcode）；279 合入时须在**本段之前**插它自己的支。
+    if let Some(tail) = name.strip_prefix("resonance") {
+        if tail.starts_with(|ch: char| ch.is_ascii_digit()) {
+            return None;
+        }
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Resonance, form, digits));
     }
     if let Some(tail) = name.strip_prefix("amplitude") {
         let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
@@ -3051,11 +3112,11 @@ mod tests {
         // `COUNT - 4` 改钉 `COUNT - 20`、`Cutoff` 由 `COUNT - 3` 改钉
         // `COUNT - 19`、`Position` 由 `COUNT - 2` 改钉 `COUNT - 18`、`Width`
         // 由 `COUNT - 1` 改钉 `COUNT - 17`；两族的边界见本段末尾的新断言。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 22], ModTarget::Tune);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 23], ModTarget::Tune);
         // ⭐ 本片（stage 3）：`Pan` 加在 `Volume` **之后** ⇒ "末尾"移到 `Pan`，
         // `Volume` 退到 `COUNT − 2`；既有十个目标的下标**一个都没动**。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 21], ModTarget::Volume);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 20], ModTarget::Pan);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 22], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 21], ModTarget::Pan);
         // ⭐ 本片（stage 5）：`Cutoff` 加在 `Pan` **之后** ⇒ "末尾"移到 `Cutoff`；
         // 既有十一个目标的下标**一个都没动**。
         //
@@ -3069,27 +3130,28 @@ mod tests {
         // 改钉 `COUNT - 6`、`Volume` 由 `COUNT - 3` 改钉 `COUNT - 5`、
         // `Pan` 由 `COUNT - 2` 改钉 `COUNT - 4`、本条 `Cutoff` 由
         // `COUNT - 1` 改钉 `COUNT - 3`。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 19], ModTarget::Cutoff);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 18], ModTarget::Position);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 17], ModTarget::Width);
-        // ⭐⭐ T-FIX-281A：两族的边界 —— `Fileg` 占 `COUNT - 16..=COUNT - 9`、
-        // `Pitcheg` 占 `COUNT - 8..=COUNT - 1`（末尾是 `Pitcheg(Depth)`）。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 20], ModTarget::Cutoff);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 19], ModTarget::Position);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 18], ModTarget::Width);
+        // ⭐⭐ T-FIX-281A：两族的边界 —— `Fileg` 占 `COUNT - 17..=COUNT - 10`、
+        // `Pitcheg` 占 `COUNT - 9..=COUNT - 2`（其后是 T-FIX-280 的 `Resonance`）。
         assert_eq!(
-            ModTarget::ALL[ModTarget::COUNT - 16],
+            ModTarget::ALL[ModTarget::COUNT - 17],
             ModTarget::Fileg(EgParam::Delay)
         );
         assert_eq!(
-            ModTarget::ALL[ModTarget::COUNT - 9],
+            ModTarget::ALL[ModTarget::COUNT - 10],
             ModTarget::Fileg(EgParam::Depth)
         );
         assert_eq!(
-            ModTarget::ALL[ModTarget::COUNT - 8],
+            ModTarget::ALL[ModTarget::COUNT - 9],
             ModTarget::Pitcheg(EgParam::Delay)
         );
         assert_eq!(
-            ModTarget::ALL[ModTarget::COUNT - 1],
+            ModTarget::ALL[ModTarget::COUNT - 2],
             ModTarget::Pitcheg(EgParam::Depth)
         );
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Resonance);
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
         assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
         assert_eq!(ModTarget::Pan.index(), AmpegParam::COUNT + 3);
@@ -3110,6 +3172,20 @@ mod tests {
                 "{param:?} 的 `Pitcheg` 下标"
             );
         }
+        assert_eq!(ModTarget::Resonance.index(), AmpegParam::COUNT + 23);
+        // ⭐ T-FIX-280：`resonance` 族的单位与域（dB／`-40..=40`）。
+        assert_eq!(ModTarget::Resonance.name(), "resonance");
+        assert_eq!(ModTarget::Resonance.mod_unit(), ModUnit::Decibels);
+        assert_eq!(ModTarget::Resonance.unit(), "dB");
+        assert_eq!(ModTarget::Resonance.ampeg(), None);
+        assert!(!ModTarget::Resonance.is_time());
+        assert_eq!(
+            ModTarget::Resonance.delta_range(),
+            (
+                MIN_RESONANCE_MODULATION_DELTA,
+                MAX_RESONANCE_MODULATION_DELTA
+            )
+        );
         // ⭐ 声像族两名新目标的单位与域（与 `Pan` 同读数）。
         assert_eq!(ModTarget::Position.name(), "position");
         assert_eq!(ModTarget::Width.name(), "width");

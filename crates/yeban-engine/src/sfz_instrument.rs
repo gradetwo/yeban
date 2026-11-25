@@ -3196,6 +3196,20 @@ impl SfzInstrument {
                     // ⇒ `+ 0.0` 逐位不变）。
                     base_hz.unwrap_or(0.0),
                     cutoff_delta_hz,
+                    // ⭐ T-FIX-280：`resonance_onccN` 的增量（`cc == None` ⇒ 0.0；复用本
+                    // 函数前面已经烘好的那份表，⛔ 不第二次烘焙、⛔ 不第二次解曲线）。
+                    match cc {
+                        Some(probe) => {
+                            yeban_sfz::modulation::cc_value_with_baked(
+                                region.resonance,
+                                ModTarget::Resonance,
+                                baked.as_deref().unwrap_or(&[]),
+                                probe,
+                            )
+                            .0 - region.resonance
+                        }
+                        None => 0.0,
+                    },
                     None,
                     out,
                 );
@@ -5462,6 +5476,32 @@ impl PreparedRegion {
         yeban_sfz::modulation::cutoff_hz_with_baked(base, self.cc_modulations(), Some(probe)) - base
     }
 
+    /// ⭐⭐ **`resonance` 调制的逐块增量**（T-FIX-280）：`Σ delta × curve(cc)`，单位 dB。
+    ///
+    /// * `cc == None` ⇒ **恰 `0.0`**（消费方的 `+ 0.0` 在 binary32 下逐位不变，
+    ///   与接线前**逐位相同**）；
+    /// * ⚠ 与 [`Self::cutoff_cc_delta_hz`] 的差别：**不要求**静态 `resonance > 0`
+    ///   —— 谐振调制作用于"已经存在的滤波器"，而滤波器是否存在由静态 `cutoff` 决定
+    ///   （`cutoff` 为 0 时声部根本没有滤波器，`mix_span_into` 的调谐块整段不进）；
+    /// * 求值本体是 `yeban_sfz` 的 [`yeban_sfz::modulation::cc_value_with_baked`]
+    ///   （离线／摊平／实时**同一份**，⛔ 没有第二套求和）；
+    /// * 域：delta 在解析层已按 `-40..=40` 钳过；叠加后的 `resonance_db` 由
+    ///   `yeban-dsp` 的 `VoiceFilter::retune` 再钳进规范域 `0..=40`。
+    #[must_use]
+    pub fn resonance_cc_delta_db(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        let Some(probe) = cc else {
+            return 0.0;
+        };
+        let base = self.resonance;
+        yeban_sfz::modulation::cc_value_with_baked(
+            base,
+            ModTarget::Resonance,
+            self.cc_modulations(),
+            probe,
+        )
+        .0 - base
+    }
+
     /// ⭐ 本区域的**滤波包络**定义（`fileg_*`；SFZ 包络族片）。
     ///
     /// 指向 [`PreparedSfz::eg_defs`]（与 [`Self::pitch_eg`] 同款侧表：
@@ -7156,6 +7196,15 @@ impl PreparedSfz {
             .unwrap_or(0.0)
     }
 
+    /// ⭐⭐ **`resonance` 调制的逐块增量**（T-FIX-280）：按区域下标取
+    /// [`PreparedRegion::resonance_cc_delta_db`]；无区域 ⇒ `0.0`。
+    #[must_use]
+    pub fn region_resonance_cc_delta_db(&self, index: usize, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        self.regions()
+            .get(index)
+            .map_or(0.0, |region| region.resonance_cc_delta_db(cc))
+    }
+
     /// ⭐ **本块有效的区域声相**（stage 3）：静态 `pan` ＋ `pan_onccN` 的逐块调制，
     /// 钳 `±100` 百分比。`cc == None` ⇒ 与 [`Self::region_pan`] 逐位相同。
     #[must_use]
@@ -7557,6 +7606,8 @@ impl PreparedSfz {
                 &mut lfos,
                 filter_base_hz,
                 region.cutoff_cc_delta_hz(note, velocity, cc),
+                // ⭐ T-FIX-280：`resonance_onccN` 的增量（`cc == None` ⇒ 0.0）。
+                region.resonance_cc_delta_db(cc),
                 None,
                 out,
             );
@@ -8803,6 +8854,44 @@ pub(crate) struct BusSend<'b> {
     pub sends: [f32; BUS_COUNT],
 }
 
+/// ⭐ **本块的谐振是否"活着"**（T-FIX-280）——决定要不要借"0 音分"入口进调谐块。
+///
+/// 两个来源：本块 `resonance_onccN` 增量非零，**或者**滤波器上现在挂着一个
+/// 非基准的谐振（＝ 上一块刚被调制过，这一块要把它调回去）。
+///
+/// * `last_res_target == f32::MAX` ＝ 这个声部**从未**调过谐振（[`LfoVoiceState::INERT`]）
+///   ⇒ 第二支恒假 ⇒ 无 `resonance` 调制的工程走的还是老路（⛔ 不凭空进调谐块）；
+/// * 纯函数：入参全部来自既有跟踪点，⛔ 不读全局、⛔ 不新开字段。
+fn resonance_cc_live(delta_db: f32, last_res_target: f32, base_db: f32) -> bool {
+    delta_db != 0.0 || (last_res_target != f32::MAX && last_res_target != base_db)
+}
+
+/// ⭐ **本块要写给滤波器的谐振目标**（T-FIX-280）；`None` ＝ 不动谐振
+/// （调用方退回 `retune_cutoff`，与接线前同一支）。
+///
+/// 五种情形，逐条对应判据：
+/// 1. LFO 谐振在场、无 CC 增量 ⇒ **逐字旧表达式** `base + db`（⛔ 不追加 `+ 0.0`）；
+/// 2. LFO 谐振在场、CC 增量在场 ⇒ `base + db + delta`（两项都算，同一求和序）；
+/// 3. 无 LFO、CC 增量非零 ⇒ `base + delta`；
+/// 4. 无 LFO、CC 增量归零但**滤波器上仍挂着被调制过的谐振** ⇒ **显式调回 `base`**
+///    ——`retune_cutoff(hz)` 是 `retune(hz, 自带谐振)`，它保留滤波器当前的
+///    `resonance_db`，不复位就会**卡在最后一次被调制到的值上**；
+/// 5. 其余（从未调过、或已复位） ⇒ `None`。
+fn resonance_target(
+    lfo_res_db: Option<f32>,
+    delta_db: f32,
+    base_db: f32,
+    last_res_target: f32,
+) -> Option<f32> {
+    match lfo_res_db {
+        Some(db) if delta_db == 0.0 => Some(base_db + db),
+        Some(db) => Some(base_db + db + delta_db),
+        None if delta_db != 0.0 => Some(base_db + delta_db),
+        None if last_res_target != f32::MAX && last_res_target != base_db => Some(base_db),
+        None => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into<'a>(
     pcm: &[f32],
@@ -8851,6 +8940,9 @@ pub(crate) fn mix_span_into<'a>(
     // `cutoff_delta_hz` ＝ `Σ delta × curve(cc)`（`0.0` ⇒ 与接线前**逐位相同**）。
     filter_base_hz: f32,
     cutoff_delta_hz: f32,
+    // ⭐ T-FIX-280：`resonance_onccN` 的块级增量（dB）。`0.0` ⇒ 调谐块的行为与接线前
+    // **逐位相同**（不强制进块、`res_target` 不多加一项）。
+    resonance_delta_db: f32,
     // ⭐ 效果总线目标（`ADR-0077` D5）：`None` ⇒ 逐样本路径一项运算都不加
     // （与接线前逐位相同）；`Some` ⇒ 每帧把本声部干声按各 send 再加进总线。
     mut bus: Option<&mut BusSend<'_>>,
@@ -9032,6 +9124,24 @@ pub(crate) fn mix_span_into<'a>(
         if fil_cents.is_none() && cutoff_delta_hz != 0.0 && filter_base_hz > 0.0 {
             fil_cents = Some(0.0);
         }
+        // ⭐ T-FIX-280：`resonance_onccN` 在场时**本块也要进调谐块** —— 它只改谐振、
+        // 不改截止 ⇒ 借用同一个"0 音分"入口（截止目标 ＝ 基准），谐振在下面叠加。
+        //
+        // ⚠ **两个条件，不是一个**：除了"本块增量非零"，还要在**增量刚回落到 0**
+        // 的那一块进来一次 —— 否则谐振会**卡在最后一次被调制到的值上**：
+        // `retune_cutoff(hz)` 是 `retune(hz, 自带谐振)`，它**保留**滤波器当前的
+        // `resonance_db`（＝ 上一块刚写进去的被调制值），不会自己回到基准。
+        // 判决全在 [`resonance_cc_live`]（纯函数，判据直接压它）。
+        if fil_cents.is_none()
+            && resonance_cc_live(
+                resonance_delta_db,
+                lfos.last_res_target,
+                lfos.base_resonance_db,
+            )
+            && filter_base_hz > 0.0
+        {
+            fil_cents = Some(0.0);
+        }
         if let Some(cents) = fil_cents {
             // 基准：fileg 在场用 `EgSpan` 的（与滤波器配置同一个），
             // 否则用 `LfoSpan` 的；两者同源（[`PreparedRegion::base_cutoff_hz`]）。
@@ -9060,7 +9170,16 @@ pub(crate) fn mix_span_into<'a>(
                 } else {
                     lfos.last_target
                 };
-                let res_target = lfo_res_db.map(|db| lfos.base_resonance_db + db);
+                // ⭐ T-FIX-280：谐振目标 ＝ 基准 ＋ LFO 增量 ＋ `resonance_onccN` 增量。
+                // ⚠ **无 `resonance` 调制时逐字保持旧表达式**（`base + db`，⛔ 不追加
+                // `+ 0.0` 这种虽然等价但会让人怀疑逐位性的写法）。五支情形与复位
+                // 理由全在 [`resonance_target`] 的文档里（判据直接压那个纯函数）。
+                let res_target = resonance_target(
+                    lfo_res_db,
+                    resonance_delta_db,
+                    lfos.base_resonance_db,
+                    lfos.last_res_target,
+                );
                 if target != last || res_target.is_some_and(|r| r != lfos.last_res_target) {
                     match res_target {
                         Some(r) => {
@@ -11218,6 +11337,8 @@ impl SfzVoicePool {
                     voice.velocity(),
                     cc,
                 ),
+                // ⭐ T-FIX-280：`resonance_onccN` 的增量（`cc == None` ⇒ 0.0）。
+                plan.region_resonance_cc_delta_db(usize::from(voice.region_index), cc),
                 None,
                 &mut out[..limit],
             );
@@ -11409,6 +11530,8 @@ impl SfzVoicePool {
                 voice.velocity(),
                 cc,
             ),
+            // ⭐ T-FIX-280：`resonance_onccN` 的增量（`cc == None` ⇒ 0.0）。
+            plan.region_resonance_cc_delta_db(usize::from(voice.region_index), cc),
             bus.as_mut(),
             &mut out[offset..remaining],
         );
@@ -13056,5 +13179,64 @@ impl BusBank {
                 right[frame] += tail;
             }
         }
+    }
+}
+
+/// ⭐ **T-FIX-280 的判决判据**：`resonance_onccN` 的两个纯函数逐支压。
+///
+/// 为什么不写在集成测试里：这两个函数是**块级判决本体**（`mix_span_into` 每个
+/// 调谐块调它们一次），分支是"增量在／不在 × 是否要复位"的**笛卡尔积**，
+/// 用音频输出反推只能看到合并后的效果 —— 而这里能看到每一支的**返回值**。
+/// 端到端那一侧另有 `tests/sfz_resonance_oncc.rs`（CC 值与静态 opcode 逐位等价）。
+#[cfg(test)]
+mod resonance_oncc_tests {
+    use super::{resonance_cc_live, resonance_target};
+
+    /// 未调过的哨兵值（与 [`super::LfoVoiceState::INERT`] 同一格）。
+    const NEVER: f32 = f32::MAX;
+
+    #[test]
+    fn nothing_ever_modulates_resonance_so_the_target_stays_absent() {
+        // ⭐ 接线前的全部工程都走这一支：`lfo_res_db == None`、无 CC 增量、
+        // 跟踪点还是"未调过"⇒ `None` ⇒ 调用方退回 `retune_cutoff`。
+        assert_eq!(resonance_target(None, 0.0, 3.0, NEVER), None);
+        // 同一情形下**不许**进调谐块（否则无 `resonance` 的工程会多一次 retune）。
+        assert!(!resonance_cc_live(0.0, NEVER, 3.0));
+    }
+
+    #[test]
+    fn the_cc_delta_is_added_to_the_base_resonance() {
+        // `cutoff=1000 resonance=3 resonance_oncc1=24`、CC1=127 ⇒ 3 + 24。
+        assert_eq!(resonance_target(None, 24.0, 3.0, NEVER), Some(27.0));
+        assert!(resonance_cc_live(24.0, NEVER, 3.0));
+        // 负增量合法（把谐振往下拉，域 `-40..=40`）。
+        assert_eq!(resonance_target(None, -40.0, 3.0, NEVER), Some(-37.0));
+    }
+
+    #[test]
+    fn the_lfo_resonance_expression_is_untouched_when_no_cc_delta_is_live() {
+        // ⭐ 旧表达式逐字：`base + db`（⛔ 不是 `base + db + 0.0`）。
+        assert_eq!(resonance_target(Some(2.0), 0.0, 3.0, NEVER), Some(5.0));
+        // 两项同时在场 ⇒ 相加（同一求和序：LFO 项在前、CC 项在后）。
+        assert_eq!(resonance_target(Some(2.0), 24.0, 3.0, NEVER), Some(29.0));
+    }
+
+    #[test]
+    fn a_cc_that_falls_back_to_zero_puts_the_filter_back_on_its_base() {
+        // ⭐⭐ 复位支：上一块调到 3 + 24，这一块 CC 回到 0 ⇒ 目标必须是 **3**
+        // （不是 None —— `retune_cutoff` 会保留滤波器自带的 27 ⇒ 谐振卡住）。
+        assert!(resonance_cc_live(0.0, 27.0, 3.0));
+        assert_eq!(resonance_target(None, 0.0, 3.0, 27.0), Some(3.0));
+        // 复位之后（跟踪点已回到基准）⇒ 恢复静态：不再动谐振、也不再多进块。
+        assert!(!resonance_cc_live(0.0, 3.0, 3.0));
+        assert_eq!(resonance_target(None, 0.0, 3.0, 3.0), None);
+    }
+
+    #[test]
+    fn the_reset_also_happens_when_the_base_is_zero() {
+        // 基准恰为 0 dB（`resonance=` 缺省）时复位支照样要出声：目标 0.0，
+        // ⛔ 不能被 "`Some(0.0)` 当成假值" 的口径吃掉。
+        assert!(resonance_cc_live(0.0, 24.0, 0.0));
+        assert_eq!(resonance_target(None, 0.0, 0.0, 24.0), Some(0.0));
     }
 }
