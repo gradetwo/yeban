@@ -8077,15 +8077,17 @@ thread_local! {
 /// ⭐ 当前是否真的在录音（读录音器本身，⛔ 不读界面属性）。
 pub fn recording_in_progress() -> bool {
     RECORDER_FOR_SWITCH.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .and_then(|recorder| {
-                recorder
-                    .try_borrow()
-                    .ok()
-                    .map(|recorder| recorder.is_recording())
-            })
-            .unwrap_or(false)
+        let recorder = slot.borrow();
+        let Some(recorder) = recorder.as_ref() else {
+            return false;
+        };
+        // ⭐ T-FIX-426：借用冲突 = 录音器正被同一线程改动（起录 / 停录 / 落地），
+        // 这一刻**按正在录音处理**（保守拦截）。此前 `.ok()` 把它吞成 false，
+        // 恰好会在最危险的停录落地窗口放行工程切换。
+        match recorder.try_borrow() {
+            Ok(recorder) => recorder.is_recording(),
+            Err(_) => true,
+        }
     })
 }
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
@@ -24654,6 +24656,26 @@ pub fn build_main_window_with_console_tab(
 #[cfg(test)]
 mod tests {
     use super::advance_scroll;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// ⭐ T-FIX-426：录音器正被可变借用（停录 / 落地窗口）时必须按"正在录音"
+    /// 处理 —— 守卫保守拦截，⛔ 不把借用失败吞成可切换。
+    #[test]
+    fn a_borrowed_recorder_counts_as_recording() {
+        let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
+        super::RECORDER_FOR_SWITCH.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::clone(&recorder));
+        });
+        assert!(!super::recording_in_progress(), "空闲录音器不算录音中");
+        let guard = recorder.borrow_mut();
+        assert!(
+            super::recording_in_progress(),
+            "借用冲突必须保守返回 true（否则停录窗口会放行工程切换）"
+        );
+        drop(guard);
+        assert!(!super::recording_in_progress(), "释放借用后恢复真实状态");
+    }
 
     // -------------------------------------------------------------------
     // T-FIX-225：端点看护的两个纯函数（真实插拔见回执的"待实机"登记）
