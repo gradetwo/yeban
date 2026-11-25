@@ -532,8 +532,8 @@ use yeban_render::automation::{
     forced_insert_instances, lane_key_layouts, macro_cascade_reaches, send_gain_automations,
 };
 use yeban_render::inserts::{
-    ignored_strip_devices, lane_chain_has_unhandled_dsp, project_inserts_with_forced_instances,
-    resolve_device_param, track_has_unhandled_dsp,
+    hosted_external_device_indices, ignored_strip_devices, lane_chain_has_unhandled_dsp,
+    project_inserts_with_forced_instances, resolve_device_param, track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -6120,25 +6120,17 @@ fn build_source(
                 && device.kind == yeban_model::DeviceKind::InternalInstrument
                 && !device.params.is_empty()
         });
+    // ⭐ ADR-0069 / T-FIX-417：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）
+    // 不再登记 `externalPlugins` 与 `deviceChainDsp` —— 它有音源/有处理，不是
+    // "未消费"。第二个索引是首个带绑定的外部效果器；两条登记共用这份事实。
+    // 加载失败时装配期已响亮返回，本行走不到。
+    let (hosted_plugin_index, hosted_effect_index) = hosted_external_device_indices(track);
     if track_has_unhandled_dsp(track)
         || lane_chain_has_unhandled_dsp(track)
         || sampler_drops_instrument_params
     {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
-    // ⭐ ADR-0069：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
-    // `externalPlugins` —— 它有音源了，不是"未消费"。其它外部设备（第二台绑定
-    // 乐器、未绑定设备）仍登记。加载失败时装配期已响亮返回，本行走不到。
-    let hosted_plugin_index = track.devices.iter().position(|device| {
-        !device.bypassed && device.kind == DeviceKind::ExternalInstrument && device.plugin.is_some()
-    });
-    // ⭐ 效果器线：首个非旁通、带绑定的外部效果器同样被宿主（包在轨源输出之外），
-    // 因此也不登记 `externalPlugins`；第二台及以上带绑定效果器仍登记（first-source
-    // 语义；多实例链是 slotlists 折中的后续项）。无源总线轨的效果器本票不接
-    // （见 `PluginEffectSource` 模块文档），仍登记。
-    let hosted_effect_index = track.devices.iter().position(|device| {
-        !device.bypassed && device.kind == DeviceKind::ExternalEffect && device.plugin.is_some()
-    });
     if track.devices.iter().enumerate().any(|(index, device)| {
         !device.bypassed
             && matches!(
@@ -6522,13 +6514,17 @@ fn build_source(
             // ⭐ 第 324 条：**只登记还没做到的**。`#274` 之后循环 / 播放区间 /
             //    幅度包络 / 双层都由引擎应用 ⇒ 那四个键退役（== `KNOWN_UNSUPPORTED_KEYS`
             //    17 → 13）；静态 `amplitude` 也已由引擎应用 ⇒ 只剩 **CC 那一半**。
-            if survey.notes_with_amplitude_cc > 0 {
+            // ⭐ T-FIX-417：外部乐器胜出时**采样器不建源**（上面的 `plugin` 分支
+            // 把 `midi` 置空、插件源顶替），这几个 CC 调制在本次渲染里没有执行面 ——
+            // ⛔ 不能把没有执行面的事登记成"未求值"（那是与音频事实相反）。
+            let sampler_runs = hosted_plugin_index.is_none();
+            if sampler_runs && survey.notes_with_amplitude_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzAmplitude");
             }
-            if survey.notes_with_tune_cc > 0 {
+            if sampler_runs && survey.notes_with_tune_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzTuneCcModulation");
             }
-            if survey.notes_with_volume_cc > 0 {
+            if sampler_runs && survey.notes_with_volume_cc > 0 {
                 note_unsupported(unsupported, counts, "sfzVolumeCcModulation");
             }
             Some(SamplerReport {

@@ -54,8 +54,8 @@ use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LaneChainDef,
-    LoopConfig, MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3,
-    YebanProjectV1,
+    LoopConfig, MidiNote, ParameterValue, PluginBinding, RoutingEdge, RoutingKind, SampleRate,
+    TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::{BEXT_FIXED_LEN, parse_container};
 
@@ -6873,6 +6873,108 @@ fn render_or_ok(project: &YebanProjectV1, tag: &str) -> Value {
         "`{tag}` 必须渲染成功: {result}"
     );
     result
+}
+
+// ===========================================================================
+// T-FIX-417：已被宿主的外部乐器不再登记 deviceChainDsp；第二台仍登记
+// ===========================================================================
+
+/// 判据（T-FIX-417）：外部乐器真的被宿主并参与发声时，`unsupported` 不得再
+/// 登记 `deviceChainDsp` / `externalPlugins`（渲染诊断必须与音频事实一致）；
+/// 负向对照：链上第二台**未绑定**的外部设备仍必须被登记。
+#[test]
+fn hosted_external_instrument_stops_reporting_device_chain_dsp() {
+    let mut hosted = device(72, 0, false);
+    hosted.kind = DeviceKind::ExternalInstrument;
+    hosted.plugin = Some(PluginBinding {
+        path: "stub:sine".to_owned(),
+        class: None,
+        state: Vec::new(),
+    });
+    let result = render_or_ok(
+        &project(&Spec {
+            devices: vec![hosted.clone()],
+            ..Spec::default()
+        }),
+        "hosted-plugin",
+    );
+    let unsupported = result["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported 数组");
+    let keys: Vec<&str> = unsupported.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        !keys.contains(&"deviceChainDsp"),
+        "已宿主并发声的外部乐器不得再报 deviceChainDsp: {result}"
+    );
+    assert!(
+        !keys.contains(&"externalPlugins"),
+        "已宿主的外部乐器不得再报 externalPlugins: {result}"
+    );
+    assert_eq!(
+        result["data"]["sources"][0]["kind"], "plugin-instrument",
+        "音源须是宿主插件（与音频事实一致）: {result}"
+    );
+    assert!(
+        result["data"]["sources"][0]["peak"].as_f64().unwrap_or(0.0) > 0.0,
+        "插件须真的出声（峰值 > 0）: {result}"
+    );
+
+    // 同源误报：采样器仍绑着、但外部乐器胜出 ⇒ 采样器不建源，`sfzAmplitude`
+    // 没有执行面，不得登记（T-FIX-417 的第二半）。
+    let scratch = Scratch::new("hosted-over-sampler");
+    let dir = scratch.join("cc-sfz");
+    fs::create_dir_all(&dir).expect("建目录");
+    write_constant_wav(&dir.join("m.wav"), 0.5, 480, 48_000);
+    fs::write(
+        dir.join("m.sfz"),
+        "<region> sample=m.wav key=69 amplitude_oncc1=20\n",
+    )
+    .expect("写 SFZ");
+    let sfz = dir.join("m.sfz").display().to_string();
+    let mut sampler_project = project_with_sampler(Some(&sfz));
+    sampler_project
+        .tracks
+        .get_mut(&id(2))
+        .expect("Lead")
+        .devices
+        .push(hosted.clone());
+    sampler_project.validate().expect("夹具合法");
+    let over_sampler = render_or_ok(&sampler_project, "hosted-over-sampler");
+    let keys: Vec<&str> = over_sampler["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported 数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        !keys.contains(&"sfzAmplitude"),
+        "外部乐器胜出时采样器不建源，sfzAmplitude 不得登记: {over_sampler}"
+    );
+    assert_eq!(
+        over_sampler["data"]["sources"][0]["kind"], "plugin-instrument",
+        "音源须是宿主插件: {over_sampler}"
+    );
+
+    // 负向对照：第一台仍被宿主，第二台未绑定 ⇒ 仍要响亮登记，不许把真缺口修没。
+    let mut unbound = device(73, 0, false);
+    unbound.kind = DeviceKind::ExternalInstrument;
+    let negative = render_or_ok(
+        &project(&Spec {
+            devices: vec![hosted, unbound],
+            ..Spec::default()
+        }),
+        "plugin-second-unbound",
+    );
+    let keys: Vec<&str> = negative["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported 数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        keys.contains(&"deviceChainDsp"),
+        "第二台未宿主的对外设备仍须登记 deviceChainDsp: {negative}"
+    );
 }
 
 // ===========================================================================

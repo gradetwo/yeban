@@ -1049,12 +1049,40 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
     if !ignored_strip_devices(track).is_empty() {
         return true;
     }
-    track.devices.iter().any(device_has_unhandled_dsp)
+    let hosted = hosted_external_device_indices(track);
+    track
+        .devices
+        .iter()
+        .enumerate()
+        .any(|(index, device)| device_has_unhandled_dsp(device, Some(index), hosted))
+}
+
+/// 本次装配**真的宿主并消费**的外部设备槽位（ADR-0069 的 first-source 口径）：
+/// 首个非旁通、带绑定的外部乐器 / 外部效果器。
+///
+/// 返回 `(hosted_plugin_index, hosted_effect_index)`。MCP 的 `externalPlugins`
+/// 与 `deviceChainDsp` 两条登记共用这一份事实 —— 两处各算一份必然漂移。
+#[must_use]
+pub fn hosted_external_device_indices(track: &TrackV3) -> (Option<usize>, Option<usize>) {
+    let plugin = track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::ExternalInstrument && device.plugin.is_some()
+    });
+    let effect = track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::ExternalEffect && device.plugin.is_some()
+    });
+    (plugin, effect)
 }
 
 /// 一台**轨**设备有没有未被任何离线路径消费的部分（[`track_has_unhandled_dsp`]
 /// 的逐台核，两处共用一条，⛔ 不许抄第二份）。
-fn device_has_unhandled_dsp(device: &DeviceDefinition) -> bool {
+///
+/// `index` 是设备在**轨设备链**里的槽位；lane 链没有宿主外部器件的执行路径，
+/// 传 `None` 与 `(None, None)` ⇒ 外部器件一律算未消费。
+fn device_has_unhandled_dsp(
+    device: &DeviceDefinition,
+    index: Option<usize>,
+    hosted: (Option<usize>, Option<usize>),
+) -> bool {
     if device.bypassed {
         return false;
     }
@@ -1069,7 +1097,14 @@ fn device_has_unhandled_dsp(device: &DeviceDefinition) -> bool {
         DeviceKind::InternalInstrument => device.params.iter().any(|param| {
             !yeban_engine::synth::is_consumed_instrument_param(&param.name.to_ascii_lowercase())
         }),
-        DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect => true,
+        DeviceKind::ExternalInstrument | DeviceKind::ExternalEffect => {
+            // ⭐ T-FIX-417：只有**本次真的被宿主并消费**的那台（first-source）不算
+            // 未消费；第二台及未绑定/未宿主的仍如实登记（⛔ 不许把真缺口也修没）。
+            match index {
+                Some(index) => Some(index) != hosted.0 && Some(index) != hosted.1,
+                None => true,
+            }
+        }
     }
 }
 
@@ -1098,23 +1133,11 @@ pub fn lane_chain_has_unhandled_dsp(track: &TrackV3) -> bool {
         if strip_sources > 1 {
             return true;
         }
-        chain.devices.iter().any(|device| {
-            if device.bypassed {
-                return false;
-            }
-            match device.kind {
-                DeviceKind::InternalEffect => {
-                    device.params.is_empty()
-                        || device
-                            .params
-                            .iter()
-                            .any(|param| !is_supported_param(&param.name.to_ascii_lowercase()))
-                }
-                DeviceKind::InternalInstrument
-                | DeviceKind::ExternalInstrument
-                | DeviceKind::ExternalEffect => true,
-            }
-        })
+        chain
+            .devices
+            .iter()
+            .enumerate()
+            .any(|(index, device)| device_has_unhandled_dsp(device, Some(index), (None, None)))
     })
 }
 
