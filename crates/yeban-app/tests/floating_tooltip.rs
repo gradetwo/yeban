@@ -168,7 +168,7 @@ fn cursor_exit_clears_hover_state() {
 fn direct_switch_between_buttons_updates_coordinates() {
     let mut port = build_rig();
 
-    let (clip_x, clip_y, _) = find_button_pos(&mut port, "Clip 激发矩阵 [Tab]");
+    let (clip_x, clip_y, _) = find_button_pos(&mut port, "Clip 激发矩阵");
     port.dispatch_pointer_move(500.0, 200.0)
         .expect("指针移动必须送达");
 
@@ -182,7 +182,7 @@ fn direct_switch_between_buttons_updates_coordinates() {
     port.dispatch_pointer_move(clip_x, clip_y)
         .expect("指针移动必须送达");
     let theme = port.ui().global::<Theme<'_>>();
-    assert_eq!(theme.get_hover_tip(), "Clip 激发矩阵 [Tab]");
+    assert_eq!(theme.get_hover_tip(), "Clip 激发矩阵");
     let tip2_x = theme.get_hover_tip_x();
     assert!(tip2_x > tip1_x, "直接切换相邻按钮必须实时更新横向绝对位置");
 }
