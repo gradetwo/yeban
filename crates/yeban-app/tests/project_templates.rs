@@ -348,6 +348,95 @@ fn same_name_scopes_to_the_three_level_path() {
     );
 }
 
+/// T-FIX-294：两个线程同时对同一三级路径 `overwrite=false` 保存 ——
+/// 恰好一个成功、一个 `Exists`，最终文件是胜者的字节。锁内重查存在性，
+/// 不再有 check-then-write 的并发覆盖窗口。
+#[test]
+fn concurrent_saves_without_overwrite_have_one_winner_and_one_exists() {
+    use std::sync::{Arc, Barrier};
+
+    let scratch = Scratch::new();
+    let roots = scratch.roots();
+    let first = archive();
+    let mut second_project = yeban_model::samples::default_project();
+    second_project.record_creation_time(42);
+    let second = yeban_model::container::ProjectArchive {
+        project: second_project,
+        history_dag: Vec::new(),
+        proposals: None,
+        assets: Vec::new(),
+        embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
+    };
+
+    fn serialized(archive: &yeban_model::container::ProjectArchive) -> Vec<u8> {
+        let assets: Vec<(&yeban_model::ids::AssetHash, &[u8])> = archive
+            .assets
+            .iter()
+            .map(|(hash, data)| (hash, data.as_slice()))
+            .collect();
+        let presets: Vec<(&str, &[u8])> = archive
+            .embedded_presets
+            .iter()
+            .map(|(name, data)| (name.as_str(), data.as_slice()))
+            .collect();
+        yeban_model::container::write_project_container_with_proposals_borrowed(
+            &archive.project,
+            &archive.history_dag,
+            &assets,
+            &presets,
+            archive.proposals.as_deref(),
+        )
+        .expect("序列化期望字节")
+    }
+
+    let expected_first = serialized(&first);
+    let expected_second = serialized(&second);
+    let user_root = roots.user.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for (label, archive) in [("first", first), ("second", second)] {
+        let user_root = user_root.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            let result = save_template_archive(&user_root, "流行", "摇滚", "并发", &archive, false);
+            (label, result)
+        }));
+    }
+
+    let mut successes = Vec::new();
+    let mut exists = Vec::new();
+    for handle in handles {
+        let (label, result) = handle.join().expect("并发保存线程");
+        match result {
+            Ok((path, bytes)) => successes.push((label, path, bytes)),
+            Err(SaveTemplateError::Exists(path)) => exists.push((label, path)),
+            Err(error) => panic!("并发保存只能成功或 Exists，实际 {label}: {error}"),
+        }
+    }
+    assert_eq!(successes.len(), 1, "恰好一个线程成功");
+    assert_eq!(exists.len(), 1, "恰好一个线程拿到 Exists");
+
+    let target = template_target_path(&roots.user, "流行", "摇滚", "并发");
+    let (winner, path, bytes) = &successes[0];
+    let (loser, exists_path) = &exists[0];
+    assert_eq!(path, &target);
+    assert_eq!(exists_path, &target);
+    assert!(*bytes > 0, "胜者必须写出非空字节");
+    assert_ne!(winner, loser);
+    let expected = if winner == &"first" {
+        &expected_first
+    } else {
+        &expected_second
+    };
+    assert_eq!(
+        &std::fs::read(&target).expect("读并发保存后的模板"),
+        expected,
+        "最终文件必须是胜者的完整字节，败者不得写入任何字节"
+    );
+}
+
 /// 字段校验：路径段绝不能逃出模板根（分隔符 / 点段 / 隐藏名 / 空）。
 #[test]
 fn segment_validation_rejects_path_escapes() {
