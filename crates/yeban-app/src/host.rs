@@ -12548,6 +12548,47 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
     }
 }
 
+/// 后台已安装扫描进行中的状态行（重开/刷新时同一句，排空成功时据此清掉）。
+const SOUND_INSTALLED_SCANNING_STATUS: &str = "正在扫描音源库…";
+
+/// 一次已安装库扫描的完整结果（工作线程算好，UI 线程只写属性）。
+///
+/// 为什么把"体检判定 / 隔离结果 / 显示路径"也搬过来：这些都要读盘或读记录，
+/// 都必须在 UI 线程之外算完；UI 侧只做数组写入，⛔ 不回头再摸一次磁盘。
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct SoundInstalledSnapshot {
+    /// 每行的稳定 id（`builtin:<目录>` / `user:<目录>`）。
+    pub ids: Vec<String>,
+    /// 每行的显示名。
+    pub names: Vec<String>,
+    /// 每行的**显示**位置（已去掉 Windows `\\?\` 前缀）。
+    pub locations: Vec<String>,
+    /// 每行的真实磁盘位置（供体检 / 删除按 id 找回，不参与显示）。
+    pub paths: Vec<std::path::PathBuf>,
+    /// 每行的人话大小（`12.3 MiB`）。
+    pub sizes: Vec<String>,
+    /// 每行是否可删。
+    pub deletable: Vec<bool>,
+    /// 每行是否仍提示体检（`Needed | Corrupt`）。
+    pub doctor_needed: Vec<bool>,
+    /// 坏记录且隔离备份成功的库名（用于"已备份"提示）。
+    pub corrupt_names: Vec<String>,
+    /// 坏记录但隔离失败的库名（必须走红色状态，⛔ 不静默）。
+    pub quarantine_failed: Vec<String>,
+}
+
+/// 判据注入的已安装扫描接缝：输入根，输出快照或**整体失败**文本。
+///
+/// 生产实现是 [`scan_sound_installed_snapshot`]；慢扫描判据用它把工作线程按住，
+/// 证明打开回调不会被扫描拖住。
+#[doc(hidden)]
+pub type SoundInstalledScanHook = std::sync::Arc<
+    dyn Fn(&crate::sound_library::SoundRoots) -> Result<SoundInstalledSnapshot, String>
+        + Send
+        + Sync,
+>;
+
 /// ⭐ **音源管理**的跨线程槽（line/sound-library-manager）。
 ///
 /// 与 [`SampleLibraryDownloadState`] 同一条形状：工作线程（拉目录 /
@@ -12575,6 +12616,16 @@ struct SoundLibraryAsyncSlot {
     /// SFZ Doctor 结局 `(库 id, 状态行文本)`；读数在工人线程里由
     /// `sfz_doctor::format_doctor_readout` 换算好（与下载读数同一条纪律）。
     doctor_outcome: Option<(String, Result<String, String>)>,
+    /// 已安装扫描的**最新请求代号**。关闭 / 重开 / 安装 / 删除都推进它。
+    installed_epoch: u64,
+    /// 当前是否还有效的已安装列表请求（关闭面板时置 false）。
+    installed_requested: bool,
+    /// 是否已有扫描在工作线程里跑。
+    installed_in_flight: bool,
+    /// 在飞行期间又来了新请求 ⇒ 旧结果作废，完成后再起一次。
+    installed_pending: bool,
+    /// 最近一次**当前代号**的扫描结局（δ 结果），由 UI 线程排空。
+    installed_outcome: Option<(u64, Result<SoundInstalledSnapshot, String>)>,
 }
 
 /// 一次下载进度采样（跨线程槽里的唯一进度载体）。
@@ -12652,33 +12703,102 @@ impl SoundLibraryAsyncState {
         slot.doctor_in_flight = false;
         slot.doctor_outcome = Some((library_id.to_owned(), outcome));
     }
+
+    /// 请求一次已安装扫描；返回 `Some(generation)` ⇒ 调用方立刻起工作线程。
+    /// 已有扫描在飞 ⇒ 只推进代号并置 pending，返回 `None`（同一时刻只有一条扫描，
+    /// 避免两条线程并发隔离同一坏记录）。
+    fn request_installed(&self) -> Option<u64> {
+        let mut slot = self.lock();
+        slot.installed_epoch += 1;
+        slot.installed_requested = true;
+        if slot.installed_in_flight {
+            slot.installed_pending = true;
+            None
+        } else {
+            slot.installed_in_flight = true;
+            Some(slot.installed_epoch)
+        }
+    }
+
+    /// 关闭面板 / 换工程：作废在飞结果，且**不再**自动补扫。
+    fn cancel_installed(&self) {
+        let mut slot = self.lock();
+        slot.installed_epoch += 1;
+        slot.installed_requested = false;
+        slot.installed_pending = false;
+    }
+
+    /// 工作线程完成一次扫描：只有代号仍是当前请求才收结果；若期间有新请求，
+    /// 返回新的代号让调用方**再起一次**（确定性取代，⛔ 不并发）。
+    fn finish_installed(
+        &self,
+        generation: u64,
+        outcome: Result<SoundInstalledSnapshot, String>,
+    ) -> Option<u64> {
+        let mut slot = self.lock();
+        slot.installed_in_flight = false;
+        let current = generation == slot.installed_epoch && slot.installed_requested;
+        if current {
+            slot.installed_outcome = Some((generation, outcome));
+        } else if slot.installed_requested && slot.installed_pending {
+            // 旧代号作废且期间有新请求 ⇒ 立刻补扫当前代号，⛔ 不起并发线程。
+            slot.installed_pending = false;
+            slot.installed_in_flight = true;
+            return Some(slot.installed_epoch);
+        } else {
+            return None;
+        }
+        if slot.installed_pending {
+            slot.installed_pending = false;
+            slot.installed_in_flight = true;
+            Some(slot.installed_epoch)
+        } else {
+            None
+        }
+    }
+
+    fn current_installed_generation(&self) -> u64 {
+        self.lock().installed_epoch
+    }
 }
 
-/// 把已安装扫描结果写进界面（唯一写 `sound-installed-*` 的地方）。
-fn publish_sound_installed(ui: &MainWindow) {
-    let roots = crate::sound_library::SoundRoots::production();
-    let installed = crate::sound_library::scan_installed(&roots);
-    let mut ids = Vec::with_capacity(installed.len());
-    let mut names = Vec::with_capacity(installed.len());
-    let mut locations = Vec::with_capacity(installed.len());
-    let mut sizes = Vec::with_capacity(installed.len());
-    let mut deletable = Vec::with_capacity(installed.len());
-    let mut doctor_needed = Vec::with_capacity(installed.len());
-    let mut corrupt_names: Vec<String> = Vec::new();
+/// 工作线程上的已安装扫描：`scan_installed`（含 `dir_size` 递归）＋逐包体检＋坏记录隔离。
+///
+/// 整体读根失败 ⇒ `Err`（UI 走红色状态，⛔ 不伪装成空库）；单条读不到仍按 0 计，
+/// 保留既有"一条坏条目不让列表消失"的展示容错。
+fn scan_sound_installed_snapshot(
+    roots: &crate::sound_library::SoundRoots,
+) -> Result<SoundInstalledSnapshot, String> {
+    // 目录不存在 = 合法的空库（首次运行）；存在但读不了 = 整体失败。
+    for root in [&roots.library_root, &roots.builtin_root] {
+        match std::fs::read_dir(root) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("音源目录不可读：{}（{error}）", root.display()));
+            }
+        }
+    }
+    let installed = crate::sound_library::scan_installed(roots);
+    let mut snapshot = SoundInstalledSnapshot::default();
     for library in &installed {
-        ids.push(library.id.clone());
-        names.push(library.name.clone());
+        snapshot.ids.push(library.id.clone());
+        snapshot.names.push(library.name.clone());
+        snapshot.paths.push(library.location.clone());
         // T-FIX-306：坏记录（`Corrupt`）的行同样要提示体检 —— 记录不可信，
         // 不能当成"已检查/已拒绝"。坏记录在这里隔离备份一次（见下）。
         let state = crate::sfz_doctor::doctor_state(library);
-        doctor_needed.push(matches!(
+        snapshot.doctor_needed.push(matches!(
             state,
             crate::sfz_doctor::DoctorState::Needed | crate::sfz_doctor::DoctorState::Corrupt
         ));
-        if state == crate::sfz_doctor::DoctorState::Corrupt
-            && crate::sfz_doctor::quarantine_corrupt_record(&library.location).is_some()
-        {
-            corrupt_names.push(library.name.clone());
+        if state == crate::sfz_doctor::DoctorState::Corrupt {
+            if crate::sfz_doctor::quarantine_corrupt_record(&library.location).is_some() {
+                snapshot.corrupt_names.push(library.name.clone());
+            } else {
+                // 隔离失败必须可见：⛔ 不按"没成功就当没事"吞掉。
+                snapshot.quarantine_failed.push(library.name.clone());
+            }
         }
         // ⚠ 去掉 Windows 的 `\\?\` 长路径前缀：它对程序有用，对人 **是噪音**
         // （界面上一行 `\\?\C:\...` 看着像出错）。只改显示，不改磁盘上的真实路径。
@@ -12688,38 +12808,106 @@ fn publish_sound_installed(ui: &MainWindow) {
             .into_owned()
             .trim_start_matches(r"\\?\")
             .to_owned();
-        locations.push(shown);
-        sizes.push(crate::sound_library::format_size(library.size_bytes));
-        deletable.push(library.deletable);
+        snapshot.locations.push(shown);
+        snapshot
+            .sizes
+            .push(crate::sound_library::format_size(library.size_bytes));
+        snapshot.deletable.push(library.deletable);
     }
-    ui.set_sound_installed_ids(strings(&ids));
-    ui.set_sound_installed_names(strings(&names));
-    ui.set_sound_installed_locations(strings(&locations));
-    ui.set_sound_installed_sizes(strings(&sizes));
-    ui.set_sound_installed_deletable(booleans(&deletable));
-    ui.set_sound_installed_doctor_needed(booleans(&doctor_needed));
-    // T-FIX-306：坏记录只警告一次 —— 隔离备份成功才报；状态行正显示着更新的
-    // 消息（例如刚点的"已跳过"）时不抢：坏文件已改名，下次刷新状态行空了再报，
-    // 行内体检提示一直在，不会漏。
-    if !corrupt_names.is_empty() && ui.get_sound_library_status().is_empty() {
+    Ok(snapshot)
+}
+
+/// 把一份已算好的快照写进界面（唯一写 `sound-installed-*` 的地方）。
+fn publish_sound_installed_snapshot(ui: &MainWindow, snapshot: &SoundInstalledSnapshot) {
+    ui.set_sound_installed_ids(strings(&snapshot.ids));
+    ui.set_sound_installed_names(strings(&snapshot.names));
+    ui.set_sound_installed_locations(strings(&snapshot.locations));
+    ui.set_sound_installed_sizes(strings(&snapshot.sizes));
+    ui.set_sound_installed_deletable(booleans(&snapshot.deletable));
+    ui.set_sound_installed_doctor_needed(booleans(&snapshot.doctor_needed));
+}
+
+/// 一次**新鲜扫描**里的坏记录提示（T-FIX-306）。
+///
+/// 只在扫描结局处调：缓存快照重开时只写数组，⛔ 不重复播"已备份"——那次隔离
+/// 早就做过了，重复提示会让用户以为又坏了一次。
+fn announce_sound_installed_warnings(ui: &MainWindow, snapshot: &SoundInstalledSnapshot) {
+    if !snapshot.quarantine_failed.is_empty() {
         ui.set_sound_library_status(
             format!(
-                "《{}》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检",
-                corrupt_names.join("、")
+                "《{}》的 SFZ Doctor 记录损坏且隔离备份失败，列表里的记录不可信",
+                snapshot.quarantine_failed.join("、")
             )
             .into(),
         );
         ui.set_sound_library_status_is_error(true);
+    } else if !snapshot.corrupt_names.is_empty() && ui.get_sound_library_status().is_empty() {
+        ui.set_sound_library_status(
+            format!(
+                "《{}》的 SFZ Doctor 记录已损坏，已备份，下次打开仍会提示体检",
+                snapshot.corrupt_names.join("、")
+            )
+            .into(),
+        );
+        ui.set_sound_library_status_is_error(false);
     }
 }
 
-/// 当前已安装条目的 id 全集（一次扫描；包对账按 `user:<包 id>` 比）。
-/// ⛔ 不逐包重扫：`scan_installed` 要走盘算占用，逐包调是 O(包数 × 库大小)。
-fn sound_installed_library_ids() -> Vec<String> {
-    let roots = crate::sound_library::SoundRoots::production();
-    crate::sound_library::scan_installed(&roots)
-        .into_iter()
-        .map(|library| library.id)
+/// 从最近一份已安装快照里按 id 找回真实位置（体检 / 跳过不再重扫全库）。
+fn cached_installed_library(
+    last_installed: &std::rc::Rc<std::cell::RefCell<Option<SoundInstalledSnapshot>>>,
+    library_id: &str,
+) -> Option<(String, std::path::PathBuf)> {
+    let cache = last_installed.borrow();
+    let snapshot = cache.as_ref()?;
+    let index = snapshot.ids.iter().position(|id| id == library_id)?;
+    Some((
+        snapshot.names.get(index).cloned().unwrap_or_default(),
+        snapshot.paths.get(index).cloned()?,
+    ))
+}
+
+/// 起一条已安装扫描工作线程；完成后回事件循环，并在一份新请求到来时再起一条。
+fn spawn_installed_scan(
+    weak: slint::Weak<MainWindow>,
+    state: SoundLibraryAsyncState,
+    scanner: SoundInstalledScanHook,
+    generation: u64,
+) {
+    std::thread::spawn(move || {
+        let outcome = scanner(&crate::sound_library::SoundRoots::production());
+        let restart = state.finish_installed(generation, outcome);
+        if let Some(next) = restart {
+            spawn_installed_scan(weak.clone(), state.clone(), scanner.clone(), next);
+        }
+        let _ = weak.upgrade_in_event_loop(|ui| {
+            ui.invoke_sound_library_drain_requested();
+        });
+    });
+}
+
+/// UI 线程入口：推进代号，必要时起工作线程。已有扫描在飞时只登记 pending。
+fn request_installed_refresh(
+    ui: &MainWindow,
+    state: &SoundLibraryAsyncState,
+    scanner: &SoundInstalledScanHook,
+) {
+    if let Some(generation) = state.request_installed() {
+        spawn_installed_scan(ui.as_weak(), state.clone(), scanner.clone(), generation);
+    } else {
+        // 已有线程在飞：它完成后会按新代号补扫，这里只保证 pending 已登记。
+        debug_assert!(state.current_installed_generation() >= 1);
+    }
+}
+
+/// 界面上**当前这份**已安装 id 快照（包对账按 `user:<包 id>` 比）。
+///
+/// ⛔ 这里不能再 `scan_installed`：那会在 UI 线程递归走盘，正是 T-FIX-434 的病灶。
+/// 列表由后台扫描发布；目录对账只读已发布属性，O(行数) 拷贝。
+fn ui_sound_installed_library_ids(ui: &MainWindow) -> Vec<String> {
+    ui.get_sound_installed_ids()
+        .iter()
+        .map(|id| id.to_string())
         .collect()
 }
 
@@ -12746,7 +12934,7 @@ fn publish_sound_catalog(ui: &MainWindow, catalog: &crate::sound_library::Catalo
     let mut sizes = Vec::with_capacity(catalog.packs.len());
     let mut descriptions = Vec::with_capacity(catalog.packs.len());
     let mut installed_flags = Vec::with_capacity(catalog.packs.len());
-    let installed_ids = sound_installed_library_ids();
+    let installed_ids = ui_sound_installed_library_ids(ui);
     // ⭐ 先收集"显示项 + 是否已装"，再**把已装沉底**：
     // 28 件内置音源一屏只放得下 6 行，已经装好的排在最前 ⇒ 用户为了找"还没装的"
     // 要往下滚半天，而滚出来的全是装好的。未装在前＝一屏里全是可行动项。
@@ -12835,7 +13023,7 @@ fn refresh_sound_pack_installed_flags(ui: &MainWindow) {
     if ids.is_empty() {
         return;
     }
-    let installed_ids = sound_installed_library_ids();
+    let installed_ids = ui_sound_installed_library_ids(ui);
     let flags: Vec<bool> = ids
         .iter()
         // 与 `publish_sound_catalog` 同一条口径（两条路子都算已装）。
@@ -13389,8 +13577,8 @@ fn publish_library_target(ui: &MainWindow) {
 /// 缺 SFZ 文件时要打开音源管理 —— 走与「设置 → 音源管理...」**同一条**路径。
 ///
 /// ⛔ 不直接 `set_sound_library_open(true)`：那只是把面板挂上，跳过了
-/// [`wire_sound_library_dialog_with`] 里 `on_open_sound_library` 的五步准备
-/// （扫描已安装 → 状态清零 → 发布当前轨 → 目录状态归零 → **触发目录拉取**）。
+/// [`wire_sound_library_dialog_with`] 里 `on_open_sound_library` 的准备序列
+/// （发布缓存/扫描中 → 状态清零 → 发布当前轨 → 目录状态归零 → 后台扫描 + 目录拉取）。
 /// 用户看到的因此往往是空列表 —— 面板开着，却没有内容。
 ///
 /// 已经打开着 ⇒ 只刷新"当前轨"，**不**重置目录状态、**不**重拉：
@@ -13405,11 +13593,12 @@ fn open_sound_library_for_missing_sfz(ui: &MainWindow) {
 
 /// 音源管理对话框接线（主菜单「设置 → 音源管理...」）。
 ///
-/// 打开 ⇒ 先同步发布已安装扫描（本地读盘，快），目录拉取走工作
-/// 线程；下载走工作线程 + 进度槽；删除是本地文件操作、同步做完
-/// 即重扫。所有联网只在这里由用户手势触发（⛔ 启动 / 投影不调）。
+/// 打开 ⇒ 回调只做轻量 UI 状态（有快照先显示，没有则"正在扫描"），
+/// 已安装扫描 / 体检 / 隔离、目录拉取、下载全走工作线程 + 排空槽；
+/// 删除是本地文件操作，删完只摘掉那一行并起后台重扫。
+/// 所有联网只在这里由用户手势触发（⛔ 启动 / 投影不调）。
 pub fn wire_sound_library_dialog(ui: &MainWindow) {
-    wire_sound_library_dialog_with(ui, None);
+    wire_sound_library_dialog_inner(ui, None, std::sync::Arc::new(scan_sound_installed_snapshot));
 }
 
 /// 带撤销端口的装配（生产 GUI 走这条）：装好的音源可以**一次点击**用到混音台当前轨。
@@ -13417,9 +13606,33 @@ pub fn wire_sound_library_dialog(ui: &MainWindow) {
 /// `port = None` ⇒ 保留旧的只读行为（列表 / 下载 / 删除照旧，但「用到当前轨」如实报
 /// "这个装配没有撤销会话"）—— 判据与无端口的装配因此一位都不变。
 pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    wire_sound_library_dialog_inner(ui, port, std::sync::Arc::new(scan_sound_installed_snapshot));
+}
+
+/// 判据专用：注入已安装扫描接缝（慢扫描 / 确定性陈旧结果）。
+///
+/// 生产两条入口都传 [`scan_sound_installed_snapshot`]；本入口只给判据按住工作线程，
+/// 证明打开回调不等扫描。
+#[doc(hidden)]
+pub fn wire_sound_library_dialog_with_installed_scan(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    installed_scan: SoundInstalledScanHook,
+) {
+    wire_sound_library_dialog_inner(ui, port, installed_scan);
+}
+
+fn wire_sound_library_dialog_inner(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    installed_scan: SoundInstalledScanHook,
+) {
     let state = SoundLibraryAsyncState::default();
     // 最近一份目录只活在 UI 线程（下载点击时按 id 查包），不进跨线程槽。
     let last_catalog: std::rc::Rc<std::cell::RefCell<Option<crate::sound_library::Catalog>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    // 最近一份已安装快照（只活在 UI 线程）：重开先显示它，后台再刷新。
+    let last_installed: std::rc::Rc<std::cell::RefCell<Option<SoundInstalledSnapshot>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
 
     // ---- 目录拉取（打开与重试共用）--------------------------------------
@@ -13448,32 +13661,47 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
     // ---- 打开 -------------------------------------------------------------
     {
         let weak = ui.as_weak();
+        let state = state.clone();
+        let installed_scan = installed_scan.clone();
+        let last_installed = last_installed.clone();
         let start_catalog_fetch = start_catalog_fetch.clone();
         ui.on_open_sound_library(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            publish_sound_installed(&ui);
             ui.set_sound_library_status("".into());
             ui.set_sound_library_status_is_error(false);
             publish_library_target(&ui);
             ui.set_sound_catalog_state(0);
+            // 有快照 ⇒ 先显示快照；没有 ⇒ 明说正在扫描。两条路都不在回调里走盘。
+            let cached = last_installed.borrow().clone();
+            if let Some(snapshot) = cached {
+                publish_sound_installed_snapshot(&ui, &snapshot);
+            } else {
+                ui.set_sound_library_status(SOUND_INSTALLED_SCANNING_STATUS.into());
+                ui.set_sound_library_status_is_error(false);
+            }
             ui.set_sound_library_open(true);
             // T-FIX-182：打开即取焦（与五只已修模态同一顺序）。
             ui.invoke_focus_sound_library_dialog();
             start_catalog_fetch();
+            // T-FIX-434：扫描（含 dir_size / 体检 / 隔离）全部在工作线程；回调只起线程。
+            request_installed_refresh(&ui, &state, &installed_scan);
         });
     }
 
     // ---- 关闭（只改视图态）-------------------------------------------------
     {
         let weak = ui.as_weak();
+        let state = state.clone();
         ui.on_close_sound_library(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // T-FIX-434：关面板即作废在飞扫描；重开由打开回调重新起代号。
+            state.cancel_installed();
             let was_open = ui.get_sound_library_open();
             ui.set_sound_library_open(false);
             if was_open {
@@ -13655,7 +13883,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
-            let installed_ids = sound_installed_library_ids();
+            let installed_ids = ui_sound_installed_library_ids(&ui);
             // ⚠ 「已装」与列表同一口径（含仓库自带 `assets/samples` 里能解析的那些）：
             // 否则「全部下载」会把 28 件本机已有的音源再下一次（几百 MB 白花）。
             let pending: Vec<crate::sound_library::CatalogPack> = catalog
@@ -13803,10 +14031,13 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
         });
     }
 
-    // ---- 删除一个用户库（本地操作，同步完成后重扫）---------------------------
+    // ---- 删除一个用户库（本地删文件；界面摘行后后台重扫）---------------------
     {
         let weak = ui.as_weak();
         let port = port.clone();
+        let state = state.clone();
+        let installed_scan = installed_scan.clone();
+        let last_installed = last_installed.clone();
         ui.on_sound_library_delete(move |library_id| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -13874,7 +14105,30 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                     ui.set_sound_library_status_is_error(true);
                 }
             }
-            publish_sound_installed(&ui);
+            // 删除成功：从快照缓存里先摘掉这一行（界面立刻少一行），再后台重扫对账。
+            let removed = {
+                let mut cache = last_installed.borrow_mut();
+                if let Some(snapshot) = cache.as_mut() {
+                    if let Some(index) = snapshot.ids.iter().position(|id| id == library_id.as_str()) {
+                        snapshot.ids.remove(index);
+                        snapshot.names.remove(index);
+                        snapshot.locations.remove(index);
+                        snapshot.paths.remove(index);
+                        snapshot.sizes.remove(index);
+                        snapshot.deletable.remove(index);
+                        snapshot.doctor_needed.remove(index);
+                        Some(snapshot.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(snapshot) = removed {
+                publish_sound_installed_snapshot(&ui, &snapshot);
+            }
+            request_installed_refresh(&ui, &state, &installed_scan);
             refresh_sound_pack_installed_flags(&ui);
         });
     }
@@ -13883,20 +14137,20 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
     //
     // 触发口径在界面层已经把好关：只有 `doctor_state == Needed` 的行才出
     // 「体检」钮，且行内两步确认后才发这个回调。这里只负责找库、防并发、
-    // 起线程；结局经跨线程槽回排空处统一落状态行 + 重扫（与下载同一条路）。
+    // 起线程；结局经跨线程槽回排空处统一落状态行 + 后台重扫（与下载同一条路）。
     {
         let weak = ui.as_weak();
         let state = state.clone();
+        let last_installed = last_installed.clone();
         ui.on_sound_library_doctor_check(move |library_id| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let roots = crate::sound_library::SoundRoots::production();
-            let library = crate::sound_library::scan_installed(&roots)
-                .into_iter()
-                .find(|library| library.id == library_id.as_str());
-            let Some(library) = library else {
+            // T-FIX-434：按已发布快照找位置，⛔ 不再为点一次体检重扫全库。
+            let Some((library_name, library_path)) =
+                cached_installed_library(&last_installed, library_id.as_str())
+            else {
                 ui.set_sound_library_status("找不到这个音源库（列表可能已刷新，请重试）".into());
                 ui.set_sound_library_status_is_error(true);
                 return;
@@ -13906,13 +14160,13 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 ui.set_sound_library_status_is_error(true);
                 return;
             }
-            ui.set_sound_library_status(format!("SFZ Doctor 正在检查《{}》…", library.name).into());
+            ui.set_sound_library_status(format!("SFZ Doctor 正在检查《{library_name}》…").into());
             ui.set_sound_library_status_is_error(false);
             let worker_state = state.clone();
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
-                let report = crate::sfz_doctor::run(&library.location);
-                let readout = crate::sfz_doctor::format_doctor_readout(&library.name, &report);
+                let report = crate::sfz_doctor::run(&library_path);
+                let readout = crate::sfz_doctor::format_doctor_readout(&library_name, &report);
                 // T-FIX-306：体检本身跑完了，但记录没存住 ⇒ 下次启动仍会提示。
                 // 读数尾巴已经带了这句警告，这里走 Err 通道，让排空处把它当错误
                 // 状态（红字）显示，而不是当一次成功的体检报。
@@ -13921,7 +14175,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                 } else {
                     Ok(readout)
                 };
-                worker_state.finish_doctor(&library.id, outcome);
+                worker_state.finish_doctor(&library_id, outcome);
                 let _ = worker_weak.upgrade_in_event_loop(|ui| {
                     ui.invoke_sound_library_drain_requested();
                 });
@@ -13929,42 +14183,42 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
         });
     }
 
-    // ---- SFZ Doctor：拒绝体检（本地操作，同步落记录后重扫）-------------------
+    // ---- SFZ Doctor：拒绝体检（本地落记录；后台重扫刷新提示）-------------------
     {
         let weak = ui.as_weak();
+        let state = state.clone();
+        let installed_scan = installed_scan.clone();
+        let last_installed = last_installed.clone();
         ui.on_sound_library_doctor_decline(move |library_id| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let roots = crate::sound_library::SoundRoots::production();
-            let library = crate::sound_library::scan_installed(&roots)
-                .into_iter()
-                .find(|library| library.id == library_id.as_str());
-            if let Some(library) = library {
+            let library = cached_installed_library(&last_installed, library_id.as_str());
+            if let Some((library_name, library_path)) = library {
                 // T-FIX-306：跳过记录落盘失败必须如实报错 —— 之前 `mark_declined`
                 // 吞掉 `Err`，界面无条件写"不再提示"，下次启动读不到记录又重提示。
-                match crate::sfz_doctor::mark_declined(&library.location) {
+                match crate::sfz_doctor::mark_declined(&library_path) {
                     Ok(()) => {
                         ui.set_sound_library_status(
-                            format!("已跳过《{}》的 SFZ Doctor 检查（不再提示）", library.name)
+                            format!("已跳过《{library_name}》的 SFZ Doctor 检查（不再提示）")
                                 .into(),
                         );
                         ui.set_sound_library_status_is_error(false);
                     }
                     Err(err) => {
                         ui.set_sound_library_status(
-                            format!(
-                                "无法保存《{}》的跳过状态（{}），下次仍会提示",
-                                library.name, err
-                            )
-                            .into(),
+                            format!("无法保存《{library_name}》的跳过状态（{err}），下次仍会提示")
+                                .into(),
                         );
                         ui.set_sound_library_status_is_error(true);
                     }
                 }
+            } else {
+                ui.set_sound_library_status("找不到这个音源库（列表可能已刷新，请重试）".into());
+                ui.set_sound_library_status_is_error(true);
             }
-            publish_sound_installed(&ui);
+            request_installed_refresh(&ui, &state, &installed_scan);
         });
     }
 
@@ -13972,19 +14226,22 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
     {
         let weak = ui.as_weak();
         let state = state.clone();
+        let installed_scan = installed_scan.clone();
         let last_catalog = last_catalog.clone();
+        let last_installed = last_installed.clone();
         ui.on_sound_library_drain_requested(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let (catalog_outcome, progress, download_outcome, doctor_outcome) = {
+            let (catalog_outcome, progress, download_outcome, doctor_outcome, installed_outcome) = {
                 let mut slot = state.lock();
                 (
                     slot.catalog_outcome.take(),
                     slot.progress.take(),
                     slot.download_outcome.take(),
                     slot.doctor_outcome.take(),
+                    slot.installed_outcome.take(),
                 )
             };
             if let Some(outcome) = catalog_outcome {
@@ -14029,7 +14286,7 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                         ui.set_sound_library_status_is_error(true);
                     }
                 }
-                publish_sound_installed(&ui);
+                request_installed_refresh(&ui, &state, &installed_scan);
                 refresh_sound_pack_installed_flags(&ui);
                 // ⭐ 装好了 ⇒ 救援面板里等着这件音源的轨**立刻**换上（用户只点过一次「下载」）。
                 // ⛔ 失败不换：没装好就换，只是一条死路径加一次新的失败。
@@ -14051,7 +14308,33 @@ pub fn wire_sound_library_dialog_with(ui: &MainWindow, port: Option<Rc<UndoPort>
                         ui.set_sound_library_status_is_error(true);
                     }
                 }
-                publish_sound_installed(&ui);
+                request_installed_refresh(&ui, &state, &installed_scan);
+            }
+            if let Some((_generation, outcome)) = installed_outcome {
+                match outcome {
+                    Ok(snapshot) => {
+                        *last_installed.borrow_mut() = Some(snapshot.clone());
+                        publish_sound_installed_snapshot(&ui, &snapshot);
+                        announce_sound_installed_warnings(&ui, &snapshot);
+                        // 只有状态行还停在"正在扫描"时才清；坏记录警告不抢。
+                        if ui.get_sound_library_status().as_str() == SOUND_INSTALLED_SCANNING_STATUS
+                        {
+                            ui.set_sound_library_status("".into());
+                            ui.set_sound_library_status_is_error(false);
+                        }
+                        // 目录的「已安装」标记与行序依赖已安装 id；快照变了就重排一次。
+                        refresh_sound_pack_installed_flags(&ui);
+                        if let Some(catalog) = last_catalog.borrow().clone() {
+                            let filter = ui.get_sound_library_search().to_string();
+                            publish_sound_catalog(&ui, &catalog, &filter);
+                        }
+                    }
+                    Err(error) => {
+                        // 整体失败必须红字，⛔ 不伪装成空库成功。
+                        ui.set_sound_library_status(format!("音源库扫描失败：{error}").into());
+                        ui.set_sound_library_status_is_error(true);
+                    }
+                }
             }
         });
     }
@@ -28677,4 +28960,50 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod sound_library_async_tests {
+    use super::*;
+
+    #[test]
+    fn installed_scan_generations_drop_stale_results_and_coalesce_running_requests() {
+        let state = SoundLibraryAsyncState::default();
+        // 首次请求立刻起线程；在飞期间的新请求只登记 pending。
+        assert_eq!(state.request_installed(), Some(1));
+        assert_eq!(state.request_installed(), None);
+
+        // 旧 generation 完成 ⇒ 不收结果，返回**当前**代号让调用方补扫一次。
+        let restart = state.finish_installed(1, Ok(SoundInstalledSnapshot::default()));
+        assert_eq!(restart, Some(2), "陈旧结果必须触发一次补扫");
+        assert!(
+            state.lock().installed_outcome.is_none(),
+            "旧 generation 的结果不得进入排空槽"
+        );
+
+        // 新 generation 完成 ⇒ 收结果，不再补扫。
+        let restart = state.finish_installed(2, Ok(SoundInstalledSnapshot::default()));
+        assert_eq!(restart, None);
+        let (generation, outcome) = state
+            .lock()
+            .installed_outcome
+            .take()
+            .expect("新 generation 必须有结局");
+        assert_eq!(generation, 2);
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn closing_the_panel_invalidates_in_flight_results_without_rescanning() {
+        let state = SoundLibraryAsyncState::default();
+        assert_eq!(state.request_installed(), Some(1));
+        state.cancel_installed();
+        assert_eq!(
+            state.finish_installed(1, Ok(SoundInstalledSnapshot::default())),
+            None,
+            "关闭后旧扫描不得补扫"
+        );
+        assert!(state.lock().installed_outcome.is_none());
+        assert!(!state.lock().installed_in_flight);
+    }
 }
