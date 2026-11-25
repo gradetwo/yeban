@@ -8762,6 +8762,30 @@ pub fn apply_clip_selection(ui: &MainWindow, selected: &[String], primary: &str)
     refresh_timeline_block_selected(ui);
 }
 
+/// 各编辑臂的**统一读点**：框选 / 加选落下的 `selected-clip-ulids` 集；
+/// 集空时回退主选中 `selected-clip-ulid`（单选时集是单元素，与旧口径逐字一致）。
+///
+/// 顺序是**身份序**（ULID 字符串序 ⇒ 与工程 `BTreeMap` 的确定序同款），与框选命中序、加选
+/// 累加序都无关 ⇒ 同一份选区不论怎么选出来，op 批的顺序都相同；去重 ⇒ 同一摆放
+/// 在一批里只出现一次。调用方不得假定它与 `clip-ulids` 同序。
+fn selected_clip_ulids_or_primary(ui: &MainWindow) -> Vec<String> {
+    use slint::Model as _;
+    let mut ids: Vec<String> = ui
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    if ids.is_empty() {
+        let primary = ui.get_selected_clip_ulid();
+        if !primary.is_empty() {
+            ids.push(primary.to_string());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
 ///
 /// | 读 / 写 | 事实源 |
@@ -20309,6 +20333,22 @@ pub fn clip_delete_ops_for(
     }]
 }
 
+/// 选中集 ⇒ 待提交的 `Op::RemoveClipPlacement` 批（多选删除的 op 构造点）。
+///
+/// 逐条复用 [`clip_delete_ops_for`]（⛔ 不另起第二个 `RemoveClipPlacement` 构造点）；
+/// 解析不到的身份贡献零条（与单条同款）⇒ 批为空时调用方不提交、不消费。
+#[must_use]
+pub fn clip_delete_ops_for_many(
+    project: &yeban_model::YebanProjectV1,
+    ulids: &[String],
+) -> Vec<yeban_model::ops::Op> {
+    let mut ops = Vec::new();
+    for ulid in ulids {
+        ops.extend(clip_delete_ops_for(project, ulid));
+    }
+    ops
+}
+
 /// 选中剪辑的人性化 op（纯函数；判据可直接喂合成工程逐条对账）。
 ///
 /// 与 MCP `humanizeClip` 的展开**同一批模型 `Op`**：每音符一条
@@ -20464,11 +20504,11 @@ fn delete_selected_clip_placement(
     if !ui.get_arrangement_view() {
         return false;
     }
-    let selected = ui.get_selected_clip_ulid();
+    let selected = selected_clip_ulids_or_primary(ui);
     if selected.is_empty() {
         return false;
     }
-    let ops = clip_delete_ops_for(project, selected.as_str());
+    let ops = clip_delete_ops_for_many(project, &selected);
     if ops.is_empty() {
         // 选中的身份不在工程里（换工程 / 外部编辑留下的陈旧读数）⇒ 不消费，
         // ⛔ 也不"顺手"清掉那个陈旧选中态：那是另一件事，不归这一键。
@@ -20478,29 +20518,27 @@ fn delete_selected_clip_placement(
         return false;
     }
     cancel_clip_drag(ui);
-    ui.set_selected_clip_ulid("".into());
+    // 被删的身份已经不存在 ⇒ 选区集与主选中**一起**清空（只清主选中会把陈旧身份
+    // 留在集里，下一次按键又去删不存在的东西；`apply_clip_selection` 是唯一写者）。
+    apply_clip_selection(ui, &[], "");
     clear_region_card(ui);
     refresh_undo_window(ui, port, true);
     true
 }
 
-/// `Cmd/Ctrl+D` 落到编曲视图选中的剪辑上：原位向后复制一份相同的摆放（Logic Pro 对齐）。
-fn duplicate_selected_clip_placement(
-    ui: &MainWindow,
-    port: &Rc<UndoPort>,
+/// 选中剪辑的身份 ⇒ 待提交的复制 op 对（`AddClip` + `AddClipPlacement`）+ 新摆放身份
+/// （纯函数；判据可直接喂合成工程逐条对账）。
+///
+/// 从 [`duplicate_selected_clip_placement`] 原样抽出（与单条逐字同一构造）：新片段身份 ＋
+/// 每个音符新身份（复用身份会撞 MODEL-AST 唯一性），新摆放落在原摆放之后（Logic Pro
+/// 对齐），名后缀 ` (Copy)`，继承 loop / muted / offset。解析不到 ⇒ `None`。
+#[must_use]
+pub fn duplicate_clip_placement_ops_for(
     project: &yeban_model::YebanProjectV1,
-) -> bool {
-    let selected = ui.get_selected_clip_ulid();
-    if selected.is_empty() {
-        return false;
-    }
-    let Some((track_id, _placement_id, placement)) = clip_placement_for(project, selected.as_str())
-    else {
-        return false;
-    };
-    let Some(clip_entry) = project.clip_pool.get(&placement.clip_id) else {
-        return false;
-    };
+    selected_clip_ulid: &str,
+) -> Option<(Vec<yeban_model::ops::Op>, String)> {
+    let (track_id, _placement_id, placement) = clip_placement_for(project, selected_clip_ulid)?;
+    let clip_entry = project.clip_pool.get(&placement.clip_id)?;
     let new_clip_id = yeban_model::EntityId::new();
     let new_content = match &clip_entry.content {
         yeban_model::project::ClipContent::Midi { notes } => {
@@ -20548,13 +20586,42 @@ fn duplicate_selected_clip_placement(
             placement: new_placement,
         },
     ];
+    Some((ops, new_id))
+}
+
+/// `Cmd/Ctrl+D` 落到编曲视图选中的剪辑上：原位向后复制一份相同的摆放（Logic Pro 对齐）。
+///
+/// 多选：选区集里每条各复制一份（新摆放落在各自原摆放之后），**一次** `commit_ops`、
+/// 一步撤销；选区迁到新身份集（主选中 = 首个副本）。解析不到的那条被跳过（不拦整批）；
+/// 一条都复制不了 ⇒ 不消费。
+fn duplicate_selected_clip_placement(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    let selected = selected_clip_ulids_or_primary(ui);
+    if selected.is_empty() {
+        return false;
+    }
+    let mut ops = Vec::new();
+    let mut new_ids = Vec::new();
+    for ulid in &selected {
+        if let Some((mut one, new_id)) = duplicate_clip_placement_ops_for(project, ulid) {
+            ops.append(&mut one);
+            new_ids.push(new_id);
+        }
+    }
+    if ops.is_empty() {
+        return false;
+    }
     if port
         .commit_ops(now_ms(), "duplicate clip placement", ops)
         .is_err()
     {
         return false;
     }
-    ui.set_selected_clip_ulid(new_id.into());
+    let primary = new_ids.first().cloned().unwrap_or_default();
+    apply_clip_selection(ui, &new_ids, &primary);
     refresh_undo_window(ui, port, true);
     true
 }
@@ -20564,16 +20631,33 @@ fn duplicate_selected_clip_placement(
 // ===========================================================================
 
 thread_local! {
-    /// 进程内片段剪贴板：一份 `ClipPoolEntry`（含音符）＋ 来源摆放
-    /// （继承 duration / loop / offset 语义）。
+    /// 进程内片段剪贴板：**一组** `ClipPoolEntry`（含音符）＋ 来源摆放
+    /// （继承 duration / loop / offset 语义；多选复制时一组按身份序排列）。
     ///
     /// ⚠ 只活在 UI 线程、只活本次运行（剪贴板语义），⛔ 不进 `.yeban`、⛔ 不进撤销栈。
     static CLIP_CLIPBOARD: std::cell::RefCell<
-        Option<(
+        Option<Vec<(
             yeban_model::project::ClipPoolEntry,
             yeban_model::project::ClipPlacement,
-        )>,
+        )>>,
     > = const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
+    /// 剪辑拖动的**组快照**：按下时那一刻选区集里每条摆放的（音轨，摆放身份，起点 tick）。
+    ///
+    /// 与 [`CLIP_CLIPBOARD`] 同一取向：只活在 UI 线程、只活一次手势（按下 → 松手 / 取消），
+    /// ⛔ 不进 `.yeban`、⛔ 不进撤销栈。快照定的是**组成员与各自按下时的起点**（松手时选区
+    /// 变了也不改组）；提交时每条的 `old_start_tick` 仍从当前文档重读（与单条拖动
+    /// 在 commit 时重读同一取向 —— 外部编辑中途改了起点时，拿快照旧值提交会被模型
+    /// 以前置条件拒掉整批）。
+    static CLIP_DRAG_GROUP: std::cell::RefCell<
+        Vec<(
+            yeban_model::EntityId,
+            yeban_model::EntityId,
+            u64,
+        )>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 分轨导出目录：**用户可预期、且不会被系统清理**的固定位置。
@@ -20647,30 +20731,48 @@ pub fn report_clipboard(ui: &MainWindow, verb: ClipboardVerb, ok: bool) {
 }
 
 /// 把选中片段复制到进程内剪贴板。返回 `false` = 没选中 / 读不到（不写入）。
+///
+/// 多选：选区集里每条各存一份（身份序）；解析不到的那条被跳过（不拦整批）；
+/// 一条都存不了 ⇒ 不写入、返回 `false`。
 pub fn clipboard_copy_selected(ui: &MainWindow, project: &yeban_model::YebanProjectV1) -> bool {
-    let selected = ui.get_selected_clip_ulid();
+    let selected = selected_clip_ulids_or_primary(ui);
     if selected.is_empty() {
         return false;
     }
-    let Some((_, _, placement)) = clip_placement_for(project, selected.as_str()) else {
+    let mut copied = Vec::new();
+    for ulid in &selected {
+        let Some((_, _, placement)) = clip_placement_for(project, ulid) else {
+            continue;
+        };
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        copied.push((entry.clone(), *placement));
+    }
+    if copied.is_empty() {
         return false;
-    };
-    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
-        return false;
-    };
-    CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some((entry.clone(), *placement)));
+    }
+    CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some(copied));
     true
 }
 
 /// 粘贴到**当前选中轨**的播放头位置（**一步**撤销）。返回 `false` = 无剪贴板/无目标轨。
+///
+/// 多选：剪贴板里的每一份各粘一份，**相对偏移原样保留**（最早那份落在播放头上，
+/// 其余按来源起点之差顺延）—— 与"全叠在播放头上"不同，后者会把一组剪辑压成一摞。
+/// 逐份 `AddClip` + `AddClipPlacement`、**一次**提交；选区迁到新摆放集
+/// （主选中 = 首份副本）。
 pub fn clipboard_paste(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
     project: &yeban_model::YebanProjectV1,
 ) -> bool {
-    let Some((entry, base)) = CLIP_CLIPBOARD.with(|cell| cell.borrow().clone()) else {
+    let Some(mut entries) = CLIP_CLIPBOARD.with(|cell| cell.borrow().clone()) else {
         return false;
     };
+    if entries.is_empty() {
+        return false;
+    }
     let Some(track_id) =
         selected_track_id(ui).and_then(|s| s.parse::<yeban_model::EntityId>().ok())
     else {
@@ -20680,58 +20782,75 @@ pub fn clipboard_paste(
     if track_id == project.master_bus_track_id || !project.tracks.contains_key(&track_id) {
         return false;
     }
-    // 副本：新片段身份 ＋ 每个音符新身份（复用身份会撞 MODEL-AST 唯一性）。
-    let new_clip_id = yeban_model::EntityId::new();
-    let content = match &entry.content {
-        yeban_model::project::ClipContent::Midi { notes } => {
-            let mut fresh = std::collections::BTreeMap::new();
-            for note in notes.values() {
-                let mut copy = note.clone();
-                copy.id = yeban_model::EntityId::new();
-                fresh.insert(copy.id, copy);
+    // 起点序 ⇒ 相对偏移按来源起点的先后算（与复制时的身份序无关）。
+    entries.sort_by_key(|(_, placement)| placement.start_tick);
+    let first_start = entries
+        .first()
+        .map(|(_, placement)| placement.start_tick)
+        .unwrap_or(0);
+    let playhead = playhead_tick(ui);
+    let mut ops = Vec::new();
+    let mut new_ids = Vec::new();
+    for (entry, base) in &entries {
+        // 副本：新片段身份 ＋ 每个音符新身份（复用身份会撞 MODEL-AST 唯一性）。
+        let new_clip_id = yeban_model::EntityId::new();
+        let content = match &entry.content {
+            yeban_model::project::ClipContent::Midi { notes } => {
+                let mut fresh = std::collections::BTreeMap::new();
+                for note in notes.values() {
+                    let mut copy = note.clone();
+                    copy.id = yeban_model::EntityId::new();
+                    fresh.insert(copy.id, copy);
+                }
+                yeban_model::project::ClipContent::Midi { notes: fresh }
             }
-            yeban_model::project::ClipContent::Midi { notes: fresh }
-        }
-        yeban_model::project::ClipContent::Audio { asset, gain_db } => {
-            yeban_model::project::ClipContent::Audio {
-                asset: asset.clone(),
-                gain_db: *gain_db,
+            yeban_model::project::ClipContent::Audio { asset, gain_db } => {
+                yeban_model::project::ClipContent::Audio {
+                    asset: asset.clone(),
+                    gain_db: *gain_db,
+                }
             }
-        }
-    };
-    let new_entry = yeban_model::project::ClipPoolEntry {
-        id: new_clip_id,
-        name: entry.name.clone(),
-        content,
-    };
-    let placement = yeban_model::project::ClipPlacement {
-        id: yeban_model::EntityId::new(),
-        clip_id: new_clip_id,
-        start_tick: playhead_tick(ui),
-        duration_ticks: base.duration_ticks,
-        loop_config: base.loop_config,
-        muted: false,
-        offset_samples: base.offset_samples,
-        fade_in_ticks: None,
-        fade_out_ticks: None,
-    };
-    let new_id = placement.id.to_string();
-    let ops = vec![
-        yeban_model::ops::Op::AddClip { clip: new_entry },
-        yeban_model::ops::Op::AddClipPlacement {
+        };
+        let new_entry = yeban_model::project::ClipPoolEntry {
+            id: new_clip_id,
+            name: entry.name.clone(),
+            content,
+        };
+        let placement = yeban_model::project::ClipPlacement {
+            id: yeban_model::EntityId::new(),
+            clip_id: new_clip_id,
+            start_tick: playhead.saturating_add(base.start_tick.saturating_sub(first_start)),
+            duration_ticks: base.duration_ticks,
+            loop_config: base.loop_config,
+            muted: false,
+            offset_samples: base.offset_samples,
+            fade_in_ticks: None,
+            fade_out_ticks: None,
+        };
+        new_ids.push(placement.id.to_string());
+        ops.push(yeban_model::ops::Op::AddClip { clip: new_entry });
+        ops.push(yeban_model::ops::Op::AddClipPlacement {
             track_id,
             placement,
-        },
-    ];
+        });
+    }
+    if ops.is_empty() {
+        return false;
+    }
     if port.commit_ops(now_ms(), "paste clip", ops).is_err() {
         return false;
     }
-    ui.set_selected_clip_ulid(new_id.into());
+    let primary = new_ids.first().cloned().unwrap_or_default();
+    apply_clip_selection(ui, &new_ids, &primary);
     refresh_undo_window(ui, port, true);
     true
 }
 
 /// 剪切 = 复制 + 删除（**一次**撤销同时回滚两者）。
+///
+/// 多选：复制选区集里的每一份，再把集里每条摆放一次删掉 —— 复制与删除走**同一份**
+/// 选区读数（先复制后删除）。复制成功 ⇒ 至少一条可删（同一批身份、同一份解析），
+/// 因此"复制了却删不到"在构造上到不了；删不到的那条（陈旧身份）两边都被跳过。
 pub fn clipboard_cut(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
@@ -20740,14 +20859,16 @@ pub fn clipboard_cut(
     if !clipboard_copy_selected(ui, project) {
         return false;
     }
-    let ops = clip_delete_ops_for(project, ui.get_selected_clip_ulid().as_str());
+    let selected = selected_clip_ulids_or_primary(ui);
+    let ops = clip_delete_ops_for_many(project, &selected);
     if ops.is_empty() {
         return false;
     }
     if port.commit_ops(now_ms(), "cut clip", ops).is_err() {
         return false;
     }
-    ui.set_selected_clip_ulid("".into());
+    // 被剪走的身份已经不存在 ⇒ 选区集与主选中一起清空（与删除同款，唯一写者）。
+    apply_clip_selection(ui, &[], "");
     clear_region_card(ui);
     refresh_undo_window(ui, port, true);
     true
@@ -20874,30 +20995,55 @@ pub fn clip_split_ops_for(
     Some((ops, new_right_id))
 }
 
+/// 选中集 ⇒ 待提交的切分 op 批 + 每条右半的新摆放身份（多选切分的 op 构造点）。
+///
+/// 逐条复用 [`clip_split_ops_for`]（⛔ 不另起第二个切分构造点）；切分点落在其摆放之外
+/// 的那条被跳过（不拦整批 —— 播放头不可能同时落在组里每一条摆放内部）；一条都切不了
+/// ⇒ 空批 + 空身份集，调用方不提交、不消费。
+#[must_use]
+pub fn clip_split_ops_for_many(
+    project: &yeban_model::YebanProjectV1,
+    ulids: &[String],
+    split_tick: u64,
+) -> (Vec<yeban_model::ops::Op>, Vec<String>) {
+    let mut ops = Vec::new();
+    let mut new_right_ids = Vec::new();
+    for ulid in ulids {
+        if let Some((mut one, new_right_id)) = clip_split_ops_for(project, ulid, split_tick) {
+            ops.append(&mut one);
+            new_right_ids.push(new_right_id);
+        }
+    }
+    (ops, new_right_ids)
+}
+
 /// `Cmd/Ctrl+T` 在播放头位置切分选中的剪辑（Logic Pro 对齐）。
 /// op 组合走 [`clip_split_ops_for`]（与 TUI 共用同一构造点），本函数只做
 /// 界面侧的选中/播放头读取、提交与选中态更新。
+///
+/// 多选：播放头穿过的每条各切一份，**一次**提交、一步撤销；选区迁到新右半集
+/// （主选中 = 首个右半）。播放头不在任何一条摆放内部 ⇒ 不消费。
 fn split_selected_clip_at_playhead(
     ui: &MainWindow,
     port: &Rc<UndoPort>,
     project: &yeban_model::YebanProjectV1,
 ) -> bool {
-    let selected = ui.get_selected_clip_ulid();
+    let selected = selected_clip_ulids_or_primary(ui);
     if selected.is_empty() {
         return false;
     }
-    let Some((ops, new_right_id)) =
-        clip_split_ops_for(project, selected.as_str(), playhead_tick(ui))
-    else {
+    let (ops, new_right_ids) = clip_split_ops_for_many(project, &selected, playhead_tick(ui));
+    if ops.is_empty() {
         return false;
-    };
+    }
     if port
         .commit_ops(now_ms(), "split clip at playhead", ops)
         .is_err()
     {
         return false;
     }
-    ui.set_selected_clip_ulid(new_right_id.into());
+    let primary = new_right_ids.first().cloned().unwrap_or_default();
+    apply_clip_selection(ui, &new_right_ids, &primary);
     refresh_undo_window(ui, port, true);
     true
 }
@@ -20927,13 +21073,31 @@ pub fn clip_mute_ops_for(
     }]
 }
 
+/// 选中集 ⇒ 待提交的 `Op::SetClipPlacementMuted` 批（多选静音的 op 构造点）。
+///
+/// 逐条复用 [`clip_mute_ops_for`]（⛔ 不另起第二个 `SetClipPlacementMuted` 构造点）；
+/// 每条按自己的现值翻（`old_muted` 从当前文档读）；解析不到的身份贡献零条。
+#[must_use]
+pub fn clip_mute_ops_for_many(
+    project: &yeban_model::YebanProjectV1,
+    ulids: &[String],
+) -> Vec<yeban_model::ops::Op> {
+    let mut ops = Vec::new();
+    for ulid in ulids {
+        ops.extend(clip_mute_ops_for(project, ulid));
+    }
+    ops
+}
 /// `Cmd/Ctrl+M` 落到**编曲视图选中的剪辑**上（`D-UI-16`）：一次原子提交、一步撤销。
+///
+/// 多选：选区集里每条各翻一次静音（各自按现值翻），**一次**提交、一步撤销；
+/// 选中态留下（静音≠删除），可以连着按第二下拨回来。
 ///
 /// 四条口径（与 [`delete_selected_clip_placement`] 逐条同款，差别只在"对象还在"）：
 /// 1. **只在编曲视图**生效（`arrangement-view`）：Session 视图里 `selected-clip-ulid`
 ///    只是上一次编曲视图留下的读数 ⇒ 拿它改东西等于改用户此刻**看不见**的对象；
 /// 2. **没有选中 / 身份解析不到 ⇒ 不消费**（`false`），⛔ 也不"顺手"清掉那个陈旧读数；
-/// 3. **一次按键 = 一次** [`UndoPort::commit_ops`]（单条 op，`[ARCH-OPS-002]` 的原子性）；
+/// 3. 一次按键 = 一次 [`UndoPort::commit_ops`]（`[ARCH-OPS-002]` 的原子性）；
 ///    模型拒绝 ⇒ `false` 且⛔ **不重试**（`old_muted` 刚从权威读，重试要再读一遍，
 ///    那不是本函数的职责，与 [`commit_clip_drag`] 同一取向）；
 /// 4. **选中态必须留下**：这条摆放改完还在原地（静音≠删除）⇒ ⛔ 不清 `selected-clip-ulid`，
@@ -20946,11 +21110,11 @@ fn toggle_selected_clip_mute(
     if !ui.get_arrangement_view() {
         return false;
     }
-    let selected = ui.get_selected_clip_ulid();
+    let selected = selected_clip_ulids_or_primary(ui);
     if selected.is_empty() {
         return false;
     }
-    let ops = clip_mute_ops_for(project, selected.as_str());
+    let ops = clip_mute_ops_for_many(project, &selected);
     if ops.is_empty() {
         return false;
     }
@@ -21153,12 +21317,45 @@ fn clear_clip_drag(ui: &MainWindow) {
     ui.set_clip_drag_ulid("".into());
     ui.set_clip_drag_origin_x(0.0);
     ui.set_clip_drag_preview_dx(0.0);
+    // 组快照与草稿属性同生同灭：松手 / 取消都清，⛔ 不留给下一次手势。
+    CLIP_DRAG_GROUP.with(|cell| cell.borrow_mut().clear());
+}
+
+/// 按下那一刻的拖动组：选区集里**包含**这一按的片段 ⇒ 拖整组；否则只拖这一条
+/// （包头单击才会改选区，拖动面的按下不改 —— 点一个未选中的片段体就拖，
+/// 组只能是它自己）。成员解析不到（陈旧身份）⇒ 跳过，不拦整组。
+fn snapshot_clip_drag_group(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    clip_ulid: &str,
+) {
+    use slint::Model as _;
+    let set: Vec<String> = ui
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let group: Vec<String> = if set.iter().any(|id| id.as_str() == clip_ulid) {
+        set
+    } else {
+        vec![clip_ulid.to_string()]
+    };
+    let mut snapshot = Vec::new();
+    for ulid in &group {
+        if let Some((track_id, placement_id, placement)) = clip_placement_for(project, ulid) {
+            snapshot.push((track_id, placement_id, placement.start_tick));
+        }
+    }
+    CLIP_DRAG_GROUP.with(|cell| *cell.borrow_mut() = snapshot);
 }
 
 /// 指针按下：校验这一按的身份**确实在当前工程里**，是则接管并记下起点。
 ///
 /// 返回 `true` = 接管（界面因此把后续 `move` 都报给宿主；⛔ 界面自己是不会"拖动"的）。
 /// 三种情况返回 `false`：没有撤销端口、端口此刻没有活跃工程、身份不在任何轨道上。
+///
+/// 接管的同时**快照拖动组**（选区集包含这一按 ⇒ 整组，否则单条）：组的成员与起点在
+/// 按下那一刻冻结，松手时按同一 delta 一起挪。
 fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) -> bool {
     if !x.is_finite() {
         return false;
@@ -21172,6 +21369,7 @@ fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str
     if clip_placement_for(&project, clip_ulid).is_none() {
         return false;
     }
+    snapshot_clip_drag_group(ui, &project, clip_ulid);
     // 身份 → 起点 → 草稿位移，顺序固定：读者看到非空身份时，其余读数已经就位。
     ui.set_clip_drag_ulid(clip_ulid.into());
     ui.set_clip_drag_origin_x(x);
@@ -21214,11 +21412,18 @@ fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &s
 ///
 /// 手势读数在函数**入口处**条件清零（身份对得上才清）：无论下面走哪条出口，
 /// 草稿都不会留在手上。
+///
+/// 多选：组里每条各发一条 `MoveClipPlacement`，**同一 delta**（按下那条的吸附后
+/// 位移）、**一次**提交、一步撤销。位移以组为整体算（各成员新起点 = 各自现起点 +
+/// 同一 delta，⛔ 不逐条吸附 —— 逐条吸附会把组内相对位置拉散）。
+/// 组快照为空（旧手势 / 直接调 `commit`）⇒ 退回单条口径。
 fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) {
     if ui.get_clip_drag_ulid().as_str() != clip_ulid {
         return;
     }
     let origin = ui.get_clip_drag_origin_x();
+    // 组快照在清草稿**之前**取走：`clear_clip_drag` 会把快照一起清掉。
+    let group = CLIP_DRAG_GROUP.with(|cell| cell.borrow().clone());
     clear_clip_drag(ui);
     let Some(port) = port else {
         return;
@@ -21236,16 +21441,48 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
         // 位移没跨过吸附网格 ⇒ **不提交空 op**（一次拖动没有产生任何编辑）。
         return;
     }
-    let op = yeban_model::ops::Op::MoveClipPlacement {
-        track_id,
-        placement_id,
-        old_start_tick,
-        new_start_tick,
-    };
-    if port
-        .commit_ops(now_ms(), "select: move clip", vec![op])
-        .is_err()
-    {
+    let delta_ticks = (new_start_tick as i64).saturating_sub(old_start_tick as i64);
+    // 先算 (音轨，摆放，旧起点，新起点) 四元组，再**一处**构造 op（`MoveClipPlacement`
+    // 在全 app 只有一个构造点 —— 单条是退化情形，不是第二处）。
+    let mut moves: Vec<(yeban_model::EntityId, yeban_model::EntityId, u64, u64)> = Vec::new();
+    if group.is_empty() {
+        moves.push((track_id, placement_id, old_start_tick, new_start_tick));
+    } else {
+        for (_, member_placement_id, _) in &group {
+            let Some((member_track_id, _, current)) =
+                clip_placement_for(&project, &member_placement_id.to_canonical_string())
+            else {
+                // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 跳过，不拦整组。
+                continue;
+            };
+            let member_old = current.start_tick;
+            let member_new = member_old.saturating_add_signed(delta_ticks);
+            if member_new == member_old {
+                continue;
+            }
+            moves.push((
+                member_track_id,
+                *member_placement_id,
+                member_old,
+                member_new,
+            ));
+        }
+    }
+    let ops: Vec<yeban_model::ops::Op> = moves
+        .into_iter()
+        .map(|(track_id, placement_id, old_start_tick, new_start_tick)| {
+            yeban_model::ops::Op::MoveClipPlacement {
+                track_id,
+                placement_id,
+                old_start_tick,
+                new_start_tick,
+            }
+        })
+        .collect();
+    if ops.is_empty() {
+        return;
+    }
+    if port.commit_ops(now_ms(), "select: move clip", ops).is_err() {
         // 模型拒绝（前置条件过期 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // 载荷携带 `old_start_tick`，重试要重新读权威工程 —— 那不是本函数的职责。
         // ⭐ T-FIX-210：剪辑弹回必须出声（走 module-status 三件套，与控制台同一条通道）。
