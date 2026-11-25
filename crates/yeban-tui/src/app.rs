@@ -970,6 +970,10 @@ impl App {
     fn commit_edit(&mut self, message: &str, ops: Vec<Op>, what: &str) {
         match self.port.commit_ops(now_ms(), message, ops) {
             Ok(_) => {
+                // T-FIX-244：模型/撤销图已经变更 ⇒ 立即置脏，与引擎发布结局无关。
+                // 发布可能 Deferred（后台解码）或 Err（发布失败），两者都不能让
+                // `:q` 把这笔已提交编辑静默丢掉。
+                self.dirty = true;
                 self.sync_from_port();
                 self.publish_snapshot(what);
             }
@@ -1003,8 +1007,10 @@ impl App {
         let mark = EditMark::from_display(&self.port.display());
         match self.host.publish_project(&self.project, mark) {
             Ok(PublishOutcome::Published(_)) => {
+                // T-FIX-244：发布分支只管发布状态，不再负责置脏。
+                // 置脏在 commit_edit / apply_history_outcome 里跟着"模型已变更"走；
+                // 否则保存后一次延迟发布成功会把已清掉的 dirty 错误地置回。
                 self.publish_deferred = false;
-                self.dirty = true;
                 self.log_line(format!("{what}（已发布到引擎）"));
             }
             // ⭐ P0-7：SFZ／音频解码转到后台线程，本跳不发布；置位延后标记，
@@ -1021,7 +1027,8 @@ impl App {
     }
 
     /// ⭐ P0-7 延后发布的每跳重试：标记从端口显示态现算（与 `publish_snapshot`
-    /// 同一口径）；就绪 ⇒ 完成发布并标脏；失败 ⇒ 响亮记日志并停止重试
+    /// 同一口径）；就绪 ⇒ 完成发布（T-FIX-244：只清延后标记，**不**标脏，
+    /// 标脏已移到编辑落点）；失败 ⇒ 响亮记日志并停止重试
     /// （同一错误不再每 16 ms 刷一遍 —— 下一次编辑会重新触发发布）。
     fn retry_deferred_publish(&mut self) {
         if !self.publish_deferred {
@@ -1030,8 +1037,9 @@ impl App {
         let mark = EditMark::from_display(&self.port.display());
         match self.host.publish_project(&self.project, mark) {
             Ok(PublishOutcome::Published(_)) => {
+                // T-FIX-244：延迟发布成功只清延后标记，绝不改 dirty。
+                // dirty 由编辑本身负责；保存后这次成功不得把 dirty 置回 true。
                 self.publish_deferred = false;
-                self.dirty = true;
                 self.log_line("后台解码就绪（已发布到引擎）".to_owned());
             }
             Ok(PublishOutcome::Deferred) => {}
@@ -1065,6 +1073,9 @@ impl App {
     fn apply_history_outcome(&mut self, what: &str, outcome: ActionOutcome) {
         match outcome {
             ActionOutcome::Changed { steps, .. } => {
+                // T-FIX-244：撤销/重做同样改了端口模型 ⇒ 立即置脏。
+                // 置脏只跟"模型是否变更"绑定，不在发布分支里做。
+                self.dirty = true;
                 self.sync_from_port();
                 self.publish_snapshot(&format!("{what} {steps} 步"));
             }
@@ -4819,5 +4830,134 @@ mod tests {
             "SFZ 文本与 WAV 字节都必须进资产池: {:?}",
             archive.assets
         );
+    }
+
+    // ---- T-FIX-244：脏标记跟"模型已变更"走，不跟"引擎发布成功"走。 ----
+    struct TFix244TempDir(PathBuf);
+    impl Drop for TFix244TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 一条带音符、且未绑采样器的轨：给它绑新 SFZ 才能在发布时触发 Deferred。
+    fn tfix244_pitched_project() -> (YebanProjectV1, EntityId) {
+        let project = yeban_model::samples::filled_project();
+        let track_id = project
+            .tracks
+            .iter()
+            .find(|(_, track)| {
+                track.clips.values().any(|placement| {
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .is_some_and(|entry| entry.content.notes().is_some())
+                })
+            })
+            .map(|(id, _)| *id)
+            .expect("filled_project 必须有带音符的轨");
+        (project, track_id)
+    }
+
+    #[test]
+    fn t_fix_244_deferred_publish_marks_dirty_and_blocks_quit() {
+        let root = std::env::temp_dir().join(format!(
+            "yeban-tui-tfix244-deferred-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        let _cleanup = TFix244TempDir(root.clone());
+        std::fs::create_dir_all(&root).expect("建临时目录");
+        let sfz = root.join("kit.sfz");
+        std::fs::write(&sfz, "<region> sample=tone.wav key=60 pitch_keycenter=60\n")
+            .expect("写 SFZ 夹具");
+
+        let (project, track_id) = tfix244_pitched_project();
+        let old_sampler = project.tracks[&track_id].sampler.clone();
+        let mut app = App::with_project(project).expect("app");
+        assert!(!app.dirty);
+
+        app.commit_edit(
+            "tui: bind uncached sampler",
+            vec![Op::SetTrackSampler {
+                track_id,
+                old_sampler,
+                new_sampler: Some(yeban_model::SamplerBinding {
+                    note_octave_override: None,
+                    path: sfz.to_string_lossy().into_owned(),
+                }),
+            }],
+            "绑定音源",
+        );
+        assert!(app.publish_deferred, "首跳发布应因未缓存 SFZ 而延后");
+        assert!(app.dirty, "模型已变更 ⇒ 必须置脏，发布延后也要置脏");
+
+        app.execute_command("q");
+        assert!(!app.quit, "有未保存修改时 :q 必须被拦");
+        assert!(
+            app.log
+                .last()
+                .is_some_and(|line| line.contains("有未保存修改")),
+            "应提示先保存，got {:?}",
+            app.log.last()
+        );
+    }
+
+    #[test]
+    fn t_fix_244_failed_publish_marks_dirty_and_blocks_quit() {
+        let (project, track_id) = tfix244_pitched_project();
+        let old_sampler = project.tracks[&track_id].sampler.clone();
+        let mut app = App::with_project(project).expect("app");
+
+        let missing = std::env::temp_dir().join(format!(
+            "yeban-tui-tfix244-missing-{}-{}.sfz",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        assert!(!missing.exists());
+
+        app.commit_edit(
+            "tui: bind missing sampler",
+            vec![Op::SetTrackSampler {
+                track_id,
+                old_sampler,
+                new_sampler: Some(yeban_model::SamplerBinding {
+                    note_octave_override: None,
+                    path: missing.to_string_lossy().into_owned(),
+                }),
+            }],
+            "绑定音源",
+        );
+        assert!(app.dirty, "发布失败也不能吞掉已提交编辑的脏标记");
+        app.execute_command("q");
+        assert!(!app.quit, "发布失败后 :q 同样必须被拦");
+    }
+
+    #[test]
+    fn t_fix_244_save_clears_dirty_and_late_publish_success_does_not_redirty() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "yeban-tui-tfix244-save-{}-{}.yeban",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        let _cleanup = TempCleanup(path.clone());
+
+        let mut app = App::with_demo().expect("demo app");
+        app.toggle_mute();
+        assert!(app.dirty);
+        app.save_to(&path).expect("保存成功");
+        assert!(!app.dirty, "保存成功后必须清脏");
+
+        // 模拟一笔早先延后的发布在保存之后才成功：不得把 dirty 置回。
+        app.publish_deferred = true;
+        app.retry_deferred_publish();
+        assert!(!app.publish_deferred, "延后标记应被清掉");
+        assert!(!app.dirty, "保存后延迟发布成功不得把 dirty 置回 true");
     }
 }
