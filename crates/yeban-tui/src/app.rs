@@ -3617,7 +3617,7 @@ impl App {
         }
         let mut lines = Vec::with_capacity(candidates.len() + 1);
         lines.push(format!(
-            "已存工程（{} 条，:sessions open <序号> 打开）：",
+            "已存工程（{} 条，:sessions open[!] <序号> 打开）：",
             candidates.len()
         ));
         for (idx, path) in candidates.iter().enumerate() {
@@ -4031,16 +4031,25 @@ impl App {
                 }
             }
             "sessions" | "sessions!" => {
-                let force = verb == "sessions!";
-                // `:sessions open <n>` 从上次列出的结果里打开；仅当 "open " 后是合法
-                // 序号时才走打开分支，否则整个 rest 当作 query（工程名可能以 open 开头）。
-                if let Some(arg) = rest.strip_prefix("open ") {
-                    if let Ok(n) = arg.trim().parse::<usize>() {
+                // `:sessions open[!] <n>` 从上次列出的结果里打开；`open! ` 与
+                // `:sessions!` 都表示强开（有未保存修改时也打开）。`open ` /
+                // `open! ` 后不是合法序号时，整个 rest 当作 query 回落查询
+                // （工程名可能以 open 开头）；只有数字但越界时才报越界。
+                let open = rest
+                    .strip_prefix("open! ")
+                    .map(|arg| (arg, true))
+                    .or_else(|| rest.strip_prefix("open ").map(|arg| (arg, false)));
+                let open_num = open.and_then(|(arg, open_bang)| {
+                    arg.trim().parse::<usize>().ok().map(|n| (n, open_bang))
+                });
+                match open_num {
+                    Some((n, open_bang)) => {
                         if n == 0 || n > self.session_search.len() {
                             self.log_line(format!(
-                                "无效序号：{n}（先 :sessions 列出，再 :sessions open <序号>）"
+                                "无效序号：{n}（先 :sessions 列出，再 :sessions open[!] <序号>）"
                             ));
                         } else {
+                            let force = verb == "sessions!" || open_bang;
                             let path = self.session_search[n - 1].clone();
                             if self.dirty && !force {
                                 self.log_line(format!(
@@ -4053,15 +4062,15 @@ impl App {
                                 }
                             }
                         }
-                    } else {
-                        self.log_line(format!("无效序号：{arg:?}（序号须为正整数）"));
                     }
-                } else {
-                    let settings = yeban_app::settings::load();
-                    let candidates = Self::filter_recent_sessions(&settings.recent_projects, rest);
-                    self.session_search = candidates.clone();
-                    for line in Self::session_list_lines(&candidates, rest) {
-                        self.log_line(line);
+                    None => {
+                        let settings = yeban_app::settings::load();
+                        let candidates =
+                            Self::filter_recent_sessions(&settings.recent_projects, rest);
+                        self.session_search = candidates.clone();
+                        for line in Self::session_list_lines(&candidates, rest) {
+                            self.log_line(line);
+                        }
                     }
                 }
             }
@@ -4517,6 +4526,196 @@ mod tests {
         app.execute_command("sessions open 1");
         assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
         assert!(!app.dirty, "opened session is clean");
+    }
+
+    /// T-FIX-246：把 `YEBAN_SETTINGS_PATH` 指到临时文件，串行化同进程测试。
+    /// `std::env::set_var` 是进程级全局量，测试线程并行跑时必须持锁，否则
+    /// 别的测试可能读到这份临时设置。
+    struct TempSettings {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        path: PathBuf,
+        old: Option<std::ffi::OsString>,
+    }
+
+    static SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl TempSettings {
+        fn new() -> Self {
+            let guard = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let path = std::env::temp_dir().join(format!(
+                "yeban-tui-sessions-settings-{}.json",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let old = std::env::var_os(yeban_app::settings::SETTINGS_PATH_ENV);
+            // SAFETY: 全程持有 SETTINGS_ENV_LOCK，本进程内没有其它线程在
+            // 这段时间读写该环境变量；测试结束在 Drop 里恢复原值。
+            unsafe { std::env::set_var(yeban_app::settings::SETTINGS_PATH_ENV, &path) };
+            Self {
+                _guard: guard,
+                path,
+                old,
+            }
+        }
+    }
+
+    impl Drop for TempSettings {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(old) => {
+                    // SAFETY: 与 new() 同锁（guard 仍在手），恢复自己设置前的值。
+                    unsafe { std::env::set_var(yeban_app::settings::SETTINGS_PATH_ENV, old) }
+                }
+                None => {
+                    // SAFETY: 与 new() 同锁（guard 仍在手），删除自己设置的值。
+                    unsafe { std::env::remove_var(yeban_app::settings::SETTINGS_PATH_ENV) }
+                }
+            }
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    struct TempDirCleanup(PathBuf);
+
+    impl Drop for TempDirCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// T-FIX-246：脏工程 `:sessions open! 1` 真强开；`:sessions! open 1`
+    /// 同样强开；不带 `!` 时脏检查仍拦住。
+    #[test]
+    fn sessions_open_bang_force_opens_dirty_project() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let saved = std::env::temp_dir().join(format!(
+            "yeban-tui-sessions-bang-{}.yeban",
+            std::process::id()
+        ));
+        let _cleanup = TempCleanup(saved.clone());
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved).expect("save demo as saved session");
+
+        // `:sessions open! 1` 强开脏工程。
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = vec![saved.clone()];
+        app.dirty = true;
+        app.execute_command("sessions open! 1");
+        assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
+        assert!(!app.dirty, "forced open loads a clean session");
+
+        // `:sessions! open 1` 同样强开。
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = vec![saved.clone()];
+        app.dirty = true;
+        app.execute_command("sessions! open 1");
+        assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
+        assert!(!app.dirty, "sessions! verb also forces open");
+
+        // 不带 `!` 时脏检查仍拦住，不打开。
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = vec![saved.clone()];
+        app.dirty = true;
+        app.execute_command("sessions open 1");
+        assert_ne!(app.project_path.as_deref(), Some(saved.as_path()));
+        assert!(app.dirty, "plain open must not discard dirty edits");
+        assert!(
+            app.log.iter().any(|line| line.contains(":sessions open!")),
+            "dirty block must point at the force form, got {:?}",
+            app.log
+        );
+    }
+
+    /// T-FIX-246：`open ` 后是非数字参数时回落查询、不报序号错；
+    /// 以 `open ` 开头的工程名能被 `:sessions open <词>` 搜到。
+    #[test]
+    fn sessions_open_non_numeric_falls_back_to_query() {
+        let _settings = TempSettings::new();
+        let dir =
+            std::env::temp_dir().join(format!("yeban-tui-sessions-query-{}", std::process::id()));
+        let _dir_cleanup = TempDirCleanup(dir.clone());
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let open_alpha = dir.join("open alpha.yeban");
+        let open_session = dir.join("open session.yeban");
+        for path in [&open_alpha, &open_session] {
+            let mut writer = App::with_demo().expect("demo app");
+            writer.save_to(path).expect("save demo as saved session");
+            yeban_app::settings::record_recent_project(path, 1);
+        }
+
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("sessions open alpha");
+        assert!(
+            !app.log.iter().any(|line| line.contains("无效序号")),
+            "non-numeric open arg must fall back to query, got {:?}",
+            app.log
+        );
+        assert_eq!(app.session_search, vec![open_alpha.clone()]);
+
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("sessions open session");
+        assert!(
+            !app.log.iter().any(|line| line.contains("无效序号")),
+            "open-prefixed name search must not report a serial error, got {:?}",
+            app.log
+        );
+        assert_eq!(app.session_search, vec![open_session.clone()]);
+
+        // `open! ` 后是非数字同样回落查询，不报序号错。
+        let mut app = App::with_demo().expect("demo app");
+        app.execute_command("sessions open! alpha");
+        assert!(
+            !app.log.iter().any(|line| line.contains("无效序号")),
+            "non-numeric open! arg must also fall back to query, got {:?}",
+            app.log
+        );
+    }
+
+    /// T-FIX-246：数字越界仍报越界，不回落成查询。
+    #[test]
+    fn sessions_open_out_of_range_still_reports_range_error() {
+        struct TempCleanup(PathBuf);
+        impl Drop for TempCleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let saved = std::env::temp_dir().join(format!(
+            "yeban-tui-sessions-range-{}.yeban",
+            std::process::id()
+        ));
+        let _cleanup = TempCleanup(saved.clone());
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved).expect("save demo as saved session");
+
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = vec![saved.clone()];
+        app.execute_command("sessions open 5");
+        assert!(
+            app.log.iter().any(|line| line.contains("无效序号")),
+            "out-of-range number must still report a range error, got {:?}",
+            app.log
+        );
+        assert_ne!(app.project_path.as_deref(), Some(saved.as_path()));
+        assert_eq!(
+            app.session_search,
+            vec![saved.clone()],
+            "range error must not relist as a query"
+        );
+
+        let mut app = App::with_demo().expect("demo app");
+        app.session_search = vec![saved.clone()];
+        app.execute_command("sessions open 0");
+        assert!(
+            app.log.iter().any(|line| line.contains("无效序号")),
+            "zero must still report a range error, got {:?}",
+            app.log
+        );
     }
 
     /// T-FIX-160：保存前必须把当前音符实际触发的样本收进归档；旧实现只搬
