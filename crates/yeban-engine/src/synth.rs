@@ -93,6 +93,16 @@
 //! - **没有循环片段展开**：`ClipPlacement::loop_config` 目前被忽略，一个摆放只播一遍；
 //!   坐标语义（clip 局部 vs 时间轴）在规范里没有定义，见
 //!   `docs/ledger/engine-sound-notes.md` 的 needs；
+//! - ⭐ ⭐ **追加修订段（任务单 `T-FIX-273`，台账第 278 条：⛔ 不改上面"波形与两条支路的
+//!   电平/失谐已可选"原文）**：那一条描述的是 `T-FIX-273` **之前**的事实（当时投影只有
+//!   滤波器三旋钮 ＋ 六个振荡器键，包络恒为器件默认 5/80/0.7/50 ms），现仍逐字保留。
+//!   自 `T-FIX-273` 起 `ToneParams` **还**投影四条**振幅包络**参数
+//!   （`attack_s` / `decay_s` / `sustain` / `release_s`），
+//!   [`ToneParams::poly_synth_params`] 在 `with_filter` 之后调用
+//!   [`PolySynthParams::with_envelope`] ⇒ 工程里写的包络真的进声音。
+//!   四条键**不是**音源识别键（只写包络的设备仍被跳过），默认值逐字等于器件默认
+//!   ⇒ 不写这四个键的工程与接通前**逐位相同**（判据 E1–E4，见
+//!   `crates/yeban-engine/tests/synth_env.rs`）。仍缺参数名的**模型层规范**这一半没变。
 //! - **没有滑音/弯音/歌词/音素**：`MidiNote::slide`/`pitch_bend_curve`/`phonemes`
 //!   不参与合成；
 //! - ⭐ ⭐ **追加修订段（任务单 `#311b`，台账第 278 条：⛔ 不改上一条原文）**：上一条
@@ -233,6 +243,46 @@ const MIN_SAMPLE_RATE: f32 = 1_000.0;
 /// `ToneParams` 的字段在任何状态下都有确定的值（便于 `PartialEq` 与诊断）。
 const TONE_BYPASS_CUTOFF_HZ: f32 = 20_000.0;
 
+/// 振幅包络的四个**默认值**（秒 / 秒 / 0..1 / 秒）—— ⭐ `T-FIX-273`。
+///
+/// 这四个常量**逐字等于**器件 `yeban_dsp::polysynth` 的默认包络
+/// （`DEFAULT_ATTACK_SECONDS = 0.005`、`DEFAULT_DECAY_SECONDS = 0.08`、
+/// `DEFAULT_SUSTAIN = 0.7`、`DEFAULT_RELEASE_SECONDS = 0.05`）。为什么不直接引用器件
+/// 常量：它们是**私有的**（器件只公开 `PolySynthParams::*()` 读数）。
+///
+/// "逐字相等"由判据 `ToneParams::bypass().poly_synth_params() == PolySynthParams::new()`
+/// 钉住（判据 E1）：本层若把任何一个默认值写偏，那条等式当场变红。
+const TONE_DEFAULT_ATTACK_S: f32 = 0.005;
+/// 见 [`TONE_DEFAULT_ATTACK_S`]。
+const TONE_DEFAULT_DECAY_S: f32 = 0.08;
+/// 见 [`TONE_DEFAULT_ATTACK_S`]。
+const TONE_DEFAULT_SUSTAIN: f32 = 0.7;
+/// 见 [`TONE_DEFAULT_ATTACK_S`]。
+const TONE_DEFAULT_RELEASE_S: f32 = 0.05;
+
+/// 包络"时长"参数的钳制：非有限或负值 ⇒ 默认（`0.0` 合法 = 瞬时）。
+///
+/// 与器件 `PolySynthParams::with_envelope` 里的 `positive_or` **同口径**：
+/// 让非法输入穿过去会产生 `NaN` 包络，那是整条链路的静默死亡。
+#[must_use]
+fn tone_duration_or_default(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+/// 包络延音电平的钳制：非有限 ⇒ 默认，否则钳到 `0.0 ..= 1.0`（与器件同口径）。
+#[must_use]
+fn tone_sustain_or_default(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        TONE_DEFAULT_SUSTAIN
+    }
+}
+
 /// 引擎**波形库**的配方顺序（契约，不是实现细节）。
 ///
 /// 数组下标就是 `osc1_wave` / `osc2_wave` 两个参数的**取值**：
@@ -295,8 +345,9 @@ fn wave_index(value: Option<f32>) -> u8 {
 
 /// [`ToneParams::from_devices`] 的**每设备**投影中间量（私有）。
 ///
-/// 九个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
-/// （与"写了 `0`"不同：`osc2_level = 0` 是"显式关掉第二条支路"）。
+/// 十三个 `Option` 字段各对应一个参数名；`None` = 本设备**没写**这个参数
+/// （与"写了 `0`"不同：`osc2_level = 0` 是"显式关掉第二条支路"，`attack_s = 0`
+/// 是"显式要一条瞬时起振"）。
 #[derive(Clone, Copy, Default)]
 struct DeviceTone {
     cutoff_hz: Option<f32>,
@@ -308,6 +359,10 @@ struct DeviceTone {
     osc1_detune_cents: Option<f32>,
     osc2_level: Option<f32>,
     osc2_detune_cents: Option<f32>,
+    attack_s: Option<f32>,
+    decay_s: Option<f32>,
+    sustain: Option<f32>,
+    release_s: Option<f32>,
 }
 
 impl DeviceTone {
@@ -316,6 +371,12 @@ impl DeviceTone {
     /// 识别键 = `cutoff_hz`/`cutoff` **或**六个振荡器键中的任意一个。
     /// 只写 `resonance`/`res`/`drive` 的设备**仍然不算**来源 —— 这是上移前的规则
     /// （滤波器的主参数是截止频率），本票只把振荡器键**并列**加进来。
+    ///
+    /// ⭐ `T-FIX-273` 的四条包络键（`attack_s` / `decay_s` / `sustain` / `release_s`）
+    /// **不是**识别键，与 `resonance`/`drive` 同一条理由：包络是**声部**的修饰，
+    /// 它不回答"这台设备是不是音源"。只写包络键的设备仍然被跳过（`from_devices`
+    /// 继续找下一条），因此"接通 ADSR"没有放宽音源判据 —— 既有工程里没有被
+    /// 误认成音源的哑设备。
     const fn is_source(&self) -> bool {
         self.cutoff_hz.is_some()
             || self.osc1_wave.is_some()
@@ -327,7 +388,8 @@ impl DeviceTone {
     }
 }
 
-/// 内置音色的**引擎侧**参数投影：一个四极梯形低通的三个旋钮 ＋ 两条振荡器支路。
+/// 内置音色的**引擎侧**参数投影：一个四极梯形低通的三个旋钮 ＋ 两条振荡器支路
+/// ＋ 振幅包络四个参数（⭐ `T-FIX-273` 接通后四项，见下面"## 振幅包络"）。
 ///
 /// ## 这是临时形状，不是模型层的第二份定义
 ///
@@ -348,9 +410,13 @@ impl DeviceTone {
 ///     {name:"osc1_wave",  value: 1}          ├ osc1_level: f32
 ///     {name:"osc2_wave",  value: 4}          ├ osc1_detune_cents: f32
 ///     {name:"osc1_level", value: 0.8}        ├ osc2_level: f32
-///     {name:"osc1_detune_cents", value: -6}  └ osc2_detune_cents: f32
-///     {name:"osc2_level", value: 0.5}
-///     {name:"osc2_detune_cents", value: 7}   ⇒ 本模块的投影整体删除，改成直读字段
+///     {name:"osc1_detune_cents", value: -6}  ├ osc2_detune_cents: f32
+///     {name:"osc2_level", value: 0.5}        ├ attack_s: f32
+///     {name:"osc2_detune_cents", value: 7}   ├ decay_s: f32
+///     {name:"attack_s",  value: 0.005}       ├ sustain: f32
+///     {name:"decay_s",   value: 0.08}        └ release_s: f32
+///     {name:"sustain",   value: 0.7}
+///     {name:"release_s", value: 0.05}        ⇒ 本模块的投影整体删除，改成直读字段
 ///   ]
 /// ```
 ///
@@ -361,9 +427,11 @@ impl DeviceTone {
 /// 2. **识别键**：`cutoff_hz`/`cutoff` **或**六个振荡器键中的任意一个。取值发生在
 ///    **第一条**写了识别键的设备上（上移前的识别键只有截止频率；振荡器键是按
 ///    "引擎侧选不了波形 / 第二条振荡器"这条缺口登记补上的同一类键）；
-/// 3. 九个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
+///    ⭐ 四条包络键（`attack_s` / `decay_s` / `sustain` / `release_s`）**不是**识别键
+///    （理由见 [`DeviceTone::is_source`]），它们跟着**已识别**的那条音源设备一起投影；
+/// 3. 十三个参数名（大小写不敏感）：`cutoff_hz`/`cutoff`、`resonance`/`res`、`drive`、
 ///    `osc1_wave`、`osc2_wave`、`osc1_level`、`osc1_detune_cents`、`osc2_level`、
-///    `osc2_detune_cents`；
+///    `osc2_detune_cents`、`attack_s`、`decay_s`、`sustain`、`release_s`；
 /// 4. **一个识别键都没有 ⇒ [`ToneParams::bypass`]**：这是刻意选的默认值，
 ///    因为"模型层没给参数"与"用户把滤波器拧到旁通"在音频上应当同解 ——
 ///    这样既有的（无设备链的）工程逐位不变，也避免了给所有轨道硬塞一个未裁决的音色；
@@ -371,7 +439,8 @@ impl DeviceTone {
 ///    截止频率 `20 Hz ..= 0.45·fs`、共振/驱动 `0.0 ..= 1.0`；
 /// 6. 非有限值 ⇒ **该参数**按默认取（截止 `12 kHz`、共振 `0`、驱动 `0`、
 ///    波形下标 `0`、`osc1_level` `1.0`（满）、`osc1_detune_cents` `0.0`、
-///    `osc2_level` `0.0`（关）、`osc2_detune_cents` `0.0`），绝不 `NaN`；
+///    `osc2_level` `0.0`（关）、`osc2_detune_cents` `0.0`、`attack_s` `0.005`、
+///    `decay_s` `0.08`、`sustain` `0.7`、`release_s` `0.05`），绝不 `NaN`；
 /// 7. **只有振荡器键、没有截止频率** ⇒ 滤波器**整段旁通**，振荡器照常投影
 ///    （不是"截止取成 20 kHz 占位值"——那样状态变量仍会吸收瞬态并染色）。
 ///
@@ -388,6 +457,26 @@ impl DeviceTone {
 /// 相同**（判据 O1 与 O8）。`osc2_level == 0.0`（默认）时器件对第二条支路**一帧也不
 /// 执行**（[`yeban_dsp::polysynth`] 模块文档 §2）⇒ "关掉"是逐位恒等的；`osc1_level`
 /// 取 `0.0` 时第一条支路同样一帧也不执行。
+///
+/// ## 振幅包络（⭐ `T-FIX-273`：`attack_s` / `decay_s` / `sustain` / `release_s`）
+///
+/// 器件侧 [`PolySynthParams::with_envelope`] 早就存在并有单元判据，但**引擎侧**
+/// 此前没有这四个字段、`poly_synth_params()` 也从不调用它 ⇒ 所有内置 PolySynth 轨道
+/// 只能用器件的默认包络（5 / 80 / 0.7 / 50 ms），工程里写的包络参数**一个也不进声音**。
+/// 本票把四条投影接通：
+///
+/// - 参数名（大小写不敏感）：`attack_s` / `decay_s` / `sustain` / `release_s`；
+/// - **默认值 = 器件默认值**（这是"接线不改变既有输出"的全部理由）：
+///   [`TONE_DEFAULT_ATTACK_S`] `0.005`、[`TONE_DEFAULT_DECAY_S`] `0.08`、
+///   [`TONE_DEFAULT_SUSTAIN`] `0.7`、[`TONE_DEFAULT_RELEASE_S`] `0.05`；
+///   不写这四个键的工程与接通之前**逐位相同**（判据 E1）；
+/// - **非法值回落本层默认**：三个"时长"参数非有限或**负值** ⇒ 该参数取默认
+///   （与器件 `positive_or` 同口径；`0.0` 是**合法值** = 瞬时起振/瞬时释放，
+///   不是"没写"）；`sustain` 非有限 ⇒ 默认，否则钳到 `0.0 ..= 1.0`；
+///   本层因此**从不**把 `NaN`/`inf` 交给器件（判据 E4）；
+/// - 包络键**不是识别键**：只写包络的设备仍不构成音源（见 [`DeviceTone::is_source`]）。
+///
+/// 包络系数含 `exp` ⇒ 落在下面的**超越函数类**；接线不改变这一分类。
 ///
 /// ## 确定性分类（[ADR-0001 D32]）
 ///
@@ -409,6 +498,10 @@ pub struct ToneParams {
     bypass: bool,
     osc1_wave: u8,
     osc2_wave: u8,
+    attack_s: f32,
+    decay_s: f32,
+    sustain: f32,
+    release_s: f32,
 }
 
 impl ToneParams {
@@ -418,7 +511,8 @@ impl ToneParams {
     /// 旁通是**逐位恒等**的：`render_track` 根本不调用 `process`。
     ///
     /// 振荡器取**历史默认**：`osc1_level = 1.0`（满）、`osc1_detune_cents = 0.0`、
-    /// `osc2_level = 0.0`（关）、`osc2_detune_cents = 0.0`。
+    /// `osc2_level = 0.0`（关）、`osc2_detune_cents = 0.0`；包络取**器件默认**
+    /// （`0.005` / `0.08` / `0.7` / `0.05` 秒）。
     #[must_use]
     pub const fn bypass() -> Self {
         Self {
@@ -432,6 +526,10 @@ impl ToneParams {
             bypass: true,
             osc1_wave: 0,
             osc2_wave: 0,
+            attack_s: TONE_DEFAULT_ATTACK_S,
+            decay_s: TONE_DEFAULT_DECAY_S,
+            sustain: TONE_DEFAULT_SUSTAIN,
+            release_s: TONE_DEFAULT_RELEASE_S,
         }
     }
 
@@ -439,7 +537,8 @@ impl ToneParams {
     ///
     /// 振荡器取**默认**：`osc1_wave = osc2_wave = 0`（[`HOLLOW`]）、第一条支路满电平
     /// 不失谐、`osc2` 关。要选波形、开第二条支路或给第一条支路设电平/失谐，接着调
-    /// [`ToneParams::with_oscillators`] 与 [`ToneParams::with_osc1`]。
+    /// [`ToneParams::with_oscillators`] 与 [`ToneParams::with_osc1`]；要改包络接着调
+    /// [`ToneParams::with_envelope`]。包络在这里取**器件默认**（判据 E1 的构造依据）。
     #[must_use]
     pub fn new(cutoff_hz: f32, resonance: f32, drive: f32) -> Self {
         Self {
@@ -465,6 +564,10 @@ impl ToneParams {
             bypass: false,
             osc1_wave: 0,
             osc2_wave: 0,
+            attack_s: TONE_DEFAULT_ATTACK_S,
+            decay_s: TONE_DEFAULT_DECAY_S,
+            sustain: TONE_DEFAULT_SUSTAIN,
+            release_s: TONE_DEFAULT_RELEASE_S,
         }
     }
 
@@ -547,6 +650,35 @@ impl ToneParams {
         self
     }
 
+    /// 设置**振幅包络**四个参数（**构造期**；非法值退回本层的默认值）。
+    ///
+    /// ⭐ `T-FIX-273`：这是"工程参数真的进声音"的那条投影。器件侧
+    /// [`PolySynthParams::with_envelope`] 早就存在，本层此前没有这四个字段 ⇒ 所有内置
+    /// PolySynth 轨道只能用器件默认包络（5 / 80 / 0.7 / 50 ms）。
+    ///
+    /// - `attack_s` / `decay_s` / `release_s`：秒。**非有限或负值** ⇒ 该参数取本层默认
+    ///   （[`TONE_DEFAULT_ATTACK_S`] / [`TONE_DEFAULT_DECAY_S`] / [`TONE_DEFAULT_RELEASE_S`]）；
+    ///   `0.0` 是**合法值**（瞬时起振/瞬时释放），与"没写"（`None` ⇒ 默认）不同；
+    /// - `sustain`：`0.0 ..= 1.0` 的延音电平。非有限 ⇒ [`TONE_DEFAULT_SUSTAIN`]，
+    ///   否则钳到 `0.0 ..= 1.0`。
+    ///
+    /// ⚠ 本层**不**做"包络与滤波器旁通的联动"：包络挂在声部上，与滤波器是否旁通无关
+    /// （`bypass()` 出来的音色照样可以是长起振）。
+    #[must_use]
+    pub fn with_envelope(
+        mut self,
+        attack_s: f32,
+        decay_s: f32,
+        sustain: f32,
+        release_s: f32,
+    ) -> Self {
+        self.attack_s = tone_duration_or_default(attack_s, TONE_DEFAULT_ATTACK_S);
+        self.decay_s = tone_duration_or_default(decay_s, TONE_DEFAULT_DECAY_S);
+        self.sustain = tone_sustain_or_default(sustain);
+        self.release_s = tone_duration_or_default(release_s, TONE_DEFAULT_RELEASE_S);
+        self
+    }
+
     /// 从模型层的设备链投影（**控制线程**；见本节文档的投影规则）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
@@ -567,6 +699,10 @@ impl ToneParams {
                     "osc1_detune_cents" => tone.osc1_detune_cents = Some(param.value),
                     "osc2_level" => tone.osc2_level = Some(param.value),
                     "osc2_detune_cents" => tone.osc2_detune_cents = Some(param.value),
+                    "attack_s" => tone.attack_s = Some(param.value),
+                    "decay_s" => tone.decay_s = Some(param.value),
+                    "sustain" => tone.sustain = Some(param.value),
+                    "release_s" => tone.release_s = Some(param.value),
                     _ => {}
                 }
             }
@@ -597,6 +733,12 @@ impl ToneParams {
         .with_osc1(
             tone.osc1_level.unwrap_or(1.0),
             tone.osc1_detune_cents.unwrap_or(0.0),
+        )
+        .with_envelope(
+            tone.attack_s.unwrap_or(TONE_DEFAULT_ATTACK_S),
+            tone.decay_s.unwrap_or(TONE_DEFAULT_DECAY_S),
+            tone.sustain.unwrap_or(TONE_DEFAULT_SUSTAIN),
+            tone.release_s.unwrap_or(TONE_DEFAULT_RELEASE_S),
         )
     }
 
@@ -660,6 +802,30 @@ impl ToneParams {
         self.osc2_detune_cents
     }
 
+    /// 起振时间（秒；⭐ `T-FIX-273`）。
+    #[must_use]
+    pub const fn attack_s(&self) -> f32 {
+        self.attack_s
+    }
+
+    /// 衰减时间（秒；⭐ `T-FIX-273`）。
+    #[must_use]
+    pub const fn decay_s(&self) -> f32 {
+        self.decay_s
+    }
+
+    /// 延音电平（0..1；⭐ `T-FIX-273`）。
+    #[must_use]
+    pub const fn sustain(&self) -> f32 {
+        self.sustain
+    }
+
+    /// 释放时间（秒；⭐ `T-FIX-273`）。
+    #[must_use]
+    pub const fn release_s(&self) -> f32 {
+        self.release_s
+    }
+
     /// 在给定采样率下武装一个滤波器（**构造期**：含 `tan`，超越函数类）。
     #[must_use]
     pub fn filter(&self, sample_rate: f32) -> LadderFilter {
@@ -688,6 +854,11 @@ impl ToneParams {
     /// `osc1_detune_cents = 0.0`、`osc2_level = 0.0`（关）⇒ 与
     /// [`PolySynthParams::new`] 的参数**逐位相同**，
     /// 因此输出与接通振荡器投影之前**逐位相同**（判据 O1 与 O8）。
+    ///
+    /// ⭐ `T-FIX-273`：包络在 `with_filter` **之后**接入（`.with_envelope(..)`），
+    /// 四个字段一律取自本层（已钳制的）字段 ⇒ 不写包络键时是
+    /// `0.005 / 0.08 / 0.7 / 0.05`，与 [`PolySynthParams::new`] **逐字段相同**
+    /// （判据 E1，它同时钉住"默认值写偏"）。
     #[must_use]
     pub fn poly_synth_params(&self) -> PolySynthParams {
         PolySynthParams::new()
@@ -696,6 +867,7 @@ impl ToneParams {
                 Self::osc_settings(self.osc2_wave, self.osc2_level, self.osc2_detune_cents),
             )
             .with_filter(self.cutoff_hz, self.resonance, self.drive, self.bypass)
+            .with_envelope(self.attack_s, self.decay_s, self.sustain, self.release_s)
     }
 }
 
@@ -3809,7 +3981,15 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
 /// 音色选择的入口就是这里的前两项：`osc1_wave` / `osc2_wave` 的取值是
 /// [`ENGINE_WAVE_RECIPES`] 的**下标**（0=hollow / 1=organ / 2=vocal /
 /// 3=metallic / 4=glass，钳位规则见 [`wave_index`]）。
-pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 11] = [
+///
+/// ⭐ `T-FIX-273` 追加四条包络键（`attack_s` / `decay_s` / `sustain` / `release_s`）：
+/// `from_devices` 消费它们、[`ToneParams::poly_synth_params`] 经
+/// [`PolySynthParams::with_envelope`] 把它们送进器件 ⇒ 离线路径**不许**再把它们登记成
+/// "没被求值"（否则 `deviceChainDsp` 会对一条真的在响的轨报假话）。
+/// 数组长度因此从 11 变成 15；判据
+/// `every_consumed_instrument_param_reaches_the_engine_projection` 对每条新名字
+/// 都要求"注入后投影必须变"。
+pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 15] = [
     "cutoff_hz",
     "cutoff",
     "resonance",
@@ -3821,6 +4001,10 @@ pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 11] = [
     "osc1_detune_cents",
     "osc2_level",
     "osc2_detune_cents",
+    "attack_s",
+    "decay_s",
+    "sustain",
+    "release_s",
 ];
 
 /// [`CONSUMED_INSTRUMENT_PARAMS`] 的成员判定 **∪** 鼓机键位/旋钮名
@@ -4397,6 +4581,12 @@ mod tests {
             ("osc1_detune_cents", 0.0),
             ("osc2_level", 0.0),
             ("osc2_detune_cents", 0.0),
+            // ⭐ `T-FIX-273`：四条包络键进底座（值 = 默认）。注入值 `0.5` 对四个字段
+            // 都远离默认（0.005 / 0.08 / 0.7 / 0.05）⇒ "必须改变"分支不空转。
+            ("attack_s", 0.005),
+            ("decay_s", 0.08),
+            ("sustain", 0.7),
+            ("release_s", 0.05),
         ];
         let device_with = |name: &str, value: f32| {
             let mut params: Vec<yeban_model::ParameterValue> = base
