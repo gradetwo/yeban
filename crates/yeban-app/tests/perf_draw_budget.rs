@@ -627,8 +627,8 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("clip-mutes", get_clip_mutes);
     push!("clip-positions", get_clip_positions);
     push!("clip-widths", get_clip_widths);
-    push!("clip-ys", get_clip_ys);
-    push!("clip-heights", get_clip_heights);
+    // T-FIX-421：`clip-ys` / `clip-heights` 已随死注入删除（剪辑几何改走行内相对布局），
+    // 不再在 `apply_view` 的每帧路径上 ⇒ 从本清单移除。
     // ⭐ 任务单 `#133`：素材池面板的三个平行数组也在 `apply_view` 的每帧路径上
     // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
     push!("asset-pool-names", get_asset_pool_names);

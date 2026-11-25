@@ -865,7 +865,7 @@ fn set_scene_launch_status(ui: &MainWindow, text: &str) {
 ///
 /// ## 为什么需要一个子集（它不是"第二个注入点"）
 ///
-/// 7 个数组只在这里列出来，`apply_view` 不再各写一遍 ⇒ 不存在"两份必须一致的列表"。
+/// 5 个数组只在这里列出来，`apply_view` 不再各写一遍 ⇒ 不存在"两份必须一致的列表"。
 /// 它单独存在的理由是**指针抓取**，实测换来的：
 ///
 /// - [`apply_view`] 会把 repeater 的**模型**（`track-names` / `clip-ulids` /
@@ -879,19 +879,18 @@ fn set_scene_launch_status(ui: &MainWindow, text: &str) {
 /// `the_row_geometry_subset_agrees_with_the_full_injection` 逐位对账（把新的行几何派生物
 /// 加进 `apply_view` 却忘记加到这里时，那条判据会红）。
 ///
-/// 7 个数组就是行几何的**全部**消费者：包头 / 车道（`track-ys` / `track-heights`）、
-/// 剪辑（`clip-ys` / `clip-heights`）、自动化带（`automation-lane-band-ys` /
-/// `-band-heights`）与自动化折线（`automation-path-commands` —— 顶点是逐像素的逻辑坐标，
-/// 行高一变它就得重算）。
+/// 5 个数组就是行几何的**全部**消费者：包头 / 车道（`track-ys` / `track-heights`）、
+/// 自动化带（`automation-lane-band-ys` / `-band-heights`）与自动化折线
+/// （`automation-path-commands` —— 顶点是逐像素的逻辑坐标，行高一变它就得重算）。
+/// 剪辑几何（`clip-ys` / `clip-heights`）已在 T-FIX-421 删除：S0 投影搬移后剪辑画在
+/// 行内（`arrangement.slint` 的 `y: 4px; height: Math.max(52px, parent.height - 8px)`），
+/// 注入无读者。
 pub fn apply_row_geometry(ui: &MainWindow, view: &ViewState) {
     // `.slint` 直接画注入值、不做 `42px + 56px * i`（`ADR-0004` S0 的前缀和）。
     ui.set_track_ys(lengths(&view.track_ys()));
     ui.set_track_heights(lengths(&view.track_heights()));
     // 行区滚动容器的内容高（同一份行几何派生；演示工程内容不高 ⇒ 偏移恒 0）。
     ui.set_arrangement_sheet_height(view.track_sheet_height().max(0.0));
-    // 剪辑的行几何同源：由所在行的 `RowGeometry` 给出（旧版 `.slint` 自己乘 `clip-lanes`）。
-    ui.set_clip_ys(lengths(&view.clip_ys()));
-    ui.set_clip_heights(lengths(&view.clip_heights()));
     // 自动化带与折线：带高 = (行槽高 − 2 × 内缩) / 泳道数，顶点 y 也出自同一份行几何。
     ui.set_automation_lane_band_ys(lengths(&view.automation_lane_band_ys()));
     ui.set_automation_lane_band_heights(lengths(&view.automation_lane_band_heights()));

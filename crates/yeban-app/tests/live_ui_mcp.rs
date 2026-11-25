@@ -2120,14 +2120,13 @@ fn injected_strings(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> 
     model.iter().map(|value| value.to_string()).collect()
 }
 
-/// 窗口上那 7 个行几何数组的快照（顺序 = `host::apply_row_geometry` 的写入顺序）。
+/// 窗口上那 5 个行几何数组的快照（顺序 = `host::apply_row_geometry` 的写入顺序）。
+/// T-FIX-421：`clip-ys` / `clip-heights` 已随死注入删除（剪辑几何改走行内相对布局）。
 fn row_geometry_snapshot(window: &yeban_app::ui::MainWindow) -> (Vec<Vec<f32>>, Vec<String>) {
     (
         vec![
             injected_lengths(&window.get_track_ys()),
             injected_lengths(&window.get_track_heights()),
-            injected_lengths(&window.get_clip_ys()),
-            injected_lengths(&window.get_clip_heights()),
             injected_lengths(&window.get_automation_lane_band_ys()),
             injected_lengths(&window.get_automation_lane_band_heights()),
         ],
@@ -2135,14 +2134,12 @@ fn row_geometry_snapshot(window: &yeban_app::ui::MainWindow) -> (Vec<Vec<f32>>, 
     )
 }
 
-/// **投影**里同样那 7 个字段的快照（本判据的独立基准；不是"另一个注入写者"）。
+/// **投影**里同样那 5 个字段的快照（本判据的独立基准；不是"另一个注入写者"）。
 fn projection_geometry_snapshot(view: &ViewState) -> (Vec<Vec<f32>>, Vec<String>) {
     (
         vec![
             view.track_ys(),
             view.track_heights(),
-            view.clip_ys(),
-            view.clip_heights(),
             view.automation_lane_band_ys(),
             view.automation_lane_band_heights(),
         ],
@@ -2496,15 +2493,18 @@ fn the_set_track_height_method_reaches_the_injected_row_geometry() {
 ///
 /// | 注入路径 | 谁用 | 断言 |
 /// | :--- | :--- | :--- |
-/// | `host::apply_row_geometry`（窄，7 个数组） | 拖拽手势的每一次 move | 窗口上的 7 个数组 == `ViewState` 的对应字段 |
+/// | `host::apply_row_geometry`（窄，5 个数组） | 拖拽手势的每一次 move | 窗口上的 5 个数组 == `ViewState` 的对应字段 |
 /// | `host::apply_view`（完整） | 换工程 / 撤销 / 打开工程 | 同上 |
 ///
 /// 于是"漏掉任何一个行几何数组"（无论在哪条路里）都会红。
 ///
 /// ## 怎么变红（实测）
 ///
-/// 从 `apply_row_geometry` 里删掉 `set_clip_ys` / `set_clip_heights` ⇒ 窗口上的
-/// `clip-ys` 停在旧值、投影给了新值 ⇒ 本判据红。
+/// 从 `apply_row_geometry` 里删掉 `set_track_ys` / `set_track_heights` ⇒ 窗口上的
+/// `track-ys` 停在旧值、投影给了新值 ⇒ 本判据红。
+/// （历史：第一版判据拿"窄注入 == 完整注入"当基准时，删 `set_clip_ys` 没有变红——
+/// 两条路一起漏，两边相等；那是空转判据，见上。T-FIX-421 后 `clip-ys` / `clip-heights`
+/// 已随死注入删除，不再是本判据的变红路径。）
 #[test]
 fn the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
@@ -2547,8 +2547,8 @@ fn the_row_geometry_writers_carry_the_projections_geometry_bit_for_bit() {
 ///
 /// 这条是"像素影响"的可判据那一半（另一half 是渲染帧 sha256 的 A/B，见交付报告）：
 /// 新的 `TouchArea` **不画任何东西**，新的属性与回调**不进像素**，因此默认帧的输入
-/// （`track-ys` / `track-heights` / `clip-ys` / `clip-heights` / 自动化带与折线）
-/// 必须与加手势之前**逐位相同**。
+/// （`track-ys` / `track-heights` / 自动化带与折线）必须与加手势之前**逐位相同**。
+/// （T-FIX-421：`clip-ys` / `clip-heights` 已随死注入删除，不再是默认帧的输入。）
 #[test]
 fn the_default_row_geometry_is_bit_for_bit_the_s0_literals() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
