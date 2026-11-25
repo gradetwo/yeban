@@ -57,6 +57,54 @@ impl Drop for Scratch {
 ///（与 `load_sfz_relative_path.rs` 的 `LibraryEnv` 同一口径）。
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// 清空指定轨的设备链并绑上工厂采样器（模拟"只有 `Preset:` 设备"的工厂 SFZ 轨，
+/// 用来对照不含手工设备时预制字节不变）。
+fn with_clean_sampler_track(
+    mut project: yeban_model::YebanProjectV1,
+    track: &str,
+) -> yeban_model::YebanProjectV1 {
+    let target = project
+        .tracks
+        .values_mut()
+        .find(|candidate| candidate.name == track)
+        .unwrap_or_else(|| panic!("轨 `{track}` 不在演示工程里"));
+    target.devices.clear();
+    target.sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: None,
+        path: format!("assets/samples/salamander-grand/{PIANO_SFZ_FRAGMENT}"),
+    });
+    project
+}
+
+/// 给工程里名为 `track` 的轨手工插一台 EQ（参数 `low_gain = 6.0`）。
+///
+/// 这是票面工作流的起点：**手工插入**的设备名不带 `Preset: ` 前缀，
+/// 旧 `snapshot_track` 会直接跳过它。
+fn with_eq_device(
+    mut project: yeban_model::YebanProjectV1,
+    track: &str,
+) -> yeban_model::YebanProjectV1 {
+    let target = project
+        .tracks
+        .values_mut()
+        .find(|candidate| candidate.name == track)
+        .unwrap_or_else(|| panic!("轨 `{track}` 不在演示工程里"));
+    target.devices.push(yeban_model::DeviceDefinition {
+        id: EntityId::new(),
+        name: "EQ".to_owned(),
+        kind: yeban_model::DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![yeban_model::ParameterValue {
+            name: "low_gain".to_owned(),
+            value: 6.0,
+            unit: None,
+        }],
+        latency_samples: 0,
+        plugin: None,
+    });
+    project
+}
+
 /// 把 `$HOME` 指到临时目录（用户预制库随之搬家），析构时恢复。
 struct HomeGuard {
     old_home: Option<String>,
@@ -811,4 +859,172 @@ fn save_project_receipt_reports_embedded_presets() {
         skipped["embeddedPresets"]["includedUserPresets"], false,
         "{skipped}"
     );
+}
+
+/// 判据（T-FIX-414，缺口 2 / 裁决 A）：手工插入的 EQ `low_gain = 6.0` 存成整轨
+/// 预制后，应用到**另一条轨**必须把参数带过去（确定性身份、先拆旧链）。
+#[test]
+fn eq_device_flows_through_a_track_preset_to_another_track() {
+    let scratch = Scratch::new("eq-flow");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!("yeban-mcp-preset-eq-{}.yeban", std::process::id())),
+            with_eq_device(demo_project(), "主音"),
+            false,
+        )
+        .expect("注入带手工 EQ 的演示工程");
+
+    let lead = track_id(&dispatcher, "主音");
+    let pad = track_id(&dispatcher, "铺底");
+    let saved = call(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": lead, "name": "eq-plus-six", "scope": "track"}),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let id = saved["id"].as_str().expect("id").to_owned();
+
+    let applied = call(
+        &mut dispatcher,
+        "yeban_apply_preset",
+        serde_json::json!({"trackId": pad, "presetId": id, "autoMerge": true}),
+    );
+    assert_eq!(applied["autoMerged"], true, "{applied}");
+    let after = track_snapshot(&dispatcher, "铺底");
+    let eq = after
+        .devices
+        .iter()
+        .find(|device| device.name == "EQ")
+        .unwrap_or_else(|| panic!("EQ 没有被带过去: {:?}", after.devices));
+    let low_gain = eq
+        .params
+        .iter()
+        .find(|param| param.name == "low_gain")
+        .map(|param| param.value)
+        .expect("EQ 须带 low_gain");
+    assert_eq!(low_gain, 6.0, "手工 EQ 的 low_gain 须逐值带过去");
+
+    // 再应用一次同一份预制 ⇒ 链条先拆再建，不得叠成两台 EQ。
+    call(
+        &mut dispatcher,
+        "yeban_apply_preset",
+        serde_json::json!({"trackId": pad, "presetId": id, "autoMerge": true}),
+    );
+    let twice = track_snapshot(&dispatcher, "铺底");
+    assert_eq!(
+        twice
+            .devices
+            .iter()
+            .filter(|device| device.name == "EQ")
+            .count(),
+        1,
+        "重复应用要先拆旧捕获链（否则叠设备）: {:?}",
+        twice.devices
+    );
+}
+
+/// 判据（T-FIX-414，缺口 1 / 探针 1 收编）：`internal` 整轨预制存下后
+/// **列得出、应用得了**。旧 `validate()` 要求 `instrument_sfz` 非空 ⇒
+/// 保存腿不校验、读取腿校验，文件一写出来就「损坏」。
+#[test]
+fn internal_track_preset_is_listed_and_applicable() {
+    let scratch = Scratch::new("internal-list-apply");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!(
+                "yeban-mcp-preset-internal-{}.yeban",
+                std::process::id()
+            )),
+            demo_project(),
+            false,
+        )
+        .expect("注入演示工程");
+
+    let midi = track_id(&dispatcher, "鼓");
+    let pad = track_id(&dispatcher, "铺底");
+    let saved = call(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": midi, "name": "internal-whole", "scope": "track"}),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let id = saved["id"].as_str().expect("id").to_owned();
+
+    let listed = call(
+        &mut dispatcher,
+        "yeban_list_presets",
+        serde_json::json!({"kind": "user"}),
+    );
+    assert_eq!(
+        listed["skipped"],
+        serde_json::json!([]),
+        "不得有损坏条目: {listed}"
+    );
+    assert!(
+        listed["presets"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == id.as_str())),
+        "internal 整轨预制必须列得出来: {listed}"
+    );
+
+    let applied = call(
+        &mut dispatcher,
+        "yeban_apply_preset",
+        serde_json::json!({"trackId": pad, "presetId": id, "autoMerge": true}),
+    );
+    assert_eq!(applied["autoMerged"], true, "应用腿必须成功: {applied}");
+    assert_eq!(
+        track_snapshot(&dispatcher, "铺底")
+            .preset
+            .as_ref()
+            .map(|state| state.preset_id.clone()),
+        Some(Some(id)),
+        "应用后轨须记下该预制"
+    );
+}
+
+/// 判据（T-FIX-414，缺口 2 的字节面 / 探针 2 收编）：工厂 SFZ 轨的整轨预制
+/// 不含手工设备 ⇒ `devices` 整段省略，序列化字节与旧格式逐字一致（不升 format）。
+#[test]
+fn factory_track_preset_stays_byte_identical_without_captured_devices() {
+    let scratch = Scratch::new("factory-bytes");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!(
+                "yeban-mcp-preset-bytes-{}.yeban",
+                std::process::id()
+            )),
+            with_clean_sampler_track(demo_project(), "主音"),
+            false,
+        )
+        .expect("注入只有工厂采样器、无手工设备的工程");
+    let lead = track_id(&dispatcher, "主音");
+    let saved = call(
+        &mut dispatcher,
+        "yeban_save_preset",
+        serde_json::json!({"trackId": lead, "name": "factory-whole", "scope": "track"}),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    let text = std::fs::read_to_string(saved["path"].as_str().expect("path")).expect("读库");
+    let parsed: Value = serde_json::from_str(&text).expect("合法 JSON");
+    assert!(
+        parsed.get("devices").is_none(),
+        "没有手工设备的预制不得写出 devices 段（旧预制字节不变）: {text}"
+    );
+    assert_eq!(parsed["format"], 1, "不得升 format: {text}");
 }

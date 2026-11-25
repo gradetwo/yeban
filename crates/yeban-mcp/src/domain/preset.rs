@@ -466,6 +466,28 @@ fn preset_device(
     }
 }
 
+/// 捕获链设备的确定性身份。
+///
+/// ⚠ **与预制标识无关**：同一轨上任何一份预制留下的捕获链都派生出同一组
+/// 身份 ⇒ 换一份预制再应用时能按身份把旧链整体拆掉，不会叠两条 EQ。
+fn captured_chain_id(track_id: &EntityId, index: usize) -> EntityId {
+    deterministic_id(&format!("preset-capture:{track_id}:{index}"))
+}
+
+/// 按槽位扫出**捕获链**设备的槽位（升序）。
+///
+/// 判据是身份而不是名字：捕获的设备名保持原样（`EQ` 就是 `EQ`），
+/// 名字不构成可辨认的标记。
+fn captured_chain_slots(track: &TrackV3, track_id: &EntityId) -> Vec<usize> {
+    track
+        .devices
+        .iter()
+        .enumerate()
+        .filter(|(index, device)| device.id == captured_chain_id(track_id, *index))
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// 把一份预制应用到一条轨的 `Op` 规划（提案路径；不直接改工程）。
 ///
 /// 顺序：先拆旧预制设备（下标降序），再追加新设备，最后写发送增益、
@@ -501,6 +523,30 @@ pub fn build_apply_ops(
             previous_device: track.devices[slot].clone(),
         });
         device_len -= 1;
+    }
+    // ①b 拆上一条预制留下的**捕获设备链**（按身份扫，与预制标识无关），
+    //    再按本次预制里的顺序整链重建 ⇒ 换预制/重复应用都不会叠设备。
+    if categories.contains(&"strip") {
+        let mut captured = captured_chain_slots(track, track_id);
+        captured.sort_unstable_by(|a, b| b.cmp(a));
+        for slot in captured {
+            ops.push(Op::RemoveDevice {
+                track_id: *track_id,
+                slot_index: slot,
+                previous_device: track.devices[slot].clone(),
+            });
+            device_len -= 1;
+        }
+        for (index, device) in preset.devices.iter().enumerate() {
+            let mut rebuilt = device.clone();
+            rebuilt.id = captured_chain_id(track_id, index);
+            ops.push(Op::InsertDevice {
+                track_id: *track_id,
+                slot_index: device_len,
+                device: rebuilt,
+            });
+            device_len += 1;
+        }
     }
     // ② 通道条（strip 类）。
     if categories.contains(&"strip") {
@@ -659,6 +705,17 @@ pub fn build_bypass_ops(
     let mut slots = preset_device_slots(track);
     slots.sort_unstable_by(|a, b| b.cmp(a));
     for slot in slots {
+        ops.push(Op::RemoveDevice {
+            track_id: *track_id,
+            slot_index: slot,
+            previous_device: track.devices[slot].clone(),
+        });
+        device_len -= 1;
+    }
+    // 旁通同样要把预制带入的捕获设备链拆掉（否则「旁通」了 EQ 还在）。
+    let mut captured = captured_chain_slots(track, track_id);
+    captured.sort_unstable_by(|a, b| b.cmp(a));
+    for slot in captured {
         ops.push(Op::RemoveDevice {
             track_id: *track_id,
             slot_index: slot,
@@ -991,6 +1048,20 @@ pub fn build_save_preset(
         // 捕获（轨绑定文件的内容摘要 → registry 里那份装载的 `initial_cc`），
         // 这里先给空表（序列化时整段省略，与改前逐字一致）。
         cc: BTreeMap::new(),
+        // ⭐ T-FIX-390/414：整轨快照捕获**非预制设备链**（手工插入的 EQ、压缩器
+        // 等）。名字不带 `Preset: ` 前缀的设备原先被直接跳过 ⇒ 「存一套 EQ/发送/
+        // 推子，复用到另一条轨」这条核心工作流在 EQ 上是断的。
+        // 只在 `track` 作用域捕获；乐器调优不碰设备链。空表序列化省略。
+        devices: if scope == PresetScope::Track {
+            track
+                .devices
+                .iter()
+                .filter(|device| !device.name.starts_with(PRESET_DEVICE_PREFIX))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        },
     };
     for (kind, slot) in [
         ("saturation", &mut preset.saturation),

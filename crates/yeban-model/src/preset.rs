@@ -165,6 +165,15 @@ pub struct Preset {
     /// 序列化时整段省略 ⇒ 旧预制文件与不带本段的预制逐字不变（不升 format）。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cc: BTreeMap<u8, u8>,
+    /// 整轨快照捕获的**非预制设备链**（EQ、压缩器等手工插入的设备），按原
+    /// 顺序保存；空表时整段省略 ⇒ 不含这类设备的预制（含全部工厂预制）
+    /// 序列化字节逐字不变（不升 format，与 `cc` / `sends` 同一口径）。
+    ///
+    /// 只在 `scope: track` 且轨上确有非 `Preset:` 前缀设备时写入。应用时按
+    /// `(预制, 目标轨, 序号)` 重新派生确定性设备身份，并先拆掉上一次留下的
+    /// 捕获链，因此同一份预制应用到任意轨都不会撞设备 id。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<crate::DeviceDefinition>,
 }
 
 /// 一份「用户初始 CC」的域校验（控制器号与值均须落在 MIDI CC 域 `0..=127`）。
@@ -263,7 +272,13 @@ impl Preset {
                 detail: "适用乐器不得为空".to_owned(),
             });
         }
-        if self.instrument_sfz.trim().is_empty() {
+        // ⭐ T-FIX-390/414：整轨快照可以没有采样器 —— 内置合成器轨、音频轨、
+        // 绑了非工厂登记文件的轨都记 `instrument = "internal"`、`instrument_sfz`
+        // 为空，应用时不重绑采样器。`validate` 必须承认这一档，否则保存腿
+        // 不校验、读取腿（`Preset::parse`）校验 ⇒ 存下来的预制**列不出、应用不了**。
+        if self.instrument_sfz.trim().is_empty()
+            && !(self.scope == PresetScope::Track && self.instrument == "internal")
+        {
             return Err(PresetError::InvalidField {
                 field: "instrument_sfz",
                 detail: "乐器 SFZ 路径不得为空".to_owned(),

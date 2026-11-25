@@ -5355,6 +5355,7 @@ mod tests {
             mix: None,
             macros: Vec::new(),
             cc: BTreeMap::new(),
+            devices: Vec::new(),
         }
     }
 
