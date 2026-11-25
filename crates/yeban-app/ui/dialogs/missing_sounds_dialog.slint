@@ -340,7 +340,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 // 这里按**行**守 —— 鼠标点同行另一格时焦点也在本行）。
                                 swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
-                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; root.scroll-row-into-view(i); }
                                 cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
@@ -353,7 +353,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 installed: root.s2-installed[i];
                                 swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
-                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; root.scroll-row-into-view(i); }
                                 cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
@@ -366,7 +366,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                 installed: root.s3-installed[i];
                                 swap(r, p, n) => { if (root.focused-row-slot >= 100 + i * 10 && root.focused-row-slot < 100 + (i + 1) * 10) { root.focus-first-control(); } root.swap-suggested(r, p, n); }
                                 open-pack(r, id, n) => { root.open-pack(r, id, n); }
-                                cell-focus-gained(s) => { root.focused-row-slot = s; }
+                                cell-focus-gained(s) => { root.focused-row-slot = s; root.scroll-row-into-view(i); }
                                 cell-focus-lost(s) => { if (root.focused-row-slot == s) { root.focused-row-slot = -1; } }
                             }
 
@@ -392,7 +392,7 @@ export component MissingSoundsDialog inherits Rectangle {
                                     width: parent.width;
                                     height: parent.height;
                                     focus-on-click: false;
-                                    focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 4; }
+                                    focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 4; root.scroll-row-into-view(i); }
                                     focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 4) { root.focused-row-slot = -1; } }
                                     key-pressed(event) => {
                                         if (event.text == Key.Return || event.text == Key.Space) {
@@ -510,6 +510,30 @@ export component MissingSoundsDialog inherits Rectangle {
         : missing-sounds-close-focus.has-focus ? 0
         : missing-sounds-later-focus.has-focus ? 1
         : -1;
+
+    /// 取焦跟随读数（T-FIX-404）：`row-scroll` 的 `content-y`，向下滚为负值。
+    /// 判据读它断言焦点行已滚进可视区。
+    out property <length> row-scroll-y: row-scroll.content-y;
+
+    /// 取焦跟随（T-FIX-404）：行取焦时把该行滚进可视区。行高固定 102px，
+    /// 行 i 在内容里的纵向区间是 `[i*102px+2px, i*102px+98px]`；只在行顶 /
+    /// 行底越出可视区时才动（最小滚动），已可见的行不动。只从行取焦的四处
+    /// `focus-gained` 调用；鼠标点击不取焦（`FocusScope` 的 `focus-on-click`
+    /// 为 false，点按只走 `TouchArea` → `activate()`），⇒ 鼠标行为不变。
+    /// 夹取与 `arrangement.slint` 的 `handle-arr-scroll` 同款口径。
+    function scroll-row-into-view(row: int) {
+        if (row * 102px + 2px < -row-scroll.content-y) {
+            row-scroll.content-y = Math.max(
+                Math.min(0px, row-scroll.height - row-scroll.content-height),
+                Math.min(0px, -(row * 102px + 2px))
+            );
+        } else if (row * 102px + 98px > -row-scroll.content-y + row-scroll.height) {
+            row-scroll.content-y = Math.max(
+                Math.min(0px, row-scroll.height - row-scroll.content-height),
+                Math.min(0px, -(row * 102px + 98px - row-scroll.height))
+            );
+        }
+    }
 
     /// 打开时由宿主调用：焦点落 ✕ 关闭（首个可聚焦控件）。
     public function focus-first-control() {

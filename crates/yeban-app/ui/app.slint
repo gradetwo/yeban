@@ -681,6 +681,7 @@ export component MainWindow inherits Window {
     in-out property <bool> missing-sounds-open: false;
     // 焦点读数（T-FIX-182）：与上面五只同款，从 Slint 自己的 `has-focus` 推导。
     in-out property <int> missing-sounds-focused-control: missing-sounds-dialog.focused-control;
+    in-out property <length> missing-sounds-row-scroll-y: missing-sounds-dialog.row-scroll-y;
     in-out property <int> missing-row-count: 0;
     in-out property <string> missing-sounds-summary: "";
     in-out property <[string]> missing-track-names: [];
