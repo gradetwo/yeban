@@ -703,7 +703,13 @@ impl App {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<demo>".to_owned());
-        let session = yeban_app::undo::session_from_archive(&source, &archive, now_ms())?;
+        let shared_project = Rc::new(std::cell::RefCell::new(archive.project.clone()));
+        let session = yeban_app::undo::session_from_archive(
+            &source,
+            shared_project,
+            &archive.history_dag,
+            now_ms(),
+        )?;
         // ⭐ 音频片段必须拿得到**字节**：TUI 独占终端时静默引擎诊断，由日志行统一播报。
         let asset_bytes: BTreeMap<AssetHash, Vec<u8>> = archive.assets.iter().cloned().collect();
         let port = Rc::new(UndoPort::new(session));
