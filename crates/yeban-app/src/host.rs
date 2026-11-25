@@ -12061,7 +12061,9 @@ pub fn report_pending_settings_warnings(ui: &MainWindow) -> usize {
     let warnings = crate::settings::take_pending_warnings();
     let shown = warnings.len();
     for warning in warnings {
-        report_notice(ui, &warning.message, true);
+        // T-FIX-432：展示时按当前语言渲染（结构化记账）；记录时语言未知，
+        // 不能在 settings 侧拼串。
+        report_notice(ui, &warning.message_in(current_language()), true);
     }
     shown
 }

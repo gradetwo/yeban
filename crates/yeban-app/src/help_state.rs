@@ -213,7 +213,10 @@ pub fn load() -> HelpState {
         // 必须让用户看见（T-FIX-299）：记进设置警告台账，UI 侧取走展示。
         // 走 settings::update 的锁内读-改-写，避免与另一实例的设置写回互相覆盖。
         if let Err(error) = crate::settings::update(|settings| settings.help = folded.clone()) {
-            crate::settings::record_save_failure("帮助状态折入", &error);
+            crate::settings::record_save_failure(
+                crate::settings::SaveFailureSubject::HelpStateFold,
+                &error,
+            );
         }
     }
     folded

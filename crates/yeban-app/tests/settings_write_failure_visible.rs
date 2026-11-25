@@ -131,11 +131,15 @@ fn settings_save_failure_records_warning_and_keeps_caller_contract() {
 
     let warnings = yeban_app::settings::take_pending_warnings();
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.message.contains("语言选择")
-                && warning.message.contains("已在本会话生效")
-                && warning.message.contains("下次启动会回到旧值")),
+        warnings.iter().any(
+            |warning| warning.message_in(Language::ZhCn).contains("语言选择")
+                && warning
+                    .message_in(Language::ZhCn)
+                    .contains("已在本会话生效")
+                && warning
+                    .message_in(Language::ZhCn)
+                    .contains("下次启动会回到旧值")
+        ),
         "写回失败必须记一条点名语言选择与回退的警告，实际台账：{warnings:?}"
     );
     assert!(
@@ -165,9 +169,10 @@ fn settings_corrupt_file_warns_and_preserves_original() {
     let warnings = yeban_app::settings::take_pending_warnings();
     assert_eq!(warnings.len(), 1, "坏文件必须恰好记一条警告");
     assert!(
-        warnings[0].message.contains("已损坏") && warnings[0].message.contains("备份"),
+        warnings[0].message_in(Language::ZhCn).contains("已损坏")
+            && warnings[0].message_in(Language::ZhCn).contains("备份"),
         "警告须点名损坏与备份：{}",
-        warnings[0].message
+        warnings[0].message_in(Language::ZhCn)
     );
     assert!(!path.exists(), "损坏文件必须被移走（备份后丢弃）");
     let backups: Vec<_> = std::fs::read_dir(&dir)
@@ -194,6 +199,34 @@ fn settings_corrupt_file_warns_and_preserves_original() {
     assert!(
         yeban_app::settings::take_pending_warnings().is_empty(),
         "备份后不再重复警告"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// T-FIX-432：损坏文件经 `load_from` 记的结构化警告，在英文态下渲染为英文。
+#[test]
+fn settings_corrupt_file_warning_renders_in_english() {
+    let _guard = ENV_LOCK.lock().expect("判据间串行锁");
+    let _ = yeban_app::settings::take_pending_warnings();
+    let dir = test_dir("corrupt-en");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    let path = dir.join("settings.json");
+    std::fs::write(&path, "{ not json").expect("写损坏文件");
+
+    let _ = yeban_app::settings::load_from(&path);
+    let warnings = yeban_app::settings::take_pending_warnings();
+    assert_eq!(warnings.len(), 1, "坏文件必须恰好记一条警告");
+    let rendered = warnings[0].message_in(Language::EnUs);
+    assert!(
+        rendered.starts_with("Settings file is corrupt (")
+            && rendered.contains("defaults are in use")
+            && rendered.contains("backed up to"),
+        "英文态损坏警告须为英文、点名损坏与备份，实际：{rendered}"
+    );
+    assert!(
+        !rendered.contains("已损坏") && !rendered.contains("备份"),
+        "英文态损坏警告不得残留中文，实际：{rendered}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -243,7 +276,7 @@ fn help_state_fold_failure_records_warning_but_keeps_folded_state() {
     assert!(
         warnings
             .iter()
-            .any(|warning| warning.message.contains("帮助状态折入")),
+            .any(|warning| warning.message_in(Language::ZhCn).contains("帮助状态折入")),
         "折入落盘失败必须记一条点名帮助状态折入的警告，实际台账：{warnings:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -313,9 +346,15 @@ fn write_failure_toast_is_visible_in_live_window() {
         "设置写回失败是错误级常驻提示，不是信息级"
     );
     let message = ui.get_toast_message();
+    // T-FIX-432：已切到英文态，提示须为英文（事项与回退都点名），不得残留中文。
     assert!(
-        message.contains("语言选择") && message.contains("下次启动会回到旧值"),
-        "提示文案须点名事项与回退，实际：{message}"
+        message.contains("Language choice")
+            && message.contains("old value will return on next launch"),
+        "英文态提示文案须为英文、点名事项与回退，实际：{message}"
+    );
+    assert!(
+        !message.contains("语言选择") && !message.contains("写回设置失败"),
+        "英文态提示不得残留中文模板，实际：{message}"
     );
     // 语言本身已在本会话生效（调用方不失败的设计）。
     assert_eq!(ui.get_language_code().as_str(), "en-US");

@@ -117,26 +117,382 @@ fn unique_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// 一条待展示的设置警告（T-FIX-299）。
+/// 一条待展示的设置警告（T-FIX-299；T-FIX-432 改为结构化记账）。
 ///
 /// 设置写回失败 / 设置文件损坏时，设置模块只把失败记在这里 —— 调用方
 /// 不失败（设定已在本会话生效），UI 侧由 [`take_pending_warnings`]
 /// 取走并经 `host::report_notice` 以错误级常驻提示展示。无窗口路径
 /// （CLI / headless）下它只留在 stderr 行里（见 [`record_save_failure`]）。
+///
+/// T-FIX-432：299 只记了一条拼好的中文串，英文态下状态条照样显示中文。
+/// 警告经 `host::report_notice` 同时写进常驻模块状态条与浮动 toast；
+/// 状态条是常驻 UI 显示、不是日志，按 `docs/app-i18n-notes.md` §4
+/// 收尾补记（2026-11-17 裁定）须译。所以警告以结构化数据记账，展示时
+/// 才按当前语言渲染（[`SettingsWarning::message_in`]）——记录时还不知
+/// 道语言（启动期 `load_from` 在 `apply_language` 之前跑），记录时拼串
+/// 是错的。翻译形态照 Rust 侧闭集先例（状态栏选区/音频配置两格、总览
+/// 曲风档名、模板分组标题）：九语模板表住在本文件，由单测逐语看守；
+/// 不走 Slint 的 `@tr`/`.po`——`@tr` 是 Slint 编译期宏，Rust 代码调不了；
+/// 而 `.po` 里加一条没有 `@tr` 调用点的词条会被 `i18n_coverage` 的词表
+/// 精确相等判据当孤儿条打红。路径与 io 错误原文按 notes §4 口径不译，
+/// 原样进占位。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SettingsWarning {
-    /// 展示给用户的完整文案（含“本次已生效、下次启动会回退”与原因）。
-    pub message: String,
+pub enum SettingsWarning {
+    /// 一次设置写回失败。
+    SaveFailure {
+        /// 事项（七种闭集之一）。
+        what: SaveFailureSubject,
+        /// io 错误原文（不译）。
+        error: String,
+    },
+    /// 设置文件在但读不出来（权限等）：原文件未改动。
+    UnreadableFile {
+        /// 设置文件路径（不译）。
+        path: PathBuf,
+        /// io 错误原文（不译）。
+        error: String,
+    },
+    /// 设置文件已损坏：`backup` 有值 = 已备份到该路径；`None` = 备份
+    /// 失败、原文件未动；`error` 仅 JSON 解析失败分支有值（顶层非对象
+    /// 分支的文案不带错误尾巴，与 299 原文一致）。
+    CorruptFile {
+        /// 设置文件路径（不译）。
+        path: PathBuf,
+        /// 备份路径（有值 = 已备份到该路径；`None` = 备份失败）。
+        backup: Option<PathBuf>,
+        /// io 错误原文（仅 JSON 解析失败分支有值；不译）。
+        error: Option<String>,
+    },
+    /// 设置文件加锁失败：本次读取跳过最近清单清理（`load` 的兜底分支，
+    /// 与上三处同属一类警告，T-FIX-432 一并结构化）。
+    LockFailure {
+        /// 设置文件路径（不译）。
+        path: PathBuf,
+        /// io 错误原文（不译）。
+        error: String,
+    },
+}
+
+/// `record_save_failure` 的事项闭集（七处调用点各一）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveFailureSubject {
+    /// 语言选择（`save_language`）。
+    Language,
+    /// 最近工程清单（`record_recent_project`）。
+    RecentProjects,
+    /// 调试输出开关（`save_debug_output`）。
+    DebugOutput,
+    /// 音频设备选择（`save_audio_devices`）。
+    AudioDevices,
+    /// 跟随模式（`save_scroll_in_play`）。
+    FollowMode,
+    /// 窗口布局（`store_layout`）。
+    WindowLayout,
+    /// 帮助状态折入（`help_state::load`）。
+    HelpStateFold,
+}
+
+impl SaveFailureSubject {
+    /// 事项在 `lang` 下的称呼（九语闭集，与状态栏选区格同款形态）。
+    #[must_use]
+    pub fn label_in(self, lang: Language) -> &'static str {
+        use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::Language => match lang {
+                ZhCn => "语言选择",
+                EnUs => "Language choice",
+                FrFr => "Choix de la langue",
+                EsEs => "Selección de idioma",
+                PtBr => "Seleção de idioma",
+                JaJp => "言語選択",
+                KoKr => "언어 선택",
+                RuRu => "Выбор языка",
+                DeDe => "Sprachauswahl",
+            },
+            Self::RecentProjects => match lang {
+                ZhCn => "最近工程清单",
+                EnUs => "Recent projects",
+                FrFr => "Projets récents",
+                EsEs => "Proyectos recientes",
+                PtBr => "Projetos recentes",
+                JaJp => "最近のプロジェクト",
+                KoKr => "최근 프로젝트",
+                RuRu => "Недавние проекты",
+                DeDe => "Letzte Projekte",
+            },
+            Self::DebugOutput => match lang {
+                ZhCn => "调试输出开关",
+                EnUs => "Debug output",
+                FrFr => "Sortie de débogage",
+                EsEs => "Salida de depuración",
+                PtBr => "Saída de depuração",
+                JaJp => "デバッグ出力",
+                KoKr => "디버그 출력",
+                RuRu => "Отладочный вывод",
+                DeDe => "Debug-Ausgabe",
+            },
+            Self::AudioDevices => match lang {
+                ZhCn => "音频设备选择",
+                EnUs => "Audio device",
+                FrFr => "Périphérique audio",
+                EsEs => "Dispositivo de audio",
+                PtBr => "Dispositivo de áudio",
+                JaJp => "オーディオデバイス",
+                KoKr => "오디오 장치",
+                RuRu => "Аудиоустройство",
+                DeDe => "Audiogerät",
+            },
+            Self::FollowMode => match lang {
+                ZhCn => "跟随模式",
+                EnUs => "Follow mode",
+                FrFr => "Mode suivi",
+                EsEs => "Modo de seguimiento",
+                PtBr => "Modo de acompanhamento",
+                JaJp => "フォローモード",
+                KoKr => "팔로우 모드",
+                RuRu => "Режим следования",
+                DeDe => "Folgen-Modus",
+            },
+            Self::WindowLayout => match lang {
+                ZhCn => "窗口布局",
+                EnUs => "Window layout",
+                FrFr => "Disposition de la fenêtre",
+                EsEs => "Diseño de ventana",
+                PtBr => "Layout da janela",
+                JaJp => "ウィンドウレイアウト",
+                KoKr => "창 레이아웃",
+                RuRu => "Раскладка окна",
+                DeDe => "Fensterlayout",
+            },
+            Self::HelpStateFold => match lang {
+                ZhCn => "帮助状态折入",
+                EnUs => "Help state",
+                FrFr => "État de l'aide",
+                EsEs => "Estado de la ayuda",
+                PtBr => "Estado da ajuda",
+                JaJp => "ヘルプ状態",
+                KoKr => "도움말 상태",
+                RuRu => "Состояние справки",
+                DeDe => "Hilfestatus",
+            },
+        }
+    }
+}
+
+impl SettingsWarning {
+    /// 在 `lang` 下的完整展示文案。中文态与 299 原文逐字相同（单测钉死）；
+    /// 路径与错误原文不译，原样进占位。
+    #[must_use]
+    pub fn message_in(&self, lang: Language) -> String {
+        use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::SaveFailure { what, error } => {
+                let what = what.label_in(lang);
+                match lang {
+                    ZhCn => format!(
+                        "{what}写回设置失败：已在本会话生效，但下次启动会回到旧值（{error}）"
+                    ),
+                    EnUs => format!(
+                        "{what} failed to save to settings: it applies to this session, but the old value will return on next launch ({error})"
+                    ),
+                    FrFr => format!(
+                        "Échec de l'enregistrement de {what} dans les réglages : appliqué pour cette session, mais l'ancienne valeur reviendra au prochain démarrage ({error})"
+                    ),
+                    EsEs => format!(
+                        "{what} no se pudo guardar en los ajustes: se aplica en esta sesión, pero el valor anterior volverá en el próximo inicio ({error})"
+                    ),
+                    PtBr => format!(
+                        "Falha ao salvar {what} nas configurações: vale para esta sessão, mas o valor antigo voltará na próxima inicialização ({error})"
+                    ),
+                    JaJp => format!(
+                        "{what}を設定に書き戻せませんでした：このセッションでは有効ですが、次回起動時に旧値に戻ります（{error}）"
+                    ),
+                    KoKr => format!(
+                        "{what}을(를) 설정에 저장하지 못했습니다: 이번 세션에는 적용되지만, 다음 시작 시 이전 값으로 돌아갑니다({error})"
+                    ),
+                    RuRu => format!(
+                        "Не удалось сохранить {what} в настройки: действует в этом сеансе, но при следующем запуске вернётся старое значение ({error})"
+                    ),
+                    DeDe => format!(
+                        "{what} konnte nicht in die Einstellungen geschrieben werden: gilt für diese Sitzung, kehrt beim nächsten Start aber zum alten Wert zurück ({error})"
+                    ),
+                }
+            }
+            Self::UnreadableFile { path, error } => {
+                let path = path.display();
+                match lang {
+                    ZhCn => {
+                        format!("设置文件无法读取（{path}），已用默认设置，原文件未改动：{error}")
+                    }
+                    EnUs => format!(
+                        "Settings file cannot be read ({path}); defaults are in use, the original file was not changed: {error}"
+                    ),
+                    FrFr => format!(
+                        "Impossible de lire le fichier de réglages ({path}) ; les réglages par défaut sont utilisés, le fichier d'origine n'a pas été modifié : {error}"
+                    ),
+                    EsEs => format!(
+                        "No se puede leer el archivo de ajustes ({path}); se usan los valores predeterminados, el archivo original no se modificó: {error}"
+                    ),
+                    PtBr => format!(
+                        "Não foi possível ler o arquivo de configurações ({path}); os padrões estão em uso, o arquivo original não foi alterado: {error}"
+                    ),
+                    JaJp => format!(
+                        "設定ファイルを読めません（{path}）。デフォルト設定を使用しています。元のファイルは変更していません：{error}"
+                    ),
+                    KoKr => format!(
+                        "설정 파일을 읽을 수 없습니다({path}). 기본 설정을 사용 중이며, 원본 파일은 변경되지 않았습니다: {error}"
+                    ),
+                    RuRu => format!(
+                        "Файл настроек не читается ({path}); используются значения по умолчанию, исходный файл не изменён: {error}"
+                    ),
+                    DeDe => format!(
+                        "Einstellungsdatei kann nicht gelesen werden ({path}); Standardeinstellungen werden verwendet, die Originaldatei wurde nicht geändert: {error}"
+                    ),
+                }
+            }
+            Self::CorruptFile {
+                path,
+                backup,
+                error,
+            } => {
+                let path = path.display();
+                match (backup, error) {
+                    (Some(backup), _) => {
+                        let backup = backup.display();
+                        match lang {
+                            ZhCn => format!(
+                                "设置文件已损坏（{path}），已用默认设置，原文件已备份到 {backup}。"
+                            ),
+                            EnUs => format!(
+                                "Settings file is corrupt ({path}); defaults are in use, the original file was backed up to {backup}."
+                            ),
+                            FrFr => format!(
+                                "Le fichier de réglages est corrompu ({path}) ; les réglages par défaut sont utilisés, le fichier d'origine a été sauvegardé sous {backup}."
+                            ),
+                            EsEs => format!(
+                                "El archivo de ajustes está dañado ({path}); se usan los valores predeterminados, el archivo original se respaldó en {backup}."
+                            ),
+                            PtBr => format!(
+                                "O arquivo de configurações está corrompido ({path}); os padrões estão em uso, o arquivo original foi copiado para {backup}."
+                            ),
+                            JaJp => format!(
+                                "設定ファイルが破損しています（{path}）。デフォルト設定を使用しています。元のファイルは {backup} にバックアップしました。"
+                            ),
+                            KoKr => format!(
+                                "설정 파일이 손상되었습니다({path}). 기본 설정을 사용 중이며, 원본 파일은 {backup}에 백업했습니다."
+                            ),
+                            RuRu => format!(
+                                "Файл настроек повреждён ({path}); используются значения по умолчанию, исходный файл сохранён в {backup}."
+                            ),
+                            DeDe => format!(
+                                "Einstellungsdatei ist beschädigt ({path}); Standardeinstellungen werden verwendet, die Originaldatei wurde nach {backup} gesichert."
+                            ),
+                        }
+                    }
+                    (None, Some(error)) => match lang {
+                        ZhCn => format!(
+                            "设置文件已损坏（{path}），已用默认设置，原文件备份失败，原文件未动：{error}"
+                        ),
+                        EnUs => format!(
+                            "Settings file is corrupt ({path}); defaults are in use, backing up the original file failed, the original file was not touched: {error}"
+                        ),
+                        FrFr => format!(
+                            "Le fichier de réglages est corrompu ({path}) ; les réglages par défaut sont utilisés, la sauvegarde du fichier d'origine a échoué, le fichier d'origine n'a pas été touché : {error}"
+                        ),
+                        EsEs => format!(
+                            "El archivo de ajustes está dañado ({path}); se usan los valores predeterminados, no se pudo respaldar el archivo original, el archivo original no se tocó: {error}"
+                        ),
+                        PtBr => format!(
+                            "O arquivo de configurações está corrompido ({path}); os padrões estão em uso, falhou o backup do arquivo original, o arquivo original não foi tocado: {error}"
+                        ),
+                        JaJp => format!(
+                            "設定ファイルが破損しています（{path}）。デフォルト設定を使用しています。元のファイルのバックアップに失敗しました。元のファイルは変更していません：{error}"
+                        ),
+                        KoKr => format!(
+                            "설정 파일이 손상되었습니다({path}). 기본 설정을 사용 중이며, 원본 파일 백업에 실패했습니다. 원본 파일은 건드리지 않았습니다: {error}"
+                        ),
+                        RuRu => format!(
+                            "Файл настроек повреждён ({path}); используются значения по умолчанию, создать резервную копию исходного файла не удалось, исходный файл не тронут: {error}"
+                        ),
+                        DeDe => format!(
+                            "Einstellungsdatei ist beschädigt ({path}); Standardeinstellungen werden verwendet, die Sicherung der Originaldatei ist fehlgeschlagen, die Originaldatei wurde nicht verändert: {error}"
+                        ),
+                    },
+                    (None, None) => match lang {
+                        ZhCn => format!(
+                            "设置文件已损坏（{path}），已用默认设置，原文件备份失败，原文件未动。"
+                        ),
+                        EnUs => format!(
+                            "Settings file is corrupt ({path}); defaults are in use, backing up the original file failed, the original file was not touched."
+                        ),
+                        FrFr => format!(
+                            "Le fichier de réglages est corrompu ({path}) ; les réglages par défaut sont utilisés, la sauvegarde du fichier d'origine a échoué, le fichier d'origine n'a pas été touché."
+                        ),
+                        EsEs => format!(
+                            "El archivo de ajustes está dañado ({path}); se usan los valores predeterminados, no se pudo respaldar el archivo original, el archivo original no se tocó."
+                        ),
+                        PtBr => format!(
+                            "O arquivo de configurações está corrompido ({path}); os padrões estão em uso, falhou o backup do arquivo original, o arquivo original não foi tocado."
+                        ),
+                        JaJp => format!(
+                            "設定ファイルが破損しています（{path}）。デフォルト設定を使用しています。元のファイルのバックアップに失敗しました。元のファイルは変更していません。"
+                        ),
+                        KoKr => format!(
+                            "설정 파일이 손상되었습니다({path}). 기본 설정을 사용 중이며, 원본 파일 백업에 실패했습니다. 원본 파일은 건드리지 않았습니다."
+                        ),
+                        RuRu => format!(
+                            "Файл настроек повреждён ({path}); используются значения по умолчанию, создать резервную копию исходного файла не удалось, исходный файл не тронут."
+                        ),
+                        DeDe => format!(
+                            "Einstellungsdatei ist beschädigt ({path}); Standardeinstellungen werden verwendet, die Sicherung der Originaldatei ist fehlgeschlagen, die Originaldatei wurde nicht verändert."
+                        ),
+                    },
+                }
+            }
+            Self::LockFailure { path, error } => {
+                let path = path.display();
+                match lang {
+                    ZhCn => {
+                        format!("设置文件加锁失败（{path}），本次读取未执行最近清单清理：{error}")
+                    }
+                    EnUs => format!(
+                        "Failed to lock the settings file ({path}); the recent-projects cleanup was skipped for this read: {error}"
+                    ),
+                    FrFr => format!(
+                        "Impossible de verrouiller le fichier de réglages ({path}) ; le nettoyage de la liste des projets récents n'a pas été effectué pour cette lecture : {error}"
+                    ),
+                    EsEs => format!(
+                        "No se pudo bloquear el archivo de ajustes ({path}); la limpieza de proyectos recientes no se realizó en esta lectura: {error}"
+                    ),
+                    PtBr => format!(
+                        "Falha ao travar o arquivo de configurações ({path}); a limpeza de projetos recentes não foi executada nesta leitura: {error}"
+                    ),
+                    JaJp => format!(
+                        "設定ファイルをロックできませんでした（{path}）。今回の読み取りでは最近のプロジェクトの整理を行いませんでした：{error}"
+                    ),
+                    KoKr => format!(
+                        "설정 파일을 잠그지 못했습니다({path}). 이번 읽기에서는 최근 프로젝트 정리를 수행하지 않았습니다: {error}"
+                    ),
+                    RuRu => format!(
+                        "Не удалось заблокировать файл настроек ({path}); очистка списка недавних проектов для этого чтения не выполнена: {error}"
+                    ),
+                    DeDe => format!(
+                        "Einstellungsdatei konnte nicht gesperrt werden ({path}); die Bereinigung der letzten Projekte wurde bei diesem Lesevorgang übersprungen: {error}"
+                    ),
+                }
+            }
+        }
+    }
 }
 
 /// 待发设置警告台账（进程内；取走即清空，见 [`take_pending_warnings`]）。
 static PENDING_WARNINGS: Mutex<Vec<SettingsWarning>> = Mutex::new(Vec::new());
 
-fn record_warning(message: String) {
+fn record_warning(warning: SettingsWarning) {
     let mut pending = PENDING_WARNINGS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    pending.push(SettingsWarning { message });
+    pending.push(warning);
 }
 
 /// 取走全部待发设置警告（取后台账清空）。UI 侧在每次设置写回动作之后
@@ -153,10 +509,14 @@ pub fn take_pending_warnings() -> Vec<SettingsWarning> {
 /// 路径的唯一可见处）。调用方不失败 —— 设定已在本会话生效，只是下次
 /// 启动会回到旧值（T-FIX-299：此前这里只打印一行 stderr，桌面双击启动
 /// 的用户看不到终端，下次启动静默回退）。
-pub fn record_save_failure(what: &str, error: &io::Error) {
-    let message = format!("{what}写回设置失败：已在本会话生效，但下次启动会回到旧值（{error}）");
-    eprintln!("[yeban-app] {message}");
-    record_warning(message);
+pub fn record_save_failure(what: SaveFailureSubject, error: &io::Error) {
+    let warning = SettingsWarning::SaveFailure {
+        what,
+        error: error.to_string(),
+    };
+    // stderr 行是日志/诊断，按 notes §1.2 不译，固定中文渲染。
+    eprintln!("[yeban-app] {}", warning.message_in(Language::ZhCn));
+    record_warning(warning);
 }
 
 /// 把一份已损坏的设置文件备份到同目录（`settings.json.corrupt-<毫秒>`），
@@ -407,10 +767,10 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         }
         Err(error) => {
             // 文件在但读不出来（权限等）：原文件一位未动，记警告。
-            record_warning(format!(
-                "设置文件无法读取（{}），已用默认设置，原文件未改动：{error}",
-                path.display()
-            ));
+            record_warning(SettingsWarning::UnreadableFile {
+                path: path.to_path_buf(),
+                error: error.to_string(),
+            });
             return Settings::default();
         }
     };
@@ -418,36 +778,22 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         Ok(value) => value,
         Err(error) => {
             let backup = backup_corrupt_settings_file(path);
-            let message = match &backup {
-                Some(backup) => format!(
-                    "设置文件已损坏（{}），已用默认设置，原文件已备份到 {}。",
-                    path.display(),
-                    backup.display()
-                ),
-                None => format!(
-                    "设置文件已损坏（{}），已用默认设置，原文件备份失败，原文件未动：{error}",
-                    path.display()
-                ),
-            };
-            record_warning(message);
+            record_warning(SettingsWarning::CorruptFile {
+                path: path.to_path_buf(),
+                backup,
+                error: Some(error.to_string()),
+            });
             return Settings::default();
         }
     };
     if !value.is_object() {
         // 顶层不是对象：保存端永远写对象，见到的只能是损坏文件。
         let backup = backup_corrupt_settings_file(path);
-        let message = match &backup {
-            Some(backup) => format!(
-                "设置文件已损坏（{}），已用默认设置，原文件已备份到 {}。",
-                path.display(),
-                backup.display()
-            ),
-            None => format!(
-                "设置文件已损坏（{}），已用默认设置，原文件备份失败，原文件未动。",
-                path.display()
-            ),
-        };
-        record_warning(message);
+        record_warning(SettingsWarning::CorruptFile {
+            path: path.to_path_buf(),
+            backup,
+            error: None,
+        });
         return Settings::default();
     }
     Settings {
@@ -901,10 +1247,10 @@ pub fn load() -> Settings {
         Ok(settings) => settings,
         Err(error) => {
             // 锁文件不可用时仍要让启动读到设置；只取消清理写回，不假装成功。
-            record_warning(format!(
-                "设置文件加锁失败（{}），本次读取未执行最近清单清理：{error}",
-                path.display()
-            ));
+            record_warning(SettingsWarning::LockFailure {
+                path: path.clone(),
+                error: error.to_string(),
+            });
             load_from(&path)
         }
     }
@@ -1044,7 +1390,7 @@ pub fn save(settings: &Settings) -> io::Result<()> {
 /// 一次切换变失败（语言已应用，设置下次再存，见 [`record_save_failure`]）。
 pub fn save_language(lang: Language) {
     if let Err(error) = update(|settings| settings.language = Some(lang)) {
-        record_save_failure("语言选择", &error);
+        record_save_failure(SaveFailureSubject::Language, &error);
     }
 }
 
@@ -1057,7 +1403,7 @@ pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
         settings.recent_projects =
             touch_recent_project(&settings.recent_projects, path, opened_at_unix_ms);
     }) {
-        record_save_failure("最近工程清单", &error);
+        record_save_failure(SaveFailureSubject::RecentProjects, &error);
     }
 }
 
@@ -1067,7 +1413,7 @@ pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
 /// （开关已在本会话生效，设置下次再存）。
 pub fn save_debug_output(enabled: bool) {
     if let Err(error) = update(|settings| settings.debug_output = enabled) {
-        record_save_failure("调试输出开关", &error);
+        record_save_failure(SaveFailureSubject::DebugOutput, &error);
     }
 }
 
@@ -1081,7 +1427,7 @@ pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
         settings.audio_output_device = output.map(str::to_owned);
         settings.audio_input_device = input.map(str::to_owned);
     }) {
-        record_save_failure("音频设备选择", &error);
+        record_save_failure(SaveFailureSubject::AudioDevices, &error);
     }
 }
 
@@ -1091,7 +1437,7 @@ pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
 /// 不把一次切换变失败。
 pub fn save_scroll_in_play(enabled: bool) {
     if let Err(error) = update(|settings| settings.scroll_in_play = enabled) {
-        record_save_failure("跟随模式", &error);
+        record_save_failure(SaveFailureSubject::FollowMode, &error);
     }
 }
 
@@ -1111,7 +1457,7 @@ pub fn resolve_debug_output(cli_debug: bool, log_file_given: bool, stored: bool)
 /// 重置变失败（布局已应用或已退出，设置下次再存）。
 pub fn store_layout(layout: Option<WindowLayout>) {
     if let Err(error) = update(|settings| settings.layout = layout) {
-        record_save_failure("窗口布局", &error);
+        record_save_failure(SaveFailureSubject::WindowLayout, &error);
     }
 }
 
@@ -1452,9 +1798,10 @@ mod tests {
         let warnings = take_pending_warnings();
         assert_eq!(warnings.len(), 1, "坏文件必须记一条警告");
         assert!(
-            warnings[0].message.contains("已损坏") && warnings[0].message.contains("备份"),
+            warnings[0].message_in(Language::ZhCn).contains("已损坏")
+                && warnings[0].message_in(Language::ZhCn).contains("备份"),
             "警告须点名损坏与备份：{}",
-            warnings[0].message
+            warnings[0].message_in(Language::ZhCn)
         );
         assert!(!corrupt.exists(), "损坏文件必须被移走（备份后丢弃）");
         let mut backups: Vec<_> = std::fs::read_dir(&dir)
@@ -1492,19 +1839,251 @@ mod tests {
     fn record_save_failure_queues_one_warning_with_rollback_wording() {
         let _ = take_pending_warnings();
         record_save_failure(
-            "语言选择",
+            SaveFailureSubject::Language,
             &io::Error::new(io::ErrorKind::PermissionDenied, "拒绝访问"),
         );
         let warnings = take_pending_warnings();
         assert_eq!(warnings.len(), 1);
         assert!(
-            warnings[0].message.contains("语言选择")
-                && warnings[0].message.contains("已在本会话生效")
-                && warnings[0].message.contains("下次启动会回到旧值"),
+            warnings[0].message_in(Language::ZhCn).contains("语言选择")
+                && warnings[0]
+                    .message_in(Language::ZhCn)
+                    .contains("已在本会话生效")
+                && warnings[0]
+                    .message_in(Language::ZhCn)
+                    .contains("下次启动会回到旧值"),
             "警告文案须点名事项与回退：{}",
-            warnings[0].message
+            warnings[0].message_in(Language::ZhCn)
         );
         assert!(take_pending_warnings().is_empty(), "取走即清空，不重复展示");
+    }
+
+    /// T-FIX-432：中文态渲染与 299 原文逐字相同 —— 五种模板全钉死，
+    /// 七种事项各钉一条（其余事项只钉称呼，模板共用同一条）。
+    #[test]
+    fn settings_warning_chinese_rendering_matches_t_fix_299_wording() {
+        let error = "拒绝访问";
+        let path = PathBuf::from("/home/u/.config/yeban/settings.json");
+        let backup = PathBuf::from("/home/u/.config/yeban/settings.json.corrupt-1");
+        let save = SettingsWarning::SaveFailure {
+            what: SaveFailureSubject::Language,
+            error: error.to_owned(),
+        };
+        assert_eq!(
+            save.message_in(Language::ZhCn),
+            "语言选择写回设置失败：已在本会话生效，但下次启动会回到旧值（拒绝访问）"
+        );
+        let unreadable = SettingsWarning::UnreadableFile {
+            path: path.clone(),
+            error: error.to_owned(),
+        };
+        assert_eq!(
+            unreadable.message_in(Language::ZhCn),
+            "设置文件无法读取（/home/u/.config/yeban/settings.json），已用默认设置，原文件未改动：拒绝访问"
+        );
+        let corrupt_backed_up = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: Some(backup.clone()),
+            error: Some(error.to_owned()),
+        };
+        assert_eq!(
+            corrupt_backed_up.message_in(Language::ZhCn),
+            "设置文件已损坏（/home/u/.config/yeban/settings.json），已用默认设置，原文件已备份到 /home/u/.config/yeban/settings.json.corrupt-1。"
+        );
+        let corrupt_no_backup_with_error = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: None,
+            error: Some(error.to_owned()),
+        };
+        assert_eq!(
+            corrupt_no_backup_with_error.message_in(Language::ZhCn),
+            "设置文件已损坏（/home/u/.config/yeban/settings.json），已用默认设置，原文件备份失败，原文件未动：拒绝访问"
+        );
+        let corrupt_no_backup_no_error = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: None,
+            error: None,
+        };
+        assert_eq!(
+            corrupt_no_backup_no_error.message_in(Language::ZhCn),
+            "设置文件已损坏（/home/u/.config/yeban/settings.json），已用默认设置，原文件备份失败，原文件未动。"
+        );
+        let lock = SettingsWarning::LockFailure {
+            path: path.clone(),
+            error: error.to_owned(),
+        };
+        assert_eq!(
+            lock.message_in(Language::ZhCn),
+            "设置文件加锁失败（/home/u/.config/yeban/settings.json），本次读取未执行最近清单清理：拒绝访问"
+        );
+        // 七种事项的中文称呼逐一钉死（模板共用写回失败那条）。
+        let subjects = [
+            (SaveFailureSubject::Language, "语言选择"),
+            (SaveFailureSubject::RecentProjects, "最近工程清单"),
+            (SaveFailureSubject::DebugOutput, "调试输出开关"),
+            (SaveFailureSubject::AudioDevices, "音频设备选择"),
+            (SaveFailureSubject::FollowMode, "跟随模式"),
+            (SaveFailureSubject::WindowLayout, "窗口布局"),
+            (SaveFailureSubject::HelpStateFold, "帮助状态折入"),
+        ];
+        for (subject, label) in subjects {
+            let warning = SettingsWarning::SaveFailure {
+                what: subject,
+                error: error.to_owned(),
+            };
+            assert_eq!(
+                warning.message_in(Language::ZhCn),
+                format!("{label}写回设置失败：已在本会话生效，但下次启动会回到旧值（{error}）")
+            );
+        }
+    }
+
+    /// T-FIX-432：英文态三场景 —— 写回失败 / 文件无法读取 / 文件损坏
+    /// （有备份 / 备份失败带错 / 备份失败无错）—— 文案逐条钉死英文，
+    /// 路径与错误原文原样保留。
+    #[test]
+    fn settings_warning_english_rendering_for_all_three_scenarios() {
+        let error = "Permission denied (os error 13)";
+        let path = PathBuf::from("/home/u/.config/yeban/settings.json");
+        let backup = PathBuf::from("/home/u/.config/yeban/settings.json.corrupt-1");
+        let save = SettingsWarning::SaveFailure {
+            what: SaveFailureSubject::Language,
+            error: error.to_owned(),
+        };
+        assert_eq!(
+            save.message_in(Language::EnUs),
+            "Language choice failed to save to settings: it applies to this session, but the old value will return on next launch (Permission denied (os error 13))"
+        );
+        let unreadable = SettingsWarning::UnreadableFile {
+            path: path.clone(),
+            error: error.to_owned(),
+        };
+        assert_eq!(
+            unreadable.message_in(Language::EnUs),
+            "Settings file cannot be read (/home/u/.config/yeban/settings.json); defaults are in use, the original file was not changed: Permission denied (os error 13)"
+        );
+        let corrupt_backed_up = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: Some(backup.clone()),
+            error: Some(error.to_owned()),
+        };
+        assert_eq!(
+            corrupt_backed_up.message_in(Language::EnUs),
+            "Settings file is corrupt (/home/u/.config/yeban/settings.json); defaults are in use, the original file was backed up to /home/u/.config/yeban/settings.json.corrupt-1."
+        );
+        let corrupt_no_backup_with_error = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: None,
+            error: Some(error.to_owned()),
+        };
+        assert_eq!(
+            corrupt_no_backup_with_error.message_in(Language::EnUs),
+            "Settings file is corrupt (/home/u/.config/yeban/settings.json); defaults are in use, backing up the original file failed, the original file was not touched: Permission denied (os error 13)"
+        );
+        let corrupt_no_backup_no_error = SettingsWarning::CorruptFile {
+            path: path.clone(),
+            backup: None,
+            error: None,
+        };
+        assert_eq!(
+            corrupt_no_backup_no_error.message_in(Language::EnUs),
+            "Settings file is corrupt (/home/u/.config/yeban/settings.json); defaults are in use, backing up the original file failed, the original file was not touched."
+        );
+    }
+
+    /// T-FIX-432：九语全覆盖 —— 每种警告在九语下都能渲染；非中文渲染里
+    /// 不含中文模板残片（日语的汉字是该语译文自带，不按“含汉字”判，只按
+    /// 模板残片判）；路径与错误原文逐字保留；写回失败文案含该语事项称呼。
+    #[test]
+    fn settings_warning_renders_in_all_nine_languages() {
+        // 中文模板残片：任一语的译文里出现即说明渲染走了中文模板。
+        const CHINESE_FRAGMENTS: &[&str] = &[
+            "写回设置失败",
+            "已在本会话生效",
+            "下次启动会回到旧值",
+            "设置文件无法读取",
+            "设置文件已损坏",
+            "设置文件加锁失败",
+            "原文件已备份到",
+            "原文件备份失败",
+        ];
+        let path = PathBuf::from("/p/settings.json");
+        let error = "boom";
+        let warnings = [
+            SettingsWarning::SaveFailure {
+                what: SaveFailureSubject::HelpStateFold,
+                error: error.to_owned(),
+            },
+            SettingsWarning::UnreadableFile {
+                path: path.clone(),
+                error: error.to_owned(),
+            },
+            SettingsWarning::CorruptFile {
+                path: path.clone(),
+                backup: Some(PathBuf::from("/p/settings.json.corrupt-1")),
+                error: Some(error.to_owned()),
+            },
+            SettingsWarning::CorruptFile {
+                path: path.clone(),
+                backup: None,
+                error: Some(error.to_owned()),
+            },
+            SettingsWarning::CorruptFile {
+                path: path.clone(),
+                backup: None,
+                error: None,
+            },
+            SettingsWarning::LockFailure {
+                path: path.clone(),
+                error: error.to_owned(),
+            },
+        ];
+        for lang in Language::ALL {
+            for warning in &warnings {
+                let rendered = warning.message_in(lang);
+                // 带路径的变体须保留路径原文；写回失败变体没有路径，只有错误原文。
+                if !matches!(warning, SettingsWarning::SaveFailure { .. }) {
+                    assert!(
+                        rendered.contains("/p/settings.json"),
+                        "{lang:?} 渲染须保留路径原文：{rendered}"
+                    );
+                }
+                // 只有“损坏且无错误原文”与“损坏且已备份”的变体不带错误：
+                // 前者没有错误可保留，后者按 299 原文就不含错误尾巴。
+                if !matches!(
+                    warning,
+                    SettingsWarning::CorruptFile { error: None, .. }
+                        | SettingsWarning::CorruptFile {
+                            backup: Some(_),
+                            ..
+                        }
+                ) {
+                    assert!(
+                        rendered.contains("boom"),
+                        "{lang:?} 渲染须保留错误原文：{rendered}"
+                    );
+                }
+                if lang != Language::ZhCn {
+                    for fragment in CHINESE_FRAGMENTS {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 渲染含中文模板残片 {fragment}：{rendered}"
+                        );
+                    }
+                }
+            }
+            // 写回失败文案必须含该语的事项称呼（不是中文称呼的残留）。
+            let save = SettingsWarning::SaveFailure {
+                what: SaveFailureSubject::HelpStateFold,
+                error: error.to_owned(),
+            };
+            assert!(
+                save.message_in(lang)
+                    .contains(SaveFailureSubject::HelpStateFold.label_in(lang)),
+                "{lang:?} 写回失败文案须含该语事项称呼：{}",
+                save.message_in(lang)
+            );
+        }
     }
 
     /// 一份与默认值处处不同的布局（每个字段都离开初值，往返才验得住）。
