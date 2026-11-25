@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 308 | 1316 | `624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 309 | 1320 | `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -186,6 +186,15 @@
 //! （`domain/sfz.rs` 的结构体字段 ⇒ 运行时盲区）⇒ 显式登记第 6 条豁免：
 //! 键站点 345 → **346**、总出现 349 → **350**、运行时站点 6 → **7**。
 //! ⛔ 不放宽扫描器、⛔ 不把新站点悄悄塞进"可分类"。
+//!
+//! ⚠ T-FIX-375（本支）：`domain/import_audio.rs` 的导入即拒闸门新增
+//! `unsupportedChannelLayout` 1 条字面站点（`channels` / `reason` /
+//! `supported` 3 键）⇒ reason 数 308 → **309**、规范行数 1316 → **1320**
+//! （1 reason 行 ＋ 3 键行）；`reason` 键站点 372 → **373**、字面站点
+//! 353 → **354**、总出现 377 → **378**。新摘要
+//! `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -197,7 +206,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 304] = [
+pub const GOLDEN_REASONS: [&str; 305] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetChannelLayout",
@@ -568,6 +577,11 @@ pub const GOLDEN_REASONS: [&str; 304] = [
     "path_unresolved",
     "sample_missing",
     "sfz_missing",
+    // ⭐ T-FIX-375（本支）：`domain/import_audio.rs` 的导入即拒闸门（声道数 > 2
+    // 在任何 op 之前拒绝）新增 `unsupportedChannelLayout`（载荷
+    // `channels` / `reason` / `supported`；`src/domain/import_audio.rs` 的
+    // `more_than_two_channels_are_refused_at_import_time` 已断言该 reason）。
+    "unsupportedChannelLayout",
 ];
 
 /// 本平台（64 位 `usize`）**不可达**的 `reason`，逐条给机械理由。
@@ -1850,13 +1864,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 377;
+const REASON_OCCURRENCES_TOTAL: usize = 378;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 372;
-const REASON_LITERAL_SITES_TOTAL: usize = 353;
+const REASON_KEY_SITES_TOTAL: usize = 373;
+const REASON_LITERAL_SITES_TOTAL: usize = 354;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2179,7 +2193,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 304] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 305] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -3257,6 +3271,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 304] = [
         "sfz_missing",
         &["binding", "detail", "kind", "reason", "sample", "trackId"],
     ),
+    // ⭐ T-FIX-375（本支）：`domain/import_audio.rs` 的导入即拒闸门（声道数 > 2
+    // 在任何 op 之前拒绝；`yeban_import_audio` 的 `plan`，见
+    // `more_than_two_channels_are_refused_at_import_time`）。
+    (
+        "unsupportedChannelLayout",
+        &["channels", "reason", "supported"],
+    ),
 ];
 
 /// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
@@ -3702,13 +3723,20 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 1288 → **1316**（5 reason 行 ＋ 22 键行 ＋ 1 键行）。新摘要
 /// `624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ T-FIX-375（本支）：`domain/import_audio.rs` 的导入即拒闸门新增
+/// `unsupportedChannelLayout` 1 条字面站点（`channels` / `reason` /
+/// `supported` 3 键）⇒ reason 数 308 → **309**、规范行数 1316 → **1320**
+/// （1 reason 行 ＋ 3 键行）；`reason` 键站点 372 → **373**、字面站点
+/// 353 → **354**、总出现 377 → **378**。新摘要
+/// `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "624242d068ccc9a0b4d693950e4b7ef19a2cfeab1cde224a3391bfc607b4de27";
+    "3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 308;
+pub const REASON_SURFACE_REASONS: usize = 309;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1316;
+pub const REASON_SURFACE_LINES: usize = 1320;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
