@@ -637,6 +637,43 @@ mod tests {
         );
     }
 
+    /// 契约（T-FIX-442）：默认 `query_project` 是**稀疏视图**，不得当完整
+    /// `YebanProjectV1` 反序列化（`clip_pool` 摘要里没有 `content`）。
+    /// 红对照：全量序列化本身**能**反序列化（同一断言形状在完整文档上为真），
+    /// 因此本判据不是空洞的 —— 它只在默认视图变回全量时变红。
+    #[test]
+    fn default_view_cannot_deserialize_as_full_project() {
+        let project = project_with_notes(2);
+        let view = project_view(&project, &[]).expect("缺省视图");
+        assert!(
+            serde_json::from_value::<YebanProjectV1>(view).is_err(),
+            "T-FIX-442：默认视图必须稀疏，不得反序列化成完整 YebanProjectV1"
+        );
+        let full = serde_json::to_value(&project).expect("全量序列化");
+        assert!(
+            serde_json::from_value::<YebanProjectV1>(full).is_ok(),
+            "全量序列化必须能读回模型类型，否则本判据是空洞的"
+        );
+    }
+
+    /// 契约（T-FIX-442）：稀疏默认视图 + 显式 `clip_pool.full` 叠回后，
+    /// 必须逐位等于全量序列化 —— 这正是 `transpose_clip` 读回走的协议。
+    #[test]
+    fn sparse_view_plus_explicit_clip_pool_full_deserializes() {
+        let project = project_with_notes(2);
+        let mut view = project_view(&project, &[]).expect("缺省视图");
+        let full = project_view(&project, &["clip_pool.full".to_owned()]).expect("全量池子");
+        view["clip_pool"] = full["clip_pool"].clone();
+        assert_eq!(
+            view,
+            serde_json::to_value(&project).expect("全量序列化"),
+            "T-FIX-442：稀疏视图叠回全量池子后必须逐位等于全量序列化"
+        );
+        let document: YebanProjectV1 =
+            serde_json::from_value(view).expect("叠回后必须能读回模型类型");
+        assert_eq!(document.clip_pool.len(), project.clip_pool.len());
+    }
+
     #[test]
     fn sparse_view_keeps_only_the_requested_selectors() {
         let project = filled_project();

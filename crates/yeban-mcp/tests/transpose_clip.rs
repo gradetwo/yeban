@@ -132,17 +132,35 @@ fn midi_target(project: &YebanProjectV1) -> (EntityId, EntityId, Vec<NoteRow>) {
     (track_id, entry.id, rows)
 }
 
+/// 用 `query_project` 读回**完整工程文档**（`YebanProjectV1`）。
+///
+/// ⭐ T-FIX-366 之后默认视图是**稀疏**的：`clip_pool` 只给摘要（`content` 缺失），
+/// 直接反序列化不成完整工程（`missing field 'content'`）。全量音符必须显式请求
+/// `clip_pool.full`（工具 `fields` 选择器写法），再把全量池子叠回稀疏文档上 ——
+/// 稀疏默认本身不动（它仍是 `yeban_query_project` 的缺省语义）。
+fn read_full_project(auth: &str, dispatcher: &mut Dispatcher) -> YebanProjectV1 {
+    let view = call(dispatcher, auth, "yeban_query_project", json!({}));
+    assert_eq!(view["status"], "success", "{view}");
+    let full = call(
+        dispatcher,
+        auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
+    assert_eq!(full["status"], "success", "{full}");
+    let mut document = view["data"]["project"].clone();
+    document["clip_pool"] = full["data"]["project"]["clip_pool"].clone();
+    serde_json::from_value(document).expect("视图必须能读回模型类型")
+}
+
 /// 从 `query_project` 里读一条片段的逐音符读数（与 [`midi_target`] 同一形状）。
 ///
 /// ⚠ 读数口径 = **把工具返回的 `data.project` 用模型自己的反序列化器读回类型**，
 /// ⛔ 从响应里猜 JSON 字段名（`start_tick` 还是 `startTick`、`"Midi"` 那层标签）。
-/// 默认视图是 `view::project_view` 的**全量顶层序列化**（`fields` 为空 ⇒ 不裁剪），
 /// 而容器层的双向对偶就是 `YebanProjectV1` 的 serde —— 用它，字段名不会漂移。
+/// 全量读数走 [`read_full_project`]（默认视图稀疏，见该函数）。
 fn read_back(auth: &str, dispatcher: &mut Dispatcher, clip: &EntityId) -> Vec<NoteRow> {
-    let view = call(dispatcher, auth, "yeban_query_project", json!({}));
-    assert_eq!(view["status"], "success", "{view}");
-    let document: YebanProjectV1 =
-        serde_json::from_value(view["data"]["project"].clone()).expect("视图必须能读回模型类型");
+    let document = read_full_project(auth, dispatcher);
     let notes = document
         .clip_pool
         .get(clip)
@@ -544,11 +562,10 @@ fn absent_auto_merge_on_edit_notes_proposes_without_merging() {
     );
 }
 
-/// 从 `query_project` 里读回**整个工程文档**（与 [`read_back`] 同一反序列化口径）。
+/// 从 `query_project` 里读回**整个工程文档**（与 [`read_back`] 同一反序列化口径，
+/// 全量读数走 [`read_full_project`]）。
 fn read_project(auth: &str, dispatcher: &mut Dispatcher) -> YebanProjectV1 {
-    let view = call(dispatcher, auth, "yeban_query_project", json!({}));
-    assert_eq!(view["status"], "success", "{view}");
-    serde_json::from_value(view["data"]["project"].clone()).expect("视图必须能读回模型类型")
+    read_full_project(auth, dispatcher)
 }
 
 /// 时间轴上**每一条摆放**的逐字段读数（排序后可直接整表比较）。
