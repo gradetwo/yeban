@@ -555,16 +555,16 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 10] = [
 /// 取消 / 没有对话框两条腿）在
 /// `tests/new_project_ui.rs` 里断。
 ///
-/// ⭐ **`module-clipping-warning`（任务单 `#230`）**：它是右栏模块入口条里
-/// 的**母带削波警示行**（`visible: 属性 != ""`），默认文本是空串 ⇒ 默认帧里不在运行时
-/// 树、一个像素都不画。反方向（削波导出之后它在树里、文本逐字、几何在右栏内）在
-/// `tests/gui_clipping_warning.rs` 里断。
+/// ⭐ T-FIX-402：**`module-clipping-warning`（任务单 `#230`）与
+/// `module-import-losses`（任务单 `#319`／`#320`）已从本清单移除** ——
 ///
-/// ⭐ **`module-import-losses`（任务单 `#319`／`#320`）是最后一位**：右栏模块入口条里
-/// 的**导入损失摘要行**（与削波警示**同一槽位**、互斥；`visible: 属性 != ""`），默认
-/// 空串 ⇒ 默认帧里不在运行时树、零像素。反方向（导入 316 B 夹具之后它在树里、摘要逐字、
-/// 含歌词未归属、与削波行互斥、在右栏内）在 `tests/import_midi_losses_ui.rs` 里断。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 14] = [
+/// 它们是右栏模块入口条里的警示行 / 导入损失摘要行（与削波警示同一槽位、互斥；
+/// `visible: 属性 != ""`），曾由 `tests/gui_clipping_warning.rs` /
+/// `tests/import_midi_losses_ui.rs` 在反方向断言。但那两行的 `.slint` 载体
+/// `ui/module_actions.slint` 是死文件（从未被活树 import），两行在活树里
+/// 根本不存在 ⇒ 它们的注册表条目已随 T-FIX-402 删除，判据 6 要求清单条目
+/// 都是真注册表条目 ⇒ 随之移出本清单（14 → 12）。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 12] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -579,8 +579,12 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 14] = [
     "module-export-midi-button",
     "module-open-project-button",
     "module-new-project-button",
-    "module-clipping-warning",
-    "module-import-losses",
+    // ⭐ T-FIX-402：`module-clipping-warning` 与 `module-import-losses`
+    // 已随注册表删除（`ui/module_actions.slint` 是死文件，见
+    // `docs/DEAD-SLINT-FILES.md` §1）⇒ 不再是注册表条目，判据 6
+    // （`criteria_id_lists_are_all_real_registry_entries`）要求清单里的
+    // 每一条都是真条目 ⇒ 14 → 12。它们"默认帧里不可见"那一半不需要这条
+    // 清单来证：死文件的控件本来就不进活树。
 ];
 
 fn demo_registry() -> ElementRegistry {

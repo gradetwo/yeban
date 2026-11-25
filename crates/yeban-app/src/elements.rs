@@ -534,116 +534,19 @@ impl ElementRegistry {
             false,
         );
 
-        // ------------------------------------------------- **模块入口**（五个）
+        // ------------------------------------------------- **模块入口**（五个）—— T-FIX-402 已删
         //
-        // 它们住在右栏的下半区（`ui/module_actions.slint` 的 `ModuleActions`，由
-        // `app.slint` 的 `AiRail` 实例化 —— 既有三条控件止于 y=204，
-        // 因此这些入口**没有**移动任何**更早**的控件；第五条（硬件 MIDI 输入）追加在
-        // 四个入口之后，只把两条**空文本**状态行往下让位（空 Text 不产像素）。
-        //
-        // 标签必须与 `.slint` 的 `accessible-label` **逐字相同**：`test_port_adapter`
-        // 的运行时树对账会断言 label 相等。四条回调的宿主实现全在
-        // `host::wire_module_actions`（复用 `export_wav` / `import_midi` / `sfz_load` /
-        // `record_wav` 四个**已经存在**的模块，⛔ 不另写一套）。
-        //
-        // ⚠ `module-last-status` 是**动态**的（`dynamic = true`）：它的文本由
-        // 宿主写进 `MainWindow.module-status`，每次按下都可能不同
-        // ⇒ `[UI-MCP-002]` 的截图遮罩必须按元素包围盒置黑它。
-        // 它是 e2e「触发入口 ⇒ 状态文本按预期变化」的**可寻址**落点。
-        for (id, label) in [
-            (
-                "module-export-wav-button",
-                "导出 WAV（打开采样率 / 位深 / 时长选项）",
-            ),
-            (
-                "module-import-midi-button",
-                "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）",
-            ),
-            (
-                "module-load-sfz-button",
-                "装载 SFZ 乐器（报告区域数并探测一个音符）",
-            ),
-            (
-                "module-record-wav-button",
-                "录音（把控制侧测试音录成 24-bit WAV）",
-            ),
-            // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture_messages`）。
-            // ⚠ 它与 `module-import-midi-button` 不是同一件事：那条读**文件**（SMF），
-            // 这条读**物理端口**（`[ADR-0006]`）。
-            // ⭐ 落点 = CLI 的 `--midi-in` **＋** `--midi-in-write-notes`：采集完成后，
-            // 配对出的音符写进**第一条非主总线音轨**（规则在 `crate::import_midi::destination`）。
-            (
-                "module-midi-in-button",
-                "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）",
-            ),
-        ] {
-            registry.add(
-                id,
-                ElementKind::Button,
-                "module_actions.slint",
-                label,
-                false,
-            );
-        }
-        registry.add(
-            "module-actions-title",
-            ElementKind::Text,
-            "module_actions.slint",
-            "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入",
-            false,
-        );
-        // ⭐ 硬件 MIDI 输入的**专属**结果行（与 `module-last-status` 是同一串字节、
-        // 同一个写者 ⇒ 两个可寻址的显示位，不是一个第二真相源）。
-        // ⚠ 动态区：每次按下都变 ⇒ 截图遮罩要按它的包围盒置黑。
-        registry.add(
-            "module-midi-in-status",
-            ElementKind::Text,
-            "module_actions.slint",
-            "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）",
-            true,
-        );
-        registry.add(
-            "module-last-status",
-            ElementKind::Text,
-            "module_actions.slint",
-            // 标签与 `.slint` 的 `accessible-label` **逐字相同**（`test_port_adapter`
-            // 的运行时对账断言 label 相等）。标签是**静态**的（内容默认空串，绑上去会
-            // 让节点无名字）；回执原文住在可见 `text`、`MainWindow.module-status` 与
-            // `accessible-value` 上（`#236`：三处绑同一个属性）。
-            "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）",
-            // 动态区：回执每次按下都变 ⇒ 截图比对的遮罩要按它的包围盒置黑。
-            true,
-        );
-        // ⭐ 任务单 `#230`：**母带削波警示行**（`module_actions.slint` 的
-        // `module-clipping-warning`，`y = 444`）。
-        //
-        // 它与上面两条状态行不是同一格：只放一行短句（削波样本数 / 建议减多少 dB），
-        // 空串 ⇒ `visible: false` ⇒ 默认帧里不在运行时树、不画像素。
-        // 动态区：导出不同的工程 / 削波读数不同 ⇒ 截图遮罩按它的包围盒置黑。
-        registry.add(
-            "module-clipping-warning",
-            ElementKind::Text,
-            "module_actions.slint",
-            // 与 `.slint` 的 `accessible-label` 逐字相同。
-            "母带削波警示（削波样本数 / 建议减多少 dB）",
-            true,
-        );
-        // ⭐ 任务单 `#319`／`#320`：**MIDI 文件导入的损失摘要行**（`module_actions.slint`
-        // 的 `module-import-losses`，`y = 444` —— 与削波警示**同一槽位**、互斥）。
-        // `#320` 起同一行也带**歌词的非零丢失桶**（完整五项在回执 `lyrics_detail`）。
-        //
-        // 空串 ⇒ `visible: false` ⇒ 默认帧里不在运行时树、不画像素（与 `#230` 同款）。
-        // 唯一写者 = `host::apply_module_receipt_with_alerts`：每次动作同时写两条，
-        // 没给的那条写空串 ⇒ 任一时刻最多一条可见。
-        // 动态区：每次导入的读数不同 ⇒ 截图遮罩按它的包围盒置黑。
-        registry.add(
-            "module-import-losses",
-            ElementKind::Text,
-            "module_actions.slint",
-            // 与 `.slint` 的 `accessible-label` 逐字相同。
-            "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）",
-            true,
-        );
+        // `module-export-wav-button` / `module-import-midi-button` /
+        // `module-load-sfz-button` / `module-record-wav-button` /
+        // `module-midi-in-button` + `module-actions-title` /
+        // `module-midi-in-status` / `module-last-status` /
+        // `module-clipping-warning` / `module-import-losses` 这 10 条曾登记在
+        // `ui/module_actions.slint` 上；该文件从未被任何活 `.slint` import
+        // （`docs/DEAD-SLINT-FILES.md` §1，无活树对应文件），注册表里留着就是
+        // 幽灵条目（覆盖判据方向 1 靠死文件的 accessible-id 模板才勉强对上）。
+        // 活的模块入口另有其处：`module-export-midi-button` /
+        // `module-open-project-button` / `module-new-project-button` 住在
+        // `ui/console/mixer_console.slint`（见下），不在此删。
 
         // ⭐ **导出 MIDI**（任务单 `#90` 甲）—— 第六条模块入口。
         //
@@ -999,36 +902,31 @@ impl ElementRegistry {
         }
 
         // ---- Hub #711：Songmap Phase 2 A/B 快照（会话态，隐藏于折叠态）----
+        // ⭐ T-FIX-402：这三键是活的 —— 住在 `ui/app.slint` 的 A/B 对比条里
+        // （`if !root.console-maximized`，默认开启），component 已由死文件
+        // `workspace/song_overview_panel.slint` 重指向 `app.slint`。
         registry.add(
             "song-overview-capture-a-button",
             ElementKind::Button,
-            "workspace/song_overview_panel.slint",
+            "app.slint",
             "存 A",
             false,
         );
         registry.add(
             "song-overview-capture-b-button",
             ElementKind::Button,
-            "workspace/song_overview_panel.slint",
+            "app.slint",
             "存 B",
             false,
         );
         registry.add(
             "song-overview-compare-button",
             ElementKind::Button,
-            "workspace/song_overview_panel.slint",
+            "app.slint",
             "对比 A→B",
             false,
         );
-        registry.add(
-            "song-overview-ab-status",
-            ElementKind::Text,
-            "workspace/song_overview_panel.slint",
-            "Songmap A/B 对比摘要",
-            false,
-        );
-        // T-FIX-301：刷新回执落点 —— 产品窗口里的 A/B 条状态文字，以及整面板组件
-        // （组件当前未挂进产品窗口，但保留同一份可读状态供它单独挂载时使用）。
+        // T-FIX-301：刷新回执落点 —— 产品窗口里的 A/B 条状态文字。
         registry.add(
             "song-overview-analysis-status",
             ElementKind::Text,
@@ -1036,132 +934,20 @@ impl ElementRegistry {
             "总览分析状态（纯谱面回退 / 渲染失败原因）",
             false,
         );
-        registry.add(
-            "song-overview-panel-analysis-status",
-            ElementKind::Text,
-            "workspace/song_overview_panel.slint",
-            "总览面板回退提示（能量/频率为谱面代理值）",
-            false,
-        );
 
-        // ------------------------------------------------- 整曲多层总览图（Song Overview Phase 1）
+        // ------------------------------------------------- 整曲多层总览图（Song Overview Phase 1）—— T-FIX-402 已删
         //
-        // 面板本体 `ui/workspace/song_overview_panel.slint`（底部、状态栏之上、可折叠
-        // 100 px）。标签必须与 `.slint` 的 `accessible-label` **逐字相同**
-        // （运行时树对账断言 label 相等）。
-        // `song-overview-playhead` 是动态区：走带光标每帧跳变 ⇒ 截图遮罩按它的包围盒置黑。
-        // `song-overview-hover-readout` 是动态区：悬停文本随指针变 ⇒ 同样遮罩。
-        registry.add(
-            "song-overview-panel",
-            ElementKind::Region,
-            "workspace/song_overview_panel.slint",
-            "整曲多层总览图",
-            false,
-        );
-        registry.add(
-            "song-overview-canvas",
-            ElementKind::Image,
-            "workspace/song_overview_panel.slint",
-            "整曲总览图：频率热力图、能量面积与情绪曲线",
-            false,
-        );
-        registry.add(
-            "song-overview-playhead",
-            ElementKind::Slider,
-            "workspace/song_overview_panel.slint",
-            "总览图走带光标",
-            true,
-        );
-        registry.add(
-            "song-overview-viewport",
-            ElementKind::Slider,
-            "workspace/song_overview_panel.slint",
-            "当前编排视口",
-            false,
-        );
-        registry.add(
-            "song-overview-viewport-resize",
-            ElementKind::Slider,
-            "workspace/song_overview_panel.slint",
-            "拖动缩放编排视口",
-            false,
-        );
-        registry.add(
-            "song-overview-hover-readout",
-            ElementKind::Text,
-            "workspace/song_overview_panel.slint",
-            "悬停小节读数",
-            true,
-        );
-        registry.add(
-            "song-overview-density-strip",
-            ElementKind::Image,
-            "workspace/song_overview_panel.slint",
-            "疏密条码与小节标尺",
-            false,
-        );
-        registry.add(
-            "song-overview-layer-tension-pill",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "情绪层开关",
-            false,
-        );
-        registry.add(
-            "song-overview-layer-energy-pill",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "能量层开关",
-            false,
-        );
-        registry.add(
-            "song-overview-layer-bands-pill",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "频段层开关",
-            false,
-        );
-        registry.add(
-            "song-overview-layer-density-pill",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "疏密层开关",
-            false,
-        );
-        registry.add(
-            "song-overview-collapse-button",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "折叠 / 展开总览面板",
-            false,
-        );
-        // ⭐ 全屏键（Wang 2026-11-08 19:56 要求）：标签与 `.slint` 的
-        // `accessible-label` 逐字相同（运行时树对账断言 label 相等）。
-        registry.add(
-            "song-overview-fullscreen-button",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "全屏 / 退出全屏总览面板",
-            false,
-        );
-        // Phase 2 曲风预设键（设计稿 §3.6）：标签与 `.slint` 的
-        // `accessible-label` 逐字相同（"曲风预设"）。
-        registry.add(
-            "song-overview-profile-button",
-            ElementKind::Button,
-            "workspace/song_overview_panel.slint",
-            "曲风预设",
-            false,
-        );
-        // Songmap follow-ons (a) 频段独奏金框：标签与 `.slint` 的
-        // `accessible-label` 逐字相同（"独奏频段行"）；角色 image（图形载体）。
-        registry.add(
-            "song-overview-band-solo-outline",
-            ElementKind::Image,
-            "workspace/song_overview_panel.slint",
-            "独奏频段行",
-            false,
-        );
+        // `song-overview-panel` / `-canvas` / `-playhead` / `-viewport` /
+        // `-viewport-resize` / `-hover-readout` / `-density-strip` /
+        // `-layer-{tension,energy,bands,density}-pill` / `-collapse-button` /
+        // `-fullscreen-button` / `-profile-button` / `-band-solo-outline` /
+        // `song-overview-ab-status` / `song-overview-panel-analysis-status`
+        // 这 17 条曾登记在
+        // `ui/workspace/song_overview_panel.slint` 上；该文件从未被任何活
+        // `.slint` import（`docs/DEAD-SLINT-FILES.md` §1，无活树对应文件），
+        // 其中 16 个 id 在活树里根本不存在（`song-overview-ab-status` 只有
+        // `app.slint` 里的无 id 文本绑定）。上面仅剩的 A/B 三键是活的，
+        // 已重指向 `app.slint`。
 
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
@@ -4669,6 +4455,16 @@ mod tests {
             if *is_template && empty_dynamic_template_is_documented(segments) {
                 continue;
             }
+            // ⭐ T-FIX-402：死文件的 accessible-id 不再要求注册表成员 ——
+            // `module_actions.slint` 与 `workspace/song_overview_panel.slint`
+            // 从未被任何活 `.slint` import（`docs/DEAD-SLINT-FILES.md` §1），
+            // 它们的 26 个 id 已随 T-FIX-402 从注册表里删除；方向 2 再按它们
+            // 逐条索要成员，就会把"死文件里有 ID"误报成"注册表漏登记"。
+            // ⛔ 只跳过这两个文件：方向 1 仍要死文件参与（22 条 arrangement
+            // 条目在 T-FIX-394 合入前仍指着死文件，靠那边的模板对上）。
+            if file == "module_actions.slint" || file == "workspace/song_overview_panel.slint" {
+                continue;
+            }
             assert!(
                 registries
                     .iter()
@@ -4924,13 +4720,11 @@ mod tests {
 
     /// T-FIX-394: 注册表里不许再出现指向死文件的指针（已登记的余量除外）。
     ///
-    /// 死文件清单以 `docs/DEAD-SLINT-FILES.md` §1 为准（6 个）。本轮把 22 处
-    /// `workspace/arrangement_view.slint` 指针改成了 `arrangement.slint`；剩下
-    /// 仍指向死文件的两组没有活文件可指 —— `module_actions.slint`（6 处；值已
-    /// 变成 MainWindow 根属性，见 `ui/app.slint:724-727`）与
-    /// `workspace/song_overview_panel.slint`（19 处；面板从未实例化，见
-    /// T-FIX-372 回执 §6）—— 只能逐条登记在余量清单里，不能静默放行。
-    /// 修掉其中一组时必须同步更新本判据；新出现死文件指针时本判据即红。
+    /// 死文件清单以 `docs/DEAD-SLINT-FILES.md` §1 为准（6 个）。T-FIX-394 把 22 处
+    /// `workspace/arrangement_view.slint` 指针改成了 `arrangement.slint`；T-FIX-402
+    /// 又删掉了剩下两组死文件指针（`module_actions.slint` 与
+    /// `workspace/song_overview_panel.slint`），登记余量因此清空。
+    /// 新出现死文件指针时本判据即红。
     /// 另外：每个指针都必须对应 `ui/` 下真实存在的文件（防 `x.slint` 类幽灵路径）。
     #[test]
     fn registry_components_never_point_at_dead_files_except_declared() {
@@ -4942,11 +4736,9 @@ mod tests {
             "workspace/song_overview_panel.slint",
             "controls/knob.slint",
         ];
-        // 已登记的余量：没有活文件可指，逐条理由见上；修掉一组就同步更新此处。
-        const DECLARED_REMAINDER: &[&str] = &[
-            "module_actions.slint",
-            "workspace/song_overview_panel.slint",
-        ];
+        // 已登记的余量：两组死文件指针已由 T-FIX-402 全部修掉，余量为空；
+        // 新出现死指针时本判据即红。
+        const DECLARED_REMAINDER: &[&str] = &[];
         let ui = ui_dir();
         let mut remainder: Vec<&str> = Vec::new();
         for meta in registry().iter() {
@@ -5038,6 +4830,79 @@ mod tests {
             !registry.contains("sidebar"),
             "注册表里不许再有 `sidebar`（旧侧栏面板已删，见 T-FIX-218）"
         );
+    }
+
+    /// T-FIX-402：26 条死文件注册已删、3 条 A/B 重指向活文件 ——
+    /// 注册表里不许再有 component 指向 `module_actions.slint` 或
+    /// `workspace/song_overview_panel.slint` 的条目；A/B 三键必须指着
+    /// `app.slint`；26 个已删 id 必须一个都不剩。
+    ///
+    /// 红证法：把任一已删条目加回注册表（或把 A/B 三键指回死文件），
+    /// 本条即红。活窗口那一侧由 `tests/registry_repointed_ids_live.rs` 另钉。
+    #[test]
+    fn no_registry_entry_points_at_the_two_dead_files_fixed_by_t_fix_402() {
+        let registry = registry();
+        for meta in registry.iter() {
+            assert_ne!(
+                meta.component, "workspace/song_overview_panel.slint",
+                "`{}` 仍指着死文件 workspace/song_overview_panel.slint（T-FIX-402 已删）",
+                meta.id
+            );
+            assert_ne!(
+                meta.component, "module_actions.slint",
+                "`{}` 仍指着死文件 module_actions.slint（T-FIX-402 已删）",
+                meta.id
+            );
+        }
+        // A/B 三键是活的，必须指着 app.slint。
+        for id in [
+            "song-overview-capture-a-button",
+            "song-overview-capture-b-button",
+            "song-overview-compare-button",
+        ] {
+            let meta = registry
+                .get(id)
+                .unwrap_or_else(|| panic!("A/B 键 `{id}` 必须在注册表里"));
+            assert_eq!(
+                meta.component, "app.slint",
+                "`{id}` 必须重指向 app.slint，实为 {}",
+                meta.component
+            );
+        }
+        // 26 个已删 id 一个都不许剩。
+        for id in [
+            "song-overview-ab-status",
+            "song-overview-panel",
+            "song-overview-canvas",
+            "song-overview-playhead",
+            "song-overview-viewport",
+            "song-overview-viewport-resize",
+            "song-overview-hover-readout",
+            "song-overview-density-strip",
+            "song-overview-layer-tension-pill",
+            "song-overview-layer-energy-pill",
+            "song-overview-layer-bands-pill",
+            "song-overview-layer-density-pill",
+            "song-overview-collapse-button",
+            "song-overview-fullscreen-button",
+            "song-overview-profile-button",
+            "song-overview-band-solo-outline",
+            "module-export-wav-button",
+            "module-import-midi-button",
+            "module-load-sfz-button",
+            "module-record-wav-button",
+            "module-midi-in-button",
+            "module-actions-title",
+            "module-midi-in-status",
+            "module-last-status",
+            "module-clipping-warning",
+            "module-import-losses",
+        ] {
+            assert!(
+                !registry.contains(id),
+                "`{id}` 已随 T-FIX-402 从注册表里删除，不许再出现"
+            );
+        }
     }
 
     #[test]
