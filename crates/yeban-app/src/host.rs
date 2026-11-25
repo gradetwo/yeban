@@ -16662,12 +16662,17 @@ pub fn wire_module_actions_with_capture(
             // 用户会以为程序崩了）。UI 线程只做最后的回执写入。
             // 跨线程安全：YebanProjectV1 是纯数据（无 Rc/RefCell）、sfz 是 Arc<SfzInstrument>。
             let weak2 = weak.clone();
+            // T-FIX-357: the archive asset pool must be cloned on the UI thread before
+            // spawning (`UndoPort` is not Send), otherwise `ClipContent::Audio` clips
+            // get no PCM in offline rendering and are silently skipped.
+            let assets = port.assets();
             let _ = std::thread::spawn(move || {
-                let result = crate::export_wav::export_wav_with_sfz_file(
+                let result = crate::export_wav::export_wav_with_sfz_file_and_assets(
                     &project,
                     &target,
                     wav_options,
                     sfz,
+                    &assets,
                 );
                 let _ = weak2.upgrade_in_event_loop(move |ui| {
                     let (receipt, ok, clipping_warning, success_line, measurement) = match result {
@@ -16685,6 +16690,13 @@ pub fn wire_module_actions_with_capture(
                                 format!("bytes={}", report.bytes),
                                 format!("source={}", report.source),
                                 format!("digest={}", report.digest),
+                                // T-FIX-357: make the asset-pool outcome visible in the
+                                // structured receipt (CLI already reports the same numbers).
+                                format!("audio_clips_rendered={}", report.audio_clips_rendered),
+                                format!(
+                                    "audio_clips_skipped={}",
+                                    report.audio_clips_skipped.len()
+                                ),
                                 // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
                                 // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
                                 // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
@@ -16740,14 +16752,22 @@ pub fn wire_module_actions_with_capture(
                             }
                             // ⭐ 任务单 `#230`：窗口里**看得见**的那一行（与上面那条回执字段
                             // 是同一份报告的两个显示位，⛔ 不是第二份读数）。
-                            let warning = if report.clipped_samples == 0 {
-                                String::new()
-                            } else {
-                                clipping_warning_line(
+                            // T-FIX-357: skipped audio assets are a visible warning, not a
+                            // bare `outcome=ok`. Keep the clipping-only case byte-identical.
+                            let mut warnings = Vec::new();
+                            if report.clipped_samples != 0 {
+                                warnings.push(clipping_warning_line(
                                     report.clipped_samples,
                                     report.suggested_trim_db,
-                                )
-                            };
+                                ));
+                            }
+                            if !report.audio_clips_skipped.is_empty() {
+                                warnings.push(format!(
+                                    "⚠ 导出缺少音频素材：{} 个音频片段被跳过",
+                                    report.audio_clips_skipped.len()
+                                ));
+                            }
+                            let warning = warnings.join(" ");
                             let success_line = format!("导出 WAV 完成 · {landed}");
                             let measurement = export_measurement_line(
                                 report.true_peak_dbfs,
