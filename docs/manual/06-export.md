@@ -22,6 +22,11 @@
 
 - 「文件 → 导出 MIDI 文件...」：把工程的音符导成标准 MIDI 文件（SMF），
   给其他 DAW 或乐谱软件继续编辑。
+- 这个入口不弹文件选择器，也没有采样率、位深、时长这类选项；点击后直接按 SMF 写出。
+- 落点优先级：`YEBAN_UI_EXPORT_MIDI_PATH` > 工程目录下的 `ui-export.mid` >
+  未保存工程写到 `Yeban` 文档目录下的 `ui-export.mid`。
+- 完成后回执会报 `path`、`bytes`、`ppq`、`format`、`tracks`、`notes`、`tempos`；
+  没有打开工程时如实报错，不生成文件。
 - MIDI 只带音符与速度信息，不带音色与效果——那是 WAV / 分轨的活。
 
 ## 诊断报告包（不是导出作品）
