@@ -28153,11 +28153,27 @@ pub fn wire_missing_sounds_dialog(
             if !swap_track_sampler(&ui, &port, row.track_index, path.as_str(), name.as_str()) {
                 return;
             }
+            // T-ISS-MWVUOZCU：删行前先记下焦点槽位 —— `publish_missing_rows` 会换掉
+            // 整组行数组、重建 `for` 行元素，事后读到的已是新表下的读数，无法反推
+            // 焦点原来在哪一行；重基（见下文）必须用删行前的值。（T-FIX-427 同款。）
+            let focused_before = ui.get_missing_sounds_focused_control();
             // 换好了 ⇒ 这一行不再"缺"，列表越点越短；全清 ⇒ 面板自己走人。
             rows.borrow_mut()
                 .retain(|item| item.track_index != row.track_index);
             let empty = rows.borrow().is_empty();
             publish_missing_rows(&ui, &rows);
+            // T-ISS-MWVUOZCU：焦点在幸存行上时按新行号重基。被删行上的焦点已由
+            // 对话框内 swap 守卫（T-FIX-333）在发 swap 前挪到 ✕，这里只处理幸存行：
+            // 被删行在焦点行之上 ⇒ 同一行新下标 = 旧下标 − 1，格内槽位不变。
+            // 焦点在 ✕ / 「先不管」/ 被删行上时不动（值 < 100，或行号等于被删行）。
+            // 全清 ⇒ 面板随即关闭、焦点复位回快捷键层，也不动。
+            if !empty && focused_before >= 100 {
+                let row = (focused_before - 100) / 10;
+                let cell = (focused_before - 100) % 10;
+                if row > index {
+                    ui.invoke_rebase_missing_sounds_focused_row_slot(100 + (row - 1) * 10 + cell);
+                }
+            }
             if empty {
                 ui.set_missing_sounds_open(false);
                 ui.set_engine_error(SharedString::from(""));
