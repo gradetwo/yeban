@@ -13,7 +13,6 @@ use yeban_app::bridge::{
 use yeban_model::samples::filled_project;
 use yeban_model::{AutomationTarget, AutomationWriteMode, Op};
 
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const APP: &str = include_str!("../ui/app.slint");
 
 #[test]

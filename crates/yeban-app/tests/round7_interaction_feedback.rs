@@ -45,7 +45,6 @@ use yeban_ui_test_port::port::Permission;
 const CONSOLE_TABS: &str = include_str!("../ui/console/console_tabs.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
 
 /// 把 `//` 注释与 `"..."` 字符串内容替换为等长空格（保留花括号结构），供块配平使用。

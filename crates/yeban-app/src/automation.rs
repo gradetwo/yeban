@@ -360,7 +360,7 @@ pub fn target_key(target: &AutomationTarget) -> String {
 
 /// 泳道的语义元素 ID（**唯一**的拼接口径）。
 ///
-/// `ui/workspace/arrangement_view.slint` 用同一组字面段拼出它
+/// `ui/arrangement.slint` 用同一组字面段拼出它
 /// （`"track-" + 轨道序号 + "-automation-" + 目标键 + "-lane"`）；
 /// 两侧一致性由 `elements::slint_accessible_ids_and_registry_cover_each_other` 与
 /// 文本层判据 `lane_element_ids_match_the_slint_template` 共同钉住。
@@ -1742,13 +1742,21 @@ mod tests {
     /// 所以它在 S0 必然变红。新版断言**更强**，它同时钉住三件事：
     ///
     /// 1. 界面里**没有任何**行算术（`42px + 56px *` 等形态全部禁止）；
-    /// 2. 行几何读的是投影注入的 `track-ys` / `track-heights` / `clip-ys` / `clip-heights`；
-    /// 3. 宿主 `host.rs` **真的注入**了这四个数组（属性写了没人注入 = 空数组 = 界面静默变形）。
+    /// 2. 行几何读的是投影注入的 `track-ys` / `track-heights` / 剪辑相对行高 / 泳道带数组；
+    /// 3. 宿主 `host.rs` **真的注入**了这些数组（属性写了没人注入 = 空数组 = 界面静默变形）。
+    ///
+    /// T-FIX-403：按**活文件** `ui/arrangement.slint` 重做（S0 复核）。死文件
+    /// `ui/workspace/arrangement_view.slint` 已不在活树中，旧针全是死文件的机制：
+    /// 行下标是 `track_index` / `lane_index` / `clip_index`，剪辑另有一套
+    /// `clip-ys` / `clip-heights`。活文件里行是 `for trk[idx]` 循环内的
+    /// `track-ys[idx]` / `track-heights[idx]`；剪辑嵌在行内、相对行高
+    /// （`parent.height - 8px`），不再读独立的剪辑数组；泳道带是注入的
+    /// `automation-lane-band-ys[lane_index] - track-ys[idx]`。
     #[test]
     fn lane_element_ids_match_the_slint_template() {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
-        let source = std::fs::read_to_string(ui.join("workspace/arrangement_view.slint"))
-            .expect("读 arrangement_view.slint");
+        let source =
+            std::fs::read_to_string(ui.join("arrangement.slint")).expect("读 arrangement.slint");
         let code: String = source
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
@@ -1789,21 +1797,32 @@ mod tests {
                 "`.slint` 仍在做行算术 `{forbidden}` ⇒ 行几何没有搬进投影（ADR-0004 S0）"
             );
         }
-        // (S0 ②) 行几何只能来自**注入的**数组（包头 / 车道两个下标 + 剪辑）。
+        // (S0 ②) 行几何只能来自**注入的**数组。活文件机制（T-FIX-403 重做）：
+        // 行 = `track-ys[idx]` / `track-heights[idx]`；剪辑嵌在行内、相对行高；
+        // 泳道带 = 注入的 band-ys 减行顶。死文件的 `clip-ys` / `clip-heights` /
+        // `rows-top` 在活文件里已不存在（反向断言钉住这一点）。
         for needle in [
-            "y: root.track-ys[track_index]",
-            "height: root.track-heights[track_index]",
-            "y: root.track-ys[lane_index]",
-            "height: root.track-heights[lane_index]",
-            "y: root.clip-ys[clip_index]",
-            "height: root.clip-heights[clip_index]",
+            "y: root.track-ys[idx]",
+            "height: root.track-heights[idx]",
+            "for blk[blk_idx] in root.timeline-blocks : Rectangle {",
+            "height: Math.max(52px, parent.height - 8px);",
+            "y: root.automation-lane-band-ys[lane_index] - root.track-ys[idx]",
+            "height: root.automation-lane-band-heights[lane_index]",
         ] {
             assert!(
                 code.contains(needle),
                 "`.slint` 缺少投影行几何的读取点 `{needle}` ⇒ 几何来源不是投影"
             );
         }
+        for gone in ["clip-ys", "clip-heights", "rows-top"] {
+            assert!(
+                !code.contains(gone),
+                "活文件里又出现了死文件的机制 `{gone}` ⇒ 行几何退回了旧结构"
+            );
+        }
         // (S0 ③) 注入侧真的存在（"属性写了没人注入"会让界面静默画成空数组）。
+        // `clip-ys` / `clip-heights` 不在这里：活界面根本不读它们，宿主仍在注入
+        // 是死注入（见 T-FIX-403 回执 §6 后续），钉注入会把死注入钉成事实，故不列。
         let host = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
         )
@@ -1811,8 +1830,9 @@ mod tests {
         for setter in [
             "set_track_ys(",
             "set_track_heights(",
-            "set_clip_ys(",
-            "set_clip_heights(",
+            "set_automation_lane_band_ys(",
+            "set_automation_lane_band_heights(",
+            "set_automation_path_commands(",
         ] {
             assert!(
                 host.contains(setter),

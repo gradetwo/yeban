@@ -62,7 +62,6 @@
 #![allow(unused)]
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
-const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const APP: &str = include_str!("../ui/app.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
