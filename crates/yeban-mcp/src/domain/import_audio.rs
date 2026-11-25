@@ -369,6 +369,9 @@ fn notes(registered_bytes: bool, placement_created: Option<bool>) -> Vec<&'stati
 /// - 磁盘文件不存在 → `FILE_NOT_FOUND`；读失败 → `IO_ERROR` / `DISK_FULL`；
 /// - 解码失败 → `RENDER_FAILED`（+ `data.decodeError` 分类）；
 /// - 超出 `PcmBudget` → `INVALID_PARAMETER_RANGE`（+ `data.budget = true`）；
+/// - **声道数 > 2** → `INVALID_PARAMETER_RANGE`（+ `data.reason = "unsupportedChannelLayout"`、
+///   `data.channels`、`data.supported = [1, 2]`）：渲染层只支持单/双声道（不做丢声道降混），
+///   在这里就拒，⛔ 不让坏资产先落盘、到导出才失败（T-FIX-375）；
 /// - 同身份但内容不同的片段已存在 → `CONFLICT`；
 /// - 摆放形状非法（给了 `startTick`/`durationTicks`/`placementId`/`muted` 却没给 `trackId`、
 ///   `durationTicks == 0`、工程速度无法换算时值）→ `INVALID_PARAMETER_RANGE`；
@@ -509,6 +512,25 @@ pub fn plan(
     };
 
     // ---- 摆放（可选；`trackId` 一给就摆放） ----
+    // ⭐ T-FIX-375：**导入即拒**多声道素材。渲染层只支持 1–2 声道（且明文
+    // 不做丢声道的静默降混）⇒ 4 声道这类资产一旦放进来，整个工程到
+    // `yeban_render_master` 才 RENDER_FAILED，且失败载荷只带资产哈希。
+    // 这里在**任何 op 之前**拒绝，工程一位不改。
+    if facts.channels > 2 {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "素材是 {} 声道，渲染层只支持 1–2 声道（导入即拒，工程未改动）",
+                facts.channels
+            ),
+            serde_json::json!({
+                "reason": "unsupportedChannelLayout",
+                "channels": facts.channels,
+                "supported": [1, 2],
+            }),
+        ));
+    }
+
     let placement = plan_placement(project, arguments, clip_id, &facts)?;
 
     // ---- 幂等 / 冲突（按内容与意图，不靠幂等键；片段与摆放各自判定） ----
@@ -1102,6 +1124,31 @@ mod tests {
         out
     }
 
+    /// 16-bit PCM WAV，任意声道数（每帧交织，测试只关心"能不能把声道数喂进去"）。
+    fn wav_s16_channels(sample_rate: u32, channels: u16, frames: &[i16]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(frames.len() * 2);
+        for sample in frames {
+            data.extend_from_slice(&sample.to_le_bytes());
+        }
+        let block_align = 2_u16.saturating_mul(channels);
+        let byte_rate = sample_rate.saturating_mul(u32::from(block_align));
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16_u32.to_le_bytes());
+        out.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&channels.to_le_bytes());
+        out.extend_from_slice(&sample_rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&block_align.to_le_bytes());
+        out.extend_from_slice(&16_u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
     fn pool_of(bytes: &[u8]) -> BTreeMap<AssetHash, Vec<u8>> {
         BTreeMap::from([(AssetHash::of_bytes(bytes), bytes.to_vec())])
     }
@@ -1140,6 +1187,52 @@ mod tests {
         for op in import.ops.iter().rev() {
             op.apply_inverse(project).expect("撤销");
         }
+    }
+
+    /// 判据（T-FIX-375）：声道数 > 2 在**导入阶段**就拒，且载荷点名
+    /// `reason/channels/supported` —— ⛔ 不再让 4 声道资产落盘、到导出才 RENDER_FAILED。
+    #[test]
+    fn more_than_two_channels_are_refused_at_import_time() {
+        let project = filled_project();
+        // 4 声道、每帧 4 个 sample，两帧。
+        let bytes = wav_s16_channels(48_000, 4, &[0, 10, -10, 0, 0, 20, -20, 0]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let error = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({"name": "Quad", "assetHash": hash.as_str()})),
+        )
+        .expect_err("4 声道必须在导入阶段被拒");
+        let Fault::Domain {
+            code,
+            message,
+            data,
+        } = &error
+        else {
+            panic!("必须是领域失败，实际: {error:?}");
+        };
+        assert_eq!(*code, ErrorCode::InvalidParameterRange);
+        assert!(
+            message.contains("4 声道") && message.contains("1–2"),
+            "文案须点名声道数与支持范围: {message}"
+        );
+        let data = data.as_ref().expect("须带结构化载荷");
+        assert_eq!(data["reason"], "unsupportedChannelLayout");
+        assert_eq!(data["channels"], 4);
+        assert_eq!(data["supported"], serde_json::json!([1, 2]));
+
+        // 单声道/双声道仍照旧放行（闸门只在 > 2 生效）。
+        let stereo = wav_s16_channels(48_000, 2, &[0, 0, 10, -10]);
+        let stereo_hash = AssetHash::of_bytes(&stereo);
+        let stereo_pool = pool_of(&stereo);
+        let ok = plan(
+            &project,
+            &stereo_pool,
+            &args(&serde_json::json!({"name": "Stereo", "assetHash": stereo_hash.as_str()})),
+        )
+        .expect("双声道必须放行");
+        assert_eq!(ok.facts.channels, 2);
     }
 
     #[test]
