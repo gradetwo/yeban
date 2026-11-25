@@ -6454,6 +6454,186 @@ mod tests {
         );
     }
 
+    /// 取出 `click_line` 所在元素块的块首行（去空白后的整行文本）。
+    ///
+    /// 口径：`clicked` 是元素的属性，块首 = 该行之前最近的一行、它更浅缩进且以 `{` 结尾。
+    /// 单行 `TouchArea { … clicked => { … } }` 里点击与块首同行，块首会落到它的父元素上 ——
+    /// 这不影响键的唯一性（键里还带点击落点），只影响键里写的是哪一级元素名。
+    fn enclosing_element_header(lines: &[&str], click_line: usize) -> String {
+        let indent = indent_of(lines[click_line]);
+        for probe in (0..click_line).rev() {
+            if lines[probe].trim_end().ends_with('{') && indent_of(lines[probe]) < indent {
+                return lines[probe].trim().to_owned();
+            }
+        }
+        String::new()
+    }
+
+    /// 从元素块首行里取出元素类型（`TouchArea` / `Rectangle` / `PushButton` …）。
+    ///
+    /// 块首行有四种形状：`name := Type {`、`Type {`、`for … : Type {`、`if … : Type {`。
+    fn element_type(header: &str) -> &str {
+        let header = header.trim_end_matches('{').trim();
+        let after_assign = header
+            .split_once(":=")
+            .map(|(_, rest)| rest)
+            .unwrap_or(header);
+        let after_colon = after_assign
+            .split_once(" : ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(after_assign);
+        after_colon.split_whitespace().next().unwrap_or("")
+    }
+
+    /// 取出 `text` 里 `component <name> inherits … { … }` 的块体（花括号配平）。
+    fn component_block(text: &str, name: &str) -> Option<String> {
+        let marker = format!("component {name} inherits");
+        let start = text.find(&marker)?;
+        let brace = text[start..].find('{')? + start;
+        let mut depth = 0_i32;
+        for (index, ch) in text[brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(text[brace..=brace + index].to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ① / `TEST-SPEC-005`，T-FIX-180）：
+    /// **clickable inventory —— 每一个 `clicked` 都必须有归属**：要么落在交互 role 块里
+    /// 且绑了同落点的无障碍动作（上一条判据的口径），要么落在四个已接线回调组件
+    /// （`PushButton` / `SmallButton` / `PhaseButton` / `PanelButton`，定义处已把
+    /// `clicked` 回调接到 `accessible-action-default`）的使用点上，要么逐条登记在
+    /// `KNOWN_ROLELESS_CLICKABLES` 里。
+    ///
+    /// 为什么要这一条：上一条判据只遍历**已有 role 的块**，`clicked` 落在任何 role 块
+    /// 之外时直接 `continue` 跳过 —— “可点击但根本没有 role” 的控件永远不会进入判据。
+    /// 实例：T-FIX-173 的 LOOP —— 修复前 `transport_bar.slint` 的 `btn_loop_touch` 有真实
+    /// `clicked => { root.toggle-loop(); }`，但父 `btn_loop` 没有任何 `accessible-*`；
+    /// 旧判据全绿，屏读器却找不到 LOOP。T-FIX-173 的定点测试只钉住一个 id，下一个同类
+    /// 控件仍会静默通过。本判据把**全部** `clicked` 先盘点成集合，再做集合比对。
+    ///
+    /// 键的口径：`{文件} :: {点击所在元素块首行} :: {空白归一化后的点击落点}`。块首行按
+    /// `enclosing_element_header` 取（点击所在行的上一级 `{` 行）；单行 TouchArea 里
+    /// 块首会落到父元素上，但三元组在本树实测唯一（105 条无重键）。
+    ///
+    /// 注入证明（破坏 ⇒ 红）：删掉 LOOP 的 `accessible-role`（T-FIX-173 补丁 revert）
+    /// ⇒ `transport_bar.slint :: btn_loop_touch := TouchArea { :: root.toggle-loop();` 落进
+    /// 未覆盖集合，判据红（而旧判据在同一棵树上仍绿 —— 这正是本条要补的盲区）；新增一个
+    /// 无 role 的可点控件 ⇒ 同样红。
+    #[test]
+    fn every_clickable_control_is_either_role_bound_or_a_known_exception() {
+        const INTERACTIVE_ROLES: [&str; 7] = [
+            "button",
+            "tab",
+            "switch",
+            "checkbox",
+            "radio-button",
+            "combobox",
+            "list-item",
+        ];
+        // 回调组件：定义处已声明 `callback clicked()` + `accessible-role: button` +
+        // `accessible-action-default => { root.clicked(); }`（或等价守卫），因此调用点的
+        // `clicked => { … }` 是回调绑定、不是 TouchArea 点击 —— 其无障碍动作由组件定义
+        // 处提供。下面先机械核对这四份定义，定义改了接线本判据就红，不靠硬编码的信任。
+        const WIRED_CALLBACK_COMPONENTS: [(&str, &str); 4] = [
+            ("PushButton", "controls/push_button.slint"),
+            ("SmallButton", "dialogs/otcp_dialog.slint"),
+            ("PhaseButton", "dialogs/phase_align_dialog.slint"),
+            ("PanelButton", "dialogs/plugin_panel.slint"),
+        ];
+        for (component, rel) in WIRED_CALLBACK_COMPONENTS {
+            let text = std::fs::read_to_string(ui_dir().join(rel))
+                .unwrap_or_else(|_| panic!("读 {rel} 失败"));
+            let block = component_block(&text, component)
+                .unwrap_or_else(|| panic!("{rel} 里找不到 component {component}"));
+            for needle in [
+                "callback clicked();",
+                "accessible-role: button;",
+                "accessible-action-default",
+                "root.clicked();",
+            ] {
+                assert!(
+                    block.contains(needle),
+                    "{rel} 的 component {component} 缺少 `{needle}` ⇒ 调用点的 `clicked` \
+                     绑定不再有无障碍动作兜底，本判据的回调组件口径失效。"
+                );
+            }
+        }
+        let mut total = 0_usize;
+        let mut covered = 0_usize;
+        let mut via_component = 0_usize;
+        let mut found: Vec<String> = Vec::new();
+        for (rel, text) in slint_sources() {
+            let code = code_only(&text);
+            let lines: Vec<&str> = code.lines().collect();
+            let blocks = role_blocks(&lines);
+            for (click_line, click_body) in arrow_bodies(&code, "clicked", 0) {
+                total += 1;
+                let block = blocks
+                    .iter()
+                    .filter(|block| block.start < click_line && click_line <= block.end)
+                    .max_by_key(|block| block.start);
+                let has_matching_action = match block {
+                    Some(block) if INTERACTIVE_ROLES.contains(&block.role.as_str()) => {
+                        let block_text = lines[block.start..=block.end].join("\n");
+                        ["default", "expand"]
+                            .iter()
+                            .flat_map(|name| {
+                                arrow_bodies(
+                                    &block_text,
+                                    &format!("accessible-action-{name}"),
+                                    block.start,
+                                )
+                            })
+                            .filter(|(line, _)| *line < click_line)
+                            .any(|(_, body)| body == click_body)
+                    }
+                    _ => false,
+                };
+                if has_matching_action {
+                    covered += 1;
+                    continue;
+                }
+                let header = enclosing_element_header(&lines, click_line);
+                if WIRED_CALLBACK_COMPONENTS
+                    .iter()
+                    .any(|(name, _)| element_type(&header) == *name)
+                {
+                    via_component += 1;
+                    continue;
+                }
+                found.push(format!("{rel} :: {header} :: {click_body}"));
+            }
+        }
+        found.sort();
+        found.dedup();
+        assert!(
+            total >= 200,
+            "只读到 {total} 个 clicked ⇒ 判据可能空转（口径或文本解析漂了）"
+        );
+        assert_eq!(
+            found,
+            KNOWN_ROLELESS_CLICKABLES
+                .iter()
+                .map(|entry| (*entry).to_owned())
+                .collect::<Vec<String>>(),
+            "没有无障碍 role 的可点控件集合与登记不符（本轮：{total} clicked / {covered} \
+             role 直绑 / {via_component} 回调组件 / {} 未覆盖）。\n\
+             新增一个 ⇒ 要么给它补 role + `accessible-action-default`（与 clicked 同落点），\
+             要么把它登记进本判据并写清理由；\n\
+             修好一个 ⇒ 从 `KNOWN_ROLELESS_CLICKABLES` 里删掉它（本判据是活文档）。",
+            found.len()
+        );
+    }
+
     /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ①）：**无障碍名称不得出现空字面量。**
     ///
     /// §7.3 第 4 条 ① 的原话是"遍历主界面所有交互控件并断言无障碍名称非空"。文本层
@@ -6692,6 +6872,142 @@ mod tests {
             "toast 收起键的 accessible-action-default 必须与 clicked 同落点"
         );
     }
+
+    /// [`every_clickable_control_is_either_role_bound_or_a_known_exception`] 的期望集合
+    /// （T-FIX-180 在当前尖端盘点的存量，105 条；键口径见该判据文档）。
+    ///
+    /// 已排序。处置分两类 —— (a) 真实可点控件，role 尚未补（绝大多数）：后续按 LOOP
+    /// 模式（父元素补 `accessible-role: button` + `accessible-id` + `accessible-label` +
+    /// `accessible-action-default` 与 clicked 同落点）逐个修，修好一个就从这里删掉它；
+    /// (b) 点空处关闭的遮罩面（`arrangement.slint` / `lower_dock.slint` 各 1 条菜单遮罩）：
+    /// 不是控件，是“点外面关菜单”的手势面，是否给 role 由后续单定夺 —— 登记在这里
+    /// 是为了让它可见，而不是默许。
+    ///
+    /// 按文件分组（计数 = 本轮盘点实测）：
+    ///
+    /// | 文件 | 条数 | 内容 |
+    /// | :--- | :---: | :--- |
+    /// | `app.slint` | 2 | AI 抽屉开关、音乐 PR 抽屉开关 |
+    /// | `clip_matrix.slint` | 10 | +轨道、停止、S1–S4 场景激发、clip1–4 激发 |
+    /// | `control_room.slint` | 6 | 复位、监听 A/B、Dim、Mono、Side |
+    /// | `left_panel.slint` | 17 | 面板折叠、inspector/browser 标签、乐器菜单开关、normalize、总线条开关、乐器菜单 × 关闭、乐器选项、空乐器区、focus-devices、EQ 快捷、清空搜索、4 个 tag 筛选、load-item |
+    /// | `modals.slint` | 4 | ESC 按钮、命令项、关闭热点、toast 收起 |
+    /// | `transport_bar.slint` | 18 | 4 个区域开关、4 个工具选择、BPM/调式/缓冲循环器、4 个人格选择、命令面板、热点开关、提示开关 |
+    /// | `app.slint`（横幅） | 1 | engine-error 横幅 × 收起 |
+    /// | `arrangement.slint` | 19 | 本地菜单开关、和弦轨开关、add-track ×5（含 drop_zone）、缩放 H−/H+/V−/V+、和弦试听 ×5、菜单遮罩 ×1、菜单项 ×2 |
+    /// | `lower_dock.slint` | 20 | 乐器菜单、EQ/混响插入、量化、空位添加 ×4、bypass、删除、设备参数 ×2、swap、轨道选择、插入菜单、mute、solo、add track、菜单遮罩 ×1、菜单选项 ×1 |
+    /// | `console/device_rack.slint` | 3 | 匿名 TouchArea：sidechain 循环、压缩比循环、乐器翻页 |
+    /// | `console/mixer_console.slint` | 1 | 轨道选择匿名 TouchArea（4 个 PushButton 走回调组件，不计） |
+    /// | `console/piano_roll.slint` | 2 | 量化、人性化按钮 |
+    /// | `dialogs/preset_library.slint` | 1 | 预设行点击 |
+    /// | `workspace/song_overview_panel.slint` | 1 | 段落循环 TouchArea（for 循环内） |
+    const KNOWN_ROLELESS_CLICKABLES: [&str; 105] = [
+        "app.slint :: Rectangle { :: root.engine-error = \"\";",
+        "app.slint :: TouchArea { :: root.ai-drawer-open = false; root.musical-pr-open = true;",
+        "app.slint :: TouchArea { :: root.toggle-ai-drawer();",
+        "arrangement.slint :: Rectangle { :: root.zoom-h-step(false);",
+        "arrangement.slint :: Rectangle { :: root.zoom-h-step(true);",
+        "arrangement.slint :: Rectangle { :: root.zoom-v-step(false);",
+        "arrangement.slint :: Rectangle { :: root.zoom-v-step(true);",
+        "arrangement.slint :: add-track-btm-r-touch := TouchArea { :: root.add-track();",
+        "arrangement.slint :: add-track-btm-touch := TouchArea { :: root.add-track();",
+        "arrangement.slint :: add-track-right-touch := TouchArea { :: root.add-track();",
+        "arrangement.slint :: add-track-top-touch := TouchArea { :: root.add-track();",
+        "arrangement.slint :: arr-menu-touch := TouchArea { :: root.active-local-menu = root.active-local-menu == \"tracks\" ? \"\" : \"tracks\";",
+        "arrangement.slint :: chord-1-touch := TouchArea { :: root.audition-chord(\"Cm9\");",
+        "arrangement.slint :: chord-2-touch := TouchArea { :: root.audition-chord(\"AbMaj7\");",
+        "arrangement.slint :: chord-3-touch := TouchArea { :: root.audition-chord(\"Fm11\");",
+        "arrangement.slint :: chord-4-touch := TouchArea { :: root.audition-chord(\"G7#9\");",
+        "arrangement.slint :: chord-5-touch := TouchArea { :: root.audition-chord(\"Cm11\");",
+        "arrangement.slint :: chord-toggle-touch := TouchArea { :: root.show-chord-track = !root.show-chord-track;",
+        "arrangement.slint :: drop_zone_touch := TouchArea { :: root.add-track();",
+        "arrangement.slint :: if root.active-local-menu != \"\" : TouchArea { :: root.active-local-menu = \"\";",
+        "arrangement.slint :: inst-m-touch := TouchArea { :: root.active-local-menu = \"\"; root.track-instrument-change( root.local-menu-track-id > 0 ? root.local-menu-track-id : root.selected-track-id, preset.id );",
+        "arrangement.slint :: trk-m-touch := TouchArea { :: root.active-local-menu = \"\"; root.execute-action(opt.id);",
+        "clip_matrix.slint :: clip1_touch := TouchArea { :: root.select-track(trk.id); root.trigger-clip(trk.id, 0);",
+        "clip_matrix.slint :: clip2_touch := TouchArea { :: root.select-track(trk.id); root.trigger-clip(trk.id, 1);",
+        "clip_matrix.slint :: clip3_touch := TouchArea { :: root.select-track(trk.id); root.trigger-clip(trk.id, 2);",
+        "clip_matrix.slint :: clip4_touch := TouchArea { :: root.select-track(trk.id); root.trigger-clip(trk.id, 3);",
+        "clip_matrix.slint :: cm_add_t := TouchArea { :: root.execute-action(\"track-add-midi\");",
+        "clip_matrix.slint :: cm_stop_t := TouchArea { :: root.execute-action(\"transport-stop\");",
+        "clip_matrix.slint :: s1_touch := TouchArea { :: root.trigger-scene(0);",
+        "clip_matrix.slint :: s2_touch := TouchArea { :: root.trigger-scene(1);",
+        "clip_matrix.slint :: s3_touch := TouchArea { :: root.trigger-scene(2);",
+        "clip_matrix.slint :: s4_touch := TouchArea { :: root.trigger-scene(3);",
+        "console/device_rack.slint :: TouchArea { :: if root.instrument-page * root.instrument-per-page + root.instrument-per-page < root.instrument-names.length { root.instrument-page = root.instrument-page + 1; }",
+        "console/device_rack.slint :: TouchArea { :: root.compressor-cycle-ratio();",
+        "console/device_rack.slint :: TouchArea { :: root.sidechain-cycle();",
+        "console/mixer_console.slint :: TouchArea { :: root.track-select(track_index);",
+        "console/piano_roll.slint :: hum-btn-touch := TouchArea { :: root.humanize-requested();",
+        "console/piano_roll.slint :: quant-btn-touch := TouchArea { :: root.quantize-requested();",
+        "control_room.slint :: cr_reset_t := TouchArea { :: root.is-dim = false; root.is-mono = false; root.is-side = false; root.execute-action(\"master-reset-fader\");",
+        "control_room.slint :: dim_touch := TouchArea { :: root.is-dim = !root.is-dim; root.toggle-dim();",
+        "control_room.slint :: mon_a_touch := TouchArea { :: root.active-monitor = \"main\"; root.switch-monitor(\"main\");",
+        "control_room.slint :: mon_b_touch := TouchArea { :: root.active-monitor = \"alt\"; root.switch-monitor(\"alt\");",
+        "control_room.slint :: mono_touch := TouchArea { :: root.is-mono = !root.is-mono; root.toggle-mono();",
+        "control_room.slint :: side_touch := TouchArea { :: root.is-side = !root.is-side; root.toggle-side();",
+        "dialogs/preset_library.slint :: row-touch := TouchArea { :: root.apply-preset(row.id);",
+        "left_panel.slint :: Rectangle { :: root.show-instrument-menu = false;",
+        "left_panel.slint :: TouchArea { :: root.active-tag = \"all\"; root.select-tag(\"all\");",
+        "left_panel.slint :: TouchArea { :: root.active-tag = \"effect\"; root.select-tag(\"effect\");",
+        "left_panel.slint :: TouchArea { :: root.active-tag = \"instrument\"; root.select-tag(\"instrument\");",
+        "left_panel.slint :: TouchArea { :: root.active-tag = \"sample\"; root.select-tag(\"sample\");",
+        "left_panel.slint :: clear_q_t := TouchArea { :: root.search-query = \"\"; root.search-changed(\"\");",
+        "left_panel.slint :: empty_ins_touch := TouchArea { :: root.show-instrument-menu = true;",
+        "left_panel.slint :: eq_touch := TouchArea { :: root.track-instrument-change(root.selected-track-id, \"fx:eq\");",
+        "left_panel.slint :: header_touch := TouchArea { :: root.toggle();",
+        "left_panel.slint :: ins_touch := TouchArea { :: root.focus-devices();",
+        "left_panel.slint :: insp_opt_t := TouchArea { :: root.show-instrument-menu = false; root.track-instrument-change(root.selected-track-id, opt.id);",
+        "left_panel.slint :: inst_btn_touch := TouchArea { :: root.show-instrument-menu = !root.show-instrument-menu;",
+        "left_panel.slint :: item_touch := TouchArea { :: root.load-item(item.name);",
+        "left_panel.slint :: tab_brow_touch := TouchArea { :: root.active-tab = \"browser\"; root.switch-tab(\"browser\");",
+        "left_panel.slint :: tab_insp_touch := TouchArea { :: root.active-tab = \"inspector\"; root.switch-tab(\"inspector\");",
+        "left_panel.slint :: touch_bus_toggle := TouchArea { :: root.show-bus-strip = !root.show-bus-strip;",
+        "left_panel.slint :: touch_norm := TouchArea { :: root.normalize-heights();",
+        "lower_dock.slint :: add_mix_trk_touch := TouchArea { :: root.execute-action(\"track-add-midi\");",
+        "lower_dock.slint :: bypass_touch := TouchArea { :: root.device-bypass-toggle(root.device-ids[idx]);",
+        "lower_dock.slint :: dev_p1_touch := TouchArea { :: root.wt-pos-val = root.wt-pos-val == 64 ? 85 : 64; root.set-wt-pos(root.wt-pos-val);",
+        "lower_dock.slint :: dev_p2_touch := TouchArea { :: root.wt-cutoff-hz = root.wt-cutoff-hz == 4800 ? 8200 : 4800; root.set-wt-cutoff(root.wt-cutoff-hz);",
+        "lower_dock.slint :: dev_rm_touch := TouchArea { :: root.device-remove(root.device-ids[idx]);",
+        "lower_dock.slint :: dev_swap_touch := TouchArea { :: root.dock-instrument-target-id = root.selected-track-id; root.dock-instrument-menu-open = true;",
+        "lower_dock.slint :: dock-eq-btn := TouchArea { :: root.execute-action(\"insert-eq\");",
+        "lower_dock.slint :: dock-inst-btn := TouchArea { :: root.dock-instrument-target-id = root.selected-track-id; root.dock-instrument-menu-open = !root.dock-instrument-menu-open;",
+        "lower_dock.slint :: dock-inst-opt := TouchArea { :: root.dock-instrument-menu-open = false; root.track-instrument-change( root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id, preset.id );",
+        "lower_dock.slint :: dock-quant-btn := TouchArea { :: root.quantize-requested();",
+        "lower_dock.slint :: dock-rev-btn := TouchArea { :: root.execute-action(\"insert-reverb\");",
+        "lower_dock.slint :: empty_add_eq := TouchArea { :: root.track-instrument-change(root.selected-track-id, \"fx:eq\");",
+        "lower_dock.slint :: empty_add_rev := TouchArea { :: root.track-instrument-change(root.selected-track-id, \"fx:reverb\");",
+        "lower_dock.slint :: empty_add_sfz := TouchArea { :: root.execute-action(\"load-sfz\");",
+        "lower_dock.slint :: empty_add_synth := TouchArea { :: root.track-instrument-change(root.selected-track-id, \"synth:hollow\");",
+        "lower_dock.slint :: for trk[tidx] in root.tracks : Rectangle { :: root.select-track(trk.id);",
+        "lower_dock.slint :: if root.dock-instrument-menu-open : TouchArea { :: root.dock-instrument-menu-open = false;",
+        "lower_dock.slint :: insert1_touch := TouchArea { :: root.select-track(trk.id); root.dock-instrument-target-id = trk.id; root.dock-instrument-menu-open = !root.dock-instrument-menu-open;",
+        "lower_dock.slint :: m_touch := TouchArea { :: root.toggle-track-mute(trk.id);",
+        "lower_dock.slint :: s_touch := TouchArea { :: root.toggle-track-solo(trk.id);",
+        "modals.slint :: TouchArea { :: root.toast-text = \"\"; root.show-toast = false;",
+        "modals.slint :: close_hotspot_touch := TouchArea { :: root.close-overlay();",
+        "modals.slint :: cmd_touch := TouchArea { :: root.execute-command(cmd.id); root.close-modal();",
+        "modals.slint :: esc_touch := TouchArea { :: root.close-modal();",
+        "transport_bar.slint :: bpm_touch := TouchArea { :: let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124); root.change-bpm(next-bpm);",
+        "transport_bar.slint :: buf_touch := TouchArea { :: if (root.buffer-samples == 64) { root.hot-swap-buffer(128); } else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); } else if (root.buffer-samples == 512) { root.hot-swap-buffer(2048); } else { root.hot-swap-buffer(64); }",
+        "transport_bar.slint :: scale_touch := TouchArea { :: let next-scale = root.scale-text == \"C Minor (自然小调)\" ? \"D Dorian (多利亚)\" : (root.scale-text == \"D Dorian (多利亚)\" ? \"F Major (大调)\" : \"C Minor (自然小调)\"); root.change-scale(next-scale);",
+        "transport_bar.slint :: touch_clip := TouchArea { :: root.toggle-zone(\"clipmatrix\");",
+        "transport_bar.slint :: touch_cmd := TouchArea { :: root.open-cmd-palette();",
+        "transport_bar.slint :: touch_dock := TouchArea { :: root.toggle-zone(\"lower\");",
+        "transport_bar.slint :: touch_drw := TouchArea { :: root.select-tool(\"draw\");",
+        "transport_bar.slint :: touch_insp := TouchArea { :: root.toggle-zone(\"browser\");",
+        "transport_bar.slint :: touch_p_cu := TouchArea { :: root.select-persona(PersonaMode.CubasePro);",
+        "transport_bar.slint :: touch_p_def := TouchArea { :: root.select-persona(PersonaMode.YebanDefault);",
+        "transport_bar.slint :: touch_p_live := TouchArea { :: root.select-persona(PersonaMode.AbletonLive);",
+        "transport_bar.slint :: touch_p_log := TouchArea { :: root.select-persona(PersonaMode.LogicPro);",
+        "transport_bar.slint :: touch_ptr := TouchArea { :: root.select-tool(\"pointer\");",
+        "transport_bar.slint :: touch_rng := TouchArea { :: root.select-tool(\"range\");",
+        "transport_bar.slint :: touch_room := TouchArea { :: root.toggle-zone(\"right\");",
+        "transport_bar.slint :: touch_splt := TouchArea { :: root.select-tool(\"split\");",
+        "transport_bar.slint :: touch_spot := TouchArea { :: root.toggle-hotspots();",
+        "transport_bar.slint :: touch_tips := TouchArea { :: Theme.show-tooltips = !Theme.show-tooltips;",
+        "workspace/song_overview_panel.slint :: for _[section-index] in root.section-names : TouchArea { :: root.target-cycle(section-index);",
+    ];
 
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
     ///
