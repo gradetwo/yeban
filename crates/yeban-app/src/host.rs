@@ -23784,6 +23784,86 @@ mod pencil_op_tests {
     }
 
     #[test]
+    fn parse_key_signature_text_handles_church_modes() {
+        // 判据（T-FIX-446）：教会调式按其父大调写调号；调式本身在
+        // `KeySignature`（只有升降号数 + 大/小调）里没有独立字段，
+        // 故以父大调的 `{sharps_flats, is_minor: false}` 表示
+        // （MIDI 调号元事件的同一约定）。D Dorian 的父大调是 C 大调，
+        // 绝不是 D 大调的两个升号。
+        assert_eq!(
+            parse_key_signature_text("D Dorian (多利亚)"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("D Dorian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("A Dorian"),
+            yeban_model::KeySignature {
+                sharps_flats: 1,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("E Phrygian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("F Lydian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("G Mixolydian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("B Locrian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("A Aeolian"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: true
+            }
+        );
+        // 回归：D 大调 / D 小调本身不受影响。
+        assert_eq!(
+            parse_key_signature_text("D Major"),
+            yeban_model::KeySignature {
+                sharps_flats: 2,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("D minor"),
+            yeban_model::KeySignature {
+                sharps_flats: -1,
+                is_minor: true
+            }
+        );
+    }
+
+    #[test]
     fn delete_ops_for_covers_every_selected_note_and_the_batch_reverses_whole() {
         // 判据：`delete_ops_for` 是"选区身份 → 待提交 op"的**唯一**解析点。
         // 空选区与垃圾身份 ⇒ **空批**（"什么都不做"是返回空, 不是 panic, 也不是删一个猜的对象）。
@@ -28429,6 +28509,20 @@ fn parse_key_signature_text(text: &str) -> yeban_model::KeySignature {
     } else {
         (raw_token.as_str(), false)
     };
+    // 教会调式（T-FIX-446）：调式文本按其父大调写调号。`KeySignature`
+    // 只有升降号数 + 大/小调两个字段，调式没有独立字段，故以父大调的
+    // `{sharps_flats, is_minor: false}` 表示（MIDI 调号元事件的同一
+    // 约定；Aeolian 即自然小调，仍记 `is_minor: true`）。
+    // 父大调主音 = 主音下行调式级数对应的半音数。
+    if let Some((offset, mode_minor)) = church_mode_parent_major(&lower)
+        && let Some(tonic_pc) = tonic_pitch_class(tonic)
+    {
+        let parent_pc = (tonic_pc + 12 - offset) % 12;
+        return yeban_model::KeySignature {
+            sharps_flats: major_sharps_flats(parent_pc),
+            is_minor: mode_minor,
+        };
+    }
     let is_minor = is_minor_word || suffix_minor;
     let sharps_flats: i8 = match (tonic, is_minor) {
         ("c", false) | ("a", true) => 0,
@@ -28451,6 +28545,69 @@ fn parse_key_signature_text(text: &str) -> yeban_model::KeySignature {
     yeban_model::KeySignature {
         sharps_flats,
         is_minor,
+    }
+}
+
+/// 教会调式名 →（主音到父大调主音的下行半音数，是否记小调）。
+///
+/// 检测顺序有讲究：`mixolydian` / `混合利底亚` 含 `lydian` / `利底亚` 子串，
+/// 须先判。Ionian 与大调同义、Aeolian 与自然小调同义。
+fn church_mode_parent_major(text_lower: &str) -> Option<(u8, bool)> {
+    if text_lower.contains("mixolydian") || text_lower.contains("混合利底亚") {
+        Some((7, false))
+    } else if text_lower.contains("dorian") || text_lower.contains("多利亚") {
+        Some((2, false))
+    } else if text_lower.contains("phrygian") || text_lower.contains("弗里吉亚") {
+        Some((4, false))
+    } else if text_lower.contains("lydian") || text_lower.contains("利底亚") {
+        Some((5, false))
+    } else if text_lower.contains("locrian") || text_lower.contains("洛克里亚") {
+        Some((11, false))
+    } else if text_lower.contains("aeolian") || text_lower.contains("伊奥利亚") {
+        Some((9, true))
+    } else if text_lower.contains("ionian") || text_lower.contains("伊奥尼亚") {
+        Some((0, false))
+    } else {
+        None
+    }
+}
+
+/// 主音拼写 → 音级（C = 0）。未知拼写返回 `None`，调用方回退旧口径。
+fn tonic_pitch_class(tonic: &str) -> Option<u8> {
+    match tonic {
+        "c" => Some(0),
+        "c#" | "db" => Some(1),
+        "d" => Some(2),
+        "d#" | "eb" => Some(3),
+        "e" => Some(4),
+        "f" => Some(5),
+        "f#" | "gb" => Some(6),
+        "g" => Some(7),
+        "g#" | "ab" => Some(8),
+        "a" => Some(9),
+        "a#" | "bb" => Some(10),
+        "b" | "cb" => Some(11),
+        _ => None,
+    }
+}
+
+/// 大调主音音级 → 调号升降号数（五度圈标准拼写；同音异名取降号拼写，
+/// 如音级 1 取 Db 大调 −5 而非 C# 大调 +7）。
+fn major_sharps_flats(tonic_pc: u8) -> i8 {
+    match tonic_pc {
+        0 => 0,   // C
+        1 => -5,  // Db
+        2 => 2,   // D
+        3 => -3,  // Eb
+        4 => 4,   // E
+        5 => -1,  // F
+        6 => 6,   // F#
+        7 => 1,   // G
+        8 => -4,  // Ab
+        9 => 3,   // A
+        10 => -2, // Bb
+        11 => 5,  // B
+        _ => 0,
     }
 }
 
