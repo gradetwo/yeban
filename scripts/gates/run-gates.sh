@@ -53,6 +53,17 @@ gate_guards() {
   run "guards" python3 scripts/guards/policy_check.py
 }
 
+gate_latex_table_terminators() {
+  step "LaTeX 表格行终止（longtable）"
+  # docs/manual-latex 是文档卷的落点；main 尚未合入时，这里必须**显式**报告
+  # 扫描范围为 0，⛔ 不能静默通过。合入后本函数自动执行真实扫描。
+  if [[ ! -d "$REPO/docs/manual-latex" ]]; then
+    printf '\033[33mSKIP\033[0m docs/manual-latex 不存在；LaTeX 表格行终止检查扫描范围为 0（合入后自动启用）\n'
+    return 0
+  fi
+  run "latex-table-terminators" python3 scripts/gates/check_latex_table_terminators.py
+}
+
 gate_docs() {
   step "文档契约（链接 / 规范 ID / ID 字典 / 决策清单 / 门禁状态表 / 阶段状态表 / 三方对齐矩阵）"
   # ⚠ 每一条都必须走 `run` —— 裸调用会被**后面成功的命令**屏蔽。
@@ -68,6 +79,7 @@ gate_docs() {
   # 三方对齐矩阵（系统 / UI / MCP）：漏点名一个工具或方法、发明一个名字、汇总与逐行不符都变红。
   run "feature-alignment" python3 scripts/gates/check_feature_alignment.py
   run "docs" python3 scripts/gates/check_docs_links.py
+  gate_latex_table_terminators
   run "clippy-changed" bash scripts/gates/clippy-changed.sh
   run "handoff-snapshot" python3 scripts/gates/check_handoff_snapshot.py
   run "diagnostics-single-impl" python3 scripts/gates/check_diagnostics_single_implementation.py
