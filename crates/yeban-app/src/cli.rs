@@ -5115,13 +5115,20 @@ pub fn load_project_with_clock(
 ) -> Result<Loaded, CliError> {
     match options.open.as_ref() {
         Some(path) => {
-            let opened: OpenedProject =
-                open_project_document_file(path, &ProjectOpenOptions::default()).map_err(
-                    |source| CliError::Open {
-                        path: path.clone(),
-                        source,
-                    },
-                )?;
+            // T-FIX-399：CLI `--open` 与生产 GUI 同口径。缺资产的工程在这里就
+            // 返回 `OpenError::MissingAsset`（首个哈希 + track/placement/clip 定位），
+            // 不再先“成功打开”一个时间轴有片段、资产池却缺字节的工程。
+            let opened: OpenedProject = open_project_document_file(
+                path,
+                &ProjectOpenOptions {
+                    strict_missing_assets: true,
+                    ..ProjectOpenOptions::default()
+                },
+            )
+            .map_err(|source| CliError::Open {
+                path: path.clone(),
+                source,
+            })?;
             Ok(Loaded {
                 archive: opened.archive,
                 source: ProjectSource::File {
@@ -7940,10 +7947,9 @@ mod tests {
     /// 造一个**真容器**并写到磁盘；返回路径与工程。
     fn write_container_file(dir: &std::path::Path, name: &str) -> (PathBuf, YebanProjectV1) {
         let project = crate::bridge::demo_project();
-        let asset = b"yeban-cli-asset".to_vec();
-        let hash = AssetHash::of_bytes(&asset);
-        let mut assets = std::collections::BTreeMap::new();
-        assets.insert(hash, asset);
+        let assets: std::collections::BTreeMap<_, _> = yeban_model::samples::demo_project_assets()
+            .into_iter()
+            .collect();
         let bytes =
             write_project_container(&project, b"cli-history-dag", &assets).expect("写出真容器");
         let path = dir.join(name);

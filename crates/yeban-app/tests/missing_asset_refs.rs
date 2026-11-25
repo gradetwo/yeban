@@ -112,6 +112,51 @@ fn extra_pool_asset_is_a_reading_not_a_rejection() {
     assert_eq!(direct, *audit);
 }
 
+/// T-FIX-399：CLI `--open` 必须和 GUI 一样在打开阶段拒绝缺资产工程，
+/// 不能先返回 Ok、等到 `--export-wav` 才逐条 skip。
+#[test]
+fn cli_open_rejects_missing_assets_at_the_cli_entry() {
+    let path = write_fixture("cli-missing", &BTreeMap::new());
+    let options = yeban_app::cli::parse(&[
+        "--open".to_owned(),
+        path.display().to_string(),
+        "--headless".to_owned(),
+    ])
+    .expect("CLI 参数必须可解析");
+
+    let error = yeban_app::cli::load_project(&options).expect_err("缺资产工程必须在打开阶段失败");
+    assert_eq!(
+        error.exit_code(),
+        yeban_app::cli::EXIT_OPEN,
+        "打开失败必须走 EXIT_OPEN，实际 {error:?}"
+    );
+    match &error {
+        yeban_app::cli::CliError::Open {
+            source:
+                OpenError::MissingAsset {
+                    hash,
+                    referenced_by,
+                    missing_count,
+                },
+            ..
+        } => {
+            assert_eq!(*missing_count, 1, "demo 只有一个被引用的 kick");
+            assert!(
+                referenced_by
+                    .iter()
+                    .any(|label| label.starts_with("track:")),
+                "CLI 错误必须带 track/placement/clip 定位: {referenced_by:?}"
+            );
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(&hash.to_string()) && rendered.contains("缺失资产"),
+                "CLI 错误必须打印首个哈希与“缺失资产”: {rendered}"
+            );
+        }
+        other => panic!("CLI --open 必须上抛 MissingAsset，实际 {other:?}"),
+    }
+}
+
 #[test]
 fn missing_assets_are_detected_from_embedded_samples_too() {
     let mut project = demo_project();

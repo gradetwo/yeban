@@ -170,10 +170,9 @@ fn write_real_container(dir: &Path, name: &str) -> PathBuf {
     use yeban_model::ids::AssetHash;
 
     let project = yeban_app::bridge::demo_project();
-    let asset = b"yeban-cli-binary-asset".to_vec();
-    let hash = AssetHash::of_bytes(&asset);
-    let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
-    assets.insert(hash, asset);
+    let assets: BTreeMap<AssetHash, Vec<u8>> = yeban_model::samples::demo_project_assets()
+        .into_iter()
+        .collect();
     let bytes = write_project_container(&project, b"binary-history", &assets).expect("写出真容器");
     let path = dir.join(name);
     std::fs::write(&path, &bytes).expect("写容器");

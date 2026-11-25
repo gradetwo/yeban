@@ -370,7 +370,10 @@ fn headless_cli_names_the_unapplied_send_gain_lane() {
     insert_send_lane(&mut project, track, demo_id("R1"), true);
     project.validate().expect("夹具工程必须合法");
 
-    let archive = write_project_container(&project, b"", &BTreeMap::new()).expect("写出容器");
+    let assets: BTreeMap<_, _> = yeban_model::samples::demo_project_assets()
+        .into_iter()
+        .collect();
+    let archive = write_project_container(&project, b"", &assets).expect("写出容器");
     let path = scratch.dir.join("send-gain.yeban");
     std::fs::write(&path, &archive).expect("写容器文件");
 
