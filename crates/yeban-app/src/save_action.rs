@@ -41,12 +41,14 @@
 //!   "本地原子写 + 一句如实回执"（默认依赖树里 `yeban-mcp` 的命中数仍为 0）；
 //! - **不**吞掉任何失败：三种失败各有各的文本，界面必须把它们念出来。
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use yeban_model::container::ProjectArchive;
+use yeban_model::ids::AssetHash;
 use yeban_model::project::YebanProjectV1;
 
-use crate::save::{SaveError, save_archive_file};
+use crate::save::{SaveError, save_archive_parts_file};
 
 #[cfg(feature = "in-process-mcp")]
 use crate::mcp_mount::ProjectAuthorityHandle;
@@ -81,12 +83,43 @@ type AuthorityParam<'a> = Option<&'a AuthorityHandle>;
 /// 把它一起交出去；活会话**还有资产池** ⇒ 用
 /// [`SaveRequest::with_history_dag_and_assets`]（⭐ 任务单 `#132`：GUI 保存此前在这里
 /// 逐字写 `assets: Vec::new()`，于是录音／导入的字节**结构性**丢失）。
+///
+/// ⭐ T-FIX-457：工程不再以"自有的一份归档"形态存在 —— 见 [`ProjectSource`]：
+/// 调用方只能给出一份自有的工程（旧入口，行为不变），或与会话共享的一份句柄
+/// （[`SaveRequest::new_shared`]，序列化时只借用，⛔ 不再整工程深拷贝）。
+/// `load_notes` 不再是请求的字段：它是装载留痕，不进容器，旧入口恒为空。
 #[derive(Debug, Clone)]
 pub struct SaveRequest {
     /// 保存目标。`None` = 这个会话没有磁盘对应物。
     pub target: Option<PathBuf>,
-    /// 要写出的一份归档 —— **只在没有权威时**使用（有权威时字节由权威自己产出）。
-    pub archive: ProjectArchive,
+    /// 要写出的工程 —— **只在没有权威时**使用（有权威时字节由权威自己产出）。
+    project: ProjectSource,
+    /// 提交图谱（`history.dag`）的字节；空 = "这份文档没有历史"。
+    history_dag: Vec<u8>,
+    /// 提案段（`proposals.json`）的原始字节；`None` = 容器里没有提案段。
+    proposals: Option<Vec<u8>>,
+    /// 会话资产池，`(AssetHash, 字节)` 的序列，按哈希升序。
+    assets: Vec<(AssetHash, Vec<u8>)>,
+    /// 内嵌的用户预制，`(名, 字节)` 的序列，按名升序。
+    embedded_presets: Vec<(String, Vec<u8>)>,
+}
+
+/// 要写出的工程从哪来（T-FIX-457）。
+///
+/// `Owned` 是旧形状：调用方把一份自有的工程交进来（活会话路径与判据夹具仍走它，
+/// 行为不变）。`Shared` 是新形状：与活会话共享同一份 `Rc<RefCell<…>>`，
+/// 序列化时只借用（见 [`SaveRequest::with_project_borrowed`]），于是"没有活会话
+/// 可读"的那条保存回退不再整工程深拷贝一次。
+///
+/// ⚠ `Clone` 在这里是**句柄克隆**（`Rc::clone`，只加引用计数），不是内容复制 ——
+/// 别把它"修"成深拷贝。
+#[derive(Debug, Clone)]
+enum ProjectSource {
+    /// 调用方自有的一份工程（装箱：`YebanProjectV1` 很大，裸放会触发
+    /// `clippy::large_enum_variant`；`Shared` 本来就是句柄，不用装）。
+    Owned(Box<YebanProjectV1>),
+    /// 与活会话共享的一份工程（[`SaveRequest::new_shared`]）。
+    Shared(Rc<RefCell<YebanProjectV1>>),
 }
 
 impl SaveRequest {
@@ -99,6 +132,45 @@ impl SaveRequest {
     #[must_use]
     pub fn new(target: PathBuf, project: YebanProjectV1) -> Self {
         Self::with_history_dag(target, project, Vec::new())
+    }
+
+    /// 有目标路径、**共享活会话那一份工程**的请求（T-FIX-457）。
+    ///
+    /// 与 [`Self::new`] 的唯一区别：工程以共享句柄交进来，序列化时只借用，
+    /// ⛔ 不再整工程深拷贝。写出的容器与 `new` 逐字节相同（同一条借用形态的
+    /// 写出入口，图谱与资产池同样留空）。用在"没有活会话可读"的保存回退
+    /// （`host::wire_save_with_engine` 的 `None` 分支）。
+    #[must_use]
+    pub fn new_shared(target: PathBuf, project: Rc<RefCell<YebanProjectV1>>) -> Self {
+        Self {
+            target: Some(target),
+            project: ProjectSource::Shared(project),
+            history_dag: Vec::new(),
+            proposals: None,
+            assets: Vec::new(),
+            embedded_presets: Vec::new(),
+        }
+    }
+
+    /// 共享形态时拿回那一份句柄（判据用：`Rc::ptr_eq` 断言共享）。
+    ///
+    /// 自有形态返回 `None`。
+    #[must_use]
+    pub fn project_shared(&self) -> Option<Rc<RefCell<YebanProjectV1>>> {
+        match &self.project {
+            ProjectSource::Shared(shared) => Some(Rc::clone(shared)),
+            ProjectSource::Owned(_) => None,
+        }
+    }
+
+    /// 借用要写出的工程跑一次闭包（序列化只读这份借用）。
+    ///
+    /// 共享形态下借用活在闭包返回前；自有形态下借用就是那一份自有的工程。
+    fn with_project_borrowed<R>(&self, f: impl FnOnce(&YebanProjectV1) -> R) -> R {
+        match &self.project {
+            ProjectSource::Owned(project) => f(project),
+            ProjectSource::Shared(shared) => f(&shared.borrow()),
+        }
     }
 
     /// 有目标路径、且**带着提交图谱**（`history.dag` 的字节）的请求。
@@ -117,20 +189,17 @@ impl SaveRequest {
     ) -> Self {
         Self {
             target: Some(target),
-            archive: ProjectArchive {
-                project,
-                history_dag,
-                proposals: None,
-                assets: Vec::new(),
-                embedded_presets: Vec::new(),
-                load_notes: Vec::new(),
-            },
+            project: ProjectSource::Owned(Box::new(project)),
+            history_dag,
+            proposals: None,
+            assets: Vec::new(),
+            embedded_presets: Vec::new(),
         }
     }
 
     /// ⭐ 有目标路径、**提交图谱**与**会话资产池**的请求（任务单 `#132`）。
     ///
-    /// `assets` 的形状就是 [`ProjectArchive::assets`]：`(AssetHash, 字节)` 的序列。
+    /// `assets` 的形状就是归档的资产池：`(AssetHash, 字节)` 的序列。
     /// 它来自活会话的唯一持有者 —— GUI 的
     /// [`crate::undo::UndoPort::assets`]（录音／导入登记的 CAS 字节）。
     /// 归档声明"按哈希升序"，`UndoPort` 的两个写入口已经守住那条不变式
@@ -140,18 +209,15 @@ impl SaveRequest {
         target: PathBuf,
         project: YebanProjectV1,
         history_dag: Vec<u8>,
-        assets: Vec<(yeban_model::AssetHash, Vec<u8>)>,
+        assets: Vec<(AssetHash, Vec<u8>)>,
     ) -> Self {
         Self {
             target: Some(target),
-            archive: ProjectArchive {
-                project,
-                history_dag,
-                proposals: None,
-                assets,
-                embedded_presets: Vec::new(),
-                load_notes: Vec::new(),
-            },
+            project: ProjectSource::Owned(Box::new(project)),
+            history_dag,
+            proposals: None,
+            assets,
+            embedded_presets: Vec::new(),
         }
     }
 }
@@ -268,7 +334,17 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
     // 落点用**归档**入口而不是裸工程入口：GUI 的活会话既有工程也有提交图谱，而
     // `.yeban` 的第二层状态就是图谱。`history.dag` 为空时两个入口写出的字节**逐字节相同**
     // （见 `save::save_archive_file` 的文档），因此这是一条落点，不是两条会漂移的路。
-    match save_archive_file(&request.archive, target) {
+    let outcome = request.with_project_borrowed(|project| {
+        save_archive_parts_file(
+            project,
+            &request.history_dag,
+            &request.assets,
+            request.proposals.as_deref(),
+            &request.embedded_presets,
+            target,
+        )
+    });
+    match outcome {
         Ok(report) => SaveOutcome::Saved {
             missing: Vec::new(),
             path: report.path,

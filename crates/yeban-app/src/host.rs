@@ -9835,13 +9835,15 @@ pub fn wire_keys(
 /// 拒绝的原因（谁占着 `.yeban.lock`、会话是不是只读）由
 /// [`crate::save_action::dispatch_save`] 写在消息里，这里**不再做第二次分类**。
 ///
-/// 工程从哪来：[`SaveRequest::archive`]。有权威时它**不被使用**（字节由权威自己产出，
+/// 工程从哪来：[`SaveRequest`]（有权威时它**不被使用**，字节由权威自己产出，
 /// 见 `save_action` 模块文档）。**没有**权威时它从 `live_port` **现读** —— 因此
 /// "界面缓存陈旧 ⇒ 写错内容"不可能发生：写出去的工程与提交图谱就是活会话此刻持有的
 /// 那一份，不是装配时刻的快照。
 ///
 /// `live_port` 为 `None`（判据侧没有撤销会话 / 窗口还没接端口）时退回 `port.project`
-/// 那份快照，并按"没有历史"写出空 `history.dag`（与此前行为逐字相同）。
+/// 那份共享工程（T-ISS-MWW4H8J6 起与会话共享同一份句柄，读的是**此刻**的工程；
+/// T-FIX-457 起连这一步也不再克隆），并按"没有历史"写出空 `history.dag`
+/// （与此前行为逐字相同）。
 ///
 /// ⭐ 任务单 `#170`：本入口**不知道引擎** ⇒ 落盘成功后**不**更新
 /// [`EngineHost::project_dir`]（旧行为，逐位不变）。产品 `run_gui` 走
@@ -9990,9 +9992,9 @@ pub fn wire_save_with_engine(
             // 没有活会话 ⇒ 退回共享的那一份工程（T-ISS-MWW4H8J6：与会话共享同一份
             // `Rc`，读的是**此刻**的工程，⛔ 不再是装配时刻的快照），如实写
             // "没有历史 / 没有资产"（既有语义）。
-            // ⚠ 这里仍要克隆一次：`SaveRequest` 按值持有工程（序列化要 owned 数据）。
-            // 克隆发生在"真的要落盘、且没有活会话"这一刻，⛔ 不在装配期。
-            None => crate::save_action::SaveRequest::new(target, port.project.borrow().clone()),
+            // ⭐ T-FIX-457：句柄直接交进请求，序列化时只借用 —— 这一步
+            // ⛔ 不再整工程深拷贝（`SaveRequest::new_shared`）。
+            None => crate::save_action::SaveRequest::new_shared(target, Rc::clone(&port.project)),
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);

@@ -281,6 +281,39 @@ pub fn save_archive_file(
     save_archive_file_with(archive, path.as_ref(), true)
 }
 
+/// 与 [`save_archive_file`] 同一条原子写，但**工程只借用**（T-FIX-457）。
+///
+/// 调用方手里只有共享句柄（`Rc<RefCell<YebanProjectV1>>`）时用它：序列化只读
+/// 借用里的工程，⛔ 不再为"凑一个 `ProjectArchive`"整工程深拷贝一次。
+/// 写出的容器字节与 [`save_archive_file`] 逐字节相同（同一条
+/// `write_project_container_with_proposals_borrowed` 调用，同一把
+/// `.yeban.lock`，同一条 `write_file_atomically`）。
+///
+/// `load_notes` 不在参数里：它是装载留痕，不进容器（见
+/// `yeban_model::container::ProjectArchive::load_notes` 的文档）。
+///
+/// # Errors
+///
+/// 同 [`save_archive_file`]。
+pub(crate) fn save_archive_parts_file(
+    project: &YebanProjectV1,
+    history_dag: &[u8],
+    assets: &[(AssetHash, Vec<u8>)],
+    proposals: Option<&[u8]>,
+    embedded_presets: &[(String, Vec<u8>)],
+    path: impl AsRef<Path>,
+) -> Result<SaveReport, SaveError> {
+    save_archive_parts_file_with(
+        project,
+        history_dag,
+        assets,
+        proposals,
+        embedded_presets,
+        path.as_ref(),
+        true,
+    )
+}
+
 /// ⭐ **新建专用**（T-FIX-308）：与 [`save_archive_file`] 同一条原子写，但
 /// **不覆盖已存在的目标** —— 拿到 `.yeban.lock` 之后先查存在性，已存在 ⇒
 /// [`SaveError::TargetExists`]，**一个字节都不写**。
@@ -301,22 +334,46 @@ pub fn save_new_archive_file(
     save_archive_file_with(archive, path.as_ref(), false)
 }
 
-/// [`save_archive_file`] 与 [`save_new_archive_file`] 的**唯一**实现体。
+/// [`save_archive_file`] 与 [`save_new_archive_file`] 的**唯一**实现体
+/// （归档形态；借用形态见 [`save_archive_parts_file_with`]）。
 fn save_archive_file_with(
     archive: &ProjectArchive,
     path: &Path,
     overwrite: bool,
 ) -> Result<SaveReport, SaveError> {
-    let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
-    for (hash, data) in &archive.assets {
-        assets.insert(hash.clone(), data.clone());
+    save_archive_parts_file_with(
+        &archive.project,
+        &archive.history_dag,
+        &archive.assets,
+        archive.proposals.as_deref(),
+        &archive.embedded_presets,
+        path,
+        overwrite,
+    )
+}
+
+/// [`save_archive_file_with`] 的借用形态：**唯一**实现体，归档形态只是转发。
+///
+/// 资产池仍按哈希重建成 `BTreeMap`（与旧实现同一处拷贝，见
+/// [`save_archive_file`] 文档登记的已知代价）；工程本身只借用，⛔ 不克隆。
+fn save_archive_parts_file_with(
+    project: &YebanProjectV1,
+    history_dag: &[u8],
+    assets: &[(AssetHash, Vec<u8>)],
+    proposals: Option<&[u8]>,
+    embedded_presets: &[(String, Vec<u8>)],
+    path: &Path,
+    overwrite: bool,
+) -> Result<SaveReport, SaveError> {
+    let mut owned_assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+    for (hash, data) in assets {
+        owned_assets.insert(hash.clone(), data.clone());
     }
-    let borrowed_assets: Vec<(&AssetHash, &[u8])> = assets
+    let borrowed_assets: Vec<(&AssetHash, &[u8])> = owned_assets
         .iter()
         .map(|(hash, data)| (hash, data.as_slice()))
         .collect();
-    let borrowed_presets: Vec<(&str, &[u8])> = archive
-        .embedded_presets
+    let borrowed_presets: Vec<(&str, &[u8])> = embedded_presets
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
@@ -324,11 +381,11 @@ fn save_archive_file_with(
     // `history_dag` 一样只搬运字节、不解读 —— 打开时读到的段若在这里被
     // 丢掉，界面保存一次就会把 MCP 的未合并提案悄悄抹除。
     let bytes = yeban_model::container::write_project_container_with_proposals_borrowed(
-        &archive.project,
-        &archive.history_dag,
+        project,
+        history_dag,
         &borrowed_assets,
         &borrowed_presets,
-        archive.proposals.as_deref(),
+        proposals,
     )?;
     // 与 [`save_project_file`] 同一条门：`--save-as` 因此与 `ui/force_save`、与
     // 控制面的 `yeban_save_project` 争**同一把** `.yeban.lock`。
