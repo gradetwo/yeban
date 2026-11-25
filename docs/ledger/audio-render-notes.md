@@ -137,7 +137,7 @@
 | 声道 | 1（复制到立体声母线）、2（恒等）、`asset == 母线`（恒等，理论上） | **>2 声道**（不做静默丢声道的降混，直接拒绝：`reason = "assetChannelLayout"`） |
 | 采样率 | `SampleRate::ALL` 的 5 个率（44.1/48/88.2/96/192 kHz）互转，以及素材的任意率 → 渲染率 | 素材率或目标率 = 0、超出 `limits::MAX_SAMPLE_RATE`（768 kHz）—— 这两种在 `yeban-decode` 层就被拒 |
 | 素材字节 | 会话 CAS 池里的字节，**且** SHA-256 与工程声明的哈希一致 | 池里没有字节但索引里有 ⇒ 登记 `audioClips` + 静音（`Domain::open_in_memory` 注入会话的形态）；索引里也没有 ⇒ `assetMissing` |
-| 摆放语义 | `start_tick`（tick→帧）、`duration_ticks`（**硬切**边界）、`muted`、片段 `gain_db`、音轨 `volume_db`/`pan`/`mute`/`solo`/`solo_safe` | `loop_config` 的重复（登记 `clipLoopRepetition`，与 MIDI 同一条）；交叉淡化（模型里没有这个字段，不发明） |
+| 摆放语义 | `start_tick`（tick→帧）、`duration_ticks`、`muted`、片段 `gain_db`、音轨 `volume_db`/`pan`/`mute`/`solo`/`solo_safe`、`offset_samples`（±4800 采样，手动相位对齐）、`fade_in_ticks`/`fade_out_ticks`（T-FIX-374 等功率端点包络；同轨至少一条显式 fade 时，部分重叠自动等功率交叉淡化） | `loop_config` 的重复（登记 `clipLoopRepetition`，与 MIDI 同一条）；`fade_in_ticks + fade_out_ticks > duration_ticks`（模型校验拒绝）；包含式重叠不做 ducking（T-FIX-437 保留双方显式窗口，外层不因内层整段淡出） |
 | 延迟 | 音轨设备链的 `latency_samples` → PDC（与 MIDI 同表） | 资产自带的延迟字段（模型里不存在）；编码器延迟裁剪由本线做，`yeban-decode` 不做 |
 
 ### 3.4 与 `ADR-0001` **D43**（1.0.0 之前没有历史包袱）的关系
@@ -445,7 +445,7 @@ Running unittests src/lib.rs (yeban_render) -> 与全量腿一起绿（真 rayon
 | # | 项 | 性质 | 建议 |
 | :--- | :--- | :--- | :--- |
 | **needs-1** | **多声道素材的降混规则**（>2 声道素材进立体声母线） | 需要产品裁决 | 现状是**拒绝**（`assetChannelLayout`）。若要支持，需要一条规范化的降混矩阵（ITU-R BS.775？还是按 `MediaKind`？）—— 凭空发明一个会破坏 [ARCH-DET-001] 的可解释性 |
-| **needs-2** | **片段内偏移 / 交叉淡化** | 模型缺口 | `ClipPlacement` 没有"素材内起点"与淡入淡出字段。若产品需要，先扩模型（别的所有者），渲染侧再接 |
+| **needs-2** | **片段内偏移 / 交叉淡化** | **已关闭（T-FIX-374 / T-FIX-437）** | `ClipPlacement` 现行已有 `offset_samples`（±4800 采样）与 `fade_in_ticks`/`fade_out_ticks`；`plan_fade_windows` 对部分重叠做等功率并集，对包含式保留双方显式窗口（不做 ducking）。若后续要外层 duck，另立独立包络票，不能复用交叉淡化窗口 |
 | **needs-3** | **`Ogg-Vorbis` / `ADPCM` 的字节级夹具** | 承接 `decode-core` 的 pending | 本线的判据只喂 WAV（f32/PCM）。FLAC/Ogg 的路径在 CI 上会经过真解码器，但**没有**音频片段的端到端夹具；建议随 `decode-core` 的 pending 一起补 |
 | **needs-4** | **编码器延迟裁剪的规范落点** | 需要裁决 | `yeban-decode` 的边界是"只记录不裁剪"，本线在渲染侧裁剪并报告。若要统一（gapless 语义属于导入还是渲染），需要一条 ADR |
 | **needs-5** | **`run-gates.sh crate yeban-mcp` 在本机会真编译重依赖** | 门禁口径 | 承接 `mcp-render-notes` 的 needs-7（`HD-39`）。本线新增的 `yeban-decode` 边让本机编译更贵（symphonia+rubato），这条更值得修 |
