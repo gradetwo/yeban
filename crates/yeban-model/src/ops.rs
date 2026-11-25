@@ -743,6 +743,29 @@ pub enum Op {
         /// 平移后起点。
         new_start_tick: u64,
     },
+    /// 把摆放移到另一条音轨（保持摆放身份，选区／撤销自然连续）。
+    ///
+    /// ⚠ **只换容器、不换身份**：摆放的 `id` 不变（`TrackV3::clips` 的键仍是同一
+    /// 个 `placement_id`），`ClipPlacement` 的其余字段原样搬运 —— 与
+    /// [`Op::MoveClipPlacement`] 的区别只在\"容器也换了\"；`new_start_tick` 与
+    /// `old_start_tick` 相等时就是一次纯换轨（纵向拖动无横向位移的那种）。
+    /// ⚠ **不是** \"`RemoveClipPlacement` + `AddClipPlacement\"`：那对组合会把撤销拆成
+    /// 两步，且 `AddClipPlacement` 的载荷要重建整份摆放（漏一个字段就是静默丢失）。
+    /// ⚠ 前置条件：摆放必须在 `from_track` 里且起点等于 `old_start_tick`；
+    /// `to_track` 必须存在；`from_track == to_track` 是空操作 ⇒ 拒绝
+    /// （与 [`Op::MoveTrack`] 的原地不动同一口径，⛔ 不让空操作进撤销栈）。
+    MoveClipPlacementToTrack {
+        /// 原音轨（摆放的当前容器）。
+        from_track: EntityId,
+        /// 目标音轨。
+        to_track: EntityId,
+        /// 摆放身份。
+        placement_id: EntityId,
+        /// 平移前起点。
+        old_start_tick: u64,
+        /// 平移后起点。
+        new_start_tick: u64,
+    },
     /// 新增音轨。
     AddTrack {
         /// 被新增的音轨。
@@ -1485,6 +1508,7 @@ impl Op {
             Self::AddClipPlacement { .. } => "AddClipPlacement",
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
+            Self::MoveClipPlacementToTrack { .. } => "MoveClipPlacementToTrack",
             Self::SetClipPlacementMuted { .. } => "SetClipPlacementMuted",
             Self::SetClipPlacementOffset { .. } => "SetClipPlacementOffset",
             Self::SetClipPlacementLoop { .. } => "SetClipPlacementLoop",
@@ -1874,6 +1898,28 @@ impl Op {
                 if current.start_tick != *old_start_tick {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
+                Ok(())
+            }
+            Self::MoveClipPlacementToTrack {
+                from_track,
+                to_track,
+                placement_id,
+                old_start_tick,
+                ..
+            } => {
+                if from_track == to_track {
+                    // 原地不动不是一次编辑（与 `MoveTrack` 同口径的第二道防线）。
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let from = doc.track(from_track)?;
+                let current = from
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                if current.start_tick != *old_start_tick {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                doc.track(to_track)?;
                 Ok(())
             }
             Self::AddTrack { track } => {
@@ -2903,6 +2949,19 @@ impl Op {
                 old_start_tick: *new_start_tick,
                 new_start_tick: *old_start_tick,
             },
+            Self::MoveClipPlacementToTrack {
+                from_track,
+                to_track,
+                placement_id,
+                old_start_tick,
+                new_start_tick,
+            } => Self::MoveClipPlacementToTrack {
+                from_track: *to_track,
+                to_track: *from_track,
+                placement_id: *placement_id,
+                old_start_tick: *new_start_tick,
+                new_start_tick: *old_start_tick,
+            },
             Self::AddTrack { track } => Self::RemoveTrack {
                 track_id: track.id,
                 previous_track: track.clone(),
@@ -3604,6 +3663,26 @@ impl Op {
                 if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
                     placement.start_tick = *new_start_tick;
                 }
+                Ok(())
+            }
+            Self::MoveClipPlacementToTrack {
+                from_track,
+                to_track,
+                placement_id,
+                new_start_tick,
+                ..
+            } => {
+                // 先取走再放回：`BTreeMap::remove` + `insert`，摆放身份与除起点外的
+                // 全部字段原样搬运（前置条件已保证它在 `from_track` 里）。
+                let mut placement = doc
+                    .track_mut(from_track)?
+                    .clips
+                    .remove(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                placement.start_tick = *new_start_tick;
+                doc.track_mut(to_track)?
+                    .clips
+                    .insert(*placement_id, placement);
                 Ok(())
             }
             Self::AddTrack { track } => doc.insert_track(track.clone()),
@@ -4684,6 +4763,14 @@ mod tests {
                 old_start_tick: 0,
                 new_start_tick: 960,
             },
+            // 换轨（T-FIX-209）：同一条摆放从 lead 轨搬到 bass 轨，起点 0 ⇒ 960。
+            Op::MoveClipPlacementToTrack {
+                from_track: f.lead,
+                to_track: f.bass,
+                placement_id: f.placement,
+                old_start_tick: 0,
+                new_start_tick: 960,
+            },
             Op::AddTrack {
                 track: TrackV3 {
                     id: fresh_track,
@@ -5150,6 +5237,7 @@ mod tests {
             "AddClipPlacement",
             "RemoveClipPlacement",
             "MoveClipPlacement",
+            "MoveClipPlacementToTrack",
             "SetClipPlacementOffset",
             "AddTrack",
             "RemoveTrack",
@@ -5180,6 +5268,116 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "脚本缺少变体 {expected}");
         }
+    }
+
+    /// `MoveClipPlacementToTrack` 换轨且保持摆放身份，一步撤销回原轨（T-FIX-209）。
+    ///
+    /// 判据钉四件事：
+    ///
+    /// 1. **换轨** —— 摆放从 lead 轨搬到 bass 轨，`id` 与除起点外的字段一位不动；
+    /// 2. **一步撤销** —— `invert()` 之后再 `apply`，文档逐字节回到施加前；
+    /// 3. **陈旧载荷必被拒** —— `old_start_tick` 与文档现值不符时 `OpStateMismatch`，
+    ///    且文档一位不动；目标轨不存在、原地不动（`from == to`）同样被拒；
+    /// 4. **纯换轨** —— `new_start_tick == old_start_tick` 时只换容器，起点不变。
+    #[test]
+    fn move_clip_placement_to_track_moves_and_undoes_in_one_step() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = doc.clone();
+
+        // ① 换轨 + 改起点：lead ⇒ bass，0 ⇒ 960。
+        let op = Op::MoveClipPlacementToTrack {
+            from_track: f.lead,
+            to_track: f.bass,
+            placement_id: f.placement,
+            old_start_tick: 0,
+            new_start_tick: 960,
+        };
+        assert_eq!(op.precondition(&doc), Ok(()));
+        op.apply(&mut doc).expect("施加");
+        assert!(
+            !doc.track(&f.lead)
+                .expect("lead 轨在夹具里")
+                .clips
+                .contains_key(&f.placement),
+            "原轨上必须没有这条摆放了"
+        );
+        let moved = doc
+            .track(&f.bass)
+            .expect("bass 轨在夹具里")
+            .clips
+            .get(&f.placement)
+            .expect("目标轨上必须有这条摆放");
+        assert_eq!(moved.id, f.placement, "摆放身份不变");
+        assert_eq!(moved.clip_id, f.clip, "片段引用不变");
+        assert_eq!(moved.start_tick, 960);
+        assert_eq!(moved.duration_ticks, 3840, "除起点外其余字段一位不动");
+        assert!(!moved.muted);
+
+        // ② 一步撤销：invert 之后再 apply，文档逐字节回到施加前。
+        let undo = op.invert(&doc).expect("逆操作可构造");
+        undo.apply(&mut doc).expect("撤销");
+        assert_eq!(doc, before, "撤销后文档逐字节还原");
+
+        // ③ 陈旧载荷必被拒，且文档一位不动。
+        let stale = Op::MoveClipPlacementToTrack {
+            from_track: f.lead,
+            to_track: f.bass,
+            placement_id: f.placement,
+            old_start_tick: 960,
+            new_start_tick: 1920,
+        };
+        assert_eq!(
+            stale.apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "MoveClipPlacementToTrack"
+            }),
+            "陈旧载荷必须被拒"
+        );
+        assert_eq!(doc, before, "被拒的操作不得改动文档");
+        // 目标轨不存在 ⇒ 拒；原地不动 ⇒ 拒。
+        let missing_target = Op::MoveClipPlacementToTrack {
+            from_track: f.lead,
+            to_track: fixture_id(999),
+            placement_id: f.placement,
+            old_start_tick: 0,
+            new_start_tick: 0,
+        };
+        assert!(
+            missing_target.precondition(&doc).is_err(),
+            "目标轨不存在必须被拒"
+        );
+        let no_op = Op::MoveClipPlacementToTrack {
+            from_track: f.lead,
+            to_track: f.lead,
+            placement_id: f.placement,
+            old_start_tick: 0,
+            new_start_tick: 0,
+        };
+        assert_eq!(
+            no_op.precondition(&doc),
+            Err(ModelError::OpStateMismatch {
+                op: "MoveClipPlacementToTrack"
+            }),
+            "原地不动不是一次编辑"
+        );
+
+        // ④ 纯换轨：起点不变，只换容器。
+        let pure = Op::MoveClipPlacementToTrack {
+            from_track: f.lead,
+            to_track: f.bass,
+            placement_id: f.placement,
+            old_start_tick: 0,
+            new_start_tick: 0,
+        };
+        pure.apply(&mut doc).expect("纯换轨施加");
+        let moved = doc
+            .track(&f.bass)
+            .expect("bass 轨在夹具里")
+            .clips
+            .get(&f.placement)
+            .expect("目标轨上必须有这条摆放");
+        assert_eq!(moved.start_tick, 0, "纯换轨不改起点");
     }
 
     /// `SetTrackSampler` 只写**那一个**字段，且"陈旧载荷必被拒"（任务单 `#76`）。
@@ -11242,7 +11440,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 65] = [
+        const FROZEN: [(&str, &[&str]); 66] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -11255,6 +11453,7 @@ mod tests {
             ("InsertDevice", &["tracks"]),
             ("ModifyNoteVelocity", &["clip_pool"]),
             ("MoveClipPlacement", &["tracks"]),
+            ("MoveClipPlacementToTrack", &["tracks"]),
             ("MoveNote", &["clip_pool"]),
             ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &["assets"]),
@@ -11517,7 +11716,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 65] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 66] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -11530,6 +11729,7 @@ mod tests {
             ("InsertDevice", &["devices"]),
             ("ModifyNoteVelocity", &["velocity"]),
             ("MoveClipPlacement", &["start_tick"]),
+            ("MoveClipPlacementToTrack", &[]),
             ("MoveNote", &["pitch", "start_tick"]),
             ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &[]),

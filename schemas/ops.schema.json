@@ -302,6 +302,16 @@
         },
         {
           "required": [
+            "MoveClipPlacementToTrack"
+          ],
+          "properties": {
+            "MoveClipPlacementToTrack": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "AddTrack"
           ],
           "properties": {

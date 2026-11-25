@@ -12,12 +12,12 @@
 //! | ②（输入面不动） | 拖动中 `clip-{ulid}-body` 的包围盒与按下前逐值相同 ⇒ `mouse-x` 的坐标系不随画面移动（否则位移读数自我抵消） |
 //! | ③（画面只在剪辑的并集内变） | 拖动帧与按下帧的差异像素**全部**落在「原位置 ∪ 预览位置」内 |
 //! | ④（松手恰好一次提交） | `up` 之后提交数 **+1**、工程起点 == 吸附后的目标（默认缩放 30 ⇒ 40px = 1200 tick）、草稿清零 |
-//! | ⑤（`Escape` 零提交） | 第二次拖动中途 `Escape` ⇒ 提交数不变、工程逐字节不变、帧与提交后的帧逐像素相同 |
+//! | ⑥（跨轨拖动，T-FIX-209） | 纵向拖到相邻轨：拖动期落点线出现、落点行/落点 y 是目标行；松手恰好一次提交、剪辑换轨且起点 tick 不变；一步撤销回到原轨原位 |
 //!
 //! ## 平台约束
 //!
-//! `slint::platform::set_platform` 是线程局部的且每线程只能装配一次 ⇒ 本文件只有一个
-//! `#[test]`（与 `tests/clip_selection.rs` 同款）。
+//! `slint::platform::set_platform` 是线程局部的且每线程只能装配一次 ⇒ 每个 `#[test]`
+//! 在自己的线程里各装配一次（与 `tests/clip_selection.rs` 同款）。
 //!
 //! ## 本机不编译重依赖（`AGENTS.md` §5）
 //!
@@ -37,7 +37,7 @@ use slint::Model as _;
 use yeban_app::host::{
     ROLL_SNAP_GRID_TICKS, roll_ticks_per_pixel, wire_clip_create, wire_clip_drag,
 };
-use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_app::undo::{UiAction, UndoPort, UndoSession};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{
     METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE,
@@ -146,7 +146,37 @@ fn pointer_drag_right(plane: &mut LiveControlPlane, seq: i64, origin: (f64, f64)
     }
 }
 
-/// 松手（`[UI-TEST-002]` §12.4 的口径：位置复用最后一次按下 / 移动）。
+/// 从按下点分 `DRAG_STEPS` 步向下拖到目标 y（**绝对窗口坐标**注入）。
+fn pointer_drag_down(plane: &mut LiveControlPlane, seq: i64, origin: (f64, f64), target_y: f64) {
+    for step in 1..=DRAG_STEPS {
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = step as f64 / DRAG_STEPS as f64;
+        let y = origin.1 + (target_y - origin.1) * fraction;
+        let moved = plane.plane().try_line(&request_line(
+            seq + i64::try_from(step).expect("步号"),
+            METHOD_DISPATCH_POINTER_MOVE,
+            Some(json!({ "x": origin.0, "y": y })),
+        ));
+        assert!(
+            !moved.is_error(),
+            "第 {step} 步移动必须落到真实窗口: {moved:?}"
+        );
+    }
+}
+
+/// 权威工程里某条摆放的 (轨身份, 起点 tick)。
+fn clip_track_and_start(
+    project: &yeban_model::YebanProjectV1,
+    ulid: &str,
+) -> Option<(yeban_model::EntityId, u64)> {
+    let id = ulid.parse::<yeban_model::EntityId>().ok()?;
+    project.tracks.iter().find_map(|(track_id, track)| {
+        track
+            .clips
+            .get(&id)
+            .map(|placement| (*track_id, placement.start_tick))
+    })
+}
 fn pointer_up(plane: &mut LiveControlPlane, seq: i64) {
     let up = plane.plane().try_line(&request_line(
         seq,
@@ -511,4 +541,140 @@ fn clip_create_entry_creates_a_clip_through_the_live_window() {
         arrangement.contains("double-clicked => { root.clip-create(); }"),
         "空白车道双击必须绑定 root.clip-create()"
     );
+}
+
+/// T-FIX-209：剪辑**跨轨**拖动 —— 纵向拖到相邻轨，松手恰好一次提交、起点 tick 不变；
+/// 一步撤销回到原轨。
+///
+/// 判据走活窗口的真实指针链（与 ①–⑤ 同一架势）：按下某轨剪辑中心 → 分步拖到下一轨
+/// 轨道头的中心 y → 松手。断言：拖动期落点线出现（`clip-drag-target-line` 在运行
+/// 时控件树里，2px、y 落在目标行内）、提交数 +1、剪辑换到下一轨且起点 tick 一位
+/// 不变、一步 `UiAction::Undo` 把工程逐字节放回。
+#[test]
+fn dragging_a_clip_down_one_track_moves_it_with_exactly_one_op() {
+    let (window, port, mut plane) = assemble();
+    let track_ids: Vec<String> = window
+        .get_track_ids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert!(
+        track_ids.len() >= 2,
+        "演示工程至少要有两条轨（否则没有'相邻轨'可拖）"
+    );
+    let clip_ids: Vec<String> = window
+        .get_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let project_before = port.project();
+    // 选一条起点落在吸附网格上、且下方还有一轨的剪辑：横向位移为 0 时起点
+    // tick 的手算期望 = 原值，不必复刻吸附实现。
+    let (ulid, from_track_id, old_start, from_row) = clip_ids
+        .iter()
+        .find_map(|id| {
+            let (track_id, start) = clip_track_and_start(&project_before, id)?;
+            if start % ROLL_SNAP_GRID_TICKS != 0 {
+                return None;
+            }
+            let row = track_ids
+                .iter()
+                .position(|track| track == &track_id.to_canonical_string())?;
+            (row + 1 < track_ids.len()).then(|| (id.clone(), track_id, start, row))
+        })
+        .expect("演示工程至少要有一条起点落在吸附网格上、且下方有轨的剪辑");
+    let to_row = from_row + 1;
+    let to_track_id = track_ids[to_row]
+        .parse::<yeban_model::EntityId>()
+        .expect("目标轨身份可解析");
+
+    let body_id = format!("clip-{ulid}-body");
+    let body_before = element_bounds(&mut plane, 10, &body_id);
+    let target_header = element_bounds(&mut plane, 11, &format!("track-{to_row}-header"));
+    let target_center_y = f64::from(target_header.1) + f64::from(target_header.3) / 2.0;
+    let commits_before = port.display().commit_count;
+
+    // ---- 拖动期：落点行 = 下一轨，落点 y = 该行顶沿；工程与提交数不动 ----
+    let origin = pointer_down_at_center(&mut plane, 20, &body_id, body_before);
+    pointer_drag_down(&mut plane, 30, origin, target_center_y);
+    assert_eq!(
+        window.get_clip_drag_preview_track_index(),
+        i32::try_from(to_row).expect("行号在 i32 内"),
+        "拖动中指针命中的落点行必须是下一轨"
+    );
+    let tops: Vec<f32> = window.get_track_ys().iter().collect();
+    assert!(
+        (window.get_clip_drag_preview_track_y() - tops[to_row]).abs() < 1e-3,
+        "落点 y 必须是目标行顶沿（track-ys[{to_row}] = {}），实测 {}",
+        tops[to_row],
+        window.get_clip_drag_preview_track_y()
+    );
+    let line = element_bounds(&mut plane, 60, "clip-drag-target-line");
+    assert_eq!(line.3, 2, "落点线必须是 2px 金线: {line:?}");
+    assert!(
+        line.1 >= target_header.1
+            && line.1 < target_header.1 + i32::try_from(target_header.3).expect("行高在 i32 内"),
+        "落点线必须画在目标行内（行头 {target_header:?}，线 {line:?}）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "拖动期**不得**提交任何 op"
+    );
+    assert_eq!(
+        clip_track_and_start(&port.project(), &ulid),
+        Some((from_track_id, old_start)),
+        "拖动期工程里的剪辑**不得**换轨、起点**不得**变化"
+    );
+
+    // ---- 松手：恰好一次提交，换轨且起点 tick 不变，草稿清零 ----
+    pointer_up(&mut plane, 100);
+    assert_eq!(
+        window.get_clip_drag_ulid().as_str(),
+        "",
+        "松手后草稿身份必须清零"
+    );
+    assert_eq!(
+        window.get_clip_drag_preview_dx(),
+        0.0,
+        "松手后草稿位移必须清零"
+    );
+    assert_eq!(
+        window.get_clip_drag_preview_track_index(),
+        -1,
+        "松手后落点行必须清零"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "一次拖动 = **恰好一步**可撤销的编辑"
+    );
+    assert_eq!(
+        clip_track_and_start(&port.project(), &ulid),
+        Some((to_track_id, old_start)),
+        "剪辑必须落在下一轨，且起点 tick 一位不变"
+    );
+
+    // ---- 一步撤销：回到原轨原位，工程逐字节复原 ----
+    port.perform(UiAction::Undo);
+    assert_eq!(
+        clip_track_and_start(&port.project(), &ulid),
+        Some((from_track_id, old_start)),
+        "一步撤销必须把剪辑放回原轨原位"
+    );
+    assert_eq!(
+        port.project(),
+        project_before,
+        "一步撤销必须把工程逐字节放回"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "撤销不得新增提交"
+    );
+
+    report_line(&format!(
+        "[clip-drag] 剪辑 `{ulid}` 从第 {from_row} 轨拖到第 {to_row} 轨，起点 {old_start} tick 不变；\
+         一次拖动恰好 1 次提交；一步撤销回到原轨原位、工程逐字节复原"
+    ));
 }

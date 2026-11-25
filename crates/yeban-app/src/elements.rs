@@ -969,6 +969,15 @@ impl ElementRegistry {
             "轨道插入位置",
             true,
         );
+        // ⭐ T-FIX-209：剪辑跨轨拖动的落点线（与重排插入线同款：只在拖动中指针命中
+        // 另一行时实例化，条件元素，注册表仍无条件登记）。
+        registry.add(
+            "clip-drag-target-line",
+            ElementKind::Image,
+            "arrangement.slint",
+            "剪辑落点轨道",
+            true,
+        );
 
         // ---- 自动化泳道（`line/app-automation-ui`） ----
         //

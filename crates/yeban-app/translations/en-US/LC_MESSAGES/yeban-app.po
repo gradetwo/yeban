@@ -1168,6 +1168,9 @@ msgstr "Clip Drag Surface {}"
 msgid "轨道插入位置"
 msgstr "Track Insert Position"
 
+msgid "剪辑落点轨道"
+msgstr "Clip drop track"
+
 msgid "走带光标"
 msgstr "Playhead Cursor"
 

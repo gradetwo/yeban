@@ -127,8 +127,13 @@ export component ArrangementViewport inherits Rectangle {
     // 预览位移（逻辑像素，已吸附）。拖动面上的指针坐标系因此保持稳定（见 clip-…-body）。
     in-out property <string> clip-drag-ulid: "";
     in-out property <float> clip-drag-preview-dx: 0.0;
+    // ⭐ T-FIX-209：纵向预览 —— 目标行下标（-1 = 与起始行相同，不画线）与目标行顶沿
+    // （行空间 y，与 `track-ys` 同帧；落点金线画在该顶沿，与重排插入线同款）。
+    in property <int> clip-drag-preview-track-index: -1;
+    in property <float> clip-drag-preview-track-y: 0.0;
     private property <bool> clip-dragging: false;
     private property <length> clip-drag-origin-x: 0px;
+    private property <length> clip-drag-origin-y: 0px;
     private property <bool> clip-drag-moved: false;
 
     // ---- 轨道头手势（T-FIX-232：从死文件 `workspace/arrangement_view.slint` 搬进活视图）----
@@ -287,9 +292,11 @@ export component ArrangementViewport inherits Rectangle {
     // ⭐ T-FIX-234：活视图的片段手势（拖动 / 双击 / 空白处新建）。
     callback clip-create();
     callback clip-double-click(string);
-    callback clip-drag-grab(string, length) -> bool;
-    callback clip-drag-move(string, length);
-    callback clip-drag-release(string, length);
+    // ⭐ T-FIX-209：拖动回调带行空间 y（与 `track-ys` 同帧）—— 横向仍只用 x 的差值，
+    // 纵向落点行由 y 命中。`grab` 返回是否接管。
+    callback clip-drag-grab(string, length, length) -> bool;
+    callback clip-drag-move(string, length, length);
+    callback clip-drag-release(string, length, length);
     callback clip-drag-cancel();
     /// 框选收尾：矩形四边（x = **时间轴像素帧**，与 `blk.start_px` 同帧；
     /// y = Flickable 内容帧，与 `track-ys` 同帧；未归一化）+ 加选标志。
@@ -2008,13 +2015,16 @@ export component ArrangementViewport inherits Rectangle {
                                             pointer-event(event) => {
                                                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                                                     root.clip-drag-origin-x = self.mouse-x;
+                                                    root.clip-drag-origin-y = self.mouse-y;
                                                     root.clip-drag-moved = false;
-                                                    root.clip-dragging = root.clip-drag-grab(blk.clip_ulid, self.mouse-x);
+                                                    // ⭐ T-FIX-209：行空间 y = 所在行顶沿 + 剪辑矩形在行内的 4px +
+                                                    // 指针在拖动面内的 y（与 `track-ys` 同帧；宿主据此命中落点行）。
+                                                    root.clip-dragging = root.clip-drag-grab(blk.clip_ulid, self.mouse-x, root.track-ys[idx] + 4px + self.mouse-y);
                                                 } else if event.kind == PointerEventKind.up {
                                                     if root.clip-dragging {
                                                         root.clip-dragging = false;
                                                         if root.clip-drag-moved {
-                                                            root.clip-drag-release(blk.clip_ulid, self.mouse-x);
+                                                            root.clip-drag-release(blk.clip_ulid, self.mouse-x, root.track-ys[idx] + 4px + self.mouse-y);
                                                         } else {
                                                             root.clip-drag-cancel();
                                                             root.clip-select(blk.clip_ulid);
@@ -2022,13 +2032,17 @@ export component ArrangementViewport inherits Rectangle {
                                                     }
                                                     root.clip-drag-moved = false;
                                                 } else if event.kind == PointerEventKind.move {
+                                                    // ⭐ T-FIX-209：横向超过 4px **或**纵向超过 4px 才算拖动
+                                                    // （纯纵向拖动没有横向位移，旧口径会把它当点击放掉）。
                                                     if !root.clip-drag-moved
                                                         && ((self.mouse-x - root.clip-drag-origin-x) > 4px
-                                                            || (root.clip-drag-origin-x - self.mouse-x) > 4px) {
+                                                            || (root.clip-drag-origin-x - self.mouse-x) > 4px
+                                                            || (self.mouse-y - root.clip-drag-origin-y) > 4px
+                                                            || (root.clip-drag-origin-y - self.mouse-y) > 4px) {
                                                         root.clip-drag-moved = true;
                                                     }
                                                     if root.clip-dragging && root.clip-drag-moved {
-                                                        root.clip-drag-move(blk.clip_ulid, self.mouse-x);
+                                                        root.clip-drag-move(blk.clip_ulid, self.mouse-x, root.track-ys[idx] + 4px + self.mouse-y);
                                                     }
                                                 } else {
                                                     root.clip-dragging = false;
@@ -2562,6 +2576,24 @@ export component ArrangementViewport inherits Rectangle {
                     accessible-role: image;
                     accessible-id: "track-reorder-insertion-line";
                     accessible-label: @tr("轨道插入位置");
+                }
+
+                // ⭐ T-FIX-209：剪辑跨轨拖动的落点指示线（与重排插入线同款）。
+                //
+                // 2px 金线，y = 宿主算好的目标行顶沿（行空间坐标，与 `track-ys` 同帧），
+                // 满宽（包头列 + 车道）。只在拖动中指针命中了另一行时出现
+                // （`preview-track-index >= 0`）；松手 / `Escape` 后宿主清零即消失。
+                // 草稿期不碰工程。只在拖动时存在 ⇒ 默认帧一位不变。
+                // ⚠ 线画在目标行顶沿：剪辑松手后落在**这条线之下**的那一行。
+                if root.clip-drag-preview-track-index >= 0 : Rectangle {
+                    x: 0px;
+                    y: root.clip-drag-preview-track-y * 1px;
+                    width: parent.width;
+                    height: 2px;
+                    background: Tokens.gold;
+                    accessible-role: image;
+                    accessible-id: "clip-drag-target-line";
+                    accessible-label: @tr("剪辑落点轨道");
                 }
 
                 // Empty Track Lane Canvas / Add Track Drop Zone (Placed strictly below sheet-height + top offset inside Flickable)

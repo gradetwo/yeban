@@ -1168,6 +1168,9 @@ msgstr "Surface de glisser du clip {}"
 msgid "轨道插入位置"
 msgstr "Position d'insertion de piste"
 
+msgid "剪辑落点轨道"
+msgstr "Piste de dépôt du clip"
+
 msgid "走带光标"
 msgstr "Curseur de lecture"
 

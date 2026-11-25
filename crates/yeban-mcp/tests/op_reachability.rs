@@ -212,10 +212,22 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 64] = [
 /// `crates/yeban-app/src/host.rs`），MCP 工具面**没有**构造点（移轨暂无 MCP 工具）。
 /// 按本文件的口径（欠账要显式，⛔ 不许为过判据伪造构造点），如实登记为不可达；
 /// 工具面要覆盖它需另加 MCP 工具（不在本支范围）。
-const KNOWN_UNREACHABLE: [(&str, &str); 1] = [(
-    "MoveTrack",
-    "仅由 yeban-app 宿主构造（包头拖拽 + MoveSelectedTrackBy）；MCP 工具面无构造点",
-)];
+///
+/// ⭐ T-FIX-209：本清单**再开一条** —— `MoveClipPlacementToTrack` 只由 `yeban-app`
+/// 宿主构造（编曲剪辑跨轨拖动松手，`crates/yeban-app/src/host.rs` 的
+/// `commit_clip_drag`），MCP 工具面**没有**构造点（换轨暂无 MCP 工具；
+/// `yeban_edit_notes` 的 `move` 形态只平移起点）。工具面要覆盖它需另加 MCP
+/// 工具（不在本支范围）。
+const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
+    (
+        "MoveTrack",
+        "仅由 yeban-app 宿主构造（包头拖拽 + MoveSelectedTrackBy）；MCP 工具面无构造点",
+    ),
+    (
+        "MoveClipPlacementToTrack",
+        "仅由 yeban-app 宿主构造（编曲剪辑跨轨拖动松手 commit_clip_drag）；MCP 工具面无构造点",
+    ),
+];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在
 // `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一" ⇒ 然后恢复）。
 

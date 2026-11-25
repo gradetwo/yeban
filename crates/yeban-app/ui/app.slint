@@ -534,7 +534,12 @@ export component MainWindow inherits Window {
     in-out property <bool> clip-create-available: false;
     in-out property <string> clip-create-reason: "";
     in-out property <float> clip-drag-origin-x: 0.0;
+    in-out property <float> clip-drag-origin-y: 0.0;
     in-out property <float> clip-drag-preview-dx: 0.0;
+    // ⭐ T-FIX-209：纵向预览 —— 目标行下标（-1 = 与起始行相同，不画线）与目标行顶沿
+    // （行空间 y，与 `track-ys` 同帧；落点金线画在该顶沿，与重排插入线同款）。
+    in-out property <int> clip-drag-preview-track-index: -1;
+    in-out property <float> clip-drag-preview-track-y: 0.0;
     in-out property <string> clip-drag-ulid: "";
     in-out property <[string]> clip-labels: [];
     in-out property <[bool]> clip-mutes: [];
@@ -1001,9 +1006,11 @@ export component MainWindow inherits Window {
     callback clip-create();
     callback clip-double-click(string);
     callback clip-drag-cancel();
-    callback clip-drag-grab(string, length) -> bool;
-    callback clip-drag-move(string, length);
-    callback clip-drag-release(string, length);
+    // ⭐ T-FIX-209：拖动回调带行空间 y（与 `track-ys` 同帧）—— 横向仍只用 x 的差值，
+    // 纵向落点行由 y 命中。`grab` 返回是否接管。
+    callback clip-drag-grab(string, length, length) -> bool;
+    callback clip-drag-move(string, length, length);
+    callback clip-drag-release(string, length, length);
     callback clip-select(string);
     /// 框选收尾（line/blank-drag-selection）：矩形四边（**时间轴像素帧**的 x
     /// 与行区内容帧的 y，逻辑像素，未归一化）+ 是否加选（Shift）。
@@ -1881,6 +1888,8 @@ export component MainWindow inherits Window {
                     selected-clip-ulids: root.selected-clip-ulids;
                     clip-drag-ulid: root.clip-drag-ulid;
                     clip-drag-preview-dx: root.clip-drag-preview-dx;
+                    clip-drag-preview-track-index: root.clip-drag-preview-track-index;
+                    clip-drag-preview-track-y: root.clip-drag-preview-track-y;
                     timeline-block-selected: root.timeline-block-selected;
                     // T-FIX-110：把时间线可见宽报给根（本元素在 `if !console-maximized`
                     // 里面，条件元素里的 id 无法从根作用域引用 ⇒ 只能自下而上报）。
@@ -1912,9 +1921,9 @@ export component MainWindow inherits Window {
                     clip-select(clip-ulid) => { root.clip-select(clip-ulid); }
                     clip-create() => { root.clip-create(); }
                     clip-double-click(clip-ulid) => { root.clip-double-click(clip-ulid); }
-                    clip-drag-grab(clip-ulid, local-x) => { return root.clip-drag-grab(clip-ulid, local-x); }
-                    clip-drag-move(clip-ulid, local-x) => { root.clip-drag-move(clip-ulid, local-x); }
-                    clip-drag-release(clip-ulid, local-x) => { root.clip-drag-release(clip-ulid, local-x); }
+                    clip-drag-grab(clip-ulid, local-x, local-y) => { return root.clip-drag-grab(clip-ulid, local-x, local-y); }
+                    clip-drag-move(clip-ulid, local-x, local-y) => { root.clip-drag-move(clip-ulid, local-x, local-y); }
+                    clip-drag-release(clip-ulid, local-x, local-y) => { root.clip-drag-release(clip-ulid, local-x, local-y); }
                     clip-drag-cancel() => { root.clip-drag-cancel(); }
                     // ⭐ T-FIX-232：轨道头手势（高度 / 重排）转发到根回调（宿主已接线）。
                     track-height-grab(idx, y) => { root.track-height-grab(idx, y); }

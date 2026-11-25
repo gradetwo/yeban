@@ -1168,6 +1168,9 @@ msgstr "Superficie de arrastre del clip {}"
 msgid "轨道插入位置"
 msgstr "Posición de inserción de pista"
 
+msgid "剪辑落点轨道"
+msgstr "Pista de destino del clip"
+
 msgid "走带光标"
 msgstr "Cursor de reproducción"
 

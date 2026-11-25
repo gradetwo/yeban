@@ -1168,6 +1168,9 @@ msgstr "클립 드래그 영역 {}"
 msgid "轨道插入位置"
 msgstr "트랙 삽입 위치"
 
+msgid "剪辑落点轨道"
+msgstr "클립 드롭 대상 트랙"
+
 msgid "走带光标"
 msgstr "재생 헤드 커서"
 

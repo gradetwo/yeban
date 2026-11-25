@@ -1168,6 +1168,9 @@ msgstr "Clip-Ziehfläche {}"
 msgid "轨道插入位置"
 msgstr "Spur-Einfügeposition"
 
+msgid "剪辑落点轨道"
+msgstr "Zielspur des Clips"
+
 msgid "走带光标"
 msgstr "Abspielpositions-Cursor"
 

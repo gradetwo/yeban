@@ -17463,6 +17463,25 @@ pub fn reorder_insertion_index(row_tops: &[f32], row_heights: &[f32], pointer_y:
         .count()
 }
 
+/// 指针 y 落在哪一行（**包含**判定：行内任意 y ⇒ 该行；行外 ⇒ 夹到最近的行）。
+///
+/// 与 [`reorder_insertion_index`] 的区别：那是\"插入位置\"（中点以上才算下一行），
+/// 这里是\"命中行\"（y 只要在行区间内就归那一行）—— 剪辑跨轨拖动的落点判定用它。
+/// 行几何为空 ⇒ 0（调用方把\"没有行\"当成\"没有纵向变化\"处理）。
+#[must_use]
+pub fn track_index_at_y(row_tops: &[f32], row_heights: &[f32], pointer_y: f32) -> usize {
+    let count = row_tops.len().min(row_heights.len());
+    if count == 0 {
+        return 0;
+    }
+    for index in 0..count {
+        if pointer_y < row_tops[index] + row_heights[index] {
+            return index;
+        }
+    }
+    count - 1
+}
+
 /// 横向时间轴单步缩放（放大 / 缩小）。
 fn zoom_horizontal_step(ui: &MainWindow, port: Option<&UndoPort>, zoom_in: bool) -> bool {
     let current_tpp = roll_ticks_per_pixel(ui);
@@ -21429,11 +21448,39 @@ fn nudge_selected_clip_ms(
     true
 }
 
+/// 音轨在显示顺序里的行下标（`track-ids` 与 `track-ys` 同序同长）。
+/// 找不到（陈旧身份 / 投影未注入）⇒ `None`，调用方当成\"没有纵向变化\"。
+fn track_row_index(ui: &MainWindow, track_id: yeban_model::EntityId) -> Option<usize> {
+    let wanted = track_id.to_canonical_string();
+    read_strings(&ui.get_track_ids())
+        .iter()
+        .position(|id| id == &wanted)
+}
+
+/// 指针 y 命中的目标行（行空间坐标，与 `track-ys` 同帧）。
+/// 行几何缺失 / 长度不一致 / y 非有限 ⇒ `None`，调用方当成\"没有纵向变化\"。
+fn clip_drag_target_row(ui: &MainWindow, y: f32) -> Option<usize> {
+    use slint::Model as _;
+    if !y.is_finite() {
+        return None;
+    }
+    let tops: Vec<f32> = ui.get_track_ys().iter().collect();
+    let heights: Vec<f32> = ui.get_track_heights().iter().collect();
+    if tops.is_empty() || tops.len() != heights.len() {
+        return None;
+    }
+    Some(track_index_at_y(&tops, &heights, y))
+}
+
 /// 剪辑拖动的**草稿清零**（松手提交之后 / `Escape` / 指针取消三条路径共用）。
 fn clear_clip_drag(ui: &MainWindow) {
     ui.set_clip_drag_ulid("".into());
     ui.set_clip_drag_origin_x(0.0);
+    ui.set_clip_drag_origin_y(0.0);
     ui.set_clip_drag_preview_dx(0.0);
+    // 纵向预览与草稿属性同生同灭：-1 = 没有目标行。
+    ui.set_clip_drag_preview_track_index(-1);
+    ui.set_clip_drag_preview_track_y(0.0);
     // 组快照与草稿属性同生同灭：松手 / 取消都清，⛔ 不留给下一次手势。
     CLIP_DRAG_GROUP.with(|cell| cell.borrow_mut().clear());
 }
@@ -21473,8 +21520,17 @@ fn snapshot_clip_drag_group(
 ///
 /// 接管的同时**快照拖动组**（选区集包含这一按 ⇒ 整组，否则单条）：组的成员与起点在
 /// 按下那一刻冻结，松手时按同一 delta 一起挪。
-fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) -> bool {
-    if !x.is_finite() {
+///
+/// `y` 是行空间坐标（与 `track-ys` 同帧，界面按 `track-ys[行] + 4px + mouse-y` 报来）：
+/// 纵向拖动的落点行由它算，横向只用 `x` 的差值。
+fn begin_clip_drag(
+    ui: &MainWindow,
+    port: Option<&Rc<UndoPort>>,
+    clip_ulid: &str,
+    x: f32,
+    y: f32,
+) -> bool {
+    if !x.is_finite() || !y.is_finite() {
         return false;
     }
     let Some(port) = port else {
@@ -21490,6 +21546,7 @@ fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str
     // 身份 → 起点 → 草稿位移，顺序固定：读者看到非空身份时，其余读数已经就位。
     ui.set_clip_drag_ulid(clip_ulid.into());
     ui.set_clip_drag_origin_x(x);
+    ui.set_clip_drag_origin_y(y);
     ui.set_clip_drag_preview_dx(0.0);
     true
 }
@@ -21498,7 +21555,17 @@ fn begin_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str
 ///
 /// ⛔ 这里**不碰工程、不碰撤销栈**（"拖动期不记录任何撤销记录"的落点）。
 /// 没有进行中的手势 / 报来的身份不是手上这条 ⇒ **什么都不做**。
-fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) {
+///
+/// 纵向预览：指针 y 命中的行 ≠ 起始行 ⇒ 在目标行顶沿画一条落点金线
+/// （与 `track-reorder` 的插入线同款纪律：草稿期只写属性、不碰工程；
+/// 行几何读不到 ⇒ 不画线，只保留横向预览）。
+fn preview_clip_drag(
+    ui: &MainWindow,
+    port: Option<&Rc<UndoPort>>,
+    clip_ulid: &str,
+    x: f32,
+    y: f32,
+) {
     if ui.get_clip_drag_ulid().as_str() != clip_ulid {
         return;
     }
@@ -21509,32 +21576,50 @@ fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &s
     // 那一条 placement 的 start_tick。工程做大后，这次深拷贝正是「越拖越卡」的来源
     // （性能实测 P2-A / 报告 §4 第 3 件）。
     let Some(found) = port.with_project(|project| {
-        clip_placement_for(project, clip_ulid).map(|(_, _, placement)| placement.start_tick)
+        clip_placement_for(project, clip_ulid)
+            .map(|(track_id, _, placement)| (track_id, placement.start_tick))
     }) else {
         // 无工程（权威会话被关）⇒ 与原 try_project 失败同口径：直接返回、不动草稿。
         return;
     };
-    let Some(start_tick) = found else {
+    let Some((track_id, start_tick)) = found else {
         // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 草稿归零，画面回到投影位置。
         ui.set_clip_drag_preview_dx(0.0);
+        ui.set_clip_drag_preview_track_index(-1);
         return;
     };
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let target =
         clip_drag_target_tick(start_tick, x - ui.get_clip_drag_origin_x(), ticks_per_pixel);
     ui.set_clip_drag_preview_dx(clip_drag_preview_dx_px(start_tick, target, ticks_per_pixel));
+    let origin_row = track_row_index(ui, track_id);
+    let target_row = clip_drag_target_row(ui, y);
+    match (origin_row, target_row) {
+        (Some(origin), Some(target)) if target != origin => {
+            use slint::Model as _;
+            let tops: Vec<f32> = ui.get_track_ys().iter().collect();
+            ui.set_clip_drag_preview_track_index(i32::try_from(target).unwrap_or(i32::MAX));
+            ui.set_clip_drag_preview_track_y(tops.get(target).copied().unwrap_or(0.0));
+        }
+        _ => {
+            ui.set_clip_drag_preview_track_index(-1);
+            ui.set_clip_drag_preview_track_y(0.0);
+        }
+    }
 }
 
-/// 松手：**至多一次**原子提交（吸附后起点没变 ⇒ 一次都没有）。
+/// 松手：**至多一次**原子提交（吸附后起点没变、行也没换 ⇒ 一次都没有）。
 ///
 /// 手势读数在函数**入口处**条件清零（身份对得上才清）：无论下面走哪条出口，
 /// 草稿都不会留在手上。
 ///
-/// 多选：组里每条各发一条 `MoveClipPlacement`，**同一 delta**（按下那条的吸附后
-/// 位移）、**一次**提交、一步撤销。位移以组为整体算（各成员新起点 = 各自现起点 +
-/// 同一 delta，⛔ 不逐条吸附 —— 逐条吸附会把组内相对位置拉散）。
+/// 多选：组里每条各发一条 `MoveClipPlacement` / `MoveClipPlacementToTrack`，
+/// **同一 delta**（按下那条的吸附后横向位移 + 整组共用的行位移）、**一次**提交、
+/// 一步撤销。位移以组为整体算（各成员新起点 = 各自现起点 + 同一 delta，
+/// ⛔ 不逐条吸附 —— 逐条吸附会把组内相对位置拉散；各成员目标行 = 各自当前行 +
+/// 同一行位移，越界的成员留在原轨）。
 /// 组快照为空（旧手势 / 直接调 `commit`）⇒ 退回单条口径。
-fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32) {
+fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &str, x: f32, y: f32) {
     if ui.get_clip_drag_ulid().as_str() != clip_ulid {
         return;
     }
@@ -21554,16 +21639,54 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
     let old_start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let new_start_tick = clip_drag_target_tick(old_start_tick, x - origin, ticks_per_pixel);
-    if new_start_tick == old_start_tick {
-        // 位移没跨过吸附网格 ⇒ **不提交空 op**（一次拖动没有产生任何编辑）。
+    // 纵向：指针 y 命中的行 − 按下那条所在的行 = 整组共用的行位移
+    // （行几何读不到 ⇒ 0，退化成纯横向拖动，与旧行为一致）。
+    let row_delta: i64 = match (track_row_index(ui, track_id), clip_drag_target_row(ui, y)) {
+        (Some(origin_row), Some(target_row)) => {
+            i64::try_from(target_row).unwrap_or(0) - i64::try_from(origin_row).unwrap_or(0)
+        }
+        _ => 0,
+    };
+    if new_start_tick == old_start_tick && row_delta == 0 {
+        // 横向没跨过吸附网格、纵向也没换行 ⇒ **不提交空 op**（一次拖动没有产生任何编辑）。
         return;
     }
     let delta_ticks = (new_start_tick as i64).saturating_sub(old_start_tick as i64);
-    // 先算 (音轨，摆放，旧起点，新起点) 四元组，再**一处**构造 op（`MoveClipPlacement`
-    // 在全 app 只有一个构造点 —— 单条是退化情形，不是第二处）。
-    let mut moves: Vec<(yeban_model::EntityId, yeban_model::EntityId, u64, u64)> = Vec::new();
+    // 先算 (原轨，目标轨，摆放，旧起点，新起点) 五元组，再**一处**构造 op
+    // （`MoveClipPlacement` / `MoveClipPlacementToTrack` 在全 app 各只有一个构造点
+    // —— 单条是退化情形，不是第二处）。
+    let track_count = read_strings(&ui.get_track_ids()).len();
+    // 组里一条摆放的目标轨 = 它当前行 + 整组行位移；越界（首 / 末行之外）⇒ 留在原轨。
+    let target_track_for = |from_track: yeban_model::EntityId| -> yeban_model::EntityId {
+        let Some(from_row) = track_row_index(ui, from_track) else {
+            return from_track;
+        };
+        let target_row = i64::try_from(from_row).unwrap_or(0) + row_delta;
+        let Ok(target_row) = usize::try_from(target_row) else {
+            return from_track;
+        };
+        if target_row >= track_count {
+            return from_track;
+        }
+        track_id_at(ui, i32::try_from(target_row).unwrap_or(i32::MAX))
+            .and_then(|id| id.parse::<yeban_model::EntityId>().ok())
+            .unwrap_or(from_track)
+    };
+    let mut moves: Vec<(
+        yeban_model::EntityId,
+        yeban_model::EntityId,
+        yeban_model::EntityId,
+        u64,
+        u64,
+    )> = Vec::new();
     if group.is_empty() {
-        moves.push((track_id, placement_id, old_start_tick, new_start_tick));
+        moves.push((
+            track_id,
+            target_track_for(track_id),
+            placement_id,
+            old_start_tick,
+            new_start_tick,
+        ));
     } else {
         for (_, member_placement_id, _) in &group {
             let Some((member_track_id, _, current)) =
@@ -21574,11 +21697,13 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
             };
             let member_old = current.start_tick;
             let member_new = member_old.saturating_add_signed(delta_ticks);
-            if member_new == member_old {
+            let member_target = target_track_for(member_track_id);
+            if member_target == member_track_id && member_new == member_old {
                 continue;
             }
             moves.push((
                 member_track_id,
+                member_target,
                 *member_placement_id,
                 member_old,
                 member_new,
@@ -21587,14 +21712,26 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
     }
     let ops: Vec<yeban_model::ops::Op> = moves
         .into_iter()
-        .map(|(track_id, placement_id, old_start_tick, new_start_tick)| {
-            yeban_model::ops::Op::MoveClipPlacement {
-                track_id,
-                placement_id,
-                old_start_tick,
-                new_start_tick,
-            }
-        })
+        .map(
+            |(from_track, to_track, placement_id, old_start_tick, new_start_tick)| {
+                if from_track == to_track {
+                    yeban_model::ops::Op::MoveClipPlacement {
+                        track_id: from_track,
+                        placement_id,
+                        old_start_tick,
+                        new_start_tick,
+                    }
+                } else {
+                    yeban_model::ops::Op::MoveClipPlacementToTrack {
+                        from_track,
+                        to_track,
+                        placement_id,
+                        old_start_tick,
+                        new_start_tick,
+                    }
+                }
+            },
+        )
         .collect();
     if ops.is_empty() {
         return;
@@ -21639,34 +21776,34 @@ pub fn wire_clip_drag(ui: &MainWindow, port: &Rc<UndoPort>) {
     ui.on_clip_drag_grab({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |clip_ulid: SharedString, x: f32| {
+        move |clip_ulid: SharedString, x: f32, y: f32| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return false;
             };
-            begin_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x)
+            begin_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x, y)
         }
     });
     ui.on_clip_drag_move({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |clip_ulid: SharedString, x: f32| {
+        move |clip_ulid: SharedString, x: f32, y: f32| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            preview_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x);
+            preview_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x, y);
         }
     });
     ui.on_clip_drag_release({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |clip_ulid: SharedString, x: f32| {
+        move |clip_ulid: SharedString, x: f32, y: f32| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            commit_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x);
+            commit_clip_drag(&ui, Some(&port), clip_ulid.as_str(), x, y);
         }
     });
     ui.on_clip_drag_cancel({
@@ -23406,6 +23543,33 @@ mod tests {
             super::reorder_insertion_index(&tall, &tall_heights, 155.0),
             2
         );
+    }
+
+    /// T-FIX-209：剪辑跨轨拖动的落点行（**包含**判定，行外夹到最近的行）。
+    #[test]
+    fn track_index_at_y_returns_the_row_containing_the_pointer() {
+        // 三行等高 56：顶沿 42 / 98 / 154，底沿 98 / 154 / 210。
+        let tops = [42.0, 98.0, 154.0];
+        let heights = [56.0, 56.0, 56.0];
+        assert_eq!(super::track_index_at_y(&tops, &heights, 0.0), 0);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 41.0), 0);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 42.0), 0);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 97.0), 0);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 98.0), 1);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 153.0), 1);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 154.0), 2);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 209.0), 2);
+        // 行外 ⇒ 夹到最近的行。
+        assert_eq!(super::track_index_at_y(&tops, &heights, 210.0), 2);
+        assert_eq!(super::track_index_at_y(&tops, &heights, 1000.0), 2);
+        // 行高不等时各行区间各算各的：第二行高 112（98..210），指针 150 落在它里面。
+        let tall = [42.0, 98.0, 210.0];
+        let tall_heights = [56.0, 112.0, 56.0];
+        assert_eq!(super::track_index_at_y(&tall, &tall_heights, 150.0), 1);
+        assert_eq!(super::track_index_at_y(&tall, &tall_heights, 209.0), 1);
+        assert_eq!(super::track_index_at_y(&tall, &tall_heights, 210.0), 2);
+        // 没有行 ⇒ 0。
+        assert_eq!(super::track_index_at_y(&[], &[], 50.0), 0);
     }
 
     /// 2026-11-07（夜半 UI 轨道交互修复线）：标尺定位先加横向偏移再换算。
