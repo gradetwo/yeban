@@ -43,19 +43,25 @@
 //!   `live_surface::LiveAdminSurface::authority_revision` 同义），它推进的是**投影游标**，
 //!   不是权威的修订号。
 //!
-//! ## 失败时出声
+//! ## 失败时**可见地**出声（T-FIX-300）
 //!
-//! `slint::invoke_from_event_loop` 在没有事件循环的平台上返回
-//! `Err(EventLoopError::NoEventLoopProvider)`（上游语义：`Platform::new_event_loop_proxy`
-//! 的默认实现返回 `None`）。这时**没有任何东西被静默吞掉**：本模块打一行 stderr，
-//! 并且 `sync_weak` 停留在"未投影"状态 —— 下一次通知会再试一次，而不是把
-//! "已经投影过了"记成一句不成立的话。
+//! 两条失败路都不许静默：
+//!
+//! - **投影失败**（`project_with_view_state` / `apply_view` 返回 `Err`）：返回独立的
+//!   [`ProjectionOutcome::ProjectionFailed`]（⛔ 不复用 `Unchanged`），`projected`
+//!   **不**推进，并用 [`host::report_notice`] 把错误级回执同时写进提示条与模块回执行
+//!   （“会话侧已改工程，但这一帧没画出来，可手动刷新/重试”）。下一次通知会重试。
+//! - **送不到 UI 线程**（`slint::invoke_from_event_loop` 返回
+//!   `Err(EventLoopError::NoEventLoopProvider)`；上游语义是
+//!   `Platform::new_event_loop_proxy` 的默认实现返回 `None`）：本模块打一行 stderr，
+//!   把回执记进 `pending_dispatch_notice`，下一次真的回到 UI 线程的 `sync_now` 会把它
+//!   展示出来；`sync_weak` 的结局也被显式匹配，不再 `let _ =` 丢掉。
 //!
 //! 生产平台（`slint` 的 `backend-winit`）实现了 `new_event_loop_proxy`，因此这一跳
 //! 在生产里成立；宿主自己**不**探测平台能力（那会变成第二套事实源）。
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::host;
 use crate::mcp_mount::{InProcessMcp, ProjectAuthorityHandle, WeakProjectAuthorityHandle};
@@ -81,6 +87,14 @@ pub enum ProjectionOutcome {
     AuthorityGone,
     /// 窗口已经销毁 ⇒ 放弃。
     WindowGone,
+    /// 权威有新版，但**这一帧投影失败** ⇒ 界面仍是旧画面；下一次通知会重试。
+    ///
+    /// 与 [`Self::Unchanged`] **必须分开**：前者是“没有新版本”，本变体是
+    /// “有新版本但画不出来”。调用方/判据据此区分静默成功与可见失败。
+    ProjectionFailed {
+        /// 失败时权威的施加修订号（失败不推进 `projected`，因此下次会重试）。
+        revision: u64,
+    },
 }
 
 /// **生产窗口**与唯一可变权威之间的投影镜子。
@@ -106,6 +120,12 @@ pub struct AuthorityMirror {
     authority: WeakProjectAuthorityHandle,
     /// 已经投影过的那一版权威修订号。
     projected: AtomicU64,
+    /// 判据缝：下一次 `sync_now` 强制走投影失败分支（生产路径永不置位）。
+    fail_next_projection: AtomicBool,
+    /// `invoke_from_event_loop` 失败时记下的可见回执；下一次 `sync_now` 在 UI 线程展示。
+    pending_dispatch_notice: Mutex<Option<String>>,
+    /// 调度失败计数（判据读；生产只在日志里看得到，不参与投影决策）。
+    dispatch_failures: AtomicU64,
 }
 
 impl AuthorityMirror {
@@ -121,7 +141,31 @@ impl AuthorityMirror {
             window: slint::ComponentHandle::as_weak(ui),
             authority: authority.downgrade(),
             projected: AtomicU64::new(authority.apply_revision()),
+            fail_next_projection: AtomicBool::new(false),
+            pending_dispatch_notice: Mutex::new(None),
+            dispatch_failures: AtomicU64::new(0),
         }
+    }
+
+    /// 判据缝：让**下一次** `sync_now` 的投影返回 `Err`（只置位一次，不改生产语义）。
+    #[doc(hidden)]
+    pub fn fail_next_projection_for_test(&self) {
+        self.fail_next_projection.store(true, Ordering::SeqCst);
+    }
+
+    /// 判据读：`invoke_from_event_loop` 失败的累计次数。
+    #[doc(hidden)]
+    #[must_use]
+    pub fn dispatch_failures(&self) -> u64 {
+        self.dispatch_failures.load(Ordering::SeqCst)
+    }
+
+    /// 取走“调度失败”的待展示回执（下一次 `sync_now` 在 UI 线程展示）。
+    fn take_pending_dispatch_notice(&self) -> Option<String> {
+        self.pending_dispatch_notice
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     /// 已经投影过的权威修订号（判据用）。
@@ -146,6 +190,11 @@ impl AuthorityMirror {
     /// 卷帘偏移复用界面上的当前值：会话侧改了工程**不该**把卷帘滚回起点
     /// （与 `host::refresh_undo_window` 同一条纪律）。
     pub fn sync_now(&self, ui: &MainWindow) -> ProjectionOutcome {
+        // 先补上一次“送不到 UI 线程”的失败回执：那时没有事件循环可碰 UI，只能记在镜子里；
+        // 下一次真的回到 UI 线程时**必须**让用户看见，而不是把它丢在服务线程日志里。
+        if let Some(notice) = self.take_pending_dispatch_notice() {
+            host::report_notice(ui, &notice, true);
+        }
         let Some(authority) = self.authority.upgrade() else {
             return ProjectionOutcome::AuthorityGone;
         };
@@ -158,7 +207,13 @@ impl AuthorityMirror {
         };
         // 行高布局（`ADR-0004` S1）与横向缩放（Q5）与卷帘偏移同款：从窗口读回来再投影，
         // 于是"会话侧改了工程"的重投影**不会**把手动调过的行高 / 缩放静默清零。
-        match host::project_with_view_state(&project, ui) {
+        let projection = if self.fail_next_projection.swap(false, Ordering::SeqCst) {
+            // 判据缝：不是另造一条成功路径，而是把**同一个** `Err` 分支喂给下面的可见处理。
+            Err(crate::bridge::BridgeError::ZeroTicksPerPixel)
+        } else {
+            host::project_with_view_state(&project, ui)
+        };
+        match projection {
             Ok(view) => {
                 let scroll_x = ui.get_roll_scroll_x();
                 host::apply_view(
@@ -180,10 +235,16 @@ impl AuthorityMirror {
                 ProjectionOutcome::Reprojected { revision }
             }
             Err(error) => {
-                // 投影失败**出声**：工程已经变了，但这一帧画不出来。
-                // 静默吞掉会让"AI 改了但界面没动"变成一个查不出的现象。
-                eprintln!("[yeban-app] 会话侧改工程后重投影失败: {error}");
-                ProjectionOutcome::Unchanged
+                // 投影失败**可见地出声**：工程已经变了，但这一帧画不出来。
+                // `ProjectionFailed` 与“没有新版本”分开；`projected` **不**推进 ⇒ 下一次
+                // 通知会重试。界面同时收到错误级常驻回执（提示条 ＋ 模块回执行）。
+                let notice = format!(
+                    "[重投影] 会话侧已改工程（修订 {revision}），但这一帧没能画出来：{error}。\
+                     界面仍停在旧画面；可手动刷新或稍后重试。"
+                );
+                eprintln!("[yeban-app] {notice}");
+                host::report_notice(ui, &notice, true);
+                ProjectionOutcome::ProjectionFailed { revision }
             }
         }
     }
@@ -215,12 +276,22 @@ impl AuthorityMirror {
             }
             let queued = Arc::clone(&mirror);
             if let Err(error) = slint::invoke_from_event_loop(move || {
-                let _ = queued.sync_weak();
+                if let ProjectionOutcome::ProjectionFailed { revision } = queued.sync_weak() {
+                    eprintln!(
+                        "[yeban-app] 会话侧改工程后重投影失败（修订 {revision}），\
+                         错误级回执已写进窗口"
+                    );
+                }
             }) {
-                eprintln!(
-                    "[yeban-app] 会话侧改工程后无法把重投影送到 UI 线程 (修订号 {revision}): {error} \
-                     —— 该平台的 new_event_loop_proxy 返回 None（生产用 backend-winit 时不会发生）"
+                let notice = format!(
+                    "[重投影] 会话侧已改工程（修订 {revision}），但无法把这次刷新送到 UI 线程：\
+                     {error}。界面可能仍停在旧画面；可手动刷新或稍后重试。"
                 );
+                eprintln!("[yeban-app] {notice}");
+                mirror.dispatch_failures.fetch_add(1, Ordering::SeqCst);
+                if let Ok(mut slot) = mirror.pending_dispatch_notice.lock() {
+                    *slot = Some(notice);
+                }
             }
         })
     }
