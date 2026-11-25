@@ -208,8 +208,8 @@ fn every_reachable_text_input_is_ime_aware() {
         );
     }
     assert_eq!(
-        aware, 25,
-        "`ImeAwareTextInput` 实例数必须是 25（26 处声明 − 未编译的 `transport.slint` 1 处裸 \
+        aware, 29,
+        "`ImeAwareTextInput` 实例数必须是 29（30 处声明 − 未编译的 `transport.slint` 1 处裸 \
          `TextInput`；`sidebar.slint` 已删，见 T-FIX-218），实际 {aware}"
     );
 }
