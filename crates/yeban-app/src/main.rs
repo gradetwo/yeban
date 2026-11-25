@@ -475,6 +475,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 因此"这里说缺、引擎却读得到"这种自相矛盾不可能出现。只在进界面之前算一次。
     let missing_sounds =
         yeban_app::missing_sounds::collect(&project_rc.borrow(), project_dir.as_deref());
+    // ⭐ T-FIX-371：模块入口的路径状态只装一次，换工程时原地更新（⛔ 不重接回调）。
+    let module_paths = host::module_paths_for_project(project_dir.as_deref());
     let mut engine = host::ProductionLoop::start_with_audio_source_and_project_dir(
         &project_rc.borrow(),
         0,
@@ -981,6 +983,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             let view_after = Rc::clone(&view_cell);
             let engine_after = Rc::clone(&engine_handle);
             let port_after = Rc::clone(&undo_port);
+            let module_paths_after = Rc::clone(&module_paths);
             let input_after = Rc::clone(&input);
             #[cfg(feature = "in-process-mcp")]
             let authority_after = in_process_mcp
@@ -1058,6 +1061,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     // ③-c 重绑纯编辑面：这些 handler 闭包着启动期 `UndoPort`，
                     // `wire_callbacks` 不含它们；不重跑会把 Op 写进旧撤销会话（T-FIX-323）。
                     host::wire_edit_surfaces(ui, &port_after);
+                    // ③-d 模块入口的缺省路径跟着新工程目录走（T-FIX-371）。
+                    // 路径是一个共享 `Rc<RefCell<..>>`，回调每次触发现读 ⇒ 原地更新即可，
+                    // ⛔ 不用重接出第二套 MIDI 实时线程。
+                    host::set_module_project_dir(
+                        &module_paths_after,
+                        if untitled {
+                            None
+                        } else {
+                            std::path::Path::new(path).parent()
+                        },
+                    );
                     // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
                     engine_after
                         .borrow_mut()
@@ -1170,10 +1184,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
     // `record_wav`），⛔ 不另写一套。目标路径由宿主解析
     // （`ModulePaths::from_env_for_project`：`export_wav` 缺省取工程目录，见 P2-3）。
-    let midi_state = host::wire_module_actions_for_project(
+    let midi_state = host::wire_module_actions_for_project_shared(
         &ui,
         Some(Rc::clone(&undo_port)),
-        project_dir.as_deref(),
+        Rc::clone(&module_paths),
     );
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（无头装配在 `live_surface.rs` 的同一处调它）。

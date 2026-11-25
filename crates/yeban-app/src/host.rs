@@ -12748,7 +12748,32 @@ pub fn wire_module_actions_for_project(
     port: Option<Rc<UndoPort>>,
     project_dir: Option<&std::path::Path>,
 ) -> MidiInState {
-    wire_module_actions_with(ui, port, ModulePaths::from_env_for_project(project_dir))
+    wire_module_actions_for_project_shared(ui, port, module_paths_for_project(project_dir))
+}
+
+/// 生产换工程可复用的模块路径状态（T-FIX-371）。
+#[must_use]
+pub fn module_paths_for_project(project_dir: Option<&std::path::Path>) -> Rc<RefCell<ModulePaths>> {
+    Rc::new(RefCell::new(ModulePaths::from_env_for_project(project_dir)))
+}
+
+/// 换工程后原地更新模块路径（T-FIX-371）。
+///
+/// 不重接回调 ⇒ 不产生第二套 MIDI 实时线程，也不丢已装载的 SFZ 与在飞采集状态。
+pub fn set_module_project_dir(
+    paths: &Rc<RefCell<ModulePaths>>,
+    project_dir: Option<&std::path::Path>,
+) {
+    *paths.borrow_mut() = ModulePaths::from_env_for_project(project_dir);
+}
+
+/// 与 [`wire_module_actions_for_project`] 相同，但复用调用方持有的可变路径状态。
+pub fn wire_module_actions_for_project_shared(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    paths: Rc<RefCell<ModulePaths>>,
+) -> MidiInState {
+    wire_module_actions_with_shared(ui, port, paths, None)
 }
 
 /// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
@@ -16559,6 +16584,21 @@ pub fn wire_module_actions_with_capture(
     paths: ModulePaths,
     capture: Option<MidiInCapture>,
 ) -> MidiInState {
+    wire_module_actions_with_shared(ui, port, Rc::new(RefCell::new(paths)), capture)
+}
+
+/// 与 [`wire_module_actions_with_capture`] 相同，但 `paths` 是**可更新**的共享状态。
+///
+/// T-FIX-371：换工程后 `project_dir` 变了，四个模块入口的缺省路径必须跟着新工程
+/// 目录走。闭包每次触发时现读 `paths`（⛔ 不再把 `ModulePaths` 按值固化进回调），
+/// 换工程只需 [`set_module_project_dir`] 原地更新这一份状态，既不会重接出第二套
+/// MIDI 实时线程，也不会丢掉已装载的 SFZ / 未完成的 MIDI 采集状态。
+pub fn wire_module_actions_with_shared(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    paths: Rc<RefCell<ModulePaths>>,
+    capture: Option<MidiInCapture>,
+) -> MidiInState {
     // 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）—— 与 CLI 的 `loaded_sfz` 同角色。
     let loaded_sfz: LoadedSfz = Rc::new(RefCell::new(None));
 
@@ -16575,7 +16615,7 @@ pub fn wire_module_actions_with_capture(
     // 一个用户可见的静默截断 —— 几分钟的工程按缺省导出只剩 8 秒。
     {
         let weak = ui.as_weak();
-        let default_target = paths.export_wav.clone();
+        let paths = Rc::clone(&paths);
         // **宿主最后一次播的值**（不是"用户填的值"）：判据是"没人动过 ⇒ 刷新"，
         // 所以需要知道眼前这串字符是不是宿主自己上一次写进去的。`None` = 还没播过。
         let seeded_seconds: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -16585,6 +16625,7 @@ pub fn wire_module_actions_with_capture(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            let default_target = paths.borrow().export_wav.clone();
             if ui.get_export_wav_path().trim().is_empty() {
                 ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
             }
@@ -16641,13 +16682,14 @@ pub fn wire_module_actions_with_capture(
         let weak = ui.as_weak();
         let port = port.clone();
         let loaded_sfz = Rc::clone(&loaded_sfz);
-        let default_target = paths.export_wav.clone();
+        let paths = Rc::clone(&paths);
         ui.on_export_wav(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             let started = std::time::Instant::now();
+            let default_target = paths.borrow().export_wav.clone();
             // 工程读数来自端口（撤销之后按导出 ⇒ 导出的是撤销之后那一版）。
             // 没有端口时退回**这一次装配**能看到的界面态：没有工程可导出 ⇒ 如实拒绝。
             let Some(port) = port.as_ref() else {
@@ -16889,7 +16931,7 @@ pub fn wire_module_actions_with_capture(
     {
         let weak = ui.as_weak();
         let port = port.clone();
-        let target = paths.export_midi.clone();
+        let paths = Rc::clone(&paths);
         ui.on_export_midi(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -16922,6 +16964,7 @@ pub fn wire_module_actions_with_capture(
             // ⭐ T-FIX-179：缺省绝对路径（文档目录 `Yeban/`）的父目录不存在时
             // 先建出来，否则 `write_file_atomically` 的同目录临时文件写不进去；
             // 显式路径不动（目标目录不存在必须失败，见 T-FIX-167 臂 2）。
+            let target = paths.borrow().export_midi.clone();
             ensure_default_parent_dir(&target);
             let (receipt, ok, success_line) =
                 match crate::export_midi::export_project_to_file(&project, &target) {
@@ -16977,7 +17020,7 @@ pub fn wire_module_actions_with_capture(
     {
         let weak = ui.as_weak();
         let port = port.clone();
-        let source = paths.import_midi.clone();
+        let paths = Rc::clone(&paths);
         ui.on_import_midi(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -17025,6 +17068,7 @@ pub fn wire_module_actions_with_capture(
                 clip_id: selected_clip,
                 ..Default::default()
             };
+            let source = paths.borrow().import_midi.clone();
             let (receipt, ok, loss_line) = match crate::import_midi::import_midi_file(
                 port,
                 &project,
@@ -17098,13 +17142,14 @@ pub fn wire_module_actions_with_capture(
     {
         let weak = ui.as_weak();
         let loaded_sfz = Rc::clone(&loaded_sfz);
-        let source = paths.load_sfz.clone();
+        let paths = Rc::clone(&paths);
         ui.on_load_sfz(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             let started = std::time::Instant::now();
+            let source = paths.borrow().load_sfz.clone();
             // ⭐ 审计 P0-2：这条入口原来**永远**读一个写死的 `ui-instrument.sfz`
             // （没有文件选择器、不绑任何一条轨）。对新手来说它的表现是"点了一下，
             // 弹一句 `读 SFZ 失败: SFZ 路径 …`"。现在：没有现成文件 ⇒ 不报术语，
@@ -17180,14 +17225,15 @@ pub fn wire_module_actions_with_capture(
     // ---------------------------------------------------------------- 录音
     {
         let weak = ui.as_weak();
-        let target = paths.record_wav.clone();
-        let seconds = paths.record_seconds;
+        let paths = Rc::clone(&paths);
         ui.on_record_wav(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             let started = std::time::Instant::now();
+            let target = paths.borrow().record_wav.clone();
+            let seconds = paths.borrow().record_seconds;
             let mut options = crate::record_wav::RecordOptions {
                 seconds,
                 ..crate::record_wav::RecordOptions::default()
@@ -17254,8 +17300,7 @@ pub fn wire_module_actions_with_capture(
     let midi_state = MidiInState::new();
     {
         let weak = ui.as_weak();
-        let wanted = paths.midi_in_port.clone();
-        let seconds = paths.midi_in_seconds;
+        let paths = Rc::clone(&paths);
         let state = midi_state.clone();
         // ⭐ 落地端口：与其余模块入口**同一个** `Rc`（唯一可变权威 ⇒ 可撤销是构造上的）。
         //
@@ -17322,6 +17367,8 @@ pub fn wire_module_actions_with_capture(
                 return;
             };
             let started = std::time::Instant::now();
+            let wanted = paths.borrow().midi_in_port.clone();
+            let seconds = paths.borrow().midi_in_seconds;
             // ⭐ 先排空上一次的结果（自愈：即使没有事件循环，下一次交互也会把终态落下来）。
             apply_pending_midi_in(&ui, &state, port.as_deref());
             if state.is_in_flight() {
