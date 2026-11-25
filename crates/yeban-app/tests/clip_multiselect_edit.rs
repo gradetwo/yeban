@@ -349,6 +349,7 @@ fn mute_two_selected_clips_toggles_both_in_one_commit() {
 
     key_ctrl(&window, "m");
     let after = port_placements(&port);
+    assert_eq!(after.len(), 2, "取消静音不增减摆放");
     assert!(
         after.iter().all(|(_, _, p)| !p.muted),
         "再按 Cmd+M 必须取消静音"
