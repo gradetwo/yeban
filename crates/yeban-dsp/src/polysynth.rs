@@ -320,6 +320,10 @@ pub const PITCH_UPDATE_SAMPLES: u64 = 64;
 /// §9 的音高网格同一条论证（见模块文档 §10）。
 pub const LFO_UPDATE_SAMPLES: u64 = 64;
 
+/// 滤波器包络深度的上限（**八度**；⭐ `T-FIX-276`）：`cutoff × 2^(depth × 包络)`
+/// 最多把截止频率推高 16 倍，与 LFO 的截止目标同一个上限。
+pub const MAX_FILTER_ENV_DEPTH_OCTAVES: f32 = 4.0;
+
 /// ⭐ **全局 LFO 的调制目标**（`T-FIX-277`）。
 ///
 /// 三个目标共享同一个 `lfo_depth` 字段，量纲按目标解释（见
@@ -474,6 +478,16 @@ pub struct PolySynthParams {
     lfo_depth: f32,
     /// ⭐ 全局 LFO 的调制目标（`T-FIX-277`）。
     lfo_target: LfoTarget,
+    /// ⭐ 滤波器包络的时间常数与电平（`T-FIX-276`；秒 / 秒 / 0..1 / 秒）。
+    filter_env_attack_s: f32,
+    /// ⭐ 滤波器包络的衰减时间（秒；`T-FIX-276`）。
+    filter_env_decay_s: f32,
+    /// ⭐ 滤波器包络的延音电平（0..1；`T-FIX-276`）。
+    filter_env_sustain: f32,
+    /// ⭐ 滤波器包络的释放时间（秒；`T-FIX-276`）。
+    filter_env_release_s: f32,
+    /// ⭐ 滤波器包络的深度（**八度**；`T-FIX-276`）：cutoff 乘 `2^(depth × 包络)`。
+    filter_env_depth: f32,
 }
 
 impl PolySynthParams {
@@ -495,6 +509,11 @@ impl PolySynthParams {
             lfo_rate_hz: DEFAULT_LFO_RATE_HZ,
             lfo_depth: DEFAULT_LFO_DEPTH,
             lfo_target: LfoTarget::Pitch,
+            filter_env_attack_s: 0.0,
+            filter_env_decay_s: 0.0,
+            filter_env_sustain: 1.0,
+            filter_env_release_s: 0.0,
+            filter_env_depth: 0.0,
         }
     }
 
@@ -588,6 +607,73 @@ impl PolySynthParams {
         };
         self.lfo_target = target;
         self
+    }
+
+    /// 设置**滤波器包络**（⭐ `T-FIX-276`）：四个时间/电平 + 深度。
+    ///
+    /// 量纲：三个时间单位是**秒**（`0.0` 合法 = 立即到位）；`sustain` 是 `0..=1`
+    /// 的包络电平；`depth` 是**八度**（渲染时钳到 `0..=4`，
+    /// `cutoff × 2^(depth × 包络值)`），与 [`Self::with_lfo`] 的截止目标同一量纲同一上限。
+    ///
+    /// `depth == 0` 是**合法值** = 关掉滤波器包络：声部**不**推进第二只包络、
+    /// 网格上**不**重配置滤波器 ⇒ 渲染路径与接线前**逐位相同**（判据
+    /// `tests/polysynth_filter_env.rs` 的 f1）。
+    ///
+    /// ⚠ 与旁通的关系同 [`Self::with_lfo`] 的截止目标：滤波器旁通时一次也不
+    /// `process`，包络无处可落（读数仍由 [`Self::filter_env_depth`] 等取值器给出）。
+    #[must_use]
+    pub fn with_filter_env(
+        mut self,
+        attack_s: f32,
+        decay_s: f32,
+        sustain: f32,
+        release_s: f32,
+        depth: f32,
+    ) -> Self {
+        self.filter_env_attack_s = positive_or(attack_s, DEFAULT_ATTACK_SECONDS);
+        self.filter_env_decay_s = positive_or(decay_s, DEFAULT_DECAY_SECONDS);
+        self.filter_env_sustain = if sustain.is_finite() {
+            sustain.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_SUSTAIN
+        };
+        self.filter_env_release_s = positive_or(release_s, DEFAULT_RELEASE_SECONDS);
+        self.filter_env_depth = if depth.is_finite() && depth >= 0.0 {
+            depth.min(MAX_FILTER_ENV_DEPTH_OCTAVES)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// 滤波器包络的起振时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_attack_s(&self) -> f32 {
+        self.filter_env_attack_s
+    }
+
+    /// 滤波器包络的衰减时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_decay_s(&self) -> f32 {
+        self.filter_env_decay_s
+    }
+
+    /// 滤波器包络的延音电平（0..1；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_sustain(&self) -> f32 {
+        self.filter_env_sustain
+    }
+
+    /// 滤波器包络的释放时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_release_s(&self) -> f32 {
+        self.filter_env_release_s
+    }
+
+    /// 滤波器包络的深度（八度；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_depth(&self) -> f32 {
+        self.filter_env_depth
     }
 
     /// 振荡器 1 的设置。
@@ -1016,6 +1102,9 @@ struct PendingNote {
     /// 新音符的包络：由 [`PolySynth::env_for`] 在 `note_on` 里造好（已 `gate_on`、
     /// 电平 `0`），与 [`PolySynth::fresh_voice`] 给空槽装的那一只**同一份构造**。
     env: Adsr,
+    /// ⭐ 新音符的**滤波器包络**（`T-FIX-276`）：与 `env` 同一帧 `gate_on`，
+    /// 由 [`PolySynth::filter_env_for`] 造好；提升点原样搬进声部。
+    filter_env: Adsr,
 }
 
 /// 一个声部的全部状态。
@@ -1038,6 +1127,9 @@ struct PolyVoice {
     /// 终点（绝对样本位置）。
     end_sample: u64,
     env: Adsr,
+    /// ⭐ 声部的**滤波器包络**（`T-FIX-276`）：与 `env` 同一帧 `gate_on/gate_off`；
+    /// 只在深度 `> 0` 且滤波器启用时推进。
+    filter_env: Adsr,
     /// 声部级四极低通（旁通时**不**被调用）。
     filter: LadderFilter,
     /// 本声部是否处于"窃取淡出"窗口内（>0 表示还剩多少帧）。
@@ -1084,6 +1176,7 @@ impl PolyVoice {
         start_sample: 0,
         end_sample: 0,
         env: Adsr::new(),
+        filter_env: Adsr::new(),
         filter: LadderFilter::new(),
         fade_remaining: 0,
         pending: None,
@@ -1371,8 +1464,10 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                 // `set_sample_rate` 语义），因此新音符的起振/释放**时标**跟着
                 // 新采样率走（判据 `a_sample_rate_change_retunes_a_pending_note`）。
                 pending.env.set_sample_rate(sample_rate);
+                pending.filter_env.set_sample_rate(sample_rate);
             }
             voice.env.set_sample_rate(sample_rate);
+            voice.filter_env.set_sample_rate(sample_rate);
             voice
                 .filter
                 .configure(sample_rate, cutoff, resonance, drive);
@@ -1498,6 +1593,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         }
         if let Some((_, index)) = victim {
             self.voices[index].env.gate_off();
+            self.voices[index].filter_env.gate_off();
             return 1;
         }
         // ⭐ 第二支路（挂起音符）：语义不变 —— ⛔ 不现在 `gate_off`，只**记下**，
@@ -1583,6 +1679,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         }
         if let Some((_, index)) = victim {
             self.voices[index].env.gate_off();
+            self.voices[index].filter_env.gate_off();
             return 1;
         }
         // 挂起支路：只认开区间的那条（时间轴音符不会进 pending，这里的过滤是同一口径的闭合）。
@@ -1641,6 +1738,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         for voice in &mut self.voices {
             if voice.active && voice.freq_hz == freq_hz && voice.env.stage() != AdsrStage::Release {
                 voice.env.gate_off();
+                voice.filter_env.gate_off();
                 released = released.saturating_add(1);
             }
         }
@@ -1716,6 +1814,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             osc1,
             osc2,
             env: self.env_for(),
+            filter_env: self.filter_env_for(),
         };
 
         if let Some(index) = self.voices.iter().position(|voice| !voice.active) {
@@ -1853,6 +1952,13 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         let lfo_cutoff_base = self.params.cutoff_hz;
         let lfo_resonance = self.params.resonance;
         let lfo_drive = self.params.drive;
+        // ⭐ 滤波器包络（`T-FIX-276`）：`depth == 0` 或滤波器旁通时整条分支
+        // （推进 + 网格重配置）都不存在 ⇒ 渲染路径与接线前**逐位相同**。
+        let filter_env_active = self.params.filter_env_depth > 0.0 && !filter_bypass;
+        let filter_env_depth = self
+            .params
+            .filter_env_depth
+            .min(MAX_FILTER_ENV_DEPTH_OCTAVES);
         for (frame, output) in out.iter_mut().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             let now = position.saturating_add(frame as u64);
@@ -1914,6 +2020,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                             // 释放变成 3 ms。新包络与 `fresh_voice`（空槽路径）装的
                             // 是同一份构造 ⇒ 两条窃取路径与空槽路径给出同一条释放。
                             voice.env = pending.env;
+                            voice.filter_env = pending.filter_env;
                             // ⭐ 提升点补齐**请求频率**：⭐ 在此之前槽位宣称的是
                             // 被窃取者的频率 ⇒ ⭐ 新音符自己的 `NoteOff` 配不上
                             //（⭐ 旧行为漏了这一笔 ⇒ 被窃取过的音符自己松不掉、
@@ -1926,6 +2033,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                             // release。
                             if voice.pending_released {
                                 voice.env.gate_off();
+                                voice.filter_env.gate_off();
                             }
                             voice.pending_released = false;
                         }
@@ -1953,28 +2061,52 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                 // 的音高网格同一控制率 `0.75 kHz`）；淡出窗口内的声部在上面已经
                 // `continue`，这里见不到它们（旧音符的最后 3 ms 保持窃取前的状态）。
                 // 网格锚在**绝对位置**（不是音符局部时间）⇒ 与块切分无关（§10）。
-                if lfo_active && now.is_multiple_of(LFO_UPDATE_SAMPLES) {
-                    match lfo_target {
-                        LfoTarget::Pitch => {
-                            // 无形状的声部：LFO 音分直接弯；有形状的声部：LFO 音分
-                            // 折进下面的探针应用（两路相加，⛔ 不互相覆盖）。
-                            if voice.pitch_shape == NO_PITCH_SHAPE {
-                                voice.apply_pitch(lfo_depth * lfo_value, sample_rate);
+                // ⭐ 滤波器包络（`T-FIX-276`）：**逐帧推进一步**（时间要连续），
+                // 但它的**采样值**只在下面的绝对网格上落进系数 ⇒ 逐样本路径不加
+                // 任何超越函数。`gate` 与振幅包络同一帧、同一判据（`end_sample`）。
+                let gate = now < voice.end_sample;
+                let filter_env_value = if filter_env_active {
+                    voice.filter_env.process(gate)
+                } else {
+                    0.0
+                };
+                if (lfo_active || filter_env_active) && now.is_multiple_of(LFO_UPDATE_SAMPLES) {
+                    // 截止目标的两路子（LFO 与滤波器包络）在**八度域相加**后
+                    // 一次重配置（⛔ 不互相覆盖）：两路都不活跃时本块的
+                    // `configure` 不存在 ⇒ 与接线前逐位相同。
+                    let mut cutoff_octaves = 0.0f32;
+                    let mut cutoff_touched = false;
+                    if lfo_active && lfo_target == LfoTarget::Cutoff {
+                        cutoff_octaves += lfo_depth.min(4.0) * lfo_value;
+                        cutoff_touched = true;
+                    }
+                    if filter_env_active {
+                        cutoff_octaves += filter_env_depth * filter_env_value;
+                        cutoff_touched = true;
+                    }
+                    if cutoff_touched {
+                        // 截止频率是声部滤波器的系数：重配置只写系数、不动状态
+                        // （[`LadderFilter::configure`] 的语义）；共振/驱动取
+                        // 当前参数（与"在响声部的滤波器系数用调用时刻的参数重算"
+                        // 同一条纪律，见 [`Self::set_sample_rate`] 的文档第 2 条）。
+                        let cutoff = lfo_cutoff_base * exp2(cutoff_octaves);
+                        voice
+                            .filter
+                            .configure(sample_rate, cutoff, lfo_resonance, lfo_drive);
+                    }
+                    if lfo_active {
+                        match lfo_target {
+                            LfoTarget::Pitch => {
+                                // 无形状的声部：LFO 音分直接弯；有形状的声部：LFO 音分
+                                // 折进下面的探针应用（两路相加，⛔ 不互相覆盖）。
+                                if voice.pitch_shape == NO_PITCH_SHAPE {
+                                    voice.apply_pitch(lfo_depth * lfo_value, sample_rate);
+                                }
                             }
-                        }
-                        LfoTarget::Cutoff => {
-                            // 截止频率是声部滤波器的系数：重配置只写系数、不动状态
-                            // （[`LadderFilter::configure`] 的语义）；共振/驱动取
-                            // 当前参数（与"在响声部的滤波器系数用调用时刻的参数重算"
-                            // 同一条纪律，见 [`Self::set_sample_rate`] 的文档第 2 条）。
-                            let octaves = lfo_depth.min(4.0) * lfo_value;
-                            let cutoff = lfo_cutoff_base * exp2(octaves);
-                            voice
-                                .filter
-                                .configure(sample_rate, cutoff, lfo_resonance, lfo_drive);
-                        }
-                        LfoTarget::Amplitude => {
-                            // 振幅是逐样本乘数（上面 `lfo_amp`），不走网格。
+                            LfoTarget::Cutoff | LfoTarget::Amplitude => {
+                                // 截止在上面与滤波器包络合并落盘；振幅是逐样本乘数
+                                //（上面 `lfo_amp`），不走网格。
+                            }
                         }
                     }
                 }
@@ -1997,7 +2129,6 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                         voice.apply_pitch(cents, sample_rate);
                     }
                 }
-                let gate = now < voice.end_sample;
                 let envelope = voice.env.process(gate);
                 if !voice.env.is_active() {
                     *voice = PolyVoice::IDLE;
@@ -2110,6 +2241,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             start_sample: pending.start_sample,
             end_sample: pending.end_sample,
             env: pending.env,
+            filter_env: pending.filter_env,
             filter: self.filter_template,
             fade_remaining: 0,
             pending: None,
@@ -2131,6 +2263,25 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             self.params.decay_s,
             self.params.sustain,
             self.params.release_s,
+        );
+        env.reset();
+        env.gate_on();
+        env
+    }
+
+    /// 按当前参数造一个"已 `gate_on`、电平 0"的**滤波器包络**（`T-FIX-276`）。
+    ///
+    /// 与 [`Self::env_for`] 同一构造纪律：同一帧起振、同一份参数来源，因此
+    /// 空槽 / 硬窃取 / 软窃取三条路径装的是同一个包络。
+    #[must_use]
+    fn filter_env_for(&self) -> Adsr {
+        let mut env = Adsr::new();
+        env.set_sample_rate(self.sample_rate);
+        env.set_params(
+            self.params.filter_env_attack_s,
+            self.params.filter_env_decay_s,
+            self.params.filter_env_sustain,
+            self.params.filter_env_release_s,
         );
         env.reset();
         env.gate_on();

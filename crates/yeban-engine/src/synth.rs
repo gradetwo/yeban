@@ -310,6 +310,37 @@ const TONE_DEFAULT_LFO_RATE_HZ: f32 = 5.0;
 /// 见 [`TONE_DEFAULT_LFO_RATE_HZ`]。
 const TONE_DEFAULT_LFO_DEPTH: f32 = 0.0;
 
+/// 滤波器包络（`T-FIX-276`）的**器件默认**：`0.0 / 0.0 / 1.0 / 0.0 / 0.0`。
+///
+/// 与 `yeban_dsp::polysynth::PolySynthParams::new` 的字段逐字段相同（判据
+/// `filter_env_defaults_match_the_device`），因此"没写这五个键"的工程投影
+/// 后仍与器件默认逐位相同。
+const TONE_DEFAULT_FILTER_ENV_ATTACK_S: f32 = 0.0;
+const TONE_DEFAULT_FILTER_ENV_DECAY_S: f32 = 0.0;
+const TONE_DEFAULT_FILTER_ENV_SUSTAIN: f32 = 1.0;
+const TONE_DEFAULT_FILTER_ENV_RELEASE_S: f32 = 0.0;
+const TONE_DEFAULT_FILTER_ENV_DEPTH: f32 = 0.0;
+
+/// 滤波器包络时间的钳制：非有限或负值 ⇒ 默认（`0.0` 秒是合法值 = 立即到位）。
+#[must_use]
+fn tone_filter_env_time_or_default(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+/// 滤波器包络深度的钳制：非有限或负值 ⇒ `0.0`（关），否则钳到 `0.0 ..= 4.0` 八度。
+#[must_use]
+fn tone_filter_env_depth_or_default(value: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value.min(4.0)
+    } else {
+        TONE_DEFAULT_FILTER_ENV_DEPTH
+    }
+}
+
 /// LFO 速率的钳制：非有限或负值 ⇒ 默认，否则钳到 `0.0 ..= 100.0`
 /// （与器件 `PolySynthParams::with_lfo` 同口径；`0.0` 合法 = LFO 冻结）。
 #[must_use]
@@ -417,6 +448,12 @@ struct DeviceTone {
     lfo_rate_hz: Option<f32>,
     lfo_depth: Option<f32>,
     lfo_target: Option<f32>,
+    /// ⭐ 滤波器包络（`T-FIX-276`）的五个键。
+    filter_env_attack_s: Option<f32>,
+    filter_env_decay_s: Option<f32>,
+    filter_env_sustain: Option<f32>,
+    filter_env_release_s: Option<f32>,
+    filter_env_depth: Option<f32>,
 }
 
 impl DeviceTone {
@@ -601,6 +638,11 @@ pub struct ToneParams {
     lfo_rate_hz: f32,
     lfo_depth: f32,
     lfo_target: LfoTarget,
+    filter_env_attack_s: f32,
+    filter_env_decay_s: f32,
+    filter_env_sustain: f32,
+    filter_env_release_s: f32,
+    filter_env_depth: f32,
 }
 
 impl ToneParams {
@@ -634,6 +676,11 @@ impl ToneParams {
             lfo_rate_hz: TONE_DEFAULT_LFO_RATE_HZ,
             lfo_depth: TONE_DEFAULT_LFO_DEPTH,
             lfo_target: LfoTarget::Pitch,
+            filter_env_attack_s: TONE_DEFAULT_FILTER_ENV_ATTACK_S,
+            filter_env_decay_s: TONE_DEFAULT_FILTER_ENV_DECAY_S,
+            filter_env_sustain: TONE_DEFAULT_FILTER_ENV_SUSTAIN,
+            filter_env_release_s: TONE_DEFAULT_FILTER_ENV_RELEASE_S,
+            filter_env_depth: TONE_DEFAULT_FILTER_ENV_DEPTH,
         }
     }
 
@@ -678,6 +725,11 @@ impl ToneParams {
             lfo_rate_hz: TONE_DEFAULT_LFO_RATE_HZ,
             lfo_depth: TONE_DEFAULT_LFO_DEPTH,
             lfo_target: LfoTarget::Pitch,
+            filter_env_attack_s: TONE_DEFAULT_FILTER_ENV_ATTACK_S,
+            filter_env_decay_s: TONE_DEFAULT_FILTER_ENV_DECAY_S,
+            filter_env_sustain: TONE_DEFAULT_FILTER_ENV_SUSTAIN,
+            filter_env_release_s: TONE_DEFAULT_FILTER_ENV_RELEASE_S,
+            filter_env_depth: TONE_DEFAULT_FILTER_ENV_DEPTH,
         }
     }
 
@@ -816,6 +868,35 @@ impl ToneParams {
         self
     }
 
+    /// 设置**滤波器包络**（⭐ `T-FIX-276`；秒 / 秒 / 0..1 / 秒 / 八度）。
+    ///
+    /// 与 [`ToneParams::with_envelope`] 同一口径：非法输入退回**器件默认**
+    /// （`0.0 / 0.0 / 1.0 / 0.0 / 0.0`），不让一个坏参数把包络推成 `NaN`。
+    /// 深度量纲是**八度**（`cutoff × 2^(depth × 包络值)`，器件再钳到 `0..=4`）。
+    #[must_use]
+    pub fn with_filter_env(
+        mut self,
+        attack_s: f32,
+        decay_s: f32,
+        sustain: f32,
+        release_s: f32,
+        depth: f32,
+    ) -> Self {
+        self.filter_env_attack_s =
+            tone_filter_env_time_or_default(attack_s, TONE_DEFAULT_FILTER_ENV_ATTACK_S);
+        self.filter_env_decay_s =
+            tone_filter_env_time_or_default(decay_s, TONE_DEFAULT_FILTER_ENV_DECAY_S);
+        self.filter_env_sustain = if sustain.is_finite() {
+            sustain.clamp(0.0, 1.0)
+        } else {
+            TONE_DEFAULT_FILTER_ENV_SUSTAIN
+        };
+        self.filter_env_release_s =
+            tone_filter_env_time_or_default(release_s, TONE_DEFAULT_FILTER_ENV_RELEASE_S);
+        self.filter_env_depth = tone_filter_env_depth_or_default(depth);
+        self
+    }
+
     /// 从模型层的设备链投影（**控制线程**；见本节文档的投影规则）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition]) -> Self {
@@ -844,6 +925,11 @@ impl ToneParams {
                     "lfo_rate_hz" => tone.lfo_rate_hz = Some(param.value),
                     "lfo_depth" => tone.lfo_depth = Some(param.value),
                     "lfo_target" => tone.lfo_target = Some(param.value),
+                    "filter_env_attack_s" => tone.filter_env_attack_s = Some(param.value),
+                    "filter_env_decay_s" => tone.filter_env_decay_s = Some(param.value),
+                    "filter_env_sustain" => tone.filter_env_sustain = Some(param.value),
+                    "filter_env_release_s" => tone.filter_env_release_s = Some(param.value),
+                    "filter_env_depth" => tone.filter_env_depth = Some(param.value),
                     _ => {}
                 }
             }
@@ -886,6 +972,18 @@ impl ToneParams {
             tone.lfo_rate_hz.unwrap_or(TONE_DEFAULT_LFO_RATE_HZ),
             tone.lfo_depth.unwrap_or(TONE_DEFAULT_LFO_DEPTH),
             LfoTarget::from_index(wave_index(tone.lfo_target)),
+        )
+        .with_filter_env(
+            tone.filter_env_attack_s
+                .unwrap_or(TONE_DEFAULT_FILTER_ENV_ATTACK_S),
+            tone.filter_env_decay_s
+                .unwrap_or(TONE_DEFAULT_FILTER_ENV_DECAY_S),
+            tone.filter_env_sustain
+                .unwrap_or(TONE_DEFAULT_FILTER_ENV_SUSTAIN),
+            tone.filter_env_release_s
+                .unwrap_or(TONE_DEFAULT_FILTER_ENV_RELEASE_S),
+            tone.filter_env_depth
+                .unwrap_or(TONE_DEFAULT_FILTER_ENV_DEPTH),
         )
     }
 
@@ -997,6 +1095,36 @@ impl ToneParams {
         self.lfo_target
     }
 
+    /// 滤波器包络的起振时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_attack_s(&self) -> f32 {
+        self.filter_env_attack_s
+    }
+
+    /// 滤波器包络的衰减时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_decay_s(&self) -> f32 {
+        self.filter_env_decay_s
+    }
+
+    /// 滤波器包络的延音电平（0..1；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_sustain(&self) -> f32 {
+        self.filter_env_sustain
+    }
+
+    /// 滤波器包络的释放时间（秒；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_release_s(&self) -> f32 {
+        self.filter_env_release_s
+    }
+
+    /// 滤波器包络的深度（八度；⭐ `T-FIX-276`）。
+    #[must_use]
+    pub const fn filter_env_depth(&self) -> f32 {
+        self.filter_env_depth
+    }
+
     /// 在给定采样率下武装一个滤波器（**构造期**：含 `tan`，超越函数类）。
     #[must_use]
     pub fn filter(&self, sample_rate: f32) -> LadderFilter {
@@ -1049,6 +1177,13 @@ impl ToneParams {
                 self.lfo_rate_hz,
                 self.lfo_depth,
                 self.lfo_target,
+            )
+            .with_filter_env(
+                self.filter_env_attack_s,
+                self.filter_env_decay_s,
+                self.filter_env_sustain,
+                self.filter_env_release_s,
+                self.filter_env_depth,
             )
     }
 }
@@ -4202,7 +4337,14 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
 /// `lfo_target`）：`from_devices` 消费它们、[`ToneParams::poly_synth_params`] 经
 /// [`PolySynthParams::with_lfo`] 把它们送进器件 ⇒ 离线路径**不许**再把它们登记成
 /// "没被求值"。数组长度因此从 15 变成 19；判据同上。
-pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 19] = [
+///
+/// ⭐ `T-FIX-276` 追加五条滤波器包络键（`filter_env_attack_s` / `filter_env_decay_s` /
+/// `filter_env_sustain` / `filter_env_release_s` / `filter_env_depth`）：
+/// `from_devices` 消费它们、[`ToneParams::poly_synth_params`] 经
+/// [`PolySynthParams::with_filter_env`] 把它们送进器件（深度 `0` 时器件不推进
+/// 第二只包络 ⇒ 输出与接线前逐位相同，但键**确实**被求值）。数组长度因此从
+/// 19 变成 24；判据同上。
+pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 24] = [
     "cutoff_hz",
     "cutoff",
     "resonance",
@@ -4222,6 +4364,11 @@ pub const CONSUMED_INSTRUMENT_PARAMS: [&str; 19] = [
     "lfo_rate_hz",
     "lfo_depth",
     "lfo_target",
+    "filter_env_attack_s",
+    "filter_env_decay_s",
+    "filter_env_sustain",
+    "filter_env_release_s",
+    "filter_env_depth",
 ];
 
 /// [`CONSUMED_INSTRUMENT_PARAMS`] 的成员判定 **∪** 鼓机键位/旋钮名
