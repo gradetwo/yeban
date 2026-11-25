@@ -474,6 +474,12 @@ fn scan_rejects_out_of_root_caller_dir() {
 
 /// 扫描 [⑤]（既有口径对照）：不存在的调用方目录仍静默跳过（`Host::scan`
 /// 的口径），⛔ 不得因此变成失败 —— 白名单只拦真实存在的根外目录。
+///
+/// 注意：`plan_scan_plugins` 恒把平台默认搜索路径（`$HOME/.vst3` 等）放进
+/// 扫描集合，因此**行总数不钉** —— 有真插件的机器上它恒 > 0（T-FIX-462 前
+/// 本判据正是在 yanshi-5 上以 `left: 3, right: 0` 变红）。钉住的是本意：
+/// 缺失目录本身不产出行（逐行判定路径是否落在该目录内）＋ 与空调用方列表
+/// 的差分对照（缺失目录不得给扫描添任何一行）。
 #[test]
 fn scan_still_skips_missing_caller_dir_silently() {
     let scratch = Scratch::new("scan-missing");
@@ -487,11 +493,43 @@ fn scan_still_skips_missing_caller_dir_silently() {
     );
     assert_eq!(out["status"], "success", "不存在的目录仍应静默跳过: {out}");
     let plugins = out["data"]["plugins"].as_array().expect("plugins 数组");
-    assert_eq!(plugins.len(), 0, "不存在的目录不得产出扫描行: {out}");
+    // 缺失目录不产出行：没有任何一行的路径是该目录本身或其子路径。
+    let missing_str = missing.display().to_string();
+    let under_missing = format!("{missing_str}/");
     assert!(
-        plugins
-            .iter()
-            .all(|row| row["path"].as_str().unwrap_or("") != missing.display().to_string()),
+        plugins.iter().all(|row| {
+            let path = row["path"].as_str().unwrap_or("");
+            path != missing_str && !path.starts_with(&under_missing)
+        }),
         "不存在的目录不得产出扫描行: {out}"
+    );
+    // 差分对照：缺失目录不得给扫描结果添任何一行 —— 与空调用方列表的扫描
+    // 逐路径比对（默认路径恒扫，行数随本机插件而变，故比的是集合相等而非总数）。
+    let baseline = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_scan_plugins",
+        json!({"paths": []}),
+    );
+    assert_eq!(
+        baseline["status"], "success",
+        "空调用方列表的扫描仍应成功: {baseline}"
+    );
+    let baseline_rows = baseline["data"]["plugins"]
+        .as_array()
+        .expect("plugins 数组");
+    let mut got: Vec<&str> = plugins
+        .iter()
+        .map(|row| row["path"].as_str().unwrap_or(""))
+        .collect();
+    let mut want: Vec<&str> = baseline_rows
+        .iter()
+        .map(|row| row["path"].as_str().unwrap_or(""))
+        .collect();
+    got.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(
+        got, want,
+        "不存在的目录不得给扫描结果添行: {out} vs {baseline}"
     );
 }
