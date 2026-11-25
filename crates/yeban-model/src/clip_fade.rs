@@ -91,8 +91,10 @@ pub struct ClipFadeInterval {
 ///
 /// 1. 显式 `fade_in_frames` / `fade_out_frames` 分别贴在摆放自己的两端；
 /// 2. **只有**轨道上至少一条摆放显式配置了 fade 时（`explicit`），才为
-///    相邻重叠的摆放生成**自动交叉淡化**：重叠区 `[max(start_i, start_j),
-///    min(end_i, end_j))` 既作为前一条的淡出尾，也作为后一条的淡入头；
+///    相邻**部分重叠**的摆放生成**自动交叉淡化**：重叠区
+///    `[max(start_i, start_j), min(end_i, end_j))` 既作为前一条的淡出尾，
+///    也作为后一条的淡入头；内层在外层尾部之前结束的**包含式重叠**不做
+///    这种并集，两条摆放各自保留显式窗口（见下）；
 /// 3. 没有显式 fade 的旧工程 ⇒ 全部窗口为空 ⇒ 渲染逐字节不变（含重叠工程）；
 /// 4. 窗口按参数顺序返回，调用方用同一个下标贴回自己的 span。
 #[must_use]
@@ -134,7 +136,20 @@ pub fn plan_fade_windows(intervals: &[ClipFadeInterval]) -> Vec<ClipFadeWindow> 
             if overlap_start >= overlap_end {
                 continue;
             }
-            // 前一条：淡出窗口并入重叠区（并集，不缩短用户显式给的尾巴）。
+            // 包含式重叠（一条摆放整段落在另一条里面、且内层在外层尾部之前
+            // 结束）不是交叉淡化：外层与内层各自保留自己的显式窗口。把整个
+            // 重叠区并进外层淡出会把内层的显式 fade 拉成整段，并让外层从内层
+            // 起点一路淡到自己的尾部（ISS-MWVZY8WH-444EA9）。若内层与外层
+            // 同尾结束，两条素材都要收尾，仍按下面的并集做交叉淡化；否则内层
+            // 消失时外层会硬切。需要压外层的场景应另走 duck 包络，不能拿等
+            // 功率交叉淡化窗口冒充。
+            let left_contains_right = left.start <= right.start && right.end < left.end;
+            let right_contains_left = right.start <= left.start && left.end < right.end;
+            if left_contains_right || right_contains_left {
+                continue;
+            }
+            // 部分重叠：前一条淡出窗口并入重叠区（并集，不缩短用户显式给的
+            // 尾巴）。
             windows[i].fade_out_start = windows[i].fade_out_start.min(overlap_start);
             windows[i].fade_out_end = windows[i].fade_out_end.max(overlap_end);
             // 后一条：淡入窗口并入重叠区。
@@ -236,6 +251,57 @@ mod tests {
             max_step < 0.02,
             "交叉淡化后最大相邻帧阶跃必须远小于旧的 0.6（实测 {max_step}）"
         );
+    }
+
+    #[test]
+    fn containment_preserves_inner_explicit_fades_and_outer_tail() {
+        // ISS-MWVZY8WH-444EA9：B 整段落在 A 里。包含式重叠不能把 B 的
+        // 10 帧 fade_in 拉成整段，也不能让 A 从 B 的起点一路淡到 A 的尾。
+        let outer = interval(0, 1000, 0, 0);
+        let inner = interval(100, 200, 10, 10);
+        let windows = plan_fade_windows(&[outer, inner]);
+        assert_eq!(
+            windows[0],
+            ClipFadeWindow {
+                fade_in_start: 0,
+                fade_in_end: 0,
+                fade_out_start: 1000,
+                fade_out_end: 1000,
+            }
+        );
+        assert_eq!(windows[1].fade_in_start, 100);
+        assert_eq!(windows[1].fade_in_end, 110);
+        assert_eq!(windows[1].fade_out_start, 190);
+        assert_eq!(windows[1].fade_out_end, 200);
+        assert!(
+            windows[1].gain_at(199) < 0.5,
+            "内层结束前一帧不能残留接近满增益（实测 {}）",
+            windows[1].gain_at(199)
+        );
+        assert_eq!(windows[0].gain_at(200), 1.0);
+    }
+
+    #[test]
+    fn containment_does_not_move_outer_explicit_fade_out() {
+        let outer = interval(0, 1000, 0, 100);
+        let inner = interval(100, 200, 10, 10);
+        let windows = plan_fade_windows(&[outer, inner]);
+        assert_eq!(windows[0].fade_out_start, 900);
+        assert_eq!(windows[0].fade_out_end, 1000);
+        assert_eq!(windows[0].fade_in_start, 0);
+        assert_eq!(windows[0].fade_in_end, 0);
+    }
+
+    #[test]
+    fn same_start_containment_is_independent_of_interval_order() {
+        let outer = interval(0, 1000, 0, 0);
+        let inner = interval(0, 200, 10, 10);
+        let forward = plan_fade_windows(&[outer, inner]);
+        let reversed = plan_fade_windows(&[inner, outer]);
+        assert_eq!(forward[0], reversed[1]);
+        assert_eq!(forward[1], reversed[0]);
+        assert_eq!(forward[1].fade_in_end, 10);
+        assert_eq!(forward[1].fade_out_start, 190);
     }
 
     #[test]
