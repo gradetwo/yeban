@@ -1,0 +1,29 @@
+中文	English	状态	说明
+乐器	instrument	已核实	挂在 MIDI 轨上的发声设备；音频/辅助/主总线轨不挂乐器。
+音源	sound source	已核实	一条轨至多一件音源；引擎分派次序为鼓机 > SFZ > 复音合成器。
+复音合成器	poly synth	已核实	夜半内置合成器，每轨 16 个在响声部；默认乐器为 Yeban PolySynth。
+工厂合成器预设	factory synth preset	已核实	六个 `synth:*` 预设，参数定义在 `synth_preset_definition`。
+乐器预制	instrument preset	已核实	保存乐器身份与参数；界面“另存当前轨为预制”走这一范围。
+整轨快照	track snapshot	已核实	保存设备链、发送、推子、声像、静音/独奏与宏；`scope: "track"`。
+原生预制库	Native Preset Library	已核实	文件菜单入口；列出工厂内嵌与用户库预制。
+设备机架	device rack	已核实	底部控制台页签，F9 打开；查看当前轨设备链。
+波表	wavetable	已核实	五张：hollow、organ、vocal、metallic、glass，下标 0–4。
+振荡器支路	oscillator branch	已核实	每个声部两条；各有电平与失谐。
+失谐	detune	已核实	单位音分；器件量程 ±4800 cents。
+截止频率	cutoff	已核实	`cutoff_hz`；器件钳在 20 Hz–0.45×采样率。
+共振	resonance	已核实	`resonance`；0–1 旋钮值。
+驱动	drive	已核实	0–1；0 逐位旁通，1 为 +36 dB 预增益。
+四极梯形低通	four-pole ladder low-pass	已核实	内置合成器的声部滤波器。
+振幅包络	amplitude envelope	已核实	固定 ADSR：5 ms / 80 ms / 0.7 / 50 ms。
+固定 ADSR	fixed ADSR	已核实	当前没有用户可调 ADSR 控件。
+LFO	LFO	尚未提供	界面与引擎参数投影均未发现 LFO 控件；正文不写假控件。
+调制矩阵	modulation matrix	尚未提供	当前没有调制矩阵；后续接线后再补。
+SFZ 音色库	SFZ instrument library	已核实	文件菜单可装载；当前轨绑定采样器。
+采样器	sampler	已核实	SFZ 乐器在轨上的绑定；工厂登记决定可否存乐器预制。
+物理建模乐器	physical-modeling instrument	尚未提供（待核）	活尖端未发现弦/梁/膜/板独立乐器与参数投影；不编参数。
+鼓机	drum machine	已核实（引擎侧）	引擎有 DrumMachine/DrumVoice；界面入口与鼓组预设待核。
+插件乐器	plugin instrument	待核	只写真实支持路径；未实现则明确“尚未提供”。
+插入效果	insert effect	已核实	EQ、Reverb、Compressor 等，位于乐器之后、总线之前。
+辅助总线	aux bus	已核实	多条轨汇入统一处理；不挂乐器。
+主总线	master bus	已核实	最终汇流；不挂乐器。
+帮助主题映射	help-topic mapping	已核实	每章末尾表格：小节 → 应用内帮助锚点。

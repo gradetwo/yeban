@@ -1,0 +1,125 @@
+\chapter{乐器与音轨}
+\label{chap:instruments-overview}
+
+本章说明夜半里“轨道—乐器—音源”的关系，以及工厂合成器预设的入口和命名。
+本章只描述活尖端代码里已经存在、并且能从界面或工程数据里观察到的行为。
+
+\section{三条信号路径}
+
+夜半的轨道按音源分成三类。MIDI 合成器轨由一个乐器发声；音频轨播放音频片段，
+不挂乐器；辅助总线轨与主总线轨只做汇流、效果与推子，也不挂乐器。乐器处理完的
+信号再经过本轨的插入效果、推子与声像，最后汇入总线。
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=10mm and 12mm,
+  box/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small},
+  bus/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small, fill=black!4},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (track) {MIDI 合成器轨};
+  \node[box, right=of track] (inst) {乐器\\合成器 / SFZ / 鼓机};
+  \node[box, right=of inst] (fx) {插入效果\\EQ / Reverb / Compressor};
+  \node[bus, right=of fx] (bus) {辅助总线 / 主总线};
+
+  \draw[arrow] (track) -- (inst);
+  \draw[arrow] (inst) -- (fx);
+  \draw[arrow] (fx) -- (bus);
+
+  \node[box, below=of track] (audio) {音频轨};
+  \node[box, right=of audio] (clip) {音频片段};
+  \draw[arrow] (audio) -- (clip);
+  \draw[arrow] (clip) -| (bus);
+\end{tikzpicture}
+\end{center}
+
+一条轨至多挂一件音源。若同一条轨上同时存在鼓机、SFZ 与复音合成器的配置，
+引擎的分派次序是“鼓机优先，其次 SFZ，最后复音合成器”；被压下的音源不会叠加
+发声。这个次序属于引擎的既有裁决，不是界面上的开关。
+
+\section{轨道与乐器}
+
+新建 MIDI 合成器轨时，应用会给它安装默认的 \term{Yeban PolySynth}，并确保
+这条轨有到主总线的路由。音频轨、辅助轨与主总线轨不会被插入乐器。
+
+换乐器有两个入口：
+
+\begin{itemize}
+  \item 底部\term{设备机架}（F9）：查看当前轨的设备链，替换或增删乐器与效果器。
+  \item 左栏\term{音色库}：浏览工厂合成器预设与 SFZ 音色库；选中的预设作为
+        当前轨的乐器。
+\end{itemize}
+
+换预设时，应用把该预设的设备参数写到当前轨的乐器设备上；已经写在工程里的
+音符与片段不会因为换音色而丢失。若当前轨没有可用的乐器，播放或编辑前应用会
+补装默认合成器。
+
+\screenshot{instrument-picker}{设备机架的乐器入口与预设行}
+
+\section{六个工厂合成器预设}
+
+工厂合成器预设用 \texttt{synth:} 前缀标识。界面在不同面板给同一个预设配了
+不同的显示名：左栏音色库偏“音色描述”，底部设备机架与编曲区偏“乐器类型 +
+音色名”。下表的“引擎名”是工程数据和引擎侧使用的规范名，写剧本、排查工程或
+对照导出结果时以它为准。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+预设 ID & 左栏显示名 & 底部/编曲区显示名 & 引擎名 \\
+\hline
+\texttt{synth:hollow} & 空灵合成 Pad (Hollow) & 合成器·柔和主音 (Hollow Lead) & Hollow Lead \\
+\texttt{synth:organ} & 温暖风琴 Organ & 合成器·风琴键音 (Warm Organ) & Warm Organ \\
+\texttt{synth:vocal} & 人声领唱 Vocal & 合成器·人声铺底 (Choir Pad) & Choir Pad \\
+\texttt{synth:metallic} & 金属拨弦 Metallic Pluck & 合成器·金属 FM (FM Bell) & FM Bell \\
+\texttt{synth:glass} & 玻璃钟琴 Glass Bell & 合成器·水晶拨弦 (Glass Pluck) & Glass Pluck \\
+\texttt{synth:bass} & 深沉贝斯 Neuro Bass & 合成器·次低音 (Sub Bass) & Sub Bass \\
+\hline
+\end{tabular}
+\caption{六个工厂合成器预设的 ID、界面名与引擎名}
+\label{tab:factory-synth-presets}
+\end{table}
+
+同一个预设在不同面板显示名不同，是界面文案的历史差异，不代表两个不同音色。
+判断当前轨到底装了哪一个预设，应查看设备参数或工程数据里的预设 ID，而不是
+只看某一个面板的标签。
+
+\section{预设的保存与加载}
+
+“原生预制库”（文件菜单）列出工厂内嵌预制与用户库预制，可把预制应用到当前轨，
+也可把当前轨另存为预制。预制分两种范围：
+
+\begin{itemize}
+  \item \term{乐器预制}（instrument）：保存乐器身份与乐器参数，应用到另一条轨时
+        换的是乐器本身。
+  \item \term{整轨快照}（track）：保存设备链、发送、推子、声像、静音/独奏与宏，
+        不要求轨道绑定可移植的乐器。
+\end{itemize}
+
+界面上的“另存当前轨为预制”按钮走的是乐器预制路径。它要求当前轨绑定的是
+工厂登记过的 SFZ 乐器；内置合成器轨与音频轨没有可移植的乐器身份，会被拒绝并
+在预制库面板显示原因。要把内置合成器轨的整套设置留作模板，应使用整轨快照
+（工程数据里 \texttt{scope: "track"}）或“另存为模板”，而不是乐器预制。
+
+工厂的六个合成器预设是内置合成音色的参数组合，不是用户库里的乐器预制；
+它们不出现在“另存当前轨为预制”的结果里，也不依赖用户库文件。
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+三条信号路径 & \texttt{instrument-signal-flow} \\
+轨道与乐器 & \texttt{track-instrument-routing} \\
+六个工厂合成器预设 & \texttt{factory-synth-presets} \\
+预设的保存与加载 & \texttt{preset-save-load} \\
+\hline
+\end{tabular}
+\caption{第一章帮助主题映射}
+\end{table}

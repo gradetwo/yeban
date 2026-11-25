@@ -1,0 +1,137 @@
+\chapter{插件乐器}
+\label{chap:plugin-instruments}
+
+插件乐器是把第三方音源接进夜半：你扫描本机的 VST3，选中一个乐器类，把它装载到当前 MIDI 轨，工程里就多了一台“外部乐器”设备。它和内置合成器、SFZ 采样器不是同一套实现：参数不在夜半的设备卡上，实时播放也不执行它；真正的发声发生在离线导出与整曲预览。本章按这条真实链路写，不把“能扫描”写成“能实时弹”。
+
+\section{支持范围}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.16\linewidth}p{0.20\linewidth}p{0.25\linewidth}p{0.28\linewidth}@{}}
+\hline
+格式 & 扫描 & 装载 & 执行 \\
+\hline
+VST3 乐器 & 支持 & 支持，落到 \texttt{ExternalInstrument} & 实时不执行；离线导出/整曲预览执行首台 \\
+VST3 效果器 & 支持 & 支持，落到 \texttt{ExternalEffect} & 离线渲染时首台非旁通带绑定胜出（本章不展开） \\
+CLAP & 未提供 & 未提供 & 宿主文档写“VST3 先行，CLAP 随后”，当前没有 CLAP 入口 \\
+AU / Audio Unit & 未提供 & 未提供 & 面板只列 VST3 \\
+\hline
+\end{tabular}
+\caption{插件格式与执行范围}
+\label{tab:plugin-formats}
+\end{table}
+
+界面只列 VST3：扫描、行状态、路径、目标轨、装载按钮都在“插件与 ARA”面板。CLAP 与 AU 不在当前面板里；不要因为架构文档提到 CLAP 许可，就以为界面已经能扫 CLAP。
+
+\section{入口与扫描}
+
+入口有两个：设备机架操作行的“插件”按钮，以及空设备链里的“+ 插件与 ARA…”。打开的是同一个“插件与 ARA”面板。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+控件 & 作用 & 取值 & 备注 \\
+\hline
+额外扫描目录 & 追加到默认搜索路径 & 多个用分号 \texttt{;} 分隔 & 只影响扫描；装载还过路径门 \\
+扫描 & 读取本机 VST3 并逐类出行 & — & 坏插件以红色失败行留下，不打断整面板 \\
+行 & 一个类一行 & 类名/厂商/乐器或效果器/ARA/可用 & 模块级失败时类名为空 \\
+装载到当前轨 & 验证加载并写设备定义 & 只能选可用行 & 失败原文进结果行，不换默认插件 \\
+\hline
+\end{tabular}
+\caption{插件面板的扫描与装载控件}
+\label{tab:plugin-panel-controls}
+\end{table}
+
+默认搜索路径按平台：Linux 是 \texttt{\textasciitilde/.vst3} 与 \texttt{/usr/lib/vst3}；macOS 是 \texttt{\textasciitilde/Library/Audio/Plug-Ins/VST3} 与 \texttt{/Library/Audio/Plug-Ins/VST3}；Windows 是 \texttt{\%COMMONPROGRAMFILES\%/VST3}。额外目录由操作者显式填；不存在的目录静默跳过。
+
+⚠ 扫描目录不等于允许装载目录。路径门认的根是 \texttt{YEBAN\_VST3\_PATHS} 环境变量加平台默认根；面板里临时填的额外目录只参与扫描，不在这个根集合里。要让额外目录里的插件能装载，先把目录写进 \texttt{YEBAN\_VST3\_PATHS}，再重启应用；否则会看到“扫描得到、装载被拒”。
+
+\section{装载契约}
+
+装载不是“把文件路径塞进工程”这么简单，它过三层门：
+
+\begin{enumerate}
+  \item \textbf{形态}：只接受 \texttt{.vst3} 包或平台动态库扩展名。
+  \item \textbf{规范化}：路径必须真实存在，符号链接按规范形态检查，不能逃逸。
+  \item \textbf{来源}：规范路径必须落在插件根内（\texttt{YEBAN\_VST3\_PATHS} ＋ 平台默认根）。
+\end{enumerate}
+
+过了门才验证加载：宿主打开模块、按类名（不给类名时按乐器类取首个）激活，失败返回原文，不回退到任何默认插件。成功后写进工程的是一台 \texttt{ExternalInstrument} 设备：
+
+- 设备名 = 插件实例名；
+- \texttt{latency\_samples} = 插件上报的延迟，参与轨道 PDC；
+- \texttt{plugin} 绑定 = 路径、类名、装载时刻的状态快照；
+- \texttt{params} 为空——夜半不把插件参数映射成自己的 DeviceParam。
+
+状态快照是装载那一刻抓的：处理器状态与控制器 blob 一起编码进绑定。抓取失败不让装载失败，但工程会保存空状态，重开回插件默认；渲染恢复损坏状态会响亮失败，不按默认偷偷渲染。
+
+\section{执行：实时不弹，导出才弹}
+
+这是本章最重要的一条边界：\textbf{装载只登记，实时播放不执行插件}。实时引擎没有插件实例的无锁生命周期；它按轨上的内置音源（复音合成器、鼓机或 SFZ）出声。若一条轨只装了外部乐器、没有内置音源参数，实时听到的是默认复音合成器，不是插件音色——不要拿实时监听判断插件。
+
+离线导出与整曲预览会执行插件：同轨首台非旁通、带绑定的外部乐器胜出，胜过引擎合成器与采样器绑定；第二台绑定设备与未绑定设备不会偷偷顶上，而是进渲染收据，标明“第二台绑定设备，首台胜出”或“未绑定插件”。带绑定但加载失败时，渲染响亮失败，不回退内置音源。
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, >=latex, node distance=4mm]
+  \node[draw, rounded corners, minimum width=18mm, minimum height=7mm] (scan) {扫描 VST3};
+  \node[draw, rounded corners, right=of scan, minimum width=18mm, minimum height=7mm, align=center] (row) {可用行\\选乐器};
+  \node[draw, rounded corners, right=of row, minimum width=20mm, minimum height=7mm, align=center] (gate) {路径门\\验证加载};
+  \node[draw, rounded corners, below=of gate, minimum width=26mm, minimum height=7mm, align=center] (dev) {ExternalInstrument\\绑定+延迟+状态};
+  \node[draw, rounded corners, left=of dev, minimum width=22mm, minimum height=7mm, align=center] (rt) {实时：不执行\\内置音源出声};
+  \node[draw, rounded corners, right=of dev, minimum width=27mm, minimum height=7mm, align=center] (off) {离线导出/整曲预览\\首台胜出};
+  \draw[->] (scan) -- (row);
+  \draw[->] (row) -- (gate);
+  \draw[->] (gate) -- (dev);
+  \draw[->] (dev) -- (rt);
+  \draw[->] (dev) -- (off);
+\end{tikzpicture}
+\end{center}
+
+\section{界面怎么用}
+
+\screenshot{plugin-panel-scan}{“插件与 ARA”面板打开，左侧 VST3 列表显示类名、厂商、乐器/效果器、可用/失败状态与路径。}
+
+\screenshot{plugin-panel-load}{面板选中一个可用乐器行，底部显示“目标轨：<轨名>”，装载按钮可用，结果行显示“仅登记”提示。}
+
+\screenshot{device-rack-plugin-instrument}{设备机架里当前轨的设备卡显示插件乐器名称与延迟读数，没有插件参数面板。}
+
+\section{ARA 与插件乐器不是一回事}
+
+面板右侧是 ARA 会话：绑定插件路径 + wav、查询会话、渲染输出。它处理的是轨内音频的分析/渲染，不是“把插件当乐器挂到 MIDI 轨”。ARA 会话上限 64 条；本章不展开 ARA 的绑定与渲染步骤，只说明它和插件乐器共用同一个面板，但不是同一条链。
+
+\section{边界与风险}
+
+\begin{itemize}
+  \item \textbf{实时不执行。} 插件只在离线导出/整曲预览执行；实时听到的是内置音源，可能是默认复音合成器。
+  \item \textbf{没有常驻插件编辑器。} 面板只做扫描、装载、状态快照；插件自己的 GUI 不出现，夜半也没有参数映射。装载后不能“打开插件调参数”。
+  \item \textbf{状态只在装载时抓一次。} 装载后插件内部状态变化不会自动回写；要更新状态，重新装载或等后续编辑器接线。
+  \item \textbf{没有跨进程崩溃隔离。} 一期是应用进程内宿主；架构里的跨进程隔离/共享内存/看门狗是 phase 2。坏插件在扫描/离线渲染时可能影响应用进程，不要把它当沙箱。
+  \item \textbf{CLAP/AU 未提供。} 当前只列 VST3；不要按架构文档的许可声明推断格式支持。
+  \item \textbf{设备机架的“商业插件宿主 [v2.0.0 · 未实现]”是旧占位。} 它指未来的隔离商业宿主，不是当前 VST3 登记面板；真实入口是下坞“插件”/空链“+ 插件与 ARA…”。
+  \item \textbf{第二台外部乐器不会顶替第一台。} 首台非旁通带绑定胜出；其余进收据，不静默换源。
+  \item \textbf{额外扫描目录不等于可装载目录。} 要装载，目录必须进 \texttt{YEBAN\_VST3\_PATHS}。
+\end{itemize}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+支持范围 & \texttt{plugin-formats} \\
+入口与扫描 & \texttt{plugin-scan} \\
+装载契约 & \texttt{plugin-load-contract} \\
+执行：实时不弹，导出才弹 & \texttt{plugin-execution} \\
+界面怎么用 & \texttt{plugin-workflow} \\
+ARA 与插件乐器不是一回事 & \texttt{plugin-ara-boundary} \\
+边界与风险 & \texttt{plugin-limits} \\
+\hline
+\end{tabular}
+\caption{第 7 章帮助主题映射}
+\end{table}

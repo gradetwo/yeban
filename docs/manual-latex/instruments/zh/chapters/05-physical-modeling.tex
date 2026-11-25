@@ -1,0 +1,123 @@
+\chapter{物理建模乐器}
+\label{chap:physical-modeling}
+
+物理建模不是“采样一段真实乐器再播放”，而是用一组会共振的模态（mode）去模拟物体被敲击后的振动。它把音高、材质、尺寸、敲击位置变成可计算的参数，因此能做出采样库很难覆盖的连续变化。夜半目前只有这条路的 DSP 核心，还没有把它接成可挂轨的乐器；本章按“原理 + 夜半现状”写，不假装界面上有还不存在的旋钮。
+
+\section{模态合成的基本思路}
+
+一次敲击提供的是宽带激励：短脉冲、噪声 burst，或两者混合。物体本身是一组共振器，每个模态有自己的频率、阻尼和形状。激励同时进入所有模态，输出按拾取位置加权求和。改变激励位置会改变哪些模态被激起，改变拾取位置会改变哪些模态被听到；这就是“敲在不同位置、听在不同位置”的物理含义。
+
+夜半的 `ModalVoice` 用 MIDI 音高定基频 $f_0 = 440\cdot2^{(note-69)/12}$，用力度定激励强度；note-on 时完成映射，逐样本路径只读已经算好的系数。它没有前视、没有采样播放，也不依赖外部音库。
+
+\section{四种模型}
+
+四种模型的差别在\textbf{分音怎么排}。同一个基频下，弦的泛音接近整数倍，梁会越往高越拉开，膜是二维平方根律，板是二维平方律。夜半的公式如下（$f_0$ 为基频，$k$、$n$ 为模态序号）：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.14\linewidth}p{0.40\linewidth}p{0.38\linewidth}@{}}
+\hline
+模型 & 频率排列 & 关键参数 \\
+\hline
+弦 String & $f_k=f_0\,k\sqrt{1+B k^2}$ & 刚度 $B$，默认 0.0005；$B=0$ 为纯谐波 \\
+梁 Beam & $f_n=f_0\,n\sqrt{(1-b)+b n^2}$ & 弦↔梁混合 $b$，默认 0；$b=0$ 柔弦，$b=1$ 梁 \\
+膜 Membrane & $f_{m,n}=f_0\dfrac{\sqrt{m^2+(n/a)^2}}{\sqrt{1+1/a^2}}$ & 纵横比 $a$，默认 1；二维模态 \\
+板 Plate & $f_{m,n}=f_0\dfrac{m^2+(n/a)^2}{1+1/a^2}$ & 纵横比 $a$，默认 1；二维模态 \\
+\hline
+\end{tabular}
+\caption{四种模态模型的频率律}
+\label{tab:modal-models}
+\end{table}
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, x=9mm, y=9mm]
+  \draw[-{Latex[length=2mm]}] (0,0) -- (7.2,0) node[right] {频率比};
+  \foreach \x in {1,2,3,4,5,6,7} { \draw (\x,0.15) -- (\x,-0.15); \node[below] at (\x,-0.15) {\x}; }
+  \node[left] at (0,0.6) {弦};
+  \foreach \x in {1,2,3,4,5} { \draw[very thick] (\x,0.45) -- (\x,0.75); }
+  \node[left] at (0,1.6) {梁};
+  \foreach \x in {1,3.16,6.36} { \draw[very thick] (\x,1.45) -- (\x,1.75); }
+  \node[left] at (0,2.6) {膜};
+  \foreach \x in {1,1.58,2,2.23,2.55} { \draw[very thick] (\x,2.45) -- (\x,2.75); }
+  \node[left] at (0,3.6) {板};
+  \foreach \x in {1,2.5,4,5,6.5} { \draw[very thick] (\x,3.45) -- (\x,3.75); }
+\end{tikzpicture}
+\end{center}
+
+图中的竖线只是前几个分音的示意位置，不按幅度画。弦的刚度 $B$ 越大，高分音越往上拉；梁的 $b$ 从 0 到 1，会把“整数倍泛音”连续推向“梁的平方律”；膜和板是二维模型，用 $(m,n)$ 两个序号枚举，纵横比 $a$ 改变两个方向的间距。
+
+\section{共用的参数}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 含义 & 范围 & 默认 \\
+\hline
+\texttt{damping} & 基础阻尼比 $\zeta_0$ & 0.0001–1 & 0.005 \\
+\texttt{damping\_slope} & 阻尼随频率比的斜率 $\zeta_1$ & 0–10 & 0.02 \\
+\texttt{stiffness} & 弦刚度 $B$ & 0–1 & 0.0005 \\
+\texttt{mix} & 梁的弦↔梁混合 $b$ & 0–1 & 0 \\
+\texttt{aspect} & 二维纵横比 $a$ & $\ge0.01$ & 1 \\
+\texttt{excitation\_x} / \texttt{excitation\_y} & 激励位置（归一化） & 0–1 & 0.5 \\
+\texttt{pickup\_x} / \texttt{pickup\_y} & 拾取位置（归一化） & 0–1 & 0.5 \\
+\texttt{coupling} & 双共振器耦合强度 $k$ & 0–0.2 & 0 \\
+\texttt{coupling\_ratio} & 第二共振器音高比 & 0.25–4 & 1.0 \\
+\hline
+\end{tabular}
+\caption{模态共振器的共用参数}
+\label{tab:modal-params}
+\end{table}
+
+阻尼决定“响多久”：$\zeta_0$ 越大衰减越快，$\zeta_1$ 让高分音比低分音衰减得更快。激励位置和拾取位置用模态形状加权：正好落在节点上，该模态会被抑制；这不是滤波器，而是几何。二维模型还要分别给 $x$、$y$ 两个位置，因为膜和板的节线是二维的。
+
+双共振器耦合是第二期的能力：两只弹簧耦合振子的简正频率会分裂，$k=0$ 时退化为单共振器，第二只不出声；$k$ 越大，分裂越明显。\texttt{coupling\_ratio} 控制第二只相对基频的音高，接近 1 时就是失谐。它适合做“同一物体有两个耦合腔”的复杂音色，不是两个独立乐器叠加。
+
+\section{激励与声部}
+
+夜半有两种激励：\texttt{NoiseBurst}（确定性种子的噪声 burst，带逐样本衰减）和 \texttt{Mallet}（短脉冲 + 一阶低通，\texttt{hardness} 越高越亮、越短）。激励强度由力度映射，note-on 时设置目标，逐样本只做一阶平滑。噪声 burst 的种子固定，因此同一输入两次渲染逐位一致——这便于判据，也意味着它不会每次随机变化。
+
+分音上限是 64。配置时从低序号往上排，频率达到 $0.495\times$ 采样率就停止，所以实际启用数通常少于 64；二维模型按 $(1,1),(2,1),(2,2),(3,1),\dots$ 的确定顺序枚举。膜模型的增益补偿上限是 64，其他三模型是 32；这是长衰减时的补偿钳位，不是“只能有 32 个分音”。
+
+\section{夜半现状：只有 DSP 核心}
+
+开写前逐项复核：`yeban-dsp/src/modal.rs` 已有 \texttt{ModalModel::String/Beam/Membrane/Plate}、\texttt{ModalParams}、\texttt{ModalVoice}、双共振器耦合与 64 分音上限；但 `yeban-app`、`yeban-engine`、`yeban-model`、`yeban-mcp` 都没有引用 \texttt{yeban\_dsp::modal} 或 \texttt{ModalModel}。也就是说：
+
+\begin{itemize}
+  \item 没有可挂到轨道上的“物理建模乐器”设备或音源类型；
+  \item 没有 GUI 参数面，界面上没有 damping/stiffness/aspect 这些旋钮；
+  \item 没有工厂预置，也没有“另存为预制”的乐器身份；
+  \item 当前可用乐器仍是复音合成器、SFZ 采样器和鼓机；物理建模不在其中。
+\end{itemize}
+
+因此本章不能写成操作指南。设备机架的乐器入口里找不到“物理建模”分类；如果看到类似界面，先核对它是不是别的音源，不要按本章的参数表去拧不存在的控件。
+
+\screenshot{instrument-rack-synth-presets}{设备机架乐器入口打开，只显示当前合成器预设与 SFZ 音源，没有物理建模分类或参数面板。}
+
+\section{什么时候会用到它}
+
+物理建模的价值在于“参数连续变化”和“同一激励下的材质差异”：弦的刚度、梁的混合、膜的纵横比、板的拾取位置，都能在同一个乐器里做出采样库难以枚举的中间状态。它适合做有机械感的持续音、拟真的打击/拨弦、以及需要“同一个物体换材质”的设计。
+
+但物理建模不是“不用录音就万事大吉”：模态数量、阻尼和激励位置设错，声音会像金属噪音或没有尾音；它也不能替代采样库的真实录音细节。夜半当前没有这条乐器链，用户要发声仍应使用合成器或 SFZ；本章的参数与公式是后续接线的设计参考，不是现在可操作的控件。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+模态合成的基本思路 & \texttt{modal-basics} \\
+四种模型 & \texttt{modal-four-models} \\
+共用的参数 & \texttt{modal-shared-params} \\
+激励与声部 & \texttt{modal-excitation-voices} \\
+夜半现状：只有 DSP 核心 & \texttt{modal-current-status} \\
+什么时候会用到它 & \texttt{modal-use-cases} \\
+\hline
+\end{tabular}
+\caption{第 5 章帮助主题映射}
+\end{table}
