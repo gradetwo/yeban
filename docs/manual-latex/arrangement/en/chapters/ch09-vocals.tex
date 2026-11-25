@@ -1,0 +1,179 @@
+\chapter{Vocal Arrangement: Keep the Lead in Front, Let the Backing Fill Behind}
+\label{ch:vocals}
+
+\begin{quote}
+\itshape The first rule of vocal arrangement is not ``how many layers'' but ``can the lyric still be heard''. The lead is the protagonist; doubles, harmonies, stacks and ad-libs are supporting roles. If the support steals the scene, the whole section blurs.
+\end{quote}
+
+\section{Vocals are a cast, not one track}
+\label{sec:vocal-roles}
+
+A pop vocal usually contains these roles:
+
+\begin{itemize}
+\item \textbf{Lead vocal}: sings the main lyric, carries narrative and emotion; its register, diction and breath must be the clearest.
+\item \textbf{Double}: the same lyric sung again and layered on the lead; it is not harmony, it is the same melody.
+\item \textbf{Harmony}: sings different notes, usually a third/sixth below the lead, or two high/low lines in the chorus.
+\item \textbf{Stack}: the same lyric layered three to five times into a ``wall of voices''; common on the final chorus or outro.
+\item \textbf{Ad-lib}: a short response, shout or breathy sound at the end of a lead phrase; it carries no lyric information, only colour.
+\end{itemize}
+
+These roles can appear in different sections: verse with lead only, pre-chorus with one double, chorus with harmony, final chorus with stack. \textbf{Not every section needs the whole cast.}
+
+\section{Lead vocal: make the lyric clear first}
+\label{sec:lead-vocal}
+
+The first job of lead arrangement is leaving space:
+
+\begin{itemize}
+\item \textbf{Phrase length}: no more than four bars per phrase; if longer, split it and leave half a beat to a beat for breath.
+\item \textbf{Register}: the lead sits most naturally near the speaking pitch; the chorus may lift it, but do not spend the whole song at the top.
+\item \textbf{Diction}: consonants need time; do not squeeze three syllables into one beat. Where the lyric is dense, simplify the melody.
+\item \textbf{Space}: leave the end of the lead phrase empty so harmony/ad-libs have somewhere to enter; if the lead fills everything, the support can only fight.
+\end{itemize}
+
+If the lead track is already full, the right move is not more compression but fewer notes or a released phrase ending. Vocal arrangement begins with letting the lead breathe.
+
+\section{Double: the same melody, sung twice}
+\label{sec:double}
+
+A \term{double}{double} is the same lyric sung twice and layered. Its job is not harmony but making the lead thicker and steadier:
+
+\begin{itemize}
+\item \textbf{Layers}: none or one in the verse; one in the chorus; two on the final chorus.
+\item \textbf{Recording}: a real double needs two takes, not a copied audio clip. Copying the same take makes it louder, not thicker, and may cause phase problems.
+\item \textbf{Alignment}: the two takes need not match syllable for syllable; letting consonants offset by a few milliseconds sounds more human; too much offset becomes choir/echo.
+\item \textbf{Register}: the double sings the same melody, not an octave below; the low octave belongs to harmony/stack, not double.
+\end{itemize}
+
+If there is only one lead take, it is better to skip the double than to fake thickness with a copied track; a copy is for widening, not for pretending to be a second performance.
+
+\section{Harmony: write a second line under the lead}
+\label{sec:harmony}
+
+\term{Vocal harmony}{vocal-harmony} differs from instrumental harmony: it is a melodic line the listener can hear, not chord tones scattered across vocal tracks.
+
+\begin{itemize}
+\item \textbf{Interval}: the most common is a third or sixth below the lead; a fifth sounds hollow and a second clashes; when unsure, start with a third.
+\item \textbf{Register}: harmony usually sits below the lead, not in the same register; the high octave is only for the final chorus phrase.
+\item \textbf{Movement}: keep the harmony line smooth; do not leap on every word. When the lead holds a long note, the harmony may move slightly to create tension.
+\item \textbf{Sections}: none in the verse, one low harmony in the pre-chorus, two in the chorus (high third/low third); the bridge may keep only one.
+\item \textbf{Lyric}: the harmony sings the same lyric, or only vowels; do not put new words in the harmony or the listener will be distracted.
+\end{itemize}
+
+\section{Stack and ad-lib: thickness and colour}
+\label{sec:stack-adlib}
+
+\term{Vocal stacking}{vocal-stacking} layers the same lyric multiple times into a ``wall of voices''. It suits the final chorus, outro or a section that needs ceremony:
+
+\begin{itemize}
+\item \textbf{Layer count}: three to five is enough; beyond five the lyric blurs and every layer thins out.
+\item \textbf{Division}: two layers sing the lead melody, one a low third, one a high third, one only vowels/breath; do not have all five sing the same words.
+\item \textbf{Pan}: keep the lead centred and spread the stack left/right; do not squeeze every layer into the middle.
+\item \textbf{Section}: use the stack only on the final chorus or outro; if it starts in the verse, the chorus has nothing ``more'' to offer.
+\end{itemize}
+
+An \term{ad-lib}{ad-lib} is a short response at the end of a lead phrase: an ``oh'', a sigh, a shout. It occupies half a beat to two beats in the lead's space; too many ad-libs become a second lead.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (9.2,0) node[right] {bars};
+    \foreach \x in {1,...,8} {\draw[gray!30] (\x,0.1) -- (\x,3.6); \node[font=\scriptsize] at (\x,0.05) {\x};}
+    \fill[yebanblue!40] (0.2,2.9) rectangle (8.2,3.25);
+    \node[font=\scriptsize] at (4.2,3.07) {lead};
+    \fill[yebanblue!65] (4.2,2.15) rectangle (8.2,2.5);
+    \node[font=\scriptsize] at (6.2,2.32) {double};
+    \fill[green!45] (4.2,1.4) rectangle (8.2,1.75);
+    \node[font=\scriptsize] at (6.2,1.57) {harmony};
+    \fill[orange!55] (6.2,0.65) rectangle (7.2,1.0);
+    \fill[orange!55] (7.2,0.65) rectangle (8.2,1.0);
+    \node[font=\scriptsize] at (6.7,0.82) {stack};
+    \node[font=\scriptsize] at (7.7,0.82) {stack};
+    \node[font=\scriptsize, anchor=west] at (8.4,2.32) {chorus};
+  \end{tikzpicture}
+  \caption{Vocal layers across eight bars: lead throughout, double and harmony entering with the chorus, stack only in the last two bars; the verse stays open.}
+  \label{fig:vocal-stack}
+\end{figure}
+
+\section{Realising it in Yeban: audio tracks, clips and stems}
+\label{sec:vocal-yeban}
+
+Vocals are audio, not MIDI; their arrangement in Yeban differs from instruments:
+
+\begin{enumerate}
+\item \textbf{Create audio tracks}: use Track $\rightarrow$ + New audio track for lead, double, harmony and stack; do not put every layer on one audio track.
+\item \textbf{Record or import}: use File $\rightarrow$ Real-time recording to WAV... for the lead, or File $\rightarrow$ Import audio file... for existing takes; imported material enters the asset pool before being placed on an audio track.
+\item \textbf{Trim clips}: select an audio clip, drag its edges to change length and drag it to move; leave the lead's phrase ends open instead of trimming everything tight.
+\item \textbf{Copy and align}: if the double/harmony is another take, copy the clip and align it to the lead; do not pass off a copy of the lead as a double. Allow consonants to offset by a few milliseconds.
+\item \textbf{Use clip mute for arrangement}: mute unneeded layers with the clip mute switch rather than deleting them, so the final chorus stack can be opened quickly.
+\item \textbf{Place with faders and pan}: lead centred, double/harmony slightly left/right, stack spread wide; check layer by layer in the mixer (X / F8), not all at once.
+\item \textbf{Export stems}: use File $\rightarrow$ Export stems... to export each vocal layer separately for mixing/mastering; the receipt reports how many tracks were exported and skipped.
+\end{enumerate}
+
+\screenshot{arrangement-vocal-stack}{Four audio tracks for lead, double, harmony and stack on one screen, with clip entrances and pan positions visible}
+
+\section{Common mistakes and fixes}
+\label{sec:vocal-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Stacking from verse to chorus & Keep only the lead in the verse; double/harmony enter at the chorus, stack only on the final pass. \\
+Copying the lead to fake a double & A copied track only widens; a real double needs two takes. \\
+Harmony in the lead's register & Put harmony a third/sixth below; use the high octave only at the final phrase. \\
+Harmony leaps on every word & Keep the line smooth; move only on long notes. \\
+Ad-libs cover the lead & Place ad-libs in the lead's space, half a beat to two beats; do not answer continuously. \\
+Five stack layers all sing the lead & Divide: lead melody, low third, high third, vowels/breath; not five layers of the same words. \\
+All vocals squeezed in the centre & Lead centred; double/harmony/stack spread left and right. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:vocal-exercise}
+
+\begin{exercise}
+Build eight bars of ``lead + double + harmony + stack'':
+\begin{enumerate}
+\item Write a four-bar lead phrase, leaving one beat at the end; repeat the second phrase with a lower final note.
+\item Add one double (same melody) in chorus bar 5; add a low-third harmony across bars 5--8.
+\item Add two stack layers in the last two bars: one lead melody, one low third; do not use five layers of the same words.
+\item Use clip mute to make the verse/chorus contrast; export stems and confirm every layer can be found separately.
+\end{enumerate}
+Finally solo the lead: is every word clear? If removing the harmony/stack makes the lyric clearer, they have already done their supporting job.
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:vocal-takeaways}
+
+\begin{itemize}
+\item Vocals are a cast: lead, double, harmony, stack, ad-lib; not one track plus effects.
+\item Lead first: phrase length, register, diction and space; make the lyric clear.
+\item A double is the same melody recorded twice; a copy is not a double.
+\item Harmony is a second melodic line, usually a third/sixth below the lead, moving smoothly.
+\item Stack three to five layers with divided roles; use it only in the final chorus/outro.
+\item In Yeban, use multiple audio tracks, clip mute, faders/pan and stem export.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+Vocals are a cast & \texttt{arrangement-vocal-roles} \\
+Lead vocal: make the lyric clear & \texttt{arrangement-lead-vocal} \\
+Double & \texttt{arrangement-vocal-double} \\
+Harmony & \texttt{arrangement-vocal-harmony} \\
+Stack and ad-lib & \texttt{arrangement-vocal-stack} \\
+Realising it in Yeban & \texttt{arrangement-vocal-yeban} \\
+Common mistakes and fixes & \texttt{arrangement-vocal-mistakes} \\
+Exercise & \texttt{arrangement-vocal-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

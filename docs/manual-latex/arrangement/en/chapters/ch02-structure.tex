@@ -1,0 +1,206 @@
+\chapter{Song Structure: Managing Attention by Section}
+\label{ch:structure}
+
+\begin{quote}
+\itshape Structure is not slicing a song into blocks. It decides what the listener hears at each second, and at which second they want to keep listening.
+\end{quote}
+
+\section{Structure is not a formula; it is an energy map}
+\label{sec:structure-map}
+
+Songwriters often ask ``how long should the verse be?'' or ``does the chorus have to repeat?'' Those questions have no answer outside the piece. Structure really solves three things:
+
+\begin{enumerate}
+\item \textbf{Orientation}: which section is the listener in now? Melody, harmony and rhythm must give a consistent signal.
+\item \textbf{Expectation}: what does the listener expect before this section ends? The next section should deliver it, or deliberately delay it.
+\item \textbf{Energy}: is this section stronger or weaker than the last? By how much, and through what means?
+\end{enumerate}
+
+Draw these three things on a graph with bars on the horizontal axis and energy on the vertical axis, and you have an energy curve. The curve is not a picture for an audience; it is a construction drawing for arranging. It tells you which section needs more parts, which needs space, and which needs a change of texture.
+
+\section{The job of five sections}
+\label{sec:section-functions}
+
+The most common sections in popular song are intro, verse, \term{pre-chorus}{pre-chorus}, chorus, \term{bridge}{bridge} and \term{outro}{outro}. They do not all have to appear, but each has a clear job.
+
+\begin{longtable}{p{0.15\textwidth}p{0.27\textwidth}p{0.20\textwidth}p{0.28\textwidth}}
+\toprule
+Section & Main job & Energy position & Where it lands in Yeban \\
+\midrule
+\endfirsthead
+\toprule
+Section & Main job & Energy position & Where it lands in Yeban \\
+\midrule
+\endhead
+Intro & Establish timbre, tempo and mood; do not spend the chorus's best tricks yet & Low to medium & 4--8 bars; build texture with one or two tracks \\
+Verse & Tell the story and give information; keep harmony and rhythm relatively restrained & Low & 8 or 16 bars; melody in a lower-middle register, space in the instrumentation \\
+Pre-chorus & Raise expectation and prepare the chorus & Medium, rising & 2--8 bars; add density and harmonic tension, leave a hook in the last bar \\
+Chorus & Deliver the most memorable sentence and the fullest harmony & High & 8 or 16 bars; highest lead, most complete instrumentation \\
+Bridge & Change the angle and create contrast; may drop down briefly & Low to medium, then lift & 4--8 bars; change chords, groove or timbre; do not write a second verse \\
+Outro & Close or fade out; give the listener an ending signal & Medium to low & 4--8 bars; remove layers, extend, return to the intro motif \\
+\bottomrule
+\end{longtable}
+
+A short song can omit the pre-chorus or bridge; dance, folk and narrative songs also vary section lengths. Do not force a bridge in just to ``sound like a pop song''. A section exists because it has a job; if it has no job, do not add it.
+
+\section{Drawing energy as a curve}
+\label{sec:energy-curve}
+
+Below is a common energy sketch for a pop song. The vertical axis is not absolute loudness; it is ``how full this section is relative to the previous one''. The horizontal axis follows section order, not real bar duration.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->, thick] (0,0) -- (11.5,0) node[right] {time};
+    \draw[->, thick] (0,0) -- (0,4.2) node[above] {energy};
+    \draw[very thick, yebanblue] (0.2,1.1) -- (1.2,1.1) -- (1.8,1.5) -- (3.2,1.5) -- (3.8,2.2) -- (5.2,3.3) -- (6.4,3.3) -- (7.0,1.7) -- (8.4,1.7) -- (9.0,3.4) -- (10.2,3.4) -- (10.8,2.0);
+    \node[font=\scriptsize, align=center] at (0.7,0.55) {intro};
+    \node[font=\scriptsize, align=center] at (2.5,0.55) {verse};
+    \node[font=\scriptsize, align=center] at (4.5,0.55) {pre};
+    \node[font=\scriptsize, align=center] at (5.8,0.55) {chorus};
+    \node[font=\scriptsize, align=center] at (7.7,0.55) {verse 2};
+    \node[font=\scriptsize, align=center] at (9.6,0.55) {chorus 2};
+    \node[font=\scriptsize, align=center] at (10.8,0.55) {outro};
+  \end{tikzpicture}
+  \caption{A pop energy sketch: each section has a different fullness. The chorus is not the only peak; a bridge may drop deliberately before lifting again.}
+  \label{fig:energy-curve}
+\end{figure}
+
+When drawing the curve, mark at least four values: how many tracks this section uses, the register of the lead, how dense the rhythm is, and how simple or complex the harmony is. Changing only one of the four usually does not move energy enough; changing all four at once is easy to lose control of. The instrumentation budget in the next section is how you decide ``how many of the four to move''.
+
+A practical acceptance line: in common pop/rock writing, a chorus-to-verse RMS difference of about 1.5 dB or more is a rough self-check that the energy actually opens up. It is not a law for every genre; calibrate against reference records and listening. If the difference is too small, add parts or density first; do not just push the master fader.
+
+\section{The instrumentation budget: what to add or remove per section}
+\label{sec:instrumentation-budget}
+
+An \term{instrumentation budget}{instrumentation-budget} is a table filled per section, not a table of money. It turns ``what should this section add?'' from a feeling into a checkable choice.
+
+\begin{longtable}{p{0.16\textwidth}p{0.10\textwidth}p{0.10\textwidth}p{0.14\textwidth}p{0.13\textwidth}p{0.10\textwidth}p{0.12\textwidth}}
+\toprule
+Section & Drums & Bass & Harmony/pad & Lead & Strings & Percussion \\
+\midrule
+\endfirsthead
+\toprule
+Section & Drums & Bass & Harmony/pad & Lead & Strings & Percussion \\
+\midrule
+\endhead
+Intro & Light & Optional & 1 layer & Motif & Optional & Accents \\
+Verse & Basic & Basic & 1 layer & Vocal/lead & Little & Little \\
+Pre-chorus & Denser & Denser & More tension & Rising & Add sustains & Add fill \\
+Chorus & Full & Full & 2--3 layers & Highest & Full & Full \\
+Bridge & Change groove & Change motion & Change chords & Change role & May remove & May remove \\
+Outro & Reduce & Reduce & Extend & Close & Extend & Close \\
+\bottomrule
+\end{longtable}
+
+Follow two rules when filling the table:
+
+\begin{itemize}
+\item \textbf{Neighbouring sections differ in at least two items.} Pushing the drums harder from verse to chorus still sounds like the same section; add a string sustain and move the bass from long notes to eighths, and both density and texture change.
+\item \textbf{Subtract before adding.} A bridge is not ``add another new instrument group''. Remove half of the chorus first so the ear has space again; then add back in the second half of the bridge.
+\end{itemize}
+
+\begin{tipbox}
+The budget can live on paper. What matters is whether the Mute/Solo states in the project match it: if the table says ``add strings in the chorus'' but the strings run from top to bottom, the table is already invalid.
+\end{tipbox}
+
+\section{Four ways to join sections}
+\label{sec:transitions}
+
+Sections are not finished by simply cutting to the next one. A \term{transition}{transition} has four common devices, each with different conditions:
+
+\begin{longtable}{p{0.18\textwidth}p{0.34\textwidth}p{0.38\textwidth}}
+\toprule
+Device & How & When to use it, and the risk \\
+\midrule
+\endfirsthead
+\toprule
+Device & How & When to use it, and the risk \\
+\midrule
+\endhead
+Hard cut & Change section on a strong beat or bar line without a fill & Strong contrast, clear groove; risk: abruptness -- the previous section must feel finished \\
+Fill & Use one bar of drums/bass/guitar to carry the ear into the next section & Verse into chorus, end of pre-chorus; risk: a fill every time becomes tiring, save it for key transitions \\
+Harmonic transition & Join sections with a common tone, dominant chord or modulation & Large key or harmonic changes; risk: over-design, the listener only hears ``clever'' \\
+Space / rhythmic bridge & Stop for half a beat, drop the kick, or let the band go quiet before the turn & When the next section must be emphasised; risk: too long a gap sounds like a broken track \\
+\bottomrule
+\end{longtable}
+
+The pre-chorus deserves its own design: it does not need to be as full as the chorus; it needs to make the listener feel ``it is coming''. A common approach is to densify the harmony in the last two bars, lift the melody, add an upward fill, leave the last beat open, and let everything land on the first beat of the chorus.
+
+\section{Realising it in Yeban}
+\label{sec:structure-yeban}
+
+To put structure into a Yeban project, work in this order:
+
+\begin{enumerate}
+\item \textbf{Lay out bars on paper first.} Use 4- or 8-bar blocks and write the start and end bar of each section. Do not start by writing notes.
+\item \textbf{Align clips in the arrangement area.} The bar ruler and \term{section markers}{section-marker} above the arrangement area show bar numbers; place the first clip of each section on the target bar so later copies do not drift.
+\item \textbf{Use Mute to subtract.} Place all layers according to the budget, then mute the layers that should not appear in each section and listen whether the whole really drops. Do not delete tracks outright; deletion makes A/B comparison hard.
+\item \textbf{Use Solo to check the protagonist.} In the chorus, listen especially to the lead and vocal. If the lead cannot stand on its own when soloed, fix the melody; do not cover it with strings.
+\item \textbf{Watch the overview panel.} Yeban's full-song overview panel shows the energy and structure distribution in one view; compare it with the paper curve. Wrong section length or density becomes obvious.
+\item \textbf{Change the instrumentation after copying.} Copying a section (Ctrl+C / Ctrl+V) solves note placement, not ``should this section be identical''. After copying, change at least one thing: instrumentation, density or register.
+\end{enumerate}
+
+\screenshot{arrangement-song-structure-overview}{Bar ruler/section markers in the arrangement area beside the full-song overview panel: see each section's boundaries and energy distribution}
+
+\section{Common mistakes and fixes}
+\label{sec:structure-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Every section is equally full & Use the budget to make neighbouring sections differ in at least two of: part count, density, register, harmonic tension. \\
+The chorus only pushes the master volume & Add parts, density and velocity first; the master fader is for final balance, not structural contrast. \\
+The bridge becomes a second verse & Change chords, groove or timbre; the bridge's job is contrast, not repetition. \\
+The pre-chorus is long and becomes another verse & Cut it to 2--4 bars and leave a hook in the last bar; its job is to raise expectation, not tell a new story. \\
+The intro spends all the chorus's instrumentation & The intro establishes texture and motif; save the fullest harmony for the chorus. \\
+Every transition relies on a riser or sound effect & Use hard cut, fill, harmonic transition or space first; effects are seasoning, not structure. \\
+Copy the eight-bar loop across the whole song & Change at least one thing per section; use the overview panel to check whether the energy curve is a flat line. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:structure-exercise}
+
+\begin{exercise}
+Choose a 3--5 minute pop song you know well and complete three tasks:
+\begin{enumerate}
+\item Count its sections and bars, then draw an energy curve. Mark each section's lead register, drum density and number of harmonic layers.
+\item Build a 32-bar structural skeleton in Yeban: intro 4, verse 8, chorus 8, verse 8, chorus 4. Use only drums, bass, pad and lead; leave detail out.
+\item Use the instrumentation budget to A/B the verse and chorus: mute every layer that ``should only be in the chorus'', then add them back one by one. Note which layer makes the contrast clearest and which layer could actually be removed.
+\end{enumerate}
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:structure-takeaways}
+
+\begin{itemize}
+\item Structure is an energy map: orientation, expectation and energy.
+\item Every section has a job; do not force sections that have no job.
+\item Use an energy curve and an instrumentation budget to manage what to add and remove.
+\item Neighbouring sections differ in at least two items; subtract before adding.
+\item Prefer transition devices over stacked effects; after copying a section, change its instrumentation.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+Structure is not a formula; it is an energy map & \texttt{arrangement-structure-map} \\
+The job of five sections & \texttt{arrangement-section-functions} \\
+Drawing energy as a curve & \texttt{arrangement-energy-curve} \\
+The instrumentation budget & \texttt{arrangement-instrumentation-budget} \\
+Four ways to join sections & \texttt{arrangement-transitions} \\
+Realising it in Yeban & \texttt{arrangement-structure-yeban} \\
+Common mistakes and fixes & \texttt{arrangement-structure-mistakes} \\
+Exercise & \texttt{arrangement-structure-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

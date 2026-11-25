@@ -1,0 +1,255 @@
+\chapter{Walkthrough: Play the Whole Book Through Two Short Songs}
+\label{ch:walkthrough}
+
+\begin{quote}
+\itshape Arrangement is not using each of ten chapters once; it is letting them all take their place in one song. A walkthrough goes section by section, puts each layer in, and checks that it does not steal another layer's seat.
+\end{quote}
+
+\section{The goal: two short songs, one workflow}
+\label{sec:walkthrough-goal}
+
+This book ends without a ``universal recipe''. Instead it uses two \term{short songs}{short-song} as \term{demo projects}{demo-project}: one folk, one pop. Neither is a commercial length; each is sixteen bars (eight-bar verse + eight-bar chorus), but both follow the same workflow:
+
+\begin{enumerate}
+\item Write the section chart and energy curve;
+\item Create and name tracks; assign the four layer roles;
+\item Build the rhythm section, then the harmony layer;
+\item Write the lead melody/vocal;
+\item Add colour layers (strings, woodwinds/brass, electronic);
+\item Walk through section by section and fix seat-stealing;
+\item Save the project;
+\item Export WAV and stems, and write a delivery receipt.
+\end{enumerate}
+
+Neither demo is a preinstalled project in the repository; both are teaching setups built by the methods in this book. You can rebuild them in Yeban from the tables, or use them only as a checklist.
+
+\section{Demo one: the folk short song ``Window Side''}
+\label{sec:folk-demo}
+
+The folk principle is ``few but clear'': lead vocal, acoustic guitar, bass, light drums/percussion, string pad. The sixteen-bar section chart:
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
+\toprule
+Bars & Section & Arrangement action \\
+\midrule
+\endfirsthead
+\toprule
+Bars & Section & Arrangement action \\
+\midrule
+\endhead
+1--8 & Verse & Acoustic guitar + bass + light drums; lead; strings stay out \\
+9--12 & First chorus & Add string pad and full drums; lead stays centred \\
+13--16 & Second chorus & Add one double/harmony; strings hold long notes, no counterpoint \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{p{0.20\textwidth}p{0.18\textwidth}p{0.52\textwidth}}
+\toprule
+Track & Type & Role and writing \\
+\midrule
+\endfirsthead
+\toprule
+Track & Type & Role and writing \\
+\midrule
+\endhead
+Lead vocal & Audio & Narrative; leave one beat at phrase ends, do not fill every gap \\
+Acoustic guitar & Audio & Harmonic skeleton; trim clips to leave the vocal's phrase ends \\
+Bass & MIDI/audio & Root; mostly same-note repetition, few leaps \\
+Drums/percussion & MIDI/audio & Light skeleton; verse keeps kick/snare/light tambourine \\
+String pad & MIDI & Enters in the chorus; long notes, not the vocal's rhythm \\
+Double/harmony & Audio & Enters after bar 13; low third, not in the lead's register \\
+\bottomrule
+\end{longtable}
+
+The folk energy curve rises gently; do not turn the chorus into electronic dance music. The chorus is ``bigger'' because of the string pad, fuller drums and one double, not because of more tracks.
+
+\section{Demo two: the pop short song ``Night Run''}
+\label{sec:pop-demo}
+
+The pop principle is ``each layer clearer'', not ``each layer more''. Sixteen bars:
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
+\toprule
+Bars & Section & Arrangement action \\
+\midrule
+\endfirsthead
+\toprule
+Bars & Section & Arrangement action \\
+\midrule
+\endhead
+1--8 & Verse & Drums + bass + pad + lead; pluck only at phrase ends \\
+9--12 & First chorus & Add double, continuous pluck, brass stab at bar 9 \\
+13--16 & Second chorus & Add harmony and stack in the last two bars; brass stops after the stab \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{p{0.20\textwidth}p{0.18\textwidth}p{0.52\textwidth}}
+\toprule
+Track & Type & Role and writing \\
+\midrule
+\endfirsthead
+\toprule
+Track & Type & Role and writing \\
+\midrule
+\endhead
+Lead vocal & Audio & Lyric first; lift in the chorus but stay in a comfortable register \\
+Double & Audio & Same melody, second take; not a copy of the lead \\
+Harmony & Audio & A third below the lead; chorus only \\
+Drums & MIDI & Four-beat skeleton; add density in the chorus \\
+Bass & MIDI & Root; divide the low end with sub \\
+Pad & MIDI & Midrange bed; open cutoff in the chorus \\
+Pluck & MIDI & High decoration; phrase ends/gaps, not continuous \\
+Brass & MIDI & Short stab at bar 9; exit after a beat and a half \\
+\bottomrule
+\end{longtable}
+
+The pop chorus is not ``open every track''; it is ``each layer more complete'': fuller drums, steadier bass, brighter pad, clearer pluck, thicker vocal. The track count can stay the same while every role becomes more definite.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[->] (0,0) -- (10.2,0) node[right] {bars};
+    \draw[->] (0,0) -- (0,3.8) node[above] {energy};
+    \foreach \x/\lab in {0/1,2/3,4/5,6/7,8/9,10/11,12/13,14/15,16/16} {\draw[gray!25] (\x,0.1) -- (\x,3.5); \node[font=\scriptsize] at (\x,0.05) {\lab};}
+    \draw[very thick, yebanblue] (0.0,1.4) -- (2.0,1.6) -- (4.0,1.7) -- (6.0,1.8) -- (8.0,2.7) -- (10.0,2.9) -- (12.0,3.0) -- (14.0,3.1) -- (16.0,3.2);
+    \draw[very thick, orange!80] (0.0,1.2) -- (2.0,1.3) -- (4.0,1.5) -- (6.0,1.6) -- (8.0,2.9) -- (10.0,3.1) -- (12.0,3.2) -- (14.0,3.4) -- (16.0,3.5);
+    \node[font=\scriptsize, yebanblue, anchor=west] at (16.2,3.2) {folk};
+    \node[font=\scriptsize, orange!80, anchor=west] at (16.2,3.5) {pop};
+    \node[font=\scriptsize] at (4.0,0.25) {verse};
+    \node[font=\scriptsize] at (12.0,0.25) {chorus};
+  \end{tikzpicture}
+  \caption{Energy curves of the two short songs: folk rises gently, pop lifts more clearly from verse to chorus; neither is a flat line.}
+  \label{fig:walkthrough-energy}
+\end{figure}
+
+\section{Eight-step walkthrough}
+\label{sec:walkthrough-steps}
+
+\subsection*{Step 1: section chart and energy curve}
+Write two tables first: a section chart (bars, section, action) and a track chart (track, type, role). Without them, every added track becomes ``add first, decide later''.
+
+\subsection*{Step 2: create and name tracks}
+Use the role cards from chapter 1: rhythm, harmony, melody, colour. Name tracks so a human can read them (``Lead'', ``Bass'', ``Pad''), not ``Track 1'' and ``Track 2''.
+
+\subsection*{Step 3: rhythm section}
+Build drums and bass first: drums define time and groove, bass defines the root. Solo both and confirm kick and bass root do not fight on the same beat. Folk drums stay light; pop drums can be fuller, but neither should fill every sixteenth.
+
+\subsection*{Step 4: harmony layer}
+Add acoustic guitar/keyboard/pad: write the chord movement first, then choose the texture. Folk uses fingerpicking/strumming; pop uses a pad bed. Do not start with five harmony tracks.
+
+\subsection*{Step 5: lead melody and vocal}
+Write the lead or record the vocal: make the lyric clear and leave phrase ends open. Folk can rely on the guitar; pop needs double/harmony behind the lead. Never let backing cover the lead.
+
+\subsection*{Step 6: colour layers}
+Add strings, woodwinds/brass or electronic pluck by section: enter only when colour/energy is needed, and be able to exit. Both short songs use one or two colours, not every instrument in the book.
+
+\subsection*{Step 7: section-by-section walkthrough}
+Solo/Mute through the section chart: does every section enter and exit? Is only one layer leading the low end? Is the lyric clear? Is there a fill/space at the transition? Answer at least once per section; do not just play the whole song once.
+
+\subsection*{Step 8: save and deliver}
+Save the project, export WAV and stems, write the receipt. Problems found in step 7 go back to the relevant track; do not force them down with faders.
+
+\section{Walkthrough checklist}
+\label{sec:walkthrough-checklist}
+
+\begin{longtable}{p{0.36\textwidth}p{0.56\textwidth}}
+\toprule
+Check & Pass criterion \\
+\midrule
+\endfirsthead
+\toprule
+Check & Pass criterion \\
+\midrule
+\endhead
+Sections & Every section has a clear entrance/exit; none is identical from start to finish \\
+Energy & The chorus is more complete, not merely louder \\
+Low end & Only one of sub/bass/kick leads; the other two yield \\
+Lead vocal & Every word clear; breath at phrase ends; not covered by double/harmony \\
+Harmony & Chord movement clear; inner voices do not share the lead's rhythm \\
+Colour & Strings/woodwinds/brass/electronic enter only when needed and can exit \\
+Transitions & Fill, space, harmonic transition or hard cut between sections, not random switching \\
+Project & Track names readable; clips not lost; save succeeds \\
+Export & WAV has sample rate/bit depth/duration; stem receipt reports exported/skipped counts \\
+\bottomrule
+\end{longtable}
+
+\section{Save, export and deliver}
+\label{sec:walkthrough-delivery}
+
+\begin{enumerate}
+\item \textbf{Save the project}: use File $\rightarrow$ Save project (Ctrl+S) to write back to the same file, or File $\rightarrow$ Save as (Ctrl+Shift+S) to a new name. Saving is an \term{atomic write}{atomic-write}; a power cut halfway does not leave half a file.
+\item \textbf{Version history}: use Edit $\rightarrow$ Arrangement version time machine to view the commit chain; click any version node to return to it. This is project editing history, not a mix version.
+\item \textbf{Export WAV}: use File $\rightarrow$ Export audio (WAV)... to set output path, sample rate, bit depth, duration and the bus limiter. The receipt reports frames, true peak and limiter work.
+\item \textbf{Export stems}: use File $\rightarrow$ Export stems... to export each track separately; the receipt reports how many were exported, skipped and the output directory.
+\item \textbf{Do not confuse the diagnostic bundle}: Diagnostics $\rightarrow$ Export project diagnostic report bundle is for troubleshooting, not audio; do not deliver it as a WAV.
+\item \textbf{Write the delivery receipt}: record project file, WAV, stem directory, sample rate/bit depth, export time and skipped items. Without a receipt, nobody can reproduce the delivery.
+\end{enumerate}
+
+\screenshot{arrangement-walkthrough-folk}{The sixteen-bar folk project: lead, acoustic guitar, bass, light drums, string pad and double, checked section by section}
+
+\screenshot{arrangement-walkthrough-pop}{The sixteen-bar pop project: lead, double, harmony, drums, bass, pad, pluck and brass; chorus layers and the bar-9 brass stab are visible}
+
+\section{Common mistakes and fixes}
+\label{sec:walkthrough-mistakes}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Common mistake & Fix \\
+\midrule
+\endfirsthead
+\toprule
+Common mistake & Fix \\
+\midrule
+\endhead
+Add tracks before planning sections & Write the section chart and track chart first; every track must answer ``what does it do here?'' \\
+The chorus is only louder & Make each layer more complete: drums, bass, pad, vocal each add something; do not just raise faders. \\
+Both demos use the same track list & Folk is few but clear; pop is each layer clearer. Change the track chart by style, do not copy. \\
+Colour layers run throughout & Colour enters at section changes/chorus and can exit. \\
+The lead is covered by double/harmony & Lead centred and highest; double same melody, harmony a third below; stack only the final pass. \\
+Clips are not checked before saving & Solo/Mute every section before saving; fix muted/lost clips on the spot. \\
+Treating the diagnostic bundle as delivery & WAV/stems are the work; the diagnostic bundle is only for troubleshooting. \\
+\bottomrule
+\end{longtable}
+
+\section{Exercise}
+\label{sec:walkthrough-exercise}
+
+\begin{exercise}
+Choose folk or pop and build sixteen bars in Yeban:
+\begin{enumerate}
+\item Write a section chart (eight-bar verse + eight-bar chorus) and a track chart (no more than eight tracks).
+\item Follow the eight steps: rhythm $\rightarrow$ harmony $\rightarrow$ lead/vocal $\rightarrow$ colour; solo after adding each track.
+\item Tick every item on the walkthrough checklist; fix at least one ``seat-stealing'' problem (low end, lead register or a colour layer that never exits).
+\item Save the project, export WAV and stems, and write a delivery receipt; keep the project file, WAV, stem directory and receipt in one folder.
+\end{enumerate}
+When finished, answer one question: if you could keep only five tracks, which three would you delete? If you can answer clearly, you understand what each layer does.
+\end{exercise}
+
+\section{Chapter takeaways}
+\label{sec:walkthrough-takeaways}
+
+\begin{itemize}
+\item A walkthrough is not ``listen again''; it checks entrances, exits and seat-stealing layer by layer against the section chart.
+\item Both short songs share one workflow: section chart $\rightarrow$ track chart $\rightarrow$ rhythm $\rightarrow$ harmony $\rightarrow$ vocal $\rightarrow$ colour $\rightarrow$ check $\rightarrow$ deliver.
+\item Folk is few but clear; pop is each layer clearer. Different styles need different track charts.
+\item The chorus is ``big'' because every layer is more complete, not because faders or track counts are higher.
+\item Saving is atomic; WAV and stems are two deliveries; the diagnostic bundle is not the work.
+\item Delivery must include a receipt: project, WAV, stems, parameters and skipped items can all be checked.
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+Section & Help anchor \\
+\midrule
+The goal & \texttt{arrangement-walkthrough-goal} \\
+Demo one: folk & \texttt{arrangement-folk-demo} \\
+Demo two: pop & \texttt{arrangement-pop-demo} \\
+Eight-step walkthrough & \texttt{arrangement-walkthrough-steps} \\
+Walkthrough checklist & \texttt{arrangement-walkthrough-checklist} \\
+Save, export and deliver & \texttt{arrangement-walkthrough-delivery} \\
+Common mistakes and fixes & \texttt{arrangement-walkthrough-mistakes} \\
+Exercise & \texttt{arrangement-walkthrough-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}

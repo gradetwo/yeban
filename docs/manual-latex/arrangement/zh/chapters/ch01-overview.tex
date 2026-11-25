@@ -1,0 +1,233 @@
+\chapter{编曲总览：先把层次搭起来}
+\label{ch:overview}
+
+\begin{quote}
+\itshape 编曲不是把最多的乐器同时放进去，而是让每一层在正确的时刻说正确的话。
+\end{quote}
+
+\section{编曲到底在编什么}
+\label{sec:what-is-arrangement}
+
+一首歌可以只有一把吉他和一个嗓子，也可以有四十条轨。两者都可能是好编曲。区别不在轨数，而在\textbf{功能层是否清楚}。本册把\term{编曲（arrangement）}{arrangement}拆成\term{编曲层次（arrangement layer）}{arrangement-layer}四层：
+
+\begin{enumerate}
+\item \textbf{节奏层}：鼓、打击、贝斯，以及承担律动的节奏吉他或键盘。它回答“这首歌怎么动”。
+\item \textbf{和声层}：铺底、琶音、和弦乐器。它回答“这首歌站在什么和声上”。
+\item \textbf{旋律层}：主唱、主奏乐器、副旋律。它回答“听众该记住哪一句话”。
+\item \textbf{音色与氛围层}：合成器长音、采样、环境声、效果音。它回答“这首歌是什么颜色”。
+\end{enumerate}
+
+四层是\textbf{功能}，不是固定编制。一个钢琴可以同时承担和声与节奏；一个合成器 pad 也可以既铺和声又提供氛围。判断标准不是“它是什么乐器”，而是“它此刻在替哪一层工作”。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (color) at (0,3.3) {\textbf{音色与氛围层}：合成器长音、采样、环境声、效果音};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (melody) at (0,2.2) {\textbf{旋律层}：主唱、主奏、副旋律、呼应句};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (harmony) at (0,1.1) {\textbf{和声层}：铺底、琶音、和弦乐器};
+    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{节奏层}：鼓、打击、贝斯、节奏吉他/键盘};
+    \draw[->, thick, yebanblue] (rhythm.north) -- (harmony.south);
+    \draw[->, thick, yebanblue] (harmony.north) -- (melody.south);
+    \draw[->, thick, yebanblue] (melody.north) -- (color.south);
+    \node[anchor=west, align=left, text width=3.6cm] at (4.8,1.6) {从下往上不是“重要性”，而是\\“先立住骨架，再决定颜色”。};
+  \end{tikzpicture}
+  \caption{编曲的四层功能。层与层之间是支撑关系，不是轨数排行榜。}
+  \label{fig:four-layers}
+\end{figure}
+
+\section{角色卡：写任何声部前的三格}
+\label{sec:role-card}
+
+在钢琴卷帘里落第一个音符之前，先给这个声部写一张\term{角色卡（role card）}{role-card}。三格写不清，后面写多少音符都会打架。
+
+\begin{longtable}{p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}}
+\toprule
+格子 & 要回答的问题 & 写不清的后果 \\
+\midrule
+\endfirsthead
+\toprule
+格子 & 要回答的问题 & 写不清的后果 \\
+\midrule
+\endhead
+功能 & 它是根盘、律动、和声填充、主旋律、对位还是氛围？ & 两个声部抢同一功能，听起来“厚但乱”。 \\
+音区 & 它的最低音、中心音、最高音大概在哪？ & 全挤在中频，主唱一进来就被埋。 \\
+节奏性格 & 长音铺底、均匀八分、切分、空拍留白，还是自由句？ & 每个声部都在动，听众找不到落点。 \\
+\bottomrule
+\end{longtable}
+
+音区可以先按经验表起步，再用参考曲校准。下表是常见声部的\textbf{起点}，不是禁令：
+
+\begin{longtable}{p{0.22\textwidth}p{0.30\textwidth}p{0.38\textwidth}}
+\toprule
+声部 & 常见音区（MIDI 音符） & 说明 \\
+\midrule
+\endfirsthead
+\toprule
+声部 & 常见音区（MIDI 音符） & 说明 \\
+\midrule
+\endhead
+贝斯 & E1—G2（28—43） & 以根音为主；频繁上探到 C3 以上容易显得“旋律化、抢戏”。 \\
+节奏吉他 & 约 E3—B3 的基音区 & 单音 riff 通常比满和弦更沉；每四小节留一点空给鼓。 \\
+键盘 / 铺底 & C3—C5 & 避开主唱最舒服的音区，给旋律让出中间。 \\
+主旋律 & 以参考曲主唱或主奏的舒适音区为准 & 不要为了“气势”整体抬八度；先改密度与配器。 \\
+鼓 & 低频与中频分工 & 底鼓撑低频，军鼓打中频骨架；不要把军鼓当律动主角。 \\
+\bottomrule
+\end{longtable}
+
+\begin{tipbox}
+三格卡不必写在工程里。用一条轨道名或一段空白片段备注即可：例如“贝斯—根盘—E1/G2—八分为主，四小节留一拍”。写下来，比凭感觉堆轨更可靠。
+\end{tipbox}
+
+\section{先编曲，后混音}
+\label{sec:arrangement-before-mixing}
+
+编曲与混音解决的是两个不同层面的事：
+
+\begin{itemize}
+\item \textbf{编曲}决定“有哪些声音、在什么音区、什么时刻、承担什么功能”。
+\item \textbf{混音}决定“这些声音各自的音量、频段、空间与动态怎样共存”。
+\end{itemize}
+
+顺序不能反过来。原因很实际：如果两个声部从一开始就在同一音区、同一拍点抢同一功能，混音师只能靠大砍 EQ、猛压动态或把其中一个推得很远来勉强分开；结果是声音变薄、变假，编曲的意图也丢了。先用音区、节奏与配器把冲突解决掉，混音才有空间做“加分”，而不是“救火”。
+
+\begin{warnbox}
+听到“糊”时，先问三个编曲问题：这两个声部是不是在同一音区？是不是在同一拍点做同一件事？是不是有一个声部根本可以删掉？三个都排除后，再动 EQ 与压缩。
+\end{warnbox}
+
+\section{在夜半里看四层：六轨演示工程}
+\label{sec:yeban-demo}
+
+夜半启动时默认打开一个演示工程。它不是教程截图，而是一个真实的 \texttt{YebanProjectV1}：六条普通轨加一条主总线，正好可以拿来观察四层怎样分家。
+
+\begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
+\toprule
+轨道 & 类型 & 在本册里的观察点 \\
+\midrule
+\endfirsthead
+\toprule
+轨道 & 类型 & 在本册里的观察点 \\
+\midrule
+\endhead
+鼓 & MIDI & 节奏层的骨架；演示工程默认独奏它，适合先听清律动。 \\
+贝斯 & 音频 & 根盘与低频；和鼓一起决定“歌怎么动”。 \\
+铺底 & MIDI & 和声层的长音背景；注意它是否给主唱让出了中频。 \\
+主音 & MIDI & 旋律层的主奏；观察它和铺底是否在同一音区重叠。 \\
+弦乐 & MIDI & 音色与氛围层，也可承担和声或对位；是“加厚”还是“抢戏”取决于写法。 \\
+打击 & 音频 & 节奏层的颜色与细节；演示工程默认静音，适合用来做 A/B。 \\
+主总线 & 主输出 & 所有轨道的汇合点；不是编曲层，但决定最终听感。 \\
+\bottomrule
+\end{longtable}
+
+打开演示工程后，做三个动作：
+
+\begin{enumerate}
+\item 按 \textbf{Space} 播放，先听整体，不要立刻 Solo 某一条轨。
+\item 在编曲区逐条点 \textbf{Solo}，听每条轨单独承担什么；再用 \textbf{Mute} 把它拿掉，听整体少了什么。
+\item 打开钢琴卷帘（\textbf{P / F7}），看鼓、铺底、主音的片段里音符落在哪些音区；打开混音台（\textbf{X / F8}）看它们各自占多少电平。
+\end{enumerate}
+
+这不是“听歌”，而是把一首成品拆回功能层。能拆开，才谈得上自己搭。
+
+\screenshot{arrangement-demo-six-tracks}{演示工程的六条普通轨与主总线：逐轨 Solo/Mute 观察四层分工}
+
+\section{三遍法：从八小节骨架到完整段落}
+\label{sec:three-pass}
+
+不要从第一小节开始，把每个声部一次写满。用三遍法，每一遍只解决一个问题。
+
+\subsection*{第一遍：骨架}
+先写节奏层与和声根。最低限度是：底鼓/军鼓的落点、贝斯的根音走向、一个能听出和弦变化的铺底或键盘。此时不要写主旋律的装饰，不要加氛围长音。目标是：\textbf{只用三到四个声部，八小节循环能站住。}
+
+\subsection*{第二遍：主角}
+写主旋律或主唱。先用一个音色把句子唱清楚，不要同时叠三轨。写完后把第一遍的铺底暂时 Mute，检查主旋律单独是否成立；再放开铺底，检查它有没有挡住主旋律的中心音区。
+
+\subsection*{第三遍：颜色}
+最后才加弦乐、合成器长音、打击细节、副旋律与呼应句。每加一层，都要能回答：“它补的是哪个空？拿掉它，整体少了什么？”答不出来，就先不加。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[font=\small, node distance=6mm]
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass1) at (0,0) {\textbf{第一遍 骨架}\\鼓 / 贝斯 / 和声根\\目标：八小节站住};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass2) at (3.6,0) {\textbf{第二遍 主角}\\主旋律 / 主唱\\目标：一句话被记住};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass3) at (7.2,0) {\textbf{第三遍 颜色}\\弦乐 / 合成器 / 打击\\目标：每层都有活干};
+    \draw[->, thick, yebanblue] (pass1) -- (pass2);
+    \draw[->, thick, yebanblue] (pass2) -- (pass3);
+  \end{tikzpicture}
+  \caption{三遍法：每一遍只增加一类功能，避免一次写满后无法判断谁在打架。}
+  \label{fig:three-pass}
+\end{figure}
+
+\section{能量不是只有“抬八度”}
+\label{sec:energy}
+
+\term{主歌（verse）}{verse}到\term{副歌（chorus）}{chorus}要变强，但“变强”不等于把所有乐器升高一个八度。先画一条\term{能量曲线（energy curve）}{energy-curve}，再按下面的顺序加能量：
+
+\begin{enumerate}
+\item \textbf{加声部}：主歌只有鼓、贝斯、铺底；副歌加弦乐长音、节奏吉他或第二人声。
+\item \textbf{加密度}：主歌的鼓只在关键拍点，副歌加八分或十六分的闭合 hi-hat；贝斯从长音变成有方向的八分。
+\item \textbf{加力度}：让演奏/编程的力度有呼吸，副歌整体比主歌高一个可控的层级，而不是全曲同一个力度。
+\item \textbf{最后才考虑音区}：抬八度会让音色更亮，但也最容易挤压主唱；前面三招不够时再用。
+\end{enumerate}
+
+这也是本册后面每章都会反复用的判断顺序：\textbf{先功能，再音区，最后音色。}混音阶段再处理频段与空间。
+
+\section{常见错误与修正}
+\label{sec:overview-mistakes}
+
+\begin{longtable}{p{0.30\textwidth}p{0.62\textwidth}}
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endfirsthead
+\toprule
+常见错误 & 修正办法 \\
+\midrule
+\endhead
+所有声部都挤在中频 & 给每个声部写清音区；让铺底避开主唱中心，贝斯回到低音区。 \\
+轨道越多越“丰满” & 先删掉没有功能的层；每层必须能回答“拿掉它少什么”。 \\
+全曲力度一条直线 & 主歌与副歌各留动态空间；力度差比音高差更自然。 \\
+八小节循环从头复制到尾 & 每个段落至少改一处配器、密度或音区；用段落标记检查能量曲线。 \\
+用 EQ/压缩掩盖编曲冲突 & 先改音区、节奏与声部数量；混音只做加分。 \\
+主旋律被铺底盖住 & 把铺底移到主旋律下方或上方，避开中心音区；必要时减少铺底声部数。 \\
+\bottomrule
+\end{longtable}
+
+\section{练习}
+\label{sec:overview-exercise}
+
+\begin{exercise}
+打开夜半演示工程，完成下面三件事，并把结果写在一张纸上：
+\begin{enumerate}
+\item 逐轨 Solo/Mute，给六条普通轨各写一张三格角色卡（功能、音区、节奏性格）。
+\item 只用鼓、贝斯、铺底三轨，做一个八小节循环；要求贝斯以根音为主，铺底避开主唱中心音区。
+\item 在这个循环上写一句四小节的主旋律；然后分别做两次对比：一次拿掉铺底，一次把铺底升高一个八度。哪一版主旋律更清楚？为什么？
+\end{enumerate}
+\end{exercise}
+
+\section{本章要点}
+\label{sec:overview-takeaways}
+
+\begin{itemize}
+\item 编曲先分功能层：节奏、和声、旋律、音色与氛围。
+\item 写任何声部前先写角色卡：功能、音区、节奏性格。
+\item 先编曲后混音；编曲冲突不要留给 EQ 与压缩去救。
+\item 用三遍法：骨架、主角、颜色；每一遍只解决一个问题。
+\item 能量优先靠加声部、加密度、加力度，抬八度是最后手段。
+\end{itemize}
+
+\begin{helpmapping}
+\begin{longtable}{p{0.45\textwidth}p{0.45\textwidth}}
+\toprule
+本节 & 帮助锚点 \\
+\midrule
+编曲到底在编什么 & \texttt{arrangement-what-is-arrangement} \\
+角色卡：写任何声部前的三格 & \texttt{arrangement-role-card} \\
+先编曲，后混音 & \texttt{arrangement-before-mixing} \\
+在夜半里看四层 & \texttt{arrangement-yeban-demo} \\
+三遍法 & \texttt{arrangement-three-pass} \\
+能量不是只有抬八度 & \texttt{arrangement-energy} \\
+常见错误与修正 & \texttt{arrangement-common-mistakes} \\
+练习 & \texttt{arrangement-overview-exercise} \\
+\bottomrule
+\end{longtable}
+\end{helpmapping}
