@@ -209,11 +209,10 @@ pub fn load() -> HelpState {
     };
     let folded = fold_legacy_state(&settings.help, &load_legacy_file(&legacy_path));
     if folded != settings.help {
-        let mut merged = settings;
-        merged.help = folded.clone();
         // 折入落盘失败不挡读取：本次先按折入结果走，下次启动再试；但失败
         // 必须让用户看见（T-FIX-299）：记进设置警告台账，UI 侧取走展示。
-        if let Err(error) = crate::settings::save(&merged) {
+        // 走 settings::update 的锁内读-改-写，避免与另一实例的设置写回互相覆盖。
+        if let Err(error) = crate::settings::update(|settings| settings.help = folded.clone()) {
             crate::settings::record_save_failure("帮助状态折入", &error);
         }
     }
@@ -226,9 +225,9 @@ pub fn load() -> HelpState {
 /// # Errors
 /// 读-改-写中的 IO 失败时返回 [`HelpStateError::Io`]。
 pub fn save_to(path: &std::path::Path, state: &HelpState) -> Result<(), HelpStateError> {
-    let mut settings = crate::settings::load_from(path);
-    settings.help = state.clone();
-    crate::settings::save_to(path, &settings).map_err(HelpStateError::Io)
+    crate::settings::update_at(path, |settings| settings.help = state.clone())
+        .map(|_| ())
+        .map_err(HelpStateError::Io)
 }
 
 /// 写当前生效的 settings 文件里的帮助状态（读-改-写，见 [`save_to`]）。
@@ -236,9 +235,9 @@ pub fn save_to(path: &std::path::Path, state: &HelpState) -> Result<(), HelpStat
 /// # Errors
 /// 落盘失败时返回 [`HelpStateError::Io`]。
 pub fn save(state: &HelpState) -> Result<(), HelpStateError> {
-    let mut settings = crate::settings::load();
-    settings.help = state.clone();
-    crate::settings::save(&settings).map_err(HelpStateError::Io)
+    crate::settings::update(|settings| settings.help = state.clone())
+        .map(|_| ())
+        .map_err(HelpStateError::Io)
 }
 
 #[cfg(test)]

@@ -45,9 +45,10 @@
 //! 测试隔离：设置了 `YEBAN_SETTINGS_PATH` 时 load/save 走该路径（单测与
 //! example 用它指到临时目录，绝不碰真用户配置；生产路径永不设此变量）。
 
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cli::Language;
 use crate::help_state::HelpState;
@@ -59,6 +60,62 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// 测试隔离环境变量（见模块文档）。
 pub const SETTINGS_PATH_ENV: &str = "YEBAN_SETTINGS_PATH";
+
+/// 同一进程内的临时文件序号；跨进程的部分由 pid + 毫秒补齐。
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// 设置文件的跨进程锁文件：`settings.json.lock`（与目标文件同目录）。
+fn settings_lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from(SETTINGS_FILE_NAME),
+        |name| name.to_os_string(),
+    );
+    name.push(".lock");
+    path.with_file_name(name)
+}
+
+/// 在设置文件的跨进程排他锁内执行一次动作。锁覆盖完整的 load → mutate → save，
+/// 而不是只覆盖 rename 那一跳；锁文件与目标文件同目录，进程崩溃时由 OS 释放。
+fn with_settings_lock<T>(path: &Path, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = settings_lock_path(path);
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+    let result = action();
+    let unlock = lock_file.unlock();
+    match result {
+        Ok(value) => unlock.map(|()| value),
+        Err(error) => {
+            // 动作已失败时优先返回动作错误；解锁错误不覆盖它。
+            let _ = unlock;
+            Err(error)
+        }
+    }
+}
+
+/// 生成唯一临时文件路径：`settings.json.tmp.<pid>.<毫秒>.<进程内序号>`。
+/// 固定名 `settings.json.tmp` 会让两个写者互相覆盖。
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from(SETTINGS_FILE_NAME),
+        |name| name.to_os_string(),
+    );
+    name.push(format!(".tmp.{}.{millis}.{seq}", std::process::id()));
+    path.with_file_name(name)
+}
 
 /// 一条待展示的设置警告（T-FIX-299）。
 ///
@@ -506,6 +563,10 @@ fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
         let Some(path) = recent_project_path_from_json(item) else {
             continue;
         };
+        // 先去重键规范化再比较：Windows 上 `/music/a` 与 `C:\music\a`
+        // 原始写法不同、身份是同一个；拿规范化后的值跟已存条目比，
+        // 否则重复条目会漏过去（T-FIX-313 在 Windows 判据里暴露）。
+        let path = recent_project_identity(&path);
         if out.iter().any(|entry| entry.path == path) {
             continue;
         }
@@ -514,7 +575,7 @@ fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         out.push(RecentProject {
-            path: recent_project_identity(&path),
+            path,
             opened_at_unix_ms,
         });
         if out.len() >= RECENT_PROJECTS_MAX {
@@ -824,18 +885,48 @@ fn help_to_json(state: &HelpState) -> serde_json::Value {
 /// 从默认路径读设置（见 [`load_from`] 的容错口径）。
 #[must_use]
 pub fn load() -> Settings {
-    let mut settings = load_from(&settings_path());
-    // ⭐ T-FIX-312：启动时把**已经不存在**的最近条目清掉并写回设置。
-    // `load_from` 保持纯读（判据仍可用它读原始文件）；清理只在默认路径的
-    // `load()` 发生，且只有真的变了才写盘（⛔ 不让每次读设置都制造一次写）。
-    let pruned = prune_recent_projects(&settings.recent_projects);
-    if pruned != settings.recent_projects {
-        settings.recent_projects = pruned;
-        if let Err(error) = save(&settings) {
-            eprintln!("[yeban-app] 最近工程清单清理写回失败（下次启动会再试）: {error}");
+    let path = settings_path();
+    match with_settings_lock(&path, || {
+        let mut settings = load_from(&path);
+        // ⭐ T-FIX-312：启动时把**已经不存在**的最近条目清掉并写回设置。
+        // `load_from` 保持纯读（判据仍可用它读原始文件）；清理只在默认路径的
+        // `load()` 发生，且只有真的变了才写盘（⛔ 不让每次读设置都制造一次写）。
+        let pruned = prune_recent_projects(&settings.recent_projects);
+        if pruned != settings.recent_projects {
+            settings.recent_projects = pruned;
+            save_to_unlocked(&path, &settings)?;
+        }
+        Ok(settings)
+    }) {
+        Ok(settings) => settings,
+        Err(error) => {
+            // 锁文件不可用时仍要让启动读到设置；只取消清理写回，不假装成功。
+            record_warning(format!(
+                "设置文件加锁失败（{}），本次读取未执行最近清单清理：{error}",
+                path.display()
+            ));
+            load_from(&path)
         }
     }
-    settings
+}
+
+/// 在锁内做一次读-改-写：所有字段变更都基于锁内刚读到的完整设置。
+pub(crate) fn update_at(path: &Path, mutate: impl FnOnce(&mut Settings)) -> io::Result<Settings> {
+    with_settings_lock(path, || {
+        let mut settings = load_from(path);
+        let pruned = prune_recent_projects(&settings.recent_projects);
+        if pruned != settings.recent_projects {
+            settings.recent_projects = pruned;
+        }
+        mutate(&mut settings);
+        save_to_unlocked(path, &settings)?;
+        Ok(settings)
+    })
+}
+
+/// 在默认设置文件上做一次读-改-写（供 `help_state` 等同 crate 调用）。
+pub(crate) fn update(mutate: impl FnOnce(&mut Settings)) -> io::Result<Settings> {
+    update_at(&settings_path(), mutate)
 }
 
 /// ⭐ **剔除失效的最近条目**（T-FIX-312；纯函数）。
@@ -856,30 +947,24 @@ pub fn prune_recent_projects(list: &[RecentProject]) -> Vec<RecentProject> {
 /// （与 [`touch_recent_project`] 的去重键同一条口径）。
 pub fn forget_recent_project(path: &std::path::Path) {
     let path = recent_project_identity(path);
-    let mut settings = load();
-    settings
-        .recent_projects
-        .retain(|entry| recent_project_identity(&entry.path) != path);
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| {
+        settings
+            .recent_projects
+            .retain(|entry| recent_project_identity(&entry.path) != path);
+    }) {
         eprintln!("[yeban-app] 从最近清单移除写回失败（下次启动仍在）: {error}");
     }
 }
 
 /// ⭐ **清空最近清单**（T-FIX-312）：写回空数组，⛔ 不再写回死路径。
 pub fn clear_recent_projects() {
-    let mut settings = load();
-    settings.recent_projects.clear();
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| settings.recent_projects.clear()) {
         eprintln!("[yeban-app] 清空最近清单写回失败（下次启动仍在）: {error}");
     }
 }
 
-/// 把设置写到 `path`（先建父目录，写临时文件再 rename，不留半截文件）。
-/// `pub(crate)`：`help_state` 按显式路径做读-改-写时复用同一份写盘纪律。
-pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+/// 把设置写到 `path`（调用方必须已经持有跨进程锁）。
+fn save_to_unlocked(path: &Path, settings: &Settings) -> io::Result<()> {
     let mut object = serde_json::Map::new();
     object.insert("version".to_owned(), serde_json::json!(1));
     if let Some(lang) = settings.language {
@@ -925,9 +1010,28 @@ pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result
     }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{text}\n"))?;
-    std::fs::rename(&tmp, path)
+    let tmp = unique_temp_path(path);
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)?;
+        file.write_all(format!("{text}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        // rename 失败时只清理自己的临时文件；不碰目标文件。
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 把设置写到 `path`（先建父目录，锁内写唯一临时文件再 rename，不留半截文件）。
+/// `pub(crate)`：`help_state` 按显式路径做读-改-写时复用同一份写盘纪律。
+pub(crate) fn save_to(path: &Path, settings: &Settings) -> io::Result<()> {
+    with_settings_lock(path, || save_to_unlocked(path, settings))
 }
 
 /// 把设置写到默认路径。
@@ -939,9 +1043,7 @@ pub fn save(settings: &Settings) -> io::Result<()> {
 /// `language` 写回。写失败记一条待发警告（UI 侧展示）、不让调用方把
 /// 一次切换变失败（语言已应用，设置下次再存，见 [`record_save_failure`]）。
 pub fn save_language(lang: Language) {
-    let mut settings = load();
-    settings.language = Some(lang);
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| settings.language = Some(lang)) {
         record_save_failure("语言选择", &error);
     }
 }
@@ -951,10 +1053,10 @@ pub fn save_language(lang: Language) {
 /// 与 [`save_language`] 同款契约：写失败记一条待发警告（UI 侧展示），
 /// 不让调用方把一次打开变失败（工程已经打开，最近清单下次再记）。
 pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
-    let mut settings = load();
-    settings.recent_projects =
-        touch_recent_project(&settings.recent_projects, path, opened_at_unix_ms);
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| {
+        settings.recent_projects =
+            touch_recent_project(&settings.recent_projects, path, opened_at_unix_ms);
+    }) {
         record_save_failure("最近工程清单", &error);
     }
 }
@@ -964,9 +1066,7 @@ pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
 /// 契约：写失败记一条待发警告（UI 侧展示），不让调用方把一次切换变失败
 /// （开关已在本会话生效，设置下次再存）。
 pub fn save_debug_output(enabled: bool) {
-    let mut settings = load();
-    settings.debug_output = enabled;
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| settings.debug_output = enabled) {
         record_save_failure("调试输出开关", &error);
     }
 }
@@ -977,10 +1077,10 @@ pub fn save_debug_output(enabled: bool) {
 /// 警告（UI 侧展示），不让调用方把一次选择变失败（选择已在本会话生效，
 /// 设置下次再存）。
 pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
-    let mut settings = load();
-    settings.audio_output_device = output.map(str::to_owned);
-    settings.audio_input_device = input.map(str::to_owned);
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| {
+        settings.audio_output_device = output.map(str::to_owned);
+        settings.audio_input_device = input.map(str::to_owned);
+    }) {
         record_save_failure("音频设备选择", &error);
     }
 }
@@ -990,9 +1090,7 @@ pub fn save_audio_devices(output: Option<&str>, input: Option<&str>) {
 /// 先读出现有设置（保住其余键），写失败记一条待发警告（UI 侧展示），
 /// 不把一次切换变失败。
 pub fn save_scroll_in_play(enabled: bool) {
-    let mut settings = load();
-    settings.scroll_in_play = enabled;
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| settings.scroll_in_play = enabled) {
         record_save_failure("跟随模式", &error);
     }
 }
@@ -1012,9 +1110,7 @@ pub fn resolve_debug_output(cli_debug: bool, log_file_given: bool, stored: bool)
 /// 同款契约：写失败记一条待发警告（UI 侧展示），不让调用方把一次退出/
 /// 重置变失败（布局已应用或已退出，设置下次再存）。
 pub fn store_layout(layout: Option<WindowLayout>) {
-    let mut settings = load();
-    settings.layout = layout;
-    if let Err(error) = save(&settings) {
+    if let Err(error) = update(|settings| settings.layout = layout) {
         record_save_failure("窗口布局", &error);
     }
 }
@@ -1718,35 +1814,200 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// T-FIX-313：两个写者并发 `record_recent_project` 时，锁必须覆盖
+    /// 完整读-改-写，最终清单同时保留两条，不出现后写覆盖前写。
+    #[test]
+    fn concurrent_recent_project_updates_keep_both_entries() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = test_dir("concurrent-recent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let a = dir.join("a.yeban");
+        let b = dir.join("b.yeban");
+        std::fs::write(&a, b"a").expect("写工程 a");
+        std::fs::write(&b, b"b").expect("写工程 b");
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for (file, at) in [(a.clone(), 100_u64), (b.clone(), 200_u64)] {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                update_at(&path, |settings| {
+                    settings.recent_projects =
+                        touch_recent_project(&settings.recent_projects, &file, at);
+                })
+                .expect("并发记录最近工程");
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("写线程结束");
+        }
+
+        let loaded = load_from(&path);
+        assert_eq!(loaded.recent_projects.len(), 2, "两条都不能丢");
+        let got: Vec<_> = loaded
+            .recent_projects
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        let canonical_a = std::fs::canonicalize(&a).expect("工程 a 存在");
+        let canonical_b = std::fs::canonicalize(&b).expect("工程 b 存在");
+        assert!(got.contains(&canonical_a), "并发后缺 a：{got:?}");
+        assert!(got.contains(&canonical_b), "并发后缺 b：{got:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-313：`save_language` 与 `record_recent_project` 并发时，
+    /// 语言和最近工程都在；锁不能只保护单个键。
+    #[test]
+    fn concurrent_language_and_recent_update_keep_both_fields() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = test_dir("concurrent-language-recent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let project = dir.join("project.yeban");
+        std::fs::write(&project, b"p").expect("写工程文件");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let path_a = path.clone();
+        let barrier_a = Arc::clone(&barrier);
+        let language_writer = std::thread::spawn(move || {
+            barrier_a.wait();
+            update_at(&path_a, |settings| {
+                settings.language = Some(Language::FrFr);
+            })
+            .expect("并发写语言");
+        });
+
+        let path_b = path.clone();
+        let barrier_b = Arc::clone(&barrier);
+        let recent_writer = std::thread::spawn(move || {
+            barrier_b.wait();
+            update_at(&path_b, |settings| {
+                settings.recent_projects =
+                    touch_recent_project(&settings.recent_projects, &project, 300);
+            })
+            .expect("并发写最近工程");
+        });
+
+        language_writer.join().expect("语言线程结束");
+        recent_writer.join().expect("最近工程线程结束");
+
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Some(Language::FrFr), "语言不能丢");
+        assert_eq!(loaded.recent_projects.len(), 1, "最近工程不能丢");
+        assert_eq!(loaded.recent_projects[0].opened_at_unix_ms, 300);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-313：锁是真正的排他锁，而不是只换了一个临时文件名的装饰。
+    /// 主线程先握住 `settings.json.lock`，另一个写者必须等锁释放后才能完成。
+    #[test]
+    fn settings_lock_blocks_another_writer_until_released() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = test_dir("lock-blocks");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let lock_path = settings_lock_path(&path);
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("打开锁文件");
+        lock.lock().expect("握住锁");
+
+        let (tx, rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            update_at(&writer_path, |settings| {
+                settings.language = Some(Language::FrFr);
+            })
+            .expect("锁释放后写入");
+            tx.send(()).expect("通知主线程");
+        });
+
+        let was_blocked = rx.recv_timeout(Duration::from_millis(200)).is_err();
+        lock.unlock().expect("释放锁");
+        writer.join().expect("写线程结束");
+        assert!(
+            was_blocked,
+            "另一个写者在锁住期间就完成了，说明 update_at 没有真正等锁"
+        );
+        assert_eq!(load_from(&path).language, Some(Language::FrFr));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-313：临时文件名必须唯一，且锁文件落在目标同目录的
+    /// `settings.json.lock`；不再使用固定 `settings.json.tmp`。
+    #[test]
+    fn settings_temp_name_is_unique_and_lock_uses_sibling_file() {
+        let dir = test_dir("unique-temp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let first = unique_temp_path(&path);
+        let second = unique_temp_path(&path);
+        assert_ne!(first, second, "两次写必须拿不同的临时名");
+        assert!(
+            first
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("settings.json.tmp.")),
+            "临时名应以原文件名 + .tmp. 开头：{}",
+            first.display()
+        );
+        assert_eq!(
+            settings_lock_path(&path),
+            dir.join("settings.json.lock"),
+            "锁文件必须与目标同目录"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn touch_recent_project_dedupes_front_inserts_and_caps() {
-        let a = std::path::Path::new("/music/a.yeban");
-        let b = std::path::Path::new("/music/b.yeban");
-        let list = touch_recent_project(&[], a, 100);
+        let dir = test_dir("recent-order");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let a = dir.join("a.yeban");
+        let b = dir.join("b.yeban");
+        std::fs::write(&a, b"a").expect("写工程 a");
+        std::fs::write(&b, b"b").expect("写工程 b");
+        let canonical_a = std::fs::canonicalize(&a).expect("工程 a 存在");
+        let canonical_b = std::fs::canonicalize(&b).expect("工程 b 存在");
+        let list = touch_recent_project(&[], &a, 100);
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].path, a);
-        let list = touch_recent_project(&list, b, 200);
-        assert_eq!(list[0].path, b, "最新打开的在最前");
+        assert_eq!(list[0].path, canonical_a);
+        let list = touch_recent_project(&list, &b, 200);
+        assert_eq!(list[0].path, canonical_b, "最新打开的在最前");
         // 再开 a：a 回到最前且不重复，时刻更新。
-        let list = touch_recent_project(&list, a, 300);
+        let list = touch_recent_project(&list, &a, 300);
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].path, a);
+        assert_eq!(list[0].path, canonical_a);
         assert_eq!(list[0].opened_at_unix_ms, 300);
         // 灌满后继续加：长度封顶、最旧的被丢掉。
         let mut list = list;
         for i in 0..20 {
-            list = touch_recent_project(
-                &list,
-                &std::path::PathBuf::from(format!("/music/p{i}.yeban")),
-                400 + i,
-            );
+            let path = dir.join(format!("p{i}.yeban"));
+            list = touch_recent_project(&list, &path, 400 + i);
         }
         assert_eq!(list.len(), RECENT_PROJECTS_MAX);
         assert_eq!(list[0].opened_at_unix_ms, 419);
         assert!(
-            list.iter().all(|entry| entry.path != b),
+            list.iter().all(|entry| entry.path != canonical_b),
             "最旧的条目应被上限丢弃"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// T-FIX-310：最近清单去重键 = 规范化绝对路径。
@@ -1781,14 +2042,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
         let path = dir.join("settings.json");
+        let raw_a = dir.join("a.yeban");
+        let raw_b = dir.join("b.yeban");
+        std::fs::write(&raw_a, b"a").expect("写工程 a");
+        std::fs::write(&raw_b, b"b").expect("写工程 b");
+        let a = std::fs::canonicalize(&raw_a).expect("工程 a 存在");
+        let b = std::fs::canonicalize(&raw_b).expect("工程 b 存在");
         let settings = Settings {
             recent_projects: vec![
                 RecentProject {
-                    path: std::path::PathBuf::from("/music/a.yeban"),
+                    path: a,
                     opened_at_unix_ms: 111,
                 },
                 RecentProject {
-                    path: std::path::PathBuf::from("/music/b.yeban"),
+                    path: b,
                     opened_at_unix_ms: 99,
                 },
             ],
