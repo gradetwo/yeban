@@ -116,7 +116,7 @@ fn crop_scaled_3x(
     out
 }
 
-#[ignore = "requires external exp-demo-cover-assets fixture (not in the Git tree)"]
+#[ignore = "manual/evidence-only: live-window screenshots need a display and human visual check; CI data-layer coverage is in startup_chooser_inrepo_demos.rs using in-repo synthetic fixtures"]
 #[test]
 fn demo_cover_live_window_screenshot() {
     use std::cell::RefCell;
