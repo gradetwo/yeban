@@ -7,7 +7,7 @@
 //!
 //! 本文件钉两层：
 //!
-//! * **音频层**（走产品路径 `EngineEvent::MidiCc` → `EngineRuntime::process_quantum`）：
+//! * **音频层**（走产品路径 `EngineEvent::ControlChange` → `EngineRuntime::process_quantum`）：
 //!   踏板踩下时松键**仍然出声**，踏板抬起后按释放尾巴归零；无踏板时逐位不变。
 //! * **状态层**（`SynthEngine` 直调）：声部阶段（`Release` 与否）＋ 挂起表读数，
 //!   并要求 `seek` 与"轨道不在快照里"两条路径都把踏板状态清干净。

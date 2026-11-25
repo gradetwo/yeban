@@ -2095,13 +2095,21 @@ impl SynthEngine {
             return 0;
         }
         // 踏板松开 ①：复音支路 —— 把踩踏板期间松开的键真正送进 Release。
+        //
+        // ⭐ **一个 pitch 放掉它的全部声部**（T-FIX-406）：`pedal_pending` 每个 pitch 只有
+        // 一个 bool，而同一频率上可能同时有好几个仍被按住的声部（时间轴重叠的同音音符
+        // ＋ 被实时 `NoteOn` 抢先触发的试听声部）。`note_off` 每次最多放一个
+        // （T-FIX-275 语义）⇒ 单次调用会留下一半，其中 `end_sample = u64::MAX` 的试听
+        // 声部**再无任何事件能释放**（复验探针：抬起后尾部 RMS 0.46 的持续音）。
+        // `release_all` 才是"抬起踏板"该有的形状（⛔ 不是 `while holds() { note_off() }`：
+        // `holds` 把 Release 段也算"有"、`note_off` 在释放段会幂等返回 1 ⇒ 那个循环不退出）。
         for pitch in 0..128u8 {
             if !self.slots[index].pedal_pending[usize::from(pitch)] {
                 continue;
             }
             self.slots[index].pedal_pending[usize::from(pitch)] = false;
             let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
-            self.slots[index].synth.note_off(freq_hz);
+            self.slots[index].synth.release_all(freq_hz);
         }
         // 踏板松开 ②：SFZ 支路 —— 逐个放掉挂起的键（原样）。
         let now = self.position;
@@ -2685,6 +2693,10 @@ impl SynthEngine {
         // 可能永远不来了；留在挂起表里的键会一直占着声部（用户听到的是"有个音卡住"）。
         // ⚠ 只放掉**被踏板挂起的**那些键，仍被按住的键照旧保留 —— 与"声部状态跨快照
         // 连续"同口径（`begin_snapshot` 不释放声部池）。
+        //
+        // ⭐ **与踏板抬起同一条口径：每个 pitch 放掉它的全部声部**（T-FIX-406）。这条离场
+        // 排水是"抬起永远不会来"时的兜底 ⇒ 它必须与抬起分支做**同样多**的事，否则被移除
+        // 的轨道上照样会留一个永不自释的同频声部。
         for slot in &mut self.slots {
             if slot.present || !slot.assigned {
                 continue;
@@ -2696,7 +2708,7 @@ impl SynthEngine {
                 }
                 slot.pedal_pending[usize::from(pitch)] = false;
                 slot.synth
-                    .note_off(yeban_dsp::math::note_to_hz(f32::from(pitch)));
+                    .release_all(yeban_dsp::math::note_to_hz(f32::from(pitch)));
             }
         }
 

@@ -1339,6 +1339,54 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         0
     }
 
+    /// ⭐ **放掉某个频率上仍被按住的全部声部**（T-FIX-406：踏板抬起 / 离场排水用）。
+    ///
+    /// 与 [`Self::note_off`] 的**唯一**差别：一次调用放掉全部仍在按住的同频声部，而不是
+    /// 最多一个。语义来源是"踏板抬起"这件事本身 —— 抬起的是**踏板**，不是某一根键：
+    /// 同频重叠（时间轴两段同音高 ＋ 实时试听声部）时，挂起表里只有**一个** bool，
+    /// 抬起一次必须把它们**全部**放掉，否则剩下的那一个 `end_sample = u64::MAX`
+    /// 的实时声部再没有任何事件会释放（复验探针实测尾部 RMS 0.46 的持续音）。
+    ///
+    /// ## ⛔ 为什么不能用 `while holds(freq) { note_off(freq) }`
+    ///
+    /// [`Self::holds`] 把**已在 Release 段**的声部也算"有"（它按 `active` 判，而
+    /// `active` 要到 [`Self::retire_finished`] 才翻），而 [`Self::note_off`] 在
+    /// "同频声部全在释放段"时会**幂等地**再 `gate_off` 最先那个并**照样返回 1**。
+    /// 两句合起来在实时线程上就是**死循环**：`holds` 永远真、`note_off` 永远返回 1、
+    /// 声部状态再也不变。本方法是那个循环的**正确形状**：按"还没进 Release"这个
+    /// 一次性谓词扫一遍，扫完即止。
+    ///
+    /// ## 口径
+    ///
+    /// * 只动 `stage() != Release` 的声部（已在释放段的**不重复** `gate_off`）。
+    /// * 挂起音符（被窃取者）走第二支路：`pending_freq_hz == freq_hz` 且未
+    ///   `pending_released` ⇒ 置 `pending_released`（与 [`Self::note_off`] 同一个补法）。
+    /// * **四趟扫描的次序与 [`Self::note_off`] 无关**：这里是"全部"，不需要全序挑一个，
+    ///   扫过即全部 `gate_off` ⇒ 任何平台同解。
+    /// * 返回值 ＝ **这次真正送进 Release 的声部数**（0 ＝ 该频率上没有仍被按住的声部）。
+    ///
+    /// **实时路径**：零分配、零锁、零 I/O（只遍历固定 16 个槽位）。
+    pub fn release_all(&mut self, freq_hz: f32) -> u32 {
+        let mut released = 0u32;
+        for voice in &mut self.voices {
+            if voice.active && voice.freq_hz == freq_hz && voice.env.stage() != AdsrStage::Release {
+                voice.env.gate_off();
+                released = released.saturating_add(1);
+            }
+        }
+        // 挂起支路：被窃取者还没提升，`gate_off` 要落到**新**包络上 ⇒ 只记标记。
+        for voice in &mut self.voices {
+            if !voice.active || voice.pending_released {
+                continue;
+            }
+            if voice.pending.is_some() && voice.pending_freq_hz == freq_hz {
+                voice.pending_released = true;
+                released = released.saturating_add(1);
+            }
+        }
+        released
+    }
+
     /// 回收**已结束**的声部：包络已回到 `Idle` 且 `end_sample <= position` 的声部空槽化
     /// ⇒ 空槽可被下一次 `note_on` 复用（零分配）。
     pub fn retire_finished(&mut self, position: u64) {
