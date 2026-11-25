@@ -55,3 +55,44 @@ fn undo_port_with_project_borrows_instead_of_cloning() {
         "Local 后端必须直接借用 session.project()（&YebanProjectV1），⛔ 不加 .clone()"
     );
 }
+
+/// ③ T-FIX-431：编曲区横向滚动/滚轮的重投影不再深拷贝整份工程。
+///
+/// 红对照：把 `reproject_with_scroll` 改回 `port.try_project()`（Local 后端会
+/// `session.project().clone()`）⇒ 本判据立刻变红。
+#[test]
+fn scroll_reprojection_borrows_instead_of_cloning_the_project() {
+    let body = fn_body(HOST, "fn reproject_with_scroll(");
+    assert!(
+        body.contains("with_project"),
+        "滚动/滚轮重投影必须用 UndoPort::with_project 借用读（T-FIX-431）"
+    );
+    assert!(
+        !body.contains("try_project()"),
+        "滚动/滚轮重投影不得再调 try_project()（那一跳会 clone 整份工程）"
+    );
+}
+
+/// ④ 滚动/滚轮的三条入口（空车道拖动、卷帘滚轮、编曲区滚轮/滚动条）都不走全量 clone。
+#[test]
+fn every_scroll_entry_point_avoids_the_full_project_clone() {
+    let install_scroll = fn_body(HOST, "fn install_roll_scroll(");
+    assert!(
+        install_scroll.contains("with_project"),
+        "空车道拖动 / 卷帘滚轮必须改用 with_project"
+    );
+    assert!(
+        !install_scroll.contains("try_project()"),
+        "install_roll_scroll 的两个滚动回调都不得再 try_project()"
+    );
+
+    let wheel = fn_body(HOST, "fn wire_arrangement_wheel(");
+    assert!(
+        wheel.contains("reproject_with_scroll"),
+        "编曲区滚轮必须走同一个滚动重投影落点"
+    );
+    assert!(
+        !wheel.contains("try_project()"),
+        "编曲区滚轮不得自己再克隆一份工程"
+    );
+}

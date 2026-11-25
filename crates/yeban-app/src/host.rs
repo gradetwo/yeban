@@ -1386,10 +1386,13 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
 /// 的工程投影；没有活跃工程 ⇒ 什么都不做，⛔ 不 panic）。`next` 只夹下界 0
 /// （与 [`advance_scroll`] 同款：上限暂不设，内容长度由投影决定）。
 fn reproject_with_scroll(ui: &MainWindow, port: &UndoPort, next: f32) {
-    let Some(project) = port.try_project() else {
-        return;
-    };
-    let Ok(view) = project_with_view_state(&project, ui) else {
+    // ⭐ T-FIX-431：滚动/滚轮是高频路径，⛔ 不再走「克隆整份工程」的读入口
+    // （Local 后端每事件一次深拷贝，每秒几十次）。`with_project` 只借
+    // `&YebanProjectV1`，投影出来的 `ViewState` 是 owned 数据，借用随即结束。
+    let Some(view) = port
+        .with_project(|project| project_with_view_state(project, ui).ok())
+        .flatten()
+    else {
         return;
     };
     let width = slint::ComponentHandle::window(ui).size().width as f32;
@@ -20985,11 +20988,12 @@ fn install_roll_scroll(
             // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
             let next = advance_scroll(ui.get_roll_scroll_x(), delta);
             let width = slint::ComponentHandle::window(&ui).size().width as f32;
-            match port
-                .as_ref()
-                .and_then(|port| port.try_project())
-                .and_then(|project| project_with_view_state(&project, &ui).ok())
-            {
+            // ⭐ T-FIX-431：滚动路径借用读，⛔ 不深拷贝整份工程。
+            let refreshed = port.as_ref().and_then(|port| {
+                port.with_project(|project| project_with_view_state(project, &ui).ok())
+                    .flatten()
+            });
+            match refreshed {
                 // 端口在场 ⇒ 用**此刻**的工程投影（与 [`reproject_roll`] 同一条链）。
                 Some(refreshed) => apply_view(&ui, &refreshed, width, next),
                 None => apply_view(&ui, &fallback_view, width, next),
@@ -21059,11 +21063,12 @@ fn install_roll_scroll(
 
             if scroll_changed || pitch_changed {
                 let width = slint::ComponentHandle::window(&ui).size().width as f32;
-                match port
-                    .as_ref()
-                    .and_then(|port| port.try_project())
-                    .and_then(|project| project_with_view_state(&project, &ui).ok())
-                {
+                // ⭐ T-FIX-431：卷帘滚轮同样借用读，⛔ 不深拷贝整份工程。
+                let refreshed = port.as_ref().and_then(|port| {
+                    port.with_project(|project| project_with_view_state(project, &ui).ok())
+                        .flatten()
+                });
+                match refreshed {
                     Some(refreshed) => apply_view(&ui, &refreshed, width, next_scroll),
                     None => apply_view(&ui, &fallback_view, width, next_scroll),
                 }
