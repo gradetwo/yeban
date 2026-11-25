@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_model::ids::EntityId;
 
+use crate::cli::Language;
 use crate::help_state::{self, ActiveLesson, HelpState};
 use crate::lessons::{self, Lesson};
 use crate::manual;
@@ -237,10 +238,103 @@ pub fn onboarding_dismiss_forever(ui: &MainWindow) {
     ui.set_onboarding_open(false);
 }
 
+/// 落盘失败的事项闭集（两处调用点各一；T-FIX-447，形态同
+/// `settings::SaveFailureSubject`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelpSaveFailureSubject {
+    /// 新手引导设置（`update_state`）。
+    OnboardingSettings,
+    /// 学习进度（开课 / 完成一步）。
+    LessonProgress,
+}
+
+impl HelpSaveFailureSubject {
+    /// 事项在 `lang` 下的称呼（九语闭集，与 `settings.rs` 同款形态）。
+    #[must_use]
+    fn label_in(self, lang: Language) -> &'static str {
+        use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::OnboardingSettings => match lang {
+                ZhCn => "新手引导设置",
+                EnUs => "Onboarding settings",
+                FrFr => "Paramètres d'accueil",
+                EsEs => "Ajustes de incorporación",
+                PtBr => "Configurações de integração",
+                JaJp => "オンボーディング設定",
+                KoKr => "온보딩 설정",
+                RuRu => "Параметры ознакомления",
+                DeDe => "Onboarding-Einstellungen",
+            },
+            Self::LessonProgress => match lang {
+                ZhCn => "学习进度",
+                EnUs => "Lesson progress",
+                FrFr => "Progression de la leçon",
+                EsEs => "Progreso de la lección",
+                PtBr => "Progresso da lição",
+                JaJp => "レッスンの進捗",
+                KoKr => "수업 진행 상황",
+                RuRu => "Прогресс урока",
+                DeDe => "Lektionsfortschritt",
+            },
+        }
+    }
+}
+
 /// 落盘失败的可见文案（与 [`crate::host::report_notice`] 的错误级口径一致）：
 /// 本次已生效、下次启动可能回退——用户必须看见这句话，⛔ 不许只打 stderr。
-fn save_failure_message(what: &str, error: &help_state::HelpStateError) -> String {
-    format!("{what}未能保存：本次已生效，但下次启动可能回退（{error}）")
+///
+/// T-FIX-447：旧实现拼了一条硬编码中文串，英文态下提示条 / 课程反馈区照样
+/// 显示中文。文案是常驻 UI 显示（错误级常驻提示与课程反馈区），按
+/// `docs/app-i18n-notes.md` §4 收尾补记（2026-11-17 裁定）须译；形态与
+/// T-FIX-432 的设置警告同款——事项与模板按当前语言渲染
+/// （[`save_failure_message_in`]），九语模板表住在本文件，由单测逐语看守；
+/// 不走 Slint 的 `@tr`/`.po`（`@tr` 是 Slint 编译期宏，Rust 代码调不了；
+/// `.po` 里加一条没有 `@tr` 调用点的词条会被 `i18n_coverage` 的词表精确
+/// 相等判据当孤儿条打红）。错误原文按 §4 口径不译，原样进占位。
+fn save_failure_message(
+    subject: HelpSaveFailureSubject,
+    error: &help_state::HelpStateError,
+) -> String {
+    save_failure_message_in(subject, error, crate::host::current_language())
+}
+
+/// 在 `lang` 下的完整展示文案。中文态与 T-FIX-311 原文逐字相同（单测钉死）；
+/// 错误原文不译，原样进占位。
+#[must_use]
+fn save_failure_message_in(
+    subject: HelpSaveFailureSubject,
+    error: &help_state::HelpStateError,
+    lang: Language,
+) -> String {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    let what = subject.label_in(lang);
+    match lang {
+        ZhCn => format!("{what}未能保存：本次已生效，但下次启动可能回退（{error}）"),
+        EnUs => format!(
+            "{what} failed to save: it applies to this session, but may roll back on next launch ({error})"
+        ),
+        FrFr => format!(
+            "Échec de l'enregistrement de {what} : appliqué pour cette session, mais il risque de revenir en arrière au prochain démarrage ({error})"
+        ),
+        EsEs => format!(
+            "No se pudo guardar {what}: se aplica en esta sesión, pero podría revertirse en el próximo inicio ({error})"
+        ),
+        PtBr => format!(
+            "Não foi possível salvar {what}: vale para esta sessão, mas poderá ser revertido na próxima inicialização ({error})"
+        ),
+        JaJp => format!(
+            "{what}を保存できませんでした：このセッションでは有効ですが、次回起動時に元に戻る可能性があります（{error}）"
+        ),
+        KoKr => format!(
+            "{what}을(를) 저장하지 못했습니다: 이번 세션에는 적용되지만, 다음 시작 시 되돌려질 수 있습니다({error})"
+        ),
+        RuRu => format!(
+            "Не удалось сохранить {what}: действует в этом сеансе, но при следующем запуске может быть отменено ({error})"
+        ),
+        DeDe => format!(
+            "{what} konnte nicht gespeichert werden: gilt für diese Sitzung, kann beim nächsten Start aber zurückgesetzt werden ({error})"
+        ),
+    }
 }
 
 /// T-FIX-328：本会话内最后一次改过的 [`HelpState`]（按设置文件路径分键）。
@@ -272,7 +366,11 @@ fn update_state(ui: &MainWindow, edit: impl FnOnce(&mut HelpState)) {
     // 课程反馈区看不见，只能走提示条 + toast）；本次仍按改后状态走。
     if let Err(error) = help_state::save(&state) {
         eprintln!("[yeban-app] 新手引导设置落盘失败（下次启动可能回退）: {error}");
-        crate::host::report_notice(ui, &save_failure_message("新手引导设置", &error), true);
+        crate::host::report_notice(
+            ui,
+            &save_failure_message(HelpSaveFailureSubject::OnboardingSettings, &error),
+            true,
+        );
     }
 }
 
@@ -328,7 +426,10 @@ pub fn start_lesson(ui: &MainWindow, port: &Rc<UndoPort>, lesson_id: &str) {
         Ok(()) => ui.set_lesson_feedback(SharedString::from("")),
         Err(error) => {
             eprintln!("[yeban-app] 学习进度落盘失败（下次启动可能回退）: {error}");
-            ui.set_lesson_feedback(SharedString::from(save_failure_message("学习进度", &error)));
+            ui.set_lesson_feedback(SharedString::from(save_failure_message(
+                HelpSaveFailureSubject::LessonProgress,
+                &error,
+            )));
         }
     }
     refresh_lessons_with_state(ui, port, &state);
@@ -375,7 +476,7 @@ pub fn check_current_step(ui: &MainWindow, port: &Rc<UndoPort>) {
             Err(error) => {
                 eprintln!("[yeban-app] 学习进度落盘失败（下次启动可能回退）: {error}");
                 ui.set_lesson_feedback(SharedString::from(save_failure_message(
-                    "学习进度",
+                    HelpSaveFailureSubject::LessonProgress,
                     &error,
                 )));
             }
@@ -475,4 +576,93 @@ fn baseline_set(active: &ActiveLesson) -> BTreeSet<EntityId> {
         .iter()
         .filter_map(|text| text.parse::<EntityId>().ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Language;
+
+    /// 固定测试错误：io 原文 ASCII，便于断言错误原文原样进占位。
+    fn test_error() -> help_state::HelpStateError {
+        help_state::HelpStateError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk full (test)",
+        ))
+    }
+
+    /// 中文态与 T-FIX-311 原文逐字相同（两处调用点各一）。
+    #[test]
+    fn save_failure_message_zh_cn_is_byte_identical_to_311() {
+        let error = test_error();
+        assert_eq!(
+            save_failure_message_in(
+                HelpSaveFailureSubject::OnboardingSettings,
+                &error,
+                Language::ZhCn
+            ),
+            "新手引导设置未能保存：本次已生效，但下次启动可能回退（帮助状态落盘失败：disk full (test)）"
+        );
+        assert_eq!(
+            save_failure_message_in(
+                HelpSaveFailureSubject::LessonProgress,
+                &error,
+                Language::ZhCn
+            ),
+            "学习进度未能保存：本次已生效，但下次启动可能回退（帮助状态落盘失败：disk full (test)）"
+        );
+    }
+
+    /// 英文态三场景逐条钉死：两事项的模板 + 错误原文原样进占位。
+    #[test]
+    fn save_failure_message_en_us_renders_english() {
+        let error = test_error();
+        let onboarding = save_failure_message_in(
+            HelpSaveFailureSubject::OnboardingSettings,
+            &error,
+            Language::EnUs,
+        );
+        assert_eq!(
+            onboarding,
+            "Onboarding settings failed to save: it applies to this session, but may roll back on next launch (帮助状态落盘失败：disk full (test))"
+        );
+        let lesson = save_failure_message_in(
+            HelpSaveFailureSubject::LessonProgress,
+            &error,
+            Language::EnUs,
+        );
+        assert_eq!(
+            lesson,
+            "Lesson progress failed to save: it applies to this session, but may roll back on next launch (帮助状态落盘失败：disk full (test))"
+        );
+    }
+
+    /// 九语全覆盖：每语两事项均有文案；非中文语的模板不含中文模板残片
+    /// （「未能保存」「回退」）；错误原文（ASCII 记号）每语原样进占位。
+    #[test]
+    fn save_failure_message_all_languages_have_no_chinese_template_residue() {
+        let error = test_error();
+        for lang in Language::ALL {
+            for subject in [
+                HelpSaveFailureSubject::OnboardingSettings,
+                HelpSaveFailureSubject::LessonProgress,
+            ] {
+                let rendered = save_failure_message_in(subject, &error, lang);
+                assert!(
+                    rendered.contains(subject.label_in(lang)),
+                    "{lang:?} 渲染必须含事项称呼，实际：{rendered}"
+                );
+                assert!(
+                    rendered.contains("disk full (test)"),
+                    "{lang:?} 渲染必须原样保留错误原文，实际：{rendered}"
+                );
+                if lang != Language::ZhCn {
+                    assert!(
+                        !rendered.contains("未能保存") && !rendered.contains("回退"),
+                        "{lang:?} 模板不许含中文残片，实际：{rendered}"
+                    );
+                }
+            }
+        }
+    }
 }
