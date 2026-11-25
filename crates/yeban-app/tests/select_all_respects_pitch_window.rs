@@ -99,7 +99,7 @@ fn select_all_only_takes_notes_inside_the_sixteen_lane_pitch_window() {
         Rc::new(RefCell::new(InputContext::new())),
         Some(Rc::clone(&port)),
         None,
-        Some(Rc::new(project.clone())),
+        Some(Rc::new(RefCell::new(project.clone()))),
     );
 
     // 把卷帘纵向窗口固定在默认基音 60 ⇒ 16 条泳道对应 60..=75。

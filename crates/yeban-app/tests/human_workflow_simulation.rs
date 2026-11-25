@@ -36,7 +36,7 @@ fn wire_full_production_surface(
     ui: &yeban_app::ui::MainWindow,
     undo: &Rc<UndoPort>,
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
-    project_rc: &Rc<YebanProjectV1>,
+    project_rc: &Rc<RefCell<YebanProjectV1>>,
     view_cell: &Rc<RefCell<ViewState>>,
 ) {
     let input = Rc::new(RefCell::new(yeban_app::input::InputContext::default()));
@@ -111,7 +111,7 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
     let production = ProductionLoop::start(&base, 0).expect("启动引擎");
     let engine = production.engine_handle();
     let view_cell = Rc::new(RefCell::new(initial_view.clone()));
-    let project_rc = Rc::new(base);
+    let project_rc = Rc::new(RefCell::new(base));
 
     let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
         host::build_main_window(&initial_view, &scene)

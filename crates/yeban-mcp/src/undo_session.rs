@@ -73,8 +73,10 @@
 //! `crates/yeban-mcp/tests/undo_wiring.rs`（工具面）与 `crates/yeban-app/src/undo.rs` 的判据
 //! + `crates/yeban-app/tests/undo_wiring_ui.rs`（界面面）。
 
+use std::cell::{Ref, RefCell};
 use std::fmt;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use yeban_model::{
     AssetHash, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, StampedOp, UndoCursor,
@@ -777,9 +779,18 @@ fn fork_point(graph: &CommitGraph, state: &UndoState) -> Result<Option<EntityId>
 /// 两者与锁/资产池的生命周期绑在一起），而是直接调用本模块的**自由函数**
 /// （[`genesis`] / [`commit`] / [`undo`] / [`redo`]）——
 /// 因此会话语义仍然只有一份，不存在"Domain 那一套"与"Session 那一套"。
+///
+/// ## 工程是共享的（`Rc<RefCell<…>>`，T-ISS-MWW4H8J6）
+///
+/// 会话**不拥有**工程文档的独一份：`project` 是与打开者共享的同一份
+/// `Rc<RefCell<YebanProjectV1>>` —— 打开时从归档里**搬**进来（`std::mem::take`），
+/// ⛔ 不再 `archive.project.clone()`（T-FIX-428 回执 §5 遗留的整工程克隆）。
+/// `Clone` 一个会话于是共享同一份工程（`Rc` 计数 +1，⛔ 不复制文档）——
+/// 会话的"拥有"只在图谱与会话态上，工程永远只有一份。调用方若需要一份
+/// 独立的工程文档，必须显式 `(*session.project()).clone()`。
 #[derive(Clone, Debug)]
 pub struct UndoSession {
-    project: YebanProjectV1,
+    project: Rc<RefCell<YebanProjectV1>>,
     graph: CommitGraph,
     state: UndoState,
     label: String,
@@ -795,6 +806,24 @@ impl UndoSession {
         label: impl Into<String>,
         author: &str,
         project: YebanProjectV1,
+        now_ms: u64,
+    ) -> Result<Self, UndoRefusal> {
+        Self::open_from_shared(label, author, Rc::new(RefCell::new(project)), now_ms)
+    }
+
+    /// 打开一个工程，但**共享调用方已经持有的那一份工程文档**（⛔ 不复制）。
+    ///
+    /// 与 [`Self::open`] 的唯一区别是工程的来源：这里不接手一份值、
+    /// 而是接手一份 `Rc` 句柄 —— 调用方（`yeban_app::undo::open_undo_session`）
+    /// 把归档里的工程**搬**进这份句柄之后，会话与打开者读到的是同一份文档。
+    ///
+    /// # Errors
+    ///
+    /// 根提交被模型拒绝。
+    pub fn open_from_shared(
+        label: impl Into<String>,
+        author: &str,
+        project: Rc<RefCell<YebanProjectV1>>,
         now_ms: u64,
     ) -> Result<Self, UndoRefusal> {
         let label = label.into();
@@ -827,8 +856,30 @@ impl UndoSession {
         graph: CommitGraph,
         now_ms: u64,
     ) -> Result<Self, UndoRefusal> {
+        Self::open_with_graph_from_shared(
+            label,
+            author,
+            Rc::new(RefCell::new(project)),
+            graph,
+            now_ms,
+        )
+    }
+
+    /// 与 [`Self::open_with_graph`] 相同，但**共享调用方已经持有的那一份工程文档**
+    /// （⛔ 不复制）—— 见 [`Self::open_from_shared`]。
+    ///
+    /// # Errors
+    ///
+    /// 图谱非空却没有 `main` 分支。
+    pub fn open_with_graph_from_shared(
+        label: impl Into<String>,
+        author: &str,
+        project: Rc<RefCell<YebanProjectV1>>,
+        graph: CommitGraph,
+        now_ms: u64,
+    ) -> Result<Self, UndoRefusal> {
         if graph.commit_count() == 0 {
-            return Self::open(label, author, project, now_ms);
+            return Self::open_from_shared(label, author, project, now_ms);
         }
         let mut session = Self {
             project,
@@ -836,14 +887,27 @@ impl UndoSession {
             state: UndoState::new(author),
             label: label.into(),
         };
-        session.state.align_with(&session.graph, &session.project)?;
+        session
+            .state
+            .align_with(&session.graph, &session.project.borrow())?;
         Ok(session)
     }
 
-    /// 权威工程（只读）。
+    /// 权威工程（只读借用）。
+    ///
+    /// ⚠ 返回的是**借用**（`Ref`），不是 `&YebanProjectV1`：工程住在共享的
+    /// `Rc<RefCell<…>>` 里，调用方在借用期间不能再 `borrow_mut()` 它
+    /// （`RefCell already borrowed` 会 panic —— 借用期只做读数）。
+    /// 需要 `&YebanProjectV1` 时写 `&session.project()`。
     #[must_use]
-    pub const fn project(&self) -> &YebanProjectV1 {
-        &self.project
+    pub fn project(&self) -> Ref<'_, YebanProjectV1> {
+        self.project.borrow()
+    }
+
+    /// 与打开者共享的那一份工程句柄（`Rc` 计数 +1，⛔ 不复制文档）。
+    #[must_use]
+    pub fn project_shared(&self) -> Rc<RefCell<YebanProjectV1>> {
+        Rc::clone(&self.project)
     }
 
     /// 提交图谱（只读）。
@@ -876,7 +940,12 @@ impl UndoSession {
     ///
     /// 见 [`commit`]。
     pub fn commit(&mut self, request: CommitRequest) -> Result<EntityId, UndoRefusal> {
-        commit(&mut self.graph, &mut self.project, &mut self.state, request)
+        commit(
+            &mut self.graph,
+            &mut self.project.borrow_mut(),
+            &mut self.state,
+            request,
+        )
     }
 
     /// 撤销（见自由函数 [`undo`]）。
@@ -885,7 +954,12 @@ impl UndoSession {
     ///
     /// 见 [`undo`]。
     pub fn undo_steps(&mut self, steps: usize) -> Result<UndoOutcome, UndoRefusal> {
-        undo(&self.graph, &mut self.project, &mut self.state, steps)
+        undo(
+            &self.graph,
+            &mut self.project.borrow_mut(),
+            &mut self.state,
+            steps,
+        )
     }
 
     /// 重做（见自由函数 [`redo`]）。
@@ -894,7 +968,12 @@ impl UndoSession {
     ///
     /// 见 [`redo`]。
     pub fn redo_steps(&mut self, steps: usize) -> Result<UndoOutcome, UndoRefusal> {
-        redo(&self.graph, &mut self.project, &mut self.state, steps)
+        redo(
+            &self.graph,
+            &mut self.project.borrow_mut(),
+            &mut self.state,
+            steps,
+        )
     }
 
     /// 工程内容的**确定性容器字节**（判据的逐字节指纹）。
@@ -903,7 +982,7 @@ impl UndoSession {
     ///
     /// 容器写出失败。
     pub fn project_bytes(&self) -> Result<Vec<u8>, UndoRefusal> {
-        canonical_project_bytes(&self.project)
+        canonical_project_bytes(&self.project.borrow())
     }
 
     /// 工程内容的 SHA-256（十六进制小写）——比整段字节更好放进日志与断言。
@@ -920,8 +999,8 @@ impl UndoSession {
     ///
     /// 只在测试构建里存在（`#[cfg(test)]`），生产二进制里没有这个口子。
     #[cfg(test)]
-    pub fn project_mut_for_tests(&mut self) -> &mut YebanProjectV1 {
-        &mut self.project
+    pub fn project_mut_for_tests(&mut self) -> std::cell::RefMut<'_, YebanProjectV1> {
+        self.project.borrow_mut()
     }
 }
 
@@ -1301,7 +1380,8 @@ mod tests {
         let state = session.state().clone();
 
         // 模拟撤销：只读，真状态一位不动。
-        let simulated = simulate_undo(session.graph(), session.project(), &state, 1).expect("模拟");
+        let simulated =
+            simulate_undo(session.graph(), &session.project(), &state, 1).expect("模拟");
         assert_eq!(
             session.project_bytes().expect("字节"),
             before,
@@ -1330,7 +1410,7 @@ mod tests {
             vec!["Batch"]
         );
         let simulated_redo =
-            simulate_redo(session.graph(), session.project(), &undone_state, 1).expect("模拟");
+            simulate_redo(session.graph(), &session.project(), &undone_state, 1).expect("模拟");
         assert_eq!(session.project_bytes().expect("字节"), undone_bytes);
         session.redo_steps(1).expect("真做");
         assert_eq!(
@@ -1535,7 +1615,7 @@ mod tests {
 
         // "保存" = 模型的容器写出（`history.dag` 用容器要求的原始字节）。
         let bytes = container::write_project_container(
-            session.project(),
+            &session.project(),
             b"fixture-history-dag",
             &std::collections::BTreeMap::new(),
         )
@@ -1611,7 +1691,7 @@ mod tests {
         assert_eq!(session.state().undone(), 2);
 
         // —— 丢掉游标，仅凭（文档, 图谱）重新推导 ——
-        let project = session.project().clone();
+        let project = (*session.project()).clone();
         let graph = session.graph().clone();
         let mut derived = UndoState::new("yeban-app");
         assert_eq!(
@@ -1642,7 +1722,7 @@ mod tests {
         let mut derived_again = UndoState::new("yeban-app");
         assert_eq!(
             derived_again
-                .align_with(&graph, session.project())
+                .align_with(&graph, &session.project())
                 .expect("再推导"),
             3,
             "全部撤掉 ⇒ 推导出 3 步"
@@ -1661,7 +1741,7 @@ mod tests {
         commit_fixture(&mut session, &fixture);
         // 绕过日志直接改工程（模拟"外部把状态写坏了"）。
         {
-            let project = session.project_mut_for_tests();
+            let mut project = session.project_mut_for_tests();
             let entry = project.clip_pool.get_mut(&fixture.clip_id).expect("片段");
             let notes = entry.content.notes_mut().expect("MIDI 片段");
             notes.get_mut(&fixture.note_id).expect("音符").velocity = 5;

@@ -450,7 +450,7 @@ fn build_live_window(
     let production = ProductionLoop::start(project, 0).expect("引擎重建");
     let engine = production.engine_handle();
     let view_cell = Rc::new(RefCell::new(view.clone()));
-    let project_rc = Rc::new(project.clone());
+    let project_rc = Rc::new(RefCell::new(project.clone()));
 
     let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
         host::build_main_window(&view, &scene)

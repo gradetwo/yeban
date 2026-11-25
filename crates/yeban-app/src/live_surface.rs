@@ -786,7 +786,7 @@ impl LiveAdminSurface {
         self.save_epoch = 0;
         self.report = None;
         // ⭐ `D-UI-30`：**重接走带**，与 `main.rs` 换工程那段（`wire_callbacks` + `wire_keys`
-        // 用新的 `Rc<YebanProjectV1>` 再走一遍）同一步。Slint 的 `on_*` 是**覆盖**语义
+        // 用新的 `Rc<RefCell<YebanProjectV1>>`（⭐ T-ISS-MWW4H8J6：一份新格）再走一遍）同一步。Slint 的 `on_*` 是**覆盖**语义
         // ⇒ 这里不是"第二个注册者"，而是把闭包里的工程换成**这一份**。
         // 不重接的后果：录音键读的是装配期那份的 `count_in_bars`（`#132` 那条"第一个读者"
         // 从此变成陈旧值），而 `metronome-on` 的初值也是旧工程里的开关。
@@ -794,7 +794,10 @@ impl LiveAdminSurface {
         host::wire_transport(
             &self.window,
             Rc::clone(&self.engine),
-            Some(Rc::new(project.clone())),
+            // ⭐ T-ISS-MWW4H8J6：`apply_project` 仍按旧语义走——本执行面自己持有一份
+            // 工程拷贝（`self.project`），这里给走带的是那份拷贝的**新格**；与活会话
+            // 共享同一格需要先证明会话持有的就是这份文档（本单未证，见回执 §8）。
+            Some(Rc::new(RefCell::new(project.clone()))),
             self.undo.clone(),
         );
         if self.engine.borrow().has_engine() {
@@ -2328,6 +2331,10 @@ pub fn build_live_ui_from_authority_with(
 /// 投影失败（[`LiveWiringError::Project`]）或平台/组件/抓帧失败
 /// （[`LiveWiringError::Render`]）。
 pub fn build_live_ui_with(
+    // ⭐ T-ISS-MWW4H8J6：本装配（serve/判据面）仍按旧语义走——调用方只给一份借用，
+    // 这里**克隆一次**进共享格（`project_rc`），走带与保存回退读同一格；克隆数与
+    // 修前相同（装配期一份）。生产 `run_gui` 不走这里，它直接共享活会话的句柄
+    // （见 `main.rs` 的 `make_after`），那条路才是本单消掉克隆的地方。
     project: &YebanProjectV1,
     options: &LiveWiringOptions,
 ) -> Result<LiveUi, LiveWiringError> {
@@ -2533,11 +2540,15 @@ pub fn build_live_ui_with(
     // 时保存按钮仍是空操作（`NoPicker` 返回 `None` ⇒ 回调提前返回，与"取消不是失败"同一条
     // 口径）。要它变成一句可见的失败，得先决定"无 OS 窗口的界面该怎么问落点"——
     // 那是规范缺口，不是这里能私自补齐的答案。
+    // ⭐ T-ISS-MWW4H8J6：本函数唯一的一次整工程克隆——调用方只给了借用，装配面
+    // 自己持有的那一份（走带初值 + 保存回退）必须有个 owned 的格；`project_rc`
+    // 是下面两处（`wire_save` 的 `SaveStatus` 与 `wire_transport`）共享的同一格。
+    let project_rc = Rc::new(RefCell::new(project.clone()));
     host::wire_save(
         &window,
         host::SaveStatus {
             target: options.save_path.clone(),
-            project: project.clone(),
+            project: Rc::clone(&project_rc),
         },
         options.undo.clone(),
         std::rc::Rc::new(yeban_app::file_picker::NoPicker),
@@ -2565,13 +2576,14 @@ pub fn build_live_ui_with(
     // 因此宿主从裸值升成 `Rc<RefCell<..>>`（与 [`host::ProductionLoop`] / `main.rs` 同款
     // 范式；`Rc` 计数 +1，⛔ 不是第二份宿主），并把**同一个**实例交给 `wire_transport`
     // ⇒ 本执行面的 `engine_tick` / `rebuild_engine` 与用户点击作用在同一条走带上。
-    // 工程参数给装配期那份克隆：`apply_project` 换工程后会按 `main.rs` 的 ③ 同款
-    // **重接**（`on_*` 是覆盖语义），因此它不是第二份事实源。
+    // 工程参数给上面那份共享格（`Rc::clone(&project_rc)`，⛔ 不再另克隆一份）：
+    // `apply_project` 换工程后会按 `main.rs` 的 ③ 同款**重接**（`on_*` 是覆盖语义），
+    // 因此它不是第二份事实源。
     let engine: Rc<RefCell<EngineHost>> = Rc::new(RefCell::new(EngineHost::new()));
     host::wire_transport(
         &window,
         Rc::clone(&engine),
-        Some(Rc::new(project.clone())),
+        Some(Rc::clone(&project_rc)),
         options.undo.clone(),
     );
     // ⭐ 缺陷 `D-UI-31`（2026-11-03，与 `D-UI-11` / `D-UI-30` 同族、同一格漏）：**定位族

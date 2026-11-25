@@ -136,7 +136,7 @@ impl Rig {
             context,
             None,
             Some(Rc::clone(&engine)),
-            Some(Rc::new(project)),
+            Some(Rc::new(RefCell::new(project))),
         );
         host::apply_transport(port.ui(), engine.borrow().transport());
 

@@ -22,6 +22,7 @@
 //! - 让 `wire_save` 退回 `assets: Vec::new()` ⇒ ①／③ 红（容器里 `assets.len() == 0`）。
 
 #![allow(unused)]
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -168,7 +169,7 @@ fn record_once(
     let _ = std::fs::remove_file(path);
     host::wire_record(
         ui,
-        Some(Rc::new(project.clone())),
+        Some(Rc::new(RefCell::new(project.clone()))),
         Some(Rc::clone(port)),
         RecordPlan {
             path: path.to_path_buf(),

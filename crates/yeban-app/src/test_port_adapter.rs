@@ -1813,7 +1813,9 @@ fn every_wired_key_returns_without_panicking_and_without_keeping_the_engine_borr
         Rc::clone(&context),
         None,
         Some(Rc::clone(&harness.engine)),
-        Some(Rc::new(yeban_model::samples::filled_project())),
+        Some(Rc::new(
+            RefCell::new(yeban_model::samples::filled_project()),
+        )),
     );
     let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
 
@@ -2002,7 +2004,9 @@ fn logic_head_harness() -> (TransportHarness, MainWindow) {
         context,
         None,
         Some(Rc::clone(&harness.engine)),
-        Some(Rc::new(yeban_model::samples::filled_project())),
+        Some(Rc::new(
+            RefCell::new(yeban_model::samples::filled_project()),
+        )),
     );
     let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
     (harness, ui)

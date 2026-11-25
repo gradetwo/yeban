@@ -75,7 +75,7 @@ fn wire_full_production_surface(
     ui: &yeban_app::ui::MainWindow,
     undo: &Rc<UndoPort>,
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
-    project_rc: &Rc<YebanProjectV1>,
+    project_rc: &Rc<RefCell<YebanProjectV1>>,
     view_cell: &Rc<RefCell<ViewState>>,
 ) {
     let input = Rc::new(RefCell::new(yeban_app::input::InputContext::default()));
@@ -151,7 +151,7 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
     let production = ProductionLoop::start(&project, 0).expect("引擎重建");
     let engine = production.engine_handle();
     let view_cell = Rc::new(RefCell::new(view.clone()));
-    let project_rc = Rc::new(project.clone());
+    let project_rc = Rc::new(RefCell::new(project.clone()));
 
     wire_full_production_surface(ui, &undo, &engine, &project_rc, &view_cell);
 

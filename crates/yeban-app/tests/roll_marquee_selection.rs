@@ -92,7 +92,7 @@ fn marquee_selects_three_notes_and_delete_removes_them_in_one_undo_step() {
         Rc::new(RefCell::new(InputContext::new())),
         Some(Rc::clone(&port)),
         None,
-        Some(Rc::new(project.clone())),
+        Some(Rc::new(RefCell::new(project.clone()))),
     );
 
     // ── ① 框选：把三颗音符全包进矩形（宿主坐标 → 绘制帧）。

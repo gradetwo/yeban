@@ -106,7 +106,7 @@ impl Rig {
         host::wire_transport(
             port.ui(),
             Rc::clone(&engine),
-            Some(Rc::new(project.clone())),
+            Some(Rc::new(RefCell::new(project.clone()))),
             None,
         );
         let context = Rc::new(RefCell::new(InputContext::new()));
@@ -118,7 +118,7 @@ impl Rig {
             context,
             None,
             Some(Rc::clone(&engine)),
-            Some(Rc::new(project.clone())),
+            Some(Rc::new(RefCell::new(project.clone()))),
         );
         host::apply_transport(port.ui(), engine.borrow().transport());
 

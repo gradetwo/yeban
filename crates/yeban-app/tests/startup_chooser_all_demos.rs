@@ -209,7 +209,7 @@ fn all_demos_live_window_screenshots() {
                     } else {
                         Some(path.to_path_buf())
                     },
-                    project: project.clone(),
+                    project: Rc::new(RefCell::new(project.clone())),
                 },
                 Some(Rc::clone(&port_after)),
                 Rc::clone(&picker_after),

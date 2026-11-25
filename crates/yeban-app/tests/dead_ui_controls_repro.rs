@@ -83,7 +83,7 @@ impl Rig {
             Rc::clone(&input),
             Some(Rc::clone(&undo)),
             Some(Rc::clone(&engine)),
-            Some(Rc::new(project.clone())),
+            Some(Rc::new(RefCell::new(project.clone()))),
         );
         host::wire_bpm_commit(port.ui(), &undo);
         host::wire_tool_select(port.ui(), Some(Rc::clone(&undo)));

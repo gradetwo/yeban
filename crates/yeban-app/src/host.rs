@@ -71,16 +71,36 @@ use crate::undo::{UiAction, UndoPort};
 /// 全部输入，而运行期的两样（活会话 / 控制面权威）由 `wire_save` 的另外两个参数单独给
 /// —— 于是"有权威时 `project` 字段不被使用"这件事在签名上是可见的，而不是埋在函数体里。
 ///
-/// ⚠ 这里的那一份工程是**装配时刻的快照**，⛔ 不是"界面此刻的工程"。界面上的保存
-/// 每次都优先从**活会话**（[`wire_save`] 的 `live_port`）现读工程与提交图谱，只有
-/// 拿不到活会话时才退回这个快照（见 [`wire_save`] 的回调体）。
+/// ⭐ T-ISS-MWW4H8J6：这里的那一份工程**不再是装配时刻的快照** —— 它是与活会话
+/// 共享的同一份 `Rc<RefCell<YebanProjectV1>>`（装配时从会话取句柄，⛔ 不再整工程
+/// 克隆）。界面上的保存每次都优先从**活会话**（[`wire_save`] 的 `live_port`）现读
+/// 工程与提交图谱，只有拿不到活会话时才退回这一份（见 [`wire_save`] 的回调体）——
+/// 而退回的那一份现在也是**此刻**的工程（共享句柄上的现读），不是装配时刻的旧版。
+/// 这是**有意的语义变化**：旧快照在"会话丢了、工程却改了"时写出旧版还不声不响；
+/// 新形状写出的是此刻的工程（与活会话那一版一致）。
 #[derive(Debug, Clone)]
 pub struct SaveStatus {
     /// 保存目标（`None` = 这个会话没有磁盘对应物，保存会从此如实报错）。
     pub target: Option<std::path::PathBuf>,
-    /// **装配时刻**的那一份工程（只在没有活会话可读、且没有控制面权威时被
-    /// `dispatch_save` 使用）。
-    pub project: yeban_model::YebanProjectV1,
+    /// 与活会话共享的那一份工程（只在没有活会话可读、且没有控制面权威时被
+    /// `dispatch_save` 使用；读的是**此刻**的工程，⛔ 不是装配时刻的快照）。
+    pub project: Rc<RefCell<YebanProjectV1>>,
+}
+
+/// 换工程后重接保存 / 走带 / 按键用的共享工程句柄（`main.rs` 的 `make_after`
+/// 与判据共用）：拿活会话的共享句柄（`port.project_shared()`）—— 保存回退、
+/// 走带初值、按键上下文读的是此刻的工程，⛔ 不是装配时刻的快照。`None` 只是
+/// 防御性回落（与旧行为同一份克隆）。
+///
+/// ⭐ T-ISS-MWW4H8J6：抽成小函数是为了让判据能直接断言这条接线（`make_after`
+/// 本身是 `run_gui` 里的闭包，判据调不到）；函数体就是 `make_after` 原来内联
+/// 的那三行，⛔ 没有改语义。
+pub fn shared_project_for_session(
+    port: &Rc<UndoPort>,
+    fallback_project: &YebanProjectV1,
+) -> Rc<RefCell<YebanProjectV1>> {
+    port.project_shared()
+        .unwrap_or_else(|| Rc::new(RefCell::new(fallback_project.clone())))
 }
 
 /// `[string]` 属性 ← `&[String]`。
@@ -7725,7 +7745,7 @@ pub fn head_command(
 pub fn wire_transport(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
-    project: Option<Rc<YebanProjectV1>>,
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
 ) {
     let _ = wire_transport_with_wiring(ui, engine, project, undo, None);
@@ -7738,7 +7758,7 @@ pub fn wire_transport(
 pub fn wire_transport_with_record(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
-    project: Option<Rc<YebanProjectV1>>,
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
     wiring: RecordWiring,
 ) -> Rc<RefCell<crate::record_wav::Recorder>> {
@@ -7763,7 +7783,9 @@ fn wire_transport_with_wiring(
     // ⭐ **当前工程**（可选；⭐ 与 `wire_keys` 的 `project` 同款形状）：⭐ 录音键要读
     // `transport.count_in_bars` 算**预备拍长度** ⇒ ⭐ 它是该字段的**第一个读者**。
     // ⚠ `None` ⇒ 预备拍 0（⛔ 不假装知道工程）。
-    project: Option<Rc<YebanProjectV1>>,
+    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份 `Rc<RefCell<…>>`（⛔ 不再整工程克隆）；
+    // 读数时在用点现借（`borrow()`），不把借用带进闭包。
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     // ⭐ **录音落进工程的写入面**（任务单 `#132`）：停录成功后要提交一次 `Op::AddClip`
     // ＋ 把那段 WAV 的字节登记进会话资产池 ⇒ 它必须是**活会话那个** `Rc<UndoPort>`。
     // ⚠ `None` ⇒ 录音只落盘、不进工程（判据/无头装配的既有形态：⛔ 不假装提交过）。
@@ -7892,7 +7914,7 @@ fn wire_transport_with_wiring(
     // 那一条的属性写入点预算被 `tests/perf_draw_budget.rs` 钉着，而运行期换工程 / 撤销
     // 都会经过发布那一跳 ⇒ 由 [`apply_metronome_mirror`] 在那一处校正。
     if let Some(project) = project.as_ref() {
-        ui.set_metronome_on(project.transport.metronome_enabled);
+        ui.set_metronome_on(project.borrow().transport.metronome_enabled);
     }
     let metronome_engine = Rc::clone(&engine);
     let metronome_project = project.as_ref().map(Rc::clone);
@@ -7924,9 +7946,12 @@ fn wire_transport_with_wiring(
             );
             return;
         };
+        // ⭐ T-ISS-MWW4H8J6：工程借用只包住 `apply_action` 这一句（与 `#212` 同款
+        // 作用域纪律 —— 借在这里放掉，体内只剩属性写入）。
+        let project_guard = project.borrow();
         let mut context = EngineCommandContext {
             host: &mut engine,
-            project: project.as_ref(),
+            project: &project_guard,
             metronome_on: Some(ui.get_metronome_on()),
         };
         // ⭐ 与键盘**同一个**落点（`apply_action` 里那条臂），⛔ 不是这里再算一遍下一个值。
@@ -8072,7 +8097,9 @@ pub fn record_count_in(
 /// ⛔ 不创建会话、⛔ 不落盘；错误文本走 [`RecordOutcomePort`]（产品落点 = `stderr`）。
 pub fn wire_record(
     ui: &MainWindow,
-    project: Option<Rc<YebanProjectV1>>,
+    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份 `Rc<RefCell<…>>`（⛔ 不再整工程克隆）；
+    // 只原样转交给 [`wire_record_at`]。
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
@@ -8112,7 +8139,9 @@ pub fn wire_record(
 /// `RefCell already borrowed`（`#212` 已实测：落在 FFI 边界 ⇒ **进程 abort**）。
 pub fn wire_record_at(
     ui: &MainWindow,
-    project: Option<Rc<YebanProjectV1>>,
+    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份 `Rc<RefCell<…>>`（⛔ 不再整工程克隆）；
+    // 预备拍在按键时现借现算（见 `on_toggle_record` 里那一跳）。
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
@@ -8131,7 +8160,7 @@ pub fn wire_record_at(
 struct RecordControl {
     recorder: Rc<RefCell<crate::record_wav::Recorder>>,
     ui: slint::Weak<MainWindow>,
-    project: Option<Rc<YebanProjectV1>>,
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
@@ -8172,9 +8201,11 @@ impl RecordControl {
             if recorder.is_recording() {
                 RecordToggle::Stopped(recorder.stop())
             } else {
+                // ⭐ T-ISS-MWW4H8J6：借用只包住 `record_count_in` 这一句（`#212` 同款作用域纪律）。
+                let project_guard = self.project.as_ref().map(|shared| shared.borrow());
                 let count_in = record_count_in(
                     self.undo.as_deref(),
-                    self.project.as_deref(),
+                    project_guard.as_deref(),
                     self.plan.options.sample_rate,
                 );
                 RecordToggle::Started(recorder.start_with_factory(
@@ -8273,7 +8304,7 @@ impl RecordControl {
 /// 建录音器 ＋ 注册录音键；返回录音器句柄（判据读借用状态）与控制端口（走带停止也要用）。
 fn install_record_control(
     ui: &MainWindow,
-    project: Option<Rc<YebanProjectV1>>,
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
     undo: Option<Rc<UndoPort>>,
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
@@ -9579,7 +9610,9 @@ pub fn wire_keys(
     // ⚠ `None` ⇒ 那类"要动引擎"的动作**不消费**（照旧放行，⛔ 不假装成功）。
     engine: Option<Rc<RefCell<EngineHost>>>,
     // ⭐ **当前工程**（由装配层持有并传进来 —— `EngineHost` **没有**工程访问器）。
-    project: Option<Rc<YebanProjectV1>>,
+    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份 `Rc<RefCell<…>>`（⛔ 不再整工程克隆）；
+    // 读数时在用点现借（`borrow()`），不把借用带进闭包。
+    project: Option<Rc<RefCell<YebanProjectV1>>>,
 ) {
     let weak = slint::ComponentHandle::as_weak(ui);
     ui.on_key_action(move |text, shift, ctrl, alt, meta| -> bool {
@@ -9642,9 +9675,12 @@ pub fn wire_keys(
                 match (engine.as_ref(), project.as_ref()) {
                     (Some(host), Some(project)) => match host.try_borrow_mut() {
                         Ok(mut host) => {
+                            // ⭐ T-ISS-MWW4H8J6：工程借用只包住 `apply_action` 这一句
+                            // （`#212` 同款作用域纪律 —— 借在这里放掉）。
+                            let project_guard = project.borrow();
                             let mut context = EngineCommandContext {
                                 host: &mut host,
-                                project: project.as_ref(),
+                                project: &project_guard,
                                 metronome_on: None,
                             };
                             apply_action(&ui, undo.as_ref(), Some(&mut context), action)
@@ -9835,8 +9871,12 @@ pub fn wire_save_with_engine(
                     assets,
                 )
             }
-            // 没有活会话 ⇒ 退回装配时刻的快照，如实写"没有历史 / 没有资产"（既有语义）。
-            None => crate::save_action::SaveRequest::new(target, port.project.clone()),
+            // 没有活会话 ⇒ 退回共享的那一份工程（T-ISS-MWW4H8J6：与会话共享同一份
+            // `Rc`，读的是**此刻**的工程，⛔ 不再是装配时刻的快照），如实写
+            // "没有历史 / 没有资产"（既有语义）。
+            // ⚠ 这里仍要克隆一次：`SaveRequest` 按值持有工程（序列化要 owned 数据）。
+            // 克隆发生在"真的要落盘、且没有活会话"这一刻，⛔ 不在装配期。
+            None => crate::save_action::SaveRequest::new(target, port.project.borrow().clone()),
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);

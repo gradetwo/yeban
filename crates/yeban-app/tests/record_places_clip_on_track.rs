@@ -30,6 +30,7 @@
 //! （`--export-wav` 与录音侧共用 `render_core`）。走带播放那半属引擎层，本单不改。
 
 #![allow(unused)]
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -205,7 +206,7 @@ fn record_once(
     let _ = std::fs::remove_file(path);
     host::wire_record_at(
         ui,
-        Some(Rc::new(project.clone())),
+        Some(Rc::new(RefCell::new(project.clone()))),
         Some(Rc::clone(port)),
         RecordPlan {
             path: path.to_path_buf(),

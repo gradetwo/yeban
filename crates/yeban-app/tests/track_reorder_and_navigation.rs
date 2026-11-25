@@ -88,7 +88,7 @@ impl Rig {
             Rc::clone(&input),
             Some(Rc::clone(&undo)),
             None,
-            Some(Rc::new(project)),
+            Some(Rc::new(RefCell::new(project))),
         );
         host::wire_zoom_controls(port.ui(), &undo);
         host::wire_track_reorder(port.ui(), &undo);

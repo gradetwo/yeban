@@ -175,7 +175,7 @@ impl Rig {
             Rc::new(RefCell::new(yeban_app::input::InputContext::new())),
             Some(Rc::clone(&undo)),
             Some(Rc::clone(&engine)),
-            Some(Rc::new(project.clone())),
+            Some(Rc::new(RefCell::new(project.clone()))),
         );
         host::apply_transport(port.ui(), engine.borrow().transport());
 

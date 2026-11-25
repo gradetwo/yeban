@@ -469,7 +469,7 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
                 ui,
                 host::SaveStatus {
                     target: None,
-                    project: project.clone(),
+                    project: Rc::new(RefCell::new(project.clone())),
                 },
                 Some(Rc::clone(&port_after)),
                 Rc::clone(&picker_after),

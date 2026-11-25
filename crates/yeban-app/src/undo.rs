@@ -51,8 +51,9 @@
 pub mod undo_session;
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
-use yeban_model::{AssetHash, CommitGraph, EntityId, Op, OpOrigin, ProjectArchive, YebanProjectV1};
+use yeban_model::{AssetHash, CommitGraph, EntityId, Op, OpOrigin, YebanProjectV1};
 
 // `ROAD-M4-008` 选项 (a) 第二片：挂载了控制面时，GUI 的写入口落到**那一个** `Domain` 上。
 // 这两个类型只存在于非默认 feature `in-process-mcp` 下（默认构建里没有 `yeban-mcp`）。
@@ -74,8 +75,8 @@ pub use undo_session::{
 /// 空图谱 ⇒ 新会话、非法图谱 ⇒ 如实报错不降级。两处装配调这里，不再各自造
 /// 会话（轻量端口没有历史恢复，撤销语义与 GUI 不一致）。
 ///
-/// 配方**只有一份**，住在 [`session_from_archive`]（取已读出的归档、返回逐字原因）；
-/// 本函数只是把它与 `CliError` 的包装口接起来。`D-UI-1` 曾各自写过一份，
+/// 配方**只有一份**，住在 [`session_from_archive`]（取已搬出的共享工程句柄与
+/// `history.dag`、返回逐字原因）；本函数只是把它与 `CliError` 的包装口接起来。`D-UI-1` 曾各自写过一份，
 /// rebase 到 `ADR-0057` A 时按"后落地的一方适配已落地的一方"合并成一条。
 ///
 /// # Errors
@@ -84,10 +85,16 @@ pub use undo_session::{
 /// `CommitGraph`（`ARCH-OPS-002`）。
 pub fn open_undo_session(
     source: &str,
-    loaded: &cli::Loaded,
+    loaded: &mut cli::Loaded,
     now_ms: u64,
 ) -> Result<UndoSession, cli::CliError> {
-    session_from_archive(source, &loaded.archive, now_ms)
+    // ⭐ T-ISS-MWW4H8J6：工程从 `loaded` 里**搬**进来（`std::mem::take`），⛔ 不再
+    // `archive.project.clone()`。搬走之后 `loaded.archive.project` 是默认的空工程 ——
+    // ⚠ 调用方在**这之后**不许再读它：要读工程就从返回的会话
+    // （`session.project_shared()`）借。编译器拦不住这条（默认值本身合法），
+    // 所以它是**纪律**：`grep "loaded.archive.project"` 在这条调用之后必须为零。
+    let project = Rc::new(RefCell::new(std::mem::take(&mut loaded.archive.project)));
+    session_from_archive(source, project, &loaded.archive.history_dag, now_ms)
         .map_err(|detail| cli::CliError::Ui { detail })
 }
 
@@ -268,7 +275,10 @@ impl UiActionRecord {
 /// 缺席会让 [`crate::live_surface`] 整段跳过写入面接线（九个 `host::wire_*`）。这条函数
 /// 就是为了让那条装配**不需要第二次发明配方**而存在。
 ///
-/// 判定口径与 `yeban-mcp` 一致（[`yeban_model::decode_history_dag`]）：空条目 ⇒ 新会话
+/// 从归档恢复一个撤销会话：`project` 是调用方已经搬进共享句柄的那一份工程
+/// （⛔ 不再 `archive.project.clone()`，T-ISS-MWW4H8J6），`history_dag` 是
+/// 归档里的提交图谱字节。判定口径与 `yeban-mcp` 一致
+/// （[`yeban_model::decode_history_dag`]）：空条目 ⇒ 新会话
 /// （一条根提交）；合法图谱 ⇒ `open_with_graph`（它自己再拒"没有 `main` 分支"的半个历史）；
 /// 非法 JSON / 不自洽的图谱 ⇒ **如实报错**，⛔ 不降级成空历史（降级等于把用户的历史
 /// 悄悄丢掉 —— 与 `store.rs` 的拒绝口径一致）。
@@ -279,21 +289,18 @@ impl UiActionRecord {
 /// `CommitGraph`（`ARCH-OPS-002`）。返回的是**逐字**原因，由调用方决定包装成哪种错误。
 pub fn session_from_archive(
     source: &str,
-    archive: &ProjectArchive,
+    project: Rc<RefCell<YebanProjectV1>>,
+    history_dag: &[u8],
     now_ms: u64,
 ) -> Result<UndoSession, String> {
-    let graph = yeban_model::decode_history_dag(&archive.history_dag).map_err(|error| {
+    let graph = yeban_model::decode_history_dag(history_dag).map_err(|error| {
         format!("`{source}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史")
     })?;
     match graph {
-        Some(graph) => UndoSession::open_with_graph(
-            source,
-            "yeban-app",
-            archive.project.clone(),
-            graph,
-            now_ms,
-        ),
-        None => UndoSession::open(source, "yeban-app", archive.project.clone(), now_ms),
+        Some(graph) => {
+            UndoSession::open_with_graph_from_shared(source, "yeban-app", project, graph, now_ms)
+        }
+        None => UndoSession::open_from_shared(source, "yeban-app", project, now_ms),
     }
     .map_err(|error| format!("撤销会话无法初始化: {error}"))
 }
@@ -552,9 +559,25 @@ impl UndoPort {
     #[must_use]
     pub fn try_project(&self) -> Option<YebanProjectV1> {
         match &*self.session.borrow() {
-            UndoBackend::Local(session) => Some(session.project().clone()),
+            // ⚠ `session.project()` 返回的是 `Ref`（借用）—— 克隆工程文档必须
+            // 先解引用（`(*…).clone()`）；直接 `.clone()` 只会克隆那份借用。
+            UndoBackend::Local(session) => Some((*session.project()).clone()),
             #[cfg(feature = "in-process-mcp")]
             UndoBackend::Authority(authority) => authority.project(),
+        }
+    }
+
+    /// 与会话共享的那一份工程句柄（`Rc` 计数 +1，⛔ 不复制文档）。
+    ///
+    /// `Local` 后端 ⇒ 会话里的那一份；`Authority` 后端 ⇒ `None`
+    /// （工程住在控制面的 `Domain` 里，不在本端口 —— 调用方在那一支
+    /// 仍需从 `loaded.archive.project` 另起一份句柄，见 `main.rs` 的装配）。
+    #[must_use]
+    pub fn project_shared(&self) -> Option<Rc<RefCell<YebanProjectV1>>> {
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => Some(session.project_shared()),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(_) => None,
         }
     }
 
@@ -570,7 +593,7 @@ impl UndoPort {
     /// 结果拿出去之后再写 UI。
     pub fn with_project<R>(&self, f: impl FnOnce(&YebanProjectV1) -> R) -> Option<R> {
         match &*self.session.borrow() {
-            UndoBackend::Local(session) => Some(f(session.project())),
+            UndoBackend::Local(session) => Some(f(&session.project())),
             #[cfg(feature = "in-process-mcp")]
             UndoBackend::Authority(authority) => authority.project().map(|p| f(&p)),
         }

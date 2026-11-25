@@ -155,7 +155,7 @@ fn startup_chooser_reaches_demo_row_beyond_sixty_four_and_search_keeps_index() {
                     } else {
                         Some(path.to_path_buf())
                     },
-                    project: project.clone(),
+                    project: Rc::new(RefCell::new(project.clone())),
                 },
                 Some(Rc::clone(&port_after)),
                 Rc::clone(&picker_after),

@@ -399,7 +399,7 @@ fn startup_chooser_live_window_flow() {
                     } else {
                         Some(path.to_path_buf())
                     },
-                    project: project.clone(),
+                    project: Rc::new(RefCell::new(project.clone())),
                 },
                 Some(Rc::clone(&port_after)),
                 Rc::clone(&picker_after),

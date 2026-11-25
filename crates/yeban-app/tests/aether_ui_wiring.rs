@@ -173,7 +173,7 @@ fn transport_and_tool_mapping_do_not_double_toggle() {
     let production = host::ProductionLoop::start(&project, 0).expect("引擎重建");
     let engine = production.engine_handle();
     let view_cell = std::rc::Rc::new(std::cell::RefCell::new(view.clone()));
-    let project_rc = std::rc::Rc::new(project.clone());
+    let project_rc = std::rc::Rc::new(std::cell::RefCell::new(project.clone()));
 
     let port = build_rig(&view);
     let ui = port.ui();
@@ -450,7 +450,7 @@ fn mixer_faders_and_pans_drag_smoothly_without_undo_spam() {
     let production = ProductionLoop::without_engine();
     let engine = production.engine_handle();
     let view_cell = Rc::new(RefCell::new(view.clone()));
-    let project_rc = Rc::new(project.clone());
+    let project_rc = Rc::new(RefCell::new(project.clone()));
 
     let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
         host::build_main_window(&view, &scene)

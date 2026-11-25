@@ -66,6 +66,7 @@
 //!      -d '{"jsonrpc":"2.0","id":1,"method":"ui/tree"}'
 //! ```
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -186,7 +187,7 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         }
     }
 
-    let loaded = cli::load_project(options)?;
+    let mut loaded = cli::load_project(options)?;
     let view = cli::project_view(&loaded.archive.project)?;
 
     // [ADR-0057 A] 测试面才建会话：两道门（`--ui-test-mode` + `YEBAN_ALLOW_UI_INJECT=1`）
@@ -204,7 +205,7 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
             });
         let port = Rc::new(UndoPort::new(open_undo_session(
             &undo_source,
-            &loaded,
+            &mut loaded,
             now_ms,
         )?));
         // ⭐ `D-UI-1` 的第二条边界（GUI 那条装配在 `main.rs` 里一直做，服务端这条漏了）：
@@ -216,20 +217,29 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         None
     };
 
+    // ⭐ T-ISS-MWW4H8J6：装配面读工程的**唯一句柄** —— 会话里那一份（`open_undo_session`
+    // 已把归档的工程搬进会话，⛔ 不再整工程克隆）；测试面没建会话（门缺一）⇒
+    // 会话里没有工程，从归档另起一份句柄（与旧行为同一份克隆，只是包在 `Rc` 里）。
+    // ⚠ `open_undo_session` 之后 `loaded.archive.project` 是默认的空工程 ——
+    // 下面**不许**再读它（`serve_wiring` 只读 `loaded.source`，见其签名）。
+    let project_rc = match test_undo.as_ref().and_then(|port| port.project_shared()) {
+        Some(shared) => shared,
+        None => Rc::new(RefCell::new(loaded.archive.project.clone())),
+    };
+
     // §12.3 的最高一级：`ui/switch_main_view`（`app:admin`）/ `ui/force_save`
     // （`app:save`）/ `ui/reload_engine`（`app:reload-engine`）要它。`ui:inject` 也在
     // 这一级的 scope 集合里，但**生产模式**会让它在服务端被硬拒 —— 这正是我们要的：
     // 作用域给全、能力由模式闸住（与领域控制面 `ScopeSet::all()` + `RunMode::Production` 同款）。
     let permission = Permission::Administrative;
     let wiring = serve_wiring(&loaded, permission, test_undo);
-    let live =
-        build_live_ui_with(&loaded.archive.project, &wiring).map_err(|error| CliError::Ui {
-            detail: format!(
-                "[ARCH-UI-004] UI 控制面执行面装配失败: {error} \
+    let live = build_live_ui_with(&project_rc.borrow(), &wiring).map_err(|error| CliError::Ui {
+        detail: format!(
+            "[ARCH-UI-004] UI 控制面执行面装配失败: {error} \
              (本档需要能装上 Tier-1 软件光栅化平台: `slint::platform::set_platform` \
              每线程只能装一次, 且必须先于任何 Slint 组件构造)"
-            ),
-        })?;
+        ),
+    })?;
 
     // 证据（**在绑 socket 之前**取，而且走的是**真的** JSON-RPC 管线）：
     // - `ui/tree` 的一次进程内调用：证明这棵运行时控件树真的能被服务（而不是"装好了"）；

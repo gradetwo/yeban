@@ -143,7 +143,7 @@ fn assemble(tag: &str) -> Rig {
     let recorder = host::wire_transport_with_record(
         &ui,
         Rc::clone(&engine),
-        Some(Rc::new(fixture_project())),
+        Some(Rc::new(std::cell::RefCell::new(fixture_project()))),
         Some(Rc::clone(&port)),
         host::RecordWiring {
             plan: RecordPlan {

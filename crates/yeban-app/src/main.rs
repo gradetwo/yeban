@@ -291,7 +291,7 @@ fn main() -> ExitCode {
 ///
 /// 返回值恒为 `Ok(vec![])`：报告已经由 [`cli::emit`] 打过了，`cli::finish` 不该再打第二遍。
 fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
-    let loaded = cli::load_project(options)?;
+    let mut loaded = cli::load_project(options)?;
     // ⭐ line/startup-chooser：带 `--open` 启动 = 一次「打开」⇒ 记进
     //    最近清单（启动选择器的「最近」分类读的就是它）。样本形态没有
     //    磁盘路径，不记。写失败只在设置模块里响亮报，⛔ 不挡启动。
@@ -425,16 +425,27 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         Some(mount) => Rc::new(UndoPort::from_authority(mount.project_authority())),
         None => Rc::new(UndoPort::new(open_undo_session(
             &undo_source,
-            &loaded,
+            &mut loaded,
             now_ms,
         )?)),
     };
     #[cfg(not(feature = "in-process-mcp"))]
     let undo_port = Rc::new(UndoPort::new(open_undo_session(
         &undo_source,
-        &loaded,
+        &mut loaded,
         now_ms,
     )?));
+    // ⭐ T-ISS-MWW4H8J6：装配面读工程的**唯一句柄** —— 会话里那一份（`Local` 后端，
+    // 打开时从归档**搬**进来，⛔ 不再整工程克隆）；权威后端（`Authority`）下会话
+    // 里没有工程 ⇒ 从 `loaded.archive.project` 另起一份句柄（那一支的写回
+    // 仍走控制面的 `Domain`，这份句柄只服务装配期的只读读数与保存回退）。
+    // ⚠ `open_undo_session` 之后 `loaded.archive.project` 是默认的空工程 ——
+    // 下面**不许**再读它（`grep "loaded.archive.project"` 在这条之后必须为零，
+    // 只有 `mount_in_process_mcp` 那一处在会话建立之前、仍可读）。
+    let project_rc = match undo_port.project_shared() {
+        Some(shared) => shared,
+        None => Rc::new(RefCell::new(loaded.archive.project.clone())),
+    };
     // ⭐ **会话资产池的装配点**（任务单 `#132`）：`--open` 的容器里若已有
     // `assets/{sha256}`，它们必须活在这一份端口里 —— 否则"打开一个带资产的工程，
     // 再按保存"会把资产池写空（`#132` 的 L2）。录音 / 导入随后往同一个池里加字节。
@@ -457,9 +468,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ **缺音源清单**（本票）：与渲染用**同一条**解析（`resolve_sampler_path`），
     // 因此"这里说缺、引擎却读得到"这种自相矛盾不可能出现。只在进界面之前算一次。
     let missing_sounds =
-        yeban_app::missing_sounds::collect(&loaded.archive.project, project_dir.as_deref());
+        yeban_app::missing_sounds::collect(&project_rc.borrow(), project_dir.as_deref());
     let mut engine = host::ProductionLoop::start_with_audio_source_and_project_dir(
-        &loaded.archive.project,
+        &project_rc.borrow(),
         0,
         Some(Box::new(move |hash| audio_asset_port.asset_bytes(hash))),
         project_dir.as_deref(),
@@ -515,7 +526,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         // 指定设备不在场时 `open_device` 会在下面走进 `Err` 分支响亮报错
         // （点名），产品降级为控制面驱动，⛔ 不静默换一台默认设备出声。
         engine.set_audio_output_device(yeban_app::settings::load().audio_output_device);
-        let config = yeban_engine::device::EngineConfig::from_project(&loaded.archive.project);
+        let config = yeban_engine::device::EngineConfig::from_project(&project_rc.borrow());
         // 调试明细（T-FIX-70）：打开之前先摊设备枚举（全部输出/输入设备、
         // 默认配置与支持范围），打开之后再摊这一次协商的逐步 trace。
         if yeban_app::debug_out::enabled() {
@@ -847,8 +858,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     wire_callbacks(
         &ui,
         &production.borrow().engine_handle(),
-        // ⭐ 当前工程（录音键用它算**预备拍**）。
-        Some(Rc::new(loaded.archive.project.clone())),
+        // ⭐ 当前工程（录音键用它算**预备拍**）—— 与会话共享同一份（T-ISS-MWW4H8J6）。
+        Some(Rc::clone(&project_rc)),
         // ⭐ 录音落进工程的写入面（`#132`）：活会话那个端口（⛔ 不是第二份）。
         Some(Rc::clone(&undo_port)),
         // ⭐ `#283`：场景按钮的投影来源（与心跳同一个 `Rc`）。
@@ -881,7 +892,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 样本形态没有磁盘对应物 ⇒ 保存会**如实报错**（不是假成功，也不是猜一个文件名）。
     //
     // 第三个参数是**活会话**：保存按钮每次点击都从它现读"工程 + 提交图谱"，因此写出去的
-    // 是此刻的那一版（`SaveStatus.project` 只是拿不到活会话时的兜底快照）。默认构建里
+    // 是此刻的那一版（`SaveStatus.project` 只是拿不到活会话时的兜底 —— 现在它与会话
+    // 共享同一份工程，⛔ 不再是装配时刻的快照，T-ISS-MWW4H8J6）。默认构建里
     // 这个端口就是 `open_undo_session` 建的那一个；挂了控制面时它是权威端口的委派者。
     //
     // ⭐ 任务单 `#170`：保存成功 ⇒ `EngineHost.project_dir` 跟着**写出的那个文件**走
@@ -892,7 +904,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &ui,
         host::SaveStatus {
             target: loaded.source.save_target(),
-            project: loaded.archive.project.clone(),
+            project: Rc::clone(&project_rc),
         },
         Some(Rc::clone(&undo_port)),
         // ⭐ `#86` 乙：**产品腿**接真原生对话框。它只在"装配期没给目标路径"时被问到
@@ -918,7 +930,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         Rc::clone(&input),
         Some(Rc::clone(&undo_port)),
         Some(Rc::clone(&engine_handle)),
-        Some(Rc::new(loaded.archive.project.clone())),
+        Some(Rc::clone(&project_rc)),
     );
     // ⭐ **运行期「打开工程」的可见入口**（任务单 `#93`）—— 本单补的那一格。
     //
@@ -972,6 +984,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                       path: &std::path::Path,
                       view: &yeban_app::bridge::ViewState|
                       -> Result<(), String> {
+                    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份工程 —— 换会话（`open_project_session`，
+                    // 上一步）已经把新工程装进端口 ⇒ 这里直接取会话那一份，⛔ 不再
+                    // `project.clone()` 三次（旧形状每换一次工程深拷贝三份）。
+                    // 句柄取法抽在 `host::shared_project_for_session`（判据直接断言它）。
+                    let shared = host::shared_project_for_session(&port_after, project);
                     // ① 心跳对齐基准。
                     *view_after.borrow_mut() = view.clone();
                     // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）；
@@ -987,7 +1004,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                             } else {
                                 Some(path.to_path_buf())
                             },
-                            project: project.clone(),
+                            project: Rc::clone(&shared),
                         },
                         Some(Rc::clone(&port_after)),
                         Rc::clone(&save_picker_after),
@@ -1001,7 +1018,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     wire_callbacks(
                         ui,
                         &engine_after,
-                        Some(Rc::new(project.clone())),
+                        Some(Rc::clone(&shared)),
                         Some(Rc::clone(&port_after)),
                         // ⭐ `#283`：`view_after` 就是上面刚换过的那份投影（同一个 `Rc`）。
                         Rc::clone(&view_after),
@@ -1012,7 +1029,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                         Rc::clone(&input_after),
                         Some(Rc::clone(&port_after)),
                         Some(Rc::clone(&engine_after)),
-                        Some(Rc::new(project.clone())),
+                        Some(Rc::clone(&shared)),
                     );
                     // ③-b 最后再装一次生产回调层。`wire_callbacks` 会重跑
                     // `wire_view_callbacks`，其中轨道 MUTE/SOLO/ARM、控制室
@@ -1110,9 +1127,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 Rc::clone(&open_runtime),
                 Rc::clone(&untitled_port),
                 template_roots,
-                yeban_app::startup_chooser::NewProjectDetails::from_project(
-                    &loaded.archive.project,
-                ),
+                yeban_app::startup_chooser::NewProjectDetails::from_project(&project_rc.borrow()),
             );
             ui.set_startup_chooser_open(true);
         }
@@ -1300,7 +1315,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 /// `CommitGraph`（`ARCH-OPS-002`）。
 fn open_undo_session(
     source: &str,
-    loaded: &cli::Loaded,
+    loaded: &mut cli::Loaded,
     now_ms: u64,
 ) -> Result<UndoSession, cli::CliError> {
     // 实现与报文住在 [`yeban_app::undo::open_undo_session`]（服务端测试装配
@@ -1478,7 +1493,9 @@ fn mount_in_process_mcp(
 fn wire_callbacks(
     ui: &yeban_app::ui::MainWindow,
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
-    project: Option<Rc<yeban_model::YebanProjectV1>>,
+    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份 `Rc<RefCell<…>>`（⛔ 不再整工程克隆）；
+    // 只原样转交给 [`host::wire_transport`]（录音键读预备拍）。
+    project: Option<Rc<RefCell<yeban_model::YebanProjectV1>>>,
     undo: Option<Rc<yeban_app::undo::UndoPort>>,
     // ⭐ 任务单 `#283`：场景按钮要读**当前投影**（量化档 / 场景 tempo / 拍号）并把
     // "当前场景"写回同一份视图 ⇒ 传的是心跳对齐用的**同一个** `Rc<RefCell<ViewState>>`
