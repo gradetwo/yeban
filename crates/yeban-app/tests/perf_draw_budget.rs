@@ -276,8 +276,18 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// `device-curve-svgs` 是设备链逐台真实参数曲线（EQ 频响 / 压缩传递曲线），与
 /// `device-names` 同索引集、在 `apply_view` 每帧路径上重写。默认演示工程没有
 /// EQ/压缩设备 ⇒ 数组每项为空串、`Path` 不画 ⇒ 默认帧逐像素不变，⛔ 无需重录基准。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 67;
-/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
+/// ## 67 → 74 的订正（T-ISS-MWW4H9E9，2026-11-26）
+///
+/// 不是"成本涨了"，是"测量口径漏了"：`array_instance_addrs` 清单漏记了 13 个
+/// `apply_view` 每帧无条件新建模型实例的数组（场景/段落色标 ×4、自动化泳道 ×5、
+/// 卷帘音符模型、时间线块模型、轨音量/声相数值 ×2），③b 的实测读数因此一直少计
+/// 13。补进清单后，③b 在基线逐字报 **74**（清单 75 项中 `track-meter-levels`
+/// 不计：`apply_meters` 先比后写，相同注入之间地址不变；`tracks` 同理，本来就不
+/// 在清单里）。`APPLY_VIEW_WRITE_SITE_BUDGET` 同期实测仍是 **125**，一字不动。
+/// 三处文档读数（本文件、`bridge.rs:1007-1008`、`track_routing_crud.rs:14`）
+/// 同步统一为 125 / 74。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 74;
+/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（③a 实测 **125**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
 ///
@@ -576,6 +586,15 @@ fn scroll_at(frame: usize) -> f32 {
 ///
 /// `ModelRc` 的 `PartialEq` 比较内层模型的指针，所以地址变了 = 换了模型实例。
 /// 这里只收 `apply_view` 每帧路径上的数组；`track-height-override-*` 归宿主的手势路径。
+///
+/// ⚠ 清单补账（T-ISS-MWW4H9E9）：本清单在 Aether 迁移后漏记了 13 个 `apply_view`
+/// 每帧无条件新建模型实例的数组（场景/段落色标 ×4、自动化泳道 ×5、卷帘音符模型、
+/// 时间线块模型、轨音量/声相数值 ×2），预算 67 因此比实测少计 13 —— 预算不是
+/// "过期放宽"，是"测量口径漏了"。本次把 13 项补进清单（各带注释），预算随实测重钉。
+///
+/// ⛔ `tracks` 有意不在清单里：`apply_view` 对它先比后写（`tracks_model_equal`
+/// 才 `set_tracks`），两次相同注入之间地址不变 ⇒ 它不是"每帧重建"，不计入预算。
+/// 若将来它改回无条件注入，请把它加进清单并同步重钉预算。
 fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, usize)> {
     let mut out: Vec<(&'static str, usize)> = Vec::new();
     macro_rules! push {
@@ -594,6 +613,11 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("track-heights", get_track_heights);
     push!("track-volumes", get_track_volumes);
     push!("track-pans", get_track_pans);
+    // ⭐ T-ISS-MWW4H9E9 补账：轨音量/声相的数值数组也在 `apply_view` 每帧路径上
+    // （`lengths(&view.track_volume_fractions())` / `lengths(&view.track_pan_values())`，
+    // 每次新建模型实例）⇒ 必须计入，否则预算漏数。
+    push!("track-volume-fractions", get_track_volume_fractions);
+    push!("track-pan-values", get_track_pan_values);
     push!("track-mutes", get_track_mutes);
     push!("track-solos", get_track_solos);
     // ⭐ 任务单 `#82`：SFZ 采样器路径也在 `apply_view` 的每帧路径上（⛔ 不是手势路径）
@@ -616,11 +640,22 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("section-names", get_section_names);
     push!("section-positions", get_section_positions);
     push!("section-widths", get_section_widths);
+    // ⭐ T-ISS-MWW4H9E9 补账：场景/段落色标的四个平行数组也在 `apply_view` 每帧路径上
+    // （`colors(&view.scene_colors())` 等，每次新建模型实例；预算 52→56 那次只改了
+    // 常量、漏了清单）⇒ 必须计入，否则预算漏数。
+    push!("scene-colors", get_scene_colors);
+    push!("scene-color-labels", get_scene_color_labels);
+    push!("section-colors", get_section_colors);
+    push!("section-color-labels", get_section_color_labels);
     push!("clip-ulids", get_clip_ulids);
     // ⭐ line/blank-drag-selection（2026-11-18）：框选标志的两个投影都在
     // `apply_view` 的每帧路径上（按界面选区集重算）⇒ 必须计入这份清单。
     push!("clip-selected-flags", get_clip_selected_flags);
     push!("timeline-block-selected", get_timeline_block_selected);
+    // ⭐ T-ISS-MWW4H9E9 补账：时间线块模型也在 `apply_view` 每帧路径上
+    // （`ModelRc::new(VecModel::from(view_to_timeline_blocks(view)))`，每次新建
+    // 模型实例）⇒ 必须计入，否则预算漏数。
+    push!("timeline-blocks", get_timeline_blocks);
     push!("clip-labels", get_clip_labels);
     // ⭐ `D-UI-16`（2026-11-02）：`clip-mutes` 也在 `apply_view` 的每帧路径上（⛔ 不是手势路径，
     // 它是 `Cmd/Ctrl+M` 的结果读数）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
@@ -678,12 +713,33 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("note-widths", get_note_widths);
     push!("note-ys", get_note_ys);
     push!("note-selected", get_note_selected);
+    // ⭐ T-ISS-MWW4H9E9 补账：卷帘音符模型也在 `apply_view` 每帧路径上
+    // （`ModelRc::new(VecModel::from(view_to_notes(view)))`，每次新建模型实例）
+    // ⇒ 必须计入，否则预算漏数。
+    push!("notes", get_notes);
     push!("track-colors", get_track_colors);
     push!("track-color-labels", get_track_color_labels);
     push!(
         "automation-lane-target-keys",
         get_automation_lane_target_keys
     );
+    // ⭐ T-ISS-MWW4H9E9 补账：自动化泳道的五个平行数组也在 `apply_view` 每帧路径上
+    // （`strings` / `booleans` / `integers`，每次新建模型实例）⇒ 必须计入，
+    // 否则预算漏数。
+    push!(
+        "automation-lane-track-indexes",
+        get_automation_lane_track_indexes
+    );
+    push!("automation-lane-labels", get_automation_lane_labels);
+    push!(
+        "automation-lane-axis-labels",
+        get_automation_lane_axis_labels
+    );
+    push!(
+        "automation-lane-read-enabled",
+        get_automation_lane_read_enabled
+    );
+    push!("automation-lane-badges", get_automation_lane_badges);
     push!("automation-path-commands", get_automation_path_commands);
     push!("track-meter-levels", get_track_meter_levels);
     // ⭐ 任务单 `#133` 的第二段：左侧资源栏的**条目数组**也在 `apply_view` 的每帧路径上
@@ -829,39 +885,62 @@ fn roll_primitives_at_runtime_are_pinned_by_the_viewport() {
 }
 
 /// **断言 ③**：每帧注入的"重建"量不得增长（源码写入点 + 运行期模型实例）。
+///
+/// ⚠ 本判据曾在 Aether UI 迁移（`a8533bd0` / `1bd20285`）中被掏成只断言字符串包含
+/// 的空壳（`PER_FRAME_ARRAY_REWRITE_BUDGET` / `APPLY_VIEW_WRITE_SITE_BUDGET`
+/// 自此零活断言）；T-ISS-MWW4H9E9 把 2fa6730b 的活体恢复回来，并把清单补全到
+/// `apply_view` 每帧路径的实测现状（见 `array_instance_addrs` 的补账注释）。
 #[test]
 fn per_frame_injection_does_not_grow() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_ui_test_port::image::Size;
+    use yeban_ui_test_port::port::Permission;
+    use yeban_ui_test_port::render::LivePort;
+
+    // ---- ③a：源码层的写入点预算 ----
+    let source = include_str!("../src/host.rs");
+    let apply_view = function_body(source, "pub fn apply_view(");
+    let sites = write_sites(apply_view);
+    assert_eq!(
+        sites, APPLY_VIEW_WRITE_SITE_BUDGET,
+        "`apply_view` 的属性写入点从 {APPLY_VIEW_WRITE_SITE_BUDGET} 变成了 {sites}。\
+         每帧多写一个属性 = 每帧多重建一批图元。若这一处确实必需：先重新测量绘制回调，\
+         再把常量改到新值，并在提交信息里写出新读数。"
+    );
+
+    // ---- ③b：运行期的"换掉模型实例"个数 ----
+    let project = yeban_model::samples::project_with_notes(NOTE_COUNT);
+    let view = ViewState::from_project(&project).expect("10 万音符夹具必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let port = LivePort::new(size, Permission::ReadOnly, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + MainWindow");
+    let ui = port.ui();
+
+    // 同一个 view、同一个偏移，注入两次。第二次若换了模型实例，就是"每帧重建"。
+    let scroll = scroll_at(PROBED_FRAMES[1]);
+    host::apply_view(ui, &view, VIEWPORT_WIDTH, scroll);
+    let before = array_instance_addrs(ui);
+    host::apply_view(ui, &view, VIEWPORT_WIDTH, scroll);
+    let after = array_instance_addrs(ui);
+    let rewrites: Vec<&str> = before
+        .iter()
+        .zip(after.iter())
+        .filter(|(lhs, rhs)| lhs.1 != rhs.1)
+        .map(|(lhs, _)| lhs.0)
+        .collect();
     assert!(
-        aether_app.contains("> arrangement-content-px:"),
-        "新 UI 契约面必须声明 > arrangement-content-px:"
+        rewrites.len() <= PER_FRAME_ARRAY_REWRITE_BUDGET,
+        "每帧换掉模型实例的数组从预算 {} 涨到了 {}：{rewrites:?}。\
+         每个被换掉的模型都会让它的 repeater 重建子图元，而重建落在绘制回调里。",
+        PER_FRAME_ARRAY_REWRITE_BUDGET,
+        rewrites.len()
     );
     assert!(
-        aether_host.contains("set_arrangement_content_px"),
-        "宿主接线层必须注册 set_arrangement_content_px"
-    );
-    assert!(
-        aether_app.contains("> asset-pool-details:"),
-        "新 UI 契约面必须声明 > asset-pool-details:"
-    );
-    assert!(
-        aether_host.contains("set_asset_pool_details"),
-        "宿主接线层必须注册 set_asset_pool_details"
-    );
-    assert!(
-        aether_app.contains("> asset-pool-kinds:"),
-        "新 UI 契约面必须声明 > asset-pool-kinds:"
-    );
-    assert!(
-        aether_host.contains("set_asset_pool_kinds"),
-        "宿主接线层必须注册 set_asset_pool_kinds"
+        rewrites.len() >= 6,
+        "随滚动变化的六个音符数组必须每帧都注入；现在只有 {} 个数组换了实例 —— \
+         少了就说明卷帘不会跟着滚动重画",
+        rewrites.len()
     );
 }

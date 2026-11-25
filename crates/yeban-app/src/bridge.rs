@@ -1004,8 +1004,8 @@ pub struct VisibleNotes {
     /// **为什么不给它消费者**（代价读数，⛔ 不是判断）：`ys` 已经是同一事实的像素形态
     /// （`pitch_lane` 一次乘法），宿主与 `.slint` 的绘制/命中路径都只读 `ys`；要真消费
     /// `rows` 就得新增 `note-rows` 属性 ＋ `apply_view` 里多一个写入点 ⇒ 会动
-    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **81**）与
-    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **48**）⇒ ⛔ 本单禁改那两个读数。
+    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **125**）与
+    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **74**）⇒ ⛔ 本单禁改那两个读数。
     ///
     /// **判据**：`crates/yeban-app/tests/roll_injection_registration.rs` 从 `host.rs`
     /// 源码**派生**"注入面恰是那 5 个名字 ＋ `rows` 不在其中"（⛔ 不读判据自己所在的文件，
