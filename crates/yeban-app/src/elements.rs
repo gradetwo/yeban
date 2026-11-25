@@ -3084,9 +3084,22 @@ impl ElementRegistry {
             "模板分组列表（工厂 / 我的 → 曲风 → 子曲风 → 模板名）",
             false,
         );
-        // 行族是**有界**的：选择器一次最多画 `TEMPLATE_CHOOSER_MAX_ROWS` 行
-        // （宿主截断并如实报数），运行时不可能出现第 65 个 `template-row-*`
-        // ⇒ 注册范围与画布上限同源（与 `undo-tree-node-{0..6}` 同一条纪律）。
+        registry.add(
+            "template-chooser-search-field",
+            ElementKind::TextInput,
+            "dialogs/template_chooser.slint",
+            "模板选择器搜索框（按来源 / 曲风 / 子曲风 / 模板名过滤）",
+            false,
+        );
+        // 行族**无界**（T-FIX-293）：宿主把全部行写进模型，界面用 `Flickable`
+        // 纵向滚动到达任意一行，`hidden_rows` 恒为 0。注册表只枚举前
+        // `TEMPLATE_CHOOSER_MAX_ROWS` 个行 id 作为该族的**代表窗口** ——
+        // 覆盖判据按 `.slint` 的 `"template-row-" + row-index` 模板匹配，
+        // 与窗口大小无关；运行时第 65 行起与前 64 行共享同一模板、同一
+        // `kind` 与同一 `accessible-action-default` 落点。⛔ 残留缺口（登记在
+        // T-FIX-293 回执）：若将来有判据对打开的、超过 64 行的选择器做运行
+        // 时 `coverage_against` 断言，第 65 行起会报 `unknown_at_runtime` ——
+        // 今天没有这样的判据。
         for row_index in 0..crate::templates::TEMPLATE_CHOOSER_MAX_ROWS {
             registry.add(
                 &format!("template-row-{row_index}"),
@@ -3157,7 +3170,16 @@ impl ElementRegistry {
             "启动选择器条目列表（最近 / 演示 / 模板分组）",
             false,
         );
-        // 行族有界：一次最多画 `CHOOSER_MAX_ROWS` 行（与模板行同纪律）。
+        registry.add(
+            "startup-chooser-search-field",
+            ElementKind::TextInput,
+            "dialogs/startup_chooser.slint",
+            "启动选择器搜索框（按当前分类的字段过滤）",
+            false,
+        );
+        // 行族无界（T-FIX-293）：与模板行同口径 —— 注册表只枚举前
+        // `CHOOSER_MAX_ROWS` 个行 id 作为该族的**代表窗口**，运行时第 65 行起
+        // 与前 64 行共享同一 `.slint` 模板。残留缺口见模板行族的注释。
         for row_index in 0..crate::startup_chooser::CHOOSER_MAX_ROWS {
             registry.add(
                 &format!("startup-row-{row_index}"),
@@ -6522,7 +6544,7 @@ mod tests {
     ///
     /// 键的口径：`{文件} :: {点击所在元素块首行} :: {空白归一化后的点击落点}`。块首行按
     /// `enclosing_element_header` 取（点击所在行的上一级 `{` 行）；单行 TouchArea 里
-    /// 块首会落到父元素上，但三元组在本树实测唯一（105 条无重键）。
+    /// 块首会落到父元素上，但三元组在本树实测唯一（107 条无重键）。
     ///
     /// 注入证明（破坏 ⇒ 红）：删掉 LOOP 的 `accessible-role`（T-FIX-173 补丁 revert）
     /// ⇒ `transport_bar.slint :: btn_loop_touch := TouchArea { :: root.toggle-loop();` 落进
@@ -6874,7 +6896,8 @@ mod tests {
     }
 
     /// [`every_clickable_control_is_either_role_bound_or_a_known_exception`] 的期望集合
-    /// （T-FIX-180 在当前尖端盘点的存量，105 条；键口径见该判据文档）。
+    /// （T-FIX-180 在当前尖端盘点的存量 105 条 + T-FIX-293 新增 2 条搜索框清空 ×；
+    /// 键口径见该判据文档）。
     ///
     /// 已排序。处置分两类 —— (a) 真实可点控件，role 尚未补（绝大多数）：后续按 LOOP
     /// 模式（父元素补 `accessible-role: button` + `accessible-id` + `accessible-label` +
@@ -6900,8 +6923,10 @@ mod tests {
     /// | `console/mixer_console.slint` | 1 | 轨道选择匿名 TouchArea（4 个 PushButton 走回调组件，不计） |
     /// | `console/piano_roll.slint` | 2 | 量化、人性化按钮 |
     /// | `dialogs/preset_library.slint` | 1 | 预设行点击 |
+    /// | `dialogs/startup_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
+    /// | `dialogs/template_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
     /// | `workspace/song_overview_panel.slint` | 1 | 段落循环 TouchArea（for 循环内） |
-    const KNOWN_ROLELESS_CLICKABLES: [&str; 105] = [
+    const KNOWN_ROLELESS_CLICKABLES: [&str; 107] = [
         "app.slint :: Rectangle { :: root.engine-error = \"\";",
         "app.slint :: TouchArea { :: root.ai-drawer-open = false; root.musical-pr-open = true;",
         "app.slint :: TouchArea { :: root.toggle-ai-drawer();",
@@ -6947,6 +6972,11 @@ mod tests {
         "control_room.slint :: mono_touch := TouchArea { :: root.is-mono = !root.is-mono; root.toggle-mono();",
         "control_room.slint :: side_touch := TouchArea { :: root.is-side = !root.is-side; root.toggle-side();",
         "dialogs/preset_library.slint :: row-touch := TouchArea { :: root.apply-preset(row.id);",
+        // T-FIX-293 新增的两个搜索框清空 ×（左栏 `clear_q_t` 同款：只清搜索串，
+        // 键盘全选 + 删除可达同一效果；补 role 需要新的 @tr 标签文案，
+        // 本单不碰词表 ⇒ 先登记为例外，后续按 LOOP 模式逐个修）。
+        "dialogs/startup_chooser.slint :: clear_q_t := TouchArea { :: root.search-text = \"\"; root.search-changed(\"\");",
+        "dialogs/template_chooser.slint :: clear_q_t := TouchArea { :: root.search-text = \"\"; root.search-changed(\"\");",
         "left_panel.slint :: Rectangle { :: root.show-instrument-menu = false;",
         "left_panel.slint :: TouchArea { :: root.active-tag = \"all\"; root.select-tag(\"all\");",
         "left_panel.slint :: TouchArea { :: root.active-tag = \"effect\"; root.select-tag(\"effect\");",

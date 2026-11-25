@@ -13,7 +13,9 @@
 //
 // 行模型、Details 初值、调号名都由宿主（`host::wire_startup_chooser`）
 // 从 `crate::startup_chooser` 的纯逻辑写入；本文件只做呈现与上抛：
-// 分类切换、条目选中 / 双击打开、Details 步进、点按测速。打开语义
+// 分类切换、条目选中 / 双击打开、Details 步进、点按测速、搜索串上抛。
+// 行模型**无界**（T-FIX-293）：全部行都进模型，`Flickable` 纵向滚动到达
+// 任意一行，`hidden-rows` 恒为 0（只剩诊断意义）。打开语义
 // （未命名副本 / 记最近 / 失败不关弹窗）全在宿主，本文件 ⛔ 不碰磁盘。
 //
 // 默认关着（`MainWindow.startup-chooser-open = false`）⇒ 默认帧与
@@ -25,9 +27,12 @@ export component StartupChooserDialog inherits Rectangle {
     // ---- 宿主写入的显示态 ------------------------------------------------
     in property <int> category: 0;
     in property <[StartupChooserRow]> rows: [];
-    // 被行数上限截断、没有画出来的行数（宿主读数，0 = 全画出来了）。
+    // 被行数上限截断、没有画出来的行数（宿主读数；T-FIX-293 起行模型全量写入，
+    // 恒为 0 —— 只剩诊断意义）。
     in property <int> hidden-rows: 0;
     in property <string> key-label: "—";
+    // 搜索串（T-FIX-293）：唯一写者是搜索框的两向绑定，宿主只读。
+    in-out property <string> search-text: "";
 
     // ---- 双向状态（界面与宿主共享） --------------------------------------
     in-out property <int> selected-entry: -1;
@@ -58,6 +63,7 @@ export component StartupChooserDialog inherits Rectangle {
 
     callback category-selected(int);
     callback entry-activated(int);
+    callback search-changed(string);
     callback new-project();
     callback open-existing();
     callback cancel();
@@ -866,11 +872,81 @@ export component StartupChooserDialog inherits Rectangle {
             accessible-id: "startup-chooser-list";
             accessible-label: @tr("启动选择器条目列表");
 
-            if root.category != 2 : Flickable {
+            // 搜索（T-FIX-293）：按当前分类的字段过滤（最近：名 / 路径；
+            // 演示：标题 / 曲风；模板：来源 / 曲风 / 子曲风 / 模板名）；
+            // 每敲一个字经 `search-changed` 上抛给宿主重过滤（与左栏搜索同款）。
+            // 换分类不清空（搜索串是用户敲的，⛔ 不是分类的一部分）。
+            Rectangle {
                 x: 0;
                 y: 0;
                 width: parent.width;
-                height: parent.height;
+                height: 36px;
+                background: Tokens.bg-panel;
+
+                HorizontalLayout {
+                    x: Tokens.space-4;
+                    y: 0;
+                    width: parent.width - 2 * Tokens.space-4;
+                    height: parent.height;
+                    spacing: 6px;
+
+                    Text {
+                        text: @tr("检索");
+                        font-family: Tokens.font-ui;
+                        font-size: Tokens.font-size-xs;
+                        color: Tokens.ink-2;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        startup_search_input := ImeAwareTextInput {
+                            width: parent.width;
+                            height: parent.height;
+                            text <=> root.search-text;
+                            font-family: Tokens.font-ui;
+                            font-size: Tokens.font-size-sm;
+                            color: Tokens.ink-1;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accessible-role: text-input;
+                            accessible-id: "startup-chooser-search-field";
+                            accessible-label: @tr("检索");
+                            edited => {
+                                root.search-changed(self.text);
+                            }
+                        }
+                    }
+
+                    if root.search-text != "" : Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: clear_q_t.has-hover ? Tokens.line : transparent;
+                        Text {
+                            text: "×";
+                            font-family: Tokens.font-ui;
+                            font-size: Tokens.font-size-sm;
+                            color: Tokens.ink-1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        clear_q_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.search-text = "";
+                                root.search-changed("");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.category != 2 : Flickable {
+                x: 0;
+                y: 36px;
+                width: parent.width;
+                height: parent.height - 36px;
                 content-width: self.width;
                 content-height: max(self.height, root.rows.length * 36px);
                 interactive: true;
@@ -1022,7 +1098,7 @@ export component StartupChooserDialog inherits Rectangle {
             // 15:12 补定）；唱片架一侧文字保留。
             if root.category == 2 : Rectangle {
                 x: 0;
-                y: 0;
+                y: 36px;
                 width: parent.width;
                 height: 36px;
 
@@ -1140,9 +1216,9 @@ export component StartupChooserDialog inherits Rectangle {
             // 演示分类的行恒为条目行（kind == 2），无分组标题行。
             if root.category == 2 && root.demo-view == 0 : demo-shelf := Flickable {
                 x: 0;
-                y: 36px;
+                y: 72px;
                 width: parent.width;
-                height: parent.height - 36px;
+                height: parent.height - 72px;
                 property <int> cols: max(1, Math.floor((self.width - 20px) / 300px));
                 property <int> grid-rows: max(1, Math.floor((root.rows.length + self.cols - 1) / self.cols));
                 // 展开卡所在的行（展开状态存根上的
@@ -1428,9 +1504,9 @@ export component StartupChooserDialog inherits Rectangle {
             // 别传裸 float、也别按弧度传。
             if root.category == 2 && root.demo-view == 1 : demo-stack := Flickable {
                 x: 0;
-                y: 36px;
+                y: 72px;
                 width: parent.width;
-                height: parent.height - 36px;
+                height: parent.height - 72px;
                 property <int> count: root.rows.length;
                 property <length> cx: self.width / 2;
                 property <length> ring-rx: min(150px, max(0px, (self.width - 320px) / 2));
@@ -1702,7 +1778,10 @@ export component StartupChooserDialog inherits Rectangle {
                 }
             }
 
-            // 截断的如实报数
+            // 未画出行的诊断（T-FIX-293 起恒为 0）
+            // 行模型全量写入，正常情况下这一块永不出现；只留作诊断通道。
+            // ⚠ 里面的 @tr 文案仍提“最多画 64 行”（旧口径）：它今天是休眠文案，
+            // 若将来重设上限，须换一条新的 @tr 文案（⛔ 不要直接改这句，词表要同步）。
             if root.hidden-rows > 0 : Rectangle {
                 x: Tokens.space-6;
                 y: parent.height - 24px;

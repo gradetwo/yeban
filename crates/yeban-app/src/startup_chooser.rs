@@ -68,8 +68,15 @@ use crate::cli::{Language, Sample};
 use crate::settings::{RecentProject, Settings};
 use crate::templates::{TemplateEntry, TemplateRoots, TemplateSource, list_templates};
 
-/// 选择器一次最多画多少行（与模板选择器同一上限纪律：超出部分
-/// 由宿主如实报数，⛔ 不静默截断）。
+/// 选择器行族在 [`crate::elements`] 注册表里登记的**代表窗口**（`startup-row-{0..N}` 等）。
+///
+/// T-FIX-293 起行模型**无界**：宿主把全部行写进模型，界面用 `Flickable` 纵向滚动
+/// 到达任意一行，`hidden_rows` 恒为 0（⛔ 不再按此截断）。这个常数不再限制行数，
+/// 只给注册表一个枚举窗口 —— 覆盖判据按 `.slint` 的 `"startup-row-" + row-index`
+/// 等模板匹配，与窗口大小无关；运行时第 65 行起与前 64 行共享同一模板、同一 `kind`
+/// 与同一 `accessible-action-default` 落点。⛔ 残留缺口（登记在 T-FIX-293 回执）：
+/// 若将来有判据对打开的、超过 64 行的选择器做运行时 `coverage_against` 断言，
+/// 第 65 行起会报 `unknown_at_runtime` —— 今天没有这样的判据。
 pub const CHOOSER_MAX_ROWS: usize = 64;
 
 /// 最近清单灌进选择器时一并算出的条目（存在性在汇集那一刻查）。
@@ -471,38 +478,58 @@ fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
     }
 }
 
+/// 搜索串的子串匹配（T-FIX-293）：空串命中全部；非空时不区分大小写、子串匹配。
+#[must_use]
+fn query_matches(haystack: &str, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty() || haystack.to_lowercase().contains(&query)
+}
+
 /// 「最近」分类的行模型：一条一工程，副文字 = 路径 + 相对时间；
 /// 文件已不存在的条目副文字换成「文件已不存在」，且不可点。
 #[must_use]
 pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<ChooserRow> {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let detail = if entry.exists {
-                format!(
-                    "{} · {}",
-                    entry.path.display(),
-                    relative_time_label(lang, now_ms, entry.opened_at_unix_ms)
-                )
-            } else {
-                format!("{} · {}", entry.path.display(), missing_file_label(lang))
-            };
-            ChooserRow {
-                kind: ChooserRowKind::Entry,
-                label: entry.name.clone(),
-                detail,
-                genre: String::new(),
-                bpm_label: String::new(),
-                details: String::new(),
-                detail_rows: Vec::new(),
-                details_height_px: 0,
-                entry_index: Some(index),
-                enabled: entry.exists,
-                cover: None,
-            }
-        })
-        .collect()
+    recent_rows_matching(entries, lang, now_ms, "")
+}
+
+/// [`recent_rows`] 的带搜索过滤版（T-FIX-293）：只放名字或路径命中 `query` 的条目；
+/// `entry_index` 仍是**全量最近清单**的下标（宿主按它打开文件），⛔ 不因过滤重排。
+#[must_use]
+pub fn recent_rows_matching(
+    entries: &[RecentEntry],
+    lang: Language,
+    now_ms: u64,
+    query: &str,
+) -> Vec<ChooserRow> {
+    let mut rows = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if !query_matches(&format!("{} {}", entry.name, entry.path.display()), query) {
+            continue;
+        }
+        let detail = if entry.exists {
+            format!(
+                "{} · {}",
+                entry.path.display(),
+                relative_time_label(lang, now_ms, entry.opened_at_unix_ms)
+            )
+        } else {
+            format!("{} · {}", entry.path.display(), missing_file_label(lang))
+        };
+        rows.push(ChooserRow {
+            kind: ChooserRowKind::Entry,
+            label: entry.name.clone(),
+            detail,
+            genre: String::new(),
+            bpm_label: String::new(),
+            details: String::new(),
+            detail_rows: Vec::new(),
+            details_height_px: 0,
+            entry_index: Some(index),
+            enabled: entry.exists,
+            cover: None,
+        });
+    }
+    rows
 }
 
 /// 「演示工程」分类的行模型（唱片架卡片口径，Wang 2026-11-23
@@ -510,30 +537,45 @@ pub fn recent_rows(entries: &[RecentEntry], lang: Language, now_ms: u64) -> Vec<
 /// 展开区（带标签行，见 [`demo_detail_rows`]），⛔ 不上主面。
 #[must_use]
 pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let detail_rows = demo_detail_rows(lang, entry);
-            ChooserRow {
-                kind: ChooserRowKind::Entry,
-                label: entry.title.clone(),
-                detail: String::new(),
-                genre: entry.genre.clone().unwrap_or_default(),
-                bpm_label: bpm_label(entry.bpm),
-                details: detail_rows
-                    .iter()
-                    .map(|row| format!("{} {}", row.label, row.value))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                details_height_px: detail_rows_height_px(&detail_rows),
-                detail_rows,
-                entry_index: Some(index),
-                enabled: true,
-                cover: entry.cover.clone(),
-            }
-        })
-        .collect()
+    demo_rows_matching(entries, lang, "")
+}
+
+/// [`demo_rows`] 的带搜索过滤版（T-FIX-293）：只放标题或曲风命中 `query` 的条目；
+/// `entry_index` 仍是**全量演示清单**的下标（宿主按它打开文件），⛔ 不因过滤重排。
+#[must_use]
+pub fn demo_rows_matching(entries: &[DemoEntry], lang: Language, query: &str) -> Vec<ChooserRow> {
+    let mut rows = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if !query_matches(
+            &format!(
+                "{} {}",
+                entry.title,
+                entry.genre.clone().unwrap_or_default()
+            ),
+            query,
+        ) {
+            continue;
+        }
+        let detail_rows = demo_detail_rows(lang, entry);
+        rows.push(ChooserRow {
+            kind: ChooserRowKind::Entry,
+            label: entry.title.clone(),
+            detail: String::new(),
+            genre: entry.genre.clone().unwrap_or_default(),
+            bpm_label: bpm_label(entry.bpm),
+            details: detail_rows
+                .iter()
+                .map(|row| format!("{} {}", row.label, row.value))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            details_height_px: detail_rows_height_px(&detail_rows),
+            detail_rows,
+            entry_index: Some(index),
+            enabled: true,
+            cover: entry.cover.clone(),
+        });
+    }
+    rows
 }
 
 /// 卡片上的弱化速度行（语言中立写法：整数不带小数尾巴）。
@@ -795,11 +837,29 @@ pub fn duration_label(lang: Language, secs: f64) -> String {
 /// 有的那一份清单就是全量清单）。
 #[must_use]
 pub fn template_rows(entries: &[TemplateEntry], source: TemplateSource) -> Vec<ChooserRow> {
+    // 空串不过滤，`lang` 不会被查（见 `entry_matches_query` 的短路）。
+    template_rows_matching(entries, source, Language::ZhCn, "")
+}
+
+/// [`template_rows`] 的带搜索过滤版（T-FIX-293）：只放来源 / 曲风 / 子曲风 / 模板名
+/// 命中 `query` 的条目（匹配口径与模板选择器同款，见
+/// [`crate::templates::entry_matches_query`]）；分组标题只在它名下出现第一条
+/// 命中条目时才出现；`entry_index` 仍是**全量模板清单**的下标，⛔ 不因过滤重排。
+#[must_use]
+pub fn template_rows_matching(
+    entries: &[TemplateEntry],
+    source: TemplateSource,
+    lang: Language,
+    query: &str,
+) -> Vec<ChooserRow> {
     let mut rows = Vec::new();
     let mut current_style: Option<&str> = None;
     let mut current_substyle: Option<&str> = None;
     for (index, entry) in entries.iter().enumerate() {
         if entry.source != source {
+            continue;
+        }
+        if !crate::templates::entry_matches_query(entry, lang, query) {
             continue;
         }
         if current_style != Some(entry.style.as_str()) {
@@ -1398,5 +1458,155 @@ mod tests {
         let user_rows = template_rows(&entries, TemplateSource::User);
         assert_eq!(user_rows.len(), 3);
         assert_eq!(user_rows[2].entry_index, Some(2), "下标是全量清单的下标");
+    }
+
+    /// 构造一条测试用演示条目。
+    fn demo_entry(title: &str, genre: Option<&str>) -> DemoEntry {
+        DemoEntry {
+            source: DemoSource::File(PathBuf::from(format!("{title}.yeban"))),
+            title: title.to_owned(),
+            track_count: 0,
+            author: None,
+            genre: genre.map(ToOwned::to_owned),
+            meta: DemoMeta::default(),
+            bpm: 120.0,
+            bars: 0,
+            duration_secs: 0.0,
+            cover: None,
+        }
+    }
+
+    /// 构造一条测试用最近条目。
+    fn recent_entry(name: &str, path: &str) -> RecentEntry {
+        RecentEntry {
+            name: name.to_owned(),
+            path: PathBuf::from(path),
+            opened_at_unix_ms: 1_700_000_000_000,
+            exists: true,
+        }
+    }
+
+    /// T-FIX-293：演示按标题 / 曲风命中；`entry_index` 是全量下标；空串不过滤。
+    #[test]
+    fn demo_rows_matching_keeps_full_list_entry_index() {
+        let entries = vec![
+            demo_entry("演示 00", Some("流行")),
+            demo_entry("演示 01", Some("古典")),
+            demo_entry("演示 02", Some("流行")),
+        ];
+        assert_eq!(
+            demo_rows_matching(&entries, crate::cli::Language::ZhCn, "").len(),
+            3,
+            "空串不过滤"
+        );
+        let rows = demo_rows_matching(&entries, crate::cli::Language::ZhCn, "古典");
+        assert_eq!(rows.len(), 1, "曲风只命中一条");
+        assert_eq!(rows[0].label, "演示 01");
+        assert_eq!(rows[0].entry_index, Some(1), "过滤不重排下标");
+        let rows = demo_rows_matching(&entries, crate::cli::Language::ZhCn, "流行");
+        assert_eq!(rows.len(), 2, "曲风命中两条");
+        assert_eq!(rows[0].entry_index, Some(0));
+        assert_eq!(rows[1].entry_index, Some(2));
+        assert!(
+            demo_rows_matching(&entries, crate::cli::Language::ZhCn, "不存在").is_empty(),
+            "无命中时行模型为空"
+        );
+    }
+
+    /// T-FIX-293：最近按名 / 路径命中；`entry_index` 是全量下标。
+    #[test]
+    fn recent_rows_matching_keeps_full_list_entry_index() {
+        let entries = vec![
+            recent_entry("最近工程", "/tmp/最近工程.yeban"),
+            recent_entry("工程B", "/tmp/工程B.yeban"),
+        ];
+        let rows = recent_rows_matching(
+            &entries,
+            crate::cli::Language::ZhCn,
+            1_700_000_000_000,
+            "工程B",
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "工程B");
+        assert_eq!(rows[0].entry_index, Some(1), "过滤不重排下标");
+        let rows = recent_rows_matching(
+            &entries,
+            crate::cli::Language::ZhCn,
+            1_700_000_000_000,
+            "最近工程.yeban",
+        );
+        assert_eq!(rows.len(), 1, "路径也是匹配字段");
+        assert_eq!(rows[0].entry_index, Some(0));
+    }
+
+    /// T-FIX-293：启动模板分类按来源 / 曲风 / 子曲风 / 模板名过滤；
+    /// 分组标题只在命中组出现；`entry_index` 是全量模板清单下标。
+    #[test]
+    fn template_rows_matching_keeps_full_list_entry_index() {
+        let entries = vec![
+            TemplateEntry {
+                source: TemplateSource::Factory,
+                style: "流行".to_owned(),
+                substyle: "摇滚".to_owned(),
+                name: "出发".to_owned(),
+                path: PathBuf::from("/f/流行/摇滚/出发.yeban"),
+            },
+            TemplateEntry {
+                source: TemplateSource::Factory,
+                style: "流行".to_owned(),
+                substyle: "抒情".to_owned(),
+                name: "归来".to_owned(),
+                path: PathBuf::from("/f/流行/抒情/归来.yeban"),
+            },
+            TemplateEntry {
+                source: TemplateSource::User,
+                style: "流行".to_owned(),
+                substyle: "摇滚".to_owned(),
+                name: "我的".to_owned(),
+                path: PathBuf::from("/u/流行/摇滚/我的.yeban"),
+            },
+        ];
+        let rows = template_rows_matching(
+            &entries,
+            TemplateSource::Factory,
+            crate::cli::Language::ZhCn,
+            "归来",
+        );
+        let shape: Vec<(ChooserRowKind, String, Option<usize>)> = rows
+            .iter()
+            .map(|row| (row.kind, row.label.clone(), row.entry_index))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (ChooserRowKind::StyleHeader, "流行".to_owned(), None),
+                (ChooserRowKind::SubstyleHeader, "抒情".to_owned(), None),
+                (ChooserRowKind::Entry, "归来".to_owned(), Some(1)),
+            ],
+            "过滤后的条目下标必须是全量模板清单下标，⛔ 不重排"
+        );
+        // 别的来源的同名条目不进工厂分类。
+        let rows = template_rows_matching(
+            &entries,
+            TemplateSource::Factory,
+            crate::cli::Language::ZhCn,
+            "我的",
+        );
+        assert!(rows.is_empty(), "用户来源的条目不得进工厂分类");
+    }
+
+    /// T-FIX-293：70 条演示的行模型没有 64 上限。
+    #[test]
+    fn demo_rows_have_no_sixty_four_cap() {
+        let entries: Vec<DemoEntry> = (0..70)
+            .map(|index| demo_entry(&format!("演示 {index:02}"), None))
+            .collect();
+        let rows = demo_rows_matching(&entries, crate::cli::Language::ZhCn, "");
+        assert_eq!(rows.len(), 70, "70 条演示必须全进模型");
+        assert_eq!(
+            rows.last().and_then(|row| row.entry_index),
+            Some(69),
+            "最后一条的下标必须是全量下标 69"
+        );
     }
 }

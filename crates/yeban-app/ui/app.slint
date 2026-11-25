@@ -871,6 +871,8 @@ export component MainWindow inherits Window {
     in-out property <int> startup-rate-index: 1;
     in-out property <[StartupChooserRow]> startup-rows: [];
     in-out property <int> startup-selected-entry: -1;
+    // 启动选择器搜索串（T-FIX-293）：唯一写者是搜索框的两向绑定，宿主只读。
+    in-out property <string> startup-search-text: "";
     in-out property <string> startup-tempo-text: "120";
     in-out property <int> startup-time-den-index: 2;
     in-out property <int> startup-time-num: 4;
@@ -879,6 +881,8 @@ export component MainWindow inherits Window {
     in-out property <int> template-chooser-hidden-rows: 0;
     in-out property <bool> template-chooser-open: false;
     in-out property <[TemplateChooserRow]> template-chooser-rows: [];
+    // 模板选择器搜索串（T-FIX-293）：唯一写者是搜索框的两向绑定，宿主只读。
+    in-out property <string> template-chooser-search-text: "";
     // 原生预制库（T-FIX-77）：行模型与当前轨的旁通态全由宿主写；
     // 默认关着 ⇒ 默认帧不变。
     in-out property <[PresetRowData]> preset-rows: [];
@@ -1180,9 +1184,11 @@ export component MainWindow inherits Window {
     callback startup-entry-activated(int);
     callback startup-new-project();
     callback startup-open-existing();
+    callback startup-search-changed(string);
     callback startup-tap-tempo();
     callback stop();
     callback template-selected(int);
+    callback template-search-changed(string);
     callback open-preset-library();
     callback preset-apply(string);
     callback preset-save(string);
@@ -2743,7 +2749,9 @@ export component MainWindow inherits Window {
             height: Math.max(240px, root.height - key-handler.absolute-position.y);
             rows: root.template-chooser-rows;
             hidden-rows: root.template-chooser-hidden-rows;
+            search-text <=> root.template-chooser-search-text;
             template-selected(i) => { root.template-selected(i); }
+            search-changed(q) => { root.template-search-changed(q); }
             close => { root.template-chooser-open = false; }
         }
 
@@ -2778,6 +2786,7 @@ export component MainWindow inherits Window {
             details-open <=> root.startup-details-open;
             rows: root.startup-rows;
             hidden-rows: root.startup-hidden-rows;
+            search-text <=> root.startup-search-text;
             key-label: root.startup-key-label;
             selected-entry <=> root.startup-selected-entry;
             tempo-text <=> root.startup-tempo-text;
@@ -2786,6 +2795,7 @@ export component MainWindow inherits Window {
             rate-index <=> root.startup-rate-index;
             category-selected(c) => { root.startup-category-selected(c); }
             entry-activated(i) => { root.startup-entry-activated(i); }
+            search-changed(q) => { root.startup-search-changed(q); }
             new-project => { root.startup-new-project(); }
             open-existing => { root.startup-open-existing(); }
             cancel => { root.startup-cancel(); }

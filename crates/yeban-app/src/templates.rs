@@ -36,12 +36,15 @@ use std::path::{Path, PathBuf};
 /// 模板文件的后缀（与工程文件相同 —— 模板就是工程文件）。
 pub const TEMPLATE_FILE_EXTENSION: &str = "yeban";
 
-/// 选择器一次最多画多少行（分组标题行与模板行合计）。
+/// 选择器行族在 [`crate::elements`] 注册表里登记的**代表窗口**（`template-row-{0..N}`）。
 ///
-/// 画布有界 ⇒ 行模型必须有界：超出部分由宿主**如实报数**（选择器底部的
-/// 「还有 N 行未画出」），⛔ 不静默截断。与时光机的
-/// `host::UNDO_TREE_MAX_NODES` 同一条纪律；`elements.rs` 的注册表按这个
-/// 常数登记 `template-row-{i}`，两处同源、不会漂移。
+/// T-FIX-293 起行模型**无界**：宿主把全部行写进模型，界面用 `Flickable` 纵向滚动
+/// 到达任意一行，`hidden_rows` 恒为 0（⛔ 不再按此截断）。这个常数不再限制行数，
+/// 只给注册表一个枚举窗口 —— 覆盖判据按 `.slint` 的 `"template-row-" + row-index`
+/// 模板匹配，与窗口大小无关；运行时第 65 行起与前 64 行共享同一模板、同一 `kind`
+/// 与同一 `accessible-action-default` 落点。⛔ 残留缺口（登记在 T-FIX-293 回执）：
+/// 若将来有判据对打开的、超过 64 行的选择器做运行时 `coverage_against` 断言，
+/// 第 65 行起会报 `unknown_at_runtime` —— 今天没有这样的判据。
 pub const TEMPLATE_CHOOSER_MAX_ROWS: usize = 64;
 
 /// 一份模板清单的两个根目录。生产装配用 [`TemplateRoots::production`]；
@@ -307,12 +310,49 @@ pub fn build_chooser_rows(
     entries: &[TemplateEntry],
     lang: crate::cli::Language,
 ) -> Vec<ChooserRow> {
+    build_chooser_rows_matching(entries, lang, "")
+}
+
+/// 一条模板是否命中搜索串（T-FIX-293：选择器按来源 / 曲风 / 子曲风 / 模板名过滤）。
+///
+/// 空串命中全部。非空时不区分大小写、子串匹配「来源标签 曲风 子曲风 模板名」
+/// 拼成的整句（各字段本身也是它的子串；多词查询如「流行 摇滚」按整句拼法命中）。
+#[must_use]
+pub fn entry_matches_query(entry: &TemplateEntry, lang: crate::cli::Language, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {} {}",
+        entry.source.group_label_for(lang),
+        entry.style,
+        entry.substyle,
+        entry.name
+    );
+    haystack.to_lowercase().contains(&query)
+}
+
+/// 把模板清单摊平成选择器的分组列表行模型（带搜索过滤；T-FIX-293）。
+///
+/// 与 [`build_chooser_rows`] 同一条分组逻辑，区别是只放命中 `query` 的条目：
+/// 分组标题只在它名下出现第一条命中条目时才出现；`entry_index` 仍是
+/// **全量清单**的下标（宿主按它打开文件），⛔ 不因过滤重排。
+#[must_use]
+pub fn build_chooser_rows_matching(
+    entries: &[TemplateEntry],
+    lang: crate::cli::Language,
+    query: &str,
+) -> Vec<ChooserRow> {
     let mut rows = Vec::new();
     // 三级分组键都带上来源：两个来源可以有同名曲风 / 子曲风，各自成组。
     let mut current_source: Option<TemplateSource> = None;
     let mut current_style: Option<(TemplateSource, &str)> = None;
     let mut current_substyle: Option<(TemplateSource, &str, &str)> = None;
     for (index, entry) in entries.iter().enumerate() {
+        if !entry_matches_query(entry, lang, query) {
+            continue;
+        }
         if current_source != Some(entry.source) {
             rows.push(ChooserRow {
                 kind: ChooserRowKind::Source,
@@ -513,5 +553,121 @@ mod tests {
             assert_eq!(TemplateSource::Factory.group_label_for(lang), factory);
             assert_eq!(TemplateSource::User.group_label_for(lang), user);
         }
+    }
+
+    /// 构造一条测试用模板条目（路径只占位，匹配不看路径）。
+    fn entry(
+        source: TemplateSource,
+        style: &str,
+        substyle: &str,
+        name: &str,
+    ) -> super::TemplateEntry {
+        super::TemplateEntry {
+            source,
+            style: style.to_owned(),
+            substyle: substyle.to_owned(),
+            name: name.to_owned(),
+            path: std::path::PathBuf::from(format!("{style}/{substyle}/{name}.yeban")),
+        }
+    }
+
+    /// T-FIX-293：搜索按来源 / 曲风 / 子曲风 / 模板名命中；空串与纯空白命中
+    /// 全部；不区分大小写；多词按整句拼法命中。
+    #[test]
+    fn entry_matches_query_covers_source_style_substyle_and_name() {
+        let fixture = entry(TemplateSource::User, "流行", "摇滚", "出发");
+        // 空串 / 纯空白命中全部。
+        assert!(super::entry_matches_query(&fixture, ZhCn, ""));
+        assert!(super::entry_matches_query(&fixture, ZhCn, "   "));
+        // 四个字段各自命中。
+        assert!(super::entry_matches_query(&fixture, ZhCn, "我的模板"));
+        assert!(super::entry_matches_query(&fixture, ZhCn, "流行"));
+        assert!(super::entry_matches_query(&fixture, ZhCn, "摇滚"));
+        assert!(super::entry_matches_query(&fixture, ZhCn, "出发"));
+        // 多词按整句拼法命中；子串命中。
+        assert!(super::entry_matches_query(&fixture, ZhCn, "流行 摇滚"));
+        assert!(super::entry_matches_query(&fixture, ZhCn, "出"));
+        // 不命中：别的来源标签、别的曲风、别的模板名。
+        assert!(!super::entry_matches_query(&fixture, ZhCn, "工厂模板"));
+        assert!(!super::entry_matches_query(&fixture, ZhCn, "古典"));
+        assert!(!super::entry_matches_query(&fixture, ZhCn, "归来"));
+        // 拉丁字母不区分大小写。
+        let latin = entry(TemplateSource::Factory, "Pop", "Rock", "Sunrise");
+        assert!(super::entry_matches_query(&latin, EnUs, "pop"));
+        assert!(super::entry_matches_query(&latin, EnUs, "SUNRISE"));
+        assert!(super::entry_matches_query(
+            &latin,
+            EnUs,
+            "Factory Templates"
+        ));
+    }
+
+    /// T-FIX-293：过滤不重排 `entry_index`（宿主按它打开文件），分组标题只在
+    /// 它名下出现第一条命中条目时才出现；空串与不过滤同输出。
+    #[test]
+    fn build_chooser_rows_matching_keeps_full_list_entry_index() {
+        let entries = vec![
+            entry(TemplateSource::User, "流行", "摇滚", "出发"),
+            entry(TemplateSource::User, "流行", "摇滚", "归来"),
+            entry(TemplateSource::User, "古典", "巴洛克", "赋格"),
+        ];
+        // 空串 = 不过滤。
+        assert_eq!(
+            super::build_chooser_rows_matching(&entries, ZhCn, ""),
+            super::build_chooser_rows(&entries, ZhCn)
+        );
+        // 只命中第二条：标题只剩它那一组，`entry_index` 仍是全量下标 1。
+        let rows = super::build_chooser_rows_matching(&entries, ZhCn, "归来");
+        let shape: Vec<(super::ChooserRowKind, String, Option<usize>)> = rows
+            .iter()
+            .map(|row| (row.kind, row.label.clone(), row.entry_index))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (super::ChooserRowKind::Source, "我的模板".to_owned(), None),
+                (super::ChooserRowKind::Style, "流行".to_owned(), None),
+                (super::ChooserRowKind::Substyle, "摇滚".to_owned(), None),
+                (super::ChooserRowKind::Entry, "归来".to_owned(), Some(1)),
+            ],
+            "过滤后的条目下标必须是全量清单下标，⛔ 不重排"
+        );
+        // 无命中 ⇒ 空模型（不是截断计数）。
+        assert!(
+            super::build_chooser_rows_matching(&entries, ZhCn, "不存在的名字").is_empty(),
+            "无命中时行模型为空"
+        );
+    }
+
+    /// T-FIX-293：70 条同组模板的行模型 = 3 个标题行 + 70 条目行 —— 纯函数层
+    /// 没有 64 上限（旧口径的截断只在宿主，如今已移除，回执里登记）。
+    #[test]
+    fn build_chooser_rows_has_no_sixty_four_cap() {
+        let entries: Vec<super::TemplateEntry> = (0..70)
+            .map(|index| {
+                entry(
+                    TemplateSource::User,
+                    "流行",
+                    "摇滚",
+                    &format!("模板 {index:02}"),
+                )
+            })
+            .collect();
+        let rows = super::build_chooser_rows_matching(&entries, ZhCn, "");
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.kind == super::ChooserRowKind::Entry)
+                .count(),
+            70,
+            "70 条模板必须全进模型"
+        );
+        assert_eq!(rows.len(), 73, "70 条目行 + 来源/曲风/子曲风 3 个标题行");
+        assert_eq!(
+            rows.iter()
+                .rfind(|row| row.kind == super::ChooserRowKind::Entry)
+                .and_then(|row| row.entry_index),
+            Some(69),
+            "最后一条的下标必须是全量下标 69"
+        );
     }
 }

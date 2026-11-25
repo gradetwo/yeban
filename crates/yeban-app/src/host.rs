@@ -10584,6 +10584,32 @@ pub fn wire_new_project(
     });
 }
 
+/// 把模板选择器的行模型写进窗口（T-FIX-293：全量写入 + 搜索过滤）。
+///
+/// 行构造的纯逻辑在 [`crate::templates::build_chooser_rows_matching`]；这里只做
+/// 过滤串与灌模型。行模型**无界**：全部行（标题行 + 条目行）都进模型，界面用
+/// `Flickable` 纵向滚动到达任意一行；`hidden_rows` 恒为 0 —— 它现在只是
+/// 「没有行被排除」的诊断读数，⛔ 不再是截断计数。`entry_index` 是全量清单下标，
+/// 过滤不重排（见 `build_chooser_rows_matching`）。
+fn apply_template_chooser_rows(
+    ui: &MainWindow,
+    entries: &[crate::templates::TemplateEntry],
+    query: &str,
+) {
+    let rows = crate::templates::build_chooser_rows_matching(entries, current_language(), query);
+    let model: Vec<crate::ui::TemplateChooserRow> = rows
+        .iter()
+        .map(|row| crate::ui::TemplateChooserRow {
+            kind: row.kind.code(),
+            label: row.label.clone().into(),
+            entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
+        })
+        .collect();
+    ui.set_template_chooser_rows(ModelRc::new(VecModel::from(model)));
+    // 全量写入 ⇒ 没有行被排除；`hidden-rows` 只剩诊断意义（恒 0）。
+    ui.set_template_chooser_hidden_rows(0);
+}
+
 /// ⭐ **工程模板的运行期接线**（照 Logic Pro 的模板机制，Wang 2026-11-17 定案）：
 /// 文件菜单「从模板新建…」/「另存为模板…」的唯一落点。纯逻辑（目录、扫描、
 /// 分组、校验、落盘）在 [`crate::templates`]，本函数只做界面接线。
@@ -10625,34 +10651,43 @@ pub fn wire_project_templates(
     let last_category: Rc<RefCell<(String, String)>> =
         Rc::new(RefCell::new((String::new(), String::new())));
 
+    // 搜索串（T-FIX-293）：输入框是它的唯一写者（两向绑定），宿主只读、
+    // ⛔ 不写回；换分类 / 重开不清空（与左栏搜索同口径）。
+    let search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
     // ---- 从模板新建：扫描两个根 ⇒ 分组行模型 ⇒ 打开选择器 ----------------
     {
         let weak = ui.as_weak();
         let entries_open = Rc::clone(&entries);
         let roots_open = roots.clone();
+        let search_open = Rc::clone(&search_query);
         ui.on_new_from_template(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             let listing = crate::templates::list_templates(&roots_open);
-            let rows = crate::templates::build_chooser_rows(&listing, current_language());
-            let hidden = rows
-                .len()
-                .saturating_sub(crate::templates::TEMPLATE_CHOOSER_MAX_ROWS);
-            let model: Vec<crate::ui::TemplateChooserRow> = rows
-                .iter()
-                .take(crate::templates::TEMPLATE_CHOOSER_MAX_ROWS)
-                .map(|row| crate::ui::TemplateChooserRow {
-                    kind: row.kind.code(),
-                    label: row.label.clone().into(),
-                    entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
-                })
-                .collect();
             *entries_open.borrow_mut() = listing;
-            ui.set_template_chooser_rows(ModelRc::new(VecModel::from(model)));
-            ui.set_template_chooser_hidden_rows(hidden as i32);
+            apply_template_chooser_rows(&ui, &entries_open.borrow(), &search_open.borrow());
             ui.set_template_chooser_open(true);
+        });
+    }
+
+    // ---- 搜索：每敲一个字 ⇒ 用那份字重过滤后重灌模型（与左栏搜索同款） ----
+    {
+        let weak = ui.as_weak();
+        let entries_search = Rc::clone(&entries);
+        let search_search = Rc::clone(&search_query);
+        ui.on_template_search_changed(move |query| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 用**回调带进来的那份字**过滤，⛔ 不读 `get_template_chooser_search_text()`：
+            // 那一刻那条两向绑定是否已经传播完没有上游保证，读到旧值 = 过滤器永远慢一个字。
+            // 也不写回那份字（写者只有输入框）。
+            *search_search.borrow_mut() = query.to_string();
+            apply_template_chooser_rows(&ui, &entries_search.borrow(), &query);
         });
     }
 
@@ -10826,35 +10861,44 @@ const STARTUP_TIME_DENOMINATORS: [u8; 6] = [1, 2, 4, 8, 16, 32];
 /// 把某个分类的行模型写进窗口（行构造的纯逻辑在
 /// [`crate::startup_chooser`]，这里只做编码与灌模型）。切换分类
 /// 同时把选中项清掉（旧分类的下标对新分类没有意义）。
+///
+/// T-FIX-293：`query` 是当前搜索串（必填形参 —— 过滤是注入的一部分，
+/// 想漏掉过滤就编译不过，与左栏 `inject_sidebar` 同一条纪律）；
+/// 行模型**无界**：全部行都进模型，界面用 `Flickable` 纵向滚动到达任意一行；
+/// `hidden_rows` 恒为 0（诊断读数，不再是截断计数）。
 fn apply_startup_category(
     ui: &MainWindow,
     data: &crate::startup_chooser::ChooserData,
     category: i32,
+    query: &str,
 ) {
     let lang = current_language();
     let rows = match category {
-        STARTUP_CATEGORY_RECENT => crate::startup_chooser::recent_rows(
+        STARTUP_CATEGORY_RECENT => crate::startup_chooser::recent_rows_matching(
             &data.recent,
             lang,
             yeban_model::project::now_unix_ms(),
+            query,
         ),
-        STARTUP_CATEGORY_DEMOS => crate::startup_chooser::demo_rows(&data.demos, lang),
-        STARTUP_CATEGORY_FACTORY => crate::startup_chooser::template_rows(
+        STARTUP_CATEGORY_DEMOS => {
+            crate::startup_chooser::demo_rows_matching(&data.demos, lang, query)
+        }
+        STARTUP_CATEGORY_FACTORY => crate::startup_chooser::template_rows_matching(
             &data.templates,
             crate::templates::TemplateSource::Factory,
+            lang,
+            query,
         ),
-        STARTUP_CATEGORY_USER => crate::startup_chooser::template_rows(
+        STARTUP_CATEGORY_USER => crate::startup_chooser::template_rows_matching(
             &data.templates,
             crate::templates::TemplateSource::User,
+            lang,
+            query,
         ),
         _ => Vec::new(),
     };
-    let hidden = rows
-        .len()
-        .saturating_sub(crate::startup_chooser::CHOOSER_MAX_ROWS);
     let model: Vec<crate::ui::StartupChooserRow> = rows
         .iter()
-        .take(crate::startup_chooser::CHOOSER_MAX_ROWS)
         .map(|row| {
             // 封面在宿主侧真实加载（文件型 demo 实验）：加载失败
             // **响亮**报错并降级为无封面行，⛔ 不静默吞。
@@ -10899,7 +10943,8 @@ fn apply_startup_category(
         })
         .collect();
     ui.set_startup_rows(ModelRc::new(VecModel::from(model)));
-    ui.set_startup_hidden_rows(hidden as i32);
+    // 全量写入 ⇒ 没有行被排除；`hidden-rows` 只剩诊断意义（恒 0）。
+    ui.set_startup_hidden_rows(0);
     ui.set_startup_category(category);
     ui.set_startup_selected_entry(-1);
 }
@@ -10948,6 +10993,9 @@ pub fn wire_startup_chooser(
         crate::startup_chooser::gather(&crate::settings::load(), &roots),
     ));
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    // 搜索串（T-FIX-293）：输入框是它的唯一写者（两向绑定），宿主只读、
+    // ⛔ 不写回；换分类不清空（与左栏搜索同口径）。
+    let search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
     // ---- 播种：Details 初值 + 停在「新建工程」分类 -------------------
     ui.set_startup_tempo_text(format_startup_bpm(initial_details.bpm).into());
@@ -10974,18 +11022,43 @@ pub fn wire_startup_chooser(
             .position(|rate| *rate == initial_details.sample_rate)
             .unwrap_or(1) as i32,
     );
-    apply_startup_category(ui, &data.borrow(), STARTUP_CATEGORY_NEW);
+    apply_startup_category(ui, &data.borrow(), STARTUP_CATEGORY_NEW, "");
 
     // ---- 分类切换 -----------------------------------------------------
     {
         let weak = ui.as_weak();
         let data_nav = Rc::clone(&data);
+        let search_nav = Rc::clone(&search_query);
         ui.on_startup_category_selected(move |category| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            apply_startup_category(&ui, &data_nav.borrow(), category);
+            // 换分类不清空搜索串：那一句是用户敲的，⛔ 不是分类的一部分。
+            apply_startup_category(&ui, &data_nav.borrow(), category, &search_nav.borrow());
+        });
+    }
+
+    // ---- 搜索：每敲一个字 ⇒ 用那份字重过滤当前分类后重灌模型 ----------
+    {
+        let weak = ui.as_weak();
+        let data_search = Rc::clone(&data);
+        let search_search = Rc::clone(&search_query);
+        ui.on_startup_search_changed(move |query| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 用**回调带进来的那份字**过滤，⛔ 不读 `get_startup_search_text()`：
+            // 那一刻那条两向绑定是否已经传播完没有上游保证，读到旧值 = 过滤器永远慢一个字。
+            // 也不写回那份字（写者只有输入框）。
+            *search_search.borrow_mut() = query.to_string();
+            apply_startup_category(
+                &ui,
+                &data_search.borrow(),
+                ui.get_startup_category(),
+                &query,
+            );
         });
     }
 
