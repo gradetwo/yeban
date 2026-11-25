@@ -16,6 +16,8 @@
 //! | E8 | 池跨块延续 ＋ 窃取/提升路径不 panic 且出声（EG 状态写回正确） | 逐位 ＋ 有限/非静音 |
 //! | E9 | 解析错误响亮：depth 小数/越界、负时间、sustain 越界 ⇒ `Err` | `is_err` |
 //! | E10 | 摊平表带出：`fileg_def` / `pitcheg_def` 与 `ampeg_base(Delay/Start)` 读数命中 | 访问器 |
+//! | E11 | 离线 CC 生效：`fileg_depthcc100` 探针满格 ⇒ 8 kHz 扫通（且逐位等于静态 depth）；`pitcheg_depthcc100` 同款弯音 | RMS 比 ＋ 逐位 |
+//! | E12 | 红对照：探针恒 0 == `cc = None`；带 CC 行的 SFZ 用 `cc = None` == 去掉 CC 行的同一份 SFZ | 逐位 |
 //!
 //! 范围裁决（见 `yeban_sfz::eg`）：本族只做**静态参 ＋ `vel2`**；`*_ccN` /
 //! `*_onccN` / `*_curveccN` ⛔ 不进 `ModTarget`。`fileg` / `pitcheg` 的释放段
@@ -26,6 +28,11 @@
 //! `fileg_*ccN` / `pitcheg_*ccN` 等 64 形进 `ModTarget::Fileg` / `Pitcheg`，
 //! `EgDef` 带 `cc_mods` 表、`value_with_cc` 叠加 delta（无 CC 时逐位不变）；
 //! 引擎逐块接线是 281B／281C，本单只做解析层 —— 本文件的 E1～E10 仍判引擎消费（静态参 ＋ `vel2`），不含 CC。
+//!
+//! ⭐ ⭐ **追加修订段（T-FIX-281B）—— 被修订的是上面「引擎逐块接线是 281B／281C」
+//! 那一支**（⛔ 原文一字未删）：离线那条路已接线 —— `eg_run_from_with_cc` 经
+//! `render_note_with` 接通，叠加走已烘好的区域调制表；本文件的 E11（离线 CC 生效）／
+//! E12（无 CC 红对照）判它。摊平／实时两条路仍未接（281C），本文件不判它们。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -98,6 +105,26 @@ fn render_offline(text: &str, sample: InMemorySample) -> Vec<f32> {
     let mut out = vec![0.0_f32; OUT];
     sfz.render_note_into_from_samples(&table, 60, 100, Some(OUT as u64), None, &mut out, HZ)
         .expect("离线渲染必须成功");
+    out
+}
+
+/// 离线渲染一份 SFZ（样本表路径 ＋ CC 探针），返回输出缓冲。
+fn render_offline_with_cc(text: &str, sample: InMemorySample, cc: &dyn Fn(u8) -> u8) -> Vec<f32> {
+    let sfz = SfzInstrument::load(text.to_owned(), &Default::default()).expect("SFZ 必须解析成功");
+    let mut table = BTreeMap::new();
+    table.insert("a.wav".to_owned(), sample);
+    let mut out = vec![0.0_f32; OUT];
+    sfz.render_note_into_from_samples_with_cc(
+        &table,
+        60,
+        100,
+        Some(OUT as u64),
+        None,
+        &mut out,
+        HZ,
+        Some(cc),
+    )
+    .expect("离线渲染必须成功");
     out
 }
 
@@ -428,4 +455,100 @@ fn e10_prepared_region_carries_eg_definitions() {
     let prepared = PreparedSfz::prepare(&plain, &nyquist(), HZ).expect("摊平必须成功");
     assert!(prepared.regions()[0].fileg_def(&prepared).is_none());
     assert!(prepared.regions()[0].pitcheg_def(&prepared).is_none());
+}
+
+/// ⭐ E11（T-FIX-281B）：离线路径 `fileg_*ccN` 生效 —— 静态 `fileg_depth=0`
+/// （包络透明）＋ `fileg_depthcc100=12000`：探针 cc100=127 时 depth 满格、
+/// 8 kHz 正弦扫通；探针 cc100=0 时 depth 仍 0、静态低通全程压灭。
+/// 与静态 `fileg_depth=12000` 的渲染逐位相同（曲线 0 在 127 处恰为 1）。
+#[test]
+fn e11_offline_fileg_cc_takes_effect() {
+    let text = "<region> sample=a.wav pitch_keytrack=0 cutoff=200 fil_type=lpf_2p \
+                fileg_depth=0 fileg_depthcc100=12000 fileg_attack=0.05 fileg_sustain=100";
+    let open = render_offline_with_cc(text, InMemorySample::sine(8_000.0, HZ, PCM), &|cc| {
+        if cc == 100 { 127 } else { 0 }
+    });
+    let early = rms(&open[..480]);
+    let late = rms(&open[4320..]);
+    assert!(
+        late > 10.0 * early.max(1e-6),
+        "⭐ cc100=127 ⇒ fileg attack 后 8 kHz 必须回来：early {early} → late {late}"
+    );
+    // 探针满格 ≡ 静态 depth=12000（曲线 0 在 127 处恰为 1 ⇒ 取值逐位相同）。
+    let statik = render_offline(
+        "<region> sample=a.wav pitch_keytrack=0 cutoff=200 fil_type=lpf_2p \
+         fileg_depth=12000 fileg_attack=0.05 fileg_sustain=100",
+        InMemorySample::sine(8_000.0, HZ, PCM),
+    );
+    assert_eq!(
+        bits(&open),
+        bits(&statik),
+        "⭐ cc100=127 的 depth 必须逐位等于静态 depth=12000"
+    );
+    // 对照：探针 cc100=0 ⇒ depth 仍 0 ⇒ 静态低通全程压灭 8 kHz。
+    let shut = render_offline_with_cc(text, InMemorySample::sine(8_000.0, HZ, PCM), &|_| 0);
+    assert!(
+        rms(&shut[4320..]) < 0.2 * late,
+        "⭐ cc100=0 ⇒ depth 仍 0 ⇒ 静态低通必须全程压灭 8 kHz"
+    );
+
+    // (b) pitcheg 同款：`pitcheg_depthcc100=1200`，探针满格 ⇒ 音高上行
+    // （后半过零数显著变多）；探针 0 ⇒ 与无弯音渲染逐位相同。
+    // ⚠ 这一腿判的是族定靶：`eg_run_from_with_cc` 必须按 `Pitcheg(param)`
+    // 取目标 —— 若错取成 `Fileg`，弯音就不会出现。
+    let sine = InMemorySample::sine(440.0, HZ, 19_200);
+    let text_p = "<region> sample=a.wav pitch_keytrack=0 pitcheg_depth=0 \
+                  pitcheg_depthcc100=1200 pitcheg_attack=0.05 pitcheg_sustain=100";
+    let bent = render_offline_with_cc(text_p, sine, &|cc| if cc == 100 { 127 } else { 0 });
+    let crossings = |span: &[f32]| {
+        span.windows(2)
+            .filter(|pair| pair[0].signum() != pair[1].signum() && pair[1] != 0.0)
+            .count()
+    };
+    let first = crossings(&bent[..2400]);
+    let second = crossings(&bent[2400..]);
+    assert!(
+        (second as f32) > (first as f32) * 1.2,
+        "⭐ cc100=127 ⇒ pitcheg attack 内音高上行 ⇒ 后半过零数必须显著变多：{first} → {second}"
+    );
+    let flat = render_offline_with_cc(text_p, InMemorySample::sine(440.0, HZ, 19_200), &|_| 0);
+    assert_ne!(
+        bits(&bent),
+        bits(&flat),
+        "⭐ 探针满格与探针 0 的 pitcheg 输出必须逐位不同（可测差异）"
+    );
+}
+
+/// ⭐ E12（T-FIX-281B）：红对照 —— 无 CC 时与 281A 前逐位相同。
+/// (a) 探针恒 0 的渲染 == `cc = None` 的渲染（逐位）；
+/// (b) 带 CC 行的 SFZ 用 `cc = None` 渲染 == 去掉 CC 行的同一份 SFZ
+///     用 `cc = None` 渲染（逐位）—— CC 行在无探针时一项算术都不加。
+#[test]
+fn e12_no_cc_is_bit_identical_to_pre_281a() {
+    let with_cc = "<region> sample=a.wav pitch_keytrack=0 cutoff=200 fil_type=lpf_2p \
+                   fileg_depth=0 fileg_depthcc100=12000 fileg_attack=0.05 fileg_sustain=100 \
+                   pitcheg_depth=0 pitcheg_depthcc100=1200 pitcheg_attack=0.05 pitcheg_sustain=100";
+    let without_cc = "<region> sample=a.wav pitch_keytrack=0 cutoff=200 fil_type=lpf_2p \
+                      fileg_depth=0 fileg_attack=0.05 fileg_sustain=100 \
+                      pitcheg_depth=0 pitcheg_attack=0.05 pitcheg_sustain=100";
+    let sample = || InMemorySample::sine(8_000.0, HZ, PCM);
+    // (a) 探针恒 0 ≡ 无探针。
+    let zero = render_offline_with_cc(with_cc, sample(), &|_| 0);
+    let none = render_offline(with_cc, sample());
+    assert_eq!(
+        bits(&zero),
+        bits(&none),
+        "⭐ 探针恒 0 ⇒ CC 项一项都不加 ⇒ 与 cc=None 逐位相同"
+    );
+    // (b) CC 行在无探针时不存在。
+    let stripped = render_offline(without_cc, sample());
+    assert_eq!(
+        bits(&none),
+        bits(&stripped),
+        "⭐ 无探针时 CC 行必须逐位等于去掉 CC 行的同一份 SFZ"
+    );
+    assert!(
+        none.iter().any(|s| *s != 0.0),
+        "夹具必须真的出声（⛔ 挡住\"静默也算逐位相同\"）"
+    );
 }
