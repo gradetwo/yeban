@@ -330,6 +330,12 @@ pub struct WavExportReport {
     ///
     /// `None` = 没给开关 ⇒ 本次导出与今天逐字节相同，[`Self::summary`] 也不多一行。
     pub loudness: Option<WavLoudnessReport>,
+    /// ⭐ T-FIX-338：本次导出里**真的执行了**的插件（`"轨名: 设备名 [乐器|效果器]"`）。
+    /// 空 = 本次没有插件参与渲染（此时 [`Self::summary`] 逐字不变）。
+    pub plugins_executed: Vec<String>,
+    /// ⭐ T-FIX-338：本次导出里**没有执行**的外置设备（同形 ＋ `(未执行: 原因)`）。
+    /// 空 = 没有外置设备被跳过。旁通的设备不在此列（旁通是显式选择）。
+    pub plugins_not_executed: Vec<String>,
 }
 
 /// ⭐ 响度归一化报告：用户给的目标／上限 ＋ 落盘文件的实测值 ＋ 谁定下了增益。
@@ -406,10 +412,38 @@ impl WavExportReport {
         if let Some(note) = self.loudness_note() {
             text = format!("{text}\n{note}");
         }
+        if let Some(note) = self.plugin_note() {
+            text = format!("{text}\n{note}");
+        }
         match self.clipping_note() {
             Some(note) => format!("{text}\n{note}"),
             None => text,
         }
+    }
+
+    /// ⭐ T-FIX-338：**插件执行行**（恰好一行；两张表都空 ⇒ `None`）。
+    ///
+    /// 这是 CLI 与控制台唯一的“插件到底跑没跑”的落点：已执行与未执行分开报，
+    /// 未执行的带原因。⛔ 两张表都空时不打印 ⇒ 既有 stdout 逐字不变
+    /// （判据 `a_clean_project_keeps_the_legacy_summary`）。
+    #[must_use]
+    pub fn plugin_note(&self) -> Option<String> {
+        if self.plugins_executed.is_empty() && self.plugins_not_executed.is_empty() {
+            return None;
+        }
+        let executed = if self.plugins_executed.is_empty() {
+            "无".to_owned()
+        } else {
+            self.plugins_executed.join("；")
+        };
+        let not_executed = if self.plugins_not_executed.is_empty() {
+            "无".to_owned()
+        } else {
+            self.plugins_not_executed.join("；")
+        };
+        Some(format!(
+            "插件执行: 已执行 {executed}；未执行 {not_executed}"
+        ))
     }
 
     /// ⭐ `#226`：**削波提示行**（恰好一行；`clipped_samples == 0` ⇒ `None`）。
@@ -717,6 +751,11 @@ pub enum WavExportError {
     /// 静音够不到目标、采样率无 K 计权系数、非立体声、或归一化后仍偏离目标
     /// 超过容差。⛔ 不悄悄交付偏离目标的文件，⛔ 不留半成品。
     Loudness(String),
+    /// ⭐ **插件装载／激活失败**（T-FIX-338）：路径门、宿主加载、状态恢复、
+    /// 激活任一步失败。⛔ 不静默回退到引擎音色或干声；报文自带
+    /// “插件装载失败／效果器装载失败／插件激活失败／插件状态损坏……”前缀，
+    /// `Display` 原样写出，不再叠加第二层前缀。
+    Plugin(String),
 }
 
 impl core::fmt::Display for WavExportError {
@@ -729,6 +768,7 @@ impl core::fmt::Display for WavExportError {
             Self::Engine(reason) => write!(formatter, "引擎装载失败: {reason}"),
             Self::Sfz(reason) => write!(formatter, "SFZ 解码失败: {reason}"),
             Self::Loudness(reason) => write!(formatter, "响度归一化失败: {reason}"),
+            Self::Plugin(reason) => write!(formatter, "{reason}"),
         }
     }
 }
@@ -1239,6 +1279,8 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         loudest_source,
         limiter_reductions: rendered.limiter_reductions,
         loudness: loudness_report,
+        plugins_executed: rendered.plugins_executed,
+        plugins_not_executed: rendered.plugins_not_executed,
     })
 }
 

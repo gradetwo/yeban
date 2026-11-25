@@ -25,6 +25,15 @@ use crate::save::write_file_atomically;
 /// ARA 会话同时存活的上限；与 MCP `MAX_ARA_SESSIONS` 同一个数。
 pub const MAX_ARA_SESSIONS: usize = 64;
 
+/// 插件装载的执行口径（T-FIX-338）：装载只做验证并写设备定义（“仅登记”）。
+///
+/// 实时播放不执行插件（实时回调内禁分配／锁／IO，见 AGENTS.md §2 红线 7，
+/// 引擎没有插件实例的无锁生命周期）；离线导出与整曲预览执行首台已装载的
+/// 插件（与 MCP 离线渲染同一套装配）。本常量是面板提示的**唯一**来源：
+/// 打开面板时与装载成功后都显示它，⛔ 不在 Slint 里另写一份（两份迟早漂移）。
+pub const PLUGIN_REGISTRATION_NOTE: &str =
+    "仅登记：实时播放不执行该插件；离线导出与整曲预览执行首台已装载的插件。";
+
 /// 扫描结果的一行：一个类一行；模块级失败时类名为空单独一行。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginRow {
@@ -184,6 +193,13 @@ pub fn guard_plugin_path(path: &str) -> Result<(), String> {
 ///
 /// `kind` 只能是 `instrument` / `effect`；其它值在路径门之后响亮拒绝，
 /// 错误原文与 MCP `yeban_load_plugin` 的 `kind` 校验一致。
+///
+/// # 执行口径（T-FIX-338）
+///
+/// 本函数只做**验证加载**：实例在返回前被丢弃，落进工程的只有设备定义
+/// （名、延迟、插件绑定与装载时刻的状态快照）。实时播放不执行该插件
+/// （见 [`PLUGIN_REGISTRATION_NOTE`]）；离线导出与整曲预览执行首台已装载
+/// 的插件（与 MCP 离线渲染同一套装配）。
 ///
 /// # Errors
 ///
@@ -687,6 +703,26 @@ mod tests {
         std::fs::write(&text, b"x").expect("临时文件");
         let error = guard_plugin_path(text.to_string_lossy().as_ref()).expect_err("扩展名必须拒绝");
         assert!(error.starts_with("插件路径校验失败，拒绝加载:"), "{error}");
+    }
+
+    #[test]
+    fn registration_note_states_the_execution_policy() {
+        assert!(
+            PLUGIN_REGISTRATION_NOTE.contains("仅登记"),
+            "{PLUGIN_REGISTRATION_NOTE}"
+        );
+        assert!(
+            PLUGIN_REGISTRATION_NOTE.contains("实时播放不执行"),
+            "{PLUGIN_REGISTRATION_NOTE}"
+        );
+        assert!(
+            PLUGIN_REGISTRATION_NOTE.contains("离线导出"),
+            "{PLUGIN_REGISTRATION_NOTE}"
+        );
+        assert!(
+            PLUGIN_REGISTRATION_NOTE.contains("首台"),
+            "{PLUGIN_REGISTRATION_NOTE}"
+        );
     }
 
     #[test]

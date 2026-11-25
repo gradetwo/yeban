@@ -28107,7 +28107,7 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             ui.set_plugin_panel_open(true);
             ui.set_plugin_target_label(plugin_target_label(&ui, port.as_deref()).into());
             ui.set_plugin_error("".into());
-            ui.set_plugin_notice("".into());
+            ui.set_plugin_notice(crate::plugin_panel::PLUGIN_REGISTRATION_NOTE.into());
             if ui.get_ara_out_path().is_empty() {
                 ui.set_ara_out_path(
                     std::env::temp_dir()
@@ -28280,7 +28280,13 @@ pub fn wire_plugin_panel(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             let commit_label = format!("load plugin: {device_name} -> {track_name}");
             match port.commit_ops(now_ms(), &commit_label, ops) {
                 Ok(_) => {
-                    ui.set_plugin_notice(format!("已装载 {device_name} → {track_name}").into());
+                    ui.set_plugin_notice(
+                        format!(
+                            "已装载 {device_name} → {track_name}（{}）",
+                            crate::plugin_panel::PLUGIN_REGISTRATION_NOTE
+                        )
+                        .into(),
+                    );
                     ui.set_plugin_target_label(track_name.into());
                     refresh_undo_window(&ui, port, true);
                 }

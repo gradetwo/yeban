@@ -38,10 +38,15 @@
 //! - **音频片段轨**：本 crate 没有音频解码器（`yeban-decode` 刻意不下移，
 //!   见 `#270` 的禁区），因此音频片段不出声；相关轨进收据的
 //!   [`SkippedTrack`]（[`SkippedReason::AudioClipsOnly`]），源位填静音。
-//! - **外置乐器轨**（`ExternalInstrument` 设备）：没有插件宿主实例可接，
-//!   同样进收据（[`SkippedReason::PluginInstrument`]），源位填静音。
-//! - **外置效果器**：不实例化，相关轨按干声渲染（收据不另记 ——
-//!   `project_inserts` 的静态投影同样不含外置效果器实例）。
+//! - **外置乐器轨**（`ExternalInstrument` 设备）：首台非旁通、带插件绑定的
+//!   设备由 [`PluginTrackSource`] 实例化执行（与 MCP 离线渲染同一条
+//!   first-source 装配）；未绑定（没有 `plugin` 绑定可实例化）的仍进收据
+//!   （[`SkippedReason::PluginInstrument`]），源位填静音；加载／激活失败 ⇒
+//!   响亮失败，⛔ 不静默回退到干声或引擎音色。
+//! - **外置效果器**：首台非旁通、带插件绑定的效果器由 [`PluginEffectSource`]
+//!   包在轨源求和输出之外（与 MCP 同一条装配）；其余（未绑定、第二台绑定
+//!   设备、无源总线轨）进收据（[`SkippedReason::PluginEffect`]），相关轨按
+//!   干声渲染。
 //! - **混响 / 释放尾巴**：帧数只到谱面末端，不加尾巴（与 `yeban_render_master`
 //!   的缺省口径一致）。
 //!
@@ -99,6 +104,9 @@ use yeban_model::{
 use crate::automation::centered_pan_gains;
 use crate::engine_source::{ArmedSfzInput, EngineSourceError, EngineTimbre};
 use crate::inserts::project_inserts;
+use crate::plugin_effect::PluginEffectSource;
+use crate::plugin_hosting::{self, PLUGIN_MAX_BLOCK};
+use crate::plugin_source::PluginTrackSource;
 use crate::render::{
     AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan, project_phase_align,
     track_latencies,
@@ -204,13 +212,15 @@ pub struct SkippedTrack {
     pub reason: SkippedReason,
 }
 
-/// 跳过一轨的原因（Phase 1 明确不做的两类，见模块文档）。
+/// 跳过一轨的原因（Phase 1 明确不做的两类，见模块文档；插件类见 T-FIX-338）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkippedReason {
     /// 只有音频片段、没有可排程的 MIDI 音符：本 crate 没有音频解码器。
     AudioClipsOnly,
-    /// 挂了外置乐器设备：本入口不接插件宿主实例。
+    /// 挂了外置乐器设备但未绑定（没有 `plugin` 绑定可实例化）：源位填静音。
     PluginInstrument,
+    /// 外置效果器未执行：未绑定、第二台绑定设备（首台胜出）或无源总线轨。
+    PluginEffect,
 }
 
 /// 一次整曲离线渲染的产物：内存交错立体声 `f32` 缓冲 + 收据。
@@ -624,9 +634,12 @@ where
         &project_phase_align(&project.tracks),
     )?;
 
-    // 4. 逐轨装源：有排程音符的轨走引擎源（声相 + CC 探针）；外置乐器轨与
-    //    纯音频轨进收据、源位填静音；无音符的叶节点填静音；无音符的总线
-    //    节点不需要源（`execute` 只要求无入边节点有源）。
+    // 4. 逐轨装源：插件乐器轨（首台已装载的胜出）走插件源，有排程音符的轨
+    //    走引擎源（声相 + CC 探针）；未绑定的外置乐器轨与纯音频轨进收据、源位
+    //    填静音；无音符的叶节点填静音；无音符的总线节点不需要源（`execute`
+    //    只要求无入边节点有源）。首台已装载的效果器包在基源之外（与 MCP
+    //    离线渲染同一条装配）；无基源可包的效果器（静音占位／无源总线轨）
+    //    与未绑定／第二台效果器一律进收据，⛔ 不静默按干声混过去。
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut skipped_tracks = Vec::new();
     for node in plan.nodes() {
@@ -634,32 +647,95 @@ where
             continue;
         };
         let has_incoming = has_audio_incoming(project, &kept, node);
-        if is_plugin_track(track) {
+        let hosted_effect = plugin_hosting::hosted_effect_index(track);
+        let has_unhosted_effect = plugin_hosting::unhosted_external_devices(track)
+            .iter()
+            .any(|device| device.kind == DeviceKind::ExternalEffect);
+        // 1. 选基源（插件乐器胜出 > 引擎源 > 静音占位）；未绑定的外置乐器进收据。
+        let mut base: Option<Box<dyn AudioSource>> = None;
+        let mut base_is_real = false;
+        if let Some(index) = plugin_hosting::hosted_instrument_index(track) {
+            let instance =
+                plugin_hosting::load_hosted_instrument(track, index).map_err(|error| {
+                    SongOverviewError::Render(RenderError::Source {
+                        node,
+                        message: error,
+                    })
+                })?;
+            let pan = centered_pan_gains(track.pan, |pan| {
+                pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law))
+            });
+            base = Some(Box::new(PluginTrackSource::new(
+                instance,
+                node,
+                timbre.schedule(node),
+                f64::from(sample_rate),
+                PLUGIN_MAX_BLOCK,
+                pan,
+            )?));
+            base_is_real = true;
+        } else if is_plugin_track(track) {
             skipped_tracks.push(SkippedTrack {
                 track: node,
                 reason: SkippedReason::PluginInstrument,
             });
-            if !has_incoming {
-                sources.insert(node, Box::new(Silence));
-            }
-            continue;
-        }
-        if timbre.scheduled_notes(node) > 0 {
+        } else if timbre.scheduled_notes(node) > 0 {
             let pan = centered_pan_gains(track.pan, |pan| {
                 pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law))
             });
-            let source = timbre.track_source(node)?.with_pan(pan).with_cc(project);
-            sources.insert(node, Box::new(source));
-            continue;
+            base = Some(Box::new(
+                timbre.track_source(node)?.with_pan(pan).with_cc(project),
+            ));
+            base_is_real = true;
+        } else {
+            if track_has_audio_clips(project, track) {
+                skipped_tracks.push(SkippedTrack {
+                    track: node,
+                    reason: SkippedReason::AudioClipsOnly,
+                });
+            }
         }
-        if track_has_audio_clips(project, track) {
+        if base.is_none() && !has_incoming {
+            base = Some(Box::new(Silence));
+        }
+        // 2. 效果器包在基源之外；无基源可包（静音占位／无源总线轨）或未绑定／
+        //    第二台效果器 ⇒ 进收据（每轨最多一条 `PluginEffect`）。
+        let mut effect_reported = false;
+        match (base, hosted_effect) {
+            (Some(source), Some(index)) if base_is_real => {
+                let instance =
+                    plugin_hosting::load_hosted_effect(track, index).map_err(|error| {
+                        SongOverviewError::Render(RenderError::Source {
+                            node,
+                            message: error,
+                        })
+                    })?;
+                let wrapped = PluginEffectSource::new(
+                    instance,
+                    source,
+                    node,
+                    f64::from(sample_rate),
+                    PLUGIN_MAX_BLOCK,
+                )?;
+                sources.insert(node, Box::new(wrapped));
+            }
+            (Some(source), _) => {
+                sources.insert(node, source);
+            }
+            (None, Some(_)) => {
+                skipped_tracks.push(SkippedTrack {
+                    track: node,
+                    reason: SkippedReason::PluginEffect,
+                });
+                effect_reported = true;
+            }
+            (None, None) => {}
+        }
+        if !effect_reported && ((hosted_effect.is_some() && !base_is_real) || has_unhosted_effect) {
             skipped_tracks.push(SkippedTrack {
                 track: node,
-                reason: SkippedReason::AudioClipsOnly,
+                reason: SkippedReason::PluginEffect,
             });
-        }
-        if !has_incoming {
-            sources.insert(node, Box::new(Silence));
         }
     }
 

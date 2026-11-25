@@ -78,6 +78,24 @@
 //! 离线／控制侧**：`--export-wav` 是离线批处理，`record_wav::record_project` 只在**喂环之前**
 //! 调它。⛔ **绝不可**在音频回调里调用；录音侧只有 `push_frame` 那一段是"禁止分配／加锁／I/O"的。
 //!
+//! ## ⭐ 插件宿主（T-FIX-338）：离线导出与 MCP 共用同一套装配
+//!
+//! 插件乐器／效果器只在**离线**渲染里执行（与 MCP `domain/render.rs` 同一条
+//! first-source 装配，见 [`yeban_render::plugin_hosting`]）：
+//!
+//! - 引擎分支里，首台非旁通、带绑定的外置乐器走 [`PluginTrackSource`]
+//!   （胜过引擎音色与采样器绑定）；加载／激活失败 ⇒
+//!   [`WavExportError::Plugin`] 响亮失败，⛔ 不回退到引擎音色；
+//! - 音频片段叠加之后，首台非旁通、带绑定的外置效果器由
+//!   [`PluginEffectSource`] 包在轨源求和输出之外；无源总线轨不接；
+//! - 已执行与未执行（未绑定／第二台绑定设备／无源总线轨）分两张表进
+//!   [`RenderProjectOutput`]（`plugins_executed`／`plugins_not_executed`），
+//!   由 [`WavExportReport`] 如实转发，⛔ 不出现“装了插件、导出却静默没跑”的分叉。
+//!
+//! `--sfz` 旁路与最小音源（`use_engine_source = false`）整体替换引擎音源，
+//! 插件线不接（与 MCP 的旁路口径一致）；实时播放不接插件（回调内禁分配／
+//! 锁／IO，见 AGENTS.md §2 红线 7；面板口径见 `PLUGIN_REGISTRATION_NOTE`）。
+//!
 //! # Errors
 //!
 //! 与 [`crate::export_wav::export_wav`] 相同（选项非法 / 计划编译 / 引擎装载 / 执行失败）。
@@ -107,6 +125,9 @@ use crate::audio_clip;
 use crate::export_wav::{NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames};
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`；与 MCP 共用同一份实现。
 use yeban_render::engine_source::{EngineTrackSource, LaneSplitSource};
+use yeban_render::plugin_effect::PluginEffectSource;
+use yeban_render::plugin_hosting::{self, PLUGIN_MAX_BLOCK};
+use yeban_render::plugin_source::PluginTrackSource;
 
 // **空轨的运行态**：一个不产生任何样本、也不占用任何内存的源。
 //
@@ -408,6 +429,14 @@ pub struct RenderProjectOutput {
     /// 不点名是哪条轨。逐轨 `(身份, 轨名)`，按 `project.tracks` 的确定序。
     /// 空 = 有内容的轨全部进了渲染计划（此时 `source_label` 逐字不变）。
     pub unrouted_tracks: Vec<(EntityId, String)>,
+    /// ⭐ T-FIX-338：本次渲染里**真的执行了**的插件（`"轨名: 设备名 [乐器|效果器]"`，
+    /// 按轨确定序）。空 = 本次没有插件参与渲染（此时 `source_label` 逐字不变）。
+    pub plugins_executed: Vec<String>,
+    /// ⭐ T-FIX-338：本次渲染里**没有执行**的外置设备（同形 ＋ `(未执行: 原因)`，
+    /// 原因见 [`yeban_render::plugin_hosting::unhosted_external_devices`]：
+    /// 未绑定插件／第二台绑定设备／无源总线轨）。空 = 没有外置设备被跳过。
+    /// 旁通的设备不在此列（旁通是显式选择，不是装配失败）。
+    pub plugins_not_executed: Vec<String>,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -1004,6 +1033,12 @@ pub fn render_project_f32_with_plans_under(
             || pan_gates.contains_key(&track_id)
             || compressing.contains(&track_id)
     };
+    // ⭐ T-FIX-338：插件执行收据（loaded 与 executed 分开报）—— 已执行的行
+    //    （`"轨名: 设备名 [乐器|效果器]"`）与未执行的行（同形 ＋ `(未执行: 原因)`），
+    //    由下面的引擎分支（乐器）与 2b-ter（效果器）分别填，最终进
+    //    `RenderProjectOutput` 与 `WavExportReport`。
+    let mut plugins_executed: Vec<String> = Vec::new();
+    let mut plugins_not_executed: Vec<String> = Vec::new();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
         let mut labels: Vec<String> = Vec::new();
@@ -1089,6 +1124,34 @@ pub fn render_project_f32_with_plans_under(
             // 分流取消，全部走 [`track_pan_of`]（它内部是 `audio_clip::track_pan_gains`）。
             // `render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan（`#251` 的落点不变）。
             let pan = track_pan_of(project, track_id, suppress_static_pan(track_id));
+            // ⭐ T-FIX-338：首台已装载的插件乐器胜出（与 MCP 同一条 first-source
+            //    语义：胜过引擎音色、采样器绑定与逐件链）。加载／激活失败 ⇒
+            //    `WavExportError::Plugin` 响亮失败，⛔ 不回退到引擎音色。
+            if let Some(index) = project
+                .tracks
+                .get(&track_id)
+                .and_then(plugin_hosting::hosted_instrument_index)
+            {
+                let track = project.tracks.get(&track_id).expect("轨在 sourced 里");
+                let instance = plugin_hosting::load_hosted_instrument(track, index)
+                    .map_err(WavExportError::Plugin)?;
+                let source = PluginTrackSource::new(
+                    instance,
+                    track_id,
+                    snapshot.schedule(&track_id).cloned(),
+                    f64::from(options.sample_rate),
+                    PLUGIN_MAX_BLOCK,
+                    pan,
+                )
+                .map_err(|error| WavExportError::Plugin(error.to_string()))?;
+                plugins_executed.push(plugin_hosting::executed_label(
+                    &track.name,
+                    &track.devices[index].name,
+                    yeban_model::DeviceKind::ExternalInstrument,
+                ));
+                sources.insert(track_id, Box::new(source));
+                continue;
+            }
             // ⭐ 逐件链（期 3）：带 `lane_chains` 的轨走分组源（与 MCP 同一份
             //    `LaneSplitSource`），否则走单引擎源 ⇒ 无逐件链的轨逐位不变。
             // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
@@ -1217,6 +1280,60 @@ pub fn render_project_f32_with_plans_under(
             " + audio-clips(rendered={audio_rendered} skipped={}) spans={audio_clip_spans}",
             audio_skipped.len()
         ));
+    }
+
+    // ---- 2b-ter. 宿主效果器（T-FIX-338）：首台已装载的效果器包在轨源求和输出之外 ----
+    //
+    // 与 MCP 离线渲染同一条装配（`PluginEffectSource` 包轨源、首台胜出）。
+    // 挂点在音频片段叠加（2b）之后、音量自动化门（2b-bis）之前 ⇒ 效果器处理
+    // “乐器＋片段”的求和输出，自动化再乘 effected 的和（与 MCP 的源内顺序同序）。
+    // 只对 `sourced` 里的轨包（有真源的轨）；无源总线轨的效果器不接（仍登记）。
+    // 未绑定／第二台效果器与未绑定／第二台乐器一律进 `plugins_not_executed`
+    // （旁通的设备除外：旁通是显式选择，不是装配失败）。加载／激活失败 ⇒
+    // `WavExportError::Plugin` 响亮失败，⛔ 不静默按干声混过去。
+    for track_id in renderable.clone() {
+        let Some(track) = project.tracks.get(&track_id) else {
+            continue;
+        };
+        for unhosted in plugin_hosting::unhosted_external_devices(track) {
+            plugins_not_executed.push(plugin_hosting::not_executed_label(
+                &track.name,
+                &unhosted.name,
+                unhosted.kind,
+                unhosted.reason,
+            ));
+        }
+        let Some(index) = plugin_hosting::hosted_effect_index(track) else {
+            continue;
+        };
+        if !sourced.contains(&track_id) {
+            plugins_not_executed.push(plugin_hosting::not_executed_label(
+                &track.name,
+                &track.devices[index].name,
+                yeban_model::DeviceKind::ExternalEffect,
+                "无源总线轨，效果器不接",
+            ));
+            continue;
+        }
+        let Some(base) = sources.remove(&track_id) else {
+            continue;
+        };
+        let instance =
+            plugin_hosting::load_hosted_effect(track, index).map_err(WavExportError::Plugin)?;
+        let wrapped = PluginEffectSource::new(
+            instance,
+            base,
+            track_id,
+            f64::from(options.sample_rate),
+            PLUGIN_MAX_BLOCK,
+        )
+        .map_err(|error| WavExportError::Plugin(error.to_string()))?;
+        plugins_executed.push(plugin_hosting::executed_label(
+            &track.name,
+            &track.devices[index].name,
+            yeban_model::DeviceKind::ExternalEffect,
+        ));
+        sources.insert(track_id, Box::new(wrapped));
     }
 
     // ---- 2b-bis. ⭐ 音量自动化（`TrackVolume`）：每条可渲染轨一个门 ----
@@ -1379,6 +1496,15 @@ pub fn render_project_f32_with_plans_under(
             ids.join(",")
         ));
     }
+    // ⭐ T-FIX-338：插件执行读数追加进 `source_label`（同上：两张表都空时
+    //    **一个字都不追加** ⇒ 没有插件的工程输出逐字不变）。
+    if !plugins_executed.is_empty() || !plugins_not_executed.is_empty() {
+        source_label.push_str(&format!(
+            " + plugins(executed={} not-executed={})",
+            plugins_executed.len(),
+            plugins_not_executed.len()
+        ));
+    }
     Ok(RenderProjectOutput {
         samples: output.samples,
         frames: output.frames,
@@ -1391,6 +1517,8 @@ pub fn render_project_f32_with_plans_under(
         source_peaks,
         limiter_reductions,
         unrouted_tracks,
+        plugins_executed,
+        plugins_not_executed,
     })
 }
 

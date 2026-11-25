@@ -121,6 +121,7 @@ pub mod song_overview;
 pub mod engine_source;
 // ⭐ ADR-0069 一期：插件轨音源（轨 MIDI → 宿主乐器 → 音频；只读调度表，不碰引擎音色）。
 pub mod plugin_effect;
+pub mod plugin_hosting;
 pub mod plugin_source;
 pub mod rf64;
 pub mod rng;
