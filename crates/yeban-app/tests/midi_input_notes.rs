@@ -101,6 +101,8 @@ fn write_container(dir: &Path, project: YebanProjectV1) -> PathBuf {
             project,
             history_dag: Vec::new(),
             proposals: None,
+            // T-FIX-329：夹具必须自洽 —— demo_project 自带音频片段，归档必须带上
+            // 它引用的真实 kick 字节（空池正是 API 硬化要拒绝的悬空引用形态）。
             assets: yeban_model::samples::demo_project_assets(),
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),

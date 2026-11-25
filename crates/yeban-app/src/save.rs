@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 
 use yeban_model::container::{ContainerError, ProjectArchive, write_project_container};
 use yeban_model::ids::{AssetHash, EntityId};
-use yeban_model::project::YebanProjectV1;
+use yeban_model::project::{ClipContent, YebanProjectV1};
 
 use crate::project_lock;
 
@@ -167,6 +167,24 @@ pub enum SaveError {
         /// 规范 ID（`ARCH-SEC-001` / `MUST-GATE-008`）。
         spec_id: &'static str,
     },
+    /// ⭐ **工程含音频片段 ⇒ 裸工程入口拒绝写**（T-FIX-329 的 API 硬化）。
+    ///
+    /// [`save_project_file`] 的文档契约是“history.dag 空 + 资产池空”；含 `Audio`
+    /// 片段的工程走这条入口必然被写成缺素材坏文件（片段引用的资产字节不在容器里）。
+    /// 因此在写任何字节之前响亮拒绝：请改用 [`save_archive_file`]（保真归档入口）。
+    RequiresArchive {
+        /// 工程里 `ClipContent::Audio` 片段的条数。
+        audio_clips: usize,
+    },
+    /// ⭐ **音频片段引用的资产缺条目**（T-FIX-329 的 API 硬化）：归档入口在写盘前
+    /// 做跨层核对 —— `ClipContent::Audio.asset` 引用的哈希必须**同时**在
+    /// `project.assets` 索引与本次写出的 CAS 字节池（`ProjectArchive::assets`）里；
+    /// 缺任何一边 ⇒ 本变体，**一个字节都不写**。
+    MissingAsset {
+        /// 缺失的资产哈希（去重升序；装在 `Box` 里控制错误值尺寸，
+        /// 理由同 [`SaveError::Locked`]）。
+        missing: Box<BTreeSet<AssetHash>>,
+    },
 }
 
 /// [`SaveError::Locked`] 的诊断载荷（谁占着、占用的是哪个锁文件）。
@@ -194,7 +212,9 @@ impl SaveError {
             | Self::TargetExists { .. }
             | Self::Io { .. }
             | Self::Locked(_)
-            | Self::LockUnsupported { .. } => None,
+            | Self::LockUnsupported { .. }
+            | Self::RequiresArchive { .. }
+            | Self::MissingAsset { .. } => None,
         }
     }
 }
@@ -236,6 +256,17 @@ impl core::fmt::Display for SaveError {
                  (绝不静默放任并发写)",
                 path.display()
             ),
+            Self::RequiresArchive { audio_clips } => write!(
+                formatter,
+                "工程含 {audio_clips} 个音频片段, 裸工程入口只写空资产池 ⇒ 拒绝写出 \
+                 (T-FIX-329: 会写成缺素材坏文件) —— 请改用保真归档入口 save_archive_file"
+            ),
+            Self::MissingAsset { missing } => write!(
+                formatter,
+                "归档缺 {} 项音频资产 (clip_pool 引用的哈希在索引/字节池缺条目) ⇒ 拒绝写盘: {:?}",
+                missing.len(),
+                missing
+            ),
         }
     }
 }
@@ -248,7 +279,9 @@ impl core::error::Error for SaveError {
             Self::NoFileName { .. }
             | Self::TargetExists { .. }
             | Self::Locked(_)
-            | Self::LockUnsupported { .. } => None,
+            | Self::LockUnsupported { .. }
+            | Self::RequiresArchive { .. }
+            | Self::MissingAsset { .. } => None,
         }
     }
 }
@@ -257,6 +290,33 @@ impl From<ContainerError> for SaveError {
     fn from(value: ContainerError) -> Self {
         Self::Container(value)
     }
+}
+
+/// 数一数工程里 `ClipContent::Audio` 片段的条数（T-FIX-329 的判定读数）。
+fn audio_clip_count(project: &YebanProjectV1) -> usize {
+    project
+        .clip_pool
+        .values()
+        .filter(|entry| matches!(entry.content, ClipContent::Audio { .. }))
+        .count()
+}
+
+/// 归档入口的跨层核对（T-FIX-329）：Audio 片段引用的哈希必须同时在
+/// `project.assets` 索引与本次写出的 CAS 字节池里。返回缺条目的哈希集合
+/// （去重升序 —— 错误文案因此也是确定性的，`[ARCH-DET-001]`）。
+fn missing_audio_assets(archive: &ProjectArchive) -> BTreeSet<AssetHash> {
+    let cas: BTreeSet<&AssetHash> = archive.assets.iter().map(|(hash, _)| hash).collect();
+    let mut missing = BTreeSet::new();
+    for entry in archive.project.clip_pool.values() {
+        if let ClipContent::Audio { asset, .. } = &entry.content {
+            let in_index = archive.project.assets.contains_key(asset);
+            let in_cas = cas.contains(asset);
+            if !in_index || !in_cas {
+                missing.insert(asset.clone());
+            }
+        }
+    }
+    missing
 }
 
 /// 把工程写成一个 `.yeban` 容器并**原子替换**到 `path`。
@@ -269,16 +329,27 @@ impl From<ContainerError> for SaveError {
 /// 需要"把打开的东西原样存回去"（保真 `history.dag` 与资产池）的调用方用
 /// [`save_archive_file`]。
 ///
+/// ⭐ T-FIX-329：这条契约从文档约定升级成了 **API 检查** —— 工程含 `Audio` 片段时
+/// 本入口直接报 [`SaveError::RequiresArchive`]，不再靠"调用方自己知道别用这条"续命。
+///
 /// # Errors
 ///
-/// 路径无法构造临时文件（[`SaveError::NoFileName`]）、容器写出被拒
-/// （[`SaveError::Container`]）、`.yeban.lock` 排他写建议锁拿不到（[`SaveError::Locked`] /
+/// 路径无法构造临时文件（[`SaveError::NoFileName`]）、**工程含音频片段**
+/// （[`SaveError::RequiresArchive`]）、容器写出被拒（[`SaveError::Container`]）、
+/// `.yeban.lock` 排他写建议锁拿不到（[`SaveError::Locked`] /
 /// [`SaveError::LockUnsupported`]）、或任一步 I/O 失败（[`SaveError::Io`]）。
 pub fn save_project_file(
     project: &YebanProjectV1,
     path: impl AsRef<Path>,
 ) -> Result<SaveReport, SaveError> {
     let path = path.as_ref();
+    // ⭐ T-FIX-329（API 硬化）：本入口的文档契约是"history.dag 空 + 资产池空"。
+    // 含 Audio 片段的工程走到这里必然被写成缺素材坏文件 —— 在写任何字节
+    // （包括容器字节本身）之前响亮拒绝。检查只数 clip_pool，O(n) 且零副作用。
+    let audio_clips = audio_clip_count(project);
+    if audio_clips > 0 {
+        return Err(SaveError::RequiresArchive { audio_clips });
+    }
     // 第 0 步：先把**字节**全部算出来（容器写出失败时一个文件都还没碰）。
     // `history.dag` 以空字节写出：容器布局要求该条目存在，而提交图谱的权威内容属
     // `yeban-model::commit`（本切片没有提交可写，见模块文档的边界）。
@@ -382,6 +453,16 @@ fn save_archive_file_with(
     path: &Path,
     overwrite: bool,
 ) -> Result<SaveReport, SaveError> {
+    // ⭐ T-FIX-329（API 硬化）：写盘前的跨层核对 —— Audio 片段引用的资产哈希
+    // 必须**同时**在 project.assets 索引与本次写出的 CAS 字节池里；缺一边 ⇒
+    // []，**一个字节都不写**。检查放在字节计算之前
+    // （与"容器被拒时一个文件都不碰"同一哲学，且更早：连容器字节都不算）。
+    let missing = missing_audio_assets(archive);
+    if !missing.is_empty() {
+        return Err(SaveError::MissingAsset {
+            missing: Box::new(missing),
+        });
+    }
     save_archive_parts_file_with(
         &archive.project,
         &archive.history_dag,
@@ -663,6 +744,7 @@ mod tests {
     use super::*;
     use crate::bridge::demo_project;
     use crate::open::open_project_file;
+    use yeban_model::samples::demo_project_assets;
 
     /// 一个一次性的临时目录（**不用外部 crate**：`tempfile` 不在本 crate 的依赖里）。
     ///
@@ -678,10 +760,24 @@ mod tests {
         dir
     }
 
+    /// 演示工程的**无音频片段**变体（判据夹具）。
+    ///
+    /// `demo_project()` 自带一个引用真实 kick 字节的 `Audio` 片段（任务单 `#142`）；
+    /// 裸工程入口按 T-FIX-329 必须**拒绝**它（写出来就是缺素材坏文件）。本文件
+    /// 判据 1~7 要验证的落盘语义与音频片段无关 ⇒ 剥掉 `Audio` 片段再走保存，
+    /// ⛔ 不改 `demo_project()` 本身（`samples` 的字节契约另有判据钉住）。
+    fn demo_project_without_audio_clips() -> YebanProjectV1 {
+        let mut project = demo_project();
+        project
+            .clip_pool
+            .retain(|_, entry| !matches!(entry.content, ClipContent::Audio { .. }));
+        project
+    }
+
     /// 判据 1：写出的文件**真的能被容器读回来**，且内容就是那个工程。
     #[test]
     fn a_saved_project_reads_back_as_the_same_project() {
-        let project = demo_project();
+        let project = demo_project_without_audio_clips();
         let dir = scratch_dir("roundtrip");
         let path = dir.join("demo.yeban");
 
@@ -707,7 +803,7 @@ mod tests {
     /// 由 `write_project_container` 保证：`BTreeMap` 顺序 + stored 压缩）。
     #[test]
     fn two_saves_of_the_same_project_are_byte_identical() {
-        let project = demo_project();
+        let project = demo_project_without_audio_clips();
         let dir = scratch_dir("stable");
         let first = save_project_file(&project, dir.join("a.yeban")).expect("第一次");
         let second = save_project_file(&project, dir.join("b.yeban")).expect("第二次");
@@ -725,7 +821,8 @@ mod tests {
         let path = dir.join("over.yeban");
         std::fs::write(&path, b"stale bytes that must disappear").expect("先放一个旧文件");
 
-        let report = save_project_file(&demo_project(), &path).expect("覆盖保存");
+        let report =
+            save_project_file(&demo_project_without_audio_clips(), &path).expect("覆盖保存");
         let bytes = std::fs::read(&path).expect("读回");
         assert_eq!(bytes.len(), report.bytes);
         assert!(
@@ -746,7 +843,8 @@ mod tests {
     fn a_missing_directory_is_an_explicit_io_error() {
         let dir = scratch_dir("missing");
         let path = dir.join("nope").join("x.yeban");
-        let error = save_project_file(&demo_project(), &path).expect_err("目录不存在必须报错");
+        let error = save_project_file(&demo_project_without_audio_clips(), &path)
+            .expect_err("目录不存在必须报错");
         assert!(matches!(error, SaveError::Io { .. }), "实际: {error:?}");
         assert!(!path.exists());
         assert!(!dir.join("nope").exists());
@@ -755,7 +853,8 @@ mod tests {
     /// 判据 5：没有文件名的目标路径 ⇒ [`SaveError::NoFileName`]（不 panic、不写到别处）。
     #[test]
     fn a_path_without_a_file_name_is_rejected() {
-        let error = save_project_file(&demo_project(), "/").expect_err("没有文件名必须报错");
+        let error = save_project_file(&demo_project_without_audio_clips(), "/")
+            .expect_err("没有文件名必须报错");
         assert!(
             matches!(error, SaveError::NoFileName { .. }),
             "实际: {error:?}"
@@ -776,7 +875,9 @@ mod tests {
         use yeban_model::container::read_project_container;
         use yeban_model::ids::AssetHash;
 
-        let project = demo_project();
+        // 判据 6 的工程同样剥掉 Audio 片段：本判据要证明的是 history/资产池保真，
+        // 资产池里只有判据自己放进去的那一项（与 clip 引用无关）。
+        let project = demo_project_without_audio_clips();
         let asset = b"yeban-save-archive-asset".to_vec();
         let hash = AssetHash::of_bytes(&asset);
         let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
@@ -830,7 +931,7 @@ mod tests {
 
         let dir = scratch_dir("readonly");
         let path = dir.join("protected.yeban");
-        save_project_file(&demo_project(), &path).expect("先放一个真容器");
+        save_project_file(&demo_project_without_audio_clips(), &path).expect("先放一个真容器");
         let before = std::fs::read(&path).expect("读原文");
 
         let mut permissions = std::fs::metadata(&dir).expect("目录元数据").permissions();
@@ -845,7 +946,8 @@ mod tests {
         if writable {
             eprintln!("[yeban-app/save] 只读目录仍可写 (特权进程?), 本条判据无从判定 —— 响亮跳过");
         } else {
-            let error = save_project_file(&demo_project(), &path).expect_err("只读目录必须报错");
+            let error = save_project_file(&demo_project_without_audio_clips(), &path)
+                .expect_err("只读目录必须报错");
             assert!(matches!(error, SaveError::Io { .. }), "实际: {error:?}");
             assert_eq!(
                 std::fs::read(&path).expect("旧文件仍在"),
@@ -892,12 +994,13 @@ mod tests {
 
         let dir = scratch_dir("locked");
         let path = dir.join("locked.yeban");
-        save_project_file(&demo_project(), &path).expect("先放一个真容器");
+        save_project_file(&demo_project_without_audio_clips(), &path).expect("先放一个真容器");
         let before = std::fs::read(&path).expect("读原文");
 
         // 与保存路径**同一个实现、同一把锁**（这正是 `#[path]` 共享源码的可观测后果）。
         let guard = acquire(&path, LockMode::ExclusiveWrite).expect("取排他写建议锁");
-        let error = save_project_file(&demo_project(), &path).expect_err("持锁时保存必须被拒");
+        let error = save_project_file(&demo_project_without_audio_clips(), &path)
+            .expect_err("持锁时保存必须被拒");
         match &error {
             SaveError::Locked(hold) => {
                 assert_eq!(hold.path, path, "拒绝必须点名企图写入的工程");
@@ -915,13 +1018,13 @@ mod tests {
             "被拒绝的保存绝不能碰旧文件"
         );
         assert!(
-            save_project_file(&demo_project(), &path).is_err(),
+            save_project_file(&demo_project_without_audio_clips(), &path).is_err(),
             "锁还在时第二次也必须被拒（不是只有第一次）"
         );
         drop(guard);
 
         // 释放之后同一份保存必须成功 ⇒ 第 1 步拒绝的原因只能是那把锁。
-        save_project_file(&demo_project(), &path).expect("锁释放后必须能保存");
+        save_project_file(&demo_project_without_audio_clips(), &path).expect("锁释放后必须能保存");
         assert!(
             !lock_path(&path).exists(),
             "成功的排他保存必须把自己的锁文件收走（不留残留锁）: {}",
@@ -991,7 +1094,7 @@ mod tests {
         use yeban_model::container::read_project_container;
         use yeban_model::ids::AssetHash;
 
-        let project = demo_project();
+        let project = demo_project_without_audio_clips();
         let kept = b"duplicate-hash-last-value".to_vec();
         let dropped = b"duplicate-hash-first-value".to_vec();
         let hash = AssetHash::of_bytes(&kept);
@@ -1063,7 +1166,7 @@ mod tests {
         std::fs::write(&path, b"old bytes that must be replaced").expect("先放旧内容");
 
         DIR_SYNC_INJECTION.with(|cell| cell.set(true));
-        let result = save_project_file(&demo_project(), &path);
+        let result = save_project_file(&demo_project_without_audio_clips(), &path);
         DIR_SYNC_INJECTION.with(|cell| cell.set(false));
 
         let report = result.expect("rename 已成功 ⇒ 保存已提交，不是失败");
@@ -1102,8 +1205,130 @@ mod tests {
     fn a_normal_save_reports_durable() {
         let dir = scratch_dir("durable");
         let path = dir.join("quiet.yeban");
-        let report = save_project_file(&demo_project(), &path).expect("保存");
+        let report = save_project_file(&demo_project_without_audio_clips(), &path).expect("保存");
         assert_eq!(report.durability, Durability::Durable);
         assert!(report.durability.warning().is_none());
+    }
+
+    /// 判据 9（T-FIX-329）：含 `Audio` 片段的工程走**裸工程入口**必须被拒绝
+    /// （[`SaveError::RequiresArchive`]），且目标文件一个字节都不变。
+    /// 夹具就是 `demo_project()` 原件 —— 它自带一个引用真实 kick 字节的音频片段，
+    /// 正是"会被写成缺素材坏文件"的那类输入。
+    #[test]
+    fn a_project_with_audio_clips_is_rejected_by_the_project_entry() {
+        let dir = scratch_dir("requires-archive");
+        let path = dir.join("audio.yeban");
+        std::fs::write(&path, b"old bytes that must survive").expect("先放旧内容");
+        let before = std::fs::read(&path).expect("读旧内容");
+
+        let error = save_project_file(&demo_project(), &path).expect_err("必须拒绝");
+        let SaveError::RequiresArchive { audio_clips } = &error else {
+            panic!("必须是 RequiresArchive, 实际: {error:?}");
+        };
+        assert!(*audio_clips >= 1, "必须点名音频片段条数: {error}");
+        assert!(
+            error.to_string().contains("save_archive_file"),
+            "错误文案必须指路保真归档入口: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("旧文件仍在"),
+            before,
+            "被拒绝的保存绝不能碰旧文件"
+        );
+    }
+
+    /// 判据 10（T-FIX-329）：归档入口的**跨层核对** —— 音频片段引用的哈希缺索引
+    /// 或缺 CAS 字节池条目 ⇒ [`SaveError::MissingAsset`]，目标文件一个字节都不写。
+    /// 两条腿各红一次：腿 A 引用在索引里但字节池缺条目；腿 B 反过来。
+    #[test]
+    fn an_archive_with_dangling_audio_assets_is_rejected() {
+        let kick_hash = demo_project_assets()[0].0.clone();
+
+        // 腿 A：project.assets 索引里有 kick 元数据，但归档字节池是空的。
+        let dir = scratch_dir("missing-cas");
+        let path = dir.join("a.yeban");
+        let archive = ProjectArchive {
+            project: demo_project(),
+            history_dag: b"history".to_vec(),
+            proposals: None,
+            assets: Vec::new(),
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        };
+        let error = save_archive_file(&archive, &path).expect_err("字节池缺条目必须拒绝");
+        let SaveError::MissingAsset { missing } = &error else {
+            panic!("必须是 MissingAsset, 实际: {error:?}");
+        };
+        assert_eq!(
+            missing.iter().next().map(|hash| hash.0.clone()),
+            Some(kick_hash.0.clone()),
+            "缺失清单必须点名 kick 的哈希: {error}"
+        );
+        assert!(!path.exists(), "⛔ 一个字节都不写");
+
+        // 腿 B：字节池里有真实 kick 字节，但索引被清空（引用无索引可查）。
+        let dir = scratch_dir("missing-index");
+        let path = dir.join("b.yeban");
+        let mut project = demo_project();
+        project.assets.clear();
+        let archive = ProjectArchive {
+            project,
+            history_dag: b"history".to_vec(),
+            proposals: None,
+            assets: demo_project_assets(),
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        };
+        let error = save_archive_file(&archive, &path).expect_err("索引缺条目必须拒绝");
+        assert!(
+            matches!(error, SaveError::MissingAsset { .. }),
+            "实际: {error:?}"
+        );
+        assert!(!path.exists(), "⛔ 一个字节都不写");
+    }
+
+    /// 判据 11（T-FIX-329）：**完整**归档（音频片段 + 索引 + CAS 三者同源）必须
+    /// 照常保真写出 —— API 硬化不得拦住合法保存。
+    #[test]
+    fn a_complete_archive_with_audio_clips_still_saves_byte_identical() {
+        use yeban_model::container::read_project_container;
+
+        let dir = scratch_dir("complete");
+        let path = dir.join("kept.yeban");
+        let archive = ProjectArchive {
+            project: demo_project(),
+            history_dag: b"tfix-329-history".to_vec(),
+            proposals: Some(b"unmerged-proposals".to_vec()),
+            assets: demo_project_assets(),
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        };
+        save_archive_file(&archive, &path).expect("完整归档必须照常写出");
+
+        let bytes = std::fs::read(&path).expect("读回");
+        let read_back =
+            read_project_container(&bytes, &yeban_model::container::ContainerLimits::default())
+                .expect("读回容器");
+        assert_eq!(
+            read_back, archive,
+            "归档必须逐字段等价（含音频片段与资产池）"
+        );
+        // 音频片段引用的哈希必须仍在读回的容器里（引用不再悬空）。
+        let audio_ref = archive
+            .project
+            .clip_pool
+            .values()
+            .find_map(|entry| match &entry.content {
+                ClipContent::Audio { asset, .. } => Some(asset.0.clone()),
+                _ => None,
+            })
+            .expect("demo_project 必须有一个音频片段");
+        assert!(
+            read_back
+                .assets
+                .iter()
+                .any(|(hash, _)| *hash.0 == audio_ref),
+            "音频引用的资产字节必须真的在容器里"
+        );
     }
 }
