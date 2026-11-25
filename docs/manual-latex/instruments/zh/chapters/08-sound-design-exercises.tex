@@ -1,0 +1,218 @@
+\chapter{声音设计练习}
+\label{chap:sound-design-exercises}
+
+这一章把前两章的九个参数变成三个能直接演奏的练习：铺底、主音、贝斯。每个练习都从默认合成器开始，只改九个参数，不碰 EQ、混响、压缩，也不假设有 ADSR、LFO、滤波包络、滑音或副振荡器。所有包络仍是固定的 5 ms 起振、80 ms 衰减、sustain 0.7、50 ms 释放；所谓“铺底”是音色与和弦，不是慢渐入。
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 10mm,
+  engine/.style={draw, rounded corners=2pt, minimum width=52mm, minimum height=10mm, align=center, font=\small, fill=black!4},
+  recipe/.style={draw, rounded corners=2pt, minimum width=34mm, minimum height=8mm, align=center, font=\scriptsize},
+  arrow/.style={-{Latex[length=1.8mm]}, semithick}
+]
+  \node[engine] (eng) {同一台复音合成器\\九个参数 + 固定 ADSR};
+  \node[recipe, above left=7mm and 18mm of eng] (pad) {练习 1 铺底\\vocal + hollow};
+  \node[recipe, above=7mm of eng] (lead) {练习 2 主音\\hollow + glass};
+  \node[recipe, above right=7mm and 18mm of eng] (bass) {练习 3 贝斯\\hollow + organ};
+  \draw[arrow] (eng) -- (pad);
+  \draw[arrow] (eng) -- (lead);
+  \draw[arrow] (eng) -- (bass);
+\end{tikzpicture}
+\end{center}
+
+\section{练习前：九个参数与固定包络}
+
+九个参数分三组：滤波器 \texttt{cutoff\_hz}、\texttt{resonance}、\texttt{drive}；两条振荡器支路的波形 \texttt{osc1\_wave}、\texttt{osc2\_wave}；两条支路的电平与失谐 \texttt{osc1\_level}、\texttt{osc1\_detune\_cents}、\texttt{osc2\_level}、\texttt{osc2\_detune\_cents}。波表下标固定：0 = hollow，1 = organ，2 = vocal，3 = metallic，4 = glass。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 作用 & 有效域 & 默认（不写时） \\
+\hline
+\texttt{cutoff\_hz} & 四极梯形低通截止 & 20 Hz–0.45×采样率 & 滤波旁通 \\
+\texttt{resonance} & 截止点附近的共振 & 0–1 & 0 \\
+\texttt{drive} & 滤波前驱动/饱和 & 0–1 & 0 \\
+\texttt{osc1\_wave} & 第一条支路波表 & 0–4 & 0（hollow） \\
+\texttt{osc2\_wave} & 第二条支路波表 & 0–4 & 0（hollow） \\
+\texttt{osc1\_level} & 第一条支路电平 & 0–1 & 1.0 \\
+\texttt{osc1\_detune\_cents} & 第一条支路失谐 & ±4800 音分 & 0 \\
+\texttt{osc2\_level} & 第二条支路电平 & 0–1 & 0（关） \\
+\texttt{osc2\_detune\_cents} & 第二条支路失谐 & ±4800 音分 & 0 \\
+\hline
+\end{tabular}
+\caption{练习只用这九个参数；没有 ADSR、LFO、滤波包络、滑音、副振荡器}
+\label{tab:exercise-params}
+\end{table}
+
+每轨最多 16 个在响声部。四音和弦最多同时叠四个；超过 16 个声部会触发窃取，不是“自动加厚”。两个支路的电平为 0 时该支路逐位旁通；\texttt{osc2\_level} 不写就是 0，写 0 也是关。
+
+\subsection{怎么把参数写进去}
+
+本章给的是参数配方，不是“九个旋钮”的界面教程。当前界面只暴露部分快捷读数；九个参数要按设备参数通路逐项写入（工程数据或 MCP 的 \texttt{setParam}，\texttt{lane} 用 \texttt{DeviceParam}、按名寻址）。如果界面上找不到某个旋钮，不要假设它藏在别处——它可能根本没有界面。参数名大小写不敏感，波表下标会四舍五入后取整，截止频率由器件钳到 20 Hz–0.45×采样率。
+
+\section{练习 1：铺底}
+
+目标：做一个能托住主音、但不抢中频的宽铺底。起点：新建 MIDI 合成器轨，默认合成器；先不要挂 EQ/混响。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+参数 & 值 & 说明 \\
+\hline
+\texttt{osc1\_wave} & 2（vocal） & 主色，带人声元音感 \\
+\texttt{osc1\_level} & 0.82 & 主支路，不要满到 1.0 \\
+\texttt{osc1\_detune\_cents} & $-9$ & 与第二条支路错开 \\
+\texttt{osc2\_wave} & 0（hollow） & 补身体，不抢元音 \\
+\texttt{osc2\_level} & 0.58 & 副支路，约主支路七成 \\
+\texttt{osc2\_detune\_cents} & $+9$ & 与第一条反向错开 \\
+\texttt{cutoff\_hz} & 1600 & 压掉齿音与空气，留中低频 \\
+\texttt{resonance} & 0.22 & 轻微强调截止点 \\
+\texttt{drive} & 0.00 & 先保持干净 \\
+\hline
+\end{tabular}
+\caption{铺底练习的参数配方}
+\label{tab:pad-recipe}
+\end{table}
+
+步骤：
+
+\begin{enumerate}
+  \item 建一条 MIDI 合成器轨，命名为“Pad”，把上表九项写入；先只弹一个 C3 听音色。
+  \item 弹一个三音或四音闭合和弦（例如 C3–E3–G3），保持两小节；听两条支路是否融在一起。若听到“两条笛子各吹各的”，把 \texttt{osc2\_level} 降到 0.50，或把两条失谐收窄到 $\pm6$。
+  \item 把 \texttt{cutoff\_hz} 从 1600 拉到 2200，再拉回 1200；每次只改这一个，记下“打开空气”和“变闷”的边界。铺底通常停在 1400–2000。
+  \item 把 \texttt{osc2\_level} 从 0.58 加到 0.70，再减到 0.45；听厚度与清晰度的交换。超过 0.70 后中频开始糊，不要再加。
+  \item 最后弹四个和弦，每个四音；确认没有超过 16 个声部。超过时减和弦音数，不要靠加轨解决。
+\end{enumerate}
+
+边界：固定起振只有 5 ms，做不出慢渐入；要“慢慢进来”，只能在编排里让音符晚点开始，或后续用音量自动化。vocal 是合成波表，不是采样合唱，没有歌词、元音或 formant 控件。
+
+\screenshot{synth-pad-recipe}{铺底练习的九参数配方}
+
+\section{练习 2：主音}
+
+目标：做一个能切穿铺底的单音主奏，带一点玻璃边缘，但不变成 Bell。起点：另一条 MIDI 合成器轨，默认合成器。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+参数 & 值 & 说明 \\
+\hline
+\texttt{osc1\_wave} & 0（hollow） & 主体，稳定 \\
+\texttt{osc1\_level} & 0.88 & 接近满电平 \\
+\texttt{osc1\_detune\_cents} & $-3$ & 轻微错开 \\
+\texttt{osc2\_wave} & 4（glass） & 只加边缘，不抢主体 \\
+\texttt{osc2\_level} & 0.32 & 约主支路三分之一 \\
+\texttt{osc2\_detune\_cents} & $+7$ & 让玻璃支路偏右 \\
+\texttt{cutoff\_hz} & 3000 & 保留咬字与亮度 \\
+\texttt{resonance} & 0.18 & 少量强调 \\
+\texttt{drive} & 0.10 & 加一点谐波，不压动态 \\
+\hline
+\end{tabular}
+\caption{主音练习的参数配方}
+\label{tab:lead-recipe}
+\end{table}
+
+步骤：
+
+\begin{enumerate}
+  \item 建“Lead”轨，写入上表；先在 C4–C6 弹一条单音旋律，不要叠和弦。
+  \item 把 \texttt{osc2\_level} 从 0.32 降到 0.20，再升到 0.45；0.20 更接近纯 hollow，0.45 开始像玻璃铃。主音通常停在 0.28–0.38。
+  \item 把 \texttt{drive} 从 0.10 升到 0.20，再回到 0；听谐波增加但整体音量不应大幅跳变。若已经刺耳，先降 \texttt{cutoff\_hz}，不要继续加 drive。
+  \item 把 \texttt{cutoff\_hz} 从 3000 降到 2000，再升到 4200；记下“暗”“亮”两端。主音在 2600–3400 最容易和铺底分开。
+  \item 与铺底同时播放：如果主音被埋，先降铺底的推子，或把主音的 \texttt{osc1\_level} 保持在 0.88；不要靠把主音 cutoff 拉到 6000 解决。
+\end{enumerate}
+
+边界：没有滑音/portamento，也没有可调 ADSR；连奏不会自动滑到下一个音。要滑音只能在 MIDI 里写音高曲线（后续章节），不是这台合成器的旋钮。
+
+\screenshot{synth-lead-recipe}{主音练习的九参数配方}
+
+\section{练习 3：贝斯}
+
+目标：做一个低频结实、能在小音箱上仍听得见的贝斯，不用副振荡器。起点：第三条 MIDI 合成器轨，默认合成器。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+参数 & 值 & 说明 \\
+\hline
+\texttt{osc1\_wave} & 0（hollow） & 低频主体 \\
+\texttt{osc1\_level} & 0.95 & 接近满 \\
+\texttt{osc1\_detune\_cents} & $0$ & 低频不要乱错开 \\
+\texttt{osc2\_wave} & 1（organ） & 补低中频的实体 \\
+\texttt{osc2\_level} & 0.30 & 少量，不要盖过基音 \\
+\texttt{osc2\_detune\_cents} & $-5$ & 轻微厚度 \\
+\texttt{cutoff\_hz} & 360 & 去掉高次谐波 \\
+\texttt{resonance} & 0.40 & 强调基音附近 \\
+\texttt{drive} & 0.28 & 加饱和，不是失真踏板 \\
+\hline
+\end{tabular}
+\caption{贝斯练习的参数配方}
+\label{tab:bass-recipe}
+\end{table}
+
+步骤：
+
+\begin{enumerate}
+  \item 建“Bass”轨，写入上表；在 C1–C3 弹单音，一次只弹一个。
+  \item 把 \texttt{cutoff\_hz} 从 360 升到 500，再降到 250；500 会多出低中频、更容易在小音箱上听见，250 更纯 sub 但可能只剩 rumble。常用区间 300–450。
+  \item 把 \texttt{resonance} 从 0.40 升到 0.55，再降到 0.25；共振会强调截止点，旋律越高越明显；不要用它当音量。
+  \item 把 \texttt{drive} 从 0.28 升到 0.40，再回 0.15；听谐波与低频紧度的变化。若低频变糊，先降 \texttt{osc2\_level}，不要继续加 drive。
+  \item 与铺底、主音合听：贝斯只占低频，不要把推子推到和主音一样响；具体电平靠耳朵，本章不给固定 dB。
+\end{enumerate}
+
+边界：没有副振荡器、八度开关、滑音或独立包络；低频来自 360 Hz 低通与两条支路的电平。要更复杂的贝斯，靠 MIDI 编排与后续效果，不要指望这一个配方覆盖全部。
+
+\screenshot{synth-bass-recipe}{贝斯练习的九参数配方}
+
+\section{三轨合听与检查}
+
+三个练习可以放在同一个八小节里：铺底弹长和弦，主音弹两小节一句，贝斯弹根音。合听时按下面的顺序检查：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.30\linewidth}p{0.56\linewidth}@{}}
+\hline
+现象 & 先动哪里 \\
+\hline
+主音被铺底埋 & 先降铺底推子；再考虑降铺底 \texttt{osc2\_level} 或 \texttt{cutoff\_hz} \\
+低频糊 & 降贝斯 \texttt{osc2\_level} 或 \texttt{drive}；不要把贝斯 cutoff 拉高到 800 \\
+铺底像两条笛子 & 收窄两条失谐，或降副支路电平；不要加第三条支路（没有） \\
+主音太刺 & 降 \texttt{cutoff\_hz} 或 \texttt{drive}；不要找不存在的 EQ \\
+和弦吞音 & 检查同时发声是否超过 16 个声部；减和弦音数 \\
+\hline
+\end{tabular}
+\caption{三轨合听的排查顺序}
+\label{tab:exercise-troubleshooting}
+\end{table}
+
+本章不涉及 EQ、混响、压缩、声相与总线；这些在混音手册里。也不要把“铺底/主音/贝斯”当成三台不同的合成器：它们是同一台复音合成器的三组参数，换的只是波形、电平、失谐与滤波。
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+练习前的九个参数 & \texttt{exercise-common-base} \\
+铺底练习 & \texttt{exercise-pad} \\
+主音练习 & \texttt{exercise-lead} \\
+贝斯练习 & \texttt{exercise-bass} \\
+三轨合听与检查 & \texttt{exercise-three-tracks} \\
+排查顺序 & \texttt{exercise-troubleshooting} \\
+\hline
+\end{tabular}
+\caption{第八章帮助主题映射}
+\label{tab:exercise-help-map}
+\end{table}

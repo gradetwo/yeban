@@ -1,0 +1,203 @@
+\chapter{Built-in Factory Voices}
+\label{chap:factory-voices}
+
+Yeban's built-in poly synth has six factory presets. They share one engine: two
+oscillator branches, a four-pole ladder low-pass, and a fixed ADSR; the only
+difference is the nine parameter values. This chapter walks through each preset
+with its parameters, typical use, and boundaries, so a preset name is not mistaken
+for a separate synthesis engine.
+
+\section{The common base of the six presets}
+
+All six use the \texttt{synth:} prefix and are reached from the left sound library
+and the bottom device rack. The same preset has slightly different labels in the
+left library and the arrangement; use the preset ID and engine name as the source
+of truth. \begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 30mm,
+  core/.style={draw, rounded corners=2pt, minimum width=62mm, minimum height=10mm, align=center, font=\small, fill=black!4},
+  preset/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=7mm, align=center, font=\scriptsize},
+  arrow/.style={-{Latex[length=1.6mm]}, semithick}
+]
+  \node[core] (engine) {One engine: two oscillators + four-pole low-pass + fixed ADSR};
+  \node[preset, above left=8mm and 50mm of engine] (h) {Hollow Lead};
+  \node[preset, above=8mm of engine] (o) {Warm Organ};
+  \node[preset, above right=8mm and 50mm of engine] (c) {Choir Pad};
+  \node[preset, below left=8mm and 50mm of engine] (f) {FM Bell};
+  \node[preset, below=8mm of engine] (g) {Glass Pluck};
+  \node[preset, below right=8mm and 50mm of engine] (s) {Sub Bass};
+  \foreach \p in {h,o,c,f,g,s} { \draw[arrow] (engine) -- (\p); }
+\end{tikzpicture}
+\end{center}
+
+None of the six contains an adjustable ADSR, LFO, modulation matrix, or
+separate envelope stages. There are only nine parameters:
+
+\begin{itemize}
+  \item Filter: \texttt{cutoff\_hz}, \texttt{resonance}, \texttt{drive};
+  \item Two oscillator branches: \texttt{osc1\_wave}, \texttt{osc2\_wave},
+        \texttt{osc1\_level}, \texttt{osc1\_detune\_cents},
+        \texttt{osc2\_level}, \texttt{osc2\_detune\_cents}.
+\end{itemize}
+
+The wavetable index is fixed: 0 = hollow, 1 = organ, 2 = vocal, 3 = metallic,
+4 = glass. A branch level of 0 bypasses that branch bit-exactly; detune is in
+cents with a device range of ±4800. The device clamps cutoff between 20 Hz and
+0.45 times the sample rate; resonance and drive are 0–1.
+
+\section{Parameter tables for the six presets}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\hline
+Preset & \texttt{cutoff\_hz} & \texttt{resonance} & \texttt{drive} \\
+\hline
+Hollow Lead & 2400 & 0.20 & 0.00 \\
+Warm Organ & 1800 & 0.15 & 0.10 \\
+Choir Pad & 2200 & 0.25 & 0.00 \\
+FM Bell & 4200 & 0.30 & 0.15 \\
+Glass Pluck & 3600 & 0.20 & 0.00 \\
+Sub Bass & 420 & 0.35 & 0.25 \\
+\hline
+\end{tabular}
+\caption{Filter parameters of the six factory presets}
+\label{tab:voice-filter}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\hline
+Preset & \texttt{osc1\_wave} & \texttt{osc2\_wave} & \texttt{osc1\_level} & \texttt{osc1\_detune} & \texttt{osc2\_level} & \texttt{osc2\_detune} \\
+\hline
+Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\
+Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\
+Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\
+FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\
+Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\
+Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
+\hline
+\end{tabular}
+\caption{Oscillator parameters of the six factory presets; detune in cents}
+\label{tab:voice-osc}
+\end{table}
+
+\screenshot{factory-preset-picker}{The preset entry in the bottom device rack is open, all six synth presets are visible, and the current track is a MIDI synth track.}
+
+\section{Hollow Lead}
+
+Hollow Lead is the historical default: the first branch uses the hollow table at
+level 0.90 and −4 cents detune; the second branch also uses hollow at level 0.35
+and +5 cents; cutoff 2400 Hz, resonance 0.20, drive 0.
+
+\textbf{Use}: soft lead lines and short melodic phrases, or one layer inside a bed.
+Two branches of the same table, slightly detuned, sound thicker than one branch
+without turning into a different instrument.
+
+\textbf{Boundaries}: it is one synth voice, not a complete chord bed; filling out
+harmony still needs multiple tracks or arrangement. It has no adjustable ADSR;
+attack, decay, sustain, and release are fixed at 5 ms / 80 ms / 0.7 / 50 ms.
+
+\section{Warm Organ}
+
+Warm Organ uses the organ table on both branches: the first at level 0.80 and
+−5 cents; the second at level 0.60 and +6 cents; cutoff 1800 Hz, resonance 0.15,
+drive 0.10.
+
+\textbf{Use}: organ-like sustained tones, chord pads, and passages that need a
+stable pitch. Both organ branches are open and detuned for thickness; drive 0.10
+adds a little harmonic content without changing overall loudness.
+
+\textbf{Boundaries}: it has no organ drawbars, rotary speaker, or percussion key
+control; ``Organ'' describes a timbre direction. Those effects need separate
+effects, not a hidden control in this preset.
+
+\section{Choir Pad}
+
+Choir Pad uses vocal on the first branch at level 0.85 and −8 cents; hollow on the
+second at level 0.55 and +8 cents; cutoff 2200 Hz, resonance 0.25, drive 0.
+
+\textbf{Use}: vocal-coloured beds, ambient sections, and harmonic backgrounds.
+The vocal table supplies the main colour while the hollow branch adds body;
+the wider detune keeps the two branches from lining up exactly.
+
+\textbf{Boundaries}: vocal is a synthesis wavetable, not a sampled choir, and there
+is no formant, lyric, or phoneme control. The labels ``Vocal Lead / Choir Pad''
+describe a timbre, not a singing synthesizer. For real voices, use audio-track
+material.
+
+\section{FM Bell}
+
+FM Bell uses metallic on the first branch at level 0.85 and −3 cents; glass on the
+second at level 0.50 and +11 cents; cutoff 4200 Hz, resonance 0.30, drive 0.15.
+
+\textbf{Use}: bright, metallic, bell-like short phrases and accents. Two high
+tables, a high cutoff, and a little drive produce a bright, hard transient.
+
+\textbf{Boundaries}: the ``FM'' in the name is only preset naming; Yeban's built-in
+synth is not an FM engine. It is a two-oscillator wavetable synth with a four-pole
+ladder low-pass, with no carrier/modulator ratio, FM depth, or operator envelope
+controls. Do not apply an FM synth parameter chart here.
+
+\section{Glass Pluck}
+
+Glass Pluck uses glass on both branches: the first at level 0.85 and −4 cents; the
+second at level 0.45 and +4 cents; cutoff 3600 Hz, resonance 0.20, drive 0.
+
+\textbf{Use}: plucked, glassy, short point-like sounds and bright ornaments. The
+slight detune between two branches of the same table keeps the pluck from sounding
+thin.
+
+\textbf{Boundaries}: it has no separate pluck decay, string damping, or per-note
+envelope control; the envelope is still the fixed ADSR. For a shorter or longer
+tail, use arrangement, note duration, or later effects; there is no pluck-decay
+control in this preset.
+
+\section{Sub Bass}
+
+Sub Bass uses hollow on the first branch at level 0.95 and 0 cents; organ on the
+second at level 0.35 and −5 cents; cutoff 420 Hz, resonance 0.35, drive 0.25.
+
+\textbf{Use}: low-end foundation, sub bass, and sections that need a heavy bottom.
+The 420 Hz low-pass removes the highs and leaves the low end; the organ branch
+adds a little low-mid body.
+
+\textbf{Boundaries}: it has no separate sub oscillator, octave switch, or glide
+control; the low end comes from the low cutoff and the two branch levels. For more
+complex bass lines, solve it in MIDI arrangement and effects rather than expecting
+one preset to cover the whole bass design.
+
+\section{Preset selection and saving boundaries}
+
+The six factory presets are parameter combinations of the built-in synth, not
+instrument presets in the user library. A built-in synth track has no portable
+instrument identity and cannot be saved as an instrument preset through ``Save
+current track as preset''. To keep a whole-track setup, use a track snapshot or
+``Save as Template''. Chapter 1 covered this boundary; this chapter does not repeat
+it in detail.
+
+\section{Help-topic mapping for this chapter}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+The common base of the six presets & \texttt{voice-common-base} \\
+Parameter tables for the six presets & \texttt{voice-parameter-tables} \\
+Hollow Lead & \texttt{voice-hollow-lead} \\
+Warm Organ & \texttt{voice-warm-organ} \\
+Choir Pad & \texttt{voice-choir-pad} \\
+FM Bell & \texttt{voice-fm-bell} \\
+Glass Pluck & \texttt{voice-glass-pluck} \\
+Sub Bass & \texttt{voice-sub-bass} \\
+Preset selection and saving boundaries & \texttt{voice-preset-boundary} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 3}
+\end{table}

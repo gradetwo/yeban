@@ -1,0 +1,134 @@
+\chapter{采样与 SFZ}
+\label{chap:sampling-sfz}
+
+合成器用算法“算”出声音，采样乐器用录音“播”出声音。夜半的采样侧以 SFZ 为核心：一份 SFZ 文本描述“哪个音区、哪个力度、用哪个音频文件、怎么移调”，音频文件本身留在磁盘上。理解这层分工，才能判断“装了没声音”到底是文件缺失、音区没覆盖，还是轨道绑错了入口。
+
+\section{SFZ 是什么，不是什么}
+
+SFZ 是一个文本定义文件。它不内含 PCM，也不把整份音库塞进工程；它只写区域（region）和样本路径。夜半读取 SFZ 后，把区域表摊平成可发声的乐器，再按音符与力度选区域。工程里只保存“这条轨绑了哪份 SFZ”的路径，所以工程文件很小，但换机器、删库、移动样本目录都可能让路径断掉。
+
+一条轨道只有一件主音源真正发声：分派次序是\textbf{鼓机 ＞ SFZ ＞ 复音合成器}。同一轨同时挂了鼓机、SFZ 和合成器时，鼓机先发声，另外两件被忽略；这不是 bug，而是“一轨一主音源”的既定口径。
+
+\section{三个入口，别走错}
+
+夜半界面里有几处都写着“SFZ/采样库”，落点并不相同：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.28\linewidth}p{0.34\linewidth}p{0.30\linewidth}@{}}
+\hline
+入口 & 实际动作 & 是否绑定当前轨 \\
+\hline
+设备机架的“+ 加载 SFZ” / 左栏采样库条目 & 打开音源管理，选中条目后载入当前轨 & 是，写轨道采样器 \\
+顶部模块条的“装载 SFZ” & 选一份 SFZ 作为导出/试听的音源，报告区域数与探测读数 & 否，不改轨道绑定 \\
+文件菜单的“装载 SFZ 音色库...” & 与模块条同一条模块动作 & 否，当前实现不写轨道绑定 \\
+\hline
+\end{tabular}
+\caption{三个 SFZ 入口的实际落点}
+\label{tab:sfz-entry}
+\end{table}
+
+想把音色真正装到某条轨上，用设备机架的空态按钮或左栏采样库条目：选中条目并载入当前轨，工程会提交一次 `SetTrackSampler`。顶部“装载 SFZ”是“整份工程试听/导出用这份音源”的旁路，它把乐器放进内存槽供下一次导出使用；它不会替当前轨换音源。若缺省路径没有文件，它会直接打开音源管理，而不是报一个术语错误。
+
+\section{音区、根音与力度层}
+
+SFZ 的每个区域至少回答四件事：覆盖哪些键（\texttt{lokey}/\texttt{hikey}）、覆盖哪些力度（\texttt{lovel}/\texttt{hivel}）、根音在哪（\texttt{pitch_keycenter}，默认 60）、播哪个文件（\texttt{sample}）。音符落在区域内才触发；多个区域同时覆盖同一个键与力度时会叠加，这就是分层采样。
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, x=13mm, y=7mm]
+  \foreach \x in {0,1,2,3} { \draw (\x,0) -- (\x,3); }
+  \foreach \y in {0,1,2,3} { \draw (0,\y) -- (3,\y); }
+  \node at (1.5,3.45) {键区：C2 – C5};
+  \node[rotate=90] at (-0.55,1.5) {力度层};
+  \node at (-0.3,2.5) {高};
+  \node at (-0.3,1.5) {中};
+  \node at (-0.3,0.5) {低};
+  \fill[black!18] (0,0) rectangle (1,1);
+  \fill[black!10] (1,0) rectangle (2,1);
+  \fill[black!18] (2,0) rectangle (3,1);
+  \fill[black!10] (0,1) rectangle (1,2);
+  \fill[black!18] (1,1) rectangle (2,2);
+  \fill[black!10] (2,1) rectangle (3,2);
+  \fill[black!18] (0,2) rectangle (1,3);
+  \fill[black!10] (1,2) rectangle (2,3);
+  \fill[black!18] (2,2) rectangle (3,3);
+  \node at (0.5,0.5) {C2};
+  \node at (1.5,0.5) {C3};
+  \node at (2.5,0.5) {C4};
+\end{tikzpicture}
+\end{center}
+
+图中每个格子代表一组“键区 × 力度层”的区域。真实 SFZ 不必铺满整张表：只写 C3 的中力度，C4 就没有声音；只写高力度，轻按就不触发。遇到“某些键有声音、某些没有”，先查区域覆盖，而不是先怀疑引擎。
+
+根音决定移调。样本若在 C3 录的，却把 \texttt{pitch_keycenter} 写成 60（C4），播放 C3 时会整体低一个八度。夜半的装载报告会做记法适配：文件用音名写键位、样本又没有嵌入根音时，证据不足就不自动移位，并在回执里提示“可能差一个八度”；工程字段支持 \texttt{note\_octave\_override}，但当前界面没有独立的八度旋钮，不能指望一键修正所有库。
+
+力度响应由 \texttt{amp\_veltrack}（默认 100\%，范围 $-100$–$100$）和可选的 \texttt{amp\_velcurve\_N} 点表决定；键位响度由 \texttt{amp\_keytrack}（默认 0 dB/键，范围 $-96$–$12$）决定。多数音库不需要改这两项；若同一力度层整体过响或过轻，先查库本身的设置，再考虑在夜半侧改。
+
+\section{支持的文件与失败回退}
+
+夜半读样本按后缀分派：\texttt{.wav}/\texttt{.wave} 走 PCM／浮点 WAV 解码；其余常见格式（FLAC、OGG 等）走通用解码器。两条腿都保留声道，超过双声道的样本会被明确拒绝，不会悄悄折成单声道。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.30\linewidth}p{0.60\linewidth}@{}}
+\hline
+情况 & 夜半的行为 \\
+\hline
+单/双声道 WAV、FLAC、OGG 等 & 正常解码；立体声保留左右声道 \\
+采样率与工程不同 & 不重采样；按播放速率换算，报告里保留原采样率 \\
+样本文件缺失/读不动 & 回退到 440 Hz 内存正弦，并把路径列入 missing；不是静默成功 \\
+超过双声道 & 明确拒绝该样本 \\
+\texttt{sample=*silence} & 内建静音伪样本：区域存在、会触发，但不发声 \\
+\texttt{\#include} 缺失或无匹配 & 装载继续，逐条列入 include\_issues \\
+\hline
+\end{tabular}
+\caption{样本读取的成功与失败口径}
+\label{tab:sfz-samples}
+\end{table}
+
+回退正弦是诊断信号，不是“替代音色”。听到整齐的 440 Hz 正弦，说明样本没读到；这时看装载回执的 missing 列表，修路径或补文件，而不是调 EQ。
+
+每条轨的 SFZ 声部池是 16 个；超过时按既有窃取策略换掉旧声部，并累计窃取计数。这个上限对普通编曲足够，但超大编制或长释放叠置时要知道它会窃取，而不是无限扩声部。
+
+\screenshot{sample-library-picker}{音源管理面板打开，已安装音源列表可见，某条目旁有载入当前轨的入口，当前轨为 MIDI 轨。}
+
+\section{声库管理}
+
+夜半的采样库根目录由程序统一管理，不在工程目录里。设备机架的采样库按钮在未安装时显示“下载采样库（约 9.4 GiB）”；已安装时同一按钮变成“校验采样库”。下载只在用户点击时发生，不会在后台偷偷拉取。
+
+音源包安装前会校验 SHA-256 与体积；校验不过不会落盘，也不会留下半个目录。删除某个库时，程序会列出仍绑定在该库上的轨道名，提醒这些轨会失去音源；删除是显式动作，不是“清理缓存”。工程里库内路径会存成相对库根的 `assets/samples/...` 形式，换机器后只要库根还在同一位置就能找回；库外绝对路径不迁移，换机器就可能断。
+
+\screenshot{sfz-load-report}{装载回执展开，能看到 regions 数量、样本来源与 probe 的帧数/能量；若失败则能看到 missing 或 include 列表。}
+
+\section{常见问题排查}
+
+\begin{enumerate}
+  \item \textbf{完全没有声音}：先看轨道是否真的绑了 SFZ（不是只点了顶部“装载 SFZ”），再看区域是否覆盖当前音区，最后看样本是否 missing。
+  \item \textbf{只有部分键有声}：查 \texttt{lokey}/\texttt{hikey} 是否漏了音区；分层库通常不会为每个半音都写区域。
+  \item \textbf{整体低/高一个八度}：查 \texttt{pitch\_keycenter} 与音库记法；当前没有界面八度旋钮，先按回执提示判断。
+  \item \textbf{力度变化很怪}：查 \texttt{amp\_veltrack} 与 \texttt{amp\_velcurve\_N}；不是所有库都按 0–127 线性。
+  \item \textbf{换电脑后无声}：查库根是否移动、工程里存的是相对路径还是库外绝对路径。
+  \item \textbf{装了采样库但列表空}：先点“校验采样库”，看库根是否可写、包是否完整；不要把空列表当成“没有音源”。
+\end{enumerate}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+SFZ 是什么，不是什么 & \texttt{sfz-what-it-is} \\
+三个入口，别走错 & \texttt{sfz-entry-points} \\
+音区、根音与力度层 & \texttt{sfz-zones-velocity} \\
+支持的文件与失败回退 & \texttt{sfz-file-fallback} \\
+声库管理 & \texttt{sfz-library-management} \\
+常见问题排查 & \texttt{sfz-troubleshooting} \\
+\hline
+\end{tabular}
+\caption{第 4 章帮助主题映射}
+\end{table}

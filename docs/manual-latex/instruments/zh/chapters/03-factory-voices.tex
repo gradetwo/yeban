@@ -1,0 +1,182 @@
+\chapter{内置合成音色}
+\label{chap:factory-voices}
+
+夜半内置复音合成器有六个工厂预设。它们共用同一套引擎：两条振荡器支路、一个
+四极梯形低通和一个固定 ADSR；差别只在九个参数的具体取值。本章逐个展开这六个
+预设，给出参数、典型用法和边界，避免把预设名当成另一套合成引擎。
+
+\section{六个预设的共同底座}
+
+六个预设都用 \texttt{synth:} 前缀标识，入口在左栏音色库与底部设备机架。同一个
+预设在左栏与编曲区的显示名不完全一样；判断当前音色以预设 ID 与引擎名为准。
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 30mm,
+  core/.style={draw, rounded corners=2pt, minimum width=62mm, minimum height=10mm, align=center, font=\small, fill=black!4},
+  preset/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=7mm, align=center, font=\scriptsize},
+  arrow/.style={-{Latex[length=1.6mm]}, semithick}
+]
+  \node[core] (engine) {同一引擎：双振荡器 + 四极梯形低通 + 固定 ADSR};
+  \node[preset, above left=8mm and 50mm of engine] (h) {Hollow Lead};
+  \node[preset, above=8mm of engine] (o) {Warm Organ};
+  \node[preset, above right=8mm and 50mm of engine] (c) {Choir Pad};
+  \node[preset, below left=8mm and 50mm of engine] (f) {FM Bell};
+  \node[preset, below=8mm of engine] (g) {Glass Pluck};
+  \node[preset, below right=8mm and 50mm of engine] (s) {Sub Bass};
+  \foreach \p in {h,o,c,f,g,s} { \draw[arrow] (engine) -- (\p); }
+\end{tikzpicture}
+\end{center}
+
+六个预设都不包含可调 ADSR、LFO、调制矩阵或独立包络段，参数只有九个：
+
+\begin{itemize}
+  \item 滤波器：\texttt{cutoff\_hz}、\texttt{resonance}、\texttt{drive}；
+  \item 两条振荡器支路：\texttt{osc1\_wave}、\texttt{osc2\_wave}、
+        \texttt{osc1\_level}、\texttt{osc1\_detune\_cents}、
+        \texttt{osc2\_level}、\texttt{osc2\_detune\_cents}。
+\end{itemize}
+
+波表下标固定为 0 = hollow、1 = organ、2 = vocal、3 = metallic、4 = glass。
+两条支路的电平为 0 时该支路逐位旁通；失谐单位是音分，器件量程 ±4800 cents。
+截止频率由器件钳在 20 Hz 到采样率 0.45 倍之间；共振与驱动都是 0–1。
+
+\section{六个预设的参数总表}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\hline
+预设 & \texttt{cutoff\_hz} & \texttt{resonance} & \texttt{drive} \\
+\hline
+Hollow Lead & 2400 & 0.20 & 0.00 \\
+Warm Organ & 1800 & 0.15 & 0.10 \\
+Choir Pad & 2200 & 0.25 & 0.00 \\
+FM Bell & 4200 & 0.30 & 0.15 \\
+Glass Pluck & 3600 & 0.20 & 0.00 \\
+Sub Bass & 420 & 0.35 & 0.25 \\
+\hline
+\end{tabular}
+\caption{六个工厂预设的滤波器参数}
+\label{tab:voice-filter}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\hline
+预设 & \texttt{osc1\_wave} & \texttt{osc2\_wave} & \texttt{osc1\_level} & \texttt{osc1\_detune} & \texttt{osc2\_level} & \texttt{osc2\_detune} \\
+\hline
+Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\
+Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\
+Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\
+FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\
+Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\
+Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
+\hline
+\end{tabular}
+\caption{六个工厂预设的振荡器参数；失谐单位为音分}
+\label{tab:voice-osc}
+\end{table}
+
+\screenshot{factory-preset-picker}{底部设备机架的预设入口打开，六个合成器预设可见，当前轨为 MIDI 合成器轨。}
+
+\section{Hollow Lead}
+
+Hollow Lead 是历史默认音色：第一条支路为 hollow 波表、电平 0.90、失谐 −4 音分；
+第二条支路同为 hollow、电平 0.35、失谐 +5 音分；截止 2400 Hz、共振 0.20、驱动 0。
+
+\textbf{用法}：适合柔和主音、短句旋律，也可作为铺底的一个组成层。两条同波表
+支路靠轻微失谐互相错开，听感比单条支路更厚，但不会变成另一件乐器。
+
+\textbf{边界}：它是单件合成音色，不负责完整和弦铺底；要铺满和声仍靠多轨或编排。
+它没有可调 ADSR，起振与释放固定为 5 ms / 80 ms / 0.7 / 50 ms。
+
+\section{Warm Organ}
+
+Warm Organ 的两条支路都用 organ 波表：第一条电平 0.80、失谐 −5 音分；第二条
+电平 0.60、失谐 +6 音分；截止 1800 Hz、共振 0.15、驱动 0.10。
+
+\textbf{用法}：适合风琴类持续音、和弦垫与需要稳定音高的段落。两条 organ 支路
+同时开，靠失谐得到厚度；驱动 0.10 只加一点谐波，不改变整体音量。
+
+\textbf{边界}：它没有风琴的拉杆（drawbar）、旋转扬声器或打击键控制；名字里的
+“Organ” 只描述音色取向。需要这些效果时，应另接效果器，不能在本预设里找。
+
+\section{Choir Pad}
+
+Choir Pad 第一条支路为 vocal 波表、电平 0.85、失谐 −8 音分；第二条为 hollow、
+电平 0.55、失谐 +8 音分；截止 2200 Hz、共振 0.25、驱动 0。
+
+\textbf{用法}：适合人声色彩的铺底、氛围段与和声背景。vocal 波表提供主体色彩，
+hollow 支路补厚度；较高的失谐让两条支路不完全重合。
+
+\textbf{边界}：vocal 是合成波表，不是采样人声，也没有共振峰、歌词或音素控制；
+界面上的“人声领唱 / Choir Pad”是音色描述，不是歌声合成器。需要真实人声应使用
+音频轨素材。
+
+\section{FM Bell}
+
+FM Bell 第一条支路为 metallic、电平 0.85、失谐 −3 音分；第二条为 glass、电平
+0.50、失谐 +11 音分；截止 4200 Hz、共振 0.30、驱动 0.15。
+
+\textbf{用法}：适合明亮、金属感、钟声类的短句与点缀。两条高波表叠加，加上较高
+截止和少量驱动，得到偏亮、偏硬的瞬态。
+
+\textbf{边界}：这里的“FM”只是预设命名，不代表夜半内置合成器是 FM 合成引擎；
+当前引擎是双振荡器波表 + 四极梯形低通，没有载波/调制器频率比、FM 深度或算子
+包络控件。不要把 FM 合成器的参数表套过来。
+
+\section{Glass Pluck}
+
+Glass Pluck 两条支路都用 glass 波表：第一条电平 0.85、失谐 −4 音分；第二条
+电平 0.45、失谐 +4 音分；截止 3600 Hz、共振 0.20、驱动 0。
+
+\textbf{用法}：适合拨弦、钟琴、短促的点状音色，以及需要“亮而短”的装饰音。
+两条同波表支路的轻微失谐让拨弦不完全单薄。
+
+\textbf{边界}：它没有独立的拨弦衰减、琴弦阻尼或每音符包络控制；包络仍是固定
+ADSR。要更短或更长的尾音，只能靠编排、编辑音符时值或后续效果器，不能在本预设
+里调拨弦衰减。
+
+\section{Sub Bass}
+
+Sub Bass 第一条支路为 hollow、电平 0.95、失谐 0；第二条为 organ、电平 0.35、
+失谐 −5 音分；截止 420 Hz、共振 0.35、驱动 0.25。
+
+\textbf{用法}：适合低频基础、次低音与需要厚重底部的段落。420 Hz 的低通把高频
+削掉，只留低频；organ 支路给一点中低频厚度。
+
+\textbf{边界}：它没有独立的 sub 振荡器、八度开关或滑音控件；低频来自低截止与
+两条支路的电平组合。需要更复杂的贝斯线条时，应在 MIDI 编排与效果器上解决，
+不要期待一个预设完成全部贝斯设计。
+
+\section{预设的选择与保存边界}
+
+六个工厂预设是内置合成器的参数组合，不是用户库里的乐器预制。内置合成器轨
+没有可移植的乐器身份，不能通过“另存当前轨为预制”保存成乐器预制；要保留整轨
+设置，应使用整轨快照或“另存为模板”。这条边界在第一章已经说明，本章不再展开。
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+六个预设的共同底座 & \texttt{voice-common-base} \\
+六个预设的参数总表 & \texttt{voice-parameter-tables} \\
+Hollow Lead & \texttt{voice-hollow-lead} \\
+Warm Organ & \texttt{voice-warm-organ} \\
+Choir Pad & \texttt{voice-choir-pad} \\
+FM Bell & \texttt{voice-fm-bell} \\
+Glass Pluck & \texttt{voice-glass-pluck} \\
+Sub Bass & \texttt{voice-sub-bass} \\
+预设的选择与保存边界 & \texttt{voice-preset-boundary} \\
+\hline
+\end{tabular}
+\caption{第三章帮助主题映射}
+\end{table}

@@ -1,0 +1,158 @@
+\chapter{Synthesizer Basics}
+\label{chap:synth-basics}
+
+This chapter explains the built-in poly synth's signal chain, its nine
+projectable parameters, and the exact values of the six factory presets. The
+parameter names, ranges, and defaults come from the engine's device projection
+code; values are reproduced without any processing beyond rounding.
+
+\section{Signal chain}
+
+The built-in synth uses one fixed-size voice pool per track, holding at most 16
+sounding voices. Each voice has two oscillator branches, a four-pole ladder
+low-pass filter, and an amplitude envelope. Both branches draw from the same five
+wavetables: \texttt{hollow}, \texttt{organ}, \texttt{vocal},
+\texttt{metallic}, and \texttt{glass}. Each branch has its own level and detune;
+the branches are mixed before the low-pass and envelope.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=9mm and 11mm,
+  box/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=8mm, align=center, font=\small},
+  sum/.style={draw, circle, minimum size=6mm, inner sep=0pt, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (osc1) {OSC 1\\wavetable + level + detune};
+  \node[box, below=of osc1] (osc2) {OSC 2\\wavetable + level + detune};
+  \node[sum, right=of osc1, yshift=-8mm] (mix) {+};
+  \node[box, right=of mix] (filter) {Four-pole\\ladder low-pass};
+  \node[box, right=of filter] (env) {Amplitude envelope\\fixed ADSR};
+  \node[box, right=of env] (out) {Insert chain\\and bus};
+
+  \draw[arrow] (osc1) -- (mix);
+  \draw[arrow] (osc2) -- (mix);
+  \draw[arrow] (mix) -- (filter);
+  \draw[arrow] (filter) -- (env);
+  \draw[arrow] (env) -- (out);
+\end{tikzpicture}
+\end{center}
+
+The filter is a four-pole ladder low-pass. The device clamps cutoff to between
+20 Hz and 0.45 times the sample rate; resonance and drive are 0-to-1 knob values.
+At drive 0 the distortion stage is bit-exactly bypassed; at 1 it is +36 dB of
+pre-gain, distributed evenly in dB in between. The output is self-compensated, so
+turning up drive changes harmonics rather than overall loudness.
+
+The amplitude envelope is a fixed ADSR: 5 ms attack, 80 ms decay, 0.7 sustain,
+and 50 ms release. The current interface exposes no adjustable ADSR knobs, and no
+LFO, modulation matrix, or separate envelope-stage controls. Do not apply control
+names from other synthesizers here. If these are wired later, find the
+corresponding parameter projection in the code first, then extend this chapter.
+
+\section{The nine projectable parameters}
+
+The built-in synth reads device-chain parameter names case-insensitively. The
+table lists the nine parameters, their valid ranges, and defaults. ``Absent'' and
+``written as 0'' are different: an absent \texttt{osc2\_level} means the second
+branch is off, and an explicit 0 also means off; an absent \texttt{cutoff\_hz}
+bypasses the whole filter, while an explicit 0 is clamped to 20 Hz by the device.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Valid range & Default when absent \\
+\hline
+\texttt{cutoff\_hz} (alias \texttt{cutoff}) & Low-pass cutoff & 20 Hz--0.45×sample rate & Filter bypassed \\
+\texttt{resonance} (alias \texttt{res}) & Low-pass resonance & 0--1 & 0.0 \\
+\texttt{drive} & Filter drive/distortion & 0--1 & 0.0 \\
+\texttt{osc1\_wave} & First-branch wavetable & 0--4 (rounded) & 0 (hollow) \\
+\texttt{osc2\_wave} & Second-branch wavetable & 0--4 (rounded) & 0 (hollow) \\
+\texttt{osc1\_level} & First-branch level & 0--1 & 1.0 (full) \\
+\texttt{osc1\_detune\_cents} & First-branch detune & ±4800 cents & 0.0 \\
+\texttt{osc2\_level} & Second-branch level & 0--1 & 0.0 (off) \\
+\texttt{osc2\_detune\_cents} & Second-branch detune & ±4800 cents & 0.0 \\
+\hline
+\end{tabular}
+\caption{The nine parameters of the built-in poly synth}
+\label{tab:synth-params}
+\end{table}
+
+\screenshot{synth-device-params}{Synth nine parameters and device-card readout}
+
+The wavetable index mapping is fixed: 0 = \texttt{hollow}, 1 = \texttt{organ},
+2 = \texttt{vocal}, 3 = \texttt{metallic}, 4 = \texttt{glass}. Non-finite or
+negative values are treated as 0; integers above 4 are clamped by the device to
+the last table, not turned into silence. When a branch level is 0, that branch
+executes no samples at all; this is a bit-exact bypass, not a multiply by zero.
+
+\section{Parameter values of the six factory presets}
+
+The two tables below give all nine parameters for each preset. There is no
+``envelope'' or ``LFO'' column because the current presets contain no such
+parameters.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\hline
+Preset & \texttt{cutoff\_hz} & \texttt{resonance} & \texttt{drive} \\
+\hline
+Hollow Lead & 2400 & 0.20 & 0.00 \\
+Warm Organ & 1800 & 0.15 & 0.10 \\
+Choir Pad & 2200 & 0.25 & 0.00 \\
+FM Bell & 4200 & 0.30 & 0.15 \\
+Glass Pluck & 3600 & 0.20 & 0.00 \\
+Sub Bass & 420 & 0.35 & 0.25 \\
+\hline
+\end{tabular}
+\caption{Filter parameters of the factory presets}
+\label{tab:preset-filter}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\hline
+Preset & \texttt{osc1\_wave} & \texttt{osc2\_wave} & \texttt{osc1\_level} & \texttt{osc1\_detune} & \texttt{osc2\_level} & \texttt{osc2\_detune} \\
+\hline
+Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\
+Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\
+Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\
+FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\
+Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\
+Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
+\hline
+\end{tabular}
+\caption{Oscillator parameters of the factory presets; detune is in cents}
+\label{tab:preset-osc}
+\end{table}
+
+Tables \ref{tab:preset-filter} and \ref{tab:preset-osc} give each preset its
+character directly: Hollow Lead is a 90%-level hollow branch plus a low-level
+second branch of the same table, suited to a soft lead; Warm Organ opens both
+organ branches and uses detune for organ-like thickness; Choir Pad uses vocal as
+the main branch and hollow as the auxiliary branch, and its pad character comes
+from the vocal table combined with a lower cutoff; FM Bell and Glass Pluck both
+use metallic/glass tables at high cutoff, the former brighter and the latter
+shorter; Sub Bass pushes cutoff down to 420 Hz and keeps only the low end.
+
+\section{Help-topic mapping for this chapter}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+Signal chain & \texttt{synth-signal-chain} \\
+Nine projectable parameters & \texttt{synth-parameters} \\
+Parameter values of the six factory presets & \texttt{synth-factory-presets} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 2}
+\end{table}

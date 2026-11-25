@@ -1,0 +1,145 @@
+\chapter{合成器基础}
+\label{chap:synth-basics}
+
+本章说明内置复音合成器的信号链、九个可投影参数，以及六个工厂预设的具体取值。
+参数名、范围和默认值取自引擎的设备投影代码；数值不做四舍五入以外的加工。
+
+\section{信号链}
+
+内置合成器每轨使用一个定长声部池，最多同时容纳 16 个在响声部。每个声部有两条
+振荡器支路、一个四极梯形低通和一个振幅包络。两条支路的波形来自同一张五张波表：
+\texttt{hollow}、\texttt{organ}、\texttt{vocal}、\texttt{metallic}、\texttt{glass}。
+两条支路各自有电平与失谐，混合后进入低通与包络。
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=9mm and 11mm,
+  box/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=8mm, align=center, font=\small},
+  sum/.style={draw, circle, minimum size=6mm, inner sep=0pt, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (osc1) {OSC 1\\波表 + 电平 + 失谐};
+  \node[box, below=of osc1] (osc2) {OSC 2\\波表 + 电平 + 失谐};
+  \node[sum, right=of osc1, yshift=-8mm] (mix) {+};
+  \node[box, right=of mix] (filter) {四极梯形\\低通};
+  \node[box, right=of filter] (env) {振幅包络\\固定 ADSR};
+  \node[box, right=of env] (out) {到插入链\\与总线};
+
+  \draw[arrow] (osc1) -- (mix);
+  \draw[arrow] (osc2) -- (mix);
+  \draw[arrow] (mix) -- (filter);
+  \draw[arrow] (filter) -- (env);
+  \draw[arrow] (env) -- (out);
+\end{tikzpicture}
+\end{center}
+
+滤波器是四极梯形低通。截止频率的有效域由器件钳在 20 Hz 到采样率的 0.45 倍之间；
+共振与驱动都是 0 到 1 的旋钮值。驱动为 0 时失真级逐位旁通，为 1 时是 +36 dB
+预增益，中间按等 dB 分布；输出侧有自补偿，拧驱动主要换谐波，不换整体音量。
+
+振幅包络是固定的 ADSR：起振 5 ms、衰减 80 ms、 sustain 0.7、释放 50 ms。
+当前界面没有提供可调的 ADSR 旋钮，也没有 LFO、调制矩阵或独立包络段控件；
+写手册时不应把其他合成器的控件名套到这里。后续若接线，应先在代码里找到对应的
+参数投影，再补写本章。
+
+\section{九个可投影参数}
+
+内置合成器从设备链读取的参数名大小写不敏感。下表列出九个参数、有效域与默认值。
+“不写”与“写 0”是两件事：不写 \texttt{osc2\_level} 表示第二条支路关，写 0 也是关；
+不写 \texttt{cutoff\_hz} 则整个滤波器旁通，写 0 会被器件钳到 20 Hz。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数名 & 含义 & 有效域 & 默认（不写时） \\
+\hline
+\texttt{cutoff\_hz}（别名 \texttt{cutoff}） & 低通截止频率 & 20 Hz–0.45×采样率 & 滤波器旁通 \\
+\texttt{resonance}（别名 \texttt{res}） & 低通共振 & 0–1 & 0.0 \\
+\texttt{drive} & 滤波器驱动/失真 & 0–1 & 0.0 \\
+\texttt{osc1\_wave} & 第一条支路波表 & 0–4（四舍五入后取整） & 0（hollow） \\
+\texttt{osc2\_wave} & 第二条支路波表 & 0–4（四舍五入后取整） & 0（hollow） \\
+\texttt{osc1\_level} & 第一条支路电平 & 0–1 & 1.0（满） \\
+\texttt{osc1\_detune\_cents} & 第一条支路失谐 & ±4800 音分 & 0.0 \\
+\texttt{osc2\_level} & 第二条支路电平 & 0–1 & 0.0（关） \\
+\texttt{osc2\_detune\_cents} & 第二条支路失谐 & ±4800 音分 & 0.0 \\
+\hline
+\end{tabular}
+\caption{内置复音合成器的九个参数}
+\label{tab:synth-params}
+\end{table}
+
+\screenshot{synth-device-params}{合成器九参数与设备卡读数}
+
+波表下标与名字的对应是固定的：0 = \texttt{hollow}，1 = \texttt{organ}，
+2 = \texttt{vocal}，3 = \texttt{metallic}，4 = \texttt{glass}。非有限值或负值按 0
+处理；大于 4 的整数由器件钳到最后一张表，不会变成静音。两条支路的电平为 0 时，
+该支路一帧也不执行；这是逐位旁通，不是把电平乘成 0。
+
+\section{六个工厂预设的参数}
+
+同一组参数在六个预设里的取值如下。两表合起来就是每个预设的全部九个参数；
+表中没有“包络”或“LFO”列，因为当前预设不包含这些参数。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\hline
+预设 & \texttt{cutoff\_hz} & \texttt{resonance} & \texttt{drive} \\
+\hline
+Hollow Lead & 2400 & 0.20 & 0.00 \\
+Warm Organ & 1800 & 0.15 & 0.10 \\
+Choir Pad & 2200 & 0.25 & 0.00 \\
+FM Bell & 4200 & 0.30 & 0.15 \\
+Glass Pluck & 3600 & 0.20 & 0.00 \\
+Sub Bass & 420 & 0.35 & 0.25 \\
+\hline
+\end{tabular}
+\caption{工厂预设的滤波器参数}
+\label{tab:preset-filter}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\hline
+预设 & \texttt{osc1\_wave} & \texttt{osc2\_wave} & \texttt{osc1\_level} & \texttt{osc1\_detune} & \texttt{osc2\_level} & \texttt{osc2\_detune} \\
+\hline
+Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\
+Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\
+Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\
+FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\
+Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\
+Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
+\hline
+\end{tabular}
+\caption{工厂预设的振荡器参数；失谐单位为音分}
+\label{tab:preset-osc}
+\end{table}
+
+从表 \ref{tab:preset-filter} 与表 \ref{tab:preset-osc} 可以直接读出每个预设的
+性格：Hollow Lead 是一条九成电平的 hollow 加一条低电平同波表，适合柔和主音；
+Warm Organ 让两条 organ 支路同时开，靠失谐做出风琴的厚度；Choir Pad 用 vocal
+作主支路、hollow 作辅支路；它的铺底听感来自 vocal 波表与较低截止的组合；
+FM Bell 与 Glass Pluck 都用 metallic/glass 波表的高截止，前者更亮、后者更短促；
+Sub Bass 把截止压到 420 Hz，只留低频。
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+信号链 & \texttt{synth-signal-chain} \\
+九个可投影参数 & \texttt{synth-parameters} \\
+六个工厂预设的参数 & \texttt{synth-factory-presets} \\
+\hline
+\end{tabular}
+\caption{第二章帮助主题映射}
+\end{table}

@@ -1,0 +1,174 @@
+\chapter{鼓机}
+\label{chap:drum-machine}
+
+夜半的“鼓机”目前是一条\textbf{生成线}，不是一台带 16 格步进编辑器的硬件鼓机：你选风格、给复杂度/强度/摇摆/小节数/种子，它生成一段可继续编辑的 MIDI 鼓型，并顺手装好鼓组与效果链。它有两种音色路线：原声族绑 SFZ 采样鼓组，电子族装内置合成鼓机。本章先讲鼓音色与步进音序的原理，再讲夜半真正能点的东西和不能点的东西。
+
+\section{两条音色路线}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.13\linewidth}p{0.24\linewidth}p{0.24\linewidth}p{0.25\linewidth}@{}}
+\hline
+族 & 音源 & 键位 & 风格 \\
+\hline
+原声 Acoustic & Virtuosity Drums 基础组（SFZ，GM 映射） & 按具体 SFZ 程序的键位图 & boombap / funk / jazz / pop / rnb / rock \\
+电子 Electronic & 内置合成鼓机 \texttt{Yeban Drum Kit (Synth)} & 核心 5 键 + 可选 9 键 & drill / edm / hiphop / house / lofi / phonk / techno / trap \\
+\hline
+\end{tabular}
+\caption{两条鼓组路线}
+\label{tab:drum-families}
+\end{table}
+
+引擎一条轨只能挂一件音源，所以原声与电子不能在同一轨里并行。要同时用采样鼓组和合成鼓机，只能分两条轨。电子族的键位是 GM 打击乐键：核心 36 底鼓、38 军鼓、39 拍手、42 闭镲、46 开镲；可选 37 边击、43/45/48 低/中/高桶鼓、49 碎镲、51 叮叮镲、56 牛铃、82 沙锤、35 独立 808 低音。
+
+原声族的具体键位以绑定的 SFZ 程序为准，不能拿电子族的 46 开镲规则硬套：部分原声程序把开镲并在 42，用 CC4 踏板控制开合；夜半的默认基础组装的是哪套键位图，要看实际 SFZ 文件，而不是看本章的电子族表。
+
+\section{鼓音色是怎么合成的}
+
+电子鼓机有 13 个音色，全部是\textbf{合成配方}，不是 808/909 的逐级电路建模。它没有晶体管、运放、节点阻抗，也没有元件容差；同一组参数永远给同一结果。这一点必须说清楚：听到“808 式”不等于“建模了 808”。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.12\linewidth}p{0.46\linewidth}p{0.34\linewidth}@{}}
+\hline
+音色 & 合成结构 & 关键参数 \\
+\hline
+底鼓 Kick & 一条从 \texttt{glide\_hz} 指数下滑到 \texttt{tune\_hz} 的正弦 + 指数幅度包络 & 调音、滑音起点、滑音时长、衰减、电平、声像 \\
+军鼓 Snare & 两个固定频率正弦相加 + 一条噪声带，两条包络各自衰减 & 音调频率/比例/衰减、噪声带上下沿、噪声衰减、电平 \\
+踩镲 Hi-hat & 6 条非谐方波相加 → 带通近似 → 极快衰减；闭镲与开镲共用配方 & 基频、上下沿、闭/开衰减、电平 \\
+拍手 Clap & 带通白噪声 × 多次短促 onset，最后一个 onset 走长尾 & 上下沿、burst 数、burst 间隔/衰减、尾巴衰减 \\
+\hline
+\end{tabular}
+\caption{四个核心音色的合成结构}
+\label{tab:drum-core-voices}
+\end{table}
+
+“带通”在这里是低通组合的近似：\texttt{hihat\_highpass\_hz} 不是带通下沿，而是那一级低通的拐点；有效通带比名字窄。军鼓的 \texttt{tone\_level} 与 \texttt{noise\_level} 是两个分量的电平，不是 RMS 之比。把这些名字当硬件旋钮的物理量，会调错方向。
+
+其余九个音色是桶鼓（低/中/高，共用一套桶鼓参数）、边击、沙锤、牛铃、碎镲、叮叮镲和独立 808 低音。它们各有自己的频率、衰减、电平与声像，但结构仍是“波形/噪声 + 包络 + 滤波”的配方，不是电路模型。底鼓、军鼓、808 在全部出厂风格里严格居中；其余音色的声像按风格定，不是全局固定。
+
+鼓机有 16 个槽位。第 17 个同时触发会偷走一个正在响的槽位；闭镲触发会让所有正在响的开镲进入淡出（反向不成立：开镲不会掐闭镲）。除此之外没有别的 choke 组，也没有逐音色独立输出或逐件发送。
+
+\section{步进音序}
+
+出厂风格的一小节是 16 个 16 分步（PPQ 960、4 拍/小节 ⇒ 每步 240 tick）。每个步进格存三件事：力度、ratchet、tier。
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, x=6.4mm, y=7mm]
+  \foreach \i in {0,...,15} {
+    \draw[rounded corners=1pt, fill=black!4] (\i,0) rectangle ++(5.6,0.9);
+    \node at (\i+2.8,0.45) {\i};
+  }
+  \foreach \i/\t in {0/C,2/S,4/C,6/E,8/C,10/S,12/C,14/E} {
+    \node[below] at (\i+2.8,-0.2) {\t};
+  }
+  \node[left] at (-0.3,0.45) {步};
+  \node[left] at (-0.3,-0.2) {层};
+\end{tikzpicture}
+\end{center}
+
+图中的 C/S/E 只是 tier 0/1/2 的示意，不代表某个风格的真实图案。tier 是“骨架 / 标准 / 加花”的层级：复杂度低于 34 只取 tier 0；34–66 取 tier 0+1；67 及以上取全部三层，并让军鼓在邻格有主击的空格里按种子哈希补低力度鬼音。复杂度越高，密度越大，但不会把风格变成另一种风格。
+
+强度不改层级，只改力度：系数是 $0.55 + 0.45 \times$ 强度/100。强度 100 等于预置原力度，强度 0 压到 55%。摇摆以千分比表示，500 是直拍，数值越大，每个奇数 16 分格被推迟得越多；界面只让你填 500–700，生成核心本身接受 500–1000。ratchet 把一格等分成最多 8 个子音，子音力度按 $0.85 + 0.15 \times k/n$ 递减；它不是“重复触发同一格”，是同一格内的多次起音。
+
+fill 只在“请求了 fill、预置带 fill、总小节数 ≥ 2”时生效：最后一小节整段换成 fill 道表，fill 里没有的鼓道在该小节休止。旋律道可选第 4 元音高，只允许牛铃与 808 道；生成时写成恒定弯音曲线，不是每个子音各自变调。
+
+确定性是硬契约：同风格、同参数、同种子，两次生成的片段逐字节一致。唯一的随机源是鬼音判定，它只依赖种子、GM 键与全局步的哈希，不读时钟、不读全局状态。
+
+\section{鼓组预置与生成结果}
+
+出厂预置有 14 个风格，编译在程序里，界面按固定顺序列出；没有“导入风格文件”或“保存自定义风格”的入口。风格不是“一条 loop”，而是一套包含鼓道、tier、ratchet、层、fill、逐件链、效果与总线的配方。
+
+生成一条新鼓轨时，夜半会做这些事：
+
+\begin{enumerate}
+  \item 建轨，轨名是“<预置名> Drums”，轨电平 −6 dB，路由到主总线；如果预置带鼓总线，先建一条 \texttt{AuxReturn} 鼓总线，装胶水压缩与 Soft Clipper，鼓轨先进总线，总线再进主总线。
+  \item 目标轨还没有音源时，按族装默认鼓组：原声族绑 Virtuosity 基础组 SFZ，电子族插一台合成鼓机。已有音源就不动，用户鼓组优先。
+  \item 按预置的 \texttt{fx} 段追加效果层：通道条与混响是基础，部分风格还带磁带、延迟、瞬态塑形、比特碾碎或噪声。已有同族非旁通效果时不重复叠加，用户效果优先。
+  \item 按预置的 \texttt{lane\_chains} 段写逐件链；已有用户逐件链时不覆盖。
+  \item 按预置的 \texttt{automation} 段写自动化泳道；已有同目标用户泳道时跳过。
+  \item 落一个 MIDI 片段与摆放：tick 0 起，长度 = 小节数 × 每小节 tick 数。
+\end{enumerate}
+
+如果当前选中的是一条 MIDI 轨（且不是主总线），生成就落在这条轨上；选中的是音频轨、辅助轨、主总线或没有选中轨，就新建一条鼓轨。新建轨路径才建鼓总线；落在既有轨时沿用既有路由，不另建总线。
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, >=latex, node distance=4mm]
+  \node[draw, rounded corners, minimum width=19mm, minimum height=7mm] (style) {风格预置};
+  \node[draw, rounded corners, right=of style, minimum width=18mm, minimum height=7mm, align=center] (gen) {生成器\\三旋钮+种子};
+  \node[draw, rounded corners, right=of gen, minimum width=17mm, minimum height=7mm] (clip) {MIDI 片段};
+  \node[draw, rounded corners, below=of clip, minimum width=17mm, minimum height=7mm] (kit) {鼓组音源};
+  \node[draw, rounded corners, left=of kit, minimum width=18mm, minimum height=7mm, align=center] (fx) {通道条/混响\\可选效果};
+  \node[draw, rounded corners, left=of fx, minimum width=16mm, minimum height=7mm, align=center] (bus) {鼓总线\\胶水/削波};
+  \draw[->] (style) -- (gen);
+  \draw[->] (gen) -- (clip);
+  \draw[->] (gen) -- (kit);
+  \draw[->] (kit) -- (fx);
+  \draw[->] (fx) -- (bus);
+\end{tikzpicture}
+\end{center}
+
+\section{界面怎么用}
+
+入口是“编辑 → 鼓机生成 (Drums)...”。对话框左列是 14 个风格，右列是五个文本格、末小节填充开关、目标轨说明和“生成”按钮。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+控件 & 含义 & 范围 & 默认 \\
+\hline
+风格 & 出厂预置，选一 & 14 个 & 第一项 \\
+复杂度 & 密度/层级 & 0–100 & 50 \\
+强度 & 力度缩放 & 0–100 & 80 \\
+摇摆 & 奇数 16 分格推迟量（千分比） & 界面 500–700 & 预置定值 \\
+小节数 & 生成长度 & 1–16 & 4 \\
+基础种子 & 鬼音哈希的盐 & u64 & 工程种子 \\
+末小节填充 & 最后一小节换 fill & 开/关 & 开 \\
+\hline
+\end{tabular}
+\caption{鼓机生成对话框的控件}
+\label{tab:drum-dialog}
+\end{table}
+
+选风格时，摇摆框会被播种成该风格的定值；复杂度、强度、小节数留空时分别按 50、80、4 播种；种子留空时用工程种子。解析失败时对话框不关，错误行写出原因，不会提交半成品。同一风格同一组参数两次生成，片段内容逐字节一致。
+
+\screenshot{drum-gen-dialog}{“鼓机生成”对话框打开：左列风格列表，右列复杂度/强度/摇摆/小节数/种子/填充开关，底部目标轨说明与“生成”按钮。}
+
+\screenshot{drum-track-device-rack}{生成后的电子鼓轨在设备机架里显示合成鼓机、通道条、混响与可选延迟；参数是只读读数。}
+
+\screenshot{drum-clip-piano-roll}{生成的鼓型片段在钢琴卷帘里显示为一列 MIDI 音符，可按键位与力度继续编辑。}
+
+\section{夜半没有的东西}
+
+\begin{itemize}
+  \item \textbf{没有 16 格步进编辑器。} 鼓机生成是“模板 + 规则变换”，不是一台让你逐格点亮的鼓机；生成后的 MIDI 片段可以在编曲区与钢琴卷帘编辑，但没有专门的鼓步进网格。
+  \item \textbf{没有自定义鼓组/风格预置的保存入口。} 14 个风格是出厂只读；设备卡显示鼓机参数，但不能拧 kick tune / snare decay。
+  \item \textbf{没有 808/909 电路建模。} 13 个音色是合成配方；所谓 808/909 只是参数级配方，不是逐级模拟电路，也没有元件离散性。
+  \item \textbf{没有逐音色独立输出、逐件发送或并行压缩。} 鼓机是求和输出（每音色有声像），没有每路独立插孔。
+  \item \textbf{没有第二个 choke 组。} 只有闭镲掐开镲；吊镲、桶鼓等没有 choke。
+  \item \textbf{没有“再来一条同一轨的合成鼓机”。} 一轨一音源；要叠加原声与电子，分两条轨。
+\end{itemize}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+两条音色路线 & \texttt{drum-families} \\
+鼓音色是怎么合成的 & \texttt{drum-voice-synthesis} \\
+步进音序 & \texttt{drum-step-sequencing} \\
+鼓组预置与生成结果 & \texttt{drum-presets-generation} \\
+界面怎么用 & \texttt{drum-dialog} \\
+夜半没有的东西 & \texttt{drum-current-limits} \\
+\hline
+\end{tabular}
+\caption{第 6 章帮助主题映射}
+\end{table}

@@ -1,0 +1,218 @@
+\chapter{Sound-Design Exercises}
+\label{chap:sound-design-exercises}
+
+This chapter turns the nine parameters from the previous two chapters into three playable exercises: a pad, a lead and a bass. Each starts from the default synthesizer and changes only the nine parameters; it does not touch EQ, reverb or compression, and does not assume ADSR, LFO, filter envelope, glide or a sub oscillator. The envelope is always the fixed 5 ms attack, 80 ms decay, sustain 0.7 and 50 ms release. A ``pad'' here is a timbre and a chord, not a slow fade-in.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 10mm,
+  engine/.style={draw, rounded corners=2pt, minimum width=52mm, minimum height=10mm, align=center, font=\small, fill=black!4},
+  recipe/.style={draw, rounded corners=2pt, minimum width=34mm, minimum height=8mm, align=center, font=\scriptsize},
+  arrow/.style={-{Latex[length=1.8mm]}, semithick}
+]
+  \node[engine] (eng) {one poly synth\\nine parameters + fixed ADSR};
+  \node[recipe, above left=7mm and 18mm of eng] (pad) {Exercise 1 pad\\vocal + hollow};
+  \node[recipe, above=7mm of eng] (lead) {Exercise 2 lead\\hollow + glass};
+  \node[recipe, above right=7mm and 18mm of eng] (bass) {Exercise 3 bass\\hollow + organ};
+  \draw[arrow] (eng) -- (pad);
+  \draw[arrow] (eng) -- (lead);
+  \draw[arrow] (eng) -- (bass);
+\end{tikzpicture}
+\end{center}
+
+\section{Before you start: nine parameters and a fixed envelope}
+
+The nine parameters fall into three groups: filter \texttt{cutoff\_hz}, \texttt{resonance}, \texttt{drive}; oscillator wavetables \texttt{osc1\_wave}, \texttt{osc2\_wave}; and branch levels/detune \texttt{osc1\_level}, \texttt{osc1\_detune\_cents}, \texttt{osc2\_level}, \texttt{osc2\_detune\_cents}. Wavetable indices are fixed: 0 = hollow, 1 = organ, 2 = vocal, 3 = metallic, 4 = glass.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Role & Range & Default (unwritten) \\
+\hline
+\texttt{cutoff\_hz} & four-pole ladder low-pass corner & 20 Hz--0.45×sample rate & filter bypassed \\
+\texttt{resonance} & resonance around the corner & 0--1 & 0 \\
+\texttt{drive} & pre-filter drive/saturation & 0--1 & 0 \\
+\texttt{osc1\_wave} & first branch wavetable & 0--4 & 0 (hollow) \\
+\texttt{osc2\_wave} & second branch wavetable & 0--4 & 0 (hollow) \\
+\texttt{osc1\_level} & first branch level & 0--1 & 1.0 \\
+\texttt{osc1\_detune\_cents} & first branch detune & ±4800 cents & 0 \\
+\texttt{osc2\_level} & second branch level & 0--1 & 0 (off) \\
+\texttt{osc2\_detune\_cents} & second branch detune & ±4800 cents & 0 \\
+\hline
+\end{tabular}
+\caption{The exercises use only these nine parameters; there is no ADSR, LFO, filter envelope, glide or sub oscillator}
+\label{tab:exercise-params}
+\end{table}
+
+Each track has at most 16 sounding voices. A four-note chord can be stacked four times at most; more than 16 voices triggers stealing, not automatic thickening. A branch level of 0 bypasses that branch bit-exactly; \texttt{osc2\_level} unwritten is 0, and written 0 is also off.
+
+\subsection{How to write the parameters}
+
+These are parameter recipes, not a tutorial for nine knobs. The current UI exposes only some quick readouts; write the nine parameters through the device-parameter path (project data or MCP \texttt{setParam} with \texttt{lane} set to \texttt{DeviceParam} and addressing by name). If a knob is not in the UI, do not assume it is hidden elsewhere; it may have no UI at all. Parameter names are case-insensitive, wavetable indices round to the nearest integer, and cutoff is clamped by the device to 20 Hz--0.45×sample rate.
+
+\section{Exercise 1: Pad}
+
+Goal: a wide bed that supports the lead without fighting for the midrange. Start with a new MIDI synth track and the default synth; do not add EQ or reverb yet.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+Parameter & Value & Reason \\
+\hline
+\texttt{osc1\_wave} & 2 (vocal) & main colour with a vowel-like body \\
+\texttt{osc1\_level} & 0.82 & main branch, not quite full \\
+\texttt{osc1\_detune\_cents} & $-9$ & offset against the second branch \\
+\texttt{osc2\_wave} & 0 (hollow) & adds body without competing with the vowel \\
+\texttt{osc2\_level} & 0.58 & second branch at about seventy percent \\
+\texttt{osc2\_detune\_cents} & $+9$ & opposite offset from the first \\
+\texttt{cutoff\_hz} & 1600 & removes sibilance and air, keeps low-mids \\
+\texttt{resonance} & 0.22 & slight emphasis at the corner \\
+\texttt{drive} & 0.00 & keep it clean first \\
+\hline
+\end{tabular}
+\caption{Pad recipe}
+\label{tab:pad-recipe}
+\end{table}
+
+Steps:
+
+\begin{enumerate}
+  \item Create a MIDI synth track named ``Pad'' and write the nine values above; play a single C3 first.
+  \item Play a three- or four-note close chord (for example C3--E3--G3) for two bars; listen for whether the branches blend. If they sound like two separate flutes, lower \texttt{osc2\_level} to 0.50 or narrow both detunes to $\pm6$.
+  \item Sweep \texttt{cutoff\_hz} from 1600 up to 2200 and back down to 1200, one change at a time; note the ``air opening'' and ``muffled'' boundaries. A pad usually sits around 1400--2000.
+  \item Raise \texttt{osc2\_level} from 0.58 to 0.70, then lower it to 0.45; listen to the trade between thickness and clarity. Above 0.70 the midrange starts to smear; do not keep adding.
+  \item Finally play four chords of four notes each; confirm you stay within 16 voices. If not, reduce the chord size instead of adding tracks.
+\end{enumerate}
+
+Boundaries: the fixed 5 ms attack cannot produce a slow fade-in. To make the pad ``come in gradually'', start its notes later in the arrangement or use volume automation later. Vocal is a synthesis wavetable, not a sampled choir; there are no lyrics, vowel or formant controls.
+
+\screenshot{synth-pad-recipe}{Nine-parameter recipe for the pad exercise}
+
+\section{Exercise 2: Lead}
+
+Goal: a monophonic lead that cuts through the pad, with a glassy edge but without becoming a bell. Start with another MIDI synth track and the default synth.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+Parameter & Value & Reason \\
+\hline
+\texttt{osc1\_wave} & 0 (hollow) & stable main body \\
+\texttt{osc1\_level} & 0.88 & near full level \\
+\texttt{osc1\_detune\_cents} & $-3$ & slight offset \\
+\texttt{osc2\_wave} & 4 (glass) & edge only, not the body \\
+\texttt{osc2\_level} & 0.32 & about one third of the main branch \\
+\texttt{osc2\_detune\_cents} & $+7$ & pushes the glass branch right \\
+\texttt{cutoff\_hz} & 3000 & keeps articulation and brightness \\
+\texttt{resonance} & 0.18 & a little emphasis \\
+\texttt{drive} & 0.10 & adds harmonics without squashing dynamics \\
+\hline
+\end{tabular}
+\caption{Lead recipe}
+\label{tab:lead-recipe}
+\end{table}
+
+Steps:
+
+\begin{enumerate}
+  \item Create a ``Lead'' track, write the table above, and play a single-note line in C4--C6; do not stack chords.
+  \item Lower \texttt{osc2\_level} from 0.32 to 0.20, then raise it to 0.45; 0.20 is closer to pure hollow, 0.45 starts to sound like a glass bell. A lead usually sits at 0.28--0.38.
+  \item Raise \texttt{drive} from 0.10 to 0.20, then back to 0; listen for added harmonics without a large overall level jump. If it is already piercing, lower \texttt{cutoff\_hz} before adding more drive.
+  \item Lower \texttt{cutoff\_hz} from 3000 to 2000, then raise it to 4200; note the dark and bright ends. A lead separates from the pad most easily around 2600--3400.
+  \item Play with the pad: if the lead is buried, lower the pad fader first, or keep the lead's \texttt{osc1\_level} at 0.88; do not solve it by pushing the lead cutoff to 6000.
+\end{enumerate}
+
+Boundaries: there is no glide/portamento and no adjustable ADSR; legato does not slide into the next note. For pitch glides, write a pitch curve in MIDI (a later chapter), not a knob on this synth.
+
+\screenshot{synth-lead-recipe}{Nine-parameter recipe for the lead exercise}
+
+\section{Exercise 3: Bass}
+
+Goal: a solid low end that still speaks on small speakers, without a sub oscillator. Start with a third MIDI synth track and the default synth.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+Parameter & Value & Reason \\
+\hline
+\texttt{osc1\_wave} & 0 (hollow) & low-frequency body \\
+\texttt{osc1\_level} & 0.95 & near full \\
+\texttt{osc1\_detune\_cents} & $0$ & do not spread the low end \\
+\texttt{osc2\_wave} & 1 (organ) & adds low-mid substance \\
+\texttt{osc2\_level} & 0.30 & small amount, never over the fundamental \\
+\texttt{osc2\_detune\_cents} & $-5$ & slight thickness \\
+\texttt{cutoff\_hz} & 360 & removes upper harmonics \\
+\texttt{resonance} & 0.40 & emphasises the fundamental region \\
+\texttt{drive} & 0.28 & saturation, not a distortion pedal \\
+\hline
+\end{tabular}
+\caption{Bass recipe}
+\label{tab:bass-recipe}
+\end{table}
+
+Steps:
+
+\begin{enumerate}
+  \item Create a ``Bass'' track, write the table above, and play single notes in C1--C3, one at a time.
+  \item Raise \texttt{cutoff\_hz} from 360 to 500, then lower it to 250; 500 adds low-mids and speaks better on small speakers, 250 is purer sub but may become rumble. The usual range is 300--450.
+  \item Raise \texttt{resonance} from 0.40 to 0.55, then lower it to 0.25; resonance emphasises the corner and becomes more obvious on higher notes. Do not use it as a volume control.
+  \item Raise \texttt{drive} from 0.28 to 0.40, then back to 0.15; listen to the harmonics and the tightness of the low end. If it turns muddy, lower \texttt{osc2\_level} first, not more drive.
+  \item Play with the pad and lead: the bass owns the low end; do not push its fader as loud as the lead. Use your ears; this chapter gives no fixed dB value.
+\end{enumerate}
+
+Boundaries: there is no sub oscillator, octave switch, glide or separate envelope; the low end comes from the 360 Hz low-pass and the two branch levels. For more complex bass, use MIDI arrangement and later effects; one recipe does not cover every bass.
+
+\screenshot{synth-bass-recipe}{Nine-parameter recipe for the bass exercise}
+
+\section{Three-track audition and checks}
+
+The three exercises can share one eight-bar section: the pad plays long chords, the lead plays a two-bar phrase, and the bass plays roots. Check in this order:
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.30\linewidth}p{0.56\linewidth}@{}}
+\hline
+Symptom & Change first \\
+\hline
+Lead buried under pad & lower the pad fader first; then lower pad \texttt{osc2\_level} or \texttt{cutoff\_hz} \\
+Low end muddy & lower bass \texttt{osc2\_level} or \texttt{drive}; do not raise bass cutoff to 800 \\
+Pad sounds like two flutes & narrow both detunes or lower the second branch; do not add a third branch (there is none) \\
+Lead too piercing & lower \texttt{cutoff\_hz} or \texttt{drive}; do not look for an EQ that is not in this chapter \\
+Chords swallow notes & check whether simultaneous voices exceed 16; reduce the chord size \\
+\hline
+\end{tabular}
+\caption{Troubleshooting order for the three-track audition}
+\label{tab:exercise-troubleshooting}
+\end{table}
+
+This chapter does not cover EQ, reverb, compression, pan or buses; those belong to the mixing manual. Nor are ``pad'', ``lead'' and ``bass'' three different synthesizers: they are three parameter sets on the same poly synth, changing only wavetables, levels, detune and filtering.
+
+\section{Help-topic mapping}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+Nine parameters before the exercises & \texttt{exercise-common-base} \\
+Pad exercise & \texttt{exercise-pad} \\
+Lead exercise & \texttt{exercise-lead} \\
+Bass exercise & \texttt{exercise-bass} \\
+Three-track audition and checks & \texttt{exercise-three-tracks} \\
+Troubleshooting order & \texttt{exercise-troubleshooting} \\
+\hline
+\end{tabular}
+\caption{Chapter 8 help-topic mapping}
+\label{tab:exercise-help-map}
+\end{table}
