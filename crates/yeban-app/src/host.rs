@@ -10970,9 +10970,9 @@ fn apply_template_chooser_rows(
 /// | :--- | :--- | :--- |
 /// | 打开模板副本 | [`OpenProjectRuntime::open_runtime`]（`#93` 的**同一段**换工程代码） | 第二条换工程实现 |
 /// | 副本的「未命名」语义 | 装配方注入的 `runtime` 自带一份 `after`：它把保存落点接成 `None`（见 `main.rs` 的 `after_untitled`）⇒ 首存走「保存工程」的问路径流程，**永不**写回模板文件 | 在模板文件上原地保存 |
-/// | 存为模板的归档组装 | 与 [`wire_save`] **同一读法**：`UndoPort` 一次读出工程 + 图谱 + 资产池 | 第二份序列化 |
+/// | 存为模板的归档组装 | 从 `UndoPort` 一次读出工程 + 资产池；模板层 [`crate::templates::template_snapshot`] 再剥离撤销历史 / 未合并提案 / 内嵌预制，并把资产裁到当前工程引用集 | 第二份序列化 |
 /// | 落盘 | [`crate::templates::save_template_archive`] ⇒ [`crate::save::save_archive_file`]（唯一归档写入口） | 第二份容器写入 |
-/// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道 | 第二条投影通道 |
+/// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道（`bytes=` / `assets=` / `undo=`） | 第二条投影通道 |
 /// | 对话框 | `.slint` 的两个模态（`TemplateChooserDialog` / `SaveAsTemplateDialog`），默认关着 ⇒ 默认帧不变 | 新的启动流程 |
 ///
 /// ## 两条语义（承重）
@@ -11783,7 +11783,8 @@ pub fn wire_startup_chooser(
 /// | 同名已存在（仅 `overwrite = false` 时） | **不写盘**：`template-save-exists` 置真，弹窗不关，等用户点「覆盖已有模板」 |
 /// | 没有活会话 / 落盘失败 | 原因写进 `template-save-error`，弹窗不关 |
 ///
-/// 成功 ⇒ 关弹窗 + 既有 `module-status` 回执（`save-as-template`）。
+/// 成功 ⇒ 关弹窗 + 既有 `module-status` 回执（`save-as-template`；带
+/// `bytes=` / `assets=` / `undo=`，读数来自 [`crate::templates::TemplateSaveReport`]）。
 fn save_template_from_dialog(
     ui: &MainWindow,
     live_port: &Option<Rc<UndoPort>>,
@@ -11817,19 +11818,20 @@ fn save_template_from_dialog(
             return;
         }
     };
-    // 保存的是**此刻**的活会话（与 [`wire_save`] 同一读法：工程 + 图谱 +
-    // 资产池一次从同一个端口读出，⛔ 不分几次读）。
-    let live = live_port.as_ref().and_then(|port| {
-        port.try_project()
-            .map(|project| (project, port.graph(), port.assets()))
-    });
-    let Some((project, graph, assets)) = live else {
+    // 保存的是**此刻**的活会话（工程 + 资产池一次从同一个端口读出，
+    // ⛔ 不分几次读）。模板不携带来源会话的撤销历史 / 未合并提案 / 内嵌预制：
+    // 这几项在这里就置空，`save_template_archive` 里的 `template_snapshot`
+    // 还会对任何调用方再做一次同样的收敛（双保险）。
+    let live = live_port
+        .as_ref()
+        .and_then(|port| port.try_project().map(|project| (project, port.assets())));
+    let Some((project, assets)) = live else {
         ui.set_template_save_error("没有活会话可存为模板（本装配没有注入工程端口）".into());
         return;
     };
     let archive = yeban_model::container::ProjectArchive {
         project,
-        history_dag: yeban_model::commit::encode_history_dag(&graph),
+        history_dag: Vec::new(),
         proposals: None,
         assets,
         embedded_presets: Vec::new(),
@@ -11838,7 +11840,7 @@ fn save_template_from_dialog(
     match crate::templates::save_template_archive(
         user_root, &style, &substyle, &name, &archive, overwrite,
     ) {
-        Ok((path, bytes)) => {
+        Ok(report) => {
             *last_category.borrow_mut() = (style.clone(), substyle.clone());
             ui.set_template_save_exists(false);
             ui.set_template_save_error(String::new().into());
@@ -11850,8 +11852,10 @@ fn save_template_from_dialog(
                     format!("style={style}"),
                     format!("substyle={substyle}"),
                     format!("name={name}"),
-                    format!("path={}", path.display()),
-                    format!("bytes={bytes}"),
+                    format!("path={}", report.path.display()),
+                    format!("bytes={}", report.bytes),
+                    format!("assets={}", report.assets),
+                    format!("undo={}", report.undo_entries),
                     format!("overwrite={overwrite}"),
                 ],
             );

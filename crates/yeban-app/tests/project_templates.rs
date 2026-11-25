@@ -41,6 +41,9 @@ use yeban_app::templates::{
     ensure_user_template_root, list_templates, save_template_archive, template_target_path,
     user_category_hint, validate_template_name, validate_template_segment,
 };
+use yeban_model::container::ProjectArchive;
+use yeban_model::ids::AssetHash;
+use yeban_model::project::{AssetMetadata, ClipContent, MediaKind};
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照 `open_project_ui.rs`。
 struct Scratch {
@@ -93,6 +96,16 @@ fn archive() -> yeban_model::container::ProjectArchive {
 fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().expect("父目录")).expect("建目录");
     std::fs::write(path, bytes).expect("写夹具文件");
+}
+
+fn asset_metadata(hash: &AssetHash, original_path: &str, byte_len: usize) -> AssetMetadata {
+    AssetMetadata {
+        hash: hash.clone(),
+        original_path: original_path.to_owned(),
+        byte_len: byte_len as u64,
+        media_kind: MediaKind::Audio,
+        license: "test-fixture".to_owned(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,15 +182,19 @@ fn user_template_root_rejects_relative_path() {
 fn save_lands_on_the_three_level_user_path_and_lists_back() {
     let scratch = Scratch::new();
     let roots = scratch.roots();
-    let (path, bytes) =
-        save_template_archive(&roots.user, "流行", "摇滚", "出发", &archive(), false)
-            .expect("首次另存为模板必须成功");
+    let report = save_template_archive(&roots.user, "流行", "摇滚", "出发", &archive(), false)
+        .expect("首次另存为模板必须成功");
     assert_eq!(
-        path,
+        report.path,
         roots.user.join("流行").join("摇滚").join("出发.yeban"),
         "落盘路径必须是 <用户根>/曲风/子曲风/模板名.yeban"
     );
-    assert!(path.exists() && bytes > 0, "模板文件必须真的落盘且非空");
+    assert!(
+        report.path.exists() && report.bytes > 0,
+        "模板文件必须真的落盘且非空"
+    );
+    assert_eq!(report.undo_entries, 0, "模板快照不得携带撤销历史");
+    assert_eq!(report.assets, 0, "默认工程没有资产引用，模板资产池必须为空");
 
     let listing = list_templates(&roots);
     assert_eq!(listing.len(), 1, "列表必须恰好读回这一条");
@@ -186,7 +203,114 @@ fn save_lands_on_the_three_level_user_path_and_lists_back() {
     assert_eq!(entry.style, "流行");
     assert_eq!(entry.substyle, "摇滚");
     assert_eq!(entry.name, "出发");
-    assert_eq!(entry.path, path);
+    assert_eq!(entry.path, report.path);
+}
+
+/// 模板快照是**干净起点**：撤销历史 / 未合并提案 / 内嵌用户预制不进模板，
+/// 资产池与 `project.assets` 索引只保留当前工程引用到的资产。判据同时对照
+/// 同源全保真归档的字节数，证明模板真的小了，而不是仅仅换了个字段。
+#[test]
+fn template_snapshot_drops_history_proposals_presets_and_unreferenced_assets() {
+    let scratch = Scratch::new();
+    let roots = scratch.roots();
+
+    let mut project = yeban_model::samples::filled_project();
+    let referenced_assets = yeban_model::samples::filled_project_assets();
+    assert_eq!(referenced_assets.len(), 1, "filled 夹具应恰好带一份 kick");
+    let kick = referenced_assets[0].clone();
+    assert!(
+        project.assets.contains_key(&kick.0),
+        "filled 工程的资产索引必须包含 kick"
+    );
+
+    // 1) 会话池里的未引用资产（已删片段残留的典型形态）。
+    let garbage_bytes = vec![0x5A; 512 * 1024];
+    let garbage_hash = AssetHash::of_bytes(&garbage_bytes);
+    project.assets.insert(
+        garbage_hash.clone(),
+        asset_metadata(
+            &garbage_hash,
+            "unreferenced/garbage.wav",
+            garbage_bytes.len(),
+        ),
+    );
+
+    // 2) `embedded_samples` 引用到的资产：模板必须保留它（不是“全部丢掉”）。
+    let embedded_bytes = vec![0x33; 8 * 1024];
+    let embedded_hash = AssetHash::of_bytes(&embedded_bytes);
+    project.assets.insert(
+        embedded_hash.clone(),
+        asset_metadata(
+            &embedded_hash,
+            "samples/kit/embedded.wav",
+            embedded_bytes.len(),
+        ),
+    );
+    project.embedded_samples.insert(
+        "samples/kit/embedded.wav".to_owned(),
+        embedded_hash.as_str().to_owned(),
+    );
+
+    let archive = ProjectArchive {
+        project,
+        history_dag: vec![0xA5; 128 * 1024],
+        proposals: Some(vec![0xB6; 32 * 1024]),
+        assets: vec![
+            kick.clone(),
+            (garbage_hash.clone(), garbage_bytes),
+            (embedded_hash.clone(), embedded_bytes),
+        ],
+        embedded_presets: vec![(
+            "presets/user/01ARZ3NDEKTSV4RRFFQ69G5FAV.json".to_owned(),
+            vec![0xC7; 16 * 1024],
+        )],
+        load_notes: vec!["fixture load note".to_owned()],
+    };
+
+    let full_path = scratch.join("full.yeban");
+    let full =
+        yeban_app::save::save_archive_file(&archive, &full_path).expect("全保真对照归档必须能落盘");
+    let report = save_template_archive(&roots.user, "流行", "摇滚", "快照", &archive, false)
+        .expect("模板快照必须落盘");
+    assert_eq!(
+        report.assets, 2,
+        "模板只应保留 clip 与 embedded_samples 引用到的资产"
+    );
+    assert_eq!(report.undo_entries, 0, "模板不得携带撤销历史");
+    assert!(
+        report.bytes < full.bytes,
+        "模板必须显著小于全保真归档：template={} full={}",
+        report.bytes,
+        full.bytes
+    );
+    eprintln!(
+        "[T-FIX-295] template_bytes={} full_bytes={} assets={} undo={}",
+        report.bytes, full.bytes, report.assets, report.undo_entries
+    );
+
+    let read = yeban_app::open::open_project_archive_file(
+        &report.path,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("快照模板必须能按生产口径打开");
+    assert!(read.history_dag.is_empty(), "history.dag 必须是空字节");
+    assert!(read.proposals.is_none(), "proposals 不得进模板");
+    assert!(read.embedded_presets.is_empty(), "内嵌用户预制不得进模板");
+    assert!(read.load_notes.is_empty(), "模板不该携带来源会话的装载留痕");
+
+    let pool: Vec<&AssetHash> = read.assets.iter().map(|(hash, _bytes)| hash).collect();
+    assert!(pool.contains(&&kick.0), "被 clip 引用的 kick 必须保留");
+    assert!(
+        pool.contains(&&embedded_hash),
+        "embedded_samples 引用的资产必须保留"
+    );
+    assert!(!pool.contains(&&garbage_hash), "未引用资产字节不得进模板");
+    assert!(read.project.assets.contains_key(&kick.0));
+    assert!(read.project.assets.contains_key(&embedded_hash));
+    assert!(
+        !read.project.assets.contains_key(&garbage_hash),
+        "未引用资产的索引项也必须裁掉，不能留下有元数据没字节的半截索引"
+    );
 }
 
 /// 扫描只认**恰好三级**深度的 `.yeban`：根下直放、二级深度、四级深度、
@@ -338,9 +462,9 @@ fn same_name_scopes_to_the_three_level_path() {
     );
 
     // 明说覆盖 ⇒ 字节换成第二份归档的。
-    let (path, _) = save_template_archive(&roots.user, "流行", "摇滚", "同名", &second, true)
+    let report = save_template_archive(&roots.user, "流行", "摇滚", "同名", &second, true)
         .expect("覆盖保存必须成功");
-    assert_eq!(path, target);
+    assert_eq!(report.path, target);
     assert_ne!(
         std::fs::read(&target).expect("读覆盖后的模板字节"),
         before,
@@ -532,6 +656,32 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
     // 正确地拒绝它。这里按生产装载形态把同一份资产字节填进会话池（修法 b），
     // 并在下面断言模板容器真的带上了它。
     undo.replace_assets(yeban_model::samples::filled_project_assets());
+    // 真正种一段撤销历史：模板必须把它剥掉，而不是只剥一个空字段。
+    let first_track = project_a
+        .tracks
+        .keys()
+        .next()
+        .cloned()
+        .expect("filled 夹具必须至少有一条轨");
+    let pan_before = project_a.tracks[&first_track].pan;
+    let pan_new = if pan_before > 0.0 { -0.5 } else { 0.5 };
+    undo.commit_ops(
+        NOW_MS + 1,
+        "fixture: template must not inherit undo history",
+        vec![yeban_model::Op::SetParam {
+            target: yeban_model::AutomationTarget::TrackPan {
+                track_id: first_track,
+            },
+            old_val: pan_before,
+            new_val: pan_new,
+        }],
+    )
+    .expect("夹具声相提交必须被接受");
+    let project_a = undo.try_project().expect("提交后的工程 A");
+    assert!(
+        undo.display().undoable >= 1,
+        "夹具必须真的有一段可撤销历史（否则本判据证明不了剥离）"
+    );
     let fingerprint_a = undo.fingerprint().expect("会话指纹");
     let production = Rc::new(RefCell::new(
         ProductionLoop::start(&project_a, 0).expect("引擎重建"),
@@ -592,7 +742,7 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         "另存为模板后文件必须落在用户目录三级路径 {}",
         template_path.display()
     );
-    // 模板必须与工程一样带全资产池：否则从模板新建会被 330 的严格打开拒绝
+    // 模板必须带上当前工程引用的资产：否则从模板新建会被 330 的严格打开拒绝
     // （旧夹具在步骤 4 就停在这里，指纹停在 C 而不是 A）。
     let template_archive = yeban_app::open::open_project_archive_file(
         &template_path,
@@ -604,11 +754,17 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         1,
         "filled 模板的 kick 资产字节不得在另存为模板时丢失"
     );
+    assert!(
+        template_archive.history_dag.is_empty(),
+        "来源会话确实有可撤销历史，但模板必须把 history.dag 剥空"
+    );
     assert!(!ui.get_template_save_open(), "保存成功后对话框必须关");
     assert!(
         ui.get_module_status().contains("save-as-template")
-            && ui.get_module_status().contains("outcome=ok"),
-        "回执必须走 module-status 且报 ok，实际 {}",
+            && ui.get_module_status().contains("outcome=ok")
+            && ui.get_module_status().contains("assets=1")
+            && ui.get_module_status().contains("undo=0"),
+        "回执必须走 module-status 且报 ok + 资产数 + 撤销条目数，实际 {}",
         ui.get_module_status()
     );
 
@@ -672,9 +828,18 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
     ui.invoke_template_selected(entry_index);
     assert!(!ui.get_template_chooser_open(), "选中后选择器必须关");
     assert_eq!(
+        undo.try_project().as_ref(),
+        Some(&project_a),
+        "从模板新建后工程内容必须是模板里的工程"
+    );
+    assert!(
+        !undo.display().can_undo && undo.display().undoable == 0,
+        "从模板新建后撤销栈必须从空开始（不得继承来源会话历史）"
+    );
+    assert_eq!(
         undo.fingerprint().as_deref(),
         Some(fingerprint_a.as_str()),
-        "从模板新建后会话必须是模板那份工程（A）"
+        "模板里的工程内容必须等于 A；历史已剥离，撤销栈空由独立断言证明"
     );
     assert!(
         ui.get_module_status().contains("new-from-template")

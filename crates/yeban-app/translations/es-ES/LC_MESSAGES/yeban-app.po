@@ -1835,8 +1835,8 @@ msgstr "Subestilo (categoría de segundo nivel)"
 msgid "存为模板"
 msgstr "Guardar como plantilla"
 
-msgid "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。"
-msgstr "Se guarda en tu carpeta de plantillas; el proyecto actual se almacena tal cual (no se elimina el contenido de los clips)."
+msgid "存成干净模板：只带当前工程引用的素材，不携带撤销历史；片段内容不剥离。"
+msgstr "Guardar como plantilla limpia: solo se incluyen los recursos a los que hace referencia el proyecto actual; no se conserva el historial de deshacer. El contenido de los clips no se elimina."
 
 msgid "已有模板分类"
 msgstr "Categorías de plantillas existentes"

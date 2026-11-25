@@ -9,6 +9,15 @@
 //! 经唯一的归档写入口 [`crate::save::save_archive_file`] 落盘、经唯一的读入口
 //! [`crate::open::open_project_document_file`] 读回，与普通工程同一条路）。
 //!
+//! ## 模板快照（T-FIX-295）
+//!
+//! 「另存为模板」写的是**模板快照**，不是会话备份：撤销历史（`history.dag`）、
+//! 未合并提案、内嵌用户预制与装载留痕都不进模板；资产池与 `project.assets`
+//! 索引只保留当前工程引用到的资产（片段池里的音频 + `embedded_samples`）。
+//! 于是从模板新建后撤销栈从空开始，模板体积也不随来源会话的素材池 / 撤销
+//! 历史增长；片段内容本身不剥离（照 Logic 的产品边界）。收敛逻辑集中在
+//! [`template_snapshot`]，所有落盘调用方都绕不过它。
+//!
 //! ## 两个模板目录
 //!
 //! | 目录 | 位置 | 选址理由 |
@@ -31,7 +40,11 @@
 //! [`crate::host::wire_project_templates`]；「从模板新建」的副本语义（打开后
 //! 保存落点为空）由装配方注入的 `after` 决定，⛔ 不在本模块。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use yeban_model::AssetHash;
+use yeban_model::project::ClipContent;
 
 /// 模板文件的后缀（与工程文件相同 —— 模板就是工程文件）。
 pub const TEMPLATE_FILE_EXTENSION: &str = "yeban";
@@ -484,20 +497,94 @@ impl std::fmt::Display for SaveTemplateError {
 
 impl std::error::Error for SaveTemplateError {}
 
+/// 一次成功「另存为模板」的读数。
+///
+/// `bytes` 来自唯一归档写入口的 [`crate::save::SaveReport::bytes`]（不是事后量文件），
+/// `assets` / `undo_entries` 描述**真正写进模板的那份快照**：模板剥离撤销历史
+/// （`history.dag`）、未合并提案与内嵌用户预制，只保留当前工程引用到的资产。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateSaveReport {
+    /// 模板落盘的三级路径。
+    pub path: PathBuf,
+    /// 写出的 `.yeban` 容器字节数。
+    pub bytes: usize,
+    /// 模板内保留的资产字节条目数（只含当前工程引用到的资产）。
+    pub assets: usize,
+    /// 模板内撤销历史条目数（模板快照恒为 0）。
+    pub undo_entries: usize,
+}
+
+/// 把一份**当前工程归档**收敛成模板快照。
+///
+/// 模板不是会话备份：从模板新建后必须是一份干净的起点，撤销栈从空开始。
+/// 因此本函数做四件事，并把取舍钉在类型边界上（任何调用方都绕不过）：
+///
+/// 1. `history_dag` ⇒ 空字节（模板不携带来源会话的撤销/重做历史）；
+/// 2. `proposals` ⇒ `None`；`embedded_presets` ⇒ 空表（未合并提案与用户预制
+///    不随模板走）；
+/// 3. 资产池只保留**当前工程**引用到的哈希：`clip_pool` 的 `ClipContent::Audio`
+///    与 `project.embedded_samples` 的值（SFZ / 样本内嵌索引）。被删片段留在
+///    会话池里的未引用字节、以及只在历史里出现的旧资产，都不进模板；
+/// 4. `project.assets` 索引同步裁到同一组哈希，避免“模板里有元数据、没有字节”
+///    的半截索引。
+///
+/// `load_notes` 也清空：它是装载留痕，不是工程内容；新模板应当从干净状态开始。
+#[must_use]
+pub fn template_snapshot(
+    archive: &yeban_model::container::ProjectArchive,
+) -> yeban_model::container::ProjectArchive {
+    let mut referenced: BTreeSet<AssetHash> = BTreeSet::new();
+    for clip in archive.project.clip_pool.values() {
+        if let ClipContent::Audio { asset, .. } = &clip.content {
+            referenced.insert(asset.clone());
+        }
+    }
+    for hash in archive.project.embedded_samples.values() {
+        // `embedded_samples` 的值按模型契约是 64 位小写十六进制；解析失败的值
+        // 不属于任何可寻址资产，不能因此把整池字节带进模板。
+        if let Ok(hash) = AssetHash::parse(hash.clone()) {
+            referenced.insert(hash);
+        }
+    }
+
+    let mut project = archive.project.clone();
+    project
+        .assets
+        .retain(|hash, _metadata| referenced.contains(hash));
+
+    yeban_model::container::ProjectArchive {
+        project,
+        history_dag: Vec::new(),
+        proposals: None,
+        assets: archive
+            .assets
+            .iter()
+            .filter(|(hash, _bytes)| referenced.contains(hash))
+            .cloned()
+            .collect(),
+        embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
+    }
+}
+
 /// 把一份归档存成用户模板（三级路径自动建目录）。
 ///
 /// 落盘走**唯一**的归档写入口 [`crate::save::save_archive_file`]（与「保存
 /// 工程」/「新建工程」同一条原子写 + 同一把 `.yeban.lock`）⇒ 模板文件与
-/// 工程文件逐字节同构，⛔ 没有第二份容器写入。存的是**当前工程原样**
-/// （照 Logic：不自动剥离片段内容）。
+/// 工程文件逐字节同构，⛔ 没有第二份容器写入。
+///
+/// **写出的不是调用方给的归档原样**：函数先经 [`template_snapshot`] 收敛成
+/// 模板快照 —— 剥离撤销历史 / 未合并提案 / 内嵌用户预制，只保留当前工程
+/// 引用到的资产；从模板新建后撤销栈从空开始。片段内容本身不剥离（照 Logic：
+/// 不自动剥离片段内容），这是模板与“只留配置”的产品边界。
 ///
 /// `overwrite = false` 且三级路径已有文件 ⇒ [`SaveTemplateError::Exists`]
 /// （一个字节都不动）。`overwrite = true` ⇒ 原子替换。
 ///
 /// # Errors
 ///
-/// 见 [`SaveTemplateError`]。成功时返回 `(落盘路径, 写出的字节数)` —— 字节数
-/// 来自写入口的回执（[`crate::save::SaveReport::bytes`]），不是事后量文件。
+/// 见 [`SaveTemplateError`]。成功时返回 [`TemplateSaveReport`] —— 字节数来自
+/// 写入口的回执，资产数 / 撤销条目数来自**真正写出的快照**，不是入参。
 pub fn save_template_archive(
     user_root: &Path,
     style: &str,
@@ -505,7 +592,7 @@ pub fn save_template_archive(
     name: &str,
     archive: &yeban_model::container::ProjectArchive,
     overwrite: bool,
-) -> Result<(PathBuf, usize), SaveTemplateError> {
+) -> Result<TemplateSaveReport, SaveTemplateError> {
     validate_user_template_root(user_root).map_err(SaveTemplateError::Invalid)?;
     let style = validate_template_segment("曲风", style).map_err(SaveTemplateError::Invalid)?;
     let substyle =
@@ -523,9 +610,15 @@ pub fn save_template_archive(
             ))
         })?;
     }
-    let report = crate::save::save_archive_file(archive, &target)
+    let snapshot = template_snapshot(archive);
+    let report = crate::save::save_archive_file(&snapshot, &target)
         .map_err(|error| SaveTemplateError::Io(format!("模板落盘失败: {error}")))?;
-    Ok((target, report.bytes))
+    Ok(TemplateSaveReport {
+        path: target,
+        bytes: report.bytes,
+        assets: snapshot.assets.len(),
+        undo_entries: 0,
+    })
 }
 
 #[cfg(test)]

@@ -1835,8 +1835,8 @@ msgstr "Sub-style (second-level category)"
 msgid "存为模板"
 msgstr "Save as Template"
 
-msgid "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。"
-msgstr "Saved into your template folder; the current project is stored as-is (clip content is not stripped)."
+msgid "存成干净模板：只带当前工程引用的素材，不携带撤销历史；片段内容不剥离。"
+msgstr "Save as a clean template: only assets referenced by the current project are included; undo history is not carried over. Clip content is not stripped."
 
 msgid "已有模板分类"
 msgstr "Existing template categories"
