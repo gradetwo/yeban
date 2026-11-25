@@ -2036,8 +2036,10 @@ impl SynthEngine {
     ///   **同一个来源**（⭐ 见 [`track_gain_scale`] 与 [`SynthEngine::set_track_gain_scales`]）；
     /// * ⭐ `start_sample = position`（⭐ 现在），⭐ `end_sample = u64::MAX`（⭐ **开区间**：
     ///   活音符由 `NoteOff` 结束，⛔ 不靠定时）；
-    /// * ⭐ **先**对同一频率做一次 [`PolySynth::note_off`]（⭐ 裁定：⭐ 同 pitch 未松键又按
+    /// * ⭐ **先**对同一频率做一次 [`PolySynth::note_off_live`]（⭐ 裁定：⭐ 同 pitch 未松键又按
     ///   ⇒ **抢占同一槽、⭐ 重触发**）⇒ ⭐ 返回值告诉调用方"⭐ 是否发生了抢占/重触发"；
+    ///   ⚠ 作用域是**活声部**（`end_sample == u64::MAX`）—— 时间轴排音带有限终点、由器件
+    ///   自己收尾，⛔ 不在实时裁定的射程内（T-FIX-389）；
     /// * ⭐ **实时路径**：零分配、零锁、零 I/O。
     ///
     /// ⚠ ⭐ `u64::MAX` 的**准确**代价（⭐ 实测更正）：⭐ [`PolySynth::retire_finished`]
@@ -2135,7 +2137,11 @@ impl SynthEngine {
         // ⭐ 池满 ⇒ 这一次会走窃取路径（⭐ 触发**之前**量，⭐ 触发之后就不是"满"了）。
         let pool_full = self.slots[index].synth.active_voices() >= VOICES_PER_TRACK;
         // ⭐ 同 pitch 重触发：⭐ 先松、⭐ 再触发（⭐ 裁定：⭐ 抢占同一槽）。
-        let retriggered = self.slots[index].synth.note_off(freq_hz) > 0;
+        // ⚠ **只松活声部**（T-FIX-389）：时间轴上可能正有同音高排音（它们带有限
+        // `end_sample`、由器件自己收尾）。沿用无作用域的 `note_off` 会把**时间轴那条**
+        // 挑走（`start_sample` 更早）⇒ 用户按一个键、回放里的音符被截短，而这条刚建的
+        // 活声部再没有事件会放它。裁定只对"用户按下的"生效 ⇒ 用 `note_off_live`。
+        let retriggered = self.slots[index].synth.note_off_live(freq_hz) > 0;
         let gain = velocity_gain(velocity) * self.slots[index].gain_scale;
         self.slots[index].synth.note_on(
             NoteEvent::new(self.position, u64::MAX, freq_hz, gain),
@@ -2149,6 +2155,11 @@ impl SynthEngine {
     /// ⭐ 合成器路径**每次调用最多放掉一个**同频试听声部（T-FIX-275：同音重叠时只放
     /// 最早触发的那个，⛔ 不再把另一个仍按住的音符一起送进释放段）；重复松键才逐个放。
     /// SFZ / 鼓组路径的释放语义不变（它们按 `pitch` 自己配对）。
+    ///
+    /// ⚠ **复音支路的作用域是活声部**（T-FIX-389）：只放 [`PolySynth::note_off_live`]
+    /// 认的那些（`end_sample == u64::MAX`，即实时按键建的声部）。时间轴排音带有限终点、
+    /// 由器件在终点自己关 gate ⇒ 实时松键⛔ 不许截断正在回放的音符；当该频率上只有
+    /// 时间轴声部时本方法返回 `false`（调用方按孤儿松键登记，而不是"找到了"）。
     ///
     /// 返回是否命中了活跃或挂起的试听声部（返回 `false` 时调用方计为孤儿松键）。
     pub fn note_off_with_sources(
@@ -2174,7 +2185,7 @@ impl SynthEngine {
                 self.slots[index].pedal_pending[usize::from(pitch)] = true;
                 released = true;
             }
-        } else if self.slots[index].synth.note_off(freq_hz) > 0 {
+        } else if self.slots[index].synth.note_off_live(freq_hz) > 0 {
             released = true;
             // 没踩踏板时不该有挂起位；顺手清掉（轨道换过音源、早前的踏板没抬起来
             // 这类残留），⛔ 不让它在下一次踏板抬起时误放一个刚松的键。
@@ -3714,6 +3725,21 @@ impl SynthEngine {
                                 }
                             }
                             None => {
+                                // ⭐ **时间轴排音刻意直调**（T-FIX-389：理由与边界钉在这里）。
+                                //
+                                // 与实时通路（`note_on_with_sources`）的差别是**结构性的**，
+                                // 不是漏接线：本支的每条音符自带**有限** `end_sample`
+                                // （`note.start_sample..note.end_sample`），器件按
+                                // `now >= end_sample` 自己关 gate ⇒ 不需要、也不该有
+                                // `NoteOff`。同一音高在时间轴上叠两段是**刻意的复音**
+                                // （长音垫 + 短音、分轨层的同音加厚），套上实时的
+                                // "抢占同一槽 = 重触发"裁定会把叠层里较早那条**吃掉**
+                                // ⇒ ⛔ 这里不调 `note_off` / `note_off_live`。
+                                //
+                                // 边界（反过来那一半由实时侧守）：实时松键/重触发只放
+                                // 活声部（`end_sample == u64::MAX`）⇒ 本支建出来的声部
+                                // 不会被用户的手指截短；判据见
+                                // `tests/live_release_scope.rs` 的四条。
                                 slot.synth.note_on(
                                     NoteEvent::new(
                                         note.start_sample,

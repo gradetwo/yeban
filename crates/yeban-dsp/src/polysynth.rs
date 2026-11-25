@@ -1339,6 +1339,90 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         0
     }
 
+    /// ⭐ **只放"活声部"**（T-FIX-389）：候选集合与 [`Self::note_off`] 同一套挑选口径，
+    /// 但**限定在开区间音符上**（`end_sample == u64::MAX`）—— 那是实时触发（`NoteOn`
+    /// 建声部、`NoteOff` 结束）的形态；时间轴排音一律带**有限** `end_sample`，由器件在
+    /// `now >= end_sample` 时自己关 gate（见 [`Self::render`] 的 `gate` 判定）。
+    ///
+    /// ## ⛔ 为什么实时松键必须收窄到这个子集
+    ///
+    /// 两条触发通路**共处同一个池**：实时（环事件）与时间轴/回放（快照投影 → `note_on`）。
+    /// 若实时松键沿用 [`Self::note_off`] 的"同频最早者优先"口径，当时间轴上恰好有同音
+    /// 排音时，被挑走的是**时间轴那条**（`start_sample` 更早）⇒ 用户松开自己按的键，
+    /// 被截短的却是正在回放的音符；而用户按下的活声部（`u64::MAX`）没有任何事件再释放
+    /// ⇒ 一直占槽，直到池满被窃取（用户听到"卡住的音"）。同一场景两次松键就是
+    /// T-FIX-406 复验里那条"尾部持续音"的**无踏板版本**。
+    ///
+    /// ⚠ 判定"活"用 `end_sample == u64::MAX` 是**既有不变量**（[`Self::note_on`] 的
+    /// 构造与文档逐字写明"开区间：活音符由 `NoteOff` 结束"）⇒ ⛔ 不新增字段、
+    /// ⛔ 不改 `PolyVoice` 尺寸（尺寸判据在 `polysynth.rs` 的测试里钉着 296 B）。
+    ///
+    /// ## 口径
+    ///
+    /// * 与 [`Self::note_off`] 逐条一致：返回 `1` = 命中一条活声部并送进 Release；
+    ///   `0` = 该频率上**没有**可放的活声部 ⇒ 调用方（引擎的 `orphan_note_offs`）按
+    ///   孤儿松键登记 —— ⛔ 不再把正在回放的时间轴音符当成"找到了"。
+    /// * 同频活声部**全在释放段**时维持幂等口径（再 `gate_off` 最先那个、照样返回 1），
+    ///   否则引擎的 `retriggered` 会在"上一个重触发还在 Release"时掉成 false。
+    /// * 挑选仍是全序（先 `start_sample`、并列取下标最小）⇒ 任何平台同解。
+    /// * 挂起支路（被窃取者）同样只认 `pending.end_sample == u64::MAX` 的那一条。
+    ///
+    /// **实时路径**：零分配、零锁、零 I/O（只遍历固定 16 个槽位）。
+    pub fn note_off_live(&mut self, freq_hz: f32) -> u32 {
+        let mut victim: Option<(u64, usize)> = None;
+        for (index, voice) in self.voices.iter().enumerate() {
+            if !voice.active
+                || voice.freq_hz != freq_hz
+                || voice.end_sample != u64::MAX
+                || voice.env.stage() == AdsrStage::Release
+            {
+                continue;
+            }
+            let key = (voice.start_sample, index);
+            if victim.is_none_or(|current| key < current) {
+                victim = Some(key);
+            }
+        }
+        // 同频活声部全在释放段：维持幂等口径（与 `note_off` 的兜底同一条理由）。
+        if victim.is_none() {
+            for (index, voice) in self.voices.iter().enumerate() {
+                if !voice.active || voice.freq_hz != freq_hz || voice.end_sample != u64::MAX {
+                    continue;
+                }
+                let key = (voice.start_sample, index);
+                if victim.is_none_or(|current| key < current) {
+                    victim = Some(key);
+                }
+            }
+        }
+        if let Some((_, index)) = victim {
+            self.voices[index].env.gate_off();
+            return 1;
+        }
+        // 挂起支路：只认开区间的那条（时间轴音符不会进 pending，这里的过滤是同一口径的闭合）。
+        let mut pending: Option<(u64, usize)> = None;
+        for (index, voice) in self.voices.iter().enumerate() {
+            if !voice.active {
+                continue;
+            }
+            let Some(note) = voice.pending.as_ref() else {
+                continue;
+            };
+            if note.end_sample != u64::MAX || voice.pending_freq_hz != freq_hz {
+                continue;
+            }
+            let key = (note.start_sample, index);
+            if pending.is_none_or(|current| key < current) {
+                pending = Some(key);
+            }
+        }
+        if let Some((_, index)) = pending {
+            self.voices[index].pending_released = true;
+            return 1;
+        }
+        0
+    }
+
     /// ⭐ **放掉某个频率上仍被按住的全部声部**（T-FIX-406：踏板抬起 / 离场排水用）。
     ///
     /// 与 [`Self::note_off`] 的**唯一**差别：一次调用放掉全部仍在按住的同频声部，而不是
