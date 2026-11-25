@@ -4696,7 +4696,12 @@ fn edit_notes_set_pitch_bend_point_inserts_updates_and_deletes_one_point() {
         json!({ "proposalId": proposal_id, "commitMessage": "插入两个弯音点" }),
     );
     assert_eq!(merged["status"], "success", "{merged}");
-    let view = call(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let view = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     assert_eq!(view["status"], "success", "{view}");
     let stored =
         &view["data"]["project"]["clip_pool"][&clip_text]["content"]["Midi"]["notes"][&note_text];
@@ -4751,7 +4756,12 @@ fn edit_notes_set_pitch_bend_point_inserts_updates_and_deletes_one_point() {
         json!({ "proposalId": proposal_id, "commitMessage": "改一个删一个" }),
     );
     assert_eq!(merged["status"], "success", "{merged}");
-    let view = call(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let view = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     let stored =
         &view["data"]["project"]["clip_pool"][&clip_text]["content"]["Midi"]["notes"][&note_text];
     assert_eq!(

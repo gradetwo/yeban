@@ -3527,7 +3527,12 @@ fn a_saturated_start_tick_from_the_tool_face_is_a_contract_error_not_a_panic() {
             assert_eq!(merged["status"], "success", "{tag}: {merged}");
 
             // 断言极值**真的**落进了文档（否则这条判据测不到那条算术）。
-            let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+            let view = call_tool(
+                &mut dispatcher,
+                &auth,
+                "yeban_query_project",
+                json!({"fields": ["clip_pool.full", "tracks"]}),
+            );
             assert_eq!(view["status"], "success", "{tag}: {view}");
             let project_json = &view["data"]["project"];
             let at_extreme = |value: &Value| value.as_u64() == Some(extreme);
@@ -8880,7 +8885,12 @@ fn a_bend_written_through_the_tool_surface_bends_the_master() {
     assert_eq!(merged["status"], "success", "合并必须成功: {merged}");
 
     // ① 值真的落进文档（不是"解析器看得到、工程里没有"）。
-    let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let view = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     assert_eq!(view["status"], "success", "{view}");
     let notes = &view["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"];
     let stored = &notes[&new_note];
@@ -9143,7 +9153,12 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
     );
     assert_eq!(merged["status"], "success", "合并必须成功: {merged}");
 
-    let view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let view = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     assert_eq!(view["status"], "success", "{view}");
     let notes = &view["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"];
     let stored = &notes[&note];
@@ -9222,7 +9237,12 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
         json!({"proposalId": clear_id, "commitMessage": "clear pitch shape"}),
     );
     assert_eq!(clear_merged["status"], "success", "{clear_merged}");
-    let after_clear = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let after_clear = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     let cleared_note =
         &after_clear["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"][&note];
     assert!(
@@ -9273,7 +9293,12 @@ fn a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master() {
         json!({"proposalId": slid_id, "commitMessage": "tool-surface slide in place"}),
     );
     assert_eq!(slid_merged["status"], "success", "{slid_merged}");
-    let slid_view = call_tool(&mut dispatcher, &auth, "yeban_query_project", json!({}));
+    let slid_view = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
     let slid_note =
         &slid_view["data"]["project"]["clip_pool"][&clip]["content"]["Midi"]["notes"][&note];
     assert_eq!(

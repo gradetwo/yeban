@@ -7,6 +7,13 @@
 //! 2. **分页**（`limit` / `offset`）：实体的扁平索引被切片，因此响应体积与工程规模
 //!    **解耦**。索引项只带 `{kind, id, name}`，**从不**包含音符集 ——
 //!    一个百万音符的工程与一个空工程的响应体积在同一量级。
+//!    `project.clip_pool` 默认也只给**摘要**（`id` / `name` / `kind` / `noteCount` /
+//!    `endTick`），⛔ 不再把每个音符序列化进响应；要全量音符必须**显式**选
+//!    `clip_pool.full`（该选择器与音符数线性，适用于明确知道自己在拉大对象的调用方）。
+//!    "同一量级"由单元判据
+//!    `a_twenty_thousand_note_project_stays_below_sixty_four_kilobytes` 与
+//!    `response_bytes_do_not_grow_with_the_number_of_notes` 钉住（20k 实测 4,787 B、
+//!    100k 实测 4,789 B；修前 20k `limit:1` 为 3,130,680 B）。
 //!
 //! ## 为什么选择器是白名单而不是自由 JSONPath
 //!
@@ -33,7 +40,7 @@ use crate::tools::ErrorCode;
 /// （其值与单独选择 `sections` 逐字节同形，满足"每个选择器都取得到根键"的单元判据），
 /// 还输出一个独立顶层键 `sectionsTimeline`（按 `(start_tick, id)` 升序的段落数组）。
 /// `sections` 的原始键序是**身份序**（ULID 插入序，⛔ 不是时间序），调用方本来必须自己重排。
-pub const SELECTORS: [&str; 31] = [
+pub const SELECTORS: [&str; 32] = [
     "id",
     "title",
     "author",
@@ -68,6 +75,9 @@ pub const SELECTORS: [&str; 31] = [
     "sections.name",
     "sections.timeline",
     "clip_pool.name",
+    // ⭐ T-FIX-366：全量音符的**显式**出口。默认 `clip_pool` 只给摘要；
+    // 这个选择器才返回带 `content.Midi.notes` 的完整片段池（体积与音符数线性）。
+    "clip_pool.full",
 ];
 
 /// `limit` 缺省值。
@@ -192,6 +202,41 @@ fn parse_fields(value: &Value) -> Result<Vec<String>, Fault> {
     Ok(fields)
 }
 
+/// `clip_pool` 的默认摘要：每个片段只给身份、名字、类型、音符数与末端 tick。
+///
+/// ⭐ T-FIX-366：这是"响应体积与音符数解耦"的落点。原先 `project_view` 无条件把
+/// `YebanProjectV1` 整个序列化，20,000 音符工程 `limit:1` 仍有 3.13 MB；摘要后
+/// 默认响应不再包含任何音符。全量音符必须显式选 [`SELECTORS`] 里的
+/// `clip_pool.full`（见 [`project_view`] 的 `sections.timeline` 同款例外臂）。
+fn clip_pool_summary(project: &YebanProjectV1) -> Value {
+    let mut out = Map::new();
+    for (id, entry) in &project.clip_pool {
+        let (kind, note_count, end_tick) = match &entry.content {
+            yeban_model::project::ClipContent::Midi { notes } => (
+                "midi",
+                notes.len(),
+                notes
+                    .values()
+                    .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+                    .max()
+                    .unwrap_or(0),
+            ),
+            yeban_model::project::ClipContent::Audio { .. } => ("audio", 0, 0),
+        };
+        out.insert(
+            id.to_canonical_string(),
+            serde_json::json!({
+                "id": id.to_canonical_string(),
+                "name": entry.name,
+                "kind": kind,
+                "noteCount": note_count,
+                "endTick": end_tick,
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
 /// 返回 `data`：`{project, entities, page}`。
 ///
 /// # Errors
@@ -226,7 +271,10 @@ pub fn data(project: &YebanProjectV1, query: &Query) -> Result<Value, Fault> {
     Ok(Value::Object(root))
 }
 
-/// 稀疏视图：`fields` 为空时是工程的**全量顶层视图**。
+/// 稀疏视图：`fields` 为空时是工程的**稀疏顶层视图**（`clip_pool` 只给摘要）。
+///
+/// ⭐ T-FIX-366：唯一例外是显式选择 `clip_pool.full` —— 它返回原始片段池
+/// （含每个音符），体积与音符数线性；默认视图与 `clip_pool` 选择器都不含音符。
 ///
 /// # Errors
 ///
@@ -235,7 +283,9 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
     let full = serde_json::to_value(project).map_err(|error| {
         Fault::domain(ErrorCode::IoError, format!("序列化工程视图失败: {error}"))
     })?;
-    let object = full.as_object().cloned().unwrap_or_default();
+    let mut object = full.as_object().cloned().unwrap_or_default();
+    // ⭐ T-FIX-366：默认 `project.clip_pool` 只留摘要；全量音符走 `clip_pool.full`。
+    object.insert("clip_pool".to_owned(), clip_pool_summary(project));
     if fields.is_empty() {
         return Ok(Value::Object(object));
     }
@@ -248,6 +298,14 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
                 } else {
                     out.insert(selector.clone(), Value::Null);
                 }
+            }
+            // ⭐ T-FIX-366：全量片段池的显式出口。必须排在通用下钻臂之前 ——
+            // 通用臂会把 `full` 当成片段条目里的叶子，取不到值。
+            Some(("clip_pool", "full")) => {
+                out.insert(
+                    "clip_pool".to_owned(),
+                    full.get("clip_pool").cloned().unwrap_or(Value::Null),
+                );
             }
             // ⭐ [G15] 派生视图：段落按时间轴升序（走独立输出键，⛔ 不改 `sections`
             // 原始形状）。必须排在通用下钻臂**之前** —— 否则这里会静默产出空对象。
@@ -487,6 +545,96 @@ mod tests {
         let text = serde_json::to_string(&entity_index(&project)).expect("序列化");
         assert!(!text.contains("start_tick"), "索引不得含音符字段: {text}");
         assert!(text.contains("\"kind\":\"clip\""));
+    }
+
+    /// ⭐ T-FIX-366：把 `filled_project` 的第一个片段换成 `count` 个音符。
+    fn project_with_notes(count: usize) -> YebanProjectV1 {
+        let mut project = filled_project();
+        let clip_id = *project.clip_pool.keys().next().expect("演示工程必须有片段");
+        let mut notes = std::collections::BTreeMap::new();
+        for index in 0..count {
+            let id = yeban_model::EntityId::new();
+            let note = yeban_model::MidiNote::new(id, index as u64 * 10, 60, 480);
+            notes.insert(id, note);
+        }
+        project.clip_pool.get_mut(&clip_id).expect("片段").content =
+            yeban_model::project::ClipContent::Midi { notes };
+        project
+    }
+
+    fn response_bytes(project: &YebanProjectV1) -> usize {
+        let page = data(
+            project,
+            &Query {
+                limit: 1,
+                ..Query::default()
+            },
+        )
+        .expect("分页视图");
+        serde_json::to_vec(&page).expect("序列化响应").len()
+    }
+
+    /// 验收 1：20,000 音符工程 `limit:1` 的响应必须 < 64 KB（修前约 3.13 MB）。
+    #[test]
+    fn a_twenty_thousand_note_project_stays_below_sixty_four_kilobytes() {
+        let project = project_with_notes(20_000);
+        let bytes = response_bytes(&project);
+        assert!(
+            bytes < 64 * 1024,
+            "T-FIX-366：20,000 音符 limit=1 响应必须 <64KB，实测 {bytes} 字节"
+        );
+    }
+
+    /// 验收 2：100,000 音符的响应体积不得随音符数线性增长。
+    ///
+    /// 两个工程只差 `noteCount` 的位数与随机身份，摘要字段数量完全相同；给 512 字节
+    /// 余量吸收 JSON 数字/键序差异，仍远小于线性增长（20k→100k 至少会多 5 倍）。
+    #[test]
+    fn response_bytes_do_not_grow_with_the_number_of_notes() {
+        let twenty = response_bytes(&project_with_notes(20_000));
+        let hundred = response_bytes(&project_with_notes(100_000));
+        assert!(
+            hundred < twenty + 512,
+            "T-FIX-366：响应体积随音符数增长（20k={twenty}，100k={hundred}）"
+        );
+    }
+
+    /// 验收 4：`clip_pool` 选择器给摘要；全量音符必须显式 `clip_pool.full`。
+    #[test]
+    fn clip_pool_is_summary_by_default_and_full_only_by_explicit_selector() {
+        let project = project_with_notes(2);
+        let clip_id = project
+            .clip_pool
+            .keys()
+            .next()
+            .expect("片段")
+            .to_canonical_string();
+
+        let default_view = project_view(&project, &[]).expect("缺省视图");
+        let clip = default_view["clip_pool"][&clip_id]
+            .as_object()
+            .expect("摘要对象");
+        assert_eq!(clip["noteCount"], 2);
+        assert_eq!(clip["kind"], "midi");
+        assert!(
+            !clip.contains_key("content"),
+            "T-FIX-366：默认 clip_pool 不得含 content/音符: {clip:?}"
+        );
+
+        let selected = project_view(&project, &["clip_pool".to_owned()]).expect("clip_pool");
+        assert!(
+            !selected["clip_pool"][&clip_id]
+                .as_object()
+                .expect("摘要")
+                .contains_key("content"),
+            "T-FIX-366：`clip_pool` 选择器也必须给摘要"
+        );
+
+        let full = project_view(&project, &["clip_pool.full".to_owned()]).expect("全量");
+        assert!(
+            full["clip_pool"][&clip_id]["content"]["Midi"]["notes"].is_object(),
+            "T-FIX-366：`clip_pool.full` 必须返回全量音符"
+        );
     }
 
     #[test]

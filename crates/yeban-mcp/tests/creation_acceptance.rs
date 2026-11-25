@@ -477,11 +477,23 @@ fn edit_and_merge(dispatcher: &mut Dispatcher, auth: &str, arguments: Value, lab
     merged
 }
 
-/// `yeban_query_project` 的**全量顶层视图**（`fields` 缺省）。
+/// `yeban_query_project` 的**稀疏顶层视图**（`fields` 缺省），再显式补回全量片段池。
+///
+/// T-FIX-366 之后 `clip_pool` 默认只给摘要，音符必须显式选 `clip_pool.full`。
+/// 本判据要检查音符内容，所以第二次调用只取该选择器，再把完整 `clip_pool` 拼回顶层。
 fn query_project(dispatcher: &mut Dispatcher, auth: &str) -> Value {
     let response = call(dispatcher, auth, "yeban_query_project", json!({}));
     assert_eq!(response["status"], "success", "{response}");
-    response["data"]["project"].clone()
+    let mut project = response["data"]["project"].clone();
+    let full = call(
+        dispatcher,
+        auth,
+        "yeban_query_project",
+        json!({"fields": ["clip_pool.full"]}),
+    );
+    assert_eq!(full["status"], "success", "{full}");
+    project["clip_pool"] = full["data"]["project"]["clip_pool"].clone();
+    project
 }
 
 /// `yeban_render_master` → 落盘 WAV；返回响应。

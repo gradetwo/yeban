@@ -796,7 +796,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-004",
         name: "yeban_query_project",
-        summary: "分页拉取工程稀疏视图, 防止海量音符撑爆 Agent 上下文",
+        summary: "分页拉取工程稀疏视图（clip_pool 默认只给摘要；全量音符需显式字段 clip_pool.full），防止海量音符撑爆 Agent 上下文",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ReadOnly,
         params: &[
@@ -809,7 +809,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             array_param(
                 "fields",
                 false,
-                "字段选择器 (稀疏视图): 元素必须**恰好**是 `items.enum` 里的一个名字 (白名单 = 解析器的 `SELECTORS`; 不在里面 ⇒ `INVALID_FIELD_SELECTOR`, 带 `availableSelectors`)。去重、保序; 缺省 = 全量顶层视图",
+                "字段选择器 (稀疏视图): 元素必须**恰好**是 `items.enum` 里的一个名字 (白名单 = 解析器的 `SELECTORS`; 不在里面 ⇒ `INVALID_FIELD_SELECTOR`, 带 `availableSelectors`)。去重、保序; 缺省 = 稀疏顶层视图 (`clip_pool` 只给摘要; 全量音符需显式 `clip_pool.full`)",
                 crate::domain::view::selector_items,
             ),
         ],

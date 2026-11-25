@@ -647,7 +647,7 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
             serde_json::json!({
                 "name": "yeban_query_project",
                 "arguments": {
-                    "fields": ["tracks", "sections", "scenes", "clip_pool",
+                    "fields": ["tracks", "sections", "scenes", "clip_pool.full",
                                "routing_graph", "master_bus_track_id"],
                     "limit": 1000,
                 },
@@ -939,7 +939,7 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
         serde_json::json!({
             "name": "yeban_query_project",
             "arguments": {
-                "fields": ["tracks", "sections", "scenes", "clip_pool",
+                "fields": ["tracks", "sections", "scenes", "clip_pool.full",
                            "routing_graph", "master_bus_track_id"],
                 "limit": 1000,
             },
@@ -1159,7 +1159,7 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
         "tools/call",
         serde_json::json!({
             "name": "yeban_query_project",
-            "arguments": {"fields": ["tracks", "sections", "scenes", "clip_pool",
+            "arguments": {"fields": ["tracks", "sections", "scenes", "clip_pool.full",
                                      "routing_graph", "master_bus_track_id"],
                           "limit": 1000},
         }),
