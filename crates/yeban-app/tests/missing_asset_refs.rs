@@ -76,7 +76,7 @@ fn missing_audio_asset_is_a_strict_open_error_and_a_default_load_note() {
             .archive
             .load_notes
             .iter()
-            .any(|note| note.contains("资产缺口") && note.contains("缺失资产")),
+            .any(|note| note.contains("资产缺口") && note.contains("不在资产池里的资产")),
         "缺口必须写进 load_notes: {:?}",
         opened.archive.load_notes
     );

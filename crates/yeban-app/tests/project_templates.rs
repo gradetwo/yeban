@@ -437,6 +437,12 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         UndoSession::open("<templates>", "yeban-app", project_a.clone(), NOW_MS)
             .expect("撤销会话必须能打开"),
     ));
+    // T-FIX-411（330 返工）：`filled_project()` 的 Audio 片段引用运行期 kick；
+    // 真实会话是从 `.yeban` 容器装载的，资产池里必有这份字节。旧夹具直接从
+    // 工程对象构造会话、池为空 ⇒ 另存模板写出一个缺资产的模板，330 严格打开
+    // 正确地拒绝它。这里按生产装载形态把同一份资产字节填进会话池（修法 b），
+    // 并在下面断言模板容器真的带上了它。
+    undo.replace_assets(yeban_model::samples::filled_project_assets());
     let fingerprint_a = undo.fingerprint().expect("会话指纹");
     let production = Rc::new(RefCell::new(
         ProductionLoop::start(&project_a, 0).expect("引擎重建"),
@@ -496,6 +502,18 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         template_path.exists(),
         "另存为模板后文件必须落在用户目录三级路径 {}",
         template_path.display()
+    );
+    // 模板必须与工程一样带全资产池：否则从模板新建会被 330 的严格打开拒绝
+    // （旧夹具在步骤 4 就停在这里，指纹停在 C 而不是 A）。
+    let template_archive = yeban_app::open::open_project_archive_file(
+        &template_path,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("模板必须是可打开的容器");
+    assert_eq!(
+        template_archive.assets.len(),
+        1,
+        "filled 模板的 kick 资产字节不得在另存为模板时丢失"
     );
     assert!(!ui.get_template_save_open(), "保存成功后对话框必须关");
     assert!(
