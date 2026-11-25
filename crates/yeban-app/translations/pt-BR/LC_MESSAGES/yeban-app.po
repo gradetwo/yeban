@@ -15,8 +15,8 @@ msgstr ""
 msgid "检查器与音色库 [I]"
 msgstr "Inspetor e Biblioteca de Sons [I]"
 
-msgid "Clip 激发矩阵 [Tab]"
-msgstr "Matriz de Disparo de Clips [Tab]"
+msgid "Clip 激发矩阵"
+msgstr "Matriz de Disparo de Clips"
 
 msgid "统一底栏 (混音控制台/钢琴卷帘) [P / X]"
 msgstr "Dock inferior unificado (Mixer / Piano Roll) [P / X]"
