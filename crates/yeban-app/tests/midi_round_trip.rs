@@ -153,7 +153,9 @@ fn project_json_of(path: &Path) -> Vec<u8> {
 fn write_container(dir: &Path, name: &str, project: &YebanProjectV1) -> PathBuf {
     let asset = b"yeban-midi-round-trip-asset".to_vec();
     let hash = AssetHash::of_bytes(&asset);
-    let mut assets: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+    let mut assets: BTreeMap<AssetHash, Vec<u8>> = yeban_model::samples::demo_project_assets()
+        .into_iter()
+        .collect();
     assets.insert(hash, asset);
     let bytes = write_project_container(project, b"round-trip-history", &assets).expect("写出容器");
     let path = dir.join(name);

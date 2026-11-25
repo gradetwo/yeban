@@ -101,7 +101,7 @@ fn write_container(dir: &Path, project: YebanProjectV1) -> PathBuf {
             project,
             history_dag: Vec::new(),
             proposals: None,
-            assets: Vec::new(),
+            assets: yeban_model::samples::demo_project_assets(),
             embedded_presets: Vec::new(),
             load_notes: Vec::new(),
         },
