@@ -22,8 +22,8 @@
 //!
 //! ⛔ 不证真从网络下载成功（"装好"这一跳按唯一入口直接调，与下载排空同一
 //! 函数，同 `missing_sounds_rescue_flow.rs` 的做法）；⛔ 不证焦点在**幸存**
-//! 行、且被删行在其上方时的行号错位（行删后下标整体前移，`focused-row-slot`
-//! 的旧值可能落在另一行上 —— 与 T-FIX-333 的 swap 守卫同款边界，另案处理）；
+//! ⑤ 幸存行重基（T-FIX-427）：焦点在行 1 的格子上，救援删掉行 0 ⇒ 焦点仍
+//! 指向同一行（槽位按新行号重基，旧槽位 −10）。
 //! ⛔ 不证 `Shift+Tab` 反向（平台通道注不进来，同款边界）。
 
 #![allow(unused)]
@@ -310,6 +310,101 @@ fn rescue_deleting_the_focused_row_moves_focus_to_close_first() {
         "救援焦点：关闭后焦点必须不在模态内"
     );
     report_line("missing-sounds-rescue-focus two-row: focus-111 rescue-to-0 tab-loop esc-closed");
+}
+
+/// ⑤ 幸存行重基（T-FIX-427）：焦点在行 1 的格子上，救援删掉行 0 ⇒ 焦点
+/// 必须仍指向**同一行**（同一条轨），即槽位按新行号重基（旧槽位 −10），
+/// 不能留在旧值上（旧值在新表里指行 1——原来行 2 的那条轨）。
+///
+/// 红→绿：未修时 `focused-control` 仍是删行前的旧槽位（或被清掉），
+/// 与「同一行」的期望不符；修后读数 = 旧槽位 −10，`Tab` 一圈只走到
+/// 合法格子。
+#[test]
+fn rescue_deleting_a_row_above_the_focused_row_rebases_the_focus_slot() {
+    let Some((pack_id, pack_name, pack_path)) = first_installed_pack() else {
+        eprintln!("[rescue/focus] 本机没有已装的内置音源，跳过");
+        return;
+    };
+    let bass_path = format!("assets/samples/{pack_id}/Programs/missing-{pack_id}.sfz");
+    let (project, ids) = project_with_missing_tracks(
+        "rebase",
+        &[
+            ("Bass", bass_path),
+            ("Lead", MISSING_PATH.to_owned()),
+            ("Keys", MISSING_PATH.to_owned()),
+        ],
+    );
+    let bass_id = ids[0];
+    let lead_id = ids[1];
+    let rows = yeban_app::missing_sounds::collect(&project, None);
+    assert_eq!(rows.len(), 3, "救援焦点：夹具必须正好三行缺失");
+    assert_eq!(
+        rows[0].pack_id.as_deref(),
+        Some(pack_id.as_str()),
+        "救援焦点：行 0 必须对应已装包 {pack_id}（否则救援删不掉它）"
+    );
+
+    let (mut live, port) = live_window(&project, "rebase");
+    let ui = live.ui().clone_strong();
+    assert!(ui.get_missing_sounds_open(), "打开工程就该弹出救援面板");
+    assert_eq!(ui.get_missing_row_count(), 3, "救援焦点：行数必须是 3");
+
+    download_then_return(&mut live, 0, &pack_id, &pack_name);
+    let focused = tab_into_row(&mut live, 1);
+    assert!(
+        (111..=114).contains(&focused),
+        "救援焦点：必须先落在行 1 的格子里（当前 {focused}）"
+    );
+
+    // 装好那一跳：行 0 换上并消失；行 1 变成行 0（同一条轨）。
+    host::rescue_after_pack_installed(&ui, pack_id.as_str());
+
+    assert_eq!(ui.get_missing_row_count(), 2, "救援焦点：行数必须剩 2");
+    assert!(
+        ui.get_missing_sounds_open(),
+        "救援焦点：还有行没解决 ⇒ 面板还开着"
+    );
+    assert_eq!(
+        ui.get_missing_sounds_focused_control(),
+        focused - 10,
+        "救援焦点：焦点必须仍指向同一行（旧槽位 {focused} 重基为 {}）",
+        focused - 10
+    );
+    let sampler = port
+        .project()
+        .tracks
+        .get(&bass_id)
+        .and_then(|track| track.sampler.clone())
+        .expect("救援焦点：行 0 的轨必须已经绑上");
+    assert_eq!(
+        sampler.path, pack_path,
+        "救援焦点：绑的必须正是刚装好的那一件"
+    );
+    // 同一条轨还在表里（行 1 的轨现在是行 0）。
+    assert!(
+        port.project().tracks.contains_key(&lead_id),
+        "救援焦点：幸存行（行 1 的轨）必须还在工程里"
+    );
+
+    // 再 Tab 一圈：只剩两行的格子 + 「先不管」+ ✕，不越界、不卡死。
+    let mut visited = vec![focused - 10];
+    for _ in 0..10 {
+        let slot = tab_once(&mut live);
+        visited.push(slot);
+        assert!(
+            slot == 0 || slot == 1 || (101..=104).contains(&slot) || (111..=114).contains(&slot),
+            "救援焦点：删行后 Tab 只能走到幸存行的格子 / 1 / 0（走到 {slot}）"
+        );
+        if slot == 0 {
+            break;
+        }
+    }
+    assert_eq!(
+        *visited.last().expect("至少走一步"),
+        0,
+        "救援焦点：Tab 一圈必须绕回 ✕（走了 {visited:?}）"
+    );
+    report_line("missing-sounds-rescue-focus rebase: focus-11x rescue-to-10x tab-loop");
 }
 
 /// ④ 单行：焦点在唯一一行的格子上，救援删掉它 ⇒ 面板关闭、读数 -1，没有死焦点。

@@ -27723,16 +27723,43 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
         // `focused-row-slot` 就指着不存在的行（死焦点），之后 Tab 的读数与
         // 轮转全错。只在对话框还开着、且焦点确实在被删行里时挪；焦点在幸存
         // 行 / ✕ / 「先不管」上 ⇒ 不动。
-        if ui.get_missing_sounds_open() {
-            let focused = ui.get_missing_sounds_focused_control();
-            if deleted_rows.iter().any(|&row| {
-                focused >= 100 + row * 10 && focused < 100 + (row + 1) * 10
-            }) {
-                ui.invoke_focus_missing_sounds_dialog();
-            }
+        // T-FIX-427：同一次读数顺带记下删行前的焦点槽位 —— `publish_missing_rows`
+        // 会换掉整组行数组、重建 `for` 行元素，事后读到的已是新表下的读数，
+        // 无法反推焦点原来在哪一行；重基（见下文）必须用删行前的值。
+        let focused_before = if ui.get_missing_sounds_open() {
+            ui.get_missing_sounds_focused_control()
+        } else {
+            -1
+        };
+        if ui.get_missing_sounds_open()
+            && deleted_rows.iter().any(|&row| {
+                focused_before >= 100 + row * 10 && focused_before < 100 + (row + 1) * 10
+            })
+        {
+            ui.invoke_focus_missing_sounds_dialog();
         }
         let empty = sink.rows.borrow().is_empty();
         publish_missing_rows(ui, &sink.rows);
+        // T-FIX-427：焦点在幸存行上时按新行号重基。344 守卫已把被删行上的
+        // 焦点挪到 ✕，这里只处理幸存行：删掉的行若在焦点行之上，同一行
+        // 新下标 = 旧下标 − 上方已删行数，格内槽位不变。焦点在 ✕ / 「先不管」
+        // / 被删行上时不动（值 < 100，或行号落在已删区间）。
+        if focused_before >= 100 {
+            let row = (focused_before - 100) / 10;
+            let cell = (focused_before - 100) % 10;
+            let on_deleted = deleted_rows.contains(&row);
+            if !on_deleted {
+                let above = deleted_rows
+                    .iter()
+                    .filter(|&&deleted| deleted < row)
+                    .count();
+                if above > 0 {
+                    ui.invoke_rebase_missing_sounds_focused_row_slot(
+                        100 + (row - i32::try_from(above).unwrap_or(0)) * 10 + cell,
+                    );
+                }
+            }
+        }
         if empty {
             ui.set_missing_sounds_open(false);
             // 都换好了 ⇒ 那条"音源没装好"的红字不再成立，收掉它。

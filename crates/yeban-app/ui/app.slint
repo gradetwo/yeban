@@ -462,6 +462,10 @@ export component MainWindow inherits Window {
     public function focus-template-save-dialog() { template-save-dialog.focus-first-field(); }
     public function focus-sound-library-dialog() { sound-library-dialog.focus-first-control(); }
     public function focus-missing-sounds-dialog() { missing-sounds-dialog.focus-first-control(); }
+    // T-FIX-427：宿主删行后按新行号重基焦点槽位 —— 直接调对话框的函数。
+    // ⛔ 不要改成属性直通（`missing-sounds-focused-row-slot: ...focused-row-slot`）：
+    // 直通是单向的（对话框 → 主窗口），宿主写直通属性到不了对话框（已实测）。
+    public function rebase-missing-sounds-focused-row-slot(slot: int) { missing-sounds-dialog.rebase-focused-row-slot(slot); }
 
     // ⛔ 2026-11-23 (T-FIX-143)：下面这批属性在 `.slint` 侧**零读者**（声明行是唯一出现），
     //   宿主仍按 snake_case setter 写入 ⇒ 写进去不产生任何界面效果。保留仅为不打断宿主调用，

@@ -550,6 +550,14 @@ export component MissingSoundsDialog inherits Rectangle {
             missing-sounds-later-focus.focus();
         }
     }
+
+    /// 宿主删行后按新行号重基（T-FIX-427）：直接写本对话框自己的属性。
+    /// 不走 app.slint 的属性直通 —— 直通是单向的（对话框 → 主窗口），
+    /// 宿主写直通属性到不了这里（已实测：写后读回直通值变了，`focused-control`
+    /// 仍是旧值）。
+    public function rebase-focused-row-slot(slot: int) {
+        root.focused-row-slot = slot;
+    }
 }
 
 
