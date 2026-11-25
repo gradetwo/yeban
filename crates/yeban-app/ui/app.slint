@@ -1903,6 +1903,9 @@ export component MainWindow inherits Window {
                     // ⇒ 宿主 `wire_track_select`）。与 `select-track` 的迂回路并存：后者经
                     // `track-selected`，其宿主落点只在产品进程接线，测试装配里不跑。
                     track-select(idx) => { root.track-select(idx); }
+                    // T-FIX-195：轨道头内联改名确认 → 根 `track-rename`（宿主既有
+                    // `wire_track_rename` 提交 `Op::SetTrackName`）。
+                    track-rename(idx, new-name) => { root.track-rename(idx, new-name); }
                     // ⭐ T-FIX-227：泳道点击的落点是宿主既有 `wire_automation_lane_click`。
                     automation-lane-click(x, y) => { root.automation-lane-click(x, y); }
                     toggle-mute(t-id) => { root.track-toggle-mute(t-id); }

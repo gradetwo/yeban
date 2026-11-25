@@ -1,4 +1,4 @@
-import { Theme, TrackData, TimelineBlockData, Tokens, TooltipBubble, UiMonoText, UiText } from "tokens.slint";
+import { ImeAwareTextInput, Theme, TrackData, TimelineBlockData, Tokens, TooltipBubble, UiMonoText, UiText } from "tokens.slint";
 
 // T-FIX-166：轨道头右键菜单的单条。`a11y-id` 必须是**调用点字面量**——仓库的
 // `slint_accessible_ids_and_registry_cover_each_other` 会逐行扫 `a11y-id:` 并和
@@ -229,27 +229,56 @@ export component ArrangementViewport inherits Rectangle {
     // `track-context-track-id` 是**菜单作用的轨道身份**（不是下标）；右键未选中轨时
     // 先把该轨选中再开菜单，因此菜单条目全部走已有「作用于选中轨」的真实操作。
     property <int> track-context-track-id: 0;
+    property <int> track-context-track-index: 0;
     property <bool> track-context-armed: false;
-    // 弹出位置是 **ArrangementViewport 局部坐标**（与卷帘右键菜单同款；菜单 250×248，
+    // T-FIX-195：轨道头内联改名态。`rename-track-index` 是当前正在编辑的行下标；
+    // 草稿由输入框双向绑定，确认/取消后关闭（不落第二份工程状态）。
+    property <int> rename-track-index: -1;
+    property <string> rename-draft: "";
+    // 弹出位置是 **ArrangementViewport 局部坐标**（与卷帘右键菜单同款；菜单 250×278，
     // 贴边时向内收，不得被窗口边缘裁掉）。
     property <length> track-context-menu-x: 0px;
     property <length> track-context-menu-y: 0px;
 
-    function open-track-context-menu(track-id: int, armed: bool, local-x: length, local-y: length) {
+    function open-track-context-menu(track-id: int, track-index: int, armed: bool, local-x: length, local-y: length) {
         if root.selected-track-id != track-id {
             root.select-track(track-id);
         }
         root.track-context-track-id = track-id;
+        root.track-context-track-index = track-index;
         root.track-context-armed = armed;
         root.track-context-menu-x = Math.min(root.width - 250px, Math.max(0px, local-x));
-        root.track-context-menu-y = Math.min(root.height - 248px, Math.max(0px, local-y));
+        root.track-context-menu-y = Math.min(root.height - 278px, Math.max(0px, local-y));
         track-context-popup.show();
+    }
+
+    // T-FIX-195：右键菜单「重命名」→ 轨道头内联编辑。确认只走既有
+    // `track-rename` 回调（宿主 `wire_track_rename` 提交 `Op::SetTrackName`）；
+    // 空名不提交，Esc 只关闭编辑器。
+    function begin-track-rename() {
+        let index = root.track-context-track-index;
+        if index >= 0 && index < root.tracks.length {
+            root.rename-track-index = index;
+            root.rename-draft = root.tracks[index].name;
+        }
+    }
+    function commit-track-rename() {
+        let index = root.rename-track-index;
+        if index >= 0 && index < root.tracks.length && root.rename-draft != "" {
+            root.track-rename(index, root.rename-draft);
+        }
+        root.rename-track-index = -1;
+    }
+    function cancel-track-rename() {
+        root.rename-track-index = -1;
     }
 
     function activate-track-context-item(kind: string, action: string) {
         track-context-popup.close();
         if kind == "arm" {
             root.toggle-arm(root.track-context-track-id);
+        } else if kind == "rename" {
+            root.begin-track-rename();
         } else if kind == "instrument" {
             root.track-instrument-change(root.track-context-track-id, action);
         } else {
@@ -261,6 +290,7 @@ export component ArrangementViewport inherits Rectangle {
 
     callback track-pan-change(int, float);
     callback track-volume-change(int, float);
+    callback track-rename(int, string);
     callback track-instrument-change(int, string);
     callback mixer-fader-grab(int, length);
     callback mixer-fader-drag(int, length);
@@ -1341,6 +1371,7 @@ export component ArrangementViewport inherits Rectangle {
                                         && event.kind == PointerEventKind.down {
                                         root.open-track-context-menu(
                                             trk.id,
+                                            idx,
                                             trk.armed,
                                             (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
                                             arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
@@ -1387,7 +1418,32 @@ export component ArrangementViewport inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: space-between;
                                     spacing: 4px;
-                                    Text {
+                                    if root.rename-track-index == idx : ImeAwareTextInput {
+                                        horizontal-stretch: 1;
+                                        text <=> root.rename-draft;
+                                        single-line: true;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: Tokens.skin-text-strong;
+                                        vertical-alignment: center;
+                                        accessible-role: text-input;
+                                        accessible-id: "arrangement-track-rename-input";
+                                        accessible-label: @tr("轨道重命名");
+                                        accessible-value: root.rename-draft;
+                                        accessible-read-only: false;
+                                        init => { self.focus(); }
+                                        accepted => { root.commit-track-rename(); }
+                                        key-pressed(event) => {
+                                            if event.text == Key.Escape {
+                                                root.cancel-track-rename();
+                                                accept
+                                            } else {
+                                                reject
+                                            }
+                                        }
+                                    }
+                                    if root.rename-track-index != idx : Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
                                         font-size: 11px;
@@ -2208,6 +2264,7 @@ export component ArrangementViewport inherits Rectangle {
                                         && event.kind == PointerEventKind.down {
                                         root.open-track-context-menu(
                                             trk.id,
+                                            idx,
                                             trk.armed,
                                             (Theme.track-headers-on-right ? root.width - root.headers-width : 0px) + self.mouse-x,
                                             arr_lanes_container.y + root.track-ys[idx] + arr_tracks_flickable.content-y + self.mouse-y,
@@ -2254,7 +2311,32 @@ export component ArrangementViewport inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: space-between;
                                     spacing: 4px;
-                                    Text {
+                                    if root.rename-track-index == idx : ImeAwareTextInput {
+                                        horizontal-stretch: 1;
+                                        text <=> root.rename-draft;
+                                        single-line: true;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: Tokens.skin-text-strong;
+                                        vertical-alignment: center;
+                                        accessible-role: text-input;
+                                        accessible-id: "arrangement-track-rename-input";
+                                        accessible-label: @tr("轨道重命名");
+                                        accessible-value: root.rename-draft;
+                                        accessible-read-only: false;
+                                        init => { self.focus(); }
+                                        accepted => { root.commit-track-rename(); }
+                                        key-pressed(event) => {
+                                            if event.text == Key.Escape {
+                                                root.cancel-track-rename();
+                                                accept
+                                            } else {
+                                                reject
+                                            }
+                                        }
+                                    }
+                                    if root.rename-track-index != idx : Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
                                         font-size: 11px;
@@ -2995,13 +3077,13 @@ export component ArrangementViewport inherits Rectangle {
 
     // T-FIX-166：选中轨道头的右键上下文菜单。与卷帘右键菜单同范式 ——
     // `PopupWindow` + `close-on-click-outside`，点外关闭；默认不显示、不占命中、
-    // 不进默认帧。条目只接**已存在**的操作（删轨 / 录音臂 / 建轨 / 效果槽），
-    // 没有重命名轨道的现成回调 ⇒ 不在这里编造入口（回执中如实登记为缺口）。
+    // 不进默认帧。条目只接**已存在**的操作（删轨 / 录音臂 / 建轨 / 效果槽）；
+    // 「重命名」走既有 `track-rename` 回调进入轨道头内联编辑，不另开通道。
     track-context-popup := PopupWindow {
         x: root.track-context-menu-x;
         y: root.track-context-menu-y;
         width: 250px;
-        height: 248px;
+        height: 278px;
         close-policy: close-on-click-outside;
 
         Rectangle {
@@ -3020,6 +3102,11 @@ export component ArrangementViewport inherits Rectangle {
                     a11y-id: "arrangement-track-context-arm";
                     label: root.track-context-armed ? @tr("取消录音准备 [R]") : @tr("录音准备 (Arm) [R]");
                     activate => { root.activate-track-context-item("arm", ""); }
+                }
+                TrackContextMenuItem {
+                    a11y-id: "arrangement-track-context-rename";
+                    label: @tr("重命名当前选中轨道");
+                    activate => { root.activate-track-context-item("rename", ""); }
                 }
                 TrackContextMenuItem {
                     a11y-id: "arrangement-track-context-delete";

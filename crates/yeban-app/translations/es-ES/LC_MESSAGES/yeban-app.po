@@ -220,6 +220,11 @@ msgstr "+ Nueva pista de bus auxiliar"
 
 msgid "删除当前选中轨道"
 msgstr "Eliminar la pista seleccionada"
+msgid "轨道重命名"
+msgstr "Renombrar pista"
+
+msgid "重命名当前选中轨道"
+msgstr "Renombrar pista seleccionada"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "Insertar EQ paramétrico en la pista actual"

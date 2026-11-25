@@ -220,6 +220,11 @@ msgstr "+ Neue Aux-Bus-Spur"
 
 msgid "删除当前选中轨道"
 msgstr "Ausgewählte Spur löschen"
+msgid "轨道重命名"
+msgstr "Spur umbenennen"
+
+msgid "重命名当前选中轨道"
+msgstr "Ausgewählte Spur umbenennen"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "Parametrischen EQ auf der aktuellen Spur einfügen"

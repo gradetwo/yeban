@@ -220,6 +220,11 @@ msgstr "+ 新規AUXバストラック"
 
 msgid "删除当前选中轨道"
 msgstr "選択中のトラックを削除"
+msgid "轨道重命名"
+msgstr "トラック名を変更"
+
+msgid "重命名当前选中轨道"
+msgstr "選択中のトラック名を変更"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "現在のトラックへパラメトリックEQを挿入"

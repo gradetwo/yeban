@@ -220,6 +220,11 @@ msgstr "+ New Aux Bus Track"
 
 msgid "删除当前选中轨道"
 msgstr "Delete Selected Track"
+msgid "轨道重命名"
+msgstr "Rename track"
+
+msgid "重命名当前选中轨道"
+msgstr "Rename Selected Track"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "Insert Parametric EQ on Current Track"

@@ -220,6 +220,11 @@ msgstr "+ 새 AUX 버스 트랙"
 
 msgid "删除当前选中轨道"
 msgstr "선택한 트랙 삭제"
+msgid "轨道重命名"
+msgstr "트랙 이름 바꾸기"
+
+msgid "重命名当前选中轨道"
+msgstr "선택한 트랙 이름 바꾸기"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "현재 트랙에 파라메트릭 EQ 삽입"

@@ -29,8 +29,8 @@ use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::samples::filled_project;
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{
-    METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE, METHOD_DISPATCH_POINTER_UP,
-    METHOD_NODE,
+    METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE,
+    METHOD_DISPATCH_POINTER_UP, METHOD_NODE,
 };
 use yeban_ui_test_port::Size;
 use yeban_ui_test_port::png;
@@ -38,8 +38,9 @@ use yeban_ui_test_port::port::Permission;
 
 const NOW_MS: u64 = 1_760_000_000_000;
 const LANES: &str = "arr-lanes-flickable";
-const MENU_ITEMS: [&str; 8] = [
+const MENU_ITEMS: [&str; 9] = [
     "arrangement-track-context-arm",
+    "arrangement-track-context-rename",
     "arrangement-track-context-delete",
     "arrangement-track-context-add-midi",
     "arrangement-track-context-add-audio",
@@ -238,7 +239,7 @@ fn right_click_header_selects_then_opens_all_items_and_clicks_outside_closes() {
 }
 
 /// 判据③（T-FIX-166 补：**右置**轨道头分支）：`Theme.track-headers-on-right = true`
-/// 时右键右侧轨道头同样先选中、弹齐 8 项、点删除真的删轨。
+/// 时右键右侧轨道头同样先选中、弹齐 9 项、点删除真的删轨。
 ///
 /// 同时钉住判据缺口本身：旧判据的固定落点（`LANES` 的 `x = 20`）在右置布局里落在
 /// **时间线**，⛔ 不会弹出轨道菜单 —— 修前那一版测试正是因此只覆盖了左置分支。
@@ -388,6 +389,141 @@ fn delete_item_really_removes_the_track_from_the_authority() {
     );
 }
 
+fn press_key(plane: &mut LiveControlPlane, seq: i64, key_code: &str) {
+    let pressed = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": key_code })),
+    ));
+    assert!(
+        !pressed.is_error(),
+        "键盘注入 {key_code} 必须落到真实窗口: {pressed:?}"
+    );
+}
+
+/// 判据⑤（T-FIX-195）：菜单「重命名」→ 轨道头内联输入 → Enter 提交到权威工程与界面。
+#[test]
+fn rename_menu_item_opens_inline_editor_and_enter_commits() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    let index = 1usize;
+    let track_id = window
+        .get_track_ids()
+        .row_data(index)
+        .expect("第二轨的实体 ID");
+    let old_name = window
+        .get_tracks()
+        .row_data(index)
+        .expect("第二轨")
+        .name
+        .to_string();
+    let (popup_x, popup_y) = right_click_header(&mut plane, 1, &window, index);
+    click_menu_item(
+        &mut plane,
+        10,
+        popup_x,
+        popup_y,
+        "arrangement-track-context-rename",
+    );
+    assert!(
+        !tree_has(&mut plane, 14, "arrangement-track-context-delete"),
+        "点「重命名」后菜单必须关闭"
+    );
+    let input = find_by_accessible_id(&window, "arrangement-track-rename-input")
+        .expect("轨道头内联改名输入必须进入运行时子树");
+    assert_eq!(
+        input.accessible_value().as_deref(),
+        Some(old_name.as_str()),
+        "编辑器必须预填当前轨道名，而不是空串"
+    );
+    input.set_accessible_value("重命名后的轨");
+    press_key(&mut plane, 20, "Enter");
+
+    let id = track_id
+        .as_str()
+        .parse::<yeban_model::EntityId>()
+        .expect("实体 ID");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        "重命名后的轨",
+        "Enter 必须提交 Op::SetTrackName 到权威工程"
+    );
+    assert_eq!(
+        window.get_tracks().row_data(index).expect("第二轨").name,
+        "重命名后的轨",
+        "重投影后界面轨道名必须同步更新"
+    );
+    assert!(
+        !tree_has(&mut plane, 30, "arrangement-track-rename-input"),
+        "提交后内联编辑器必须关闭"
+    );
+}
+
+/// 判据⑥（T-FIX-195）：Esc 取消不改名；空名不提交。
+#[test]
+fn rename_editor_escape_and_empty_name_leave_the_track_unchanged() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    let index = 1usize;
+    let track_id = window
+        .get_track_ids()
+        .row_data(index)
+        .expect("第二轨的实体 ID");
+    let old_name = window
+        .get_tracks()
+        .row_data(index)
+        .expect("第二轨")
+        .name
+        .to_string();
+    let (popup_x, popup_y) = right_click_header(&mut plane, 1, &window, index);
+    click_menu_item(
+        &mut plane,
+        10,
+        popup_x,
+        popup_y,
+        "arrangement-track-context-rename",
+    );
+    let _ =
+        find_by_accessible_id(&window, "arrangement-track-rename-input").expect("改名输入必须出现");
+    press_key(&mut plane, 20, "Escape");
+    let id = track_id
+        .as_str()
+        .parse::<yeban_model::EntityId>()
+        .expect("实体 ID");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        old_name,
+        "Esc 必须取消，不改工程名"
+    );
+    assert!(
+        !tree_has(&mut plane, 30, "arrangement-track-rename-input"),
+        "Esc 后内联编辑器必须关闭"
+    );
+
+    // 空名：再次打开编辑器，清空草稿后 Enter ⇒ 不提交（工程名仍是旧名）。
+    let (popup_x, popup_y) = right_click_header(&mut plane, 40, &window, index);
+    click_menu_item(
+        &mut plane,
+        50,
+        popup_x,
+        popup_y,
+        "arrangement-track-context-rename",
+    );
+    let input = find_by_accessible_id(&window, "arrangement-track-rename-input")
+        .expect("第二次改名输入必须出现");
+    input.set_accessible_value("");
+    press_key(&mut plane, 60, "Enter");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        old_name,
+        "空名不得提交"
+    );
+}
+
 /// 证据：菜单打开态截图（1:1）与 3x 最近邻裁切；只在设了 `T_FIX_166_SHOTS` 时落盘。
 #[test]
 fn capture_menu_open_evidence_when_requested() {
@@ -398,7 +534,7 @@ fn capture_menu_open_evidence_when_requested() {
     let (menu_x, menu_y) = right_click_header(&mut plane, 1, &window, 1);
 
     // `PopupWindow` 子节点的 `bounds` 是弹层**局部**坐标（首项 x=4 / y=4 附近的
-    // padding），弹层原点就是右键落点；截图从落点裁 250×248 才是整块菜单。
+    // padding），弹层原点就是右键落点；截图从落点裁 250×278 才是整块菜单。
     let arm = node_bounds(&mut plane, 10, "arrangement-track-context-arm");
     let delete = node_bounds(&mut plane, 11, "arrangement-track-context-delete");
     assert!(arm["x"].as_f64().expect("arm x") >= 0.0);
@@ -414,19 +550,19 @@ fn capture_menu_open_evidence_when_requested() {
     )
     .expect("写 1:1 截图");
 
-    // 3x 最近邻：以菜单左侧为起点裁 250×248，再逐像素放大。
+    // 3x 最近邻：以菜单左侧为起点裁 250×278，再逐像素放大。
     let crop_x = menu_x as u32;
     let crop_y = menu_y as u32;
-    let mut crop = yeban_ui_test_port::image::Rgb8Image::new(Size::new(250, 248));
-    for y in 0..248 {
+    let mut crop = yeban_ui_test_port::image::Rgb8Image::new(Size::new(250, 278));
+    for y in 0..278 {
         for x in 0..250 {
             if let Some(pixel) = image.pixel(crop_x + x, crop_y + y) {
                 crop.set_pixel(x, y, pixel);
             }
         }
     }
-    let mut zoom = yeban_ui_test_port::image::Rgb8Image::new(Size::new(750, 744));
-    for y in 0..744 {
+    let mut zoom = yeban_ui_test_port::image::Rgb8Image::new(Size::new(750, 834));
+    for y in 0..834 {
         for x in 0..750 {
             if let Some(pixel) = crop.pixel(x / 3, y / 3) {
                 zoom.set_pixel(x, y, pixel);

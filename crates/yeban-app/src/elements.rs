@@ -3819,6 +3819,10 @@ impl ElementRegistry {
                 "编曲轨道头右键菜单：录音准备开/关",
             ),
             (
+                "arrangement-track-context-rename",
+                "编曲轨道头右键菜单：重命名当前选中轨道",
+            ),
+            (
                 "arrangement-track-context-delete",
                 "编曲轨道头右键菜单：删除当前选中轨道",
             ),
@@ -3849,6 +3853,13 @@ impl ElementRegistry {
         ] {
             registry.add(id, ElementKind::Button, "arrangement.slint", label, false);
         }
+        registry.add(
+            "arrangement-track-rename-input",
+            ElementKind::TextInput,
+            "arrangement.slint",
+            "编曲轨道头内联重命名输入",
+            false,
+        );
 
         registry
     }

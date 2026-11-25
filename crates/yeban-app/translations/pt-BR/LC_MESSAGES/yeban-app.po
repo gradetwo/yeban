@@ -220,6 +220,11 @@ msgstr "+ Nova faixa de bus auxiliar"
 
 msgid "删除当前选中轨道"
 msgstr "Excluir a faixa selecionada"
+msgid "轨道重命名"
+msgstr "Renomear faixa"
+
+msgid "重命名当前选中轨道"
+msgstr "Renomear faixa selecionada"
 
 msgid "给当前轨插入 参量均衡 EQ"
 msgstr "Inserir EQ paramétrico na faixa atual"
