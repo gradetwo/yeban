@@ -1528,6 +1528,11 @@ pub enum Plan {
         /// 且只能在 `plan` 阶段由那一次解析产生 ⇒ 放在 [`Plan`] 上随响应走，
         /// 预览与真正创建读同一份。其余提案工具恒为空（响应不带该键）。
         param_echoes: Vec<Value>,
+        /// ⭐ T-FIX-741：`yeban_edit_notes` 回执的派生读数（`clip` / `placement`）。
+        ///
+        /// 与 `warnings` / `param_echoes` 同一条纪律：它是**响应的形状**、不是提案内容，
+        /// 在 `plan` 阶段对模拟后工程读一次，预览与真正创建读同一份。其余提案工具恒 `None`。
+        clip_receipt: Option<Value>,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -2367,6 +2372,7 @@ impl Plan {
                 auto_merge,
                 param_echoes,
                 sampler_warnings,
+                clip_receipt,
                 ..
             } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
@@ -2386,6 +2392,14 @@ impl Plan {
                     "resolvedParams".to_owned(),
                     Value::Array(param_echoes.clone()),
                 );
+                // T-FIX-741：派生读数（`clip` / `placement`）随预览一起给。
+                if let Some(receipt) = clip_receipt
+                    && let Some(receipt) = receipt.as_object()
+                {
+                    for (key, value) in receipt {
+                        preview.insert(key.clone(), value.clone());
+                    }
+                }
                 // 完整 op 载荷是**可选**的（`arguments.includeOps`，缺省 false）：
                 // `[BASELINE-006]` 要求 16 小节段落生成的往返 JSON ≤ 4 KB 且
                 // "结构化字段传输"，而逐条 op 载荷正是把这条判据顶破的那一块。
@@ -4045,7 +4059,73 @@ fn plan_query(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// `include_ops` 直接来自 `arguments.includeOps`（缺省 `false`）—— 它只影响
 /// **响应的形状**，不影响提案内容：两种取值下被创建的隔离分支、op 日志与提交
 /// 逐字节相同（判据 `tests/payload_budget.rs::include_ops_only_changes_the_response_shape`）。
-fn propose_draft(
+/// T-FIX-741：回执要带哪一块派生读数（由 `yeban_edit_notes` 指定）。
+#[derive(Clone, Copy, Debug, Default)]
+struct ReceiptRequest {
+    /// 要回显的片段（创建或改音符之后）。
+    clip_id: Option<EntityId>,
+    /// 要回显的摆放 `(trackId, placementId)`。
+    placement: Option<(EntityId, EntityId)>,
+}
+
+/// 从**模拟后**的工程读回 `clip` / `placement` 派生读数（T-FIX-741）。
+///
+/// 读模拟结果而不是重跑一遍 op ⇒ `dryRun` 预览与真正落地不可能各说一套。
+fn build_clip_receipt(project: &YebanProjectV1, request: ReceiptRequest) -> Value {
+    let mut receipt = serde_json::Map::new();
+    if let Some(clip_id) = request.clip_id
+        && let Some(entry) = project.clip_pool.get(&clip_id)
+    {
+        let (kind, note_count, end_tick) = match &entry.content {
+            ClipContent::Midi { notes } => (
+                "midi",
+                u64::try_from(notes.len()).unwrap_or(u64::MAX),
+                notes
+                    .values()
+                    .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+                    .max()
+                    .unwrap_or(0),
+            ),
+            ClipContent::Audio { .. } => ("audio", 0, 0),
+        };
+        receipt.insert(
+            "clip".to_owned(),
+            serde_json::json!({
+                "clipId": clip_id.to_canonical_string(),
+                "name": entry.name,
+                "kind": kind,
+                "noteCount": note_count,
+                "endTick": end_tick,
+            }),
+        );
+    }
+    if let Some((track_id, placement_id)) = request.placement
+        && let Some(placement) = project
+            .tracks
+            .get(&track_id)
+            .and_then(|track| track.clips.get(&placement_id))
+    {
+        receipt.insert(
+            "placement".to_owned(),
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "placementId": placement_id.to_canonical_string(),
+                "clipId": placement.clip_id.to_canonical_string(),
+                "startTick": placement.start_tick,
+                "durationTicks": placement.duration_ticks,
+                "loop": {
+                    "enabled": placement.loop_config.enabled,
+                    "startTick": placement.loop_config.start_tick,
+                    "endTick": placement.loop_config.end_tick,
+                },
+            }),
+        );
+    }
+    Value::Object(receipt)
+}
+
+#[allow(clippy::too_many_arguments)] // 与 propose_draft 同一条 7 参接口 + 一个派生回执选项
+fn propose_draft_impl(
     domain: &Domain,
     project: &YebanProjectV1,
     kind: &'static str,
@@ -4053,6 +4133,7 @@ fn propose_draft(
     description: String,
     ops: Vec<Op>,
     call: &ToolCall,
+    receipt: Option<ReceiptRequest>,
 ) -> Result<Plan, Fault> {
     let base_commit = domain.active_head().ok_or_else(|| {
         Fault::domain(ErrorCode::Conflict, "主分支没有头提交（提交图谱未初始化）")
@@ -4080,6 +4161,7 @@ fn propose_draft(
     // 注：T-FIX-154 已把同一预检的 op 驱动版并进 `warnings[]`；这里是
     // 顶层 `samplerWarnings[]` 用的换绑比对版（只报本次新绑的轨）。
     let sampler_warnings = sampler_binding_warnings_for_changed_tracks(domain, project, &simulated);
+    let clip_receipt = receipt.map(|request| build_clip_receipt(&simulated, request));
     let base_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     Ok(Plan::Propose {
         draft: Box::new(ProposalDraft {
@@ -4097,7 +4179,45 @@ fn propose_draft(
         sfz_load: None,
         sampler_warnings,
         param_echoes: Vec::new(),
+        clip_receipt,
     })
+}
+
+/// 三个提案类工具共用的收尾（无派生回执）。
+fn propose_draft(
+    domain: &Domain,
+    project: &YebanProjectV1,
+    kind: &'static str,
+    title: String,
+    description: String,
+    ops: Vec<Op>,
+    call: &ToolCall,
+) -> Result<Plan, Fault> {
+    propose_draft_impl(domain, project, kind, title, description, ops, call, None)
+}
+
+/// 同 [`propose_draft`]，但额外读回 `clip` / `placement` 派生读数（T-FIX-741）。
+#[allow(clippy::too_many_arguments)] // 见 propose_draft_impl 的同名豁免
+fn propose_draft_with_receipt(
+    domain: &Domain,
+    project: &YebanProjectV1,
+    kind: &'static str,
+    title: String,
+    description: String,
+    ops: Vec<Op>,
+    call: &ToolCall,
+    receipt: ReceiptRequest,
+) -> Result<Plan, Fault> {
+    propose_draft_impl(
+        domain,
+        project,
+        kind,
+        title,
+        description,
+        ops,
+        call,
+        Some(receipt),
+    )
 }
 
 /// `yeban_propose_section`。
@@ -4431,6 +4551,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             notes::compile_create(project, &track_id, &clip_id, clip_name, &note_ops)?;
         // `ADR-0018`：材料与摆放可以在**同一次**提案里原子落盘。摆放跟在
         // `Op::AddClip` 之后施加，模型的前置条件因此看得到刚建出来的片段。
+        let mut placed_placement_id = None;
         if placement_raw.is_some() {
             let placement = notes::parse_placement_for_create(
                 project,
@@ -4439,6 +4560,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                 &note_ops,
                 &call.arguments,
             )?;
+            placed_placement_id = Some(placement.id);
             compiled.push(Op::AddClipPlacement {
                 track_id,
                 placement,
@@ -4455,7 +4577,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         } else {
             format!("新建 MIDI 片段: {clip_name} ({note_count} 个音符)")
         };
-        return propose_draft(
+        return propose_draft_with_receipt(
             domain,
             project,
             "notes",
@@ -4463,6 +4585,10 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             format!("edit_notes create {clip_id}"),
             compiled,
             call,
+            ReceiptRequest {
+                clip_id: Some(clip_id),
+                placement: placed_placement_id.map(|id| (track_id, id)),
+            },
         );
     }
     // 音轨实体级形态（`removeTrack`）**单独成一路**：摘掉一条音轨和"在同一次调用里
@@ -4662,7 +4788,17 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // 描述里点名自动加载的预制（提案摘要随响应回传）。
         description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
     }
-    let mut plan = propose_draft(
+    let receipt = ReceiptRequest {
+        clip_id: needs_clip.then_some(clip_id),
+        placement: match &placement {
+            Some(notes::PlacementEdit::Add(placement)) => Some((track_id, placement.id)),
+            Some(notes::PlacementEdit::Move { placement_id, .. }) => {
+                Some((track_id, *placement_id))
+            }
+            _ => None,
+        },
+    };
+    let mut plan = propose_draft_with_receipt(
         domain,
         project,
         "notes",
@@ -4670,6 +4806,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("edit_notes {title_target}"),
         compiled,
         call,
+        receipt,
     )?;
     // ⭐ 第五份报告 A-3：把编译期命中的参数回显随计划带到响应（`data.resolvedParams`）。
     if let Plan::Propose {
@@ -7859,6 +7996,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             sfz_load,
             param_echoes,
             sampler_warnings,
+            clip_receipt,
         } => apply_propose(
             domain,
             *draft,
@@ -7869,6 +8007,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             sfz_load.map(|load| *load),
             &param_echoes,
             &sampler_warnings,
+            &clip_receipt,
         ),
         Plan::Merge {
             proposal_id,
@@ -8710,6 +8849,7 @@ pub(crate) fn apply_propose(
     sfz_load: Option<sfz::SfzLoad>,
     param_echoes: &[Value],
     sampler_warnings: &[embed_samples::MissingSample],
+    clip_receipt: &Option<Value>,
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -8818,6 +8958,14 @@ pub(crate) fn apply_propose(
             "resolvedParams".to_owned(),
             Value::Array(param_echoes.to_vec()),
         );
+        // T-FIX-741：与预览同一份派生读数（`clip` / `placement`）。
+        if let Some(receipt) = clip_receipt
+            && let Some(receipt) = receipt.as_object()
+        {
+            for (key, value) in receipt {
+                object.insert(key.clone(), value.clone());
+            }
+        }
         // ⭐ T-FIX-48 后续 ①：绑定当刻的缺样本预检，**恒带**（没换绑定 ⇒ 空数组）。
         // 元素形状与保存侧 `missingSamples.items[]` 同源（同一个
         // [`embed_samples::MissingSample`]），GUI 只读这一份、不另设状态。

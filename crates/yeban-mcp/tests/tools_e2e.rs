@@ -10352,3 +10352,99 @@ fn misspelled_drum_knobs_are_reported_and_factory_kits_stay_quiet() {
         "factory kit params must all be recognised (no false warnings): {factory_warnings:?}"
     );
 }
+
+/// T-FIX-741：`yeban_edit_notes` 回执带 `clip:{clipId,noteCount,endTick}`（创建与改音符都带），
+/// 摆放编辑回显最终 `placement:{durationTicks,loop}`；与工程内实际值一致，不用再 query。
+#[test]
+fn edit_notes_receipt_reports_the_clip_extent() {
+    const LEAD: &str = "01J8ZQ00000000000000000002";
+    let (mut dispatcher, auth) = dispatcher();
+    let scratch = Scratch::new("clip-receipt");
+    open(&scratch, &mut dispatcher, &auth);
+    let clip_id = "01J8ZQ00000000000000000099";
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "autoMerge": true,
+            "trackId": LEAD,
+            "create": true,
+            "clipId": clip_id,
+            "clipName": "Receipt",
+            "ops": [
+                {"kind": "add", "note": {"pitch": 60, "startTick": 0, "durationTicks": 960}},
+                {"kind": "add", "note": {"pitch": 64, "startTick": 960, "durationTicks": 960}},
+                {"kind": "add", "note": {"pitch": 67, "startTick": 1920, "durationTicks": 480}}
+            ],
+            "placement": {"kind": "add", "startTick": 0}
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let clip = &created["data"]["clip"];
+    assert_eq!(clip["clipId"], clip_id, "{created}");
+    assert_eq!(clip["noteCount"], 3, "{created}");
+    assert_eq!(clip["endTick"], 2400, "{created}");
+    let placement = &created["data"]["placement"];
+    assert_eq!(placement["clipId"], clip_id, "{created}");
+    assert_eq!(
+        placement["durationTicks"], 2400,
+        "缺省 = 片段内容长度: {created}"
+    );
+    assert_eq!(placement["loop"]["enabled"], false, "{created}");
+
+    // 与工程内实际值逐项一致（回执不是自说自话）。
+    {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let entry = project
+            .clip_pool
+            .get(&clip_id.parse().expect("ULID"))
+            .expect("片段在池里");
+        let yeban_model::ClipContent::Midi { notes } = &entry.content else {
+            panic!("必须是 MIDI 片段");
+        };
+        assert_eq!(u64::try_from(notes.len()).expect("len"), 3);
+        assert_eq!(
+            notes
+                .values()
+                .map(|note| note.start_tick + note.duration_ticks)
+                .max()
+                .expect("max"),
+            2400
+        );
+    }
+
+    // 改音符（追加一个更靠后的音符）⇒ 同一个回执键立即更新。
+    let edited = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "autoMerge": true,
+            "trackId": LEAD,
+            "clipId": clip_id,
+            "ops": [{"kind": "add", "note": {"pitch": 72, "startTick": 3840, "durationTicks": 480}}]
+        }),
+    );
+    assert_eq!(edited["status"], "success", "{edited}");
+    assert_eq!(edited["data"]["clip"]["noteCount"], 4, "{edited}");
+    assert_eq!(edited["data"]["clip"]["endTick"], 4320, "{edited}");
+
+    // 非片段级写入不发明 `clip` 键（不静默塞一份无关读数）。
+    let track_only = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "autoMerge": true,
+            "trackId": LEAD,
+            "ops": [{"kind": "setTrackMute", "trackId": LEAD, "value": false}]
+        }),
+    );
+    assert_eq!(track_only["status"], "success", "{track_only}");
+    assert!(
+        track_only["data"].get("clip").is_none(),
+        "纯音轨写入不得带 clip 回执: {track_only}"
+    );
+}

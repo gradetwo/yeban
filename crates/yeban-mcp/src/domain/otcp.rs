@@ -559,6 +559,7 @@ pub(crate) fn apply_deliver(
         None,
         &[],
         &sampler_warnings,
+        &None,
     )?;
     let proposal_id = match &response {
         ToolResponse::Success { data } => data
