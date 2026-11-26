@@ -17,6 +17,11 @@
 \RequirePackage{caption}
 \RequirePackage{amsmath}
 \RequirePackage{tikz}
+% Chapters place nodes with the positioning syntax (below=of,
+% right=of), compute coordinates with calc ($(a)+(1,0)$), and draw
+% on background layers; load those libraries centrally so every
+% volume builds without per-volume setup.
+\usetikzlibrary{positioning,calc,backgrounds}
 \RequirePackage{makeidx}
 \RequirePackage[colorlinks=true,linkcolor=yebanblue,urlcolor=yebanblue,citecolor=yebanblue]{hyperref}
 
