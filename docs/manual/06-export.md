@@ -48,3 +48,10 @@
 
 - 「诊断 → 导出工程诊断报告包」导出的是给排障用的诊断包，
   不是音频；作品有问题要找人看时附上它。
+- 包写到系统临时目录（`std::env::temp_dir()`，Linux 通常是 `/tmp`，
+  Windows 通常是 `%TEMP%`）；文件名
+  `yeban-diagnostics-<unix 时间戳>-<sha256 前 7 位>.zip`。
+- GUI 的 Toast 只报「已成功导出」，具体路径打印在启动终端的 stderr；
+  找不到就去临时目录取最新的 `yeban-diagnostics-*.zip`。
+- GUI 默认包内是 `env.txt`、`git.txt`、`config.json` 和 `MANIFEST.txt`，
+  不含作品音频；需要日志、崩溃或工程内容时，找排障同学走 CLI / MCP 入口补输入。
