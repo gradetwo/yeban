@@ -415,6 +415,8 @@ export component MainWindow inherits Window {
     in-out property <[string]> track-meter-peaks: [];
     in-out property <[string]> track-meter-rmss: [];
     in-out property <[float]> track-meter-levels: [];
+    // 引擎断流时的界面态：柱置灰、dBFS 文本改 "--"（与"真的静音"分开）。
+    in-out property <bool> meter-stale: false;
     in-out property <string> master-name: "Master";
     in-out property <string> master-volume-display: "-0.0 dB";
     in-out property <float> master-volume-fraction: 0.85;
@@ -3295,6 +3297,7 @@ export component MainWindow inherits Window {
             track-meter-peaks: root.track-meter-peaks;
             track-meter-rmss: root.track-meter-rmss;
             track-meter-levels: root.track-meter-levels;
+            meter-stale: root.meter-stale;
             master-name: root.master-name;
             master-volume-display: root.master-volume-display;
             master-volume-fraction: root.master-volume-fraction;

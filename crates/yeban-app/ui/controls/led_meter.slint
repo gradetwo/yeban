@@ -26,6 +26,9 @@ export component LedMeter inherits Rectangle {
     in property <float> level: 0.0;
     /// flat 模式的填充色 (旧内联原值由调用方注入)。
     in property <color> flat-color: Tokens.ok-green;
+    /// 引擎读数已过期：整条表置灰，峰值保持线不画（电平高度保留最后一帧，
+    /// 让"停住了"与"归零的静音"在画面上仍能区分）。
+    in property <bool> stale: false;
     // 无障碍转发 (根即语义节点, 与旧内联同形状)。
     in property <string> a11y-id: "";
     in property <string> a11y-label: "";
@@ -73,7 +76,7 @@ export component LedMeter inherits Rectangle {
         y: parent.height - 2px - 100px * root.level;
         width: parent.width - 2px;
         height: 100px * root.level;
-        background: root.flat-color;
+        background: root.stale ? Tokens.ink-2 : root.flat-color;
         border-radius: Tokens.radius-sm;
     }
 
@@ -81,8 +84,8 @@ export component LedMeter inherits Rectangle {
     for seg[idx] in 18: Rectangle {
         visible: Tokens.texture-physical;
         // 段的区位色: 段中心归一化位置 < 0.65 绿 / < 0.85 琥珀 / 以上红。
-        property <color> zone: (idx + 0.5) / 18 < 0.65 ? Tokens.ok-green
-            : ((idx + 0.5) / 18 < 0.85 ? Tokens.warn-amber : Tokens.record-red);
+        property <color> zone: root.stale ? Tokens.ink-2 : ((idx + 0.5) / 18 < 0.65 ? Tokens.ok-green
+            : ((idx + 0.5) / 18 < 0.85 ? Tokens.warn-amber : Tokens.record-red));
         // 亮段判据: 段中心被 level 覆盖。
         property <bool> lit: root.level * 18 >= idx + 0.5;
         // 峰值段判据: 峰值落在段内。
@@ -101,7 +104,7 @@ export component LedMeter inherits Rectangle {
 
         // 峰值保持线: 画在峰值段的上沿 (白色 55%, 1px)。
         Rectangle {
-            visible: parent.is-peak;
+            visible: parent.is-peak && !root.stale;
             x: 0;
             y: -1px;
             width: parent.width;

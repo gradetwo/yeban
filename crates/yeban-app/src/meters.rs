@@ -59,6 +59,14 @@ use crate::bridge::ViewState;
 /// `the_display_floor_is_the_engine_floor`）。
 pub const METER_FLOOR_DBFS: f32 = SILENCE_FLOOR_DBFS;
 
+/// 连续多少跳没有新量子就把电平判为 **stale**（界面柱置灰、文本 `"--"`）。
+///
+/// 取 **12 跳**：UI 心跳是 16 ms（`src/main.rs` 的 `slint::Timer`，62.5 Hz），
+/// 12 × 16 ms = **192 ms**（约 1/5 秒）；引擎默认量子是 128 帧 / 48 kHz ≈ 2.67 ms，
+/// 这段窗口约 72 个量子。它足以吸收偶发的一两帧 UI 抖动，又能在设备真正断流时
+/// 于 1/5 秒内把"定格"与"静音"分开，不必等用户先怀疑界面卡死。
+pub const METER_STALE_AFTER_TICKS: u32 = 12;
+
 /// 一个通道条的电平读数（UI 线程上的**值对象**，不是引擎状态）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelMeter {
@@ -147,12 +155,22 @@ pub struct MeterSnapshot {
     pub quantum: Option<u64>,
     /// 面板里已知的节点数（诊断用：与 `tracks + 1` 比较就知道"引擎报的轨道集"跟不跟得上工程）。
     pub nodes_seen: usize,
+    /// 电平是否已过期（有读数、但连续 [`METER_STALE_AFTER_TICKS`] 跳以上没有新量子）。
+    ///
+    /// 过期时界面把柱置灰、文本改 `"--"`；数值仍保留最后一帧（柱高不跳回 0），
+    /// 因此"引擎断流"与"真的静音"在画面上不再同形。
+    pub stale: bool,
 }
 
 impl MeterSnapshot {
     /// 每一轨的峰值显示文本（`track-meter-peaks` 的注入源）。
+    ///
+    /// stale 时统一给 `"--"`：数值仍是最后一帧，但界面不再把它冒充当前读数。
     #[must_use]
     pub fn peak_labels(&self) -> Vec<String> {
+        if self.stale {
+            return vec!["--".to_owned(); self.tracks.len()];
+        }
         self.tracks
             .iter()
             .map(|track| track.peak_label.clone())
@@ -162,6 +180,9 @@ impl MeterSnapshot {
     /// 每一轨的平滑 RMS 显示文本（`track-meter-rmss` 的注入源）。
     #[must_use]
     pub fn rms_labels(&self) -> Vec<String> {
+        if self.stale {
+            return vec!["--".to_owned(); self.tracks.len()];
+        }
         self.tracks
             .iter()
             .map(|track| track.rms_label.clone())
@@ -174,18 +195,24 @@ impl MeterSnapshot {
         self.tracks.iter().map(|track| track.level).collect()
     }
 
-    /// 主控峰值文本（无主总线时为下限文本）。
+    /// 主控峰值文本（无主总线时为下限文本；stale 时为 `"--"`）。
     #[must_use]
     pub fn master_peak_label(&self) -> String {
+        if self.stale {
+            return "--".to_owned();
+        }
         self.master.as_ref().map_or_else(
             || display_dbfs(METER_FLOOR_DBFS),
             |master| master.peak_label.clone(),
         )
     }
 
-    /// 主控 RMS 文本。
+    /// 主控 RMS 文本（stale 时为 `"--"`）。
     #[must_use]
     pub fn master_rms_label(&self) -> String {
+        if self.stale {
+            return "--".to_owned();
+        }
         self.master.as_ref().map_or_else(
             || display_dbfs(METER_FLOOR_DBFS),
             |master| master.rms_label.clone(),
@@ -230,9 +257,12 @@ impl MeterSnapshot {
         })
     }
 
-    /// 主控 LUFS 显示文本（`display_dbfs(master_lufs())`）。
+    /// 主控 LUFS 显示文本（`display_dbfs(master_lufs())`；stale 时为 `"--"`）。
     #[must_use]
     pub fn master_lufs_label(&self) -> String {
+        if self.stale {
+            return "--".to_owned();
+        }
         display_dbfs(self.master_lufs())
     }
 }
@@ -258,6 +288,7 @@ pub fn silent_snapshot(view: &ViewState) -> MeterSnapshot {
         master,
         quantum: None,
         nodes_seen: 0,
+        stale: false,
     }
 }
 
@@ -267,7 +298,7 @@ pub fn silent_snapshot(view: &ViewState) -> MeterSnapshot {
 /// 轨道集合可能暂时不一致（快照切换、轨道增删、淘汰），按下标对齐会把 A 轨的电平画到
 /// B 轨上。找不到帧的轨道给"静音"（有限值），**不给**上一条轨道的残留。
 #[must_use]
-pub fn snapshot(view: &ViewState, board: &MeterBoard) -> MeterSnapshot {
+pub fn snapshot(view: &ViewState, board: &MeterBoard, stale: bool) -> MeterSnapshot {
     // `MeterBoard` 内部是 `BTreeMap`（红线 4 的确定性顺序），把"面板里有什么"抄成
     // `Vec<(规范id, &MeterFrame)>` —— 轨道数在那儿是 O(轨道数 × 节点数) 的字符串比较，
     // 对 60Hz × 百轨量级完全够用，而且**不需要**在 app 侧再引入第二份索引。
@@ -294,6 +325,7 @@ pub fn snapshot(view: &ViewState, board: &MeterBoard) -> MeterSnapshot {
         master,
         quantum: board.latest_quantum(),
         nodes_seen: board.len(),
+        stale,
     }
 }
 
@@ -351,6 +383,10 @@ pub struct MeterRuntime {
     collector: Option<MeterCollector>,
     board: MeterBoard,
     scratch: Vec<MeterFrame>,
+    /// 连续"有读数但最大量子没有前进"的 UI 跳数。
+    stale_ticks: u32,
+    /// 本轮长度不一致是否已经发过可见回执（一次失配只响一次，恢复后重新武装）。
+    length_mismatch_reported: bool,
 }
 
 impl Default for MeterRuntime {
@@ -367,6 +403,8 @@ impl MeterRuntime {
             collector: None,
             board: MeterBoard::new(),
             scratch: Vec::new(),
+            stale_ticks: 0,
+            length_mismatch_reported: false,
         }
     }
 
@@ -387,6 +425,8 @@ impl MeterRuntime {
         self.collector = Some(collector);
         self.board = MeterBoard::new();
         self.scratch.clear();
+        self.stale_ticks = 0;
+        self.length_mismatch_reported = false;
     }
 
     /// 是否有引擎在供电平。
@@ -412,6 +452,7 @@ impl MeterRuntime {
         let Some(collector) = self.collector.as_mut() else {
             return 0;
         };
+        let before = self.board.latest_quantum();
         let want = expected_nodes.max(1);
         if self.scratch.len() < want {
             // UI 线程允许分配（红线 7 约束的是音频线程）。
@@ -419,13 +460,41 @@ impl MeterRuntime {
         }
         let filled = collector.drain_latest(&mut self.scratch);
         self.board.ingest(&self.scratch[..filled]);
+        let after = self.board.latest_quantum();
+        if after.is_some() && after == before {
+            self.stale_ticks = self.stale_ticks.saturating_add(1);
+        } else {
+            self.stale_ticks = 0;
+        }
         self.board.len()
+    }
+
+    /// 当前读数是否 stale（语义见 [`MeterSnapshot::stale`]）。
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.board.latest_quantum().is_some() && self.stale_ticks > METER_STALE_AFTER_TICKS
+    }
+
+    /// 记录一次"界面行数 ≠ 投影轨道数"；返回 `true` 表示**本次失配第一次**出现，
+    /// 调用方应发一次可见回执。连续失配只响一次，长度恢复后重新武装。
+    pub(crate) fn note_length_mismatch(&mut self) -> bool {
+        if self.length_mismatch_reported {
+            false
+        } else {
+            self.length_mismatch_reported = true;
+            true
+        }
+    }
+
+    /// 长度契约恢复 ⇒ 下一次再失配时允许重新发声。
+    pub(crate) fn clear_length_mismatch(&mut self) {
+        self.length_mismatch_reported = false;
     }
 
     /// 当前面板对齐到工程后的读数（界面要的形态）。
     #[must_use]
     pub fn snapshot(&self, view: &ViewState) -> MeterSnapshot {
-        snapshot(view, &self.board)
+        snapshot(view, &self.board, self.is_stale())
     }
 }
 
@@ -749,5 +818,88 @@ mod tests {
         // 0.0 dBFS rms - 0.691 dB = -0.691 LUFS -> 显示 "-0.7"
         assert!((shot.master_lufs() - (-0.691)).abs() < 1e-4);
         assert_eq!(shot.master_lufs_label(), "-0.7");
+    }
+
+    /// 判据 11：引擎断流后**推进 N 跳** ⇒ stale 为真、文本 `"--"`，数值仍停在最后一帧；
+    /// 新量子一到立刻复鲜（不是永久判死）。
+    #[test]
+    fn meter_goes_stale_after_n_ticks_without_a_new_quantum_and_recovers() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let track = first_track_id(&project);
+        let (mut publisher, collector) = meter_channel(16);
+        let mut runtime = MeterRuntime::with_collector(collector);
+
+        // 注入 5 个量子，每量子之后走一跳（与生产 60Hz 心跳同形）。
+        for quantum in 1..=5 {
+            publisher.publish(&[MeterFrame::new(track, quantum, 1.0, 1.0)]);
+            assert_eq!(runtime.poll(view.tracks.len() + 1), 1);
+        }
+        let fresh = runtime.snapshot(&view);
+        assert!(!fresh.stale, "量子在前进时不得 stale");
+        assert!(
+            !fresh.peak_labels().iter().any(|label| label == "--"),
+            "fresh 时文本仍是 dBFS：{:?}",
+            fresh.peak_labels()
+        );
+
+        // 停发之后推进 N 跳：恰好 N 跳还不 stale（窗口吸收 UI 抖动）。
+        for _ in 0..METER_STALE_AFTER_TICKS {
+            runtime.poll(view.tracks.len() + 1);
+        }
+        assert!(
+            !runtime.is_stale(),
+            "恰好 {METER_STALE_AFTER_TICKS} 跳边界内不得 stale"
+        );
+
+        // 第 N+1 跳才 stale（"差超 N 跳"）。
+        runtime.poll(view.tracks.len() + 1);
+        let stale = runtime.snapshot(&view);
+        assert!(
+            stale.stale,
+            "第 {} 跳必须 stale",
+            METER_STALE_AFTER_TICKS + 1
+        );
+        assert_eq!(stale.quantum, Some(5), "过期不改变最后一帧的量子读数");
+        assert!(
+            stale.peak_labels().iter().all(|label| label == "--"),
+            "stale 时每轨峰值文本必须是 --：{:?}",
+            stale.peak_labels()
+        );
+        assert!(
+            stale.rms_labels().iter().all(|label| label == "--"),
+            "stale 时每轨 RMS 文本必须是 --"
+        );
+        assert_eq!(stale.master_peak_label(), "--");
+        assert_eq!(stale.master_rms_label(), "--");
+        assert_eq!(stale.master_lufs_label(), "--");
+        assert!(
+            stale.levels().iter().any(|level| *level > 0.0),
+            "柱高保留最后一帧（置灰由界面完成，不把读数抹成 0）"
+        );
+
+        // 新量子到达 ⇒ 立即复鲜。
+        publisher.publish(&[MeterFrame::new(track, 6, 0.5, 0.5)]);
+        runtime.poll(view.tracks.len() + 1);
+        let recovered = runtime.snapshot(&view);
+        assert!(!recovered.stale, "有新量子必须复鲜");
+        assert!(
+            !recovered.peak_labels().iter().any(|label| label == "--"),
+            "复鲜后文本回到 dBFS：{:?}",
+            recovered.peak_labels()
+        );
+    }
+
+    /// 判据 12：长度失配的可见回执**一次失配只响一次**，恢复后重新武装。
+    #[test]
+    fn length_mismatch_notice_is_armed_once_until_lengths_recover() {
+        let mut runtime = MeterRuntime::empty();
+        assert!(runtime.note_length_mismatch(), "首次失配必须发声");
+        assert!(!runtime.note_length_mismatch(), "连续失配不得刷屏");
+        runtime.clear_length_mismatch();
+        assert!(
+            runtime.note_length_mismatch(),
+            "长度恢复后再次失配必须重新发声"
+        );
     }
 }

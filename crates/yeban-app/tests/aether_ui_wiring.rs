@@ -87,6 +87,7 @@ fn apply_meters_projects_master_left_and_right_separately() {
         master: Some(master),
         quantum: Some(9),
         nodes_seen: 1,
+        stale: false,
     };
 
     host::apply_meters(ui, &snapshot);

@@ -184,6 +184,7 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
+    in property <bool> meter-stale: false;
     in property <string> master-name: "Master";
     in property <string> master-volume-display: "";
     in property <float> master-volume-fraction: 0.0;
@@ -507,6 +508,7 @@ export component ConsoleTabs inherits Rectangle {
         track-meter-peaks: root.track-meter-peaks;
         track-meter-rmss: root.track-meter-rmss;
         track-meter-levels: root.track-meter-levels;
+        meter-stale: root.meter-stale;
         master-name: root.master-name;
         master-volume-display: root.master-volume-display;
         master-volume-fraction: root.master-volume-fraction;

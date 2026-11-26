@@ -68,6 +68,7 @@
 use yeban_app::bridge::{ViewState, demo_project};
 use yeban_app::engine_host::EditMark;
 use yeban_app::host::{self, MeterPump, ProductionLoop};
+use yeban_app::meters::{METER_STALE_AFTER_TICKS, MeterRuntime};
 use yeban_app::scene::DemoScene;
 use yeban_engine::meter::{MeterFrame, MeterPublisher, meter_channel};
 use yeban_model::AutomationTarget;
@@ -143,6 +144,126 @@ impl Window {
     fn master_peak(&self) -> String {
         self.ui().get_master_meter_peak().to_string()
     }
+}
+
+/// 判据（**可见回执**）：长度契约被打破时，`pump_meters` 必须把"电平暂停"写进
+/// **提示条＋模块回执行**，而不是只返回一个枚举让调用方自己猜；同一段失配只响一次，
+/// 长度恢复后才重新武装。
+#[test]
+fn length_mismatch_reports_one_visible_notice_per_episode() {
+    let project = demo_project();
+    let window = Window::new(&project);
+    let view = ViewState::from_project(&project).expect("投影");
+
+    let full_names = window.ui().get_track_names();
+    let full_rows = slint::Model::row_count(&full_names);
+    assert!(full_rows > 1, "演示工程至少要有两条轨用于缩短");
+    let short_names = slint::ModelRc::new(slint::VecModel::from(vec![
+        slint::Model::row_data(&full_names, 0).expect("第 0 行必须存在"),
+    ]));
+    window.ui().set_track_names(short_names);
+
+    let mut runtime = MeterRuntime::empty();
+    let pump = host::pump_meters(window.ui(), &mut runtime, &view);
+    assert!(
+        matches!(pump, MeterPump::LengthMismatch { rows, projected } if rows == 1 && projected == full_rows),
+        "必须如实回报 1 行界面 / {full_rows} 条投影，实为 {pump:?}"
+    );
+    let notice = window.ui().get_module_status_text().to_string();
+    assert!(
+        notice.contains("电平暂停"),
+        "失配必须写进模块回执行（用户可见），实为 `{notice}`"
+    );
+    assert!(
+        window.ui().get_toast_message().contains("电平暂停"),
+        "失配必须同时写进提示条"
+    );
+
+    // 连续失配不得刷屏：把回执行改成哨兵，第二跳若又写一次就会被抓。
+    window.ui().set_module_status_text("sentinel".into());
+    window.ui().set_toast_message("sentinel".into());
+    let again = host::pump_meters(window.ui(), &mut runtime, &view);
+    assert!(matches!(again, MeterPump::LengthMismatch { .. }));
+    assert_eq!(
+        window.ui().get_module_status_text().as_str(),
+        "sentinel",
+        "同一段失配只许响一次"
+    );
+
+    // 长度恢复 ⇒ 清掉"已发声"标记；再次失配必须重新响。
+    window.ui().set_track_names(full_names.clone());
+    assert!(matches!(
+        host::pump_meters(window.ui(), &mut runtime, &view),
+        MeterPump::Applied(_)
+    ));
+    window.ui().set_module_status_text("sentinel-2".into());
+    window
+        .ui()
+        .set_track_names(slint::ModelRc::new(slint::VecModel::from(vec![
+            slint::Model::row_data(&full_names, 0).expect("第 0 行必须存在"),
+        ])));
+    assert!(matches!(
+        host::pump_meters(window.ui(), &mut runtime, &view),
+        MeterPump::LengthMismatch { .. }
+    ));
+    assert!(
+        window.ui().get_module_status_text().contains("电平暂停"),
+        "恢复后再失配必须重新发声"
+    );
+}
+
+/// 判据（**界面 stale**）：注入 5 个量子后停发，推进 N 跳 ⇒ `meter-stale` 为真，
+/// 界面文本全部变成 `"--"`；数值柱高保留最后一帧（置灰，不抹成 0）。
+#[test]
+fn meter_stale_after_n_ticks_is_visible_in_the_slint_properties() {
+    let project = demo_project();
+    let window = Window::new(&project);
+    let view = ViewState::from_project(&project).expect("投影");
+    let track = track_ids(&project, &view)[0];
+
+    let (mut publisher, collector) = meter_channel(64);
+    let mut runtime = MeterRuntime::with_collector(collector);
+    for quantum in 1..=5 {
+        publisher.publish(&[MeterFrame::new(track, quantum, 1.0, 1.0)]);
+        assert!(matches!(
+            host::pump_meters(window.ui(), &mut runtime, &view),
+            MeterPump::Applied(_)
+        ));
+    }
+    assert!(!window.ui().get_meter_stale(), "量子前进时不得 stale");
+    assert!(
+        !strings_of(&window.ui().get_track_meter_peaks())
+            .iter()
+            .any(|label| label == "--"),
+        "fresh 时界面仍是 dBFS"
+    );
+
+    for _ in 0..=METER_STALE_AFTER_TICKS {
+        assert!(matches!(
+            host::pump_meters(window.ui(), &mut runtime, &view),
+            MeterPump::Applied(_)
+        ));
+    }
+    assert!(window.ui().get_meter_stale(), "停发 N+1 跳后必须 stale");
+    assert!(
+        strings_of(&window.ui().get_track_meter_peaks())
+            .iter()
+            .all(|label| label == "--"),
+        "stale 时每轨峰值文本必须是 --"
+    );
+    assert!(
+        strings_of(&window.ui().get_track_meter_rmss())
+            .iter()
+            .all(|label| label == "--"),
+        "stale 时每轨 RMS 文本必须是 --"
+    );
+    assert_eq!(window.ui().get_master_meter_peak().as_str(), "--");
+    assert!(
+        lengths_of(&window.ui().get_track_meter_levels())
+            .iter()
+            .any(|level| *level > 0.0),
+        "柱高必须保留最后一帧，置灰由 .slint 的 meter-stale 完成"
+    );
 }
 
 /// 序数化的探针行：每一次读数都带上"第几跳 + 哪一个探针 + 字面值"。

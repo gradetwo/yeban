@@ -254,6 +254,8 @@ export component MixerConsole inherits Rectangle {
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
+    /// 引擎断流 ⇒ 电平柱置灰、文本 `"--"`（数值保留最后一帧，不再冒充当前读数）。
+    in property <bool> meter-stale: false;
 
     // ---- 主控通道条 (同样由投影 + 电平驱动) ----
     in property <string> master-name: "Master";
@@ -712,6 +714,7 @@ export component MixerConsole inherits Rectangle {
                 width: 12px;
                 height: 104px;
                 level: root.track-meter-levels[track_index];
+                stale: root.meter-stale;
                 flat-color: Tokens.ok-green;
                 a11y-id: "track-" + track_index + "-meter";
                 a11y-label: @tr("轨道 {} 电平表 峰值 {} RMS {} dBFS", track_name, root.track-meter-peaks[track_index], root.track-meter-rmss[track_index]);
@@ -1189,6 +1192,7 @@ export component MixerConsole inherits Rectangle {
             width: 14px;
             height: 104px;
             level: root.master-meter-level;
+            stale: root.meter-stale;
             flat-color: Tokens.warn-amber;
             a11y-id: "mixer-master-meter";
             a11y-label: @tr("主控电平表 峰值 {} RMS {} dBFS", root.master-meter-peak, root.master-meter-rms);

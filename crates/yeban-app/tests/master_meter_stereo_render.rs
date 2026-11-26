@@ -49,6 +49,7 @@ fn demo_snapshot(view: &ViewState, left: f32, right: f32) -> MeterSnapshot {
         master: Some(master),
         quantum: Some(11),
         nodes_seen: 1,
+        stale: false,
     }
 }
 

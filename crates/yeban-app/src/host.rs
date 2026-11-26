@@ -6472,6 +6472,7 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     if !update_f32_model_in_place(&ui.get_track_meter_levels(), &levels) {
         ui.set_track_meter_levels(lengths(&levels));
     }
+    ui.set_meter_stale(snapshot.stale);
     // 可观测性（本轮实测教训）：电平"到底有没有读数"必须能在 stderr 读到，否则界面上一根
     // 不动时分不清两件完全不同的事——"引擎给的就是静音" 与 "值到了但没画出来"。
     // 只在**首次**出现非零读数时打一行（稳态零噪声，一次排查够用）。
@@ -7568,11 +7569,20 @@ pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState)
     let snapshot = meters.snapshot(view);
     let rows = slint::Model::row_count(&ui.get_track_names());
     if rows != snapshot.tracks.len() {
+        if meters.note_length_mismatch() {
+            let notice = format!(
+                "混音台电平暂停：界面 {rows} 条通道、工程 {} 条轨道；换工程完成后自动恢复。",
+                snapshot.tracks.len()
+            );
+            eprintln!("[yeban-app] 电平：{notice}");
+            report_notice(ui, &notice, true);
+        }
         return MeterPump::LengthMismatch {
             rows,
             projected: snapshot.tracks.len(),
         };
     }
+    meters.clear_length_mismatch();
     apply_meters(ui, &snapshot);
     MeterPump::Applied(snapshot)
 }
