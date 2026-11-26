@@ -169,6 +169,85 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 宽 = 相邻两条小节线的差；只为**可见范围**生成节点（长工程不把上千条网格线
 /// 塞进控件树），因此标尺 / 网格 / 片段块三者用同一个水平刻度。
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+/// ⭐ T-FIX-494：**只重写依赖横向偏移**的那一组属性（滚动快路径与整份重投影共用）。
+///
+/// 过去滚轮/双指滚动**每个事件**都走 `project_with_view_state` + 整份 `apply_view`：
+/// 几十个属性、五个大数组全部换实例，只为改一个偏移标量。这里把真正随偏移变化的
+/// 写点收在一处（标尺读数、网格密度、可见音符五连数组 + 选中标志、`roll-scroll-x`、
+/// 可见 tick 上下界）；其余属性与偏移无关，快路径⛔ 不碰。
+pub fn apply_scroll_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll_x: f32) {
+    // 标尺 / 网格 / 片段块共用同一条水平刻度：小节数与小节宽都从 `bar_positions` 求。
+    let (bar_start, bar_count, bar_width_px) =
+        bar_ruler_readout(&view.bar_positions, viewport_width, scroll_x);
+    ui.set_bar_start_index(bar_start);
+    ui.set_bar_count(bar_count);
+    ui.set_bar_width_px(bar_width_px);
+    let density = grid_density(bar_width_px, i32::from(view.time_signature_numerator));
+    ui.set_grid_label_stride(density.label_stride_bars);
+    ui.set_grid_line_unit(density.line_unit_bars);
+    ui.set_grid_show_beat_ticks(density.show_beat_ticks);
+    ui.set_grid_show_lane_beats(density.show_lane_beats);
+    ui.set_grid_subdiv_per_beat(density.subdiv_per_beat);
+    // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
+    // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
+    // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
+    // `VisibleNotes::rows`（音高车道索引）**有意不注入**：纵向几何已由投影算进 `ys`
+    // （`pitch_lane` 一次乘法），宿主与 `.slint` 两侧都没有车道索引的消费者
+    // ⇒ 登记与判据见 `bridge.rs` 的 `VisibleNotes::rows` 与 `tests/roll_injection_registration.rs`
+    // （台账第 283 条：生产读点 0；改这里之前先读那条登记）。
+    // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
+    // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
+    // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
+    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view), None);
+    let mut visible = if roll_scope(ui, view).is_some() {
+        visible
+    } else if let Some(index) = view
+        .selected_track
+        .as_deref()
+        .and_then(|id| view.tracks.iter().position(|track| track.id == id))
+    {
+        let allowed: std::collections::BTreeSet<&str> = view
+            .clips
+            .iter()
+            .filter(|clip| clip.track_index == index)
+            .map(|clip| clip.clip_id.as_str())
+            .collect();
+        let mut scoped = visible;
+        scoped.retain_clip_ids(&allowed);
+        scoped
+    } else {
+        visible
+    };
+    // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
+    // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
+    // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
+    let selected_ulids: Vec<String> = {
+        use slint::Model as _;
+        ui.get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    let flags = crate::input::flags_for_ids(&selected_ulids, &visible.ulids);
+    ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
+    // 把偏移留在界面对象上：撤销刷新要复用同一个值（账本第 200/201 轮）。
+    ui.set_roll_scroll_x(scroll_x);
+    let (min_tick, max_tick) = view.visible_tick_range(scroll_x, viewport_width);
+    ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
+    ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
+    // 纵向基音平移后的 ys（纵向滚轮/八度平移只改 base，⛔ 不改偏移）。
+    let roll_base = roll_base_pitch(ui);
+    if roll_base != crate::bridge::PITCH_LANE_BASE {
+        view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, roll_base);
+    }
+    ui.set_note_ulids(strings(&visible.ulids));
+    ui.set_note_velocities(lengths(&visible.velocities));
+    ui.set_note_positions(lengths(&visible.positions));
+    ui.set_note_widths(lengths(&visible.widths));
+    ui.set_note_ys(lengths(&visible.ys));
+    // ── 注入块到此结束（T-FIX-494）：滚动快路径只写上面这些依赖偏移的属性。
+}
+
 fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32, scroll_x: f32) -> (i32, i32, f32) {
     let bar_width = match bar_positions {
         [first, second, ..] => (second - first).max(0.0),
@@ -601,105 +680,20 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
-    // [Q6] 标尺 / 网格 / 片段块共用同一条水平刻度：小节数与小节宽都从
-    // `bar_positions` 求，`.slint` 不再写死 `1..36` 与 64px。
-    let (bar_start, bar_count, bar_width_px) =
-        bar_ruler_readout(&view.bar_positions, viewport_width, scroll_x);
-    ui.set_bar_start_index(bar_start);
-    ui.set_bar_count(bar_count);
-    ui.set_bar_width_px(bar_width_px);
-    // 拍刻度 / 拍线的拍位来源：投影的拍号分子（标量，与小节读数同批写入；
-    // Wang 2026-11-17：编曲网格以拍为常显基本单位）。
     ui.set_beats_per_bar(i32::from(view.time_signature_numerator));
-    // 网格密度读数（五版自适应，Wang 2026-11-17 14:37 按 Logic 实测规格）：
-    // 编号步长 / 线条单位 / 拍刻度与车道拍线可见性 / 每拍细分份数，全部由
-    // `grid_density` 按当前小节宽与拍号分子一次算出（五个标量，与小节读数
-    // 同批写入；规则与阈值来源见 `grid_density` 的文档）。
-    let density = grid_density(bar_width_px, i32::from(view.time_signature_numerator));
-    ui.set_grid_label_stride(density.label_stride_bars);
-    ui.set_grid_line_unit(density.line_unit_bars);
-    ui.set_grid_show_beat_ticks(density.show_beat_ticks);
-    ui.set_grid_show_lane_beats(density.show_lane_beats);
-    ui.set_grid_subdiv_per_beat(density.subdiv_per_beat);
-    // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
-    // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
-    // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
-    // `VisibleNotes::rows`（音高车道索引）**有意不注入**：纵向几何已由投影算进 `ys`
-    // （`pitch_lane` 一次乘法），宿主与 `.slint` 两侧都没有车道索引的消费者
-    // ⇒ 登记与判据见 `bridge.rs` 的 `VisibleNotes::rows` 与 `tests/roll_injection_registration.rs`
-    // （台账第 283 条：生产读点 0；改这里之前先读那条登记）。
-    // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
-    // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
-    // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
-    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view), None);
-    // 作用域优先级：选中片段的摆放（`clip-select`）> 选中轨（兜底）> 全部。
-    // 报告反馈③：旧口径在没有选中片段时显示**所有轨**的音符，和"当前轨道"对不上。
-    // ⚠ 保留上面那一行**唯一**的 `visible_notes_scoped` 绑定（判据
-    // `roll_injection_registration` 以它作注入窗口锚点）；选中轨的收窄在下面。
-    let mut visible = if roll_scope(ui, view).is_some() {
-        visible
-    } else if let Some(index) = view
-        .selected_track
-        .as_deref()
-        .and_then(|id| view.tracks.iter().position(|track| track.id == id))
-    {
-        let allowed: std::collections::BTreeSet<&str> = view
-            .clips
-            .iter()
-            .filter(|clip| clip.track_index == index)
-            .map(|clip| clip.clip_id.as_str())
-            .collect();
-        let mut scoped = visible;
-        scoped.retain_clip_ids(&allowed);
-        scoped
-    } else {
-        visible
-    };
-    // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
-    // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
-    // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
-    let selected_ulids: Vec<String> = {
-        use slint::Model as _;
-        ui.get_selected_ulids()
-            .iter()
-            .map(|id| id.to_string())
-            .collect()
-    };
-    let flags = crate::input::flags_for_ids(&selected_ulids, &visible.ulids);
-    ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
-    // 把偏移**留在界面对象上**：撤销刷新要复用同一个值（账本第 200/201 轮）。
-    ui.set_roll_scroll_x(scroll_x);
-    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：编曲横向滚动条的内容总长（逻辑像素）。
-    // 唯一事实源 = 投影的 `content_end_tick`（`Shift+Z` 全曲总览读的同一格）× 当前
-    // 横向缩放 ⇒ 缩放一变，滚动条滑块的大小 / 位置同步更新。`tick_to_px` 失败
-    // （溢出）⇒ 0（滑块退回"内容不可见"，⛔ 不 panic）。本行计入
-    // `APPLY_VIEW_WRITE_SITE_BUDGET`（101 → 102，见 `tests/perf_draw_budget.rs`）。
+    // ⭐ T-FIX-494：**所有依赖横向偏移**的属性集中在 apply_scroll_view（标尺读数、
+    // 网格密度、可见音符五连数组、滚动偏移、可见 tick 上下界）。滚动事件走的快路径
+    // 调的是同一个函数 ⇒ 屏幕结果与整份重投影逐位相同，⛔ 不写第二份实现。
+    reframe_roll_pitch_if_scope_changed(ui, view);
+    let (min_pitch, max_pitch) = roll_visible_pitch_window(ui);
+    ui.set_roll_min_pitch(i32::from(min_pitch));
+    ui.set_roll_max_pitch(i32::from(max_pitch));
+    apply_scroll_view(ui, view, viewport_width, scroll_x);
+    // ⭐ 2026-11-07：编曲横向滚动条的内容总长（缩放派生，⛔ 不随偏移变）。
     ui.set_arrangement_content_px(
         crate::bridge::tick_to_px(view.content_end_tick(), roll_ticks_per_pixel(ui))
             .map_or(0.0, |px| px as f32),
     );
-    // `[UI-NOTE-001]` 步骤 ①：把裁剪窗口换算成 tick 上下界并发布（音高上下界待做, 见账本第 201 轮）。
-    let (min_tick, max_tick) = view.visible_tick_range(scroll_x, viewport_width);
-    ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
-    ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
-    // 纵向：泳道数 16 与 `piano_roll.slint` 的 `for lane_index in 16` 一致（第 202 轮记录了它的来源问题）。
-    // ⭐ 作用域取景（2026-11-23）：先按当前作用域（片段/轨/全部）校正音高窗口，
-    // 再读 base 算 min/max 与 y——作用域刚变时本帧就用新窗口，⛔ 不留一帧陈旧窗口。
-    // 作用域没变时本调用一位不动，下面的「保留当前音高视野」口径原样成立。
-    reframe_roll_pitch_if_scope_changed(ui, view);
-    // 先读当前卷帘音域基音：纵向滚轮/八度平移之后若只横向滚动或编辑音符，必须保留当前的 min/max 音高视野。
-    let roll_base = roll_base_pitch(ui);
-    let (min_pitch, max_pitch) = roll_visible_pitch_window(ui);
-    ui.set_roll_min_pitch(i32::from(min_pitch));
-    ui.set_roll_max_pitch(i32::from(max_pitch));
-    if roll_base != crate::bridge::PITCH_LANE_BASE {
-        view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, roll_base);
-    }
-    ui.set_note_ulids(strings(&visible.ulids));
-    ui.set_note_velocities(lengths(&visible.velocities));
-    ui.set_note_positions(lengths(&visible.positions));
-    ui.set_note_widths(lengths(&visible.widths));
-    ui.set_note_ys(lengths(&visible.ys));
     // 轨道色标：解析 / 回退都在投影层完成，这里只转成 Slint 的 `Color`。
     ui.set_track_colors(colors(&view.track_colors()));
     ui.set_track_color_labels(strings(&view.track_color_labels()));
@@ -24951,6 +24945,38 @@ fn reproject_roll(ui: &MainWindow, port: &UndoPort, width: f32, scroll: f32) {
 ///
 /// `fallback_view` 只在端口缺席、或它此刻没有活跃工程时使用（与 [`install_roll_click`]
 /// 的 `fallback_view` 同一语义）：那时如实退回快照，而不是在一个 Slint 回调里 panic。
+/// ⭐ T-FIX-494：滚动路径的**投影缓存**（工程版本 / 窗口宽 / 缩放 三者不变就复用）。
+///
+/// 纯滚动只改偏移标量，投影本身（`ViewState::from_project…`：音符、片段、自动化
+/// 全量映射）在偏移不变时是同一份 ⇒ 每个事件重算一次纯属浪费。缓存键取
+/// `UndoPort::fingerprint()`（工程身份 + 提交版本）+ 窗口宽 + `roll-ticks-per-pixel`：
+/// 任何一项变了就重建，⛔ 不复用过期投影。
+#[allow(clippy::type_complexity)]
+fn scroll_projection(
+    ui: &MainWindow,
+    port: Option<&Rc<UndoPort>>,
+    fallback: &Rc<ViewState>,
+    cache: &Rc<std::cell::RefCell<Option<(Option<String>, f32, f32, Rc<ViewState>)>>>,
+) -> Rc<ViewState> {
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    let zoom = ui.get_roll_ticks_per_pixel() as f32;
+    let key = port.and_then(|port| port.fingerprint());
+    if let Some((cached_key, cached_width, cached_zoom, view)) = cache.borrow().as_ref()
+        && *cached_key == key
+        && (*cached_width - width).abs() < 0.5
+        && (*cached_zoom - zoom).abs() < f32::EPSILON
+    {
+        return Rc::clone(view);
+    }
+    let view = port
+        .and_then(|port| {
+            port.with_project(|project| project_with_view_state(project, ui).ok())
+                .flatten()
+        })
+        .map_or_else(|| Rc::clone(fallback), Rc::new);
+    *cache.borrow_mut() = Some((key, width, zoom, Rc::clone(&view)));
+    view
+}
 fn install_roll_scroll(
     ui: &MainWindow,
     fallback_view: std::rc::Rc<ViewState>,
@@ -24961,10 +24987,16 @@ fn install_roll_scroll(
     // 内存镜像。存副本的话"重新接线"就要手工播种、别的写者改了偏移也会被镜像盖回去
     // （与 [`install_roll_click`] 从 `selected-ulids` 播种是同一件事，但这里连播种都不需要）。
     let weak = ui.as_weak();
+    // ⭐ T-FIX-494：滚动投影缓存（见 [`scroll_projection`]）。
+    #[allow(clippy::type_complexity)]
+    let projection_cache: Rc<
+        std::cell::RefCell<Option<(Option<String>, f32, f32, Rc<ViewState>)>>,
+    > = Rc::new(std::cell::RefCell::new(None));
     ui.on_scroll_requested({
         let weak = weak.clone();
         let port = port.clone();
         let fallback_view = Rc::clone(&fallback_view);
+        let projection_cache = Rc::clone(&projection_cache);
         move |delta| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -24973,16 +25005,9 @@ fn install_roll_scroll(
             // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
             let next = advance_scroll(ui.get_roll_scroll_x(), delta);
             let width = slint::ComponentHandle::window(&ui).size().width as f32;
-            // ⭐ T-FIX-431：滚动路径借用读，⛔ 不深拷贝整份工程。
-            let refreshed = port.as_ref().and_then(|port| {
-                port.with_project(|project| project_with_view_state(project, &ui).ok())
-                    .flatten()
-            });
-            match refreshed {
-                // 端口在场 ⇒ 用**此刻**的工程投影（与 [`reproject_roll`] 同一条链）。
-                Some(refreshed) => apply_view(&ui, &refreshed, width, next),
-                None => apply_view(&ui, &fallback_view, width, next),
-            }
+            // ⭐ T-FIX-494：只重写依赖偏移的属性；投影按需复用（T-FIX-431 已保证不深拷贝）。
+            let view = scroll_projection(&ui, port.as_ref(), &fallback_view, &projection_cache);
+            apply_scroll_view(&ui, &view, width, next);
         }
     });
 
@@ -24992,6 +25017,7 @@ fn install_roll_scroll(
         let weak = weak.clone();
         let port = port.clone();
         let fallback_view = Rc::clone(&fallback_view);
+        let projection_cache = Rc::clone(&projection_cache);
         move |delta_x, delta_y, shift, alt| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -25048,15 +25074,9 @@ fn install_roll_scroll(
 
             if scroll_changed || pitch_changed {
                 let width = slint::ComponentHandle::window(&ui).size().width as f32;
-                // ⭐ T-FIX-431：卷帘滚轮同样借用读，⛔ 不深拷贝整份工程。
-                let refreshed = port.as_ref().and_then(|port| {
-                    port.with_project(|project| project_with_view_state(project, &ui).ok())
-                        .flatten()
-                });
-                match refreshed {
-                    Some(refreshed) => apply_view(&ui, &refreshed, width, next_scroll),
-                    None => apply_view(&ui, &fallback_view, width, next_scroll),
-                }
+                // ⭐ T-FIX-494：与横向滚动同一条快路径（投影按需复用、只重写偏移/音高相关属性）。
+                let view = scroll_projection(&ui, port.as_ref(), &fallback_view, &projection_cache);
+                apply_scroll_view(&ui, &view, width, next_scroll);
             }
         }
     });

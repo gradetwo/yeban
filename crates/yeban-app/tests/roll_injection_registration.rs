@@ -33,8 +33,8 @@ const BRIDGE_RS: &str = include_str!("../src/bridge.rs");
 /// ⚠ 作用域切片（`[UI-NOTE-001]` 的"当前编辑片段"）之后**唯一**的取法带上了
 /// `roll_scope(ui, view)`（选中剪辑 → 片段池条目）；数组集合与 `rows` 的处置**一位未变**。
 const INJECT_ANCHOR: &str = "let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view), None);";
-/// 注入块的终点（下一个与音符无关的注入）—— 窗口是**半开**的。
-const INJECT_END: &str = "ui.set_track_colors(";
+/// 注入块的终点（T-FIX-494：音符注入搬进 `apply_scroll_view`，终点改为该块末尾的哨兵注释）—— 窗口是**半开**的。
+const INJECT_END: &str = "// ── 注入块到此结束";
 /// 被判的那段注释的起点。
 const COMMENT_ANCHOR: &str = "// `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**";
 

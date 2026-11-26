@@ -575,7 +575,13 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 74;
 /// `ui.set_device_curve_svgs(...)` 是设备链逐台真实曲线的唯一注入点（与
 /// `device-names` 同住 `apply_view`）。默认工程没有 EQ/压缩设备 ⇒ 每项空串，
 /// 卡片 `Path` 隐藏 ⇒ 默认帧不变。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 125;
+// ⭐ T-FIX-494：125 → 108。
+//
+// 依赖横向偏移的那 17 个写点（标尺三连 + 网格五连 + 音符五连 + note-selected +
+// roll-scroll-x + tick 上下界）从 `apply_view` 移进了 `apply_scroll_view`，
+// 由整份重投影与滚动快路径**共用**。`apply_view` 自己的写入点因此从 125 降到 108；
+// 总写入量没有增加（移动，不是新增），滚动事件那一路反而从"每次 100+ 写"降到 17。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 108;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
