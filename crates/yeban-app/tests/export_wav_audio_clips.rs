@@ -297,6 +297,9 @@ fn export_via_cli(container: &Path, out: &Path) -> Vec<String> {
         container.display().to_string(),
         "--export-wav".to_owned(),
         out.display().to_string(),
+        // T-FIX-360: 旧判据钉的是 8 秒产物；改成显式用户值，不再借“产品默认”保字节。
+        "--wav-seconds".to_owned(),
+        "8".to_owned(),
     ])
     .expect("命令行必须可解析");
     run_batch(&options).expect("生产导出入口必须成功")

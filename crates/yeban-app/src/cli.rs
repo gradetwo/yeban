@@ -475,7 +475,7 @@ pub fn usage_text() -> String {
   --record-wav <path>      录一段**测试音**成 24-bit WAV (音源 = 内存正弦 440Hz, ⛔ 不是声卡);
                            三段走 ARCH-REC-001: 构造期建环 -> 逐帧推 -> 抽干落盘;
                            输出行 recorded-wav: path=… frames=… dropped=… bytes=… source=…
-  --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
+  --record-seconds <n>     --record-wav 的秒数 (不给时取工程可闻末端, 空工程 2.0)
   --record-source <s>      project (默认) = 录**工程离线渲染的声音** (与 --export-wav 同一条
                            核心 ＋ 同一种子 ⇒ **逐位一致**); tone = 内存正弦测试音
                            与 --sfz 同时给 ⇒ 录的就是**该 SFZ 音色**的声音
@@ -547,7 +547,7 @@ pub fn usage_text() -> String {
                            ⚠ 只在**无窗口路径**上执行: 只给本开关 (不给 --save-as /
                            --export-* / --headless 等) 会进 GUI 路径, 导入**不会发生**
                            (与 --import-midi 同一条既存口径)
-  --export-wav <path>      把当前工程**离线渲染**成 WAV (默认 24-bit 立体声 8 秒): 音源是
+  --export-wav <path>      把当前工程**离线渲染**成 WAV (默认 24-bit 立体声, 时长取工程可闻末端): 音源是
                            最小音源 (**方波 + 首尾包络**, ⛔ 非引擎乐器, 见 `export_wav.rs` 的
                            诚实登记); 与 --export-midi 同族: 不给 --open 时导出演示工程;
                            位深 / 采样率 / 时长 / 帧数由下面四条选
@@ -557,8 +557,9 @@ pub fn usage_text() -> String {
   --wav-sample-rate <hz>   --export-wav 的输出采样率, 取值必须是规范枚举之一:
                            44100 | 48000 | 88200 | 96000 | 192000
                            (默认**跟随工程** audio_config.sample_rate; 要旧口径就显式给 48000)
-  --wav-seconds <秒>       --export-wav 的**时长** (默认 8 秒, 与旧行为一致;
-                           帧数 = round(秒 × 采样率)); ⛔ 缺省不是\"工程可闻末端\"
+  --wav-seconds <秒>       --export-wav 的**时长** (不给时按工程可闻末端推导,
+                           与 GUI/MCP 同款; 帧数 = round(秒 × 采样率);
+                           要旧口径就显式给 8)
   --limiter                --export-wav 在**主总线推子之后**跑母线限制器
                            (默认关; 开启时补偿 33 帧前瞻延迟, 输出长度不变)
   --wav-frames <n>         --export-wav 的**精确帧数** (与 MCP render_master.frames 同量纲):
@@ -1688,7 +1689,8 @@ pub struct Options {
     /// （报告行 `source=in-memory-sine(440Hz)`）；`--record-seconds` 给秒数（默认 2.0）。
     /// 环满 ⇒ 丢弃并计数（输出行 `dropped=`），⛔ 不阻塞、⛔ 不 panic。
     pub record_wav: Option<PathBuf>,
-    /// `--record-seconds <n>`：`--record-wav` 的录制秒数（默认 2.0）。
+    /// `--record-seconds <n>`：`--record-wav` 的录制秒数。不给时与 `--export-wav`
+    /// 共用工程可闻末端推导（T-FIX-360）；仅空工程退到 2.0 的最小默认。
     pub record_seconds: Option<f32>,
     /// `--record-source <project|tone>`：录什么（默认 **project** = 工程离线渲染的声音；
     /// `tone` = 内存正弦测试音）。⭐ `project` **已接 `--sfz`**：同时给了 `--sfz` ⇒ 录的就是
@@ -1928,9 +1930,9 @@ pub struct Options {
     pub wav_sample_rate: Option<SampleRate>,
     /// `--wav-seconds <秒>`：`--export-wav` 的**时长**（帧数 = `round(秒 × 采样率)`）。
     ///
-    /// 缺省（不给）= **8 秒**（[`crate::export_wav::DEFAULT_WAV_SECONDS`]，与旧行为逐字一致）。
-    /// ⚠ 本切片**没有**把缺省改成"工程可闻末端"：导出路径今天没有"工程有多长"的唯一权威
-    /// 读数，那属**新能力**而不是接线；要更长的产物就显式给秒数。
+    /// 缺省（不给）= 按**工程可闻末端**推导（`content_end_tick` + tempo，与 GUI / MCP
+    /// 同款）；只有空工程 / 末端为 0 才退到 [`crate::export_wav::DEFAULT_WAV_SECONDS`]。
+    /// 要旧口径就显式给 `8`。来源在回执的 `secondsSource=` / `projectEndSeconds=` 里可见。
     pub wav_seconds: Option<f32>,
     /// `--wav-frames <n>`：`--export-wav` 的**精确帧数**（与 MCP `render_master.frames`
     /// 同一量纲，用来让两侧的产物长度逐字节对齐）。
@@ -6818,9 +6820,23 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     if let Some(path) = options.record_wav.as_ref() {
         let mut record_options = crate::record_wav::RecordOptions::default();
-        if let Some(seconds) = options.record_seconds {
+        // ⭐ T-FIX-360：与 `--export-wav` 共用同一套工程末端推导；显式 `--record-seconds`
+        // 优先，空工程 ⇒ 沿用 RecordOptions 的 2 秒最小默认并标 `secondsSource=fallback`。
+        let record_project = recorded_bound_project
+            .as_ref()
+            .unwrap_or(&loaded.archive.project);
+        let project_end_seconds = crate::export_wav::project_audible_end_seconds(record_project);
+        let duration_source = if let Some(seconds) = options.record_seconds {
             record_options.seconds = seconds;
-        }
+            crate::export_wav::WavDurationSource::Explicit
+        } else if let Some(end) = project_end_seconds {
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            let seconds = end as f32;
+            record_options.seconds = seconds;
+            crate::export_wav::WavDurationSource::ProjectEnd
+        } else {
+            crate::export_wav::WavDurationSource::Fallback
+        };
         // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
         // `--record-source tone` 才录内存正弦测试音。⭐ 给了 `--sfz` ⇒ 把乐器（＋SFZ 文件路径）
         // 一并交给 `record_project_under`（下面那两行）⇒ `sample=` 指向的 WAV 会被真读。
@@ -6850,7 +6866,15 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             path: path.clone(),
             source,
         })?;
-        lines.push(report.summary());
+        // T-FIX-360：录制回执同样报出时长来源（与 `exported-wav:` 同款字段）。
+        let project_end =
+            project_end_seconds.map_or_else(|| "0".to_owned(), |seconds| format!("{seconds:.3}"));
+        lines.push(format!(
+            "{} secondsSource={} projectEndSeconds={}",
+            report.summary(),
+            duration_source.as_str(),
+            project_end,
+        ));
     }
     if options.record_seconds.is_some() && options.record_wav.is_none() {
         return Err(CliError::Usage(
@@ -7372,14 +7396,42 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // ⭐ `&loaded.archive.assets` 是**归档资产池**（`--open` 读进来的 `assets/{sha256}`）：
         // 没有它，工程里摆放的 `ClipContent::Audio` 会静音 —— 引擎快照把音频片段当静音，
         // 见 `crate::audio_clip` 的模块文档。
-        // ⭐ 位深／采样率／时长／精确帧数在这里解析出**唯一一份**可执行选项
-        // （缺省口径见 `WavExportOptions::resolve`：24-bit / 跟随工程 / 8 秒）。
+        // ⭐ T-FIX-360：两个时长开关都没给时，和 GUI / MCP 一样按工程可闻末端推导；
+        // 给了任意一个就用用户值（解析层已保证两者互斥）。空工程 → 明确的最小默认
+        // （沿用 `DEFAULT_WAV_SECONDS`）并在回执里标 `secondsSource=fallback`。
+        let project_end_seconds =
+            crate::export_wav::project_audible_end_seconds(&loaded.archive.project);
+        let (wav_seconds, wav_frames, duration_source) =
+            match (options.wav_seconds, options.wav_frames) {
+                (None, None) => match project_end_seconds {
+                    Some(end) => {
+                        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                        let seconds = end as f32;
+                        (
+                            Some(seconds),
+                            None,
+                            crate::export_wav::WavDurationSource::ProjectEnd,
+                        )
+                    }
+                    None => (
+                        Some(crate::export_wav::DEFAULT_WAV_SECONDS),
+                        None,
+                        crate::export_wav::WavDurationSource::Fallback,
+                    ),
+                },
+                (seconds, frames) => (
+                    seconds,
+                    frames,
+                    crate::export_wav::WavDurationSource::Explicit,
+                ),
+            };
+        // ⭐ 位深／采样率／时长／精确帧数在这里解析出**唯一一份**可执行选项。
         let mut wav_options = crate::export_wav::WavExportOptions::resolve(
             &loaded.archive.project,
             options.wav_sample_rate,
             options.wav_bit_depth,
-            options.wav_seconds,
-            options.wav_frames,
+            wav_seconds,
+            wav_frames,
         );
         // ⭐ 任务单 `#302`：per-call 限制器开关；默认关 ⇒ 旧导出逐字节不变。
         wav_options.limiter = options.wav_limiter;
@@ -7414,7 +7466,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             path: path.clone(),
             source,
         })?;
-        lines.push(exported_wav_line(&report, &loaded));
+        lines.push(exported_wav_line(
+            &report,
+            &loaded,
+            &WavDurationInfo {
+                source: duration_source,
+                project_end_seconds,
+            },
+        ));
         // 调试明细（T-FIX-70）：导出回执的细节档位 —— 帧数/摘要/削波/
         // 真峰值/限制器读数逐格摊开，只在调试开启时产行。
         if options.debug || options.log_file.is_some() || crate::debug_out::enabled() {
@@ -7692,12 +7751,24 @@ fn saved_line(report: &SaveReport, loaded: &Loaded) -> String {
     )
 }
 
+/// T-FIX-360：随 `exported-wav:` 行一起打印的时长来源读数。
+#[derive(Clone, Copy, Debug)]
+struct WavDurationInfo {
+    source: crate::export_wav::WavDurationSource,
+    /// `None` = 工程没有可闻末端（回执里打印 `projectEndSeconds=0`）。
+    project_end_seconds: Option<f64>,
+}
+
 /// `exported-midi:` 行（说清落点、字节数、**写进 `MThd` 的 PPQ 与格式**、轨道 / 音符数、
 /// 用过的临时文件与来源）。
 ///
 /// `ppq=` 是**从导出结果读回来的**事实（不是本文件里第二个 960 字面量）：
 /// 判据把这一行与文件头的大端字段逐字段对账。
-fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loaded) -> String {
+fn exported_wav_line(
+    report: &crate::export_wav::WavExportReport,
+    loaded: &Loaded,
+    duration: &WavDurationInfo,
+) -> String {
     // ⭐ 模型 SFZ 链条的解码读数（任务单 `#79`）：有内容才追加 ⇒ ⛔ 缺样本不静默
     //    （`sfz(... missing=[...] silent=N)`；没有模型 `sampler` 时本段为空，行不变）。
     let sfz = if report.sfz_decoded.is_empty() {
@@ -7754,9 +7825,13 @@ fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loade
             report.sfz_decoded.len()
         )
     };
+    // T-FIX-360：时长来源可见，⛔ 不只在调试档打印（静默截断的缺陷正是看不见造成的）。
+    let project_end = duration
+        .project_end_seconds
+        .map_or_else(|| "0".to_owned(), |seconds| format!("{seconds:.3}"));
     format!(
         "exported-wav: path={} bytes={} frames={} sample_rate={} channels={} bits={} digest={} \
-         source={}{sfz} from={}",
+         source={}{sfz} secondsSource={} projectEndSeconds={} from={}",
         report.path.display(),
         report.bytes,
         report.frames,
@@ -7765,6 +7840,8 @@ fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loade
         report.bits,
         report.digest,
         report.source,
+        duration.source.as_str(),
+        project_end,
         loaded.source.save_origin(),
     )
 }
@@ -8023,6 +8100,25 @@ mod tests {
     /// 造一个**真容器**并写到磁盘；返回路径与工程。
     fn write_container_file(dir: &std::path::Path, name: &str) -> (PathBuf, YebanProjectV1) {
         let project = crate::bridge::demo_project();
+        let assets: std::collections::BTreeMap<_, _> = yeban_model::samples::demo_project_assets()
+            .into_iter()
+            .collect();
+        let bytes =
+            write_project_container(&project, b"cli-history-dag", &assets).expect("写出真容器");
+        let path = dir.join(name);
+        std::fs::write(&path, &bytes).expect("写容器文件");
+        (path, project)
+    }
+
+    /// T-FIX-360：造一个可闻末端约 5 分钟的真容器（把段落末端推到 576000 tick）。
+    fn write_long_container_file(dir: &std::path::Path, name: &str) -> (PathBuf, YebanProjectV1) {
+        let mut project = crate::bridge::demo_project();
+        let last = project
+            .sections
+            .values_mut()
+            .next_back()
+            .expect("演示夹具必须有段落");
+        last.end_tick = 576_000;
         let assets: std::collections::BTreeMap<_, _> = yeban_model::samples::demo_project_assets()
             .into_iter()
             .collect();
@@ -10457,6 +10553,9 @@ mod tests {
                 sfz.display().to_string(),
                 "--export-wav".to_owned(),
                 target.display().to_string(),
+                // T-FIX-360: 旧判据的 8 秒口径改为显式用户值。
+                "--wav-seconds".to_owned(),
+                "8".to_owned(),
             ])
             .expect("解析"),
         )
@@ -11021,6 +11120,9 @@ mod tests {
                 source.display().to_string(),
                 "--export-wav".to_owned(),
                 target.display().to_string(),
+                // T-FIX-360: 这条判据钉 8 秒 / 384000 帧 ⇒ 显式给，不再借产品默认。
+                "--wav-seconds".to_owned(),
+                "8".to_owned(),
             ])
             .expect("解析"),
         )
@@ -11066,6 +11168,9 @@ mod tests {
                 source.display().to_string(),
                 "--export-wav".to_owned(),
                 again.display().to_string(),
+                // T-FIX-360: 与第一次同口径，显式 8 秒。
+                "--wav-seconds".to_owned(),
+                "8".to_owned(),
             ])
             .expect("解析"),
         )
@@ -11083,6 +11188,107 @@ mod tests {
             .map(std::collections::BTreeMap::len)
             .sum();
         assert!(notes > 0, "夹具必须有音符（实际 {notes}）");
+    }
+
+    /// T-FIX-360 判据 1/2/3：CLI 没给时长 ⇒ 按工程可闻末端（≈5 分钟）导出，
+    /// 显式 `--wav-seconds 8` / `--wav-frames` 仍按用户值；回执带来源与末端秒数。
+    #[test]
+    fn export_wav_defaults_to_project_end_and_reports_duration_source() {
+        let dir = scratch_dir("export-wav-project-end");
+        let (source, project) = write_long_container_file(&dir, "long.yeban");
+        let expected_end =
+            crate::export_wav::project_audible_end_seconds(&project).expect("长工程必须有可闻末端");
+        assert!(
+            expected_end > 290.0 && expected_end < 310.0,
+            "夹具应是 5 分钟量级: {expected_end}"
+        );
+
+        // ① 不给时长 ⇒ secondsSource=projectEnd，帧数按末端 × 采样率（不再截成 8 秒）。
+        let no_flag = dir.join("default.wav");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-wav".to_owned(),
+                no_flag.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("按工程末端导出必须成功");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须有 exported-wav 行");
+        assert_eq!(
+            field(line, "secondsSource").as_deref(),
+            Some("projectEnd"),
+            "{line}"
+        );
+        let reported_end: f64 = field(line, "projectEndSeconds")
+            .expect("projectEndSeconds")
+            .parse()
+            .expect("projectEndSeconds 必须是数字");
+        assert!((reported_end - expected_end).abs() < 0.002, "{line}");
+        let (format, buffer) = yeban_render::wav::read_plain_wav(&no_flag).expect("回读 WAV");
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        let expected_frames = (expected_end * f64::from(format.sample_rate)).round() as u64;
+        assert!(
+            frames.abs_diff(expected_frames) <= 48_000,
+            "{frames} vs {expected_frames}"
+        );
+        assert!(frames > 48_000 * 8, "不再静默截断到 8 秒: {frames}");
+
+        // ② 显式秒数仍得 8 秒；③ 显式帧数原样使用。
+        let explicit_s = dir.join("explicit-s.wav");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-wav".to_owned(),
+                explicit_s.display().to_string(),
+                "--wav-seconds".to_owned(),
+                "8".to_owned(),
+            ])
+            .expect("解析"),
+        )
+        .expect("显式秒数导出必须成功");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须有 exported-wav 行");
+        assert_eq!(
+            field(line, "secondsSource").as_deref(),
+            Some("explicit"),
+            "{line}"
+        );
+        assert_eq!(field(line, "frames").as_deref(), Some("384000"), "{line}");
+        let (format, buffer) = yeban_render::wav::read_plain_wav(&explicit_s).expect("回读 WAV");
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        assert_eq!(frames, 384_000, "显式 8 秒仍是旧产物");
+
+        let explicit_f = dir.join("explicit-f.wav");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-wav".to_owned(),
+                explicit_f.display().to_string(),
+                "--wav-frames".to_owned(),
+                "12345".to_owned(),
+            ])
+            .expect("解析"),
+        )
+        .expect("显式帧数导出必须成功");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须有 exported-wav 行");
+        assert_eq!(
+            field(line, "secondsSource").as_deref(),
+            Some("explicit"),
+            "{line}"
+        );
+        assert_eq!(field(line, "frames").as_deref(), Some("12345"), "{line}");
     }
 
     /// ⭐ 任务单 `#302`：`--limiter` 是**每次调用**的导出修饰开关，默认关，

@@ -354,6 +354,9 @@ fn the_cli_sfz_load_lines_carry_the_no_evidence_conclusion() {
         sfz.display().to_string(),
         "--export-wav".to_owned(),
         out.display().to_string(),
+        // T-FIX-360: 保留旧产物口径，显式 8 秒。
+        "--wav-seconds".to_owned(),
+        "8".to_owned(),
     ];
     let options = yeban_app::cli::parse(&argv).expect("命令行必须解析");
     let lines = yeban_app::cli::run_batch(&options).expect("批处理必须成功");
@@ -426,6 +429,9 @@ fn apply_ops_object_form_sets_the_override_end_to_end() {
         saved.display().to_string(),
         "--export-wav".to_owned(),
         target.display().to_string(),
+        // T-FIX-360: 同上，显式 8 秒。
+        "--wav-seconds".to_owned(),
+        "8".to_owned(),
     ]);
     assert!(
         lines

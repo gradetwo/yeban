@@ -1002,8 +1002,9 @@ fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
 /// 且**缺省兼容**。
 ///
 /// 本条钉四件事（都**回读真文件**，⛔ 不读 stdout 的自报值）：
-/// ① 不给 `--wav-*` ⇒ 与旧行为一致（48 kHz / 立体声 / 24-bit / 8 秒）—— 演示工程
-///    的 `audio_config.sample_rate` 就是 48 kHz，所以"跟随工程"在缺省档**不改变产物**；
+/// ① 显式给 `--wav-seconds 8` ⇒ 与旧行为逐字节一致（48 kHz / 立体声 / 24-bit / 8 秒）——
+///    演示工程的 `audio_config.sample_rate` 就是 48 kHz，所以"跟随工程"在该档**不改变产物**；
+///    T-FIX-360 起"不给时长"改为按工程末端推导，旧的 8 秒口径一律显式给；
 /// ② 显式给三条 ⇒ 产物形状**逐条**跟着变（16-bit / 44.1 kHz / 1 秒）；
 ///    ②b `--wav-frames` 原样生效（与 MCP `render_master.frames` 同量纲）；
 ///    ②c `--wav-frames` 与 `--wav-seconds` 互斥（两种顺序都是用法错误）；

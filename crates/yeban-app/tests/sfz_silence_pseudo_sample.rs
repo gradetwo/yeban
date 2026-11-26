@@ -199,6 +199,9 @@ fn the_cli_export_of_a_silence_only_instrument_is_really_silent() {
             path.display().to_string(),
             "--export-wav".to_owned(),
             out.display().to_string(),
+            // T-FIX-360: 旧判据钉的 8 秒产物改为显式用户值。
+            "--wav-seconds".to_owned(),
+            "8".to_owned(),
         ];
         if let Some(depth) = depth {
             argv.push("--wav-bit-depth".to_owned());
@@ -280,6 +283,9 @@ fn the_track_sampler_chain_reports_silent_without_missing() {
         path.display().to_string(),
         "--export-wav".to_owned(),
         out.display().to_string(),
+        // T-FIX-360: 旧判据的 8 秒口径显式化。
+        "--wav-seconds".to_owned(),
+        "8".to_owned(),
     ])
     .expect("命令行必须解析");
     let lines = yeban_app::cli::run_batch(&options).expect("批处理");

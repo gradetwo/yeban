@@ -432,6 +432,9 @@ fn the_cli_exports_a_project_whose_aux_return_carries_a_sampler() {
         sfz.to_str().expect("UTF-8"),
         "--export-wav",
         out.to_str().expect("UTF-8"),
+        // T-FIX-360: 本判据钉 8 秒产物 ⇒ 显式给，不再依赖产品缺省。
+        "--wav-seconds",
+        "8",
     ]);
     println!("[237/cli] rc={code}\n[237/cli] stdout:\n{stdout}\n[237/cli] stderr:\n{stderr}");
     assert_eq!(
@@ -636,6 +639,9 @@ fn the_sampler_installed_on_the_aux_return_is_heard_in_the_export() {
         container.to_str().expect("UTF-8"),
         "--export-wav",
         plain_wav.to_str().expect("UTF-8"),
+        // T-FIX-360: 钉住 frames=384000 的旧判据改为显式 8 秒。
+        "--wav-seconds",
+        "8",
     ]);
     assert_eq!(
         plain_code, 0,
@@ -658,6 +664,9 @@ fn the_sampler_installed_on_the_aux_return_is_heard_in_the_export() {
         sfz.to_str().expect("UTF-8"),
         "--export-wav",
         sampled_wav.to_str().expect("UTF-8"),
+        // T-FIX-360: 与上面的对照同口径，显式 8 秒。
+        "--wav-seconds",
+        "8",
     ]);
     assert_eq!(code, 0, "aux 装采样器后必须能导出; stderr={stderr}");
     let track_line = stdout

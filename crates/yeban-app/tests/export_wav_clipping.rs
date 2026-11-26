@@ -670,6 +670,9 @@ fn the_real_cli_prints_the_warning_only_when_the_master_clips() {
         clipping.to_str().expect("utf8"),
         "--export-wav",
         clipping_out.to_str().expect("utf8"),
+        // T-FIX-360: 保留旧判据的 8 秒口径（显式，不再借产品默认）。
+        "--wav-seconds",
+        "8",
     ]);
     assert_eq!(code, 0, "削波导出必须成功; stderr={stderr}");
     assert!(
@@ -692,6 +695,9 @@ fn the_real_cli_prints_the_warning_only_when_the_master_clips() {
         clean.to_str().expect("utf8"),
         "--export-wav",
         clean_out.to_str().expect("utf8"),
+        // T-FIX-360: 同上，显式 8 秒。
+        "--wav-seconds",
+        "8",
     ]);
     assert_eq!(code, 0, "干净导出必须成功; stderr={stderr}");
     assert!(

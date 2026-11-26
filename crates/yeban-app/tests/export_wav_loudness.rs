@@ -691,6 +691,9 @@ fn the_real_cli_mastering_clipper_validates_like_the_mcp() {
         container.to_str().expect("utf8"),
         "--export-wav",
         out.to_str().expect("utf8"),
+        // T-FIX-360: 旧校验判据的 8 秒口径显式化。
+        "--wav-seconds",
+        "8",
         "--mastering-clipper",
         "driveDb=8",
     ]);
@@ -706,6 +709,9 @@ fn the_real_cli_mastering_clipper_validates_like_the_mcp() {
         container.to_str().expect("utf8"),
         "--export-wav",
         out.to_str().expect("utf8"),
+        // T-FIX-360: 同上，显式 8 秒。
+        "--wav-seconds",
+        "8",
         "--loudness-target",
         "-16",
         "--mastering-clipper",

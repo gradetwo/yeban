@@ -78,7 +78,7 @@ use yeban_engine::level::dbfs;
 #[cfg(test)]
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::project::SampleRate;
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{EntityId, PPQ, YebanProjectV1};
 use yeban_render::dither::{BitDepth, quantize};
 use yeban_render::mastering::{
     ClipperParams, ExportPreset, GainBound, LOUDNESS_TARGET_TOLERANCE_LU, NormalizeOutcome,
@@ -137,10 +137,64 @@ pub struct WavExportOptions {
     pub loudness: Option<ExportPreset>,
 }
 
-/// `--wav-seconds` / UI 缺省时长（秒）。
+/// `WavExportOptions::resolve` 的底层缺省时长（秒）。
 ///
-/// ⭐ 与旧行为**逐字一致**：`--export-wav` 一直导出 8 秒。
+/// ⭐ T-FIX-360 起 CLI 的 `--export-wav` / `--record-wav` 在用户没给时长时已在
+/// **调用方**按工程末端推导；本常量只作为空工程的明确最小默认与直接调用
+/// `resolve` 的既有判据口径（⛔ 不由产品默认保字节）。
 pub const DEFAULT_WAV_SECONDS: f32 = 8.0;
+
+/// CLI 回执 `secondsSource=` 的口径（T-FIX-360）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavDurationSource {
+    /// 用户没给时长开关 ⇒ 按工程可闻末端推导（GUI / MCP 同款默认）。
+    ProjectEnd,
+    /// 用户显式给了 `--wav-seconds` / `--wav-frames` / `--record-seconds`。
+    Explicit,
+    /// 空工程 / 末端为 0 ⇒ 各入口明确的最小默认（`projectEndSeconds=0`）。
+    Fallback,
+}
+
+impl WavDurationSource {
+    /// 回执 secondsSource= 的稳定字面（projectEnd / explicit / fallback）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectEnd => "projectEnd",
+            Self::Explicit => "explicit",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+/// 工程末端推导的一小时上限（与 GUI 播种 / MCP `MAX_RENDER_FRAMES` 同档）。
+pub const MAX_PROJECT_END_SECONDS: f64 = 3600.0;
+
+/// 工程**可闻末端**的秒数（`None` = 空工程 / 换算失败）。
+///
+/// 口径与 `host::audible_end_seconds` 逐字同源：`ViewState::content_end_tick` →
+/// `project.tempo().frames_at_tick` → 帧 ÷ 采样率，向上取整到毫秒、封顶一小时。
+/// CLI 的 `--export-wav` / `--record-wav` 在用户没给时长时共用这一处推导
+/// （T-FIX-360）；本函数⛔ 不改 `WavExportOptions::resolve` 的共用缺省，
+/// 于是 GUI / MCP 及直接调用 `resolve` 的判据字节不变。
+#[must_use]
+pub fn project_audible_end_seconds(project: &YebanProjectV1) -> Option<f64> {
+    let end_tick = crate::bridge::ViewState::from_project(project)
+        .ok()?
+        .content_end_tick();
+    if end_tick == 0 {
+        return None;
+    }
+    let hz = project.sample_rate().hz();
+    let frames = project.tempo().frames_at_tick(end_tick, PPQ, hz)?;
+    // `frames` 是 u64；48 kHz 下 2^53 帧 ≈ 5900 年，此处 cast 只是 lint 的形状。
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = frames as f64 / f64::from(hz);
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    Some((seconds.min(MAX_PROJECT_END_SECONDS) * 1000.0).ceil() / 1000.0)
+}
 
 impl Default for WavExportOptions {
     fn default() -> Self {
@@ -173,12 +227,14 @@ impl WavExportOptions {
     ///   （见 [`crate::audio_clip`]）。内置三份夹具工程都是 48 kHz ⇒ 默认产物与旧行为
     ///   **逐字节相同**；`--wav-sample-rate 48000` 可强制回旧口径。
     /// - **时长 8 秒**（[`DEFAULT_WAV_SECONDS`]）⇒ 帧数 = `round(秒 × 采样率)`。
-    ///   ⛔ 缺省**不**改成"工程可闻末端"：那会改变既有判据钉住的产物长度，而且 GUI /
-    ///   CLI / MCP 共用这一份缺省，改一处 ⇒ 三侧同变。
+    ///   ⛔ 本函数这一档**不**改成"工程可闻末端"：它是 GUI / CLI / MCP 与既有判据
+    ///   共用的底层缺省，改它会让三侧已钉住的字节同变。
     ///   ⚠ 本条原句的**理由**（"导出路径今天没有'工程有多长'的唯一权威读数"）今天已经
-    ///   **不成立** —— `crate::bridge::ViewState::content_end_tick` 就是那个读数（标尺与
-    ///   `Shift+Z` 早就在用它）。因此 `D-UI-28` 把"按末端导出"落在**调用方**：宿主打开
-    ///   导出弹窗时把末端算成秒、播进时长那一格（`host::audible_end_seconds`），
+    ///   **不成立** —— [`crate::bridge::ViewState::content_end_tick`] 加
+    ///   [`project_audible_end_seconds`] 就是那个读数（标尺与 `Shift+Z` 早就在用它）。
+    ///   因此 `D-UI-28` 把"按末端导出"落在**调用方**：GUI 打开弹窗时把末端播进时长格
+    ///   （`host::audible_end_seconds`）；`T-FIX-360` 把 CLI 的两个导出入口也接到
+    ///   [`project_audible_end_seconds`]，没给时长开关时**显式传入**推导值。
     ///   本函数的缺省一位不改 ⇒ 两侧已钉住的字节仍然对得上。
     /// - **精确帧数**（`--wav-frames`）：与 MCP `render_master` 的 `frames` 同一量纲，
     ///   用来逐字节对齐两侧的产物长度。给了它就**不再**做秒×采样率的换算；
