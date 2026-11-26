@@ -271,6 +271,19 @@ pub fn pitch_for_lane_with_base(lane: i32, base_pitch: u8) -> Option<u8> {
     u8::try_from(base + offset).ok()
 }
 
+/// T-FIX-764：把卷帘试听行号映射到音高，口径与 [`pitch_for_lane_with_base`] 完全一致
+/// （`pitch = base + 15 - row`），但**不受 16 条泳道上限约束** —— 卷帘可见行随
+/// `base_midi_pitch` 可达 `roll-rows`（>16），点击第 17 行及以下必须按真实行号发音。
+/// 越界（负行或算出的 MIDI 音高不在 0..=127）返回 `None`，由宿主响亮拒绝。
+#[must_use]
+pub fn pitch_for_roll_row_with_base(row: i32, base_pitch: u8) -> Option<u8> {
+    if row < 0 {
+        return None;
+    }
+    let pitch = i32::from(base_pitch) + (PITCH_LANE_COUNT - 1) - row;
+    u8::try_from(pitch).ok().filter(|pitch| *pitch <= 127)
+}
+
 /// `[UI-NOTE-002/003]` Map a piano-roll lane index (`0..15`) to a MIDI pitch anchored at [`PITCH_LANE_BASE`].
 #[must_use]
 pub fn pitch_for_lane(lane: i32) -> Option<u8> {

@@ -764,7 +764,8 @@ export component PianoRoll inherits Rectangle {
                     || event.modifiers.control
                     || event.modifiers.meta;
                 if self.mouse-x < 56px && self.mouse-y >= 28px {
-                    root.audition-active-row = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
+                    // T-FIX-764：按 roll-rows 全量映射，不能夹到 15（低行会弹成第 16 行的音）。
+                    root.audition-active-row = Math.min(root.roll-rows - 1, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
                     root.dragging = false;
                     root.note-dragging = false;
                     root.drag-moved = false;
@@ -837,7 +838,8 @@ export component PianoRoll inherits Rectangle {
                 if root.audition-active-row >= 0 {
                     // 琴键列滑动滑奏（glissando）：越过新琴键行时先释放前音再触发新音
                     if self.mouse-y >= 28px {
-                        let hovered = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
+                        // T-FIX-764：滑奏同样按 roll-rows 全量映射，越过 16 行后继续取真实行。
+                        let hovered = Math.min(root.roll-rows - 1, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
                         if hovered != root.audition-active-row {
                             let prev = root.audition-active-row;
                             root.piano-key-released(prev);

@@ -22826,12 +22826,16 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     / crate::bridge::PITCH_LANE_HEIGHT_PX)
                     .floor() as i32;
                 if let Some(pitch) =
-                    crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))
+                    crate::bridge::pitch_for_roll_row_with_base(lane, roll_base_pitch(&ui))
                 {
                     ui.invoke_piano_key_audition(
                         midi_pitch_name(pitch).into(),
                         84 - i32::from(pitch),
                     );
+                } else {
+                    // T-FIX-764：越界行不静默忽略。
+                    ui.set_module_status("试听: 行号超出可发声范围".into());
+                    ui.set_module_status_succeeded(false);
                 }
                 return;
             }
@@ -32106,8 +32110,11 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let Some(pitch) = crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))
+            let Some(pitch) = crate::bridge::pitch_for_roll_row_with_base(lane, roll_base_pitch(&ui))
             else {
+                // T-FIX-764：行号越界必须响亮拒绝，不静默吞掉。
+                ui.set_module_status("试听: 行号超出可发声范围".into());
+                ui.set_module_status_succeeded(false);
                 return;
             };
             let Some((track, warning)) =
@@ -32165,7 +32172,8 @@ pub fn wire_aether_actions(
                 return;
             };
             let target = active_keys.borrow_mut().remove(&lane).or_else(|| {
-                let pitch = crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))?;
+                let pitch =
+                    crate::bridge::pitch_for_roll_row_with_base(lane, roll_base_pitch(&ui))?;
                 let track = port.try_project().and_then(|project| {
                     display_track(&ui, &project)
                         .map(|t| t.id)
