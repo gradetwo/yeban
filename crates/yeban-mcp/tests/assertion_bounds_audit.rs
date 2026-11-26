@@ -139,13 +139,14 @@ const SOURCES: &[(&str, &str)] = &[
     ("tests/sfz_tools.rs", include_str!("sfz_tools.rs")),
     ("tests/stdio_e2e.rs", include_str!("stdio_e2e.rs")),
     ("tests/tools_e2e.rs", include_str!("tools_e2e.rs")),
+    ("src/domain/mod.rs", include_str!("../src/domain/mod.rs")),
 ];
 
 /// 被扫文件数的精确清单长度（R93：清单必须与登记数逐条对账）。
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有精确长度能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 34;
+const MIN_SOURCES: usize = 35;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -194,6 +195,15 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "`scan_still_skips_missing_caller_dir_silently`：扫描结果允许为空（8c4ea390 起刻意不钉总行数，\
          无插件机器上恒为空），空集时“缺失目录不产出行”这一结论仍然成立；紧接着的差分对照\
          用 `paths: []` 逐路径比较集合相等，任何多出来的行都会被抓到，故空集真空风险不存在。",
+    ),
+    (
+        "src/domain/mod.rs",
+        "section_rows.iter().all(|row| row[\"kind\"] == \"section\"),",
+        "`list_proposals_kind_plugin_lists_plugin_proposals_and_rejects_unknown` 步骤③：否定制断言——\
+         断言的是“section 列表不得混入其它 kind 的行”，空集合时该性质仍然成立（没有混入即结论正确）；\
+         ⛔ 不能钉非空：本测试只建了一条 plugin 提案（步骤①），夹具工程本身不含任何提案，空 section \
+         列表是合法状态；泄漏失败模式仍被抓住：若 plugin 行混入 section 列表，`.all` 即为假 ⇒ 判据红。\
+         （T-FIX-773：domain/mod.rs 新登记后暴露的唯一无界站点，逐条评审。）",
     ),
 ];
 
