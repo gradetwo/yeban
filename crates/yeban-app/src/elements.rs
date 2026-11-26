@@ -1027,6 +1027,22 @@ impl ElementRegistry {
             "Songmap A/B 对比摘要",
             false,
         );
+        // T-FIX-301：刷新回执落点 —— 产品窗口里的 A/B 条状态文字，以及整面板组件
+        // （组件当前未挂进产品窗口，但保留同一份可读状态供它单独挂载时使用）。
+        registry.add(
+            "song-overview-analysis-status",
+            ElementKind::Text,
+            "app.slint",
+            "总览分析状态（纯谱面回退 / 渲染失败原因）",
+            false,
+        );
+        registry.add(
+            "song-overview-panel-analysis-status",
+            ElementKind::Text,
+            "workspace/song_overview_panel.slint",
+            "总览面板回退提示（能量/频率为谱面代理值）",
+            false,
+        );
 
         // ------------------------------------------------- 整曲多层总览图（Song Overview Phase 1）
         //

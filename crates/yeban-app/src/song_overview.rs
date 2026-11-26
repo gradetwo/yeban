@@ -49,8 +49,12 @@
 //!   内嵌 SFZ（`.yeban` 容器内）本轮不接：解析不到时 provider 记失败并返回空输入，
 //!   渲染层随即响亮失败（⛔ 不拿静音轨去渲染），refresh 走纯谱面回退。缺样本的区域
 //!   按引擎既定口径记静音（不进提供表），⛔ 不塞正弦占位。
-//! - 刷新是同步的（调用线程上跑完整曲渲染 + 分析，首算付一次，之后同一哈希命中缓存
-//!   不重算）；换工程后调一次 [`refresh_song_overview`] 即可。
+//! - 刷新是同步的（调用线程上跑分析，首算付一次整曲渲染；之后同一内容哈希
+//!   直接复用渲染产物）。`#4913`：曲风档 / 期望等级只影响分析 ⇒ 换档、改等级
+//!   在 UI 回调里**只重跑分析**，不再重渲整曲（渲染产物按"工程 + 渲染设置"
+//!   的内容哈希单槽缓存，见 `yeban_render::song_overview::cached_overview`）。
+//!   同一工程换档不重渲；切到别的工程内容后再切回来换档，需要重渲一次
+//!   （单槽边界，显式接受）。换工程后调一次 [`refresh_song_overview`] 即可。
 //!
 //! ## 生产接线
 //!
@@ -847,7 +851,38 @@ fn arm_sfz_input(
 /// （`wire_song_overview` 的返回值就是同一份 `Rc`）以备下一次刷新 —— 刷新原地
 /// 改写这份 `Rc` 里的内容，回调闭包读到的永远是最新份。
 #[must_use]
+/// 刷新总览并把**回执写进面板**（T-FIX-301）：调用方不再丢弃 `score_only/error`。
+///
+/// 回退本身不取消：渲染失败仍画纯谱面，只是面板上会明确写出「纯谱面回退」与
+/// 「能量/频率为谱面代理值」。成功 ⇒ 清空提示。
 pub fn refresh_song_overview(
+    ui: &MainWindow,
+    view: &crate::bridge::ViewState,
+    state: &Rc<RefCell<SongOverviewLive>>,
+) -> RefreshReport {
+    let report = refresh_song_overview_inner(ui, view, state);
+    apply_refresh_report(ui, &report);
+    report
+}
+
+/// 把刷新回执写成面板状态（唯一写者；成功与回退走同一处）。
+pub fn apply_refresh_report(ui: &MainWindow, report: &RefreshReport) {
+    ui.set_song_overview_score_only(report.score_only);
+    ui.set_song_overview_analysis_status(analysis_status_text(report).into());
+}
+
+/// 回执 → 面板文案（唯一构造点；空串 ⇒ 正常全量分析）。
+fn analysis_status_text(report: &RefreshReport) -> String {
+    if let Some(error) = report.error.as_deref() {
+        return format!("纯谱面回退：{error}；能量/频率为谱面代理值");
+    }
+    if report.score_only {
+        return "纯谱面分析（工程较大）：能量/频率为谱面代理值".to_owned();
+    }
+    String::new()
+}
+
+fn refresh_song_overview_inner(
     ui: &MainWindow,
     view: &ViewState,
     state: &Rc<RefCell<SongOverviewLive>>,
@@ -1285,6 +1320,7 @@ pub fn wire_song_overview(
     // Phase 2 曲风预设（设计稿 §3.6）：界面只报“按了预设键”，档位循环与重算
     // 的唯一写者是这里。Default → Orchestral → Electronic → Default；
     // 刷新后预设按钮的显示名由 `apply_song_overview` 从新数据的档名写回。
+    // `#4913`：档位只进分析、不进渲染 ⇒ 这里同步跑的是分析（渲染产物复用）。
     let weak = ui.as_weak();
     ui.on_song_overview_profile_cycle({
         let weak = weak.clone();
@@ -1303,6 +1339,7 @@ pub fn wire_song_overview(
     // Phase 2 段落期望等级（设计稿 §3.5）：界面只报“点了第几个段落标签”，
     // 等级循环与重算的唯一写者是这里。None → 1 → … → 5 → None；
     // 等级只活在 `state.expected_levels`（会话态），不写工程。
+    // `#4913`：等级只进分析 ⇒ 改等级只重跑分析，复用已渲染的音频。
     // 下标越界（段落表已变）⇒ 静默忽略，不重算。
     let weak = ui.as_weak();
     ui.on_song_overview_target_cycle({
@@ -1422,6 +1459,39 @@ pub fn wire_song_overview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-FIX-301：回退态必须自己说出来，且哨兵值被标成谱面代理。
+    #[test]
+    fn a_fallback_report_is_written_as_a_visible_analysis_status() {
+        let failed = RefreshReport {
+            bars: 3,
+            cache_hit: false,
+            score_only: true,
+            error: Some("渲染失败（missing sample），回退到纯谱面分析".to_owned()),
+        };
+        let text = analysis_status_text(&failed);
+        assert!(text.contains("纯谱面回退"), "必须点名回退: {text}");
+        assert!(text.contains("渲染失败"), "必须带失败原因: {text}");
+        assert!(text.contains("谱面代理"), "哨兵值必须标注代理: {text}");
+
+        let large = RefreshReport {
+            bars: 16,
+            cache_hit: false,
+            score_only: true,
+            error: None,
+        };
+        let text = analysis_status_text(&large);
+        assert!(text.contains("纯谱面分析"), "工程较大也要说清: {text}");
+        assert!(text.contains("谱面代理"), "哨兵值必须标注代理: {text}");
+
+        let full = RefreshReport {
+            bars: 16,
+            cache_hit: true,
+            score_only: false,
+            error: None,
+        };
+        assert_eq!(analysis_status_text(&full), "", "全量成功必须清空提示");
+    }
 
     /// Magma 锚点逐位相等（设计稿 §4.5 的 5 个色值）。
     #[test]

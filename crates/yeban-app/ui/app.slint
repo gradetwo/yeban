@@ -863,6 +863,10 @@ export component MainWindow inherits Window {
     in-out property <[float]> song-overview-lufs: [];
     in-out property <string> song-overview-profile: @tr("均衡");
     in-out property <string> song-overview-ab-status: "";
+    // T-FIX-301：刷新回执（纯谱面回退 / 渲染失败原因）—— 产品可见落点是
+    // SONGMAP A/B 条上的状态文字（整面板组件因 codegen 成本未挂进窗口）。
+    in-out property <bool> song-overview-score-only: false;
+    in-out property <string> song-overview-analysis-status: "";
     in-out property <[string]> song-overview-ruler-labels: [];
     in-out property <[float]> song-overview-score-dyn: [];
     in-out property <[string]> song-overview-section-names: [];
@@ -2139,12 +2143,14 @@ export component MainWindow inherits Window {
                     }
 
                     Text {
-                        text: root.song-overview-ab-status;
+                        text: root.song-overview-analysis-status == "" ? root.song-overview-ab-status : root.song-overview-analysis-status;
                         font-size: Tokens.font-size-xs;
-                        color: Tokens.ink-2;
+                        color: root.song-overview-score-only ? Tokens.gold : Tokens.ink-2;
                         vertical-alignment: TextVerticalAlignment.center;
                         horizontal-stretch: 1;
                         overflow: TextOverflow.elide;
+                        accessible-id: "song-overview-analysis-status";
+                        accessible-label: @tr("总览分析状态（纯谱面回退 / 渲染失败原因）");
                     }
                 }
             }

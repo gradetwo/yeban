@@ -76,6 +76,9 @@ export component SongOverviewPanel inherits Rectangle {
     /// Songmap Phase 2 A/B：最近一次「存 A / 存 B / 对比」的回执（空串 = 尚未操作）。
     /// 快照数据住在 `src/song_overview.rs` 的会话态（⛔ 不进工程、⛔ 不进撤销）。
     in property <string> ab-status: "";
+    /// T-FIX-301：刷新回执（纯谱面回退 / 渲染失败原因）。非空 ⇒ 面板顶部亮金提示。
+    in property <bool> score-only: false;
+    in property <string> analysis-status: "";
     in property <[string]> section-names: [];
     in property <[int]> section-start-bars: [];
     in property <[string]> ruler-labels: [];
@@ -862,6 +865,29 @@ export component SongOverviewPanel inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.compare-ab(); }
+        }
+    }
+
+    // T-FIX-301：回退态必须可读（能量/频率是谱面代理值，不是音频测量）。
+    if !root.collapsed && root.analysis-status != "" : Rectangle {
+        x: 96px;
+        y: 2px;
+        width: min(360px, max(0px, root.width - 460px));
+        height: 16px;
+        background: Tokens.bg-void;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Tokens.gold;
+        accessible-id: "song-overview-panel-analysis-status";
+        accessible-label: root.analysis-status;
+        UiText {
+            x: 6px;
+            width: parent.width - 8px;
+            text: root.analysis-status;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 
