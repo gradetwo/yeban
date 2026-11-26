@@ -578,6 +578,13 @@ export component Transport inherits Rectangle {
         height: 32px;
         background: (metronome_area.pressed || metronome_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
+        // ⭐ T-FIX-556（D-UI-33）：颜色之外的第二可见通道 —— 外框。
+        // 开态常驻 1px `playing` 描边；关态无描边。描边是**几何**差异，
+        // 不依赖色觉（WCAG 1.4.11 非文本对比：全主题 `playing` 对按钮两态底色
+        // 4.03–9.14:1，均 ≥ 3:1，核算见本票回执）。
+        // 状态唯一写者不变：仍只读 `root.metronome-on`（`D-UI-29` 口径）。
+        border-width: root.metronome-on ? 1px : 0px;
+        border-color: Tokens.playing;
         accessible-role: button;
         accessible-id: "transport-metronome-button";
         accessible-label: @tr("节拍器 (Cmd/Ctrl + Alt + N)");
@@ -593,11 +600,24 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "♩";
-            // 开启 = 走带族的功能色（与播放键同族：节拍器服务于走带）；
-            // 关闭 = 中性灰。只换**颜色表达式**，不新增控件。
+            // 第一通道（保留）：开启 = 走带族的功能色（与播放键同族：节拍器服务于走带）；
+            // 关闭 = 中性灰。第二通道（外框 + 底部指示灯）见 T-FIX-556 / `D-UI-33`。
             color: root.metronome-on ? Tokens.playing : Tokens.ink-2;
             font-size: Tokens.font-size-lg;
             horizontal-alignment: center;
+        }
+
+        // ⭐ T-FIX-556（D-UI-33）：颜色之外的第二可见通道 —— 底部指示灯。
+        // 开态常亮 5px 圆点（`playing`），关态不渲染（`visible` 门控，非透明度，
+        // 不在关态留下可寻址残影）。几何存在性差异，色觉缺陷/低对比环境可辨。
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - 7px;
+            width: 5px;
+            height: 5px;
+            border-radius: self.width / 2;
+            background: Tokens.playing;
+            visible: root.metronome-on;
         }
 
         metronome_area := TouchArea {
