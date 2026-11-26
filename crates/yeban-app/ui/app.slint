@@ -595,6 +595,8 @@ export component MainWindow inherits Window {
     in-out property <string> drum-gen-complexity: "";
     in-out property <string> drum-gen-error: "";
     in-out property <bool> drum-gen-fill: true;
+    /// 选风格的一次性预听标记：复用既有 apply 生成通道，成功后不关窗。
+    in-out property <bool> drum-gen-preview-once: false;
     in-out property <int> drum-gen-focused-control: drum-gen-dialog.focused-control;
     in-out property <string> drum-gen-intensity: "";
     in-out property <bool> drum-gen-open: false;
@@ -2761,6 +2763,7 @@ export component MainWindow inherits Window {
             seed <=> root.drum-gen-seed;
             bars <=> root.drum-gen-bars;
             fill <=> root.drum-gen-fill;
+            preview-once <=> root.drum-gen-preview-once;
             target-label: root.drum-gen-target-label;
             error <=> root.drum-gen-error;
             style-picked(i) => { root.drum-gen-style-picked(i); }

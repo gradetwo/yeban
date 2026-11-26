@@ -16947,7 +16947,7 @@ pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
             ui.invoke_focus_drum_gen_dialog();
         });
     }
-    // ---- 选风格：摇摆重播为该风格定值 ---------------------------------------
+    // ---- 选风格：播种摇摆 + 立即走既有生成通道出预听 loop -------------------
     {
         let weak = ui.as_weak();
         ui.on_drum_gen_style_picked(move |index| {
@@ -16956,13 +16956,19 @@ pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 return;
             };
             let Ok(styles) = yeban_theory::factory_drum_styles() else {
+                ui.set_drum_gen_error("出厂风格预置读取失败".into());
                 return;
             };
-            if index < 0 || index as usize >= styles.len() {
+            let Some(preset) = usize::try_from(index).ok().and_then(|i| styles.get(i)) else {
+                ui.set_drum_gen_error(format!("风格下标 {index} 越界，未生成").into());
                 return;
-            }
+            };
             ui.set_drum_gen_style_index(index);
-            ui.set_drum_gen_swing(styles[index as usize].swing_permille.to_string().into());
+            ui.set_drum_gen_swing(preset.swing_permille.to_string().into());
+            // 选风格即出 loop：复用下方同一条 apply 生成通道；预听标记只让成功路径
+            // 不关窗，便于继续挑风格。生成失败仍由 apply 写 error，弹窗不关。
+            ui.set_drum_gen_preview_once(true);
+            ui.invoke_apply_drum_gen();
         });
     }
     // ---- 关闭（只改视图态，⛔ 不碰工程）-------------------------------------
@@ -16989,6 +16995,9 @@ pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // 选风格触发的预听只让成功路径不关窗；一次性标记在任何提前返回前消费。
+            let preview_once = ui.get_drum_gen_preview_once();
+            ui.set_drum_gen_preview_once(false);
             let Some(port) = port.as_ref() else {
                 ui.set_drum_gen_error("没有撤销会话，无法生成".into());
                 return;
@@ -17091,7 +17100,9 @@ pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 return;
             }
             ui.set_drum_gen_error("".into());
-            ui.invoke_close_drum_gen();
+            if !preview_once {
+                ui.invoke_close_drum_gen();
+            }
             reproject_now(&ui, port);
         });
     }

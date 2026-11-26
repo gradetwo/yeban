@@ -11,7 +11,8 @@
 //     种子 u64、小节数 1..=16）；解析失败时宿主把原因写进 `error`，
 //     **弹窗不关**、不提交半成品。
 //   - 风格行由宿主从 `yeban_theory::factory_drum_styles()` 投影写入
-//     `rows`；选中风格时宿主把该风格的 swing 定值播种进摇摆框。
+//     `rows`；选中风格时宿主先把该风格的 swing 定值播种进摇摆框，再**立即**
+//     走既有生成通道落一条已摆放的 loop（预听），成功后弹窗不关。
 //   - 目标轨在 `target-label` 里明示：展示轨为 MIDI 轨时落该轨，
 //     否则新建鼓轨；既有轨已有采样器 / 设备时不动其鼓组（用户鼓组优先）。
 //
@@ -41,6 +42,9 @@ export component DrumGenDialog inherits Rectangle {
     in property <string> target-label: "";
     // ---- 宿主写的失败行（空串 = 无失败；失败时弹窗不关）------------------
     in-out property <string> error: "";
+    /// 选风格触发的**一次**生成：宿主复用 apply 通道，但成功后不关窗，
+    /// 让用户继续挑风格 / 调参数。生成按钮不带这个标记，仍按原口径关窗。
+    in-out property <bool> preview-once: false;
 
     callback style-picked(int);
     callback apply();
