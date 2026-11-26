@@ -1199,6 +1199,162 @@ fn export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
     );
 }
 
+/// 判据 B10（T-FIX-565；T-FIX-384 的跟进）: `--open` + `--import-audio` + `--save-as`
+/// 在**真二进制**上走通：导入的音频资产落盘后可读回。
+///
+/// 为什么这条必须住在真二进制这一层：`cli.rs` 里 T-FIX-384 的单元判据
+/// （`import_audio_indexes_the_asset_so_the_container_passes_the_cross_layer_check`）
+/// 跑的是进程内 `run_batch(&parse(...))` —— 它证明逻辑对，但证明不了 argv 进来、真
+/// 进程出去、真退出码这一条产品路径。本判据与那条同一组断言、另一条路径：真 argv、
+/// 真 stdout、`imported-audio:` 报告行、读回落盘容器（池字节逐字节相同、索引自洽、
+/// 片段指向同一 SHA-256、取回的字节可解码、跨层审计无半登记）。
+///
+/// 红对照（T-FIX-565 交付时在盒上双向验证）：删掉 `cli.rs` 里
+/// `register_audio_asset` 那一行调用 ⇒ 保存被跨层核对以 `MissingAsset` 拒掉、
+/// 进程非零退出，本判据红；恢复 ⇒ 绿。
+#[test]
+fn import_audio_save_as_round_trips_asset_through_the_real_binary() {
+    let dir = scratch_dir("import-audio-e2e");
+    let input = write_real_container(&dir, "in.yeban");
+
+    // 真 WAV：单声道 48 kHz 16-bit、64 帧（与 T-FIX-384 单元判据同一份写法、同一只写入器）。
+    let wav = dir.join("take.wav");
+    let samples: Vec<i16> = (0..64_i16).map(|index| index * 137 - 4_000).collect();
+    yeban_render::wav::write_plain_wav(
+        &wav,
+        &yeban_render::rf64::PcmFormat::integer(1, 48_000, 16),
+        &yeban_render::dither::PcmBuffer::Int16(samples),
+    )
+    .expect("写夹具 WAV");
+    let wav_bytes = std::fs::read(&wav).expect("读夹具 WAV");
+    let expected = yeban_model::ids::AssetHash::of_bytes(&wav_bytes);
+
+    let out = dir.join("out.yeban");
+    let run = invoke(&[
+        "--open",
+        input.to_str().expect("输入路径必须是 UTF-8"),
+        "--import-audio",
+        wav.to_str().expect("WAV 路径必须是 UTF-8"),
+        "--save-as",
+        out.to_str().expect("输出路径必须是 UTF-8"),
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "导入 + 另存必须成功（退出 0），stderr: {}",
+        run.stderr
+    );
+    let line =
+        line_with(&run.stdout, "imported-audio:").expect("stdout 必须有 imported-audio 报告行");
+    assert_eq!(
+        field(line, "asset").as_deref(),
+        Some(expected.as_str()),
+        "报告行的 asset 必须是源字节的 SHA-256: {line}"
+    );
+    assert_eq!(
+        field(line, "frames").as_deref(),
+        Some("64"),
+        "解码事实：帧数: {line}"
+    );
+    assert_eq!(
+        field(line, "rate").as_deref(),
+        Some("48000"),
+        "解码事实：采样率: {line}"
+    );
+    assert_eq!(
+        field(line, "channels").as_deref(),
+        Some("1"),
+        "解码事实：声道数: {line}"
+    );
+    assert_eq!(
+        field(line, "origin").as_deref(),
+        Some("import"),
+        "来源标记必须是 `OpOrigin::Import`: {line}"
+    );
+
+    // 公开入口回读 `--save-as` 写出的容器。
+    let reopened = yeban_app::open::open_project_archive_file(
+        &out,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("回读另存的容器");
+    let entry = reopened
+        .project
+        .clip_pool
+        .values()
+        .find(|entry| match &entry.content {
+            yeban_model::ClipContent::Audio { asset, .. } => asset.as_str() == expected.as_str(),
+            _ => false,
+        })
+        .expect("保存的工程里必须多一条这份字节的音频片段");
+    match entry.content.clone() {
+        yeban_model::ClipContent::Audio { asset, gain_db } => {
+            assert_eq!(asset, expected, "片段必须指向源字节的 SHA-256");
+            assert_eq!(gain_db, 0.0, "本路径的片段增益是单位增益 0.0 dB");
+        }
+        other => panic!("必须是音频片段: {other:?}"),
+    }
+    let stored = reopened
+        .assets
+        .iter()
+        .find(|(hash, _)| *hash == expected)
+        .map(|(_, bytes)| bytes.clone())
+        .expect("容器的资产池必须有该 sha256 的字节");
+    assert_eq!(stored, wav_bytes, "容器里的字节必须与源文件逐字节相同");
+
+    let metadata = reopened.project.assets.get(&expected).unwrap_or_else(|| {
+        panic!(
+            "工程资产索引必须有该 sha256 的条目，实测索引键={:?}",
+            reopened.project.assets.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(metadata.hash, expected, "索引项的 hash 必须自指");
+    assert_eq!(
+        metadata.byte_len,
+        u64::try_from(wav_bytes.len()).expect("字节数放得进 u64"),
+        "索引项的 byte_len 必须等于源字节长度"
+    );
+    assert_eq!(
+        metadata.media_kind,
+        yeban_model::project::MediaKind::Audio,
+        "导入的 WAV 是音频资产"
+    );
+    assert_eq!(
+        metadata.license, "user-imported",
+        "许可口径与 import_logic 的导入口径同款"
+    );
+    assert_eq!(
+        metadata.original_path, "take.wav",
+        "original_path 只留文件名（⛔ 不把导入机的临时目录钉进工程）"
+    );
+
+    // 跨层审计：两层必须同时写 —— 缺一边就是 T-FIX-384 修的那种半登记。
+    let audit = yeban_app::open::audit_project_assets(&reopened);
+    assert!(
+        audit.missing.is_empty(),
+        "引用不得悬空: {:?}",
+        audit.missing
+    );
+    assert!(
+        audit.unindexed_pool.is_empty(),
+        "池里不许有未索引的条目: {:?}",
+        audit.unindexed_pool
+    );
+    assert!(
+        audit.index_without_pool.is_empty(),
+        "索引不许指向池里没有的字节: {:?}",
+        audit.index_without_pool
+    );
+
+    // 解码证据：从容器取回的字节再走同一个唯一读取器 ⇒ 帧数／采样率／声道不变。
+    let extracted = dir.join("extracted.wav");
+    std::fs::write(&extracted, &stored).expect("写出取回的资产");
+    let (back, buffer) =
+        yeban_render::wav::read_plain_wav(&extracted).expect("取回的资产必须可解码");
+    assert_eq!(back.sample_rate, 48_000);
+    assert_eq!(back.channels, 1);
+    assert_eq!(buffer.len(), 64, "帧数 = 64（单声道）");
+}
+
 /// 判据 B15c（`#200`）: 3 轨产物的**损失表文本**必须同时写明「已验的音色」「音色来自**供体**」
 /// 「⛔ **不是用户工程的设备链**」。
 ///
