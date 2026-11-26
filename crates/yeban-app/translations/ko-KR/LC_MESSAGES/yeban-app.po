@@ -966,89 +966,6 @@ msgstr "브라우저: 사운드 / 샘플 / 프리셋 / 이펙트 체인 / 프로
 msgid "片段级"
 msgstr "클립 수준"
 
-# --- workspace/song_overview_panel.slint ---
-
-msgid "整曲多层总览图"
-msgstr "전체 곡 다층 개요"
-
-msgid "整曲总览图：频率热力图、能量面积与情绪曲线"
-msgstr "전체 곡 개요: 주파수 히트맵, 에너지 면적 및 감정 곡선"
-
-msgid "总览图走带光标"
-msgstr "개요 재생 헤드 커서"
-
-msgid "独奏频段行"
-msgstr "솔로 밴드 행"
-
-msgid "当前编排视口"
-msgstr "현재 편곡 뷰포트"
-
-msgid "第 {}–{} 小节"
-msgstr "{}–{}마디"
-
-msgid "无数据"
-msgstr "데이터 없음"
-
-msgid "拖动缩放编排视口"
-msgstr "드래그하여 편곡 뷰포트 확대 / 축소"
-
-msgid "悬停小节读数"
-msgstr "호버 마디 수치"
-
-msgid "疏密条码与小节标尺"
-msgstr "밀도 바코드 및 마디 눈금자"
-
-msgid "情绪层开关"
-msgstr "감정 레이어 전환"
-
-msgid "能量层开关"
-msgstr "에너지 레이어 전환"
-
-msgid "频段层开关"
-msgstr "밴드 레이어 전환"
-
-msgid "疏密层开关"
-msgstr "밀도 레이어 전환"
-
-msgid "情绪"
-msgstr "감정"
-
-msgid "能量"
-msgstr "에너지"
-
-msgid "频段"
-msgstr "밴드"
-
-msgid "疏密"
-msgstr "밀도"
-
-msgid "折叠 / 展开总览面板"
-msgstr "개요 패널 접기 / 펼치기"
-
-msgid "总览"
-msgstr "개요"
-
-msgid "总览（已折叠）"
-msgstr "개요 (접힘)"
-
-msgid "总览（已展开）"
-msgstr "개요 (펼침)"
-
-msgid "全屏 / 退出全屏总览面板"
-msgstr "개요 패널 전체 화면 / 전체 화면 종료"
-
-msgid "退出全屏"
-msgstr "전체 화면 종료"
-
-msgid "全屏"
-msgstr "전체 화면"
-
-msgid "曲风预设"
-msgstr "스타일 프리셋"
-
-msgid "预设：{}"
-msgstr "프리셋: {}"
-
 # --- console/mixer_console.slint ---
 
 msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
@@ -2508,15 +2425,6 @@ msgstr "B 저장"
 
 msgid "对比 A→B"
 msgstr "A→B 비교"
-
-msgid "对比"
-msgstr "비교"
-
-msgid "A/B：先存 A 与 B，再对比"
-msgstr "A/B: A와 B를 먼저 저장한 뒤 비교"
-
-msgid "Songmap A/B 对比摘要"
-msgstr "Songmap A/B 비교 요약"
 
 msgid "实测 · 尚未导出（导出后显示真峰值与 LUFS）"
 msgstr "실측 · 아직 내보내지 않음(내보낸 뒤 트루 피크와 LUFS 표시)"

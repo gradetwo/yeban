@@ -4,7 +4,7 @@
 
 判定口径：以 `crates/yeban-app/ui/app.slint` 的 import 可达性为准（组件被 import 且被实例化才算活树）。
 
-## 一、已不在活树中的文件（6 个）
+## 一、已不在活树中的文件（5 个）
 
 | 死文件 | 现状 | 活树对应文件 |
 |---|---|---|
@@ -12,7 +12,6 @@
 | `ui/sidebar.slint` | 从未被 import | `ui/left_panel.slint` |
 | `ui/workspace/arrangement_view.slint` | 从未被 import | `ui/arrangement.slint` |
 | `ui/module_actions.slint` | 从未被 import | **无**（该文件已不在活树中，改动无效） |
-| `ui/workspace/song_overview_panel.slint` | 从未被 import | **无**（该文件已不在活树中，改动无效） |
 | `ui/controls/knob.slint` | 未被任何活文件 import | **无**（该文件已不在活树中，改动无效） |
 
 > `ui/workspace/session_view.slint` **不在死文件清单内**：T-FIX-223（`66b4eaa11`）已由 `app.slint:14`
@@ -25,7 +24,6 @@ ui/transport.slint                  → ui/transport_bar.slint
 ui/sidebar.slint                    → ui/left_panel.slint
 ui/workspace/arrangement_view.slint → ui/arrangement.slint
 ui/module_actions.slint             → （无对应活文件）改动无效
-ui/workspace/song_overview_panel.slint → （无对应活文件）改动无效
 ui/controls/knob.slint              → （无对应活文件）改动无效
 ```
 

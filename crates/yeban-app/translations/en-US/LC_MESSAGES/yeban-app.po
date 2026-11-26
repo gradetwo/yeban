@@ -966,89 +966,6 @@ msgstr "Browser: Sounds / Samples / Presets / Effect Chains / Project Assets, On
 msgid "片段级"
 msgstr "Clip Level"
 
-# --- workspace/song_overview_panel.slint ---
-
-msgid "整曲多层总览图"
-msgstr "Whole-Song Multi-Layer Overview"
-
-msgid "整曲总览图：频率热力图、能量面积与情绪曲线"
-msgstr "Whole-Song Overview: Frequency Heatmap, Energy Area & Emotion Curve"
-
-msgid "总览图走带光标"
-msgstr "Overview Playhead Cursor"
-
-msgid "独奏频段行"
-msgstr "Solo Band Row"
-
-msgid "当前编排视口"
-msgstr "Current Arrangement Viewport"
-
-msgid "第 {}–{} 小节"
-msgstr "Bars {}–{}"
-
-msgid "无数据"
-msgstr "No Data"
-
-msgid "拖动缩放编排视口"
-msgstr "Drag to Zoom the Arrangement Viewport"
-
-msgid "悬停小节读数"
-msgstr "Hovered Bar Readout"
-
-msgid "疏密条码与小节标尺"
-msgstr "Density Barcode & Bar Ruler"
-
-msgid "情绪层开关"
-msgstr "Toggle Emotion Layer"
-
-msgid "能量层开关"
-msgstr "Toggle Energy Layer"
-
-msgid "频段层开关"
-msgstr "Toggle Band Layer"
-
-msgid "疏密层开关"
-msgstr "Toggle Density Layer"
-
-msgid "情绪"
-msgstr "Emotion"
-
-msgid "能量"
-msgstr "Energy"
-
-msgid "频段"
-msgstr "Bands"
-
-msgid "疏密"
-msgstr "Density"
-
-msgid "折叠 / 展开总览面板"
-msgstr "Fold / Unfold the Overview Panel"
-
-msgid "总览"
-msgstr "Overview"
-
-msgid "总览（已折叠）"
-msgstr "Overview (collapsed)"
-
-msgid "总览（已展开）"
-msgstr "Overview (expanded)"
-
-msgid "全屏 / 退出全屏总览面板"
-msgstr "Full-Screen / Exit Full-Screen Overview Panel"
-
-msgid "退出全屏"
-msgstr "Exit Full Screen"
-
-msgid "全屏"
-msgstr "Full Screen"
-
-msgid "曲风预设"
-msgstr "Style Preset"
-
-msgid "预设：{}"
-msgstr "Preset: {}"
-
 # --- console/mixer_console.slint ---
 
 msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
@@ -2508,15 +2425,6 @@ msgstr "Save B"
 
 msgid "对比 A→B"
 msgstr "Compare A→B"
-
-msgid "对比"
-msgstr "Compare"
-
-msgid "A/B：先存 A 与 B，再对比"
-msgstr "A/B: save A and B first, then compare"
-
-msgid "Songmap A/B 对比摘要"
-msgstr "Songmap A/B comparison summary"
 
 msgid "实测 · 尚未导出（导出后显示真峰值与 LUFS）"
 msgstr "Measured · not exported yet (true peak and LUFS appear after export)"

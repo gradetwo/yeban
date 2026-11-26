@@ -740,19 +740,8 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
         session.contains("Tokens.texture-physical ? ((scene_touch.pressed"),
         "Session 场景激发行（按钮面）必须保留质感三元"
     );
-    let overview = read("workspace/song_overview_panel.slint");
-    assert!(
-        overview.contains("background: Tokens.bg-void;"),
-        "全曲总览画布必须回平 (bg-void)"
-    );
-    assert!(
-        !overview.contains("Tokens.void-brush"),
-        "全曲总览不得再用 void-brush（编辑面回平）"
-    );
-    assert!(
-        overview.contains("pill_touch.pressed ? Tokens.raised-brush"),
-        "全曲总览层开关胶囊（按钮面）必须保留质感三元"
-    );
+    // ⭐ T-FIX-670：`song_overview_panel.slint` 已删（死文件，无人 import、
+    // 不参与编译）；总览画布的回平钉随文件一起删除（`read()` 会对缺失文件 panic）。
 
     // ConsoleTabs 普查处置钉: 转发块保留（判据面在用，见本节头注）。
     let app = read("app.slint");

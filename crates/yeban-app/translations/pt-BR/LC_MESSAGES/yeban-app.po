@@ -966,89 +966,6 @@ msgstr "Navegador: sons / samples / presets / cadeias de efeitos / assets do pro
 msgid "片段级"
 msgstr "Nível de clip"
 
-# --- workspace/song_overview_panel.slint ---
-
-msgid "整曲多层总览图"
-msgstr "Visão geral do projeto em várias camadas"
-
-msgid "整曲总览图：频率热力图、能量面积与情绪曲线"
-msgstr "Visão geral do projeto: mapa de calor de frequência, área de energia e curva de emoção"
-
-msgid "总览图走带光标"
-msgstr "Cursor do cabeçote de reprodução na visão geral"
-
-msgid "独奏频段行"
-msgstr "Linha de banda em solo"
-
-msgid "当前编排视口"
-msgstr "Viewport atual do arranjo"
-
-msgid "第 {}–{} 小节"
-msgstr "Compassos {}–{}"
-
-msgid "无数据"
-msgstr "Sem dados"
-
-msgid "拖动缩放编排视口"
-msgstr "Arraste para dar zoom no viewport do arranjo"
-
-msgid "悬停小节读数"
-msgstr "Leitura do compasso sob o cursor"
-
-msgid "疏密条码与小节标尺"
-msgstr "Código de barras de densidade e régua de compassos"
-
-msgid "情绪层开关"
-msgstr "Ativar/desativar a camada de emoção"
-
-msgid "能量层开关"
-msgstr "Ativar/desativar a camada de energia"
-
-msgid "频段层开关"
-msgstr "Ativar/desativar a camada de bandas"
-
-msgid "疏密层开关"
-msgstr "Ativar/desativar a camada de densidade"
-
-msgid "情绪"
-msgstr "Emoção"
-
-msgid "能量"
-msgstr "Energia"
-
-msgid "频段"
-msgstr "Bandas"
-
-msgid "疏密"
-msgstr "Densidade"
-
-msgid "折叠 / 展开总览面板"
-msgstr "Recolher / expandir o painel de visão geral"
-
-msgid "总览"
-msgstr "Visão geral"
-
-msgid "总览（已折叠）"
-msgstr "Visão geral (recolhida)"
-
-msgid "总览（已展开）"
-msgstr "Visão geral (expandida)"
-
-msgid "全屏 / 退出全屏总览面板"
-msgstr "Tela cheia / sair da tela cheia do painel de visão geral"
-
-msgid "退出全屏"
-msgstr "Sair da tela cheia"
-
-msgid "全屏"
-msgstr "Tela cheia"
-
-msgid "曲风预设"
-msgstr "Preset de estilo"
-
-msgid "预设：{}"
-msgstr "Preset: {}"
-
 # --- console/mixer_console.slint ---
 
 msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
@@ -2508,15 +2425,6 @@ msgstr "Salvar B"
 
 msgid "对比 A→B"
 msgstr "Comparar A→B"
-
-msgid "对比"
-msgstr "Comparar"
-
-msgid "A/B：先存 A 与 B，再对比"
-msgstr "A/B: salve A e B e depois compare"
-
-msgid "Songmap A/B 对比摘要"
-msgstr "Resumo da comparação A/B do Songmap"
 
 msgid "实测 · 尚未导出（导出后显示真峰值与 LUFS）"
 msgstr "Medido · ainda não exportado (pico real e LUFS aparecem após exportar)"

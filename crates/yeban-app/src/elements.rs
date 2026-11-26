@@ -922,8 +922,8 @@ impl ElementRegistry {
 
         // ---- Hub #711：Songmap Phase 2 A/B 快照（会话态，隐藏于折叠态）----
         // ⭐ T-FIX-402：这三键是活的 —— 住在 `ui/app.slint` 的 A/B 对比条里
-        // （`if !root.console-maximized`，默认开启），component 已由死文件
-        // `workspace/song_overview_panel.slint` 重指向 `app.slint`。
+        // （`if !root.console-maximized`，默认开启），component 已由已删除的
+        // 死文件重指向 `app.slint`。
         registry.add(
             "song-overview-capture-a-button",
             ElementKind::Button,
@@ -961,12 +961,11 @@ impl ElementRegistry {
         // `-layer-{tension,energy,bands,density}-pill` / `-collapse-button` /
         // `-fullscreen-button` / `-profile-button` / `-band-solo-outline` /
         // `song-overview-ab-status` / `song-overview-panel-analysis-status`
-        // 这 17 条曾登记在
-        // `ui/workspace/song_overview_panel.slint` 上；该文件从未被任何活
-        // `.slint` import（`docs/DEAD-SLINT-FILES.md` §1，无活树对应文件），
-        // 其中 16 个 id 在活树里根本不存在（`song-overview-ab-status` 只有
-        // `app.slint` 里的无 id 文本绑定）。上面仅剩的 A/B 三键是活的，
-        // 已重指向 `app.slint`。
+        // 这 17 条曾登记在一个从未被任何活 `.slint` import 的死文件上
+        // （`docs/DEAD-SLINT-FILES.md` §1，无活树对应文件；该文件已由
+        // T-FIX-670 从磁盘删除），其中 16 个 id 在活树里根本不存在
+        // （`song-overview-ab-status` 只有 `app.slint` 里的无 id 文本绑定）。
+        // 上面仅剩的 A/B 三键是活的，已重指向 `app.slint`。
 
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
@@ -3983,7 +3982,7 @@ pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 9] = [
 /// ⭐ **T-FIX-327**：本清单是全仓 `.slint` 文件的**唯一登记**，已由测试模块
 /// 提升为模块级 `pub` 常量。集成判据需要全仓语料时一律从这里**派生**
 /// （`yeban_app::elements::SLINT_MANIFEST`），⛔ 不许再在判据文件里手写第二份名单
-/// —— 那正是本单修掉的漂移源（五份 18 文件手抄名单 vs 本清单 45 文件）。
+/// —— 那正是本单修掉的漂移源（五份 18 文件手抄名单 vs 本清单 44 文件）。
 /// 这样"UI/UX §8 的 11 个文件"就不是一句注释, 而是一条会被机械检查的约定。
 ///
 /// `module_actions.slint`（14 号）是**四个模块入口**那一票加的：导出 WAV / 导入 MIDI /
@@ -3994,7 +3993,7 @@ pub const PROPOSAL_HOST_PROPERTY_NAMES: [(&str, &str); 9] = [
 /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
 /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
 /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-pub const SLINT_MANIFEST: [&str; 45] = [
+pub const SLINT_MANIFEST: [&str; 44] = [
     "app.slint",
     "transport.slint",
     "status_bar.slint",
@@ -4003,10 +4002,6 @@ pub const SLINT_MANIFEST: [&str; 45] = [
     "tokens.slint",
     "workspace/session_view.slint",
     "workspace/arrangement_view.slint",
-    // 整曲多层总览图面板（`line/songmap-overview` Phase 1）：独立组件。
-    // UI 加一个文件就必须在清单里显式改（与 `module_actions.slint` /
-    // `console/asset_pool_panel.slint` 同一条纪律）。
-    "workspace/song_overview_panel.slint",
     "console/console_tabs.slint",
     "console/piano_roll.slint",
     "console/mixer_console.slint",
@@ -4496,13 +4491,14 @@ mod tests {
                 continue;
             }
             // ⭐ T-FIX-402：死文件的 accessible-id 不再要求注册表成员 ——
-            // `module_actions.slint` 与 `workspace/song_overview_panel.slint`
-            // 从未被任何活 `.slint` import（`docs/DEAD-SLINT-FILES.md` §1），
-            // 它们的 26 个 id 已随 T-FIX-402 从注册表里删除；方向 2 再按它们
-            // 逐条索要成员，就会把"死文件里有 ID"误报成"注册表漏登记"。
-            // ⛔ 只跳过这两个文件：方向 1 仍要死文件参与（22 条 arrangement
+            // `module_actions.slint` 从未被任何活 `.slint` import
+            // （`docs/DEAD-SLINT-FILES.md` §1），它的 id 已随 T-FIX-402
+            // 从注册表里删除；方向 2 再按它逐条索要成员，就会把"死文件里有 ID"
+            // 误报成"注册表漏登记"。总览面板文件已由 T-FIX-670 删除，不再进
+            // 方向 2 的扫描面。
+            // ⛔ 只跳过这一个文件：方向 1 仍要死文件参与（22 条 arrangement
             // 条目在 T-FIX-394 合入前仍指着死文件，靠那边的模板对上）。
-            if file == "module_actions.slint" || file == "workspace/song_overview_panel.slint" {
+            if file == "module_actions.slint" {
                 continue;
             }
             assert!(
@@ -4760,10 +4756,10 @@ mod tests {
 
     /// T-FIX-394: 注册表里不许再出现指向死文件的指针（已登记的余量除外）。
     ///
-    /// 死文件清单以 `docs/DEAD-SLINT-FILES.md` §1 为准（6 个）。T-FIX-394 把 22 处
+    /// 死文件清单以 `docs/DEAD-SLINT-FILES.md` §1 为准（5 个）。T-FIX-394 把 22 处
     /// `workspace/arrangement_view.slint` 指针改成了 `arrangement.slint`；T-FIX-402
-    /// 又删掉了剩下两组死文件指针（`module_actions.slint` 与
-    /// `workspace/song_overview_panel.slint`），登记余量因此清空。
+    /// 又删掉了剩下两组死文件指针（`module_actions.slint` 与总览面板文件），
+    /// 登记余量因此清空；总览面板文件已由 T-FIX-670 从磁盘删除，不再是死文件。
     /// 新出现死文件指针时本判据即红。
     /// 另外：每个指针都必须对应 `ui/` 下真实存在的文件（防 `x.slint` 类幽灵路径）。
     #[test]
@@ -4773,7 +4769,6 @@ mod tests {
             "sidebar.slint",
             "workspace/arrangement_view.slint",
             "module_actions.slint",
-            "workspace/song_overview_panel.slint",
             "controls/knob.slint",
         ];
         // 已登记的余量：两组死文件指针已由 T-FIX-402 全部修掉，余量为空；
@@ -4873,9 +4868,10 @@ mod tests {
     }
 
     /// T-FIX-402：26 条死文件注册已删、3 条 A/B 重指向活文件 ——
-    /// 注册表里不许再有 component 指向 `module_actions.slint` 或
-    /// `workspace/song_overview_panel.slint` 的条目；A/B 三键必须指着
-    /// `app.slint`；26 个已删 id 必须一个都不剩。
+    /// 注册表里不许再有 component 指向 `module_actions.slint` 的条目
+    /// （总览面板文件已由 T-FIX-670 删除，指向它的指针另由“指针必须对应
+    /// 真实文件”判据拦截）；A/B 三键必须指着 `app.slint`；26 个已删 id
+    /// 必须一个都不剩。
     ///
     /// 红证法：把任一已删条目加回注册表（或把 A/B 三键指回死文件），
     /// 本条即红。活窗口那一侧由 `tests/registry_repointed_ids_live.rs` 另钉。
@@ -4883,11 +4879,6 @@ mod tests {
     fn no_registry_entry_points_at_the_two_dead_files_fixed_by_t_fix_402() {
         let registry = registry();
         for meta in registry.iter() {
-            assert_ne!(
-                meta.component, "workspace/song_overview_panel.slint",
-                "`{}` 仍指着死文件 workspace/song_overview_panel.slint（T-FIX-402 已删）",
-                meta.id
-            );
             assert_ne!(
                 meta.component, "module_actions.slint",
                 "`{}` 仍指着死文件 module_actions.slint（T-FIX-402 已删）",
@@ -6485,7 +6476,7 @@ mod tests {
     ///
     /// 键的口径：`{文件} :: {点击所在元素块首行} :: {空白归一化后的点击落点}`。块首行按
     /// `enclosing_element_header` 取（点击所在行的上一级 `{` 行）；单行 TouchArea 里
-    /// 块首会落到父元素上，但三元组在本树实测唯一（107 条无重键）。
+    /// 块首会落到父元素上，但三元组在本树实测唯一（106 条无重键）。
     ///
     /// 注入证明（破坏 ⇒ 红）：删掉 LOOP 的 `accessible-role`（T-FIX-173 补丁 revert）
     /// ⇒ `transport_bar.slint :: btn_loop_touch := TouchArea { :: root.toggle-loop();` 落进
@@ -6866,8 +6857,7 @@ mod tests {
     /// | `dialogs/preset_library.slint` | 1 | 预设行点击 |
     /// | `dialogs/startup_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
     /// | `dialogs/template_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
-    /// | `workspace/song_overview_panel.slint` | 1 | 段落循环 TouchArea（for 循环内） |
-    const KNOWN_ROLELESS_CLICKABLES: [&str; 107] = [
+    const KNOWN_ROLELESS_CLICKABLES: [&str; 106] = [
         "app.slint :: Rectangle { :: root.engine-error = \"\";",
         "app.slint :: TouchArea { :: root.ai-drawer-open = false; root.musical-pr-open = true;",
         "app.slint :: TouchArea { :: root.toggle-ai-drawer();",
@@ -6977,7 +6967,6 @@ mod tests {
         "transport_bar.slint :: touch_splt := TouchArea { :: root.select-tool(\"split\");",
         "transport_bar.slint :: touch_spot := TouchArea { :: root.toggle-hotspots();",
         "transport_bar.slint :: touch_tips := TouchArea { :: Theme.show-tooltips = !Theme.show-tooltips;",
-        "workspace/song_overview_panel.slint :: for _[section-index] in root.section-names : TouchArea { :: root.target-cycle(section-index);",
     ];
 
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
