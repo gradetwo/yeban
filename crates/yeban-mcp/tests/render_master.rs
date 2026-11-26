@@ -3660,6 +3660,19 @@ fn the_render_frame_ceiling_is_the_published_hour() {
 /// 1.4 GB 浮点母带）。让一条常驻判据带上"回归时会吃 2~3 GB 内存、跑几分钟"的代价
 /// 不可接受 ⇒ 这里钉**写形**，与 `contract.rs` 里
 /// `only_the_loopback_and_dynamic_port_are_used_for_binding` 同一手法。
+///
+/// 上限常量在 `render.rs` 全文只许出现七次，落点登记如下——多一处或少一处
+/// 都要先逐处定性再改数（T-FIX-779：T-FIX-512 引入单元测试模块后由三处涨到
+/// 七处，判据计数与落点登记同步更新）：
+/// 1. 定义 `pub const MAX_RENDER_FRAMES`；
+/// 2. 闸门比较 `if frames > MAX_RENDER_FRAMES`（`frame_ceiling`）；
+/// 3. 报文 `maxFrames`（`frame_ceiling`）；
+/// 4. 单元测试模块 `master_cap_tests` 的 `use super::MAX_RENDER_FRAMES`；
+/// 5. 同模块数值钉 `assert_eq!(MAX_RENDER_FRAMES, 172_800_000)`；
+/// 6. 同模块派生钉 `assert_eq!(MAX_RENDER_FRAMES, (48_000.0 * …) as u64)`；
+/// 7. 同模块红对照 `assert_ne!(drifted, MAX_RENDER_FRAMES)`。
+///    其中 4–7 是合规引用（钉住常量取值与派生关系）；`render.rs` 自身单元测试
+///    里校验报文 `maxFrames` 的一处仍故意用字面量 `172_800_000`，不计入。
 #[test]
 fn the_frame_ceiling_gate_uses_the_constant_itself() {
     let text =
@@ -3671,8 +3684,8 @@ fn the_frame_ceiling_gate_uses_the_constant_itself() {
     );
     assert_eq!(
         text.matches("MAX_RENDER_FRAMES").count(),
-        3,
-        "上限常量只许出现三次: 定义 + 比较 + 报文里的 maxFrames"
+        7,
+        "上限常量只许出现七次: 定义 + 比较 + 报文里的 maxFrames + 单元测试模块的 4 处引用（落点见上方登记）"
     );
 }
 

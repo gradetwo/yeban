@@ -7078,7 +7078,7 @@ fn restore_binding_state(
 /// 为什么抽成一个函数：`#252` 让 `validate` 也能拿到显式 `frames` ⇒ 参数层就要拒绝
 /// 超限。两处各写一份 `if frames > …` 会让"上限"有两个来源（迟早漂移），而源码级判据
 /// `the_frame_ceiling_gate_uses_the_constant_itself` 钉住"闸门紧贴常量"与"常量只出现
-/// 三次（定义 + 比较 + 报文）" ⇒ 抽成一处后两条仍然成立，且**两处出口逐字相同**。
+/// 七次（定义 + 比较 + 报文 + 单元测试模块 `master_cap_tests` 的 4 处引用）" ⇒ 抽成一处后两条仍然成立，且**两处出口逐字相同**。
 ///
 /// 出口故意是 `RENDER_FAILED`（不是 `INVALID_PARAMETER_RANGE`）：它与"工程自己的末端
 /// 就超过上限"是**同一个**条件，调用方拿到的报文（`frames` + `maxFrames`）因此不因
@@ -7470,7 +7470,8 @@ mod tests {
         assert_eq!(value["error"]["data"]["durationFrames"], 24_000.0);
         // 上限：与工程末端推导**同一个**出口（`RENDER_FAILED` + `maxFrames`）。
         // ⚠ 这里用**字面量**而不是常量：源码级判据 `the_frame_ceiling_gate_uses_the_
-        // constant_itself` 要求常量在 render.rs 里只出现三次（定义 + 比较 + 报文）。
+        // constant_itself` 要求常量在 render.rs 里只出现七次（定义 + 比较 + 报文 +
+        // 单元测试模块的 4 处引用）。
         let fault = validate(&args(serde_json::json!({
             "format": "wav",
             "sampleRate": 48000,
