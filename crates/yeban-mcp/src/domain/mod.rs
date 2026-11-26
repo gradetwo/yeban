@@ -4662,6 +4662,24 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             });
             format!("平移摆放: {placement_id} → tick {new_start_tick}")
         }
+        Some(notes::PlacementEdit::SourceStart {
+            placement_id,
+            previous_placement,
+            source_start_samples,
+        }) => {
+            let mut updated = previous_placement;
+            updated.source_start_samples = Some(source_start_samples);
+            compiled.push(Op::RemoveClipPlacement {
+                track_id,
+                placement_id,
+                previous_placement,
+            });
+            compiled.push(Op::AddClipPlacement {
+                track_id,
+                placement: updated,
+            });
+            format!("改素材内起点: {placement_id} → 第 {source_start_samples} 帧")
+        }
         Some(notes::PlacementEdit::Remove {
             placement_id,
             previous_placement,

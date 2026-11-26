@@ -4670,3 +4670,119 @@ fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
         );
     }
 }
+
+/// T-FIX-728：同 clip 两条 placement，第二条带 `sourceStartSamples` ⇒ 第二段从源的
+/// 对应位置继续（不是重放开头）；把同一摆放再改成另一个起点后 `placementId` 不变、
+/// 渲染随之改变。两条摆放都经 **MCP 的 `parse_placement` / `parse_placement_edit`**
+/// 解析 —— 即工具面真正读到的形状。
+#[test]
+fn a_second_placement_with_source_start_continues_inside_the_material() {
+    let frames = 48_000usize;
+    let material = pattern(frames);
+    let bytes = wav_f32(2, 48_000, &material);
+    let tune = Tune::default();
+    let mut fixture = fixture(bytes, &tune);
+    let track_id = id(2);
+    let clip_id = id(10);
+
+    let mut add_args = serde_json::Map::new();
+    add_args.insert(
+        "placement".to_owned(),
+        json!({
+            "kind": "add",
+            "startTick": ONE_SECOND_TICKS,
+            "durationTicks": ONE_SECOND_TICKS,
+            "sourceStartSamples": 24_000
+        }),
+    );
+    let second =
+        yeban_mcp::domain::notes::parse_placement(&fixture.project, &track_id, &clip_id, &add_args)
+            .expect("工具面解析")
+            .expect("placement 在场");
+    let second_id = second.id;
+    assert_eq!(second.source_start_samples, Some(24_000));
+    fixture
+        .project
+        .tracks
+        .get_mut(&track_id)
+        .expect("音轨")
+        .clips
+        .insert(second_id, second);
+    fixture.project.validate().expect("两条摆放必须合法");
+
+    let scratch = Scratch::new("source-start-two");
+    let out = scratch.join("two.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let samples = payload_samples(&artifact);
+    // 第一段仍从素材第 0 帧起。
+    assert!(
+        (frame_value(&samples, 100) - material[200]).abs() < 1e-3,
+        "第一段必须从素材第 0 帧起: {}",
+        frame_value(&samples, 100)
+    );
+    // 第二段（1.000 s 起）必须从素材第 24000 帧继续。
+    for offset in [0usize, 1, 37, 100] {
+        let rendered = frame_value(&samples, 48_000 + offset);
+        let expected = material[(24_000 + offset) * 2];
+        assert!(
+            (rendered - expected).abs() < 1e-3,
+            "第二段第 {offset} 帧应读素材第 {} 帧: rendered={rendered} expected={expected}",
+            24_000 + offset
+        );
+    }
+
+    // ---- 改同一摆放的素材内起点：placementId 不变，渲染随之改变 ----
+    let mut edit_args = serde_json::Map::new();
+    edit_args.insert(
+        "placement".to_owned(),
+        json!({
+            "kind": "sourceStart",
+            "placementId": second_id.to_canonical_string(),
+            "sourceStartSamples": 12_000
+        }),
+    );
+    let edit = yeban_mcp::domain::notes::parse_placement_edit(
+        &fixture.project,
+        &track_id,
+        &clip_id,
+        &edit_args,
+    )
+    .expect("编辑解析")
+    .expect("placement 在场");
+    let yeban_mcp::domain::notes::PlacementEdit::SourceStart {
+        placement_id,
+        previous_placement,
+        source_start_samples,
+    } = edit
+    else {
+        panic!("必须是 SourceStart 形态");
+    };
+    assert_eq!(placement_id, second_id, "编辑不得改变摆放身份");
+    assert_eq!(source_start_samples, 12_000);
+    let mut updated = previous_placement;
+    updated.source_start_samples = Some(source_start_samples);
+    {
+        let track = fixture.project.tracks.get_mut(&track_id).expect("音轨");
+        track.clips.remove(&placement_id);
+        track.clips.insert(placement_id, updated);
+    }
+    fixture.project.validate().expect("改后工程必须合法");
+
+    let out2 = scratch.join("two-edited.wav");
+    let artifact2 =
+        build_with(&fixture.project, &pool(&fixture), &out2, args(&out2)).expect("再次渲染");
+    let samples2 = payload_samples(&artifact2);
+    for offset in [0usize, 37, 100] {
+        let rendered = frame_value(&samples2, 48_000 + offset);
+        let expected = material[(12_000 + offset) * 2];
+        assert!(
+            (rendered - expected).abs() < 1e-3,
+            "改起点后第二段第 {offset} 帧应读素材第 {} 帧: rendered={rendered} expected={expected}",
+            12_000 + offset
+        );
+    }
+    assert_eq!(
+        fixture.project.tracks[&track_id].clips[&placement_id].id, second_id,
+        "工程里的摆放身份必须仍是原来那条"
+    );
+}

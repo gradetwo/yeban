@@ -1120,6 +1120,12 @@ pub const SET_PITCH_BEND_POINT_FIELDS: [&str; 4] = [
 /// （只摆放的调用给空数组，见 [`parse_ops`] 的空数组口径）。
 pub const PLACEMENT_FIELD: &str = "placement";
 
+/// 音频摆放的**素材内起点**（帧, 0 起; 与模型 `ClipPlacement::source_start_samples` 同名同单位）。
+///
+/// 只对音频片段有意义：它改"从素材第几帧开始读"，⛔ 不移动摆放的时间轴，
+/// 也⛔ 不是 `offsetSamples`（后者是 ±100ms 相位对齐）。非音频片段给了它就响亮拒绝。
+pub const SOURCE_START_SAMPLES_FIELD: &str = "sourceStartSamples";
+
 /// `placement` 对象里 `add` 形态**允许**出现的全部键。
 ///
 /// 与 [`parse_placement`] 真正读取的键**同源**（判据 `placement_field_names_are_pinned`
@@ -1137,6 +1143,7 @@ pub const PLACEMENT_FIELDS: &[&str] = &[
     LOOP_END_TICK_FIELD,
     FADE_IN_TICKS_FIELD,
     FADE_OUT_TICKS_FIELD,
+    SOURCE_START_SAMPLES_FIELD,
 ];
 
 /// ⭐ `#241`：`add` 摆放的循环开关（`placement.loopEnabled`，可选；缺省 `false`）。
@@ -1189,11 +1196,23 @@ pub const PLACEMENT_KIND_MOVE: &str = "move";
 /// `placement.kind` 的**取走**形态：把一条**已经存在**的摆放从时间轴上移除。
 pub const PLACEMENT_KIND_REMOVE: &str = "remove";
 
+/// `placement.kind` 的**素材内起点**形态：改一条**已有**音频摆放从素材第几帧开始读
+/// （`sourceStartSamples`，帧）。摆放身份不变，时间轴与时长都不动。
+pub const PLACEMENT_KIND_SOURCE_START: &str = "sourceStart";
+
 /// `placement.kind` 的合法取值集合（错误信息与判据共用同一份真相）。
-pub const PLACEMENT_KINDS: [&str; 3] = [
+pub const PLACEMENT_KINDS: [&str; 4] = [
     PLACEMENT_KIND_ADD,
     PLACEMENT_KIND_MOVE,
     PLACEMENT_KIND_REMOVE,
+    PLACEMENT_KIND_SOURCE_START,
+];
+
+/// `sourceStart` 形态允许出现的全部键（判别键 + 摆放身份 + 素材内起点）。
+pub const PLACEMENT_SOURCE_START_FIELDS: [&str; 3] = [
+    PLACEMENT_KIND_FIELD,
+    "placementId",
+    SOURCE_START_SAMPLES_FIELD,
 ];
 
 /// `placement.add` 自带的目标音轨键（T-FIX-709）。
@@ -1218,6 +1237,7 @@ pub const PLACEMENT_ADD_FIELDS: &[&str] = &[
     LOOP_END_TICK_FIELD,
     FADE_IN_TICKS_FIELD,
     FADE_OUT_TICKS_FIELD,
+    SOURCE_START_SAMPLES_FIELD,
 ];
 
 /// `move` 形态允许的键：判别键 + 被平移的摆放身份 + **新的**起点。
@@ -1697,6 +1717,16 @@ pub enum PlacementEdit {
         /// 文档里的现值（模型层的撤销载荷，必须逐字段等于文档现值）。
         previous_placement: ClipPlacement,
     },
+    /// 改一条已有**音频**摆放的素材内起点（帧）。摆放身份不变：
+    /// 编译成「取走旧摆放 + 以同一 `placementId` 放回新摆放」。
+    SourceStart {
+        /// 被改的摆放身份（保持不变）。
+        placement_id: EntityId,
+        /// 文档里的现值（撤销载荷）。
+        previous_placement: ClipPlacement,
+        /// 新的素材内起点（帧）。
+        source_start_samples: u64,
+    },
 }
 
 impl PlacementEdit {
@@ -1707,6 +1737,7 @@ impl PlacementEdit {
             Self::Add(_) => PLACEMENT_KIND_ADD,
             Self::Move { .. } => PLACEMENT_KIND_MOVE,
             Self::Remove { .. } => PLACEMENT_KIND_REMOVE,
+            Self::SourceStart { .. } => PLACEMENT_KIND_SOURCE_START,
         }
     }
 }
@@ -12610,6 +12641,73 @@ pub fn parse_placement_edit(
                 previous_placement: found,
             }))
         }
+        PLACEMENT_KIND_SOURCE_START => {
+            reject_placement_fields(
+                object,
+                &PLACEMENT_SOURCE_START_FIELDS,
+                PLACEMENT_KIND_SOURCE_START,
+            )?;
+            let placement_id = require_placement_id(object, PLACEMENT_KIND_SOURCE_START)?;
+            let Some(source_start_samples) = read_optional_u64(object, SOURCE_START_SAMPLES_FIELD)?
+            else {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{PLACEMENT_FIELD}` 的 `{PLACEMENT_KIND_SOURCE_START}` 形态必须给出                          `{SOURCE_START_SAMPLES_FIELD}` (素材内起点, 帧)"
+                    ),
+                    serde_json::json!({
+                        "reason": "sourceStartRequired",
+                        "field": format!("{PLACEMENT_FIELD}.{SOURCE_START_SAMPLES_FIELD}"),
+                        "placementKind": PLACEMENT_KIND_SOURCE_START,
+                    }),
+                ));
+            };
+            let found = existing_placement(
+                project,
+                track_id,
+                &placement_id,
+                clip_id,
+                PLACEMENT_KIND_SOURCE_START,
+            )?;
+            let audio = project
+                .clip_pool
+                .get(clip_id)
+                .is_some_and(|entry| matches!(entry.content, ClipContent::Audio { .. }));
+            if !audio {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{PLACEMENT_FIELD}.{SOURCE_START_SAMPLES_FIELD}` 只对音频片段有意义;                          片段 {clip_id} 不是音频"
+                    ),
+                    serde_json::json!({
+                        "reason": "sourceStartNotAudio",
+                        "field": format!("{PLACEMENT_FIELD}.{SOURCE_START_SAMPLES_FIELD}"),
+                        "clipId": clip_id.to_canonical_string(),
+                        "placementKind": PLACEMENT_KIND_SOURCE_START,
+                    }),
+                ));
+            }
+            if found.source_start_samples == Some(source_start_samples) {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::Conflict,
+                    format!(
+                        "摆放 {placement_id} 的素材内起点已经是 {source_start_samples}, 没有可提交的改动"
+                    ),
+                    serde_json::json!({
+                        "reason": "placementAlreadyAtSourceStart",
+                        "placementKind": PLACEMENT_KIND_SOURCE_START,
+                        "trackId": track_id.to_canonical_string(),
+                        "placementId": placement_id.to_canonical_string(),
+                        "sourceStartSamples": source_start_samples,
+                    }),
+                ));
+            }
+            Ok(Some(PlacementEdit::SourceStart {
+                placement_id,
+                previous_placement: found,
+                source_start_samples,
+            }))
+        }
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("`{PLACEMENT_FIELD}.{PLACEMENT_KIND_FIELD}` 不支持 `{other}`"),
@@ -13007,7 +13105,26 @@ fn build_placement(
         offset_samples: None,
         fade_in_ticks: read_optional_u64(object, FADE_IN_TICKS_FIELD)?,
         fade_out_ticks: read_optional_u64(object, FADE_OUT_TICKS_FIELD)?,
-        source_start_samples: None,
+        source_start_samples: match read_optional_u64(object, SOURCE_START_SAMPLES_FIELD)? {
+            Some(value) => {
+                if !is_audio {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "`{PLACEMENT_FIELD}.{SOURCE_START_SAMPLES_FIELD}` 只对音频片段有意义; 片段 {clip_id} 不是音频"
+                        ),
+                        serde_json::json!({
+                            "reason": "sourceStartNotAudio",
+                            "field": format!("{PLACEMENT_FIELD}.{SOURCE_START_SAMPLES_FIELD}"),
+                            "clipId": clip_id.to_canonical_string(),
+                            "hint": "素材内起点只改音频片段的读取位置; MIDI 片段删掉这个键",
+                        }),
+                    ));
+                }
+                Some(value)
+            }
+            None => None,
+        },
     };
     placement
         .validate()
@@ -21907,6 +22024,74 @@ mod tests {
         (project, track_id, clip_id)
     }
 
+    /// T-FIX-728：`placement.add` 暴露音频素材内起点（帧），非音频响亮拒绝。
+    #[test]
+    fn placement_add_exposes_source_start_only_for_audio() {
+        let (project, track_id, clip_id) = unplaced_audio_clip();
+        let mut args = Map::new();
+        args.insert(
+            PLACEMENT_FIELD.to_owned(),
+            serde_json::json!({"kind":"add","durationTicks":960,"sourceStartSamples":1234}),
+        );
+        let placement = parse_placement(&project, &track_id, &clip_id, &args)
+            .expect("音频片段必须接受素材内起点")
+            .expect("placement 在场");
+        assert_eq!(placement.source_start_samples, Some(1234));
+
+        let (midi_project, midi_track, midi_clip) = unplaced_midi_clip();
+        let fault = parse_placement(&midi_project, &midi_track, &midi_clip, &args)
+            .expect_err("MIDI 片段给素材内起点必须拒绝");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("sourceStartNotAudio"),
+            "{fault:?}"
+        );
+    }
+
+    /// T-FIX-728：`sourceStart` 编辑形态保留 `placementId`，只改素材内起点；
+    /// MIDI 片段的摆放同样响亮拒绝。
+    #[test]
+    fn source_start_edit_keeps_the_placement_id() {
+        let (mut project, track_id, clip_id) = unplaced_audio_clip();
+        let mut add_args = Map::new();
+        add_args.insert(
+            PLACEMENT_FIELD.to_owned(),
+            serde_json::json!({"kind":"add","durationTicks":960}),
+        );
+        let placed = parse_placement(&project, &track_id, &clip_id, &add_args)
+            .expect("摆放解析")
+            .expect("placement 在场");
+        let placement_id = placed.id;
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("音轨")
+            .clips
+            .insert(placement_id, placed);
+
+        let mut edit_args = Map::new();
+        edit_args.insert(
+            PLACEMENT_FIELD.to_owned(),
+            serde_json::json!({
+                "kind": PLACEMENT_KIND_SOURCE_START,
+                "placementId": placement_id.to_canonical_string(),
+                "sourceStartSamples": 4800
+            }),
+        );
+        let edit = parse_placement_edit(&project, &track_id, &clip_id, &edit_args)
+            .expect("编辑解析")
+            .expect("placement 在场");
+        let PlacementEdit::SourceStart {
+            placement_id: edited_id,
+            source_start_samples,
+            ..
+        } = edit
+        else {
+            panic!("必须是 SourceStart 形态");
+        };
+        assert_eq!(edited_id, placement_id, "摆放身份必须保持不变");
+        assert_eq!(source_start_samples, 4800);
+    }
     /// 同 [`unplaced_midi_clip`]，但取的是池子里那条**音频**条目。
     fn unplaced_audio_clip() -> (YebanProjectV1, EntityId, EntityId) {
         let mut project = filled_project();
@@ -21939,6 +22124,7 @@ mod tests {
                 "loopEndTick",
                 "fadeInTicks",
                 "fadeOutTicks",
+                "sourceStartSamples",
             ]
         );
     }
@@ -22474,7 +22660,8 @@ mod tests {
             [
                 PLACEMENT_KIND_ADD,
                 PLACEMENT_KIND_MOVE,
-                PLACEMENT_KIND_REMOVE
+                PLACEMENT_KIND_REMOVE,
+                PLACEMENT_KIND_SOURCE_START
             ]
         );
         assert_eq!(
@@ -22492,6 +22679,7 @@ mod tests {
                 "loopEndTick",
                 "fadeInTicks",
                 "fadeOutTicks",
+                "sourceStartSamples",
             ]
         );
         assert_eq!(PLACEMENT_MOVE_FIELDS, ["kind", "startTick", "placementId"]);
@@ -22509,6 +22697,7 @@ mod tests {
                 "loopEndTick",
                 "fadeInTicks",
                 "fadeOutTicks",
+                "sourceStartSamples",
             ]
         );
         for fields in [PLACEMENT_MOVE_FIELDS, PLACEMENT_REMOVE_FIELDS] {
