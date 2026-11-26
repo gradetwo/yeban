@@ -49,7 +49,7 @@ use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, Scope, ScopeSet};
-use yeban_model::samples::filled_project;
+use yeban_model::samples::{filled_project, filled_project_assets};
 use yeban_model::{AssetHash, ClipContent, EntityId, YebanProjectV1};
 
 use super::session_dispatcher;
@@ -150,12 +150,18 @@ fn fixture_sfz(scratch: &Scratch) -> PathBuf {
 }
 
 /// ⭐ **内嵌装配本体**：只调 [`session_dispatcher`]（生产路径的同一个符号）。
+///
+/// 池必须带 [`filled_project_assets`]，⛔ 不能是空池：`filled_project()` 的
+/// `clip_pool` 音频片段引用 kick 哈希、`project.assets` 里也有它的元数据，
+/// 只有会话 CAS 池里**没有**对应字节 ⇒ 存盘审计（T-FIX-500/665 的
+/// `missing_audio_assets`）会把写会话的 `yeban_save_project` 当悬空资产拒绝。
+/// 字节与 `filled_project()` 同源（`#142` 的出厂判据已钉），不可能漂移。
 pub(super) fn embedded(scratch: &Scratch, read_only: bool) -> Dispatcher {
     session_dispatcher(
         &project_without_note_probability(),
         &scratch.join("session.yeban"),
         read_only,
-        Vec::new(),
+        filled_project_assets(),
     )
     .expect("内嵌会话装配")
 }
