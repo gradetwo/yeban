@@ -111,6 +111,155 @@ fn assemble_without_roll_edit() -> (yeban_app::ui::MainWindow, LiveControlPlane)
     (window, plane)
 }
 
+/// T-FIX-677：在**宿主帧**里找一个"铅笔能写、但当前没有任何音符"的 x。
+///
+/// 这样断言的是"落音后选中新音符"，而不是"点到了旧音符又改选区"。
+fn blank_pencil_x(
+    window: &yeban_app::ui::MainWindow,
+    project: &yeban_model::YebanProjectV1,
+) -> f32 {
+    let view = ViewState::from_project(project).expect("投影");
+    let width = slint::ComponentHandle::window(window).size().width as f32;
+    let base = window.get_roll_base_pitch().clamp(0, 127) as u8;
+    (1..240)
+        .map(|step| 10.0 * f32::from(u8::try_from(step).unwrap_or(0)))
+        .find(|x| {
+            pencil_op_for(
+                project,
+                0.0,
+                *x,
+                HIT_Y_IN_ROLL,
+                ROLL_SNAP_GRID_TICKS,
+                i32::from(PENCIL_TOOL_DIGIT),
+            )
+            .is_some()
+                && view
+                    .hit_test_visible_scoped_with_base(
+                        window.get_roll_scroll_x(),
+                        width,
+                        *x,
+                        HIT_Y_IN_ROLL,
+                        NOTE_HEIGHT,
+                        None,
+                        base,
+                    )
+                    .is_none()
+        })
+        .expect("夹具里必须存在一个片段内、但当前没有音符的铅笔点击点")
+}
+
+/// `T-FIX-677` 判据 1：铅笔落音后，**新音符自己**进选区；人性化对话框的作用范围读 1；
+/// 连续画第二颗时选区是**最后一颗**（裸单击替换，不是累加）。
+#[test]
+fn a_pencil_click_selects_the_new_note_and_humanize_scope_reads_one() {
+    let (window, port, mut plane) = assemble();
+    let before = port.project();
+    let before_count = note_count(&before);
+    let first_x = blank_pencil_x(&window, &before);
+    window.set_active_tool(i32::from(PENCIL_TOOL_DIGIT));
+    click_in_roll_by_id(&mut plane, 1, first_x);
+
+    let after_first = port.project();
+    assert_eq!(note_count(&after_first), before_count + 1, "铅笔必须加一颗");
+    let first_new = notes(&after_first)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .find(|id| !notes(&before).iter().any(|(old, _, _)| old == id))
+        .expect("必须读出第一颗新音符身份");
+    assert_eq!(window.get_selected_note_count(), 1, "落音后必须选中 1 颗");
+    let selected: Vec<String> = {
+        use slint::Model as _;
+        window
+            .get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    assert_eq!(selected, vec![first_new.clone()], "选中的必须是新音符 ULID");
+
+    window.invoke_open_humanize();
+    assert_eq!(
+        window.get_humanize_scope_count(),
+        1,
+        "人性化作用范围必须读选区 1，不能是 0（整段）"
+    );
+    window.invoke_close_humanize();
+
+    // 连续画第二颗：选区是最后一颗（裸单击的替换口径）。
+    let second_x = blank_pencil_x(&window, &after_first);
+    click_in_roll_by_id(&mut plane, 20, second_x);
+    let after_second = port.project();
+    assert_eq!(
+        note_count(&after_second),
+        before_count + 2,
+        "第二颗必须也落音"
+    );
+    let second_new = notes(&after_second)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .find(|id| !notes(&after_first).iter().any(|(old, _, _)| old == id))
+        .expect("必须读出第二颗新音符身份");
+    assert_eq!(
+        window.get_selected_note_count(),
+        1,
+        "连续画仍是单选，不是累加"
+    );
+    let selected: Vec<String> = {
+        use slint::Model as _;
+        window
+            .get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    assert_eq!(selected, vec![second_new], "连续画后选区必须是最新一颗");
+}
+
+/// `T-FIX-677` 判据 2：空工程（只有主总线）走 `track_created` / `clip_created` 自动落音路径，
+/// 同样要把新音符写进选区 —— 这条路径不能只在"已有 MIDI 片段"分支里做。
+#[test]
+fn an_auto_created_track_and_clip_draw_selects_the_first_note() {
+    let project = yeban_model::samples::default_project();
+    let before_tracks = project.tracks.len();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("空工程也要能开窗");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<roll-edit-auto-track>", "yeban-app", project, NOW_MS).expect("打开"),
+    ));
+    wire_roll_edit(ui.ui(), &port);
+    let mut plane = ui.into_control_plane(Permission::Interactive);
+
+    window.set_active_tool(i32::from(PENCIL_TOOL_DIGIT));
+    click_in_roll_by_id(&mut plane, 1, 10.0);
+
+    let after = port.project();
+    assert_eq!(note_count(&after), 1, "自动建轨/建片段后必须落一颗音符");
+    assert_eq!(
+        after.tracks.len(),
+        before_tracks + 1,
+        "必须真的自动建了一条轨"
+    );
+    assert_eq!(
+        window.get_selected_note_count(),
+        1,
+        "自动路径也必须选中新音符"
+    );
+    let selected: Vec<String> = {
+        use slint::Model as _;
+        window
+            .get_selected_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+    let new_id = notes(&after)
+        .into_iter()
+        .next()
+        .map(|(id, _, _)| id)
+        .expect("必须有一颗新音符");
+    assert_eq!(selected, vec![new_id], "自动路径的选区必须是新音符");
+}
+
 /// 音符矩形的高度（与 `host::NOTE_HEIGHT_PX` / `piano_roll.slint` 的 `12px` 同一读数）。
 const NOTE_HEIGHT: f32 = 12.0;
 

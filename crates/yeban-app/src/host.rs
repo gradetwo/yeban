@@ -21918,6 +21918,35 @@ fn sync_roll_target_selection(
     }
 }
 
+/// `T-FIX-677`：从铅笔刚生成的 op 批里取**新音符**的身份。
+///
+/// `AutoRollNoteInsert` 不带 `note_id` 字段（它是批的载体，不是单音符的载体）；
+/// 批里恰好一条 `AddNote`（`ensure_track_instrument_ops` 只可能补设备/路由 op），
+/// 因此直接从那条 op 取，避免在四个构造点各抄一遍 id（第二真相源）。
+fn drawn_note_ulid(inserted: &AutoRollNoteInsert) -> Option<String> {
+    inserted.ops.iter().find_map(|op| match op {
+        yeban_model::ops::Op::AddNote { note, .. } => Some(note.id.to_canonical_string()),
+        _ => None,
+    })
+}
+
+/// `T-FIX-677`：铅笔提交成功后，把新音符写成**唯一**选区（裸单击语义：替换）。
+///
+/// 必须写在 [`reproject_roll`] **之前**：`apply_view` 从 `selected-ulids` 重算
+/// `note-selected` 标志，并在同一函数末尾调用 `publish_status_bar`。只写这三个读数
+/// （`selected-ulids` / `selected-note-count` / 标志由 `apply_view` 派生）就与既有
+/// 选择工具的写回口径同源，⛔ 不另造选区缓存。
+///
+/// ⛔ 不在提交失败分支调用：点击结算的选区保持原样，不写幽灵 id。
+fn select_drawn_note(ui: &MainWindow, inserted: &AutoRollNoteInsert) {
+    let Some(note_id) = drawn_note_ulid(inserted) else {
+        return;
+    };
+    let ids: Vec<slint::SharedString> = vec![note_id.as_str().into()];
+    ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
+    ui.set_selected_note_count(1);
+}
+
 fn commit_roll_auto_draw(
     ui: &MainWindow,
     port: &UndoPort,
@@ -21948,6 +21977,9 @@ fn commit_roll_auto_draw(
             if let Some(updated_project) = port.try_project() {
                 sync_roll_target_selection(ui, &updated_project, &inserted);
             }
+            // T-FIX-677：落音后选中新音符；写在 reproject 之前，由 apply_view 重算标志
+            // 并刷新状态栏。连续画多颗时是"最后一颗"的替换选区（裸单击口径）。
+            select_drawn_note(ui, &inserted);
             apply_undo(ui, port);
             reproject_roll(ui, port, width, scroll);
             if let Some(notice) = auto_insert_status_message(&inserted) {
