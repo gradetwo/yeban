@@ -842,11 +842,8 @@ pub fn plan(
     };
 
     let lane: Option<&AutomationLane> = project.automation_lane(&target);
-    let points = lane
-        .map(AutomationLane::points_in_tick_order)
-        .unwrap_or_default();
-    let read_enabled = lane.is_some_and(|lane| lane.read_enabled);
-    let write_mode = lane.map(|lane| serde_name(&lane.write_mode));
+    // 响应的泳道快照在写模拟之后重读（见下方 T-FIX-649），这里只保留写前
+    // 计算所需的那份（old_point / 值域校验）。
     let unit = serde_name(&target.nominal_unit());
     let domain = lane
         .and_then(AutomationLane::effective_domain)
@@ -866,6 +863,8 @@ pub fn plan(
     let mut write = None;
     let mut values_after = None;
     let mut digest_after = None;
+    // 写入模拟后的工程：响应的泳道快照必须从它重读（T-FIX-649），而不是写前那份。
+    let mut simulated_project: Option<YebanProjectV1> = None;
     let offline_support = if let Some(raw_point) = arguments.get("point") {
         let (point_id, point) = parse_point(arguments, raw_point, &target_label, domain)?;
         let old_point = lane.and_then(|lane| lane.points.get(&point_id)).copied();
@@ -882,6 +881,7 @@ pub fn plan(
         simulated
             .validate()
             .map_err(|error| error::from_model("自动化点校验", &error))?;
+        simulated_project = Some(simulated.clone());
         let mut after = Vec::with_capacity(read_ticks.len());
         for tick in &read_ticks {
             after.push(AutomationReading::read(&simulated, &target, *tick)?);
@@ -904,6 +904,22 @@ pub fn plan(
     };
     let (applied_in_offline_render, residual_reason, offline_render_error) = offline_support;
 
+    // ⭐ T-FIX-649：响应的泳道快照描述写入之后的状态。写调用从 simulated 重读
+    // exists / readEnabled / writeMode / domain / pointCount / points；只读调用
+    // 仍读当前工程。⛔ 不把 written 手工拼进旧 points（那会造出第二份状态）。
+    let response_project = simulated_project.as_ref().unwrap_or(project);
+    let response_lane: Option<&AutomationLane> = response_project.automation_lane(&target);
+    let points = response_lane
+        .map(AutomationLane::points_in_tick_order)
+        .unwrap_or_default();
+    let lane_exists = response_lane.is_some();
+    let read_enabled = response_lane.is_some_and(|lane| lane.read_enabled);
+    let write_mode = response_lane.map(|lane| serde_name(&lane.write_mode));
+    let domain = response_lane
+        .and_then(AutomationLane::effective_domain)
+        .or_else(|| target.nominal_domain())
+        .map(|domain| (domain.min(), domain.max()));
+
     Ok(AutomationEdit {
         track_id,
         target,
@@ -911,7 +927,7 @@ pub fn plan(
         lane_kind,
         resolved_param_name,
         points,
-        lane_exists: lane.is_some(),
+        lane_exists,
         read_enabled,
         write_mode,
         unit,
@@ -1814,5 +1830,88 @@ mod tests {
         let data = data.as_ref().expect("带 data");
         assert!(data.get("reason").is_none(), "值域闸门不带这个 reason");
         assert_eq!(data["domainMax"], serde_json::json!(12.0));
+    }
+}
+
+/// T-FIX-649：写调用的响应泳道必须是**写入之后**的状态（只读调用不变）。
+#[cfg(test)]
+mod write_snapshot_tests {
+    use super::*;
+    use yeban_model::samples::filled_project;
+
+    fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn write_response_lane_describes_the_post_write_lane() {
+        let project = filled_project();
+        let track = project
+            .tracks
+            .values()
+            .find(|track| !track.devices.is_empty())
+            .expect("样本里必须有带设备的音轨")
+            .id;
+
+        // 第一次写：TrackPan 在样本里没有泳道 ⇒ 响应必须报 exists=true、1 个点。
+        let first = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackPan")),
+                ("point", serde_json::json!({"tick": 0, "value": 0.5})),
+            ]),
+            track,
+        )
+        .expect("第一次写规划");
+        let write = first.write.as_ref().expect("必须有写入");
+        assert!(
+            first.lane_exists,
+            "空泳道首次写点后响应 lane.exists 必须为 true"
+        );
+        assert_eq!(first.points.len(), 1, "响应必须包含刚写的点");
+        assert_eq!(first.points[0].tick, 0);
+
+        let mut after = project.clone();
+        write.op.apply(&mut after).expect("施加第一次写");
+        assert_eq!(
+            after.automation_lane(&first.target).map(|l| l.points.len()),
+            Some(1)
+        );
+
+        // 第二次写同一泳道：响应必须包含两个点（不是只含第一个）。
+        let second = plan(
+            &after,
+            &args(&[
+                ("lane", Value::from("TrackPan")),
+                ("point", serde_json::json!({"tick": 480, "value": -0.5})),
+            ]),
+            track,
+        )
+        .expect("第二次写规划");
+        assert!(second.lane_exists);
+        assert_eq!(second.points.len(), 2, "第二次写后响应必须有两个点");
+        let ticks: Vec<u64> = second.points.iter().map(|point| point.tick).collect();
+        assert_eq!(ticks, vec![0, 480]);
+
+        let mut after_second = after.clone();
+        second
+            .write
+            .as_ref()
+            .unwrap()
+            .op
+            .apply(&mut after_second)
+            .expect("施加第二次写");
+        // 只读调用仍返回当前（两个点）的泳道状态。
+        let read = plan(
+            &after_second,
+            &args(&[("lane", Value::from("TrackPan"))]),
+            track,
+        )
+        .expect("只读规划");
+        assert!(read.is_read_only());
+        assert_eq!(read.points.len(), 2, "只读调用返回当前泳道状态");
     }
 }
