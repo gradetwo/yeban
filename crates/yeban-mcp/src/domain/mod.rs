@@ -6919,6 +6919,19 @@ fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     guard_plugin_path(path)?;
     let class = arg_str(call, "pluginId");
     let kind = arg_str(call, "kind").unwrap_or("instrument");
+    // T-FIX-420：乐器只上 MIDI 轨。Audio 轨没有软件乐器槽位（参照 Logic Pro）：
+    // 静默挂上只会返回成功回执，渲染却从不使用该插件（只走音频片段），输出与
+    // 装载前逐字节相同 —— 成功回执掩盖了目标轨语义不匹配。必须在 `Host::load`
+    // 之前响亮拒绝（INVALID_PARAMETER_RANGE，报文点名目标轨的 kind 与要求）。
+    if kind == "instrument" && track.kind != yeban_model::TrackKind::Midi {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "目标音轨 kind 为 {:?}，乐器插件只上 MIDI 轨（Audio 轨没有软件乐器槽位）",
+                track.kind
+            ),
+        ));
+    }
     let (instance, device_kind) = match kind {
         "instrument" => (Host::load(path, class), DeviceKind::ExternalInstrument),
         "effect" => (Host::load_effect(path, class), DeviceKind::ExternalEffect),
