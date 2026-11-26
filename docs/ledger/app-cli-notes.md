@@ -552,5 +552,6 @@ SLINT_BACKEND=headless yeban-app --headless
 
 - [ ] 把本线的 CLI 契约（退出码 / 报告字段 / 握手行）登记进 `docs/DEVELOPMENT_LEDGER.md` 或 ADR（needs-3）。
 - [ ] `docs/ledger/app-binding-notes.md` §7 第 8 条的"没有打开文件路径"改为指向本台账（needs-5）。
-- [ ] 若 `yeban-mcp` 的 `store.rs` 落地，把 `save.rs` 换成对它的调用（app-mixer 线的 needs 同族）。
+- [ ] ~~若 `yeban-mcp` 的 `store.rs` 落地，把 `save.rs` 换成对它的调用（app-mixer 线的 needs 同族）。~~ **前提已翻面，改写为带前置条件的形态（T-FIX-496；仍是 TODO，未满足）**，见下一条。
+- [ ] 待 `store` 的落盘口径补齐以下两项后，再把 `save.rs` 换成对它的调用（app-mixer 线的 needs 同族）：（a）`write_project_atomic` 在 rename 后刷父目录（app 侧 T-FIX-324 已有目录刷盘 + `Durability::Warning` 读数；缺口 ISS-MWWUX8U5-3BF57C，已立项 T-FIX-498，排队中）；（b）另存目标取 `.yeban.lock` 排他写锁（app 保存每次取锁；缺口 ISS-MWWUXF16-4FF3A2，待派单）。**两项缺一不可**——只补其一仍不许换线（T-FIX-477 审计 #5）。
 - [ ] README / 官网加 Quick Start 时引用 §6，并**逐字**带上"必须写进文档的诚实说明"。
