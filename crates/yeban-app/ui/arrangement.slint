@@ -185,6 +185,8 @@ export component ArrangementViewport inherits Rectangle {
     // 坐标口径与死文件一致：x 是时间轴像素（tick 0 起，不含 scroll），
     // y 是**行区帧**（首行顶 = 0），宿主按 `band_y − 42` 找泳道。
     callback automation-lane-click(length, length);
+    // T-FIX-715：Ctrl/⌘ + 单击命中既有点时循环曲线形状；无修饰键仍走增/改点。
+    callback automation-lane-cycle-curve(length, length);
 
     // 框选草稿（界面本地瞬态，⛔ 不进宿主 / 不进撤销栈）：坐标是 **Flickable
     // 内容帧**（与 `track-ys` 同帧）；`marquee-active` = 已越过 4px 阈值。
@@ -2079,10 +2081,17 @@ export component ArrangementViewport inherits Rectangle {
                                                     root.marquee-subtractive);
                                             } else if self.gesture-pressed {
                                                 // 未越阈值 = 单击：自动化点编辑（T-FIX-714 语义不变）。
+                                                // ⭐ T-FIX-715：修饰键单击只切曲线，不改 tick/value。
                                                 root.select-track(trk.id);
-                                                root.automation-lane-click(
-                                                    self.mouse-x,
-                                                    root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
+                                                if event.modifiers.control {
+                                                    root.automation-lane-cycle-curve(
+                                                        self.mouse-x,
+                                                        root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
+                                                } else {
+                                                    root.automation-lane-click(
+                                                        self.mouse-x,
+                                                        root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
+                                                }
                                             }
                                             self.gesture-mode = 0;
                                             self.gesture-pressed = false;

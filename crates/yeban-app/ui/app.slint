@@ -1068,6 +1068,7 @@ export component MainWindow inherits Window {
     callback arrangement-scroll-to(length);
     callback arrangement-wheel(length, length, bool, bool);
     callback automation-lane-click(length, length);
+    callback automation-lane-cycle-curve(length, length);
     callback back-to-arrangement();
     callback bpm-commit(string);
     callback browse-export-wav-path();
@@ -2024,6 +2025,7 @@ export component MainWindow inherits Window {
                     track-rename(idx, new-name) => { root.track-rename(idx, new-name); }
                     // ⭐ T-FIX-227：泳道点击的落点是宿主既有 `wire_automation_lane_click`。
                     automation-lane-click(x, y) => { root.automation-lane-click(x, y); }
+                    automation-lane-cycle-curve(x, y) => { root.automation-lane-cycle-curve(x, y); }
                     toggle-mute(t-id) => { root.track-toggle-mute(t-id); }
                     toggle-solo(t-id) => { root.track-toggle-solo(t-id); }
                     toggle-arm(t-id) => { root.track-toggle-arm(t-id); }

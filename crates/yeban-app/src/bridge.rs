@@ -8003,6 +8003,69 @@ pub fn automation_lane_click_ops(
     }]
 }
 
+/// 切换既有点曲线形状（T-FIX-715 / ISS-MWXHO6JS-4406D6）。
+///
+/// 修饰键单击命中既有点时循环
+/// Linear → Exponential → Logarithmic → SCurve → Linear。
+/// 只改 `curve`：`tick` / `value` / `id` 逐字不变 ⇒ 撤销回到原曲线。
+/// 命中规则与自动化点编辑一致（tick 最近、平局 EntityId 决胜）；无候选返回空 Vec，
+/// 由宿主响亮拒绝，不静默忽略。
+#[must_use]
+pub fn cycle_automation_curve_ops(
+    project: &YebanProjectV1,
+    lane_index: usize,
+    click_x_px: f32,
+    scroll_x_px: f32,
+    ticks_per_pixel: u64,
+) -> Vec<Op> {
+    let Ok(view) = ViewState::from_project(project) else {
+        return Vec::new();
+    };
+    if lane_index >= view.automation_lanes.len() {
+        return Vec::new();
+    }
+    let target = view.automation_lanes[lane_index].target;
+    let track_id = target.track_id();
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let abs_x = (click_x_px + scroll_x_px).max(0.0);
+    let tick = px_to_tick(abs_x as u32, ticks_per_pixel.max(1)).unwrap_or(0);
+    let tolerance_ticks = 8u64.saturating_mul(ticks_per_pixel.max(1));
+    let nearest = track.automation_lanes.get(&target).and_then(|lane| {
+        lane.points
+            .values()
+            .filter(|pt| pt.tick.abs_diff(tick) <= tolerance_ticks)
+            .min_by(|a, b| {
+                a.tick
+                    .abs_diff(tick)
+                    .cmp(&b.tick.abs_diff(tick))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
+    });
+    let Some(existing) = nearest else {
+        return Vec::new();
+    };
+    let next_curve = match existing.curve {
+        yeban_model::CurveType::Linear => yeban_model::CurveType::Exponential,
+        yeban_model::CurveType::Exponential => yeban_model::CurveType::Logarithmic,
+        yeban_model::CurveType::Logarithmic => yeban_model::CurveType::SCurve,
+        yeban_model::CurveType::SCurve => yeban_model::CurveType::Linear,
+    };
+    let new_point = AutomationPoint {
+        id: existing.id,
+        tick: existing.tick,
+        value: existing.value,
+        curve: next_curve,
+    };
+    vec![Op::SetAutomationPoint {
+        target,
+        point_id: existing.id,
+        old_point: Some(*existing),
+        new_point,
+    }]
+}
+
 /// 将录制的一批 (tick, value) 点转换为 `Op::SetAutomationPoint` 操作集 (G-A2)。
 ///
 /// 若工程在该 tick 已存在点，则附带 `old_point` 实现原地修改；否则新建点。

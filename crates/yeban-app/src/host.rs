@@ -2028,6 +2028,71 @@ pub fn wire_automation_lane_click(ui: &MainWindow, port: &Rc<UndoPort>) {
     });
 }
 
+/// 连接自动化车道「修饰键单击切换曲线」(T-FIX-715)。
+///
+/// 只改既有点 `curve`，tick/value 不变；命中不到既有点时响亮拒绝，不静默忽略。
+pub fn wire_automation_lane_cycle_curve(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_automation_lane_cycle_curve({
+        let weak = weak.clone();
+        let port = Rc::clone(&port);
+        move |click_x, click_y| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !ui.get_automation_visible() {
+                report_rejected(&ui, "自动化曲线切换：泳道未显示");
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let Ok(view) = crate::bridge::ViewState::from_project(&project) else {
+                return;
+            };
+            // 与点编辑同一命中口径：band_y - 42px(rows-top) ⇒ 局部 y。
+            let mut matched_lane = None;
+            for (idx, lane) in view.automation_lanes.iter().enumerate() {
+                let lane_top = lane.band_y - 42.0;
+                let lane_bottom = lane_top + lane.band_height;
+                if click_y >= lane_top && click_y < lane_bottom {
+                    matched_lane = Some(idx);
+                    break;
+                }
+            }
+            let Some(lane_idx) = matched_lane else {
+                report_rejected(&ui, "自动化曲线切换：点击不在泳道带内");
+                return;
+            };
+            let scroll_x = ui.get_roll_scroll_x();
+            let ops = crate::bridge::cycle_automation_curve_ops(
+                &project,
+                lane_idx,
+                click_x,
+                scroll_x,
+                view.ticks_per_pixel,
+            );
+            if ops.is_empty() {
+                report_rejected(&ui, "自动化曲线切换：容差内没有既有点");
+                return;
+            }
+            if port
+                .commit_ops_with_origin(
+                    now_ms(),
+                    yeban_model::OpOrigin::UserUi,
+                    "cycle automation point curve",
+                    ops,
+                )
+                .is_err()
+            {
+                report_rejected(&ui, "自动化曲线切换");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
 // ===========================================================================
 // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏
 // ===========================================================================
@@ -33786,6 +33851,7 @@ pub fn wire_edit_surfaces(ui: &MainWindow, port: &Rc<UndoPort>) {
     wire_track_rename(ui, port);
     wire_track_arm(ui);
     wire_automation_lane_click(ui, port);
+    wire_automation_lane_cycle_curve(ui, port);
     wire_mixer_edit(ui, port);
     wire_device_rack(ui, port);
     wire_send_strip(ui, port);
