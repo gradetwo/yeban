@@ -566,7 +566,12 @@ export component MainWindow inherits Window {
     in-out property <int> current-scene-index: -1;
     in-out property <string> current-scene-name: "";
     in-out property <bool> cycle-enabled: false;
-    in-out property <int> cycle-end-ticks: 15360;
+    // ⭐ T-FIX-569：产品当前只有「整曲循环开关」（cycle_enabled / is_looping），没有可设的
+    //    循环区间事实源。旧默认 0..15360 是演示区间，宿主从不写入 ⇒ 开关一开就在活视图
+    //    arrangement.slint 画出一条与实际播放范围无关的假循环带。归零后 start==end，
+    //    :1879 换算出的 cycle-start-px/end-px 相等 ⇒ 画带条件 `end-px > start-px` 不成立，
+    //    无真实区间时不画带。将来有可设区间时由宿主写入这两个属性即可接通（零回归）。
+    in-out property <int> cycle-end-ticks: 0;
     in-out property <int> cycle-start-ticks: 0;
     in-out property <[bool]> device-bypassed: [];
     in-out property <bool> device-eq-available: false;

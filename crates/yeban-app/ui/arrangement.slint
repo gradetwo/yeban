@@ -705,9 +705,12 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
 
-                            // 循环指示带：区间来自视图态（`cycle-start/end-ticks`），
-                            // ⛔ 不再是写死的 `x: 150px / width: 220px`。
-                            if root.is-looping && root.cycle-end-px > root.cycle-start-px : Rectangle {
+                            // 循环指示带：区间来自视图态（`cycle-start/end-px`，由根属性
+                            // `cycle-start/end-ticks` 换算），⛔ 不再是写死的 150px/220px。
+                            // ⭐ T-FIX-569：加 Slint id 供审阅定位；无真实区间时根属性恒 0 ⇒
+                            //    两端 px 相等 ⇒ 此节点不入树。开关 (is-looping) 与区间同源：
+                            //    开关关或区间空都不画。（不挂 accessible-id：不在语义控件树注册）
+                            if root.is-looping && root.cycle-end-px > root.cycle-start-px : cycle-range-band := Rectangle {
                                 x: root.cycle-start-px - root.scroll-x;
                                 y: 0px;
                                 width: root.cycle-end-px - root.cycle-start-px;

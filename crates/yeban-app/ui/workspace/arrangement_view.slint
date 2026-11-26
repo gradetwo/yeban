@@ -105,8 +105,10 @@ export component ArrangementView inherits Rectangle {
     in property <[bool]> track-arms: [];
     in property <bool> automation-visible: true;
     in property <bool> cycle-enabled: false;
+    // ⭐ T-FIX-569：死文件（从未被 import，实意见 DEAD-SLINT-FILES.md）残留的演示区间
+    //    一并清零，使全树不再有 0..15360 的无人写入读点。活视图在 arrangement.slint。
     in property <int> cycle-start-ticks: 0;
-    in property <int> cycle-end-ticks: 15360;
+    in property <int> cycle-end-ticks: 0;
     // 轨道色标：`[color]` 由投影解析后的 RGB 构造（十六进制语法只在 `src/bridge.rs`，
     // 非法 / 缺失已在那边回退）；`track-color-labels` 是同一颜色的规范化 `#RRGGBB` 文本，
     // 只用于无障碍标签 —— 于是"界面画的颜色"与"控件树读到的色标"来自同一个值。
