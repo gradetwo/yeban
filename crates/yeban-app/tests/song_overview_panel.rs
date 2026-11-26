@@ -305,7 +305,13 @@ impl Rig {
 
     /// 活态 view-model 的一份快照（`wire_song_overview` 算出的真实数据）。
     fn live_data(&self) -> SongOverview {
-        self._state.borrow().data.clone()
+        self._state
+            .borrow()
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .data
+            .clone()
     }
 
     /// 断言面板处于展开态：12 个 ID 在场、面板 104 px、画布 82、底部条 22。

@@ -49,12 +49,13 @@
 //!   内嵌 SFZ（`.yeban` 容器内）本轮不接：解析不到时 provider 记失败并返回空输入，
 //!   渲染层随即响亮失败（⛔ 不拿静音轨去渲染），refresh 走纯谱面回退。缺样本的区域
 //!   按引擎既定口径记静音（不进提供表），⛔ 不塞正弦占位。
-//! - 刷新是同步的（调用线程上跑分析，首算付一次整曲渲染；之后同一内容哈希
-//!   直接复用渲染产物）。`#4913`：曲风档 / 期望等级只影响分析 ⇒ 换档、改等级
-//!   在 UI 回调里**只重跑分析**，不再重渲整曲（渲染产物按"工程 + 渲染设置"
-//!   的内容哈希单槽缓存，见 `yeban_render::song_overview::cached_overview`）。
-//!   同一工程换档不重渲；切到别的工程内容后再切回来换档，需要重渲一次
-//!   （单槽边界，显式接受）。换工程后调一次 [`refresh_song_overview`] 即可。
+//! - 重计算走后台：装配期由 [`refresh_song_overview`] 同步算一次首帧；交互中的
+//!   预设 / 等级循环只改会话态并调用 [`request_song_overview_refresh`]，把任务投给
+//!   单工作线程。工作线程用 `cached_overview` 算（命中不重算），完成后经
+//!   `slint::Weak::upgrade_in_event_loop` 回 UI 线程，并按 `generation` 丢弃过期代次。
+//!   `#4913`：曲风档 / 期望等级只影响分析 ⇒ 换档、改等级不重渲整曲；渲染产物按
+//!   “工程 + 渲染设置”的内容哈希单槽缓存，见 `yeban_render::song_overview::cached_overview`。
+//!   切到别的工程内容后再切回来换档，需要重渲一次（单槽边界，显式接受）。
 //!
 //! ## 生产接线
 //!
@@ -62,11 +63,10 @@
 //!
 //! ```ignore
 //! let overview = yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
-//! yeban_app::song_overview::refresh_song_overview(ui, &view.borrow(), &overview);
 //! ```
 //!
 //! `wire_song_overview` 在装配时已经按活工程算过一次真实数据并注入；换工程会重跑
-//! `wire_callbacks`（`main.rs` 的 `after` 闭包），于是接线 + 刷新各再跑一次。
+//! `wire_callbacks`（`main.rs` 的 `after` 闭包），于是接线再跑一次。
 //! 只换缩放不换工程时不用调（数据是按小节的，与 `ticks-per-pixel` 无关）。
 //!
 //! - 界面不算任何东西：Magma 配色、张力配色、悬停文本、标尺标签全在这里算好再注入。
@@ -82,7 +82,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
@@ -761,16 +761,29 @@ pub struct AbCompare {
     pub b: Option<McpSongOverview>,
 }
 
-/// 总览面板的活态（`wire_song_overview` 的返回值，`Rc<RefCell>` 单一事实源）。
+/// 总览面板的 UI 线程活态（`wire_song_overview` 的返回值，`Rc<RefCell>` 单一事实源）。
+///
+/// 重计算不在这里跑：`core` 与 `cache` 都是 `Arc<Mutex<_>>`，工作线程只拿这两份
+/// **可跨线程**的数据；窗口句柄走 `slint::Weak` 的 `upgrade_in_event_loop` 回 UI 线程。
+/// `port` / `project_dir` 留在 UI 线程，工作线程的输入是启动任务时的工程克隆。
 pub struct SongOverviewLive {
-    /// 当前注入面板的那份 view-model（回调闭包读它算悬停读数）。
-    pub data: SongOverview,
-    /// 整曲哈希缓存（`cached_overview` 的进程内缓存，跨刷新常驻）。
-    pub cache: SongOverviewCache,
     /// 活工程的来源（`try_project()`，换工程自动跟着换；`None` ⇒ 无工程）。
     pub port: Option<Rc<UndoPort>>,
     /// SFZ 磁盘解析的工程目录根（装配时从引擎现读；换工程重接线时重读）。
     pub project_dir: Option<std::path::PathBuf>,
+    /// 整曲哈希缓存（`cached_overview` 的进程内缓存，跨刷新常驻）。
+    pub cache: Arc<Mutex<SongOverviewCache>>,
+    /// 面板数据与会话态；工作线程完成时经事件循环回写这里。
+    pub core: Arc<Mutex<SongOverviewCore>>,
+    /// 后台任务的投递口；drop 它即结束工作线程。
+    job_tx: mpsc::Sender<SongOverviewAnalysisJob>,
+}
+
+/// UI 线程与工作线程共享的面板数据与会话态（⛔ 不含 `Rc<UndoPort>`）。
+#[doc(hidden)]
+pub struct SongOverviewCore {
+    /// 当前注入面板的那份 view-model（回调闭包读它算悬停读数）。
+    pub data: SongOverview,
     /// 曲风预设档（Phase 2，设计稿 §3.6）：面板预设按钮与 MCP `profile`
     /// 参数的同一份会话态；换档即重算（缓存键含档名，见 render 侧哈希）。
     pub profile: TensionProfile,
@@ -779,7 +792,48 @@ pub struct SongOverviewLive {
     pub expected_levels: BTreeMap<String, u8>,
     /// A/B 快照（Phase 2 对比面；两次捕获都走同一份 `RealSongOverviewProvider`）。
     pub compare: AbCompare,
+    /// 最近一次请求代号；工作线程结果回到 UI 线程时按它丢弃过期代次。
+    pub generation: u64,
+    /// 是否有任务在飞（供判据读；UI 回调不依赖它做阻塞）。
+    pub in_flight: bool,
 }
+
+/// 一次后台总览分析任务的输入（全字段 `Send`，⛔ 不含窗口 / `Rc`）。
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct SongOverviewAnalysisJob {
+    /// 请求代号；回 UI 线程时与 `SongOverviewCore::generation` 对账。
+    pub generation: u64,
+    /// 启动时的活工程快照；`None` ⇒ 画静音。
+    pub project: Option<yeban_model::YebanProjectV1>,
+    /// 启动时的视图投影（用于把 dsp 结果映射成面板 view-model）。
+    pub view: ViewState,
+    /// SFZ 磁盘解析根。
+    pub project_dir: Option<std::path::PathBuf>,
+    /// 本次分析选项（曲风档 + 期望等级表）。
+    pub options: AnalysisOptions,
+    /// 整曲哈希缓存（与 UI 线程共享；锁只在工作线程里持有）。
+    pub cache: Arc<Mutex<SongOverviewCache>>,
+}
+
+/// 工作线程算好的完整结果；UI 线程只做属性写入与状态对账。
+#[doc(hidden)]
+pub struct SongOverviewAnalysisOutcome {
+    /// 映射后的面板数据。
+    pub data: SongOverview,
+    /// 刷新回执（缓存命中 / 纯谱面回退 / 失败原文）。
+    pub report: RefreshReport,
+    /// SFZ 缺口（已按静音渲染；只进日志，不改回执）。
+    pub failures: Vec<String>,
+}
+
+/// 判据注入的总览分析接缝：输入任务，输出完整结果。
+///
+/// 生产实现是 [`compute_song_overview`]；慢分析判据用它把工作线程按住，证明
+/// 预设 / 等级回调不会被完整曲渲染拖住。
+#[doc(hidden)]
+pub type SongOverviewAnalysisHook =
+    Arc<dyn Fn(&SongOverviewAnalysisJob) -> SongOverviewAnalysisOutcome + Send + Sync>;
 
 /// SFZ 武装输入（`cached_overview` 的 provider）：磁盘腿。
 ///
@@ -845,24 +899,249 @@ fn arm_sfz_input(
 ///   写进回执与日志，面板画的是谱面实测值 + 能量/频率哨兵，⛔ 不是假全量。
 /// - 纯谱面也空（空工程）时画静音面板；没有工程（`port` 为 `None` 或取不到工程）
 ///   时同样画静音面板，⛔ 不留旧工程的数据。
-/// - 刷新是同步的：首算在调用线程上跑完整曲渲染 + 分析，之后同一哈希命中缓存。
+/// - 这是**装配 / 判据用的阻塞入口**：首算在调用线程上跑完整曲渲染 + 分析，
+///   之后同一哈希命中缓存。Slint 回调 ⛔ 不得调用它，交互一律走
+///   [`request_song_overview_refresh`]（后台工作线程 + generation 丢弃旧结果）。
 ///
 /// 返回回执（小节数 / 是否命中 / 是否回退 / 失败原文）。调用方留着 `state`
 /// （`wire_song_overview` 的返回值就是同一份 `Rc`）以备下一次刷新 —— 刷新原地
 /// 改写这份 `Rc` 里的内容，回调闭包读到的永远是最新份。
-#[must_use]
 /// 刷新总览并把**回执写进面板**（T-FIX-301）：调用方不再丢弃 `score_only/error`。
 ///
 /// 回退本身不取消：渲染失败仍画纯谱面，只是面板上会明确写出「纯谱面回退」与
 /// 「能量/频率为谱面代理值」。成功 ⇒ 清空提示。
+#[must_use]
 pub fn refresh_song_overview(
     ui: &MainWindow,
     view: &crate::bridge::ViewState,
     state: &Rc<RefCell<SongOverviewLive>>,
 ) -> RefreshReport {
-    let report = refresh_song_overview_inner(ui, view, state);
-    apply_refresh_report(ui, &report);
-    report
+    let (_generation, job) = snapshot_analysis_job(state, view);
+    let outcome = compute_song_overview(&job);
+    publish_analysis_outcome(ui, &state.borrow().core, job.generation, outcome).unwrap_or_else(
+        || RefreshReport {
+            bars: 0,
+            cache_hit: false,
+            score_only: false,
+            error: Some("总览刷新结果已被更新的请求代次取代".to_owned()),
+        },
+    )
+}
+
+/// UI 回调专用：只更新会话态、置“分析中…”并把任务投给后台线程，立即返回。
+///
+/// 重计算不在这个调用栈上；完成时工作线程用 `upgrade_in_event_loop` 把结果交回
+/// UI 线程，按 `generation` 丢弃过期代次。返回本次代号（判据用）。
+pub fn request_song_overview_refresh(
+    ui: &MainWindow,
+    view: &crate::bridge::ViewState,
+    state: &Rc<RefCell<SongOverviewLive>>,
+) -> u64 {
+    let (generation, job) = snapshot_analysis_job(state, view);
+    let send_result = state.borrow().job_tx.send(job);
+    if let Err(error) = send_result {
+        let core = Arc::clone(&state.borrow().core);
+        let mut core = core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if core.generation == generation {
+            core.in_flight = false;
+        }
+        drop(core);
+        let message = format!("总览后台任务投递失败：{error}");
+        eprintln!("[yeban-app] {message}");
+        ui.set_song_overview_analysis_status(message.into());
+        return generation;
+    }
+    ui.set_song_overview_analysis_status("分析中…".into());
+    generation
+}
+
+/// 取一份可跨线程的分析输入；同时推进代号并标“在飞”。UI 线程调用。
+fn snapshot_analysis_job(
+    state: &Rc<RefCell<SongOverviewLive>>,
+    view: &crate::bridge::ViewState,
+) -> (u64, SongOverviewAnalysisJob) {
+    let live = state.borrow();
+    let generation = {
+        let mut core = live
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core.generation = core.generation.saturating_add(1);
+        core.in_flight = true;
+        core.generation
+    };
+    let project = live.port.as_ref().and_then(|port| port.try_project());
+    let options = {
+        let core = live
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        AnalysisOptions {
+            profile: core.profile,
+            expected_levels: core.expected_levels.clone(),
+        }
+    };
+    let job = SongOverviewAnalysisJob {
+        generation,
+        project,
+        view: view.clone(),
+        project_dir: live.project_dir.clone(),
+        options,
+        cache: Arc::clone(&live.cache),
+    };
+    (generation, job)
+}
+
+/// 工作线程上的完整总览计算（渲染 + 分析 + 映射；失败走纯谱面回退）。
+///
+/// 这是唯一的重计算入口：工作线程只碰 job 里的输入 / 缓存，不碰任何 Slint 对象。
+#[doc(hidden)]
+pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnalysisOutcome {
+    let view = &job.view;
+    let Some(project) = job.project.as_ref() else {
+        let silent = silent_overview(view);
+        return SongOverviewAnalysisOutcome {
+            data: silent.clone(),
+            report: RefreshReport {
+                bars: silent.total_bars,
+                cache_hit: false,
+                score_only: false,
+                error: Some("没有活工程：总览面板画静音（不留旧工程数据）".to_string()),
+            },
+            failures: Vec::new(),
+        };
+    };
+    let settings = RenderSettings::new(project.audio_config.sample_rate.hz(), 0);
+    let roots = match job.project_dir.as_ref() {
+        Some(dir) => SfzRoots::under_project(dir),
+        None => SfzRoots::none(),
+    };
+    let mut failures: Vec<String> = Vec::new();
+    let engine_hz = settings.sample_rate_hz as f32;
+    if project.tracks.len() > 8 || view.bar_positions.len() > 32 {
+        let score = score_input_from_project(project);
+        let dsp = analyze_song_overview_with_options(&score, None, &job.options);
+        let mapped = if dsp.bar_series.is_empty() {
+            silent_overview(view)
+        } else {
+            overview_from_dsp(&dsp, view)
+        };
+        let bars = mapped.total_bars;
+        return SongOverviewAnalysisOutcome {
+            data: mapped,
+            report: RefreshReport {
+                bars,
+                cache_hit: false,
+                score_only: true,
+                error: None,
+            },
+            failures,
+        };
+    }
+    let mut cache = job
+        .cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let result = cached_overview(&mut cache, project, &settings, &job.options, |_, raw| {
+        arm_sfz_input(raw, roots, engine_hz, &mut failures)
+    });
+    drop(cache);
+    match result {
+        Ok((dsp, hit)) => {
+            let mapped = overview_from_dsp(&dsp, view);
+            SongOverviewAnalysisOutcome {
+                data: mapped,
+                report: RefreshReport {
+                    bars: 0,
+                    cache_hit: hit,
+                    score_only: false,
+                    error: None,
+                },
+                failures,
+            }
+            .with_bars()
+        }
+        Err(error) => {
+            // 渲染失败 ⇒ 纯谱面回退（dsp 的既定回退口径），不留旧工程数据。
+            let score = score_input_from_project(project);
+            let dsp = analyze_song_overview_with_options(&score, None, &job.options);
+            let message = format!("渲染失败（{error:?}），回退到纯谱面分析");
+            eprintln!("[yeban-app] 总览图刷新：{message}");
+            let (mapped, score_only) = if dsp.bar_series.is_empty() {
+                (silent_overview(view), true)
+            } else {
+                (overview_from_dsp(&dsp, view), true)
+            };
+            SongOverviewAnalysisOutcome {
+                data: mapped,
+                report: RefreshReport {
+                    bars: 0,
+                    cache_hit: false,
+                    score_only,
+                    error: Some(message),
+                },
+                failures,
+            }
+            .with_bars()
+        }
+    }
+}
+
+impl SongOverviewAnalysisOutcome {
+    /// 把 `bars` 补成实际映射后的小节数（唯一构造点，避免两处手抄）。
+    fn with_bars(mut self) -> Self {
+        self.report.bars = self.data.total_bars;
+        self
+    }
+}
+
+/// 工作线程完成 ⇒ UI 线程按代号收结果；过期代次直接丢（⛔ 不写面板）。
+fn publish_analysis_outcome(
+    ui: &MainWindow,
+    core: &Mutex<SongOverviewCore>,
+    generation: u64,
+    outcome: SongOverviewAnalysisOutcome,
+) -> Option<RefreshReport> {
+    let mut core = core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if core.generation != generation {
+        return None;
+    }
+    core.in_flight = false;
+    core.data = outcome.data.clone();
+    drop(core);
+    apply_song_overview(ui, &outcome.data);
+    apply_refresh_report(ui, &outcome.report);
+    if !outcome.failures.is_empty() {
+        eprintln!(
+            "[yeban-app] 总览图刷新：SFZ 有 {} 处缺口（已按静音渲染）：{}",
+            outcome.failures.len(),
+            outcome.failures.join("；")
+        );
+    }
+    Some(outcome.report)
+}
+
+/// 后台总览分析工作线程：串行消费任务，结果经 `upgrade_in_event_loop` 回 UI 线程。
+fn spawn_song_overview_worker(
+    weak: slint::Weak<MainWindow>,
+    core: Arc<Mutex<SongOverviewCore>>,
+    jobs: mpsc::Receiver<SongOverviewAnalysisJob>,
+    hook: SongOverviewAnalysisHook,
+) {
+    std::thread::spawn(move || {
+        while let Ok(job) = jobs.recv() {
+            let generation = job.generation;
+            let outcome = hook(&job);
+            let core = Arc::clone(&core);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                let _ = publish_analysis_outcome(&ui, &core, generation, outcome);
+            });
+        }
+    });
 }
 
 /// 把刷新回执写成面板状态（唯一写者；成功与回退走同一处）。
@@ -882,110 +1161,6 @@ fn analysis_status_text(report: &RefreshReport) -> String {
     String::new()
 }
 
-fn refresh_song_overview_inner(
-    ui: &MainWindow,
-    view: &ViewState,
-    state: &Rc<RefCell<SongOverviewLive>>,
-) -> RefreshReport {
-    let port = state.borrow().port.clone();
-    let project_dir = state.borrow().project_dir.clone();
-    let Some(project) = port.as_ref().and_then(|port| port.try_project()) else {
-        let silent = silent_overview(view);
-        let report = RefreshReport {
-            bars: silent.total_bars,
-            cache_hit: false,
-            score_only: false,
-            error: Some("没有活工程：总览面板画静音（不留旧工程数据）".to_string()),
-        };
-        state.borrow_mut().data = silent.clone();
-        apply_song_overview(ui, &silent);
-        eprintln!("[yeban-app] 总览图刷新：没有活工程 ⇒ 面板画静音");
-        return report;
-    };
-    let settings = RenderSettings::new(project.audio_config.sample_rate.hz(), 0);
-    let roots = match project_dir.as_ref() {
-        Some(dir) => SfzRoots::under_project(dir),
-        None => SfzRoots::none(),
-    };
-    // Phase 2：本次分析的选项取自活态（预设档 + 期望等级表）；先读出，
-    // 再借缓存（`borrow_mut` 期间不能再借 state）。
-    let options = {
-        let live = state.borrow();
-        AnalysisOptions {
-            profile: live.profile,
-            expected_levels: live.expected_levels.clone(),
-        }
-    };
-    let mut failures: Vec<String> = Vec::new();
-    let engine_hz = settings.sample_rate_hz as f32;
-    if project.tracks.len() > 8 || view.bar_positions.len() > 32 {
-        let score = score_input_from_project(&project);
-        let dsp = analyze_song_overview_with_options(&score, None, &options);
-        let mapped = if dsp.bar_series.is_empty() {
-            silent_overview(view)
-        } else {
-            overview_from_dsp(&dsp, view)
-        };
-        let bars = mapped.total_bars;
-        apply_song_overview(ui, &mapped);
-        state.borrow_mut().data = mapped;
-        return RefreshReport {
-            bars,
-            cache_hit: false,
-            score_only: true,
-            error: None,
-        };
-    }
-    let result = {
-        let mut live = state.borrow_mut();
-        cached_overview(&mut live.cache, &project, &settings, &options, |_, raw| {
-            arm_sfz_input(raw, roots, engine_hz, &mut failures)
-        })
-    };
-    match result {
-        Ok((dsp, hit)) => {
-            let mapped = overview_from_dsp(&dsp, view);
-            let report = RefreshReport {
-                bars: mapped.total_bars,
-                cache_hit: hit,
-                score_only: false,
-                error: None,
-            };
-            state.borrow_mut().data = mapped.clone();
-            apply_song_overview(ui, &mapped);
-            if !failures.is_empty() {
-                eprintln!(
-                    "[yeban-app] 总览图刷新：SFZ 有 {} 处缺口（已按静音渲染）：{}",
-                    failures.len(),
-                    failures.join("；")
-                );
-            }
-            report
-        }
-        Err(error) => {
-            // 渲染失败 ⇒ 纯谱面回退（dsp 的既定回退口径），不留旧工程数据。
-            // 回退同样走本次分析的选项（档与等级表与全量路一致）。
-            let score = score_input_from_project(&project);
-            let dsp = analyze_song_overview_with_options(&score, None, &options);
-            let message = format!("渲染失败（{error:?}），回退到纯谱面分析");
-            eprintln!("[yeban-app] 总览图刷新：{message}");
-            let (mapped, score_only) = if dsp.bar_series.is_empty() {
-                (silent_overview(view), true)
-            } else {
-                (overview_from_dsp(&dsp, view), true)
-            };
-            let report = RefreshReport {
-                bars: mapped.total_bars,
-                cache_hit: false,
-                score_only,
-                error: Some(message),
-            };
-            state.borrow_mut().data = mapped.clone();
-            apply_song_overview(ui, &mapped);
-            report
-        }
-    }
-}
 /// 走带定位的提交口（与 `host::commit_seek` 同一条路，只是那一个函数是私有的）。
 ///
 /// 引擎借不到（同一线程重入）⇒ 降级（一行 `eprintln`，走带与界面一位不动），
@@ -1037,10 +1212,16 @@ fn capture_compare_snapshot(state: &SongOverviewLive) -> Result<McpSongOverview,
         state.project_dir.clone(),
         Arc::new(assets),
     ));
-    let request = SongOverviewRequest {
-        resolution: Resolution::Bar,
-        profile: Profile::from_name(state.profile.as_str()).unwrap_or_default(),
-        expected_levels: state.expected_levels.clone(),
+    let request = {
+        let core = state
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        SongOverviewRequest {
+            resolution: Resolution::Bar,
+            profile: Profile::from_name(core.profile.as_str()).unwrap_or_default(),
+            expected_levels: core.expected_levels.clone(),
+        }
     };
     provider
         .overview(&project, &request)
@@ -1080,28 +1261,49 @@ fn ab_summary(diff: &SongOverviewDiff) -> String {
 /// `port` 传 `None` 时缩放只写属性（见 [`reproject_after_zoom`]），且面板画静音
 /// （没有活工程可算）。
 ///
-/// 返回活态的单一事实源：装配时已经按活工程算过一次真实数据并注入；换工程后调
-/// [`refresh_song_overview`]（传这份 `Rc`）即可更新数据，⛔ 不用重接回调。
-/// 返回会话态（快照 A/B、缓存、预设档）的唯一持有者；换工程时调用方
-/// （`main::wire_callbacks`）会再走一次并刷新。
+/// 返回活态的单一事实源：装配时按活工程同步算一次真实数据并注入；换工程时
+/// `main::wire_callbacks` 会重走本函数（⛔ 不调用阻塞的 [`refresh_song_overview`]）。
+/// 返回会话态（快照 A/B、缓存、预设档）的唯一持有者。
 pub fn wire_song_overview(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
     view: Rc<RefCell<ViewState>>,
     port: Option<Rc<UndoPort>>,
 ) -> Rc<RefCell<SongOverviewLive>> {
+    wire_song_overview_with_analysis_hook(ui, engine, view, port, Arc::new(compute_song_overview))
+}
+
+/// 判据注入版接线：只替换分析接缝，其余与产品装配完全相同。
+#[doc(hidden)]
+pub fn wire_song_overview_with_analysis_hook(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+    port: Option<Rc<UndoPort>>,
+    hook: SongOverviewAnalysisHook,
+) -> Rc<RefCell<SongOverviewLive>> {
     let project_dir = engine.borrow().project_dir().map(|path| path.to_path_buf());
-    let state = Rc::new(RefCell::new(SongOverviewLive {
+    let core = Arc::new(Mutex::new(SongOverviewCore {
         data: silent_overview(&view.borrow()),
-        cache: SongOverviewCache::new(),
-        port: port.clone(),
-        project_dir,
         profile: TensionProfile::Default,
         expected_levels: BTreeMap::new(),
         compare: AbCompare::default(),
+        generation: 0,
+        in_flight: false,
     }));
-    // 装配时按活工程算一次真实数据并注入（`refresh_song_overview` 在内）。
-    // 回执只作装配期诊断：缓存命中/回退已由刷新写进日志，这里不展开用。
+    let cache = Arc::new(Mutex::new(SongOverviewCache::new()));
+    let (job_tx, job_rx) = mpsc::channel();
+    spawn_song_overview_worker(ui.as_weak(), Arc::clone(&core), job_rx, hook);
+    let state = Rc::new(RefCell::new(SongOverviewLive {
+        port: port.clone(),
+        project_dir,
+        cache,
+        core,
+        job_tx,
+    }));
+    // 装配时先算一次，保证首帧就有真实数据（这不是 Slint 回调；启动期 UI 尚未
+    // 接收输入）。交互中的预设 / 等级切换一律走 `request_song_overview_refresh`，
+    // ⛔ 不再在回调里同步跑完整曲渲染。
     let _assembly_report = refresh_song_overview(ui, &view.borrow(), &state);
 
     // ① 点击跳转播放头：界面只报横坐标分数（0..1），换算 / 吸附 / 夹紧全在这里。
@@ -1136,14 +1338,17 @@ pub fn wire_song_overview(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let borrowed = state.borrow();
-            let overview = &borrowed.data;
+            let core = Arc::clone(&state.borrow().core);
+            let core = core
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let overview = &core.data;
             if overview.total_bars == 0 {
                 return;
             }
             let bar = bar_at_fraction(fraction, overview.total_bars);
             let text = hover_readout(overview, bar);
-            drop(borrowed);
+            drop(core);
             ui.set_song_overview_hover_text(text.into());
             ui.set_song_overview_hover_fraction(fraction.clamp(0.0, 1.0));
             ui.set_song_overview_hover_visible(true);
@@ -1320,7 +1525,8 @@ pub fn wire_song_overview(
     // Phase 2 曲风预设（设计稿 §3.6）：界面只报“按了预设键”，档位循环与重算
     // 的唯一写者是这里。Default → Orchestral → Electronic → Default；
     // 刷新后预设按钮的显示名由 `apply_song_overview` 从新数据的档名写回。
-    // `#4913`：档位只进分析、不进渲染 ⇒ 这里同步跑的是分析（渲染产物复用）。
+    // T-FIX-429：档位只进分析、不进渲染；回调只改会话态并把任务投给后台线程，
+    // ⛔ 不在这里跑 `cached_overview`。
     let weak = ui.as_weak();
     ui.on_song_overview_profile_cycle({
         let weak = weak.clone();
@@ -1330,16 +1536,22 @@ pub fn wire_song_overview(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let next = next_profile(state.borrow().profile);
-            state.borrow_mut().profile = next;
-            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
+            {
+                let core = Arc::clone(&state.borrow().core);
+                let mut core = core
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                core.profile = next_profile(core.profile);
+            }
+            let _ = request_song_overview_refresh(&ui, &view.borrow(), &state);
         }
     });
 
     // Phase 2 段落期望等级（设计稿 §3.5）：界面只报“点了第几个段落标签”，
     // 等级循环与重算的唯一写者是这里。None → 1 → … → 5 → None；
-    // 等级只活在 `state.expected_levels`（会话态），不写工程。
-    // `#4913`：等级只进分析 ⇒ 改等级只重跑分析，复用已渲染的音频。
+    // 等级只活在 `SongOverviewCore::expected_levels`（会话态），不写工程。
+    // T-FIX-429：等级只进分析 ⇒ 改等级只重跑分析，复用已渲染的音频；回调只
+    // 改会话态并把任务投给后台线程，⛔ 不在这里跑完整曲分析。
     // 下标越界（段落表已变）⇒ 静默忽略，不重算。
     let weak = ui.as_weak();
     ui.on_song_overview_target_cycle({
@@ -1353,28 +1565,32 @@ pub fn wire_song_overview(
             let Ok(index) = usize::try_from(section_index) else {
                 return;
             };
-            let Some(name) = state
-                .borrow()
-                .data
-                .sections
-                .get(index)
-                .map(|(name, _)| name.clone())
-            else {
+            let name = {
+                let core = Arc::clone(&state.borrow().core);
+                let core = core
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                core.data.sections.get(index).map(|(name, _)| name.clone())
+            };
+            let Some(name) = name else {
                 return;
             };
             {
-                let mut live = state.borrow_mut();
-                let current = live.expected_levels.get(&name).copied();
+                let core = state.borrow().core.clone();
+                let mut core = core
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let current = core.expected_levels.get(&name).copied();
                 match cycle_level(current) {
                     Some(level) => {
-                        live.expected_levels.insert(name, level);
+                        core.expected_levels.insert(name, level);
                     }
                     None => {
-                        live.expected_levels.remove(&name);
+                        core.expected_levels.remove(&name);
                     }
                 }
             }
-            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
+            let _ = request_song_overview_refresh(&ui, &view.borrow(), &state);
         }
     });
 
@@ -1393,7 +1609,13 @@ pub fn wire_song_overview(
             match result {
                 Ok(overview) => {
                     let bars = overview.bar_series.len();
-                    state.borrow_mut().compare.a = Some(overview);
+                    state
+                        .borrow()
+                        .core
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .compare
+                        .a = Some(overview);
                     ui.set_song_overview_ab_status(format!("A 已存 · {bars} 小节").into());
                 }
                 Err(message) => {
@@ -1415,7 +1637,13 @@ pub fn wire_song_overview(
             match result {
                 Ok(overview) => {
                     let bars = overview.bar_series.len();
-                    state.borrow_mut().compare.b = Some(overview);
+                    state
+                        .borrow()
+                        .core
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .compare
+                        .b = Some(overview);
                     ui.set_song_overview_ab_status(format!("B 已存 · {bars} 小节").into());
                 }
                 Err(message) => {
@@ -1433,8 +1661,11 @@ pub fn wire_song_overview(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let live = state.borrow();
-            let (Some(a), Some(b)) = (live.compare.a.as_ref(), live.compare.b.as_ref()) else {
+            let core = Arc::clone(&state.borrow().core);
+            let core = core
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (Some(a), Some(b)) = (core.compare.a.as_ref(), core.compare.b.as_ref()) else {
                 ui.set_song_overview_ab_status("先存 A 与 B，再对比".into());
                 return;
             };
@@ -1442,13 +1673,13 @@ pub fn wire_song_overview(
                 Ok(diff) => diff,
                 Err(fault) => {
                     let message = fault_message(&fault);
-                    drop(live);
+                    drop(core);
                     ui.set_song_overview_ab_status(format!("对比失败：{message}").into());
                     return;
                 }
             };
             let summary = ab_summary(&diff);
-            drop(live);
+            drop(core);
             ui.set_song_overview_ab_status(summary.into());
         }
     });

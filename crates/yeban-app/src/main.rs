@@ -1568,11 +1568,9 @@ fn wire_callbacks(
     let phase_align_project_dir = engine.borrow().project_dir().map(|path| path.to_path_buf());
     yeban_app::otcp_gui::wire_otcp_dialog(ui, undo.clone());
     yeban_app::phase_align_gui::wire_phase_align_dialog(ui, undo.clone(), phase_align_project_dir);
-    let overview_state =
-        yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
-    // 换工程后的那一次刷新（缓存命中，不重算）；回执只作装配期诊断，这里不展开用。
-    let _overview_refresh =
-        yeban_app::song_overview::refresh_song_overview(ui, &view.borrow(), &overview_state);
+    yeban_app::song_overview::wire_song_overview(ui, Rc::clone(engine), Rc::clone(&view), undo);
+    // T-FIX-429：总览首算已在 `wire_song_overview` 里投给后台线程（回调即返回）；
+    // 这里不再同步调 `refresh_song_overview`，否则换工程装配会重新阻塞 UI 线程。
     // ⭐ 章节卡片点击 ⇒ 走带定位到段起点（`U-05`）：与上一行**同一对** `Rc`
     // （同一条走带、同一份活投影），落点也是同一个 `commit_seek`。
     host::wire_section_seek(ui, Rc::clone(engine), Rc::clone(&view));
