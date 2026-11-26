@@ -30868,6 +30868,13 @@ pub fn wire_aether_actions(
                         let notice = "最近工程清单已清空（settings.json 已写回）";
                         update_toast(&ui, notice);
                     }
+                    // ⭐ T-FIX-487：按锚点打开帮助（`help-topic:<anchor>`），
+                    // 落点是 `crate::help::open_help_topic`（注册表精确匹配，
+                    // 表外锚点只报提示、不打开）。必须放在 `other` 臂之前。
+                    other if other.starts_with("help-topic:") => {
+                        let anchor = &other["help-topic:".len()..];
+                        crate::help::open_help_topic(&ui, anchor, &port);
+                    }
                     other => dispatch_aether_command(&ui, other),
                 }
             }

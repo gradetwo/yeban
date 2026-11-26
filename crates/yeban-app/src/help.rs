@@ -65,6 +65,200 @@ pub fn close_manual(ui: &MainWindow) {
     ui.set_help_manual_open(false);
 }
 
+/// 按锚点打开帮助的结果（T-FIX-487）：调用方只看这个枚举，
+/// ⛔ 不许再拿锚点名字符串去全文里猜落点。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpTopicOutcome {
+    /// 已打开某章（值为章节 id）。
+    OpenedChapter(&'static str),
+    /// 已打开某个既有帮助入口（值为命令名）。
+    OpenedEntry(&'static str),
+    /// 锚点已知但正文未入 main：什么都没打开，已报提示。
+    Missing,
+    /// 锚点在应用外：什么都没打开，已报提示。
+    External,
+    /// 注册表里没有这个锚点：什么都没打开，已报提示。
+    Unknown,
+}
+
+/// 按锚点打开帮助的唯一入口（T-FIX-487）：注册表精确匹配
+/// （[`manual::resolve_help_anchor`]），⛔ 不做子串/前缀/模糊匹配——
+/// 同名 UI id（如 `export-wav-dialog`）不在表里就是未覆盖。
+/// `Present` 的章节锚点落到对应章、`Present` 的入口锚点走既有入口；
+/// `Missing` / `External` / 表外锚点什么都不打开，按当前语言报一条
+/// 信息级提示（[`crate::host::report_notice`]），⛔ 不静默。
+pub fn open_help_topic(ui: &MainWindow, anchor: &str, port: &Rc<UndoPort>) -> HelpTopicOutcome {
+    use manual::HelpTopicStatus;
+    let Some(row) = manual::resolve_help_anchor(anchor) else {
+        crate::host::report_notice(
+            ui,
+            &help_topic_notice(HelpTopicNotice::Unknown, anchor),
+            false,
+        );
+        return HelpTopicOutcome::Unknown;
+    };
+    if !row.is_covered() {
+        let notice = match row.status {
+            HelpTopicStatus::Missing => HelpTopicNotice::Missing,
+            HelpTopicStatus::External => HelpTopicNotice::External,
+            HelpTopicStatus::Present => unreachable!("is_covered() 已排除 Present"),
+        };
+        crate::host::report_notice(ui, &help_topic_notice(notice, anchor), false);
+        return match row.status {
+            HelpTopicStatus::Missing => HelpTopicOutcome::Missing,
+            HelpTopicStatus::External => HelpTopicOutcome::External,
+            HelpTopicStatus::Present => unreachable!("is_covered() 已排除 Present"),
+        };
+    }
+    match (row.chapter, row.entry) {
+        (Some(chapter_id), None) => {
+            if let Some(index) = manual::chapter_index(chapter_id) {
+                ui.set_manual_chapter_index(i32::try_from(index).unwrap_or(0));
+            }
+            open_manual(ui);
+            HelpTopicOutcome::OpenedChapter(chapter_id)
+        }
+        (None, Some(entry)) => {
+            match entry {
+                "help-manual" => open_manual(ui),
+                "help-shortcuts" => open_shortcuts(ui),
+                "help-onboarding" => open_onboarding(ui),
+                "help-lessons" => open_lessons(ui, port),
+                _ => return HelpTopicOutcome::Unknown,
+            }
+            HelpTopicOutcome::OpenedEntry(entry)
+        }
+        // 注册表自洽性：`Present` 行必有且仅有一个落点；走到这里说明表坏了，
+        // 判据 `help_anchor_registry` 会先红。运行时按 Unknown 处理，不猜。
+        _ => {
+            crate::host::report_notice(
+                ui,
+                &help_topic_notice(HelpTopicNotice::Unknown, anchor),
+                false,
+            );
+            HelpTopicOutcome::Unknown
+        }
+    }
+}
+
+/// 按锚点打不开时的提示事项（T-FIX-487）：三档闭集，锚点名原样进占位、不译。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpTopicNotice {
+    /// 已知主题但正文未入 main。
+    Missing,
+    /// 主题在应用外。
+    External,
+    /// 注册表里没有这个锚点。
+    Unknown,
+}
+
+/// 按当前语言渲染一条按锚点打不开的提示。
+fn help_topic_notice(notice: HelpTopicNotice, anchor: &str) -> String {
+    help_topic_notice_in(notice, anchor, crate::host::current_language())
+}
+
+/// 在 `lang` 下的完整展示文案。锚点名是命令参数，原样进占位、不译。
+/// 九语模板表住在本文件，由单测逐语看守；不走 Slint 的 `@tr`/`.po`
+/// （`@tr` 是 Slint 编译期宏，Rust 代码调不了；`.po` 里加一条没有 `@tr`
+/// 调用点的词条会被 `i18n_coverage` 的词表精确相等判据当孤儿条打红）。
+#[must_use]
+fn help_topic_notice_in(notice: HelpTopicNotice, anchor: &str, lang: Language) -> String {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match (notice, lang) {
+        (HelpTopicNotice::Missing, ZhCn) => {
+            format!("帮助主题「{anchor}」还没有正文，暂未提供")
+        }
+        (HelpTopicNotice::Missing, EnUs) => {
+            format!("Help topic “{anchor}” has no content yet and is not available")
+        }
+        (HelpTopicNotice::Missing, FrFr) => {
+            format!(
+                "Le sujet d’aide « {anchor} » n’a pas encore de contenu et n’est pas disponible"
+            )
+        }
+        (HelpTopicNotice::Missing, EsEs) => {
+            format!("El tema de ayuda «{anchor}» aún no tiene contenido y no está disponible")
+        }
+        (HelpTopicNotice::Missing, PtBr) => {
+            format!("O tópico de ajuda “{anchor}” ainda não tem conteúdo e não está disponível")
+        }
+        (HelpTopicNotice::Missing, JaJp) => {
+            format!("ヘルプトピック「{anchor}」にはまだ本文がなく、利用できません")
+        }
+        (HelpTopicNotice::Missing, KoKr) => {
+            format!("도움말 주제 “{anchor}”에는 아직 내용이 없어 이용할 수 없습니다")
+        }
+        (HelpTopicNotice::Missing, RuRu) => {
+            format!("У раздела справки «{anchor}» пока нет содержания, он недоступен")
+        }
+        (HelpTopicNotice::Missing, DeDe) => {
+            format!("Zum Hilfethema „{anchor}“ gibt es noch keinen Inhalt, es ist nicht verfügbar")
+        }
+        (HelpTopicNotice::External, ZhCn) => {
+            format!("帮助主题「{anchor}」在应用外，应用内暂未提供")
+        }
+        (HelpTopicNotice::External, EnUs) => {
+            format!("Help topic “{anchor}” lives outside the app and is not available here")
+        }
+        (HelpTopicNotice::External, FrFr) => {
+            format!(
+                "Le sujet d’aide « {anchor} » se trouve hors de l’application et n’est pas disponible ici"
+            )
+        }
+        (HelpTopicNotice::External, EsEs) => {
+            format!(
+                "El tema de ayuda «{anchor}» está fuera de la aplicación y no está disponible aquí"
+            )
+        }
+        (HelpTopicNotice::External, PtBr) => {
+            format!(
+                "O tópico de ajuda “{anchor}” está fora do aplicativo e não está disponível aqui"
+            )
+        }
+        (HelpTopicNotice::External, JaJp) => {
+            format!("ヘルプトピック「{anchor}」はアプリの外部にあり、ここでは利用できません")
+        }
+        (HelpTopicNotice::External, KoKr) => {
+            format!("도움말 주제 “{anchor}”는 앱 외부에 있어 여기에서는 이용할 수 없습니다")
+        }
+        (HelpTopicNotice::External, RuRu) => {
+            format!("Раздел справки «{anchor}» находится вне приложения и здесь недоступен")
+        }
+        (HelpTopicNotice::External, DeDe) => {
+            format!(
+                "Das Hilfethema „{anchor}“ liegt außerhalb der App und ist hier nicht verfügbar"
+            )
+        }
+        (HelpTopicNotice::Unknown, ZhCn) => {
+            format!("找不到帮助主题「{anchor}」")
+        }
+        (HelpTopicNotice::Unknown, EnUs) => {
+            format!("No help topic named “{anchor}” was found")
+        }
+        (HelpTopicNotice::Unknown, FrFr) => {
+            format!("Aucun sujet d’aide nommé « {anchor} » n’a été trouvé")
+        }
+        (HelpTopicNotice::Unknown, EsEs) => {
+            format!("No se encontró ningún tema de ayuda llamado «{anchor}»")
+        }
+        (HelpTopicNotice::Unknown, PtBr) => {
+            format!("Nenhum tópico de ajuda chamado “{anchor}” foi encontrado")
+        }
+        (HelpTopicNotice::Unknown, JaJp) => {
+            format!("「{anchor}」というヘルプトピックは見つかりませんでした")
+        }
+        (HelpTopicNotice::Unknown, KoKr) => {
+            format!("“{anchor}”라는 도움말 주제를 찾을 수 없습니다")
+        }
+        (HelpTopicNotice::Unknown, RuRu) => {
+            format!("Раздел справки с именем «{anchor}» не найден")
+        }
+        (HelpTopicNotice::Unknown, DeDe) => {
+            format!("Kein Hilfethema mit dem Namen „{anchor}“ gefunden")
+        }
+    }
+}
+
 // --------------------------------------------------------------------- 速查
 
 /// 打开快捷键速查：行数据现算自 `cli::shortcut_rows()`（与
@@ -659,6 +853,67 @@ mod tests {
                 if lang != Language::ZhCn {
                     assert!(
                         !rendered.contains("未能保存") && !rendered.contains("回退"),
+                        "{lang:?} 模板不许含中文残片，实际：{rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// T-FIX-487：中文态三档提示逐字钉死（锚点名原样进占位）。
+    #[test]
+    fn help_topic_notice_zh_cn_is_byte_identical() {
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::Missing, "theory-harmony", Language::ZhCn),
+            "帮助主题「theory-harmony」还没有正文，暂未提供"
+        );
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::External, "theory-harmony", Language::ZhCn),
+            "帮助主题「theory-harmony」在应用外，应用内暂未提供"
+        );
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::Unknown, "theory-harmony", Language::ZhCn),
+            "找不到帮助主题「theory-harmony」"
+        );
+    }
+
+    /// T-FIX-487：英文态三档提示逐条钉死（锚点名原样进占位）。
+    #[test]
+    fn help_topic_notice_en_us_renders_english() {
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::Missing, "theory-harmony", Language::EnUs),
+            "Help topic “theory-harmony” has no content yet and is not available"
+        );
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::External, "theory-harmony", Language::EnUs),
+            "Help topic “theory-harmony” lives outside the app and is not available here"
+        );
+        assert_eq!(
+            help_topic_notice_in(HelpTopicNotice::Unknown, "theory-harmony", Language::EnUs),
+            "No help topic named “theory-harmony” was found"
+        );
+    }
+
+    /// T-FIX-487：九语全覆盖：每语三档均有文案；非中文语的模板不含中文
+    /// 模板残片（「帮助主题」「暂未提供」「找不到」）；锚点名每语原样进占位。
+    #[test]
+    fn help_topic_notice_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for notice in [
+                HelpTopicNotice::Missing,
+                HelpTopicNotice::External,
+                HelpTopicNotice::Unknown,
+            ] {
+                let rendered = help_topic_notice_in(notice, "theory-harmony", lang);
+                assert!(
+                    rendered.contains("theory-harmony"),
+                    "{lang:?} 渲染必须原样保留锚点名，实际：{rendered}"
+                );
+                if lang != Language::ZhCn {
+                    assert!(
+                        !rendered.contains("帮助主题")
+                            && !rendered.contains("暂未提供")
+                            && !rendered.contains("找不到"),
                         "{lang:?} 模板不许含中文残片，实际：{rendered}"
                     );
                 }
