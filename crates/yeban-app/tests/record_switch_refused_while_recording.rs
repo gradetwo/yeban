@@ -100,12 +100,12 @@ fn guard_refuses_switch_while_recording_and_allows_it_after_stop() {
         port: Rc::clone(&port),
         production: None,
         quanta: 0,
-        after: Rc::new(|_, _, _, _| Ok(())),
+        after: Rc::new(|_, _, _| Ok(())),
     };
     let before = port.fingerprint();
 
     // ① 录音进行中：必须拒绝，且当前工程指纹一位不动。
-    let refused = opener.open_archive_runtime(&ui, "t-fix-397", &archive, None, None);
+    let refused = opener.open_archive_runtime(&ui, "t-fix-397", archive.clone(), None, None);
     assert!(refused.is_err(), "录音进行中切换必须被拦，实得 Ok");
     assert_eq!(port.fingerprint(), before, "被拦的切换不得动当前工程");
     assert!(
@@ -117,7 +117,7 @@ fn guard_refuses_switch_while_recording_and_allows_it_after_stop() {
     ui.invoke_toggle_record();
     assert!(!ui.get_recording(), "停录之后必须归零");
     assert!(!host::recording_in_progress(), "停录后守卫必须读到未录音");
-    let allowed = opener.open_archive_runtime(&ui, "t-fix-397", &archive, None, None);
+    let allowed = opener.open_archive_runtime(&ui, "t-fix-397", archive, None, None);
     assert!(allowed.is_ok(), "停录后切换必须放行，实得 Err: {allowed:?}");
 
     let _ = std::fs::remove_dir_all(&dir);

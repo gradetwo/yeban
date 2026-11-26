@@ -128,12 +128,15 @@ fn synthetic_demos_stack_layout_and_unnamed_copy_open() {
             port: Rc::clone(&undo),
             production: Some(Rc::clone(&production)),
             quanta: 0,
-            after: Rc::new(move |ui, project, path, _view| {
+            after: Rc::new(move |ui, path, _view| {
+                let Some(project) = port_after.try_project() else {
+                    return Err("打开后端口里没有工程（当前工程一位没动）".to_owned());
+                };
                 host::wire_save_with_engine(
                     ui,
                     host::SaveStatus {
                         target: None, // 未命名副本：首存才问路径
-                        project: Rc::new(RefCell::new(project.clone())),
+                        project: Rc::new(RefCell::new(project)),
                     },
                     Some(Rc::clone(&port_after)),
                     Rc::clone(&picker_after),

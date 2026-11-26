@@ -996,15 +996,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             let proposal_source_after = proposal_source.clone();
             Rc::new(
                 move |ui: &yeban_app::ui::MainWindow,
-                      project: &yeban_model::YebanProjectV1,
                       path: &std::path::Path,
                       view: &yeban_app::bridge::ViewState|
                       -> Result<(), String> {
-                    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份工程 —— 换会话（`open_project_session`，
-                    // 上一步）已经把新工程装进端口 ⇒ 这里直接取会话那一份，⛔ 不再
-                    // `project.clone()` 三次（旧形状每换一次工程深拷贝三份）。
-                    // 句柄取法抽在 `host::shared_project_for_session`（判据直接断言它）。
-                    let shared = host::shared_project_for_session(&port_after, project);
+                    // ⭐ T-FIX-428：`after` 不再拿工程当入参 —— 从端口取此刻那一份，
+                    //    取不到如实报错（当前工程一位没动）。
+                    let Some(project) = port_after.try_project() else {
+                        return Err("打开后端口里没有工程（当前工程一位没动）".to_owned());
+                    };
+                    // ⭐ T-ISS-MWW4H8J6：与活会话共享同一份工程句柄（保存回退 / 走带 /
+                    //    按键读此刻的工程，⛔ 不是装配时刻快照）。
+                    let shared = host::shared_project_for_session(&port_after, &project);
                     // ① 心跳对齐基准。
                     *view_after.borrow_mut() = view.clone();
                     // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）；

@@ -381,6 +381,21 @@ pub struct OpenedProject {
     pub asset_audit: AssetAudit,
 }
 
+/// 后台打开的**阶段**（工作线程向 UI 线程报告进度的唯一口径）。
+///
+/// 每个阶段只在**进入**时报告一次：`fraction` 是该阶段在整次打开里的锚点
+/// （读盘 0.0→0.3、解码 0.55、核对 0.85、完成由排空那一跳写 1.0），⛔ 不是
+/// 实测字节比 —— 解码 / 核对是整段调用，中间没有字节级进度可报（T-FIX-428）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenLoadPhase {
+    /// 正在读盘（`read_capped` 整文件读；`file_bytes` 只有读完那一刻是 `Some`）。
+    Reading,
+    /// 正在解码容器（ZIP 解包 + `project.json` 解析）。
+    Decoding,
+    /// 正在核对资产（严格模式下缺资产直接拒绝）。
+    Auditing,
+}
+
 /// **命令行的打开入口**：只接受 `.yeban` 容器。
 ///
 /// ## 判定顺序（顺序是契约的一部分）
@@ -403,33 +418,73 @@ pub fn open_project_document_file(
     options: &ProjectOpenOptions,
 ) -> Result<OpenedProject, OpenError> {
     let path = path.as_ref();
+    // ⛔ 单调用入口没有取消源：取消标志永不置位，分步的 `Ok(None)` 不可能到达这里。
+    // 组合只留一份（见 [`open_project_document_file_stepwise`]），⛔ 不复制第二份。
+    let never_cancelled = std::sync::atomic::AtomicBool::new(false);
+    match open_project_document_file_stepwise(path, options, &never_cancelled, &mut |_, _, _| {}) {
+        Ok(Some(opened)) => Ok(opened),
+        Ok(None) => unreachable!("单调用入口的取消标志永不置位，分步返回 None 不可能到达这里"),
+        Err(error) => Err(error),
+    }
+}
+
+/// 分步打开（后台线程用）：与 [`open_project_document_file`] **同一段**组合，
+///
+/// 只是每步之间向调用方报告进度并给取消留出检查点 —— 读盘 / 解码 / 资产核对
+/// 全在调用方的线程上跑（T-FIX-428：`wire_open_project` 的工作线程），⛔ 不再
+/// 占着 UI 线程。
+///
+/// `cancelled` 被置位时返回 `Ok(None)`：⛔ 不是错误 —— 取消不是失败，调用方按
+/// "用户取消、当前工程一位不动"回执。检查点在每步**之间**（读盘 / 解码 / 核对
+/// 各自是整段调用，段内不停 —— 取消总在下一段开始前生效）。
+///
+/// `on_phase` 在每步**进入**时调一次（`fraction` 是 [`OpenLoadPhase`] 的锚点；
+/// `file_bytes` 只有读完那一刻是 `Some`，之前是 `None`）。
+///
+/// # Errors
+///
+/// 与 [`open_project_document_file`] 逐字相同。
+pub(crate) fn open_project_document_file_stepwise(
+    path: &Path,
+    options: &ProjectOpenOptions,
+    cancelled: &std::sync::atomic::AtomicBool,
+    on_phase: &mut dyn FnMut(OpenLoadPhase, f32, Option<u64>),
+) -> Result<Option<OpenedProject>, OpenError> {
+    on_phase(OpenLoadPhase::Reading, 0.0, None);
     let bytes = read_capped(path, options.max_file_bytes)?;
     let file_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-
-    match open_project_archive(&bytes, &options.limits) {
-        Ok(archive) => {
-            if options.strict_missing_assets
-                && let Some(error) = strict_missing_asset_error(&archive)
-            {
-                return Err(error);
-            }
-            let asset_audit = audit_project_assets(&archive);
-            Ok(OpenedProject {
-                archive,
-                file_bytes,
-                asset_audit,
-            })
-        }
+    on_phase(OpenLoadPhase::Reading, 0.3, Some(file_bytes));
+    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+    on_phase(OpenLoadPhase::Decoding, 0.55, Some(file_bytes));
+    let archive = match open_project_archive(&bytes, &options.limits) {
+        Ok(archive) => archive,
         Err(OpenError::Container(container)) if !has_zip_signature(&bytes) => {
-            Err(OpenError::NotAYebanContainer {
+            return Err(OpenError::NotAYebanContainer {
                 path: path.to_path_buf(),
                 container,
-            })
+            });
         }
         // ZIP 结构在 ⇒ "容器坏了"，原样转达；`open_project_archive` 只剩容器裁决与
         // 超限两支，而超限已被上面的 `read_capped` 拦下。
-        Err(other) => Err(other),
+        Err(other) => return Err(other),
+    };
+    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
     }
+    on_phase(OpenLoadPhase::Auditing, 0.85, Some(file_bytes));
+    if options.strict_missing_assets
+        && let Some(error) = strict_missing_asset_error(&archive)
+    {
+        return Err(error);
+    }
+    let asset_audit = audit_project_assets(&archive);
+    Ok(Some(OpenedProject {
+        archive,
+        file_bytes,
+        asset_audit,
+    }))
 }
 
 /// 这份字节有没有 ZIP 结构（三种签名：local header / EOCD / data descriptor）。
@@ -1296,6 +1351,135 @@ mod tests {
                 .map(|opened| opened.archive.project),
             Some(empty),
             "错误不得退化成空工程"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-428：分步打开与单调用入口**同一段**组合 —— 阶段按读盘 / 解码 / 核对
+    /// 顺序报告，读到的字节数与工程逐字段一致，且与
+    /// [`open_project_document_file`] 的结果逐位相同。
+    #[test]
+    fn stepwise_reports_phases_in_order_and_matches_the_single_call_entry() {
+        let (bytes, project) = container_bytes();
+        let dir = std::env::temp_dir().join(format!("yeban-open-stepwise-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("stepwise.yeban");
+        std::fs::write(&path, &bytes).expect("写临时容器");
+
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let mut seen: Vec<(OpenLoadPhase, u32, Option<u64>)> = Vec::new();
+        let opened = open_project_document_file_stepwise(
+            &path,
+            &ProjectOpenOptions::default(),
+            &cancelled,
+            &mut |phase, fraction, file_bytes| {
+                seen.push((phase, fraction.to_bits(), file_bytes));
+            },
+        )
+        .expect("分步打开必须成功")
+        .expect("未取消时分步必须返回 Some");
+        assert_eq!(
+            seen,
+            vec![
+                (OpenLoadPhase::Reading, 0.0f32.to_bits(), None),
+                (
+                    OpenLoadPhase::Reading,
+                    0.3f32.to_bits(),
+                    Some(bytes.len() as u64)
+                ),
+                (
+                    OpenLoadPhase::Decoding,
+                    0.55f32.to_bits(),
+                    Some(bytes.len() as u64)
+                ),
+                (
+                    OpenLoadPhase::Auditing,
+                    0.85f32.to_bits(),
+                    Some(bytes.len() as u64)
+                ),
+            ],
+            "阶段必须按读盘 / 解码 / 核对顺序报告，锚点与字节数逐位一致"
+        );
+        assert_eq!(opened.archive.project, project, "工程文档必须逐字段一致");
+        assert_eq!(opened.file_bytes, bytes.len() as u64);
+
+        let single = open_project_document_file(&path, &ProjectOpenOptions::default())
+            .expect("单调用入口必须打开同一份容器");
+        assert_eq!(opened, single, "分步与单调用入口的结果必须逐位相同");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-428：读完之后、解码之前取消 ⇒ 返回 `Ok(None)`（⛔ 不是错误），
+    /// 且解码 / 核对两个阶段**一个都没跑**。
+    ///
+    /// 红对照：删掉读盘后的取消检查点 ⇒ 本判据拿到 `Some` 而红。
+    #[test]
+    fn stepwise_cancel_between_read_and_decode_returns_none() {
+        let (bytes, _) = container_bytes();
+        let dir =
+            std::env::temp_dir().join(format!("yeban-open-stepwise-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("cancel.yeban");
+        std::fs::write(&path, &bytes).expect("写临时容器");
+
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let mut seen: Vec<OpenLoadPhase> = Vec::new();
+        let outcome = open_project_document_file_stepwise(
+            &path,
+            &ProjectOpenOptions::default(),
+            &cancelled,
+            &mut |phase, _, _| seen.push(phase),
+        )
+        .expect("取消不是错误，分步必须返回 Ok");
+        assert_eq!(outcome, None, "预先取消 ⇒ 分步返回 None，不打开");
+        assert_eq!(
+            seen,
+            vec![OpenLoadPhase::Reading, OpenLoadPhase::Reading],
+            "取消在读盘后生效：解码 / 核对一个都没跑"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-428：解码开始时才取消 ⇒ 解码跑完、核对**没跑**，返回 `Ok(None)`。
+    ///
+    /// 红对照：删掉解码后的取消检查点 ⇒ 本判据拿到 `Some` 而红。
+    #[test]
+    fn stepwise_cancel_between_decode_and_audit_returns_none() {
+        let (bytes, _) = container_bytes();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-open-stepwise-cancel2-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("cancel2.yeban");
+        std::fs::write(&path, &bytes).expect("写临时容器");
+
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let mut seen: Vec<OpenLoadPhase> = Vec::new();
+        let outcome = open_project_document_file_stepwise(
+            &path,
+            &ProjectOpenOptions::default(),
+            &cancelled,
+            &mut |phase, _, _| {
+                if phase == OpenLoadPhase::Decoding {
+                    cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                seen.push(phase);
+            },
+        )
+        .expect("取消不是错误，分步必须返回 Ok");
+        assert_eq!(outcome, None, "解码后取消 ⇒ 分步返回 None，不打开");
+        assert_eq!(
+            seen,
+            vec![
+                OpenLoadPhase::Reading,
+                OpenLoadPhase::Reading,
+                OpenLoadPhase::Decoding
+            ],
+            "取消在解码后生效：核对没跑"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

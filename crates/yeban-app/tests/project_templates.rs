@@ -703,7 +703,11 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
             let owned: Rc<ScriptedPicker> = Rc::clone(&picker);
             owned
         };
-        Rc::new(move |ui, project, _path, _view| {
+        Rc::new(move |ui, _path, _view| {
+            // T-FIX-428：`after` 不再接工程入参 —— 从端口取快照（与 main.rs 同款）。
+            let Some(project) = port_after.try_project() else {
+                return Err("打开后端口里没有工程（当前工程一位没动）".to_owned());
+            };
             host::wire_save_with_engine(
                 ui,
                 host::SaveStatus {

@@ -186,6 +186,17 @@ export component MixerConsole inherits Rectangle {
     // 回执走**既有**的 `module-status` 投影通道（与 `export-midi` / `export-wav` 逐字同一条）。
     callback open-project();
 
+    // ⭐ T-FIX-428：打开工程的**加载行** —— 后台读盘 / 解码 / 核对时父级写下的
+    // 读数（只读注入：本组件只读、⛔ 不写；写方向是宿主 `host::wire_open_project`
+    // 的 `open-project-progress-requested` / 排空）。取消按钮只上抛
+    // `cancel-open-project`（宿主置取消标志）。
+    // ⚠ 本组件目前只在 `console_tabs.slint` 的 `if false` 分支里实例化（aether
+    // 重构后旧控制台树未进活窗口）⇒ 加载行现在不画在任何活帧里；链路照旧逐层
+    // 声明 + 转发，树一恢复就有人话 + 可点的取消。
+    in property <bool> open-project-loading: false;
+    in property <string> open-project-status: "";
+    callback cancel-open-project();
+
     // ⭐ **新建工程**（任务单 `#129`）—— **从零开始**在界面上的可见入口。
     //
     // 本单补的是哪一格：上面那个 `#93` 的「打开工程」要磁盘上**已经**有一个 `.yeban`；
@@ -461,6 +472,61 @@ export component MixerConsole inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.new-project(); }
+                }
+            }
+
+            // ⭐ T-FIX-428：打开工程的**加载行** —— 后台读盘 / 解码 / 核对时亮起。
+            // 座位：面板底边那 20px 空档（`y: 84px` = 两格按钮之下），⛔ 不改面板与
+            // 任何既有控件的几何；平时 `visible: false`，面板与原来逐像素相同。
+            // 左边是进度文案（宿主按阶段写，形如 `正在解码工程容器… 55%`），右边是
+            // 取消按钮（只置标志，工作线程在阶段之间检查它；取消不是失败，见
+            // `host::wire_open_project`）。
+            Rectangle {
+                x: Tokens.space-3;
+                y: 84px;
+                width: parent.width - 12px;
+                height: 18px;
+                visible: root.open-project-loading;
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width - 52px;
+                    height: parent.height;
+                    text: root.open-project-status;
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    x: parent.width - 48px;
+                    y: 0;
+                    width: 48px;
+                    height: parent.height;
+                    background: (cancel_open_project_area.pressed || cancel_open_project_area.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
+                    border-radius: Tokens.radius-md;
+                    accessible-role: button;
+                    accessible-id: "cancel-open-project-button";
+                    accessible-label: @tr("取消打开工程（当前工程一位不动）");
+                    accessible-action-default => { root.cancel-open-project(); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: @tr("取消");
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: center;
+                    }
+
+                    cancel_open_project_area := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.cancel-open-project(); }
+                    }
                 }
             }
         }

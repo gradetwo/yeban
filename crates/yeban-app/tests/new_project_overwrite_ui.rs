@@ -49,6 +49,20 @@ impl host::OpenProjectRuntime for RecordingRuntime {
         self.opened.borrow_mut().push(path.to_path_buf());
         Ok(())
     }
+
+    fn open_archive(
+        &self,
+        _ui: &MainWindow,
+        _label: &str,
+        _archive: yeban_model::container::ProjectArchive,
+        _project_dir: Option<&std::path::Path>,
+        _source_path: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        // T-FIX-428：`wire_new_project` 永远不调这一跳（新建 = 写空容器 + 走
+        // `open_runtime` 的换工程路径）；真走到就是装配错误 ⇒ 响亮报错，
+        // ⛔ 不静默假装换了工程。
+        Err("RecordingRuntime 不支持 open_archive（wire_new_project 不应调它）".to_owned())
+    }
 }
 
 struct Scratch {

@@ -10273,14 +10273,40 @@ pub trait OpenProjectRuntime {
     ///
     /// 给用户看的完整原因（**非空**）。调用方原样写进 `module-status` 回执。
     fn open_runtime(&self, ui: &MainWindow, path: &std::path::Path) -> Result<(), String>;
+
+    /// 把一份**已经在手里的归档**换进界面（T-FIX-428：后台加载的排空腿）。
+    ///
+    /// 与 [`Self::open_runtime`] 的差别只有来源：那条从磁盘路径读归档，这条由
+    /// 调用方直接给出归档 —— 后台工作线程把读盘 / 解码 / 资产核对做完之后，
+    /// UI 线程经这一跳做**一次原子会话换入**（`open_project_session` ＋ 引擎换代）。
+    /// 归档按值取：工程与资产池 **move** 进新会话，⛔ 不 clone（见
+    /// [`PortOpenProject::open_archive_runtime`]）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::open_runtime`] 同口径（投影失败 / 换会话被拒 / `after` 失败 /
+    /// 引擎换代失败）。
+    fn open_archive(
+        &self,
+        ui: &MainWindow,
+        label: &str,
+        archive: yeban_model::container::ProjectArchive,
+        project_dir: Option<&std::path::Path>,
+        source_path: Option<&std::path::Path>,
+    ) -> Result<(), String>;
 }
 
-/// 换工程之后**装配方最后一跳**的签名：`(ui, 新工程, 新落点, 新投影)`。
+/// 换工程之后**装配方最后一跳**的签名：`(ui, 新落点, 新投影)`。
 ///
+/// T-FIX-428：签名里**不再有** `&YebanProjectV1` —— `after` 闭包手里已经有装配期的
+/// `Rc<UndoPort>`，新工程就是换会话后端口里的那一份（`try_project` 自取一次共享
+/// 快照）；再从调用方传一份引用进来，只会逼着 `open_archive_runtime` 在换会话
+/// 之后还留一份工程引用 —— 而那份引用只能来自端口的 `with_project` 借用，
+/// `after` 体内的 `port.display()` 会在同一借用里 panic（`RefCell already borrowed`）。
 /// 单独起一个别名的两个理由：① `clippy::type_complexity`（`-D warnings` 下是硬错误）；
-/// ② 这**是**一条契约（调用方要拿哪四样东西）—— 别名比内联的函数类型好读。
+/// ② 这**是**一条契约（调用方要拿哪三样东西）—— 别名比内联的函数类型好读。
 pub type OpenProjectAfter =
-    Rc<dyn Fn(&MainWindow, &YebanProjectV1, &std::path::Path, &ViewState) -> Result<(), String>>;
+    Rc<dyn Fn(&MainWindow, &std::path::Path, &ViewState) -> Result<(), String>>;
 
 /// ⭐ T-FIX-193 D3：新工程打开时的**默认选中轨** —— 身份序第一条**有 MIDI 音符**
 /// 的非主总线轨；一条都没有 ⇒ `None`（由 `display_track` 回落到旧口径：身份序第一条
@@ -10328,8 +10354,9 @@ pub struct PortOpenProject {
     pub production: Option<Rc<RefCell<ProductionLoop>>>,
     /// `reload` 的量子数（与装配时给 [`ProductionLoop::start`] 的那一个同源）。
     pub quanta: u64,
-    /// **装配方自己的最后一跳**（`(ui, 新工程, 新落点, 新投影)`）：产品用它更新心跳的对齐
-    /// 基准并重接三处**静态快照**（保存落点 / 走带 / 按键）。⛔ 它**不**注入视图、
+    /// **装配方自己的最后一跳**（`(ui, 新落点, 新投影)`；新工程由它自己从端口里
+    /// 取 —— 见 [`OpenProjectAfter`]）：产品用它更新心跳的对齐基准并重接三处
+    /// **静态快照**（保存落点 / 走带 / 按键）。⛔ 它**不**注入视图、
     /// ⛔ 它**不**换代引擎 —— 那两件是[`Self::open_runtime`]的固定动作。
     pub after: OpenProjectAfter,
 }
@@ -10361,7 +10388,21 @@ impl OpenProjectRuntime for PortOpenProject {
         // `&Path` 走完读盘、`project_dir` 与 `after`（保存落点），⛔ 不再经过
         // `to_string_lossy` —— 否则非 UTF-8 工程会被静默改写成 `�`。
         let label = path.display().to_string();
-        self.open_archive_runtime(ui, &label, &document.archive, path.parent(), Some(path))
+        // T-FIX-428：归档**按值**交给下一跳（工程与资产池 move 进新会话，⛔ 不 clone）。
+        self.open_archive_runtime(ui, &label, document.archive, path.parent(), Some(path))
+    }
+
+    fn open_archive(
+        &self,
+        ui: &MainWindow,
+        label: &str,
+        archive: yeban_model::container::ProjectArchive,
+        project_dir: Option<&std::path::Path>,
+        source_path: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        // 只有这一句委托：固定动作只留一份（[`Self::open_archive_runtime`]），
+        // trait 方法是后台排空腿的调用口径，⛔ 不复制第二份实现。
+        self.open_archive_runtime(ui, label, archive, project_dir, source_path)
     }
 }
 
@@ -10372,6 +10413,20 @@ impl PortOpenProject {
     /// 差别只有来源：那条从磁盘路径读归档，这条由调用方直接给出
     /// 归档 —— 启动选择器的演示工程（内置样本）与新建工程
     /// （Details 构造）没有磁盘文件可读，只能走这条。
+    ///
+    /// T-FIX-428：归档**按值**取 —— 工程与资产池 **move** 进新会话，
+    /// ⛔ 不 clone（修前这里 `archive.project.clone()` 一份、
+    /// `open_project_session` 里 `project.clone()` 又一份，外加两次
+    /// `project_with_view_state`）。投影只算**一次**（换会话之前，既是
+    /// 校验、又供 ④ `apply_view`）；换会话之后要读工程的地方（⑤ 引擎换代）
+    /// 从端口借回（[`UndoPort::with_project`]），`after` 自己从端口取快照
+    /// （见 [`OpenProjectAfter`]）。
+    ///
+    /// 归档其余段（`history.dag` / `proposals` / `embedded_presets` /
+    /// `load_notes`）本函数**不消费**，随归档一起 drop —— 与修前逐位一致：
+    /// 修前也只读 `project` 与 `assets`（会话由 [`UndoSession::open`] 从根提交
+    /// 新建，`history.dag` 不进运行期会话 —— 那是启动装配
+    /// `open_undo_session` 的另一条腿）。
     ///
     /// `label` 是这份归档在回执 / 会话来源里的名字（文件打开时
     /// 就是路径本身，于是那条路的报文逐字不变）；`project_dir`
@@ -10387,7 +10442,7 @@ impl PortOpenProject {
         &self,
         ui: &MainWindow,
         label: &str,
-        archive: &yeban_model::container::ProjectArchive,
+        archive: yeban_model::container::ProjectArchive,
         project_dir: Option<&std::path::Path>,
         // T-FIX-310：真实来源路径（打开/文件型 demo 给出）；内置 demo / 未命名
         // 新建没有磁盘来源 ⇒ `None`，`after` 只拿到显示用的 `label`。
@@ -10409,20 +10464,42 @@ impl PortOpenProject {
             ui.set_show_floating_toast(true);
             return Err(message.to_owned());
         }
-        let project = archive.project.clone();
-        // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
-        //    用的是与 ④ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
-        project_with_view_state(&project, ui)
+        // T-FIX-428：工程与资产池从归档里 **move** 出来（⛔ 不 clone），
+        // 其余段随归档 drop（见本函数文档）。
+        let project = archive.project;
+        let assets = archive.assets;
+        // ③c 的纯读数先算好（换会话之前借 `project`，换会话之后它已搬进端口）。
+        // `default_selected_track_id` 只调一次（修前 ③c 与 ③d 各调一次）。
+        let selected_track = default_selected_track_id(&project);
+        // ③d ⭐ T-FIX-2392：**横向**落点与 D4 同口径 —— 默认选中轨首个音符的 tick。
+        //     修前这里沿用 `ui.get_roll_scroll_x()`（新窗口为 0 / 上一工程的旧值），
+        //     于是《回头路》鼓刷军鼓（首音符 89280）打开瞬间视口内没有音符、看着是空的。
+        //     无 MIDI 音符 / 空工程 ⇒ 0（不报错、不 panic）。
+        //     只动打开路径：选轨路径的横向落点仍由 `roll_focus_on_track` 负责。
+        let scroll_x = selected_track
+            .and_then(|track_id| first_note_tick_on_track(&project, track_id))
+            .map_or(0.0, |tick| roll_scroll_for_tick(ui, tick));
+        // ③c ⭐ T-FIX-193 D3：新工程的**默认选中轨**优先"有 MIDI 音符"的轨 ——
+        //     民谣三首（回头路 / 下一个路口 / 那个午后）首轨是音频轨「人声·参考」，
+        //     按身份序选中它 ⇒ 打开第一眼卷帘必然全空。找不到 MIDI 轨时清空选中，
+        //     交给既有回落（`display_track` = 身份序第一条非主总线轨）。
+        //     ⛔ 顺序：必须在下面那一次投影**之前**写 —— 投影读的就是窗口上这个属性，
+        //     修前 ④ 那一次重投影正是在写完选中轨之后才算的；只算一次就必须先写。
+        ui.set_selected_track_id(
+            selected_track
+                .map_or_else(String::new, |id| id.to_canonical_string())
+                .into(),
+        );
+        // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**，并且这**同一份**
+        //    投影供 ④ `apply_view`（修前这里只校验、结果丢掉，④ 又重算一次）。
+        let view = project_with_view_state(&project, ui)
             .map_err(|error| format!("`{label}` 投影失败（当前工程一位没动）: {error}"))?;
         // ③ 换会话（「打开一个工程 = **新会话**」的唯一实现）。
         //    权威后端在场 / 根提交被模型拒绝 ⇒ 到这里就返回：界面与引擎都还没碰。
         //    ⭐ 资产池跟着新归档走（替换，⛔ 不合并 —— 见 [`UndoPort::replace_assets`]）。
-        self.port.open_project_session(
-            format!("open {label}"),
-            project.clone(),
-            archive.assets.clone(),
-            now_ms(),
-        )?;
+        //    工程与资产池都是 **move**（上面已从归档里取出，⛔ 不 clone）。
+        self.port
+            .open_project_session(format!("open {label}"), project, assets, now_ms())?;
         // ⭐ T-FIX-349：工程边界清 ARA 会话（与 MCP `reset_history` 同义）。
         // 打开 / 新建 / 模板副本都走本函数 ⇒ 只有这一处清会话，⛔ 不另起生命周期。
         reset_plugin_panel_for_project_switch(ui);
@@ -10432,28 +10509,9 @@ impl PortOpenProject {
         //     认为"作用域没变"，音高窗口停在**上一个工程**的取景值（实测 58，应为 31）。
         //     取景状态是视图态（⛔ 不进工程 / 撤销栈），换工程即失效。
         ui.set_roll_framed_scope("".into());
-        // ③c ⭐ T-FIX-193 D3：新工程的**默认选中轨**优先"有 MIDI 音符"的轨 ——
-        //     民谣三首（回头路 / 下一个路口 / 那个午后）首轨是音频轨「人声·参考」，
-        //     按身份序选中它 ⇒ 打开第一眼卷帘必然全空。找不到 MIDI 轨时清空选中，
-        //     交给既有回落（`display_track` = 身份序第一条非主总线轨）。
-        ui.set_selected_track_id(
-            default_selected_track_id(&project)
-                .map_or_else(String::new, |id| id.to_canonical_string())
-                .into(),
-        );
-        // ④ 注入界面（唯一注入点）—— 选中态已换成新工程默认轨，这里重新投影一次；
-        //    其余视图态仍从**当前窗口**读回（行高 / 缩放不因换工程清零）。
-        let view = project_with_view_state(&project, ui)
-            .map_err(|error| format!("`{label}` 换会话后投影失败: {error}"))?;
+        // ④ 注入界面（唯一注入点）—— 用 ② 那**同一份**投影；其余视图态仍从
+        //    **当前窗口**读回（行高 / 缩放不因换工程清零）。
         let width = slint::ComponentHandle::window(ui).size().width as f32;
-        // ③d ⭐ T-FIX-2392：**横向**落点与 D4 同口径 —— 默认选中轨首个音符的 tick。
-        //     修前这里沿用 `ui.get_roll_scroll_x()`（新窗口为 0 / 上一工程的旧值），
-        //     于是《回头路》鼓刷军鼓（首音符 89280）打开瞬间视口内没有音符、看着是空的。
-        //     无 MIDI 音符 / 空工程 ⇒ 0（不报错、不 panic）。
-        //     只动打开路径：选轨路径的横向落点仍由 `roll_focus_on_track` 负责。
-        let scroll_x = default_selected_track_id(&project)
-            .and_then(|track_id| first_note_tick_on_track(&project, track_id))
-            .map_or(0.0, |tick| roll_scroll_for_tick(ui, tick));
         ui.set_roll_scroll_x(scroll_x);
         apply_view(ui, &view, width, scroll_x);
         // ⑤ 引擎换代：新快照 / 新队列 / 新的电平消费端。
@@ -10474,103 +10532,126 @@ impl PortOpenProject {
         //    （⛔ 不是换掉 `Rc` —— 走带 / 按键 / 模块那批接线都持有它，换掉会指向旧引擎），
         //    于是播放侧不会继续拿着**上一份**工程的快照（那会让"界面 0 轨、按播放却响旧工程"）。
         //    ⛔ 不清空则 `reload` 必然失败、换工程回执变成"失败"，而界面其实已经换了 —— 假读数。
-        let mut reload_error = None;
-        if let Some(production) = self.production.as_ref() {
-            let engine = production.borrow().engine_handle();
-            // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
-            //    必须在 `reload` **之前**写下（那一跳就要摊平第一份快照）；0 轨分支会把
-            //    宿主整体换成 `EngineHost::new()`，那里没有可解析的 SFZ，不重写也无害。
-            // ⭐ T-FIX-422：先把真实工程文件路径写下（含文件名，供导出护栏用），
-            //    再按既有口径写目录；源路径为 `None`（内置样本 / 新建）时目录也随之为空。
-            engine
-                .borrow_mut()
-                .set_project_path(source_path.map(std::path::Path::to_path_buf));
-            engine
-                .borrow_mut()
-                .set_project_dir(project_dir.map(std::path::Path::to_path_buf));
-            // ⚠ **先读成一个布尔**（⛔ 不写 `if engine.borrow().has_engine() { … }`）：那样写会让
-            // 那个 `Ref` **活着穿过整个 `if` 体**，于是体内任何 `engine.borrow_mut()` 都会
-            // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的
-            // 就是这一条（本处是那次实测的修法）。
-            let has_engine = engine.borrow().has_engine();
-            if view.master.is_none() {
-                // 0 轨（或主总线不在）⇒ 快照投影不可能。旧一代先停、再清空。
-                if has_engine {
-                    // 设备腿先放掉（与 `EngineHost::reload` 的第 1.5 步同款），再清空内容。
-                    let _ = engine.borrow_mut().close_device();
-                    *engine.borrow_mut() = EngineHost::new();
-                }
-                // 界面必须停在停止态（与装配点 `ProductionLoop::start` 失败后那一条同款；
-                // `TransportReading::cold` 的 `state` 不是 running ⇒ `playing: false`）。
-                let reading = engine.borrow().transport();
-                apply_transport(ui, reading);
-            } else if has_engine {
-                // ⭐ 任务单 `#136`：把**音频片段字节来源**重新接到这一代宿主上。
-                //
-                // ③ 的 `open_project_session` 已经把会话资产池**换成新归档的**（替换，⛔ 不合并），
-                // 而来源是"读同一个 `Rc<UndoPort>` 的**现读**闭包" ⇒ 重接一次即可让
-                // `reload` 第 1.3 步看到新工程的 `assets/{sha256}`。0 轨分支（上面）会把
-                // 宿主整体换成 `EngineHost::new()` ⇒ 来源也会丢，所以每次换代都重接。
-                {
-                    let audio_port = Rc::clone(&self.port);
-                    engine
-                        .borrow_mut()
-                        .set_audio_asset_source(Box::new(move |hash| audio_port.asset_bytes(hash)));
-                }
-                // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
-                // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
-                // ⇒ 先把结局**结算**成一个值，再进 `match`。
-                // ⚠ 设备腿状态必须在 `reload` **之前**记下：`reload` 的第 1.5 步会
-                // `close_device()`（`engine_host.rs` 的 `reload` 文档写明"要重新交回设备
-                // 请再调一次 open_device"）。这里曾经只 `stop()`、没有重开 ⇒ 用户在启动
-                // 选择器里换工程之后，走带和轨道电平都正常，但声卡流已经被关掉，播放无声。
-                let device_was_active = engine.borrow().device_active();
-                let rebuild = engine.borrow_mut().reload(&project, self.quanta);
-                match rebuild {
-                    Ok(rebuild) => {
-                        production
+        //
+        // T-FIX-428：工程已经 move 进会话，这里从端口**借回**（[`UndoPort::with_project`]，
+        // ⛔ 不 clone）。闭包里嵌套借的只有两处，都**不是**端口的会话那只 `RefCell`：
+        // ① 引擎宿主（`production` / `engine` 各自的 `RefCell`）；② 音频来源闭包在
+        // `reload` 第 1.3 步调的 `asset_bytes` 借的是端口的**资产池**那只 `RefCell`
+        // （与 `session` 是两只）⇒ 不会 `RefCell already borrowed`。
+        // ⛔ `after` ⛔ 不能进这个闭包：它体内调 `port.display()`，借的正是 `session`。
+        let reload_error = match self.port.with_project(|project| {
+            let mut reload_error = None;
+            if let Some(production) = self.production.as_ref() {
+                let engine = production.borrow().engine_handle();
+                // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
+                //    必须在 `reload` **之前**写下（那一跳就要摊平第一份快照）；0 轨分支会把
+                //    宿主整体换成 `EngineHost::new()`，那里没有可解析的 SFZ，不重写也无害。
+                // ⭐ T-FIX-422：先把真实工程文件路径写下（含文件名，供导出护栏用），
+                //    再按既有口径写目录；源路径为 `None`（内置样本 / 新建）时目录也随之为空。
+                engine
+                    .borrow_mut()
+                    .set_project_path(source_path.map(std::path::Path::to_path_buf));
+                engine
+                    .borrow_mut()
+                    .set_project_dir(project_dir.map(std::path::Path::to_path_buf));
+                // ⚠ **先读成一个布尔**（⛔ 不写 `if engine.borrow().has_engine() { … }`）：那样写会让
+                // 那个 `Ref` **活着穿过整个 `if` 体**，于是体内任何 `engine.borrow_mut()` 都会
+                // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的
+                // 就是这一条（本处是那次实测的修法）。
+                let has_engine = engine.borrow().has_engine();
+                if view.master.is_none() {
+                    // 0 轨（或主总线不在）⇒ 快照投影不可能。旧一代先停、再清空。
+                    if has_engine {
+                        // 设备腿先放掉（与 `EngineHost::reload` 的第 1.5 步同款），再清空内容。
+                        let _ = engine.borrow_mut().close_device();
+                        *engine.borrow_mut() = EngineHost::new();
+                    }
+                    // 界面必须停在停止态（与装配点 `ProductionLoop::start` 失败后那一条同款；
+                    // `TransportReading::cold` 的 `state` 不是 running ⇒ `playing: false`）。
+                    let reading = engine.borrow().transport();
+                    apply_transport(ui, reading);
+                } else if has_engine {
+                    // ⭐ 任务单 `#136`：把**音频片段字节来源**重新接到这一代宿主上。
+                    //
+                    // ③ 的 `open_project_session` 已经把会话资产池**换成新归档的**（替换，⛔ 不合并），
+                    // 而来源是"读同一个 `Rc<UndoPort>` 的**现读**闭包" ⇒ 重接一次即可让
+                    // `reload` 第 1.3 步看到新工程的 `assets/{sha256}`。0 轨分支（上面）会把
+                    // 宿主整体换成 `EngineHost::new()` ⇒ 来源也会丢，所以每次换代都重接。
+                    {
+                        let audio_port = Rc::clone(&self.port);
+                        engine
                             .borrow_mut()
-                            .meters_mut()
-                            .adopt(rebuild.collector);
-                        // 与装配点**逐字同款**：新引擎沿用"自由跑"默认值，而界面此刻应当停在
-                        // 停止态（`ProductionLoop::start` 的文档第 ① 条）。⛔ 不 stop 会让
-                        // `playing: false` 的界面背后真的在跑。
-                        engine.borrow_mut().stop();
-                        // ⭐ **换工程后把设备腿接回去**。离线导出不经过设备腿，所以它会
-                        // 一直是好的；实时播放这条腿则必须在 `reload` 之后显式重开。
-                        // 只在换工程前设备腿活跃时重开：启动时就没声卡的机器不去反复试，
-                        // 保持"控制驱动（无声但走带正常）"的既有降级形态。
-                        if device_was_active {
-                            let config = yeban_engine::device::EngineConfig::from_project(&project);
-                            // 同形（判据表达式里 `borrow_mut`），但两个分支都**不再借**
-                            // `production` ⇒ 当前安全。仍统一成「先结算再 match」：这个形状
-                            // 只差一行注释就会变成上面那个 abort（⛔ 不给第三次留门）。
-                            let opened = production.borrow_mut().open_device(config);
-                            match opened {
-                                Ok(opening) => crate::cli::emit(&[opening.status_line()]),
-                                Err(error) => {
-                                    let text = format!(
-                                        "已打开 `{label}`，但音频设备未接线（{error}）：\
+                            .set_audio_asset_source(Box::new(move |hash| {
+                                audio_port.asset_bytes(hash)
+                            }));
+                    }
+                    // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
+                    // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
+                    // ⇒ 先把结局**结算**成一个值，再进 `match`。
+                    // ⚠ 设备腿状态必须在 `reload` **之前**记下：`reload` 的第 1.5 步会
+                    // `close_device()`（`engine_host.rs` 的 `reload` 文档写明"要重新交回设备
+                    // 请再调一次 open_device"）。这里曾经只 `stop()`、没有重开 ⇒ 用户在启动
+                    // 选择器里换工程之后，走带和轨道电平都正常，但声卡流已经被关掉，播放无声。
+                    let device_was_active = engine.borrow().device_active();
+                    let rebuild = engine.borrow_mut().reload(project, self.quanta);
+                    match rebuild {
+                        Ok(rebuild) => {
+                            production
+                                .borrow_mut()
+                                .meters_mut()
+                                .adopt(rebuild.collector);
+                            // 与装配点**逐字同款**：新引擎沿用"自由跑"默认值，而界面此刻应当停在
+                            // 停止态（`ProductionLoop::start` 的文档第 ① 条）。⛔ 不 stop 会让
+                            // `playing: false` 的界面背后真的在跑。
+                            engine.borrow_mut().stop();
+                            // ⭐ **换工程后把设备腿接回去**。离线导出不经过设备腿，所以它会
+                            // 一直是好的；实时播放这条腿则必须在 `reload` 之后显式重开。
+                            // 只在换工程前设备腿活跃时重开：启动时就没声卡的机器不去反复试，
+                            // 保持"控制驱动（无声但走带正常）"的既有降级形态。
+                            if device_was_active {
+                                let config =
+                                    yeban_engine::device::EngineConfig::from_project(project);
+                                // 同形（判据表达式里 `borrow_mut`），但两个分支都**不再借**
+                                // `production` ⇒ 当前安全。仍统一成「先结算再 match」：这个形状
+                                // 只差一行注释就会变成上面那个 abort（⛔ 不给第三次留门）。
+                                let opened = production.borrow_mut().open_device(config);
+                                match opened {
+                                    Ok(opening) => crate::cli::emit(&[opening.status_line()]),
+                                    Err(error) => {
+                                        let text = format!(
+                                            "已打开 `{label}`，但音频设备未接线（{error}）：\
                                          播放将无声；编辑与导出不受影响"
-                                    );
-                                    eprintln!("[yeban-app] {text}");
-                                    ui.set_toast_message(text.into());
-                                    ui.set_toast_is_error(false);
-                                    ui.set_show_floating_toast(true);
+                                        );
+                                        eprintln!("[yeban-app] {text}");
+                                        ui.set_toast_message(text.into());
+                                        ui.set_toast_is_error(false);
+                                        ui.set_show_floating_toast(true);
+                                    }
                                 }
                             }
+                            let reading = engine.borrow().transport();
+                            apply_transport(ui, reading);
                         }
-                        let reading = engine.borrow().transport();
-                        apply_transport(ui, reading);
+                        Err(error) => reload_error = Some(error.to_string()),
                     }
-                    Err(error) => reload_error = Some(error.to_string()),
                 }
             }
-        }
+            reload_error
+        }) {
+            Some(error) => error,
+            // 换会话刚成功、端口里必有活工程；`None` 只可能是后端形态漂移 ⇒ 响亮报错，
+            // ⛔ 不静默跳过引擎换代。
+            None => {
+                return Err(format!(
+                    "`{label}` 换会话后端口没有活工程（引擎换代无法进行）"
+                ));
+            }
+        };
         // ⑥ 装配方自己的那一跳（心跳对齐基准 / 保存落点 / 静态快照）。
+        // T-FIX-428：`after` 不再接 `&project` 参数 —— 它自己从端口取快照
+        // （见 [`OpenProjectAfter`]）；这里只传落点与 ② 那一份投影。
         (self.after)(
             ui,
-            &project,
             source_path.unwrap_or_else(|| std::path::Path::new(label)),
             &view,
         )?;
@@ -10596,15 +10677,351 @@ pub fn close_startup_chooser(ui: &MainWindow) {
     ui.set_startup_chooser_open(false);
 }
 
+/// ⭐ **后台打开一次工程的结果**（T-FIX-428：工作线程交回、UI 线程排空）。
+///
+/// 槽里装的是**纯数据**（[`crate::open::OpenedProject`] = 归档 + 审计结果）⇒
+/// ⛔ 没有任何 Slint 对象跨线程。换会话 / 写属性那一步**不在**这里 —— 它在
+/// [`apply_pending_open_project`] 里，⛔ 只能在 UI 线程上跑。
+pub enum OpenProjectLoadOutcome {
+    /// 读盘 / 解码 / 资产核对全过：归档在手里，等 UI 线程一次换入。
+    ///
+    /// ⛔ **不**直接装 [`crate::open::OpenedProject`]：它上百字节，别的变体只有
+    /// 一个 `String` / 零字节 —— 直接装会触发 `clippy::large_enum_variant`
+    ///（大变体拖着整个枚举变大）。`Box` 之后枚举只剩一个指针宽。
+    Loaded(Box<crate::open::OpenedProject>),
+    /// 打开失败：给用户看的完整原因（**非空**，与 `open_runtime` 同步版的口径
+    /// 逐字相同 —— `"打开 \`{path}\` 失败（当前工程一位没动）: {error}"`）。
+    Failed(String),
+    /// 用户在加载中途点了取消：⛔ 不是失败（当前工程一位不动）。
+    Cancelled,
+}
+
+/// **后台打开的进度读数**（T-FIX-428：判据与界面共读的一份快照）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenProjectLoadProgress {
+    /// 当前阶段（读盘 / 解码 / 核对）。
+    pub phase: crate::open::OpenLoadPhase,
+    /// 0.0..=1.0 —— **阶段锚点**，不是实测字节比（解码 / 核对是单次不透明调用，
+    /// 量不出字节比；见 [`crate::open::OpenLoadPhase`] 的文档）。
+    pub fraction: f32,
+    /// 这一轮读到的文件字节数（`read_capped` 回来的）；`None` = 还没开始读。
+    pub file_bytes: Option<u64>,
+    /// 读盘 / 解码跑在哪条线程上（工作线程在第一个阶段回调里写下；判据用它
+    /// 断言"读 / 解析不在 UI 线程上" —— 读若回到了回调里，这里就是 UI 线程 ⇒ 红）。
+    pub load_thread: Option<std::thread::ThreadId>,
+}
+
+impl Default for OpenProjectLoadProgress {
+    fn default() -> Self {
+        Self {
+            phase: crate::open::OpenLoadPhase::Reading,
+            fraction: 0.0,
+            file_bytes: None,
+            load_thread: None,
+        }
+    }
+}
+
+/// 一次加载的**上下文**（UI 线程在 `begin` 里写下，排空时读出 —— 回执与
+/// `module-trace` 都要它）。
+#[derive(Debug, Clone, Default)]
+struct OpenProjectLoadContext {
+    path: Option<std::path::PathBuf>,
+    started: Option<std::time::Instant>,
+    save_first: bool,
+}
+
+/// ⭐ **后台打开工程的跨线程状态**（T-FIX-428）—— 与 [`MidiInState`] 同一条形状：
+/// `Arc` 句柄 ⇒ UI 线程与工作线程各持一份；`in_flight` 挡住"第二次点击开第二次
+/// 加载"，工作线程只做读盘 / 解码 / 核对三件事、把结果放进 `Send` 的槽，再请 UI
+/// 线程排空；⛔ 工作线程一个 Slint 对象都不碰（进度也只经 `upgrade_in_event_loop`
+/// 请 UI 线程写）。
+///
+/// ## 生命周期
+///
+/// `begin` → （工作线程）`finish` → （UI 线程）[`apply_pending_open_project`] 取走
+/// 并落界面。`is_in_flight` 在 `finish` 那一刻就为 `false`，因此"在飞"的窗口 =
+/// "已 begin、还没 finish"。
+#[derive(Clone, Default)]
+pub struct OpenProjectLoadState {
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    slot: std::sync::Arc<std::sync::Mutex<Option<OpenProjectLoadOutcome>>>,
+    worker: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    progress: std::sync::Arc<std::sync::Mutex<OpenProjectLoadProgress>>,
+    context: std::sync::Arc<std::sync::Mutex<OpenProjectLoadContext>>,
+}
+
+impl OpenProjectLoadState {
+    /// 开始一次加载：占住单飞位、记下路径 / 开始时刻 / `save_first`、清掉上一轮
+    /// 的结果 / 进度 / 取消。在飞 ⇒ 返回 `false`（调用方响亮拒绝，⛔ 不排队）。
+    pub fn begin(&self, path: std::path::PathBuf, save_first: bool) -> bool {
+        if self
+            .in_flight
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = None;
+        }
+        if let Ok(mut progress) = self.progress.lock() {
+            *progress = OpenProjectLoadProgress::default();
+        }
+        self.cancel
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut context) = self.context.lock() {
+            *context = OpenProjectLoadContext {
+                path: Some(path),
+                started: Some(std::time::Instant::now()),
+                save_first,
+            };
+        }
+        true
+    }
+
+    /// 这一刻有没有加载在飞。
+    pub fn is_in_flight(&self) -> bool {
+        self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 用户点了取消（加载行的按钮）：只置标志 —— 工作线程在阶段之间检查它，
+    /// 随即以 `Cancelled` 交回；⛔ 取消不是失败（当前工程一位不动）。
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 取消标志此刻是不是已置（工作线程在交回前最后再看一眼 —— 见
+    /// [`wire_open_project`] 里那扇竞态窗的注释）。
+    pub fn cancel_requested(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 取消标志的句柄（传给 `open_project_document_file_stepwise`）。
+    pub(crate) fn cancel_flag(&self) -> &std::sync::atomic::AtomicBool {
+        &self.cancel
+    }
+
+    /// 写一格进度（**工作线程**调）：阶段 + 锚点分数 + 文件字节数；同时记下
+    /// 当前线程 —— 判据用它断言读 / 解析不在 UI 线程上。
+    pub fn set_progress(
+        &self,
+        phase: crate::open::OpenLoadPhase,
+        fraction: f32,
+        file_bytes: Option<u64>,
+    ) {
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.phase = phase;
+            progress.fraction = fraction;
+            progress.file_bytes = file_bytes;
+            progress.load_thread = Some(std::thread::current().id());
+        }
+    }
+
+    /// 进度快照（判据与 UI 线程共读）。
+    pub fn progress(&self) -> OpenProjectLoadProgress {
+        self.progress
+            .lock()
+            .ok()
+            .map(|progress| progress.clone())
+            .unwrap_or_default()
+    }
+
+    /// 交回一次结果（**工作线程**调）：放进槽、松开单飞位。
+    pub fn finish(&self, outcome: OpenProjectLoadOutcome) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = Some(outcome);
+        }
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 记下工作线程的句柄（UI 线程调；判据用它 join —— 见
+    /// [`wait_for_pending_open_project`]）。
+    pub fn set_worker(&self, handle: std::thread::JoinHandle<()>) {
+        if let Ok(mut worker) = self.worker.lock() {
+            *worker = Some(handle);
+        }
+    }
+
+    /// 取出本次加载的上下文（排空时读回执字段用）。
+    fn load_context(&self) -> OpenProjectLoadContext {
+        self.context
+            .lock()
+            .ok()
+            .map(|context| context.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// ⭐ **确定性等待**：等当前工作线程**真的结束**（join），⛔ 不用 sleep、⛔ 不用轮询。
+/// （与 [`wait_for_pending_midi_in`] 同款。）
+pub fn wait_for_pending_open_project(state: &OpenProjectLoadState) -> bool {
+    let handle = state
+        .worker
+        .lock()
+        .ok()
+        .and_then(|mut worker| worker.take());
+    handle.is_some_and(|handle| {
+        // ⚠ join 的**唯一**后果是"等它跑完"；工作线程自己不做任何 UI 操作，
+        // 因此这里不会与 UI 线程互相等待（⛔ 无死锁环）。
+        handle.join().is_ok()
+    })
+}
+
+/// 阶段的人话（加载行与判据共读的一份文案；与 [`crate::open::OpenLoadPhase`] 的
+/// 阶段一一对应）。
+fn open_load_phase_label(phase: crate::open::OpenLoadPhase) -> &'static str {
+    match phase {
+        crate::open::OpenLoadPhase::Reading => "正在读取工程文件…",
+        crate::open::OpenLoadPhase::Decoding => "正在解码工程容器…",
+        crate::open::OpenLoadPhase::Auditing => "正在核对资产…",
+    }
+}
+
+/// ⭐ **把状态里的进度写进 Slint 属性**（⛔ 只能在 UI 线程上调）。
+///
+/// 生产路径：工作线程的阶段回调 ⇒ `upgrade_in_event_loop` ⇒
+/// `open-project-progress-requested` ⇒ 本函数。判据路径：直接调。
+fn apply_open_project_progress(ui: &MainWindow, state: &OpenProjectLoadState) {
+    let progress = state.progress();
+    ui.set_open_project_loading(true);
+    ui.set_open_project_progress(progress.fraction);
+    ui.set_open_project_status(
+        format!(
+            "{} {:.0}%",
+            open_load_phase_label(progress.phase),
+            progress.fraction * 100.0
+        )
+        .into(),
+    );
+}
+
+/// ⭐ **把已交回的加载结果落到界面上** —— 唯一写 `module-status` 回执的地方。
+///
+/// ⚠ **必须**在 UI 线程上调用（它换会话、写 Slint 属性）。
+/// 返回 `true` = 这一次真的落了一个结果（调用方据此知道状态变了）。
+///
+/// 生产路径：工作线程完成 ⇒ `upgrade_in_event_loop` ⇒
+/// `open-project-drain-requested` ⇒ 本函数。判据路径：
+/// [`wait_for_pending_open_project`] ⇒ 在 UI 线程上执行本函数。
+/// ⇒ ⭐ 两条路是**同一段**代码（终态不可能因"谁排空的"而不同）。
+///
+/// ## 落地
+///
+/// `Loaded` ⇒ [`OpenProjectRuntime::open_archive`] 一次换入（投影 / 会话 / 注入 /
+/// 换代 / `after` 全在那里面）；成功 ⇒ 记进「最近打开」＋ 关启动选择器；
+/// `Failed` / `Cancelled` ⇒ 当前工程一位不动，只写回执。
+pub fn apply_pending_open_project(
+    ui: &MainWindow,
+    state: &OpenProjectLoadState,
+    runtime: &std::rc::Rc<dyn OpenProjectRuntime>,
+) -> bool {
+    let context = state.load_context();
+    // ⚠ 先确认上下文在手 —— 没它回执写不出路径；⛔ 槽里的结果**不**取走
+    // （调用方下一次还能排空它）。
+    let (Some(path), Some(started)) = (context.path.clone(), context.started) else {
+        return false;
+    };
+    let Some(outcome) = state.slot.lock().ok().and_then(|mut slot| slot.take()) else {
+        return false;
+    };
+    let (receipt, ok) = match outcome {
+        OpenProjectLoadOutcome::Loaded(document) => {
+            let label = path.display().to_string();
+            match runtime.open_archive(ui, &label, document.archive, path.parent(), Some(&path)) {
+                Ok(()) => {
+                    crate::settings::record_recent_project(
+                        &path,
+                        yeban_model::project::now_unix_ms(),
+                    );
+                    (
+                        module_receipt(
+                            "open-project",
+                            &[
+                                "outcome=ok".to_owned(),
+                                format!("path={}", path.display()),
+                                // **回读**（不是回显入参）：界面此刻的轨道行数。
+                                format!(
+                                    "tracks={}",
+                                    slint::Model::row_count(&ui.get_track_names())
+                                ),
+                                format!("savedFirst={}", context.save_first),
+                            ],
+                        ),
+                        true,
+                    )
+                }
+                Err(message) => (
+                    module_receipt(
+                        "open-project",
+                        &module_error_fields("open-project", &message),
+                    ),
+                    false,
+                ),
+            }
+        }
+        OpenProjectLoadOutcome::Failed(message) => (
+            module_receipt(
+                "open-project",
+                &module_error_fields("open-project", &message),
+            ),
+            false,
+        ),
+        OpenProjectLoadOutcome::Cancelled => (
+            module_receipt(
+                "open-project",
+                &[
+                    "outcome=cancelled".to_owned(),
+                    format!("path={}", path.display()),
+                    "error=cancelled".to_owned(),
+                    "message=\"用户取消了打开（当前工程一位没动）\"".to_owned(),
+                ],
+            ),
+            false,
+        ),
+    };
+    // 加载行随结果一起收掉（成功 1.0 / 失败与取消 0.0 —— 分数只在"在飞"时有意义）。
+    ui.set_open_project_loading(false);
+    ui.set_open_project_progress(if ok { 1.0 } else { 0.0 });
+    ui.set_open_project_status(String::new().into());
+    if ok {
+        close_startup_chooser(ui);
+    }
+    apply_module_receipt(ui, &receipt, ok);
+    module_trace("open-project", started, &receipt);
+    // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
+    // 让警告成为本次打开的最后一条可见反馈。
+    report_pending_settings_warnings(ui);
+    true
+}
+
 /// ⭐ **运行期「打开工程」的唯一接线**：`.slint` 的 `open-project` 回调 ⇒ 对话框 ⇒
-/// [`OpenProjectRuntime`] ⇒ **既有**的 `module-status` 回执通道。
+/// **后台线程**读盘 / 解码 / 核对 ⇒ UI 线程一次换入（T-FIX-428）。
 ///
-/// ## 取消**不是**失败（⛔ 不写回执）
+/// ## 哪一步在哪条线程上
 ///
-/// 用户在对话框里按取消 ⇒ [`FilePicker::choose_open`](crate::file_picker::FilePicker::choose_open)
+/// | 步骤 | 线程 | 说明 |
+/// | :--- | :--- | :--- |
+/// | 对话框 / 先保存 / 单飞检查 | UI | 同步、快 |
+/// | 读盘 / 解码 / 资产核对 | **工作线程** | `open_project_document_file_stepwise`；UI 线程只等排空 |
+/// | 换会话 / 投影 / 注入 / 换代 / `after` | UI | [`apply_pending_open_project`] 里一次完成 |
+///
+/// 工作线程**不碰**任何 Slint 对象：进度与"请排空"都经 `upgrade_in_event_loop` 请
+/// UI 线程写；结果只经 [`OpenProjectLoadState`] 的槽交回。⛔ 没有事件循环的平台
+/// （Tier-1 判据）那一跳返回 `Err` —— **不是错误**：进度与结果仍在状态里，调用方
+/// 用 [`wait_for_pending_open_project`] ＋ [`apply_pending_open_project`] 排空即可。
+///
+/// ## 取消**不是**失败
+///
+/// 用户在**对话框**里按取消 ⇒ [`FilePicker::choose_open`](crate::file_picker::FilePicker::choose_open)
 /// 回 `None` ⇒ 本回调**什么都不做**：既不换工程，也不写 `module-status`
 /// （把它写成"打开失败"是把"我不想"和"出错了"混成一句 —— 与 [`wire_save`] 的取消口径、
 /// `crate::file_picker` 的模块文档第 2 条**逐字一致**）。
+///
+/// 用户在**加载中途**点了加载行的取消按钮 ⇒ 只置取消标志，工作线程在阶段之间
+/// 检查到就以 `Cancelled` 交回；排空写 `outcome=cancelled` 回执（⛔ 不是失败：
+/// 当前工程一位不动，见 [`apply_pending_open_project`]）。
 ///
 /// ## `save_first`：**复用**已有的保存入口
 ///
@@ -10615,12 +11032,51 @@ pub fn close_startup_chooser(ui: &MainWindow) {
 ///
 /// 保存没落盘（没有目标路径 / 权威只读 / 入口未接线）⇒ **响亮**报 `error=save-first`，
 /// 且**当前工程与界面一位不动**（返回得比读新文件还早）。
+///
+/// ## 返回值
+///
+/// 返回 [`OpenProjectLoadState`]：判据用它做**确定性**排空（join + apply）。
+/// 生产路径忽略它 —— 那一跳由工作线程里的 `upgrade_in_event_loop` 完成。
 pub fn wire_open_project(
     ui: &MainWindow,
     picker: Rc<dyn crate::file_picker::FilePicker>,
     runtime: Rc<dyn OpenProjectRuntime>,
     save_first: bool,
-) {
+) -> OpenProjectLoadState {
+    let state = OpenProjectLoadState::default();
+    // ① 排空（工作线程完成 ⇒ `upgrade_in_event_loop` ⇒ 本回调 ⇒
+    //    [`apply_pending_open_project`]；判据也走同一段）。
+    let drain_state = state.clone();
+    let drain_runtime = Rc::clone(&runtime);
+    let drain_weak = ui.as_weak();
+    ui.on_open_project_drain_requested(move || {
+        let Some(ui) = drain_weak.upgrade() else {
+            return;
+        };
+        apply_pending_open_project(&ui, &drain_state, &drain_runtime);
+    });
+    // ② 进度（工作线程的阶段回调 ⇒ `upgrade_in_event_loop` ⇒ 本回调 ⇒
+    //    [`apply_open_project_progress`]）。
+    let progress_state = state.clone();
+    let progress_weak = ui.as_weak();
+    ui.on_open_project_progress_requested(move || {
+        let Some(ui) = progress_weak.upgrade() else {
+            return;
+        };
+        apply_open_project_progress(&ui, &progress_state);
+    });
+    // ③ 取消（加载行的按钮）：只置标志 —— 工作线程在阶段之间检查它；
+    //    状态行同步写一句"正在取消…"，⛔ 不等工作线程。
+    let cancel_state = state.clone();
+    let cancel_weak = ui.as_weak();
+    ui.on_cancel_open_project(move || {
+        cancel_state.request_cancel();
+        if let Some(ui) = cancel_weak.upgrade() {
+            ui.set_open_project_status("正在取消…".into());
+        }
+    });
+    // ④ 打开（对话框 ⇒ 单飞检查 ⇒ 先保存 ⇒ 起工作线程 ⇒ 立刻返回）。
+    let open_state = state.clone();
     let weak = ui.as_weak();
     ui.on_open_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -10639,6 +11095,19 @@ pub fn wire_open_project(
         };
         // T-FIX-310：⛔ 不再 `to_string_lossy` —— `path` 保持 `PathBuf`，
         // 读盘 / 最近清单 / `after` 的保存落点都拿**原字节**。
+        // 在飞 ⇒ 响亮拒绝（⛔ 不并发、⛔ 不排队 —— 与采样库下载同一口径）。
+        if open_state.is_in_flight() {
+            let receipt = module_receipt(
+                "open-project",
+                &module_error_fields(
+                    "busy",
+                    "已有工程正在打开（⛔ 不并发、⛔ 不排队），请等它完成或取消",
+                ),
+            );
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("open-project", started, &receipt);
+            return;
+        }
         // ② 先保存（可选）：唯一的保存入口就是那个回调。
         if save_first && let Err(message) = save_first_through_the_existing_entry(&ui) {
             let receipt =
@@ -10647,45 +11116,73 @@ pub fn wire_open_project(
             module_trace("open-project", started, &receipt);
             return;
         }
-        // ③ 打开（唯一实现在 runtime 里）。
-        let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
-            Ok(()) => {
-                // 打开成功 ⇒ 记进「最近打开」（line/startup-chooser 的
-                // 第三键）：启动选择器的「最近」分类读的就是这份清单。
-                // 写回失败不把打开改判失败，但会以错误级常驻提示展示
-                // （本回调末尾的 [`report_pending_settings_warnings`]）。
-                crate::settings::record_recent_project(&path, yeban_model::project::now_unix_ms());
-                (
-                    module_receipt(
-                        "open-project",
-                        &[
-                            "outcome=ok".to_owned(),
-                            format!("path={}", path.display()),
-                            // **回读**（不是回显入参）：界面此刻的轨道行数。
-                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
-                            format!("savedFirst={save_first}"),
-                        ],
-                    ),
-                    true,
-                )
-            }
-            Err(message) => (
-                module_receipt(
-                    "open-project",
-                    &module_error_fields("open-project", &message),
+        if !open_state.begin(path.clone(), save_first) {
+            // begin 自己的单飞位（与上面的检查同一口径 —— 同一线程上不可能
+            // 走到这里，纯属防御；真走到就按"在飞"处理）。
+            let receipt = module_receipt(
+                "open-project",
+                &module_error_fields(
+                    "busy",
+                    "已有工程正在打开（⛔ 不并发、⛔ 不排队），请等它完成或取消",
                 ),
-                false,
-            ),
-        };
-        if ok {
-            close_startup_chooser(&ui);
+            );
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("open-project", started, &receipt);
+            return;
         }
-        apply_module_receipt(&ui, &receipt, ok);
-        module_trace("open-project", started, &receipt);
-        // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
-        // 让警告成为本次打开的最后一条可见反馈。
-        report_pending_settings_warnings(&ui);
+        // ⭐ 中间态：在 spawn 之前同步写 ⇒ 点击后立刻可观察（⛔ 不等工作线程的第一格进度）。
+        ui.set_open_project_loading(true);
+        ui.set_open_project_progress(0.0);
+        ui.set_open_project_status("正在读取工程文件… 0%".into());
+        // ③ 读盘 / 解码 / 核对在**工作线程**上跑（T-FIX-428）—— UI 线程只等排空。
+        //    口径与 `open_runtime` 同步版**逐字相同**：严格缺资产 + 同一条失败文案。
+        let worker_state = open_state.clone();
+        let worker_weak = ui.as_weak();
+        let options = crate::open::ProjectOpenOptions {
+            strict_missing_assets: true,
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            let mut on_phase =
+                |phase: crate::open::OpenLoadPhase, fraction: f32, file_bytes: Option<u64>| {
+                    worker_state.set_progress(phase, fraction, file_bytes);
+                    // 唯一跨线程的一跳：请 UI 线程把进度写进 Slint 属性。
+                    // 没有事件循环的平台这里返回 Err —— 进度仍在状态里，下一次排空读它。
+                    let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                        ui.invoke_open_project_progress_requested();
+                    });
+                };
+            let loaded = crate::open::open_project_document_file_stepwise(
+                &path,
+                &options,
+                worker_state.cancel_flag(),
+                &mut on_phase,
+            );
+            // 取消竞态的最后一扇窗：工作线程在交回前再检查一次 —— 若用户恰在
+            // 读完的同一刻点了取消，`Cancelled` 压倒 `Loaded`（⛔ 不把用户不要
+            // 的工程换进来）；失败也一样（取消的意思是"别换了"，失败的原因已不重要）。
+            let outcome = if worker_state.cancel_requested() {
+                OpenProjectLoadOutcome::Cancelled
+            } else {
+                match loaded {
+                    Ok(Some(document)) => OpenProjectLoadOutcome::Loaded(Box::new(document)),
+                    Ok(None) => OpenProjectLoadOutcome::Cancelled,
+                    Err(error) => OpenProjectLoadOutcome::Failed(format!(
+                        "打开 `{}` 失败（当前工程一位没动）: {error}",
+                        path.display()
+                    )),
+                }
+            };
+            worker_state.finish(outcome);
+            let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                ui.invoke_open_project_drain_requested();
+            });
+        });
+        open_state.set_worker(handle);
     });
+    // ⭐ 把跨线程状态交出去：判据用它做**确定性**排空（join + apply）。
+    // 生产路径忽略它 —— 那一跳由工作线程里的 `upgrade_in_event_loop` 完成。
+    state
 }
 
 // ⭐ **新建工程**（任务单 `#129`）—— GUI 里"打开工程"旁边的那一格。
@@ -11592,7 +12089,7 @@ pub fn wire_startup_chooser(
                                 crate::cli::Sample::Filled => "sample:filled",
                                 crate::cli::Sample::Empty => "sample:empty",
                             };
-                            match untitled.open_archive_runtime(&ui, label, &archive, None, None) {
+                            match untitled.open_archive_runtime(&ui, label, archive, None, None) {
                                 Ok(()) => done(&ui, "demo", format!("source={label}")),
                                 Err(message) => fail(&ui, "open-demo", &message),
                             }
@@ -11615,7 +12112,7 @@ pub fn wire_startup_chooser(
                                     match untitled.open_archive_runtime(
                                         &ui,
                                         &label,
-                                        &archive,
+                                        archive,
                                         path.parent(),
                                         Some(&path),
                                     ) {
@@ -11716,7 +12213,7 @@ pub fn wire_startup_chooser(
                 embedded_presets: Vec::new(),
                 load_notes: Vec::new(),
             };
-            match untitled.open_archive_runtime(&ui, "new-project", &archive, None, None) {
+            match untitled.open_archive_runtime(&ui, "new-project", archive, None, None) {
                 Ok(()) => {
                     ui.set_startup_chooser_open(false);
                     let receipt = module_receipt(

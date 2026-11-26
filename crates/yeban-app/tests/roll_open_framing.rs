@@ -180,7 +180,7 @@ fn opening_a_project_reframes_the_roll_selects_a_midi_track_and_scrolls_to_the_f
     })
     .expect("Tier-1 平台 + 生产窗口构造入口");
     let ui = live.ui();
-    let after: host::OpenProjectAfter = Rc::new(|_, _, _, _| Ok(()));
+    let after: host::OpenProjectAfter = Rc::new(|_, _, _| Ok(()));
     let runtime = host::PortOpenProject {
         port: Rc::clone(&port),
         production: None,

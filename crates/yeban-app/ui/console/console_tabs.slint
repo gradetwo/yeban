@@ -292,6 +292,11 @@ export component ConsoleTabs inherits Rectangle {
     // **运行期换工程**的可见入口（本单补的那一格）。与上面那一族同款：本组件只上抛，
     // ⛔ 不读盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点是宿主 `host::wire_open_project`。
     callback open-project();
+    // ⭐ T-FIX-428：打开工程的加载行（只透传 —— 见 `mixer_console.slint` 的同款注释；
+    // 本组件目前只在 `app.slint` 的 `if false` 分支里实例化）。
+    in property <bool> open-project-loading: false;
+    in property <string> open-project-status: "";
+    callback cancel-open-project();
     // ⭐ **新建工程**（任务单 `#129`）：混音台（Tab 1）里「打开工程」**正下方**的那一格。
     // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
     // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
@@ -576,6 +581,13 @@ export component ConsoleTabs inherits Rectangle {
         // 是唯一落点）—— ⛔ 本组件不读盘、不弹窗、不判断成功与否。
         open-project => {
             root.open-project();
+        }
+        // ⭐ T-FIX-428：打开工程的加载行（只透传 —— 读数从 `MainWindow` 来，
+        // 取消原样上抛到 `MainWindow.cancel-open-project`）。
+        open-project-loading: root.open-project-loading;
+        open-project-status: root.open-project-status;
+        cancel-open-project => {
+            root.cancel-open-project();
         }
         // ⭐ **新建工程**（任务单 `#129`）：同样只上抛（宿主 `host::wire_new_project`
         // 是唯一落点）—— ⛔ 本组件不写盘、不弹窗、不判断成功与否。

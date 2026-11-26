@@ -165,7 +165,7 @@ fn wire(
     // `after` = 装配方自己的最后一跳。本判据测的是**入口 + 换工程**这条腿，
     // 因此这里如实给一个"什么都不额外做"的装配（产品的 `run_gui` 那一个会更新心跳基准
     // 并重接三处静态快照 —— 那是 `main.rs` 的装配细节，不是本判据的对象）。
-    let after: host::OpenProjectAfter = Rc::new(|_, _, _, _| Ok(()));
+    let after: host::OpenProjectAfter = Rc::new(|_, _, _| Ok(()));
     host::wire_open_project(
         window,
         picker,

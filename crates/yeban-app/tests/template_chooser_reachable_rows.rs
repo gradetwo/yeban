@@ -154,12 +154,15 @@ fn template_chooser_reaches_row_beyond_sixty_four_and_search_keeps_index() {
             let owned: Rc<ScriptedPicker> = Rc::clone(&picker);
             owned
         };
-        Rc::new(move |ui, project, _path, _view| {
+        Rc::new(move |ui, _path, _view| {
+            let Some(project) = port_after.try_project() else {
+                return Err("打开后端口里没有工程（当前工程一位没动）".to_owned());
+            };
             host::wire_save_with_engine(
                 ui,
                 host::SaveStatus {
                     target: None,
-                    project: Rc::new(RefCell::new(project.clone())),
+                    project: Rc::new(RefCell::new(project)),
                 },
                 Some(Rc::clone(&port_after)),
                 Rc::clone(&picker_after),

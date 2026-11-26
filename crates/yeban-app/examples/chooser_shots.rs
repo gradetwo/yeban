@@ -151,7 +151,7 @@ fn main() {
     let undo = Rc::new(UndoPort::new(
         UndoSession::open("<chooser-shots>", "yeban-app", project.clone(), now).expect("打开会话"),
     ));
-    let after: host::OpenProjectAfter = Rc::new(|_ui, _project, _path, _view| Ok(()));
+    let after: host::OpenProjectAfter = Rc::new(|_ui, _path, _view| Ok(()));
     let titled: Rc<dyn host::OpenProjectRuntime> = Rc::new(host::PortOpenProject {
         port: Rc::clone(&undo),
         production: None,

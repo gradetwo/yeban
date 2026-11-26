@@ -746,6 +746,11 @@ export component MainWindow inherits Window {
     // 界面只画这一条 —— 以前 30 个写者写了属性、0 个读者，回执等于不存在。
     in-out property <string> module-status-text: "";
     in-out property <bool> module-status-succeeded: false;
+    // ⭐ T-FIX-428：打开工程的**加载行**（后台读盘 / 解码 / 核对时亮起；读数只由
+    // 宿主写，⛔ 不进回执通道 —— 回执仍是 `module-status` 那一条）。
+    in-out property <bool> open-project-loading: false;
+    in-out property <float> open-project-progress: 0.0;
+    in-out property <string> open-project-status: "";
     // ⭐ 审计 P0-1：**读者**。四类回执里挑一条最新的、非空的显示（错误优先）。
     property <string> receipt-line: root.module-status-text != "" ? root.module-status-text
         : (root.module-clipping-warning != "" ? root.module-clipping-warning
@@ -1126,6 +1131,11 @@ export component MainWindow inherits Window {
     callback open-export-wav();
     callback open-humanize();
     callback open-project();
+    // T-FIX-428：后台打开的三个动作 —— 取消（加载行的按钮）/ 排空（工作线程完成
+    // 请 UI 线程落结果）/ 进度（工作线程的阶段回调请 UI 线程写属性）。
+    callback cancel-open-project();
+    callback open-project-drain-requested();
+    callback open-project-progress-requested();
     callback open-quantize();
     callback open-otcp();
     callback close-otcp();
@@ -3295,6 +3305,11 @@ export component MainWindow inherits Window {
             master-meter-level: root.master-meter-level;
             console-maximized: root.console-maximized;
             console-maximize-toggle => { root.console-maximize-toggle(); }
+            // ⭐ T-FIX-428：打开工程的加载行（只透传 —— 读数从 `MainWindow` 来，
+            // 取消原样上抛到 `MainWindow.cancel-open-project`）。
+            open-project-loading: root.open-project-loading;
+            open-project-status: root.open-project-status;
+            cancel-open-project => { root.cancel-open-project(); }
                     selected-track-id: root.selected-track-id;
             track-select(track_index) => {
                 root.track-select(track_index);

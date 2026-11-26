@@ -16,7 +16,7 @@
 //! | 工程指纹 | `UndoPort::fingerprint()`（模型容器字节的 SHA-256） | 十六进制串 |
 //! | 界面的轨道行数 | `MainWindow.track-names` 的行数 | 行 |
 //! | `undoable` | `UndoPort::display().undoable`（可撤销步数） | 步 |
-//! | `after` 收到的视图轨道数 | `OpenProjectAfter` 第三/四个参数 | 条 |
+//! | `after` 收到的视图轨道数 | `OpenProjectAfter` 的 `path` / `view` 参数（工程快照从端口取） | 条 |
 //! | `module-status` | 宿主写的**回执行**原文（既有投影通道） | 结构化文本 |
 //!
 //! ## 为什么入口住在控制台 Tab 1（与 `#90` / `#93` **同一条纪律**）

@@ -592,6 +592,25 @@ impl ElementRegistry {
             false,
         );
 
+        // ⭐ **取消打开工程**（T-FIX-428）—— 后台加载行的取消按钮。
+        //
+        // 与上面那条**逐条同款**：同一个「工程」面板（底边 `y: 84px` 那一行）、
+        // 同一个物理位置纪律（控制台 **Tab 1 = 调音台** ⇒ 默认帧里没有它 ⇒
+        // 5 张 Linux 基准逐位不变）。它只置取消标志（`host::wire_open_project`
+        // 的 `on_cancel_open_project`），工作线程在阶段之间检查它；取消不是
+        // 失败（当前工程一位不动），排空写 `outcome=cancelled` 回执。
+        // ⚠ 控制台树目前只在 `app.slint` 的 `if false` 分支里实例化（aether 重构后
+        // 未进活窗口）⇒ 本按钮现在按不到；链路照旧逐层声明 + 转发（`mixer_console`
+        // → `console_tabs` → `MainWindow`），树一恢复就可点。
+        registry.add(
+            "cancel-open-project-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            // 与 `.slint` 的 `accessible-label` **逐字相同**（运行时树对账会断言相等）。
+            "取消打开工程（当前工程一位不动）",
+            false,
+        );
+
         // ⭐ **新建工程**（任务单 `#129`）—— **从零开始**的可见入口。
         //
         // 与上面那条**逐条同款**：同一族 ID（`module-{动作}-button`）、同一个「工程」面板
