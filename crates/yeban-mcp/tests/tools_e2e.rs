@@ -9208,3 +9208,263 @@ fn opentune_scan_and_load_via_mcp() {
     assert_eq!(last["kind"], "ExternalEffect", "{reading}");
     assert_eq!(last["latencySamples"], 0, "{reading}");
 }
+
+// ---------------------------------------------------------------------------
+// T-FIX-662：内置样本作为可写副本打开 + save 的 `path` 另存为
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builtin_sample_opens_as_writable_copy_and_save_as_switches_the_active_path() {
+    let scratch = Scratch::new("sample-save-as");
+    let (mut dispatcher, auth) = dispatcher();
+
+    // ① 只给 `sample`，不给 path：物化到唯一临时路径，回执必须报明实际路径。
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": "filled" }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(opened["data"]["opened"], true, "{opened}");
+    assert_eq!(opened["data"]["created"], true, "{opened}");
+    assert_eq!(opened["data"]["sample"], "filled", "{opened}");
+    assert_eq!(
+        opened["data"]["readOnly"], false,
+        "样本必须是可写副本: {opened}"
+    );
+    let sample_path = PathBuf::from(opened["data"]["path"].as_str().expect("内置样本的实际路径"));
+    assert!(
+        sample_path.exists(),
+        "样本必须真的物化到磁盘: {sample_path:?}"
+    );
+    let original_sample_bytes = fs::read(&sample_path).expect("读样本文件");
+
+    // ② 真编辑：建一条宏提案并合并（样本的 `filled` 夹具带宏）。
+    let track = macro_track(&dispatcher);
+    let proposal = propose_macro(&mut dispatcher, &auth, &track, 0.42);
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal, "commitMessage": "sample edit" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+
+    // ③ 另存为新路径：活跃工程切过去，原样本文件必须逐字节不变。
+    let copy = scratch.join("copy.yeban");
+    let saved = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_save_project",
+        json!({ "path": copy.display().to_string() }),
+    );
+    assert_eq!(saved["status"], "success", "{saved}");
+    assert_eq!(saved["data"]["saved"], true, "{saved}");
+    assert_eq!(saved["data"]["saveAs"], true, "{saved}");
+    assert_eq!(saved["data"]["path"], copy.display().to_string(), "{saved}");
+    assert_eq!(
+        dispatcher.domain().active_path(),
+        Some(copy.as_path()),
+        "另存后活跃工程必须指向新路径"
+    );
+    assert!(copy.exists(), "另存文件必须存在");
+    assert_eq!(
+        fs::read(&sample_path).expect("读样本文件"),
+        original_sample_bytes,
+        "另存为不得改写原内置样本副本"
+    );
+
+    // ④ 关闭后重开新路径：另存出的容器必须能独立打开（不是只换了个指针）。
+    let closed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    assert_eq!(closed["data"]["closed"], true, "{closed}");
+    let reopened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": copy.display().to_string() }),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+    assert_eq!(reopened["data"]["opened"], true, "{reopened}");
+    assert_eq!(
+        reopened["data"]["path"],
+        copy.display().to_string(),
+        "{reopened}"
+    );
+    assert_eq!(
+        reopened["data"]["historyRestored"], true,
+        "另存出的提交图谱必须能恢复: {reopened}"
+    );
+
+    let _ = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    let _ = fs::remove_file(&sample_path);
+    let _ = fs::remove_file(format!("{}.lock", sample_path.display()));
+}
+
+#[test]
+fn read_only_project_save_is_refused_with_a_save_as_hint_and_path_succeeds() {
+    let scratch = Scratch::new("readonly-save-as");
+    let (mut dispatcher, auth) = dispatcher();
+    let (path, original_bytes) = scratch.write_project("readonly.yeban");
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string(), "readOnly": true }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(opened["data"]["readOnly"], true, "{opened}");
+
+    // 无 `path`：拒绝并给可执行的另存指引（不是只说“只读”）。
+    let refused = call(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    assert_domain_error(&refused, "IO_ERROR", "只读工程保存");
+    let message = refused["error"]["message"].as_str().expect("错误文案");
+    assert!(
+        message.contains("path"),
+        "拒绝文案必须指向 path 另存: {message}"
+    );
+    assert!(
+        refused["error"]["data"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("path")),
+        "hint 必须给出可执行的另存指引: {refused}"
+    );
+
+    // 给 `path`：写到新文件并切换为可写活跃工程。
+    let copy = scratch.join("copy.yeban");
+    let saved = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_save_project",
+        json!({ "path": copy.display().to_string() }),
+    );
+    assert_eq!(saved["status"], "success", "{saved}");
+    assert_eq!(saved["data"]["saveAs"], true, "{saved}");
+    assert_eq!(
+        saved["data"]["readOnly"], false,
+        "另存后必须切换为可写: {saved}"
+    );
+    assert_eq!(dispatcher.domain().active_path(), Some(copy.as_path()));
+    assert_eq!(
+        fs::read(&path).expect("读原工程"),
+        original_bytes,
+        "只读工程另存不得改写原文件"
+    );
+
+    // 后续无 `path` 保存必须落新文件（活跃路径已切换）。
+    let next = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_save_project",
+        json!({ "force": true }),
+    );
+    assert_eq!(next["data"]["path"], copy.display().to_string(), "{next}");
+    assert!(
+        next["data"].get("saveAs").is_none(),
+        "旧调用（无 path）的回执形状必须保持不变: {next}"
+    );
+
+    let _ = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+}
+
+#[test]
+fn unknown_sample_and_contradictory_sample_parameters_are_refused_loudly() {
+    let scratch = Scratch::new("sample-refusals");
+    let (mut dispatcher, auth) = dispatcher();
+
+    let unknown = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": "nope" }),
+    );
+    assert_domain_error(&unknown, "INVALID_PARAMETER_RANGE", "未知样本");
+    assert_eq!(
+        unknown["error"]["data"]["reason"], "unknownSample",
+        "{unknown}"
+    );
+    let available = unknown["error"]["data"]["available"]
+        .as_array()
+        .expect("可用样本列表");
+    assert!(available.iter().any(|name| name == "filled"), "{unknown}");
+
+    let read_only_sample = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": "filled", "readOnly": true }),
+    );
+    assert_domain_error(&read_only_sample, "INVALID_PARAMETER_RANGE", "只读打开样本");
+    assert_eq!(
+        read_only_sample["error"]["data"]["reason"], "sampleIsNotReadOnly",
+        "{read_only_sample}"
+    );
+
+    let (existing, _) = scratch.write_project("existing.yeban");
+    let target_exists = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": "filled", "path": existing.display().to_string() }),
+    );
+    assert_domain_error(&target_exists, "CONFLICT", "样本目标已存在");
+    assert_eq!(
+        target_exists["error"]["data"]["reason"], "projectAlreadyExists",
+        "{target_exists}"
+    );
+
+    let create_and_sample = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "create": true,
+            "sample": "filled",
+            "path": scratch.join("new.yeban").display().to_string()
+        }),
+    );
+    assert_domain_error(
+        &create_and_sample,
+        "INVALID_PARAMETER_RANGE",
+        "create 与 sample 同给",
+    );
+    assert_eq!(
+        create_and_sample["error"]["data"]["reason"], "createAndSample",
+        "{create_and_sample}"
+    );
+
+    let neither = call(&mut dispatcher, &auth, "yeban_open_project", json!({}));
+    assert_domain_error(&neither, "INVALID_PARAMETER_RANGE", "path/sample 都缺");
+    assert_eq!(
+        neither["error"]["data"]["reason"], "pathOrSampleRequired",
+        "{neither}"
+    );
+
+    // 键在场但类型不对：响亮拒绝，不静默当作"没给"。
+    let (bad_status, bad_outcome) = call_raw(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": 7 }),
+    );
+    assert_eq!(bad_status, 400, "schema 层必须拒绝非字符串 sample");
+    assert!(
+        bad_outcome.is_err(),
+        "非字符串 sample 不得被静默当作缺省: {bad_outcome:?}"
+    );
+}

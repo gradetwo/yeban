@@ -1237,13 +1237,17 @@ pub struct OpenRequest {
     /// 新建工程时为空集。解码在 `plan` 的读盘阶段已完成
     /// （[`store::load_project`]），`apply` 只经 `SessionSeed` 装入会话。
     pub proposals: BTreeMap<EntityId, Proposal>,
-    /// **新建**工程的落盘字节（`create: true` 且目标路径不存在时才有值）。
+    /// **新建**工程或**内置样本物化**的落盘字节（目标路径不存在时才有值）。
     ///
     /// 为什么放在这里而不是在 [`apply_open`] 里现算：`plan` 是**只读**的
     /// （`dryRun` 走同一条路，见模块头），所以"这份文档长什么样"必须在 `plan` 里定死；
     /// `apply` 只负责把它原子落盘（`store::write_project_atomic`）。
     /// 两个相位读的是**同一份**字节，因此 `dryRun` 的预览与真调用不会漂移。
     pub created: Option<CreatedSeed>,
+    /// 本次打开的内置样本名（`None` = 普通打开 / `create:true`）。
+    ///
+    /// 回执用它点名"这份工程来自哪个内置样本"；`path` 是物化后的实际路径。
+    pub sample: Option<String>,
 }
 
 /// `create: true` 建出来的东西（文档 + 字节 + 读数）。
@@ -1411,6 +1415,8 @@ pub enum Plan {
     Save {
         /// 目标路径。
         path: PathBuf,
+        /// 是否**另存为**（`path` 与活跃工程路径不同）。
+        save_as: bool,
         /// 将要写出的**容器字节**（`ARCH-SEC-003`；由 `write_project_container` 产出）。
         bytes: Vec<u8>,
         /// 将要写出的工程内容摘要（规范化 JSON 的 SHA-256）。
@@ -2226,10 +2232,14 @@ impl Plan {
                     Value::from(request.digest.clone()),
                 );
                 preview.insert("alreadyOpen".to_owned(), Value::from(request.already_open));
+                if let Some(sample) = request.sample.clone() {
+                    preview.insert("sample".to_owned(), Value::from(sample));
+                }
                 preview.insert("summary".to_owned(), project_summary(&request.project));
             }
             Self::Save {
                 path,
+                save_as,
                 bytes,
                 digest,
                 force,
@@ -2243,6 +2253,9 @@ impl Plan {
                 proposals_digest,
             } => {
                 preview.insert("path".to_owned(), Value::from(path.display().to_string()));
+                if *save_as {
+                    preview.insert("saveAs".to_owned(), Value::from(true));
+                }
                 preview.insert("bytes".to_owned(), Value::from(bytes.len()));
                 preview.insert("format".to_owned(), Value::from(store::DOCUMENT_FORMAT));
                 // 提案段在场 ⇔ 段摘要 ≠ 空字节摘要（无段时的口径）。
@@ -2925,6 +2938,25 @@ fn arg_str<'a>(call: &'a ToolCall, name: &str) -> Option<&'a str> {
     call.arguments.get(name).and_then(Value::as_str)
 }
 
+/// 读**可选**字符串实参：键在场但类型不是字符串时**响亮拒绝**，不静默当作缺省。
+///
+/// 新增的 `path` / `sample` 都走这条口子：调用方给了键就必须知道它被读了没有。
+fn arg_optional_string<'a>(call: &'a ToolCall, name: &str) -> Result<Option<&'a str>, Fault> {
+    match call.arguments.get(name) {
+        None => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.as_str())),
+        Some(other) => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{name}` 必须是字符串"),
+            serde_json::json!({
+                "reason": "parameterMustBeString",
+                "parameter": name,
+                "received": other.clone(),
+            }),
+        )),
+    }
+}
+
 /// 读布尔实参（缺省值由调用方给）。
 fn arg_bool(call: &ToolCall, name: &str, default: bool) -> bool {
     call.arguments
@@ -3286,25 +3318,81 @@ fn plan_redo(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 const CREATE_ONLY_PARAMS: [&str; 4] =
     ["title", "bpm", project_create::TIME_SIGNATURE_PARAM, "seed"];
 
-/// `yeban_open_project`。
+/// `yeban_open_project` 的 `sample` 可接受的内置样本名。
 ///
-/// 读盘一律走 [`store::load_project`]（**只接受 `.yeban` 容器**，`ADR-0001 D43`），
-/// 工程**历史 / CAS 资产池**一并进入 [`OpenRequest`]。
-fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    let path =
-        PathBuf::from(arg_str(call, "path").ok_or_else(|| {
-            Fault::domain(ErrorCode::InvalidParameterRange, "`path` 必须是字符串")
-        })?);
-    let read_only = arg_bool(call, "readOnly", false);
-    // `create: true` 走**建工程**分支：从零构造一份可渲染、可配器的文档。
-    // 它不读盘（路径本来就不存在），因此不会撞 `FILE_NOT_FOUND` ——
-    // 这正是本能力要关的那个缺口（旧行为：不存在的路径 ⇒ FILE_NOT_FOUND，
-    // 而没有任何工具能建工程）。
-    if arg_bool(call, "create", false) {
-        return plan_create(domain, path, read_only, call);
+/// 名字与 `yeban-app --project-sample` 同一口径（`default` / `filled` / `empty`），
+/// 另加 `demo` 作为 `default` 的显式别名 —— 调用方常把"演示夹具"就叫 demo。
+/// 未知名字一律响亮拒绝并回传本表，绝不静默回退到某个默认样本。
+const BUILTIN_SAMPLE_NAMES: [&str; 4] = ["default", "filled", "empty", "demo"];
+
+/// 内置样本（**在 MCP 进程内合成**，不读仓库里的文件）。
+///
+/// ⚠ `yeban-mcp` 刻意不依赖 `yeban-app`（依赖方向是 app → mcp），因此这里不能
+/// 复用 `yeban_app::cli::Sample`；样本内容仍来自 `yeban_model::samples`，
+/// 与 app / CLI 是同一份模型级夹具。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuiltinSample {
+    /// 演示夹具（6 条普通轨 + 主总线），即 CLI 的 `default`。
+    Default,
+    /// 模型级丰富样本。
+    Filled,
+    /// 模型级空工程（0 条普通轨 + 1 条主总线）。
+    Empty,
+}
+
+impl BuiltinSample {
+    /// 把调用方给的名字解析成样本；未知名字返回 `None`（由调用方响亮拒绝）。
+    fn resolve(name: &str) -> Option<Self> {
+        match name {
+            "default" | "demo" => Some(Self::Default),
+            "filled" => Some(Self::Filled),
+            "empty" => Some(Self::Empty),
+            _ => None,
+        }
     }
-    // 只对 `create: true` 有意义的实参：在没有 `create` 时**响亮拒绝**，
-    // 而不是静默丢弃（`title` / `bpm` / `seed` 在加这条之前就是被静默忽略的）。
+
+    /// 物化文件名里用的稳定短名（`demo` 别名落成 `default`）。
+    const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Filled => "filled",
+            Self::Empty => "empty",
+        }
+    }
+
+    /// 样本工程本体。
+    fn project(self) -> YebanProjectV1 {
+        match self {
+            Self::Default => yeban_model::samples::demo_project(),
+            Self::Filled => yeban_model::samples::filled_project(),
+            Self::Empty => yeban_model::samples::default_project(),
+        }
+    }
+
+    /// 样本自带的会话 CAS 资产池（与工程里的 `AssetHash` 同源合成）。
+    fn assets(self) -> Vec<(AssetHash, Vec<u8>)> {
+        match self {
+            Self::Default => yeban_model::samples::demo_project_assets(),
+            Self::Filled => yeban_model::samples::filled_project_assets(),
+            Self::Empty => Vec::new(),
+        }
+    }
+}
+
+/// `yeban_open_project` 的 `create` / `sample` 互斥检查。
+fn reject_create_and_sample(create: bool, sample: Option<&str>) -> Result<(), Fault> {
+    if create && sample.is_some() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`create: true` 与 `sample` 相互矛盾: 一个是新建空工程, 一个是打开内置样本",
+            serde_json::json!({ "reason": "createAndSample", "sample": sample }),
+        ));
+    }
+    Ok(())
+}
+
+/// `create: true` 才有意义的实参，在没有 `create` 时必须响亮拒绝。
+fn reject_create_only_arguments(call: &ToolCall, context: &str) -> Result<(), Fault> {
     let create_only: Vec<&str> = CREATE_ONLY_PARAMS
         .into_iter()
         .filter(|name| call.arguments.contains_key(*name))
@@ -3313,7 +3401,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{}` 只在 `create: true` 时有效 (本次是打开已有工程)",
+                "`{}` 只在 `create: true` 时有效 ({context})",
                 create_only.join("`, `")
             ),
             serde_json::json!({
@@ -3322,6 +3410,162 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             }),
         ));
     }
+    Ok(())
+}
+
+/// 内置样本**未给 `path`** 时的物化落点。
+///
+/// 每个调用一个唯一文件（临时目录 + ULID），避免两次 sample-only 打开
+/// 抢同一个路径；调用方从回执的 `path` 取实际位置。
+fn default_sample_path(sample: BuiltinSample) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yeban-mcp-sample-{}-{}.yeban",
+        sample.canonical_name(),
+        EntityId::new().to_canonical_string()
+    ))
+}
+
+/// `yeban_open_project` 的内置样本分支：把样本**物化**到一个新的可写容器再打开。
+///
+/// 关键纪律：
+/// - 目标已存在 ⇒ `CONFLICT`（绝不覆盖用户文件）；样本永远写到**新路径**；
+/// - `readOnly: true` 与"可写副本"矛盾 ⇒ `INVALID_PARAMETER_RANGE`；
+/// - 物化字节在 `plan` 阶段算好（`created`），`apply` 只做原子落盘 + 取写锁。
+fn plan_sample(
+    domain: &Domain,
+    sample: BuiltinSample,
+    requested: &str,
+    path: PathBuf,
+) -> Result<Plan, Fault> {
+    if path.exists() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!(
+                "目标路径已存在, 拒绝覆盖内置样本副本: {} (要打开它就不要给这个 path)",
+                path.display()
+            ),
+            serde_json::json!({
+                "reason": "projectAlreadyExists",
+                "path": path.display().to_string(),
+            }),
+        ));
+    }
+    if domain.active_path().is_some() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!(
+                "已有另一个活跃工程 `{}`, 请先关闭它",
+                domain
+                    .active_path()
+                    .map_or_else(String::new, |open| open.display().to_string())
+            ),
+            serde_json::json!({ "activePath": domain.active_path().map(|open| open.display().to_string()) }),
+        ));
+    }
+    let project = sample.project();
+    project
+        .check_readable()
+        .map_err(|error| error::from_model("内置样本版本门", &error))?;
+    project
+        .validate()
+        .map_err(|error| error::from_model("内置样本结构校验", &error))?;
+    let assets: BTreeMap<AssetHash, Vec<u8>> = sample.assets().into_iter().collect();
+    let history = serde_json::to_vec(&CommitGraph::new())
+        .map_err(|error| Fault::domain(ErrorCode::IoError, format!("空图谱序列化失败: {error}")))?;
+    let bytes = yeban_model::container::write_project_container(&project, &history, &assets)
+        .map_err(|error| {
+            Fault::domain(
+                ErrorCode::IoError,
+                format!("内置样本的容器写出被拒: {error}"),
+            )
+        })?;
+    let json = store::serialize_project(&project)?;
+    let digest = store::digest_of(json.as_bytes());
+    let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let master_bus_track_id = project.master_bus_track_id;
+    Ok(Plan::Open(Box::new(OpenRequest {
+        path,
+        read_only: false,
+        project: Box::new(project),
+        digest,
+        bytes: byte_count,
+        already_open: false,
+        history: None,
+        assets,
+        embedded_presets: Vec::new(),
+        proposals: BTreeMap::new(),
+        created: Some(CreatedSeed {
+            bytes,
+            master_bus_track_id,
+            summary: serde_json::json!({
+                "sample": sample.canonical_name(),
+                "source": "builtin",
+            }),
+        }),
+        sample: Some(requested.to_owned()),
+    })))
+}
+
+/// `yeban_open_project`。
+///
+/// 读盘一律走 [`store::load_project`]（**只接受 `.yeban` 容器**，`ADR-0001 D43`），
+/// 工程**历史 / CAS 资产池**一并进入 [`OpenRequest`]。
+fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let path_arg = arg_optional_string(call, "path")?.map(PathBuf::from);
+    let sample_arg = arg_optional_string(call, "sample")?;
+    let read_only = arg_bool(call, "readOnly", false);
+    let create = arg_bool(call, "create", false);
+    reject_create_and_sample(create, sample_arg)?;
+    // `create: true` 走**建工程**分支：从零构造一份可渲染、可配器的文档。
+    // 它不读盘（路径本来就不存在），因此不会撞 `FILE_NOT_FOUND` ——
+    // 这正是本能力要关的那个缺口（旧行为：不存在的路径 ⇒ FILE_NOT_FOUND，
+    // 而没有任何工具能建工程）。
+    if create {
+        let path = path_arg.ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                "`create: true` 需要 `path` 字符串",
+            )
+        })?;
+        return plan_create(domain, path, read_only, call);
+    }
+    // 只对 `create: true` 有意义的实参：在没有 `create` 时**响亮拒绝**，
+    // 而不是静默丢弃（`title` / `bpm` / `seed` 在加这条之前就是被静默忽略的）。
+    reject_create_only_arguments(call, "本次不是 create: true")?;
+    if let Some(sample_name) = sample_arg {
+        let sample = BuiltinSample::resolve(sample_name).ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("未知内置样本 `{sample_name}`"),
+                serde_json::json!({
+                    "reason": "unknownSample",
+                    "sample": sample_name,
+                    "available": BUILTIN_SAMPLE_NAMES,
+                }),
+            )
+        })?;
+        if read_only {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "内置样本必须打开为**可写副本** (readOnly: true 与之矛盾)",
+                serde_json::json!({ "reason": "sampleIsNotReadOnly", "sample": sample_name }),
+            ));
+        }
+        // `path` 给了就是物化落点；没给就落临时目录里的唯一新文件，
+        // 实际路径由回执 `path` 字段报明。
+        let path = path_arg.unwrap_or_else(|| default_sample_path(sample));
+        return plan_sample(domain, sample, sample_name, path);
+    }
+    let path = path_arg.ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "打开已有工程需要 `path`; 要打开内置样本请给 `sample`",
+            serde_json::json!({
+                "reason": "pathOrSampleRequired",
+                "availableSamples": BUILTIN_SAMPLE_NAMES,
+            }),
+        )
+    })?;
     let loaded = store::load_project(&path)?;
     // 内嵌预制先解析、再校验轨引用：系统预制必须在发行表里，用户预制必须
     // 在内嵌副本或用户库里；查不到 ⇒ 响亮拒绝打开，不静默回干声（设计稿 §5）。
@@ -3363,6 +3607,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         embedded_presets: loaded.embedded_presets,
         proposals: loaded.proposals,
         created: None,
+        sample: None,
     })))
 }
 
@@ -3478,16 +3723,46 @@ fn plan_create(
             master_bus_track_id: created.master_bus_track_id,
             summary,
         }),
+        sample: None,
     })))
 }
 
 /// `yeban_save_project`。
 fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
-    if active.read_only {
-        return Err(Fault::domain(
+    let requested_path = arg_optional_string(call, "path")?.map(PathBuf::from);
+    let save_as = requested_path
+        .as_ref()
+        .is_some_and(|path| path != &active.path);
+    let target = requested_path.unwrap_or_else(|| active.path.clone());
+    if active.read_only && !save_as {
+        // 只读工程不能刷盘到**原路径**（那会绕过共享读锁）；但另存为是允许的：
+        // 写到一个**新路径**并把它变成可写活跃工程，正是给只读样本的出口。
+        return Err(Fault::domain_with_data(
             ErrorCode::IoError,
-            format!("工程 `{}` 是只读打开的, 拒绝落盘", active.path.display()),
+            format!(
+                "工程 `{}` 是只读打开的, 拒绝落盘; 要另存为请给 `path` 实参 (例如给一个新路径 /tmp/copy.yeban), 当前内容会写入新文件并切换为可写活跃工程",
+                active.path.display()
+            ),
+            serde_json::json!({
+                "reason": "readOnlyProject",
+                "path": active.path.display().to_string(),
+                "hint": "给 yeban_save_project 的 `path` 实参另存为新文件; 新文件成为活跃工程后可继续保存",
+                "saveAsParameter": "path",
+            }),
+        ));
+    }
+    if save_as && target.exists() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!(
+                "另存为的目标已存在, 拒绝覆盖: {} (换一个新路径, 或先打开它再保存)",
+                target.display()
+            ),
+            serde_json::json!({
+                "reason": "saveAsTargetExists",
+                "path": target.display().to_string(),
+            }),
         ));
     }
     // `includeUserPresets` 缺省 `true`（设计稿 §5：导出缺省带出用户预制）。
@@ -3495,7 +3770,8 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let material = save_material(domain, include_user_presets)
         .map_err(|fault| with_unsaved_change_stats(domain, fault))?;
     Ok(Plan::Save {
-        path: active.path.clone(),
+        path: target,
+        save_as,
         // 变化判定 = 文档摘要 **或** 提案段摘要（T-FIX-43）：只提案不改文档
         // 时前者不变，只看它会把保存跳过、未决提案随"已保存"假象一起丢掉。
         changed: material.digest != active.saved_digest
@@ -3683,6 +3959,7 @@ fn plan_close(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         let material = save_material(domain, true)?;
         Some(Box::new(Plan::Save {
             path: active.path.clone(),
+            save_as: false,
             bytes: material.bytes,
             digest: material.digest,
             force: false,
@@ -7400,6 +7677,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         Plan::Open(request) => apply_open(domain, *request),
         Plan::Save {
             path,
+            save_as,
             bytes,
             digest,
             force,
@@ -7425,6 +7703,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
                     included: include_user_presets,
                 },
                 proposals_digest,
+                save_as,
             },
         ),
         Plan::Close {
@@ -7824,6 +8103,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         embedded_presets,
         proposals,
         created,
+        sample,
     } = request;
     let asset_count = assets.len();
     let embedded_count = embedded_presets.len();
@@ -7831,7 +8111,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
     if already_open {
         // 幂等: 同一个工程重复打开不是错误, 但也不重建历史。
         let summary = domain.active_project().map_or(Value::Null, project_summary);
-        return Ok(ToolResponse::success(serde_json::json!({
+        let mut data = serde_json::json!({
             "opened": true,
             "alreadyOpen": true,
             "path": path.display().to_string(),
@@ -7846,7 +8126,11 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             "assets": asset_count,
             "projectDigest": digest,
             "project": summary,
-        })));
+        });
+        if let Some(sample) = sample {
+            data["sample"] = Value::from(sample);
+        }
+        return Ok(ToolResponse::success(data));
     }
     // ---- `create: true`：先把新文档原子落盘, 再取锁并成为活跃工程 ----
     //
@@ -7888,7 +8172,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
     // 本次打开的内嵌副本；`plan_open` 已校验过条目与引用，这里只做装入。
     domain.set_embedded_presets(&embedded_presets)?;
     let seed_summary = created.as_ref().map(|seed| seed.summary.clone());
-    Ok(ToolResponse::success(serde_json::json!({
+    let mut data = serde_json::json!({
         "opened": true,
         "alreadyOpen": false,
         "created": created.is_some(),
@@ -7914,7 +8198,11 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             .active_project()
             .map_or(Value::Null, project_summary),
         "seed": seed_summary.unwrap_or(Value::Null),
-    })))
+    });
+    if let Some(sample) = sample {
+        data["sample"] = Value::from(sample);
+    }
+    Ok(ToolResponse::success(data))
 }
 
 /// `readOnly` 参数 → 锁模式（`ARCH-SEC-001` 第 3 条的双模式）。
@@ -7936,6 +8224,8 @@ struct SaveEmbeds {
     presets: EmbeddedPresetReceipt,
     /// 写进容器的未合并提案段摘要（T-FIX-43）；落盘成功后记为已保存口径。
     proposals_digest: String,
+    /// 是否**另存为**（目标 ≠ 活跃路径）：落盘后切换活跃路径/锁，且即使内容未变也真写。
+    save_as: bool,
 }
 
 /// `yeban_save_project` 的施加。
@@ -7974,7 +8264,8 @@ fn apply_save(
     // ⭐ T-FIX-151：缺失样本清单进 **apply 面**回执，与 plan/preview 面同一形状。
     // 两条分支都带：跳过落盘时"这次会缺什么"同样是要给的读数。
     let missing_samples = missing_samples_value(&embeds.samples.missing);
-    if !force && !changed {
+    let save_as = embeds.save_as;
+    if !force && !changed && !save_as {
         return Ok(ToolResponse::success(serde_json::json!({
             "saved": false,
             "skipped": true,
@@ -7989,9 +8280,32 @@ fn apply_save(
             "durabilityWarning": null,
         })));
     }
+    // 另存为：先对新路径取排他锁，再写盘，最后把活跃工程切到新路径。
+    // 顺序与 `apply_open` 相反是有意的：这里活跃工程已经存在，写失败时旧工程
+    // 必须原样保留（旧锁也继续持有），而新锁会在本函数返回时被 Drop 释放。
+    let new_lock = if save_as {
+        if path.exists() {
+            return Err(Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!("另存为的目标在落盘前已出现, 拒绝覆盖: {}", path.display()),
+                serde_json::json!({
+                    "reason": "saveAsTargetExists",
+                    "path": path.display().to_string(),
+                }),
+            ));
+        }
+        Some(store::lock(path, store::LockMode::ExclusiveWrite)?)
+    } else {
+        None
+    };
     // T-FIX-498：落盘读数进回执 —— 已提交 + 持久化警告（不是失败）。
     let durability = store::write_project_atomic_with_durability(path, bytes)?;
     if let Some(active) = domain.active.as_mut() {
+        if save_as {
+            active.path = path.to_path_buf();
+            active.read_only = false;
+            active.lock = new_lock;
+        }
         active.saved_digest.clone_from(&digest);
         // 提案段的已保存口径随落盘一起推进（T-FIX-43）：不推进的话，
         // 保存成功之后未保存标记仍会因段摘要不一致而亮着。
@@ -8008,7 +8322,7 @@ fn apply_save(
             active.assets.remove(&hash);
         }
     }
-    Ok(ToolResponse::success(serde_json::json!({
+    let mut data = serde_json::json!({
         "saved": true,
         "skipped": false,
         "atomic": true,
@@ -8025,7 +8339,12 @@ fn apply_save(
         // T-FIX-498：持久化警告（"已提交但目录项未确认持久化"）；完全落盘时为 null。
         // 有警告仍是 "saved": true —— 磁盘上已经是新内容，⛔ 不是保存失败。
         "durabilityWarning": durability.warning(),
-    })))
+    });
+    if save_as {
+        data["saveAs"] = Value::from(true);
+        data["readOnly"] = Value::from(domain.is_read_only());
+    }
+    Ok(ToolResponse::success(data))
 }
 
 /// `yeban_save_preset` 的施加：把 `plan` 里已校验的预制写进用户库。
@@ -8088,6 +8407,7 @@ fn apply_close(
                     included: include_user_presets,
                 },
                 proposals_digest,
+                save_as: false,
             },
         )?;
         saved = true;

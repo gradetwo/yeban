@@ -703,12 +703,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
         name: "yeban_open_project",
-        summary: "校验排他锁并打开指定 `.yeban` 工程; `create:true` 时从零建一个可渲染的工程 (主总线在路由图里)",
+        summary: "校验排他锁并打开指定 `.yeban` 工程; `sample` 可打开内置样本的可写副本; `create:true` 时从零建一个可渲染的工程 (主总线在路由图里)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("path", "string", true, "工程文件路径"),
-            param("readOnly", "boolean", false, "以只读方式打开 (不取写锁)"),
+            param("path", "string", false, "工程文件路径 (打开已有容器时必填; 给 `sample` 时可省略, 此时落到临时目录的唯一新文件并回填实际路径)"),
+            param("readOnly", "boolean", false, "以只读方式打开 (不取写锁); 与 `sample` 同给 ⇒ `INVALID_PARAMETER_RANGE` (样本总是打开为可写副本)"),
+            param(
+                "sample",
+                "string",
+                false,
+                "打开内置样本为**可写副本**: `default` (6 轨演示夹具), `filled` (丰富样本), `empty` (空工程 + 主总线); `demo` 是 `default` 的别名。与 `path` 同给 ⇒ 物化到该新路径; 不给 `path` ⇒ 物化到临时目录的唯一新文件 (回执 `path` 报明实际路径)。未知名字 ⇒ `INVALID_PARAMETER_RANGE` 并回传 `available` 列表; 目标已存在 ⇒ `CONFLICT`, 绝不覆盖",
+            ),
             // `create` 与它的三个伙伴是本线新增的**可选**实参（缺省 = 逐字节等于旧行为）。
             //
             // 为什么扩 `yeban_open_project` 而不新增工具：建工程需要的三样东西
@@ -775,6 +781,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         side_effect: SideEffect::Disk,
         params: &[
             param("force", "boolean", false, "忽略未保存标记强制落盘"),
+            param(
+                "path",
+                "string",
+                false,
+                "可选**另存为**目标: 给一个与活跃工程不同的新路径时, 内容写到该文件并把活跃工程切换过去 (后续保存落新文件); 目标已存在 ⇒ `CONFLICT`。只读工程不给 `path` 会被拒, 错误 hint 指向本参数",
+            ),
             param(
                 "includeUserPresets",
                 "boolean",

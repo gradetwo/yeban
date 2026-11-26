@@ -2675,12 +2675,16 @@
               "type": "string"
             },
             "path": {
-              "description": "工程文件路径",
+              "description": "工程文件路径 (打开已有容器时必填; 给 `sample` 时可省略, 此时落到临时目录的唯一新文件并回填实际路径)",
               "type": "string"
             },
             "readOnly": {
-              "description": "以只读方式打开 (不取写锁)",
+              "description": "以只读方式打开 (不取写锁); 与 `sample` 同给 ⇒ `INVALID_PARAMETER_RANGE` (样本总是打开为可写副本)",
               "type": "boolean"
+            },
+            "sample": {
+              "description": "打开内置样本为**可写副本**: `default` (6 轨演示夹具), `filled` (丰富样本), `empty` (空工程 + 主总线); `demo` 是 `default` 的别名。与 `path` 同给 ⇒ 物化到该新路径; 不给 `path` ⇒ 物化到临时目录的唯一新文件 (回执 `path` 报明实际路径)。未知名字 ⇒ `INVALID_PARAMETER_RANGE` 并回传 `available` 列表; 目标已存在 ⇒ `CONFLICT`, 绝不覆盖",
+              "type": "string"
             },
             "seed": {
               "description": "`create:true` 时的最小内容: `{trackCount: 1..=8, clipName: string, notes: [{pitch: 0..=127, durationTicks: >=1}]}`。`sampler` 是 SFZ 路径，绑到第一条种子轨；缺省不绑。缺省 = 1 条 MIDI 轨 + 4 个种子音符 + 一小节摆放 (因此新建的工程立即可 `render_master`, 且 `propose_section` 有 MIDI 材料可用)",
@@ -2695,9 +2699,6 @@
               "type": "string"
             }
           },
-          "required": [
-            "path"
-          ],
           "type": "object",
           "title": "yeban_open_project"
         },
@@ -2721,6 +2722,10 @@
             "includeUserPresets": {
               "description": "导出时是否带出用户预制（设计稿 §5；缺省 true = 物化进包，条目名 `presets/user/<id>.json`，一律 stored；false = 不内嵌，接收方打开缺用户预制会响亮报错）。收据 `embeddedPresets` 如实报内嵌预制数、字节数与本取值",
               "type": "boolean"
+            },
+            "path": {
+              "description": "可选**另存为**目标: 给一个与活跃工程不同的新路径时, 内容写到该文件并把活跃工程切换过去 (后续保存落新文件); 目标已存在 ⇒ `CONFLICT`。只读工程不给 `path` 会被拒, 错误 hint 指向本参数",
+              "type": "string"
             }
           },
           "type": "object",
