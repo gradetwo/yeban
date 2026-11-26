@@ -4290,11 +4290,15 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .get("ops")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
     // `ops` 先解析（一次），因此"这一批到底要做什么"在**任何寻址之前**就已知：
-    // 寻址自带的形态（`removeTrack` 与设备形态 `insertDevice` / `removeDevice`）
-    // 自带 `trackId`，它们不需要顶层 `trackId` / `clipId` —— 那两个实参的语义是
-    // "目标片段（及其音轨）"，这些形态一个音符都不读、也不碰片段池。
-    // 与三个路由级形态、段落形态、场景形态同一纪律（它们的寻址也在操作对象里，
-    // 但**仍然**要求顶层两个身份合法 —— 那是本工具既有的入口口径，本票不放松）。
+    // 寻址自带的形态（`removeTrack` 与**逐条给了** `trackId` 的设备形态
+    // `insertDevice` / `removeDevice`）自带 `trackId`，它们不需要顶层
+    // `trackId` / `clipId` —— 那两个实参的语义是"目标片段（及其音轨）"，
+    // 这些形态一个音符都不读、也不碰片段池。设备形态**省略** `ops[].trackId`
+    // 时（T-FIX-652）回退顶层 `trackId`，两处都缺在取身份前响亮拒绝。
+    // 路由级形态（`addRoutingNode` / `connectRouting` / `disconnectRouting` /
+    // `setRoutingGain` / `removeRoutingNode`）的寻址全在 `nodeId` / `edgeId` 里，
+    // T-FIX-708 起与设备形态同一条"整批自寻址 ⇒ 不读顶层 `trackId`"的路；
+    // 段落形态 / 场景形态仍按本工具既有入口口径要求顶层身份（本票不放松）。
     //
     // ⚠ 空 `ops` 的**合法**情形只有两种（T-FIX-41 把第二种接上）：
     // ① 只摆放（"这次调用做什么"由 `placement` 承载）；
@@ -4343,6 +4347,32 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
         (EntityId::default(), EntityId::default())
     } else {
+        // T-FIX-652：设备形态省略 `ops[].trackId` 时回退顶层 `trackId`；两处都缺
+        // 就把错误点名到具体那个 op（`ops[i].trackId`），而不是笼统的顶层缺参。
+        if call.arguments.get("trackId").is_none()
+            && let Some(index) = notes::NoteOp::first_device_without_track(&note_ops)
+        {
+            let missing = format!("ops[{index}].trackId");
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "缺少 `{missing}`: 该设备形态（ops[{index}].kind = {}）没有自带目标音轨, \
+                     顶层 `trackId` 也未给出（两处都缺）",
+                    note_ops[index].kind_name()
+                ),
+                serde_json::json!({
+                    "reason": "trackIdRequired",
+                    "missing": missing,
+                    "opIndex": index,
+                    "requiredByKinds": [note_ops[index].kind_name()],
+                    "hint": format!(
+                        "在该 op 里写 `\"{}\": \"<音轨 ULID>\"`，\
+                         或给工具顶层 `trackId` 作为回退",
+                        notes::DEVICE_TRACK_FIELD,
+                    ),
+                }),
+            ));
+        }
         let track_id = arg_id(call, "trackId")?;
         let clip_id = if needs_clip {
             require_envelope_clip(call, &note_ops, placement_raw.is_some(), creating)?

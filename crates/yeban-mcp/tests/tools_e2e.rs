@@ -5718,6 +5718,207 @@ fn edit_notes_insert_device_refuses_an_out_of_range_slot() {
     assert_eq!(accepted["status"], "success", "{accepted}");
 }
 
+/// T-FIX-652 ①：**逐条 `ops[].trackId` 齐全时顶层 `trackId` 可省略** ——
+/// 多轨 `setParam` 批不带顶层 `trackId` / `clipId` 也必须成功，且各落目标轨。
+/// 同时钉住旧调用的逐字节兼容：只有顶层 `trackId`、op 内不给时仍写顶层那条。
+#[test]
+fn edit_notes_per_op_track_id_batch_without_the_envelope_still_targets_each_track() {
+    let scratch = Scratch::new("t652-per-op-no-envelope");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let ids: Vec<yeban_model::EntityId> = project.tracks.keys().copied().collect();
+    assert!(ids.len() >= 2, "样本里必须至少两条音轨: {}", ids.len());
+    let (a, b) = (ids[0], ids[1]);
+    let (volume_before, pan_before) = (
+        project.track(&a).expect("音轨").volume_db,
+        project.track(&b).expect("音轨").pan,
+    );
+
+    // 顶层 `trackId` / `clipId` 都不给：批内每条都自带 `ops[].trackId`。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            "ops": [
+                {"kind": "setParam", "trackId": a.to_canonical_string(), "lane": "TrackVolume", "value": -9.5},
+                {"kind": "setParam", "trackId": b.to_canonical_string(), "lane": "TrackPan", "value": -0.5}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetParam"]["target"],
+        json!({"TrackVolume": {"track_id": a.to_canonical_string()}}),
+        "第一条必须落到 a: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetParam"]["target"],
+        json!({"TrackPan": {"track_id": b.to_canonical_string()}}),
+        "第二条必须落到 b: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetParam"]["old_val"],
+        json!(pan_before),
+        "撤销载荷必须等于 b 的文档现值: {created}"
+    );
+
+    // 旧调用（只有顶层 `trackId`, op 内不给）逐字节兼容。
+    let legacy = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": a.to_canonical_string(),
+            "includeOps": true,
+            "ops": [
+                {"kind": "setParam", "lane": "TrackVolume", "value": -3.0}
+            ]
+        }),
+    );
+    assert_eq!(legacy["status"], "success", "旧调用必须仍成功: {legacy}");
+    assert_eq!(
+        legacy["data"]["proposal"]["ops"][0]["op"]["SetParam"]["target"],
+        json!({"TrackVolume": {"track_id": a.to_canonical_string()}}),
+        "旧调用必须仍写顶层那条轨: {legacy}"
+    );
+    assert_eq!(
+        legacy["data"]["proposal"]["ops"][0]["op"]["SetParam"]["old_val"],
+        json!(volume_before),
+        "{legacy}"
+    );
+}
+
+/// T-FIX-652 ②：`insertDevice` **只给顶层 `trackId`、op 内不给**也必须成功，
+/// 并且设备真的插到顶层那条轨（不是占位身份、不是别的轨）。
+#[test]
+fn edit_notes_insert_device_falls_back_to_the_envelope_track_id() {
+    let scratch = Scratch::new("t652-device-envelope-fallback");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let track = project
+        .tracks
+        .values()
+        .find(|track| !track.devices.is_empty())
+        .expect("样本里必须有带设备链的音轨")
+        .id;
+    let chain_len = project.tracks[&track].devices.len();
+    let device_id = yeban_model::EntityId::from_str("01J8ZQ000000000000000000T6").expect("ULID");
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track.to_canonical_string(),
+            "includeOps": true,
+            "ops": [{
+                "kind": "insertDevice",
+                // 关键：op 内不给 `trackId` ⇒ 回退顶层。
+                "slotIndex": chain_len,
+                "device": {
+                    "deviceId": device_id.to_canonical_string(),
+                    "name": "T652 Probe",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": [],
+                },
+            }]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["InsertDevice"]["track_id"],
+        json!(track.to_canonical_string()),
+        "设备必须插到顶层 `trackId` 那条轨: {created}"
+    );
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T652 device fallback" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        project.tracks[&track]
+            .devices
+            .iter()
+            .any(|device| device.id == device_id),
+        "合并后设备必须真的在那条轨上"
+    );
+}
+
+/// T-FIX-652 ③：设备形态**顶层与逐条都缺** `trackId` ⇒ 响亮拒绝，错误点名
+/// `ops[i].trackId` 并给可直接修正的 hint（⛔ 不笼统报"缺少 trackId"）。
+#[test]
+fn edit_notes_device_without_any_track_id_names_the_missing_location() {
+    let scratch = Scratch::new("t652-device-no-track");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let bytes_before = project_bytes(&dispatcher);
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            // 顶层 `trackId` 不给，op 内也不给。
+            "ops": [{
+                "kind": "insertDevice",
+                "device": {
+                    "deviceId": "01J8ZQ000000000000000000T6",
+                    "name": "No Track",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": [],
+                },
+            }]
+        }),
+    );
+    assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", "两处都缺必须响亮拒绝");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "trackIdRequired",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["missing"], "ops[0].trackId",
+        "错误必须点名 op 内的位置: {refused}"
+    );
+    let message = refused["error"]["message"]
+        .as_str()
+        .or_else(|| refused["error"]["message"].as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("ops[0].trackId"),
+        "错误文案必须点名 `ops[0].trackId`: {refused}"
+    );
+    let hint = refused["error"]["data"]["hint"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        hint.contains("trackId"),
+        "hint 必须给出可直接修正的方向: {refused}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒的调用不得改工程"
+    );
+}
+
 /// **工具面真的能写自动化泳道自己的属性**：`ops[].kind == "setAutomationLane"` 走完
 /// `tools/call` → 提案 → 合并 → 撤销 的整条管线，并且关掉读开关之后**唯一求值入口**
 /// 真的返回"无自动化值"。
@@ -9546,5 +9747,295 @@ fn unknown_sample_and_contradictory_sample_parameters_are_refused_loudly() {
     assert!(
         bad_outcome.is_err(),
         "非字符串 sample 不得被静默当作缺省: {bad_outcome:?}"
+    );
+}
+
+/// T-FIX-708 ①：**纯路由级批不给顶层 `trackId` / `clipId` 也必须成功** ——
+/// `addRoutingNode` / `connectRouting` 的寻址全在 `nodeId` / `edgeId` 里，
+/// 整批不读信封音轨（旧口径会在 `arg_id` 先以"缺少 trackId"拒绝）。
+#[test]
+fn edit_notes_pure_routing_batch_needs_no_envelope_track() {
+    let scratch = Scratch::new("t708-pure-routing-no-envelope");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let master = project.master_bus_track_id;
+    let new_node = yeban_model::EntityId::from_str("01J8ZQ00000000000000000N8X").expect("ULID");
+    let edge = yeban_model::EntityId::from_str("01J8ZQ00000000000000000NE8").expect("ULID");
+    assert!(
+        !project.routing_graph.nodes.contains(&new_node),
+        "夹具前提: 节点身份必须是新的"
+    );
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            // 关键: 顶层 `trackId` / `clipId` 都不给。
+            "ops": [
+                {"kind": "addRoutingNode", "nodeId": new_node.to_canonical_string()},
+                {
+                    "kind": "connectRouting",
+                    "edgeId": edge.to_canonical_string(),
+                    "sourceNode": new_node.to_canonical_string(),
+                    "destinationNode": master.to_canonical_string(),
+                    "edgeKind": "TrackToBus"
+                }
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"].as_array().map(Vec::len),
+        Some(2),
+        "两条路由 op 都必须编译进提案: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["AddRoutingNode"]["node"],
+        json!(new_node.to_canonical_string()),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["ConnectRouting"]["edge"]["id"],
+        json!(edge.to_canonical_string()),
+        "{created}"
+    );
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T708 pure routing" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert!(project.routing_graph.nodes.contains(&new_node));
+    assert!(project.routing_graph.edges.contains_key(&edge));
+}
+
+/// T-FIX-708 ②：信封给了**主总线**身份、批内全是自寻址路由形态时不得误报
+/// `TRACK_NOT_FOUND`（信封身份对本批一个字节都不读）。
+#[test]
+fn edit_notes_self_addressed_routing_batch_accepts_the_master_envelope() {
+    let scratch = Scratch::new("t708-routing-master-envelope");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let master = project.master_bus_track_id;
+    let new_node = yeban_model::EntityId::from_str("01J8ZQ00000000000000000N9M").expect("ULID");
+    assert!(!project.routing_graph.nodes.contains(&new_node));
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": master.to_canonical_string(),
+            "includeOps": true,
+            "ops": [
+                {"kind": "addRoutingNode", "nodeId": new_node.to_canonical_string()}
+            ]
+        }),
+    );
+    assert_eq!(
+        created["status"], "success",
+        "主总线信封不得让自寻址批报 TRACK_NOT_FOUND: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["AddRoutingNode"]["node"],
+        json!(new_node.to_canonical_string()),
+        "{created}"
+    );
+}
+
+/// T-FIX-708 ③（回归）：真正需要信封音轨的形态（设备形态，逐条与顶层都缺）
+/// 仍必须响亮拒绝，并把位置点名到 `ops[i].trackId` —— 放宽路由不得顺手放过它。
+#[test]
+fn edit_notes_routing_relaxation_does_not_weaken_device_track_requirement() {
+    let scratch = Scratch::new("t708-device-still-required");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "ops": [{
+                "kind": "insertDevice",
+                "device": {
+                    "deviceId": "01J8ZQ000000000000000000T6",
+                    "name": "No Track T708",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": [],
+                },
+            }]
+        }),
+    );
+    assert_domain_error(
+        &refused,
+        "INVALID_PARAMETER_RANGE",
+        "设备形态两处都缺仍必须拒绝",
+    );
+    assert_eq!(
+        refused["error"]["data"]["reason"], "trackIdRequired",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["missing"], "ops[0].trackId",
+        "必须点名实际缺失位置: {refused}"
+    );
+}
+
+/// T-FIX-724 ①：一次 `edit_notes` 发**多条 `addTrack`**、不给顶层 `trackId`
+/// 必须成功 —— `addTrack` 的身份就是 `ops[].trackId`，顶层信封一个字节都不读
+/// （旧口径会在 schema/入口先以缺 `trackId` 拒绝）。
+#[test]
+fn edit_notes_multiple_add_track_ops_need_no_envelope_track() {
+    let scratch = Scratch::new("t724-multiple-add-track");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let a = yeban_model::EntityId::from_str("01J8ZQ00000000000000000AT1").expect("ULID");
+    let b = yeban_model::EntityId::from_str("01J8ZQ00000000000000000AT2").expect("ULID");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            // 关键: 顶层 `trackId` / `clipId` 都不给, 批内两条各自自带身份。
+            "ops": [
+                {"kind": "addTrack", "trackId": a.to_canonical_string(), "name": "T724 A", "trackKind": "Midi"},
+                {"kind": "addTrack", "trackId": b.to_canonical_string(), "name": "T724 B", "trackKind": "Audio"}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T724 add tracks" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        project.tracks.contains_key(&a),
+        "第一条新轨必须落地: {created}"
+    );
+    assert!(
+        project.tracks.contains_key(&b),
+        "第二条新轨必须落地: {created}"
+    );
+}
+
+/// T-FIX-724 ②：`setTrackMute` 批每条自带 `ops[].trackId`、顶层不给也必须成功，
+/// 并且每条真的落到它点名的音轨（不是占位身份、也不是同一条轨）。
+#[test]
+fn edit_notes_per_op_mute_batch_needs_no_envelope_track() {
+    let scratch = Scratch::new("t724-mute-no-envelope");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let ids: Vec<yeban_model::EntityId> = project.tracks.keys().copied().collect();
+    assert!(ids.len() >= 2, "样本里必须至少两条音轨: {}", ids.len());
+    let (a, b) = (ids[0], ids[1]);
+    let (mute_a, mute_b) = (
+        project.track(&a).expect("a").mute,
+        project.track(&b).expect("b").mute,
+    );
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            "ops": [
+                {"kind": "setTrackMute", "trackId": a.to_canonical_string(), "value": !mute_a},
+                {"kind": "setTrackMute", "trackId": b.to_canonical_string(), "value": !mute_b}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["track_id"],
+        json!(a.to_canonical_string()),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetTrackMute"]["track_id"],
+        json!(b.to_canonical_string()),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackMute"]["old_mute"],
+        json!(mute_a),
+        "{created}"
+    );
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T724 mute two tracks" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert_eq!(project.track(&a).expect("a").mute, !mute_a);
+    assert_eq!(project.track(&b).expect("b").mute, !mute_b);
+}
+
+/// T-FIX-724 ③（回归）：需要信封音轨、且没有逐条回退的形态（音符）缺顶层
+/// `trackId` 仍必须响亮拒绝并可定位到 `trackId` —— 放宽 addTrack / 开关批不得
+/// 顺手放过它。
+#[test]
+fn edit_notes_note_op_still_refuses_a_missing_envelope_track() {
+    let scratch = Scratch::new("t724-note-no-track");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            // 顶层 trackId 不给（clipId 给了，隔离出"缺信封音轨"这一条）。
+            "clipId": "01J8ZQ00000000000000000CL1",
+            "ops": [{
+                "kind": "add",
+                "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}
+            }]
+        }),
+    );
+    assert_domain_error(
+        &refused,
+        "INVALID_PARAMETER_RANGE",
+        "音符形态缺信封音轨必须拒绝",
+    );
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("trackId"),
+        "错误必须点名缺失的信封字段 `trackId`: {refused}"
     );
 }

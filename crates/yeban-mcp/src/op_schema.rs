@@ -740,11 +740,11 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "insertDevice",
-                "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
-                &["kind", "trackId", "device"],
+                "在目标音轨的设备链里插入一台设备。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨（T-FIX-652：两处都缺时 `INVALID_PARAMETER_RANGE` 点名 `ops[i].trackId`）。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
+                &["kind", "device"],
                 json!({
                     "kind": kind("insertDevice"),
-                    "trackId": id("目标音轨身份"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
                     "slotIndex": uint("插槽下标（可选；缺省 = 追加到链尾；> 链长则 OUT_OF_RANGE）"),
                     "device": device_object(),
                 }),
@@ -752,11 +752,11 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "removeDevice",
-                "按身份从目标音轨的设备链里取走一台设备",
-                &["kind", "trackId", "deviceId"],
+                "按身份从目标音轨的设备链里取走一台设备。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨（T-FIX-652：两处都缺时 `INVALID_PARAMETER_RANGE` 点名 `ops[i].trackId`）",
+                &["kind", "deviceId"],
                 json!({
                     "kind": kind("removeDevice"),
-                    "trackId": id("目标音轨身份"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
                     "deviceId": id("要取走的设备身份"),
                 }),
                 true,

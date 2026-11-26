@@ -1012,8 +1012,8 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param(
                 "trackId",
                 "string",
-                true,
-                "音轨 EntityId (26 字符 ULID); 音符 / 摆放 / 音轨属性级形态的**缺省**目标音轨 (`setParam` 等六个音轨级形态可用 `ops[].trackId` 逐条覆盖, 批内每条都自备 `trackId` 时顶层身份接受但不读)。自带寻址的形态 (removeTrack / insertDevice / removeDevice) 不读它, 但仍要求它是合法身份",
+                false,
+                "音轨 EntityId (26 字符 ULID); **按 `ops[].kind` 条件必需**（T-FIX-652/T-FIX-708: 顶层与逐条寻址统一 —— 批内**每条**要么自带 `ops[].trackId`、要么是 `removeTrack` / `addTrack` / 路由级（`addRoutingNode` / `connectRouting` / `disconnectRouting` / `setRoutingGain` / `removeRoutingNode`，寻址全在 `nodeId` / `edgeId`）这类不需要顶层音轨的形态时, 顶层 `trackId` 可省略；`setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` / `setTrackTune` / `insertDevice` / `removeDevice` 都可用 `ops[].trackId` 逐条点名, 省缺时回退顶层 `trackId`）。需要而缺 ⇒ `INVALID_PARAMETER_RANGE` (`reason: \"trackIdRequired\"`): 设备形态两处都缺时错误点名 `ops[i].trackId` 并给可修正的 hint; 其余形态点名顶层 `trackId` 与 `requiredByKinds`。顶层与逐条同时给出且不一致时**以逐条值为准**（顶层不是额外必填, 也不是冲突源）",
             ),
             param(
                 "clipId",

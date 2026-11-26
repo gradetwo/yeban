@@ -573,8 +573,10 @@ fn every_ops_branch_publishes_the_envelope_clip_rule() {
 
 /// 判据 ⑥ 的 `tools/list` 面：`clipId` 已从 `required` 里移除，且仍在 `properties` 里
 /// （向后兼容：旧调用传它不会撞 `additionalProperties: false`）。
+/// ⭐ T-FIX-652：`trackId` 同样从顶层 `required` 移除（按 `ops[].kind` 条件必需），
+/// 但仍留在 `properties` 里 —— schema 的必填集必须与解析器实际接受集一致。
 #[test]
-fn the_published_signature_makes_clip_id_optional_but_still_accepted() {
+fn the_published_signature_makes_clip_id_and_track_id_optional_but_still_accepted() {
     let catalog = tools::catalog();
     let schema = catalog["tools"]
         .as_array()
@@ -589,8 +591,12 @@ fn the_published_signature_makes_clip_id_optional_but_still_accepted() {
         "`clipId` 必须从顶层 required 里移除: {schema}"
     );
     assert!(
-        required.iter().any(|name| name == "trackId"),
-        "`trackId` 仍是顶层必填（本票只改 `clipId`）: {schema}"
+        !required.iter().any(|name| name == "trackId"),
+        "T-FIX-652：`trackId` 必须从顶层 required 里移除（按 `ops[].kind` 条件必需）: {schema}"
+    );
+    assert!(
+        schema["properties"]["trackId"]["type"] == "string",
+        "`trackId` 仍必须在 properties 里（需要回退时旧调用照样传）: {schema}"
     );
     assert!(
         schema["properties"]["clipId"]["type"] == "string",

@@ -3003,15 +3003,21 @@ pub const INSERT_DEVICE_KIND: &str = "insertDevice";
 /// `ops[].kind` 的**取走设备**形态名（写 [`Op::RemoveDevice`]）。
 pub const REMOVE_DEVICE_KIND: &str = "removeDevice";
 
-/// 设备形态的**目标音轨**字段名（`ops[].trackId`，两个设备形态都必填）。
+/// 设备形态的**目标音轨**字段名（`ops[].trackId`，可选）。
+///
+/// ⭐ T-FIX-652：省略 = 回退到工具顶层 `trackId`（与 `setParam` / `setTrackMute`
+/// 的逐条 `trackId` 同一口径）；给了 = 逐条点名另一条音轨。两处都缺时
+/// `domain::plan_edit_notes` 在取顶层身份之前响亮拒绝，错误点名
+/// `ops[i].trackId`（⛔ 不笼统报"缺少 trackId"）。
 ///
 /// 与 [`REMOVE_TRACK_FIELD`] 逐字同词：那个实参的语义就是"哪一条音轨"，而设备链
 /// 挂在音轨上 —— 这是本文件里**唯一**两处共用同一个寻址字段名的形态，因为两处指的
 /// 是同一个对象（音轨），而 [`ROUTING_NODE_FIELD`] / [`SECTION_FIELD`] /
 /// [`SCENE_FIELD`] 指的是**别的**实体（因此各有各的字面量）。
 ///
-/// ⚠ 它**不是**工具顶层的 `trackId`（那是"目标片段所在的音轨"，[`compile`] 的入口
-/// 用它查音轨与片段池）：设备形态**自带寻址**，与 [`REMOVE_TRACK_KIND`] 同一纪律。
+/// ⚠ 它与工具顶层 `trackId` **不是同一个位置**（那是"目标片段所在的音轨"，也是
+/// 本字段省略时的**回退值**）：给了就按逐条值寻址，与 [`REMOVE_TRACK_KIND`]
+/// 的"永远自带"不同 —— 设备形态的逐条寻址是调用方选择。
 pub const DEVICE_TRACK_FIELD: &str = "trackId";
 
 /// 插入设备形态的**插槽下标**字段名（`ops[].slotIndex`，可选）。
@@ -4510,16 +4516,18 @@ pub enum NoteOp {
     /// 而一台延迟非零的外部设备只能在文档里表示、不能在工具面里表示 ⇒ 外部设备的
     /// 相位对齐在 MCP 会话里**无法被表达**。
     ///
-    /// 目标由**自带的** [`DEVICE_TRACK_FIELD`] 给出，与顶层 `trackId` / `clipId` 无关
-    /// （后者是"目标片段所在的音轨"）。与 [`Self::RemoveTrack`] 同一纪律：本形态
-    /// 一个音符都不读，也不要求片段是 MIDI。
+    /// 目标音轨由 [`DEVICE_TRACK_FIELD`] 给出（`Some` = 本操作逐条点名）；
+    /// ⭐ T-FIX-652：省略（`None`）= 回退到工具顶层 `trackId`，与
+    /// `setParam` / `setTrackMute` 的逐条 `trackId` 同一口径。顶层与逐条都缺
+    /// ⇒ `domain::plan_edit_notes` 在取顶层身份之前响亮拒绝，错误点名
+    /// `ops[i].trackId`。本形态一个音符都不读，也不要求片段是 MIDI。
     ///
     /// 载荷是 [`DeviceDefinition`]，字段与 [`DEVICE_FIELDS`] 逐条对应；`slot_index`
     /// 是 [`Option`]：`None` = **追加到链尾**（模型允许 `slot_index == devices.len()`），
     /// `Some(n)` 的 `n > devices.len()` 是响亮失败（不夹紧）。
     InsertDevice {
-        /// 目标音轨身份（本形态自带寻址）。
-        track_id: EntityId,
+        /// 目标音轨身份；`None` = 回退到工具顶层 `trackId`。
+        track_id: Option<EntityId>,
         /// 插槽下标；`None` = 追加到链尾。
         slot_index: Option<usize>,
         /// 被插入的完整设备定义。
@@ -4534,8 +4542,8 @@ pub enum NoteOp {
     /// 撤销载荷 `previous_device` 由 [`compile`] 从**当前文档**读（模型的前置条件
     /// 要求它逐字段等于文档现值，因此本层不采信调用方声明的旧状态）。
     RemoveDevice {
-        /// 目标音轨身份（本形态自带寻址）。
-        track_id: EntityId,
+        /// 目标音轨身份；`None` = 回退到工具顶层 `trackId`。
+        track_id: Option<EntityId>,
         /// 被取走的设备身份。
         device_id: EntityId,
     },
@@ -4678,18 +4686,30 @@ impl NoteOp {
 
     /// 该形态的寻址**全部**在操作对象自己身上（不读工具顶层的 `trackId` / `clipId`）。
     ///
-    /// 两种形态：音轨实体级（[`Self::RemoveTrack`]）与设备级
-    /// （[`Self::InsertDevice`] / [`Self::RemoveDevice`]）。它们的寻址都在操作对象里
-    /// 自带的 `trackId`（设备形态还有 `deviceId` / `slotIndex`），因此 [`compile`]
-    /// 与 `domain::plan_edit_notes` **不必**先取顶层那两个身份，也不必要求片段是 MIDI。
+    /// 音轨实体级（[`Self::RemoveTrack`]）**永远**自带 `trackId`；设备级
+    /// （[`Self::InsertDevice`] / [`Self::RemoveDevice`]）**仅当**逐条给了
+    /// `ops[].trackId` 时自带（T-FIX-652：省略 = 回退顶层 `trackId`）。
+    /// 自带时 [`compile`] 与 `domain::plan_edit_notes` **不必**先取顶层那两个身份，
+    /// 也不必要求片段是 MIDI；没自带时按顶层回退路走。
     ///
     /// ⚠ 与 [`Self::is_self_addressed`] 的**区别**要写清：路由级 / 段落级 / 场景级形态
-    /// 的寻址**也**在操作对象里（`edgeId` / `nodeId` / `sectionId` / `sceneId`），但它们
-    /// **仍然**要求顶层 `trackId` / `clipId` 是合法身份 —— 那是本工具既有的入口口径，
-    /// 本方法**不**替它们放松（放松会改变既有调用的可接受集合）。
+    /// 的寻址**也**在操作对象里（`edgeId` / `nodeId` / `sectionId` / `sceneId`）。
+    /// T-FIX-708 起**路由级**形态经 [`Self::all_ops_address_their_own_track`] 进入
+    /// "整批不读顶层 `trackId`"那条路（它们的载荷只有节点/边身份，一个音轨引用都没有）；
+    /// 段落级 / 场景级仍按原口径要求顶层身份。
     #[must_use]
     pub const fn is_self_addressed(&self) -> bool {
-        self.is_track_entity_level() || self.is_device_level()
+        self.is_track_entity_level()
+            || matches!(
+                self,
+                Self::InsertDevice {
+                    track_id: Some(_),
+                    ..
+                } | Self::RemoveDevice {
+                    track_id: Some(_),
+                    ..
+                }
+            )
     }
 
     /// 批内**每一条**都是音轨实体级形态（[`Op::RemoveTrack`] 的写侧）。
@@ -4704,6 +4724,22 @@ impl NoteOp {
     #[must_use]
     pub fn all_track_entity_level(ops: &[Self]) -> bool {
         !ops.is_empty() && ops.iter().all(Self::is_track_entity_level)
+    }
+
+    /// 批内第一条**设备形态但没给** `ops[].trackId` 的下标（T-FIX-652）。
+    ///
+    /// 这些 op 的音轨寻址只能回退到工具顶层 `trackId`。顶层也没给时，
+    /// `domain::plan_edit_notes` 用它把错误点名到 `ops[i].trackId`，
+    /// 而不是笼统地说"缺少 `trackId`"。
+    #[must_use]
+    pub fn first_device_without_track(ops: &[Self]) -> Option<usize> {
+        ops.iter().position(|op| {
+            matches!(
+                op,
+                Self::InsertDevice { track_id: None, .. }
+                    | Self::RemoveDevice { track_id: None, .. }
+            )
+        })
     }
 
     /// 批内**每一条**的寻址都在操作对象自己身上（[`Self::is_self_addressed`]）。
@@ -4725,11 +4761,10 @@ impl NoteOp {
 
     /// 该形态**本条**是否自带了目标音轨（`ops[].trackId` 给了值）。
     ///
-    /// 只对四个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`] /
-    /// [`Self::SetTrackDelay`] / [`Self::SetTrackTune`]），且**仅当**
-    /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`（⛔ 不是自带寻址）。
-    /// 与 [`Self::is_self_addressed`] 的同类形态（`removeTrack` / 设备）不同：那几个**永远**
-    /// 自带 `trackId`，这四个是**调用方选择**是否逐条点名。
+    /// 对四个音轨属性形态（[`Self::SetParam`] / [`Self::SetTrackFlag`] /
+    /// [`Self::SetTrackDelay`] / [`Self::SetTrackTune`]）与两个设备形态
+    /// （[`Self::InsertDevice`] / [`Self::RemoveDevice`]）为真，且**仅当**
+    /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`。
     #[must_use]
     pub const fn addresses_own_track(&self) -> bool {
         matches!(
@@ -4746,15 +4781,24 @@ impl NoteOp {
             } | Self::SetTrackTune {
                 track_id: Some(_),
                 ..
+            } | Self::InsertDevice {
+                track_id: Some(_),
+                ..
+            } | Self::RemoveDevice {
+                track_id: Some(_),
+                ..
             }
         )
     }
 
     /// 批内**每一条**的音轨寻址都在操作对象自己身上（自带 `trackId`）。
     ///
-    /// 这是 [`Self::all_self_addressed`] 的**加宽版**：除了原有的两种形态
-    /// （音轨实体级 + 设备级，它们永远自带 `trackId`），`setParam` / `setTrackMute` /
-    /// `setTrackSolo` 在**逐条给了** `trackId` 时也算自带 —— 于是"一次调用对多条音轨
+    /// 这是 [`Self::all_self_addressed`] 的**加宽版**：除了原有的音轨实体级
+    /// 与**逐条给了** `trackId` 的设备形态，`setParam` / `setTrackMute` /
+    /// `setTrackSolo` 在**逐条给了** `trackId` 时也算自带，路由级形态
+    /// （`addRoutingNode` / `connectRouting` / `disconnectRouting` /
+    /// `setRoutingGain` / `removeRoutingNode`）的寻址全在操作对象里、从不读顶层
+    /// `trackId`，因此也计入 —— 于是"一次调用对多条音轨
     /// 静音/独奏/调音"成立，顶层 `trackId` 对本批不被读取（可为占位身份，
     /// 与 `removeTrack` / 设备形态同一条路）。**`addTrack` 也算**：它只建新轨，
     /// 身份就是操作对象自带的 `trackId`，顶层 `trackId` 一个字节都不读
@@ -4774,6 +4818,7 @@ impl NoteOp {
             && ops.iter().all(|op| {
                 op.is_self_addressed()
                     || op.addresses_own_track()
+                    || op.is_routing_level()
                     || matches!(op, Self::AddTrack { .. })
             })
     }
@@ -5952,7 +5997,8 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 Some(_) => Some(read_usize(object, DEVICE_SLOT_FIELD)?),
             };
             Ok(NoteOp::InsertDevice {
-                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                // T-FIX-652：省略 = 回退顶层 `trackId`（由 `compile` 解析）。
+                track_id: read_optional_id(object, DEVICE_TRACK_FIELD)?,
                 slot_index,
                 device,
             })
@@ -5960,7 +6006,8 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         REMOVE_DEVICE_KIND => {
             reject_remove_device_fields(object)?;
             Ok(NoteOp::RemoveDevice {
-                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                // T-FIX-652：省略 = 回退顶层 `trackId`（由 `compile` 解析）。
+                track_id: read_optional_id(object, DEVICE_TRACK_FIELD)?,
                 device_id: read_id(object, DEVICE_ID_FIELD)?,
             })
         }
@@ -10046,13 +10093,15 @@ fn compile_inner(
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 钉住这条。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
-    // 寻址自带的形态（`removeTrack` 与两个设备形态、`addTrack`，以及**逐条给了** `trackId` 的
-    // `setParam` / `setTrackMute` / `setTrackSolo`）不读工具顶层的 `trackId` /
-    // `clipId`：它们的寻址在操作对象自己身上。判据
+    // 寻址自带的形态（`removeTrack`、**逐条给了** `trackId` 的两个设备形态、
+    // `addTrack`，以及**逐条给了** `trackId` 的 `setParam` / `setTrackMute` /
+    // `setTrackSolo`）不读工具顶层的 `trackId` / `clipId`：它们的寻址在操作对象
+    // 自己身上。设备形态**省略** `ops[].trackId` 时（T-FIX-652）本判据为假 ⇒
+    // 顶层 `trackId` 被当作回退值读。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 与
     // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
-    // ⚠ 那三个音轨属性形态**没给** `trackId` 时本判据为假 ⇒ 顶层 `trackId` 照旧被查、
-    // 照旧是唯一目标（旧调用逐字节不变）。
+    // ⚠ 那三个音轨属性形态与两个设备形态**没给** `trackId` 时本判据为假 ⇒
+    // 顶层 `trackId` 照旧被查、照旧是唯一目标（旧调用逐字节不变）。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
     let self_addressed_only = NoteOp::all_ops_address_their_own_track(ops);
     // ⭐ `#177` 坑④：片段池查找**只**在批里真的有形态读顶层 `clipId` 时发生。
@@ -11833,14 +11882,16 @@ fn compile_inner(
                 }
             }
             NoteOp::InsertDevice {
-                track_id: target,
+                track_id: op_track_id,
                 slot_index,
                 device,
             } => {
+                // T-FIX-652：逐条 `ops[].trackId` 优先；省略回退顶层 `trackId`。
+                let target = op_track_id.unwrap_or(*track_id);
                 // 撤销载荷由模型从**这一条** op 自己反转（`Op::invert` 把 `InsertDevice`
                 // 换成 `RemoveDevice`，两个载荷本来就都在插入这一条上），因此本层
                 // 不需要从文档读任何"旧状态"；要读的是**前**置条件。
-                let track = project.track(target).map_err(|_| {
+                let track = project.track(&target).map_err(|_| {
                     Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
                         format!("工程里没有身份 {target} 的音轨, 没有设备链可以插入"),
@@ -11908,16 +11959,18 @@ fn compile_inner(
                     )
                 })?;
                 Op::InsertDevice {
-                    track_id: *target,
+                    track_id: target,
                     slot_index: resolved,
                     device: device.clone(),
                 }
             }
             NoteOp::RemoveDevice {
-                track_id: target,
+                track_id: op_track_id,
                 device_id,
             } => {
-                let track = project.track(target).map_err(|_| {
+                // T-FIX-652：逐条 `ops[].trackId` 优先；省略回退顶层 `trackId`。
+                let target = op_track_id.unwrap_or(*track_id);
+                let track = project.track(&target).map_err(|_| {
                     Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
                         format!("工程里没有身份 {target} 的音轨, 没有设备链可以取走"),
@@ -11951,7 +12004,7 @@ fn compile_inner(
                         )
                     })?;
                 Op::RemoveDevice {
-                    track_id: *target,
+                    track_id: target,
                     slot_index,
                     previous_device,
                 }
@@ -19758,6 +19811,107 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
     }
 
+    /// T-FIX-652：设备形态的 `ops[].trackId` **省略**时回退顶层 `trackId`，
+    /// **给了**时以逐条值为准（顶层同时给别的轨也不冲突）。
+    #[test]
+    fn device_ops_fall_back_to_envelope_and_prefer_per_op_track() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let other = project
+            .tracks
+            .keys()
+            .copied()
+            .find(|id| *id != track)
+            .expect("样本里必须不止一条音轨");
+        let existing = project.tracks[&track].devices[0].id;
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000T6D").expect("ULID");
+
+        // ① 两条设备形态**都不给** `ops[].trackId`：回退顶层 `track`。
+        let ops = parse_ops(&serde_json::json!([
+            {
+                "kind": INSERT_DEVICE_KIND,
+                "device": {
+                    "deviceId": fresh.to_canonical_string(),
+                    "name": "Probe",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": []
+                }
+            },
+            {
+                "kind": REMOVE_DEVICE_KIND,
+                "deviceId": existing.to_canonical_string()
+            }
+        ]))
+        .expect("省略 ops[].trackId 必须被解析接受");
+        assert!(
+            !NoteOp::all_self_addressed(&ops),
+            "没给逐条 trackId 的设备形态不是自带寻址"
+        );
+        assert_eq!(NoteOp::first_device_without_track(&ops), Some(0));
+        let compiled =
+            compile(&project, &track, &EntityId::default(), &ops).expect("顶层回退必须编译得过");
+        match (&compiled[0], &compiled[1]) {
+            (
+                Op::InsertDevice {
+                    track_id: inserted, ..
+                },
+                Op::RemoveDevice {
+                    track_id: removed, ..
+                },
+            ) => {
+                assert_eq!(*inserted, track, "插入必须落在顶层 trackId 那条轨");
+                assert_eq!(*removed, track, "取走必须落在顶层 trackId 那条轨");
+            }
+            other => panic!("应当是两条设备 op: {other:?}"),
+        }
+
+        // ② 逐条 `trackId` 与顶层不一致 ⇒ 以逐条值为准。
+        let ops = parse_ops(&serde_json::json!([
+            {
+                "kind": INSERT_DEVICE_KIND,
+                "trackId": other.to_canonical_string(),
+                "device": {
+                    "deviceId": fresh.to_canonical_string(),
+                    "name": "Probe",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": []
+                }
+            }
+        ]))
+        .expect("解析");
+        assert!(NoteOp::all_self_addressed(&ops));
+        assert_eq!(NoteOp::first_device_without_track(&ops), None);
+        let compiled = compile(&project, &track, &EntityId::default(), &ops).expect("编译");
+        match &compiled[0] {
+            Op::InsertDevice {
+                track_id: inserted, ..
+            } => assert_eq!(*inserted, other, "逐条值必须压过顶层值"),
+            other => panic!("应当是 InsertDevice: {other:?}"),
+        }
+        // 顶层是占位 nil 也照样编译（全批自带的旧路径逐字节不变）。
+        let nil = EntityId::default();
+        let ops = parse_ops(&serde_json::json!([
+            {
+                "kind": INSERT_DEVICE_KIND,
+                "trackId": other.to_canonical_string(),
+                "device": {
+                    "deviceId": fresh.to_canonical_string(),
+                    "name": "Probe",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": []
+                }
+            }
+        ]))
+        .expect("解析");
+        compile(&project, &nil, &nil, &ops).expect("自带寻址批不读顶层身份");
+    }
+
     #[test]
     fn peak_polyphony_ignores_abutting_notes() {
         assert_eq!(peak_polyphony([] as [(u64, u64); 0]), 0);
@@ -23112,7 +23266,7 @@ mod tests {
             unit: None,
         });
         let ops = vec![NoteOp::InsertDevice {
-            track_id: track,
+            track_id: Some(track),
             slot_index: None,
             device,
         }];
