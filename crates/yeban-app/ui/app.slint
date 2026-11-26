@@ -927,6 +927,8 @@ export component MainWindow inherits Window {
     in-out property <int> song-overview-total-bars: 0;
     in-out property <int> startup-category: 0;
     in-out property <bool> startup-chooser-open: false;
+    // 「空工程」入口卡片是否已选中（T-FIX-722）：仅界面态，创建仍走既有回调。
+    in-out property <bool> startup-empty-selected: false;
     in-out property <bool> startup-details-open: false;
     in-out property <int> startup-hidden-rows: 0;
     in-out property <int> startup-key-index: 0;
@@ -3011,6 +3013,7 @@ export component MainWindow inherits Window {
             height: Math.max(240px, root.height - key-handler.absolute-position.y);
             category: root.startup-category;
             details-open <=> root.startup-details-open;
+            empty-selected <=> root.startup-empty-selected;
             rows: root.startup-rows;
             hidden-rows: root.startup-hidden-rows;
             search-text <=> root.startup-search-text;

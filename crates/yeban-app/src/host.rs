@@ -12418,6 +12418,7 @@ fn apply_startup_category(
     ui.set_startup_hidden_rows(0);
     ui.set_startup_category(category);
     ui.set_startup_selected_entry(-1);
+    ui.set_startup_empty_selected(false);
 }
 
 /// 速度文本的规范写法（整数不带小数尾巴，其余一位小数）。
@@ -12778,6 +12779,7 @@ pub fn wire_startup_chooser(
             };
             match untitled.open_archive_runtime(&ui, "new-project", archive, None, None) {
                 Ok(()) => {
+                    ui.set_startup_empty_selected(false);
                     ui.set_startup_chooser_open(false);
                     let receipt = module_receipt(
                         "startup-chooser",

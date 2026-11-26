@@ -374,7 +374,7 @@ fn startup_chooser_live_window_flow() {
     let production = Rc::new(RefCell::new(
         ProductionLoop::start(&placeholder, 0).expect("引擎重建"),
     ));
-    let live = LivePort::new(Size::new(1600, 1000), Permission::Interactive, None, || {
+    let mut live = LivePort::new(Size::new(1600, 1000), Permission::Interactive, None, || {
         host::build_main_window(&view, &scene)
     })
     .expect("Tier-1 活窗口");
@@ -587,6 +587,72 @@ fn startup_chooser_live_window_flow() {
         created.tracks.len(),
         1,
         "新工程必须是空工程形状（只有主总线）"
+    );
+
+    // ---- 4c. 单击「空工程」卡 + 点「创建新工程」 -------------------------
+    ui.set_startup_chooser_open(true);
+    ui.invoke_startup_category_selected(0);
+    ui.set_startup_tempo_text("84".into());
+    assert!(
+        !ui.get_startup_empty_selected(),
+        "换分类后卡片必须回到未选中"
+    );
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        live.refresh_tree(None).expect("打开空工程分类后重抓控件树");
+        live.dispatch_pointer_down("startup-empty-project", 20.0, 20.0, PointerButton::Left)
+            .expect("单击空工程卡必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+    }
+    let ui = live.ui();
+    assert!(
+        ui.get_startup_empty_selected(),
+        "单击空工程卡必须留下可见/可读选中态"
+    );
+    if let Ok(path) = std::env::var("YEBAN_722_SHOT") {
+        live.refresh_tree(None).expect("截图前重抓控件树");
+        let frame = live.window().capture().expect("抓选中态帧");
+        std::fs::write(&path, yeban_ui_test_port::png::encode_rgb8(&frame))
+            .unwrap_or_else(|error| panic!("写截图 {path} 失败: {error}"));
+    }
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        live.dispatch_pointer_down("startup-confirm-button", 20.0, 18.0, PointerButton::Left)
+            .expect("创建新工程按钮必须可按下");
+        live.dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+    }
+    let ui = live.ui();
+    assert!(
+        !ui.get_startup_chooser_open(),
+        "单击卡片再点确认后选择器必须关"
+    );
+    assert_eq!(undo.project().bpm, 84.0, "确认创建设置的速度必须落进新工程");
+
+    // ---- 4d. 双击「空工程」卡仍直接创建（不回归） -------------------------
+    ui.set_startup_chooser_open(true);
+    ui.invoke_startup_category_selected(0);
+    ui.set_startup_tempo_text("90".into());
+    {
+        use yeban_ui_test_port::{PointerButton, UiTestPort as _};
+        live.refresh_tree(None).expect("双击前重抓控件树");
+        for _ in 0..2 {
+            live.dispatch_pointer_down("startup-empty-project", 20.0, 20.0, PointerButton::Left)
+                .expect("双击空工程卡必须可按下");
+            live.dispatch_pointer_up(PointerButton::Left)
+                .expect("释放必须送达");
+        }
+    }
+    let ui = live.ui();
+    assert!(
+        !ui.get_startup_chooser_open(),
+        "双击空工程卡必须直接创建并关窗"
+    );
+    assert_eq!(
+        undo.project().bpm,
+        90.0,
+        "双击创建的工程必须用 Details 当前速度"
     );
 
     // ---- 4b. 越界/非有限速度必须响亮拒绝，不得静默钳值 -------------------

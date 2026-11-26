@@ -36,6 +36,9 @@ export component StartupChooserDialog inherits Rectangle {
 
     // ---- 双向状态（界面与宿主共享） --------------------------------------
     in-out property <int> selected-entry: -1;
+    // 「空工程」入口卡片的选中态：单击 / 无障碍默认动作置真，换分类时宿主清回。
+    // 仅新建分类读它；创建仍由页脚主按钮 / 双击 / 回车承担。
+    in-out property <bool> empty-selected: false;
     in-out property <string> tempo-text: "120";
     in-out property <int> time-num: 4;
     in-out property <int> time-den-index: 2;
@@ -359,14 +362,27 @@ export component StartupChooserDialog inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: 64px;
-                background: Tokens.bg-raised;
+                background: root.empty-selected ? Tokens.bg-panel-alt : Tokens.bg-raised;
                 border-radius: Tokens.radius-md;
-                border-width: 1px;
-                border-color: Tokens.line;
+                border-width: root.empty-selected ? 2px : 1px;
+                border-color: root.empty-selected ? Tokens.accent : Tokens.line;
                 accessible-role: list-item;
                 accessible-id: "startup-empty-project";
                 accessible-label: @tr("空工程");
-                accessible-action-default => { root.new-project(); }
+                accessible-checked: root.empty-selected;
+                // 默认动作与单击同一落点：先选中；创建走页脚主按钮 / 双击。
+                accessible-action-default => { root.empty-selected = true; }
+
+                // 左侧 accent 竖条：除了边框加粗，再给一个不依赖主题色差的
+                // 「已选中」人眼信号（读屏器读 accessible-checked）。
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 4px;
+                    height: parent.height;
+                    background: Tokens.accent;
+                    visible: root.empty-selected;
+                }
 
                 UiText {
                     x: Tokens.space-6;
@@ -393,7 +409,11 @@ export component StartupChooserDialog inherits Rectangle {
                     mouse-cursor: MouseCursor.pointer;
                     width: parent.width;
                     height: parent.height;
-                    double-clicked => { root.new-project(); }
+                    clicked => { root.empty-selected = true; }
+                    double-clicked => {
+                        root.empty-selected = true;
+                        root.new-project();
+                    }
                 }
             }
 
