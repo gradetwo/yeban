@@ -417,6 +417,9 @@ export component MainWindow inherits Window {
     in-out property <[float]> track-meter-levels: [];
     // 引擎断流时的界面态：柱置灰、dBFS 文本改 "--"（与"真的静音"分开）。
     in-out property <bool> meter-stale: false;
+    // ⭐ T-FIX-521：过载锁存（与 `track-meter-levels` 同序同长）。柱高夹到 1.0，
+    // 只有这一列能区分"刚好到 0 dBFS"与"+3.5 dBFS 已削"。
+    in-out property <[bool]> track-meter-overs: [];
     in-out property <string> master-name: "Master";
     in-out property <string> master-volume-display: "-0.0 dB";
     in-out property <float> master-volume-fraction: 0.85;
@@ -429,6 +432,9 @@ export component MainWindow inherits Window {
     in-out property <string> master-meter-rms: "-120.0";
     in-out property <string> master-meter-lufs: "-120.0";
     in-out property <float> master-meter-level: 0.0;
+    in-out property <bool> master-meter-over: false;
+    /// 用户点击主控电平条 ⇒ 清过载锁存（`ChannelMeter::over` 的"锁存到清零"）。
+    callback meter-over-clear();
     in-out property <[bool]> master-device-bypassed: [];
     in-out property <bool> master-device-eq-available: false;
     in-out property <string> master-device-eq-device-id: "";
@@ -2021,6 +2027,7 @@ export component MainWindow inherits Window {
                     lufs-peak: root.lufs-peak;
                     master-meter-l: root.master-meter-l;
                     master-meter-r: root.master-meter-r;
+                    master-meter-over: root.master-meter-over;
                     is-dim <=> root.control-room-dim;
                     is-mono <=> root.control-room-mono;
                     is-side <=> root.control-room-side;
@@ -2220,8 +2227,11 @@ export component MainWindow inherits Window {
                 // ⭐ 混音台真实接线：通道条与主控电平取自引擎 SPSC（与轨道头/画布同一份），
                 // ⛔ 不再让下坞读 `TrackData.meter_peak` 那个永不更新的占位字段。
                 track-meter-levels: root.track-meter-levels;
+                track-meter-overs: root.track-meter-overs;
                 master-meter-l: root.master-meter-l;
                 master-meter-r: root.master-meter-r;
+                master-meter-over: root.master-meter-over;
+                master-meter-over-click => { root.meter-over-clear(); }
                 track-volumes: root.track-volumes;
                 master-volume-db: Math.round((-60.0 + root.master-volume-fraction * 66.0) * 10.0) / 10.0;
                 master-volume-display: root.master-volume-display;

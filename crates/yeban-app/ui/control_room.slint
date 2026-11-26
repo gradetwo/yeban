@@ -10,6 +10,8 @@ export component ControlRoomMeters inherits Rectangle {
     in-out property <bool> is-side: false;
     in-out property <float> master-meter-l: 0.68;
     in-out property <float> master-meter-r: 0.64;
+    /// ⭐ T-FIX-521：主总线过载锁存 ⇒ 顶格红（柱高夹 1.0，光看柱高分不清削没削）。
+    in-out property <bool> master-meter-over: false;
     in-out property <length> panel-width: 192px;
 
     callback switch-monitor(string);
@@ -373,7 +375,7 @@ export component ControlRoomMeters inherits Rectangle {
                         y: parent.height - (root.master-meter-l * parent.height);
                         width: 14px;
                         height: root.master-meter-l * parent.height;
-                        background: root.master-meter-l > 0.85 ? Theme.status-alert : (root.master-meter-l > 0.70 ? Theme.status-warn : Theme.status-ok);
+                        background: root.master-meter-over ? Theme.status-alert : (root.master-meter-l > 0.85 ? Theme.status-alert : (root.master-meter-l > 0.70 ? Theme.status-warn : Theme.status-ok));
                         border-radius: 2px;
                     }
                 }

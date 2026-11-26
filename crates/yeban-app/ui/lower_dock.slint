@@ -10,8 +10,11 @@ export component UnifiedLowerDock inherits Rectangle {
     // 通道条电平柱按下标取；master 两柱取主总线读数（控制面已按 60Hz 镜像到
     // `master-meter-l/r`）。缺数据时取 0（= 下限），不画假值。
     in property <[float]> track-meter-levels: [];
+    in property <[bool]> track-meter-overs: [];
     in property <float> master-meter-l: 0.0;
     in property <float> master-meter-r: 0.0;
+    in property <bool> master-meter-over: false;
+    callback master-meter-over-click();
     in-out property <int> selected-track-id: 1;
     in-out property <[string]> device-names: [];
     // ⭐ C2：逐台真实参数曲线（420×100 SVG Path；与 device-names 同索引集）。
@@ -1618,10 +1621,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: parent.height - ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) * parent.height);
                                         width: 6px;
                                         height: (root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) * parent.height;
-                                        background: (root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                        // ⭐ T-FIX-521：过载锁存 ⇒ 顶格红（柱高 1.0 本身分不清 0 dBFS 与 +3.5 dBFS）。
+                                        background: (root.track-meter-overs.length > tidx && root.track-meter-overs[tidx]) ? Theme.status-alert : ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok);
                                         border-radius: 1px;
                                         // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                        drop-shadow-color: ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
+                                        drop-shadow-color: ((root.track-meter-overs.length > tidx && root.track-meter-overs[tidx]) ? Theme.status-alert : ((root.track-meter-levels.length > tidx ? root.track-meter-levels[tidx] : 0.0) > 0.8 ? Theme.status-warn : Theme.status-ok)).with-alpha(Tokens.glass-glow-alpha);
                                         drop-shadow-offset-x: 0px;
                                         drop-shadow-offset-y: 0px;
                                         drop-shadow-blur: 3px;
@@ -2337,6 +2341,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 10px;
                                     height: 88px;
+                                    // ⭐ T-FIX-521：点一下电平条 = 清过载锁存（"锁存到清零/点击"）。
+                                    meter_over_touch := TouchArea {
+                                        accessible-role: button;
+                                        accessible-label: @tr("主控电平条: 点击清除过载指示");
+                                        accessible-action-default => { root.master-meter-over-click(); }
+                                        clicked => { root.master-meter-over-click(); }
+                                    }
                                     // 一期质感: flat 分支保留旧值; physical 走玻璃刷。
                                     background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.skin-inset;
                                     border-radius: 1px;
@@ -2356,9 +2367,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 y: parent.height - (root.master-meter-l * parent.height);
                                                 width: 4px;
                                                 height: root.master-meter-l * parent.height;
-                                                background: root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                                background: root.master-meter-over ? Theme.status-alert : (root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok);
                                                 // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                                drop-shadow-color: (root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-color: (root.master-meter-over ? Theme.status-alert : (root.master-meter-l > 0.8 ? Theme.status-warn : Theme.status-ok)).with-alpha(Tokens.glass-glow-alpha);
                                                 drop-shadow-offset-x: 0px;
                                                 drop-shadow-offset-y: 0px;
                                                 drop-shadow-blur: 3px;
@@ -2373,9 +2384,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 y: parent.height - (root.master-meter-r * parent.height);
                                                 width: 4px;
                                                 height: root.master-meter-r * parent.height;
-                                                background: root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                                background: root.master-meter-over ? Theme.status-alert : (root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok);
                                                 // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
-                                                drop-shadow-color: (root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-color: (root.master-meter-over ? Theme.status-alert : (root.master-meter-r > 0.8 ? Theme.status-warn : Theme.status-ok)).with-alpha(Tokens.glass-glow-alpha);
                                                 drop-shadow-offset-x: 0px;
                                                 drop-shadow-offset-y: 0px;
                                                 drop-shadow-blur: 3px;

@@ -40,8 +40,9 @@
 //! | 输入幅度 | `MeterFrame::peak` / `rms_smoothed`（线性，1.0 = 0 dBFS） | 引擎已钳位 |
 //! | dBFS | `20·log10(幅度)`，`幅度 ≤ 0` ⇒ `-∞` | 复用 `yeban_engine::level::dbfs` |
 //! | 显示下限 | [`METER_FLOOR_DBFS`] = **-120.0** | 与引擎的 `SILENCE_FLOOR_DBFS` **同一个常量**（re-export） |
-//! | 显示文本 | `{:.1}`，**前后都有限** | `-∞`/`NaN` 一律落到下限 |
-//! | 柱高 | `(clamped_dbfs - 下限) / (0 - 下限)`，再夹到 `0..=1` | 纯线性（对数已在 dBFS 里） |
+//! | 显示文本 | `{:.1}`；`> 0.0`（过载）**原值保留**成 `"+3.5"` 这种带号文本 | `-∞`/`NaN` 落到下限，`+∞` 落到 [`METER_CEIL_DBFS`] |
+//! | 柱高 | `(clamped_dbfs - 下限) / (0 - 下限)`，再夹到 `0..=1` | 纯线性（对数已在 dBFS 里）；过载只能顶格，因此另有 `over` 锁存 |
+//! | 过载 | `peak_dbfs > 0.0` ⇒ `ChannelMeter::over`（在 `MeterRuntime` 里**锁存**，直到清零） | 柱高夹到 1.0 会把 +3.5 dBFS 压成 0.0 dBFS 的观感，`over` 就是补这一格 |
 //!
 //! **"输入 NaN 不产生 NaN 显示"是两条独立的防线**：引擎侧的 `sanitize_sample` 保证实时
 //! 路径不发布 `NaN`；本模块的 [`sanitize_dbfs`] 保证**即使**收到 `NaN`（测试注入、
@@ -66,6 +67,11 @@ pub const METER_FLOOR_DBFS: f32 = SILENCE_FLOOR_DBFS;
 /// 这段窗口约 72 个量子。它足以吸收偶发的一两帧 UI 抖动，又能在设备真正断流时
 /// 于 1/5 秒内把"定格"与"静音"分开，不必等用户先怀疑界面卡死。
 pub const METER_STALE_AFTER_TICKS: u32 = 12;
+/// 非有限**上界**（dBFS）：只有 `+∞` 会落到这里。
+///
+/// 它**不是**显示上限：有限值一律原样保留（`peak=1.5` ⇒ `+3.52 dBFS`，文本 `"+3.5"`）。
+/// 旧实现把有限值也 `clamp(下限, 0.0)`，于是削波在混音台上显示成 `"0.0"` —— 看不见。
+pub const METER_CEIL_DBFS: f32 = 12.0;
 
 /// 一个通道条的电平读数（UI 线程上的**值对象**，不是引擎状态）。
 #[derive(Debug, Clone, PartialEq)]
@@ -79,12 +85,15 @@ pub struct ChannelMeter {
     pub node_id: String,
     /// 显示名（工程里的 `TrackV3::name`）。
     pub name: String,
-    /// 峰值 dBFS，**已按下限钳位**，恒有限。
+    /// 峰值 dBFS，**只按下限钳位**，恒有限；`> 0.0` 表示过载（原值保留，⛔ 不截成 `0.0`）。
     pub peak_dbfs: f32,
     /// 平滑 RMS dBFS，**已按下限钳位**，恒有限。
     pub rms_dbfs: f32,
-    /// 峰值柱高（0.0–1.0），由 [`peak_fraction`] 从 `peak_dbfs` 得到（联动读数）。
+    /// 峰值柱高（0.0–1.0，过载只能顶格），由 [`peak_fraction`] 从 `peak_dbfs` 得到。
     pub level: f32,
+    /// 本帧是否过载（`peak_dbfs > 0.0`）。`MeterRuntime::snapshot` 会把它**锁存**
+    /// （保持到 [`MeterRuntime::clear_over_latches`] 清零），界面因此有顶格过载态。
+    pub over: bool,
     /// 左声道柱高（0.0–1.0），来自帧的 `peak_l`。
     pub level_l: f32,
     /// 右声道柱高（0.0–1.0），来自帧的 `peak_r`。
@@ -114,6 +123,7 @@ impl ChannelMeter {
             level: 0.0,
             level_l: 0.0,
             level_r: 0.0,
+            over: false,
             peak_label: display_dbfs(METER_FLOOR_DBFS),
             rms_label: display_dbfs(METER_FLOOR_DBFS),
             quantum: None,
@@ -134,6 +144,7 @@ impl ChannelMeter {
             level: peak_fraction(peak_dbfs),
             level_l: amplitude_fraction(frame.peak_l),
             level_r: amplitude_fraction(frame.peak_r),
+            over: peak_dbfs > 0.0,
             peak_label: display_dbfs(peak_dbfs),
             rms_label: display_dbfs(rms_dbfs),
             quantum: Some(frame.quantum),
@@ -217,6 +228,18 @@ impl MeterSnapshot {
             || display_dbfs(METER_FLOOR_DBFS),
             |master| master.rms_label.clone(),
         )
+    }
+
+    /// 每一轨的过载锁存（`track-meter-overs` 的注入源）。
+    #[must_use]
+    pub fn overs(&self) -> Vec<bool> {
+        self.tracks.iter().map(|track| track.over).collect()
+    }
+
+    /// 主控过载锁存（无主总线时为 `false`）。
+    #[must_use]
+    pub fn master_over(&self) -> bool {
+        self.master.as_ref().is_some_and(|master| master.over)
     }
 
     /// 主控柱高。
@@ -339,18 +362,27 @@ pub fn sanitize_dbfs(value: f32) -> f32 {
         return METER_FLOOR_DBFS;
     }
     if value == f32::INFINITY {
-        return 0.0;
+        return METER_CEIL_DBFS;
     }
     if value == f32::NEG_INFINITY {
         return METER_FLOOR_DBFS;
     }
-    value.clamp(METER_FLOOR_DBFS, 0.0)
+    // ⭐ T-FIX-521：**只钳下限**。有限值里的 `+3.52`（幅度 1.5）是真实过载，
+    // 截成 `0.0` 会让削波在混音台上彻底看不见（柱高仍由 `peak_fraction` 夹到 1.0）。
+    value.max(METER_FLOOR_DBFS)
 }
 
-/// dBFS → 显示文本（`{:.1}`）。非有限输入先经 [`sanitize_dbfs`]。
+/// dBFS → 显示文本（`{:.1}`，过载带 `+` 号）。非有限输入先经 [`sanitize_dbfs`]。
+///
+/// ⭐ T-FIX-521：`> 0.0` 显式带 `+`（`"+3.5"`）—— 混音台上"0.0"与"过载"必须一眼分得开。
 #[must_use]
 pub fn display_dbfs(value: f32) -> String {
-    format!("{:.1}", sanitize_dbfs(value))
+    let value = sanitize_dbfs(value);
+    if value > 0.0 {
+        format!("+{value:.1}")
+    } else {
+        format!("{value:.1}")
+    }
 }
 
 /// 峰值 dBFS → 柱高（0.0–1.0，纯线性映射到 [`METER_FLOOR_DBFS`]..`0.0`）。
@@ -387,6 +419,9 @@ pub struct MeterRuntime {
     stale_ticks: u32,
     /// 本轮长度不一致是否已经发过可见回执（一次失配只响一次，恢复后重新武装）。
     length_mismatch_reported: bool,
+    /// 过载**锁存**（节点身份 → 是否曾经过载）。`MeterBoard` 每帧都是"当下"，
+    /// 60Hz 下 +3.5 dBFS 的一帧转瞬即逝；锁存让顶格过载态留到用户清零为止。
+    over_latched: std::collections::BTreeMap<String, bool>,
 }
 
 impl Default for MeterRuntime {
@@ -405,6 +440,7 @@ impl MeterRuntime {
             scratch: Vec::new(),
             stale_ticks: 0,
             length_mismatch_reported: false,
+            over_latched: std::collections::BTreeMap::new(),
         }
     }
 
@@ -495,6 +531,26 @@ impl MeterRuntime {
     #[must_use]
     pub fn snapshot(&self, view: &ViewState) -> MeterSnapshot {
         snapshot(view, &self.board, self.is_stale())
+    ///
+    /// ⭐ T-FIX-521：这里顺带**锁存过载** —— 任一阵发过 `peak_dbfs > 0.0`，该节点的
+    /// `over` 就一直为真，直到 [`clear_over_latches`](Self::clear_over_latches) 清零
+    /// （工程切换、用户点击主控电平条都会清）。
+    pub fn snapshot(&mut self, view: &ViewState) -> MeterSnapshot {
+        let mut shot = snapshot(view, &self.board);
+        for meter in shot.tracks.iter_mut().chain(shot.master.iter_mut()) {
+            let latched = self
+                .over_latched
+                .entry(meter.node_id.clone())
+                .or_insert(false);
+            *latched |= meter.over;
+            meter.over = *latched;
+        }
+        shot
+    }
+
+    /// 清空过载锁存（下一次 [`snapshot`](Self::snapshot) 从"当下"重新开始）。
+    pub fn clear_over_latches(&mut self) {
+        self.over_latched.clear();
     }
 }
 
@@ -535,8 +591,10 @@ mod tests {
     fn nan_frames_never_render_as_nan() {
         assert_eq!(sanitize_dbfs(f32::NAN), METER_FLOOR_DBFS);
         assert_eq!(sanitize_dbfs(f32::NEG_INFINITY), METER_FLOOR_DBFS);
-        assert_eq!(sanitize_dbfs(f32::INFINITY), 0.0);
-        assert_eq!(sanitize_dbfs(6.0), 0.0, "越界向上夹到 0 dBFS");
+        // ⭐ T-FIX-521：`+∞` 落到非有限上界；**有限的正值原样保留**（旧实现夹成 0.0 ⇒ 削波看不见）。
+        assert_eq!(sanitize_dbfs(f32::INFINITY), METER_CEIL_DBFS);
+        assert_eq!(sanitize_dbfs(6.0), 6.0, "有限的正 dBFS 不再被截成 0.0");
+        assert_eq!(sanitize_dbfs(1e30), 1e30, "有限值只受下限约束");
         assert_eq!(sanitize_dbfs(-999.0), METER_FLOOR_DBFS);
         for value in [f32::NAN, f32::NEG_INFINITY, f32::INFINITY, 1e30, -1e30] {
             let text = display_dbfs(value);
@@ -650,6 +708,62 @@ mod tests {
             "契约面单标量仍是两声道最大: {}",
             shot.master_level()
         );
+    }
+
+    /// ⭐ **T-FIX-521**：幅度 1.5（+3.52 dBFS）的过载帧 ⇒ 文本 `"+3.5"`、`over == true`，
+    /// 柱高仍顶格 1.0；锁存要在 `MeterRuntime` 里留住，`clear_over_latches` 才清。
+    #[test]
+    fn an_over_peak_keeps_its_positive_dbfs_and_latches() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let track = first_track_id(&project);
+        let (mut publisher, collector) = meter_channel(8);
+        let mut runtime = MeterRuntime::with_collector(collector);
+
+        publisher.publish(&[MeterFrame::new(track, 3, 1.5, 0.5)]);
+        runtime.poll(view.tracks.len() + 1);
+        let shot = runtime.snapshot(&view);
+        let meter = shot
+            .tracks
+            .iter()
+            .find(|meter| meter.node_id == track.to_canonical_string())
+            .expect("该轨道必须有读数");
+        assert_eq!(
+            meter.peak_dbfs,
+            sanitize_dbfs(20.0 * 1.5_f32.log10()),
+            "幅度 1.5 ⇒ +3.52 dBFS"
+        );
+        assert_eq!(
+            meter.peak_label, "+3.5",
+            "削波文本必须带号原值，⛔ 不是 \"0.0\""
+        );
+        assert!(meter.over, "峰值 > 0 dBFS ⇒ over 锁存为真");
+        assert_eq!(meter.level, 1.0, "柱高仍夹到 1.0（顶格）");
+        assert!(shot.overs().iter().any(|over| *over));
+
+        // 锁存：下一拍没有过载帧，`over` 仍然为真（`MeterBoard` 保留上一帧也是 +3.5 那一帧）。
+        publisher.publish(&[MeterFrame::new(track, 4, 0.25, 0.25)]);
+        runtime.poll(view.tracks.len() + 1);
+        let latched = runtime.snapshot(&view);
+        let meter = latched
+            .tracks
+            .iter()
+            .find(|meter| meter.node_id == track.to_canonical_string())
+            .expect("该轨道必须有读数");
+        assert!(meter.over, "过载必须锁存到清零为止");
+        assert_eq!(
+            meter.peak_label, "-12.0",
+            "当下读数必须是新帧（锁存只锁 `over`）"
+        );
+
+        runtime.clear_over_latches();
+        let cleared = runtime.snapshot(&view);
+        let meter = cleared
+            .tracks
+            .iter()
+            .find(|meter| meter.node_id == track.to_canonical_string())
+            .expect("该轨道必须有读数");
+        assert!(!meter.over, "清零之后下一拍必须回到当下（此时不过载）");
     }
 
     /// 判据 4：抽帧走的是 `drain_latest`（取最新），**不是** FIFO 前缀。

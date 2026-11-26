@@ -2416,6 +2416,7 @@ pub fn build_live_ui_with(
     // 端口时接上；`options.undo` 为 `None` 的既有判据因此照旧"没有写入面"，行为一位不变。
     if let Some(undo) = options.undo.as_ref() {
         host::wire_mixer_edit(&window, undo);
+        host::wire_meter_over_clear(&window);
         // ⭐ 设备效果链（控制台 Tab 3）的写入面（任务单 `#157`）：与产品进程
         // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_device_rack`，
         // 因此无头端口注入的手势与用户点击走同一条链（`Op` + `UndoPort`）。

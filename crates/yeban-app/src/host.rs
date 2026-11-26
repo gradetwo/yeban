@@ -132,13 +132,13 @@ fn lengths(values: &[f32]) -> ModelRc<f32> {
     ModelRc::new(VecModel::from(values.to_vec()))
 }
 
-/// `[int]` 属性 ← `&[i32]`。
-fn integers(values: &[i32]) -> ModelRc<i32> {
+/// `[bool]` 属性 ← `&[bool]`（过载锁存：`track-meter-overs`）。
+fn booleans(values: &[bool]) -> ModelRc<bool> {
     ModelRc::new(VecModel::from(values.to_vec()))
 }
 
-/// `[bool]` 属性 ← `&[bool]`。
-fn booleans(values: &[bool]) -> ModelRc<bool> {
+/// `[int]` 属性 ← `&[i32]`。
+fn integers(values: &[i32]) -> ModelRc<i32> {
     ModelRc::new(VecModel::from(values.to_vec()))
 }
 
@@ -6473,6 +6473,12 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
         ui.set_track_meter_levels(lengths(&levels));
     }
     ui.set_meter_stale(snapshot.stale);
+    // ⭐ T-FIX-521：过载锁存（`peak_dbfs > 0.0` 的顶格态）。柱高只能到 1.0，这一列
+    // 才分得清"刚好 0 dBFS"与"+3.5 dBFS 已经削了"。
+    let overs = snapshot.overs();
+    if !update_bool_model_in_place(&ui.get_track_meter_overs(), &overs) {
+        ui.set_track_meter_overs(booleans(&overs));
+    }
     // 可观测性（本轮实测教训）：电平"到底有没有读数"必须能在 stderr 读到，否则界面上一根
     // 不动时分不清两件完全不同的事——"引擎给的就是静音" 与 "值到了但没画出来"。
     // 只在**首次**出现非零读数时打一行（稳态零噪声，一次排查够用）。
@@ -6517,6 +6523,10 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     if ui.get_master_meter_r().to_bits() != master_r.to_bits() {
         ui.set_master_meter_r(master_r);
     }
+    let master_over = snapshot.master_over();
+    if ui.get_master_meter_over() != master_over {
+        ui.set_master_meter_over(master_over);
+    }
 }
 
 fn update_string_model_in_place(model: &ModelRc<SharedString>, values: &[String]) -> bool {
@@ -6531,6 +6541,22 @@ fn update_string_model_in_place(model: &ModelRc<SharedString>, values: &[String]
             .is_none_or(|current| current.as_str() != value.as_str());
         if changed {
             vec.set_row_data(index, SharedString::from(value.as_str()));
+        }
+    }
+    true
+}
+
+fn update_bool_model_in_place(model: &ModelRc<bool>, values: &[bool]) -> bool {
+    let Some(vec) = slint::Model::as_any(model).downcast_ref::<VecModel<bool>>() else {
+        return false;
+    };
+    if slint::Model::row_count(vec) != values.len() {
+        return false;
+    }
+    for (index, &value) in values.iter().enumerate() {
+        let changed = slint::Model::row_data(vec, index).is_none_or(|current| current != value);
+        if changed {
+            vec.set_row_data(index, value);
         }
     }
     true
@@ -7563,6 +7589,12 @@ impl ProductionLoop {
 /// 这个函数跑在 UI 线程上，因此它**允许**分配（`MeterRuntime::poll` 可能扩容搬运缓冲）；
 /// 红线 7（`MUST-GATE-001`）约束的是音频线程，而这里没有一行代码跑在音频线程上。
 pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState) -> MeterPump {
+    // ⭐ T-FIX-521：走带停止 或 用户点了主控电平条 ⇒ 清过载锁存。
+    // 与真 DAW 的 peak hold 一致：停止时重置，下一段播放从当下重新锁存。
+    let clear_requested = METER_OVER_CLEAR_REQUESTED.with(|flag| flag.replace(false));
+    if clear_requested || !ui.get_playing() {
+        meters.clear_over_latches();
+    }
     // `+ 1` 是主总线：引擎每个量子发布的帧数是"非母线轨数 + 1"
     // （`docs/ledger/engine-meters-notes.md` §2 的结构性契约）。
     meters.poll(view.tracks.len() + 1);
@@ -24000,6 +24032,15 @@ fn duplicate_selected_clip_placement(
 // ===========================================================================
 
 thread_local! {
+    /// ⭐ T-FIX-521：用户点击主控电平条 ⇒ **请求清过载锁存**（下一跳 [`pump_meters`] 执行）。
+    ///
+    /// 为什么是请求而不是在回调里直接清：锁存活在 `MeterRuntime` 里，而回调注册在装配期、
+    /// 拿不到运行期那份 `MeterRuntime`（它随 `AppRuntime` 走）。一个线程局部位加一跳消费
+    /// 比把运行时塞进回调安全（也不制造第二份锁存）。
+    static METER_OVER_CLEAR_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
     /// 进程内片段剪贴板：**一组** `ClipPoolEntry`（含音符）＋ 来源摆放
     /// （继承 duration / loop / offset 语义；多选复制时一组按身份序排列）。
     ///
@@ -30494,6 +30535,16 @@ pub fn wire_trigger_shortcut(ui: &MainWindow) {
     });
 }
 
+/// ⭐ T-FIX-521：主控电平条点击 ⇒ 清过载锁存（`app.slint` 的 `meter-over-clear`）。
+///
+/// 无捕获闭包，只置一个线程局部请求位；真正的清空发生在下一跳 [`pump_meters`]
+/// （那时才有 `&mut MeterRuntime`）。启动装配与换工程 `after` 重跑本函数都不会漏。
+pub fn wire_meter_over_clear(ui: &MainWindow) {
+    ui.on_meter_over_clear(|| {
+        METER_OVER_CLEAR_REQUESTED.with(|flag| flag.set(true));
+    });
+}
+
 /// 换工程后可重跑的“编辑面”接线（T-FIX-323）。
 ///
 /// 这些回调的闭包都捕获 `UndoPort`，且注册在启动装配期；换工程只跑
@@ -30524,6 +30575,7 @@ pub fn wire_edit_surfaces(ui: &MainWindow, port: &Rc<UndoPort>) {
     wire_bpm_commit(ui, port);
     wire_track_strip(ui, port);
     wire_clip_create(ui, port);
+    wire_meter_over_clear(ui);
 }
 
 /// 生产桥接层: 把**全部 33 个新 UI 独有回调**注册到真实 handler。
