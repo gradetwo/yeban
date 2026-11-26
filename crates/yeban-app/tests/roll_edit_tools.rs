@@ -1094,7 +1094,7 @@ fn a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
 // | 格 | 决定 |
 // | :--- | :--- |
 // | 力度臂（力度工具按在**力度柱**上竖直拖 ⇒ 松手一个原子 `Op::ModifyNoteVelocity`） | **本切片接上** |
-// | 多选作用域（拖一根柱是否带动整个选区） | ⛔ 只作用**指针下那一个**音符（登记为 pending） |
+// | 多选作用域（拖一根柱是否带动整个选区） | **T-ISS-MWTFLO7Z 已接**：指针下那颗在选区里且选区多于一颗 ⇒ 移动/改时值按**整选区**（每颗一条 op、组夹紧、一次提交一步撤销）；⚠ 拖动中的**画面预览**仍只跟指针下那一颗（`note-drag-ulid` 单身份，仍登记为 pending） |
 // | 零力度音符（柱高 0 ⇒ 不可命中） | ⛔ 不给柱体加最小高度、⛔ 不发明 affordance（登记为 pending） |
 // | 双击到 100（`[UI-NOTE-003]` aux 列 —— 把零力度音符提起来的**规范路径**） | ⛔ 本切片**不实现**（登记为 pending） |
 // | 空白处拖动 | ⛔ 语义一位不改（仍是滚动）—— 判据 (f) 是兄弟臂行为改变的**回归钉** |
@@ -3283,5 +3283,216 @@ fn a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snap
     assert!(
         aether_host.contains("set_note_drag_active"),
         "宿主接线层必须注册 set_note_drag_active"
+    );
+}
+
+// ===========================================================================
+// T-ISS-MWTFLO7Z：整选区拖动 / 整选区改时值（op 构造层 + 一步撤销）
+// ===========================================================================
+//
+// 本切片证明的是**提交口径**，不证明"拖动中画面把整组一起画出来"（那条仍未接，
+// 见回执的留白）：`note-drag-ulid` 只有一个身份，界面预览只跟指针下那颗走。
+// 但**松手后的编辑**必须是整组，且一步撤销 —— 那正是"以为在搬整组、实际只挪一个"
+// 的非预期编辑要堵的地方。
+
+/// `filled_project` 里第一条**至少三颗音符**的 MIDI 片段：返回 `(clip_id, [note_id; 3])`。
+fn a_clip_with_three_notes() -> (String, [String; 3]) {
+    let project = yeban_model::samples::filled_project();
+    for entry in project.clip_pool.values() {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        if notes.len() < 3 {
+            continue;
+        }
+        let ids: Vec<String> = notes
+            .keys()
+            .map(|id| id.to_canonical_string())
+            .take(3)
+            .collect();
+        return (
+            entry.id.to_canonical_string(),
+            [ids[0].clone(), ids[1].clone(), ids[2].clone()],
+        );
+    }
+    panic!("夹具里必须有一条至少三颗音符的 MIDI 片段");
+}
+
+/// 权威工程里按身份读一条 MIDI 片段里的音符 `(start_tick, pitch, duration_ticks)`。
+fn group_note_readings(
+    project: &yeban_model::YebanProjectV1,
+    clip_id: &str,
+    ulids: &[String],
+) -> Vec<(u64, u8, u64)> {
+    let clip: yeban_model::EntityId = clip_id.parse().expect("片段身份");
+    let entry = project.clip_pool.get(&clip).expect("片段在池子里");
+    let notes = entry.content.notes().expect("MIDI 片段");
+    ulids
+        .iter()
+        .map(|ulid| {
+            let id: yeban_model::EntityId = ulid.parse().expect("音符身份");
+            let note = notes.get(&id).expect("音符在片段里");
+            (note.start_tick, note.pitch, note.duration_ticks)
+        })
+        .collect()
+}
+
+/// ① 整组拖动：三颗选中、拖其中一颗 ⇒ **三条** `Op::MoveNote`，共用同一个位移；
+/// 组夹紧后最左那颗不会掉到 0 以下。
+#[test]
+fn a_group_drag_emits_one_move_op_per_selected_note_with_a_shared_clamped_delta() {
+    let project = yeban_model::samples::filled_project();
+    let (clip_id, ulids) = a_clip_with_three_notes();
+    let before = group_note_readings(&project, &clip_id, &ulids);
+    let selected = vec![ulids[0].clone(), ulids[1].clone(), ulids[2].clone()];
+
+    // (a) 普通位移：三条 op、同一个 (240, +1)。
+    let ops = yeban_app::host::note_drag_move_ops_for(&project, &ulids[0], &selected, 240, 1);
+    assert_eq!(ops.len(), 3, "三颗选中 ⇒ 三条 MoveNote");
+    for op in &ops {
+        match op {
+            yeban_model::ops::Op::MoveNote {
+                delta_tick,
+                delta_pitch,
+                ..
+            } => {
+                assert_eq!(*delta_tick, 240);
+                assert_eq!(*delta_pitch, 1);
+            }
+            other => panic!("组拖只该产 MoveNote，实测 {other:?}"),
+        }
+    }
+
+    // (b) 组夹紧：往左拖到最左那颗会穿过 0 ⇒ 公共位移缩到"最左刚好落到 0"，
+    //     三颗**仍然**是同一个位移（⛔ 不是各夹各的、把和弦拉散）。
+    let ops = yeban_app::host::note_drag_move_ops_for(&project, &ulids[0], &selected, -10_000, 0);
+    let earliest = before.iter().map(|(tick, _, _)| *tick).min().expect("三颗");
+    let expected_delta = -i64::try_from(earliest).expect("tick 在 i64 里");
+    if expected_delta == 0 {
+        // 最左那颗本来就在 0 —— 整组一步都走不动 ⇒ **一条空 op 都不发**
+        // （空 `Batch` 会在撤销栈上留一步"什么都没改"）。
+        assert!(ops.is_empty(), "已到时间轴左边界 ⇒ 不提交空 op");
+    } else {
+        assert_eq!(ops.len(), 3, "夹紧之后仍是三条");
+        for op in &ops {
+            match op {
+                yeban_model::ops::Op::MoveNote { delta_tick, .. } => {
+                    assert_eq!(*delta_tick, expected_delta, "整块夹紧：所有音符同一个位移");
+                }
+                other => panic!("组拖只该产 MoveNote，实测 {other:?}"),
+            }
+        }
+    }
+
+    // (c) 控制臂：指针下那颗**不在**选区 ⇒ 只搬它一颗（与单击把选区缩到一颗同取向）。
+    let others = vec![ulids[1].clone(), ulids[2].clone()];
+    let ops = yeban_app::host::note_drag_move_ops_for(&project, &ulids[0], &others, 240, 0);
+    assert_eq!(ops.len(), 1, "选区外按下只搬指针下那一颗");
+}
+
+/// ② 一步撤销：三颗的整组 op 一次 `commit_ops` ⇒ `Undo` 一步全部回位、`Redo` 再全部移过去。
+#[test]
+fn one_group_commit_is_exactly_one_undo_step() {
+    let project = yeban_model::samples::filled_project();
+    let (clip_id, ulids) = a_clip_with_three_notes();
+    let selected = vec![ulids[0].clone(), ulids[1].clone(), ulids[2].clone()];
+    let before = group_note_readings(&project, &clip_id, &ulids);
+    let port = UndoPort::new(
+        UndoSession::open("<group-drag>", "yeban-app", project.clone(), NOW_MS).expect("打开"),
+    );
+    let ops = yeban_app::host::note_drag_move_ops_for(&project, &ulids[0], &selected, 240, 1);
+    assert_eq!(ops.len(), 3, "前提：三条 op");
+    port.commit_ops(NOW_MS, "select: move notes", ops)
+        .expect("一次提交整组");
+    let after = group_note_readings(&port.project(), &clip_id, &ulids);
+    for (index, (old, new)) in before.iter().zip(after.iter()).enumerate() {
+        assert_eq!(
+            new.0,
+            old.0.saturating_add(240),
+            "第 {index} 颗的起点必须 +240"
+        );
+        assert_eq!(new.1, old.1.saturating_add(1), "第 {index} 颗的音高必须 +1");
+        assert_eq!(new.2, old.2, "第 {index} 颗的时值必须不动");
+    }
+
+    // 一步之后回到起点 —— 若整组被拆成三次提交，这里会只回一颗。
+    assert!(
+        matches!(
+            port.perform(yeban_app::undo::UiAction::Undo),
+            yeban_app::undo::ActionOutcome::Changed { .. }
+        ),
+        "撤销必须真的走了一步"
+    );
+    assert_eq!(
+        group_note_readings(&port.project(), &clip_id, &ulids),
+        before,
+        "一步撤销必须把三颗一起放回原位"
+    );
+    assert!(
+        matches!(
+            port.perform(yeban_app::undo::UiAction::Redo),
+            yeban_app::undo::ActionOutcome::Changed { .. }
+        ),
+        "重做必须真的走了一步"
+    );
+    assert_eq!(
+        group_note_readings(&port.project(), &clip_id, &ulids),
+        after,
+        "一步重做必须把三颗一起再移过去"
+    );
+}
+
+/// ③ 整组改时值：每颗 +240（起点不动）；拖到负数每颗各自夹到最小格；零位移不发 op。
+#[test]
+fn a_group_resize_changes_every_selected_duration_and_clamps_at_the_grid_minimum() {
+    let project = yeban_model::samples::filled_project();
+    let (clip_id, ulids) = a_clip_with_three_notes();
+    let before = group_note_readings(&project, &clip_id, &ulids);
+    let selected = vec![ulids[0].clone(), ulids[1].clone(), ulids[2].clone()];
+
+    let ops = yeban_app::host::note_drag_resize_ops_for(&project, &ulids[0], &selected, 240, 240);
+    assert_eq!(ops.len(), 3, "三颗选中 ⇒ 三条 SetNoteTiming");
+    for (index, op) in ops.iter().enumerate() {
+        match op {
+            yeban_model::ops::Op::SetNoteTiming {
+                old_start_tick,
+                new_start_tick,
+                old_duration_ticks,
+                new_duration_ticks,
+                ..
+            } => {
+                assert_eq!(new_start_tick, old_start_tick, "改时值不动起点");
+                assert_eq!(
+                    *old_duration_ticks, before[index].2,
+                    "旧时值必须来自权威工程"
+                );
+                assert_eq!(
+                    *new_duration_ticks,
+                    old_duration_ticks.saturating_add(240),
+                    "每颗都 +240"
+                );
+            }
+            other => panic!("改时值只该产 SetNoteTiming，实测 {other:?}"),
+        }
+    }
+
+    // 拖到负数：每颗各自夹到最小格（240），不会出现 0 时值（模型会整批拒）。
+    let ops =
+        yeban_app::host::note_drag_resize_ops_for(&project, &ulids[0], &selected, -10_000, 240);
+    assert_eq!(ops.len(), 3, "夹到最小格仍是三条（时值真的变了才发）");
+    for op in &ops {
+        match op {
+            yeban_model::ops::Op::SetNoteTiming {
+                new_duration_ticks, ..
+            } => assert_eq!(*new_duration_ticks, 240, "每颗都夹到最小格"),
+            other => panic!("改时值只该产 SetNoteTiming，实测 {other:?}"),
+        }
+    }
+
+    // 零位移 / 已全部夹在最小格 ⇒ 空集（不提交空 op）。
+    assert!(
+        yeban_app::host::note_drag_resize_ops_for(&project, &ulids[0], &selected, 0, 240)
+            .is_empty(),
+        "零位移不得产 op"
     );
 }

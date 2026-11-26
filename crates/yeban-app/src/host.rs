@@ -22238,6 +22238,113 @@ pub fn move_note_op_for(
     })
 }
 
+/// 卷帘**移动臂**的 op 构造点：单颗拖动 = 一条 `Op::MoveNote`；**整选区拖动** =
+/// 每颗一条，且共用**组夹紧**后的同一个位移（复用键盘路径的 [`nudge_ops_for`]，
+/// ⛔ 不再长第二份"最低音/最早 tick 先撞边"的算术）。
+///
+/// 何时算"整组"（决定，不是意外）：
+/// - 选区里**多于一颗**，且**指针下那颗在选区里** ⇒ 整组；
+/// - 否则单颗 —— 在选区外按下拖动（或选区已陈旧不含它）只搬指针下那一颗，
+///   与"点击会先把选区缩到塌下的那颗"的既有单击口径一致。
+///
+/// 返回空集 = 模型侧没有可提交的位移（身份失效 / 组夹紧后一步都走不动）⇒
+/// 调用方**不提交空 op**（空 `Batch` 会在撤销栈上留一步"什么都没改"）。
+#[must_use]
+pub fn note_drag_move_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    dragged_ulid: &str,
+    selected_ulids: &[String],
+    delta_tick: i64,
+    delta_pitch: i8,
+) -> Vec<yeban_model::ops::Op> {
+    let grouped = selected_ulids.len() > 1 && selected_ulids.iter().any(|id| id == dragged_ulid);
+    if grouped {
+        return nudge_ops_for(project, selected_ulids, delta_tick, delta_pitch);
+    }
+    move_note_op_for(project, dragged_ulid, delta_tick, delta_pitch)
+        .into_iter()
+        .collect()
+}
+
+/// 卷帘**改时值臂**的 op 构造点：对**选区**里每颗音符各发一条 `Op::SetNoteTiming`。
+///
+/// 语义（三条都是决定）：
+/// - **同一个 tick 增量**作用于每颗（与移动臂共用像素→tick 的吸附换算）；
+/// - **每颗各自夹到 `min_duration`**（拖动到负数时停在最小格，⛔ 不出现 0 时值 ——
+///   模型会以 `ZeroDuration` 拒绝，那会让整批失败、什么都不动）；
+/// - **没变的音符不发 op**（`new == old` 的 `SetNoteTiming` 会留一步空改动），
+///   全部没变 ⇒ 空集 ⇒ 调用方不提交。
+#[must_use]
+pub fn note_drag_resize_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    dragged_ulid: &str,
+    selected_ulids: &[String],
+    delta_tick: i64,
+    min_duration_ticks: u64,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::BTreeSet;
+    let grouped = selected_ulids.len() > 1 && selected_ulids.iter().any(|id| id == dragged_ulid);
+    let targets: BTreeSet<yeban_model::EntityId> = if grouped {
+        selected_ulids
+            .iter()
+            .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+            .collect()
+    } else {
+        dragged_ulid
+            .parse::<yeban_model::EntityId>()
+            .ok()
+            .into_iter()
+            .collect()
+    };
+    if delta_tick == 0 {
+        return Vec::new();
+    }
+    let mut ops = Vec::new();
+    for note_id in targets {
+        let Some((clip_id, track_id, _velocity)) = note_identity_for(project, note_id) else {
+            continue;
+        };
+        let Some(existing) = project
+            .clip_pool
+            .get(&clip_id)
+            .and_then(|entry| entry.content.notes())
+            .and_then(|notes| notes.get(&note_id))
+        else {
+            continue;
+        };
+        let minimum = i64::try_from(min_duration_ticks.max(1)).unwrap_or(i64::MAX);
+        let new_duration_i64 = i64::try_from(existing.duration_ticks)
+            .unwrap_or(i64::MAX)
+            .saturating_add(delta_tick)
+            .max(minimum);
+        let Ok(new_duration_ticks) = u64::try_from(new_duration_i64) else {
+            continue;
+        };
+        if new_duration_ticks == existing.duration_ticks {
+            continue;
+        }
+        ops.push(yeban_model::ops::Op::SetNoteTiming {
+            track_id,
+            clip_id,
+            note_id,
+            old_start_tick: existing.start_tick,
+            old_duration_ticks: existing.duration_ticks,
+            new_start_tick: existing.start_tick,
+            new_duration_ticks,
+        });
+    }
+    ops
+}
+
+/// 当前卷帘选区的身份集（`selected-ulids` 是选区唯一事实源，⛔ 不读第二份状态）。
+fn selected_note_ulids(ui: &MainWindow) -> Vec<String> {
+    use slint::Model as _;
+    ui.get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect()
+}
+
 /// `[UI-NOTE-003]` 把"被拖动音符的身份 + **目标力度**"解析成**待提交的
 /// `Op::ModifyNoteVelocity`**（纯函数，力度臂的唯一构造点）。
 ///
@@ -22433,53 +22540,27 @@ fn commit_note_drag(
         return;
     };
     if is_resize {
-        if delta_tick == 0 {
-            return;
-        }
         let Some(port) = port else {
-            return;
-        };
-        let Ok(note_id) = note.parse::<yeban_model::EntityId>() else {
             return;
         };
         let Some(project) = port.try_project() else {
             return;
         };
-        let Some((clip_id, track_id, _)) = note_identity_for(&project, note_id) else {
-            return;
-        };
-        let Some(existing) = project
-            .clip_pool
-            .get(&clip_id)
-            .and_then(|entry| entry.content.notes())
-            .and_then(|notes| notes.get(&note_id))
-        else {
-            return;
-        };
-        let min_duration = i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(240).max(1);
-        let new_duration_i64 = i64::try_from(existing.duration_ticks)
-            .unwrap_or(i64::MAX)
-            .saturating_add(delta_tick)
-            .max(min_duration);
-        let Ok(new_duration_ticks) = u64::try_from(new_duration_i64) else {
-            return;
-        };
-        if new_duration_ticks == existing.duration_ticks {
+        // ⭐ T-ISS-MWTFLO7Z：改时值也按**选区**（与移动臂同一条"指针下那颗在选区里
+        // 且选区多于一颗 ⇒ 整组"的规则，收在 `note_drag_resize_ops_for` 里）。
+        let selected = selected_note_ulids(ui);
+        let ops =
+            note_drag_resize_ops_for(&project, &note, &selected, delta_tick, ROLL_SNAP_GRID_TICKS);
+        if ops.is_empty() {
+            // 没跨过网格 / 每颗都已夹到最小格 ⇒ 一次空 op 都不提交。
             return;
         }
-        let op = yeban_model::ops::Op::SetNoteTiming {
-            track_id,
-            clip_id,
-            note_id,
-            old_start_tick: existing.start_tick,
-            old_duration_ticks: existing.duration_ticks,
-            new_start_tick: existing.start_tick,
-            new_duration_ticks,
+        let label = if ops.len() > 1 {
+            "pencil: resize note durations"
+        } else {
+            "pencil: resize note duration"
         };
-        if port
-            .commit_ops(now_ms(), "pencil: resize note duration", vec![op])
-            .is_err()
-        {
+        if port.commit_ops(now_ms(), label, ops).is_err() {
             return;
         }
         let width = slint::ComponentHandle::window(ui).size().width as f32;
@@ -22499,18 +22580,25 @@ fn commit_note_drag(
     let Some(project) = port.try_project() else {
         return;
     };
-    let Some(op) = move_note_op_for(&project, &note, delta_tick, delta_pitch) else {
+    // ⭐ T-ISS-MWTFLO7Z：整选区拖动 —— 每颗一条 `Op::MoveNote`，共用组夹紧后的
+    // 同一个位移（规则收在 `note_drag_move_ops_for` 里，键盘微移的 `nudge_ops_for` 是
+    // 同一份算术）。一次 `commit_ops` 包成**一个** `Op::Batch` ⇒ 一步撤销全部回位。
+    let selected = selected_note_ulids(ui);
+    let ops = note_drag_move_ops_for(&project, &note, &selected, delta_tick, delta_pitch);
+    if ops.is_empty() {
         // ⭐ T-FIX-210：解析失败 = 音符身份已失效（已被删 / 不在工程里）⇒ 写回执，
         // 否则用户只看到"拖了又弹回"。
         let reason = "音符拖动被拒：音符身份已失效（可能已被删除）";
         ui.set_roll_edit_status(reason.into());
         update_toast(ui, reason);
         return;
+    }
+    let label = if ops.len() > 1 {
+        "select: move notes"
+    } else {
+        "select: move note"
     };
-    if port
-        .commit_ops(now_ms(), "select: move note", vec![op])
-        .is_err()
-    {
+    if port.commit_ops(now_ms(), label, ops).is_err() {
         // 模型拒绝（结果越界 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // `Op::MoveNote` 是**相对**变换，重试会把同一个增量再加一次。
         // ⭐ T-FIX-210：拒绝必须出声，否则"弹回"没有原因。
