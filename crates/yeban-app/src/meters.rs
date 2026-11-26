@@ -537,14 +537,11 @@ impl MeterRuntime {
 
     /// 当前面板对齐到工程后的读数（界面要的形态）。
     #[must_use]
-    pub fn snapshot(&self, view: &ViewState) -> MeterSnapshot {
-        snapshot(view, &self.board, self.is_stale())
-    ///
     /// ⭐ T-FIX-521：这里顺带**锁存过载** —— 任一阵发过 `peak_dbfs > 0.0`，该节点的
     /// `over` 就一直为真，直到 [`clear_over_latches`](Self::clear_over_latches) 清零
     /// （工程切换、用户点击主控电平条都会清）。
     pub fn snapshot(&mut self, view: &ViewState) -> MeterSnapshot {
-        let mut shot = snapshot(view, &self.board);
+        let mut shot = snapshot(view, &self.board, self.is_stale());
         for meter in shot.tracks.iter_mut().chain(shot.master.iter_mut()) {
             let latched = self
                 .over_latched
