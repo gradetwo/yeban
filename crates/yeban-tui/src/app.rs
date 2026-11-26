@@ -672,6 +672,12 @@ impl App {
 
     /// 从文件打开工程（全保真归档路径）。
     ///
+    /// 成功打开后回写最近工程清单（与 GUI 同落点
+    /// `yeban_app::settings::record_recent_project`，`:sessions` 才能
+    /// 看到）；`with_demo` / `with_project` 不走这里，不会误记演示工程。
+    /// 回写失败不拦打开（`record_recent_project` 按 `save_language`
+    /// 同款契约只记一条待发警告）。
+    ///
     /// # Errors
     /// 文件读不到 / 容器被拒 / 引擎图构建失败时返回错误文本。
     pub fn open_file(path: &Path) -> Result<Self, String> {
@@ -681,7 +687,9 @@ impl App {
         )
         .map_err(|error| format!("打开失败：{error}"))?;
         let project = archive.project.clone();
-        Self::assemble(project, Some(archive), Some(path.to_path_buf()))
+        let app = Self::assemble(project, Some(archive), Some(path.to_path_buf()))?;
+        yeban_app::settings::record_recent_project(path, now_ms());
+        Ok(app)
     }
 
     fn assemble(
@@ -4099,6 +4107,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn tick_calls_heartbeat_and_reclaims_retired_snapshots() {
@@ -4522,8 +4531,64 @@ mod tests {
         );
     }
 
+    /// T-FIX-245：设置路径的环境变量守卫。`YEBAN_SETTINGS_PATH` 是进程级
+    /// 变量，判据期间必须独占（`onboarding_help.rs` 同款 `ENV_LOCK`），
+    /// 否则并行测试会互相串改最近清单。
+    static SETTINGS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 把 `YEBAN_SETTINGS_PATH` 指到临时文件，Drop 时恢复原值。
+    /// 调用方必须先持有 [`SETTINGS_ENV_LOCK`]。
+    struct TempSettingsPath {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TempSettingsPath {
+        fn set(path: &Path) -> Self {
+            let previous = std::env::var_os(yeban_app::settings::SETTINGS_PATH_ENV);
+            // SAFETY: 调用方持有 SETTINGS_ENV_LOCK；见 `onboarding_help.rs` 同款注释。
+            unsafe {
+                std::env::set_var(yeban_app::settings::SETTINGS_PATH_ENV, path);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for TempSettingsPath {
+        fn drop(&mut self) {
+            // SAFETY: 守卫在 SETTINGS_ENV_LOCK 释放前析构，恢复进入时读到的原值。
+            unsafe {
+                match &self.previous {
+                    Some(value) => {
+                        std::env::set_var(yeban_app::settings::SETTINGS_PATH_ENV, value);
+                    }
+                    None => std::env::remove_var(yeban_app::settings::SETTINGS_PATH_ENV),
+                }
+            }
+        }
+    }
+
+    fn temp_settings_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "yeban-tui-recent-{tag}-{}.json",
+            std::process::id()
+        ))
+    }
+
+    struct TempFileCleanup(PathBuf);
+    impl Drop for TempFileCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn session_open_chosen_index_loads_that_project() {
+        // T-FIX-245：`:sessions open` 走 `open_file`，会回写最近清单；
+        // 指到临时设置文件，避免判据碰真实配置目录。
+        let _lock = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let settings_path = temp_settings_path("sessions-open");
+        let _settings_cleanup = TempFileCleanup(settings_path.clone());
+        let _env = TempSettingsPath::set(&settings_path);
         struct TempCleanup(PathBuf);
         impl Drop for TempCleanup {
             fn drop(&mut self) {
@@ -4553,8 +4618,6 @@ mod tests {
         path: PathBuf,
         old: Option<std::ffi::OsString>,
     }
-
-    static SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl TempSettings {
         fn new() -> Self {
@@ -4604,6 +4667,8 @@ mod tests {
     /// 同样强开；不带 `!` 时脏检查仍拦住。
     #[test]
     fn sessions_open_bang_force_opens_dirty_project() {
+        // 打开会回写最近清单（T-FIX-245），持锁指到临时设置文件隔离。
+        let _settings = TempSettings::new();
         struct TempCleanup(PathBuf);
         impl Drop for TempCleanup {
             fn drop(&mut self) {
@@ -4644,6 +4709,49 @@ mod tests {
         assert!(
             app.log.iter().any(|line| line.contains(":sessions open!")),
             "dirty block must point at the force form, got {:?}",
+            app.log
+        );
+    }
+
+    /// T-FIX-245：`App::open_file` 成功打开后回写最近工程清单，
+    /// `:sessions` 重新 `settings::load()` 必须列出它。
+    #[test]
+    fn open_file_records_recent_project_and_sessions_lists_it() {
+        let _lock = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let settings_path = temp_settings_path("open");
+        let _settings_cleanup = TempFileCleanup(settings_path.clone());
+        let _env = TempSettingsPath::set(&settings_path);
+
+        let saved = std::env::temp_dir().join(format!(
+            "yeban-tui-recent-open-{}.yeban",
+            std::process::id()
+        ));
+        let _cleanup = TempFileCleanup(saved.clone());
+
+        let mut writer = App::with_demo().expect("demo app");
+        writer.save_to(&saved).expect("save demo as temp project");
+
+        let mut app = App::open_file(&saved).expect("open temp project");
+        assert_eq!(app.project_path.as_deref(), Some(saved.as_path()));
+
+        let settings = yeban_app::settings::load();
+        assert!(
+            settings
+                .recent_projects
+                .first()
+                .is_some_and(|entry| entry.path == saved),
+            "recent_projects first must be the opened project, got {:?}",
+            settings.recent_projects
+        );
+
+        app.execute_command("sessions");
+        let stem = saved
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("temp project stem");
+        assert!(
+            app.log.iter().any(|line| line.contains(stem)),
+            ":sessions must list the opened project, log: {:?}",
             app.log
         );
     }
@@ -4696,6 +4804,7 @@ mod tests {
     /// T-FIX-246：数字越界仍报越界，不回落成查询。
     #[test]
     fn sessions_open_out_of_range_still_reports_range_error() {
+        let _settings = TempSettings::new();
         struct TempCleanup(PathBuf);
         impl Drop for TempCleanup {
             fn drop(&mut self) {
@@ -4732,6 +4841,23 @@ mod tests {
             app.log.iter().any(|line| line.contains("无效序号")),
             "zero must still report a range error, got {:?}",
             app.log
+        );
+    }
+
+    /// T-FIX-245：演示工程不走 `open_file`，不得进入最近清单。
+    #[test]
+    fn with_demo_does_not_record_recent_project() {
+        let _lock = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let settings_path = temp_settings_path("demo");
+        let _settings_cleanup = TempFileCleanup(settings_path.clone());
+        let _env = TempSettingsPath::set(&settings_path);
+
+        let _app = App::with_demo().expect("demo app");
+        let settings = yeban_app::settings::load();
+        assert!(
+            settings.recent_projects.is_empty(),
+            "demo must not be recorded, got {:?}",
+            settings.recent_projects
         );
     }
 
