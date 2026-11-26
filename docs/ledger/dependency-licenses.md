@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `ba3bae194c52707f`
+- `Cargo.lock` SHA-256（前 16 位）: `f294feaf593e506e`
 - 外部依赖包数: **694**（不含 30 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -506,7 +506,7 @@
 | `rustls-webpki` | `0.103.17` | `ISC` | 传递 | — |
 | `rustversion` | `1.0.23` | `MIT OR Apache-2.0` | 传递 | — |
 | `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | 传递 | — |
-| `same-file` | `1.0.6` | `Unlicense/MIT` | 直接 | `yeban-mcp` |
+| `same-file` | `1.0.6` | `Unlicense/MIT` | 直接 | `yeban-app`, `yeban-mcp` |
 | `scoped-tls` | `1.0.1` | `MIT/Apache-2.0` | 传递 | — |
 | `scoped-tls-hkt` | `0.1.5` | `MIT/Apache-2.0` | 传递 | — |
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |

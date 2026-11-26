@@ -85,6 +85,12 @@ yeban-render = { workspace = true }
 # 负责人裁决起为默认开, 见 ADR-0072)。
 yeban-dsp = { workspace = true }
 
+# ⭐ T-FIX-542：`src/project_lock.rs` 用 `#[path = "../../yeban-mcp/src/domain/lock.rs"]`
+# 共享 mcp 的锁实现，而该文件用 `same_file::Handle` 校验"路径是否同一文件"（T-FIX-470）。
+# ⇒ app 侧必须**无条件**声明这条依赖：`pub mod project_lock;` 在 `lib.rs` 里没有
+# feature 门，`--no-default-features` 下同样要能编（⛔ 不能只挂到 `in-process-mcp`）。
+same-file.workspace = true
+
 # ---------------------------------------------------------------------------
 # yeban-decode: SFZ 样本的**通用解码入口** (symphonia / rubato), 任务单 #85
 # ---------------------------------------------------------------------------

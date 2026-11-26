@@ -45,6 +45,10 @@ serde_json = { version = "1.0.151" }
 thiserror = { version = "2.0.21" }
 ulid = { version = "3.0.0" }
 sha2 = { version = "0.11.0" }
+# ⭐ T-FIX-542：`yeban-mcp/src/domain/lock.rs` 是**两个 crate 共享**的实现文件
+# （`yeban-app/src/project_lock.rs` 用 `#[path]` 装进来），因此两个 crate 都必须
+# 声明同一条直接依赖；版本从根清单继承（G08：成员不得自带裸版本）。
+same-file = "1.0"
 # 注意: rand_xoshiro 目前**没有**任何成员引用 —— yeban-model 与 yeban-theory 都选择手写
 # splitmix64, 以把跨平台确定性完全握在自己手里 (少一个依赖、少一处版本漂移面)。
 # 这两行保留为"已核验的候选实现", 不是死条目, 清理时请先读 docs/adr/ADR-0001 D5 与
