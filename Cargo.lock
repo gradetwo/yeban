@@ -7246,6 +7246,7 @@ version = "0.0.1"
 dependencies = [
  "getrandom 0.3.4",
  "libm",
+ "same-file",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

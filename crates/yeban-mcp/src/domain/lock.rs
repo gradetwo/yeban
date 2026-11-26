@@ -71,6 +71,23 @@
 //! `tests/lock_advisory.rs::a_lock_file_without_a_live_holder_is_not_occupied`
 //! （造一份无人持有的锁文件 ⇒ 必须能打开；把实现改回"看一眼文件是否存在"它就变红）。
 //!
+//! ## 释放、inode 身份与"两个持有者"（T-FIX-470）
+//!
+//! 锁文件用 `unlink` 释放，这本身带一个**身份**竞态：A 打开旧 inode 并加锁成功，B 随即
+//! `unlink`，C `create_new` 建出新 inode 并加锁成功 —— A 与 C 都拿到 `LockGuard`，
+//! 锁的是**两个不同的文件**，互斥形同虚设。两条防线一起才成立：
+//!
+//! 1. **加锁后校验身份**（[`acquire`]）：锁住 fd 之后用
+//!    [`path_is_same_file`] 比较 fd 与路径。不是同一个文件 ⇒ 我们锁的是已被 unlink
+//!    的孤儿 ⇒ 释放、关句柄、重来（最多 [`LOCK_ACQUIRE_ATTEMPTS`] 次）。
+//!    竞争者若在我们释放后拿到那把孤儿锁，它的身份校验同样会失败并重试。
+//! 2. **持锁期间删除**（[`LockGuard::drop`]）：只有 `path_is_same_file` 为真才
+//!    `remove_file`，而且**先删再释放建议锁**。先释放再删会把"释放之后抢到同一路径"
+//!    的别人的锁文件删掉（那是同一类竞态的另一个方向）。
+//!
+//! 由此保持 `MUST-GATE-008` 的三条既有性质：残留锁文件仍可被接管（拿到建议锁即可）、
+//! `WouldBlock` 仍带**加锁前**的持有者快照、正常关闭仍删掉锁文件（无残留）。
+//!
 //! ## 心跳与陈旧阈值（规范 §0.2 第 5 条的处理）
 //!
 //! 规范要求"每 3 秒刷新 `last_heartbeat`，超过 15 秒或 `kill(pid, 0)` 失败则允许接管"。
@@ -621,19 +638,37 @@ impl LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        // 释放失败不做任何事: `Drop` 里 panic 会让"关闭工程"变成崩溃。
-        if let Some(file) = self.file.take() {
-            let _ = platform::release(&file);
-            drop(file);
-        }
         // 只有**排他**持有者删除锁文件。
         //
         // 共享读者**不删**：删文件不能唤醒已经在等别的 inode 的竞争者
         // （典型 check-then-lock 竞态），反而制造"看起来释放了其实没有"的假象。
         // 读者留下的锁文件是**可接管**的（下一次拿排他锁即可接管并重写），
         // 所以它不会变成永久锁 —— 这正是 `MUST-GATE-008` 要的性质。
+        //
+        // ⭐ T-FIX-470：删之前必须确认**路径仍指向我们锁住的这个文件**，而且要在
+        // **释放建议锁之前**删。
+        //
+        // - 先校验：若路径已被换掉（别人删了旧文件、建了新文件），删的就是**别人的
+        //   锁文件** —— 那会让对方在不知情的情况下失去互斥。
+        // - 先删再释放：释放之后、删之前若有人抢到同一路径的锁，我们照样会把他的
+        //   文件删掉（同一类竞态）。持锁期间删则不会 —— 竞争者要么在 `try_lock`
+        //   上被拒，要么拿到的是**已被我们 unlink** 的孤儿 inode，其 `acquire`
+        //   的身份校验会发现路径不再指向它，放手重来。
         if self.mode.is_exclusive() {
-            let _ = std::fs::remove_file(&self.path);
+            let ours = self
+                .file
+                .as_ref()
+                .is_some_and(|file| path_is_same_file(&self.path, file).unwrap_or(false));
+            if ours {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+        // 释放失败不做任何事: `Drop` 里 panic 会让"关闭工程"变成崩溃。
+        // ⚠ 顺序：**先删（持锁）再放锁**。反过来的话，释放之后抢到同一路径的
+        // 竞争者会被我们删掉它的锁文件（见上面那段的推理）。
+        if let Some(file) = self.file.take() {
+            let _ = platform::release(&file);
+            drop(file);
         }
     }
 }
@@ -663,11 +698,46 @@ impl Drop for LockGuard {
 /// - 文件系统失败 → [`LockError::Io`]。
 pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockError> {
     let lock_file = lock_path(project_path);
-    let (file, created) = open_lock_file(&lock_file)?;
+    // ⭐ T-FIX-470：打开 + 加锁 + **身份校验** 是一个有界重试的整体。
+    //
+    // 只做「打开 + 加锁」是不够的：锁文件用 `unlink` 释放 ⇒ 路径可能在我们
+    // 拿到 fd 之后指向**另一个 inode**（释放者删掉旧文件、别人 `create_new` 建了
+    // 新文件）。这时我们锁住的只是**已经从命名空间消失**的那个 inode，而另一个
+    // 写者锁住了路径上的新文件 —— 两个"持有者"各持一把，互斥失效。
+    //
+    // 所以：加锁成功后必须确认「fd 与路径仍是同一个文件」。不是 ⇒ 放手（释放
+    // 建议锁、关句柄）并重来，本次的锁不算数。
+    for _ in 0..LOCK_ACQUIRE_ATTEMPTS {
+        if let Some(guard) = try_acquire_once(project_path, &lock_file, mode)? {
+            return Ok(guard);
+        }
+    }
+    Err(LockError::Io(std::io::Error::other(format!(
+        "锁文件标识在 {LOCK_ACQUIRE_ATTEMPTS} 次尝试内反复变化，拒绝持有一把无法证明属于该路径的锁: {}",
+        lock_file.display()
+    ))))
+}
+
+/// 一次「打开 → 加锁 → 身份校验」。身份不符（路径已指向别的文件）⇒ `Ok(None)`，
+/// 调用方重试；被活着的持有者占用 ⇒ `Err(WouldBlock)`（不重试：那是真实占用）。
+fn try_acquire_once(
+    project_path: &Path,
+    lock_file: &Path,
+    mode: LockMode,
+) -> Result<Option<LockGuard>, LockError> {
+    let (file, created) = open_lock_file(lock_file)?;
+    // 判据缝（T-FIX-470）：模拟"另一个持有者在 open 与 lock 之间正常释放（含 unlink）"。
+    #[cfg(test)]
+    {
+        let hook = BETWEEN_OPEN_AND_LOCK.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
     // **加锁之前**读一份持有者快照：Windows 的 `LockFileEx` 是强制锁，一旦我们自己
     // 或别人持锁，之后任何其它句柄的读取都会被 OS 拒绝 —— 因此这一次读取的机会
     // 只在"还没锁上"的窗口里（见模块头的平台矩阵）。
-    let holder_snapshot = LockFileSnapshot::read(&lock_file);
+    let holder_snapshot = LockFileSnapshot::read(lock_file);
     // `created == false` ⇒ 文件本来就在。此刻"是否陈旧"还没有结论 ——
     // 它取决于下一行能不能拿到建议锁。
     let took_over_stale_lock = !created && mode.is_exclusive();
@@ -693,10 +763,26 @@ pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockErr
         });
     }
 
+    // ⭐ 身份校验（T-FIX-470）：锁住的 fd 必须仍是**路径此刻指向的那个文件**。
+    // 不是 ⇒ 我们锁的是别人已经 unlink 掉的 inode（孤儿），立刻放手并让调用方重试。
+    match path_is_same_file(lock_file, &file) {
+        Ok(true) => {}
+        Ok(false) => {
+            // 放手：释放建议锁 + 关句柄。⛔ 不删路径 —— 那个文件不是我们的。
+            let _ = platform::release(&file);
+            drop(file);
+            return Ok(None);
+        }
+        Err(error) => {
+            let _ = platform::release(&file);
+            return Err(LockError::Io(error));
+        }
+    }
+
     // 共享读者**不写**元数据（不截断别人正在写的），因此它携带的是"加锁前读到的那一份"。
     let mut guard = LockGuard {
         project_path: project_path.to_path_buf(),
-        path: lock_file,
+        path: lock_file.to_path_buf(),
         mode,
         file: Some(file),
         took_over_stale_lock,
@@ -713,14 +799,37 @@ pub fn acquire(project_path: &Path, mode: LockMode) -> Result<LockGuard, LockErr
         let metadata = LockMetadata::new(project_path, mode);
         if let Err(error) = rewrite_metadata(guard.file.as_ref(), &metadata) {
             // 元数据写失败 ⇒ 撤掉这次加锁（不能留下"锁是我的但内容是别人的/半截的"）。
+            // 删文件前同样做身份校验：删的必须是**我们锁住的**那个文件。
+            let ours = guard
+                .file
+                .as_ref()
+                .is_some_and(|file| path_is_same_file(&guard.path, file).unwrap_or(false));
+            if ours {
+                let _ = std::fs::remove_file(&guard.path);
+            }
             guard.file = None;
-            let _ = std::fs::remove_file(&guard.path);
             return Err(LockError::Io(error));
         }
         // **先把元数据放进守卫再返回**：这是"持锁期间谁持有"的唯一可靠来源。
         guard.holder = Some(metadata);
     }
-    Ok(guard)
+    Ok(Some(guard))
+}
+
+/// `acquire` 的**整体**尝试次数上限（打开 + 加锁 + 身份校验算一次）。
+///
+/// 身份校验失败意味着"路径上的锁文件在我们打开之后被换掉了"，这是竞争而不是故障：
+/// 重试一次通常就落到新文件上。8 次仍反复变化 ⇒ 放弃并响亮报错（⛔ 不返回一把
+/// 无法证明属于该路径的锁）。
+const LOCK_ACQUIRE_ATTEMPTS: usize = 8;
+
+// 判据缝（T-FIX-470）：在 `open` 之后、`try_lock` 之前执行一次注入动作，
+// 用来**确定性地**复现"另一持有者恰好在这两步之间释放（含 unlink）"。
+// 只在 `#[cfg(test)]` 存在，生产构建里没有这个静态量。
+#[cfg(test)]
+thread_local! {
+    static BETWEEN_OPEN_AND_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// 单次打开最多尝试 `create_new` 的次数。
@@ -789,6 +898,21 @@ fn rewrite_metadata(file: Option<&File>, metadata: &LockMetadata) -> std::io::Re
     file.sync_all()
 }
 
+/// 判断 `path` 此刻是否仍指向 `file` 打开的那个文件（设备 + inode / 文件索引）。
+///
+/// 为什么需要它（T-FIX-470）：锁文件用 `unlink` 释放，所以"我拿到了 fd"不等于
+/// "我锁住的就是这个路径"。只有两者是同一个文件时，持有建议锁才等于持有该路径的锁。
+///
+/// 路径已不存在（被释放者删掉）⇒ `Ok(false)`（不是错误：那是竞争输了）。
+fn path_is_same_file(path: &Path, file: &File) -> std::io::Result<bool> {
+    let held = same_file::Handle::from_file(file.try_clone()?)?;
+    match same_file::Handle::from_path(path) {
+        Ok(probe) => Ok(held == probe),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// 读锁文件里的持有者元数据（诊断用）。返回 `(原文, 解析结果)`。
 ///
 /// ⚠ **平台差异**：Windows 上若锁正被持有，这次读取会被 OS 拒绝 ⇒ 返回
@@ -836,6 +960,93 @@ mod lock_open_race_tests {
         );
         assert!(path.exists(), "重试成功后锁文件必须在盘上");
         drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 临时目录（每个判据独立，绝不污染仓库）。
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-lock-identity-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        dir
+    }
+
+    /// ⭐ T-FIX-470 的**确定性**交错判据：A 打开旧 inode 之后、加锁之前，持有者 B
+    /// 正常释放（`Drop` 会 `unlink`）。修复前 A 会锁住**孤儿 inode** 并返回成功，
+    /// 随后 C `create_new` 建新 inode 也能拿到锁 ⇒ 两个持有者同时成立。
+    /// 修复后 A 的身份校验发现路径已不是它锁的那个文件 ⇒ 放手重试；C 必须被拒。
+    #[test]
+    fn an_unlink_between_open_and_lock_cannot_produce_two_holders() {
+        let dir = scratch("split");
+        let project = dir.join("demo.yeban");
+        let lock = lock_path(&project);
+
+        // B：正常持有一把排他锁（文件在盘上）。
+        let holder = acquire(&project, LockMode::ExclusiveWrite).expect("第一持有者");
+        assert!(lock.is_file(), "持锁期间锁文件必须在");
+
+        // A 打开之后、加锁之前，让 B 正常释放（Drop = 校验身份 + unlink + 解锁）。
+        BETWEEN_OPEN_AND_LOCK
+            .with(|slot| *slot.borrow_mut() = Some(Box::new(move || drop(holder))));
+
+        let a = acquire(&project, LockMode::ExclusiveWrite)
+            .expect("身份不符必须放手重试，而不是锁住已 unlink 的孤儿");
+        // A 必须持有**路径此刻指向**的那个文件：第三个写者必须被拒。
+        let third = acquire(&project, LockMode::ExclusiveWrite);
+        assert!(
+            matches!(third, Err(LockError::WouldBlock { .. })),
+            "两个持有者同时成立 ⇒ inode 分裂，实得 {third:?}"
+        );
+
+        drop(a);
+        assert!(!lock.exists(), "正常关闭仍应删掉锁文件（无残留）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ T-FIX-470 的**并发**判据：多线程交替 acquire/Drop，任一时刻成功持有者 ≤ 1。
+    /// 所有写者都在真正的临界区里自增/自减共享计数器 —— 只要出现两个同时成功，
+    /// `peak` 就会大于 1。
+    #[test]
+    fn concurrent_writers_never_hold_the_lock_at_the_same_time() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = scratch("concurrent");
+        let project = Arc::new(dir.join("demo.yeban"));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let project = Arc::clone(&project);
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..64 {
+                    if let Ok(guard) = acquire(&project, LockMode::ExclusiveWrite) {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::yield_now();
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        drop(guard);
+                    }
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().expect("线程不得 panic");
+        }
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "任一时刻成功持有者必须 ≤ 1（>1 ⇒ inode 分裂，互斥失效）"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

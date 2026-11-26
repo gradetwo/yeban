@@ -35,6 +35,12 @@ yeban-midi = { workspace = true }
 yeban-diagnostics = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+# ⭐ T-FIX-470：锁文件的**身份校验**（fd 与路径是否同一个文件）。
+# 理由：锁文件用 unlink 释放 ⇒ 路径可能在我们拿到 fd 之后指向另一个 inode；
+# 只比路径不够，必须比设备 + inode（Windows 上是卷序列号 + 文件索引）。
+# 这个 crate 已在依赖树里（Unlicense/MIT，见 docs/ledger/dependency-licenses.md），
+# 本单只是把它从传递依赖提为直接依赖，不引入任何新代码。
+same-file = "1.0"
 thiserror.workspace = true
 # 领域实现的**执行引擎**: `Op`(23 变体 + 自包含逆操作)、`CommitGraph`、
 # `YebanProjectV1::validate()`、`AssetHash::of_bytes`(SHA-256 摘要)。
