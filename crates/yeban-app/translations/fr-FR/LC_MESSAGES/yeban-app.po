@@ -1063,6 +1063,9 @@ msgstr "Ouvrir un projet (choisir un conteneur .yeban dans la boîte de dialogue
 msgid "打开工程"
 msgstr "Ouvrir un projet"
 
+msgid "取消打开工程（当前工程一位不动）"
+msgstr "Annuler l'ouverture du projet (le projet actuel reste inchangé)"
+
 msgid "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）"
 msgstr "Nouveau projet (choisir un emplacement dans la boîte de dialogue ; écrit un conteneur vide avec 0 piste + 1 bus master et bascule dessus)"
 
