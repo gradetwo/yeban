@@ -433,16 +433,9 @@ fn tracks_model_equal(ui: &MainWindow, next: &[crate::ui::TrackData]) -> bool {
 /// 与 `.slint` 的 16 条泳道逐条对应（滚轮/八度平移会移动 base，窗口随之移动）。`apply_view` 与 `Cmd/Ctrl+A`
 /// 共用本函数，⛔ 不在两个调用点各抄一套。
 fn roll_visible_pitch_window(ui: &MainWindow) -> (u8, u8) {
-    let roll_base = roll_base_pitch(ui);
-    // ⛔ 不能拿 `ViewState::visible_pitch_range(16)` 当来源：`pitch_lane` 把窗口外的音高
-    // **钳制**到 0..15，于是它对 16 条泳道恒返回 `0..=127`（T-FIX-216 复核时实测）。
-    // 真实的 16 条泳道窗口就是 base..=base+15，两个调用点都只认这一份。
-    (
-        roll_base,
-        roll_base
-            .saturating_add((ROLL_LANE_COUNT - 1) as u8)
-            .min(127),
-    )
+    // ⭐ T-FIX-511：算术只有一份（`bridge::visible_pitch_range_for`）——host 不再自己
+    // 写 base..base+15 的第二份，越界钳位与"默认不能静默"也都在那里。
+    crate::bridge::visible_pitch_range_for(roll_base_pitch(ui), ROLL_LANE_COUNT)
 }
 
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。

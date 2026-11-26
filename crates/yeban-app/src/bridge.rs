@@ -223,6 +223,33 @@ pub fn pitch_lane_with_base(pitch: u8, base_pitch: u8) -> i32 {
     PITCH_LANE_COUNT - 1 - offset
 }
 
+/// 可见音高窗口的**唯一**算术（[`ViewState::visible_pitch_range`] 与 host 共用）。
+///
+/// 返回 `(base_pitch, min(base_pitch + lane_count - 1, 127))`。
+///
+/// **默认不能静默**：
+/// - `lane_count <= 0`（非法：一条泳道都没有）⇒ 按 1 条处理并打一行 stderr；
+/// - 窗口上界越过 MIDI 127 ⇒ 钳到 127 并打一行 stderr（不静默回退到默认窗口）。
+#[must_use]
+pub fn visible_pitch_range_for(base_pitch: u8, lane_count: i32) -> (u8, u8) {
+    let lanes = if lane_count <= 0 {
+        eprintln!(
+            "[yeban-app] visible_pitch_range: lane_count={lane_count} 不是正整数 ⇒ 按 1 条泳道处理（钳位）"
+        );
+        1
+    } else {
+        lane_count
+    };
+    let span = u8::try_from(lanes - 1).unwrap_or(u8::MAX);
+    let wanted_max = i32::from(base_pitch).saturating_add(lanes - 1);
+    if wanted_max > i32::from(u8::MAX) {
+        eprintln!(
+            "[yeban-app] visible_pitch_range: base={base_pitch} lanes={lanes} 越过 MIDI 127 ⇒ 上界钳到 127"
+        );
+    }
+    (base_pitch, base_pitch.saturating_add(span).min(127))
+}
+
 /// `[UI-NOTE-002]` Map a MIDI pitch to the default C4 (`PITCH_LANE_BASE`) piano-roll lane index.
 #[must_use]
 pub fn pitch_lane(pitch: u8) -> i32 {
@@ -5949,26 +5976,17 @@ impl ViewState {
         hits
     }
 
-    /// `[UI-NOTE-001]` 步骤 ①（纵向）：当前视口的 **音高范围**。
+    /// `[UI-NOTE-001]` 步骤 ①（纵向）：**当前基音下**的可见音高窗口。
     ///
-    /// 卷帘目前**固定画 16 条泳道**（`piano_roll.slint` 的 `for lane_index in 16`），所以纵向窗口就是
-    /// "泳道号落在 `[0, lane_count)` 的那些音高"。这与"工程里出现过的音高"**不是**同一个量 ——
-    /// 后者会把视口之外的音高也算进来，正是账本第 202 轮拒绝发布的那种错值。
+    /// 卷帘固定画 `PITCH_LANE_COUNT` 条泳道，纵向窗口就是 `base_pitch ..= base_pitch+lanes-1`
+    /// （上界钳到 MIDI 127）。⛔ 不要再用"扫描 `pitch_lane`"那套：`pitch_lane_with_base`
+    /// 把窗口外的音高**钳制**到 0/15 两条边道，扫描结果会对任何 `lane_count >= 16` 返回
+    /// `0..=127`（T-FIX-216 复核实测），等于没裁。
     ///
-    /// 换算法是**扫描 0..=127** 找泳道在范围内的音高（`pitch_lane` 没有现成的反函数）；
-    /// 无匹配时返回 `(0, 0)`，与"没有可见音高"同义。
+    /// 基音必须是**参数**：默认基音 60 只是其中一档，纵向滚动/八度平移后的窗口由调用方给。
     #[must_use]
-    pub fn visible_pitch_range(&self, lane_count: i32) -> (u8, u8) {
-        let mut min: Option<u8> = None;
-        let mut max: Option<u8> = None;
-        for pitch in 0..=u8::MAX {
-            let lane = pitch_lane(pitch);
-            if lane >= 0 && lane < lane_count {
-                min = Some(min.map_or(pitch, |m: u8| m.min(pitch)));
-                max = Some(max.map_or(pitch, |m: u8| m.max(pitch)));
-            }
-        }
-        (min.unwrap_or(0), max.unwrap_or(0))
+    pub fn visible_pitch_range(&self, base_pitch: u8, lane_count: i32) -> (u8, u8) {
+        visible_pitch_range_for(base_pitch, lane_count)
     }
 
     /// `[UI-NOTE-003]` **命中测试**：可见窗口内某个逻辑像素点落在哪个音符上。
@@ -9177,39 +9195,37 @@ mod tests {
         }
     }
 
+    /// ⭐ T-FIX-511：可见音高窗口**认基音**——四档基音逐档对齐 `base..=base+lanes-1`。
+    ///
+    /// 旧实现（扫描 `pitch_lane`）对 16 条泳道恒返回 `0..=127`：`pitch_lane_with_base`
+    /// 把窗口外的音高钳到两条边道，扫描就把 0 与 127 都算了进来。
     #[test]
-    fn visible_pitch_range_covers_every_pitch_the_roll_can_draw() {
-        // 纵向类比（第 459 轮 tick 判据的纵向版）：泳道号落在 `[0, lane_count)` 的音高,
-        // **必须**落在返回的音高范围内 —— 否则卷帘画得出的音符会跑到"视口范围"之外。
-        let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
-        let lane_count = 16; // 与 `piano_roll.slint` 的 `for lane_index in 16` 一致
-        let (min_pitch, max_pitch) = view.visible_pitch_range(lane_count);
-        assert!(
-            min_pitch <= max_pitch,
-            "范围必须有序: {min_pitch}..{max_pitch}"
+    fn visible_pitch_range_is_base_aware() {
+        let lane_count = PITCH_LANE_COUNT;
+        for (base, expected_max) in [(60_u8, 75_u8), (72, 87), (0, 15), (112, 127)] {
+            let (min_pitch, max_pitch) = visible_pitch_range_for(base, lane_count);
+            assert_eq!(min_pitch, base, "下界必须就是当前基音（base={base}）");
+            assert_eq!(
+                max_pitch, expected_max,
+                "base={base} 的窗口上界必须是 base+15（越 127 钳位）"
+            );
+        }
+        // 默认基音下与旧口径一致：60..=75。
+        assert_eq!(
+            visible_pitch_range_for(PITCH_LANE_BASE, lane_count),
+            (60, 75)
         );
-        let mut covered = 0_usize;
-        for pitch in 0..=u8::MAX {
-            let lane = pitch_lane(pitch);
-            if lane >= 0 && lane < lane_count {
-                assert!(
-                    pitch >= min_pitch && pitch <= max_pitch,
-                    "音高 {pitch}（泳道 {lane}）应可见, 却不在范围 {min_pitch}..{max_pitch} 内"
-                );
-                covered += 1;
-            }
-        }
-        assert!(covered > 0, "16 条泳道必须覆盖至少一个音高, 否则判据空转");
-        // 反向: 范围之外**不得**有可见泳道（否则范围偏大, 等于没裁）。
-        for pitch in 0..=u8::MAX {
-            if pitch < min_pitch || pitch > max_pitch {
-                let lane = pitch_lane(pitch);
-                assert!(
-                    lane < 0 || lane >= lane_count,
-                    "音高 {pitch} 在范围外, 却落在可见泳道 {lane}"
-                );
-            }
-        }
+    }
+
+    /// ⭐ T-FIX-511：非法/越界输入必须**响亮**（钳位 + stderr），⛔ 不静默回退默认窗口。
+    #[test]
+    fn visible_pitch_range_clamps_invalid_input_instead_of_defaulting() {
+        // 0 条泳道 ⇒ 按 1 条处理（窗口退化为基音本身），不是回退到 60..=75。
+        assert_eq!(visible_pitch_range_for(72, 0), (72, 72));
+        // 越过 MIDI 127 ⇒ 上界钳到 127，下界仍是基音。
+        assert_eq!(visible_pitch_range_for(120, 16), (120, 127));
+        // 极端：span 超出 u8 ⇒ 仍钳在 127。
+        assert_eq!(visible_pitch_range_for(127, i32::MAX), (127, 127));
     }
 
     #[test]
