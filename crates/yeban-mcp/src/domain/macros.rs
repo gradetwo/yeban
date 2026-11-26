@@ -19,7 +19,8 @@
 //! 级联点仍然**物化**进 `mapping.target` 的泳道：离线渲染器消费目标泳道的既有路径
 //! 不变。另一条动态路径（`AutomationTarget::Macro` 泳道）只在**存在该泳道**时才
 //! 级联，因此没有宏泳道的工程不会与这里的物化双计。⚠ 同一个宏**同时**有 `Macro`
-//! 泳道与物化点时，两者会叠加一次（本单未去重；现有夹具无此组合）。
+//! 泳道与物化点时，渲染侧只认**物化点**（`MacroCascade::for_target` 按本文件的
+//! 确定性 id 识别并跳过对应映射）；两条路径不会叠加。
 //!
 //! ## 级联的跨度 = **工程拍号**下的"一小节"
 //!
@@ -51,9 +52,9 @@ use yeban_model::{
 };
 
 use super::error::{Fault, from_model};
-use super::ids::deterministic_id;
 use super::section::ops_to_value;
 use crate::tools::ErrorCode;
+use yeban_model::ids::macro_cascade_point_id;
 
 /// 一次已校验的宏规划（**只读计算的产物**）。
 #[derive(Clone, Debug, PartialEq)]
@@ -286,9 +287,7 @@ fn plan_inner(
         // 级联的形状: 本小节起点 → 一小节后, S 曲线平滑过渡;
         // 幅值 = 基线 + mapping.depth × 宏位置（depth 是目标单位的振幅）。
         for (step, tick) in [0_u64, cascade_ticks].into_iter().enumerate() {
-            let point_id = deterministic_id(&format!(
-                "macro-cascade:{track_id}:{macro_index}:{mapping_index}:{step}"
-            ));
+            let point_id = macro_cascade_point_id(*track_id, macro_index, mapping_index, step);
             let old_point = track
                 .automation_lanes
                 .get(&target)
@@ -330,10 +329,8 @@ fn plan_inner(
             if reused {
                 continue;
             }
-            for step in [0_u64, 1_u64] {
-                let point_id = deterministic_id(&format!(
-                    "macro-cascade:{track_id}:{macro_index}:{mapping_index}:{step}"
-                ));
+            for step in [0_usize, 1] {
+                let point_id = macro_cascade_point_id(*track_id, macro_index, mapping_index, step);
                 let previous_point = track
                     .automation_lanes
                     .get(&old_mapping.target)
@@ -375,6 +372,7 @@ fn plan_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::deterministic_id;
     use yeban_model::samples::filled_project;
 
     /// 样本里那个带宏与映射的音轨（`filled_project` 的 lead）。

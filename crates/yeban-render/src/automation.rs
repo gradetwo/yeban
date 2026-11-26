@@ -48,7 +48,8 @@
 //!   `目标当前值 + depth × macro_value`（`depth` 是目标单位的振幅）。只有**存在
 //!   `Macro` 泳道**时才做动态级联：没有宏泳道的静态宏不参与渲染（`yeban_set_macro`
 //!   已经把级联物化进目标泳道，再算一次就是双计）。⚠ 若同一个宏**既有** `Macro`
-//!   泳道、又已被 `set_macro` 物化，两条路径会叠加（本单未去重；现有夹具无此组合）；
+//!   泳道、又已被 `set_macro` 物化，目标泳道上的两个确定性 `macro-cascade:` 点
+//!   是**唯一**来源：`MacroCascade` 按同一身份公式跳过该映射，⛔ 不再叠加；
 //! - 设备参数自动化的形状**不同**（任务单 `#266`）：它改的是**器件参数**、要重算系数
 //!   ⇒ 只在**块边界**调 [`crate::inserts::InsertRuntime::apply_device_params`]，
 //!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`_db` = dB、`_hz` = Hz、
@@ -69,6 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use yeban_dsp::channel_strip::ChannelStripParams;
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_engine::sfz_instrument::CcSeedTable;
+use yeban_model::ids::macro_cascade_point_id;
 use yeban_model::time_math::TempoMap;
 use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
@@ -109,15 +111,38 @@ pub fn tick_at_frame(frame: u64, bpm: f64, sample_rate: u32) -> u64 {
 
 /// 一条 `Macro` 泳道对**某个目标**的级联贡献（任务单 `#297`）。
 ///
-/// 只由**存在的 `Macro` 泳道**产生：没有 `Macro` 泳道的静态宏继续不参与渲染 ——
-/// `yeban_set_macro` 已经把级联**物化**进目标泳道，再无条件算一次就是同一份映射
-/// **双计**。因此本类型只在"目标有一条映射到它的 `Macro` 泳道"时才非空。
+/// 只由**存在的 `Macro` 泳道**产生，且该映射在目标泳道上**还没有**两个确定性
+/// 物化点：`yeban_set_macro` 已经把级联**物化**进目标泳道，再算一次就是同一份
+/// 映射**双计**。因此本类型只在“目标有一条映射到它的 `Macro` 泳道、而物化点
+/// 尚未接管”时才非空。
 #[derive(Clone, Debug)]
 struct MacroLaneSource {
     /// 映射振幅，**目标单位**（[`yeban_model::MacroMapping::depth`]）。
     depth: f32,
     /// 宏位置曲线（`0.0..=1.0`；`value_at` 是模型层的唯一插值）。
     lane: AutomationLane,
+}
+
+/// 目标泳道上是否已有这条映射的**两个**确定性物化点。
+///
+/// 两个都在 ⇒ `yeban_set_macro` 已经把整条映射物化完，动态级联必须让位；
+/// 只缺一个（手删/半写）⇒ 仍走动态路径，⛔ 不把半条物化当成完整真相。
+fn mapping_is_materialised(
+    target_lane: Option<&AutomationLane>,
+    track_id: EntityId,
+    macro_index: usize,
+    mapping_index: usize,
+) -> bool {
+    target_lane.is_some_and(|lane| {
+        [0_usize, 1].into_iter().all(|step| {
+            lane.points.contains_key(&macro_cascade_point_id(
+                track_id,
+                macro_index,
+                mapping_index,
+                step,
+            ))
+        })
+    })
 }
 
 /// 一个目标上的全部宏级联贡献（`#297`）。
@@ -134,11 +159,14 @@ impl MacroCascade {
     /// 扫描工程里**全部 `Macro` 泳道**，收集映射到 `target` 的贡献。
     ///
     /// - 只认 `read_enabled` 且有点的宏泳道（关掉/空泳道 = 此刻没有宏值）；
+    /// - ⭐ 该映射在目标泳道上已经有**两个**本宏确定性物化点时，跳过它：
+    ///   `yeban_set_macro` 已经把这条映射写进目标泳道，动态路径再加一次就是双计；
     /// - 目标为 `Macro` 的映射**不在这里递归**：嵌套宏本切片不消费，判定侧
     ///   （[`unsupported_lane_reason`]）也把它报成 `macro`；
     /// - 只收集 `depth != 0.0` 的映射（`0.0` 的摆动恒为 0，收进来只会多一次乘法）。
     fn for_target(project: &YebanProjectV1, target: &AutomationTarget) -> Self {
         let mut sources = Vec::new();
+        let target_lane = project.automation_lane(target);
         for track in project.tracks.values() {
             for (lane_target, lane) in &track.automation_lanes {
                 let AutomationTarget::Macro {
@@ -157,10 +185,16 @@ impl MacroCascade {
                 let Some(macro_parameter) = macro_track.macros.get(*macro_index) else {
                     continue;
                 };
-                for mapping in &macro_parameter.mappings {
+                for (mapping_index, mapping) in macro_parameter.mappings.iter().enumerate() {
                     if mapping.target == *target
                         && !matches!(mapping.target, AutomationTarget::Macro { .. })
                         && mapping.depth != 0.0
+                        && !mapping_is_materialised(
+                            target_lane,
+                            *track_id,
+                            *macro_index,
+                            mapping_index,
+                        )
                     {
                         sources.push(MacroLaneSource {
                             depth: mapping.depth,
@@ -2400,7 +2434,107 @@ mod tests {
         (project, track_id)
     }
 
-    /// ⭐ `#297` 判据 2/3：宏泳道按**目标单位**级联；`macro_value = 0` 时逐位恒等。
+    /// 三种宏路径夹具：只有 `Macro` 泳道 / 只有物化点 / 两者都有。
+    ///
+    /// 宏泳道与物化点都编码同一条曲线（tick 0 = 0.5、小节末 = 0.8），
+    /// 因而三种形态在 `tick 0` 与 `tick 3840` 的目标读数必须逐位相同。
+    fn macro_path_project(lane: bool, materialised: bool) -> (YebanProjectV1, EntityId) {
+        let (mut project, track_id) = project_with_macro_lane(0.5, 6.0, true);
+        let macro_target = AutomationTarget::Macro {
+            track_id,
+            macro_index: 0,
+        };
+        if !lane {
+            project
+                .tracks
+                .get_mut(&track_id)
+                .expect("track")
+                .automation_lanes
+                .remove(&macro_target);
+        } else {
+            let target_lane = project
+                .tracks
+                .get_mut(&track_id)
+                .expect("track")
+                .automation_lanes
+                .get_mut(&macro_target)
+                .expect("macro lane");
+            target_lane.points.clear();
+            let first = point(0, 0, 0.5);
+            let last = point(1, 3_840, 0.8);
+            target_lane.points.insert(first.id, first);
+            target_lane.points.insert(last.id, last);
+        }
+        if materialised {
+            let target = AutomationTarget::TrackVolume { track_id };
+            let mut points = std::collections::BTreeMap::new();
+            for (step, macro_value) in [0.5_f32, 0.8].into_iter().enumerate() {
+                let id = macro_cascade_point_id(track_id, 0, 0, step);
+                let value = -6.0 + macro_value * 6.0;
+                points.insert(
+                    id,
+                    AutomationPoint {
+                        id,
+                        tick: if step == 0 { 0 } else { 3_840 },
+                        value,
+                        curve: CurveType::SCurve,
+                    },
+                );
+            }
+            project
+                .tracks
+                .get_mut(&track_id)
+                .expect("track")
+                .automation_lanes
+                .insert(
+                    target,
+                    AutomationLane {
+                        target,
+                        points,
+                        read_enabled: true,
+                        write_mode: AutomationWriteMode::Off,
+                        domain: None,
+                    },
+                );
+        }
+        (project, track_id)
+    }
+
+    #[test]
+    fn macro_lane_only_materialised_only_and_both_agree_bit_for_bit() {
+        let target = AutomationTarget::TrackVolume {
+            track_id: EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P001").expect("ULID"),
+        };
+        let both = macro_path_project(true, true);
+        for tick in [0_u64, 3_840] {
+            let mut readings = Vec::new();
+            for (label, (project, track_id)) in [
+                ("lane", macro_path_project(true, false)),
+                ("points", macro_path_project(false, true)),
+                ("both", both.clone()),
+            ] {
+                let automation = TrackGainAutomation::new(&project, track_id, 48_000);
+                let reading = automation
+                    .composed_db_at(tick)
+                    .unwrap_or_else(|| panic!("{label} 在 tick {tick} 必须有读数"));
+                readings.push((label, reading.to_bits()));
+            }
+            assert_eq!(readings[0].1, readings[1].1, "tick {tick}: 泳道 vs 物化点");
+            assert_eq!(
+                readings[1].1, readings[2].1,
+                "tick {tick}: 物化点 vs 两者都有"
+            );
+        }
+        assert!(
+            !MacroCascade::for_target(&both.0, &target).has_sources(),
+            "两者都有时动态路径必须让位给两个物化点"
+        );
+        assert!(
+            !MacroCascade::for_target(&macro_path_project(true, false).0, &target).is_zero(),
+            "只有泳道时宏曲线不是全零，不得走恒等"
+        );
+    }
+
     #[test]
     fn a_macro_lane_cascades_in_target_units_and_zero_is_identity() {
         // depth = 6 dB、宏位置 1.0、静态推子 −6 dB ⇒ 有效值 0 dB

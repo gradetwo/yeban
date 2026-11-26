@@ -238,6 +238,66 @@ impl Default for AssetHasher {
     }
 }
 
+/// Crockford Base32 字母表（ULID 规范；排除了 `I` `L` `O` `U`）。
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// FNV-1a 128 的偏移基。
+const FNV_OFFSET_BASIS_128: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+
+/// FNV-1a 128 的质数（2^88 + 0x13B）。
+const FNV_PRIME_128: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+/// `label` 的 128 bit 稳定摘要（FNV-1a，跨进程、跨平台、跨重启一致）。
+#[must_use]
+pub fn digest128(label: &str) -> u128 {
+    let mut hash = FNV_OFFSET_BASIS_128;
+    for byte in label.as_bytes() {
+        hash ^= u128::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME_128);
+    }
+    hash
+}
+
+/// 把 128 bit 值编码成 26 字符 Crockford Base32（ULID 文本形态，前 2 bit 补零）。
+#[must_use]
+pub fn to_ulid_text(value: u128) -> String {
+    let mut out = [0_u8; 26];
+    let mut rest = value;
+    for slot in out.iter_mut().rev() {
+        *slot = CROCKFORD[(rest & 0x1f) as usize];
+        rest >>= 5;
+    }
+    // 安全: 26 个字节全部来自 ASCII 字母表。
+    String::from_utf8(out.to_vec()).expect("Crockford 字母表是 ASCII")
+}
+
+/// 由标签派生一个确定性 [`EntityId`]。
+///
+/// # Panics
+///
+/// 不会 panic：编码器与 [`EntityId::from_str`] 的口径由单元判据钉住。
+#[must_use]
+pub fn deterministic_id(label: &str) -> EntityId {
+    EntityId::from_str(&to_ulid_text(digest128(label))).expect("编码器产出合法 ULID")
+}
+
+/// `yeban_set_macro` 物化级联点的**单一身份公式**。
+///
+/// 物化点身份是 `macro-cascade:{track}:{macro}:{mapping_index}:{step}` 的确定性
+/// 派生；写入侧（`yeban-mcp`）与渲染侧（`yeban-render`）必须用同一个函数，
+/// 否则渲染侧无法可靠地识别“这条映射已经有物化点”，双计就会回来。
+#[must_use]
+pub fn macro_cascade_point_id(
+    track_id: EntityId,
+    macro_index: usize,
+    mapping_index: usize,
+    step: usize,
+) -> EntityId {
+    deterministic_id(&format!(
+        "macro-cascade:{track_id}:{macro_index}:{mapping_index}:{step}"
+    ))
+}
+
 /// 提交快照树的 SHA-256 摘要 [ARCH-OPS-002]。
 ///
 /// 与 [`AssetHash`] 同为内容寻址键，但语义不同：`ContentHash` 标识一次

@@ -14,61 +14,23 @@
 //!
 //! ## 这不是加密随机源，也**不是**工程实体身份的分配器
 //!
-//! `Proposal::id` / 提交身份 / 保存用的临时文件名仍然用 [`EntityId::new`]
-//! （那里"可预测"反而是缺点：两个并发会话必须拿到不同的提案身份）。
+//! `Proposal::id` / 提交身份 / 保存用的临时文件名仍然用
+//! [`yeban_model::EntityId::new`]。
 //! 本模块只用于"同一请求应当产出同一载荷"的**确定性**场景。
+//!
+//! ## 单一实现
+//!
+//! 派生算法在 [`yeban_model::ids`]；这里只做再导出，因为渲染侧也要用同一个
+//! [`macro_cascade_point_id`] 识别物化点（两条路径共享一份身份公式）。
 
-use std::str::FromStr as _;
-
-use yeban_model::EntityId;
-
-/// Crockford Base32 字母表（ULID 规范；排除了 `I` `L` `O` `U`）。
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/// FNV-1a 128 的偏移基。
-const FNV_OFFSET_BASIS_128: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-
-/// FNV-1a 128 的质数（2^88 + 0x13B）。
-const FNV_PRIME_128: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-
-/// `label` 的 128 bit 稳定摘要（FNV-1a，跨进程、跨平台、跨重启一致）。
-#[must_use]
-pub fn digest128(label: &str) -> u128 {
-    let mut hash = FNV_OFFSET_BASIS_128;
-    for byte in label.as_bytes() {
-        hash ^= u128::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME_128);
-    }
-    hash
-}
-
-/// 把 128 bit 值编码成 26 字符 Crockford Base32（ULID 文本形态，前 2 bit 补零）。
-#[must_use]
-pub fn to_ulid_text(value: u128) -> String {
-    let mut out = [0_u8; 26];
-    let mut rest = value;
-    for slot in out.iter_mut().rev() {
-        *slot = CROCKFORD[(rest & 0x1f) as usize];
-        rest >>= 5;
-    }
-    // 安全: 26 个字节全部来自 ASCII 字母表。
-    String::from_utf8(out.to_vec()).expect("Crockford 字母表是 ASCII")
-}
-
-/// 由标签派生一个确定性 `EntityId`。
-///
-/// # Panics
-///
-/// 不会 panic：编码器与 `EntityId::from_str` 的口径由单元判据钉住
-/// （`deterministic_ids_are_stable_canonical_ulids`）。
-#[must_use]
-pub fn deterministic_id(label: &str) -> EntityId {
-    EntityId::from_str(&to_ulid_text(digest128(label))).expect("编码器产出合法 ULID")
-}
+pub use yeban_model::ids::{deterministic_id, digest128, macro_cascade_point_id, to_ulid_text};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr as _;
+
+    use yeban_model::EntityId;
 
     #[test]
     fn deterministic_ids_are_stable_canonical_ulids() {
@@ -88,7 +50,6 @@ mod tests {
             first,
             "文本形态必须能被解析回同一身份"
         );
-        // 不同标签 → 不同身份。
         assert_ne!(
             first,
             deterministic_id("section:Chorus:cinematic-orchestral:9")
@@ -101,7 +62,6 @@ mod tests {
         assert_eq!(to_ulid_text(1), "00000000000000000000000001");
         assert_eq!(to_ulid_text(31), "0000000000000000000000000Z");
         assert_eq!(to_ulid_text(32), "00000000000000000000000010");
-        // 字母表里没有 I / L / O / U。
         let text = to_ulid_text(u128::MAX);
         assert_eq!(text.len(), 26);
         for banned in ['I', 'L', 'O', 'U'] {
@@ -113,5 +73,14 @@ mod tests {
     fn digest_is_order_sensitive_and_not_constant() {
         assert_ne!(digest128("ab"), digest128("ba"));
         assert_ne!(digest128(""), 0);
+    }
+
+    #[test]
+    fn macro_cascade_point_ids_are_the_same_formula_as_the_callers() {
+        let track = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P001").expect("ULID");
+        assert_eq!(
+            macro_cascade_point_id(track, 0, 0, 0),
+            deterministic_id("macro-cascade:01J8Z5Q0R7K3M9X2V4B6N8P001:0:0:0")
+        );
     }
 }
