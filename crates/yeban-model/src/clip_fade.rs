@@ -39,6 +39,11 @@ pub struct ClipFadeWindow {
     pub fade_out_start: u64,
     /// 淡出终点（不含）；与起点相同 ⇒ 没有淡出。
     pub fade_out_end: u64,
+    /// 这条淡出是否**收尾到静音**（T-FIX-441）：显式 fade-out 落在摆放自己的
+    /// 尾巴上时为 `true`，渲染窗口的最后一帧必须落到 0；自动交叉淡化生成的
+    /// 淡出（后面还有另一条素材顶着）为 `false`，末帧仍留 `sqrt(1/len)` 以
+    /// 保持两侧功率之和为 1。
+    pub fade_out_closes_to_silence: bool,
 }
 
 impl ClipFadeWindow {
@@ -62,8 +67,21 @@ impl ClipFadeWindow {
         }
         let out_len = self.fade_out_end.saturating_sub(self.fade_out_start);
         if out_len > 0 && frame >= self.fade_out_start && frame < self.fade_out_end {
-            let remaining = self.fade_out_end.saturating_sub(frame);
-            let t = (remaining as f32 / out_len as f32).clamp(0.0, 1.0);
+            // T-FIX-441：收尾到静音的淡出用**闭区间**（末帧 = `end - 1` ⇒ t = 0），
+            // 否则 25 帧（1 tick）尾巴会停在 sqrt(1/25) = 0.2，下一帧静音形成台阶。
+            // 交叉淡化的淡出**不进这条**：它的末帧还要与后一条的淡入凑成功率 1。
+            let t = if self.fade_out_closes_to_silence {
+                let last = self.fade_out_end.saturating_sub(1);
+                let span = out_len.saturating_sub(1);
+                if span == 0 {
+                    0.0
+                } else {
+                    (last.saturating_sub(frame) as f32 / span as f32).clamp(0.0, 1.0)
+                }
+            } else {
+                let remaining = self.fade_out_end.saturating_sub(frame);
+                (remaining as f32 / out_len as f32).clamp(0.0, 1.0)
+            };
             gain *= t.sqrt();
         }
         gain
@@ -117,6 +135,7 @@ pub fn plan_fade_windows(intervals: &[ClipFadeInterval]) -> Vec<ClipFadeWindow> 
                 fade_in_end,
                 fade_out_start,
                 fade_out_end: interval.end,
+                fade_out_closes_to_silence: interval.fade_out_frames > 0,
             }
         })
         .collect();
@@ -181,12 +200,94 @@ mod tests {
             fade_in_end: 100,
             fade_out_start: 100,
             fade_out_end: 200,
+            // 本夹具覆盖的是 100 帧等功率**交叉淡化**口径（不是收尾到静音）：
+            // 中点仍应为 1/√2，末帧仍应与后一条凑成功率 1。
+            fade_out_closes_to_silence: false,
         };
         assert!((window.gain_at(0) - 0.0).abs() < 1e-6);
         assert!((window.gain_at(50) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert!((window.gain_at(100) - 1.0).abs() < 1e-6);
         assert!((window.gain_at(150) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert!(window.gain_at(199) <= 0.1 + 1e-6);
+    }
+
+    /// T-FIX-441：25 帧 = 1 tick @120BPM/48kHz/PPQ960。收尾到静音的淡出，
+    /// 最后一个被渲染帧必须正好 0；相邻帧阶跃只允许由等功率 sqrt 网格本身
+    /// 决定（`sqrt(1/(len-1))`），不允许再叠加"末帧没淡完"的台阶。
+    #[test]
+    fn a_25_frame_terminal_fade_out_ends_at_zero_without_an_extra_step() {
+        let window = ClipFadeWindow {
+            fade_in_start: 0,
+            fade_in_end: 0,
+            fade_out_start: 0,
+            fade_out_end: 25,
+            fade_out_closes_to_silence: true,
+        };
+        assert_eq!(window.gain_at(0), 1.0, "首帧仍是满增益");
+        assert_eq!(window.gain_at(24), 0.0, "末帧必须正好落到 0");
+        assert_eq!(window.gain_at(25), 1.0, "窗口外不再乘淡出");
+
+        let mut max_step = 0.0_f32;
+        for frame in 1..25u64 {
+            max_step = max_step.max((window.gain_at(frame) - window.gain_at(frame - 1)).abs());
+        }
+        // sqrt 网格的最后一格：sqrt(1/24) ≈ 0.204124；留 1e-4 的浮点余量。
+        assert!(
+            (max_step - 0.204_124).abs() < 1e-4,
+            "相邻帧最大阶跃只能是 sqrt 网格值，实测 {max_step}"
+        );
+        assert!(max_step <= 0.204_2, "短淡出不得出现额外台阶: {max_step}");
+    }
+
+    /// 1 帧淡出的边界：窗口只剩一帧，必须直接是 0（旧公式这里是 1.0）。
+    #[test]
+    fn a_one_frame_terminal_fade_out_is_silent_on_its_only_frame() {
+        let window = ClipFadeWindow {
+            fade_in_start: 0,
+            fade_in_end: 0,
+            fade_out_start: 0,
+            fade_out_end: 1,
+            fade_out_closes_to_silence: true,
+        };
+        assert_eq!(window.gain_at(0), 0.0);
+    }
+
+    /// T-FIX-441 的交叉淡化口径：自动交叉淡化的淡出**不**归零，两侧功率和恒为 1。
+    /// 这条防止"为了短淡出归零"把 T-FIX-374 的等功率补偿弄坏。
+    #[test]
+    fn an_automatic_crossfade_keeps_equal_power_after_the_terminal_fix() {
+        let mut right = interval(480, 1440, 0, 0);
+        right.explicit = true;
+        let windows = plan_fade_windows(&[interval(0, 960, 0, 0), right]);
+        assert!(!windows[0].fade_out_closes_to_silence, "交叉淡化不是收尾");
+        for frame in 480..960u64 {
+            let power = windows[0].gain_at(frame).powi(2) + windows[1].gain_at(frame).powi(2);
+            assert!(
+                (power - 1.0).abs() < 1e-5,
+                "交叉淡化第 {frame} 帧功率和 {power} 偏离 1"
+            );
+        }
+    }
+
+    /// 100 帧既有锚点不放宽：普通（非收尾）100 帧窗口第 199 帧仍是 1/10。
+    #[test]
+    fn the_hundred_frame_anchor_is_not_relaxed() {
+        let window = ClipFadeWindow {
+            fade_in_start: 0,
+            fade_in_end: 0,
+            fade_out_start: 100,
+            fade_out_end: 200,
+            fade_out_closes_to_silence: false,
+        };
+        assert!(
+            (window.gain_at(199) - 0.1).abs() < 1e-6,
+            "旧锚点必须保持 0.1"
+        );
+        let terminal = ClipFadeWindow {
+            fade_out_closes_to_silence: true,
+            ..window
+        };
+        assert_eq!(terminal.gain_at(199), 0.0, "收尾窗口末帧必须 0");
     }
 
     #[test]
@@ -208,6 +309,8 @@ mod tests {
                 fade_in_end: 0,
                 fade_out_start: 480,
                 fade_out_end: 960,
+                // 自动交叉淡化：后一条顶上，末帧不能归零（否则功率和掉档）。
+                fade_out_closes_to_silence: false,
             }
         );
         assert_eq!(
@@ -217,6 +320,7 @@ mod tests {
                 fade_in_end: 960,
                 fade_out_start: 1440,
                 fade_out_end: 1440,
+                fade_out_closes_to_silence: false,
             }
         );
     }
@@ -267,6 +371,8 @@ mod tests {
                 fade_in_end: 0,
                 fade_out_start: 1000,
                 fade_out_end: 1000,
+                // 外层没有显式 fade-out（空窗口）；这里的标记不表达任何收尾语义。
+                fade_out_closes_to_silence: false,
             }
         );
         assert_eq!(windows[1].fade_in_start, 100);

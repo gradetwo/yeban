@@ -616,6 +616,49 @@ fn an_audio_clip_renders_into_the_master_matching_the_asset_samples() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据 1b（T-FIX-441）：1 tick 淡出尾帧真的落到 0
+// ---------------------------------------------------------------------------
+
+/// 判据 1b：MCP 离线母带里 `fadeOutTicks = 1`（120BPM/48kHz/PPQ960 = **25 帧**）
+/// 的最后一个被渲染帧必须静音。旧公式在末帧留 `sqrt(1/25)=0.2`，对应
+/// `0.5 * 0.2 = 0.1` 的残留 —— 与"下一帧 0"形成可测台阶。
+///
+/// 判据直接读母带 PCM，不经过模型层断言：证明 `line/mcp-render` 的
+/// `fadeOutTicks → frames → plan_fade_windows → 渲染循环` 整条链接对了。
+#[test]
+fn a_one_tick_fade_out_renders_its_last_frame_at_zero() {
+    let scratch = Scratch::new("fade-out-one-tick");
+    let samples = constant(700, 0.5);
+    let tune = Tune {
+        start_tick: 0,
+        duration_ticks: 25,
+        fade_out_ticks: Some(1),
+        ..Tune::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("master.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+
+    assert_eq!(artifact.frames, 625, "25 tick @120BPM/48kHz = 625 帧");
+    let tolerance = 2.0 / 8_388_608.0;
+    let last = frame_peak(&rendered, 624);
+    assert!(last <= tolerance, "fadeOut 末帧必须静音，实测峰值 {last}");
+    let previous = frame_peak(&rendered, 623);
+    let expected = 0.5 * (1.0_f32 / 24.0).sqrt();
+    assert!(
+        (previous - expected).abs() <= tolerance,
+        "倒数第二帧应为 0.5*sqrt(1/24)={expected}，实测 {previous}"
+    );
+    // 旧公式下末帧是 0.1；这里最响的末两帧差也必须远小于它。
+    assert!(
+        (previous - last - expected).abs() <= tolerance,
+        "末两帧阶跃应只剩 sqrt 网格值，实测 {}",
+        previous - last
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 2：落位
 // ---------------------------------------------------------------------------
 
