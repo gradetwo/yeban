@@ -936,6 +936,14 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         None,
         Some(Rc::clone(&engine_handle)),
     );
+    // T-FIX-739：启动时检测旁挂恢复文件。只提示、不自动覆盖原文件；
+    // 恢复入口是 `--open <recover>`（它本身就是合法容器）。
+    if let Some(path) = &options.open
+        && let Some(notice) = yeban_app::recovery::startup_notice(path)
+    {
+        ui.set_save_status(notice.into());
+        ui.set_save_succeeded(false);
+    }
     // `N2` 裁决 (1)：GUI 的逻辑键快捷键 → 界面动作。撤销族经 `undo::dispatch_key`
     // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
     // 与时光机按钮是**同一条链**（ADR-0001 D45 的"人按 `Cmd+Z` 真的能撤销"）。
@@ -1322,6 +1330,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             // 退出，此刻窗口虽已隐藏，尺寸、位置与面板属性仍可读，快照
             // 存回设置（语言字段由设置的读-改-写保住）。异常退出不写回。
             host::save_window_layout(&ui);
+            // T-FIX-739：正常退出 ⇒ 旁挂恢复文件失效并删除（崩溃路径不会走到这里，
+            // 所以那份快照仍会在下次启动被检测到）。
+            if let Some(path) = &options.open {
+                yeban_app::recovery::discard(path);
+            }
             Ok(Vec::new())
         }
         Err(error) => Err(cli::CliError::Ui {

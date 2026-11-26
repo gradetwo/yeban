@@ -10453,6 +10453,11 @@ pub fn wire_save_with_engine(
     // 必须在第一个闭包**搬走**它们之前克隆出来（`Rc` 语义：共享同一份状态）。
     let picker_save_as = std::rc::Rc::clone(&picker);
     let chosen_save_as = std::rc::Rc::clone(&chosen);
+    // T-FIX-739：自动保存要的三个句柄在闭包搬走前先克隆（目标路径随「另存为」走）。
+    let recovery_live = live_port.clone();
+    let recovery_chosen = std::rc::Rc::clone(&chosen);
+    let recovery_target = port.target.clone();
+    let recovery_project = std::rc::Rc::clone(&port.project);
     let weak = ui.as_weak();
     ui.on_save_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -10598,7 +10603,9 @@ pub fn wire_save_with_engine(
         // ⭐ T-FIX-208：**只有落盘成功**（Saved）才把保存点前移到当前头。
         // 失败 / 取消绝不动它 —— 否则"存失败却被当成已存"会把未保存改动静默丢掉。
         // 头从活端口现读（与保存读的是同一个会话）；没有活端口时记 None（空基线）。
-        if matches!(outcome, crate::save_action::SaveOutcome::Saved { .. }) {
+        if let crate::save_action::SaveOutcome::Saved { path, .. } = &outcome {
+            // T-FIX-739：正常保存成功 ⇒ 旁挂恢复文件失效并删除（⛔ 让下次启动误报）。
+            crate::recovery::note_saved(path);
             let head = live_port.as_ref().and_then(|live| live.display().head);
             crate::dirty_guard::mark_saved(head);
             // ⭐ T-FIX-736：同时记下落盘那一刻的文档指纹。撤销只前移游标、不动分支头，
@@ -10645,6 +10652,15 @@ pub fn wire_save_with_engine(
             ui.invoke_save_project();
         });
     }
+
+    // T-FIX-739：装配自动保存（固定间隔，工程指纹变了才写旁挂）。窗口销毁后回调自行退出。
+    crate::recovery::start_autosave(
+        ui,
+        recovery_live,
+        recovery_chosen,
+        recovery_target,
+        recovery_project,
+    );
 }
 
 /// 一次保存的**界面回执**：把 [`crate::save_action::SaveOutcome`] 写进状态文本。

@@ -184,6 +184,7 @@ pub mod plugin_panel;
 // AI 提案抽屉的**读面**（`Domain.proposals` → 界面属性, ⛔ 不发明第二份权威）。
 // 没有 feature 门：默认构建里它读不到来源, 于是恒给"没有来源"那句**真话**（见模块文档）。
 pub mod proposals;
+pub mod recovery;
 pub mod save;
 /// 最小设置存储：平台配置目录下 `yeban/settings.json`。存两项 ——
 /// i18n 的 `language` 与窗口布局的 `layout`（line/ui-window-state 在
