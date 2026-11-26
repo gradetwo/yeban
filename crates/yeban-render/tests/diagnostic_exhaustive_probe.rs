@@ -3,9 +3,9 @@
 //! ## 为什么需要它（R48: 黄金表数的是**表**, 读不到**枚举**）
 //!
 //! `contract_tests::every_diagnostic_message_is_pinned_in_one_golden_table` 用
-//! `assert_eq!(cases.len(), 46)` 与"按枚举 18/4/13/3/8"守住**表**。但给一个错误枚举
+//! `assert_eq!(cases.len(), 46)` 与"按枚举 18/5/12/3/8"守住**表**。但给一个错误枚举
 //! **加一个变体**、同时补上它的 `Display` 实现、却**忘了**给黄金表加一行时 ——
-//! 表还是 45 行、四个计数全对 ⇒ 全绿。本文件补上那个缺口:
+//! 表还是 46 行、五个计数全对 ⇒ 全绿。本文件补上那个缺口:
 //!
 //! 下面 5 个 `*_label` 是**无通配符**的 `match`（一条 `_ =>` 都不许有）。枚举加一个变体
 //! ⇒ 这些函数**编译失败** ⇒ 门禁红。它们每一个都被**真的调用**过（对每个变体各一次）,
@@ -72,6 +72,7 @@ fn f_label(error: &Rf64Error) -> &'static str {
 fn w_label(error: &WavError) -> &'static str {
     match error {
         WavError::Hound(_) => "Wav::Hound",
+        WavError::Io { .. } => "Wav::Io",
         WavError::FormatMismatch { .. } => "Wav::FormatMismatch",
         WavError::UnsupportedDepth(_) => "Wav::UnsupportedDepth",
         WavError::RejectedFormat { .. } => "Wav::RejectedFormat",
@@ -180,6 +181,14 @@ fn every_golden_table_enum_variant_has_an_exhaustive_label() {
     ];
     let w_cases: Vec<(&str, _)> = vec![
         ("Wav::Hound", WavError::Hound("hound 说不行".to_owned())),
+        (
+            "Wav::Io",
+            WavError::Io {
+                path: std::path::PathBuf::from("out.wav"),
+                action: "原子重命名 WAV",
+                detail: "模拟失败".to_owned(),
+            },
+        ),
         (
             "Wav::FormatMismatch",
             WavError::FormatMismatch {
@@ -312,21 +321,21 @@ fn every_golden_table_enum_variant_has_an_exhaustive_label() {
         assert_eq!(m_label(value), *label, "MasterExportError 的标签");
     }
 
-    // 计数与唯一性: 与黄金表的"按枚举 18/4/12/3/8"对齐。
+    // 计数与唯一性: 与黄金表的"按枚举 18/5/12/3/8"对齐。
     assert_eq!(f_cases.len(), 18, "Rf64Error 的变体数");
-    assert_eq!(w_cases.len(), 4, "WavError 的变体数");
+    assert_eq!(w_cases.len(), 5, "WavError 的变体数");
     assert_eq!(r_cases.len(), 12, "RenderError 的变体数");
     assert_eq!(p_cases.len(), 3, "PdcError 的变体数");
     assert_eq!(m_cases.len(), 8, "MasterExportError 的变体数");
-    let mut all: Vec<&str> = Vec::with_capacity(45);
+    let mut all: Vec<&str> = Vec::with_capacity(46);
     all.extend(f_cases.iter().map(|(label, _)| *label));
     all.extend(w_cases.iter().map(|(label, _)| *label));
     all.extend(r_cases.iter().map(|(label, _)| *label));
     all.extend(p_cases.iter().map(|(label, _)| *label));
     all.extend(m_cases.iter().map(|(label, _)| *label));
-    assert_eq!(all.len(), 45, "5 个枚举的变体总数");
+    assert_eq!(all.len(), 46, "5 个枚举的变体总数");
     let unique: BTreeSet<&str> = all.iter().copied().collect();
-    assert_eq!(unique.len(), 45, "一行一变体: 标签不得重复");
+    assert_eq!(unique.len(), 46, "一行一变体: 标签不得重复");
     // 非空证明: 5 个枚举的规模互不相同, 因此"把某一族的计数写错"不会恰好被另一族掩盖。
     assert_ne!(f_cases.len(), r_cases.len());
     assert_ne!(r_cases.len(), m_cases.len());

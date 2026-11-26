@@ -523,9 +523,8 @@ fn write_slice_wavs(
         let name = format!("{stem}_{index:03}.wav");
         let target = out_dir.join(&name);
         let temp = out_dir.join(format!("{name}.tmp-{}", std::process::id()));
-        // `write_plain_wav` 直接写盘（路径腿）：先写临时文件，再改名 ——
-        // 校验在 `hound` 建文件之前完成，被拒的缓冲不留字节；写一半失败时
-        // 临时文件随手删掉，不留半成品。
+        // `write_plain_wav` 自身已原子落盘（同目录临时文件 + 成功后改名）；
+        // 这里保留调用方原有的临时名 + 改名（双保险），失败时两层临时文件都清掉。
         write_plain_wav(&temp, &out_format, &PcmBuffer::Float32(interleaved)).map_err(|error| {
             let _ = std::fs::remove_file(&temp);
             AudioSlicerError::Write {

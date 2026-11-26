@@ -69,8 +69,10 @@
 //!
 //! ## "拒绝时不留半成品"
 //!
-//! `write_plain_wav` 自带该纪律（先 `check_match` 校验，再建文件）。本文件在**调用顺序**上
-//! 不破坏它：**全部渲染与量化都在内存里完成**，只在最后一步调用一次 `write_plain_wav`。
+//! `write_plain_wav` 自带该纪律：先 `check_match` 校验，再写同目录临时文件，
+//! `finalize` ＋ 刷盘成功后才 `rename` 到目标 ⇒ **写中 I/O 失败也不会截断目标**、
+//! 不会毁掉目标路径上原有的好文件。本文件在**调用顺序**上不破坏它：**全部渲染与
+//! 量化都在内存里完成**，只在最后一步调用一次 `write_plain_wav`。
 
 use std::path::{Path, PathBuf};
 
@@ -1140,7 +1142,8 @@ pub(crate) fn track_notes_in_frames(
 ///
 /// - [`WavExportError::Empty`]：`options.frames == 0`；
 /// - [`WavExportError::Render`]：计划编译/执行失败；
-/// - [`WavExportError::Write`]：`write_plain_wav` 拒绝（此时**不留任何字节**）。
+/// - [`WavExportError::Write`]：`write_plain_wav` 拒绝或写中失败（**目标路径不留
+///   半成品，原有文件保持原样**）。
 pub fn export_wav(
     project: &YebanProjectV1,
     path: &Path,
@@ -1341,7 +1344,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
 }
 
 /// ⭐ **把交错 `f32` 量化并落成一个 WAV**（`[ARCH-SEC-004]` 的"拒绝 ⇒ 不留半成品"
-/// 由 `write_plain_wav` 保证：它先校验再建文件）。
+/// 由 `write_plain_wav` 保证：它先校验，再写同目录临时文件，成功后才原子替换目标）。
 ///
 /// ⚠ ⭐ 为什么它必须是一个**共享**函数（⛔ 不是复制一份）：`--export-wav` 与
 /// `--midi-in-render` 都要把"内存里的 f32"变成"同一个格式的抖动 PCM"。
@@ -1356,7 +1359,8 @@ pub fn export_wav_with_sfz_file_and_assets_under(
 ///
 /// # Errors
 ///
-/// [`WavExportError::Write`]（WAV 头/缓冲被拒）或 [`WavExportError::Io`]（读回尺寸失败）。
+/// [`WavExportError::Write`]（WAV 头/缓冲被拒，或写中 I/O 失败）或
+/// [`WavExportError::Io`]（读回尺寸失败）。
 pub fn write_interleaved_wav(
     path: &Path,
     samples: &[f32],

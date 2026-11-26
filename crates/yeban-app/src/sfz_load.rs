@@ -1156,9 +1156,10 @@ pub fn classify_sample_failure(path: &Path, error: &WavError) -> SampleReadFailu
         // `hound` 把"根本不是 WAV"与"WAV 但内容坏"报成同一类错 ⇒ 用**内容**分开。
         WavError::Hound(_) if !looks_like_wav_family(path) => SampleReadFailure::UnsupportedFormat,
         // 剩下的是"文件在、也像 WAV，但读不动"。
-        WavError::Hound(_) | WavError::FormatMismatch { .. } | WavError::RejectedFormat { .. } => {
-            SampleReadFailure::Unreadable
-        }
+        WavError::Hound(_)
+        | WavError::Io { .. }
+        | WavError::FormatMismatch { .. }
+        | WavError::RejectedFormat { .. } => SampleReadFailure::Unreadable,
     }
 }
 

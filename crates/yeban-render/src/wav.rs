@@ -21,7 +21,12 @@
 //! - `hound` 不读 `bext` 的语义内容（它跳过未知 chunk）, 因此 `bext` 的正确性由
 //!   [`crate::rf64`] 自己的读取器核验。
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 
@@ -33,6 +38,15 @@ use crate::rf64::PcmFormat;
 pub enum WavError {
     /// `hound` 报的错。
     Hound(String),
+    /// WAV 原子落盘的 I/O 失败（临时文件、刷盘或改名）。
+    Io {
+        /// 出问题的路径（写样本时是**调用方给的目标路径**，其余是临时路径/目标路径）。
+        path: PathBuf,
+        /// 正在做什么。
+        action: &'static str,
+        /// 底层错误的文本（`std::io::Error` 不实现 `Eq`，这里保留它的 `Display`）。
+        detail: String,
+    },
     /// 位深/样本格式与缓冲不匹配。
     FormatMismatch {
         /// 期望的格式。
@@ -55,6 +69,13 @@ impl core::fmt::Display for WavError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Hound(message) => write!(f, "hound 失败: {message}"),
+            Self::Io {
+                path,
+                action,
+                detail,
+            } => {
+                write!(f, "WAV 落盘失败（{action} `{}`）: {detail}", path.display())
+            }
             Self::FormatMismatch { expected, got } => {
                 write!(f, "格式不匹配: 期望 {expected}, 实际 {got}")
             }
@@ -187,16 +208,22 @@ pub fn check_match(format: &PcmFormat, buffer: &PcmBuffer) -> Result<(), WavErro
     Ok(())
 }
 
-/// 用 `hound` 写一份普通 RIFF WAV。
+/// 用 `hound` 写一份普通 RIFF WAV（**原子落盘**）。
 ///
-/// **拒绝时不留字节**：全部校验（格式、容器字段、样本范围）都在
-/// [`WavWriter::create`] 之前完成，因此一个被拒的缓冲不会留下残缺文件。
-/// 这条纪律的来源是实测：此前越界样本会在 `hound` 的第 3 个样本处报错，
-/// 而文件已经存在（本机实测 68 字节的 `RIFF`/`fmt `/`data` 头）。
+/// **拒绝时不留字节，写中失败也不留半成品**：全部校验（格式、容器字段、
+/// 样本范围）都在建文件之前完成；写盘走同目录临时文件，`finalize` ＋ 刷盘
+/// 成功后才 `rename` 到目标。临时文件名带进程 id、纳秒时间与自增序号，
+/// `create_new` 建文件 ⇒ 撞名时报错，绝不覆盖别人的临时文件。
+///
+/// 这条纪律的来源是实测：越界样本会在 `hound` 的第 3 个样本处报错，而文件
+/// 已经存在（本机实测 68 字节的 `RIFF`/`fmt `/`data` 头）。原子落盘同时覆盖
+/// 另一条更难复现的路径：磁盘满 / 配额 / 设备断开发生在 `write_sample` 循环
+/// 中途时，**目标路径既不会被截断，也不会丢掉原来的好文件**。
 ///
 /// # Errors
 ///
-/// 格式与缓冲不匹配、容器字段不可用、有越界样本、位深不受支持，或 `hound` I/O 失败。
+/// 格式与缓冲不匹配、容器字段不可用、有越界样本、位深不受支持，或
+/// 临时文件 / 写样本 / 刷盘 / 改名任一步 I/O 失败。
 pub fn write_plain_wav(
     path: impl AsRef<Path>,
     format: &PcmFormat,
@@ -204,26 +231,134 @@ pub fn write_plain_wav(
 ) -> Result<(), WavError> {
     check_match(format, buffer)?;
     let spec = hound_spec(format)?;
-    let mut writer = WavWriter::create(path, spec)?;
-    match buffer {
-        PcmBuffer::Int16(samples) => {
-            for &sample in samples {
-                writer.write_sample(sample)?;
-            }
-        }
-        PcmBuffer::Int24(samples) => {
-            for &sample in samples {
-                writer.write_sample(sample)?;
-            }
-        }
-        PcmBuffer::Float32(samples) => {
-            for &sample in samples {
-                writer.write_sample(sample)?;
-            }
-        }
+    let path = path.as_ref();
+    let temp_path = temporary_sibling(path)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|source| WavError::Io {
+            path: temp_path.clone(),
+            action: "创建临时 WAV",
+            detail: source.to_string(),
+        })?;
+    let outcome = write_temporary_then_commit(&temp_path, path, spec, buffer, file);
+    if outcome.is_err() {
+        // 临时文件可能还没建出来，也可能已经写完；两种情况都清一次。
+        let _ = fs::remove_file(&temp_path);
     }
-    writer.finalize()?;
+    outcome
+}
+
+/// 临时文件名里的固定中缀（与 app 的 `save::TEMP_INFIX` 同形）。
+const WAV_TEMP_INFIX: &str = ".yeban.tmp-";
+
+/// 临时名序号；同进程同纳秒内也不撞名。
+static NEXT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// 与目标同目录的临时路径。`create_new` 的排他建文件是最后一道撞名校验。
+fn temporary_sibling(path: &Path) -> Result<PathBuf, WavError> {
+    let Some(file_name) = path.file_name() else {
+        return Err(WavError::Io {
+            path: path.to_path_buf(),
+            action: "创建临时 WAV",
+            detail: "目标路径没有文件名，无法构造同目录临时文件".to_owned(),
+        });
+    };
+    let mut temp_name = OsString::from(file_name);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    temp_name.push(format!(
+        "{WAV_TEMP_INFIX}{}-{nanos}-{}",
+        std::process::id(),
+        NEXT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    Ok(path.with_file_name(temp_name))
+}
+
+/// 把样本写进临时文件，`finalize` 与刷盘成功后才替换目标。
+fn write_temporary_then_commit(
+    temp_path: &Path,
+    target: &Path,
+    spec: hound::WavSpec,
+    buffer: &PcmBuffer,
+    file: File,
+) -> Result<(), WavError> {
+    let mut writer = WavWriter::new(BufWriter::new(file), spec).map_err(|source| WavError::Io {
+        path: target.to_path_buf(),
+        action: "写 WAV 头",
+        detail: source.to_string(),
+    })?;
+    write_samples(&mut writer, target, buffer)?;
+    writer.finalize().map_err(|source| WavError::Io {
+        path: target.to_path_buf(),
+        action: "写完 WAV 头",
+        detail: source.to_string(),
+    })?;
+    OpenOptions::new()
+        .write(true)
+        .open(temp_path)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|source| WavError::Io {
+            path: temp_path.to_path_buf(),
+            action: "刷盘临时 WAV",
+            detail: source.to_string(),
+        })?;
+    fs::rename(temp_path, target).map_err(|source| WavError::Io {
+        path: target.to_path_buf(),
+        action: "原子重命名 WAV",
+        detail: source.to_string(),
+    })
+}
+
+/// 逐样本写入；任一样本失败都由外层删除临时文件，目标仍是旧内容。
+fn write_samples(
+    writer: &mut WavWriter<BufWriter<File>>,
+    target: &Path,
+    buffer: &PcmBuffer,
+) -> Result<(), WavError> {
+    #[cfg(test)]
+    let fail_after = WAV_FAIL_AFTER_SAMPLE.with(std::cell::Cell::get);
+    #[cfg(test)]
+    let mut index = 0usize;
+    macro_rules! write_all {
+        ($samples:expr) => {
+            for &sample in $samples {
+                #[cfg(test)]
+                if fail_after == Some(index) {
+                    return Err(WavError::Io {
+                        path: target.to_path_buf(),
+                        action: "写 WAV 样本",
+                        detail: "注入的写盘失败（判据）".to_owned(),
+                    });
+                }
+                writer.write_sample(sample).map_err(|source| WavError::Io {
+                    path: target.to_path_buf(),
+                    action: "写 WAV 样本",
+                    detail: source.to_string(),
+                })?;
+                #[cfg(test)]
+                {
+                    index += 1;
+                }
+            }
+        };
+    }
+    match buffer {
+        PcmBuffer::Int16(samples) => write_all!(samples),
+        PcmBuffer::Int24(samples) => write_all!(samples),
+        PcmBuffer::Float32(samples) => write_all!(samples),
+    }
     Ok(())
+}
+
+// 判据注入缝（仅测试构建）：在第 N 个样本之前返回 I/O 错误。
+#[cfg(test)]
+thread_local! {
+    static WAV_FAIL_AFTER_SAMPLE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// 用 `hound` 读回一份 WAV, 返回 `(格式, 缓冲)`。
@@ -817,6 +952,51 @@ mod tests {
         assert_eq!(read_format.bits_per_sample, 24);
         assert!(!read_format.is_float);
         assert_eq!(read_pcm, pcm, "hound 读到的样本必须与我们写的一致");
+    }
+
+    /// 写中失败（由测试注入在第 N 个样本前）必须保留旧目标、清掉同目录临时文件。
+    ///
+    /// 这条钉住的是“目标路径不留半成品”：旧实现直接 `WavWriter::create(path)`，
+    /// 写到第 3 个样本就报错时，`path` 已被截成 68 字节的 RIFF 头；原子实现先写
+    /// 临时文件，`finalize`/刷盘成功前绝不碰目标。
+    #[test]
+    fn a_mid_write_failure_preserves_the_target_and_leaves_no_temp() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("take.wav");
+        let format = PcmFormat::integer(1, 48_000, 16);
+        write_plain_wav(&path, &format, &PcmBuffer::Int16(vec![1, 2, 3, 4]))
+            .expect("先写一份旧导出");
+        let previous = std::fs::read(&path).expect("读旧导出");
+
+        let buffer = PcmBuffer::Int16(vec![11, 22, 33, 44]);
+        WAV_FAIL_AFTER_SAMPLE.with(|cell| cell.set(Some(2)));
+        let error = write_plain_wav(&path, &format, &buffer).expect_err("注入的写中失败");
+        WAV_FAIL_AFTER_SAMPLE.with(|cell| cell.set(None));
+
+        assert!(
+            matches!(
+                error,
+                WavError::Io {
+                    action: "写 WAV 样本",
+                    ..
+                }
+            ),
+            "必须是写样本阶段的 I/O 失败，实际: {error:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("读旧导出"),
+            previous,
+            "写中失败后目标必须还是旧内容，绝不能被截断"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(directory.path())
+            .expect("列临时目录")
+            .map(|entry| entry.expect("目录项").file_name())
+            .filter(|name| name.to_string_lossy().contains(WAV_TEMP_INFIX))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "失败后不得留下临时文件: {leftovers:?}"
+        );
     }
 
     /// 判据 2: 本 crate 的读取器能解析 `hound` 写出的 WAV, 且 `fmt `/`data` 长度正确。
@@ -1448,15 +1628,15 @@ mod tests {
     ///
     /// # 量的是什么（对象 + 单位）
     ///
-    /// 对象: 4 对 `WavError`（单位: 一个错误）。读数: `==` / `!=` 的判决。
+    /// 对象: 6 对 `WavError`（单位: 一个错误）。读数: `==` / `!=` 的判决。
     ///
     /// # 非空证明
     ///
-    /// 4 对里既有跨变体, 也有**同变体不同载荷**（位深 8 vs 16、`field` 两个取值、
-    /// `Hound` 的两条消息）⇒ "只比判别式"必红。
+    /// 6 对里既有跨变体, 也有**同变体不同载荷**（位深 8 vs 16、`field`/`detail`
+    /// 的不同取值、`Hound` 的两条消息、`Io` 的路径与明细）⇒ "只比判别式"必红。
     #[test]
     fn the_wav_error_equality_reads_every_variant_and_payload() {
-        let pairs: [(&str, WavError, WavError); 4] = [
+        let pairs: [(&str, WavError, WavError); 6] = [
             (
                 "跨变体",
                 WavError::UnsupportedDepth(8),
@@ -1489,20 +1669,46 @@ mod tests {
                 WavError::Hound("a".to_owned()),
                 WavError::Hound("b".to_owned()),
             ),
+            (
+                "Io 的 path",
+                WavError::Io {
+                    path: PathBuf::from("a.wav"),
+                    action: "写 WAV 样本",
+                    detail: "模拟失败".to_owned(),
+                },
+                WavError::Io {
+                    path: PathBuf::from("b.wav"),
+                    action: "写 WAV 样本",
+                    detail: "模拟失败".to_owned(),
+                },
+            ),
+            (
+                "Io 的 detail",
+                WavError::Io {
+                    path: PathBuf::from("a.wav"),
+                    action: "写 WAV 样本",
+                    detail: "失败甲".to_owned(),
+                },
+                WavError::Io {
+                    path: PathBuf::from("a.wav"),
+                    action: "写 WAV 样本",
+                    detail: "失败乙".to_owned(),
+                },
+            ),
         ];
-        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs.len(), 6);
         for (label, left, right) in &pairs {
             assert_ne!(left, right, "{label}: 必须不相等");
             assert_eq!(*left, left.clone(), "{label}: 自反");
         }
-        // 非空证明: 至少 3 对是同变体不同载荷。
+        // 非空证明: 至少 5 对是同变体不同载荷。
         let same_variant = pairs
             .iter()
             .filter(|(_, a, b)| std::mem::discriminant(a) == std::mem::discriminant(b))
             .count();
         assert!(
-            same_variant >= 3,
-            "至少 3 对同变体不同载荷, 实际 {same_variant}"
+            same_variant >= 5,
+            "至少 5 对同变体不同载荷, 实际 {same_variant}"
         );
     }
 
