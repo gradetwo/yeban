@@ -8053,9 +8053,14 @@ pub fn record_count_in(
     sample_rate: u32,
 ) -> u64 {
     match undo {
-        Some(port) => port.try_project().map_or(0, |live_project| {
-            crate::record_wav::count_in_frames(&live_project, sample_rate)
-        }),
+        // T-FIX-464：端口在场 ⇒ 借用读（`with_project`，`Local` 后端零克隆），
+        // ⛔ 不再整工程快照。读不出 ⇒ 如实 0（`unwrap_or(0)`），
+        // ⛔ 不拿冻结那份冒充现状。
+        Some(port) => port
+            .with_project(|live_project| {
+                crate::record_wav::count_in_frames(live_project, sample_rate)
+            })
+            .unwrap_or(0),
         // 没有权威会话（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
         None => frozen.map_or(0, |project| {
             crate::record_wav::count_in_frames(project, sample_rate)
@@ -8068,9 +8073,11 @@ pub fn record_count_in(
 #[must_use]
 pub fn record_count_in_ticks(undo: Option<&UndoPort>, frozen: Option<&YebanProjectV1>) -> u64 {
     match undo {
-        Some(port) => port.try_project().map_or(0, |live_project| {
-            crate::record_wav::count_in_ticks(&live_project)
-        }),
+        // T-FIX-464：与 [`record_count_in`] 同款借用读（`with_project`），
+        // ⛔ 不再整工程快照；读不出 ⇒ 如实 0，⛔ 不拿冻结冒充。
+        Some(port) => port
+            .with_project(crate::record_wav::count_in_ticks)
+            .unwrap_or(0),
         // 没有权威会话（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
         None => frozen.map_or(0, crate::record_wav::count_in_ticks),
     }
