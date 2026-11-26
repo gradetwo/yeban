@@ -43,8 +43,9 @@ use yeban_app::plugin_live::{
 use yeban_app::plugin_panel::load_device;
 use yeban_model::samples::filled_project;
 use yeban_model::{EntityId, YebanProjectV1};
+use yeban_plugin_host::stub::STUB_GAIN_PARAM_ID;
 use yeban_plugin_host::{
-    HostError, MidiEvent, ParamInfo, PluginInstance, PluginState, STUB_GAIN_ID, StubInstrument,
+    HostError, MidiEvent, ParamInfo, PluginInstance, PluginState, StubInstrument,
 };
 
 /// 给工程第一台轨装上一台桩乐器（经 GUI 装载同一入口 ⇒ 绑定带装载时刻状态快照）。
@@ -126,7 +127,7 @@ fn a_registered_live_instance_state_lands_in_the_binding_on_refresh() {
 
     // 编辑器持有活实例：增益从 0.8 改到 0.5（StubInstrument 的 save_state = gain LE 字节）。
     let mut live = StubInstrument::new();
-    live.set_parameter(STUB_GAIN_ID, 0.5)
+    live.set_parameter(STUB_GAIN_PARAM_ID, 0.5)
         .expect("桩增益参数可直设（停用态）");
     register_live_instance(&track_id, &device_id, Box::new(live));
 
