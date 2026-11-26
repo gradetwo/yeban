@@ -475,9 +475,12 @@ fn saved_after_an_undo_reopens_to_the_same_bytes() {
     let (mut dispatcher, auth) = new_dispatcher();
     // 先写一份真容器（唯一工程格式 ADR-0001 D43）。
     let pristine = filled_project();
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .collect();
     std::fs::write(
         &path,
-        container::write_project_container(&pristine, &[], &BTreeMap::new()).expect("容器"),
+        container::write_project_container(&pristine, &[], &assets).expect("容器"),
     )
     .expect("写盘");
     let opened = call(
@@ -557,9 +560,12 @@ fn undo_does_not_cross_a_project_open_boundary() {
     {
         let (mut writer, writer_auth) = new_dispatcher();
         let pristine = filled_project();
+        let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+            .into_iter()
+            .collect();
         std::fs::write(
             &path_b,
-            container::write_project_container(&pristine, &[], &BTreeMap::new()).expect("容器"),
+            container::write_project_container(&pristine, &[], &assets).expect("容器"),
         )
         .expect("写盘");
         let opened = call(

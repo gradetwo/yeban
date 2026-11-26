@@ -156,10 +156,11 @@ fn dispatcher_with_project() -> Dispatcher {
     dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
     dispatcher
         .domain_mut()
-        .open_in_memory(
+        .open_in_memory_with_assets(
             std::env::temp_dir().join(format!("yeban-mcp-preset-{}.yeban", std::process::id())),
             filled_project(),
             false,
+            yeban_model::samples::filled_project_assets(),
         )
         .expect("注入规范工程");
     dispatcher

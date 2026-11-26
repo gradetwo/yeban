@@ -103,9 +103,11 @@ impl Scratch {
     fn project(&self, name: &str) -> PathBuf {
         let project = yeban_model::samples::filled_project();
         let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
-        let bytes =
-            yeban_model::container::write_project_container(&project, &history, &BTreeMap::new())
-                .expect("写真容器");
+        let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+            .into_iter()
+            .collect();
+        let bytes = yeban_model::container::write_project_container(&project, &history, &assets)
+            .expect("写真容器");
         let path = self.join(name);
         fs::write(&path, &bytes).expect("写容器工程");
         path

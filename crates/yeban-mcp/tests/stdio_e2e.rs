@@ -162,7 +162,10 @@ fn req(id: u32, method: &str, params: Value) -> String {
 fn write_container_project(name: &str) -> PathBuf {
     let project = yeban_model::samples::filled_project();
     let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
-    let bytes = write_project_container(&project, &history, &BTreeMap::new()).expect("写真容器");
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .collect();
+    let bytes = write_project_container(&project, &history, &assets).expect("写真容器");
     let path = scratch().join(name);
     std::fs::write(&path, bytes).expect("写容器工程");
     path
