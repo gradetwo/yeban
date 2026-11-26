@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 pub use yeban_midi::import::*;
 use yeban_midi::midi::parse_smf;
-use yeban_model::{EntityId, OpOrigin, YebanProjectV1};
+use yeban_model::{EntityId, Op, OpOrigin, YebanProjectV1};
 
 use crate::undo::UndoPort;
 
@@ -136,7 +136,69 @@ pub fn import_midi_bytes(
     now_ms: u64,
 ) -> Result<MidiImportReport, MidiImportError> {
     let parsed = parse_smf(bytes).map_err(|error| MidiImportError::Parse(error.to_string()))?;
-    let plan = plan_midi_import(project, &parsed, options)?;
+    let plan = match plan_midi_import(project, &parsed, options) {
+        Ok(plan) => plan,
+        // ⭐ T-FIX-720：GUI 导入腿空轨无落点。与 MCP T-FIX-41 同一语义：目标轨
+        // 一条摆放都没有时，先自建空 MIDI 片段 + 摆放；时值按整段内容算，
+        // 与音符同一次原子提交。只在 Destination 失败、且未显式给 clip 时触发，
+        // 已有可导入落点的正常路径逐字不变（⛔ 不改 T-FIX-364 的时长/冲突范围）。
+        Err(MidiImportError::NoDestination(no_destination)) if options.clip_id.is_none() => {
+            let Some(auto_track) = auto_track_for_empty_destination(project, options) else {
+                return Err(MidiImportError::NoDestination(no_destination));
+            };
+            let clip_id = EntityId::new();
+            let placement_id = EntityId::new();
+            let entry = yeban_model::ClipPoolEntry {
+                id: clip_id,
+                name: "Imported MIDI".to_owned(),
+                content: yeban_model::ClipContent::Midi {
+                    notes: std::collections::BTreeMap::new(),
+                },
+            };
+            let span_ticks = parsed
+                .notes
+                .iter()
+                .map(|note| note.end_tick)
+                .max()
+                .unwrap_or(0);
+            let source_ppq = u64::from(parsed.ppq.max(1));
+            let span_in_model = span_ticks
+                .saturating_mul(MODEL_PPQ)
+                .saturating_add(source_ppq - 1)
+                / source_ppq;
+            let placement = yeban_model::ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: span_in_model.max(MODEL_PPQ),
+                ..yeban_model::ClipPlacement::default()
+            };
+            let mut patched = project.clone();
+            patched.clip_pool.insert(clip_id, entry.clone());
+            patched
+                .tracks
+                .get_mut(&auto_track)
+                .expect("自建落点的轨必须在工程里")
+                .clips
+                .insert(placement_id, placement);
+            let auto_ops = vec![
+                Op::AddClip { clip: entry },
+                Op::AddClipPlacement {
+                    track_id: auto_track,
+                    placement,
+                },
+            ];
+            let auto_options = MidiImportOptions {
+                track_id: Some(auto_track),
+                clip_id: Some(clip_id),
+                split_tracks: options.split_tracks,
+            };
+            let mut auto_plan = plan_midi_import(&patched, &parsed, &auto_options)?;
+            auto_plan.ops.splice(0..0, auto_ops);
+            auto_plan
+        }
+        Err(error) => return Err(error),
+    };
     let commit = port
         .commit_ops_with_origin(now_ms, OpOrigin::MidiInput, "import midi", plan.ops)
         .map_err(|refusal| MidiImportError::Refused(refusal.to_string()))?;
@@ -154,6 +216,28 @@ pub fn import_midi_bytes(
         lyrics: plan.lyrics,
         losses: plan.losses,
     })
+}
+
+/// 空轨无落点时，找一条**可以自建落点**的轨：显式轨必须真的存在且没有任何
+/// 摆放；缺省时取第一条非 master、没有任何摆放的音轨。已有摆放的轨不在这里
+/// 被改写（正常 `destination` 已成功，根本不会走到本函数）。
+fn auto_track_for_empty_destination(
+    project: &YebanProjectV1,
+    options: &MidiImportOptions,
+) -> Option<EntityId> {
+    if let Some(track_id) = options.track_id {
+        return project
+            .tracks
+            .get(&track_id)
+            .filter(|track| track.clips.is_empty())
+            .map(|_| track_id);
+    }
+    project
+        .tracks
+        .iter()
+        .filter(|(id, _)| **id != project.master_bus_track_id)
+        .find(|(_, track)| track.clips.is_empty())
+        .map(|(id, _)| *id)
 }
 
 /// 从**文件**导入（CLI 路径）。
@@ -418,6 +502,175 @@ mod tests {
             .notes()
             .expect("MIDI 片段");
         assert_eq!(notes.len(), 4, "撤销后导入的音符也没了");
+    }
+    /// T-FIX-720 判据：空 MIDI 轨没有任何摆放 ⇒ GUI/核心导入自建空片段 + 摆放，
+    /// 音符与落点同一批提交；一次撤销把新建片段、摆放与音符一起还原。
+    #[test]
+    fn empty_track_import_creates_a_placement_and_lands_notes() {
+        let mut project = yeban_model::samples::filled_project();
+        let target = destination(&project, &MidiImportOptions::default())
+            .expect("样本工程有目标")
+            .0;
+        project
+            .tracks
+            .get_mut(&target)
+            .expect("目标轨")
+            .clips
+            .clear();
+        let options = MidiImportOptions {
+            track_id: Some(target),
+            clip_id: None,
+            ..Default::default()
+        };
+        let before = destination(&project, &options).expect_err("空轨必须没有可导入目标");
+        assert!(
+            matches!(before, MidiImportError::NoDestination(_)),
+            "前提：空轨无摆放必须被拒绝，实际: {before:?}"
+        );
+
+        let session =
+            crate::undo::UndoSession::open("<判据:T-FIX-720>", "yeban-app", project.clone(), 1)
+                .expect("打开会话");
+        let port = UndoPort::new(session);
+        let report = import_midi_bytes(&port, &project, &minimal_smf(), &options, 10)
+            .expect("空轨必须能自建落点并落谱");
+        assert_eq!(report.notes, 1, "文件里的音符必须进来");
+        assert_eq!(report.track_id, target, "落点必须留在调用方选的轨");
+        assert_eq!(report.audible_notes, 1, "自建落点后音符必须可听");
+        assert_eq!(report.clipped_notes, 0, "自建落点不得把音符报成被裁");
+        assert_eq!(
+            (report.target_duration_ticks, report.required_duration_ticks),
+            (MODEL_PPQ, MODEL_PPQ),
+            "自建摆放时值与内容末端必须由同一次计划读出"
+        );
+
+        let after = port.project();
+        let entry = after
+            .clip_pool
+            .get(&report.clip_id)
+            .expect("自建片段必须进池");
+        let notes = entry.content.notes().expect("自建片段必须是 MIDI");
+        assert_eq!(notes.len(), 1, "自建片段里必须有导入的音符");
+        let placement = after
+            .tracks
+            .get(&target)
+            .expect("目标轨")
+            .clips
+            .values()
+            .find(|placement| placement.clip_id == report.clip_id)
+            .expect("自建摆放必须挂到目标轨");
+        assert!(
+            placement.duration_ticks >= report.required_duration_ticks
+                && placement.duration_ticks > 0,
+            "自建摆放时值必须覆盖整段内容: duration={} required={}",
+            placement.duration_ticks,
+            report.required_duration_ticks
+        );
+        assert_eq!(
+            after.clip_pool.len(),
+            project.clip_pool.len() + 1,
+            "只许新增自建片段，不许顺手多造"
+        );
+
+        port.perform(crate::undo::UiAction::Undo);
+        let undone = port.project();
+        assert!(
+            undone.tracks[&target].clips.is_empty(),
+            "一次撤销必须把自建摆放也收回"
+        );
+        assert!(
+            !undone.clip_pool.contains_key(&report.clip_id),
+            "一次撤销必须把自建片段也收回"
+        );
+        assert_eq!(
+            undone.clip_pool.len(),
+            project.clip_pool.len(),
+            "撤销后片段池回到导入前"
+        );
+    }
+
+    /// T-FIX-720 判据：没有轨提示时也走同一条自建落点（空工程/空轨的 GUI 缺省）。
+    #[test]
+    fn empty_track_import_without_track_hint_also_creates_a_placement() {
+        let mut project = yeban_model::samples::filled_project();
+        let target = destination(&project, &MidiImportOptions::default())
+            .expect("样本工程有目标")
+            .0;
+        project
+            .tracks
+            .get_mut(&target)
+            .expect("目标轨")
+            .clips
+            .clear();
+        let session = crate::undo::UndoSession::open(
+            "<判据:T-FIX-720-default>",
+            "yeban-app",
+            project.clone(),
+            1,
+        )
+        .expect("打开会话");
+        let port = UndoPort::new(session);
+        let report = import_midi_bytes(
+            &port,
+            &project,
+            &minimal_smf(),
+            &MidiImportOptions {
+                track_id: None,
+                clip_id: None,
+                ..Default::default()
+            },
+            10,
+        )
+        .expect("无轨提示时空轨也必须能导入");
+        assert_eq!(report.notes, 1);
+        assert_eq!(report.track_id, target, "缺省应落在第一条空轨");
+        assert!(
+            port.project().tracks[&target]
+                .clips
+                .values()
+                .any(|placement| placement.clip_id == report.clip_id),
+            "缺省自建摆放必须挂到目标轨"
+        );
+    }
+
+    /// T-FIX-720 回归：已有片段的轨仍按原目标导入，不额外造片段。
+    #[test]
+    fn existing_placement_import_does_not_create_another_clip() {
+        let project = yeban_model::samples::filled_project();
+        let (track_id, clip_id) =
+            destination(&project, &MidiImportOptions::default()).expect("样本工程有目标");
+        let placements_before = project.tracks[&track_id].clips.len();
+        let session = crate::undo::UndoSession::open(
+            "<判据:T-FIX-720-existing>",
+            "yeban-app",
+            project.clone(),
+            1,
+        )
+        .expect("打开会话");
+        let port = UndoPort::new(session);
+        let report = import_midi_bytes(
+            &port,
+            &project,
+            &minimal_smf(),
+            &MidiImportOptions {
+                track_id: Some(track_id),
+                clip_id: Some(clip_id),
+                ..Default::default()
+            },
+            10,
+        )
+        .expect("已有片段轨必须照常导入");
+        assert_eq!(report.clip_id, clip_id, "目标片段不能被换掉");
+        assert_eq!(
+            port.project().tracks[&track_id].clips.len(),
+            placements_before,
+            "已有落点的轨不许额外造摆放"
+        );
+        assert_eq!(
+            port.project().clip_pool.len(),
+            project.clip_pool.len(),
+            "已有落点的轨不许额外造片段"
+        );
     }
 }
 
