@@ -108,6 +108,15 @@ install -m 0755 "$built_binary" "$bundle/Contents/MacOS/$executable_name"
 cp "$template" "$bundle/Contents/Info.plist"
 plist="$bundle/Contents/Info.plist"
 
+# 工厂工程模板随包分发：运行时 factory_template_root 读
+# Contents/Resources/assets/templates；必须在 codesign 之前拷入，否则资源不在签名内。
+mkdir -p "$bundle/Contents/Resources/assets"
+cp -R "$repo_root/assets/templates" "$bundle/Contents/Resources/assets/templates"
+[[ -d "$bundle/Contents/Resources/assets/templates" ]] \
+  || die "bundle 缺工厂模板目录: $bundle/Contents/Resources/assets/templates"
+[[ -f "$bundle/Contents/Resources/assets/templates/README.md" ]] \
+  || die "bundle 工厂模板目录缺 README.md"
+
 # 两个版本键都从**同一个** $version 写入 ⇒ Info.plist 里不存在第二份版本事实源。
 plutil -replace CFBundleShortVersionString -string "$version" "$plist"
 plutil -replace CFBundleVersion -string "$version" "$plist"

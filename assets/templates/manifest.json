@@ -1,0 +1,20 @@
+{
+  "$schema": "../../schemas/assets.manifest.schema.json",
+  "category": "templates",
+  "version": "1.0.0",
+  "items": [
+    {
+      "id": "template-directory-readme",
+      "name": "README.md",
+      "relative_path": "assets/templates/README.md",
+      "sha256": "914a0071d4c51ddfb300e0ccdfdb7fb2b17c7a47dc2998e3a93575a1e2a6949b",
+      "size_bytes": 1095,
+      "license": "GPL-3.0-only",
+      "author": "Yeban project contributors",
+      "commercial_usable": true,
+      "attribution_required": false,
+      "note": "目录说明；不是模板内容。新增任何 .yeban 模板时必须逐条登记 license / sha256 / size_bytes。"
+    }
+  ],
+  "note": "工厂工程模板目录当前只有 README（模板内容由后续内容线按市场需求定序添加）。本清单登记 README；日后每个 .yeban 必须作为独立 item 登记许可证与 SHA-256，与其它资产同口径。"
+}

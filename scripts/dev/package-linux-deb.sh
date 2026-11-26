@@ -18,6 +18,7 @@
 #   /usr/share/icons/hicolor/scalable/apps/yeban.svg + {64,128,256,512}x*/apps/yeban.png
 #                                                  ← assets/brand 的深色变体 (SVG/同尺寸 PNG)
 #   /usr/share/mime/packages/yeban.xml             ← .yeban 工程文件的 MIME 注册
+#   /usr/share/yeban/assets/templates/             ← 工厂工程模板（README + 日后 .yeban）
 #   DEBIAN/control: Package/Version/Architecture/Maintainer/Section/Priority/
 #                   Depends/Recommends/Installed-Size/Homepage/Description 写全。
 #   .desktop 身份三一致 (Omarchy/Hyprland 的窗口↔启动器匹配靠它): 文件名
@@ -122,6 +123,11 @@ install -m 0644 "$repo_root/resources/linux/dev.yeban.app.desktop" \
   "$root/usr/share/applications/dev.yeban.app.desktop"
 install -m 0644 "$repo_root/resources/linux/yeban-mime.xml" \
   "$root/usr/share/mime/packages/yeban.xml"
+# 工厂工程模板：运行时 factory_template_root 读 /usr/share/yeban/assets/templates。
+install -d "$root/usr/share/yeban/assets/templates"
+cp -a "$repo_root/assets/templates/." "$root/usr/share/yeban/assets/templates/"
+[[ -f "$root/usr/share/yeban/assets/templates/README.md" ]] \
+  || die "deb 暂存树缺工厂模板 README: $root/usr/share/yeban/assets/templates/README.md"
 # 图标: 裸名 yeban; SVG 进 scalable, PNG 按品牌资产现有尺寸进各档
 # (品牌集只有 32/64/128/256/512 的 PNG, 没有 48 —— scalable SVG 覆盖该档)。
 install -m 0644 "$repo_root/assets/brand/yeban-dark-512.svg" \
@@ -176,6 +182,8 @@ for want in "./usr/lib/yeban/yeban-app" "./usr/lib/yeban/yeban-mcp" \
             "./usr/lib/yeban/LICENSE" "./usr/bin/yeban" "./usr/bin/yeban-mcp" \
             "./usr/share/applications/dev.yeban.app.desktop" \
             "./usr/share/mime/packages/yeban.xml" \
+            "./usr/share/yeban/assets/templates/README.md" \
+            "./usr/share/yeban/assets/templates/manifest.json" \
             "./usr/share/icons/hicolor/scalable/apps/yeban.svg" \
             "./usr/share/icons/hicolor/64x64/apps/yeban.png" \
             "./usr/share/icons/hicolor/128x128/apps/yeban.png" \
@@ -193,6 +201,8 @@ dpkg-deb -x "$out_dir/$name.deb" "$extract"
   || die "/usr/bin/yeban 软链指向不对: $(readlink "$extract/usr/bin/yeban")"
 [[ "$(readlink "$extract/usr/bin/yeban-mcp")" == "../lib/yeban/yeban-mcp" ]] \
   || die "/usr/bin/yeban-mcp 软链指向不对"
+[[ -d "$extract/usr/share/yeban/assets/templates" ]] \
+  || die "解开后缺工厂模板目录: usr/share/yeban/assets/templates"
 echo "[pkg-deb] 结构自验通过"
 
 # --- 实装验证 (仅 CI: YEBAN_PKG_INSTALL_TEST=1) ------------------------------

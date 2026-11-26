@@ -4,6 +4,12 @@
 用户在「文件 → 从模板新建…」里能直接选用（照 Logic Pro 的模板机制：
 模板不是新格式，就是存进模板目录的工程文件）。
 
+发布包内路径与源码树不同，但目录结构相同：
+
+- macOS `.app`：`Contents/Resources/assets/templates/`
+- Linux `.deb`：`/usr/share/yeban/assets/templates/`
+- 源码树直跑：`assets/templates/`
+
 ## 目录结构（三级分类）
 
 ```text

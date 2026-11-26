@@ -22,7 +22,7 @@
 //!
 //! | 目录 | 位置 | 选址理由 |
 //! | :--- | :--- | :--- |
-//! | 工厂模板 | `<仓库根>/assets/templates/`（[`factory_template_root`]） | 仓内随应用分发的资源都住在仓根 `assets/`（brand / fonts / presets / samples）；仓库根的唯一解析是 [`crate::sfz_load::repo_root`]（SFZ 内置资产同源）。目录可不存在 / 为空 ⇒ 列表如实为空组。 |
+//! | 工厂模板 | 安装资源根下的 `assets/templates/`（[`factory_template_root`]） | 随应用分发的资源住在安装包的资源目录：macOS `.app` 为 `Contents/Resources/assets/`，Linux `.deb` 为 `/usr/share/yeban/assets/`；源码树直接运行时回退到仓根 `assets/`（[`crate::sfz_load::repo_root`]，与 SFZ 内置资产同源）。目录可不存在 / 为空 ⇒ 列表如实为空组。 |
 //! | 用户模板 | `~/Music/Audio Music Apps/Project Templates/`（[`yeban_model::preset::user_template_library_dir`]） | 与用户预制库 `~/Music/Audio Music Apps/Patches/` **同源同父**（Logic 自家就是把 `Project Templates` 与 `Patches` 并列放在 `Audio Music Apps` 下）；⛔ 不新造一套路径规则。目录不存在时由 [`ensure_user_template_root`] 自动创建。 |
 //!
 //! ## 三级分类（Wang 2026-11-17 追加定案）
@@ -85,13 +85,72 @@ impl TemplateRoots {
     }
 }
 
-/// 工厂模板目录：仓根 `assets/templates`（仓库根解析与 SFZ 内置资产同源，
-/// 见 [`crate::sfz_load::repo_root`]）。
+/// 工厂模板目录：安装资源根下的 `assets/templates`。
+///
+/// 解析顺序（只影响工厂模板，⛔ 不改 [`crate::sfz_load::repo_root`] 的 SFZ 语义）：
+///
+/// 1. macOS `.app`：`<Contents>/Resources/assets/templates`（可执行文件在
+///    `Contents/MacOS/`）；
+/// 2. 安装目录旁：`<可执行文件目录>/assets/templates`（Linux 若把资源装在
+///    `/usr/lib/yeban/assets` 也走这一条）；
+/// 3. Linux 共享资源：`<prefix>/share/yeban/assets/templates`（可执行文件在
+///    `<prefix>/lib/yeban/` 时，`<prefix>` 为 `/usr` 等）；
+/// 4. 源码树 / 找不到安装资源：仓根 `assets/templates`（见
+///    [`crate::sfz_load::repo_root`]）—— `cargo run` / `target/release` 仍可用。
+///
+/// 目录存在但为空时，调用方（[`crate::templates::list_templates`]）如实返回
+/// 空工厂组，⛔ 不伪造模板。
 #[must_use]
 pub fn factory_template_root() -> PathBuf {
-    crate::sfz_load::repo_root()
-        .join("assets")
+    match std::env::current_exe() {
+        Ok(exe) => factory_template_root_for_exe(&exe),
+        Err(_) => source_tree_assets_root().join("templates"),
+    }
+}
+
+/// [`factory_template_root`] 的可注入版本（判据用临时目录模拟三种安装形态）。
+fn factory_template_root_for_exe(exe: &Path) -> PathBuf {
+    bundled_assets_root_for_exe(exe)
+        .unwrap_or_else(source_tree_assets_root)
         .join("templates")
+}
+
+/// 从可执行文件位置推断安装资源根（`.../assets`）；源码树返回 `None`。
+///
+/// 判据只看目录是否存在：安装包若把 `assets/templates` 漏装，目录不存在
+/// ⇒ 退回源码树根；打包脚本的自验必须把“目录存在”钉住，不能让运行时
+/// 用编译期路径掩盖漏装。
+fn bundled_assets_root_for_exe(exe: &Path) -> Option<PathBuf> {
+    let exe_dir = exe.parent()?;
+
+    // 1. macOS `.app`：<Contents>/MacOS/yeban → <Contents>/Resources/assets
+    if let Some(contents) = exe_dir.parent() {
+        let mac_assets = contents.join("Resources").join("assets");
+        if mac_assets.is_dir() {
+            return Some(mac_assets);
+        }
+    }
+
+    // 2. 应用私有安装目录：<exe_dir>/assets（Linux 若装 /usr/lib/yeban/assets）
+    let local_assets = exe_dir.join("assets");
+    if local_assets.is_dir() {
+        return Some(local_assets);
+    }
+
+    // 3. Linux 共享资源：<prefix>/lib/yeban/yeban-app → <prefix>/share/yeban/assets
+    if let Some(prefix) = exe_dir.parent().and_then(Path::parent) {
+        let shared_assets = prefix.join("share").join("yeban").join("assets");
+        if shared_assets.is_dir() {
+            return Some(shared_assets);
+        }
+    }
+
+    None
+}
+
+/// 源码树回退根：仓根 `assets`（唯一解析仍是 [`crate::sfz_load::repo_root`]）。
+fn source_tree_assets_root() -> PathBuf {
+    crate::sfz_load::repo_root().join("assets")
 }
 
 /// 用户模板目录：[`yeban_model::preset::user_template_library_dir`] 的转发
@@ -625,6 +684,116 @@ pub fn save_template_archive(
 mod tests {
     use super::TemplateSource;
     use crate::cli::Language::{self, DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 唯一临时根：并行测试不互相踩目录；只用于“安装形态 → 路径”的纯路径判据。
+    fn scratch_root(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("系统时钟必须晚于 Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeban-templates-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("创建临时根失败");
+        root
+    }
+
+    fn cleanup(root: &Path) {
+        std::fs::remove_dir_all(root).expect("删除临时根失败");
+    }
+
+    fn fake_exe(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("测试可执行文件必须有父目录"))
+            .expect("创建可执行文件父目录失败");
+        std::fs::write(path, b"").expect("写测试可执行文件失败");
+    }
+
+    /// T-FIX-298：macOS `.app` 的工厂模板必须读 `Contents/Resources/assets/templates`，
+    /// 不再从编译期 `CARGO_MANIFEST_DIR` 推出源码树路径。
+    #[test]
+    fn factory_root_prefers_macos_bundle_resources() {
+        let root = scratch_root("mac");
+        let contents = root.join("Yeban.app/Contents");
+        let exe = contents.join("MacOS/yeban");
+        fake_exe(&exe);
+        let expected = contents.join("Resources/assets/templates");
+        std::fs::create_dir_all(&expected).expect("创建 Resources 模板目录失败");
+
+        assert_eq!(super::factory_template_root_for_exe(&exe), expected);
+        cleanup(&root);
+    }
+
+    /// T-FIX-298：Linux `.deb` 的标准共享资源路径是 `<prefix>/share/yeban/assets`；
+    /// 可执行文件在 `<prefix>/lib/yeban/` 时必须能找到它。
+    #[test]
+    fn factory_root_uses_linux_share_prefix() {
+        let root = scratch_root("linux-share");
+        let prefix = root.join("usr");
+        let exe = prefix.join("lib/yeban/yeban-app");
+        fake_exe(&exe);
+        let expected = prefix.join("share/yeban/assets/templates");
+        std::fs::create_dir_all(&expected).expect("创建 share/yeban 模板目录失败");
+
+        assert_eq!(super::factory_template_root_for_exe(&exe), expected);
+        cleanup(&root);
+    }
+
+    /// T-FIX-298：若发行包把资源放在可执行文件旁（`<exe_dir>/assets`），也要读到；
+    /// 这条是 Linux 安装布局的兼容腿。
+    #[test]
+    fn factory_root_reads_app_local_assets() {
+        let root = scratch_root("app-local");
+        let exe_dir = root.join("opt/yeban");
+        let exe = exe_dir.join("yeban-app");
+        fake_exe(&exe);
+        let expected = exe_dir.join("assets/templates");
+        std::fs::create_dir_all(&expected).expect("创建应用内模板目录失败");
+
+        assert_eq!(super::factory_template_root_for_exe(&exe), expected);
+        cleanup(&root);
+    }
+
+    /// T-FIX-298：源码树直跑（`target/release/yeban-app`）没有安装资源目录时，
+    /// 必须回退到仓根 `assets/templates`，否则 `cargo run` 的工厂组会凭空消失。
+    #[test]
+    fn factory_root_falls_back_to_source_tree_assets() {
+        let root = scratch_root("source");
+        let exe = root.join("target/release/yeban-app");
+        fake_exe(&exe);
+
+        assert_eq!(
+            super::factory_template_root_for_exe(&exe),
+            super::source_tree_assets_root().join("templates")
+        );
+        cleanup(&root);
+    }
+
+    /// T-FIX-298：按安装包形态解析出的工厂根必须真的被选择器扫描到；
+    /// 只断言路径存在还不够，这里放一份三级 `.yeban` 走 [`super::list_templates`]。
+    #[test]
+    fn installed_factory_root_is_read_by_template_scanner() {
+        let root = scratch_root("scan");
+        let contents = root.join("Yeban.app/Contents");
+        let exe = contents.join("MacOS/yeban");
+        fake_exe(&exe);
+        let factory = contents.join("Resources/assets/templates");
+        let template_dir = factory.join("电子/氛围");
+        std::fs::create_dir_all(&template_dir).expect("创建三级模板目录失败");
+        std::fs::write(template_dir.join("夜色.yeban"), b"").expect("写模板占位失败");
+        let user = root.join("user-templates");
+        std::fs::create_dir_all(&user).expect("创建用户模板根失败");
+
+        let entries = super::list_templates(&super::TemplateRoots { factory, user });
+        assert_eq!(entries.len(), 1, "工厂根下唯一的三级 .yeban 必须被扫到");
+        assert_eq!(entries[0].source, super::TemplateSource::Factory);
+        assert_eq!(entries[0].style, "电子");
+        assert_eq!(entries[0].substyle, "氛围");
+        assert_eq!(entries[0].name, "夜色");
+        cleanup(&root);
+    }
 
     /// 分组标题九语闭集逐条钉死：任一语言缺译 / 误译当场红（与总览档名
     /// `profile_display_name_for` 的九语单测同一口径）。

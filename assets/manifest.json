@@ -61,6 +61,17 @@
       "files_total_bytes": 204770,
       "bundled": true,
       "note": "品牌资产（登记 + 打包）：母版 SVG 与光栅化 PNG, 逐条 sha256 / 字节见 assets/brand/manifest.json。本条指针由 T-FIX-327 补上 —— 此前 brand 不在根清单 sub_manifests 里, assets/brand/ 整个目录游离于 validate_schemas.py 的未登记资产扫描与许可白名单之外; 补指针时一并登记了漏登的 png/yeban-moon-keyed-64.png(实测 sha256 / 字节入清单)。许可为 SPDX 表达式 GPL-3.0-only AND LicenseRef-Yeban-Trademark(商标部分另见 TRADEMARK.md)。新增或替换品牌资产时同步更新该清单与本条的 files_count / files_total_bytes。"
+    },
+    {
+      "category": "templates",
+      "manifest": "assets/templates/manifest.json",
+      "allowed_licenses": [
+        "GPL-3.0-only"
+      ],
+      "files_count": 1,
+      "files_total_bytes": 1095,
+      "bundled": true,
+      "note": "工厂工程模板（登记 + 打包）：本目录当前只有 README.md，已登记；模板内容由后续内容线添加，每个 .yeban 必须登记许可证与 SHA-256。发布包路径：macOS Contents/Resources/assets/templates、Linux /usr/share/yeban/assets/templates。"
     }
   ]
 }
