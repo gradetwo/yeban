@@ -988,20 +988,22 @@ impl LiveAdminSurface {
                 ),
             })?;
             self.save_epoch = self.save_epoch.saturating_add(1);
-            self.report = Some(AdminReport::new(
-                "force_save",
-                vec![
-                    ("saveEpoch", ReportValue::Uint(self.save_epoch)),
-                    ("bytes", ReportValue::Uint(saved.bytes as u64)),
-                    // 这条读数就是"保存走了权威"的可断言的证据（不是注释里的声明）。
-                    ("writtenByAuthority", ReportValue::Bool(true)),
-                    ("assets", ReportValue::Uint(saved.assets as u64)),
-                    (
-                        "historyCommits",
-                        ReportValue::Uint(saved.history_commits as u64),
-                    ),
-                ],
-            ));
+            let mut rows = vec![
+                ("saveEpoch", ReportValue::Uint(self.save_epoch)),
+                ("bytes", ReportValue::Uint(saved.bytes as u64)),
+                // 这条读数就是"保存走了权威"的可断言的证据（不是注释里的声明）。
+                ("writtenByAuthority", ReportValue::Bool(true)),
+                ("assets", ReportValue::Uint(saved.assets as u64)),
+                (
+                    "historyCommits",
+                    ReportValue::Uint(saved.history_commits as u64),
+                ),
+            ];
+            // T-FIX-498：持久化警告也进管理面回执（有警告仍是保存成功）。
+            if let Some(warning) = saved.durability_warning {
+                rows.push(("durabilityWarning", ReportValue::Text(warning)));
+            }
+            self.report = Some(AdminReport::new("force_save", rows));
             return Ok(());
         }
         // [ADR-0057 A] 有撤销端口时保存**端口的工程**，不是界面缓存 `self.project`：

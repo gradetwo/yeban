@@ -1388,6 +1388,13 @@ pub struct HostSaveOutcome {
     pub digest: String,
     /// T-FIX-154：本次保存遇到的缺失样本（与 MCP apply 回执 missingSamples 同源同形状）。
     pub missing_samples: Vec<embed_samples::MissingSample>,
+    /// T-FIX-498：持久化警告（"已提交但目录项未确认持久化"）；完全落盘时为 [`Option::None`]。
+    ///
+    /// 与 app 侧 `SaveReport.durability` 同口径：`rename` 成功后刷目录失败**不是**
+    /// 保存失败，调用方应照常更新落点状态，同时把警告如实转给用户 ——
+    /// ⛔ 不回滚、⛔ 不说"保存失败"。跳过落盘的分支恒为 [`Option::None`]
+    /// （那次根本没写盘，没有"目录项未确认"这回事）。
+    pub durability_warning: Option<String>,
 }
 
 /// 一次已经校验过的执行计划（**只读计算的产物**）。
@@ -7139,6 +7146,7 @@ pub fn host_save_project(
             include_user_presets: true,
             digest,
             missing_samples,
+            durability_warning: None,
         });
     }
     // T-FIX-497：另存目标的排他写锁（与 `apply_open` / app 侧 `acquire_write_lock`
@@ -7154,7 +7162,7 @@ pub fn host_save_project(
     } else {
         None
     };
-    store::write_project_atomic(target, &bytes)?;
+    let durability = store::write_project_atomic_with_durability(target, &bytes)?;
     if session_path.as_path() == target
         && let Some(active) = domain.active.as_mut()
     {
@@ -7181,6 +7189,8 @@ pub fn host_save_project(
         include_user_presets: true,
         digest,
         missing_samples,
+        // T-FIX-498：已提交 + 持久化警告（不是失败）；完全落盘时为 None。
+        durability_warning: durability.warning().map(str::to_owned),
     })
 }
 
@@ -7926,7 +7936,9 @@ struct SaveEmbeds {
 /// `yeban_save_project` 的施加。
 ///
 /// `bytes` 是**容器字节**（`ARCH-SEC-003`），落盘协议仍是 `ARCH-SEC-004` 的
-/// 同目录临时文件 + `fsync` + `rename`（唯一入口 [`store::write_project_atomic`]）。
+/// 同目录临时文件 + `fsync` + `rename` + 目录刷盘（T-FIX-498，唯一入口
+/// [`store::write_project_atomic_with_durability`]；旧入口
+/// [`store::write_project_atomic`] 仍在，只是不带回读数）。
 /// 保存收据里的内嵌预制三件套（设计稿 §5）：条目数、字节数、是否带出用户预制。
 /// 具名结构是刻意的：`EmbeddedPresetReceipt` 与 [`SaveEmbeds`] 把内嵌载荷收束成
 /// 两个参数，否则 `apply_save` 会触发 clippy 的 `too_many_arguments` 线（硬线 7）。
@@ -7968,9 +7980,12 @@ fn apply_save(
             "projectDigest": digest,
             "embeddedPresets": embedded_presets,
             "missingSamples": missing_samples.clone(),
+            // T-FIX-498：这次根本没写盘 ⇒ 没有持久化警告（恒为 null）。
+            "durabilityWarning": null,
         })));
     }
-    store::write_project_atomic(path, bytes)?;
+    // T-FIX-498：落盘读数进回执 —— 已提交 + 持久化警告（不是失败）。
+    let durability = store::write_project_atomic_with_durability(path, bytes)?;
     if let Some(active) = domain.active.as_mut() {
         active.saved_digest.clone_from(&digest);
         // 提案段的已保存口径随落盘一起推进（T-FIX-43）：不推进的话，
@@ -8002,6 +8017,9 @@ fn apply_save(
         "forced": force,
         "embeddedPresets": embedded_presets,
         "missingSamples": missing_samples,
+        // T-FIX-498：持久化警告（"已提交但目录项未确认持久化"）；完全落盘时为 null。
+        // 有警告仍是 "saved": true —— 磁盘上已经是新内容，⛔ 不是保存失败。
+        "durabilityWarning": durability.warning(),
     })))
 }
 

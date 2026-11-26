@@ -46,6 +46,11 @@
 //! 3. `std::fs::rename` 原子替换 —— POSIX `rename(2)` 与 Windows
 //!    `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` 都保证"要么旧文件完好，要么新文件生效"。
 //!
+//! 追加的第 3.5 步（Unix，T-FIX-498）：对**父目录** `sync_all`，把目录项也刷下去 ——
+//! 否则"文件在了"这件事本身可能还在页缓存里，断电后回退到旧内容。
+//! 这一步失败**不是**保存失败（`rename` 已成功）：只返回 [`Durability::Warning`]，
+//! 由调用方如实转给用户（与 app 侧 `save.rs` 的 `SaveReport.durability` 同口径）。
+//!
 //! **任何一步失败都不得破坏原文件**：失败路径统一 `remove_file(tmp)`，
 //! 而不是把目标文件截断重写。判据
 //! `tests/container_store.rs::save_into_a_read_only_directory_keeps_the_original_container_bytes`
@@ -809,11 +814,46 @@ pub fn container_bytes_with_proposals(
     .map_err(|error| container_fault(path, &error))
 }
 
-/// **原子**把 `bytes` 落盘到 `path`（同目录临时文件 + `fsync` + `rename`）。
+/// 一次成功保存的持久化读数（T-FIX-498，与 app 侧 `save.rs` 的
+/// `SaveReport.durability` 同口径 —— 控制面自己的类型，不跨 crate 共用）。
+///
+/// `rename` 成功 ⇒ 目标文件**已经**换成了新字节 —— 这件事不会因为随后的目录刷盘
+/// 失败而回退（磁盘上旧内容已经不存在）。因此"rename 成功、刷目录失败"**不是**
+/// 保存失败（那意味着"什么都没写"），而是"已提交、持久化未确认"：调用方应当
+/// 把它当成一次成功的保存并更新自己的落点状态，同时把警告如实转给用户。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Durability {
+    /// 文件内容与目录项都已落盘（rename 后的刷目录成功；`Windows` 分支不刷目录，
+    /// 也归这里 —— 与 app 侧"目录刷盘只在 Unix 执行"一致）。
+    Durable,
+    /// 文件内容已落盘（`rename` 成功），但**目录项**持久化未能确认（Unix 刷目录失败）。
+    ///
+    /// 断电后文件可能回退到旧内容 —— 这是"持久化警告"，不是保存失败；调用方
+    /// （工具回执 / 宿主读数 / 界面）必须把它与真正的"什么都没写"分开显示。
+    Warning {
+        /// 给用户看的一句话（带目录路径与底层错误，说清"文件已替换"这个事实）。
+        message: String,
+    },
+}
+
+impl Durability {
+    /// 警告文案（[`Durability::Durable`] 恒为 [`Option::None`]）。
+    #[must_use]
+    pub fn warning(&self) -> Option<&str> {
+        match self {
+            Self::Durable => None,
+            Self::Warning { message } => Some(message),
+        }
+    }
+}
+
+/// **原子**把 `bytes` 落盘到 `path`（同目录临时文件 + `fsync` + `rename` +
+/// Unix 目录刷盘）。
 ///
 /// 这是 `ARCH-SEC-004` 的**唯一**落盘入口 —— 写入内容从"JSON 文本"换成
 /// "容器字节"时**协议一字未改**：临时文件名、同目录约束、`create_new`、
-/// `sync_all`、`rename`、失败清理全部保持原样。
+/// `sync_all`、`rename`、失败清理全部保持原样；T-FIX-498 在 `rename` 之后
+/// 追加了第 3.5 步（Unix 刷父目录，见 [`write_project_atomic_with_durability`]）。
 ///
 /// 失败时原文件**逐字节不变**，且临时文件被清理。
 ///
@@ -821,7 +861,30 @@ pub fn container_bytes_with_proposals(
 ///
 /// 父目录不存在、无写权限、磁盘写满、`rename` 失败 → 对应契约错误码
 /// （`IO_ERROR` / `DISK_FULL`）。
+///
+/// 注意：目录刷盘失败**不**走这条 —— `rename` 已成功时它只是
+/// [`Durability::Warning`]，本函数（`()` 返回）把它吞掉；要读数请用
+/// [`write_project_atomic_with_durability`]。
 pub fn write_project_atomic(path: &Path, bytes: &[u8]) -> Result<(), Fault> {
+    write_project_atomic_with_durability(path, bytes).map(|_| ())
+}
+
+/// **原子**把 `bytes` 落盘到 `path`，并返回持久化读数（[`Durability`]）。
+///
+/// 与 [`write_project_atomic`] 同一个协议，唯一区别是返回值把"第 3.5 步"
+/// （Unix `rename` 后刷父目录）的结果也带出来 —— app 侧 `save.rs` 的
+/// `SaveReport.durability`（T-FIX-324）在控制面的对等物。
+///
+/// # Errors
+///
+/// 与 [`write_project_atomic`] 相同（父目录不存在、无写权限、磁盘写满、
+/// `rename` 失败）。目录刷盘失败**不是**错误：返回
+/// `Ok(`[`Durability::Warning`]`)`，调用方必须把它当成一次成功的保存，
+/// 同时把警告如实转给用户 —— ⛔ 不回滚、⛔ 不说"保存失败"。
+pub fn write_project_atomic_with_durability(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<Durability, Fault> {
     let parent = parent_dir(path);
     if !parent.is_dir() {
         return Err(Fault::domain(
@@ -848,7 +911,48 @@ pub fn write_project_atomic(path: &Path, bytes: &[u8]) -> Result<(), Fault> {
             &format!("原子保存 {} (临时文件 {})", path.display(), temp.display()),
             &error,
         )
-    })
+    })?;
+
+    // 第 3.5 步（Unix 追加）：把**目录项**也刷下去，否则"文件在了"这件事本身可能还在
+    // 页缓存里。Windows 分支不猜（见模块文档）。
+    //
+    // ⭐ T-FIX-498：这一步失败**不再**报 `Fault`（那样会把一次已提交的保存说成
+    // "什么都没写"，调用方会回滚状态 / 保留旧落点，与磁盘分叉），而是照常返回
+    // `Ok`，把警告装进 [`Durability::Warning`]，由调用方如实显示。
+    #[cfg(unix)]
+    if let Err(source) = sync_directory(&parent) {
+        return Ok(Durability::Warning {
+            message: format!(
+                "文件已替换，但目录项未确认持久化（刷目录 `{}` 失败: {source}）",
+                parent.display()
+            ),
+        });
+    }
+
+    Ok(Durability::Durable)
+}
+
+/// 第 3.5 步的本体（Unix）：打开目录并 `sync_all`。
+///
+/// 抽成函数只为判据可注入（T-FIX-498：rename 成功 + 刷目录失败的用例）；
+/// 生产路径行为不变。
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        if DIR_SYNC_INJECTION.with(std::cell::Cell::get) {
+            return Err(std::io::Error::other("注入的目录刷盘失败（判据）"));
+        }
+    }
+    fs::File::open(dir).and_then(|handle| handle.sync_all())
+}
+
+// 判据注入缝（仅测试构建）：置 `true` 后 [`sync_directory`] 直接返回错误。
+// 线程局部 ⇒ 并行测试互不干扰。
+#[cfg(all(test, unix))]
+thread_local! {
+    pub(crate) static DIR_SYNC_INJECTION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 /// 三阶段写入本体；失败时不留半成品（调用方负责清理临时文件）。
@@ -983,6 +1087,70 @@ mod tests {
             leftovers.is_empty(),
             "临时文件必须被 rename 掉: {leftovers:?}"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-FIX-498：目录刷盘成功 ⇒ 读数是 `Durable`（第 3.5 步走完了）。
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_reports_durable_when_dir_sync_succeeds() {
+        let dir = scratch("durable");
+        let project = dir.join("demo.yeban");
+        fs::write(&project, b"OLD\n").expect("原文件");
+        let durability = write_project_atomic_with_durability(&project, b"NEW\n").expect("保存");
+        assert_eq!(durability, Durability::Durable, "刷目录成功必须是 Durable");
+        assert!(durability.warning().is_none(), "Durable 没有警告文案");
+        assert_eq!(fs::read(&project).expect("读"), b"NEW\n");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-FIX-498：`rename` 成功 + 刷目录失败 ⇒ **已提交 + 警告**，不是失败。
+    ///
+    /// 注入缝只让第 3.5 步失败（`DIR_SYNC_INJECTION`）；断言三点：
+    /// ① 返回 `Warning`（不是 `Err`）；② 文案点名刷失败的目录；
+    /// ③ 磁盘上已经是新字节（"已提交"那一半没有回退）。
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_reports_warning_when_dir_sync_fails_but_file_is_committed() {
+        let dir = scratch("warn");
+        let project = dir.join("demo.yeban");
+        fs::write(&project, b"OLD\n").expect("原文件");
+        DIR_SYNC_INJECTION.with(|flag| flag.set(true));
+        let durability = write_project_atomic_with_durability(&project, b"NEW\n");
+        DIR_SYNC_INJECTION.with(|flag| flag.set(false));
+        let durability = durability.expect("刷目录失败必须是 Ok(Warning)，不是 Err");
+        let Durability::Warning { message } = &durability else {
+            panic!("必须是 Durability::Warning, 实际: {durability:?}");
+        };
+        assert!(
+            message.contains(&dir.display().to_string()),
+            "警告文案要点名刷失败的目录: {message}"
+        );
+        assert!(
+            message.contains("文件已替换"),
+            "警告文案要说清'文件已替换'这个事实: {message}"
+        );
+        assert_eq!(
+            fs::read(&project).expect("读"),
+            b"NEW\n",
+            "rename 已成功 ⇒ 磁盘上必须是新字节（已提交，不回退）"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-FIX-498：旧入口 `write_project_atomic` 在刷目录失败时**也不**报错 ——
+    /// 它只是把 `Durability` 读数丢掉，落盘本身照常完成（已提交语义不变）。
+    #[test]
+    #[cfg(unix)]
+    fn atomic_write_wrapper_still_succeeds_when_dir_sync_fails() {
+        let dir = scratch("wrapper");
+        let project = dir.join("demo.yeban");
+        fs::write(&project, b"OLD\n").expect("原文件");
+        DIR_SYNC_INJECTION.with(|flag| flag.set(true));
+        let outcome = write_project_atomic(&project, b"NEW\n");
+        DIR_SYNC_INJECTION.with(|flag| flag.set(false));
+        outcome.expect("旧入口在刷目录失败时仍必须 Ok（警告被吞掉，不是失败）");
+        assert_eq!(fs::read(&project).expect("读"), b"NEW\n");
         fs::remove_dir_all(&dir).ok();
     }
 

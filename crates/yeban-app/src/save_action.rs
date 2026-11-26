@@ -244,8 +244,9 @@ pub enum SaveOutcome {
         ///
         /// 有警告**仍是** [`SaveOutcome::Saved`]：磁盘上已经是新内容，调用方（界面
         /// `save_target` / 引擎落点）应照常更新，只是把警告如实转给用户 ——
-        /// ⛔ 不回滚、⛔ 不说"保存失败"。权威会话路径恒为 [`Option::None`]
-        /// （控制面的 `store::write_project_atomic` 不刷目录，不走这条读数）。
+        /// ⛔ 不回滚、⛔ 不说"保存失败"。权威会话路径自 T-FIX-498 起也走这条读数
+        /// （`HostSaveOutcome.durability_warning`，控制面的
+        /// `store::write_project_atomic_with_durability` 产出）。
         warning: Option<String>,
     },
     /// 拒绝了 / 失败了，且**什么都没写**。`stage` 是本模块自己的分类（判据与界面都读它）。
@@ -325,7 +326,8 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
                     .iter()
                     .map(|item| format!("{}: {}", item.reason, item.detail))
                     .collect(),
-                warning: None,
+                // T-FIX-498：权威会话的持久化警告也透传（与本地路径同口径）。
+                warning: saved.durability_warning.clone(),
             },
             Err(fault) => SaveOutcome::Failed {
                 stage: SaveStage::Authority,
