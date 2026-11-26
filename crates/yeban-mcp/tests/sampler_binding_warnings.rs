@@ -247,7 +247,12 @@ fn apply_save_reports_missing_samples_in_the_receipt() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
 
     // 第一条分支：真落盘。
