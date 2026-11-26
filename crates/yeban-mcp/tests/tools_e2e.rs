@@ -10156,3 +10156,107 @@ fn edit_notes_note_op_still_refuses_a_missing_envelope_track() {
         "错误必须点名缺失的信封字段 `trackId`: {refused}"
     );
 }
+
+/// T-FIX-709：`placement.add` 自带 `trackId` 时，顶层 `trackId` 可省略；
+/// 两处不一致必须响亮冲突（点名两处身份），未知键仍是 `unknownPlacementField`。
+#[test]
+fn placement_add_accepts_its_own_track_id() {
+    let (mut dispatcher, auth) = dispatcher();
+    let scratch = Scratch::new("placement-track-id");
+    let (_path, _opened) = open(&scratch, &mut dispatcher, &auth);
+    let (clip, target) = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let clip = project
+            .clip_pool
+            .keys()
+            .next()
+            .expect("片段池非空")
+            .to_canonical_string();
+        (clip, "01J8ZQ00000000000000000003".to_owned())
+    };
+
+    // ---- 只给 placement.trackId，顶层不给 ----
+    let placed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "clipId": clip,
+            "ops": [],
+            "autoMerge": true,
+            "placement": {"kind": "add", "trackId": target, "startTick": 0, "durationTicks": 3840},
+        }),
+    );
+    assert_eq!(placed["status"], "success", "{placed}");
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let landed: Vec<(String, String, u64)> = project
+        .tracks
+        .values()
+        .flat_map(|track| {
+            track.clips.values().map(move |placement| {
+                (
+                    track.name.clone(),
+                    placement.clip_id.to_canonical_string(),
+                    placement.start_tick,
+                )
+            })
+        })
+        .collect();
+    assert!(
+        landed
+            .iter()
+            .any(|(name, id, _)| name == "Bass" && id == &clip),
+        "摆放必须落在 placement.trackId 指定的轨上: clip={clip} landed={landed:?}"
+    );
+
+    // ---- 两处不一致 ⇒ 冲突，报两处身份，工程不变 ----
+    let bytes_after_placement = project_bytes(&dispatcher);
+    let mismatch = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": "01J8ZQ00000000000000000002",
+            "clipId": clip,
+            "ops": [],
+            "placement": {"kind": "add", "trackId": target, "startTick": 0, "durationTicks": 1920},
+        }),
+    );
+    assert_domain_error(&mismatch, "INVALID_PARAMETER_RANGE", "两处 trackId 不一致");
+    assert_eq!(
+        mismatch["error"]["data"]["reason"], "placementTrackIdMismatch",
+        "{mismatch}"
+    );
+    assert_eq!(
+        mismatch["error"]["data"]["placementTrackId"],
+        json!(target),
+        "{mismatch}"
+    );
+    assert_eq!(
+        mismatch["error"]["data"]["envelopeTrackId"],
+        json!("01J8ZQ00000000000000000002"),
+        "{mismatch}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_after_placement,
+        "冲突被拒的调用不得改工程"
+    );
+
+    // ---- 未知键仍是 unknownPlacementField（回归） ----
+    let unknown = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "clipId": clip,
+            "ops": [],
+            "placement": {"kind": "add", "trackId": target, "garbageFraction": 1},
+        }),
+    );
+    assert_domain_error(&unknown, "INVALID_PARAMETER_RANGE", "未知键");
+    assert_eq!(
+        unknown["error"]["data"]["reason"], "unknownPlacementField",
+        "{unknown}"
+    );
+}

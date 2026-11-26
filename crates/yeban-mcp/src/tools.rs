@@ -587,6 +587,11 @@ impl ToolSpec {
                     }
                 }
                 None if spec.required => {
+                    // T-FIX-709: `placement.add` 自带的 `trackId` 与顶层同权 ——
+                    // 只有它给了目标轨时，顶层 `trackId` 才可以省略。
+                    if spec.name == "trackId" && placement_carries_its_own_track(arguments) {
+                        continue;
+                    }
                     return Err(ToolCallError::MissingParam {
                         name: spec.name.to_owned(),
                     });
@@ -604,6 +609,20 @@ impl ToolSpec {
         }
         Ok(())
     }
+}
+
+/// `arguments` 的 `placement.add` 是否自带目标轨（T-FIX-709）。
+///
+/// 只有 `kind` 缺省或等于 `add`、且 `placement.trackId` 在场时才成立：`move` /
+/// `remove` 的 `trackId` 属于本形态不适用，不能拿来豁免顶层实参。
+fn placement_carries_its_own_track(arguments: &Map<String, Value>) -> bool {
+    arguments
+        .get("placement")
+        .and_then(Value::as_object)
+        .is_some_and(|object| {
+            let kind = object.get("kind").and_then(Value::as_str).unwrap_or("add");
+            kind == "add" && object.get("trackId").is_some()
+        })
 }
 
 /// 参数概要的简写构造（保持注册表可读）。
@@ -1064,7 +1083,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "placement",
                 "object",
                 false,
-                "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = 把 `clipId` 摆到 `trackId` 上 (键: `startTick?` 缺省 0 / `durationTicks?` 缺省 = 片段内容长度, 推不出时必填 / `placementId?` 缺省确定性派生 / `muted?`、`loopEnabled?` 缺省 false / `loopStartTick?`、`loopEndTick?` / `fadeInTicks?`、`fadeOutTicks?` 仅音频片段, MIDI 给了响亮拒绝, 之和不得超过 `durationTicks`); `loopEnabled:true` 且循环区间短于 `durationTicks` 时渲染器真的展开 N 遍。`move` = `{kind:\"move\", placementId, startTick}` 平移已有摆放; `remove` = `{kind:\"remove\", placementId}` 取走已有摆放。多余的键一律 `INVALID_PARAMETER_RANGE`; `move`/`remove` 的 `clipId` 必须等于该摆放引用的片段 (`placementClipMismatch`); 轨上没有该摆放 ⇒ `ENTITY_NOT_FOUND`; 与 `create:true` 同给时只能是 `add`",
+                "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = 把 `clipId` 摆到 `trackId` 上 —— 目标轨可写在 `placement.trackId?`（给出时它就是目标；与顶层 `trackId` 同时给出且不一致 ⇒ `INVALID_PARAMETER_RANGE`/`placementTrackIdMismatch`，点名两处身份），也可以省略 `placement.trackId` 用顶层身份 (键: `startTick?` 缺省 0 / `durationTicks?` 缺省 = 片段内容长度, 推不出时必填 / `placementId?` 缺省确定性派生 / `muted?`、`loopEnabled?` 缺省 false / `loopStartTick?`、`loopEndTick?` / `fadeInTicks?`、`fadeOutTicks?` 仅音频片段, MIDI 给了响亮拒绝, 之和不得超过 `durationTicks`); `loopEnabled:true` 且循环区间短于 `durationTicks` 时渲染器真的展开 N 遍。`move` = `{kind:\"move\", placementId, startTick}` 平移已有摆放; `remove` = `{kind:\"remove\", placementId}` 取走已有摆放。多余的键一律 `INVALID_PARAMETER_RANGE`; `move`/`remove` 的 `clipId` 必须等于该摆放引用的片段 (`placementClipMismatch`); 轨上没有该摆放 ⇒ `ENTITY_NOT_FOUND`; 与 `create:true` 同给时只能是 `add`",
             ),
             // ⭐ 第八批实测：这一条**遮蔽**了公共那份（`ParamSpec` 同名两份、界不同：
             // 公共 `(None, Some(256))` vs 本条 `(None, None)`）⇒ `input_schema()` 合并前

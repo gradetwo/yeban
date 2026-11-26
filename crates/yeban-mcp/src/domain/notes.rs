@@ -1196,12 +1196,19 @@ pub const PLACEMENT_KINDS: [&str; 3] = [
     PLACEMENT_KIND_REMOVE,
 ];
 
+/// `placement.add` 自带的目标音轨键（T-FIX-709）。
+///
+/// 它只属于 `add` 形态：`move` / `remove` 作用于一条**已有**摆放，轨道由那条摆放
+/// 决定 —— 两形态的词表因此不变（多给 `trackId` 走 `placementFieldNotApplicable`）。
+pub const PLACEMENT_TARGET_TRACK_FIELD: &str = "trackId";
+
 /// `add` 形态允许的键 = [`PLACEMENT_FIELDS`] **加上**判别键。
 ///
 /// 单列一个常量是为了不动 [`PLACEMENT_FIELDS`]：后者是 `add` 形态的内容键表，
 /// 由判据 `placement_field_names_are_pinned` 逐个钉住；扩展形态时**不改**那张表。
 pub const PLACEMENT_ADD_FIELDS: &[&str] = &[
     PLACEMENT_KIND_FIELD,
+    PLACEMENT_TARGET_TRACK_FIELD,
     "startTick",
     "durationTicks",
     "placementId",
@@ -12617,6 +12624,82 @@ pub fn parse_placement_edit(
     }
 }
 
+/// 读 `placement.add` 自带的 `trackId`（可选；给了就是**放置目标轨**）。
+///
+/// `move` / `remove` 不吃这个键（轨道由已有摆放下定），返回 `Ok(None)` —— 它们的
+/// 词表由 [`reject_placement_fields`] 把关，多给的 `trackId` 会被判
+/// `placementFieldNotApplicable`。
+///
+/// # Errors
+///
+/// - `placement.trackId` 不是字符串 / 不是 ULID ⇒ `INVALID_PARAMETER_RANGE`；
+/// - 与工具顶层 `trackId` 同时给出且不一致 ⇒ `INVALID_PARAMETER_RANGE`
+///   （`reason = "placementTrackIdMismatch"`，`data` 点名两处身份）。
+///   ⛔ 不静默取一：两处身份不一致的载荷说不清要摆到哪条轨。
+pub fn placement_target_track(
+    envelope: Option<&EntityId>,
+    arguments: &Map<String, Value>,
+) -> Result<Option<EntityId>, Fault> {
+    let Some(raw) = arguments.get(PLACEMENT_FIELD) else {
+        return Ok(None);
+    };
+    let Some(object) = raw.as_object() else {
+        return Ok(None);
+    };
+    let kind = object
+        .get(PLACEMENT_KIND_FIELD)
+        .and_then(Value::as_str)
+        .unwrap_or(PLACEMENT_KIND_ADD);
+    if kind != PLACEMENT_KIND_ADD {
+        return Ok(None);
+    }
+    let Some(value) = object.get(PLACEMENT_TARGET_TRACK_FIELD) else {
+        return Ok(None);
+    };
+    let text = value.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}` 必须是字符串, 实际收到 {value}"
+            ),
+            serde_json::json!({
+                "reason": "invalidPlacementTrackId",
+                "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}"),
+            }),
+        )
+    })?;
+    let target = text.parse::<EntityId>().map_err(|error| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}` 不是合法 ULID: {error}"),
+            serde_json::json!({
+                "reason": "invalidPlacementTrackId",
+                "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}"),
+                "value": text,
+            }),
+        )
+    })?;
+    if let Some(envelope) = envelope
+        && *envelope != target
+    {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}` ({target}) 与顶层 `trackId` \
+                 ({envelope}) 不一致: 两处身份必须指向同一条音轨, ⛔ 不静默取一"
+            ),
+            serde_json::json!({
+                "reason": "placementTrackIdMismatch",
+                "field": format!("{PLACEMENT_FIELD}.{PLACEMENT_TARGET_TRACK_FIELD}"),
+                "placementTrackId": target.to_canonical_string(),
+                "envelopeTrackId": envelope.to_canonical_string(),
+                "hint": "两处 trackId 指向不同音轨: 只写一处, 或让两处一致",
+            }),
+        ));
+    }
+    Ok(Some(target))
+}
+
 /// 解析 `placement` 的 **`add` 形态**（缺省 = 对象不在场 ⇒ `None` ⇒ 不摆放 =
 /// 逐字节等于旧行为）。
 ///
@@ -12672,6 +12755,10 @@ pub fn parse_placement(
         )
     })?;
     reject_placement_fields(object, PLACEMENT_ADD_FIELDS, PLACEMENT_KIND_ADD)?;
+    // T-FIX-709: `placement.trackId` 给出时它就是放置目标（与顶层不一致已在
+    // `placement_target_track` 里响亮拒绝）。缺省沿用顶层身份。
+    let resolved_track = placement_target_track(Some(track_id), arguments)?.unwrap_or(*track_id);
+    let track_id = &resolved_track;
     // 目标音轨与片段都必须**真的存在**：摆放是"把已有材料放到已有轨道上"，
     // 两个端点缺一个都不是一次摆放（`compile` 的编辑路径有同一对前置条件）。
     //
@@ -12742,6 +12829,9 @@ pub fn parse_placement_for_create(
         )
     })?;
     reject_placement_fields(object, PLACEMENT_ADD_FIELDS, PLACEMENT_KIND_ADD)?;
+    // T-FIX-709: `placement.trackId` 与顶层不一致时已在 helper 里响亮拒绝。
+    let resolved_track = placement_target_track(Some(track_id), arguments)?.unwrap_or(*track_id);
+    let track_id = &resolved_track;
     if let Some(value) = object.get(PLACEMENT_KIND_FIELD) {
         let kind = value.as_str().ok_or_else(|| {
             Fault::domain_with_data(
@@ -22391,6 +22481,8 @@ mod tests {
             PLACEMENT_ADD_FIELDS,
             [
                 "kind",
+                // T-FIX-709: `add` 自带目标轨（与顶层同权；两处不一致响亮拒绝）。
+                "trackId",
                 "startTick",
                 "durationTicks",
                 "placementId",

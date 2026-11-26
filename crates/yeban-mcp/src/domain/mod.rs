@@ -4367,6 +4367,14 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // （不解析 ULID、也不查片段池 —— 与"省略"逐字节同一条路）。
     let needs_clip =
         notes::NoteOp::envelope_clip_required(&note_ops) || placement_raw.is_some() || creating;
+    // T-FIX-709: `placement.add` 自带的 `trackId` 与顶层同权（不一致由
+    // `notes::placement_target_track` 响亮拒绝）；只有 `placement` 给了轨道时
+    // 顶层才可以省略。
+    let envelope_track = match call.arguments.get("trackId") {
+        Some(_) => Some(arg_id(call, "trackId")?),
+        None => None,
+    };
+    let placement_track = notes::placement_target_track(envelope_track.as_ref(), &call.arguments)?;
     let (track_id, clip_id) = if self_addressed_only {
         // 缺省的两个身份在这里取**占位**的 nil 身份：本分支下它们一个都不会被读
         // （`compile` 走的是"不查音轨与片段池"的那条路），而且它们**不**参与
@@ -4401,7 +4409,13 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                 }),
             ));
         }
-        let track_id = arg_id(call, "trackId")?;
+        let track_id = envelope_track.or(placement_track).ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                "缺少必填参数 `trackId` (或在 `placement.add.trackId` 里给出目标轨)".to_owned(),
+            )
+        })?;
+
         let clip_id = if needs_clip {
             require_envelope_clip(call, &note_ops, placement_raw.is_some(), creating)?
         } else {
