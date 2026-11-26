@@ -67,6 +67,7 @@ fn two_midi_track_project() -> (YebanProjectV1, EntityId, EntityId) {
                 loop_config: LoopConfig::default(),
                 muted: false,
                 offset_samples: None,
+                source_start_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
             },
