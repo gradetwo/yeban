@@ -1088,8 +1088,98 @@ pub fn write_manifest(batch: &StemBatch) -> Result<PathBuf, Fault> {
             )
         })?;
     text.push('\n');
-    store::write_project_atomic(&path, text.as_bytes())?;
+    // ⭐ T-FIX-501：manifest 失败时**如实说明分轨已落盘**（见 [`manifest_failed`]）。
+    // 修前这里是裸 `?`：错误只带 `write_project_atomic` 的 I/O 原因，用户看不出
+    // "N 条分轨已经完整躺在盘上、只需补写 manifest"，最可能的反应是重跑整批渲染
+    // （大工程数分钟到数十分钟，全部白付）。
+    store::write_project_atomic(&path, text.as_bytes())
+        .map_err(|fault| manifest_failed(batch, &fault))?;
     Ok(path)
+}
+
+/// manifest 落盘失败的**部分成功回执**（T-FIX-501）。
+///
+/// 与 [`write_failed`]（D5：第 k 条分轨写失败）同一族纪律 —— 部分成功是一等状态，
+/// 必须如实报出来，⛔ 不许让"manifest 没写成"看起来像"整批作废"：
+///
+/// - `message` 里直接写出**已落盘几条**、以及"只需补写 manifest，⛔ 不必重跑渲染"；
+/// - `data.completedStems` 给已落盘的清单（**逐条实测盘上存在**，⛔ 不按"应该写过"推断）；
+/// - `data.resumeFrom.action = "rewriteManifestOnly"`：续跑口径与 D5 的"剩下的轨"
+///   不同 —— 分轨全在，只差 manifest 这一个文件；
+/// - `data.manifestPath` 指出缺的是哪个文件。
+///
+/// ⚠ `write_manifest` 是 `pub`，理论上可以在"一条分轨都没写"时被单独调用 ⇒ 这里的
+/// "已落盘 N 条"一律用 `path.exists()` **实测**，0 条时就照实说 0 条（⛔ 不撒谎）。
+fn manifest_failed(batch: &StemBatch, fault: &Fault) -> Fault {
+    // ⭐ 错误码**原样继承**：`write_project_atomic` 在磁盘满时给的是 `DiskFull`，
+    // 不许在这里统一降级成 `IoError` —— 那会把"磁盘满"这条可操作信息洗掉。
+    let (failed_code, failed_reason, inner_data) = match fault {
+        Fault::Domain {
+            code,
+            message,
+            data,
+        } => (*code, message.clone(), data.clone()),
+        Fault::Impl { error } => (ErrorCode::IoError, error.message.clone(), None),
+    };
+    // 实测：盘上真的存在的才算"已落盘"。
+    let completed: Vec<&StemRow> = batch.stems.iter().filter(|row| row.path.exists()).collect();
+    let manifest_path = batch.manifest_path();
+    let mut data = Map::new();
+    data.insert("errorKind".to_owned(), json!("stemManifestWriteFailed"));
+    data.insert(
+        "manifestPath".to_owned(),
+        json!(manifest_path.display().to_string()),
+    );
+    data.insert("failedReason".to_owned(), json!(failed_reason));
+    if let Some(inner) = inner_data {
+        data.insert("failedData".to_owned(), inner);
+    }
+    data.insert(
+        "completedStems".to_owned(),
+        Value::Array(completed.iter().map(|row| row.to_value()).collect()),
+    );
+    data.insert(
+        "resumeFrom".to_owned(),
+        json!({
+            "outDir": batch.request.out_dir.display().to_string(),
+            "manifestPath": manifest_path.display().to_string(),
+            // ⭐ 与 D5 的 resumeFrom（剩下的轨）**语义不同**：分轨已经全在，
+            //    续跑只需要写 manifest 这一个文件。
+            "action": "rewriteManifestOnly",
+            "trackIds": batch
+                .stems
+                .iter()
+                .map(|row| row.track_id.to_canonical_string())
+                .collect::<Vec<_>>(),
+        }),
+    );
+    data.insert("partial".to_owned(), json!(true));
+    data.insert(
+        "writtenBeforeFailure".to_owned(),
+        json!(completed.iter().map(|row| row.bytes_len).sum::<usize>()),
+    );
+    data.insert(
+        "rollback".to_owned(),
+        json!("none: 已落盘的分轨不会被删除 (删用户盘上的文件比留一份如实的 completedStems 危险)"),
+    );
+    data.insert(
+        "stemsBasis".to_owned(),
+        stems_basis_value(batch.renders, batch.basis_frames, batch.sample_rate),
+    );
+    let message = if completed.is_empty() {
+        format!(
+            "分轨 manifest 落盘失败 ({}): {failed_reason} — 本次没有分轨落在盘上, 整批需重跑",
+            manifest_path.display()
+        )
+    } else {
+        format!(
+            "分轨 manifest 落盘失败 ({}): {failed_reason} — 但 {} 条分轨已完整落盘、可直接使用; \
+             只需补写 manifest (resumeFrom.action=rewriteManifestOnly), ⛔ 不必重跑渲染",
+            manifest_path.display(),
+            completed.len()
+        )
+    };
+    Fault::domain_with_data(failed_code, message, Value::Object(data))
 }
 
 /// ⭐ 逐条原子落盘（唯一的副作用点，D5）。
@@ -1517,5 +1607,73 @@ mod tests {
             vec!["hint", "name", "reason", "trackId"],
             "带 hint 的行必须是四键（字典序 = BTreeMap 承载）"
         );
+    }
+
+    /// ⭐ T-FIX-501：manifest 落盘失败、且盘上**一条分轨都没有**时，回执必须照实说
+    /// "0 条"（⛔ 不许为了显得好看而谎称"部分成功"）。
+    ///
+    /// `write_manifest` 是 `pub`，可以在任何时刻被单独调用 ⇒ "已落盘几条"一律
+    /// 由 `path.exists()` **实测**，这条判据钉的就是实测口径的下界。
+    #[test]
+    fn a_manifest_failure_with_nothing_on_disk_says_zero_instead_of_claiming_partial() {
+        let dir =
+            std::env::temp_dir().join(format!("yeban-manifest-fail-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        // 占住 manifest 落点：同名**目录** ⇒ `write_project_atomic` 必失败
+        // （跨平台、不依赖只读权限 —— 只读在 root 下挡不住写入）。
+        std::fs::create_dir(dir.join(STEMS_MANIFEST_FILE_NAME)).expect("占住 manifest 落点");
+        let batch = StemBatch {
+            request: StemRequest {
+                out_dir: dir.clone(),
+                track_ids: None,
+            },
+            stems: Vec::new(),
+            skipped: Vec::new(),
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            streamed: false,
+        };
+        let fault = write_manifest(&batch).expect_err("manifest 落点是目录 ⇒ 必须失败");
+        match fault {
+            Fault::Domain {
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(code, ErrorCode::IoError, "manifest 写失败是 IO_ERROR");
+                assert!(
+                    message.contains("没有分轨落在盘上"),
+                    "0 条落盘时必须照实说 0 条（⛔ 不许谎称部分成功）: {message}"
+                );
+                assert!(
+                    !message.contains("条分轨已完整落盘"),
+                    "0 条落盘时不许说「已完整落盘」: {message}"
+                );
+                let data = data.expect("必须带结构化回执（D5 同族纪律）");
+                assert_eq!(data["errorKind"], json!("stemManifestWriteFailed"));
+                assert_eq!(data["partial"], json!(true));
+                assert_eq!(
+                    data["completedStems"].as_array().map(Vec::len),
+                    Some(0),
+                    "completedStems 必须是实测的 0 条"
+                );
+                assert_eq!(
+                    data["resumeFrom"]["action"],
+                    json!("rewriteManifestOnly"),
+                    "续跑口径必须是「只补写 manifest」（与 D5 的剩下的轨不同）"
+                );
+                assert!(
+                    data["manifestPath"]
+                        .as_str()
+                        .is_some_and(|path| path.ends_with(STEMS_MANIFEST_FILE_NAME)),
+                    "回执必须点名缺的是哪个文件: {:?}",
+                    data["manifestPath"]
+                );
+            }
+            other => panic!("必须是领域故障: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
