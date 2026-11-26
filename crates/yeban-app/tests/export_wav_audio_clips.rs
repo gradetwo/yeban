@@ -24,9 +24,15 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
+use yeban_app::bridge::ViewState;
 use yeban_app::cli::{self, run_batch};
 use yeban_app::export_wav::{WavExportOptions, export_wav_with_sfz_file_and_assets};
+use yeban_app::host::{self, ModulePaths};
+use yeban_app::scene::DemoScene;
+use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::container::write_project_container;
 use yeban_model::{
     AssetHash, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, RoutingEdge,
@@ -36,6 +42,7 @@ use yeban_render::dither::PcmBuffer;
 use yeban_render::render::db_to_linear;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::{read_plain_wav, write_plain_wav};
+use yeban_ui_test_port::render::Tier1Window;
 
 /// 夹具速度：120 BPM / 960 PPQ / 48 kHz ⇒ **1 tick = 25 帧**（可手算）。
 const BPM: f64 = 120.0;
@@ -980,5 +987,112 @@ fn a_non_looping_app_export_is_byte_identical_under_every_non_wrapping_config() 
         assert!(exported.contains("spans=1"), "{tag} 必须仍是单 span");
     }
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 判据 1c（GUI 出口）：经 `on_export_wav` 真回调导出，产物必须与 CLI 同响
+// ---------------------------------------------------------------------------
+
+/// 等 GUI 导出线程把 WAV 写完整；返回左声道。
+///
+/// GUI 导出是后台线程（`host.rs` 的 `std::thread::spawn`），Tier-1 没有事件循环
+/// 代理 ⇒ 成功回执读不到，只能以落盘文件为证据（与 `tests/ui_export_dialog.rs`
+/// 的 `wait_for_wav` 同一口径）。
+fn wait_for_gui_wav(path: &Path, min_frames: usize) -> Vec<f32> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_frames = 0usize;
+    while Instant::now() < deadline {
+        if path.exists() {
+            // 文件已出现，但写线程可能还在写最后一页；读失败或帧数未达标就再等一轮。
+            if let Ok((format, buffer)) = read_plain_wav(path) {
+                let channels = usize::from(format.channels.max(1));
+                let interleaved: Vec<f32> = match &buffer {
+                    PcmBuffer::Int24(values) => {
+                        values.iter().map(|v| *v as f32 / I24_SCALE).collect()
+                    }
+                    other => panic!("GUI 导出必须是 24-bit 整数: {other:?}"),
+                };
+                let left: Vec<f32> = interleaved.chunks(channels).map(|frame| frame[0]).collect();
+                last_frames = left.len();
+                if last_frames >= min_frames {
+                    return left;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "GUI 导出 30s 内帧数未达标（目标 {}，实际 {last_frames} 帧，需要 ≥ {min_frames}）",
+        path.display()
+    );
+}
+
+#[test]
+fn gui_export_wav_uses_the_asset_pool_and_renders_placed_audio() {
+    let dir = scratch("gui-audible");
+    let (bytes, source_sample) = synth_asset(&dir, EXPORT_RATE);
+    let hash = AssetHash::of_bytes(&bytes);
+    let project = project_with_audio_clip(hash.clone(), CLIP_GAIN_DB);
+    let out = dir.join("gui-out.wav");
+
+    // 生产窗口构造入口 + 真撤销端口（资产池挂在端口上，GUI 导出必须读它）。
+    let view = ViewState::from_project(&project).expect("夹具工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let tier1 =
+        Tier1Window::install(yeban_ui_test_port::Size::new(1440, 900)).expect("装 Tier-1 无头平台");
+    let ui = host::build_main_window(&view, &scene).expect("生产窗口构造入口");
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<gui-export-audio>",
+            "yeban-app",
+            project.clone(),
+            1_760_000_000_368,
+        )
+        .expect("打开撤销会话"),
+    ));
+    undo.replace_assets([(hash, bytes.clone())]);
+
+    let paths = ModulePaths {
+        export_wav: out.clone(),
+        midi_in_port: "0".to_owned(),
+        midi_in_seconds: 0.0,
+        ..ModulePaths::default()
+    };
+    let _midi = host::wire_module_actions_with(&ui, Some(Rc::clone(&undo)), paths);
+    ui.set_export_wav_path(out.to_string_lossy().to_string().into());
+
+    let start = usize::try_from(frames_of(START_TICK)).expect("窗口起点");
+    let end = usize::try_from(frames_of(START_TICK + DURATION_TICKS)).expect("窗口终点");
+
+    ui.invoke_export_wav();
+    let left = wait_for_gui_wav(&out, end);
+    assert!(
+        left.len() >= end,
+        "GUI 默认导出长度必须覆盖摆放窗口：实际 {} 帧，需要 ≥ {end}",
+        left.len()
+    );
+    let in_window = peak_in(&left, start..end);
+    let outside = peak_in(&left, 0..start).max(peak_in(&left, end..left.len()));
+    let expected = source_sample * db_to_linear(CLIP_GAIN_DB);
+    println!(
+        "[export-audio/gui] 窗口 [{start}, {end}) 内峰值 {in_window:.6}；期望 {expected:.6}；窗口外峰值 {outside:.8}；帧数 {}",
+        left.len()
+    );
+    assert!(
+        in_window > 0.05,
+        "GUI 导出的音频片段必须可闻（窗口内峰值 = {in_window}）；\
+         当前 GUI 若是无资产池入口，会在这里红 —— 这就是 T-FIX-357 的回归守门"
+    );
+    assert!(
+        (in_window - expected).abs() <= 0.02 * expected,
+        "GUI 窗口内峰值必须 ≈ 源样本 × db_to_linear(gain_db)：实测 {in_window}，期望 {expected}"
+    );
+    assert!(
+        outside <= 1e-4,
+        "GUI 窗口之外必须 ≈ 0（实测峰值 {outside}）"
+    );
+
+    drop(tier1);
     std::fs::remove_dir_all(&dir).ok();
 }
