@@ -2678,3 +2678,7 @@ msgstr "개요 분석 상태(악보 전용 폴백 / 렌더링 실패 사유)"
 # --- T-FIX-533: macro panel export-only badge ---
 msgid "仅导出：实时监听尚未执行宏"
 msgstr "내보내기 전용: 재생 중에는 매크로가 아직 적용되지 않습니다"
+
+#: crates/yeban-app/ui/lower_dock.slint
+msgid "主控电平条: 点击清除过载指示"
+msgstr "마스터 레벨 미터: 클릭하여 과부하 표시 지우기"

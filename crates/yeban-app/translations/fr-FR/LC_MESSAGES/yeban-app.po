@@ -2678,3 +2678,7 @@ msgstr "État de l’analyse de l’aperçu (repli partition seule / raison de l
 # --- T-FIX-533: macro panel export-only badge ---
 msgid "仅导出：实时监听尚未执行宏"
 msgstr "Export uniquement : la macro n'est pas encore appliquée pendant la lecture en direct"
+
+#: crates/yeban-app/ui/lower_dock.slint
+msgid "主控电平条: 点击清除过载指示"
+msgstr "Indicateur de niveau principal : cliquer pour effacer l'indicateur de surcharge"

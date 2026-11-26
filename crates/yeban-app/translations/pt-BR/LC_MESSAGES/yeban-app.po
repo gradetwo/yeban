@@ -2678,3 +2678,7 @@ msgstr "Estado da análise da visão geral (fallback somente partitura / motivo 
 # --- T-FIX-533: macro panel export-only badge ---
 msgid "仅导出：实时监听尚未执行宏"
 msgstr "Somente exportação: a macro ainda não é aplicada durante a reprodução ao vivo"
+
+#: crates/yeban-app/ui/lower_dock.slint
+msgid "主控电平条: 点击清除过载指示"
+msgstr "Medidor de nível master: clique para limpar o indicador de sobrecarga"

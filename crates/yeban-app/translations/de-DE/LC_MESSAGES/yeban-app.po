@@ -2678,3 +2678,7 @@ msgstr "Status der Übersicht-Analyse (nur Partitur-Fallback / Grund für Render
 # --- T-FIX-533: macro panel export-only badge ---
 msgid "仅导出：实时监听尚未执行宏"
 msgstr "Nur Export: Makros werden bei der Live-Wiedergabe noch nicht angewendet"
+
+#: crates/yeban-app/ui/lower_dock.slint
+msgid "主控电平条: 点击清除过载指示"
+msgstr "Master-Pegelanzeige: Klicken, um Übersteuerungsanzeige zurückzusetzen"
