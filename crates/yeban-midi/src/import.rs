@@ -2074,6 +2074,12 @@ pub fn plan_midi_import(
                     id: new_track_id,
                     name: track_name,
                     kind: TrackKind::Midi,
+                    // ⭐ T-FIX-750：拆分新建轨承载的是用户刚导入的内容。若工程里
+                    // 另有轨道开着 solo，只靠自动连 master 仍会被 T-FIX-506 的
+                    // 可闻门整条排除（导入报成功但新轨一声不响）。导入新轨不是
+                    // “被 solo 压住的既有轨”，故显式 solo_safe，让导入物在 solo
+                    // 工程里也可闻；既有轨的 solo 语义与可闻门本身均不改。
+                    solo_safe: true,
                     ..TrackV3::default()
                 },
             });
@@ -5365,6 +5371,10 @@ pub mod metadata_adoption_tests {
                 Op::AddTrack { track } => {
                     assert_eq!(track.name, "Sub Bass");
                     assert_eq!(track.kind, TrackKind::Midi);
+                    assert!(
+                        track.solo_safe,
+                        "T-FIX-750：导入拆分出的新轨必须 solo_safe，否则 solo 工程里整条不可闻"
+                    );
                     new_track_id = Some(track.id);
                 }
                 Op::AddClip { clip } => {

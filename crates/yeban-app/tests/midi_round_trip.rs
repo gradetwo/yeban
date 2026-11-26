@@ -1976,3 +1976,51 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ⭐ T-FIX-750：solo 工程导入多轨 MIDI 时，拆分新建轨必须保持可闻。
+///
+/// 控制臂：`--project-sample default` 自带的鼓轨 `solo=true`；导入一份 3 轨
+/// 5 音符文件后，若新拆轨不是 `solo_safe`，T-FIX-506 可闻门会把它整条排除，
+/// 导入报告仍说 `notes=5`，但重导出只剩 9 颗（工程 6 + 第一轨 3）。
+/// 本判据要求重导出 11 颗、3 条轨名，导入与导出计数一致，且不改变 solo 轨本身。
+#[test]
+fn solo_project_import_keeps_split_track_audible() {
+    let dir = scratch_dir("solo-import");
+    let mid = dir.join("all-aux.mid");
+    std::fs::write(&mid, all_aux_events_smf()).expect("写夹具");
+    let out = dir.join("out.mid");
+
+    let run = invoke(&[
+        "--project-sample",
+        "default",
+        "--import-midi",
+        mid.to_str().expect("utf8"),
+        "--export-midi",
+        out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "solo 工程导入 + 重导出必须成功; stderr={}",
+        run.stderr
+    );
+    let line = line_with(&run.stdout, "imported-midi:").expect("必须有 imported-midi 行");
+    assert_eq!(
+        field(line, "notes").as_deref(),
+        Some("5"),
+        "文件 5 颗必须全部报告: {line}"
+    );
+
+    let out_bytes = std::fs::read(&out).expect("读重导出");
+    assert_eq!(
+        occurrences(&out_bytes, &[0xFF, 0x03]),
+        3,
+        "conductor + 工程 solo 轨 + 导入拆分轨，3 条轨名都要在"
+    );
+    let exported = parsed(&out_bytes);
+    assert_eq!(exported.tracks, 3, "conductor + 2 条工程音符轨（多轨拆分）");
+    assert_eq!(
+        exported.notes.len(),
+        11,
+        "工程原有 6 颗 + 文件 5 颗必须全部可闻并重导出"
+    );
+}
