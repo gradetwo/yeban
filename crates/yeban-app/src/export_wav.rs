@@ -481,8 +481,9 @@ impl WavExportReport {
 
     /// ⭐ T-FIX-338：**插件执行行**（恰好一行；两张表都空 ⇒ `None`）。
     ///
-    /// 这是 CLI 与控制台唯一的“插件到底跑没跑”的落点：已执行与未执行分开报，
-    /// 未执行的带原因。⛔ 两张表都空时不打印 ⇒ 既有 stdout 逐字不变
+    /// `T-FIX-504`：这条行有三个真实落点 —— [`Self::summary`]（调试摘要）、
+    /// CLI `--export-wav` 与 GUI 导出回执。已执行与未执行分开报，未执行的带原因。
+    /// ⛔ 两张表都空时不打印 ⇒ 既有 stdout / 回执逐字不变
     /// （判据 `a_clean_project_keeps_the_legacy_summary`）。
     #[must_use]
     pub fn plugin_note(&self) -> Option<String> {

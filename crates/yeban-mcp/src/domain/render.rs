@@ -3201,6 +3201,17 @@ pub struct RenderArtifact {
     /// ⚠ 它们**不是** `unsupported`：那份清单的口径是"我们会静默少做什么"，
     /// 削波是"算对了、但结果过载"，静音源是"排了内容却没进母带"。判据与消费者都不同。
     pub warnings: Vec<Value>,
+    /// ⭐ `T-FIX-504`：本渲染里**真的执行**的插件设备（`轨名: 设备名 [乐器|效果器]`）。
+    ///
+    /// 与 CLI / GUI 的 `WavExportReport::plugins_executed` 同一套标签口径
+    /// （[`yeban_render::plugin_hosting::executed_label`]），⛔ 不是 MCP 自造的第二份。
+    pub plugins_executed: Vec<String>,
+    /// ⭐ `T-FIX-504`：本渲染里**没有执行**的插件设备（同形 ＋ `(未执行: 原因)`）。
+    ///
+    /// 覆盖未绑定、第二台绑定设备（首台胜出）与无源总线轨上的效果器；旁通设备
+    /// 不进（旁通是显式选择，不是装配失败）。与 CLI 同一份
+    /// [`yeban_render::plugin_hosting::unhosted_external_devices`]。
+    pub plugins_not_executed: Vec<String>,
     /// 归一化是否真的改变了样本。
     pub normalize_applied: bool,
     /// 归一化的补充说明（全零信号等边界）。
@@ -3551,6 +3562,31 @@ impl RenderArtifact {
         // ⭐ #225：结果质量预警（非阻断、可寻址）。`clippedSamples == 0` 时是空数组。
         // 它与 `unsupported` **不是一回事**：那条口径是"我们会静默少做什么"。
         map.insert("warnings".to_owned(), Value::Array(self.warnings.clone()));
+        // ⭐ T-FIX-504：插件执行情况只在**本渲染出现过插件记录**时成对出现 ——
+        // 无插件工程的响应逐字节不变；有记录时两个键并列，空数组表示“没有这一栏”，
+        // ⛔ 不再让调用方从 `unsupported: ["externalPlugins"]` 反推设备名。
+        if !self.plugins_executed.is_empty() || !self.plugins_not_executed.is_empty() {
+            map.insert(
+                "pluginsExecuted".to_owned(),
+                Value::Array(
+                    self.plugins_executed
+                        .iter()
+                        .cloned()
+                        .map(Value::from)
+                        .collect(),
+                ),
+            );
+            map.insert(
+                "pluginsNotExecuted".to_owned(),
+                Value::Array(
+                    self.plugins_not_executed
+                        .iter()
+                        .cloned()
+                        .map(Value::from)
+                        .collect(),
+                ),
+            );
+        }
         map.insert(
             "unsupported".to_owned(),
             Value::Array(
@@ -3952,6 +3988,13 @@ pub fn build(
     let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut pending: Vec<PendingSource> = Vec::new();
     let mut reports: Vec<SourceReport> = Vec::new();
+    // ⭐ `T-FIX-504`：插件执行收据 —— 与 CLI 的 `render_core` / `WavExportReport`
+    // 同一套标签口径。已执行的行在下面的建源循环里追加（只有真的装配成功才记账）；
+    // 未执行的行在循环之后按同一份 `unhosted_external_devices` 点名。
+    let mut plugins_executed: Vec<String> = Vec::new();
+    let mut plugins_not_executed: Vec<String> = Vec::new();
+    // 哪些轨**真的**把外部乐器装成了源；未进这张集合的 hosted 乐器要报“没跑”。
+    let mut plugin_instrument_executed_nodes: BTreeSet<EntityId> = BTreeSet::new();
     // ⭐ `#274`：逐轨的**声部窃取**句柄（渲染之后才有读数，见 `9a` 的同一条时机）。
     let mut sampler_steals: BTreeMap<EntityId, Arc<AtomicU64>> = BTreeMap::new();
     let mut end_tick = 0u64;
@@ -3989,8 +4032,74 @@ pub fn build(
         )?;
         lane_chains_applied_total += lane_applied;
         end_tick = end_tick.max(report.end_tick);
+        // ⭐ T-FIX-504：`build_source` 成功返回 = 首台乐器/效果器已装载并激活；
+        // 记账放在这之后，坏绑定在前面已 `RENDER_FAILED`，不会伪造“已执行”。
+        // 乐器只在**实际走了插件乐器源**时记账：一条有音频片段的轨即使挂了
+        // 外部乐器，`build_source` 也走音频片段，乐器没有被执行。
+        if report.kind == "plugin-instrument"
+            && let Some(index) = yeban_render::plugin_hosting::hosted_instrument_index(track)
+        {
+            plugins_executed.push(yeban_render::plugin_hosting::executed_label(
+                &track.name,
+                &track.devices[index].name,
+                DeviceKind::ExternalInstrument,
+            ));
+            plugin_instrument_executed_nodes.insert(node);
+        }
+        if let Some(index) = yeban_render::plugin_hosting::hosted_effect_index(track) {
+            plugins_executed.push(yeban_render::plugin_hosting::executed_label(
+                &track.name,
+                &track.devices[index].name,
+                DeviceKind::ExternalEffect,
+            ));
+        }
         reports.push(report);
         pending.push((node, source, effect));
+    }
+    // ⭐ T-FIX-504：未执行的插件逐台点名（原因与 CLI 的 `render_core` 同词）。
+    // 只走计划里的非 master 节点：不在保留子图里的轨本来就不参与这次渲染，
+    // 把它们算成"未执行"会把剪枝误报成装配失败。
+    for &node in &nodes {
+        if node == project.master_bus_track_id {
+            continue;
+        }
+        let Some(track) = project.tracks.get(&node) else {
+            continue;
+        };
+        for unhosted in yeban_render::plugin_hosting::unhosted_external_devices(track) {
+            plugins_not_executed.push(yeban_render::plugin_hosting::not_executed_label(
+                &track.name,
+                &unhosted.name,
+                unhosted.kind,
+                unhosted.reason,
+            ));
+        }
+        let has_own_source = source_nodes.contains(&node) || bus_source_nodes.contains(&node);
+        if let Some(index) = yeban_render::plugin_hosting::hosted_effect_index(track)
+            && !has_own_source
+        {
+            plugins_not_executed.push(yeban_render::plugin_hosting::not_executed_label(
+                &track.name,
+                &track.devices[index].name,
+                DeviceKind::ExternalEffect,
+                "无源总线轨，效果器不接",
+            ));
+        }
+        if let Some(index) = yeban_render::plugin_hosting::hosted_instrument_index(track)
+            && !plugin_instrument_executed_nodes.contains(&node)
+        {
+            let reason = if has_own_source {
+                "音频片段轨，乐器不接"
+            } else {
+                "无源音轨，乐器不接"
+            };
+            plugins_not_executed.push(yeban_render::plugin_hosting::not_executed_label(
+                &track.name,
+                &track.devices[index].name,
+                DeviceKind::ExternalInstrument,
+                reason,
+            ));
+        }
     }
     // ⭐ 空轨：注册 **0 字节**静音源（不建引擎、不建 SFZ 表、也不进 `sources[]` 回执）。
     // 直接进 `registry` 而不是 `pending` —— 静音源没有可夹的片段区间、也没有值得
@@ -4527,6 +4636,8 @@ pub fn build(
         true_peak_dbfs,
         headroom_db,
         warnings,
+        plugins_executed,
+        plugins_not_executed,
         normalize_applied,
         normalize_note,
         loudness,

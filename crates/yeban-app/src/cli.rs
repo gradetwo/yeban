@@ -7523,6 +7523,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         if let Some(note) = report.loudness_note() {
             lines.push(note);
         }
+        // ⭐ `T-FIX-504`：插件执行情况（哪台跑了、哪台没跑、为什么）**必须**出现在
+        //    CLI 回执里。此前 `plugin_note()` 只被 `summary()` 调用，而 `summary()`
+        //    的 production 调用点都在引擎诊断/录音报告，`--export-wav` 的 stdout 里
+        //    只有 `plugins(executed=N not-executed=M)` 这个计数。⛔ 两张表都空时不产行
+        //    ⇒ 无插件工程的既有 stdout 逐字不变（与削波／响度两行同一范式）。
+        if let Some(note) = report.plugin_note() {
+            lines.push(note);
+        }
         // ⭐ 音频片段被跳过时**逐条多打一行**（原文照印：轨/摆放 ID、片段名、资产哈希、
         //    逐字原因都在 `audio_clips_skipped` 的自由文本里）。此前该明细只进报告结构、
         //    CLI 从不读 ⇒ 生成后被丢弃，用户只看得到 `skipped=N` 的计数。

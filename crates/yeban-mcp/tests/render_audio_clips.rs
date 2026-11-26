@@ -4157,6 +4157,13 @@ fn a_hosted_effect_passes_audio_through_and_leaves_the_receipt() {
         "已宿主的效果器不得登记 externalPlugins，T-FIX-417 起也不再登记 deviceChainDsp: {}",
         data["unsupported"]
     );
+    // T-FIX-504：MCP 回执必须点名“哪台插件真的跑了”，⛔ 不能只剩一个计数。
+    assert_eq!(
+        data["pluginsExecuted"],
+        json!(["Lead: stub-gain [效果器]"]),
+        "已宿主的效果器必须进 pluginsExecuted: {}",
+        data["pluginsExecuted"]
+    );
     let peak = data["sources"][0]["peak"].as_f64().expect("峰值读数");
     assert!(
         (peak - 0.5).abs() < 1e-6,

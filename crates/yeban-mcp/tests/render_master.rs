@@ -6935,6 +6935,12 @@ fn hosted_external_instrument_stops_reporting_device_chain_dsp() {
         result["data"]["sources"][0]["kind"], "plugin-instrument",
         "音源须是宿主插件（与音频事实一致）: {result}"
     );
+    // T-FIX-504：插件回执必须点名设备，⛔ 不能再只有一个计数或空收据。
+    assert_eq!(
+        result["data"]["pluginsExecuted"],
+        json!(["Lead: dev72 [乐器]"]),
+        "已宿主的外部乐器必须进 pluginsExecuted: {result}"
+    );
     assert!(
         result["data"]["sources"][0]["peak"].as_f64().unwrap_or(0.0) > 0.0,
         "插件须真的出声（峰值 > 0）: {result}"
@@ -6995,6 +7001,18 @@ fn hosted_external_instrument_stops_reporting_device_chain_dsp() {
     assert!(
         keys.contains(&"deviceChainDsp"),
         "第二台未宿主的对外设备仍须登记 deviceChainDsp: {negative}"
+    );
+    // T-FIX-504：未执行的那台必须被**点名 + 带原因**，而不是只留一个 unsupported 键。
+    let not_executed = negative["data"]["pluginsNotExecuted"]
+        .as_array()
+        .expect("pluginsNotExecuted 数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        not_executed,
+        vec!["Lead: dev73 [乐器] (未执行: 未绑定插件)"],
+        "第二台未绑定设备必须进 pluginsNotExecuted: {negative}"
     );
 }
 

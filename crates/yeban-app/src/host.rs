@@ -18019,6 +18019,14 @@ pub fn wire_module_actions_with_shared(
                             // ② `module-status` 是**一行**文本，再拆成几个字段只会让这一行更长、
                             // 可见部分更少；③ 长文案里的 `:` / `=` 不参与回执语法 —— 它整体被
                             // 双引号包住（与 `module_error_fields` 的 `message="…"` 同款）。
+                            // ⭐ `T-FIX-504`：插件执行情况（哪台跑了、哪台没跑、为什么）
+                            // 进 GUI 回执；⛔ 两张表都空时不加字段 ⇒ 无插件导出的回执
+                            // 逐字不变（判据 `tests/common/mod.rs::wav_export_receipt`）。
+                            // 与 `clipping_note` 的「长文案落在最后一个字段」口径一致，
+                            // 这里放在它**之前**，削波行仍是最后一条。
+                            if let Some(note) = report.plugin_note() {
+                                fields.push(format!("plugin_note=\"{note}\""));
+                            }
                             if let Some(note) = report.clipping_note() {
                                 fields.push(format!("clipping_note=\"{note}\""));
                             }

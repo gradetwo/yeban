@@ -24,6 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::process::Command;
 
 use yeban_app::export_wav::{WavExportOptions, export_wav};
 use yeban_app::render_core::{RenderProjectOutput, render_project_f32_with_assets_under};
@@ -33,6 +34,8 @@ use yeban_model::{
     RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_plugin_host::{PluginInstance, StubEffect, StubInstrument};
+
+mod common;
 
 /// 导出 1 秒：够量峰值（音符 0.25 秒）。
 const FRAMES: u64 = 48_000;
@@ -379,5 +382,64 @@ fn export_report_carries_the_plugin_split() {
         !clean.summary().contains("插件执行"),
         "没有插件的导出摘要必须一个字不多，实为 {}",
         clean.summary()
+    );
+}
+
+/// `T-FIX-504`：**真二进制**的 `--export-wav` 必须把 `plugin_note()` 打出来。
+///
+/// 修复前：`plugin_note()` 只被 `summary()` 调用，而 `summary()` 的 production
+/// 调用点都在引擎诊断/录音报告 ⇒ CLI stdout 只有 `exported-wav:` 里的
+/// `plugins(executed=N not-executed=M)` 计数，没有“哪台、为什么”。
+/// 本判据在无修法树上红（找不到 `插件执行:` 行），补丁树上绿；同时钉住
+/// **无插件工程不新增行**（既有 stdout 逐字不变）。
+#[test]
+fn cli_export_wav_prints_the_plugin_note() {
+    use std::collections::BTreeMap;
+
+    let fixture = Fixture::new("cli-note");
+    let write_container = |name: &str, project: &YebanProjectV1| {
+        let bytes = yeban_model::container::write_project_container(
+            project,
+            b"binary-history",
+            &BTreeMap::new(),
+        )
+        .expect("写出真容器");
+        let path = fixture.dir.join(name);
+        std::fs::write(&path, &bytes).expect("写容器");
+        path
+    };
+    let run = |project_path: &std::path::Path, wav: &std::path::Path| {
+        let output = Command::new(common::bin_path())
+            .args([
+                "--open",
+                project_path.to_str().expect("临时路径必须是 UTF-8"),
+                "--export-wav",
+                wav.to_str().expect("临时路径必须是 UTF-8"),
+            ])
+            .output()
+            .expect("执行真二进制");
+        assert!(
+            output.status.success(),
+            "`--export-wav` 必须成功；stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let with_plugin = write_container(
+        "with-plugin.yeban",
+        &project_with_devices(vec![sine_device()]),
+    );
+    let plugin_stdout = run(&with_plugin, &fixture.dir.join("with-plugin.wav"));
+    assert!(
+        plugin_stdout.contains("插件执行: 已执行 Plugin: stub:sine [乐器]；未执行 无"),
+        "CLI `--export-wav` 必须打印插件执行行，实为:\n{plugin_stdout}"
+    );
+
+    let clean = write_container("clean.yeban", &project_with_devices(vec![]));
+    let clean_stdout = run(&clean, &fixture.dir.join("clean.wav"));
+    assert!(
+        !clean_stdout.contains("插件执行"),
+        "无插件工程的 `--export-wav` stdout 必须一个字不多，实为:\n{clean_stdout}"
     );
 }
