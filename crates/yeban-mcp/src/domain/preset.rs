@@ -15,8 +15,8 @@
 //!   本次跳过并在响应里点名（`sendsSkipped`），不增边、不删边、不建 Aux。
 //!   整轨快照的 Aux 创建同样是后续项。
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -241,6 +241,105 @@ pub fn user_library_presets() -> (Vec<(Preset, PathBuf)>, Vec<String>) {
     (presets, skipped)
 }
 
+/// 递归收集 `root` 下的普通文件路径（读目录失败的分支跳过；样本根不存在 ⇒ 空集）。
+fn collect_files(root: &Path, out: &mut BTreeSet<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else if path.is_file() {
+            out.insert(path);
+        }
+    }
+}
+
+/// 预制绑定的 SFZ 的**样本可用状态**（只做文件存在性核对，不解码、不下载）。
+///
+/// 口径与 `yeban_list_instruments` 的目录条目完全同源：声明样本按
+/// `sample_path()`（含 `default_path=`）解析后去重，内建静音/空 `sample=` 不计；
+/// `presentSampleCount` 是磁盘上真实存在的普通文件数，`missingSampleCount` 是差额。
+/// 解析失败时三个计数为 `null`，`parseError` 点明原因（⛔ 不静默当成“齐全”）。
+#[must_use]
+pub(super) fn sample_status(instrument_sfz: &str) -> Value {
+    if instrument_sfz.trim().is_empty() {
+        return Value::Null;
+    }
+    let declared = Path::new(instrument_sfz);
+    // 工厂预制里的 `assets/...` 是**仓库相对**路径；MCP 测试从 `crates/yeban-mcp`
+    // 起跑时 cwd 不是仓库根。按「原样 → 仓库根」两档找，⛔ 不把路径错误伪装成缺样本。
+    let resolved = if declared.is_file() {
+        declared.to_path_buf()
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join(declared))
+            .filter(|candidate| candidate.is_file())
+            .unwrap_or_else(|| declared.to_path_buf())
+    };
+    let mut declared_samples: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    match super::sfz::declared_sample_paths(&resolved) {
+        Ok(samples) => {
+            for sample in samples {
+                if let Ok(candidate) = super::sfz::resolve_sample_path(&resolved, &sample) {
+                    declared_samples.insert(candidate);
+                }
+            }
+        }
+        Err(fault) => {
+            return serde_json::json!({
+                "sfzPath": instrument_sfz,
+                "declaredSampleCount": Value::Null,
+                "presentSampleCount": Value::Null,
+                "missingSampleCount": Value::Null,
+                "missingSampleExamples": Value::Array(Vec::new()),
+                "parseError": format!("{fault:?}"),
+            });
+        }
+    }
+    // ⛔ 不逐条 `is_file()`：鼓组一件就声明 8016 个样本，在 FUSE 上 8016 次 stat
+    // 会把列表拖到一分钟。样本根通常就是乐器目录（`.../Programs/xx.sfz` 的祖父）；
+    // 一次递归扫出真实文件集，声明路径在集合里即 present，超出根的才回退 stat。
+    let sample_root = resolved
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == "Programs"))
+        .and_then(Path::parent)
+        .or_else(|| resolved.parent())
+        .unwrap_or(Path::new("."));
+    let mut present_files: BTreeSet<PathBuf> = BTreeSet::new();
+    collect_files(sample_root, &mut present_files);
+    let mut present = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+    for candidate in &declared_samples {
+        if present_files.contains(candidate) || candidate.is_file() {
+            present += 1;
+        } else {
+            missing.push(candidate.display().to_string());
+        }
+    }
+    serde_json::json!({
+        "sfzPath": instrument_sfz,
+        "declaredSampleCount": declared_samples.len(),
+        "presentSampleCount": present,
+        "missingSampleCount": missing.len(),
+        "missingSampleExamples": missing.iter().take(5).cloned().collect::<Vec<_>>(),
+        "parseError": Value::Null,
+    })
+}
+
+/// `sampleStatus` 是否要求额外样本包：有缺文件，或 SFZ 本身读不动/解析失败。
+#[must_use]
+pub(super) fn requires_sample_pack(status: &Value) -> bool {
+    if status.is_null() {
+        return false;
+    }
+    status["missingSampleCount"].as_u64().is_some_and(|n| n > 0) || !status["parseError"].is_null()
+}
+
 /// 列出预制（`yeban_list_presets` 的读数部分；不要求活跃工程）。
 #[must_use]
 pub fn list_presets_json(kind: &str, instrument: Option<&str>) -> Value {
@@ -252,12 +351,15 @@ pub fn list_presets_json(kind: &str, instrument: Option<&str>) -> Value {
             {
                 continue;
             }
+            let sample_status = sample_status(&preset.instrument_sfz);
             rows.push(serde_json::json!({
                 "id": preset.id,
                 "name": preset.name,
                 "kind": "system",
                 "instrument": preset.instrument,
                 "instrumentSfz": preset.instrument_sfz,
+                "sampleStatus": sample_status,
+                "requiresSamplePack": requires_sample_pack(&sample_status),
                 "scope": if preset.scope == PresetScope::Track { "track" } else { "instrument" },
                 "draft": preset.draft,
                 "default": default_preset_id_for_instrument(&preset.instrument).is_some_and(|id| id == preset.id),
@@ -276,12 +378,15 @@ pub fn list_presets_json(kind: &str, instrument: Option<&str>) -> Value {
             {
                 continue;
             }
+            let sample_status = sample_status(&preset.instrument_sfz);
             rows.push(serde_json::json!({
                 "id": preset.id,
                 "name": preset.name,
                 "kind": "user",
                 "instrument": preset.instrument,
                 "instrumentSfz": preset.instrument_sfz,
+                "sampleStatus": sample_status,
+                "requiresSamplePack": requires_sample_pack(&sample_status),
                 "scope": if preset.scope == PresetScope::Track { "track" } else { "instrument" },
                 "draft": preset.draft,
                 "default": false,

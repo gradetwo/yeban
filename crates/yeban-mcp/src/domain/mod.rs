@@ -5556,6 +5556,34 @@ fn plan_apply_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         plan.ops,
         call,
     )?;
+    // ⭐ T-FIX-660：套用即绑定乐器的预制时，样本缺失必须在**套用回执**里响亮可见。
+    // 走既有顶层 `samplerWarnings[]`（与 T-FIX-48 的缺样本预检同一承载面）：
+    // 与“成功但点名”的既有语义一致，预制的设备/路由/宏仍然可用；⛔ 不新造 warning
+    // code、不改广播名册，也不让一次套用被样本部署状态卡死。
+    if applies_instrument {
+        let status = preset::sample_status(&preset.instrument_sfz);
+        if preset::requires_sample_pack(&status)
+            && let Plan::Propose {
+                sampler_warnings, ..
+            } = &mut drafted
+        {
+            let missing = status["missingSampleCount"].as_u64().unwrap_or(0);
+            sampler_warnings.push(embed_samples::MissingSample {
+                track_id: track_id.to_canonical_string(),
+                binding: preset.instrument_sfz.clone(),
+                sample: None,
+                reason: "sample_missing",
+                detail: format!(
+                    "preset `{preset_id}` 的乐器样本缺失: missingSampleCount = {missing}, \
+                         declaredSampleCount = {}, presentSampleCount = {}, sfz = {}; \
+                         设备链/路由已套用，但这条轨当前不会发声。装好样本包后无需重套预制。",
+                    status["declaredSampleCount"],
+                    status["presentSampleCount"],
+                    preset.instrument_sfz,
+                ),
+            });
+        }
+    }
     if let Plan::Propose { sfz_load, .. } = &mut drafted {
         *sfz_load = seed_load;
     }

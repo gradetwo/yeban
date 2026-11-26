@@ -1750,6 +1750,12 @@ fn silent_sources_warning(reports: &[SourceReport]) -> Option<Value> {
     if silent.is_empty() {
         return None;
     }
+    let sampler_blocking = silent.iter().any(|report| {
+        report
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| sampler.notes > 0 && sampler.decoded_samples == 0)
+    });
     let named: Vec<Value> = silent
         .iter()
         .map(|report| {
@@ -1765,20 +1771,28 @@ fn silent_sources_warning(reports: &[SourceReport]) -> Option<Value> {
             })
         })
         .collect();
+    let sample_note = if sampler_blocking {
+        " 其中含采样器轨 `notes > 0` 且 `decodedSamples = 0`：这是样本缺失造成的整轨静音，\
+         已按**阻断语义**告警（severity=error / blocking=true / sampleBlocking=true）；\
+         装好样本包后重渲即可。"
+    } else {
+        ""
+    };
     let hint = format!(
         "本次渲染里有 {} 条源被判定为**可闻**、也确实排了内容（音符或音频片段），\
          但源节点输出**一个非零样本都没有** —— 它们没有出现在母带里。\
          请逐条检查：轨是否被别的 solo 门控（`audible` 已按 mute/solo 判过）、\
          轨推子/声相是否为 0、路由边是否断开、采样器是否缺样本\
-         （`sources[].sampler.missingSamplePaths`）。\
+         （`sources[].sampler.missingSamplePaths`）。{sample_note}\
          ⚠ 若这些轨本来就不该出声，请删掉它们的内容，而不是让「渲染成功」掩盖静音。\
          ⛔ 本工具**不自动修**，音频一个字节都没动。",
         silent.len()
     );
     Some(serde_json::json!({
         "code": "silentSources",
-        "severity": "warning",
-        "blocking": false,
+        "severity": if sampler_blocking { "error" } else { "warning" },
+        "blocking": sampler_blocking,
+        "sampleBlocking": sampler_blocking,
         "count": silent.len(),
         "sources": named,
         "hint": hint,

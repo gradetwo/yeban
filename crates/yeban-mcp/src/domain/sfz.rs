@@ -1823,6 +1823,46 @@ pub fn parse(text: &str) -> Result<Instrument<'_>, Fault> {
     parse_expanded(text, None)
 }
 
+/// 只解析 SFZ（含 `#include` 展开）并取出**声明样本路径**，⛔ 不读样本字节。
+///
+/// 给 `yeban_list_presets` 的样本可用状态用：这里只要“声明了哪些文件”，
+/// 再由调用方 stat；⛔ 不走 [`load`]（那会把整包样本解码一遍，列表不该付这个成本）。
+///
+/// # Errors
+///
+/// SFZ 读不到 / 非 UTF-8 / 语法错 / include 循环等 ⇒ [`Fault`]。
+pub(crate) fn declared_sample_paths(sfz_path: &Path) -> Result<Vec<String>, Fault> {
+    let bytes = super::store::read_bounded(sfz_path, 16 * 1024 * 1024, "SFZ 文件")
+        .map_err(|error| Fault::domain(ErrorCode::IoError, format!("读取 SFZ 文件: {error:?}")))?;
+    let text = String::from_utf8(bytes).map_err(|error| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "SFZ 文件不是合法 UTF-8 文本 (validUpTo={})",
+                error.utf8_error().valid_up_to()
+            ),
+        )
+    })?;
+    let Some((sources, _issues)) = resolve_include_sources(&text, sfz_path)? else {
+        let instrument = parse(&text)?;
+        return Ok(instrument
+            .regions()
+            .iter()
+            .filter(|region| !region.is_builtin_silence())
+            .map(|region| region.sample_path().into_owned())
+            .filter(|sample| !sample.trim().is_empty())
+            .collect());
+    };
+    let instrument = parse_expanded(&text, Some(&sources))?;
+    Ok(instrument
+        .regions()
+        .iter()
+        .filter(|region| !region.is_builtin_silence())
+        .map(|region| region.sample_path().into_owned())
+        .filter(|sample| !sample.trim().is_empty())
+        .collect())
+}
+
 /// 解析根文本或**已展开的片段序列**（本模块唯一的解析入口）。
 ///
 /// `Some(sources)` ⇒ `parse_sources`（跨片段状态延续，`#include` 真的进来了）；

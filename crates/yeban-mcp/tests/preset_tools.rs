@@ -293,6 +293,27 @@ fn list_system_presets_returns_six_factory_presets() {
             "工厂预制须带乐器标识: {preset}"
         );
     }
+    // T-FIX-660 判据：系统鼓组预制的样本文件在 `assets/samples` 里缺失，
+    // 列表必须把「要样本包 / 缺多少」说清楚，⛔ 不能和可发声预制长得一样。
+    let drums = presets
+        .iter()
+        .find(|preset| preset["id"] == "sys:karoryfer-big-rusty-drums:drums-punchy-room")
+        .expect("系统鼓组预制必须在清单里");
+    assert_eq!(
+        drums["requiresSamplePack"], true,
+        "缺样本的鼓组预制必须标 requiresSamplePack: {drums}"
+    );
+    assert!(
+        drums["sampleStatus"]["missingSampleCount"]
+            .as_u64()
+            .is_some_and(|missing| missing > 0),
+        "鼓组预制必须报出缺失样本数: {drums}"
+    );
+    assert_eq!(
+        drums["sampleStatus"]["parseError"],
+        Value::Null,
+        "鼓组 SFZ 必须可解析，缺的是音频文件: {drums}"
+    );
     // `kind=all` 里系统 6 件一分不少（用户件数不钉：它读本机用户库）。
     let all = call(
         &mut dispatcher,
@@ -321,6 +342,53 @@ fn list_unknown_kind_is_rejected() {
         "yeban_list_presets",
         serde_json::json!({"kind": "bogus"}),
         "INVALID_PARAMETER_RANGE",
+    );
+}
+
+/// T-FIX-660：套用样本缺失的系统鼓组预制必须**成功但响亮** ——
+/// `warnings[]` 里带 `presetSamplesMissing`，报明缺多少；⛔ 不静默成功。
+#[test]
+fn apply_preset_with_missing_samples_warns_loudly() {
+    let mut dispatcher = dispatcher_with_project();
+    let bass = track_id(&dispatcher, "Bass");
+    let data = call(
+        &mut dispatcher,
+        "yeban_apply_preset",
+        serde_json::json!({
+            "trackId": bass,
+            "presetId": "sys:karoryfer-big-rusty-drums:drums-punchy-room",
+            "categories": ["instrument"],
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(data["autoMerged"], true, "套用本身必须成功: {data}");
+    let sampler_warnings = data["samplerWarnings"]
+        .as_array()
+        .expect("samplerWarnings 是数组");
+    // 换绑时同一数组还会有逐样本 `MissingSample`（`sample` 非 null）；
+    // 这里只取“预制整体”那一条聚合告警（`sample=null` 且 detail 点名 preset）。
+    let missing: Vec<&Value> = sampler_warnings
+        .iter()
+        .filter(|warning| warning["sample"].is_null())
+        .filter(|warning| {
+            warning["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("preset `sys:karoryfer-big-rusty-drums"))
+        })
+        .collect();
+    assert_eq!(
+        missing.len(),
+        1,
+        "缺样本的预制必须在套用回执里恰好点名一次: {sampler_warnings:?}"
+    );
+    let detail = missing[0]["detail"].as_str().expect("detail 字符串");
+    assert!(
+        detail.contains("missingSampleCount"),
+        "告警必须报出缺失样本数: {detail}"
+    );
+    assert!(
+        detail.contains("declaredSampleCount"),
+        "告警必须报出声明样本数: {detail}"
     );
 }
 

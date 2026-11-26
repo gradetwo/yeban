@@ -10137,6 +10137,23 @@ fn a_sampler_with_missing_sample_files_is_named_in_silent_sources() {
         1,
         "缺样本的采样器轨必须被 silentSources 点名（warnings = {warnings:?}）"
     );
+    // T-FIX-660：notes>0 且 decodedSamples=0 的采样器静音不是普通 warning，
+    // 必须带阻断语义（severity=error / blocking=true），⛔ 不让 success 掩盖整轨静音。
+    assert_eq!(
+        silent[0]["severity"], "error",
+        "采样器缺样本必须升级为 error: {:?}",
+        silent[0]
+    );
+    assert_eq!(
+        silent[0]["blocking"], true,
+        "采样器缺样本必须带阻断语义: {:?}",
+        silent[0]
+    );
+    assert_eq!(
+        silent[0]["sampleBlocking"], true,
+        "采样器缺样本必须显式标 sampleBlocking: {:?}",
+        silent[0]
+    );
     let named = silent[0]["sources"].as_array().expect("sources 数组");
     assert_eq!(named.len(), 1, "{silent:?}");
     // 逐源读数：同一条轨的 sampler 子对象必须如实登记缺失（不是“无内容”）。
