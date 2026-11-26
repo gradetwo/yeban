@@ -9190,6 +9190,16 @@ pub(crate) fn apply_propose(
     // 提案**不**改工程内容 —— 这两行是给调用方的证据, 不是顺手加的字段。
     let project_digest = store::digest_of(store::serialize_project(&project)?.as_bytes());
     let unwired = draft_unwired(&wire_projection);
+    // T-FIX-732：`deviceId` 省略时由服务端确定性派生 —— 调用方必须能从响应
+    // 读到实际身份才能继续寻址该设备（includeOps 缺省 false 时也要有）。
+    let inserted_device_ids: Vec<String> = draft
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::InsertDevice { device, .. } => Some(device.id.to_canonical_string()),
+            _ => None,
+        })
+        .collect();
     let mut data = serde_json::json!({
         "created": true,
         "projectUnchanged": true,
@@ -9206,6 +9216,7 @@ pub(crate) fn apply_propose(
         // ⭐ #178：同一数组里还有"设备落在没有东西可发声的音轨上"那一条
         // （`deviceOnSilentTrack`）；它是 `plan` 阶段对模拟后工程算好的同一份读数。
         "warnings": Value::Array(warnings.to_vec()),
+        "insertedDeviceIds": inserted_device_ids,
         "proposal": wire_projection,
     });
     // ⭐ 第五份报告 A-3：`setParam`（`DeviceParam`）的命中回显，**恒带**
@@ -13706,5 +13717,66 @@ mod tests {
             "正常路径不出现警告（与保存/分轨同口径）"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-FIX-732：省略 `deviceId` / `latencySamples` 的工具面判据。
+    /// 红对照：把派生改回 `EntityId::new()` ⇒ dryRun 与提交 ops 不等；
+    /// 去掉 `insertedDeviceIds` 回显 ⇒ 本条的第二组断言红。
+    #[test]
+    fn insert_device_derived_id_is_echoed_and_dry_run_equals_commit() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+        let clip = clip_id(&domain);
+        let arguments = serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": clip.to_canonical_string(),
+            "includeOps": true,
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": track.to_canonical_string(),
+                "device": {
+                    "name": "Probe Effect",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "params": [{"name": "mix", "value": 0.5}]
+                }
+            }]
+        });
+        let tool_call = call("yeban_edit_notes", arguments);
+        let planned_ops = preview(&domain, &tool_call).expect("dryRun")["ops"].clone();
+        let created = execute(&mut domain, &tool_call).expect("创建提案");
+        assert_eq!(created["status"], "success");
+        let echoed = created["data"]["insertedDeviceIds"][0]
+            .as_str()
+            .expect("实际分配的 deviceId 必须显式回显")
+            .to_owned();
+        assert!(!echoed.is_empty(), "回显身份不得为空");
+
+        let proposal_id = created["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("proposalId");
+        let record = domain
+            .proposal(&EntityId::from_str(proposal_id).expect("ULID"))
+            .expect("提案记录")
+            .clone();
+        let committed: Vec<Value> = record
+            .ops
+            .iter()
+            .map(|stamped| serde_json::to_value(&stamped.op).expect("序列化 op"))
+            .collect();
+        assert_eq!(
+            planned_ops,
+            Value::Array(committed),
+            "同一请求 dryRun 预览 ops 必须与实际提交 ops 逐字相等"
+        );
+        let Op::InsertDevice { device, .. } = &record.ops[0].op else {
+            panic!("提案里必须是 InsertDevice");
+        };
+        assert_eq!(
+            device.id.to_canonical_string(),
+            echoed,
+            "回显必须是实际身份"
+        );
+        assert_eq!(device.latency_samples, 0, "省略延迟必须按 0 处理并回显");
     }
 }

@@ -1556,7 +1556,7 @@ fn edit_notes() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_edit_notes 成功响应的 data",
-            "缺省形状 `pendingMerge:true` / `projectUnchanged:true` / `mergeTool:\"yeban_merge_proposal\"`（本调用先写隔离提案分支）。`proposal` 为摘要；`includeOps:true` 时多 `ops`。⚠ 两种成功形状：`autoMerge:true` 时多 `autoMerged`（true）与 `merge`（`yeban_merge_proposal` 全字段回执，不含嵌套 `commitModel`），并把 `pendingMerge`/`projectUnchanged` 翻为 false、`mergeTool` 改为 `\"applied-in-process:autoMerge\"`；这三键不用 const，`autoMerged`/`merge` 不进 required。`warnings[]` 报非阻断：`unrecognisedEffectParam`（带 `knownParams`）/`deviceOnSilentTrack`，可为空。`resolvedParams` 回显 `setParam` 命中。`clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 是条件读数，刻意不声明进 `properties`（纯音轨调用可不带）；`placement.add` 且 `autoMerge:true` 落地后顶层 `createdPlacementId` 逐字等于 `willCreate.placements[0].id`，可立即 move/fade；未合并或 `dryRun` 不带，只读计划值。",
+            "缺省形状 `pendingMerge:true` / `projectUnchanged:true` / `mergeTool:\"yeban_merge_proposal\"`（本调用先写隔离提案分支）。`proposal` 为摘要；`includeOps:true` 时多 `ops`。⚠ 两种成功形状：`autoMerge:true` 时多 `autoMerged`（true）与 `merge`（`yeban_merge_proposal` 全字段回执，不含嵌套 `commitModel`），并把 `pendingMerge`/`projectUnchanged` 翻为 false、`mergeTool` 改为 `\"applied-in-process:autoMerge\"`；这三键不用 const，`autoMerged`/`merge` 不进 required。`warnings[]` 报非阻断：`unrecognisedEffectParam`（带 `knownParams`）/`deviceOnSilentTrack`，可为空。`resolvedParams` 回显 `setParam` 命中。`clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 是条件读数，刻意不声明进 `properties`（纯音轨调用可不带）；`placement.add` 且 `autoMerge:true` 落地后顶层 `createdPlacementId` 逐字等于 `willCreate.placements[0].id`，可立即 move/fade；未合并或 `dryRun` 不带，只读计划值。`insertedDeviceIds` 逐条回显本批实际分配的 deviceId（恒带，无插入时为空数组）。",
         ),
         &[
             "created",
@@ -1567,6 +1567,7 @@ fn edit_notes() -> Value {
             "unwired",
             "willCreate",
             "warnings",
+            "insertedDeviceIds",
             "proposal",
             "samplerWarnings",
         ],
@@ -1582,6 +1583,7 @@ fn edit_notes() -> Value {
                 "type": "array",
                 "items": proposal_warning_items()
             },
+            "insertedDeviceIds": {"type": "array", "items": {"type": "string"}},
             "proposal": proposal_detail_schema(),
             "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},

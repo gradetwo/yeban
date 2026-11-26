@@ -4570,6 +4570,10 @@ pub enum NoteOp {
         slot_index: Option<usize>,
         /// 被插入的完整设备定义。
         device: DeviceDefinition,
+        /// T-FIX-732：`None` = 调用方显式给了 `deviceId`（逐字保留）；
+        /// `Some(batch_index)` = 省略时确定性派生的初值及其批内序号 ——
+        /// `compile` 按目标轨既有身份冲突递增重派，⛔ 不用随机身份。
+        derive_device_id_from_batch: Option<usize>,
     },
     /// 从一条音轨的设备链里**取走**一台设备（[`Op::RemoveDevice`]）。
     ///
@@ -5153,7 +5157,7 @@ pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
     let mut parsed = Vec::with_capacity(items.len());
     let mut failures: Vec<(usize, Fault)> = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        match parse_one(item) {
+        match parse_one(item, index) {
             Ok(op) => parsed.push(op),
             Err(fault) => failures.push((index, fault)),
         }
@@ -5247,8 +5251,8 @@ fn missing_kind(object: &Map<String, Value>) -> Fault {
     missing("kind", "字符串")
 }
 
-/// 解析单个操作。
-fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
+/// 解析单个操作。`index` 是批内序号（T-FIX-732 确定性身份派生的输入之一）。
+fn parse_one(item: &Value, index: usize) -> Result<NoteOp, Fault> {
     let object = item.as_object().ok_or_else(|| {
         Fault::domain(
             ErrorCode::InvalidParameterRange,
@@ -6169,20 +6173,26 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         }
         INSERT_DEVICE_KIND => {
             reject_insert_device_fields(object)?;
+            let track_id = read_optional_id(object, DEVICE_TRACK_FIELD)?;
             let payload = object
                 .get(DEVICE_PAYLOAD_FIELD)
                 .and_then(Value::as_object)
                 .ok_or_else(|| missing(DEVICE_PAYLOAD_FIELD, "对象"))?;
-            let device = parse_device(payload)?;
+            let (device, derived_batch) = parse_device(
+                payload,
+                track_id.as_ref().unwrap_or(&EntityId::default()),
+                index,
+            )?;
             let slot_index = match object.get(DEVICE_SLOT_FIELD) {
                 None => None,
                 Some(_) => Some(read_usize(object, DEVICE_SLOT_FIELD)?),
             };
             Ok(NoteOp::InsertDevice {
                 // T-FIX-652：省略 = 回退顶层 `trackId`（由 `compile` 解析）。
-                track_id: read_optional_id(object, DEVICE_TRACK_FIELD)?,
+                track_id,
                 slot_index,
                 device,
+                derive_device_id_from_batch: derived_batch.then_some(index),
             })
         }
         REMOVE_DEVICE_KIND => {
@@ -7558,7 +7568,36 @@ fn reject_remove_device_fields(object: &Map<String, Value>) -> Result<(), Fault>
 ///   `INVALID_PARAMETER_RANGE`（`data.reason = "incompleteDrumNoteMap"`，
 ///   逐条点名缺的键）—— 见 [`reject_incomplete_drum_note_map`]；
 /// - `name` 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = "deviceNameRequired"`）。
-fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault> {
+///
+/// T-FIX-732：`deviceId` 省略时的**纯函数**身份派生。
+///
+/// 输入含目标轨、器件 kind / 显示名 / 旁通 / 延迟 / 规范化 params、批内序号
+/// 与冲突递增序号 —— 同一基线同一请求（含 dryRun 与真调用）逐字节同值，
+/// ⛔ 不使用 `EntityId::new()`（随机身份会让预览与提交分叉，见 `domain/ids.rs`）。
+#[allow(clippy::too_many_arguments)]
+fn derived_device_id(
+    track_id: &EntityId,
+    name: &str,
+    kind: &DeviceKind,
+    bypassed: bool,
+    latency_samples: u32,
+    params: &[ParameterValue],
+    batch_index: usize,
+    salt: u64,
+) -> EntityId {
+    let params_json = serde_json::to_string(params).unwrap_or_default();
+    deterministic_id(&format!(
+        "insert-device:{track}:{kind:?}:{name}:{bypassed}:{latency}:{params_json}:{batch_index}:{salt}",
+        track = track_id.to_canonical_string(),
+        latency = latency_samples,
+    ))
+}
+
+fn parse_device(
+    payload: &Map<String, Value>,
+    track_id: &EntityId,
+    batch_index: usize,
+) -> Result<(DeviceDefinition, bool), Fault> {
     let mut unknown: Vec<&str> = payload
         .keys()
         .map(String::as_str)
@@ -7583,7 +7622,11 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
             }),
         ));
     }
-    let id = read_id(payload, DEVICE_ID_FIELD)?;
+    // T-FIX-732：显式 id 逐字保留；省略留空，等全部字段解析完后确定性派生。
+    let explicit_id = match payload.get(DEVICE_ID_FIELD) {
+        None => None,
+        Some(_) => Some(read_id(payload, DEVICE_ID_FIELD)?),
+    };
     let name = match payload.get("name") {
         Some(Value::String(text)) if !text.is_empty() => text.clone(),
         Some(Value::String(_)) => {
@@ -7642,28 +7685,30 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
             })
         },
     )?;
-    let latency_samples = {
-        let raw = payload
-            .get("latencySamples")
-            .ok_or_else(|| missing("device.latencySamples", "u32 整数"))?;
-        let number = raw.as_u64().ok_or_else(|| {
-            Fault::domain(
-                ErrorCode::InvalidParameterRange,
-                format!("`device.latencySamples` 必须是非负整数, 实际收到 {raw}"),
-            )
-        })?;
-        u32::try_from(number).map_err(|_| {
-            Fault::domain_with_data(
-                ErrorCode::OutOfRange,
-                format!("`device.latencySamples` 越界: {number} 不在 0..=4294967295"),
-                serde_json::json!({
-                    "field": "device.latencySamples",
-                    "reason": "latencyOutOfRange",
-                    "value": number,
-                    "max": u32::MAX,
-                }),
-            )
-        })?
+    // T-FIX-732：省略 `latencySamples` 按 0 处理（⛔ 不猜其它延迟值），
+    // 显式给出仍按 u32 域校验，越界响亮拒绝。
+    let latency_samples = match payload.get("latencySamples") {
+        None => 0_u32,
+        Some(raw) => {
+            let number = raw.as_u64().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`device.latencySamples` 必须是非负整数, 实际收到 {raw}"),
+                )
+            })?;
+            u32::try_from(number).map_err(|_| {
+                Fault::domain_with_data(
+                    ErrorCode::OutOfRange,
+                    format!("`device.latencySamples` 越界: {number} 不在 0..=4294967295"),
+                    serde_json::json!({
+                        "field": "device.latencySamples",
+                        "reason": "latencyOutOfRange",
+                        "value": number,
+                        "max": u32::MAX,
+                    }),
+                )
+            })?
+        }
     };
     let params = {
         let raw = payload
@@ -7683,6 +7728,19 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
     };
     // ⭐ #175：拼错的参数名在**写入时**就响亮失败（⛔ 不再"存下来、静默不生效"）。
     reject_misspelled_effect_params(&name, &params)?;
+    let derive_device_id = explicit_id.is_none();
+    let id = explicit_id.unwrap_or_else(|| {
+        derived_device_id(
+            track_id,
+            &name,
+            &kind,
+            bypassed,
+            latency_samples,
+            &params,
+            batch_index,
+            0,
+        )
+    });
     let device = DeviceDefinition {
         id,
         name,
@@ -7694,7 +7752,7 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
     };
     // ⭐ P2-3：鼓机键位写了但没写全 ⇒ 同样在**写入时**响亮失败（见函数文档）。
     reject_incomplete_drum_note_map(&device)?;
-    Ok(device)
+    Ok((device, derive_device_id))
 }
 
 /// 拒绝"鼓机键位写了但没写全"的内置乐器设备（**P2-3**）。
@@ -12199,9 +12257,11 @@ fn compile_inner(
                 track_id: op_track_id,
                 slot_index,
                 device,
+                derive_device_id_from_batch,
             } => {
                 // T-FIX-652：逐条 `ops[].trackId` 优先；省略回退顶层 `trackId`。
                 let target = op_track_id.unwrap_or(*track_id);
+                let mut device = device.clone();
                 // 撤销载荷由模型从**这一条** op 自己反转（`Op::invert` 把 `InsertDevice`
                 // 换成 `RemoveDevice`，两个载荷本来就都在插入这一条上），因此本层
                 // 不需要从文档读任何"旧状态"；要读的是**前**置条件。
@@ -12236,8 +12296,45 @@ fn compile_inner(
                         }),
                     ));
                 }
+                // T-FIX-732：省略 deviceId 的身份是确定性派生的初值；与既有
+                // 身份冲突时按确定性序号递增重派（⛔ 不静默换随机身份、⛔ 不吞冲突）。
+                if let Some(batch_index) = derive_device_id_from_batch {
+                    // T-FIX-652/732：解析期 trackId 可省略（占位派生），这里按
+                    // 解析后的目标轨重派一次（同输入同值，给了 trackId 时不变）。
+                    device.id = derived_device_id(
+                        &target,
+                        &device.name,
+                        &device.kind,
+                        device.bypassed,
+                        device.latency_samples,
+                        &device.params,
+                        *batch_index,
+                        0,
+                    );
+                    let taken: Vec<EntityId> = track.devices.iter().map(|item| item.id).collect();
+                    let mut salt = 0_u64;
+                    while taken.contains(&device.id) {
+                        salt = salt.checked_add(1).ok_or_else(|| {
+                            Fault::domain(
+                                ErrorCode::InvalidParameterRange,
+                                "确定性设备身份重派次数耗尽，拒绝插入".to_owned(),
+                            )
+                        })?;
+                        device.id = derived_device_id(
+                            &target,
+                            &device.name,
+                            &device.kind,
+                            device.bypassed,
+                            device.latency_samples,
+                            &device.params,
+                            *batch_index,
+                            salt,
+                        );
+                    }
+                }
                 // 同一条音轨上设备身份不得重复（模型 `Op::validate` 的
-                // `DuplicateEntityId`）。提前报，让调用方拿到 `reason` 与现成的位置。
+                // `DuplicateEntityId`）。显式身份仍在这里响亮拒绝；派生身份
+                // 已按上面的确定性序列避开既有身份。
                 if let Some(existing) = track.devices.iter().position(|it| it.id == device.id) {
                     return Err(Fault::domain_with_data(
                         ErrorCode::Conflict,
@@ -24277,6 +24374,7 @@ mod tests {
             track_id: Some(track),
             slot_index: None,
             device,
+            derive_device_id_from_batch: None,
         }];
         let fault = compile(&project, &track, &clip_id, &ops).expect_err("NaN 参数必须被拒");
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
@@ -28402,5 +28500,63 @@ mod tests {
             ["kind", "trackId", "sampler"],
             "顶层键集不变：对象形只扩 sampler 的值形状"
         );
+    }
+
+    /// T-FIX-732：省略 `deviceId` / `latencySamples` 的纯函数判据。
+    /// 红对照：把 `derived_device_id` 换成 `EntityId::new()`（随机）⇒ 两次
+    /// 解析的身份不等，本条即红；把 latency 缺省改成非 0 ⇒ 第二条红。
+    #[test]
+    fn omitted_device_id_is_deterministic_and_latency_defaults_to_zero() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let (_, clip_id) = lead_clip(&project);
+        let payload = serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "device": {
+                "name": "Probe Effect",
+                "kind": "InternalEffect",
+                "bypassed": false,
+                "params": [{"name": "mix", "value": 0.5}]
+            }
+        }]);
+        let first = parse_ops(&payload).expect("第一次解析");
+        let second = parse_ops(&payload).expect("第二次解析（同一请求）");
+        let (id_a, derived_a, latency_a) = match &first[0] {
+            NoteOp::InsertDevice {
+                device,
+                derive_device_id_from_batch,
+                ..
+            } => (
+                device.id,
+                *derive_device_id_from_batch,
+                device.latency_samples,
+            ),
+            other => panic!("必须是 insertDevice, 实际 {other:?}"),
+        };
+        let id_b = match &second[0] {
+            NoteOp::InsertDevice { device, .. } => device.id,
+            other => panic!("必须是 insertDevice, 实际 {other:?}"),
+        };
+        assert_eq!(
+            derived_a,
+            Some(0),
+            "省略 deviceId 必须标记为派生并带批内序号"
+        );
+        assert_eq!(latency_a, 0, "省略 latencySamples 必须按 0 处理");
+        assert_eq!(
+            id_a, id_b,
+            "同一请求两次解析必须派生同一身份（dryRun==提交）"
+        );
+        assert!(
+            project.tracks[&track].devices.iter().all(|d| d.id != id_a),
+            "派生身份不得与目标轨既有设备身份冲突"
+        );
+
+        let compiled = compile(&project, &track, &clip_id, &first).expect("编译插入");
+        let Op::InsertDevice { device, .. } = &compiled[0] else {
+            panic!("必须是 Op::InsertDevice");
+        };
+        assert_eq!(device.id, id_a, "编译阶段不得改掉派生身份");
     }
 }

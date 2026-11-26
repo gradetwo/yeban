@@ -255,15 +255,13 @@ fn device_object() -> Value {
         "type": "object",
         "description": "设备定义。`kind` 必须是 `InternalEffect` 且 `bypassed:false` 才会武装引擎内置效果器; `params` 的已识别名字见 items (名字大小写不敏感)。⚠ 拼错的 `name` (与已识别拼写编辑距离 ≤ 2) 会被**响亮拒绝** (`INVALID_PARAMETER_RANGE` / `unknownEffectParam`, 带最近邻建议); 更远的未识别名字仍会被存储但**不生效**, 并在 `warnings[]` 与 `inserts[].unrecognisedParams` 里出现",
         "required": [
-            "deviceId",
             "name",
             "kind",
             "bypassed",
-            "latencySamples",
             "params",
         ],
         "properties": {
-            "deviceId": id("设备身份（设备链上唯一）"),
+            "deviceId": id("设备身份（设备链上唯一）；省略时由服务端按目标轨 / 器件 / 批内序号确定性派生，并在响应的 insertedDeviceIds 回显实际值"),
             "name": non_empty("设备显示名"),
             "kind": {
                 "type": "string",
@@ -278,7 +276,7 @@ fn device_object() -> Value {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 4_294_967_295_u64,
-                "description": "设备延迟（样本，PDC 的唯一来源）",
+                "description": "设备延迟（样本，PDC 的唯一来源）；省略按 0 处理并回显 0，显式给出按 u32 域校验",
             },
             "params": {
                 "type": "array",

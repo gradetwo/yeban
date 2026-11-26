@@ -3793,7 +3793,7 @@
                             "type": "boolean"
                           },
                           "deviceId": {
-                            "description": "设备身份（设备链上唯一）（26 字符 ULID）",
+                            "description": "设备身份（设备链上唯一）（26 字符 ULID）；省略时由服务端确定性派生，并在响应 insertedDeviceIds 回显",
                             "maxLength": 26,
                             "minLength": 26,
                             "type": "string"
@@ -3809,7 +3809,7 @@
                             "type": "string"
                           },
                           "latencySamples": {
-                            "description": "设备延迟（样本，PDC 的唯一来源）",
+                            "description": "设备延迟（样本，PDC 的唯一来源）；省略按 0 处理并回显 0，显式给出按 u32 域校验",
                             "maximum": 4294967295,
                             "minimum": 0,
                             "type": "integer"
@@ -6636,11 +6636,9 @@
                           }
                         },
                         "required": [
-                          "deviceId",
                           "name",
                           "kind",
                           "bypassed",
-                          "latencySamples",
                           "params"
                         ],
                         "type": "object"
