@@ -123,3 +123,15 @@ TPDF 抖动	TPDF dither	CH09
 静态平衡	static balance	CH10
 导出限制器	export limiter	CH10
 压缩器	compressor	CH04
+动态均衡	dynamic EQ	T-DOC-EXP-002	只在某段超过阈值时改变该段增益的处理器；通道条有 deq_* 级，界面无独立旋钮。
+扫频	frequency sweep	T-DOC-EXP-002	临时提升窄段并移动中心频率，用“最难受点”定位问题；探针不是最终曲线。
+Haas 延迟	Haas delay	T-DOC-EXP-002	把同一声复制到另一侧并延迟 1–35 ms，用先到声建立定位；单声道下会梳状滤波。
+电平预算	level budget	T-DOC-EXP-002	预先分配音源、设备链、总线与导出的峰值余量。
+低频掩蔽	low-frequency masking	T-DOC-EXP-002	低频强时人耳更难听到同时出现的中高频细节。
+多段压缩	multiband compression	T-DOC-EXP-002	分频段独立压缩后合成；夜半当前无多段压缩器件。
+并行压缩	parallel compression	T-DOC-EXP-002	干声与重压副本并联；夜半可用辅助返回轨近似。
+并行饱和	parallel saturation	T-DOC-EXP-002	干声与饱和副本并联；夜半当前无独立并行饱和路由。
+相位抵消	phase cancellation	T-DOC-EXP-002	两路相同信号因极性或延迟在某个频率相加变小。
+平台响度归一化	platform loudness normalization	T-DOC-EXP-002	平台播放时把不同作品拉到相近响度的机制；不是强制统一制作目标。
+参考监听	reference monitoring	T-DOC-EXP-002	固定参考曲、监听音量与检查顺序，做 A/B 偏差判断。
+侧链压缩	sidechain compression	T-DOC-EXP-002	用一条轨的电平触发另一条轨压缩；夜半设备架有“侧链键源”循环。

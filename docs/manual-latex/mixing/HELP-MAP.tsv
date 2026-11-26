@@ -70,3 +70,9 @@ chapter	section	anchor
 10	总线与导出	walkthrough-bus-export
 10	导出前检查	walkthrough-export-check
 10	常见误判与边界	walkthrough-boundaries
+11	电平预算与平台响度	mixing-level-budget
+11	扫频、动态 EQ 与多段思路	mixing-eq-advanced
+11	侧链、门限与并行压缩	mixing-dynamics-advanced
+11	延迟、Haas 与宽度	mixing-space-advanced
+11	染色、并行饱和与监听环境	mixing-coloration-advanced
+11	故障排查：浑浊、刺耳、相位与低频打架	mixing-troubleshooting

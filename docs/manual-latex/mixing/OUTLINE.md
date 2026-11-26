@@ -4,8 +4,8 @@
 
 - 首包基线：`origin/main` 活尖端 `6be5d66`；整册装配基线：`line/incoming-doc-infra` `2d59bbf`。
 - 语言：中文 `zh/`、英文 `en/`，XeLaTeX；共用样式按约定引用 `docs/manual-latex/common/yeban-manual.sty`。
-- 当前状态：全册大纲、术语与第一章由首包交付；第 2–10 章已交付并全部装配进 `chapters/`，两语言 `main.tex` 已按 01–10 排序。
-- 样式现状：装配基线已有 `docs/manual-latex/common/yeban-manual.sty`；`main.tex` 使用该共用样式，未编译 PDF。
+- 当前状态：全册大纲、术语与第一章由首包交付；第 2–10 章已交付；T-DOC-EXP-002 新增第 11 章“混音进阶实验”，两语言 `main.tex` 已按 01–11 排序。
+- 样式现状：装配基线已有 `docs/manual-latex/common/yeban-manual.sty`；本包已用 `common/build.sh` 编译 zh/en，页数见回执。
 - 现有应用内手册 `docs/manual/05-mixer-effects.md` 只覆盖通道条、设备链、控制室和一段混音顺序；本册是它的完整版来源，正文不与它矛盾。
 
 ## 二、全册章节
@@ -22,6 +22,7 @@
 | 8 | 自动化混音 | 音量/声像/发送/效果自动化在段落中的用法 | 已装配 |
 | 9 | 总线与母带入门 | 总线处理、响度目标、导出前检查清单 | 已装配 |
 | 10 | 实作：从粗混到成品 | 一首歌的完整走查，每步参数与理由 | 已装配 |
+| 11 | 混音进阶实验 | 电平/响度预算、动态 EQ 与多段、侧链/门限/并行压缩、延迟/Haas/宽度、染色与故障排查；每章练习 | T-DOC-EXP-002 新增 |
 
 ## 三、第一章样章要点
 
@@ -32,17 +33,23 @@
 5. 参考曲：导入音频、单独音频轨摆放、旁通该轨效果；只做 A/B，不进入最终导出。
 6. 七步顺序：粗平衡 → 增益结构 → EQ → 动态 → 空间 → 自动化 → 总线收尾。
 
-## 四、截图清单
+## 四、T-DOC-EXP-002 扩充说明
+
+- 新增第 11 章中英双版，六个小节、六个 help 锚点、六组练习；原 10 章各补一节“练习”。
+- 新增术语已追加到 `docs/manual-latex/common/glossary-zh.tex` / `glossary-en.tex`，并登记 `TERMS.tsv`；新锚点登记 `HELP-MAP.tsv`。
+- 已编译：中文 78 页、英文 73 页（基线中文 69 页、英文 66 页；中 +9、英 +7）。
+
+## 五、截图清单
 
 全册已汇总 23 个唯一图名，含章节、中英 caption 与拍摄步骤，见同目录 `SCREENSHOTS.tsv`。两语言正文各 23 处 `\screenshot{name}{caption}`，没有单参数或三参数残留；第一章与第 2--7 章的原拍摄步骤已移入 TSV。
 
-## 五、术语表
+## 六、术语表
 
-首包 `TERMS.tsv` 保留为来源；装配后的 124 条规范条目见 `TERMS-MERGED.tsv`，并已写入 `docs/manual-latex/common/glossary-zh.tex` 与 `glossary-en.tex`。冲突与别名见 `GLOSSARY-CONFLICTS.md`，其中 `增益结构` 保留首包 `gain structure`，正文中的 `gain staging` 作为并存说法。
+首包 `TERMS.tsv` 保留为来源；装配后的 136 条规范条目见 `TERMS-MERGED.tsv`，并已写入 `docs/manual-latex/common/glossary-zh.tex` 与 `glossary-en.tex`（`T-DOC-EXP-002` 新增 12 条）。冲突与别名见 `GLOSSARY-CONFLICTS.md`，其中 `增益结构` 保留首包 `gain structure`，正文中的 `gain staging` 作为并存说法。
 
-## 六、装配未核实项
+## 七、装配未核实项
 
-1. 未编译 PDF；按任务纪律只做静态结构/配对检查与 `git apply --check`，共用样式沿用 `line/incoming-doc-infra` 的 `yeban-manual.sty`。
+1. 已用 `common/build.sh` 编译中英 PDF；静态结构与 `git apply --check` 仍按任务纪律执行；共用样式沿用 `line/incoming-doc-infra` 的 `yeban-manual.sty`。
 2. 未实际拍摄 23 张截图；截图清单是待拍摄步骤，不是已拍素材。
 3. 未做逐页视觉排版检查；10 章正文按章序 include，目录、索引与分页需在编译环境确认。
 4. 各章代码事实沿用原章回执的核对范围；整册装配没有重新打开 GUI 或重新导出音频验证。
