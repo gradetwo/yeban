@@ -212,6 +212,54 @@ pub fn looks_like_container(path: &Path) -> bool {
     file.read_exact(&mut magic).is_ok() && magic == *b"PK\x03\x04"
 }
 
+/// `.part` 半成品的生命周期守卫：从临时文件创建起接管，任何错误返回
+/// 都由 `Drop` 统一删除；成功 rename 后 `disarm`，不碰 target。
+struct PartCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PartCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// 成功 rename 后解除守卫（`.part` 已不存在，target 不能被误删）。
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// 显式清理并解除守卫；清理失败只记日志，不改变调用方正在返回的
+    /// 原始下载错误。
+    fn cleanup_now(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.remove_part();
+        }
+    }
+
+    fn remove_part(&self) {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!(
+                    "demo-download: 清理半成品 `{}` 失败: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
+}
+
+impl Drop for PartCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            self.remove_part();
+        }
+    }
+}
+
 /// 同步下载到 `target`：临时文件 → 校验 → 改名。返回最终路径。
 ///
 /// `notify` 收到每一次 Progress；取消时返回 `Err(Cancelled)` 且**不留文件**；
@@ -258,6 +306,7 @@ where
     }
     let part = part_path(target);
     let _ = std::fs::remove_file(&part);
+    let mut part_cleanup = PartCleanup::new(part.clone());
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(15)))
@@ -282,7 +331,7 @@ where
     loop {
         if cancel.is_cancelled() {
             drop(file);
-            let _ = std::fs::remove_file(&part);
+            part_cleanup.cleanup_now();
             notify(DownloadEvent::Cancelled);
             return Err((DownloadError::Cancelled, "已取消".to_owned()));
         }
@@ -304,24 +353,21 @@ where
     if let Some(total) = total
         && received != total
     {
-        let _ = std::fs::remove_file(&part);
         return Err((
             DownloadError::Network,
             format!("下载不完整: {received} / {total} 字节"),
         ));
     }
     if !looks_like_container(&part) {
-        let _ = std::fs::remove_file(&part);
         return Err((
             DownloadError::Corrupt,
             "下载内容不是合法的工程容器".to_owned(),
         ));
     }
     if let Err(error) = std::fs::rename(&part, target) {
-        // 改名失败也清掉半成品。
-        let _ = std::fs::remove_file(&part);
         return Err((DownloadError::Io, format!("改名失败: {error}")));
     }
+    part_cleanup.disarm();
     notify(DownloadEvent::Finished(target.to_path_buf()));
     Ok(target.to_path_buf())
 }

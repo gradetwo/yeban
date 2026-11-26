@@ -39,6 +39,28 @@ fn serve(body: Vec<u8>, requests: usize) -> (String, Arc<std::sync::Mutex<Vec<St
     (format!("http://{addr}"), seen)
 }
 
+/// 起一个只回答一次、声明完整长度但只发送 `prefix` 的服务器；用于
+/// 模拟“响应已开始、读取中途断流”。
+fn serve_prefix(prefix: Vec<u8>, declared_len: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("绑定端口");
+    let addr = listener.local_addr().expect("地址");
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {declared_len}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&prefix);
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    });
+    format!("http://{addr}")
+}
+
 fn temp_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "yeban-demo-dl-{tag}-{}-{}",
@@ -200,6 +222,44 @@ fn corrupt_payload_is_rejected_and_leaves_no_file() {
     assert_eq!(error.0, DownloadError::Corrupt);
     assert!(!target.exists(), "校验失败不得留下正式文件");
     assert!(!part_path(&target).exists(), "校验失败不得留下半成品");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mid_stream_read_failure_cleans_part_and_target() {
+    let body = b"PK\x03\x04partial-but-declared-longer".to_vec();
+    let declared = body.len() + 64;
+    let base = serve_prefix(body, declared);
+    let root = temp_root("mid-read");
+    let target = root.join("demo").join("mid-read.yeban");
+    let url = format!("{base}/demo/mid-read.yeban");
+    let error =
+        download_to(&url, &target, &CancelFlag::new(), |_| {}).expect_err("响应中途断流必须失败");
+    assert_eq!(error.0, DownloadError::Network);
+    assert!(!target.exists(), "读取失败不得留下正式文件");
+    assert!(
+        !part_path(&target).exists(),
+        "读取失败必须由 guard 清掉 .part"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rename_failure_cleans_part_and_keeps_target() {
+    let body = b"PK\x03\x04rename-failure".to_vec();
+    let (base, _seen) = serve(body, 1);
+    let root = temp_root("rename-fail");
+    let target = root.join("demo").join("rename-fail.yeban");
+    std::fs::create_dir_all(&target).expect("目标路径放目录，制造 rename 失败");
+    let url = format!("{base}/demo/rename-fail.yeban");
+    let error =
+        download_to(&url, &target, &CancelFlag::new(), |_| {}).expect_err("rename 到目录必须失败");
+    assert_eq!(error.0, DownloadError::Io);
+    assert!(target.is_dir(), "失败的 rename 不得破坏原 target");
+    assert!(
+        !part_path(&target).exists(),
+        "rename 失败必须由 guard 清掉 .part"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
