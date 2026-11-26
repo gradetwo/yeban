@@ -662,13 +662,65 @@ pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> Result<PathBuf, yeb
     // `SampleCache` 一律读不到、静默回退到内存正弦（读数会如实报
     // `samples=0 missing=["…"]`，但**听见的不是那个音色**）。归一之后
     // 同一份 SFZ 读到 210 份样本（见报告里的实测数字）。
-    yeban_sfz::instrument::validate_sample_path(sample)?;
     let normalized = normalize_sample_path(sample);
-    let raw = Path::new(normalized.as_ref());
-    let root = sfz_path
+    let sfz_dir = sfz_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // T-FIX-266：厂商库的惯用布局是 `Programs/*.sfz` + `..\Samples\*.wav`
+    // （真实库 karoryfer-bigcat-cello 就是这种写法）。沙箱根取 **instrument 根**，
+    // 即 `Programs` 的父目录；其它布局仍以 SFZ 所在目录为根，不扩大沙箱。
+    let root = if sfz_dir.file_name().is_some_and(|name| name == "Programs") {
+        sfz_dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(sfz_dir)
+    } else {
+        sfz_dir
+    };
+    // `up_budget` = 从 SFZ 目录回到根所需的上层数（Programs 布局为 1）。
+    // sample 里的 `..` 先抵这个额度，再弹已归约的组件；弹空即越界 ⇒ SampleEscape。
+    // `validate_sample_path` 拒绝一切 `..`，所以这里先做词法归约、再校验归约后的
+    // 逻辑路径（仍拦绝对路径 / 盘符相对 / NUL）。symlink 逃逸由下面的
+    // canonicalize + starts_with 兜底 —— ⛔ 不是静默放宽沙箱。
+    let mut up_budget = usize::from(root != sfz_dir);
+    let mut parts: Vec<&str> = Vec::new();
+    for component in Path::new(normalized.as_ref()).components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .ok_or_else(|| yeban_sfz::SfzError::SampleInvalidPath {
+                        path: sample.to_owned(),
+                    })?;
+                parts.push(part);
+            }
+            std::path::Component::ParentDir => {
+                if up_budget > 0 {
+                    up_budget -= 1;
+                } else if parts.pop().is_none() {
+                    return Err(yeban_sfz::SfzError::SampleEscape {
+                        path: sample.to_owned(),
+                    });
+                }
+            }
+            std::path::Component::RootDir => {
+                // POSIX 绝对路径要保持原有错误种类与文案（`is absolute`），
+                // 否则 `sampleFailures` 的点名口径会被本单改掉。
+                return Err(yeban_sfz::SfzError::SampleAbsolutePath {
+                    path: sample.to_owned(),
+                });
+            }
+            _ => {
+                return Err(yeban_sfz::SfzError::SampleEscape {
+                    path: sample.to_owned(),
+                });
+            }
+        }
+    }
+    let logical = parts.join("/");
+    yeban_sfz::instrument::validate_sample_path(&logical)?;
+    let raw = Path::new(&logical);
     let resolved = root.join(raw);
     if let Ok(root_canonical) = std::fs::canonicalize(root)
         && let Some(ancestor) = nearest_existing_ancestor(&resolved)

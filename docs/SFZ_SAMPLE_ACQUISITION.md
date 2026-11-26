@@ -68,3 +68,25 @@ EOF
 - **`optional=true` 门禁不因缺文件报错**：这是登记式策略的**设计**，不是漏洞；
   它也正是"载入成功但静音"曾经无人察觉的土壤——现在由 `data.warnings[]` 补上点名。
 - **30 款 ≠ 规范要求的 323 款**（差 293，`counts_note`），开箱音色的覆盖面是另一条缺口。
+
+## 5. 采样根边界与缺样本告警口径（T-FIX-266）
+
+`resolve_sample_path` 的沙箱根是 **instrument 根**，不是 SFZ 文件所在的目录：
+
+- 当 SFZ 在 `<instrument>/Programs/*.sfz` 时，根取 `Programs` 的父目录；其它布局
+  仍以 SFZ 所在目录为根，**不扩大**。
+- sample 里的 `..` 先在词法层归约：先用掉「从 SFZ 目录回到根」的额度（Programs
+  布局为 1），再弹已归约的组件；**弹空即 `SampleEscape`**。例如
+  `..\Samples\x.wav` 折成根内的 `Samples/x.wav`，而 `..\..\etc\passwd` 在第二次
+  弹栈时被拒。
+- `yeban_sfz::instrument::validate_sample_path` 一字未改——它仍然拒绝裸 `..`；
+  这里只是把归约后的逻辑路径交给它，让它照旧拦绝对路径 / 盘符相对 / NUL。
+  symlink 逃逸仍由 `canonicalize` + `starts_with(root_canonical)` 兜底。
+  ⛔ 不是把沙箱放宽成"任意上级目录"。
+- **外取落点不变**：仍按 `assets/samples/<prefix>/<仓库内路径>` 整体镜像安装，
+  `Programs/` 与 `Samples/` 保持上游相对关系（见第 1 节）；缺样本时重新取字节、
+  重跑装载即可。
+
+`apply_preset` 的 `samplerBinding` 告警按 ADR-0024 的 sample 告警口径聚合：
+同一缺失样本只报一次，一条告警带 `count`（去重后的个数）、最多 5 条 `examples`、
+`hint` 与 `blocking: false`，不再按 region 逐条平铺。

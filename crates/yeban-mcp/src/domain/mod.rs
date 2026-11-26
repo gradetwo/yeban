@@ -8508,14 +8508,39 @@ fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Valu
                     "detail": format!("{error:?}"),
                 })),
                 Ok(load) => {
+                    // T-FIX-266：按 ADR-0024 的 sample 告警口径聚合 —— 同一个缺失样本
+                    // 在多个 region 里会重复失败（工厂大提琴 SFZ 实测 2446 条里只有
+                    // 410 个不同路径，最多一条重复 12 次）。逐条 push 会把一次提案
+                    // 撑到约 1 MB，调用方也读不过来。
+                    //
+                    // 去重键 = 装载器给出的完整失败串 `rejected(<sample>): <reason>`，
+                    // 它同时含样本路径与失败原因；同一路径不同原因仍分别计数。
+                    // 输出一条聚合告警：首条完整 detail + count + 最多 5 条 examples
+                    // + hint，与 ADR-0024 的 `sfzSamplesUnreadable` 同形，不阻断。
+                    let mut seen = BTreeSet::new();
+                    let mut unique: Vec<String> = Vec::new();
                     for failure in load.sample_failures {
+                        if seen.insert(failure.clone()) {
+                            unique.push(failure);
+                        }
+                    }
+                    if let Some(first) = unique.first() {
+                        let examples: Vec<Value> = unique
+                            .iter()
+                            .take(5)
+                            .map(|detail| Value::String(detail.clone()))
+                            .collect();
                         out.push(serde_json::json!({
                             "kind": "samplerBinding",
                             "trackId": track,
                             "binding": binding.path,
                             "sample": Value::Null,
                             "reason": "sample_missing",
-                            "detail": failure,
+                            "detail": first,
+                            "count": unique.len(),
+                            "examples": examples,
+                            "blocking": false,
+                            "hint": "同一缺失样本只报一次（count 为去重后的个数）；样本需按外取流程安装，装完重新应用即可消失。",
                         }));
                     }
                 }

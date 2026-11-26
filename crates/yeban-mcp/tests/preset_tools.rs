@@ -389,12 +389,53 @@ fn apply_preset_sets_state_and_preset_devices() {
         title.contains("跳过的宏"),
         "跳过的宏（超出当前宏位数）须写进提案标题: {title}"
     );
-    // 预制参数全在引擎公告表里：一次应用不得产出 `unrecognisedEffectParam` 误报。
-    assert_eq!(
-        full["warnings"].as_array().map(Vec::len),
-        Some(0),
+    // T-FIX-266：warnings 里除了 effect-param 还会带 `samplerBinding` 缺样本预检
+    // （样本按 ADR-0024 外取，未安装时须点名）。原断言把两类混为一谈，看到任何
+    // 告警就红；这里只断言"预制参数全被引擎认下"这件事。
+    let warnings = full["warnings"].as_array().expect("warnings 是数组");
+    let effect_param: Vec<&Value> = warnings
+        .iter()
+        .filter(|w| w["kind"].as_str() == Some("unrecognisedEffectParam"))
+        .collect();
+    assert!(
+        effect_param.is_empty(),
         "预制参数须全部被引擎认下: {:?}",
-        full["warnings"]
+        effect_param
+    );
+    // samplerBinding 必须按 (binding, sample) 去重并聚合：一条告警带 count 与
+    // 最多 5 条 examples，响应有界，且 instrument 内的 ../Samples 不得被判越界。
+    let sampler_bindings: Vec<&Value> = warnings
+        .iter()
+        .filter(|w| w["kind"].as_str() == Some("samplerBinding"))
+        .collect();
+    for warning in &sampler_bindings {
+        let count = warning["count"].as_u64().expect("聚合告警必须有 count");
+        assert!(count >= 1, "count 至少为 1: {:?}", warning);
+        assert!(
+            warning["examples"].as_array().is_some_and(|a| a.len() <= 5),
+            "examples 最多 5 条: {:?}",
+            warning
+        );
+        assert_eq!(
+            warning["blocking"].as_bool(),
+            Some(false),
+            "缺样本只警告、不阻断: {:?}",
+            warning
+        );
+    }
+    let warnings_bytes = serde_json::to_string(warnings)
+        .expect("warnings 可序列化")
+        .len();
+    assert!(
+        warnings_bytes < 4096,
+        "聚合后 warnings 须远小于逐条平铺的量级（< 4KB），实际 {warnings_bytes} B；告警 {sampler_bindings:?}"
+    );
+    assert!(
+        !serde_json::to_string(&sampler_bindings)
+            .expect("可序列化")
+            .contains("escapes the SFZ root"),
+        "instrument 内的 ../Samples 路径不得再被判 SampleEscape: {:?}",
+        sampler_bindings
     );
     let applied = track_snapshot(&dispatcher, "Bass");
     assert!(
