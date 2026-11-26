@@ -502,7 +502,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         min_len: None,
         max_len: Some(256),
         items: None,
-        doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存; 该响应是 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`), 而不是裸 `ToolResponse`; 空串按未提供处理; 作用域 = 工具名 + 键 (缓存键 `<工具名>:<idempotencyKey>`) ⇒ 不同工具复用同一个键**不会**互相命中",
+        doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存 (响应是 `{\"replayed\":true,\"response\":…}` 信封, 不是裸 `ToolResponse`); 空串按未提供处理; 作用域 = 工具名 + 键 ⇒ 不同工具复用同一个键不会互相命中",
     },
 ];
 
@@ -707,8 +707,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("path", "string", false, "工程文件路径 (打开已有容器时必填; 给 `sample` 时可省略, 此时落到临时目录的唯一新文件并回填实际路径)"),
-            param("readOnly", "boolean", false, "以只读方式打开 (不取写锁); 与 `sample` 同给 ⇒ `INVALID_PARAMETER_RANGE` (样本总是打开为可写副本)"),
+            param(
+                "path",
+                "string",
+                false,
+                "工程文件路径 (打开已有容器时必填; 给 `sample` 时可省略, 此时落到临时目录的唯一新文件并回填实际路径)",
+            ),
+            param(
+                "readOnly",
+                "boolean",
+                false,
+                "以只读方式打开 (不取写锁); 与 `sample` 同给 ⇒ `INVALID_PARAMETER_RANGE` (样本总是打开为可写副本)",
+            ),
             param(
                 "sample",
                 "string",
@@ -756,7 +766,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "timeSignature",
                 "string",
                 false,
-                "`create:true` 时的拍号, \"N/D\" 文本 (例 \"3/4\"、\"6/8\"; 缺省 4/4)。取值由模型层 `TimeSignature::validate` 判决: 分子 1..=32, 分母 ∈ {1,2,4,8,16,32}; 形状错误 ⇒ `INVALID_PARAMETER_RANGE`, 取值越界 ⇒ `OUT_OF_RANGE`。种子摆放的时值与 `yeban_propose_section` 的 `bars` 都按这个拍号算; 不给 `create` 时给它是 `INVALID_PARAMETER_RANGE` (`createOnlyParameter`)",
+                "`create:true` 时的拍号, \"N/D\" 文本 (例 \"3/4\"、\"6/8\"; 缺省 4/4)。取值由模型层 `TimeSignature::validate` 判决: 分子 1..=32, 分母 ∈ {1,2,4,8,16,32}; 形状错误 ⇒ `INVALID_PARAMETER_RANGE`, 取值越界 ⇒ `OUT_OF_RANGE`。不给 `create` 时给它 ⇒ `INVALID_PARAMETER_RANGE` (`createOnlyParameter`)",
             ),
             param(
                 "seed",
@@ -848,49 +858,49 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "progression",
                 "string",
                 false,
-                "自定义走向 (例 \"i-VI-III-VII\"), 只被 `materialSource:\"theory\"` 消费; 缺省 = 该流派登记的首选走向, 流派没有登记时兜底 \"I-V-vi-IV\"。接受**两种**文本: 罗马数字级数 (经 `Progression::parse`, 在目标调式上展开) 与绝对和弦符号 (例 \"Dm7-G7-Cmaj7\", 经 `Chord::from_symbol` 逐词解析 —— 符号自带根音/性质、不依赖调式, 展开的 `ChordSpan.degree` 为 null); 判定顺序是整体先罗马、失败再试符号, 混合写法 (\"I-Dm7\") 两边都拒。两种语法都解析失败 ⇒ `INVALID_PARAMETER_RANGE` (数据带 `romanError`/`symbolError`); 声部连接无可行解 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep`)",
+                "自定义走向 (例 \"i-VI-III-VII\"), 只被 `materialSource:\"theory\"` 消费; 缺省 = 该流派登记的首选走向, 无登记时兜底 \"I-V-vi-IV\"。接受两种文本: 罗马数字级数 (在目标调式上展开) 与绝对和弦符号 (例 \"Dm7-G7-Cmaj7\", 符号自带根音/性质、不依赖调式); 整体先罗马、失败再试符号, 混合写法 (\"I-Dm7\") 两边都拒。都失败 ⇒ `INVALID_PARAMETER_RANGE` (带 `romanError`/`symbolError`); 声部连接无可行解 ⇒ 同码 (带 `theoryStep`)",
             ),
             param(
                 "includeDrums",
                 "boolean",
                 false,
-                "是否追加鼓组声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨, 鼓点由 `GenreRule::drum_pattern` (或 `swung_styled_drum_pattern`) 生成, 映射为标准 GM 打击乐键 (底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51), 时值固定 120 tick, 重音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。两条材料源都支持 [审计 N1]: `'theory'` 源与 `'project'` 源都会在段落末尾追加鼓轨 (鼓轨不读和声材料, 流派 `GenreRule` 自带网格/音色/重音); `'project'` 源上 `swingPermille`/`drumBackbeat`/`drumStyle`/`beatGrouping`/`onsetsPerBar`/`drumDensity`/`velocityMin`/`velocityMax` 同样被消费",
+                "是否追加鼓组声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Drums\"` 音轨: 鼓点由流派 `GenreRule` 生成, 映射 GM 打击乐键 (底鼓 36 / 军鼓 38 / 踩镲 42 / 吊镲 51), 时值固定 120 tick, 重音取 `velocityMax` 其余取 `velocityMin`, 并直连主总线。两条材料源都支持 (`'project'` 源上 `swingPermille`/`drumBackbeat`/`drumStyle`/`beatGrouping`/`onsetsPerBar`/`drumDensity`/`velocityMin`/`velocityMax` 同样被消费)",
             ),
             param(
                 "includeMelody",
                 "boolean",
                 false,
-                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨, 旋律由 `melody_over_chords` 在**当前段落展开的** `ChordSpan` 与流派节奏网格上生成, 音域缺省 `48..=84` (theory 的 `MELODY_LOWER_BOUND`/`MELODY_UPPER_BOUND`), 可由 `melodyLower` / `melodyUpper` 覆盖 [ADR-0038]; 跳进上界 (相邻两音的半音距离) 缺省 12 (= theory 的 `MELODY_MAX_LEAP`), 可由 `melodyMaxLeap` 覆盖 [ADR-0039]; 取音种子缺省 = 由该段落的 `EntityId` 派生 (每个段落不同), 可由 `melodySeed` 覆盖 [ADR-0045], 起点/时值与网格对齐, 和弦音取 `velocityMax` (缺省 112) 其余取 `velocityMin` (缺省 96) [ADR-0037], 并直连主总线 (整图仍为 DAG)。两条材料源都支持 [审计 N1]: `'project'` 源上逐小节从和声材料片段的 voicing 判出 `ChordSpan` (该小节相交音类须为 3..=5, 无相交音符 ⇒ 沿用上一小节判出; 判不出 ⇒ `INVALID_PARAMETER_RANGE` 带 `bar`+`hint`), 且要求 `scale` 显式指名 (音阶无法从材料判出, 缺省 ⇒ `INVALID_PARAMETER_RANGE` 带 `hint`)",
+                "是否追加旋律声部 [ADR-0017]: 缺省 false。true = 在段落末尾追加 `\"{sectionName} · Melody\"` 音轨: 旋律由 `melody_over_chords` 在当前段落展开的 `ChordSpan` 与流派节奏网格上生成, 音域缺省 `48..=84` (`melodyLower`/`melodyUpper` [ADR-0038]), 跳进上界缺省 12 半音 (`melodyMaxLeap` [ADR-0039]), 取音种子缺省由段落 `EntityId` 派生 (`melodySeed` [ADR-0045]), 和弦音取 `velocityMax` 其余取 `velocityMin`, 并直连主总线。`'project'` 源上和声跨度逐小节从材料判出 (判不出 ⇒ `INVALID_PARAMETER_RANGE` 带 `bar`+`hint`), 且要求 `scale` 显式指名",
             ),
             param(
                 "drumDensity",
                 "string",
                 false,
-                "鼓点密度档位 [ADR-0028]: 缺省 \"normal\" = 逐字节维持既有鼓组输出。\"sparse\" = 只保留 `GenreRule::drum_pattern` 里**登记为重音** (`accent`) 的击点 (不发明新节奏表); 该流派没有登记重音时 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`, 建议换 \"normal\" 或换流派)。只允许与 `includeDrums:true` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。其余取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `accepted`)",
+                "鼓点密度档位 [ADR-0028]: 缺省 \"normal\"。\"sparse\" = 只保留流派鼓型里登记为重音 (`accent`) 的击点; 该流派没有登记重音时 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。只允许与 `includeDrums:true` 同给, 否则同码 (带 `hint`); 其余取值同码 (带 `accepted`)",
             ),
             param(
                 "voiceSubdivision",
                 "integer",
                 false,
-                "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (不是每小节击点数, ⛔ 勿与错误载荷里的 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1 = 逐字节维持既有块状和声。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高、力度取 `velocityMin` 档 (缺省 96) 的音符: `step = duration_ticks / N` 整数 tick, **最后一条吸收余数** ⇒ 跨度总时值守恒 (无缝无叠); 音符 id 种子追加切分序号。只作用于 `materialSource:\"theory\"` 的和声声部 (鼓/旋律/`\"project\"` 材料路径不受影响), 因此只允许与 `materialSource:\"theory\"` 同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界或非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `range`)",
+                "和声声部的节奏切分 [ADR-0033]: 单位 = **每个和弦跨度切成几条** (⛔ 不是每小节击点数, 勿与 `onsetsPerBar` 混同)。取值 1..=16, 缺省 1。N>1 时每个 `ChordSpan` 均匀切成 N 条同音高音符 (力度取 `velocityMin` 档), 最后一条吸收余数 ⇒ 总时值守恒。只作用于 `materialSource:\"theory\"` 的和声声部, 只允许与它同给; 否则或越界/非整数 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`/`range`)",
             ),
             param(
                 "voiceSubdivisions",
                 "object",
                 false,
-                "按**声部名**给值的切分覆盖表 [ADR-0035]: `{\"Bass\": 8, \"Soprano\": 1}`。单位与 `voiceSubdivision` 完全一致 (每个和弦跨度切成几条, 1..=16)。组合规则只有一条: 表里列出的声部用表里的值, **没列出的声部沿用 `voiceSubdivision`** (其缺省 1) —— 因此 `voiceSubdivision:4 + {\"Soprano\":1}` = 低音/内声部切 4、高音持续。键 = 该风格预设的和声声部名 (`preset_parts` 实测清单); 不是声部名的键 (含 `\"Drums\"` / `\"Melody\"`) ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `allowedParts`, ⛔ 静默忽略)。非整数或越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `part` + `range`)。空对象 `{}` 合法 = 没有任何覆盖。只作用于 `materialSource:\"theory\"` 的和声声部, 因此只允许与它同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。没被改的声部音符身份与缺省路径逐字节相同",
+                "按**声部名**给值的切分覆盖表 [ADR-0035]: `{\"Bass\": 8, \"Soprano\": 1}`。单位与 `voiceSubdivision` 一致 (每个和弦跨度切成几条, 1..=16)。组合规则: 列出的声部用表里的值, **没列出的沿用 `voiceSubdivision`** (缺省 1)。键必须是该风格预设的和声声部名 (含 `\"Drums\"`/`\"Melody\"` 在内的非声部名 ⇒ `INVALID_PARAMETER_RANGE` 带 `part`+`allowedParts`, ⛔ 静默忽略); 非整数/越界同码。空对象 `{}` 合法 = 无覆盖。只允许与 `materialSource:\"theory\"` 同给",
             ),
             param(
                 "onsetsPerBar",
                 "integer",
                 false,
-                "鼓组与旋律的**每小节**音头数 [ADR-0036]: 单位 = 每小节 (⛔ 与 `voiceSubdivision`/`voiceSubdivisions` 的\"每个和弦跨度\"不是同一个量, 两者互不换算)。缺省 = **该流派拍号一小节的 16 分格位数** (4/4⇒16, 3/4⇒12, 2/4⇒8, 6/8⇒12, 7/8⇒14) —— 因此 4/4 预设不传时逐字节不变, 而非 4/4 预设也不再需要调用方自己折算。下界 1 (0 ⇒ `INVALID_PARAMETER_RANGE`); 上界 = 该拍号的格位数, 由 `yeban-theory` 判定而非本层常量: 超过它 ⇒ `INVALID_PARAMETER_RANGE` (带 `onsetsPerBar` + `maxOnsetsPerBar` + `meter` + `hint`, ⛔ 静默夹紧)。只作用于**鼓组与旋律**两条生成路径 (审计 N1: 两源同口径 —— `'project'` 源上鼓/旋律同样消费本键) (和声声部不受影响), 因此要求与它同给、且 `includeDrums` 或 `includeMelody` 至少一条为 true; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)",
+                "鼓组与旋律的**每小节**音头数 [ADR-0036]: 单位 = 每小节 (⛔ 与 `voiceSubdivision` 的\"每个和弦跨度\"不是同一个量)。缺省 = 该流派拍号一小节的 16 分格位数 (4/4⇒16, 3/4⇒12, 2/4⇒8, 6/8⇒12, 7/8⇒14)。下界 1; 上界 = 该拍号格位数 (由 `yeban-theory` 判定), 超过 ⇒ `INVALID_PARAMETER_RANGE` (带 `maxOnsetsPerBar`+`hint`, ⛔ 静默夹紧)。只作用于鼓组与旋律, 要求 `includeDrums` 或 `includeMelody` 至少一条为 true",
             ),
             param(
                 "velocityMin",
                 "integer",
                 false,
-                "生成音符的力度**下档** [ADR-0037]: 单位 = MIDI velocity。取值 0..=127, 缺省 96 = 逐字节维持既有输出。消费点: **和声声部的全部音符** + 鼓 (`hit.accent==false`) + 旋律 (`chord_tone==false`)。只作用于 `materialSource:\"theory\"` 的生成路径 (外部素材的力度由调用方给出, 本层不覆盖), 因此只允许与它同给; 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`); 与 `velocityMax` 的相对界 (`min <= max`) 同样在此判定 ⇒ `INVALID_PARAMETER_RANGE` (带 `field:\"velocityMin\"` + `velocityMin` + `velocityMax` + `hint`, ⛔ 不支持反重音)。⛔ 不改音符身份 (id 种子里不含力度) ⇒ 同一次调用的音符 id 与不传时逐条对齐",
+                "生成音符的力度**下档** [ADR-0037]: 单位 = MIDI velocity。取值 0..=127, 缺省 96。消费点: 和声声部全部音符 + 鼓的非重音 + 旋律的非和弦音。只作用于 `materialSource:\"theory\"` 生成路径, 只允许与它同给; 否则/越界 ⇒ `INVALID_PARAMETER_RANGE`。与 `velocityMax` 的相对界 (`min <= max`) 同在此判定 (⛔ 不支持反重音)。⛔ 不改音符身份: 音符 id 与不传时逐条对齐",
             ),
             param(
                 "velocityMax",
@@ -902,7 +912,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "melodyLower",
                 "integer",
                 false,
-                "旋律声部音高窗口的**下端** [ADR-0038]: 单位 = **MIDI 音高值** (⛔ 不是八度号、⛔ 不是半音偏移)。取值 0..=127, 缺省 48 (= theory 的 `MELODY_LOWER_BOUND`) ⇒ 逐字节维持既有输出。消费点: **仅**旋律生成路径 (`melody_over_chords` 的 `MelodyConstraints.lower`); 和声声部的音域是 [ADR-0028] 的 `SECTION_THREE_VOICES` (编译期常量, ⛔ 入参化), 鼓的音高是 GM 键。因此要求与 `includeMelody:true` 同给 (审计 N1: 旋律在 `'project'` 源上同样生成 —— 和声跨度由材料判出并要求显式 `scale`), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`); 相对界 (`melodyLower <= melodyUpper`) 同样在此判定 ⇒ `INVALID_PARAMETER_RANGE` (带 `field:\"melodyLower\"` + 两值 + `hint`)。窗口内没有该调式的音 ⇒ 由 `yeban-theory` 判定并原样转发 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep:\"melody_over_chords\"`), ⛔ 本层不抄可行性表。⛔ 不筛点、⛔ 不改时值 ⇒ 同一次调用的音符 id/起点/时值与不传时逐条对齐, 只有音高变。跳进上界是**另一个键** `melodyMaxLeap` [ADR-0039] (单位 = 相邻两音的半音距离, ⛔ 音域的一部分)",
+                "旋律声部音高窗口的**下端** [ADR-0038]: 单位 = **MIDI 音高值** (⛔ 不是八度号、⛔ 不是半音偏移)。取值 0..=127, 缺省 48。消费点: 仅旋律生成路径 (`melody_over_chords`); 要求与 `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界同码; 相对界 (`melodyLower <= melodyUpper`) 同在此判定。窗口内没有该调式的音 ⇒ 由 `yeban-theory` 判定并原样转发 (带 `theoryStep:\"melody_over_chords\"`)。⛔ 不筛点、⛔ 不改时值: 只有音高变。跳进上界是另一个键 `melodyMaxLeap` [ADR-0039]",
             ),
             param(
                 "melodyUpper",
@@ -914,68 +924,67 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "melodyMaxLeap",
                 "integer",
                 false,
-                "旋律**相邻两音的跳进上界** [ADR-0039]: 单位 = **半音距离** (⛔ 不是 MIDI 音高值、⛔ 不是八度号、⛔ 不是音域宽度)。取值 0..=127, 缺省 12 (= theory 的 `MELODY_MAX_LEAP`) ⇒ 逐字节维持既有输出。为什么上界是 127 而⛔ 是 12/24: 音高全域是 0..=127 ⇒ 两音的半音距离任何输入下都不可能超过 127, 因此 0..=127 是恰好的界; 大于窗口宽度的取值 = \"实际不设限\" (语义, ⛔ 错误)。`0` 合法 = 只允许同音反复 (实测: theory 把整条旋律压成单音, onset 数不变)。消费点与 `melodyLower`/`melodyUpper` **同一个** (只被 `melody_over_chords` 读取) ⇒ 同样要求与 `includeMelody:true` 同给 (审计 N1: 旋律在 `'project'` 源上同样生成 —— 和声跨度由材料判出并要求显式 `scale`), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。⛔ 不筛点、⛔ 不改时值 ⇒ 同一次调用的音符 id/起点/时值与不传时逐条对齐, 只有音高变; 窗口里没有满足上界的音阶音时由 `yeban-theory` 判定并原样转发 ⇒ `INVALID_PARAMETER_RANGE` (带 `theoryStep:\"melody_over_chords\"`), ⛔ 本层不抄可行性表 (与音域同一条理由)",
+                "旋律**相邻两音的跳进上界** [ADR-0039]: 单位 = **半音距离** (⛔ 不是 MIDI 音高值、⛔ 不是八度号)。取值 0..=127, 缺省 12。`0` 合法 = 只允许同音反复。消费点与 `melodyLower`/`melodyUpper` 同一个 (只被 `melody_over_chords` 读取), 要求与 `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); 越界同码。⛔ 不筛点、⛔ 不改时值: 只有音高变; 窗口里没有满足上界的音阶音时由 `yeban-theory` 判定并原样转发 (带 `theoryStep`)",
             ),
             param(
                 "melodySeed",
                 "integer",
                 false,
-                "旋律**取音种子** [ADR-0045]: 单位 = 无单位整数 (u64, 取值 0..=18446744073709551615; ⛔ 不是掷骰子的结果、⛔ 不是段落号、⛔ 不是版本号)。同一个数 + 同一组其余参数 ⇒ 同一条旋律 (确定性)。缺省不给 = 沿用 `section_seed(section_id)` 的派生值 (由该段落的 `EntityId` 算出, 因此**每个段落不同**) ⇒ 键缺席时逐字节维持既有输出, 也因此契约里⛔ 写 `default`、⛔ 写 `maximum` (界就是整数类型面本身)。消费点: **仅**旋律生成路径 (`melody_over_chords` 的第 5 实参) ⇒ 与 `melodyLower`/`melodyUpper`/`melodyMaxLeap` **同一支**耦合口径, 要求 `includeMelody:true` 同给 (审计 N1: 旋律在 `'project'` 源上同样生成 —— 和声跨度由材料判出并要求显式 `scale`), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。非整数 / 负数 / 浮点 ⇒ `INVALID_PARAMETER_RANGE` (带 `field:\"melodySeed\"`)。⚠ 换种子改的是**音高选择**与随之变化的**力度档** (和弦音判定 `chord_tone` 是音高的函数: 和弦音取 `velocityMax` 其余取 `velocityMin`) ⇒ 起点/时值与音符 id **逐条不变** (网格来自流派 `rhythm_grid`, ⛔ 读种子),
- 只有音高与重音分布变。⚠ 可行性同样随种子移动 (`pick_within_leap` 的可行音取决于上一音): 换个种子可能触发 `NoFeasibleVoicing` ⇒ 由 `yeban-theory` 判定并原样转发 (`theoryStep:\"melody_over_chords\"`), ⛔ 本层不判定「哪个种子好」, ⛔ 静默放宽或换种子重试。和声与鼓⛔ 受影响。",
+                "旋律**取音种子** [ADR-0045]: 单位 = 无单位整数 (u64)。同一个数 + 同一组其余参数 ⇒ 同一条旋律 (确定性)。缺省不给 = 沿用由段落 `EntityId` 派生的种子 (**每个段落不同**) ⇒ 契约里不写 `default`/`maximum`。消费点: 仅旋律生成路径, 要求 `includeMelody:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); 非整数/负数/浮点同码。⚠ 换种子改的是**音高选择**与随之的力度档 ⇒ 起点/时值/音符 id 逐条不变; 可行性随种子移动, 无解由 `yeban-theory` 判定并原样转发 (带 `theoryStep`), ⛔ 静默放宽或换种子重试",
             ),
             param(
                 "harmonySeed",
                 "integer",
                 false,
-                "**和声编排种子** [审计 N3]: 单位 = `u64` 整数 (界 `0..=18446744073709551615`)。缺省不给 = 逐字节维持既有输出 (走向取流派 `progression_at(0)`、音阶取 `primary_scale`)。给了 = `scale` 缺席时音阶改由 `GenreRule::scale_for(tonic, seed)` 抽取、走向改由 `GenreRule::progression_for(seed)` 抽取 —— 与 `melodySeed` 同一支\"换个数再来一版\"的语义 (消费点不同: melodySeed 换旋律音高, harmonySeed 换已登记的走向/音阶条目)。要求 `materialSource:\"theory\"` 同给 ⇒ 否则 `INVALID_PARAMETER_RANGE` (带 `hint`); `progression` 与 `scale` **都**显式给了时没有可消费的槽位 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。⚠ theory 的鼓生成没有种子入参 ⇒ `drumSeed` 是刻意缺席项, 本键**不**兼作鼓种子。",
+                "**和声编排种子** [审计 N3]: 单位 = `u64` 整数。缺省不给 = 走向取流派首选、音阶取 `primary_scale`。给了 = `scale` 缺席时音阶改由种子抽取、走向改由种子抽取 (与 `melodySeed` 同一支\"换个数再来一版\"语义, 消费点不同)。要求 `materialSource:\"theory\"` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); `progression` 与 `scale` 都显式给了时无槽位可消费, 同码。⚠ 本键不兼作鼓种子 (theory 的鼓生成没有种子入参)",
             ),
             param(
                 "harmonyMaxVoiceJump",
                 "integer",
                 false,
-                "和声声部**相邻两个和弦之间**的跳进上界 [ADR-0040]: 单位 = 半音距离 (同一声部在前后两个和弦里的音高差, ⛔ 不是 MIDI 音高、⛔ 不是八度号)。取值 0..=127; 缺省不给 = **不覆盖** theory 的出厂值 (3 声部 `VoicingConstraints::THREE_VOICES`、4 声部 `FOUR_VOICES`, 现读同为 12) ⇒ 键缺席时逐字节维持既有输出。消费点: **仅**和声生成路径 (`voice_leading::realize`), 且 3 与 4 声部**两条**路径都接线 ⇒ 只要求与 `materialSource:\"theory\"` 同给, ⛔ **不**要求 `includeMelody`/`includeDrums` (和声声部在 theory 路径上恒在场、恒被消费)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。`0` 合法 (和弦不动), 但某个上界在该进行里可不可行**随进行移动** (实测: `i-VI-III-VII` 上 1/0 无解, 同和弦反复上 0 有解) ⇒ 由 `yeban-theory` 判定并原样转发 (`theoryStep:\"voice_leading::realize\"`), ⛔ 本层不抄「进行 × 上界」可行性表, ⛔ 静默放宽。⛔ 不筛和弦、⛔ 不改时值: 和弦层数与和声各音符的 id/起点/时值逐条对齐, 只有和声声部的音高变; 旋律与鼓⛔ 受影响。与 `melodyMaxLeap` 是两个键: 那一个管**旋律线**里相邻两音, 这一个管**和声声部**在相邻和弦之间的移动。实测: 缺省 12 在常见进行上只打到 2..3 半音 ⇒ 比实际所需更松的取值不改变输出, 那是\"上界\"的正常语义而⛔ 缺陷",
+                "和声声部**相邻两个和弦之间**的跳进上界 [ADR-0040]: 单位 = 半音距离 (同一声部在前后两个和弦里的音高差, ⛔ 不是 MIDI 音高)。取值 0..=127; 缺省不给 = 不覆盖 theory 出厂值 (3/4 声部同为 12)。消费点: 仅和声生成路径 (`voice_leading::realize`, 3 与 4 声部都接线), 只要求与 `materialSource:\"theory\"` 同给。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field`+`value`+`range`)。`0` 合法 (和弦不动); 某上界在该进行里可不可行随进行移动, 由 `yeban-theory` 判定并原样转发 (带 `theoryStep`), ⛔ 静默放宽。⛔ 不筛和弦、⛔ 不改时值: 只有和声声部音高变。与 `melodyMaxLeap` 是两个键 (那个管旋律线相邻两音)",
             ),
             param(
                 "swingPermille",
                 "integer",
                 false,
-                "鼓网格的**摇摆比例** [ADR-0041]: 单位 = **千分比** (每对相邻格位里第二个 onset 向后推移的比例; 500 = 平直不推, 1000 = 推到半个格位)。取值 500..=1000 (= theory 的 `SWING_PERMILLE_STRAIGHT..=SWING_PERMILLE_MAX`)。⛔ 本键**没有固定缺省值**: 缺省不给 = **不覆盖**该流派登记的 `GenreRule::swing`, 而那一个值**随流派移动** (现读 `GENRES` 182 条: 148 条**不登记** ⇒ theory 走平直路径, 34 条登记 540..=660, ⛔ 一条登记 500; 例 bossa_nova=540 / lo_fi_hip_hop=560 / bebop=580 / jazz_swing=660) ⇒ schema 里因此⛔ 写 `default`, 键缺席时逐字节维持既有输出。消费点: **仅**鼓轨网格 (`GenreRule::drum_pattern` 里 `swung_styled_drum_pattern` 的那一个实参; 实测该方法是它的薄封装 ⇒ 接线只换这个实参), 和声与旋律⛔ 读它 ⇒ 要求与 `includeDrums:true` 同给 (审计 N1: 鼓轨在两条材料源上都生成, 本键在两源同口径被消费), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `range`)。⛔ 不筛点、⛔ 不改音色/力度、⛔ 不改时值: 只改 `tick` (实测 4 小节 synthwave + 16 格位: 鼓点恒 88 条且每条的音色与重音逐条不变, 其中 32 条反拍的起点随比例单调推移 —— 与 500 档比, 580 档合计 1216 个 tick / 单条最大 38, 1000 档合计 7648 / 单条最大 239)。与 `onsetsPerBar` (每小节几个 onset) 和 `drumDensity` (筛不筛非重音) 是三根**不同**的轴。比例越界由本层拒; 「这个比例在该拍号与该格位下产不产得出鼓点」由 `yeban-theory` 判定并原样转发 (`theoryStep:\"swung_styled_drum_pattern\"`; 实测 theory 侧 499/1001 ⇒ `SwingOutOfRange`), ⛔ 本层不抄表",
+                "鼓网格的**摇摆比例** [ADR-0041]: 单位 = **千分比** (每对相邻格位里第二个 onset 向后推移的比例; 500 = 平直不推, 1000 = 推到半个格位)。取值 500..=1000。⛔ 没有固定缺省值: 不给 = 不覆盖该流派登记的摇摆值 (随流派移动) ⇒ 契约里不写 `default`。消费点: 仅鼓轨网格, 要求与 `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); 越界同码。⛔ 不筛点、⛔ 不改音色/力度/时值: 只改 `tick`。与 `onsetsPerBar`、`drumDensity` 是不同的轴",
             ),
             param(
                 "drumBackbeat",
                 "integer",
                 false,
-                "鼓的**军鼓落点** [ADR-0043]: 单位 = **拍序号** (第 0 基; 语义 = 军鼓打在能被它整除的那些**拍的起点**上, `1` = 每一拍都打, ⛔ 不是\"不打军鼓\"; 3/4 上 `2` = 第 0、2 拍)。取值 **1..=该流派拍号的拍数** —— 上界 = theory 的 `felt_beats_per_bar(meter)` 现读 (4/4 ⇒ 1..=4, 3/4 ⇒ 1..=3, 2/4 与 6/8 ⇒ 1..=2, 5/4 ⇒ 1..=5) ⇒ schema 里因此⛔ 写 `maximum` (写了就会对 2/4 报出\"契约说 5 能、本层拒\"的矛盾), 也⛔ 写 `default` (缺省不给 = **不覆盖** theory 的派生值 `default_backbeat(meter)`, 实测 4/4→2 / 3/4→2 / 2/4→1 / 5/4→3 / 6/8→1, 那一个数**随拍号移动**) ⇒ 键缺席时逐字节维持既有输出。消费点: **仅**鼓轨 (`GenreRule::drum_pattern` 是 `swung_styled_drum_pattern(meter, bars, onsets, self.swing_permille()?, None, default_backbeat(meter), drum_style)` 的薄封装, 实测逐字节同形 ⇒ 接线只换 `backbeat` 那一个实参), 和声与旋律⛔ 读它 ⇒ 要求与 `includeDrums:true` 同给 (审计 N1: 鼓轨在两条材料源上都生成, 本键在两源同口径被消费), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。越界 (`0` / 超拍数 / `>255`) **由本层先拒** (带 `field` + `value` + `range`): theory 对这两种越界返回 `Ok(None)` (⛔ 报错、⛔ 静默钳制), 放下去只会得到一句不点名本键的\"流派 X 的拍号推不出可用的鼓组型\"。⚠ **与 `swingPermille` 相反, 本键会加/筛击点**: 实测 4/4 夹具 (4 小节 / 16 格位) 总击点 `96`(`1`) ↔ `88`(`2`=缺省) ↔ `84`(`4`), 军鼓条数 `16` ↔ `8` ↔ `4`, 落点拍集合 resp. `{0,1,2,3}` / `{0,2}` / `{0}`; 底鼓/踩镲/吊镲的 (音色, 起点, 时值, 力度) 逐条不变, 力度仍只取阶梯两档。⚠ 条数⛔ 是单调读数 (5/4 上 `3` 与 `4` 都得 8 条, 落点分别是 `{0,3}` 与 `{0,4}`) ⇒ 判定要看**落点**, ⛔ 只数条数。与 `swingPermille` (推 tick)、`onsetsPerBar` (每小节几个 onset)、`drumDensity` (筛不筛非重音) 是四根**不同**的轴。\"该落点在此拍号与该格位下产不产得出鼓点\"由 `yeban-theory` 判定并原样转发 (`theoryStep:\"swung_styled_drum_pattern\"`), ⛔ 本层不抄「拍号 × 落点」可行性表",
+                "鼓的**军鼓落点** [ADR-0043]: 单位 = **拍序号** (第 0 基; 军鼓打在能被它整除的那些**拍的起点**上; `1` = 每一拍都打, ⛔ 不是\"不打军鼓\"; 3/4 上 `2` = 第 0、2 拍)。取值 1..=该流派拍号的拍数 (上界随拍号移动 ⇒ 契约里不写 `maximum`/`default`)。缺省不给 = 不覆盖 theory 的派生值。消费点: 仅鼓轨, 要求与 `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); 越界由本层先拒 (带 `field`+`value`+`range`)。⚠ 本键会加/筛击点 (与 `swingPermille` 只推 tick 不同)。该落点在此拍号下产不产得出鼓点由 `yeban-theory` 判定并原样转发 (带 `theoryStep`)",
             ),
             param(
                 "drumStyle",
                 "string",
                 false,
-                "鼓的**底鼓口径** [ADR-0044]: 单位 = 档位名 (⛔ 数字、⛔ 枚举下标)。`\"metric\"` = 底鼓落在**组起点** (由拍号自身的度量层级或 `BeatGrouping` 判定); `\"four-on-the-floor\"` = 底鼓落在**每一个拍的起点** (disco/house/techno/trance 的通行配器口径)。候选 = theory 公开的 `DrumStyle::ALL` × `name()` 现读 (本层⛔ 另立一份字符串表 ⇒ 契约里的 `enum` 与错误载荷里的 `accepted` 都从同一处生成)。⛔ 本键**没有固定缺省值**: 缺省不给 = **不覆盖**该流派登记的 `GenreRule::drum_style`, 而现读 `GENRES` 182 条是 **169 条 `metric` / 13 条 `four-on-the-floor`** 两支 ⇒ schema 里因此⛔ 写 `default`, 键缺席时逐字节维持既有输出。消费点: **仅**鼓轨 (`GenreRule::drum_pattern` 是 `swung_styled_drum_pattern(meter, bars, onsets, swing, None, backbeat, drum_style)` 的薄封装, 实测逐字节同形 ⇒ 接线只换 `style` 那一个实参), 和声与旋律⛔ 读它 ⇒ 要求与 `includeDrums:true` 同给 (审计 N1: 鼓轨在两条材料源上都生成, 本键在两源同口径被消费), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。未知取值 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `accepted`), ⛔ 夹紧、⛔ 静默降级成 `metric`。⚠ 本键**只动底鼓**: 实测可测的 518 组里 **非底鼓**击点的 (音色, 起点, 时值, 力度) 表两档逐条相同, 四踩的底鼓集合恒是度量的**超集** (4/4 夹具实测底鼓 8 → 16 条, 新增的那批起点恒是拍起点)。⚠ \"严格更多\"⛔ 全局成立: 复合二拍 (6/8 的 `jig`/`irish_trad`/`celtic` × onsets 4/8 共 6 组) 上两档**逐字节相同**, 因为那两个拍起点恒是组起点。与 `drumBackbeat` (军鼓落点, 会同时加/筛击点)、`swingPermille` (推 tick)、`onsetsPerBar`、`drumDensity` (筛不筛非重音) 是五根**不同**的轴; 本键与摇摆正交 (同一档位在 500 与 580 两档下底鼓起点集合相同)。\"该口径在此拍号与该格位下产不产得出鼓点\"由 `yeban-theory` 判定并原样转发 (`theoryStep:\"swung_styled_drum_pattern\"`), ⛔ 本层不抄可行性表",
+                "鼓的**底鼓口径** [ADR-0044]: 单位 = 档位名 (⛔ 数字、⛔ 枚举下标)。`\"metric\"` = 底鼓落在**组起点**; `\"four-on-the-floor\"` = 底鼓落在**每一个拍的起点**。候选 = theory 的 `DrumStyle` 词表 (契约 `enum` 与错误载荷 `accepted` 同源生成)。⛔ 没有固定缺省值: 不给 = 不覆盖该流派登记的口径 ⇒ 契约里不写 `default`。消费点: 仅鼓轨, 要求与 `includeDrums:true` 同给, 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`); 未知取值同码 (带 `accepted`), ⛔ 静默降级成 `metric`。⚠ 本键只动底鼓。与 `drumBackbeat`/`swingPermille`/`onsetsPerBar`/`drumDensity` 是不同的轴",
             ),
             array_param(
                 "beatGrouping",
                 false,
-                "鼓网格的**拍内分组** [ADR-0046]: 单位 = 拍数序列, 逐项 = 该组的拍数 (⛔ tick、⛔ \"每小节打几下\")。缺省不给 = **不覆盖**拍号自身的度量层级 (组起点 = 拍号判成强位的那些拍), 键缺席时逐字节维持既有输出 ⇒ schema 里⛔ 写 `default`。合法形状**随拍号移动**: 逐项 `>= 1` 且总和 == 该拍号的 `felt_beats_per_bar(meter)` (实测 4/4 ⇒ `[4]`/`[2,2]`/`[1,1,1,1]`、5/4 ⇒ `[5]`/`[3,2]`/`[2,3]`、6/8 ⇒ `[2]`/`[1,1]`) ⇒ schema 里⛔ 写 `maximum`; 合法性的唯一判者是 theory 的 `BeatGrouping::new` (本层⛔ 重算那条规则), 不合法 ⇒ `INVALID_PARAMETER_RANGE` (带 `field` + `value` + `beatsPerBar`), ⛔ 夹紧、⛔ 静默降级。消费点: **仅**鼓轨 (`swung_styled_drum_pattern` 的 `grouping` 实参), 和声与旋律⛔ 读它 ⇒ 要求与 `includeDrums:true` 同给 (审计 N1: 鼓轨在两条材料源上都生成, 本键在两源同口径被消费), 否则 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。⚠ 本键改的是**分派与重量**: 组起点决定底鼓 (Metric 口径) 与吊镲的落点、`weight` 取 `metric_weight_in` 与 `metric_weight_grouped` 的较大者 ⇒ 重音读数与力度档跟着变; **踩镲条数与起点逐条不变** (⛔ 改网格)、军鼓落点⛔ 因它改变 (那由 `drumBackbeat` 管)。与 `swingPermille` (推 tick)、`drumBackbeat` (军鼓落点)、`drumStyle` (底鼓口径)、`onsetsPerBar`/`drumDensity` 是**不同**的轴。",
+                "鼓网格的**拍内分组** [ADR-0046]: 单位 = 拍数序列, 逐项 = 该组的拍数 (⛔ tick、⛔ \"每小节打几下\"); item = 正整数。缺省不给 = 不覆盖拍号自身的度量层级 ⇒ 契约里不写 `default`。合法形状随拍号移动: 逐项 >= 1 且总和 == 该拍号的拍数 (4/4 ⇒ `[4]`/`[2,2]`/`[1,1,1,1]`), 唯一判者是 theory 的 `BeatGrouping::new` ⇒ 契约里不写 `maximum`; 不合法 ⇒ `INVALID_PARAMETER_RANGE` (带 `field`+`value`+`beatsPerBar`), ⛔ 夹紧、⛔ 静默降级。消费点: 仅鼓轨, 要求与 `includeDrums:true` 同给。⚠ 本键改分派与重量 (组起点决定底鼓与吊镲落点、重音档跟着变), ⛔ 不改网格",
                 crate::tools::beat_grouping_items,
             ),
             array_param(
                 "materialClipIds",
                 false,
-                "**指名材料表** [审计 N2]: 单位 = 片段池条目身份数组 (ULID 字符串, 第 `i` 项喂第 `i` 个声部)。缺省不给 = 逐字节维持既有行为 (可用材料按 `clip_pool` 顺序轮询分配)。长度必须**恰等于**该流派的**和声**声部数 (3 或 4, ⛔ 像缺省路径那样轮询重复 —— 指名就该对每个和声声部点名; `includeDrums`/`includeMelody` 追加的是生成声部, 不吃材料 [审计 N1]); 每一项必须在 `clip_pool` 里存在且是可用 MIDI 材料 (至少一个音符), 重复项允许 (同一材料喂多个声部是显式写的)。只允许与 `materialSource:\"project\"` (或缺省) 同给 —— theory 路径不读片段池, 给了就是静默忽略 ⇒ `INVALID_PARAMETER_RANGE` (带 `hint`)。长度不符 ⇒ `INVALID_PARAMETER_RANGE` (带 `received`/`requiredParts`/`parts`); 条目不存在 ⇒ `CLIP_NOT_FOUND` (带 `clipId`/`clipPoolEntries`); 存在但不是可用 MIDI 材料 ⇒ `CLIP_NOT_FOUND` (带 `clipId`/`clipName`/`acceptedContent`)。⚠ 与 `progression`/`melodySeed` 等 theory 键**互斥** (材料路径不同 ⇒ 同给必有一边被静默忽略 ⇒ 响亮拒)",
+                "**指名材料表**: 单位 = 片段池条目身份数组 (ULID 字符串, 第 `i` 项喂第 `i` 个声部); item = 实体身份字符串。缺省不给 = 可用材料按 `clip_pool` 顺序轮询分配。长度必须**恰等于**该流派的**和声**声部数 (3 或 4); 每一项必须在 `clip_pool` 里存在且是可用 MIDI 材料 (至少一个音符), 重复项允许。只允许与 `materialSource:\"project\"` (或缺省) 同给, 与 `progression`/`melodySeed` 等 theory 键互斥 (同给必有一边被静默忽略 ⇒ 响亮拒)。长度不符 ⇒ `INVALID_PARAMETER_RANGE`; 条目不存在或不是可用材料 ⇒ `CLIP_NOT_FOUND`",
                 crate::tools::entity_id_items,
             ),
             array_param(
                 "partTracks",
                 false,
-                "**复用既有音轨** [审计 N9]: 单位 = 音轨身份数组 (ULID 字符串, 第 `i` 项是第 `i` 个声部的目标音轨)。缺省不给 = 逐字节维持既有行为 (每个声部新开一条确定性派生轨)。长度必须**恰等于**声部总数 (含 `includeDrums`/`includeMelody` 追加的声部); 每一项必须在 `project.tracks` 里存在且是 `TrackKind::Midi`; **不允许重复项** (两个声部同轨会产生相同的确定性边身份)。复用的轨不追加 `Op::AddTrack`、不改名不改电平; 路由按现状补齐 (节点缺席补 `AddRoutingNode`、缺 `TrackToBus` 边补 `ConnectRouting`, 已在位的跳过)。长度不符 ⇒ `INVALID_PARAMETER_RANGE` (带 `received`/`requiredParts`/`parts`); 轨不存在或不是 MIDI 轨 ⇒ `TRACK_NOT_FOUND` (带 `trackId`/`trackIds` 或 `trackId`/`trackName`/`trackKind`/`acceptedKind`); 重复项 ⇒ `INVALID_PARAMETER_RANGE` (带 `trackId`/`hint`)。⚠ 与 `materialClipIds` **正交** (一个管内容来源、一个管目标音轨), 与 `materialSource` 两条路径都可同给。",
+                "**复用既有音轨**: 单位 = 音轨身份数组 (ULID 字符串, 第 `i` 项是第 `i` 个声部的目标音轨); item = 实体身份字符串。缺省不给 = 每个声部新开一条确定性派生轨。长度必须**恰等于**声部总数 (含 `includeDrums`/`includeMelody` 追加的声部); 每一项必须在 `project.tracks` 里存在且是 `TrackKind::Midi`; **不允许重复项**。复用的轨不改名不改电平, 路由按现状补齐 (缺节点/缺边才补)。长度不符/重复 ⇒ `INVALID_PARAMETER_RANGE`; 轨不存在或不是 MIDI 轨 ⇒ `TRACK_NOT_FOUND`。与 `materialClipIds` 正交, 与 `materialSource` 两条路径都可同给",
                 crate::tools::entity_id_items,
             ),
             param(
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -996,7 +1005,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（缺省响应的 `data.pendingMerge` 为 `true`、`data.projectUnchanged` 为 `true`, 成功只代表提案已创建, ⛔ 不代表已落盘; ⭐ `ADR-0029`: 给 `autoMerge:true` 时**本次调用内**执行**同一条**合并实现 —— 等价于背靠背调用 `yeban_merge_proposal`, ⛔ 不存在第二条落到 main 的路, 响应改为 `pendingMerge:false` + `autoMerged:true` + `merge:{…}`）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。⭐ `#178`：`insertDevice` 装到一条**没有任何可发声内容**的源轨上时（主总线永不报；经路由入边连到可发声源的总线轨也不报）, 同一条 `warnings[]` 会多一条 `code:\"deviceOnSilentTrack\"`（带 `trackId` / `track` / `placements` / `notes` / 逐字 `hint`），⛔ **不阻断**提案（装是合法的, 只是该设备对这条轨的渲染输出不会产生影响；渲染侧源轨的同一读数在 `sources[].kind:\"silent\"`）。⭐ `T-FIX-647`：同一条轨上第二台（及之后）带通道条名字的设备，其通道条参数会被来源规则忽略 —— `insertDevice` / `removeDevice` 改动过的轨上出现这种遮挡时，同一条 `warnings[]` 会多一条 `code:\"ignoredStripDevices\"`（带 `count` / `devices[]`（轨 / 槽位 / 设备 / 被忽略参数）与修法 `hint`：把参数并进首台设备或调整设备顺序），⛔ **不阻断**提案；旁通设备不算被忽略；与母带 `data.warnings[]` 里同一 `code` 的那条是同一判定、同一形状。⭐ `G5`（审计 2026-10-27）: 内置**音色选择**的入口就是 `insertDevice` + `device.kind:\"InternalInstrument\"` —— 引擎在渲染时**真的求值**这些参数名: `osc1_wave` / `osc2_wave`（取值 = 波表下标 `0`=hollow / `1`=organ / `2`=vocal / `3`=metallic / `4`=glass, 越界钳到末表）、`osc1_level` / `osc1_detune_cents` / `osc2_level` / `osc2_detune_cents`、`cutoff_hz`(`cutoff`) / `resonance`(`res`) / `drive`、⭐ `T-FIX-273` 起的振幅包络 `attack_s` / `decay_s` / `sustain` / `release_s`（秒 / 秒 / 0..1 / 秒；不写=器件默认 5/80/0.7/50 ms，非法值回默认）、⭐ `T-FIX-277` 起的全局 LFO `lfo_wave` / `lfo_rate_hz` / `lfo_depth` / `lfo_target`（波形下标 0=正弦/1=三角/2=方波/3=锯齿；速率 Hz；深度按目标解释，音高=音分/振幅=增益分数/截止=八度；目标下标 0=音高/1=振幅/2=截止；不写=器件默认关，非法值回默认）、⭐ `T-FIX-276` 起的**滤波器包络** `filter_env_attack_s` / `filter_env_decay_s` / `filter_env_sustain` / `filter_env_release_s` / `filter_env_depth`（秒 / 秒 / 0..1 / 秒 / **八度**；`cutoff × 2^(depth × 包络)`，深度钳到 0..4；不写=器件默认 0/0/1/0/0，深度 0 = 关且与接线前逐位相同）, 以及鼓机键位 `kick_note` 等五个 `*_note` 与 `kick_*`/`snare_*`/`hihat_*`/`clap_*`/`master_level` 旋钮（权威判据: `yeban_engine::synth::is_consumed_instrument_param`）; **非采样器轨**上这些名字⛔ 不再触发 `deviceChainDsp` 登记（采样器轨的音源是 SFZ, 音源参数不生效 ⇒ 仍如实登记）。⭐ **鼓机键位闸门（P2-3）**：五个 `*_note` 只写一部分（缺一）⇒ 解析期 `INVALID_PARAMETER_RANGE`（`incompleteDrumNoteMap`，`missingNoteNames` 逐条点名缺的键、`presentNoteNames` 给已写的键）；一个都不写 = 普通复音合成器，不受影响。; ⭐ `ADR-0018`: 可与 `placement` 同给, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement`在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的七个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、轨延时、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` · `setTrackPolarity` · `setTrackDelay` 五者都可用 `ops[].trackId` 逐条点名另一条音轨, 单次提案即可批量跨轨静音/独奏/调音/反相/延时 · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 提案里在它**之前**排上该轨在路由图里的逐条断边与移除节点 (`disconnectRouting` → `removeRoutingNode`, 顺序承重), 一次 `yeban_undo` 把边、节点与音轨一起复原; 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
+        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main** (缺省响应 `data.pendingMerge:true`、`data.projectUnchanged:true`, 成功只代表提案已创建; 给 `autoMerge:true` 时本次调用内执行同一条合并实现, 响应改为 `pendingMerge:false` + `autoMerged:true` + `merge:{…}`)。用 `yeban_list_proposals` 查未合并提案。⭐ 易错点: 效果器参数名拼错 (与已识别拼写编辑距离 ≤ 2) 在解析期 `INVALID_PARAMETER_RANGE` (`unknownEffectParam`, 带最近邻建议); 更远的未知名字会被接受但不生效, 逐条报在 `data.warnings[]`。`insertDevice` 装到无可发声内容的源轨上时 `warnings[]` 另报 `deviceOnSilentTrack` (不阻断)。内置音色选择也是 `insertDevice` + `device.kind:\"InternalInstrument\"` (参数名见 `ops.items` 的 `insertDevice` 分支); 鼓机五个 `*_note` 键位只写一部分 ⇒ 解析期 `INVALID_PARAMETER_RANGE` (`incompleteDrumNoteMap`)。可与 `placement` 同给 (单次提案原子生成片段 + 摆放); `create:true` 时以 `clipId` 新建片段池条目；同轨第 2 台及之后通道条设备参数被遮挡时 `warnings[]` 报 `ignoredStripDevices`。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -1004,18 +1013,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "trackId",
                 "string",
                 true,
-                "音轨 EntityId (26 字符 ULID); 音符 / 摆放 / 音轨属性级形态的**缺省**目标音轨 (`setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` / `setTrackTune` 可用 `ops[].trackId` 逐条覆盖, 批内每条都自备 `trackId` 时顶层身份接受但**不读** —— 可给占位身份)。自带寻址的形态 (removeTrack / insertDevice / removeDevice) 不读它, 但仍按本工具既有入口口径要求它是合法身份",
+                "音轨 EntityId (26 字符 ULID); 音符 / 摆放 / 音轨属性级形态的**缺省**目标音轨 (`setParam` 等六个音轨级形态可用 `ops[].trackId` 逐条覆盖, 批内每条都自备 `trackId` 时顶层身份接受但不读)。自带寻址的形态 (removeTrack / insertDevice / removeDevice) 不读它, 但仍要求它是合法身份",
             ),
             param(
                 "clipId",
                 "string",
                 false,
-                "片段 EntityId; ⭐ **按 `ops[].kind` 条件必需**（`#177` 坑④，此前是无条件必填）: 只有**读**它的形态需要 —— 音符形态 (`add` / `delete` / `move` / `velocity` / `setNoteTiming` / `setNoteExpression` / `setNotePitchShape` / `setPitchBendPoint` / `transposeClip` / `quantizeClip` / `invertClip` / `retrogradeClip` / `humanizeClip` / `velocityShapeClip` / `chordStaggerClip` / `duplicateClip`，⭐ 清单以 `domain::notes::ENVELOPE_CLIP_KINDS` 为准）、池级 `removeClip`，以及 `placement` 在场 / `create:true` 时。其余形态 (`addTrack` / 设备 / 路由 / 段落 / 场景 / 资产 / 音轨属性 / 文档级) **不读**它: 省略 = 用占位身份 (一个字节都不会被读, 也不会查片段池)，给了 = **接受但忽略**。需要而缺 ⇒ `INVALID_PARAMETER_RANGE` (`reason: \"clipIdRequired\"`, 带 `requiredByKinds`); 不读它的形态即使给了非法 ULID 也不解析 (同样忽略)。逐 kind 的口径同时广播在 `ops.items` 每个分支的 `x-envelope.clipId` 与分支描述里。`create:true` 时它是**将要新建的**片段身份 (池里已有该身份 ⇒ `CONFLICT`)",
+                "片段 EntityId; ⭐ **按 `ops[].kind` 条件必需**: 只有**读**它的形态需要 —— 音符形态 (清单以 `domain::notes::ENVELOPE_CLIP_KINDS` 为准)、池级 `removeClip`, 以及 `placement` 在场 / `create:true` 时。其余形态 (音轨/设备/路由/段落/场景/资产/文档级) **不读**它: 省略即可, 给了也接受但忽略 (不查片段池)。需要而缺 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"clipIdRequired\"`, 带 `requiredByKinds`)。逐 kind 口径见 `ops.items` 各分支的 `x-envelope.clipId` 与分支描述。`create:true` 时它是**将要新建的**片段身份 (池里已有 ⇒ `CONFLICT`)",
             ),
             array_param(
                 "ops",
                 true,
-                "操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,channel?,probability?,ratchet?,microTimingTicks?,pitchBendCurve?,slide?,syllable?,phonemes?}}` / `delete` / `move` / `velocity` / `setNoteTiming` / `setNotePitchShape` / `setPitchBendPoint` / `transposeClip` / `quantizeClip` / `invertClip` / `retrogradeClip` / `humanizeClip` / `velocityShapeClip` / `chordStaggerClip` / `duplicateClip` / `insertDevice` / `removeDevice` / `setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` / `setTrackTune` / `setTrackName` / `setClipName` / `setClipGain` / `setDeviceName` / `setDeviceBypassed` / `setClipPlacementMuted` / `setClipPlacementLoop` / `setTrackColor` / `setTrackSampler` / `setClipPlacementDuration` / `setClipPlacementOffset` / `setTransportConfig` / `setTempo` / `setAuthor` / `setTitle` / `setLyrics` / `setTimeSignature` / `setKeySignature` / `setTempoPoint` / `setTimeSignaturePoint` / `setAutomationLane` / `removeAutomationPoint` / `removeClip` / `removeAsset` / `setAsset` / `setRoutingGain` / `disconnectRouting` / `connectRouting` / `removeRoutingNode` / `addRoutingNode` / `addTrack` / `removeSection` / `setSection` / `removeTrack` / `removeScene` / `setScene`。`note.channel` (可选, 整数 0..=15) 为 MIDI 通道 (缺省遵循所属轨道默认通道); `note.syllable` (可选, 字符串) 为歌词音节; `note.phonemes` (可选, 字符串数组, 缺省 = 空数组) 为该音符的音素序列 (每个音素必须是字符串)。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note.pitchBendCurve` (可选) 与 `note.slide` (可选) 也已接线: `pitchBendCurve` 是 `[tick, cents]` 二元组数组 (tick 是**音符局部**坐标、严格升序; cents 相对 `pitch` 且闭区间 ±1200; 首点可为任意 tick ≥ 0, 形状/值域由模型 `MidiNote::validate` 把关, 见 `ADR-0012`), `slide` 是 `{durationTicks, targetPitch, curve?}` (`durationTicks` 必须非零、`targetPitch` 是 0..=127, 两者**必填**; `curve` 只认 `Linear`/`Exponential`/`Logarithmic`/`SCurve`, 缺省 `Linear`); 两者都由引擎与母带渲染器**真的求值** (同时存在时**相加**, `ADR-0012` D9), 母带里听得到。`note` 里这 13 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型的表现力字段 (`slide` / `pitchBendCurve` / `channel` / `syllable` / `phonemes`) 现已**全部**接上工具面通路 ⇒ 拒绝载荷里的 `unsupportedNoteFields` 是空集。⚠ `phonemes` 写进文档但本渲染器**没有歌声合成** —— 母带里听不到, 渲染器仍把「母带不会唱」如实登记为 `noteLyrics` (⛔ 不再登记 `noteSlide`/`notePitchBend` —— `#311b` 起它们真的被求值)。`{\"kind\":\"setNoteTiming\",\"noteId\":ULID,\"startTick\":N,\"durationTicks\":N}` 把**已有**音符的起点/时值设为**绝对值** (`Op::SetNoteTiming`): ⭐ 补的是 `move` 只按增量平移起点、时值**没有任何字段级通路**的缺口 —— 在它之前改时值只能删 + 加, 且要把音高/力度/概率/连击/微时序等表现力字段全部抄一遍 (漏抄一个就是静默丢失); 两个旧值由服务端从**当前文档**读 (陈旧载荷 ⇒ `CONFLICT`), `durationTicks` 必须 ≥ 1 (模型的 `ZeroDuration`), 操作对象只认 `kind`/`noteId`/`startTick`/`durationTicks` 四个键 (`unknownSetNoteTimingField`)。`{\"kind\":\"setNoteExpression\",\"noteId\":ULID,\"probability\":0.0..=1.0|null,\"ratchet\":1..=16|null,\"microTimingTicks\":-240..=240|null}` 把**已有**音符的三个表现力字段**整体替换**为绝对值 (`Op::SetNoteExpression`): ⭐ 补的是 `probability`/`ratchet`/`microTimingTicks` 只在 `add` 时能给的缺口 —— 在它之前改一个概率只能删 + 加, 而那会换掉音符身份 (`MidiNote::triggers` 的确定性哈希只用 `id`)。⚠ 三个键**全部必填**、`null` = 清空 = 模型的 `None` (必然触发/等价于 1/无偏移); ⛔ 缺键不等于 `null` (`missingField`)。三个旧值由服务端从**当前文档**读 (陈旧载荷 ⇒ `CONFLICT`), `probability` 的比较是**逐位**的; 值域照抄模型 (`0.0..=1.0` 且有限 / `1..=16` / `-240..=240`), 越界 ⇒ `OUT_OF_RANGE`。操作对象只认 `kind`/`noteId`/`probability`/`ratchet`/`microTimingTicks` 五个键 (`unknownSetNoteExpressionField`)。`{\"kind\":\"setNotePitchShape\",\"noteId\":ULID,\"newPitchBendCurve\":[[tick,cents],...],\"newSlide\":{...}|null}` 把**已有**音符的**音高形状**（弯音曲线 ＋ 滑音）**整体替换** (`Op::SetNotePitchShape`): ⭐ 补的是 `pitchBendCurve`/`slide` 只在 `add` 时能给的缺口 —— 在它之前改形状只能删 + 加, 而那会换掉音符身份 (`MidiNote::triggers` 的确定性哈希只用 `id`)。⚠ 载荷**只带新值**: `newPitchBendCurve` 与 `newSlide` **全部必填**; 旧值由服务端从**当前文档**读 (与 `setNoteExpression` 同一条纪律), 把 `oldPitchBendCurve`/`oldSlide` 写进载荷是**未知键**并响亮拒绝 (那正是 `oldProbability` 的待遇)。\"无弯音\"**只有一种拼法 — 空数组 `[]`** (模型的 `pitch_bend_curve` 是 `Vec`, ⛔ 无 `null`); `newSlide:null` = 清空滑音; 两者同时存在时由引擎/渲染器**相加** (`ADR-0012` D9), 改完的母带真的变调。值域照抄模型 (`SlideConfig::validate` + `MidiNote::validate`, 弯音 tick 升序先于 cents ±1200)。操作对象只认 `kind`/`noteId`/`newPitchBendCurve`/`newSlide` 四个键 (`unknownSetNotePitchShapeField`)。八个**音轨级**形态 (不读不写任何音符, 目标缺省是顶层 `trackId`; `setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` / `setTrackTune` 六个形态可给可选的 `ops[].trackId` **逐条点名**另一条音轨, 批内每条都自备目标时顶层 `trackId` 接受但**不读**): `{\"kind\":\"setParam\",\"lane\":\"TrackVolume\"|\"TrackPan\",\"value\":number}` 写 `TrackV3::volume_db` / `pan` (`Op::SetParam`), `{\"kind\":\"setParam\",\"lane\":\"DeviceParam\",\"slotIndex\":N,\"paramIndex\":N,\"value\":number}` 写 `track.devices[slotIndex].params[paramIndex].value`; `lane` 只认这三个规范名 (`SendGain` 走 `setRoutingGain`, 与 `Macro`、未知名字一样都 `INVALID_PARAMETER_RANGE`), `DeviceParam` 的 `slotIndex` 必填, `paramIndex` 与 `paramName` 至少给一个: 给了 `paramName` 即**按名寻址** (按目标设备自己的 `params` 定下标, 大小写不敏感; 名字不存在 ⇒ `paramNameNotFound` 且报文列出该设备可用名全集; 设备里有同名参数 ⇒ `paramNameAmbiguous`, 请用下标消歧; 两者同给必须指向同一个参数, 不一致 ⇒ `paramNameIndexMismatch` 并点名两边各指向谁), 落盘的模型目标仍是纯下标; 越界时 `data.reason` 用 `slotOutOfRange`/`paramIndexOutOfRange`, 参数名不在离线渲染器消费的白名单里时 `paramNotSupported` (⛔ 不静默写入一个 DSP 不认的参数), 值域 (声相 -1.0..=1.0, 有限值) 由模型层 `validate_param_value` 判; `{\"kind\":\"setTrackMute\",\"value\":bool}` / `{\"kind\":\"setTrackSolo\",\"value\":bool}` 写 `TrackV3::mute` / `solo`; {\"kind\":\"setTrackPolarity\",\"value\":bool} 写 `TrackV3::invert_polarity` (极性反转: 渲染时信号 × −1; 撤销载荷 `old_invert` 由服务端从**当前文档**读); {\"kind\":\"setTrackDelay\",\"delaySamples\":整数|\"delayMs\":毫秒} 写 `TrackV3::delay_samples` (手动相位对齐: `delaySamples` 与 `delayMs` **二选一**, 同给 ⇒ `delayUnitAmbiguous`, 都不给 ⇒ `delayUnitRequired`; 毫秒在编译期用工程采样率换算、四舍五入; 值域 ±4800 采样, 越界 ⇒ `TrackDelayOutOfRange`; 撤销载荷 `old_delay_samples` 由服务端从**当前文档**读); {\"kind\":\"setTrackTune\",\"tuneCents\":音分} 写 `TrackV3::tune_offset_cents` (轨级调律偏移 B8: 恒定偏移, 全轨音符共用; 值域 ±100 音分, 越界 ⇒ `TrackTuneOutOfRange`; 0 = 无偏移; 撤销载荷 `old_tune_cents` 由服务端从**当前文档**读); {\"kind\":\"setClipPlacementOffset\",\"trackId\":ULID,\"placementId\":ULID,\"offsetSamples\":整数} 写 `ClipPlacement::offset_samples` (手动相位对齐: 采样粒度的平移量, 不动起点 tick、不动长度; 值域 ±4800 采样, 越界 ⇒ `ClipOffsetOutOfRange`; 撤销载荷 `old_offset_samples` 由服务端从**当前文档**读); `{\"kind\":\"setTrackName\",\"trackId\":ULID,\"name\":\"<字符串>\"}` 写 `TrackV3::name` (`Op::SetTrackName`)：`name` **必填**但**可为空串** (模型的 `Op::SetTrackName` 只有「陈旧载荷」一条校验, `TrackV3::validate` **不查**空名 ⇒ 空串 = 显式清空名字; 与 `addTrack` 的 `name` 必须非空**不同口径**), 目标音轨必须在 `project.tracks` 里 (否则 `ENTITY_NOT_FOUND` / `trackNotFound`), 撤销载荷 `oldName` 由服务端从**当前文档**读 (`project.tracks[trackId].name`), 比较是**逐字节**的; ⭐ 本形态补的是「建轨后改不了名」—— 此前只能删轨重建, 那会换掉 `trackId` 并丢掉设备链/自动化/路由边; `setClipName` 写 `ClipPoolEntry::name` (`Op::SetClipName`)：载荷 `{\"kind\":\"setClipName\",\"clipId\":ULID,\"name\":\"<字符串>\"}`，`name` **必填**但**可为空串** (模型只有「陈旧载荷」一条校验, `ClipPoolEntry` 的校验**不查**空名 — 与 `addClip` 的必需标签不是同一条口径), 目标片段必须在 `project.clip_pool` 里 (否则 `CLIP_NOT_FOUND`, 模型不带 `data.reason`), 撤销载荷 `oldName` 由服务端从**当前文档**读 (`project.clip_pool[clipId].name`), 比较是**逐字节**的; ⭐ 本形态补的是「建片段后改不了名」—— 此前只能删 + 加, 而 `removeClip` 还要求先把该片段的每一处摆放拆掉; {\"kind\":\"setClipGain\",\"clipId\":ULID,\"gainDb\":number} 写**音频片段**的 `ClipContent::Audio::gain_db` (`Op::SetClipGain`)：⭐ 本形态补的是「音频片段建得出、增益改不了」—— `gain_db` 此前只在 `yeban_import_audio` 创建时由 `gainDb` 写一次。目标 `clipId` **在操作对象里** (⛔ 不读工具顶层 `clipId`)，且目标**必须是音频片段** (MIDI 片段 ⇒ `CLIP_NOT_FOUND`，文案逐字 \"不是音频片段, 没有 gain_db 可改\" —— 因为 MIDI 没有 `gain_db` 可读、撤销载荷 `old_gain_db` 无从取得)；撤销载荷 `old_gain_db` 由服务端从**当前文档**读 (⛔ 不信调用方)，比较是**逐位**的。⚠ `gainDb` 的**值域照抄现状**：模型只查有限性 (`clip.audio.gain_db`)，**没有** dB 上下限 ⇒ 收任意**有限** `f32`；非数字 ⇒ `valueMustBeNumber`，收窄到 `f32` 后非有限 (如 `1e300` ⇒ `inf`) ⇒ `nonFiniteValue`。操作对象只认 `kind`/`clipId`/`gainDb` 三个键 (`unknownSetClipGainField`)。⚠ 身份是条目自己的 `id` (即 `clip_pool` 的键) ⇒ 改 `name` **不动键**、不悬空任何摆放 (`Op::SetTrackMute` / `Op::SetTrackSolo`, 母带渲染器的 `audible` 判定真的读它们), `value` 只收 JSON 布尔 (不做真假值强转), 开关对象里 `kind`/`value`/`trackId` 之外的键一律 `INVALID_PARAMETER_RANGE` (`trackId` **可选**: 省略 = 目标是顶层 `trackId`, 给了 = 逐条点名另一条音轨); `{\"kind\":\"setTempo\",\"bpm\":number}` 写**工程速度** (`Op::SetTempo`): `bpm` **必填**、必须**有限**并在 **20.0..=999.0** 内 (越界或非有限 ⇒ `bpmOutOfRange`)。撤销载荷 `oldBpm` 由服务端从**当前文档**读 (`project.bpm`), ⛔ 不信调用方声明; 模型的比较是**逐位**的 (`-0.0` 与 `0.0` 位不同 ⇒ 陈旧载荷一律 `OpStateMismatch`)。⚠ **JSON 没有 NaN / Infinity 字面量** —— 它们在线上是 `null`, 因此这一类在**解析期**就报 `valueMustBeNumber`; 工具面**没有**非有限值的可表达入口, 这一半如实说清。操作对象只认 `kind`/`bpm` 两个键 (`unknownSetTempoField`)。 `{\"kind\":\"setAuthor\",\"author\":\"<字符串>\"}` 写**工程署名** (`Op::SetAuthor`): `author` **必填**, 且**照抄模型口径收任意字符串** —— 模型只有「陈旧载荷」这一条校验, 而 `project.schema.json` 的 `author` 是裸 `{\"type\":\"string\"}` (非必需、无 `minLength`、无 `pattern`) ⇒ ⛔ 本层**不发明**「非空」或长度上限。撤销载荷 `oldAuthor` 由服务端从**当前文档**读 (`project.author`), 比较是**逐字节**的; 操作对象只认 `kind`/`author` 两个键 (`unknownSetAuthorField`)。 `{\"kind\":\"setTitle\",\"title\":\"<字符串>\"}` 写**工程标题** (`Op::SetTitle`): `title` **必填**, 且**照抄模型口径收任意字符串** —— 模型只有「陈旧载荷」这一条校验, 而 `project.schema.json` 的 `title` 是裸 `{\"type\":\"string\"}` (**必需**、无 `minLength`、无 `pattern`) ⇒ ⛔ 本层**不发明**「非空」或长度上限。撤销载荷 `oldTitle` 由服务端从**当前文档**读 (`project.title`), 比较是**逐字节**的; 操作对象只认 `kind`/`title` 两个键 (`unknownSetTitleField`)。⭐ 本形态补的是「建得出、改不了」—— 此前 `project.title` 唯一的**结构写**点是 `yeban_create_project` (`domain/project_create.rs:370`)。 `{\"kind\":\"setLyrics\",\"lines\":[{\"startTick\":N,\"text\":\"...\"}]}` 或 `{\"kind\":\"setLyrics\",\"lrcText\":\"<LRC 文本>\"}` **整体替换工程歌词时间轴** (`Op::SetLyrics`): 两种形态**恰好二选一** (同给 ⇒ `lyricsFormAmbiguous`, 都不给 ⇒ `lyricsFormRequired`); `lrcText` 走模型既有 `parse_lrc` (编译期按工程速度映射换算 tick), 与 `lines` 形态产物一致。撤销载荷 `oldLines` 由服务端从**当前文档**读 (`project.lyrics`), 把旧值写进载荷是**未知键**并响亮拒绝 (`unknownSetLyricsField`); 操作对象只认 `kind`/`lines`/`lrcText` 三个键, 行对象只认 `startTick`/`text` 两个键。值域 (行文本非空、tick 严格升序) 由模型 `validate_lyrics` 判。写后可用 `yeban_query_project` 的 `lyrics` 读回, LRC 导出 (app `--export-lyrics`) 消费同一份时间轴。 `setTimeSignature` 形态写**工程拍号** (`Op::SetTimeSignature`): 载荷是 `kind` + `timeSignature` 两个键, `timeSignature` **必填** —— 形状与 `yeban_open_project` 的 `create:true` 实参**逐字同词同义** (`N/D` 文本, 例 `3/4`、`6/8`), 且**复用同一个解析器** (`parse_time_signature`) ⇒ 接受集合逐点相同 (形状错误 ⇒ `INVALID_PARAMETER_RANGE`, 取值越界 ⇒ `OUT_OF_RANGE`; 值域的唯一判定入口是模型 `TimeSignature::validate`, ⛔ 本层不抄那张表)。⛔ 载荷**只带新值**: 旧值由服务端从**当前文档**读 (`project.time_signature`), 把 `oldTimeSignature` 写进载荷是**未知键**并响亮拒绝 (`unknownSetTimeSignatureField`)。⭐ 本形态补的是「建得出、改不了」—— 此前 `project.time_signature` 唯一的**结构写**点是 `yeban_open_project` 的 `timeSignature` 实参。⚠ 本渲染器是 **tick 基**的: 改拍号**不会**改变任何已渲染时值 (离线母带逐字节不变); 它驱动的是**栅格几何** —— 引擎节拍器的 `ticks_per_beat` (= `PPQ` × 4 ÷ 分母) 与 `beats_per_bar` (= 分子)、小节长度 (`ticks_per_bar`) 与 SMF 拍号元事件。 `setKeySignature` 形态写**工程调号** (`Op::SetKeySignature`): 载荷是 `kind` + `keySignature` 两个键, `keySignature` **必填** (可为 `null` 清空调号，或包含 `sharpsFlats` 整数 -7..=7 与 `isMinor` 布尔值的对象; 值域由模型 `KeySignature::validate` 判 ⇒ 越界报 `OUT_OF_RANGE`)。旧值由服务端从**当前文档**读 (`project.key_signature`), 把 `oldKeySignature` 写进载荷是**未知键**并响亮拒绝 (`unknownSetKeySignatureField`)。 `setTempoPoint` 形态写 `project.tempo_map` 里的一个**速度映射点** (`Op::SetTempoPoint`): 载荷是 `kind` + `tick` + `bpm` 三个键, `tick` **必填**且必须 **≥ 1** (tick 0 的时间点是**工程速度本身**, 归 `setTempo`; 模型对 `tempo_map[0]` 报 `TempoMapZeroTick` ⇒ 本层同理由 `tempoMapZeroTick` 拒)。⚠ `bpm` **必填** —— 数字 = 新增/修改该点 (区间与有限性**同 `setTempo` 一个口径**, `20.0..=999.0`, 越界 ⇒ `bpmOutOfRange`), `null` = **删除**该映射点; ⛔ **缺键不等于删除** (删除的唯一拼法是显式 `null`)。删除一个**不存在**的点 ⇒ `ENTITY_NOT_FOUND` (`tempoPointNotFound`, 带 `tick`)。撤销载荷 `old_bpm` 由服务端从**当前文档**读 (`project.tempo_map[tick]`, ⛔ 不信调用方), 模型的比较是**逐位**的。操作对象只认 `kind`/`tick`/`bpm` 三个键 (`unknownSetTempoPointField`)。⭐ 本形态补的是「速度**曲线**改不了」—— 在它之前 `project.tempo_map` 在工具面**没有任何**结构写点。 `setTimeSignaturePoint` 形态写 `project.time_signature_map` 里的一个**拍号映射点** (`Op::SetTimeSignaturePoint`): 载荷是 `kind` + `tick` + `timeSignature` 三个键, `tick` **必填**且必须 **≥ 1** (同上, `tempoMapZeroTick`); `timeSignature` **必填** —— `\"N/D\"` 文本与 `setTimeSignature` **逐字同词同义**且**复用同一个解析器** (`parse_time_signature`, 唯一值域判定 = 模型 `TimeSignature::validate`; 形状错误 ⇒ `INVALID_PARAMETER_RANGE`, 取值越界 ⇒ `OUT_OF_RANGE`), `null` = **删除**该映射点 (⛔ 缺键不等于删除, 显式 `null` 是唯一拼法)。删除一个**不存在**的点 ⇒ `ENTITY_NOT_FOUND` (`timeSignaturePointNotFound`, 带 `tick`)。撤销载荷 `old_time_signature` 由服务端从**当前文档**读 (`project.time_signature_map[tick]`)。操作对象只认 `kind`/`tick`/`timeSignature` 三个键 (`unknownSetTimeSignaturePointField`)。⭐ 本形态补的是「拍号**曲线**改不了」—— 在它之前 `project.time_signature_map` 在工具面**没有任何**结构写点。 ⛔ 两个映射点形态都**不触碰**顶层 `project.bpm` / `project.time_signature`; 与 `setTimeSignature` 同一条事实: 本渲染器是 **tick 基**的, 映射点驱动的是引擎节拍器的**栅格几何**与 SMF 元事件, ⛔ 不移动任何音符/摆放的 tick。 九个形态都是**顶层文档字段** (与走带配置同族): 不读不写音符, 也不寻址音轨。 `{\"kind\":\"setAutomationLane\",\"lane\":{...}}` 写**自动化泳道自己**的属性 (`Op::SetAutomationLane` / `Op::RemoveAutomationLane`): `lane.lane` 是目标变体名 (`TrackVolume`/`TrackPan`/`SendGain`+`edgeId`/`DeviceParam`+`slotIndex`+`paramIndex`/`Macro`+`macroIndex`/`MidiCc`+`controller`, 与 `yeban_edit_automation` 同一份词表), 属性 `readEnabled` (bool) / `writeMode` (`Off`|`Write`|`Touch`|`Latch`) / `domain` (`{min,max}` 或 `null` 清掉) **各自可选** (缺省 = 保留文档现值, 是**合并**不是整体替换), `remove:true` 把整条泳道取走 (与属性键同给即 `INVALID_PARAMETER_RANGE`), 同一目标在一次调用里出现两次也 `INVALID_PARAMETER_RANGE`; `readEnabled:false` 会让唯一求值入口 `automation_value_at` 返回「无自动化值」⇒ 该泳道在走带与宿主求值里**不生效**; `{\"kind\":\"removeAutomationPoint\",\"point\":{...}}` 取走一个**自动化点** (`Op::RemoveAutomationPoint`): `point` 是自包含对象 —— 泳道寻址 (`lane` 与上一条同一份词表, `SendGain` 仍必须给 `edgeId`) 加**恰好一个**点寻址: `tick` (文档里**恰好一个**落在该 tick 上的点; 0 个 `ENTITY_NOT_FOUND`, 同 tick 多个 `INVALID_PARAMETER_RANGE` 并给出 `candidatePointIds`) 或 `pointId` (`yeban_edit_automation` 读侧 `lane.points[].id` 报的身份), 两个同给 (`pointAddressIsAmbiguous`) 或都不给 (`pointAddressRequired`) 都是 `INVALID_PARAMETER_RANGE`; `point` 里的泳道属性键 (`readEnabled`/`writeMode`/`domain`/`remove`) 与操作对象顶层的 `tick`/`pointId` 都被响亮拒绝 (寻址在 `point` 对象里); 撤销载荷 `previous_point` 从当前文档读; `{\"kind\":\"setAsset\",\"assetHash\":\"<SHA-256>\",\"license\":\"<许可>\"|\"originalPath\":\"<路径>\"}` **改**一条已存在的资产索引项 (`Op::SetAsset`, `old_asset` 从当前文档读; ⭐ 补的是「建得出、改不了」)。⚠ **只可改两个字段**: `license` 与 `originalPath` —— ⛔ `hash`/`byteLen`/`mediaKind` **不可改** (它们是**内容身份或内容事实**; 给它们会 `unknownSetAssetField`)。⭐ 新 `license` **同样过步 ③ 的许可判定** (白名单外 ⇒ `licenseNotAllowed`) ⇒ 本通路⛔ **不绕过**它。至少给一个可改字段 (否则 `assetPatchIsEmpty`)。该哈希**在** `project.assets` 里 (否则 `assetNotFound`)。⚠ 它与 `yeban_import_audio` 的 `assetDeclaredDifferently` 冲突**分工不同**: 那个拒绝「靠重导**静默**改写许可留痕」, 本形态给出一条**正门** (用户明说要改)。 `{\"kind\":\"removeAsset\",\"assetHash\":\"<SHA-256>\"}` 取走**工程 assets 索引里的一条资产** (`Op::RemoveAsset`, 撤销载荷 `previousAsset` 从当前文档读)。⭐ 它是资产**唯一的显式删除通路** —— 在它之前 `Op::RemoveAsset` 只由模型的结构逆产出 (用户只能靠撤销那次导入取走索引项)。⚠ **自带寻址** (本工具没有顶层 `assetHash` 实参), 操作对象只认 `kind`/`assetHash` 两个键 (`unknownRemoveAssetField`)。两条前置: 该哈希**在** `project.assets` 里 (否则 `ENTITY_NOT_FOUND` / `assetNotFound`); ⚠ **没有任何 `clip_pool` 条目引用它** (否则 `CONFLICT` / `assetInUse`, 带 `clipCount`/`clipIds`) —— 与 `removeClip` 要求先取走摆放是同一条顺序纪律 (先取走引用它的片段, 再取走这条索引项)。⚠ 它**只**删工程里的索引留痕, ⛔ **不碰** CAS 池里的字节 (字节住在容器层, `needs-2` 仍开着)。 `{\"kind\":\"removeClip\"}` 取走**顶层 `clipId` 那条已有的片段池条目** (`Op::RemoveClip`, 撤销载荷 `previous_clip` 从当前文档读) —— 这是唯一的**池级**形态, 操作对象**只认 `kind` 一个键** (嵌套 `clipId` 等一律 `INVALID_PARAMETER_RANGE` / `unknownRemoveClipField`), 且必须**单独**出现在 `ops` 里 (`removeClipTakesNoOtherOps`), 与 `placement` 同给即 `removeClipIsNotPlacement`; 池里没有该身份 `CLIP_NOT_FOUND`, 还有**任何**摆放引用它则 `CONFLICT` (模型自己的 `ClipInUse`), 因此顺序是「先取走摆放, 再取走材料」; 它**不要求片段是 MIDI** (音频池条目同样取得走), 但**不回收** CAS 资产字节 (模型 `Op` 全集没有资产变体)。`{\"kind\":\"setRoutingGain\",\"edgeId\":ULID,\"value\":数字|null}` 是唯一的**路由级**形态: 写 `edgeId` 那条**已有**路由边的静态增益 (`Op::SetRoutingGain`), 撤销载荷 `old_gain_db` 从当前文档读**原样**的 `Option<f32>` (不经过会把 `None` 折算成 `0.0` 的静态值入口, 因为模型的 `same_gain` 是逐位比较)。`value` 是 `Option<f32>` 的字面形态: `null` = `None` = **单位增益**, 数字 = `Some` (收窄到 `f32` 后必须有限, 否则 `nonFiniteValue`); 缺 `value` 或给了布尔/字符串/对象都是 `INVALID_PARAMETER_RANGE`; 操作对象只认 `kind`/`edgeId`/`value` 三个键 (`unknownRoutingGainField`, 嵌套的 `trackId`/`gainDb` 不会被读取); 工程里没有该边 ⇒ `ENTITY_NOT_FOUND` (`routingEdgeNotFound`); 它与顶层 `trackId`/`clipId` 都无关, 目标由自带的 `edgeId` 给出。`{\"kind\":\"connectRouting\",\"edgeId\":ULID,\"sourceNode\":ULID,\"destinationNode\":ULID,\"edgeKind\":\"TrackToBus\"|\"BusToMaster\"|\"SendToAux\"|\"Sidechain\",\"gainDb\":数字|null}` 是**建立路由边**形态 (`Op::ConnectRouting`): 把一条边加进 `routing_graph.edges`。它是 `disconnectRouting` 的**逆**, 也是**路由图可用性的最后一环** —— 在它之前工具面**建得起节点、连不起边** (边只在 `yeban_create_project` 与 `yeban_propose_section` 里发生)。⚠ **平铺** (⛔ 不嵌套 `edge: {...}` 对象), 与 `addRoutingNode`/`disconnectRouting` 同一形状。`edgeId`/`sourceNode`/`destinationNode`/`edgeKind` **四个必填**; `gainDb` **可选** —— ⛔ 与 `setRoutingGain` 的 `value` **同口径** (不造第二套): `null` = `None` = **单位增益**, 数字 = `Some` (收窄到 `f32` 后必须有限, 否则 `nonFiniteValue`), **整键省略与 `null` 同义** (模型 `RoutingEdge::gain_db` 带 `#[serde(default)]`)。模型的三条前置条件: 两端都必须在 `routing_graph.nodes` 里 (`routingNodeNotFound` —— 先用 `addRoutingNode` 把节点加进图), `edgeId` 不在 `edges` 里 (`routingEdgeAlreadyExists`, **幂等拒绝**), 增益有限。⚠ 模型**没有**「节点类型与 `edgeKind` 必须匹配」这条约束 ⇒ 工具面**也不**发明它。操作对象只认那六个键 (`unknownConnectRoutingField`)。 `{\"kind\":\"disconnectRouting\",\"edgeId\":ULID}` 是**另一个**路由级形态: 把 `edgeId` 那条**已有**路由边**取走** (`Op::DisconnectRouting`), 撤销载荷 `previous_edge` 从当前文档读**整条**边 (`RoutingEdge` 逐字段比较, 因此调用方声明的旧状态一律不被采信)。它的载荷是**空**的: 操作对象只认 `kind`/`edgeId` 两个键 (`unknownDisconnectRoutingField`, 嵌套的 `trackId`/`value`/`gainDb` 都不会被读取); 工程里没有该边 ⇒ `ENTITY_NOT_FOUND` (`routingEdgeNotFound`); `routing_graph.nodes` 一个字都不动 (取走**节点**是**另一个**形态 `removeRoutingNode` 的事, 它要求没有任何边引用它 —— 先断开每一条引用边, 再单独一次调用取走节点)。`{\"kind\":\"addRoutingNode\",\"nodeId\":ULID}` 是**第四个**路由级形态 (`Op::AddRoutingNode`): 把 `nodeId` 那个身份**加进** `routing_graph.nodes`。它与 `removeRoutingNode` 严格**互为逆操作**, 因此载荷也**是空的**: 操作对象只认 `kind`/`nodeId` 两个键 (`unknownAddRoutingNodeField`), 嵌套的 `edgeId`/`trackId` 都不会被读取 (节点与边是两种实体)。⚠ 这个身份**必须不在** `nodes` 里, 否则 `CONFLICT` (`routingNodeAlreadyExists`) —— 本形态是**幂等拒绝**的。⚠ 它**不要求**这个身份是一条真实音轨: 模型只做数据层校验 (`RoutingGraph::validate` 查节点重复、以及每条边的两端都在 `nodes` 里), **不**要求节点能对应到 `tracks` 的条目 (模型 `Op::AddTrack` 只把音轨加进 `tracks`；`addTrack` 形态已在编译层自带接线)。**它是「让一条存量音轨成为路由节点」的通路** —— 在此之前工具面只有 `disconnectRouting`/`setRoutingGain`/`removeRoutingNode`, **没有**任何形态能**建立**一条路由边或**加入**一个节点 (那条通路此前只在 `yeban_propose_section` 的建批里)。 `{\"kind\":\"removeRoutingNode\",\"nodeId\":ULID}` 是**第三个**路由级形态: 把 `nodeId` 那个**已有**路由节点从 `routing_graph.nodes` **取走** (`Op::RemoveRoutingNode`)。它的载荷是**空**的: 模型 `RemoveRoutingNode` 只有节点身份, 而且它与 `AddRoutingNode` 互为逆操作 ⇒ **没有撤销载荷要读** (前两个路由级形态的撤销载荷都从当前文档读, 本形态不需要也不接受调用方声明旧状态)。操作对象只认 `kind`/`nodeId` 两个键 (`unknownRemoveRoutingNodeField`, 嵌套的 `trackId`/`edgeId`/`value` 都不会被读取 —— `edgeId` 是**边**的寻址, 节点与边是两种实体); `routing_graph.nodes` 里没有该身份 ⇒ `ENTITY_NOT_FOUND` (`routingNodeNotFound`); 这个身份是**主总线** ⇒ `CONFLICT` (`masterBusNodeCannotBeRemoved`: 模型要求有音轨时主总线留在 `nodes` 里, 那是 `yeban-engine` 的 `PdcPlan::compute` 找得到唯一声学出口的前提); 还有**任何**路由边引用它 ⇒ `CONFLICT` (模型自己的 `RoutingNodeInUse`, 带 `edge_count`)。`{\"kind\":\"setSection\",\"section\":{...}}` 是**段落级写入**形态 (`Op::SetSection`): 载荷是**自包含**的 `section` 对象 (只认 `create`/`sectionId`/`name`/`startTick`/`endTick`/`color` 六个键, 其余一律 `INVALID_PARAMETER_RANGE` / `unknownSetSectionField`; 操作对象顶层只认 `kind` 与 `section`, 嵌套的 `sectionId` 放在顶层是 `unknownSetSectionOpField`)。它是 `removeSection` 的**对偶**: 在它之前工具面**删得掉段落、⛔ 改不了也加不了**, 而 `Op::SetSection` 的**唯一**构造点是 `yeban_propose_section` 的内部建批 ⇒ 一个**已存在的**工程无法改段落名/区间/色标, 也无法逐个小段落地加段落。`sectionId` (ULID) **必填**; `section.create:true` = **新建**: 该身份必须**不在** `project.sections` 里 (否则 `CONFLICT` / `sectionAlreadyExists`), 且 `name` **必填** (模型的 `SectionV3::name` 没有校验, 空名会静默落盘 ⇒ `sectionNameRequiredWhenCreating`); 缺省 = **更新**: 该身份必须**在**工程里 (否则 `ENTITY_NOT_FOUND` / `sectionNotFound`)。四个属性**各自可选**、按**合并**语义施加 (缺省 = 保留文档现值, 不是整体替换): `name` (非空字符串), `startTick`/`endTick` (非负整数, 否则 `sectionTickMustBeUnsignedInteger`), `color` (非空字符串或 `null` = 清空)。⚠ 区间约束 (`endTick > startTick`) 与色标/名字一样**不在这里**复制: 模型 `SectionV3::validate` 是唯一事实源 (`ZeroDuration`)。撤销载荷 `oldSection` 由服务端从**当前文档**读 (新建时为空 ⇒ 逆操作是 `RemoveSection`), 因此一次合并不可能把段落改成调用方声明的样子。 `{\"kind\":\"removeSection\",\"sectionId\":ULID}` 是**唯一的段落级**形态 (`Op::RemoveSection`): 把 `sectionId` 那个**已有的**曲式段落从 `project.sections` **取走**。它的载荷是**空**的: 操作对象只认 `kind`/`sectionId` 两个键 (`unknownRemoveSectionField`, 嵌套的 `trackId`/`nodeId`/`edgeId`/`clipId` 都不会被读取 —— 段落与音轨/节点/边/片段是四种不同的实体); 撤销载荷 `previousSection` 由服务端从**当前文档**读**整条**段落 (`SectionV3` 逐字段比较, 因此调用方声明的旧状态一律不被采信); 工程里没有该段落 ⇒ `ENTITY_NOT_FOUND` (`sectionNotFound`, 段落身份由 `yeban_query_project` 的 `entities[]` 里 `kind == \"section\"` 的条目报出)。它不读不写任何音符 (因此不要求片段是 MIDI), 也不碰音轨、片段池与路由图; 与 `removeClip` 一样, 顶层 `trackId`/`clipId` 仍是本工具签名要求的必填实参, 但它们不是本形态的目标。`{\"kind\":\"addTrack\",\"trackId\":ULID,\"name\":\"<非空>\",\"trackKind\":\"Midi\"|\"Audio\"|\"AuxReturn\"|\"Master\"}` 是**新增音轨**形态 (`Op::AddTrack`): 把一条**空形状**的音轨加进 `project.tracks`。它补的是「删得到、加不到」的不对称 —— 加音轨此前只在 `yeban_create_project` 与 `yeban_propose_section` 里发生, 所以一个**已存在的**工程无法被逐步扩展。⚠⭐ **四个集合 (`devices`/`macros`/`automationLanes`/`clips`) 与 `folderId`/`color`/五个混音标量 (`volumeDb`/`pan`/`mute`/`solo`/`soloSafe`) 都**不在**载荷里** —— 那是**决定**, 理由 = **新实体无内容可清**: `ADR-0001 D43` 的必需性立法理由是「缺键 = 静默清空**既有**内容」, 而创建时没有既有内容 (同族先例: `project_create.rs:381` 的 `TrackV3 { id, name, kind, ..Default::default() }` 与 `setScene` 的 create 分支)。因此新建空轨**不会**改动混音 (`volume_db = 0.0`、`pan = 0.0`、三个开关 `false`); 操作对象只认 `kind`/`trackId`/`name`/`trackKind` 四个键 (`unknownAddTrackField`), 多写一个集合或混音标量都被响亮拒绝。`trackId` 已在 `tracks` 里 ⇒ `CONFLICT` (`trackAlreadyExists`, **幂等拒绝**); `name` 必须非空 (`valueMustBeNonEmptyString` —— 模型的 `TrackV3::validate` 不查空名); `trackKind` 必须是四个规范名之一 (`unknownTrackKind`)。⭐ 它**已含接线**：编译时展开为 `AddTrack`＋`AddRoutingNode`＋`ConnectRouting`(→主总线) 批次（`Midi`/`Audio` 用 `TrackToBus`，`AuxReturn` 用 `BusToMaster`，`Master` 不接线），新建轨直接可渲染；⚠ 因此 `addTrack` 之后**不要**再显式补 `addRoutingNode` —— 会撞 `routingNodeAlreadyExists` 的响亮拒绝（预期行为）。 `{\"kind\":\"removeTrack\",\"trackId\":ULID}` 是**唯一的音轨实体级**形态 (`Op::RemoveTrack`): 把 `trackId` 那条**已有的**音轨**本身**从 `project.tracks` 取走 (连带它自己的 `clips` 摆放与 `automation_lanes` —— 那是音轨的子结构)。它的载荷是**空**的: 操作对象只认 `kind`/`trackId` 两个键 (`unknownRemoveTrackField`, 嵌套的 `clipId`/`sceneId`/`sectionId`/`nodeId`/`edgeId` 都不会被读取 —— 音轨与片段/场景/段落/节点/边是五种不同的实体); 撤销载荷 `previousTrack` 由服务端从**当前文档**读**整条**音轨 (`TrackV3` 逐字段比较, 因此调用方声明的旧状态一律不被采信); 工程里没有该音轨 ⇒ `ENTITY_NOT_FOUND` (`trackNotFound`, 音轨身份由 `yeban_query_project` 的 `tracks` 字段报出); 该身份是**主总线** ⇒ `CONFLICT` (`masterBusTrackCannotBeRemoved`: 模型要求有音轨时主总线留在 `tracks` 里且 `kind == Master`, 那也让 `master_bus_track_id` 不悬空)。⚠ 它与工具顶层 `trackId` **不是同一个东西**: 后者是「目标片段所在的音轨」(本工具的签名要求它必填), 本形态的寻址在操作对象**自带**的 `trackId` 上 —— 因此 `removeTrack` 单独出现时顶层 `trackId`/`clipId` 两个实参的内容不被读取。本形态必须**单独**出现在 `ops` 里 (`removeTrackTakesNoOtherOps`), 与 `placement` 同给即 `removeTrackIsNotPlacement` (摘掉一条音轨与在它上面摆片段是同一批里互相矛盾的两件事)。它不读不写任何音符 (因此不要求片段是 MIDI), 也不碰片段池 (池里的材料留着, 可能仍被别的音轨引用)。⭐ 它**连带**清掉该轨在路由图里的边与节点: 提案里排在 `RemoveTrack` **之前**的是每一条端点命中该轨的边的 `Op::DisconnectRouting` (撤销载荷 `previous_edge` 从当前文档读) 与 `Op::RemoveRoutingNode` —— 留着孤儿节点会让 `yeban_render_master` **整体失败** (G2 / `ADR-0023`)。该轨不在图里时不产生这些 op。`{\"kind\":\"removeScene\",\"sceneId\":ULID}` 是**唯一的场景级**形态 (`Op::RemoveScene`): 把 `sceneId` 那个**已有的**场景从 `project.scenes` **取走**。它的载荷是**空**的: 操作对象只认 `kind`/`sceneId` 两个键 (`unknownRemoveSceneField`, 嵌套的 `trackId`/`sectionId`/`nodeId`/`edgeId`/`clipId` 都不会被读取 —— 场景与段落/音轨/节点/边/片段是五种不同的实体); 撤销载荷 `previousScene` 由服务端从**当前文档**读**整条**场景 (`SceneV3` 逐字段比较, 因此调用方声明的旧状态一律不被采信); 工程里没有该场景 ⇒ `ENTITY_NOT_FOUND` (`sceneNotFound`, 场景身份由 `yeban_query_project` 的 `entities[]` 里 `kind == \"scene\"` 的条目报出)。⚠ 与段落形态不同, 写侧此前**一处都没有**: `Op::SetScene` 与 `Op::RemoveScene` 在 MCP 侧实测构造点都是 0 (同一模式对 `Op::SetSection` 读 2 ⇒ 模式有效), 因此本形态关的是场景实体上**无自由度**的那一半 (删除; 创建/更新要决定 `sceneId`/`name`/`tempo`/`color` 的形状, 留在它自己的一票)。它不读不写任何音符 (因此不要求片段是 MIDI), 也不碰音轨、片段池、路由图与曲式段落。`{\"kind\":\"setScene\",\"scene\":{...}}` 是**场景级写入**形态 (`Op::SetScene`): 载荷是**自包含**的 `scene` 对象 (只认 `create`/`sceneId`/`name`/`tempo`/`color` 五个键, 其余一律 `INVALID_PARAMETER_RANGE` / `unknownSetSceneField`; 操作对象顶层只认 `kind` 与 `scene`, 嵌套的 `sceneId` 放在顶层是 `unknownSetSceneOpField`)。`sceneId` (ULID) **必填** —— 本工具面的身份一律由调用方给出, 且 `ops[]` 信封没有回传「服务端替你生成的身份」的通道。`scene.create:true` = **新建**: 该身份必须**不在** `project.scenes` 里 (否则 `CONFLICT` / `sceneAlreadyExists`, 与 `create:true` 的 `clipAlreadyExists` 同口径), 且 `name` **必填** (模型的 `SceneV3::name` 没有校验, 空名会静默落盘); 缺省 = **更新**: 该身份必须**在**工程里 (否则 `ENTITY_NOT_FOUND` / `sceneNotFound`)。三个属性**各自可选**、按**合并**语义施加 (缺省 = 保留文档现值, 不是整体替换): `name` (非空字符串; 模型里不是可空字段, 给 `null` 响亮拒绝), `tempo` (数字或 `null`; `null` = 清空覆盖 = 跟随工程速度, 值域 20.0..=999.0 与有限性由模型 `SceneV3::validate` 判 → `OUT_OF_RANGE` / `INVALID_PARAMETER_RANGE`), `color` (非空字符串或 `null`; `null` = 清空)。撤销载荷 `oldScene` 由服务端从**当前文档**读 (新建时为空 ⇒ 逆操作是 `RemoveScene`; 更新时是整条现值), 因此一次合并不可能把场景改成调用方声明的样子。同一个场景在一次调用里出现两次 ⇒ `INVALID_PARAMETER_RANGE` (`duplicateSceneTarget`)。十三个形态都走与本工具音符编辑**相同**的提案路径; 除 `removeRoutingNode` 外, 其余形态的撤销载荷都从当前文档读 (`removeRoutingNode` **没有**撤销载荷 —— 它与 `AddRoutingNode` 互为逆操作)。`{\"kind\":\"setTrackSampler\",\"trackId\":ULID,\"sampler\":\"<路径>\"|{\"path\":\"<路径>\",\"noteOctaveOverride\":-24|-12|0|12|24|null}|null}` 给一条音轨**绑定采样器定义文件** (`Op::SetTrackSampler` ⇒ `TrackV3::sampler`): `sampler` **必填** —— 非空字符串 = 绑定 (路径若是落在采样库根之下的绝对路径，存入时改写成 `assets/samples/` ＋ 库根下相对部分，换机器仍可经规则 2 解析回原文件；其余形式原样留痕，⛔ 不查存在性/不查扩展名); 对象 `{path, noteOctaveOverride?}` = 绑定 + 工程手动八度覆盖 (c) (台账 §14.4 阶段 2: 采样库用 Yamaha 记法写音名键位、夜半按 IPN 解析时整库错一个八度, 且采样无 WAV 嵌入根音证据时自动检测按设计不移位 —— 用本键把整轨键位移回来; `noteOctaveOverride` 只认八度步 -24/-12/0/12/24 或 null = 不设覆盖, 对象内未知键与非八度步值一律响亮拒绝), `null` = **解绑** (缺键 ⛔ 不等于解绑); 撤销载荷 `oldSampler` 由服务端从当前文档读。⭐ `yeban_render_master` **真的**消费它 (与 app 的 `--track-sampler`/`--export-wav` **同一条音源路径**: 区域选择/播放速率/总增益/样本文件都走 `yeban-sfz` 的同一份读数), 并把逐轨读数 `sfz(tracks=1 regions=… samples=… silent=… missing=[…])` 写进 `data.sources[].sampler.label`; 路径读不到 ⇒ `RENDER_FAILED` / `samplerUnreadable` (⛔ 不静默回退正弦)。给了 `placement` 时允许空数组 (这次调用只摆放, 一个音符都不动) ⭐ **逐 kind 的 JSON Schema 见本参数的 `items`** (oneOf, 每个 `kind` 一个分支); EQ / 混响 / 卷积混响的参数名 / 单位 / 值域 / 缺省值见 `insertDevice` 分支的 `device.params.items` (名字大小写不敏感; ⛔ 不认 `reverb_mix` / `reverb_width`); 建发送的边形状见 `connectRouting` 的 `edgeKind:\"SendToAux\"`。⭐ `#177` 坑④: 顶层 `clipId` 只在**读**它的形态上是必需的 (五个音符形态 / 池级 `removeClip` / `placement` / `create:true`), 其余形态省略即可 (给了也接受但忽略); 逐 kind 的 `x-envelope.clipId` 见每个 `oneOf` 分支。",
+                "操作列表 (NoteOp 数组): 逐 `kind` 的形状、必填键与封闭性见本参数 `items` 的 `oneOf` 分支 (与解析器逐臂对账); `insertDevice` 的效果器参数名/单位/值域见该分支的 `device.params.items`。封闭形态上多余的键一律 `INVALID_PARAMETER_RANGE` (⛔ 静默丢弃)。顶层 `clipId` 只在读它的形态上必需 (见 `clipId` 参数)。⭐ 最小示例: `[{\"kind\":\"add\",\"note\":{\"startTick\":0,\"pitch\":60,\"durationTicks\":480}}]`",
                 crate::op_schema::ops_items,
             ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
@@ -1033,7 +1042,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "create",
                 "boolean",
                 false,
-                "用 `clipId` 新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 只允许 `add` (它们成为新片段的初始内容): 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE`。⭐ `ADR-0018`: `create:true` 可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导",
+                "用 `clipId` 新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 只允许 `add` (它们成为新片段的初始内容): 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE`。可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导",
             ),
             param(
                 "clipName",
@@ -1055,7 +1064,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "placement",
                 "object",
                 false,
-                "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = `{startTick?: 非负整数 (默认 0), durationTicks?: >=1 (默认 = 片段内容长度; 片段推不出长度时必填), placementId?: ULID (默认由 片段+音轨+起点 确定性派生), muted?: 布尔 (默认 false), loopEnabled?: 布尔 (默认 false), loopStartTick?: 非负整数 (默认 0), loopEndTick?: 非负整数 (启用时默认 = 片段内容长度), fadeInTicks?: >0 整数 tick (默认无; ⛔ **仅音频片段**), fadeOutTicks?: >0 整数 tick (默认无; 两者之和不得超过 durationTicks; T-FIX-374 起按等功率包络渲染, 同轨重叠且任一摆放配置了 fade 时重叠区自动交叉淡化; ⛔ **仅音频片段** —— MIDI/乐器片段没有可淡的音频包络, 给这两个键会被 `placementFieldNotApplicable` 响亮拒绝而不是静默忽略, T-FIX-439)}` 把 `clipId` 摆到 `trackId` 上 (`Op::AddClipPlacement`); ⭐ `#241`: `loopEnabled: true` 且 `loopStartTick < loopEndTick < durationTicks` 时, 渲染器把循环区间**真的展开** N = ceil((durationTicks - loopStartTick) / (loopEndTick - loopStartTick)) 遍 (母带里真的有 N 遍音符/音频); 想重复一个 4 小节 loop 就把它摆成 N×4 小节并把 `loopEndTick` 设成 4 小节, ⛔ 不用手写 N 遍音符; `move` = `{kind:\"move\", placementId: ULID (必填), startTick: 非负整数 (必填, 新起点)}` 平移一条已有摆放 (`Op::MoveClipPlacement`, 现值从工程读取); `remove` = `{kind:\"remove\", placementId: ULID (必填)}` 取走一条已有摆放 (`Op::RemoveClipPlacement`, 撤销载荷从工程读取)。三者的键之外的键一律 `INVALID_PARAMETER_RANGE`; 形态不适用但别处合法的键报 `placementFieldNotApplicable` (不静默丢弃)。`move`/`remove` 的 `clipId` 必须等于文档里那条摆放引用的片段, 否则 `INVALID_PARAMETER_RANGE` (`placementClipMismatch`); 该音轨上没有这条摆放 ⇒ `ENTITY_NOT_FOUND`; `move` 到原起点 ⇒ `CONFLICT` (`placementAlreadyAtStartTick`)。`add` 时目标音轨上已有该摆放身份 ⇒ `CONFLICT` (内容相同的重放请用 `idempotencyKey`)。⭐ `ADR-0018`: 与 `create:true` 同给时, 单次提案原子生成 `Op::AddClip` + `Op::AddClipPlacement` (此时 `placement.kind` 只能是 `add`, `move`/`remove` 报 `INVALID_PARAMETER_RANGE` / `createPlacementKindMustBeAdd`)。",
+                "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = 把 `clipId` 摆到 `trackId` 上 (键: `startTick?` 缺省 0 / `durationTicks?` 缺省 = 片段内容长度, 推不出时必填 / `placementId?` 缺省确定性派生 / `muted?`、`loopEnabled?` 缺省 false / `loopStartTick?`、`loopEndTick?` / `fadeInTicks?`、`fadeOutTicks?` 仅音频片段, MIDI 给了响亮拒绝, 之和不得超过 `durationTicks`); `loopEnabled:true` 且循环区间短于 `durationTicks` 时渲染器真的展开 N 遍。`move` = `{kind:\"move\", placementId, startTick}` 平移已有摆放; `remove` = `{kind:\"remove\", placementId}` 取走已有摆放。多余的键一律 `INVALID_PARAMETER_RANGE`; `move`/`remove` 的 `clipId` 必须等于该摆放引用的片段 (`placementClipMismatch`); 轨上没有该摆放 ⇒ `ENTITY_NOT_FOUND`; 与 `create:true` 同给时只能是 `add`",
             ),
             // ⭐ 第八批实测：这一条**遮蔽**了公共那份（`ParamSpec` 同名两份、界不同：
             // 公共 `(None, Some(256))` vs 本条 `(None, None)`）⇒ `input_schema()` 合并前
@@ -1079,7 +1088,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -1112,7 +1121,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "mappings",
                 "array",
                 false,
-                "整体替换该宏的映射列表 (T-FIX-93 同批): 每项 = {\"target\": <AutomationTarget 同形载荷, 例如 {\"TrackVolume\":{\"trackId\":\"…\"}}> , \"depth\": <目标单位振幅, #297>}。提供时在值调整的级联展开之后追加 Op::SetMacroMappings (old = 文档现值, 陈旧载荷在模型层逐项相等校验; 空数组 = 清空全部映射, 一等状态); 缺省 / null = 不动映射",
+                "整体替换该宏的映射列表: 每项 = {\"target\": <AutomationTarget 同形载荷>, \"depth\": <目标单位振幅>}。提供时在值调整的级联展开之后追加 `Op::SetMacroMappings` (old = 文档现值, 陈旧载荷在模型层逐项相等校验; 空数组 = 清空全部映射); 缺省 / null = 不动映射",
             ),
             param(
                 INCLUDE_OPS_PARAM,
@@ -1124,7 +1133,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\"applied-in-process:autoMerge\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -1138,7 +1147,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); ⭐ 鼓机键位写了但没写全的存量设备另由**一条** `code:\"incompleteDrumNoteMap\"` 逐台点名 (`devices[]` 带 `missingNoteNames` / `hint`, 非阻断、不自动修); 各条来源都不出现时 `warnings` 是**空数组**。⛔ 读数与预警**不自动改增益** —— 只是读数 + 建议; 本工具唯一会改增益的是显式 `targetLufs` (与 CLI `--loudness-target` 同一伺服, 见该实参); 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节 ⭐ 部分渲染: 可选 `startTick` / `endTick` (tick) 圈定区间 —— 真区间渲染 (计划只按区间编译、音源 seek 到起点起渲, 成本 ≈ 一次区间渲染; 起点语义: 跨起点的音符由内置引擎音源预滚追补、与全程同段一致, 起点前已结束内容的尾音不带入, 内容全部源于区间内时产物与全程同区间切片逐字节相同; 回执 `data.renderRange` 回显请求的 tick 与实际帧区间), 响度/峰值/削波统计只算区间, `targetLufs` 施加于区间; 两个实参都不给时产物逐字节不变",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径 (缺省多线程; `threads` 可指定线程数, 逐字节相同)。响应带实测读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数) / `data.truePeakDbfs` (真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= −truePeakDbfs)。⭐ 削波时 `data.warnings[]` 恰好一条 `code:\"exportClipping\"` (带 `suggestedTrimDb` 与最响的源); 可闻却 `peak == 0.0` 的源另由一条 `code:\"silentSources\"` 点名; 鼓机键位没写全的设备另由一条 `code:\"incompleteDrumNoteMap\"` 点名; 都不出现时 `warnings` 是空数组。⛔ 读数与预警不自动改增益; 唯一会改增益的是显式 `targetLufs`。逐源峰值见 `data.sources[]` (源节点输出, ⛔ 不含插入链与路由边增益); `data.peak.before/after` 是归一化前/后的浮点母带峰值 (⛔ 不是写盘文件峰值)。可选 `frames`/`durationSeconds` 指定总长度, `startTick`/`endTick` 圈定部分渲染区间, `contributions:true` 附逐轨贡献读数",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1164,13 +1173,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "targetLufs",
                 "number",
                 false,
-                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就**施加增益**去够它: 与 CLI `--loudness-target` 同一份伺服 (增益 = 目标 − 实测, 真峰值上限 −1.0 dBTP 让步, 上限回显在 `data.request.truePeakCeilingDbtp`), 施加后按 ±0.5 LU 容差复测判定。施加结果在 `data.loudness` (`appliedGainDb` / `gainBound` / `beforeGainLufs`); 已达标时增益恒为 0、产物逐字节不变。施加后仍未达标 ⇒ RENDER_FAILED, 报文带 `reasonKind` 原因分类与可执行诊断 (上限绑定时含 `suggestedTrimDb`); 不给则只报实测读数 (默认路径)。先降 crest 再补增益见 `masteringClipper`",
+                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就**施加增益**去够它: 与 CLI `--loudness-target` 同一份伺服 (增益 = 目标 − 实测, 真峰值上限 −1.0 dBTP), 施加后按 ±0.5 LU 容差复测判定; 结果在 `data.loudness`。已达标时增益恒为 0、产物逐字节不变。施加后仍未达标 ⇒ `RENDER_FAILED` (带原因分类与诊断)。不给则只报实测读数。先降 crest 再补增益见 `masteringClipper`",
             ),
             param(
                 "masteringClipper",
                 "object",
                 false,
-                "⭐ C-1 软削波段 (响度目标施加级的**增能**一级): 只与 `targetLufs` 同给时生效 (单独给 ⇒ INVALID_PARAMETER_RANGE, 没有施加级可挂)。给了目标时流程 = clipper 先按本段参数降 crest → 增益伺服补剩余增益 → 真峰值上限 −1.0 dBTP 兜底 (与母带链 / CLI 同一条 `ExportPreset::apply` 复测闭环, ⛔ 不另起第二套伺服)。对象子键全可选, 缺省 = 器件缺省: `driveDb` [0, 24] 缺省 6 (输入驱动, 决定削多少瞬态) / `ceilingDb` [−6, 0] 缺省 −1 (削波渐近线) / `kneeDb` [0, 6] 缺省 3 (软膝宽度) / `mix` [0, 1] 缺省 1 (干湿比; ⚠ 它是**响度可达性开关**不只是音质旋钮: mix<1 时有 (1−mix) 的干声绕过削波器、真峰值回落, `targetLufs` 可能物理上到不了 —— 回执 `data.loudness.reachableIntegratedLufs` 给出当前参数的可达上限, `data.loudness.reachability` 在目标越过上限时给 cause/shortfallDb/remedies) / `oversample` 1|2|4|8 缺省 4。未知子键 / 非数字 / 越界 ⇒ INVALID_PARAMETER_RANGE 并点名子键。回执: `data.loudness.masteringClipper` 回显实际参数、`data.loudness.crestReductionDb` 报削掉的 crest (dB)、`data.request.masteringClipper` 同步回显; 不给本实参 ⇒ 施加级与今天逐位一致",
+                "软削波段 (响度目标施加级的增能一级): 只与 `targetLufs` 同给时生效 (单独给 ⇒ `INVALID_PARAMETER_RANGE`)。流程 = clipper 先降 crest → 增益伺服补剩余增益 → 真峰值上限 −1.0 dBTP 兜底 (与母带链/CLI 同一条伺服)。子键全可选, 缺省 = 器件缺省: `driveDb` [0, 24] 缺省 6 / `ceilingDb` [−6, 0] 缺省 −1 / `kneeDb` [0, 6] 缺省 3 / `mix` [0, 1] 缺省 1 (⚠ mix<1 时干声绕过削波器, `targetLufs` 可能物理上到不了 —— 可达上限见回执 `data.loudness.reachableIntegratedLufs`) / `oversample` 1|2|4|8 缺省 4。未知子键/非数字/越界 ⇒ `INVALID_PARAMETER_RANGE` 并点名子键",
             ),
             param(
                 "path",
@@ -1182,7 +1191,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "frames",
                 "integer",
                 false,
-                "⭐ 显式总帧数 (整数, 1..=172800000 即 1 小时 @ 48 kHz)。缺省 = 按工程末端推导 (默认路径, 与加这个实参之前逐字节相同)。⭐ 用途: 把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐 (帧数是 `#250` 的 `C1` 判据\"两侧同 masterDigest\"的六个前置条件之一)。与 `durationSeconds` 二选一: 同给必须指向同一个帧数, 否则 INVALID_PARAMETER_RANGE。大于工程末端 ⇒ 末尾补静音; 小于 ⇒ 裁掉末端",
+                "显式总帧数 (整数, 1..=172800000)。缺省 = 按工程末端推导。用途: 与 CLI `--export-wav --wav-frames` 的帧数逐帧对齐。与 `durationSeconds` 二选一: 同给必须指向同一个帧数, 否则 `INVALID_PARAMETER_RANGE`。大于工程末端 ⇒ 末尾补静音; 小于 ⇒ 裁掉末端",
             ),
             param(
                 "durationSeconds",
@@ -1194,7 +1203,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "startTick",
                 "integer",
                 false,
-                "⭐ 部分渲染区间起点 (tick, ≥ 0, 左闭)。与 `endTick` 一起圈定区间: 真区间渲染 —— 计划只按区间帧数编译, 音源 seek 到起点再从该帧起渲 (成本 ≈ 一次区间渲染, ⛔ 不是先渲全程再切)。起点语义: 跨起点的音符由内置引擎音源预滚追补发声、与全程同段一致, 起点前已结束内容的尾音不带入; 内容全部源于区间内时产物与全程产物同区间切片逐字节相同 (TPDF 抖动同相位)。缺省 = 工程起点 (0); 只给一端时另一端取工程首/尾。回执 `data.renderRange` 回显请求的 tick 与实际帧区间; `peak` / `loudness` 等统计与 `targetLufs` 施加全部只算区间。负数 / 小数 / `startTick >= endTick` / 与 `contributions` 同给 ⇒ INVALID_PARAMETER_RANGE; 换算成帧后为空或超出工程总长 ⇒ RENDER_FAILED 且不落盘",
+                "部分渲染区间起点 (tick, ≥ 0, 左闭)。与 `endTick` 一起圈定区间: 真区间渲染 (只按区间编译、音源 seek 到起点起渲, ⛔ 不是先渲全程再切)。跨起点的音符由引擎音源预滚追补、与全程同段一致; 起点前已结束内容的尾音不带入。缺省 = 工程起点; 只给一端时另一端取工程首/尾。统计与 `targetLufs` 只算区间。负数/小数/`startTick >= endTick`/与 `contributions` 同给 ⇒ `INVALID_PARAMETER_RANGE`; 换算成帧后为空或超出工程总长 ⇒ `RENDER_FAILED` 且不落盘",
             ),
             param(
                 "endTick",
@@ -1206,7 +1215,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "contributions",
                 "boolean",
                 false,
-                "⭐ `ADR-0020`: 逐轨贡献读数。缺省 false = 不额外渲染 (`data.contributions` 不出现, 写盘字节与加这个实参之前逐字节相同)。true = 对每条非 master 轨各渲染一次\"只静音该轨\", 在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}` (两次**未归一化**母带逐样本差的 RMS / 峰值, dBFS; 逐样本无差异或渲染前已静音 ⇒ null), 口径见 `data.contributionsBasis`。⛔ 不改写盘字节; 成本 = 1 + 未静音轨数 次额外渲染。与 `startTick` / `endTick` 同给 ⇒ INVALID_PARAMETER_RANGE (贡献是全程口径, 与区间没有合成语义)",
+                "逐轨贡献读数: 缺省 false = 不额外渲染 (`data.contributions` 不出现, 写盘字节不变)。true = 对每条非 master 轨各渲染一次\"只静音该轨\", 在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}` (两次未归一化母带逐样本差的 RMS/峰值; 无差异或渲染前已静音 ⇒ null), 口径见 `data.contributionsBasis`。⛔ 不改写盘字节; 成本 = 1 + 未静音轨数次额外渲染。与 `startTick`/`endTick` 同给 ⇒ `INVALID_PARAMETER_RANGE`",
             ),
             param(
                 "threads",
@@ -1218,13 +1227,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 1024，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleTruncation` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
+                "每条采样器轨最多读多少个**不同**样本文件 (去重后); 缺省 1024, `0` = 不限。与 `yeban_load_sfz` 的同名上限同一份解析实现与缺省值。逐轨记账 (已解码 PCM 跨轨共享)。截断如实进 `data.sources[].sampler` 的记账字段, 预算在 `data.request.sampleLimits` 回显",
             ),
             param(
                 "maxSampleFrames",
                 "integer",
                 false,
-                "⭐ 每条采样器轨最多读入多少帧（合计，按**解码后**规模算）；缺省 134217728，`0` = 不限。为什么缺省是 134217728：2026-11-18 起缺省取 2^27，等于 256 MiB 单文件门以 16-bit 单声道计的帧数 ⇒ 任何过单文件门的文件必过本门，本门只约束同轨多文件合计。此前缺省 64000000 的来历：八百万帧只够 181 s 单声道，而真实乐器一件就要 4–37 M 帧（VSCO-2-CE 实测：FHornSus 12.66 M / SViolinVib 18.59 M / GM-StylePerc 36.82 M）⇒ 旧缺省下 `FHornSus` 报 `regions=29 samples=17 silent=12`，而采样器轨**没有正弦回退**，那 12 个音区就是数字静音。逐轨记账；已解码 PCM 由一次渲染内的共享池复用 ⇒ 峰值内存 ≈ 全部**不同**样本之和（本仓 12 件乐器实测 157.7 M 帧 ≈ 630 MB）",
+                "每条采样器轨最多读入多少帧 (合计, 按解码后规模算); 缺省 134217728, `0` = 不限。缺省取 2^27: 过单文件字节门的文件必过本门, 本门只约束同轨多文件合计。⚠ 采样器轨没有正弦回退: 被本门截断的音区就是数字静音, 截断如实记账在 `data.sources[].sampler`。逐轨记账; 已解码 PCM 由一次渲染内的共享池复用",
             ),
         ],
         // 这里声明的仍然是**规范表格那一行**的错误码。实现还会真实产出
@@ -1307,7 +1316,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-AUTOMATION",
         name: "yeban_edit_automation",
-        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。⭐ 遮蔽：有自动化值时用自动化值，静态值被遮蔽（不叠加）；无自动化值时退回静态值。⚠ **序列化形状** (手写/直改工程 JSON 时必读)：泳道的 `points` 是「点 id (ULID) → 点对象」的**对象映射** (`BTreeMap<EntityId, AutomationPoint>` 的序列化)，⛔ 不是数组；空泳道写作 `{}`，且 `points` 是**必需**字段、缺键即非法文档。本工具的**读响应**则把点报成 `lane.points[]` **数组** (每项带 `id`/`tick`/`value`/`curve`) —— 两种形状分属工程文件格式与工具响应格式，不要互相套用。",
+        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。⭐ 遮蔽: 有自动化值时用自动化值, 静态值被遮蔽 (不叠加); 无自动化值时退回静态值。⚠ 序列化形状: 工程文件里泳道的 `points` 是「点 id → 点对象」的**对象映射** (⛔ 不是数组) 且是必需字段; 本工具的**读响应**则把点报成 `lane.points[]` 数组 —— 两种形状不要互相套用",
         scope: Scope::AppAdmin,
         // 按**最坏情况**声明：给了 `point` 就改工程状态。只读调用在响应里如实标
         // `readOnly: true`（不给 `point` 时一位都不改）。
@@ -1323,7 +1332,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "lane",
                 "string",
                 true,
-                "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro | MidiCc (与 project.json 同一份词汇表; 不接受别名)。各泳道的固有值域 (模型 `AutomationTarget::nominal_domain`): `TrackVolume` 与 `SendGain` 为 [-60, +12] dB, `TrackPan` 为 [-1, 1], `Macro` 为 [0, 1]; `DeviceParam` 无固有值域 (模型不声明设备参数的合法区间, 由目标设备参数自身决定); `MidiCc` 点值域为 0..=127",
+                "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro | MidiCc (与 project.json 同一份词汇表; 不接受别名)。固有值域: `TrackVolume`/`SendGain` 为 [-60, +12] dB, `TrackPan` 为 [-1, 1], `Macro` 为 [0, 1], `MidiCc` 点值为 0..=127; `DeviceParam` 无固有值域 (由目标设备参数自身决定)",
             ),
             param("edgeId", "string", false, "SendGain 必需: 路由边 EntityId"),
             param(
@@ -1518,7 +1527,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-EXPORT-MIDI",
         name: "yeban_export_midi",
-        summary: "把活跃工程经 yeban-midi 的共享 SMF 映射导出成字节 (base64 回传, 只读不落盘)。⭐ `#312`: `note.syllable`（非空）真的写成 `FF 05` 歌词元事件, 条数是响应里的 `data.lyrics`（与编码器同一个判定, ⛔ 不是「想写几条」）; ⚠ `phonemes` 没有 SMF 载体（写进去等于把 SVS 对齐数据伪装成歌词）⇒ **只在工程真带 phonemes 时**进 `data.unsupported` / `data.unsupportedCounts`（键 `phonemes`, 计数 = 带 phonemes 的音符数）",
+        summary: "把活跃工程经 yeban-midi 的共享 SMF 映射导出成字节 (base64 回传, 只读不落盘)。`note.syllable` (非空) 真的写成 `FF 05` 歌词元事件, 条数是响应里的 `data.lyrics`; ⚠ `phonemes` 没有 SMF 载体 ⇒ 只在工程真带 phonemes 时进 `data.unsupported`/`data.unsupportedCounts` (计数 = 带 phonemes 的音符数)",
         scope: Scope::AppAdmin,
         // 只读：字节作为工具结果回传，工程状态一位都不改（落盘出口仍是 app CLI，D47）。
         side_effect: SideEffect::ReadOnly,
@@ -1539,7 +1548,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-IMPORT-MIDI",
         name: "yeban_import_midi",
-        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段，采纳单值头元数据并原子提交到撤销历史。⭐ [ARCH-EXT-002]：响应 `data` 逐条回报采纳结果 —— `adoptedTempoBpm` / `adoptedTimeSignature` / `adoptedTempoMap`（tick > 0 的变速映射点，形如 `{ \"<tick>\": bpm }`，与工程 `tempo_map` 同口径）/ `adoptedTimeSignatureMap`（tick > 0 的拍号映射点，形如 `{ \"<tick>\": { \"numerator\": u8, \"denominator\": u8 } }`，与工程 `time_signature_map` 同口径）/ `adoptedKeySignature`（`FF 59` 唯一 tick 0 调号 ⇒ `project.key_signature`，形如 `{ \"sharpsFlats\": i8, \"isMinor\": bool }`）/ `adoptedTrackName` / `adoptedTitle`（导体轨名或 `FF 01` 文本 ⇒ `project.title`）/ `adoptedCopyright`（`FF 02` ⇒ `project.author`）；未采纳的一律为 `null`，⛔ 不拿没做的事填个值；未采纳的原因在 `data.losses.aux_events` 对应类别的 `reason`。多轨拆分 (`splitTracks: true`) 时另报 `createdTracks`（多轨拆分新建音轨列表，每项含 `trackId`、`name`、`clipId`；未拆轨或仅单轨时为空数组）。⭐ 自动连 master：拆分新建的每条音轨都带一条到 master 的路由边（`TrackToBus`，单位增益），导入的音符无需手动接线即可出声。⭐ 歌词五桶 `data.lyricCounts`：`read` / `attached` / `dropped`（恒有 `read == attached + dropped`）＋ `nonUtf8` / `empty`（连候选都不算的两类 `FF 05`，⛔ 猜文本、⛔ 不进 `losses.aux_events`）；`orphan` 是 `dropped` 的同值旧别名，保留仅为兼容",
+        summary: "从磁盘读取 Standard MIDI File (.mid) 解析并导入进指定的空 MIDI 片段, 采纳单值头元数据并原子提交到撤销历史。响应 `data` 逐条回报采纳结果: `adoptedTempoBpm` / `adoptedTimeSignature` / `adoptedTempoMap` / `adoptedTimeSignatureMap` / `adoptedKeySignature` / `adoptedTrackName` / `adoptedTitle` / `adoptedCopyright`; 未采纳的一律为 `null`, 原因在 `data.losses.aux_events`。多轨拆分 (`splitTracks:true`) 时另报 `createdTracks`, 新建轨自动连 master (单位增益) 即可出声。歌词五桶 `data.lyricCounts`: `read` / `attached` / `dropped` (恒有 read == attached + dropped) + `nonUtf8` / `empty`",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -1585,7 +1594,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出生效种子 (用户 initialCc 覆于文件 <control> 的 set_ccN 种子之上, 未声明者 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道, 泳道值覆于种子之上); ⭐ 预算截断: 样本被文件数/帧数/单文件字节上限跳过时, data.sampleTruncation 给结构化记账 (按上限分计被跳过文件数), data.budgetSilentRegionCount 给因此静音的区域数, data.warnings[] 另点名非阻塞的 sfzSampleBudgetTruncated (命中上限名+值/跳过数/静音区域数/改法: maxSampleFiles/maxSampleFrames 提高或 0=不限, 单文件上限须切小或转码); ⭐ 可选 initialCc: 用户初始 CC 并入同一种子表播种 (覆盖文件 set_ccN), 普查改按生效种子算、响应回显 data.initialCc; ⭐ T-FIX-278 滤波器类型: SFZ 规范的 23 个 fil_type 值全部可装载 (此前 12 个值直接让整份乐器解析失败), data.regionDetails[] 逐区域给出 filterType / filterImplemented / filterGainDb; 本仓尚未实现的 8 个类型 (bpf_1p, brf_1p, lpf_2p_sv, hpf_2p_sv, bpf_2p_sv, brf_2p_sv, comb, pink) 不影响装载, 但 data.unsupportedFilterTypes[] 按类型点名 (regionCount/regions/supported:false/hint), 这些区域的滤波直通 (采样与包络照常); 已实现 pkf_2p / lsh / hsh / peq, 其中 lsh/hsh/peq 的增益由 fil_gain (dB) 承载; 规范外未知 fil_type 仍响亮拒绝",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId。`data.silentRegionCount` 是引擎摊平口径的静音区域数 (缺样本 + 内建静音), `builtinSilentRegionCount` 是其中的 *silence 子集。⭐ 样本文件读不到时 status 仍是 success, 但 `data.warnings[]` 点名 `sfzSamplesUnreadable` —— 采样器轨没有正弦回退, 绑轨即整轨静音。⭐ CC 门控普查 `data.ccGateCensus`: 生效种子下不可发声的区域分计, 非 0 时 `warnings[]` 另点名 `sfzCcGatedSilence` (需注入 MidiCc 泳道校准)。⭐ 样本被预算上限跳过时 `data.sampleTruncation` 结构化记账 + `warnings[]` 点名 `sfzSampleBudgetTruncated`。可选 `initialCc` 并入同一种子表播种 (覆盖文件 `set_ccN`)。⭐ SFZ 规范的 23 个 `fil_type` 值全部可装载; 本仓尚未实现的 8 个类型在 `data.unsupportedFilterTypes[]` 点名, 这些区域滤波直通",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
@@ -1616,7 +1625,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 1024, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份, Salamander Grand 641 份), 旧缺省 512 会把大乐器的音区层/力度层**砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断是响亮报告的 (`sampleReadsTruncated` + `sampleTruncation` 结构化记账 + `sfzSampleBudgetTruncated` 警告 + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
+                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 1024, `0` = 不限。真实大库一件乐器就有上百份不同样本, 缺省太小会把音区/力度层砍掉 —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断响亮报告 (`sampleTruncation` 记账 + `sfzSampleBudgetTruncated` 警告 + 逐条 `sampleFailures`), 预算在响应 `sampleLimits` 回显",
             ),
             param(
                 "maxSampleFrames",
@@ -1628,7 +1637,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "initialCc",
                 "object",
                 false,
-                "用户初始 CC (控制器号 → 值, 如 `{\"1\": 64}`): 与文件 `<control> set_ccN` 并入**同一张** CC 种子表 (用户值覆盖文件值), 装载时播种。控制器号与值合法域均为 0..=127: 形状层拒非整数/负数/>255, 域层拒 128..=255 (与预制 `cc` 段共用同一份校验), 越界响亮拒绝、⛔ 不钳位。给了它时 `data.ccGateCensus` 按生效种子值算 (不再是全 0 口径), 响应回显 `data.initialCc` (登记时的那份; 同内容复用时以首次登记为准)。不给 ⇒ 行为与读数与改前逐字一致",
+                "用户初始 CC (控制器号 → 值, 如 `{\"1\": 64}`): 与文件 `<control> set_ccN` 并入同一张 CC 种子表 (用户值覆盖文件值), 装载时播种。控制器号与值合法域均为 0..=127, 越界响亮拒绝、⛔ 不钳位。给了它时 `data.ccGateCensus` 按生效种子算, 响应回显 `data.initialCc`",
             ),
         ],
         errors: &[
@@ -1790,7 +1799,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-PROPOSALS",
         name: "yeban_list_proposals",
-        summary: "列出当前**未合并**的提案（只读）: 每条给 `proposalId` / `branch` / `kind` / `title` / `description` / `status` / `baseCommit` / `headCommit` / `mergeCommit` / `createdAt` / `resolvedAt` / `resolution` / `opCount` / `opKinds`（= `Proposal::summary()` 的全部键，外加 1 起的 `index`）。没有未合并的提案 ⇒ `proposals: []` ＋ 一句 `note`（⛔ 不报错）。⭐ 未合并提案随工程容器落盘（`proposals.json` 段，T-FIX-43）: 保存后重开工程（或进程重启后重新打开）会恢复它们，`proposalId` 不变、可继续 merge / reject; 已合并 / 已拒绝的记录只在会话内留痕（合并事实由 `history.dag` 的合并提交承担）。用它可以在提案还没 merge 时重新找到 `proposalId`。",
+        summary: "列出当前**未合并**的提案 (只读): 每条给 `proposalId` / `branch` / `kind` / `title` / `status` / `opCount` / `opKinds` 等 (键全集见 outputSchema)。没有未合并的提案 ⇒ `proposals: []` + 一句 `note` (⛔ 不报错)。⭐ 未合并提案随工程容器落盘: 保存后重开工程 (或进程重启后重新打开) 会恢复它们, `proposalId` 不变、可继续 merge / reject。用它在提案还没 merge 时重新找到 `proposalId`",
         scope: Scope::AppAdmin,
         // 只读：读 `domain.proposals`，不改工程、不落盘（`Plan::ListProposals` 的 `apply` 原样回传）。
         side_effect: SideEffect::ReadOnly,
@@ -1805,7 +1814,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SCENE-LAUNCH",
         name: "yeban_launch_scene",
-        summary: "把一次**量化场景启动**交给宿主：`sceneId` 必须是当前工程里的场景；成功响应的 `data.queued` 只代表**已交给宿主**（宿主在量化点调用引擎），⛔ 不代表已生效；`data.applied` 恒为 `false`。生效读数用 `yeban_query_engine_state` 的 `engine.sceneLaunchesApplied`。⚠ 形态 B（独立 stdio 进程）不托管引擎 ⇒ 响亮报 `CONFLICT`（`reason:\"engineUnavailable\"`），⛔ 不静默成功；本 crate 不依赖 `yeban-engine`（依赖方向门 `FORBIDDEN`），引擎由形态 A 的 `yeban-app` 经宿主 attach 口接上。",
+        summary: "把一次**量化场景启动**交给宿主: `sceneId` 必须是当前工程里的场景; 成功响应的 `data.queued` 只代表**已交给宿主** (宿主在量化点调用引擎), ⛔ 不代表已生效; `data.applied` 恒为 `false`。生效读数用 `yeban_query_engine_state` 的 `engine.sceneLaunchesApplied`。⚠ 独立 stdio 进程形态不托管引擎 ⇒ 响亮报 `CONFLICT` (`reason:\"engineUnavailable\"`), ⛔ 不静默成功",
         scope: Scope::AppAdmin,
         // 最坏情况声明：它不改工程文档（`Plan::mutates_project = false`），但会改
         // 会话/引擎运行态 ⇒ `dryRun` 必须短路。标成 `ProjectState` 与
@@ -1829,7 +1838,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-EXPORT-STEMS",
         name: "yeban_export_stems",
-        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (保留 Unicode 字母/数字与 `._-`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`, 总长封顶 255 字节、超限按整字截断) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`CONFLICT` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"`); 有喂入且能到达主总线的总线/分组轨出**总线 stem** (喂入求和经其自身通路在主总线上的实际贡献, 与源轨同一条克隆隔离渲染); 无通路/无内容的轨点名 `\"notASourceNode\"` / `\"emptyTrack\"`。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。⭐ 某轨样本峰值**超过 0 dBFS** 时，该轨回执条件出现 `peakWarning`（`code: peakAboveFullScale`，带 `peak` / `peakDbfs` / `truePeakDbfs` 与说明）：32-bit float 文件原样容纳这些样本、不削波，但转 24-bit 整数会硬削平 ⇒ 先压电平再转；不超限的轨**没有**这个键。⭐ 同理，某轨上有第二台（及之后）带通道条名字的设备、其通道条参数被来源规则忽略时，该轨回执条件出现 `stripWarning`（与母带 `data.warnings[]` 里 `code: ignoredStripDevices` 的那条同一判定、同一形状，带 `count` / `devices[]`（槽位 / 设备 / 被忽略参数）与修法 `hint`）；没有遮挡的轨**没有**这个键；`dryRun` 预览与真实落盘的读数逐字相同。成功落盘时同时在 `outDir` 写一份机器可读 manifest (`stems-manifest.json`: 每条 stem 的 `trackId` / 轨名 / 文件名 / `sha256` / 字节数等, 响应带 `manifestFileName` / `manifestPath`), 供进程退出后核对与续跑判定; `trackIds` 给空数组 ⇒ `INVALID_PARAMETER_RANGE` 响亮拒绝 (省略才是全部)。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写 (manifest 也不写).",
+        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (母带那条 24-bit 整数 + TPDF 路径不变)。实现 = 克隆工程 → 只留目标轨可闻 → 复用母带渲染器 ⇒ 代价是 **N + 1** 次整工程长度渲染。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 false (保轨间电平关系)。文件名由轨名清洗生成, 同一工程两次导出逐字节同名。⭐ 试听状态 (mute/solo) **不参与**批次选取, 每条如实回报 `sourceMute`/`sourceSolo`。⚠ 目标文件已在盘上 ⇒ 整批拒绝 (`CONFLICT` + `conflictingPaths`), 不隐式改名不覆盖; 主总线不出文件 (在 `data.skippedTracks[]` 点名); 无通路/无内容的轨同样点名。⚠ 写盘中途失败是响亮的 `IO_ERROR` (带 `completedStems`/`failedTrackId`/`orphanedFiles`/`resumeFrom`)。某轨峰值超过 0 dBFS 时该轨回执带 `peakWarning` (float 文件不削波, 但转 24-bit 会硬削平)。成功时在 `outDir` 写 `stems-manifest.json` 供核对与续跑; `trackIds` 给空数组 ⇒ `INVALID_PARAMETER_RANGE` (省略才是全部)。`dryRun` 只给测量读数, 一个字节都不写；同轨多台通道条设备遮挡时该轨行条件带 `stripWarning` (`ignoredStripDevices`)。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1858,7 +1867,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-INSTRUMENTS",
         name: "yeban_list_instruments",
-        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`silentRegionCount` 是**引擎摊平口径**（缺样本 ＋ 内建静音，与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义），`builtinSilentRegionCount` 是其中 `sample=*silence` 的子集；`count` = 条目数；`mode` = `session`；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。⭐ B7 目录模式：给 `directory` 时改扫磁盘目录（`mode` = `directory`，⛔ 不查 registry、⛔ 不装载）：递归列出目录内每件 `.sfz`（`path` / `regions` / `sha256` / `declaredSampleCount` / `presentSampleCount` / `missingSampleCount`，解析失败的条目带 `parseError` 点名），并回汇总计数（`scannedFileCount` / `sampleFileCount` / `unsupportedFileCount` ＋ 例子 / `parseFailureCount`）；根目录有 `manifest.json` 时附 `manifest` 逐文件 stat 对账（每件乐器的 `presentCount` / `missingCount`）。目录不存在或不是目录 ⇒ `IO_ERROR` 响亮失败；空目录 ⇒ `count: 0` ＋ `note` 点名（⛔ 不报错）。",
+        summary: "列出**本会话已装载**的 SFZ 乐器。响应 `data.instruments[]`: 每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` 等装载读数; 空 registry ⇒ `instruments: []` + 一句 `note` (⛔ 不报错)。⚠ registry 是**会话运行态** (不落盘): 打开/关闭工程或重启进程后为空, `instrumentId` 只能当本会话句柄。装乐器走 `yeban_load_sfz`; 绑轨走 `yeban_edit_notes` 的 `insertDevice` (sampler)。⭐ 目录模式: 给 `directory` 时改扫磁盘目录 (⛔ 不查 registry、⛔ 不装载): 递归列出每件 `.sfz` 的区域数与样本在缺计数, 解析失败的条目带 `parseError` 点名, 根目录有 `manifest.json` 时附逐文件对账; 目录不存在 ⇒ `IO_ERROR`; 空目录 ⇒ `count: 0` + `note` (⛔ 不报错)",
         scope: Scope::AppAdmin,
         // 只读：枚举 `domain.sfz_instruments` 或扫磁盘目录，不改工程、不装载、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -1880,7 +1889,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SCAN-PLUGINS",
         name: "yeban_scan_plugins",
-        summary: "枚举本机可用的 VST3 插件（ADR-0069 的扫描与验证，类比 Logic 的 auval 准入）：扫描 YEBAN_VST3_PATHS 环境变量给出的目录与平台标准路径，另加 `paths` 给出的额外目录；每个候选都尝试打开、枚举类、逐个实例化探针（控制器／兼容类不作组件探针，单列说明），失败逐个记原因、不中断扫描、不进可用列表。响应 data.plugins[]：每条给 path / className / classId / kind（instrument / effect / unknown）/ usable / error（失败时才有）；失败项也在列表里，但 usable 为假。只读：不改工程、不装载进工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活，不证明它在真实工程里出声；真实商业插件兼容性未经验证。",
+        summary: "枚举本机可用的 VST3 插件: 扫描 `YEBAN_VST3_PATHS` 给出的目录与平台标准路径, 另加 `paths` 给出的额外目录; 每个候选都尝试打开、枚举类、逐个实例化探针, 失败逐个记原因、不中断扫描、不进可用列表。响应 `data.plugins[]` 每条给 path / className / classId / kind / usable / error (失败时)。只读: 不改工程、不落盘。扫描只证明插件能打开、能实例化、能通过验证激活, 不证明它在真实工程里出声",
         scope: Scope::AppAdmin,
         // 只读枚举：Host::scan 只读目录、打开库、实例化探针，不写工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -1903,7 +1912,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LOAD-PLUGIN",
         name: "yeban_load_plugin",
-        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上（ADR-0069）：先用宿主打开 `pluginPath`、按 `pluginId` 指名类（不给则按 `kind` 取首个同类）、做验证激活，失败则整个调用失败、不写提案；成功后以缺省提案挂一台外部设备（name 为插件名，latency_samples 为实例上报值，plugin 绑定记 path 与 class），slot_index 为该轨 devices 长度（追加到末尾）。`kind` 缺省 `instrument`（挂 ExternalInstrument；音源优先级：非旁通的已宿主外部乐器胜过引擎合成器与采样器绑定）；`kind` 为 `effect` 时挂 ExternalEffect（渲染时包在轨源输出之外，首个非旁通带绑定效果器胜出，其余仍进 externalPlugins 收据）。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律，不另设直写路。带绑定但加载失败的轨在渲染时响亮失败。测试桩 stub:sine（乐器）／stub:gain（效果器）可用（仅测试夹具）。",
+        summary: "验证加载一个 VST3 插件并经提案路径把它挂到指定轨道上: 先用宿主打开 `pluginPath`、按 `pluginId` 指名类 (不给则按 `kind` 取首个同类)、做验证激活, 失败则整个调用失败、不写提案; 成功后以缺省提案挂一台外部设备 (追加到该轨 devices 末尾)。`kind` 缺省 `instrument` (挂 ExternalInstrument); `kind:\"effect\"` 挂 ExternalEffect。缺省建提案; `autoMerge` 为真时当场落 main, 与 `yeban_edit_notes` 同一条提案纪律。带绑定但加载失败的轨在渲染时响亮失败。测试桩 `stub:sine`/`stub:gain` 可用 (仅测试夹具)",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -1957,7 +1966,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-ARA-BIND",
         name: "yeban_ara_bind",
-        summary: "把一段音频 wav 绑定到 ARA 插件（ARA2 宿主原型）：plan 只做实参校验 + wav 解码，apply 打开 ARA 会话（模块加载、ARA 类名配对、文档图构建）并以 sessionId 登记进会话 registry。绑定不改工程、不落盘（会话运行态；打开 / 关闭工程整体重置）；sessionId 只在本会话有效。pluginId 不给则取首个 ARA 类；tempoBpm 缺省 120；loopIterations 缺省 1（每次迭代各建一个 playback region）；muted 缺省 false（静音摆放不建 region）。MIDI 轨不能挂 ARA（构造期响亮失败，须先渲染成音频）。",
+        summary: "把一段音频 wav 绑定到 ARA 插件 (ARA2 宿主原型): plan 只做实参校验 + wav 解码, apply 打开 ARA 会话并以 sessionId 登记进会话 registry。绑定不改工程、不落盘 (会话运行态; 打开/关闭工程整体重置); sessionId 只在本会话有效。pluginId 不给则取首个 ARA 类; tempoBpm 缺省 120; loopIterations 缺省 1; muted 缺省 false。MIDI 轨不能挂 ARA (构造期响亮失败, 须先渲染成音频)",
         scope: Scope::AppAdmin,
         // 只动会话态 registry（与 load_sfz 同款口径）：不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2025,7 +2034,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-ARA-RENDER",
         name: "yeban_ara_render",
-        summary: "把已绑定 ARA 会话离线渲染成 WAV（ARA2 宿主原型 companion API）：按块调处理器 process() 渲染整段，编成 32-bit float WAV 后原子落盘（`ARCH-SEC-004` 同目录临时文件 + fsync + rename）。回帧数、峰值、非零帧数、字节数与文档 blob 的字节数与 SHA-256（blob 字节本身不进工程 JSON，CAS 口径）。渲染仅支持 44100Hz 片段（PitchNet 渲染器固定 44100Hz），非 44100 片段响亮失败、不静默变调或截断。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。",
+        summary: "把已绑定 ARA 会话离线渲染成 WAV (ARA2 宿主原型): 按块调处理器渲染整段, 编成 32-bit float WAV 后原子落盘。回帧数、峰值、非零帧数、字节数与文档 blob 的字节数与 SHA-256 (blob 字节本身不进工程 JSON)。渲染仅支持 44100Hz 片段, 非 44100 片段响亮失败、不静默变调或截断。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`",
         scope: Scope::AppAdmin,
         // 写盘（渲染 WAV）；不改工程文档。
         side_effect: SideEffect::Disk,
@@ -2055,7 +2064,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-ARA-UNBIND",
         name: "yeban_ara_unbind",
-        summary: "解绑并释放一个已绑定的 ARA 会话（T-FIX-25 / 审计 #24.5）：从会话 registry 移除该 sessionId，插件实例持有的文档图 / 模块资源随之释放。只动会话态，不改工程、不落盘；解绑后该 id 立即失效（query / render / 再次 unbind 都报会话不存在）。会话数已达上限 MAX_ARA_SESSIONS 时，用本工具回收旧会话即可继续绑定。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`。",
+        summary: "解绑并释放一个已绑定的 ARA 会话: 从会话 registry 移除该 sessionId, 插件实例的资源随之释放。只动会话态, 不改工程、不落盘; 解绑后该 id 立即失效。会话数达上限时用本工具回收旧会话即可继续绑定。会话不存在 ⇒ `INVALID_PARAMETER_RANGE` + `araSessionNotFound`",
         scope: Scope::AppAdmin,
         // 只动会话态 registry（与 ara_bind 同款）：不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2073,7 +2082,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SVS-SUBMIT",
         name: "synthesize_singing",
-        summary: "把乐谱提交到伶人 SVS 服务（只提交、不含推理）：`parts` 数组每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`，与 `POST /v1/synthesize` 的 part 形状一致；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`，`lyric` 为 `''` 或 `'<SP>'` 表示休止；`takes` 缺省 1（1..=8）。返回 `{jobId, status, partsTotal, takesTotal, serviceUrl}`；提交失败（连不上、4xx/5xx）直接报 `IO_ERROR`，⛔ 不返回空任务。配置：服务地址 = 实参 `service_url` > 环境变量 `YEBAN_SVS_URL` > 缺省 `http://127.0.0.1:8000`；API key **只**从环境变量 `YEBAN_SVS_API_KEY` 读，⛔ 不是工具参数、⛔ 不进工程文件、⛔ 不出现在响应里。只支持 `http`（`std` 客户端无 TLS，`https` 在配置解析时就响亮拒绝，见 `domain::svs` 模块头）。`dryRun` 只校验参数、不提交。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约（服务文档与调用方都按此名），见注册判据的例外说明。",
+        summary: "把乐谱提交到伶人 SVS 服务 (只提交、不含推理): `parts` 数组每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`; `score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`, `lyric` 为 `''` 或 `'<SP>'` 表示休止; `takes` 缺省 1 (1..=8)。返回 `{jobId, status, partsTotal, takesTotal, serviceUrl}`; 提交失败直接报 `IO_ERROR`, ⛔ 不返回空任务。配置: 服务地址 = 实参 `service_url` > 环境变量 `YEBAN_SVS_URL` > 缺省 `http://127.0.0.1:8000`; API key **只**从环境变量 `YEBAN_SVS_API_KEY` 读 (⛔ 不是工具参数、不进工程文件、不出现在响应里)。只支持 `http` (`https` 在配置解析时响亮拒绝)。`dryRun` 只校验参数、不提交。⚠ 工具名不带 `yeban_` 前缀 (跨线契约名)",
         scope: Scope::AppAdmin,
         // 外部副作用（服务端建任务）：不改工程、不落盘，但 `dryRun` 必须短路它。
         side_effect: SideEffect::External,
@@ -2082,7 +2091,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "parts",
                 "array",
                 true,
-                "乐谱 part 数组（至少 1 项），每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`；`score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`；`lyric` 为 `''` 或 `'<SP>'` = 休止；`takes` 缺省 1（1..=8）；未知 `model` 由服务端响亮拒绝，本层不另抄一份模型白名单",
+                "乐谱 part 数组 (至少 1 项), 每项 `{label, score, voice_id, model?, variant?, takes?, seeds?, options?}`; `score = {bpm, language?, notes: [{lyric, midi, start_s, dur_s, tie?, phoneme?}]}`; `lyric` 为 `''` 或 `'<SP>'` = 休止; `takes` 缺省 1 (1..=8); 未知 `model` 由服务端响亮拒绝",
             ),
             param(
                 "service_url",
@@ -2096,12 +2105,17 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SVS-JOB",
         name: "svs_job",
-        summary: "查 SVS 任务状态、取音频与回执（`want` 缺省 `status`）。`status`：返回 `{jobId, status, partsTotal, takesTotal, partsCompleted, takesCompleted, error}`，`failed` 时 `error` 原文照带。`receipt`：返回服务端回执全文（每遍 seed、耗时、对齐数组、门记录）。`audio`：按 `part` + `take` 取一遍 wav（多 part 多遍时每次取一遍，⛔ 不替用户混音）；取前先查状态：任务失败 ⇒ `IO_ERROR` + 服务端 `error` 原文（门耗尽同属这一条，⛔ 不返回静音 wav），未完成 ⇒ `IO_ERROR`（`jobNotCompleted`）。取回的 wav 写稳定暂存路径（`temp_dir/yeban-svs/{job}_{part}_take{n}.wav`，重复取同一遍覆盖同一文件）；给了 `trackId` 就按放置语义落轨（走 `yeban_import_audio` 同一机制：`license` 此时必填且须在白名单内，`gainDb` 缺省 0.0，`startTick` 缺省 0），不给 `trackId` 只返回暂存路径、不落轨。放置语义：SoulX 按乐谱时钟贴轨（起点 = `startTick`，回执实测偏差只作校验，超 100 ms 的条目进 `deviationWarnings`，⛔ 不自动移位）；VocalRender 按回执实测起点贴（首个非休止音节的 `measured_onset_s` 对齐 `startTick`，其余按实测相对位置落位）；休止（`lyric` 为 `''` 或 `'<SP>'` 的 SP 条目）放置时忽略。取回的 wav 作为**普通音频片段**走现有音频片段机制，⛔ 不另设 SVS 片段类型；导入时重采样到工程采样率是渲染路径已有的行为（`yeban_render_master` 的音频片段路径）。⚠ 工具名**不带** `yeban_` 前缀：名字由 Phase 1 规格定，是跨线契约，见注册判据的例外说明。",
+        summary: "查 SVS 任务状态、取音频与回执 (`want` 缺省 `status`)。`status`: 返回任务进度字段, `failed` 时 `error` 原文照带。`receipt`: 返回服务端回执全文。`audio`: 按 `part` + `take` 取一遍 wav (⛔ 不替用户混音); 取前先查状态: 任务失败 ⇒ `IO_ERROR` + 服务端 `error` 原文 (⛔ 不返回静音 wav), 未完成 ⇒ `IO_ERROR` (`jobNotCompleted`)。取回的 wav 写稳定暂存路径; 给了 `trackId` 就按放置语义落轨 (走 `yeban_import_audio` 同一机制: `license` 此时必填且须在白名单内, `gainDb` 缺省 0.0, `startTick` 缺省 0), 不给只返回暂存路径。放置语义: SoulX 按乐谱时钟贴轨 (回执实测偏差只作校验, 超 100 ms 进 `deviationWarnings`, ⛔ 不自动移位); VocalRender 按回执实测起点贴; 休止条目放置时忽略。取回的 wav 作为**普通音频片段**走现有音频片段机制。⚠ 工具名不带 `yeban_` 前缀 (跨线契约名)",
         scope: Scope::AppAdmin,
         // 按最坏情况：`want=audio` + `trackId` 时改工程（与 `yeban_edit_automation` 同款口径）。
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("job_id", "string", true, "SVS 任务 id（服务端生成的 16 位十六进制；本层只接受字母 / 数字 / `_` / `-`，防 URL 路径与暂存文件名越界）"),
+            param(
+                "job_id",
+                "string",
+                true,
+                "SVS 任务 id（服务端生成的 16 位十六进制；本层只接受字母 / 数字 / `_` / `-`，防 URL 路径与暂存文件名越界）",
+            ),
             param(
                 "want",
                 "string",
@@ -2165,7 +2179,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-PRESETS",
         name: "yeban_list_presets",
-        summary: "列出可用的预制（夜半原生预制机制一期）：系统预制（`assets/presets/` 发行表，6 件草案）+ 用户预制库（`~/Music/Audio Music Apps/Patches/`，抄 Logic）。只读，不要求活跃工程；`kind` 缺省 `all`；`instrument` 按乐器 slug 过滤。响应 `presets[]` 每条给 `id` / `name` / `kind`（system/user）/ `instrument` / `instrumentSfz` / `scope` / `draft` / `default`（该乐器的默认预制）/ `macros`（宏名）/ `sends`；坏文件逐条进 `skipped`，不拦整个列表。",
+        summary: "列出可用的预制: 系统预制 (发行表) + 用户预制库。只读, 不要求活跃工程; `kind` 缺省 `all`; `instrument` 按乐器 slug 过滤。响应 `presets[]` 每条给 `id` / `name` / `kind` / `instrument` / `scope` / `default` (该乐器的默认预制) 等; 坏文件逐条进 `skipped`, 不拦整个列表",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ReadOnly,
         params: &[
@@ -2187,11 +2201,16 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-APPLY-PRESET",
         name: "yeban_apply_preset",
-        summary: "把一份预制应用到指定音轨（夜半原生预制机制一期，提案路径）：通道条与四件落成 `Preset: …` 设备（确定性身份），发送只改已有边的增益（不增边、不删边、不建 Aux），宏只调已有的宏位（超出跳过并报告），乐器绑定变化时写 `SetTrackSampler`，最后写 `track.preset`（`previous` = 应用前快照）。`categories` 缺省全开（instrument/strip/effects/sends/macros），未知类名 ⇒ `INVALID_PARAMETER_RANGE`。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。预制查不到 ⇒ `ENTITY_NOT_FOUND`，响亮报错，不静默回干声。预制带 `cc` 段（初始 CC）且本次含 instrument 类别时，提案落地后把该乐器按 `yeban_load_sfz` 同一条路登记进会话并播种，回执带 `initialCcSeeded`（生效种子以登记为准）。",
+        summary: "把一份预制应用到指定音轨 (提案路径): 通道条与四件落成 `Preset: …` 设备 (确定性身份), 发送只改已有边的增益 (不增边、不删边、不建 Aux), 宏只调已有的宏位 (超出跳过并报告), 乐器绑定变化时写 `SetTrackSampler`, 最后写 `track.preset`。`categories` 缺省全开 (instrument/strip/effects/sends/macros), 未知类名 ⇒ `INVALID_PARAMETER_RANGE`。跳过的发送/宏写进提案描述。缺省建提案; `autoMerge` 为真时当场落 main, 与 `yeban_edit_notes` 同一条提案纪律。预制查不到 ⇒ `ENTITY_NOT_FOUND`。预制带 `cc` 段且本次含 instrument 类别时, 落地后按 `yeban_load_sfz` 同一条路登记乐器并播种初始 CC, 回执带 `initialCcSeeded`",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("trackId", "string", true, "目标音轨 EntityId（26 字符 ULID）"),
+            param(
+                "trackId",
+                "string",
+                true,
+                "目标音轨 EntityId（26 字符 ULID）",
+            ),
             param(
                 "presetId",
                 "string",
@@ -2214,7 +2233,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -2234,11 +2253,16 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SAVE-PRESET",
         name: "yeban_save_preset",
-        summary: "把当前轨状态另存为一份用户预制（夜半原生预制机制一期）：从轨上的 `Preset:` 设备收通道条与四件、从 `SendToAux` 边收发送、取轨宏数组，写进用户预制库（`~/Music/Audio Music Apps/Patches/<ulid>.json`，抄 Logic），标识 `user:<ulid>`。不改工程、不动提交图谱；要进工程包须保存工程（导出缺省带出用户预制）。名重复 ⇒ `CONFLICT`（`overwrite: true` 才覆盖同一标识的文件）。单份超 64 KiB ⇒ 拒绝保存。轨未绑定已知乐器 ⇒ `INVALID_PARAMETER_RANGE`。若本会话登记过该轨绑定文件的装载且带 `initialCc`，初始 CC 一并捕获进预制的 `cc` 段（按内容摘要匹配），之后 apply 能重播同一份种子。",
+        summary: "把当前轨状态另存为一份用户预制: 从轨上的 `Preset:` 设备收通道条与四件、从 `SendToAux` 边收发送、取轨宏数组, 写进用户预制库, 标识 `user:<ulid>`。不改工程、不动提交图谱; 要进工程包须保存工程。名重复 ⇒ `CONFLICT` (`overwrite:true` 才覆盖)。单份超 64 KiB ⇒ 拒绝保存。轨未绑定已知乐器 ⇒ `INVALID_PARAMETER_RANGE`。本会话登记过该轨乐器装载且带 `initialCc` 时, 初始 CC 一并捕获进预制的 `cc` 段",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
-            param("trackId", "string", true, "来源音轨 EntityId（26 字符 ULID）"),
+            param(
+                "trackId",
+                "string",
+                true,
+                "来源音轨 EntityId（26 字符 ULID）",
+            ),
             // ⭐ D46 收口（实现侧）：与 `yeban_import_audio` 的 `name` 同一条纪律 ——
             // 契约 `minLength: 1`，空名字必须在参数层被拒（`build_save_preset` 在
             // plan 层同样拒空名；两道口径一致）。
@@ -2274,12 +2298,22 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-PRESET-BYPASS",
         name: "yeban_preset_bypass",
-        summary: "开关一条轨的预制旁通（夜半原生预制机制一期，提案路径）：`bypassed: true` = 恢复 `previous` 快照（通道条、四件、发送、宏），只旁通处理、不换乐器；没有快照 ⇒ 响亮拒绝。`bypassed: false` = 按当前 `preset_id` 重新应用该预制（预制带 `cc` 段时同 apply 口径重播初始 CC 种子）。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。",
+        summary: "开关一条轨的预制旁通 (提案路径): `bypassed:true` = 恢复 `previous` 快照 (通道条、四件、发送、宏), 只旁通处理、不换乐器; 没有快照 ⇒ 响亮拒绝。`bypassed:false` = 按当前 `preset_id` 重新应用该预制 (带 `cc` 段时重播初始 CC 种子)。缺省建提案; `autoMerge` 为真时当场落 main",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("trackId", "string", true, "目标音轨 EntityId（26 字符 ULID）"),
-            param("bypassed", "boolean", true, "true = 旁通（恢复应用前快照，含乐器绑定：应用前没绑采样器就清掉），false = 取消旁通（重新应用当前预制）"),
+            param(
+                "trackId",
+                "string",
+                true,
+                "目标音轨 EntityId（26 字符 ULID）",
+            ),
+            param(
+                "bypassed",
+                "boolean",
+                true,
+                "true = 旁通（恢复应用前快照，含乐器绑定：应用前没绑采样器就清掉），false = 取消旁通（重新应用当前预制）",
+            ),
             param(
                 INCLUDE_OPS_PARAM,
                 "boolean",
@@ -2290,7 +2324,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -2310,7 +2344,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SONG-OVERVIEW",
         name: "get_song_overview",
-        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `frequency_clash` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。`format` 缺省 `\"json\"`（§8.2 JSON）；给 `\"html\"` 返回单文件自包含 HTML 报告字符串（与 JSON 同一份数，由 `yeban-dsp` 的唯一渲染器生成）。共享缓存（线 H）：同一会话内同一工程、同一组分析参数的重复调用只算一次，JSON 响应带 `cacheHit`（首次计算 `false`、命中共享缓存 `true`；工程、参数或 provider 变化后回到 `false`）；HTML 与 JSON 共用同一份计算，但其 `data` 是字符串、不带该字段。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。`scoreOnly: true`（T-FIX-62 / P2-C）只要谱面那一份：跳过整曲渲染与音频面分析、不要求 provider，响应带 `scoreOnly: true`。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
+        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要 (字段集见 outputSchema; 归一化指标保留 2 位小数, 响度与频段能量保留 1 位小数)。`resolution` 缺省 `\"bar\"` (一小节一行), 给 `\"beat\"` 则一拍一行; `profile` = 曲风预设 (缺省 `default`), `expected_levels` = 段落期望张力等级表; `format` 缺省 `\"json\"`, 给 `\"html\"` 返回单文件自包含 HTML 报告字符串 (同一份数)。共享缓存: 同一会话内同工程同参数的重复调用只算一次, JSON 响应带 `cacheHit`。只读: 不改工程、不落盘; 需要活跃工程与宿主注入的 provider (未注入 ⇒ `CONFLICT` + `providerUnavailable`, ⛔ 不返回空总览)。`scoreOnly:true` 只要谱面那一份: 跳过整曲渲染与音频面分析、不要求 provider。⚠ 工具名不带 `yeban_` 前缀 (跨线契约名)",
         scope: Scope::AppAdmin,
         // 只读：取 provider 已算好的总览做映射，不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2329,13 +2363,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "profile",
                 "string",
                 false,
-                "曲风预设档（Phase 2，设计稿 §3.6）：缺省 `default`（均衡流行摇滚，权重 w_L 0.30 / w_D 0.20 / w_P 0.20 / w_H 0.15 / w_O 0.15）；`orchestral`（管弦/原声叙事：音区与和声权重调高，[0.25, 0.15, 0.30, 0.20, 0.10]）；`electronic`（电子/律动：响度与密度权重调高，[0.35, 0.30, 0.10, 0.10, 0.15]）。方差自适应：某特征全曲标准差 σ ≤ 0.05 时该权重衰减 50% 并按比例重分配给活跃特征。其它值 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"unknownProfile\"`，`accepted: [\"default\", \"orchestral\", \"electronic\"]`）",
+                "曲风预设档: 缺省 `default` (均衡流行摇滚); `orchestral` (管弦/原声叙事: 音区与和声权重调高); `electronic` (电子/律动: 响度与密度权重调高)。方差自适应: 某特征全曲标准差 σ ≤ 0.05 时该权重衰减 50% 并按比例重分配。其它值 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"unknownProfile\"`, `accepted:[\"default\",\"orchestral\",\"electronic\"]`)",
             ),
             param(
                 "expected_levels",
                 "object",
                 false,
-                "段落期望张力等级表（Phase 2，设计稿 §3.5）：对象，键 = 段落名（如 `Chorus`），值 = 期望张力等级 1–5 的整数（例 `{\"Chorus\": 5}`）。期望带中心 = 0.1 + 0.2 × (等级 − 1)，半宽 0.15；实际张力超出带边界超过 0.15 的小节进 `envelope_deviation` 异常。空对象 `{}` 合法 = 无标注。非对象 ⇒ 协议层 `-32602`（注册表类型先拒）；对象内非整数值、越界等级 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"invalidExpectedLevels\"`）。等级只活在本次分析请求里，不写工程",
+                "段落期望张力等级表: 对象, 键 = 段落名 (如 `Chorus`), 值 = 期望张力等级 1–5 的整数 (例 `{\"Chorus\": 5}`)。实际张力偏离期望带过远的小节进 `envelope_deviation` 异常。空对象 `{}` 合法 = 无标注。非对象 ⇒ 协议层拒绝; 对象内非整数值/越界等级 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"invalidExpectedLevels\"`)。等级只活在本次分析请求里, 不写工程",
             ),
             param(
                 "include_png_path",
@@ -2347,13 +2381,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "format",
                 "string",
                 false,
-                "响应形态：\"json\"（缺省，§8.2 JSON）或 \"html\"（单文件自包含 HTML 报告字符串，与 JSON 同一份数）；其它值 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"unknownFormat\"`，`accepted: [\"json\", \"html\"]`）；与 `include_png_path: true` 同给 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"includePngPathRequiresJson\"`）",
+                "响应形态: `\"json\"` (缺省) 或 `\"html\"` (单文件自包含 HTML 报告字符串, 与 JSON 同一份数); 其它值 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"unknownFormat\"`); 与 `include_png_path:true` 同给 ⇒ 同码 (`reason:\"includePngPathRequiresJson\"`)",
             ),
             param(
                 "scoreOnly",
                 "boolean",
                 false,
-                "只算谱面总览（缺省 false；T-FIX-62 / P2-C，与 app CLI 的 `--overview-score-only` 同一模式）：true 时跳过整曲渲染与音频面分析，只由谱面（音符/段落/速度）算出同构的 §8.2 总览 —— 大工程不再被音频面数据撑大，且不要求宿主注入 provider。响应带 `scoreOnly: true` 且 `provider` 报 `score-only`、`cacheHit` 恒 `false`（不走共享缓存）。`profile` / `expected_levels` 是全量模式的分析参数，本模式下不参与计算（仍被校验，非法值照样响亮拒绝）",
+                "只算谱面总览 (缺省 false, 与 app CLI 的 `--overview-score-only` 同一模式): true 时跳过整曲渲染与音频面分析, 只由谱面算出同构总览 —— 不要求宿主注入 provider。响应带 `scoreOnly:true`, `cacheHit` 恒 `false` (不走共享缓存)。`profile`/`expected_levels` 本模式下不参与计算 (仍被校验, 非法值照样响亮拒绝)",
             ),
         ],
         errors: &[
@@ -2365,7 +2399,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-OTCP-CORRECT",
         name: "yeban_correct_pitch",
-        summary: "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap（`ADR-0070`，`yeban-otcp` 驱动子进程走 OTCP 协议；单 clip；只改音高、不改时值）。提交后立即回 `{job_id, status: \"running\", server: {build, instanceId, self_test}, notes_before: {count}, receipt_path}`，校正在后台线程跑；用 `yeban_correct_pitch_job` 轮询。源音频须是单声道（立体声 ⇒ `otcpStereoUnsupported`）；轨道已挂 OpenTune 外部效果绑定 ⇒ `otcpDoubleCorrection`（驱动与效果二选一，⛔ 不双重校正）。`mode` 缺省 `snapNotes`，v1 只执行它（`regenerate` / `notesOnly` 须先在无头环境探针验证，见设计稿 §9，给了即响亮拒绝）。`autoMerge` 缺省 `false`：只出提案；`true` 时交付当场合并（像 `yeban_load_plugin`）。`predictOnly`（缺省 `false`）：真跑一遍导入→F0→调音→读谱，只返回预测音符表，⛔ 不导出、不交付（与通用 `dryRun` 不同——`dryRun` 只校验参数、不提交）。失败模态：`RENDER_FAILED` 时大声失败、什么都不写、⛔ 不回落干声（设计稿 §6）。自测门：该构建无记录时提交前先跑一次自测（合成夹具），`fail` 只注解错误、⛔ 不拦任务。响应里每处都带服务端块（构建提交 + 自测记录）。",
+        summary: "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap (`ADR-0070`; 单 clip; 只改音高、不改时值)。提交后立即回 `{job_id, status:\"running\", server, notes_before, receipt_path}`, 校正在后台线程跑; 用 `yeban_correct_pitch_job` 轮询。源音频须是单声道 (立体声 ⇒ `otcpStereoUnsupported`); 轨道已挂 OpenTune 外部效果绑定 ⇒ `otcpDoubleCorrection` (二选一, ⛔ 不双重校正)。`mode` 缺省 `snapNotes`, v1 只执行它 (其余给了即响亮拒绝)。`autoMerge` 缺省 false = 只出提案; `predictOnly` (缺省 false) = 真跑一遍只返回预测音符表, ⛔ 不导出、不交付。失败时 `RENDER_FAILED` 大声失败、什么都不写、⛔ 不回落干声",
         scope: Scope::AppAdmin,
         // 外部副作用（启动 OpenTune 子进程建任务）：不改工程、不落盘，但 `dryRun` 必须短路它。
         side_effect: SideEffect::External,
@@ -2374,12 +2408,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             // `definitions.ExtensionToolArguments.$defs.yeban_correct_pitch` 逐字段一致
             // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
             // 双向核对属性集合 / 类型 / 必填集合）。
-            param(
-                "trackId",
-                "string",
-                true,
-                "目标音轨 id（26 字符 ULID）",
-            ),
+            param("trackId", "string", true, "目标音轨 id（26 字符 ULID）"),
             param(
                 "clipId",
                 "string",
@@ -2404,12 +2433,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "校正模式：`snapNotes`（缺省，v1 只执行它）；`regenerate` / `notesOnly` 须先探针验证，给了即 `INVALID_PARAMETER_RANGE`",
             ),
-            param(
-                "tuningHz",
-                "number",
-                false,
-                "A4 频率 Hz（缺省 440）",
-            ),
+            param("tuningHz", "number", false, "A4 频率 Hz（缺省 440）"),
             param(
                 "autoMerge",
                 "boolean",
@@ -2441,13 +2465,16 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-OTCP-JOB",
         name: "yeban_correct_pitch_job",
-        summary: "查音高校正任务状态；成功后经提案换资产。`running`：回 `{job_id, status, notes_before, receipt_path}`。`succeeded`：回 `{job_id, status, notes_before, notes_after, measurement: {median_cents, p90_cents, detection_rate, hybrid_mode, backend}, asset: {hash, path}, server, receipt_path}`，同时按提交时的 `autoMerge` 出提案（`false` 只出提案，`true` 当场合并）；响应带 `proposal` 块（`id` / `commitModel`）。`failed`：回 `{job_id, status, error: {code, detail, block?, self_test?}}`，`code` 是固定 `reason`（`otcpRenderFailed` 等，见 `yeban-otcp` 的 `REASONS`）；`RENDER_FAILED` 时什么都没写、源片段原样。任务收据住在控制根的任务目录下（`receipt.json`），进程重启后仍可查。",
+        summary: "查音高校正任务状态; 成功后经提案换资产。`running`: 回 `{job_id, status, notes_before, receipt_path}`。`succeeded`: 回音符表与测量读数 (`measurement` / `asset` / `server`), 同时按提交时的 `autoMerge` 出提案 (false 只出提案, true 当场合并), 响应带 `proposal` 块。`failed`: 回 `{job_id, status, error:{code, detail, …}}`, `code` 是固定 `reason`; `RENDER_FAILED` 时什么都没写、源片段原样。任务收据住在控制根的任务目录下, 进程重启后仍可查",
         scope: Scope::AppAdmin,
         // 按最坏情况：成功后交付走提案路径改工程（与 `svs_job` 同款口径）。
         side_effect: SideEffect::ProjectState,
-        params: &[
-            param("job_id", "string", true, "校正任务 id（提交时返回的 `job_id`）"),
-        ],
+        params: &[param(
+            "job_id",
+            "string",
+            true,
+            "校正任务 id（提交时返回的 `job_id`）",
+        )],
         errors: &[
             ErrorCode::InvalidParameterRange,
             ErrorCode::IoError,
@@ -2461,7 +2488,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-OTCP-NOTES",
         name: "yeban_correct_pitch_notes",
-        summary: "读某片段最近一次校正的检测音符表（只读）。给 `trackId` + `clipId`：取该片段最近一次校正任务的音符表；给 `contentId`：取该 OpenTune 内容的任务音符表。返回 `{contentId, tuningHz, totalCount, notes: [{index, startContentSec, endContentSec, detectedMidi, targetMidi, offsetCents, corrected}]}`。⚠ 这是 OpenTune **检测到**的音符，不是夜半乐谱（探针实测会过分割：16 音乐句检出 22 音，含 40 ms 碎片）；无任务时报 `otcpNotesUnavailable`，⛔ 不返回空表。v1 不启动服务端现算音符（须已有任务收据）。",
+        summary: "读某片段最近一次校正的检测音符表 (只读)。给 `trackId` + `clipId` 取该片段最近一次校正任务的音符表; 给 `contentId` 取该 OpenTune 内容的任务音符表。返回 `{contentId, tuningHz, totalCount, notes:[…]}`。⚠ 这是 OpenTune **检测到**的音符, 不是夜半乐谱 (探针会过分割, 含短碎片); 无任务时报 `otcpNotesUnavailable`, ⛔ 不返回空表。v1 不现算音符 (须已有任务收据)",
         scope: Scope::AppAdmin,
         // 只读：读任务收据里的音符表，不改工程、不落盘、不启动服务端。
         side_effect: SideEffect::ReadOnly,
@@ -2499,7 +2526,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("trackId", "string", true, "被移动的音轨 EntityId（26 字符 ULID）"),
+            param(
+                "trackId",
+                "string",
+                true,
+                "被移动的音轨 EntityId（26 字符 ULID）",
+            ),
             param(
                 "newIndex",
                 "integer",
@@ -2516,7 +2548,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "autoMerge",
                 "boolean",
                 false,
-                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+                "[ADR-0029]: 缺省 false = 只建提案 (`pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `merge:{...}`)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
             ),
             param(
                 "mergeCommitMessage",
@@ -2535,7 +2567,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-COMPARE-SNAPSHOT",
         name: "compare_song_snapshots",
-        summary: "返回两版 Songmap 快照的 A/B Diff（设计稿 §8.3，Phase 2）：逐小节差值（Δ = B − A，归一化指标 2 位小数、响度与频段能量 1 位小数，与 §8.2 同口径）+ 新增/删除小节 + 异常与重复条目的增减 + 结构摘要变化（高潮小节移动、动态范围差值）。快照 = `get_song_overview` 的 `data`（`SongOverview`，schema 1.1）原样：先取修改前的快照 A，改谱后再取当前版快照 B，两份原样传进来。只比小节级：任一快照含拍级行 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"snapshotMismatch\"`，`field: \"resolution\"`）；两版 `schema_version` / `band_definitions_hz` 不等 ⇒ 同码（`field` 点名哪一项）。快照形状非法（缺字段、类型错、行键重复、小节号为 0）⇒ `INVALID_PARAMETER_RANGE`（`reason: \"invalidSnapshot\"`）。只读：入参的纯函数，不要求活跃工程、不改工程、不落盘。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §11 定，是跨线契约名，见注册判据的例外说明。",
+        summary: "返回两版 Songmap 快照的 A/B Diff: 逐小节差值 (Δ = B − A, 小数口径与 `get_song_overview` 同) + 新增/删除小节 + 异常与重复条目的增减 + 结构摘要变化。快照 = `get_song_overview` 的 `data` 原样: 先取修改前快照 A, 改谱后再取当前版 B, 两份原样传进来。只比小节级: 任一快照含拍级行 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"snapshotMismatch\"`); 两版 `schema_version`/`band_definitions_hz` 不等 ⇒ 同码; 快照形状非法 ⇒ 同码 (`reason:\"invalidSnapshot\"`)。只读: 纯函数, 不要求活跃工程、不改工程、不落盘。⚠ 工具名不带 `yeban_` 前缀 (跨线契约名)",
         scope: Scope::AppAdmin,
         // 只读：对两份入参快照做纯算术，不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -2562,7 +2594,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-PHASE-ALIGN-AUTO",
         name: "yeban_auto_align_tracks",
-        summary: "自动相位对齐（手动层第二层）：对两条源轨 solo 渲染后做归一化互相关，测目标轨相对基准轨的延时（`lagSamples`，正 = 目标轨晚到），再把补偿经提案路径写进已有的手动延时机制（只延时先到的轨，正延时，无前视；极性反转时同时翻目标轨 `invert_polarity`）。`apply` 缺省 `true` = 建提案；`false` = 只测量、不建提案。测量取最响 5 秒窗（粗 8× 抽稀 + 全速 ±16 采样精修 + 抛物线亚采样插值）；置信度 |ρ| ≥ 0.7 高 / ≥ 0.4 中 / 其余低；|ρ| < 0.3 响亮拒绝应用（`lowCorrelation`）。新延时 = 旧延时 + 补偿，超出 ±4800 采样响亮拒绝（`compensationOutOfRange`），⛔ 不部分应用。`autoMerge` 缺省 `false`：只出提案；`true` 时交付当场合并（与 `yeban_load_plugin` 同一条提案纪律）。⚠ Logic Pro 没有自动互相关对齐（只有轨延时 + Sample Delay 插件，手动层已镜像）：测量设计（归一化互相关、基准轨约定、搜索窗、置信度门）抄自动对齐插件的通行做法，补偿侧抄 Logic 轨延时语义（正 = 更晚）。测量由宿主注入的 provider 提供（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回假测量）。",
+        summary: "自动相位对齐: 对两条源轨 solo 渲染后做归一化互相关, 测目标轨相对基准轨的延时 (`lagSamples`, 正 = 目标轨晚到), 再把补偿经提案路径写进已有的手动延时机制 (只延时先到的轨, 正延时, 无前视; 极性反转时同时翻目标轨 `invert_polarity`)。`apply` 缺省 true = 建提案; false = 只测量。置信度 |ρ| < 0.3 响亮拒绝应用 (`lowCorrelation`); 新延时超出 ±4800 采样响亮拒绝 (`compensationOutOfRange`), ⛔ 不部分应用。`autoMerge` 缺省 false; true 时交付当场合并。测量由宿主注入的 provider 提供 (未注入 ⇒ `CONFLICT` + `providerUnavailable`, ⛔ 不返回假测量)",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -2624,7 +2656,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-DRUM-GENERATE",
         name: "yeban_generate_drum_pattern",
-        summary: "鼓机一期：按风格预置生成鼓型并落成目标轨上的 MIDI 片段（提案路径，`autoMerge` 可一次调用落 main）。风格 = 出厂 14 预置（trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock + v2 新增 jazz/funk/rnb/hiphop；前 10 个数据改编自 groove 仓 MIT pattern 并经调优，新 4 个源数据取自 theory GENRES 注册表）；三旋钮 complexity（密度/鬼音）/ intensity（力度）/ swingPermille（摇摆，缺省取风格定值）+ seed（同种子同参数逐字节可复现）。`trackId` 缺省 ⇒ 新建鼓轨；目标轨尚无音源时按风格族装默认鼓组（原声族 = Virtuosity Drums SFZ 采样、电子族 = 合成鼓机（808/909 系配方逐风格定值、13 音色带声像）），已有音源则沿用。ratchet/hat roll 在音符事件层展开，无新片段类型；生成片段可在编曲区与钢琴卷帘继续编辑。风格不存在 ⇒ STYLE_NOT_FOUND（回执带 availableStyles）。",
+        summary: "鼓机一期: 按风格预置生成鼓型并落成目标轨上的 MIDI 片段 (提案路径, `autoMerge` 可一次调用落 main)。风格 = 出厂 14 预置 (trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock/jazz/funk/rnb/hiphop); 三旋钮 complexity (密度/鬼音) / intensity (力度) / swingPermille (摇摆, 缺省取风格定值) + seed (同种子同参数逐字节可复现)。`trackId` 缺省 ⇒ 新建鼓轨; 目标轨尚无音源时按风格族装默认鼓组, 已有音源则沿用。ratchet/hat roll 在音符事件层展开。风格不存在 ⇒ `STYLE_NOT_FOUND` (回执带 `availableStyles`)",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -2680,12 +2712,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "缺省 true = 最后一小节落 fill（风格带 fill 时）；false = 全程主 pattern",
             ),
-            param(
-                "startTick",
-                "integer",
-                false,
-                "摆放起始 tick（缺省 0）",
-            ),
+            param("startTick", "integer", false, "摆放起始 tick（缺省 0）"),
             param(
                 INCLUDE_OPS_PARAM,
                 "boolean",

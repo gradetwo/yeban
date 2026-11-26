@@ -253,7 +253,7 @@ fn note_object() -> Value {
 fn device_object() -> Value {
     json!({
         "type": "object",
-        "description": "设备定义。`kind` 必须是 `InternalEffect` 且 `bypassed:false` 才会武装引擎内置效果器；`params` 的已识别名字见 items（名字大小写不敏感）。⚠ 拼错的 `name`（与某个已识别拼写的编辑距离 ≤ 2，例如 `eq_low_gian`）会被**响亮拒绝**（`INVALID_PARAMETER_RANGE` / `unknownEffectParam`，带最近邻建议）；距离更远的未识别名字仍会被存储但**不生效**，并在提案响应的 `warnings[]` 与读回的 `inserts[].unrecognisedParams` 里出现",
+        "description": "设备定义。`kind` 必须是 `InternalEffect` 且 `bypassed:false` 才会武装引擎内置效果器; `params` 的已识别名字见 items (名字大小写不敏感)。⚠ 拼错的 `name` (与已识别拼写编辑距离 ≤ 2) 会被**响亮拒绝** (`INVALID_PARAMETER_RANGE` / `unknownEffectParam`, 带最近邻建议); 更远的未识别名字仍会被存储但**不生效**, 并在 `warnings[]` 与 `inserts[].unrecognisedParams` 里出现",
         "required": [
             "deviceId",
             "name",
@@ -524,7 +524,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setNotePitchShape",
-                "整体替换一个已有音符的**音高形状**（弯音曲线 ＋ 滑音）。⚠ 载荷**只带新值**：`newPitchBendCurve` 与 `newSlide` **全部必填**；两个旧值由服务端从**当前文档**读（与 `setNoteExpression` 同一条纪律），把 `oldPitchBendCurve` / `oldSlide` 写进来是**未知键**、响亮拒绝。弯音\"无\"**只有**空数组一种拼法（`newPitchBendCurve: []`，⛔ 无 `null`），滑音用 `newSlide: null` 清空；两者同时存在时**相加**（`ADR-0012` D9）。操作对象上的多余键被响亮拒绝",
+                "整体替换一个已有音符的**音高形状** (弯音曲线 ＋ 滑音)。⚠ 载荷**只带新值**: `newPitchBendCurve` 与 `newSlide` **全部必填**; 旧值由服务端从当前文档读, 写 `oldPitchBendCurve` / `oldSlide` 进来是**未知键**、响亮拒绝。弯音\"无\"只有空数组一种拼法 (`newPitchBendCurve: []`, ⛔ 无 `null`), 滑音用 `newSlide: null` 清空; 两者同时存在时**相加**。多余键被响亮拒绝",
                 &[
                     "kind",
                     "noteId",
@@ -546,7 +546,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setPitchBendPoint",
-                "增删改一个音符的**单个**弯音点：`cents` 是整数 ⇒ 在 `tick` 处插入或改值；`cents` 是 `null` ⇒ 删除该 tick 的点（该 tick 本来没有点 ⇒ `ENTITY_NOT_FOUND` / `pitchBendPointNotFound`）。`tick` 是**绝对** tick（与 `pitchBendCurve` 的键同一坐标系），`cents` ∈ ±1200（与 `add` 的 `pitchBendCurve` 同一份值域）。⚠ 载荷**只带新值**：旧值由服务端从**当前文档**读，写 `oldCents` 进来是**未知键**、响亮拒绝。要整条替换曲线仍用 `setNotePitchShape`。操作对象上的多余键被响亮拒绝",
+                "增删改一个音符的**单个**弯音点: `cents` 是整数 ⇒ 在 `tick` 处插入或改值; `cents` 是 `null` ⇒ 删除该 tick 的点 (本来没有 ⇒ `ENTITY_NOT_FOUND` / `pitchBendPointNotFound`)。`tick` 是**绝对** tick, `cents` ∈ ±1200。⚠ 载荷**只带新值**: 旧值由服务端从当前文档读, 写 `oldCents` 进来是**未知键**、响亮拒绝。要整条替换曲线用 `setNotePitchShape`。多余键被响亮拒绝",
                 &["kind", "noteId", "tick", "cents"],
                 json!({
                     "kind": kind("setPitchBendPoint"),
@@ -622,7 +622,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "humanizeClip",
-                "整片段人性化：对顶层 `clipId` 那条 MIDI 片段里**每个**音符加确定性的微时值（`microTimingTicks` ±`timeJitterTicks`）与力度（±`velocityJitter`）抖动。有效种子按轨派生：同（`seed`，轨）⇒ 永远同一份\"手感\"（splitmix64 哈希，跨进程稳定；一步撤销），不同轨即使音符相同、seed 相同，抖动序列也不同（消除跨轨碰撞；2026-11-11 行为变化：旧均匀路径的抖动值因此改变，op 契约不变）。`model = \"structured\"` 时走结构化抖动 v2：高斯分布 + AR(2) 自回归（缺省 α = 0.8，偏平滑）+ 相邻音阻尼（跳变 ≤ 生效幅度 / 4）",
+                "整片段人性化: 对顶层 `clipId` 那条 MIDI 片段里**每个**音符加确定性的微时值 (±`timeJitterTicks`) 与力度 (±`velocityJitter`) 抖动。有效种子按轨派生: 同 (`seed`, 轨) ⇒ 永远同一份\"手感\" (跨进程稳定; 一步撤销), 不同轨抖动序列也不同。`model = \"structured\"` 时走结构化抖动 v2 (高斯分布 + 自回归平滑 + 相邻音阻尼)",
                 &["kind", "seed"],
                 json!({
                     "kind": kind("humanizeClip"),
@@ -652,7 +652,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "velocityShapeClip",
-                "整片段力度塑形：把顶层 `clipId` 那条 MIDI 片段里**每个**音符的力度按声部/角色映进目标带（舒适区 `comfortMin`–`comfortMax`，缺省 65–95；重音 `accentMin` 起，缺省 101；幽灵音 `ghostMin`–`ghostMax`，缺省 35–50）。声部按同 `start_tick` 的和弦组内音高排位：最低音 = bass、最高音 = melody、中间 = 内声部、单音 = melody；重音 = 力度已 ≥ `accentMin` 或旋律音落在拍点（`start_tick % 960 == 0`）；幽灵音 = 力度 ≤ `ghostMax`（拍点上的幽灵音仍是幽灵音，不升重音）。`strengthPermille` 缺省 1000 = 全额；`jitter` 是带内 seed 抖动（缺省 ±3，沿 tick 序阻尼）。有效种子按轨派生：同（`seed`，轨）⇒ 永远同一份塑形；一步撤销。五端点必须满足完整次序链 `1 ≤ ghostMin ≤ ghostMax ≤ comfortMin ≤ comfortMax < accentMin ≤ 127`（模型 `VelocityShapeParams::validate`），不满足 ⇒ `INVALID_PARAMETER_RANGE`",
+                "整片段力度塑形: 把顶层 `clipId` 那条 MIDI 片段里**每个**音符的力度按声部/角色映进目标带 (舒适区 `comfortMin`–`comfortMax` 缺省 65–95; 重音 `accentMin` 起, 缺省 101; 幽灵音 `ghostMin`–`ghostMax` 缺省 35–50)。声部按同 `start_tick` 和弦组内音高排位: 最低音 = bass、最高音 = melody、中间 = 内声部、单音 = melody; 重音 = 力度已 ≥ `accentMin` 或旋律音落在拍点; 幽灵音 = 力度 ≤ `ghostMax` (拍点上的幽灵音仍是幽灵音)。`strengthPermille` 缺省 1000 = 全额; `jitter` 是带内 seed 抖动 (缺省 ±3)。有效种子按轨派生: 同 (`seed`, 轨) ⇒ 永远同一份塑形; 一步撤销。五端点必须满足完整次序链 `1 ≤ ghostMin ≤ ghostMax ≤ comfortMin ≤ comfortMax < accentMin ≤ 127`, 不满足 ⇒ `INVALID_PARAMETER_RANGE`",
                 &["kind", "seed"],
                 json!({
                     "kind": kind("velocityShapeClip"),
@@ -704,7 +704,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "chordStaggerClip",
-                "整片段和弦错开：把顶层 `clipId` 那条 MIDI 片段里同 `start_tick` 的和弦组内各音按 `direction` 依次延迟（`up` 缺省 = 低音先、高音后；`down` = 高音先、低音后）。首音锚定原微时值，组内总微时值严格递增；每和弦实际步长 = `staggerTicks` ±25%（seed 决定）；`jitterTicks` 是每音附加 seed 抖动（缺省 0，组内阻尼、单调钳制）。经 `microTimingTicks`（±240 钳制）写出，单音组不动；有效种子按轨派生：同（`seed`，轨）⇒ 永远同一份错开；一步撤销",
+                "整片段和弦错开: 把顶层 `clipId` 那条 MIDI 片段里同 `start_tick` 的和弦组内各音按 `direction` 依次延迟 (`up` 缺省 = 低音先、高音后; `down` = 高音先、低音后)。首音锚定, 组内总微时值严格递增; 每和弦实际步长 = `staggerTicks` ±25% (seed 决定); `jitterTicks` 是每音附加 seed 抖动 (缺省 0)。经 `microTimingTicks` (±240 钳制) 写出, 单音组不动; 有效种子按轨派生: 同 (`seed`, 轨) ⇒ 永远同一份错开; 一步撤销",
                 &["kind", "seed", "staggerTicks"],
                 json!({
                     "kind": kind("chordStaggerClip"),
@@ -763,7 +763,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setParam",
-                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`，或 `slotIndex` + `paramName` 按名寻址）。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；其余多余键被静默忽略",
+                "写**静态**参数: `lane:\"TrackVolume\"` (dB) / `lane:\"TrackPan\"` (-1.0..=1.0) / `lane:\"DeviceParam\"` (另需 `slotIndex` + `paramIndex`, 或 `slotIndex` + `paramName` 按名寻址)。目标音轨缺省是工具顶层的 `trackId`, 也可逐条点名另一条音轨; 设备参数的 `value` 必须是离线渲染器真的消费的参数 (名字不在白名单 ⇒ `paramNotSupported`, ⛔ 不静默写入)。本形态的多余键被静默忽略 (与其余形态不同)",
                 &["kind", "lane", "value"],
                 json!({
                     "kind": kind("setParam"),
@@ -785,7 +785,7 @@ pub fn ops_items() -> Value {
                     },
                     "paramName": {
                         "type": "string",
-                        "description": "仅 `lane:\"DeviceParam\"`：按名寻址的参数名（大小写不敏感，按目标设备自己的 `params` 定下标；与 `paramIndex` 并存时必须指向同一个参数，不一致 ⇒ `paramNameIndexMismatch`；名字不存在 ⇒ `paramNameNotFound` 并列出可用名全集；同名参数多个 ⇒ `paramNameAmbiguous`）。落盘的模型目标仍是纯下标；成功响应在 `data.resolvedParams[]` 逐条回显命中的 `resolvedParamName` 与下标（按下标寻址同样回显）",
+                        "description": "仅 `lane:\"DeviceParam\"`: 按名寻址的参数名 (大小写不敏感, 按目标设备自己的 `params` 定下标; 与 `paramIndex` 并存时必须指向同一个参数, 不一致 ⇒ `paramNameIndexMismatch`; 名字不存在 ⇒ `paramNameNotFound` 并列出可用名全集; 同名多个 ⇒ `paramNameAmbiguous`)。落盘的模型目标仍是纯下标; 成功响应在 `data.resolvedParams[]` 回显命中的 `resolvedParamName` 与下标",
                     },
                     "value": {
                         "type": "number",

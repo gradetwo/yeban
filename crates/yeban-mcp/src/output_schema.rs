@@ -357,11 +357,7 @@ fn commit_model_schema() -> Value {
     json!({
         "type": "string",
         "enum": crate::domain::COMMIT_MODEL_VALUES.to_vec(),
-        "description": "本次调用的**提交模型**（`ADR-0032`）：`proposal` = 工程头没动，必须再调 \
-            `yeban_merge_proposal` 才落盘；`proposalAutoMerged` = 同一次调用里已当场合并 \
-            （`arguments.autoMerge`），⛔ 不需要也不必再合并；`direct` = 当场生效、没有\"下一步去合并\"；\
-            `none` = 本次不产生任何提交（⛔ 不等于\"没有副作用\" —— 是否写盘请读 `path` / \
-            `sideEffect` / `appliedInOfflineRender`，提交数请读 `commitDelta` / `committed`）。"
+        "description": "本次调用的**提交模型** (`ADR-0032`): `proposal` = 工程头没动, 必须再调 `yeban_merge_proposal` 才落盘; `proposalAutoMerged` = 同一次调用里已当场合并, 不必再合并; `direct` = 当场生效、没有下一步; `none` = 本次不产生任何提交 (⛔ 不等于\"没有副作用\" —— 是否写盘读 `path` / `sideEffect` / `appliedInOfflineRender`, 提交数读 `commitDelta` / `committed`)"
     })
 }
 
@@ -1520,20 +1516,7 @@ fn propose_section() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_propose_section 成功响应的 data",
-            "缺省形状：`pendingMerge: true` / `projectUnchanged: true` / \
-             `mergeTool: \"yeban_merge_proposal\"`（提案不改工程，`merge` 前另给一次\
-             `projectDigest` 作为未变证据）。\
-             ⚠ **两种成功形状**（按 `autoMerge` 参数分支，[ADR-0029] D3 两段式回执）：\
-             `autoMerge: true` 时**多出** `autoMerged`（恒 `true`）与 `merge`（逐字 = \
-             `yeban_merge_proposal` 正常合并的全字段回执，其形状见该工具的 outputSchema；\
-             ⚠ 它**不含**嵌套 `commitModel`，顶层那一份只注入一次），并且**翻值**：\
-             `pendingMerge` → `false`、`projectUnchanged` → `false`、`mergeTool` → \
-             `\"applied-in-process:autoMerge\"`、`proposal` 换成合并后的投影\
-             ⇒ 这三个键⛔ 不用 `const`，`autoMerged`/`merge` ⛔ 不进 `required`。\
-             `proposal` 缺省是**摘要**（14 键），仅 `includeOps: true` 时多一个 `ops` 键\
-             ⇒ `ops` 只进 `properties`。`willCreate` 是 `summarize_ops` 从**同一份** `ops` \
-             数出来的八键派生清单（六条清单恒发，逐键见名册）。`warnings[]` 与 `edit_notes` 同一份 plan 阶段读数\
-             （`code` / `hint` 逐条），可能为空数组。",
+            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` / `mergeTool:\"yeban_merge_proposal\"`。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执, 不含嵌套 `commitModel`), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`proposal` 缺省是**摘要**, 仅 `includeOps:true` 时多一个 `ops` 键。`warnings[]` 与 `yeban_edit_notes` 同一份 plan 阶段读数, 可能为空数组",
         ),
         &[
             "created",
@@ -1571,25 +1554,7 @@ fn edit_notes() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_edit_notes 成功响应的 data",
-            "缺省形状：`pendingMerge: true` / `projectUnchanged: true`（本调用**永远**先写隔离提案分支）；\
-             `proposal` 是**摘要**（不含逐条 `ops`，除非 `includeOps: true`）。\
-             ⚠ **两种成功形状**（按 `autoMerge` 参数分支，[ADR-0029] D3，口径与 \
-             `yeban_propose_section` 逐字相同）：`autoMerge: true` 时**多出** `autoMerged`（恒 `true`）\
-             与 `merge`（= `yeban_merge_proposal` 正常合并的全字段回执，不含嵌套 `commitModel`），\
-             并且翻值：`pendingMerge` → `false`、`projectUnchanged` → `false`、`mergeTool` → \
-             `\"applied-in-process:autoMerge\"`、`proposal` 随合并后状态\
-             ⇒ 这三键⛔ 不用 `const`，`autoMerged`/`merge` ⛔ 不进 `required`。\
-             `warnings[]` 逐条报出**非阻断**问题：`code:\"unrecognisedEffectParam\"` = 引擎不认但又不是\
-             拼错的设备参数名（带 `deviceName` / `paramName` / `knownParams` —— \
-             后者逐字列出引擎认的全部拼写，可当场改拼写重发）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
-             一条没有任何可发声内容的源轨上（主总线与有可发声上游的总线轨不报）（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
-             两者都可能为空数组。\
-             ⭐ 第五份报告 A-3：`resolvedParams` 逐条回显批里 `setParam`（`DeviceParam` 泳道）\
-             的命中（⛔ 不进 `required`，但**恒带**：没有设备参数写入时为空数组，\
-             与 `warnings` 等数组字段同口径）—— \
-             元素含编译期命中的 `trackId` / `slotIndex` / `paramIndex` / \
-             `resolvedParamName`（与 `yeban_edit_automation` 回执同名同义，\
-             按名写对与写错从此可辨）。",
+            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` (本调用永远先写隔离提案分支); `proposal` 是**摘要** (不含逐条 `ops`, 除非 `includeOps:true`)。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`warnings[]` 逐条报非阻断问题: `code:\"unrecognisedEffectParam\"` (引擎不认又不是拼错的参数名, 带 `knownParams` 全集, 可当场改拼写重发) / `code:\"deviceOnSilentTrack\"` (设备装到无可发声内容的源轨上); 两者都可能为空数组。`resolvedParams` 逐条回显批里 `setParam` 的命中 (恒带, 无写入时为空数组)",
         ),
         &[
             "created",
@@ -1643,14 +1608,7 @@ fn set_macro() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_set_macro 成功响应的 data",
-            "宏调整展开为级联自动化 op 后走**同一条**提案路径 ⇒ 形状与 `yeban_edit_notes` \
-             逐字相同（键集合与两条分支语义见该工具的 schema，[ADR-0029]）：缺省 \
-             `pendingMerge: true` / `projectUnchanged: true`；`autoMerge: true` 时多出 \
-             `autoMerged` / `merge` 并翻值（`mergeTool: \"applied-in-process:autoMerge\"`）。\
-             `willCreate` 与另两个提案类工具**共用同一份名册**（生产者同一个 `summarize_ops`）：\
-             宏展开的是自动化类 op ⇒ 六条清单**恒为空数组**，但八个键恒在（⛔ 不是「可缺省」）；\
-             `opKinds` 反映宏展开的自动化形态；`warnings[]` 同一路算子，宏调用\
-             通常为空数组。`proposal` 缺省是摘要，仅 `includeOps: true` 时多 `ops` 一键。",
+            "宏调整展开为级联自动化 op 后走**同一条**提案路径 ⇒ 形状与 `yeban_edit_notes` 相同: 缺省 `pendingMerge:true` / `projectUnchanged:true`; `autoMerge:true` 时多出 `autoMerged` / `merge` 并翻值。`willCreate` 与另两个提案类工具共用同一份名册: 宏展开的是自动化类 op ⇒ 六条清单恒为空数组, 但八个键恒在; `opKinds` 反映宏展开的自动化形态; `warnings[]` 宏调用通常为空数组。`proposal` 缺省是摘要, 仅 `includeOps:true` 时多 `ops` 一键",
         ),
         &[
             "created",
@@ -1736,10 +1694,7 @@ fn merge_shape_properties() -> Value {
 fn merge_shape_roster() -> Value {
     json!({
         "type": "object",
-        "description": "`autoMerge: true` 时**才出现**的那一键（缺省形状里没有 \
-            `autoMerged` / `merge` 两键），逐字等于 `yeban_merge_proposal` 成功响应的 `data` \
-            （除 `commitModel` —— 派发器只注入外层）。⚠ 这一槽**只有一种形状**：合并的是\
-            本次调用刚创建的提案，`apply_merge` 的幂等短形状在这条路径上不可达 ⇒ 七个键恒发。",
+        "description": "`autoMerge:true` 时**才出现**的那一键 (缺省形状里没有 `autoMerged` / `merge` 两键), 逐字等于 `yeban_merge_proposal` 成功响应的 `data` (除 `commitModel`)。这一槽只有一种形状: 合并的是本次刚创建的提案, 幂等短形状不可达 ⇒ 七个键恒发",
         "required": [
             "merged",
             "alreadyMerged",
@@ -1758,9 +1713,7 @@ fn merge_proposal() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_merge_proposal 成功响应的 data",
-            "正常合并：`commit` 是**多父合并提交**（`parents` 从图谱读回），`baseCommitMoved` 说明基线是否移动过。\
-             ⚠ 幂等合并（`alreadyMerged: true`）返回**更短**的形状：只有 `merged` / `alreadyMerged` / \
-             `appliedOps` / `proposal`，没有 `commit` / `baseCommitMoved` / `projectDigest` ⇒ 因此这三个键不在 `required` 里。",
+            "正常合并: `commit` 是**多父合并提交**, `baseCommitMoved` 说明基线是否移动过。⚠ 幂等合并 (`alreadyMerged:true`) 返回**更短**的形状: 只有 `merged` / `alreadyMerged` / `appliedOps` / `proposal` ⇒ `commit` / `baseCommitMoved` / `projectDigest` 不在 `required` 里",
         ),
         &["merged", "alreadyMerged", "appliedOps", "proposal"],
         merge_shape_properties(),
@@ -1772,13 +1725,7 @@ fn reject_proposal() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_reject_proposal 成功响应的 data",
-            "只改记录、**绝不**删除。⚠ 两种形状（拼装点 `domain::apply_reject`）：对**已经**被拒绝的\
-             提案再拒一次 ⇒ 短形状，只有 `rejected` / `alreadyRejected`（恒 `true`）/ `proposal`（**摘要**）；\
-             真的拒绝一次 ⇒ 长形状，多出 `archived`（恒 `true`）与 `reason`，且 `proposal` 换成**完整载荷**\
-             （这里⚠ **没有** `includeOps` 开关 —— 长形状无条件带 `ops`）⇒ `archived` / `reason` \
-             ⛔ 不进 `required`。`rejected` 两种形状都恒 `true` ⇒ 用 `const` 钉住（本校验器**真的**核 `const`）。\
-             ⚠ 已合并的提案走**失败**回执（`Conflict` ＋ `proposalId`），⛔ 不是成功形状、不进这份 schema。\
-             `commitModel` = `none`：拒绝只动提案记录，不产生任何工程提交。",
+            "只改记录、**绝不**删除。⚠ 两种形状: 对**已经**被拒绝的提案再拒一次 ⇒ 短形状 (只有 `rejected` / `alreadyRejected` / `proposal` 摘要); 真的拒绝一次 ⇒ 长形状 (多出 `archived` 与 `reason`, 且 `proposal` 换成**完整载荷**, 无条件带 `ops`) ⇒ `archived` / `reason` 不进 `required`。`rejected` 两形状都恒 `true`。⚠ 已合并的提案走**失败**回执 (`Conflict`), 不进这份 schema。`commitModel` = `none` (拒绝不产生工程提交)",
         ),
         &["rejected", "alreadyRejected", "proposal"],
         json!({
@@ -1874,26 +1821,7 @@ fn edit_automation() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_edit_automation 成功响应的 data",
-            "只有一条成功形状，但**多个键可取 `null`**：拼装点 `AutomationEdit::data()` 的口径是\
-             \"键**始终在**（⛔ 不静默省略）\"—— `readOnly: true`（没给 `point` 实参 ⇒ 一位都不改）时\
-             `written` / `valuesAfter` / `projectDigestAfter` 都是 `null`，`residualReason: null` 配\
-             `appliedInOfflineRender: false` 的含义是\"没有可求值点 / 读开关关闭\"（与\"有落点但没生效\"\
-             分开，⛔ 不拿一个残差类冒充）。`dryRun` 预览与真做**共用同一个拼装函数** ⇒ 两种调用不可能漂移。\
-             `offlineRenderError` 只在**离线导出本身失败**时非 `null`（同一处会报 `RENDER_FAILED`）。\
-             `resolvedParamName` 是 `DeviceParam` 目标的落点规范名（与母带回执 \
-             `data.automation[].resolvedParamName` 同名同口径，唯一解析入口给出），\
-             其余目标恒 `null` —— 它是 `paramName` 按名寻址的回读面，也是纯下标调用的落点核对面。\
-             `origin.kind` 恒 `\"McpEdit\"`：MCP 直接编辑不创建提案。\
-             ⭐ 本校验器**会递归**（s29 起）⇒ 下面 `lane` / `read` / `origin` 的嵌套键是**可执行断言**：\
-             逐键核 `type`、该层 `required` 缺席即红、路径带下标（形如 `$.lane.points[0]`）。\
-             在此之前它们只是文档（原句实测留痕：「本校验器⛔ 不递归」⇒ 这三层的 `required` 从写下到 s29\
-             **一次都没被跑过**）。对齐过的构造点：`domain/automation.rs` 里 `lane` 的七个键**全部无条件**\
-             `insert`，而 `read` 与 `origin` 是**同一处 JSON 字面量** ⇒ 三者的键不会自己缺席。\
-             `applied` / `commitCount` 也在 `required` 里，因为补插点在**唯一**那条成功出口上\
-             （`domain/automation.rs:843-847`，`apply` 的末尾、`if` 块之外）⇒ **预览与真做都带**这两个键；\
-             别把 `applied` 读成\"只有真做才有\"：它与 `readOnly` 是**同一个判定**（`write.is_none()`），\
-             两者的差异只在来源（`readOnly` 由 `data()` 拼、`applied` 由出口补）。形状差异看 `written`：\
-             真做是对象、预览是 `null`。",
+            "只有一条成功形状, 但**多个键可取 `null`**: 键**始终在** (⛔ 不静默省略)。`readOnly:true` (没给 `point`) 时 `written` / `valuesAfter` / `projectDigestAfter` 都是 `null`; `residualReason:null` 配 `appliedInOfflineRender:false` = \"没有可求值点 / 读开关关闭\" (与\"有落点但没生效\"分开)。`dryRun` 预览与真做共用同一个拼装函数 ⇒ 不可能漂移。`offlineRenderError` 只在离线导出本身失败时非 `null`。`resolvedParamName` 是 `DeviceParam` 目标的落点规范名, 其余目标恒 `null`。`origin.kind` 恒 `\"McpEdit\"` (MCP 直接编辑不创建提案)。`applied` / `commitCount` 预览与真做都带; 形状差异看 `written` (真做是对象、预览是 `null`)",
         ),
         &[
             "trackId",
@@ -1977,11 +1905,7 @@ fn query_engine_state() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_query_engine_state 成功响应的 data",
-            "三份状态各有唯一来源（`stateSources` 逐条给出）。`track` 只在给了 `trackId` 时是对象，\
-             缺省是 `null`；`sends` 同样只在点名音轨时出现（缺省调用是诊断包 `projectIncluded:false` 的路径，\
-             不把工程内容写进去）。`readingsStream` 只在给了 `since` 时出现，故不在 `properties` 里。\
-             ⭐ `session.undoCursor` 的口径（`#177`）= 可撤销步数 = 已应用的 op 数，与 `yeban_undo` 响应的 \
-             `before.undoable` 同一个数（旧的'已撤销步数'口径已废弃）。",
+            "三份状态各有唯一来源 (`stateSources` 逐条给出)。`track` 只在给了 `trackId` 时是对象, 缺省是 `null`; `sends` 同样只在点名音轨时出现。`readingsStream` 只在给了 `since` 时出现。`session.undoCursor` = 可撤销步数 = 已应用的 op 数 (与 `yeban_undo` 响应的 `before.undoable` 同一个数)",
         ),
         &["session", "engine", "track", "stateSources"],
         json!({
@@ -2053,53 +1977,7 @@ fn render_master() -> Value {
     let mut schema = finish(
         envelope(
             "yeban_render_master 成功响应的 data",
-            "全部字段都是实测值（帧数 / 字节数 / SHA-256 / 块数 / 削波样本数 / 真峰值）。\
-             `peak.before|after` 是**归一化前后**的浮点母带样本峰值（⛔ 不是文件峰值）；\
-             文件层面的削波读数是顶层 `clippedSamples`，样本间过冲是顶层 `truePeakDbfs`。\
-             `truePeakDbfs` / `headroomDb` 在无法测量时是 `null`（不编造 0）。\
-             ⭐ `#225`：`warnings[]` 是**结果质量**提示（非阻断），两条来源：\
-             ① `clippedSamples > 0` 时恰好一条 `code:\"exportClipping\"`（含 `clippedSamples` / `truePeakDbfs` /\
-             `suggestedTrimDb`（公式 `-(ceil(truePeakDbfs * 2) / 2)`）/ `loudestSource` /\
-             `hint`）；② 可闻、排了内容、却 `peak == 0.0` 的源由一条 `code:\"silentSources\"`\
-             逐条点名（含 `count` / `sources[]` / `hint`）；两条都不出现时是**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
-             是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。\
-             ⭐ `#268`（`ADR-0011`）：顶层 `midiSource` **明说** MIDI 音源是\
-             `yeban-engine` 的 `SynthEngine`（`kind:\"engine-instrument\"`、\
-             `engineTimbre:true`），与界面/CLI 的 `--export-wav` 同一个音色；\
-             带 SFZ 采样器的轨由采样器发声，见 `sources[].sampler`。\
-             ⭐ `#315`/`#337`：侧链边有**三个读数**——\
-             `sidechainEdgesSummedAsOrdinaryAudio` 数\"侧链边里有几条**真的**被当成普通\
-             音频边求和进了母带\"；`#337` 起侧链边不再进音频子图 ⇒ 该字段**恒为 `0`**\
-             （⚠ 与 `unsupported` 里的 `sidechainRouting` **不是一回事**：那个键只说\
-             \"图里有没有这种数据\"、悬挂边也照报）。\
-             `sidechainEdgesInRoutingGraph` 数\"路由图里声明了几条\"。\
-             `sidechainEdgesDeclaredWithoutKeyInput` 数\"声明了、但**没有键输入路径**的\
-             有几条\" —— 侧链键输入（v1）：声明条数 − 真的接上键输入的条数（一条边被\
-             求值当且仅当目的已武装、源在保留子图、源层号严格小于目的、且是该目的边\
-             身份升序第一条合格边）。\
-             三者对照读：`0 / 0 / 0` = 没有侧链；`0 / N / K` = N 条侧链声明了、K 条没有\
-             被求值（K = N 时一条都没有被求值）；`0 / N / 0` = 全部求值。⛔ 单看 `0` 会以为问题消失了。\
-             口径逐字：`sidechainEdgesSummedAsOrdinaryAudio` 说的是\"这条边走了普通音频\
-             求和路径\"、⛔ 不是\"+6 dB 了几路\"。\
-             ⭐ 逐件处理线期 3：逐件链有**两个读数**——\
-             `laneChainsDeclared` 数\"工程里全部音轨共声明了多少条逐件链组\"，\
-             `laneChainsUnapplied` 数\"声明了、但本次渲染没有应用的有几条\"。\
-             应用的口径：该轨在本次渲染里真的建了逐件分组源并进了渲染计划；\
-             轨没进本次渲染、被插件音源胜出、或没有可发声音符 ⇒ 如实计入未应用。\
-             全部声明都被应用时未应用归零。⛔ 别把\"生成时写进了工程\"读成\"渲染时生效了\"。\
-             ⭐ `ADR-0020`：请求给 `contributions: true` 时**额外**出现\
-             `contributions[]`（每条非 master 轨一行：`{trackId, name, alreadyMuted,\
-             deltaRmsDbfs, deltaPeakDbfs}`，两次**未归一化**母带逐样本差的 RMS / 峰值，\
-             单位 dBFS；逐样本无差异或渲染前已静音 ⇒ null）与 `contributionsBasis`\
-             （口径说明 + `renders` = 实际渲染次数）。缺省时**两个键都不出现**\
-             ⇒ 不在 `required` 列表里；开关⛔ 不改写盘字节。\
-             ⭐ 部分渲染：请求给 `startTick` / `endTick` 时**额外**出现 `renderRange`\\\
-             （请求的 tick 原值 + 按工程速度表换算的实际帧区间 + 全程帧数）；\\\
-             产物是全程混音在该区间的原样切片，统计与 `targetLufs` 施加只算区间，\\\
-             ⛔ 成本仍是一次全程渲染。缺省时该键不出现 ⇒ 不在 `required` 列表里。\\\
-             ⭐ s32：`automation` 是**每次成功渲染都发**的逐泳道读数（`tracks[]` 只列有泳道的轨，\
-             每条 `lanes[]` 一行给 `evaluable` / `supported` / `applied` 三个布尔与首末点读数）；\
-             空泳道与关掉读开关的泳道**也在这份读数里**，其首末点与三个 `resolved*` 是 `null`。",
+            "全部字段都是实测值 (帧数 / 字节数 / SHA-256 / 块数 / 削波样本数 / 真峰值)。`peak.before|after` 是归一化前后的浮点母带样本峰值 (⛔ 不是文件峰值); 文件削波读数是顶层 `clippedSamples`, 样本间过冲是顶层 `truePeakDbfs`; 无法测量时是 `null` (不编造 0)。`warnings[]` 是**结果质量**提示 (非阻断): 削波时恰好一条 `code:\"exportClipping\"` (含 `suggestedTrimDb` / `loudestSource` / `hint`); 可闻却 `peak == 0.0` 的源由一条 `code:\"silentSources\"` 点名; 都不出现时是**空数组**; ⛔ 它不自动改增益。`sources[].peak` / `.peakDbfs` 是逐源峰值 (源节点输出, ⛔ 不含插入链与路由边增益)。顶层 `midiSource` 明说 MIDI 音源是引擎 `SynthEngine` (与 `--export-wav` 同一个音色); 带 SFZ 采样器的轨见 `sources[].sampler`。侧链三读数: `sidechainEdgesSummedAsOrdinaryAudio` 恒为 `0` (侧链边不进音频子图; ⚠ 与 `unsupported.sidechainRouting` 不是一回事) / `sidechainEdgesInRoutingGraph` = 图里声明了几条 / `sidechainEdgesDeclaredWithoutKeyInput` = 声明了但没被求值的有几条。逐件链两读数: `laneChainsDeclared` / `laneChainsUnapplied`。给 `contributions:true` 时额外出现 `contributions[]` 与 `contributionsBasis`; 给 `startTick`/`endTick` 时额外出现 `renderRange` (统计与 `targetLufs` 只算区间)。`automation` 是每次成功渲染都发的逐泳道读数",
         ),
         &[
             "rendered",
@@ -2261,10 +2139,7 @@ fn redo() -> Value {
     steps_receipt(
         "redone",
         "yeban_redo",
-        "键集与 `yeban_undo` 逐字镜像（拼装点 `domain::apply_redo` 就是照 `apply_undo` 写的），\
-         只有第一个键名是 `redone`。⚠ **`undoneTotal` 这个名字在重做回执里也叫 `undoneTotal`**\
-         （来自 `outcome.undone_total`）—— schema 照抄真实键名，⛔ 顺手改名（改名是另一张票）。\
-         `cursorPersisted` 恒为 `false`：游标是会话运行态（MODEL-ISO-001）。",
+        "键集与 `yeban_undo` 逐字镜像, 只有第一个键名是 `redone`。⚠ `undoneTotal` 在重做回执里也叫 `undoneTotal` (schema 照抄真实键名, ⛔ 顺手改名)。`cursorPersisted` 恒为 `false` (游标是会话运行态)",
     )
 }
 
