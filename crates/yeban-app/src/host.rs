@@ -21308,6 +21308,20 @@ pub const PENCIL_NO_DISPLAYED_TRACK_REASON: &str = "工程里没有可显示的�
 /// 铅笔拒绝的逐字原因：工程无法投影（拍号 / 缩放退化）。
 pub const PENCIL_NO_PROJECTION_REASON: &str = "工程无法投影（拍号非法），未写入音符";
 
+/// 铅笔拒绝的逐字原因：同一 `(pitch, tick)` 已有音符（`T-FIX-583`）。
+///
+/// 与 Logic 的对照：Logic 的铅笔在已有音符上单击**不叠第二颗**，而是把该音符选中/进入编辑；
+/// 本实现走同一取向（`DrawNote` 命中 `hit` 时只保留上面的选区写入），这条文本是给
+/// 绕过 UI 的 `commit_roll_auto_draw` 路径留的**可见**拒绝，⛔ 不静默 AddNote。
+pub const PENCIL_NOTE_ALREADY_EXISTS_REASON: &str =
+    "该 (pitch, tick) 已有音符，铅笔不会重复创建；已保留原音符";
+
+/// 铅笔在已有音符上单击后写进 `roll-edit-status` 的**正向**回执（`T-FIX-583`）：
+/// 命中已有音符 ⇒ 与选择工具一样只改选区，并明确告诉用户"没有新建"。文案不写"已选中"，
+/// 因为 Shift/Cmd 单击是 toggle，可能会把这一颗取消选中。
+pub const PENCIL_EXISTING_NOTE_SELECTED_STATUS: &str =
+    "该位置已有音符，铅笔不重复创建（单击与选择工具一样只改选区）";
+
 /// 铅笔点击被拒绝的**结构化**原因（纯函数返回值 ⇒ 界面能选一句逐字文本，⛔ 不靠猜）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PencilRefusal {
@@ -21321,6 +21335,8 @@ pub enum PencilRefusal {
     NoDisplayedTrack,
     /// ⭐ 展示轨上没有覆盖该 tick 的片段（⛔ 不回退到别的轨）。
     NoClipOnDisplayedTrack,
+    /// `T-FIX-583`：同一 `(pitch, tick)` 已有音符（⛔ 不再 AddNote）。
+    NoteAlreadyExists,
 }
 
 impl PencilRefusal {
@@ -21333,6 +21349,7 @@ impl PencilRefusal {
             Self::NoPlan => Some(PENCIL_NO_PLAN_REASON),
             Self::NoDisplayedTrack => Some(PENCIL_NO_DISPLAYED_TRACK_REASON),
             Self::NoClipOnDisplayedTrack => Some(PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON),
+            Self::NoteAlreadyExists => Some(PENCIL_NOTE_ALREADY_EXISTS_REASON),
         }
     }
 }
@@ -21837,6 +21854,15 @@ fn auto_pencil_ops_for_selected_with_base(
     let plan = view
         .pencil_plan_with_base(scroll_x, pos.0, pos.1, grid_ticks, base_pitch)
         .ok_or(PencilRefusal::NoPlan)?;
+    // `T-FIX-583`：模型层最后一道门 —— 即使调用方绕过 hit 测试，也**不许**
+    // 同一 `(pitch, tick)` 再 AddNote。⛔ 不是只在 UI 上过滤：MCP / 脚本同样走这里。
+    if view
+        .notes
+        .iter()
+        .any(|note| note.pitch == plan.pitch && note.start_tick == plan.start_tick)
+    {
+        return Err(PencilRefusal::NoteAlreadyExists);
+    }
     let pitch = plan.pitch;
     let note = yeban_model::MidiNote::new(
         yeban_model::EntityId::new(),
@@ -22878,6 +22904,18 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     }
                 }
                 crate::input::ToolClick::DrawNote => {
+                    // `T-FIX-583`：铅笔命中已有音符 ⇒ 与选择工具一致，只保留第一段已写入的
+                    // 选区/加选，⛔ 不再 `commit_roll_auto_draw`。Logic 的铅笔在同一位置
+                    // 也不会叠第二颗；这里给出可见的正向回执（⛔ 不静默）。
+                    if let Some(index) = hit {
+                        let pitch = view.notes[index].pitch;
+                        ui.set_roll_edit_status(PENCIL_EXISTING_NOTE_SELECTED_STATUS.into());
+                        ui.invoke_piano_key_audition(
+                            midi_pitch_name(pitch).into(),
+                            84 - i32::from(pitch),
+                        );
+                        return;
+                    }
                     let (Some(project), Some(port)) = (project.as_ref(), port.as_ref()) else {
                         return;
                     };
@@ -27537,6 +27575,51 @@ mod pencil_op_tests {
             Some(other) => panic!("铅笔必须产生 AddNote, 实际是 {other:?}"),
             None => panic!("片段所在区域**必须**存在能给出操作的点击位置"),
         }
+    }
+
+    /// `T-FIX-583` 判据：同一 `(pitch, tick)` 已有音符 ⇒ 同一坐标先命中已有音符（UI 走
+    /// “只改选区”分支），模型层也拒绝再 `AddNote`。
+    ///
+    /// 取 `filled_project` 里第一颗可见音符的左沿 / 顶沿当点击点：`pencil_plan_with_base`
+    /// 会吸附回同一个 `(pitch, tick)`。红对照：删掉 `auto_pencil_ops_for_selected_with_base`
+    /// 里的 `NoteAlreadyExists` 门 ⇒ 这里返回 `Ok`，会生成第二条同位置音符。
+    #[test]
+    fn a_pencil_plan_on_an_existing_note_is_refused_before_adding_a_duplicate() {
+        let project = filled_project();
+        let view = ViewState::from_project(&project).expect("filled_project 可投影");
+        let note = view
+            .notes
+            .iter()
+            .find(|note| note.start_tick % ROLL_SNAP_GRID_TICKS == 0)
+            .expect("夹具至少一颗落在吸附网格上的音符")
+            .clone();
+        // 同一坐标必须命中这颗音符：`ToolClick::DrawNote` 才会走"只改选区、不新建"的那条分支。
+        assert!(
+            view.hit_test_visible_scoped_with_base(
+                0.0,
+                note.x + note.width + 1.0,
+                note.x,
+                note.y,
+                NOTE_HEIGHT_PX,
+                None,
+                crate::bridge::PITCH_LANE_BASE,
+            )
+            .is_some(),
+            "音符左沿 / 顶沿必须命中已有音符"
+        );
+        let result = auto_pencil_ops_for_selected_with_base(
+            &project,
+            None,
+            None,
+            0.0,
+            (note.x, note.y),
+            ROLL_SNAP_GRID_TICKS,
+            crate::bridge::PITCH_LANE_BASE,
+        );
+        assert!(
+            matches!(result, Err(PencilRefusal::NoteAlreadyExists)),
+            "同一 (pitch, tick) 必须先被拒绝，⛔ 不能生成重叠 AddNote"
+        );
     }
 
     #[test]
