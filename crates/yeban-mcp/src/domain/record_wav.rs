@@ -75,7 +75,20 @@ pub const DEFAULT_CAPACITY_MS: u32 = 1_000;
 pub const DEFAULT_DRAIN_BATCH: u32 = 4_096;
 
 /// 单次录制的秒数上限（防呆闸门：不设它，一个 `seconds: 1e9` 会申请无界缓冲）。
-pub const MAX_SECONDS: f64 = 3_600.0;
+///
+/// T-FIX-512：引用共享定义，⛔ 不再另写 `3600.0` 常量。数值逐字不变。
+pub const MAX_SECONDS: f64 = yeban_model::MAX_MASTER_SECONDS;
+
+#[cfg(test)]
+mod master_cap_tests {
+    use super::MAX_SECONDS;
+
+    #[test]
+    fn record_seconds_cap_is_the_shared_master_cap() {
+        assert_eq!(MAX_SECONDS, yeban_model::MAX_MASTER_SECONDS);
+        assert_eq!(MAX_SECONDS, 3_600.0);
+    }
+}
 
 /// 样本来源的**如实**文案（⛔ 不是声卡）。
 pub const SOURCE_LABEL: &str = "in-memory-sine(440Hz)";

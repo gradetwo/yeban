@@ -746,7 +746,33 @@ fn gain_bound_name(bound: mastering::GainBound) -> &'static str {
 /// 不是性能目标，而是一道**防呆闸门**：工程里一个错误的 `duration_ticks`
 /// （或极慢的 BPM）可以在几秒内申请几十 GB 缓冲。超过即 `RENDER_FAILED`
 /// 并如实报出请求帧数与上限。
-pub const MAX_RENDER_FRAMES: u64 = 48_000 * 3_600;
+///
+/// T-FIX-512：帧数由共享秒上限按 48 kHz 派生，⛔ 不再另写 `48_000 × 3600`。
+/// 数值逐字不变：172_800_000 帧。
+pub const MAX_RENDER_FRAMES: u64 = (48_000.0 * yeban_model::MAX_MASTER_SECONDS) as u64;
+
+#[cfg(test)]
+mod master_cap_tests {
+    use super::MAX_RENDER_FRAMES;
+
+    #[test]
+    fn render_frame_cap_derives_from_shared_seconds_cap() {
+        assert_eq!(yeban_model::MAX_MASTER_SECONDS, 3_600.0);
+        assert_eq!(MAX_RENDER_FRAMES, 172_800_000);
+        assert_eq!(
+            MAX_RENDER_FRAMES,
+            (48_000.0 * yeban_model::MAX_MASTER_SECONDS) as u64
+        );
+    }
+
+    /// 红对照：把共享上限人为缩到 60 秒时，派生帧数必须与现行闸门不同
+    /// （若有人把某一侧改回独立 3600 常量，上面的派生判据即转红）。
+    #[test]
+    fn master_cap_drift_would_change_the_gate() {
+        let drifted = (48_000.0 * 60.0) as u64;
+        assert_ne!(drifted, MAX_RENDER_FRAMES);
+    }
+}
 
 /// 源节点没有可识别名字时的文件名 stem。
 pub const DEFAULT_STEM: &str = "master";

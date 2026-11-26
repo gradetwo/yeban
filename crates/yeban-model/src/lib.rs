@@ -35,6 +35,14 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+/// 「一小时母带」上限（秒）：GUI 导出时长格播种、MCP 渲染帧数闸门与录制
+/// 秒数闸门共用的唯一定义（T-FIX-512）。
+///
+/// 帧数上限由本常量按 48 kHz 派生（`48_000 × MAX_MASTER_SECONDS`），既有
+/// 数值与语义逐字不变：3600 秒 / 172_800_000 帧 @48 kHz。⛔ 不在下游
+/// crate 再写第二份常量。
+pub const MAX_MASTER_SECONDS: f64 = 3_600.0;
+
 pub mod automation;
 pub mod clip_fade;
 pub mod clip_ops;

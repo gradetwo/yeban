@@ -13032,13 +13032,6 @@ impl ModulePaths {
     }
 }
 
-/// ⭐ `D-UI-28`：「导出 WAV」弹窗给**时长**那一格播种的上限（单位：秒）。
-///
-/// 与 MCP 那条同源：`yeban-mcp` 的 `MAX_RENDER_FRAMES = 48_000 × 3600` 也是"一小时母带"。
-/// 超过它 ⇒ 播 `3600.000`（那一格看得见这个数），⛔ 不播一个会把 UI 线程阻塞几十分钟的
-/// 数（`D-EX-2` 登记的"导出同步阻塞 UI 线程"今天仍在）。
-const EXPORT_SEED_MAX_SECONDS: f64 = 3600.0;
-
 /// 工程**可闻末端**的秒数（向上取整到毫秒）——「导出 WAV」时长格的缺省播种值。
 ///
 /// 链条只有三跳，每一跳都是既存的**唯一**实现，⛔ 在这里另写一份：
@@ -13076,7 +13069,9 @@ fn audible_end_seconds(port: Option<&Rc<UndoPort>>, ui: &MainWindow) -> Option<f
     if !seconds.is_finite() || seconds <= 0.0 {
         return None;
     }
-    Some((seconds.min(EXPORT_SEED_MAX_SECONDS) * 1000.0).ceil() / 1000.0)
+    // T-FIX-512：一小时上限的唯一定义在 `yeban_model::MAX_MASTER_SECONDS`，
+    // 与 MCP 渲染/录制闸门同源；⛔ 本文件不再持有第二份常量。
+    Some((seconds.min(yeban_model::MAX_MASTER_SECONDS) * 1000.0).ceil() / 1000.0)
 }
 
 /// 导出对话框三格文本解析出的覆盖参数（`None` = 用后端缺省）。
