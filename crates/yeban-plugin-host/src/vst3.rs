@@ -127,6 +127,24 @@ fn check_query(method: &'static str, code: i32) -> Result<(), HostError> {
     }
 }
 
+/// ⭐ T-FIX-536：`IEditController::setComponentState` 的验收口径。
+///
+/// 只有两个返回值算成功：`kResultOk`（真接受）与 `kNotImplemented`（SDK 允许的
+/// 合法缺省——不少插件不实现该回调，放行）。其余一律响亮上抛。⚠ 注意
+/// `kResultFalse` 是 **1**（正数），通用 [`check`] 的"非负＝成功"口径会把它
+/// 放过，所以这里不能用 [`check`]，必须显式两值判等——控制器拒绝同步处理器
+/// 状态时静默成功，正是 T-FIX-483 审计钉住的残口（ISS-MWWZ1684-EA3E9D）。
+fn check_component_state(code: i32) -> Result<(), HostError> {
+    if code == RESULT_OK || code == RESULT_NOT_IMPLEMENTED {
+        Ok(())
+    } else {
+        Err(HostError::CallFailed {
+            method: "setComponentState",
+            code,
+        })
+    }
+}
+
 /// 解码 `String128`（UTF-16，遇 NUL 截断，非法序列按 `from_utf16_lossy`）。
 fn decode_string128(units: &[u16; 128]) -> String {
     let end = units.iter().position(|unit| *unit == 0).unwrap_or(128);
@@ -2146,7 +2164,10 @@ impl PluginInstance for Vst3Instance {
             // SAFETY: `ctrl` 是本实例的控制器指针；流对象在调用帧内。
             unsafe {
                 let ctrl_vtbl = vtbl::<EditControllerVtbl>(ctrl);
-                let _ = (ctrl_vtbl.set_component_state)(ctrl, comp_ptr);
+                // ⭐ T-FIX-536：控制器拒绝同步处理器状态 ⇒ 整次恢复响亮失败
+                //（`kNotImplemented` 放行——SDK 允许不实现；旧口径 `let _ =`
+                // 是 T-FIX-483 审计钉住的静默残口：控制器侧参数将与真实状态脱节）。
+                check_component_state((ctrl_vtbl.set_component_state)(ctrl, comp_ptr))?;
                 if !state.controller.is_empty() {
                     let mut ctrl_stream = MemoryStream::restore(&state.controller);
                     let ctrl_ptr = (&mut ctrl_stream) as *mut MemoryStream as *mut c_void;
@@ -2617,6 +2638,47 @@ pub(crate) fn inspect_loaded_module(
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    /// T-FIX-536：`setComponentState` 的验收口径——只放行 `kResultOk` 与
+    /// `kNotImplemented`，其余（含**正数**的 `kResultFalse`）一律响亮上抛。
+    #[test]
+    fn component_state_result_accepts_ok_and_not_implemented_only() {
+        assert!(check_component_state(RESULT_OK).is_ok());
+        assert!(check_component_state(RESULT_NOT_IMPLEMENTED).is_ok());
+        assert!(
+            check_component_state(RESULT_FALSE).is_err(),
+            "kResultFalse=1 是拒绝；通用 check 的非负口径会放过它，必须显式判等"
+        );
+        assert!(check_component_state(RESULT_INVALID_ARGUMENT).is_err());
+        assert!(check_component_state(RESULT_NO_INTERFACE).is_err());
+        assert!(check_component_state(-2).is_err());
+        let err = check_component_state(RESULT_FALSE).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                HostError::CallFailed {
+                    method: "setComponentState",
+                    code: RESULT_FALSE
+                }
+            ),
+            "错误必须点名方法与原始码，实测 {err:?}"
+        );
+    }
+
+    /// T-FIX-536 源码契约：restore_state 不再丢弃控制器 setComponentState 返回值。
+    /// 修前该调用以 \`let _ =\` 丢弃返回值（静默口径）在案 ⇒ 本判据红。
+    /// ⛔ 本判据的搜索串不得原样出现在本文件的注释里（include_str 全文搜索）。
+    #[test]
+    fn restore_state_no_longer_discards_the_controller_component_state_result() {
+        let source = include_str!("vst3.rs");
+        // ⛔ include_str 全文含本判据自身 ⇒ 搜索串必须运行时拼接（两段字面量都不全）。
+        let silent_call = ["let _ = (ctrl_vtbl.", "set_component_state)"].concat();
+        assert!(!source.contains(&silent_call), "旧静默口径必须已移除");
+        assert!(
+            source.contains("check_component_state((ctrl_vtbl.set_component_state)"),
+            "restore_state 必须经验收函数响亮上抛"
+        );
+    }
 
     /// `IAudioProcessor` 虚表槽位必须与 SDK 一致（`FUnknown` 3 项前缀，无 `IPluginBase` 垫项）。
     /// 2026-11-03 真插件 SIGSEGV 回归：垫两项会使 `canProcessSampleSize` 命中 `setupProcessing`。
