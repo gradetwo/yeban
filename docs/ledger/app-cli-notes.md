@@ -288,8 +288,12 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 `save_project_file` 只拿得到一个 `YebanProjectV1`，因此它写空的 `history.dag`（app-mixer 线
 `ui/force_save` 的既有语义**一行未改**）。命令行需要的是"打开再另存**不丢东西**"，
 所以新增 `save_archive_file`：把打开时拿到的归档（工程 + `history.dag` + `assets/{sha256}`）
-原样写回。已知代价：`write_project_container` 的签名要 `BTreeMap<AssetHash, Vec<u8>>`，
-而 `ProjectArchive::assets` 是 `Vec<(AssetHash, Vec<u8>)>` ⇒ 大资产池多一次内存拷贝（见 §7 needs-2）。
+原样写回。~~已知代价：`write_project_container` 的签名要 `BTreeMap<AssetHash, Vec<u8>>`，
+而 `ProjectArchive::assets` 是 `Vec<(AssetHash, Vec<u8>)>` ⇒ 大资产池多一次内存拷贝（见 §7 needs-2）。~~
+**已消除（T-FIX-460）**：`save_archive_parts_file_with`（`crates/yeban-app/src/save.rs`）
+经 `borrowed_assets_deduped` 只搬运引用、⛔ 不复制资产字节，再调
+`write_project_container_with_proposals_borrowed` 写出；同一输入的写出字节与旧实现逐字节相同
+（见 §8 needs-2；旧指针"§7"有误，本次一并更正）。
 
 ### 5.3 GUI 里的"保存"与命令行的"保存"是两条入口、一份落盘实现
 
@@ -516,10 +520,17 @@ SLINT_BACKEND=headless yeban-app --headless
 
 1. **【集成者 / 文档】README 与官网的 Quick Start**：请引用 §6 的 ✅ 清单与"必须写进文档的诚实说明"。
    本线**不改** `README*.md` 与官网（集成者独占）。**关键**：不要写"在界面里改一改再保存"。
-2. **【yeban-model / 人类裁决】`write_project_container` 的资产入参形态**：它要
+2. ~~**【yeban-model / 人类裁决】`write_project_container` 的资产入参形态**：它要
    `&BTreeMap<AssetHash, Vec<u8>>`，而 `ProjectArchive::assets` 是 `Vec<(AssetHash, Vec<u8>)>`
    ⇒ `--save-as` 对大资产池多一次拷贝。建议加一个 `&[(AssetHash, &[u8])]` 形态的写出面
-   （或让 `ProjectArchive` 直接带一个写出方法）。本线**不改** `yeban-model`。
+   （或让 `ProjectArchive` 直接带一个写出方法）。本线**不改** `yeban-model`。~~
+   **已满足（T-FIX-460）**：借用写出面 `write_project_container_with_proposals_borrowed`
+   （`crates/yeban-model/src/container/mod.rs:712`，资产入参 `&[(&AssetHash, &[u8])]`）已存在；
+   生产保存路径已走它——命令行 `--save-as` 经 `save_archive_parts_file_with`
+   （`crates/yeban-app/src/save.rs:523`，`borrowed_assets_deduped` 只搬运引用、不复制资产字节），
+   MCP 侧经 `container_bytes_with_proposals`（`crates/yeban-mcp/src/domain/store.rs:802`，
+   由 `save_material` 调用）。同一输入的写出字节与旧实现逐字节相同。
+   ✔ 这条不再是 needs —— 见 §5.2。
 3. **【人类裁决】CLI 是否是 stable interface**：退出码 `0..5`、报告字段名、`headless ok`
    现在被文档与脚本依赖。要不要把它们登记成"对外契约"（并在 ADR 里钉住）？
 4. **【集成者】`docs/ledger/gate-status.md`**：本线**没有**改它（不属于本线证据的必改项）；
