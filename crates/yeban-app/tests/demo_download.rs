@@ -61,7 +61,7 @@ fn manifest_lists_eight_unique_demos() {
     assert_eq!(dirs.len(), 8, "子目录必须两两不同");
     let base = "http://example.invalid/base";
     // ⭐ T-FIX-158 返工：清单必须与 gradetwo/yeban-extras 的 `demos/` **逐字**对应
-    //    （目录名就是歌名；工程/封面的文件名带 `_男声` / `_叙事版` 等后缀），
+    //    （目录名、工程名与封面名都只用干净歌名，不带 `_男声` / `_叙事版` 等后缀），
     //    且中文段一律百分号编码 —— http 1.5 的 URI 不接受 ≥127 的字节。
     let spec = DEMOS
         .iter()
@@ -73,20 +73,23 @@ fn manifest_lists_eight_unique_demos() {
     );
     assert_eq!(
         cover_url(base, spec),
-        "http://example.invalid/base/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5-cover.png"
+        "http://example.invalid/base/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5/%E9%9B%A8%E5%A3%B0%E5%A4%AA%E5%90%B5.png"
     );
-    // 每条 URL 都必须是纯 ASCII（否则 ureq 在发请求前就解析失败），工程名都以 `.yeban` 结尾。
+    // 每条 URL 都必须是纯 ASCII（否则 ureq 在发请求前就解析失败）。
+    // 工程与封面只用干净歌名：工程是 `<歌名>.yeban`，封面是 `<歌名>.png/.jpg`。
     for spec in &DEMOS {
         let url = project_url(base, spec);
         assert!(url.is_ascii(), "URL 必须纯 ASCII: {url}");
-        assert!(
-            spec.file.ends_with(".yeban"),
-            "工程名必须以 .yeban 结尾: {}",
-            spec.file
+        assert_eq!(spec.dir, spec.title, "demo 目录名必须是干净歌名");
+        assert_eq!(
+            spec.file,
+            format!("{}.yeban", spec.title),
+            "工程名必须是干净歌名加 .yeban"
         );
         assert!(
-            spec.cover.ends_with("-cover.png") || spec.cover.ends_with("-cover.jpg"),
-            "封面名必须是真实后缀: {}",
+            spec.cover == format!("{}.png", spec.title)
+                || spec.cover == format!("{}.jpg", spec.title),
+            "封面名必须是干净歌名加图片后缀: {}",
             spec.cover
         );
     }

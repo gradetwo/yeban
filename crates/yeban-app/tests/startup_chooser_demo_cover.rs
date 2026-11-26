@@ -157,10 +157,10 @@ fn demo_cover_live_window_screenshot() {
     // 另外两条文件型 demo 的素材在 `all-demos/` 里。
     let all_demos = assets.join("all-demos");
     for name in [
-        "下一个路口_女声.yeban",
-        "下一个路口_女声-cover.png",
-        "那个午后_男声.yeban",
-        "那个午后_男声-cover.png",
+        "下一个路口.yeban",
+        "下一个路口.png",
+        "那个午后.yeban",
+        "那个午后.png",
     ] {
         assert!(
             all_demos.join(name).is_file(),
@@ -179,16 +179,10 @@ fn demo_cover_live_window_screenshot() {
     let copy_fixture = |from: &Path, to_name: &str| {
         std::fs::copy(from, demos_fixture.join(to_name)).expect("拷演示夹具");
     };
-    copy_fixture(&all_demos.join("下一个路口_女声.yeban"), "01-lukou.yeban");
-    copy_fixture(
-        &all_demos.join("下一个路口_女声-cover.png"),
-        "01-lukou-cover.png",
-    );
-    copy_fixture(&all_demos.join("那个午后_男声.yeban"), "02-wuhou.yeban");
-    copy_fixture(
-        &all_demos.join("那个午后_男声-cover.png"),
-        "02-wuhou-cover.png",
-    );
+    copy_fixture(&all_demos.join("下一个路口.yeban"), "01-lukou.yeban");
+    copy_fixture(&all_demos.join("下一个路口.png"), "01-lukou-cover.png");
+    copy_fixture(&all_demos.join("那个午后.yeban"), "02-wuhou.yeban");
+    copy_fixture(&all_demos.join("那个午后.png"), "02-wuhou-cover.png");
     copy_fixture(&demo_file, "yusheng.yeban");
     copy_fixture(&cover_file, "yusheng-cover.png");
     copy_fixture(&meta_file, "yusheng.meta.json");

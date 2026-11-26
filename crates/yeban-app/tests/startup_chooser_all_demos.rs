@@ -129,21 +129,21 @@ fn all_demos_live_window_screenshots() {
     // 素材齐全性（响亮失败，不静默跳过）：8 工程 + 8 封面 + 1 旁挂。
     for name in [
         "雨声太吵.yeban",
-        "潮_切片版.yeban",
-        "失重_切片版.yeban",
-        "失语_叙事版.yeban",
-        "呢喃_叙事版.yeban",
-        "下一个路口_女声.yeban",
-        "回头路_男声.yeban",
-        "那个午后_男声.yeban",
-        "雨声太吵-cover.png",
-        "潮_切片版-cover.png",
-        "失重_切片版-cover.png",
-        "失语_叙事版-cover.jpg",
-        "呢喃_叙事版-cover.jpg",
-        "下一个路口_女声-cover.png",
-        "回头路_男声-cover.png",
-        "那个午后_男声-cover.png",
+        "潮.yeban",
+        "失重.yeban",
+        "失语.yeban",
+        "呢喃.yeban",
+        "下一个路口.yeban",
+        "回头路.yeban",
+        "那个午后.yeban",
+        "雨声太吵.png",
+        "潮.png",
+        "失重.png",
+        "失语.jpg",
+        "呢喃.jpg",
+        "下一个路口.png",
+        "回头路.png",
+        "那个午后.png",
         "雨声太吵.meta.json",
     ] {
         assert!(
@@ -153,7 +153,7 @@ fn all_demos_live_window_screenshots() {
         );
     }
     assert!(
-        !demos.join("能否_女声.yeban").exists(),
+        !demos.join("能否.yeban").exists(),
         "《能否》按裁决不放条目，不得出现在本轮 demo 目录里"
     );
 
