@@ -20,6 +20,7 @@
 //! | 该轨道的通道号 | 按**被导出的顺序**取 `i % 16`（第 0 条 → 通道 0，第 1 条 → 通道 1 …） |
 //! | 主总线轨道（`master_bus_track_id`） | **不导出**（它是声学出口，不是内容轨；与 `bridge` 的投影口径一致） |
 //! | 一条音符都没有的轨道 | **不导出**（不产生空 `MTrk`） |
+//! | 轨级静音 / 独奏（`TrackV3::mute` / `TrackV3::solo` / `TrackV3::solo_safe`） | ⭐ T-FIX-506：**可闻门** `!mute && (!any_solo \|\| solo \|\| solo_safe)`，其中 `any_solo` = 任一轨道 `solo == true`（全工程扫，含主总线，与引擎的扫描口径一致）；**不可闻的轨道整条不导出**（不产生 `MTrk`，不占通道号）—— 与引擎 `track_is_audible`（yeban-engine 的 `synth.rs`，`track_gain_scale` 的单一来源）同口径；静音在工程里是可听语义的一部分，与摆放级 `muted` 同款裁决（`mute` 优先于 `solo`；`solo_safe` 的轨道不被其它轨的 `solo` 静音） |
 //! | 音频片段（`ClipContent::Audio`） | **不导出**（音频→MIDI 不在本切片；见 notes 的未实现项） |
 //!
 //! ### 音符 → 事件
@@ -51,6 +52,7 @@
 //!   clamp 到摆放窗口内，而本导出如实写作者写下的 tick（与
 //!   `yeban-mcp` 的 `yeban_render_master` 同口径）。这个差异登记在 notes 的未实现项里。
 //! - `placement.muted == true` 的摆放**跳过**（静音在工程里是可听语义的一部分）。
+//! - 轨级 `mute` / `solo` 同款裁决（⭐ T-FIX-506）：不可闻的轨道整条跳过（见上表可闻门）；`solo_safe` 的轨道不被其它轨的 `solo` 静音；`mute` 优先于 `solo`。
 //! - `loop_config` 不导出（循环重复是播放期展开，SMF 里没有对应物）。
 //! - 段落（`sections`）/ 场景（`scenes`）/ 自动化 / 路由 / 混音参数都不进 SMF。
 
@@ -95,7 +97,7 @@ pub struct MidiExportReport {
 /// 导出失败的原因（**每一种都精确上报**，绝不"写了个空文件也算成功"）。
 #[derive(Debug)]
 pub enum MidiExportError {
-    /// 工程里没有任何可导出的 MIDI 音符（没有一条非主总线轨道含非静音 MIDI 摆放）。
+    /// 工程里没有任何可导出的 MIDI 音符（没有一条可闻的非主总线轨道含非静音 MIDI 摆放）。
     NoMidiContent,
     /// 摆放引用的片段不在 `clip_pool` 里（工程不合法）—— 不静默跳过。
     DanglingClip {
@@ -248,6 +250,19 @@ fn tempo_map(project: &YebanProjectV1) -> Result<Vec<MidiTempo>, MidiExportError
     }
     tempos.extend(points.into_values());
     Ok(tempos)
+}
+
+/// 轨级可闻门（⭐ T-FIX-506）：与引擎的 `track_is_audible`（yeban-engine 的
+/// `synth.rs`，`track_gain_scale` 的单一来源）**同口径** —— 静音在工程里是
+/// 可听语义的一部分，与摆放级 `placement.muted` 的跳过裁决一致。
+///
+/// 本函数是引擎那条判据在映射层的**镜像**，不是第二份权威：`yeban-midi`
+/// 必须保持零引擎依赖（MCP 也依赖它），故此处只抄公式并在文档里点名权威出处；
+/// 两边漂移时以引擎为准，镜像判据（`tests/track_mute_solo_export.rs` 的独奏安全
+/// 臂与静音优先臂）会先红。
+#[must_use]
+fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool) -> bool {
+    !mute && (!any_solo || solo || solo_safe)
 }
 
 /// 把一条轨道的全部摆放展开成**绝对 tick** 的音符列表。
@@ -467,9 +482,19 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
     let ppq = smf_ppq()?;
     let tempos = tempo_map(project)?;
 
+    // ⭐ T-FIX-506：`any_solo` 按引擎的扫描口径取全工程（含主总线，见
+    // yeban-engine `snapshot.rs` 的 `any_solo_in` 与 `project_schedules`）。
+    let any_solo = project.tracks.values().any(|track| track.solo);
+
     let mut tracks: Vec<MidiExportTrack> = Vec::new();
     for track in project.tracks.values() {
         if track.id == project.master_bus_track_id {
+            continue;
+        }
+        // ⭐ T-FIX-506：不可闻的轨道整条跳过（不产生 `MTrk`，不占通道号），且
+        // 在 `track_notes` 之前跳过 —— 与摆放级 `muted` 的跳过口径一致（静音
+        // 摆放的悬空片段引用也不上报，见判据 `a_muted_placement_with_a_dangling_clip_is_skipped_not_reported`）。
+        if !track_is_audible(track.mute, track.solo, track.solo_safe, any_solo) {
             continue;
         }
         let mut notes = track_notes(project, track.id, &track.clips)?;
