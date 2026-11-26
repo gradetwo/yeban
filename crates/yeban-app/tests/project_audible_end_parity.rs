@@ -24,7 +24,9 @@ fn legacy_end_seconds_with_cap(project: &YebanProjectV1, cap: f64) -> Option<f64
         return None;
     }
     let hz = project.sample_rate().hz();
-    let frames = project.tempo().frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
+    let frames = project
+        .tempo()
+        .frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
     #[allow(clippy::cast_precision_loss)]
     let seconds = frames as f64 / f64::from(hz);
     if !seconds.is_finite() || seconds <= 0.0 {
