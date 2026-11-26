@@ -7081,10 +7081,17 @@ impl HostKind {
 /// 资产池），写出的目标由调用方给。只有目标与会话路径**逐字相同**时才更新内存里的
 /// `saved_digest`（否则"未保存标记"会错误地声称另一个文件与内存一致）。
 ///
+/// 另存目标**不是**无法之地：目标 ≠ 会话路径时，本函数在落盘前对目标取一次排他写锁
+/// （T-FIX-497，与 `apply_open` / app 侧 `acquire_write_lock` 同一把锁、同一个函数
+/// [`store::lock`]）。目标正被另一活会话持有 ⇒ `PROJECT_LOCKED`，一个字节都不写。
+/// 目标与会话路径逐字相同时不重取 —— 会话已持有这把排他锁，而 `flock` 是 fd 粒度，
+/// 同进程第二个 fd 再取同一把锁必然 `WouldBlock`（见 `lock.rs` 场景 ①）。
+///
 /// # Errors
 ///
 /// 没有活跃工程、只读会话、工程 / 图谱序列化失败、容器层拒绝，或落盘 I/O 失败
-/// （原样携带领域错误码，与工具路径同源）。
+/// （原样携带领域错误码，与工具路径同源）。另存目标被另一活会话持有 ⇒
+/// `PROJECT_LOCKED`（见上）。
 pub fn host_save_project(
     domain: &mut Domain,
     target: &Path,
@@ -7134,6 +7141,19 @@ pub fn host_save_project(
             missing_samples,
         });
     }
+    // T-FIX-497：另存目标的排他写锁（与 `apply_open` / app 侧 `acquire_write_lock`
+    // 同一把锁、同一个函数 `store::lock`）。目标 ≠ 会话路径时，目标的锁无人持有
+    // 也无人检查 —— 不取锁就写，等于让另存绕过 ROAD-M4-008 的单一写者。
+    // 拿不到 ⇒ `PROJECT_LOCKED`，一个字节都不写；守卫在写盘全程持有，写完才释放。
+    // 目标 == 会话路径时不重取：会话已持有这把排他锁，而 `flock` 是 fd 粒度，
+    // 同进程第二个 fd 再取同一把锁必然 `WouldBlock`（见 `lock.rs` 场景 ①），
+    // 重取会把"保存到自己路径"误判成被锁。比较口径与下面 `saved_digest` 的
+    // 更新分支同一条（逐字路径相等）。
+    let _target_lock = if target != session_path.as_path() {
+        Some(store::lock(target, store::LockMode::ExclusiveWrite)?)
+    } else {
+        None
+    };
     store::write_project_atomic(target, &bytes)?;
     if session_path.as_path() == target
         && let Some(active) = domain.active.as_mut()
