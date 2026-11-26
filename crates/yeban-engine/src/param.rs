@@ -56,7 +56,7 @@
 //! 槽位号**与实体**必须同时匹配：一条轨只有 [`TRACK_GAIN_SLOT`]、主总线只有
 //! [`MASTER_GAIN_SLOT`] ⇒ 两个号**不通用**（互相串用一律未映射，见下面的清单）。
 //!
-//! ⚠ ⭐ **本模块只消费上面两格**。另外四个槽位号由**同一 crate 的另一条通路**消费，
+//! ⚠ ⭐ **本模块只消费上面两格**。另外六个槽位号由**同一 crate 的另一条通路**消费，
 //! 它们在这里的裁决**仍然是 `Unmapped`（并且计数）** —— 这是设计，不是遗漏：
 //!
 //! | 槽位号 | 谁消费 | 引入 |
@@ -64,6 +64,7 @@
 //! | [`TRACK_PAN_LEFT_SLOT`]／[`TRACK_PAN_RIGHT_SLOT`]（2／3） | `crate::rt` 的**事件循环先截走**，写进逐轨声相平滑对（`armed_pan_l`／`armed_pan_r`） | 裁决 P4=(b) |
 //! | [`SEND_GAIN_SLOT`]（4） | `crate::rt` 的**事件循环先截走**，写进逐**边**发送量平滑表（`armed_send_gain`） | `#261` |
 //! | [`STRIP_OUTPUT_GAIN_SLOT`]（5） | `crate::rt` 的**事件循环先截走**，直接赋值给该轨**已武装通道条**的输出增益（`armed_strips`，⛔ 不经平滑器） | S1 第一片（`output_gain_db`） |
+//! | [`MASTER_PAN_LEFT_SLOT`]／[`MASTER_PAN_RIGHT_SLOT`]（6／7） | `crate::rt` 的**事件循环先截走**，写进主总线声相平滑对（`armed_master_pan_l`／`armed_master_pan_r`），施加在步骤 3a'⁰（与静态主总线声相同一位置） | T-FIX-537 |
 //!
 //! 两者都是"打得到那条通路 ⇒ 生效且 `param_unmapped_events` 不动；打不到 ⇒ 交回本表判
 //! `Unmapped` 并计数"（单一归属：未映射的裁决只有一处）。
@@ -171,7 +172,7 @@
 //! | P1 | **绝对值 → 乘子的换算**（`AutomationTarget::TrackVolume` 的 dB 值 → 本槽位的线性乘子）由谁做 | 本表刻意只收乘子（§2.1）；换算需要一个"当前静态值"的读点，那是模型／app 侧的事实。**两个槽位同一件事**（音轨与主总线） |
 //! | P2 | **槽位词汇的模型层规范**（`DeviceDefinition::params` 的字符串键 → 稳定索引） | 与 `engine-mix-notes.md` §8.2 的 **N5** 同一件事；它落下之后本模块的槽位表应当改为直读模型字段 |
 //! | P3 | ~~**主总线增益的自动化槽位**~~ ⇒ **已由本票关闭**（[`MASTER_GAIN_SLOT`]，见 §2.3）。**残留**：主总线的绝对值 → 乘子的换算仍是 P1 | 关闭的理由：`crate::rt` 已经有一条明确的总线增益路径（`scale_bus`），本槽位只是同位置的第二个乘子，语义不需要新裁决 |
-//! | P4 | **声相（`pan`）与插入器件参数的自动化槽位** | 本票只开了两个**增益**槽位。声相的施加点在声相表（构造期 `cos`／`sin`），把它做成逐样本需要"声相律在事件边界求值"的新裁决（超越函数类能不能在事件边界跑）；器件参数的词汇又卡在 P2 |
+//! | P4 | **声相（`pan`）与插入器件参数的自动化槽位** | 本票只开了两个**增益**槽位。声相的施加点在声相表（构造期 `cos`／`sin`），把它做成逐样本需要"声相律在事件边界求值"的新裁决（超越函数类能不能在事件边界跑）；器件参数的词汇又卡在 P2。⭐ 声相这一半**已关闭**：逐轨声相（槽位 2/3，裁决 P4=(b)）与主总线声相（槽位 6/7，T-FIX-537）都已落地；插入器件参数仍在 P2 |
 
 use yeban_dsp::smoothing::{DEFAULT_TIME_CONSTANT_S, ParamSmoother};
 use yeban_model::EntityId;
@@ -250,6 +251,28 @@ pub const SEND_GAIN_SLOT: u16 = 4;
 ///   的 `forced_identity_strip`），实时侧**不做**这件事 ⇒ 那类泳道在控制侧由
 ///   `yeban_app` 的 `unapplied_automation_lanes` 计数（谓词与采样共用，不各写一套）。
 pub const STRIP_OUTPUT_GAIN_SLOT: u16 = 5;
+
+/// ⭐ **主总线声相左增益**的槽位号（T-FIX-537）。
+///
+/// 语义：`entity` 必须是**主总线**（不是一条普通音轨），值是**线性绝对增益**
+/// —— 与逐轨声相 [`TRACK_PAN_LEFT_SLOT`] 同一条口径：控制侧用
+/// [`crate::mixer::centered_pan_gains`] 把主总线 `TrackPan` 泳道的位置折成
+/// `(左, 右)` 绝对增益发进来（"替换"口径；`pan == 0 ⇒ (1, 1)`，与离线
+/// `yeban_render::automation::TrackPanAutomation` 的 `apply_pan_block` 用的是
+/// 同一个居中规则 ⇒ 同一 tick 的左右增益逐位相同）。
+///
+/// * **替换**快照的主总线静态声相（[`crate::snapshot::EngineSnapshot::master_pan_left`]），
+///   ⛔ 不是乘在它之上：离线侧非恒等时也是把静态声相关掉、只乘自动化给的绝对增益
+///   （`render_core.rs` 的 `master_pan_automation`）⇒ 两条腿同序；
+/// * ⚠ **本表（[`ParamTable`]）不消费它**：[`ParamTable::accept`] 仍然只认
+///   [`TRACK_GAIN_SLOT`]／[`MASTER_GAIN_SLOT`]，其余一律 [`ParamOutcome::Unmapped`]。
+///   `slot = 6/7` 的事件由 `crate::rt` 的**事件循环先截走**（与槽位 2/3/4/5 同一条
+///   先例）⇒ 实体是主总线就生效且 `param_unmapped_events` 不动；实体不是主总线
+///   就原样交给 `ParamTable` 判 `Unmapped` 并**计数**（单一归属：未映射的裁决只有一处）。
+pub const MASTER_PAN_LEFT_SLOT: u16 = 6;
+
+/// **主总线声相右增益**的槽位号（与 [`MASTER_PAN_LEFT_SLOT`] 成对，语义相同）。
+pub const MASTER_PAN_RIGHT_SLOT: u16 = 7;
 
 /// 发送量槽位表的容量（`#261` 裁决 1）。///
 /// 一条边一个槽位，最多 [`SEND_SLOTS`] 条边被武装。装满之后**多出来的边**：

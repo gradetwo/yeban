@@ -260,8 +260,8 @@ use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, MonitorControls, PanLaw, apply_monitor, apply_monitor_bus};
 use crate::param::{
-    ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT, TRACK_PAN_LEFT_SLOT,
-    TRACK_PAN_RIGHT_SLOT,
+    MASTER_PAN_LEFT_SLOT, MASTER_PAN_RIGHT_SLOT, ParamTable, SEND_GAIN_SLOT, SEND_SLOTS,
+    STRIP_OUTPUT_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
 };
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::routing::{RouteTarget, RoutingPlan};
@@ -3877,6 +3877,26 @@ pub struct EngineRuntime {
     armed_master_pan_left: f32,
     /// 见 [`Self::armed_master_pan_left`]（右声道）。
     armed_master_pan_right: f32,
+    /// ⭐ **主总线声相自动化的逐样本平滑器**（左声道；T-FIX-537）。
+    ///
+    /// 与逐轨声相平滑对（`armed_pan_l`／`armed_pan_r`）同一个器件、同一个 `τ ≈ 5 ms`：
+    /// 控制侧把主总线 `TrackPan` 泳道的位置折成**绝对** `(左, 右)` 增益发进来，
+    /// 这里只做"从当前值逐样本收敛到目标值"。`armed_master_pan_armed == false` ⇒
+    /// 走**静态**主总线声相（[`Self::armed_master_pan_left`]）⇒ 没有主总线声相自动化
+    /// 的工程**逐位不变**。
+    armed_master_pan_l: ParamSmoother,
+    /// 见 [`Self::armed_master_pan_l`]（右声道）。
+    armed_master_pan_r: ParamSmoother,
+    /// 本主总线是否收到过**被接受的**声相自动化目标（真 ⇒ 走平滑路径）。
+    armed_master_pan_armed: bool,
+    /// **覆盖度见证**：被**平滑**主总线声相乘过的帧数（累计）。
+    ///
+    /// 与 `pan_automation_frames` 同族：那条平滑路径至少在两个可观测上与静态路径
+    /// 相同（都不分配、都不加锁）⇒ 没有这个数，"四元组全 0"可能是空转。
+    /// 读口见 [`EngineRuntime::master_pan_automation_frames`]。
+    master_pan_automation_frames: u64,
+    /// 被拒绝的主总线声相**值**数（非有限 / 负数）。
+    master_pan_automation_value_rejects: u64,
     /// 本快照是否开启节拍器（`transport.metronome_enabled` 的投影）。
     ///
     /// `false`（默认）时**整段咔哒声代码不被执行** ⇒ 输出与接线前逐字节相同。
@@ -4683,6 +4703,20 @@ impl EngineRuntime {
             put!(armed_master_gain, 1.0);
             put!(armed_master_pan_left, 1.0);
             put!(armed_master_pan_right, 1.0);
+            // ⭐ 主总线声相自动化（T-FIX-537）：平滑器构造期建好（回调内绝不再分配）。
+            // 初值采样率与逐轨声相平滑器同一个数（48 kHz），真正的采样率在快照边界
+            // 用 `set_sample_rate` 校准（同值提前返回 ⇒ 不重复算 `exp`）。
+            put!(
+                armed_master_pan_l,
+                ParamSmoother::with_default_time(48_000.0)
+            );
+            put!(
+                armed_master_pan_r,
+                ParamSmoother::with_default_time(48_000.0)
+            );
+            put!(armed_master_pan_armed, false);
+            put!(master_pan_automation_frames, 0);
+            put!(master_pan_automation_value_rejects, 0);
             put!(armed_metronome_enabled, false);
             put!(armed_metronome_ticks_per_beat, 0);
             put!(armed_metronome_beats_per_bar, 0);
@@ -5360,6 +5394,22 @@ impl EngineRuntime {
     #[must_use]
     pub const fn pan_automation_frames(&self) -> u64 {
         self.pan_automation_frames
+    }
+
+    /// **主总线声相自动化的覆盖度见证**：被**平滑**主总线声相乘过的帧数（累计）。
+    ///
+    /// 与 [`Self::pan_automation_frames`] 同族（T-FIX-537）：那条平滑路径至少在两个
+    /// 可观测上与静态路径相同（都不分配、都不加锁）⇒ 没有这个数，"见证为 0"
+    /// 可能是空转。
+    #[must_use]
+    pub const fn master_pan_automation_frames(&self) -> u64 {
+        self.master_pan_automation_frames
+    }
+
+    /// **不静默**：被拒绝的主总线声相自动化**值**数（非有限 / 负数）。
+    #[must_use]
+    pub const fn master_pan_automation_value_rejects(&self) -> u64 {
+        self.master_pan_automation_value_rejects
     }
 
     /// ⭐ **stage 18 覆盖度见证**：**真的走了分声道渲染**的帧数（累计）。
@@ -6045,6 +6095,12 @@ impl EngineRuntime {
             armed_master_gain,
             armed_master_pan_left,
             armed_master_pan_right,
+            // ⭐ 主总线声相自动化（T-FIX-537）：事件循环写目标、逐样本路径推进它们。
+            armed_master_pan_l,
+            armed_master_pan_r,
+            armed_master_pan_armed,
+            master_pan_automation_frames,
+            master_pan_automation_value_rejects,
             armed_metronome_enabled,
             armed_metronome_ticks_per_beat,
             armed_metronome_beats_per_bar,
@@ -6169,6 +6225,19 @@ impl EngineRuntime {
                     } else {
                         None
                     };
+                // --- 主总线声相：**同样的分流**（T-FIX-537）---
+                //
+                // `ParamTable` 只认 0/1 ⇒ 槽位 6/7 也必须在这里被截走，否则每条
+                // 主总线声相事件都会落进 `params.accept` 被判 `Unmapped` 并计数，
+                // 而主总线声相永远不动（那正是本单修的缺陷：离线导出有落点，
+                // 实时监听静默跳过）。
+                // ⚠ 只在**实体就是主总线**时截走：别的实体带 6/7 号槽位就原样交给
+                // `params.accept` ⇒ 由它判 `Unmapped` 并计数（**单一归属**，与声相
+                // 逐字相同）。武装之前（还没有快照 ⇒ `armed_master` 是默认值）
+                // 到达的事件同样打不到 ⇒ 计数，下一跳自愈（app 每跳重采样）。
+                let master_pan = (target.slot == MASTER_PAN_LEFT_SLOT
+                    || target.slot == MASTER_PAN_RIGHT_SLOT)
+                    && target.entity == *armed_master;
                 // --- 逐边发送量：**同样的分流**（任务单 `#261`）---
                 //
                 // `ParamTable` 只认 0/1 ⇒ 槽位 4 也必须在这里被截走，否则每条
@@ -6220,6 +6289,19 @@ impl EngineRuntime {
                             armed_pan_r[index].set_target(value);
                         }
                         armed_pan_armed[index] = true;
+                    }
+                } else if master_pan {
+                    if !value.is_finite() || value < 0.0 {
+                        // 与 `ParamTable::accept` 同一条口径：非有限 / 负值 ⇒ **计数**拒绝。
+                        *master_pan_automation_value_rejects =
+                            master_pan_automation_value_rejects.wrapping_add(1);
+                    } else {
+                        if target.slot == MASTER_PAN_LEFT_SLOT {
+                            armed_master_pan_l.set_target(value);
+                        } else {
+                            armed_master_pan_r.set_target(value);
+                        }
+                        *armed_master_pan_armed = true;
                     }
                 } else if let Some(index) = send_index {
                     if !value.is_finite() || value < 0.0 {
@@ -6667,6 +6749,16 @@ impl EngineRuntime {
                 *armed_master_gain = current.master_gain();
                 *armed_master_pan_left = current.master_pan_left();
                 *armed_master_pan_right = current.master_pan_right();
+                // ⭐ T-FIX-537：**换快照不覆盖在飞的主总线声相自动化**（与逐轨声相
+                // 同一条裁决）—— 平滑器的 α 跟着快照采样率走；基值只在**还没武装
+                // 自动化**时才吸附到新快照的静态声相。在飞的目标保持不变，换工程
+                // 之后的新事件继续生效（`set_target` 只写目标，不碰当前值）。
+                armed_master_pan_l.set_sample_rate(current.sample_rate() as f32);
+                armed_master_pan_r.set_sample_rate(current.sample_rate() as f32);
+                if !*armed_master_pan_armed {
+                    armed_master_pan_l.snap_to(current.master_pan_left());
+                    armed_master_pan_r.snap_to(current.master_pan_right());
+                }
 
                 // --- 2c'') 每轨**插入器件**（通道条）：与声相表同一个形状 ---
                 // [crate::insert]。计划（哪条轨挂通道条、参数是多少）在**控制线程**的
@@ -7392,10 +7484,21 @@ impl EngineRuntime {
             // 零除法、零超越函数 [MUST-GATE-001]。
             // `(1.0, 1.0)`（默认 `pan = 0`）时**整段跳过** ⇒ 中性主总线的输出与
             // 接线前**逐位**相同。这个对在整份快照的生命周期内不变。
-            let (master_pan_left, master_pan_right) =
-                (*armed_master_pan_left, *armed_master_pan_right);
-            if master_pan_left != 1.0 || master_pan_right != 1.0 {
-                pan_bus(block, master_pan_left, master_pan_right);
+            //
+            // ⭐ T-FIX-537：主总线声相自动化已武装时，**平滑值替换静态声相**
+            // （与逐轨声相平滑对同一条口径：两个平滑器每帧各推进一次 ⇒ 目标
+            // 变化是 5 ms 斜坡，不是 16.7 ms 阶跃）。静态声相只在"没有自动化"
+            // 时起作用 ⇒ 没有主总线声相泳道的工程**逐位不变**。
+            if *armed_master_pan_armed {
+                pan_bus_smoothed(block, &mut *armed_master_pan_l, &mut *armed_master_pan_r);
+                *master_pan_automation_frames =
+                    master_pan_automation_frames.wrapping_add(frames as u64);
+            } else {
+                let (master_pan_left, master_pan_right) =
+                    (*armed_master_pan_left, *armed_master_pan_right);
+                if master_pan_left != 1.0 || master_pan_right != 1.0 {
+                    pan_bus(block, master_pan_left, master_pan_right);
+                }
             }
 
             // --- 3a'') 主总线推子：**逐轨汇流之后、母线限制器之前** ---
@@ -7989,6 +8092,28 @@ fn pan_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, pan_left: f32, pan_righ
     for (l, r) in left.iter_mut().zip(right.iter_mut()) {
         *l *= pan_left;
         *r *= pan_right;
+    }
+}
+
+/// ⭐ 主总线**输出级声相的自动化版**（T-FIX-537）：逐帧平滑值，替换静态声相。
+///
+/// 与 [`pan_bus`] 同形（左右各一次乘），区别只有增益的来源：这里的左右增益是
+/// 两个 [`ParamSmoother`] 每帧各推进一次的**输出值**（`τ ≈ 5 ms`），不是构造期
+/// 算好的常量 ⇒ 目标变化是斜坡，不是阶跃（与逐轨声相平滑对同一条口径）。
+///
+/// 调用点是 [`EngineRuntime::render_block`] 的步骤 3a'⁰，**只在**主总线声相自动化
+/// 已武装时走这里；没武装时仍走 [`pan_bus`] 的静态路径（`(1, 1)` 整段跳过）。
+/// 零分配、零锁、零 I/O、零超越函数 [MUST-GATE-001]。
+fn pan_bus_smoothed(
+    block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    pan_left: &mut ParamSmoother,
+    pan_right: &mut ParamSmoother,
+) {
+    // 与 `pan_bus` 同源：`stereo_mut()` 只给出**有效帧**。
+    let (left, right) = block.stereo_mut();
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        *l *= pan_left.process();
+        *r *= pan_right.process();
     }
 }
 
@@ -9785,7 +9910,17 @@ mod tests {
     /// 同 [`note_snapshot_with_pan`]，但**轨身份由调用方给**：用于"同一条轨换快照"
     /// 与"槽位换主人"两类判据（前者要保持 id，后者要换 id）。
     fn note_snapshot_with_pan_for(revision: u64, pan: f32, track: EntityId) -> EngineSnapshot {
-        let master = EntityId::new();
+        note_snapshot_with_pan_for_master(revision, pan, track, EntityId::new())
+    }
+
+    /// 同 [`note_snapshot_with_pan_for`]，但**母线身份也由调用方给**：主总线声相判据
+    /// 要向母线发事件 ⇒ 必须知道母线身份（T-FIX-537）。
+    fn note_snapshot_with_pan_for_master(
+        revision: u64,
+        pan: f32,
+        track: EntityId,
+        master: EntityId,
+    ) -> EngineSnapshot {
         let mut routing = RoutingGraph {
             nodes: vec![track, master],
             ..RoutingGraph::default()
@@ -9833,6 +9968,21 @@ mod tests {
         )
         .expect("合法图")
         .with_schedules(schedules, 0)
+    }
+
+    /// 同 [`note_snapshot_with_pan`]，但同时返回母线身份（T-FIX-537：主总线声相判据
+    /// 要向母线发事件）。
+    fn note_snapshot_with_master_pan(
+        revision: u64,
+        pan: f32,
+    ) -> (EngineSnapshot, EntityId, EntityId) {
+        let track = EntityId::new();
+        let master = EntityId::new();
+        (
+            note_snapshot_with_pan_for_master(revision, pan, track, master),
+            track,
+            master,
+        )
     }
 
     /// 从一个给定快照装一台运行时（事件通道容量 64）。
@@ -10665,6 +10815,191 @@ mod tests {
             },
             EngineEvent::SetParam {
                 target: crate::ring::ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+                value: 1.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&new_events), 2);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut after_events = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut after_events, 2);
+        assert!(
+            after_events.iter().step_by(2).all(|l| *l == 0.0),
+            "换工程之后的新事件必须继续生效（左声道收敛到 0）"
+        );
+        assert!(
+            after_events.iter().skip(1).step_by(2).any(|r| *r != 0.0),
+            "右声道必须重新有声（不是静音对静音）"
+        );
+    }
+
+    /// 判据（T-FIX-537）：主总线声相自动化**被事件循环截走**、**逐样本平滑**、并**收敛到目标**。
+    ///
+    /// 与逐轨声相判据 `pan_automation_is_intercepted_and_smoothed_per_sample` 同一条尺子，
+    /// 只是实体是母线、槽位是 6/7。四条读数**一次跑出来**：
+    /// ① `param_unmapped_events == 0` ⇒ 事件被 `rt.rs` 截走（**不是**落进 `ParamTable`
+    ///    被判 `Unmapped`）—— 修前这两条事件正是这样被静默丢弃的（母线不在逐轨声相表里，
+    ///    而控制侧又跳过母线 ⇒ 监听永远听不到）；
+    /// ② `master_pan_automation_frames() > 0` ⇒ 平滑路径真的被走到（覆盖度见证）；
+    /// ③ 第一量子的右声道**还**不是 0 ⇒ 是**平滑**而不是阶跃（阶跃会有 zipper）；
+    /// ④ 跑够量子之后右声道**恰好** 0.0 ⇒ 平滑器吸附到硬左目标。
+    #[test]
+    fn master_pan_automation_is_intercepted_and_smoothed_per_sample() {
+        let (snapshot, _track, master) = note_snapshot_with_master_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        // 基线（居中）：左右逐位相同 —— 证明下面观察的差异来自声相，不是别的。
+        assert!(
+            out.iter()
+                .step_by(2)
+                .zip(out.iter().skip(1).step_by(2))
+                .all(|(l, r)| l.to_bits() == r.to_bits()),
+            "居中声相 ⇒ 左右必须逐位相同"
+        );
+
+        // 自动化：硬左（绝对增益 L = 1.0、R = 0.0）。
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_RIGHT_SLOT),
+                value: 0.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2, "两个声相事件必须都进通道");
+        // ⭐ **R95 测量窗**：与逐轨声相同一条（输出比状态晚一个量子）。
+        let mut shifted = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut shifted, 2);
+        let mut first = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut first, 2);
+        assert_eq!(
+            rig.runtime.stats().param_unmapped_events,
+            0,
+            "主总线声相槽位必须被 rt.rs 截走，不得被判成未映射"
+        );
+        assert!(
+            rig.runtime.master_pan_automation_frames() > 0,
+            "平滑路径必须真的被走到（见证）"
+        );
+        assert!(
+            first.iter().skip(1).step_by(2).any(|r| *r != 0.0),
+            "第一量子的右声道不得已经归零（那说明是阶跃，不是平滑）"
+        );
+
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut settled = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut settled, 2);
+        assert!(
+            settled.iter().skip(1).step_by(2).all(|r| *r == 0.0),
+            "硬左之后右声道必须**恰好**为 0（平滑器吸附到目标）"
+        );
+        // R58：等号判据的 `assert_ne!` 落在同一个表达式上 —— 左声道必须仍然有声。
+        assert!(
+            settled.iter().step_by(2).any(|l| *l != 0.0),
+            "硬左的左声道不得也是 0（否则上面那条是静音对静音）"
+        );
+    }
+
+    /// 判据（T-FIX-537）：**不静默** —— 别的实体带 6/7 号槽位、以及**负值**都被计数拒绝。
+    ///
+    /// ① 一条普通轨带主总线声相槽位 ⇒ 实体不是母线 ⇒ 交回 `ParamTable` 判 `Unmapped`；
+    /// ② 母线带负值 ⇒ 计数拒绝（硬右的左增益就是负的，控制侧必须先 clamp）。
+    #[test]
+    fn master_pan_automation_rejects_wrong_entity_and_negative_values() {
+        let (snapshot, track, master) = note_snapshot_with_master_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        // 先武装（否则"找不到"会把已知实体也算成拒绝，判据就不精确了）。
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, MASTER_PAN_LEFT_SLOT),
+                value: 0.5,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_LEFT_SLOT),
+                value: -4.371_139e-8,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            rig.runtime.stats().param_unmapped_events,
+            1,
+            "普通轨带主总线声相槽位必须被判未映射并计数（⛔ 不静默）"
+        );
+        assert_eq!(
+            rig.runtime.master_pan_automation_value_rejects(),
+            1,
+            "负的主总线声相增益必须被计数拒绝（硬右的左增益就是负的！）"
+        );
+        assert_eq!(
+            rig.runtime.master_pan_automation_frames(),
+            0,
+            "两次都没生效 ⇒ 不得走平滑路径"
+        );
+    }
+
+    /// 判据（T-FIX-537；与逐轨声相同一条裁决）：**换快照不覆盖在飞的主总线声相自动化**，
+    /// 而换工程之后的**新事件继续生效**。
+    ///
+    /// 夹具的静态主总线声相恒为 `(1, 1)`（母线不在快照的 `tracks` 表里 ⇒
+    /// `master_pan_of` 取恒等）⇒ 它与硬左目标 `(1, 0)` 的差已经足够分辨"武装时
+    /// 有没有把在飞目标抹掉"：若武装 `snap_to` 到静态值，右声道会回到满幅。
+    #[test]
+    fn a_snapshot_swap_does_not_override_an_in_flight_master_pan_automation() {
+        let (snapshot, track, master) = note_snapshot_with_master_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        // 先跑一个量子：快照边界**武装**（`armed_master` 由此确立）。
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_RIGHT_SLOT),
+                value: 0.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+
+        // 换一份新修订的快照，**同一条母线 id**（静态主总线声相仍是恒等 `(1, 1)`）。
+        let swapped = note_snapshot_with_pan_for_master(2, 0.0, track, master);
+        rig.slot.publish(swapped);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut after_swap = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut after_swap, 2);
+        assert!(
+            after_swap.iter().skip(1).step_by(2).all(|r| *r == 0.0),
+            "换快照不得覆盖在飞的自动化（右声道必须仍然是 0）"
+        );
+
+        // 换工程**之后**的新事件继续生效：改成硬右（L = 0、R = 1）。
+        let new_events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_LEFT_SLOT),
+                value: 0.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(master, MASTER_PAN_RIGHT_SLOT),
                 value: 1.0,
             },
         ];

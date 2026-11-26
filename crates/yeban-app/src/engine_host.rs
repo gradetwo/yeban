@@ -121,8 +121,8 @@ use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
 use yeban_engine::mixer::{MonitorBus, MonitorControls, PanLaw, centered_pan_gains};
 use yeban_engine::param::{
-    MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT,
-    TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+    MASTER_GAIN_SLOT, MASTER_PAN_LEFT_SLOT, MASTER_PAN_RIGHT_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT,
+    SEND_SLOTS, STRIP_OUTPUT_GAIN_SLOT, TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
 };
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::routing::edge_carries_audio;
@@ -591,6 +591,13 @@ pub struct TransportActionRecord {
 /// 只数 `read_enabled == true` 的泳道：关掉的泳道**本来就不该生效**，把它算成缺口
 /// 只会制造假读数。`TrackVolume` / `TrackPan` **不**计入 —— 它们已经被
 /// [`EngineHost::publish_automation`] 真的落到引擎里了。
+///
+/// ⚠ ⭐ **T-FIX-537 对上面这段的修订**：上面写"`TrackPan` 已经被 `publish_automation`
+/// 真的落到引擎里了"这句话**对母线当时是假的** —— 母线声相被声相分支跳过
+/// （`track.id != master_bus_track_id`），而本分类又对 `TrackPan` 直接放行不计
+/// ⇒ 母线声相泳道"监听听不到、导出有变化、读数也不计"。现在母线声相经
+/// `MASTER_PAN_LEFT/RIGHT_SLOT` 真的落到引擎里了 ⇒ 这句话**重新为真**，本分类
+/// 的放行口径一位不动（⛔ 不新增"主总线声相"一列：落点已补，数它就是假读数）。
 ///
 /// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：实时引擎没有槽位。
 /// ⚠ ⭐ **任务单 `#266` 修订了这段话的"连离线也没有落点"那一半，`#267`/`#293`/`#304` 再扩**：
@@ -2210,6 +2217,15 @@ impl EngineHost {
     /// ⛔ 不共用执行。⚠ 母线仍被排除（引擎的声相表不含它）⇒ 原文的“主总线两个槽位”
     /// 只适用于 `TrackVolume`。
     ///
+    /// ⚠ ⭐ **T-FIX-537 对上面这条登记的修订（⭐ 只改"母线声相"这一支）**：
+    /// ⭐ “母线仍被排除”**不再成立**：声相分支现在也给母线下发两条**绝对**增益事件
+    /// （槽位 `MASTER_PAN_LEFT/RIGHT_SLOT` = 6/7，实体 = 母线），引擎侧由
+    /// `armed_master_pan_l/r` 平滑后施加在 3a'⁰（与静态主总线声相同一位置，推子之前）。
+    /// 值仍由同一个 `centered_pan_gains` 算 ⇒ 同一 tick 的左右增益与离线
+    /// `TrackPanAutomation` 的 `apply_pan_block` **逐位相同**。`TrackVolume` 那一支
+    /// 没有改动；`unapplied_automation_lanes` 的 `TrackPan` 放行口径也因此从
+    /// "声称已落地"变成了**真的已落地**（母线是最后一块）。
+    ///
     /// ⚠ ⭐ **任务单 `#260` 对上面两条登记的修订（⭐ 只改"采样结构"，不改值）**：
     /// ⭐ `#257` 把 `TrackPan` 发布进了引擎，但它被**嵌在** `TrackVolume` 分支的
     /// `if let` **里面**（音量泳道缺失 ⇒ `continue` 把声相段一起跳过）⇒
@@ -2350,10 +2366,21 @@ impl EngineHost {
             // ⭐ `#300`：修前这里用**裸** `pan_gains` ⇒ 自动化经过 `pan == 0` 时发
             // `0.707/0.707`，而源侧静态已是 `(1, 1)` / 离线自动化也是 `(1, 1)`
             // ⇒ "自动化过中心"仍差 3 dB。现在两条腿共用同一条落点规则。
-            // ⚠ 母线**不**进声相表（引擎的 `armed_pan_gains` 明确排除它）⇒ 这里也跳过，
-            // 否则两条事件会被判未映射（计数），读数上像缺陷。
+            // ⭐ T-FIX-537：母线**也**进声相（修前这里跳过它 ⇒ 实时监听静默丢声相，
+            // 而离线导出经 `TrackPanAutomation` 有落点）。母线用**自己的一对槽位**
+            // （`MASTER_PAN_LEFT/RIGHT_SLOT` = 6/7）：引擎的逐轨声相表
+            // （`armed_pan_gains`）明确排除母线，母线声相是**母线级**的一级，
+            // 落点在 3a'⁰（与静态主总线声相同一位置，推子之前）；两条事件的**值**
+            // 与逐轨声相同一个公式（`centered_pan_gains`，`pan == 0 ⇒ (1, 1)`）
+            // ⇒ 同一 tick 的左右增益与离线 `apply_pan_block` 逐位相同。
+            // 槽位号与实体**不通用**（单一归属：串用一律未映射）：逐轨走 2/3，母线走 6/7。
             // ⭐ `#260`：这一段**不再**嵌在音量块里（见上）—— 没有音量泳道也照样采样。
-            if track.id != project.master_bus_track_id {
+            let (left_slot, right_slot) = if track.id == project.master_bus_track_id {
+                (MASTER_PAN_LEFT_SLOT, MASTER_PAN_RIGHT_SLOT)
+            } else {
+                (TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT)
+            };
+            {
                 let pan_target = AutomationTarget::TrackPan { track_id: track.id };
                 if let Some(lane) = project.automation_lane(&pan_target)
                     && lane.read_enabled
@@ -2364,10 +2391,8 @@ impl EngineHost {
                     // ⚠ **必须 clamp 到 `>= 0`**：硬右时曲线左增益实测是
                     // `-4.371139e-8`（f32 的 `π/2` 不精确，见 `mixer` 的端点判据）⇒
                     // 不 clamp 会被引擎"有限且非负"的值规则拒掉（静默丢失）。
-                    for (slot, value) in [
-                        (TRACK_PAN_LEFT_SLOT, left.max(0.0)),
-                        (TRACK_PAN_RIGHT_SLOT, right.max(0.0)),
-                    ] {
+                    for (slot, value) in [(left_slot, left.max(0.0)), (right_slot, right.max(0.0))]
+                    {
                         if !value.is_finite() || len == batch_capacity {
                             dropped += 1;
                             continue;
@@ -4508,5 +4533,149 @@ mod tests {
         assert_eq!(dispatch.written, 1, "一条命令，一条写进去");
         assert!(dispatch.is_success(), "真的落地了才报成功：{dispatch:?}");
         assert_eq!(reading.state, TransportState::Playing);
+    }
+
+    // ---------------------------------------------------------------------
+    // T-FIX-537：主总线 `TrackPan` 必须**实时**落地（不再静默跳过、读数也不计）
+    // ---------------------------------------------------------------------
+
+    /// 往 demo 工程的**主总线**轨上加一条 `TrackPan` 泳道（平直值，tick 0 处无插值歧义）。
+    fn insert_master_pan_lane(project: &mut YebanProjectV1, pan: f32) {
+        let master = project.master_bus_track_id;
+        let target = AutomationTarget::TrackPan { track_id: master };
+        project
+            .tracks
+            .get_mut(&master)
+            .expect("主总线轨必须在")
+            .automation_lanes
+            .insert(
+                target,
+                AutomationLane {
+                    target,
+                    points: automation_points(&[(0, pan), (1_920, pan)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+    }
+
+    /// ⭐ **T-FIX-537 判据 1（值）**：主总线 `TrackPan` 泳道 ⇒ 修前 **0 条**、修后 **2 条**
+    /// （`MASTER_PAN_LEFT_SLOT` ＋ `MASTER_PAN_RIGHT_SLOT`），值与离线导出**逐位相同**。
+    ///
+    /// 平直 -0.5 ⇒ tick 0 处没有插值歧义；离线侧 `TrackPanAutomation::apply_pan_block`
+    /// 在同一 tick 上给的正是 `centered_pan_gains(pan, |p| pan_gains(p, law))` ——
+    /// 本判据按离线那条式子**逐位**断言实时事件的值（`to_bits`），⛔ 不只断言"在曲线上"。
+    /// `pan == 0` 的居中规则由判据 2 钉死。
+    #[test]
+    fn master_bus_trackpan_is_published_with_offline_bitwise_gains() {
+        let mut project = demo_project();
+        insert_master_pan_lane(&mut project, -0.5);
+        let master = project.master_bus_track_id;
+        let mut host = EngineHost::new();
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        println!("### #537 master-pan events = {params:?}");
+        let master_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == master)
+            .collect();
+        assert_eq!(
+            master_events.len(),
+            2,
+            "修前主总线声相恒为 0 条（声相分支跳过母线）；修后左 + 右两条"
+        );
+        // 离线公式（`yeban_render::automation::centered_pan_gains`，曲线闭包是
+        // 引擎的 `pan_gains`）：同一 tick 的值必须与实时事件逐位相同。
+        let law = PanLaw::from_model(project.audio_config.pan_law);
+        let (expected_left, expected_right) =
+            yeban_render::automation::centered_pan_gains(-0.5, |pan| {
+                yeban_engine::mixer::pan_gains(pan, law)
+            });
+        assert_eq!(
+            master_events[0],
+            (master, MASTER_PAN_LEFT_SLOT, expected_left),
+            "主总线声相左增益必须与离线逐位相同"
+        );
+        assert_eq!(
+            master_events[1],
+            (master, MASTER_PAN_RIGHT_SLOT, expected_right),
+            "主总线声相右增益必须与离线逐位相同"
+        );
+        // 同一条值也等于引擎侧的 `centered_pan_gains`（两条腿共用同一条落点规则），
+        // 并且等于独立字面量（⛔ 不在判据里只调被测函数自证）。
+        let (engine_left, engine_right) = centered_pan_gains(-0.5, law);
+        assert_eq!(expected_left.to_bits(), engine_left.to_bits());
+        assert_eq!(expected_right.to_bits(), engine_right.to_bits());
+        assert!(
+            (engine_left - 0.923_879_5).abs() < 1e-6,
+            "左增益 {engine_left} ≠ cos(π/8)"
+        );
+        assert!(
+            (engine_right - 0.382_683_43).abs() < 1e-6,
+            "右增益 {engine_right} ≠ sin(π/8)"
+        );
+        assert_eq!(
+            params.len(),
+            5,
+            "同一次采样里鼓音量 1 ＋ 贝斯声相 2 ＋ 主总线声相 2"
+        );
+        assert_eq!(host.automation_counts(), (5, 0), "五条都写进去了、没有丢");
+        assert_eq!(
+            host.automation_unapplied(),
+            0,
+            "主总线声相泳道不是「未落地」"
+        );
+    }
+
+    /// ⭐ **T-FIX-537 判据 2（居中规则＋关灯）**：主总线声相 `pan == 0` ⇒ `(1, 1)`
+    /// （⛔ 不是 `0.707/0.707`：自动化过中心不得差 3 dB）；关掉读开关 ⇒ 0 条。
+    #[test]
+    fn master_bus_trackpan_at_center_is_identity_and_disabled_publishes_nothing() {
+        let mut project = demo_project();
+        insert_master_pan_lane(&mut project, 0.0);
+        let master = project.master_bus_track_id;
+        let mut host = EngineHost::new();
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        let master_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == master)
+            .collect();
+        assert_eq!(
+            master_events.len(),
+            2,
+            "居中也要发两条（绝对增益，不是省略）"
+        );
+        assert_eq!(
+            master_events,
+            vec![
+                (master, MASTER_PAN_LEFT_SLOT, 1.0),
+                (master, MASTER_PAN_RIGHT_SLOT, 1.0),
+            ],
+            "pan == 0 ⇒ 逐位 (1, 1)：与离线 `centered_pan_gains` 同一条规则"
+        );
+        assert_eq!(host.automation_unapplied(), 0);
+
+        // 关灯：主总线声相泳道关掉 ⇒ 一条都不发（其余泳道照旧）。
+        let target = AutomationTarget::TrackPan { track_id: master };
+        project
+            .tracks
+            .get_mut(&master)
+            .expect("主总线轨必须在")
+            .automation_lanes
+            .get_mut(&target)
+            .expect("主总线声相泳道必须在")
+            .read_enabled = false;
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        assert_eq!(
+            params
+                .iter()
+                .filter(|(entity, _, _)| *entity == master)
+                .count(),
+            0,
+            "关掉的主总线声相泳道不得下发"
+        );
+        assert_eq!(params.len(), 3, "鼓音量 1 ＋ 贝斯声相 2（主总线 0 条）");
     }
 }
