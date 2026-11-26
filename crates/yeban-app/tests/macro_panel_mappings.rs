@@ -162,11 +162,11 @@ fn the_panel_is_reachable_from_the_live_window() {
 /// `Op` 枚举体**有** `SetMacroMappings` 变体 ⇒ 宏映射的写入通路已存在。
 ///
 /// 历史：T-FIX-88 发现缺口（本判据旧版断言 `!enum_body.contains("mappings")`）；
-/// T-FIX-93 同批（2026-11-24）落地 `Op::SetMacroMappings`（陈旧载荷校验 =
+/// T-FIX-96（2026-11-24）落地 `Op::SetMacroMappings`（陈旧载荷校验 =
 /// `old_mappings` 逐项相等），MCP 工具面经 `yeban_set_macro` 的可选 `mappings`
 /// 参数接线。**仍然有效的纪律**：GUI 改映射必须走 `Op` 这条唯一写入载体
 /// （`ADR-0031` D1），不许绕过它直接改内存模型 —— 面板的建立 / 改绑 / 删除
-/// 入口接线即本判据的下一步（T-FIX-88 承接方）。
+/// 入口接线即本判据的下一步（待后续线承接）。
 #[test]
 fn the_op_enum_has_a_macro_mapping_write_path() {
     let ops = read("../yeban-model/src/ops.rs");
@@ -193,7 +193,9 @@ fn the_op_enum_has_a_macro_mapping_write_path() {
         "前提判据自身失效：SetMacro 变体都找不到，说明切片的锚点不对"
     );
     assert!(
-        !MACRO_MAPPING_PANEL_NOT_WIRED.is_empty(),
-        "常量必须给用户一句话事实（回执与台账引用它）"
+        MACRO_MAPPING_PANEL_NOT_WIRED.contains("写路径已存在")
+            && MACRO_MAPPING_PANEL_NOT_WIRED.contains("T-FIX-96")
+            && !MACRO_MAPPING_PANEL_NOT_WIRED.contains("写路径不存在"),
+        "常量必须给用户一句话事实：写路径已存在（T-FIX-96），仅面板入口未接线；实际：{MACRO_MAPPING_PANEL_NOT_WIRED}"
     );
 }

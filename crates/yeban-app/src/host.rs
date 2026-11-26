@@ -587,7 +587,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_macro_value_labels(strings(&view.macro_value_labels()));
     // ⭐ 级联去向（T-FIX-88 项 1）：与上面三个数组同索引集，只读呈现
     // （写路径已存在：`Op::SetMacroMappings`，见 `bridge::MACRO_MAPPING_PANEL_NOT_WIRED`；
-    // 面板映射编辑入口待 T-FIX-88 承接方接线）。
+    // 面板映射编辑入口待后续线接线）。
     ui.set_macro_mapping_summaries(strings(&view.macro_mapping_summaries()));
     // ⭐ 轨 / 路由（任务单 `#160`）：显示轨数 ＋ 建轨 / "删除展示轨"的可用性与逐字原因
     // （主总线说明那一行兼作"没有主总线 ⇒ 不能建轨"的原因）。五个都是**标量**（不是新

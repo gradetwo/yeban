@@ -1,4 +1,4 @@
-//! T-FIX-93 同批（2026-11-24）：`Op::SetMacroMappings` 判据。
+//! T-FIX-96（2026-11-24）：`Op::SetMacroMappings` 判据。
 //!
 //! 钉四件事：
 //! 1. **陈旧载荷必被拒** —— `old_mappings` 与文档现值逐项不符 ⇒ `OpStateMismatch`，文档一位不动；
@@ -6,10 +6,10 @@
 //! 3. **非法深度先于落盘被拒** —— `depth` 非有限 ⇒ `NonFiniteValue`，文档一位不动；
 //! 4. **空列表是一等状态** —— 清空全部映射合法（不是"丢失"），且同样可逆。
 //!
-//! 前提事实（T-FIX-93 任务单 + `bridge::MACRO_MAPPING_PANEL_NOT_WIRED` 旧锚，
+//! 前提事实（T-FIX-96 任务单 + `bridge::MACRO_MAPPING_PANEL_NOT_WIRED` 旧锚，
 //! 当时旧名 `MACRO_MAPPING_NO_WRITE_PATH`）：此前 `Op`
 //! 全集没有任何变体能写 `MacroParameter::mappings` —— 本变体就是那个缺口的第一块落地
-//! （model 层；MCP 工具面同批接线；GUI 宏映射面板的改绑入口由 T-FIX-88 的承接方接线）。
+//! （model 层；MCP 工具面同批接线；GUI 宏映射面板的改绑入口待后续线接线）。
 
 use yeban_model::ops::Op;
 use yeban_model::project::{AutomationTarget, MacroMapping};

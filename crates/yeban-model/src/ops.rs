@@ -1308,7 +1308,7 @@ pub enum Op {
     /// 陈旧载荷校验与 [`Op::SetMacro`] 同契约：`old_mappings` 必须与文档现值
     /// **逐项相等**，否则 [`ModelError::OpStateMismatch`]（见 [`Op::precondition`]）。
     /// 空列表是一等状态 = 清空全部映射（⛔ 不是"丢失"）。
-    /// T-FIX-93 同批（2026-11-24）解除 `bridge::MACRO_MAPPING_PANEL_NOT_WIRED`
+    /// T-FIX-96（2026-11-24）落地本变体，解除 `bridge::MACRO_MAPPING_PANEL_NOT_WIRED`
     /// （当时旧名 `MACRO_MAPPING_NO_WRITE_PATH`，写路径落地后随 ISS-MWTZ18HO 名实对齐改名）
     /// 所记录的写入口缺口（宏映射面板改绑路径的前提）。
     SetMacroMappings {

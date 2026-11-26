@@ -1718,7 +1718,7 @@ fn send_gain_display(gain_db: Option<f32>) -> String {
 ///
 /// ⚠ 只读：`MacroMapping` 的写路径已在系统层落地（`Op::SetMacroMappings`，T-FIX-96
 /// 同批，见 [`macro_mapping_panel_not_wired`] 的文档与判据），但宏面板的建立 /
-/// 改绑 / 删除入口尚未接线（T-FIX-88 承接方），因此这一行仍只呈现
+/// 改绑 / 删除入口尚未接线（待后续线承接），因此这一行仍只呈现
 /// "这个宏会推动谁、推多少"，⛔ 界面上不许绕过 `Op` 直改模型
 /// —— 那会造出第二真理源。
 #[derive(Debug, Clone, PartialEq)]
@@ -1818,13 +1818,13 @@ pub fn macro_depth_display(depth: f32) -> String {
 
 /// 宏映射的写入状态锚点（历史 + 现状，带落点）。
 ///
-/// **写路径已存在**（2026-11-24，T-FIX-93 同批）：`Op::SetMacroMappings`
+/// **写路径已存在**（2026-11-24，T-FIX-96）：`Op::SetMacroMappings`
 /// （`crates/yeban-model/src/ops.rs`，陈旧载荷校验 = `old_mappings` 逐项相等），
 /// MCP 侧经 `yeban_set_macro` 的可选 `mappings` 参数接线。
-/// **面板现状**：宏映射面板仍未接建立 / 改绑 / 删除入口（T-FIX-88 承接方接线）；
+/// **面板现状**：宏映射面板仍未接建立 / 改绑 / 删除入口，待后续接线单承接；
 /// 在那之前 GUI 若自己改内存模型，
 /// 就等于绕过 `Op` 这条唯一写入载体（`ADR-0031` D1 的同一条纪律）⇒ 会造出第二真理源。
-pub const MACRO_MAPPING_PANEL_NOT_WIRED: &str = "宏映射编辑入口未接线（写路径已存在：Op::SetMacroMappings，待面板接入；在那之前不许绕过 Op 直改模型）";
+pub const MACRO_MAPPING_PANEL_NOT_WIRED: &str = "宏映射编辑入口未接线（写路径已存在：Op::SetMacroMappings，T-FIX-96 已落地；GUI 面板入口待后续线承接；在那之前不许绕过 Op 直改模型）";
 
 /// 旧名存档（ISS-MWTZ18HO 名实对齐）：写路径落地（T-FIX-96）后，`NO_WRITE_PATH` 一名
 /// 与常量值/文档都相牾，故随判据名一并改为 [`MACRO_MAPPING_PANEL_NOT_WIRED`]；
@@ -1834,7 +1834,7 @@ pub const MACRO_MAPPING_PANEL_NOT_WIRED: &str = "宏映射编辑入口未接线�
 ///
 /// 本函数不执行任何事；判据见
 /// `crates/yeban-app/tests/macro_panel_mappings.rs`（写路径存在性）与
-/// `crates/yeban-app/src/host.rs` 的映射面板接线（待 T-FIX-88 承接方）。
+/// `crates/yeban-app/src/host.rs` 的映射面板接线（待后续线承接）。
 /// 旧名 `macro_mapping_writes_are_absent` 同步作废（见 [`MACRO_MAPPING_PANEL_NOT_WIRED`]
 /// 的改名存档）。
 #[must_use]
