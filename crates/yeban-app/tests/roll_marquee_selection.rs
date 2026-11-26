@@ -60,6 +60,22 @@ fn three_note_project() -> (YebanProjectV1, EntityId, EntityId) {
     (project, lead_id, clip_id)
 }
 
+/// 夹具：三颗可见音符 + 一颗**窗口下方**的低音（48；默认窗口 60..=75）。
+fn project_with_offscreen_low_note() -> (YebanProjectV1, EntityId) {
+    let (mut project, _lead_id, clip_id) = three_note_project();
+    let low_id = EntityId::new();
+    let ClipContent::Midi { notes } = &mut project
+        .clip_pool
+        .get_mut(&clip_id)
+        .expect("片段池条目")
+        .content
+    else {
+        unreachable!();
+    };
+    notes.insert(low_id, MidiNote::new(low_id, 0, 48, 480));
+    (project, low_id)
+}
+
 fn midi_note_count(project: &YebanProjectV1) -> usize {
     project
         .clip_pool
@@ -69,6 +85,29 @@ fn midi_note_count(project: &YebanProjectV1) -> usize {
             ClipContent::Audio { .. } => 0,
         })
         .sum()
+}
+
+/// T-FIX-766：框选矩形拖进底部力度泳道时，纵向 max_y 会覆盖窗口外行；
+/// 命中必须先按当前音高窗口（60..=75）裁剪，窗口外的低音 48 不得进选区。
+#[test]
+fn marquee_into_velocity_lane_does_not_select_offscreen_low_pitch() {
+    let (project, low_id) = project_with_offscreen_low_note();
+    let view = ViewState::from_project(&project).expect("投影");
+    let hits = host::roll_marquee_hits(
+        &view,
+        0.0,
+        10_000.0,
+        (0.0, -1_000.0),
+        (10_000.0, 10_000.0),
+        16.0,
+        None,
+        60,
+    );
+    assert_eq!(hits.len(), 3, "只许选中窗口内三颗，实际 {hits:?}");
+    assert!(
+        !hits.contains(&low_id.to_string()),
+        "窗口外低音 48 不得被框选：{hits:?}"
+    );
 }
 
 #[test]

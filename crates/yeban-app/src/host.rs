@@ -22648,6 +22648,8 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 
 /// 框选命中（ISS-MWTFLI5C-10E44F）：矩形与音符矩形**相交**即命中（rubberband 口径），
 /// 与 [`ViewState::hit_test_visible_scoped_with_base`] 同一套坐标/作用域/基音换算。
+/// 纵向先按 `base_pitch..=base + 15` 的音高窗口裁剪（与全选同一口径）：
+/// 框选终点可以拖进底部力度泳道，其 `max_y` 覆盖窗口外行，不可见音高不得进选区。
 ///
 /// 返回**投影顺序**（音符在 `view.notes` 里的先后）的身份列表；调用方负责去重写入选区。
 ///
@@ -22671,9 +22673,16 @@ pub fn roll_marquee_hits(
     let max_x = start.0.max(end.0);
     let min_y = start.1.min(end.1);
     let max_y = start.1.max(end.1);
+    // 纵向窗口与全选 / 单击同一口径：框选矩形可以拖进底部力度泳道，
+    // 其 max_y 会覆盖窗口外行；先按音高裁剪，不可见音高不得进选区。
+    let (min_pitch, max_pitch) =
+        crate::bridge::visible_pitch_range_for(base_pitch, ROLL_LANE_COUNT);
     let mut hits = Vec::new();
     for index in view.notes_visible_in(scroll_x, viewport_width) {
         let note = &view.notes[index];
+        if note.pitch < min_pitch || note.pitch > max_pitch {
+            continue;
+        }
         if clip_scope.is_some_and(|scope| note.clip_id.as_str() != scope) {
             continue;
         }
