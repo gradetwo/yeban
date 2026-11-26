@@ -417,11 +417,23 @@ const LOCK_WAIT_STEP_MS: u64 = 10;
 /// PROJECT_LOCKED 载荷里的建议重试间隔（与上面的步长同源）。
 const LOCK_RETRY_AFTER_MS: u64 = LOCK_WAIT_STEP_MS;
 
-/// 判据缝（T-FIX-663）：让下一次 lock 先模拟一次瞬时占用，用来确定性地
-/// 验证有界等待路径。0 = 不模拟。
+// 判据缝（T-FIX-663）：让下一次 lock 先模拟一次瞬时占用，用来确定性地
+// 验证有界等待路径。0 = 不模拟。
+//
+// T-FIX-745：**线程局部**，⛔ 不是进程级原子量。并行跑 `--lib` 时，别的测试线程
+// 的 `lock()` 会把全局标记 `swap(0)` 抢走，本判据于是拿到 `waited_ms=0` 假红
+// （ISS-MWXKXW28-7863DA）。线程局部后每个判据只影响自己线程的下一次 `lock()`。
 #[cfg(test)]
-pub static SIMULATE_TRANSIENT_LOCK_HOLD: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+thread_local! {
+    // 本线程下一次 `lock()` 要模拟的瞬时占用次数（0 = 不模拟）。
+    #[allow(missing_docs)]
+    pub static SIMULATE_TRANSIENT_LOCK_HOLD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn take_simulated_transient_hold() -> u32 {
+    SIMULATE_TRANSIENT_LOCK_HOLD.with(|slot| slot.replace(0))
+}
 
 /// **拿到锁**（有界等待版）：瞬时占用时按 LOCK_WAIT_STEP_MS 退避重试，预算耗尽后
 /// 照旧返回 PROJECT_LOCKED（载荷带 retryAfterMs）。
@@ -432,7 +444,7 @@ pub fn lock(project_path: &Path, mode: LockMode) -> Result<AcquiredLock, Fault> 
             Ok(guard) => {
                 // 判据缝：模拟一次瞬时占用（守卫立刻释放，下一轮重试）。
                 #[cfg(test)]
-                if SIMULATE_TRANSIENT_LOCK_HOLD.swap(0, std::sync::atomic::Ordering::SeqCst) > 0 {
+                if take_simulated_transient_hold() > 0 {
                     drop(guard);
                     std::thread::sleep(std::time::Duration::from_millis(LOCK_WAIT_STEP_MS));
                     waited_ms = waited_ms.saturating_add(LOCK_WAIT_STEP_MS);
@@ -1706,7 +1718,6 @@ mod tests {
 #[cfg(test)]
 mod bounded_wait_tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1723,12 +1734,14 @@ mod bounded_wait_tests {
         let dir = scratch("transient");
         let project = dir.join("demo.yeban");
         fs::write(&project, "{}").expect("占位");
-        SIMULATE_TRANSIENT_LOCK_HOLD.store(1, Ordering::SeqCst);
+        SIMULATE_TRANSIENT_LOCK_HOLD.with(|slot| slot.set(1));
         let acquired = lock(&project, LockMode::ExclusiveWrite).expect("瞬时占用必须等过去");
-        assert!(
-            acquired.waited_ms() >= LOCK_WAIT_STEP_MS,
-            "等待必须被如实披露: {} ms",
-            acquired.waited_ms()
+        // T-FIX-745：断言**披露字段与模拟 hold 对应**，⛔ 不量墙钟。
+        // 一次模拟占用 = 恰好一个重试步长；`>=` 会把"多等/少等"都放过。
+        assert_eq!(
+            acquired.waited_ms(),
+            LOCK_WAIT_STEP_MS,
+            "一次模拟瞬时占用必须恰好披露一个退避步长（等待必须被如实披露）"
         );
         drop(acquired);
         let _ = fs::remove_dir_all(&dir);
