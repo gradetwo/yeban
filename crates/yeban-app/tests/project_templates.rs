@@ -534,7 +534,7 @@ fn concurrent_saves_without_overwrite_have_one_winner_and_one_exists() {
     for handle in handles {
         let (label, result) = handle.join().expect("并发保存线程");
         match result {
-            Ok((path, bytes)) => successes.push((label, path, bytes)),
+            Ok(report) => successes.push((label, report.path, report.bytes)),
             Err(SaveTemplateError::Exists(path)) => exists.push((label, path)),
             Err(error) => panic!("并发保存只能成功或 Exists，实际 {label}: {error}"),
         }
