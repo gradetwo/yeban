@@ -23432,6 +23432,12 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // 剪刀/橡皮按下时先接管（`note-drag-active=true` + 空身份 = 扫动占位）。
+            // 若这一抬没有越过 4px 阈值，`.slint` 会走 `clicked` 而不是 `note-drag-release`；
+            // 这里必须清掉占位，否则下一次 move/release 会把陈旧起点当成一次扫动。
+            if ui.get_note_drag_active() && ui.get_note_drag_ulid().is_empty() {
+                clear_note_drag(&ui);
+            }
             // ⭐ 选区事实源是界面属性 `selected-ulids`：Cmd+A / 框选会从**别处**改它，
             //    每次派发前先把内存镜像同步回来，否则下一次 Shift 单击会基于陈旧集合
             //    做 toggle（把刚全选的 30 颗覆盖成 1 颗）。
@@ -23848,17 +23854,19 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
 // `[UI-NOTE-003]` 卷帘左键**拖拽**的两条臂（选择工具的移动 / 力度工具的力度）
 // ===========================================================================
 //
-// 工具矩阵"左键拖拽"列的五格里有**两格**已接线，共用**同一条**手势通道
+// 工具矩阵"左键拖拽"列的五格里有**四格**已接线，共用**同一条**手势通道
 // （`note-drag-grab/move/release/cancel` 四条回调 + `note-drag-*` 草稿读数）：
 //
 // | 格 | 变体 | 工具门 | 松手提交的 op |
 // | :--- | :--- | :--- | :--- |
 // | 选择工具 | `ToolDrag::MoveNote` | [`begin_note_drag`] | **一个** `Op::MoveNote`（相对位移） |
 // | 力度工具 | `ToolDrag::AdjustVelocity` | [`begin_velocity_drag`] | **一个** `Op::ModifyNoteVelocity`（绝对赋值） |
+// | 剪刀 | `ToolDrag::SliceAcross` | [`begin_sweep_drag`] | **一个**批（每颗命中音符 3 个切分 op） |
+// | 橡皮擦 | `ToolDrag::EraseSweep` | [`begin_sweep_drag`] | **一个** `delete_ops_for` 批 |
 //
-// 其余三格（`ResizeDuration` / `SliceAcross` / `EraseSweep`）**仍未消费**，各自的裁决见
-// `src/input.rs` 的逐变体说明；结构上由判据 `move_arm_e_...` 与
-// `velocity_arm_e_...` 分别钉住"这两格在 `src/input.rs` 之外真的有生产消费者"。
+// 仅 `ResizeDuration` **仍未消费**（裁决未定，见 `src/input.rs` 变体说明）。剪刀/橡皮擦
+// 用 `note-drag-ulid=""` 作扫动占位：`preview_note_drag` 对空身份早退，松手先走
+// [`commit_sweep_drag`] 再让原两条臂 no-op；空白处也接管并在松手写明确回执（⛔ 不静默滚动）。
 //
 // ## 数据流（形状照抄 [`wire_track_height_drag`] / [`wire_mixer_edit`]）
 //
@@ -24403,7 +24411,7 @@ fn preview_note_drag(
     x: f32,
     y: f32,
 ) {
-    if !ui.get_note_drag_active() {
+    if !ui.get_note_drag_active() || ui.get_note_drag_ulid().is_empty() {
         return;
     }
     let (x, y) = crate::bridge::painted_to_host(x, y);
@@ -24777,6 +24785,304 @@ pub fn cancel_velocity_drag(ui: &MainWindow) -> bool {
     true
 }
 
+/// 一次剪刀/橡皮拖拽里被扫到的一颗音符（**屏幕几何 + 工程 tick 跨度**）。
+///
+/// 只由 [`roll_sweep_hits`] 产出：起点/终点是宿主帧（网格局部），`left/right/top` 是相对
+/// 视口的绘制几何；`start_tick/end_tick` 从投影同一份音符对象读出，⛔ 不另算第二份。
+#[derive(Debug, Clone)]
+struct RollSweepHit {
+    ulid: String,
+    left: f32,
+    right: f32,
+    start_tick: u64,
+    end_tick: u64,
+}
+
+/// 线段与轴对齐矩形是否相交（Liang–Barsky，含边界）。
+fn segment_intersects_rect(start: (f32, f32), end: (f32, f32), rect: (f32, f32, f32, f32)) -> bool {
+    let (x0, y0) = start;
+    let (x1, y1) = end;
+    let (min_x, min_y, max_x, max_y) = rect;
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return false;
+    }
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let p = [-dx, dx, -dy, dy];
+    let q = [x0 - min_x, max_x - x0, y0 - min_y, max_y - y0];
+    let mut t0 = 0.0_f32;
+    let mut t1 = 1.0_f32;
+    for i in 0..4 {
+        if p[i] == 0.0 {
+            if q[i] < 0.0 {
+                return false;
+            }
+        } else {
+            let r = q[i] / p[i];
+            if p[i] < 0.0 {
+                t0 = t0.max(r);
+            } else {
+                t1 = t1.min(r);
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// 拖拽路径（起点→终点）扫到的**当前可见**音符。
+///
+/// 可见口径与 [`ViewState::visible_notes_scoped`] 相同：横向窗口 + 片段作用域 +
+/// `roll_visible_pitch_window` 的纵向窗口。⛔ 不能让窗口外音符（`pitch_lane_with_base`
+/// 会把它们钳到 0/15 边道）混进来 —— 那正是框选/命中错误的同一条根。
+fn roll_sweep_hits(
+    ui: &MainWindow,
+    view: &ViewState,
+    start: (f32, f32),
+    end: (f32, f32),
+) -> Vec<RollSweepHit> {
+    let scroll = ui.get_roll_scroll_x();
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    let scope = roll_scope(ui, view);
+    let pitch_range = roll_visible_pitch_window(ui);
+    let visible = view.visible_notes_scoped(scroll, width, scope, Some(pitch_range));
+    let mut hits = Vec::new();
+    for index in 0..visible.ulids.len() {
+        let left = visible.positions[index];
+        let right = left + visible.widths[index].max(1.0);
+        let top = visible.ys[index];
+        let bottom = top + NOTE_HEIGHT_PX;
+        if !segment_intersects_rect(start, end, (left, top, right, bottom)) {
+            continue;
+        }
+        let Some(note) = view
+            .notes
+            .iter()
+            .find(|note| note.id == visible.ulids[index])
+        else {
+            continue;
+        };
+        let Some(end_tick) = note.start_tick.checked_add(note.duration_ticks) else {
+            continue;
+        };
+        hits.push(RollSweepHit {
+            ulid: note.id.clone(),
+            left,
+            right,
+            start_tick: note.start_tick,
+            end_tick,
+        });
+    }
+    hits
+}
+
+/// 剪刀拖拽对一颗被扫到的音符取**切点 tick**。
+///
+/// 口径（写明，避免第二个真相源）：
+/// - 松手 x 落在音符内部 ⇒ 就用松手 x（用户拖到哪就在哪切）；
+/// - 松手不在内部（例如横拖过头）⇒ 取路径与音符 x 重叠区间的中点；
+/// - 吸附走 [`ViewState::snapped_tick_at`]；吸附结果落到边界（`<=start` / `>=end`）时向
+///   内退/进一个网格；仍不严格落在内部（音符短于一个网格）⇒ `None`，调用方不提交。
+fn knife_split_tick_for(
+    view: &ViewState,
+    scroll: f32,
+    start: (f32, f32),
+    end: (f32, f32),
+    hit: &RollSweepHit,
+) -> Option<u64> {
+    let cut_x = if end.0 > hit.left + 0.5 && end.0 < hit.right - 0.5 {
+        end.0
+    } else {
+        let lo = start.0.min(end.0).max(hit.left);
+        let hi = start.0.max(end.0).min(hit.right);
+        if hi <= lo {
+            return None;
+        }
+        (lo + hi) / 2.0
+    };
+    if !cut_x.is_finite() {
+        return None;
+    }
+    let mut tick = view.snapped_tick_at(scroll, cut_x, ROLL_SNAP_GRID_TICKS);
+    if tick <= hit.start_tick {
+        tick = hit.start_tick.saturating_add(ROLL_SNAP_GRID_TICKS);
+    }
+    if tick >= hit.end_tick {
+        tick = hit.end_tick.saturating_sub(ROLL_SNAP_GRID_TICKS);
+    }
+    (tick > hit.start_tick && tick < hit.end_tick).then_some(tick)
+}
+
+/// 剪刀/橡皮擦的**按下接管**：工具门 + 有可投影工程。
+///
+/// 返回 `true` = 这一拖归宿主处理（`.slint` 不滚动）。⚠ 空白处也接管：任务要求这两格
+/// 的拖拽**不得静默变成滚动**；空白拖拽在松手时会写明确「没扫到音符」回执。
+/// 单击（未越 4px 阈值）仍走原有 `clicked` 路径（切分/删除光标下那一颗）。
+fn begin_sweep_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, x: f32, y: f32) -> bool {
+    let Some(port) = port else {
+        return false;
+    };
+    let Some(project) = port.try_project() else {
+        return false;
+    };
+    let Some(tool) = u8::try_from(ui.get_active_tool())
+        .ok()
+        .and_then(crate::input::Tool::from_digit)
+    else {
+        return false;
+    };
+    if !matches!(
+        tool.drag(),
+        crate::input::ToolDrag::SliceAcross | crate::input::ToolDrag::EraseSweep
+    ) {
+        return false;
+    }
+    // 只为确认投影可用（真正命中在松手时按当前权威工程重算）。
+    if ViewState::from_project(&project).is_err() {
+        return false;
+    }
+    let (x, y) = crate::bridge::painted_to_host(x, y);
+    ui.set_note_drag_ulid("".into());
+    ui.set_note_drag_origin_x(x);
+    ui.set_note_drag_origin_y(y);
+    ui.set_note_drag_preview_dx(0.0);
+    ui.set_note_drag_preview_dy(0.0);
+    ui.set_note_drag_active(true);
+    true
+}
+
+/// 清空音符选区（剪刀/橡皮提交后原文身份已不存在；不清会把幽灵 id 留给下一次 Delete）。
+fn clear_note_selection(ui: &MainWindow) {
+    ui.set_selected_note_count(0);
+    ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(Vec::<
+        SharedString,
+    >::new())));
+    ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(
+        Vec::<bool>::new(),
+    )));
+}
+
+/// 剪刀/橡皮拖拽松手：**至多一次**批提交。
+///
+/// - 剪刀：每颗被扫到的音符 `split_ops_for`（`DeleteNote` + 两个新 `AddNote`），所有 op
+///   合成 **一个** `commit_ops` ⇒ 一步撤销恢复整次拖拽；
+/// - 橡皮：扫到的身份交给既有 `delete_ops_for`，同样一个批；
+/// - 没扫到 / 没有可切位置 / 模型拒绝 ⇒ 写 `roll-edit-status` + toast，**不重试**、不静默。
+fn commit_sweep_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, x: f32, y: f32) {
+    if !ui.get_note_drag_active() || !ui.get_note_drag_ulid().is_empty() {
+        return;
+    }
+    let Some(tool) = u8::try_from(ui.get_active_tool())
+        .ok()
+        .and_then(crate::input::Tool::from_digit)
+    else {
+        clear_note_drag(ui);
+        return;
+    };
+    if !matches!(
+        tool.drag(),
+        crate::input::ToolDrag::SliceAcross | crate::input::ToolDrag::EraseSweep
+    ) {
+        return;
+    }
+    let start = (ui.get_note_drag_origin_x(), ui.get_note_drag_origin_y());
+    let end = crate::bridge::painted_to_host(x, y);
+    clear_note_drag(ui);
+    let Some(port) = port else {
+        let reason = "剪刀/橡皮拖拽被拒：没有撤销端口，工程未改动";
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
+        return;
+    };
+    let Some(project) = port.try_project() else {
+        let reason = "剪刀/橡皮拖拽被拒：当前没有可编辑工程";
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
+        return;
+    };
+    let Ok(fresh) = ViewState::from_project(&project) else {
+        let reason = "剪刀/橡皮拖拽被拒：工程投影失败";
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
+        return;
+    };
+    let view = &fresh;
+    let scroll = ui.get_roll_scroll_x();
+    let hits = roll_sweep_hits(ui, view, start, end);
+    let is_knife = tool.drag() == crate::input::ToolDrag::SliceAcross;
+    if hits.is_empty() {
+        let reason = if is_knife {
+            "剪刀拖拽：没有扫到可切分的音符（工程未改动）"
+        } else {
+            "橡皮擦拖拽：没有扫到可删除的音符（工程未改动）"
+        };
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
+        return;
+    }
+    let (ops, label, success) = if is_knife {
+        let mut ops = Vec::new();
+        for hit in &hits {
+            let Some(split_tick) = knife_split_tick_for(view, scroll, start, end, hit) else {
+                continue;
+            };
+            ops.extend(split_ops_for(&project, &hit.ulid, split_tick));
+        }
+        let label = if ops.len() > 3 {
+            "knife: split notes across drag"
+        } else {
+            "knife: split note across drag"
+        };
+        let success = format!("剪刀：已切分 {} 个音符", ops.len() / 3);
+        (ops, label, success)
+    } else {
+        let ids: Vec<String> = hits.iter().map(|hit| hit.ulid.clone()).collect();
+        let ops = delete_ops_for(&project, &ids);
+        let deleted = ops.len();
+        (
+            ops,
+            "eraser: sweep delete notes",
+            format!("橡皮擦：已删除 {deleted} 个音符"),
+        )
+    };
+    if ops.is_empty() {
+        let reason = if is_knife {
+            format!(
+                "剪刀拖拽：扫到 {} 个音符，但没有严格落在音符内部的切点（音符太短或切点压边界，工程未改动）",
+                hits.len()
+            )
+        } else {
+            "橡皮擦拖拽：扫到音符但身份已失效（工程未改动）".to_owned()
+        };
+        ui.set_roll_edit_status(reason.clone().into());
+        update_toast(ui, reason);
+        return;
+    }
+    let op_count = ops.len();
+    if port.commit_ops(now_ms(), label, ops).is_err() {
+        let reason = if is_knife {
+            "剪刀拖拽切分被拒：模型拒绝（前沿工程已变，未重试）"
+        } else {
+            "橡皮擦拖拽删除被拒：模型拒绝（前沿工程已变，未重试）"
+        };
+        ui.set_roll_edit_status(reason.into());
+        update_toast(ui, reason);
+        return;
+    }
+    clear_note_selection(ui);
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    reproject_roll(ui, port, width, scroll);
+    let reason = if is_knife {
+        success
+    } else {
+        format!("橡皮擦：已删除 {op_count} 个音符")
+    };
+    ui.set_roll_edit_status(reason.clone().into());
+    update_toast(ui, reason);
+}
+
 /// `[UI-NOTE-003]` 卷帘拖拽四条回调的接线（本文件是唯一实现，**两条臂共用**）。
 ///
 /// 分派按工具门：每条回调都把两条臂**各问一遍**（两条臂各自门自己的 `ToolDrag` 变体 ⇒
@@ -24798,6 +25104,7 @@ fn install_roll_note_drag(
             };
             begin_note_drag(&ui, &view, port.as_ref(), x, y)
                 || begin_velocity_drag(&ui, &view, port.as_ref(), x, y)
+                || begin_sweep_drag(&ui, port.as_ref(), x, y)
         }
     });
     ui.on_note_drag_move({
@@ -24822,6 +25129,7 @@ fn install_roll_note_drag(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            commit_sweep_drag(&ui, port.as_ref(), x, y);
             commit_note_drag(&ui, &view, port.as_ref(), x, y);
             commit_velocity_drag(&ui, port.as_ref(), x, y);
         }

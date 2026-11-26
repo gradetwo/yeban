@@ -444,9 +444,11 @@ impl LogicalKey {
 /// | :--- | :--- |
 /// | [`ToolDrag::MoveNote`] | **已接线**：`host::begin_note_drag` 的工具门（`crates/yeban-app/src/host.rs`）—— `Tool::drag()` 的第一个生产调用点 |
 /// | [`ToolDrag::AdjustVelocity`] | **已接线**：`host::begin_velocity_drag` 的工具门 + `host::commit_velocity_drag`（松手**一个** `Op::ModifyNoteVelocity`） |
-/// | [`ToolDrag::ResizeDuration`] / [`ToolDrag::SliceAcross`] / [`ToolDrag::EraseSweep`] | **仍未消费**（各自的裁决未定，见各变体的说明） |
+/// | [`ToolDrag::SliceAcross`] | **已接线**：`host::begin_sweep_drag` / `host::commit_sweep_drag`（拖过位置切分，整次手势**一个**批提交） |
+/// | [`ToolDrag::EraseSweep`] | **已接线**：`host::begin_sweep_drag` / `host::commit_sweep_drag`（扫过的音符一次批删） |
+/// | [`ToolDrag::ResizeDuration`] | **仍未消费**（裁决未定，见变体说明） |
 ///
-/// ⇒ "左键拖拽列整列都是死代码"这句话现在**只对剩下三个变体成立**；
+/// ⇒ "左键拖拽列整列都是死代码"这句话现在**只对 `ResizeDuration` 成立**；
 /// 判据 `move_arm_e_...`（在 `tests/roll_edit_tools.rs`）钉住前两格在 `src/input.rs`
 /// **之外**各有生产消费者，但它**不**证明其余三个没被误接（要另立判据）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,7 +465,9 @@ pub enum ToolDrag {
     ResizeDuration,
     /// 沿时间轴连续划过（多轨切片，剪刀）。
     ///
-    /// ⛔ **未消费**：裁决未定（一次划过 = 一个 `Op::Batch` 还是一个 `Op` 一步撤销）。
+    /// **已接线**：`host::begin_sweep_drag`（工具门 + 扫动占位）+ `host::commit_sweep_drag`
+    /// （松手把所有命中音符的切分 op 合成**一个** `commit_ops` 批 ⇒ 一次手势一步撤销）。
+    /// 空白处也接管（⛔ 不静默变成滚动）；单击仍走 [`ToolClick::Knife`]。
     SliceAcross,
     /// 纵向拖拽力度线（力度编辑）。
     ///
@@ -479,7 +483,8 @@ pub enum ToolDrag {
     AdjustVelocity,
     /// 划动连续批量消除（橡皮擦）。
     ///
-    /// ⛔ **未消费**：裁决未定（划过是否连带删掉不是划中的音符）。
+    /// **已接线**：`host::begin_sweep_drag` / `host::commit_sweep_drag`；只删**路径真正扫到**
+    /// 的可见音符（线段-矩形相交），整次手势**一个** `delete_ops_for` 批。
     EraseSweep,
 }
 

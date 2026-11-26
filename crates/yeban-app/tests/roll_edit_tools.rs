@@ -1820,7 +1820,7 @@ fn code_only(source: &str) -> String {
 /// ⑥ `src/input.rs` **整个排除**（那是变体自己的定义处，必然出现）。
 ///
 /// 另加一条**不成对的**检查（用**原始**文本，注释**不**去掉）：`input.rs` 的 `ToolDrag`
-/// 五个变体里，每一个的文档必须逐字包含「已接线」或「未消费」，且**恰好两**个说已接线 ——
+/// 五个变体里，每一个的文档必须逐字包含「已接线」或「未消费」，且**恰好四**个说已接线 ——
 /// 这条钉的是"消费现状表不许漂"（把未接的写成已接会立刻红）。
 ///
 /// **它证明什么**：去注释后 `ToolDrag::AdjustVelocity` 在 `src/input.rs` 之外有一个**代码**
@@ -2229,7 +2229,7 @@ fn contract_only_velocity_double_click_c2_a_select_tool_double_click_leaves_velo
 // | 手势范围 | **指针**（不是列）：只切指针下那一颗，⛔ 不建 tick-span 查询 / 第二条命中路径 |
 // | 切分身份 | 原文 `DeleteNote` ＋ 两个 `EntityId::new()` 的 `AddNote`（与 `duplicate_ops_for` 的副本形状同款）⇒ ⛔ 无新 `Op` 变体 |
 // | 退化切分（吸附点不严格落在音符内） | **拒绝**：`split_ops_for` 返回空 ⇒ 一个 op 都不写 |
-// | 剪刀拖拽（`ToolDrag::SliceAcross`） | ⛔ **不接**（本切片只接左键单击；规范矩阵的拖拽列仍未接） |
+// | 剪刀拖拽（`ToolDrag::SliceAcross`） | **另一切片接上**：`host::begin_sweep_drag` / `commit_sweep_drag`（见 `tests/sweep_tools.rs`）；本文件的单击判据仍只覆盖单击 |
 //
 // ## 每条判据证明什么 / ⛔ 不证明什么
 //
@@ -2386,7 +2386,7 @@ fn knife_target(
 ///
 /// ## ⛔ 它不证明什么
 ///
-/// - 剪刀的**拖拽**切分（`ToolDrag::SliceAcross` 仍未接线）；
+/// - 剪刀的**拖拽**切分（已由 `tests/sweep_tools.rs` 覆盖，本文件不重复）；
 /// - 跨片段 / 跨轨 / 多选切分（本切片**只**切指针下那一颗）；
 /// - 切分**期**的画面（无截图判据）；
 /// - 网格竖线的**绘制**位置（本判据断言的是模型里的 tick，不是像素）。
