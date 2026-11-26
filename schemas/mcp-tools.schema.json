@@ -19,7 +19,8 @@
         "sfzSamplesUnreadable",
         "silentSources",
         "unrecognisedEffectParam",
-        "unroutedTracks"
+        "unroutedTracks",
+        "unrecognisedInstrumentParam"
       ]
     },
     "ToolCall": {

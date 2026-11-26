@@ -9072,6 +9072,31 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
     warnings
 }
 
+/// T-FIX-746：乐器设备里**引擎不认**的参数名。
+///
+/// 词表来自 `yeban-engine::drums`（键位与旋钮的同一份 match 表，见
+/// `unknown_kit_param_names`）⇒ 工厂预设的每个参数都会命中、零假警告；
+/// T-FIX-705 的“乐器参数不按效果词表判噪音”因此**不回退**（两条警告各管一套词表）。
+fn instrument_param_warnings(ops: &[Op]) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    walk_ops(ops, &mut |op| {
+        let Op::InsertDevice { device, .. } = op else {
+            return;
+        };
+        if device.kind != DeviceKind::InternalInstrument {
+            return;
+        }
+        for name in yeban_engine::drums::unknown_kit_param_names(device) {
+            warnings.push(serde_json::json!({
+                "code": "unrecognisedInstrumentParam",
+                "deviceName": device.name,
+                "paramName": name,
+                "hint": "引擎不认这个乐器参数: 会被存储但不生效; 合法拼写见 drum_preset.rs 与 yeban-engine/src/drums.rs",
+            }));
+        }
+    });
+    warnings
+}
 /// 本次提案的完整 `warnings[]`（`#175` 的未识别参数名 ＋ `#178` 的"设备落在静音轨上"）。
 /// T-FIX-154：**绑定期**采样器预检 —— 逐条 `SetTrackSampler` 算缺失样本警告。
 ///
@@ -9206,6 +9231,8 @@ fn proposal_warnings(
     project_path: Option<&Path>,
 ) -> Vec<Value> {
     let mut warnings = effect_param_warnings(ops);
+    // T-FIX-746：乐器参数走引擎自己的键位/旋钮表（与 effect 词表并行）。
+    warnings.extend(instrument_param_warnings(ops));
     warnings.extend(device_on_silent_track_warnings(project, ops));
     // T-FIX-647：通道条遮挡预检（只警告、不阻断；与母带同一判定、同一形状）。
     warnings.extend(ignored_strip_devices_warnings(project, ops));

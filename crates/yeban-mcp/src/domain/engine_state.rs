@@ -326,12 +326,28 @@ pub fn device_chain_value(track: &TrackV3) -> Value {
     let mut inserts: Vec<Value> = Vec::with_capacity(track.devices.len());
     for (slot_index, device) in track.devices.iter().enumerate() {
         let mut effects: Vec<&'static str> = Vec::new();
-        let mut recognised_params: Vec<&'static str> = Vec::new();
+        let mut recognised_params: Vec<String> = Vec::new();
         let mut unrecognised_params: Vec<String> = Vec::new();
+        // T-FIX-746：乐器参数（鼓机键位/旋钮）由引擎自己的表判，⛔ 不拿效果词表去问；
+        // 工厂预设的每个参数都会命中 ⇒ 不再被误报成 unrecognised。
+        let instrument = device.kind == DeviceKind::InternalInstrument;
+        let instrument_unknown = if instrument {
+            yeban_engine::drums::unknown_kit_param_names(device)
+        } else {
+            Vec::new()
+        };
         for param in &device.params {
+            if instrument {
+                if instrument_unknown.iter().any(|name| name == &param.name) {
+                    unrecognised_params.push(param.name.clone());
+                } else {
+                    recognised_params.push(param.name.clone());
+                }
+                continue;
+            }
             match effect_params::recognise(&param.name) {
                 Some((group, canonical)) => {
-                    recognised_params.push(canonical.name);
+                    recognised_params.push(canonical.name.to_owned());
                     if !effects.contains(&group.id) {
                         effects.push(group.id);
                     }
@@ -347,13 +363,18 @@ pub fn device_chain_value(track: &TrackV3) -> Value {
             .enumerate()
             .map(|(param_index, param)| {
                 let recognised = effect_params::recognise(&param.name);
+                let recognised_here = if instrument {
+                    !instrument_unknown.iter().any(|name| name == &param.name)
+                } else {
+                    recognised.is_some()
+                };
                 serde_json::json!({
                     "paramIndex": param_index,
                     "name": param.name.clone(),
                     "value": param.value,
                     "unit": param.unit.clone(),
                     // ⭐ 只读验收读数（既有四个键不动）。
-                    "recognised": recognised.is_some(),
+                    "recognised": recognised_here,
                     "canonicalName": recognised.map(|(_, canonical)| canonical.name),
                     "effect": recognised.map(|(group, _)| group.id),
                 })

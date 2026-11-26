@@ -617,6 +617,28 @@ fn bursts_from_f32(value: f32) -> u32 {
     bursts
 }
 
+/// 这台设备里**引擎不认**的鼓机参数名（保持设备 `params` 的原拼写、按出现顺序）。
+///
+/// 与 [`DrumKitParams::from_device`] 共用**同一份**识别表（键位 `note_slot` / 可选键位
+/// `extra_note_slot` / 旋钮 `apply_kit_knob`）⇒ 不可能与渲染侧漂移；工厂预设的每个参数
+/// 都会命中，返回空表。MCP 用它把"拼错的音色参数"响亮报出来（T-FIX-746）。
+#[must_use]
+pub fn unknown_kit_param_names(device: &DeviceDefinition) -> Vec<String> {
+    let mut kit = DrumKitParams::DEFAULT;
+    let mut unknown = Vec::new();
+    for param in &device.params {
+        let name = param.name.to_ascii_lowercase();
+        if note_slot(&name).is_some() || extra_note_slot(&name).is_some() {
+            continue;
+        }
+        if apply_kit_knob(&mut kit, &name, param.value) {
+            continue;
+        }
+        unknown.push(param.name.clone());
+    }
+    unknown
+}
+
 /// 把一条**音色旋钮**写进投影；返回它是否被认下（名字已转小写）。
 ///
 /// 先赋原值、由 [`DrumKitParams::sanitised`] 在收尾时统一钳制：
@@ -759,6 +781,35 @@ pub fn consumes_drum_param(name_lower: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// T-FIX-746：未知旋钮名必须被点名，已知键位/旋钮不得误报。
+    #[test]
+    fn unknown_kit_params_are_reported_and_known_ones_are_not() {
+        let device = DeviceDefinition {
+            id: yeban_model::EntityId::new(),
+            name: "kit".to_owned(),
+            kind: yeban_model::DeviceKind::InternalInstrument,
+            bypassed: false,
+            params: [
+                ("kick_note", 36.0),
+                ("kick_tune_hz", 45.0),
+                ("kick_tun_hz", 50.0),
+            ]
+            .into_iter()
+            .map(|(name, value)| yeban_model::ParameterValue {
+                name: name.to_owned(),
+                value,
+                unit: None,
+            })
+            .collect(),
+            latency_samples: 0,
+            plugin: None,
+        };
+        assert_eq!(
+            unknown_kit_param_names(&device),
+            vec!["kick_tun_hz".to_owned()]
+        );
+    }
+
     use super::*;
     use yeban_model::{EntityId, ParameterValue};
 

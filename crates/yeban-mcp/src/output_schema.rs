@@ -469,10 +469,12 @@ fn undo_display_schema() -> Value {
 /// `budget_truncation_warning` / `cc_gate_warning`，经 `all_warnings` 装配），
 /// 而 `for_tool` 对扩展工具返回 `None`（不广播 outputSchema，常驻判据
 /// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它们由契约名册兜住，⛔ 不许为凑等式造假 schema。
-const PROPOSAL_WARNING_CODES: [&str; 3] = [
+const PROPOSAL_WARNING_CODES: [&str; 4] = [
     "deviceOnSilentTrack",
     "ignoredStripDevices",
     "unrecognisedEffectParam",
+    // T-FIX-746：乐器设备（鼓机）里引擎不认的键位/旋钮名。
+    "unrecognisedInstrumentParam",
 ];
 
 /// ⭐ `data.warnings[].code` 的逐工具子集（母带）。六条来源 `clipping_warning` +
@@ -2875,7 +2877,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 12, "契约名册现读 12 枚: {contract:?}");
+        assert_eq!(contract.len(), 13, "契约名册现读 13 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");

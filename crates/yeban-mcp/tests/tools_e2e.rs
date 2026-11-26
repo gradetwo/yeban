@@ -10260,3 +10260,95 @@ fn placement_add_accepts_its_own_track_id() {
         "{unknown}"
     );
 }
+
+/// T-FIX-746：乐器设备里拼错的鼓机参数必须在 `warnings[]` 响亮可见；
+/// 工厂预设的全量参数零假警告（T-FIX-705 的效果词表分流不回退）。
+#[test]
+fn misspelled_drum_knobs_are_reported_and_factory_kits_stay_quiet() {
+    const LEAD: &str = "01J8ZQ00000000000000000002";
+    let (mut dispatcher, auth) = dispatcher();
+    let scratch = Scratch::new("instrument-params");
+    open(&scratch, &mut dispatcher, &auth);
+
+    let inserted = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "autoMerge": true,
+            "trackId": LEAD,
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": LEAD,
+                "device": {
+                    "deviceId": "01J8ZQ00000000000000000077",
+                    "kind": "InternalInstrument",
+                    "name": "Probe Kit",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": [
+                        {"name": "kick_note", "value": 36.0},
+                        {"name": "snare_note", "value": 38.0},
+                        {"name": "closed_hat_note", "value": 42.0},
+                        {"name": "open_hat_note", "value": 46.0},
+                        {"name": "clap_note", "value": 39.0},
+                        {"name": "kick_tune_hz", "value": 45.0},
+                        {"name": "kick_tun_hz", "value": 50.0}
+                    ]
+                }
+            }]
+        }),
+    );
+    assert_eq!(inserted["status"], "success", "{inserted}");
+    let warnings = inserted["data"]["warnings"].as_array().expect("warnings");
+    let instrument: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "unrecognisedInstrumentParam")
+        .collect();
+    assert_eq!(
+        instrument.len(),
+        1,
+        "拼错一个名字必须恰好报一条: {warnings:?}"
+    );
+    assert_eq!(instrument[0]["paramName"], "kick_tun_hz", "{warnings:?}");
+    assert_eq!(instrument[0]["deviceName"], "Probe Kit", "{warnings:?}");
+    // T-FIX-705 (instrument devices skipped by the effect registry) is not merged on this base,
+    // so this criterion does not assert zero unrecognisedEffectParam; that half belongs to 705.
+
+    // 引擎读回同一台设备：���知的名字进 unrecognisedParams，已知的不进。
+    let state = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_engine_state",
+        json!({"trackId": LEAD}),
+    );
+    assert_eq!(state["status"], "success", "{state}");
+    let inserts = state["data"]["track"]["inserts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("track.inserts 必须是数组: {state}"));
+    let probe = inserts
+        .iter()
+        .find(|insert| insert["deviceName"] == "Probe Kit")
+        .expect("Probe Kit 在 inserts 里");
+    assert_eq!(
+        probe["unrecognisedParams"],
+        json!(["kick_tun_hz"]),
+        "engine_state 必须只列拼错的那个: {probe}"
+    );
+
+    // 工厂鼓组：全量参数零假警告（两种 code 都不许出现）。
+    let generated = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_generate_drum_pattern",
+        json!({"style": "lofi", "bars": 2, "autoMerge": true}),
+    );
+    assert_eq!(generated["status"], "success", "{generated}");
+    let factory_warnings = generated["data"]["warnings"].as_array().expect("warnings");
+    assert!(
+        factory_warnings
+            .iter()
+            .all(|warning| warning["code"] != "unrecognisedInstrumentParam"),
+        "factory kit params must all be recognised (no false warnings): {factory_warnings:?}"
+    );
+}
