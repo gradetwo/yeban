@@ -6390,6 +6390,9 @@ impl EngineRuntime {
                 // （由 `line/app-mixer` 交叉核对时发现；判据见 `meter_ballistics_follow_the_processing_quantum`）。
                 let quanta_per_second = current.sample_rate() as f32 / DEFAULT_BLOCK_FRAMES as f32;
                 bank.set_quanta_per_second(quanta_per_second);
+                // 主总线响度计量器按同一份快照的采样率武装（K 加权系数是采样率相关的；
+                // 不支持的采样率 ⇒ 计量器保持未武装，主总线帧的响度字段为负无穷）。
+                bank.set_sample_rate(current.sample_rate() as f32);
                 self.armed_quanta_per_second = Some(quanta_per_second);
                 *armed_revision = Some(revision);
 
@@ -7500,10 +7503,12 @@ impl EngineRuntime {
             // （见 [`EngineStats::limiter_current_reduction`] 的文档）。
             *limiter_current_reduction = reduction;
 
-            // --- 3c) 母线：立体声联动电平（**限制之后**） ---
+            // --- 3c) 母线：立体声联动电平（**限制之后**）+ BS.1770 真实响度 ---
+            // 主总线走 `measure_master_bus_stereo`（它同时喂响度计量器并把瞬时/短时
+            // 读数写进帧）；组总线一律走 `measure_bus_stereo`，不碰响度状态。
             if produced < scratch_meters.len() {
                 scratch_meters[produced] =
-                    bank.measure_bus_stereo(master, quantum, block.left(), block.right());
+                    bank.measure_master_bus_stereo(master, quantum, block.left(), block.right());
                 produced += 1;
             } else {
                 *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);

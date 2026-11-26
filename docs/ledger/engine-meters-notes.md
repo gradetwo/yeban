@@ -300,7 +300,10 @@ test result: ok. 84 passed; 0 failed           ← 默认 feature(含 device 的
    声道各自的电平、以及 >2 声道的口径都没有；
 3. **真正的超采样峰值表 / 真峰值（true-peak）**：现在测的是样本峰值，
    没有 4× 过采样，因此**会漏掉采样点之间的过冲**（intersample peak）；
-   `LUFS`/`ITU-R BS.1770` 的响度计量也未实现；
+   `LUFS`/`ITU-R BS.1770` 的响度计量也未实现
+   （2026-11-26 T-FIX-523：主总线**实时**响度已接线——`GatedLoudness` 的
+   瞬时/短时读数随 `MeterFrame` 发布，`MeterSnapshot::master_lufs` 改读帧；
+   4× 真峰值与离线门限积分仍未接线）；
 4. **母线汇流不是混音**：`sum_into_bus` 等增益写两声道，没有 pan law、发送/辅助增益、
    mute/solo 应用、PDC 对齐（这些是混音台切片）；
 5. **轨道渲染仍是占位静音**：`render_track_into` 是唯一接入点，等待声部合成切片；

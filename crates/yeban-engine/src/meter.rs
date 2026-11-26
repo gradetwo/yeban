@@ -45,6 +45,7 @@
 //!   弹道不取决于"它的槽位是在哪一次修订被建立的"。
 
 use rtrb::{Consumer, Producer, RingBuffer};
+use yeban_dsp::loudness::GatedLoudness;
 use yeban_model::EntityId;
 
 use crate::level::{
@@ -97,7 +98,15 @@ pub const DRAIN_CHUNK: usize = 128;
 /// （[`is_sane`](Self::is_sane)）；dBFS 换算在 UI 侧按需做，见
 /// [`peak_dbfs`](Self::peak_dbfs) / [`peak_hold_dbfs`](Self::peak_hold_dbfs) /
 /// [`rms_dbfs`](Self::rms_dbfs)。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+///
+/// 两个响度字段是 **ITU-R BS.1770-4 的真实读数**（K 加权 + 400 ms / 3 s 窗口，
+/// 由 [`GatedLoudness`] 在主总线计量时产出，见
+/// [`MeterBank::measure_master_bus_stereo`]），**不是** `rms_dbfs − 0.691`：
+/// 旧的 app 侧公式把平滑 RMS 减 0.691 冒充 LUFS，在 K 加权敏感的信号上
+/// （例如 997 Hz 正弦）会错几个 dB。响度字段恒为有限值或负无穷
+/// （`−∞` = 还没有完整窗口 / 静音 / 采样率不支持 ⇒ 没有读数，绝不是 0 LUFS）；
+/// `NaN` 永远不合法（见 [`is_sane`](Self::is_sane)）。
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeterFrame {
     /// 计量对象（音轨 / 总线身份）。
     pub node: EntityId,
@@ -116,6 +125,34 @@ pub struct MeterFrame {
     pub rms: f32,
     /// 平滑 RMS：均方经一阶低通（τ=300 ms）后开方。
     pub rms_smoothed: f32,
+    /// 瞬时响度 momentary（400 ms 窗口，LUFS）。
+    ///
+    /// 只有**主总线**的帧由 [`MeterBank::measure_master_bus_stereo`] 填入真实读数；
+    /// 轨道 / 组总线帧一律是负无穷（它们不走响度计量）。
+    pub momentary_lufs: f32,
+    /// 短时响度 short-term（3 s 窗口，LUFS）。口径同 `momentary_lufs`。
+    pub short_term_lufs: f32,
+}
+
+impl Default for MeterFrame {
+    /// 全零电平 + **没有响度读数**（负无穷）。
+    ///
+    /// 手写而不是派生：派生的 `Default` 会把响度字段填成 `0.0`，即谎称"0 LUFS"；
+    /// 一条默认帧（例如 `drain_latest` 的栈上搬运块）绝不能冒充一个读数。
+    fn default() -> Self {
+        Self {
+            node: EntityId::default(),
+            quantum: 0,
+            peak: 0.0,
+            peak_l: 0.0,
+            peak_r: 0.0,
+            peak_hold: 0.0,
+            rms: 0.0,
+            rms_smoothed: 0.0,
+            momentary_lufs: f32::NEG_INFINITY,
+            short_term_lufs: f32::NEG_INFINITY,
+        }
+    }
 }
 
 impl MeterFrame {
@@ -134,6 +171,8 @@ impl MeterFrame {
             peak_hold: peak,
             rms,
             rms_smoothed: rms,
+            momentary_lufs: f32::NEG_INFINITY,
+            short_term_lufs: f32::NEG_INFINITY,
         }
     }
 
@@ -149,6 +188,8 @@ impl MeterFrame {
             peak_hold: reading.peak_hold,
             rms: reading.rms,
             rms_smoothed: reading.rms_smoothed,
+            momentary_lufs: f32::NEG_INFINITY,
+            short_term_lufs: f32::NEG_INFINITY,
         }
     }
 
@@ -163,6 +204,9 @@ impl MeterFrame {
     }
 
     /// 帧内四个电平字段是否都是有限数（`NaN`/`±∞` 一律为假）。
+    ///
+    /// 响度字段另算：有限值**或负无穷**都合法（负无穷 = "还没有读数"，见字段文档），
+    /// 只有 `NaN` / 正无穷才算不正常。
     #[must_use]
     pub fn is_sane(&self) -> bool {
         self.peak.is_finite()
@@ -171,6 +215,8 @@ impl MeterFrame {
             && self.peak_hold.is_finite()
             && self.rms.is_finite()
             && self.rms_smoothed.is_finite()
+            && (self.momentary_lufs.is_finite() || self.momentary_lufs == f32::NEG_INFINITY)
+            && (self.short_term_lufs.is_finite() || self.short_term_lufs == f32::NEG_INFINITY)
     }
 
     /// 峰值的 dBFS（`peak <= 0` 时返回负无穷）。
@@ -518,6 +564,17 @@ impl MeterSlot {
 pub struct MeterBank<const N: usize> {
     slots: [MeterSlot; N],
     bus: LevelDetector,
+    /// 主总线的 BS.1770 响度计量器（[`GatedLoudness`]，流式瞬时/短时窗口）。
+    ///
+    /// `None` = 尚未按采样率武装，或采样率不在 K 加权支持的四档里（例如 192 kHz）
+    /// ⇒ 主总线帧的响度字段保持负无穷（**没有读数**，绝不拿一个错误读数冒充）。
+    /// 只有 [`measure_master_bus_stereo`](Self::measure_master_bus_stereo) 会喂它；
+    /// 组总线走 [`measure_bus_stereo`](Self::measure_bus_stereo)，永远不碰它
+    /// （否则组总线的信号会污染主总线的响度状态）。
+    ///
+    /// 实时安全：`GatedLoudness` 是 `Copy` 的定长环（30 个 `f64`），`add_stereo`
+    /// 每样本只做双二阶滤波与加法，**零分配、零锁、零 I/O** [ARCH-RT-001]。
+    loudness: Option<GatedLoudness>,
     /// 本池**当前**的每秒量子数（弹道系数的唯一事实源）。
     ///
     /// 它必须住在池里而不是只存在于"最近一次刷新"的调用里：槽位是**惰性**建立的
@@ -545,6 +602,7 @@ impl<const N: usize> MeterBank<N> {
         Self {
             slots: [MeterSlot::EMPTY; N],
             bus: LevelDetector::new(),
+            loudness: None,
             quanta_per_second: DEFAULT_QUANTA_PER_SECOND,
             measured: 0,
             capacity_drops: 0,
@@ -574,14 +632,28 @@ impl<const N: usize> MeterBank<N> {
         }
     }
 
+    /// 按采样率武装主总线的响度计量器（与 [`set_quanta_per_second`] 同一个
+    /// 调用点：快照修订变化时由 [`crate::rt`] 一并调用）。
+    ///
+    /// 换率即**重建**计量器（滤波器系数是采样率相关的，旧状态不能跨率复用）；
+    /// 不支持的采样率 ⇒ 计量器保持 `None`，主总线帧的响度字段为负无穷。
+    /// 只做一次 `Option` 赋值：零分配、零锁。
+    pub fn set_sample_rate(&mut self, sample_rate_hz: f32) {
+        self.loudness = GatedLoudness::for_sample_rate(sample_rate_hz);
+    }
+
     /// 全部清零（换流/关流时用）。
     ///
     /// **弹道系数不清**：它是配置（由 [`Self::set_quanta_per_second`] 武装），
     /// 与"电平状态"不是一回事 —— 与 `LevelDetector::reset` 的"系数保留"同口径。
     /// 母线的检测器因此也按**本池当前**的每秒量子数重建，而不是回到器件默认口径。
+    /// 响度计量器的**配置**（采样率）同样不清，只清它的窗口状态。
     pub fn reset(&mut self) {
         self.slots = [MeterSlot::EMPTY; N];
         self.bus = detector_at(self.quanta_per_second);
+        if let Some(loudness) = self.loudness.as_mut() {
+            loudness.reset();
+        }
         self.measured = 0;
         self.capacity_drops = 0;
     }
@@ -650,6 +722,33 @@ impl<const N: usize> MeterBank<N> {
         right: &[f32],
     ) -> MeterFrame {
         MeterFrame::from_reading(node, quantum, self.bus.analyze_stereo(left, right))
+    }
+
+    /// 测量**主总线**（立体声联动电平 **+ BS.1770 真实响度**）。
+    ///
+    /// 与 [`measure_bus_stereo`](Self::measure_bus_stereo) 的唯一区别：本方法在量电平
+    /// 的同时把本量子的立体声样本喂给主总线响度计量器，并把它的瞬时/短时读数写进帧
+    /// 的响度字段。**只在主总线调用**（[`crate::rt`] 的母线电平点）；组总线一律走
+    /// `measure_bus_stereo`，否则它们的信号会污染主总线的响度窗口。
+    ///
+    /// 响度计量器未武装（`set_sample_rate` 未调用或采样率不支持）⇒ 响度字段为
+    /// 负无穷（没有读数）；窗口未满（前 400 ms）⇒ 瞬时为负无穷，前 3 s ⇒ 短时为负无穷。
+    pub fn measure_master_bus_stereo(
+        &mut self,
+        node: EntityId,
+        quantum: u64,
+        left: &[f32],
+        right: &[f32],
+    ) -> MeterFrame {
+        if let Some(loudness) = self.loudness.as_mut() {
+            loudness.add_stereo(left, right);
+        }
+        let mut frame = self.measure_bus_stereo(node, quantum, left, right);
+        if let Some(loudness) = self.loudness.as_ref() {
+            frame.momentary_lufs = loudness.momentary_lufs();
+            frame.short_term_lufs = loudness.short_term_lufs();
+        }
+        frame
     }
 }
 
@@ -1302,6 +1401,226 @@ mod tests {
             (bus.peak - 1.0).abs() < 1e-6,
             "零节点容量不得让母线失效（实测 peak = {}）",
             bus.peak
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 主总线 BS.1770 真实响度（T-FIX-523）
+    // -----------------------------------------------------------------------
+
+    /// 997 Hz、−20 dBFS 的双声道正弦（振幅 0.1），48 kHz。
+    fn sine_997hz_minus_20_dbfs(len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                let phase = std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0;
+                (0.1 * phase.sin()) as f32
+            })
+            .collect()
+    }
+
+    /// 按 128 帧/量子把一段信号喂给主总线，返回最后一帧。
+    fn drive_master_bus(
+        bank: &mut MeterBank<4>,
+        master: EntityId,
+        signal: &[f32],
+        quanta: u64,
+    ) -> MeterFrame {
+        let mut frame = MeterFrame::default();
+        for quantum in 0..quanta {
+            bank.begin_quantum();
+            let start = quantum as usize * 128;
+            frame = bank.measure_master_bus_stereo(
+                master,
+                quantum,
+                &signal[start..start + 128],
+                &signal[start..start + 128],
+            );
+        }
+        frame
+    }
+
+    /// 判据：主总线帧的瞬时响度是**真 BS.1770**（K 加权 + 400 ms 窗口）。
+    ///
+    /// 997 Hz、−20 dBFS ⇒ **−20.0 LUFS**（±0.05）。旧的 app 侧公式对同一信号
+    /// 给出 `rms_dbfs − 0.691` ≈ −23.7 LUFS（RMS = 0.1/√2 ⇒ −23.01 dBFS），
+    /// 差 3.7 dB —— 这条判据在旧公式下是红的。
+    #[test]
+    fn master_bus_momentary_lufs_matches_the_bs1770_reference_vector() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let signal = sine_997hz_minus_20_dbfs(48_000);
+
+        // 前 100 个量子（2.67 个跳）窗口未满 ⇒ 瞬时读数是负无穷，不是假值。
+        let early = drive_master_bus(&mut bank, master, &signal, 100);
+        assert_eq!(
+            early.momentary_lufs,
+            f32::NEG_INFINITY,
+            "窗口未满时不得冒充一个读数"
+        );
+        assert!(early.is_sane());
+
+        // 满 1 秒（375 个量子）：瞬时窗口已满 ⇒ −20.0 LUFS。
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert!(
+            (frame.momentary_lufs + 20.0).abs() < 0.05,
+            "997 Hz −20 dBFS 应为 −20.0 LUFS, 实际 {}",
+            frame.momentary_lufs
+        );
+        assert!(frame.is_sane());
+        // 旧公式的对照：同一帧的平滑 RMS 减 0.691 与 −20.0 差 3 dB 以上。
+        let fake = frame.rms_dbfs() - 0.691;
+        assert!(
+            (fake + 20.0).abs() > 3.0,
+            "旧公式对同一信号应给出 ≈ −23.7 LUFS（实际 {fake}），与真值差 3 dB 以上"
+        );
+    }
+
+    /// 判据：短时响度（3 s 窗口）在满 3 秒后同样是 −20.0 LUFS。
+    #[test]
+    fn master_bus_short_term_lufs_matches_after_three_seconds() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let signal = sine_997hz_minus_20_dbfs(144_000);
+        let frame = drive_master_bus(&mut bank, master, &signal, 1125);
+        assert!(
+            (frame.short_term_lufs + 20.0).abs() < 0.05,
+            "3 s 后的短时读数应为 −20.0 LUFS, 实际 {}",
+            frame.short_term_lufs
+        );
+        assert!(
+            (frame.momentary_lufs + 20.0).abs() < 0.05,
+            "瞬时读数同步应为 −20.0 LUFS, 实际 {}",
+            frame.momentary_lufs
+        );
+        assert!(frame.is_sane());
+    }
+
+    /// 判据：静音时主总线帧的响度字段是负无穷（低于门限），且帧仍然有限。
+    #[test]
+    fn master_bus_silence_reports_no_loudness_reading() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let silence = vec![0.0f32; 48_000];
+        let frame = drive_master_bus(&mut bank, master, &silence, 375);
+        assert_eq!(frame.momentary_lufs, f32::NEG_INFINITY);
+        assert_eq!(frame.short_term_lufs, f32::NEG_INFINITY);
+        assert!(frame.is_sane(), "静音帧必须有限: {frame:?}");
+    }
+
+    /// 判据：组总线帧**不带**响度读数，且它的信号**不污染**主总线的响度窗口。
+    ///
+    /// 组总线走 `measure_bus_stereo`（不喂响度计量器）；主总线走
+    /// `measure_master_bus_stereo`。两条臂之间不得串扰。
+    #[test]
+    fn group_bus_frames_carry_no_loudness_and_do_not_pollute_the_master() {
+        let master = EntityId::new();
+        let group = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let signal = sine_997hz_minus_20_dbfs(48_000);
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert!((frame.momentary_lufs + 20.0).abs() < 0.05);
+
+        // 组总线喂 1 秒满幅直流：帧本身的响度字段必须是负无穷……
+        let dc = vec![1.0f32; 48_000];
+        let mut group_frame = MeterFrame::default();
+        for quantum in 0..375u64 {
+            bank.begin_quantum();
+            let start = quantum as usize * 128;
+            group_frame = bank.measure_bus_stereo(
+                group,
+                quantum,
+                &dc[start..start + 128],
+                &dc[start..start + 128],
+            );
+        }
+        assert_eq!(group_frame.momentary_lufs, f32::NEG_INFINITY);
+        assert!(group_frame.is_sane());
+
+        // ……且主总线再量一个量子后读数仍是 −20.0（组总线的直流没进响度窗口）。
+        bank.begin_quantum();
+        let after = bank.measure_master_bus_stereo(master, 375, &signal[..128], &signal[..128]);
+        assert!(
+            (after.momentary_lufs + 20.0).abs() < 0.05,
+            "组总线不得污染主总线响度: 实际 {}",
+            after.momentary_lufs
+        );
+    }
+
+    /// 判据：不支持的采样率（192 kHz 不在 K 加权四档里）⇒ 没有响度读数，
+    /// 而不是拿 48 kHz 的系数硬套出一个错误读数。
+    #[test]
+    fn unsupported_sample_rate_yields_no_loudness_reading() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(192_000.0);
+        let signal = sine_997hz_minus_20_dbfs(48_000);
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert_eq!(frame.momentary_lufs, f32::NEG_INFINITY);
+        assert_eq!(frame.short_term_lufs, f32::NEG_INFINITY);
+        assert!(frame.is_sane(), "无读数的帧必须有限: {frame:?}");
+        // 电平口径不受影响：0.1 振幅正弦的峰值仍是 −20 dBFS。
+        assert!(
+            (frame.peak_dbfs() + 20.0).abs() < 1e-4,
+            "电平峰值应仍为 −20 dBFS, 实际 {}",
+            frame.peak_dbfs()
+        );
+    }
+
+    /// 判据：`reset` 清掉响度窗口状态（配置的采样率保留）。
+    ///
+    /// 换流/关流后，旧信号的窗口不得跨过一次 `reset` 活下来。
+    #[test]
+    fn reset_clears_the_loudness_window_but_keeps_the_armed_rate() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let signal = sine_997hz_minus_20_dbfs(48_000);
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert!((frame.momentary_lufs + 20.0).abs() < 0.05);
+
+        bank.reset();
+        bank.begin_quantum();
+        let after = bank.measure_master_bus_stereo(master, 0, &signal[..128], &signal[..128]);
+        assert_eq!(
+            after.momentary_lufs,
+            f32::NEG_INFINITY,
+            "reset 之后窗口必须从空开始"
+        );
+        assert!(after.is_sane());
+
+        // 采样率配置保留：重新喂满 1 秒，读数回到 −20.0（不是"永远没读数"）。
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert!(
+            (frame.momentary_lufs + 20.0).abs() < 0.05,
+            "reset 之后重新喂满 1 秒应回到 −20.0 LUFS, 实际 {}",
+            frame.momentary_lufs
+        );
+    }
+
+    /// 判据：换采样率即重建响度计量器（K 加权系数是采样率相关的，旧状态
+    /// 不能跨率复用）。
+    #[test]
+    fn changing_the_sample_rate_rebuilds_the_loudness_meter() {
+        let master = EntityId::new();
+        let mut bank = MeterBank::<4>::new();
+        bank.set_sample_rate(48_000.0);
+        let signal = sine_997hz_minus_20_dbfs(48_000);
+        let frame = drive_master_bus(&mut bank, master, &signal, 375);
+        assert!((frame.momentary_lufs + 20.0).abs() < 0.05);
+
+        bank.set_sample_rate(44_100.0);
+        bank.begin_quantum();
+        let after = bank.measure_master_bus_stereo(master, 0, &signal[..128], &signal[..128]);
+        assert_eq!(
+            after.momentary_lufs,
+            f32::NEG_INFINITY,
+            "换率之后窗口必须从空开始（旧的 48 kHz 状态不得复用）"
         );
     }
 }

@@ -43,6 +43,7 @@
 //! | 显示文本 | `{:.1}`；`> 0.0`（过载）**原值保留**成 `"+3.5"` 这种带号文本 | `-∞`/`NaN` 落到下限，`+∞` 落到 [`METER_CEIL_DBFS`] |
 //! | 柱高 | `(clamped_dbfs - 下限) / (0 - 下限)`，再夹到 `0..=1` | 纯线性（对数已在 dBFS 里）；过载只能顶格，因此另有 `over` 锁存 |
 //! | 过载 | `peak_dbfs > 0.0` ⇒ `ChannelMeter::over`（在 `MeterRuntime` 里**锁存**，直到清零） | 柱高夹到 1.0 会把 +3.5 dBFS 压成 0.0 dBFS 的观感，`over` 就是补这一格 |
+//! | LUFS | 帧的 `momentary_lufs`（引擎 BS.1770 瞬时读数），`−∞` ⇒ 下限 | **不再由 RMS 推算**（旧 `rms − 0.691` 公式已删） |
 //!
 //! **"输入 NaN 不产生 NaN 显示"是两条独立的防线**：引擎侧的 `sanitize_sample` 保证实时
 //! 路径不发布 `NaN`；本模块的 [`sanitize_dbfs`] 保证**即使**收到 `NaN`（测试注入、
@@ -89,6 +90,12 @@ pub struct ChannelMeter {
     pub peak_dbfs: f32,
     /// 平滑 RMS dBFS，**已按下限钳位**，恒有限。
     pub rms_dbfs: f32,
+    /// 瞬时响度 momentary（LUFS，BS.1770-4 真实读数，来自引擎帧）。
+    ///
+    /// 只有主总线帧带真实读数；轨道帧恒为负无穷（不计量响度）。负无穷在
+    /// [`MeterSnapshot::master_lufs`] 里被钳到显示下限 —— "没有读数"与"静音"
+    /// 在界面上是同一个有限值。
+    pub lufs: f32,
     /// 峰值柱高（0.0–1.0，过载只能顶格），由 [`peak_fraction`] 从 `peak_dbfs` 得到。
     pub level: f32,
     /// 本帧是否过载（`peak_dbfs > 0.0`）。`MeterRuntime::snapshot` 会把它**锁存**
@@ -120,6 +127,7 @@ impl ChannelMeter {
             name,
             peak_dbfs: METER_FLOOR_DBFS,
             rms_dbfs: METER_FLOOR_DBFS,
+            lufs: METER_FLOOR_DBFS,
             level: 0.0,
             level_l: 0.0,
             level_r: 0.0,
@@ -141,6 +149,7 @@ impl ChannelMeter {
             name,
             peak_dbfs,
             rms_dbfs,
+            lufs: frame.momentary_lufs,
             level: peak_fraction(peak_dbfs),
             level_l: amplitude_fraction(frame.peak_l),
             level_r: amplitude_fraction(frame.peak_r),
@@ -264,20 +273,19 @@ impl MeterSnapshot {
         self.master.as_ref().map_or(0.0, |master| master.level_r)
     }
 
-    /// 主控 LUFS 读数（LKFS / LUFS）。
+    /// 主控 LUFS 读数（LKFS / LUFS）—— **引擎帧里的 BS.1770 瞬时响度**。
     ///
-    /// 依照 ITU-R BS.1770-4，双声道瞬时功率经 K 计权后，标定偏移量为 -0.691 dBFS。
-    /// 当主总线有电平帧且高于静音下限时，由平滑 RMS 减去 0.691 dB 计算；
-    /// 静音或无主总线时保持为静音下限 METER_FLOOR_DBFS。
+    /// 读数由实时线程在主总线计量时产出：`GatedLoudness` 对限制之后的母线立体声
+    /// 做 K 加权 + 400 ms 滑窗（[`yeban_engine::meter::MeterBank`]），经电平 SPSC
+    /// 随帧送到这里。本函数**只读帧**，不再算 `rms_dbfs − 0.691`：那个公式
+    /// 没有 K 加权/窗口/门限，在 997 Hz 正弦上会把 −20.0 LUFS 报成 −23.7 LUFS。
+    /// 帧里还没有读数（窗口未满 / 静音 / 采样率不支持）或没有主总线时，读数为
+    /// 显示下限 METER_FLOOR_DBFS（`sanitize_dbfs` 把负无穷钳到下限）。
     #[must_use]
     pub fn master_lufs(&self) -> f32 {
-        self.master.as_ref().map_or(METER_FLOOR_DBFS, |master| {
-            if master.rms_dbfs > METER_FLOOR_DBFS {
-                sanitize_dbfs(master.rms_dbfs - 0.691)
-            } else {
-                METER_FLOOR_DBFS
-            }
-        })
+        self.master
+            .as_ref()
+            .map_or(METER_FLOOR_DBFS, |master| sanitize_dbfs(master.lufs))
     }
 
     /// 主控 LUFS 显示文本（`display_dbfs(master_lufs())`；stale 时为 `"--"`）。
@@ -613,6 +621,8 @@ mod tests {
             peak_hold: f32::NAN,
             rms: f32::NAN,
             rms_smoothed: f32::NAN,
+            momentary_lufs: f32::NAN,
+            short_term_lufs: f32::NAN,
         };
         let meter = ChannelMeter::from_frame(0, "敌意轨道".to_owned(), &hostile);
         assert_eq!(meter.peak_label, "-120.0");
@@ -685,6 +695,8 @@ mod tests {
             peak_hold: 0.5,
             rms: 0.25,
             rms_smoothed: 0.25,
+            momentary_lufs: f32::NEG_INFINITY,
+            short_term_lufs: f32::NEG_INFINITY,
         }]);
         runtime.poll(1);
         let shot = runtime.snapshot(&view);
@@ -911,9 +923,14 @@ mod tests {
         assert_eq!(runtime.snapshot(&view).quantum, Some(9));
     }
 
-    /// 判据 10：主控 LUFS 读数与 ITU-R BS.1770-4 偏移量吻合，且静音时保持下限。
+    /// 判据 10：主控 LUFS **读引擎帧的 BS.1770 瞬时读数**，不再由 RMS 推算。
+    ///
+    /// 旧公式 `rms_dbfs − 0.691` 在这里会给出 **−0.691**（满幅 RMS ⇒ 0.0 dBFS）；
+    /// 新口径下同一帧的 LUFS 是帧里带的 −20.0（997 Hz、−20 dBFS 的标定信号
+    /// 在引擎侧的真实读数，见 `yeban_engine::meter` 的参考向量判据）。
+    /// 这条判据在**旧公式下是红的**（−0.691 ≠ −20.0），正是"假公式"的判别点。
     #[test]
-    fn master_lufs_calculation_matches_bs1770_offset() {
+    fn master_lufs_reads_the_engine_bs1770_momentary_reading() {
         let project = demo_project();
         let view = ViewState::from_project(&project).expect("投影");
         let silent = silent_snapshot(&view);
@@ -924,14 +941,36 @@ mod tests {
 
         let (mut publisher, collector) = meter_channel(16);
         let mut runtime = MeterRuntime::with_collector(collector);
-        // 发布一帧满幅信号 (1.0 peak, 1.0 rms => 0.0 dBFS)
+        // 满幅 RMS（0.0 dBFS）但帧里带的真实响度是 −20.0 LUFS：新口径读 −20.0，
+        // 旧公式会读 −0.691 —— 两者差 19.3 dB，绝不是"标定偏移"能解释的。
+        let mut frame = MeterFrame::new(master_entity, 1, 1.0, 1.0);
+        frame.momentary_lufs = -20.0;
+        frame.short_term_lufs = -20.0;
+        publisher.publish(&[frame]);
+        assert_eq!(runtime.poll(view.tracks.len() + 1), 1);
+        let shot = runtime.snapshot(&view);
+
+        assert!((shot.master_lufs() - (-20.0)).abs() < 1e-4);
+        assert_eq!(shot.master_lufs_label(), "-20.0");
+    }
+
+    /// 判据 10b：帧里**还没有**响度读数（负无穷：窗口未满 / 静音 / 采样率不支持）
+    /// 时，主控 LUFS 显示下限 —— 绝不拿 RMS 拼一个假读数顶上去。
+    #[test]
+    fn master_lufs_without_a_frame_reading_stays_at_the_floor() {
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        let master_entity = project.master_bus_track_id;
+
+        let (mut publisher, collector) = meter_channel(16);
+        let mut runtime = MeterRuntime::with_collector(collector);
+        // 满幅 RMS 但响度字段是负无穷：旧公式会报 −0.691，新口径必须报下限。
         publisher.publish(&[MeterFrame::new(master_entity, 1, 1.0, 1.0)]);
         assert_eq!(runtime.poll(view.tracks.len() + 1), 1);
         let shot = runtime.snapshot(&view);
 
-        // 0.0 dBFS rms - 0.691 dB = -0.691 LUFS -> 显示 "-0.7"
-        assert!((shot.master_lufs() - (-0.691)).abs() < 1e-4);
-        assert_eq!(shot.master_lufs_label(), "-0.7");
+        assert_eq!(shot.master_lufs(), METER_FLOOR_DBFS);
+        assert_eq!(shot.master_lufs_label(), "-120.0");
     }
 
     /// 判据 11：引擎断流后**推进 N 跳** ⇒ stale 为真、文本 `"--"`，数值仍停在最后一帧；
