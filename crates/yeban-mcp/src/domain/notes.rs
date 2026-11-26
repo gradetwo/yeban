@@ -10032,6 +10032,31 @@ impl ParamEcho {
     }
 }
 
+/// `clipPlacementNotFound` 的 hint：点明摆放身份取 `tracks[].clips` 里各摆放对象
+/// 的 `id`（又名 `placement_id`），不是材质 `clip_id`。
+///
+/// 传入的身份若恰好是该轨上某摆放的材质 `clip_id`，再点出同对象在该轨上的摆放身份
+/// （确定性查得才给，不猜：只查**本轨**的摆放，别的轨不认；一材多摆时全列）。
+/// 候选只写进 hint 文案，不加新的 data 键 ⇒ `fault_vocabulary` 的 reason 面摘要不动。
+fn clip_placement_not_found_hint(track: &TrackV3, placement_id: &EntityId) -> String {
+    const BASE: &str = "摆放身份是 `yeban_query_project` 的 `tracks[].clips` 里各摆放对象的 `id`（又名 `placement_id`），不是材质 `clip_id`";
+    let matched: Vec<String> = track
+        .clips
+        .values()
+        .filter(|placement| placement.clip_id == *placement_id)
+        .map(|placement| placement.id.to_canonical_string())
+        .collect();
+    if matched.is_empty() {
+        BASE.to_owned()
+    } else {
+        format!(
+            "{BASE}；传入的 `{}` 是材质 `clip_id`，同对象在该轨上的摆放身份：{}",
+            placement_id.to_canonical_string(),
+            matched.join("、")
+        )
+    }
+}
+
 /// [`compile`] 的带回显变体（第五份报告 A-3）：除编译出的 `Op` 外，还按出现顺序
 /// 返回每条 `setParam`（`DeviceParam`）命中的参数回显（[`ParamEcho`]）。
 ///
@@ -10677,7 +10702,7 @@ fn compile_inner(
                             "trackId": track_id.to_canonical_string(),
                             "placementId": placement_id.to_canonical_string(),
                             "reason": "clipPlacementNotFound",
-                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                            "hint": clip_placement_not_found_hint(track, placement_id),
                         }),
                     )
                 })?;
@@ -10715,7 +10740,7 @@ fn compile_inner(
                             "trackId": track_id.to_canonical_string(),
                             "placementId": placement_id.to_canonical_string(),
                             "reason": "clipPlacementNotFound",
-                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                            "hint": clip_placement_not_found_hint(track, placement_id),
                         }),
                     )
                 })?;
@@ -10793,7 +10818,7 @@ fn compile_inner(
                             "trackId": track_id.to_canonical_string(),
                             "placementId": placement_id.to_canonical_string(),
                             "reason": "clipPlacementNotFound",
-                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                            "hint": clip_placement_not_found_hint(track, placement_id),
                         }),
                     )
                 })?;
@@ -10832,7 +10857,7 @@ fn compile_inner(
                             "trackId": track_id.to_canonical_string(),
                             "placementId": placement_id.to_canonical_string(),
                             "reason": "clipPlacementNotFound",
-                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                            "hint": clip_placement_not_found_hint(track, placement_id),
                         }),
                     )
                 })?;
@@ -13788,6 +13813,114 @@ mod tests {
         )
         .expect_err("音符不存在");
         assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+    }
+
+    /// T-FIX-659：`setClipPlacementDuration` 误传材质 `clip_id` 时，
+    /// `clipPlacementNotFound` 的 hint 必须点明取哪个字段，并给出同对象在该轨上的
+    /// 摆放身份；传一个谁也不是的身份时只给字段指引、不编候选；传对 `placementId` 仍成功。
+    #[test]
+    fn set_clip_placement_duration_with_clip_id_hint_names_the_field_and_candidate() {
+        let project = filled_project();
+        // 顶层信封 clip：本形态自带寻址（`all_ops_address_their_own_track`），
+        // 信封不被查，只为满足 `compile` 的签名而给一个真实存在的片段身份。
+        let (_track_id, clip_id) = lead_clip(&project);
+        // 找一个有摆放的音轨与它的第一个摆放（与 23066 行的既有写法同一路数）。
+        let (placement_track, placed) = project
+            .tracks
+            .iter()
+            .find(|(_, track)| !track.clips.is_empty())
+            .map(|(id, track)| {
+                (
+                    *id,
+                    *track.clips.values().next().expect("非空轨必有第一个摆放"),
+                )
+            })
+            .expect("样本里必须有带摆放的音轨");
+
+        // ---- 误传材质 clip_id ⇒ CLIP_NOT_FOUND，hint 点名这是材质并给出候选摆放身份。
+        let fault = compile(
+            &project,
+            &placement_track,
+            &clip_id,
+            &[NoteOp::SetClipPlacementDuration {
+                track_id: placement_track,
+                placement_id: placed.clip_id,
+                old_duration_ticks: 0,
+                new_duration_ticks: 960,
+            }],
+        )
+        .expect_err("误传 clip_id 必须响亮失败");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
+        assert_eq!(reason_of(&fault).as_deref(), Some("clipPlacementNotFound"));
+        let hint = lane_fault_data(&fault)["hint"]
+            .as_str()
+            .expect("hint 必须是字符串");
+        assert!(
+            hint.contains("不是材质 `clip_id`"),
+            "hint 必须点明摆放身份不是材质 clip_id: {hint}"
+        );
+        assert!(
+            hint.contains(&format!(
+                "传入的 `{}` 是材质 `clip_id`",
+                placed.clip_id.to_canonical_string()
+            )),
+            "误传 clip_id 时 hint 必须点明传入的是材质 clip_id: {hint}"
+        );
+        assert!(
+            hint.contains("同对象在该轨上的摆放身份"),
+            "误传 clip_id 时 hint 必须给出候选摆放身份: {hint}"
+        );
+        assert!(
+            hint.contains(&placed.id.to_canonical_string()),
+            "hint 必须给出同对象在该轨上的摆放身份: {hint}"
+        );
+
+        // ---- 传一个谁也不是的幽灵身份 ⇒ 同样 CLIP_NOT_FOUND，但 hint 不给候选（不猜）。
+        let ghost = deterministic_id("ghost-placement");
+        let fault = compile(
+            &project,
+            &placement_track,
+            &clip_id,
+            &[NoteOp::SetClipPlacementDuration {
+                track_id: placement_track,
+                placement_id: ghost,
+                old_duration_ticks: 0,
+                new_duration_ticks: 960,
+            }],
+        )
+        .expect_err("幽灵摆放身份必须响亮失败");
+        assert_eq!(reason_of(&fault).as_deref(), Some("clipPlacementNotFound"));
+        let hint = lane_fault_data(&fault)["hint"]
+            .as_str()
+            .expect("hint 必须是字符串");
+        assert!(
+            hint.contains("不是材质 `clip_id`"),
+            "无匹配时 hint 仍须给字段指引: {hint}"
+        );
+        assert!(
+            !hint.contains("同对象在该轨上的摆放身份"),
+            "没匹配到材质时不得编候选: {hint}"
+        );
+
+        // ---- 传对 placementId ⇒ 成功（回归）。
+        let compiled = compile(
+            &project,
+            &placement_track,
+            &clip_id,
+            &[NoteOp::SetClipPlacementDuration {
+                track_id: placement_track,
+                placement_id: placed.id,
+                old_duration_ticks: 0,
+                new_duration_ticks: 960,
+            }],
+        )
+        .expect("传对摆放身份必须成功");
+        assert_eq!(compiled.len(), 1, "一条 duration op 只编译出一条 Op");
+        assert!(
+            matches!(compiled[0], Op::SetClipPlacementDuration { .. }),
+            "编译产物必须是 SetClipPlacementDuration: {:?}",
+            compiled[0]
+        );
     }
 
     /// `ops[].kind == "setParam"` 的**规范**形状：解析 → 编译 → 真的改工程 → 逆操作回原。

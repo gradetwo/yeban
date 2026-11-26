@@ -286,6 +286,10 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
     let mut object = full.as_object().cloned().unwrap_or_default();
     // ⭐ T-FIX-366：默认 `project.clip_pool` 只留摘要；全量音符走 `clip_pool.full`。
     object.insert("clip_pool".to_owned(), clip_pool_summary(project));
+    // ⭐ T-FIX-659：`tracks[].clips` 里各摆放对象补 `placement_id` 别名（与 `id`
+    // 同值），让调用方一眼分清摆放身份与材质 `clip_id`；旧 `id`/`clip_id` 字段不动，
+    // 模型与落盘格式也不动（只改查询视图的投影，在字段选择之前注入，各选择器都可见）。
+    add_placement_id_aliases(&mut object);
     if fields.is_empty() {
         return Ok(Value::Object(object));
     }
@@ -381,6 +385,28 @@ pub fn project_view(project: &YebanProjectV1, fields: &[String]) -> Result<Value
     Ok(Value::Object(out))
 }
 
+/// 给查询视图里每条摆放对象补 `placement_id`（= `id` 的别名）。
+///
+/// 只改 `project_view` 产出的投影：模型不变、落盘不变；`clips` 为空的音轨无事可做。
+fn add_placement_id_aliases(object: &mut Map<String, Value>) {
+    let Some(Value::Object(tracks)) = object.get_mut("tracks") else {
+        return;
+    };
+    for track in tracks.values_mut() {
+        let Some(Value::Object(clips)) = track.get_mut("clips") else {
+            continue;
+        };
+        for clip in clips.values_mut() {
+            let Some(id) = clip.get("id").cloned() else {
+                continue;
+            };
+            if let Some(clip) = clip.as_object_mut() {
+                clip.insert("placement_id".to_owned(), id);
+            }
+        }
+    }
+}
+
 /// 实体索引：确定性顺序（`tracks` → `sections` → `scenes` → `clip_pool`，组内按身份升序）。
 ///
 /// **刻意不含音符** —— 这是"防止海量音符撑爆 Agent 上下文"的落点。
@@ -442,6 +468,34 @@ mod tests {
                 "选择器 `{selector}` 在序列化结果里取不到值 —— 白名单与数据模型漂移了"
             );
         }
+    }
+
+    /// T-FIX-659：查询视图里 `tracks[].clips` 的每个摆放对象补 `placement_id` 别名
+    /// （与 `id` 同值），旧 `id`/`clip_id` 字段不动；空轨无事可做。
+    #[test]
+    fn query_project_clips_carry_placement_id_alias() {
+        let project = filled_project();
+        let view = project_view(&project, &[]).expect("缺省视图");
+        let tracks = view["tracks"].as_object().expect("tracks 必须是对象");
+        let mut checked = 0usize;
+        for track in tracks.values() {
+            let Some(clips) = track.get("clips").and_then(Value::as_object) else {
+                continue;
+            };
+            for clip in clips.values() {
+                let clip = clip.as_object().expect("摆放必须是对象");
+                assert_eq!(
+                    clip["placement_id"], clip["id"],
+                    "placement_id 必须等于 id: {clip:?}"
+                );
+                assert!(
+                    clip.contains_key("clip_id"),
+                    "旧 clip_id 字段必须保留: {clip:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "样本工程必须至少有一个摆放，否则本判据是空转");
     }
 
     #[test]
@@ -664,6 +718,20 @@ mod tests {
         let mut view = project_view(&project, &[]).expect("缺省视图");
         let full = project_view(&project, &["clip_pool.full".to_owned()]).expect("全量池子");
         view["clip_pool"] = full["clip_pool"].clone();
+        // T-FIX-659：视图的 clips 每个摆放多一个 `placement_id` 别名（= `id`）；
+        // 442 的逐位相等只看除别名外的部分，别名本身由
+        // `query_project_clips_carry_placement_id_alias` 钉住。
+        if let Some(tracks) = view["tracks"].as_object_mut() {
+            for track in tracks.values_mut() {
+                if let Some(clips) = track.get_mut("clips").and_then(Value::as_object_mut) {
+                    for clip in clips.values_mut() {
+                        if let Some(clip) = clip.as_object_mut() {
+                            clip.remove("placement_id");
+                        }
+                    }
+                }
+            }
+        }
         assert_eq!(
             view,
             serde_json::to_value(&project).expect("全量序列化"),
