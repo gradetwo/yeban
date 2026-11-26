@@ -27,7 +27,14 @@
 //!
 //! | `MidiNote` 字段 | 事件 / 去向 |
 //! | :--- | :--- |
-//! | `start_tick` | `NoteOn` 的**绝对** tick = `placement.start_tick + note.start_tick`（饱和加，不 wrap） |
+//! | `start_tick` | `NoteOn` 的**绝对** tick = `placement.start_tick + note.start_tick + offset_ticks`（饱和加，不 wrap）① |
+//!
+//! ① **T-FIX-584**：`placement.offset_samples`（手动相位对齐，±4800 采样）映射层此前静默忽略，
+//! 同一工程 WAV 生效、MIDI 不动。现按 `offset_ticks = round(offset_samples × bpm × PPQ / (60 × sample_rate_hz))`
+//! 并入起点，与 WAV「tick→帧后加偏移」保持同一听感（tick 精度内，≤1 tick）。**换算来源**：
+//! `sample_rate` 取工程 `audio_config.sample_rate`（`project.sample_rate().hz()`，唯一来源），
+//! `bpm` 取工程基准 `project.bpm`（与 WAV 侧 `time_math::ticks_to_frames` 的入参一致）；
+//! 四舍五入、饱和、可正可负（负偏移起点夹 0，与 WAV `shift_note_span` 同口径）。`offset=0/None` 零回归。
 //! | `duration_ticks` | `NoteOff` 的绝对 tick = 起始 + 时值（由 `yeban_render::midi` 追加） |
 //! | `pitch` | `NoteOn` / `NoteOff` 的 `key` |
 //! | `velocity` | `NoteOn` 的 `vel`（`NoteOff` 的力度恒为 0） |
@@ -274,6 +281,22 @@ fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool) -> 
 /// # Errors
 ///
 /// [`MidiExportError::DanglingClip`]：摆放引用的片段不在 `clip_pool` 里。
+/// ⭐ T-FIX-584：把片段采样偏移 `offset_samples` 换算成 tick。
+///
+/// 口径与 WAV「tick→帧后加偏移」（`export_wav::shift_note_span`）同一听感：
+/// `offset_ticks = round(offset_samples × bpm × PPQ / (60 × sample_rate_hz))`，
+/// sample_rate 取工程 `audio_config.sample_rate`（唯一来源），bpm 取工程基准 BPM
+/// （与 `time_math::ticks_to_frames` 在 WAV 侧的入参一致）。四舍五入、可正可负；
+/// 调用方用饱和加减并入 NoteOn 起点（负偏移夹到 0），与 WAV 起点夹 0 对齐。
+fn offset_samples_to_ticks(offset_samples: i32, project: &YebanProjectV1) -> i64 {
+    if offset_samples == 0 {
+        return 0;
+    }
+    let rate = f64::from(project.sample_rate().hz());
+    let ticks = f64::from(offset_samples) * project.bpm * (PPQ as f64) / (60.0 * rate);
+    ticks.round() as i64
+}
+
 fn track_notes(
     project: &YebanProjectV1,
     track: EntityId,
@@ -293,12 +316,22 @@ fn track_notes(
         let ClipContent::Midi { notes: pool } = &entry.content else {
             continue;
         };
+        // ⭐ T-FIX-584：片段采样偏移换算成 tick 后并入起点（饱和、可正可负、夹 0），
+        // 与 WAV 侧 `shift_note_span(ticks_to_frames(...), offset)` 同一听感。
+        // offset=0 / None 时增量为 0 ⇒ 既有导出逐位不变。
+        let offset_ticks = offset_samples_to_ticks(placement.offset_samples.unwrap_or(0), project);
         for note in pool.values() {
+            let base = placement.start_tick.saturating_add(note.start_tick);
+            let start_tick = if offset_ticks >= 0 {
+                base.saturating_add(offset_ticks as u64)
+            } else {
+                base.saturating_sub(offset_ticks.unsigned_abs())
+            };
             notes.push(MidiNote {
-                // 绝对 tick = 摆放起点 + 片段内起点（饱和加，不 wrap）。
+                // 绝对 tick = 摆放起点 + 片段内起点 + offset 换算 tick（饱和加，不 wrap）。
                 // `micro_timing_ticks` 原样带着, 由 `yeban_render::midi` 并入起点 ——
                 // 与 `yeban-engine` 的 `placement_start + note.start_tick + micro` 同口径。
-                start_tick: placement.start_tick.saturating_add(note.start_tick),
+                start_tick,
                 ..note.clone()
             });
         }
@@ -2433,5 +2466,143 @@ mod tests {
             }),
             "越界的控制器字节必须被点名拒绝（掩码会把 128 写成 0）"
         );
+    }
+
+    /// ⭐ T-FIX-584 判据：`ClipPlacement.offset_samples` 必须按采样率/bpm 换算成 tick
+    /// 并入 NoteOn 起点，与 WAV「先帧换算后加偏移」同一听感（≤1 tick）。
+    /// 红对照：当前映射层忽略 offset ⇒ 本判据红（起点不移动）。
+    #[test]
+    fn placement_offset_samples_shift_midi_note_on_ticks() {
+        let mut project = filled_project();
+        assert_eq!(project.bpm, 128.0, "夹具 bpm 固定，便于算期望 tick");
+        let sample_rate = project.sample_rate().hz();
+        assert_eq!(sample_rate, 48_000, "夹具采样率固定");
+
+        let track_id = project
+            .tracks
+            .values()
+            .find(|t| t.id != project.master_bus_track_id)
+            .map(|t| t.id)
+            .expect("非主总线轨");
+        let placement_id = *project.tracks[&track_id]
+            .clips
+            .keys()
+            .next()
+            .expect("有 MIDI 摆放");
+
+        let base = export_from_project(&project).expect("基线导出");
+        let base_ticks: Vec<u64> = base.tracks[0].notes.iter().map(|n| n.start_tick).collect();
+        assert!(!base_ticks.is_empty(), "夹具应有音符");
+
+        // offset = +2400 samples = 50 ms @48k ⇒ 期望 tick 增量 = round(2400*bpm*PPQ/(60*rate))。
+        const OFFSET: i32 = 2_400;
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在")
+            .offset_samples = Some(OFFSET);
+        let shifted = export_from_project(&project).expect("带 offset 导出");
+        let shifted_ticks: Vec<u64> = shifted.tracks[0]
+            .notes
+            .iter()
+            .map(|n| n.start_tick)
+            .collect();
+        let expected_delta = ((OFFSET as f64) * project.bpm * (yeban_model::PPQ as f64)
+            / (60.0 * sample_rate as f64))
+            .round() as u64;
+        assert!(expected_delta > 0, "期望增量必须为正");
+        for (i, (b, sh)) in base_ticks.iter().zip(shifted_ticks.iter()).enumerate() {
+            assert_eq!(
+                *sh,
+                b.saturating_add(expected_delta),
+                "第 {i} 颗音符 NoteOn tick 必须 +{expected_delta}（offset_samples 生效）"
+            );
+        }
+    }
+
+    /// ⭐ T-FIX-584 零回归：offset_samples = 0（或 None）时导出逐位不变。
+    #[test]
+    fn zero_offset_samples_export_is_byte_identical() {
+        let project = filled_project();
+        let a = export_from_project(&project).expect("无 offset");
+        let mut p0 = project.clone();
+        for track in p0.tracks.values_mut() {
+            for placement in track.clips.values_mut() {
+                placement.offset_samples = Some(0);
+            }
+        }
+        let b = export_from_project(&p0).expect("offset=0");
+        assert_eq!(
+            a.to_smf_bytes().expect("编码 a"),
+            b.to_smf_bytes().expect("编码 b"),
+            "offset_samples=0 时 MIDI 导出必须逐字节不变"
+        );
+    }
+
+    /// ⭐ T-FIX-584 交叉判据（派单验收项）：MIDI NoteOn 起点与 WAV 帧落点反算的 tick
+    /// 必须 ≤1 tick。用 `yeban_model::time_math` 对同一工程做帧↔tick 往返，
+    /// 证明「MIDI 加 offset_ticks」与「WAV 先 tick→帧再加 offset_samples」同一听感。
+    /// 覆盖正/负/零偏移；WAV 起点已夹 0 的音符不参与往返对照（两侧都夹 0，无信息量）。
+    #[test]
+    fn midi_offset_tick_matches_wav_frame_roundtrip_within_one_tick() {
+        let project = filled_project();
+        let bpm = project.bpm;
+        let rate = project.sample_rate().hz();
+        let ppq = yeban_model::PPQ;
+
+        let base = export_from_project(&project).expect("基线导出");
+        let base_ticks: Vec<u64> = base.tracks[0].notes.iter().map(|n| n.start_tick).collect();
+        assert!(!base_ticks.is_empty(), "夹具应有音符");
+
+        let track_id = project
+            .tracks
+            .values()
+            .find(|t| t.id != project.master_bus_track_id)
+            .map(|t| t.id)
+            .expect("非主总线轨");
+        let placement_id = *project.tracks[&track_id]
+            .clips
+            .keys()
+            .next()
+            .expect("有 MIDI 摆放");
+
+        for &offset in &[-4_800_i32, -2_400, -1, 0, 1, 2_400, 4_800] {
+            let mut p = project.clone();
+            p.tracks
+                .get_mut(&track_id)
+                .expect("轨在")
+                .clips
+                .get_mut(&placement_id)
+                .expect("摆放在")
+                .offset_samples = Some(offset);
+            let got = export_from_project(&p).expect("带 offset 导出");
+            let got_ticks: Vec<u64> = got.tracks[0].notes.iter().map(|n| n.start_tick).collect();
+
+            let mut compared = 0usize;
+            for (b, &m) in base_ticks.iter().zip(got_ticks.iter()) {
+                let wav_start =
+                    yeban_model::time_math::ticks_to_frames(*b, bpm, ppq, rate).expect("tick→帧");
+                if offset < 0 && wav_start < offset.unsigned_abs() as u64 {
+                    continue; // WAV 起点夹 0，两侧同为 0，跳过
+                }
+                let wav_shifted = if offset >= 0 {
+                    wav_start.saturating_add(offset as u64)
+                } else {
+                    wav_start.saturating_sub(offset.unsigned_abs() as u64)
+                };
+                let wav_tick =
+                    yeban_model::time_math::frames_to_ticks_ceil(wav_shifted, ppq, bpm, rate)
+                        .expect("帧→tick");
+                assert!(
+                    m.abs_diff(wav_tick) <= 1,
+                    "offset={offset}：base_tick={b} 的 MIDI NoteOn={m}，WAV 帧反算 tick={wav_tick}，差 >1"
+                );
+                compared += 1;
+            }
+            assert!(compared > 0, "offset={offset} 至少应有一颗粒子参与往返对照");
+        }
     }
 }
