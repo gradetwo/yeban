@@ -24752,6 +24752,9 @@ fn clear_clip_drag(ui: &MainWindow) {
     ui.set_clip_drag_origin_x(0.0);
     ui.set_clip_drag_origin_y(0.0);
     ui.set_clip_drag_preview_dx(0.0);
+    // ⭐ T-FIX-491：整组标志与草稿同生同灭（松手 / Escape / 取消三条路径共用本函数），
+    // ⛔ 不留给下一次手势 —— 否则下一次单条拖动会把上一次的组员一起画走。
+    ui.set_clip_drag_is_group(false);
     // 纵向预览与草稿属性同生同灭：-1 = 没有目标行。
     ui.set_clip_drag_preview_track_index(-1);
     ui.set_clip_drag_preview_track_y(0.0);
@@ -24817,6 +24820,11 @@ fn begin_clip_drag(
         return false;
     }
     snapshot_clip_drag_group(ui, &project, clip_ulid);
+    // ⭐ T-FIX-491：把"这一拖是不是整组"告诉界面 —— 界面据此让**每条组员**都读
+    // 同一份预览位移（组员身份由选区标志给出，见 `ui/arrangement.slint` 的
+    // `drag-preview-in-group`）。组只有一条 ⇒ `false` ⇒ 单条拖动的旧行为逐像素不变。
+    let group_len = CLIP_DRAG_GROUP.with(|cell| cell.borrow().len());
+    ui.set_clip_drag_is_group(group_len > 1);
     // 身份 → 起点 → 草稿位移，顺序固定：读者看到非空身份时，其余读数已经就位。
     ui.set_clip_drag_ulid(clip_ulid.into());
     ui.set_clip_drag_origin_x(x);

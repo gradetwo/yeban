@@ -127,6 +127,24 @@ export component ArrangementViewport inherits Rectangle {
     // 预览位移（逻辑像素，已吸附）。拖动面上的指针坐标系因此保持稳定（见 clip-…-body）。
     in-out property <string> clip-drag-ulid: "";
     in-out property <float> clip-drag-preview-dx: 0.0;
+    /// ⭐ T-FIX-491：按下那一刻冻结的拖动组**是否多成员**（组 = 选区集包含这一按时
+    /// 的全部成员，见 `host::snapshot_clip_drag_group`）。为 true ⇒ 组内**每一条**都读
+    /// 同一份 `clip-drag-preview-dx` —— 与松手提交的口径一致（`commit_clip_drag`：
+    /// 各成员新起点 = 各自现起点 + **同一** delta，⛔ 不逐条吸附）。为 false ⇒ 只有按下
+    /// 那条读草稿（单条拖动的旧行为，逐像素不变）。⛔ 界面不自己算组成员。
+    in property <bool> clip-drag-is-group: false;
+    /// ⭐ T-FIX-491：这一块在拖动期是否读预览位移。
+    ///
+    /// 两个充分条件（与宿主冻结的组同源）：
+    /// ① 它就是按下的那条（`clip-drag-ulid`，单选拖动永远走这条）；
+    /// ② 组是多成员 **且** 它在选区标志里 —— 选区标志与 `timeline-blocks` 同序同长
+    ///    时才读（长度对不上 ⇒ 回落只认按下那条，⛔ 不让刚换投影的那一帧误动）。
+    pure function drag-preview-in-group(ulid: string, index: int) -> bool {
+        ulid == root.clip-drag-ulid
+            || (root.clip-drag-is-group
+                && root.timeline-block-selected.length == root.timeline-blocks.length
+                && root.timeline-block-selected[index])
+    }
     // ⭐ T-FIX-209：纵向预览 —— 目标行下标（-1 = 与起始行相同，不画线）与目标行顶沿
     // （行空间 y，与 `track-ys` 同帧；落点金线画在该顶沿，与重排插入线同款）。
     in property <int> clip-drag-preview-track-index: -1;
@@ -1868,9 +1886,11 @@ export component ArrangementViewport inherits Rectangle {
                                 // 进可见区右段（滚动越深推得越远，双指左滑时内容反而右移）；
                                 // 短片段（起点在屏内）不触发，长工程单片段（《失语》88 小节）
                                 // 一滚就错位。现行公式下起点在屏内时补偿恒 0，行为与旧版一致。
-                                // T-FIX-234：拖动期只有被拖的那一条加预览位移（宿主已吸附）。
+                                // T-FIX-234：拖动期被拖的那一条加预览位移（宿主已吸附）。
+                                // T-FIX-491：整组拖动时**每条组员**都加同一份位移（组在按下
+                                // 那一刻冻结；松手按同一 delta 一次提交，预览因此与提交一致）。
                                 property <length> blk-raw-x: blk.start_px - root.scroll-x
-                                    + (blk.clip_ulid == root.clip-drag-ulid ? root.clip-drag-preview-dx * 1px : 0px);
+                                    + (root.drag-preview-in-group(blk.clip_ulid, blk_idx) ? root.clip-drag-preview-dx * 1px : 0px);
                                 property <length> blk-vis-x: Math.max(blk-raw-x, 0px);
                                 property <length> blk-vis-r: Math.min(blk-raw-x + blk.width_px, root.width);
                                 if blk.track_id == trk.id && blk-vis-r > blk-vis-x : Rectangle {
@@ -2053,8 +2073,10 @@ export component ArrangementViewport inherits Rectangle {
 
                                     // ⭐ T-FIX-234：片段拖动面（语义 ID clip-<ulid>-body）。外层矩形随预览位移右移，
                                     // 本体反向抵消 ⇒ 拖动面的**绝对几何不动**（mouse-x 的坐标系稳定，位移读数不会自我抵消）。
+                                    // ⭐ T-FIX-491：反向抵消必须与外层位移**同一条件**（组员全抵消），
+                                    // 否则组内非按下项的拖动面会被外层右移带走 ⇒ 指针坐标系漂移。
                                     Rectangle {
-                                        x: blk.clip_ulid == root.clip-drag-ulid ? 0px - root.clip-drag-preview-dx * 1px : 0px;
+                                        x: root.drag-preview-in-group(blk.clip_ulid, blk_idx) ? 0px - root.clip-drag-preview-dx * 1px : 0px;
                                         y: 0px;
                                         width: parent.width;
                                         height: parent.height;

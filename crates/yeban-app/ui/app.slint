@@ -536,6 +536,9 @@ export component MainWindow inherits Window {
     in-out property <float> clip-drag-origin-x: 0.0;
     in-out property <float> clip-drag-origin-y: 0.0;
     in-out property <float> clip-drag-preview-dx: 0.0;
+    // ⭐ T-FIX-491：按下那一刻冻结的拖动组是否多成员（宿主写；见 host::snapshot_clip_drag_group）。
+    // 为 true ⇒ 活编曲视图里组内每条都读同一份预览位移（与松手提交同一 delta 的口径一致）。
+    in-out property <bool> clip-drag-is-group: false;
     // ⭐ T-FIX-209：纵向预览 —— 目标行下标（-1 = 与起始行相同，不画线）与目标行顶沿
     // （行空间 y，与 `track-ys` 同帧；落点金线画在该顶沿，与重排插入线同款）。
     in-out property <int> clip-drag-preview-track-index: -1;
@@ -1904,6 +1907,7 @@ export component MainWindow inherits Window {
                     selected-clip-ulids: root.selected-clip-ulids;
                     clip-drag-ulid: root.clip-drag-ulid;
                     clip-drag-preview-dx: root.clip-drag-preview-dx;
+                    clip-drag-is-group: root.clip-drag-is-group;
                     clip-drag-preview-track-index: root.clip-drag-preview-track-index;
                     clip-drag-preview-track-y: root.clip-drag-preview-track-y;
                     timeline-block-selected: root.timeline-block-selected;
