@@ -75,6 +75,7 @@
 
 use std::path::{Path, PathBuf};
 
+use yeban_model::project::{AssetMetadata, MediaKind};
 use yeban_model::{
     AssetHash, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, Op, OpOrigin, PPQ, TrackKind,
     YebanProjectV1, frames_to_ticks_ceil,
@@ -446,6 +447,44 @@ pub fn land_recording_at(
     }
     let placement = plan_placement(&project, &plan, start_tick, target)?;
     let mut ops = plan.ops;
+    // ⭐ T-FIX-468：录音落地与 CAS 池**双登记**。
+    //
+    // `UndoPort::insert_asset`（本函数末尾那次）只写会话池 —— 那是保存时落进
+    // 容器 `assets/{sha256}` 的**字节**。`project.assets` 是 `project.json` 里的
+    // **索引**，两者不是同一件事：只写池不写索引 ⇒ T-FIX-329 的保存跨层核对
+    // 一旦生效，「录一段就保存」会被判 `MissingAsset` 而不是"能存"。
+    //
+    // 索引是工程文档的一部分 ⇒ 走 `Op::SetAsset`（`old_asset: None` 编码"创建"，
+    // 见该变体的文档），与 `AddClip` 同一次提交、同一个撤销单元。放在 `ops`
+    // **最前**：声明先于引用，撤销时逆序先撤片段、再撤声明。
+    //
+    // 幂等：索引里已有同哈希 ⇒ 不产 op（重复调用 `land_recording_at` 不重复声明）；
+    // 但池里已有索引里没有（旧工程的历史形态）时**仍补一次声明**，这正是一次
+    // 编辑，`committed` 如实为 `true`。
+    if !project.assets.contains_key(&plan.asset) {
+        ops.insert(
+            0,
+            Op::SetAsset {
+                asset_hash: plan.asset.clone(),
+                old_asset: None,
+                new_asset: AssetMetadata {
+                    hash: plan.asset.clone(),
+                    // 与 CLI 导入侧（`cli::register_audio_asset`）同一条口径：
+                    // `original_path` 只留痕、不参与寻址 ⇒ 只取源文件**名**，
+                    // ⛔ 不把录音机的临时目录钉进 `.yeban`（否则同一段录音在两台
+                    // 机器上产出的工程不再逐字节相同）。
+                    original_path: plan.path.file_name().map_or_else(
+                        || "Media/Audio Files".to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    ),
+                    byte_len: u64::try_from(plan.bytes.len()).unwrap_or(u64::MAX),
+                    media_kind: MediaKind::Audio,
+                    // 录音不是"导入"：来源如实标 `user-recorded`，与 `user-imported` 区分。
+                    license: "user-recorded".to_owned(),
+                },
+            },
+        );
+    }
     if let Some(placed) = &placement {
         ops.push(Op::AddClipPlacement {
             track_id: placed.track_id,
