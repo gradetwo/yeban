@@ -24773,21 +24773,89 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
         }
         _ => 0,
     };
-    if new_start_tick == old_start_tick && row_delta == 0 {
-        // 横向没跨过吸附网格、纵向也没换行 ⇒ **不提交空 op**（一次拖动没有产生任何编辑）。
-        return;
-    }
     let delta_ticks = (new_start_tick as i64).saturating_sub(old_start_tick as i64);
     // 先算 (原轨，目标轨，摆放，旧起点，新起点) 五元组，再**一处**构造 op
     // （`MoveClipPlacement` / `MoveClipPlacementToTrack` 在全 app 各只有一个构造点
     // —— 单条是退化情形，不是第二处）。
     let track_count = read_strings(&ui.get_track_ids()).len();
+    // ⭐ T-FIX-490：组拖动**先算整组可行位移，再一次统一应用**。
+    //
+    // 旧实现给每个成员各自 `saturating_add_signed(delta_ticks)`：触到时间轴 0 的成员被
+    // 夹住、没触到的照常移 ⇒ 组内相对间距被压扁（起点 0/960 拽 −200，结果 0/760）；
+    // 纵向同理（越界成员留原轨、其余换轨）⇒ 松手后整组变形。
+    //
+    // 现在的口径：整组是一个**刚体**。
+    // · 横向：可行位移 = `[−min(成员起点), +∞)`（时间轴只有 0 这个硬边界）。
+    //   把 delta 夹进该区间，所有成员同减同一值 ⇒ 间距逐字保持；夹到 0 就是整组不动。
+    // · 纵向：所有成员的行 `+ row_delta` 都必须落在 `[0, track_count)`。
+    //   任一越界 ⇒ 整组**不换轨**（行位移归 0）并给可见回执，
+    //   ⛔ 不再出现"一条换轨一条不动"。
+    // · 行几何读不到（`track_row_index` 返回 `None`）⇒ 纵向退化成 0，与旧行为一致。
+    let members: Vec<(yeban_model::EntityId, yeban_model::EntityId, u64)> = if group.is_empty() {
+        Vec::new()
+    } else {
+        group
+            .iter()
+            .filter_map(|(_, member_placement_id, _)| {
+                // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 跳过，不拦整组。
+                clip_placement_for(&project, &member_placement_id.to_canonical_string()).map(
+                    |(member_track_id, _, current)| {
+                        (member_track_id, *member_placement_id, current.start_tick)
+                    },
+                )
+            })
+            .collect()
+    };
+    // 横向：整组一起夹紧（下界 = 时间轴 0）。
+    let effective_delta = if members.is_empty() {
+        delta_ticks
+    } else {
+        let min_old = members.iter().map(|(_, _, tick)| *tick).min().unwrap_or(0);
+        let lower = -i64::try_from(min_old).unwrap_or(i64::MAX);
+        delta_ticks.max(lower)
+    };
+    // 纵向：整组一起换轨；任一成员越界 ⇒ 整组不换。
+    let effective_row_delta = if members.is_empty() {
+        row_delta
+    } else {
+        let rows: Vec<usize> = members
+            .iter()
+            .filter_map(|(member_track, _, _)| track_row_index(ui, *member_track))
+            .collect();
+        let all_rows_known = rows.len() == members.len();
+        let feasible = all_rows_known
+            && rows.iter().all(|row| {
+                let target = i64::try_from(*row).unwrap_or(0) + row_delta;
+                target >= 0 && usize::try_from(target).is_ok_and(|row| row < track_count)
+            });
+        if feasible { row_delta } else { 0 }
+    };
+    let rows_blocked = effective_row_delta != row_delta;
+    // 夹紧后的落点：按下那条也必须落在夹紧后的位置（组是刚体）。
+    let effective_start_tick =
+        u64::try_from(i128::from(old_start_tick) + i128::from(effective_delta)).unwrap_or(0);
+    if effective_start_tick == old_start_tick && effective_row_delta == 0 {
+        // 整组一位都动不了：**有手势意图就出声**（⛔ 不静默），没有就当成空拖动不提交
+        // （横向没跨过吸附网格、纵向也没换行 ⇒ 一次拖动没有产生任何编辑）。
+        if delta_ticks != 0 || row_delta != 0 {
+            let reason = if rows_blocked {
+                "整组拖动被拒：有成员会越出轨道范围（已保持原轨原位）"
+            } else {
+                "整组拖动被拒：有成员会越过时间轴起点（已保持组内间距）"
+            };
+            ui.set_module_status(reason.into());
+            ui.set_module_status_text("整组未移动".into());
+            ui.set_module_status_succeeded(false);
+        }
+        return;
+    }
     // 组里一条摆放的目标轨 = 它当前行 + 整组行位移；越界（首 / 末行之外）⇒ 留在原轨。
+    // 注意这里用的是**夹紧后**的行位移：整组共用一个值，⛔ 不是各算各的。
     let target_track_for = |from_track: yeban_model::EntityId| -> yeban_model::EntityId {
         let Some(from_row) = track_row_index(ui, from_track) else {
             return from_track;
         };
-        let target_row = i64::try_from(from_row).unwrap_or(0) + row_delta;
+        let target_row = i64::try_from(from_row).unwrap_or(0) + effective_row_delta;
         let Ok(target_row) = usize::try_from(target_row) else {
             return from_track;
         };
@@ -24811,18 +24879,13 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
             target_track_for(track_id),
             placement_id,
             old_start_tick,
-            new_start_tick,
+            effective_start_tick,
         ));
     } else {
-        for (_, member_placement_id, _) in &group {
-            let Some((member_track_id, _, current)) =
-                clip_placement_for(&project, &member_placement_id.to_canonical_string())
-            else {
-                // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 跳过，不拦整组。
-                continue;
-            };
-            let member_old = current.start_tick;
-            let member_new = member_old.saturating_add_signed(delta_ticks);
+        // 整组**同一个** effective_delta：⛔ 不再逐成员饱和（那正是压扁间距的来源）。
+        for (member_track_id, member_placement_id, member_old) in members {
+            let member_new =
+                u64::try_from(i128::from(member_old) + i128::from(effective_delta)).unwrap_or(0);
             let member_target = target_track_for(member_track_id);
             if member_target == member_track_id && member_new == member_old {
                 continue;
@@ -24830,7 +24893,7 @@ fn commit_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &st
             moves.push((
                 member_track_id,
                 member_target,
-                *member_placement_id,
+                member_placement_id,
                 member_old,
                 member_new,
             ));
