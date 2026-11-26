@@ -14928,6 +14928,469 @@ mod sound_library_scan_status_tests {
     }
 }
 
+/// 缺声救援面板的状态行文案闭集（T-FIX-463，形态同
+/// `SoundLibraryDownloadStatus`）：救援面板经 `open_library_for` 写进音源库
+/// 状态行的两处硬编码中文（还没下载 / 工程原本用的）与 458 的状态行属同一缺口
+/// （同一状态行），按当前语言渲染；九语模板表住在本文件，由单测逐语看守。
+/// 包名与轨名不译，原样进占位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MissingSoundsOpenStatus {
+    /// 这件包还没下载：点「下载」，装好后自动换到某条轨上。
+    PackNotDownloaded {
+        pack_name: String,
+        track_name: String,
+    },
+    /// 工程原本用的那件包：点「下载」，装好后自动换回某条轨上。
+    OriginalPack { name: String, track_name: String },
+}
+
+impl MissingSoundsOpenStatus {
+    /// 在 `lang` 下的完整状态行文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::PackNotDownloaded {
+                pack_name,
+                track_name,
+            } => match lang {
+                ZhCn => format!(
+                    "「{pack_name}」还没下载。点右边的「下载」，装好之后我会自动把它换到「{track_name}」上。"
+                ),
+                EnUs => format!(
+                    "“{pack_name}” isn't downloaded yet. Tap “Download” on the right; once it's installed I'll swap it onto “{track_name}” automatically."
+                ),
+                FrFr => format!(
+                    "« {pack_name} » n'est pas encore téléchargé. Appuyez sur « Télécharger » à droite ; une fois installé, je le mettrai automatiquement sur « {track_name} »."
+                ),
+                EsEs => format!(
+                    "«{pack_name}» aún no está descargado. Pulsa «Descargar» a la derecha; una vez instalado, lo pondré automáticamente en «{track_name}»."
+                ),
+                PtBr => format!(
+                    "«{pack_name}» ainda não foi baixado. Toque em «Baixar» à direita; depois de instalado, vou colocá-lo automaticamente em «{track_name}»."
+                ),
+                JaJp => format!(
+                    "「{pack_name}」はまだダウンロードされていません。右の「ダウンロード」を押してください。インストールが終わったら、自動で「{track_name}」に差し替えます。"
+                ),
+                KoKr => format!(
+                    "“{pack_name}”이(가) 아직 다운로드되지 않았습니다. 오른쪽의 “다운로드”를 누르세요. 설치가 끝나면 자동으로 “{track_name}”에 바꿔 놓겠습니다."
+                ),
+                RuRu => format!(
+                    "«{pack_name}» ещё не загружен. Нажмите «Скачать» справа; после установки я автоматически поставлю его на «{track_name}»."
+                ),
+                DeDe => format!(
+                    "„{pack_name}“ ist noch nicht heruntergeladen. Tippen Sie rechts auf „Herunterladen“; sobald es installiert ist, setze ich es automatisch auf „{track_name}“ ein."
+                ),
+            },
+            Self::OriginalPack { name, track_name } => match lang {
+                ZhCn => format!(
+                    "这是工程原本用的「{name}」。点右边的「下载」，装好之后我会自动把它换回「{track_name}」。"
+                ),
+                EnUs => format!(
+                    "This is the original “{name}” the project used. Tap “Download” on the right; once it's installed I'll swap it back onto “{track_name}” automatically."
+                ),
+                FrFr => format!(
+                    "C'est le « {name} » d'origine utilisé par le projet. Appuyez sur « Télécharger » à droite ; une fois installé, je le remettrai automatiquement sur « {track_name} »."
+                ),
+                EsEs => format!(
+                    "Este es el «{name}» original que usaba el proyecto. Pulsa «Descargar» a la derecha; una vez instalado, lo volveré a poner automáticamente en «{track_name}»."
+                ),
+                PtBr => format!(
+                    "Este é o «{name}» original usado pelo projeto. Toque em «Baixar» à direita; depois de instalado, vou colocá-lo de volta automaticamente em «{track_name}»."
+                ),
+                JaJp => format!(
+                    "これはプロジェクトがもともと使っていた「{name}」です。右の「ダウンロード」を押してください。インストールが終わったら、自動で「{track_name}」に戻します。"
+                ),
+                KoKr => format!(
+                    "이것은 프로젝트가 원래 사용하던 “{name}”입니다. 오른쪽의 “다운로드”를 누르세요. 설치가 끝나면 자동으로 “{track_name}”에 다시 바꿔 놓겠습니다."
+                ),
+                RuRu => format!(
+                    "Это исходный «{name}», который использовал проект. Нажмите «Скачать» справа; после установки я автоматически верну его на «{track_name}»."
+                ),
+                DeDe => format!(
+                    "Das ist das ursprüngliche „{name}“, das das Projekt verwendet hat. Tippen Sie rechts auf „Herunterladen“; sobald es installiert ist, setze ich es automatisch wieder auf „{track_name}“ ein."
+                ),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod missing_sounds_open_status_tests {
+    use super::MissingSoundsOpenStatus;
+    use crate::cli::Language;
+
+    /// 中文态与旧实现逐字相同（两处状态行）。
+    #[test]
+    fn missing_sounds_open_status_zh_cn_is_byte_identical() {
+        assert_eq!(
+            MissingSoundsOpenStatus::PackNotDownloaded {
+                pack_name: "ext-lib".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::ZhCn),
+            "「ext-lib」还没下载。点右边的「下载」，装好之后我会自动把它换到「Track 1」上。"
+        );
+        assert_eq!(
+            MissingSoundsOpenStatus::OriginalPack {
+                name: "ext-lib".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::ZhCn),
+            "这是工程原本用的「ext-lib」。点右边的「下载」，装好之后我会自动把它换回「Track 1」。"
+        );
+    }
+
+    /// 英文态两处逐条钉死。
+    #[test]
+    fn missing_sounds_open_status_en_us_renders_english() {
+        assert_eq!(
+            MissingSoundsOpenStatus::PackNotDownloaded {
+                pack_name: "ext-lib".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::EnUs),
+            "“ext-lib” isn't downloaded yet. Tap “Download” on the right; once it's installed I'll swap it onto “Track 1” automatically."
+        );
+        assert_eq!(
+            MissingSoundsOpenStatus::OriginalPack {
+                name: "ext-lib".to_string(),
+                track_name: "Track 1".to_string(),
+            }
+            .text_in(Language::EnUs),
+            "This is the original “ext-lib” the project used. Tap “Download” on the right; once it's installed I'll swap it back onto “Track 1” automatically."
+        );
+    }
+
+    /// 九语全覆盖：每语两处均有文案；非中文语的模板不含中文残片
+    /// （「还没下载」「点右边的」「换到」「换回」「原本用的」）；渲染必须
+    /// 含包名与轨名。
+    #[test]
+    fn missing_sounds_open_status_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for status in [
+                MissingSoundsOpenStatus::PackNotDownloaded {
+                    pack_name: "ext-lib".to_string(),
+                    track_name: "Track 1".to_string(),
+                },
+                MissingSoundsOpenStatus::OriginalPack {
+                    name: "ext-lib".to_string(),
+                    track_name: "Track 1".to_string(),
+                },
+            ] {
+                let rendered = status.text_in(lang);
+                assert!(
+                    rendered.contains("ext-lib") && rendered.contains("Track 1"),
+                    "{lang:?} 状态行渲染必须含包名与轨名，实际：{rendered}"
+                );
+                if lang != Language::ZhCn {
+                    for fragment in ["还没下载", "点右边的", "换到", "换回", "原本用的"]
+                    {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 缺声救援面板的通知文案闭集（T-FIX-463，形态同
+/// `MissingSoundsOpenStatus`）：救援流程里的五处硬编码中文通知（不在内置清单 /
+/// 都换好了 / 包里没找到能直接用的 .sfz / 已自动换上 / 已换上）经 `report_notice`
+/// 写提示条与模块回执行，与状态行属同一缺口（同一面板、同一用户动作），按当前
+/// 语言渲染；九语模板表住在本文件，由单测逐语看守。包名与轨名不译，原样进占位；
+/// 多件换上名单按语言惯用分隔符连接（中/日用「、」，其余用 ", "，与 §16 同款）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MissingSoundsNotice {
+    /// 这件音源不在内置清单里，没法一键下载。
+    NotInCatalog,
+    /// 音源都换好了。
+    AllSwapped,
+    /// 包里没找到能直接用的 .sfz：换不上，提示手动指定。
+    NoUsableSfz { name: String },
+    /// 已自动换上多件（「名（轨名）」清单）。
+    Swapped { swapped: Vec<String> },
+    /// 已换上一件。
+    SwappedOne { name: String },
+}
+
+impl MissingSoundsNotice {
+    /// 在 `lang` 下的完整通知文案。中文态与旧实现逐字相同（单测钉死）。
+    #[must_use]
+    fn text_in(self, lang: crate::cli::Language) -> String {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match self {
+            Self::NotInCatalog => match lang {
+                ZhCn => {
+                    "这件音源不在内置清单里，没法一键下载。你可以换成同类音源，或自己把 .sfz 装好后在混音台指定。"
+                        .to_string()
+                }
+                EnUs => {
+                    "This sound isn't in the built-in catalog, so it can't be downloaded in one tap. You can swap in a similar sound, or install the .sfz yourself and point to it in the mixer."
+                        .to_string()
+                }
+                FrFr => {
+                    "Ce son ne figure pas dans le catalogue intégré ; impossible de le télécharger en un geste. Vous pouvez le remplacer par un son similaire, ou installer le .sfz vous-même puis le désigner dans la console de mixage."
+                        .to_string()
+                }
+                EsEs => {
+                    "Este sonido no está en el catálogo integrado, así que no se puede descargar con un toque. Puedes cambiarlo por un sonido similar, o instalar el .sfz tú mismo y asignarlo en la mesa de mezclas."
+                        .to_string()
+                }
+                PtBr => {
+                    "Este som não está no catálogo integrado, então não pode ser baixado com um toque. Você pode trocá-lo por um som semelhante, ou instalar o .sfz e apontá-lo no mixer."
+                        .to_string()
+                }
+                JaJp => {
+                    "この音源は内蔵カタログにないため、ワンタップでダウンロードできません。同類の音源に換えるか、.sfz を自分でインストールしてミキサーで指定してください。"
+                        .to_string()
+                }
+                KoKr => {
+                    "이 음원은 내장 목록에 없어 한 번의 탭으로 다운로드할 수 없습니다. 비슷한 음원으로 바꾸거나, .sfz를 직접 설치한 뒤 믹서에서 지정하세요."
+                        .to_string()
+                }
+                RuRu => {
+                    "Этого звука нет во встроенном каталоге, поэтому скачать его одним нажатием нельзя. Можно заменить его похожим звуком или установить .sfz самостоятельно и указать его в микшере."
+                        .to_string()
+                }
+                DeDe => {
+                    "Dieser Sound steht nicht im integrierten Katalog und kann nicht per Fingertipp geladen werden. Sie können einen ähnlichen Sound einsetzen oder die .sfz selbst installieren und im Mischpult zuweisen."
+                        .to_string()
+                }
+            },
+            Self::AllSwapped => match lang {
+                ZhCn => "音源都换好了，现在按播放就有声音。".to_string(),
+                EnUs => {
+                    "All sounds have been swapped; press play and you'll hear them now."
+                        .to_string()
+                }
+                FrFr => {
+                    "Tous les sons ont été remplacés ; appuyez sur lecture et vous les entendrez."
+                        .to_string()
+                }
+                EsEs => {
+                    "Todos los sonidos ya están cambiados; pulsa reproducir y ya se oirán."
+                        .to_string()
+                }
+                PtBr => {
+                    "Todos os sons já foram trocados; pressione reproduzir e você já os ouvirá."
+                        .to_string()
+                }
+                JaJp => "音源はすべて差し替え済みです。今すぐ再生すれば音が鳴ります。".to_string(),
+                KoKr => "음원이 모두 교체되었습니다. 지금 재생하면 소리가 납니다。".to_string(),
+                RuRu => "Все звуки заменены; нажмите воспроизведение — звук уже будет.".to_string(),
+                DeDe => {
+                    "Alle Sounds sind ausgetauscht; drücken Sie Wiedergabe und Sie hören sie jetzt."
+                        .to_string()
+                }
+            },
+            Self::NoUsableSfz { name } => match lang {
+                ZhCn => format!(
+                    "「{name}」装好了，但这个音源包里没找到能直接用的 .sfz。请在混音台给这条轨手动指定音源。"
+                ),
+                EnUs => format!(
+                    "“{name}” is installed, but no directly usable .sfz was found in this sound pack. Please assign a sound to this track manually in the mixer."
+                ),
+                FrFr => format!(
+                    "« {name} » est installé, mais aucun .sfz directement utilisable n'a été trouvé dans ce pack. Veuillez assigner manuellement un son à cette piste dans la console de mixage."
+                ),
+                EsEs => format!(
+                    "«{name}» está instalado, pero no se encontró ningún .sfz utilizable directamente en este paquete. Asigna manualmente un sonido a esta pista en la mesa de mezclas."
+                ),
+                PtBr => format!(
+                    "«{name}» está instalado, mas nenhum .sfz utilizável diretamente foi encontrado neste pacote. Atribua manualmente um som a esta faixa no mixer."
+                ),
+                JaJp => format!(
+                    "「{name}」はインストール済みですが、この音源パック内に直接使える .sfz が見つかりませんでした。ミキサーでこのトラックに音源を手動で指定してください。"
+                ),
+                KoKr => format!(
+                    "“{name}”이(가) 설치되었지만, 이 사운드 팩에서 바로 사용할 수 있는 .sfz를 찾지 못했습니다. 믹서에서 이 트랙에 음원을 직접 지정해 주세요."
+                ),
+                RuRu => format!(
+                    "«{name}» установлен, но в этом звуковом пакете не нашлось напрямую пригодного .sfz. Назначьте звук этой дорожке вручную в микшере."
+                ),
+                DeDe => format!(
+                    "„{name}“ ist installiert, aber in diesem Sound-Paket wurde keine direkt verwendbare .sfz gefunden. Bitte weisen Sie dieser Spur manuell einen Sound im Mischpult zu."
+                ),
+            },
+            Self::Swapped { swapped } => {
+                let separator = match lang {
+                    ZhCn | JaJp => "、",
+                    _ => ", ",
+                };
+                let joined = swapped.join(separator);
+                match lang {
+                    ZhCn => format!("装好了，已自动换上：{joined}。按播放就有声音了。"),
+                    EnUs => format!(
+                        "Installed and swapped in automatically: {joined}. Press play and you'll hear them."
+                    ),
+                    FrFr => format!(
+                        "Installé et remplacé automatiquement : {joined}. Appuyez sur lecture et vous les entendrez."
+                    ),
+                    EsEs => format!(
+                        "Instalado y cambiado automáticamente: {joined}. Pulsa reproducir y ya se oirán."
+                    ),
+                    PtBr => format!(
+                        "Instalado e trocado automaticamente: {joined}. Pressione reproduzir e você já os ouvirá."
+                    ),
+                    JaJp => format!("インストール済み、自動で差し替えました：{joined}。再生すれば音が鳴ります。"),
+                    KoKr => format!("설치되어 자동으로 교체되었습니다: {joined}. 재생하면 소리가 납니다."),
+                    RuRu => format!(
+                        "Установлено и автоматически заменено: {joined}. Нажмите воспроизведение — звук уже будет."
+                    ),
+                    DeDe => format!(
+                        "Installiert und automatisch ausgetauscht: {joined}. Drücken Sie Wiedergabe und Sie hören sie."
+                    ),
+                }
+            }
+            Self::SwappedOne { name } => match lang {
+                ZhCn => format!("已换上「{name}」，这条轨现在按播放就有声音了。"),
+                EnUs => format!("“{name}” is now on this track; press play and you'll hear it."),
+                FrFr => format!(
+                    "« {name} » est maintenant sur cette piste ; appuyez sur lecture et vous l'entendrez."
+                ),
+                EsEs => format!("«{name}» ya está en esta pista; pulsa reproducir y ya se oirá."),
+                PtBr => format!("«{name}» já está nesta faixa; pressione reproduzir e você já o ouvirá."),
+                JaJp => format!("「{name}」に差し替えました。このトラックは今すぐ再生すれば音が鳴ります。"),
+                KoKr => format!("“{name}”으로 교체되었습니다. 이 트랙은 지금 재생하면 소리가 납니다."),
+                RuRu => format!("«{name}» поставлен на эту дорожку; нажмите воспроизведение — звук уже будет."),
+                DeDe => format!("„{name}“ ist jetzt auf dieser Spur; drücken Sie Wiedergabe und Sie hören ihn."),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod missing_sounds_notice_tests {
+    use super::MissingSoundsNotice;
+    use crate::cli::Language;
+
+    fn swapped() -> Vec<String> {
+        vec![
+            "ext-lib（Track 1）".to_string(),
+            "other-lib（Track 2）".to_string(),
+        ]
+    }
+
+    /// 中文态与旧实现逐字相同（五处通知；多件换上名单用「、」连接）。
+    #[test]
+    fn missing_sounds_notice_zh_cn_is_byte_identical() {
+        assert_eq!(
+            MissingSoundsNotice::NotInCatalog.text_in(Language::ZhCn),
+            "这件音源不在内置清单里，没法一键下载。你可以换成同类音源，或自己把 .sfz 装好后在混音台指定。"
+        );
+        assert_eq!(
+            MissingSoundsNotice::AllSwapped.text_in(Language::ZhCn),
+            "音源都换好了，现在按播放就有声音。"
+        );
+        assert_eq!(
+            MissingSoundsNotice::NoUsableSfz {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "「ext-lib」装好了，但这个音源包里没找到能直接用的 .sfz。请在混音台给这条轨手动指定音源。"
+        );
+        assert_eq!(
+            MissingSoundsNotice::Swapped { swapped: swapped() }.text_in(Language::ZhCn),
+            "装好了，已自动换上：ext-lib（Track 1）、other-lib（Track 2）。按播放就有声音了。"
+        );
+        assert_eq!(
+            MissingSoundsNotice::SwappedOne {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::ZhCn),
+            "已换上「ext-lib」，这条轨现在按播放就有声音了。"
+        );
+    }
+
+    /// 英文态五处逐条钉死；多件换上名单用 ", " 连接。
+    #[test]
+    fn missing_sounds_notice_en_us_renders_english() {
+        assert_eq!(
+            MissingSoundsNotice::NotInCatalog.text_in(Language::EnUs),
+            "This sound isn't in the built-in catalog, so it can't be downloaded in one tap. You can swap in a similar sound, or install the .sfz yourself and point to it in the mixer."
+        );
+        assert_eq!(
+            MissingSoundsNotice::AllSwapped.text_in(Language::EnUs),
+            "All sounds have been swapped; press play and you'll hear them now."
+        );
+        assert_eq!(
+            MissingSoundsNotice::NoUsableSfz {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::EnUs),
+            "“ext-lib” is installed, but no directly usable .sfz was found in this sound pack. Please assign a sound to this track manually in the mixer."
+        );
+        assert_eq!(
+            MissingSoundsNotice::Swapped { swapped: swapped() }.text_in(Language::EnUs),
+            "Installed and swapped in automatically: ext-lib（Track 1）, other-lib（Track 2）. Press play and you'll hear them."
+        );
+        assert_eq!(
+            MissingSoundsNotice::SwappedOne {
+                name: "ext-lib".to_string()
+            }
+            .text_in(Language::EnUs),
+            "“ext-lib” is now on this track; press play and you'll hear it."
+        );
+    }
+
+    /// 九语全覆盖：每语五处均有文案；非中文语的模板不含中文残片
+    /// （「不在内置清单」「没法一键下载」「换好了」「换上」「按播放」
+    /// 「装好了」「手动指定」「同类音源」）；含占位的渲染必须含包名，
+    /// 多件换上必须含两件。
+    #[test]
+    fn missing_sounds_notice_all_languages_have_no_chinese_template_residue() {
+        for lang in Language::ALL {
+            for notice in [
+                MissingSoundsNotice::NotInCatalog,
+                MissingSoundsNotice::AllSwapped,
+                MissingSoundsNotice::NoUsableSfz {
+                    name: "ext-lib".to_string(),
+                },
+                MissingSoundsNotice::Swapped { swapped: swapped() },
+                MissingSoundsNotice::SwappedOne {
+                    name: "ext-lib".to_string(),
+                },
+            ] {
+                let rendered = notice.text_in(lang);
+                if lang != Language::ZhCn {
+                    for fragment in [
+                        "不在内置清单",
+                        "没法一键下载",
+                        "换好了",
+                        "换上",
+                        "按播放",
+                        "装好了",
+                        "手动指定",
+                        "同类音源",
+                    ] {
+                        assert!(
+                            !rendered.contains(fragment),
+                            "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
+                        );
+                    }
+                }
+            }
+            let no_usable = MissingSoundsNotice::NoUsableSfz {
+                name: "ext-lib".to_string(),
+            }
+            .text_in(lang);
+            assert!(
+                no_usable.contains("ext-lib"),
+                "{lang:?} 包里没找到 .sfz 渲染必须含包名，实际：{no_usable}"
+            );
+            let swapped = MissingSoundsNotice::Swapped { swapped: swapped() }.text_in(lang);
+            assert!(
+                swapped.contains("ext-lib") && swapped.contains("other-lib"),
+                "{lang:?} 已自动换上渲染必须含两件，实际：{swapped}"
+            );
+        }
+    }
+}
+
 /// 一次**新鲜扫描**里的坏记录提示（T-FIX-306）。
 ///
 /// 只在扫描结局处调：缓存快照重开时只写数组，⛔ 不重复播"已备份"——那次隔离
@@ -30922,7 +31385,10 @@ fn swap_track_sampler(
     }
     report_notice(
         ui,
-        &format!("已换上「{name}」，这条轨现在按播放就有声音了。"),
+        &MissingSoundsNotice::SwappedOne {
+            name: name.to_string(),
+        }
+        .text_in(current_language()),
         false,
     );
     true
@@ -31039,10 +31505,10 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
             let Some(path) = crate::missing_sounds::installed_path(&target.pack_id, roots) else {
                 report_notice(
                     ui,
-                    &format!(
-                        "「{}」装好了，但这个音源包里没找到能直接用的 .sfz。请在混音台给这条轨手动指定音源。",
-                        target.name
-                    ),
+                    &MissingSoundsNotice::NoUsableSfz {
+                        name: target.name.clone(),
+                    }
+                    .text_in(current_language()),
                     true,
                 );
                 continue;
@@ -31118,10 +31584,7 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
         }
         report_notice(
             ui,
-            &format!(
-                "装好了，已自动换上：{}。按播放就有声音了。",
-                swapped.join("、")
-            ),
+            &MissingSoundsNotice::Swapped { swapped }.text_in(current_language()),
             false,
         );
     });
@@ -31203,7 +31666,11 @@ pub fn wire_missing_sounds_dialog(
                 // 与音源管理"用到当前轨"都发生在音源管理打开、焦点已在馆内时，
                 // 关的只是早已收起的救援面板，复位会把焦点从馆里拽走。
                 ui.invoke_focus_shortcut_layer();
-                report_notice(&ui, "音源都换好了，现在按播放就有声音。", false);
+                report_notice(
+                    &ui,
+                    &MissingSoundsNotice::AllSwapped.text_in(current_language()),
+                    false,
+                );
             }
         }
     });
@@ -31229,10 +31696,11 @@ pub fn wire_missing_sounds_dialog(
             // ⭐ 记下"这条轨在等这件音源"：装好那一刻自动换上（见
             // [`rescue_after_pack_installed`]），用户不用回来再点第二次。
             remember_pending_bind(row.track_index, pack_id.as_str(), pack_name.as_str());
-            let status = format!(
-                "「{pack_name}」还没下载。点右边的「下载」，装好之后我会自动把它换到「{}」上。",
-                row.track_name
-            );
+            let status = MissingSoundsOpenStatus::PackNotDownloaded {
+                pack_name: pack_name.to_string(),
+                track_name: row.track_name.clone(),
+            }
+            .text_in(current_language());
             open_library_for(&ui, pack_id.as_str(), status.as_str());
         }
     });
@@ -31255,17 +31723,18 @@ pub fn wire_missing_sounds_dialog(
             let Some(pack_id) = row.pack_id.clone() else {
                 report_notice(
                     &ui,
-                    "这件音源不在内置清单里，没法一键下载。你可以换成同类音源，或自己把 .sfz 装好后在混音台指定。",
+                    &MissingSoundsNotice::NotInCatalog.text_in(current_language()),
                     true,
                 );
                 return;
             };
             let name = row.pack_name.clone().unwrap_or_else(|| pack_id.clone());
             remember_pending_bind(row.track_index, pack_id.as_str(), name.as_str());
-            let status = format!(
-                "这是工程原本用的「{name}」。点右边的「下载」，装好之后我会自动把它换回「{}」。",
-                row.track_name
-            );
+            let status = MissingSoundsOpenStatus::OriginalPack {
+                name,
+                track_name: row.track_name.clone(),
+            }
+            .text_in(current_language());
             open_library_for(&ui, pack_id.as_str(), status.as_str());
         }
     });
