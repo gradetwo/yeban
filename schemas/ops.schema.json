@@ -292,6 +292,16 @@
         },
         {
           "required": [
+            "SetClipPlacementFade"
+          ],
+          "properties": {
+            "SetClipPlacementFade": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "MoveClipPlacement"
           ],
           "properties": {

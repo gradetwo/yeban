@@ -732,6 +732,40 @@ pub enum Op {
         /// 修改后的**整份**循环配置（整体替换，⛔ 不是逐字段合并）。
         new_loop_config: LoopConfig,
     },
+    /// 设置摆放两端的淡入/淡出（[`ClipPlacement::fade_in_ticks`] /
+    /// [`ClipPlacement::fade_out_ticks`]）。
+    ///
+    /// ⚠ **为什么需要它**：`fade_*` 只在 [`Op::AddClipPlacement`] 的载荷里能给 —— 创建
+    /// 之后**没有任何 `Op` 能改它**（[`Op::SetClipPlacementDuration`] 只写长度、
+    /// [`Op::SetClipPlacementMuted`] 只写开关）⇒ T-FIX-489 的切分无法把"切点那一侧不再
+    /// 淡出、末端淡出按新长度收窄"写回文档，只能删了重建（那会换掉 `EntityId`，
+    /// 选区与自动化引用全断）。这是 `ARCH-OPS-001` 那一族的又一处。
+    ///
+    /// ⚠ **前置条件**：① 音轨与摆放都必须存在（[`ModelError::TrackNotFound`] /
+    /// [`ModelError::ClipPlacementNotFound`]）；② 文档现值必须逐字段等于 `old_*`
+    /// （`None` 与 `Some(0)` **不**互相等价：前者是"不淡"，后者文档非法）；
+    /// ③ 新值必须满足 [`ClipPlacement::validate`] 的**同一条**口径（`Some(0)` 拒收、
+    /// `fade_in + fade_out <= duration_ticks`），否则 [`ModelError::ClipFadeOutOfRange`]
+    /// —— ⛔ 不自造新错误变体。
+    /// ⚠ 本变体只写这两个字段：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+    /// `duration_ticks` / `muted` / `loop_config` / `offset_samples`。
+    /// ⚠ **寻址用 `track_id` + `placement_id` 双定位**（与
+    /// [`Op::SetClipPlacementDuration`] 同族）。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类），⛔ 不是 `previous_*`。
+    SetClipPlacementFade {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份（即 `clips` 的键）。
+        placement_id: EntityId,
+        /// 修改前的淡入（`None` = 不淡入）。
+        old_fade_in_ticks: Option<u64>,
+        /// 修改前的淡出（`None` = 不淡出）。
+        old_fade_out_ticks: Option<u64>,
+        /// 修改后的淡入（`None` = 不淡入）。
+        new_fade_in_ticks: Option<u64>,
+        /// 修改后的淡出（`None` = 不淡出）。
+        new_fade_out_ticks: Option<u64>,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -1513,6 +1547,7 @@ impl Op {
             Self::SetClipPlacementOffset { .. } => "SetClipPlacementOffset",
             Self::SetClipPlacementLoop { .. } => "SetClipPlacementLoop",
             Self::SetClipPlacementDuration { .. } => "SetClipPlacementDuration",
+            Self::SetClipPlacementFade { .. } => "SetClipPlacementFade",
             Self::AddTrack { .. } => "AddTrack",
             Self::RemoveTrack { .. } => "RemoveTrack",
             Self::MoveTrack { .. } => "MoveTrack",
@@ -1813,6 +1848,61 @@ impl Op {
                 // 口径（⭐ ⛔ 不自造新错误变体）。
                 if *new_duration_ticks == 0 {
                     return Err(ModelError::ZeroDuration);
+                }
+                // ⭐ T-FIX-489：缩到比现有淡入/淡出还短 ⇒ 两端包络会在中间互相吃掉
+                // （[`ClipPlacement::validate`] 的同一条口径）。⛔ 不在这里偷偷改淡值：
+                // 拒绝并报告，调用方先发一条 [`Op::SetClipPlacementFade`] 收窄淡出。
+                let fade_in = current.fade_in_ticks.unwrap_or(0);
+                let fade_out = current.fade_out_ticks.unwrap_or(0);
+                if fade_in > *new_duration_ticks
+                    || fade_out > *new_duration_ticks
+                    || fade_in.saturating_add(fade_out) > *new_duration_ticks
+                {
+                    return Err(ModelError::ClipFadeOutOfRange {
+                        fade_in_ticks: fade_in,
+                        fade_out_ticks: fade_out,
+                        duration_ticks: *new_duration_ticks,
+                    });
+                }
+                Ok(())
+            }
+            Self::SetClipPlacementFade {
+                track_id,
+                placement_id,
+                old_fade_in_ticks,
+                old_fade_out_ticks,
+                new_fade_in_ticks,
+                new_fade_out_ticks,
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                // ⚠ `Option` 逐字段**值比较**（`None` 与 `Some(0)` 不等价）⇒ 陈旧载荷必被拒。
+                if current.fade_in_ticks != *old_fade_in_ticks
+                    || current.fade_out_ticks != *old_fade_out_ticks
+                {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                let fade_in = new_fade_in_ticks.unwrap_or(0);
+                let fade_out = new_fade_out_ticks.unwrap_or(0);
+                if *new_fade_in_ticks == Some(0) || *new_fade_out_ticks == Some(0) {
+                    return Err(ModelError::ClipFadeOutOfRange {
+                        fade_in_ticks: fade_in,
+                        fade_out_ticks: fade_out,
+                        duration_ticks: current.duration_ticks,
+                    });
+                }
+                if fade_in > current.duration_ticks
+                    || fade_out > current.duration_ticks
+                    || fade_in.saturating_add(fade_out) > current.duration_ticks
+                {
+                    return Err(ModelError::ClipFadeOutOfRange {
+                        fade_in_ticks: fade_in,
+                        fade_out_ticks: fade_out,
+                        duration_ticks: current.duration_ticks,
+                    });
                 }
                 Ok(())
             }
@@ -2904,6 +2994,21 @@ impl Op {
                 old_duration_ticks: *new_duration_ticks,
                 new_duration_ticks: *old_duration_ticks,
             },
+            Self::SetClipPlacementFade {
+                track_id,
+                placement_id,
+                old_fade_in_ticks,
+                old_fade_out_ticks,
+                new_fade_in_ticks,
+                new_fade_out_ticks,
+            } => Self::SetClipPlacementFade {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                old_fade_in_ticks: *new_fade_in_ticks,
+                old_fade_out_ticks: *new_fade_out_ticks,
+                new_fade_in_ticks: *old_fade_in_ticks,
+                new_fade_out_ticks: *old_fade_out_ticks,
+            },
             Self::SetClipPlacementMuted {
                 track_id,
                 placement_id,
@@ -3607,6 +3712,21 @@ impl Op {
             } => {
                 if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
                     placement.duration_ticks = *new_duration_ticks;
+                }
+                Ok(())
+            }
+            // 只写那**两个**淡值：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+            // `duration_ticks` / `muted` / `loop_config` / `offset_samples`。
+            Self::SetClipPlacementFade {
+                track_id,
+                placement_id,
+                new_fade_in_ticks,
+                new_fade_out_ticks,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.fade_in_ticks = *new_fade_in_ticks;
+                    placement.fade_out_ticks = *new_fade_out_ticks;
                 }
                 Ok(())
             }
@@ -4736,6 +4856,17 @@ mod tests {
                 placement_id: f.placement,
                 old_duration_ticks: 3840,
                 new_duration_ticks: 1920,
+            },
+            // 摆放淡值：**此前创建之后改不了**（`SetClipPlacementDuration` 只写长度）。
+            // ⚠ 必须放在 `SetClipPlacementDuration` **之后**（那时长度已是 1920）与
+            // `RemoveClipPlacement` **之前**；淡值 `None → 480/480`，和 960 ≤ 1920 合法。
+            Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: Some(480),
+                new_fade_out_ticks: Some(480),
             },
             Op::SetClipPlacementOffset {
                 track_id: f.lead,
@@ -11447,7 +11578,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 66] = [
+        const FROZEN: [(&str, &[&str]); 67] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -11481,6 +11612,7 @@ mod tests {
             ("SetClipGain", &["clip_pool"]),
             ("SetClipName", &["clip_pool"]),
             ("SetClipPlacementDuration", &["tracks"]),
+            ("SetClipPlacementFade", &["tracks"]),
             ("SetClipPlacementLoop", &["tracks"]),
             ("SetClipPlacementMuted", &["tracks"]),
             ("SetClipPlacementOffset", &["tracks"]),
@@ -11723,7 +11855,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 66] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 67] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -11757,6 +11889,7 @@ mod tests {
             ("SetClipGain", &["gain_db"]),
             ("SetClipName", &["name"]),
             ("SetClipPlacementDuration", &["duration_ticks"]),
+            ("SetClipPlacementFade", &["fade_in_ticks", "fade_out_ticks"]),
             ("SetClipPlacementLoop", &["enabled", "end_tick"]),
             ("SetClipPlacementMuted", &["muted"]),
             ("SetClipPlacementOffset", &["offset_samples"]),
@@ -12348,5 +12481,136 @@ mod tests {
             duplicate_strings.is_empty(),
             mismatched.is_empty()
         );
+    }
+
+    /// ⭐ **T-FIX-489**：`SetClipPlacementFade` 的往返 / 可逆 / 前置条件，以及它与
+    /// `SetClipPlacementDuration` 的**顺序契约**（先收窄淡值、再缩长度）。
+    mod t_fix_489_fade_op {
+        use super::{Op, fixture, fixture_document};
+        use crate::{EntityId, YebanProjectV1};
+
+        fn placement_fades(
+            doc: &YebanProjectV1,
+            track: EntityId,
+            id: EntityId,
+        ) -> (Option<u64>, Option<u64>) {
+            let placement = doc
+                .tracks
+                .get(&track)
+                .expect("轨道")
+                .clips
+                .get(&id)
+                .expect("摆放");
+            (placement.fade_in_ticks, placement.fade_out_ticks)
+        }
+
+        /// apply 真的写两个字段、`structural_inverse` 真的放回去（`None` ↔ `Some` 也原样）。
+        #[test]
+        fn the_fade_op_writes_and_inverts_both_fields() {
+            let f = fixture();
+            let mut doc = fixture_document();
+            assert_eq!(placement_fades(&doc, f.lead, f.placement), (None, None));
+            let op = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: Some(10),
+                new_fade_out_ticks: Some(20),
+            };
+            op.precondition(&doc).expect("前置条件必须接受");
+            op.apply(&mut doc).expect("apply 必须成");
+            assert_eq!(
+                placement_fades(&doc, f.lead, f.placement),
+                (Some(10), Some(20))
+            );
+            let inverse = op.structural_inverse().expect("端点必须可逆");
+            inverse.apply(&mut doc).expect("逆必须能放回");
+            assert_eq!(
+                placement_fades(&doc, f.lead, f.placement),
+                (None, None),
+                "逆必须恢复两端 `None`"
+            );
+        }
+
+        /// 陈旧载荷（旧值与文档现值不等）被拒；`Some(0)` 与 `None` **不等价**。
+        #[test]
+        fn a_stale_or_zero_fade_payload_is_refused() {
+            let f = fixture();
+            let mut doc = fixture_document();
+            let stale = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: Some(0),
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: Some(10),
+                new_fade_out_ticks: None,
+            };
+            assert!(
+                stale.precondition(&doc).is_err(),
+                "`Some(0)` 与文档现值 `None` 不等价，必须拒"
+            );
+            let zero = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: Some(0),
+                new_fade_out_ticks: None,
+            };
+            assert!(
+                zero.precondition(&doc).is_err(),
+                "`Some(0)` 新值必须拒（`ClipPlacement::validate` 同口径）"
+            );
+            let too_long = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: Some(3841),
+                new_fade_out_ticks: None,
+            };
+            assert!(too_long.precondition(&doc).is_err(), "淡入超过时长必须拒");
+            let _ = &mut doc;
+        }
+
+        /// **顺序契约**：缩长度之前淡值必须已经收窄 —— 否则模型响亮拒收（不偷偷改值）。
+        #[test]
+        fn shrinking_the_duration_refuses_a_fade_that_no_longer_fits() {
+            let f = fixture();
+            let mut doc = fixture_document();
+            // 端点 3840，先给它一个末端淡出 3000。
+            let widen = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: None,
+                new_fade_in_ticks: None,
+                new_fade_out_ticks: Some(3000),
+            };
+            widen.apply(&mut doc).expect("淡出 3000 ≤ 3840 合法");
+            let shrink = Op::SetClipPlacementDuration {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_duration_ticks: 3840,
+                new_duration_ticks: 1000,
+            };
+            assert!(
+                shrink.precondition(&doc).is_err(),
+                "淡出 3000 > 新长度 1000 ⇒ 必须拒收并报告，⛔ 不许偷偷改淡值"
+            );
+            let narrow = Op::SetClipPlacementFade {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_fade_in_ticks: None,
+                old_fade_out_ticks: Some(3000),
+                new_fade_in_ticks: None,
+                new_fade_out_ticks: Some(500),
+            };
+            narrow.apply(&mut doc).expect("收窄必须成");
+            shrink.precondition(&doc).expect("收窄后缩长度必须放行");
+            shrink.apply(&mut doc).expect("缩长度必须成");
+            assert_eq!(doc.tracks[&f.lead].clips[&f.placement].duration_ticks, 1000);
+        }
     }
 }

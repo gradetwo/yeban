@@ -23881,8 +23881,8 @@ pub fn duplicate_clip_placement_ops_for(
         muted: placement.muted,
         // 复制片段继承原片段的 offset：丢掉它等于复制后偷偷取消用户的微移。
         offset_samples: placement.offset_samples,
-        fade_in_ticks: None,
-        fade_out_ticks: None,
+        fade_in_ticks: placement.fade_in_ticks,
+        fade_out_ticks: placement.fade_out_ticks,
         // 素材内起点也必须继承：复制一条切分后的右半，不能又退回素材第 0 帧。
         source_start_samples: placement.source_start_samples,
     };
@@ -24118,49 +24118,11 @@ pub fn clipboard_paste(
     let mut ops = Vec::new();
     let mut new_ids = Vec::new();
     for (entry, base) in &entries {
-        // 副本：新片段身份 ＋ 每个音符新身份（复用身份会撞 MODEL-AST 唯一性）。
-        let new_clip_id = yeban_model::EntityId::new();
-        let content = match &entry.content {
-            yeban_model::project::ClipContent::Midi { notes } => {
-                let mut fresh = std::collections::BTreeMap::new();
-                for note in notes.values() {
-                    let mut copy = note.clone();
-                    copy.id = yeban_model::EntityId::new();
-                    fresh.insert(copy.id, copy);
-                }
-                yeban_model::project::ClipContent::Midi { notes: fresh }
-            }
-            yeban_model::project::ClipContent::Audio { asset, gain_db } => {
-                yeban_model::project::ClipContent::Audio {
-                    asset: asset.clone(),
-                    gain_db: *gain_db,
-                }
-            }
-        };
-        let new_entry = yeban_model::project::ClipPoolEntry {
-            id: new_clip_id,
-            name: entry.name.clone(),
-            content,
-        };
-        let placement = yeban_model::project::ClipPlacement {
-            id: yeban_model::EntityId::new(),
-            clip_id: new_clip_id,
-            start_tick: playhead.saturating_add(base.start_tick.saturating_sub(first_start)),
-            duration_ticks: base.duration_ticks,
-            loop_config: base.loop_config,
-            muted: false,
-            offset_samples: base.offset_samples,
-            fade_in_ticks: None,
-            fade_out_ticks: None,
-            // 粘贴继承素材内起点：复制/剪切切分后的右半，粘贴后仍从切点续读。
-            source_start_samples: base.source_start_samples,
-        };
-        new_ids.push(placement.id.to_string());
-        ops.push(yeban_model::ops::Op::AddClip { clip: new_entry });
-        ops.push(yeban_model::ops::Op::AddClipPlacement {
-            track_id,
-            placement,
-        });
+        let start_tick = playhead.saturating_add(base.start_tick.saturating_sub(first_start));
+        let (mut entry_ops, placement_id) =
+            clipboard_paste_ops_for_entry(entry, base, track_id, start_tick);
+        new_ids.push(placement_id.to_string());
+        ops.append(&mut entry_ops);
     }
     if ops.is_empty() {
         return false;
@@ -24172,6 +24134,69 @@ pub fn clipboard_paste(
     apply_clip_selection(ui, &new_ids, &primary);
     refresh_undo_window(ui, port, true);
     true
+}
+
+/// 粘贴的一条摆放 ⇒ 待提交的 `AddClip` ＋ `AddClipPlacement`（纯函数，有判据）。
+///
+/// 抽出来只为让"粘贴到底继承了什么"能被**本机判据**直接喂合成载荷对账（粘贴本体要
+/// `MainWindow` 的选中轨与播放头，本机编不了 Slint）。⭐ **T-FIX-489**：`fade_in_ticks` /
+/// `fade_out_ticks` 逐字段继承剪贴板里的来源摆放 —— 旧实现写 `None` ⇒ 复制带淡化的
+/// 片段再粘贴，副本静默变成硬切。时长与原摆放相同 ⇒ 原值仍然合法。
+#[must_use]
+fn clipboard_paste_ops_for_entry(
+    entry: &yeban_model::project::ClipPoolEntry,
+    base: &yeban_model::project::ClipPlacement,
+    track_id: yeban_model::EntityId,
+    start_tick: u64,
+) -> (Vec<yeban_model::ops::Op>, yeban_model::EntityId) {
+    // 副本：新片段身份 ＋ 每个音符新身份（复用身份会撞 MODEL-AST 唯一性）。
+    let new_clip_id = yeban_model::EntityId::new();
+    let content = match &entry.content {
+        yeban_model::project::ClipContent::Midi { notes } => {
+            let mut fresh = std::collections::BTreeMap::new();
+            for note in notes.values() {
+                let mut copy = note.clone();
+                copy.id = yeban_model::EntityId::new();
+                fresh.insert(copy.id, copy);
+            }
+            yeban_model::project::ClipContent::Midi { notes: fresh }
+        }
+        yeban_model::project::ClipContent::Audio { asset, gain_db } => {
+            yeban_model::project::ClipContent::Audio {
+                asset: asset.clone(),
+                gain_db: *gain_db,
+            }
+        }
+    };
+    let new_entry = yeban_model::project::ClipPoolEntry {
+        id: new_clip_id,
+        name: entry.name.clone(),
+        content,
+    };
+    let placement = yeban_model::project::ClipPlacement {
+        id: yeban_model::EntityId::new(),
+        clip_id: new_clip_id,
+        start_tick,
+        duration_ticks: base.duration_ticks,
+        loop_config: base.loop_config,
+        muted: false,
+        offset_samples: base.offset_samples,
+        // ⭐ T-FIX-489：粘贴继承剪贴板里的淡入/淡出（时长与原摆放相同 ⇒ 原值仍合法）。
+        fade_in_ticks: base.fade_in_ticks,
+        fade_out_ticks: base.fade_out_ticks,
+        source_start_samples: base.source_start_samples,
+    };
+    let placement_id = placement.id;
+    (
+        vec![
+            yeban_model::ops::Op::AddClip { clip: new_entry },
+            yeban_model::ops::Op::AddClipPlacement {
+                track_id,
+                placement,
+            },
+        ],
+        placement_id,
+    )
 }
 
 /// 剪切 = 复制 + 删除（**一次**撤销同时回滚两者）。
@@ -24208,7 +24233,15 @@ pub fn clipboard_cut(
 /// 界面（TUI）复用：组合形状与 GUI 路径逐字一致——左半靠
 /// [`clip_duration_ops_for`] 缩短、跨点音符在左侧截断并在右半续接、
 /// 右半是新池条目（名后缀 ` (Part 2)`）＋新摆放（继承 loop/muted/offset），
-/// 整批一次提交、一步撤销。**不需要任何新 `Op` 变体**。
+/// 整批一次提交、一步撤销。
+///
+/// ⭐ **T-FIX-489 的淡值重分配**（旧实现三处静默丢淡值）：
+/// - 左半：淡入按新长度**收窄**（`min(fade_in, left_duration)`），淡出**清空**
+///   —— 切点那一侧不该继续淡出；先发 [`yeban_model::ops::Op::SetClipPlacementFade`]
+///   再缩长度，两步顺序与模型"缩到比淡值还短即拒收"的前置条件配套。
+/// - 右半：淡入 `None`（切点是硬起点），淡出继承原值并按右半长度收窄
+///   （`min(fade_out, right_duration)`）。
+/// - 任一侧都不可能留下 `fade_in + fade_out > duration` 的非法摆放。
 ///
 /// 拒绝退化切分（返回 `None` ⇒ 调用方什么都不做）：身份解析不到、切分点
 /// 不严格落在摆放内部、或缩短左半的 op 构造为空时都回 `None`。
@@ -24238,6 +24271,25 @@ pub fn clip_split_ops_for(
     let mut ops = clip_duration_ops_for(project, selected_clip_ulid, shorten_delta);
     if ops.is_empty() {
         return None;
+    }
+    // ⭐ T-FIX-489：左半先把淡值收窄（淡出→`None`、淡入→`min(fade_in, 左半长度)`），
+    // 再缩长度 —— 顺序反了会被 `SetClipPlacementDuration` 的新前置条件当场拒收。
+    if placement.fade_in_ticks.is_some() || placement.fade_out_ticks.is_some() {
+        let new_fade_in = placement
+            .fade_in_ticks
+            .filter(|fade| *fade > 0)
+            .map(|fade| fade.min(left_duration));
+        ops.insert(
+            0,
+            yeban_model::ops::Op::SetClipPlacementFade {
+                track_id,
+                placement_id: _placement_id,
+                old_fade_in_ticks: placement.fade_in_ticks,
+                old_fade_out_ticks: placement.fade_out_ticks,
+                new_fade_in_ticks: new_fade_in,
+                new_fade_out_ticks: None,
+            },
+        );
     }
 
     // T-FIX-488：音频片段切分后，右半段必须从**切点对应的素材帧**继续读，而不是
@@ -24333,8 +24385,13 @@ pub fn clip_split_ops_for(
         muted: placement.muted,
         // 切分右半继承原片段的 offset：切分不得偷偷取消用户的微移。
         offset_samples: placement.offset_samples,
+        // ⭐ T-FIX-489：切点是硬起点（淡入 `None`），末端淡出继承并按右半长度收窄
+        // （旧实现把两端都写成 `None` ⇒ 右半的淡出静默消失）。
         fade_in_ticks: None,
-        fade_out_ticks: None,
+        fade_out_ticks: placement
+            .fade_out_ticks
+            .filter(|fade| *fade > 0)
+            .map(|fade| fade.min(right_duration)),
         source_start_samples: right_source_start,
     };
     let new_right_id = right_placement.id.to_string();
@@ -33493,5 +33550,184 @@ mod sound_library_async_tests {
         );
         assert!(state.lock().installed_outcome.is_none());
         assert!(!state.lock().installed_in_flight);
+    }
+}
+
+/// ⭐ **T-FIX-489**：复制 / 切分不再把 `fade_in_ticks` / `fade_out_ticks` 静默清零。
+///
+/// 粘贴那一处需要 `MainWindow`（选中轨与播放头），本机编不了 Slint ⇒ 行为交 CI；
+/// 这里用**源码纪律**钉住"粘贴继承剪贴板淡值"，其余两处直接喂合成工程逐字段对账。
+#[cfg(test)]
+mod clip_fade_carry_tests {
+    use super::{clip_split_ops_for, duplicate_clip_placement_ops_for};
+    use yeban_model::ops::Op;
+    use yeban_model::{EntityId, YebanProjectV1};
+
+    /// 演示工程里 Lead 轨那条 3840 tick 的摆放（唯一稳定的假体）。
+    fn fixture() -> (YebanProjectV1, EntityId, EntityId) {
+        let project = yeban_model::samples::demo_project();
+        let (track_id, placement_id) = project
+            .tracks
+            .iter()
+            .filter(|(id, track)| **id != project.master_bus_track_id && !track.clips.is_empty())
+            .find_map(|(id, track)| track.clips.keys().next().map(|placement| (*id, *placement)))
+            .expect("演示工程必须有非主总线轨道且带摆放");
+        (project, track_id, placement_id)
+    }
+
+    fn set_fades(
+        project: &mut YebanProjectV1,
+        track_id: EntityId,
+        placement_id: EntityId,
+        fade_in: Option<u64>,
+        fade_out: Option<u64>,
+    ) {
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放");
+        placement.fade_in_ticks = fade_in;
+        placement.fade_out_ticks = fade_out;
+    }
+
+    fn set_span(
+        project: &mut YebanProjectV1,
+        track_id: EntityId,
+        placement_id: EntityId,
+        start_tick: u64,
+        duration_ticks: u64,
+    ) {
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放");
+        placement.start_tick = start_tick;
+        placement.duration_ticks = duration_ticks;
+    }
+
+    /// ① 复制：`fade_in = 10 / fade_out = 20` 的摆放，复制件逐字段继承。
+    #[test]
+    fn duplicate_carries_both_fades() {
+        let (mut project, track_id, placement_id) = fixture();
+        set_fades(&mut project, track_id, placement_id, Some(10), Some(20));
+        let (ops, new_id) = duplicate_clip_placement_ops_for(&project, &placement_id.to_string())
+            .expect("复制必须成立");
+        for op in &ops {
+            op.apply(&mut project).expect("复制 op 必须能应用");
+        }
+        let copy = project
+            .tracks
+            .get(&track_id)
+            .expect("轨道")
+            .clips
+            .get(&new_id.parse::<EntityId>().expect("新摆放身份"))
+            .expect("复制件必须存在");
+        assert_eq!(copy.fade_in_ticks, Some(10), "复制件必须继承淡入");
+        assert_eq!(copy.fade_out_ticks, Some(20), "复制件必须继承淡出");
+    }
+
+    /// ② 切分：100 tick 摆放、`fade_out = 100`，在 50 tick 处切开 ——
+    /// 左半先收窄淡值再缩长度（整批 `apply` 必须一次过），任一半都不得留下
+    /// `fade_out > 本半长度`；切点两侧的淡值按"淡出不跨切点"重分配。
+    #[test]
+    fn split_redistributes_the_end_fade_into_the_right_half() {
+        let (mut project, track_id, placement_id) = fixture();
+        set_span(&mut project, track_id, placement_id, 0, 100);
+        set_fades(&mut project, track_id, placement_id, None, Some(100));
+        let (ops, right_id) =
+            clip_split_ops_for(&project, &placement_id.to_string(), 50).expect("切分必须成立");
+        assert!(
+            matches!(ops.first(), Some(Op::SetClipPlacementFade { .. })),
+            "左半必须先发淡值 op：顺序反了会被 `SetClipPlacementDuration` 的新前置条件拒收"
+        );
+        for op in &ops {
+            op.apply(&mut project)
+                .unwrap_or_else(|error| panic!("切分批必须能按序应用: {error:?}"));
+        }
+        let right_id = right_id.parse::<EntityId>().expect("右半身份");
+        let track = project.tracks.get(&track_id).expect("轨道");
+        let left = track.clips.get(&placement_id).expect("左半");
+        let right = track.clips.get(&right_id).expect("右半");
+        assert_eq!(left.duration_ticks, 50, "左半缩到切点");
+        assert!(
+            left.fade_out_ticks.unwrap_or(0) <= 50,
+            "左半不得留下超过新长度的淡出: {:?}",
+            left.fade_out_ticks
+        );
+        assert_eq!(
+            right.fade_out_ticks,
+            Some(50),
+            "右半继承末端淡出并收窄到 50"
+        );
+        assert_eq!(right.fade_in_ticks, None, "切点是硬起点");
+    }
+
+    /// ③ 切分：`fade_in = 100` 的 100 tick 摆放，切在 20 tick —— 左半淡入收窄到 20。
+    #[test]
+    fn split_clamps_the_start_fade_inside_the_left_half() {
+        let (mut project, track_id, placement_id) = fixture();
+        set_span(&mut project, track_id, placement_id, 0, 100);
+        set_fades(&mut project, track_id, placement_id, Some(100), None);
+        let (ops, right_id) =
+            clip_split_ops_for(&project, &placement_id.to_string(), 20).expect("切分必须成立");
+        for op in &ops {
+            op.apply(&mut project).expect("切分批必须能按序应用");
+        }
+        let right_id = right_id.parse::<EntityId>().expect("右半身份");
+        let track = project.tracks.get(&track_id).expect("轨道");
+        let left = track.clips.get(&placement_id).expect("左半");
+        let right = track.clips.get(&right_id).expect("右半");
+        assert_eq!(left.fade_in_ticks, Some(20), "左半淡入收窄到 20");
+        assert_eq!(left.fade_out_ticks, None);
+        assert_eq!(right.fade_in_ticks, None, "切点是硬起点");
+        assert_eq!(right.fade_out_ticks, None);
+    }
+
+    /// ④ 粘贴：剪贴板条目带着 `fade_in = 10 / fade_out = 20` ⇒ 新摆放逐字段一致。
+    #[test]
+    fn paste_carries_both_fades_from_the_clipboard_entry() {
+        let (mut project, track_id, placement_id) = fixture();
+        set_fades(&mut project, track_id, placement_id, Some(10), Some(20));
+        let placement = project.tracks[&track_id].clips[&placement_id];
+        let entry = project
+            .clip_pool
+            .get(&placement.clip_id)
+            .expect("片段池条目")
+            .clone();
+        let (ops, new_id) =
+            super::clipboard_paste_ops_for_entry(&entry, &placement, track_id, 3840);
+        for op in &ops {
+            op.apply(&mut project).expect("粘贴 op 必须能应用");
+        }
+        let pasted = project.tracks[&track_id].clips[&new_id];
+        assert_eq!(pasted.fade_in_ticks, Some(10), "粘贴件必须继承淡入");
+        assert_eq!(pasted.fade_out_ticks, Some(20), "粘贴件必须继承淡出");
+        assert_eq!(pasted.start_tick, 3840, "粘贴落在给定起点");
+    }
+
+    /// ⑤ 源码纪律：三处构造点不许再写死 `None`，粘贴必须继承剪贴板里的两个淡值。
+    #[test]
+    fn no_construction_site_zeroes_the_fades_any_more() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
+            .expect("读取 host.rs");
+        assert!(
+            source.contains("fade_in_ticks: base.fade_in_ticks"),
+            "粘贴必须继承剪贴板淡入"
+        );
+        assert!(
+            source.contains("fade_out_ticks: base.fade_out_ticks"),
+            "粘贴必须继承剪贴板淡出"
+        );
+        assert!(
+            source.contains("fade_in_ticks: placement.fade_in_ticks")
+                && source.contains("fade_out_ticks: placement.fade_out_ticks"),
+            "复制必须继承原摆放两个淡值"
+        );
     }
 }
