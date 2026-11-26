@@ -1,0 +1,149 @@
+\clearpage
+\chapter{蓝调、五声与调式写作}
+\label{chap:blues-pentatonic-modal}
+
+\subsection*{学完这一章能做什么}
+\begin{itemize}
+  \item 写出大调/小调五声音阶与蓝调音阶，并说清“蓝音”为什么会让听感变“脏而活”。
+  \item 用十二小节蓝调骨架写一段可演奏的进行，知道 I--IV--V 各自在第几小节出现。
+  \item 分辨多利亚、利底亚、混合利底亚、弗里几亚的“特征音”，并为每种调式选一个不打架的和弦底。
+  \item 在夜半里用五声/蓝调音阶铺一条 riff，再用调式 vamp 做八小节，不靠功能进行也能站住。
+\end{itemize}
+
+\subsection{五声不是“少两个音的大调”}
+
+大调五声音阶取 1、2、3、5、6 级，小调五声取 1、\(\flat\)3、4、5、\(\flat\)7 级。它省略的是最容易制造半音冲突的 4、7 级（小调里则是 2、6 级附近），所以旋律在快速移动时不容易“撞”到和声。五声的稳定感来自两条：相邻音至少隔两个半音；五个音可以任意排列成旋律而不会形成尖锐的半音邻接。
+
+但五声不是只能写“民谣”。把它当“可用的音高集合”而不是“必须严格的音阶”，就能做三件事：
+
+\begin{enumerate}
+  \item \textbf{旋律骨架}：先用五声写出主句，再把 4、7 级作为经过音补进去；
+  \item \textbf{和弦内音筛选}：和弦根音、三音、五音若都在五声集合里，整段会更协和；
+  \item \textbf{再配和}：同一段五声旋律可以配不同和弦，只要和弦的三音不长期与旋律的半音邻接冲突。
+\end{enumerate}
+
+\subsection{蓝调音阶与蓝音}
+
+小调蓝调音阶（blues scale）常写作：
+
+\[
+\mathrm{1\ \flat3\ 4\ \flat5\ 5\ \flat7\ 1}
+\]
+
+它在小调五声（1、\(\flat\)3、4、5、\(\flat\)7）里插入一个 \(\flat\)5。这个 \(\flat\)5 就是最典型的“蓝音”（blue note）：它不属于大调或小调的稳定音级，只作为经过、装饰或张力存在。蓝调里常见的三个蓝音是 \(\flat\)3、\(\flat\)5、\(\flat\)7；它们与“本该在那里的”3、5、7 级形成轻微冲突，这种冲突就是蓝调的“脏”与“活”。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.1cm,y=0.5cm,font=\scriptsize]
+  \foreach \i/\n/\h in {0/C/0,1/E$\flat$/3,2/F/5,3/G$\flat$/6,4/G/7,5/B$\flat$/10,6/C/12} {
+    \draw[gray] (\i,-0.4) -- (\i,\h);
+    \node[above=2pt] at (\i,\h) {\n};
+  }
+  \draw[very thick] (0,0)--(1,3)--(2,5)--(3,6)--(4,7)--(5,10)--(6,12);
+  \node[fill=white,inner sep=1.5pt] at (3.45,6.8) {\(\flat\)5 蓝音};
+\end{tikzpicture}
+\caption*{图 10-1：C 小调蓝调音阶。\(\flat\)5 插在 5 级之前，是蓝调最醒目的张力点；它适合经过，不适合长期停在上面。}
+\end{figure}
+
+蓝调音阶可以与大调 I7 和弦同时使用：和弦是 C7（C E G B\(\flat\)），旋律却可以落 E\(\flat\)、G\(\flat\)。这不是“错”，而是蓝调把“调内”与“调外”的冲突当成颜色。写作时用两条规则约束：
+
+\begin{itemize}
+  \item 蓝音落在弱拍、短音、经过位置；强拍与句尾回到和弦内音（根、3、5、\(\flat\)7）。
+  \item 同一句里不要连续把三个蓝音都当目标音；选一个当“招牌”，其余做装饰。
+\end{itemize}
+
+\subsection{十二小节蓝调：骨架与可替换点}
+
+最基础的十二小节蓝调（12-bar blues）按小节：
+
+\[
+\mathrm{I7\ I7\ I7\ I7\ \ IV7\ IV7\ I7\ I7\ \ V7\ IV7\ I7\ V7}
+\]
+
+每一格是一小节。I7、IV7、V7 都是“属七”性质，不是功能理论里的 I--IV--V 三和弦；蓝调把三者都七化，是为了让每个和弦都带一个可解决的七音，听起来更“开放”。常见替换：
+
+\begin{center}
+\small
+\begin{tabular}{cll}
+\toprule
+小节 & 基础 & 常用替换 \\
+\midrule
+9--12 & V7--IV7--I7--V7 & V7--IV7--I7--I7；或加一个 turnaround：VI7--V7 \\
+5--8 & IV7--IV7--I7--I7 & IV7--IV7--I7--VI7（提前铺 turnaround） \\
+整段 & 全部属七 & 把部分 I7 换成 i7 或 I6，减一点“硬” \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+在夜半里做：新建 12 小节，按上面的小节位置放 C7、F7、G7；旋律用 C 小调蓝调音阶，强拍落 C、E、G、B\(\flat\)，E\(\flat\)/G\(\flat\) 放弱拍。若听感太“散”，先把 \(\flat\)5 去掉，只留 \(\flat\)3 与 \(\flat\)7。
+
+\subsection{调式写作：先找特征音，再选和弦底}
+
+七种教会调式不是“七个音阶名字”，而是七套“主音＋特征音”的听觉合同。写作时先问：这个调式的特征音是哪一级？它和主音形成什么音程？
+
+\begin{center}
+\small
+\begin{tabular}{clll}
+\toprule
+调式 & 特征音 & 与主音 & 写作提示 \\
+\midrule
+多利亚 Dorian & 大六度 & 明亮的小调 & 常配 i--IV，避免强 V7 \\
+利底亚 Lydian & 增四度 & 漂浮、少落地 & 配 I--II，少用 V \\
+混合利底亚 Mixolydian & 小七度 & 开放、 blues 感 & 配 I7--IV，V7 可省 \\
+弗里几亚 Phrygian & 小二度 & 紧张、异域 & 配 i--\(\flat\)II，别连续小二度 \\
+爱奥利亚 Aeolian & 小六度 & 自然小调底色 & 与自然小调同形 \\
+洛克里亚 Locrian & 小二度＋减五度 & 极不稳定 & 少作主调，多作局部色彩 \\
+伊奥利亚 Ionian & 大七度 & 大调底色 & 与 major 同形 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+调式写作和功能写作最大的差别：功能写作靠 V--I 把“家”钉住；调式写作靠\textbf{持续的主音底}与\textbf{特征音的反复出现}把中心站住。纯调式段落里，强 V7 往往会把耳朵拉回大调/小调，所以常用 i--IV、I--II、i--\(\flat\)VII 这类“不解决”的循环。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize]
+  \draw[->,thick] (0,0) circle (1.8);
+  \foreach \a/\m/\t in {90/Dorian/6, 141/Lydian/\sharp4, 193/Mixolydian/\flat7, 244/Phrygian/\flat2, 296/Aeolian/\flat3, 347/Locrian/\flat5, 39/Ionian/7} {
+    \node at (\a:2.3) {\m};
+    \node[gray] at (\a:1.45) {$\t$};
+  }
+  \node at (0,0) {特征音};
+\end{tikzpicture}
+\caption*{图 10-2：调式的“身份证”是特征音。先记住每个调式与主音的哪一个音程不同，再决定和弦底。}
+\end{figure}
+
+\subsection{练习}
+\begin{enumerate}
+  \item 写出 A 小调蓝调音阶的七个音，并标出三个蓝音。\\
+  \emph{答案：}A C D E\(\flat\) E G A；蓝音 C、E\(\flat\)、G。
+  \item 在 C 蓝调里，为什么 C7 的 E 与旋律的 E\(\flat\) 可以同时存在？\\
+  \emph{答案：}E\(\flat\) 是蓝音/经过音，E 是和弦三音；冲突被当作蓝调颜色，靠强弱位置与时值控制，不把 E\(\flat\) 长期停在强拍。
+  \item 写一个 4 小节 Dorian vamp，要求只用 i 与 IV，不出现 V7。\\
+  \emph{答案示例：}Dm7--G--Dm7--G；D 多利亚的 G 是 IV，特征音 B（大六度）在 Dm7 的伴奏里可被听见。
+  \item 把 C 大调五声旋律 C--D--E--G--A 配成 C、F、G 三个和弦的两个版本，说明哪一版更协和。\\
+  \emph{答案：}C--F--G 版本在 F 小节里 A 与 F 的间隔较远；若把 G 小节提前，A 与 G 的半音邻接会增加摩擦。
+  \item 调式段落里为什么少用强 V7？\\
+  \emph{答案：}V7 的导音会把中心拉回大小调的功能体系，破坏调式靠主音底维持的“漂浮”中心。
+  \item 在夜半里建 12 小节：第 1--4 小节 C7，第 5--6 小节 F7，第 7--8 小节 C7，第 9--12 小节 G7--F7--C7--G7；用 C 蓝调音阶写两句，标出蓝音所在拍位。\\
+  \emph{答案示例：}第一句 4 小节，E\(\flat\) 放第 2 拍弱位、G\(\flat\) 放第 3 拍经过；第二句句尾落 G（和弦五音），不把蓝音停在强拍。
+\end{enumerate}
+
+\subsection{帮助主题映射}
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{0.34\linewidth}p{0.45\linewidth}p{0.15\linewidth}}
+\toprule
+本章小节 & 应用内帮助锚点 & 备注 \\
+\midrule
+\endhead
+五声与蓝调音阶 & \texttt{music-theory-blues-scale} & 图 10-1 \\
+十二小节蓝调 & \texttt{music-theory-12-bar-blues} & 表 10-1 \\
+调式特征音 & \texttt{music-theory-modal-character} & 表 10-2 \\
+调式和弦底 & \texttt{music-theory-modal-vamp} & 图 10-2 \\
+在夜半里怎么做 & \texttt{music-theory-blues-riff} & 操作 \\
+练习 & \texttt{music-theory-ch10-practice} & 答案在本章 \\
+\bottomrule
+\end{longtable}
+\end{center}
