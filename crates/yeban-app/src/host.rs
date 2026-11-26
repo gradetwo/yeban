@@ -11804,9 +11804,12 @@ fn apply_startup_category(
             yeban_model::project::now_unix_ms(),
             query,
         ),
-        STARTUP_CATEGORY_DEMOS => {
-            crate::startup_chooser::demo_rows_matching(&data.demos, lang, query)
-        }
+        STARTUP_CATEGORY_DEMOS => crate::startup_chooser::demo_rows_matching_with_blocked(
+            &data.demos,
+            &data.blocked_demos,
+            lang,
+            query,
+        ),
         STARTUP_CATEGORY_FACTORY => crate::startup_chooser::template_rows_matching(
             &data.templates,
             crate::templates::TemplateSource::Factory,
@@ -11913,9 +11916,25 @@ pub fn wire_startup_chooser(
     roots: crate::templates::TemplateRoots,
     initial_details: crate::startup_chooser::NewProjectDetails,
 ) {
-    let data: Rc<RefCell<crate::startup_chooser::ChooserData>> = Rc::new(RefCell::new(
-        crate::startup_chooser::gather(&crate::settings::load(), &roots),
-    ));
+    // 汇集一次；块内失败（目录读不了 / 超过列表上限 / 坏容器）已经结构化
+    // 留在 `blocked_demos` 里 ⇒ 这里再写一条**计数回执**，让"演示工程为空"
+    // 和"演示读不了"在日志/回执面上也分得开（界面面见演示分类的置灰行）。
+    let gathered = crate::startup_chooser::gather(&crate::settings::load(), &roots);
+    if !gathered.blocked_demos.is_empty() {
+        let first = &gathered.blocked_demos[0];
+        let message = format!(
+            "{} 条演示未进清单；首条 `{}`: {}",
+            gathered.blocked_demos.len(),
+            first.path.display(),
+            first.reason
+        );
+        let receipt = module_receipt(
+            "startup-chooser",
+            &module_error_fields("demo-scan", &message),
+        );
+        module_trace("startup-chooser", std::time::Instant::now(), &receipt);
+    }
+    let data: Rc<RefCell<crate::startup_chooser::ChooserData>> = Rc::new(RefCell::new(gathered));
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     // 搜索串（T-FIX-293）：输入框是它的唯一写者（两向绑定），宿主只读、
     // ⛔ 不写回；换分类不清空（与左栏搜索同口径）。

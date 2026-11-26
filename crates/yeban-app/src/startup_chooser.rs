@@ -136,6 +136,33 @@ pub struct DemoEntry {
     pub cover: Option<PathBuf>,
 }
 
+/// 演示清单阶段单文件**整体读盘**的上限（字节）。
+///
+/// 列清单只需要标题 / BPM / 轨道数 / 跨度，⛔ 不该为它把整包读进内存：
+/// 超过本上限的 `.yeban` 不进 [`ChooserData::demos`]，而是带着原因进
+/// [`ChooserData::blocked_demos`]，在选择器里显示成一条置灰行（用户仍可
+/// 从「打开工程」按路径直接打开它）。上限取 8 MiB，与模板预检同一数量级
+/// —— 只覆盖真正的"小 demo"，带音频资产的归档一律不在清单阶段读。
+pub const DEMO_LIST_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 一条没能进演示清单的条目（路径 + 显示名 + 原因）。
+///
+/// 存在理由：旧行为是 `eprintln!` 后 `continue` —— 用户只看得到"演示工程为空"
+/// 或条目凭空消失，分不清是文件坏了、目录没权限，还是本来就没有 demo。这里把
+/// 每条失败都留在结构化结果里，选择器用它渲染置灰行（`enabled = false`，
+/// 点不动），⛔ 不再只写 stderr。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedDemo {
+    /// 出问题的路径（文件或目录）。
+    pub path: PathBuf,
+    /// 置灰行的主文字：文件名（目录级失败时是目录名）。
+    /// ⚠ 不是从容器读出的标题 —— 读不到元数据时只能显示文件名，行副文字
+    /// 会同时写明原因，⛔ 不把它当成工程标题冒充。
+    pub label: String,
+    /// 为什么没进清单（读不了 / 超过列表上限 / 不是可读容器 / 目录不可读）。
+    pub reason: String,
+}
+
 /// 选择器开屏时汇集的全部数据（汇集一次，分类切换只读不重扫 ——
 /// 与模板选择器「两跳之间清单只存一份」同一条纪律，防下标漂移）。
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +173,9 @@ pub struct ChooserData {
     /// 环境变量未设时为空。内置样本已按 Wang 2026-11-23 裁决
     /// 移出本清单）。
     pub demos: Vec<DemoEntry>,
+    /// 没能进演示清单的条目（每条带路径与原因，选择器渲染成置灰行）。
+    /// ⛔ 不是"静默跳过"的等价物：这些行对用户可见、可读原因。
+    pub blocked_demos: Vec<BlockedDemo>,
     /// 全部模板（工厂在前，与 [`list_templates`] 同序）。
     pub templates: Vec<TemplateEntry>,
 }
@@ -180,31 +210,60 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
     // 闭集不缩），只是本函数不再产出。环境变量未设 ⇒ 清单为空，
     // 演示分类如实显示空清单，⛔ 不拿内置样本回填。
     let mut demos: Vec<DemoEntry> = Vec::new();
+    let mut blocked_demos: Vec<BlockedDemo> = Vec::new();
     if let Some(dir) = std::env::var_os(DEMOS_DIR_ENV)
         && !dir.is_empty()
     {
-        demos.extend(scan_file_demos(Path::new(&dir)));
+        let scan = scan_file_demos(Path::new(&dir));
+        demos.extend(scan.entries);
+        blocked_demos.extend(scan.blocked);
     }
     ChooserData {
         recent,
         demos,
+        blocked_demos,
         templates: list_templates(roots),
     }
 }
 
+/// [`scan_file_demos`] 的结构化结果：进清单的条目 + 没进的（含原因）。
+#[derive(Debug, Clone, PartialEq)]
+struct DemoScan {
+    entries: Vec<DemoEntry>,
+    blocked: Vec<BlockedDemo>,
+}
+
 /// 扫描文件型 demo 目录（实验）：每个 `*.yeban` 文件一条，标题与
-/// 轨道数从容器真实读取；读不出的文件**响亮报错并跳过**（⛔ 不
-/// 编造）；与工程同名的 `.png` / `.jpg` 是封面。条目按路径排序，
-/// ⛔ 不依赖 `read_dir` 的文件系统顺序。
-fn scan_file_demos(dir: &Path) -> Vec<DemoEntry> {
+/// 轨道数从容器真实读取；读不出的文件**响亮报错并进 `blocked`**（⛔ 不
+/// 编造、⛔ 不只写 stderr）；与工程同名的 `.png` / `.jpg` 是封面。条目按
+/// 路径排序，⛔ 不依赖 `read_dir` 的文件系统顺序。
+///
+/// 两处**不读整包**的闸：目录读不了 ⇒ 一条目录级 `BlockedDemo`；单文件
+/// 体积超过 [`DEMO_LIST_MAX_BYTES`] ⇒ 不进清单、不读内容，只留一条写明
+/// 上限的 `BlockedDemo`（读整包的时机是用户点选打开，不是列清单）。
+fn scan_file_demos(dir: &Path) -> DemoScan {
+    let mut blocked: Vec<BlockedDemo> = Vec::new();
     let read_dir = match std::fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(error) => {
+            let reason = format!("演示目录读不了: {error}");
             eprintln!(
-                "startup-chooser: 文件型 demo 目录 `{}` 读不了: {error}",
+                "startup-chooser: 文件型 demo 目录 `{}` {reason}",
                 dir.display()
             );
-            return Vec::new();
+            blocked.push(BlockedDemo {
+                path: dir.to_path_buf(),
+                label: dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                reason,
+            });
+            return DemoScan {
+                entries: Vec::new(),
+                blocked,
+            };
         }
     };
     let mut paths: Vec<PathBuf> = Vec::new();
@@ -217,29 +276,62 @@ fn scan_file_demos(dir: &Path) -> Vec<DemoEntry> {
                 }
             }
             Err(error) => {
+                let reason = format!("演示目录有条目读不了: {error}");
                 eprintln!(
-                    "startup-chooser: 文件型 demo 目录 `{}` 有条目读不了: {error}",
+                    "startup-chooser: 文件型 demo 目录 `{}` {reason}",
                     dir.display()
                 );
+                blocked.push(BlockedDemo {
+                    path: dir.to_path_buf(),
+                    label: dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    reason,
+                });
             }
         }
     }
     paths.sort();
-    let mut demos = Vec::new();
+    let mut entries = Vec::new();
     for path in paths {
         match load_demo_entry(&path) {
-            Ok(entry) => demos.push(entry),
+            Ok(entry) => entries.push(entry),
             Err(message) => {
-                eprintln!("startup-chooser: 文件型 demo 跳过: {message}");
+                eprintln!("startup-chooser: 文件型 demo 未进清单: {message}");
+                blocked.push(BlockedDemo {
+                    path: path.clone(),
+                    label: path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    reason: message,
+                });
             }
         }
     }
-    demos
+    DemoScan { entries, blocked }
 }
 
 /// 从磁盘真实读取一条文件型 demo 的标题与轨道数（整包读容器 ——
-/// 实验口径，见回执）。读不出 ⇒ `Err` 写明原因，调用方响亮跳过。
+/// 实验口径，见回执）。读不出 ⇒ `Err` 写明原因，调用方把它转成
+/// [`BlockedDemo`]（置灰行）而不是静默跳过。体积超过
+/// [`DEMO_LIST_MAX_BYTES`] 的文件在这里就被拒，⛔ 不进 `fs::read`。
 fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
+    // 列清单前先量体积：超过上限的归档**一个字节都不读**（否则一个坏/巨
+    // 文件就能把 UI 线程占住，容器 limits 也拦不住"已经读进内存"这件事）。
+    let len = std::fs::metadata(path)
+        .map_err(|error| format!("`{}` 读不了: {error}", path.display()))?
+        .len();
+    if len > DEMO_LIST_MAX_BYTES {
+        return Err(format!(
+            "`{}` 有 {len} 字节，超过清单阶段读盘上限 {DEMO_LIST_MAX_BYTES} 字节，\
+             未读取元数据；请从「打开工程」直接打开它",
+            path.display()
+        ));
+    }
     let bytes =
         std::fs::read(path).map_err(|error| format!("`{}` 读不了: {error}", path.display()))?;
     let archive = read_project_container(&bytes, &ContainerLimits::default())
@@ -544,6 +636,50 @@ pub fn demo_rows(entries: &[DemoEntry], lang: Language) -> Vec<ChooserRow> {
 /// `entry_index` 仍是**全量演示清单**的下标（宿主按它打开文件），⛔ 不因过滤重排。
 #[must_use]
 pub fn demo_rows_matching(entries: &[DemoEntry], lang: Language, query: &str) -> Vec<ChooserRow> {
+    demo_rows_matching_with_blocked(entries, &[], lang, query)
+}
+
+/// [`demo_rows_matching`] 的带"未进清单条目"版：正常条目之后追加每条
+/// [`BlockedDemo`] 的置灰行（`enabled = false` ⇒ 界面层点不动、不给打开
+/// 回调），副文字写原因，`entry_index = None`（没有可打开的下标）。
+/// 搜索同样过滤这些行（按显示名 + 原因），⛔ 不让坏条目从搜索里消失。
+#[must_use]
+pub fn demo_rows_matching_with_blocked(
+    entries: &[DemoEntry],
+    blocked: &[BlockedDemo],
+    lang: Language,
+    query: &str,
+) -> Vec<ChooserRow> {
+    let mut rows = demo_rows_matching_entries(entries, lang, query);
+    for blocked_entry in blocked {
+        if !query_matches(
+            &format!("{} {}", blocked_entry.label, blocked_entry.reason),
+            query,
+        ) {
+            continue;
+        }
+        rows.push(ChooserRow {
+            kind: ChooserRowKind::Entry,
+            label: blocked_entry.label.clone(),
+            detail: blocked_entry.reason.clone(),
+            genre: String::new(),
+            bpm_label: String::new(),
+            details: blocked_entry.reason.clone(),
+            detail_rows: Vec::new(),
+            details_height_px: 0,
+            entry_index: None,
+            enabled: false,
+            cover: None,
+        });
+    }
+    rows
+}
+
+fn demo_rows_matching_entries(
+    entries: &[DemoEntry],
+    lang: Language,
+    query: &str,
+) -> Vec<ChooserRow> {
     let mut rows = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         if !query_matches(
@@ -1608,5 +1744,114 @@ mod tests {
             Some(69),
             "最后一条的下标必须是全量下标 69"
         );
+    }
+
+    fn demo_scan_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-demo-scan-{tag}-{}",
+            yeban_model::ids::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        dir
+    }
+
+    /// 清单阶段的三道闸：超过上限的文件**一个字节都不读**、坏容器留原因、
+    /// 正常 demo 照旧进清单。红对照：去掉 `load_demo_entry` 的体积预检 ⇒
+    /// 超大文件会走 `fs::read` 后以"不是可读的工程容器"收场，第三条断言红。
+    #[test]
+    fn demo_scan_blocks_oversize_without_reading_and_keeps_reasons() {
+        let dir = demo_scan_dir("oversize");
+        let project = yeban_model::samples::filled_project();
+        let good = yeban_model::container::write_project_container(
+            &project,
+            &[],
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("写容器");
+        std::fs::write(dir.join("good.yeban"), good).expect("写合法 demo");
+        std::fs::write(dir.join("broken.yeban"), b"x").expect("写坏 demo");
+        // 稀疏文件：长度超上限、内容为空 ⇒ 只要实现真的读了它，就会以
+        // "不是可读的工程容器"失败；正确实现则应停在体积闸上。
+        let huge = dir.join("huge.yeban");
+        let file = std::fs::File::create(&huge).expect("建稀疏文件");
+        file.set_len(DEMO_LIST_MAX_BYTES + 1).expect("设置长度");
+        drop(file);
+
+        let scan = scan_file_demos(&dir);
+        assert_eq!(scan.entries.len(), 1, "只有合法 demo 进清单");
+        assert_eq!(
+            scan.entries[0].title, project.title,
+            "合法 demo 的标题必须是容器实读值"
+        );
+        assert_eq!(scan.blocked.len(), 2, "坏容器 + 超大文件各一条置灰行");
+        let huge_row = scan
+            .blocked
+            .iter()
+            .find(|blocked| blocked.label == "huge")
+            .expect("超大文件必须有自己的置灰行");
+        assert!(
+            huge_row.reason.contains("超过清单阶段读盘上限"),
+            "超大文件必须死在体积闸上（不是在解容器时失败）：{}",
+            huge_row.reason
+        );
+        assert!(
+            huge_row.reason.contains(&DEMO_LIST_MAX_BYTES.to_string()),
+            "原因里必须写出上限字节数：{}",
+            huge_row.reason
+        );
+        let broken_row = scan
+            .blocked
+            .iter()
+            .find(|blocked| blocked.label == "broken")
+            .expect("坏容器必须有自己的置灰行");
+        assert!(
+            broken_row.reason.contains("不是可读的工程容器"),
+            "坏容器的原因必须具体：{}",
+            broken_row.reason
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 目录读不了 ⇒ 一条目录级置灰行（不是空清单），行模型里它置灰、
+    /// 无下标、原因可见。
+    #[test]
+    fn demo_scan_reports_unreadable_dir_and_rows_are_disabled() {
+        let missing = demo_scan_dir("missing").join("nope");
+        let scan = scan_file_demos(&missing);
+        assert!(scan.entries.is_empty());
+        assert_eq!(scan.blocked.len(), 1, "目录读不了必须有诊断");
+        assert!(
+            scan.blocked[0].reason.contains("演示目录读不了"),
+            "原因必须写清是目录级失败：{}",
+            scan.blocked[0].reason
+        );
+
+        let entries = vec![demo_entry("演示 00", Some("流行"))];
+        let rows = demo_rows_matching_with_blocked(
+            &entries,
+            &scan.blocked,
+            crate::cli::Language::ZhCn,
+            "",
+        );
+        assert_eq!(rows.len(), 2, "正常条目 + 一条置灰行");
+        assert!(rows[0].enabled, "正常条目照旧可点");
+        let blocked_row = rows.last().expect("置灰行");
+        assert!(!blocked_row.enabled, "未进清单的条目必须点不动");
+        assert_eq!(blocked_row.entry_index, None, "置灰行没有可打开的下标");
+        assert!(
+            blocked_row.detail.contains("演示目录读不了"),
+            "置灰行的副文字必须是原因：{}",
+            blocked_row.detail
+        );
+        // 搜索能命中原因里的字 ⇒ 坏条目不会从搜索里消失。
+        let rows = demo_rows_matching_with_blocked(
+            &entries,
+            &scan.blocked,
+            crate::cli::Language::ZhCn,
+            "读不了",
+        );
+        assert_eq!(rows.len(), 1, "搜索原因命中时只剩那条置灰行");
+        assert!(!rows[0].enabled);
+        std::fs::remove_dir_all(missing.parent().expect("父目录")).ok();
     }
 }
