@@ -2687,10 +2687,10 @@ export component MainWindow inherits Window {
             y: 0px;
             width: root.width;
             height: Math.max(240px, root.height - key-handler.absolute-position.y);
-            reference: root.phase-align-reference;
-            target: root.phase-align-target;
-            max-lag-ms: root.phase-align-max-lag-ms;
-            apply: root.phase-align-apply;
+            reference <=> root.phase-align-reference;
+            target <=> root.phase-align-target;
+            max-lag-ms <=> root.phase-align-max-lag-ms;
+            apply <=> root.phase-align-apply;
             status: root.phase-align-status;
             close => { root.close-phase-align(); }
             run => { root.run-phase-align(); }
