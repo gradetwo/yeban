@@ -8430,7 +8430,7 @@
               "type": "string"
             },
             "sampleRate": {
-              "description": "输出采样率 (Hz); 与工程采样率不一致时由 rubato sinc 重采样 (ARCH-DSP-002)",
+              "description": "输出采样率 (Hz); ⭐ 缺省 = 工程采样率 (`audio_config.sample_rate`), 原样导出不必给、也不重采样; 显式给出且与工程不一致时由 rubato sinc 重采样 (ARCH-DSP-002); 非法值 (非正/非有限/超范围) 仍显式拒绝",
               "type": "integer"
             },
             "startTick": {
@@ -8447,8 +8447,7 @@
             }
           },
           "required": [
-            "format",
-            "sampleRate"
+            "format"
           ],
           "type": "object",
           "title": "yeban_render_master"
