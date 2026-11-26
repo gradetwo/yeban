@@ -192,6 +192,16 @@ impl Rig {
             "{label}: Recorder 必须停止采集"
         );
         assert!(!self.ui.get_recording(), "{label}: 界面 recording 必须归零");
+        // T-FIX-430：落地改为异步（后台线程落盘 + 定时器轮询收尾），无头测试不跑
+        // 事件循环 ⇒ 必须主动 pump 定时器，等落地+重投影跑完再断言。
+        let settle_until = std::time::Instant::now() + Duration::from_millis(3000);
+        while std::time::Instant::now() < settle_until {
+            slint::platform::update_timers_and_animations();
+            if self.placement_count() > before_placements {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert_eq!(
             self.placement_count(),
             before_placements + 1,

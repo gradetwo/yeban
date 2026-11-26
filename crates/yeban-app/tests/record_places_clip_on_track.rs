@@ -228,6 +228,21 @@ fn record_once(
     std::thread::sleep(Duration::from_millis(80));
     ui.invoke_toggle_record();
     assert!(!ui.get_recording(), "停录之后必须归零");
+    // T-FIX-430：落地改为异步（后台线程落盘 + 定时器轮询收尾），无头测试不跑事件
+    // 循环 ⇒ 主动 pump 定时器，等落地+当帧重投影跑完再返回，调用方断言才有意义。
+    let settle_until = std::time::Instant::now() + Duration::from_millis(3000);
+    while std::time::Instant::now() < settle_until {
+        slint::platform::update_timers_and_animations();
+        if port
+            .project()
+            .tracks
+            .values()
+            .any(|track| !track.clips.is_empty())
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// 渲染 1 秒，返回 `(非零样本数, 峰值, 帧数, 音频摆放渲染数)`。

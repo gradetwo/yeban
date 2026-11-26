@@ -705,11 +705,28 @@ impl Recorder {
     ///
     /// 没在录，或抽干 / 落盘失败。
     pub fn stop(&mut self) -> Result<RecordReport, RecordError> {
+        // 同步口径：停线程 + 后台落盘 + 阻塞等结果（CLI / 测试 / 不走 UI 的入口用这条）。
+        self.stop_async()?.wait()
+    }
+
+    /// ⭐ **停录并交回一个可轮询的后台落盘任务**（T-FIX-430）。
+    ///
+    /// 与 [`Self::stop`] 的唯一区别：量化 ＋ `write_plain_wav` ＋ `metadata` 搬到**后台线程**
+    /// 执行，本函数只做「发停止信号 → 收尸拿 sink → spawn 落盘线程」这几步轻活后**立即返回**。
+    ///
+    /// UI 主线程（Slint 回调）必须用这条：否则停录那一刻要在调用线程把整段录音量化并写
+    /// 几百 MB —— 10 分钟 48 kHz 立体声是 5,760 万次量化，UI 会明显卡死（本单要解决的问题）。
+    ///
+    /// # Errors
+    ///
+    /// 没在录，或录音工作线程 panic（这些发生在 spawn 之前，仍同步返回错误）。
+    pub fn stop_async(&mut self) -> Result<RecordLanding, RecordError> {
         let mut session = self
             .session
             .take()
             .ok_or_else(|| RecordError::Invalid("没有正在进行的录音".to_owned()))?;
-        // ① 先发停止信号，再收尸（⛔ 顺序反了会让工作线程永远等下去）。
+        // ① 先发停止信号，再收尸（⛔ 顺序反了会让工作线程永远等下去）。收尸只等录音
+        //    工作线程把已拉到的块写进内存 sink，这一步很快（不是量化/写盘的重活）。
         session
             .stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -719,47 +736,101 @@ impl Recorder {
                 .map_err(|_| RecordError::Invalid("录音线程 panic".to_owned()))?,
             None => SampleSink::default(),
         };
-        // ② 量化 ＋ **一次**落盘（与 `record_test_tone` 同一个落盘点与同一个抖动种子）。
-        let mut rng = DeterministicDitherRng::new(1);
-        let quantized: Vec<i32> = sink
-            .samples
-            .iter()
-            .map(|sample| quantize_i24(*sample, &mut rng))
-            .collect();
-        // ⭐ 帧数与 WAV 头都用**这次会话实际的**声道数（`session.channels` = 源协商值）。
-        let frames = u64::try_from(sink.samples.len() / usize::from(session.channels.max(1)))
-            .unwrap_or(u64::MAX);
-        let buffer = PcmBuffer::Int24(quantized);
-        let format = PcmFormat::integer(session.channels, session.options.sample_rate, 24);
-        write_plain_wav(&session.path, &format, &buffer)
-            .map_err(|error| RecordError::Write(error.to_string()))?;
-        let bytes = std::fs::metadata(&session.path)
-            .map_err(|error| RecordError::Io(error.to_string()))?
-            .len();
-        Ok(RecordReport {
-            path: session.path.clone(),
-            frames,
-            // ⭐ **如实**（任务单 `#88`）：两条生产路（控制侧 `push_block` / 工作线程从源拉块）
-            // 共用的帧级计数器 —— ⛔ 原来 `pushed` 只数控制侧（设备源接上后会写 0），
-            // `dropped` 更是**写死的 0**。
-            pushed: self
-                .pushed_frames
-                .load(std::sync::atomic::Ordering::Relaxed),
-            dropped: self
-                .dropped_frames
-                .load(std::sync::atomic::Ordering::Relaxed),
-            bytes,
-            bits: 24,
-            // ⭐ **如实**取自源自己的标签（任务单 `#88`）：真设备源报 `device-input-stream`、
-            // 显式静音腿报 `explicit-silence-source`、判据的假源报它自己写的那一条。
-            // ⛔ 原来这里写死 `ui-record-button(no-device-input)` —— 设备源接上之后
-            // 那句话就**成了假话**（报告行是"这条录音从哪来"的唯一出处）。
-            source: session.source_label.to_owned(),
-            // ⭐ 起录时给的捕获起点 tick（T-FIX-239）原样带回报告；
-            // `None` = 调用方没给（旧路）⇒ 落点方按停录播放头回落。
-            start_tick: session.start_tick,
+        // 计数器在 spawn 前读快照（会话已 take，这两条原子值此后不再变）。
+        let pushed = self
+            .pushed_frames
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let dropped = self
+            .dropped_frames
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // ② 量化 ＋ 落盘搬到后台线程：本函数立即返回句柄，调用方（UI）轮询它完成。
+        let handle = std::thread::spawn(move || land_sink(sink, session, pushed, dropped));
+        Ok(RecordLanding {
+            handle: Some(handle),
         })
     }
+}
+
+/// ⭐ **后台落盘任务句柄**（T-FIX-430）：[`Recorder::stop_async`] 返回它，UI 轮询 `try_take`。
+///
+/// 量化 ＋ `write_plain_wav` ＋ `metadata` 全在这个线程里跑，UI 主线程只做「拿到句柄 ⇒
+/// 显示『正在保存录音…』⇒ 定时器轮询」。句柄被丢弃而任务未 join 时，线程仍在后台跑完
+/// （detach 语义），不会打断写盘 —— 但实践上要 `try_take` 到 `Some` 才算落盘完成。
+#[derive(Debug)]
+pub struct RecordLanding {
+    handle: Option<std::thread::JoinHandle<Result<RecordReport, RecordError>>>,
+}
+
+impl RecordLanding {
+    /// 非阻塞轮询：后台落盘**已结束**则 join 取走结果返回 `Some`；还在写返回 `None`。
+    ///
+    /// UI 定时器每 50 ms 调一次即可：`None` ⇒ 继续显示"正在保存录音…"；`Some` ⇒ 落工程 + 刷界面。
+    #[must_use]
+    pub fn try_take(&mut self) -> Option<Result<RecordReport, RecordError>> {
+        let handle = self.handle.as_ref()?;
+        if !handle.is_finished() {
+            return None;
+        }
+        // 已完成 ⇒ take + join 是瞬时的（⛔ 不会阻塞 UI）。
+        self.handle.take().map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|_| Err(RecordError::Invalid("落盘线程 panic".to_owned())))
+        })
+    }
+
+    /// 阻塞等到落盘结束（同步口径 [`Recorder::stop`] 用）。已被 `try_take` 取走 ⇒ 返回错误。
+    ///
+    /// # Errors
+    ///
+    /// 句柄已被取走（`try_take` 已消费结果），或落盘线程 panic。
+    pub fn wait(self) -> Result<RecordReport, RecordError> {
+        match self.handle {
+            Some(handle) => handle
+                .join()
+                .unwrap_or_else(|_| Err(RecordError::Invalid("落盘线程 panic".to_owned()))),
+            None => Err(RecordError::Invalid("落盘任务已取走".to_owned())),
+        }
+    }
+}
+
+/// 后台线程主体：量化整段 sink ＋ 一次落盘 ＋ 读文件大小，组装报告（T-FIX-430 从 `stop` 搬来）。
+///
+/// ⭐ 量化与写盘都在**非 UI 线程**；`sink.samples` 的所有权 move 进来，UI 线程不再持有那段
+/// `f32` 全量。落盘仍是「量化成 `Vec<i32>` ＋ 一次 `write_plain_wav`」，复用唯一落盘点。
+fn land_sink(
+    sink: SampleSink,
+    session: RecorderSession,
+    pushed: u64,
+    dropped: u64,
+) -> Result<RecordReport, RecordError> {
+    // 量化 ＋ **一次**落盘（与 `record_test_tone` 同一个落盘点与同一个抖动种子）。
+    let mut rng = DeterministicDitherRng::new(1);
+    let quantized: Vec<i32> = sink
+        .samples
+        .iter()
+        .map(|sample| quantize_i24(*sample, &mut rng))
+        .collect();
+    // ⭐ 帧数与 WAV 头都用**这次会话实际的**声道数（`session.channels` = 源协商值）。
+    let frames = u64::try_from(sink.samples.len() / usize::from(session.channels.max(1)))
+        .unwrap_or(u64::MAX);
+    let buffer = PcmBuffer::Int24(quantized);
+    let format = PcmFormat::integer(session.channels, session.options.sample_rate, 24);
+    write_plain_wav(&session.path, &format, &buffer)
+        .map_err(|error| RecordError::Write(error.to_string()))?;
+    let bytes = std::fs::metadata(&session.path)
+        .map_err(|error| RecordError::Io(error.to_string()))?
+        .len();
+    Ok(RecordReport {
+        path: session.path.clone(),
+        frames,
+        pushed,
+        dropped,
+        bytes,
+        bits: 24,
+        source: session.source_label.to_owned(),
+        start_tick: session.start_tick,
+    })
 }
 
 /// ⭐ **录一段由调用方给出的帧源**（`[ARCH-REC-001]` 的"可注入源"入口）。
@@ -1378,6 +1449,124 @@ mod tests {
             "判定量：带同一 SFZ ⇒ 录制与导出必须逐位一致"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **T-FIX-430 判据 ①（确定性状态机）**：`RecordLanding::try_take` 的轮询契约——
+    /// 后台任务**未完成**时返回 `None`，完成后返回 `Some`，且结果**只被取走一次**。
+    ///
+    /// 用手工构造的**慢速**后台任务（sleep 120ms 后再给报告）驱动，⛔ 不依赖真实录音的
+    /// 墙钟样本量（那样量化太快会让"耗时对比"变脆）。这条判据确定性强：慢任务完成前
+    /// 轮询必为 `None`，完成后必为 `Some`、再轮询必为 `None`。
+    ///
+    /// ⚠ 反向腿不在这条判据里（它测的是状态机，不是"工作在哪条线程"）；"量化/写盘已
+    /// 搬出调用线程"由 `stop_async_lands_the_same_bytes_as_sync_stop`（结果一致）＋
+    /// 交付回执里的反向腿实证（把 `land_sink` 放回同步路径则见 `stop_async` 不再快速返回）共同保证。
+    #[test]
+    fn record_landing_poll_semantics_none_then_some_once() {
+        let dir = temp_dir("landing-poll");
+        let path = dir.join("slow.wav");
+        // 手工构造一个"慢后台任务"：sleep 后返回一个最小合法报告。
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            std::fs::write(&path, b"RIFF").expect("造个文件");
+            Ok(RecordReport {
+                path,
+                frames: 1,
+                pushed: 1,
+                dropped: 0,
+                bytes: 4,
+                bits: 24,
+                source: "test-slow-landing".to_owned(),
+                start_tick: None,
+            })
+        });
+        let mut landing = RecordLanding {
+            handle: Some(handle),
+        };
+        // 慢任务还没完成 ⇒ 首次轮询必为 None（120ms 内几乎不可能完成）。
+        assert!(
+            landing.try_take().is_none(),
+            "后台任务未完成时 try_take 必须返回 None"
+        );
+        // 轮询到完成。
+        let report = loop {
+            if let Some(result) = landing.try_take() {
+                break result.expect("慢任务成功");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        };
+        assert_eq!(report.frames, 1);
+        // 取走后再轮询 ⇒ None（一次性契约）。
+        assert!(
+            landing.try_take().is_none(),
+            "结果取走后 try_take 必须返回 None（⛔ 不重复消费）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **T-FIX-430 判据 ②（正确性）**：`stop_async` 的后台落盘产物**可回读**，且
+    /// 回读帧数 ＝ 报告帧数 ＝ 推入帧数（与同步 `stop` 同一条读回契约，⛔ 不靠"两条
+    /// 实时录音逐位比对"——墙钟样本量不同会假红）。
+    #[test]
+    fn stop_async_lands_a_readable_wav_with_consistent_frame_count() {
+        let dir = temp_dir("async-readable");
+        let path = dir.join("async.wav");
+        let options = RecordOptions {
+            seconds: 1.0,
+            capacity_frames: 480_000,
+            ..RecordOptions::default()
+        };
+
+        let mut recorder = Recorder::new();
+        recorder
+            .start(
+                &path,
+                &options,
+                Box::new(SilenceSource {
+                    channels: options.channels,
+                }),
+                0,
+                None,
+            )
+            .expect("异步起录");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut landing = recorder.stop_async().expect("stop_async");
+        let report = loop {
+            if let Some(result) = landing.try_take() {
+                break result.expect("后台落盘成功");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(report.frames > 0, "异步落盘必须真的写出帧");
+        assert_eq!(
+            report.frames, report.pushed,
+            "整帧契约：写出帧 == 成功推入帧（异步落盘不改计数）"
+        );
+        // 回读：帧数、格式、字节数都要自洽。
+        let (format, buffer) =
+            yeban_render::wav::read_plain_wav(&path).expect("异步 WAV 必须可回读");
+        assert_eq!(format.sample_rate, 48_000);
+        assert_eq!(format.channels, 2);
+        assert_eq!(format.bits_per_sample, 24);
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        assert_eq!(frames, report.frames, "回读帧数必须等于报告帧数");
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").len(),
+            report.bytes,
+            "报告字节数必须等于文件实际大小（后台读 metadata 的诚实性）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **T-FIX-430 判据 ③（错误腿）**：`stop_async` 在**没在录**时同步返回错误
+    /// （此时根本不会 spawn 落盘线程，`RecordLanding` 不会产生）。
+    #[test]
+    fn stop_async_without_a_session_returns_an_error_not_a_landing() {
+        let mut recorder = Recorder::new();
+        assert!(
+            recorder.stop_async().is_err(),
+            "没在录时 stop_async 必须返回错误，⛔ 不产生空落盘任务"
+        );
     }
 }
 

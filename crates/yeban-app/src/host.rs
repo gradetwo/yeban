@@ -8236,12 +8236,33 @@ struct RecordControl {
     /// 解析一次，`apply_stopped` 取走（`take`）后原样用；起录失败／停录后
     /// 为 `None`（⛔ 不许上一条 take 的目标轨漏进下一条）。
     target_track: std::cell::Cell<Option<crate::record_landing::RecordTarget>>,
+    /// ⭐ T-FIX-430：**待落盘的后台任务槽**。停录那一刻 `Recorder::stop_async` 立即返回
+    /// 一个 [`crate::record_wav::RecordLanding`]（量化＋写盘在后台线程跑）存这里，
+    /// 由 [`Self::poll_landing`] 定时器轮询；拿到结果才落工程、刷界面。⛔ 停录回调本身
+    /// 不再搬几百 MB（10 分钟立体声 5,760 万次量化会卡死 UI 主线程）。
+    /// 元组第二项是停录瞬间捕获的目标轨（T-FIX-239）—— 异步落盘期间 `target_track`
+    /// 可能被下一次起录改写，所以必须**当场取走**随任务一起存。
+    pending_landing: std::cell::RefCell<
+        Option<(
+            crate::record_wav::RecordLanding,
+            Option<crate::record_landing::RecordTarget>,
+        )>,
+    >,
+    /// ⭐ T-FIX-430：轮询 `pending_landing` 的 50 ms 定时器（只在有待落盘任务时启动）。
+    poll_timer: slint::Timer,
+    /// ⭐ T-FIX-430：自身弱引用 —— 定时器回调需要在 `&self` 之外拿到 `Rc<RecordControl>`
+    /// 才能调 [`Self::poll_landing`]；Weak 不增强引用计数，⛔ 不造成 self 循环引用。
+    self_weak: std::cell::RefCell<std::rc::Weak<RecordControl>>,
 }
 
 impl RecordControl {
-    /// 录音中 ⇒ 停录并落地；没在录 ⇒ 什么都不做。返回是否真的结束了一条 take。
+    /// 录音中 ⇒ 停录并**启动后台落盘**；没在录 ⇒ 什么都不做。返回是否真的结束了一条 take。
+    ///
+    /// ⭐ T-FIX-430：本方法不再同步量化/写盘（那会卡 UI 主线程）；它把
+    /// `stop_async` 的落盘句柄存进 [`Self::pending_landing`] 并启动 `poll_timer`，
+    /// 完成后由 [`Self::poll_landing`] 落工程。返回 `true` 表示"发起了停录"。
     fn stop_if_recording(&self) -> bool {
-        let stopped = {
+        let landing = {
             let mut recorder = match self.recorder.try_borrow_mut() {
                 Ok(recorder) => recorder,
                 Err(_) => {
@@ -8252,10 +8273,73 @@ impl RecordControl {
             if !recorder.is_recording() {
                 return false;
             }
-            recorder.stop()
+            recorder.stop_async()
         };
-        self.apply_stopped(stopped);
+        self.begin_landing(landing);
         true
+    }
+
+    /// ⭐ T-FIX-430：把停录得到的后台落盘任务接上——成功则存槽 + 起轮询 + 显示
+    /// "正在保存录音…"；失败（没在录 / 线程 panic）则直接走错误落点。
+    ///
+    /// 目标轨在**这里**当场取走随任务存（异步落盘期间 `target_track` 可能被下一次
+    /// 起录改写，落工程时必须用停录这一刻的那一份）。
+    fn begin_landing(
+        &self,
+        landing: Result<crate::record_wav::RecordLanding, crate::record_wav::RecordError>,
+    ) {
+        match landing {
+            Ok(landing) => {
+                let target = self.target_track.take();
+                *self.pending_landing.borrow_mut() = Some((landing, target));
+                if let Some(ui) = self.ui.upgrade() {
+                    // 录音已经停了（引擎不再吃输入），但落盘在后台：先如实告诉用户。
+                    ui.set_recording(false);
+                    report_notice(&ui, "正在保存录音…", false);
+                }
+                self.start_poll_timer();
+            }
+            Err(error) => {
+                // 起录前就失败：target_track 还没被 take，沿用 apply_stopped 的兜底。
+                self.apply_stopped(Err(error), self.target_track.take());
+            }
+        }
+    }
+
+    /// ⭐ T-FIX-430：启动 50 ms 轮询定时器（幂等：重复 start 会重置，但只在有待落盘时调）。
+    fn start_poll_timer(&self) {
+        let weak = self.self_weak.borrow().clone();
+        self.poll_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(50),
+            move || {
+                if let Some(control) = weak.upgrade() {
+                    control.poll_landing();
+                }
+            },
+        );
+    }
+
+    /// ⭐ T-FIX-430：轮询后台落盘是否完成；完成则落工程 + 刷界面 + 停定时器。
+    fn poll_landing(&self) {
+        let taken = {
+            let mut slot = self.pending_landing.borrow_mut();
+            let result = match slot.as_mut() {
+                Some((landing, _)) => landing.try_take(),
+                None => None,
+            };
+            match result {
+                Some(done) => {
+                    let target = slot.take().and_then(|(_, target)| target);
+                    Some((done, target))
+                }
+                None => None,
+            }
+        };
+        if let Some((done, target)) = taken {
+            self.poll_timer.stop();
+            self.apply_stopped(done, target);
+        }
     }
 
     /// 录音键：在录 ⇒ 停录落地；没在录 ⇒ 起录。
@@ -8269,7 +8353,7 @@ impl RecordControl {
                 }
             };
             if recorder.is_recording() {
-                RecordToggle::Stopped(recorder.stop())
+                RecordToggle::Stopped(recorder.stop_async())
             } else {
                 // ⭐ T-ISS-MWW4H8J6：借用只包住 `record_count_in` 这一句（`#212` 同款作用域纪律）。
                 let project_guard = self.project.as_ref().map(|shared| shared.borrow());
@@ -8295,15 +8379,19 @@ impl RecordControl {
             }
         };
         match toggle {
-            RecordToggle::Stopped(stopped) => self.apply_stopped(stopped),
+            RecordToggle::Stopped(landing) => self.begin_landing(landing),
             RecordToggle::Started(started) => self.apply_started(started),
         }
     }
 
     /// 停录结果的产品落点：报告、0 帧响亮、`frames > 0` 才进工程、最后才碰界面。
+    ///
+    /// ⭐ T-FIX-430：`target` 由调用方在**停录这一刻**捕获（异步落盘期间 `target_track`
+    /// 可能被下一次起录改写）；`None` ⇒ 停录时现解析一次（旧路兜底）。
     fn apply_stopped(
         &self,
         stopped: Result<crate::record_wav::RecordReport, crate::record_wav::RecordError>,
+        target: Option<crate::record_landing::RecordTarget>,
     ) {
         let empty_report = match &stopped {
             Ok(report) if report.frames == 0 => Some(format!(
@@ -8333,12 +8421,10 @@ impl RecordControl {
                                 );
                                 (self.playhead_tick)()
                             });
-                            // ⭐ T-FIX-239：目标轨 = 起录时解析的那一份；没解析到
-                            // （例如这条 take 不是经 `toggle()` 起录的）⇒ 停录时现解析一次。
-                            let target = self
-                                .target_track
-                                .take()
-                                .unwrap_or_else(|| self.resolve_target());
+                            // ⭐ T-FIX-239 / T-FIX-430：目标轨 = 停录那一刻捕获的那一份
+                            // （由 `begin_landing` 随任务存下）；没捕获到
+                            // （这条 take 不是经 `toggle()` 起录的）⇒ 现解析一次。
+                            let target = target.unwrap_or_else(|| self.resolve_target());
                             match crate::record_landing::land_recording_at(
                                 port,
                                 &report.path,
@@ -8514,7 +8600,12 @@ fn install_record_control(
         playhead_tick,
         // ⭐ 起录成功时才解析目标轨（T-FIX-239）；此前没有。
         target_track: std::cell::Cell::new(None),
+        // ⭐ T-FIX-430：待落盘槽 + 轮询定时器 + 自弱引用（下面立刻填 self_weak）。
+        pending_landing: std::cell::RefCell::new(None),
+        poll_timer: slint::Timer::default(),
+        self_weak: std::cell::RefCell::new(std::rc::Weak::new()),
     });
+    *control.self_weak.borrow_mut() = Rc::downgrade(&control);
     let toggle = Rc::clone(&control);
     ui.on_toggle_record(move || toggle.toggle());
     (recorder, control)
@@ -8528,8 +8619,8 @@ fn install_record_control(
 /// 那正是 `#213` 修的形态。
 #[derive(Debug)]
 enum RecordToggle {
-    /// 本次是**停录**：`Recorder::stop` 的返回值（含 0 帧判定所需的计数器读数）。
-    Stopped(Result<crate::record_wav::RecordReport, crate::record_wav::RecordError>),
+    /// 本次是**停录**：`Recorder::stop_async` 返回的后台落盘句柄（T-FIX-430）。
+    Stopped(Result<crate::record_wav::RecordLanding, crate::record_wav::RecordError>),
     /// 本次是**起录**：`Recorder::start_with_factory` 的返回值。
     Started(Result<(), crate::record_wav::RecordError>),
 }

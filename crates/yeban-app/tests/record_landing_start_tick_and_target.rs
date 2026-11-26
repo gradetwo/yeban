@@ -246,6 +246,16 @@ fn record_once(
     std::thread::sleep(Duration::from_millis(80));
     ui.invoke_toggle_record();
     assert!(!ui.get_recording(), "停录之后必须归零");
+    // ⭐ T-FIX-430：停录已改为**后台落盘**（量化+写盘搬出 UI 主线程），落地由
+    // `RecordControl` 的 50ms 轮询定时器驱动。无头测试不跑事件循环，须主动 pump
+    // 定时器；pump 一个固定短窗口让后台落盘 + 定时器落工程跑完（生产由事件循环自动 pump）。
+    // ⚠ 不硬性要求"必须出现片段"——拒绝落地场景（无目标轨）本就该 0 片段，由各测试
+    //    自己的断言判定；这里只负责把定时器推到后台任务落定。
+    let settle_until = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < settle_until {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// ⭐ **验收 ①**：走带在录音期间前进 ≥ 1 小节；停录后摆放的起点是**起录 tick**，
@@ -324,6 +334,12 @@ fn count_in_ticks_are_added_to_the_press_time_playhead() {
     std::thread::sleep(Duration::from_millis(1000));
     ui.invoke_toggle_record();
     assert!(!ui.get_recording(), "停录之后必须归零");
+    // ⭐ T-FIX-430：pump 轮询定时器让后台落盘落工程（无头测试不跑事件循环）。
+    let settle_until = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < settle_until {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let landed = port.try_project().expect("会话在场");
     let placements = all_placements(&landed);
