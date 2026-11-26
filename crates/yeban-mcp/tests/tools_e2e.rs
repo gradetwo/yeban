@@ -9550,10 +9550,20 @@ fn builtin_sample_opens_as_writable_copy_and_save_as_switches_the_active_path() 
         "另存后活跃工程必须指向新路径"
     );
     assert!(copy.exists(), "另存文件必须存在");
-    assert_eq!(
-        fs::read(&sample_path).expect("读样本文件"),
+    assert_ne!(
+        fs::read(&copy).expect("读另存文件"),
         original_sample_bytes,
-        "另存为不得改写原内置样本副本"
+        "另存出的容器必须带着这次编辑，不是原样本的字节复制"
+    );
+    // T-FIX-696：另存为把活跃工程切到调用方路径后，原 sample-only 临时副本
+    // 到此退休并立即回收；否则每次另存都会在 /tmp 多留一份。
+    assert!(
+        !sample_path.exists(),
+        "另存为后临时副本必须回收: {sample_path:?}"
+    );
+    assert_eq!(
+        saved["data"]["retiredTempCopyRemoved"], true,
+        "另存回执必须报明临时副本已回收: {saved}"
     );
 
     // ④ 关闭后重开新路径：另存出的容器必须能独立打开（不是只换了个指针）。
@@ -9590,6 +9600,113 @@ fn builtin_sample_opens_as_writable_copy_and_save_as_switches_the_active_path() 
     );
     let _ = fs::remove_file(&sample_path);
     let _ = fs::remove_file(format!("{}.lock", sample_path.display()));
+}
+
+// T-FIX-696：sample-only 打开的临时副本在 close 时必须连同 `.lock` 一起回收；
+// 连续多轮 open/close 不得在 /tmp 留下随次数增长的副本。
+#[test]
+fn sample_only_open_close_reclaims_temp_copy_and_does_not_accumulate() {
+    let tmp = std::env::temp_dir();
+    let (mut dispatcher, auth) = dispatcher();
+    let mut opened_paths = Vec::new();
+
+    for round in 0..3 {
+        let opened = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_open_project",
+            json!({ "sample": "filled" }),
+        );
+        assert_eq!(opened["status"], "success", "round {round}: {opened}");
+        assert_eq!(
+            opened["data"]["ephemeralSampleCopy"], true,
+            "sample-only 必须标记为临时副本: {opened}"
+        );
+        assert_eq!(
+            opened["data"]["tempCopyCleanup"], "yeban_close_project",
+            "回执必须给出回收点: {opened}"
+        );
+        let path = PathBuf::from(opened["data"]["path"].as_str().expect("临时副本路径"));
+        assert!(
+            path.starts_with(&tmp),
+            "sample-only 应落在临时目录: {path:?}"
+        );
+        assert!(path.exists(), "副本必须先真的物化: {path:?}");
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("yeban-mcp-sample-filled-")),
+            "sample-only 路径形状: {path:?}"
+        );
+
+        let closed = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_close_project",
+            json!({ "saveFirst": false }),
+        );
+        assert_eq!(closed["status"], "success", "round {round}: {closed}");
+        assert_eq!(
+            closed["data"]["tempCopyRemoved"], true,
+            "close 必须报明临时副本已回收: {closed}"
+        );
+        assert!(
+            !path.exists(),
+            "round {round}: close 后容器必须消失: {path:?}"
+        );
+        let lock = PathBuf::from(format!("{}.lock", path.display()));
+        assert!(
+            !lock.exists(),
+            "round {round}: close 后 .lock 必须消失: {lock:?}"
+        );
+        opened_paths.push(path);
+    }
+
+    assert_eq!(opened_paths.len(), 3, "三轮都必须真正打开过");
+    for path in opened_paths {
+        assert!(!path.exists(), "任何一轮都不得留下副本: {path:?}");
+    }
+}
+
+// T-FIX-696 的边界：sample + 显式 path 归调用方所有，close 绝不删用户文件。
+#[test]
+fn sample_with_explicit_path_survives_close() {
+    let scratch = Scratch::new("sample-explicit-path");
+    let target = scratch.join("mine.yeban");
+    let (mut dispatcher, auth) = dispatcher();
+
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "sample": "filled", "path": target.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(
+        opened["data"]["ephemeralSampleCopy"],
+        Value::Null,
+        "显式 path 不能被标记成临时副本: {opened}"
+    );
+    assert!(target.exists(), "显式 path 必须物化: {target:?}");
+
+    let closed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    assert_eq!(closed["status"], "success", "{closed}");
+    assert!(
+        !closed["data"]
+            .as_object()
+            .unwrap_or(&serde_json::Map::new())
+            .contains_key("tempCopyRemoved"),
+        "显式 path 的 close 不应有临时副本清理字段: {closed}"
+    );
+    assert!(target.exists(), "close 不得删除调用方显式路径: {target:?}");
+
+    let _ = fs::remove_file(&target);
+    let _ = fs::remove_file(format!("{}.lock", target.display()));
 }
 
 #[test]

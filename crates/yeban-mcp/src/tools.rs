@@ -723,7 +723,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "sample",
                 "string",
                 false,
-                "打开内置样本为**可写副本**: `default` (6 轨演示夹具), `filled` (丰富样本), `empty` (空工程 + 主总线); `demo` 是 `default` 的别名。与 `path` 同给 ⇒ 物化到该新路径; 不给 `path` ⇒ 物化到临时目录的唯一新文件 (回执 `path` 报明实际路径)。未知名字 ⇒ `INVALID_PARAMETER_RANGE` 并回传 `available` 列表; 目标已存在 ⇒ `CONFLICT`, 绝不覆盖",
+                "打开内置样本为**可写副本**: `default` (6 轨演示夹具), `filled` (丰富样本), `empty` (空工程 + 主总线); `demo` 是 `default` 的别名。与 `path` 同给 ⇒ 物化到该新路径; 不给 `path` ⇒ 物化到临时目录的唯一新文件 (回执 `path` 报明实际路径), 该临时副本在 `yeban_close_project` 时自动回收; 要保留请用 `yeban_save_project` 的 `path` 另存。未知名字 ⇒ `INVALID_PARAMETER_RANGE` 并回传 `available` 列表; 目标已存在 ⇒ `CONFLICT`, 绝不覆盖",
             ),
             // `create` 与它的三个伙伴是本线新增的**可选**实参（缺省 = 逐字节等于旧行为）。
             //

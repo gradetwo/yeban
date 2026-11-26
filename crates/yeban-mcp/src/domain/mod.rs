@@ -178,6 +178,11 @@ struct Active {
     /// 排他写是 [`store::LockGuard`]，共享读是包着共享建议锁的 [`AcquiredLock`] ——
     /// 两者都是 RAII：`Drop` 即释放，进程死亡由内核释放。
     lock: Option<AcquiredLock>,
+    /// 本工程是否是 MCP 为 `sample`-only 打开自动物化的临时副本。
+    ///
+    /// 只对**没有调用方给 `path`** 的 `yeban_open_project {sample}` 为 `true`；
+    /// `close` 时据此回收文件和 `.lock`，绝不把调用方自己指定的路径当临时文件删。
+    ephemeral_sample_copy: bool,
 }
 
 /// 打开一个工程所需的全部会话种子（[`Domain::reset_history`] 的入参）。
@@ -204,6 +209,8 @@ struct SessionSeed {
     /// 时为空集。提案分支与提交本就在图谱里（随 `history` 一并恢复），
     /// 这里恢复的是提案**记录**本身。
     proposals: BTreeMap<EntityId, Proposal>,
+    /// 是否 MCP 自动物化的临时样本副本（`sample`-only 打开）。
+    ephemeral_sample_copy: bool,
 }
 
 /// 系统实时时钟（Unix 毫秒）。
@@ -786,6 +793,14 @@ impl Domain {
         self.active.as_ref().map(|active| active.path.as_path())
     }
 
+    /// 当前活跃工程是否是 MCP 自动物化的临时样本副本（`sample`-only 打开）。
+    #[must_use]
+    pub fn is_ephemeral_sample_copy(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.ephemeral_sample_copy)
+    }
+
     /// 是否以只读方式打开。
     #[must_use]
     pub fn is_read_only(&self) -> bool {
@@ -1100,6 +1115,7 @@ impl Domain {
             history: None,
             assets: assets.into_iter().collect(),
             proposals: BTreeMap::new(),
+            ephemeral_sample_copy: false,
         })
     }
 
@@ -1171,6 +1187,7 @@ impl Domain {
             saved_proposals_digest: self.proposals_segment_digest(),
             assets: seed.assets,
             lock: seed.lock,
+            ephemeral_sample_copy: seed.ephemeral_sample_copy,
         });
         // 打开工程会重建撤销会话态（游标可能被 `align_with` 推导出来），
         // 因此模型会话态里那份镜像必须跟着走 —— 否则"打开一个带历史的工程"之后
@@ -1252,6 +1269,10 @@ pub struct OpenRequest {
     ///
     /// 回执用它点名"这份工程来自哪个内置样本"；`path` 是物化后的实际路径。
     pub sample: Option<String>,
+    /// 是否 MCP 自动物化的临时样本副本（`sample`-only 打开）。
+    ///
+    /// `close` 时只有它为 `true` 才删文件；调用方显式给 `path` 时永远 `false`。
+    pub ephemeral_sample_copy: bool,
 }
 
 /// `create: true` 建出来的东西（文档 + 字节 + 读数）。
@@ -3440,6 +3461,7 @@ fn plan_sample(
     sample: BuiltinSample,
     requested: &str,
     path: PathBuf,
+    ephemeral_sample_copy: bool,
 ) -> Result<Plan, Fault> {
     if path.exists() {
         return Err(Fault::domain_with_data(
@@ -3511,6 +3533,7 @@ fn plan_sample(
             }),
         }),
         sample: Some(requested.to_owned()),
+        ephemeral_sample_copy,
     })))
 }
 
@@ -3559,10 +3582,13 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                 serde_json::json!({ "reason": "sampleIsNotReadOnly", "sample": sample_name }),
             ));
         }
-        // `path` 给了就是物化落点；没给就落临时目录里的唯一新文件，
-        // 实际路径由回执 `path` 字段报明。
-        let path = path_arg.unwrap_or_else(|| default_sample_path(sample));
-        return plan_sample(domain, sample, sample_name, path);
+        // `path` 给了就是物化落点（归调用方所有，close 不删）；没给就落
+        // 临时目录里的唯一新文件，并在 close 时由 MCP 自动回收。
+        let (path, ephemeral_sample_copy) = match path_arg {
+            Some(path) => (path, false),
+            None => (default_sample_path(sample), true),
+        };
+        return plan_sample(domain, sample, sample_name, path, ephemeral_sample_copy);
     }
     let path = path_arg.ok_or_else(|| {
         Fault::domain_with_data(
@@ -3621,6 +3647,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         missing_audio_assets,
         created: None,
         sample: None,
+        ephemeral_sample_copy: false,
     })))
 }
 
@@ -3738,6 +3765,7 @@ fn plan_create(
             summary,
         }),
         sample: None,
+        ephemeral_sample_copy: false,
     })))
 }
 
@@ -8172,7 +8200,16 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         missing_audio_assets,
         created,
         sample,
+        ephemeral_sample_copy,
     } = request;
+    // sample-only 的临时文件在 apply_open 内先落盘再取锁/建会话；任何一步失败
+    // 都不会有活跃工程可供 close 回收，因此错误路径必须由这个守卫兜底删除。
+    // `already_open` 不会来自 sample-only（临时路径唯一），不建守卫，避免误删。
+    let mut temp_sample_guard = if ephemeral_sample_copy && created.is_some() && !already_open {
+        Some(TempSampleCopyGuard::new(path.clone()))
+    } else {
+        None
+    };
     let asset_count = assets.len();
     let embedded_count = embedded_presets.len();
     let missing_audio_assets_json = missing_audio_assets
@@ -8249,7 +8286,13 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         history: history.map(|graph| *graph),
         assets,
         proposals,
+        ephemeral_sample_copy,
     })?;
+    // `reset_history` 成功后活跃工程已接管这个临时副本：后续失败（例如内嵌
+    // 预制的装入）走正常 close 回收，守卫不再越权删除一个活跃工程的文件。
+    if let Some(guard) = temp_sample_guard.as_mut() {
+        guard.disarm();
+    }
     // `reset_history` 整体清空会话运行态（内嵌预制也在其中），因此这里再装入
     // 本次打开的内嵌副本；`plan_open` 已校验过条目与引用，这里只做装入。
     domain.set_embedded_presets(&embedded_presets)?;
@@ -8286,6 +8329,10 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
     });
     if let Some(sample) = sample {
         data["sample"] = Value::from(sample);
+    }
+    if ephemeral_sample_copy {
+        data["ephemeralSampleCopy"] = Value::from(true);
+        data["tempCopyCleanup"] = Value::from("yeban_close_project");
     }
     Ok(ToolResponse::success(data))
 }
@@ -8385,8 +8432,15 @@ fn apply_save(
     };
     // T-FIX-498：落盘读数进回执 —— 已提交 + 持久化警告（不是失败）。
     let durability = store::write_project_atomic_with_durability(path, bytes)?;
+    let mut retired_temp_copy = None;
     if let Some(active) = domain.active.as_mut() {
         if save_as {
+            // 另存为把活跃工程切到调用方路径；原 sample-only 临时副本到此退休。
+            // 记录旧路径，等旧锁随赋值释放后再删，避免"删了文件仍持有锁"。
+            if active.ephemeral_sample_copy {
+                retired_temp_copy = Some(active.path.clone());
+                active.ephemeral_sample_copy = false;
+            }
             active.path = path.to_path_buf();
             active.read_only = false;
             active.lock = new_lock;
@@ -8428,6 +8482,15 @@ fn apply_save(
     if save_as {
         data["saveAs"] = Value::from(true);
         data["readOnly"] = Value::from(domain.is_read_only());
+    }
+    if let Some(old_path) = retired_temp_copy {
+        match remove_ephemeral_sample_copy(&old_path) {
+            Ok(()) => data["retiredTempCopyRemoved"] = Value::from(true),
+            Err(error) => {
+                data["retiredTempCopyRemoved"] = Value::from(false);
+                data["retiredTempCopyCleanupError"] = Value::from(error);
+            }
+        }
     }
     Ok(ToolResponse::success(data))
 }
@@ -8497,10 +8560,22 @@ fn apply_close(
         )?;
         saved = true;
     }
+    let ephemeral_sample_copy = domain.is_ephemeral_sample_copy();
     let was_read_only = domain.is_read_only();
     let lock_file = domain.lock_path().map(|lock| lock.display().to_string());
     let released = domain.release().is_some();
-    Ok(ToolResponse::success(serde_json::json!({
+    // sample-only 的临时副本：锁释放后再删文件和 .lock。只有 MCP 自动物化的
+    // 副本会走这里；调用方显式给了 path 的工程 `ephemeral_sample_copy=false`，
+    // close 绝不碰调用方文件。
+    let mut temp_copy_removed = false;
+    let mut temp_copy_cleanup_error = None;
+    if ephemeral_sample_copy && released {
+        match remove_ephemeral_sample_copy(&path) {
+            Ok(()) => temp_copy_removed = true,
+            Err(error) => temp_copy_cleanup_error = Some(error),
+        }
+    }
+    let mut data = serde_json::json!({
         "closed": true,
         "path": path.display().to_string(),
         "saveFirst": save_first,
@@ -8508,7 +8583,62 @@ fn apply_close(
         "releasedLock": released && !was_read_only,
         "releasedLockFile": lock_file,
         "commitCount": domain.commit_count(),
-    })))
+    });
+    if ephemeral_sample_copy {
+        data["ephemeralSampleCopy"] = Value::from(true);
+        data["tempCopyRemoved"] = Value::from(temp_copy_removed);
+        if let Some(error) = temp_copy_cleanup_error {
+            // 关闭本身已成功；清理失败不掩盖 close，但必须在回执里响亮可见。
+            data["tempCopyCleanupError"] = Value::from(error);
+        }
+    }
+    Ok(ToolResponse::success(data))
+}
+
+/// `apply_open` 的临时副本兜底守卫：成功打开后 disarm，失败时 Drop 删除。
+struct TempSampleCopyGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempSampleCopyGuard {
+    const fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempSampleCopyGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            // 这是失败路径的兜底：close 回执不可达，删除失败只能放弃；
+            // 正常成功路径已在 disarm 后交给 close 的响亮回收。
+            let _ = remove_ephemeral_sample_copy(&path);
+        }
+    }
+}
+
+/// 删除 sample-only 临时副本及其 `.lock`；`NotFound` 视为已清理。
+///
+/// 返回的错误是给人看的具体路径与原因，调用方把它放进 close 回执
+/// `tempCopyCleanupError`，不静默吞掉。
+fn remove_ephemeral_sample_copy(path: &Path) -> Result<(), String> {
+    let lock = store::lock_path(path);
+    let mut errors = Vec::new();
+    for target in [path, lock.as_path()] {
+        match std::fs::remove_file(target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!("{}: {error}", target.display())),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// 提案类工具：创建隔离分支 + 提交 + 记录。
