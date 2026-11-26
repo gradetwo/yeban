@@ -534,6 +534,8 @@ pub fn template_target_path(user_root: &Path, style: &str, substyle: &str, name:
 #[derive(Debug)]
 pub enum SaveTemplateError {
     /// 三级路径上已有同名模板且调用方没说覆盖。载荷是那个已有文件的路径。
+    /// 同目标的另一场保存正在持锁写出时同样报它（T-FIX-777：败者不覆盖
+    /// 胜者的字节，锁占用细节不泄漏为错误类别）。
     Exists(PathBuf),
     /// 字段校验失败（消息给用户看）。
     Invalid(String),
@@ -638,7 +640,10 @@ pub fn template_snapshot(
 /// 不自动剥离片段内容），这是模板与“只留配置”的产品边界。
 ///
 /// `overwrite = false` 且三级路径已有文件 ⇒ [`SaveTemplateError::Exists`]
-/// （一个字节都不动）。`overwrite = true` ⇒ 原子替换。
+/// （一个字节都不动）。同目标的另一场保存正在持锁写出时，`overwrite = false`
+/// 的败者同样得 `Exists`（T-FIX-777：锁占用细节不泄漏为错误类别；判定在
+/// 锁内重查，见 [`crate::save::save_new_archive_file`]）。
+/// `overwrite = true` ⇒ 原子替换。
 ///
 /// # Errors
 ///
@@ -670,8 +675,25 @@ pub fn save_template_archive(
         })?;
     }
     let snapshot = template_snapshot(archive);
-    let report = crate::save::save_archive_file(&snapshot, &target)
-        .map_err(|error| SaveTemplateError::Io(format!("模板落盘失败: {error}")))?;
+    // ⭐ T-FIX-777：`overwrite = false` 时走 T-FIX-308 的新建专用入口
+    // [`crate::save::save_new_archive_file`] —— 拿锁之后在锁内重查存在性，
+    // 已存在 ⇒ [`crate::save::SaveError::TargetExists`]；锁被另一场同目标
+    // 保存占用时（[`crate::save::SaveError::Locked`]，非阻塞 `try_lock` 的
+    // `WouldBlock`）同样报 [`SaveTemplateError::Exists`]：同名模板正在被
+    // 另一场保存写出，败者不得把锁占用细节（锁文件路径 / 持有者元数据）泄漏
+    // 为错误类别，也不得覆盖胜者的字节。`overwrite = true` 仍走
+    // `save_archive_file`（原子替换），锁占用仍按原样报 `Io`。
+    let report = if overwrite {
+        crate::save::save_archive_file(&snapshot, &target)
+            .map_err(|error| SaveTemplateError::Io(format!("模板落盘失败: {error}")))
+    } else {
+        crate::save::save_new_archive_file(&snapshot, &target).map_err(|error| match error {
+            crate::save::SaveError::TargetExists { .. } | crate::save::SaveError::Locked(_) => {
+                SaveTemplateError::Exists(target.clone())
+            }
+            error => SaveTemplateError::Io(format!("模板落盘失败: {error}")),
+        })
+    }?;
     Ok(TemplateSaveReport {
         path: target,
         bytes: report.bytes,

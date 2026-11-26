@@ -11863,7 +11863,7 @@ fn apply_template_chooser_rows(
 /// | 打开模板副本 | [`OpenProjectRuntime::open_runtime`]（`#93` 的**同一段**换工程代码） | 第二条换工程实现 |
 /// | 副本的「未命名」语义 | 装配方注入的 `runtime` 自带一份 `after`：它把保存落点接成 `None`（见 `main.rs` 的 `after_untitled`）⇒ 首存走「保存工程」的问路径流程，**永不**写回模板文件 | 在模板文件上原地保存 |
 /// | 存为模板的归档组装 | 从 `UndoPort` 一次读出工程 + 资产池；模板层 [`crate::templates::template_snapshot`] 再剥离撤销历史 / 未合并提案 / 内嵌预制，并把资产裁到当前工程引用集 | 第二份序列化 |
-/// | 落盘 | [`crate::templates::save_template_archive`] ⇒ [`crate::save::save_archive_file`]（唯一归档写入口） | 第二份容器写入 |
+/// | 落盘 | [`crate::templates::save_template_archive`] ⇒ [`crate::save::save_archive_file`]（覆盖，原子替换）/ [`crate::save::save_new_archive_file`]（不覆盖：锁内重查存在性，同目标持锁的败者报 `Exists`，T-FIX-777） | 第二份容器写入 |
 /// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道（`bytes=` / `assets=` / `undo=`） | 第二条投影通道 |
 /// | 对话框 | `.slint` 的两个模态（`TemplateChooserDialog` / `SaveAsTemplateDialog`），默认关着 ⇒ 默认帧不变 | 新的启动流程 |
 ///
