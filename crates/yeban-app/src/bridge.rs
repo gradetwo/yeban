@@ -7819,6 +7819,27 @@ pub fn cycle_automation_write_mode_ops(
     }
 }
 
+/// 容差内选点：取 **tick 距离最近** 的既有点；平局按 `EntityId` 决胜（确定性）。
+///
+/// ⛔ 不得用 `points.values().find(...)`：`AutomationLane.points` 的键是 EntityId，
+/// BTreeMap 迭代顺序与距离无关；两点同在容差内时会命中先建（ID 更小）的点，
+/// 而不是离点击更近的点（ISS-MWXHO997-727953 / T-FIX-713）。
+fn nearest_point_in_tolerance(
+    points: &BTreeMap<EntityId, AutomationPoint>,
+    tick: u64,
+    tolerance_ticks: u64,
+) -> Option<&AutomationPoint> {
+    points
+        .values()
+        .filter(|pt| pt.tick.abs_diff(tick) <= tolerance_ticks)
+        .min_by(|a, b| {
+            a.tick
+                .abs_diff(tick)
+                .cmp(&b.tick.abs_diff(tick))
+                .then_with(|| a.id.cmp(&b.id))
+        })
+}
+
 /// 点击自动化车道添加或编辑自动化点 (G-A1)。
 ///
 /// 坐标经由 `px_to_tick` 与 `AutomationAxis::value_at_y` 双向还原。
@@ -7860,11 +7881,8 @@ pub fn automation_lane_click_ops(
     let tolerance_ticks = 8u64.saturating_mul(ticks_per_pixel.max(1));
 
     if let Some(lane) = track.automation_lanes.get(&target) {
-        // 查找既有点是否在容差内
-        let nearest = lane
-            .points
-            .values()
-            .find(|pt| pt.tick.abs_diff(tick) <= tolerance_ticks);
+        // 容差内取最近点（平局按 EntityId），不是先建的点。
+        let nearest = nearest_point_in_tolerance(&lane.points, tick, tolerance_ticks);
         if let Some(existing) = nearest {
             let new_point = AutomationPoint {
                 id: existing.id,
@@ -7978,6 +7996,76 @@ mod tests {
 
     use super::*;
     use yeban_model::samples::{default_project, filled_project};
+
+    /// 容差命中必须取最近点：EntityId 顺序与 tick 距离顺序相反时不得命中先建点。
+    #[test]
+    fn tolerance_picks_nearest_point_not_first_by_entity_id() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        assert_ne!(a, b);
+        let (smaller, larger) = if a < b { (a, b) } else { (b, a) };
+        // EntityId 更小的点反而更远；旧 `values().find()` 会先遇到它并错误命中。
+        let far = AutomationPoint {
+            id: smaller,
+            tick: 1004,
+            value: 0.8,
+            curve: yeban_model::CurveType::Linear,
+        };
+        let near = AutomationPoint {
+            id: larger,
+            tick: 1002,
+            value: 0.5,
+            curve: yeban_model::CurveType::Linear,
+        };
+        let mut points = BTreeMap::new();
+        points.insert(far.id, far);
+        points.insert(near.id, near);
+        let picked = nearest_point_in_tolerance(&points, 1002, 8).expect("容差内应有候选");
+        assert_eq!(
+            picked.id, near.id,
+            "必须命中 tick 距离更近的点，而不是 EntityId 更小的先建点"
+        );
+    }
+
+    /// 距离相同时按 EntityId 决胜，保证确定性。
+    #[test]
+    fn tolerance_tie_breaks_by_entity_id() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let (smaller, larger) = if a < b { (a, b) } else { (b, a) };
+        let point = |id: EntityId, tick: u64| AutomationPoint {
+            id,
+            tick,
+            value: 0.5,
+            curve: yeban_model::CurveType::Linear,
+        };
+        let mut points = BTreeMap::new();
+        points.insert(larger, point(larger, 1004));
+        points.insert(smaller, point(smaller, 1000));
+        let picked = nearest_point_in_tolerance(&points, 1002, 8).expect("两点同距");
+        assert_eq!(picked.id, smaller, "平局必须按 EntityId 决胜");
+    }
+
+    /// 单点命中与无候选（新建点路径）回归。
+    #[test]
+    fn tolerance_single_point_and_no_candidate_regression() {
+        let id = EntityId::new();
+        let only = AutomationPoint {
+            id,
+            tick: 1000,
+            value: 0.25,
+            curve: yeban_model::CurveType::SCurve,
+        };
+        let mut points = BTreeMap::new();
+        points.insert(id, only);
+        let hit = nearest_point_in_tolerance(&points, 1001, 8).expect("单点在容差内");
+        assert_eq!(hit.id, id);
+        assert_eq!(hit.curve, yeban_model::CurveType::SCurve);
+        assert!(
+            nearest_point_in_tolerance(&points, 2000, 8).is_none(),
+            "无候选时必须返回 None，维持新建点行为"
+        );
+    }
 
     /// 把 `[&str; N]` 常量提升成可与 `Vec<String>` 比较的形态。
     fn owned(values: &[&str]) -> Vec<String> {
