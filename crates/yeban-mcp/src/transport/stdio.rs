@@ -5,6 +5,8 @@
 //! - 空行被跳过（不产生输出，也不报错）；
 //! - 非法 JSON 产生一行 `id = null` 的解析错误响应 —— **不静默丢弃**，
 //!   否则批处理调用方会以为"这一行被接受了"；
+//! - 非 UTF-8 行与非法 JSON 同款处理（T-FIX-509）：一行 `id = null` 的
+//!   `-32700` 解析错误响应、计数、继续循环，**不杀死进程**、不回显坏字节；
 //! - notification（没有 `id` 键）按规范**不产生任何输出**；
 //! - 每一行响应写完立刻 flush（下游 `read_line` 才能及时拿到，不会卡在缓冲区里）。
 //!
@@ -18,6 +20,7 @@
 use std::io::{BufRead, Write};
 
 use crate::dispatch::Dispatcher;
+use crate::jsonrpc::{ErrorObject, Id, Response};
 use crate::security::Channel;
 
 /// 单行输入的最大字节数（T-FIX-263）：stdio 上一行一个 JSON-RPC 请求，
@@ -37,6 +40,10 @@ pub struct ServeReport {
     /// 因超过 [`MAX_LINE_BYTES`] 被丢弃的行数（T-FIX-263）。
     /// 超限行不喂给 dispatcher —— 既不解析也不回显，避免放大。
     pub oversized_lines_skipped: usize,
+    /// 非 UTF-8 的行数（T-FIX-509）。这类行**不丢弃**：各得一行 `id = null`
+    /// 的 `-32700` 解析错误响应（与非法 JSON 同款），同时计入
+    /// [`ServeReport::lines_read`] 与 [`ServeReport::responses_written`]。
+    pub non_utf8_lines: usize,
 }
 
 /// 逐行处理。
@@ -74,9 +81,25 @@ where
     {
         // 去掉行尾 '\r'（兼容 CRLF）。
         let payload = buf.strip_suffix(b"\r").unwrap_or(buf);
-        let line = std::str::from_utf8(payload).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "stdio 输入行不是 UTF-8")
-        })?;
+        // T-FIX-509：非 UTF-8 行不是"读失败"——按模块契约把它当解析错误回答，
+        // 绝不能让 InvalidData 经 `?` 杀死整个批处理进程。修法选解析错误响应
+        // 而非 lossy 转换：lossy 会把坏字节换成 U+FFFD 再喂解析，既可能误拼出
+        // 一条"合法"请求、又丢了"输入本身非法"这个事实；解析错误响应则与非法
+        // JSON 完全同款（id=null / -32700），且坏字节不回显（T-FIX-263 的
+        // 不放大原则同样适用）。
+        let line = match std::str::from_utf8(payload) {
+            Ok(line) => line,
+            Err(_) => {
+                report.non_utf8_lines += 1;
+                report.lines_read += 1;
+                let error = ErrorObject::parse_error("stdio 输入行不是 UTF-8");
+                let response = Response::failure(Id::Null, error);
+                writeln!(writer, "{}", response.to_json())?;
+                writer.flush()?;
+                report.responses_written += 1;
+                return Ok(());
+            }
+        };
         if line.trim().is_empty() {
             report.blank_lines_skipped += 1;
             return Ok(());
@@ -252,6 +275,65 @@ mod tests {
         assert_eq!(report.lines_read, 0);
         assert_eq!(report.responses_written, 0);
         assert!(output.is_empty(), "超长行不得产生任何输出");
+    }
+
+    #[test]
+    fn non_utf8_line_gets_parse_error_response_and_processing_continues() {
+        // T-FIX-509：坏字节行 + 合法行同批输入。坏行得一行 id=null 的 -32700
+        // 解析错误响应（与非法 JSON 同款），合法行得正常响应，进程不退出。
+        let mut input = Vec::new();
+        input.extend_from_slice(b"\xff\xfe{\"jsonrpc\":\"2.0\",\"id\":1}\n");
+        input.extend_from_slice(br#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#);
+        input.push(b'\n');
+
+        let mut dispatcher = dispatcher();
+        let mut output: Vec<u8> = Vec::new();
+        let report = serve_lines(input.as_slice(), &mut output, &mut dispatcher)
+            .expect("非 UTF-8 行不得杀死批处理");
+
+        assert_eq!(report.lines_read, 2, "坏行与合法行都计入已读");
+        assert_eq!(report.responses_written, 2, "坏行与合法行各得一行响应");
+        assert_eq!(report.non_utf8_lines, 1, "坏行必须单独计数");
+        assert_eq!(report.blank_lines_skipped, 0);
+        assert_eq!(report.oversized_lines_skipped, 0);
+        // 坏字节绝不回显。
+        assert!(
+            !output.contains(&0xff) && !output.contains(&0xfe),
+            "输出不得回显坏字节"
+        );
+        let text = String::from_utf8(output).expect("输出是 UTF-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("第一行是 JSON");
+        assert_eq!(first["id"], serde_json::Value::Null);
+        assert_eq!(first["error"]["code"], crate::jsonrpc::PARSE_ERROR);
+        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("第二行是 JSON");
+        assert_eq!(second["id"], 9);
+        assert!(second.get("error").is_none(), "合法行须正常处理");
+    }
+
+    #[test]
+    fn non_utf8_line_without_trailing_newline_is_answered_at_eof() {
+        // EOF 残留的坏行（无结尾换行）同样得解析错误响应、不杀死批处理。
+        let mut input = Vec::new();
+        input.extend_from_slice(br#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#);
+        input.push(b'\n');
+        input.extend_from_slice(b"\xc3\x28");
+
+        let mut dispatcher = dispatcher();
+        let mut output: Vec<u8> = Vec::new();
+        let report = serve_lines(input.as_slice(), &mut output, &mut dispatcher)
+            .expect("EOF 残留坏行不得杀死批处理");
+
+        assert_eq!(report.lines_read, 2);
+        assert_eq!(report.responses_written, 2);
+        assert_eq!(report.non_utf8_lines, 1);
+        let text = String::from_utf8(output).expect("输出是 UTF-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let last: serde_json::Value = serde_json::from_str(lines[1]).expect("末行是 JSON");
+        assert_eq!(last["id"], serde_json::Value::Null);
+        assert_eq!(last["error"]["code"], crate::jsonrpc::PARSE_ERROR);
     }
 
     #[test]

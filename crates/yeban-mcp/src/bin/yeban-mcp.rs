@@ -227,11 +227,12 @@ fn execute(config: &Config) -> Result<(), Failure> {
             let report = transport::stdio::serve_stdio(&mut dispatcher)
                 .map_err(|error| Failure::runtime(format!("stdio 批处理失败: {error}")))?;
             eprintln!(
-                "yeban-mcp: 处理 {} 行, 写出 {} 条响应 (跳过 {} 个空行, {} 个超长行, 模式 {}); 令牌 {}",
+                "yeban-mcp: 处理 {} 行, 写出 {} 条响应 (跳过 {} 个空行, {} 个超长行, {} 个非 UTF-8 行, 模式 {}); 令牌 {}",
                 report.lines_read,
                 report.responses_written,
                 report.blank_lines_skipped,
                 report.oversized_lines_skipped,
+                report.non_utf8_lines,
                 mode.as_str(),
                 token_file.path().display()
             );
