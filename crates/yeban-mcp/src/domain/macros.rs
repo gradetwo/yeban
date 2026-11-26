@@ -178,17 +178,71 @@ pub fn plan(
         .track(track_id)
         .map_err(|error| from_model("音轨查找", &error))?;
     if macro_index >= track.macros.len() {
-        return Err(Fault::domain_with_data(
+        return Err(MacroPlan::index_out_of_bounds(
+            track_id,
+            macro_index,
+            track.macros.len(),
+        ));
+    }
+    let mappings = track.macros[macro_index].mappings.clone();
+    plan_inner(project, track_id, macro_index, value, &mappings, false)
+}
+
+/// 规划一次**同批改绑**：级联必须按 `new_mappings` 展开，而不是按文档里的旧映射。
+///
+/// 调用方必须已经通过 [`plan_set_macro_mappings`] 对 `new_mappings` 做过目标对账；
+/// 本函数只负责求值与生成 op。`rebind` 会多生成 `RemoveAutomationPoint`，
+/// 只删本宏旧 `macro-cascade:` 确定性 id；用户手写的点不是这些 id，不会被删。
+pub(crate) fn plan_with_mappings(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    macro_index: usize,
+    value: f32,
+    new_mappings: &[MacroMapping],
+) -> Result<MacroPlan, Fault> {
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("音轨查找", &error))?;
+    if macro_index >= track.macros.len() {
+        return Err(MacroPlan::index_out_of_bounds(
+            track_id,
+            macro_index,
+            track.macros.len(),
+        ));
+    }
+    plan_inner(project, track_id, macro_index, value, new_mappings, true)
+}
+
+impl MacroPlan {
+    fn index_out_of_bounds(track_id: &EntityId, macro_index: usize, macro_count: usize) -> Fault {
+        Fault::domain_with_data(
             ErrorCode::IndexOutOfBounds,
-            format!(
-                "宏下标 {macro_index} 越界: 音轨 {track_id} 只有 {} 个宏",
-                track.macros.len()
-            ),
+            format!("宏下标 {macro_index} 越界: 音轨 {track_id} 只有 {macro_count} 个宏"),
             serde_json::json!({
                 "trackId": track_id.to_canonical_string(),
                 "macroIndex": macro_index,
-                "macroCount": track.macros.len(),
+                "macroCount": macro_count,
             }),
+        )
+    }
+}
+
+fn plan_inner(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    macro_index: usize,
+    value: f32,
+    mappings: &[MacroMapping],
+    rebind: bool,
+) -> Result<MacroPlan, Fault> {
+    let track = project
+        .track(track_id)
+        .map_err(|error| from_model("音轨查找", &error))?;
+    if macro_index >= track.macros.len() {
+        return Err(MacroPlan::index_out_of_bounds(
+            track_id,
+            macro_index,
+            track.macros.len(),
         ));
     }
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
@@ -208,7 +262,7 @@ pub fn plan(
         new_val: value,
     }];
 
-    let mut cascade_points = Vec::with_capacity(macro_parameter.mappings.len() * 2);
+    let mut cascade_points = Vec::with_capacity(mappings.len() * 2);
     // "一小节"由**工程拍号**算出（与配器段落长度、种子摆放长度同一个函数）：
     // 早先这里是一条写死的 `4/4` 常量，拍号可设之后它就成了同一份算法里的第二个真相。
     let cascade_ticks = super::section_build::ticks_per_bar(project);
@@ -217,8 +271,12 @@ pub fn plan(
     // 同值重放时旋钮没有移动 ⇒ 若照此重算，第二次调用会把它自己在第一次调用里写下的那个
     // 起点**改写**掉（一小节的斜坡被压平）—— 同一份请求第二次改变了文档，类别⑤ 不成立。
     // 因此同值时保留文档现值（既有起点），既不改写自己写的，也不覆盖别人写的自动化。
+    // ⚠ 同批改绑是结构变更：mapping 的目标/depth/顺序变了，旧起点不再是"此刻在哪"
+    // ⇒ 必须按新映射重算，不能沿用旧点。否则同值改 depth 会留下一条假斜坡。
     let knob_moved = old_value.to_bits() != value.to_bits();
-    for (mapping_index, mapping) in macro_parameter.mappings.iter().enumerate() {
+    let mappings_changed = mappings != macro_parameter.mappings.as_slice();
+    let recompute_start = knob_moved || mappings_changed;
+    for (mapping_index, mapping) in mappings.iter().enumerate() {
         let target: AutomationTarget = mapping.target;
         // `#297`：基线 = 目标的**当前值**（`DeviceParam` 的当前 `ParameterValue.value`
         // 就是能拿到的"默认值"；模型里没有单独的出厂默认字段）。
@@ -236,9 +294,9 @@ pub fn plan(
                 .get(&target)
                 .and_then(|lane| lane.points.get(&point_id))
                 .copied();
-            // 终点永远跟随本次请求的目标；起点只在旋钮**真的移动过**时才重算。
+            // 终点永远跟随本次请求的目标；起点只在旋钮移动或映射改绑时才重算。
             let level = if step == 0 {
-                if knob_moved {
+                if recompute_start {
                     baseline + old_value * mapping.depth
                 } else {
                     old_point.map_or(baseline + old_value * mapping.depth, |point| point.value)
@@ -258,6 +316,37 @@ pub fn plan(
                     curve: CurveType::SCurve,
                 },
             });
+        }
+    }
+
+    if rebind {
+        // 旧映射上的点：只有"新列表同一位置仍是同一 target"才算复用（新点会覆盖它）。
+        // 其余（目标改绑 / 列表变短 / 重排）都删掉；id 仍由同一个确定性公式生成，
+        // 所以只可能命中本宏写下的 cascade 点，不会碰用户手写点。
+        for (mapping_index, old_mapping) in macro_parameter.mappings.iter().enumerate() {
+            let reused = mappings
+                .get(mapping_index)
+                .is_some_and(|mapping| mapping.target == old_mapping.target);
+            if reused {
+                continue;
+            }
+            for step in [0_u64, 1_u64] {
+                let point_id = deterministic_id(&format!(
+                    "macro-cascade:{track_id}:{macro_index}:{mapping_index}:{step}"
+                ));
+                let previous_point = track
+                    .automation_lanes
+                    .get(&old_mapping.target)
+                    .and_then(|lane| lane.points.get(&point_id))
+                    .copied();
+                if let Some(previous_point) = previous_point {
+                    ops.push(Op::RemoveAutomationPoint {
+                        target: old_mapping.target,
+                        point_id,
+                        previous_point,
+                    });
+                }
+            }
         }
     }
 
@@ -525,15 +614,125 @@ mod tests {
         assert_eq!(again, after, "级联必须是可逆的");
     }
 
+    /// **T-FIX-527**：同批 `value + mappings` 与"先按旧值改绑、再推新值"两步的文档逐位相同。
+    ///
+    /// 修前同批调用会先按旧 mappings 物化、再换映射；两步调用则会先按新映射写一条
+    /// 平线、再在第二步写出真正的斜坡。把它们逐字段比，能抓住"顺序错了"而不只是
+    /// "有没有删点"。
+    #[test]
+    fn one_call_rebind_is_bit_identical_to_two_step_rebind() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let before = applied(
+            &plan(&project, &track_id, 0, 0.33).expect("旧级联"),
+            &project,
+        );
+        let new_mappings = vec![MacroMapping {
+            target: AutomationTarget::TrackPan { track_id },
+            depth: 1.0,
+        }];
+
+        let single_plan =
+            plan_with_mappings(&before, &track_id, 0, 0.8, &new_mappings).expect("同批改绑规划");
+        let mut single_ops = single_plan.ops;
+        single_ops.extend(
+            plan_set_macro_mappings(&before, &track_id, 0, new_mappings.clone())
+                .expect("单批映射 op"),
+        );
+        let single = apply_ops(&before, &single_ops);
+
+        let mut first_ops = plan_with_mappings(&before, &track_id, 0, 0.33, &new_mappings)
+            .expect("两步第一步规划")
+            .ops;
+        first_ops.extend(
+            plan_set_macro_mappings(&before, &track_id, 0, new_mappings.clone())
+                .expect("第一步映射 op"),
+        );
+        let after_first = apply_ops(&before, &first_ops);
+
+        let mut second_ops = plan_with_mappings(&after_first, &track_id, 0, 0.8, &new_mappings)
+            .expect("两步第二步规划")
+            .ops;
+        second_ops.extend(
+            plan_set_macro_mappings(&after_first, &track_id, 0, new_mappings.clone())
+                .expect("第二步映射 op"),
+        );
+        let after_second = apply_ops(&after_first, &second_ops);
+
+        assert_eq!(
+            single, after_second,
+            "同批改绑必须与先改绑、再推值的两步结果逐位相同"
+        );
+    }
+
+    /// **T-FIX-527**：清理只删 `macro-cascade:` 确定性 id；旧目标上用户手写的点必须留下。
+    #[test]
+    fn rebind_cleanup_keeps_user_points_on_the_old_target() {
+        let project = filled_project();
+        let track_id = track_with_macro(&project);
+        let mut before = applied(
+            &plan(&project, &track_id, 0, 0.33).expect("旧级联"),
+            &project,
+        );
+        let old_target = before.tracks[&track_id].macros[0].mappings[0].target;
+        let user_id = EntityId::new();
+        let user_point = AutomationPoint {
+            id: user_id,
+            tick: 123,
+            value: 999.0,
+            curve: CurveType::Linear,
+        };
+        before
+            .tracks
+            .get_mut(&track_id)
+            .expect("宏轨")
+            .automation_lanes
+            .get_mut(&old_target)
+            .expect("旧目标泳道")
+            .points
+            .insert(user_id, user_point);
+
+        let new_mappings = vec![MacroMapping {
+            target: AutomationTarget::TrackPan { track_id },
+            depth: 1.0,
+        }];
+        let mut ops = plan_with_mappings(&before, &track_id, 0, 0.8, &new_mappings)
+            .expect("改绑规划")
+            .ops;
+        ops.extend(plan_set_macro_mappings(&before, &track_id, 0, new_mappings).expect("映射 op"));
+        let after = apply_ops(&before, &ops);
+
+        let old_points = &after.tracks[&track_id].automation_lanes[&old_target].points;
+        assert_eq!(old_points.len(), 1, "旧目标只应剩用户手写的那一个点");
+        assert_eq!(
+            old_points.get(&user_id),
+            Some(&user_point),
+            "用户点不得被删"
+        );
+        assert_eq!(
+            after.tracks[&track_id].automation_lanes[&AutomationTarget::TrackPan { track_id }]
+                .points
+                .len(),
+            2,
+            "新目标仍是恰好两个 cascade 点"
+        );
+    }
+
     /// 施加一份规划（与 `domain::apply` 走同一个 `Op::Batch`），产出施加后的文档。
     fn applied(plan: &MacroPlan, project: &YebanProjectV1) -> YebanProjectV1 {
+        apply_ops(project, &plan.ops)
+    }
+
+    /// 施加任意一组 op（含映射替换 op），产出施加后的文档。
+    fn apply_ops(project: &YebanProjectV1, ops: &[Op]) -> YebanProjectV1 {
         let mut after = project.clone();
         Op::Batch {
-            ops: plan.ops.clone(),
+            ops: ops.to_vec(),
             description: "t".to_owned(),
         }
         .apply(&mut after)
         .expect("施加");
+        after.validate().expect("施加后必须合法");
         after
     }
 

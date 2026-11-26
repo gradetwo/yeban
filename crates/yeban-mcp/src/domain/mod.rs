@@ -4329,13 +4329,11 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // f64 → f32: 值域校验在 macros::plan 里, 这里只做宽度转换。
     #[allow(clippy::cast_possible_truncation)]
     let value = value as f32;
-    let macro_plan = macros::plan(project, &track_id, macro_index, value)?;
-    let mut ops = macro_plan.ops;
-    // T-FIX-93 同批：可选 `mappings` 参数 → 追加 `Op::SetMacroMappings`
-    // （在值调整的级联展开之后生效；后续旋钮移动按新映射级联）。
-    // `None` / `null` = 不动映射（逐字节不变的历史行为）。
-    match call.arguments.get("mappings") {
-        None | Some(Value::Null) => {}
+    // T-FIX-527：`mappings` 是**同批结构变更**，必须先按新映射展开级联；
+    // 修前是 `macros::plan`（按旧 mappings）后再追加 `SetMacroMappings`，
+    // 旧目标级联点因此留成孤儿、新映射当次不落点。
+    let ops = match call.arguments.get("mappings") {
+        None | Some(Value::Null) => macros::plan(project, &track_id, macro_index, value)?.ops,
         Some(raw) => {
             let new_mappings: Vec<MacroMapping> =
                 serde_json::from_value(raw.clone()).map_err(|error| {
@@ -4345,14 +4343,21 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                         serde_json::json!({ "detail": error.to_string() }),
                     )
                 })?;
-            ops.extend(macros::plan_set_macro_mappings(
+            // 先对账（陈旧载荷在模型层校验；这里提前把悬空目标/非有限 depth 拒掉），
+            // 再按**新映射**规划级联，最后把映射替换 op 追加在同一次 `Op::Batch`。
+            let mapping_ops = macros::plan_set_macro_mappings(
                 project,
                 &track_id,
                 macro_index,
-                new_mappings,
-            )?);
+                new_mappings.clone(),
+            )?;
+            let mut ops =
+                macros::plan_with_mappings(project, &track_id, macro_index, value, &new_mappings)?
+                    .ops;
+            ops.extend(mapping_ops);
+            ops
         }
-    }
+    };
     propose_draft(
         domain,
         project,

@@ -29,7 +29,7 @@ use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::jsonrpc::ErrorObject;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{ErrorCode, TOOLS};
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{AutomationPoint, AutomationTarget, EntityId, MacroMapping, YebanProjectV1};
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -274,6 +274,16 @@ fn macro_track(dispatcher: &Dispatcher) -> String {
         .expect("带宏的音轨")
         .id
         .to_canonical_string()
+}
+
+/// 某目标泳道的全部点，按 tick 升序（`BTreeMap` 按点 id 排序，不是 tick）。
+fn lane_points(project: &YebanProjectV1, target: AutomationTarget) -> Vec<AutomationPoint> {
+    let mut points: Vec<AutomationPoint> = project
+        .automation_lane(&target)
+        .map(|lane| lane.points.values().copied().collect())
+        .unwrap_or_default();
+    points.sort_by_key(|point| point.tick);
+    points
 }
 
 /// 创建一条提案，返回 `proposalId`。
@@ -614,6 +624,172 @@ fn set_macro_same_value_replay_leaves_the_project_byte_identical() {
         project_bytes(&dispatcher),
         after_first,
         "同值重放之后工程必须与第一次之后逐字节相同（不得压平斜坡）"
+    );
+}
+
+/// **T-FIX-527**：`yeban_set_macro` 同批 `value + mappings` 时，必须以**新映射**
+/// 物化级联，删掉旧目标上属于本宏的 `macro-cascade:` 点，且新目标恰好两个点。
+///
+/// 这是黑盒判据：入口是真实的 `yeban_set_macro`，不是直接调规划器；红对照在
+/// 修前跑（旧实现只按旧映射物化，再把 `SetMacroMappings` 追加在尾部）。
+#[test]
+fn set_macro_rebind_in_one_call_drops_old_cascade_and_writes_exactly_two_new_points() {
+    let scratch = Scratch::new("macro-rebind");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let track_id = EntityId::from_str(&track).expect("宏轨身份");
+
+    // 先用一次普通 set_macro 建立旧映射（DeviceParam cutoff）的两个级联点。
+    let first = propose_macro(&mut dispatcher, &auth, &track, 0.33);
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": first, "commitMessage": "建立旧级联" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+    let before = dispatcher.domain().active_project().expect("工程").clone();
+    let old_target = before.tracks[&track_id].macros[0].mappings[0].target;
+    assert_eq!(
+        lane_points(&before, old_target).len(),
+        2,
+        "前提：旧映射已经物化出两个级联点"
+    );
+
+    // 同一次调用里把映射改到 TrackPan，并把 value 从 0.33 推到 0.8。
+    let new_mappings = vec![MacroMapping {
+        target: AutomationTarget::TrackPan { track_id },
+        depth: 1.0,
+    }];
+    let mappings = serde_json::to_value(&new_mappings).expect("映射 JSON");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_set_macro",
+        json!({
+            "trackId": track,
+            "macroIndex": 0,
+            "value": 0.8,
+            "mappings": mappings,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "同批改绑" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+
+    let after = dispatcher.domain().active_project().expect("工程").clone();
+    assert_eq!(
+        lane_points(&after, old_target).len(),
+        0,
+        "旧目标上的 cascade 点必须清零"
+    );
+    let new_target = AutomationTarget::TrackPan { track_id };
+    let points = lane_points(&after, new_target);
+    assert_eq!(points.len(), 2, "新目标必须恰好两个级联点");
+    assert_eq!(points[0].tick, 0);
+    assert_eq!(points[1].tick, 3_840);
+    let baseline = new_target.static_value(&after).expect("新目标静态值");
+    assert!(
+        (points[0].value - (baseline + 0.33 * 1.0)).abs() < 1e-4,
+        "起点必须是旧旋钮位置 0.33：{}",
+        points[0].value
+    );
+    assert!(
+        (points[1].value - (baseline + 0.8 * 1.0)).abs() < 1e-4,
+        "终点必须是新旋钮位置 0.8：{}",
+        points[1].value
+    );
+    assert_eq!(
+        after.tracks[&track_id].macros[0].mappings, new_mappings,
+        "映射必须在同一次调用内被替换"
+    );
+}
+
+/// **T-FIX-527 的 value 不变改绑腿**：旋钮没动、只换映射，旧目标也必须是 0 个
+/// cascade 点，新目标恰好两个点，而且是一条平线（起点＝终点＝旧旋钮位置 × 新 depth）。
+#[test]
+fn set_macro_rebind_with_unchanged_value_moves_the_flat_cascade_to_the_new_target() {
+    let scratch = Scratch::new("macro-rebind-flat");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let track_id = EntityId::from_str(&track).expect("宏轨身份");
+
+    let first = propose_macro(&mut dispatcher, &auth, &track, 0.33);
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": first, "commitMessage": "建立旧级联" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+    let before = dispatcher.domain().active_project().expect("工程").clone();
+    let old_target = before.tracks[&track_id].macros[0].mappings[0].target;
+    assert_eq!(lane_points(&before, old_target).len(), 2);
+
+    let new_mappings = vec![MacroMapping {
+        target: AutomationTarget::TrackPan { track_id },
+        depth: 1.0,
+    }];
+    let mappings = serde_json::to_value(&new_mappings).expect("映射 JSON");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_set_macro",
+        json!({
+            "trackId": track,
+            "macroIndex": 0,
+            "value": 0.33,
+            "mappings": mappings,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "同值改绑" }),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+
+    let after = dispatcher.domain().active_project().expect("工程").clone();
+    assert_eq!(
+        lane_points(&after, old_target).len(),
+        0,
+        "同值改绑也必须清掉旧目标的 cascade 点"
+    );
+    let new_target = AutomationTarget::TrackPan { track_id };
+    let points = lane_points(&after, new_target);
+    assert_eq!(points.len(), 2, "新目标必须恰好两个级联点");
+    let baseline = new_target.static_value(&after).expect("新目标静态值");
+    let expected = baseline + 0.33 * 1.0;
+    assert!(
+        (points[0].value - expected).abs() < 1e-4,
+        "{}",
+        points[0].value
+    );
+    assert!(
+        (points[1].value - expected).abs() < 1e-4,
+        "{}",
+        points[1].value
+    );
+    assert_eq!(
+        after.tracks[&track_id].macros[0].value, 0.33,
+        "旋钮值不得因为改绑而变化"
     );
 }
 
