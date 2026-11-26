@@ -1042,6 +1042,36 @@ pub struct Region<'a> {
     /// 次数耗尽同样停绕（释放期不循环的既有语义不变）。负值 ⇒ 明确 `Err`
     ///（`read_u32` 的域 `0..=u32::MAX`）；规范未给上界，⛔ 不发明。
     pub loop_count: u32,
+    /// `count`：整段重复播放的次数（SFZ v1；`None` ＝ 未给出）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/count/>（Type = integer，Default `0`，
+    /// Range `0 to 4294967296`）："The number of times the sample will be played."
+    /// ＋ "If this opcode is specified, the sample will play as many times as
+    /// defined." ＋ "Envelope generators will not be retriggered on sample restart."
+    /// ＋ "When this opcode is defined, `loop_mode` is automatically set to
+    /// **one_shot**."（同页 `loop_mode` 行亦然："This mode is engaged automatically
+    /// if the `count` opcode is defined."）⇒ **总播放次数 ＝ `count`**（与
+    /// `loop_count` 的「1 ＋ 次数」**不同**：`count=1` 只播一次、"effectively the
+    /// same as setting `loop_mode=one_shot`"；`count=3` ⇒ 整段播 **3** 次）。
+    ///
+    /// ⚠ `count=0` 的裁决（T-FIX-645）：**合法、等价于未给出** —— 同页 "Practical
+    /// Considerations" 逐字："count=0 behaves differently in different SFZ players.
+    /// ARIA and sfz.dll treat this the same as if count was not set, and respect
+    /// loop_mode settings."（Rapture / DropZone 则把它当 `count=1`。）
+    /// 本仓取 **ARIA 口径**：与 `cutoff=0` 取 ARIA 口径、`loopcount` 别名取 ARIA
+    /// 拼写同一条依据 —— `0` 是规范表里的 **Default**，缺省值必须产出正常行为
+    /// （否则每个没写 `count` 的 region 都会静音）；`0` 不强制 `one_shot`、
+    /// 不重复。见 [`Region::effective_count`]。
+    ///
+    /// ⚠ **不是 `loop_count` 的别名**：`loop_count` 重复的是**循环窗口**
+    /// （SFZ v2，总次数 1 ＋ N，次数耗尽后继续播窗口后的尾巴）；`count` 重复的是
+    /// **整段**（从 `offset` 到 `end`，不含循环窗口 —— 生效模式被强制成
+    /// `one_shot` ⇒ [`Region::loop_window`] 恒 `None`），且包络在重播时**不**
+    /// 重新触发。两者冲突时以 `count` 为准（见 [`Region::effective_loop_mode`]）。
+    /// 负值／非整数 ⇒ 明确 `Err`（`read_u32` 的域 `0..=u32::MAX`；规范上限
+    /// `4294967296` 超出 `u32` 一格 —— `u32::MAX` 之外的取值同 `loop_count` 一样
+    /// 走 `Err`，⛔ 不发明 `u64` 字段）。
+    pub count: Option<u32>,
     /// `loop_crossfade`：循环接缝的交叉淡化长度（**秒**；SFZ v2；缺省 `0` ＝ 硬切）。
     ///
     /// 出处 <https://sfzformat.com/opcodes/loop_crossfade/>（Type = float，Unit = seconds）：
@@ -1879,8 +1909,24 @@ impl<'a> Region<'a> {
         self.sw_last.is_some() || self.sw_down.is_some() || self.sw_up.is_some()
     }
 
+    /// 生效的 `count`（整段重复次数，T-FIX-645）：`None` ＝ 未给出**或** `count=0`
+    /// （ARIA 口径，见 [`Region::count`]）；`Some(n)`（`n >= 1`）⇒ 整段共播 `n` 次。
+    ///
+    /// 零分配、可在实时路径调用（读一个标量字段）。
+    #[must_use]
+    pub const fn effective_count(&self) -> Option<u32> {
+        match self.count {
+            Some(n) if n > 0 => Some(n),
+            _ => None,
+        }
+    }
+
     /// 生效的循环模式：`trigger=release` / `release_key` 的 region 覆盖成
-    /// [`LoopMode::OneShot`]。
+    /// [`LoopMode::OneShot`]；**`count` 给出（且 `> 0`）时同样覆盖成 `one_shot`**
+    /// （T-FIX-645：规范逐字 "When this opcode is defined, `loop_mode` is
+    /// automatically set to **one_shot**"，见 [`Region::count`]；与显式
+    /// `loop_mode`／`loop_count` 冲突时以 `count` 为准 —— `count` 重复的是整段，
+    /// 不是循环窗口，窗口语义在它面前**不生效**）。
     ///
     /// 规范事实（<https://sfzformat.com/opcodes/trigger/>）：「Setting trigger to
     /// release or release_key will cause the region to play as if `loop_mode` was
@@ -1888,7 +1934,7 @@ impl<'a> Region<'a> {
     /// 存的原样取值；[`Region::loop_window`] 与 [`crate::PlaybackSpec`] 用本方法。
     #[must_use]
     pub fn effective_loop_mode(&self) -> LoopMode {
-        if self.trigger.is_release_family() {
+        if self.trigger.is_release_family() || self.effective_count().is_some() {
             LoopMode::OneShot
         } else {
             self.loop_mode
@@ -3292,6 +3338,16 @@ pub(crate) fn build_region<'a>(
     // `AMPEG_TIME_MAX_SECONDS` 的 100 秒上限，是 ampeg 族的域 —— 规范没给
     // `loop_crossfade` 上界，渲染期按窗口长钳，解析期⛔ 不发明上界）。
     let loop_count = read_u32(&scopes, "loop_count", Some("loopcount"), 0)?;
+    // ⭐ 整段重复（T-FIX-645）：`count` 是**独立字段**（⛔ 不是 `loop_count` 的别名），
+    // 缺失 ⇒ `None`（与 `loop_count` 的缺省 `0` 不同 —— `0` 在这里是**规范缺省值**，
+    // 见 [`Region::count`] 的 `count=0` 裁决：ARIA 口径下 `0` ＝ 未给出）。
+    // 出现但非法 ⇒ 明确 `Err`（`read_u32` 的域 `0..=u32::MAX`）。
+    // ⚠ 不能用 `read_u32(..., 0)`：它分不出"没写"与"写了 0" —— `None`／`Some` 的区分
+    // 是 [`Region::effective_count`] 的输入。
+    let count = match scopes.get("count") {
+        Some(value) => Some(value.as_int(0, i64::from(u32::MAX))? as u32),
+        None => None,
+    };
     let loop_crossfade = read_seconds(&scopes, "loop_crossfade", Some("loopcrossfade"), 0.0)?;
 
     // ---- ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）----
@@ -3711,6 +3767,7 @@ pub(crate) fn build_region<'a>(
             loop_end,
             loop_mode,
             loop_count,
+            count,
             loop_crossfade,
             offset_random,
             ampeg_attack,
@@ -5556,6 +5613,7 @@ mod tests {
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
             loop_count: 0,
+            count: None,
             loop_crossfade: 0.0,
             ampeg_attack: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_hold: AMPEG_TIME_DEFAULT_SECONDS,
@@ -10906,6 +10964,85 @@ v127=1
         let long =
             first_region("<region>sample=a.wav loop_mode=loop_continuous loop_crossfade=250");
         assert_eq!(long.loop_crossfade, 250.0);
+    }
+
+    #[test]
+    fn count_is_parsed_as_own_field_not_loop_count() {
+        // ⭐ T-FIX-645：`count` 是独立字段（⛔ 不是 `loop_count` 的别名）；解析后
+        // 不再落 `UnknownOpcode` 警告。
+        let instrument = parse_text(
+            "<region>sample=a.wav count=3 loop_count=5",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.count, Some(3));
+        assert_eq!(
+            region.loop_count, 5,
+            "`loop_count` 原样保留、⛔ 不被 `count` 改写"
+        );
+        assert!(
+            instrument.warnings().is_empty(),
+            "`count` 已建模 ⇒ 必须不再报 UnknownOpcode（也不得报别的告警），实得 {:?}",
+            instrument.warnings()
+        );
+    }
+
+    #[test]
+    fn count_forces_one_shot_and_kills_the_loop_window() {
+        // ⭐ T-FIX-645：`count` 给出 ⇒ 生效模式强制 `one_shot`（规范逐字），窗口恒 `None`；
+        // 存的原样取值不动（`loop_mode` 仍是文件写的 `loop_continuous`）。
+        let region = first_region(
+            "<region>sample=a.wav count=3 loop_mode=loop_continuous loop_start=10 loop_end=200 \
+             loop_count=7",
+        );
+        assert_eq!(region.effective_count(), Some(3));
+        assert_eq!(region.effective_loop_mode(), LoopMode::OneShot);
+        assert_eq!(region.loop_mode, LoopMode::LoopContinuous, "原样取值不动");
+        assert_eq!(region.loop_count, 7, "原样取值不动");
+        assert_eq!(region.loop_window(), None, "`count` 重复整段、不是窗口");
+        let spec = region.playback_spec(60, 127, crate::playback::RenderRates::default());
+        assert_eq!(spec.count, Some(3));
+        assert_eq!(spec.loop_mode, LoopMode::OneShot);
+        assert_eq!(spec.loop_window, None);
+        assert!(spec.ignores_note_off(), "`count` 必须忽略 note-off");
+    }
+
+    #[test]
+    fn count_zero_is_absent_and_respects_loop_mode() {
+        // ⭐ T-FIX-645：`count=0` 取 ARIA 口径 —— 等价于未给出（见 `Region::count`）：
+        // 不强制 `one_shot`、`loop_mode` 照旧生效。
+        let region = first_region(
+            "<region>sample=a.wav count=0 loop_mode=loop_continuous loop_start=10 loop_end=200",
+        );
+        assert_eq!(region.count, Some(0), "存的仍是文件写的 0");
+        assert_eq!(region.effective_count(), None);
+        assert_eq!(region.effective_loop_mode(), LoopMode::LoopContinuous);
+        assert!(region.loop_window().is_some(), "`count=0` 时窗口照旧成立");
+        let spec = region.playback_spec(60, 127, crate::playback::RenderRates::default());
+        assert_eq!(spec.count, None);
+        assert_eq!(spec.loop_mode, LoopMode::LoopContinuous);
+    }
+
+    #[test]
+    fn count_one_forces_one_shot_but_plays_once() {
+        // 规范逐字："count=1 will play the sample once, so it's effectively the same
+        // as setting loop_mode=one_shot." ⇒ 生效值是 `Some(1)`、模式是 `one_shot`。
+        let region = first_region("<region>sample=a.wav count=1");
+        assert_eq!(region.effective_count(), Some(1));
+        assert_eq!(region.effective_loop_mode(), LoopMode::OneShot);
+        let spec = region.playback_spec(60, 127, crate::playback::RenderRates::default());
+        assert_eq!(spec.count, Some(1));
+    }
+
+    #[test]
+    fn count_rejects_bad_values_loudly() {
+        // 负值／非整数／小数／超 `u32` ⇒ 明确 `Err`（`read_u32` 的域，⛔ 不钳位、不静默）。
+        for bad in ["count=-1", "count=abc", "count=1.5", "count=4294967296"] {
+            let text = format!("<region>sample=a.wav {bad}");
+            let err = parse_text(&text, &Default::default()).expect_err("非法 `count` 必须响亮");
+            assert!(err.to_string().contains("count"), "`{bad}` 实得 {err}");
+        }
     }
 
     #[test]

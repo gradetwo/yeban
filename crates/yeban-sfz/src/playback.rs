@@ -365,6 +365,13 @@ pub struct PlaybackSpec {
     pub loop_mode: LoopMode,
     /// 有效循环窗口；`None` 表示按不循环渲染。
     pub loop_window: Option<LoopWindow>,
+    /// ⭐ 生效的 `count`（T-FIX-645：[`Region::effective_count`]）：整段共播的次数；
+    /// `None` ＝ 未给出（或 `count=0` 的 ARIA 口径）⇒ 只播一次。
+    /// 消费方（渲染器）按它重播整段；`Some(n)` 时 [`PlaybackSpec::loop_mode`]
+    /// 恒为 [`LoopMode::OneShot`]（见 [`Region::effective_loop_mode`]），
+    /// [`PlaybackSpec::loop_window`] 恒为 `None`。包络在重播时**不**重新触发
+    /// （规范逐字，见 [`Region::count`]）。
+    pub count: Option<u32>,
     /// 该 region 的 `offset`（采样点，原样）。
     pub offset: u32,
     /// 该 region 的 `end`（原样；`Inclusive` 时**含**端点）。
@@ -713,6 +720,8 @@ impl<'a> Region<'a> {
     /// `trigger=release` / `release_key` 会被覆盖成 `one_shot`）是 `loop_continuous`
     /// 或 `loop_sustain`，**且** `loop_end > loop_start`。`no_loop` / `one_shot`
     /// 恒返回 `None`（即使文件写了 `loop_start` / `loop_end`）。
+    /// ⭐ `count` 给出（且 `> 0`）时生效模式恒为 `one_shot` ⇒ 本方法恒 `None`：
+    /// `count` 重复的是整段、不是窗口（T-FIX-645）。
     #[must_use]
     pub fn loop_window(&self) -> Option<LoopWindow> {
         if !matches!(
@@ -872,6 +881,7 @@ impl<'a> Region<'a> {
             off_shape: self.off_shape,
             loop_mode: self.effective_loop_mode(),
             loop_window: self.loop_window(),
+            count: self.effective_count(),
             offset: self.offset,
             end: self.end,
             direction: self.direction,
@@ -1742,6 +1752,7 @@ mod tests {
                             loop_end: 0,
                             loop_mode: LoopMode::NoLoop,
                             loop_count: 0,
+                            count: None,
                             loop_crossfade: 0.0,
                             ampeg_attack: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_hold: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,

@@ -123,6 +123,13 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
    ⭐ **修订（T-FIX-282）**：`loop_count` 已建模（`Region::loop_count`，缺省 0 ＝ 无限；`loop_count=3` ⇒ 循环部分播 4 次 ＋ 尾巴，见 `tests/sfz_loop_count_crossfade.rs` 的 C1）；
    `loop_crossfade` 同批建模（`Region::loop_crossfade` 秒数，等功率 sqrt 淡化，缺省 0 ＝ 与旧输出逐位相同；反向不做淡化，见 C7）；
    `count` 仍未建模（本片未把它当作 `loop_count` 的别名）；本条其余部分（`off_mode` / `off_time`）逐字成立。
+   ⭐ **修订（T-FIX-645）—— 被修订的是上一段里 "`count` 仍未建模" 那一支**（⛔ 原文一字未删）：
+   `count` 已建模为**独立字段**（`Region::count: Option<u32>`，缺失 ⇒ `None`；`PlaybackSpec::count`；
+   引擎 `PreparedRegion::count` ＋ 三条渲染路重播整段，见 `tests/sfz_count.rs` 的 K1～K10）——
+   总播放次数 ＝ `count`（`count=3` ⇒ 整段播 3 次，与 `loop_count` 的「1 ＋ N」不同）；
+   给出（且 `> 0`）时生效模式强制 `one_shot`（`Region::effective_loop_mode`）、窗口恒 `None`、
+   包络重播时不重新触发；`count=0` 取 **ARIA 口径**（等价于未给出，`loop_mode` 照旧生效；
+   规范页 "Practical Considerations" 逐字）；非法值响亮 `Err`。本条其余部分逐字成立。
 4. **`trigger` 的 release 家族只做事件门控**：`release` / `release_key` 的
    「是否存在对应的 attack region」「`rt_decay` 音量缩放」未实现。规范自己写明这一族行为
    「varies considerably between SFZ players」（ARIA / DropZone / rgc 三套语义各不相同），
