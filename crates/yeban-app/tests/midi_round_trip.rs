@@ -171,6 +171,12 @@ fn write_container(dir: &Path, name: &str, project: &YebanProjectV1) -> PathBuf 
 /// 摆到"第二条 MIDI 轨"上（身份升序；第一条留给导入的落点），摆放起点 **1920**（非零）。
 fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
     let mut project = demo_project();
+    // T-FIX-747：演示工程带一条 `solo=true` 的鼓轨；T-FIX-506 的可闻门会因此
+    // 把后面新增的第二条 MIDI 轨整条排除，导出的字节只剩 6 颗。判据要在**可闻**
+    // 的第二轨上验证往返，因此夹具先清掉 demo 的 solo（不改产品可闻规则）。
+    for track in project.tracks.values_mut() {
+        track.solo = false;
+    }
     project.time_signature = TimeSignature {
         numerator: 3,
         denominator: 4,
@@ -1730,9 +1736,18 @@ fn the_import_reports_every_aux_event_kind_as_read_and_dropped() {
     // ── ② 导入 + 重导出 ──
     let out = dir.join("out.mid");
     let saved = dir.join("out.yeban");
+    // T-FIX-747：`--project-sample default` 自带一条 `solo=true` 的鼓轨；T-FIX-506
+    // 的可闻门会把导入后拆分出的第二条 MIDI 轨排除（轨名从 3 变 2）。这条判据
+    // 量的是 aux 读取与拆分后果，所以用一个去掉 solo 的同源夹具，保持原期望。
+    let mut project = demo_project();
+    for track in project.tracks.values_mut() {
+        track.solo = false;
+    }
+    let fixture = write_container(&dir, "no-solo.yeban", &project);
+    let fixture_arg = fixture.to_str().expect("utf8");
     let run = invoke(&[
-        "--project-sample",
-        "default",
+        "--open",
+        fixture_arg,
         "--import-midi",
         mid.to_str().expect("utf8"),
         "--export-midi",
