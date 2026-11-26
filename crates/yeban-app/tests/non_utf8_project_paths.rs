@@ -45,9 +45,48 @@ fn non_utf8_project_paths_survive_open_recent_and_new_project_round_trip() {
     std::fs::create_dir_all(&dir).expect("建临时目录");
 
     // ---- ① 磁盘上真有一份文件名含 0xFF 的工程 ----
+    //
+    // ⭐ T-FIX-436：落盘必须按**生产装载形态**带上资产字节。
+    // `filled_project()` 的 Audio 片段引用会话资产池里的 kick，而
+    // `save_project_file` 的契约明确是"history.dag 空 + 资产池空"，含 Audio
+    // 片段时在写任何字节之前就 `RequiresArchive` 响亮拒绝（T-FIX-329）。
+    // 这里改走全保真归档入口（同一处唯一写入口），容器里才真的有被引用的
+    // `assets/{sha256}`；③ 的严格打开（T-FIX-330）才不会报"缺 1 个资产"。
+    // ⛔ 不是放宽：`open_runtime` 的 `strict_missing_assets: true` 一字未改，
+    // 缺资产工程经 GUI 打开仍响亮失败。
+    // 同一机理的先例：`tests/project_templates.rs`（T-FIX-411）。
     let project = yeban_model::samples::filled_project();
+    let referenced_assets = yeban_model::samples::filled_project_assets();
+    assert_eq!(referenced_assets.len(), 1, "filled 夹具应恰好带一份 kick");
+    assert!(
+        referenced_assets
+            .iter()
+            .any(|(hash, _)| project.assets.contains_key(hash)),
+        "夹具前提：filled 工程的资产索引必须引用这份 kick"
+    );
     let project_path = dir.join(non_utf8_name(b"fixture-", b".yeban"));
-    yeban_app::save::save_project_file(&project, &project_path).expect("写出非 UTF-8 工程");
+    let kick_hash = referenced_assets[0].0.clone();
+    let archive = yeban_model::container::ProjectArchive {
+        project,
+        // `history.dag` 恒空字节：本判据只判路径编解码，提交图谱不是它的关注点。
+        history_dag: Vec::new(),
+        proposals: None,
+        assets: referenced_assets,
+        embedded_presets: Vec::new(),
+        load_notes: Vec::new(),
+    };
+    yeban_app::save::save_archive_file(&archive, &project_path).expect("写出非 UTF-8 工程");
+    // 容器里**真的**有被 Audio 片段引用的字节：不是"存了但池空"，否则 ③ 的严格
+    // 打开必报缺资产。这一条与 ③ 是两条腿：它钉保存侧，③ 钉打开侧。
+    let round = yeban_app::open::open_project_archive_file(
+        &project_path,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("刚写出的工程必须能按生产口径读回");
+    assert!(
+        round.assets.iter().any(|(hash, _)| *hash == kick_hash),
+        "容器必须真的带上被 Audio 片段引用的 kick 字节（否则 ③ 的严格打开必报缺资产）"
+    );
     assert!(project_path.exists(), "工程必须真的落在原路径上");
     assert!(
         project_path.to_str().is_none(),
