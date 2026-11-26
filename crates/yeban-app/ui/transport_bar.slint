@@ -679,7 +679,7 @@ export component TransportHeaderBar inherits Rectangle {
                 TooltipBubble { text: "夜半"; is-visible: brand_touch.has-hover; }
             }
 
-            // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
+            // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵, 底栏 [P/X], 监听室 [F4])
             Rectangle {
                 // 二期质感: 组板走 §10 外壳刷。扁平支 no plate (见品牌块同条注释)。
                 background: Tokens.texture-physical ? Tokens.shell-brush : transparent;
@@ -713,7 +713,7 @@ export component TransportHeaderBar inherits Rectangle {
                         TooltipBubble { text: @tr("检查器与音色库 [I]"); is-visible: touch_insp.has-hover; }
                     }
 
-                    // 2. Clip 矩阵 [Tab]
+                    // 2. Clip 矩阵
                     Rectangle {
                         width: 28px;
                         height: 24px;
