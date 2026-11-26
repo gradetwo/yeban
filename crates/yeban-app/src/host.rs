@@ -18891,6 +18891,12 @@ pub fn wire_module_actions_with_shared(
                             if let Some(note) = report.plugin_note() {
                                 fields.push(format!("plugin_note=\"{note}\""));
                             }
+                            // ⭐ T-FIX-721：空导出（全静音）必须在回执里可见。⛔ 只在
+                            // `render_empty` 时加字段 ⇒ 有内容的工程回执逐字不变
+                            // （`tests/common/mod.rs::wav_export_receipt` 的干净臂）。
+                            if report.render_empty {
+                                fields.push("silent_export=true".to_owned());
+                            }
                             if let Some(note) = report.clipping_note() {
                                 fields.push(format!("clipping_note=\"{note}\""));
                             }
@@ -18899,6 +18905,14 @@ pub fn wire_module_actions_with_shared(
                             // T-FIX-357: skipped audio assets are a visible warning, not a
                             // bare `outcome=ok`. Keep the clipping-only case byte-identical.
                             let mut warnings = Vec::new();
+                            // ⭐ T-FIX-721：空导出写进**可见**警示行（不是只有 stderr）。
+                            // 有 clip / 采样器时 `render_empty == false` ⇒ ⛔ 不误报。
+                            if report.render_empty {
+                                warnings.push(
+                                    "⚠ 无可渲染内容，导出为静音（请检查素材是否挂在了可渲染轨上）"
+                                        .to_owned(),
+                                );
+                            }
                             if report.clipped_samples != 0 {
                                 warnings.push(clipping_warning_line(
                                     report.clipped_samples,
@@ -18912,7 +18926,11 @@ pub fn wire_module_actions_with_shared(
                                 ));
                             }
                             let warning = warnings.join(" ");
-                            let success_line = format!("导出 WAV 完成 · {landed}");
+                            let success_line = if report.render_empty {
+                                format!("导出 WAV 完成（全静音） · {landed}")
+                            } else {
+                                format!("导出 WAV 完成 · {landed}")
+                            };
                             let measurement = export_measurement_line(
                                 report.true_peak_dbfs,
                                 report.integrated_lufs,

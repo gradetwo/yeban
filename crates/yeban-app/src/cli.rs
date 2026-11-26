@@ -7908,13 +7908,19 @@ fn exported_wav_line(
             report.sfz_decoded.len()
         )
     };
+    // T-FIX-721：空导出必须在机器可读行里也响亮（⛔ 不只在 stderr 的 `render-empty:`）。
+    let silent = if report.render_empty {
+        " silent=true"
+    } else {
+        ""
+    };
     // T-FIX-360：时长来源可见，⛔ 不只在调试档打印（静默截断的缺陷正是看不见造成的）。
     let project_end = duration
         .project_end_seconds
         .map_or_else(|| "0".to_owned(), |seconds| format!("{seconds:.3}"));
     format!(
         "exported-wav: path={} bytes={} frames={} sample_rate={} channels={} bits={} digest={} \
-         source={}{sfz} secondsSource={} projectEndSeconds={} from={}",
+         source={}{sfz}{silent} secondsSource={} projectEndSeconds={} from={}",
         report.path.display(),
         report.bytes,
         report.frames,

@@ -394,6 +394,15 @@ pub struct WavExportReport {
     /// ⭐ T-FIX-338：本次导出里**没有执行**的外置设备（同形 ＋ `(未执行: 原因)`）。
     /// 空 = 没有外置设备被跳过。旁通的设备不在此列（旁通是显式选择）。
     pub plugins_not_executed: Vec<String>,
+    /// ⭐ T-FIX-721：本次导出**没有任何可渲染内容** ⇒ 落盘文件是全静音。
+    ///
+    /// 从 `render_core` 的同名读数**如实转发**（⛔ 不在这里另算）。判据与
+    /// `render-empty` 完全一致：可渲染轨上既无 clip 也无采样器绑定；主总线轨上的
+    /// clip 不参与渲染（所以只有主总线素材也算空）。有一条 clip 或一个采样器 ⇒ `false`。
+    ///
+    /// `true` 时 [`Self::silence_note`] 给出用户可读原因，GUI 回执另加
+    /// `silent_export=true`，CLI 行另加 `silent=true`；⛔ 不再只打在 stderr。
+    pub render_empty: bool,
 }
 
 /// ⭐ 响度归一化报告：用户给的目标／上限 ＋ 落盘文件的实测值 ＋ 谁定下了增益。
@@ -473,6 +482,9 @@ impl WavExportReport {
         if let Some(note) = self.plugin_note() {
             text = format!("{text}\n{note}");
         }
+        if let Some(note) = self.silence_note() {
+            text = format!("{text}\n{note}");
+        }
         match self.clipping_note() {
             Some(note) => format!("{text}\n{note}"),
             None => text,
@@ -503,6 +515,24 @@ impl WavExportReport {
         Some(format!(
             "插件执行: 已执行 {executed}；未执行 {not_executed}"
         ))
+    }
+
+    /// ⭐ T-FIX-721：**空导出提示行**（恰好一行；有可渲染内容 ⇒ `None`）。
+    ///
+    /// 这是 [`Self::summary`]、CLI `--export-wav` 与 GUI 导出回执共用的**唯一**文案。
+    /// 【T-FIX-721】修前 `render_core` 只在 stderr 打 `render-empty:` —— 窗口里的用户
+    /// 只看到「导出 WAV 完成」，拿到一条全静音的带子却不知道原因（dou-win-133 实机）。
+    /// ⇒ 现在把"无可渲染内容、导出为静音"写进用户可见的回执；⛔ 音频一个字节都没动。
+    #[must_use]
+    pub fn silence_note(&self) -> Option<String> {
+        if !self.render_empty {
+            return None;
+        }
+        Some(
+            "⚠ 无可渲染内容，导出为静音：可渲染轨上没有任何 clip 或采样器绑定；\
+             主总线轨上的 clip 按设计不参与渲染。请检查素材是否挂在了可渲染轨上。"
+                .to_owned(),
+        )
     }
 
     /// ⭐ `#226`：**削波提示行**（恰好一行；`clipped_samples == 0` ⇒ `None`）。
@@ -1341,6 +1371,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         loudness: loudness_report,
         plugins_executed: rendered.plugins_executed,
         plugins_not_executed: rendered.plugins_not_executed,
+        render_empty: rendered.render_empty,
     })
 }
 

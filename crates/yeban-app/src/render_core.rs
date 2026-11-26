@@ -437,6 +437,13 @@ pub struct RenderProjectOutput {
     /// 未绑定插件／第二台绑定设备／无源总线轨）。空 = 没有外置设备被跳过。
     /// 旁通的设备不在此列（旁通是显式选择，不是装配失败）。
     pub plugins_not_executed: Vec<String>,
+    /// ⭐ T-FIX-721：本次渲染**没有任何可渲染内容**（可渲染轨上既没有 clip，也没有
+    /// 采样器绑定）。`true` ⇒ 产物是全静音；字段同时进入 [`crate::export_wav::WavExportReport`]，
+    /// 由 CLI／GUI 把"导出为静音"写进回执（⛔ 不再只打在 stderr）。
+    ///
+    /// 口径与下面那段 `render-empty` 检查**同一个判据**：主总线轨上的 clip 按设计不参与渲染
+    /// ⇒ 只有主总线素材也算空；有一条 clip 或一个采样器绑定就为 `false`（⛔ 不误报）。
+    pub render_empty: bool,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -989,23 +996,22 @@ pub fn render_project_f32_with_plans_under(
     //
     // ⇒ 只在"**可渲染轨上真的什么都没有**"时报（有一条 clip 或一个采样器绑定就不报，
     //    ⛔ 不出假警）。
-    {
-        let has_content = renderable.iter().any(|id| {
-            project
-                .tracks
-                .get(id)
-                .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
-        });
-        if !has_content {
-            let master_clips = project
-                .tracks
-                .get(&project.master_bus_track_id)
-                .map_or(0, |track| track.clips.len());
-            eprintln!(
-                "render-empty: 可渲染轨上没有任何 clip 或采样器（主总线轨上有 {master_clips} 个 clip，\
-                 按设计**不参与渲染**）—— 导出会是全静音。请检查素材是否挂在了主总线轨上。"
-            );
-        }
+    let has_content = renderable.iter().any(|id| {
+        project
+            .tracks
+            .get(id)
+            .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
+    });
+    let render_empty = !has_content;
+    if render_empty {
+        let master_clips = project
+            .tracks
+            .get(&project.master_bus_track_id)
+            .map_or(0, |track| track.clips.len());
+        eprintln!(
+            "render-empty: 可渲染轨上没有任何 clip 或采样器（主总线轨上有 {master_clips} 个 clip，\
+             按设计**不参与渲染**）—— 导出会是全静音。请检查素材是否挂在了主总线轨上。"
+        );
     }
     // ---- 2a-pre. ⭐ `TrackPan` 自动化（任务单 `#257`）----
     //
@@ -1234,6 +1240,17 @@ pub fn render_project_f32_with_plans_under(
             let silent: Box<dyn AudioSource> = Box::new(SilentSource);
             sources.insert(track_id, silent);
         }
+    }
+    // ⭐ T-FIX-721：**只有 Master 的空工程**也要能导出成静音（否则计划层先报
+    // `MissingSource(master)`，用户看到的是"导出失败"而不是本单要标注的静音）。
+    // `render_empty` 时主总线必然没有任何自有素材；注册零成本静音源后，计划执行
+    // 把"这条总线什么都不产出"如实走完，产物仍是全静音，且本单的回执能标注原因。
+    // 有内容时⛔ 不加这一步（主总线按设计不产生素材，源表逐字不变）。
+    if render_empty && !sources.contains_key(&project.master_bus_track_id) {
+        sources.insert(
+            project.master_bus_track_id,
+            Box::new(SilentSource) as Box<dyn AudioSource>,
+        );
     }
 
     // ---- 2b. 音频片段（`ClipContent::Audio`）叠加 ----
@@ -1519,6 +1536,7 @@ pub fn render_project_f32_with_plans_under(
         unrouted_tracks,
         plugins_executed,
         plugins_not_executed,
+        render_empty,
     })
 }
 
