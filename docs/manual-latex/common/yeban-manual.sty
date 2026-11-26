@@ -23,6 +23,10 @@
 % volume builds without per-volume setup.
 \usetikzlibrary{positioning,calc,backgrounds,arrows,arrows.meta}
 \RequirePackage{makeidx}
+% Chapters name identifiers with underscores inside \texttt and
+% backtick code spans (pitch_keycenter, tape_drive); the underscore
+% package typesets _ in text mode while keeping math subscripts.
+\RequirePackage{underscore}
 \RequirePackage[colorlinks=true,linkcolor=yebanblue,urlcolor=yebanblue,citecolor=yebanblue]{hyperref}
 
 \definecolor{yebanblue}{RGB}{31,78,120}
