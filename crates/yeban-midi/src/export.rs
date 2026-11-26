@@ -76,8 +76,10 @@ use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3};
 
 /// SMF 的通道号是 4 bit ⇒ 一个文件最多 16 个可区分的通道。
 ///
-/// 超过 16 条被导出的轨道时按 `i % 16` 复用通道（**如实**记录在 `exported-midi:` 行的
-/// `tracks=` 里；不发生静默丢弃）。
+/// 超过 16 条被导出的轨道时按 `i % 16` 复用通道（T-FIX-505：复用不再是"只靠
+/// `tracks=` 暗示"—— 报告显式带 `channels_reused` / `max_tracks_per_channel`，
+/// `exported-midi:` 行同名字段如实披露；字节层面不丢弃，但 SMF 同通道同音高
+/// 重叠音符在标准播放器里可能互相灭音，故必须让用户看见）。
 pub const MIDI_CHANNEL_COUNT: u8 = 16;
 
 /// 一次 `--export-midi` 成功后的读数（报告行由 [`crate::cli`] 据此拼出）。
@@ -99,6 +101,25 @@ pub struct MidiExportReport {
     pub ppq: u16,
     /// 写进 `MThd` 的格式。
     pub format: MidiFormat,
+    /// T-FIX-505：被多于一条导出轨共用的 MIDI 通道数（0..=16）。
+    pub channels_reused: usize,
+    /// T-FIX-505：单条通道上最多挂了几条导出轨（>1 即有回放灭音风险）。
+    pub max_tracks_per_channel: usize,
+}
+
+/// T-FIX-505：按导出轨的通道号统计复用（纯函数，判据可在不带修法的树上先红）。
+///
+/// 返回 `(被复用的通道数, 单通道最大轨数)`；通道 0..=15 以 `BTreeMap` 计数，
+/// 同一通道的两条轨在标准 SMF 播放器里共享一个"同音高发声槽"，必须披露。
+#[must_use]
+pub fn channel_reuse_report(tracks: &[MidiExportTrack]) -> (usize, usize) {
+    let mut per_channel: BTreeMap<u8, usize> = BTreeMap::new();
+    for track in tracks {
+        *per_channel.entry(track.channel).or_insert(0) += 1;
+    }
+    let reused = per_channel.values().filter(|count| **count > 1).count();
+    let max = per_channel.values().copied().max().unwrap_or(0);
+    (reused, max)
 }
 
 /// 导出失败的原因（**每一种都精确上报**，绝不"写了个空文件也算成功"）。
@@ -2604,5 +2625,28 @@ mod tests {
             }
             assert!(compared > 0, "offset={offset} 至少应有一颗粒子参与往返对照");
         }
+    }
+
+    /// T-FIX-505：通道复用披露的纯函数判据。
+    /// 红对照：报告结构/导出器不带 `channels_reused` 字段时本条编译即红；
+    /// 把统计写成"恒 0"时四个断言红。
+    #[test]
+    fn channel_reuse_report_discloses_reused_channels() {
+        let track = |index: usize| crate::midi::MidiExportTrack {
+            name: format!("T{index}"),
+            channel: (index % usize::from(MIDI_CHANNEL_COUNT)) as u8,
+            notes: Vec::new(),
+            control_changes: Vec::new(),
+            bend_range_semitones: 2,
+        };
+        let twenty: Vec<_> = (0..20).map(track).collect();
+        assert_eq!(
+            channel_reuse_report(&twenty),
+            (4, 2),
+            "20 轨 => 通道 0..15,0..3 => 4 个通道被复用, 单通道最多 2 条"
+        );
+        let sixteen: Vec<_> = (0..16).map(track).collect();
+        assert_eq!(channel_reuse_report(&sixteen), (0, 1), "16 轨无复用");
+        assert_eq!(channel_reuse_report(&[]), (0, 0), "空导出无复用");
     }
 }

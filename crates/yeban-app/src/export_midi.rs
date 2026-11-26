@@ -50,6 +50,9 @@ pub fn export_project_to_file(
     let export = export_from_project(project)?;
     let bytes = export.to_smf_bytes().map_err(MidiExportError::Encode)?;
     let saved = crate::save::write_file_atomically(&bytes, path).map_err(MidiExportError::Save)?;
+    // T-FIX-505：通道复用必须与导出通道分配同源（同一份 export.tracks）。
+    let (channels_reused, max_tracks_per_channel) =
+        yeban_midi::export::channel_reuse_report(&export.tracks);
     Ok(MidiExportReport {
         path: saved.path,
         bytes: saved.bytes,
@@ -59,6 +62,8 @@ pub fn export_project_to_file(
         tempos: export.tempos.len(),
         ppq: export.ppq,
         format: export.format,
+        channels_reused,
+        max_tracks_per_channel,
     })
 }
 

@@ -7861,7 +7861,7 @@ fn exported_midi_line(report: &MidiExportReport, loaded: &Loaded) -> String {
     };
     format!(
         "exported-midi: path={} bytes={} ppq={} format={} tracks={} notes={} tempos={} \
-         temp={} from={}",
+         channelsReused={} maxTracksPerChannel={} temp={} from={}",
         report.path.display(),
         report.bytes,
         report.ppq,
@@ -7869,6 +7869,8 @@ fn exported_midi_line(report: &MidiExportReport, loaded: &Loaded) -> String {
         report.tracks,
         report.notes,
         report.tempos,
+        report.channels_reused,
+        report.max_tracks_per_channel,
         report.temp_name,
         loaded.source.save_origin(),
     )
@@ -11400,6 +11402,17 @@ mod tests {
             field(exported, "tempos").as_deref(),
             Some("1"),
             "{exported}"
+        );
+        // T-FIX-505：通道复用必须逐值回执（本夹具 1 条轨 ⇒ 无复用）。
+        assert_eq!(
+            field(exported, "channelsReused").as_deref(),
+            Some("0"),
+            "exported-midi: 必须披露复用通道数: {exported}"
+        );
+        assert_eq!(
+            field(exported, "maxTracksPerChannel").as_deref(),
+            Some("1"),
+            "exported-midi: 必须披露单通道最大轨数: {exported}"
         );
         assert!(
             exported.contains(crate::save::TEMP_INFIX),
