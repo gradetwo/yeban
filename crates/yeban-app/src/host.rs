@@ -8578,6 +8578,20 @@ impl RecordControl {
             )),
             _ => None,
         };
+        // ⭐ T-FIX-758：短时断流不触发 InputLost，但 WAV 已带时间缺口 ⇒
+        // 不能当作“无缺口成功”静默落盘；在 UI 回执通道响亮报送。
+        let gap_report = match &stopped {
+            Ok(report) if report.frames > 0 && report.gaps.is_loud() => Some(format!(
+                "录音完成但检测到输入时长缺口：{} 段，共 {} ms（最大 {} ms，占 {:.2}%）。\
+                 WAV 已保留：{}；本条 take 不作为无缺口成功。",
+                report.gaps.count,
+                report.gaps.total_ms,
+                report.gaps.max_ms,
+                report.gaps.ratio_percent(),
+                report.path.display()
+            )),
+            _ => None,
+        };
         let mut landing_report: Option<String> = None;
         let mut landed_in_project = false;
         match &stopped {
@@ -8641,6 +8655,7 @@ impl RecordControl {
                     .err()
                     .map(|error| error.to_string())
                     .or(empty_report)
+                    .or(gap_report)
                     .or(landing_report),
             );
         }

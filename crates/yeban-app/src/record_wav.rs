@@ -108,6 +108,109 @@ pub struct RecordReport {
     /// 旧路，或 `--record-wav` 这类不走走带的入口）⇒ 落点方按停录播放头回落
     /// （旧口径，见 `host::RecordControl`）。
     pub start_tick: Option<u64>,
+    /// ⭐ **T-FIX-758**：按墙钟与采样率对照 `pulled` 得到的输入时长缺口。
+    /// `0` 段 = 每个正块都跟上了设备时钟；>0 不代表 WAV 无效，但必须响亮上报。
+    pub gaps: RecordGaps,
+}
+
+/// ⭐ **T-FIX-758：一次录音的输入时长缺口读数**。
+///
+/// 设备短时断流（每次 `< INPUT_STALL_TIMEOUT` 就回一帧）不会触发 T-FIX-508 的
+/// `InputLost`，但录音仍会带上静默时间缺口。这里按“相邻两个正块之间墙钟应得帧数
+/// vs 实际拉到的帧数”累计，和端点重建分开：⛔ 本结构不重连设备、不伪造帧。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordGaps {
+    /// 有缺口的块间区间数（微小时钟抖动也会计入；是否响亮看 [`Self::is_loud`]）。
+    pub count: u32,
+    /// 全部缺口累计时长（毫秒，按采样率折算）。
+    pub total_ms: u64,
+    /// 单次最大缺口（毫秒）。
+    pub max_ms: u64,
+    /// 全部缺口累计缺失帧数。
+    pub missing_frames: u64,
+    /// 参与对照的应得帧数总和（累计占比的分母）。
+    pub expected_frames: u64,
+}
+
+impl RecordGaps {
+    /// 缺口帧占应得帧的百分比（`0.0` = 没有可对照区间）。
+    #[must_use]
+    pub fn ratio_percent(&self) -> f64 {
+        if self.expected_frames == 0 {
+            return 0.0;
+        }
+        (self.missing_frames as f64) * 100.0 / (self.expected_frames as f64)
+    }
+
+    /// 验收阈值：单次缺口 **>100 ms**，或累计缺口 **>1%**。
+    #[must_use]
+    pub fn is_loud(&self) -> bool {
+        self.max_ms > 100
+            || (self.expected_frames > 0
+                && self.missing_frames.saturating_mul(100) > self.expected_frames)
+    }
+
+    /// 一行可读读数（摘要 / UI 提示共用，⛔ 不隐藏缺口）。
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "gaps={} gap-total-ms={} gap-max-ms={} gap-ratio={:.2}%",
+            self.count,
+            self.total_ms,
+            self.max_ms,
+            self.ratio_percent()
+        )
+    }
+}
+
+/// 内部累计器：只在**正块**上取对照点，避免每 1 ms 轮询把正常块内时间算成缺口。
+#[derive(Debug)]
+struct InputGapMeter {
+    sample_rate: u32,
+    last: Option<(std::time::Instant, u64)>,
+    gaps: RecordGaps,
+}
+
+impl InputGapMeter {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            last: None,
+            gaps: RecordGaps::default(),
+        }
+    }
+
+    /// `pulled` = 本次会话**累计**从源拉到的帧数（含预备拍；相邻差即区间实际帧）。
+    fn observe(&mut self, at: std::time::Instant, pulled: u64) {
+        if let Some((last_at, last_pulled)) = self.last {
+            let elapsed = at.saturating_duration_since(last_at);
+            let expected = (elapsed.as_secs_f64() * f64::from(self.sample_rate)) as u64;
+            let actual = pulled.saturating_sub(last_pulled);
+            self.gaps.expected_frames = self.gaps.expected_frames.saturating_add(expected);
+            if expected > actual {
+                let missing = expected - actual;
+                let ms = missing
+                    .saturating_mul(1000)
+                    .checked_div(u64::from(self.sample_rate))
+                    .unwrap_or(u64::MAX);
+                self.gaps.count = self.gaps.count.saturating_add(1);
+                self.gaps.missing_frames = self.gaps.missing_frames.saturating_add(missing);
+                self.gaps.total_ms = self.gaps.total_ms.saturating_add(ms);
+                self.gaps.max_ms = self.gaps.max_ms.max(ms);
+            }
+        }
+        self.last = Some((at, pulled));
+    }
+
+    fn finish(mut self) -> RecordGaps {
+        self.gaps.total_ms = self
+            .gaps
+            .missing_frames
+            .saturating_mul(1000)
+            .checked_div(u64::from(self.sample_rate))
+            .unwrap_or(u64::MAX);
+        self.gaps
+    }
 }
 
 impl RecordReport {
@@ -115,7 +218,7 @@ impl RecordReport {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "recorded-wav: path={} frames={} dropped={} bytes={} source={} start-tick={}",
+            "recorded-wav: path={} frames={} dropped={} bytes={} source={} start-tick={} {}",
             self.path.display(),
             self.frames,
             self.dropped,
@@ -123,6 +226,7 @@ impl RecordReport {
             self.source,
             self.start_tick
                 .map_or_else(|| "<none>".to_owned(), |tick| tick.to_string()),
+            self.gaps.summary(),
         )
     }
 }
@@ -289,6 +393,7 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
         source: SOURCE_LABEL.to_owned(),
         // ⭐ 测试音不走走带 ⇒ 没有起录 tick（T-FIX-239）。
         start_tick: None,
+        gaps: RecordGaps::default(),
     })
 }
 
@@ -516,7 +621,7 @@ struct RecorderSession {
     /// 停止信号（工作线程每轮检查）。
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 工作线程（停录时收尸）。
-    worker: Option<std::thread::JoinHandle<SampleSink>>,
+    worker: Option<std::thread::JoinHandle<(SampleSink, RecordGaps)>>,
     /// 这次录音的落盘路径。
     path: PathBuf,
     /// 建环参数（落盘时要同一组）。
@@ -645,8 +750,10 @@ impl Recorder {
         self.dropped_frames = std::sync::Arc::clone(&dropped);
         // ⭐ **如实标签**（在源被 move 进线程**之前**取一次）：它进报告的 `source=` 字段。
         let source_label = source.label();
+        let sample_rate = options.sample_rate;
         let worker = std::thread::spawn(move || {
             let mut drain = RecordDrain::new(receiver, SampleSink::default());
+            let mut gap_meter = InputGapMeter::new(sample_rate);
             let sender = sender_worker;
             // ⭐ **已经开始录了没有**：预备拍走完之前为 `false`。
             let mut recording = count_in_frames == 0;
@@ -671,6 +778,8 @@ impl Recorder {
                     if !recording && pulled_so_far >= count_in_frames {
                         // ⭐ 预备拍走完 ⇒ **从这一块起**开始录（⛔ 不追录预备拍期间的块）。
                         recording = true;
+                        // ⛔ 预备拍不是缺口：计量基准从**开始录**的这一刻起算。
+                        gap_meter = InputGapMeter::new(sample_rate);
                     }
                     if recording && let Ok(mut sender) = sender.lock() {
                         let samples = frames.saturating_mul(usize::from(channels));
@@ -686,6 +795,8 @@ impl Recorder {
                             frames.saturating_sub(accepted) as u64,
                             std::sync::atomic::Ordering::Relaxed,
                         );
+                        // T-FIX-758：以**正块**为对照点，按墙钟应得帧 vs 实际拉帧计缺口。
+                        gap_meter.observe(std::time::Instant::now(), pulled_so_far);
                     }
                 } else {
                     let since = *zero_since.get_or_insert_with(std::time::Instant::now);
@@ -714,7 +825,7 @@ impl Recorder {
                     Ok(_) => {}
                 }
             }
-            drain.into_inner()
+            (drain.into_inner(), gap_meter.finish())
         });
         self.session = Some(RecorderSession {
             sender,
@@ -785,11 +896,11 @@ impl Recorder {
         session
             .stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let sink = match session.worker.take() {
+        let (sink, gaps) = match session.worker.take() {
             Some(handle) => handle
                 .join()
                 .map_err(|_| RecordError::Invalid("录音线程 panic".to_owned()))?,
-            None => SampleSink::default(),
+            None => (SampleSink::default(), RecordGaps::default()),
         };
         // ⭐ T-FIX-508：工作线程已判定输入源失效 ⇒ **响亮失败，不落一条短 WAV**。
         // 这条检查必须在量化/写盘之前；否则 UI 会拿到“录音完成”而文件已被截断。
@@ -804,7 +915,7 @@ impl Recorder {
             .dropped_frames
             .load(std::sync::atomic::Ordering::Relaxed);
         // ② 量化 ＋ 落盘搬到后台线程：本函数立即返回句柄，调用方（UI）轮询它完成。
-        let handle = std::thread::spawn(move || land_sink(sink, session, pushed, dropped));
+        let handle = std::thread::spawn(move || land_sink(sink, session, pushed, dropped, gaps));
         Ok(RecordLanding {
             handle: Some(handle),
         })
@@ -863,6 +974,7 @@ fn land_sink(
     session: RecorderSession,
     pushed: u64,
     dropped: u64,
+    gaps: RecordGaps,
 ) -> Result<RecordReport, RecordError> {
     // 量化 ＋ **一次**落盘（与 `record_test_tone` 同一个落盘点与同一个抖动种子）。
     let mut rng = DeterministicDitherRng::new(1);
@@ -890,6 +1002,7 @@ fn land_sink(
         bits: 24,
         source: session.source_label.to_owned(),
         start_tick: session.start_tick,
+        gaps,
     })
 }
 
@@ -972,6 +1085,7 @@ where
         source: "injected-frames".to_owned(),
         // ⭐ 注入帧不走走带 ⇒ 没有起录 tick（T-FIX-239）。
         start_tick: None,
+        gaps: RecordGaps::default(),
     })
 }
 
@@ -1138,6 +1252,7 @@ pub fn record_project_under(
         source: source_label,
         // ⭐ 工程渲染录音不走走带 ⇒ 没有起录 tick（T-FIX-239）。
         start_tick: None,
+        gaps: RecordGaps::default(),
     })
 }
 
@@ -1182,6 +1297,37 @@ mod tests {
                 *sample = (self.produced as f32 * 0.001).sin();
             }
             fill / channels
+        }
+    }
+
+    /// ⭐ T-FIX-758 判据源：每隔 40 ms 只回 **1 帧**，其余轮询返回 0 帧。
+    /// 每次 0 帧都短于 `INPUT_STALL_TIMEOUT`（测试口径 250 ms）⇒ 不会触发
+    /// `InputLost`；但按墙钟应得帧对照，录音带着大量静默缺口。
+    struct OneFrameEvery {
+        channels: u16,
+        next_at: std::time::Instant,
+    }
+
+    impl InputSource for OneFrameEvery {
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+
+        fn next_block(&mut self, _frames: usize, out: &mut [f32]) -> usize {
+            let now = std::time::Instant::now();
+            if now < self.next_at {
+                return 0;
+            }
+            self.next_at = now + std::time::Duration::from_millis(40);
+            let channels = usize::from(self.channels.max(1));
+            for sample in &mut out[..channels] {
+                *sample = 0.25;
+            }
+            1
+        }
+
+        fn label(&self) -> &'static str {
+            "criterion-one-frame-every-40ms"
         }
     }
 
@@ -1230,6 +1376,101 @@ mod tests {
             path.display()
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **T-FIX-758 判据**：注入间歇断流（每 40 ms 只回 1 帧，连续 0 帧从不超过
+    /// `INPUT_STALL_TIMEOUT`）⇒ 旧判据不会报 InputLost，但报告必须带可读的缺口读数
+    /// 并触发响亮阈值；修复前 `gaps` 全 0、按成功静默落盘。
+    #[test]
+    fn intermittent_dropout_reports_a_loud_gap_not_a_clean_success() {
+        let dir = temp_dir("input-gaps");
+        let path = dir.join("gappy.wav");
+        let options = RecordOptions {
+            seconds: 0.3,
+            sample_rate: 48_000,
+            channels: 2,
+            capacity_frames: 48_000,
+            ..RecordOptions::default()
+        };
+        let mut recorder = Recorder::new();
+        recorder
+            .start(
+                &path,
+                &options,
+                Box::new(OneFrameEvery {
+                    channels: 2,
+                    next_at: std::time::Instant::now(),
+                }),
+                0,
+                None,
+            )
+            .expect("起录");
+        // 220 ms < 测试口径的 250 ms InputLost 阈值；但足够跨出多个 40 ms 缺口。
+        std::thread::sleep(std::time::Duration::from_millis(220));
+        let report = recorder.stop().expect("间歇断流不得判成 InputLost");
+        assert!(
+            report.frames > 0,
+            "设备仍在回帧，WAV 必须有内容；缺口靠计量而非判死"
+        );
+        assert!(
+            report.gaps.is_loud(),
+            "间歇断流必须触发缺口阈值: {:?}",
+            report.gaps
+        );
+        assert!(
+            report.gaps.count >= 2,
+            "至少两个 40 ms 级缺口应被计数: {:?}",
+            report.gaps
+        );
+        assert!(
+            report.gaps.expected_frames > 0 && report.gaps.missing_frames > 0,
+            "墙钟应得帧与实际拉帧必须都有读数: {:?}",
+            report.gaps
+        );
+        let summary = report.summary();
+        assert!(
+            summary.contains("gaps=") && summary.contains("gap-ratio="),
+            "摘要必须带缺口读数（CLI/回执可见）: {summary}"
+        );
+        // ⛔ 不把缺口伪装成零：累计占比必须明显 >1%。
+        assert!(
+            report.gaps.ratio_percent() > 1.0,
+            "累计缺口必须 >1%: {:.3}%",
+            report.gaps.ratio_percent()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ T-FIX-758 边界：阈值判定只看单次 >100 ms 或累计 >1%；
+    /// 1 ms 的轻微抖动不得借累计阈值放大成响亮失败。
+    #[test]
+    fn gap_loudness_thresholds_are_exactly_single_100ms_or_cumulative_one_percent() {
+        let quiet = RecordGaps {
+            count: 2,
+            total_ms: 10,
+            max_ms: 10,
+            missing_frames: 480,
+            expected_frames: 48_000,
+        };
+        assert!(!quiet.is_loud(), "累计 1% 且单次 10ms ⇒ 不响亮: {quiet:?}");
+        let single = RecordGaps {
+            max_ms: 101,
+            ..quiet
+        };
+        assert!(single.is_loud(), "单次 101ms 必须响亮: {single:?}");
+        let cumulative = RecordGaps {
+            missing_frames: 481,
+            ..quiet
+        };
+        assert!(
+            cumulative.is_loud(),
+            "累计 481/48000 > 1% 必须响亮: {cumulative:?}"
+        );
+        let exactly_one_percent = RecordGaps {
+            missing_frames: 480,
+            ..quiet
+        };
+        assert!(!exactly_one_percent.is_loud(), "恰好 1% 按“>1%”口径不响亮");
     }
 
     /// 判据 a：录出的 WAV **可被 `read_plain_wav` 读回**，帧数与推入数一致（无丢弃），样本非静音。
@@ -1613,6 +1854,7 @@ mod tests {
                 bits: 24,
                 source: "test-slow-landing".to_owned(),
                 start_tick: None,
+                gaps: RecordGaps::default(),
             })
         });
         let mut landing = RecordLanding {
