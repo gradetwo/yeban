@@ -2101,6 +2101,13 @@ impl ElementRegistry {
             false,
         );
         registry.add(
+            "macro-panel-export-only",
+            ElementKind::Text,
+            "dialogs/macro_panel.slint",
+            "仅导出：实时监听尚未执行宏",
+            false,
+        );
+        registry.add(
             "macro-empty-state",
             ElementKind::Text,
             "dialogs/macro_panel.slint",

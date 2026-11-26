@@ -4,95 +4,204 @@
 //!
 //! 控制台 Tab 3 标题行的「宏 (N)」按钮打开的右侧抽屉**不是装饰**：它的条数 / 名字 /
 //! 位置来自 `ViewState::macros`（`TrackV3::macros` 的投影），滑块手势经
-//! `host::wire_macro_panel` 提交**恰好一次** `Op::SetMacro` —— 一步可撤销的编辑。
-//!
-//! ## 判据
+//! `host::wire_macro_panel` 提交**恰好一次**批次：`Op::SetMacro` ＋ 该宏每条映射的
+//! 两个 `macro-cascade:` 点；导出侧按新宏位置读到新值。
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（默认关着） | 装配后抽屉**不在**运行时控件树里（`macro-panel-open=false`）⇒ 金帧不变；入口按钮在场且条数 = 投影里的宏数 |
-//! | ②（可寻址） | 打开后 7 个语义 ID 全部在树里、角色与注册表一致、树里没有注册表之外的 ID |
-//! | ③（手势 = 一步编辑） | grab/drag 只写视图态（提交数不变）；release ⇒ `commit_count + 1`，权威工程里是 `0.9`；撤销回到 `0.5` |
-//! | ④（空态） | 投影为空时画 `macro-empty-state`，宏行全部消失 |
-//! | ⑤（入口接线） | 控制台的回调真的被转发到 `macro-panel-open`（`.slint` 文本层，本机不编译 Slint 的那一半） |
+//! | ①（无泳道无物化点） | 夹具目标泳道与 `Macro` 泳道都不存在；手势前导出求值器是恒等 |
+//! | ②（一次手势 = 一个批次） | grab/drag 只写视图态；release ⇒ `commit_count + 1` |
+//! | ③（级联点真物化） | 目标泳道恰 2 点，id 是 `macro_cascade_point_id` 的确定性身份，起点/终点按旧/新宏位置算 |
+//! | ④（导出随新位置变化） | 同一工程 `TrackGainAutomation` 从恒等变为非恒等，tick 3840 的 `last_db` 与目标泳道终点逐位相同 |
+//! | ⑤（UI 明说仅导出） | 面板有 `macro-panel-export-only` 角标，文案走 `@tr` 且八语文档有名 |
 //!
 //! ## 平台约束
 //!
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/ui_export_dialog.rs` 同款）。
-
-#![allow(unused)]
-#[path = "../src/live_surface.rs"]
-// 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code
-// （`-D warnings` 会判红）。同款见 `tests/ui_export_dialog.rs`。
-#[allow(dead_code)]
-mod live;
+//!
+//! ## 红对照
+//!
+//! 把 `host::wire_macro_panel` 的 `macro-release` 退回只提交 `Op::SetMacro`：
+//! `commit_count` 仍 `+1`，但目标泳道 0 点、导出求值器仍恒等 ⇒ ③④ 当场红。
 
 use std::rc::Rc;
 
-use slint::Model as _;
-
-use live::{LiveControlPlane, LiveWiringOptions, build_live_ui_with};
-use yeban_app::elements::ElementKind;
-use yeban_app::undo::{UiAction, UndoPort, UndoSession};
-use yeban_ui_mcp::tree::UiTree;
+use yeban_app::bridge::ViewState;
+use yeban_app::host;
+use yeban_app::scene::DemoScene;
+use yeban_app::ui::MainWindow;
+use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_model::AutomationTarget;
+use yeban_model::MacroMapping;
+use yeban_model::YebanProjectV1;
+use yeban_model::ids::macro_cascade_point_id;
+use yeban_render::automation::TrackGainAutomation;
+use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
+use yeban_ui_test_port::render::LivePort;
 
-/// 抽屉打开后在树里的七个语义 ID 与登记角色（`elements.rs` 是同一份口径）。
-const PANEL_IDS: [(&str, ElementKind); 7] = [
-    ("macro-panel", ElementKind::Region),
-    ("macro-panel-title", ElementKind::Text),
-    ("macro-panel-close-button", ElementKind::Button),
-    ("macro-0-row", ElementKind::ListItem),
-    ("macro-0-name", ElementKind::Text),
-    ("macro-0-value", ElementKind::Text),
-    ("macro-0-slider", ElementKind::Slider),
-];
+const NOW_MS: u64 = 1_700_000_000_000;
 
-fn tree_ids(plane: &mut LiveControlPlane) -> Vec<String> {
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    let mut ids: Vec<String> = tree.nodes.iter().map(|node| node.id.clone()).collect();
-    ids.sort();
-    ids
+fn live_window(project: &YebanProjectV1) -> LivePort<MainWindow> {
+    let view = ViewState::from_project(project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口")
 }
 
-fn node<'a>(tree: &'a UiTree, id: &str) -> &'a yeban_ui_mcp::tree::UiNode {
-    tree.nodes
-        .iter()
-        .find(|node| node.id == id)
-        .unwrap_or_else(|| panic!("`{id}` 不在运行时控件树里（树里 {} 条）", tree.nodes.len()))
-}
-
-fn f32_row(model: &slint::ModelRc<f32>, index: usize) -> f32 {
-    model.row_data(index).expect("滑块值必须存在")
+fn undo_port(project: &YebanProjectV1) -> Rc<UndoPort> {
+    Rc::new(UndoPort::new(
+        UndoSession::open("<判据 macro>", "yeban-app", project.clone(), NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ))
 }
 
 #[test]
-fn the_macro_panel_is_hidden_until_opened_and_its_slider_commits_one_set_macro() {
-    // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
-    // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+fn macro_slider_materialises_the_cascade_and_export_follows_the_new_position() {
+    let mut project = yeban_model::samples::filled_project();
+    let macro_track = project
+        .tracks
+        .values()
+        .find(|track| !track.macros.is_empty())
+        .expect("样本必须有带宏的音轨")
+        .id;
+    // 样本的宏映射指向 DeviceParam；本判据把同一台宏改绑到目标单位更直观的
+    // `TrackVolume`（depth = 6 dB），这样导出读数可以直接和推子 dB 对位。
+    project.tracks.get_mut(&macro_track).expect("宏轨").macros[0].mappings = vec![MacroMapping {
+        target: AutomationTarget::TrackVolume {
+            track_id: macro_track,
+        },
+        depth: 6.0,
+    }];
+    let target = project.tracks[&macro_track].macros[0].mappings[0].target;
+    let macro_lane = AutomationTarget::Macro {
+        track_id: macro_track,
+        macro_index: 0,
+    };
+    // 样本自带一条音量点线；判据要证“无泳道无物化点”，先把这条目标泳道摘掉。
+    project
+        .tracks
+        .get_mut(&macro_track)
+        .expect("宏轨")
+        .automation_lanes
+        .remove(&target);
+    // ① 前提：无 Macro 泳道、无物化点。
     assert!(
-        aether_app.contains("> macro-panel-open:"),
-        "契约面必须声明 > macro-panel-open:"
+        !project.tracks[&macro_track]
+            .automation_lanes
+            .contains_key(&target),
+        "夹具必须从“无物化点”开始"
     );
     assert!(
-        aether_host.contains("wire_macro_panel"),
-        "宿主接线层必须注册 wire_macro_panel"
+        !project.tracks[&macro_track]
+            .automation_lanes
+            .contains_key(&macro_lane),
+        "夹具必须从“无 Macro 泳道”开始"
     );
-    assert!(
-        aether_app.contains("> macro-values:"),
-        "契约面必须声明 > macro-values:"
+
+    let mut live = live_window(&project);
+    let ui = live.ui();
+    let port = undo_port(&project);
+    host::wire_edit_surfaces(ui, &port);
+    ui.set_selected_track_id(macro_track.to_string().into());
+
+    let old_value = project.tracks[&macro_track].macros[0].value;
+    let depth = project.tracks[&macro_track].macros[0].mappings[0].depth;
+    let static_value = target.static_value(&project).expect("目标静态值");
+    let before_commits = port.display().commit_count;
+
+    // ② 手势：按下 / 拖动只改视图态，松手才提交。
+    ui.invoke_macro_grab(0, 0.0);
+    ui.invoke_macro_drag(0, 1.0);
+    ui.invoke_macro_release(0);
+    assert_eq!(
+        port.display().commit_count,
+        before_commits + 1,
+        "一次松手必须恰好一个提交"
     );
+
+    let after = port.try_project().expect("提交后的工程");
+    let lane = after.tracks[&macro_track]
+        .automation_lanes
+        .get(&target)
+        .expect("手势必须物化目标泳道");
+    let first = macro_cascade_point_id(macro_track, 0, 0, 0);
+    let last = macro_cascade_point_id(macro_track, 0, 0, 1);
+    // ③ 级联点数与确定性身份：恰好两个点。
+    assert_eq!(lane.points.len(), 2, "一条映射必须恰好两个级联点");
+    let start = lane.points.get(&first).expect("起点");
+    let end = lane.points.get(&last).expect("终点");
+    assert_eq!(
+        start.value.to_bits(),
+        (static_value + old_value * depth).to_bits(),
+        "起点 = 静态值 + 旧宏位置 × depth"
+    );
+    assert_eq!(
+        end.value.to_bits(),
+        (static_value + 1.0 * depth).to_bits(),
+        "终点 = 静态值 + 新宏位置 × depth"
+    );
+    assert_eq!(
+        after.tracks[&macro_track].macros[0].value.to_bits(),
+        1.0_f32.to_bits()
+    );
+
+    // ④ 导出侧真的读新值：手前恒等，手后读到终点值（tick 3840 = 96000 帧 @120bpm）。
+    let before_export = TrackGainAutomation::new(&project, macro_track, 48_000);
     assert!(
-        aether_host.contains("macro_values"),
-        "宿主接线层必须注册 macro_values"
+        before_export.is_identity(),
+        "无泳道无物化点时导出必须是恒等"
+    );
+    let mut after_export = TrackGainAutomation::new(&after, macro_track, 48_000);
+    assert!(!after_export.is_identity(), "物化后导出不得再走恒等快路径");
+    let mut buffer = vec![0.25_f32; 256];
+    after_export.apply_ratio_block(&mut buffer, 96_000, 256, 1);
+    let reading = after_export.last_db().expect("物化后导出必须有读数");
+    assert_eq!(
+        reading.to_bits(),
+        end.value.to_bits(),
+        "导出读数必须与目标泳道终点逐位相同"
+    );
+
+    // ④-b 有旧物化点再转宏：必须按新位置重写既有两个点（⛔ 不是继续按旧值）。
+    let before_second_commits = port.display().commit_count;
+    ui.invoke_macro_grab(0, 0.25);
+    ui.invoke_macro_drag(0, 0.5);
+    ui.invoke_macro_release(0);
+    assert_eq!(
+        port.display().commit_count,
+        before_second_commits + 1,
+        "第二次松手仍是一个提交"
+    );
+    let after_second = port.try_project().expect("第二次提交后的工程");
+    let second_lane = after_second.tracks[&macro_track]
+        .automation_lanes
+        .get(&target)
+        .expect("旧泳道必须仍在");
+    assert_eq!(second_lane.points.len(), 2, "重写后仍恰好两个点");
+    let rewritten_end = second_lane.points.get(&last).expect("终点身份不变").value;
+    assert_eq!(
+        rewritten_end.to_bits(),
+        (static_value + 0.5 * depth).to_bits(),
+        "旧物化点必须按新宏位置重写"
+    );
+    let mut second_export = TrackGainAutomation::new(&after_second, macro_track, 48_000);
+    let mut second_buffer = vec![0.25_f32; 256];
+    second_export.apply_ratio_block(&mut second_buffer, 96_000, 256, 1);
+    assert_eq!(
+        second_export.last_db().expect("第二次导出读数").to_bits(),
+        rewritten_end.to_bits(),
+        "有旧物化点时导出也必须跟随新宏位置"
+    );
+
+    // ⑤ 面板明说只导出，语义 ID 在控件树里。
+    ui.set_macro_panel_open(true);
+    let tree = live.refresh_tree(None).expect("ui/tree");
+    assert!(
+        tree.contains("macro-panel-export-only"),
+        "宏面板必须挂出“仅导出”角标"
     );
 }

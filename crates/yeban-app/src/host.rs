@@ -6037,26 +6037,30 @@ fn preview_macro_value(ui: &MainWindow, macro_index: usize, value: f32) {
 }
 
 /// 宏面板的**写入面**：一个滑块手势 = **恰好一次** [`UndoPort::commit_ops`]
-/// （一个 `Op::SetMacro`，撤销标签 `"set macro"`）。
+/// （撤销标签 `"set macro"`；同批含 `Op::SetMacro` 与该宏每条映射的两个级联点）。
 ///
 /// | 回调 | `.slint` | 作用 |
 /// | :--- | :--- | :--- |
 /// | `macro-grab(int, float)` | `on_macro_grab` | 解析展示轨与宏下标，记下 `old_val`；按下即定位 |
 /// | `macro-drag(int, float)` | `on_macro_drag` | 只写视图态预览 |
-/// | `macro-release(int)` | `on_macro_release` | 核基线 → 提交一次 `SetMacro` → 重投影 |
+/// | `macro-release(int)` | `on_macro_release` | 核基线 → 复用 MCP 级联规划 → 提交一次批次 → 重投影 |
 ///
 /// ## 目标与规则（全部来自权威工程，⛔ 不信界面）
 ///
 /// - 主语是 [`display_track`]（选中轨 or 兜底，与设备架 / 发送条**同一条**）；
 /// - 松手时重解析展示轨：身份变了 / 工程值已变（陈旧基线）⇒ 放弃提交并重投影；
 /// - 值域 `0.0..=1.0` 与 `0.01` 一格由 [`macro_value_from_fraction`] 唯一决定；
-/// - 模型校验（[`yeban_model::Op::SetMacro`]）仍会拒绝非法值 ⇒ 这里先夹紧，
+/// - ⭐ 级联展开复用 `yeban_mcp::domain::macros::plan`（与 `yeban_set_macro` **同一个**
+///   规划器）：`Op::SetMacro` ＋ 每条映射两个 `macro-cascade:` 点，⛔ 不在这里写第二份
+///   公式。因此**没有 `Macro` 泳道、也没有旧物化点**的工程，转宏后导出会真的变化；
+///   有旧物化点的工程会按新位置重写起点/终点；
+/// - 模型校验（[`yeban_model::Op::SetMacro`] / `Validate`）仍会拒绝非法值 ⇒ 这里先夹紧，
 ///   但**不**替模型做别的判定。
 ///
 /// ## 它**不**做什么
 ///
 /// ⛔ 不新建 / 删除宏（`Op` 全集里没有 `AddMacro` / `RemoveMacro`）；
-/// ⛔ 不写映射（`MacroMapping` 是设备层的字段，工具面也没有入口）；
+/// ⛔ 不新建 `Macro` 泳道（映射是设备层字段；实时侧尚未有宏落点 ⇒ 面板固定标“仅导出”）；
 /// ⛔ 不碰引擎。
 pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
@@ -6187,13 +6191,33 @@ pub fn wire_macro_panel(ui: &MainWindow, port: &Rc<UndoPort>) {
                 refresh_undo_window(&ui, &port, true);
                 return;
             }
-            let op = yeban_model::Op::SetMacro {
-                track_id,
-                macro_index,
-                old_val: start_value,
-                new_val: last_value,
+            // ⭐ 复用 MCP 的**同一个**宏规划器：`Op::SetMacro` ＋ 每条映射的两个级联点。
+            // ⛔ 不在这里按 `mappings` 再算一份（第二份公式就是下一次漂移）。
+            #[cfg(feature = "in-process-mcp")]
+            let ops =
+                match yeban_mcp::domain::macros::plan(&project, &track_id, macro_index, last_value)
+                {
+                    Ok(plan) => plan.ops,
+                    Err(error) => {
+                        eprintln!("[yeban-app] 宏位置提交被放弃：级联规划失败 {error:?}");
+                        report_rejected(&ui, "宏位置");
+                        refresh_undo_window(&ui, &port, true);
+                        return;
+                    }
+                };
+            // 非进程内 MCP 构建没有级联规划器；保留一次 `SetMacro`，但**响亮**说明
+            // 这条路没有物化点（⛔ 不假装有音频效果）。
+            #[cfg(not(feature = "in-process-mcp"))]
+            let ops = {
+                eprintln!("[yeban-app] 本构建没有 in-process-mcp：宏位置只写文档，不展开级联");
+                vec![yeban_model::Op::SetMacro {
+                    track_id,
+                    macro_index,
+                    old_val: start_value,
+                    new_val: last_value,
+                }]
             };
-            if port.commit_ops(now_ms(), "set macro", vec![op]).is_err() {
+            if port.commit_ops(now_ms(), "set macro", ops).is_err() {
                 report_rejected(&ui, "宏位置");
             }
             // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。

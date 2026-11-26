@@ -2671,3 +2671,7 @@ msgstr ".jsfx-Datei zum Einspeisen in ysfx auswählen"
 msgid "总览分析状态（纯谱面回退 / 渲染失败原因）"
 msgstr "Status der Übersicht-Analyse (nur Partitur-Fallback / Grund für Renderfehler)"
 
+
+# --- T-FIX-533: macro panel export-only badge ---
+msgid "仅导出：实时监听尚未执行宏"
+msgstr "Nur Export: Makros werden bei der Live-Wiedergabe noch nicht angewendet"

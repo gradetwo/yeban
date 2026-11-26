@@ -4,8 +4,8 @@
 // `MacroRowView`）。三个平行数组（名字 / 位置 0.0..=1.0 / 位置文本）**同索引集**，
 // 下标就是模型里的 `macro_index` —— 宿主提交的 `Op::SetMacro` 用它寻址。
 //
-// 语义 ID (`[UI-TEST-001]` §12.2): `macro-panel` / `macro-empty-state` /
-// `macro-{i}-row` / `macro-{i}-name` / `macro-{i}-slider` / `macro-{i}-value`。
+// 语义 ID (`[UI-TEST-001]` §12.2): `macro-panel` / `macro-panel-export-only` /
+// `macro-empty-state` / `macro-{i}-row` / `macro-{i}-name` / `macro-{i}-slider` / `macro-{i}-value`。
 //
 // ⚠ 本文件**不**新建 / 删除宏（`Op` 全集里没有 `AddMacro` / `RemoveMacro`），
 // 也**不**编辑映射（`MacroMapping` 没有工具面入口，`Op` 枚举体内无 `mappings` 字样
@@ -116,11 +116,29 @@ export component MacroPanel inherits Rectangle {
         }
     }
 
+    // ---------------------------------------------------------------- 仅导出角标
+    // 实时侧目前**没有**宏落点（`EngineHost` 只执行目标泳道 / 设备参数 / CC / 发送增益）。
+    // 宏手势现在会真物化级联点，因此导出有声、监听无声；这行角标必须先讲清楚，
+    // ⛔ 不把宏画成一个"能听见"的普通旋钮。实时侧接上后再删这一行。
+    UiMonoText {
+        x: Tokens.space-6;
+        y: 36px;
+        width: parent.width - 32px;
+        height: 14px;
+        text: @tr("仅导出：实时监听尚未执行宏");
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        accessible-role: text;
+        accessible-id: "macro-panel-export-only";
+        accessible-label: @tr("仅导出：实时监听尚未执行宏");
+    }
+
     // ---------------------------------------------------------------- 空态
     // 零宏时画一句用户可见的话，⛔ 不是一片空白（与 `musical-pr-empty-state` 同一条纪律）。
     UiMonoText {
         x: Tokens.space-6;
-        y: 52px;
+        y: 68px;
         width: parent.width - 32px;
         height: 16px;
         text: @tr("这条轨没有宏");
@@ -136,7 +154,7 @@ export component MacroPanel inherits Rectangle {
     for macro_name[macro_index] in root.macro-names : Rectangle {
         x: Tokens.space-6;
         // 行高 52px（名字 16 + 滑块 20 + 级联去向 16）：级联摘要不压在滑块上。
-        y: 48px + 56px * macro_index;
+        y: 64px + 56px * macro_index;
         width: parent.width - 32px;
         height: 52px;
         background: transparent;
