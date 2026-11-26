@@ -116,16 +116,23 @@ fn inrepo_synthetic_demos_cover_the_chooser_data_layer() {
         user: scratch.dir.join("user"),
     };
     let data = gather(&Settings::default(), &roots);
-    assert_eq!(data.demos.len(), 2, "两条合成 demo 必须都被扫到");
+    // T-FIX-951 起 gather 还并入 8 条官方 demo（带下载态）；本判据只认
+    // 合成目录里的两条本地 demo（无下载态）。
+    let synthetic: Vec<_> = data
+        .demos
+        .iter()
+        .filter(|entry| entry.download.is_none())
+        .collect();
+    assert_eq!(synthetic.len(), 2, "两条合成 demo 必须都被扫到");
     assert!(
-        data.demos
+        synthetic
             .iter()
             .all(|entry| matches!(entry.source, DemoSource::File(_))),
         "演示清单只能是文件型"
     );
 
-    let a = &data.demos[0];
-    let b = &data.demos[1];
+    let a = synthetic[0];
+    let b = synthetic[1];
     let pa = yeban_model::samples::filled_project();
     let mut pb = pa.clone();
     pb.bpm = 90.0;
@@ -150,7 +157,7 @@ fn inrepo_synthetic_demos_cover_the_chooser_data_layer() {
         secs_a
     );
     assert!(
-        a.cover.as_deref().is_some_and(|p| p.is_file()),
+        a.cover.path().is_some_and(|p| p.is_file()),
         "同目录合成封面必须被认出"
     );
 
@@ -162,12 +169,13 @@ fn inrepo_synthetic_demos_cover_the_chooser_data_layer() {
     assert_eq!(b.bars, bars_b);
     assert!((b.duration_secs - secs_b).abs() < 0.5);
     assert!(
-        b.cover.as_deref().is_some_and(|p| p.is_file()),
+        b.cover.path().is_some_and(|p| p.is_file()),
         "同名封面约定也必须认出"
     );
 
     // 行模型：详情行按专辑页顺序，有数据才有行。
-    let rows = demo_rows(&data.demos, Language::ZhCn);
+    let synthetic_entries: Vec<_> = synthetic.iter().map(|entry| (*entry).clone()).collect();
+    let rows = demo_rows(&synthetic_entries, Language::ZhCn);
     assert_eq!(rows.len(), 2);
     let labels_a: Vec<&str> = rows[0]
         .detail_rows

@@ -145,8 +145,8 @@ pub struct DemoEntry {
     pub bars: usize,
     /// 全曲时长（秒，按片段末端 tick 与 bpm 实算，只进「详情」）。
     pub duration_secs: f64,
-    /// 封面图路径（文件型 demo 的同名图片；无同名图片时 `None`）。
-    pub cover: Option<PathBuf>,
+    /// 封面三态（文件型 demo 的同名图片；T-FIX-541）。
+    pub cover: DemoCover,
     /// 官方 demo 的下载态（T-FIX-951）；本地 demo 为 `None`。
     pub download: Option<DemoDownloadState>,
 }
@@ -205,6 +205,45 @@ impl DemoDownloadState {
             },
             Self::Failed(message) => message.clone(),
             _ => String::new(),
+        }
+    }
+}
+
+/// 演示封面的三态（T-FIX-541）：没有封面文件 / 有且解码成功 / 有但解码失败。
+///
+/// 两态（`Option<PathBuf>`）只能表达"有没有文件"，不能表达"解没解开" ——
+/// 坏图与"本来没封面"在界面上长得一模一样。失败态带原因，详情里必须看得见。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DemoCover {
+    /// 没有同名图片。
+    None,
+    /// 有同名图片，宿主侧解码成功。
+    Ready(PathBuf),
+    /// 有同名图片，但解码失败（坏图 / 格式不支持 / 读不了）；`reason` 是原样原因。
+    Failed {
+        /// 解码失败的图片路径。
+        path: PathBuf,
+        /// 失败原因（解码器原文，⛔ 不吞、⛔ 不编造友好文案）。
+        reason: String,
+    },
+}
+
+impl DemoCover {
+    /// 有封面文件时返回它的路径（失败态也给，便于日志/回执指认）。
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            DemoCover::None => None,
+            DemoCover::Ready(path) | DemoCover::Failed { path, .. } => Some(path),
+        }
+    }
+
+    /// 解码失败时返回原因（成功 / 无封面 ⇒ `None`）。
+    #[must_use]
+    pub fn failure(&self) -> Option<&str> {
+        match self {
+            DemoCover::Failed { reason, .. } => Some(reason.as_str()),
+            _ => None,
         }
     }
 }
@@ -513,7 +552,7 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
         bpm: project.bpm,
         bars,
         duration_secs,
-        cover,
+        cover: cover.map_or(DemoCover::None, DemoCover::Ready),
         download: None,
     })
 }
@@ -542,7 +581,7 @@ fn load_official_demo_entry(path: &Path, spec: &crate::demo_download::DemoSpec) 
         bars: meta.bars.unwrap_or(0),
         duration_secs: meta.duration_secs.unwrap_or(0.0),
         meta,
-        cover,
+        cover: cover.map_or(DemoCover::None, DemoCover::Ready),
         download: Some(DemoDownloadState::Downloaded),
     }
 }
@@ -564,7 +603,7 @@ fn pending_official_demo_entry(spec: &crate::demo_download::DemoSpec) -> DemoEnt
         bpm: 0.0,
         bars: 0,
         duration_secs: 0.0,
-        cover: None,
+        cover: DemoCover::None,
         download: Some(DemoDownloadState::NotDownloaded),
     }
 }
@@ -938,7 +977,10 @@ fn demo_rows_matching_entries(
             detail_rows,
             entry_index: Some(index),
             enabled: true,
-            cover: entry.cover.clone(),
+            cover: match &entry.cover {
+                DemoCover::Ready(path) => Some(path.clone()),
+                _ => None,
+            },
             download: entry.download.clone(),
         });
     }
@@ -969,6 +1011,8 @@ enum DetailField {
     Copyright,
     License,
     Website,
+    /// 封面读不了（T-FIX-541；只在解码失败时出现，⛔ 没有封面不列）。
+    CoverError,
 }
 
 /// 详情字段标签（九语闭集；时长 / 小节 / 轨道的词根与
@@ -989,6 +1033,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::ZhCn, F::Copyright) => "版权声明",
         (L::ZhCn, F::License) => "许可协议",
         (L::ZhCn, F::Website) => "作者网站",
+        (L::ZhCn, F::CoverError) => "封面读不了",
         (L::EnUs, F::Author) => "Author",
         (L::EnUs, F::Genre) => "Genre",
         (L::EnUs, F::Released) => "Release date",
@@ -1000,6 +1045,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::EnUs, F::Copyright) => "Copyright",
         (L::EnUs, F::License) => "License",
         (L::EnUs, F::Website) => "Website",
+        (L::EnUs, F::CoverError) => "Cover unreadable",
         (L::FrFr, F::Author) => "Artiste",
         (L::FrFr, F::Genre) => "Genre",
         (L::FrFr, F::Released) => "Date de sortie",
@@ -1011,6 +1057,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::FrFr, F::Copyright) => "Droits d'auteur",
         (L::FrFr, F::License) => "Licence",
         (L::FrFr, F::Website) => "Site web",
+        (L::FrFr, F::CoverError) => "Couverture illisible",
         (L::EsEs, F::Author) => "Artista",
         (L::EsEs, F::Genre) => "Género",
         (L::EsEs, F::Released) => "Fecha de lanzamiento",
@@ -1022,6 +1069,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::EsEs, F::Copyright) => "Derechos de autor",
         (L::EsEs, F::License) => "Licencia",
         (L::EsEs, F::Website) => "Sitio web",
+        (L::EsEs, F::CoverError) => "Portada ilegible",
         (L::PtBr, F::Author) => "Artista",
         (L::PtBr, F::Genre) => "Gênero",
         (L::PtBr, F::Released) => "Data de lançamento",
@@ -1033,6 +1081,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::PtBr, F::Copyright) => "Direitos autorais",
         (L::PtBr, F::License) => "Licença",
         (L::PtBr, F::Website) => "Site",
+        (L::PtBr, F::CoverError) => "Capa ilegível",
         (L::JaJp, F::Author) => "アーティスト",
         (L::JaJp, F::Genre) => "ジャンル",
         (L::JaJp, F::Released) => "リリース日",
@@ -1044,6 +1093,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::JaJp, F::Copyright) => "著作権",
         (L::JaJp, F::License) => "ライセンス",
         (L::JaJp, F::Website) => "ウェブサイト",
+        (L::JaJp, F::CoverError) => "カバーを読み込めません",
         (L::KoKr, F::Author) => "아티스트",
         (L::KoKr, F::Genre) => "장르",
         (L::KoKr, F::Released) => "발매일",
@@ -1055,6 +1105,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::KoKr, F::Copyright) => "저작권",
         (L::KoKr, F::License) => "라이선스",
         (L::KoKr, F::Website) => "웹사이트",
+        (L::KoKr, F::CoverError) => "커버를 읽을 수 없음",
         (L::RuRu, F::Author) => "Автор",
         (L::RuRu, F::Genre) => "Жанр",
         (L::RuRu, F::Released) => "Дата выпуска",
@@ -1066,6 +1117,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::RuRu, F::Copyright) => "Авторские права",
         (L::RuRu, F::License) => "Лицензия",
         (L::RuRu, F::Website) => "Сайт",
+        (L::RuRu, F::CoverError) => "Обложку не удалось прочитать",
         (L::DeDe, F::Author) => "Künstler",
         (L::DeDe, F::Genre) => "Genre",
         (L::DeDe, F::Released) => "Veröffentlichungsdatum",
@@ -1077,6 +1129,7 @@ fn detail_field_label(lang: Language, field: DetailField) -> &'static str {
         (L::DeDe, F::Copyright) => "Urheberrecht",
         (L::DeDe, F::License) => "Lizenz",
         (L::DeDe, F::Website) => "Website",
+        (L::DeDe, F::CoverError) => "Cover nicht lesbar",
     }
 }
 
@@ -1115,6 +1168,11 @@ pub fn demo_detail_rows(lang: Language, entry: &DemoEntry) -> Vec<DemoDetailRow>
     push(DetailField::Copyright, entry.meta.copyright.clone());
     push(DetailField::License, entry.meta.license.clone());
     push(DetailField::Website, entry.meta.website.clone());
+    // ⭐ T-FIX-541：封面解码失败必须在详情里看得见（⛔ 只写默认关闭的 module 回执）。
+    push(
+        DetailField::CoverError,
+        entry.cover.failure().map(str::to_owned),
+    );
     rows
 }
 
@@ -1887,7 +1945,7 @@ mod tests {
             bpm: 120.0,
             bars: 0,
             duration_secs: 0.0,
-            cover: None,
+            cover: DemoCover::None,
             download: None,
         }
     }
@@ -2227,5 +2285,61 @@ mod tests {
         assert_eq!(rows.len(), 1, "搜索原因命中时只剩那条置灰行");
         assert!(!rows[0].enabled);
         std::fs::remove_dir_all(missing.parent().expect("父目录")).ok();
+    }
+
+    /// ⭐ T-FIX-541：封面解码失败必须在详情里看得见（一行「封面读不了：原因」），
+    /// 没有封面 / 封面正常两种状态⛔ 不列该行 —— 三态必须可区分。
+    #[test]
+    fn a_failed_cover_is_a_visible_detail_row() {
+        let mut failed = demo_entry("Bad Cover", None);
+        failed.cover = DemoCover::Failed {
+            path: PathBuf::from("bad-cover.png"),
+            reason: "The image format could not be determined".to_owned(),
+        };
+        let rows = demo_detail_rows(Language::ZhCn, &failed);
+        let row = rows
+            .iter()
+            .find(|row| row.label == "封面读不了")
+            .expect("坏封面必须在详情里有一行");
+        assert_eq!(
+            row.value, "The image format could not be determined",
+            "失败行必须原样带解码器原因（⛔ 不吞、⛔ 不编造友好文案）"
+        );
+        // 卡片摘要（无障碍 label）与展开区高度也必须算进这一行。
+        let demo_rows = demo_rows_matching(std::slice::from_ref(&failed), Language::ZhCn, "");
+        let demo_row = demo_rows
+            .iter()
+            .find(|row| row.entry_index.is_some())
+            .expect("演示行必须在");
+        assert!(
+            demo_row.details.contains("封面读不了"),
+            "卡片「详情」拼法里必须带上这一行，实测 {:?}",
+            demo_row.details
+        );
+        assert!(
+            demo_row.details_height_px > 0,
+            "有失败行时展开区高度必须按行数长出来"
+        );
+        assert!(
+            demo_row.cover.is_none(),
+            "失败态没有可显示的图（⛔ 不要拿空图冒充有封面）"
+        );
+
+        // 没有封面 ⇒ 不列；封面正常 ⇒ 也不列（那是成功，不是失败）。
+        let none = demo_entry("No Cover", None);
+        assert!(
+            !demo_detail_rows(Language::ZhCn, &none)
+                .iter()
+                .any(|row| row.label == "封面读不了"),
+            "没有封面文件不是失败，⛔ 不许列「封面读不了」"
+        );
+        let mut ready = demo_entry("Good Cover", None);
+        ready.cover = DemoCover::Ready(PathBuf::from("good-cover.png"));
+        assert!(
+            !demo_detail_rows(Language::ZhCn, &ready)
+                .iter()
+                .any(|row| row.label == "封面读不了"),
+            "封面正常时⛔ 不许列「封面读不了」"
+        );
     }
 }

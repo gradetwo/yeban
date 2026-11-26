@@ -12574,6 +12574,49 @@ const STARTUP_CATEGORY_USER: i32 = 4;
 
 /// 拍号分母的步进表（模型合法集 {1,2,4,8,16,32}，界面按下标步进）。
 const STARTUP_TIME_DENOMINATORS: [u8; 6] = [1, 2, 4, 8, 16, 32];
+thread_local! {
+    /// 本次重灌前刚解码成功的封面（路径 ⇒ 图像）。`resolve_demo_cover_states`
+    /// 填、`apply_startup_category` 读，⛔ 不重复解码、⛔ 不给工作线程碰。
+    static DEMO_COVER_IMAGES: RefCell<std::collections::HashMap<std::path::PathBuf, slint::Image>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// 把「封面解码成功 / 失败」落进数据本身（T-FIX-541）：成功 ⇒ 图像进
+/// [`DEMO_COVER_IMAGES`]；失败 ⇒ 条目翻成 `DemoCover::Failed`（带原因），
+/// 详情里因此有一行「封面读不了：原因」。
+///
+/// 旧的 module 回执保留（日志面），但**不再是唯一出口**；也不依赖
+/// `YEBAN_UI_MODULE_TRACE` 才看得见。
+fn resolve_demo_cover_states(data: &mut crate::startup_chooser::ChooserData) {
+    use crate::startup_chooser::DemoCover;
+    DEMO_COVER_IMAGES.with(|images| images.borrow_mut().clear());
+    for entry in &mut data.demos {
+        let DemoCover::Ready(path) = &entry.cover else {
+            continue;
+        };
+        let path = path.clone();
+        match slint::Image::load_from_path(&path) {
+            Ok(image) => {
+                DEMO_COVER_IMAGES.with(|images| {
+                    images.borrow_mut().insert(path, image);
+                });
+            }
+            Err(error) => {
+                let message = format!("演示封面 `{}` 加载失败: {error}", path.display());
+                eprintln!("startup-chooser: {message}");
+                let receipt = module_receipt(
+                    "startup-chooser",
+                    &module_error_fields("cover-load", &message),
+                );
+                module_trace("startup-chooser", std::time::Instant::now(), &receipt);
+                entry.cover = DemoCover::Failed {
+                    path,
+                    reason: error.to_string(),
+                };
+            }
+        }
+    }
+}
 
 /// 把某个分类的行模型写进窗口（行构造的纯逻辑在
 /// [`crate::startup_chooser`]，这里只做编码与灌模型）。切换分类
@@ -12624,24 +12667,15 @@ fn apply_startup_category(
     let model: Vec<crate::ui::StartupChooserRow> = rows
         .iter()
         .map(|row| {
-            // 封面在宿主侧真实加载（文件型 demo 实验）：加载失败
-            // **响亮**报错并降级为无封面行，⛔ 不静默吞。
-            let (has_cover, cover) = match &row.cover {
-                Some(path) => match slint::Image::load_from_path(path) {
-                    Ok(image) => (true, image),
-                    Err(error) => {
-                        let message = format!("演示封面 `{}` 加载失败: {error}", path.display());
-                        eprintln!("startup-chooser: {message}");
-                        let receipt = module_receipt(
-                            "startup-chooser",
-                            &module_error_fields("cover-load", &message),
-                        );
-                        module_trace("startup-chooser", std::time::Instant::now(), &receipt);
-                        (false, slint::Image::default())
-                    }
-                },
-                None => (false, slint::Image::default()),
+            // 封面在宿主侧真实加载（文件型 demo 实验）：解码失败已由
+            // [`resolve_demo_cover_states`] 写进条目的 `DemoCover::Failed`
+            // （详情里一行「封面读不了：原因」），这里只取已解码好的图像。
+            let cover = match &row.cover {
+                Some(path) => DEMO_COVER_IMAGES.with(|images| images.borrow().get(path).cloned()),
+                None => None,
             };
+            let has_cover = cover.is_some();
+            let cover = cover.unwrap_or_default();
             crate::ui::StartupChooserRow {
                 kind: row.kind.code(),
                 label: row.label.clone().into(),
@@ -13031,6 +13065,7 @@ pub fn wire_startup_chooser(
             .position(|rate| *rate == initial_details.sample_rate)
             .unwrap_or(1) as i32,
     );
+    resolve_demo_cover_states(&mut data.borrow_mut());
     apply_startup_category(ui, &data.borrow(), STARTUP_CATEGORY_NEW, "");
 
     // ---- 分类切换 -----------------------------------------------------
@@ -13044,6 +13079,7 @@ pub fn wire_startup_chooser(
                 return;
             };
             // 换分类不清空搜索串：那一句是用户敲的，⛔ 不是分类的一部分。
+            resolve_demo_cover_states(&mut data_nav.borrow_mut());
             apply_startup_category(&ui, &data_nav.borrow(), category, &search_nav.borrow());
         });
     }
@@ -13062,6 +13098,8 @@ pub fn wire_startup_chooser(
             // 那一刻那条两向绑定是否已经传播完没有上游保证，读到旧值 = 过滤器永远慢一个字。
             // 也不写回那份字（写者只有输入框）。
             *search_search.borrow_mut() = query.to_string();
+            // 搜索重灌同样要先解封面（否则失败态会随搜索被"忘掉"）。
+            resolve_demo_cover_states(&mut data_search.borrow_mut());
             apply_startup_category(
                 &ui,
                 &data_search.borrow(),
@@ -28933,7 +28971,9 @@ pub fn build_main_window_with_console_tab(
 
 #[cfg(test)]
 mod tests {
+    use super::DEMO_COVER_IMAGES;
     use super::advance_scroll;
+    use super::resolve_demo_cover_states;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -29913,6 +29953,77 @@ mod tests {
             1,
             "起点 0 也不可能产出 0"
         );
+    }
+    /// ⭐ T-FIX-541：坏图必须把条目翻成 `DemoCover::Failed`（带原因），
+    /// 好图必须留在 `Ready` 并把解码结果放进本次重灌的图像表。
+    /// 默认环境下跑（⛔ 不依赖 `YEBAN_UI_MODULE_TRACE`）。
+    #[test]
+    fn resolve_demo_cover_states_marks_bad_images_failed() {
+        assert!(
+            std::env::var_os("YEBAN_UI_MODULE_TRACE").is_none(),
+            "判据必须在默认环境下成立（证明不依赖 trace 开关）"
+        );
+        let dir = std::env::temp_dir().join("yeban-t-fix-541-cover");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let bad = dir.join("bad.png");
+        let good = dir.join("good.png");
+        std::fs::write(&bad, b"not a png").expect("写坏图");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/brand/png/yeban-light-64.png");
+        assert!(
+            source.exists(),
+            "封面判据需要仓内素材：{}",
+            source.display()
+        );
+        std::fs::copy(&source, &good).expect("复制好图");
+
+        let entry = |title: &str, cover: std::path::PathBuf| crate::startup_chooser::DemoEntry {
+            source: crate::startup_chooser::DemoSource::File(cover.clone()),
+            title: title.to_owned(),
+            track_count: 0,
+            author: None,
+            genre: None,
+            meta: crate::startup_chooser::DemoMeta::default(),
+            bpm: 120.0,
+            bars: 0,
+            duration_secs: 0.0,
+            cover: crate::startup_chooser::DemoCover::Ready(cover),
+            download: None,
+        };
+        let bad_entry = entry("Bad", bad.clone());
+        let good_entry = entry("Good", good.clone());
+        let mut data = crate::startup_chooser::ChooserData {
+            recent: Vec::new(),
+            demos: vec![bad_entry, good_entry],
+            blocked_demos: Vec::new(),
+            templates: Vec::new(),
+            template_diagnostics: Vec::new(),
+        };
+
+        resolve_demo_cover_states(&mut data);
+
+        match &data.demos[0].cover {
+            crate::startup_chooser::DemoCover::Failed { reason, .. } => {
+                assert!(!reason.is_empty(), "失败原因不许为空");
+            }
+            other => panic!("坏图必须翻成 Failed，实测 {other:?}"),
+        }
+        assert!(
+            matches!(
+                data.demos[1].cover,
+                crate::startup_chooser::DemoCover::Ready(_)
+            ),
+            "好图必须留在 Ready"
+        );
+        assert!(
+            DEMO_COVER_IMAGES.with(|images| images.borrow().contains_key(&good)),
+            "好图解码结果必须进本次图像表（apply 才能取到）"
+        );
+        assert!(
+            !DEMO_COVER_IMAGES.with(|images| images.borrow().contains_key(&bad)),
+            "坏图⛔ 不许进图像表"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

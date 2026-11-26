@@ -227,7 +227,7 @@ fn gather_collects_demos_and_templates() {
         bpm: filled.bpm,
         bars: 0,
         duration_secs: 0.0,
-        cover: None,
+        cover: yeban_app::startup_chooser::DemoCover::None,
         download: None,
     };
     let demo_rows = demo_rows(&[filled_entry], Language::ZhCn);
