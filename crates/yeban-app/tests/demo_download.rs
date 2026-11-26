@@ -52,6 +52,64 @@ fn temp_root(tag: &str) -> PathBuf {
     dir
 }
 
+/// 起一个声明 `declared` 长度、实际只发 `body` 字节后就断开的服务器
+/// （不完整下载的夹具）。
+fn serve_short(declared: usize, body: Vec<u8>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("绑定端口");
+    let addr = listener.local_addr().expect("地址");
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+        // 随即关闭：客户端收到的字节少于声明值。
+    });
+    format!("http://{addr}")
+}
+
+/// T-FIX-640：断言事件序列以**恰好一次** `Failed` 结尾（无 Finished、无
+/// Cancelled）；`want` 给出时再断言 Failed 报文含该子串。
+fn assert_failed_terminal(events: &[DownloadEvent], want: Option<&str>) {
+    assert!(
+        matches!(events.last(), Some(DownloadEvent::Failed(_))),
+        "事件序列必须以 Failed 结尾: {events:?}"
+    );
+    let failed: Vec<&String> = events
+        .iter()
+        .filter_map(|event| match event {
+            DownloadEvent::Failed(reason) => Some(reason),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed.len(), 1, "Failed 必须恰好出现一次: {events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::Finished(_))),
+        "失败路径不得发 Finished: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::Cancelled)),
+        "失败路径不得发 Cancelled: {events:?}"
+    );
+    if let Some(want) = want {
+        assert!(
+            failed[0].contains(want),
+            "Failed 报文应含 {want:?}，实为 {:?}",
+            failed[0]
+        );
+    }
+}
+
 #[test]
 fn manifest_lists_eight_unique_demos() {
     assert_eq!(DEMOS.len(), 8);
@@ -238,5 +296,180 @@ fn cancelled_chinese_path_download_leaves_no_residue() {
         .map(|entries| entries.map(|entry| entry.expect("目录项").path()).collect())
         .unwrap_or_default();
     assert!(leftovers.is_empty(), "取消后目录必须为空: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// T-FIX-640：每条失败路径在返回 Err 前恰好发一次 Failed，事件序列以 Failed 结尾。
+// ---------------------------------------------------------------------------
+
+/// 网络失败（死链）：终态必须是恰好一次 Failed，报文点名"请求失败"。
+#[test]
+fn network_failure_ends_with_single_failed() {
+    let root = temp_root("net-failed");
+    let target = root.join("demo").join("d.yeban");
+    let dead = "http://127.0.0.1:9/demo/d.yeban";
+    let mut events = Vec::new();
+    let error = download_to(dead, &target, &CancelFlag::new(), |event| {
+        events.push(event)
+    })
+    .expect_err("必须失败");
+    assert_eq!(error.0, DownloadError::Network);
+    assert_failed_terminal(&events, Some("请求失败"));
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// IO 失败（改名）：目标已是目录 ⇒ rename(.part → 目录) 失败，终态 Failed 一次。
+#[test]
+fn rename_failure_ends_with_single_failed() {
+    let body = b"PK\x03\x04rename-target".to_vec();
+    let (base, _seen) = serve(body, 1);
+    let root = temp_root("rename");
+    let target = root.join("demo").join("e.yeban");
+    std::fs::create_dir_all(&target).expect("建目标目录");
+    let url = format!("{base}/demo/e.yeban");
+    let mut events = Vec::new();
+    let error = download_to(&url, &target, &CancelFlag::new(), |event| {
+        events.push(event)
+    })
+    .expect_err("改名必须失败");
+    assert_eq!(error.0, DownloadError::Io);
+    assert_failed_terminal(&events, Some("改名失败"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// IO 失败（建目录）：父级分量是个文件 ⇒ create_dir_all 失败，终态 Failed 一次。
+#[test]
+fn mkdir_failure_ends_with_single_failed() {
+    let root = temp_root("mkdir");
+    let blocker = root.join("blocker");
+    std::fs::write(&blocker, b"x").expect("写占位文件");
+    let target = blocker.join("demo").join("f.yeban");
+    let url = "http://127.0.0.1:9/demo/f.yeban";
+    let mut events = Vec::new();
+    let error = download_to(url, &target, &CancelFlag::new(), |event| events.push(event))
+        .expect_err("建目录必须失败");
+    assert_eq!(error.0, DownloadError::Io);
+    assert_failed_terminal(&events, Some("建目录失败"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 校验失败（非容器）：终态必须是恰好一次 Failed，报文点名"不是合法的工程容器"。
+#[test]
+fn corrupt_payload_ends_with_single_failed() {
+    let (base, _seen) = serve(b"not a container".to_vec(), 1);
+    let root = temp_root("corrupt-failed");
+    let target = root.join("demo").join("bad.yeban");
+    let url = format!("{base}/demo/bad.yeban");
+    let mut events = Vec::new();
+    let error = download_to(&url, &target, &CancelFlag::new(), |event| {
+        events.push(event)
+    })
+    .expect_err("非容器必须被拒");
+    assert_eq!(error.0, DownloadError::Corrupt);
+    assert_failed_terminal(&events, Some("不是合法的工程容器"));
+    assert!(!target.exists());
+    assert!(!part_path(&target).exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 网络失败（不完整）：服务端声明的长度多于实际发送的字节 ⇒ 终态 Failed 一次。
+///
+/// 不论底层走"读取失败"还是"下载不完整"，终态必须是恰好一次 Failed，
+/// 故此处只断言结构（终态 + 次数 + Network），不钉死报文措辞。
+#[test]
+fn incomplete_download_ends_with_single_failed() {
+    let body = b"PK\x03\x04short".to_vec();
+    let base = serve_short(body.len() + 100, body);
+    let root = temp_root("short");
+    let target = root.join("demo").join("i.yeban");
+    let url = format!("{base}/demo/i.yeban");
+    let mut events = Vec::new();
+    let error = download_to(&url, &target, &CancelFlag::new(), |event| {
+        events.push(event)
+    })
+    .expect_err("不完整必须失败");
+    assert_eq!(error.0, DownloadError::Network);
+    assert_failed_terminal(&events, None);
+    assert!(!target.exists());
+    // 注：本路径（服务端提前断开）底层走"读取失败"，读错 `?` 分支不清理 .part
+    // —— 那是读/写/flush 诸 `?` 分支既有的清理口径，与本次 Failed 终态无关，
+    // 故此处不断言 .part 已清；正式文件不落位是本判据钉住的。
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 成功路径终态不变：恰好一次 Finished，零 Failed、零 Cancelled。
+#[test]
+fn success_still_ends_with_single_finished_and_no_failed() {
+    let body = b"PK\x03\x04ok-terminal".to_vec();
+    let (base, _seen) = serve(body.clone(), 1);
+    let root = temp_root("ok-terminal");
+    let target = root.join("demo").join("g.yeban");
+    let url = format!("{base}/demo/g.yeban");
+    let mut events = Vec::new();
+    download_to(&url, &target, &CancelFlag::new(), |event| {
+        events.push(event)
+    })
+    .expect("下载必须成功");
+    assert!(
+        matches!(events.last(), Some(DownloadEvent::Finished(_))),
+        "成功路径必须以 Finished 结尾: {events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DownloadEvent::Finished(_)))
+            .count(),
+        1,
+        "Finished 必须恰好一次: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::Failed(_))),
+        "成功路径不得发 Failed: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::Cancelled)),
+        "成功路径不得发 Cancelled: {events:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 取消路径终态不变：恰好一次 Cancelled，零 Failed。
+#[test]
+fn cancel_still_ends_with_single_cancelled_and_no_failed() {
+    let (base, _seen) = serve(b"PK\x03\x04cancel-terminal".to_vec(), 1);
+    let root = temp_root("cancel-terminal");
+    let target = root.join("demo").join("h.yeban");
+    let url = format!("{base}/demo/h.yeban");
+    let cancel = CancelFlag::new();
+    cancel.cancel();
+    let mut events = Vec::new();
+    let error =
+        download_to(&url, &target, &cancel, |event| events.push(event)).expect_err("取消必须失败");
+    assert_eq!(error.0, DownloadError::Cancelled);
+    assert!(
+        matches!(events.last(), Some(DownloadEvent::Cancelled)),
+        "取消路径必须以 Cancelled 结尾: {events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DownloadEvent::Cancelled))
+            .count(),
+        1,
+        "Cancelled 必须恰好一次: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::Failed(_))),
+        "取消路径不得发 Failed: {events:?}"
+    );
+    assert!(!target.exists());
     let _ = std::fs::remove_dir_all(&root);
 }

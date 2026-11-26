@@ -214,8 +214,36 @@ pub fn looks_like_container(path: &Path) -> bool {
 
 /// 同步下载到 `target`：临时文件 → 校验 → 改名。返回最终路径。
 ///
-/// `notify` 收到每一次 Progress；取消时返回 `Err(Cancelled)` 且**不留文件**。
+/// `notify` 收到每一次 Progress；取消时返回 `Err(Cancelled)` 且**不留文件**；
+/// 每条失败路径在返回 `Err` 前恰好发一次 `DownloadEvent::Failed`（人读原因，
+/// 可重试）；成功路径只发一次 `Finished`，取消路径只发一次 `Cancelled`。
 pub fn download_to<F>(
+    url: &str,
+    target: &Path,
+    cancel: &CancelFlag,
+    mut notify: F,
+) -> Result<PathBuf, (DownloadError, String)>
+where
+    F: FnMut(DownloadEvent),
+{
+    // T-FIX-640：失败终态统一收口 —— 内层只管干活（Progress/Cancelled/
+    // Finished 照旧），任何非取消的 Err 在这里恰好补一次 Failed（人读原因
+    // 即返回的错误文本），再把 Err 原样返回。单出口 ⇒ 每条失败路径恰好一次，
+    // 成功与取消路径零次。
+    match download_to_inner(url, target, cancel, &mut notify) {
+        Ok(path) => Ok(path),
+        Err((error, message)) => {
+            if error != DownloadError::Cancelled {
+                notify(DownloadEvent::Failed(message.clone()));
+            }
+            Err((error, message))
+        }
+    }
+}
+
+/// `download_to` 的内层：临时文件 → 校验 → 改名。`notify` 收到每一次
+/// Progress；取消时发一次 `Cancelled` 并返回 `Err(Cancelled)`。
+fn download_to_inner<F>(
     url: &str,
     target: &Path,
     cancel: &CancelFlag,
