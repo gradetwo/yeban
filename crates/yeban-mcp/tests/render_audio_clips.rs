@@ -4497,6 +4497,21 @@ fn fade_in_peak(level: f32, elapsed: usize, length: usize) -> f32 {
     level * (elapsed as f32 / length as f32).sqrt()
 }
 
+/// 等功率淡出在窗口内 `elapsed` 帧处的期望电平（T-FIX-441 口径）。
+///
+/// 与淡入不同，显式淡出是**收尾到静音**的：窗口 `[start, end)` 的最后一帧
+/// （`end - 1`）增益必须正好是 0，所以曲线走**闭区间** `len - 1` 而不是
+/// 右开的 `len`：`level · √((len - 1 - elapsed) / (len - 1))`。旧口径
+/// `level · √((len - elapsed) / len)` 会在末帧留 `level/√len`（5000 帧
+/// 时 ≈ 0.007），与下一帧的静音形成台阶；自动交叉淡化的淡出不走这条
+/// （见 `yeban_model::clip_fade::ClipFadeWindow::gain_at`）。
+fn fade_out_peak(level: f32, elapsed: usize, length: usize) -> f32 {
+    if length <= 1 {
+        return 0.0;
+    }
+    level * ((length - 1 - elapsed) as f32 / (length - 1) as f32).sqrt()
+}
+
 /// 判据 14 [⑭]：`fade_in_ticks` 真的改变**母带包络**，且 `offset_samples` 把整条
 /// 包络平移同一个帧数。
 ///
@@ -4513,6 +4528,9 @@ fn fade_in_peak(level: f32, elapsed: usize, length: usize) -> f32 {
 /// - **(c) 平移腿**：同一 fade 加 `offset_samples = +2400` ⇒ 前 2400 帧整段静音、
 ///   第 2400 帧是包络的第 0 帧、第 4900 帧落在曲线上、第 7400 帧满值。
 ///   （`#5198` 修前，引擎侧窗口不随 offset 平移 ⇒ 淡入整段落在静音里。）
+/// - **(d) 尾腿**（T-FIX-439 补的"首/尾"里的尾）：淡出 200 tick（5000 帧）⇒
+///   淡出区间之前满值、区间内按闭区间等功率曲线衰减、末帧正好 0
+///   （T-FIX-441 收尾到静音口径；旧的右开期望 `LEVEL/√5000` 已随 441 失效）。
 #[test]
 fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
     /// 24-bit 量化的容差：抖动 ±1 LSB + 四舍五入 0.5 LSB ⇒ 取 2 LSB。
@@ -4610,9 +4628,9 @@ fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
     );
 
     // (d) 尾腿（T-FIX-439 补的"首/尾"里的尾）：淡出 200 tick 也必须落在母带包络上
-    //     —— 片段末尾 5000 帧按同一条等功率曲线**衰减**，之前满、之后被片段末端截断。
-    //     为什么必须单独量尾：⑭ 此前只读过 `fade_in_ticks`，淡出窗口在离线母带里
-    //     "接线了吗"同样只能从代码推断。
+    //     —— 片段末尾 5000 帧按同一条等功率曲线**衰减**，之前满、末帧收尾到 0
+    //     （T-FIX-441 闭区间口径）。为什么必须单独量尾：⑭ 此前只读过
+    //     `fade_in_ticks`，淡出窗口在离线母带里"接线了吗"同样只能从代码推断。
     const TOTAL_FRAMES: usize = 48_000;
     let fade_out_tune = Tune {
         fade_out_ticks: Some(200),
@@ -4632,9 +4650,11 @@ fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
         );
     }
     let tail_start = TOTAL_FRAMES - FADE_FRAMES;
-    // 最后一帧对应窗口内 elapsed = FADE_FRAMES - 1 ⇒ 期望 ≈ `LEVEL/√5000`（≈0.007），
-    // ⛔ 不是 0：片段在窗口走完**之前**就结束了，末帧落在曲线倒数第二格上。
-    let last_expected = fade_in_peak(LEVEL, 1, FADE_FRAMES);
+    // T-FIX-441 口径：显式淡出**收尾到静音**——窗口最后一帧（elapsed =
+    // FADE_FRAMES - 1）增益正好是 0，曲线走闭区间 `len - 1`；旧口径
+    // `LEVEL/√5000`（≈0.007）是 441 之前右开公式的残留，末帧留值会与
+    // 下一帧的静音形成台阶。倒数第二帧仍是 `LEVEL·√(1/4999)`（≈0.007）。
+    let last_expected = 0.0f32;
     assert!(
         (frame_peak(&rendered, TOTAL_FRAMES - 1) - last_expected).abs() <= TOLERANCE,
         "淡出最后一帧必须落在曲线末端（期望 {last_expected}, 实测 {}）",
@@ -4642,7 +4662,7 @@ fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
     );
     for elapsed in [1_000usize, 2_500, 4_000] {
         let actual = frame_peak(&rendered, tail_start + elapsed);
-        let expected = fade_in_peak(LEVEL, FADE_FRAMES - elapsed, FADE_FRAMES);
+        let expected = fade_out_peak(LEVEL, elapsed, FADE_FRAMES);
         assert!(
             (actual - expected).abs() <= TOLERANCE,
             "淡出第 {} 帧必须落在等功率曲线上（期望 {expected}, 实测 {actual}）",
