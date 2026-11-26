@@ -2019,7 +2019,8 @@ fn parse_tick_argument(
 /// # Errors
 ///
 /// - 未知 `format` → `INVALID_PARAMETER_RANGE`（带白名单）；
-/// - `sampleRate` 不在模型层允许集合 → `INVALID_PARAMETER_RANGE`；
+/// - `sampleRate` 显式给出但不在模型层允许集合 → `INVALID_PARAMETER_RANGE`；
+///   省略时由调用方注入工程采样率（[`validate_with_sample_rate`]），不再必填；
 /// - `normalize` 不是布尔 / `path` 不是非空字符串 → `INVALID_PARAMETER_RANGE`；
 /// - `targetLufs` 不是有限数、或不在 [`TARGET_LUFS_RANGE`] 内 →
 ///   `INVALID_PARAMETER_RANGE`（带区间）；
@@ -2029,6 +2030,17 @@ fn parse_tick_argument(
 /// - ⭐ 部分渲染：`startTick` / `endTick` 不是非负整数 / `startTick >= endTick` /
 ///   与 `contributions` 同给 → `INVALID_PARAMETER_RANGE`。
 pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> {
+    // 保留旧入口：没有工程上下文时仍要求显式 sampleRate（历史单测口径）。
+    validate_with_sample_rate(arguments, None)
+}
+
+/// 与 [`validate`] 同规则，但允许省略 `sampleRate`：此时回落到调用方注入的
+/// **工程采样率**（`project.audio_config.sample_rate`），不做重采样。
+/// 显式给出时维持现行语义（与工程不一致由 rubato sinc 重采样）与全部非法值拒绝。
+pub fn validate_with_sample_rate(
+    arguments: &Map<String, Value>,
+    project_sample_rate: Option<SampleRate>,
+) -> Result<RenderRequest, Fault> {
     let format = arguments
         .get("format")
         .and_then(Value::as_str)
@@ -2043,18 +2055,28 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
                 serde_json::json!({ "supportedFormats": FORMATS }),
             )
         })?;
-    let sample_rate_hz = arguments
-        .get("sampleRate")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| {
+    let sample_rate = match arguments.get("sampleRate") {
+        // 省略 ⇒ 回落工程采样率（唯一来源是 audio_config.sample_rate）。
+        None => project_sample_rate.ok_or_else(|| {
             Fault::domain(
                 ErrorCode::InvalidParameterRange,
-                "`sampleRate` 必须是 32 位无符号整数",
+                "`sampleRate` 省略时需要工程采样率; 无工程上下文的直接调用必须显式给出",
             )
-        })?;
-    let sample_rate = SampleRate::from_hz(sample_rate_hz)
-        .map_err(|error| super::error::from_model("采样率校验", &error))?;
+        })?,
+        Some(value) => {
+            let sample_rate_hz = value
+                .as_u64()
+                .and_then(|hz| u32::try_from(hz).ok())
+                .ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        "`sampleRate` 必须是 32 位无符号整数",
+                    )
+                })?;
+            SampleRate::from_hz(sample_rate_hz)
+                .map_err(|error| super::error::from_model("采样率校验", &error))?
+        }
+    };
     let normalize = match arguments.get("normalize") {
         None => false,
         Some(Value::Bool(flag)) => *flag,
@@ -7126,6 +7148,58 @@ mod tests {
 
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn omitted_sample_rate_falls_back_to_project_rate() {
+        let project_rate = SampleRate::Hz96000;
+        let request = validate_with_sample_rate(
+            &args(serde_json::json!({"format": "wav"})),
+            Some(project_rate),
+        )
+        .expect("省略 sampleRate 应回落工程采样率");
+        assert_eq!(request.sample_rate, project_rate);
+
+        // 显式给出时维持现行语义（与工程不同 ⇒ 重采样路径）。
+        let explicit = validate_with_sample_rate(
+            &args(serde_json::json!({"format": "wav", "sampleRate": 48000})),
+            Some(project_rate),
+        )
+        .expect("显式采样率仍合法");
+        assert_eq!(explicit.sample_rate, SampleRate::Hz48000);
+        assert_ne!(explicit.sample_rate, project_rate);
+
+        // 无工程上下文的旧入口仍要求显式给出，避免静默猜一个采样率。
+        assert!(
+            validate(&args(serde_json::json!({"format": "wav"}))).is_err(),
+            "旧入口缺少采样率时必须显式拒绝，不得静默回落"
+        );
+    }
+
+    #[test]
+    fn duration_seconds_with_fallback_rate_uses_project_rate() {
+        // 0.5s × 96000 = 48000 帧；若写死 48000 会得到 24000 ⇒ 本条钉住换算口径。
+        let request = validate_with_sample_rate(
+            &args(serde_json::json!({"format": "wav", "durationSeconds": 0.5})),
+            Some(SampleRate::Hz96000),
+        )
+        .expect("0.5 秒 @ 96k 合法");
+        assert_eq!(request.sample_rate, SampleRate::Hz96000);
+        assert_eq!(request.frames, Some(48_000));
+    }
+
+    #[test]
+    fn invalid_explicit_sample_rate_still_rejected_with_fallback_available() {
+        for bad in [
+            serde_json::json!({"format": "wav", "sampleRate": 0}),
+            serde_json::json!({"format": "wav", "sampleRate": -1}),
+            serde_json::json!({"format": "wav", "sampleRate": "48000"}),
+            serde_json::json!({"format": "wav", "sampleRate": 12345}),
+        ] {
+            let fault = validate_with_sample_rate(&args(bad.clone()), Some(SampleRate::Hz96000))
+                .expect_err("非法采样率必须响亮拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        }
     }
 
     #[test]

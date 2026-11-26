@@ -5704,7 +5704,8 @@ fn include_ops(call: &ToolCall) -> bool {
 fn plan_render_master(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let project_path = domain.active_path().ok_or_else(no_active_project)?;
-    let request = render::validate(&call.arguments)?;
+    // `sampleRate` 可选：省略时回落工程采样率（audio_config.sample_rate 唯一来源）。
+    let request = render::validate_with_sample_rate(&call.arguments, Some(project.sample_rate()))?;
     // 资产字节的唯一来源是会话 CAS 池（`assets/{sha256}`）；`Domain` 自己实现
     // `render::AssetStore`，因此渲染层不需要认识 `Domain` 的任何内部结构。
     let mut artifact = render::build(project, project_path, &request, domain.now_ms(), domain)?;

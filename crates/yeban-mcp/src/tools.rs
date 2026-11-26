@@ -1147,7 +1147,8 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径 (缺省多线程; `threads` 可指定线程数, 逐字节相同)。响应带实测读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数) / `data.truePeakDbfs` (真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= −truePeakDbfs)。⭐ 削波时 `data.warnings[]` 恰好一条 `code:\"exportClipping\"` (带 `suggestedTrimDb` 与最响的源); 可闻却 `peak == 0.0` 的源另由一条 `code:\"silentSources\"` 点名; 鼓机键位没写全的设备另由一条 `code:\"incompleteDrumNoteMap\"` 点名; 都不出现时 `warnings` 是空数组。⛔ 读数与预警不自动改增益; 唯一会改增益的是显式 `targetLufs`。逐源峰值见 `data.sources[]` (源节点输出, ⛔ 不含插入链与路由边增益); `data.peak.before/after` 是归一化前/后的浮点母带峰值 (⛔ 不是写盘文件峰值)。可选 `frames`/`durationSeconds` 指定总长度, `startTick`/`endTick` 圈定部分渲染区间, `contributions:true` 附逐轨贡献读数",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径 (缺省多线程; `threads` 可指定线程数, 逐字节相同)。响应带实测读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数) / `data.truePeakDbfs` (真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= −truePeakDbfs)。⭐ 削波时 `data.warnings[]` 恰好一条 `code:\"exportClipping\"` (带 `suggestedTrimDb` 与最响的源); 可闻却 `peak == 0.0` 的源另由一条 `code:\"silentSources\"` 点名; 鼓机键位没写全的设备另由一条 `code:\"incompleteDrumNoteMap\"` 点名; 都不出现时 `warnings` 是空数组。⛔ 读数与预警不自动改增益; 唯一会改增益的是显式 `targetLufs`。逐源峰值见 `data.sources[]` (源节点输出, ⛔ 不含插入链与路由边增益); `data.peak.before/after` 是归一化前/后的浮点母带峰值 (⛔ 不是写盘文件峰值)。可选 `frames`/`durationSeconds` 指定总长度, `startTick`/`endTick` 圈定部分渲染区间, `contributions:true` 附逐轨贡献读数。⭐ `sampleRate` 可省略, 缺省 = 工程采样率 (原样导出不必写死)",
+
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1160,8 +1161,8 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             param(
                 "sampleRate",
                 "integer",
-                true,
-                "输出采样率 (Hz); 与工程采样率不一致时由 rubato sinc 重采样 (ARCH-DSP-002)",
+                false,
+                "输出采样率 (Hz); ⭐ 缺省 = 工程采样率 (`audio_config.sample_rate`), 原样导出不必给、也不重采样; 显式给出且与工程不一致时由 rubato sinc 重采样 (ARCH-DSP-002); 非法值 (非正/非有限/超范围) 仍显式拒绝",
             ),
             param(
                 "normalize",
@@ -3121,6 +3122,40 @@ impl ToolResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_master_sample_rate_is_optional_and_schema_follows() {
+        let spec = tool("yeban_render_master").expect("render_master 已注册");
+        let sample_rate = spec.param("sampleRate").expect("sampleRate 参数仍在");
+        assert!(
+            !sample_rate.required,
+            "sampleRate 必须可选（缺省 = 工程采样率）"
+        );
+        assert!(
+            sample_rate.doc.contains("工程采样率"),
+            "参数文案必须写明缺省 = 工程采样率: {}",
+            sample_rate.doc
+        );
+        let minimal = serde_json::json!({"format": "wav"});
+        spec.validate_arguments(minimal.as_object().expect("object"))
+            .expect("省略 sampleRate 必须通过参数校验");
+        let required: Vec<&str> = spec
+            .required_params()
+            .iter()
+            .map(|param| param.name)
+            .collect();
+        assert!(
+            !required.contains(&"sampleRate"),
+            "required 清单不应再含 sampleRate: {required:?}"
+        );
+        // tools/list 的 inputSchema 由注册表派生，required 必须同步。
+        let schema = spec.input_schema();
+        let schema_required = schema["required"].as_array().expect("required 数组");
+        assert!(
+            !schema_required.iter().any(|value| value == "sampleRate"),
+            "inputSchema.required 不应再含 sampleRate: {schema_required:?}"
+        );
+    }
 
     #[test]
     fn registry_has_the_documented_tools_then_the_extensions() {
