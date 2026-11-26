@@ -99,7 +99,12 @@ fn gui_export_renders_a_nonzero_pcm_audio_clip_from_the_asset_pool() {
     let ui = host::build_main_window_with_console_tab(&view, &scene, 0).expect("生产窗口");
     let mut paths = ModulePaths::from_env();
     paths.export_wav = target.clone();
-    let _midi = wire_module_actions_with(&ui, Some(Rc::clone(&port)), paths);
+    let _midi = wire_module_actions_with(
+        &ui,
+        Some(Rc::clone(&port)),
+        paths,
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
 
     ui.invoke_export_wav();
     assert!(

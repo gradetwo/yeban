@@ -2574,10 +2574,14 @@ pub fn build_live_ui_with(
     // ⛔ 不静默用一个临时会话把编辑吞掉。
     // ⭐ 审评 2026-10-31（P2-3）：`export_wav` 缺省取工程目录（`save_path` 是文件，
     // 故取其父目录；未保存工程 ⇒ `None` ⇒ 相对缺省，旧行为）。
+    // ⭐ T-FIX-719：本档没有 OS 窗口 ⇒ 接 `NoPicker`（`import-midi` 回落到
+    // `ModulePaths.import_midi` 缺省路径；`choose_open` 一次都不问 ⇒ 判据
+    // `import_midi_losses_ui.rs` 的 env 缺省行为一位不变）。
     host::wire_module_actions_for_project(
         &window,
         options.undo.clone(),
         options.save_path.as_deref().and_then(|path| path.parent()),
+        Rc::new(yeban_app::file_picker::NoPicker),
     );
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（产品进程在 `main.rs` 的同一处调它）。

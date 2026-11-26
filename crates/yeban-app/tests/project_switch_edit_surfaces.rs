@@ -132,6 +132,7 @@ fn project_switch_module_paths_follow_the_new_project_dir() {
         ui,
         Some(Rc::clone(&port)),
         Rc::clone(&module_paths),
+        Rc::new(yeban_app::file_picker::NoPicker),
     );
 
     // 换工程：同一个 `Rc<UndoPort>` 原地换会话；then 生产 `after` 的 `wire_view_callbacks`。

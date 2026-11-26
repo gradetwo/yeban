@@ -1203,6 +1203,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &ui,
         Some(Rc::clone(&undo_port)),
         Rc::clone(&module_paths),
+        // ⭐ T-FIX-719：产品腿用真原生对话框（`import-midi` 先问一次框再导入）。
+        Rc::new(yeban_app::file_picker::NativeFilePicker),
     );
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（无头装配在 `live_surface.rs` 的同一处调它）。

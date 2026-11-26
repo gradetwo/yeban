@@ -346,8 +346,12 @@ fn build_port() -> Port {
     })
     .expect("Tier-1 活窗口");
     host::wire_view_callbacks(port.ui());
-    let _ =
-        host::wire_module_actions_with(port.ui(), Some(Rc::clone(&undo)), ModulePaths::default());
+    let _ = host::wire_module_actions_with(
+        port.ui(),
+        Some(Rc::clone(&undo)),
+        ModulePaths::default(),
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     port
 }
 

@@ -289,7 +289,12 @@ fn gui_export_stems_passes_the_session_asset_pool_to_the_backend() {
     let ui = live.ui();
 
     // 生产同序：模块入口先接，分派层最后覆盖。
-    let _ = host::wire_module_actions_with(ui, Some(Rc::clone(&undo)), ModulePaths::default());
+    let _ = host::wire_module_actions_with(
+        ui,
+        Some(Rc::clone(&undo)),
+        ModulePaths::default(),
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     host::wire_aether_actions(
         ui,
         Rc::clone(&undo),

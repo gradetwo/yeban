@@ -1104,7 +1104,12 @@ fn gui_export_wav_uses_the_asset_pool_and_renders_placed_audio() {
         midi_in_seconds: 0.0,
         ..ModulePaths::default()
     };
-    let _midi = host::wire_module_actions_with(&ui, Some(Rc::clone(&undo)), paths);
+    let _midi = host::wire_module_actions_with(
+        &ui,
+        Some(Rc::clone(&undo)),
+        paths,
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     ui.set_export_wav_path(out.to_string_lossy().to_string().into());
 
     let start = usize::try_from(frames_of(START_TICK)).expect("窗口起点");

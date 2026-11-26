@@ -13203,8 +13203,11 @@ fn save_first_through_the_existing_entry(ui: &MainWindow) -> Result<(), String> 
 /// 现在由 [`wire_export_wav_browse`] 把 **WAV 导出那一格**接上 `Ctrl/Cmd+O` 路径浏览：选中的路径
 /// 写回 `MainWindow.export-wav-path` ⇒ 覆盖本结构的 `export_wav` 缺省
 /// （`on_export_wav` 现读的是那条两向绑定，⛔ 不需要第二份出口）。
-/// ⚠ 其余四条模块入口（导入 MIDI / 装载 SFZ / 录音 / 导出 MIDI）**仍只能**走环境变量
+/// ⚠ 其余三条模块入口（装载 SFZ / 录音 / 导出 MIDI）**仍只能**走环境变量
 /// 或手输；给它们逐一加对话框属后续切片（见交付说明文档的 ROI 表）。
+/// ⭐ T-FIX-719 起「导入 MIDI」已接上文件选择器（见 [`wire_module_actions`] 的
+/// `picker` 参数）：有对话框的装配先问一次原生框，取消一位不动；无头 /
+/// 装配期已定路径（`NoPicker`）才回落到本结构的 `import_midi` 缺省。
 /// ⛔ 本结构不消费 `FilePicker`，也不因那条接线改变任何缺省值。
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModulePaths {
@@ -13841,8 +13844,17 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 /// `load-sfz` 成功 ⇒ 乐器存进本闭包的共享槽（`Rc<RefCell<Option<…>>>`），
 /// 之后的 `export-wav` 把它交给 `export_wav_with_sfz_file` 的第四个参数
 /// ⇒ 与 CLI 的 `--sfz <f> --export-wav out.wav` 是**同一条**音源路径。
-pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) -> MidiInState {
-    wire_module_actions_with(ui, port, ModulePaths::from_env())
+/// ⭐ T-FIX-719：`import-midi` 先问一次文件选择器（`picker`；与
+/// [`wire_import_audio`] 同一条口径）—— 有对话框的装配（产品 `NativeFilePicker`）
+/// 弹原生框让用户挑一个 `.mid` / `.midi`；`picker.can_prompt()` 为假
+/// （`NoPicker`：无头 / 装配期已定路径那一档）⇒ 回落到 `paths.import_midi`
+/// 既有缺省（测试 / 无头唯一缺省；⛔ 不再是 GUI 唯一入口）。
+pub fn wire_module_actions(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+) -> MidiInState {
+    wire_module_actions_with(ui, port, ModulePaths::from_env(), picker)
 }
 
 /// 与 [`wire_module_actions`] 相同，但 `export_wav` 的缺省取工程目录
@@ -13854,8 +13866,9 @@ pub fn wire_module_actions_for_project(
     ui: &MainWindow,
     port: Option<Rc<UndoPort>>,
     project_dir: Option<&std::path::Path>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
 ) -> MidiInState {
-    wire_module_actions_for_project_shared(ui, port, module_paths_for_project(project_dir))
+    wire_module_actions_for_project_shared(ui, port, module_paths_for_project(project_dir), picker)
 }
 
 /// 生产换工程可复用的模块路径状态（T-FIX-371）。
@@ -13879,8 +13892,9 @@ pub fn wire_module_actions_for_project_shared(
     ui: &MainWindow,
     port: Option<Rc<UndoPort>>,
     paths: Rc<RefCell<ModulePaths>>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
 ) -> MidiInState {
-    wire_module_actions_with_shared(ui, port, paths, None)
+    wire_module_actions_with_shared(ui, port, paths, None, picker)
 }
 
 /// ⭐ T-FIX-469：导出 WAV 工作线程的句柄（`wait_for_pending_export` 用它在判据里做
@@ -13907,8 +13921,9 @@ pub fn wire_module_actions_with(
     ui: &MainWindow,
     port: Option<Rc<UndoPort>>,
     paths: ModulePaths,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
 ) -> MidiInState {
-    wire_module_actions_with_capture(ui, port, paths, None)
+    wire_module_actions_with_capture(ui, port, paths, None, picker)
 }
 
 /// 人性化 / 量化对话框的文本解析（与 MCP `humanizeClip` / `quantizeClip` 同一口径）。
@@ -18580,8 +18595,9 @@ pub fn wire_module_actions_with_capture(
     port: Option<Rc<UndoPort>>,
     paths: ModulePaths,
     capture: Option<MidiInCapture>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
 ) -> MidiInState {
-    wire_module_actions_with_shared(ui, port, Rc::new(RefCell::new(paths)), capture)
+    wire_module_actions_with_shared(ui, port, Rc::new(RefCell::new(paths)), capture, picker)
 }
 
 /// 与 [`wire_module_actions_with_capture`] 相同，但 `paths` 是**可更新**的共享状态。
@@ -18595,6 +18611,7 @@ pub fn wire_module_actions_with_shared(
     port: Option<Rc<UndoPort>>,
     paths: Rc<RefCell<ModulePaths>>,
     capture: Option<MidiInCapture>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
 ) -> MidiInState {
     // 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）—— 与 CLI 的 `loaded_sfz` 同角色。
     let loaded_sfz: LoadedSfz = Rc::new(RefCell::new(None));
@@ -19033,6 +19050,7 @@ pub fn wire_module_actions_with_shared(
         let weak = ui.as_weak();
         let port = port.clone();
         let paths = Rc::clone(&paths);
+        let picker = Rc::clone(&picker);
         ui.on_import_midi(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -19080,7 +19098,28 @@ pub fn wire_module_actions_with_shared(
                 clip_id: selected_clip,
                 ..Default::default()
             };
-            let source = paths.borrow().import_midi.clone();
+            // ⭐ T-FIX-719：GUI 先问一次原生文件选择器（与 `wire_import_audio`
+            // 同一条口径：`PickerRequest::open("导入 MIDI 文件").with_extensions(["mid", "midi"])`）。
+            // 取消 ⇒ 一位不动（⛔ 不写回执、不动工程 —— `file_picker` 模块契约第 2 条：
+            // \"我不想\"不是错误）。`picker.can_prompt()` 为假（`NoPicker`：无头 /
+            // 装配期已定路径那一档）⇒ 回落到 `paths.import_midi` 既有缺省
+            // （测试 / 无头唯一缺省；⛔ 不再是 GUI 唯一入口）。
+            // 顺序：端口 / 工程检查在前（已有的响亮拒绝一位不动；没落点时不白弹一个框）。
+            // ⭐ 重入核查（T-FIX-692 的结论）：`choose_open` 本身在 Slint 回调内是安全的
+            // （692 的探针 A/B/D 均为绿）；74f 的 panic 来自 `after` 在运行中的回调上
+            // 重注册（`set_handler`）。本回调的后续只有回执写属性 + `module_trace`，
+            // `import_midi_file` 经 `UndoPort` 提交、不注册任何回调 ⇒ 没有那条重入链，
+            // 不需要 T-FIX-428 式的后台线程 + 排空回调。
+            let source = if picker.can_prompt() {
+                let request = crate::file_picker::PickerRequest::open("导入 MIDI 文件")
+                    .with_extensions(["mid", "midi"]);
+                let Some(path) = picker.choose_open(&request) else {
+                    return;
+                };
+                path
+            } else {
+                paths.borrow().import_midi.clone()
+            };
             let (receipt, ok, loss_line) = match crate::import_midi::import_midi_file(
                 port,
                 &project,

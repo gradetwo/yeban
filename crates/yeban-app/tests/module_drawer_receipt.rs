@@ -233,7 +233,12 @@ fn open_live(project: &YebanProjectV1, size: (u32, u32), export_wav: PathBuf) ->
     paths.export_wav = export_wav;
     paths.midi_in_port = "0".to_owned();
     paths.midi_in_seconds = 0.05;
-    let midi = wire_module_actions_with(port.ui(), Some(Rc::clone(&undo)), paths);
+    let midi = wire_module_actions_with(
+        port.ui(),
+        Some(Rc::clone(&undo)),
+        paths,
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     Live { port, undo, midi }
 }
 
@@ -582,7 +587,12 @@ fn drawer_arm() -> Result<(), String> {
     clip_paths.export_wav = clip_path.clone();
     clip_paths.midi_in_port = "0".to_owned();
     clip_paths.midi_in_seconds = 0.05;
-    wire_module_actions_with(window, Some(Rc::clone(&clip_port)), clip_paths);
+    wire_module_actions_with(
+        window,
+        Some(Rc::clone(&clip_port)),
+        clip_paths,
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     window.invoke_export_wav();
     let clip_succeeded = window.get_module_status_succeeded();
     let clip_receipt = window.get_module_status().to_string();

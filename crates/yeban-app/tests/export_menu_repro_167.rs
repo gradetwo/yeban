@@ -122,7 +122,12 @@ fn behavior_arm() {
     let ui = live.ui();
 
     // 生产同序：模块入口先接，分派层最后覆盖。
-    let _ = host::wire_module_actions_with(ui, Some(Rc::clone(&undo)), ModulePaths::default());
+    let _ = host::wire_module_actions_with(
+        ui,
+        Some(Rc::clone(&undo)),
+        ModulePaths::default(),
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     host::wire_aether_actions(
         ui,
         Rc::clone(&undo),
@@ -174,6 +179,7 @@ fn behavior_arm() {
         ui,
         Some(Rc::clone(&undo)),
         ModulePaths::from_env_for_project(Some(&scratch)),
+        Rc::new(yeban_app::file_picker::NoPicker),
     );
     ui.invoke_command_execute("export-midi".into());
     let receipt1b = ui.get_module_status().to_string();
@@ -209,6 +215,7 @@ fn behavior_arm() {
             export_midi: bad_target.clone(),
             ..ModulePaths::default()
         },
+        Rc::new(yeban_app::file_picker::NoPicker),
     );
     ui.invoke_command_execute("export-midi".into());
     let receipt2 = ui.get_module_status().to_string();
@@ -336,7 +343,12 @@ fn stems_project_dir_arm() {
     })
     .expect("Tier-1 活窗口");
     let ui = live.ui();
-    let _ = host::wire_module_actions_with(ui, Some(Rc::clone(&undo)), ModulePaths::default());
+    let _ = host::wire_module_actions_with(
+        ui,
+        Some(Rc::clone(&undo)),
+        ModulePaths::default(),
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     host::wire_aether_actions(
         ui,
         Rc::clone(&undo),
@@ -491,7 +503,12 @@ fn stems_guard_sees_the_real_project_file_name() {
     })
     .expect("Tier-1 活窗口");
     let ui = live.ui();
-    let _ = host::wire_module_actions_with(ui, Some(Rc::clone(&undo)), ModulePaths::default());
+    let _ = host::wire_module_actions_with(
+        ui,
+        Some(Rc::clone(&undo)),
+        ModulePaths::default(),
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
     host::wire_aether_actions(
         ui,
         Rc::clone(&undo),

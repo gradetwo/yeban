@@ -71,6 +71,7 @@ fn missing_sfz_opens_the_library_through_the_same_path_as_the_menu() {
             load_sfz: path.clone(),
             ..ModulePaths::default()
         },
+        std::rc::Rc::new(yeban_app::file_picker::NoPicker),
     );
 
     // ── 判据 ①：库还没开过 ────────────────────────────────────────────────

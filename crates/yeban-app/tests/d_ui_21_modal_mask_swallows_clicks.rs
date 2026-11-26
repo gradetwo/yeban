@@ -58,7 +58,11 @@ fn live_window() -> Port {
     // ⭐ 开合弹窗那两条回调挂在模块入口的装配里 ⇒ ④ 点 ✕ 走的必须是**宿主那条**
     // `on_close_export_wav`（⛔ 不是判据自己 `set_export_wav_open(false)` 冒充用户）。
     // `None` 那个参数是有意的：本文件从不**跑**导出（那才需要工程事实源），只开合弹窗。
-    let _midi_in_state = host::wire_module_actions(port.ui(), None);
+    let _midi_in_state = host::wire_module_actions(
+        port.ui(),
+        None,
+        std::rc::Rc::new(yeban_app::file_picker::NoPicker),
+    );
     port
 }
 
