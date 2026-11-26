@@ -4340,6 +4340,16 @@ fn validate_param_value(target: AutomationTarget, value: f32) -> Result<(), Mode
             }
             Ok(())
         }
+        AutomationTarget::TrackVolume { .. } | AutomationTarget::SendGain { .. } => {
+            // ⭐ T-FIX-712：与 `nominal_domain()` 同源 [-60, 12]，与 pan 同口径
+            // （拒绝而非钳位），边界值本身合法；非有限已在上面拒绝。
+            if !(crate::automation::NOMINAL_GAIN_MIN_DB..=crate::automation::NOMINAL_GAIN_MAX_DB)
+                .contains(&value)
+            {
+                return Err(ModelError::GainOutOfRange { value });
+            }
+            Ok(())
+        }
         AutomationTarget::Macro { .. } => validate_macro_value(value),
         _ => Ok(()),
     }
@@ -8255,7 +8265,8 @@ mod tests {
                         let new_val = match target {
                             AutomationTarget::TrackPan { .. } => 0.5,
                             AutomationTarget::Macro { .. } => 0.25,
-                            _ => f32::from(rng.byte()) - 24.0,
+                            // T-FIX-712：生成器必须落在 [-60, 12] 标称域内。
+                            _ => f32::from(rng.byte() % 73) - 60.0,
                         };
                         return Op::SetParam {
                             target,
@@ -9129,6 +9140,56 @@ mod tests {
     /// 公开枚举的通配兜底 —— 给 `AutomationTarget` 加第 6 个**有界**变体时，它会**默认通过**
     /// （R48 的 fail-open 形态）。本判据给每个臂编号（无通配符 `match` 探针 ⇒ 加变体即编译错），
     /// 并逐臂钉住 `validate_param_value` 在该臂上的判决。
+    /// ⭐ T-FIX-712 判据：`SetParam(TrackVolume)` 拒绝标称域外值且文档不变，
+    /// 接受 `-60 / 0 / 12`；pan 既有越界判据回归。
+    #[test]
+    fn set_param_checks_nominal_gain_domain_and_keeps_pan_regression() {
+        let f = fixture();
+        let volume = AutomationTarget::TrackVolume { track_id: f.master };
+        for value in [-100.0, 100.0] {
+            let mut doc = fixture_document();
+            let before = serde_json::to_vec(&doc).expect("序列化");
+            let old = read_param(&doc, volume).expect("读取当前音量");
+            let op = Op::SetParam {
+                target: volume,
+                old_val: old,
+                new_val: value,
+            };
+            let error = op.apply(&mut doc).expect_err("越界必须拒绝");
+            assert!(
+                matches!(error, ModelError::GainOutOfRange { .. }),
+                "音量 {value} 必须报 GainOutOfRange, 实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("序列化"),
+                before,
+                "越界拒绝后文档必须逐字节不变"
+            );
+        }
+        for value in [-60.0, 0.0, 12.0] {
+            let mut doc = fixture_document();
+            let old = read_param(&doc, volume).expect("读取当前音量");
+            Op::SetParam {
+                target: volume,
+                old_val: old,
+                new_val: value,
+            }
+            .apply(&mut doc)
+            .expect("标称域端点必须合法");
+            assert_eq!(doc.track(&f.master).expect("主总线").volume_db, value);
+        }
+        let mut doc = fixture_document();
+        let pan = AutomationTarget::TrackPan { track_id: f.master };
+        let error = Op::SetParam {
+            target: pan,
+            old_val: 0.0,
+            new_val: 1.5,
+        }
+        .apply(&mut doc)
+        .expect_err("pan 越界仍须拒绝");
+        assert!(matches!(error, ModelError::PanOutOfRange { .. }));
+    }
+
     #[test]
     fn every_automation_target_arm_is_numbered_and_its_verdict_is_pinned() {
         let track = fixture_id(2);
@@ -9168,9 +9229,9 @@ mod tests {
         const ARM_COUNT: usize = 6;
         // (编号, 目标, 该臂的判决：`true` = 取值域由本函数判, `false` = 本函数放行)
         let table: [(usize, AutomationTarget, bool); ARM_COUNT] = [
-            (0, volume, false),
+            (0, volume, true),
             (1, pan, true),
-            (2, send, false),
+            (2, send, true),
             (3, device, false),
             (4, mac, true),
             // `MidiCc`：取值是控制器原始 7 位值，模型层**不**判界（越界值由渲染层
@@ -9196,7 +9257,7 @@ mod tests {
             "臂编号必须恰好是 0..N（R48 的臂编号断言）"
         );
 
-        // 有界两臂：两侧边界都要点名（拒绝侧 + 恰好到界）。
+        // 有界四臂：两侧边界都要点名（拒绝侧 + 恰好到界）。
         assert_eq!(
             validate_param_value(pan, 1.0),
             Ok(()),
@@ -9206,6 +9267,20 @@ mod tests {
             validate_param_value(pan, 2.0),
             Err(ModelError::PanOutOfRange { value: 2.0 })
         );
+        // T-FIX-712：推子标称域 [-60, 12]，边界合法、越界拒绝。
+        for target in [volume, send] {
+            assert_eq!(validate_param_value(target, -60.0), Ok(()));
+            assert_eq!(validate_param_value(target, 0.0), Ok(()));
+            assert_eq!(validate_param_value(target, 12.0), Ok(()));
+            assert_eq!(
+                validate_param_value(target, 100.0),
+                Err(ModelError::GainOutOfRange { value: 100.0 })
+            );
+            assert_eq!(
+                validate_param_value(target, -100.0),
+                Err(ModelError::GainOutOfRange { value: -100.0 })
+            );
+        }
         assert_eq!(validate_param_value(mac, 1.0), Ok(()), "宏上界本身必须放行");
         assert_eq!(
             validate_param_value(mac, 1.5),

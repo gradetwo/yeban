@@ -5,6 +5,7 @@
 
 use thiserror::Error;
 
+use crate::automation::{NOMINAL_GAIN_MAX_DB, NOMINAL_GAIN_MIN_DB};
 use crate::ids::{AssetHash, EntityId};
 
 /// 把闭合环路径渲染成可读的规范 ULID 文本链（`a -> b -> a`）。
@@ -282,6 +283,16 @@ pub enum ModelError {
     #[error("pan {value} out of range -1.0..=1.0")]
     PanOutOfRange {
         /// 实际收到的声相值。
+        value: f32,
+    },
+
+    /// 推子类增益 (音轨音量 / 发送增益) 越界。
+    ///
+    /// 标称域唯一事实源是 [`crate::automation::NOMINAL_GAIN_MIN_DB`] /
+    /// [`crate::automation::NOMINAL_GAIN_MAX_DB`]；越界一律**拒绝而非钳位**。
+    #[error("gain {value} dB out of range {NOMINAL_GAIN_MIN_DB}..={NOMINAL_GAIN_MAX_DB}")]
+    GainOutOfRange {
+        /// 实际收到的增益值 (dB)。
         value: f32,
     },
 

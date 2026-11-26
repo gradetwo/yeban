@@ -173,6 +173,7 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::TimeSignatureDenominatorUnsupported { .. }
         | ModelError::KeySignatureSharpsFlatsOutOfRange { .. }
         | ModelError::PanOutOfRange { .. }
+        | ModelError::GainOutOfRange { .. }
         // 逐件链声相、增益与组数上限：与声相同组（同是"量越界"）。
         | ModelError::LaneChainPanOutOfRange { .. }
         | ModelError::LaneChainGainOutOfRange { .. }

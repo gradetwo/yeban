@@ -4257,6 +4257,7 @@ mod tests {
         "src/error.rs::ModelError::BpmOutOfRange.value",
         "src/error.rs::ModelError::NonFiniteValue.value",
         "src/error.rs::ModelError::PanOutOfRange.value",
+        "src/error.rs::ModelError::GainOutOfRange.value",
         "src/error.rs::ModelError::LaneChainPanOutOfRange.value",
         "src/error.rs::ModelError::LaneChainGainOutOfRange.value",
         "src/error.rs::ModelError::MacroValueOutOfRange.value",
@@ -4310,7 +4311,7 @@ mod tests {
     /// **逐项判定表**：清单里除 `ModelError` 输出载体之外的每一个数值字段一行。
     ///
     /// 行 = `(清单键, 判定结论, 探针)`。键集合必须**恰好**等于
-    /// `NUMERIC_FIELD_INVENTORY` 减去那 9 个输出载体（多一行、少一行都红；
+    /// `NUMERIC_FIELD_INVENTORY` 减去那 10 个输出载体（多一行、少一行都红；
     /// 第 8 个是逐件处理线期 2 的 `LaneChainPanOutOfRange.value`，第 9 个是
     /// P4 的 `LaneChainGainOutOfRange.value`，与 `PanOutOfRange.value`
     /// 同为错误输出载体）。
@@ -4357,7 +4358,7 @@ mod tests {
         ),
         (
             "src/ops.rs::Op::SetParam.new_val",
-            "非有限拒绝（param.value）；声相 -1..=1、宏 0..=1 外拒绝；音量/设备参数无范围",
+            "非有限拒绝（param.value）；声相 -1..=1、音量/发送 -60..=12、宏 0..=1 外拒绝；设备参数无范围",
             probe_set_param_new,
         ),
         (
@@ -5587,7 +5588,8 @@ mod tests {
     }
 
     fn probe_set_param_new() -> Result<(), String> {
-        // ① 音量目标：非有限拒绝（field = "param.value"），有限极值接受。
+        // ① 音量目标：非有限拒绝（field = "param.value"），标称域 [-60, 12]
+        // 端点及域内值接受，域外响亮拒绝（T-FIX-712）。
         let (mut doc, f) = numeric_fixture();
         let volume = |new_val| Op::SetParam {
             target: AutomationTarget::TrackVolume { track_id: f.master },
@@ -5608,14 +5610,27 @@ mod tests {
                 Err(reason) => return Err(reason),
             }
         }
-        for value in [-f32::MAX, f32::MAX] {
+        for value in [-60.0, 0.0, 12.0] {
             let (mut doc, f) = numeric_fixture();
             let op = Op::SetParam {
                 target: AutomationTarget::TrackVolume { track_id: f.master },
                 old_val: -6.0,
                 new_val: value,
             };
-            apply_accepted(&mut doc, &op, "SetParam(音量有限极值)")?;
+            apply_accepted(&mut doc, &op, "SetParam(音量标称域端点)")?;
+        }
+        for value in [-100.0, 100.0] {
+            let (mut doc, f) = numeric_fixture();
+            let op = Op::SetParam {
+                target: AutomationTarget::TrackVolume { track_id: f.master },
+                old_val: -6.0,
+                new_val: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetParam(音量越界)") {
+                Ok(ModelError::GainOutOfRange { .. }) => {}
+                Ok(other) => return Err(format!("音量越界必须报 GainOutOfRange, 实际 {other:?}")),
+                Err(reason) => return Err(reason),
+            }
         }
 
         // ② 声相目标：非有限与越界都拒绝，闭区间端点接受。
@@ -6589,8 +6604,8 @@ mod tests {
             .collect();
         assert_eq!(
             outputs.len(),
-            9,
-            "输出载体豁免必须恰好 9 条（ModelError 的 value 字段）: {outputs:?}"
+            10,
+            "输出载体豁免必须恰好 10 条（ModelError 的 value 字段）: {outputs:?}"
         );
         let expected: std::collections::BTreeSet<&str> =
             inventory.difference(&outputs).copied().collect();
