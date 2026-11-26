@@ -532,8 +532,9 @@ impl InputSource for RampSource {
 }
 
 /// ⭐ **预备拍长度（帧）** —— ⛔ 不靠墙钟，**算出**：
-/// `bars × 拍号分子 × (60 ÷ bpm) × 采样率`。
+/// `bars × 拍号分子 × (4 ÷ 分母) × (60 ÷ bpm) × 采样率`。
 ///
+/// 一拍的实际四分音符数 = `4 ÷ 分母`；4/4 下因子为 1，现行结果不变。
 /// ⭐ 确定性 ⇒ 判据可**本地**断言它（见 `count_in_tests`）。`bpm` 非有限或非正 ⇒ 退回 120
 /// （⛔ 不 panic、⛔ 不产出荒谬值）。
 #[must_use]
@@ -543,30 +544,36 @@ pub fn count_in_frames(project: &yeban_model::YebanProjectV1, sample_rate: u32) 
         return 0;
     }
     let beats = bars.saturating_mul(u64::from(project.time_signature.numerator));
+    let denominator = f64::from(project.time_signature.denominator);
     let bpm = if project.bpm.is_finite() && project.bpm > 0.0 {
         project.bpm
     } else {
         120.0
     };
-    let seconds = (beats as f64) * 60.0 / bpm;
+    let seconds = (beats as f64) * (4.0 / denominator) * 60.0 / bpm;
     (seconds * f64::from(sample_rate)) as u64
 }
 
 /// ⭐ **预备拍的 tick 长度**（T-FIX-239，[`count_in_frames`] 的 tick 孪生）：
-/// `bars × 拍号分子 × PPQ`。走带位置按 tick 计，帧数按采样率计；起录 tick =
+/// `bars × 拍号分子 × (4 ÷ 分母) × PPQ`。走带位置按 tick 计，帧数按采样率计；起录 tick =
 /// `起录时播放头 + count_in_ticks`（见 `host::RecordControl`）。
 ///
 /// ⭐ 与 `count_in_frames` 的**同一条**口径：预备拍期间工作线程照拉、只不推，
 /// 第一帧真正被推入的时刻 = 按下录音键的 tick ＋ 预备拍 tick（⛔ 不是停录时
 /// 播放头在哪）。
+///
+/// ⭐ **整数精确**：`4 × PPQ` 可被合法分母 {1,2,4,8,16,32} 整除，先算
+/// `4 × PPQ ÷ 分母` 再乘，避免先除产生有理数/浮点误差；4/4 现行结果不变。
 #[must_use]
 pub fn count_in_ticks(project: &yeban_model::YebanProjectV1) -> u64 {
     let bars = u64::from(project.transport.count_in_bars);
     if bars == 0 {
         return 0;
     }
+    let denominator = u64::from(project.time_signature.denominator);
+    let ticks_per_beat = (4 * yeban_model::PPQ) / denominator;
     bars.saturating_mul(u64::from(project.time_signature.numerator))
-        .saturating_mul(yeban_model::PPQ)
+        .saturating_mul(ticks_per_beat)
 }
 
 /// ⭐ **一次录音会话**（⭐ 按钮背后的那一件事）。
@@ -2273,8 +2280,43 @@ mod count_in_tests {
         assert_eq!(count_in_frames(&bad, 48_000), 96_000, "bpm=0 ⇒ 退回 120");
     }
 
+    /// ⭐ **判据 ①''（纯函数、确定性，T-FIX-623）**：拍号分母参与换算。
+    ///
+    /// 1 小节 6/8 @120bpm @48k ⇒ 6 个八分音符 = 3 个四分音符 = 1.5 s ⇒ **72_000 帧**；
+    /// 1 小节 2/2 ⇒ 2 个二分音符 = 4 个四分音符 = 2 s ⇒ **96_000 帧**；
+    /// 1 小节 3/8 ⇒ 3 个八分音符 = 1.5 个四分音符 = 0.75 s ⇒ **36_000 帧**。
+    #[test]
+    fn count_in_frames_include_the_time_signature_denominator() {
+        let mut six_eight = project_with_bars(1);
+        six_eight.time_signature.numerator = 6;
+        six_eight.time_signature.denominator = 8;
+        assert_eq!(
+            count_in_frames(&six_eight, 48_000),
+            72_000,
+            "1 小节 6/8 @120bpm @48k ⇒ 72_000 帧（⛔ 不是 144_000）"
+        );
+
+        let mut two_two = project_with_bars(1);
+        two_two.time_signature.numerator = 2;
+        two_two.time_signature.denominator = 2;
+        assert_eq!(
+            count_in_frames(&two_two, 48_000),
+            96_000,
+            "1 小节 2/2 @120bpm @48k ⇒ 96_000 帧（⛔ 不是 48_000）"
+        );
+
+        let mut three_eight = project_with_bars(1);
+        three_eight.time_signature.numerator = 3;
+        three_eight.time_signature.denominator = 8;
+        assert_eq!(
+            count_in_frames(&three_eight, 48_000),
+            36_000,
+            "1 小节 3/8 @120bpm @48k ⇒ 36_000 帧（⛔ 不是 72_000）"
+        );
+    }
+
     /// ⭐ **判据 ①'（纯函数、确定性，T-FIX-239）**：预备拍的 **tick** 长度与
-    /// `count_in_frames` 同口径 —— `bars × 拍号分子 × PPQ`。
+    /// `count_in_frames` 同口径 —— `bars × 拍号分子 × (4 ÷ 分母) × PPQ`。
     ///
     /// 1 小节 4/4 ⇒ 4 × 960 = **3840 tick**；2 小节 3/4 ⇒ 2 × 3 × 960 = 5760。
     /// 起录 tick = 起录时播放头 ＋ 这个数（⛔ 不是停录时播放头在哪）。
@@ -2297,6 +2339,39 @@ mod count_in_tests {
             count_in_ticks(&three_quarters),
             5760,
             "2 小节 3/4 ⇒ 2 × 3 × 960 tick"
+        );
+    }
+
+    /// ⭐ **判据 ①'''（纯函数、确定性，T-FIX-623）**：tick 长度同样看分母；
+    /// 6/8 一小节 ⇒ 6 × (4/8) × 960 = **2880 tick**（不是 5760）。
+    /// `4 × PPQ` 能整除所有合法分母，保持整数精确。
+    #[test]
+    fn count_in_ticks_include_the_time_signature_denominator() {
+        let mut six_eight = project_with_bars(1);
+        six_eight.time_signature.numerator = 6;
+        six_eight.time_signature.denominator = 8;
+        assert_eq!(
+            count_in_ticks(&six_eight),
+            2_880,
+            "1 小节 6/8 ⇒ 2880 tick（⛔ 不是 5760）"
+        );
+
+        let mut two_two = project_with_bars(1);
+        two_two.time_signature.numerator = 2;
+        two_two.time_signature.denominator = 2;
+        assert_eq!(
+            count_in_ticks(&two_two),
+            3_840,
+            "1 小节 2/2 ⇒ 4 个四分音符 = 3840 tick（⛔ 不是 1920）"
+        );
+
+        let mut three_eight = project_with_bars(1);
+        three_eight.time_signature.numerator = 3;
+        three_eight.time_signature.denominator = 8;
+        assert_eq!(
+            count_in_ticks(&three_eight),
+            1_440,
+            "1 小节 3/8 ⇒ 1440 tick（⛔ 不是 2880）"
         );
     }
 

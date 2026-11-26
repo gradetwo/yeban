@@ -358,6 +358,64 @@ fn count_in_ticks_are_added_to_the_press_time_playhead() {
     );
 }
 
+/// ⭐ **验收 ①''（非 4/4，T-FIX-623）**：`count_in_bars = 1`、拍号 6/8 时，
+/// 起点 = 起录 tick ＋ 6 × (4/8) × 960 = **2880 tick**（⛔ 不是 5760）。
+/// 这是 RecordControl 起录 tick 的真窗口等价判据：走的是 `wire_record_at` +
+/// 按钮 `toggle_record`，不是只测纯函数。
+#[test]
+fn count_in_start_tick_uses_the_time_signature_denominator() {
+    let scratch = Scratch::new("count-in-six-eight");
+    let mut project = fixture_project();
+    project.transport.count_in_bars = 1;
+    project.bpm = 480.0;
+    project.time_signature.numerator = 6;
+    project.time_signature.denominator = 8;
+    // 1 小节 6/8 @480bpm = 0.375 s 真实时间；等 1 s ⇒ 预备拍必定走完。
+    let (_tier1, ui, port) = assemble(project.clone());
+    let path = scratch.dir.join("take.wav");
+    let _ = std::fs::remove_file(&path);
+    let playhead = Rc::new(Cell::new(PRESS_TICK));
+    let playhead_for_closure = Rc::clone(&playhead);
+    host::wire_record_at(
+        &ui,
+        Some(Rc::new(std::cell::RefCell::new(project.clone()))),
+        Some(Rc::clone(&port)),
+        RecordPlan {
+            path: path.to_path_buf(),
+            options: options(),
+        },
+        Rc::new(ToneFactory),
+        Rc::new(host::UiRecordOutcome),
+        Rc::new(move || playhead_for_closure.get()),
+    );
+    ui.invoke_toggle_record();
+    assert!(ui.get_recording(), "起录必须成功（工厂能开）");
+    std::thread::sleep(Duration::from_millis(1000));
+    ui.invoke_toggle_record();
+    assert!(!ui.get_recording(), "停录之后必须归零");
+    let settle_until = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < settle_until {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let landed = port.try_project().expect("会话在场");
+    let placements = all_placements(&landed);
+    assert_eq!(
+        placements.len(),
+        1,
+        "⭐ 停录后全工程必须恰好一条新摆放（实测 {} 条）",
+        placements.len()
+    );
+    let (_, placement) = placements[0];
+    assert_eq!(
+        placement.start_tick,
+        PRESS_TICK + 2_880,
+        "⭐ 1 小节 6/8 ⇒ 起点 = 起录 tick {PRESS_TICK} ＋ 2880（实测 {}）",
+        placement.start_tick
+    );
+}
+
 /// ⭐ **验收 ②**：两条音频轨，选中第二条 ⇒ 落到第二条（⛔ 不是键序第一条）。
 #[test]
 fn landing_goes_to_the_selected_audio_track_not_the_first() {
