@@ -6250,6 +6250,19 @@ fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 分发采样字节）的库绑上轨才在装载后报 `sfzSamplesUnreadable`，为时已晚。
 fn plan_list_instruments(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     if let Some(directory) = arg_str(call, "directory") {
+        // 默认不能静默：目录模式与效果参数发现面是两件事，同给会让人以为
+        // 目录里也有参数表 ⇒ 响亮拒绝。
+        if arg_bool(call, "includeEffectParams", false) || arg_str(call, "effectGroup").is_some() {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "`includeEffectParams` / `effectGroup` 只属于会话模式; 目录模式不返回效果参数表"
+                    .to_owned(),
+                serde_json::json!({
+                    "reason": "effectParamsWithDirectory",
+                    "hint": "去掉 `directory` 再查效果参数; 或去掉发现面实参只扫目录",
+                }),
+            ));
+        }
         return plan_list_instruments_directory(directory);
     }
     let instruments: Vec<Value> = domain
@@ -6283,15 +6296,77 @@ fn plan_list_instruments(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault
             instruments.len()
         )
     };
-    Ok(Plan::ListInstruments {
-        data: serde_json::json!({
-            "instruments": instruments,
-            "count": instruments.len(),
-            "mode": "session",
-            "loadTool": "yeban_load_sfz",
-            "note": note,
-        }),
-    })
+    let requested_group = arg_str(call, "effectGroup").filter(|group| !group.is_empty());
+    if let Some(group) = requested_group
+        && crate::effect_params::EFFECT_GROUPS
+            .iter()
+            .all(|candidate| candidate.id != group)
+    {
+        let available: Vec<&str> = crate::effect_params::EFFECT_GROUPS
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect();
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("未知效果器分组 `{group}`; 可选: {available:?}"),
+            serde_json::json!({
+                "reason": "unknownEffectGroup",
+                "effectGroup": group,
+                "availableGroups": available,
+                "hint": "分组 id 逐字来自 effect_params.rs::EFFECT_GROUPS; 不猜近似名",
+            }),
+        ));
+    }
+    let include_effect_params =
+        arg_bool(call, "includeEffectParams", false) || requested_group.is_some();
+    let mut data = serde_json::json!({
+        "instruments": instruments,
+        "count": instruments.len(),
+        "mode": "session",
+        "loadTool": "yeban_load_sfz",
+        "note": note,
+    });
+    if include_effect_params {
+        let groups: Vec<&crate::effect_params::EffectGroup> = crate::effect_params::EFFECT_GROUPS
+            .iter()
+            .filter(|group| requested_group.is_none_or(|wanted| group.id == wanted))
+            .collect();
+        let mut params: Vec<Value> = Vec::new();
+        let mut group_rows: Vec<Value> = Vec::new();
+        for group in &groups {
+            group_rows.push(serde_json::json!({
+                "id": group.id,
+                "title": group.title,
+                "summary": group.summary,
+                "paramCount": group.params.len(),
+            }));
+            for param in group.params {
+                params.push(serde_json::json!({
+                    "group": group.id,
+                    "groupTitle": group.title,
+                    "name": param.name,
+                    "canonicalName": param.name,
+                    "aliases": param.aliases,
+                    "unit": param.unit,
+                    "min": param.min,
+                    "max": param.max,
+                    "default": param.default,
+                    "doc": param.doc,
+                    "consumed": true,
+                }));
+            }
+        }
+        data["effectGroups"] = serde_json::json!(group_rows);
+        data["effectParams"] = serde_json::json!(params);
+        data["effectParamCount"] = serde_json::json!(params.len());
+        data["effectParamSource"] = serde_json::json!(
+            "crates/yeban-mcp/src/effect_params.rs::EFFECT_GROUPS (与 insertDevice 校验同一份词表)"
+        );
+        data["storedOnlyPolicy"] = serde_json::json!(
+            "未列出的参数名会被存储但引擎不消费, 由 insertDevice 的 warnings[].unrecognisedParams 点名; 本表每条的 consumed:true 都表示引擎真的消费"
+        );
+    }
+    Ok(Plan::ListInstruments { data })
 }
 
 /// 目录模式下算作**样本文件**的扩展名（小写比较）。样本不是乐器定义，

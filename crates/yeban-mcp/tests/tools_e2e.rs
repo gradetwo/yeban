@@ -10448,3 +10448,111 @@ fn edit_notes_receipt_reports_the_clip_extent() {
         "纯音轨写入不得带 clip 回执: {track_only}"
     );
 }
+
+/// T-FIX-731：装设备前一次调用拿到效果参数全表；每条名字都被 registry 认、别名指向规范名；
+/// 分组过滤可用、未知分组响亮拒绝。
+#[test]
+fn list_instruments_exposes_the_effect_param_table() {
+    let (mut dispatcher, auth) = dispatcher();
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_list_instruments",
+        json!({"includeEffectParams": true}),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    let params = data["effectParams"]
+        .as_array()
+        .unwrap_or_else(|| panic!("effectParams 必须是数组: {result}"));
+    assert!(!params.is_empty(), "参数表不得为空: {result}");
+    for param in params {
+        let name = param["name"].as_str().expect("name");
+        let (group, registered) = yeban_mcp::effect_params::recognise(name)
+            .unwrap_or_else(|| panic!("发现面给出的 {name} 必须被同一份词表认"));
+        assert_eq!(registered.name, name);
+        assert_eq!(param["canonicalName"], json!(name));
+        assert_eq!(param["group"], json!(group.id));
+        assert_eq!(param["consumed"], json!(true));
+        for alias in param["aliases"].as_array().expect("aliases 必须是数组") {
+            let alias = alias.as_str().expect("alias");
+            let (_, via_alias) = yeban_mcp::effect_params::recognise(alias)
+                .unwrap_or_else(|| panic!("别名 {alias} 必须被认"));
+            assert_eq!(via_alias.name, name, "别名 {alias} 必须指向规范名 {name}");
+        }
+    }
+    // 代表性参数必须逐字在场（红对照的钉子：删掉词表里任何一个名字，这条就红）。
+    let names: Vec<&str> = params
+        .iter()
+        .filter_map(|param| param["name"].as_str())
+        .collect();
+    for expected in [
+        "input_gain_db",
+        "eq_low_gain",
+        "cutoff_hz",
+        "reverb_wet",
+        "conv_wet",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "发现面必须逐字含 {expected}; 实际 {names:?}"
+        );
+    }
+    // 别名必须指回规范名（triple: trim_db -> input_gain_db）。
+    let input = params
+        .iter()
+        .find(|param| param["name"] == "input_gain_db")
+        .expect("input_gain_db");
+    assert!(
+        input["aliases"]
+            .as_array()
+            .expect("aliases")
+            .iter()
+            .any(|alias| alias == "trim_db"),
+        "trim_db 必须是 input_gain_db 的别名: {input}"
+    );
+
+    let groups = data["effectGroups"].as_array().expect("effectGroups");
+    assert!(!groups.is_empty());
+
+    let filtered = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_list_instruments",
+        json!({"effectGroup": "reverb"}),
+    );
+    assert_eq!(filtered["status"], "success", "{filtered}");
+    let reverb = filtered["data"]["effectParams"]
+        .as_array()
+        .expect("过滤后仍有数组");
+    assert!(!reverb.is_empty(), "reverb 分组不得为空");
+    assert!(
+        reverb.iter().all(|param| param["group"] == "reverb"),
+        "过滤必须只留 reverb: {reverb:?}"
+    );
+
+    let both = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_list_instruments",
+        json!({"directory": std::env::temp_dir().display().to_string(), "includeEffectParams": true}),
+    );
+    assert_domain_error(&both, "INVALID_PARAMETER_RANGE", "目录模式不接受发现面实参");
+    assert_eq!(both["error"]["data"]["reason"], "effectParamsWithDirectory");
+
+    let unknown = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_list_instruments",
+        json!({"effectGroup": "reverbz"}),
+    );
+    assert_domain_error(&unknown, "INVALID_PARAMETER_RANGE", "未知分组");
+    assert_eq!(unknown["error"]["data"]["reason"], "unknownEffectGroup");
+    assert!(
+        !unknown["error"]["data"]["availableGroups"]
+            .as_array()
+            .expect("availableGroups")
+            .is_empty(),
+        "拒绝必须列出可用分组"
+    );
+}

@@ -1887,7 +1887,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-INSTRUMENTS",
         name: "yeban_list_instruments",
-        summary: "列出**本会话已装载**的 SFZ 乐器。响应 `data.instruments[]`: 每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` 等装载读数; 空 registry ⇒ `instruments: []` + 一句 `note` (⛔ 不报错)。⚠ registry 是**会话运行态** (不落盘): 打开/关闭工程或重启进程后为空, `instrumentId` 只能当本会话句柄。装乐器走 `yeban_load_sfz`; 绑轨走 `yeban_edit_notes` 的 `insertDevice` (sampler)。⭐ 目录模式: 给 `directory` 时改扫磁盘目录 (⛔ 不查 registry、⛔ 不装载): 递归列出每件 `.sfz` 的区域数与样本在缺计数, 解析失败的条目带 `parseError` 点名, 根目录有 `manifest.json` 时附逐文件对账; 目录不存在 ⇒ `IO_ERROR`; 空目录 ⇒ `count: 0` + `note` (⛔ 不报错)",
+        summary: "列出**本会话已装载**的 SFZ 乐器。响应 `data.instruments[]`: 每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` 等装载读数; 空 registry ⇒ `instruments: []` + 一句 `note` (⛔ 不报错)。⚠ registry 是**会话运行态** (不落盘): 打开/关闭工程或重启进程后为空, `instrumentId` 只能当本会话句柄。装乐器走 `yeban_load_sfz`; 绑轨走 `yeban_edit_notes` 的 `insertDevice` (sampler)。⭐ 目录模式: 给 `directory` 时改扫磁盘目录 (⛔ 不查 registry、⛔ 不装载): 递归列出每件 `.sfz` 的区域数与样本在缺计数, 解析失败的条目带 `parseError` 点名, 根目录有 `manifest.json` 时附逐文件对账; 目录不存在 ⇒ `IO_ERROR`; 空目录 ⇒ `count: 0` + `note` (⛔ 不报错)。⭐ 装前发现面: includeEffectParams:true 或 effectGroup:<id> 时同一响应另给 effectParams[] (规范名/别名/单位/值域/缺省/分组/consumed) 与 effectGroups[] —— 一次调用拿全表, ⛔ 不用翻 schema 的 oneOf 标题",
         scope: Scope::AppAdmin,
         // 只读：枚举 `domain.sfz_instruments` 或扫磁盘目录，不改工程、不装载、不落盘。
         side_effect: SideEffect::ReadOnly,
@@ -1900,6 +1900,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "可选: 目录模式的根目录（磁盘路径）；给出时递归扫描该目录的 SFZ 与 manifest，不查会话 registry；不存在/不是目录 ⇒ `IO_ERROR`；不给 = 会话模式（既有行为）",
+            ),
+            param(
+                "includeEffectParams",
+                "boolean",
+                false,
+                "可选: true 时在同一次会话模式响应里返回引擎认的**全部效果器参数**（`data.effectParams[]`: 规范名 / canonicalName / aliases / unit / min / max / default / doc / group / consumed）与分组表 `data.effectGroups[]`；数据逐条取自 effect_params.rs::EFFECT_GROUPS（与 insertDevice 校验同一份词表）。consumed:true = 引擎真的消费；未列出的名字只存储不生效（由 insertDevice 的 warnings 点名）。与 directory 同给 ⇒ INVALID_PARAMETER_RANGE",
+            ),
+            param(
+                "effectGroup",
+                "string",
+                false,
+                "可选: 只返回某个器件分组的参数（id 逐字取自 effect_params.rs::EFFECT_GROUPS，如 reverb / eq / channelStrip）；未知分组 ⇒ INVALID_PARAMETER_RANGE（unknownEffectGroup，带 availableGroups）。给出时隐含 includeEffectParams:true",
             ),
         ],
         // 会话模式没有业务失败面（空 registry 是合法状态）；目录模式的
