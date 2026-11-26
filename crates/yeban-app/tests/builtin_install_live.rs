@@ -36,8 +36,15 @@ fn emily() -> yeban_app::builtin_sounds::BuiltinSound {
 }
 
 fn roots() -> SoundRoots {
-    let library_root = std::env::temp_dir().join("yeban-live-sounds");
-    let _ = std::fs::remove_dir_all(&library_root);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时钟必须晚于 UNIX_EPOCH")
+        .as_nanos();
+    let library_root =
+        std::env::temp_dir().join(format!("yeban-live-sounds-{}-{stamp}", std::process::id()));
+    if library_root.exists() {
+        std::fs::remove_dir_all(&library_root).expect("清理本进程的临时采样库");
+    }
     SoundRoots {
         library_root,
         builtin_root: repo_root().join("assets/samples"),

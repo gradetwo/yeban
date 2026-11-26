@@ -104,8 +104,32 @@ fn scratch(tag: &str) -> PathBuf {
 
 /// 分轨输出目录（与 `host::stems_output_dir` 在 Linux 上的口径相同：
 /// 无 `USERPROFILE` ⇒ `temp_dir()/yeban-stems`）。
+fn isolate_stems_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // 产品回退目录由 `host::stems_output_dir` 读 `USERPROFILE` 决定；把本测试
+        // 进程的 profile 指到进程唯一根，产品与实际断言就都落在同一份私有目录，
+        // 不再与别的用户/测试二进制抢 `temp_dir()/yeban-stems`。
+        let root = std::env::temp_dir().join(format!("yeban-stems-{}", std::process::id()));
+        // SAFETY: 只在本进程第一次碰分轨目录前写一次；本文件没有别的 USERPROFILE 读者。
+        unsafe { std::env::set_var("USERPROFILE", root) };
+    });
+}
+
 fn stems_dir() -> PathBuf {
-    std::env::temp_dir().join("yeban-stems")
+    isolate_stems_dir();
+    let root = std::env::var("USERPROFILE").expect("USERPROFILE 已由本测试进程设置");
+    PathBuf::from(root)
+        .join("Documents")
+        .join("Yeban")
+        .join("stems")
+}
+
+fn clear_stems_dir() {
+    let dir = stems_dir();
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("清理分轨输出目录");
+    }
 }
 
 /// tick ⇒ 帧（四舍五入），与 `yeban_engine::synth::{samples_per_tick, tick_to_sample}` 同式。
@@ -437,7 +461,7 @@ fn empty_pool_backend_report_counts_the_skipped_audio_clip_and_warns() {
         "警告文案里不得再出现\"分轨完成\"，实得 {toast}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
 }
 
 #[test]
@@ -507,7 +531,7 @@ fn full_pool_backend_report_counts_the_rendered_audio_clip_and_completes() {
         "零未渲染时 toast 必须逐字沿用旧文案"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
 }
 
 /// GUI 两条场景各是一条测试函数（Tier-1 平台**每个线程只能装一次**，
@@ -611,8 +635,8 @@ fn gui_export_stems_full_pool_reports_rendered_clip_counts() {
         "GUI/CLI 音频分轨样本必须逐个相等（同一份工程、同一份满池、同一条后端）"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(stems_dir());
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
+    clear_stems_dir();
 }
 
 /// 场景（2）空池：音频轨静音（manifest 报 rendered=0/skipped=1）、MIDI 轨
@@ -667,8 +691,8 @@ fn gui_export_stems_empty_pool_reports_skipped_audio_clip() {
         "GUI 空池：MIDI 分轨（采样器走磁盘，不走资产池）仍必须可闻，实测 midi_peak={midi_peak}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(stems_dir());
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
+    clear_stems_dir();
 }
 
 /// 跑一次真实 GUI「导出分轨」：`command_execute("export-stems")`，等 manifest
@@ -705,7 +729,7 @@ fn run_gui_export(project: &YebanProjectV1, hash: &AssetHash, bytes: &[u8], with
         Rc::clone(&view_cell),
     );
 
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
     ui.invoke_command_execute("export-stems".into());
     wait_manifest();
 }

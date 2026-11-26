@@ -359,7 +359,10 @@ fn runtime_tree(window: &MainWindow) -> ControlTree {
 fn isolate_uninstalled_library() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let path = std::env::temp_dir().join("yeban-pane-no-overlap-no-library");
+        let path = std::env::temp_dir().join(format!(
+            "yeban-pane-no-overlap-no-library-{}",
+            std::process::id()
+        ));
         // SAFETY: 唯一一次写，且在所有窗口构造之前（见函数文档）。
         unsafe { std::env::set_var(SAMPLE_LIBRARY_ENV, path) };
     });

@@ -156,7 +156,10 @@ impl Drop for AudioFixture {
 fn isolate_repo_only_library() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let path = std::env::temp_dir().join("yeban-instrument-install-no-library");
+        let path = std::env::temp_dir().join(format!(
+            "yeban-instrument-install-no-library-{}",
+            std::process::id()
+        ));
         // SAFETY: 见函数文档 —— 唯一一次写，且所有读都发生在本函数返回之后。
         unsafe { std::env::set_var(SAMPLE_LIBRARY_ENV, path) };
     });

@@ -39,10 +39,33 @@ use yeban_ui_test_port::render::LivePort;
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
-/// 分轨输出目录：与生产 `host::stems_output_dir` **同一来源**（Windows 是
-/// `%USERPROFILE%/Documents/Yeban/stems`；其它平台退回 TEMP）。
+/// 两个测试进程若同时跑本文件与分轨镜像，产品回退目录 `temp_dir()/yeban-stems`
+/// 是同一份；本文件内串行，跨文件由各测试进程自己的锁兜住同进程并发。
+static STEMS_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 把本测试进程的 profile 指到进程唯一根，产品 `host::stems_output_dir`
+/// 与实际断言就都落在同一份私有目录，不再与别的测试二进制抢
+/// `temp_dir()/yeban-stems`。
+fn isolate_stems_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let root = std::env::temp_dir().join(format!("yeban-stems-{}", std::process::id()));
+        // SAFETY: 只在本进程第一次碰分轨目录前写一次；本文件没有别的 USERPROFILE 读者。
+        unsafe { std::env::set_var("USERPROFILE", root) };
+    });
+}
+
+/// 分轨输出目录：与生产 `host::stems_output_dir` **同一来源**。
 fn stems_dir() -> PathBuf {
+    isolate_stems_dir();
     host::stems_output_dir()
+}
+
+fn clear_stems_dir() {
+    let dir = stems_dir();
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("清理分轨输出目录");
+    }
 }
 
 fn list_files(dir: &PathBuf) -> Vec<(String, u64)> {
@@ -60,6 +83,7 @@ fn list_files(dir: &PathBuf) -> Vec<(String, u64)> {
 
 #[test]
 fn menu_export_midi_and_stems_reproduction() {
+    let _guard = STEMS_DIR_LOCK.lock().expect("分轨目录锁必须能拿到");
     behavior_arm();
     // ⭐ 臂 3b 在另一条线程起第二个活窗口（平台是线程局部的，每线程只能装一次 ——
     // 与 `tests/import_midi_losses_ui.rs` 的行为臂/几何臂同款）。
@@ -75,7 +99,7 @@ fn behavior_arm() {
         yeban_model::ids::EntityId::new().to_canonical_string()
     ));
     std::fs::create_dir_all(&scratch).expect("建临时目录");
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
     let cwd = std::env::current_dir().expect("读 cwd");
     let default_mid = cwd.join("ui-export.mid");
     let _ = std::fs::remove_file(&default_mid);
@@ -242,7 +266,7 @@ fn behavior_arm() {
     // 清理：不留产物污染仓库与 tmp。
     let _ = std::fs::remove_file(&default_mid);
     let _ = std::fs::remove_dir_all(&scratch);
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
 
     assert!(
         failures.is_empty(),
@@ -329,7 +353,7 @@ fn stems_project_dir_arm() {
         "臂 3b 前提：引擎必须记着真实工程目录"
     );
 
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
     ui.invoke_command_execute("export-stems".into());
     let manifest = stems_dir().join("stems-manifest.json");
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -357,7 +381,7 @@ fn stems_project_dir_arm() {
     );
 
     let _ = std::fs::remove_dir_all(&scratch);
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
 }
 
 #[test]

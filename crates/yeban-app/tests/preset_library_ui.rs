@@ -48,7 +48,8 @@ fn preset_library_panel_lists_rows_and_renders() {
     let evidence = golden_evidence(&image).expect("面板帧必须非全黑");
     let png = yeban_ui_test_port::png::encode_rgb8_limited(&image, 8 * 1024 * 1024)
         .expect("面板帧必须能编码 PNG");
-    let path = std::env::temp_dir().join("preset-library-tfix77.png");
+    let path =
+        std::env::temp_dir().join(format!("preset-library-tfix77-{}.png", std::process::id()));
     std::fs::write(&path, &png).expect("面板帧必须能落盘");
 
     assert!(ui.get_preset_library_open());

@@ -80,10 +80,37 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// 本文件里碰产品回退目录的 GUI 臂必须串行；纯后端臂用自有输出目录，不受影响。
+static STEMS_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 分轨输出目录（与 `host::stems_output_dir` 在 Linux 上的口径相同：
 /// 无 `USERPROFILE` ⇒ `temp_dir()/yeban-stems`）。
+fn isolate_stems_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // 产品回退目录由 `host::stems_output_dir` 读 `USERPROFILE` 决定；把本测试
+        // 进程的 profile 指到进程唯一根，产品与实际断言就都落在同一份私有目录，
+        // 不再与别的用户/测试二进制抢 `temp_dir()/yeban-stems`。
+        let root = std::env::temp_dir().join(format!("yeban-stems-{}", std::process::id()));
+        // SAFETY: 只在本进程第一次碰分轨目录前写一次；本文件没有别的 USERPROFILE 读者。
+        unsafe { std::env::set_var("USERPROFILE", root) };
+    });
+}
+
 fn stems_dir() -> PathBuf {
-    std::env::temp_dir().join("yeban-stems")
+    isolate_stems_dir();
+    let root = std::env::var("USERPROFILE").expect("USERPROFILE 已由本测试进程设置");
+    PathBuf::from(root)
+        .join("Documents")
+        .join("Yeban")
+        .join("stems")
+}
+
+fn clear_stems_dir() {
+    let dir = stems_dir();
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("清理分轨输出目录");
+    }
 }
 
 fn list_files(dir: &Path) -> Vec<(String, u64)> {
@@ -233,6 +260,7 @@ fn peak_in(samples: &[f32], range: core::ops::Range<usize>) -> f32 {
 
 #[test]
 fn gui_export_stems_passes_the_session_asset_pool_to_the_backend() {
+    let _guard = STEMS_DIR_LOCK.lock().expect("分轨目录锁必须能拿到");
     let dir = scratch("gui");
     let bytes = synth_asset(&dir);
     let hash = AssetHash::of_bytes(&bytes);
@@ -265,7 +293,7 @@ fn gui_export_stems_passes_the_session_asset_pool_to_the_backend() {
         Rc::clone(&view_cell),
     );
 
-    let _ = std::fs::remove_dir_all(stems_dir());
+    clear_stems_dir();
     ui.invoke_command_execute("export-stems".into());
     let manifest = stems_dir().join("stems-manifest.json");
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -323,8 +351,8 @@ fn gui_export_stems_passes_the_session_asset_pool_to_the_backend() {
         "素材耗尽后（仍在摆放内）必须静音，实测 after_peak={after_peak}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(stems_dir());
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
+    clear_stems_dir();
 }
 
 /// 后端对照：同一份工程、`&[]` 空池 ⇒ 同一轨静音。
@@ -365,7 +393,7 @@ fn stems_export_with_empty_asset_pool_renders_the_audio_track_silent() {
         "空池下同一轨必须静音，实测 inside_peak={inside_peak}"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
 }
 
 /// 钉住调用点：`export-stems` 臂必须从端口取池，⛔ 不得写死 `&[]`。
