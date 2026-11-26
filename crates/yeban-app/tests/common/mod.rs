@@ -56,7 +56,7 @@ use yeban_app::file_picker::{FilePicker, PickerRequest};
 #[must_use]
 pub fn wav_export_receipt(report: &WavExportReport, path: &Path, limiter: bool) -> String {
     format!(
-        "module:action=export-wav:outcome=ok:path={}:frames={}:sample_rate={}:channels={}:bits={}:bytes={}:source={}:digest={}:limiter={}:limiter_reductions={}:true_peak_dbfs={}:headroom_db={}",
+        "module:action=export-wav:outcome=ok:path={}:frames={}:sample_rate={}:channels={}:bits={}:bytes={}:source={}:digest={}:audio_clips_rendered={}:audio_clips_skipped={}:limiter={}:limiter_reductions={}:true_peak_dbfs={}:headroom_db={}:integrated_lufs={}:loudness_range_lu={}",
         path.display(),
         report.frames,
         report.sample_rate,
@@ -65,6 +65,8 @@ pub fn wav_export_receipt(report: &WavExportReport, path: &Path, limiter: bool) 
         report.bytes,
         report.source,
         report.digest,
+        report.audio_clips_rendered,
+        report.audio_clips_skipped.len(),
         if limiter { "on" } else { "off" },
         report.limiter_reductions,
         report
@@ -73,6 +75,12 @@ pub fn wav_export_receipt(report: &WavExportReport, path: &Path, limiter: bool) 
         report
             .headroom_db
             .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}")),
+        report
+            .integrated_lufs
+            .map_or_else(|| "null".to_owned(), |v| format!("{v:.3}")),
+        report
+            .loudness_range_lu
+            .map_or_else(|| "null".to_owned(), |v| format!("{v:.2}")),
     )
 }
 

@@ -13311,6 +13311,25 @@ pub fn wire_module_actions_for_project_shared(
     wire_module_actions_with_shared(ui, port, paths, None)
 }
 
+/// ⭐ T-FIX-469：导出 WAV 工作线程的句柄（`wait_for_pending_export` 用它在判据里做
+/// **确定性**等待 —— 与 `wait_for_pending_midi_in` 同一手法）。
+///
+/// 生产路径只多一步"把 handle 存进来"（不改导出的任何行为）；工作线程在写回执前
+/// 必然先把 `upgrade_in_event_loop` 的闭包入队 ⇒ join 返回后闭包一定已在事件循环队列，
+/// 测试再 `drain_event_loop` 即确定性落地（⛔ 无 sleep / 无轮询 / 无超时）。
+static PENDING_EXPORT_WORKER: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
+/// join 最近一次 `export-wav` 的工作线程；返回 `true` = 这一次确实等到一个刚结束的导出。
+/// 判据用它在 `drain_event_loop` 之前建立"回写闭包已入队"的 happens-before。
+pub fn wait_for_pending_export() -> bool {
+    let handle = PENDING_EXPORT_WORKER
+        .lock()
+        .ok()
+        .and_then(|mut worker| worker.take());
+    handle.is_some_and(|handle| handle.join().is_ok())
+}
+
 /// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
 pub fn wire_module_actions_with(
     ui: &MainWindow,
@@ -17772,7 +17791,9 @@ pub fn wire_module_actions_with_shared(
             // spawning (`UndoPort` is not Send), otherwise `ClipContent::Audio` clips
             // get no PCM in offline rendering and are silently skipped.
             let assets = port.assets();
-            let _ = std::thread::spawn(move || {
+            // ⭐ T-FIX-469：保存句柄供 `wait_for_pending_export` 做确定性等待（判据路径）。
+            // 生产路径同样存一次，⛔ 不改变导出行为（上一轮的 `let _ =` 丢弃句柄）。
+            let worker = std::thread::spawn(move || {
                 let result = crate::export_wav::export_wav_with_sfz_file_and_assets(
                     &project,
                     &target,
@@ -17913,6 +17934,11 @@ pub fn wire_module_actions_with_shared(
                     module_trace("export-wav", started, &receipt);
                 });
             });
+            // ⭐ T-FIX-469：存句柄（判据 join 用）；并发导出时后者覆盖前者，与
+            // "一次模块操作"的串行语义一致（⛔ 不改变导出行为）。
+            if let Ok(mut pending) = PENDING_EXPORT_WORKER.lock() {
+                *pending = Some(worker);
+            }
         });
     }
 

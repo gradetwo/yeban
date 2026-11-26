@@ -56,16 +56,59 @@ use std::rc::Rc;
 use std::str::FromStr as _;
 
 use common::wav_export_receipt;
-use live::{LiveWiringOptions, build_live_ui_with};
+use yeban_app::bridge::ViewState;
 use yeban_app::export_wav::{WavExportOptions, export_wav};
+use yeban_app::host;
 use yeban_app::host::{ModulePaths, wire_module_actions_with};
+use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::{
     AssetHash, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote,
     RoutingEdge, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
-use yeban_ui_test_port::port::Permission;
+use yeban_ui_test_port::inspect::install_testing_backend_with_event_loop;
 use yeban_ui_test_port::render::report_line;
+
+/// 把事件循环里已经排队的回写闭包跑掉（先压 `Quit`，FIFO ⇒ 回写先跑、循环后退出）。
+fn drain_event_loop() {
+    slint::quit_event_loop().expect("带事件循环的后端必须提供 proxy");
+    slint::run_event_loop().expect("无头事件循环必须正常返回");
+}
+
+/// 经**真窗口**导出一次并返回 `module_status`（结构化回执原文）。
+///
+/// 用带事件循环的 testing backend（导出回写走 `upgrade_in_event_loop`，Tier-1 平台
+/// 无 proxy ⇒ 必须用本后端），生产构造入口 `build_main_window_with_console_tab` +
+/// `wire_module_actions_with`（装配参考 `tests/ui_module_actions.rs`）。
+fn export_through_gui(
+    project: &YebanProjectV1,
+    target: &std::path::Path,
+    label: &str,
+) -> (String, bool) {
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open(label, "yeban-app", project.clone(), 1).expect("打开撤销会话"),
+    ));
+    let view = ViewState::from_project(project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let ui = host::build_main_window_with_console_tab(&view, &scene, 0).expect("生产窗口");
+    let mut paths = ModulePaths::from_env();
+    paths.export_wav = target.to_path_buf();
+    let _midi = wire_module_actions_with(&ui, Some(Rc::clone(&port)), paths);
+
+    assert_eq!(ui.get_module_status().as_str(), "", "导出前回执应为空");
+    ui.invoke_export_wav();
+    // ⭐ 确定性等待：join 工作线程 ⇒ upgrade_in_event_loop 已返回 ⇒ 回写闭包
+    // 一定已在事件循环队列 ⇒ drain 让它在 UI 线程执行（⛔ 无 sleep/轮询/超时）。
+    assert!(
+        host::wait_for_pending_export(),
+        "必须有一个刚结束的导出工作线程可 join"
+    );
+    drain_event_loop();
+    (
+        ui.get_module_status().to_string(),
+        ui.get_module_status_succeeded(),
+    )
+}
 
 // ⚠ 这里**没有** WAV 的绝对 `sha256`/`digest` 常量：绝对字节是机器相关的（第 313 条），
 //   "不改音频"一律用**同一台机器上的自比**（GUI 产物 vs 直接调用同一导出器）。
@@ -73,7 +116,7 @@ use yeban_ui_test_port::render::report_line;
 /// 回执字段名闭集（只用于把"值里自带的冒号"排除在切分边界之外；口径照
 /// `tests/ui_module_actions.rs` 的 `receipt_field_end`）。
 /// ⭐ 本单新增 `clipping_note`；`D-EX-1` 再加**恒发**的四个峰值读数字段。
-const RECEIPT_KEYS: [&str; 14] = [
+const RECEIPT_KEYS: [&str; 19] = [
     "action",
     "outcome",
     "path",
@@ -84,10 +127,15 @@ const RECEIPT_KEYS: [&str; 14] = [
     "bytes",
     "source",
     "digest",
+    "audio_clips_rendered",
+    "audio_clips_skipped",
     "limiter",
     "limiter_reductions",
     "true_peak_dbfs",
     "headroom_db",
+    "integrated_lufs",
+    "loudness_range_lu",
+    "clipping_note",
 ];
 
 fn fixture_id(tail: &str) -> EntityId {
@@ -250,41 +298,102 @@ fn project_with_track(volume_db: f32) -> YebanProjectV1 {
     project
 }
 
+/// ⭐ 运行时判据（恢复自退化前的源码断言）：经**真窗口**回调导出过载/干净工程，
+/// 解析结构化回执 —— 削波臂有 `clipping_note`（含 clippedSamples/suggestedTrimDb/最响的源），
+/// 干净臂逐字等于 `wav_export_receipt`（无 clipping_note），两臂产物与直接调用
+/// `export_wav` 的产物 sha256 自比。
+///
+/// 红对照：删 host.rs 的 `clipping_note` 字段 ⇒ 削波臂红；把它改成无条件出现 ⇒ 干净臂红；
+/// 让 GUI 走另一条导出器 ⇒ sha256 自比红。
 #[test]
 fn the_gui_export_reports_clipping_only_when_the_master_clips() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    install_testing_backend_with_event_loop();
+
+    let dir = scratch_dir("clip");
+    let clip_project = project_with_track(24.0); // +24dB ⇒ master 削波
+    let clean_project = project_with_track(0.0);
+    let options = WavExportOptions::resolve(&clip_project, None, None, None, None);
+
+    // ---------- ① 削波臂：真窗口导出过载工程 ----------
+    let clip_path = dir.join("clip.wav");
+    let (clip_receipt, clip_ok) = export_through_gui(&clip_project, &clip_path, "gui clip");
+    assert!(clip_ok, "削波工程导出必须成功: {clip_receipt}");
+    let note = field_of_opt(&clip_receipt, "clipping_note")
+        .expect("削波工程回执必须含 clipping_note（删该字段 ⇒ 本断言红）");
+    let inner = note.trim_matches('"');
     assert!(
-        aether_app.contains("callback export-wav("),
-        "新 UI 契约面必须声明 callback export-wav("
+        inner.contains("clippedSamples"),
+        "clipping_note 必须含 clippedSamples: {note}"
     );
     assert!(
-        aether_host.contains("on_export_wav"),
-        "宿主接线层必须注册 on_export_wav"
+        inner.contains("suggestedTrimDb"),
+        "clipping_note 必须含 suggestedTrimDb: {note}"
     );
     assert!(
-        aether_app.contains("> module-status:"),
-        "新 UI 契约面必须声明 > module-status:"
+        inner.contains("Lead"),
+        "clipping_note 必须点名最响的源 Lead: {note}"
+    );
+    assert_ne!(
+        field_of(&clip_receipt, "true_peak_dbfs"),
+        "null",
+        "削波臂真峰值非 null"
+    );
+    assert_eq!(field_of(&clip_receipt, "limiter"), "off");
+
+    // 与同一工程直接调用导出器对照：clipping_note 逐字相等 + 整条回执逐字相等 + sha256 自比。
+    let clip_oracle = dir.join("clip-oracle.wav");
+    let direct = export_wav(&clip_project, &clip_oracle, options).expect("直接导出对照");
+    let direct_note = direct
+        .clipping_note()
+        .expect("削波报告必须有 clipping_note");
+    assert_eq!(
+        inner, direct_note,
+        "GUI 与直接调用的 clipping_note 必须逐字相同"
+    );
+    let legacy = wav_export_receipt(&direct, &clip_path, false);
+    assert_eq!(
+        clip_receipt,
+        format!("{legacy}:clipping_note={note}"),
+        "削波臂整条回执必须逐字等于 第二份形状 + clipping_note"
+    );
+    assert_eq!(
+        sha_hex(&clip_path),
+        sha_hex(&clip_oracle),
+        "GUI 产物与直接调用 sha256 自比"
+    );
+
+    // ---------- ② 干净臂：真窗口导出不削波工程 ----------
+    let clean_path = dir.join("clean.wav");
+    let (clean_receipt, clean_ok) = export_through_gui(&clean_project, &clean_path, "gui clean");
+    assert!(clean_ok, "干净工程导出必须成功: {clean_receipt}");
+    assert!(
+        field_of_opt(&clean_receipt, "clipping_note").is_none(),
+        "干净臂不得含 clipping_note（无条件加 ⇒ 本断言红）: {clean_receipt}"
     );
     assert!(
-        aether_host.contains("set_module_status"),
-        "宿主接线层必须注册 set_module_status"
+        !clean_receipt.contains("削波"),
+        "干净臂回执不得出现削波字样"
     );
-    assert!(
-        aether_app.contains("> module-status-succeeded:"),
-        "新 UI 契约面必须声明 > module-status-succeeded:"
+    let clean_options = WavExportOptions::resolve(&clean_project, None, None, None, None);
+    let clean_oracle = dir.join("clean-oracle.wav");
+    let clean_direct = export_wav(&clean_project, &clean_oracle, clean_options).expect("干净对照");
+    assert_eq!(
+        clean_receipt,
+        wav_export_receipt(&clean_direct, &clean_path, false),
+        "干净臂整条回执必须逐字等于 第二份形状（无 clipping_note）"
     );
-    assert!(
-        aether_host.contains("set_module_status_succeeded"),
-        "宿主接线层必须注册 set_module_status_succeeded"
+    assert_ne!(
+        field_of(&clean_receipt, "true_peak_dbfs"),
+        "null",
+        "干净臂真峰值非 null"
     );
+    assert_eq!(
+        sha_hex(&clean_path),
+        sha_hex(&clean_oracle),
+        "干净臂 GUI 产物 sha256 自比"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**（本文件的取值器也必须引号感知）。
@@ -293,37 +402,24 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
 /// 而引号值仍**保留引号**返回（本文件既有约定）。
 #[test]
 fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    // 纯函数判据（不装平台，可与主测试并行）：引号值里的 `key=` 不得被当成顶层字段。
+    let receipt = "module:action=export-wav:outcome=ok:clipping_note=\"clippedSamples = 3, channels=2, suggestedTrimDb = -1\"";
+    // 引号值整段（保留引号）可取到。
+    let note = field_of_opt(receipt, "clipping_note").expect("顶层 clipping_note 必须可取");
     assert!(
-        aether_app.contains("callback export-wav("),
-        "新 UI 契约面必须声明 callback export-wav("
+        note.starts_with('"') && note.ends_with('"'),
+        "引号值保留引号"
+    );
+    assert!(note.contains("clippedSamples"), "引号值内容完整");
+    // 引号里的 `channels=` / `suggestedTrimDb=` 不是顶层字段 ⇒ 取不到。
+    assert!(
+        field_of_opt(receipt, "channels").is_none(),
+        "引号内的 key 不得暴露为顶层字段"
     );
     assert!(
-        aether_host.contains("on_export_wav"),
-        "宿主接线层必须注册 on_export_wav"
+        field_of_opt(receipt, "suggestedTrimDb").is_none(),
+        "引号内的 key 不得暴露为顶层字段"
     );
-    assert!(
-        aether_app.contains("> module-status:"),
-        "新 UI 契约面必须声明 > module-status:"
-    );
-    assert!(
-        aether_host.contains("set_module_status"),
-        "宿主接线层必须注册 set_module_status"
-    );
-    assert!(
-        aether_app.contains("> module-status-succeeded:"),
-        "新 UI 契约面必须声明 > module-status-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_module_status_succeeded"),
-        "宿主接线层必须注册 set_module_status_succeeded"
-    );
+    // 顶层字段照常可取。
+    assert_eq!(field_of(receipt, "outcome"), "ok");
 }
