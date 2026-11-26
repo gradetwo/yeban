@@ -45,6 +45,16 @@ pub const TEST_TONE_AMPLITUDE: f32 = 0.5;
 /// 样本来源的**如实**文案（⛔ 不是声卡）。
 pub const SOURCE_LABEL: &str = "in-memory-sine(440Hz)";
 
+/// ⭐ **T-FIX-508**：输入源连续这么久只返回 0 帧，就判定设备已停止送帧。
+///
+/// 工作线程按 1 ms 轮询；真实设备在正常工作时应不断有块（即使内容是静音）。
+/// 1 s 远大于调度抖动，又足够让用户感到“设备一断，录音自己停”。测试用更短
+/// 阈值，避免每个用例等满一秒。
+#[cfg(not(test))]
+const INPUT_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(test)]
+const INPUT_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// 录制参数。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecordOptions {
@@ -135,6 +145,10 @@ pub enum RecordError {
     /// 把两者混在一起会把排查方向引错（与引擎 `DeviceError` 把输入/输出分开同一条理由）。
     /// ⛔ 本变体**绝不**表示"那就录静音"：出现它 ⇒ **没有**会话、**没有**文件。
     Source(String),
+    /// ⭐ **T-FIX-508**：已经开始的录音，输入源连续 [`INPUT_STALL_TIMEOUT`] 返回 0 帧
+    /// （设备被拔掉 / 音频服务重启 / 后端流失效）。出现它 ⇒ 录音已停止，且
+    /// [`Recorder::stop`] **不写**一条短 WAV，而是把这条原因原样交给 UI。
+    InputLost(String),
 }
 
 impl core::fmt::Display for RecordError {
@@ -145,6 +159,7 @@ impl core::fmt::Display for RecordError {
             Self::Invalid(reason) => write!(formatter, "录音参数非法: {reason}"),
             Self::Render(reason) => write!(formatter, "工程渲染失败: {reason}"),
             Self::Source(reason) => write!(formatter, "打开录音输入源失败: {reason}"),
+            Self::InputLost(reason) => write!(formatter, "录音输入中断: {reason}"),
         }
     }
 }
@@ -482,6 +497,12 @@ pub struct Recorder {
     ///
     /// ⚠ 修之前 `stop` 里是**写死的 0**：设备源一旦跑得比抽干快，报告就会说"没丢"。
     dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// ⭐ **T-FIX-508**：输入源连续 0 帧/失效的**一次性**失败槽。
+    ///
+    /// 工作线程发现设备不再送帧时写入；`stop()` 看到它 ⇒ 返回
+    /// [`RecordError::InputLost`] 且**不落短 WAV**；UI 的 500 ms 看门狗看到它
+    /// ⇒ 走同一条停录/回执路径，不再等用户手动按停止。
+    input_failure: std::sync::Arc<std::sync::Mutex<Option<RecordError>>>,
 }
 
 #[derive(Debug)]
@@ -527,6 +548,15 @@ impl Recorder {
     #[must_use]
     pub fn is_recording(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// ⭐ **T-FIX-508**：工作线程是否已判定输入源停止送帧。
+    ///
+    /// UI 层 500 ms 看门狗读它；读不到（没在录 / 正常录音）⇒ `None`。
+    /// 返回值是**克隆**（错误原因很小），不把锁交给调用方。
+    #[must_use]
+    pub fn input_failure(&self) -> Option<RecordError> {
+        self.input_failure.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// ⭐ **经工厂缝起录**（任务单 `#88`）：源**只能**由
@@ -588,6 +618,11 @@ impl Recorder {
         // 用源的值 = "照设备说的录一条单声道"，⛔ 不是拒绝录音、⛔ 不是偷偷上混。
         let channels = source.channels().max(1);
         let (sender, receiver) = record_channel(options.capacity_frames, channels);
+        // ⭐ T-FIX-508：新会话从**没有失败**开始（上一条 take 的 InputLost 不许漏进来）。
+        if let Ok(mut slot) = self.input_failure.lock() {
+            *slot = None;
+        }
+        let input_failure_worker = std::sync::Arc::clone(&self.input_failure);
         let sender = std::sync::Arc::new(std::sync::Mutex::new(sender));
         let sender_worker = std::sync::Arc::clone(&sender);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -616,6 +651,9 @@ impl Recorder {
             // ⭐ **已经开始录了没有**：预备拍走完之前为 `false`。
             let mut recording = count_in_frames == 0;
             let mut pulled_so_far: u64 = 0;
+            // ⭐ T-FIX-508：连续 0 帧的起点。真设备正常时即使录到静音也会**送帧**；
+            // 连续 0 帧只可能是后端失效/设备断开，超过阈值就停录并留错误。
+            let mut zero_since: Option<std::time::Instant> = None;
             // ⚠ 轮询而非阻塞等待：`RecordDrain` 没有"等新数据"的接口，而停止必须**及时**
             // （⛔ 不能让按钮卡住）。1 ms 的休眠只在**后台线程**上，⛔ 不碰音频线程。
             while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
@@ -624,6 +662,7 @@ impl Recorder {
                 // **本后台线程**上：设备回调只做无锁推入，⛔ 不在这一层分配/加锁。
                 let frames = source.next_block(block_frames, &mut block);
                 if frames > 0 {
+                    zero_since = None;
                     // ⭐ ⭐ **照拉、只不推**：预备拍期间**照常**从源拉块（⛔ 不能停止拉取，
                     // 否则真设备的回调会积压、甚至丢帧/溢出 —— 那会把"不录预备拍"变成
                     // "录音整体出问题"），但**⛔ 不推入录音环** ⇒ **不产生任何录音内容**。
@@ -647,6 +686,22 @@ impl Recorder {
                             frames.saturating_sub(accepted) as u64,
                             std::sync::atomic::Ordering::Relaxed,
                         );
+                    }
+                } else {
+                    let since = *zero_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= INPUT_STALL_TIMEOUT {
+                        let reason = format!(
+                            "输入源 `{source_label}` 连续 {} ms 返回 0 帧（设备可能被拔掉、\
+                             音频服务重启或后端流失效）",
+                            since.elapsed().as_millis()
+                        );
+                        eprintln!(
+                            "[yeban-app] T-FIX-508 input-watchdog: {reason} ⇒ 停止录音，不落短 WAV"
+                        );
+                        if let Ok(mut slot) = input_failure_worker.lock() {
+                            *slot = Some(RecordError::InputLost(reason));
+                        }
+                        break;
                     }
                 }
                 let _ = drain.pump(batch);
@@ -736,6 +791,11 @@ impl Recorder {
                 .map_err(|_| RecordError::Invalid("录音线程 panic".to_owned()))?,
             None => SampleSink::default(),
         };
+        // ⭐ T-FIX-508：工作线程已判定输入源失效 ⇒ **响亮失败，不落一条短 WAV**。
+        // 这条检查必须在量化/写盘之前；否则 UI 会拿到“录音完成”而文件已被截断。
+        if let Some(error) = self.input_failure() {
+            return Err(error);
+        }
         // 计数器在 spawn 前读快照（会话已 take，这两条原子值此后不再变）。
         let pushed = self
             .pushed_frames
@@ -1095,6 +1155,81 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("建临时目录");
         dir
+    }
+
+    /// T-FIX-508：先送几块真帧，随后永久返回 0 —— 模拟设备被拔掉/音频服务重启后的
+    /// cpal 输入流（回调继续活着但环里永远没有新帧）。
+    struct StallAfter {
+        channels: u16,
+        remaining: usize,
+        produced: u64,
+    }
+
+    impl InputSource for StallAfter {
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+
+        fn next_block(&mut self, frames: usize, out: &mut [f32]) -> usize {
+            if self.remaining == 0 {
+                return 0;
+            }
+            self.remaining -= 1;
+            let channels = usize::from(self.channels.max(1));
+            let fill = frames.saturating_mul(channels).min(out.len());
+            for sample in &mut out[..fill] {
+                self.produced = self.produced.saturating_add(1);
+                *sample = (self.produced as f32 * 0.001).sin();
+            }
+            fill / channels
+        }
+    }
+
+    /// 判据：连续 0 帧达到阈值 ⇒ `InputLost`，且**不写短 WAV**；旧路径会在这里
+    /// 返回 `Ok(RecordReport { frames: ... })`，把截断当成功。
+    #[test]
+    fn an_input_stall_is_reported_and_leaves_no_short_wav() {
+        let dir = temp_dir("input-stall");
+        let path = dir.join("take.wav");
+        let options = RecordOptions {
+            seconds: 0.2,
+            capacity_frames: 48_000,
+            ..RecordOptions::default()
+        };
+        let mut recorder = Recorder::new();
+        recorder
+            .start(
+                &path,
+                &options,
+                Box::new(StallAfter {
+                    channels: 2,
+                    remaining: 8,
+                    produced: 0,
+                }),
+                0,
+                None,
+            )
+            .expect("起录");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while recorder.input_failure().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let failure = recorder.input_failure().expect("输入停帧必须被看门狗抓到");
+        assert!(
+            matches!(failure, RecordError::InputLost(_)),
+            "必须是 InputLost: {failure:?}"
+        );
+        let error = recorder.stop().expect_err("停录必须响亮失败");
+        assert!(
+            matches!(error, RecordError::InputLost(_)),
+            "stop 必须原样返回 InputLost: {error:?}"
+        );
+        assert!(
+            !path.exists(),
+            "⛔ 输入失效时不许留下一条短 WAV（{} 存在）",
+            path.display()
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 判据 a：录出的 WAV **可被 `read_plain_wav` 读回**，帧数与推入数一致（无丢弃），样本非静音。

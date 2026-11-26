@@ -8263,9 +8263,31 @@ struct RecordControl {
     /// ⭐ T-FIX-430：自身弱引用 —— 定时器回调需要在 `&self` 之外拿到 `Rc<RecordControl>`
     /// 才能调 [`Self::poll_landing`]；Weak 不增强引用计数，⛔ 不造成 self 循环引用。
     self_weak: std::cell::RefCell<std::rc::Weak<RecordControl>>,
+    /// ⭐ **T-FIX-508**：500 ms 输入看门狗。录音中轮询
+    /// [`Recorder::input_failure`](crate::record_wav::Recorder::input_failure)；
+    /// 一旦工作线程判定“输入源连续 0 帧”，立刻走同一条 `stop_if_recording`
+    /// （⛔ 不让用户手动按停止才发现录音已经断了）。
+    input_watchdog: std::cell::RefCell<Option<slint::Timer>>,
 }
 
 impl RecordControl {
+    /// ⭐ **T-FIX-508**：500 ms 看门狗。只在输入源已报 `InputLost` 时动作；
+    /// 正常录音（包括录到静音）永远不触发。
+    ///
+    /// 借用纪律与 [`Self::stop_if_recording`] 相同：先 `try_borrow` 读失败标记，
+    /// 读不到就跳过这一拍；真正停录在 `try_borrow_mut` 里完成，UI 回执在借外。
+    fn stop_on_input_loss(&self) -> bool {
+        let failed = match self.recorder.try_borrow() {
+            Ok(recorder) => recorder.input_failure().is_some(),
+            Err(_) => false,
+        };
+        if failed {
+            self.stop_if_recording()
+        } else {
+            false
+        }
+    }
+
     /// 录音中 ⇒ 停录并**启动后台落盘**；没在录 ⇒ 什么都不做。返回是否真的结束了一条 take。
     ///
     /// ⭐ T-FIX-430：本方法不再同步量化/写盘（那会卡 UI 主线程）；它把
@@ -8614,8 +8636,24 @@ fn install_record_control(
         pending_landing: std::cell::RefCell::new(None),
         poll_timer: slint::Timer::default(),
         self_weak: std::cell::RefCell::new(std::rc::Weak::new()),
+        input_watchdog: std::cell::RefCell::new(None),
     });
     *control.self_weak.borrow_mut() = Rc::downgrade(&control);
+    // ⭐ T-FIX-508：UI 线程上的 500 ms 输入看门狗。回调只持 `Weak`，不把
+    // `RecordControl` 自己的引用计数抬成环；`Timer` 存在 `control` 字段里保活，
+    // 控制端口随 `wire_transport` 的局部 Rc 活到本次装配结束。
+    let watchdog = slint::Timer::default();
+    let weak_control = Rc::downgrade(&control);
+    watchdog.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(500),
+        move || {
+            if let Some(control) = weak_control.upgrade() {
+                control.stop_on_input_loss();
+            }
+        },
+    );
+    *control.input_watchdog.borrow_mut() = Some(watchdog);
     let toggle = Rc::clone(&control);
     ui.on_toggle_record(move || toggle.toggle());
     (recorder, control)
@@ -8645,6 +8683,8 @@ fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
         eprintln!("[yeban-app] 录音: {reason}");
         let human = if reason.contains("没有进工程") {
             "录音已经存成文件，但没能放进这个工程。文件仍在磁盘上，不会丢；再按一次「录音」会重新录一遍。".to_owned()
+        } else if reason.contains("录音输入中断") {
+            "录音已停止：输入设备连续没有送来帧（可能被拔掉，或音频服务重启了）。这条 take 没有保存，检查设备后再按一次「录音」重试。".to_owned()
         } else if reason.contains("重入") {
             "录音已经在进行中，不用再按一次。等这一条录完再看结果。".to_owned()
         } else {
