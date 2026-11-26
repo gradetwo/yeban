@@ -1309,6 +1309,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // UFCS 两种情况下都成立, 且不需要任何 import。
     match slint::ComponentHandle::run(&ui) {
         Ok(()) => {
+            // ⭐ T-FIX-408：事件循环结束是最后一道出口。菜单退出 / 窗口关闭都已先
+            // stop 落盘；这里再兜一次，覆盖平台直接结束循环、close 回调未走的路径。
+            // 已经停过就是 no-op，不会写第二个文件。
+            let _ = host::finish_recording_before_exit(&ui);
             // 布局写回（line/ui-window-state）：事件循环正常结束 = 关窗 /
             // 退出，此刻窗口虽已隐藏，尺寸、位置与面板属性仍可读，快照
             // 存回设置（语言字段由设置的读-改-写保住）。异常退出不写回。

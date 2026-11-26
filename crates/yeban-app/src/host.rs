@@ -8204,6 +8204,60 @@ pub fn recording_in_progress() -> bool {
         }
     })
 }
+
+/// ⭐ T-FIX-408：**退出前的录音收尾**——菜单退出 / 窗口关闭共用这一条。
+///
+/// 只做一件事：若录音器真的在录，调用 [`Recorder::stop`](crate::record_wav::Recorder::stop)
+/// 把当前 take 写盘；⛔ 不再调用 `record-wav`（那是 CLI 测试音，不是交互录音）。
+///
+/// 返回 `true` 表示可以继续退出（没在录 / 已成功落盘）；`false` 表示停录失败，
+/// 调用方必须**拦下退出**并把界面留在原位——⛔ 不许静默丢 take。
+#[must_use]
+pub fn finish_recording_before_exit(ui: &MainWindow) -> bool {
+    let outcome = RECORDER_FOR_SWITCH.with(|slot| {
+        let recorder = slot.borrow();
+        let Some(recorder) = recorder.as_ref() else {
+            return Ok(None);
+        };
+        let mut recorder = match recorder.try_borrow_mut() {
+            Ok(recorder) => recorder,
+            Err(_) => {
+                return Err("录音器正忙（停录/落地尚未结束）".to_owned());
+            }
+        };
+        if !recorder.is_recording() {
+            return Ok(None);
+        }
+        recorder.stop().map(Some).map_err(|error| error.to_string())
+    });
+    match outcome {
+        Ok(Some(report)) => {
+            eprintln!(
+                "[yeban-app] 退出前录音已落盘：{}（{} 帧，{} 字节）",
+                report.path.display(),
+                report.frames,
+                report.bytes
+            );
+            ui.set_is_recording(false);
+            ui.set_toast_message(
+                format!(
+                    "[退出] 录音已保存：{}（{} 帧）",
+                    report.path.display(),
+                    report.frames
+                )
+                .into(),
+            );
+            true
+        }
+        Ok(None) => true,
+        Err(error) => {
+            eprintln!("[yeban-app] 退出前录音未能落盘：{error} ⇒ 已取消退出");
+            ui.set_is_recording(false);
+            ui.set_toast_message(format!("[退出] 录音未能落盘：{error} · 已取消退出").into());
+            false
+        }
+    }
+}
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
 ///
 /// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
@@ -31423,15 +31477,11 @@ pub fn wire_aether_actions(
                     // 是唯一正确的出口；`hide()` 先做是为了把"点菜单到进程结束"之间
                     // 的空窗时间压到最短（视觉上不会留一个白框）。
                     "app-quit" => {
-                        // ⭐ T-FIX-391：退出前若有录音，先走现有 stop→land 路径把
-                        // take 落进当前工程；⛔ 不让未完成录音随进程消失。
-                        if recording_in_progress() {
-                            ui.invoke_record_wav();
+                        // T-FIX-408：先直接 stop 落盘；失败就留在窗口，不带走未写盘 take。
+                        if !finish_recording_before_exit(&ui) {
+                            return;
                         }
-                        // ⭐ T-FIX-208：有未保存改动先拦一下，弹三选框让用户选
-                        // 「保存并退出 / 直接退出 / 取消」，⛔ 不再一键丢掉全部编辑。
-                        // 判据走 crate::dirty_guard —— 与保存点同一个真源（head 指针）。
-                        // 未安装保存点的判据装配里 current_is_dirty 恒 false ⇒ 逐位沿用旧行为。
+                        // T-FIX-208：有未保存改动先弹三选，避免一键丢编辑；判据与保存点同一真源。
                         if crate::dirty_guard::current_is_dirty(port.display().head) {
                             ui.set_quit_confirm_open(true);
                         } else {
@@ -33869,18 +33919,23 @@ pub fn wire_quit_guard(ui: &MainWindow, port: &Rc<UndoPort>) {
         });
     }
 
-    // ④ 窗口关闭按钮：dirty 时拦下（KeepWindowShown + 弹框），干净时放行。
-    //    on_close_requested 必须同步返回，故这里只做"判断 + 弹框"，真正的
+    // ④ 窗口关闭按钮：先结束录音 take，再按 dirty 拦（KeepWindowShown + 弹框），干净时放行。
+    //    on_close_requested 必须同步返回，故这里只做"停录 + 判断 + 弹框"，真正的
     //    退出在三选 callback 里完成（与菜单 app-quit 同一组出口）。
     {
         let w = weak.clone();
         let p = Rc::clone(port);
         ui.window().on_close_requested(move || {
-            if let Some(ui) = w.upgrade()
-                && crate::dirty_guard::current_is_dirty(p.display().head)
-            {
-                ui.set_quit_confirm_open(true);
-                return slint::CloseRequestResponse::KeepWindowShown;
+            if let Some(ui) = w.upgrade() {
+                // ⭐ T-FIX-408：窗口关闭同样必须先 stop 落盘；停不下来就保持窗口，
+                // ⛔ 不允许 HideWindow 把未写盘的 take 带走。
+                if !finish_recording_before_exit(&ui) {
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
+                if crate::dirty_guard::current_is_dirty(p.display().head) {
+                    ui.set_quit_confirm_open(true);
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
             }
             slint::CloseRequestResponse::HideWindow
         });
