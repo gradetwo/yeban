@@ -2988,6 +2988,13 @@ impl ElementRegistry {
             false,
         );
         registry.add(
+            "clear-micro-timing-button",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "清除微时值（T-FIX-675）",
+            false,
+        );
+        registry.add(
             "humanize-error-line",
             ElementKind::Text,
             "dialogs/humanize_dialog.slint",

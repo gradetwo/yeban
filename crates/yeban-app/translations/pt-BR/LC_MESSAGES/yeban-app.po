@@ -1361,6 +1361,12 @@ msgstr "Aplicar Quantizar ao clip selecionado"
 
 msgid "应用量化"
 msgstr "Aplicar Quantizar"
+msgid "清除选中范围内的微时值"
+msgstr "Limpar o micro-timing da seleção"
+
+msgid "清除微时值"
+msgstr "Limpar o micro-timing"
+
 
 msgid "人性化或量化失败的原因"
 msgstr "Por que Humanizar ou Quantizar falhou"

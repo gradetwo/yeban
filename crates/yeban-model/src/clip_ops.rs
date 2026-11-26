@@ -56,6 +56,30 @@ pub fn quantize_tick(start: u64, grid: u64, strength_permille: u16) -> u64 {
     scaled.max(0) as u64
 }
 
+/// 量化按强度把微时值拉回 0 —— 与 [`quantize_tick`] 同一条线性内插口径。
+///
+/// `strength_permille` = 1000 时微时值清零；`p` 时按 `(1000 - p) / 1000` 缩放；
+/// `0` 时一位不动。取整与 `quantize_tick` 一致：整数除法向零截断（`i32` 除法语义，
+/// 如 `-31 * 500 / 1000 = -15`）。返回值是**规范形态**：`None` 表示\"无微时值\"
+/// （模型既有口径：`MidiNote::default` 的 `micro_timing_ticks` 就是 `None`，且播放
+/// 侧把 `None` 与 `Some(0)` 同等当成 0 偏移），所以缩放结果为 0 时返回 `None`
+/// 而不是 `Some(0)` —— 100% 量化后音符的微时值是**清除**（`None`），不是\"写了个 0\"。
+/// 调用方（MCP `quantizeClip` 展开与宿主 `quantize_clip_ops_for`）都调这里，
+/// ⛔ 不另写一份缩放算式。
+#[must_use]
+pub fn quantize_micro_timing(micro: Option<i16>, strength_permille: u16) -> Option<i16> {
+    let current = micro?;
+    debug_assert!((-MICRO_TIMING_MAX_ABS..=MICRO_TIMING_MAX_ABS).contains(&current));
+    let remaining = 1000i32 - i32::from(strength_permille.min(1000));
+    let scaled = i32::from(current) * remaining / 1000;
+    if scaled == 0 {
+        None
+    } else {
+        // `|current| <= 240` 且 `remaining <= 1000` ⇒ 结果仍在 ±240 内，截断安全。
+        Some(scaled as i16)
+    }
+}
+
 /// 按轨派生有效种子（Wang 2026-11-11 13:01 定：每轨种子必须不一致）。
 ///
 /// `effective_seed = splitmix64(base_seed ⊕ 轨盐)`，轨盐 = 轨 ULID 高低
@@ -554,6 +578,27 @@ mod tests {
         // grid <= 1 ⇒ 不吸。
         assert_eq!(quantize_tick(123, 1, 1000), 123);
         assert_eq!(quantize_tick(123, 0, 1000), 123);
+    }
+
+    #[test]
+    fn quantize_micro_timing_scales_toward_zero_and_clears_at_full_strength() {
+        // 强度 1000 ⇒ 清除（None，不是 Some(0)）；无微时值 ⇒ 仍是 None。
+        assert_eq!(quantize_micro_timing(Some(100), 1000), None);
+        assert_eq!(quantize_micro_timing(Some(-240), 1000), None);
+        assert_eq!(quantize_micro_timing(None, 1000), None);
+        // 强度 0 ⇒ 一位不动。
+        assert_eq!(quantize_micro_timing(Some(100), 0), Some(100));
+        assert_eq!(quantize_micro_timing(Some(-30), 0), Some(-30));
+        // 强度一半 ⇒ 约减半（向零截断，与 quantize_tick 同一取整口径）。
+        assert_eq!(quantize_micro_timing(Some(100), 500), Some(50));
+        assert_eq!(quantize_micro_timing(Some(-30), 500), Some(-15));
+        assert_eq!(quantize_micro_timing(Some(-31), 500), Some(-15));
+        // 缩放后为 0 ⇒ 规范形态是 None（播放侧 None 与 Some(0) 等价）。
+        assert_eq!(quantize_micro_timing(Some(1), 500), None);
+        assert_eq!(quantize_micro_timing(Some(1), 999), None);
+        // 强度 250 ⇒ 留 3/4。
+        assert_eq!(quantize_micro_timing(Some(240), 250), Some(180));
+        assert_eq!(quantize_micro_timing(Some(-240), 250), Some(-180));
     }
 
     #[test]

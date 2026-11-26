@@ -15,7 +15,7 @@
 //! （T-FIX-204 未合入前，选区由程序构造）。
 
 use std::collections::{BTreeMap, BTreeSet};
-use yeban_app::host::{humanize_clip_ops_for, quantize_clip_ops_for};
+use yeban_app::host::{clear_micro_timing_ops_for, humanize_clip_ops_for, quantize_clip_ops_for};
 use yeban_model::music::MidiNote;
 use yeban_model::ops::Op;
 use yeban_model::samples::filled_project;
@@ -273,5 +273,313 @@ fn humanize_no_selected_clip_touches_both_clips() {
         op_note_ids(&ops),
         selected,
         "人性化跨片段选区两边都必须产出 op"
+    );
+}
+
+/// T-FIX-675：5 颗带微时值的音符（起点与 `five_note_project` 相同，全部离格）。
+/// 微时值：`Some(100)` / `Some(-30)` / `Some(1)`（50% 时缩到 0 ⇒ 归一为 `None`）/
+/// `None` / `Some(240)`。返回（工程，摆放身份 ULID，5 颗音符的身份 —— 按片段
+/// `BTreeMap` 键序）。
+fn micro_note_project() -> (YebanProjectV1, String, Vec<EntityId>) {
+    let (mut project, placement_ulid, _ids) = five_note_project();
+    let clip_id = first_midi_clip(&project).2;
+    let entry = project.clip_pool.get_mut(&clip_id).expect("片段必须在池里");
+    let Some(notes) = entry.content.notes_mut() else {
+        panic!("片段必须是 MIDI");
+    };
+    // `BTreeMap` 按 ULID 键序（⛔ 不是插入序）⇒ 先按起点排好序再赋微时值，
+    // 返回的 ids[0..5] 对应起点 100/340/580/820/1060。
+    let mut by_start: Vec<(u64, EntityId)> = notes
+        .iter()
+        .map(|(id, note)| (note.start_tick, *id))
+        .collect();
+    by_start.sort();
+    let ids: Vec<EntityId> = by_start.iter().map(|(_, id)| *id).collect();
+    for (id, micro) in ids
+        .iter()
+        .copied()
+        .zip([Some(100_i16), Some(-30), Some(1), None, Some(240)])
+    {
+        notes
+            .get_mut(&id)
+            .expect("音符必须在片段里")
+            .micro_timing_ticks = micro;
+    }
+    (project, placement_ulid, ids)
+}
+
+/// 该音符的微时值 op（`SetNoteExpression` 里新微时值），没有 ⇒ `None`。
+fn micro_op_of(ops: &[Op], note_id: EntityId) -> Option<Option<i16>> {
+    ops.iter().find_map(|op| match op {
+        Op::SetNoteExpression {
+            note_id: id,
+            new_micro_timing_ticks,
+            ..
+        } if *id == note_id => Some(*new_micro_timing_ticks),
+        _ => None,
+    })
+}
+
+/// 该音符的起点 op（`SetNoteTiming` 里新起点），没有 ⇒ `None`。
+fn timing_op_of(ops: &[Op], note_id: EntityId) -> Option<u64> {
+    ops.iter().find_map(|op| match op {
+        Op::SetNoteTiming {
+            note_id: id,
+            new_start_tick,
+            ..
+        } if *id == note_id => Some(*new_start_tick),
+        _ => None,
+    })
+}
+
+/// 判据 ⑤（T-FIX-675）：强度 100% 时 5 颗全到网格、微时值全清为 `None`。
+/// 每颗音符 `SetNoteTiming` 在前、`SetNoteExpression` 在后；`None` 的那颗不产
+/// 表达式 op（9 条 = 5 起点 + 4 微时值）。
+#[test]
+fn quantize_full_strength_clears_micro_timing_to_none() {
+    let (project, placement_ulid, ids) = micro_note_project();
+    let ops = quantize_clip_ops_for(&project, &placement_ulid, 240, 1000, None)
+        .expect("合成片段必须能量化");
+    assert_eq!(
+        ops.len(),
+        9,
+        "100% 时 5 起点 + 4 微时值 = 9 条 op，实得 {} 条：{ops:?}",
+        ops.len()
+    );
+    assert_eq!(
+        timing_op_of(&ops, ids[0]),
+        Some(0),
+        "起点 100 在网格 240 下 100% 吸附到 0"
+    );
+    assert_eq!(timing_op_of(&ops, ids[1]), Some(240));
+    assert_eq!(timing_op_of(&ops, ids[2]), Some(480));
+    assert_eq!(timing_op_of(&ops, ids[3]), Some(720));
+    assert_eq!(timing_op_of(&ops, ids[4]), Some(960));
+    for id in [ids[0], ids[1], ids[2], ids[4]] {
+        assert_eq!(
+            micro_op_of(&ops, id),
+            Some(None),
+            "100% 时微时值必须清为 None：{id:?}"
+        );
+    }
+    assert_eq!(
+        micro_op_of(&ops, ids[3]),
+        None,
+        "本来就是 None 的音符不产表达式 op"
+    );
+    // 同一颗音符两条 op 的顺序固定是起点在前、表达式在后（按音符分组断言：
+    // 展开按 `BTreeMap` 键序产 op，全局顺序与起点序无关，只钉组内顺序）。
+    let mut kinds_by_note: BTreeMap<EntityId, Vec<&str>> = BTreeMap::new();
+    for op in &ops {
+        let (note_id, kind) = match op {
+            Op::SetNoteTiming { note_id, .. } => (*note_id, "timing"),
+            Op::SetNoteExpression { note_id, .. } => (*note_id, "expression"),
+            _ => panic!("量化展开只应产这两类 op：{op:?}"),
+        };
+        kinds_by_note.entry(note_id).or_default().push(kind);
+    }
+    for id in [ids[0], ids[1], ids[2], ids[4]] {
+        assert_eq!(
+            kinds_by_note[&id],
+            ["timing", "expression"],
+            "带微时值的音符必须先产 Timing 再产 Expression：{id:?}"
+        );
+    }
+    assert_eq!(
+        kinds_by_note[&ids[3]],
+        ["timing"],
+        "无微时值的音符只产 Timing"
+    );
+}
+
+/// 判据 ⑥（T-FIX-675）：强度 50% 时微时值约减半（向零取整）；`Some(1)` 缩到
+/// 0 ⇒ 归一为 `None`；起点同样插值一半。
+#[test]
+fn quantize_half_strength_halves_micro_timing() {
+    let (project, placement_ulid, ids) = micro_note_project();
+    let ops = quantize_clip_ops_for(&project, &placement_ulid, 240, 500, None)
+        .expect("合成片段必须能量化");
+    assert_eq!(
+        ops.len(),
+        9,
+        "50% 时同样 5 起点 + 4 微时值 = 9 条 op，实得 {} 条：{ops:?}",
+        ops.len()
+    );
+    assert_eq!(micro_op_of(&ops, ids[0]), Some(Some(50)), "100 @50% ⇒ 50");
+    assert_eq!(micro_op_of(&ops, ids[1]), Some(Some(-15)), "-30 @50% ⇒ -15");
+    assert_eq!(
+        micro_op_of(&ops, ids[2]),
+        Some(None),
+        "1 @50% 缩到 0 ⇒ 归一为 None"
+    );
+    assert_eq!(micro_op_of(&ops, ids[4]), Some(Some(120)), "240 @50% ⇒ 120");
+    assert_eq!(timing_op_of(&ops, ids[0]), Some(50), "起点 100 @50% ⇒ 50");
+    assert_eq!(
+        timing_op_of(&ops, ids[4]),
+        Some(1010),
+        "起点 1060 @50% ⇒ 1010"
+    );
+}
+
+/// 判据 ⑦（T-FIX-675）：强度 0 时展开为空（起点不动、微时值不动）；已在格上
+/// 但带微时值的音符只产一条表达式 op（起点不动）。
+#[test]
+fn quantize_zero_strength_changes_nothing_and_on_grid_note_yields_expression_only() {
+    let (project, placement_ulid, _ids) = micro_note_project();
+    let ops =
+        quantize_clip_ops_for(&project, &placement_ulid, 240, 0, None).expect("合成片段必须能量化");
+    assert!(
+        ops.is_empty(),
+        "强度 0 时展开必须为空，实得 {} 条：{ops:?}",
+        ops.len()
+    );
+
+    // 已在格上的音符（起点 480）带微时值 ⇒ 100% 时只产表达式 op。
+    let (mut project, placement_ulid, ids) = five_note_project();
+    let clip_id = first_midi_clip(&project).2;
+    let entry = project.clip_pool.get_mut(&clip_id).expect("片段必须在池里");
+    let Some(notes) = entry.content.notes_mut() else {
+        panic!("片段必须是 MIDI");
+    };
+    let note = notes.get_mut(&ids[0]).expect("音符必须在片段里");
+    note.start_tick = 480;
+    note.micro_timing_ticks = Some(80);
+    let ops = quantize_clip_ops_for(&project, &placement_ulid, 240, 1000, None)
+        .expect("合成片段必须能量化");
+    // 其余 4 颗离格音符各 1 条起点 op；第 1 颗只产表达式 op。
+    assert_eq!(
+        ops.len(),
+        5,
+        "1 表达式 + 4 起点 = 5 条 op，实得 {} 条：{ops:?}",
+        ops.len()
+    );
+    assert_eq!(
+        timing_op_of(&ops, ids[0]),
+        None,
+        "已在格上的音符不产起点 op"
+    );
+    assert_eq!(
+        micro_op_of(&ops, ids[0]),
+        Some(None),
+        "已在格上的音符微时值仍清为 None"
+    );
+}
+
+/// 判据 ⑧（T-FIX-675）：量化尊重选区 —— 只清选区内音符的微时值，选区外不动。
+#[test]
+fn quantize_micro_timing_respects_selection() {
+    let (project, placement_ulid, ids) = micro_note_project();
+    let selected: BTreeSet<EntityId> = [ids[0], ids[2]].into_iter().collect();
+    let ops = quantize_clip_ops_for(&project, &placement_ulid, 240, 1000, Some(&selected))
+        .expect("合成片段必须能量化");
+    assert_eq!(
+        op_note_ids(&ops),
+        selected,
+        "选区外音符的微时值必须一位不动：{ops:?}"
+    );
+    assert_eq!(
+        micro_op_of(&ops, ids[0]),
+        Some(None),
+        "选区内音符的微时值必须清掉"
+    );
+    assert_eq!(
+        micro_op_of(&ops, ids[2]),
+        Some(None),
+        "选区内音符的微时值必须清掉"
+    );
+}
+
+/// 判据 ⑨（T-FIX-675）：清除动作只清作用范围内的微时值 —— 整片段 4 条、
+/// 选区 2 条、选区内无微时值时空展开；概率 / 连击原样、旧值原样进 op（一步
+/// 撤销即按 `old_*` 还回）。
+#[test]
+fn clear_micro_timing_ops_scope_and_undo_payload() {
+    let (mut project, placement_ulid, ids) = micro_note_project();
+    // 给第 1 颗音符挂概率 / 连击：清除 op 必须原样带走它们。
+    let clip_id = first_midi_clip(&project).2;
+    let entry = project.clip_pool.get_mut(&clip_id).expect("片段必须在池里");
+    let Some(notes) = entry.content.notes_mut() else {
+        panic!("片段必须是 MIDI");
+    };
+    let note = notes.get_mut(&ids[0]).expect("音符必须在片段里");
+    note.probability = Some(0.5);
+    note.ratchet = Some(2);
+
+    let ops =
+        clear_micro_timing_ops_for(&project, &placement_ulid, None).expect("合成片段必须能清除");
+    assert_eq!(
+        ops.len(),
+        4,
+        "整片段 4 颗带微时值的音符 ⇒ 4 条 op，实得 {} 条：{ops:?}",
+        ops.len()
+    );
+    assert!(
+        ops.iter().all(|op| matches!(
+            op,
+            Op::SetNoteExpression {
+                new_micro_timing_ticks: None,
+                ..
+            }
+        )),
+        "清除 op 必须全是 new_micro_timing_ticks: None 的 SetNoteExpression：{ops:?}"
+    );
+    let first = ops
+        .iter()
+        .find(|op| matches!(op, Op::SetNoteExpression { note_id, .. } if *note_id == ids[0]))
+        .expect("第 1 颗音符必须有清除 op");
+    let Op::SetNoteExpression {
+        old_micro_timing_ticks,
+        old_probability,
+        old_ratchet,
+        new_probability,
+        new_ratchet,
+        ..
+    } = first
+    else {
+        panic!("第 1 颗音符的 op 必须是 SetNoteExpression");
+    };
+    assert_eq!(
+        *old_micro_timing_ticks,
+        Some(100),
+        "旧微时值进 op，撤销时原样还回"
+    );
+    assert_eq!(*old_probability, Some(0.5), "概率原样进 op");
+    assert_eq!(*old_ratchet, Some(2), "连击原样进 op");
+    assert_eq!(*new_probability, Some(0.5), "概率新值不变");
+    assert_eq!(*new_ratchet, Some(2), "连击新值不变");
+    assert_eq!(
+        op_note_ids(&ops),
+        [ids[0], ids[1], ids[2], ids[4]]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        "本来就是 None 的第 4 颗不产 op"
+    );
+
+    // 选区只清选区内。
+    let selected: BTreeSet<EntityId> = [ids[1], ids[4]].into_iter().collect();
+    let scoped = clear_micro_timing_ops_for(&project, &placement_ulid, Some(&selected))
+        .expect("合成片段必须能清除");
+    assert_eq!(
+        op_note_ids(&scoped),
+        selected,
+        "选区外音符的微时值必须一位不动：{scoped:?}"
+    );
+
+    // 选区内没有带微时值的音符 ⇒ 空展开（调用方据此给明文、不提交）。
+    let empty_selected: BTreeSet<EntityId> = [ids[3]].into_iter().collect();
+    let empty = clear_micro_timing_ops_for(&project, &placement_ulid, Some(&empty_selected))
+        .expect("合成片段必须能清除");
+    assert!(
+        empty.is_empty(),
+        "选区内无微时值时展开必须为空，实得 {empty:?}"
+    );
+
+    // 整片段都没有微时值 ⇒ 空展开。
+    let (project, placement_ulid, _ids) = five_note_project();
+    let empty =
+        clear_micro_timing_ops_for(&project, &placement_ulid, None).expect("合成片段必须能清除");
+    assert!(
+        empty.is_empty(),
+        "整片段无微时值时展开必须为空，实得 {empty:?}"
     );
 }

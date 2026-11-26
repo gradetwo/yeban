@@ -773,8 +773,8 @@ use std::str::FromStr as _;
 use serde_json::{Map, Value};
 
 use yeban_model::clip_ops::{
-    ChordStaggerParams, StaggerDirection, VelocityShapeParams, quantize_tick, shape_velocities,
-    stagger_micro_offsets,
+    ChordStaggerParams, StaggerDirection, VelocityShapeParams, quantize_micro_timing,
+    quantize_tick, shape_velocities, stagger_micro_offsets,
 };
 use yeban_model::music::{
     MICRO_TIMING_MAX_ABS, MIDI_CHANNEL_MAX, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX,
@@ -3513,7 +3513,11 @@ pub enum NoteOp {
     /// `grid_ticks` 网格（`strength_permille` < 1000 时按比例靠近）。
     ///
     /// 与 [`Self::TransposeClip`] 同一先例：⛔ 不是新 `Op` 变体，[`compile`]
-    /// 在**同一批**里展开成 N 条 `Op::SetNoteTiming`（N = 音符数），一步撤销。
+    /// 在**同一批**里展开成每音符至多两条 `Op`（起点变了 ⇒ `Op::SetNoteTiming`；
+    /// 微时值按同一强度缩放后变了 ⇒ `Op::SetNoteExpression`，只改微时值），一步撤销。
+    /// T-FIX-675：量化之前只动起点、不碰微时值 —— 人性化写入的微时值在量化后
+    /// 仍生效；100% 强度时微时值清为 `None`，其余强度按比例缩放（算式见
+    /// `yeban_model::clip_ops::quantize_micro_timing`，与宿主同一份）。
     QuantizeClip {
         /// 网格时值（tick，非零）。
         grid_ticks: u64,
@@ -9916,18 +9920,34 @@ fn expand_clip_level_op(
         NoteOp::QuantizeClip {
             grid_ticks,
             strength_permille,
-        } => notes
-            .iter()
-            .filter_map(|(note_id, note)| {
+        } => {
+            // T-FIX-675：起点吸附与微时值缩放同一强度口径 —— 每颗音符先算吸附起点，
+            // 再算缩放后的微时值；同一颗音符的两条 op 顺序固定是 `SetTiming` 在前、
+            // `SetNoteExpression` 在后，与宿主 `quantize_clip_ops_for` 的产物逐条一致。
+            // 微时值只在缩放后变了时才产 op（已在格上但带微时值的音符只产这一条）。
+            let mut expanded = Vec::new();
+            for (note_id, note) in notes.iter() {
                 let snapped = quantize_tick(note.start_tick, *grid_ticks, *strength_permille);
                 // 已在格上的音符不产生 op —— 空动只涨日志不涨音乐。
-                (snapped != note.start_tick).then_some(NoteOp::SetTiming {
-                    note_id: *note_id,
-                    start_tick: snapped,
-                    duration_ticks: note.duration_ticks,
-                })
-            })
-            .collect(),
+                if snapped != note.start_tick {
+                    expanded.push(NoteOp::SetTiming {
+                        note_id: *note_id,
+                        start_tick: snapped,
+                        duration_ticks: note.duration_ticks,
+                    });
+                }
+                let scaled = quantize_micro_timing(note.micro_timing_ticks, *strength_permille);
+                if scaled != note.micro_timing_ticks {
+                    expanded.push(NoteOp::SetNoteExpression {
+                        note_id: *note_id,
+                        new_probability: note.probability,
+                        new_ratchet: note.ratchet,
+                        new_micro_timing_ticks: scaled,
+                    });
+                }
+            }
+            expanded
+        }
         NoteOp::InvertClip { axis_pitch } => {
             let axis = match axis_pitch {
                 Some(axis) => *axis,
@@ -15576,18 +15596,34 @@ mod tests {
         assert!(!sample.is_empty(), "夹具片段必须至少有一个音符");
 
         // ① quantizeClip：strength=1000 ⇒ 每个产物都落在 grid 整数倍上；
-        //    已在格上的音符不产生 op。
+        //    已在格上的音符不产生 op。微时值按同一强度缩放：100% 时清为 `None`
+        //    （T-FIX-675；产物只允许 `SetNoteTiming` / `SetNoteExpression` 两变体，
+        //    缩放算式本身由 `quantize_clip_scales_micro_timing_by_strength` 钉住）。
         let ops = parse_ops(&serde_json::json!([{
             "kind": "quantizeClip", "gridTicks": 240, "strengthPermille": 1000,
         }]))
         .expect("解析");
         let compiled = compile(&project, &track, &clip, &ops).expect("编译");
-        assert!(compiled.len() <= sample.len());
+        assert!(compiled.len() <= sample.len() * 2);
         for op in &compiled {
-            let Op::SetNoteTiming { new_start_tick, .. } = op else {
-                panic!("quantizeClip 只能产出 SetNoteTiming, 实际 {}", op.name());
-            };
-            assert_eq!(new_start_tick % 240, 0, "必须吸到 240 的整数倍");
+            match op {
+                Op::SetNoteTiming { new_start_tick, .. } => {
+                    assert_eq!(new_start_tick % 240, 0, "必须吸到 240 的整数倍");
+                }
+                Op::SetNoteExpression {
+                    new_micro_timing_ticks,
+                    ..
+                } => {
+                    assert_eq!(
+                        *new_micro_timing_ticks, None,
+                        "100% 量化后微时值必须清为 None"
+                    );
+                }
+                other => panic!(
+                    "quantizeClip 只能产出 SetNoteTiming / SetNoteExpression, 实际 {}",
+                    other.name()
+                ),
+            }
         }
 
         // ② invertClip：缺省轴 = 片段音域中点（恒不越界）⇒ delete+add 成对，
@@ -15907,6 +15943,130 @@ mod tests {
         .expect("解析");
         let fault = compile(&project, &track, &clip, &ops).expect_err("撞库必须红");
         assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+    }
+
+    /// T-FIX-675：`quantizeClip` 按同一强度缩放微时值 —— 100% 清为 `None`，
+    /// 50% 约减半；已在格上但带微时值的音符只产 `SetNoteExpression`；强度 0
+    /// 时微时值一位不动；同一颗音符的两条 op 顺序固定是 `SetNoteTiming` 在前。
+    #[test]
+    fn quantize_clip_scales_micro_timing_by_strength() {
+        let mut project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        // 三颗音符：离格 + 微时值 100；已在格 + 微时值 -30；离格 + 无微时值。
+        let mut notes = BTreeMap::new();
+        for (index, (start, micro)) in [(100u64, Some(100i16)), (480, Some(-30)), (700, None)]
+            .into_iter()
+            .enumerate()
+        {
+            let id = deterministic_id(&format!("quantize-micro-test-note:{index}"));
+            let mut note = MidiNote::new(id, start, 60 + index as u8, 120);
+            note.micro_timing_ticks = micro;
+            notes.insert(id, note);
+        }
+        // `BTreeMap` 按 ULID 键序（⛔ 不是插入序）⇒ 用起点找身份，不用下标。
+        let mut id_by_start: BTreeMap<u64, EntityId> = BTreeMap::new();
+        for (id, note) in &notes {
+            id_by_start.insert(note.start_tick, *id);
+        }
+        project.clip_pool.get_mut(&clip).expect("夹具片段").content = ClipContent::Midi { notes };
+        let id_100 = id_by_start[&100];
+        let id_480 = id_by_start[&480];
+        let id_700 = id_by_start[&700];
+
+        // 100%：起点全吸到格上，微时值全清为 None。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "quantizeClip", "gridTicks": 240, "strengthPermille": 1000,
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        // 音符 0：SetNoteTiming（100→0）+ SetNoteExpression（Some(100)→None）；
+        // 音符 1：只有 SetNoteExpression（Some(-30)→None，起点已在格上）；
+        // 音符 2：只有 SetNoteTiming（700→720）。
+        assert_eq!(compiled.len(), 4, "三颗音符共 4 条 op：{compiled:?}");
+        let mut by_note: BTreeMap<EntityId, Vec<&Op>> = BTreeMap::new();
+        for op in &compiled {
+            let note_id = match op {
+                Op::SetNoteTiming { note_id, .. } | Op::SetNoteExpression { note_id, .. } => {
+                    *note_id
+                }
+                other => panic!("quantizeClip 只能产出两类 op, 实际 {}", other.name()),
+            };
+            by_note.entry(note_id).or_default().push(op);
+        }
+        let first = by_note.get(&id_100).expect("起点 100 的音符必须有 op");
+        assert_eq!(first.len(), 2);
+        assert!(
+            matches!(first[0], Op::SetNoteTiming { .. }),
+            "同一颗音符先产 SetNoteTiming"
+        );
+        assert!(matches!(first[1], Op::SetNoteExpression { .. }));
+        let Op::SetNoteExpression {
+            old_micro_timing_ticks,
+            new_micro_timing_ticks,
+            ..
+        } = first[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*old_micro_timing_ticks, Some(100));
+        assert_eq!(
+            *new_micro_timing_ticks, None,
+            "100% 量化后微时值必须清为 None"
+        );
+        let second = by_note.get(&id_480).expect("起点 480 的音符必须有 op");
+        assert_eq!(second.len(), 1, "已在格上的音符只产微时值那一条");
+        assert!(matches!(
+            second[0],
+            Op::SetNoteExpression {
+                new_micro_timing_ticks: None,
+                ..
+            }
+        ));
+        let third = by_note.get(&id_700).expect("起点 700 的音符必须有 op");
+        assert_eq!(third.len(), 1);
+        assert!(matches!(third[0], Op::SetNoteTiming { .. }));
+
+        // 50%：起点走一半距离（100→50、700→710），微时值约减半（100→50、-30→-15）。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "quantizeClip", "gridTicks": 240, "strengthPermille": 500,
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        let mut micros: BTreeMap<EntityId, Option<i16>> = BTreeMap::new();
+        let mut starts: BTreeMap<EntityId, u64> = BTreeMap::new();
+        for op in &compiled {
+            match op {
+                Op::SetNoteTiming {
+                    note_id,
+                    new_start_tick,
+                    ..
+                } => {
+                    starts.insert(*note_id, *new_start_tick);
+                }
+                Op::SetNoteExpression {
+                    note_id,
+                    new_micro_timing_ticks,
+                    ..
+                } => {
+                    micros.insert(*note_id, *new_micro_timing_ticks);
+                }
+                other => panic!("quantizeClip 只能产出两类 op, 实际 {}", other.name()),
+            }
+        }
+        assert_eq!(starts.get(&id_100), Some(&50));
+        assert_eq!(starts.get(&id_700), Some(&710));
+        assert_eq!(starts.get(&id_480), None, "已在格上的音符不起点 op");
+        assert_eq!(micros.get(&id_100), Some(&Some(50)));
+        assert_eq!(micros.get(&id_480), Some(&Some(-15)));
+        assert_eq!(micros.get(&id_700), None, "无微时值的音符不产微时值 op");
+
+        // 强度 0：起点与微时值都一位不动 ⇒ 空展开。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "quantizeClip", "gridTicks": 240, "strengthPermille": 0,
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert!(compiled.is_empty(), "强度 0 时必须空展开：{compiled:?}");
     }
 
     /// 64 音 fixture：tick 等距 240、音高 60..71 循环、力度 100、微时值 0。
@@ -25068,11 +25228,17 @@ mod tests {
                 || kind == VELOCITY_SHAPE_CLIP_KIND
                 || kind == CHORD_STAGGER_CLIP_KIND
             {
-                // 量化只点名不在格上的音符 ⇒ 数目是数据相关的 (0..=音符数)；
+                // 量化只点名不在格上或微时值变了的音符 ⇒ 数目是数据相关的
+                // (0..=2×音符数：每颗音符至多起点 + 微时值两条，T-FIX-675)；
                 // 塑形 / 错开只点名实际变化的音符 ⇒ 同样是数据相关的 (0..=音符数)。
+                let cap = if kind == QUANTIZE_CLIP_KIND {
+                    notes_len * 2
+                } else {
+                    notes_len
+                };
                 assert!(
-                    compiled.len() <= notes_len,
-                    "`{label}` 的量化产物不能超过音符数"
+                    compiled.len() <= cap,
+                    "`{label}` 的量化产物不能超过每音符两条"
                 );
             } else {
                 assert_eq!(
@@ -25099,9 +25265,11 @@ mod tests {
                 }
             } else {
                 // 展开形态允许的产物变体集（`invertClip` 删+加成对、`humanizeClip`
-                // 微时值+力度成对；其余形态就是行尾登记的单一变体）。
+                // 微时值+力度成对、`quantizeClip` 起点+微时值成对（T-FIX-675）；
+                // 其余形态就是行尾登记的单一变体）。
                 let allowed: &[&str] = match kind {
-                    QUANTIZE_CLIP_KIND | RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
+                    QUANTIZE_CLIP_KIND => &["SetNoteTiming", "SetNoteExpression"],
+                    RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
                     INVERT_CLIP_KIND => &["DeleteNote", "AddNote"],
                     HUMANIZE_CLIP_KIND => &["SetNoteExpression", "ModifyNoteVelocity"],
                     VELOCITY_SHAPE_CLIP_KIND => &["ModifyNoteVelocity"],

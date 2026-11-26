@@ -138,6 +138,8 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <[length]> note-widths;
     in-out property <[length]> note-ys;
     in-out property <[bool]> note-selected;
+    // T-FIX-675：微时值标记（与上面五个数组同一索引集的第六个注入面）。
+    in-out property <[bool]> note-has-micro-timing;
     in-out property <int> playhead-ticks: 0;
     in-out property <int> ticks-per-pixel: 30;
     in-out property <float> scroll-x: 0.0;
@@ -2502,6 +2504,7 @@ export component UnifiedLowerDock inherits Rectangle {
                 note-widths: root.note-widths;
                 note-ys: root.note-ys;
                 note-selected: root.note-selected;
+                note-has-micro-timing: root.note-has-micro-timing;
                 playhead-ticks: root.playhead-ticks;
                 ticks-per-pixel: root.ticks-per-pixel;
                 scroll-x: root.scroll-x;

@@ -189,7 +189,7 @@ pub fn apply_scroll_view(ui: &MainWindow, view: &ViewState, viewport_width: f32,
     ui.set_grid_show_lane_beats(density.show_lane_beats);
     ui.set_grid_subdiv_per_beat(density.subdiv_per_beat);
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
-    // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
+    // 六个平行数组（ulids / velocities / positions / widths / ys / has_micro_timing）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
     // `VisibleNotes::rows`（音高车道索引）**有意不注入**：纵向几何已由投影算进 `ys`
     // （`pitch_lane` 一次乘法），宿主与 `.slint` 两侧都没有车道索引的消费者
@@ -218,7 +218,7 @@ pub fn apply_scroll_view(ui: &MainWindow, view: &ViewState, viewport_width: f32,
     } else {
         visible
     };
-    // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
+    // 选中标志与其它数组**同一索引集**（第七个：六个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
     // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
     // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
     let selected_ulids: Vec<String> = {
@@ -245,6 +245,8 @@ pub fn apply_scroll_view(ui: &MainWindow, view: &ViewState, viewport_width: f32,
     ui.set_note_positions(lengths(&visible.positions));
     ui.set_note_widths(lengths(&visible.widths));
     ui.set_note_ys(lengths(&visible.ys));
+    // T-FIX-675：微时值标记（第 6 个平行数组；`rows` 仍有意不注入，见上）。
+    ui.set_note_has_micro_timing(booleans(&visible.has_micro_timing));
     // ── 注入块到此结束（T-FIX-494）：滚动快路径只写上面这些依赖偏移的属性。
 }
 
@@ -678,7 +680,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_bar_positions(lengths(&view.bar_positions));
     ui.set_beats_per_bar(i32::from(view.time_signature_numerator));
     // ⭐ T-FIX-494：**所有依赖横向偏移**的属性集中在 apply_scroll_view（标尺读数、
-    // 网格密度、可见音符五连数组、滚动偏移、可见 tick 上下界）。滚动事件走的快路径
+    // 网格密度、可见音符六连数组、滚动偏移、可见 tick 上下界）。滚动事件走的快路径
     // 调的是同一个函数 ⇒ 屏幕结果与整份重投影逐位相同，⛔ 不写第二份实现。
     reframe_roll_pitch_if_scope_changed(ui, view);
     let (min_pitch, max_pitch) = roll_visible_pitch_window(ui);
@@ -14725,6 +14727,10 @@ fn selected_note_ids_for_ops(ui: &MainWindow) -> Option<std::collections::BTreeS
 /// 把原因写进 `humanize-error`，**弹窗不关**。成功 ⇒ 一次 [`UndoPort::commit_ops`]
 /// （一步撤销）+ 重投影卷帘 + 关弹窗。
 ///
+/// T-FIX-675：第三枚按钮「清除微时值」（`apply-clear-micro`）走同一结构 ——
+/// 作用范围取卷帘选区（有选区 ⇒ 只清选区内，空选区 ⇒ 整片段），空展开 ⇒ 明文、
+/// 弹窗不关、⛔ 不提交；一次提交 ⇒ 一步撤销。
+///
 /// 种子是**基础种子**：⛔ 不加每轨种子输入、⛔ 不在 UI 侧按轨编不同种子 —— 按轨派生
 /// （基础种子 ⊕ 轨标识）在引擎侧做（v2 线）。参数透传保持通用：抖动量不标\"均匀随机\"
 /// （分布由引擎定，v2 会换分布而不改 UI）。
@@ -14939,6 +14945,57 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 return;
             }
             if port.commit_ops(now_ms(), "quantize clip", ops).is_err() {
+                ui.set_humanize_error("模型拒绝了这次应用（音符已不存在或结果越界）".into());
+                return;
+            }
+            ui.set_humanize_error("".into());
+            ui.invoke_close_humanize();
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            reproject_roll(&ui, port, width, ui.get_roll_scroll_x());
+        });
+    }
+    // ---- 清除微时值（T-FIX-675）----------------------------------------------
+    //
+    // 与上面两条应用同一结构：作用范围取卷帘选区（有选区 ⇒ 只清选区内，
+    // 空选区 ⇒ 整片段，与 `humanize_clip_ops_for` / `quantize_clip_ops_for`
+    // 同一口径）；一次 `commit_ops` ⇒ 一步撤销；空展开 ⇒ 明文、弹窗不关、
+    // ⛔ 不提交。显式清除不改变「抖动量 0 = 原样不动」的既有语义（那是人性化
+    // 应用时的口径，本函数只响应用户点的这一下清除）。
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        ui.on_apply_clear_micro(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = port.as_ref() else {
+                ui.set_humanize_error("没有撤销会话，无法应用".into());
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                ui.set_humanize_error("没有活跃工程".into());
+                return;
+            };
+            let ops = match clear_micro_timing_ops_for(
+                &project,
+                ui.get_selected_clip_ulid().as_str(),
+                selected_note_ids_for_ops(&ui).as_ref(),
+            ) {
+                Ok(ops) => ops,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            if ops.is_empty() {
+                ui.set_humanize_error("作用范围内没有带微时值的音符".into());
+                return;
+            }
+            if port
+                .commit_ops(now_ms(), "clear micro timing", ops)
+                .is_err()
+            {
                 ui.set_humanize_error("模型拒绝了这次应用（音符已不存在或结果越界）".into());
                 return;
             }
@@ -26255,11 +26312,22 @@ pub fn humanize_clip_ops_for(
 ///
 /// 与 MCP `quantizeClip` 的展开**同一批模型 `Op`**：只有吸附后起点**变了**的音符
 /// 才产一条 `Op::SetNoteTiming`（已在格上的音符不产生 op）；强度经
-/// [`yeban_model::clip_ops::quantize_tick`] 的线性插值。空展开 ⇒ 空 `Vec`
-/// （调用方据此给明文、⛔ 不提交空批次）。
+/// [`yeban_model::clip_ops::quantize_tick`] 的线性插值。微时值走同一条强度口径：
+/// 每颗音符的 `micro_timing_ticks` 经 [`yeban_model::clip_ops::quantize_micro_timing`]
+/// 缩放（100% ⇒ 清除为 `None`，`p%` ⇒ 按 `(1000-p)/1000` 缩放，缩放后为 0 ⇒ `None`），
+/// 变了才产一条 `Op::SetNoteExpression`（概率 / 连击原样，只改微时值）；同一颗音符
+/// 两条 op 的顺序固定是 `SetNoteTiming` 在前、`SetNoteExpression` 在后，与 MCP 展开
+/// 的产物逐条一致（`tests/piano_roll_humanize_quantize_ui.rs` 的交叉对照臂钉住它）。
+/// 空展开 ⇒ 空 `Vec`（调用方据此给明文、⛔ 不提交空批次）。
 ///
 /// T-FIX-206：`selected_note_ids` 为 `Some` 非空时只处理与片段音符的**交集**；
 /// `None` / 空集时保持整片段口径（向后兼容）。
+///
+/// T-FIX-675：量化之前只动起点、不碰微时值 —— 人性化写入的 `micro_timing_ticks`
+/// 在量化后仍生效，用户以为已拉回网格、实际亚格偏移还在。强度 100% 时微时值
+/// 清为 `None`（模型既有口径：`MidiNote::default` 就是 `None`，播放侧 `None` 与
+/// `Some(0)` 等价；`SetNoteExpression` 的 `new_micro_timing_ticks: None` 是合法值，
+/// 撤销时由 `old_*` 原样还回）。
 pub fn quantize_clip_ops_for(
     project: &yeban_model::YebanProjectV1,
     selected_clip_ulid: &str,
@@ -26316,6 +26384,78 @@ pub fn quantize_clip_ops_for_with_swing(
                     new_duration_ticks: note.duration_ticks,
                 });
             }
+            // T-FIX-675：微时值按同一强度缩放；变了才产 op（已在格上但带微时值的音符
+            // 只产这一条；强度 0 时缩放结果与原值相同 ⇒ 不产 op，空展开口径不变）。
+            let scaled = yeban_model::clip_ops::quantize_micro_timing(
+                note.micro_timing_ticks,
+                strength_permille,
+            );
+            if scaled != note.micro_timing_ticks {
+                ops.push(yeban_model::ops::Op::SetNoteExpression {
+                    track_id,
+                    clip_id,
+                    note_id: *note_id,
+                    old_probability: note.probability,
+                    old_ratchet: note.ratchet,
+                    old_micro_timing_ticks: note.micro_timing_ticks,
+                    new_probability: note.probability,
+                    new_ratchet: note.ratchet,
+                    new_micro_timing_ticks: scaled,
+                });
+            }
+        }
+    }
+    Ok(ops)
+}
+
+/// 选中剪辑的「清除微时值」op（纯函数；判据可直接喂合成工程逐条对账）。
+///
+/// 人性化对话框的「清除微时值」入口用：作用范围与
+/// [`humanize_clip_ops_for`] / [`quantize_clip_ops_for`] 同一口径 ——
+/// `selected_note_ids` 为 `Some` 非空时只处理与片段音符的**交集**（选区内的音符），
+/// `None` / 空集时保持整片段口径。只对当前 `micro_timing_ticks` 非 `None`
+/// 的音符产一条 `Op::SetNoteExpression`（`new_micro_timing_ticks: None`，概率 /
+/// 连击原样）；已是 `None` 的音符不产 op。一次提交 ⇒ 一步撤销（撤销时由 `old_*`
+/// 原样还回）。空展开 ⇒ 空 `Vec`（调用方据此给明文、⛔ 不提交空批次）。
+///
+/// 与「抖动量 0 = 原样不动」是两回事：人性化 `time_jitter_ticks == 0` 时
+/// [`yeban_model::clip_ops::humanize_note`] 原样保留微时值（既有语义，本单不改）；
+/// 本函数是用户**显式**点的清除动作，只清作用范围内的微时值，范围外的音符一位不动。
+pub fn clear_micro_timing_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
+) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
+    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
+        return Err("未选中剪辑");
+    };
+    let Some(notes) = project
+        .clip_pool
+        .get(&placement.clip_id)
+        .and_then(|entry| entry.content.notes())
+    else {
+        return Err("选中的剪辑不是 MIDI 片段");
+    };
+    let mut ops = Vec::new();
+    for (note_id, note) in notes.iter() {
+        if let Some(ids) = selected_note_ids
+            && !ids.is_empty()
+            && !ids.contains(note_id)
+        {
+            continue;
+        }
+        if note.micro_timing_ticks.is_some() {
+            ops.push(yeban_model::ops::Op::SetNoteExpression {
+                track_id,
+                clip_id: placement.clip_id,
+                note_id: *note_id,
+                old_probability: note.probability,
+                old_ratchet: note.ratchet,
+                old_micro_timing_ticks: note.micro_timing_ticks,
+                new_probability: note.probability,
+                new_ratchet: note.ratchet,
+                new_micro_timing_ticks: None,
+            });
         }
     }
     Ok(ops)

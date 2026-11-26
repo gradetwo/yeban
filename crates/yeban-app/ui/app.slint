@@ -809,6 +809,8 @@ export component MainWindow inherits Window {
     in-out property <[float]> note-velocities: [];
     in-out property <[length]> note-widths: [];
     in-out property <[length]> note-ys: [];
+    // T-FIX-675：微时值标记（与上面五个数组同一索引集的第六个注入面）。
+    in-out property <[bool]> note-has-micro-timing: [];
     in-out property <int> playhead-ticks: 0;
     in-out property <bool> playing: false;
     in-out property <bool> recording: false;
@@ -1062,6 +1064,7 @@ export component MainWindow inherits Window {
     callback apply-drum-gen();
     callback apply-humanize();
     callback apply-quantize();
+    callback apply-clear-micro();
     callback arrangement-scroll-to(length);
     callback arrangement-wheel(length, length, bool, bool);
     callback automation-lane-click(length, length);
@@ -2333,6 +2336,7 @@ export component MainWindow inherits Window {
                 note-widths: root.note-widths;
                 note-ys: root.note-ys;
                 note-selected: root.note-selected;
+                note-has-micro-timing: root.note-has-micro-timing;
                 playhead-ticks: root.playhead-ticks;
                 ticks-per-pixel: root.roll-ticks-per-pixel;
                 scroll-x: root.roll-scroll-x;
@@ -2833,6 +2837,7 @@ export component MainWindow inherits Window {
             apply-quantize => { root.apply-quantize(); }
             grid-note-picked(index) => { root.roll-grid-note-picked(index); }
             grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
+            apply-clear-micro => { root.apply-clear-micro(); }
             close => { root.close-humanize(); }
         }
 

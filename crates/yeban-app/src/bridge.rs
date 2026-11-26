@@ -1035,8 +1035,8 @@ pub struct VisibleNotes {
     /// ⚠ **追加修订段（任务单 `#127`；台账第 283 条）—— ⛔ 只针对 `rows` 这一支**：
     /// 上面这行与 [`VisibleNotes`] 的字段集合**不删不改**；被修订的是"六个字段同索引集
     /// ⇒ 六个一起注入宿主"这一支里的 **`rows` 注入面**。实测（`#127`）：宿主
-    /// `apply_view` 从 `visible_notes` 注入的是 **5** 个数组（`ulids` / `velocities` /
-    /// `positions` / `widths` / `ys`），第 6 条注入是 `note-selected`（由
+    /// `apply_view` 从 `visible_notes` 注入的是 **6** 个数组（`ulids` / `velocities` /
+    /// `positions` / `widths` / `ys` / `has_micro_timing`），第 7 条注入是 `note-selected`（由
     /// `flags_for_ids` 从选区现算，⛔ 不是 `rows`）；`rows` 的**宿主生产读点 = 0**
     /// （只有测试读点与访问器 `ViewState::note_rows` 读它）⇒ 按第 283 条**登记为
     /// 有意不消费**（⛔ 不是"待接线"、⛔ 不是静默降级）。
@@ -1044,17 +1044,24 @@ pub struct VisibleNotes {
     /// **为什么不给它消费者**（代价读数，⛔ 不是判断）：`ys` 已经是同一事实的像素形态
     /// （`pitch_lane` 一次乘法），宿主与 `.slint` 的绘制/命中路径都只读 `ys`；要真消费
     /// `rows` 就得新增 `note-rows` 属性 ＋ `apply_view` 里多一个写入点 ⇒ 会动
-    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **125**）与
-    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **74**）⇒ ⛔ 本单禁改那两个读数。
+    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **108**）与
+    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **75**）⇒ ⛔ 本单禁改那两个读数。
+    /// （T-FIX-675：`has_micro_timing` 是本单新给的第 6 个注入 —— 它是**绘制面**
+    /// （卷帘标记），不是 `rows` 那种已有像素形态的重复事实；预算已同步改到 108 / 75。）
     ///
     /// **判据**：`crates/yeban-app/tests/roll_injection_registration.rs` 从 `host.rs`
-    /// 源码**派生**"注入面恰是那 5 个名字 ＋ `rows` 不在其中"（⛔ 不读判据自己所在的文件，
+    /// 源码**派生**"注入面恰是那 6 个名字 ＋ `rows` 不在其中"（⛔ 不读判据自己所在的文件，
     /// 第 293 条）。
     pub rows: Vec<i32>,
     /// `note-{ulid}-rect` 的 `{ulid}` 段（语义元素 ID 的一半）。
     pub ulids: Vec<String>,
     /// 归一化力度（0.0..=1.0）。
     pub velocities: Vec<f32>,
+    /// 微时值是否非零（与 [`Self::ulids`] 同索引集；T-FIX-675：卷帘标记面）。
+    ///
+    /// 由 [`VisibleNotes::has_micro_timing`] 这一支注入 `.slint` 的
+    /// `note-has-micro-timing`（与 `rows` 不同：`rows` 有意不注入，见下）。
+    pub has_micro_timing: Vec<bool>,
 }
 
 impl VisibleNotes {
@@ -1076,6 +1083,7 @@ impl VisibleNotes {
         self.rows = keep.iter().map(|&i| self.rows[i]).collect();
         self.ulids = keep.iter().map(|&i| self.ulids[i].clone()).collect();
         self.velocities = keep.iter().map(|&i| self.velocities[i]).collect();
+        self.has_micro_timing = keep.iter().map(|&i| self.has_micro_timing[i]).collect();
     }
 
     /// 可见音符数（各数组长度相同，故用一个函数报告）。
@@ -1525,6 +1533,13 @@ pub struct NoteView {
     pub velocity: u8,
     /// 力度归一化到 0.0–1.0（力度泳道按比例画柱高）。
     pub velocity_normalized: f32,
+    /// 该音符的微时值是否**非零**（`micro_timing_ticks` 为 `Some(非 0)`）。
+    ///
+    /// T-FIX-675：卷帘标记的唯一事实源 —— 微时值非零的音符在块右沿画一条标记
+    /// （`piano_roll.slint` 的 `note-has-micro-timing` 数组）。`Some(0)` 不算：
+    /// 播放侧把它与 `None` 同等当成 0 偏移，量化缩放后为 0 也规范成 `None`，
+    /// 所以\"有微时值\"就是\"有效偏移非零\"。
+    pub has_micro_timing: bool,
     /// 音符块左沿相对时间轴 0 的 x（逻辑像素，`tick_to_px(start_tick)`）。
     pub x: f32,
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
@@ -6177,6 +6192,7 @@ impl ViewState {
             rows: Vec::with_capacity(indices.len()),
             ulids: Vec::with_capacity(indices.len()),
             velocities: Vec::with_capacity(indices.len()),
+            has_micro_timing: Vec::with_capacity(indices.len()),
         };
         for index in indices {
             let note = &self.notes[index];
@@ -6188,6 +6204,7 @@ impl ViewState {
             out.clip_ids.push(note.clip_id.clone());
             out.ulids.push(note.id.clone());
             out.velocities.push(note.velocity_normalized);
+            out.has_micro_timing.push(note.has_micro_timing);
         }
         out
     }
@@ -6302,6 +6319,15 @@ impl ViewState {
     #[must_use]
     pub fn note_rows(&self) -> Vec<i32> {
         self.notes.iter().map(|note| note.row).collect()
+    }
+
+    /// 与 [`Self::note_ulids`] 对齐的微时值标记（T-FIX-675：卷帘标记面）。
+    #[must_use]
+    pub fn note_has_micro_timing(&self) -> Vec<bool> {
+        self.notes
+            .iter()
+            .map(|note| note.has_micro_timing)
+            .collect()
     }
 
     // ------------------------------------------------------------------
@@ -6880,6 +6906,7 @@ fn note_view(
         pitch: note.pitch,
         velocity: note.velocity,
         velocity_normalized: velocity_normalized(note.velocity),
+        has_micro_timing: note.micro_timing_ticks.is_some_and(|micro| micro != 0),
         x,
         width: (x_end - x).max(MIN_BLOCK_WIDTH_PX),
         row: pitch_lane(note.pitch),
@@ -9902,6 +9929,7 @@ mod tests {
             assert_eq!(view.note_widths().len(), view.notes.len());
             assert_eq!(view.note_ys().len(), view.notes.len());
             assert_eq!(view.note_rows().len(), view.notes.len());
+            assert_eq!(view.note_has_micro_timing().len(), view.notes.len());
             for (index, note) in view.notes.iter().enumerate() {
                 assert_eq!(note.index, index);
                 assert_eq!(view.note_ulids[index], note.id);
@@ -9910,6 +9938,7 @@ mod tests {
                 assert_eq!(view.note_widths()[index], note.width);
                 assert_eq!(view.note_ys()[index], note.y);
                 assert_eq!(view.note_rows()[index], note.row);
+                assert_eq!(view.note_has_micro_timing()[index], note.has_micro_timing);
                 assert!(crate::scene::is_ulid_text(&note.id));
             }
         }

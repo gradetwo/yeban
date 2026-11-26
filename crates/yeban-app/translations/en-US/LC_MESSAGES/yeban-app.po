@@ -1361,6 +1361,12 @@ msgstr "Apply Quantize to the Selected Clip"
 
 msgid "应用量化"
 msgstr "Apply Quantize"
+msgid "清除选中范围内的微时值"
+msgstr "Clear Micro-Timing in the Current Selection"
+
+msgid "清除微时值"
+msgstr "Clear Micro-Timing"
+
 
 msgid "人性化或量化失败的原因"
 msgstr "Why Humanize or Quantize Failed"

@@ -11,7 +11,7 @@
 //! | ④ 主总线不可删 | 只剩主总线的工程 ⇒ `track-delete-available == false`、原因逐字 `主总线（Master）不可删除`；直接调用回调也 **Δ0**；`track_delete_ops` 返回 `Err(同一个原因)` | 证"禁用不是只画个灰" |
 //! | ⑤ 删发送 = Δ1 | `filled_project` 的 1 条发送 ⇒ **Δ1**、`edges −1`、`send-*-row` 归零（`无发送`）、`send-create` 重新可用；同一条边再删一次 ⇒ **Δ0** | 证"删发送是真实边删除，且删完不留悬空按钮" |
 //! | ⑥ 防重复发送 | 已有同源同目的地的 `SendToAux` ⇒ 按钮禁用、原因逐字 `该发送已存在（源与目的地相同），无法重复新建`；再点一次 **Δ0**、边数不变 | 证"`#159` 登记的'连点会各建一条新边'被关掉" |
-//! | ⑦ 预算三件套 | 不在本文件：读数在 `tests/perf_draw_budget.rs`（`APPLY_VIEW_WRITE_SITE_BUDGET` **125** / `PER_FRAME_ARRAY_REWRITE_BUDGET` **74**，常量与原因同处） | — |
+//! | ⑦ 预算三件套 | 不在本文件：读数在 `tests/perf_draw_budget.rs`（`APPLY_VIEW_WRITE_SITE_BUDGET` **108** / `PER_FRAME_ARRAY_REWRITE_BUDGET` **75**，常量与原因同处） | — |
 //! | ⑧ 不退化 | `cargo test -p yeban-app --locked --no-fail-fast` rc 与 passed 数在交付报告里 | — |
 //!
 //! ## 反向腿（去掉本片改动 ⇒ 哪条红）

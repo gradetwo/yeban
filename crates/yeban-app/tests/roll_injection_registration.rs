@@ -8,6 +8,11 @@
 //! 本文件把"注释与实现一致"与"`rows` 有意不消费"各钉成**从 `host.rs` / `bridge.rs`
 //! 源码派生**的事实。
 //!
+//! T-FIX-675：注入面长到 **6** 个（`ulids` / `velocities` / `positions` / `widths` /
+//! `ys` / `has_micro_timing`）＋ 第 7 条 `note-selected`；`rows` 仍有意不注入。
+//! 下面"六个平行数组"的旧错口径随之进一位 —— 错数是"把 `rows` 也算进去"的那一个，
+//! 现在是七个。
+//!
 //! ## 口径（三个断言数三个对象）
 //!
 //! | 断言 | 数的对象 | 单位 |
@@ -38,8 +43,15 @@ const INJECT_END: &str = "// ── 注入块到此结束";
 /// 被判的那段注释的起点。
 const COMMENT_ANCHOR: &str = "// `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**";
 
-/// `[ROAD-M3-002 / BASELINE-003]` 视口裁剪**必须**注入的 5 个平行数组（派生期望值）。
-const INJECTED_NOTE_ARRAYS: [&str; 5] = ["ulids", "velocities", "positions", "widths", "ys"];
+/// `[ROAD-M3-002 / BASELINE-003]` 视口裁剪**必须**注入的 6 个平行数组（派生期望值）。
+const INJECTED_NOTE_ARRAYS: [&str; 6] = [
+    "ulids",
+    "velocities",
+    "positions",
+    "widths",
+    "ys",
+    "has_micro_timing",
+];
 
 /// 换行计数 ⇒ 1 基行号。
 fn line_of(source: &str, byte: usize) -> usize {
@@ -168,7 +180,7 @@ fn host_comment_and_injection_agree_on_the_note_array_set() {
     assert_eq!(
         siblings,
         vec!["selected".to_string()],
-        "第 6 条注入是 `note-selected`（由选区现算，⛔ 不是 `rows`）"
+        "第 7 条注入是 `note-selected`（由选区现算，⛔ 不是 `rows`）"
     );
     assert_eq!(
         token_hits(&code, "rows"),
@@ -202,25 +214,25 @@ fn host_comment_and_injection_agree_on_the_note_array_set() {
         chinese_numeral(injected.len())
     );
     assert!(
-        !comment.contains("六个平行数组"),
-        "注释不得再自称『六个平行数组』—— `rows` 不在注入面里"
+        !comment.contains("七个平行数组"),
+        "注释不得再自称『七个平行数组』—— `rows` 不在注入面里"
     );
     assert!(
         comment.contains("`VisibleNotes::rows`") && comment.contains("有意不注入"),
         "注释必须点名 `rows` 与它的处置（有意不注入）"
     );
-    // 兄弟注入的**序数**也必须由派生数量算出：曾写"第七个" ⇒ 与"六个数组"是同一个错
+    // 兄弟注入的**序数**也必须由派生数量算出：曾写"第八个" ⇒ 与"七个数组"是同一个错
     // （把不注入的 `rows` 也算进了索引集）。
     let raw = raw_injection_window();
     let ordinal = format!("（第{}个", chinese_numeral(injected.len() + 1));
     assert!(
         raw.contains(&ordinal),
-        "`note-selected` 是五个数组之后的那一个 ⇒ 注释必须写 `{ordinal}…）`（派生：5 + 1 = {}）",
+        "`note-selected` 是六个数组之后的那一个 ⇒ 注释必须写 `{ordinal}…）`（派生：6 + 1 = {}）",
         injected.len() + 1
     );
     assert!(
-        !raw.contains("（第七个"),
-        "⛔ 不得再写『第七个』—— 那是把 `rows` 算进索引集的旧口径"
+        !raw.contains("（第八个"),
+        "⛔ 不得再写『第八个』—— 那是把 `rows` 算进索引集的旧口径"
     );
     println!(
         "[roll-injection] 注入块 host.rs:{first}-{last}；从 `visible_notes` 注入 {} 个名字 {injected:?}；同索引集兄弟注入 {siblings:?}；注释 host.rs:{cfirst}-{clast} 声明 {declared:?}；序数写 `{ordinal}`",

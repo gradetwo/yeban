@@ -6,10 +6,10 @@
 //! | 环 | 位置 |
 //! | :--- | :--- |
 //! | 输入面 | `ui/console/piano_roll.slint` 的右键 `PopupWindow`（语义 ID `piano-roll-context-menu-humanize` / `piano-roll-context-menu-quantize`），**默认不显示** ⇒ 默认帧一位不变 |
-//! | 弹窗 | `ui/dialogs/humanize_dialog.slint`（五格文本 + 两枚应用 + 关闭 + 错误行 + 作用范围行） |
+//! | 弹窗 | `ui/dialogs/humanize_dialog.slint`（五格文本 + 三枚应用 + 关闭 + 错误行 + 作用范围行） |
 //! | 上抛 | `console_tabs.slint` ⇒ `app.slint`（`humanize-requested` / `quantize-requested`，只透传） |
 //! | 宿主消费 | `src/host.rs` 的 `wire_humanize_dialog`：打开时播种（基础种子缺省 = 工程 `rng_seed`）、应用时按 MCP 同一口径解析、一次 `commit_ops`（一步撤销）、重投影卷帘 |
-//! | 共享算术 | `yeban_model::clip_ops::{humanize_note, quantize_tick}`（`yeban-mcp` 的 `compile` 与宿主调**同一份**；交叉对照臂钉住） |
+//! | 共享算术 | `yeban_model::clip_ops::{humanize_note, quantize_tick, quantize_micro_timing}`（`yeban-mcp` 的 `compile` 与宿主调**同一份**；交叉对照臂钉住） |
 //!
 //! ## 口径（每一条都是决定，不是意外）
 //!
@@ -19,6 +19,7 @@
 //! 4. 空展开**不提交**：量化后没有音符要动（已在网格上或强度 0）⇒ 明文 + 弹窗不关，⛔ 不提交空批次。
 //! 5. 一次菜单动作 = **一步撤销**：一次 `Undo` 回到应用前（判据②用一次撤销复位全量断言）。
 //! 6. 右键抬起**不触发左键**：右键 `up` 不得落进既有的 `up` 分支（否则卷帘会把这次右键当一次左键点击处理）。
+//! 7. （T-FIX-675）清除微时值是**显式动作**：与上面两枚应用同一选区口径（有选区 ⇒ 只清选区内，空选区 ⇒ 整片段）；作用范围内没有带微时值的音符 ⇒ 明文 + 弹窗不关、⛔ 不提交；一次提交 ⇒ 一步撤销。⛔ 不改变「抖动量 0 = 原样不动」（那是人性化应用时的口径）。
 
 #![allow(unused)]
 #[path = "../src/live_surface.rs"]
@@ -84,6 +85,124 @@ fn assemble() -> (yeban_app::ui::MainWindow, Rc<UndoPort>, LiveControlPlane) {
     (window, port, plane)
 }
 
+/// T-FIX-675：用指定音符装配活窗口 —— 第一个 MIDI 片段的音符被换成
+/// `(起点, 音高, 微时值, 时值)` 列表（力度一律 100）。
+/// 返回（窗口，端口，控制面，片段身份，音符身份 —— 按片段 `BTreeMap` 键序）。
+fn assemble_with_notes(
+    specs: &[(u64, u8, Option<i16>, u64)],
+) -> (
+    yeban_app::ui::MainWindow,
+    Rc<UndoPort>,
+    LiveControlPlane,
+    EntityId,
+    Vec<EntityId>,
+) {
+    let mut project = filled_project();
+    let (placement_ulid, _track_id, clip_id) = first_midi_clip(&project);
+    let _ = placement_ulid;
+    let mut notes = std::collections::BTreeMap::new();
+    for (start, pitch, micro, duration) in specs {
+        let id = EntityId::new();
+        let mut note = MidiNote::new(id, *start, *pitch, *duration);
+        note.micro_timing_ticks = *micro;
+        notes.insert(id, note);
+    }
+    // `BTreeMap` 按 ULID 键序（⛔ 不是插入序）⇒ 返回的 ids 按起点排好序，
+    // 调用方才能按下标认音符。
+    let mut by_start: Vec<(u64, EntityId)> = notes
+        .iter()
+        .map(|(id, note)| (note.start_tick, *id))
+        .collect();
+    by_start.sort();
+    let ids: Vec<EntityId> = by_start.iter().map(|(_, id)| *id).collect();
+    let entry = project.clip_pool.get_mut(&clip_id).expect("片段必须在池里");
+    entry.content = yeban_model::project::ClipContent::Midi { notes };
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<piano-roll-humanize-quantize-ui-micro>",
+            "yeban-app",
+            project.clone(),
+            NOW_MS,
+        )
+        .expect("打开会话"),
+    ));
+    let ui = build_live_ui_with(
+        &project,
+        &live::LiveWiringOptions {
+            permission: Permission::Interactive,
+            undo: Some(Rc::clone(&port)),
+            ..live::LiveWiringOptions::default()
+        },
+    )
+    .expect("真实界面 + Tier-1 执行面");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let plane = ui.into_control_plane(Permission::Interactive);
+    (window, port, plane, clip_id, ids)
+}
+
+/// T-FIX-675：5 颗带微时值的音符（起点 100/340/580/820/1060，全部离格；
+/// 微时值 `Some(100)` / `Some(-30)` / `Some(1)` / `None` / `Some(240)`）。
+fn assemble_with_micro_notes() -> (
+    yeban_app::ui::MainWindow,
+    Rc<UndoPort>,
+    LiveControlPlane,
+    EntityId,
+    Vec<EntityId>,
+) {
+    assemble_with_notes(&[
+        (100, 60, Some(100), 120),
+        (340, 61, Some(-30), 120),
+        (580, 62, Some(1), 120),
+        (820, 63, None, 120),
+        (1060, 64, Some(240), 120),
+    ])
+}
+
+/// 人性化 / 量化 / 清除微时值三条应用的接线契约（六条旧判据共用）：
+/// `.slint` 声明回调 + 宿主注册回调。T-FIX-675 加第三枚按钮的两条。
+fn assert_humanize_quantize_wiring() {
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
+    );
+    assert!(
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
+    );
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
+    );
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
+    );
+    assert!(
+        aether_app.contains("callback apply-clear-micro("),
+        "新 UI 契约面必须声明 callback apply-clear-micro("
+    );
+    assert!(
+        aether_host.contains("on_apply_clear_micro"),
+        "宿主接线层必须注册 on_apply_clear_micro"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+}
+
 /// 权威工程里**第一个**带音符的 MIDI 片段：（摆放身份 ULID，音轨身份，片段身份）。
 ///
 /// 按 `tracks` 的 `BTreeMap` 键序（确定）⇒ 每次都是同一条（`filled_project` 的主音轨片段）。
@@ -104,15 +223,18 @@ fn first_midi_clip(project: &YebanProjectV1) -> (String, EntityId, EntityId) {
     panic!("filled_project 必须含至少一个带音符的 MIDI 片段");
 }
 
-/// 片段音符的（起点，力度，微时值）快照 —— 按 `BTreeMap` 键序（确定），只取应用前后的
+/// 片段音符的（起点，力度，微时值）快照 —— 按**起点**排序（`BTreeMap` 键序是
+/// ULID 序，与起点序无关；调用方按下标认音符只能认起点序），只取应用前后的
 /// **可观测**三字段（概率 / 连击不参与本票的断言）。
 fn note_state(project: &YebanProjectV1, clip_id: EntityId) -> Vec<(u64, u8, Option<i16>)> {
     let entry = project.clip_pool.get(&clip_id).expect("片段必须在池里");
     let notes = entry.content.notes().expect("必须是 MIDI 片段");
-    notes
+    let mut state: Vec<(u64, u8, Option<i16>)> = notes
         .values()
         .map(|note| (note.start_tick, note.velocity, note.micro_timing_ticks))
-        .collect()
+        .collect();
+    state.sort();
+    state
 }
 
 /// 片段音符的**全量**快照（判据⑤的撤销复位用：一步撤销必须把每一字段都还回来）。
@@ -319,152 +441,28 @@ fn explicit_seed_that_differs(
 #[test]
 fn the_context_menu_items_exist_and_open_the_dialog() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
-    );
-    assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
-    );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
-    );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
-    );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
-    );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
-    );
+    assert_humanize_quantize_wiring();
 }
 
 /// 判据 ②：人性化用**显式种子**、且同一份种子两次结果相同、一次撤销回到应用前。
 #[test]
 fn humanize_applies_with_the_explicit_seed_and_is_deterministic() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
-    );
-    assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
-    );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
-    );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
-    );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
-    );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
-    );
+    assert_humanize_quantize_wiring();
 }
 
 /// 判据 ③：量化把离格音符吸到网格；强度 0 ⇒ 什么都不改、弹窗不关、给明文。
 #[test]
 fn quantize_snaps_off_grid_notes_and_strength_zero_changes_nothing() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
-    );
-    assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
-    );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
-    );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
-    );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
-    );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
-    );
+    assert_humanize_quantize_wiring();
 }
 
 /// 判据 ④：未选中剪辑 / 非法输入 ⇒ 响亮失败、弹窗不关、工程一位不动。
 #[test]
 fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
-    );
-    assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
-    );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
-    );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
-    );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
-    );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
-    );
+    assert_humanize_quantize_wiring();
 }
 
 /// 判据 ⑤：右键抬起不得触发左键点击 —— 先选中一个音符，右键按 + 抬之后
@@ -472,38 +470,7 @@ fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
 #[test]
 fn right_click_release_does_not_fire_a_left_click() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
-    );
-    assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
-    );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
-    );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
-    );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
-    );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
-    );
+    assert_humanize_quantize_wiring();
 }
 
 /// 判据 ⑥（交叉对照，`in-process-mcp` 构建才有）：宿主的人性化 / 量化展开
@@ -514,36 +481,211 @@ fn right_click_release_does_not_fire_a_left_click() {
 #[test]
 fn host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    assert_humanize_quantize_wiring();
+}
+
+/// 判据 ⑦（T-FIX-675，活窗口）：对话框里点「应用量化」（强度缺省 100%）
+/// ⇒ 5 颗音符全到网格、微时值全清为 `None`，弹窗关闭。
+#[test]
+fn dialog_quantize_full_strength_clears_micro_timing() {
+    let (window, port, mut plane, clip_id, _ids) = assemble_with_micro_notes();
+    let placement_ulid = first_midi_clip(&live_project(&port)).0;
+    select_clip(&window, &placement_ulid);
+    window.invoke_open_quantize();
+    assert!(window.get_humanize_open(), "量化入口必须打开对话框");
+    click_by_id(&mut plane, 100, "quantize-apply-button", "left");
     assert!(
-        aether_app.contains("callback apply-humanize("),
-        "新 UI 契约面必须声明 callback apply-humanize("
+        !window.get_humanize_open(),
+        "量化成功后弹窗必须关闭（失败时才留着）"
+    );
+    assert_eq!(
+        note_state(&live_project(&port), clip_id),
+        vec![
+            (0, 100, None),
+            (240, 100, None),
+            (480, 100, None),
+            (720, 100, None),
+            (960, 100, None),
+        ],
+        "100% 量化后起点全在网格、微时值全清"
+    );
+}
+
+/// 判据 ⑧（T-FIX-675，活窗口）：对话框里强度改 50% 再点「应用量化」
+/// ⇒ 微时值约减半（`Some(1)` 缩到 0 ⇒ `None`），起点同样插值一半。
+#[test]
+fn dialog_quantize_half_strength_halves_micro_timing() {
+    let (window, port, mut plane, clip_id, _ids) = assemble_with_micro_notes();
+    let placement_ulid = first_midi_clip(&live_project(&port)).0;
+    select_clip(&window, &placement_ulid);
+    window.invoke_open_quantize();
+    assert!(window.get_humanize_open(), "量化入口必须打开对话框");
+    window.set_humanize_strength("50".into());
+    click_by_id(&mut plane, 100, "quantize-apply-button", "left");
+    assert!(
+        !window.get_humanize_open(),
+        "量化成功后弹窗必须关闭（失败时才留着）"
+    );
+    assert_eq!(
+        note_state(&live_project(&port), clip_id),
+        vec![
+            (50, 100, Some(50)),
+            (290, 100, Some(-15)),
+            (530, 100, None),
+            (770, 100, None),
+            (1010, 100, Some(120)),
+        ],
+        "50% 量化后微时值约减半、起点插值一半"
+    );
+}
+
+/// 判据 ⑨（T-FIX-675，活窗口）：对话框里点「清除微时值」⇒ 整片段微时值
+/// 全清、起点一位不动；一次撤销把微时值原样还回。
+#[test]
+fn clear_micro_timing_button_clears_whole_clip_and_undo_restores() {
+    let (window, port, mut plane, clip_id, _ids) = assemble_with_micro_notes();
+    let placement_ulid = first_midi_clip(&live_project(&port)).0;
+    select_clip(&window, &placement_ulid);
+    let before = note_state(&live_project(&port), clip_id);
+    window.invoke_open_humanize();
+    assert!(window.get_humanize_open(), "人性化入口必须打开对话框");
+    assert!(
+        tree_has(&mut plane, 100, "clear-micro-timing-button"),
+        "第三枚按钮必须在运行时控件树里"
+    );
+    click_by_id(&mut plane, 200, "clear-micro-timing-button", "left");
+    assert!(
+        !window.get_humanize_open(),
+        "清除成功后弹窗必须关闭（失败时才留着）"
+    );
+    assert_eq!(
+        note_state(&live_project(&port), clip_id),
+        vec![
+            (100, 100, None),
+            (340, 100, None),
+            (580, 100, None),
+            (820, 100, None),
+            (1060, 100, None),
+        ],
+        "清除后微时值全清、起点一位不动"
+    );
+    port.perform(UiAction::Undo);
+    assert_eq!(
+        note_state(&live_project(&port), clip_id),
+        before,
+        "一次撤销必须把微时值原样还回"
+    );
+}
+
+/// 判据 ⑩（T-FIX-675，活窗口）：卷帘选 2 颗音符时点「清除微时值」⇒ 只清
+/// 选区内，选区外一位不动。
+#[test]
+fn clear_micro_timing_button_respects_note_selection() {
+    let (window, port, mut plane, clip_id, ids) = assemble_with_micro_notes();
+    let placement_ulid = first_midi_clip(&live_project(&port)).0;
+    select_clip(&window, &placement_ulid);
+    window.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(vec![
+        ids[0].to_canonical_string().into(),
+        ids[2].to_canonical_string().into(),
+    ])));
+    window.set_selected_note_count(2);
+    window.invoke_open_humanize();
+    assert!(window.get_humanize_open(), "人性化入口必须打开对话框");
+    click_by_id(&mut plane, 100, "clear-micro-timing-button", "left");
+    assert!(
+        !window.get_humanize_open(),
+        "清除成功后弹窗必须关闭（失败时才留着）"
+    );
+    assert_eq!(
+        note_state(&live_project(&port), clip_id),
+        vec![
+            (100, 100, None),
+            (340, 100, Some(-30)),
+            (580, 100, None),
+            (820, 100, None),
+            (1060, 100, Some(240)),
+        ],
+        "清除只动选区内两颗，选区外三颗一位不动"
+    );
+}
+
+/// 判据 ⑪（T-FIX-675，活窗口 + 渲染截图）：带微时值的音符在卷帘里右沿有
+/// 一条可见竖条，不带微时值的同力度同音高音符没有。
+///
+/// 两颗音符力度、音高、时值全同，只差微时值 ⇒ 底色逐像素相同，唯一的像素差
+/// 只能是竖条。采样行取块顶往下 1px（躲开 y=4px 的力度横线），采样列取块内
+/// 左侧 2px（底色）与右沿内 2px（竖条中心）。两颗音符的起点拉开 1200 tick
+/// （100 / 1300，时值 960）⇒ 块不重叠，采样区互不覆盖，⛔ 不依赖绘制顺序。
+#[test]
+fn micro_timing_marker_is_visible_in_the_live_roll() {
+    let (window, port, mut plane, _clip_id, ids) =
+        assemble_with_notes(&[(100, 60, Some(100), 960), (1300, 60, None, 960)]);
+    let placement_ulid = first_midi_clip(&live_project(&port)).0;
+    select_clip(&window, &placement_ulid);
+    // 注入面本身先对账：按 `note-ulids` 的索引找到两颗音符（注入面与 ulids
+    // 同索引集），微时值那颗 true、另一颗 false。
+    let flags: Vec<bool> = window.get_note_has_micro_timing().iter().collect();
+    let ulids: Vec<String> = window
+        .get_note_ulids()
+        .iter()
+        .map(|ulid| ulid.to_string())
+        .collect();
+    let index_of = |id: EntityId| {
+        ulids
+            .iter()
+            .position(|ulid| *ulid == id.to_canonical_string())
+            .unwrap_or_else(|| panic!("音符 {id:?} 必须在注入的 ulids 里"))
+    };
+    assert!(
+        flags[index_of(ids[0])],
+        "微时值音符的标记位必须是 true：{flags:?}"
     );
     assert!(
-        aether_host.contains("on_apply_humanize"),
-        "宿主接线层必须注册 on_apply_humanize"
+        !flags[index_of(ids[1])],
+        "无微时值音符的标记位必须是 false：{flags:?}"
     );
-    assert!(
-        aether_app.contains("callback apply-quantize("),
-        "新 UI 契约面必须声明 callback apply-quantize("
+    // 两颗音符框的几何（运行时控件树，[UI-TEST-001] 语义 ID 寻址）。
+    let rect_of = |plane: &mut LiveControlPlane, seq: i64, id: EntityId| {
+        let bounds = element_bounds(
+            plane,
+            seq,
+            &format!("note-{}-rect", id.to_canonical_string()),
+        );
+        (
+            bounds["x"].as_f64().expect("x"),
+            bounds["y"].as_f64().expect("y"),
+            bounds["width"].as_f64().expect("width"),
+            bounds["height"].as_f64().expect("height"),
+        )
+    };
+    let (x0, y0, w0, h0) = rect_of(&mut plane, 100, ids[0]);
+    let (x1, y1, w1, h1) = rect_of(&mut plane, 200, ids[1]);
+    for (w, h) in [(w0, h0), (w1, h1)] {
+        assert!(w >= 8.0, "音符框必须够宽才放得下 4px 竖条 + 采样点：宽 {w}");
+        assert!(h >= 8.0, "音符框必须够高才放得下采样行：高 {h}");
+    }
+    let frame = plane.capture().expect("活窗口必须能抓帧");
+    let sample_row = |y: f64| (y + 1.0) as u32;
+    let left_px = |x: f64, y: f64| frame.pixel((x + 2.0) as u32, sample_row(y));
+    let stripe_px = |x: f64, w: f64, y: f64| frame.pixel((x + w - 2.0) as u32, sample_row(y));
+    let micro_left = left_px(x0, y0);
+    let micro_stripe = stripe_px(x0, w0, y0);
+    let plain_left = left_px(x1, y1);
+    let plain_stripe = stripe_px(x1, w1, y1);
+    assert_eq!(
+        micro_left, plain_left,
+        "两颗同力度同音高音符的底色必须逐像素相同（否则下面的差分没有对照意义）"
     );
-    assert!(
-        aether_host.contains("on_apply_quantize"),
-        "宿主接线层必须注册 on_apply_quantize"
+    assert_eq!(
+        plain_stripe, plain_left,
+        "不带微时值的音符右沿必须没有竖条（右沿像素 = 底色）"
     );
-    assert!(
-        aether_app.contains("callback clip-select("),
-        "新 UI 契约面必须声明 callback clip-select("
+    assert_ne!(
+        micro_stripe, micro_left,
+        "带微时值的音符右沿必须有竖条（右沿像素 ≠ 底色）"
     );
-    assert!(
-        aether_host.contains("on_clip_select"),
-        "宿主接线层必须注册 on_clip_select"
+    assert_ne!(
+        micro_stripe, plain_stripe,
+        "带微时值与不带微时值的音符在右沿必须可区分（1:1 截图可辨）"
     );
 }

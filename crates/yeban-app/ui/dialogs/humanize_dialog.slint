@@ -23,8 +23,8 @@
 //
 // ## 键盘（D-UI-19：`[UI-A11Y-003]` §7.3 第 1 条 —— 模态对话框内焦点闭环）
 //
-// 与导出对话框同一机制：`humanize-trap` 是八格（五框 + 两应用钮 + ✕）的**祖先**
-// `FocusScope`；`Tab` / `Shift+Tab` 做八格闭环轮转并 `accept`；`Return` 落在
+// 与导出对话框同一机制：`humanize-trap` 是九格（五框 + 三应用钮 + ✕）的**祖先**
+// `FocusScope`；`Tab` / `Shift+Tab` 做九格闭环轮转并 `accept`；`Return` 落在
 // 文本框内 ⇒ 该框的 `accepted` 调对应区段的 `apply-*`（与按钮同一条回调）；
 // `Return` / `Space` 落在按钮上 ⇒ 该按钮自己的 `FocusScope.key-pressed`；
 // `Esc` 调既有的 `close` 回调；其它裸键 `reject` ⇒ 快捷键层收不到（模态持有键盘）。
@@ -66,6 +66,7 @@ export component HumanizeDialog inherits Rectangle {
     callback apply-quantize();
     callback grid-note-picked(int);
     callback grid-mode-picked(int);
+    callback apply-clear-micro();
     callback close();
 
     background: Tokens.mask-black.with-alpha(0.65);
@@ -189,7 +190,7 @@ export component HumanizeDialog inherits Rectangle {
 
             // ------------------------------------------------------------ 作用范围
             // T-FIX-206：对话框打开时宿主按卷帘选区写 `scope-count`；有选区时
-            // 两只应用只动选区内的音符，空选区时保持整片段口径。
+            // 三只应用只动选区内的音符，空选区时保持整片段口径。
             UiText {
                 x: Tokens.space-6;
                 y: 48px;
@@ -646,6 +647,62 @@ export component HumanizeDialog inherits Rectangle {
                 }
             }
 
+            // ------------------------------------------------------------ 清除微时值
+            // T-FIX-675：人性化写入的微时值在卷帘不可见、量化不还原、抖动量 0 也不清，
+            // 且无任何清除入口 —— 这里给一个显式动作。作用范围与上面两只应用同一口径
+            // （对话框打开时宿主按卷帘选区写的 `scope-count`：有选区 ⇒ 只清选区内，
+            // 空选区 ⇒ 整片段）；一次提交 ⇒ 一步撤销；作用范围内没有带微时值的音符
+            // ⇒ 宿主写失败行、弹窗不关、⛔ 不提交。⛔ 不改变「抖动量 0 = 原样不动」
+            // 的既有语义（那是「应用人性化」那条的口径）。
+            Rectangle {
+                x: Tokens.space-6 + 176px;
+                y: 300px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "clear-micro-timing-button";
+                accessible-label: @tr("清除选中范围内的微时值");
+                accessible-action-default => { root.apply-clear-micro(); }
+
+                clear-micro-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.apply-clear-micro();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("清除微时值");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.apply-clear-micro(); }
+                }
+            }
+
             // ------------------------------------------------------------ 失败行
             Rectangle {
                 x: Tokens.space-6;
@@ -683,8 +740,9 @@ export component HumanizeDialog inherits Rectangle {
         : quantize-strength-input.has-focus ? 4
         : -1;
 
-    /// 轮转**全集**的读数 —— 九格。`0..2` 人性化文本框，`3` 网格音符值 /
-    /// `4` 摇摆 / `5` 强度 / `6` 应用人性化 / `7` 应用量化 / `8` ✕ 关闭。
+    /// 轮转**全集**的读数 —— 十格。`0..2` 人性化文本框，`3` 网格音符值 /
+    /// `4` 摇摆 / `5` 强度 / `6` 应用人性化 / `7` 应用量化 / `8` 清除微时值 /
+    /// `9` ✕ 关闭 / `-1` 不在模态内。
     out property <int> focused-control:
         humanize-time-input.has-focus ? 0
         : humanize-velocity-input.has-focus ? 1
@@ -694,7 +752,8 @@ export component HumanizeDialog inherits Rectangle {
         : quantize-strength-input.has-focus ? 5
         : humanize-apply-focus.has-focus ? 6
         : quantize-apply-focus.has-focus ? 7
-        : humanize-close-focus.has-focus ? 8
+        : clear-micro-focus.has-focus ? 8
+        : humanize-close-focus.has-focus ? 9
         : -1;
 
     /// 打开时由宿主调用：焦点进 `focus-section` 指定的首格。
@@ -706,7 +765,7 @@ export component HumanizeDialog inherits Rectangle {
         }
     }
 
-    /// 九格的**唯一**一张「序号 → 控件」表。
+    /// 十格的**唯一**一张「序号 → 控件」表。
     public function focus-control(index: int) {
         if (index == 0) {
             humanize-time-input.focus();
@@ -725,12 +784,16 @@ export component HumanizeDialog inherits Rectangle {
         } else if (index == 7) {
             quantize-apply-focus.focus();
         } else if (index == 8) {
+            clear-micro-focus.focus();
+        } else if (index == 9) {
             humanize-close-focus.focus();
         }
     }
 
     /// `Tab`：时值 → 力度 → 基础种子 → 网格音符值 → 摇摆 → 强度 →
     /// 应用人性化 → 应用量化 → ✕ → 回第一格。
+    /// `Tab`：时值 → 力度 → 基础种子 → 网格 → 强度 → 应用人性化 →
+    /// 应用量化 → 清除微时值 → ✕ → 回第一格。两端都闭合；`-1` ⇒ 落回 `focus-section` 的首格。
     public function focus-next-control() {
         if (root.focused-control == 0) {
             root.focus-control(1);
@@ -749,6 +812,8 @@ export component HumanizeDialog inherits Rectangle {
         } else if (root.focused-control == 7) {
             root.focus-control(8);
         } else if (root.focused-control == 8) {
+            root.focus-control(9);
+        } else if (root.focused-control == 9) {
             root.focus-control(0);
         } else {
             root.focus-first-field();
@@ -773,8 +838,10 @@ export component HumanizeDialog inherits Rectangle {
             root.focus-control(6);
         } else if (root.focused-control == 8) {
             root.focus-control(7);
-        } else {
+        } else if (root.focused-control == 9) {
             root.focus-control(8);
+        } else {
+            root.focus-control(9);
         }
     }
 

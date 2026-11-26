@@ -7,7 +7,7 @@
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
-//! | ①（MIDI 剪辑 = 恒等） | 选中演示工程的 MIDI 剪辑 ⇒ 注入的五个音符数组与基线**逐项相同**；像素变化只在它的包头内 |
+//! | ①（MIDI 剪辑 = 恒等） | 选中演示工程的 MIDI 剪辑 ⇒ 注入的六个音符数组与基线**逐项相同**；像素变化只在它的包头内 |
 //! | ②（作用域下可点） | 在卷帘上点一个音符 ⇒ 它进 `selected-ulids`（命中测试在作用域内仍工作） |
 //! | ③（音频剪辑 = 清空） | 换选音频剪辑 ⇒ `note-ulids` / `note-velocities` 清空、控件树里音符 / 力度柱一个不剩 |
 //! | ④（看不见的不可点） | 音频剪辑选中时点同一处 ⇒ 选区**被清空**（`install_roll_click` 与注入同一作用域，⛔ 不选中看不见的音符） |
@@ -138,14 +138,19 @@ fn bools_of(model: slint::ModelRc<bool>) -> Vec<bool> {
     model.iter().collect()
 }
 
-/// 选中标志数组（第六个平行数组）。
+/// 选中标志数组（第七个平行数组）。
 fn flags_of(ui: &MainWindow) -> Vec<bool> {
     bools_of(ui.get_note_selected())
 }
 
-/// 同一次注入的五个音符数组 ＋ 选中标志（六个平行数组，同索引集）。
+/// T-FIX-675：微时值标记数组（第六个平行数组）。
+fn micro_flags_of(ui: &MainWindow) -> Vec<bool> {
+    bools_of(ui.get_note_has_micro_timing())
+}
+
+/// 同一次注入的六个音符数组 ＋ 选中标志（七个平行数组，同索引集）。
 ///
-/// 用具名字段而不是六元组：`clippy::type_complexity` 对 `-D warnings` 生效
+/// 用具名字段而不是七元组：`clippy::type_complexity` 对 `-D warnings` 生效
 /// （run 40989419153 红在 `roll_scope.rs:148`）。
 #[derive(Debug, PartialEq)]
 struct Reading {
@@ -155,6 +160,7 @@ struct Reading {
     ys: Vec<f32>,
     velocities: Vec<f32>,
     selected: Vec<bool>,
+    has_micro_timing: Vec<bool>,
 }
 
 fn reading(ui: &MainWindow) -> Reading {
@@ -165,6 +171,7 @@ fn reading(ui: &MainWindow) -> Reading {
         ys: floats_of(ui.get_note_ys()),
         velocities: floats_of(ui.get_note_velocities()),
         selected: flags_of(ui),
+        has_micro_timing: micro_flags_of(ui),
     }
 }
 

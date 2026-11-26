@@ -56,7 +56,8 @@
 //! 比较成本落在绘制回调**之外**。
 //!
 //! **随 `scroll_x` 变化、必须每次都写的属性**：`note-ulids`、`note-velocities`、
-//! `note-positions`、`note-widths`、`note-ys`、`note-selected`（六个数组）与
+//! `note-positions`、`note-widths`、`note-ys`、`note-selected`、`note-has-micro-timing`
+//! （七个数组）与
 //! `roll-scroll-x`、`roll-min-tick`、`roll-max-tick`、`roll-min-pitch`、`roll-max-pitch`
 //! （五个标量）。补丁落地后本文件的 ③ 应收紧到 **7**（六个数组 + 一个标量）。
 //!
@@ -286,8 +287,16 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// 在清单里）。`APPLY_VIEW_WRITE_SITE_BUDGET` 同期实测仍是 **125**，一字不动。
 /// 三处文档读数（本文件、`bridge.rs:1007-1008`、`track_routing_crud.rs:14`）
 /// 同步统一为 125 / 74。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 74;
-/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（③a 实测 **125**）。
+/// ## 74 → 75 / 108 不动的追加（T-FIX-675，2026-11-26）
+///
+/// 卷帘微时值标记是**新注入面**（`note-has-micro-timing`，第 6 个音符平行数组）：
+/// ③b：`array_instance_addrs` 多一项每帧重建的模型实例（74 → 75）。
+/// ③a：**不动**（仍是 108）—— 新写入点住在 `apply_scroll_view`（与其它五个
+/// 音符数组同住滚动快路径），而 ③a 只数 `apply_view` 函数体里的 `ui.set_*`。
+/// 三处文档读数同步统一为 108 / 75。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 75;
+/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（③a 实测 **108**；
+/// T-FIX-675：新写入点住在 `apply_scroll_view`，③a 只数 `apply_view` 体 ⇒ 不动）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
 ///
@@ -583,6 +592,8 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 74;
 // 总写入量没有增加（移动，不是新增），滚动事件那一路反而从"每次 100+ 写"降到 17。
 // ⭐ T-FIX-754：108 → 109。`ui.set_count_in_bars` 是预备拍菜单档位的唯一注入点
 // （`ViewState::count_in_bars`，随重投影回填）；⛔ 不像 60Hz 心跳那样每帧跑。
+// ⭐ T-FIX-675：滚动快路径又多一处 `note-has-micro-timing`（音符六连），现 18 处；
+// 该写入点不住 `apply_view` 体，预算仍是 109。
 const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 109;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
@@ -721,6 +732,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("note-widths", get_note_widths);
     push!("note-ys", get_note_ys);
     push!("note-selected", get_note_selected);
+    // T-FIX-675：微时值标记数组（第 6 个音符平行数组），同样在 `apply_view` 每帧
+    // 路径上新建模型实例 ⇒ 必须计入，否则预算漏数。
+    push!("note-has-micro-timing", get_note_has_micro_timing);
     // ⭐ T-ISS-MWW4H9E9 补账：卷帘音符模型也在 `apply_view` 每帧路径上
     // （`ModelRc::new(VecModel::from(view_to_notes(view)))`，每次新建模型实例）
     // ⇒ 必须计入，否则预算漏数。
@@ -946,8 +960,8 @@ fn per_frame_injection_does_not_grow() {
         rewrites.len()
     );
     assert!(
-        rewrites.len() >= 6,
-        "随滚动变化的六个音符数组必须每帧都注入；现在只有 {} 个数组换了实例 —— \
+        rewrites.len() >= 7,
+        "随滚动变化的七个音符数组必须每帧都注入；现在只有 {} 个数组换了实例 —— \
          少了就说明卷帘不会跟着滚动重画",
         rewrites.len()
     );
