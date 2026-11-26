@@ -10990,6 +10990,29 @@ pub fn wire_save_with_engine(
         let request = match live {
             // ⭐ 活会话这一版：工程 ＋ 图谱 ＋ **资产池**（`#132` 补的第三层）。
             Some((project, graph, assets)) => {
+                // ⭐ T-FIX-534：保存前**重抓**活实例的插件状态（编辑器持有活实例后，
+                // 用户改动只有经这里才会落进工程；注释口径见
+                // `plugin_panel::load_device` 的 T-FIX-345 注）。登记表为空 ⇒ 空转
+                // （今天的常态，工程一位不改）；失败逐台**响亮**渲染（保留旧快照
+                // 继续保存，⛔ 静默）。
+                let mut project = project;
+                let refresh = crate::plugin_live::refresh_plugin_states_before_save(&mut project);
+                if refresh.refreshed > 0 {
+                    report_notice(
+                        &ui,
+                        &format!("已重抓 {} 台插件的最新状态", refresh.refreshed),
+                        false,
+                    );
+                }
+                for (device_name, error) in &refresh.failures {
+                    report_notice(
+                        &ui,
+                        &format!(
+                            "插件状态重抓失败（{device_name}）：{error}。该设备按装载时旧快照保存，工程其余部分不受影响。"
+                        ),
+                        true,
+                    );
+                }
                 crate::save_action::SaveRequest::with_history_dag_and_assets(
                     target,
                     project,
