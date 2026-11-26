@@ -163,6 +163,27 @@ const DEVICE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 /// 设备腿轮询确认的间隔（控制线程；不是实时路径）。
 const DEVICE_COMMAND_POLL: std::time::Duration = std::time::Duration::from_millis(1);
 
+/// ⭐ `T-FIX-240`：环满时留在宿主 pending 队列里的走带事件**上限**（条）。
+///
+/// 走带批次本身只有几条命令；64 条已是"用户在满环上连按几十下"的极端。超过的部分
+/// 才记为**真丢**（`transport_dropped_total`）—— ⛔ 不让控制线程为一个按不动的环
+/// 无限攒内存。
+const PENDING_TRANSPORT_CAP: usize = 64;
+
+/// ⭐ `T-FIX-240`：pending 队列的补写期限。
+///
+/// 控制腿每次 `pump` 都会补写；这个期限只兜"环被别的写者长期占满"的极端 ——
+/// 过了它就如实记 `transport_dropped_total` 并清空，界面才有可报的"没生效"。
+/// 1 s ≈ 60 Hz 发布腿的 60 跳 / 数百个运行时量子，远长于一次正常腾挪。
+const PENDING_TRANSPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// ⭐ `T-FIX-240`：控制腿就地为一次发送**腾挪 + 补写**的最大量子数。
+///
+/// 与 [`PENDING_TRANSPORT_TIMEOUT`] 不同，它是**同步**重试：每次 `pump(1)` 让读者
+/// 出队一个量子的旧事件，随后补写尾巴。8 ≈ 一个回调周期的余量，超过就交给
+/// pending 队列的异步补写（⛔ 不在 UI 线程里自旋到卡帧）。
+const CONTROL_TRANSPORT_RETRY_PUMPS: u64 = 8;
+
 /// 退役队列容量（条）。
 ///
 /// `reload` 同一次内最多发生一次快照交换；增量发布每一跳**至多**一次（[`EditMark`]
@@ -884,6 +905,9 @@ pub struct TransportDispatch {
     pub requested: usize,
     /// 真正写进事件环的条数（`EventSender::publish` 的真实返回值）。
     pub written: usize,
+    /// ⭐ `T-FIX-240`：因环满而**留在宿主 pending 队列**、等后续 `pump` /
+    /// `heartbeat` 补写的条数（`written + pending < requested` 才是真丢）。
+    pub pending: usize,
     /// 本批的后置条件是否在引擎读数上成立。
     pub confirmed: bool,
 }
@@ -895,10 +919,21 @@ impl TransportDispatch {
         self.channel && self.written == self.requested && self.confirmed
     }
 
-    /// 本批是否**被环丢掉了一部分**（通道在场但没全写进去）。
+    /// 本批是否**还没有全部写进环**（通道在场但没全写进去）。
+    ///
+    /// ⚠ `T-FIX-240`：`true` **不一定**等于"丢了"——一部分可能还在
+    /// [`EngineHost`] 的 pending 队列里等补写；判"真丢"用 [`Self::is_hard_dropped`]。
     #[must_use]
     pub const fn is_dropped(&self) -> bool {
         self.channel && self.written < self.requested
+    }
+
+    /// ⭐ `T-FIX-240`：本批是否有命令**彻底没进环**（既没写进去、也不在 pending）。
+    ///
+    /// 只有它才该向用户报"没生效"：pending 中的命令仍会在后续量子/心跳里补写。
+    #[must_use]
+    pub const fn is_hard_dropped(&self) -> bool {
+        self.channel && self.written + self.pending < self.requested
     }
 }
 
@@ -1077,6 +1112,24 @@ pub struct EngineHost {
     /// （写进环几条 / 后置条件是否成立）。⛔ 不是计数器：旧事件的 `commands_applied`
     /// 推过目标也不构成"本批已生效"。
     last_transport_dispatch: TransportDispatch,
+    /// ⭐ `T-FIX-240`：环满时**没能写进事件环**的走带事件（命令原文，⛔ 不是索引）。
+    ///
+    /// 写者只有 [`EngineHost::dispatch_transport`]（环满时入队），读者只有
+    /// [`EngineHost::flush_pending_transport`]（`pump` / `heartbeat` 里补写）。
+    /// 它存在的原因：`publish` 只能写前缀，满环时尾巴被丢 ⇒ "按了 Play 却没播"
+    /// 若只报 dropped 而不补写，用户就得再按一次。这里把尾巴留下，等下一次
+    /// 量子/心跳腾出空间后补写，后置条件仍由 [`TransportExpectation`] 判。
+    ///
+    /// 上限 [`PENDING_TRANSPORT_CAP`]：超过的部分才真正算丢（计数在
+    /// `transport_dropped_total`），⛔ 不让一批命令无限期占着控制线程内存。
+    pending_transport: Vec<EngineEvent>,
+    /// pending 队列要满足的后置条件（`None` = 队列空）。
+    pending_transport_expectation: Option<TransportExpectation>,
+    /// pending 队列的**补写期限**：过了这一刻还没补写完 ⇒ 记为真丢并清空。
+    pending_transport_deadline: Option<std::time::Instant>,
+    /// ⭐ `T-FIX-240`：被彻底丢掉的走带命令**累计条数**（pending 超时 / 超上限）。
+    /// 判据与界面回执读它；`0` = 至今没真丢过。
+    transport_dropped_total: u64,
     /// ⭐ ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`）。
     ///
     /// 为什么住在这里（⛔ 不是全局）：生命周期就是"这一代宿主"、写者只有 `reload` /
@@ -2152,6 +2205,9 @@ impl EngineHost {
     ///
     /// ⚠ **只在 UI / 主线程上调用**（它读通道、回收快照，都允许分配）。
     pub fn heartbeat(&mut self) -> HeartbeatReadings {
+        // ⭐ `T-FIX-240`：设备腿没有 `pump`（推进归真实时钟），pending 的走带尾巴
+        // 只能在这里补写 —— 只写环，⛔ 不推量子。
+        self.flush_pending_transport();
         let Some(slot) = self.slot.as_ref() else {
             return HeartbeatReadings {
                 published: 0,
@@ -2837,6 +2893,7 @@ impl EngineHost {
                     channel: false,
                     requested,
                     written: 0,
+                    pending: 0,
                     confirmed: false,
                 },
                 TransportReading::cold(),
@@ -2852,19 +2909,42 @@ impl EngineHost {
             None => 0,
         };
         let control = self.runtime.is_some();
-        let pumped = if !control {
-            // 设备腿：**不推量子**（推进归真实时钟）。环满就如实报告丢弃，⛔ 不重试到成功。
-            0
-        } else {
-            if written < requested {
-                // 环满：先泵一个量子把旧事件出队（腾出空间 + 顺带应用它们），再补写剩余。
+        let mut pumped = 0u64;
+        if control {
+            // 控制腿：环满时**先泵再补写**，有界（[`CONTROL_TRANSPORT_RETRY_PUMPS`]）。
+            // 每次 `pump(1)` 让读者出队一个量子的旧事件，腾出空间后立刻补写尾巴。
+            let mut attempts = 0u64;
+            while written < requested && attempts < CONTROL_TRANSPORT_RETRY_PUMPS {
                 self.pump(1);
+                pumped += 1;
+                attempts += 1;
                 if let Some(sender) = self.events.as_mut() {
                     written += sender.publish(&events[written..]);
                 }
             }
-            self.pump(1)
-        };
+            // 收尾推一个量子（既有形态）：让本次已写进去的命令在返回前应用。
+            self.pump(1);
+            pumped += 1;
+        }
+        // ⭐ `T-FIX-240`：**仍未进环的尾巴**交给 pending 队列，等后续 `pump`（控制腿）
+        // 或 `heartbeat`（设备腿，⛔ 不推量子）腾出空间后补写；超过上限的部分或
+        // 超期未补写的部分才记为真丢。
+        let mut pending = 0usize;
+        if written < requested {
+            let room = PENDING_TRANSPORT_CAP.saturating_sub(self.pending_transport.len());
+            let enqueue = (requested - written).min(room);
+            for event in &events[written..written + enqueue] {
+                self.pending_transport.push(*event);
+            }
+            self.transport_dropped_total += (requested - written - enqueue) as u64;
+            if self.pending_transport_expectation.is_none() {
+                // 后置条件按**整批**算（队列里的尾巴排在已写命令之后执行）。
+                self.pending_transport_expectation = Some(TransportExpectation::of(commands));
+                self.pending_transport_deadline =
+                    Some(std::time::Instant::now() + PENDING_TRANSPORT_TIMEOUT);
+            }
+            pending = enqueue;
+        }
         let expectation = TransportExpectation::of(commands);
         let confirmed = written == requested && {
             if control {
@@ -2889,10 +2969,90 @@ impl EngineHost {
                 channel: true,
                 requested,
                 written,
+                pending,
                 confirmed,
             },
             reading,
         )
+    }
+
+    /// ⭐ `T-FIX-240`：把 pending 队列里没进环的走带事件补写进去。
+    ///
+    /// 三条口径：
+    ///
+    /// 1. **只在 W 有空间时补写**（`publish` 自己只写前缀 ⇒ 这里的返回值照收）；
+    /// 2. 队列空了**且后置条件成立** ⇒ 清掉期望与期限（本批真的落地了）；
+    /// 3. 队列空了但后置条件**迟迟不成立**、或过了期限还有剩余 ⇒ 记为真丢
+    ///    （`transport_dropped_total`）并清空 —— 界面才有"没生效"可报。
+    ///
+    /// ⚠ 设备腿也走这里（`heartbeat` 调用）：只 `publish`，⛔ 不推量子。
+    fn flush_pending_transport(&mut self) {
+        if self.pending_transport.is_empty() {
+            self.pending_transport_expectation = None;
+            self.pending_transport_deadline = None;
+            return;
+        }
+        // 过了期限还有剩余 ⇒ 记为真丢并清空（界面据此报"没生效"）。
+        if self
+            .pending_transport_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            self.transport_dropped_total += self.pending_transport.len() as u64;
+            self.pending_transport.clear();
+            self.pending_transport_expectation = None;
+            self.pending_transport_deadline = None;
+            return;
+        }
+        let mut pushed = 0usize;
+        if let Some(sender) = self.events.as_mut() {
+            pushed = sender.publish(&self.pending_transport);
+        }
+        if pushed > 0 {
+            self.pending_transport.drain(..pushed);
+        }
+        if self.pending_transport.is_empty() {
+            // 尾巴全部进了环 ⇒ 本批"送达"完成；**执行**由引擎自己的量子边界负责，
+            // ⛔ 不在控制线程里假装已生效（`confirmed` 仍只看 `dispatch` 当时的读数）。
+            self.pending_transport_expectation = None;
+            self.pending_transport_deadline = None;
+        }
+    }
+
+    /// ⭐ `T-FIX-240`：pending 队列里还剩多少条走带命令（判据与界面回执读它）。
+    #[must_use]
+    pub const fn pending_transport_len(&self) -> usize {
+        self.pending_transport.len()
+    }
+
+    /// ⭐ `T-FIX-240`：至今**真正丢掉**的走带命令累计条数（pending 超期 / 超上限）。
+    #[must_use]
+    pub const fn transport_dropped_total(&self) -> u64 {
+        self.transport_dropped_total
+    }
+
+    /// ⭐ `T-FIX-240`：pending 队列的后置条件此刻是否成立（队列空且期望成立）。
+    #[must_use]
+    pub fn pending_transport_satisfied(&self) -> bool {
+        self.pending_transport.is_empty()
+            && self
+                .pending_transport_expectation
+                .as_ref()
+                .is_none_or(|expectation| expectation.satisfied_by(&self.transport()))
+    }
+
+    /// ⭐ `T-FIX-240` 的判据缝：给**没有运行时**的宿主装一条事件环，并把读者交出去。
+    ///
+    /// 只给判据用（`#[doc(hidden)]`）：生产路径的环由 `reload` / `open_device` 建，
+    /// ⛔ 不在这里再造第二条。它让"设备腿形态（不推量子）＋ 环满"在无声卡机器上可造，
+    /// 从而证明 pending 队列与超期丢弃的整条回执链。
+    #[doc(hidden)]
+    pub fn install_event_channel_for_criteria(
+        &mut self,
+        capacity: usize,
+    ) -> yeban_engine::ring::EventReceiver {
+        let (sender, receiver) = yeban_engine::ring::event_channel(capacity);
+        self.events = Some(sender);
+        receiver
     }
 
     /// ⭐ 任务单 `#283`：**产品路径的场景启动**（Session View 的场景按钮 → 引擎）。
@@ -3022,6 +3182,9 @@ impl EngineHost {
     /// ⚠ **设备腿活跃时恒返回 0**：那一代的 `EngineRuntime` 在 cpal 回调线程上，
     /// 控制面推不了、也**不许**推（推了就是第二条音频路径）。推进由真实时钟负责。
     pub fn pump(&mut self, quanta: u64) -> u64 {
+        // ⭐ `T-FIX-240`：先补写 pending 的走带尾巴，再推量子 —— 补写进去的事件
+        // 因此能在**本次**量子里被执行，满环上的 Play 不会拖到下一跳才生效。
+        self.flush_pending_transport();
         let driven = self.drive_audio(quanta);
         self.drain_retired();
         driven
@@ -4480,6 +4643,63 @@ mod tests {
             reading.state,
             TransportState::Stopped,
             "返回值也必须是引擎此刻的真实读数（⛔ 不是'看起来在播'）"
+        );
+    }
+
+    /// ⭐ `T-FIX-240`：**满环上的 Play 不会就此消失** —— 尾巴留在 pending 队列，
+    /// 读者排空旧事件后由心跳补写进环，Play 最终真的生效。
+    ///
+    /// 设备腿形态（没有控制线程里的运行时）：本线程⛔ 不推量子，因此初始 `publish`
+    /// 铁定一条都写不进去 —— 这正是缺陷单"点了播放没反应"的现场。
+    #[test]
+    fn a_play_dropped_by_a_full_ring_is_retried_until_it_lands() {
+        use yeban_engine::transport::{Transport, TransportState};
+
+        let (mut sender, mut receiver) = event_channel(2);
+        for _ in 0..2 {
+            let wrote = sender.publish(&[EngineEvent::Transport {
+                command: TransportCommand::Stop,
+            }]);
+            assert_eq!(wrote, 1, "灌环必须真的写进去");
+        }
+        let mut host = EngineHost::new();
+        host.events = Some(sender);
+
+        let reading = host.send_transport(&[TransportCommand::Play]);
+        let dispatch = host.last_transport_dispatch();
+        assert_eq!(dispatch.written, 0, "满环时这条 Play 一条都写不进去");
+        assert_eq!(reading.state, TransportState::Stopped, "此刻确实还没生效");
+
+        // 读者把环里的旧 `Stop` 排空（回调的等价形态）。
+        let mut transport = Transport::stopped(48_000, 120.0);
+        let mut scratch = [EngineEvent::Idle; 8];
+        let mut first = 0usize;
+        while receiver.drain_with(&mut scratch, |event| {
+            if let EngineEvent::Transport { command } = event {
+                transport.apply(command);
+                first += 1;
+            }
+        }) > 0
+        {}
+        assert_eq!(first, 2, "旧事件真的被应用了");
+
+        // 心跳把 pending 补写进已腾空的环（设备腿⛔ 不推量子，只写环）。
+        host.heartbeat();
+
+        // 读者再排一次：Play 这一次真的落地。
+        let mut second = 0usize;
+        while receiver.drain_with(&mut scratch, |event| {
+            if let EngineEvent::Transport { command } = event {
+                transport.apply(command);
+                second += 1;
+            }
+        }) > 0
+        {}
+        assert_eq!(second, 1, "补写进去的 Play 必须真的被应用");
+        assert_eq!(
+            transport.state(),
+            TransportState::Playing,
+            "满环上的 Play 必须**最终生效**（缺陷单的核心要求）"
         );
     }
 

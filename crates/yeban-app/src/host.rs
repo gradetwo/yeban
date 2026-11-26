@@ -52,7 +52,7 @@ use yeban_model::{EntityId, YebanProjectV1};
 use crate::bridge::{CurrentScene, DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
 use crate::engine_host::{
     DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings, PublishOutcome,
-    SceneLaunchRequest,
+    SceneLaunchRequest, TransportDispatch,
 };
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
@@ -6996,6 +6996,11 @@ pub struct ProductionLoop {
     last_device_config: Option<yeban_engine::device::EngineConfig>,
     /// 端点看护（T-FIX-225）：1 Hz 闸门 + 指数退避 + 失败次数。
     device_watch: DeviceWatch,
+    /// ⭐ `T-FIX-240`：上一次在这一跳报过的 `transport_dropped_total` 读数。
+    ///
+    /// pending 队列的走带命令可能**过了补写期限**才被记为真丢（那时发起方早已
+    /// 返回）⇒ 那个"超时丢"只能在心跳之后的 `tick` 里报。只比总数，不重复弹。
+    transport_dropped_seen: u64,
 }
 
 /// 端点看护状态（T-FIX-225）。全部是**控制面**数字，不进实时路径。
@@ -7164,6 +7169,7 @@ impl ProductionLoop {
             follow: ArrangementFollow::new(),
             last_device_config: None,
             device_watch: DeviceWatch::default(),
+            transport_dropped_seen: 0,
         })
     }
 
@@ -7181,6 +7187,7 @@ impl ProductionLoop {
             follow: ArrangementFollow::new(),
             last_device_config: None,
             device_watch: DeviceWatch::default(),
+            transport_dropped_seen: 0,
         }
     }
 
@@ -7457,10 +7464,19 @@ impl ProductionLoop {
         // 重入同一份 `RefCell`。持借调界面正是 `#212` 崩溃的形态。
         let mut engine = self.engine.borrow_mut();
         if !engine.has_engine() {
+            // ⭐ `T-FIX-240`：没有引擎的形态同样走心跳 —— 它会把 pending 的走带命令
+            // 补写进环、或**超期**记账为真丢。丢了的必须让用户看见（⛔ 不静默）。
+            let _readings = engine.heartbeat();
+            let dropped_now = engine.transport_dropped_total();
+            let dropped_new = dropped_now.saturating_sub(self.transport_dropped_seen);
+            if dropped_new > 0 {
+                self.transport_dropped_seen = dropped_now;
+            }
             drop(engine);
             // 没有引擎 ⇒ 这一跳"没有发布" ⇒ 横幅**一位不动**（⛔ 不因为"引擎没起来"
             // 就清掉上一次的错误：那不是"错误已解决"的证据）。见 [`EnginePublishOutcome`]。
             apply_engine_error(ui, EnginePublishOutcome::Unchanged);
+            report_dropped_transport(ui, dropped_new);
             return ProductionTick {
                 published_revision: None,
                 publish_error: None,
@@ -7494,6 +7510,13 @@ impl ProductionLoop {
             }
         }
         let readings = engine.heartbeat();
+        // ⭐ `T-FIX-240`：pending 的走带命令**超期**才被记为真丢 —— 那时发起 `play()` 的
+        // 回调早已返回，只有这里（每一跳、借用期内）还能读到它。只报增量，不重复弹。
+        let dropped_now = engine.transport_dropped_total();
+        let dropped_new = dropped_now.saturating_sub(self.transport_dropped_seen);
+        if dropped_new > 0 {
+            self.transport_dropped_seen = dropped_now;
+        }
         // **④ R55：自动化泳道 → `SetParam`**（与前三步同一个 tick、同一个 UI 线程）。
         //
         // 为什么在这里、而不是在 `EngineHost` 内部：采样必须是**每一跳**都发生的事，
@@ -7555,6 +7578,9 @@ impl ProductionLoop {
         // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
         // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
         apply_transport(ui, transport);
+        // ⭐ `T-FIX-240`：pending 走带命令**超期**被判真丢 ⇒ 在这一跳（借外）如实告诉用户。
+        // ⛔ 不静默：这正是缺陷单"点了播放没反应、也没人说话"的那一面。
+        report_dropped_transport(ui, dropped_new);
         // ⭐ **T-FIX-110**：播放中播放头越出可见区 ⇒ 编曲视图翻页跟进（Logic 的 Catch）。
         //
         // 位置取**界面刚写下的** `playhead-px`（与 `.slint` 画播放头同一格、同一个
@@ -7936,9 +7962,12 @@ fn wire_transport_with_wiring(
         };
         // ⭐ 作用域纪律：**先放借，再碰界面**（`apply_transport` 写两个属性；将来若有人在
         // 属性变更里回调引擎，这里也不会重入）。`#212` 的根因就是"持借调界面"。
+        // ⭐ `T-FIX-240`：借里同时取走本批的**落点**——界面要如实告诉用户"命令没进环"。
+        let dispatch = engine.last_transport_dispatch();
         drop(engine);
         if let Some(ui) = toggle_ui.upgrade() {
             apply_transport(&ui, reading);
+            report_transport_dispatch(&ui, dispatch);
         } else {
             // 窗口已经销毁：动作已经发给引擎了（不留半途状态），只是没人可通知。
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -7971,9 +8000,12 @@ fn wire_transport_with_wiring(
         // 按下停止按钮之后 1.5 s 内按 `Space`，会被当成"连按的第二次"而**只是**再定位一次，
         // 看起来像"按了播放却不动"。
         stop_head.set(None);
+        // ⭐ `T-FIX-240`：停止 / 回起点同样要如实回执（命令没进环时界面不能装作停住了）。
+        let dispatch = engine.last_transport_dispatch();
         drop(engine);
         if let Some(ui) = stop_ui.upgrade() {
             apply_transport(&ui, reading);
+            report_transport_dispatch(&ui, dispatch);
         } else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
         }
@@ -9595,8 +9627,49 @@ fn commit_seek(ui: &MainWindow, engine: &Rc<RefCell<EngineHost>>, tick: u64, sou
         return;
     };
     let reading = engine.seek(tick);
+    // ⭐ `T-FIX-240`：定位也是走带命令 —— 没进环就必须让用户看见。
+    let dispatch = engine.last_transport_dispatch();
     drop(engine);
     apply_transport(ui, reading);
+    report_transport_dispatch(ui, dispatch);
+}
+
+/// ⭐ `T-FIX-240`：pending 队列**超期**丢掉的走带命令 ⇒ 界面可见回执。
+///
+/// 与 [`report_transport_dispatch`] 的分工：那一个报"发起时就一条都写不进去"，
+/// 这一个报"排了队、期限过了仍没写进去"（此时发起回调早已返回，只有心跳所在的一跳能报）。
+fn report_dropped_transport(ui: &MainWindow, dropped: u64) {
+    if dropped == 0 {
+        return;
+    }
+    eprintln!("[yeban-app] 走带命令超时仍未进环：{dropped} 条");
+    report_notice(
+        ui,
+        &format!(
+            "{dropped} 条走带命令在事件环上排了队但超时没有生效，引擎仍停在原状态。请再按一次；如果仍然没有反应，说明环正被别的写者占满。"
+        ),
+        true,
+    );
+}
+
+/// ⭐ `T-FIX-240`：**走带命令的可见回执**（`report_notice` 是唯一出口）。
+///
+/// `T-FIX-271` 已经把"写进环几条 / 后置条件是否成立"如实记进
+/// [`TransportDispatch`]，但界面侧**没有读者** ⇒ 满环时按 Play 依旧"看上去没反应、
+/// 也没人告诉用户"。这里补上那一条出口：只有**真丢**（`is_hard_dropped`，即既没
+/// 写进环、也不在 pending 队列里）才报，pending 中的命令不误报（它们还会补写）。
+fn report_transport_dispatch(ui: &MainWindow, dispatch: TransportDispatch) {
+    if dispatch.is_hard_dropped() {
+        eprintln!(
+            "[yeban-app] 走带命令没有进环：requested={} written={} pending={}",
+            dispatch.requested, dispatch.written, dispatch.pending
+        );
+        report_notice(
+            ui,
+            "走带命令没有生效：引擎事件环已满，命令没能送进去。请再按一次；如果仍然没有反应，说明环正被别的写者占满。",
+            true,
+        );
+    }
 }
 
 /// 把**标尺点击 / 无障碍定位**接到引擎的走带定位上（`arrangement-ruler` 的全部入口）。

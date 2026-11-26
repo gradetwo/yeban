@@ -276,6 +276,12 @@ impl EventSender {
     /// 恰好调用一次 `Producer::push_partial_slice` [ARCH-RT-001, ROAD-M2-007]。
     /// 队列满时多出来的部分被丢弃（返回的条数 < `events.len()`），不阻塞、不分配。
     ///
+    /// ⚠ **容量语义不变，但"丢掉的那一段"由调用方负责**：本函数只写前缀，
+    /// 返回值就是"进环的真实条数"。要保证一条不丢（例如走带命令满环时的 `Play`），
+    /// 调用方必须把 `events[written..]` 留到自己手里，在腾出空间后补写 ——
+    /// `crates/yeban-app/src/engine_host.rs` 的 pending 队列（`T-FIX-240`）就是这么做的。
+    /// ⛔ 不要在这里改成阻塞/扩容：本函数在实时侧也被调用，红线 7（零分配 / 零锁）优先。
+    ///
     /// 生产端通常不是实时线程，但保持同一批量契约可以让"事件洪峰"不撕裂。
     pub fn publish(&mut self, events: &[EngineEvent]) -> usize {
         self.bulk_push_calls = self.bulk_push_calls.saturating_add(1);
