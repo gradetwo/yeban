@@ -461,6 +461,11 @@ pub struct ParamSpec {
     /// （注册表是 `const TOOLS`），而 `serde_json::Value` 不能 const 构造。
     /// 目前只有 `yeban_edit_notes` 的 `ops` 用它（[`crate::op_schema::ops_items`]）。
     pub items: Option<fn() -> Value>,
+    /// `string` 参数的合法值枚举构造器；`None` = 不广播 `enum`。
+    ///
+    /// ⚠ 同样用函数指针（不是 `Value`）以保持 `ParamSpec: Copy + const`；
+    /// 清单在调用时从单一真相生成，⛔ 不在注册表里手抄。
+    pub enum_values: Option<fn() -> Vec<String>>,
     /// 规范语义。
     pub doc: &'static str,
 }
@@ -490,6 +495,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         min_len: None,
         max_len: None,
         items: None,
+        enum_values: None,
         doc: "只读模拟校验: 只做参数与领域合法性校验, 不改任何状态",
     },
     ParamSpec {
@@ -502,6 +508,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         min_len: None,
         max_len: Some(256),
         items: None,
+        enum_values: None,
         doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存 (响应是 `{\"replayed\":true,\"response\":…}` 信封, 不是裸 `ToolResponse`); 空串按未提供处理; 作用域 = 工具名 + 键 ⇒ 不同工具复用同一个键不会互相命中",
     },
 ];
@@ -639,6 +646,7 @@ const fn param(
         min_len: None,
         max_len: None,
         items: None,
+        enum_values: None,
         doc,
     }
 }
@@ -663,6 +671,7 @@ const fn bounded_param(
         min_len,
         max_len,
         items: None,
+        enum_values: None,
         doc,
     }
 }
@@ -687,8 +696,41 @@ const fn array_param(
         min_len: None,
         max_len: None,
         items: Some(items),
+        enum_values: None,
         doc,
     }
+}
+
+/// `string` 参数：合法值由单一真相在调用时生成，广播成 JSON Schema 的 `enum`。
+///
+/// ⚠ 这里**只**加 schema 广播，⛔ 不动 `validate_arguments`：未知值仍由领域层
+/// 给出 `STYLE_NOT_FOUND`（含完整清单），"合法值生成路径逐字节不变"。
+const fn enum_param(
+    name: &'static str,
+    required: bool,
+    doc: &'static str,
+    enum_values: fn() -> Vec<String>,
+) -> ParamSpec {
+    ParamSpec {
+        name,
+        json_type: "string",
+        required,
+        min_len: None,
+        max_len: None,
+        items: None,
+        enum_values: Some(enum_values),
+        doc,
+    }
+}
+
+/// `stylePreset` 的完整合法值集合 —— **直接**由 theory 的 `GenreLibrary::ids`
+/// 生成，与 `STYLE_NOT_FOUND` 的 `data.availablePresets` 同源同一条。
+#[must_use]
+pub fn style_preset_enum() -> Vec<String> {
+    yeban_theory::genre::GenreLibrary::ids()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `beatGrouping` 的 item schema（`ADR-0046` D5）：逐项 = 该组的拍数，正整数。
@@ -864,7 +906,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         side_effect: SideEffect::ProjectState,
         params: &[
             param("sectionName", "string", true, "章节名"),
-            param("stylePreset", "string", true, "风格预设"),
+            enum_param(
+                "stylePreset",
+                true,
+                "风格预设: 合法值见本参数的 enum 数组（来源 yeban-theory::genre::GenreLibrary::ids，总数口径 = enum 数组长度 = GenreLibrary::ids() 的条目数；未知值仍由领域层 STYLE_NOT_FOUND 给出同源清单）",
+                style_preset_enum,
+            ),
             param("bars", "integer", true, "小节数"),
             param("scale", "string", false, "音阶"),
             param(
@@ -2908,6 +2955,15 @@ impl ToolSpec {
             if let Some(items) = spec.items {
                 property.insert("items".to_owned(), items());
             }
+            // ⭐ T-FIX-655：string 参数的合法值机器可读地广播出去。
+            // 枚举由单一真相函数在调用时生成（此处不缓存、不手抄），
+            // 与领域层 STYLE_NOT_FOUND 的 availablePresets 同源。
+            if let Some(values) = spec.enum_values {
+                property.insert(
+                    "enum".to_owned(),
+                    Value::Array(values().into_iter().map(Value::from).collect()),
+                );
+            }
             properties.insert(spec.name.to_owned(), Value::Object(property));
             if spec.required
                 && !required
@@ -3757,6 +3813,50 @@ mod tests {
                     assert!(!extra.required);
                 }
             }
+        }
+    }
+
+    /// ⭐ T-FIX-655 判据①：`tools/list` 的 `stylePreset` enum 必须与
+    /// `GenreLibrary::ids()` **逐项相等**（顺序也要一致 —— 单一真相，手抄子集必红）。
+    #[test]
+    fn style_preset_schema_enum_equals_genre_library_ids() {
+        let catalog = catalog();
+        let tools = catalog["tools"]
+            .as_array()
+            .expect("tools/list.tools 是数组");
+        let spec = tools
+            .iter()
+            .find(|tool| tool["name"] == "yeban_propose_section")
+            .expect("yeban_propose_section 必须在 tools/list 中");
+        let property = &spec["inputSchema"]["properties"]["stylePreset"];
+        let got: Vec<String> = property["enum"]
+            .as_array()
+            .expect("stylePreset 必须广播机器可读 enum")
+            .iter()
+            .map(|value| value.as_str().expect("enum 项必须是字符串").to_owned())
+            .collect();
+        let want: Vec<String> = yeban_theory::genre::GenreLibrary::ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(got, want, "schema enum 必须逐项等于 GenreLibrary::ids()");
+        assert!(!got.is_empty(), "枚举不许是空数组冒充");
+    }
+
+    /// ⭐ 判据②：领域层 `availablePresets`（未知值 `STYLE_NOT_FOUND` 带的清单）
+    /// 与 schema enum **同源逐项相等**；且枚举里每个值确实可用作风格预设。
+    #[test]
+    fn style_preset_enum_is_same_source_as_style_not_found_list() {
+        let domain: Vec<String> = crate::domain::section_build::available_presets()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(domain, style_preset_enum(), "两处必须由同一真相生成");
+        for id in &domain {
+            assert!(
+                crate::domain::section_build::preset_parts(id).is_ok(),
+                "枚举内的 `{id}` 必须能用作风格预设"
+            );
         }
     }
 }
