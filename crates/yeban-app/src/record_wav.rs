@@ -773,26 +773,35 @@ impl Recorder {
                     // ⭐ ⭐ **照拉、只不推**：预备拍期间**照常**从源拉块（⛔ 不能停止拉取，
                     // 否则真设备的回调会积压、甚至丢帧/溢出 —— 那会把"不录预备拍"变成
                     // "录音整体出问题"），但**⛔ 不推入录音环** ⇒ **不产生任何录音内容**。
+                    let block_start = pulled_so_far;
                     pulled_so_far = pulled_so_far.saturating_add(frames as u64);
                     pulled_worker.store(pulled_so_far, std::sync::atomic::Ordering::Relaxed);
+                    let mut block_offset = 0usize;
                     if !recording && pulled_so_far >= count_in_frames {
-                        // ⭐ 预备拍走完 ⇒ **从这一块起**开始录（⛔ 不追录预备拍期间的块）。
+                        // ⭐ **样本级裁剪**：预备拍可能在**这一块的中途**结束。只把
+                        // `count_in_frames` 之后的样本推入，⛔ 不整块推入（那会让首帧
+                        // 比 `start_tick` 早最多一个 block）。
+                        block_offset = usize::try_from(count_in_frames.saturating_sub(block_start))
+                            .unwrap_or(frames)
+                            .min(frames);
                         recording = true;
                         // ⛔ 预备拍不是缺口：计量基准从**开始录**的这一刻起算。
                         gap_meter = InputGapMeter::new(sample_rate);
                     }
                     if recording && let Ok(mut sender) = sender.lock() {
-                        let samples = frames.saturating_mul(usize::from(channels));
+                        let frames_to_push = frames.saturating_sub(block_offset);
+                        let skip_samples = block_offset.saturating_mul(usize::from(channels));
+                        let samples = frames_to_push.saturating_mul(usize::from(channels));
                         let accepted = yeban_engine::record::push_input_block(
                             &mut sender,
-                            &block[..samples],
+                            &block[skip_samples..skip_samples + samples],
                             channels,
                         );
                         // ⭐ 帧级如实计数（⭐ 与 `push_block` 那一条路共用同一对计数器）。
                         pushed_worker
                             .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
                         dropped_worker.fetch_add(
-                            frames.saturating_sub(accepted) as u64,
+                            frames_to_push.saturating_sub(accepted) as u64,
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         // T-FIX-758：以**正块**为对照点，按墙钟应得帧 vs 实际拉帧计缺口。
@@ -2334,6 +2343,43 @@ mod count_in_tests {
             report.frames > 0,
             "⭐ 判据 ③：预备拍走完后必须**真的开始录**（实测 {} 帧）",
             report.frames
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ③'（T-FIX-752）**：预备拍在块中途结束时，首帧索引必须**恰好**
+    /// 等于 `count_in_frames`，⛔ 不是块起点。
+    ///
+    /// `drain_batch = 1024`、`count_in = 2500`（非整数倍）：旧代码把
+    /// `2048..3072` 整块推入 ⇒ 首帧是 2048；修后从块内偏移 452 开始 ⇒ 首帧 2500。
+    /// `RampSource` 每帧值 = frame × 0.0001，因此首样本可直接读回判索引。
+    #[test]
+    fn first_recorded_frame_is_the_exact_count_in_boundary() {
+        let path = scratch("exact-first-frame");
+        let _ = std::fs::remove_file(&path);
+        let mut options = opts();
+        options.drain_batch = 1024;
+        options.seconds = 0.5;
+        let count_in = 2_500u64;
+        let mut recorder = Recorder::new();
+        recorder
+            .start(&path, &options, ramp(), count_in, None)
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let report = recorder.stop().expect("停录并落盘");
+        let (samples, _rate, _desc) =
+            yeban_render::wav::read_plain_wav_mono_f32(&path).expect("读回 WAV");
+        assert!(!samples.is_empty(), "必须真的录到样本");
+        assert!(
+            report.frames > 0,
+            "必须真的落盘（实测 {} 帧）",
+            report.frames
+        );
+        let expected = count_in as f32 * 0.0001;
+        let actual = samples[0];
+        assert!(
+            (actual - expected).abs() <= 0.001,
+            "首帧必须是 count_in 边界 {count_in}（预期样本 {expected}），实测 {actual}；             若实测约 0.2048 ⇒ 旧代码整块从第 2048 帧推入"
         );
         let _ = std::fs::remove_file(&path);
     }
