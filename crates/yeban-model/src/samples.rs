@@ -1550,7 +1550,10 @@ mod tests {
 
     #[test]
     fn export_all_writes_four_byte_stable_samples() {
-        let dir = std::env::temp_dir().join("yeban-model-schema-samples-test");
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-model-schema-samples-test-{}",
+            std::process::id()
+        ));
         let written = export_all(&dir).expect("导出样本");
         assert_eq!(written.len(), 4, "必须写出 4 份样本: {written:?}");
         let names: Vec<String> = written
@@ -1583,7 +1586,7 @@ mod tests {
         for content in &before {
             assert!(content.ends_with('\n'));
         }
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("清理样本导出目录");
     }
 
     /// ⭐ 任务单 `#142` 的**出厂判据**：每个内置样例里，每条 `ClipContent::Audio` 的

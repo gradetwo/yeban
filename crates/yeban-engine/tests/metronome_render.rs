@@ -19,10 +19,12 @@
 //!
 //! ## 证据的落盘（M0 的跨提交比对）
 //!
-//! M0 把交错样本按**小端 `f32`** 写成 `$TMPDIR/yeban-metronome-disabled.raw`
-//! （M1 写 `…-enabled.raw`）⇒ 提交前后各跑一次、`shasum -a 256` 两张原始样本
-//! 即可判"关闭节拍器时逐字节不变"。判据刻意**不**把哈希硬编码进源码：
-//! 那会把"本机 libm 的某一位"当成规范常数（跨平台金标准不是本票的事）。
+//! M0 把交错样本按**小端 `f32`** 写成
+//! `$TMPDIR/yeban-metronome-disabled-<pid>.raw`（M1 写 `…-enabled-<pid>.raw`）；
+//! 每次运行按打印出的路径取样本、`shasum -a 256` 比对，即可判"关闭节拍器时
+//! 逐字节不变"。文件名带 pid，同一机器并发跑多份测试不会互相覆盖。判据刻意
+//! **不**把哈希硬编码进源码：那会把"本机 libm 的某一位"当成规范常数
+//! （跨平台金标准不是本票的事）。
 
 mod support;
 
@@ -37,6 +39,11 @@ const SAMPLE_RATE: u64 = 48_000;
 
 /// 一拍几个 tick：4/4 拍号下 = `PPQ`（960）。
 const TICKS_PER_BEAT: u64 = PPQ;
+
+/// 落盘样本按进程唯一命名：同机并发跑同一套件不会互相截断/覆盖。
+fn artifact_path(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("yeban-metronome-{tag}-{}.raw", std::process::id()))
+}
 
 /// 构造夹具：**只有主总线、没有音符** ⇒ 输出里除了咔哒声什么都没有。
 ///
@@ -144,7 +151,7 @@ fn disabled_metronome_leaves_the_mix_path_untouched() {
     project.transport.metronome_enabled = false;
     let explicit_off = render(&project, 200);
 
-    let path = std::env::temp_dir().join("yeban-metronome-disabled.raw");
+    let path = artifact_path("disabled");
     write_raw(&path, &first);
     println!(
         "[metronome] M0 disabled fingerprint={:#018x} nonzero={} frames={} raw={}",
@@ -398,7 +405,7 @@ fn metronome_render_is_byte_deterministic_across_independent_assemblies() {
     assert_eq!(first.right, second.right);
 
     // 落盘"开启"侧样本：与 M0 的"关闭"侧样本一起构成提交前后的比对材料。
-    let path = std::env::temp_dir().join("yeban-metronome-enabled.raw");
+    let path = artifact_path("enabled");
     write_raw(&path, &first);
     println!("[metronome] M5 enabled raw={}", path.display());
 }

@@ -590,7 +590,8 @@ mod tests {
     fn start_server_refuses_missing_binary() {
         let config = OtcpConfig {
             opentune_bin: PathBuf::from("/nonexistent/OpenTune-xyz"),
-            control_root: std::env::temp_dir().join("yeban-otcp-no-bin"),
+            control_root: std::env::temp_dir()
+                .join(format!("yeban-otcp-no-bin-{}", std::process::id())),
             ..OtcpConfig::default()
         };
         let error = match start_server(&config, "job-test") {

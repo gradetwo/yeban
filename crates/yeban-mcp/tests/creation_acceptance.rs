@@ -407,17 +407,20 @@ impl Drop for Scratch {
 }
 
 /// 最终产物（WAV + 读数 JSON）放在**稳定**目录：`$YEBAN_ACCEPTANCE_DIR`，否则
-/// `$CARGO_TARGET_DIR/acceptance-335`，否则系统临时目录。
+/// `$CARGO_TARGET_DIR/acceptance-335-<pid>`，否则系统临时目录下的同款名字。
 ///
-/// 这个目录在 `target/` 下（未跟踪），因此 WAV **不会**进仓库。
+/// 这个目录在 `target/` 下（未跟踪），因此 WAV **不会**进仓库。显式给了
+/// `$YEBAN_ACCEPTANCE_DIR` 时尊重用户指定的稳定目录；否则带 pid，避免同机
+/// 多用户或并发测试进程互相覆盖产物。
 fn artifact_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("YEBAN_ACCEPTANCE_DIR") {
         return PathBuf::from(dir);
     }
+    let leaf = format!("acceptance-335-{}", std::process::id());
     if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
-        return PathBuf::from(target).join("acceptance-335");
+        return PathBuf::from(target).join(leaf);
     }
-    std::env::temp_dir().join("yeban-acceptance-335")
+    std::env::temp_dir().join(leaf)
 }
 
 // ---------------------------------------------------------------------------

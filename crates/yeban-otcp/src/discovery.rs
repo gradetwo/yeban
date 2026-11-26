@@ -454,6 +454,11 @@ pub fn control_dir_for(control_root: &Path, job_id: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// 测试目录按进程唯一：同机多用户或并发测试不抢同一路径。
+    fn test_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("yeban-otcp-{tag}-{}", std::process::id()))
+    }
+
     #[test]
     fn etime_parser_reads_bsd_ps_formats() {
         // macOS `ps -o etime=` 的输出形状：[[dd-]hh:]mm:ss，右对齐带空格。
@@ -495,21 +500,21 @@ mod tests {
 
     #[test]
     fn control_dir_mode_check_passes_on_0700() {
-        let dir = std::env::temp_dir().join("yeban-otcp-mode-0700");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = test_dir("mode-0700");
+        std::fs::create_dir_all(&dir).expect("建测试目录");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("设模式");
         }
         assert!(check_control_dir_mode(&dir).is_ok());
-        let _ = std::fs::remove_dir(&dir);
+        std::fs::remove_dir_all(&dir).expect("清理测试目录");
     }
 
     #[test]
     fn control_dir_mode_check_fails_on_0775() {
-        let dir = std::env::temp_dir().join("yeban-otcp-mode-0775");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = test_dir("mode-0775");
+        std::fs::create_dir_all(&dir).expect("建测试目录");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -526,13 +531,13 @@ mod tests {
                 "非 Unix 平台无 0775 语义，应 Ok"
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).expect("清理测试目录");
     }
 
     #[test]
     fn stale_discovery_rejected_when_pid_dead() {
-        let dir = std::env::temp_dir().join("yeban-otcp-stale-disc");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = test_dir("stale-disc");
+        std::fs::create_dir_all(&dir).expect("建测试目录");
         let path = dir.join("999999.json");
         let file = DiscoveryFile {
             port: 41234,
@@ -546,7 +551,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&file).expect("序列化")).expect("写文件");
         let error = read_discovery_file(&path, "valid-nonce-0123456789").expect_err("死 pid 应拒");
         assert!(error.message.contains("已死"));
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).expect("清理测试目录");
     }
 
     #[test]
@@ -569,12 +574,12 @@ mod tests {
 
     #[test]
     fn wait_ready_file_times_out() {
-        let dir = std::env::temp_dir().join("yeban-otcp-no-ready");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = test_dir("no-ready");
+        std::fs::create_dir_all(&dir).expect("建测试目录");
         let error =
             wait_ready_file(&dir, Duration::from_millis(300)).expect_err("无 ready.json 应超时");
         assert!(error.message.contains("超时"));
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).expect("清理测试目录");
     }
 
     #[test]

@@ -9775,14 +9775,14 @@ mod tests {
                 serde_json::json!({
                     "instrumentId": 1,
                     "frames": 64,
-                    "path": std::env::temp_dir().join("yeban-mcp-unit-sfz-out.wav").display().to_string(),
+                    "path": std::env::temp_dir().join(format!("yeban-mcp-unit-sfz-out-{}.wav", std::process::id())).display().to_string(),
                 }),
             ),
             // 录音：**不要求**活跃工程, 且 `plan` 真的把三段跑完（只碰内存）⇒ 规划成功。
             (
                 "yeban_record_wav",
                 serde_json::json!({
-                    "path": std::env::temp_dir().join("yeban-mcp-unit-take.wav").display().to_string(),
+                    "path": std::env::temp_dir().join(format!("yeban-mcp-unit-take-{}.wav", std::process::id())).display().to_string(),
                     "seconds": 0.01,
                 }),
             ),

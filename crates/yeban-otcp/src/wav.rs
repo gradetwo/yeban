@@ -182,8 +182,8 @@ mod tests {
 
     #[test]
     fn roundtrip_pcm16_mono() {
-        let dir = std::env::temp_dir().join("yeban-otcp-wav-test");
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = std::env::temp_dir().join(format!("yeban-otcp-wav-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建 WAV 测试目录");
         let path = dir.join("roundtrip.wav");
         let samples: Vec<f32> = (0..4800)
             .map(|i| (i as f32 / 4800.0 * 2.0 - 1.0) * 0.5)
@@ -197,7 +197,7 @@ mod tests {
         for (a, b) in samples.iter().zip(read.samples.iter()) {
             assert!((a - b).abs() < 1.0 / 32768.0 + 1e-6);
         }
-        let _ = std::fs::remove_file(&path);
+        std::fs::remove_dir_all(&dir).expect("清理 WAV 测试目录");
     }
 
     #[test]

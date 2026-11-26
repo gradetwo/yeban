@@ -1346,6 +1346,15 @@ fn write_self_test_record(config: &OtcpConfig, record: &SelfTestRecord) {
 mod tests {
     use super::*;
 
+    /// Pipeline 测试的私有控制根：不碰产品默认的 `$TMPDIR/yeban-otcp`。
+    fn test_config(tag: &str) -> OtcpConfig {
+        OtcpConfig {
+            control_root: std::env::temp_dir()
+                .join(format!("yeban-otcp-pipeline-{tag}-{}", std::process::id())),
+            ..OtcpConfig::default()
+        }
+    }
+
     #[test]
     fn key_scale_membership() {
         let key = Key {
@@ -1504,7 +1513,7 @@ mod tests {
 
     #[test]
     fn receipt_roundtrips() {
-        let config = OtcpConfig::default();
+        let config = test_config("receipt");
         let request = CorrectionRequest {
             job_id: "receipt-test-1".to_owned(),
             source_wav: PathBuf::from("/tmp/x.wav"),
@@ -1529,12 +1538,12 @@ mod tests {
         let read = read_receipt(&config, "receipt-test-1").expect("读回");
         assert_eq!(read.job_id, "receipt-test-1");
         assert_eq!(read.status, "succeeded");
-        let _ = std::fs::remove_dir_all(config.job_dir("receipt-test-1"));
+        std::fs::remove_dir_all(config.job_dir("receipt-test-1")).expect("清理收据目录");
     }
 
     #[test]
     fn initial_receipt_does_not_overwrite_terminal_failure() {
-        let config = OtcpConfig::default();
+        let config = test_config("initial-receipt");
         let request = CorrectionRequest {
             job_id: "receipt-preserve-terminal-1".to_owned(),
             source_wav: PathBuf::from("/tmp/x.wav"),
@@ -1560,7 +1569,7 @@ mod tests {
         let read = read_receipt(&config, &request.job_id).expect("读回");
         assert_eq!(read.status, "failed");
         assert!(read.error.is_some());
-        let _ = std::fs::remove_dir_all(config.job_dir(&request.job_id));
+        std::fs::remove_dir_all(config.job_dir(&request.job_id)).expect("清理收据目录");
     }
 
     #[test]

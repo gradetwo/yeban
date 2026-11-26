@@ -206,7 +206,10 @@ fn test_import_midi_fault_handling() {
     // 2. FILE_NOT_FOUND: 文件不存在
     {
         let mut dispatcher = dispatcher_with_project(project_with_notes(0));
-        let non_existent = std::env::temp_dir().join("does-not-exist-yeban-smf.mid");
+        let non_existent = std::env::temp_dir().join(format!(
+            "does-not-exist-yeban-smf-{}.mid",
+            std::process::id()
+        ));
         let res = call_tool(
             &mut dispatcher,
             "yeban_import_midi",

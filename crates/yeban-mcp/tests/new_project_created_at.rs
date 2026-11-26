@@ -302,7 +302,8 @@ fn an_old_project_without_a_creation_time_is_not_backfilled() {
 #[test]
 fn the_creation_clock_is_read_exactly_once() {
     let calls = std::cell::Cell::new(0_u32);
-    let path = std::env::temp_dir().join("yeban-created-at-once.yeban");
+    let dir = std::env::temp_dir().join(format!("yeban-created-at-once-{}", std::process::id()));
+    let path = dir.join("project.yeban");
     let created = build_with_clock(&CreateConfig::default(), &path, || {
         calls.set(calls.get() + 1);
         1_760_000_000_123
@@ -317,4 +318,11 @@ fn the_creation_clock_is_read_exactly_once() {
         created.project.metadata.modified_at_unix_ms, 0,
         "本单不写 modified_at（那是'保存时刷新修改时刻'的另一条裁决）"
     );
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "清理临时工程目录失败: {error}"
+        );
+    }
 }
