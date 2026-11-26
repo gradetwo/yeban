@@ -310,9 +310,9 @@ integer_count | no_callee | 0 | - | src/polysynth.rs | a4_puts_its_energy_in_the
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_full_octave_bend_moves_the_spectral_peak_from_440_to_880
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_sample_rate_change_keeps_the_envelope_time_scale
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_sample_rate_change_retunes_a_pending_note
-float_bits | hard | 35 | - | src/polysynth.rs | a_sample_rate_change_retunes_the_sounding_voices
+float_bits | hard | 36 | - | src/polysynth.rs | a_sample_rate_change_retunes_the_sounding_voices
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_stolen_voice_starts_its_new_note_with_the_configured_release
-float_bits | hard | 32 | - | src/polysynth.rs | an_empty_pitch_probe_is_bit_identical_to_plain_render
+float_bits | hard | 33 | - | src/polysynth.rs | an_empty_pitch_probe_is_bit_identical_to_plain_render
 integer_count | no_callee | 0 | - | src/polysynth.rs | an_empty_recipe_list_still_yields_one_table
 integer_count | no_callee | 0 | - | src/polysynth.rs | an_off_second_oscillator_is_bit_identical
 float_bits | hard | 2 | - | src/polysynth.rs | bypass_is_not_a_transparent_filter
@@ -326,7 +326,7 @@ integer_count | no_callee | 0 | - | src/polysynth.rs | render_is_bit_identical_u
 integer_count | no_callee | 0 | - | src/polysynth.rs | stealing_is_deterministic
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_earliest_voice_is_stolen_first
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_pitch_grid_is_anchored_to_the_note_and_not_to_the_caller_block
-float_bits | hard | 32 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
+float_bits | hard | 33 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_second_oscillator_adds_its_own_fundamental
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_voice_size_is_pinned_after_adding_the_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | ties_on_start_sample_are_broken_by_the_smallest_index

@@ -1,5 +1,8 @@
 # R149／R150 匹配站点普查：`src/` 内 .contains/.find/.starts_with/.ends_with/.strip_prefix/.strip_suffix
 # 列：file|line|kind(literal|variable)|needle|verdict(by_design|twin_point_risk|variable_needle)|reason
+# ⭐ 比对口径（T-FIX-472）：`line` 列**仅供人工定位**，⛔ 不参与判据比对；
+#    判据按 file|kind|needle|verdict|reason **稳定锚点**（多重集）比对 ⇒
+#    增删行（含纯文档注释）不再破表；新增/消失站点、verdict/needle 变化仍然红。
 # 口径（R150，逐条与判据一致）：
 #   ① 跨行：本表是**行式**扫描（⛔ 不跨行）。实测本 crate 折行站点 0 处
 #      （grep -c '\.contains($\|\.find($\|\.starts_with($\|\.ends_with($' = 0）。
@@ -52,10 +55,10 @@ src/noise_source.rs|520|variable|&events|variable_needle|needle 非字面量：�
 src/oscillator.rs|1154|variable|&oscillator.phase(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/oscillator.rs|1225|variable|&v|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/oscillator.rs|1290|variable|&value|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2058|variable||voice| voice.active && voice.freq_hz == freq_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2801|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|2870|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/polysynth.rs|3329|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2189|variable||voice| voice.active && voice.freq_hz == freq_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2960|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|3029|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|3488|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/song_overview.rs|221|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/song_overview.rs|402|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

@@ -19,7 +19,13 @@
 //!    与**整数计数**（只比整数/长度）；
 //! 3. 为**浮点**类建**产线函数图**（⛔ 排除 `mod tests`）并求可达闭包，
 //!    扫其中的宿主 libm 超越函数 ⇒ 分类为 **可硬断言** / **平台感知**；
-//! 4. **把结果与提交在仓库里的证据表逐字比对**（表漂了 ⇒ 判据红）；
+//! 4. **把结果与提交在仓库里的证据表按稳定锚点比对**（表漂了 ⇒ 判据红）；
+//!    ⭐ 表里的**定位列**（`src_match_sites.txt` 的 `line`）**不参与比对**
+//!    （T-FIX-472）：行号随任何增删行漂移，连纯文档注释都会让它变；
+//!    判据要守的是"哪些硬断言存在、怎么分类"，不是"它们在文件第几行"。
+//!    ⛔ 但**新增/删除/改分类/改 needle 仍然红** —— 锚点集变了就红。
+//!    ⛔ 去定位列后若出现**同名锚点**（同一 needle 多行），按**多重集计数**比对，
+//!    并在 `[r77]` 诊断里**逐个点名**（⛔ 不静默合并/丢弃）；
 //! 5. ⭐ **R93／R100 非真空下界**：扫描域（文件数）与每一类的**计数地板**都必须有余量
 //!    —— ⛔ 否则"一条都没扫到"会**真空通过**。
 //!
@@ -211,6 +217,134 @@ fn read_evidence_text(path: &Path) -> (String, bool) {
     let raw = fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到证据文件 {path:?}：{e}"));
     let had_crlf = raw.contains("\r\n");
     (raw.replace("\r\n", "\n"), had_crlf)
+}
+
+/// ⭐ **T-FIX-472 稳定锚点比对**：把证据表归一成"锚点文本"。
+///
+/// - 数据行（非空、非 `#`）：**剔除** `locator` 指定的定位列（如 `line`），
+///   其余列**原样**保留（⛔ 不排序、不合并、不去重）；
+/// - 表头行（`#` 开头）与空行：原样保留 ⇒ "合计 N 条"这类口径数字**仍然参与比对**。
+///
+/// 为什么不是"整行逐字比对"：定位列是**生成时的行号快照**，任何增删行
+/// （哪怕一行纯文档注释）都会让它变，而它**不是判据要守的事实**；
+/// 判据要守的是"哪些硬断言存在、怎么分类"（T-ISS-MWWSOPXO-594CBD）。
+fn canonical_evidence(text: &str, locator: Option<usize>) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let is_data = !line.trim().is_empty() && !line.starts_with('#');
+        match (is_data, locator) {
+            (true, Some(col)) => {
+                let cols: Vec<&str> = line.split('|').collect();
+                assert!(
+                    col < cols.len(),
+                    "证据表数据行列数不足（需要定位列 {}，实际 {}）：{line}",
+                    col,
+                    cols.len()
+                );
+                let kept: Vec<&str> = cols
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != col)
+                    .map(|(_, value)| *value)
+                    .collect();
+                out.push_str(&kept.join("|"));
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// 锚点计数（多重集）：用于"不唯一锚点"的诊断与差异定位。
+fn anchor_counts(canonical: &str) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for line in canonical
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        *counts.entry(line.to_string()).or_default() += 1;
+    }
+    counts
+}
+
+/// 表内**不唯一锚点**的响亮诊断（⛔ 失败与否由多重集比对决定，这里只登记）。
+fn report_duplicate_anchors(canonical: &str, table: &str) {
+    let counts = anchor_counts(canonical);
+    let dups: Vec<(String, usize)> = counts
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(anchor, count)| (anchor.clone(), *count))
+        .collect();
+    if dups.is_empty() {
+        return;
+    }
+    eprintln!(
+        "[r77] 注意：{table} 有 {} 个锚点在去掉定位列后不唯一（按多重集计数比对，⛔ 不合并）：",
+        dups.len()
+    );
+    for (anchor, count) in dups.iter().take(12) {
+        eprintln!("[r77]   ×{count} {anchor}");
+    }
+    if dups.len() > 12 {
+        eprintln!("[r77]   …另 {} 个", dups.len() - 12);
+    }
+}
+
+/// ⭐ **T-FIX-472 判据**：一张证据表必须与渲染结果**锚点集相等**（多重集）。
+///
+/// `locator` 给出**不参与比对**的定位列下标（`None` ＝ 该表没有定位列）。
+/// 不等时报告**缺失/多出**的锚点（⛔ 不报"首个差异行"——那又是在拿行号说话）。
+fn assert_evidence_anchors_match(
+    committed: &str,
+    rendered: &str,
+    table: &str,
+    locator: Option<usize>,
+) {
+    let rendered_anchors = canonical_evidence(rendered, locator);
+    let committed_anchors = canonical_evidence(committed, locator);
+    let rendered_counts = anchor_counts(&rendered_anchors);
+    assert!(
+        !rendered_counts.is_empty(),
+        "渲染出 0 行数据锚点（{table}）⇒ 扫描器退化，⛔ 不许真空通过"
+    );
+    if committed_anchors == rendered_anchors {
+        report_duplicate_anchors(&committed_anchors, table);
+        return;
+    }
+    let committed_counts = anchor_counts(&committed_anchors);
+    let mut missing: Vec<String> = Vec::new();
+    for (anchor, count) in &committed_counts {
+        let rendered_count = rendered_counts.get(anchor).copied().unwrap_or(0);
+        if *count > rendered_count {
+            missing.push(format!("×{} {anchor}", count - rendered_count));
+        }
+    }
+    let mut extra: Vec<String> = Vec::new();
+    for (anchor, count) in &rendered_counts {
+        let committed_count = committed_counts.get(anchor).copied().unwrap_or(0);
+        if *count > committed_count {
+            extra.push(format!("×{} {anchor}", count - committed_count));
+        }
+    }
+    let mut detail = String::new();
+    detail.push_str(&format!(
+        "\n【表有·源码没有】{} 条（删掉的硬断言/改了 needle 或分类，必须同步进表）：",
+        missing.len()
+    ));
+    for row in missing.iter().take(10) {
+        detail.push_str(&format!("\n  {row}"));
+    }
+    detail.push_str(&format!(
+        "\n【源码有·表里未登记】{} 条（新增的硬断言必须先登记）：",
+        extra.len()
+    ));
+    for row in extra.iter().take(10) {
+        detail.push_str(&format!("\n  {row}"));
+    }
+    panic!(
+        "{table} 的锚点集与当前源码不一致（定位列已排除，差异见下）：先跑 cargo fmt，再用 R77_WRITE=1 重生成（⛔ 行号变化本身不再算红）{detail}"
+    );
 }
 
 /// 判据（含**紧邻其上的连续上下文**）里是否声明了平台依赖。
@@ -723,33 +857,9 @@ fn the_hard_assertion_table_matches_the_committed_evidence() {
         return;
     }
     let (committed, had_crlf) = read_evidence_text(&table_path);
-    if committed != rendered {
-        let committed_lines: Vec<&str> = committed.lines().collect();
-        let rendered_lines: Vec<&str> = rendered.lines().collect();
-        let first = committed_lines
-            .iter()
-            .zip(rendered_lines.iter())
-            .position(|(a, b)| a != b);
-        let detail = first.map_or_else(
-            || {
-                format!(
-                    "前 {} 行相同，长度不同（表 {} 行 / 渲染 {} 行）",
-                    committed_lines.len().min(rendered_lines.len()),
-                    committed_lines.len(),
-                    rendered_lines.len()
-                )
-            },
-            |i| {
-                format!(
-                    "首个差异行 {}：表={:?} 渲染={:?}",
-                    i + 1,
-                    committed_lines.get(i).unwrap_or(&"<缺失>"),
-                    rendered_lines.get(i).unwrap_or(&"<缺失>")
-                )
-            },
-        );
-        panic!("证据表与当前源码不一致（{detail}）：先跑 cargo fmt，再用 R77_WRITE=1 重生成");
-    }
+    // ⭐ T-FIX-472：本表没有定位列 ⇒ 锚点集比对即"数据行多重集相等"；
+    //   差异按"表有·源码没有 / 源码有·表里未登记"点名，⛔ 不再只说行号。
+    assert_evidence_anchors_match(&committed, &rendered, TABLE_PATH, None);
     // ⭐ 报告原始行尾（诊断用；⛔ 不作为失败条件）。
     if had_crlf {
         eprintln!("[r77] 注意：证据表在盘上是 CRLF（已在比较前归一化）");
@@ -1045,6 +1155,11 @@ fn render_match_sites(crate_root: &Path) -> String {
     let mut out = String::new();
     out.push_str("# R149／R150 匹配站点普查：`src/` 内 .contains/.find/.starts_with/.ends_with/.strip_prefix/.strip_suffix\n");
     out.push_str("# 列：file|line|kind(literal|variable)|needle|verdict(by_design|twin_point_risk|variable_needle)|reason\n");
+    out.push_str("# ⭐ 比对口径（T-FIX-472）：`line` 列**仅供人工定位**，⛔ 不参与判据比对；\n");
+    out.push_str("#    判据按 file|kind|needle|verdict|reason **稳定锚点**（多重集）比对 ⇒\n");
+    out.push_str(
+        "#    增删行（含纯文档注释）不再破表；新增/消失站点、verdict/needle 变化仍然红。\n",
+    );
     out.push_str("# 口径（R150，逐条与判据一致）：\n");
     out.push_str("#   ① 跨行：本表是**行式**扫描（⛔ 不跨行）。实测本 crate 折行站点 0 处\n");
     out.push_str("#      （grep -c '\\.contains($\\|\\.find($\\|\\.starts_with($\\|\\.ends_with($' = 0）。\n");
@@ -1087,10 +1202,8 @@ fn the_src_match_site_census_matches_the_committed_evidence() {
         return;
     }
     let (committed, had_crlf) = read_evidence_text(&path);
-    assert_eq!(
-        committed, rendered,
-        "匹配站点表与当前源码不一致 ⇒ 用 R77_WRITE=1 重生成（⛔ 仅在 cargo fmt 之后）"
-    );
+    // ⭐ T-FIX-472：`line` 是定位列（第 2 列，下标 1），**不参与比对**。
+    assert_evidence_anchors_match(&committed, &rendered, MATCH_SITES_PATH, Some(1));
     if had_crlf {
         eprintln!("[r77] 注意：匹配站点表在盘上是 CRLF（已在比较前归一化）");
     }
@@ -1266,10 +1379,8 @@ fn the_integer_count_categories_match_the_committed_evidence() {
         return;
     }
     let (committed, had_crlf) = read_evidence_text(&path);
-    assert_eq!(
-        committed, rendered,
-        "分类表与当前源码不一致 ⇒ 用 R77_WRITE=1 重生成（⛔ 仅在 cargo fmt 之后）"
-    );
+    // ⭐ T-FIX-472：本表没有定位列（file|test|category|证据），锚点集比对即数据行多重集相等。
+    assert_evidence_anchors_match(&committed, &rendered, INTEGER_BOUND_PATH, None);
     if had_crlf {
         eprintln!("[r77] 注意：分类表在盘上是 CRLF（已在比较前归一化）");
     }
@@ -2182,4 +2293,84 @@ fn the_arm_coverage_register_matches_the_source() {
             "覆盖列必须明确 1/N 或 N/N：{row}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ T-FIX-472：锚点比对自带正负对照（行号不算红、内容算红）
+// ---------------------------------------------------------------------------
+
+/// **R147 配对形态**：[`canonical_evidence`] 只能**剔除定位列**。
+///
+/// - 正例：同一批站点、行号整体平移 ⇒ 锚点相等（⇒ 纯文档注释不再破表）；
+/// - 配对反例：换 needle／换 verdict／少一行／改表头口径 ⇒ 锚点**必须不等**
+///   （否则"相等"来自"把内容也删掉了"，判据真空通过）；
+/// - 不唯一锚点：去定位列后同 needle 的两行**按多重集计数**保留（⛔ 不合并），
+///   少一行时计数从 2 变 1 ⇒ 必须红。
+#[test]
+fn the_anchor_comparison_ignores_line_numbers_but_not_content() {
+    let table = |rows: &[&str]| {
+        let mut text = String::from(
+            "# 合计 3 处：literal 3 ／ variable 0\n# 列：file|line|kind|needle|verdict|reason\n",
+        );
+        for row in rows {
+            text.push_str(row);
+            text.push('\n');
+        }
+        text
+    };
+    let base = ["src/a.rs|10|literal|needle|by_design|按设计"];
+    let shifted = ["src/a.rs|14|literal|needle|by_design|按设计"];
+    assert_eq!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(&table(&shifted), Some(1)),
+        "行号平移（纯文档注释）必须不影响锚点"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(&table(&shifted), None),
+        "配对反例：**不**剔除定位列时行号平移必须不等 ⇒ 证明上面那条靠的是剔除"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(
+            &table(&["src/a.rs|14|literal|needle2|by_design|按设计"]),
+            Some(1)
+        ),
+        "needle 变化必须红"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(
+            &table(&["src/a.rs|14|literal|needle|twin_point_risk|按设计"]),
+            Some(1)
+        ),
+        "verdict 变化必须红"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(&table(&[]), Some(1)),
+        "删掉一行必须红（多重集）"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&base), Some(1)),
+        canonical_evidence(&table(&base).replace("# 合计 3 处", "# 合计 4 处"), Some(1)),
+        "表头口径数字变化必须红（⛔ 只忽略定位列）"
+    );
+    // 不唯一锚点：同 needle 两行（不同行号）在剔除定位列后必须保留 2 份。
+    let twice = [
+        "src/a.rs|10|literal|needle|by_design|按设计",
+        "src/a.rs|11|literal|needle|by_design|按设计",
+    ];
+    let once = ["src/a.rs|10|literal|needle|by_design|按设计"];
+    assert_eq!(
+        anchor_counts(&canonical_evidence(&table(&twice), Some(1)))
+            .get("src/a.rs|literal|needle|by_design|按设计"),
+        Some(&2),
+        "不唯一锚点必须按计数保留（⛔ 不合并成 1）"
+    );
+    assert_ne!(
+        canonical_evidence(&table(&twice), Some(1)),
+        canonical_evidence(&table(&once), Some(1)),
+        "不唯一锚点少一处必须红（计数 2 → 1）"
+    );
 }

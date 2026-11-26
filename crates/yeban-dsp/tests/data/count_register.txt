@@ -10,7 +10,7 @@ rows_hard_assertion_table|466|structural|证据文件行数（去掉 # 表头）
 rows_integer_count_categories|369|structural|证据文件行数（去掉 # 表头）
 rows_src_match_sites|134|structural|证据文件行数（去掉 # 表头）
 rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
-digits_in_comment_fragments|22778|raw|对注释片段（// 与 /* */）内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
-digits_in_string_fragments|2876|raw|对字符串字面量片段内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
+digits_in_comment_fragments|22882|raw|对注释片段（// 与 /* */）内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
+digits_in_string_fragments|2879|raw|对字符串字面量片段内的数字字符计数；本文件 mask_source 同口径计（生成与复算共用同一实现，取代仓外脚本）
 test_result_lines_last_run|28|log_lines|上一轮 test 门日志里 'test result:' 的行数（合入树全量 28 个二进制）
 runtime_passed_last_run|696|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和（合入树全量 696）

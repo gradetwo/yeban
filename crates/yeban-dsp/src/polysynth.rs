@@ -2513,8 +2513,16 @@ mod tests {
     /// 因此 `#311b` 选择把形状只放在声部上、被窃取时直接改写
     /// [`PolyVoice::pitch_shape`]（淡出窗口内不更新音高）。
     ///
-    /// ⚠ **每槽成本**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个轨道槽的声部池 = `304 × 16`
-    /// = **`4864`** 字节（⭐ 跨 16 个音轨 = `77824` 字节；⭐ 本判据钉住单声部这一格）。
+    /// ⚠ **`T-FIX-276` 实测 `304 → 384`**：`PolyVoice` 新增 `filter_env: Adsr`
+    /// （滤波器包络，与振幅包络同一帧 `gate_on/off`）。`Adsr` 内部存三段时间、三档电平
+    /// 与采样率系数，实测 **+80 B/声部**；`PendingNote` 同样多带一只（`Option<PendingNote>`
+    /// 随之上移，`fresh_voice` / 提升点原样搬运）。
+    ///
+    /// ⚠ **每槽成本（`T-FIX-276` 之后重算）**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个
+    /// 轨道槽的声部池 = `384 × 16` = **`6144`** 字节（⭐ 跨 16 个音轨 = `98304` 字节；
+    /// ⭐ 本判据钉住单声部这一格）。与 `P5` 的 304 相比每轨 +1280 B、16 轨 +20480 B
+    /// —— 这是"每声部一套滤波器包络"的代价，包络状态必须逐声部独立（共用一只就无法
+    /// 各音符各自起落）。
     ///
     /// ⚠ **本轮改动（`P5`，驱动刻度重做）实测 `296 → 304`**：`LadderFilter` 新增
     /// `makeup: f32`（驱动级的输出补偿，见 `filter.rs` 的 `DRIVE_REFERENCE`）。
@@ -2526,14 +2534,14 @@ mod tests {
     fn the_voice_size_is_pinned_after_adding_the_requested_frequency() {
         let size = core::mem::size_of::<PolyVoice>();
         eprintln!("DIAGNOSTIC PolyVoice size_of = {size}");
-        // ⭐ **实测值**（本机 48 kHz 构建，⭐ `P5` 加 `LadderFilter::makeup` 之后重取）：⭐ `304` 字节。
+        // ⭐ **实测值**（本机 48 kHz 构建，⭐ `T-FIX-276` 加第二只 `Adsr` 之后重取）：⭐ `384` 字节。
         // ⭐ 加 `freq_hz: f32` 之前是 `292`；⭐ `pending_freq_hz` ＋ `pending_released`
         // 两字段实测落进既有填充；⭐ `pitch_shape: u16` 填进尾部 2 B padding（仍 296）；
         // ⭐ `P5` 的 `makeup: f32` 越过 8 B 对齐 ⇒ `304`。
         assert_eq!(
-            size, 304,
-            "size_of::<PolyVoice>() = {size}（⭐ 实测 304；⭐ 上一票 296，`P5` 的 `LadderFilter::makeup` +8）\
-             ⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
+            size, 384,
+            "size_of::<PolyVoice>() = {size}（⭐ 实测 384；⭐ `T-FIX-276` 的 `filter_env: Adsr` +80，\
+             上一票 304）⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
         );
     }
 
