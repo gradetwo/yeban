@@ -26,6 +26,7 @@
 
 use std::path::PathBuf;
 use std::str::FromStr as _;
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
@@ -233,9 +234,19 @@ fn point_bin_at_missing_path() {
     }
 }
 
-/// OTCP 默认控制根（与 `OtcpConfig::default` 同一款：`temp_dir/yeban-otcp`）。
+/// 本测试进程的 OTCP 控制根。
+///
+/// 测试会往 `jobs/<id>/receipt.json`、`clip-jobs/` 写伪造收据，因此通过
+/// `yeban-otcp/test-support` 把 `OtcpConfig::default()` 指到
+/// `temp_dir/yeban-otcp-<pid>`，不碰同机其他用户/测试进程共享的 `temp_dir/yeban-otcp`。
 fn control_root() -> PathBuf {
-    std::env::temp_dir().join("yeban-otcp")
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("yeban-otcp-{}", std::process::id()));
+        let _ = yeban_otcp::config::set_default_control_root_override_for_tests(root.clone());
+        root
+    })
+    .clone()
 }
 
 /// 往默认控制根里写一份伪造的成功收据（交付 / 音符表判据用；不启动服务端）。

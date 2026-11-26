@@ -141,6 +141,9 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# OTCP 测试控制根覆盖缝只在本 crate 的测试构建里启用；正常 `cargo build -p yeban-mcp`
+# 不拉 dev-dependencies，生产图里没有 `test-support`。
+yeban-otcp = { workspace = true, features = ["test-support"] }
 # ⭐ `#223` 判据用：`yeban-decode` 的 `testfix` 用**代码生成**最小 FLAC / OGG 字节
 # （⛔ 不把音频样本入库；与 `yeban-app` 侧的十六进制夹具同源，理由见 `yeban-decode`
 # 的 `testfix` 模块文档）。`test-fixtures` 是**判据专用** feature ⇒ 只在测试里打开，

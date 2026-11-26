@@ -9,7 +9,36 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "test-support")]
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
+
+/// 测试用的默认控制根覆盖；只在 `test-support` feature 下打进构建。
+#[cfg(feature = "test-support")]
+static DEFAULT_CONTROL_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// 仅供测试把 [`OtcpConfig::default`] 的控制根指到进程私有目录。
+///
+/// 返回 `false` 表示本进程已设置过覆盖，后到的值不会生效。仅 `test-support`
+/// feature 可见，产品代码拿不到这个入口。
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[must_use]
+pub fn set_default_control_root_override_for_tests(root: PathBuf) -> bool {
+    DEFAULT_CONTROL_ROOT_OVERRIDE.set(root).is_ok()
+}
+
+/// 默认控制根：生产恒为历史 `$TMPDIR/yeban-otcp`；测试 feature 下可被进程内覆盖。
+fn default_control_root() -> PathBuf {
+    #[cfg(feature = "test-support")]
+    {
+        if let Some(root) = DEFAULT_CONTROL_ROOT_OVERRIDE.get() {
+            return root.clone();
+        }
+    }
+    std::env::temp_dir().join("yeban-otcp")
+}
 
 /// 超时（毫秒／秒，见设计稿 §2）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +111,7 @@ impl Default for OtcpConfig {
     fn default() -> Self {
         Self {
             opentune_bin: default_bin_path(),
-            control_root: std::env::temp_dir().join("yeban-otcp"),
+            control_root: default_control_root(),
             display: DisplayConfig::default(),
             max_concurrent_jobs: 2,
             timeouts: OtcpTimeouts::default(),

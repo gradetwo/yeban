@@ -12,6 +12,11 @@ publish.workspace = true
 name = "yeban_otcp"
 path = "src/lib.rs"
 
+[features]
+# 仅测试用的配置注入缝；默认关闭，生产构建/下游正常依赖都看不到覆盖静态量与 setter。
+# 唯一启用点在 yeban-mcp 的 dev-dependencies（otcp_tools 集成测试）。
+test-support = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
