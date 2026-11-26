@@ -175,7 +175,7 @@ I–V–vi–IV 的循环感来自“主—属—主替补—下属”：vi 把 
 
 \begin{enumerate}
   \item 在编曲区菜单选“显示 / 隐藏和弦轨”（命令 \texttt{toggle-chord-lane}），或点轨道头上方的“和弦展开”。和弦轨会出现一条全局轨。
-  \item 和弦轨是固定五块演示数据：\texttt{Cm9}、\texttt{AbMaj7}、\texttt{Fm11}、\texttt{G7\sharpsym9}、\texttt{Cm11}，功能标记依次为 i9、VI7、iv11、V7\sharpsym9、i11。点块或“▶ 试听”只向引擎发该和弦的 NoteOn/Off，不播放整个工程。
+  \item 和弦轨是固定五块演示数据：\texttt{Cm9}、\texttt{AbMaj7}、\texttt{Fm11}、\texttt{G7\sharpsym9}、\texttt{Cm11}，功能标记依次为 i9、VI7、iv11、V7\sharpsym9、i11。点块或“\ensuremath{\triangleright} 试听”只向引擎发该和弦的 NoteOn/Off，不播放整个工程。
   \item 先听这五块的顺序：i–VI–iv–V–i，正好是本章的小调循环。注意它只是演示，不会跟随工程里真正写的和弦。
   \item 要写自己的进行，打开钢琴卷帘（P/F7），在同一拍上按行叠和弦音。以 C 大调 ii–V–I 为例：Dm 放 D4、F4、A4；G 放 G4、B4、D5；C 放 C4、E4、G4。
   \item 按 Space 播放，先只听低音，再听三音/五音；把同一小节复制、只改最后两个和弦，比较正格终止与阻碍终止的差别。
@@ -184,7 +184,7 @@ I–V–vi–IV 的循环感来自“主—属—主替补—下属”：vi 把 
 
 \screenshot{piano-roll-ii-v-i}{ii–V–I 进行在卷帘中的排列}
 
-\textbf{范围说明：}夜半当前没有自动功能分析、终止式识别、转调检测，也没有和弦轨编辑或“按和弦名自动铺音”；和弦轨五块是固定演示数据，不是工程内可编辑和弦。和弦试听解析只覆盖基础三和弦与常见七和弦，\texttt{Cm9}、\texttt{Fm11}、\texttt{Cm11} 实际按小三和弦发声，\texttt{G7\sharpsym9} 实际按 G 大三和弦发声，9/11/♯9 扩展音不会自动加入。需要完整扩展音时，只能在卷帘里自己叠。上述分析与转调判断都要靠耳朵和纸面分析，应用不替你做。
+\textbf{范围说明：}夜半当前没有自动功能分析、终止式识别、转调检测，也没有和弦轨编辑或“按和弦名自动铺音”；和弦轨五块是固定演示数据，不是工程内可编辑和弦。和弦试听解析只覆盖基础三和弦与常见七和弦，\texttt{Cm9}、\texttt{Fm11}、\texttt{Cm11} 实际按小三和弦发声，\texttt{G7\sharpsym9} 实际按 G 大三和弦发声，9/11/\sharpsym9 扩展音不会自动加入。需要完整扩展音时，只能在卷帘里自己叠。上述分析与转调判断都要靠耳朵和纸面分析，应用不替你做。
 
 \subsection{练习}
 
@@ -199,7 +199,7 @@ I–V–vi–IV 的循环感来自“主—属—主替补—下属”：vi 把 
   \par\noindent 答案：借自同主音 C 小调的 iv、VI、bVII；Fm 压暗下属，Ab 厚重，Bb 宽阔、可直接回 C。
   \item C–Am–D7–G 中哪个和弦是枢轴？转到了什么调？
   \par\noindent 答案：Am（C 的 vi，也是 G 的 ii）；转到 G 大调，D7 是 G 的 V7。
-  \item 在夜半和弦轨依次点 Cm9、AbMaj7、Fm11、G7\sharpsym9、Cm11，写出功能路径；为什么 G7\sharpsym9 听不到 ♯9？
+  \item 在夜半和弦轨依次点 Cm9、AbMaj7、Fm11、G7\sharpsym9、Cm11，写出功能路径；为什么 G7\sharpsym9 听不到 \sharpsym9？
   \par\noindent 答案：i–VI–iv–V–i；和弦轨试听解析只到基础三/七和弦，\texttt{G7\sharpsym9} 实际发 G 大三和弦，扩展音不会自动加入（详见第 5 章范围说明与 issue \texttt{ISS-MWW4F0LZ-C8939F}）。
 \end{enumerate}
 
