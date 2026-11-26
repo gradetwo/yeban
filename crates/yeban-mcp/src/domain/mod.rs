@@ -5602,7 +5602,10 @@ fn plan_launch_scene(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 已合并 / 已拒绝的记录仍只住在会话内（它们的事实由 `history.dag`
 /// 的合并提交承担），不在恢复面里。
 fn plan_list_proposals(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
-    const KINDS: [&str; 3] = ["section", "notes", "macro"];
+    // T-FIX-419：`yeban_load_plugin` 以 `autoMerge:false` 创建的提案 kind 是
+    // `"plugin"`，必须能被它自己的过滤入口按 kind 列出。此表与
+    // `proposal::PROPOSAL_KINDS`（恢复校验表）是同一份规范词表，改一处必须同步另一处。
+    const KINDS: [&str; 4] = ["section", "notes", "macro", "plugin"];
     let wanted = match arg_str(call, "kind") {
         Some(kind) => {
             if !KINDS.contains(&kind) {
@@ -6608,9 +6611,8 @@ fn apply_ara_render(
 /// 设备字段：`name` = 插件名（VST3 类名；桩 = `stub:` 标识），`latency_samples` =
 /// 验证激活时实例上报的延迟（验证激活循环已读过，停用后缓存值仍在），
 /// `plugin` 绑定记 `path` 与 `class`（`pluginId` 未给时记实际选中的类名）。
-/// 提案类别是新的 `"plugin"`（创建与无过滤清单都走通；`yeban_list_proposals`
-/// 的 `kind` 过滤词表仍是 section / notes / macro 三个，过滤 `"plugin"` 会被
-/// 拒绝 —— 词表扩展示后续票，不在本票里顺带改过滤语义）。
+/// 提案类别是新的 `"plugin"`（创建与无过滤清单都走通；T-FIX-419 起
+/// `yeban_list_proposals` 的 `kind` 过滤词表已含 `"plugin"`，可按 kind 列出插件提案）。
 fn plan_load_plugin(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = arg_id(call, "trackId")?;
@@ -10236,6 +10238,79 @@ mod tests {
         assert!(
             plan(&domain, &mismatch_call).is_err(),
             "乐器桩走效果器路必须失败"
+        );
+    }
+
+    /// T-FIX-419 红对照判据：`yeban_load_plugin` 以默认 `autoMerge:false`
+    /// 创建的提案 kind 是 `"plugin"`，必须能被 `yeban_list_proposals` 用
+    /// `kind:"plugin"` 列出；旧词表（只有 section/notes/macro）下这一步会
+    /// 报 `INVALID_PARAMETER_RANGE` ⇒ 判据变红。
+    ///
+    /// 红线用法：把 `plan_list_proposals` 的 `KINDS` 删掉 `"plugin"` ⇒ 第一处
+    /// assert 红；把 `proposal::PROPOSAL_KINDS` 删掉 `"plugin"` ⇒ 重开恢复红。
+    #[test]
+    fn list_proposals_kind_plugin_lists_plugin_proposals_and_rejects_unknown() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+
+        // ① 建一条 plugin 提案（默认 autoMerge:false ⇒ 留在未合并清单）。
+        let loaded = execute(
+            &mut domain,
+            &call(
+                "yeban_load_plugin",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "pluginPath": "stub:sine",
+                }),
+            ),
+        )
+        .expect("load_plugin 执行");
+        assert_eq!(loaded["status"], "success", "提案必须成功: {loaded}");
+
+        // ② 按 kind:"plugin" 过滤 —— 未修树上这里会因词表缺 plugin 而失败。
+        let by_plugin = execute(
+            &mut domain,
+            &call(
+                "yeban_list_proposals",
+                serde_json::json!({"kind": "plugin"}),
+            ),
+        )
+        .expect("按 plugin 过滤应成功（T-FIX-419）");
+        assert_eq!(by_plugin["status"], "success", "{by_plugin}");
+        let plugin_rows = by_plugin["data"]["proposals"]
+            .as_array()
+            .expect("proposals 数组");
+        assert!(
+            plugin_rows.iter().any(|row| row["kind"] == "plugin"),
+            "kind:\"plugin\" 必须列出刚创建的插件提案: {by_plugin}"
+        );
+
+        // ③ 旧值行为不变：section 过滤不应把 plugin 提案混进来。
+        let by_section = execute(
+            &mut domain,
+            &call(
+                "yeban_list_proposals",
+                serde_json::json!({"kind": "section"}),
+            ),
+        )
+        .expect("section 过滤仍应成功");
+        let section_rows = by_section["data"]["proposals"]
+            .as_array()
+            .expect("proposals 数组");
+        assert!(
+            section_rows.iter().all(|row| row["kind"] == "section"),
+            "kind:\"section\" 不得混入其它类别: {by_section}"
+        );
+
+        // ④ 未知 kind 仍响亮拒绝，不静默返回全部。
+        let unknown = execute(
+            &mut domain,
+            &call("yeban_list_proposals", serde_json::json!({"kind": "bogus"})),
+        )
+        .expect("execute 应返回错误信封");
+        assert_eq!(
+            unknown["error"]["code"], "INVALID_PARAMETER_RANGE",
+            "未知 kind 应报 INVALID_PARAMETER_RANGE: {unknown:?}"
         );
     }
 

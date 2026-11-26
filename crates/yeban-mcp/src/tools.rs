@@ -1786,7 +1786,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             "kind",
             "string",
             false,
-            "只看某一类提案: `section` / `notes` / `macro`; 其余取值 ⇒ `INVALID_PARAMETER_RANGE` (⛔ 不静默返回全部)",
+            "只看某一类提案: `section` / `notes` / `macro` / `plugin` (T-FIX-419: `yeban_load_plugin` 的提案类别); 其余取值 ⇒ `INVALID_PARAMETER_RANGE` (⛔ 不静默返回全部)",
         )],
         errors: &[ErrorCode::InvalidParameterRange],
     },

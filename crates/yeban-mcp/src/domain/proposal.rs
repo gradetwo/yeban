@@ -250,7 +250,10 @@ impl ProposalRow {
 /// 提案类别的全部规范值（恢复时的校验表；与 `yeban_list_proposals`
 /// 的 `KINDS` 同一份清单）。[`Proposal::kind`] 是 `&'static str`，恢复时
 /// 只能从这张表里取回字面量 —— 表外的值响亮拒绝，⛔ 不现造类别。
-const PROPOSAL_KINDS: [&str; 3] = ["section", "notes", "macro"];
+///
+/// T-FIX-419：`"plugin"`（`yeban_load_plugin` 的提案类别）与
+/// `plan_list_proposals` 的 `KINDS` 同步补入，插件提案保存后重开才能恢复。
+const PROPOSAL_KINDS: [&str; 4] = ["section", "notes", "macro", "plugin"];
 
 /// 容器提案段的模式版本。读到不认识的版本 ⇒ 响亮拒绝打开，
 /// ⛔ 不猜测性恢复（猜错一条未决提案比拒绝打开更糟）。
