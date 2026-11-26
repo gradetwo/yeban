@@ -89,6 +89,7 @@ fn fixture() -> (YebanProjectV1, String, String) {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         id.to_canonical_string()
