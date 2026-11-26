@@ -1,0 +1,224 @@
+\clearpage
+\chapter{和声进行与功能}
+\label{sec:harmonic-progression}
+
+\subsection*{学完这一章能做什么}
+\begin{itemize}
+  \item 用主、下属、属三个功能给和弦分类，判断一个和弦在调里“要往哪走”。
+  \item 认出正格、变格、半、阻碍四种常见终止式，并听出句尾有没有真正收住。
+  \item 用借用和弦与副属和弦给进行加颜色，知道它们为什么需要解决。
+  \item 用枢轴和弦完成一次简单转调，并在夜半里把进行铺出来、听低音与功能走向。
+\end{itemize}
+
+\subsection{功能和声：三个角色，不是三张标签}
+
+功能（function）不是和弦的“性格标签”，而是它相对主音的位置与倾向。把调的主和弦当作家，其他和弦按“离开家—制造紧张—回家”分工：
+
+\begin{itemize}
+  \item \textbf{主功能 T}（tonic）：I 最稳定；vi、iii 也能临时落脚，但稳定感依次减弱。
+  \item \textbf{下属功能 S}（subdominant）：IV、ii 把耳朵从主功能推开，为属功能做准备。
+  \item \textbf{属功能 D}（dominant）：V、vii$^\circ$ 含导音或三全音，天然要解决回主。
+\end{itemize}
+
+以 C 大调为例，常用和弦可以这样归组：
+
+\begin{center}
+\small
+\begin{tabular}{p{0.10\linewidth}p{0.18\linewidth}p{0.36\linewidth}p{0.24\linewidth}}
+\toprule
+功能 & 角色 & C 大调常用和弦 & 倾向 \\
+\midrule
+T & 主功能 & I（C）、vi（Am）、iii（Em） & 稳定、落脚 \\
+S & 下属功能 & IV（F）、ii（Dm） & 离开主、准备属 \\
+D & 属功能 & V（G）、vii$^\circ$（Bdim） & 紧张、等待解决 \\
+\bottomrule
+\end{tabular}
+
+表 6-1：三个功能与 C 大调的常用和弦。iii 的归属有争议，常作弱主或主到属的过渡。
+\end{center}
+
+最典型的功能路径是 \textbf{T → S → D → T}。C–F–G–C 就是 I–IV–V–I：C 建立主，F 把重心推开，G 制造回 C 的拉力，最后 C 收住。路径不是法律：可以跳过 S，也可以在主功能内部用 vi 替代 I；但把 D 硬接回 S（比如 G–F–C）会听起来“倒退”，除非刻意制造反功能效果。
+
+功能与级数不是一回事。级数（I、ii、V……）只标根音在调里的位置；功能说的是这些级数在当下承担的推力。同一个 Am，在 C 大调是 vi（主功能替补），在 G 大调却是 ii（下属功能）——离开调性谈功能没有意义。
+
+\begin{center}
+\begin{minipage}{0.82\linewidth}
+\centering
+\begin{tikzpicture}[font=\small,every node/.style={align=center}]
+  \node (T) at (0,1.7) {\textbf{T}\\ 主功能};
+  \node (S) at (-2.1,-1.0) {\textbf{S}\\ 下属功能};
+  \node (D) at (2.1,-1.0) {\textbf{D}\\ 属功能};
+  \draw[->,thick] (T) to[bend left=12] node[midway,above,font=\tiny]{准备} (S);
+  \draw[->,thick] (S) to[bend left=12] node[midway,below,font=\tiny]{推进} (D);
+  \draw[->,thick] (D) to[bend left=12] node[midway,above,font=\tiny]{解决} (T);
+  \node[font=\tiny] at (0,-2.0) {稳定 → 离开 → 紧张 → 回家};
+\end{tikzpicture}
+
+图 6-1：功能循环。T 建立中心，S 把重心推开，D 制造回 T 的拉力。
+\end{minipage}
+\end{center}
+
+\subsection{终止式：句尾的标点}
+
+终止式（cadence）是乐句结尾的和声公式。它不是“最后两个和弦随便接”，而是让耳朵判断这句话说完了、没说完，还是故意不说完。四种最常用的终止式：
+
+\begin{center}
+\small
+\begin{tabular}{p{0.12\linewidth}p{0.34\linewidth}p{0.42\linewidth}}
+\toprule
+类型 & C 大调例子 & 听感与用法 \\
+\midrule
+正格终止 & C–G–C（I–V–I） & 最明确的收束，属回到主 \\
+变格终止 & C–F–C（I–IV–I） & 柔和、宽阔，像“阿门”结尾 \\
+半终止 & C–Dm–G（I–ii–V） & 停在属，句子没完，下一句继续 \\
+阻碍终止 & C–G–Am（I–V–vi） & 用 vi 代替 I，推迟结束 \\
+\bottomrule
+\end{tabular}
+
+表 6-2：四种常见终止式。正格与变格都可能因转位或旋律位置而“不完满”。
+\end{center}
+
+正格终止（authentic cadence）是 V–I，属功能直接回主。若 V 与 I 都在原位、旋律又落在主音上，叫完满正格；低音或旋律被转位改写，则是完满度较低的收束。变格终止（plagal cadence）是 IV–I，没有导音拉力，所以更柔、更“颂歌”。半终止（half cadence）停在 V，像逗号；阻碍终止（deceptive cadence）用 vi 替代 I，让 V 的紧张得到部分释放却不真正回家，常用于把段落再拖长一句。
+
+写终止式时先听低音：V–I 的 bass 走 G→C，是最强的“回家”；IV–I 的 bass 走 F→C，是下行五度的柔和版；V–vi 的 bass 走 G→A，上二度，所以听起来“没落地”。旋律落在主音、三音还是五音，也会改变完满程度。
+
+\subsection{借用和弦：从同主音小调借颜色}
+
+借用和弦（borrowed chord）是从同主音的另一个调式借来的和弦。C 大调可以从 C 小调借：
+
+\begin{itemize}
+  \item \textbf{Fm（iv）}：把 IV 的三音降半音，得到下属功能的暗色版；C–Fm–C 比 C–F–C 更沉。
+  \item \textbf{Ab（VI）}：下中音的厚重色彩，常接在 C 或 Fm 之后，再回 G 或 C。
+  \item \textbf{Bb（bVII）}：摇滚、民谣里常见的“下主音”，可直接回到 C，形成 bVII–I 的宽广大调。
+  \item \textbf{Cm（i）}：短暂把主和弦变小，制造“同主音大小调”的明暗切换。
+\end{itemize}
+
+借用的关键是“借完要能回”。Fm 仍属下属功能，Ab、Bb 常作色彩与过渡；不要把一串借用和弦堆在一起却不解决，否则调性会散。
+
+\subsection{副属和弦：给某个目标临时装一个属}
+
+副属和弦（secondary dominant）是“某个和弦的属和弦”，记作 V/X，读作“X 的属”。它把目标 X 临时当成主，用 X 的导音制造局部紧张：
+
+\begin{itemize}
+  \item \textbf{D7 = V/V}：D7（D–F\sharpsym–A–C）解决到 G。F\sharpsym 是 G 的导音，C 是 G 的七音，两者形成三全音，必须解决。
+  \item \textbf{A7 = V/ii}：A7（A–C\sharpsym–E–G）解决到 Dm；C\sharpsym 上行到 D。
+  \item \textbf{E7 = V/vi}：E7（E–G\sharpsym–B–D）解决到 Am；G\sharpsym 上行到 A。
+\end{itemize}
+
+副属和弦与借用和弦都会带来调外音，但来源不同：借用看“同主音另一个调式”，副属看“目标和弦的属”。同一个 Ab，在 C 大调更常按借用的 VI 解释；同一个 D7，在 C 大调既可以是 V/V，也可以在转调时成为 G 的 V7。分析时先看它解决到谁，再定名字。
+
+\subsection{转调入门：让中心搬家}
+
+转调（modulation）不是“换个和弦颜色”，而是听感的中心换了一个主。最省力的做法是找枢轴和弦（pivot chord）：它在旧调与新调里都成立，先以旧调身份出现，再以新调身份继续。
+
+以 C 大调转 G 大调为例：
+
+\[
+\texttt{C \;\; Am \;\; D7 \;\; G}
+\]
+
+\begin{itemize}
+  \item C = C 大调的 I，建立旧主。
+  \item Am = C 大调的 vi，同时是 G 大调的 ii；它是枢轴，耳朵还可以把它听成旧调的替补主。
+  \item D7 = C 大调的 V/V，同时是 G 大调的 V7；它把 G 的导音 F\sharpsym 推出来，中心开始偏向 G。
+  \item G = G 大调的 I，新主站住。
+\end{itemize}
+
+\begin{center}
+\begin{minipage}{0.92\linewidth}
+\centering
+\begin{tikzpicture}[font=\scriptsize,every node/.style={align=center}]
+  \node[draw,rounded corners,fill=gray!10,minimum width=1.9cm,minimum height=0.8cm] (c) at (0,0) {C\\ \tiny I};
+  \node[draw,rounded corners,fill=gray!10,minimum width=1.9cm,minimum height=0.8cm] (am) at (2.7,0) {Am\\ \tiny vi = ii};
+  \node[draw,rounded corners,fill=gray!10,minimum width=1.9cm,minimum height=0.8cm] (d7) at (5.4,0) {D7\\ \tiny V/V};
+  \node[draw,rounded corners,fill=gray!10,minimum width=1.9cm,minimum height=0.8cm] (g) at (8.1,0) {G\\ \tiny I};
+  \draw[->,thick] (c) -- (am);
+  \draw[->,thick] (am) -- (d7);
+  \draw[->,thick] (d7) -- (g);
+  \node at (0,-1.0) {C 大调};
+  \node at (8.1,-1.0) {G 大调};
+  \node[font=\tiny] at (2.7,0.8) {枢轴};
+  \node[font=\tiny] at (5.4,0.8) {新属};
+\end{tikzpicture}
+
+图 6-2：C→G 的转调路径。Am 在两边都成立，D7 把 G 的导音推出来，G 成为新主。
+\end{minipage}
+\end{center}
+
+转调是否成立，最终看耳朵：新调的主和弦是否被真正建立、旋律是否落在新调音阶、后面是否在新调里继续。只出现一个 D7 就宣布“转调”，常常只是副属和弦的临时色彩；反过来，连续几个新调和弦却没有新主，也可能只是“游移”。写作时先用枢轴，再用新调的属→主确认，最稳。
+
+\subsection{常用进行：把功能写成循环}
+
+把功能拉成循环，就是流行的“和弦套路”。下面四条值得先练熟：
+
+\begin{center}
+\small
+\begin{tabular}{p{0.20\linewidth}p{0.23\linewidth}p{0.23\linewidth}p{0.23\linewidth}}
+\toprule
+进行 & C 大调/小调 & 功能路径 & 常见场景 \\
+\midrule
+I–V–vi–IV & C–G–Am–F & T–D–T–S & 流行、摇滚循环 \\
+ii–V–I & Dm–G–C & S–D–T & 爵士终止、流行收束 \\
+i–VI–iv–V & Cm–Ab–Fm–G & T–VI–S–D & 小调、夜半和弦轨 \\
+I–vi–IV–V & C–Am–F–G & T–T–S–D & 50 年代流行 \\
+\bottomrule
+\end{tabular}
+
+表 6-3：四条常用进行。功能路径是听觉倾向，不是必须逐字遵守的规则。
+\end{center}
+
+I–V–vi–IV 的循环感来自“主—属—主替补—下属”：vi 把 I 的稳定感软化，IV 再把重心推高，回到 I 时既有解决又有继续。ii–V–I 是爵士最常用的收束：ii 是下属，V 是属，I 是主；把三和弦换成七和弦（Dm7–G7–Cmaj7）会更顺。i–VI–iv–V 是小调版本，VI 与 iv 都带下属色彩，V 用和声小调的大三和弦提供导音。I–vi–IV–V 则把 vi 提前，形成更早的“假收束”。
+
+声部连接上，优先保留共同音，其余音就近移动；低音可以走级进，也可以走四五度。不要为了追求“高级和弦”让所有声部同时大跳，那会把功能走向听散。
+
+\subsection{在夜半里怎么做}
+
+\begin{enumerate}
+  \item 在编曲区菜单选“显示 / 隐藏和弦轨”（命令 \texttt{toggle-chord-lane}），或点轨道头上方的“和弦展开”。和弦轨会出现一条全局轨。
+  \item 和弦轨是固定五块演示数据：\texttt{Cm9}、\texttt{AbMaj7}、\texttt{Fm11}、\texttt{G7\sharpsym9}、\texttt{Cm11}，功能标记依次为 i9、VI7、iv11、V7\sharpsym9、i11。点块或“▶ 试听”只向引擎发该和弦的 NoteOn/Off，不播放整个工程。
+  \item 先听这五块的顺序：i–VI–iv–V–i，正好是本章的小调循环。注意它只是演示，不会跟随工程里真正写的和弦。
+  \item 要写自己的进行，打开钢琴卷帘（P/F7），在同一拍上按行叠和弦音。以 C 大调 ii–V–I 为例：Dm 放 D4、F4、A4；G 放 G4、B4、D5；C 放 C4、E4、G4。
+  \item 按 Space 播放，先只听低音，再听三音/五音；把同一小节复制、只改最后两个和弦，比较正格终止与阻碍终止的差别。
+  \item 需要单独听低频时，用轨道头的“独奏 [S]”只留铺底/贝斯轨，再判断低音是否过浑；不要把所有低频都塞在同一个八度。
+\end{enumerate}
+
+\screenshot{piano-roll-ii-v-i}{ii–V–I 进行在卷帘中的排列}
+
+\textbf{范围说明：}夜半当前没有自动功能分析、终止式识别、转调检测，也没有和弦轨编辑或“按和弦名自动铺音”；和弦轨五块是固定演示数据，不是工程内可编辑和弦。和弦试听解析只覆盖基础三和弦与常见七和弦，\texttt{Cm9}、\texttt{Fm11}、\texttt{Cm11} 实际按小三和弦发声，\texttt{G7\sharpsym9} 实际按 G 大三和弦发声，9/11/♯9 扩展音不会自动加入。需要完整扩展音时，只能在卷帘里自己叠。上述分析与转调判断都要靠耳朵和纸面分析，应用不替你做。
+
+\subsection{练习}
+
+\begin{enumerate}
+  \item 写出 C 大调 I、ii、IV、V、vi 的功能分类。
+  \par\noindent 答案：I=T，ii=S，IV=S，V=D，vi=T（弱主）。
+  \item 下列片段各是什么终止式：C–G–C；C–F–C；C–Dm–G；C–G–Am。
+  \par\noindent 答案：正格、变格、半终止、阻碍终止。
+  \item 在 G 大调写出 ii–V–I 的三和弦。
+  \par\noindent 答案：Am–D–G。
+  \item C 大调中的 Fm、Ab、Bb 是从哪里借来的？各有什么色彩？
+  \par\noindent 答案：借自同主音 C 小调的 iv、VI、bVII；Fm 压暗下属，Ab 厚重，Bb 宽阔、可直接回 C。
+  \item C–Am–D7–G 中哪个和弦是枢轴？转到了什么调？
+  \par\noindent 答案：Am（C 的 vi，也是 G 的 ii）；转到 G 大调，D7 是 G 的 V7。
+  \item 在夜半和弦轨依次点 Cm9、AbMaj7、Fm11、G7\sharpsym9、Cm11，写出功能路径；为什么 G7\sharpsym9 听不到 ♯9？
+  \par\noindent 答案：i–VI–iv–V–i；和弦轨试听解析只到基础三/七和弦，\texttt{G7\sharpsym9} 实际发 G 大三和弦，扩展音不会自动加入（详见第 5 章范围说明与 issue \texttt{ISS-MWW4F0LZ-C8939F}）。
+\end{enumerate}
+
+\subsection{帮助主题映射}
+
+\begin{center}
+\footnotesize
+\begin{tabular}{p{0.22\linewidth}p{0.54\linewidth}p{0.16\linewidth}}
+\toprule
+本章小节 & 应用内帮助锚点 & 备注 \\
+\midrule
+功能和声 & \texttt{music-theory-harmonic-function} & 概念 \\
+终止式 & \texttt{music-theory-cadences} & 表 6-2 \\
+借用与副属 & \texttt{music-theory-borrowed-secondary} & 色彩/解决 \\
+转调 & \texttt{music-theory-modulation} & 图 6-2 \\
+常用进行 & \texttt{music-theory-functional-progressions} & 表 6-3 \\
+低音与声部 & \texttt{music-theory-bass-voicing} & 配器 \\
+在夜半里怎么做 & \texttt{music-theory-piano-roll-progressions} & 操作 \\
+练习 & \texttt{music-theory-ch6-practice} & 答案在章末 \\
+\bottomrule
+\end{tabular}
+\end{center}

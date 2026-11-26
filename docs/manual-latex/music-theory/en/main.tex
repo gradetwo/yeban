@@ -1,12 +1,37 @@
+% T-DOC-003 Music Theory volume, English edition
+% Base: line/incoming-doc-infra 2d59bbff
+% Structure: shared yeban-manual.sty + nine chapters under chapters/ + outline + glossary appendix
 \documentclass[11pt]{book}
 \usepackage{fontspec}
 \usepackage{yeban-manual}
-\title{Music Theory}
-\author{Yeban}
-\date{}
+\usetikzlibrary{decorations.pathreplacing}
+
+\newcommand{\sharpsym}{\ensuremath{\sharp}}
+\newcommand{\flatsym}{\ensuremath{\flat}}
+\newcommand{\yeban}{Yeban}
+\newcommand{\bookname}{Music Theory for Yeban}
+
+\title{\bookname\\[0.3em]\large Pitch, Rhythm, and Harmony from Scratch}
+\author{Yeban Documentation Team}
+\date{November 2026}
+
 \begin{document}
 \maketitle
 \tableofcontents
-\input{chapters/ch01-sample}
+\clearpage
+
+\input{outline}
+\input{chapters/ch01-sound-and-pitch}
+\input{chapters/ch02-rhythm-and-meter}
+\input{chapters/ch03-intervals}
+\input{chapters/ch04-scales-and-modes}
+\input{chapters/ch05-chords}
+\input{chapters/ch06-harmonic-progression}
+\input{chapters/ch07-melody-writing}
+\input{chapters/ch08-form-basics}
+\input{chapters/ch09-reading-notation}
+
+\appendix
+\input{terminology}
 \printindex
 \end{document}

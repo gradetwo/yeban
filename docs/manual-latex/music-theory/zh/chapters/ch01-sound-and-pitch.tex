@@ -1,0 +1,195 @@
+\chapter{声音与音高}
+\label{sec:sound-and-pitch}
+
+\subsection*{学完这一章能做什么}
+\begin{itemize}
+  \item 看见一个音名（如 C4、A4、F\sharpsym3）能说出它在钢琴键盘上的位置，并能和夜半钢琴卷帘的音高行对应。
+  \item 会用频率公式在音名、频率、MIDI 编号三者之间换算；知道 A4=440 Hz、中央 C=C4、MIDI 60=C4 这几条基准。
+  \item 能解释“八度”“半音”“十二平均律”分别解决什么问题，不再把音名、唱名、简谱数字混为一谈。
+\end{itemize}
+
+\subsection{声音的四个维度}
+
+人耳听到的“一个音”，至少可以拆成四个独立的维度。乐理主要管前两个，录音与混音主要管后两个。
+
+\begin{description}[leftmargin=2.2em,style=nextline]
+  \item[音高（pitch）] 声音听起来“高”还是“低”，由基频（fundamental frequency）决定。频率越高，音越高。单位是赫兹（Hz），即每秒振动次数。
+  \item[时值（duration）] 一个音持续多久。它由音符的起始与结束决定，是节奏与节拍的原材料。
+  \item[响度（loudness）] 听起来多响，和振幅、频谱分布、监听环境都有关。夜半里对应音量、力度（velocity）与推子。
+  \item[音色（timbre）] 同样高、同样响的两个音，为什么钢琴和小提琴听起来不同：泛音（harmonics）的比例与包络不同。
+\end{description}
+
+\begin{center}
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[->] (0,0) -- (5.4,0) node[right] {\small 时间 / ms};
+  \draw[->] (0,-1.35) -- (0,1.45) node[above] {\small 振幅};
+  \draw[thick,blue!65!black] plot[smooth,tension=1] coordinates {(0,0)(0.284,0.9)(0.568,0)(0.852,-0.9)(1.136,0)(1.42,0.9)(1.704,0)(1.988,-0.9)(2.272,0)};
+  \draw[thick,red!65!black,dashed] plot[smooth,tension=1] coordinates {(0,0)(0.568,0.9)(1.136,0)(1.704,-0.9)(2.272,0)(2.84,0.9)(3.408,0)(3.976,-0.9)(4.544,0)};
+  \node[blue!65!black,anchor=west] at (2.32,0.85) {\scriptsize 440 Hz（A4）};
+  \node[red!65!black,anchor=west] at (4.58,-0.95) {\scriptsize 220 Hz（A3）};
+  \draw[decorate,decoration={brace,amplitude=4pt},yshift=-2pt] (0,-1.35) -- (2.272,-1.35)
+    node[midway,below=4pt] {\scriptsize 一个周期 2.27 ms};
+\end{tikzpicture}
+
+\small 图 1-1：频率减半，周期加倍；220 Hz 与 440 Hz 相差一个八度。纵轴只表示归一化振幅，不代表实际声压。
+\end{center}
+
+把 440 Hz 的弦和 220 Hz 的弦同时拨响，你会听到“同一个音，只是高低不同”，而不是两个毫不相干的音——这就是八度关系。人耳把频率成 2:1 的两个音归为同一“音级”，所以音名会循环。
+
+\subsection{音名与钢琴键盘}
+
+钢琴上七个白键为一组，音名依次是 C、D、E、F、G、A、B；黑键夹在白键之间，用升号（\sharpsym）或降号（\flatsym）表示，例如 C\sharpsym（读“升 C”）与 D\flatsym（读“降 D”）是同一个键的两个名字，称为等音（enharmonic）。
+
+\begin{center}
+\begin{tikzpicture}[x=1cm,y=1cm,font=\small]
+  \foreach \i/\n/\m in {0/C4/60,1/D4/62,2/E4/64,3/F4/65,4/G4/67,5/A4/69,6/B4/71} {
+    \draw[fill=white] (\i,0) rectangle ++(1.0,3.2);
+    \node at (\i+0.5,-0.32) {\n};
+    \node[font=\scriptsize,text=black!55] at (\i+0.5,-0.72) {MIDI \m};
+  }
+  \foreach \x/\n in {0.72/C\sharpsym4,1.72/D\sharpsym4,3.72/F\sharpsym4,4.72/G\sharpsym4,5.72/A\sharpsym4} {
+    \fill[black!82] (\x,1.35) rectangle ++(0.56,1.85);
+    \node[white,font=\scriptsize,rotate=90] at (\x+0.28,2.05) {\n};
+  }
+  \node[anchor=west,font=\scriptsize] at (7.2,2.4) {白键：C D E F G A B};
+  \node[anchor=west,font=\scriptsize] at (7.2,1.8) {黑键：五个，按升/降号命名};
+  \node[anchor=west,font=\scriptsize] at (7.2,1.2) {C4 = 中央 C（MIDI 60）};
+  \node[anchor=west,font=\scriptsize] at (7.2,0.6) {A4 = 440 Hz（MIDI 69）};
+\end{tikzpicture}
+
+\small 图 1-2：一个八度内的音名与 MIDI 编号。夜半钢琴卷帘沿用“C4=60”的口径，和这张键盘图一致。
+\end{center}
+
+相邻两个键（含黑键）之间的距离叫半音（semitone）；两个半音等于一个全音（whole tone）。从 C 到下一组 C 有八个白键、十二个半音，构成一个八度（octave）。在钢琴上，E–F 与 B–C 之间没有黑键，所以它们天然只隔一个半音；其余相邻白键之间隔一个全音。
+
+\subsection{科学音高记法与 MIDI 编号}
+
+同一个音名会在不同八度反复出现，必须带数字才唯一。国际通行的科学音高记法（scientific pitch notation）把中央 C 记为 C4，往上是 C5、C6，往下是 C3、C2；数字写在音名右侧，不随升降号改变。夜半界面与 MIDI 文件都用 C4 表示中央 C，这一点与应用内手册的卷帘音域标签一致。
+
+MIDI 把音高编成 0–127 的整数，中央 C 是 60，A4 是 69。公式是：
+
+\begin{equation}
+  n = 69 + 12\log_2\!\left(\frac{f}{440}\right),
+  \qquad
+  f = 440 \times 2^{(n-69)/12}.
+  \label{eq:midi-frequency}
+\end{equation}
+
+其中 \(n\) 是 MIDI 编号，\(f\) 是频率（Hz）。式 \eqref{eq:midi-frequency} 对十二平均律成立；它把“频率”与“音高编号”变成可逆的一一对应。C4 代入 \(n=60\)，得到约 261.63 Hz；C5 是 523.25 Hz，正好翻倍。
+
+\subsection{十二平均律}
+
+如果八度严格是 2:1，那么把一个八度分成十二个“等距”的半音，每个半音的频率比必须是：
+
+\begin{equation}
+  r = 2^{1/12} \approx 1.059463.
+  \label{eq:semitone-ratio}
+\end{equation}
+
+从 A4=440 Hz 往上数一个半音是 A\sharpsym4/B\flatsym4：
+
+\[
+  440 \times 2^{1/12} \approx 466.16\ \text{Hz}.
+\]
+
+这种把八度均分成十二份的律制叫十二平均律（12-tone equal temperament）。它的好处是任意调都能自由转调、键盘形状统一；代价是除八度外，大多数音程与纯律的整数比略有偏差。现代流行、摇滚、爵士与夜半的默认音高体系都以它为基础。
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{中央 C 所在八度的白键频率（十二平均律，A4=440 Hz）。}
+\begin{tabular}{lccccccc}
+\toprule
+音名 & C4 & D4 & E4 & F4 & G4 & A4 & B4 \\
+\midrule
+MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
+频率/Hz & 261.63 & 293.66 & 329.63 & 349.23 & 392.00 & 440.00 & 493.88 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{音名、唱名与简谱}
+
+同一个音高有四套常见“叫法”，用途不同：
+
+\begin{itemize}
+  \item \textbf{音名}：C、D、E……是音的固定名字，不随调改变。夜半卷帘左侧的音名、MIDI 文件、和弦标记都用它。
+  \item \textbf{唱名}：do、re、mi、fa、sol、la、si。固定唱名法（fixed-do）里 C 永远唱 do；首调唱名法（movable-do）里主音唱 do，调一变，唱名对应的音高就变。
+  \item \textbf{简谱}：用 1–7 表示 scale degrees（音级），1 代表主音；1=C 表示 C 是主音。它适合快速记旋律，但不适合精确描述和弦转位。
+  \item \textbf{音级}：罗马数字 I、II、III……或阿拉伯数字，表示音阶中的第几级，讨论和声功能时最常用。
+\end{itemize}
+
+初学阶段最容易混的是“音名”和“唱名”：音名是绝对的，唱名是相对的。看到 C4，应该先想到“中央 C、MIDI 60、261.63 Hz”，而不是条件反射地唱 do——只有在 C 调、且使用固定唱名时，C 才唱 do。
+
+\subsection{在夜半里怎么做}
+
+\begin{enumerate}
+  \item 按 \texttt{P} 或 \texttt{F7} 打开钢琴卷帘；它在底部控制台的第一个页签。
+  \item 卷帘纵轴是音高行，默认显示 16 行（C4–E\flatsym5），左侧只标 C 音锚点；向上/向下滚动可以看到更高或更低的八度。行高与音名由同一套音高映射投影，不存在“看着是 C4、实际响的是别的音”的第二套坐标。
+  \begin{center}
+\begin{tikzpicture}[x=0.80cm,y=0.62cm]
+  \foreach \r/\n in {0/C4,1/D4,2/E4,3/F4,4/G4,5/A4,6/B4} {
+    \draw[black!20] (0,\r) rectangle (7.6,\r+1);
+    \node[left,font=\scriptsize] at (0,\r+0.5) {\n};
+  }
+  \foreach \x in {0.95,1.9,2.85,3.8,4.75,5.7,6.65} {
+    \draw[black!12] (\x,0) -- (\x,7);
+  }
+  \fill[blue!55!black] (1.0,0.12) rectangle (1.85,0.88);
+  \fill[blue!55!black] (1.95,1.12) rectangle (2.80,1.88);
+  \fill[blue!55!black] (2.90,2.12) rectangle (3.75,2.88);
+  \fill[blue!55!black] (3.85,4.12) rectangle (4.70,4.88);
+  \node[above,font=\scriptsize] at (0,7.1) {音高 ↑};
+  \node[below,font=\scriptsize] at (7.6,0) {时间 →};
+\end{tikzpicture}
+
+\small 图 1-3：夜半钢琴卷帘的音高行示意。格子横轴是时间，纵轴是音高；这里只画出 C4–B4 七行，实际默认视图是 16 行（C4–E\flatsym5）。
+\end{center}
+\item 先在编曲区选中一个 MIDI 片段，再选绘制工具（数字键 \texttt{2}），在 C4 行点一下，就写入一个 C4 音符；按住拖动可以拉长时值。
+  \item 选中音符后，\texttt{↑}/\texttt{↓} 按半音移调，\texttt{Shift+↑}/\texttt{Shift+↓} 按整个八度移调；移调后音名会跟着变，频率也按式 \eqref{eq:midi-frequency} 改变。
+  \item 按 \texttt{Space} 播放。用 A4=440 Hz 的参考音对照，确认你写的 C4 与它相差 9 个半音（60 与 69 的差）。
+\end{enumerate}
+
+
+
+\screenshot{piano-roll-pitch-labels}{钢琴卷帘音高标签与钢琴键盘对照}
+
+\textbf{尚未提供的部分：}本册不写“频谱分析仪”“自动音高检测”之类夜半当前没有的功能；若后续版本加入，会在此节补链接，而不是先画一个不存在的按钮。
+
+\subsection{练习}
+
+\begin{enumerate}
+  \item 写出下列 MIDI 编号对应的音名：60、64、67、69。\\
+  \emph{答案：}C4、E4、G4、A4。
+  \item 已知 A4=440 Hz，求 A3 与 C5 的频率。\\
+  \emph{提示：}A3 比 A4 低一个八度，频率减半；C5 比 C4 高一个八度，C4 约 261.63 Hz。\\
+  \emph{答案：}A3=220 Hz；C5≈523.25 Hz。
+  \item C4 到 G4 是多少个半音？\\
+  \emph{答案：}7 个半音（C–C\sharpsym–D–D\sharpsym–E–F–F\sharpsym–G）。
+  \item 为什么 E–F 之间没有黑键？\\
+  \emph{答案：}自然音阶中 E–F 本身就是半音关系；黑键只填补全音之间的半音。
+  \item 在夜半里写 C4–D4–E4–G4–G4–F4–E4–D4，用 \texttt{Space} 播放，再把最后两个音用 \texttt{↑} 各升一个半音听变化。\\
+  \emph{提示：}先对准 C4 行，再用绘制工具逐格点；不要用鼠标拖着猜音高。
+\end{enumerate}
+
+\subsection{帮助主题映射}
+
+\begin{center}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{0.30\linewidth}p{0.48\linewidth}p{0.16\linewidth}}
+\toprule
+本章小节 & 应用内帮助锚点 & 备注 \\
+\midrule
+\endhead
+声音的四个维度 & \texttt{music-theory-sound-dimensions} & 概念 \\
+音名与钢琴键盘 & \texttt{music-theory-note-names-keyboard} & 图 1-2 \\
+八度与半音 & \texttt{music-theory-octave-semitone} & 图 1-2 \\
+科学音高记法与 MIDI & \texttt{music-theory-scientific-pitch-midi} & 式 \eqref{eq:midi-frequency} \\
+十二平均律 & \texttt{music-theory-equal-temperament} & 表 1-1 \\
+音名、唱名与简谱 & \texttt{music-theory-solfege-numbered-notation} & 概念 \\
+在夜半里怎么做 & \texttt{music-theory-piano-roll-pitch} & 操作 \\
+练习 & \texttt{music-theory-ch1-practice} & 答案在章末 \\
+\bottomrule
+\end{longtable}
+\end{center}

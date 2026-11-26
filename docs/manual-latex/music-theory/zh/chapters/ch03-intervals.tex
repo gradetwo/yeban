@@ -1,0 +1,188 @@
+\chapter{音程}
+\label{sec:intervals}
+
+\subsection*{学完这一章能做什么}
+\begin{itemize}
+  \item 给定两个音名，能说出它们相距几个半音、构成什么音程（如 C4–E4 是大三度）。
+  \item 能区分音程的“度数”和“性质”，不再把“三度”和“三个半音”混为一谈。
+  \item 能判断常见音程的协和/不协和，并知道同一音程在不同和声语境里可能改变作用。
+  \item 在夜半钢琴卷帘上量出两个音符的行距，用移调与试听做音程听辨练习。
+\end{itemize}
+
+\subsection{半音：音程的“距离单位”}
+
+音程（interval）是两个音之间的音高距离。最实在的度量单位是半音（semitone）：钢琴上相邻两个键（含黑键）就是半音，卷帘里相邻一行也是半音。全音等于两个半音。
+
+只用半音数描述还不够。C4–E4 是 4 个半音，C4–F\flatsym4 也是 4 个半音，但前者叫大三度，后者叫减四度；它们在实际十二平均律里听起来一样高，写法与和声意义却不同。所以完整的音程名由两部分组成：
+
+\begin{itemize}
+  \item \textbf{度数}（quantity）：从第一个音数到第二个音，包含两端，数到几就是几度。C–D 是二度，C–E 是三度，C–G 是五度，C–C（高八度）是八度。
+  \item \textbf{性质}（quality）：大、小、纯、增、减。它描述同一度数内部的半音差异。
+\end{itemize}
+
+\begin{center}
+\begin{tikzpicture}[x=1.02cm,y=1cm,font=\scriptsize]
+  \draw[thick] (0,0) -- (12,0);
+  \foreach \i in {0,...,12} {\draw (\i,-0.1) -- (\i,0.1);}
+  \foreach \i/\n in {0/C4,2/D4,4/E4,5/F4,7/G4,9/A4,11/B4,12/C5} {
+    \node[above=3pt] at (\i,0) {\n};
+  }
+  \foreach \i in {0,2,...,12} {\node[below=2pt,font=\tiny,text=black!55] at (\i,0) {\i};}
+  \draw[decorate,decoration={brace,amplitude=3pt}] (0,-0.35) -- (4,-0.35)
+    node[midway,below=4pt] {大三度：4 个半音};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (0,-1.05) -- (7,-1.05)
+    node[midway,below=4pt] {纯五度：7 个半音};
+\end{tikzpicture}
+
+\small 图 3-1：C4 到 C5 的半音尺。刻度下方隔一格标出半音数；度数从两端数起，性质看同一度数内的半音差。
+\end{center}
+
+\subsection{度数怎么数，性质怎么定}
+
+数度数时一定要把起点算进去：C 到 E 是 C(1)、D(2)、E(3)，所以是三度；如果只数“中间隔几个音”，会少数一度。八度也是同样：C4 到 C5 包含两端共八个音级，所以是八度，不是“七度”。
+
+性质以自然大调音阶为参照。以 C 大调为例：
+
+\begin{itemize}
+  \item C–D、C–E、C–A、C–B 分别是大二度、大三度、大六度、大七度。
+  \item 把这些大音程缩小一个半音，得到小音程：C–E\flatsym 是小三度，C–A\flatsym 是小六度。
+  \item 一度、四度、五度、八度用“纯”，不用“大/小”：C–C 是纯一度，C–F 是纯四度，C–G 是纯五度，C–C（八度）是纯八度。
+  \item 在纯音程基础上扩大一个半音叫增，缩小一个半音叫减；在大/小音程上再扩/缩一个半音，也叫增/减。
+\end{itemize}
+
+\begin{center}
+\small
+\begin{tabular}{llcl}
+\toprule
+音程 & 半音数 & 例子（从 C4 起） & 性质 \\
+\midrule
+小二度 & 1 & C4–D\flatsym4 & 小 \\
+大二度 & 2 & C4–D4 & 大 \\
+小三度 & 3 & C4–E\flatsym4 & 小 \\
+大三度 & 4 & C4–E4 & 大 \\
+纯四度 & 5 & C4–F4 & 纯 \\
+增四度 / 减五度 & 6 & C4–F\sharpsym4 / C4–G\flatsym4 & 增 / 减（三全音） \\
+纯五度 & 7 & C4–G4 & 纯 \\
+小六度 & 8 & C4–A\flatsym4 & 小 \\
+大六度 & 9 & C4–A4 & 大 \\
+小七度 & 10 & C4–B\flatsym4 & 小 \\
+大七度 & 11 & C4–B4 & 大 \\
+纯八度 & 12 & C4–C5 & 纯 \\
+\bottomrule
+\end{tabular}
+
+表 3-1：一个八度内的十二种基本音程。6 个半音的三全音有两个等音写法：增四度与减五度。
+\end{center}
+
+超过一个八度的叫复音程（compound interval）：九度 = 八度 + 二度，十度 = 八度 + 三度。描述时可以先说“大九度”，也可以说“八度上加一个大二度”；两者指向同一个音高关系。
+
+\subsection{协和与不协和}
+
+协和（consonance）与不协和（dissonance）是听感分类，不是道德判断。常见口径：
+
+\begin{itemize}
+  \item \textbf{完全协和}：纯一度、纯八度、纯五度；纯四度在传统和声里常归为完全协和，但在现代听感/配器中有时被当作“有张力的四度”，要看语境。
+  \item \textbf{不完全协和}：大三度、小三度、大六度、小六度。它们比完全协和更有色彩，但仍容易融合。
+  \item \textbf{不协和}：大二度、小二度、大七度、小七度、三全音。它们制造紧张，通常需要解决或有意保留张力。
+\end{itemize}
+
+“不协和”不等于“难听”。鼓组里的吊镲、失真吉他、电影配乐里的三全音，都是把不协和当颜色用。判断标准是：这个紧张感是否被后面的音解决、是否服务于段落情绪，而不是只看音程表。
+
+\subsection{转位与等音：同一个距离的两种看法}
+
+把音程的下方音移到上方（或上方音移到下方），叫转位（inversion）。转位后度数与性质按“9 减去原度数”变化，性质大多相反：
+
+\begin{itemize}
+  \item 大二度 ↔ 小七度；小三度 ↔ 大六度；大三度 ↔ 小六度；大七度 ↔ 小二度。
+  \item 纯四度 ↔ 纯五度；纯八度 ↔ 纯一度；增四度 ↔ 减五度。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,font=\scriptsize]
+  % 原音程 C4-E4
+  \draw[thick] (0,2.2) -- (0,1.0);
+  \draw[thick] (3,2.2) -- (3,1.0);
+  \node[above] at (0,2.2) {C4};
+  \node[above] at (3,2.2) {E4};
+  \draw[decorate,decoration={brace,amplitude=3pt},yshift=-2pt] (0,1.0) -- (3,1.0)
+    node[midway,below=3pt] {大三度（4 半音）};
+
+  % 转位 E4-C5
+  \draw[->,thick] (3.6,1.6) -- (4.35,1.6);
+  \node[below=1pt,font=\tiny] at (3.98,1.45) {上移八度};
+  \draw[thick] (5,2.2) -- (5,1.0);
+  \draw[thick] (9,2.2) -- (9,1.0);
+  \node[above] at (5,2.2) {E4};
+  \node[above] at (9,2.2) {C5};
+  \draw[decorate,decoration={brace,amplitude=3pt},yshift=-2pt] (5,1.0) -- (9,1.0)
+    node[midway,below=3pt] {小六度（8 半音）};
+\end{tikzpicture}
+
+\small 图 3-2：C4–E4 的大三度转位成 E4–C5 的小六度；度数 3 + 6 = 9，半音 4 + 8 = 12。
+\end{figure}
+
+等音（enharmonic）是另一回事：同一个键/同一个音高，写成不同的音名。C\sharpsym 与 D\flatsym 是等音；增四度 C–F\sharpsym 与减五度 C–G\flatsym 也是等音音程。等音在十二平均律里频率相同，但在谱面、和弦功能与旋律写作里不能随便互换：写 F\sharpsym 还是 G\flatsym，取决于它要解决到哪个音。
+
+\subsection{听辨与唱音程}
+
+听音程不要从“背表”开始，而要先建立参照：
+
+\begin{enumerate}
+  \item 先用一个熟悉的纯八度校准耳朵：C4 到 C5 是 12 个半音，频率翻倍。
+  \item 再听纯五度（7 个半音）与纯四度（5 个半音）；它们是最稳定的两个非八度音程。
+  \item 大三度（4 个半音）与小三度（3 个半音）只差一个半音，差别却在“明亮/柔和”的色彩上；用同一根音分别听 C–E 与 C–E\flatsym。
+  \item 最后练不协和：大二度、小七度、三全音；不要急着判“错”，先听它需不需要解决。
+\end{enumerate}
+
+唱音程时，上行用“根音→目标音”的首调/固定唱名都可以，但必须每次从同一个根音出发；下行则反过来。旋律音程（两个音先后出现）比和声音程（同时出现）更容易分辨，练习先从旋律音程开始，再练和声。
+
+\subsection{在夜半里怎么做}
+
+\begin{enumerate}
+  \item 打开钢琴卷帘（\texttt{P}/\texttt{F7}），在 C4 行写一个音；再在 E4 行写一个音。卷帘相邻一行是半音，所以两行的行距就是半音数：C4 到 E4 是 4 行。
+  \item 要听旋律音程，把两个音错开时间；要听和声音程，把两个音放在同一拍。按 \texttt{Space} 播放，先判断“协和/不协和”，再看行距核对度数。
+  \item 选中上方音，用 \texttt{↓} 或 \texttt{Shift+↓} 移调；每移一个半音，音程性质可能从大变小、从纯变增/减。用这个方法把 C4–E4 依次变成 C4–E\flatsym4（小三度）、C4–F4（纯四度），听差别。
+  \item 做转位：选中下方音 C4，按 \texttt{Shift+↑} 升八度到 C5，原来的 C4–E4 就变成 E4–C5（小六度）；行距从 4 行变成 8 行，验证“度数相加为 9”。
+  \item 需要更细的听辨时，用 A4=440 Hz 作参照，把目标音与 A4 比较；不要在没校准速度/监听的情况下凭记忆判断。
+\end{enumerate}
+
+\screenshot{piano-roll-interval-two-notes}{卷帘上的两个音与音程行距}
+
+\textbf{范围说明：}夜半当前没有自动“音程识别/听辨评分”工具；本章的听辨靠人耳 + 卷帘行距核对，不描述一个不存在的分析按钮。若后续加入，会在此节补入口。
+
+\subsection{练习}
+
+\begin{enumerate}
+  \item C4–G4 是几度、几个半音？性质是什么？\\
+  \emph{答案：}五度，7 个半音，纯五度。
+  \item C4–A4 与 C4–A\flatsym4 相差几个半音？各是什么音程？\\
+  \emph{答案：}相差 1 个半音；C4–A4 是大六度（9 半音），C4–A\flatsym4 是小六度（8 半音）。
+  \item 大三度转位后是什么音程？半音数如何变化？\\
+  \emph{答案：}小六度；4 个半音变为 8 个半音。
+  \item 为什么增四度和减五度听起来一样，写谱却不能随便互换？\\
+  \emph{答案：}十二平均律里它们是等音（都是 6 个半音），但谱面功能与解决方向不同；写错会改变和声含义。
+  \item 在夜半里写 C4–E4，听和声音程；再把 E4 降到 E\flatsym4，听大小三度的色彩差别。\\
+  \emph{提示：}先对准 C4 与 E4 两行，确认行距 4；降一个半音后行距变 3。
+\end{enumerate}
+
+\subsection{帮助主题映射}
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{0.30\linewidth}p{0.48\linewidth}p{0.16\linewidth}}
+\toprule
+本章小节 & 应用内帮助锚点 & 备注 \\
+\midrule
+\endhead
+半音与音程距离 & \texttt{music-theory-semitone-distance} & 图 3-1 \\
+度数与性质 & \texttt{music-theory-interval-quantity-quality} & 表 3-1 \\
+协和与不协和 & \texttt{music-theory-consonance-dissonance} & 概念 \\
+转位与等音 & \texttt{music-theory-inversion-enharmonic} & 图 3-2 \\
+听辨与唱音程 & \texttt{music-theory-interval-ear-training} & 练习方法 \\
+在夜半里怎么做 & \texttt{music-theory-piano-roll-intervals} & 操作 \\
+练习 & \texttt{music-theory-ch3-practice} & 答案在章末 \\
+\bottomrule
+\end{longtable}
+\end{center}

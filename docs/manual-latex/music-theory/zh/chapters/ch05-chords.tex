@@ -1,0 +1,212 @@
+\clearpage
+\chapter{和弦}
+\label{sec:chords}
+
+\subsection*{学完这一章能做什么}
+\begin{itemize}
+  \item 听/看三个音就能判断它是不是三和弦，并说出根音、三音、五音。
+  \item 分清大三、小三、减三、增三与常见七和弦，写出它们的半音公式与和弦标记。
+  \item 用转位与斜杠记号改变低音，让和声连接更平滑。
+  \item 在夜半的钢琴卷帘里叠出和弦、听出根音位置，并看懂和弦轨的试听与边界。
+\end{itemize}
+
+\subsection{和弦：三个以上的音组成一个功能单位}
+
+和弦（chord）不是“随便几个音同时响”，而是以一个根音（root）为核心、按一定音程叠起来的一组音。最常见的是三和弦（triad）：根音、三音、五音三个音。三音决定大/小，五音决定纯/减/增；根音决定这个和弦在调里的功能。
+
+写和弦时先定根音，再按半音往上数。以 C 为根音：
+
+\[
+\mathrm{C4 \xrightarrow{+4} E4 \xrightarrow{+3} G4}
+\]
+
+C–E 是大三度（4 个半音），E–G 是小三度（3 个半音），合起来 C–E–G 就是大三和弦。若把三音降一个半音，C–E\flatsym–G 就是小三和弦；三音、五音都变，性质也跟着变。
+
+\subsection{四种三和弦}
+
+\begin{center}
+\small
+\begin{tabular}{p{0.16\linewidth}p{0.27\linewidth}p{0.31\linewidth}p{0.15\linewidth}}
+\toprule
+类型 & 半音公式（从根音） & 以 C 为根音 & 听感 \\
+\midrule
+大三和弦 & 0, 4, 7 & C E G & 明亮、稳定 \\
+小三和弦 & 0, 3, 7 & C E\flatsym{} G & 柔和、内敛 \\
+减三和弦 & 0, 3, 6 & C E\flatsym{} G\flatsym & 紧张、不稳定 \\
+增三和弦 & 0, 4, 8 & C E G\sharpsym & 悬浮、对称 \\
+\bottomrule
+\end{tabular}
+
+表 5-1：四种三和弦。公式里的 0 是根音，后两个数是三音、五音相对根音的半音数。
+\end{center}
+
+减三和弦的三音与五音都偏低，增三和弦的五音偏高；两者都不属于“稳定协和”的底色，常用来制造过渡或色彩。大、小三和弦则是绝大多数流行、摇滚、爵士和声的骨架。
+
+\begin{center}
+\begin{minipage}{\linewidth}
+\centering
+\begin{tikzpicture}[x=2.8cm,y=0.48cm,font=\scriptsize]
+  \foreach \y in {0,3,4,7} {\draw[gray!45] (-0.2,\y) -- (3.2,\y);}
+  \foreach \y/\lab in {0/C4,3/E\flatsym4 (+3),4/E4 (+4),7/G4 (+7)} {
+    \node[left,font=\tiny] at (0,\y) {\lab};
+  }
+  \foreach \x/\lab in {1.0/大三和弦,2.5/小三和弦} {
+    \draw[gray] (\x,-0.3) -- (\x,7.4);
+    \node[above=3pt,font=\tiny] at (\x,7.4) {\lab};
+  }
+  \foreach \y in {0,4,7} {\fill (1.0,\y) circle (2.2pt);}
+  \foreach \y in {0,3,7} {\fill (2.5,\y) circle (2.2pt);}
+\end{tikzpicture}
+
+\small 图 5-1：C 大三和弦与小三和弦的叠置。竖线位置是相对根音的半音高度；大三和弦的三音在 +4，小三和弦的三音在 +3，五音都在 +7。
+\end{minipage}
+\end{center}
+
+\subsection{七和弦：在三和弦上再加一个三音}
+
+七和弦（seventh chord）是在三和弦上再叠一个七音。它不是“三和弦加任意音”，七音与根音的关系决定和弦的性质。常用的五种：
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.19\linewidth}p{0.24\linewidth}p{0.35\linewidth}p{0.15\linewidth}}
+\toprule
+类型 & 半音公式 & 以 C 为根音 & 标记 \\
+\midrule
+属七和弦 & 0, 4, 7, 10 & C E G B\flatsym & C7 \\
+大七和弦 & 0, 4, 7, 11 & C E G B & Cmaj7 \\
+小七和弦 & 0, 3, 7, 10 & C E\flatsym{} G B\flatsym & Cm7 \\
+半减七和弦 & 0, 3, 6, 10 & C E\flatsym{} G\flatsym{} B\flatsym & Cm7\flatsym5 \\
+减七和弦 & 0, 3, 6, 9 & C E\flatsym{} G\flatsym{} B\flatsym{}\flatsym（等音 A） & Cdim7 \\
+\bottomrule
+\end{tabular}
+
+表 5-2：五种常用七和弦。属七的七音比大七低一个半音，这是 C7 与 Cmaj7 最直接的差别。
+\end{center}
+
+属七和弦（dominant seventh）的 \(0,4,7,10\) 是功能和声里最常用的“紧张—解决”单元：它带着一个倾向主音的三音和一个倾向三音的七音，所以 V7 → I 听起来最顺。大七和弦把七音升高到 11，听感更“亮、悬浮”；小七和弦把三音降下来，常用于小调与爵士；半减七与减七则更不稳定。
+
+\subsection{转位与低音}
+
+同一个和弦，把最低音换掉，就叫转位（inversion）。以 C 大三和弦为例：
+
+\begin{itemize}
+  \item 原位（root position）：C–E–G，低音是根音 C，标记 \texttt{C}。
+  \item 第一转位：E–G–C，低音是三音 E，标记 \texttt{C/E}。
+  \item 第二转位：G–C–E，低音是五音 G，标记 \texttt{C/G}。
+\end{itemize}
+
+转位不改变和弦的“音集”，只改变低音与声部排列。它最实用的价值是让低音线更平滑：C → F 时，如果 F 和弦用原位 F–A–C，低音从 C 跳到 F；若用 F 的第一转位 A–C–F，低音从 C 走到 A，跳动更小。实际编配时，先看低音要不要级进，再决定用原位还是转位。
+
+\begin{center}
+\begin{minipage}{\linewidth}
+\centering
+\begin{tikzpicture}[x=1.25cm,y=0.38cm,font=\scriptsize]
+  \foreach \x in {0,4,8} {\draw[gray] (\x,-0.5) -- (\x,16.5);}
+  \foreach \y/\n in {0/C4,4/E4,7/G4} {
+    \draw[thick] (0,\y) -- (0.75,\y);
+    \node[left=2pt] at (0,\y) {\n};
+  }
+  \foreach \y/\n in {4/E4,7/G4,12/C5} {
+    \draw[thick] (4,\y) -- (4.75,\y);
+    \node[left=2pt] at (4,\y) {\n};
+  }
+  \foreach \y/\n in {7/G4,12/C5,16/E5} {
+    \draw[thick] (8,\y) -- (8.75,\y);
+    \node[left=2pt] at (8,\y) {\n};
+  }
+  \node[below=4pt,font=\tiny] at (0,-0.5) {低音 C};
+  \node[below=4pt,font=\tiny] at (4,-0.5) {低音 E};
+  \node[below=4pt,font=\tiny] at (8,-0.5) {低音 G};
+  \node[above=6pt,font=\tiny] at (0,16.5) {C};
+  \node[above=6pt,font=\tiny] at (4,16.5) {C/E};
+  \node[above=6pt,font=\tiny] at (8,16.5) {C/G};
+\end{tikzpicture}
+
+\small 图 5-2：C 大三和弦的原位、第一转位、第二转位。三列的音集相同，最低音分别落在 C、E、G；斜杠记号把低音写在和弦名后面。
+\end{minipage}
+\end{center}
+
+\subsection{和弦标记：从字母到罗马数字}
+
+流行/爵士谱用字母和弦标记：根音字母 + 性质后缀。常用写法：
+
+\begin{itemize}
+  \item \texttt{C} 大三和弦；\texttt{Cm} 小三和弦；\texttt{Cdim} 减三；\texttt{Caug} 增三。
+  \item \texttt{C7} 属七；\texttt{Cmaj7} 大七；\texttt{Cm7} 小七；\texttt{Cm7\flatsym5} 半减七；\texttt{Cdim7} 减七。
+  \item 斜杠后的字母是低音，如 \texttt{C/E}、\texttt{C/G}；它不改变和弦性质，只改变转位。
+  \item 扩展音 9、11、13 写在性质后，如 \texttt{Cm9}、\texttt{Fm11}；它们是在七和弦上继续叠音，具体听感取决于排列与语境。
+\end{itemize}
+
+功能分析用罗马数字：大调里 I、ii、iii、IV、V、vi、vii°；小调里 i、ii°、III、iv、v/V、VI、vii°。以 C 大调为例：I = C，ii = Dm，iii = Em，IV = F，V = G，vi = Am，vii° = Bdim。罗马数字让你一眼看出“这是主、属还是下属”，比死记和弦名更有用。
+
+\subsection{常用进行与声部连接}
+
+三个最值得先练的进行：
+
+\begin{itemize}
+  \item \textbf{I–V–vi–IV}（C–G–Am–F）：流行歌最常用的循环之一，主—属—下中音—下属，情绪从稳定到明亮再回到柔和。
+  \item \textbf{ii–V–I}（Dm–G–C）：爵士与功能和的骨架；ii 先准备，V 制造紧张，I 解决。小调里常写成 ii°–V–i 或 ii–V–i。
+  \item \textbf{i–VI–iv–V}（Cm–A\flatsym–Fm–G）：小调的史诗/流行走向，夜半和弦轨的示例正是这一组（Cm9、A\flatsym Maj7、Fm11、G7\sharpsym9、Cm11）。
+\end{itemize}
+
+连接时先守着两条：能不动就不动（共同音保留），必须动就就近动（尽量小跳）。这就是声部连接（voice leading）。例如 C → Am，C 和弦的 E、G 可以留在 Am 的 E、G 上，只把 C 换成 A；C → F 时，共同音 C 保留，E 移到 F、G 移到 A，低音 C 移到 F。不要让所有声部同时大跳。
+
+低音区要特别小心：把根音和五音放在低音区能稳住和声，但不要把三音也塞到很低的位置，否则低频会浑浊；三音、七音、扩展音更适合放在中高音区。具体频率下限没有唯一标准，以监听不糊、低频不打架为准。
+
+\subsection{在夜半里怎么做}
+
+\begin{enumerate}
+  \item 在编曲区菜单里选“显示 / 隐藏和弦轨”（或点轨道头上方的“和弦展开”开关），编曲区会出现一条全局和弦轨。
+  \item 和弦轨是演示用的固定五块：\texttt{Cm9}（i9）、\texttt{AbMaj7}（VI7）、\texttt{Fm11}（iv11）、\texttt{G7\sharpsym9}（V7\sharpsym9）、\texttt{Cm11}（i11）。点任意一块会向引擎发 NoteOn/Off 试听，不是播放整个工程。
+  \item 要写自己的和弦，打开钢琴卷帘（\texttt{P}/\texttt{F7}），在同一个拍点把根音、三音、五音放在相邻行距对应的行上。以 C 大三和弦为例：C4 行、E4 行（+4）、G4 行（+7）；小三和弦把 E4 换成 E\flatsym4（+3）。
+  \item 写第一转位：把最低的 C4 用 \texttt{Shift+↑} 升高一个八度到 C5，音符变成 E4–G4–C5；听低音从 C 变成 E。第二转位同理，把 E4 再升八度，得到 G4–C5–E5。
+  \item 用 \texttt{Space} 播放，先只听低音，再听三音/五音；要对比原位与转位，复制同一小节，只改最低音，其他音保持不动。
+  \item 写进行时按小节分块：第 1 小节 C，第 2 小节 G，第 3 小节 Am，第 4 小节 F；每块先用原位，再试把 F 改成 F/A 或 C/E，听低音线是否更顺。
+\end{enumerate}
+
+\screenshot{piano-roll-c-major-triad}{C 大三和弦在卷帘中的叠置}
+
+\textbf{范围说明：}夜半当前没有和弦识别、和弦轨编辑或“按和弦名自动铺音”的功能；和弦轨的五块是固定演示数据，试听走引擎 NoteOn/Off。试听解析只覆盖三和弦与常见七和弦（大三/小三/减/增、属七/大七/小七/半减七/减七、sus）；\texttt{Cm9}、\texttt{Fm11}、\texttt{Cm11} 这类带 9/11 的标签实际只按基础三和弦发，\texttt{G7\sharpsym9} 只按属七发，扩展音不会自动加入。要听扩展音，需在卷帘里自己叠音；不要把标签当成完整和弦数据。
+
+\subsection{练习}
+
+\begin{enumerate}
+  \item 写出 C 大三和弦的三个音与相邻半音数；它为什么不是 C–E–A？\\
+  \emph{答案：}C E G；C–E 4 个半音，E–G 3 个半音；C–E–A 的 A 是六音，不是三和弦的五音。
+
+  \item 写出 A 小三和弦；它的第一转位低音是谁、斜杠标记怎么写？\\
+  \emph{答案：}A C E；第一转位是 C E A，低音 C，标记 Am/C。
+
+  \item C7 与 Cmaj7 相差几个半音？差在哪个音？\\
+  \emph{答案：}相差 1 个半音；C7 的七音是 B\flatsym（10），Cmaj7 的七音是 B（11）。
+
+  \item 在 C 大调写出 ii–V–I 的三个和弦与罗马数字；V 到 I 时哪个音最容易保留？\\
+  \emph{答案：}Dm–G–C；ii–V–I；G 的根音 G 同时是 C 的五音，可以保留；G 的三音 B 到 C 的根音 C 只差半音，G 的五音 D 到 C 的三音 E 差一个全音。
+
+  \item 在夜半里叠出 C/E（E4–G4–C5），再与 C 原位（C4–E4–G4）对比；听到的低音变化是什么？\\
+  \emph{提示：}先确认 C4 行、E4 行、G4 行；把 C4 用 \texttt{Shift+↑} 移到 C5，最低音变成 E4；低音从 C 变成 E，和弦音集仍是 C、E、G。
+\end{enumerate}
+
+\subsection{帮助主题映射}
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{0.34\linewidth}p{0.45\linewidth}p{0.15\linewidth}}
+\toprule
+本章小节 & 应用内帮助锚点 & 备注 \\
+\midrule
+\endhead
+和弦与根音 & \texttt{music-theory-chord-root} & 概念 \\
+四种三和弦 & \texttt{music-theory-triads} & 表 5-1 \\
+七和弦 & \texttt{music-theory-sevenths} & 表 5-2 \\
+转位与低音 & \texttt{music-theory-chord-inversion} & 图 5-2 \\
+和弦标记 & \texttt{music-theory-chord-symbols} & 记号 \\
+常用进行 & \texttt{music-theory-progressions} & 功能 \\
+声部连接与低频 & \texttt{music-theory-voice-leading} & 编配 \\
+在夜半里怎么做 & \texttt{music-theory-piano-roll-chords} & 操作 \\
+练习 & \texttt{music-theory-ch5-practice} & 答案在章末 \\
+\bottomrule
+\end{longtable}
+\end{center}
