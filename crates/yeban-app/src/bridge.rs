@@ -6021,6 +6021,9 @@ impl ViewState {
     /// 可能被点到的音符"就是这批。若在择优**之后**才丢，别的轨在同一个 x/y 上的音符
     /// （纵向只有 16 条泳道、音高要折叠）就会遮住正在编辑的这颗：命中返回它的下标 →
     /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
+    /// 纵向先按 `base_pitch..=base_pitch + PITCH_LANE_COUNT - 1` 裁掉窗口外音高
+    /// （与 [`Self::visible_notes_scoped`] 的 `pitch_range` 同一口径），再做矩形命中：
+    /// 否则 `pitch_lane_with_base` 会把窗口外音高钳到顶/底边道，抢走可见音符的命中。
     /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
     #[must_use]
     #[allow(clippy::too_many_arguments)]
@@ -6035,9 +6038,16 @@ impl ViewState {
         base_pitch: u8,
     ) -> Option<usize> {
         let left_edge = scroll_x.max(0.0);
+        // 纵向窗口与 `visible_notes_scoped` / 全选同一口径：窗口外音高会被
+        // `pitch_lane_with_base` 钳到顶/底边道，若不先裁掉，它会在择优时
+        // 覆盖同行的可见音符，宿主随后再丢弃 ⇒ 点击被静默吞掉。
+        let (min_pitch, max_pitch) = visible_pitch_range_for(base_pitch, PITCH_LANE_COUNT);
         let mut hit: Option<usize> = None;
         for index in self.notes_visible_in(scroll_x, viewport_width) {
             let note = &self.notes[index];
+            if note.pitch < min_pitch || note.pitch > max_pitch {
+                continue;
+            }
             // 作用域过滤发生在**择优之前**（与 [`Self::visible_notes_scoped`] 同一口径）。
             if clip_scope.is_some_and(|scope| note.clip_id.as_str() != scope) {
                 continue;
