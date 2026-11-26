@@ -760,6 +760,18 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "moveDevice",
+                "在目标音轨的设备链内原子移动一台设备（fromSlot/toSlot 都是移动前的槽位下标）",
+                &["kind", "trackId", "fromSlot", "toSlot"],
+                json!({
+                    "kind": kind("moveDevice"),
+                    "trackId": id("目标音轨身份"),
+                    "fromSlot": uint("移动前的槽位下标"),
+                    "toSlot": uint("移动后的槽位下标（必须 < 设备链长度）"),
+                }),
+                true,
+            ),
+            op(
                 "setParam",
                 "写**静态**参数: `lane:\"TrackVolume\"` (dB) / `lane:\"TrackPan\"` (-1.0..=1.0) / `lane:\"DeviceParam\"` (另需 `slotIndex` + `paramIndex`, 或 `slotIndex` + `paramName` 按名寻址)。目标音轨缺省是工具顶层的 `trackId`, 也可逐条点名另一条音轨; 设备参数的 `value` 必须是离线渲染器真的消费的参数 (名字不在白名单 ⇒ `paramNotSupported`, ⛔ 不静默写入)。本形态的多余键被静默忽略 (与其余形态不同)",
                 &["kind", "lane", "value"],

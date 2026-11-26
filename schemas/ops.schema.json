@@ -422,6 +422,16 @@
         },
         {
           "required": [
+            "MoveDevice"
+          ],
+          "properties": {
+            "MoveDevice": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetParam"
           ],
           "properties": {

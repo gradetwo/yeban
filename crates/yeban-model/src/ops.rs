@@ -177,7 +177,7 @@ pub enum Op {
     },
     /// 平移音符（tick 与音高增量）。
     ///
-    /// ⚠ **本变体是全集里唯一的相对变换**：载荷是**增量**（`delta_*`）而不是旧值，
+    /// ⚠ **本变体是相对变换之一**（另一条是 [`Op::MoveDevice`]）：载荷是**增量**（`delta_*`）而不是旧值，
     /// 因此前置条件**无法**判定"这一遍是不是重复施加" —— 同一 `MoveNote` 连续施加两次
     /// 会把增量**再加一次**（对比 [`Op::MoveClipPlacement`]：那个携带 `old_start_tick`
     /// 与 `new_start_tick`，第二遍必然被前置条件拒绝）。
@@ -883,6 +883,19 @@ pub enum Op {
         /// 移除前的完整设备。
         previous_device: DeviceDefinition,
     },
+    /// 在设备链内**原子移动**一台设备（效果链排序）。
+    ///
+    /// ⚠ `from_slot` / `to_slot` 都是**移动前**链内的下标，均须 `< devices.len()`，
+    /// 否则响亮拒绝（越界不夹紧）。求逆只需交换两个下标，不需携带设备载荷
+    /// ⇒ 撤销精确且幂等（同一条重放要么被前置条件拒、要么回到同一位置）。
+    MoveDevice {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 移动前下标。
+        from_slot: usize,
+        /// 移动后下标。
+        to_slot: usize,
+    },
     /// 设置参数值。
     ///
     /// 目标为 [`AutomationTarget::SendGain`] 时**拒绝**：发送增益必须走
@@ -1556,6 +1569,7 @@ impl Op {
             Self::SetRoutingGain { .. } => "SetRoutingGain",
             Self::InsertDevice { .. } => "InsertDevice",
             Self::RemoveDevice { .. } => "RemoveDevice",
+            Self::MoveDevice { .. } => "MoveDevice",
             Self::SetDeviceName { .. } => "SetDeviceName",
             Self::SetDeviceBypassed { .. } => "SetDeviceBypassed",
             Self::SetParam { .. } => "SetParam",
@@ -2328,6 +2342,20 @@ impl Op {
                         })?;
                 if current != previous_device {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::MoveDevice {
+                track_id,
+                from_slot,
+                to_slot,
+            } => {
+                let track = doc.track(track_id)?;
+                let len = track.devices.len();
+                for index in [*from_slot, *to_slot] {
+                    if index >= len {
+                        return Err(ModelError::DeviceSlotOutOfRange { index, len });
+                    }
                 }
                 Ok(())
             }
@@ -3187,6 +3215,16 @@ impl Op {
                 slot_index: *slot_index,
                 device: previous_device.clone(),
             },
+            // ⭐ 精确求逆：交换两个下标即可，⛔ 不携带设备载荷。
+            Self::MoveDevice {
+                track_id,
+                from_slot,
+                to_slot,
+            } => Self::MoveDevice {
+                track_id: *track_id,
+                from_slot: *to_slot,
+                to_slot: *from_slot,
+            },
             Self::SetParam {
                 target,
                 old_val,
@@ -3900,6 +3938,16 @@ impl Op {
                 doc.track_mut(track_id)?.devices.remove(*slot_index);
                 Ok(())
             }
+            Self::MoveDevice {
+                track_id,
+                from_slot,
+                to_slot,
+            } => {
+                let devices = &mut doc.track_mut(track_id)?.devices;
+                let moved = devices.remove(*from_slot);
+                devices.insert(*to_slot, moved);
+                Ok(())
+            }
             Self::SetParam {
                 target, new_val, ..
             } => write_param(doc, *target, *new_val),
@@ -4521,6 +4569,22 @@ mod tests {
         crate::ids::AssetHash::of_bytes(b"kick-corrected")
     }
 
+    /// ⭐ T-FIX-711：bass 夹具设备的唯一定义（fixture_document 与 showcase 共用）。
+    fn fixture_bass_devices() -> Vec<DeviceDefinition> {
+        vec![
+            DeviceDefinition {
+                id: fixture_id(41),
+                name: "Bass EQ".to_owned(),
+                ..DeviceDefinition::default()
+            },
+            DeviceDefinition {
+                id: fixture_id(42),
+                name: "Bass Comp".to_owned(),
+                ..DeviceDefinition::default()
+            },
+        ]
+    }
+
     fn fixture_document() -> YebanProjectV1 {
         let f = fixture();
         let mut lead = TrackV3 {
@@ -4610,6 +4674,9 @@ mod tests {
                         id: f.bass,
                         name: "Bass".to_owned(),
                         kind: TrackKind::Audio,
+                        // ⭐ T-FIX-711：夹具里的 bass 链有两台设备，使 MoveDevice 的
+                        // showcase 实例能在**全新**文档上单独施加（逐变体判据的前提）。
+                        devices: fixture_bass_devices(),
                         ..TrackV3::default()
                     },
                 ),
@@ -4939,6 +5006,7 @@ mod tests {
                     id: f.bass,
                     name: "Bass".to_owned(),
                     kind: TrackKind::Audio,
+                    devices: fixture_bass_devices(),
                     ..TrackV3::default()
                 },
             },
@@ -4994,6 +5062,11 @@ mod tests {
                 track_id: f.bass,
                 slot_index: 0,
                 device: new_device.clone(),
+            },
+            Op::MoveDevice {
+                track_id: f.bass,
+                from_slot: 0,
+                to_slot: 1,
             },
             Op::RemoveDevice {
                 track_id: f.lead,
@@ -5408,6 +5481,7 @@ mod tests {
             "SetRoutingGain",
             "InsertDevice",
             "RemoveDevice",
+            "MoveDevice",
             "SetParam",
             "SetTrackMute",
             "SetTrackSolo",
@@ -6503,6 +6577,62 @@ mod tests {
         );
     }
 
+    /// ⭐ T-FIX-711 判据①：一条 `MoveDevice` 把 [EQ, COMP] 变成 [COMP, EQ]，
+    /// 一次求逆应用回到原文档（逐字节），⛔ 不需要 remove+insert 两步。
+    #[test]
+    fn move_device_reorders_in_one_op_and_one_inverse_restores_it() {
+        let mut doc = fixture_document();
+        let before = doc.clone();
+        let bass = fixture().bass;
+        assert_eq!(
+            doc.track(&bass)
+                .expect("bass")
+                .devices
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Bass EQ", "Bass Comp"]
+        );
+        let op = Op::MoveDevice {
+            track_id: bass,
+            from_slot: 0,
+            to_slot: 1,
+        };
+        op.apply(&mut doc).expect("一次移动");
+        assert_eq!(
+            doc.track(&bass)
+                .expect("bass")
+                .devices
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Bass Comp", "Bass EQ"]
+        );
+        let inverse = op.invert(&doc).expect("精确求逆");
+        inverse.apply(&mut doc).expect("逆操作应用");
+        assert_eq!(doc, before, "一次撤销回到原序（逐字节）");
+    }
+
+    /// ⭐ T-FIX-711 判据②：`from` / `to` 越界一律响亮拒绝，且文档不变。
+    #[test]
+    fn move_device_out_of_range_is_rejected_and_leaves_document_unchanged() {
+        let mut doc = fixture_document();
+        let before = doc.clone();
+        for (from, to) in [(0, 2), (2, 1), (9, 0), (0, 9)] {
+            let op = Op::MoveDevice {
+                track_id: fixture().bass,
+                from_slot: from,
+                to_slot: to,
+            };
+            let err = op.apply(&mut doc).expect_err("越界必须拒绝");
+            assert!(
+                matches!(err, ModelError::DeviceSlotOutOfRange { .. }),
+                "越界错误必须是 DeviceSlotOutOfRange: {err:?}"
+            );
+            assert_eq!(doc, before, "越界拒绝后文档必须逐字节不变");
+        }
+    }
+
     #[test]
     fn every_variant_applies_and_inverts_exactly() {
         let mut doc = fixture_document();
@@ -6541,15 +6671,17 @@ mod tests {
     /// | 类 | 行为 | 期望 |
     /// | :--- | :--- | :--- |
     /// | 值变换（绝大多数） | 第二遍被前置条件拒绝（`Err`） | 文档与第一遍之后**逐字节相同** |
-    /// | 相对变换（[`Op::MoveNote`]） | 第二遍被接受，增量**再加一次** | 必须在登记表里，且差值恰好是那一个增量 |
+    /// | 相对变换（[`Op::MoveNote`] / [`Op::MoveDevice`]） | 第二遍被接受，状态**再动一次** | 必须在登记表里 |
     /// | 其它 | —— | 红 |
     ///
     /// 登记表是双向的：漏登记（观察到的"被接受"不在表里）与多登记（表里的名字没被接受）
     /// 都会让判据变红。因此谁把某个变体从相对改成绝对值（或反之），都必须同步改这张表。
     #[test]
     fn re_applying_the_same_op_is_rejected_and_leaves_the_document_byte_identical() {
-        /// 集合里**唯一**的相对变换（见 [`Op::MoveNote`] 的文档）。
-        const RELATIVE_TRANSFORMS: [&str; 1] = ["MoveNote"];
+        /// 相对变换登记表（见 [`Op::MoveNote`] / [`Op::MoveDevice`] 的文档）：
+        /// `MoveNote` 的载荷是增量，第二遍再加一次；`MoveDevice` 的 `from/to` 是
+        /// **移动前**下标，同一条重放会再交换一次（回到原位）——两者都不许盲目重试。
+        const RELATIVE_TRANSFORMS: [&str; 2] = ["MoveDevice", "MoveNote"];
 
         let all_ops = showcase_ops();
         let mut accepted_second_apply: std::collections::BTreeSet<&'static str> =
@@ -11209,7 +11341,7 @@ mod tests {
     /// ⛔ 不手抄数字（第 44 条）。
     ///
     /// ⚠ 本判据**不复用** `re_applying_...` 的 `RELATIVE_TRANSFORMS` 例外表：
-    /// `MoveNote` 是唯一的**相对**变换（载荷是增量），它的"第二遍被接受"是**已知且已登记**
+    /// `MoveNote`（增量）与 `MoveDevice`（移动前下标）是**相对**变换，它的"第二遍被接受"是**已知且已登记**
     /// 的行为，而**往返**（正一遍 + 逆一遍）对它仍然必须逐字节回原位 —— 这正是本判据要判的。
     #[test]
     fn every_op_variant_round_trips_byte_for_byte_or_is_explicitly_not_applicable() {
@@ -11679,7 +11811,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 67] = [
+        const FROZEN: [(&str, &[&str]); 68] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -11693,6 +11825,7 @@ mod tests {
             ("ModifyNoteVelocity", &["clip_pool"]),
             ("MoveClipPlacement", &["tracks"]),
             ("MoveClipPlacementToTrack", &["tracks"]),
+            ("MoveDevice", &["tracks"]),
             ("MoveNote", &["clip_pool"]),
             ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &["assets"]),
@@ -11956,7 +12089,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 67] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 68] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -11970,6 +12103,7 @@ mod tests {
             ("ModifyNoteVelocity", &["velocity"]),
             ("MoveClipPlacement", &["start_tick"]),
             ("MoveClipPlacementToTrack", &[]),
+            ("MoveDevice", &["id", "name"]),
             ("MoveNote", &["pitch", "start_tick"]),
             ("MoveTrack", &["track_order"]),
             ("RemoveAsset", &[]),

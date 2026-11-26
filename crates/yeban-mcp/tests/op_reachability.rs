@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 64] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 65] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -121,6 +121,7 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 64] = [
     ("SetRoutingGain", &["domain/notes.rs"]),
     ("InsertDevice", &["domain/notes.rs"]),
     ("RemoveDevice", &["domain/notes.rs"]),
+    ("MoveDevice", &["domain/notes.rs"]),
     ("SetParam", &["domain/notes.rs"]),
     ("SetTrackMute", &["domain/notes.rs"]),
     ("SetTrackSolo", &["domain/notes.rs"]),
@@ -487,9 +488,9 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        64,
-        "登记表有 64 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
-         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59；OTCP 音高校正线加 `SetClipAsset` 一条（构造点 `domain/otcp.rs`）⇒ 59 → 60；本票加 `SetLyrics` 一条（构造点 `domain/notes.rs`）⇒ 60 → 61；本票加 `SetTrackTune` 一条（构造点 `domain/notes.rs`）⇒ 61 → 62；逐件处理线期 2 加 `SetTrackLaneChains` 一条（构造点 `domain/mod.rs`）⇒ 62 → 63；宏映射写路径加 `SetMacroMappings` 一条（构造点 `domain/macros.rs`，T-FIX-93 同批）⇒ 63 → 64）"
+        65,
+        "登记表有 65 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59；OTCP 音高校正线加 `SetClipAsset` 一条（构造点 `domain/otcp.rs`）⇒ 59 → 60；本票加 `SetLyrics` 一条（构造点 `domain/notes.rs`）⇒ 60 → 61；本票加 `SetTrackTune` 一条（构造点 `domain/notes.rs`）⇒ 61 → 62；逐件处理线期 2 加 `SetTrackLaneChains` 一条（构造点 `domain/mod.rs`）⇒ 62 → 63；宏映射写路径加 `SetMacroMappings` 一条（构造点 `domain/macros.rs`，T-FIX-93 同批）⇒ 63 → 64；T-FIX-711 加 `MoveDevice` 一条（构造点 `domain/notes.rs`）⇒ 64 → 65）"
     );
 }
 

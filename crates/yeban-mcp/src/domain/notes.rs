@@ -747,7 +747,7 @@
 //!
 //! | 情形 | 结果 |
 //! | :--- | :--- |
-//! | 操作对象里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownInsertDeviceField` / `unknownRemoveDeviceField`） |
+//! | 操作对象里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownInsertDeviceField` / `unknownRemoveDeviceField` / `unknownMoveDeviceField`） |
 //! | `device` 里有支持集合之外的键（含 snake_case 拼写） | `INVALID_PARAMETER_RANGE`（`unknownDeviceField`） |
 //! | `device.params[]` 里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownDeviceParamField`） |
 //! | ⭐ `device.params[].name` 与某个已识别拼写只差 ≤ 2 个字符（拼错） | `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议 — #175） |
@@ -1434,6 +1434,7 @@ pub const OP_KINDS: &[&str] = &[
     REMOVE_TRACK_KIND,
     INSERT_DEVICE_KIND,
     REMOVE_DEVICE_KIND,
+    MOVE_DEVICE_KIND,
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
@@ -3041,6 +3042,9 @@ pub const INSERT_DEVICE_KIND: &str = "insertDevice";
 /// `ops[].kind` 的**取走设备**形态名（写 [`Op::RemoveDevice`]）。
 pub const REMOVE_DEVICE_KIND: &str = "removeDevice";
 
+/// `ops[].kind` 的**移动设备**形态名（写 [`Op::MoveDevice`]）。
+pub const MOVE_DEVICE_KIND: &str = "moveDevice";
+
 /// 设备形态的**目标音轨**字段名（`ops[].trackId`，可选）。
 ///
 /// ⭐ T-FIX-652：省略 = 回退到工具顶层 `trackId`（与 `setParam` / `setTrackMute`
@@ -3090,6 +3094,9 @@ pub const INSERT_DEVICE_FIELDS: [&str; 4] = [
 /// 被取走设备的旧状态**不在**这里：撤销载荷 `previous_device` 由 [`compile`] 从
 /// **当前文档**读。多写一个键是**响亮失败**，不静默丢弃。
 pub const REMOVE_DEVICE_FIELDS: [&str; 3] = ["kind", DEVICE_TRACK_FIELD, DEVICE_ID_FIELD];
+
+/// 移动设备形态允许出现的全部键：判别键 + 寻址键 + 移动前/后槽位键。
+pub const MOVE_DEVICE_FIELDS: [&str; 4] = ["kind", DEVICE_TRACK_FIELD, "fromSlot", "toSlot"];
 
 /// `device` 载荷对象允许出现的**全部**键（camelCase，与本 crate 的工具体一致）。
 ///
@@ -4593,6 +4600,18 @@ pub enum NoteOp {
         /// 被取走的设备身份。
         device_id: EntityId,
     },
+    /// 在设备链内**原子移动**一台设备（[`Op::MoveDevice`]）。
+    ///
+    /// `from_slot` / `to_slot` 都是**移动前**的槽位下标，越界由模型响亮拒绝。
+    /// 与 [`Self::RemoveDevice`] 一样自带音轨寻址，不读顶层 `trackId` / `clipId`。
+    MoveDevice {
+        /// 目标音轨身份（本形态自带寻址）。
+        track_id: EntityId,
+        /// 移动前的槽位下标。
+        from_slot: usize,
+        /// 移动后的槽位下标（必须 `<` 设备链长度）。
+        to_slot: usize,
+    },
 }
 
 impl NoteOp {
@@ -4658,6 +4677,7 @@ impl NoteOp {
             Self::RemoveTrack { .. } => REMOVE_TRACK_KIND,
             Self::InsertDevice { .. } => INSERT_DEVICE_KIND,
             Self::RemoveDevice { .. } => REMOVE_DEVICE_KIND,
+            Self::MoveDevice { .. } => MOVE_DEVICE_KIND,
         }
     }
 
@@ -4727,7 +4747,10 @@ impl NoteOp {
     /// 操作对象**自带**的 `trackId`）。
     #[must_use]
     pub const fn is_device_level(&self) -> bool {
-        matches!(self, Self::InsertDevice { .. } | Self::RemoveDevice { .. })
+        matches!(
+            self,
+            Self::InsertDevice { .. } | Self::RemoveDevice { .. } | Self::MoveDevice { .. }
+        )
     }
 
     /// 该形态的寻址**全部**在操作对象自己身上（不读工具顶层的 `trackId` / `clipId`）。
@@ -6207,6 +6230,14 @@ fn parse_one(item: &Value, index: usize) -> Result<NoteOp, Fault> {
                 device_id: read_id(object, DEVICE_ID_FIELD)?,
             })
         }
+        MOVE_DEVICE_KIND => {
+            reject_move_device_fields(object)?;
+            Ok(NoteOp::MoveDevice {
+                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                from_slot: read_usize(object, "fromSlot")?,
+                to_slot: read_usize(object, "toSlot")?,
+            })
+        }
         SET_ROUTING_GAIN_KIND => {
             reject_routing_gain_fields(object)?;
             Ok(NoteOp::SetRoutingGain {
@@ -7534,6 +7565,38 @@ fn reject_remove_device_fields(object: &Map<String, Value>) -> Result<(), Fault>
             "hint": "本形态只认 `kind` / `trackId` / `deviceId`; 设备身份取自 \
                      `yeban_query_engine_state` 的 `tracks[].devices[].deviceId`, \
                      撤销载荷 `previousDevice` 由服务端从当前文档读 (不接受调用方声明)",
+        }),
+    ))
+}
+
+/// 拒绝 `moveDevice` 操作对象里 [`MOVE_DEVICE_FIELDS`] 之外的键。
+///
+/// # Errors
+/// 出现 `kind` / `trackId` / `fromSlot` / `toSlot` 之外的键 ⇒ `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownMoveDeviceField"`）。
+fn reject_move_device_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !MOVE_DEVICE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{MOVE_DEVICE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {MOVE_DEVICE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownMoveDeviceField",
+            "unsupportedFields": unknown,
+            "supportedMoveDeviceFields": MOVE_DEVICE_FIELDS,
+            "hint": "本形态只认 `kind` / `trackId` / `fromSlot` / `toSlot`; 槽位来自 \
+                     `yeban_query_engine_state` 的 `tracks[].devices[].slotIndex`",
         }),
     ))
 }
@@ -12440,6 +12503,15 @@ fn compile_inner(
                     previous_device,
                 }
             }
+            NoteOp::MoveDevice {
+                track_id: target,
+                from_slot,
+                to_slot,
+            } => Op::MoveDevice {
+                track_id: *target,
+                from_slot: *from_slot,
+                to_slot: *to_slot,
+            },
         };
         // 最佳努力推进投影（见循环头的 G7 注释）：失败不报，模拟才是判据。
         let _ = compiled_op.apply(&mut project);
@@ -17344,7 +17416,7 @@ mod tests {
         // 本票（人性化 ROI）新增 velocityShapeClip / chordStaggerClip 两个 kind 后为 58 —— 同样与真实 `kind` 同步。
         // 本票新增 `setLyrics`（顶层文档字段，整体替换歌词时间轴）后为 59 —— 同样与真实 `kind` 同步。
         // 本票新增 `setTrackTune`（音轨属性，写 `tune_offset_cents`）后为 60 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 60);
+        assert_eq!(OP_KINDS.len(), 61);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(
             TrackFlag::NAMES,
@@ -17363,6 +17435,7 @@ mod tests {
         assert!(OP_KINDS.contains(&REMOVE_TRACK_KIND));
         assert!(OP_KINDS.contains(&INSERT_DEVICE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_DEVICE_KIND));
+        assert!(OP_KINDS.contains(&MOVE_DEVICE_KIND));
         assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
         assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
@@ -20891,7 +20964,8 @@ mod tests {
         .expect_err("`removeDevice` 多写 `device` 必须被拒");
         assert_eq!(
             lane_fault_data(&fault)["reason"],
-            "unknownRemoveDeviceField"
+            "unknownRemoveDeviceField",
+            "unknownMoveDeviceField"
         );
     }
 
@@ -24002,7 +24076,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 60] = [
+        let table: [(&str, serde_json::Value); 61] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -24089,6 +24163,10 @@ mod tests {
             (
                 "removeDevice",
                 serde_json::json!({"trackId": ulid, "deviceId": ulid}),
+            ),
+            (
+                "moveDevice",
+                serde_json::json!({"trackId": ulid, "fromSlot": 0, "toSlot": 1}),
             ),
             (
                 "setParam",
@@ -24261,6 +24339,7 @@ mod tests {
                 "removeTrack",
                 "insertDevice",
                 "removeDevice",
+                "moveDevice",
                 "setParam",
                 "setTrackMute",
                 "setTrackSolo",
@@ -24661,7 +24740,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 61] = [
+        let rows: [Row<'_>; 62] = [
             (
                 "add",
                 None,
@@ -24850,6 +24929,13 @@ mod tests {
                 None,
                 serde_json::json!({"trackId": device_track_id, "deviceId": device}),
                 "RemoveDevice",
+            ),
+            (
+                "moveDevice",
+                None,
+                None,
+                serde_json::json!({"trackId": device_track_id, "fromSlot": 0, "toSlot": 1}),
+                "MoveDevice",
             ),
             (
                 "setParam",
@@ -25321,7 +25407,8 @@ mod tests {
         // （产 `ModifyNoteVelocity` / `SetNoteExpression`，已有变体）⇒ 52 不变。
         // 本票的 `setLyrics`（独占 `SetLyrics` 变体）⇒ 52 → **53**。
         // 本票的 `setTrackTune`（独占 `SetTrackTune` 变体）⇒ 53 → **54**。
-        assert_eq!(seen.len(), 54);
+        // T-FIX-711 的 `moveDevice`（独占 `Op::MoveDevice` 变体）⇒ 54 → **55**。
+        assert_eq!(seen.len(), 55);
         // ⭐ `#179`：音符级分支集合**恰好是十五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
