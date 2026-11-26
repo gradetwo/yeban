@@ -1237,6 +1237,10 @@ pub struct OpenRequest {
     /// 新建工程时为空集。解码在 `plan` 的读盘阶段已完成
     /// （[`store::load_project`]），`apply` 只经 `SessionSeed` 装入会话。
     pub proposals: BTreeMap<EntityId, Proposal>,
+    /// 打开时发现的悬空音频资产哈希（T-FIX-500）：Audio 片段引用的哈希不在
+    /// `project.assets` 或容器 CAS 池里。保存会被拒绝；打开本身放行并回执警告，
+    /// 与 `yeban-app` 的 `AssetAudit`“打开即告警”口径一致。
+    pub missing_audio_assets: Vec<AssetHash>,
     /// **新建**工程或**内置样本物化**的落盘字节（目标路径不存在时才有值）。
     ///
     /// 为什么放在这里而不是在 [`apply_open`] 里现算：`plan` 是**只读**的
@@ -3483,6 +3487,9 @@ fn plan_sample(
     let digest = store::digest_of(json.as_bytes());
     let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let master_bus_track_id = project.master_bus_track_id;
+    let missing_audio_assets = store::missing_audio_assets(&project, &assets)
+        .into_iter()
+        .collect::<Vec<_>>();
     Ok(Plan::Open(Box::new(OpenRequest {
         path,
         read_only: false,
@@ -3492,6 +3499,7 @@ fn plan_sample(
         already_open: false,
         history: None,
         assets,
+        missing_audio_assets,
         embedded_presets: Vec::new(),
         proposals: BTreeMap::new(),
         created: Some(CreatedSeed {
@@ -3595,6 +3603,10 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     if already_open && read_only != domain.is_read_only() {
         return Err(store::locked_fault(&path));
     }
+    let missing_audio_assets: Vec<AssetHash> =
+        store::missing_audio_assets(&loaded.project, &loaded.assets)
+            .into_iter()
+            .collect();
     Ok(Plan::Open(Box::new(OpenRequest {
         path,
         read_only,
@@ -3606,6 +3618,7 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         assets: loaded.assets,
         embedded_presets: loaded.embedded_presets,
         proposals: loaded.proposals,
+        missing_audio_assets,
         created: None,
         sample: None,
     })))
@@ -3718,6 +3731,7 @@ fn plan_create(
         assets: BTreeMap::new(),
         embedded_presets: Vec::new(),
         proposals: BTreeMap::new(),
+        missing_audio_assets: Vec::new(),
         created: Some(CreatedSeed {
             bytes,
             master_bus_track_id: created.master_bus_track_id,
@@ -3878,6 +3892,14 @@ struct SaveMaterial {
 /// 或引用的用户预制查不到（响亮拒绝保存，不静默写出缺件工程）。
 fn save_material(domain: &Domain, include_user_presets: bool) -> Result<SaveMaterial, Fault> {
     let active = domain.active.as_ref().ok_or_else(no_active_project)?;
+    // ⭐ T-FIX-500：写盘前的跨层核对 —— Audio 片段引用的哈希必须同时在
+    // `project.assets` 索引与本次会话 CAS 池里；缺一边 ⇒ 拒绝保存，一个字节都不写。
+    // 与 `yeban-app` 的 `save::missing_audio_assets` 同口径，避免 MCP 把 GUI
+    // 会拒绝的悬空容器原样存回去。
+    let missing = store::missing_audio_assets(&active.project, &active.assets);
+    if !missing.is_empty() {
+        return Err(store::missing_audio_assets_fault(&missing));
+    }
     // ① 收集内嵌（逐音触发集 ＋ SFZ 文本）；缺样本 ⇒ 响亮失败，保存被拒绝。
     let collected = embed_samples::collect(&active.project, &active.path, &active.assets)?;
     // ② 带内嵌表的工程副本（会话里的工程本身不动 —— 安装是 apply 阶段的事）。
@@ -8115,11 +8137,22 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         assets,
         embedded_presets,
         proposals,
+        missing_audio_assets,
         created,
         sample,
     } = request;
     let asset_count = assets.len();
     let embedded_count = embedded_presets.len();
+    let missing_audio_assets_json = missing_audio_assets
+        .iter()
+        .map(|hash| {
+            serde_json::json!({
+                "asset": hash.as_str(),
+                "message": "音频片段引用了不在工程索引/容器资产池里的资产",
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing_audio_assets_count = missing_audio_assets.len();
     let history_commits = history.as_ref().map_or(0, |graph| graph.commit_count());
     if already_open {
         // 幂等: 同一个工程重复打开不是错误, 但也不重建历史。
@@ -8138,6 +8171,8 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             "format": store::DOCUMENT_FORMAT,
             "historyRestored": false,
             "assets": asset_count,
+            "missingAudioAssets": missing_audio_assets_json,
+            "missingAudioAssetCount": missing_audio_assets_count,
             "projectDigest": digest,
             "project": summary,
         });
@@ -8209,6 +8244,8 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         "historyCommits": domain.commit_count(),
         "assets": domain.asset_count(),
         "embeddedPresets": embedded_count,
+        "missingAudioAssets": missing_audio_assets_json,
+        "missingAudioAssetCount": missing_audio_assets_count,
         "projectDigest": digest,
         "project": domain
             .active_project()
@@ -10034,6 +10071,24 @@ mod tests {
         domain
     }
 
+    /// 带会话资产字节的规范夹具（保存 / 计划普查用）。
+    ///
+    /// `filled_project()` 的音频片段引用了 `filled_project_assets()` 的哈希；
+    /// 只开工程不装字节会构成“悬空资产”，T-FIX-500 之后保存会响亮拒绝。
+    fn domain_with_assets() -> Domain {
+        let mut domain = Domain::new();
+        domain.set_now_ms(1_760_000_000_000);
+        domain
+            .open_in_memory_with_assets(
+                unique_path(),
+                yeban_model::samples::filled_project(),
+                false,
+                yeban_model::samples::filled_project_assets(),
+            )
+            .expect("注入带资产的工程");
+        domain
+    }
+
     fn fixture_track(domain: &Domain) -> EntityId {
         domain
             .active_project()
@@ -10104,7 +10159,7 @@ mod tests {
     #[test]
     fn every_tool_has_a_plan_arm_and_no_not_implemented_report() {
         // 十个工具都必须能进 `plan`（不再一律 -32005）。
-        let mut domain = domain();
+        let mut domain = domain_with_assets();
         // `get_song_overview` 的 provider 是宿主注入的：本夹具注入 stub
         // （无 provider 的那条响亮拒绝由 `tests/song_overview.rs` 单独覆盖）。
         domain.set_song_overview_provider(Arc::new(song_overview::StubSongOverviewProvider));
@@ -11137,7 +11192,7 @@ mod tests {
 
     #[test]
     fn save_without_changes_is_skipped_unless_forced() {
-        let mut domain = domain();
+        let mut domain = domain_with_assets();
         let no_force = execute(
             &mut domain,
             &call("yeban_save_project", serde_json::json!({})),

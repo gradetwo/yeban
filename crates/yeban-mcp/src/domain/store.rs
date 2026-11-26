@@ -77,7 +77,7 @@
 //!    `WouldBlock`（含跨进程与同进程另一个 fd）→ `PROJECT_LOCKED`；
 //!    平台无建议锁 → JSON-RPC 实现级 `-32005`（**不发明新错误码**）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -86,6 +86,7 @@ use yeban_model::container::{
     ContainerError, ContainerLimits, MAX_ENTRY_NAME_BYTES, read_project_container,
     write_project_container_with_proposals_borrowed,
 };
+use yeban_model::project::ClipContent;
 use yeban_model::{AssetHash, CommitGraph, EntityId, YebanProjectV1};
 
 use super::MAIN_BRANCH;
@@ -112,6 +113,46 @@ pub const CONTAINER_MAGIC: [u8; 4] = *b"PK\x03\x04";
 #[must_use]
 pub fn digest_of(bytes: &[u8]) -> String {
     AssetHash::of_bytes(bytes).as_str().to_owned()
+}
+
+/// 数出 Audio 片段引用的、**同时**不在 `project.assets` 索引与本次会话 CAS 池里的
+/// 资产哈希（去重升序）。与 `yeban-app::save::missing_audio_assets` 同口径：
+/// 缺任何一边都算缺件。T-FIX-500。
+#[must_use]
+pub(crate) fn missing_audio_assets(
+    project: &YebanProjectV1,
+    assets: &BTreeMap<AssetHash, Vec<u8>>,
+) -> BTreeSet<AssetHash> {
+    let mut missing = BTreeSet::new();
+    for entry in project.clip_pool.values() {
+        if let ClipContent::Audio { asset, .. } = &entry.content
+            && (!project.assets.contains_key(asset) || !assets.contains_key(asset))
+        {
+            missing.insert(asset.clone());
+        }
+    }
+    missing
+}
+
+/// T-FIX-500：缺件保存的响亮拒绝。错误码只用既有 `IO_ERROR`；`data.reason`
+/// 与缺失哈希列表让调用方可以精确区分"缺音频资产"与其他 IO 失败。
+pub(crate) fn missing_audio_assets_fault(missing: &BTreeSet<AssetHash>) -> Fault {
+    let hashes: Vec<String> = missing
+        .iter()
+        .map(AssetHash::as_str)
+        .map(str::to_owned)
+        .collect();
+    Fault::domain_with_data(
+        ErrorCode::IoError,
+        format!(
+            "工程含 {} 项悬空音频资产 (clip_pool 引用的哈希不在 project.assets / CAS 字节池) ⇒ 拒绝保存: {hashes:?}",
+            missing.len()
+        ),
+        serde_json::json!({
+            "reason": "missingAudioAsset",
+            "missingAssets": hashes,
+        }),
+    )
 }
 
 /// `yeban_open_project` / `yeban_save_project` 响应里 `format` 的**唯一**取值。

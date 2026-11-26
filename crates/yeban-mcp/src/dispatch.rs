@@ -808,7 +808,12 @@ mod tests {
         dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
         dispatcher
             .domain_mut()
-            .open_in_memory(path, yeban_model::samples::filled_project(), false)
+            .open_in_memory_with_assets(
+                path,
+                yeban_model::samples::filled_project(),
+                false,
+                yeban_model::samples::filled_project_assets(),
+            )
             .expect("注入规范工程");
     }
 
