@@ -167,3 +167,111 @@ fn quantize_ignores_selection_ids_outside_the_clip() {
         "外来身份必须被交集滤掉"
     );
 }
+
+/// ⭐ T-FIX-767 夹具：把两个 MIDI 片段的首颗音符钉到离格起点（100 tick）。
+/// 返回（工程，片段①的音符身份，片段②的音符身份）。
+fn two_offgrid_clips() -> (YebanProjectV1, Vec<EntityId>, Vec<EntityId>) {
+    let mut project = filled_project();
+    // (track_id, placement_id, clip_id) —— 只收带音符的 MIDI 片段。
+    let mut clips: Vec<(EntityId, EntityId, EntityId)> = Vec::new();
+    for (track_id, track) in project.tracks.iter() {
+        for placement in track.clips.values() {
+            if project
+                .clip_pool
+                .get(&placement.clip_id)
+                .and_then(|entry| entry.content.notes())
+                .is_some_and(|notes| !notes.is_empty())
+            {
+                clips.push((*track_id, placement.id, placement.clip_id));
+            }
+        }
+    }
+    // filled_project 只带一个 MIDI 片段 ⇒ 复制成第二个，供跨片段选区判据使用。
+    if clips.len() == 1 {
+        let (track_id, placement_id, clip_id) = clips[0];
+        let new_clip_id = EntityId::new();
+        let new_placement_id = EntityId::new();
+        let entry = project.clip_pool.get(&clip_id).expect("MIDI 片段").clone();
+        project.clip_pool.insert(
+            new_clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: new_clip_id,
+                name: "Clip B".to_owned(),
+                ..entry
+            },
+        );
+        let placement = *project
+            .tracks
+            .get(&track_id)
+            .expect("音轨")
+            .clips
+            .get(&placement_id)
+            .expect("摆放");
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("音轨")
+            .clips
+            .insert(
+                new_placement_id,
+                yeban_model::project::ClipPlacement {
+                    id: new_placement_id,
+                    ..placement
+                },
+            );
+        clips.push((track_id, new_placement_id, new_clip_id));
+    }
+    assert!(clips.len() >= 2, "必须构造出两个 MIDI 片段");
+    let mut groups = Vec::new();
+    for (_, _, clip_id) in clips.iter().take(2) {
+        let entry = project.clip_pool.get_mut(clip_id).expect("MIDI 片段");
+        let notes = entry.content.notes_mut().expect("MIDI 音符");
+        let ids: Vec<EntityId> = notes.keys().copied().collect();
+        if let Some(first) = ids.first()
+            && let Some(note) = notes.get_mut(first)
+        {
+            note.start_tick = 100;
+        }
+        groups.push(ids);
+    }
+    (project, groups[0].clone(), groups[1].clone())
+}
+
+/// ⭐ 判据⑤（T-FIX-767）：无选中片段（作用域 = 全部音符，与 `roll_scope() == None`
+/// 同源）时量化必须生效 —— 旧实现此处直接 Err("未选中剪辑")。
+#[test]
+fn quantize_with_no_selected_clip_quantifies_all_notes() {
+    let (project, first, second) = two_offgrid_clips();
+    let all: BTreeSet<EntityId> = first.iter().chain(second.iter()).copied().collect();
+    let ops = quantize_clip_ops_for(&project, "", 240, 1000, Some(&all))
+        .expect("空 selected_clip_ulid 必须按全部音符作用域展开");
+    let changed = op_note_ids(&ops);
+    assert!(
+        changed.contains(&first[0]) && changed.contains(&second[0]),
+        "两个片段的离格音符都必须被量化，实得 {changed:?}"
+    );
+}
+
+/// ⭐ 判据⑥（T-FIX-767）：跨片段选区量化两边都变，⛔ 不再静默漏掉另一片段。
+#[test]
+fn quantize_cross_clip_selection_touches_both_clips() {
+    let (project, first, second) = two_offgrid_clips();
+    let selected: BTreeSet<EntityId> = [first[0], second[0]].into_iter().collect();
+    let ops = quantize_clip_ops_for(&project, "", 240, 1000, Some(&selected))
+        .expect("跨片段选区必须按全部音符作用域展开");
+    assert_eq!(op_note_ids(&ops), selected, "跨片段选中的两颗都必须被量化");
+}
+
+/// ⭐ 判据⑦：人性化与量化同源 —— 无选中片段时跨片段选区两边都产出 op。
+#[test]
+fn humanize_no_selected_clip_touches_both_clips() {
+    let (project, first, second) = two_offgrid_clips();
+    let selected: BTreeSet<EntityId> = [first[0], second[0]].into_iter().collect();
+    let ops = humanize_clip_ops_for(&project, "", 7, 10, 10, Some(&selected))
+        .expect("空 selected_clip_ulid 必须按全部音符作用域展开");
+    assert_eq!(
+        op_note_ids(&ops),
+        selected,
+        "人性化跨片段选区两边都必须产出 op"
+    );
+}

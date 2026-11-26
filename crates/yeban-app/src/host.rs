@@ -24107,6 +24107,53 @@ pub fn clip_delete_ops_for_many(
     ops
 }
 
+/// ⭐ T-FIX-767：卷帘**作用域**的纯函数展开（与 `roll_scope()` 同源）。
+///
+/// `selected_clip_ulid` 为空 ⇒ 卷帘显示的是「全部音符」⇒ 展开工程里**所有**片段的
+/// 全部 MIDI 音符（跨片段选区因此两边都会处理，⛔ 不再静默漏）。
+/// 非空 ⇒ 旧口径：只展开该摆放所属的片段。
+///
+/// 返回 `(track_id, clip_id, notes)` 分组；每组内音符的序号仍按片段 `BTreeMap` 键序，
+/// 与人instrument化/量化的既有抖动下标口径一致。
+/// 一组作用域音符：`(track_id, clip_id, notes)`。
+type ScopeNoteGroup<'a> = (
+    yeban_model::EntityId,
+    yeban_model::EntityId,
+    &'a std::collections::BTreeMap<yeban_model::EntityId, yeban_model::MidiNote>,
+);
+
+fn scope_note_groups<'a>(
+    project: &'a yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+) -> Result<Vec<ScopeNoteGroup<'a>>, &'static str> {
+    if selected_clip_ulid.is_empty() {
+        let mut groups = Vec::new();
+        for (track_id, track) in project.tracks.iter() {
+            for placement in track.clips.values() {
+                if let Some(notes) = project
+                    .clip_pool
+                    .get(&placement.clip_id)
+                    .and_then(|entry| entry.content.notes())
+                {
+                    groups.push((*track_id, placement.clip_id, notes));
+                }
+            }
+        }
+        return Ok(groups);
+    }
+    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
+        return Err("未选中剪辑");
+    };
+    let Some(notes) = project
+        .clip_pool
+        .get(&placement.clip_id)
+        .and_then(|entry| entry.content.notes())
+    else {
+        return Err("选中的剪辑不是 MIDI 片段");
+    };
+    Ok(vec![(track_id, placement.clip_id, notes)])
+}
+
 /// 选中剪辑的人性化 op（纯函数；判据可直接喂合成工程逐条对账）。
 ///
 /// 与 MCP `humanizeClip` 的展开**同一批模型 `Op`**：每音符一条
@@ -24132,52 +24179,44 @@ pub fn humanize_clip_ops_for(
     velocity_jitter: u8,
     selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
 ) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
-    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
-        return Err("未选中剪辑");
-    };
-    let Some(notes) = project
-        .clip_pool
-        .get(&placement.clip_id)
-        .and_then(|entry| entry.content.notes())
-    else {
-        return Err("选中的剪辑不是 MIDI 片段");
-    };
-    let effective_seed = yeban_model::clip_ops::derive_track_seed(seed, &track_id);
-    let mut ops = Vec::with_capacity(notes.len() * 2);
-    for (index, (note_id, note)) in notes.iter().enumerate() {
-        // T-FIX-206：有选区时只动交集；`continue` 在取下标之前 ⇒ 序号仍是
-        // 片段内的原序号（与整片段展开逐位一致）。
-        if let Some(ids) = selected_note_ids
-            && !ids.is_empty()
-            && !ids.contains(note_id)
-        {
-            continue;
+    let mut ops = Vec::new();
+    for (track_id, clip_id, notes) in scope_note_groups(project, selected_clip_ulid)? {
+        let effective_seed = yeban_model::clip_ops::derive_track_seed(seed, &track_id);
+        for (index, (note_id, note)) in notes.iter().enumerate() {
+            // T-FIX-206：有选区时只动交集；`continue` 在取下标之前 ⇒ 序号仍是
+            // 片段内的原序号（与整片段展开逐位一致）。
+            if let Some(ids) = selected_note_ids
+                && !ids.is_empty()
+                && !ids.contains(note_id)
+            {
+                continue;
+            }
+            let (micro, velocity) = yeban_model::clip_ops::humanize_note(
+                note,
+                effective_seed,
+                index,
+                time_jitter_ticks,
+                velocity_jitter,
+            );
+            ops.push(yeban_model::ops::Op::SetNoteExpression {
+                track_id,
+                clip_id,
+                note_id: *note_id,
+                old_probability: note.probability,
+                old_ratchet: note.ratchet,
+                old_micro_timing_ticks: note.micro_timing_ticks,
+                new_probability: note.probability,
+                new_ratchet: note.ratchet,
+                new_micro_timing_ticks: Some(micro),
+            });
+            ops.push(yeban_model::ops::Op::ModifyNoteVelocity {
+                track_id,
+                clip_id,
+                note_id: *note_id,
+                old_vel: note.velocity,
+                new_vel: velocity,
+            });
         }
-        let (micro, velocity) = yeban_model::clip_ops::humanize_note(
-            note,
-            effective_seed,
-            index,
-            time_jitter_ticks,
-            velocity_jitter,
-        );
-        ops.push(yeban_model::ops::Op::SetNoteExpression {
-            track_id,
-            clip_id: placement.clip_id,
-            note_id: *note_id,
-            old_probability: note.probability,
-            old_ratchet: note.ratchet,
-            old_micro_timing_ticks: note.micro_timing_ticks,
-            new_probability: note.probability,
-            new_ratchet: note.ratchet,
-            new_micro_timing_ticks: Some(micro),
-        });
-        ops.push(yeban_model::ops::Op::ModifyNoteVelocity {
-            track_id,
-            clip_id: placement.clip_id,
-            note_id: *note_id,
-            old_vel: note.velocity,
-            new_vel: velocity,
-        });
     }
     Ok(ops)
 }
@@ -24198,37 +24237,32 @@ pub fn quantize_clip_ops_for(
     strength_permille: u16,
     selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
 ) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
-    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
-        return Err("未选中剪辑");
-    };
-    let Some(notes) = project
-        .clip_pool
-        .get(&placement.clip_id)
-        .and_then(|entry| entry.content.notes())
-    else {
-        return Err("选中的剪辑不是 MIDI 片段");
-    };
     let mut ops = Vec::new();
-    for (note_id, note) in notes.iter() {
-        // T-FIX-206：有选区时只动交集（不属于本片段的身份直接滤掉）。
-        if let Some(ids) = selected_note_ids
-            && !ids.is_empty()
-            && !ids.contains(note_id)
-        {
-            continue;
-        }
-        let snapped =
-            yeban_model::clip_ops::quantize_tick(note.start_tick, grid_ticks, strength_permille);
-        if snapped != note.start_tick {
-            ops.push(yeban_model::ops::Op::SetNoteTiming {
-                track_id,
-                clip_id: placement.clip_id,
-                note_id: *note_id,
-                old_start_tick: note.start_tick,
-                old_duration_ticks: note.duration_ticks,
-                new_start_tick: snapped,
-                new_duration_ticks: note.duration_ticks,
-            });
+    for (track_id, clip_id, notes) in scope_note_groups(project, selected_clip_ulid)? {
+        for (note_id, note) in notes.iter() {
+            // T-FIX-206：有选区时只动交集（不属于本片段的身份直接滤掉）。
+            if let Some(ids) = selected_note_ids
+                && !ids.is_empty()
+                && !ids.contains(note_id)
+            {
+                continue;
+            }
+            let snapped = yeban_model::clip_ops::quantize_tick(
+                note.start_tick,
+                grid_ticks,
+                strength_permille,
+            );
+            if snapped != note.start_tick {
+                ops.push(yeban_model::ops::Op::SetNoteTiming {
+                    track_id,
+                    clip_id,
+                    note_id: *note_id,
+                    old_start_tick: note.start_tick,
+                    old_duration_ticks: note.duration_ticks,
+                    new_start_tick: snapped,
+                    new_duration_ticks: note.duration_ticks,
+                });
+            }
         }
     }
     Ok(ops)
