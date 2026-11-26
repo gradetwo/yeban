@@ -10234,6 +10234,20 @@ pub fn wire_keys(
     });
 }
 
+/// T-FIX-738：录音进行中的保存**一律拒绝**，并把原因留在 `save-status` 上。
+///
+/// 为什么不是"保存但附警告"：保存请求里的工程与资产池都是**已登记**的那一份，
+/// 正在录的 take 还没 stop→land，根本不在请求里。既然写不进去，就不该让
+/// `apply_save_outcome` 把脏标记清零 —— 那会让用户以为 take 已存，随后退出提示
+/// 也不再出现。拒绝发生在**问路径之前**：既不开对话框，也不碰磁盘。
+fn refuse_save_while_recording(ui: &MainWindow) -> bool {
+    if !recording_in_progress() {
+        return false;
+    }
+    ui.set_save_status("保存被拒绝：正在录音，请先停止录音再保存（本次没有写入任何内容）".into());
+    true
+}
+
 /// **用户按"保存"的接线**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
 ///
 /// 它把两件事接起来，别的一件都不做：
@@ -10336,6 +10350,10 @@ pub fn wire_save_with_engine(
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
+        // T-FIX-738：录音中保存**先拒绝**（此时目标路径问不问都没有意义）。
+        if refuse_save_while_recording(&ui) {
+            return;
+        }
         // 默认构建里 `authority` 是那个**不可构造**的占位类型 ⇒ 这里恒为 `None`，
         // 策略表里"没有控制面"那一行就是唯一的行（没有条件编译出来的第二条策略）。
         #[cfg(feature = "in-process-mcp")]
@@ -10454,6 +10472,10 @@ pub fn wire_save_with_engine(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // T-FIX-738：另存为同属保存区，录音中同样先拒绝（⛔ 不先弹对话框）。
+            if refuse_save_while_recording(&ui) {
+                return;
+            }
             let picked = picker_save_as.choose_save(
                 &crate::file_picker::PickerRequest::save("另存为", "project.yeban")
                     .with_extensions(["yeban"]),
