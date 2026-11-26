@@ -812,34 +812,113 @@ fn print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake
     );
 }
 
+/// 渐变与投影的**清单判据**（替代已失实的「无渐变 / 无投影」口径）。
 ///
-/// 观测面是全部 `ui/**/*.slint` 的**代码**（注释已剥掉：在注释里写"我们不用
-/// `drop-shadow-*`"是文档，不是用法）。三条独立命中路径各自会红：
-/// `drop-shadow-*` 系列属性、`@linear-gradient(...)`/`@radial-gradient(...)`/
-/// `@conic-gradient(...)` 画笔、以及任何含 `shadow` 的标识符。
+/// 2026-11-17 起 UI 分两档皮肤：`texture-physical`（拟物套，面受光 + 投影）与扁平套。
+/// 因此「全仓 0 处渐变/投影」不再是事实。本条钉三件仍然成立的事：
 ///
-/// 为什么这条值得存在：这条纪律在本仓是**结构性成立**的（13 个 `.slint` 全部自绘
-/// `Rectangle`，一个上游控件都没有），所以它很容易被"顺手加一个投影好看一点"打破，
-/// 而那种改动不会撞上任何既有判据。
+/// 1. **不引入第三种光源模型**：`@conic-gradient` 一处都不许有；`@radial-gradient`
+///    只允许住在 `tokens.slint` 的 `glass-brush`（拟物套的一处光泽）；
+/// 2. **扁平侧同色单停**：`!texture-physical ? @linear-gradient(…, X, X)` 与
+///    `: @linear-gradient(…, X, X)` 的每个停点必须字面相同（扁平套不画明暗过渡）；
+/// 3. **清单棘轮**：渐变与 `drop-shadow-*` 的逐文件计数钉死。新增一处渐变/投影必须
+///    同时改这里与 `ui/tokens.slint` §6b 的登记 —— 让改动在 review 里可见。
+///
+/// 观测面是 `ui/**/*.slint` 的**代码**（注释已剥：注释里写「我们用渐变」是文档）。
 #[test]
-fn the_ui_uses_no_shadow_and_no_gradient_brush() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> playing:"),
-        "新 UI 契约面必须声明 > playing:"
+fn the_ui_gradient_inventory_matches_the_recorded_sources() {
+    // (文件后缀, 渐变处数, drop-shadow-* 处数)；两表合起来就是本仓今天的实况。
+    const INVENTORY: [(&str, usize, usize); 9] = [
+        ("tokens.slint", 25, 0),
+        ("controls/fader.slint", 1, 8),
+        ("controls/push_button.slint", 1, 4),
+        ("controls/led_meter.slint", 1, 4),
+        ("controls/toggle_switch.slint", 0, 4),
+        ("controls/knob.slint", 0, 4),
+        ("arrangement.slint", 0, 4),
+        ("left_panel.slint", 0, 20),
+        ("lower_dock.slint", 0, 62),
+    ];
+
+    let mut gradients_total = 0;
+    let mut radial_total = 0;
+    let mut shadows_total = 0;
+    let mut seen = Vec::new();
+    for (path, raw) in all_ui_sources() {
+        let code = strip_slint_comments(&raw);
+        assert!(
+            !code.contains("@conic-gradient"),
+            "{path}: 不许用锥形渐变（本仓没有第三种光源模型）"
+        );
+        let radials = code.matches("@radial-gradient").count();
+        radial_total += radials;
+        assert!(
+            radials == 0 || path_ends_with(&path, "tokens.slint"),
+            "{path}: 径向渐变只允许住在 tokens.slint 的拟物刷 (glass-brush)"
+        );
+
+        // 扁平侧：`!texture-physical ?` 那一支，或 `texture-physical ? … :` 的 `:` 那一支，
+        // 渐变必须同色单停（扁平套不画明暗过渡）。
+        let lines: Vec<&str> = code.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("@linear-gradient(") {
+                continue;
+            }
+            let previous = lines[..index]
+                .iter()
+                .rev()
+                .find(|candidate| !candidate.trim().is_empty())
+                .copied()
+                .unwrap_or("");
+            let flat = line.contains("!texture-physical ?")
+                || (line.trim_start().starts_with(':')
+                    && previous.contains("texture-physical")
+                    && !previous.contains("!texture-physical"));
+            if !flat {
+                continue;
+            }
+            let open =
+                line.find("@linear-gradient(").expect("已判存在") + "@linear-gradient(".len();
+            let close = line[open..]
+                .find(')')
+                .unwrap_or_else(|| panic!("{path}: 渐变调用未闭合: {line}"));
+            let stops: Vec<&str> = line[open..open + close]
+                .split(',')
+                .skip(1)
+                .map(str::trim)
+                .collect();
+            assert!(stops.len() >= 2, "{path}: 渐变至少两个停点: {line}");
+            assert!(
+                stops.windows(2).all(|pair| pair[0] == pair[1]),
+                "{path}: 扁平侧渐变必须同色单停, 实际 {stops:?}"
+            );
+        }
+
+        let gradients = code.matches("@linear-gradient").count();
+        let shadows = code.matches("drop-shadow-").count();
+        gradients_total += gradients;
+        shadows_total += shadows;
+        for (suffix, expected_gradients, expected_shadows) in INVENTORY {
+            if path_ends_with(&path, suffix) {
+                seen.push(suffix);
+                assert_eq!(
+                    (gradients, shadows),
+                    (expected_gradients, expected_shadows),
+                    "{path}: 渐变/投影清单变了 —— 一并更新本表与 tokens.slint §6b"
+                );
+            }
+        }
+    }
+    for (suffix, _, _) in INVENTORY {
+        assert!(seen.contains(&suffix), "清单里的 {suffix} 没有被读到");
+    }
+    assert_eq!(gradients_total, 28, "全仓 @linear-gradient 总数变了");
+    assert_eq!(
+        radial_total, 1,
+        "全仓 @radial-gradient 只应有 glass-brush 那一处"
     );
-    assert!(
-        aether_host.contains("set_playing"),
-        "宿主接线层必须注册 set_playing"
-    );
+    assert_eq!(shadows_total, 110, "全仓 drop-shadow-* 总数变了");
+    eprintln!("[theme] 渐变 {gradients_total} 处 / 投影 {shadows_total} 处（清单一致）");
 }
 
 /// 把 `#rrggbb` 解析成 `(r, g, b)`（0..=255）。

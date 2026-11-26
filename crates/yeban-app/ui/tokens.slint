@@ -325,38 +325,54 @@ export global Tokens {
     // 负责人随后给出了一份**具名的完整调色板**并把它定为权威设计输入 ⇒ 本次一律改用
     // **他们的数字**。旧采样值全部作废: 这是设计权威的转移, 不是回归。
     //
-    // 负责人 mock 的四条设计原则, 逐条落在这里:
-    //   ① 低饱和水墨夜色: 背景全走「墨阶」(色相≈一致, 只分明度);
-    //   ② 单一暖强调: 渔火 #c6a47c 是全界面**唯一**的暖强调色;
-    //   ③ 功能色降饱和: 录音=江枫 / 播放=铜绿 / 选区=愁眠 / 副强调=客船;
-    //   ④ 极简: 发丝线描边、无投影、无渐变光晕; 衬线体只用于诗意点缀。
-    //      ④ 的前半在本仓**已经成立**: 13 个 `.slint` 里 `drop-shadow-*` 与渐变画笔
-    //      各 **0** 处 (判据 `the_ui_uses_no_shadow_and_no_gradient_brush` 扫源码)。
+    // Wang 的 UI 提交（2026-11-17 起的拟物/扁平两档皮肤）是当前视觉基准；本表的数字
+    // 从下方 `out property` 行**机械读出**，⛔ 不再维护第二份手抄值。
     //
-    // 令牌 ← 负责人取值 ← 负责人色名 / 角色 (逐条, 一个数字都没改):
-    //   bg-void        <- #0e1216  玄夜      bg-base    主背景
-    //   bg-shell       <- #141517  墨池      bg-lane    内凹/交替面 (混音条、设备架、卷帘网格)
-    //   bg-lane        <- #141517  墨池      bg-lane    轨道车道 (偶)
-    //   bg-lane2       <- #0d1116  墨池·深   bg-lane2   轨道车道 (奇)
-    //   bg-panel       <- #131a22  黛蓝·暗   bg-panel   面板 / 走带条
-    //   bg-head        <- #161e28  鸦青·暗   bg-head    轨道包头 (奇; 偶仍用 bg-panel)
-    //   bg-panel-alt   <- #161e28  鸦青·暗   bg-head    交替面板 / 按钮板 / 片段底
-    //   bg-raised      <- #1e2733  绀灰      bg-raise   hover / 选中
-    //   bg-control     <- #1e2733  绀灰      bg-raise   保存键的板 (取「抬起面」那一档)
-    //   line           <- #212b36  墨线      stroke
-    //   line-strong    <- #2c3948  雾线      stroke2
-    //   ink-0          <- #d7dee1  月白      txt
-    //   ink-1          <- #8d99a5  雾灰      txt-dim
-    //   ink-2          <- #5a6672  霜灰      txt-faint
-    //   gold-bright    <- #e7dfc8  月华      yuehua     播放头 / 时间码 / 读数
-    //   gold           <- #c6a47c  渔火      yuhuo      片段 / 音符头 / 章节名 = 主强调
-    //   gold-deep      <- #6d88a1  客船      kechuan    副强调: 片段描边 / solo / 自动化徽章
-    //   accent         <- #c6a47c  渔火      yuhuo      唯一那一处强调 (装点录音键的 ●; 2026-10-07 HD-54)
-    //   ai-suggestion  <- #8e86a6  愁眠      choumian   AI 建议层
-    //   record-red     <- #ac6e60  江枫      jiangfeng  录音 / 静音
-    //   playing        <- #6e9488  铜绿      tonglv     播放 / 走带
-    //   selection      <- #8e86a6  愁眠      choumian   选中 / 激活 / AI 文案
-    //   piano-key      <- #c8c2b2  苇白      weibai     钢琴卷帘白键
+    // 四条设计原则（随皮肤分档重述）：
+    //   ① 低饱和水墨夜色：背景走墨阶，色相≈一致，只分明度；
+    //   ② 单一强调：`accent` 与 `gold` 同值，是全界面**唯一**的强调色；
+    //   ③ 功能色降饱和：录音=`record-red` / 播放=`playing` / 选中=`selection` /
+    //      副强调=`gold-deep`（色名沿用负责人 2026-10-07 的命名，取值为本表）；
+    //   ④ 极简：发丝线描边，衬线体只用于诗意点缀。拟物套如实使用投影与多停渐变
+    //      （代码文本 110 处 `drop-shadow-*` / 8 个 `.slint`；`@linear-gradient`
+    //      28 处 / 4 个文件，其中本文件 25 处）；扁平套的渐变一律**同色单停**
+    //      （`@linear-gradient(180deg, X, X)`）。旧句「13 个 `.slint` 里各 0 处」已失实，
+    //      于 T-FIX-695 删除；判据改为钉清单与「扁平侧同色」，见
+    //      `theme_selection::the_ui_gradient_inventory_matches_the_recorded_sources`。
+    //
+    // 令牌表（`yeban` 主题，两档皮肤的实际运行取值，括号内为角色）：
+    //
+    //   令牌            拟物套      扁平套      角色
+    //   bg-void         #121314     #22262a     主背景
+    //   bg-shell        #171819     #30343b     内凹 / 交替面（混音条、设备架、卷帘网格）
+    //   bg-lane         #1d1f21     #2b3036     轨道车道（偶）
+    //   bg-lane2        #191b1d     #272c31     轨道车道（奇）
+    //   bg-panel        #1b1d1f     #30343b     面板 / 走带条
+    //   bg-head         #232629     #31363c     轨道包头（奇；偶仍用 bg-panel）
+    //   bg-panel-alt    #202224     #30343b     交替面板 / 按钮板 / 片段底
+    //   bg-raised       #27292c     #373c44     hover / 选中
+    //   bg-control      #27292c     #373c44     保存键的板（取「抬起面」那一档）
+    //   line            #2d3033     #414751     发丝线
+    //   line-strong     #3b3e42     #525963     强发丝线
+    //   ink-0           #e3e6ea     #f1f4f8     正文
+    //   ink-1           #a8b0b9     #bdc6d0     次级文本
+    //   ink-2           #828b95     #99a2ad     弱文本（⛔ 不作正文）
+    //   gold-bright     #d9efe8     #e6ecf3     播放头 / 时间码 / 读数
+    //   gold            #6fb8a4     #6d94c4     片段 / 音符头 / 章节名 = 主强调
+    //   gold-deep       #4f8f7f     #8fa9c6     副强调：片段描边 / solo / 自动化徽章
+    //   accent          #6fb8a4     #6d94c4     唯一强调落点（录音键的 ●）
+    //   ai-suggestion   #8d88b2     #8f95b4     AI 建议层
+    //   record-red      #b0655f     #bd6a63     录音 / 静音
+    //   playing         #4e9b89     #67a98c     播放 / 走带
+    //   selection       #8a84b8     #7fa0c9     选中 / 激活 / AI 文案
+    //   piano-key       #cfc9bd     #e2e7ee     钢琴卷帘白键
+    //   note-vel-low    #3f5f57     #45607f     低力度音符
+    //   note-vel-high   #b9e0d4     #9ec4e4     高力度音符
+    //   note-vel-mark   #e4f2ee     #e2ebf7     力度标记
+    //   note-vel-mid    = gold                   中力度 = 主强调（引用, 不是独立字面量）
+    //
+    // brand / inkmoor / plume 三支不在本表：它们各有自己的字面量（§6e 与上方多选一
+    // 表达式），本表只描述默认主题 `yeban`。
     //
     // 结构上**新增**的令牌 (旧令牌集没有这些角色)。每一个的 brand 分支都等于它
     // **替换掉的那个字面量** ⇒ **brand 分支**的渲染字节相对改动前一位未变
@@ -366,23 +382,19 @@ export global Tokens {
     //   bg-head   brand #0d1326 (= bg-shell)     playing    brand #e2c77e (= gold)
     //   selection brand #f7e6b0 (= gold-bright)  piano-key  brand #f0ebe3 (= ink-0)
     //
-    // 负责人**没有**命名的角色照旧用旧值, 不替他们发明: `ok-green` / `warn-amber` (§9)
-    // 与 `diff-*` / `mask-black` (§8) —— 语义色仍不跟随主题。两个例外是负责人**点名**过的:
-    // 录音=江枫 ⇒ `record-red` 有了 yeban 分支; AI=愁眠 ⇒ `ai-suggestion` 有了 yeban 分支。
-    // 两者的 brand 分支都仍是原字面量, 所以**品牌分支**不变 (默认主题已换成 yeban)。
+    // 语义色仍不跟随主题: `ok-green` / `warn-amber` (§9) 与 `diff-*` / `mask-black`
+    // (§8) 没有 yeban 分支; `record-red` 与 `ai-suggestion` 有, 且 brand 分支仍是原
+    // 字面量 (默认主题已换成 yeban, 品牌分支因此不变)。
     //
-    // 已知取舍 (如实登记, **没有**擅自改负责人的颜色):
-    //   - `--txt-faint` 霜灰 #5a6672 对 `--bg-panel` 黛蓝·暗 #131a22 的 WCAG 2.1 对比度是
-    //     **2.99:1 < 3:1** (对 #161e28 是 2.86:1, 对 #1e2733 是 2.57:1)。这是负责人调色板
-    //     自身的缺口 ⇒ 判据里登记为 `OWNER_TEXT_FAINT_SHORTFALL` 并给出数字, 不悄悄改色。
-    //   - `bg-panel-alt` 与 `bg-head` 同值 (鸦青·暗 #161e28): 负责人的墨阶只有 6 级, 而
-    //     「交替面板」与「包头」在我们是两个角色 ⇒ 共用同一级。
-    //   - `bg-control` 与 `bg-raised` 同值 (绀灰 #1e2733): 比 鸦青·暗 再亮一级的只有 绀灰,
-    //     而保存键的板必须比 AI 徽章的板亮 (顶栏撞色缺陷的修法, 见 §6c)。
-    //   - `bg-shell` 与 `bg-lane` 同值 (墨池 #141517): 负责人只给了一级「轨道车道」,
-    //     我们的「内凹/交替面」没有独立名字 ⇒ 落在同一级。
-    //   - `accent` 与 `gold` 同为 渔火 #c6a47c: 负责人的角色表把 渔火 同时给了「主强调」与
-    //     「片段」⇒ **暖强调色相唯一**(整个 yeban 只有一个暖强调色), 但**令牌不唯一**。
+    // 已知取舍 (如实登记, ⛔ 不擅自改负责人/基准的颜色):
+    //   - `ink-2` #828b95 的最低 WCAG 2.1 对比度是 **3.21:1** (扁平套 `bg-raised`
+    //     #373c44); 对扁平套 `bg-panel` #30343b 是 3.62:1, 对拟物套 `bg-panel`
+    //     #1b1d1f 是 4.89:1。过 3:1 非文本门, 低于 4.5:1 正文门 ⇒ 弱文本不作正文。
+    //   - `bg-control` 与 `bg-raised` 同值 (#27292c / #373c44): 保存键的板取「抬起面」
+    //     那一档 (顶栏撞色缺陷的修法, 见 §6c)。
+    //   - `accent` 与 `gold` 同值: 主强调与片段共用一个色, **令牌不唯一**但强调唯一。
+    //   - `bg-panel-alt` (#202224/#30343b) 与 `bg-head` (#232629/#31363c) 在两档下都
+    //     不同值; 旧句"同值 (鸦青·暗 #161e28)"已不成立, 于本单删除。
     out property <color> bg-lane: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #1d1f21 : #2b3036) : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.alternate-background)));
     out property <color> bg-lane2: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #191b1d : #272c31) : (ThemeState.theme == YebanTheme.inkmoor ? #0f1317 : (ThemeState.theme == YebanTheme.plume ? #151110 : Palette.background)));
     out property <color> bg-head: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #232629 : #31363c) : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
@@ -666,10 +678,11 @@ export global Tokens {
     //        (`piano-key` 的登记角色就是「track colour / piano keys」) ⇒ 渐变两端无家。
     //   `tl-c` / `tl-m` / `tl-x` —— macOS 红黄绿窗钮; Slint 画的是自绘窗口 ⇒ 无家。
     //   `note1` (`--note1`) —— 音符头的渐变**亮端**。`note2` 两支都恰好等于 `gold`,
-    //        所以我们用 `gold` 平铺 (渐变被 §8 的「无渐变画笔」纪律挡住) ⇒ 亮端无家。
+    //        所以我们用 `gold` 平铺 ⇒ 亮端无家 (音符头今天不用渐变; 与 §6f 的「拟物套
+    //        允许渐变、扁平套同色单停」口径一致)。
     //   `--arr-ambient` / `--meter-grad` / `--line`+`--line2` 的**渐变用法** ——
-    //        环境光与电平表都是**渐变画笔**, 判据 `the_ui_uses_no_shadow_and_no_gradient_brush`
-    //        明令禁止, 且它们是布局/动画而不是颜色 ⇒ 本切片**不实现** (见 §6f)。
+    //        环境光仍未实现; 电平表的拟物渐变已落在 `glass-brush` / `LedMeter`, 但那是
+    //        布局/动画图层而不是颜色令牌 ⇒ 仍然无家 (见 §6f)。
     //   `--focus-bd` / `--pal-bg` / `--poem-ls` / `--poem-op` —— 焦点环 alpha、配色面板
     //        自身底色、诗句字距与透明度; 不是我们的调色板角色 ⇒ 无家。
     //
@@ -752,8 +765,9 @@ export global Tokens {
     //       **等宽族** `Menlo` 上: 数字 advance 恒等 ⇒ 小数点与负号天然成列。
     //       上面那句被划掉的旧措辞("对齐是几何")**被像素证据推翻**: 只改族名、
     //       零几何改动, 1920x1080 就有 **26,003** 个像素不同 (见 §5b 的 4 条证据)。
-    //     - 「月色/落日余晖」环境光与「长河」一线 —— **渐变画笔 + 定位矩形**,
-    //       而且 §8 的判据 `the_ui_uses_no_shadow_and_no_gradient_brush` 明令禁止;
+    //     - 「月色/落日余晖」环境光与「长河」一线 —— **渐变画笔 + 定位矩形**;
+    //       2026-11-17 起拟物套允许渐变, 但它们是定位/动画图层而不是调色板角色,
+    //       因此仍不落在令牌集里;
     //     - 标题栏的**主题标签** (`<span class="theme-tag">孤烟 PLUME</span>`)、
     //       印章 `.seal`、红黄绿窗钮 —— 标题栏的结构改动 (硬约束: 本切片不许动标题栏);
     //     - 走带指针的形态差异 (月华柔光 ↔ 孤烟直上/底部消散) 与录音键光环
