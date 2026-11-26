@@ -32,6 +32,19 @@
 //! 提供（`genre` / `released` / `description` / `credits` /
 //! `copyright` / `license` / `website`，全可选，缺失即不列该行，
 //! ⛔ 不编造）。
+//!
+//! ### 官方 demo 的独立口径（T-FIX-641）
+//!
+//! [`crate::demo_download::DEMOS`] 是官方 8 首 demo 的**固定清单**
+//! （名字 / 工程文件名 / 封面文件名）。下载落地目录里的 `.yeban`
+//! 文件名命中固定清单 ⇒ 这条是**官方 demo**：卡片从固定清单取标题、
+//! 从同名旁挂 `<stem>.meta.json` 取作者 / 轨道数 / BPM / 小节 /
+//! 时长 / 曲风等展示字段，**⛔ 不读整包**，也不受
+//! [`DEMO_LIST_MAX_BYTES`] 约束（官方 demo 23–269 MB，全部超过该闸）。
+//! 不在固定清单里的 `.yeban` 是用户手工放入的文件：照旧走体积闸，
+//! 超过 [`DEMO_LIST_MAX_BYTES`] 就只进 [`ChooserData::blocked_demos`]
+//! 并写明原因（置灰行对用户可见，可从「打开工程」直接打开）。
+//! 官方 demo 的旁挂元数据缺失 ⇒ 对应字段留空/为 0，⛔ 不猜。
 //! 环境变量未设 ⇒ 演示清单为空（内置样本已移出清单，见上）。
 //! 文件型 demo 打开时
 //! 从磁盘真实加载归档，同样走未命名副本口径（不记最近、不回写源
@@ -143,7 +156,56 @@ pub struct DemoEntry {
 /// [`ChooserData::blocked_demos`]，在选择器里显示成一条置灰行（用户仍可
 /// 从「打开工程」按路径直接打开它）。上限取 8 MiB，与模板预检同一数量级
 /// —— 只覆盖真正的"小 demo"，带音频资产的归档一律不在清单阶段读。
+///
+/// T-FIX-641：**官方 demo**（文件名命中 [`crate::demo_download::DEMOS`]
+/// 固定清单）不受本闸约束 —— 它们的卡片由固定清单 + 旁挂元数据生成，
+/// 清单阶段同样不读整包；本闸只保护用户手工放入目录的任意 `.yeban`。
 pub const DEMO_LIST_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 官方 demo 的固定清单（见 [`crate::demo_download::DEMOS`]）：按文件名
+/// 认领，大小写敏感、只认 `.yeban` 的文件名本身（不认目录层级）。
+///
+/// 为什么按文件名而不是内容哈希：清单阶段不许读整包（官方 demo 最大
+/// 269 MB），而下载落地时文件名就是 [`crate::demo_download::DemoSpec::file`]
+/// （下载执行器用同一份固定清单拼目标路径），所以文件名是清单阶段唯一
+/// 不需要读内容就能拿到的身份。用户把手放同名文件也只是得到"官方卡片"
+/// 这一条外观，打开时仍走真实归档解析、坏容器照旧响亮报错。
+fn official_demo_spec(path: &Path) -> Option<&'static crate::demo_download::DemoSpec> {
+    if path.extension().is_none_or(|ext| ext != "yeban") {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    crate::demo_download::DEMOS
+        .iter()
+        .find(|spec| spec.file == name)
+}
+
+/// 官方 demo 的封面：固定清单里的封面文件名优先（下载落地时与工程同
+/// 目录）；文件不在 ⇒ 回落到与普通 demo 同款的同名图规则，⛔ 不编造路径。
+fn official_demo_cover(path: &Path, spec: &crate::demo_download::DemoSpec) -> Option<PathBuf> {
+    let cover = path.with_file_name(spec.cover);
+    if cover.is_file() {
+        return Some(cover);
+    }
+    same_stem_cover(path)
+}
+
+/// 与文件同名的封面候选（先到先得）：同名图、同名 + `-cover` 后缀图。
+fn same_stem_cover(path: &Path) -> Option<PathBuf> {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    ["png", "jpg"]
+        .iter()
+        .flat_map(|ext| {
+            [
+                path.with_extension(ext),
+                path.with_file_name(format!("{stem}-cover.{ext}")),
+            ]
+        })
+        .find(|candidate| candidate.is_file())
+}
 
 /// 一条没能进演示清单的条目（路径 + 显示名 + 原因）。
 ///
@@ -296,6 +358,12 @@ fn scan_file_demos(dir: &Path) -> DemoScan {
     paths.sort();
     let mut entries = Vec::new();
     for path in paths {
+        // T-FIX-641：官方 demo 先按固定清单认领 —— 命中就不进整包读盘，
+        // 也不受体积闸约束（见 [`official_demo_spec`]）。
+        if let Some(spec) = official_demo_spec(&path) {
+            entries.push(load_official_demo_entry(&path, spec));
+            continue;
+        }
         match load_demo_entry(&path) {
             Ok(entry) => entries.push(entry),
             Err(message) => {
@@ -338,20 +406,12 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
         .map_err(|error| format!("`{}` 不是可读的工程容器: {error}", path.display()))?;
     let project = &archive.project;
     // 封面候选（先到先得）：同名图、同名 + `-cover` 后缀图。
+    let cover = same_stem_cover(path);
+    let (bars, duration_secs) = demo_span(project);
     let stem = path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
-    let cover = ["png", "jpg"]
-        .iter()
-        .flat_map(|ext| {
-            [
-                path.with_extension(ext),
-                path.with_file_name(format!("{stem}-cover.{ext}")),
-            ]
-        })
-        .find(|candidate| candidate.is_file());
-    let (bars, duration_secs) = demo_span(project);
     let meta = read_sidecar_meta(path, stem);
     Ok(DemoEntry {
         source: DemoSource::File(path.to_path_buf()),
@@ -369,6 +429,34 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
         duration_secs,
         cover,
     })
+}
+
+/// 官方 demo 的清单条目（T-FIX-641）：**不读工程包**，卡片字段全部来自
+/// 固定清单（标题 / 封面文件名）与同名旁挂 `<stem>.meta.json`
+/// （作者 / 轨道数 / BPM / 小节 / 时长 / 曲风 / 专辑页字段）。
+///
+/// 与 [`load_demo_entry`] 的差别只有"元数据从哪来"：官方 demo 是
+/// 23–269 MB 的整包，清单阶段读不起（见 [`DEMO_LIST_MAX_BYTES`] 的
+/// 文档）。旁挂缺字段 ⇒ 留空/0，⛔ 不从文件名或封面猜内容。
+fn load_official_demo_entry(path: &Path, spec: &crate::demo_download::DemoSpec) -> DemoEntry {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let meta = read_sidecar_meta(path, stem);
+    let cover = official_demo_cover(path, spec);
+    DemoEntry {
+        source: DemoSource::File(path.to_path_buf()),
+        title: spec.title.to_owned(),
+        track_count: meta.track_count.unwrap_or(0),
+        author: meta.author.clone(),
+        genre: meta.genre.clone(),
+        bpm: meta.bpm.unwrap_or(0.0),
+        bars: meta.bars.unwrap_or(0),
+        duration_secs: meta.duration_secs.unwrap_or(0.0),
+        meta,
+        cover,
+    }
 }
 
 /// 全曲跨度实算：取全部轨道片段末端 tick 的最大值，按拍号换
@@ -422,7 +510,7 @@ fn author_name(author: &str) -> Option<String> {
 /// 文件缺失 ⇒ 全 `None`（对应详情行不出现）；文件在但解析失败
 /// ⇒ **响亮**报错并按全缺失处理，⛔ 不编造。字段不是非空字符串
 /// ⇒ 按缺失处理。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DemoMeta {
     /// 曲风/风格（同时是卡片主面的曲风行来源）。
     pub genre: Option<String>,
@@ -438,6 +526,16 @@ pub struct DemoMeta {
     pub license: Option<String>,
     /// 作者网站（只展示 URL 文本）。
     pub website: Option<String>,
+    /// 作者名（官方 demo 清单阶段不读容器，作者由此提供）。
+    pub author: Option<String>,
+    /// 非主总线轨道数（官方 demo 的卡片「详情」用）。
+    pub track_count: Option<usize>,
+    /// 工程速度（官方 demo 清单阶段不读容器，速度由此提供）。
+    pub bpm: Option<f64>,
+    /// 全曲小节数（官方 demo 清单阶段不读容器，跨度由此提供）。
+    pub bars: Option<usize>,
+    /// 全曲时长（秒）。
+    pub duration_secs: Option<f64>,
 }
 
 fn read_sidecar_meta(path: &Path, stem: &str) -> DemoMeta {
@@ -453,6 +551,18 @@ fn read_sidecar_meta(path: &Path, stem: &str) -> DemoMeta {
             .filter(|text| !text.is_empty())
             .map(str::to_owned)
     };
+    let integer = |value: &serde_json::Value, key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|number| usize::try_from(number).ok())
+    };
+    let number = |value: &serde_json::Value, key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .filter(|number| number.is_finite() && *number >= 0.0)
+    };
     match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(value) => DemoMeta {
             genre: field(&value, "genre"),
@@ -462,6 +572,11 @@ fn read_sidecar_meta(path: &Path, stem: &str) -> DemoMeta {
             copyright: field(&value, "copyright"),
             license: field(&value, "license"),
             website: field(&value, "website"),
+            author: field(&value, "author").and_then(|name| author_name(&name)),
+            track_count: integer(&value, "trackCount"),
+            bpm: number(&value, "bpm"),
+            bars: integer(&value, "bars"),
+            duration_secs: number(&value, "durationSecs"),
         },
         Err(error) => {
             eprintln!(
@@ -1753,6 +1868,100 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("临时目录");
         dir
+    }
+
+    /// T-FIX-641 判据：官方 demo 走固定清单口径 —— 超过 8 MiB 闸的
+    /// **官方已下载** demo 仍进清单（标题来自固定清单、细节来自旁挂
+    /// 元数据，清单阶段不读整包），且打开时能真实解析；同一目录里任意
+    /// 超限用户文件照旧进 blocked 且原因写明上限。
+    #[test]
+    fn oversized_official_demo_is_listed_and_openable_while_user_file_stays_blocked() {
+        let dir = demo_scan_dir("official");
+        let spec = crate::demo_download::DEMOS.first().expect("固定清单非空");
+        // 官方 demo：真实可解析容器 + 9 MiB 资产 ⇒ 整包 > 8 MiB 闸。
+        let project = yeban_model::samples::filled_project();
+        let payload = vec![7u8; 9 * 1024 * 1024];
+        let hash = yeban_model::AssetHash::of_bytes(&payload);
+        let mut assets = std::collections::BTreeMap::new();
+        assets.insert(hash, payload);
+        let archive = yeban_model::container::write_project_container(&project, &[], &assets)
+            .expect("写官方 demo 容器");
+        assert!(
+            archive.len() as u64 > DEMO_LIST_MAX_BYTES,
+            "夹具必须真的超过清单闸：{} 字节",
+            archive.len()
+        );
+        let official = dir.join(spec.file);
+        std::fs::write(&official, &archive).expect("写官方 demo");
+        let stem = official
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("文件名");
+        std::fs::write(
+            dir.join(format!("{stem}.meta.json")),
+            r#"{"genre":"流行","author":"夜半· Studio","trackCount":5,"bpm":96.0,"bars":32,"durationSecs":180.5}"#,
+        )
+        .expect("写旁挂");
+        // 任意用户文件：稀疏、超限、内容为空 ⇒ 只要读它就会失败。
+        let user = dir.join("huge-user.yeban");
+        let file = std::fs::File::create(&user).expect("建稀疏文件");
+        file.set_len(DEMO_LIST_MAX_BYTES + 1).expect("设置长度");
+        drop(file);
+
+        let scan = super::scan_file_demos(&dir);
+        let row = scan
+            .entries
+            .iter()
+            .find(|entry| entry.source == super::DemoSource::File(official.clone()))
+            .expect("官方已下载 demo 必须进清单");
+        assert_eq!(row.title, spec.title, "标题取固定清单的干净歌名");
+        assert_eq!(row.track_count, 5, "轨道数取旁挂元数据");
+        assert_eq!(row.bars, 32, "小节数取旁挂元数据");
+        assert!((row.duration_secs - 180.5).abs() < f64::EPSILON);
+        assert!((row.bpm - 96.0).abs() < f64::EPSILON);
+        assert_eq!(row.author.as_deref(), Some("夜半"));
+        assert_eq!(row.genre.as_deref(), Some("流行"));
+
+        let blocked = scan
+            .blocked
+            .iter()
+            .find(|blocked| blocked.label == "huge-user")
+            .expect("任意超限用户文件仍必须进 blocked");
+        assert!(
+            blocked.reason.contains("超过清单阶段读盘上限")
+                && blocked.reason.contains(&DEMO_LIST_MAX_BYTES.to_string()),
+            "原因必须写明上限：{}",
+            blocked.reason
+        );
+        assert_eq!(scan.blocked.len(), 1, "官方 demo 不得进置灰行");
+
+        // 「可打开」：同一份官方 demo 走打开路径能真实解析出工程。
+        let opened = super::load_file_demo_archive(&official).expect("官方 demo 必须可打开");
+        assert_eq!(opened.project.title, project.title);
+    }
+
+    /// T-FIX-641 判据：官方 demo 的清单阶段**不读整包** —— 一个超过
+    /// 8 MiB、内容为空（不可解析）的官方文件名，加上旁挂元数据，照样
+    /// 进清单（读整包就一定失败）。
+    #[test]
+    fn official_demo_listing_never_reads_the_archive() {
+        let dir = demo_scan_dir("official-sparse");
+        let spec = crate::demo_download::DEMOS.first().expect("固定清单非空");
+        let official = dir.join(spec.file);
+        let file = std::fs::File::create(&official).expect("建稀疏文件");
+        file.set_len(DEMO_LIST_MAX_BYTES + 1).expect("设置长度");
+        drop(file);
+        let stem = official
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("文件名");
+        std::fs::write(dir.join(format!("{stem}.meta.json")), r#"{"trackCount":4}"#)
+            .expect("写旁挂");
+        let scan = super::scan_file_demos(&dir);
+        assert_eq!(scan.entries.len(), 1, "官方 demo 必须进清单");
+        assert!(scan.blocked.is_empty(), "官方 demo 不得被体积闸拦下");
+        assert_eq!(scan.entries[0].title, spec.title);
+        assert_eq!(scan.entries[0].track_count, 4);
     }
 
     /// 清单阶段的三道闸：超过上限的文件**一个字节都不读**、坏容器留原因、
