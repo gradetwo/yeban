@@ -3120,6 +3120,84 @@ fn the_view_state_properties_drive_the_runtime_tree() {
     );
 }
 
+/// 判据：**读路径把树刷到当下**（`ISS-MWXBVH5X-24BE9D`，`UiSurface::refresh_runtime_tree`
+/// 的活窗口那一半）。
+///
+/// 读方法在返回前调 `refresh_before_read()`（`crates/yeban-ui-mcp/src/service.rs`），而
+/// `LiveAdminSurface` 覆写它去重抓活窗口的树 —— 但那条链在**活窗口**上一直没有行为判据：
+/// 同切片的两条旧判据只读源文件做字符串断言，把刷新改成空操作它们仍绿。
+/// 本条是活的那一半：视图态动作改了运行时树可见状态，服务读路径必须读到刚发生的变化。
+///
+/// ## 为什么用 `Tab`（`ToggleView`）做动作
+///
+/// 动作本身**不得**靠手动重抓树把结果写好。`Tab` 在画布上被解析成
+/// `Action::ToggleView`（`input.rs`），`apply_action` 只写
+/// `arrangement-view` 一个属性（`host.rs`），**不调** `refresh_tree` /
+/// `pump_meters` / 截图；它是 `toggle-view` 的等效视图状态回调（`toggle-view` 回调
+/// 本人写的是同一个属性，见 `host::wire_view_callbacks`）。
+///
+/// 注意：同切片旧判据的文档表把 `toggle-view` 的注入点写成
+/// `transport-view-toggle-button`，但那颗键**不存在**：注册表把它登记为已知缺席
+/// （`elements.rs`：\"顶栏没有视图切换键\"，T-FIX-122），`ui/node` 查它返回 `-32006`
+/// —— 旧表那一行已经过时，本条改走键盘 `Tab`。旧表本身不在本单改动范围，见回执。
+///
+/// 因此点击与读数之间**唯一**的重抓点，就是读方法自己的 `refresh_before_read()` ——
+/// 读到新树，只能是它刷的。
+///
+/// ## 为什么走 `ui/node` 而不是 `ui/property`
+///
+/// `ui/tree` / `ui/node` 投影的是**缓存的那棵树**（`surface.tree()`）；`ui/property`
+/// 的值本来就来自活组件，只有\"这个 ID 在不在树里\"那一问走缓存树。用 `ui/property`
+/// 读 `arrangement-view` 断新鲜度是测错了地方 —— 刷新改成空操作它照样绿。
+/// 这里用 `ui/node` 的有无（`workspace-arrangement-canvas` 与
+/// `workspace-session-canvas` 互斥）断新鲜度。
+///
+/// ## 两条会变红的注入（红对照，方式与失败输出见回执）
+///
+/// | 注入 | 位置 | 现象 |
+/// | :--- | :--- | :--- |
+/// | `refresh_runtime_tree` 改成返回 `Ok(())` 的空操作 | `src/live_surface.rs` | 读回来的还是动作前的那棵树 ⇒ 动作后两断言一起红 |
+/// | 摘掉 `ui/node` 分支的 `refresh_before_read()` | `crates/yeban-ui-mcp/src/service.rs` | 同上 ⇒ 动作后两断言一起红 |
+///
+/// ## 边界
+///
+/// 这里仍然**不**断言\"两次读之间树必须不变\"：那是把某一种缓存语义钉成契约。
+/// 钉住的是**新鲜度** —— 读必须看见刚发生的变化。
+#[test]
+fn ui_read_path_refreshes_to_the_current_runtime_tree_after_toggle_view() {
+    let (window, mut plane) = assemble_view_state_callbacks();
+
+    // 基线：编曲画布在树里、Session 画布不在（读数经服务读路径，已刷新）。
+    assert!(
+        node_exists(&mut plane, 1, "workspace-arrangement-canvas"),
+        "默认视图必须在运行时树里含 `workspace-arrangement-canvas`"
+    );
+    assert!(
+        !node_exists(&mut plane, 2, "workspace-session-canvas"),
+        "默认视图不许在运行时树里含 `workspace-session-canvas`"
+    );
+
+    // Tab（ToggleView）：只翻 `arrangement-view`，不重抓树。
+    assert!(
+        window.invoke_key_action("\u{0009}".into(), false, false, false, false),
+        "Tab 键必须被画布接受为视图切换"
+    );
+    assert!(
+        !window.get_arrangement_view(),
+        "Tab 切换后 `arrangement-view` 必须是 false"
+    );
+
+    // 服务读路径必须读到刚发生的变化：两画布互换。
+    assert!(
+        node_exists(&mut plane, 3, "workspace-session-canvas"),
+        "Tab 切换后运行时树必须含 `workspace-session-canvas`"
+    );
+    assert!(
+        !node_exists(&mut plane, 4, "workspace-arrangement-canvas"),
+        "Tab 切换后编曲画布必须从运行时树里消失（两画布互斥）"
+    );
+}
+
 // =====================================================================================
 // 判据：**抽屉不说谎** —— 没有提案的抽屉里没有编造的数据，只有一句用户可见的真话
 //
