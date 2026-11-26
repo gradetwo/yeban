@@ -858,6 +858,89 @@ impl SceneLaunchDisposition {
     }
 }
 
+/// ⭐ 任务单 `T-FIX-271`：一批走带命令的**如实落点**（"写进环几条 / 是否真落地"）。
+///
+/// 为什么需要它：设备腿的回执曾经只等 `TransportReading::commands_applied` 这个**全局累计
+/// 计数**前进到"当前 + 本批条数"。计数没有批次身份 ⇒ 环里残留的旧 `Stop`/`Seek` 被应用时
+/// 也会 +1，把被丢弃的 `Play` 伪装成"已生效"。本结构把三件事分开如实报告：
+///
+/// | 字段 | 含义 |
+/// | :--- | :--- |
+/// | `channel` | 命令通道在不在（⛔ `false` = 根本没有引擎，冷读不是"丢了命令"） |
+/// | `requested` / `written` | 本批想写几条 / `publish` 真正写进环几条（满环只写前缀） |
+/// | `confirmed` | 本批**后置条件**在读数上成立（见 [`TransportExpectation`]），⛔ 不是计数 |
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransportDispatch {
+    /// 命令通道是否存在（有引擎才有）。
+    pub channel: bool,
+    /// 本批请求的命令条数。
+    pub requested: usize,
+    /// 真正写进事件环的条数（`EventSender::publish` 的真实返回值）。
+    pub written: usize,
+    /// 本批的后置条件是否在引擎读数上成立。
+    pub confirmed: bool,
+}
+
+impl TransportDispatch {
+    /// 本批是否**完整落地**：通道在、一条没丢、后置条件成立。
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        self.channel && self.written == self.requested && self.confirmed
+    }
+
+    /// 本批是否**被环丢掉了一部分**（通道在场但没全写进去）。
+    #[must_use]
+    pub const fn is_dropped(&self) -> bool {
+        self.channel && self.written < self.requested
+    }
+}
+
+/// ⭐ 任务单 `T-FIX-271`：一批走带命令的**后置条件**（⛔ 不是计数器）。
+///
+/// 只回答一个事实：这些命令按序执行完之后，读数**应该**长什么样。
+/// - `Play` ⇒ 状态 `Playing`（位置由时钟推进，⛔ 不钉）；
+/// - `Stop` / `Pause` ⇒ 状态 `Stopped`（位置保留，⛔ 不钉）；
+/// - `SeekTicks(t)` ⇒ 位置 `t`（状态不变）。
+///
+/// 最后一条命令说了算（同一批里 `[Stop, SeekTicks(0)]` 就是"停住并回起点"）；
+/// 若批里最后落到 `Playing`，位置钉不住（时钟会立刻推进）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TransportExpectation {
+    state: Option<TransportState>,
+    position_ticks: Option<u64>,
+}
+
+impl TransportExpectation {
+    fn of(commands: &[TransportCommand]) -> Self {
+        let mut expectation = Self::default();
+        for command in commands {
+            match command {
+                TransportCommand::Play => expectation.state = Some(TransportState::Playing),
+                TransportCommand::Stop | TransportCommand::Pause => {
+                    expectation.state = Some(TransportState::Stopped);
+                }
+                TransportCommand::SeekTicks(tick) => expectation.position_ticks = Some(*tick),
+            }
+        }
+        // 播放中位置每量子都在走 ⇒ 只钉状态。
+        if expectation.state == Some(TransportState::Playing) {
+            expectation.position_ticks = None;
+        }
+        expectation
+    }
+
+    fn satisfied_by(&self, reading: &TransportReading) -> bool {
+        let state_ok = self.state.is_none_or(|state| reading.state == state);
+        // ⚠ 位置只在**停住**的读数上钉得住：播放中时钟每量子都在推进，
+        // `SeekTicks(t)` 落地之后位置立刻越过 `t` —— 那时"位置 == t"会永远不成立。
+        // 播放中丢掉的定位由"写进环几条"兜住（`written < requested` ⇒ 不确认）。
+        let position_ok = self.position_ticks.is_none_or(|tick| {
+            reading.state != TransportState::Playing && reading.position_ticks == tick
+        });
+        state_ok && position_ok
+    }
+}
+
 /// 频段独奏（Songmap follow-ons (a)）：独奏请求**真的落到哪条腿上** —— 如实报告，不假装成功。
 ///
 /// 与 [`SceneLaunchDisposition`] 同一张表：控制驱动直接调
@@ -983,6 +1066,10 @@ pub struct EngineHost {
     device: Option<OutputStreamHandle>,
     /// 走带动作日志（控制线程私有；判据的注入点，见 [`TransportActionRecord`]）。
     journal: Vec<TransportActionRecord>,
+    /// ⭐ `T-FIX-271`：上一次 [`EngineHost::send_transport`] 批次的**如实落点**
+    /// （写进环几条 / 后置条件是否成立）。⛔ 不是计数器：旧事件的 `commands_applied`
+    /// 推过目标也不构成"本批已生效"。
+    last_transport_dispatch: TransportDispatch,
     /// ⭐ ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`）。
     ///
     /// 为什么住在这里（⛔ 不是全局）：生命周期就是"这一代宿主"、写者只有 `reload` /
@@ -2680,23 +2767,88 @@ impl EngineHost {
     /// 控制驱动的**已知代价**：走带位置会因此前进一个运行时量子（128 帧）—— 那是
     /// "没有声卡"形态的代价，不是走带的语义。设备腿形态没有这个代价（推进由真实时钟给出）。
     pub fn send_transport(&mut self, commands: &[TransportCommand]) -> TransportReading {
-        if !self.transport_ready() {
-            return TransportReading::cold();
+        let (dispatch, reading) = self.dispatch_transport(commands);
+        self.last_transport_dispatch = dispatch;
+        reading
+    }
+
+    /// ⭐ `T-FIX-271`：上一次走带批次的如实落点。
+    ///
+    /// 判据与将来的界面都用它区分三种"没有生效"：没有通道（冷读）、环满丢命令
+    /// （[`TransportDispatch::is_dropped`]）、写进去了但后置条件没在读数上成立。
+    #[must_use]
+    pub const fn last_transport_dispatch(&self) -> TransportDispatch {
+        self.last_transport_dispatch
+    }
+
+    /// 发一批走带命令，**同时**交回"这批到底落没落地"。
+    ///
+    /// ## 回执口径（`T-FIX-271` 的全部内容）
+    ///
+    /// 旧实现两条腿都只等 `TransportReading::commands_applied` 这个**全局累计计数**
+    /// 到 `当前 + 本批条数`，且把 `publish` 的返回值与等待结果都丢掉。计数没有批次身份：
+    /// 环里残留的旧 `Stop`/`Seek` 被应用时也会 +1 ⇒ 本该失败的一次 `Play`（环满，
+    /// 一条都没写进去）会被旧事件"补票"成成功（`_confirmed = true`），界面拿到的是
+    /// 旧/新混合读数，看起来"播放已开始"而引擎其实停着。
+    ///
+    /// 现在三条如实分开：
+    ///
+    /// 1. **写进去几条**：`EventSender::publish` 返回实际写入条数（满环只写前缀），
+    ///    ⛔ 不再丢弃；没全写进去 ⇒ 本批不可能"已落地"，直接报告
+    ///    [`TransportDispatch::is_dropped`]，⛔ 不再等任何计数；
+    /// 2. **后置条件**：等的是"命令执行完之后读数该长什么样"
+    ///    （[`TransportExpectation`]：`Play` ⇒ `Playing`、`Stop` ⇒ `Stopped`、
+    ///    `SeekTicks(t)` ⇒ 位置 `t`），⛔ 不是计数；
+    /// 3. **控制腿**：命令由本线程 `pump(1)` 出队应用 ⇒ 判据读的是应用后的读数；
+    ///    环满时先泵一次腾空间再补写剩余（设备腿⛔ 不许推量子，如实报告丢弃）。
+    fn dispatch_transport(
+        &mut self,
+        commands: &[TransportCommand],
+    ) -> (TransportDispatch, TransportReading) {
+        let requested = commands.len();
+        if self.events.is_none() {
+            return (
+                TransportDispatch {
+                    channel: false,
+                    requested,
+                    written: 0,
+                    confirmed: false,
+                },
+                TransportReading::cold(),
+            );
         }
         let events: Vec<EngineEvent> = commands
             .iter()
             .map(|command| EngineEvent::Transport { command: *command })
             .collect();
-        let expected = commands.len() as u64;
-        if let Some(sender) = self.events.as_mut() {
-            sender.publish(&events);
-        }
-        let pumped = if self.runtime.is_some() {
-            self.pump(1)
-        } else {
-            // 设备腿：等引擎自己的读数确认（`TransportReading::commands_applied`）。
-            let _confirmed = self.await_device_commands(expected);
+        // ⚠ 借 `events` 的段落只包住 publish：下面要用 `&mut self` 推量子 / 轮询。
+        let mut written = match self.events.as_mut() {
+            Some(sender) => sender.publish(&events),
+            None => 0,
+        };
+        let control = self.runtime.is_some();
+        let pumped = if !control {
+            // 设备腿：**不推量子**（推进归真实时钟）。环满就如实报告丢弃，⛔ 不重试到成功。
             0
+        } else {
+            if written < requested {
+                // 环满：先泵一个量子把旧事件出队（腾出空间 + 顺带应用它们），再补写剩余。
+                self.pump(1);
+                if let Some(sender) = self.events.as_mut() {
+                    written += sender.publish(&events[written..]);
+                }
+            }
+            self.pump(1)
+        };
+        let expectation = TransportExpectation::of(commands);
+        let confirmed = written == requested && {
+            if control {
+                // 控制腿：命令已经在本线程的量子边界应用 ⇒ 直接读读数。
+                expectation.satisfied_by(&self.transport())
+            } else {
+                // 设备腿：等回调把后置条件做出来（有界；超时如实返回 false）。
+                self.await_device_commands(&expectation)
+            }
         };
         let reading = self.transport();
         for command in commands {
@@ -2707,7 +2859,15 @@ impl EngineHost {
                 quanta_pumped: pumped,
             });
         }
-        reading
+        (
+            TransportDispatch {
+                channel: true,
+                requested,
+                written,
+                confirmed,
+            },
+            reading,
+        )
     }
 
     /// ⭐ 任务单 `#283`：**产品路径的场景启动**（Session View 的场景按钮 → 引擎）。
@@ -2813,14 +2973,13 @@ impl EngineHost {
     /// 判据是引擎自己的读数（[`TransportReading::commands_applied`]）前进，不是猜意图：
     /// 每条命令（含幂等的 `Play`/`Stop`）都会让那个计数器 `+1`（`Transport::apply`）。
     /// 返回"是否在超时之前确认"。超时不是错误：调用方仍会读到引擎此刻的**真实**读数。
-    fn await_device_commands(&self, expected: u64) -> bool {
+    fn await_device_commands(&self, expectation: &TransportExpectation) -> bool {
         let Some(mirror) = self.transport_mirror.as_ref() else {
             return false;
         };
-        let target = mirror.read().commands_applied.saturating_add(expected);
         let deadline = std::time::Instant::now() + DEVICE_COMMAND_TIMEOUT;
         loop {
-            if mirror.read().commands_applied >= target {
+            if expectation.satisfied_by(&mirror.read()) {
                 return true;
             }
             if std::time::Instant::now() >= deadline {
@@ -4212,5 +4371,142 @@ mod tests {
         assert_eq!(host.automation_counts(), (3, 0));
         assert_eq!(host.automation_unapplied(), 1);
         assert_eq!(host.automation_unapplied_breakdown().send_gain, 1);
+    }
+    // ⭐⭐ T-FIX-271：走带回执**不得**用全局累计计数给被丢弃的命令补票。
+
+    /// 判据：环满 ＋ 环里残留旧 `Stop`，本批 `Play` 一条都没写进去 ⇒
+    /// 旧 `Stop` 被应用时把 `commands_applied` 推过目标，也**不构成**"本批已生效"。
+    ///
+    /// 这是活尖端缺陷的直接复现（缺陷三处：`publish` 返回值被丢、
+    /// `await_device_commands` 只等累计计数、`Transport::apply` 对任何事件 +1）。
+    /// 设备腿在本机造不出来（要真声卡），所以本判据**手工装配**设备腿的等价形态：
+    /// 有命令通道 + 有读数镜面、没有控制线程里的运行时（⛔ 不推量子）。
+    #[test]
+    fn a_stale_stop_in_a_full_ring_cannot_vouch_for_a_dropped_play() {
+        use std::sync::Arc;
+        use yeban_engine::transport::{Transport, TransportMirror};
+
+        let (mut sender, mut receiver) = event_channel(2);
+        // 环里先塞满两条**旧** `Stop`（回调还没消费，但已经在环里）。
+        for _ in 0..2 {
+            let wrote = sender.publish(&[EngineEvent::Transport {
+                command: TransportCommand::Stop,
+            }]);
+            assert_eq!(wrote, 1, "灌环必须真的写进去");
+        }
+
+        let mirror = Arc::new(TransportMirror::new());
+        let mut host = EngineHost::new();
+        host.events = Some(sender);
+        host.transport_mirror = Some(Arc::clone(&mirror));
+
+        // "音频回调"：稍后把环里的旧事件应用掉并发布读数（计数前进、状态仍是 Stopped）。
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let mut transport = Transport::stopped(48_000, 120.0);
+            let mut scratch = [EngineEvent::Idle; 8];
+            let mut applied = 0usize;
+            while receiver.drain_with(&mut scratch, |event| {
+                if let EngineEvent::Transport { command } = event {
+                    transport.apply(command);
+                    applied += 1;
+                }
+            }) > 0
+            {}
+            transport.publish(&mirror);
+            applied
+        });
+
+        // 环满 ⇒ 这条 `Play` 一条都写不进去。旧实现仍会"等计数"（250 ms），
+        // 被环里的旧 `Stop` 补票成"已确认"。
+        let reading = host.send_transport(&[TransportCommand::Play]);
+        let dispatch = host.last_transport_dispatch();
+        let applied = consumer.join().expect("回调线程");
+
+        assert_eq!(dispatch.requested, 1);
+        assert_eq!(
+            dispatch.written, 0,
+            "环满时 publish 一条都写不进去 —— 这个事实必须如实记录，⛔ 不能再被丢弃"
+        );
+        assert!(
+            dispatch.is_dropped(),
+            "本批被环丢掉了：调用方必须能看见（is_dropped）"
+        );
+        assert!(
+            !dispatch.confirmed,
+            "本批一条都没写进去 ⇒ 不得被判为'已确认'（旧实现正是被旧 Stop 的计数补票）"
+        );
+        assert!(
+            !dispatch.is_success(),
+            "被丢弃的 Play 不得报成功 —— 旧事件的计数不是本批的证据"
+        );
+        let after = host.transport();
+        assert_eq!(applied, 2, "旧 Stop 真的被应用了（这是补票的来源）");
+        assert_eq!(
+            after.commands_applied, 2,
+            "计数确实被旧事件推过了旧实现的目标（1）"
+        );
+        assert_eq!(
+            after.state,
+            TransportState::Stopped,
+            "Play 从未落地 ⇒ 引擎仍是停住"
+        );
+        assert_eq!(
+            reading.state,
+            TransportState::Stopped,
+            "返回值也必须是引擎此刻的真实读数（⛔ 不是'看起来在播'）"
+        );
+    }
+
+    /// 判据：回执问的是**后置条件**，⛔ 不是累计计数。
+    #[test]
+    fn the_batch_receipt_asks_the_post_condition_not_the_cumulative_counter() {
+        let playing = TransportReading {
+            state: TransportState::Playing,
+            position_ticks: 4_096,
+            ..TransportReading::cold()
+        };
+        // 旧事件把计数推到 9，但状态仍是停住 —— 对 `Play` 来说**没有**落地。
+        let stopped_with_stale_counter = TransportReading {
+            state: TransportState::Stopped,
+            commands_applied: 9,
+            ..TransportReading::cold()
+        };
+        assert!(
+            !TransportExpectation::of(&[TransportCommand::Play])
+                .satisfied_by(&stopped_with_stale_counter),
+            "计数再大也不能证明 Play 生效"
+        );
+        assert!(
+            TransportExpectation::of(&[TransportCommand::Play]).satisfied_by(&playing),
+            "Play 的后置条件就是状态变 Playing"
+        );
+
+        assert!(
+            TransportExpectation::of(&[TransportCommand::Stop, TransportCommand::SeekTicks(0)])
+                .satisfied_by(&stopped_with_stale_counter),
+            "停住并回起点：状态 Stopped ＋ 位置 0"
+        );
+        assert!(
+            !TransportExpectation::of(&[TransportCommand::SeekTicks(1_000)])
+                .satisfied_by(&stopped_with_stale_counter),
+            "定位的后置条件是位置真的到了，⛔ 不看计数"
+        );
+    }
+
+    /// 判据（正例）：控制腿（无设备）上 `Play` 真的落地 ⇒ 落点报成功，读数是在播。
+    #[test]
+    fn the_control_leg_reports_success_only_when_play_really_landed() {
+        let project = demo_project();
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("重建");
+        assert!(host.has_engine());
+
+        let reading = host.send_transport(&[TransportCommand::Play]);
+        let dispatch = host.last_transport_dispatch();
+        assert!(dispatch.channel, "控制腿有命令通道");
+        assert_eq!(dispatch.written, 1, "一条命令，一条写进去");
+        assert!(dispatch.is_success(), "真的落地了才报成功：{dispatch:?}");
+        assert_eq!(reading.state, TransportState::Playing);
     }
 }
