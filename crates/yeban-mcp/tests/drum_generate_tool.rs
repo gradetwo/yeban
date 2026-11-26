@@ -621,3 +621,29 @@ fn hiphop_drum_sidechain_self_loop_does_not_block_propose_section() {
         "生成鼓后的 propose_section 不得被侧链自环误判为环路: {section}"
     );
 }
+
+/// ⑫ T-FIX-705：电子族工厂鼓组的生成回执**不得**带 `unrecognisedEffectParam` 噪音。
+///
+/// 工厂鼓组是 `DeviceKind::InternalInstrument`，参数是鼓机键位（`kick_note` 等），
+/// 不属效果参数词表。修前每条生成都带一条噪音警告（ISS-MWXHJ9L9）；本条钉住 0 条，
+/// 同时保证 `warnings` 字段仍然存在（⛔ 不是把它删掉）。
+#[test]
+fn electronic_factory_kit_produces_no_effect_param_noise() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let result = generate(
+        &mut dispatcher,
+        json!({"style": "lofi", "bars": 2, "autoMerge": true}),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let warnings = result["data"]["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("生成回执必须带 warnings 数组: {result}"));
+    let noisy: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "unrecognisedEffectParam")
+        .collect();
+    assert!(
+        noisy.is_empty(),
+        "工厂鼓组不得产生 unrecognisedEffectParam: {noisy:?}"
+    );
+}

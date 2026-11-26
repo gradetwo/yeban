@@ -8869,6 +8869,18 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
         let Op::InsertDevice { device, .. } = op else {
             return;
         };
+        // T-FIX-705: 乐器设备的参数属于**另一套词表**（鼓机键位 `*_note`、合成器
+        // `kick_tune_hz` 等，见 `yeban-theory::drum_preset::kit_setup`），拿效果
+        // 参数注册表去判它属**范畴错误**：工厂鼓组每次生成都会带一条
+        // `unrecognisedEffectParam` 噪音，把真正的用户拼写错误淹没。
+        // 乐器参数的真实性由乐器侧自己的校验负责（鼓机键位见
+        // `drum_kit_missing_warnings`）；这里只审效果设备。
+        if matches!(
+            device.kind,
+            DeviceKind::InternalInstrument | DeviceKind::ExternalInstrument
+        ) {
+            return;
+        }
         for param in &device.params {
             if crate::effect_params::recognise(&param.name).is_some() {
                 continue;
@@ -11017,6 +11029,63 @@ mod tests {
             "细节必须点到缺的那个样本: {warning}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-705：乐器设备的参数不得按效果词表判噪音；效果设备拼错仍须警告。
+    ///
+    /// 工厂鼓组（`DeviceKind::InternalInstrument`）装的是 `kick_note` / `snare_note`
+    /// 这类**乐器**键位参数，效果注册表当然不认它们。按 kind 分流后：
+    ///
+    /// - 乐器设备：一条警告都不出；
+    /// - 效果设备（同一批里）：未识别拼写照旧报一条 —— 证明分流不是"把警告全关掉"。
+    #[test]
+    fn instrument_device_params_are_not_judged_by_the_effect_registry() {
+        let instrument = Op::InsertDevice {
+            track_id: EntityId::new(),
+            slot_index: 0,
+            device: DeviceDefinition {
+                id: EntityId::new(),
+                name: "Yeban Drum Kit (Synth)".to_owned(),
+                kind: DeviceKind::InternalInstrument,
+                bypassed: false,
+                params: ["kick_note", "snare_note", "closed_hat_note"]
+                    .into_iter()
+                    .map(|name| yeban_model::ParameterValue {
+                        name: name.to_owned(),
+                        value: 36.0,
+                        unit: None,
+                    })
+                    .collect(),
+                latency_samples: 0,
+                plugin: None,
+            },
+        };
+        let effect = Op::InsertDevice {
+            track_id: EntityId::new(),
+            slot_index: 1,
+            device: DeviceDefinition {
+                id: EntityId::new(),
+                name: "Yeban EQ".to_owned(),
+                kind: DeviceKind::InternalEffect,
+                bypassed: false,
+                params: vec![yeban_model::ParameterValue {
+                    name: "cutof".to_owned(),
+                    value: 1200.0,
+                    unit: None,
+                }],
+                latency_samples: 0,
+                plugin: None,
+            },
+        };
+        let warnings = effect_param_warnings(&[instrument, effect]);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "乐器参数必须零警告，效果拼错必须恰好一条: {warnings:?}"
+        );
+        assert_eq!(warnings[0]["code"], "unrecognisedEffectParam");
+        assert_eq!(warnings[0]["deviceName"], "Yeban EQ", "{warnings:?}");
+        assert_eq!(warnings[0]["paramName"], "cutof", "{warnings:?}");
     }
 
     /// T-FIX-2201：`Op::Batch` 内的 `InsertDevice` 也必须出警告（含 Batch 套 Batch）。
