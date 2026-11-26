@@ -2637,9 +2637,15 @@ pub struct BarDiff {
     /// 期望带下沿差值（B − A，保留 2 位小数；两版任一缺失时缺席）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub envelope_lo_delta: Option<f64>,
+    /// 期望带下沿在 A / B 两侧是否存在（`[A, B]`）。`envelope_lo_delta=None`
+    /// 既可能是“两侧都无带”也可能是“只有一侧有带”，本字段负责区分。
+    pub envelope_lo_present: [bool; 2],
     /// 期望带上沿差值（B − A，保留 2 位小数；两版任一缺失时缺席）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub envelope_hi_delta: Option<f64>,
+    /// 期望带上沿在 A / B 两侧是否存在（`[A, B]`）；与 `envelope_hi_delta`
+    /// 合读才能区分“两侧都无带”与“只有一侧有带”。
+    pub envelope_hi_present: [bool; 2],
     /// 期望带偏离量差值（B − A，保留 2 位小数）。
     pub target_deviation_delta: f64,
     /// 旋律和声组每拍触发数差值（B − A，保留 2 位小数）。
@@ -2650,7 +2656,7 @@ pub struct BarDiff {
     pub density_perc_onsets_per_beat_delta: f64,
     /// 8 频段倾斜补偿后能量差值（B − A，顺序 Sub → Air，保留 1 位小数，单位 dB）。
     pub bands_tilted_db_delta: [f64; 8],
-    /// 本行是否变了：任一差值取整后非 0，或段落改名。
+    /// 本行是否变了：任一差值取整后非 0、段落改名，或期望带存在性变化。
     pub changed: bool,
 }
 

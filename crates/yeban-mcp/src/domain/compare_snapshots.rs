@@ -268,6 +268,10 @@ fn diff_row(a: &BarRow, b: &BarRow) -> BarDiff {
         || score_dyn_delta != 0.0
         || envelope_lo_delta.is_some_and(|delta| delta != 0.0)
         || envelope_hi_delta.is_some_and(|delta| delta != 0.0)
+        // 期望带的存在性变化必须计入：A 无等级 / B 设了等级且张力在带内时，
+        // 两侧 delta 都是 None/0.0，只有 is_some 不同——漏掉就等于报“没变”。
+        || a.envelope_lo.is_some() != b.envelope_lo.is_some()
+        || a.envelope_hi.is_some() != b.envelope_hi.is_some()
         || target_deviation_delta != 0.0
         || density_pitched_onsets_per_beat_delta != 0.0
         || density_pitched_duty_delta != 0.0
@@ -288,7 +292,9 @@ fn diff_row(a: &BarRow, b: &BarRow) -> BarDiff {
         lufs_momentary_max_delta,
         score_dyn_delta,
         envelope_lo_delta,
+        envelope_lo_present: [a.envelope_lo.is_some(), b.envelope_lo.is_some()],
         envelope_hi_delta,
+        envelope_hi_present: [a.envelope_hi.is_some(), b.envelope_hi.is_some()],
         target_deviation_delta,
         density_pitched_onsets_per_beat_delta,
         density_pitched_duty_delta,
@@ -664,7 +670,45 @@ mod tests {
         let diff = diff_overviews(&a, &b);
         assert_eq!(diff.bar_diffs[0].envelope_lo_delta, None);
         assert_eq!(diff.bar_diffs[0].envelope_hi_delta, Some(0.0));
-        assert!(!diff.bar_diffs[0].changed);
+        // A 有带上沿、没有下沿；B 两侧都有 ⇒ 存在性变了，不能因为 delta=None 说没变。
+        assert_eq!(diff.bar_diffs[0].envelope_lo_present, [false, true]);
+        assert_eq!(diff.bar_diffs[0].envelope_hi_present, [true, true]);
+        assert!(diff.bar_diffs[0].changed);
+        assert_eq!(diff.summary.bars_changed, 1);
+    }
+
+    #[test]
+    fn envelope_band_appearance_and_disappearance_mark_the_row_changed() {
+        // A 无期望等级、B 设了等级且张力落在带内：deviation 两边都是 0.0，
+        // 只有 envelope 的存在性从“无带”变成“有带”。
+        let mut a = overview(vec![row(1, 0.5, -14.0, 0.0)]);
+        a.bar_series[0].envelope_lo = None;
+        a.bar_series[0].envelope_hi = None;
+        let b = overview(vec![row(1, 0.5, -14.0, 0.0)]);
+        let diff = diff_overviews(&a, &b);
+        assert_eq!(diff.bar_diffs[0].envelope_lo_present, [false, true]);
+        assert_eq!(diff.bar_diffs[0].envelope_hi_present, [false, true]);
+        assert!(diff.bar_diffs[0].changed);
+        assert_eq!(diff.summary.bars_changed, 1);
+        let wire = serde_json::to_value(&diff).expect("Diff 必须可序列化");
+        assert_eq!(
+            wire["bar_diffs"][0]["envelope_lo_present"],
+            json!([false, true]),
+            "序列化后也必须保留存在性，不能只活在 Rust 结构里"
+        );
+
+        // 反向 Some→None 同样必须记变化。
+        let reverse = diff_overviews(&b, &a);
+        assert_eq!(reverse.bar_diffs[0].envelope_lo_present, [true, false]);
+        assert_eq!(reverse.bar_diffs[0].envelope_hi_present, [true, false]);
+        assert!(reverse.bar_diffs[0].changed);
+        assert_eq!(reverse.summary.bars_changed, 1);
+
+        // 两侧都无带：存在性相同，仍然不能记变化。
+        let both_none = diff_overviews(&a, &a);
+        assert_eq!(both_none.bar_diffs[0].envelope_lo_present, [false, false]);
+        assert_eq!(both_none.bar_diffs[0].envelope_hi_present, [false, false]);
+        assert!(!both_none.bar_diffs[0].changed);
     }
 
     #[test]
