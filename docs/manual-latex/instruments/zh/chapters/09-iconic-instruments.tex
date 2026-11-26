@@ -1,0 +1,575 @@
+\chapter{传奇乐器听感图鉴}
+\label{chap:iconic-instruments}
+
+这一章不按“收藏目录”写，也不把品牌名当成音质保证。它只回答三个问题：这件
+乐器从哪来、听感靠什么辨认、在夜半里能落到哪条轨或哪个风格上。选进来的
+十四件乐器，是鼓机、合成器与电声乐器三条历史线里最常被拿来当“声音参照”的
+型号；它们不是夜半的复刻清单，更不是“买了就能复原”的采购单。
+
+史料部分只写厂牌、年代、可查的公开作品名；作品只列曲名与艺人，不引歌词。
+夜半的产品边界按活尖端代码写：有采样器的 SFZ 路径、有鼓机风格生成、
+有复音合成器的六个工厂预设；没有原厂授权采样、没有 303 的滑音旋钮、
+没有 707 套件、没有 Linn 套件、没有合唱与旋转扬声器。能近似的写“近似”，
+不能做的写“缺件”，不把“听起来像”写成“就是”。
+
+\section{听传奇乐器的四个维度}
+\label{sec:iconic-listening}
+
+判断一件传奇乐器，先别背年份。按下面四个维度听，四个维度都过一遍，再回头
+看品牌与型号；这样听到的是声音，不是故事。
+
+\begin{longtable}{p{0.16\linewidth}p{0.38\linewidth}p{0.36\linewidth}}
+\hline
+维度 & 听什么 & 典型例子 \\
+\hline
+\endhead
+包络与瞬态 & 起振多快、衰减多长、尾巴是否压过下一拍 & 808 底鼓的长尾、Linn 的干净短击、Rhodes 的钟形余韵 \\
+频谱与共振 & 基频落在哪、谐波是整齐还是被强调、滤波器有没有“唱歌” & 303 的高共振低通、DX7 的玻璃感、Hammond 的拉杆谐波 \\
+时间与运动 & 有没有滑音、摇摆、旋转、走带抖动 & 303 的 slide、909 的 shuffle、Leslie 的旋转、Mellotron 的走带 \\
+编排角色 & 它在乐队里替谁干活：低音、反拍、铺底、主奏、独奏 & 808 当低音、909 当四拍四骨架、MPC 当采样与音序中心 \\
+\hline
+\end{longtable}
+
+四个维度里，编排角色最先决定“像不像”。把 808 底鼓塞进一个需要干净反拍的
+流行段落，哪怕音色一模一样，角色也不对；把 Hammond 当铺底和弦，却要求它
+像钢琴一样短促，同样会听出问题。先定角色，再调包络与频谱，最后才处理运动。
+
+本章的“夜半落点”分三档：\textbf{直接可用}（工厂风格或预设本身就能给出
+主要特征）、\textbf{近似}（用现有器件拼出部分特征，明确缺哪一块）、
+\textbf{需要自备素材}（夜半不随附合法采样，必须用户自己准备 SFZ 或第三方
+乐器）。三档不会混着写。
+
+\section{鼓机与采样器}
+\label{sec:iconic-drum-machines}
+
+鼓机最早是“替代鼓手”的伴奏工具，后来反而成了电子鼓组的作曲家。下面五件
+型号分别代表三种路线：纯模拟（808）、模拟加数字采样（909）、全采样
+（707 与 Linn）、采样加音序一体（MPC）。它们的历史地位不等于夜半都有对应
+套件；每件都写清楚落点与缺口。
+
+\subsection{TR-808：失败的鼓机，成功的低音}
+\label{sec:iconic-808}
+
+Roland 在 1980 年推出 TR-808，用模拟电路生成鼓声，而不是播放采样。它想
+替代真鼓，但听感太“电子”，当时卖得不好；1983 年停产，产量约一万二千台。
+停产后的二手市场反而让它进入嘻哈、electro 与早期 house。1982 年的
+“Planet Rock”（Afrika Bambaataa）与“Sexual Healing”（Marvin Gaye）是
+它进入流行录音的早期代表。
+
+\textbf{听感指纹}：底鼓不是短促的“咚”，而是一个带下滑音高的长正弦式衰减，
+尾巴会拖到下一拍；军鼓偏噪声、军鼓与拍手都不追求真鼓的颗粒；手鼓与
+牛铃有明显的模拟电路味。808 的底鼓之所以能当低音，不是因为它“低”，
+而是因为它的基频落在低音区、衰减又足够长，重复起来就成了一条 bassline。
+
+\textbf{夜半落点}：直接可用。新建 MIDI 轨，按 F9 打开设备机架，用鼓机风格
+生成选 \texttt{Trap}（默认 140 BPM）或 \texttt{Hip-Hop}（默认 92 BPM），
+风格会装入 808 取向的合成鼓组；步进格保留 kick 在 1/3、snare 在 2/4，
+再用 \texttt{bass808} 轨写次低音。需要更长的底鼓尾，用 MCP
+\texttt{DeviceParam} 改 \texttt{kick\_decay\_s}；设备卡片没有独立鼓件旋钮，
+不要在界面上找“808 底鼓衰减”。
+
+\textbf{边界}：\texttt{bass808} 是独立声部，不是“底鼓自动变成贝斯”。
+底鼓提供低频脉冲，\texttt{bass808} 提供持续的低音线；两者叠在一起时要
+二选一当低频主载，另一个让路，否则低频会打架。
+
+\subsection{TR-909：模拟鼓身，数字金属}
+\label{sec:iconic-909}
+
+Roland 在 1983 年推出 TR-909，作为 808 的后继。它把底鼓、嗵鼓等“皮膜类”
+继续做成模拟电路，把踩镲、镲片做成数字采样；它也是 Roland 第一台带 MIDI
+的鼓机，音序器有 flam 与 shuffle。产量约一万台，商业上同样不算成功，
+后来却成为 house 与 techno 的骨架；“Love Can’t Turn Around”（1986）、“Strings of Life”（1987）与“The Whistle Song”（1991）是常见参照。
+
+\textbf{听感指纹}：底鼓比 808 更短、更硬，军鼓有明确的“裂”；踩镲与镲片
+是采样出来的金属声，比 808 的模拟金属更“干净利落”；四拍四的底鼓加上
+反拍开镲，是它最常被引用的节奏轮廓。909 的 shuffle 是它音序器的一部分，
+不是“909 音色”本身。
+
+\textbf{夜半落点}：近似，且骨架可用。鼓机风格生成选 \texttt{House}
+（默认 124 BPM）、\texttt{Techno}（默认 128 BPM）或 \texttt{EDM}
+（默认 128 BPM），生成器会装入 909 基表或 909 变体；在步进格里做
+“四拍四底鼓 + 2/4 军鼓或拍手 + 反拍开镲”。house 的开镲更长、techno
+的底鼓更短更硬，需要用 MCP \texttt{DeviceParam} 改
+\texttt{hihat\_open\_decay\_s} 与 \texttt{kick\_decay\_s} 时按这两个方向
+微调。界面没有“909 套件”这个单独选择项，风格生成就是落点。
+
+\textbf{边界}：909 的 shuffle 没有做成可点的全局旋钮；风格表里的 swing
+与音符微时值可以给出近似，但不能说“复刻 909 的 shuffle 手感”。
+
+\subsection{TR-707：八比特的干爽反拍}
+\label{sec:iconic-707}
+
+Roland 在 1985 年推出 TR-707，它是 Roland 第一台全部使用采样音的鼓机，
+采样分辨率以 8 bit 为主，金属件与部分包络另走 6 bit。它不能调每个鼓件的
+音高，但有全局四档 shuffle、LCD 与 MIDI/DIN 同步。它在早期 house，
+尤其是 acid house 里很常见；“Acid Tracks”（Phuture，1987）与
+“Can You Feel It?”（Mr. Fingers，1986）都用了 707。
+
+\textbf{听感指纹}：闭镲短、干、带一点量化噪声；军鼓与 rimshot 不厚，
+但反拍很利落；整体没有 808 那种长低频，也没有 909 那种大镲片的尾巴。
+它适合把节奏“切干净”，不适合独自撑起低频。
+
+\textbf{夜半落点}：需要自备素材或接受近似。夜半没有 707 套件；最接近的
+工厂路径是 \texttt{House} 或 \texttt{Techno} 风格生成出来的 909 套件，
+用其中较短的闭镲与干军鼓，再把开镲衰减压短。要真正保留 8 bit 的颗粒，
+应自备合法的 707 采样并装成 SFZ，经设备机架“加载 SFZ”绑到当前轨；
+\texttt{Bit Crusher} 只能给现有声音加量化感，不能把 909 变成 707。
+
+\textbf{边界}：707 的“干”不是把音量拉小；它是采样位深与包络共同造成的。
+只把 909 的开镲关掉，不会得到 707 的闭镲质感。
+
+\subsection{LinnDrum：采样鼓机的“干净时代”}
+\label{sec:iconic-linn}
+
+Roger Linn 在 1980 年做出 LM-1，第一次用数字采样回放真实鼓组；1982 年的
+LinnDrum（LM-2）把价格降下来，成为 1980 年代流行与 R\&B 的常见声音。
+它用 8 bit 左右的采样，鼓声干净、击点明确，和 808 的模拟长尾形成两条路。
+Michael Jackson 的《Thriller》专辑、Prince 的“When Doves Cry”与“1999”
+都属于 Linn 系列被反复引用的录音。
+
+\textbf{听感指纹}：底鼓短而有弹性，军鼓有清晰的击点但不脏；整体像“把
+真鼓录进机器再擦干净”，没有 808 的夸张低频，也没有 707 的明显量化噪。
+它最适合中速流行、R\&B 与需要精确反拍的段落。
+
+\textbf{夜半落点}：近似。夜半没有 Linn 套件；\texttt{Acoustic R\&B}
+或 \texttt{Acoustic Pop} 风格可以给出干净的反拍与中速骨架，但那不是
+1982 年的 8 bit 采样质感。要更接近，需自备合法的 Linn 采样 SFZ，
+装入采样器后按本章的“短击、干、少低频”方向处理；不要用 808 套件
+硬改，长尾会立刻暴露。
+
+\textbf{边界}：采样的“干净”与合成器的“干净”不是同一件事。夜半的
+Acoustic 风格是另一套鼓组，不能被称为 LinnDrum 复刻。
+
+\subsection{MPC：采样、切片与音序的一体机}
+\label{sec:iconic-mpc}
+
+Akai 与 Roger Linn 在 1988 年推出 MPC60：12 bit 采样、十六个力度感应
+鼓垫、内置音序器，三件事装进一台机器。它把“采样一段鼓、切成片、再用
+鼓垫重排”的 workflow 变成日常，成为 1990 年代嘻哈制作的中心设备之一。
+DJ Premier、Pete Rock、J Dilla 等制作人都长期使用 MPC 系列；
+《Ready to Die》《The Blueprint》《Enter the Wu-Tang》是常见参照专辑。
+
+\textbf{听感指纹}：不是某一种鼓声，而是一种“手感”：采样有颗粒、切片
+按瞬态切、演奏带轻微前後错位；鼓垫的力度与音序器的微时值共同决定律动。
+把 MPC 只当成“音色包”会丢掉它最重要的一半。
+
+\textbf{夜半落点}：需要自备素材，切片链路可用。夜半没有十六个鼓垫，
+但有一条批处理切片出口：用 \texttt{yeban-app} \texttt{--slice-audio loop.wav}
+\texttt{--slice-out ./loop-slices} 把一段鼓loop按 onset 切成
+\texttt{<stem>\_<nnn>.wav} 与一份 \texttt{<stem>.sfz}；再把这份 SFZ
+经设备机架绑到采样器轨，用 MIDI 音符重排。节奏骨架可用
+\texttt{Acoustic Boom Bap}（默认 90 BPM）；要 MPC 那种轻微拖拽，
+在钢琴卷帘里把弱拍音符手动前後移，或用音符的
+\texttt{micro\_timing\_ticks} 字段（当前界面没有专门的 MPC swing 面板）。
+
+\textbf{边界}：切片是音频文件操作，不是工程内的鼓垫演奏；夜半没有
+MPC 的 16-pad 打击界面，也没有“MPC swing”旋钮。采样素材必须已获授权，
+不要把商业录音直接切片后发布。
+
+\section{合成器}
+\label{sec:iconic-synths}
+
+合成器这条线选六件：303 代表“一条线加一个滤波器”的极简；Minimoog
+代表三振荡器加梯形滤波的模拟标准；DX7 代表数字 FM；Juno 代表可负担的
+DCO 复音；Prophet 代表可编程复音；Mellotron 代表磁带采样键盘。
+它们的技术路线不同，听感不能互相替代。
+
+\subsection{TB-303：为贝斯手设计，却被舞池改写}
+\label{sec:iconic-303}
+
+Roland 在 1981 年推出 TB-303，本意是给吉他手或独奏者一个可携带的
+“电脑贝斯”，用锯齿波或方波进 24 dB 低通，内置步进音序器。它没能
+说服目标用户，1984 年停产，产量约一万台。1980 年代中后期，芝加哥
+的制作人用二手 303 做出高共振的“酸”声；“Acid Tracks”（Phuture，
+1987）通常被当作 acid house 的起点。
+
+\textbf{听感指纹}：单音、窄、带鼻音的锯齿或方波；滤波器的截止与共振
+被推到极端时，音符会“唱歌”甚至自激；音符之间的 slide 让音高不是跳，
+而是滑过去；过载或失真会让它更凶。三者合起来才是 acid，不是单靠
+一个“酸”字。
+
+\textbf{夜半落点}：近似。选 \texttt{Sub Bass}（\texttt{synth:bass}），
+它的低截止、较高共振与少量驱动能给出 303 的低频骨架；但夜半的
+PolySynth 是固定 ADSR、没有可点的滑音手柄、也没有 303 的专用滤波器
+扫频。工程模型里有 \texttt{slide} 字段，当前 GUI 没有把它做成可拖动
+的滑音手柄；要真滑音只能经数据/MCP 写入，或使用外部 303/VST3。
+不要在界面上找“303 glide”旋钮。
+
+\textbf{边界}：Sub Bass 不是 303 复刻；它没有 24 dB 303 滤波器的
+共振曲线，也没有 accent 的包络重触发。把 Sub Bass 的 cutoff 拉低
+只能得到“暗”，不能得到 acid 的“尖叫”。
+
+\subsection{Minimoog：便携、三振荡器与梯形低通}
+\label{sec:iconic-minimoog}
+
+Moog 在 1970 年推出 Minimoog，把原本模块化、占房间的 Moog 合成器
+压成一台可携带的三振荡器单音合成器；它用梯形低通与饱和的混音器，
+成为后来“模拟合成器应该是什么样”的参照。它卖了约一万三千台，
+Herbie Hancock、Stevie Wonder、Kraftwerk、Pink Floyd 等都用过；
+“Chameleon”的贝斯、“Autobahn”与“Shine On You Crazy Diamond”
+是常见听感参照。
+
+\textbf{听感指纹}：三振荡器可以互相失谐、叠出厚而肥的 bass 或 lead；
+梯形低通的共振不会像 303 那样尖，而是带一点压缩和“圆”的拐角；
+把混音器推高会自然饱和。它的低音不是单纯的 sub，而是有中低频
+“肉”的 bass。
+
+\textbf{夜半落点}：近似。做 bass 用 \texttt{Sub Bass}（
+\texttt{synth:bass}）；做 lead 或中频旋律用 \texttt{Hollow Lead}
+（\texttt{synth:hollow}），两条支路的轻微失谐可以模拟一部分厚度。
+夜半只有两条振荡器支路、没有第三个振荡器、没有独立混音器饱和、
+没有可调滤波器包络；不要把“三振荡器”写成夜半的参数。
+
+\textbf{边界}：Minimoog 的“肥”来自三振荡器与梯形滤波的相互作用，
+不是把两个波表电平调高就能得到。需要更厚的三层时，只能多轨叠加，
+但要注意低频与中频的相位。
+
+\subsection{DX7：数字 FM 的玻璃与钟声}
+\label{sec:iconic-dx7}
+
+Yamaha 在 1983 年推出 DX7，用数字 FM 合成，六个算子、三十二种算法，
+是第一台真正大量进入录音室的数字合成器。它没有传统旋钮，编程靠菜单，
+但预设音色成了 1980 年代流行乐的通用语言；“When Doves Cry”里的
+Koto、“Take On Me”的 Bass 1、“Smooth Operator”与“Smooth Criminal”
+都是 DX7 被引用的例子。
+
+\textbf{听感指纹}：玻璃、金属、钟声、电钢琴的“叮”与“脆”；音色
+可以是干净的，也可以带复杂的非谐波；它的包络与算法组合能做出
+模拟合成器做不到的“数字冷光”。DX7 的 E Piano 1 预设甚至替掉了
+一部分 Rhodes 的市场。
+
+\textbf{夜半落点}：近似，且要区分“名字”与“引擎”。夜半的
+\texttt{FM Bell}（\texttt{synth:metallic}）名字里有 FM，但内置引擎
+是双振荡器波表加梯形低通，不是 FM 算子引擎；它能给玻璃/金属的
+听感，不能给 DX7 的算法、算子比率或反馈。若已安装
+\texttt{TX81Z - FM Piano.sfz}，可把它装到采样器轨，得到一台
+四算子 FM 电钢的近似（TX81Z 不是 DX7，但同属 FM 家族）。
+做“钟声”用 \texttt{FM Bell}，做“短促玻璃拨弦”用
+\texttt{Glass Pluck}（\texttt{synth:glass}）。
+
+\textbf{边界}：不要把 \texttt{FM Bell} 的参数表当成 DX7 的算法表；
+夜半没有算子、比率、反馈、算法选择。它只是波表预设的名字。
+
+\subsection{Juno：DCO、子振荡与“那道合唱”}
+\label{sec:iconic-juno}
+
+Roland 在 1982 年推出 Juno-60，1984 年推出 Juno-106。它们用数字控制
+振荡器（DCO）保证音准，用一个子振荡器加厚低音，用内置合唱把单振荡器
+的薄声音撑开。Juno 让复音合成器变得可负担，成为 1980 年代 synth-pop
+与 house 的常见声音；“Take On Me”“Time After Time”“Can You Feel It?”
+都用了 Juno 系列。
+
+\textbf{听感指纹}：DCO 的干净、稳定，加上子振荡器的低音，再加合唱
+造成的宽与软；pad 是“宽而不糊”，pluck 是“亮而不硬”。它的合唱
+不是装饰，是音色的骨架之一。
+
+\textbf{夜半落点}：近似，缺合唱。用 \texttt{Choir Pad}
+（\texttt{synth:vocal}）做宽 pad，用 \texttt{Glass Pluck}
+（\texttt{synth:glass}）做短拨弦；夜半没有内置合唱、镶边或相位器，
+所以 Juno 的“宽”只能靠多轨、失谐与混响/磁带饱和拼一部分，不能
+叫 Juno 复刻。需要真正的合唱，只能接第三方 VST3 或外部制作。
+
+\textbf{边界}：Juno 的 sub 振荡器不是夜半的可调参数；Choir Pad
+的 vocal 波表也不是采样合唱。两者只能在角色上对应，不能在电路上
+对应。
+
+\subsection{Prophet-5：第一台可编程复音}
+\label{sec:iconic-prophet}
+
+Sequential Circuits 在 1978 年推出 Prophet-5，用微处理器保存音色，
+是第一台完全可编程的复音合成器；它有五声部、两振荡器、梯形/ Curtis
+低通与 Poly-Mod。它成为 1980 年代流行与电影配乐的常客；
+“In the Air Tonight”、《Thriller》同名曲、“Everything In Its
+Right Place”与“I Can't Go for That”是常见参照。
+
+\textbf{听感指纹}：五声部的复音、温暖而有咬合力的振荡器、可保存的
+预设；pad 有“合唱感”但不靠效果器，lead 有模拟的厚度，bass 也能
+沉。它的 Poly-Mod 能让滤波器与振荡器互相调制，产生非典型的扫频。
+
+\textbf{夜半落点}：近似。用 \texttt{Hollow Lead} 做 lead、
+\texttt{Choir Pad} 做 pad、\texttt{Warm Organ} 做持续和弦；
+夜半的 16 声部比 Prophet 的 5 声部多，但没有 Poly-Mod、没有
+独立的滤波器包络与振荡器同步。不要把它当成“复刻 Prophet”。
+
+\textbf{边界}：复音数多不等于像 Prophet；Prophet 的“暖”来自
+振荡器与滤波器的模拟电路，夜半的波表只能给角色与大致频谱。
+
+\subsection{Mellotron：磁带做的“采样键盘”}
+\label{sec:iconic-mellotron}
+
+Mellotron 在 1963 年于英国伯明翰问世，用每个琴键对应的磁带来
+回放预录乐器；每段磁带约八秒，按下去播放，松开就回卷。它不是
+现代意义的数字采样器，而是“机械磁带采样键盘”。它在 1960 年代
+被 Beatles 用在“Strawberry Fields Forever”，被 King Crimson
+用在《In the Court of the Crimson King》，后来成为前卫摇滚的
+弦乐/合唱/长笛制造机。
+
+\textbf{听感指纹}：弦乐、合唱、长笛都带一点磁带噪、轻微的走带
+不稳与“每键一条磁带”的不均匀；它不是干净的采样，而是有机械
+痕迹的“录音回放”。八秒的长度也决定了它不能无限持续。
+
+\textbf{夜半落点}：需要自备素材或近似。夜半没有 Mellotron 磁带
+采样；用 \texttt{Choir Pad} 可以做合唱铺底，用
+\texttt{Tape Saturation} 的 \texttt{tape\_wow}/\texttt{tape\_flutter}
+可以给整段加走带抖动，但那不是逐键磁带的 Mellotron。要更接近，
+需自备合法的 Mellotron 采样 SFZ。不要把 Choir Pad 叫作
+Mellotron。
+
+\textbf{边界}：Tape Saturation 的 wow/flutter 调制整段信号，
+包括干声；它不是 Mellotron 的每键独立磁带，也不能做出八秒断带。
+
+\section{电声乐器}
+\label{sec:iconic-electric}
+
+电声乐器不是“合成器的一个预设”，它们的发声机构不同：Rhodes 用
+金属音叉（tine），Wurlitzer 用金属簧片（reed），Hammond 用音轮与
+拉杆。机构决定了瞬态和谐波，不能只靠一个波表名来替代。
+
+\subsection{Rhodes：音叉、钟声与立体颤音}
+\label{sec:iconic-rhodes}
+
+Harold Rhodes 的设计在 1965 年以 Fender Rhodes 的名义量产；它用
+琴槌敲金属音叉，靠拾音器转成电信号。它的声音像钟、像电钢琴，
+尾音长而圆；Suitcase 型号还有立体颤音。Miles Davis 的
+《In a Silent Way》《Bitches Brew》、Doors 的“Riders on the Storm”、
+Stevie Wonder 的“You Are the Sunshine of My Life”都是经典参照。
+
+\textbf{听感指纹}：起振有钟形的“叮”，中高频有金属泛音，尾音
+比 Wurlitzer 长、比 acoustic piano 更“电”；立体颤音让左右声道
+轻微反相摆动。它适合中速 ballad、fusion 与需要“温暖但带电”的
+键盘层。
+
+\textbf{夜半落点}：近似。用 \texttt{FM Bell}（\texttt{synth:metallic}）
+可以得到钟形起振与金属尾，但它的固定 ADSR 与波表不是 tine；
+若已安装 \texttt{TX81Z - FM Piano.sfz}，装到采样器轨更接近
+FM 电钢的听感。夜半没有颤音/立体颤音器件，也没有 Rhodes 专用
+采样；需要真 Rhodes 音色应自备合法 SFZ 或第三方乐器。
+
+\textbf{边界}：把 FM Bell 的低频拉低不会变成 Rhodes；tine 的
+非谐波与拾音器频响不是波表能完全复现的。
+
+\subsection{Wurlitzer：簧片、咬字与“ bark”}
+\label{sec:iconic-wurlitzer}
+
+Wurlitzer 电子钢琴从 1954 年生产到 1983 年，用金属簧片发声，
+比 Rhodes 更硬、更直接；200A 是最常见的舞台型号。Ray Charles
+的“What'd I Say”、Joe Zawinul 的“Mercy, Mercy, Mercy”、
+Supertramp 的“The Logical Song”、Queen 的“You're My Best Friend”
+都是常见参照。
+
+\textbf{听感指纹}：起振比 Rhodes 更“咬”，中频更突出，尾音更短；
+它有一种簧片式的“bark”，在低音区尤其明显。它适合 soul、R\&B、
+摇滚与需要“电钢琴但不飘”的段落。
+
+\textbf{夜半落点}：近似或自备素材。夜半没有 Wurlitzer 簧片模型；
+可用 \texttt{FM Bell} 降低截止、加一点 \texttt{Tape Saturation}
+的驱动来靠近它的“咬”，但没有簧片机构与 Tremolo。要保留
+200A 的咬字，需自备合法 Wurlitzer 采样 SFZ。
+
+\textbf{边界}：Wurlitzer 与 Rhodes 都是电钢，但一个簧片、一个
+音叉；把 Rhodes 的钟声调亮，不会得到 Wurlitzer 的 bark。
+
+\subsection{Hammond：音轮、拉杆与 Leslie}
+\label{sec:iconic-hammond}
+
+Hammond 的 B-3 从 1955 年生产到 1974 年，用音轮（tone wheel）
+产生接近正弦的谐波，再用九根拉杆（drawbar）按比例混合；
+Leslie 旋转扬声器用双速旋转的喇叭制造 Doppler 与幅度调制。
+“Green Onions”（Booker T. \& the M.G.'s，Hammond M-3）、
+“A Whiter Shade of Pale”（Procol Harum）、“Like a Rolling Stone”
+（Bob Dylan）、“I Want You (She's So Heavy)”（The Beatles）
+都是 Hammond 家族的参照。
+
+\textbf{听感指纹}：音轮给出稳定的谐波堆，拉杆决定“哪个泛音
+更响”；Leslie 让声音在空间里转，慢速像呼吸，快速像扫过。
+它没有钢琴的击弦瞬态，按下去就是持续的“风琴音”。
+
+\textbf{夜半落点}：近似，缺拉杆与 Leslie。用 \texttt{Warm Organ}
+（\texttt{synth:organ}）可以得到持续的风琴音色；若已安装
+\texttt{DrawbarOrganEmulation}\allowbreak\texttt{-20190712.sfz}，可装到采样器轨，
+得到更接近拉杆风琴的采样音色。夜半没有拉杆控件、没有旋转扬声器
+器件；需要 Leslie 的旋转，只能接第三方 VST3 或外部制作。
+
+\textbf{边界}：Warm Organ 是固定波表的 organ 预设，不是拉杆
+风琴；它没有 9 根拉杆的比例控制，也没有 Leslie 的旋转滤波。
+
+\section{六个“为什么”}
+\label{sec:iconic-why}
+
+这一节把最容易在制作里用错的六个原理单独拆开。它们不是历史八卦，
+而是决定“这个声音为什么能这样用”的机制。
+
+\subsection{为什么 808 的底鼓能当贝斯}
+\label{sec:iconic-why-808}
+
+808 底鼓的波形不是一声短促的“咚”，而是一个带音高下滑的脉冲
+进入长衰减。它的基频通常在几十赫兹，衰减足够长，重复时会在
+低频形成一条连续的“线”；这条线就是 bassline。鼓机的底鼓本来
+是节奏事件，但当它的尾巴跨过下一拍，节奏事件就变成了持续低音。
+
+夜半里要用好这一点，必须把“低频主载”分开：要么让底鼓的
+长尾当低音，\texttt{bass808} 只做点缀；要么让 \texttt{bass808}
+当持续线，底鼓缩短衰减只做冲击。两者同时全开，低频会互相
+掩蔽，听起来不是更厚，而是更糊。检查方法：solo 低频轨，
+听底鼓尾巴与 \texttt{bass808} 是否在同一频段抢同一个峰。
+
+\subsection{为什么 303 的滑音会“酸”}
+\label{sec:iconic-why-303}
+
+303 的滑音不是装饰，它让音高在音符之间连续变化；同时，高共振
+的低通滤波器会把某些谐波推出来，让音高变化变成“滤波器在唱歌”。
+当滑音、共振与过载同时存在，音色会带有一种不稳定的、液体般的
+“酸”感；单独的滑音或单独的共振都不够。
+
+夜半没有 303 的滑音手柄；工程模型有 \texttt{slide} 字段，但
+当前界面没有可拖动的滑音控件。Sub Bass 只能给低频骨架，
+不能给 303 的滤波器扫频。要练习这个原理，先用参考曲听“音高
+滑过去”与“滤波器共振峰跟着动”两件事，再决定是否值得接外部
+303/VST3；不要用 Sub Bass 硬模仿。
+
+\subsection{为什么切片与摇摆会互相破坏}
+\label{sec:iconic-why-slicing}
+
+切片（slicing）是按瞬态把一段音频切成小片；摇摆（swing）是把
+偶数拍或弱拍往后推。两者都改时间，但改的不是同一层：切片改的是
+音频文件里的边界，摇摆改的是音符触发时刻。先切片再摇摆，切片
+本身不会跟着动，只有触发点动；如果切点切在鼓的尾音中间，摇摆
+后的新触发会把尾音切断，听感反而更碎。
+
+夜半的切片出口是批处理：\texttt{--slice-audio} 按 onset 生成
+每片 WAV 与一份 SFZ，采样器加载后由 MIDI 音符触发；swing 或
+微时值应加在 MIDI 触发层，而不是指望切片自动重排。要保留
+原鼓loop的律动，切点应选在瞬态之间；要重排律动，先切干净，
+再在钢琴卷帘里移触发点。
+
+\subsection{为什么 707 与 909 的“金属”不一样}
+\label{sec:iconic-why-707-909}
+
+707 的金属件是全采样、以 8 bit 为主，声音干、短、带量化噪；
+909 的金属件是 6 bit 采样，底鼓与嗵鼓仍是模拟，所以它的金属
+更“干净利落”，底鼓却更硬。两者的差别不是“谁更高级”，而是
+采样位深与模拟/数字混合的比例不同。
+
+夜半没有 707 套件；用 909 套件的短闭镲去近似 707 的干爽，
+只能得到一部分。要练习分辨，选同一段四拍四，把 909 的开镲
+关掉、闭镲压短，再与 707 参考录音对比：707 的闭镲更短、更
+“方”，909 的金属更有镲片的尾巴。
+
+\subsection{为什么 Rhodes 与 Wurlitzer 都是电钢却不像}
+\label{sec:iconic-why-rhodes-wurli}
+
+Rhodes 用金属音叉，敲下去是钟形、尾音长、泛音偏金属；Wurlitzer
+用金属簧片，起振更咬、尾音更短、中频更突出。机构不同，瞬态
+与谐波就不同；这不是“调亮一点”或“加一点失真”能互换的。
+
+夜半没有这两种专用采样；FM Bell 可以给 Rhodes 的钟形起振，
+但不能给 tine 的非谐波；把 FM Bell 调亮也不会变成 Wurlitzer
+的簧片咬字。需要哪一种，就准备哪一种的合法采样，不要用一个
+电钢预设去冒充另一件。
+
+\subsection{为什么 Hammond 的拉杆与 Leslie 要分开听}
+\label{sec:iconic-why-hammond}
+
+拉杆决定“哪些泛音更响”，是频域混合；Leslie 决定“声音在空间
+里怎么转”，是时域/幅度调制。两者可以独立：没有 Leslie 的
+Hammond 仍然是 Hammond，没有拉杆的“旋转风琴”只是一个会转的
+管风琴。夜半的 Warm Organ 只给了固定的 organ 波表，没有拉杆
+比例，也没有 Leslie；听参考录音时，先只听拉杆的谐波组合，再
+单独听 Leslie 的慢速/快速旋转，不要混成一个“风琴味”。
+
+\section{夜半映射总表}
+\label{sec:iconic-yeban-map}
+
+下表把十四件乐器压成一张可查的表。“直接可用”表示工厂风格或
+预设能给出主要特征；“近似”表示只能给出角色与部分频谱；
+“自备素材”表示夜半不随附合法采样，必须用户自己准备 SFZ
+或第三方乐器。
+
+\begin{longtable}{p{0.13\linewidth}p{0.08\linewidth}p{0.22\linewidth}p{0.28\linewidth}p{0.15\linewidth}}
+\hline
+乐器 & 年代 & 听感指纹 & 夜半落点 & 档位 \\
+\hline
+\endhead
+TR-808 & 1980 & 长尾底鼓、噪声军鼓、模拟手鼓 & \texttt{Trap}/\texttt{Hip-Hop} 风格 + \texttt{bass808} & 直接可用 \\
+TR-909 & 1983 & 硬底鼓、裂军鼓、采样金属 & \texttt{House}/\texttt{Techno}/\texttt{EDM} 风格 & 近似 \\
+TR-707 & 1985 & 干、短、8 bit 金属 & 909 套件短闭镲；或自备 707 SFZ & 自备素材 \\
+LinnDrum & 1982 & 干净采样、短击、无长尾 & \texttt{Acoustic R\&B}/\texttt{Acoustic Pop}；或自备 SFZ & 自备素材 \\
+MPC & 1988 & 采样颗粒、切片、微时值 & \texttt{--slice-audio} $\to$ SFZ $\to$ 采样器 + \texttt{Boom Bap} & 自备素材 \\
+TB-303 & 1981 & 单音、高共振、滑音 & \texttt{Sub Bass}；无滑音/GUI 扫频 & 近似 \\
+Minimoog & 1970 & 三振荡器、肥 bass、梯形低通 & \texttt{Sub Bass} / \texttt{Hollow Lead} & 近似 \\
+DX7 & 1983 & 玻璃、金属、FM 电钢 & \texttt{FM Bell} / \texttt{Glass Pluck}；或 \texttt{TX81Z} SFZ & 近似 \\
+Juno & 1982 & DCO、子振荡、合唱 & \texttt{Choir Pad} / \texttt{Glass Pluck}；无合唱 & 近似 \\
+Prophet-5 & 1978 & 五声部、暖、Poly-Mod & \texttt{Hollow Lead} / \texttt{Choir Pad} / \texttt{Warm Organ} & 近似 \\
+Mellotron & 1963 & 磁带弦乐/合唱、走带痕迹 & \texttt{Choir Pad} + \texttt{Tape Saturation}；或 SFZ & 自备素材 \\
+Rhodes & 1965 & 音叉、钟形、长尾 & \texttt{FM Bell}；或 \texttt{TX81Z} SFZ & 近似 \\
+Wurlitzer & 1954 & 簧片、咬字、短尾 & \texttt{FM Bell} 低截止 + 驱动；或 SFZ & 近似 \\
+Hammond & 1955 & 拉杆谐波、Leslie 旋转 & \texttt{Warm Organ}；或 \texttt{DrawbarOrganEmulation} SFZ & 近似 \\
+\hline
+\end{longtable}
+
+\section{听辨练习}
+\label{sec:iconic-exercises}
+
+练习只用参考曲的鼓/键盘段落，不跟唱，也不复制歌词。每项都先听
+参考，再在夜半里做 A/B；做不出来就回到“四个维度”，不要靠调大
+音量掩盖差异。
+
+\begin{enumerate}
+  \item \textbf{808 与 909 的底鼓}：找同一首曲里的 808 长尾与 909
+        短击，各听两小节；在夜半分别用 \texttt{Hip-Hop} 与
+        \texttt{House} 风格生成，只保留 kick，比较尾巴是否跨拍。
+  \item \textbf{303 的滑音}：“Acid Tracks”里选一个音高连续变化的
+        片段；用 Sub Bass 弹同样的音高，先不做滑音，再加入
+        \texttt{slide}（若用外部数据）；听“跳”和“滑”的差别。
+  \item \textbf{707 与 909 的金属}：把 909 开镲关掉、闭镲压短，
+        与 707 参考录音比较；注意 707 的闭镲更短、更干，909
+        的镲片尾巴更长。
+  \item \textbf{Rhodes 与 Wurlitzer}：同一段慢歌，分别听
+        “Riders on the Storm”的 Rhodes 与“The Logical Song”的
+        Wurlitzer；在夜半都用 FM Bell，只改截止与驱动，感受
+        “钟形”和“簧片咬字”不是同一个方向。
+  \item \textbf{Hammond 的拉杆与 Leslie}：听“Green Onions”的
+        风琴谐波，再听一段有 Leslie 旋转的 Hammond；在夜半用
+        Warm Organ 做持续和弦，承认缺拉杆与旋转，不要用混响
+        代替 Leslie。
+\end{enumerate}
+
+\section{本章与帮助主题的映射}
+\label{sec:iconic-help-map}
+
+\begin{longtable}{p{0.42\linewidth}p{0.46\linewidth}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+\endhead
+听传奇乐器的四个维度 & \texttt{iconic-listening} \\
+TR-808 & \texttt{iconic-drum-808} \\
+TR-909 & \texttt{iconic-drum-909} \\
+TR-707 & \texttt{iconic-drum-707} \\
+LinnDrum & \texttt{iconic-drum-linn} \\
+MPC & \texttt{iconic-drum-mpc} \\
+TB-303 & \texttt{iconic-synth-303} \\
+Minimoog & \texttt{iconic-synth-minimoog} \\
+DX7 & \texttt{iconic-synth-dx7} \\
+Juno & \texttt{iconic-synth-juno} \\
+Prophet-5 & \texttt{iconic-synth-prophet} \\
+Mellotron & \texttt{iconic-synth-mellotron} \\
+Rhodes & \texttt{iconic-electric-rhodes} \\
+Wurlitzer & \texttt{iconic-electric-wurlitzer} \\
+Hammond & \texttt{iconic-electric-hammond} \\
+六个“为什么” & \texttt{iconic-why} \\
+夜半映射总表 & \texttt{iconic-yeban-map} \\
+听辨练习 & \texttt{iconic-exercises} \\
+\hline
+\end{longtable}
+
+\section{资料边界与延伸阅读}
+\label{sec:iconic-sources}
+
+本章的厂牌、年代、产量与作品归属，优先采用厂牌官方历史页、产品页与
+可查的百科条目；听感描述是编辑判断，不是测量结论。延伸阅读可按
+以下方向核对：Roland 的 808/909/303 官方历史页，Yamaha 的 DX7
+历史页，Sequential 的 Prophet-5 页面，Streetly Electronics 的
+Mellotron 资料，以及 Fender Rhodes、Wurlitzer、Hammond 的
+产品史资料。作品只列曲名，不引歌词；需要歌词文本时，另行处理
+版权，不把歌词写进本手册。

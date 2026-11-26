@@ -27,3 +27,13 @@ SFZ 音色库	SFZ instrument library	已核实	文件菜单可装载；当前轨
 辅助总线	aux bus	已核实	多条轨汇入统一处理；不挂乐器。
 主总线	master bus	已核实	最终汇流；不挂乐器。
 帮助主题映射	help-topic mapping	已核实	每章末尾表格：小节 → 应用内帮助锚点。
+传奇乐器	iconic instrument	已核实	被后世反复引用、具有可辨认听感指纹的代表性乐器型号；不等于“贵”或“老”。
+808 底鼓	808 kick	已核实	TR-808 的长衰减模拟底鼓；基频在低音区且尾巴跨拍，可承担 bassline，但它是独立声部而非自动贝斯。
+采样切片	sample slicing	已核实	按瞬态或显式切点把音频切成小片并生成采样区域；夜半走 `--slice-audio` 批处理出口。
+音序摇摆	swing quantization	已核实	把弱拍或偶数拍延后，形成“拖拽”律动；应与 MIDI 触发层配合，不等同于音频切片。
+拉杆	drawbar	已核实	Hammond 风琴上按比例混合各次谐波的滑块；夜半 Warm Organ 没有拉杆控制。
+旋转扬声器	rotary speaker	已核实	用旋转喇叭产生 Doppler 与幅度调制的 Leslie 类扬声器；夜半未提供。
+音叉电钢琴	tine electric piano	已核实	以金属音叉发声的电钢琴，如 Rhodes；起振呈钟形、尾音较长。
+簧片电钢琴	reed electric piano	已核实	以金属簧片发声的电钢琴，如 Wurlitzer；中频更咬、尾音更短。
+频率调制合成	FM synthesis	已核实	用调制器改变载波频率或相位来产生谐波的合成方式；DX7 的代表技术，不等同于夜半的 FM Bell 波表预设。
+磁带采样键盘	tape-sample keyboard	已核实	用预录磁带逐键回放的键盘，如 Mellotron；不是现代数字采样器，也不能无限持续。
