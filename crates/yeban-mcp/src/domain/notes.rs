@@ -80,7 +80,7 @@
 //! | 情形 | 结果 |
 //! | :--- | :--- |
 //! | `create: true` 且池里**已有** `clipId` | `CONFLICT`（`reason = clipAlreadyExists`）—— 与 `yeban_open_project` 的 `create` 同款：绝不覆盖 |
-//! | `create: true` 且 `ops` 里有**任何非 `add`** 的形态（`delete` / `move` / `velocity` / `transposeClip` / 音轨级开关…） | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向 |
+//! | `create: true` 且 `ops` 里有 `add` / 纯音轨元数据（`setTrackName` / `setTrackColor`）之外的形态（`delete` / `move` / `velocity` / `transposeClip` / 设备级 / 自动化级 / `removeClip`…） | `INVALID_PARAMETER_RANGE`（`reason = createRequiresAddOps`）—— 新片段里还没有音符可以被它们指向；纯音轨元数据不依赖新片段，与 `AddClip` 同批原子施加 |
 //! | `create: true` 且两个 `add` 抢同一个音符身份 | `INVALID_PARAMETER_RANGE`（`reason = duplicateNoteId`）—— 不静默去重 |
 //!
 //! 创建出来的片段**只在池子里**（本工具不摆放；摆放是 `Op::AddClipPlacement` 的事，
@@ -629,7 +629,7 @@
 //! 就当作新建"：后者会让一个打错的 `sceneId` **静默建出一个新场景**，而那正是本仓库
 //! "响亮失败、绝不静默降级"纪律要拦的形状。`create` 与工具顶层的 `create` 同词同义
 //! （`ADR-0001` D48）—— "目标不存在才新建，已存在就响亮拒绝"；两者不可能同时为真
-//! （顶层 `create: true` 只放行 `add`）。
+//! （顶层 `create: true` 只放行 `add` 与纯音轨元数据，仍不含 `setScene`）。
 //!
 //! 形态：`{"kind":"setScene","scene":{...}}` —— 载荷是**自包含**的 `scene` 对象
 //! （与 `setAutomationLane` 的 `lane`、`removeAutomationPoint` 的 `point` 同一形状）：
@@ -10597,26 +10597,10 @@ fn compile_inner(
                     new_bpm: *new_bpm,
                 }
             }
-            NoteOp::SetTrackName {
-                track_id, new_name, ..
-            } => {
-                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，逐字节比较）。
-                let track = project.track(track_id).map_err(|_| {
-                    Fault::domain_with_data(
-                        ErrorCode::EntityNotFound,
-                        format!("工程里没有身份 {track_id} 的音轨, 没有名字可以改"),
-                        serde_json::json!({
-                            "trackId": track_id.to_canonical_string(),
-                            "reason": "trackNotFound",
-                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
-                        }),
-                    )
-                })?;
-                Op::SetTrackName {
-                    track_id: *track_id,
-                    old_name: track.name.clone(),
-                    new_name: new_name.clone(),
-                }
+            // ⭐ T-FIX-650：这两个纯音轨元数据形态与 `compile_create` 共用同一份
+            // 编译（撤销载荷取自当前文档），⛔ 不写第二份语义。
+            NoteOp::SetTrackName { .. } | NoteOp::SetTrackColor { .. } => {
+                compile_track_metadata_op(&project, op)?.expect("音轨元数据形态必须编译出一条 Op")
             }
             NoteOp::SetClipPlacementDuration {
                 track_id,
@@ -10691,29 +10675,6 @@ fn compile_inner(
                     placement_id: *placement_id,
                     old_offset_samples: placement.offset_samples.unwrap_or(0),
                     new_offset_samples: *new_offset_samples,
-                }
-            }
-            NoteOp::SetTrackColor {
-                track_id,
-                new_color,
-                ..
-            } => {
-                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，`Option` 比对）。
-                let track = project.track(track_id).map_err(|_| {
-                    Fault::domain_with_data(
-                        ErrorCode::EntityNotFound,
-                        format!("工程里没有身份 {track_id} 的音轨, 没有色标可以改"),
-                        serde_json::json!({
-                            "trackId": track_id.to_canonical_string(),
-                            "reason": "trackNotFound",
-                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
-                        }),
-                    )
-                })?;
-                Op::SetTrackColor {
-                    track_id: *track_id,
-                    old_color: track.color.clone(),
-                    new_color: new_color.clone(),
                 }
             }
             NoteOp::SetTrackSampler {
@@ -12259,12 +12220,72 @@ pub fn routing_cleanup_ops(project: &YebanProjectV1, track_id: &EntityId) -> Vec
     ops
 }
 
+/// 编译**纯音轨元数据**形态（`setTrackName` / `setTrackColor`）。
+///
+/// 这两个形态只读写一条音轨的展示属性（名字 / 色标），一个音符、一条摆放、
+/// 一个设备节点、一条自动化状态都不读；撤销载荷一律取自**当前文档**。
+/// 普通编辑（[`compile_inner`]）与材料创建（[`compile_create`]）共用本函数，
+/// 避免"创建路径放行一套、普通路径又是另一套"的第二份语义。
+///
+/// 返回 `None` 表示传入的不是这两个形态（调用方按自己的分发继续处理）。
+fn compile_track_metadata_op(project: &YebanProjectV1, op: &NoteOp) -> Result<Option<Op>, Fault> {
+    match op {
+        NoteOp::SetTrackName {
+            track_id, new_name, ..
+        } => {
+            // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，逐字节比较）。
+            let track = project.track(track_id).map_err(|_| {
+                Fault::domain_with_data(
+                    ErrorCode::EntityNotFound,
+                    format!("工程里没有身份 {track_id} 的音轨, 没有名字可以改"),
+                    serde_json::json!({
+                        "trackId": track_id.to_canonical_string(),
+                        "reason": "trackNotFound",
+                        "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                    }),
+                )
+            })?;
+            Ok(Some(Op::SetTrackName {
+                track_id: *track_id,
+                old_name: track.name.clone(),
+                new_name: new_name.clone(),
+            }))
+        }
+        NoteOp::SetTrackColor {
+            track_id,
+            new_color,
+            ..
+        } => {
+            // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，`Option` 比对）。
+            let track = project.track(track_id).map_err(|_| {
+                Fault::domain_with_data(
+                    ErrorCode::EntityNotFound,
+                    format!("工程里没有身份 {track_id} 的音轨, 没有色标可以改"),
+                    serde_json::json!({
+                        "trackId": track_id.to_canonical_string(),
+                        "reason": "trackNotFound",
+                        "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                    }),
+                )
+            })?;
+            Ok(Some(Op::SetTrackColor {
+                track_id: *track_id,
+                old_color: track.color.clone(),
+                new_color: new_color.clone(),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
-/// [`Op::AddClip`]。
+/// [`Op::AddClip`]，可同批携带纯音轨元数据操作。
 ///
 /// 与 [`compile`] 的分工：`compile` 改**已存在**的片段（每条 `NoteOp` 一条 `Op`），
-/// 本函数建**新**片段（`ops` 全部折进 `AddClip` 的初始内容，因此产物恰好一条 `Op`）。
-/// 两者共用同一个 `NoteOp` 解析器与同一个发声数上限常量。
+/// 本函数建**新**片段（`add` 全部折进 `AddClip` 的初始内容）。纯音轨元数据
+/// （`setTrackName` / `setTrackColor`）不依赖新片段，可与建片段同批出现；它们
+/// 编译成既有 [`Op::SetTrackName`] / [`Op::SetTrackColor`]，与 `AddClip` 一起由
+/// 调用方放进同一条 `Op::Batch` 原子施加。其余形态仍拒绝。
 ///
 /// ⚠ 本函数**不摆放**：新片段只在 `clip_pool` 里。渲染与 `yeban_export_midi` 只遍历
 /// `track.clips`，因此未摆放的片段不出声 —— 这是刻意的（"配器材料"只要求池里有材料），
@@ -12274,8 +12295,10 @@ pub fn routing_cleanup_ops(project: &YebanProjectV1, track_id: &EntityId) -> Vec
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
 /// - 池里已有该 `clipId` → `CONFLICT`（`data.reason = "clipAlreadyExists"`）；
-/// - `ops` 里出现 `add` 之外的操作 → `INVALID_PARAMETER_RANGE`
-///   （`data.reason = "createRequiresAddOps"`）；
+/// - `ops` 里出现 `add` / `setTrackName` / `setTrackColor` 之外的操作 →
+///   `INVALID_PARAMETER_RANGE`（`data.reason = "createRequiresAddOps"`）；
+/// - `setTrackName` / `setTrackColor` 指向的音轨不存在 → `ENTITY_NOT_FOUND`
+///   （`data.reason = "trackNotFound"`），整批不建片段；
 /// - 两个 `add` 用同一个音符身份 → `INVALID_PARAMETER_RANGE`
 ///   （`data.reason = "duplicateNoteId"`）。
 pub fn compile_create(
@@ -12301,6 +12324,7 @@ pub fn compile_create(
         ));
     }
     let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+    let mut metadata_ops = Vec::new();
     for op in ops {
         match op {
             NoteOp::Add { note } => {
@@ -12315,20 +12339,29 @@ pub fn compile_create(
                     ));
                 }
             }
+            // ⭐ T-FIX-650：纯音轨元数据不读新片段里的音符、摆放或设备状态，
+            // 与"建片段"不矛盾。它们编译成既有 Op，与 `AddClip` 同批原子施加；
+            // 目标轨不存在则在这里响亮失败，整批不建片段。
+            NoteOp::SetTrackName { .. } | NoteOp::SetTrackColor { .. } => {
+                metadata_ops.push(
+                    compile_track_metadata_op(project, op)?
+                        .expect("音轨元数据形态必须编译出一条 Op"),
+                );
+            }
             other => {
                 return Err(Fault::domain_with_data(
                     ErrorCode::InvalidParameterRange,
                     format!(
-                        "`create: true` 时 `ops` 只允许 `add` (新片段里还没有音符可以被 \
-                         `delete`/`move`/`velocity` 指向; 音轨级的 \
-                         `setParam`/`setTrackMute`/`setTrackSolo`/`setAutomationLane`/\
-                         `removeAutomationPoint` 与建材料无关; 池级的 `removeClip` 更是 \
-                         与「建」相反的一步), 实际收到 `{}`",
+                        "`create: true` 时 `ops` 只允许 `add` 与纯音轨元数据 \
+                         (`setTrackName`/`setTrackColor`) —— 新片段里还没有音符可以被 \
+                         `delete`/`move`/`velocity` 指向; 音符级、片段级、摆放级、设备级、\
+                         自动化级形态都依赖既有内容; 池级的 `removeClip` 更是与「建」\
+                         相反的一步。实际收到 `{}`",
                         other.kind_name()
                     ),
                     serde_json::json!({
                         "reason": "createRequiresAddOps",
-                        "supportedKindsWhenCreating": ["add"],
+                        "supportedKindsWhenCreating": ["add", SET_TRACK_NAME_KIND, SET_TRACK_COLOR_KIND],
                         "received": other.kind_name(),
                     }),
                 ));
@@ -12340,13 +12373,17 @@ pub fn compile_create(
     // 导 MIDI 永远只能先手工造一个带音符的片段。
     // 旧的"空片段不是可用材料"担忧（`section_build` 的 `usable_materials`）由配器侧
     // 自己过滤空材料解决 —— 在**写入口**上禁掉空片段，代价是整条导入路径不可达。
-    Ok(vec![Op::AddClip {
+    let add_clip = Op::AddClip {
         clip: ClipPoolEntry {
             id: *clip_id,
             name: clip_name.to_owned(),
             content: ClipContent::Midi { notes },
         },
-    }])
+    };
+    // `AddClip` 保持在首位（旧响应 / 旧判据逐字节不变），元数据 Op 紧随其后。
+    let mut compiled = vec![add_clip];
+    compiled.extend(metadata_ops);
+    Ok(compiled)
 }
 
 /// 一次**摆放**的确定性标签：`(片段身份, 音轨身份, 起始 tick)`。
@@ -21179,10 +21216,10 @@ mod tests {
         assert_eq!(value["error"]["data"]["reason"], "clipAlreadyExists");
     }
 
-    /// `create: true` 只允许 `add`；其余（`delete` / `move` / `velocity` /
-    /// `transposeClip` / 音轨级开关）必须响亮失败。
+    /// `create: true` 只允许 `add` 与纯音轨元数据；依赖既有内容的形态
+    /// （`delete` / `move` / `velocity` / `transposeClip` / 音轨开关）必须响亮失败。
     #[test]
-    fn create_refuses_every_non_add_operation() {
+    fn create_refuses_operations_that_depend_on_existing_content() {
         let project = project_without_midi_clips();
         let (track_id, _) = lead_clip(&filled_project());
         let clip_id = deterministic_id("clip:needs-8:kinds");
@@ -21207,7 +21244,7 @@ mod tests {
                 TRANSPOSE_CLIP_KIND,
                 serde_json::json!({"kind": TRANSPOSE_CLIP_KIND, "deltaPitch": 2}),
             ),
-            // 两个音轨级开关与建材料**无关**：`create: true` 只收 `add`。
+            // 两个音轨开关改的是**播放状态**而不是纯元数据：`create: true` 仍拒绝。
             (
                 "setTrackMute",
                 serde_json::json!({"kind": "setTrackMute", "value": true}),
@@ -21231,6 +21268,123 @@ mod tests {
             assert_eq!(value["error"]["data"]["reason"], "createRequiresAddOps");
             assert_eq!(value["error"]["data"]["received"], kind);
         }
+    }
+
+    /// T-FIX-650：`add` + `setTrackName` + `setTrackColor` 同批 ⇒ 建片段并改轨名/色标。
+    /// 三者编译成既有 Op，由同一条 `Op::Batch` 原子施加；`AddClip` 仍在首位。
+    #[test]
+    fn create_with_pure_track_metadata_applies_in_one_batch() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:track-metadata");
+        let old_name = project.track(&track_id).expect("样本轨").name.clone();
+        let old_color = project.track(&track_id).expect("样本轨").color.clone();
+        let new_name = "T-FIX-650 renamed";
+        let new_color = "#22AA88";
+        let ops = parse_ops(&serde_json::json!([
+            add_json(0, 60),
+            {
+                "kind": SET_TRACK_NAME_KIND,
+                "trackId": track_id.to_canonical_string(),
+                "name": new_name,
+            },
+            {
+                "kind": SET_TRACK_COLOR_KIND,
+                "trackId": track_id.to_canonical_string(),
+                "color": new_color,
+            },
+        ]))
+        .expect("解析");
+
+        let compiled =
+            compile_create(&project, &track_id, &clip_id, "Seed", &ops).expect("同批必须被允许");
+        assert_eq!(compiled.len(), 3, "`AddClip` + 两条音轨元数据");
+        let Op::AddClip { clip } = &compiled[0] else {
+            panic!("首条必须是 Op::AddClip, 实际 {}", compiled[0].name());
+        };
+        assert_eq!(clip.id, clip_id);
+        let Op::SetTrackName {
+            old_name: compiled_old_name,
+            new_name: compiled_new_name,
+            ..
+        } = &compiled[1]
+        else {
+            panic!("第二条必须是 Op::SetTrackName, 实际 {}", compiled[1].name());
+        };
+        assert_eq!(compiled_old_name, &old_name);
+        assert_eq!(compiled_new_name, new_name);
+        let Op::SetTrackColor {
+            old_color: compiled_old_color,
+            new_color: compiled_new_color,
+            ..
+        } = &compiled[2]
+        else {
+            panic!(
+                "第三条必须是 Op::SetTrackColor, 实际 {}",
+                compiled[2].name()
+            );
+        };
+        assert_eq!(compiled_old_color, &old_color);
+        assert_eq!(compiled_new_color.as_deref(), Some(new_color));
+
+        let mut after = project.clone();
+        batch(&compiled).apply(&mut after).expect("整批施加");
+        let track = after.track(&track_id).expect("轨还在");
+        assert_eq!(track.name, new_name);
+        assert_eq!(track.color.as_deref(), Some(new_color));
+        let entry = after.clip_pool.get(&clip_id).expect("片段必须建成");
+        assert_eq!(entry.content.notes().expect("MIDI").len(), 1);
+    }
+
+    /// T-FIX-650：元数据指向不存在的轨 ⇒ 整批失败，片段**不建**。
+    #[test]
+    fn create_with_metadata_for_a_missing_track_builds_nothing() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:metadata-missing-track");
+        let missing_track = deterministic_id("track:needs-8:missing");
+        let ops = parse_ops(&serde_json::json!([
+            add_json(0, 60),
+            {
+                "kind": SET_TRACK_NAME_KIND,
+                "trackId": missing_track.to_canonical_string(),
+                "name": "ghost",
+            },
+        ]))
+        .expect("解析");
+        let fault = compile_create(&project, &track_id, &clip_id, "Seed", &ops)
+            .expect_err("目标轨不存在必须整批拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "trackNotFound");
+        assert_eq!(
+            value["error"]["data"]["trackId"],
+            missing_track.to_canonical_string()
+        );
+        assert!(
+            !project.clip_pool.contains_key(&clip_id),
+            "失败路径不得留下半成品片段"
+        );
+    }
+
+    /// T-FIX-650：`removeClip` 即使**单独**给出（不与其它 op 混用）也仍被
+    /// `createRequiresAddOps` 拒绝 —— 与「建」相反的一步不得混进创建批次。
+    #[test]
+    fn create_refuses_remove_clip_even_alone() {
+        let project = project_without_midi_clips();
+        let (track_id, _) = lead_clip(&filled_project());
+        let clip_id = deterministic_id("clip:needs-8:remove-alone");
+        let ops = parse_ops(&serde_json::json!([{"kind": REMOVE_CLIP_KIND}])).expect("解析");
+        let fault = compile_create(&project, &track_id, &clip_id, "Seed", &ops)
+            .expect_err("removeClip 必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "createRequiresAddOps");
+        assert_eq!(value["error"]["data"]["received"], REMOVE_CLIP_KIND);
+        assert_eq!(
+            value["error"]["data"]["supportedKindsWhenCreating"],
+            serde_json::json!(["add", SET_TRACK_NAME_KIND, SET_TRACK_COLOR_KIND])
+        );
     }
 
     /// 两个 `add` 抢同一个音符身份 ⇒ 响亮失败（不静默去重）。

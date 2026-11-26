@@ -2569,6 +2569,76 @@ fn needs_8_create_true_supplies_the_midi_material_arranging_requires() {
     );
 }
 
+/// T-FIX-650：`create: true` 同批 `add` + `setTrackName` —— 工具层真的接上了，
+/// 提案里既有 `AddClip` 也有 `SetTrackName`，合并后片段建成且轨名更新。
+#[test]
+fn fix_650_create_true_allows_track_metadata_in_same_batch() {
+    let scratch = Scratch::new("fix-650-track-metadata");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    let source_track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        .expect("样本里必须有 MIDI 音轨")
+        .id
+        .to_canonical_string();
+    let new_name = "T-FIX-650 e2e renamed";
+    let clip_id =
+        yeban_mcp::domain::ids::deterministic_id("clip:fix-650:e2e-metadata").to_canonical_string();
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track,
+            "clipId": clip_id,
+            "clipName": "Motif",
+            "create": true,
+            "includeOps": true,
+            "ops": [
+                {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+                {"kind": "setTrackName", "trackId": source_track, "name": new_name},
+            ],
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let op_kinds = created["data"]["willCreate"]["opKinds"]
+        .as_array()
+        .expect("opKinds 数组");
+    let op_kinds: Vec<&str> = op_kinds.iter().filter_map(Value::as_str).collect();
+    assert!(op_kinds.contains(&"AddClip"), "{created}");
+    assert!(op_kinds.contains(&"SetTrackName"), "{created}");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T-FIX-650" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程").clone();
+    let track = after
+        .tracks
+        .values()
+        .find(|track| track.id.to_canonical_string() == source_track)
+        .expect("目标音轨");
+    assert_eq!(track.name, new_name);
+    assert!(
+        after
+            .clip_pool
+            .values()
+            .any(|entry| entry.id.to_canonical_string() == clip_id),
+        "片段必须与轨名更新同批落盘"
+    );
+}
+
 /// `create: true` 的三条**响亮失败**口径（端到端；每条都在真实文件系统上）。
 #[test]
 fn needs_8_create_true_refuses_what_it_cannot_honour() {
@@ -2624,7 +2694,11 @@ fn needs_8_create_true_refuses_what_it_cannot_honour() {
                 "ops": [add.clone(), op.clone()],
             }),
         );
-        assert_domain_error(&outcome, "INVALID_PARAMETER_RANGE", "create 只允许 add");
+        assert_domain_error(
+            &outcome,
+            "INVALID_PARAMETER_RANGE",
+            "create 只允许 add 与纯音轨元数据",
+        );
         assert_eq!(outcome["error"]["data"]["reason"], "createRequiresAddOps");
     }
 

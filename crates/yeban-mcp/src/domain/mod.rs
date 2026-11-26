@@ -4373,13 +4373,15 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             });
         }
         notes::check_polyphony(project, &clip_id, &compiled)?;
+        // T-FIX-650：`ops` 现在可以同批携带纯音轨元数据，描述里的数字只数音符。
+        let note_count = note_ops
+            .iter()
+            .filter(|op| matches!(op, notes::NoteOp::Add { .. }))
+            .count();
         let description = if placement_raw.is_some() {
-            format!(
-                "新建并摆放 MIDI 片段: {clip_name} ({} 个音符) → 音轨 {track_id}",
-                note_ops.len()
-            )
+            format!("新建并摆放 MIDI 片段: {clip_name} ({note_count} 个音符) → 音轨 {track_id}")
         } else {
-            format!("新建 MIDI 片段: {clip_name} ({} 个音符)", note_ops.len())
+            format!("新建 MIDI 片段: {clip_name} ({note_count} 个音符)")
         };
         return propose_draft(
             domain,
