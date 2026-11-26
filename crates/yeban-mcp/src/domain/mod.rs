@@ -8120,6 +8120,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
             "locked": true,
             "advisoryLock": true,
             "tookOverStaleLock": false,
+            "lockWaitMs": 0,
             "bytes": bytes,
             "format": store::DOCUMENT_FORMAT,
             "historyRestored": false,
@@ -8158,6 +8159,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
     }
     let lock = store::lock(&path, lock_mode(read_only))?;
     let took_over_stale_lock = lock.took_over_stale_lock();
+    let lock_wait_ms = lock.waited_ms();
     domain.reset_history(SessionSeed {
         path: path.clone(),
         read_only,
@@ -8185,6 +8187,7 @@ fn apply_open(domain: &mut Domain, request: OpenRequest) -> Result<ToolResponse,
         // 崩溃遗留的陈旧锁被本次打开接管并重写 —— 这是 MUST-GATE-008
         // "不留下永久锁"的可观察证据。
         "tookOverStaleLock": took_over_stale_lock,
+        "lockWaitMs": lock_wait_ms,
         "lockFile": store::lock_path(&path).display().to_string(),
         "bytes": bytes,
         // 形态（唯一取值）+ 容器里另外两类条目的实际装载量（如实上报，不假装）。

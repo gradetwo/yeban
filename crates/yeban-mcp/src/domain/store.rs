@@ -341,6 +341,8 @@ pub fn not_a_container_fault(path: &Path, error: &ContainerError) -> Fault {
 pub struct AcquiredLock {
     /// RAII 守卫（`Drop` 释放建议锁）。
     pub guard: LockGuard,
+    /// 为拿到这把锁实际等待的毫秒数（0 = 一次就成了）。
+    pub waited_ms: u64,
 }
 
 impl AcquiredLock {
@@ -348,6 +350,11 @@ impl AcquiredLock {
     #[must_use]
     pub const fn took_over_stale_lock(&self) -> bool {
         self.guard.took_over_stale_lock()
+    }
+    /// 为拿到这把锁有界等待了多久（毫秒）。
+    #[must_use]
+    pub const fn waited_ms(&self) -> u64 {
+        self.waited_ms
     }
 }
 
@@ -359,10 +366,57 @@ impl AcquiredLock {
 ///   + 建议锁诊断）；
 /// - 平台无建议锁 → JSON-RPC 实现级 `-32005`（**不是**契约错误码，见 [`Fault::Impl`]）；
 /// - 文件系统失败 → `IO_ERROR` / `FILE_NOT_FOUND` / `DISK_FULL`。
+///
+/// 有界等待：遇到 WouldBlock 时的重试次数与每次步长（总上限 = 两者之积）。
+///
+/// T-FIX-663：只对瞬时占用退避；真正的活持有者会在预算耗尽后照旧得到
+/// PROJECT_LOCKED（载荷带 retryAfterMs），不抢锁、不无限等。
+const LOCK_WAIT_ATTEMPTS: u32 = 6;
+const LOCK_WAIT_STEP_MS: u64 = 10;
+/// PROJECT_LOCKED 载荷里的建议重试间隔（与上面的步长同源）。
+const LOCK_RETRY_AFTER_MS: u64 = LOCK_WAIT_STEP_MS;
+
+/// 判据缝（T-FIX-663）：让下一次 lock 先模拟一次瞬时占用，用来确定性地
+/// 验证有界等待路径。0 = 不模拟。
+#[cfg(test)]
+pub static SIMULATE_TRANSIENT_LOCK_HOLD: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// **拿到锁**（有界等待版）：瞬时占用时按 LOCK_WAIT_STEP_MS 退避重试，预算耗尽后
+/// 照旧返回 PROJECT_LOCKED（载荷带 retryAfterMs）。
 pub fn lock(project_path: &Path, mode: LockMode) -> Result<AcquiredLock, Fault> {
-    lock::acquire(project_path, mode)
-        .map(|guard| AcquiredLock { guard })
-        .map_err(|error| lock_fault(project_path, error))
+    let mut waited_ms = 0_u64;
+    for attempt in 0..=LOCK_WAIT_ATTEMPTS {
+        match lock::acquire(project_path, mode) {
+            Ok(guard) => {
+                // 判据缝：模拟一次瞬时占用（守卫立刻释放，下一轮重试）。
+                #[cfg(test)]
+                if SIMULATE_TRANSIENT_LOCK_HOLD.swap(0, std::sync::atomic::Ordering::SeqCst) > 0 {
+                    drop(guard);
+                    std::thread::sleep(std::time::Duration::from_millis(LOCK_WAIT_STEP_MS));
+                    waited_ms = waited_ms.saturating_add(LOCK_WAIT_STEP_MS);
+                    continue;
+                }
+                return Ok(AcquiredLock { guard, waited_ms });
+            }
+            // 只有瞬时占用才值得等：WouldBlock 说明有人正持有它；预算内重试，
+            // 预算耗尽后照旧响亮报 PROJECT_LOCKED（不抢、不无限等）。
+            Err(LockError::WouldBlock { snapshot }) => {
+                if attempt == LOCK_WAIT_ATTEMPTS {
+                    return Err(locked_fault_with_snapshot(project_path, &snapshot));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(LOCK_WAIT_STEP_MS));
+                waited_ms = waited_ms.saturating_add(LOCK_WAIT_STEP_MS);
+            }
+            Err(error) => return Err(lock_fault(project_path, error)),
+        }
+    }
+    Err(lock_fault(
+        project_path,
+        LockError::WouldBlock {
+            snapshot: LockFileSnapshot::read(&lock_path(project_path)),
+        },
+    ))
 }
 
 /// `read_only: bool` 形态的兼容入口（`domain/mod.rs` 的历史调用点）。
@@ -460,6 +514,8 @@ pub fn locked_fault_with_snapshot(project_path: &Path, snapshot: &LockFileSnapsh
             "heartbeatAgeSecs": heartbeat_age,
             "staleHeartbeatSecs": STALE_HEARTBEAT_SECS,
             "advisoryLockHeld": true,
+            // T-FIX-663：结构化的可重试信号，调用方无需猜退避时长。
+            "retryAfterMs": LOCK_RETRY_AFTER_MS,
         }),
     )
 }
@@ -1602,5 +1658,58 @@ mod tests {
             }),
             1_024 + 4_096
         );
+    }
+}
+
+/// T-FIX-663：瞬时锁占用有界等待并披露；活持有者仍 PROJECT_LOCKED（带 retryAfterMs）。
+#[cfg(test)]
+mod bounded_wait_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-bounded-{}-{tag}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    #[test]
+    fn a_transient_hold_is_waited_out_and_the_wait_is_disclosed() {
+        let dir = scratch("transient");
+        let project = dir.join("demo.yeban");
+        fs::write(&project, "{}").expect("占位");
+        SIMULATE_TRANSIENT_LOCK_HOLD.store(1, Ordering::SeqCst);
+        let acquired = lock(&project, LockMode::ExclusiveWrite).expect("瞬时占用必须等过去");
+        assert!(
+            acquired.waited_ms() >= LOCK_WAIT_STEP_MS,
+            "等待必须被如实披露: {} ms",
+            acquired.waited_ms()
+        );
+        drop(acquired);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_holder_still_reports_project_locked_with_retry_after() {
+        let dir = scratch("live");
+        let project = dir.join("demo.yeban");
+        fs::write(&project, "{}").expect("占位");
+        let guard = lock(&project, LockMode::ExclusiveWrite).expect("首次加锁");
+        let fault = lock(&project, LockMode::ExclusiveWrite).expect_err("活持有者必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::ProjectLocked));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("期望领域失败，得到 {fault:?}");
+        };
+        let data = data.as_ref().expect("PROJECT_LOCKED 必须带诊断载荷");
+        assert_eq!(
+            data["retryAfterMs"], LOCK_RETRY_AFTER_MS,
+            "结构化可重试信号必须给建议间隔"
+        );
+        drop(guard);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
