@@ -1240,6 +1240,12 @@ mod tests {
     /// 判据 10（T-FIX-329）：归档入口的**跨层核对** —— 音频片段引用的哈希缺索引
     /// 或缺 CAS 字节池条目 ⇒ [`SaveError::MissingAsset`]，目标文件一个字节都不写。
     /// 两条腿各红一次：腿 A 引用在索引里但字节池缺条目；腿 B 反过来。
+    ///
+    /// ⚠️ 腿 B 是**直接构造归档**再保存，因此它证的是"保存 API 不猜"：入口拿到的工程
+    /// 没索引就拒绝，⛔ 不在写盘路径上凭空补元数据。存量文件的兼容面走**装载**一侧
+    /// （`open_project_archive` 按池字节补登索引并留 `load_notes`，见
+    /// `tests/audio_index_backfill.rs`）：那条路能补登是因为它拿得到池字节，而这里
+    /// 补与不补的区别恰好就是"要不要替调用方编一份元数据"。
     #[test]
     fn an_archive_with_dangling_audio_assets_is_rejected() {
         let kick_hash = demo_project_assets()[0].0.clone();

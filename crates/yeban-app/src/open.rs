@@ -51,7 +51,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use yeban_model::container::{
     ContainerError, ContainerLimits, ProjectArchive, read_project_container,
 };
-use yeban_model::project::{ClipContent, YebanProjectV1};
+use yeban_model::project::{AssetMetadata, ClipContent, MediaKind, YebanProjectV1};
+
+/// 装载时补登的索引项用的许可标识（`[MUST-GATE-014]` 要求逐条可查）。
+///
+/// 补登的条目**不知道**原始许可（文件里根本没有这条记录），所以写 `unknown` 而不是
+/// 编一个看起来合理的值：可查 ≠ 看起来完整，`unknown` 是诚实的读数。
+const BACKFILLED_ASSET_LICENSE: &str = "unknown";
 
 /// 合法 `.yeban` 文件的字节上限：**4 GiB**（`1 << 32`）。
 ///
@@ -229,6 +235,19 @@ pub fn open_project_archive(
     limits: &ContainerLimits,
 ) -> Result<ProjectArchive, OpenError> {
     let mut archive = read_project_container(bytes, limits)?;
+    // T-FIX-329 的写前核对要求 Audio 片段的哈希**同时**在索引与池里；而今天 main 产出的
+    // 归档只有池、没有索引（`--import-audio` / 录音落地都只写池）。装载时按池字节把索引
+    // 补登回去，"打开→保存"才能闭环 —— 否则 329 一进 main，所有存量带音频工程都存不回去。
+    // 补登了什么必须能从装载结果里看见（本模块的既有约定），所以同时写一条 `load_notes`。
+    let backfilled = backfill_audio_index_from_pool(&mut archive);
+    if backfilled > 0 {
+        archive.load_notes.push(format!(
+            "资产索引补登：{backfilled} 个音频片段引用的资产在 `assets/` 池里有字节、但 \
+             `project.assets` 缺索引项；已按池字节补登（`byte_len` 取自池、`original_path` \
+             留空、`license` = `{BACKFILLED_ASSET_LICENSE}`）。本条只改内存中的装载结果，\
+             文件未被改写；下次保存会把补登后的索引一并写出。"
+        ));
+    }
     // T-FIX-330：容器读成功只证明 `assets/{sha256}` 的**字节与名字**自洽；
     // 它不证明工程 / 历史引用的哈希真的在池里。默认形态把缺口写进 `load_notes`
     // 并随 `OpenedProject.asset_audit` 交给 UI；严格形态（`OpenProjectOptions::
@@ -245,6 +264,70 @@ pub fn open_project_archive(
         ));
     }
     Ok(archive)
+}
+
+/// 按资产池字节补登 `project.assets` 缺失的索引项，返回补登条数。
+///
+/// ## 为什么需要（T-FIX-329 的兼容面）
+///
+/// 329 让保存入口拒绝"音频片段引用的哈希缺索引或缺池字节"。而**今天 main 产出的归档
+/// 恰恰缺索引**：`--import-audio` 与录音落地都只往 CAS 池写字节。于是 329 一合入，
+/// 存量带音频工程就会"能打开、存不回去"。修"以后不再产生"（384）治不了已有文件；
+/// 这条修的是"已有文件还能不能救"。
+///
+/// ## 边界（刻意窄）
+///
+/// - **只补被 `ClipContent::Audio` 引用、且池里真有字节**的哈希。池里也没有的（真缺口）
+///   一律不补 —— 留给 [`audit_project_assets`] 的 `missing` 去报，本函数⛔ 不制造"看着有、
+///   其实没有"的条目。
+/// - **只补索引，不动池**：字节是权威，本函数一个字节都不改。
+/// - 池里没被任何片段引用的多余资产**不补** —— 它们必须继续出现在
+///   `AssetAudit::unindexed_pool` 里（T-FIX-330 的读数语义）。
+///
+/// ## 确定性
+///
+/// 合成元数据只取输入里已有的信息：`byte_len` 取自池（重复哈希按写出端的"最后一次胜出"
+/// 取值，与 [`crate::save`] 的去重语义一致）、`media_kind` 恒 `Audio`（引用它的就是音频
+/// 片段）、`original_path` 留空（`AssetMetadata` 文档写明它只留痕、不参与寻址）、
+/// `license` 用 [`BACKFILLED_ASSET_LICENSE`]。⛔ 不写机器相关路径，同一份字节在任何机器上
+/// 补登结果相同。
+fn backfill_audio_index_from_pool(archive: &mut ProjectArchive) -> usize {
+    let mut missing_index = BTreeSet::new();
+    for entry in archive.project.clip_pool.values() {
+        if let ClipContent::Audio { asset, .. } = &entry.content
+            && !archive.project.assets.contains_key(asset)
+        {
+            missing_index.insert(asset.clone());
+        }
+    }
+    if missing_index.is_empty() {
+        return 0;
+    }
+
+    let mut pool_lens: BTreeMap<yeban_model::AssetHash, u64> = BTreeMap::new();
+    for (hash, data) in &archive.assets {
+        // 倒序不需要：`BTreeMap::insert` 覆盖语义与"最后一次出现胜出"一致。
+        pool_lens.insert(hash.clone(), u64::try_from(data.len()).unwrap_or(u64::MAX));
+    }
+
+    let mut backfilled = 0;
+    for hash in missing_index {
+        let Some(byte_len) = pool_lens.get(&hash).copied() else {
+            continue; // 池里也没有 ⇒ 真缺口，留给 audit.missing
+        };
+        archive.project.assets.insert(
+            hash.clone(),
+            AssetMetadata {
+                hash,
+                original_path: String::new(),
+                byte_len,
+                media_kind: MediaKind::Audio,
+                license: BACKFILLED_ASSET_LICENSE.to_owned(),
+            },
+        );
+        backfilled += 1;
+    }
+    backfilled
 }
 
 /// **纯函数**：容器字节 → `YebanProjectV1`（只要工程文档）。
