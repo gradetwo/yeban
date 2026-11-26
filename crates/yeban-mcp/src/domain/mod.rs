@@ -8939,6 +8939,8 @@ fn proposal_warnings(
 ) -> Vec<Value> {
     let mut warnings = effect_param_warnings(ops);
     warnings.extend(device_on_silent_track_warnings(project, ops));
+    // T-FIX-647：通道条遮挡预检（只警告、不阻断；与母带同一判定、同一形状）。
+    warnings.extend(ignored_strip_devices_warnings(project, ops));
     // T-FIX-154：绑定期预检（只警告、不阻断）。
     warnings.extend(sampler_binding_warnings(project_path, ops));
     warnings
@@ -9279,6 +9281,45 @@ fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<
         }));
     });
     warnings
+}
+
+/// T-FIX-647：通道条遮挡预警 —— 设备链编辑后，轨上有非旁通设备的通道条参数
+/// 被来源规则忽略时响亮点名。
+///
+/// ⚠ **不阻断**：装是合法的（第二台设备照常进链、提案计数照常前进），只是它的
+/// 通道条参数在渲染里不会被采纳 —— 调用方必须从这条警告看出来，而不是事后
+/// 才发现压缩器没起作用。判定与形状**逐字复用**母带那条
+/// [`render::ignored_strip_devices_warning`]（⛔ 不另写第二条规则）：同一函数、同一
+/// `code` / `severity` / `blocking` / `count` / `devices[]` / `hint`。
+///
+/// 口径：
+/// - 只看本批 `InsertDevice` / `RemoveDevice` **真的触及**的轨（`walk_ops` 递归进
+///   `Batch`；其余轨既有的遮挡不是本次编辑造成的，不在这里重复报）；
+/// - 在**模拟后**的工程上判定（`propose_draft` 传进来的就是模拟工程）⇒ 插第二台
+///   报、删首台后第二台转正就不报、插第三台把第二、三台一起点名；
+/// - 旁通设备不算被忽略（与渲染侧同一条规则：旁通本来就不进信号链）；
+/// - 主总线不豁免：来源规则是逐轨的，`strip_source_slot` 对主总线的设备链同样只认
+///   首台（与 `deviceOnSilentTrack` 的主总线豁免不同 —— 那条豁免的理由是"主总线
+///   0 片段是结构使然"，这里不适用）。
+fn ignored_strip_devices_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
+    let mut touched: Vec<EntityId> = Vec::new();
+    walk_ops(ops, &mut |op| {
+        let track_id = match op {
+            Op::InsertDevice { track_id, .. } | Op::RemoveDevice { track_id, .. } => {
+                Some(*track_id)
+            }
+            _ => None,
+        };
+        if let Some(track_id) = track_id
+            && !touched.contains(&track_id)
+        {
+            touched.push(track_id);
+        }
+    });
+    touched
+        .into_iter()
+        .filter_map(|track_id| render::ignored_strip_devices_warning(&project.tracks, &[track_id]))
+        .collect()
 }
 
 /// 提案类工具里**明确没接线**的那部分（如实上报，不藏在错误码后面）。

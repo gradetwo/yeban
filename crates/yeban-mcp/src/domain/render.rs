@@ -1767,7 +1767,11 @@ fn silent_sources_warning(reports: &[SourceReport]) -> Option<Value> {
 /// 不看未进渲染图的轨。
 /// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`（与削波预警同一条纪律）。
 /// 空 ⇒ `None`（**没有这条预警**，不是恒报）。
-fn ignored_strip_devices_warning(
+///
+/// T-FIX-647：同一判定、同一形状也被提案侧（`domain::proposal_warnings`，逐条
+/// 被设备链编辑触及的轨）与分轨侧（`domain::stems::StemRow::strip_warning`，逐条
+/// 出文件的轨）复用 —— ⛔ 不另写第二条规则，三处读数必须逐字同源。
+pub(crate) fn ignored_strip_devices_warning(
     tracks: &BTreeMap<EntityId, TrackV3>,
     source_nodes: &[EntityId],
 ) -> Option<Value> {

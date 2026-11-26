@@ -460,16 +460,24 @@ fn undo_display_schema() -> Value {
 /// `schemas/mcp-tools.schema.json` 的 `definitions.WarningCode.enum`（机械对账 =
 /// `scripts/guards/check_warning_codes.py`：实现侧构造点与该名册必须**集合相等**）；
 /// 这里的子集由**调用链现读**得来（台账 §22.16）：`proposal_warnings`（`domain/mod.rs`，=
-/// `effect_param_warnings` ＋ `device_on_silent_track_warnings`）的唯一调用点是 `propose_draft`，
-/// 而 `propose_draft` 的读数经 `apply_propose` 拼装点同时喂给 `propose_section` / `edit_notes` /
-/// `set_macro` ⇒ 这三个工具只会发这两枚。
+/// `effect_param_warnings` ＋ `device_on_silent_track_warnings` ＋
+/// `ignored_strip_devices_warnings`）的唯一调用点是 `propose_draft`，而 `propose_draft`
+/// 的读数经 `apply_propose` 拼装点同时喂给 `propose_section` / `edit_notes` /
+/// `set_macro` ⇒ 这三个工具的 `warnings[].code` 只会发这三枚（T-FIX-647：
+/// `ignoredStripDevices` 由提案侧与母带侧**共用** —— 同一判定、同一形状，母带那枚
+/// 登记不变；`sampler_binding_warnings` 同批也挂进 `warnings[]`，但它用的是 `kind`
+/// 不是 `code`，⛔ 不进这个名册）。
 /// ⚠ 名册里不广播的 SFZ 三枚（`sfzSamplesUnreadable` / `sfzCcGatedSilence` /
 /// `sfzSampleBudgetTruncated`）⛔ 不在任何子集里
 /// —— 它们只出自 `yeban_load_sfz` 的响应构造器（`domain/sfz.rs` 的 `samples_warning` /
 /// `budget_truncation_warning` / `cc_gate_warning`，经 `all_warnings` 装配），
 /// 而 `for_tool` 对扩展工具返回 `None`（不广播 outputSchema，常驻判据
 /// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它们由契约名册兜住，⛔ 不许为凑等式造假 schema。
-const PROPOSAL_WARNING_CODES: [&str; 2] = ["deviceOnSilentTrack", "unrecognisedEffectParam"];
+const PROPOSAL_WARNING_CODES: [&str; 3] = [
+    "deviceOnSilentTrack",
+    "ignoredStripDevices",
+    "unrecognisedEffectParam",
+];
 
 /// ⭐ `data.warnings[].code` 的逐工具子集（母带）。六条来源 `clipping_warning` +
 /// `silent_sources_warning` + `ignored_strip_devices_warning` +
@@ -492,10 +500,13 @@ const RENDER_WARNING_CODES: [&str; 6] = [
 /// 提案族 `warnings[]` 的**逐条形状** —— 三个工具共用一份，因为它们的读数来自同一拼装点
 /// （⛔ 不是三份手抄：`edit_notes` 原本内联了这一份，只是 `code` 没带名册）。
 ///
-/// `required` 只放 `code` + `hint`：**两条**构造点都带这两个键，其余键随 code 变化
-/// （未识别参数四键 / 静音轨六键）⇒ 取**并集**逐个声明类型，但 ⛔ 不声明 `additionalProperties: false`
+/// `required` 只放 `code` + `hint`：**三条**构造点都带这两个键，其余键随 code 变化
+/// （未识别参数四键 / 静音轨六键 / 通道条遮挡四键）⇒ 取**并集**逐个声明类型，但 ⛔ 不声明 `additionalProperties: false`
 /// （那会把另一条形如实地判成违规）。并集里每个键的取值都是**非空具体值**（`DeviceDefinition.name: String`、
 /// `recognised_names(): Vec<&'static str>`、`TrackPlayableSurvey.sounding_placements: usize`）⇒ 类型可以放心核。
+/// 通道条遮挡那条的 `devices[]` 只声明到"对象数组"这一层（元素内键与母带那条同形，
+/// 见 `domain::render::ignored_strip_devices_warning` —— 元素键逐字取自拼装点，
+/// 但本 schema 与母带 schema 一样只核到 `code` + `hint` 的并集层，不再往下钉）。
 #[must_use]
 fn proposal_warning_items() -> Value {
     json!({
@@ -513,6 +524,10 @@ fn proposal_warning_items() -> Value {
             "soundingPlacements": {"type": "integer"},
             "notes": {"type": "integer"},
             "triggeringNotes": {"type": "integer"},
+            "severity": {"type": "string"},
+            "blocking": {"type": "boolean"},
+            "count": {"type": "integer"},
+            "devices": {"type": "array", "items": {"type": "object"}},
             "hint": {"type": "string"}
         }
     })
@@ -2907,6 +2922,30 @@ mod tests {
             "$.warnings",
         )
         .expect("两条构造点的真实形状必须通过");
+    }
+
+    /// T-FIX-647：第三条构造点（通道条遮挡预警）的**真实形状**也必须通过提案族自己的
+    /// 广播 —— 提案侧与母带侧共用同一判定、同一形状，`code` 进了 `PROPOSAL_WARNING_CODES`
+    /// 还不够，`severity` / `blocking` / `count` / `devices[]` 各键的类型声明也必须
+    /// 与真实值对得上，否则广播会把自家响应拒掉。
+    #[test]
+    fn the_strip_warning_shape_passes_the_proposal_broadcast() {
+        let warnings =
+            for_tool("yeban_edit_notes").expect("schema")["properties"]["warnings"].clone();
+        check_declared_field(
+            &warnings,
+            &json!([{
+                "code": "ignoredStripDevices", "severity": "warning", "blocking": false,
+                "count": 1,
+                "devices": [{"track": "Lead", "trackNode": "01J8ZR00000000000000000002",
+                             "slot": 1, "device": "Compressor",
+                             "deviceId": "01J8ZR00000000000000000051",
+                             "ignoredParams": ["threshold_db", "ratio"]}],
+                "hint": "本次渲染里有 1 台设备的通道条参数**没有被采纳**"
+            }]),
+            "$.warnings",
+        )
+        .expect("真实通道条遮挡预警必须通过提案广播");
     }
 
     /// 越名册的 `warnings[].code` 必须被**自己广播的 schema** 拒掉（逐工具子集，s29）。

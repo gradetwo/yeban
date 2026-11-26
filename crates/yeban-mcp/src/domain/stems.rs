@@ -306,6 +306,14 @@ pub struct StemRow {
     pub bytes_len: usize,
     /// 已编码的分轨容器。
     pub artifact: render::RenderArtifact,
+    /// T-FIX-647：本轨的通道条遮挡预警（`stripWarning` 的原值）。
+    ///
+    /// 在行构造时（[`export_with_sink`]）按**原工程**逐轨现算 —— 同一判定、同一形状
+    /// 复用 [`render::ignored_strip_devices_warning`]（⛔ 不另写第二条规则、不从
+    /// `artifact.warnings` 里筛：分轨渲染的源节点集含其它被静音的轨，从产物里筛会
+    /// 把别轨的遮挡也挂到本行上）。`None` ⇒ 本轨干净，`to_value` 里**没有这个键**
+    /// （与 `peakWarning` 同一条"条件键"纪律）；`Some` ⇒ 逐字照搬母带那条预警。
+    pub strip_warning: Option<Value>,
 }
 
 impl StemRow {
@@ -337,6 +345,15 @@ impl StemRow {
                 .as_object_mut()
                 .expect("to_value 产出对象")
                 .insert("peakWarning".to_owned(), warning);
+        }
+        // ⭐ T-FIX-647：通道条遮挡警告同样是**条件键** —— 本轨没有被忽略的通道条
+        // 参数时一位都不加；有才出现（见 [`Self::strip_warning`] 字段的构造处注释）。
+        // `dryRun` 预览与真实落盘都走这里 ⇒ 两处读数逐字相同。
+        if let Some(warning) = &self.strip_warning {
+            value
+                .as_object_mut()
+                .expect("to_value 产出对象")
+                .insert("stripWarning".to_owned(), warning.clone());
         }
         value
     }
@@ -1028,6 +1045,9 @@ fn export_with_sink(
             audio_clips_rendered: artifact.audio_clips,
             audio_clips_skipped: artifact.audio_clips_unrendered,
             bytes_len: artifact.bytes.len(),
+            // T-FIX-647：本轨的通道条遮挡预警 —— 按**原工程**逐轨现算（见字段注释）。
+            // 判定与 `artifact` 无关，在挪走它之前算好。
+            strip_warning: render::ignored_strip_devices_warning(&project.tracks, &[track_id]),
             artifact,
         };
         if let Some(write) = sink.as_mut() {
