@@ -46,9 +46,24 @@
 \newcommand{\warnbox}[1]{\yebanbox{yebanwarnbg}{\textbf{Note.}\ #1}}
 \newcommand{\zhbox}[2]{\yebanbox{#1}{#2}}
 
+% Arity compatibility (2026-11-26 assembly): chapters use
+% \screenshot{name}{caption} (165 sites) and a legacy 3-arg form
+% whose third argument duplicates the caption (9 sites, all in
+% music-theory/en); \term{term}{index} (104 sites) and \term{term}
+% (50 sites). One macro-side compatibility layer covers both forms
+% instead of rewriting 59 call sites. A non-duplicate third
+% \screenshot argument warns loudly instead of being dropped.
+\RequirePackage{xparse}
+
 % Screenshot placeholder: management captures the real UI shot and
 % replaces the placeholder file under figures/ with the same name.
-\newcommand{\screenshot}[2]{%
+\NewDocumentCommand{\screenshot}{m m g}{%
+  \IfValueT{#3}{%
+    \def\yeban@ss@third{#3}%
+    \def\yeban@ss@caption{#2}%
+    \ifx\yeban@ss@third\yeban@ss@caption\else
+      \PackageWarning{yeban-manual}{\string\screenshot{#1}: third argument differs from caption and is ignored}%
+    \fi}%
   \begin{figure}[htbp]
     \centering
     \fbox{\begin{minipage}[c][5.2cm][c]{0.82\textwidth}
@@ -59,8 +74,9 @@
     \label{fig:#1}
   \end{figure}}
 
-% Bilingual term: \term{轨道}{track} prints the term and indexes it.
-\newcommand{\term}[2]{#1\index{#2}}
+% Bilingual term: \term{轨道}{track} prints the term and indexes it;
+% \term{轨道} indexes the term itself.
+\NewDocumentCommand{\term}{m g}{#1\IfValueTF{#2}{\index{#2}}{\index{#1}}}
 
 \newenvironment{exercise}{\par\smallskip\noindent\textbf{Exercise.}\ }{\par\smallskip}
 \newenvironment{helpmapping}{\par\smallskip\noindent\textbf{Help-topic mapping.}\par\smallskip}{\par\smallskip}
