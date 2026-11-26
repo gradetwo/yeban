@@ -228,8 +228,24 @@ impl Host {
         }
         candidates.sort();
         let mut out = Vec::new();
+        // ⭐ T-FIX-339：探针二进制可用时，加载/枚举/验证全在**子进程**完成 —— 坏插件
+        // abort()/SIGSEGV/挂起只杀子进程，本进程继续扫下一个候选。探针未部署时回退
+        // 进程内原路径（旧部署兼容），缺口在回执/文档登记（⛔ 不把 phase 2 当已解决）。
+        let isolated = crate::probe::probe_binary_path().is_some();
         for candidate in candidates {
             let path_string = candidate.to_string_lossy().into_owned();
+            if isolated {
+                let result = crate::probe::spawn_scan(&candidate, crate::probe::probe_timeout())
+                    .expect("isolated 已确认探针可用");
+                out.push(PluginDescriptor {
+                    path: path_string,
+                    vendor: result.vendor,
+                    classes: result.classes,
+                    error: result.error,
+                    ara: result.ara,
+                });
+                continue;
+            }
             // 每个候选模块只加载一次，同时服务 ARA 探针与类枚举，避免重复 dlopen。
             match Vst3Module::load(&path_string) {
                 Ok(module) => {

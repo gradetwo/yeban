@@ -12,6 +12,12 @@ publish.workspace = true
 name = "yeban_plugin_host"
 path = "src/lib.rs"
 
+# ⭐ T-FIX-339：插件崩溃隔离的子进程探测器。宿主进程通过它把「加载/枚举/验证」
+# 放到独立进程，坏插件 abort / 挂起不带走应用与音频线程。
+[[bin]]
+name = "yeban-plugin-probe"
+path = "src/bin/plugin_probe.rs"
+
 [dependencies]
 
 [lints]

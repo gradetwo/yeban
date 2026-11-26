@@ -34,6 +34,15 @@ pub const MAX_ARA_SESSIONS: usize = 64;
 pub const PLUGIN_REGISTRATION_NOTE: &str =
     "仅登记：实时播放不执行该插件；离线导出与整曲预览执行首台已装载的插件。";
 
+/// 插件崩溃隔离风险声明（T-FIX-339）：用户可见提示的**唯一**文本来源。
+///
+/// 扫描 / 验证已放进子进程（探针），坏插件在此时崩溃不带走应用；但渲染期
+/// `process` / `process_audio` 仍在调用线程直接调插件虚表，未验证的第三方插件
+/// 仍可能卡死音频线程或使应用崩溃（phase 2 进程外实例 + watchdog 未落地）。
+/// ⛔ 不在 Slint 里另写一份（两份迟早漂移）。
+pub const PLUGIN_CRASH_RISK_NOTE: &str =
+    "扫描/验证已在独立进程隔离；渲染期插件仍进程内执行，未验证的第三方插件可能导致应用崩溃。";
+
 /// 扫描结果的一行：一个类一行；模块级失败时类名为空单独一行。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginRow {
@@ -877,6 +886,23 @@ mod tests {
         assert!(
             PLUGIN_REGISTRATION_NOTE.contains("首台"),
             "{PLUGIN_REGISTRATION_NOTE}"
+        );
+    }
+
+    #[test]
+    fn crash_risk_note_states_scan_isolated_but_render_is_not() {
+        // T-FIX-339：不把 phase 2 当已解决 —— 声明必须同时说清"已隔离扫描"与"渲染仍进程内"。
+        assert!(
+            PLUGIN_CRASH_RISK_NOTE.contains("独立进程"),
+            "{PLUGIN_CRASH_RISK_NOTE}"
+        );
+        assert!(
+            PLUGIN_CRASH_RISK_NOTE.contains("渲染期"),
+            "{PLUGIN_CRASH_RISK_NOTE}"
+        );
+        assert!(
+            PLUGIN_CRASH_RISK_NOTE.contains("崩溃"),
+            "{PLUGIN_CRASH_RISK_NOTE}"
         );
     }
 

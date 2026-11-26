@@ -83,6 +83,31 @@ pub fn tuid_hex(id: &Tuid) -> String {
     id.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// 把 32 位十六进制串解析回 `Tuid`（[`tuid_hex`] 的逆；子进程探测协议用）。
+/// 非法长度 / 非法十六进制字符 ⇒ `TUID_INVALID`（调用方据此把该类标为不可用）。
+#[must_use]
+pub fn tuid_from_hex(hex: &str) -> Tuid {
+    let mut id = TUID_INVALID;
+    let bytes = hex.as_bytes();
+    if bytes.len() != 32 {
+        return id;
+    }
+    let mut buf = [0_u8; 16];
+    for (i, slot) in buf.iter_mut().enumerate() {
+        let hi = match (bytes[2 * i] as char).to_digit(16) {
+            Some(v) => v as u8,
+            None => return TUID_INVALID,
+        };
+        let lo = match (bytes[2 * i + 1] as char).to_digit(16) {
+            Some(v) => v as u8,
+            None => return TUID_INVALID,
+        };
+        *slot = (hi << 4) | lo;
+    }
+    id = buf;
+    id
+}
+
 /// 一期宿主发给插件的 MIDI 事件（只含音符 on／off；CC 一期不发，见 ADR-0069 D7）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MidiEvent {
