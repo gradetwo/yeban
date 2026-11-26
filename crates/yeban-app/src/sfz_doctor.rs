@@ -57,13 +57,24 @@ pub enum DoctorState {
 /// 调用方要先给一次可见警告，并把坏记录隔离备份）。
 #[must_use]
 pub fn doctor_state(library: &InstalledLibrary) -> DoctorState {
-    if !library.id.starts_with(USER_ID_PREFIX) {
+    doctor_state_at(&library.id, &library.location)
+}
+
+/// 只按「稳定 id + 库目录」判状态（[`doctor_state`] 与执行层守卫共用同一口径）。
+///
+/// 官方身份有两条来源，任一条命中即 [`DoctorState::Official`]：
+/// ① id 不以 [`USER_ID_PREFIX`] 开头（内置 `builtin:<目录名>`）；② 库目录里有
+/// [`PACK_MARKER_FILE`]。另外，仓库内置采样根 [`BUILTIN_SAMPLES_REL`] 下的路径
+/// 也按官方处理 —— 陈旧快照可能把 `builtin:` 身份丢了，只留下路径，不能让
+/// 这种调用点绕过去。
+fn doctor_state_at(id: &str, location: &Path) -> DoctorState {
+    if !id.starts_with(USER_ID_PREFIX) || is_builtin_samples_path(location) {
         return DoctorState::Official;
     }
-    if library.location.join(PACK_MARKER_FILE).exists() {
+    if location.join(PACK_MARKER_FILE).exists() {
         return DoctorState::Official;
     }
-    match read_record(&library.location) {
+    match read_record(location) {
         RecordRead::Ok(record) => {
             if record.get("outcome").and_then(|v| v.as_str()) == Some("declined") {
                 DoctorState::Declined
@@ -73,6 +84,50 @@ pub fn doctor_state(library: &InstalledLibrary) -> DoctorState {
         }
         RecordRead::Missing => DoctorState::Needed,
         RecordRead::Corrupt => DoctorState::Corrupt,
+    }
+}
+
+/// 仓库内置采样根（相对仓库根）。判官方身份的第二条路径判据。
+const BUILTIN_SAMPLES_REL: &str = "assets/samples";
+
+fn is_builtin_samples_path(location: &Path) -> bool {
+    location.starts_with(crate::sfz_load::repo_root().join(BUILTIN_SAMPLES_REL))
+}
+
+/// 执行层拒绝修复的原因。`run` 与宿主回调都用它把「为什么没跑」响亮报出来。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoctorRefusal {
+    pub(crate) state: DoctorState,
+}
+
+impl DoctorRefusal {
+    /// 拒绝时库的状态（只可能是 `Official` / `Done` / `Declined`）。
+    #[must_use]
+    pub fn state(self) -> DoctorState {
+        self.state
+    }
+
+    /// 机器可读原因（日志/测试用；面向用户的文案在宿主状态行）。
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self.state {
+            DoctorState::Official => "officialLibrary",
+            DoctorState::Done => "alreadyChecked",
+            DoctorState::Declined => "declined",
+            DoctorState::Needed | DoctorState::Corrupt => "repairable",
+        }
+    }
+}
+
+/// 执行层硬守卫：只有 `Needed` / `Corrupt` 才允许进入修复。
+///
+/// 官方库（内置 / 带包标记）**永不**修复；已检查过（`Done`）或用户拒绝过
+/// （`Declined`）的库也不得被非 UI 调用点重新跑一遍。拒绝是返回值，⛔ 不
+/// 静默跳过：调用方必须把 [`DoctorRefusal`] 显示出来。
+pub(crate) fn guard(library_id: &str, root: &Path) -> Result<(), DoctorRefusal> {
+    match doctor_state_at(library_id, root) {
+        DoctorState::Needed | DoctorState::Corrupt => Ok(()),
+        state => Err(DoctorRefusal { state }),
     }
 }
 
@@ -123,10 +178,16 @@ pub struct DoctorReport {
 
 /// 对一个库目录跑完整体检 + 修复，并把结果写进记录文件。
 ///
+/// **执行层硬守卫**：入口先按 `library_id + root` 重判 [`doctor_state_at`]，
+/// 只有 `Needed` / `Corrupt` 才继续；官方库、已检查（`Done`）、已拒绝
+/// （`Declined`）一律返回 [`DoctorRefusal`]，且**一个字节都不写** —— 不建链接、
+/// 不改操作码、不写记录。⛔ 这不是 UI 层约束：任何调用点（含陈旧快照/直接调用）
+/// 都在这里被拦住。
+///
 /// 三趟：大小写链接 → 已知钳值 → 引擎探针回路（拿引擎报错里给的区间
 /// 通用钳值，最多 6 轮）。全程只动**这个目录之内**的文件。
-#[must_use]
-pub fn run(root: &Path) -> DoctorReport {
+pub fn run(library_id: &str, root: &Path) -> Result<DoctorReport, DoctorRefusal> {
+    guard(library_id, root)?;
     let mut report = DoctorReport::default();
     let tops = top_level_sfzs(root);
 
@@ -242,7 +303,7 @@ pub fn run(root: &Path) -> DoctorReport {
     ) {
         report.record_error = Some(one_line_io_error(&err));
     }
-    report
+    Ok(report)
 }
 
 /// 把一次体检结果换算成一行人话（界面状态行口径，与下载读数同一条纪律：

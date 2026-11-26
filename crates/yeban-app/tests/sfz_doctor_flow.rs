@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use yeban_app::sfz_doctor::{
     DoctorState, doctor_state, format_doctor_readout, mark_declined, quarantine_corrupt_record, run,
 };
-use yeban_app::sound_library::InstalledLibrary;
+use yeban_app::sound_library::{InstalledLibrary, PACK_MARKER_FILE};
 
 const DIALOG: &str = include_str!("../ui/dialogs/sound_library_dialog.slint");
 const APP: &str = include_str!("../ui/app.slint");
@@ -38,6 +38,9 @@ fn dialog_and_host_wire_doctor_callbacks() {
         "ui.on_sound_library_doctor_check",
         "ui.on_sound_library_doctor_decline",
         "crate::sfz_doctor::run(",
+        "crate::sfz_doctor::guard(",
+        "DoctorRunStatus::Refused",
+        "library_id.as_str(), library_path.as_path()",
         "crate::sfz_doctor::mark_declined(",
         "set_sound_installed_doctor_needed",
         // T-FIX-306：跳过记录落盘失败必须如实报错，坏记录要隔离备份、行内仍提示。
@@ -135,7 +138,7 @@ fn external_library_state_machine_and_repair_roundtrip() {
     // 跑体检：大小写链接数与本机文件系统的大小写敏感性一致、tune 钳值 ≥1、
     // 修完必须真能装载（探针口径）。大小写不敏感的盘上错大小写路径本身可解析，
     // 体检无链接可建、也不需要建——两种都对，只钉本机文件系统的真值。
-    let report = run(&lib_dir);
+    let report = run("user:ext-lib", &lib_dir).expect("Needed 库应允许体检");
     let expected_links = if fs_is_case_sensitive(&base) { 1 } else { 0 };
     assert_eq!(
         report.links_created.len(),
@@ -165,10 +168,9 @@ fn external_library_state_machine_and_repair_roundtrip() {
     assert!(lib_dir.join(".sfz-doctor.json").exists());
     assert_eq!(doctor_state(&lib), DoctorState::Done);
 
-    // 再跑一次应当无改动（幂等）。
-    let second = run(&lib_dir);
-    assert!(second.links_created.is_empty() && second.edits.is_empty());
-    assert!(second.still_failing.is_empty());
+    // 记录已落盘 ⇒ Done：执行层拒绝重复检查（不重跑、不再写文件）。
+    let refusal = run("user:ext-lib", &lib_dir).expect_err("Done 库必须拒绝重复体检");
+    assert_eq!(refusal.state(), DoctorState::Done);
 
     let _ = fs::remove_dir_all(&base);
 }
@@ -182,6 +184,15 @@ fn declined_and_official_are_never_prompted() {
     mark_declined(&lib_dir).expect("跳过记录应能落盘");
     assert_eq!(doctor_state(&lib), DoctorState::Declined);
 
+    // Declined 不是可修复状态：执行层必须拒绝重跑，记录保持原样。
+    let refusal = run("user:ext-lib", &lib_dir).expect_err("Declined 库必须拒绝体检");
+    assert_eq!(refusal.state(), DoctorState::Declined);
+    let record = fs::read_to_string(lib_dir.join(".sfz-doctor.json")).expect("跳过记录仍在");
+    assert!(
+        record.contains("declined"),
+        "拒绝体检不得改写跳过记录：{record}"
+    );
+
     // 带包标记 ⇒ 官方库，恒 Official（哪怕没有体检记录）。
     fs::write(lib_dir.join(".yeban-pack.json"), "{}").expect("写包标记");
     let _ = fs::remove_file(lib_dir.join(".sfz-doctor.json"));
@@ -192,6 +203,65 @@ fn declined_and_official_are_never_prompted() {
     assert_eq!(doctor_state(&builtin), DoctorState::Official);
 
     let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-618：执行层硬守卫 —— 官方库（带包标记 / 内置 id）调用 `run`
+/// 必须被拒绝，且**一个字节都不写**：无链接、无记录、无操作码改动。
+#[test]
+fn official_library_run_is_refused_without_writes() {
+    let base = temp_dir("official-guard");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+    fs::write(lib_dir.join(PACK_MARKER_FILE), "{}").expect("写包标记");
+    assert_eq!(doctor_state(&lib), DoctorState::Official);
+
+    let sfz_before = fs::read(lib_dir.join("test.sfz")).expect("读原始 SFZ");
+    let entries_before: Vec<_> = fs::read_dir(&lib_dir)
+        .expect("读库根")
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    let refusal = run("user:ext-lib", &lib_dir).expect_err("官方库必须拒绝体检");
+    assert_eq!(refusal.state(), DoctorState::Official);
+    assert_eq!(refusal.reason(), "officialLibrary");
+    assert_eq!(
+        fs::read(lib_dir.join("test.sfz")).expect("读原 SFZ"),
+        sfz_before,
+        "官方库的 SFZ 文本不得被改动"
+    );
+    assert!(
+        !lib_dir.join(".sfz-doctor.json").exists(),
+        "官方库不得写体检记录"
+    );
+    let entries_after: Vec<_> = fs::read_dir(&lib_dir)
+        .expect("读库根")
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(entries_before, entries_after, "官方库根不得新增任何条目");
+    let wrong_case = lib_dir.join("Samples/flute/take1.wav");
+    assert!(
+        fs::symlink_metadata(&wrong_case).map_or(true, |m| !m.file_type().is_symlink()),
+        "官方库不得建大小写链接：{wrong_case:?}"
+    );
+
+    // 内置 id 同样拒绝（哪怕路径上没有包标记）。
+    let base2 = temp_dir("builtin-guard");
+    let builtin_dir = make_broken_library(&base2);
+    let sfz_before = fs::read(builtin_dir.join("test.sfz")).expect("读原始 SFZ");
+    let refusal = run("builtin:ext-lib", &builtin_dir).expect_err("内置 id 必须拒绝体检");
+    assert_eq!(refusal.state(), DoctorState::Official);
+    assert_eq!(
+        fs::read(builtin_dir.join("test.sfz")).expect("读原 SFZ"),
+        sfz_before
+    );
+    assert!(
+        !builtin_dir.join(".sfz-doctor.json").exists(),
+        "内置库不得写体检记录"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+    let _ = fs::remove_dir_all(&base2);
 }
 
 /// T-FIX-306：跳过记录落盘失败必须返回 Err，且状态绝不能变成 Declined。
@@ -234,7 +304,7 @@ fn run_record_write_failure_is_visible_in_report() {
     let lib = library("user:ext-lib", lib_dir.clone());
     fs::create_dir_all(lib_dir.join(".sfz-doctor.json")).expect("把记录路径占成目录");
 
-    let report = run(&lib_dir);
+    let report = run("user:ext-lib", &lib_dir).expect("Needed 库应允许体检");
     assert!(
         report.record_error.is_some(),
         "记录写失败时 record_error 必须带上：{report:?}"
@@ -295,6 +365,34 @@ fn corrupt_record_is_quarantined_and_reprompts() {
     assert!(
         quarantine_corrupt_record(&lib_dir).is_none(),
         "好记录不应被隔离"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-618：Corrupt 是「需要先给可见警告的待检查库」，执行层仍允许体检；
+/// 拒绝只针对 Official / Done / Declined，不能把 Corrupt 一并挡掉。
+#[test]
+fn corrupt_library_is_still_repairable() {
+    let base = temp_dir("corrupt-run");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+    fs::write(lib_dir.join(".sfz-doctor.json"), "{ 不是 json").expect("写坏记录");
+    assert_eq!(doctor_state(&lib), DoctorState::Corrupt);
+
+    let report = run("user:ext-lib", &lib_dir).expect("Corrupt 库应允许体检");
+    assert!(
+        report.record_error.is_none(),
+        "坏记录被正常记录覆盖时应无 record_error：{report:?}"
+    );
+    assert!(
+        report.edits.iter().any(|e| e.opcode == "tune"),
+        "Corrupt 库的体检仍应执行修复：{report:?}"
+    );
+    assert_eq!(
+        doctor_state(&lib),
+        DoctorState::Done,
+        "体检成功后坏记录应被合法记录取代"
     );
 
     let _ = fs::remove_dir_all(&base);

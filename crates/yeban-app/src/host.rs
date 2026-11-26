@@ -14087,6 +14087,8 @@ enum DoctorRunStatus {
     AlreadyChecking,
     /// 正在检查这件库。
     Checking,
+    /// 执行层守卫拒绝：官方 / 已检查 / 已跳过（T-FIX-618）。
+    Refused(crate::sfz_doctor::DoctorRefusal),
 }
 
 impl DoctorRunStatus {
@@ -14152,6 +14154,103 @@ impl DoctorRunStatus {
                 RuRu => format!("SFZ Doctor проверяет «{library_name}»…"),
                 DeDe => format!("SFZ Doctor prüft „{library_name}“…"),
             },
+            Self::Refused(refusal) => {
+                use crate::sfz_doctor::DoctorState::{Declined, Done, Official};
+                match (refusal.state(), lang) {
+                    (Official, ZhCn) => format!(
+                        "SFZ Doctor 拒绝检查《{library_name}》：官方音源库永不进修复"
+                    ),
+                    (Official, EnUs) => format!(
+                        "SFZ Doctor refused to check “{library_name}”: official libraries are never repaired"
+                    ),
+                    (Official, FrFr) => format!(
+                        "SFZ Doctor refuse de vérifier « {library_name} » : les bibliothèques officielles ne sont jamais réparées"
+                    ),
+                    (Official, EsEs) => format!(
+                        "SFZ Doctor rechazó revisar «{library_name}»: las bibliotecas oficiales nunca se reparan"
+                    ),
+                    (Official, PtBr) => format!(
+                        "O SFZ Doctor recusou verificar «{library_name}»: bibliotecas oficiais nunca são reparadas"
+                    ),
+                    (Official, JaJp) => format!(
+                        "SFZ Doctor は《{library_name}》のチェックを拒否しました：公式ライブラリは決して修復されません"
+                    ),
+                    (Official, KoKr) => format!(
+                        "SFZ Doctor가 “{library_name}” 검사를 거부했습니다: 공식 라이브러리는 절대 복구되지 않습니다"
+                    ),
+                    (Official, RuRu) => format!(
+                        "SFZ Doctor отказался проверять «{library_name}»: официальные библиотеки никогда не исправляются"
+                    ),
+                    (Official, DeDe) => format!(
+                        "SFZ Doctor hat die Prüfung von „{library_name}“ abgelehnt: offizielle Bibliotheken werden niemals repariert"
+                    ),
+                    (Done, ZhCn) => format!(
+                        "SFZ Doctor 拒绝重复检查《{library_name}》：该库已检查过"
+                    ),
+                    (Done, EnUs) => format!(
+                        "SFZ Doctor refused to check “{library_name}” again: this library has already been checked"
+                    ),
+                    (Done, FrFr) => format!(
+                        "SFZ Doctor refuse de vérifier « {library_name} » à nouveau : cette bibliothèque a déjà été vérifiée"
+                    ),
+                    (Done, EsEs) => format!(
+                        "SFZ Doctor rechazó revisar «{library_name}» de nuevo: esta biblioteca ya se revisó"
+                    ),
+                    (Done, PtBr) => format!(
+                        "O SFZ Doctor recusou verificar «{library_name}» novamente: esta biblioteca já foi verificada"
+                    ),
+                    (Done, JaJp) => format!(
+                        "SFZ Doctor は《{library_name}》の再チェックを拒否しました：このライブラリはチェック済みです"
+                    ),
+                    (Done, KoKr) => format!(
+                        "SFZ Doctor가 “{library_name}” 재검사를 거부했습니다: 이 라이브러리는 이미 검사되었습니다"
+                    ),
+                    (Done, RuRu) => format!(
+                        "SFZ Doctor отказался повторно проверять «{library_name}»: эта библиотека уже проверена"
+                    ),
+                    (Done, DeDe) => format!(
+                        "SFZ Doctor hat die erneute Prüfung von „{library_name}“ abgelehnt: diese Bibliothek wurde bereits geprüft"
+                    ),
+                    (Declined, ZhCn) => format!(
+                        "SFZ Doctor 拒绝检查《{library_name}》：你已选择不检查该库"
+                    ),
+                    (Declined, EnUs) => format!(
+                        "SFZ Doctor refused to check “{library_name}”: you chose not to check this library"
+                    ),
+                    (Declined, FrFr) => format!(
+                        "SFZ Doctor refuse de vérifier « {library_name} » : vous avez choisi de ne pas vérifier cette bibliothèque"
+                    ),
+                    (Declined, EsEs) => format!(
+                        "SFZ Doctor rechazó revisar «{library_name}»: elegiste no revisar esta biblioteca"
+                    ),
+                    (Declined, PtBr) => format!(
+                        "O SFZ Doctor recusou verificar «{library_name}»: você optou por não verificar esta biblioteca"
+                    ),
+                    (Declined, JaJp) => format!(
+                        "SFZ Doctor は《{library_name}》のチェックを拒否しました：このライブラリをチェックしないことを選択済みです"
+                    ),
+                    (Declined, KoKr) => format!(
+                        "SFZ Doctor가 “{library_name}” 검사를 거부했습니다: 이 라이브러리를 검사하지 않기로 선택했습니다"
+                    ),
+                    (Declined, RuRu) => format!(
+                        "SFZ Doctor отказался проверять «{library_name}»: вы выбрали не проверять эту библиотеку"
+                    ),
+                    (Declined, DeDe) => format!(
+                        "SFZ Doctor hat die Prüfung von „{library_name}“ abgelehnt: Sie haben diese Bibliothek nicht prüfen lassen"
+                    ),
+                    // `Refused` 只由 `guard` 的拒绝分支构造（Official/Done/Declined）；
+                    // Needed/Corrupt 不可能走到这里。真到了也只是通用拒绝，绝不静默。
+                    (_, ZhCn) => format!("SFZ Doctor 拒绝检查《{library_name}》"),
+                    (_, EnUs) => format!("SFZ Doctor refused to check “{library_name}”"),
+                    (_, FrFr) => format!("SFZ Doctor refuse de vérifier « {library_name} »"),
+                    (_, EsEs) => format!("SFZ Doctor rechazó revisar «{library_name}»"),
+                    (_, PtBr) => format!("O SFZ Doctor recusou verificar «{library_name}»"),
+                    (_, JaJp) => format!("SFZ Doctor は《{library_name}》のチェックを拒否しました"),
+                    (_, KoKr) => format!("SFZ Doctor가 “{library_name}” 검사를 거부했습니다"),
+                    (_, RuRu) => format!("SFZ Doctor отказался проверять «{library_name}»"),
+                    (_, DeDe) => format!("SFZ Doctor hat die Prüfung von „{library_name}“ abgelehnt"),
+                }
+            }
         }
     }
 }
@@ -14160,6 +14259,11 @@ impl DoctorRunStatus {
 mod doctor_run_status_tests {
     use super::DoctorRunStatus;
     use crate::cli::Language;
+    use crate::sfz_doctor::{DoctorRefusal, DoctorState};
+
+    fn refused(state: DoctorState) -> DoctorRunStatus {
+        DoctorRunStatus::Refused(DoctorRefusal { state })
+    }
 
     /// 中文态与旧实现逐字相同（三处状态行）。
     #[test]
@@ -14175,6 +14279,18 @@ mod doctor_run_status_tests {
         assert_eq!(
             DoctorRunStatus::Checking.text_in("ext-lib", Language::ZhCn),
             "SFZ Doctor 正在检查《ext-lib》…"
+        );
+        assert_eq!(
+            refused(DoctorState::Official).text_in("ext-lib", Language::ZhCn),
+            "SFZ Doctor 拒绝检查《ext-lib》：官方音源库永不进修复"
+        );
+        assert_eq!(
+            refused(DoctorState::Done).text_in("ext-lib", Language::ZhCn),
+            "SFZ Doctor 拒绝重复检查《ext-lib》：该库已检查过"
+        );
+        assert_eq!(
+            refused(DoctorState::Declined).text_in("ext-lib", Language::ZhCn),
+            "SFZ Doctor 拒绝检查《ext-lib》：你已选择不检查该库"
         );
     }
 
@@ -14193,6 +14309,18 @@ mod doctor_run_status_tests {
             DoctorRunStatus::Checking.text_in("ext-lib", Language::EnUs),
             "SFZ Doctor is checking “ext-lib”…"
         );
+        assert_eq!(
+            refused(DoctorState::Official).text_in("ext-lib", Language::EnUs),
+            "SFZ Doctor refused to check “ext-lib”: official libraries are never repaired"
+        );
+        assert_eq!(
+            refused(DoctorState::Done).text_in("ext-lib", Language::EnUs),
+            "SFZ Doctor refused to check “ext-lib” again: this library has already been checked"
+        );
+        assert_eq!(
+            refused(DoctorState::Declined).text_in("ext-lib", Language::EnUs),
+            "SFZ Doctor refused to check “ext-lib”: you chose not to check this library"
+        );
     }
 
     /// 九语全覆盖：每语三处均有文案；非中文语的模板不含中文残片
@@ -14205,17 +14333,32 @@ mod doctor_run_status_tests {
                 DoctorRunStatus::LibraryNotFound,
                 DoctorRunStatus::AlreadyChecking,
                 DoctorRunStatus::Checking,
+                refused(DoctorState::Official),
+                refused(DoctorState::Done),
+                refused(DoctorState::Declined),
             ] {
                 let rendered = status.text_in("ext-lib", lang);
-                if status == DoctorRunStatus::Checking {
+                if matches!(
+                    status,
+                    DoctorRunStatus::Checking | DoctorRunStatus::Refused(_)
+                ) {
                     assert!(
                         rendered.contains("ext-lib"),
-                        "{lang:?} 正在检查渲染必须含库名，实际：{rendered}"
+                        "{lang:?} 检查/拒绝渲染必须含库名，实际：{rendered}"
                     );
                 }
                 if lang != Language::ZhCn {
-                    for fragment in ["找不到", "请重试", "已有", "检查中", "正在检查"]
-                    {
+                    for fragment in [
+                        "找不到",
+                        "请重试",
+                        "已有",
+                        "检查中",
+                        "正在检查",
+                        "拒绝",
+                        "官方音源库",
+                        "该库已检查过",
+                        "你已选择",
+                    ] {
                         assert!(
                             !rendered.contains(fragment),
                             "{lang:?} 模板不许含中文残片「{fragment}」，实际：{rendered}"
@@ -17471,6 +17614,19 @@ fn wire_sound_library_dialog_inner(
                 ui.set_sound_library_status_is_error(true);
                 return;
             };
+            // T-FIX-618：执行层硬守卫。UI 的 `doctor-needded` 只是展示层约束；
+            // 这里按 id + 路径再判一次官方身份/状态，拒绝时响亮写状态行，不静默跳过。
+            if let Err(refusal) =
+                crate::sfz_doctor::guard(library_id.as_str(), library_path.as_path())
+            {
+                ui.set_sound_library_status(
+                    DoctorRunStatus::Refused(refusal)
+                        .text_in(&library_name, current_language())
+                        .into(),
+                );
+                ui.set_sound_library_status_is_error(true);
+                return;
+            }
             if !state.begin_doctor() {
                 ui.set_sound_library_status(
                     DoctorRunStatus::AlreadyChecking
@@ -17489,7 +17645,21 @@ fn wire_sound_library_dialog_inner(
             let worker_state = state.clone();
             let worker_weak = weak.clone();
             std::thread::spawn(move || {
-                let report = crate::sfz_doctor::run(&library_path);
+                let report =
+                    match crate::sfz_doctor::run(library_id.as_str(), library_path.as_path()) {
+                        Ok(report) => report,
+                        Err(refusal) => {
+                            // 守卫在 begin 之后又被重判一次（TOCTOU）：同样走 Err 通道，
+                            // 把拒绝原因落到状态行，绝不把「没跑」伪装成体检成功。
+                            let readout = DoctorRunStatus::Refused(refusal)
+                                .text_in(&library_name, current_language());
+                            worker_state.finish_doctor(&library_id, Err(readout));
+                            let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                                ui.invoke_sound_library_drain_requested();
+                            });
+                            return;
+                        }
+                    };
                 let readout = crate::sfz_doctor::format_doctor_readout(&library_name, &report);
                 // T-FIX-306：体检本身跑完了，但记录没存住 ⇒ 下次启动仍会提示。
                 // 读数尾巴已经带了这句警告，这里走 Err 通道，让排空处把它当错误
