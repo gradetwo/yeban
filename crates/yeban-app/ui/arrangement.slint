@@ -1853,14 +1853,10 @@ export component ArrangementViewport inherits Rectangle {
                                         } else if root.marquee-pressed {
                                             // 未越阈值 = 单击：保持原语义（选中本轨）。
                                             root.select-track(trk.id);
-                                            // ⭐ T-FIX-227：同一次空白单击也报给自动化点编辑
-                                            // （死文件的 G-A1 口径）。宿主只在 y 落在某条
-                                            // 泳道带内时才产 op；无泳道的行/项目行为不变。
-                                            if root.automation-visible {
-                                                root.automation-lane-click(
-                                                    self.mouse-x,
-                                                    root.track-ys[idx] - 42px + self.mouse-y);
-                                            }
+                                            // T-FIX-714：自动化点单击已由泳道自身 TouchArea
+                                            // 接收（含片段覆盖区），此处不再重复上报。
+                                            // 泳道隐藏时宿主侧 `automation-visible` 仍直接拒绝，
+                                            // 本段删去后片段命中/选轨行为逐字节不变。
                                         }
                                         root.marquee-pressed = false;
                                         root.marquee-active = false;
@@ -2141,10 +2137,9 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                             }
-                            // ⭐ T-FIX-227：本轨的自动化泳道（覆盖模式）。绘制顺序 = 片段在前、
-                            //   泳道在后 ⇒ **曲线可见**（修前泳道整块不存在）；命中判定仍归片段
-                            //   （泳道不接指针），空白车道的单击在下面的手势状态机里报给宿主
-                            //   （automation-lane-click，与死文件「只在空白车道生效」同口径）。
+                            // ⭐ T-FIX-227 / T-FIX-714：本轨的自动化泳道（覆盖模式）。绘制顺序 =
+                            //   片段在前、泳道在后 ⇒ **曲线可见**；泳道带内单击由泳道自身 TouchArea
+                            //   接收（含片段覆盖区），泳道隐藏时片段命中逐字节不变。
                             //   `y` 与 `track-ys` 同帧（投影的 `band_y` 由同一份行几何算出），
                             //   ⛔ 不减 `rows-top`（那是死文件的结构差异）。
                             for _lane[lane_index] in root.automation-lane-target-keys : Rectangle {
@@ -2203,6 +2198,26 @@ export component ArrangementViewport inherits Rectangle {
                                     color: root.automation-lane-read-enabled[lane_index] ? Tokens.gold-deep : Tokens.ink-2;
                                     font-size: Tokens.font-size-xs;
                                     overflow: elide;
+                                }
+
+                                // T-FIX-714：泳道自身接单击 —— 含片段覆盖区。
+                                // 整条带都在 TouchArea 内，绘制顺序在片段之后 ⇒ 命中层级在片段之上；
+                                // 泳道隐藏时 `visible:false` 的 Rectangle 不接指针，片段命中回归原样。
+                                // 坐标：mouse-x 已在时间轴像素帧（宿主内部再加 scroll-x）；
+                                //       band_y 是内容帧的带顶沿，宿主按 `band_y - 42px` 还原局部 y。
+                                // 手势冲突：可见泳道带内的单击/按下由泳道消费（框选与拖拽不在本单）；
+                                //       带外区域仍走原框选/选轨状态机。
+                                TouchArea {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    clicked => {
+                                        root.select-track(trk.id);
+                                        root.automation-lane-click(
+                                            self.mouse-x,
+                                            root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
+                                    }
                                 }
                             }
 
