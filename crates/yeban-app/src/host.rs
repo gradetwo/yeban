@@ -16693,10 +16693,7 @@ pub fn wire_module_actions_with_capture(
                                 // T-FIX-357: make the asset-pool outcome visible in the
                                 // structured receipt (CLI already reports the same numbers).
                                 format!("audio_clips_rendered={}", report.audio_clips_rendered),
-                                format!(
-                                    "audio_clips_skipped={}",
-                                    report.audio_clips_skipped.len()
-                                ),
+                                format!("audio_clips_skipped={}", report.audio_clips_skipped.len()),
                                 // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
                                 // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
                                 // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**

@@ -10,8 +10,8 @@
 fn gui_wav_export_passes_asset_pool_and_reports_skipped_clips() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let host = std::fs::read_to_string(manifest.join("src/host.rs")).expect("read host.rs");
-    let export = std::fs::read_to_string(manifest.join("src/export_wav.rs"))
-        .expect("read export_wav.rs");
+    let export =
+        std::fs::read_to_string(manifest.join("src/export_wav.rs")).expect("read export_wav.rs");
 
     assert!(
         host.contains("let assets = port.assets();"),
