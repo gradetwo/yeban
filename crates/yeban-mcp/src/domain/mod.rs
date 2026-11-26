@@ -9075,8 +9075,10 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
 /// 本次提案的完整 `warnings[]`（`#175` 的未识别参数名 ＋ `#178` 的"设备落在静音轨上"）。
 /// T-FIX-154：**绑定期**采样器预检 —— 逐条 `SetTrackSampler` 算缺失样本警告。
 ///
-/// 只产警告、**从不阻断**绑定：解析不到 SFZ（`sfz_missing`）或 SFZ 里引用的样本读不到
-/// （`sample_missing`）都记一条，交给 op 结果的 `warnings[]` 响亮报告。
+/// 只产警告、**从不阻断**绑定：解析不到 SFZ（`sfz_missing`），或样本读不到 /
+/// 格式不认 / 文件头读不动（`sample_missing` / `sample_unsupported` /
+/// `sample_unreadable`）都记一条，交给 op 结果的 `warnings[]` 响亮报告。
+/// 预检走 [`sfz::probe_samples`]，**不解码样本帧**。
 ///
 /// 批内（`Op::Batch`）的 `SetTrackSampler` 同样逐条算（[`walk_ops`]）。
 ///
@@ -9127,14 +9129,7 @@ fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Valu
                 "reason": "sfz_missing",
                 "detail": format!("{error:?}"),
             })),
-            Ok(path) => match sfz::load(
-                &path,
-                48_000.0,
-                0,
-                false,
-                sfz::SampleLimits::default(),
-                &BTreeMap::new(),
-            ) {
+            Ok(path) => match sfz::probe_samples(&path) {
                 Err(error) => out.push(serde_json::json!({
                     "kind": "samplerBinding",
                     "trackId": track,
@@ -9143,41 +9138,60 @@ fn sampler_binding_warnings(project_path: Option<&Path>, ops: &[Op]) -> Vec<Valu
                     "reason": "sfz_missing",
                     "detail": format!("{error:?}"),
                 })),
-                Ok(load) => {
-                    // T-FIX-266：按 ADR-0024 的 sample 告警口径聚合 —— 同一个缺失样本
-                    // 在多个 region 里会重复失败（工厂大提琴 SFZ 实测 2446 条里只有
-                    // 410 个不同路径，最多一条重复 12 次）。逐条 push 会把一次提案
-                    // 撑到约 1 MB，调用方也读不过来。
-                    //
-                    // 去重键 = 装载器给出的完整失败串 `rejected(<sample>): <reason>`，
-                    // 它同时含样本路径与失败原因；同一路径不同原因仍分别计数。
-                    // 输出一条聚合告警：首条完整 detail + count + 最多 5 条 examples
-                    // + hint，与 ADR-0024 的 `sfzSamplesUnreadable` 同形，不阻断。
-                    let mut seen = BTreeSet::new();
-                    let mut unique: Vec<String> = Vec::new();
-                    for failure in load.sample_failures {
-                        if seen.insert(failure.clone()) {
-                            unique.push(failure);
-                        }
+                Ok(probe) => {
+                    // 同一失败原因聚合一条（T-FIX-266 的体量口径不变）；探针已按
+                    // `sample=` 原样串去重，不会一个 region 一条。
+                    let mut groups: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+                    for issue in probe.issues {
+                        groups
+                            .entry(issue.reason.warning_reason())
+                            .or_default()
+                            .push(issue.detail);
                     }
-                    if let Some(first) = unique.first() {
-                        let examples: Vec<Value> = unique
-                            .iter()
-                            .take(5)
-                            .map(|detail| Value::String(detail.clone()))
-                            .collect();
-                        out.push(serde_json::json!({
-                            "kind": "samplerBinding",
-                            "trackId": track,
-                            "binding": binding.path,
-                            "sample": Value::Null,
-                            "reason": "sample_missing",
-                            "detail": first,
-                            "count": unique.len(),
-                            "examples": examples,
-                            "blocking": false,
-                            "hint": "同一缺失样本只报一次（count 为去重后的个数）；样本需按外取流程安装，装完重新应用即可消失。",
-                        }));
+                    for (reason, failures) in groups {
+                        let mut seen = BTreeSet::new();
+                        let mut unique: Vec<String> = Vec::new();
+                        for failure in failures {
+                            if seen.insert(failure.clone()) {
+                                unique.push(failure);
+                            }
+                        }
+                        if let Some(first) = unique.first() {
+                            let examples: Vec<Value> = unique
+                                .iter()
+                                .take(5)
+                                .map(|detail| Value::String(detail.clone()))
+                                .collect();
+                            if reason == "sample_missing" {
+                                // 保留 `sample_missing` 的既有字面站点：Fault 词表普查
+                                // 以 `"reason": "<值>"` 字面为准，动态 reason 会漏登。
+                                out.push(serde_json::json!({
+                                    "kind": "samplerBinding",
+                                    "trackId": track,
+                                    "binding": binding.path,
+                                    "sample": Value::Null,
+                                    "reason": "sample_missing",
+                                    "detail": first,
+                                    "count": unique.len(),
+                                    "examples": examples,
+                                    "blocking": false,
+                                    "hint": "同一失败样本只报一次（count 为去重后的个数）；按外取流程安装/转换后重新应用即可消失。",
+                                }));
+                            } else {
+                                out.push(serde_json::json!({
+                                    "kind": "samplerBinding",
+                                    "trackId": track,
+                                    "binding": binding.path,
+                                    "sample": Value::Null,
+                                    "reason": reason,
+                                    "detail": first,
+                                    "count": unique.len(),
+                                    "examples": examples,
+                                    "blocking": false,
+                                    "hint": "同一失败样本只报一次（count 为去重后的个数）；按外取流程安装/转换后重新应用即可消失。",
+                                }));
+                            }
+                        }
                     }
                 }
             },
@@ -9203,18 +9217,19 @@ fn proposal_warnings(
 /// 绑定当刻的**缺样本预检**（T-FIX-48 后续 ①）。
 ///
 /// 对**本批真的换了绑定**的每条轨（`before` 与 `after` 的 `sampler.path` 不同，
-/// 含新绑、改绑；解绑不查），按 `yeban_load_sfz` **同一条**装载路读一遍 SFZ，
-/// 只把**读不到的东西**摘出来：SFZ 本身读不到 ⇒ `sfz_missing`；样本读不到 /
-/// 格式不认 / 读不动 ⇒ 逐条 `sample_missing` / `sample_unsupported` /
-/// `sample_unreadable`（键 = `sample=` 原串，细节 = 装载器给的原因串）。
+/// 含新绑、改绑；解绑不查），用 [`sfz::probe_samples`] **只读 SFZ 文本与样本文件头**，
+/// 不进入帧解码。只把**读不到的东西**摘出来：SFZ 本身读不到 ⇒ `sfz_missing`；
+/// 样本读不到 / 格式不认 / 文件头读不动 ⇒ 逐条 `sample_missing` /
+/// `sample_unsupported` / `sample_unreadable`（键 = `sample=` 原串，
+/// 细节 = 探针给的原因串）。
 ///
 /// 口径（管理侧裁决）：
 /// - **不阻断** —— 绑定本身是合法的，缺样本要说到位，但不能因此拒绝提案；
 /// - **只报本次新绑的** —— 未变的绑定不重复预检（一次提案只买一次读盘）；
 /// - **与保存侧同形** —— 复用 [`embed_samples::MissingSample`]，`reason` 词表
 ///   与 `missingSamples.items[]` 同一套，GUI 只读回执、不另设状态；
-/// - **预算照 `SampleLimits::default()`** —— 与 `yeban_load_sfz` 缺省同一口径；
-///   被预算截断的样本记 `NotLoaded`（⛔ 不当成缺失，免得把"没读"说成"没有"）。
+/// - **不占样本帧预算** —— 轻量探针不产出 PCM，也不存在"被预算截断/未触达"
+///   的状态；⛔ 不把"没读"说成"没有"。显式 `yeban_load_sfz` 仍按调用方预算真装载。
 fn sampler_binding_warnings_for_changed_tracks(
     domain: &Domain,
     before: &YebanProjectV1,
@@ -9248,15 +9263,8 @@ fn sampler_binding_warnings_for_changed_tracks(
                 continue;
             }
         };
-        let load = match sfz::load(
-            &path,
-            48_000.0,
-            0,
-            false,
-            sfz::SampleLimits::default(),
-            &BTreeMap::new(),
-        ) {
-            Ok(load) => load,
+        let probe = match sfz::probe_samples(&path) {
+            Ok(probe) => probe,
             Err(fault) => {
                 out.push(embed_samples::MissingSample {
                     track_id: track_text,
@@ -9268,29 +9276,17 @@ fn sampler_binding_warnings_for_changed_tracks(
                 continue;
             }
         };
-        for (sample, disposition) in &load.sample_dispositions {
-            let reason = match disposition {
-                sfz::SampleDisposition::NotFound => "sample_missing",
-                sfz::SampleDisposition::Unsupported => "sample_unsupported",
-                sfz::SampleDisposition::Other => "sample_unreadable",
-                // 读到了 / 本次按需装载没读 ⇒ 不是"缺"，不进警告。
-                sfz::SampleDisposition::Loaded | sfz::SampleDisposition::NotLoaded => continue,
-            };
+        for issue in &probe.issues {
+            let reason = issue.reason.warning_reason();
             // 键与保存侧**同一个**：`embedded_sample_key`（绑定目录 ＋ `sample=` 原串，
             // 词法折叠）—— 否则同一份缺失在两张回执上会有两种拼法。
-            let key = sfz::embedded_sample_key(&sampler.path, sample);
-            let detail = load
-                .sample_failures
-                .iter()
-                .find(|failure| failure.contains(sample.as_str()))
-                .cloned()
-                .unwrap_or_else(|| format!("{reason}: `{sample}`"));
+            let key = sfz::embedded_sample_key(&sampler.path, &issue.sample);
             out.push(embed_samples::MissingSample {
                 track_id: track_text.clone(),
                 binding: sampler.path.clone(),
                 sample: Some(key),
                 reason,
-                detail,
+                detail: issue.detail.clone(),
             });
         }
     }
@@ -11121,6 +11117,77 @@ mod tests {
                 .iter()
                 .any(|item| item.get("reason").and_then(Value::as_str) == Some("sample_missing")),
             "缺样本必须产生 sample_missing 警告: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-FIX-648：apply 侧绑定预检也走只读文件头探针，不进入帧解码。
+    ///
+    /// 红对照：把 `sampler_binding_warnings_for_changed_tracks` 里的
+    /// `sfz::probe_samples` 换回 `sfz::load(... SampleLimits::default())`，
+    /// `header_only.wav` 会变成 `sample_unreadable`，本条转红。
+    #[test]
+    fn apply_binding_precheck_probes_headers_without_decoding_frames() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sampler-apply-probe-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        // 只有 RIFF/WAVE 头、没有帧数据：`hound` 能读 spec，真读样本必错。
+        let data_bytes = 1_000_000_u32 * 2;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48000_u32.to_le_bytes());
+        wav.extend_from_slice(&96000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        std::fs::write(dir.join("header_only.wav"), wav).expect("写只有头的 WAV");
+        std::fs::write(dir.join("bad.xyz"), b"not an audio container").expect("写不支持格式");
+        std::fs::write(
+            dir.join("kit.sfz"),
+            "<region> sample=header_only.wav key=59\n\
+             <region> sample=gone.wav key=60\n\
+             <region> sample=bad.xyz key=61\n",
+        )
+        .expect("写 SFZ");
+
+        let domain = domain();
+        let track_id = *domain
+            .active_project()
+            .expect("工程")
+            .tracks
+            .keys()
+            .next()
+            .expect("夹具工程至少有一条轨");
+        let absolute = dir.join("kit.sfz").to_string_lossy().into_owned();
+        let mut before = domain.active_project().expect("工程").clone();
+        before.tracks.get_mut(&track_id).expect("轨").sampler = None;
+        let mut after = before.clone();
+        after.tracks.get_mut(&track_id).expect("轨").sampler =
+            Some(serde_json::from_value(serde_json::json!({ "path": absolute })).expect("绑定"));
+
+        let warnings = sampler_binding_warnings_for_changed_tracks(&domain, &before, &after);
+        assert_eq!(
+            warnings.len(),
+            2,
+            "只报缺失与不支持格式，不得为仅头可读的 WAV 报错: {warnings:?}"
+        );
+        let reasons: Vec<&str> = warnings.iter().map(|warning| warning.reason).collect();
+        assert!(reasons.contains(&"sample_missing"), "{warnings:?}");
+        assert!(reasons.contains(&"sample_unsupported"), "{warnings:?}");
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.detail.contains("header_only.wav")),
+            "仅头可读的 WAV 不得进警告: {warnings:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

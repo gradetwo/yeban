@@ -10,11 +10,13 @@
 //! 夹具：工程在 `<scratch>/proj/song.yeban`，采样库在 `<scratch>/proj/assets/samples/kit`，
 //! 绑定写成工程目录相对路径（`resolve_sampler_path` 候选 ① 命中）。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
+use yeban_mcp::domain::sfz::{SampleDisposition, SampleLimits};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
 use yeban_model::{ClipContent, EntityId, SamplerBinding, YebanProjectV1};
@@ -294,4 +296,153 @@ fn apply_save_reports_missing_samples_in_the_receipt() {
         "{outcome:?}"
     );
     assert_eq!(outcome.missing_samples[0].reason, "sample_missing");
+}
+
+/// 只有 RIFF/WAVE `fmt ` 头、没有帧数据的 WAV：`hound` 能读出 spec，
+/// 但真正读样本必然报错。绑定预检若进入帧解码，就不可能对它保持安静。
+fn write_header_only_wav(path: &Path, declared_frames: u32) {
+    let data_bytes = declared_frames * 2;
+    let mut out = Vec::with_capacity(44);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&48000_u32.to_le_bytes());
+    out.extend_from_slice(&96000_u32.to_le_bytes());
+    out.extend_from_slice(&2_u16.to_le_bytes());
+    out.extend_from_slice(&16_u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_bytes.to_le_bytes());
+    fs::write(path, out).expect("写只有头的 WAV 夹具");
+}
+
+/// T-FIX-648：绑定预检只读文件头，不解码整库样本帧；三类既有警告仍响亮。
+///
+/// 红对照：把 `sampler_binding_warnings` 里的 `sfz::probe_samples` 换回
+/// `sfz::load(... SampleLimits::default())`，本判据会多出 `header_only.wav`
+/// 的 `sample_unreadable` 并转红。
+#[test]
+fn binding_precheck_probes_headers_without_decoding_frames() {
+    const BINDING: &str = "assets/samples/kit/002.sfz";
+    let scratch = Scratch::new("header-probe");
+    let (project_path, kit) = scaffold(&scratch);
+    write_header_only_wav(&kit.join("header_only.wav"), 1_000_000);
+    // 大型多样本腿：32 个各声明 8,000,000 帧的文件合计 256,000,000 帧，
+    // 已超过默认 134,217,728 帧预算；但预检只读文件头，不得出现截断/缺失警告。
+    let mut sfz = String::from("<region> sample=header_only.wav key=59\n");
+    for index in 0..32 {
+        let name = format!("bulk_{index}.wav");
+        write_header_only_wav(&kit.join(&name), 8_000_000);
+        sfz.push_str(&format!(
+            "<region> sample={name} key={key}\n",
+            key = 62 + index
+        ));
+    }
+    // 故意不写 `gone.wav`；`bad.xyz` 是格式不认的字节。
+    fs::write(kit.join("bad.xyz"), b"not an audio container").expect("写不支持格式夹具");
+    sfz.push_str("<region> sample=gone.wav key=60\n<region> sample=bad.xyz key=61\n");
+    fs::write(kit.join("002.sfz"), sfz).expect("写 SFZ 夹具");
+
+    let (project, lead) = project_with_notes(&[(60, 100)]);
+    let (mut dispatcher, auth) = fresh_dispatcher();
+    dispatcher
+        .domain_mut()
+        .open_in_memory(project_path, project, false)
+        .expect("注入夹具工程");
+
+    let result = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "ops": [{"kind": "setTrackSampler", "trackId": lead, "sampler": BINDING}],
+        }),
+    );
+    let warnings = result["data"]["samplerWarnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("响应必须带 samplerWarnings: {result}"))
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "只应报缺样本与不支持格式，不得为仅头可读的 WAV 报错: {result}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|item| item["reason"] == "sample_missing"),
+        "缺样本必须仍报 sample_missing: {result}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|item| item["reason"] == "sample_unsupported"),
+        "不支持格式必须仍报 sample_unsupported: {result}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|item| item["reason"] == "sample_unreadable"),
+        "仅头可读的 WAV 不得被当成不可读: {result}"
+    );
+
+    // 同一份 SFZ 走显式全量装载：header_only.wav 必须真的读不动 —— 证明上面的
+    // 「安静」来自轻量探针，而不是夹具本身能解码。
+    let load = yeban_mcp::domain::sfz::load(
+        &kit.join("002.sfz"),
+        48_000.0,
+        0,
+        false,
+        SampleLimits::default(),
+        &BTreeMap::new(),
+    )
+    .expect("SFZ 本身可装载");
+    let header_disposition = load
+        .sample_dispositions
+        .iter()
+        .find(|(sample, _)| sample.ends_with("header_only.wav"))
+        .map(|(_, disposition)| disposition)
+        .expect("显式装载必须处置 header_only.wav");
+    assert_eq!(
+        *header_disposition,
+        SampleDisposition::Other,
+        "显式全量装载必须把截断帧数据判成不可读: {load:?}"
+    );
+    let gone_disposition = load
+        .sample_dispositions
+        .iter()
+        .find(|(sample, _)| sample.ends_with("gone.wav"))
+        .map(|(_, disposition)| disposition)
+        .expect("显式装载必须处置 gone.wav");
+    assert_eq!(*gone_disposition, SampleDisposition::NotFound);
+    let bad_disposition = load
+        .sample_dispositions
+        .iter()
+        .find(|(sample, _)| sample.ends_with("bad.xyz"))
+        .map(|(_, disposition)| disposition)
+        .expect("显式装载必须处置 bad.xyz");
+    assert_eq!(*bad_disposition, SampleDisposition::Unsupported);
+
+    // ---- SFZ 本身缺失：仍是 sfz_missing，不因轻量探针变成静默 ----
+    let missing_sfz = "assets/samples/kit/gone.sfz";
+    let result = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "ops": [{"kind": "setTrackSampler", "trackId": lead, "sampler": missing_sfz}],
+        }),
+    );
+    let warnings = result["data"]["samplerWarnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("响应必须带 samplerWarnings: {result}"))
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 1, "缺 SFZ 必须恰好一条: {result}");
+    assert_eq!(warnings[0]["reason"], "sfz_missing", "{result}");
 }

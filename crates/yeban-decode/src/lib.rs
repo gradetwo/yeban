@@ -152,8 +152,8 @@ pub use asset::{
 // 返回 `AssetHash`，`pcm_hash` 内部就是对 `AssetHasher` 的分块喂入。重新导出一次，
 // 调用方（含本 crate 的集成判据）因此不必自己声明 `yeban-model` 依赖就能写出类型。
 pub use decode::{
-    DecodeOptions, MeasuredSource, MonoSample, decode_bytes, decode_mono_channel0, decode_path,
-    decode_reader, decode_source,
+    DecodeOptions, MeasuredSource, MediaProbe, MonoSample, decode_bytes, decode_mono_channel0,
+    decode_path, decode_reader, decode_source, probe_path,
 };
 pub use duration::{Mismatch, Reconciliation, reconcile};
 pub use error::{DecodeError, DecodeResult};

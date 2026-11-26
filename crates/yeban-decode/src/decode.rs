@@ -99,6 +99,64 @@ pub fn decode_path(path: &Path, options: &DecodeOptions) -> DecodeResult<Decoded
     decode_source(Box::new(file), &hint, options)
 }
 
+/// 只读**容器/编解码文件头**的探针（不解码任何帧）。
+///
+/// 走与 [`decode_path`] **同一套**格式判定：输入字节闸门、RIFF `fmt ` 预检、
+/// `symphonia` probe、默认音频轨与 `make_audio_decoder`。区别只在返回前不调用
+/// `fill` / `next_packet`，因此不产生 PCM、不占样本帧预算。绑定预检用它判断
+/// "这个非 WAV 样本是不是本构建认得的格式"。
+///
+/// PCM 字节与时长预算在这里刻意放开：本探针只看文件头；真正的 `decode_path`
+/// 仍按调用方预算判它们。声道结构上限仍是本 crate 的 1/2 声道约定。
+///
+/// # Errors
+///
+/// 与 [`decode_path`] 的**文件头**部分同：I/O、输入字节上限、容器/编解码器不支持、
+/// 缺音频轨/缺参数、声道 >2、采样率或布局触发布局闸门。
+pub fn probe_path(path: &Path) -> DecodeResult<MediaProbe> {
+    let len = std::fs::metadata(path)?.len();
+    let defaults = PcmBudget::default();
+    limits::check_input_len(len, &defaults)?;
+    let options = DecodeOptions {
+        budget: PcmBudget {
+            max_pcm_bytes: u64::MAX,
+            max_duration_secs: u64::MAX,
+            ..defaults
+        },
+        ..DecodeOptions::default()
+    };
+    let file = File::open(path)?;
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let decoder = StreamingDecoder::open_source(Box::new(file), &hint, &options)?;
+    if let Some(channels) = decoder.header_channels
+        && channels > 2
+    {
+        return Err(DecodeError::TooManyStreamChannels { channels, limit: 2 });
+    }
+    let channels = decoder
+        .header_channels
+        .ok_or(DecodeError::MissingCodecParameters)?;
+    Ok(MediaProbe {
+        channels,
+        sample_rate: decoder.sample_rate,
+        declared_frames: decoder.declared_frames,
+    })
+}
+
+/// [`probe_path`] 的文件头读数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaProbe {
+    /// 文件头声明的声道数。
+    pub channels: u16,
+    /// 文件头声明的采样率（Hz）。
+    pub sample_rate: u32,
+    /// 文件头声明的总帧数（未知 ⇒ `None`）。
+    pub declared_frames: Option<u64>,
+}
+
 /// 一份样本的**单声道（声道 0）**读数，SFZ 的样本口径。
 ///
 /// 存在的理由（`#223`）：`yeban_app` 与 `yeban_mcp` 各自的 SFZ 读取器都要把
@@ -246,6 +304,8 @@ pub struct StreamingDecoder<'s> {
     track_id: u32,
     sample_rate: u32,
     declared_frames: Option<u64>,
+    /// 容器/编解码参数里声明的声道数（首包解码前也能读到）。
+    header_channels: Option<u16>,
     declared_bit_depth: Option<u16>,
     encoder_delay_frames: Option<u32>,
     encoder_padding_frames: Option<u32>,
@@ -355,6 +415,10 @@ impl<'s> StreamingDecoder<'s> {
         let declared_bit_depth = audio_params
             .bits_per_sample
             .and_then(|b| u16::try_from(b).ok());
+        let header_channels = audio_params
+            .channels
+            .as_ref()
+            .and_then(|channels| u16::try_from(channels.count()).ok());
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
             .map_err(|err| DecodeError::from_symphonia(&err))?;
@@ -395,6 +459,7 @@ impl<'s> StreamingDecoder<'s> {
             track_id,
             sample_rate,
             declared_frames,
+            header_channels,
             declared_bit_depth,
             encoder_delay_frames,
             encoder_padding_frames,

@@ -102,8 +102,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use yeban_decode::{DecodeError, probe_path as probe_media_header};
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
-use yeban_render::wav::{read_plain_wav_f32, read_plain_wav_f32_from_bytes};
+use yeban_render::wav::{
+    WavError, probe_plain_wav, read_plain_wav_f32, read_plain_wav_f32_from_bytes,
+};
 use yeban_sfz::PlayDirection;
 use yeban_sfz::SampleEnd;
 use yeban_sfz::instrument::{
@@ -2182,6 +2185,174 @@ pub fn load(
     .map(|(load, _)| load)
 }
 
+/// 绑定预检的轻量探针：只读 SFZ 文本、样本路径与文件头，不解码样本帧。
+///
+/// 这是 [`load`] 的**只看头**兄弟：SFZ 读取/`#include` 展开/区域解析走同一套设施，
+/// 但逐区域只拒绝"路径解析失败、文件不存在/不是文件、格式不支持、文件头读不动"，
+/// 不调用 [`read_sample_file`]，因此不产生 PCM、不占 [`SampleLimits`] 的帧/文件预算。
+/// 被预算截断或未触达的情形在这里不存在，也就不会把"没读"误报成"没有"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SfzProbe {
+    /// 读不到的样本，按 `sample=` 原样字符串去重。
+    pub issues: Vec<SfzProbeIssue>,
+}
+
+/// 一条轻量探针失败。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SfzProbeIssue {
+    /// `Region::sample_path()` 的有效路径原样串。
+    pub sample: String,
+    /// 失败分类（与 [`SampleDisposition`] 的三个失败态同义）。
+    pub reason: ProbeIssueReason,
+    /// 人读细节；含样本路径，供回执点名。
+    pub detail: String,
+}
+
+/// 轻量探针的失败分类。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeIssueReason {
+    /// 路径解析后目标文件不存在。
+    Missing,
+    /// 容器/编解码/位深/声道数不在本仓支持范围。
+    Unsupported,
+    /// 文件在，但文件头读不动或无法判定格式。
+    Unreadable,
+}
+
+impl ProbeIssueReason {
+    /// 绑定/保存回执里的既有 reason 词。
+    #[must_use]
+    pub const fn warning_reason(self) -> &'static str {
+        match self {
+            Self::Missing => "sample_missing",
+            Self::Unsupported => "sample_unsupported",
+            Self::Unreadable => "sample_unreadable",
+        }
+    }
+}
+
+/// 只读文件头地预检一份 SFZ 的全部有效样本路径。
+///
+/// 无需求过滤器：绑定动作没有"本次会不会发声"的信息，必须覆盖所有区域；
+/// 但仍不进入帧解码。`*silence` 与空 `sample=` 照旧跳过。
+///
+/// # Errors
+///
+/// SFZ 本身读不到、不是 UTF-8、`#include` 循环/越界或解析失败 —— 与 [`load`] 同。
+pub fn probe_samples(path: &Path) -> Result<SfzProbe, Fault> {
+    let document = read_sfz_document(path)?;
+    let instrument = match document.resolution.as_ref() {
+        Some((sources, _)) => parse_expanded(&document.text, Some(sources.as_slice())),
+        None => parse_expanded(&document.text, None),
+    }?;
+    let mut issues: BTreeMap<String, SfzProbeIssue> = BTreeMap::new();
+    for region in instrument.regions() {
+        if region.is_builtin_silence() {
+            continue;
+        }
+        let sample = region.sample_path();
+        if sample.trim().is_empty() {
+            continue;
+        }
+        let raw = sample.into_owned();
+        let probe = match resolve_sample_path(path, &raw) {
+            Err(error) => Err((
+                ProbeIssueReason::Unreadable,
+                format!("rejected({raw}): {error}"),
+            )),
+            Ok(resolved) => probe_sample_header(&resolved).map_err(|(reason, detail)| {
+                (
+                    reason,
+                    format!("unreadable({}): {detail}", resolved.display()),
+                )
+            }),
+        };
+        if let Err((reason, detail)) = probe {
+            issues.entry(raw.clone()).or_insert(SfzProbeIssue {
+                sample: raw,
+                reason,
+                detail,
+            });
+        }
+    }
+    Ok(SfzProbe {
+        issues: issues.into_values().collect(),
+    })
+}
+
+/// 单个样本文件的文件头探针。
+///
+/// WAV 后缀走 [`probe_plain_wav`]（与 [`read_sample_file`] 的 WAV 腿同源）；
+/// 其余走 [`yeban_decode::probe_path`]（与 [`read_sample_file`] 的 symphonia 腿同源）。
+/// 两者都不读样本帧。无法判定格式一律落 `Unreadable`，⛔ 不静默当可用。
+fn probe_sample_header(path: &Path) -> Result<(), (ProbeIssueReason, String)> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        let reason = if error.kind() == std::io::ErrorKind::NotFound {
+            ProbeIssueReason::Missing
+        } else {
+            ProbeIssueReason::Unreadable
+        };
+        (reason, error.to_string())
+    })?;
+    if metadata.is_dir() {
+        return Err((
+            ProbeIssueReason::Unreadable,
+            "是一个目录, 不是样本文件".to_owned(),
+        ));
+    }
+    if metadata.len() > MAX_SAMPLE_FILE_BYTES {
+        return Err((
+            ProbeIssueReason::Unreadable,
+            format!(
+                "文件超过单样本上限 {} bytes（实际 {}）",
+                MAX_SAMPLE_FILE_BYTES,
+                metadata.len()
+            ),
+        ));
+    }
+    if is_plain_wav_suffix(path) {
+        return match probe_plain_wav(path) {
+            Ok(probe) if probe.channels <= 2 => Ok(()),
+            Ok(probe) => Err((
+                ProbeIssueReason::Unsupported,
+                format!("不支持的声道数 {}（只支持 1/2 声道）", probe.channels),
+            )),
+            Err(WavError::UnsupportedDepth(bits)) => Err((
+                ProbeIssueReason::Unsupported,
+                format!("不支持的 WAV 位深 {bits}"),
+            )),
+            Err(error) => {
+                // 与 [`classify_failed_read`] 同一条分流：`.wav` 头不是 RIFF/WAVE
+                // ⇒ 格式不支持；RIFF/WAVE 头但内容锁死 ⇒ 文件不可读。
+                if looks_like_wav_family(path) {
+                    Err((ProbeIssueReason::Unreadable, error.to_string()))
+                } else {
+                    Err((ProbeIssueReason::Unsupported, error.to_string()))
+                }
+            }
+        };
+    }
+    match probe_media_header(path) {
+        Ok(probe) if probe.channels <= 2 => Ok(()),
+        Ok(probe) => Err((
+            ProbeIssueReason::Unsupported,
+            format!("不支持的声道数 {}（只支持 1/2 声道）", probe.channels),
+        )),
+        Err(
+            DecodeError::UnsupportedFormat
+            | DecodeError::UnsupportedCodec { .. }
+            | DecodeError::TooManyStreamChannels { .. },
+        ) => Err((
+            ProbeIssueReason::Unsupported,
+            "格式/编解码不受支持".to_owned(),
+        )),
+        Err(DecodeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err((ProbeIssueReason::Missing, error.to_string()))
+        }
+        Err(error) => Err((ProbeIssueReason::Unreadable, error.to_string())),
+    }
+}
+
 /// 提供表的一行：`sample=` 的**原样字符串** ＋ 该文件的读取结果（读不到 ⇒ `Err`）。
 ///
 /// ⭐ `#276`：这张表由 [`load_with`] 在同一次解析里产出，供引擎摊平使用。
@@ -2442,28 +2613,16 @@ impl DemandLoadFilter {
     }
 }
 
-/// 与 [`load`] 在**同一次解析**里多产出一件东西：引擎摊平要的那张
-/// `(sample= 的**原样字符串**, 读取结果)` 表 —— 按区域首见顺序、按原样字符串去重，
-/// 跳过内建静音（`*silence`）与空 `sample=`。于是渲染路径
-/// ⛔ 不必为了这张表再解析一遍（修前 `prepare_sampler_track` 会再开一次
-/// `with_instrument`），也 ⛔ 不必再解码一遍（修前每次渲染自建一个 [`SampleCache`]）。
-///
-/// 读盘与预算仍由 `cache`（[`SampleReads`]）记账：传 [`SampleCache`] ⇒ 与 [`load`]
-/// **完全同一条**；传 [`TrackSampleCache`] ⇒ 多轨共享已解码 PCM，而每条轨的记账
-/// （文件数 / 帧数 / 截断）逐条不变。
-///
-/// # Errors
-///
-/// 与 [`load`] 相同。
-pub fn load_with(
-    path: &Path,
-    sample_hz: f32,
-    assign_id: u64,
-    reused: bool,
-    cache: &mut dyn SampleReads,
-    wanted: Option<&DemandLoadFilter>,
-    initial_cc: &BTreeMap<u8, u8>,
-) -> Result<(SfzLoad, SampledProviderTable), Fault> {
+/// 磁盘 SFZ 的原文、字节数、摘要与 `#include` 展开结果。
+struct SfzDocument {
+    text: String,
+    byte_len: u64,
+    digest: String,
+    resolution: Option<ResolvedIncludeSources>,
+}
+
+/// 读一份磁盘 SFZ 并展开 `#include`（只读文本，⛔ 不碰样本）。
+fn read_sfz_document(path: &Path) -> Result<SfzDocument, Fault> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         Fault::domain_with_data(
             CODE_IO,
@@ -2512,12 +2671,43 @@ pub fn load_with(
     let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
     // ⭐ `#208`：先把 `#include` 展开（缺失只记一条、循环/超深报错），再解析片段序列。
     let resolution = resolve_include_sources(&text, path)?;
-    load_with_resolved(
+    Ok(SfzDocument {
         text,
-        metadata.len(),
+        byte_len: metadata.len(),
         digest,
-        path,
         resolution,
+    })
+}
+
+/// 与 [`load`] 在**同一次解析**里多产出一件东西：引擎摊平要的那张
+/// `(sample= 的**原样字符串**, 读取结果)` 表 —— 按区域首见顺序、按原样字符串去重，
+/// 跳过内建静音（`*silence`）与空 `sample=`。于是渲染路径
+/// ⛔ 不必为了这张表再解析一遍（修前 `prepare_sampler_track` 会再开一次
+/// `with_instrument`），也 ⛔ 不必再解码一遍（修前每次渲染自建一个 [`SampleCache`]）。
+///
+/// 读盘与预算仍由 `cache`（[`SampleReads`]）记账：传 [`SampleCache`] ⇒ 与 [`load`]
+/// **完全同一条**；传 [`TrackSampleCache`] ⇒ 多轨共享已解码 PCM，而每条轨的记账
+/// （文件数 / 帧数 / 截断）逐条不变。
+///
+/// # Errors
+///
+/// 与 [`load`] 相同。
+pub fn load_with(
+    path: &Path,
+    sample_hz: f32,
+    assign_id: u64,
+    reused: bool,
+    cache: &mut dyn SampleReads,
+    wanted: Option<&DemandLoadFilter>,
+    initial_cc: &BTreeMap<u8, u8>,
+) -> Result<(SfzLoad, SampledProviderTable), Fault> {
+    let document = read_sfz_document(path)?;
+    load_with_resolved(
+        document.text,
+        document.byte_len,
+        document.digest,
+        path,
+        document.resolution,
         sample_hz,
         assign_id,
         reused,

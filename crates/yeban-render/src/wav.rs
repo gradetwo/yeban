@@ -376,6 +376,46 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
     read_plain_wav_from_reader(&mut reader)
 }
 
+/// WAV **文件头**探针：只解析 `fmt ` 与容器字段，不读取任何样本帧。
+///
+/// 与 [`read_plain_wav`] 复用同一套 `hound::WavReader` 打开路径与
+/// [`check_container_fields`] / 位深白名单判定；差别只在返回前**不**调用
+/// `samples::<T>()`。绑定预检用它判断"这个文件是不是本仓能读的 WAV"，
+/// 不占用帧预算、不把 PCM 装进内存。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav`] 的**文件头**部分同：`hound` 打不开、声道/采样率为 0、
+/// 位深不是 16 / 24 / 32（Float32）。
+pub fn probe_plain_wav(path: impl AsRef<Path>) -> Result<WavHeaderProbe, WavError> {
+    let reader = WavReader::open(path)?;
+    let spec = reader.spec();
+    let format = PcmFormat {
+        channels: spec.channels,
+        sample_rate: spec.sample_rate,
+        bits_per_sample: spec.bits_per_sample,
+        is_float: spec.sample_format == SampleFormat::Float,
+        channel_mask: None,
+    };
+    check_container_fields(&format)?;
+    match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Int, 16 | 24) | (SampleFormat::Float, 32) => Ok(WavHeaderProbe {
+            channels: spec.channels,
+            sample_rate: spec.sample_rate,
+        }),
+        (_, bits) => Err(WavError::UnsupportedDepth(bits)),
+    }
+}
+
+/// [`probe_plain_wav`] 的文件头读数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WavHeaderProbe {
+    /// 容器声明的声道数。
+    pub channels: u16,
+    /// 容器声明的采样率（Hz）。
+    pub sample_rate: u32,
+}
+
 /// [`read_plain_wav`] 的 `hound::WavReader` 腿：路径腿与字节腿共用同一份
 /// 格式校验与样本读取（⛔ 不许各写一份：位深/越界口径漂移会直接改渲染字节）。
 fn read_plain_wav_from_reader(
