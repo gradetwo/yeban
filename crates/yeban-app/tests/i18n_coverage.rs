@@ -7,7 +7,7 @@
 //! | # | 判据 | 观测面 |
 //! | :-- | :--- | :--- |
 //! | ① | `ui/**/*.slint` 里任何含汉字的字符串字面量，只要不是 `@tr(...)` 的直接参数、也不在白名单内 ⇒ 红（报文件:行号 + 原文） | 全部 `.slint` 源码文本 |
-//! | ② | 源码 `@tr` 的 msgid 集合与**全部八个目标语言**词表的 msgid 集合**精确相等**（按解析值比，转义两侧同规），且每条 `msgstr` 非空；缺条 / 孤儿条 / 空译都红。另逐语做删词条变异：每语删 `选区 无` 一条，判据必须当场点名该条（变异可抽样，全量对账在判据本体） | `.slint` 源码 + 八份 `.po` 文本 |
+//! | ② | 源码 `@tr` 的 msgid 集合与**全部八个目标语言**词表的 msgid 集合**精确相等**（按解析值比，转义两侧同规），且每条 `msgstr` 非空；缺条 / 孤儿条 / 空译都红。同一 msgid 出现两次（重复条）也红，点名 msgid 与语种。另逐语做删词条变异：每语删 `选区 无` 一条，判据必须当场点名该条（变异可抽样，全量对账在判据本体） | `.slint` 源码 + 八份 `.po` 文本 |
 //! | ③ | 判据自身的合成变异自检：喂一段带假硬编码中文的合成源码，①必须抓住；同一段改走 `@tr` 后必须放行 | 本文件的检查函数 |
 //!
 //! ## 白名单（逐条带理由，只许按值精确匹配）
@@ -186,11 +186,13 @@ fn source_msgids(files: &[(String, String)]) -> BTreeSet<String> {
     ids
 }
 
-/// 解析 .po 文本：返回 (msgid 集合, 空 msgstr 的 msgid 清单)。
+/// 解析 .po 文本：返回 (msgid 集合, 空 msgstr 的 msgid 清单, 重复 msgid 清单)。
 /// 只认本仓词表的简单形态：`msgid "..."` / `msgstr "..."` 加 `"..."` 续行。
-fn parse_po(po: &str) -> (BTreeSet<String>, Vec<String>) {
+/// 重复 msgid 由集合插入的返回值判定：第二次出现即记入清单，判据据此红并点名。
+fn parse_po(po: &str) -> (BTreeSet<String>, Vec<String>, Vec<String>) {
     let mut ids = BTreeSet::new();
     let mut empty = Vec::new();
+    let mut duplicates = Vec::new();
     let mut current_id: Option<String> = None;
     let mut current_str: Option<String> = None;
     let mut mode: Option<&str> = None;
@@ -201,7 +203,9 @@ fn parse_po(po: &str) -> (BTreeSet<String>, Vec<String>) {
             if s.is_empty() {
                 empty.push(id.clone());
             }
-            ids.insert(id);
+            if !ids.insert(id.clone()) {
+                duplicates.push(id);
+            }
         }
     };
     for raw_line in po.lines() {
@@ -233,7 +237,7 @@ fn parse_po(po: &str) -> (BTreeSet<String>, Vec<String>) {
         }
     }
     flush(&mut current_id, &mut current_str);
-    (ids, empty)
+    (ids, empty, duplicates)
 }
 
 /// 取一行 PO 字符串字面量（`"..."`）的解析值。
@@ -296,7 +300,7 @@ fn no_unrouted_chinese_literals() {
 fn catalog_matches_source_msgids() {
     let files = slint_files();
     let src_ids = source_msgids(&files);
-    let (po_ids, empty) = parse_po(&po_source());
+    let (po_ids, empty, duplicates) = parse_po(&po_source());
     let missing: Vec<&String> = src_ids.difference(&po_ids).collect();
     let orphans: Vec<&String> = po_ids.difference(&src_ids).collect();
     assert!(
@@ -321,6 +325,11 @@ fn catalog_matches_source_msgids() {
         empty.is_empty(),
         "en-US.po 空译条（msgstr 为空）:\n{}",
         empty.join("\n")
+    );
+    assert!(
+        duplicates.is_empty(),
+        "en-US.po 重复 msgid（同一条出现两次）:\n{}",
+        duplicates.join("\n")
     );
 }
 
@@ -355,7 +364,7 @@ fn all_locales_match_source_msgids_with_mutation_evidence() {
     let src_ids = source_msgids(&files);
     for locale in TARGET_LOCALES {
         let po = po_source_for_locale(locale);
-        let (po_ids, empty) = parse_po(&po);
+        let (po_ids, empty, duplicates) = parse_po(&po);
         let missing: Vec<&String> = src_ids.difference(&po_ids).collect();
         let orphans: Vec<&String> = po_ids.difference(&src_ids).collect();
         assert!(
@@ -381,9 +390,14 @@ fn all_locales_match_source_msgids_with_mutation_evidence() {
             "{locale} 词表空译条（msgstr 为空）:\n{}",
             empty.join("\n")
         );
+        assert!(
+            duplicates.is_empty(),
+            "{locale} 词表重复 msgid（同一条出现两次）:\n{}",
+            duplicates.join("\n")
+        );
         // 变异证据：删 `选区 无` 一条，判据必须只报这一条、且点名它。
         let mutated = remove_po_entry(&po, "选区 无");
-        let (mutated_ids, _) = parse_po(&mutated);
+        let (mutated_ids, _, _) = parse_po(&mutated);
         let caught: Vec<&String> = src_ids.difference(&mutated_ids).collect();
         assert_eq!(
             caught.len(),
@@ -396,6 +410,30 @@ fn all_locales_match_source_msgids_with_mutation_evidence() {
             "{locale} 词表删条变异必须当场点名被删的 `选区 无`"
         );
     }
+}
+
+#[test]
+fn duplicate_msgid_detection_catches_mutation() {
+    // 重复条判据的绿/红对照：去重后的 en-US 必须零重复；
+    // 注入一条重复的 `选区 无` 后必须当场红、并点名该 msgid。
+    let po = po_source();
+    let (_, _, clean) = parse_po(&po);
+    assert!(
+        clean.is_empty(),
+        "去重后的 en-US.po 不应有重复 msgid: {clean:?}"
+    );
+    let injected = format!("{po}\nmsgid \"选区 无\"\nmsgstr \"DUPLICATE PROBE\"\n");
+    let (_, _, caught) = parse_po(&injected);
+    assert_eq!(
+        caught.len(),
+        1,
+        "注入一条重复后判据必须只报这一条: {caught:?}"
+    );
+    assert_eq!(
+        caught[0].as_str(),
+        "选区 无",
+        "重复判据必须点名被注入的 msgid"
+    );
 }
 
 #[test]

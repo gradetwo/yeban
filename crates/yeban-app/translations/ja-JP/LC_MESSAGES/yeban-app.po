@@ -2593,20 +2593,8 @@ msgstr "maxLagMs"
 msgid "关闭"
 msgstr "閉じる"
 
-msgid "采样率"
-msgstr "サンプルレート"
-
-msgid "重试"
-msgstr "再試行"
-
-msgid "确认删除"
-msgstr "削除を確認"
-
 msgid "相位对齐状态"
 msgstr "フェーズ整列の状態"
-
-msgid "音源管理状态"
-msgstr "音源管理の状態"
 
 msgid "OTCP keyRoot"
 msgstr "OTCP keyRoot"

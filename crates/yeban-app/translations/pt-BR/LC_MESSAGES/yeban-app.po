@@ -2593,20 +2593,8 @@ msgstr "maxLagMs"
 msgid "关闭"
 msgstr "Fechar"
 
-msgid "采样率"
-msgstr "Taxa de amostragem"
-
-msgid "重试"
-msgstr "Tentar novamente"
-
-msgid "确认删除"
-msgstr "Confirmar exclusão"
-
 msgid "相位对齐状态"
 msgstr "Status do alinhamento de fase"
-
-msgid "音源管理状态"
-msgstr "Status da biblioteca de sons"
 
 msgid "OTCP keyRoot"
 msgstr "OTCP keyRoot"

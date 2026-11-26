@@ -2593,20 +2593,8 @@ msgstr "maxLagMs"
 msgid "关闭"
 msgstr "Закрыть"
 
-msgid "采样率"
-msgstr "Частота дискретизации"
-
-msgid "重试"
-msgstr "Повторить"
-
-msgid "确认删除"
-msgstr "Подтвердить удаление"
-
 msgid "相位对齐状态"
 msgstr "Состояние выравнивания фазы"
-
-msgid "音源管理状态"
-msgstr "Состояние библиотеки звуков"
 
 msgid "OTCP keyRoot"
 msgstr "OTCP keyRoot"

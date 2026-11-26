@@ -2593,20 +2593,8 @@ msgstr "maxLagMs"
 msgid "关闭"
 msgstr "닫기"
 
-msgid "采样率"
-msgstr "샘플 레이트"
-
-msgid "重试"
-msgstr "다시 시도"
-
-msgid "确认删除"
-msgstr "삭제 확인"
-
 msgid "相位对齐状态"
 msgstr "위상 정렬 상태"
-
-msgid "音源管理状态"
-msgstr "음원 관리 상태"
 
 msgid "OTCP keyRoot"
 msgstr "OTCP keyRoot"
