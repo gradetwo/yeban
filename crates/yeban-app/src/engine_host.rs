@@ -999,6 +999,12 @@ pub struct EngineHost {
     /// `None` = 工程不是从文件打开的（内置样本 / 判据装配）⇒ 解析从**仓库根**开始，
     /// 与 `#164`／`#165` 的旧口径一致。
     project_dir: Option<PathBuf>,
+    /// ⭐ **当前工程文件路径**（T-FIX-422）：真实磁盘落点（`None` = 未保存工程）。
+    ///
+    /// `project_dir` 只够相对 SFZ 解析；导出护栏（`guard_output_path`）还必须知道
+    /// **真实工程文件名**（例如 `Song.yeban`，⛔ 不是合成名 `project.yeban`）。
+    /// 装配方在打开 / 另存为时和 `project_dir` 一起写下；点击导出时现读。
+    project_path: Option<PathBuf>,
     /// ⭐ ⭐ **音频片段字节的只读来源**（任务单 `#136`）：`AssetHash ⇒ 会话 CAS 池里的字节`。
     ///
     /// 为什么住在这里：`reload` / `publish_project` 只拿得到 `&YebanProjectV1`，而 **PCM
@@ -1080,6 +1086,27 @@ impl EngineHost {
     pub fn set_project_dir(&mut self, project_dir: Option<PathBuf>) {
         self.project_dir =
             project_dir.map(|dir| std::path::absolute(&dir).unwrap_or_else(|_| dir.clone()));
+    }
+
+    /// ⭐ **写下当前工程文件的真实磁盘路径**（T-FIX-422）。
+    ///
+    /// 与 [`Self::set_project_dir`] 的分工：目录只服务 SFZ 解析；导出护栏还要区分
+    /// 「输出路径是不是工程文件本身 / 工程锁文件」，因此必须有真实文件名。
+    /// 传 `None` = 新建未保存 / 内置样本：目录与文件路径一起清掉，避免上一次工程的
+    /// 真实文件名残留到下一个会话。
+    pub fn set_project_path(&mut self, project_path: Option<PathBuf>) {
+        let path =
+            project_path.map(|path| std::path::absolute(&path).unwrap_or_else(|_| path.clone()));
+        self.project_dir = path
+            .as_ref()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+        self.project_path = path;
+    }
+
+    /// 当前工程文件的真实磁盘路径（诊断 / 导出护栏读数）。
+    #[must_use]
+    pub fn project_path(&self) -> Option<&Path> {
+        self.project_path.as_deref()
     }
 
     /// 当前写下的工程文件所在目录（诊断/判据读数）。

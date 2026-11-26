@@ -10033,9 +10033,9 @@ pub fn wire_save_with_engine(
         if let (Some(engine), crate::save_action::SaveOutcome::Saved { path, .. }) =
             (engine.as_ref(), &outcome)
         {
-            engine
-                .borrow_mut()
-                .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
+            // ⭐ T-FIX-422：真实工程文件名落进宿主；`set_project_path` 同时把目录
+            //    改成这个文件的父目录（与上面 `#170` 的目录语义同一条）。
+            engine.borrow_mut().set_project_path(Some(path.clone()));
         }
         // ⭐ T-FIX-208：**只有落盘成功**（Saved）才把保存点前移到当前头。
         // 失败 / 取消绝不动它 —— 否则"存失败却被当成已存"会把未保存改动静默丢掉。
@@ -10408,6 +10408,11 @@ impl PortOpenProject {
             // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
             //    必须在 `reload` **之前**写下（那一跳就要摊平第一份快照）；0 轨分支会把
             //    宿主整体换成 `EngineHost::new()`，那里没有可解析的 SFZ，不重写也无害。
+            // ⭐ T-FIX-422：先把真实工程文件路径写下（含文件名，供导出护栏用），
+            //    再按既有口径写目录；源路径为 `None`（内置样本 / 新建）时目录也随之为空。
+            engine
+                .borrow_mut()
+                .set_project_path(source_path.map(std::path::Path::to_path_buf));
             engine
                 .borrow_mut()
                 .set_project_dir(project_dir.map(std::path::Path::to_path_buf));
@@ -22666,7 +22671,7 @@ thread_local! {
 ///
 /// ⚠ `wire_aether_actions` 没有 `ModulePaths` 捕获 ⇒ 拿不到"工程文件同级"，
 /// 真正的目录选择器属 ADR-0076 B5 的后续切片。
-fn stems_output_dir() -> std::path::PathBuf {
+pub fn stems_output_dir() -> std::path::PathBuf {
     // let-chain（Rust 2024）：层叠两个 if 会被 clippy::collapsible_if 拦下
     // （本仓库 -D warnings ⇒ 硬错误），语义完全相同。
     if let Ok(profile) = std::env::var("USERPROFILE")
@@ -22678,6 +22683,21 @@ fn stems_output_dir() -> std::path::PathBuf {
             .join("stems");
     }
     std::env::temp_dir().join("yeban-stems")
+}
+
+/// 分轨导出要传给后端的 `project_path`（T-FIX-422，相对 SFZ 的解析根＋护栏基准）。
+///
+/// - 有真实工程文件路径 ⇒ 原样用它（含文件名，`guard_output_path` 才护得住工程文件本身）；
+/// - 新建未保存 / 内置样本 ⇒ **cwd**（与 CLI `--export-stems` 的样本工程口径逐字相同），
+///   ⛔ 不再回退到 `out_dir.join("project.yeban")` 的输出目录占位。
+#[must_use]
+pub fn stems_project_path(engine: &EngineHost) -> std::path::PathBuf {
+    engine
+        .project_path()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
 }
 
 /// 剪贴板三键的**用户可见回执**（键盘与菜单共用一条，⛔ 不再静默）。
@@ -29476,16 +29496,15 @@ pub fn wire_aether_actions(
                             ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
                             return;
                         };
-                        // ⭐ T-FIX-167：`project_path` 只用于解析 SFZ 相对路径（与 CLI
-                        // 同口径）—— 工程从文件打开时用**真实目录**（`EngineHost` 的
-                        // `project_dir`，点击时现读），否则（新建未保存、目录未知）仍用
-                        // 输出目录下的占位（旧行为）。占位会让「只放在工程文件旁边」的
-                        // 相对 SFZ 在四档解析里全军覆没 ⇒ 渲染失败 ⇒ 分轨导不出。
-                        let project_path = engine
-                            .borrow()
-                            .project_dir()
-                            .map(|dir| dir.join("project.yeban"))
-                            .unwrap_or_else(|| out_dir.join("project.yeban"));
+                        // ⭐ T-FIX-422：分轨导出的 `project_path` 必须是**真实工程文件路径**
+                        // （相对 SFZ 的解析根＋`guard_output_path` 的工程文件/锁文件基准）。
+                        // T-FIX-167 的目录合成名 `project_dir/project.yeban` 只够解析，护栏
+                        // 拿它比对等于在护一个不存在的文件；未保存工程也不能回退到输出目录
+                        // 占位（那是 T-FIX-189 的原始根因之一）。这里点击时现读：
+                        // - 从文件打开 / 另存为成功 ⇒ `EngineHost` 记着的真实路径；
+                        // - 新建未保存 / 内置样本 ⇒ cwd（与 CLI `--export-stems` 样本工程
+                        //   的 `project_path` 口径逐字相同），⛔ 不再拿 `out_dir` 占位。
+                        let project_path = stems_project_path(&engine.borrow());
                         // ⭐ T-FIX-188：资产池与保存同一来源（`UndoPort::assets()`）——
                         //   装配点（`main.rs` 的 `--open` / `open_archive_runtime`）已把
                         //   归档的 `assets/{sha256}` 换进这只端口；空池会让内嵌样本

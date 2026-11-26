@@ -27,6 +27,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use yeban_app::bridge::ViewState;
+use yeban_app::engine_host::EngineHost;
 use yeban_app::host;
 use yeban_app::host::{ModulePaths, ProductionLoop};
 use yeban_app::scene::DemoScene;
@@ -38,10 +39,10 @@ use yeban_ui_test_port::render::LivePort;
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
-/// 分轨输出目录（与 `host::stems_output_dir` 在 Linux 上的口径相同：
-/// 无 `USERPROFILE` ⇒ `temp_dir()/yeban-stems`）。
+/// 分轨输出目录：与生产 `host::stems_output_dir` **同一来源**（Windows 是
+/// `%USERPROFILE%/Documents/Yeban/stems`；其它平台退回 TEMP）。
 fn stems_dir() -> PathBuf {
-    std::env::temp_dir().join("yeban-stems")
+    host::stems_output_dir()
 }
 
 fn list_files(dir: &PathBuf) -> Vec<(String, u64)> {
@@ -292,6 +293,18 @@ fn stems_project_dir_arm() {
         ProductionLoop::start_with_audio_source_and_project_dir(&project, 0, None, Some(&proj_dir))
             .expect("带工程目录启动引擎");
     let engine = production.engine_handle();
+    // ⭐ T-FIX-422：真实工程文件名（不是 `project.yeban` 合成名）写进宿主；
+    // 分轨臂点击时现读它，`guard_output_path` 才护得住真实工程文件/锁文件。
+    let project_file = proj_dir.join("Song.yeban");
+    std::fs::write(&project_file, b"fixture project").expect("写工程文件占位");
+    engine
+        .borrow_mut()
+        .set_project_path(Some(project_file.clone()));
+    assert_eq!(
+        engine.borrow().project_path(),
+        Some(project_file.as_path()),
+        "臂 3b 前提：引擎必须记着真实工程文件名"
+    );
     let view_cell = Rc::new(RefCell::new(view.clone()));
 
     let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
@@ -347,7 +360,139 @@ fn stems_project_dir_arm() {
     let _ = std::fs::remove_dir_all(stems_dir());
 }
 
-/// ⭐ 分轨占位 `project_path` 的候选根因（纯后端臂，不碰窗口）：
+#[test]
+fn stems_project_path_unsaved_falls_back_to_cwd_not_output_dir() {
+    // 未保存工程：没有真实工程路径 ⇒ 用 cwd（CLI 样本工程同一口径），
+    // ⛔ 不再拿 out_dir.join("project.yeban") 占位。
+    let empty = EngineHost::new();
+    let cwd = std::env::current_dir().expect("读 cwd");
+    assert_eq!(
+        host::stems_project_path(&empty),
+        cwd,
+        "未保存工程的分轨 project_path 必须回退到 cwd，而不是输出目录占位"
+    );
+    let mut saved = EngineHost::new();
+    let saved_path = std::env::temp_dir().join("Song.yeban");
+    saved.set_project_path(Some(saved_path.clone()));
+    assert_eq!(
+        host::stems_project_path(&saved),
+        saved_path,
+        "有磁盘落点时必须返回真实工程文件名"
+    );
+}
+
+/// 后端护栏臂：`project_path` 是真实工程文件名，某个分轨落点与它同路径时，
+/// 预检必须给出“输出路径不能是工程文件本身”，而不是渲染后覆盖。
+#[test]
+fn export_stems_guard_rejects_the_real_project_file_path() {
+    let scratch = std::env::temp_dir().join(format!(
+        "yeban-422-stems-guard-backend-{}-{}",
+        std::process::id(),
+        yeban_model::ids::EntityId::new().to_canonical_string()
+    ));
+    let out_dir = scratch.join("stems");
+    std::fs::create_dir_all(&out_dir).expect("建分轨输出目录");
+    let project: YebanProjectV1 = yeban_model::samples::filled_project();
+    let project_path = out_dir.join("0001.Lead.wav");
+    let error = yeban_app::export_stems::export_stems(&project, &project_path, &out_dir, None, &[])
+        .expect_err("输出等于真实工程文件时必须被 guard 拒绝");
+    let text = format!("{error}");
+    assert!(
+        text.contains("输出路径不能是工程文件本身"),
+        "必须点明工程文件护栏: {text}"
+    );
+    assert!(!project_path.exists(), "不能把工程文件写成输出");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// 臂 3c：真实工程文件名与某个分轨落点重合 ⇒ `guard_output_path` 必须响亮拒绝。
+///
+/// 构造方式：把工程路径设成 `out_dir/0001.Lead.wav`（filled_project 的第一条
+/// 非 master 轨是 Lead，分轨文件名按 ADR-0030 D7 是 `0001.Lead.wav`）。
+/// - 修前：分轨臂把 `project_path` 合成成 `out_dir/project.yeban`，护栏比对不到，
+///   会把分轨写进这个路径；
+/// - 修后：`project_path` 是真实工程文件名 ⇒ 落点预检在渲染前拒绝，manifest
+///   和分轨文件都不出现。
+#[test]
+fn stems_guard_sees_the_real_project_file_name() {
+    let scratch = std::env::temp_dir().join(format!(
+        "yeban-422-stems-guard-{}-{}",
+        std::process::id(),
+        yeban_model::ids::EntityId::new().to_canonical_string()
+    ));
+    let out_dir = stems_dir();
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    let project: YebanProjectV1 = yeban_model::samples::filled_project();
+    let lead = project
+        .tracks
+        .values()
+        .find(|track| track.name == "Lead")
+        .expect("filled_project 必须有 Lead 轨");
+    let project_path = out_dir.join("0001.Lead.wav");
+    assert!(
+        lead.name == "Lead",
+        "夹具前提：第一条分轨名必须能推出 0001.Lead.wav"
+    );
+
+    let view = ViewState::from_project(&project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<422-guard>", "yeban-app", project.clone(), NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    let engine = production.engine_handle();
+    engine
+        .borrow_mut()
+        .set_project_path(Some(project_path.clone()));
+    assert_eq!(
+        engine.borrow().project_path(),
+        Some(project_path.as_path()),
+        "前提：引擎必须记着真实工程文件名"
+    );
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    let _ = host::wire_module_actions_with(ui, Some(Rc::clone(&undo)), ModulePaths::default());
+    host::wire_aether_actions(
+        ui,
+        Rc::clone(&undo),
+        Rc::clone(&engine),
+        Rc::new(RefCell::new(view.clone())),
+    );
+    ui.invoke_command_execute("export-stems".into());
+    assert!(
+        out_dir.exists(),
+        "export-stems 回调必须真的跑到（它负责创建输出目录）"
+    );
+
+    let manifest = out_dir.join("stems-manifest.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if manifest.exists() || project_path.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        !manifest.exists(),
+        "真实工程文件名下，输出 == 工程文件必须在落盘前被 guard 拒绝；manifest={}",
+        manifest.display()
+    );
+    assert!(
+        !project_path.exists(),
+        "护栏必须拒绝把分轨写到真实工程文件路径 {}",
+        project_path.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 ///
 /// GUI 分轨入口没有工程落盘路径 ⇒ 用输出目录下的 `project.yeban` 占位
 /// （`host.rs` 的 `export-stems` 臂）。`resolve_sampler_path` 对相对 SFZ 按

@@ -1174,6 +1174,9 @@ impl LiveAdminSurface {
         let project_dir = PathBuf::from(path)
             .parent()
             .map(std::path::Path::to_path_buf);
+        self.engine
+            .borrow_mut()
+            .set_project_path(Some(PathBuf::from(path)));
         self.engine.borrow_mut().set_project_dir(project_dir);
         self.apply_project(&project).map_err(wiring_rejected)?;
         // ④ 落点跟着新工程走。
@@ -2643,6 +2646,10 @@ pub fn build_live_ui_with(
         .as_deref()
         .and_then(std::path::Path::parent)
         .map(std::path::Path::to_path_buf);
+    admin
+        .engine
+        .borrow_mut()
+        .set_project_path(admin.save_path.clone());
     admin.engine.borrow_mut().set_project_dir(project_dir);
     Ok(LiveUi {
         reference,

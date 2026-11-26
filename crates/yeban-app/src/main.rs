@@ -465,6 +465,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         cli::ProjectSource::File { path, .. } => path.parent().map(std::path::Path::to_path_buf),
         cli::ProjectSource::Sample(_) => None,
     };
+    // ⭐ T-FIX-422：分轨导出的护栏要真实工程文件名（不是 `project.yeban` 合成名）。
+    //    启动时把同一个 `ProjectSource` 的路径写下；样本工程为 `None`（导出回退 cwd）。
+    let project_path = match &loaded.source {
+        cli::ProjectSource::File { path, .. } => Some(path.clone()),
+        cli::ProjectSource::Sample(_) => None,
+    };
     // ⭐ **缺音源清单**（本票）：与渲染用**同一条**解析（`resolve_sampler_path`），
     // 因此"这里说缺、引擎却读得到"这种自相矛盾不可能出现。只在进界面之前算一次。
     let missing_sounds =
@@ -490,6 +496,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         host::apply_engine_error(&ui, host::EnginePublishOutcome::Failed(text.as_str()));
         host::ProductionLoop::without_engine()
     });
+    // ⭐ T-FIX-422：启动装配的真实工程路径（与上面 `project_dir` 同一个来源）。
+    if let Some(path) = project_path {
+        engine
+            .engine_handle()
+            .borrow_mut()
+            .set_project_path(Some(path));
+    }
     if engine.has_engine() {
         // 初始快照**就是**这份工程的投影 ⇒ 记下开局标记，免得第一次心跳白发一份
         // （`reload` 不知道"这一份投影对应哪个撤销标记"，只有装配点知道）。
