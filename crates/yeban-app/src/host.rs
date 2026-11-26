@@ -13935,44 +13935,19 @@ impl ModulePaths {
 
 /// 工程**可闻末端**的秒数（向上取整到毫秒）——「导出 WAV」时长格的缺省播种值。
 ///
-/// 链条只有三跳，每一跳都是既存的**唯一**实现，⛔ 在这里另写一份：
-/// ① [`crate::bridge::ViewState::content_end_tick`] —— 铺标尺与 `Shift+Z` 全曲总览读的
-/// 就是这一个数（剪辑摆放末端与段末端的最大值）；
-/// ② `YebanProjectV1::tempo().frames_at_tick(tick, PPQ, sr)` —— 模型层 `#339` 的分段
-/// 常速换算（变速工程按段累加、只取整一次）；
-/// ③ 帧 ÷ 采样率 = 秒。
-///
-/// ⚠ **向上**取整到毫秒：导出那侧是 `WavExportOptions::resolve` 的 `round(秒 × 采样率)`。
-/// 四舍五入会把末端最后半帧**切掉** —— `time_math` 的反向换算因此同样选向上（静默丢音）。
+/// T-FIX-467：本函数⛔ 不再持有自己的公式与上限常量，统一委托
+/// [`crate::export_wav::project_audible_end_seconds`]（CLI 的两个导出入口也走它）。
+/// 旧副本的三跳（投影 `content_end_tick` → 分段 tempo 换算 → 帧÷采样率、
+/// 毫秒向上取整、一小时上限）与共用助手逐字同源；`project_with_view_state` 与
+/// `ViewState::from_project` 只在缩放/光标/行高/选中态上有差别，`content_end_tick`
+/// 只取剪辑与段落末端，所以播种读数逐值不变。
 ///
 /// `None` = 没有可播的东西（空工程 / 没有撤销端口 / 换算失败 / 病态采样率）⇒ 调用方
-/// ⛔ 不播种，让 [`crate::export_wav::DEFAULT_WAV_SECONDS`]（8 秒）那条既有缺省继续生效 ——
-/// 这一档与 CLI `--export-wav` 不给 `--wav-seconds` 时逐字节相同（⛔ 本票⛔ 动 `resolve`
-/// 的缺省：GUI / CLI / MCP 共用那一份，改它会改两侧已钉住的产物长度）。
+/// ⛔ 不播种，让 [`crate::export_wav::DEFAULT_WAV_SECONDS`]（8 秒）那条既有缺省继续生效。
 #[must_use]
-fn audible_end_seconds(port: Option<&Rc<UndoPort>>, ui: &MainWindow) -> Option<f64> {
+fn audible_end_seconds(port: Option<&Rc<UndoPort>>, _ui: &MainWindow) -> Option<f64> {
     let project = port?.try_project()?;
-    let end_tick = project_with_view_state(&project, ui)
-        .ok()?
-        .content_end_tick();
-    if end_tick == 0 {
-        return None;
-    }
-    let hz = project.sample_rate().hz();
-    let frames = project
-        .tempo()
-        .frames_at_tick(end_tick, yeban_model::PPQ, hz)?;
-    // ⚠ `f64::from` 只到 `u32`（`frames` 是 `u64` ⇒ 那里会 E0277，CI 的 clippy 腿抓到过）。
-    // `as f64` 在 `2^53` 帧以内是**精确**的（48 kHz 下 ≈ 5,900 年：2^53 / 48000 / 3.15576e7），
-    // 因此这里的 `cast_precision_loss` 是 lint 的形状而非本行的实际误差。
-    #[allow(clippy::cast_precision_loss)]
-    let seconds = frames as f64 / f64::from(hz);
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return None;
-    }
-    // T-FIX-512：一小时上限的唯一定义在 `yeban_model::MAX_MASTER_SECONDS`，
-    // 与 MCP 渲染/录制闸门同源；⛔ 本文件不再持有第二份常量。
-    Some((seconds.min(yeban_model::MAX_MASTER_SECONDS) * 1000.0).ceil() / 1000.0)
+    crate::export_wav::project_audible_end_seconds(&project)
 }
 
 /// 导出对话框三格文本解析出的覆盖参数（`None` = 用后端缺省）。
