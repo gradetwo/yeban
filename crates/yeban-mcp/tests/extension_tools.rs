@@ -724,6 +724,126 @@ fn import_audio_registers_a_clip_and_undo_restores_byte_for_byte() {
     }
 }
 
+/// T-FIX-439：fade 在**工具边界**上只对音频片段成立。
+///
+/// 三段：
+/// - **(a) 拒绝腿**：MIDI 片段 + `fadeInTicks` ⇒ `INVALID_PARAMETER_RANGE` /
+///   `placementFieldNotApplicable`，`data` 点名 `placement.fadeInTicks` 与
+///   `clipContent: "midi"`，且**工程字节一位不变**（拒绝发生在提案之前）；
+/// - **(b) 阴性对照**：同一 MIDI 片段不给 fade ⇒ 照常成为提案（拒绝不是"不能摆"）；
+/// - **(c) 音频正腿**：音频片段 + fadeIn/fadeOut ⇒ 提案成功、合并后工程里真的带
+///   这两个值（渲染侧包络判据在 `render_audio_clips.rs` 的 ⑭）。
+#[test]
+fn fade_is_refused_on_midi_and_accepted_on_audio_through_the_tool_boundary() {
+    let project = filled_project();
+    let mut dispatcher = dispatcher_with_project(project.clone());
+    let before = project_bytes(&dispatcher);
+    let track = project.tracks.values().next().expect("样本里必须有音轨").id;
+    let midi = project
+        .clip_pool
+        .values()
+        .find(|entry| matches!(entry.content, ClipContent::Midi { .. }))
+        .expect("样本里必须有 MIDI 条目")
+        .id;
+    let audio = project
+        .clip_pool
+        .values()
+        .find(|entry| matches!(entry.content, ClipContent::Audio { .. }))
+        .expect("样本里必须有音频条目")
+        .id;
+
+    // (a) MIDI + fade ⇒ 结构化拒绝。
+    let refused = call_tool(
+        &mut dispatcher,
+        "yeban_edit_notes",
+        serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": midi.to_canonical_string(),
+            "ops": [],
+            "placement": {"durationTicks": 960, "fadeInTicks": 10, "fadeOutTicks": 20},
+        }),
+    );
+    assert_eq!(
+        refused["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["reason"], "placementFieldNotApplicable",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["field"], "placement.fadeInTicks",
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["data"]["clipContent"], "midi", "{refused}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        before,
+        "被拒的 fade 不得改动工程字节"
+    );
+
+    // (b) 阴性对照：同一个 MIDI 片段、不给 fade ⇒ 提案成功。
+    let plain = call_tool(
+        &mut dispatcher,
+        "yeban_edit_notes",
+        serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": midi.to_canonical_string(),
+            "ops": [],
+            "placement": {"durationTicks": 960},
+        }),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    assert_eq!(plain["data"]["pendingMerge"], true, "{plain}");
+    // 撤掉这条提案，免得它影响下面音频那一段的读数。
+    let proposal = plain["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let rejected = call_tool(
+        &mut dispatcher,
+        "yeban_reject_proposal",
+        serde_json::json!({"proposalId": proposal, "reason": "阴性对照用"}),
+    );
+    assert_eq!(rejected["status"], "success", "{rejected}");
+
+    // (c) 音频 + fade ⇒ 提案成功、合并后工程里真的带值。
+    let accepted = call_tool(
+        &mut dispatcher,
+        "yeban_edit_notes",
+        serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "clipId": audio.to_canonical_string(),
+            "ops": [],
+            "placement": {"durationTicks": 4800, "fadeInTicks": 200, "fadeOutTicks": 200},
+        }),
+    );
+    assert_eq!(accepted["status"], "success", "{accepted}");
+    let proposal = accepted["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        "yeban_merge_proposal",
+        serde_json::json!({"proposalId": proposal, "commitMessage": "#439 audio fade"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let placement = dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .track(&track)
+        .expect("音轨")
+        .clips
+        .values()
+        .find(|placement| placement.clip_id == audio)
+        .expect("音频片段必须真的摆上时间轴");
+    assert_eq!(placement.fade_in_ticks, Some(200));
+    assert_eq!(placement.fade_out_ticks, Some(200));
+    assert_eq!(placement.duration_ticks, 4800);
+}
+
 #[test]
 fn import_audio_accepts_a_pool_asset_and_respects_the_pcm_budget() {
     let project = filled_project();

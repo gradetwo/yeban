@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 309 | 1320 | `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 309 | 1322 | `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -193,6 +193,15 @@
 //! （1 reason 行 ＋ 3 键行）；`reason` 键站点 372 → **373**、字面站点
 //! 353 → **354**、总出现 377 → **378**。新摘要
 //! `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
+//! ⚠ T-FIX-439（本支）：`domain/notes.rs` 的 `reject_fade_on_non_audio_clip` 新增
+//! 1 处 `"reason": "placementFieldNotApplicable"` 字面站点（多带 `clipContent` /
+//! `clipId` 2 键；该 reason 已存在 ⇒ **reason 数不变** 309）⇒ `reason` 键站点
+//! 373 → **374**、字面站点 354 → **355**、总出现 378 → **379**、规范行数
+//! 1320 → **1322**（只多 2 个键行）。新摘要
+//! `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3`
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 
@@ -1864,13 +1873,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 378;
+const REASON_OCCURRENCES_TOTAL: usize = 379;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 373;
-const REASON_LITERAL_SITES_TOTAL: usize = 354;
+const REASON_KEY_SITES_TOTAL: usize = 374;
+const REASON_LITERAL_SITES_TOTAL: usize = 355;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2560,9 +2569,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 305] = [
     ),
     // ⭐ `#340`：旧扫描器看不见 `"reason": reason`，这两条因此从未进过载荷表。
     // 键集合取自它们共同的 `json!` 对象（`reject_placement_fields` / 循环区间拒答）。
+    // T-FIX-439：同一个 `reason` 在 `reject_fade_on_non_audio_clip` 上也出现，
+    // 那一处多带 `clipContent` / `clipId`（"哪个片段/什么内容"必须能定位）⇒ 载荷面取并集。
     (
         "placementFieldNotApplicable",
         &[
+            "clipContent",
+            "clipId",
             "field",
             "hint",
             "placementKind",
@@ -3730,13 +3743,21 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 353 → **354**、总出现 377 → **378**。新摘要
 /// `3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⚠ T-FIX-439（本支）：`domain/notes.rs` 的 `reject_fade_on_non_audio_clip` 新增
+/// 1 处 `"reason": "placementFieldNotApplicable"` 字面站点（多带 `clipContent` /
+/// `clipId` 2 键；该 reason 已存在 ⇒ reason 数不变）⇒ `reason` 键站点 373 → **374**、
+/// 字面站点 354 → **355**、总出现 378 → **379**、规范行数 1320 → **1322**
+/// （只多 2 个键行）。新摘要
+/// `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "3506705d233423f180f9b6dd03401deb9e2e58e246553692b63912fb71810699";
+    "e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 309;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1320;
+pub const REASON_SURFACE_LINES: usize = 1322;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

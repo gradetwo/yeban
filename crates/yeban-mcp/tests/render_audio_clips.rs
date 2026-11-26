@@ -4513,4 +4513,45 @@ fn a_clip_fade_ramps_the_master_envelope_and_follows_the_sample_offset() {
         "平移后的淡入结束必须回到满值（实测 {}）",
         frame_peak(&rendered, SHIFT + FADE_FRAMES)
     );
+
+    // (d) 尾腿（T-FIX-439 补的"首/尾"里的尾）：淡出 200 tick 也必须落在母带包络上
+    //     —— 片段末尾 5000 帧按同一条等功率曲线**衰减**，之前满、之后被片段末端截断。
+    //     为什么必须单独量尾：⑭ 此前只读过 `fade_in_ticks`，淡出窗口在离线母带里
+    //     "接线了吗"同样只能从代码推断。
+    const TOTAL_FRAMES: usize = 48_000;
+    let fade_out_tune = Tune {
+        fade_out_ticks: Some(200),
+        ..Tune::default()
+    };
+    let faded_out = fixture(wav_f32(2, 48_000, &constant(48_000, LEVEL)), &fade_out_tune);
+    let out = scratch.join("faded-out.wav");
+    let artifact =
+        build_with(&faded_out.project, &pool(&faded_out), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert_eq!(rendered.len(), TOTAL_FRAMES * 2, "1 秒立体声母带");
+    for frame in [0usize, 1_000, TOTAL_FRAMES - FADE_FRAMES - 1] {
+        assert!(
+            (frame_peak(&rendered, frame) - LEVEL).abs() <= TOLERANCE,
+            "淡出区间之前必须仍是满值（第 {frame} 帧 {}）",
+            frame_peak(&rendered, frame)
+        );
+    }
+    let tail_start = TOTAL_FRAMES - FADE_FRAMES;
+    // 最后一帧对应窗口内 elapsed = FADE_FRAMES - 1 ⇒ 期望 ≈ `LEVEL/√5000`（≈0.007），
+    // ⛔ 不是 0：片段在窗口走完**之前**就结束了，末帧落在曲线倒数第二格上。
+    let last_expected = fade_in_peak(LEVEL, 1, FADE_FRAMES);
+    assert!(
+        (frame_peak(&rendered, TOTAL_FRAMES - 1) - last_expected).abs() <= TOLERANCE,
+        "淡出最后一帧必须落在曲线末端（期望 {last_expected}, 实测 {}）",
+        frame_peak(&rendered, TOTAL_FRAMES - 1)
+    );
+    for elapsed in [1_000usize, 2_500, 4_000] {
+        let actual = frame_peak(&rendered, tail_start + elapsed);
+        let expected = fade_in_peak(LEVEL, FADE_FRAMES - elapsed, FADE_FRAMES);
+        assert!(
+            (actual - expected).abs() <= TOLERANCE,
+            "淡出第 {} 帧必须落在等功率曲线上（期望 {expected}, 实测 {actual}）",
+            tail_start + elapsed
+        );
+    }
 }

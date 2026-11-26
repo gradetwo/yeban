@@ -1163,6 +1163,9 @@ pub const LOOP_END_TICK_FIELD: &str = "loopEndTick";
 
 /// ⭐ T-FIX-374：淡入时长（`placement.fadeInTicks`，可选；tick，必须 > 0）。
 ///
+/// ⛔ **只对音频片段成立**（T-FIX-439）：等功率包络只在音频路径施加，MIDI/乐器
+/// 片段的排程路径不读这个字段 ⇒ 给非音频片段带它会报 `placementFieldNotApplicable`。
+///
 /// 等功率包络只在渲染层施加（`yeban-model::clip_fade` 是唯一一份窗口/曲线定义）；
 /// 本层只搬字面值与校验。与 [`FADE_OUT_TICKS_FIELD`] 之和不得超过 `durationTicks`。
 pub const FADE_IN_TICKS_FIELD: &str = "fadeInTicks";
@@ -12582,6 +12585,7 @@ pub fn parse_placement(
         clip_id,
         content_extent,
         entry.content.notes().is_some(),
+        matches!(entry.content, ClipContent::Audio { .. }),
     )?))
 }
 
@@ -12662,7 +12666,17 @@ pub fn parse_placement_for_create(
             _ => None,
         })
         .max();
-    build_placement(object, track_id, track, clip_id, content_extent, true)
+    // `create: true` 同给时，材料就是本次 `ops` 里的音符 ⇒ 一定是 MIDI 片段，
+    // fade 在这里同样不适用（响亮拒绝，不写一个永远不生效的旋钮）。
+    build_placement(
+        object,
+        track_id,
+        track,
+        clip_id,
+        content_extent,
+        true,
+        false,
+    )
 }
 
 /// `add` 形态的**共同构造器**：`parse_placement`（材料已在池里）与
@@ -12677,7 +12691,9 @@ fn build_placement(
     clip_id: &EntityId,
     content_extent: Option<u64>,
     is_midi: bool,
+    is_audio: bool,
 ) -> Result<ClipPlacement, Fault> {
+    reject_fade_on_non_audio_clip(object, clip_id, is_audio)?;
     let start_tick = read_optional_u64(object, "startTick")?.unwrap_or(0);
     let duration_ticks = match read_optional_u64(object, "durationTicks")? {
         Some(0) => {
@@ -12828,6 +12844,63 @@ fn build_placement(
         }
     }
     Ok(placement)
+}
+
+/// 收 `fadeInTicks` / `fadeOutTicks` 之前先问一句"这个片段真能被 fade 吗"。
+///
+/// ⚠ **等功率包络只长在音频路径上**：`crates/yeban-app/src/audio_clip.rs`、
+/// `crates/yeban-engine/src/audio_clip.rs` 与 `domain::render` 的 `AudioClipSource`
+/// 三处读 `fade_in_ticks` / `fade_out_ticks`；`ClipContent::Midi` 的排程路径
+/// **没有任何一处**读这两个字段。
+/// ⇒ 给 MIDI / 乐器片段写 fade 只会持久化一个**永远不生效**的旋钮（T-FIX-374 的
+/// 字段接住了、渲染静默忽略），那正是本单要堵的静默。
+///
+/// 复用既有 `placementFieldNotApplicable`（"字段已知、但这个目标上不适用"，
+/// 与"循环关闭时给区间"同一口径），不新增词表外的 `reason`。
+///
+/// # Errors
+///
+/// 非音频片段带 `fadeInTicks` / `fadeOutTicks` ⇒ `INVALID_PARAMETER_RANGE`，
+/// `data` 带 `field`（按出现顺序取第一个）、`reason`、`clipId`、`clipContent`
+/// （`"midi"`）与 `hint`。
+fn reject_fade_on_non_audio_clip(
+    object: &Map<String, Value>,
+    clip_id: &EntityId,
+    is_audio: bool,
+) -> Result<(), Fault> {
+    if is_audio {
+        return Ok(());
+    }
+    let Some(field) = [FADE_IN_TICKS_FIELD, FADE_OUT_TICKS_FIELD]
+        .into_iter()
+        .find(|field| object.contains_key(*field))
+    else {
+        return Ok(());
+    };
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{PLACEMENT_FIELD}.{field}` 只适用于**音频**片段: 这个片段是 MIDI/乐器内容, \
+             渲染路径根本不读 fade (放进来只会持久化一个永远不生效的旋钮)"
+        ),
+        serde_json::json!({
+            "reason": "placementFieldNotApplicable",
+            "field": format!("{PLACEMENT_FIELD}.{field}"),
+            "placementKind": PLACEMENT_KIND_ADD,
+            "clipId": clip_id.to_canonical_string(),
+            "clipContent": "midi",
+            "supportedPlacementFields": [
+                "startTick",
+                "durationTicks",
+                "placementId",
+                "muted",
+                "loopEnabled",
+                "loopStartTick",
+                "loopEndTick",
+            ],
+            "hint": "去掉 fade 键（MIDI 片段没有可淡的音频包络）；要淡入淡出就把音频片段摆上来",
+        }),
+    ))
 }
 
 /// 拒绝 `placement` 对象里 `allowed` 之外的键（与 [`reject_unknown_note_fields`]
@@ -21301,6 +21374,22 @@ mod tests {
         (project, track_id, clip_id)
     }
 
+    /// 同 [`unplaced_midi_clip`]，但取的是池子里那条**音频**条目。
+    fn unplaced_audio_clip() -> (YebanProjectV1, EntityId, EntityId) {
+        let mut project = filled_project();
+        for track in project.tracks.values_mut() {
+            track.clips.clear();
+        }
+        let track_id = project.tracks.values().next().expect("样本里必须有音轨").id;
+        let clip_id = project
+            .clip_pool
+            .values()
+            .find(|entry| matches!(entry.content, ClipContent::Audio { .. }))
+            .expect("样本里必须有音频条目")
+            .id;
+        (project, track_id, clip_id)
+    }
+
     /// 字段名与支持集合被钉住（不多报一个键，也不少报一个）。
     #[test]
     fn placement_field_names_are_pinned() {
@@ -21456,10 +21545,14 @@ mod tests {
         assert_eq!(value["error"]["data"]["isMidi"], false);
     }
 
-    /// T-FIX-374：摆放的 fade 字段被接住、能读回，越界响亮拒绝。
+    /// T-FIX-374 + T-FIX-439：fade 字段**只**对音频片段成立。
+    ///
+    /// 本判据改用**音频**片段：淡入淡出在渲染层只由音频路径读（`audio_clip.rs` /
+    /// `domain::render` 的 `AudioClipSource`），所以"接住并读回"这件事只在这里才有
+    /// 意义；MIDI 片段上给 fade 由 [`fade_on_midi_clip_is_refused`] 响亮拒绝。
     #[test]
     fn placement_fade_fields_are_parsed_and_validated() {
-        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let (project, track_id, clip_id) = unplaced_audio_clip();
         let placement = parse_placement(
             &project,
             &track_id,
@@ -21499,6 +21592,79 @@ mod tests {
         )
         .expect_err("和超过时值必须被拒");
         assert_eq!(too_long.domain_code(), Some(ErrorCode::OutOfRange));
+    }
+
+    /// T-FIX-439：MIDI / 乐器片段带 fade ⇒ 结构化拒绝（`placementFieldNotApplicable`），
+    /// 且**工程一位不变**。
+    ///
+    /// 为什么必须拒：`ClipContent::Midi` 的排程路径没有任何一处读
+    /// `fade_in_ticks` / `fade_out_ticks`（T-FIX-374 只接了字面值）⇒ 接受就等于
+    /// "持久化一个永远不生效的旋钮"，正是本单要堵的静默。
+    #[test]
+    fn fade_on_midi_clip_is_refused() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let before = serde_json::to_value(&project).expect("可序列化");
+
+        let fade_in = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 960, "fadeInTicks": 10})),
+        )
+        .expect_err("MIDI 片段上的 fadeInTicks 必须被拒");
+        assert_eq!(
+            fade_in.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "拒绝必须是既有的 INVALID_PARAMETER_RANGE"
+        );
+        let value = fade_in.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["reason"], "placementFieldNotApplicable",
+            "{value}"
+        );
+        assert_eq!(
+            value["error"]["data"]["field"], "placement.fadeInTicks",
+            "{value}"
+        );
+        assert_eq!(value["error"]["data"]["clipContent"], "midi", "{value}");
+        assert_eq!(
+            value["error"]["data"]["clipId"],
+            clip_id.to_canonical_string(),
+            "{value}"
+        );
+
+        // 单独给 fadeOutTicks 同样被拒（报的是**那个**键，而不是固定报 fadeInTicks）。
+        let fade_out = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 960, "fadeOutTicks": 20})),
+        )
+        .expect_err("MIDI 片段上的 fadeOutTicks 必须被拒");
+        let value = fade_out.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["field"], "placement.fadeOutTicks",
+            "{value}"
+        );
+
+        // 不给 fade 的同一片段照常可摆（阴性对照：拒绝不是"这个片段不能摆"）。
+        let plain = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"durationTicks": 960})),
+        )
+        .expect("不带 fade 必须照常通过")
+        .expect("在场");
+        assert_eq!(plain.fade_in_ticks, None);
+        assert_eq!(plain.fade_out_ticks, None);
+
+        // 工程一位不变：拒绝发生在提案之前，解析层不写任何东西。
+        assert_eq!(
+            serde_json::to_value(&project).expect("可序列化"),
+            before,
+            "被拒的 fade 不得改动工程"
+        );
     }
 
     /// 时值 0 在**这一层**就被拒（模型层同样拒绝；这里多给 `field`/`value` 的结构化载荷）。
