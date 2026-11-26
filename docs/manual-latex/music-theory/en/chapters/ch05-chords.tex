@@ -1,0 +1,213 @@
+\clearpage
+\chapter{Chords}
+\label{sec:chords}
+
+\subsection*{What you can do after this chapter}
+\begin{itemize}
+  \item Hear or see three notes and tell whether they form a triad, naming the root, third, and fifth.
+  \item Distinguish major, minor, diminished, and augmented triads, plus the common seventh chords, and write their semitone formulas and symbols.
+  \item Use inversions and slash symbols to change the bass and make voice leading smoother.
+  \item Stack chords in Yeban's piano roll, hear where the root lies, and understand what the chord lane can and cannot do.
+\end{itemize}
+
+\subsection{Chords: three or more notes as one functional unit}
+
+A chord is not ``any notes sounding together.'' It is a set of notes built from a root at fixed intervals. The most common is the triad: root, third, and fifth. The third decides major or minor, the fifth decides perfect, diminished, or augmented, and the root decides the chord's function in the key.
+
+To spell a chord, fix the root first and count semitones upward. From C:
+
+\[
+\mathrm{C4 \xrightarrow{+4} E4 \xrightarrow{+3} G4}
+\]
+
+C--E is a major third (four semitones), and E--G is a minor third (three semitones), so C--E--G is a major triad. Lower the third by a semitone and C--E\flatsym--G becomes a minor triad; change the third and fifth together and the quality changes with them.
+
+\subsection{The four triads}
+
+\begin{center}
+\small
+\begin{tabular}{p{0.15\linewidth}p{0.26\linewidth}p{0.30\linewidth}p{0.18\linewidth}}
+\toprule
+Type & Semitones from root & On C & Sound \\
+\midrule
+Major triad & 0, 4, 7 & C E G & bright, stable \\
+Minor triad & 0, 3, 7 & C E\flatsym{} G & soft, inward \\
+Diminished triad & 0, 3, 6 & C E\flatsym{} G\flatsym & tense, unstable \\
+Augmented triad & 0, 4, 8 & C E G\sharpsym & floating, symmetric \\
+\bottomrule
+\end{tabular}
+
+Table 5-1. The four triads. In the formula, 0 is the root; the other numbers are the third and fifth measured in semitones above it.
+\end{center}
+
+The diminished triad lowers both the third and the fifth; the augmented triad raises the fifth. Neither is a stable consonant base, so they usually serve as colour or transition. Major and minor triads are the skeleton of most pop, rock, jazz, and film harmony.
+
+\begin{center}
+\begin{minipage}{\linewidth}
+\centering
+\begin{tikzpicture}[x=2.8cm,y=0.48cm,font=\scriptsize]
+  \foreach \y in {0,3,4,7} {\draw[gray!45] (-0.2,\y) -- (3.2,\y);}
+  \foreach \y/\lab in {0/C4,3/E\flatsym4 (+3),4/E4 (+4),7/G4 (+7)} {
+    \node[left,font=\tiny] at (0,\y) {\lab};
+  }
+  \foreach \x/\lab in {1.0/major triad,2.5/minor triad} {
+    \draw[gray] (\x,-0.3) -- (\x,7.4);
+    \node[above=3pt,font=\tiny] at (\x,7.4) {\lab};
+  }
+  \foreach \y in {0,4,7} {\fill (1.0,\y) circle (2.2pt);}
+  \foreach \y in {0,3,7} {\fill (2.5,\y) circle (2.2pt);}
+\end{tikzpicture}
+
+\small Figure 5-1. C major and C minor triads. Rows are semitone distances above the root; filled dots are chord tones. The major triad uses +0/+4/+7, the minor triad +0/+3/+7.
+\end{minipage}
+\end{center}
+
+\subsection{Seventh chords: adding another third}
+
+A seventh chord adds a seventh above the triad. It is not ``a triad plus any note'': the relationship between the seventh and the root determines the chord quality. The five common types:
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.21\linewidth}p{0.21\linewidth}p{0.35\linewidth}p{0.15\linewidth}}
+\toprule
+Type & Semitones & On C & Symbol \\
+\midrule
+Dominant seventh & 0, 4, 7, 10 & C E G B\flatsym & C7 \\
+Major seventh & 0, 4, 7, 11 & C E G B & Cmaj7 \\
+Minor seventh & 0, 3, 7, 10 & C E\flatsym{} G B\flatsym & Cm7 \\
+Half-diminished seventh & 0, 3, 6, 10 & C E\flatsym{} G\flatsym{} B\flatsym & Cm7\flatsym5 \\
+Diminished seventh & 0, 3, 6, 9 & C E\flatsym{} G\flatsym{} B\flatsym{}\flatsym{} (enharmonic A) & Cdim7 \\
+\bottomrule
+\end{tabular}
+
+Table 5-2. Five common seventh chords. The dominant seventh's seventh is one semitone lower than the major seventh; that is the direct difference between C7 and Cmaj7.
+\end{center}
+
+The dominant seventh (0, 4, 7, 10) is functional harmony's most common tension-and-release unit: its third tends toward the tonic and its seventh tends toward the third of the tonic chord, so V7 to I sounds natural. The major seventh raises the seventh to 11 and sounds brighter and more suspended; the minor seventh lowers the third and is common in minor keys and jazz; half-diminished and diminished seventh chords are less stable.
+
+\subsection{Inversions and the bass}
+
+Changing which chord tone is the lowest note is an inversion. For C major:
+
+\begin{itemize}
+  \item Root position: C--E--G, bass C, symbol \texttt{C}.
+  \item First inversion: E--G--C, bass E, symbol \texttt{C/E}.
+  \item Second inversion: G--C--E, bass G, symbol \texttt{C/G}.
+\end{itemize}
+
+Inversion does not change the pitch set, only the bass and voicing. Its practical value is smoother bass motion: moving from C to F, a root-position F--A--C jumps the bass from C to F; F's first inversion A--C--F moves the bass from C to A, a smaller step. When arranging, decide whether the bass should move by step before choosing root position or an inversion.
+
+\begin{center}
+\begin{minipage}{\linewidth}
+\centering
+\begin{tikzpicture}[x=1.25cm,y=0.38cm,font=\scriptsize]
+  \foreach \x in {0,4,8} {\draw[gray] (\x,-0.5) -- (\x,16.5);}
+  \foreach \y/\n in {0/C4,4/E4,7/G4} {
+    \draw[thick] (0,\y) -- (0.75,\y);
+    \node[left=2pt] at (0,\y) {\n};
+  }
+  \foreach \y/\n in {4/E4,7/G4,12/C5} {
+    \draw[thick] (4,\y) -- (4.75,\y);
+    \node[left=2pt] at (4,\y) {\n};
+  }
+  \foreach \y/\n in {7/G4,12/C5,16/E5} {
+    \draw[thick] (8,\y) -- (8.75,\y);
+    \node[left=2pt] at (8,\y) {\n};
+  }
+  \node[below=4pt,font=\tiny] at (0,-0.5) {bass C};
+  \node[below=4pt,font=\tiny] at (4,-0.5) {bass E};
+  \node[below=4pt,font=\tiny] at (8,-0.5) {bass G};
+  \node[above=6pt,font=\tiny] at (0,16.5) {C};
+  \node[above=6pt,font=\tiny] at (4,16.5) {C/E};
+  \node[above=6pt,font=\tiny] at (8,16.5) {C/G};
+\end{tikzpicture}
+
+\small Figure 5-2. C major in root position, first inversion, and second inversion. All three contain C, E, G; the lowest note moves from C to E to G, and the slash symbol records the bass.
+\end{minipage}
+\end{center}
+
+\subsection{Chord symbols: from letters to Roman numerals}
+
+Lead-sheet and jazz notation uses a root letter plus a quality suffix. Common forms:
+
+\begin{itemize}
+  \item \texttt{C} major triad; \texttt{Cm} minor triad; \texttt{Cdim} diminished; \texttt{Caug} augmented.
+  \item \texttt{C7} dominant seventh; \texttt{Cmaj7} major seventh; \texttt{Cm7} minor seventh; \texttt{Cm7\flatsym5} half-diminished; \texttt{Cdim7} diminished seventh.
+  \item The letter after a slash is the bass, as in \texttt{C/E} or \texttt{C/G}; it changes the inversion, not the chord quality.
+  \item Extensions 9, 11, and 13 follow the quality, as in \texttt{Cm9} or \texttt{Fm11}; they stack further notes above the seventh, and their effect depends on voicing and context.
+\end{itemize}
+
+Functional analysis uses Roman numerals: in major, I, ii, iii, IV, V, vi, vii°; in minor, i, ii°, III, iv, v/V, VI, vii°. In C major: I = C, ii = Dm, iii = Em, IV = F, V = G, vi = Am, vii° = Bdim. Roman numerals show at a glance whether a chord is tonic, dominant, or subdominant, which is more useful than memorizing chord names alone.
+
+\subsection{Common progressions and voice leading}
+
+Three progressions worth practising first:
+
+\begin{itemize}
+  \item \textbf{I–V–vi–IV} (C–G–Am–F): one of pop's most common loops; tonic, dominant, submediant, subdominant, moving from stable to bright and back to soft.
+  \item \textbf{ii–V–I} (Dm–G–C): the backbone of jazz and functional harmony; ii prepares, V creates tension, I resolves. In minor it often appears as ii°–V–i or ii–V–i.
+  \item \textbf{i–VI–iv–V} (Cm–A\flatsym–Fm–G): an epic/pop minor progression; Yeban's chord-lane demo is exactly this family (Cm9, A\flatsym Maj7, Fm11, G7\sharpsym9, Cm11).
+\end{itemize}
+
+Two rules govern the connection: keep common tones when possible, and move the rest by the smallest practical distance. That is voice leading. For C to Am, the E and G of C can stay on E and G of Am while C moves to A. For C to F, keep the common C, move E to F and G to A, and move the bass C to F; do not make every voice leap at once.
+
+The low register needs care: root and fifth low can anchor the harmony, but do not put the third very low as well, or the bass turns muddy. Thirds, sevenths, and extensions sit better in the middle and upper register. There is no single frequency limit; judge by whether the monitoring sounds clear and the low end does not fight itself.
+
+\subsection{How to do it in Yeban}
+
+\begin{enumerate}
+  \item In the arrangement area, use the Show / Hide Chord Track menu item (or the chord expand/collapse toggle above the track headers). A global chord lane appears.
+  \item The lane is a fixed five-block demo: \texttt{Cm9} (i9), \texttt{AbMaj7} (VI7), \texttt{Fm11} (iv11), \texttt{G7\sharpsym9} (V7\sharpsym9), and \texttt{Cm11} (i11). Clicking a block sends NoteOn/Off to the engine for an audition; it does not play the whole project.
+  \item To write your own chord, open the piano roll (\texttt{P}/\texttt{F7}) and place root, third, and fifth on the same beat at the rows corresponding to their semitone distances. For C major: C4 row, E4 row (+4), G4 row (+7); for C minor, replace E4 with E\flatsym4 (+3).
+  \item For a first inversion, raise the lowest C4 by an octave with \texttt{Shift+↑} to C5; the notes become E4--G4--C5, and the bass moves from C to E. For a second inversion, raise E4 again by an octave to get G4--C5--E5.
+  \item Press \texttt{Space}, first listen only to the bass, then to the third and fifth. To compare root position with an inversion, copy the bar, change only the lowest note, and keep the others fixed.
+  \item When writing a progression, work bar by bar: bar 1 C, bar 2 G, bar 3 Am, bar 4 F. Start with root position, then try F/A or C/E and hear whether the bass line becomes smoother.
+\end{enumerate}
+
+\screenshot{piano-roll-c-major-triad}{C major triad stacked in the piano roll}{C major triad stacked in the piano roll}
+
+\textbf{Scope note:} Yeban currently has no chord recognition, no chord-lane editing, and no ``spell a chord by name'' action. The five chord-lane blocks are fixed demo data, and auditioning sends NoteOn/Off to the engine. The audition parser covers only triads and common seventh chords (major / minor / diminished / augmented, dominant / major / minor / half-diminished / diminished seventh, and sus); labels such as \texttt{Cm9}, \texttt{Fm11}, and \texttt{Cm11} audition as the basic triad, and \texttt{G7\sharpsym9} auditions as a dominant seventh, so the extension notes are not added automatically. To hear an extension, stack the notes yourself in the roll; do not treat the label as complete chord data.
+
+\subsection{Exercises}
+
+\begin{enumerate}
+  \item Write the three notes of C major and their adjacent semitone counts; why is C--E--A not the same chord?\\
+  \emph{Answer:} C E G; C--E is four semitones, E--G is three; C--E--A uses A, a sixth, not the fifth of a triad.
+
+  \item Write A minor; what is the bass of its first inversion, and how is it written?\\
+  \emph{Answer:} A C E; first inversion C E A, bass C, symbol Am/C.
+
+  \item How many semitones separate C7 and Cmaj7, and which note differs?\\
+  \emph{Answer:} One semitone; C7 has B\flatsym{} (10) as the seventh, Cmaj7 has B (11).
+
+  \item Write the three chords and Roman numerals of ii--V--I in C major; which note is easiest to keep from V to I?\\
+  \emph{Answer:} Dm--G--C; ii--V--I; G is the root of V and the fifth of I, so it can stay; V's third B moves to C's root C by a semitone, and V's fifth D moves to C's third E by a whole tone.
+
+  \item In Yeban, stack C/E (E4--G4--C5) and compare it with root-position C (C4--E4--G4); what happens to the bass?\\
+  \emph{Hint:} Confirm the C4, E4, and G4 rows; move C4 up an octave with \texttt{Shift+↑} to C5; the lowest note becomes E4.\\
+  \emph{Answer:} The bass moves from C to E; the pitch set is still C, E, G.
+\end{enumerate}
+
+\subsection{Help topic map}
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{0.34\linewidth}p{0.45\linewidth}p{0.15\linewidth}}
+\toprule
+Section & In-app help anchor & Note \\
+\midrule
+\endhead
+Chords and roots & \texttt{music-theory-chord-root} & concept \\
+The four triads & \texttt{music-theory-triads} & Table 5-1 \\
+Seventh chords & \texttt{music-theory-sevenths} & Table 5-2 \\
+Inversions and bass & \texttt{music-theory-chord-inversion} & Figure 5-2 \\
+Chord symbols & \texttt{music-theory-chord-symbols} & notation \\
+Common progressions & \texttt{music-theory-progressions} & function \\
+Voice leading and low end & \texttt{music-theory-voice-leading} & arranging \\
+How to do it in Yeban & \texttt{music-theory-piano-roll-chords} & procedure \\
+Exercises & \texttt{music-theory-ch5-practice} & answers above \\
+\bottomrule
+\end{longtable}
+\end{center}

@@ -1,11 +1,36 @@
+% T-DOC-003 《夜半乐理手册》中文版主文件
+% 基线：line/incoming-doc-infra 2d59bbff
+% 结构：共用样式 yeban-manual.sty + 九章 chapters/ + 全册大纲 + 术语附录
 \documentclass[UTF8,zihao=-4]{ctexbook}
 \usepackage{yeban-manual}
-\title{乐理手册}
-\author{Yeban}
-\date{}
+\usetikzlibrary{decorations.pathreplacing}
+
+\newcommand{\sharpsym}{\ensuremath{\sharp}}
+\newcommand{\flatsym}{\ensuremath{\flat}}
+\newcommand{\yeban}{夜半}
+\newcommand{\bookname}{夜半乐理手册}
+
+\title{\bookname\\[0.3em]\large 从零开始的音高、节奏与和声}
+\author{夜半文档组}
+\date{2026 年 11 月}
+
 \begin{document}
 \maketitle
 \tableofcontents
-\input{chapters/ch01-sample}
+\clearpage
+
+\input{outline}
+\input{chapters/ch01-sound-and-pitch}
+\input{chapters/ch02-rhythm-and-meter}
+\input{chapters/ch03-intervals}
+\input{chapters/ch04-scales-and-modes}
+\input{chapters/ch05-chords}
+\input{chapters/ch06-harmonic-progression}
+\input{chapters/ch07-melody-writing}
+\input{chapters/ch08-form-basics}
+\input{chapters/ch09-reading-notation}
+
+\appendix
+\input{terminology}
 \printindex
 \end{document}
