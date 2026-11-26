@@ -353,3 +353,174 @@ fn a_refused_device_bypass_precheck_is_visibly_reported() {
         .expect("设备仍在工程里");
     assert!(bypassed, "成功路径必须真的旁通");
 }
+
+// ===========================================================================
+// ⑦ 编曲视图的**片段**四键（删除 / 复制 / 切分 / 静音）
+//
+// 与 ②③ 是**两条不同的作用域**：②③ 走音符选区（`delete selection` /
+// `duplicate selection`），本节走编曲视图选中的**摆放**（`delete clip` /
+// `duplicate clip placement` / `split clip at playhead` / `mute clip`）。
+// 修前这四条 `commit_ops(...).is_err()` 全部只 `return false`：模型拒绝时
+// 界面一声不响，用户以为"切分没切成 / 删不掉"是程序坏了。
+// ===========================================================================
+
+/// 工程里片段摆放的总数（`tracks[*].clips` 之和）。
+fn placement_count(project: &YebanProjectV1) -> usize {
+    project.tracks.values().map(|track| track.clips.len()).sum()
+}
+
+/// 第一条片段摆放：`(身份, 起点 tick, 时长 tick)`（`tracks` / `clips` 的 BTreeMap 序，确定）。
+fn first_placement(project: &YebanProjectV1) -> (EntityId, u64, u64) {
+    for track in project.tracks.values() {
+        if let Some((id, placement)) = track.clips.iter().next() {
+            return (*id, placement.start_tick, placement.duration_ticks);
+        }
+    }
+    panic!("filled_project 必须至少有一条片段摆放");
+}
+
+/// 把第一条摆放**选中**（走 `.slint` 包头 clicked 调的那一个回调），并清空音符选区
+/// ⇒ `Delete` / `Cmd+D` 落到片段那条臂（音符臂在选区为空时让位）。
+fn select_first_clip(window: &MainWindow, project: &YebanProjectV1) -> (EntityId, u64, u64) {
+    window.set_arrangement_view(true);
+    window.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(Vec::<
+        slint::SharedString,
+    >::new())));
+    window.set_selected_note_count(0);
+    let fixture = first_placement(project);
+    let ulid = fixture.0.to_canonical_string();
+    window.invoke_clip_select(ulid.clone().into());
+    assert_eq!(
+        window.get_selected_clip_ulid().as_str(),
+        ulid,
+        "夹具前提：宿主必须接受这个片段身份（否则下面的按键判据空转）"
+    );
+    fixture
+}
+
+#[test]
+fn a_refused_clip_delete_is_visibly_reported() {
+    let (window, port, _ui) = assemble();
+    let _selected = select_first_clip(&window, &port.project());
+    let before_placements = placement_count(&port.project());
+    let before_commits = commit_count(&port);
+
+    port.refuse_next_commit_for_test();
+    let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
+    assert!(!consumed, "被拒绝的键盘动作保持不消费（既有设计）");
+    assert_rejected(&window, "删除片段");
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements,
+        "被拒绝 ⇒ 片段仍在"
+    );
+    assert_eq!(commit_count(&port), before_commits);
+
+    // 成功路径回归（开关只用一次）⇒ 真的删掉、提交 +1。
+    assert!(window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false));
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements - 1,
+        "成功路径必须真的删掉一条摆放"
+    );
+    assert_eq!(commit_count(&port), before_commits + 1);
+}
+
+#[test]
+fn a_refused_clip_duplicate_is_visibly_reported() {
+    let (window, port, _ui) = assemble();
+    let _selected = select_first_clip(&window, &port.project());
+    let before_placements = placement_count(&port.project());
+    let before_commits = commit_count(&port);
+
+    port.refuse_next_commit_for_test();
+    let consumed = window.invoke_key_action("d".into(), false, true, false, false);
+    assert!(!consumed);
+    assert_rejected(&window, "复制片段");
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements,
+        "被拒绝 ⇒ 没有副本"
+    );
+    assert_eq!(commit_count(&port), before_commits);
+
+    assert!(window.invoke_key_action("d".into(), false, true, false, false));
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements + 1,
+        "成功路径必须真的多一条摆放"
+    );
+    assert_eq!(commit_count(&port), before_commits + 1);
+}
+
+#[test]
+fn a_refused_clip_split_is_visibly_reported() {
+    let (window, port, _ui) = assemble();
+    let (_, start, duration) = select_first_clip(&window, &port.project());
+    assert!(duration >= 2, "夹具前提：摆放时长至少 2 tick 才能从中间切");
+    // 播放头落在摆放内部（严格在两端之间）⇒ 切分有条件成立。
+    window.set_playhead_ticks(i32::try_from(start + duration / 2).expect("播放头在 i32 内"));
+    let before_placements = placement_count(&port.project());
+    let before_commits = commit_count(&port);
+
+    port.refuse_next_commit_for_test();
+    let consumed = window.invoke_key_action("t".into(), false, false, false, true);
+    assert!(!consumed);
+    assert_rejected(&window, "切分片段");
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements,
+        "被拒绝 ⇒ 没有切成两半"
+    );
+    assert_eq!(commit_count(&port), before_commits);
+
+    assert!(window.invoke_key_action("t".into(), false, false, false, true));
+    assert_eq!(
+        placement_count(&port.project()),
+        before_placements + 1,
+        "成功路径 = 一条变两条"
+    );
+    assert_eq!(commit_count(&port), before_commits + 1);
+}
+
+#[test]
+fn a_refused_clip_mute_is_visibly_reported() {
+    let (window, port, _ui) = assemble();
+    let (placement_id, _, _) = select_first_clip(&window, &port.project());
+    let before_muted = port
+        .project()
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .find(|placement| placement.id == placement_id)
+        .map(|placement| placement.muted)
+        .expect("夹具片段仍在工程里");
+    let before_commits = commit_count(&port);
+
+    port.refuse_next_commit_for_test();
+    let consumed = window.invoke_key_action("m".into(), false, false, false, true);
+    assert!(!consumed);
+    assert_rejected(&window, "静音片段");
+    let muted_after = port
+        .project()
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .find(|placement| placement.id == placement_id)
+        .map(|placement| placement.muted)
+        .expect("夹具片段仍在工程里");
+    assert_eq!(muted_after, before_muted, "被拒绝 ⇒ 静音位不动");
+    assert_eq!(commit_count(&port), before_commits);
+
+    assert!(window.invoke_key_action("m".into(), false, false, false, true));
+    let muted_after = port
+        .project()
+        .tracks
+        .values()
+        .flat_map(|track| track.clips.values())
+        .find(|placement| placement.id == placement_id)
+        .map(|placement| placement.muted)
+        .expect("夹具片段仍在工程里");
+    assert_ne!(muted_after, before_muted, "成功路径必须真的翻静音位");
+    assert_eq!(commit_count(&port), before_commits + 1);
+}

@@ -23707,6 +23707,9 @@ fn delete_selected_clip_placement(
         return false;
     }
     if port.commit_ops(now_ms(), "delete clip", ops).is_err() {
+        // 与音符那条 `delete selection` 同一出口（T-FIX-303 口径）：模型拒绝必须
+        // 在提示条 ＋ 模块回执上点名动作，⛔ 不只 `return false`（用户只看到按键没反应）。
+        report_rejected(ui, "删除片段");
         return false;
     }
     cancel_clip_drag(ui);
@@ -23810,6 +23813,7 @@ fn duplicate_selected_clip_placement(
         .commit_ops(now_ms(), "duplicate clip placement", ops)
         .is_err()
     {
+        report_rejected(ui, "复制片段");
         return false;
     }
     let primary = new_ids.first().cloned().unwrap_or_default();
@@ -24247,6 +24251,7 @@ fn split_selected_clip_at_playhead(
         .commit_ops(now_ms(), "split clip at playhead", ops)
         .is_err()
     {
+        report_rejected(ui, "切分片段");
         return false;
     }
     let primary = new_right_ids.first().cloned().unwrap_or_default();
@@ -24326,6 +24331,7 @@ fn toggle_selected_clip_mute(
         return false;
     }
     if port.commit_ops(now_ms(), "mute clip", ops).is_err() {
+        report_rejected(ui, "静音片段");
         return false;
     }
     refresh_undo_window(ui, port, true);
