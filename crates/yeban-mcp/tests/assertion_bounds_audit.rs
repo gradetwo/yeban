@@ -188,6 +188,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "内层嵌套（同上，文件内两处同形共用本条）：外层已由 `!project.tracks.is_empty()` 有界；\
          内层是单条音轨的 placements，空集合是合法状态",
     ),
+    (
+        "tests/render_plugin_whitelist.rs",
+        "plugins.iter().all(|row| {",
+        "`scan_still_skips_missing_caller_dir_silently`：扫描结果允许为空（8c4ea390 起刻意不钉总行数，\
+         无插件机器上恒为空），空集时“缺失目录不产出行”这一结论仍然成立；紧接着的差分对照\
+         用 `paths: []` 逐路径比较集合相等，任何多出来的行都会被抓到，故空集真空风险不存在。",
+    ),
 ];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。

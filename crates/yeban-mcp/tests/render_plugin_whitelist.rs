@@ -495,12 +495,13 @@ fn scan_still_skips_missing_caller_dir_silently() {
     assert_eq!(out["status"], "success", "不存在的目录仍应静默跳过: {out}");
     let plugins = out["data"]["plugins"].as_array().expect("plugins 数组");
     // 缺失目录不产出行：没有任何一行的路径是该目录本身或其子路径。
-    let missing_str = missing.display().to_string();
+    let missing_str = missing.display().to_string().replace('\\', "/");
     let under_missing = format!("{missing_str}/");
     assert!(
         plugins.iter().all(|row| {
             let path = row["path"].as_str().unwrap_or("");
-            path != missing_str && !path.starts_with(&under_missing)
+            path.replace('\\', "/") != missing_str
+                && !path.replace('\\', "/").starts_with(&under_missing)
         }),
         "不存在的目录不得产出扫描行: {out}"
     );
