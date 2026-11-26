@@ -1,0 +1,139 @@
+\chapter{增益结构}
+\label{chap:gain-structure}
+
+增益结构解决的是“信号在每一级应该有多大”。它和推子不是同一件事：增益决定
+信号进入下一级时的电平，推子决定这一轨相对其他轨有多响。先有干净的增益，
+推子才有意义。
+
+\section{电平、增益、推子}
+
+\begin{itemize}
+  \item \term{电平}（level）：某一刻信号的大小，通常用 dBFS 或 dB 表示。
+  \item \term{增益}（gain）：设备对信号的放大或衰减。开大增益会让信号更强，
+        也会把底噪和失真一起放大。
+  \item \term{推子}（fader）：通道条上的相对音量控制。它改变的是这一轨在总线里
+        的占比，不是“修复失真”的工具。
+\end{itemize}
+
+把推子当成万能音量键，是混音里最常见的错误：某一轨太小时，先把推子推到
++6 dB，结果设备链里早就削波；某一轨太大时，先把推子拉到 −30 dB，结果动态
+全丢。正确顺序是先让设备链里的信号处在合适范围，再用推子做相对平衡。
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 10mm,
+  box/.style={draw, rounded corners=2pt, minimum width=29mm, minimum height=8mm, align=center, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (source) {音源 / 片段};
+  \node[box, right=of source] (devices) {设备链增益\\EQ / 动态 / 空间};
+  \node[box, right=of devices] (fader) {推子\\相对音量};
+  \node[box, right=of fader] (bus) {总线\\汇总};
+  \node[box, right=of bus] (master) {主总线\\监听 / 导出};
+
+  \draw[arrow] (source) -- (devices);
+  \draw[arrow] (devices) -- (fader);
+  \draw[arrow] (fader) -- (bus);
+  \draw[arrow] (bus) -- (master);
+\end{tikzpicture}
+\end{center}
+
+图中“设备链增益”是设备内部的工作电平，不是混音台推子。夜半当前没有在通道条上
+提供一个可编辑的输入增益旋钮；设备链里的增益由各效果器自己的参数决定，逐项
+参数见第三章与第四章。
+
+\section{夜半通道条的读数}
+
+混音控制台（X / F8）的每条通道条有以下可操作项与读数。范围与默认值取自
+`TrackV3` 与推子映射代码，界面显示的是有损的一位小数。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.20\linewidth}p{0.27\linewidth}p{0.44\linewidth}@{}}
+\hline
+控件/读数 & 范围与默认 & 行为 \\
+\hline
+轨道推子 \texttt{volume\_db} & −60.0–+6.0 dB；默认 0.0 dB & 推子行程线性映射；0 dB 在行程约 90.9\% 处；双击归 0 dB \\
+声像 \texttt{pan} & −1.0–+1.0；默认 0.0 & 左右拖拽；双击归中 \\
+静音 / 独奏 & 布尔；默认 false & 试听工具，不删除内容 \\
+轨道电平表 & 归一化 0.0–1.0 & 来自引擎 \texttt{MeterFrame}；超过 0.8 转为警告色 \\
+主总线电平表 & 左/右各 0.0–1.0 & 控制面 60 Hz 从主总线帧镜像 \\
+监听响度 & 积分/短时 LUFS、峰值 dBTP & 监听控制室显示；EBU R128 标注 \\
+\texttt{IN: 0.0dB} / \texttt{Ø} & 最大化混音台时显示 & 当前是静态显示，没有可编辑输入增益或相位反转的接入动作 \\
+\hline
+\end{tabular}
+\caption{夜半通道条的可操作项与读数}
+\label{tab:channel-strip-readings}
+\end{table}
+
+\screenshot{mixer-channel-strip}{混音控制台最大化，单条通道条完整显示：名称、IN/Ø、推子 dB、声像、电平表。}
+
+推子位置与 dB 不是等比关系，而是线性映射到 −60.0–+6.0 dB。把推子从 0 dB
+往下拉一点，dB 变化很小；拉到行程底部，才是 −60 dB。读推子时看数字，不要只看
+帽子的高低。
+
+轨道电平表是归一化值，不是 dBFS 数值；它用于看“有没有信号、是否过界”，
+精确的峰值与响度看监听控制室。电平表超过 0.8 转警告色，是提示“接近上限”，
+不等于已经削波；但持续在警告区，导出前必须处理。
+
+\section{增益结构的三条原则}
+
+\begin{enumerate}
+  \item \term{先增益，后推子}：先在设备链里把信号放到合适工作电平，再用推子做
+        相对平衡。设备链里已经削波时，拉低推子只会把削波后的波形变小，不会修复
+        波形。
+  \item \term{每一级留余量}：不要把每一级都顶到 0 dBFS。给动态、并联汇流和
+        总线处理留出空间；混音阶段的峰值余量通常比“看起来更响”更重要。
+  \item \term{只在必要时放大}：增益不是越大约好。需要更响时，先确认是编曲、
+        音色还是平衡的问题；盲目推增益会把底噪、失真和掩蔽一起放大。
+\end{enumerate}
+
+“0 dBFS”是数字满刻度，不是“标准音量”。夜半的推子 0 dB 只是工程里的参考点，
+不代表信号一定在 0 dBFS；实际电平由音源、设备链和推子共同决定。
+
+\section{逐级检查流程}
+
+\begin{enumerate}
+  \item 独奏当前轨，确认有信号，电平表不是 0；没有信号先查片段、静音/独奏状态
+        与设备旁通，不要先动推子。
+  \item 看轨道电平表是否长期在 0.8 以上；若是，先回到设备链查增益与效果参数，
+        再把推子拉回合理位置。
+  \item 用推子做相对平衡：先拉主唱、鼓、贝斯三条骨架，再让其他轨围绕它们；
+        不要从第一条轨一路推到最末一条。
+  \item 看主总线与监听控制室：主总线电平表是否长期贴顶，积分/短时 LUFS 是否
+        与参考曲同量级，峰值 dBTP 是否留有余量。
+  \item 导出前再查一遍静音/独奏、参考轨和旁通设备；任何一项没归位，都可能让
+        成品与工程里听到的不一样。
+\end{enumerate}
+
+\section{常见错误}
+
+\begin{itemize}
+  \item \term{用推子修削波}：推子只能改变已经削波的信号大小，不能恢复波形。
+  \item \term{所有推子都往上推}：每轨都 +6 dB，主总线只会更早削波；相对平衡
+        不需要整体变大。
+  \item \term{把监听音量当混音音量}：DIM/MONO/SIDE 只改监听方式；主总线推子
+        才是工程状态，两者不要混为一谈。
+  \item \term{把 IN:0.0dB 当输入增益旋钮}：当前它只是最大化混音台里的静态读数，
+        没有可编辑动作；需要改设备增益时，进设备链改对应效果器参数。
+\end{itemize}
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+电平、增益、推子 & \texttt{gain-level-fader} \\
+夜半通道条的读数 & \texttt{gain-channel-strip} \\
+增益结构的三条原则 & \texttt{gain-structure-principles} \\
+逐级检查流程 & \texttt{gain-check-workflow} \\
+常见错误 & \texttt{gain-common-mistakes} \\
+\hline
+\end{tabular}
+\caption{第二章帮助主题映射}
+\end{table}

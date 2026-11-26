@@ -1,0 +1,134 @@
+\chapter{动态处理}
+\label{chap:dynamics}
+
+动态处理改变的不是频率，而是\textbf{电平随时间的变化}。它让过响的峰值退让、让过轻的细节靠近，或者反过来把不该出现的声音挡住。压缩、限制、门限、扩展是四种不同目标；把“响”当成唯一目标，通常会把混音压扁。
+
+\section{四种器件，四种目标}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.16\linewidth}p{0.36\linewidth}p{0.38\linewidth}@{}}
+\hline
+器件 & 做什么 & 典型用途 \\
+\hline
+压缩器 & 超过阈值的部分按比率减小，未超过的部分不动 & 控制演唱/贝斯的动态，让轨在混音里更稳定 \\
+限制器 & 把峰值钉在天花板以下，比率极高、攻击极快 & 导出前防越峰，或保护后续器件 \\
+门限器 & 低于阈值的部分衰减/静音 & 去掉底噪、串音、不需要的尾音 \\
+扩展器 & 低于阈值的部分进一步压低；向上扩展则抬高 & 恢复对比、做“更安静”的段落；向上扩展较少用 \\
+\hline
+\end{tabular}
+\caption{四种动态器件的目标差异}
+\label{tab:dynamics-kinds}
+\end{table}
+
+压缩和限制的分界不在名字，而在\textbf{攻击是否让瞬态漏过去}。压缩器允许慢攻击，让第一个瞬态保持原样、只压后面的持续段；限制器的攻击必须足够快，否则峰值已经越过了天花板。门限器不是“反向压缩器”：它作用于阈值以下，目标是去掉内容；扩展器也是作用于阈值以下，但目标是加大电平差，不是静音。
+
+\section{压缩器的参数}
+
+夜半内置的是前馈式软膝压缩器。信号链是：立体声联动 RMS 检波 → 软膝静态曲线 → 独立的增益起振/释放 → 乘回输入，最后加 makeup。它没有前视延迟，也不看输出，所以不会“先压再补”形成反馈回路。
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, node distance=5mm and 8mm,
+  box/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=8mm, align=center, fill=black!5},
+  arrow/.style={-{Latex[length=1.8mm]}, semithick}]
+  \node[box] (in) {输入 L/R};
+  \node[box, right=of in] (det) {联动 RMS\\检波};
+  \node[box, right=of det] (curve) {软膝\\静态曲线};
+  \node[box, right=of curve] (ball) {起振/释放\\增益弹道};
+  \node[box, right=of ball] (out) {乘回\\＋makeup};
+  \draw[arrow] (in) -- (det);
+  \draw[arrow] (det) -- (curve);
+  \draw[arrow] (curve) -- (ball);
+  \draw[arrow] (ball) -- (out);
+\end{tikzpicture}
+\end{center}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 含义 & 范围 & 默认 \\
+\hline
+\texttt{threshold\_db} & 压缩起点 & $-120$–$24$ dBFS & $-12$ dBFS \\
+\texttt{ratio} & 压缩比 & 1–1000 & 4:1 \\
+\texttt{knee\_db} & 软膝宽度 & 0–24 dB & 6 dB \\
+\texttt{detector\_s} & RMS 检波窗口时间常数 & 0.0001–10 s & 0.005 s \\
+\texttt{attack\_s} & 增益向更小走的起振时间常数 & 0.0001–10 s & 0.01 s \\
+\texttt{release\_s} & 增益回 1.0 的释放时间常数 & 0.0001–10 s & 0.1 s \\
+\texttt{makeup\_db} & 压缩后的补偿增益 & $-24$–$24$ dB & 0 dB \\
+\hline
+\end{tabular}
+\caption{夜半 dynamics 参数契约}
+\label{tab:comp-params}
+\end{table}
+
+三个时间参数都是\textbf{时间常数 $\tau$}，不是“10%–90% 上升时间”：到稳态的 63.2\% 用 $\tau$，距稳态 1 dB 约 $1.585\tau$。检波窗口决定“多快看清当前 RMS”，起振/释放决定“增益多快跟上去”。把两者混成一个 attack 旋钮，会让读数无法对账。
+
+软膝公式在阈值上下各 $W/2$ 内做二次插值：膝下透明，膝内平滑过渡，膝上按比率压缩。$W=0$ 时退化为硬膝，阈值处有一个折角。软膝的意义是让“刚超过阈值”的材料不被突然压掉，而不是让压缩更响。
+
+\section{夜半压缩器的实际入口}
+
+在设备机架点“装 Compressor”，会在当前轨插入一台内置软膝压缩器。机架上的压缩器读数条显示阈值、比率和 GR；旁边的按钮循环切换比率：\textbf{2:1 → 4:1 → 8:1 → 20:1}。当前比率不在这个列表里时，下一次点击从 2:1 开始。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.28\linewidth}p{0.34\linewidth}p{0.30\linewidth}@{}}
+\hline
+界面元素 & 实际行为 & 边界 \\
+\hline
+“装 Compressor” & 插入 dynamics 组，参数取契约缺省 & 同一轨可再插入多台 \\
+压缩器读数条 & 显示第一台带 \texttt{ratio} 的设备的阈值/比率 & 找不到时显示占位值 \\
+Ratio 循环按钮 & 只改该设备的 \texttt{ratio} & 只有 2/4/8/20 四档 \\
+GR 读数 & 固定显示 0.0 dB & 不是实时衰减表 \\
+压缩曲线 & 按阈值＋比率画硬拐点传递曲线 & 未计入 knee/detector/attack/release，不是软膝实测 \\
+阈值/膝宽/检波/起振/释放/makeup 旋钮 & 参数契约存在 & 当前机架没有独立控件，不能直接拖 \\
+\hline
+\end{tabular}
+\caption{压缩器界面元素的真实落点}
+\label{tab:comp-ui}
+\end{table}
+
+这张表里最容易被误读的是“GR 0.0 dB”和“实测曲线”。GR 读数是投影侧固定的字符串，不代表当前真的没有衰减；曲线用的是硬拐点公式 $y=T+(x-T)/R$，而器件实际跑的是软膝三段公式。要看压缩是否发生，应以耳朵、电平表和整体动态为准；不要把曲线当成实时表。
+
+\screenshot{device-rack-compressor}{当前轨已装 Compressor，设备机架显示压缩器读数条与 Ratio 循环按钮，压缩曲线可见。}
+
+\section{限制器、门限器、扩展器的现状}
+
+夜半的效果器契约里有独立的限制器组：阈值 $-30$–$0$ dB（默认 $-1$）、天花板 $-6$–$0$ dB（默认 $-0.3$）、释放 10–1000 ms（默认 80）、前瞻 1–192 帧。但一键插入的内置效果器只有 EQ、Reverb、Compressor 三件；限制器没有“装 Limiter”入口。界面上的“限制器: 阈值 -0.1 dBTP · 状态 正常 (无越峰)”是固定文本，不是从真实限制器设备读出的状态。
+
+门限器和扩展器目前没有对应的内置效果器组，也没有机架入口。它们可以在概念层讲，但不能在本机架上当现有功能操作。若需要这些处理，只能用现有压缩器/限制器契约之外的路径，或等后续版本接线；手册不把“应该会有”写成“现在就有”。
+
+\section{设置顺序与常见误区}
+
+\begin{enumerate}
+  \item \textbf{先修电平，再上压缩}：如果轨本身忽大忽小是演奏问题，先用推子/自动化把段落拉平，压缩只处理剩下的峰谷。
+  \item \textbf{阈值看“最响的段落”}：阈值应落在需要的峰值以下、但又不要压到每一句；常用起点是让最响段产生 3–6 dB 衰减。
+  \item \textbf{比率按目标选}：2:1–4:1 适合人声/贝斯的动态控制；8:1 以上更接近限制，容易听出“压扁”。
+  \item \textbf{起振不要一律最快}：太快会削掉鼓/拨弦的瞬态；太慢会让峰值漏过去。10 ms 是常见起点。
+  \item \textbf{释放不要一律最短}：太短会“抽吸”，太长会让下一句起不来。100 ms 是常见起点，按歌曲节奏调。
+  \item \textbf{makeup 不是“变响按钮”}：补偿增益会把整体抬高，可能让总线削波；先看压缩后的峰值，再决定补多少。
+\end{enumerate}
+
+常见错误：把压缩器当限制器用（慢攻击漏峰）、把限制器当响度工具用（越限越扁）、用门限器“修”演奏（把尾音和呼吸一起切掉）、看着固定的 GR 0.0 以为没压缩、把硬拐点示意图当软膝实测。夜半当前没有这些参数的独立旋钮，遇到需要精调的场景，先在工程数据/后续控件层面解决，不要假装拖动曲线能改 knee 或 attack。
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+四种器件，四种目标 & \texttt{dyn-four-kinds} \\
+压缩器的参数 & \texttt{dyn-compressor-params} \\
+夜半压缩器的实际入口 & \texttt{dyn-compressor-ui} \\
+限制器、门限器、扩展器的现状 & \texttt{dyn-limiter-gate-status} \\
+设置顺序与常见误区 & \texttt{dyn-workflow-mistakes} \\
+\hline
+\end{tabular}
+\caption{第 4 章帮助主题映射}
+\end{table}

@@ -1,0 +1,138 @@
+\chapter{Equalization (EQ)}
+\label{chap:eq}
+
+EQ is not a magic "make it sound better" knob; it changes the relative level of frequency ranges. Cutting a 300 Hz buildup and lifting presence at 3 kHz can transform the same take, but neither replaces correct level, pan, or performance. This chapter builds a frequency map first, then explains what Yeban's three-band shaping EQ can and cannot do.
+
+\section{A frequency map and masking}
+
+Human hearing spans roughly 20 Hz–20 kHz. Mixing usually divides it into bands, but the divisions are not hard borders; adjacent bands always interact:
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, every node/.style={align=center}]
+  \foreach \i/\lab in {0/{20–60\\sub}, 1/{60–250\\bass}, 2/{250–500\\low-mid}, 3/{0.5–2k\\mid}, 4/{2–5k\\presence}, 5/{5–10k\\high}, 6/{10k+\\air}} {
+    \fill[black!12] (\i*2.3,0) rectangle ++(2.3,1.2);
+    \draw (\i*2.3,0) rectangle ++(2.3,1.2);
+    \node at (\i*2.3+1.15,0.6) {\lab};
+  }
+  \draw[-{Latex[length=2mm]}] (0,-0.35) -- (16.1,-0.35) node[right] {frequency rises};
+\end{tikzpicture}
+\end{center}
+
+Lows carry weight and foundation; low-mids carry body; mids carry melody and speech; the presence region carries clarity; highs carry air. When two sources are loud in the same band, masking occurs: the ear follows the louder one, and the other can "disappear" even at a healthy level. EQ's first job is to reduce that competition, not to give every track a pretty curve.
+
+\section{Subtract first, add later}
+
+\begin{enumerate}
+  \item \textbf{Find what is excess}: sweep by boosting a narrow band, locate the spot that turns muddy or harsh, then cut instead. The boost is only a probe; the final curve usually cuts more than it boosts.
+  \item \textbf{Add only what is missing}: after subtracting, if weight or air is still missing, lift gently. A boost raises everything in that band, including noise and sibilance.
+  \item \textbf{Return to the full mix}: a solo track sounding good does not prove it works in context. After each move, check whether other elements get pushed away.
+\end{enumerate}
+
+A common sweep: push the mid gain to +9–12 dB, move the center slowly, stop at the most uncomfortable point, return the gain to 0, and cut 2–4 dB there. Yeban currently has no separate Q knob; a newly inserted EQ uses the default mid Q of 0.9, and curve dragging changes gain and center frequency only. So a truly narrow probe is not available on this rack; the probe is wider than a dedicated EQ, and judgment should rely on the whole mix rather than one frequency number.
+
+\section{Yeban's three-band shaping EQ}
+
+Click "Insert EQ" in the device rack to add a three-band shaping EQ to the current track's device chain. It is three series RBJ biquads: low shelf, mid peak, high shelf. When a band's gain is 0 dB, that band is mathematically identity; when all three are 0 dB, the whole EQ is a true bypass, not an approximate one.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Role & Range & Default \\
+\hline
+\texttt{eq\_low\_gain} & Low-shelf gain & $-18$–$+18$ dB & 0 dB \\
+\texttt{eq\_low\_freq} & Low-shelf corner & 20–1000 Hz & 200 Hz \\
+\texttt{eq\_mid\_gain} & Mid-peak gain & $-18$–$+18$ dB & 0 dB \\
+\texttt{eq\_mid\_freq} & Mid center & 200–8000 Hz & 1000 Hz \\
+\texttt{eq\_mid\_q} & Mid quality factor & 0.3–6 & 0.9 \\
+\texttt{eq\_high\_gain} & High-shelf gain & $-18$–$+18$ dB & 0 dB \\
+\texttt{eq\_high\_freq} & High-shelf corner & 1000–16000 Hz & 4000 Hz \\
+\hline
+\end{tabular}
+\caption{Parameter contract of Yeban's three-band shaping EQ}
+\label{tab:eq-params}
+\end{table}
+
+The response graph in the device rack is computed from real parameters, not decoration. The horizontal axis is 20 Hz–20 kHz logarithmic, the vertical axis is $\pm18$ dB, and the center line is 0 dB. The graph's accessibility label still says "4-band EQ response", but the current contract and implementation are three bands: low shelf, one mid peak, high shelf. There is no fourth band and no fourth draggable point.
+
+\screenshot{device-rack-eq-curve}{The current track has an EQ inserted; the device rack shows the response curve, the low-gain slider is visible, and the curve is not flat.}
+
+\section{Dragging on the curve}
+
+The response graph is also a drag surface. A drag writes two parameters at once: the band's gain and its frequency.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\hline
+Horizontal position & Gain written & Frequency written \\
+\hline
+Left third ($x<0.333$) & \texttt{eq\_low\_gain} & \texttt{eq\_low\_freq} \\
+Middle third ($0.333\le x<0.667$) & \texttt{eq\_mid\_gain} & \texttt{eq\_mid\_freq} \\
+Right third ($x\ge0.667$) & \texttt{eq\_high\_gain} & \texttt{eq\_high\_freq} \\
+\hline
+\end{tabular}
+\caption{Curve-drag destinations}
+\label{tab:eq-drag}
+\end{table}
+
+Vertically, the center line is 0 dB and the ends are $\pm18$ dB; gain is rounded to 0.1 dB. Horizontally, frequency is $20\times10^{3x}$ Hz, then clamped to that band's legal range. The far left never goes below 20 Hz; the low third stops at 1000 Hz at the boundary, the middle at 8000 Hz, and the high third at 16000 Hz. Curve dragging does \emph{not} change \texttt{eq\_mid\_q}; Q stays at its default or whatever value the file already carries.
+
+The low-shelf gain also has a separate slider (\texttt{eq\_low\_gain}); it changes gain only, not the corner frequency. For everyday low-end buildup, the slider is more direct; use the left third of the curve when the corner also needs to move. The master bus can host an EQ too and provides the same low-gain slider; master processing affects the whole project, so finish the display track before touching it.
+
+\section{Common band fixes}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.18\linewidth}p{0.36\linewidth}p{0.38\linewidth}@{}}
+\hline
+Band & Common problem & Direction \\
+\hline
+20–60 Hz & Sub; too much sounds dull and eats headroom & High-pass or low-shelf cut; first confirm your monitoring can hear it \\
+60–250 Hz & Bass and kick foundation; buildup feels boomy & Gentle low-shelf cut, or separate the parts \\
+250–500 Hz & Low-mid "cardboard" & Narrow 2–3 dB cut; do not hollow out the body \\
+500 Hz–2 kHz & Melody and speech; too much sounds "telephone" & Check arrangement overlap first, then cut gently \\
+2–5 kHz & Presence; too much is harsh and sibilant & Gentle mid-peak cut; boost very sparingly \\
+5–10 kHz & Clarity and sibilance & Small high-shelf moves, with sibilance handling \\
+10 kHz+ & Air & Gentle high-shelf lift; noise rises too \\
+\hline
+\end{tabular}
+\caption{Common band problems and directions}
+\label{tab:eq-bands}
+\end{table}
+
+These numbers are starting points, not prescriptions. What matters is whether a source still needs that much space in the whole. If two tracks mask each other, solve it with pan, level, or arrangement first; EQ is only one tool.
+
+\section{Boundaries and common mistakes}
+
+\begin{itemize}
+  \item \textbf{Do not use EQ to fix clipping}: a boost changes peaks; clipping belongs to gain structure and dynamics.
+  \item \textbf{Do not boost highs on every track}: the sum turns harsh; allocate high-end lift across the mix.
+  \item \textbf{Do not mix with your eyes}: a flat curve is not automatically good, and a curved one is not automatically wrong; return to the full mix.
+  \item \textbf{Multiple EQs: only the first curve is drawn}: the rack graph follows the first device in the chain that carries EQ parameters. A second EQ still processes, but may not be drawn.
+  \item \textbf{Master EQ is global}: the master low-shelf gain affects the whole project; do not reach for it to fix a single-track problem.
+  \item \textbf{No Q knob in the UI}: mid Q exists in the parameter contract, but the current rack has no separate Q control. If a narrower or wider band is needed, this UI cannot do it; do not pretend curve dragging changes Q.
+\end{itemize}
+
+\section{Help-topic mapping}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+A frequency map and masking & \texttt{eq-frequency-map} \\
+Subtract first, add later & \texttt{eq-subtract-first} \\
+Yeban's three-band shaping EQ & \texttt{eq-three-band} \\
+Dragging on the curve & \texttt{eq-curve-drag} \\
+Common band fixes & \texttt{eq-common-bands} \\
+Boundaries and common mistakes & \texttt{eq-boundaries} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 3}
+\end{table}

@@ -1,0 +1,208 @@
+\chapter{Modulation and Coloration}
+\label{chap:modulation-coloration}
+
+"Modulation" makes time, phase, or pitch move slowly; "coloration" adds harmonics and texture through nonlinearity, quantization, or filtering. The two often appear together, but they are not the same: chorus is modulated delay, distortion/saturation is static nonlinearity, bit crushing is quantization error. Yeban currently has no built-in chorus, flanger, or phaser, and no separate distortion pedal; what it does have is tape saturation, soft clipping, bit crushing, plus adjacent devices such as transient shaping, sample delay, and a noise source. This chapter writes "principle + current state" and does not turn a category name into an existing device.
+
+\section{Three principles}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.14\linewidth}p{0.30\linewidth}p{0.40\linewidth}@{}}
+\hline
+Type & Method & Sound \\
+\hline
+Modulated delay & An LFO changes the length of a short delay line; shorter/slower reads as chorus, more feedback/faster reads as flanger & Width, softness, or comb-like movement \\
+Static nonlinearity & Feed the signal into tanh, a soft knee, or hard clipping to create new harmonics & Saturation, compression, a harder edge; odd harmonics read "hard", even read "warm" \\
+Quantization/downsampling & Reduce bit depth or effective sample rate & Grain, steps, old-sampler "dirt" \\
+\hline
+\end{tabular}
+\caption{The three principles of modulation and coloration}
+\label{tab:mod-coloration-principles}
+\end{table}
+
+Chorus, flanger, and phaser all belong to the first type; they differ only in delay length, LFO rate, feedback, and dry/wet. Yeban has none of these three built in. Distortion, overdrive, and amp simulation belong to the second type; Yeban has no separate distortion pedal or cabinet simulation — soft clipping and tape saturation are the two real members of that family. Bit crushing belongs to the third type and does exist. Writing "chorus is a kind of modulated delay" is more accurate than writing "chorus is a kind of reverb".
+
+\section{Yeban's built-in coloration chain}
+
+The offline/full-song render insert order is:
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, >=latex, node distance=3.2mm, scale=0.9, transform shape]
+  \node[draw, rounded corners, minimum width=15mm, minimum height=6.5mm] (sd) {sample delay};
+  \node[draw, rounded corners, right=of sd, minimum width=12mm, minimum height=6.5mm] (ns) {noise};
+  \node[draw, rounded corners, right=of ns, minimum width=15mm, minimum height=6.5mm] (cs) {channel strip};
+  \node[draw, rounded corners, right=of cs, minimum width=13mm, minimum height=6.5mm] (tr) {transient};
+  \node[draw, rounded corners, right=of tr, minimum width=12mm, minimum height=6.5mm] (tp) {tape};
+  \node[draw, rounded corners, right=of tp, minimum width=13mm, minimum height=6.5mm] (cr) {crusher};
+  \node[draw, rounded corners, right=of cr, minimum width=13mm, minimum height=6.5mm] (cl) {clipper};
+  \node[draw, rounded corners, right=of cl, minimum width=16mm, minimum height=6.5mm] (rv) {reverb/conv/delay};
+  \node[draw, rounded corners, right=of rv, minimum width=13mm, minimum height=6.5mm] (lm) {limiter};
+  \draw[->] (sd) -- (ns);
+  \draw[->] (ns) -- (cs);
+  \draw[->] (cs) -- (tr);
+  \draw[->] (tr) -- (tp);
+  \draw[->] (tp) -- (cr);
+  \draw[->] (cr) -- (cl);
+  \draw[->] (cl) -- (rv);
+  \draw[->] (rv) -- (lm);
+\end{tikzpicture}
+\end{center}
+
+This is the offline render chain, not the real-time chain: the real-time engine's `insert.rs` currently wires only part of the stages — channel strip, tape, sample delay, reverb/convolution/delay — while transient, crusher, clipper, and noise exist only in offline/full-song rendering. In other words, "what you hear in real time" and "what you export" may not be the same coloration; do not use real-time monitoring to judge the exported timbre.
+
+\section{Tape saturation}
+
+Tape saturation is Yeban's only built-in saturation device. It is a chain-level device: it is built only when `tape_drive > 0` and `tape_mix > 0`; if either is zero, it is not built, and there is no separate enabled switch.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{tape\_drive} & Saturation drive $g=1+9d$ & 0–1 & 0 \\
+\texttt{tape\_mix} & Dry/wet; 0 = dry passthrough & 0–1 & 0 \\
+\texttt{tape\_trim\_db} & Output trim & −24–24 dB & 0 \\
+\texttt{tape\_hf\_hz} & Wet-path one-pole low-pass; ≥20000 bypasses & 2000–20000 Hz & 20000 \\
+\texttt{tape\_asym} & Curve asymmetry; 0 = odd only, >0 adds even & 0–0.5 & 0 \\
+\texttt{tape\_wow\_rate\_hz} & Transport wow rate & 0.05–2 Hz & 0.5 \\
+\texttt{tape\_wow\_depth\_ms} & Wow depth; 0 = no modulation & 0–8 ms & 0 \\
+\texttt{tape\_flutter\_rate\_hz} & Transport flutter rate & 2–15 Hz & 6 \\
+\texttt{tape\_flutter\_depth\_ms} & Flutter depth; 0 = no modulation & 0–2 ms & 0 \\
+\texttt{tape\_seed} & Modulation seed (integer part) & 0–16777215 & 0 \\
+\hline
+\end{tabular}
+\caption{Tape saturation parameters}
+\label{tab:tape-params}
+\end{table}
+
+The curve is `pade_tanh(g·x)/g`; small-signal gain is about 1. `tape_trim_db` compensates the post-saturation level loss, not "more drive". `tape_hf_hz` low-passes only the wet path; 20 kHz bypasses that low-pass and does not change drive.
+
+`tape_asym > 0` produces even harmonics, the source of "warmth", but only when the stage is built; small-signal gain drops by about 1 dB, so use trim. `tape_wow` / `tape_flutter` are transport wow and flutter: they modulate the whole signal (dry included), not a chorus-style wet-only modulated delay. Their phase and drift are pure functions of `(seed, frame)`, so the same seed renders bit-identically. The tape stage has 31 samples of oversampling round-trip latency, reported into the device and included in PDC.
+
+⚠ The channel strip also has `filter_drive`; that is filter drive, not tape saturation, and it does not apply to sampler tracks. To saturate a sampler track, use the tape stage; do not treat `filter_drive` as "sampler saturation".
+
+\section{Soft clipping and bit crushing}
+
+The soft clipper is a static nonlinearity: linear below the knee, asymptotic to a ceiling above it. It is not a distortion pedal; it has no tone control and no cabinet simulation, only drive, ceiling, knee, dry/wet, and oversampling. It sits after tape and before reverb; in the master chain it is the middle stage of "tape → clipper → limiter".
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{clipper\_drive\_db} & Input drive; how much crest is clipped & 0–24 dB & 6 \\
+\texttt{clipper\_ceiling\_db} & Asymptotic ceiling; full wet never exceeds it & −6–0 dB & −1 \\
+\texttt{clipper\_knee\_db} & Soft-knee width; 0 near-hard, 6 softest & 0–6 dB & 3 \\
+\texttt{clipper\_mix} & Dry/wet parallel; 1 = full wet & 0–1 & 1 \\
+\texttt{clipper\_oversample} & Oversampling (only 1/2/4/8) & 1–8× & 4 \\
+\hline
+\end{tabular}
+\caption{Soft clipper parameters}
+\label{tab:clipper-params}
+\end{table}
+
+Bit crushing is "quantize, then sample-and-hold downsampling": `crush_bits` is bit depth, `crush_down` is the hold divisor, `crush_aa` mixes a one-pole low-pass before and after the divider to suppress aliasing. It sits after tape and before the clipper; it is a medium-degradation stage, not modulation.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{crush\_bits} & Bit depth; 16 near-transparent, 8 classic, 4 near-square & 4–16 bit & 16 \\
+\texttt{crush\_down} & Sample-and-hold divisor; effective rate divided by it & 1–64× & 1 \\
+\texttt{crush\_aa} & Anti-alias amount; 0 raw aliasing, 1 two-stage low-pass & 0–1 & 0 \\
+\hline
+\end{tabular}
+\caption{Bit crusher parameters}
+\label{tab:crusher-params}
+\end{table}
+
+⚠ The crusher's default 16 bit / 1 / 0 is not bit-transparent: quantization really changes the low bits. As soon as the device is projected, it changes the output; do not treat it as "transparent by default".
+
+\section{Adjacent devices that are not modulation}
+
+- \textbf{Transient shaping}: fast/slow envelope difference; `transient_attack` / `transient_sustain` each −1–1, 0 is identity; it sits after channel strip and before tape. It is dynamic shaping, not modulation.
+- \textbf{Sample delay}: pure delay, no feedback; `sample_delay_samples` 0–48000, `sample_delay_invert` polarity flip; it is manual phase alignment, not chorus.
+- \textbf{Noise source}: additive source at the chain head, hiss + crackle, seed-reproducible; it is lofi "medium noise", not modulation.
+- \textbf{Filter drive}: the channel strip's `filter_drive`, drive before the filter; it only applies to non-sampler tracks and is part of the filter stage.
+
+None of these has a manual "install" button; they are written by the project/MCP, or installed automatically by factory drum styles on generated tracks. The device card can show an existing device and its recognized parameters, but there are no knobs to turn.
+
+\section{Built-in devices Yeban does not have}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.22\linewidth}p{0.34\linewidth}p{0.34\linewidth}@{}}
+\hline
+Device & Built in? & Alternative/boundary \\
+\hline
+Chorus & Not provided & Needs a modulated delay line; only a third-party VST3 effect or external production \\
+Flanger & Not provided & Same; short delay + feedback + LFO \\
+Phaser & Not provided & Needs an all-pass cascade; Yeban has no such DSP \\
+Distortion/overdrive pedal & Not provided & Only tape saturation and soft clipping; not a pedal/cabinet model \\
+Amp simulation & Not provided & No cabinet, no microphone model \\
+Vibrato & Not provided as a separate effect & Pitch/delay modulation is not in the built-in effect groups \\
+\hline
+\end{tabular}
+\caption{Gaps in built-in modulation/coloration devices}
+\label{tab:modulation-gaps}
+\end{table}
+
+Third-party VST3 effects are another path: the plugin panel can scan and load effects, and offline rendering executes the first non-bypassed bound effect. They are not "built-in Yeban effects" and do not execute in real-time playback; this chapter does not count third-party plugins as built-ins.
+
+\section{How to use and listen}
+
+\begin{enumerate}
+  \item Decide first whether you need "time movement" or "harmonic change". For chorus/flanger/phaser, Yeban has no built-in; for saturation/clipping/grain, use tape/clipper/crusher.
+  \item For tape, set `tape_mix` until you can hear the blend, then push `tape_drive`; use `tape_trim_db` to restore level, not the fader.
+  \item For "warm", add `tape_asym`; for "hard", leave it at 0. For brighter, raise `tape_hf_hz`; for darker, lower it.
+  \item For the clipper, set `clipper_ceiling_db` first, then push `clipper_drive_db`; a larger `clipper_knee_db` is softer, lower `clipper_mix` keeps transients.
+  \item For the crusher, start at `crush_bits=8`, `crush_down=2`; `crush_aa=0` is dirtiest, 1 is smoothest. Do not max all three at once.
+  \item None of these stages has a manual entry; if the device card does not show it, do not assume "there is another one in the menu". Generate with a drum style or write via MCP, then audition.
+\end{enumerate}
+
+\screenshot{device-rack-tape}{A generated track's device card in the device rack shows tape saturation and recognized parameter readouts; there are no drive/mix knobs.}
+
+\screenshot{device-rack-clipper-crusher}{The device rack shows soft clipper and bit crusher cards; parameters are read-only.}
+
+\section{Common mistakes}
+
+\begin{itemize}
+  \item \textbf{Treating chorus as a built-in Yeban effect.} There is no built-in chorus, flanger, or phaser; only third-party VST3 effects or external production.
+  \item \textbf{Treating soft clipping as a distortion pedal.} It has no tone control and no cabinet model; it is only soft-knee clipping.
+  \item \textbf{Treating the channel strip's \texttt{filter\_drive} as sampler saturation.} It does not apply to sampler tracks; use tape for sampler saturation.
+  \item \textbf{Treating tape wow/flutter as chorus.} It modulates the whole signal (dry included), not a wet-only modulated delay.
+  \item \textbf{Treating the crusher default as transparent.} 16 bit / 1 / 0 still changes low bits; if the device is projected, the output changes.
+  \item \textbf{Judging coloration by real-time monitoring.} The real-time engine wires only part of the stages; final timbre of transient/crusher/clipper/noise is defined by offline export.
+  \item \textbf{Counting third-party VST3 effects as built-ins.} They are a plugin path, execute offline, first-one-wins; not the same entry as built-in devices.
+\end{itemize}
+
+\section{Help-topic mapping}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+Three principles & \texttt{mod-three-principles} \\
+Yeban's built-in coloration chain & \texttt{mod-coloration-chain} \\
+Tape saturation & \texttt{mod-tape} \\
+Soft clipping and bit crushing & \texttt{mod-clipper-crusher} \\
+Adjacent devices that are not modulation & \texttt{mod-adjacent-devices} \\
+Built-in devices Yeban does not have & \texttt{mod-gaps} \\
+How to use and listen & \texttt{mod-workflow} \\
+Common mistakes & \texttt{mod-mistakes} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 6}
+\end{table}

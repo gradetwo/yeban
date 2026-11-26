@@ -1,0 +1,185 @@
+\chapter{空间效果}
+\label{chap:space-effects}
+
+空间效果回答的是“这个声音在什么空间里”：混响给声音加一层房间、板、厅或弹簧的尾巴，延迟给声音加可数的回声。它们既能放在一条轨的插入链里，也能做成发送—辅助返回的共享空间。夜半目前真正能一键装上的只有 Freeverb 混响；卷积混响和乒乓延迟有完整的参数契约，但界面没有手工安装入口。本章按“原理 + 夜半现状”写，不把契约里的参数说成已经存在的旋钮。
+
+\section{混响的四个读数}
+
+混响不是一条“越长越好”的尾巴，它由三段时间叠成：直达声之后最早的反射（early reflections）、随后密集起来的扩散尾（late reverberation），以及尾巴里高频先死、低频后死的阻尼。预延迟（pre-delay）把湿信号整体往后推，让直达声先站住；衰减时间决定尾巴多长；阻尼决定尾巴多暗；湿干比决定原声和空间各占多少。
+
+这四个读数互相牵连：预延迟太长，尾巴会和原声脱节；衰减太长，密集段落会糊成一片；阻尼太小，尾巴会亮得像金属；湿声太大，声源会退到墙后。调空间效果不是把四个旋钮都拧大，而是先决定“要多大的空间”，再决定“原声离听者多远”。
+
+\section{插入式与发送式}
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, >=latex, node distance=5mm]
+  \node[draw, rounded corners, minimum width=17mm, minimum height=7mm] (src) {源轨};
+  \node[draw, rounded corners, right=of src, minimum width=34mm, minimum height=7mm] (ins) {EQ → Reverb → Conv → Delay};
+  \node[draw, rounded corners, right=of ins, minimum width=13mm, minimum height=7mm] (bus) {总线};
+  \draw[->] (src) -- (ins);
+  \draw[->] (ins) -- (bus);
+  \node[below=9mm of src, draw, rounded corners, minimum width=17mm, minimum height=7mm] (src2) {源轨};
+  \node[draw, rounded corners, right=of src2, minimum width=16mm, minimum height=7mm] (send) {发送增益};
+  \node[draw, rounded corners, right=of send, minimum width=20mm, minimum height=7mm, align=center] (aux) {Aux 返回\\Reverb};
+  \node[draw, rounded corners, right=of aux, minimum width=13mm, minimum height=7mm] (bus2) {总线};
+  \draw[->] (src2) -- (send);
+  \draw[->] (send) -- (aux);
+  \draw[->] (aux) -- (bus2);
+  \draw[->, dashed] (src2) -- node[below, pos=0.5] {干声} (bus2);
+\end{tikzpicture}
+\end{center}
+
+插入式把效果器直接接在轨的插入链里：整条轨都经过它，湿干比由效果器自己的 wet 决定。它适合“这条轨就要这个空间”，例如人声、军鼓、吉他；缺点是每一轨都要各自占一份混响，而且效果器在轨的插入链里，后续再改轨的增益会连带改湿声。
+
+发送式从源轨取一份信号送到辅助返回轨（Aux Return），返回轨自己装混响，处理完再回总线。多条轨可以共用同一个返回轨，发送增益就是“每轨送多少进去”。它适合鼓组、和声组、整段乐器的统一空间；缺点是返回轨的混响参数是共享的，单轨不能要不同的房间。
+
+夜半的界面两条路都开了：选中的轨上可以“装混响”，主总线上也可以“装混响”；发送条里可以“新建发送”，目的地是工程里第一条辅助返回轨，发送增益范围 −60…+12 dB。设备机架的“+ 辅助返回”可以建返回轨。发送进返回轨后，还会经过返回轨自己的插入链——所以返回轨上装什么，送进来的信号就吃什么。
+
+\section{夜半真正提供的三种空间器件}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.15\linewidth}p{0.30\linewidth}p{0.39\linewidth}@{}}
+\hline
+器件 & DSP & 界面可达性 \\
+\hline
+Freeverb 混响 & 8 梳状 + 4 全通/声道，单声道输入取中值，湿路立体声展宽 & “装混响”一键装到选中轨；主总线也有“装混响”。参数只读显示，无旋钮 \\
+卷积混响 & 按衰减时间与种子合成 IR，再做卷积；不是加载外部 IR 文件 & 无“装卷积”按钮；只能经工程/MCP 的通用插设备写入，设备卡可显示已识别参数 \\
+乒乓延迟 & 左右交替回声，反馈上限 0.95，链尾、卷积之后 & 无手工“装延迟”按钮；鼓机工厂风格会按风格自动追加一台，或经 MCP 写入 \\
+\hline
+\end{tabular}
+\caption{夜半的空间器件与真实入口}
+\label{tab:space-devices}
+\end{table}
+
+插入链的顺序是固定的：通道条 → 磁带饱和 → Freeverb → 卷积混响 → 乒乓延迟。也就是说，延迟永远在混响之后；混响和卷积都吃通道条与磁带处理过的信号。这个顺序不是建议，是器件投影的实际顺序。
+
+\section{Freeverb 的参数}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 含义 & 范围 & 默认 \\
+\hline
+\texttt{reverb\_size} & 衰减长度（旧归一化旋钮） & 0–1 & 0.45 \\
+\texttt{reverb\_kind} & 0 Room / 1 Plate / 2 Hall / 3 Spring & 0–3 & 0 \\
+\texttt{reverb\_decay\_s} & T60 混响时间（秒）；0 = 未设，走 size & 0–10 & 0 \\
+\texttt{reverb\_damp} & 尾巴里的高频阻尼 & 0–1 & 0.35 \\
+\texttt{reverb\_wet} & 湿路电平；干路 = 1 − wet & 0–1 & 0.25 \\
+\texttt{reverb\_predelay} & 湿路预延迟（秒） & 0–0.1 & 0.012 \\
+\hline
+\end{tabular}
+\caption{Freeverb 参数契约（插入式）}
+\label{tab:reverb-params}
+\end{table}
+
+\texttt{reverb\_size} 与 \texttt{reverb\_decay\_s} 不是叠加关系：\texttt{decay\_s > 0} 时反馈由 T60 标定决定，\texttt{size} 不参与；\texttt{decay\_s = 0} 时才走 \texttt{size} 的旧公式。想按秒设混响时间，就把 \texttt{decay\_s} 写成一个正数，不要再用 \texttt{size} 去“补”。
+
+\texttt{reverb\_kind} 换的是延迟线长度布局与全通反馈：Room、Plate、Hall、Spring 共用同一 Freeverb 拓扑；Spring 是参数组近似，不是物理弹簧模型。换类型会重排延迟线，尾巴的密度和颜色会变，但不会变成另一台算法。
+
+\texttt{reverb\_damp} 只管尾巴的高频：数值越大，尾巴越暗、越短；它不影响直达声。\texttt{reverb\_predelay} 只推湿路，干声不动；0.012 s 是默认的 12 ms，拉到 0.1 s 就是 100 ms。\texttt{reverb\_wet} 是湿路电平，DSP 里干路自动取 1 − wet；它不是一个独立的“dry/wet”旋钮。
+
+⚠ 参数名有坑：\texttt{reverb\_mix} 与 \texttt{reverb\_width} 是引擎\textbf{刻意不认}的拼写。湿干比要写 \texttt{reverb\_wet}（或别名 \texttt{reverb\_wet\_mix}）；宽度没有曝光到契约，内部默认 0.8，不能拿 \texttt{reverb\_width} 当旋钮写。写成不认的名字，设备卡会把它列进“未识别参数”，声音不变。
+
+\section{卷积混响的参数}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 含义 & 范围 & 默认 \\
+\hline
+\texttt{conv\_predelay\_s} & 湿路预延迟（秒） & 0–0.1 & 0 \\
+\texttt{conv\_dry} & 干路电平（线性） & 0–1 & 1 \\
+\texttt{conv\_wet} & 湿路电平（线性） & 0–1 & 0.25 \\
+\texttt{conv\_ir\_gain\_db} & IR 增益（dB） & −60–24 & 0 \\
+\texttt{conv\_ir\_decay\_s} & 合成 IR 的指数衰减时间常数（秒） & 0.005–5 & 0.35 \\
+\texttt{conv\_ir\_seed} & 合成 IR 的随机种子 & $0$–$2^{32}-1$ & 1 \\
+\texttt{conv\_ir\_stereo} & 0 = 左右同 IR；非 0 = 左右独立 IR & 0/1 & 0 \\
+\hline
+\end{tabular}
+\caption{卷积混响参数契约（插入式）}
+\label{tab:conv-params}
+\end{table}
+
+卷积混响的 IR 不是外部文件，而是引擎按 \texttt{conv\_ir\_decay\_s} 与 \texttt{conv\_ir\_seed} 现场合成的：衰减时间是一个指数时间常数，不是 T60；换种子会换掉 IR 的随机细节，但不会换房间尺寸。\texttt{conv\_ir\_stereo} 在构造期烘焙：0 时左右用同一份 IR，非 0 时右声道用 seed + 黄金比例常数派生另一份；它不可自动化，改了要重建器件。
+
+界面没有“装卷积”按钮，所以这条参数表目前是给工程/MCP 写入和后续接线用的，不是给用户在设备卡上拧的。设备卡能显示已经存在的卷积器件及其已识别参数，但不会凭空造出一台。
+
+\section{乒乓延迟的参数}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+参数 & 含义 & 范围 & 默认 \\
+\hline
+\texttt{delay\_time\_s} & 延迟时间（秒） & 0.001–2 & 0.3 \\
+\texttt{delay\_feedback} & 反馈量 & 0–0.95 & 0.3 \\
+\texttt{delay\_mix} & 湿路电平；0 = 整级不建 & 0–1 & 0 \\
+\texttt{delay\_damp} & 反馈回路高频阻尼 & 0–1 & 0 \\
+\texttt{delay\_ping\_pong} & 乒乓开关（非零即真） & 0/1 & 1 \\
+\texttt{delay\_sync\_enabled} & 音符同步开关 & 0/1 & 0 \\
+\texttt{delay\_sync\_num} & 同步分子（拍） & 1–16 & 3 \\
+\texttt{delay\_sync\_den} & 同步分母（拍） & 1–16 & 8 \\
+\texttt{delay\_sync\_dotted} & 附点开关（时长 ×1.5） & 0/1 & 1 \\
+\hline
+\end{tabular}
+\caption{乒乓延迟参数契约（插入式，链尾）}
+\label{tab:delay-params}
+\end{table}
+
+\texttt{delay\_mix = 0} 时整级不建，这是“缺省关闭”的语义，不是旁通。\texttt{delay\_sync\_enabled = 1} 时，延迟时间由工程拍速在投影期换算，\texttt{delay\_time\_s} 不再直接生效；换算结果超过 2.0 s 会被钳制。\texttt{delay\_sync\_dotted = 1} 会把时长乘 1.5，所以“3/8 附点”不是 3/8 拍，而是 3/8 × 1.5 拍。
+
+\section{怎么在夜半调一个空间}
+
+\begin{enumerate}
+  \item 先决定插入还是发送。单轨要一个独立空间，选轨后点“装混响”；整组鼓、整组合唱要共享空间，先点“+ 辅助返回”建返回轨，在返回轨上装混响，再在源轨点“新建发送”。
+  \item 插入式先设 \texttt{reverb\_wet}，让原声和尾巴的比例合理；发送式先设发送增益，再在返回轨上设混响的 wet。两种方式的“湿干比”落点不同，不要拿一个数去套另一个。
+  \item 再设 \texttt{reverb\_predelay}：短预延迟让尾巴紧贴原声，长预延迟让原声先出来；它只推湿路，不会把整条轨往后挪。
+  \item 衰减优先用 \texttt{reverb\_decay\_s} 按秒写；如果只想快速试听，再用 \texttt{reverb\_size} 拉长短。两者不要同时当“叠加”用。
+  \item 最后用 \texttt{reverb\_damp} 压高频。尾巴亮而硬时加大 damp；尾巴闷而短时减小 damp，不要用 wet 去补亮度。
+\end{enumerate}
+
+\screenshot{device-rack-reverb-installed}{设备机架里选中一条轨，设备卡显示一台 Reverb 及已识别参数读数；下方是发送条，没有混响旋钮。}
+
+\screenshot{send-aux-reverb}{源轨的发送条显示一条“发送 → Aux”行与增益滑块；辅助返回轨上装有 Reverb。}
+
+\section{常见误区}
+
+\begin{itemize}
+  \item \textbf{把 \texttt{reverb\_mix} 当参数名。} 引擎不认这个名字；正确拼写是 \texttt{reverb\_wet}。写错不会报错，只会进“未识别参数”，声音不变。
+  \item \textbf{同时拉 \texttt{reverb\_size} 和 \texttt{reverb\_decay\_s}。} 两者不是叠加：\texttt{decay\_s > 0} 时 \texttt{size} 不参与。要按秒就用 \texttt{decay\_s}，要快速试听就用 \texttt{size}。
+  \item \textbf{把预延迟当“混响开始时间”整体推轨。} 预延迟只推湿路，干声不动；它不会让整条轨迟到。
+  \item \textbf{把 \texttt{reverb\_wet} 当干湿比。} 它是湿路电平，干路自动取 1 − wet；湿声越大，干声越小。
+  \item \textbf{在每条轨上各装一台混响，再抱怨“空间不统一”。} 插入式适合单轨独立空间；要统一空间，用一条 Aux 返回轨加发送。
+  \item \textbf{把卷积混响当“加载 IR 文件”。} 夜半的卷积 IR 是合成的，参数是衰减时间与种子；没有外部 IR 文件导入入口。
+  \item \textbf{把延迟的 \texttt{delay\_mix = 0} 当旁通。} 它是“整级不建”；设备卡上可能还看得见这台器件，但链里没有它。
+\end{itemize}
+
+\section{帮助主题映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+小节 & 应用内帮助锚点 \\
+\hline
+混响的四个读数 & \texttt{space-reverb-basics} \\
+插入式与发送式 & \texttt{space-insert-vs-send} \\
+夜半真正提供的三种空间器件 & \texttt{space-devices-status} \\
+Freeverb 的参数 & \texttt{space-reverb-params} \\
+卷积混响的参数 & \texttt{space-convolution-params} \\
+乒乓延迟的参数 & \texttt{space-delay-params} \\
+怎么在夜半调一个空间 & \texttt{space-workflow} \\
+常见误区 & \texttt{space-mistakes} \\
+\hline
+\end{tabular}
+\caption{第 5 章帮助主题映射}
+\end{table}

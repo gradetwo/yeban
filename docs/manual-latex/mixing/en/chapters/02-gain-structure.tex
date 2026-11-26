@@ -1,0 +1,158 @@
+\chapter{Gain Structure}
+\label{chap:gain-structure}
+
+Gain structure is about how large the signal should be at each stage. It is not
+the same as the fader: gain sets the level entering the next stage, while the
+fader sets how loud this track is relative to the others. Clean gain comes first;
+the fader only makes sense after that.
+
+\section{Level, gain, fader}
+
+\begin{itemize}
+  \item \term{Level}: the size of a signal at a given moment, usually expressed in
+        dBFS or dB.
+  \item \term{Gain}: amplification or attenuation applied by a device. Turning up
+        gain makes the signal stronger, and also makes noise and distortion louder.
+  \item \term{Fader}: the relative volume control on a channel strip. It changes
+        this track's share of the bus, not ``fixes distortion''.
+\end{itemize}
+
+Treating the fader as a universal volume key is the most common mixing mistake:
+when a track is too quiet, push the fader to +6 dB and discover that the device
+chain was already clipping; when a track is too loud, pull the fader to −30 dB
+and lose all the dynamics. The correct order is to put the device chain at a
+sensible level first, then use the fader for relative balance.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 10mm,
+  box/.style={draw, rounded corners=2pt, minimum width=29mm, minimum height=8mm, align=center, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (source) {Source / clip};
+  \node[box, right=of source] (devices) {Device-chain gain\\EQ / dynamics / space};
+  \node[box, right=of devices] (fader) {Fader\\relative volume};
+  \node[box, right=of fader] (bus) {Bus\\summing};
+  \node[box, right=of bus] (master) {Master\\monitor / export};
+
+  \draw[arrow] (source) -- (devices);
+  \draw[arrow] (devices) -- (fader);
+  \draw[arrow] (fader) -- (bus);
+  \draw[arrow] (bus) -- (master);
+\end{tikzpicture}
+\end{center}
+
+``Device-chain gain'' in the diagram is the working level inside the devices,
+not the mixer fader. Yeban currently exposes no editable input-gain knob on the
+channel strip; gain inside the device chain comes from each effect's own
+parameters, covered in Chapters 3 and 4.
+
+\section{Readings on Yeban's channel strip}
+
+Each channel strip in the mixer console (X / F8) has the following controls and
+readings. Ranges and defaults come from \texttt{TrackV3} and the fader mapping
+code; the interface shows a lossy one-decimal display.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.20\linewidth}p{0.27\linewidth}p{0.44\linewidth}@{}}
+\hline
+Control/readout & Range and default & Behaviour \\
+\hline
+Track fader \texttt{volume\_db} & −60.0 to +6.0 dB; default 0.0 dB & Linear fader travel; 0 dB sits at about 90.9\% of travel; double-click resets to 0 dB \\
+Pan \texttt{pan} & −1.0 to +1.0; default 0.0 & Drag left/right; double-click centres \\
+Mute / solo & Boolean; default false & Audition tools; they do not delete content \\
+Track meter & Normalised 0.0–1.0 & Comes from the engine \texttt{MeterFrame}; above 0.8 turns to the warning colour \\
+Master meters & Left/right, each 0.0–1.0 & Mirrored from the master frame at 60 Hz \\
+Monitoring loudness & Integrated/short-term LUFS, peak dBTP & Shown in the control room; labelled EBU R128 \\
+\texttt{IN: 0.0dB} / \texttt{Ø} & Shown when the mixer is maximised & Currently a static display; no editable input gain or polarity-invert action is wired \\
+\hline
+\end{tabular}
+\caption{Yeban channel-strip controls and readings}
+\label{tab:channel-strip-readings}
+\end{table}
+
+\screenshot{mixer-channel-strip}{The mixer console is maximised and one channel strip is fully visible: name, IN/Ø, fader dB, pan, and meter.}
+
+Fader position and dB are not an exponential relationship; the travel maps
+linearly to −60.0 to +6.0 dB. Moving the fader slightly down from 0 dB changes dB
+by very little; only near the bottom of travel does it reach −60 dB. Read the
+number, not just the cap height.
+
+The track meter is a normalised value, not a dBFS number. Use it to see whether a
+signal exists and whether it is running hot; read precise peak and loudness in the
+control room. Above 0.8 the meter changes to the warning colour, meaning ``near
+the top'', not ``already clipping''. If it stays in the warning zone, fix it
+before export.
+
+\section{Three principles of gain structure}
+
+\begin{enumerate}
+  \item \term{Gain first, fader second}: set a sensible working level in the device
+        chain, then balance with the fader. If the chain already clips, lowering the
+        fader only makes the clipped waveform smaller; it does not repair it.
+  \item \term{Leave headroom at every stage}: do not push everything to 0 dBFS.
+        Leave space for dynamics, parallel summing, and bus processing; during
+        mixing, peak headroom usually matters more than ``looking louder''.
+  \item \term{Amplify only when needed}: louder is not automatically better. When a
+        track needs to be louder, first check arrangement, timbre, and balance;
+        blind gain boosts noise, distortion, and masking together.
+\end{enumerate}
+
+``0 dBFS'' is digital full scale, not a standard volume. Yeban's fader 0 dB is
+only a project reference point; it does not mean the signal is at 0 dBFS. Actual
+level is determined by the source, the device chain, and the fader together.
+
+\section{Stage-by-stage check}
+
+\begin{enumerate}
+  \item Solo the current track and confirm there is signal; the meter should not be
+        at zero. If there is no signal, check the clip, mute/solo state, and device
+        bypass first; do not reach for the fader.
+  \item Check whether the track meter stays above 0.8. If it does, go back to the
+        device chain and inspect gain and effect parameters first, then bring the
+        fader to a sensible position.
+  \item Balance with faders: start with the lead vocal, drums, and bass skeleton,
+        then place other tracks around them. Do not push every track from first to
+        last.
+  \item Check the master bus and control room: whether the master meter is pinned
+        near the top, whether integrated/short-term LUFS is in the same range as the
+        reference, and whether peak dBTP has headroom.
+  \item Before export, check mute/solo, the reference track, and bypassed devices
+        once more. Any one of them out of place can make the export differ from what
+        you heard in the project.
+\end{enumerate}
+
+\section{Common mistakes}
+
+\begin{itemize}
+  \item \term{Using the fader to fix clipping}: the fader can only change the size
+        of an already-clipped signal; it cannot restore the waveform.
+  \item \term{Pushing every fader up}: if every track goes +6 dB, the master bus
+        only clips sooner; relative balance does not require an overall boost.
+  \item \term{Confusing monitoring volume with mix volume}: DIM/MONO/SIDE change
+        only how you monitor. The master fader is project state; do not conflate them.
+  \item \term{Treating IN:0.0dB as an input-gain knob}: it is currently only a
+        static readout in the maximised mixer, with no editable action. To change
+        device gain, edit the relevant effect parameters in the device chain.
+\end{itemize}
+
+\section{Help-topic mapping for this chapter}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+Level, gain, fader & \texttt{gain-level-fader} \\
+Readings on Yeban's channel strip & \texttt{gain-channel-strip} \\
+Three principles of gain structure & \texttt{gain-structure-principles} \\
+Stage-by-stage check & \texttt{gain-check-workflow} \\
+Common mistakes & \texttt{gain-common-mistakes} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 2}
+\end{table}

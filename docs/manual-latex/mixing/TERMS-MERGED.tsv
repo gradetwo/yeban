@@ -1,0 +1,125 @@
+中文	English	来源	说明
+轨道	track	common seed
+片段	clip	common seed
+钢琴卷帘	piano roll	common seed
+音符	note	common seed
+力度	velocity	common seed
+量化	quantize	common seed
+速度	tempo	common seed
+拍号	time signature	common seed
+小节	bar	common seed
+播放头	playhead	common seed
+混音台	mixer	common seed
+通道条	channel strip	common seed
+推子	fader	common seed
+声像	pan	common seed
+插入效果	insert effect	common seed
+发送	send	common seed
+总线	bus	common seed
+主输出	master output	common seed
+均衡	equalization	common seed
+压缩	compression	common seed
+混响	reverb	common seed
+延迟	delay	common seed
+自动化	automation	common seed
+预设	preset	common seed
+采样	sample	common seed
+采样率	sample rate	common seed
+导出	export	common seed
+分轨导出	stem export	common seed
+工程	project	common seed
+素材池	asset pool	common seed
+音阶	scale	common seed
+和弦	chord	common seed
+音程	interval	common seed
+调式	mode	common seed
+旋律	melody	common seed
+和声	harmony	common seed
+编曲	arrangement	common seed
+配器	orchestration	common seed
+混音	mixing	common seed
+母带	mastering	common seed
+粗混	rough mix	TERMS.tsv	已核实
+增益结构	gain structure	TERMS.tsv	已核实
+余量	headroom	TERMS.tsv	已核实
+增益	gain	TERMS.tsv	已核实
+静音	mute	TERMS.tsv	已核实
+独奏	solo	TERMS.tsv	已核实
+设备链	device chain	TERMS.tsv	已核实
+插入式	insert	TERMS.tsv	已核实
+辅助总线	aux bus	TERMS.tsv	已核实
+主总线	master bus	TERMS.tsv	已核实
+监听控制室	control room	TERMS.tsv	已核实
+积分响度	integrated loudness	TERMS.tsv	已核实
+短时响度	short-term loudness	TERMS.tsv	已核实
+真峰值	true peak	TERMS.tsv	已核实
+EBU R128	EBU R128	TERMS.tsv	已核实
+衰减监听	DIM	TERMS.tsv	已核实
+单声道监听	MONO	TERMS.tsv	已核实
+差信号监听	SIDE	TERMS.tsv	已核实
+参考曲	reference track	TERMS.tsv	已核实
+旁通	bypass	TERMS.tsv	已核实
+限制器	limiter	TERMS.tsv	待核
+门限	gate	TERMS.tsv	待核
+扩展器	expander	TERMS.tsv	待核
+单声道兼容	mono compatibility	TERMS.tsv	已核实
+导出前检查	pre-export check	TERMS.tsv	已核实
+通道条读数	channel-strip readout	CH02
+输入增益	input gain	CH02
+推子行程	fader travel	CH02
+频响图	response graph	CH03
+低架	low shelf	CH03
+中频峰	mid peak	CH03
+高架	high shelf	CH03
+曲线拖动	curve drag	CH03
+软膝	soft knee	CH04
+检波器	detector	CH04
+增益衰减	gain reduction	CH04
+补偿增益	makeup gain	CH04
+混响时间 T60	reverb time (T60)	CH05
+预延迟	pre-delay	CH05
+阻尼	damping	CH05
+干湿比	wet/dry mix	CH05
+辅助返回	auxiliary return	CH05
+卷积 IR	convolution impulse response	CH05
+乒乓延迟	ping-pong delay	CH05
+调制延迟	modulated delay	CH06
+静态非线性	static nonlinearity	CH06
+磁带饱和	tape saturation	CH06
+软削波	soft clipping	CH06
+比特碾碎	bit crushing	CH06
+走带慢摆/快抖	wow / flutter	CH06
+介质退化	medium degradation	CH06
+声相定律	pan law	CH07
+中心恒等	centre identity	CH07
+衰减律	attenuation law	CH07
+M/S 宽度	mid-side width	CH07
+低频收窄器	mono-maker	CH07
+差信号	difference signal	CH07
+声像族	image family	CH07
+控制室监听	control-room monitoring	CH07
+自动化泳道	automation lane	CH08
+自动化目标	automation target	CH08
+读开关	read switch	CH08
+写模式	write mode	CH08
+中心恒等台阶	centre-identity step	CH08
+绝对增益	absolute gain	CH08
+路由边	routing edge	CH08
+设备参数泳道	device-parameter lane	CH08
+槽位下标	slot index	CH08
+段落 tick 区间	section tick range	CH08
+发送边	send edge	CH09
+发送增益	send gain	CH09
+主总线推子	master fader	CH09
+主总线插入链	master insert chain	CH09
+母线限制器	bus limiter	CH09
+门限积分响度	gated integrated loudness	CH09
+响度范围	loudness range (LRA)	CH09
+天花板	ceiling	CH09
+抖动	dither	CH09
+TPDF 抖动	TPDF dither	CH09
+响度归一化	loudness normalization	CH09
+峰值归一化	peak normalization	CH09
+静态平衡	static balance	CH10
+导出限制器	export limiter	CH10
+压缩器	compressor	CH04

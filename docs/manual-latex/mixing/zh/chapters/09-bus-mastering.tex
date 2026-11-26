@@ -1,0 +1,280 @@
+\chapter{总线与母带入门}
+\label{chap:bus-mastering}
+
+总线是“多条轨汇到一处再处理”的地方；母带是“整首歌定稿前的最后一轮总线处理与交付检查”。夜半没有独立的母带套件，只有三类真实入口：辅助返回轨（\texttt{AuxReturn}）、主总线（\texttt{Master}）上的插入链与推子，以及导出对话框里的母线限制器、位深/采样率/时长选项和导出后的实测行。本章按这三类入口写；响度目标、真峰值上限与响度归一化只在 CLI/MCP 路径存在，界面没有输入框，不能假装有。
+
+\section{信号从轨到文件}
+
+夜半的总线路径可以压缩成一句话：轨道设备链 → 轨道推子/声相 → 发送边 → 辅助返回轨 → 主总线求和 → 主总线推子 → 主总线插入链 → 导出限制器（可选）→ 量化/抖动 → WAV。
+
+\begin{center}
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, minimum width=27mm, minimum height=8mm, align=center, font=\scriptsize},
+  arrow/.style={->, thick}
+]
+  \node[box] (trk) at (0,0) {轨道\\设备链 → 推子};
+  \node[box] (aux) at (3.3,-1.5) {辅助返回\\发送边 → 效果};
+  \node[box] (sum) at (6.6,0) {主总线求和\\各轨＋各辅助返回};
+  \node[box] (fader) at (6.6,-1.8) {主总线推子\\在插入链之前};
+  \node[box] (ins) at (9.9,-1.8) {主总线插入链\\EQ/压缩/混响};
+  \node[box] (lim) at (9.9,0) {导出限制器\\可选、固定参数};
+  \node[box] (out) at (13.1,0) {量化/抖动\\WAV};
+  \draw[arrow] (trk) -- (aux);
+  \draw[arrow] (trk) -- (sum);
+  \draw[arrow] (aux) -- (sum);
+  \draw[arrow] (sum) -- (fader);
+  \draw[arrow] (fader) -- (ins);
+  \draw[arrow] (ins) -- (lim);
+  \draw[arrow] (lim) -- (out);
+\end{tikzpicture}
+\end{center}
+
+主总线推子位于插入链\textbf{之前}，不是之后。推子推高，进入 EQ/压缩/混响的电平也一起变高；导出限制器在插入链之后才兜底。不要用主总线推子给限制器“做补偿”，也不要把推子当作母带增益：推子改变的是插入链的驱动量，限制器改变的是最终天花板。
+
+\section{辅助返回轨与发送}
+
+辅助返回轨的类型是 \texttt{AuxReturn}，用途是汇流与共享处理，不是乐器轨。创建入口有两处：
+
+\begin{itemize}
+  \item 轨道菜单“+ 新建辅助总线轨”；
+  \item 设备机架发送区的“+ 辅助返回”按钮。
+\end{itemize}
+
+建好后，在展示轨的设备机架发送区点“新建发送”，目标选这条辅助返回轨；发送边只带一个增益 \texttt{gain\_db}，没有 pre/post 开关。界面上没有“发送点在前级/后级”的选择，别按其他 DAW 的 pre/post 习惯假设。
+
+\screenshot{bus-aux-send}{设备机架发送区显示一条到辅助返回轨的发送边，辅助返回轨的效果链与发送增益同屏}
+
+辅助返回轨适合放“多条轨共用”的处理：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.22\linewidth}p{0.30\linewidth}p{0.38\linewidth}@{}}
+\hline
+用途 & 放在哪 & 理由 \\
+\hline
+共享混响 & 辅助返回轨插入 Reverb，发送量用发送边增益 & 多条轨进同一只混响，尾音一致；不要每轨各插一只同样的混响 \\
+共享延迟 & 辅助返回轨插入 Delay & 同一延迟时间/反馈，便于对齐 \\
+总线压缩前的分组 & 多条轨先汇入辅助返回，再进主总线 & 只压这一组，不压整首；辅助返回的推子仍可调这组电平 \\
+\hline
+\end{tabular}
+\caption{辅助返回轨的常见用法}
+\label{tab:aux-return-uses}
+\end{table}
+
+共享混响要把混响器件设为高湿声比例、低干声，干声仍从原轨直达主总线；否则同一份干声会在辅助返回里再出现一次，变成双干声。发送边增益是绝对 dB，不是“百分比”；发送量调小，进混响的电平就小，但原轨直达声不变。
+
+\section{主总线链}
+
+主总线轨的类型是 \texttt{Master}。选中主总线后按 \texttt{F9} 打开设备机架，能看到它的插入链；按 \texttt{X} 或 \texttt{F8} 打开混音控制台，能看到主总线推子、电平表与通道条。
+
+主总线能做的事：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.22\linewidth}p{0.34\linewidth}p{0.34\linewidth}@{}}
+\hline
+阶段 & 夜半入口 & 不要拿它做 \\
+\hline
+求和 & 路由图把各轨/辅助返回汇入 \texttt{Master} & 不要用它修单轨的频响或动态 \\
+推子 & 混音控制台主总线推子（F8/X） & 不要用它替代限制器或响度归一化 \\
+插入链 & 主总线设备机架的 EQ、Compressor、Reverb、Delay、Limiter 等 & 不要堆一长串“母带预设”；每台都要有可说明的理由 \\
+导出限制器 & 导出对话框的“母线限制器”开关 & 不要把它当成可调母带限制器；参数固定、每次导出才生效 \\
+\hline
+\end{tabular}
+\caption{主总线各阶段能做什么、不要做什么}
+\label{tab:master-stages}
+\end{table}
+
+\screenshot{master-bus-chain}{混音控制台选中主总线，主总线推子、电平表与设备机架插入链同屏}
+
+母线处理的起点是“先修源，再修总线”。单轨过亮、过响、低频过多，先在单轨的 EQ/压缩/推子上解决；主总线只处理“所有轨共有的问题”：整体动态、整体频响、整体空间感。主总线 EQ 拉低 3 dB 低频，往往是在替多条轨的低频过量背锅；下一首换配器就不适用了。
+
+\subsection{三段常用的总线处理}
+
+\begin{enumerate}
+  \item \textbf{主总线 EQ}：只做小幅修正。低频用通道条低切去掉 20–30 Hz 以下的不可闻/直流附近能量；中高频只在整套混音都偏亮或偏暗时动 1–2 dB。不要在主总线上做“扫频找单轨问题”。
+  \item \textbf{主总线压缩}：用 Compressor 做“ glue ”，目标通常只是 1–3 dB 的增益衰减；ratio 从 2:1 附近起，attack 不抢瞬态，release 不抽气。压缩器在插入链里，推子在它前面；推子推高会改变压缩器输入，先定推子再调阈值。
+  \item \textbf{主总线限制器}：设备链里的 Limiter 器件有阈值、天花板、释放、前瞻、真峰值开关；导出对话框的“母线限制器”是另一个固定参数的开关。两者不要同时开而不知情，否则你会得到两次限制，且第二次的参数不可调。
+\end{enumerate}
+
+\subsection{两只限制器不是同一只}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.18\linewidth}p{0.27\linewidth}p{0.27\linewidth}p{0.20\linewidth}@{}}
+\hline
+ & 设备链 Limiter & 导出对话框限制器 & 响度归一化 \\
+\hline
+位置 & 主总线插入链内 & 主总线推子/自动化之后、量化之前 & 渲染之后、量化之前 \\
+参数 & 阈值/天花板/释放/前瞻/真峰值 & 固定阈值 0.9、天花板 0.95、33 帧前瞻、真峰值检测关 & 目标 LUFS ＋ 真峰值上限（CLI/MCP） \\
+默认 & 插入后才存在 & 关 & 不给目标就不做 \\
+可调 & 器件参数可改 & 只有开/关 & 目标与上限可给 \\
+写进工程 & 是（设备链） & 否（每次导出的修饰量） & 否（每次导出的修饰量） \\
+\hline
+\end{tabular}
+\caption{主总线限制器、导出限制器与响度归一化的区别}
+\label{tab:limiters}
+\end{table}
+
+导出对话框的固定限制器有 33 帧前瞻延迟，导出路径会补偿这 33 帧，所以输出长度与时间轴不变；它的天花板按线性 0.95 约等于 $-0.45$ dBFS，阈值 0.9 约等于 $-0.92$ dBFS。它不做真峰值过采样检测，不能拿来保证“真峰值不超过 $-1$ dBTP”；要那个保证，得看导出实测行，或用 CLI/MCP 的响度归一化/真峰值上限。
+
+\section{响度读数：界面与导出不是一回事}
+
+夜半界面上有 LUFS 字样，但必须分清“活表”和“静态占位”：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.24\linewidth}p{0.30\linewidth}p{0.38\linewidth}@{}}
+\hline
+读数 & 来源 & 能不能当交付依据 \\
+\hline
+混音台主表 LUFS & 主总线平滑 RMS 减 0.691 dB & 只能当粗略电平参考；不是 BS.1770 门限积分，不能报“整首 $-14$ LUFS” \\
+控制室“短时 LUFS” & 同一份主表读数 & 同上；它没有 3 s 短时窗口与门限 \\
+控制室“积分 LUFS” & 当前没有运行时更新，只有界面缺省字符串 & 不能当读数；不要截图当证据 \\
+控制室“dBTP” & 当前没有运行时更新，只有界面缺省字符串 & 不能当读数；真峰值只在导出实测行里 \\
+导出实测行 & 导出后 16× 真峰值、门限积分 LUFS、LRA & 唯一可引用的交付读数；测不出会写“未测出” \\
+\hline
+\end{tabular}
+\caption{界面 LUFS 与导出实测行的口径}
+\label{tab:loudness-readings}
+\end{table}
+
+这不是命名吹毛求疵：主表那一条是“平滑 RMS 减 0.691 dB”，没有 BS.1770 的 K 计权门限积分，也没有 400 ms/3 s 窗口。它可以帮你判断“现在大概多响”，但不能作为“这首歌达到 $-14$ LUFS”的证据。控制室的“积分 LUFS”和“dBTP”两格在当前构建里没有运行时写入，默认字符串只是占位；要交付读数，导出一次，读导出实测行。
+
+\screenshot{export-wav-dialog}{WAV 导出对话框：采样率、位深、时长、母线限制器开关与导出后的实测行}
+
+导出实测行的三个数是：
+
+\begin{itemize}
+  \item \textbf{真峰值}：16× 过采样的 dBFS 读数，0 为满量程，正数表示过载；
+  \item \textbf{积分响度}：BS.1770-4 门限积分 LUFS；少于 400 ms 的节目或整体低于绝对门限会显示“未测出”；
+  \item \textbf{LRA}：按 $-20$ LU 相对门限的 3 s 短时直方图取 P95−P10；少于 3 s 或没有短时值过门限会显示“未测出”。
+\end{itemize}
+
+\section{导出选项与响度目标}
+
+WAV 导出对话框的五个真实控件：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.16\linewidth}p{0.24\linewidth}p{0.50\linewidth}@{}}
+\hline
+控件 & 默认 & 口径 \\
+\hline
+输出路径 & 无 & 浏览/手填；只填路径，不导出 \\
+采样率 & \texttt{auto} & 跟随工程；不显示工程当前采样率，别把 \texttt{auto} 当固定 48 kHz \\
+位深 & \texttt{24} & 16/24 整数走 TPDF 抖动；32f 浮点透传，不抖动 \\
+时长（秒） & 工程可闻末端 & 打开时播种；清空后回退 8 秒缺省，不是整曲。长尾/静尾要自己确认 \\
+母线限制器 & 关 & 每次导出的布尔量；固定参数；不进工程、不进撤销栈 \\
+\hline
+\end{tabular}
+\caption{WAV 导出对话框的真实控件}
+\label{tab:export-options}
+\end{table}
+
+界面\textbf{没有}这些控件：响度目标（LUFS）、真峰值上限、峰值归一化、抖动模式、噪声整形、母带软削波。它们不在 GUI 里，不要按“导出对话框能设 $-14$ LUFS”写操作步骤。
+
+CLI/MCP 路径才有响度归一化：
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.22\linewidth}p{0.20\linewidth}p{0.20\linewidth}p{0.30\linewidth}@{}}
+\hline
+预设 & 目标 LUFS & 真峰值上限 & 入口 \\
+\hline
+流媒体 & $-14$ & $-1$ dBTP & CLI/MCP；不是 GUI \\
+EBU R128 & $-23$ & $-1$ dBTP & CLI/MCP；不是 GUI \\
+\hline
+\end{tabular}
+\caption{内置响度预设；目标数字是工程选择，不是规范强制}
+\label{tab:loudness-presets}
+\end{table}
+
+MCP 渲染的 \texttt{targetLufs} 接受 $[-70,0]$，给了就施加增益去够它，真峰值上限固定 $-1.0$ dBTP 让步；施加后按 $\pm0.5$ LU 容差复测，达不到就报 \texttt{RENDER\_FAILED}，不会静默交付偏离目标的文件。CLI 另有 \texttt{--true-peak-ceiling} 可单独设上限。响度归一化只在 44.1/48/88.2/96 kHz 采样率下可用；其他采样率直接失败，不会偷偷按 48 kHz 系数算。
+
+范围导出时，目标按\textbf{导出片段}测，不是按整曲测。分轨目标与整曲目标不是同一件事；不要把整曲的 $-14$ 套到一条 8 秒分轨上还问“为什么测出来不一样”。
+
+\section{导出前检查清单}
+
+\begin{enumerate}
+  \item \textbf{先看源}：单轨有没有明显过亮/过响/低频过量；能在轨上解决的，不要留到主总线。
+  \item \textbf{主总线推子}：确认推子没有为了“听起来更响”推过 0 dB 太多；推子在插入链前，推高会改变压缩/限制器的输入。
+  \item \textbf{插入链}：逐台确认旁通状态与参数；不要同时挂设备链 Limiter 和导出限制器而不知道。
+  \item \textbf{先关限制器导出一次}：读实测行的真峰值、积分 LUFS、LRA；这是“未限制”的基线。
+  \item \textbf{削波警告}：出现“母带削波 N 个样本，建议减 X dB”时，先按建议减主总线或最响的源；不要无视警告直接交付。
+  \item \textbf{需要目标时}：走 CLI/MCP 的 \texttt{targetLufs}/\texttt{--loudness-target}，不要指望 GUI；确认采样率在支持列表内。
+  \item \textbf{格式}：交付用 24-bit 整数（TPDF）最常见；需要后期继续处理时用 32f；16-bit 只在下游明确要求时用。采样率跟工程走，不为了“更好”硬改。
+  \item \textbf{时长}：确认时长框不是 8 秒缺省；尾奏、静尾、淡出都要包含。
+  \item \textbf{最后一遍监听}：F4 控制室做 MONO/SIDE 检查，确认没有单声道塌陷；这些开关不进导出，别在 MONO 打开时判断导出电平。
+\end{enumerate}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.28\linewidth}p{0.62\linewidth}@{}}
+\hline
+检查项 & 通过条件 \\
+\hline
+主总线削波 & 导出实测真峰值不超过目标上限；出现削波警告先减源/减总线 \\
+响度 & 有目标时 $\pm0.5$ LU 内；没有目标时只记录实测值，不假装达标 \\
+格式 & 采样率与交付要求一致；位深与下游一致；整数位深已抖动 \\
+时长 & 覆盖整首（含尾奏），不是 8 秒缺省 \\
+监听 & MONO 下没有消失的必留声部；SIDE 下没有该留的中心干声 \\
+\hline
+\end{tabular}
+\caption{导出前检查清单}
+\label{tab:export-checklist}
+\end{table}
+
+\section{尚未提供与边界}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.54\linewidth}@{}}
+\hline
+需求 & 夜半现状 \\
+\hline
+独立母带套件 & 没有；只有主总线插入链与导出选项 \\
+多段压缩/动态 EQ 母带链 & 没有独立母带多段压缩；通道条有 EQ/压缩级，但不能当“母带套件” \\
+GUI 响度目标/真峰值上限 & 没有；只在 CLI/MCP \\
+界面实时积分 LUFS/真峰值/LRA & 没有；控制室积分与 dBTP 两格无运行时更新，主表 LUFS 是 RMS−0.691 \\
+自动响度匹配/参考曲电平对齐 & 没有；参考曲只做 A/B，不自动匹配响度 \\
+发送 pre/post 切换 & 没有；路由边只有增益 \\
+抖动模式/噪声整形 & 没有；整数位深固定 TPDF，32f 透传 \\
+真峰值“绝对不削顶”保证 & 没有；16× 仍有固有欠读，读数不是数学保证 \\
+将导出限制器参数写进工程 & 没有；它是每次导出的布尔开关 \\
+\hline
+\end{tabular}
+\caption{总线与母带入门的当前边界}
+\label{tab:mastering-gaps}
+\end{table}
+
+\section{本章与帮助主题的映射}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.34\linewidth}p{0.52\linewidth}@{}}
+\hline
+本章小节 & 应用内帮助锚点 \\
+\hline
+信号从轨到文件 & \texttt{master-signal-flow} \\
+辅助返回轨与发送 & \texttt{aux-return-sends} \\
+主总线链 & \texttt{master-bus-chain} \\
+两只限制器不是同一只 & \texttt{master-limiters} \\
+响度读数：界面与导出 & \texttt{loudness-readings} \\
+导出选项与响度目标 & \texttt{export-options-loudness} \\
+导出前检查清单 & \texttt{export-checklist} \\
+当前边界 & \texttt{mastering-gaps} \\
+\hline
+\end{tabular}
+\caption{第九章帮助主题映射}
+\label{tab:mastering-help-map}
+\end{table}

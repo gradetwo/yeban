@@ -1,0 +1,185 @@
+\chapter{Space Effects}
+\label{chap:space-effects}
+
+A space effect answers "what room is this sound in": reverb adds a room, plate, hall, or spring tail; delay adds countable echoes. Both can live inside a track's insert chain or as a shared send-and-aux-return space. Yeban currently has exactly one one-click reverb, Freeverb; convolution reverb and ping-pong delay have full parameter contracts but no manual install button in the UI. This chapter writes "principle + current state" and does not turn contract parameters into knobs that do not exist.
+
+\section{Four readings of reverb}
+
+Reverb is not a tail that should simply be as long as possible. It is three periods stacked: early reflections after the direct sound, the dense late reverberation that follows, and damping, where high frequencies die before lows. Pre-delay pushes the whole wet signal later so the direct sound can establish itself first; decay time sets how long the tail lasts; damping sets how dark it is; wet/dry sets how much source versus space.
+
+These readings interact. Too much pre-delay and the tail detaches from the source; too much decay and dense passages blur; too little damping and the tail rings like metal; too much wet and the source retreats behind a wall. Tuning a space effect is not turning all four up; first choose the size of the space, then choose how far the source sits from the listener.
+
+\section{Insert versus send}
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize, >=latex, node distance=5mm]
+  \node[draw, rounded corners, minimum width=17mm, minimum height=7mm] (src) {source};
+  \node[draw, rounded corners, right=of src, minimum width=34mm, minimum height=7mm] (ins) {EQ → Reverb → Conv → Delay};
+  \node[draw, rounded corners, right=of ins, minimum width=13mm, minimum height=7mm] (bus) {bus};
+  \draw[->] (src) -- (ins);
+  \draw[->] (ins) -- (bus);
+  \node[below=9mm of src, draw, rounded corners, minimum width=17mm, minimum height=7mm] (src2) {source};
+  \node[draw, rounded corners, right=of src2, minimum width=16mm, minimum height=7mm] (send) {send gain};
+  \node[draw, rounded corners, right=of send, minimum width=20mm, minimum height=7mm, align=center] (aux) {Aux return\\Reverb};
+  \node[draw, rounded corners, right=of aux, minimum width=13mm, minimum height=7mm] (bus2) {bus};
+  \draw[->] (src2) -- (send);
+  \draw[->] (send) -- (aux);
+  \draw[->] (aux) -- (bus2);
+  \draw[->, dashed] (src2) -- node[below, pos=0.5] {dry} (bus2);
+\end{tikzpicture}
+\end{center}
+
+Insert mode places the effect directly in the track's insert chain: the whole track passes through it, and the wet/dry balance is the effect's own wet control. It suits "this track needs this space", such as a vocal, a snare, or a guitar. The cost is one reverb per track, and because the effect is inside the insert chain, later changes to track gain also change the wet signal.
+
+Send mode takes a copy of the source signal to an aux return track, where the reverb lives; the return feeds the bus. Several tracks can share one return, and the send gain is "how much each track sends in". It suits a drum kit, a backing-vocal group, or a whole instrument group sharing one space. The cost is that the return's reverb is shared, so one track cannot ask for a different room.
+
+Yeban exposes both paths: a selected track can "install reverb", and the master bus can also "install reverb"; the send strip can "create send", whose destination is the first aux return in the project, with send gain from −60 to +12 dB. The device rack's "+ Aux Return" creates a return track. A send enters the return and then passes through the return's own insert chain — whatever is installed on the return processes everything sent into it.
+
+\section{The three space devices Yeban actually provides}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.15\linewidth}p{0.30\linewidth}p{0.39\linewidth}@{}}
+\hline
+Device & DSP & UI reachability \\
+\hline
+Freeverb & 8 combs + 4 allpasses per channel, mono input summed, stereo wet width & "Install reverb" one-click on the selected track; master bus has "install reverb". Parameters are read-only, no knobs \\
+Convolution reverb & Synthesizes an IR from decay time and seed, then convolves; does not load an external IR file & No "install convolution" button; only via project/MCP generic device insert; the device card shows recognized parameters \\
+Ping-pong delay & Alternating left/right echoes, feedback capped at 0.95, chain end after convolution & No manual "install delay" button; factory drum styles add one automatically, or via MCP \\
+\hline
+\end{tabular}
+\caption{Space devices and their real entry points}
+\label{tab:space-devices}
+\end{table}
+
+The insert chain order is fixed: channel strip → tape saturation → Freeverb → convolution reverb → ping-pong delay. Delay is always after reverb; reverb and convolution both receive the signal after the channel strip and tape. This order is not a suggestion; it is the actual device projection order.
+
+\section{Freeverb parameters}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{reverb\_size} & Decay length (legacy normalized control) & 0–1 & 0.45 \\
+\texttt{reverb\_kind} & 0 Room / 1 Plate / 2 Hall / 3 Spring & 0–3 & 0 \\
+\texttt{reverb\_decay\_s} & T60 reverb time (s); 0 = unset, use size & 0–10 & 0 \\
+\texttt{reverb\_damp} & High-frequency damping in the tail & 0–1 & 0.35 \\
+\texttt{reverb\_wet} & Wet path level; dry = 1 − wet & 0–1 & 0.25 \\
+\texttt{reverb\_predelay} & Wet-path pre-delay (s) & 0–0.1 & 0.012 \\
+\hline
+\end{tabular}
+\caption{Freeverb parameter contract (insert)}
+\label{tab:reverb-params}
+\end{table}
+
+\texttt{reverb\_size} and \texttt{reverb\_decay\_s} do not add up: when \texttt{decay\_s > 0}, feedback is determined by the T60 calibration and \texttt{size} does not participate; only when \texttt{decay\_s = 0} does the legacy \texttt{size} formula apply. To set reverb time in seconds, write a positive \texttt{decay\_s}; do not use \texttt{size} to "top it up".
+
+\texttt{reverb\_kind} changes the delay-line layout and allpass feedback: Room, Plate, Hall, and Spring share the same Freeverb topology; Spring is a parameter-set approximation, not a physical spring model. Changing the type relayouts the delay lines, so density and color change, but it does not become another algorithm.
+
+\texttt{reverb\_damp} only affects the tail's high frequencies: larger values make the tail darker and shorter; it does not touch the direct sound. \texttt{reverb\_predelay} delays only the wet path; the dry sound stays put. 0.012 s is the default 12 ms; 0.1 s is 100 ms. \texttt{reverb\_wet} is the wet level; the DSP takes dry as 1 − wet. It is not an independent dry/wet control.
+
+⚠ Naming trap: \texttt{reverb\_mix} and \texttt{reverb\_width} are spellings the engine \textbf{deliberately does not recognize}. For wet/dry use \texttt{reverb\_wet} (or alias \texttt{reverb\_wet\_mix}); width is not exposed in the contract (internal default 0.8), so \texttt{reverb\_width} cannot be used as a knob. A wrong name appears in the device card's "unrecognized parameters" list and the sound does not change.
+
+\section{Convolution reverb parameters}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{conv\_predelay\_s} & Wet-path pre-delay (s) & 0–0.1 & 0 \\
+\texttt{conv\_dry} & Dry level (linear) & 0–1 & 1 \\
+\texttt{conv\_wet} & Wet level (linear) & 0–1 & 0.25 \\
+\texttt{conv\_ir\_gain\_db} & IR gain (dB) & −60–24 & 0 \\
+\texttt{conv\_ir\_decay\_s} & Exponential decay constant of the synthesized IR (s) & 0.005–5 & 0.35 \\
+\texttt{conv\_ir\_seed} & Random seed for the synthesized IR & $0$–$2^{32}-1$ & 1 \\
+\texttt{conv\_ir\_stereo} & 0 = same IR L/R; non-zero = independent IR & 0/1 & 0 \\
+\hline
+\end{tabular}
+\caption{Convolution reverb parameter contract (insert)}
+\label{tab:conv-params}
+\end{table}
+
+The convolution IR is not an external file; the engine synthesizes it from \texttt{conv\_ir\_decay\_s} and \texttt{conv\_ir\_seed}. Decay is an exponential time constant, not T60. Changing the seed changes random detail in the IR, not room size. \texttt{conv\_ir\_stereo} is baked at construction: 0 means both channels use the same IR; non-zero means the right channel uses a second IR derived from seed plus a golden-ratio constant. It is not automatable; changing it rebuilds the device.
+
+The UI has no "install convolution" button, so this parameter table is currently for project/MCP writes and later wiring, not for a user turning knobs on the device card. The card can show an existing convolution device and its recognized parameters, but it will not create one out of nothing.
+
+\section{Ping-pong delay parameters}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\hline
+Parameter & Meaning & Range & Default \\
+\hline
+\texttt{delay\_time\_s} & Delay time (s) & 0.001–2 & 0.3 \\
+\texttt{delay\_feedback} & Feedback amount & 0–0.95 & 0.3 \\
+\texttt{delay\_mix} & Wet level; 0 = stage not built & 0–1 & 0 \\
+\texttt{delay\_damp} & High-frequency damping in the feedback loop & 0–1 & 0 \\
+\texttt{delay\_ping\_pong} & Ping-pong switch (non-zero = true) & 0/1 & 1 \\
+\texttt{delay\_sync\_enabled} & Tempo-sync switch & 0/1 & 0 \\
+\texttt{delay\_sync\_num} & Sync numerator (beats) & 1–16 & 3 \\
+\texttt{delay\_sync\_den} & Sync denominator (beats) & 1–16 & 8 \\
+\texttt{delay\_sync\_dotted} & Dotted switch (time ×1.5) & 0/1 & 1 \\
+\hline
+\end{tabular}
+\caption{Ping-pong delay parameter contract (insert, chain end)}
+\label{tab:delay-params}
+\end{table}
+
+\texttt{delay\_mix = 0} means the stage is not built; that is "off by default", not bypass. When \texttt{delay\_sync\_enabled = 1}, the delay time is converted from project tempo at projection time and \texttt{delay\_time\_s} no longer applies directly; the result is clamped to 2.0 s. \texttt{delay\_sync\_dotted = 1} multiplies the time by 1.5, so "3/8 dotted" is 3/8 × 1.5 beats, not 3/8 beat.
+
+\section{Setting up a space in Yeban}
+
+\begin{enumerate}
+  \item Decide insert or send first. For one track with its own space, select the track and click "install reverb". For a shared space across a drum kit or a vocal group, click "+ Aux Return", install reverb on the return, then click "create send" on the source track.
+  \item For insert mode, set \texttt{reverb\_wet} first so source and tail balance. For send mode, set send gain first, then the return's reverb wet. The "wet/dry" lives in different places; do not apply one number to the other.
+  \item Set \texttt{reverb\_predelay}: short pre-delay keeps the tail close, long pre-delay lets the source speak first; it only delays the wet path and never moves the whole track.
+  \item Prefer \texttt{reverb\_decay\_s} when you want a time in seconds; use \texttt{reverb\_size} only for quick auditioning. Do not treat them as additive.
+  \item Finish with \texttt{reverb\_damp}. If the tail is bright and hard, raise damping; if it is dull and short, lower damping; do not use wet to add brightness.
+\end{enumerate}
+
+\screenshot{device-rack-reverb-installed}{A track is selected in the device rack; the device card shows a Reverb and recognized parameter readouts; the send strip below has no reverb knobs.}
+
+\screenshot{send-aux-reverb}{The source track's send strip shows a "Send → Aux" row and gain slider; the aux return track has a Reverb installed.}
+
+\section{Common mistakes}
+
+\begin{itemize}
+  \item \textbf{Using \texttt{reverb\_mix} as the parameter name.} The engine does not recognize it; the correct spelling is \texttt{reverb\_wet}. A wrong name does not error, it only lands in "unrecognized parameters" and the sound is unchanged.
+  \item \textbf{Pulling both \texttt{reverb\_size} and \texttt{reverb\_decay\_s}.} They are not additive: when \texttt{decay\_s > 0}, \texttt{size} does not participate. Use \texttt{decay\_s} for seconds, \texttt{size} for quick auditioning.
+  \item \textbf{Treating pre-delay as a whole-track offset.} It delays only the wet path; the dry sound does not move, and the track does not arrive late.
+  \item \textbf{Treating \texttt{reverb\_wet} as a dry/wet ratio.} It is the wet level; dry is automatically 1 − wet. More wet means less dry.
+  \item \textbf{Installing a reverb on every track and then complaining the space is inconsistent.} Insert mode is for per-track spaces; for a shared space, use one aux return plus sends.
+  \item \textbf{Treating convolution reverb as "load an IR file".} Yeban's convolution IR is synthesized from decay time and seed; there is no external IR import entry.
+  \item \textbf{Treating \texttt{delay\_mix = 0} as bypass.} It means the stage is not built; the device may still appear on the card, but it is not in the chain.
+\end{itemize}
+
+\section{Help-topic mapping}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.40\linewidth}p{0.48\linewidth}@{}}
+\hline
+Section & In-app help anchor \\
+\hline
+Four readings of reverb & \texttt{space-reverb-basics} \\
+Insert versus send & \texttt{space-insert-vs-send} \\
+The three space devices Yeban actually provides & \texttt{space-devices-status} \\
+Freeverb parameters & \texttt{space-reverb-params} \\
+Convolution reverb parameters & \texttt{space-convolution-params} \\
+Ping-pong delay parameters & \texttt{space-delay-params} \\
+Setting up a space in Yeban & \texttt{space-workflow} \\
+Common mistakes & \texttt{space-mistakes} \\
+\hline
+\end{tabular}
+\caption{Help-topic mapping for Chapter 5}
+\end{table}
