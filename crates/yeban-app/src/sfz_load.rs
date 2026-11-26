@@ -160,6 +160,7 @@ use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::is_builtin_silence_sample;
 use yeban_sfz::instrument::resolve_sample_under_root;
 use yeban_sfz::notation::{NotationDetection, NotationMissReason};
+use yeban_sfz::parser::Warning;
 use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
 /// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
@@ -303,6 +304,110 @@ impl SfzProbeReading {
     }
 }
 
+/// 一条被忽略的未知 opcode：名字 + 首次出现的行号。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownOpcodeNote {
+    /// opcode 名（原文，大小写敏感）。
+    pub name: String,
+    /// 首次扫到它的行号（1-based；与解析器 `Warning::UnknownOpcode.line` 同源）。
+    pub line: usize,
+}
+
+/// 解析告警的**结构化摘要**（T-FIX-485）：未知 opcode 计数 + 前若干条名字/行号 + 截断事实。
+///
+/// 为什么要有它：解析器早就产生 [`Warning::UnknownOpcode`] 与 [`Warning::Truncated`]（裁决
+/// R46：截断是真实发生的事实，必须出现在公开输出里），但装载报告过去只报区域数 ⇒
+/// 用户看不到哪些 opcode 被忽略、告警是否被截断，违反"默认不能静默"。
+///
+/// ⚠ 预览是**有界**的（[`MAX_UNKNOWN_OPCODE_PREVIEW`]）：超出的部分靠 `total` /
+/// `unknown_opcode_count` / `truncated` 三个计数如实交代，⛔ 不假装只有预览那几条。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SfzWarningsSummary {
+    /// 解析器给出的告警总条数（含 `Truncated` 标记本身）。
+    pub total: usize,
+    /// 未知 opcode 的**去重后**条数（解析器按名去重）。
+    pub unknown_opcode_count: usize,
+    /// 未知 opcode 的前若干条（名字 + 行号，按解析顺序）。
+    pub unknown_opcodes: Vec<UnknownOpcodeNote>,
+    /// 解析器的告警表是否被 `max_warnings` 截断过。
+    pub truncated: bool,
+    /// 截断时实际保留的实质告警条数（未截断 ⇒ 0）。
+    pub kept: usize,
+    /// 截断时被丢弃的实质告警条数（未截断 ⇒ 0）。
+    pub dropped: usize,
+}
+
+/// 未知 opcode 预览最多列几条（其余靠计数交代）。
+pub const MAX_UNKNOWN_OPCODE_PREVIEW: usize = 8;
+
+impl SfzWarningsSummary {
+    /// 从解析器的告警切片折叠出摘要（唯一入口：报告与回执读的是同一份）。
+    #[must_use]
+    pub fn from_warnings(warnings: &[Warning]) -> Self {
+        let mut summary = Self {
+            total: warnings.len(),
+            ..Self::default()
+        };
+        for warning in warnings {
+            match warning {
+                Warning::UnknownOpcode { line, name } => {
+                    summary.unknown_opcode_count += 1;
+                    if summary.unknown_opcodes.len() < MAX_UNKNOWN_OPCODE_PREVIEW {
+                        summary.unknown_opcodes.push(UnknownOpcodeNote {
+                            name: name.clone(),
+                            line: *line,
+                        });
+                    }
+                }
+                Warning::Truncated { kept, dropped } => {
+                    summary.truncated = true;
+                    summary.kept = *kept;
+                    summary.dropped = *dropped;
+                }
+                _ => {}
+            }
+        }
+        summary
+    }
+
+    /// 一条告警都没有（未截断、无未知 opcode、总数为 0）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// 预览串：`name@line,name@line[,…]`；无未知 opcode ⇒ `-`。
+    #[must_use]
+    pub fn preview(&self) -> String {
+        if self.unknown_opcodes.is_empty() {
+            return "-".to_owned();
+        }
+        self.unknown_opcodes
+            .iter()
+            .map(|note| format!("{}@{}", note.name, note.line))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// 回执字段（`key=value`，与 `load-sfz` 其余字段同一形态；⛔ 不在这里拼散文）。
+    #[must_use]
+    pub fn receipt_fields(&self) -> Vec<String> {
+        vec![
+            format!("warnings={}", self.total),
+            format!("unknownOpcodes={}", self.unknown_opcode_count),
+            format!("unknownOpcodeList={}", self.preview()),
+            format!(
+                "warningsTruncated={}",
+                if self.truncated { "yes" } else { "no" }
+            ),
+            format!(
+                "warningsKept={} warningsDropped={}",
+                self.kept, self.dropped
+            ),
+        ]
+    }
+}
+
 /// 装载报告（形态照 `MidiImportReport`：路径／字节／区域数／探测读数／诚实字段）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SfzLoadReport {
@@ -325,6 +430,10 @@ pub struct SfzLoadReport {
     /// 空 ⇒ 全部 include 都读到了。每条都带**行号 + 请求路径 + 原因**；装载本身
     /// **不会**因为一条缺失就失败（其余 include 与 inline `<region>` 照常）。
     pub include_issues: Vec<IncludeIssue>,
+    /// ⭐ T-FIX-485：解析告警的结构化摘要（未知 opcode / 截断事实）。
+    ///
+    /// 空摘要 ⇒ 解析器一条告警都没发（⛔ 不是"没接线"：`from_warnings` 是唯一入口）。
+    pub warnings: SfzWarningsSummary,
     /// ⭐ 阶段 2：(b) 记法检测的**结构化报告**（命中/未命中原因 + 证据计数）。
     ///
     /// `None` 只出现在 (c) 手动覆盖在场时（检测**停跑**，⛔ 不是"没结论"）。
@@ -354,13 +463,19 @@ impl SfzLoadReport {
             None => "-".to_owned(),
         };
         format!(
-            "loaded-sfz: path={} bytes={} regions={} include_issues={} sample_source={} probe(note:vel:frames:energy)={probe} wired_to_export={}",
+            "loaded-sfz: path={} bytes={} regions={} include_issues={} sample_source={} probe(note:vel:frames:energy)={probe} wired_to_export={} warnings={} unknown_opcodes={} unknown_opcode_list={} warnings_truncated={} warnings_kept={} warnings_dropped={}",
             self.path.display(),
             self.bytes,
             self.regions,
             self.include_issues.len(),
             self.sample_source,
             if self.wired_to_export { "yes" } else { "no" },
+            self.warnings.total,
+            self.warnings.unknown_opcode_count,
+            self.warnings.preview(),
+            if self.warnings.truncated { "yes" } else { "no" },
+            self.warnings.kept,
+            self.warnings.dropped,
         )
     }
 
@@ -565,6 +680,7 @@ pub fn load_sfz_adapted(
             // 默认 `false`（本次装载没有请求导出/录音）；调用方（CLI）在真的要用它导出/录音时改写为 `true`。
             wired_to_export: false,
             include_issues: instrument.include_issues().to_vec(),
+            warnings: SfzWarningsSummary::from_warnings(instrument.warnings()),
             notation: adaptation.detection,
             notation_shift: adaptation.applied_shift,
             notation_source: adaptation.source,
@@ -2960,6 +3076,102 @@ mod tests {
             source.cc_seeds.is_some(),
             "⭐ 带 `set_ccN` 的音源必须在构造期拿到种子表"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ T-FIX-485：未知 opcode 必须进装载报告（名字 + 行号 + 计数）。
+    #[test]
+    fn unknown_opcodes_reach_the_load_report() {
+        let dir = temp_dir("warn-unknown");
+        let path = dir.join("unknown.sfz");
+        std::fs::write(
+            &path,
+            "<region> sample=a.wav key=60 zz_unknown_one=1 zz_unknown_two=2\n",
+        )
+        .expect("写夹具");
+        let report = load_sfz(&path, None, 48_000.0).expect("装载");
+        assert_eq!(
+            report.warnings.unknown_opcode_count, 2,
+            "两个未知 opcode 必须都记进计数，实得 {:?}",
+            report.warnings
+        );
+        assert_eq!(report.warnings.unknown_opcodes.len(), 2, "预览条数");
+        let names: Vec<&str> = report
+            .warnings
+            .unknown_opcodes
+            .iter()
+            .map(|note| note.name.as_str())
+            .collect();
+        assert!(names.contains(&"zz_unknown_one") && names.contains(&"zz_unknown_two"));
+        assert!(
+            report
+                .warnings
+                .unknown_opcodes
+                .iter()
+                .all(|note| note.line == 1),
+            "行号必须折回原文件（第 1 行），实得 {:?}",
+            report.warnings.unknown_opcodes
+        );
+        assert!(!report.warnings.truncated, "两条告警远未触顶 ⇒ 不得报截断");
+        let summary = report.summary();
+        assert!(
+            summary.contains("unknown_opcodes=2"),
+            "报告行必须带计数: {summary}"
+        );
+        assert!(
+            summary.contains("zz_unknown_one@1"),
+            "报告行必须带名字@行号: {summary}"
+        );
+        assert!(summary.contains("warnings_truncated=no"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ T-FIX-485：超过 max_warnings 时的截断标记必须原样进报告（R46）。
+    #[test]
+    fn a_truncated_warning_list_is_reported_as_truncated() {
+        let warnings = vec![
+            Warning::UnknownOpcode {
+                line: 7,
+                name: "zz_capped".to_owned(),
+            },
+            Warning::Truncated {
+                kept: 256,
+                dropped: 5,
+            },
+        ];
+        let summary = SfzWarningsSummary::from_warnings(&warnings);
+        assert!(summary.truncated, "Truncated 标记必须被识别");
+        assert_eq!(summary.kept, 256);
+        assert_eq!(summary.dropped, 5);
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.unknown_opcode_count, 1);
+        let fields = summary.receipt_fields().join(" ");
+        assert!(
+            fields.contains("warningsTruncated=yes"),
+            "回执字段: {fields}"
+        );
+        assert!(fields.contains("warningsKept=256"), "回执字段: {fields}");
+        assert!(fields.contains("warningsDropped=5"), "回执字段: {fields}");
+        assert!(
+            fields.contains("unknownOpcodeList=zz_capped@7"),
+            "回执字段: {fields}"
+        );
+    }
+
+    /// ⭐ T-FIX-485：没有告警时不得误报（计数为 0、不出现 truncated=yes）。
+    #[test]
+    fn a_clean_sfz_reports_no_warnings() {
+        let dir = temp_dir("warn-clean");
+        let path = dir.join("clean.sfz");
+        std::fs::write(&path, "<region> sample=a.wav key=60\n").expect("写夹具");
+        let report = load_sfz(&path, None, 48_000.0).expect("装载");
+        assert!(report.warnings.is_empty(), "干净文件不得产生告警");
+        assert_eq!(report.warnings.unknown_opcode_count, 0);
+        assert!(report.warnings.preview() == "-", "无未知 opcode ⇒ 预览是 -");
+        let summary = report.summary();
+        assert!(summary.contains("warnings=0"), "{summary}");
+        assert!(summary.contains("unknown_opcodes=0"), "{summary}");
+        assert!(summary.contains("warnings_truncated=no"), "{summary}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -18199,6 +18199,10 @@ pub fn wire_module_actions_with_shared(
                         // 接上之后**一定会**被导出用（下一次 export-wav），如实报 yes。
                         "wired_to_export=yes".to_owned(),
                     ];
+                    // ⭐ T-FIX-485：解析告警必须进回执（未知 opcode 名字/行号、截断事实），
+                    // 否则"哪些 opcode 被忽略"只存在于内存里 ⇒ 默认静默。
+                    let mut fields = fields;
+                    fields.extend(report.warnings.receipt_fields());
                     (module_receipt("load-sfz", &fields), true)
                 }
                 Err(error) => (
