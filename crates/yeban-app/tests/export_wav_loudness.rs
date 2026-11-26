@@ -136,6 +136,7 @@ fn sine_clip_project(dir: &Path, amplitude: f32) -> (YebanProjectV1, BTreeMap<As
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     project.clip_pool.insert(
@@ -215,6 +216,7 @@ fn project_with_tracks(tracks: &[(&str, f32)]) -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         let mut notes = BTreeMap::new();

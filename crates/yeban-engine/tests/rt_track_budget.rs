@@ -53,6 +53,7 @@ fn put_note(track: &mut TrackV3, pool: &mut BTreeMap<EntityId, ClipPoolEntry>, p
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
 }

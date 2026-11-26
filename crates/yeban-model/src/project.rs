@@ -1209,6 +1209,18 @@ pub struct ClipPlacement {
     /// 淡出时长（tick，必须 > 0）。`None` = 不淡出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_out_ticks: Option<u64>,
+    /// 素材内起始采样（帧，0 起）。`None` = 从素材第 0 帧开始。
+    ///
+    /// 与 [`Self::offset_samples`] 分工不同：`offset_samples` 把**整段摆放沿时间轴平移**
+    /// （相位对齐）；本字段只改**从素材的哪一帧开始读**，不移动摆放的时间轴，也不改变
+    /// 摆放时值。音频片段切分时，右半段用切点相对摆放起点的采样数填写本字段 ⇒
+    /// 右半段从切点继续，而不是从素材第 0 帧重放。
+    ///
+    /// `None` 是旧工程/未裁剪摆放的一等状态：`serde(default)` +
+    /// `skip_serializing_if` ⇒ 默认（从 0 读）的工程逐字节不变；渲染侧按 `0` 处理。
+    /// 循环展开时，每一遍的素材帧还会再叠加循环区间相对摆放起点的偏移。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_start_samples: Option<u64>,
 }
 
 impl Default for ClipPlacement {
@@ -1223,6 +1235,7 @@ impl Default for ClipPlacement {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         }
     }
 }
@@ -2864,6 +2877,25 @@ mod tests {
     // 样本夹具的唯一事实源在 `crate::samples`（同一个 `filled_project` 也被
     // `examples/export_schema_samples.rs` 使用，避免"测试一套、导出另一套"）。
     use crate::samples::{filled_project, fixture_id, master_track, midi_clip, midi_track};
+
+    #[test]
+    fn source_start_samples_is_absent_when_none_and_defaults_on_old_load() {
+        let placement = ClipPlacement::default();
+        let value = serde_json::to_value(placement).expect("摆放必须可序列化");
+        assert!(
+            value.get("source_start_samples").is_none(),
+            "None 是旧工程/未裁剪的一等状态 ⇒ 不落盘，旧工程字节不变：{value}"
+        );
+        let old: ClipPlacement = serde_json::from_value(value.clone()).expect("缺字段必须可读");
+        assert_eq!(old.source_start_samples, None);
+
+        let mut with_source = value;
+        with_source["source_start_samples"] = serde_json::json!(12_345_u64);
+        let decoded: ClipPlacement =
+            serde_json::from_value(with_source).expect("显式素材内起点必须可读");
+        assert_eq!(decoded.source_start_samples, Some(12_345));
+        assert_eq!(decoded.validate(), Ok(()));
+    }
 
     #[test]
     fn schema_version_is_one_per_adr_0001_d3() {

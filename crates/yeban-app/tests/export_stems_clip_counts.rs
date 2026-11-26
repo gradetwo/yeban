@@ -250,6 +250,7 @@ fn project_with_audio_clip(asset: AssetHash, bytes: &[u8]) -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     project.assets.insert(
@@ -314,6 +315,7 @@ fn add_midi_track(project: &mut YebanProjectV1, sfz_path: &Path) {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     project.tracks.insert(track, track_v3);

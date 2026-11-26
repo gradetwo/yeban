@@ -79,6 +79,7 @@ fn project(mute: bool, velocity: u8) -> (YebanProjectV1, EntityId) {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
 

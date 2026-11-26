@@ -231,6 +231,7 @@ fn fixture(bytes: Vec<u8>, plugin_device: Option<DeviceDefinition>) -> Fixture {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
             loop_config: LoopConfig::default(),
         },
     );

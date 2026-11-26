@@ -213,6 +213,7 @@ fn project_with_one_note(tag: &str) -> (YebanProjectV1, EntityId) {
         offset_samples: None,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        source_start_samples: None,
     };
     project
         .tracks

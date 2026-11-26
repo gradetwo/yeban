@@ -288,6 +288,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             placement_count += 1;
@@ -324,6 +325,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             placement_count += 1;

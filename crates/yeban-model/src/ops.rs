@@ -4434,6 +4434,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
 
@@ -4569,6 +4570,7 @@ mod tests {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         };
         let new_edge = RoutingEdge {
             id: fresh_edge,
@@ -4755,6 +4757,7 @@ mod tests {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             },
             Op::MoveClipPlacement {
@@ -5584,6 +5587,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         };
         place.apply(&mut chain).expect("摆放新建的片段");
@@ -6328,6 +6332,7 @@ mod tests {
             offset_samples: Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES),
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
             ..Default::default()
         };
         assert!(placement.validate().is_ok(), "负边界值必须合法");
@@ -7942,6 +7947,7 @@ mod tests {
                             offset_samples: None,
                             fade_in_ticks: None,
                             fade_out_ticks: None,
+                            source_start_samples: None,
                         },
                     };
                 }
@@ -8482,6 +8488,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         }
         .apply(&mut doc)

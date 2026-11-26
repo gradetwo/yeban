@@ -258,6 +258,7 @@ pub fn audio_clip_project_at(start_tick: u64, duration_ticks: u64, gain_db: f32)
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
 
@@ -362,6 +363,7 @@ pub fn build(notes: &[NoteSpec], kind: TrackKind, without_clip: bool) -> Fixture
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     }
@@ -469,6 +471,7 @@ pub fn two_track_project(
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         tracks.insert(track, midi_track);
@@ -621,6 +624,7 @@ fn rebind_sounding_track(id: EntityId) -> (TrackV3, ClipPoolEntry) {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     (track, entry)

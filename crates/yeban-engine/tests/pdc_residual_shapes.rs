@@ -92,6 +92,7 @@ fn note_track_v(
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     (track, Some(entry))

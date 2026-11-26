@@ -75,6 +75,7 @@ fn monitor_project(note: NoteSpec, track_pan: f32) -> YebanProjectV1 {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     tracks.insert(track, track_model);

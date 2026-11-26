@@ -572,6 +572,7 @@ fn single_track_sampler_project(pan: f32, sampler: &str) -> yeban_model::YebanPr
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

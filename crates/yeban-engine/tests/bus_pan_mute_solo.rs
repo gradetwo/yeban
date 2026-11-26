@@ -121,6 +121,7 @@ fn project(mix: Mix, with_bus: bool) -> YebanProjectV1 {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     let mut pool = BTreeMap::new();

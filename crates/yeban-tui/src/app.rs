@@ -1354,6 +1354,7 @@ impl App {
             offset_samples: base.offset_samples,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         };
         self.commit_edit(
             "tui: paste clip",

@@ -164,6 +164,7 @@ fn build_project(master: EntityId, tracks: &[TrackSpec], edges: &[EdgeSpec]) -> 
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
         }

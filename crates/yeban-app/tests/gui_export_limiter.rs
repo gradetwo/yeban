@@ -128,6 +128,7 @@ fn project_with_track(volume_db: f32) -> YebanProjectV1 {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

@@ -5136,7 +5136,7 @@ struct ClipSpan {
     /// 结束帧（不含）。
     end: i64,
     /// 素材里的起始帧（`#241`）：循环重复时每一遍只搬循环区间那一段素材。
-    /// 非循环摆放恒为 `0` ⇒ 与加循环展开之前逐位相同。
+    /// 未裁剪/旧工程的非循环摆放为 `0` ⇒ 与加循环展开之前逐位相同。
     source_offset: i64,
     /// 左声道增益（片段 `gain_db` + 音轨 `volume_db` → 线性，× 等功率声相）。
     gain_l: f32,
@@ -5217,7 +5217,9 @@ impl AudioClipSource {
 
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
     fn asset_frame(asset: &PreparedAsset, span: &ClipSpan, global: i64) -> Option<usize> {
-        let offset = global - span.start + span.source_offset;
+        let offset = global
+            .saturating_sub(span.start)
+            .saturating_add(span.source_offset);
         if offset < 0 || offset >= asset.frames {
             return None;
         }
@@ -6449,6 +6451,10 @@ fn build_source(
                     ));
                 };
                 let fade_window = fade_by_placement.get(&placement.id).map(Arc::clone);
+                // T-FIX-488：素材内起点。`None` = 旧工程/未裁剪 ⇒ 0（逐位不变）。
+                let source_start = i64::try_from(placement.source_start_samples.unwrap_or(0))
+                    .unwrap_or(i64::MAX)
+                    .max(0);
                 let (base_start, base_end) = clip_math::clip_frame_span_with_tempo(
                     placement.start_tick,
                     placement.duration_ticks,
@@ -6494,25 +6500,26 @@ fn build_source(
                         entry.1.push(ClipSpan {
                             start: base_start,
                             end: base_end,
-                            source_offset: 0,
+                            source_offset: source_start,
                             gain_l,
                             gain_r,
                             fade_window: fade_window.clone(),
                         });
                     } else {
-                        // 区间之前的内容：播放一遍（素材从 0 开始）。
+                        // 区间之前的内容：播放一遍（从摆放的素材内起点开始）。
                         if region_start_frames > base_start_frames {
                             entry.1.push(ClipSpan {
                                 start: shift(frames_i64(base_start_frames)),
                                 end: shift(frames_i64(region_start_frames)),
-                                source_offset: 0,
+                                source_offset: source_start,
                                 gain_l,
                                 gain_r,
                                 fade_window: fade_window.clone(),
                             });
                         }
-                        let source_offset =
-                            frames_i64(region_start_frames.saturating_sub(base_start_frames));
+                        let source_offset = source_start.saturating_add(frames_i64(
+                            region_start_frames.saturating_sub(base_start_frames),
+                        ));
                         let mut iteration = 0u64;
                         loop {
                             let start = region_start_frames
@@ -6536,7 +6543,7 @@ fn build_source(
                     entry.1.push(ClipSpan {
                         start: base_start,
                         end: base_end,
-                        source_offset: 0,
+                        source_offset: source_start,
                         gain_l,
                         gain_r,
                         fade_window: fade_window.clone(),

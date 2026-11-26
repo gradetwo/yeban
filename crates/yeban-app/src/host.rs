@@ -21232,6 +21232,7 @@ fn build_roll_note_insert_ops(
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             };
             let mut ops = ensure_track_instrument_ops(project, track.id);
             ops.push(yeban_model::ops::Op::AddClip { clip });
@@ -21289,6 +21290,7 @@ fn build_roll_note_insert_ops(
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     });
     ops.push(yeban_model::ops::Op::AddNote {
@@ -23770,6 +23772,8 @@ pub fn duplicate_clip_placement_ops_for(
         offset_samples: placement.offset_samples,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        // 素材内起点也必须继承：复制一条切分后的右半，不能又退回素材第 0 帧。
+        source_start_samples: placement.source_start_samples,
     };
     let new_id = new_placement.id.to_string();
     let ops = vec![
@@ -24037,6 +24041,8 @@ pub fn clipboard_paste(
             offset_samples: base.offset_samples,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            // 粘贴继承素材内起点：复制/剪切切分后的右半，粘贴后仍从切点续读。
+            source_start_samples: base.source_start_samples,
         };
         new_ids.push(placement.id.to_string());
         ops.push(yeban_model::ops::Op::AddClip { clip: new_entry });
@@ -24123,6 +24129,28 @@ pub fn clip_split_ops_for(
         return None;
     }
 
+    // T-FIX-488：音频片段切分后，右半段必须从**切点对应的素材帧**继续读，而不是
+    // 从素材第 0 帧重放。`source_start_samples` 是素材内起点（帧），与
+    // `offset_samples`（整段沿时间轴平移）分工不同；MIDI 不使用该字段。
+    // `ticks_to_frames` 与引擎/离线渲染同一条 tick→帧口径（48 kHz、工程 BPM、960 PPQ）。
+    let right_source_start = match &clip_entry.content {
+        yeban_model::project::ClipContent::Audio { .. } => {
+            let split_delta_ticks = split_tick.saturating_sub(placement.start_tick);
+            let split_delta_frames = yeban_model::time_math::ticks_to_frames(
+                split_delta_ticks,
+                project.bpm,
+                yeban_model::PPQ,
+                project.audio_config.sample_rate.hz(),
+            )
+            .unwrap_or(0);
+            let source = placement
+                .source_start_samples
+                .unwrap_or(0)
+                .saturating_add(split_delta_frames);
+            (source != 0).then_some(source)
+        }
+        yeban_model::project::ClipContent::Midi { .. } => None,
+    };
     let right_clip_id = yeban_model::EntityId::new();
     let (right_content, note_ops) = match &clip_entry.content {
         yeban_model::project::ClipContent::Midi { notes } => {
@@ -24196,6 +24224,7 @@ pub fn clip_split_ops_for(
         offset_samples: placement.offset_samples,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        source_start_samples: right_source_start,
     };
     let new_right_id = right_placement.id.to_string();
     ops.push(yeban_model::ops::Op::AddClipPlacement {

@@ -323,6 +323,7 @@ fn project_with_new_midi_track(notes: &[(u64, u8, u64)]) -> (YebanProjectV1, BTr
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     project.tracks.insert(track_id, track);
@@ -652,6 +653,7 @@ fn help_system_end_to_end_in_a_live_window() {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             },
         ],

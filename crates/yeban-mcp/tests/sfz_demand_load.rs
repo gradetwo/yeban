@@ -124,6 +124,7 @@ fn project_with_notes(track_id: EntityId, notes: &[(u8, u8)]) -> YebanProjectV1 
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     project.tracks.insert(track_id, track);

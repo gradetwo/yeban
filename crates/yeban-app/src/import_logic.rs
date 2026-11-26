@@ -776,6 +776,7 @@ fn build_project(
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         placements += 1;
@@ -855,6 +856,7 @@ fn build_project(
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             audio.clips += 1;

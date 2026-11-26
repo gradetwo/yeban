@@ -149,6 +149,7 @@ fn three_track_project() -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -1217,6 +1218,7 @@ fn bus_project() -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         let mut notes = BTreeMap::new();

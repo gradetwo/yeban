@@ -338,6 +338,7 @@ fn place_clip(
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
 }

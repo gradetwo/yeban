@@ -12,7 +12,7 @@
 //! | 维度 | 口径 |
 //! | :--- | :--- |
 //! | 帧区间 | `[ticks_to_frames(start), ticks_to_frames(start + max(duration, 1)))`，四舍五入、终点至少 `start + 1`。这里**复用引擎的** [`samples_per_tick`] / [`tick_to_sample`]（与 `EngineSnapshot` 的排程同一个函数），而不另写一份换算。 |
-//! | 循环展开 | ⭐ `#249` / `[ADR-0010 D4]`：与引擎、MCP **同一份** `ClipPlacement::loop_repeat()`；循环区间 `[start, end)` 每一遍只搬对应素材段（`source_offset`），区间之前的内容（pickup）原样播一遍。不循环 / `end >= D` / 关掉 ⇒ 单个 `source_offset == 0` 的区间 ⇒ **逐位等于**展开之前。 |
+//! | 循环展开 | ⭐ `#249` / `[ADR-0010 D4]`：与引擎、MCP **同一份** `ClipPlacement::loop_repeat()`；循环区间 `[start, end)` 每一遍只搬对应素材段（`source_offset`），区间之前的内容（pickup）原样播一遍。不循环 / `end >= D` / 关掉 ⇒ 单个从摆放素材内起点读的区间；旧工程该起点为 0 ⇒ **逐位等于**展开之前。 |
 //! | 硬切 | 摆放时值之外一律不加；素材比区间长就截断，比区间短就留静音尾巴。 |
 //! | 叠加 | **累加**（调用方已清零）；同一素材的多个 span 按 `(start, end, source_offset, 增益位型)` 全序依次累加（[ARCH-DET-002]，浮点加法不满足结合律）。 |
 //! | 增益 | `db_to_linear(clip.gain_db + track.volume_db)`（一次超越函数；非有限按 0 dB），`mute`/`solo` 门控与 MCP 的 `combined_gain_db` 同式。 |
@@ -135,7 +135,7 @@ struct ClipSpan {
     /// 结束帧（不含）。
     end: i64,
     /// 素材里的起始帧（`#249` / `[ADR-0010 D4]`）：循环重复时每一遍只搬循环区间
-    /// 那一段素材。非循环摆放恒为 `0` ⇒ 与加循环展开之前逐位相同。
+    /// 那一段素材。未裁剪/旧工程的非循环摆放为 `0` ⇒ 与加循环展开之前逐位相同。
     source_offset: i64,
     /// 左声道增益。
     gain_l: f32,
@@ -173,7 +173,9 @@ impl AudioClipSource {
 
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
     fn asset_frame(asset: &DecodedAsset, span: &ClipSpan, global: i64) -> Option<usize> {
-        let offset = global - span.start + span.source_offset;
+        let offset = global
+            .saturating_sub(span.start)
+            .saturating_add(span.source_offset);
         if offset < 0 || u64::try_from(offset).ok()? >= asset.frames {
             return None;
         }
@@ -509,6 +511,10 @@ pub(crate) fn resolve_track_clips(
             track_pan_gains(project, track)
         };
         let (gain_l, gain_r) = (gain * pan_l, gain * pan_r);
+        // T-FIX-488：摆放的素材内起点（帧）。`None` = 旧工程/未裁剪 ⇒ 0，逐位不变。
+        let source_start = i64::try_from(placement.source_start_samples.unwrap_or(0))
+            .unwrap_or(i64::MAX)
+            .max(0);
         let resolution = resolve_asset(asset, sample_rate, assets, cache);
         let prepared = match resolution {
             AssetResolution::Ready(prepared) => prepared,
@@ -576,24 +582,25 @@ pub(crate) fn resolve_track_clips(
                 entry.1.push(ClipSpan {
                     start: base_start,
                     end: base_end,
-                    source_offset: 0,
+                    source_offset: source_start,
                     gain_l,
                     gain_r,
                     fade_window: fade_window.clone(),
                 });
             } else {
-                // 区间之前的内容：播放一遍（素材从 0 开始）。
+                // 区间之前的内容：播放一遍（从摆放的素材内起点开始）。
                 if region_start_frames > base_start_frames {
                     entry.1.push(ClipSpan {
                         start: shift(base_start_frames),
                         end: shift(region_start_frames),
-                        source_offset: 0,
+                        source_offset: source_start,
                         gain_l,
                         gain_r,
                         fade_window: fade_window.clone(),
                     });
                 }
-                let source_offset = region_start_frames.saturating_sub(base_start_frames);
+                let source_offset = source_start
+                    .saturating_add(region_start_frames.saturating_sub(base_start_frames));
                 let max_iterations = i64::try_from(repeat.iterations).unwrap_or(i64::MAX);
                 let mut iteration = 0i64;
                 loop {
@@ -616,11 +623,11 @@ pub(crate) fn resolve_track_clips(
             }
         } else {
             // `None` ＝ 不循环（含 `end >= duration` / 关掉 / 非法区间）⇒
-            // 单 span、`source_offset = 0` ⇒ 逐位等于加循环展开之前。
+            // 单 span，从摆放的素材内起点读；旧工程 `source_start = 0` ⇒ 逐位不变。
             entry.1.push(ClipSpan {
                 start: base_start,
                 end: base_end,
-                source_offset: 0,
+                source_offset: source_start,
                 gain_l,
                 gain_r,
                 fade_window: fade_window.clone(),

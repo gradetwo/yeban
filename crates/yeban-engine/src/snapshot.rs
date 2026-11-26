@@ -4157,6 +4157,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         if let Some((points, read_enabled)) = pedal {

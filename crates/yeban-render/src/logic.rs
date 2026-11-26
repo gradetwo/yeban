@@ -5069,6 +5069,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         project.tracks.insert(lead.id, lead);
@@ -5110,6 +5111,7 @@ mod tests {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         project.tracks.insert(audio.id, audio);
@@ -5215,6 +5217,7 @@ mod tests {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             project.tracks.insert(track.id, track);
@@ -8541,6 +8544,7 @@ mod tests {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             project.tracks.insert(model_track.id, model_track);

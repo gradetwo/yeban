@@ -10273,6 +10273,7 @@ fn compile_inner(
                             offset_samples: None,
                             fade_in_ticks: None,
                             fade_out_ticks: None,
+                            source_start_samples: None,
                         },
                     });
                 }
@@ -12801,6 +12802,7 @@ fn build_placement(
         offset_samples: None,
         fade_in_ticks: read_optional_u64(object, FADE_IN_TICKS_FIELD)?,
         fade_out_ticks: read_optional_u64(object, FADE_OUT_TICKS_FIELD)?,
+        source_start_samples: None,
     };
     placement
         .validate()

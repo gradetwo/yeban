@@ -90,6 +90,7 @@ fn project_with_missing_tracks(
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         };
         let mut track = TrackV3 {
             id: *id,

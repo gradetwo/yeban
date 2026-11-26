@@ -28,12 +28,14 @@ use serde_json::json;
 use slint::ComponentHandle as _;
 use slint::Model as _;
 use yeban_app::host::{
-    clip_delete_ops_for_many, clip_mute_ops_for_many, clip_split_ops_for_many,
+    clip_delete_ops_for_many, clip_mute_ops_for_many, clip_split_ops_for, clip_split_ops_for_many,
     duplicate_clip_placement_ops_for,
 };
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_engine::audio_clip::{AudioPcm, mix_into, project_audio_clips};
 use yeban_model::ops::Op;
+use yeban_model::project::ClipContent;
 use yeban_model::samples::filled_project;
 use yeban_model::{ClipPlacement, EntityId, YebanProjectV1};
 use yeban_ui_mcp::live::request_line;
@@ -622,4 +624,129 @@ fn edit_arms_read_the_selection_set_through_one_helper() {
         "删除/复制/剪切/静音/分割臂都应调用统一读取点，实际 {calls} 处"
     );
     assert!(source.contains("CLIP_DRAG_GROUP"), "组拖拽快照必须存在");
+}
+
+/// T-FIX-488：音频片段在中点切分后，右半段必须从切点对应的素材帧继续读。
+///
+/// 夹具：`filled_project` 的音频摆放改成 `[0, 1920)`，素材 PCM 是前半 `-0.5`、
+/// 后半 `+0.5` 的方波；切点帧由工程 BPM/采样率现算（本夹具 BPM=128 ⇒ 960 tick =
+/// 22 500 帧，⛔ 不写死 24 000）。在 960 tick 切分：
+/// - 右半 `source_start_samples = Some(切点帧)`；
+/// - 右半首帧（绝对帧 = 切点帧）应读 `+0.5`；
+/// - 把右半的素材内起点强制回 `None`（旧公式）⇒ 读素材第 0 帧 `-0.5` ⇒ 旧实现红。
+#[test]
+fn splitting_audio_clip_resumes_from_cut_frame_not_zero() {
+    let mut project = filled_project();
+    let (track_id, placement_id, _clip_id, asset) = project
+        .tracks
+        .iter()
+        .find_map(|(track_id, track)| {
+            track.clips.iter().find_map(|(placement_id, placement)| {
+                let entry = project.clip_pool.get(&placement.clip_id)?;
+                match &entry.content {
+                    ClipContent::Audio { asset, .. } => {
+                        Some((*track_id, *placement_id, placement.clip_id, asset.clone()))
+                    }
+                    ClipContent::Midi { .. } => None,
+                }
+            })
+        })
+        .expect("filled_project 必须有一条音频摆放");
+
+    let placement = project
+        .tracks
+        .get_mut(&track_id)
+        .expect("音频轨必须存在")
+        .clips
+        .get_mut(&placement_id)
+        .expect("音频摆放必须存在");
+    placement.start_tick = 0;
+    placement.duration_ticks = 1_920;
+    placement.loop_config = yeban_model::LoopConfig::default();
+    placement.offset_samples = None;
+    placement.fade_in_ticks = None;
+    placement.fade_out_ticks = None;
+    placement.source_start_samples = None;
+
+    let (ops, right_id) = clip_split_ops_for(&project, &placement_id.to_canonical_string(), 960)
+        .expect("中点切分必须可构造");
+    for op in &ops {
+        op.apply(&mut project).expect("切分 op 必须可应用");
+    }
+    let right_id: EntityId = right_id.parse().expect("右半身份必须是合法 ULID");
+    let split_frame = yeban_model::time_math::ticks_to_frames(
+        960,
+        project.bpm,
+        yeban_model::PPQ,
+        project.audio_config.sample_rate.hz(),
+    )
+    .expect("合法工程必须能算切点帧");
+    let right = project
+        .tracks
+        .get(&track_id)
+        .expect("音频轨必须存在")
+        .clips
+        .get(&right_id)
+        .expect("右半摆放必须存在");
+    assert_eq!(right.start_tick, 960, "右半从切点开始");
+    assert_eq!(
+        right.source_start_samples,
+        Some(split_frame),
+        "右半素材内起点 = 切点相对摆放起点的 {split_frame} 帧"
+    );
+
+    // 双倍切点长度的单声道：前半 -0.5、后半 +0.5，切点处符号翻转。
+    let frames = usize::try_from(split_frame.saturating_mul(2)).expect("帧数必须放得进 usize");
+    let samples: Vec<f32> = (0..frames)
+        .map(|frame| {
+            if u64::try_from(frame).unwrap_or(u64::MAX) < split_frame {
+                -0.5
+            } else {
+                0.5
+            }
+        })
+        .collect();
+    let pcm = std::sync::Arc::new(
+        AudioPcm::new(
+            std::sync::Arc::from(samples),
+            1,
+            project.audio_config.sample_rate.hz(),
+        )
+        .expect("PCM 必须合法"),
+    );
+    let mut schedules = project_audio_clips(&project);
+    for schedule in schedules.values_mut() {
+        schedule.attach_pcm(&asset, &pcm);
+    }
+    let schedule = schedules.get(&track_id).expect("音频轨必须有 span 表");
+    let mut out = [0.0_f32; 1];
+    mix_into(schedule, split_frame, &mut out);
+    assert!(
+        out[0] > 0.01,
+        "切分右半首帧应读切点后的 +0.5，而不是素材第 0 帧的 -0.5；实际 {}",
+        out[0]
+    );
+
+    // 红对照：旧实现没有素材内起点字段（等价于 None）⇒ 同一帧读成 -0.5。
+    let mut old_formula = project.clone();
+    old_formula
+        .tracks
+        .get_mut(&track_id)
+        .expect("音频轨必须存在")
+        .clips
+        .get_mut(&right_id)
+        .expect("右半摆放必须存在")
+        .source_start_samples = None;
+    let mut old_schedules = project_audio_clips(&old_formula);
+    for schedule in old_schedules.values_mut() {
+        schedule.attach_pcm(&asset, &pcm);
+    }
+    let old_schedule = old_schedules.get(&track_id).expect("音频轨必须有 span 表");
+    let mut old_out = [0.0_f32; 1];
+    mix_into(old_schedule, split_frame, &mut old_out);
+    assert!(
+        old_out[0] < -0.01,
+        "旧公式（source_start=None）必须读素材第 0 帧 -0.5；实际 {}",
+        old_out[0]
+    );
 }

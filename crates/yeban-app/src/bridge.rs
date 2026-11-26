@@ -2941,6 +2941,7 @@ pub fn clip_create_ops_on(
         offset_samples: None,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        source_start_samples: None,
     };
     Ok(vec![
         Op::AddClip { clip },
@@ -3385,6 +3386,7 @@ pub fn drum_gen_ops(
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     });
     Ok(ops)
@@ -3535,6 +3537,7 @@ pub fn audio_clip_placement_ops_on(
         offset_samples: None,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        source_start_samples: None,
     };
     Ok((
         vec![Op::AddClipPlacement {

@@ -160,6 +160,7 @@ fn the_embedded_mount_carries_the_session_asset_pool_into_the_render() {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             },
         ],

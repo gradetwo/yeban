@@ -273,6 +273,7 @@ fn project_with_audio_clip(asset: AssetHash, gain_db: f32) -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     project
@@ -402,6 +403,47 @@ fn project_with_audio_clip_offset(
         }
     }
     project
+}
+
+/// T-FIX-488：`source_start_samples` 只跳过素材前缀，不移动摆放时间轴。
+/// 素材 1 s 单声道：前 24 000 帧 −0.25、后 24 000 帧 +0.5；摆放从 tick 0 起、
+/// 素材内起点 24 000 ⇒ 导出**第 0 帧**就应是 +0.5（旧实现读前缀 ⇒ −0.25）。
+#[test]
+fn source_start_samples_skips_the_asset_prefix_in_the_app_export() {
+    let dir = scratch("source-start-export");
+    let samples: Vec<i16> = (0..48_000)
+        .map(|frame| if frame < 24_000 { -8_192 } else { 16_384 })
+        .collect();
+    let path = dir.join("source-start.wav");
+    write_plain_wav(
+        &path,
+        &PcmFormat::integer(1, EXPORT_RATE, 16),
+        &PcmBuffer::Int16(samples),
+    )
+    .expect("写两段素材");
+    let bytes = std::fs::read(&path).expect("读两段素材");
+    let hash = AssetHash::of_bytes(&bytes);
+    let mut project = project_with_audio_clip(hash, CLIP_GAIN_DB);
+    for track in project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.start_tick = 0;
+            placement.duration_ticks = 1_920;
+            placement.source_start_samples = Some(24_000);
+        }
+    }
+    let container = write_container(&dir, "song.yeban", &project, &bytes);
+    let out = dir.join("out.wav");
+    export_via_cli(&container, &out);
+    let left = left_channel_of(&out);
+    let start_peak = peak_in(&left, 0..1_000);
+    let expected = 0.5 * db_to_linear(CLIP_GAIN_DB);
+    println!(
+        "[export-audio/source-start] 第 0 帧起 1000 帧峰值 {start_peak:.6}；期望 {expected:.6}"
+    );
+    assert!(
+        (start_peak - expected).abs() < 1e-4,
+        "素材内起点 24 000 ⇒ 导出开头必须读后半 +0.5，而不是前半 −0.25；实际峰值 {start_peak}"
+    );
 }
 
 /// `offset_samples` ⇒ 可闻窗口 `[start, end)` 整体平移偏移量（1 tick = 25 帧 @120 BPM/960 PPQ/48 kHz）：

@@ -853,6 +853,7 @@ fn add_empty_midi_placement(
         offset_samples: None,
         fade_in_ticks: None,
         fade_out_ticks: None,
+        source_start_samples: None,
     };
     port.commit_ops(
         NOW_MS,

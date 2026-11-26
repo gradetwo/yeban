@@ -278,6 +278,7 @@ fn project(spec: &Spec) -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -374,6 +375,7 @@ fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProje
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -439,6 +441,7 @@ fn many_track_clip_project(tracks: usize) -> YebanProjectV1 {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -1367,6 +1370,7 @@ fn loud_then_quiet_project() -> YebanProjectV1 {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     project.tracks.insert(quiet_track, track);
@@ -6155,6 +6159,7 @@ fn two_track_project() -> YebanProjectV1 {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -6532,6 +6537,7 @@ fn the_known_unsupported_list_is_not_decoration() {
                         offset_samples: None,
                         fade_in_ticks: None,
                         fade_out_ticks: None,
+                        source_start_samples: None,
                     },
                 );
             project.validate().expect("夹具合法");
@@ -6605,6 +6611,7 @@ fn the_known_unsupported_list_is_not_decoration() {
                     offset_samples: None,
                     fade_in_ticks: None,
                     fade_out_ticks: None,
+                    source_start_samples: None,
                 },
             );
             project.validate().expect("夹具合法");
@@ -10343,6 +10350,7 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     proj.tracks.insert(orphan, orphan_track);
@@ -10366,6 +10374,7 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
     proj.tracks.insert(pruned, pruned_track);

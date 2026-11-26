@@ -127,6 +127,7 @@ fn fixture(empty_clip: bool) -> Fixture {
             offset_samples: None,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
         },
     );
 
@@ -153,6 +154,7 @@ fn fixture(empty_clip: bool) -> Fixture {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     }
@@ -361,6 +363,7 @@ fn silent_fixture() -> SilentFixture {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     project.routing_graph = RoutingGraph {

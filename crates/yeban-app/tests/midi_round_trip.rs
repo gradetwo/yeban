@@ -229,6 +229,7 @@ fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             },
         );
     assert_eq!(project.validate(), Ok(()), "夹具必须是合法工程");

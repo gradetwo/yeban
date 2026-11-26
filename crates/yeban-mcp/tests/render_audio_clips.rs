@@ -215,6 +215,8 @@ struct Tune {
     fade_in_ticks: Option<u64>,
     /// ⭐ T-FIX-374：摆放的**显式**淡出（tick；`None` = 不淡）。
     fade_out_ticks: Option<u64>,
+    /// T-FIX-488：素材内起点（帧；`None` = 从 0 读）。
+    source_start_samples: Option<u64>,
     /// ⭐ 效果器线：音轨是否挂一台带 `stub:gain` 绑定的外部效果器（缺省增益 1.0＝直通）。
     effect_stub: bool,
     /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
@@ -245,6 +247,7 @@ impl Default for Tune {
             clip_offset_samples: 0,
             fade_in_ticks: None,
             fade_out_ticks: None,
+            source_start_samples: None,
             effect_stub: false,
             effect_bad_path: false,
             effect_state: Vec::new(),
@@ -382,6 +385,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             },
             fade_in_ticks: tune.fade_in_ticks,
             fade_out_ticks: tune.fade_out_ticks,
+            source_start_samples: tune.source_start_samples,
             loop_config: tune.loop_config,
         },
     );
@@ -658,6 +662,47 @@ fn the_clip_lands_exactly_on_the_placement_start_frame() {
 /// 夹具：片段摆在 0.5 秒处（960 tick = 24 000 帧）、时值 1 秒（48 000 帧），
 /// 素材 240 帧。+240 ⇒ 首可闻 24 240、末可闻 24 479、母带 48 240 帧；
 /// −240 ⇒ 首可闻 23 760、母带仍 48 000 帧（负偏移不延长）。
+/// T-FIX-488：`source_start_samples` 让摆放从素材内部起读，不移动摆放的时间轴。
+/// 素材 480 帧、素材内起点 240、摆放 [960, 1920) tick ⇒ 首可闻帧仍是 24 000，
+/// 但只播 240 帧（素材后半），证明读指针跳过前 240 帧而不是重放素材开头。
+#[test]
+fn source_start_samples_skips_the_asset_prefix_without_moving_the_clip() {
+    let scratch = Scratch::new("source-start");
+    let samples = pattern(480);
+    let tune = Tune {
+        start_tick: 960,
+        duration_ticks: 960,
+        source_start_samples: Some(240),
+        ..Tune::default()
+    };
+    let source_fixture = fixture(wav_f32(2, 48_000, &samples), &tune);
+    let out = scratch.join("source-start.wav");
+    let artifact = build_with(
+        &source_fixture.project,
+        &pool(&source_fixture),
+        &out,
+        args(&out),
+    )
+    .expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert_eq!(
+        first_audible_frame(&rendered, 0.01),
+        Some(24_000),
+        "素材内起点不移动摆放：首可闻帧仍是摆放起点 24 000"
+    );
+    assert_eq!(
+        last_audible_frame(&rendered, 0.01),
+        Some(24_000 + 239),
+        "只播素材后半 240 帧 ⇒ 末帧 24 239，而不是重放素材前 240 帧"
+    );
+    for frame in 0..24_000 {
+        assert!(
+            frame_peak(&rendered, frame) <= 1.0 / 8_388_608.0,
+            "素材内起点之前的帧必须静音（实际帧 {frame} 有信号）"
+        );
+    }
+}
+
 #[test]
 fn clip_offset_moves_the_first_audible_frame_by_exactly_the_offset() {
     let scratch = Scratch::new("offset-landing");

@@ -64,7 +64,7 @@
 //!   [`yeban_model::ClipPlacement::loop_repeat`] 按遍展开，[`mix_into`] 读
 //!   `素材帧 = 绝对帧 − span.start + span.source_offset` ⇒ 实时监听里音频片段**真的循环**。
 //!   非循环 / `end >= duration` / `loop_config.enabled == false` 的工程仍只产生一个
-//!   `source_offset == 0` 的 span ⇒ 与展开之前**逐位相同**。
+//!   未裁剪/旧工程的 `source_offset == 0` 的 span ⇒ 与展开之前**逐位相同**。
 //! - ✅ **声相在 `pan == 0` 时与离线路径同一条**（任务单 `#300` 修好；修前差 −3.01 dB）：
 //!   离线 `yeban-app::audio_clip` 在 `pan == 0.0` 时用 `(gain, gain)`（单位增益），
 //!   引擎的**逐轨混音**现在对**所有**音源（含 MIDI 与音频片段）也走
@@ -216,8 +216,9 @@ pub struct AudioClipSpan {
     fade_window: Option<Arc<ClipFadeWindow>>,
     /// 本 span 从素材的**第几帧**开始读（`#249` / `[ADR-0010 D4]`）。
     ///
-    /// 非循环摆放恒为 `0` ⇒ 与加循环展开之前**逐位相同**；循环展开后每一遍都从
-    /// 循环区间起点对应的素材帧读（见 [`project_audio_clips`]）。
+    /// 未被裁剪的摆放 / 旧工程恒为 `0` ⇒ 与加本字段之前**逐位相同**；循环展开后
+    /// 每一遍都从「素材内起点 + 循环区间相对摆放起点的帧数」读（见
+    /// [`project_audio_clips`]）。
     source_offset: u64,
 }
 
@@ -252,7 +253,7 @@ impl AudioClipSpan {
         &self.asset
     }
 
-    /// 本 span 从素材的第几帧开始读（`#249`；非循环恒为 `0`）。
+    /// 本 span 从素材的第几帧开始读（`#249`；未裁剪/旧工程为 `0`）。
     #[must_use]
     pub const fn source_offset(&self) -> u64 {
         self.source_offset
@@ -496,6 +497,9 @@ pub fn project_audio_clips_with_tempo(
             // 非有限增益按 `0` 处理（[`track_gain`] 的口径）。⚠ 已校验的工程走不到这里：
             // `ClipContent::validate` 拒绝非有限增益 —— 这条只是"不 panic、不发疯"的兜底。
             let gain = track_gain(*gain_db) * track_gain_scale;
+            // T-FIX-488：摆放可以在素材内部从某一帧起读（切分右半、复制裁剪）。
+            // `None` 是旧工程/未裁剪的一等状态 ⇒ 恒 0，与加字段之前逐位相同。
+            let source_start = placement.source_start_samples.unwrap_or(0);
             // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，负值结果夹到 0
             // （与 `micro_timing_ticks` 负值夹 0 同一条口径）。`source_offset` 与
             // 循环周期是 tick 差值，移位下不变 ⇒ `push` 只移 span 边界，不动那两处。
@@ -530,8 +534,9 @@ pub fn project_audio_clips_with_tempo(
                 };
             match placement.loop_repeat() {
                 // `None` ＝ 不循环（含 `end >= duration` / 关掉 / 非法区间）⇒
-                // 单 span、`source_offset = 0` ⇒ 逐位等于加循环展开之前。
-                None => push(&mut spans, start, end, 0),
+                // 单 span，从摆放的素材内起点读；旧工程 `source_start = 0` ⇒
+                // 逐位等于加本字段之前。
+                None => push(&mut spans, start, end, source_start),
                 Some(repeat) => {
                     // `[ADR-0010 D4]`：与 MCP 的 `render.rs` 逐条同式 —— 第一遍之前
                     // 的内容（pickup）原样播一遍；循环区间 `[start, end)` 的每一遍
@@ -539,12 +544,12 @@ pub fn project_audio_clips_with_tempo(
                     let region_start_tick = placement.start_tick.saturating_add(repeat.start_tick);
                     let region_end_tick = placement.start_tick.saturating_add(repeat.end_tick);
                     let Some(region_start) = timebase.sample_at(region_start_tick) else {
-                        push(&mut spans, start, end, 0);
+                        push(&mut spans, start, end, source_start);
                         placements = placements.saturating_add(1);
                         continue;
                     };
                     let Some(region_end) = timebase.sample_at(region_end_tick) else {
-                        push(&mut spans, start, end, 0);
+                        push(&mut spans, start, end, source_start);
                         placements = placements.saturating_add(1);
                         continue;
                     };
@@ -559,13 +564,14 @@ pub fn project_audio_clips_with_tempo(
                     if period == 0 {
                         // tick 太短、帧换算后不足一帧 ⇒ 没有可重复的区间，
                         // 按单遍播放（不静默丢内容；与 MCP 同一条守卫）。
-                        push(&mut spans, start, end, 0);
+                        push(&mut spans, start, end, source_start);
                     } else {
                         if region_start > start {
-                            // 区间之前的内容只播一遍（素材从 0 开始）。
-                            push(&mut spans, start, region_start, 0);
+                            // 区间之前的内容只播一遍（从摆放的素材内起点开始）。
+                            push(&mut spans, start, region_start, source_start);
                         }
-                        let source_offset = region_start.saturating_sub(start);
+                        let source_offset =
+                            source_start.saturating_add(region_start.saturating_sub(start));
                         let mut iteration = 0u64;
                         loop {
                             let span_start =
@@ -645,8 +651,10 @@ pub fn mix_into(schedule: &AudioClipSchedule, block_start: u64, out: &mut [f32])
         let samples = pcm.samples();
         for frame in from..to {
             // `#249` / `[ADR-0010 D4]`：循环展开后每一遍从素材的 `source_offset`
-            // 开始读；非循环 span 的该字段恒为 `0` ⇒ 与展开之前逐位相同。
-            let asset_frame = frame.saturating_sub(span.start) + span.source_offset;
+            // 开始读；未裁剪/旧工程的该字段为 `0` ⇒ 与展开之前逐位相同。
+            let asset_frame = frame
+                .saturating_sub(span.start)
+                .saturating_add(span.source_offset);
             if asset_frame >= frames {
                 // 素材比摆放区间短 ⇒ 之后的帧是静音尾巴（不是"继续读越界"）。
                 break;

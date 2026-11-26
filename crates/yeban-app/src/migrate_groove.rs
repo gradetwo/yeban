@@ -747,6 +747,7 @@ fn migrate_bytes(
                 offset_samples: None,
                 fade_in_ticks: None,
                 fade_out_ticks: None,
+                source_start_samples: None,
             };
             if let Some(track) = project.tracks.get_mut(&track_entities[track_id]) {
                 track.clips.insert(placement_id, placement);
