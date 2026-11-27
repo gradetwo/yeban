@@ -25,7 +25,8 @@
 //! `"reason"` 键站点中有 **11 个**不是这个形状（变量 / `format!` / `map.insert` /
 //! 外部枚举的 `as_str()`），旧实现**静默**漏掉它们 —— 守卫因此"绿"在看不见的地方。
 //! 现在每次出现都被分类；`Dynamic`（运行时才定值）与 `ArgumentName`（只是参数名）
-//! 必须逐条登记并写明退役条件，`Unclassified` 直接红并点名 file:line。
+//! 必须逐条登记并写明退役条件；`Unclassified` 也必须逐条登记（未登记即红并点名
+//! file:line；登记项的出现次数必须精确匹配，见 [`EXEMPT_UNCLASSIFIED_REASON_SITES`]）。
 //! 新扫描器解析出了旧实现看不见的两条真实 reason：
 //! `placementFieldNotApplicable` / `unknownPlacementField`（词表 144 → 146）。
 //!
@@ -44,7 +45,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 309 | 1322 | `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 318 | 1352 | `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -215,13 +216,10 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 306] = [
+pub const GOLDEN_REASONS: [&str; 315] = [
     "araSessionLimitReached",
     "araSessionNotFound",
-    "assetChannelLayout",
     "assetDecodeFailed",
-    "assetHashMismatch",
-    "assetMissing",
     "assetDeclaredDifferently",
     "assetInUse",
     "assetNotFound",
@@ -270,9 +268,6 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     // ⭐ 空轨分轨豁免（本支）：`yeban_export_stems` 对"没有 clip、也没有采样器"的轨
     // 不出静音文件，改用这条 reason 在 `skippedTracks[]` 里点名（⛔ 不静默丢轨）。
     "emptyTrack",
-    // ⭐ `#268`（`ADR-0011`）：引擎音源装配失败（防御映射；合法工程上前面的
-    // 探针编译会先拒绝同一批路由错误 ⇒ 本词主要用于"没有主总线 / 快照投影失败"）。
-    "engineSource",
     // ⭐ `#290`：形态 A 的宿主口没有接上（形态 B / 引擎未起来）。
     "engineUnavailable",
     "framesExceedCap",
@@ -299,7 +294,6 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     "listDirectoryNotDirectory",
     "listDirectoryNotFound",
     "listDirectoryReadFailed",
-    "loudnessTargetMissed",
     // ⭐ 自动相位对齐第二层：|ρ| < 0.3，峰值不可信，不施加补偿。
     "lowCorrelation",
     // ⭐ 本票：`setLyrics` 的 5 处新字面站点（`lines` 形态 2 处 ＋ 二选一 2 处 ＋
@@ -362,10 +356,6 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     "placementIdConflict",
     "placementNotFound",
     "placementWithoutTrack",
-    "pluginActivate",
-    "pluginEffectActivate",
-    "pluginEffectLoad",
-    "pluginLoad",
     "pluginLoadFailed",
     "pluginPathNotAllowed",
     "pointAddressIsAmbiguous",
@@ -374,7 +364,6 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     "proposalNotFound",
     "providerUnavailable",
     "quantizeGridMustBeNonZero",
-    "recordDrainFailed",
     "removeClipIsNotPlacement",
     "removeClipTakesNoOtherOps",
     "removeRequiresPlacementId",
@@ -402,7 +391,6 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     "sceneNotFound",
     "sceneTempoMustBeNumberOrNull",
     "sceneTempoOutOfRange",
-    "secondsExceedCap",
     "sectionAlreadyExists",
     "sectionNameRequiredWhenCreating",
     "sectionTickMustBeUnsignedInteger",
@@ -592,6 +580,29 @@ pub const GOLDEN_REASONS: [&str; 306] = [
     // `channels` / `reason` / `supported`；`src/domain/import_audio.rs` 的
     // `more_than_two_channels_are_refused_at_import_time` 已断言该 reason）。
     "unsupportedChannelLayout",
+    // ⭐ T-FIX-885（2026-11-27 活尖端 6a3375f2 普查）：本批新增 20 条已发射的 reason
+    // （`bareNoteNeedsAddWrapper` / `opsValidationFailed` / `unknownProposalKind` 等）；
+    // 同批删除 11 条在本尖端已无字面站点的旧词，净增 9 条。
+    "bareNoteNeedsAddWrapper",
+    "createAndSample",
+    "cursorProjectMismatch",
+    "effectParamsWithDirectory",
+    "invalidPlacementTrackId",
+    "missingAudioAsset",
+    "opsValidationFailed",
+    "parameterMustBeString",
+    "pathOrSampleRequired",
+    "placementAlreadyAtSourceStart",
+    "placementTrackIdMismatch",
+    "readOnlyProject",
+    "sampleIsNotReadOnly",
+    "saveAsTargetExists",
+    "sourceStartNotAudio",
+    "sourceStartRequired",
+    "trackIdRequired",
+    "unknownEffectGroup",
+    "unknownProposalKind",
+    "unknownSample",
 ];
 
 /// 本平台（64 位 `usize`）**不可达**的 `reason`，逐条给机械理由。
@@ -662,7 +673,8 @@ struct Reasons {
 //
 // 一个看不见的站点会让"词表一致"变成假绿。现在每个 `"reason"` 出现都必须落到
 // 下面**六类**之一；`Dynamic`（运行时才算得出来）与 `ArgumentName`（只是参数名）
-// 必须**逐条**登记，`Unclassified`（没有已知形状）直接判红并点名 file:line。
+// 必须**逐条**登记，`Unclassified`（没有已知形状）也必须逐条登记；未登记项直接
+// 判红并点名 file:line。
 //
 // ⭐ 2026-10-28 的**调用点传播片**把第三类 `Propagated` 补了进来：辅助函数把**自己的
 // 入参**转给 `json!` 时, 值不再算"运行时才定" —— 扫描器读**调用点**的最后一个实参
@@ -683,7 +695,7 @@ enum ReasonOccurrenceKind {
     Propagated(String, String, Vec<String>),
     /// `"reason"` 是**参数名 / 入参键名**，不是 `data.reason` 的值键。
     ArgumentName(String),
-    /// 没有任何已知形状 ⇒ 判据必须红（带 file:line）。
+    /// 没有任何已知形状 ⇒ 未登记时必须红（带 file:line）。
     Unclassified(String),
 }
 
@@ -1612,13 +1624,12 @@ struct DynamicReasonSite {
     retires_when: &'static str,
 }
 
-/// 生产区实测 **12 次出现 / 7 个 distinct 表达式**（2026-11-24 T-FIX-249 在
-/// `4ab08005` 上重测：output_schema 的类型声明 2 次、`item.reason` 4 次，
-/// 其余 5 个表达式各 1 次。2026-10-28：`reject_unknown_keys` /
-/// `read_non_empty_string` 的 3 处转发站点已改由 [`PROPAGATED_REASON_SITES`] 传播出值 ⇒
-/// 6 → 3；⭐ 十工具面（`#176` 扩到十）在 `output_schema.rs` 加了**一处 schema 类型声明**
-/// ⇒ 3 → 4；那一条**不产出任何值**（它只是把值域声明成 `string`），词源仍是
-/// `domain/mod.rs` 的 `apply_reject`。剩下的每一条都是**真的**静态看不见）。
+/// 生产区实测 **14 次出现 / 8 个 distinct 表达式**（T-FIX-885 于 2026-11-27 在
+/// 活尖端 `6a3375f2` 重测：`output_schema` 的类型声明 2 次、`item.reason` 4 次，
+/// `domain/mod.rs` 的 `reason` 2 次，其余 7 个表达式各 1 次）。⭐ 十工具面
+/// （`#176` 扩到十）在 `output_schema.rs` 加了**一处 schema 类型声明** ——
+/// 该表达式**不产出任何值**（它只把值域声明成 `string`），词源仍是
+/// `domain/mod.rs` 的 `apply_reject`。剩下每一条都是**真的**静态看不见。
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
@@ -1635,9 +1646,11 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 8] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "reason",
-        occurrences: 1,
-        forwards: "`apply_reject` 的 `reason` 参数：同上，是**入库的用户数据**，经响应原样返回。",
-        retires_when: "同上：改成闭合枚举/常量，而不是自由字符串。",
+        occurrences: 2,
+        forwards: "`apply_reject` 的 `reason` 参数（入库的用户数据，经响应原样返回）与 \
+                   `sampler_binding_warnings` 的动态分类分支（`sample_missing` 之外的 \
+                   `path_unresolved` / `sfz_missing`，值来自运行时候选分类）各 1 处。",
+        retires_when: "两处都改成闭合枚举/常量（或扫描器能解析分类枚举）时退役。",
     },
     DynamicReasonSite {
         file: "domain/notes.rs",
@@ -1700,18 +1713,36 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 8] = [
         retires_when: "把 `empty_schedule_reason` 改成闭合枚举（每个值一个 `as_str()` 常量）\
                        且扫描器能解析该字段的赋值时退役；在此之前它没有可冻结的词表。",
     },
-    // ⭐ T-FIX-345：`restore_binding_state` 接收 `reason: &'static str` 并在解码/恢复失败两处转发。
     DynamicReasonSite {
-        file: "domain/render.rs",
-        expr: "reason",
-        occurrences: 2,
-        forwards: "`restore_binding_state` 接收调用方传入的 `reason: &'static str`（`\"pluginState\"`）\
-                   并在插件状态解码失败与恢复失败两处 `render_failed` 中复用；扫描器只认字面量或末参\
-                   单点传播，看不见该辅助函数入参。",
-        retires_when: "把 `restore_binding_state` 拆回内联字面量或扫描器支持通用 `&'static str` 末参\
-                       调用点传播时退役。",
+        file: "recovery.rs",
+        expr: "Value::from(value)",
+        occurrences: 1,
+        forwards: "模块内 `fn reason(data, value)` 的唯一写入点：`value` 是调用方传入的\
+                   已分类 reason（`reason_for_code` 或领域实现给出），扫描器只看见形参。",
+        retires_when: "把该 helper 内联到所有调用点、每个调用点给字面量，或扫描器支持\
+                       通用 `&str` 末参传播时退役。",
     },
 ];
+
+/// `recovery` 的 `.entry("reason".to_owned())` 是扫描器尚未认识的字面键插入形状：
+/// 它不是扫描器的已知 `insert` / 索引赋值 / `json!` 值键，分类器只能报 `Unclassified`。
+/// 这类站点必须逐条登记，且出现次数精确匹配；其它任何未分类写法仍然直接红。
+struct UnclassifiedReasonSite {
+    file: &'static str,
+    context: &'static str,
+    occurrences: usize,
+    why: &'static str,
+}
+
+const EXEMPT_UNCLASSIFIED_REASON_SITES: [UnclassifiedReasonSite; 1] = [UnclassifiedReasonSite {
+    file: "recovery.rs",
+    context: "data.entry(\"reason\".to_owned())",
+    occurrences: 2,
+    why: "`enrich_error` 按 `reason_for_code(&code)` 补领域失败 reason（`or_insert_with`），\
+              `enrich_impl_error` 补 `implementationError`；两处都先构造 `\"reason\"` 键再由\
+              `entry` 写入值，扫描器只认识 `insert(\"reason\", value)` / 索引赋值，故当前\
+              形状无法从值侧分类。",
+}];
 
 /// 一处 `"reason"` 只是**参数名 / 入参键名**（⛔ 不是 `data.reason` 值键）的出现。
 struct ReasonArgumentNameUse {
@@ -1722,10 +1753,10 @@ struct ReasonArgumentNameUse {
     why: &'static str,
 }
 
-/// 生产区实测 **5 处**（2026-10-25 #340 开工 3 处；2026-11-14 B2 加第 4 处；
-/// 2026-11-24 T-FIX-249 加 `missing_sample_items()` 的 `required` 键名清单第 5 处）：
-/// 它们都不是故障数据的 reason 值。
-const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
+/// 生产区实测 **9 处**（2026-10-25 #340 开工 3 处；2026-11-14 B2 加第 4 处；
+/// 2026-11-24 T-FIX-249 加第 5 处；T-FIX-885 在活尖端 `6a3375f2` 再加 `recovery.rs`
+/// 的 3 处读取与 `domain/notes.rs` 的 1 处字段名清单）：它们都不是故障数据的 reason 值。
+const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 9] = [
     ReasonArgumentNameUse {
         file: "output_schema.rs",
         marker: "\"required\": [\"trackId\", \"binding\", \"sample\", \"reason\", \"detail\"]",
@@ -1760,6 +1791,33 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
               `data.reason` 判别要不要并入未保存编辑统计，读的是键名；值 \
               （`samplerUnreadable`）有自己的字面站点（`domain/embed_samples.rs`），\
               不是本层的词。",
+    },
+    // ⭐ T-FIX-885：recovery 层的 3 处 `data.get("reason")` 读取（键名，不是产出值）。
+    ReasonArgumentNameUse {
+        file: "recovery.rs",
+        marker: "let reason = data.get(\"reason\")",
+        occurrences: 1,
+        why: "`infer_path` 读取已构造失败数据的 reason 以推断字段路径；输入是调用方\
+              或 `enrich_error` 已写入的值，不是本层新词。",
+    },
+    ReasonArgumentNameUse {
+        file: "recovery.rs",
+        marker: "\"ENTITY_NOT_FOUND\" => match data.get(\"reason\")",
+        occurrences: 1,
+        why: "`entity_candidates` 按 reason 选择候选实体；同样是读取已有失败数据。",
+    },
+    ReasonArgumentNameUse {
+        file: "recovery.rs",
+        marker: "if data.get(\"reason\")",
+        occurrences: 1,
+        why: "`next_step_for_domain` 按 `opsValidationFailed` 选择重试模板；读取键名。",
+    },
+    // ⭐ T-FIX-885：`notes.rs` 的字段名校验数组。
+    ReasonArgumentNameUse {
+        file: "domain/notes.rs",
+        marker: "for key in [\"reason\"",
+        occurrences: 1,
+        why: "`unknown*Field` 的字段名清单把 `reason` 作为被校验的键名，不产出值。",
     },
 ];
 
@@ -1874,17 +1932,21 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 5] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 379;
+const REASON_OCCURRENCES_TOTAL: usize = 386;
+// ⭐ T-FIX-885（2026-11-27，活尖端 `6a3375f2`）：字面 356 ＋ 可解析 `let` 2 ＋
+// 运行时 14 ＋ 传播 3 ＝ 键站点 375；总出现 386 ＝ 375 ＋ 参数名 9 ＋
+// 未分类登记 2（`recovery.rs` 的 `.entry("reason".to_owned())`，见
+// [`EXEMPT_UNCLASSIFIED_REASON_SITES`]）。
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 374;
-const REASON_LITERAL_SITES_TOTAL: usize = 355;
+const REASON_KEY_SITES_TOTAL: usize = 375;
+const REASON_LITERAL_SITES_TOTAL: usize = 356;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
-const REASON_ARGUMENT_NAME_TOTAL: usize = 5;
+const REASON_ARGUMENT_NAME_TOTAL: usize = 9;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
 /// 任何 `Unclassified` **都点名 file:line**；陈旧的登记项同样变红。
@@ -1893,6 +1955,7 @@ fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
     let mut dynamic: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     let mut propagated: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
     let mut arguments = vec![0usize; REASON_ARGUMENT_NAME_USES.len()];
+    let mut unclassified: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for occurrence in occurrences {
         let file = relative_to_src(&occurrence.path);
         match &occurrence.kind {
@@ -1916,10 +1979,10 @@ fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
                     )),
                 }
             }
-            ReasonOccurrenceKind::Unclassified(context) => failures.push(format!(
-                "{file}:{} 无法归类 `\"reason\"` 站点（{context}）",
-                occurrence.line
-            )),
+            ReasonOccurrenceKind::Unclassified(context) => unclassified
+                .entry((file, context.clone()))
+                .or_default()
+                .push(occurrence.line),
             ReasonOccurrenceKind::Literal(_) | ReasonOccurrenceKind::Resolved(_) => {}
         }
     }
@@ -1952,6 +2015,36 @@ fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
             !entry.forwards.trim().is_empty() && !entry.retires_when.trim().is_empty(),
             "`{}` 的动态站点登记必须写清值从哪来**且**怎么退役",
             entry.expr
+        );
+    }
+    for ((file, context), lines) in &unclassified {
+        let at = lines.first().copied().unwrap_or_default();
+        match EXEMPT_UNCLASSIFIED_REASON_SITES
+            .iter()
+            .find(|entry| entry.file == file.as_str() && entry.context == context)
+        {
+            None => failures.push(format!(
+                "{file}:{at} 无法归类 `\"reason\"` 站点（{context}）",
+            )),
+            Some(entry) if entry.occurrences != lines.len() => failures.push(format!(
+                "{file}:{at} 的未分类 `\"reason\"` 站点 `{context}` 出现 {} 次，登记 {} 次",
+                lines.len(),
+                entry.occurrences
+            )),
+            Some(_) => {}
+        }
+    }
+    for entry in EXEMPT_UNCLASSIFIED_REASON_SITES {
+        if !unclassified.contains_key(&(entry.file.to_owned(), entry.context.to_owned())) {
+            failures.push(format!(
+                "{} 的未分类登记项 `{}` 已经不存在（陈旧豁免, 必须删掉）",
+                entry.file, entry.context
+            ));
+        }
+        assert!(
+            !entry.why.trim().is_empty(),
+            "`{}` 的未分类站点登记必须写清原因",
+            entry.context
         );
     }
     for entry in PROPAGATED_REASON_SITES {
@@ -2016,11 +2109,13 @@ fn unexplained_reason_sites(occurrences: &[ReasonOccurrence]) -> Vec<String> {
 /// **放宽** [`reasons_in`] 的字符集 —— 那是把守卫减弱。若将来真出现一种**合法**的
 /// 被拒形态（例如某个理由故意带 `.`），就在这里逐条登记并写明理由。
 ///
-/// ⚠ **不是空的**（本条曾误写「今天为空」，与紧随其后的 `[(&str, &str); 6]` 自相矛盾、已更正）：
-/// 实测**有 6 条** reason 值确实落在 `[A-Za-z0-9_]` **之外**，故逐条登记并给理由（见下）。
+/// ⚠ **不是空的**（本条曾误写「今天为空」，与紧随其后的定长数组自相矛盾、已更正）：
+/// 实测**有 7 条 distinct / 9 次出现**的 reason 值落在 `[A-Za-z0-9_]` **之外**，
+/// 故逐条登记并给理由（见下）。
 /// ⭐ 教训：这种「今天为空／全部如何如何」的自述**会随代码演进而变成假话**，而它读起来像保证。
-const EXEMPT_REJECTED_REASONS: [(&str, &str); 6] = [
-    // ⚠ **实测是 6 条 distinct / 7 次出现**（`织体过密` 出现 2 次）—— 逐条带理由
+const EXEMPT_REJECTED_REASONS: [(&str, &str); 7] = [
+    // ⚠ **实测是 7 条 distinct / 9 次出现**（`织体过密` 出现 2 次、`T-FIX-725 fixture`
+    // 出现 2 次）—— 逐条带理由
     // （读数是判据自己 `eprintln!` 报出来的，⛔ 不是我猜的）。
     //
     // ⭐ **它们全都不是故障词表里的词**，而是**另一个面**的数据；字符集把它们排除在
@@ -2055,6 +2150,11 @@ const EXEMPT_REJECTED_REASONS: [(&str, &str); 6] = [
         "低于 BS.1770 的绝对门限 Γa 的读数不可达; 高于 0 LUFS 在 PCM 里不可达",
         "`domain/render.rs` 里一条**诊断人话**：带 `;` 与空格 ⇒ 落在字符集之外。\
          ⛔ 不是词表的词，但它已在**摘要面**里。",
+    ),
+    (
+        "T-FIX-725 fixture",
+        "T-FIX-725 的**测试夹具值**（`domain/mod.rs` 测试区）：故意构造一个字符集外的\
+         reason，用来证明过滤路径确实拒掉它；不是生产词表的词。",
     ),
 ];
 
@@ -2203,43 +2303,19 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 315] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
-        "assetChannelLayout",
-        &[
-            "asset",
-            "reason",
-            "sourceChannels",
-            "supported",
-            "targetChannels",
-        ],
-    ),
-    (
+        // ⭐ T-FIX-885：本尖端只余四处字面站点；`asset` / 编码器帧数不再由
+        // `json!` 第一层给出（历史登记已随站点消失）。
         "assetDecodeFailed",
-        &[
-            "asset",
-            "decodeError",
-            "detail",
-            "encoderDelayFrames",
-            "encoderPaddingFrames",
-            "reason",
-            "sourceFrames",
-            "specId",
-        ],
+        &["decodeError", "detail", "reason", "specId"],
     ),
-    ("assetHashMismatch", &["actual", "asset", "bytes", "reason"]),
-    // ⭐ `#268`：两处出口（快照投影 / 逐轨 `arm_from_snapshot`）共用同一组键。
-    ("engineSource", &["cause", "hint", "reason"]),
     // ⭐ `#290`：形态 A 的宿主口没有接上。
     (
         "engineUnavailable",
         &["form", "hint", "hostAttached", "reason"],
-    ),
-    (
-        "assetMissing",
-        &["asset", "declaredInIndex", "hint", "reason"],
     ),
     (
         "assetDeclaredDifferently",
@@ -2376,29 +2452,6 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
     (
         "listDirectoryReadFailed",
         &["directory", "ioError", "reason"],
-    ),
-    (
-        // ⭐ 响度施加线 (F3) 把本 reason 的载荷扩成「施加前实测/已施加增益/
-        // 绑定约束/复测值/建议 trim」全套, 本行随实发键补齐 (该线漏更新本表)。
-        "loudnessTargetMissed",
-        &[
-            "achievedIntegratedLufs",
-            "algorithm",
-            "appliedGainDb",
-            "deltaLu",
-            "gainBound",
-            "measuredIntegratedLufs",
-            "measurementNote",
-            // ⭐ T-FIX-49：可达上限与"目标不可达"诊断（`mix < 1` 时点名干声绕道）。
-            "reachability",
-            "reachableIntegratedLufs",
-            "reason",
-            "reasonKind",
-            "suggestedTrimDb",
-            "targetLufs",
-            "toleranceLu",
-            "truePeakCeilingDbtp",
-        ],
     ),
     (
         // ⭐ 自动相位对齐第二层。
@@ -2607,10 +2660,6 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
         ],
     ),
     ("placementWithoutTrack", &["field", "reason"]),
-    ("pluginActivate", &["pluginId", "pluginPath", "reason"]),
-    ("pluginEffectActivate", &["node", "reason"]),
-    ("pluginEffectLoad", &["pluginId", "pluginPath", "reason"]),
-    ("pluginLoad", &["pluginId", "pluginPath", "reason"]),
     ("pluginLoadFailed", &["pluginId", "pluginPath", "reason"]),
     ("pluginPathNotAllowed", &["pluginPath", "reason"]),
     (
@@ -2637,7 +2686,6 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
         &["form", "hint", "providerAttached", "reason"],
     ),
     ("quantizeGridMustBeNonZero", &["field", "reason"]),
-    ("recordDrainFailed", &["ioError", "reason"]),
     ("removeClipIsNotPlacement", &["hint", "reason"]),
     ("removeClipTakesNoOtherOps", &["hint", "opKinds", "reason"]),
     (
@@ -2691,7 +2739,6 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
     ),
     // ⭐ `#290`：场景 tempo 覆盖越界 / 非有限。
     ("sceneTempoOutOfRange", &["reason", "sceneId", "tempoBpm"]),
-    ("secondsExceedCap", &["maxSeconds", "reason", "seconds"]),
     ("sectionAlreadyExists", &["hint", "reason", "sectionId"]),
     (
         "sectionNameRequiredWhenCreating",
@@ -2723,16 +2770,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
         &["field", "reason", "received"],
     ),
     (
+        // ⭐ T-FIX-885：本尖端只余一条字面站点（`path` / `reason`）；调用点
+        // 另行补的 `cause` / `hint` / `resolvedPath` / `tried` 不在 `json!`
+        // 第一层，已随站点迁出本表。
         "samplerUnreadable",
-        &[
-            "cause",
-            "embeddedHash",
-            "hint",
-            "path",
-            "reason",
-            "resolvedPath",
-            "tried",
-        ],
+        &["path", "reason"],
     ),
     (
         "slotOutOfRange",
@@ -3290,8 +3332,12 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
         &["binding", "detail", "kind", "reason", "sample", "trackId"],
     ),
     (
+        // ⭐ T-FIX-885：去重计数 / 示例 / 阻断位 / 外取提示进入同形载荷。
         "sample_missing",
-        &["binding", "detail", "kind", "reason", "sample", "trackId"],
+        &[
+            "binding", "blocking", "count", "detail", "examples", "hint", "kind", "reason",
+            "sample", "trackId",
+        ],
     ),
     (
         "sfz_missing",
@@ -3304,25 +3350,90 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 306] = [
         "unsupportedChannelLayout",
         &["channels", "reason", "supported"],
     ),
+    // ⭐ T-FIX-885（活尖端 6a3375f2）：新增的 20 条 reason 的实测载荷。
+    ("bareNoteNeedsAddWrapper", &["hint", "reason"]),
+    ("createAndSample", &["reason", "sample"]),
+    ("cursorProjectMismatch", &["hint", "op", "reason"]),
+    ("effectParamsWithDirectory", &["hint", "reason"]),
+    ("invalidPlacementTrackId", &["field", "reason", "value"]),
+    ("missingAudioAsset", &["missingAssets", "reason"]),
+    (
+        "opsValidationFailed",
+        &[
+            "errorCount",
+            "errors",
+            "field",
+            "path",
+            "reason",
+            "retryable",
+            "stateChanged",
+        ],
+    ),
+    (
+        "parameterMustBeString",
+        &["parameter", "reason", "received"],
+    ),
+    ("pathOrSampleRequired", &["availableSamples", "reason"]),
+    (
+        "placementAlreadyAtSourceStart",
+        &[
+            "placementId",
+            "placementKind",
+            "reason",
+            "sourceStartSamples",
+            "trackId",
+        ],
+    ),
+    (
+        "placementTrackIdMismatch",
+        &[
+            "envelopeTrackId",
+            "field",
+            "hint",
+            "placementTrackId",
+            "reason",
+        ],
+    ),
+    (
+        "readOnlyProject",
+        &["hint", "path", "reason", "saveAsParameter"],
+    ),
+    ("sampleIsNotReadOnly", &["reason", "sample"]),
+    ("saveAsTargetExists", &["path", "reason"]),
+    (
+        "sourceStartNotAudio",
+        &["clipId", "field", "hint", "placementKind", "reason"],
+    ),
+    ("sourceStartRequired", &["field", "placementKind", "reason"]),
+    (
+        "trackIdRequired",
+        &["hint", "missing", "opIndex", "reason", "requiredByKinds"],
+    ),
+    (
+        "unknownEffectGroup",
+        &["availableGroups", "effectGroup", "hint", "reason"],
+    ),
+    (
+        "unknownProposalKind",
+        &["accepted", "field", "reason", "received"],
+    ),
+    ("unknownSample", &["available", "reason", "sample"]),
 ];
 
-/// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），4 条。
+/// **非标识符形状**的 `reason` 值（成功路径上的说明性字段），3 条。
 ///
-/// 为什么单列一张表：上面 155 条的黄金表按口径只收**标识符形状**
-/// （`[A-Za-z0-9_]+`）的值 —— 那是"错误分类用的机器可读 reason"。生产区里另有 4 个
-/// `"reason"` 是**人话/带连字符**的（`no-history` / `no-redo` / 两条中文说明），
+/// 为什么单列一张表：上面 315 条的黄金表按口径只收**标识符形状**
+/// （`[A-Za-z0-9_]+`）的值 —— 那是"错误分类用的机器可读 reason"。生产区里另有 3 个
+/// `"reason"` 是**人话/带连字符**的（`no-history` / `no-redo` / 一条中文说明），
 /// 它们同样进 `data`，改了没有任何东西会红。本表把它们也钉住，并**如实登记口径边界**。
-pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 4] = [
+pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 3] = [
     ("no-history", &["reason", "undoable"]),
     ("no-redo", &["reason", "redoable"]),
-    (
-        "低于 BS.1770 的绝对门限 Γa 的读数不可达; 高于 0 LUFS 在 PCM 里不可达",
-        &["maxLufs", "minLufs", "reason"],
-    ),
     (
         "内存状态与磁盘一致; 传 force: true 可强制落盘",
         &[
             "bytes",
+            "durabilityWarning",
             "embeddedPresets",
             "format",
             "missingSamples",
@@ -3334,7 +3445,6 @@ pub const GOLDEN_INFO_REASON_PAYLOADS: [(&str, &[&str]); 4] = [
         ],
     ),
 ];
-
 /// 标识符形状（错误分类用的 `reason`）。
 fn is_identifier_reason(value: &str) -> bool {
     !value.is_empty()
@@ -3764,13 +3874,18 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// （只多 2 个键行）。新摘要
 /// `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ T-FIX-885（2026-11-27，活尖端 `6a3375f2`）：按实际生产面重新普查
+/// ⇒ reason 数 309 → **318**（新增 20 条、退出 11 条，净 +9；信息型 reason
+/// 4 → 3）、规范行数 1322 → **1352**、生产区 `.rs` 文件 57 → **58**。
+/// 新摘要 `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb`
+/// 由临时取数判据报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3";
+    "27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 309;
+pub const REASON_SURFACE_REASONS: usize = 318;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1322;
+pub const REASON_SURFACE_LINES: usize = 1352;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3950,7 +4065,7 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 自动相位对齐（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 54 → 55（该文件带 `reason` 键，摘要同批重钉）。
     // stdio provider 接线（本支）：新增 `src/song_overview_provider.rs` 与
     // `src/phase_align_auto_provider.rs`（自 yeban-app 迁入）⇒ 55 → 57（两文件都带 `reason` 键，摘要同批重钉）。
-    assert_eq!(files.len(), 57, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 58, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()
@@ -4391,8 +4506,8 @@ fn a_reason_outside_the_frozen_set_is_still_a_violation() {
 }
 
 /// #340 的**站点普查**：生产区每一次 `"reason"` 出现都必须可分类，
-/// 或逐条登记在两张显式表（[`EXEMPT_DYNAMIC_REASON_SITES`] /
-/// [`REASON_ARGUMENT_NAME_USES`]）里。
+/// 或逐条登记在三张显式表（[`EXEMPT_DYNAMIC_REASON_SITES`] /
+/// [`REASON_ARGUMENT_NAME_USES`] / [`EXEMPT_UNCLASSIFIED_REASON_SITES`]）里。
 ///
 /// 为什么这是 #340 的核心：旧扫描器在"值不是字面量"时**什么都不说** ——
 /// 它不报错、不计数、不列清单，于是词表绿在一个它没看见的站台上。
@@ -4446,9 +4561,13 @@ fn every_reason_occurrence_is_classified_or_explicitly_registered() {
         .filter(|occurrence| matches!(occurrence.kind, ReasonOccurrenceKind::Unclassified(_)))
         .count();
 
+    let registered_unclassified: usize = EXEMPT_UNCLASSIFIED_REASON_SITES
+        .iter()
+        .map(|entry| entry.occurrences)
+        .sum();
     assert_eq!(
-        unclassified, 0,
-        "`Unclassified` 必须是 0（上面已经逐条点名）"
+        unclassified, registered_unclassified,
+        "`Unclassified` 只能包含逐条登记并精确匹配的站点（上面已经逐条点名）"
     );
     assert_eq!(
         literal + resolved + dynamic + propagated,
