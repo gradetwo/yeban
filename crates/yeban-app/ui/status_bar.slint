@@ -203,6 +203,9 @@ export component StatusBar inherits Rectangle {
         text: @tr("和弦 {}", root.chord);
         color: Tokens.gold;
         font-size: Tokens.font-size-xs;
+        // T-FIX-947: 与同文件 shortcut-tip / save-status 两条对齐 —— 96px 固定宽的
+        // 动态和弦名在长译文下会被硬裁；elide 只改绘制，accessible-value/label 不动。
+        overflow: elide;
         accessible-role: text;
         accessible-id: "status-bar-chord";
         // ⭐ [PATCH UI-A11Y-003]：原名"实时和弦识别"是**假的承诺** —— app 侧没有

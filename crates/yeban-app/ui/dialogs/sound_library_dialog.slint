@@ -750,6 +750,9 @@ export component SoundLibraryDialog inherits Rectangle {
                 text: @tr("可下载");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-md;
+                // T-FIX-947: 西文译文（fr 29 / es 26 / pt 25 / en 22 显示宽度）远超 80px，
+                // UiText 默认硬裁会从字形中间截断；elide 收成省略号。中文原文仍完整显示。
+                overflow: elide;
             }
 
             // 一键下载全部（清单里还没装的，按顺序逐个下）
