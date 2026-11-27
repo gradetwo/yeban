@@ -437,19 +437,37 @@ fn ulid(text: &str) -> EntityId {
 #[test]
 fn eq_and_reverb_round_trip_and_sends_are_readable() {
     let (mut dispatcher, auth, project) = dispatcher();
-    let (track_id, clip_id) = track_and_clip(&project);
     let eq_id = ulid("01ARZ3NDEKTSV4RRFFQ69G5FA1");
     let reverb_id = ulid("01ARZ3NDEKTSV4RRFFQ69G5FA2");
     let send_edge_id = ulid("01ARZ3NDEKTSV4RRFFQ69G5FA3");
 
-    // 这台音轨上已有一条 sample 里的发送边（lead → Aux Reverb，-12 dB）。
-    let aux_id = project
+    // 样本里已有一条 SendToAux 边（lead → Aux Reverb，-12 dB）—— 这条保留，
+    // 供下面的 `sample_send` 对照读数使用。
+    let existing_send = project
         .routing_graph
         .edges
         .values()
         .find(|edge| edge.kind == yeban_model::RoutingKind::SendToAux)
-        .map(|edge| edge.destination_node)
         .expect("样本里必须有一条 SendToAux 边");
+    let aux_id = existing_send.destination_node;
+
+    // ⭐ T-FIX-961：夹具必须换一个**源端点**。去重逻辑按
+    // `(source_node, destination_node, kind)` 拒绝平行边（09f68b69）；
+    // 若仍用 lead → Aux Reverb 写新 edgeId，必报 CONFLICT/routingEdgeDuplicate，
+    // 判据就测不到「新边可连」。选另一条带摆放的音轨作源：目的地与 kind 不变，
+    // 下面的 `destinationNode` / `destinationName` / `track.sends` 断言仍逐字成立。
+    let (track_id, clip_id) = project
+        .tracks
+        .iter()
+        .filter(|(id, _)| **id != existing_send.source_node)
+        .find_map(|(id, track)| {
+            track
+                .clips
+                .values()
+                .next()
+                .map(|placement| (*id, placement.clip_id))
+        })
+        .expect("样本里必须有另一条带摆放的音轨作新发送源");
 
     let eq_device = json!({
         "deviceId": eq_id.to_canonical_string(),
