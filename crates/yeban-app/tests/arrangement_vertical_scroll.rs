@@ -307,3 +307,46 @@ fn short_projects_do_not_scroll() {
         "宿主接线层必须注册 apply_transport"
     );
 }
+
+/// T-FIX-643：编排区 `content-height` 的 +46px 底部余量——**活体几何判据**。
+///
+/// 滚到纵向底部后，最后一行底沿与 `arr-lanes-flickable` 视口底沿之间应保留
+/// 46px 余量（即 `.slint` 的 `content-height: sheet-height + 42px + 46px` 中
+/// 那 46px；`+42px` 是行区上沿偏移，已被行区起点抵消）。把 +46px 改成 +0px
+/// 后本判据必红（余量塌成 0）。读数来源是**活控件树几何**（视口 bounds 与
+/// 最后一行包头 bounds），不是 `arrangement-sheet-height` 注入属性、也不是 grep。
+#[test]
+fn bottom_scroll_keeps_46px_content_margin_below_the_last_row() {
+    let mut rig = Rig::with_project(project_with_24_extra_tracks());
+    // 滚到底（大幅 + 再滚一次确保 ensure_in_bound 夹紧）。
+    rig.dispatch_wheel(-100_000);
+    rig.dispatch_wheel(-100_000);
+
+    // 视口底沿（活控件树几何）：arr-lanes-flickable 的 y + height。
+    let viewport = rig.bounds_of("arr-lanes-flickable");
+    let viewport_bottom = viewport.y + viewport.height as i32;
+
+    // 滚到底后最后一行可见（可达性即它进树）；读它的底沿。
+    let last_index = ROWS - 1;
+    let last = rig.bounds_of(&format!("track-{last_index}-header"));
+    let last_row_bottom = last.y + last.height as i32;
+
+    let margin = viewport_bottom - last_row_bottom;
+    assert!(
+        (margin - 46).abs() <= 2,
+        "滚到底后最后一行底沿到视口底沿应保留 46px 余量，实际 {margin}px（viewport_bottom={viewport_bottom}, last_row_bottom={last_row_bottom}）"
+    );
+
+    // 继续向下滚不改变位置（夹紧）：再滚一次，余量与最后行 y 逐位不变。
+    let before_y = last.y;
+    rig.dispatch_wheel(-100_000);
+    let last_again = rig.bounds_of(&format!("track-{last_index}-header"));
+    let viewport_again = rig.bounds_of("arr-lanes-flickable");
+    let margin_again = (viewport_again.y + viewport_again.height as i32)
+        - (last_again.y + last_again.height as i32);
+    assert_eq!(last_again.y, before_y, "已到底后再滚，最后一行 y 不得变化");
+    assert_eq!(
+        margin_again, margin,
+        "已到底后再滚，底部余量不得变化（应恒为 46px）"
+    );
+}
