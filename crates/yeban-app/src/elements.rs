@@ -1023,6 +1023,33 @@ impl ElementRegistry {
             "卷帘吸附与音域状态",
             false,
         );
+        // T-FIX-579：网格音符值下拉 + 修饰循环（默认 1/16 · 均分）。
+        registry.add(
+            "piano-roll-grid-note-button",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "选择网格音符值",
+            false,
+        );
+        registry.add(
+            "piano-roll-grid-mode-button",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "切换网格修饰",
+            false,
+        );
+        for (index, label) in ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"]
+            .into_iter()
+            .enumerate()
+        {
+            registry.add(
+                &format!("piano-roll-grid-note-{index}"),
+                ElementKind::Button,
+                "console/piano_roll.slint",
+                &format!("卷帘网格音符值 {label}"),
+                false,
+            );
+        }
         registry.add(
             "piano-roll-keys",
             ElementKind::List,
@@ -2746,10 +2773,36 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "quantize-grid-input",
+            "quantize-grid-selector",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "量化网格音符值（1/1..1/64）",
+            false,
+        );
+        registry.add(
+            "quantize-grid-mode",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "量化网格修饰（均分 / 附点 / 三连音）",
+            false,
+        );
+        for (index, label) in ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"]
+            .into_iter()
+            .enumerate()
+        {
+            registry.add(
+                &format!("quantize-grid-note-{index}"),
+                ElementKind::Button,
+                "dialogs/humanize_dialog.slint",
+                &format!("量化网格音符值 {label}"),
+                false,
+            );
+        }
+        registry.add(
+            "quantize-swing-input",
             ElementKind::TextInput,
             "dialogs/humanize_dialog.slint",
-            "量化网格（ticks，非零）",
+            "量化摇摆（0..=100%）",
             false,
         );
         registry.add(

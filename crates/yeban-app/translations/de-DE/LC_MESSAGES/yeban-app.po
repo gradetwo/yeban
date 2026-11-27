@@ -1140,9 +1140,6 @@ msgstr "Virtualisierte Piano-Rolle"
 msgid "{}工具"
 msgstr "{}-Werkzeug"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Einrasten 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "Piano-Rollen-Einrast- & Bereichsstatus"
 
@@ -1355,9 +1352,6 @@ msgstr "Humanisieren auf den ausgewählten Clip anwenden"
 
 msgid "应用人性化"
 msgstr "Humanisieren anwenden"
-
-msgid "网格（tick）"
-msgstr "Raster (Ticks)"
 
 msgid "强度（0–100%）"
 msgstr "Stärke (0–100 %)"
@@ -2593,3 +2587,39 @@ msgstr "Nur Export: Makros werden bei der Live-Wiedergabe noch nicht angewendet"
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Master-Pegelanzeige: Klicken, um Übersteuerungsanzeige zurückzusetzen"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Gleichmäßig"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "Punktiert"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Triolisch"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Raster-Notenwert"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Raster-Notenwert wählen"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Raster-Modifikator umschalten"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Raster-Modifikator"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Swing (0–100 %)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Einrasten {} · PPQ 960 · {}"

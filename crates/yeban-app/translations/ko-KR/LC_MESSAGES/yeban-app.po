@@ -1140,9 +1140,6 @@ msgstr "가상화 피아노 롤"
 msgid "{}工具"
 msgstr "{} 도구"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "스냅 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "피아노 롤 스냅 및 음역 상태"
 
@@ -1355,9 +1352,6 @@ msgstr "선택한 클립에 휴머나이즈 적용"
 
 msgid "应用人性化"
 msgstr "휴머나이즈 적용"
-
-msgid "网格（tick）"
-msgstr "그리드 (tick)"
 
 msgid "强度（0–100%）"
 msgstr "강도 (0–100%)"
@@ -2593,3 +2587,39 @@ msgstr "내보내기 전용: 재생 중에는 매크로가 아직 적용되지 �
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "마스터 레벨 미터: 클릭하여 과부하 표시 지우기"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "균등"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "점음표"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "셋잇단"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "그리드 음표 값"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "그리드 음표 값 선택"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "그리드 변형 전환"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "그리드 변형"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "스윙 (0–100%)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "스냅 {} · PPQ 960 · {}"

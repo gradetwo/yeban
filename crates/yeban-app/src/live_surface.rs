@@ -2460,6 +2460,7 @@ pub fn build_live_ui_with(
     // 真实指针事件与用户点击走同一条链。它不改工程 ⇒ 只在装配给了端口时把端口一并交给
     // 那**同一个** `Action::SelectTool` 臂（`None` 时照旧写界面属性，与 `wire_keys` 同款）。
     host::wire_tool_select(&window, options.undo.clone());
+    host::wire_roll_grid(&window);
     // **纯视图态的三条回调**（`toggle-view` / `toggle-ai-drawer` /
     // `open-musical-pr`）：与产品进程**同一个**接线函数（`main.rs` 的 `wire_callbacks`
     // 也调它），因此端口注入的点击与用户点击走的是同一条链

@@ -1140,9 +1140,6 @@ msgstr "Piano Roll virtualisé"
 msgid "{}工具"
 msgstr "Outil {}"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Magnétisme 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "État du magnétisme et de la plage du Piano Roll"
 
@@ -1355,9 +1352,6 @@ msgstr "Appliquer l'humanisation au clip sélectionné"
 
 msgid "应用人性化"
 msgstr "Appliquer l'humanisation"
-
-msgid "网格（tick）"
-msgstr "Grille (ticks)"
 
 msgid "强度（0–100%）"
 msgstr "Intensité (0–100 %)"
@@ -2593,3 +2587,39 @@ msgstr "Export uniquement : la macro n'est pas encore appliquée pendant la lect
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Indicateur de niveau principal : cliquer pour effacer l'indicateur de surcharge"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Uniforme"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "Pointé"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Triolet"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Valeur de grille"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Choisir la valeur de grille"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Changer le caractère de grille"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Caractère de grille"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Swing (0–100 %)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Aimantation {} · PPQ 960 · {}"

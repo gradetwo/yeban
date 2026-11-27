@@ -1140,9 +1140,6 @@ msgstr "Виртуализированный пиано-ролл"
 msgid "{}工具"
 msgstr "Инструмент {}"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Привязка 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "Состояние привязки и диапазона пиано-ролла"
 
@@ -1355,9 +1352,6 @@ msgstr "Применить хуманизацию к выбранному кли
 
 msgid "应用人性化"
 msgstr "Применить хуманизацию"
-
-msgid "网格（tick）"
-msgstr "Сетка (тики)"
 
 msgid "强度（0–100%）"
 msgstr "Сила (0–100%)"
@@ -2593,3 +2587,39 @@ msgstr "Только экспорт: макрос пока не применяе
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Индикатор уровня мастера: нажмите, чтобы сбросить индикатор перегрузки"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Ровный"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "С точкой"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Триоль"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Значение сетки"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Выбрать значение сетки"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Переключить характер сетки"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Характер сетки"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Свинг (0–100 %)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Привязка {} · PPQ 960 · {}"

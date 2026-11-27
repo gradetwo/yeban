@@ -1140,9 +1140,6 @@ msgstr "Piano Roll virtualizado"
 msgid "{}工具"
 msgstr "Herramienta {}"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Ajuste 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "Estado de ajuste y rango del Piano Roll"
 
@@ -1355,9 +1352,6 @@ msgstr "Aplicar humanización al clip seleccionado"
 
 msgid "应用人性化"
 msgstr "Aplicar humanización"
-
-msgid "网格（tick）"
-msgstr "Rejilla (tics)"
 
 msgid "强度（0–100%）"
 msgstr "Intensidad (0–100%)"
@@ -2593,3 +2587,39 @@ msgstr "Solo exportación: la macro aún no se aplica durante la reproducción e
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Medidor de nivel maestro: haz clic para borrar el indicador de sobrecarga"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Regular"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "Con puntillo"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Tresillo"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Valor de rejilla"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Elegir el valor de rejilla"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Cambiar el carácter de rejilla"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Carácter de rejilla"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Swing (0–100 %)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Ajuste {} · PPQ 960 · {}"

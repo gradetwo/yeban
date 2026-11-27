@@ -1179,6 +1179,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // **同一个** `Action::SelectTool` 臂（与上面 `wire_keys` 的 `1`..`5` 数字键同一条链）。
     // 因此"点工具按钮"与"按数字键"不可能分叉。
     host::wire_tool_select(&ui, Some(Rc::clone(&undo_port)));
+    // 卷帘网格选择（1/1..1/64 · 附点 / 三连音）：视图态 + 唯一 tick 换算。
+    host::wire_roll_grid(&ui);
     // 撤销的两条界面入口（弹窗开关 + "撤销一步"按钮）都汇到**同一个** `UndoPort`。
     host::wire_undo(&ui, &undo_port);
     // 纯编辑面统一接线（T-FIX-323）：启动与换工程 `after` 共用同一份清单。

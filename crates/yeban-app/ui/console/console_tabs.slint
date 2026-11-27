@@ -35,6 +35,8 @@ export component ConsoleTabs inherits Rectangle {
     in property <[bool]> note-selected: [];
     // `[UI-NOTE-003]` 当前工具（与卷帘同一份状态；宿主需要读它来知道该执行哪个工具的语义）。
     in-out property <int> active-tool: 1;
+    in property <int> roll-grid-note: 4;
+    in property <int> roll-grid-mode: 0;
     // ⭐ 任务单 `#166`：卷帘的拒绝文本（**只透传**；唯一写者 = `host::install_roll_click`）。
     in property <string> roll-edit-status: "";
     // 透传卷帘的滚动手势。
@@ -47,6 +49,8 @@ export component ConsoleTabs inherits Rectangle {
     // `[UI-NOTE-003]` 工具矩阵的点击透传（工具行号 1..5）。本组件不解释它，也不改
     // `active-tool`（那是 MainWindow 的宿主侧唯一落点）。
     callback tool-selected(int);
+    callback roll-grid-note-picked(int);
+    callback roll-grid-mode-picked(int);
     // `[UI-NOTE-003]` 卷帘左键**拖拽**（移动臂）的四条手势回调 + 三个草稿读数：本组件**只透传**
     // （工具门 / 命中 / 草稿算术 / 提交全在 `host::install_roll_note_drag`）。
     callback note-drag-grab(length, length) -> bool;
@@ -453,12 +457,16 @@ export component ConsoleTabs inherits Rectangle {
         scroll-x: root.scroll-x;
         playhead-timecode: root.playhead-timecode;
         active-tool: root.active-tool;
+        grid-note-index: root.roll-grid-note;
+        grid-mode-index: root.roll-grid-mode;
         edit-status: root.roll-edit-status;
         scroll-requested(d) => { root.scroll-requested(d); }
         clicked(x, y, additive) => { root.clicked(x, y, additive); }
         double-clicked(x, y) => { root.double-clicked(x, y); }
         roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
         tool-selected(tool) => { root.tool-selected(tool); }
+        grid-note-picked(index) => { root.roll-grid-note-picked(index); }
+        grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
         note-drag-grab(x, y) => { root.note-drag-grab(x, y); }
         note-drag-move(x, y) => { root.note-drag-move(x, y); }
         note-drag-release(x, y) => { root.note-drag-release(x, y); }

@@ -1140,9 +1140,6 @@ msgstr "Virtualized Piano Roll"
 msgid "{}工具"
 msgstr "{} Tool"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Snap 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "Piano Roll Snap & Range Status"
 
@@ -1355,9 +1352,6 @@ msgstr "Apply Humanize to the Selected Clip"
 
 msgid "应用人性化"
 msgstr "Apply Humanize"
-
-msgid "网格（tick）"
-msgstr "Grid (Ticks)"
 
 msgid "强度（0–100%）"
 msgstr "Strength (0–100%)"
@@ -2593,3 +2587,39 @@ msgstr "Export only: macros are not applied during live playback"
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Master level meter: click to clear overload indicator"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Straight"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "Dotted"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Triplet"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Grid note value"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Choose grid note value"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Toggle grid feel"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Grid feel"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Swing (0–100%)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Snap {} · PPQ 960 · {}"

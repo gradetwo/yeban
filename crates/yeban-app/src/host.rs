@@ -13872,8 +13872,8 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
         {
             ui.set_humanize_seed(project.rng_seed.to_string().into());
         }
-        if ui.get_humanize_grid().trim().is_empty() {
-            ui.set_humanize_grid("240".into());
+        if ui.get_quantize_swing().trim().is_empty() {
+            ui.set_quantize_swing("0".into());
         }
         if ui.get_humanize_strength().trim().is_empty() {
             ui.set_humanize_strength("100".into());
@@ -14017,13 +14017,14 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 ui.set_humanize_error("没有撤销会话，无法应用".into());
                 return;
             };
-            let grid_text = ui.get_humanize_grid();
-            let grid = match parse_humanize_u64(grid_text.as_str(), "网格") {
-                Ok(0) => {
-                    ui.set_humanize_error("网格不能为 0".into());
+            let grid = roll_grid_ticks_from_ui(&ui);
+            let swing_text = ui.get_quantize_swing();
+            let swing_permille = match parse_humanize_u64(swing_text.as_str(), "摇摆") {
+                Ok(v) if v <= 100 => (v * 10) as u16,
+                Ok(_) => {
+                    ui.set_humanize_error("摇摆必须在 0..=100 之间".into());
                     return;
                 }
-                Ok(v) => v,
                 Err(msg) => {
                     ui.set_humanize_error(msg.into());
                     return;
@@ -14045,11 +14046,12 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 ui.set_humanize_error("没有活跃工程".into());
                 return;
             };
-            let ops = match quantize_clip_ops_for(
+            let ops = match quantize_clip_ops_for_with_swing(
                 &project,
                 ui.get_selected_clip_ulid().as_str(),
                 grid,
                 strength_permille,
+                swing_permille,
                 selected_note_ids_for_ops(&ui).as_ref(),
             ) {
                 Ok(ops) => ops,
@@ -20735,7 +20737,7 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            let ops = duplicate_ops_for(&project, &selected, ROLL_SNAP_GRID_TICKS);
+            let ops = duplicate_ops_for(&project, &selected, roll_grid_ticks_from_ui(ui));
             if !ops.is_empty() {
                 if port
                     .commit_ops(now_ms(), "duplicate selection", ops)
@@ -20870,7 +20872,7 @@ fn apply_action(
         // 语义（五条都是决定, 不是意外）：
         // 1. 选区是**视图态**，事实源是界面属性 `selected-ulids`（与 `DeleteSelection` /
         //    `Duplicate` 同一个读点）—— 这里读它, 不读第二份状态；
-        // 2. 幅度由 [`nudge_delta_for`] **唯一**换算（`Grid` → `ROLL_SNAP_GRID_TICKS`、
+        // 2. 幅度由 [`nudge_delta_for_with_grid`] **唯一**换算（`Grid` → 当前卷帘网格、
         //    `Tick` → 1、`Semitone` → 1、`Octave` → 12）；
         // 3. 批解析走 [`nudge_ops_for`]（纯函数）：**组夹紧** + 整块平移；
         // 4. **无选区 / 身份解析不到 / 夹紧后位移为 0 ⇒ 0 提交**，返回 `false`（不吞键）。
@@ -20895,7 +20897,8 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            let (delta_tick, delta_pitch) = nudge_delta_for(step, direction);
+            let (delta_tick, delta_pitch) =
+                nudge_delta_for_with_grid(step, direction, roll_grid_ticks_from_ui(ui));
             let mut ops = nudge_ops_for(&project, &selected, delta_tick, delta_pitch);
             // ⭐ T-FIX-358（T-FIX-599 重贴）：整块位移后音符末端可能超出摆放 ⇒ 同批补摆放扩展
             // （与拖动/插入/T-FIX-354 共用 placement_extension 原语）。
@@ -20953,7 +20956,8 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            let delta_ticks = resize_duration_delta_for(direction);
+            let delta_ticks =
+                resize_duration_delta_for_with_grid(direction, roll_grid_ticks_from_ui(ui));
             let mut ops = resize_duration_ops_for(&project, &selected, delta_ticks);
             // ⭐ T-FIX-358（T-FIX-599 重贴）：缩放拉长后音符末端可能超出摆放 ⇒ 同批补摆放扩展。
             ops.extend(clip_extension_ops_for_notes(
@@ -22406,7 +22410,7 @@ fn commit_roll_auto_draw(
         Some(selected_clip.as_str()),
         scroll,
         (x, y),
-        ROLL_SNAP_GRID_TICKS,
+        roll_grid_ticks_from_ui(ui),
         roll_base_pitch(ui),
     ) {
         Ok((inserted, pitch)) => {
@@ -22443,8 +22447,113 @@ fn commit_roll_auto_draw(
 /// 铅笔工具的**数字键值**（与 `active-tool` 及 `Tool::from_digit` 同一口径）。
 pub const PENCIL_TOOL_DIGIT: u8 = 2;
 
-/// 当前吸附网格（tick）：1/16 = 240。将来若可配, 应由配置注入而不是在这里长第二个真相源。
+/// 缺省吸附网格（tick）：1/16 = 240。
+///
+/// 这是**缺省值**，不是当前网格：卷帘头的视图态（`roll-grid-note` /
+/// `roll-grid-mode`）经 [`roll_grid_ticks_for`] 换算后才可参与编辑算术。
+/// 所有纯函数判据仍用它当缺省夹具，保证 1/16 的零回归口径。
 pub const ROLL_SNAP_GRID_TICKS: u64 = 240;
+
+/// 卷帘网格音符值：下标 0..=6 对应 1/1 .. 1/64（PPQ 960）。
+pub const ROLL_GRID_NOTE_COUNT: usize = 7;
+
+/// 卷帘网格修饰（直 / 附点 / 三连音）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RollGridMode {
+    /// 均分（直）：音符值原样。
+    Straight,
+    /// 附点：音符值 ×3⁄2。
+    Dotted,
+    /// 三连音：音符值 ×2⁄3。
+    Triplet,
+}
+
+impl RollGridMode {
+    /// 视图态里的下标（0 直 / 1 附点 / 2 三连音）⇒ 修饰；越界 ⇒ `None`。
+    #[must_use]
+    pub fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Straight),
+            1 => Some(Self::Dotted),
+            2 => Some(Self::Triplet),
+            _ => None,
+        }
+    }
+
+    /// 修饰对音符值的比例：直 ×1 / 附点 ×3⁄2 / 三连音 ×2⁄3。
+    #[must_use]
+    pub fn factor(self) -> (u64, u64) {
+        match self {
+            Self::Straight => (1, 1),
+            Self::Dotted => (3, 2),
+            Self::Triplet => (2, 3),
+        }
+    }
+}
+
+/// **唯一**的音乐单位 → tick 换算（卷帘吸附与量化共用）。
+///
+/// `note_index`：0=1/1, 1=1/2, …, 6=1/64（每降一档 ÷2）；越界按 1/16。
+/// `mode`：直 / 附点 / 三连音；`None` 按直。返回恒非零。
+#[must_use]
+pub fn roll_grid_ticks_for(note_index: i32, mode: Option<RollGridMode>) -> u64 {
+    let index = usize::try_from(note_index)
+        .ok()
+        .filter(|v| *v < ROLL_GRID_NOTE_COUNT)
+        .unwrap_or(4);
+    // 1/1 = 4 拍 = 3840 tick（PPQ 960）；整数右移等价于逐档减半，无舍入。
+    let base = 3840_u64 >> index;
+    let (num, den) = mode.unwrap_or(RollGridMode::Straight).factor();
+    (base * num) / den
+}
+
+/// 从窗口的**视图态**读当前网格（界面下标非法时按缺省 1/16 直）。
+#[must_use]
+pub fn roll_grid_ticks_from_ui(ui: &MainWindow) -> u64 {
+    roll_grid_ticks_for(
+        ui.get_roll_grid_note(),
+        RollGridMode::from_index(ui.get_roll_grid_mode()),
+    )
+}
+
+/// 网格选择回调的唯一落点：校验下标、写视图态、同步派生的 tick 读数。
+///
+/// `roll-grid-ticks` 只是**显示/判据读数**；编辑路径一律重新走
+/// [`roll_grid_ticks_from_ui`]，避免界面属性与换算函数分叉。
+pub fn apply_roll_grid_selection(ui: &MainWindow, note_index: i32, mode_index: i32) {
+    let Some(mode) = RollGridMode::from_index(mode_index) else {
+        return;
+    };
+    if usize::try_from(note_index)
+        .ok()
+        .is_none_or(|index| index >= ROLL_GRID_NOTE_COUNT)
+    {
+        return;
+    }
+    ui.set_roll_grid_note(note_index);
+    ui.set_roll_grid_mode(mode_index);
+    ui.set_roll_grid_ticks(i32::try_from(roll_grid_ticks_for(note_index, Some(mode))).unwrap_or(0));
+}
+
+/// 卷帘网格选择的两条回调接线（产品进程与无头装配共用）。
+pub fn wire_roll_grid(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_roll_grid_note_picked(move |note_index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        apply_roll_grid_selection(&ui, note_index, ui.get_roll_grid_mode());
+    });
+    let weak = ui.as_weak();
+    ui.on_roll_grid_mode_picked(move |mode_index: i32| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        apply_roll_grid_selection(&ui, ui.get_roll_grid_note(), mode_index);
+    });
+}
 
 /// 当前 UNIX 毫秒（提交时间戳）。溢出与时钟倒退都夹到 `0` / `u64::MAX`，**不 panic**。
 ///
@@ -22810,21 +22919,28 @@ pub fn toggle_track_switch_ops_for(
 
 /// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。
 ///
-/// 幅度的事实源只有这一处：`Grid` 取 [`ROLL_SNAP_GRID_TICKS`]（与铅笔 / `Cmd+D` 同一个吸附网格
-/// 常量），`Octave` 取 12 —— 规范逐字写"±12 半音"，因此这里用**字面量 12** 而不是
+/// 幅度的事实源只有这一处：`Grid` 取调用方给的当前卷帘网格（缺省包装器用
+/// [`ROLL_SNAP_GRID_TICKS`]，生产路径用 [`roll_grid_ticks_from_ui`]），`Octave` 取 12 —— 规范逐字写"±12 半音"，因此这里用**字面量 12** 而不是
 /// `bridge::PITCH_LANE_COUNT / 12` 之类的巧合等式（那会是第二个真相源）。
 ///
 /// 步长决定**轴**：`Grid`/`Tick` 只动 tick，`Semitone`/`Octave` 只动音高 ⇒ 不存在
 /// "两边都改"的组合，也不存在 `direction` 之外的自由度。
 #[must_use]
 pub fn nudge_delta_for(step: crate::input::NudgeStep, direction: i8) -> (i64, i8) {
+    nudge_delta_for_with_grid(step, direction, ROLL_SNAP_GRID_TICKS)
+}
+
+/// 同 [`nudge_delta_for`]，但网格由调用方给（卷帘视图态的当前网格）。
+#[must_use]
+pub fn nudge_delta_for_with_grid(
+    step: crate::input::NudgeStep,
+    direction: i8,
+    grid_ticks: u64,
+) -> (i64, i8) {
     use crate::input::NudgeStep;
     let sign = i64::from(direction.signum());
     match step {
-        NudgeStep::Grid => (
-            sign * i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(i64::MAX),
-            0,
-        ),
+        NudgeStep::Grid => (sign * i64::try_from(grid_ticks).unwrap_or(i64::MAX), 0),
         NudgeStep::Tick => (sign, 0),
         NudgeStep::Semitone => (0, direction.signum()),
         NudgeStep::Octave => (0, direction.signum() * 12),
@@ -22985,12 +23101,19 @@ fn clamp_pitch_delta(min_pitch: u8, max_pitch: u8, delta: i8) -> i8 {
 
 /// `[UI-NOTE-005]` §3 项 3：`Shift+←/→` 的一档时值增量（**唯一**换算）。
 ///
-/// 幅度的事实源：一个吸附网格 = [`ROLL_SNAP_GRID_TICKS`]，与无修饰 `←/→` 的平移、
-/// 铅笔落笔、`Cmd+D` 的几何是**同一个**常量（⛔ 不给时值单开一个网格）。
+/// 幅度的事实源：一个当前卷帘网格（缺省包装器 = [`ROLL_SNAP_GRID_TICKS`]，生产路径
+/// = [`roll_grid_ticks_from_ui`]），与无修饰 `←/→` 的平移、铅笔落笔、`Cmd+D` 的几何
+/// 是**同一份**换算（⛔ 不给时值单开一个网格）。
 /// `direction` 取 `signum` ⇒ 任何非零正 / 负都等价于 `+1` / `-1`。
 #[must_use]
 pub fn resize_duration_delta_for(direction: i8) -> i64 {
-    i64::from(direction.signum()) * i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(i64::MAX)
+    resize_duration_delta_for_with_grid(direction, ROLL_SNAP_GRID_TICKS)
+}
+
+/// 同 [`resize_duration_delta_for`]，但网格由调用方给（卷帘视图态的当前网格）。
+#[must_use]
+pub fn resize_duration_delta_for_with_grid(direction: i8, grid_ticks: u64) -> i64 {
+    i64::from(direction.signum()) * i64::try_from(grid_ticks).unwrap_or(i64::MAX)
 }
 
 /// `[UI-NOTE-005]` §3 项 3：把"选中的音符身份 + 一档时值增量"解析成待提交的
@@ -23451,7 +23574,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     else {
                         return;
                     };
-                    let split_tick = view.snapped_tick_at(scroll, x, ROLL_SNAP_GRID_TICKS);
+                    let split_tick = view.snapped_tick_at(scroll, x, roll_grid_ticks_from_ui(&ui));
                     let note_clip_id = view.notes[index].clip_id.as_str();
                     let placement_start =
                         <yeban_model::EntityId as std::str::FromStr>::from_str(note_clip_id)
@@ -24207,9 +24330,13 @@ fn preview_note_drag(
     let (x, y) = crate::bridge::painted_to_host(x, y);
     let scroll = ui.get_roll_scroll_x();
     let origin = (ui.get_note_drag_origin_x(), ui.get_note_drag_origin_y());
-    let Some((delta_tick, delta_pitch)) =
-        note_move_delta_for(fallback_view, scroll, origin, (x, y), ROLL_SNAP_GRID_TICKS)
-    else {
+    let Some((delta_tick, delta_pitch)) = note_move_delta_for(
+        fallback_view,
+        scroll,
+        origin,
+        (x, y),
+        roll_grid_ticks_from_ui(ui),
+    ) else {
         return;
     };
     // 预览位移的**单位是逻辑像素**（与 `.slint` 的 `note-positions` 同帧），且是**近似**：
@@ -24273,9 +24400,13 @@ fn commit_note_drag(
     clear_note_drag(ui);
     let (x, y) = crate::bridge::painted_to_host(x, y);
     let scroll = ui.get_roll_scroll_x();
-    let Some((delta_tick, delta_pitch)) =
-        note_move_delta_for(fallback_view, scroll, origin, (x, y), ROLL_SNAP_GRID_TICKS)
-    else {
+    let Some((delta_tick, delta_pitch)) = note_move_delta_for(
+        fallback_view,
+        scroll,
+        origin,
+        (x, y),
+        roll_grid_ticks_from_ui(ui),
+    ) else {
         return;
     };
     if is_resize {
@@ -24288,8 +24419,13 @@ fn commit_note_drag(
         // ⭐ T-ISS-MWTFLO7Z：改时值也按**选区**（与移动臂同一条"指针下那颗在选区里
         // 且选区多于一颗 ⇒ 整组"的规则，收在 `note_drag_resize_ops_for` 里）。
         let selected = selected_note_ulids(ui);
-        let mut ops =
-            note_drag_resize_ops_for(&project, &note, &selected, delta_tick, ROLL_SNAP_GRID_TICKS);
+        let mut ops = note_drag_resize_ops_for(
+            &project,
+            &note,
+            &selected,
+            delta_tick,
+            roll_grid_ticks_from_ui(ui),
+        );
         // ⭐ T-FIX-358（T-FIX-599 重贴）：缩放拉长后末端可能超出摆放 ⇒ 同批补扩展。
         ops.extend(clip_extension_ops_for_notes(
             &project, &selected, 0, delta_tick,
@@ -24904,6 +25040,28 @@ pub fn quantize_clip_ops_for(
     strength_permille: u16,
     selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
 ) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
+    quantize_clip_ops_for_with_swing(
+        project,
+        selected_clip_ulid,
+        grid_ticks,
+        strength_permille,
+        0,
+        selected_note_ids,
+    )
+}
+
+/// 同 [`quantize_clip_ops_for`]，多一个 `swing_permille`（0..=1000）。
+///
+/// `swing_permille == 0` **逐位**走模型的 [`yeban_model::clip_ops::quantize_tick`]
+/// ⇒ 与改前零回归。非零时用 [`quantize_tick_with_swing`]。
+pub fn quantize_clip_ops_for_with_swing(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    grid_ticks: u64,
+    strength_permille: u16,
+    swing_permille: u16,
+    selected_note_ids: Option<&std::collections::BTreeSet<yeban_model::EntityId>>,
+) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
     let mut ops = Vec::new();
     for (track_id, clip_id, notes) in scope_note_groups(project, selected_clip_ulid)? {
         for (note_id, note) in notes.iter() {
@@ -24914,10 +25072,11 @@ pub fn quantize_clip_ops_for(
             {
                 continue;
             }
-            let snapped = yeban_model::clip_ops::quantize_tick(
+            let snapped = quantize_tick_with_swing(
                 note.start_tick,
                 grid_ticks,
                 strength_permille,
+                swing_permille,
             );
             if snapped != note.start_tick {
                 ops.push(yeban_model::ops::Op::SetNoteTiming {
@@ -24933,6 +25092,45 @@ pub fn quantize_clip_ops_for(
         }
     }
     Ok(ops)
+}
+
+/// 带摇摆的量化落点（纯函数）。
+///
+/// 语义（明确写死，避免"swing 百分比"各人一套）：
+/// - 网格仍按 `grid_ticks`；每**一对**网格里，后一格（奇数格）被推后
+///   `grid_ticks × swing_permille / 2000`：`0` = 直，`1000` = 推后半格；
+/// - 音符吸附到**最近**的落点（平局取更晚），再按 `strength_permille` 线性插值；
+/// - `swing_permille == 0` 直接调用模型 [`yeban_model::clip_ops::quantize_tick`]，
+///   保证与既有 240 tick 行为逐位一致。
+#[must_use]
+pub fn quantize_tick_with_swing(
+    start: u64,
+    grid_ticks: u64,
+    strength_permille: u16,
+    swing_permille: u16,
+) -> u64 {
+    if swing_permille == 0 || grid_ticks <= 1 {
+        return yeban_model::clip_ops::quantize_tick(start, grid_ticks, strength_permille);
+    }
+    let swing = u64::from(swing_permille.min(1000));
+    let delay = grid_ticks.saturating_mul(swing) / 2000;
+    let floor_index = start / grid_ticks;
+    let line = |index: u64| {
+        let base = index.saturating_mul(grid_ticks);
+        if index % 2 == 1 {
+            base.saturating_add(delay)
+        } else {
+            base
+        }
+    };
+    let lower = line(floor_index);
+    let upper = line(floor_index.saturating_add(1));
+    let d_lower = i128::from(start) - i128::from(lower);
+    let d_upper = i128::from(upper) - i128::from(start);
+    let snapped = if d_upper <= d_lower { upper } else { lower };
+    let distance = i128::from(snapped) - i128::from(start);
+    let scaled = i128::from(start) + distance * i128::from(strength_permille) / 1000;
+    scaled.max(0) as u64
 }
 
 /// `Delete` / `Backspace` 落到**编曲视图选中的剪辑**上（`D-UI-15`）：一次原子提交、一步撤销。

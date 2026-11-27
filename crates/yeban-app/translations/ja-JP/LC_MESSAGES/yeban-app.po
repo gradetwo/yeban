@@ -1140,9 +1140,6 @@ msgstr "仮想化ピアノロール"
 msgid "{}工具"
 msgstr "{}ツール"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "スナップ 1/16・PPQ 960・{}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "ピアノロールスナップと音域状態"
 
@@ -1355,9 +1352,6 @@ msgstr "選択中のクリップへヒューマナイズを適用"
 
 msgid "应用人性化"
 msgstr "ヒューマナイズを適用"
-
-msgid "网格（tick）"
-msgstr "グリッド（tick）"
 
 msgid "强度（0–100%）"
 msgstr "強度（0–100%）"
@@ -2593,3 +2587,39 @@ msgstr "書き出しのみ：再生中はマクロがまだ適用されません
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "マスターレベルメーター: クリックしてオーバーロード表示をクリア"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "均等"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "付点"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "三連符"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "グリッド音符値"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "グリッド音符値を選択"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "グリッド修飾を切り替え"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "グリッド修飾"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "スウィング（0–100%）"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "スナップ {} · PPQ 960 · {}"

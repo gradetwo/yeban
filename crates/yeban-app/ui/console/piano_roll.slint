@@ -108,6 +108,21 @@ export component PianoRoll inherits Rectangle {
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
     in property <[string]> tool-labels: [@tr("选择"), @tr("铅笔"), @tr("剪刀"), @tr("力度"), @tr("橡皮")];
     in property <int> active-tool: 1;
+    // T-FIX-579：网格音符值（0..6 = 1/1..1/64）与修饰（0 直 / 1 附点 / 2 三连音）。
+    // 本组件只持有**视图态下标**；tick 由宿主按同一份换算给出，界面⛔ 不自行除 tick。
+    in-out property <int> grid-note-index: 4;
+    in-out property <int> grid-mode-index: 0;
+    in property <[string]> grid-note-labels: ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"];
+    in property <[string]> grid-mode-labels: [@tr("均分"), @tr("附点"), @tr("三连音")];
+    callback grid-note-picked(int);
+    callback grid-mode-picked(int);
+    // 当前网格的显示读数（越界 ⇒ 空串，与其它读数同一条安全口径）。
+    out property <string> grid-label:
+        root.grid-note-index >= 0 && root.grid-note-index < root.grid-note-labels.length
+            ? root.grid-note-labels[root.grid-note-index]
+                + (root.grid-mode-index > 0 && root.grid-mode-index < root.grid-mode-labels.length
+                    ? " · " + root.grid-mode-labels[root.grid-mode-index] : "")
+            : "";
     // `[UI-NOTE-003]` **工具行号口径的唯一转换点**（台账 R372）: `active-tool` 是 `1`..`5`
     // （`Tool::digit()` 与数字键 `1`..`5` 同一口径），而工具矩阵那圈 `for` 的下标是 `0`..`4`。
     // 底色 / `accessible-checked` / 字色三条绑定**只许读这一个属性** —— 直接拿 `active-tool`
@@ -250,21 +265,97 @@ export component PianoRoll inherits Rectangle {
         background: Tokens.line;
     }
 
-    UiMonoText {
+    // T-FIX-579：网格选择（音符值下拉 + 修饰循环）。两枚都只上抛下标，
+    // 视图态与 tick 换算的唯一写者住在宿主（`host::wire_roll_grid`）。
+    Rectangle {
         x: 272px;
+        y: Tokens.space-2;
+        width: 76px;
+        height: 20px;
+        background: grid-note-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "piano-roll-grid-note-button";
+        accessible-label: @tr("选择网格音符值");
+        accessible-action-default => { grid-popup.show(); }
+
+        UiMonoText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.grid-label + " ▾";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        grid-note-touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { grid-popup.show(); }
+            scroll-event(event) => {
+                root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                accept
+            }
+        }
+    }
+    Rectangle {
+        x: 354px;
+        y: Tokens.space-2;
+        width: 70px;
+        height: 20px;
+        background: grid-mode-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "piano-roll-grid-mode-button";
+        accessible-label: @tr("切换网格修饰");
+        accessible-action-default => { root.grid-mode-picked(Math.mod(root.grid-mode-index + 1, 3)); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.grid-mode-index >= 0 && root.grid-mode-index < root.grid-mode-labels.length
+                ? root.grid-mode-labels[root.grid-mode-index] : "";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        grid-mode-touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.grid-mode-picked(Math.mod(root.grid-mode-index + 1, 3)); }
+            scroll-event(event) => {
+                root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                accept
+            }
+        }
+    }
+
+    UiMonoText {
+        x: 432px;
         y: Tokens.space-2;
         // 运行期拒绝原因（`#166`）比静态读数长 ⇒ 这一行横向占满剩余宽度（左侧 x / 顶沿 y
         // 与高度一位未改，而**没有拒绝时**文字仍是同一串、左对齐 ⇒ 像素不变）。
-        width: max(0px, parent.width - 272px - 230px);
+        width: max(0px, parent.width - 432px - 230px);
         height: 20px;
-        text: root.edit-status-shown ? root.edit-status : @tr("吸附 1/16 · PPQ 960 · {}", root.pitch-range-label);
+        text: root.edit-status-shown ? root.edit-status : @tr("吸附 {} · PPQ 960 · {}", root.grid-label, root.pitch-range-label);
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         overflow: elide;
         accessible-role: text;
         accessible-id: "piano-roll-status";
         accessible-label: @tr("卷帘吸附与音域状态");
-        accessible-value: root.edit-status-shown ? root.edit-status : @tr("吸附 1/16 · PPQ 960 · {}", root.pitch-range-label);
+        accessible-value: root.edit-status-shown ? root.edit-status : @tr("吸附 {} · PPQ 960 · {}", root.grid-label, root.pitch-range-label);
     }
 
     // 右侧本地视图菜单（八度移位 / 量化 / 人性化）
@@ -1004,6 +1095,59 @@ export component PianoRoll inherits Rectangle {
                     clicked => {
                         root.quantize-requested();
                         context-menu-popup.close();
+                    }
+                }
+            }
+        }
+    }
+
+    // T-FIX-579：网格音符值清单（与右键菜单同一种 PopupWindow；默认不显示）。
+    grid-popup := PopupWindow {
+        x: 272px;
+        y: 26px;
+        width: 100px;
+        height: 168px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            clip: true;
+
+            VerticalLayout {
+                width: parent.width;
+                for label[index] in root.grid-note-labels : Rectangle {
+                    height: 24px;
+                    background: index == root.grid-note-index ? Tokens.gold-deep : transparent;
+                    accessible-role: button;
+                    accessible-id: "piano-roll-grid-note-" + index;
+                    accessible-label: label;
+                    accessible-action-default => {
+                        root.grid-note-picked(index);
+                        grid-popup.close();
+                    }
+
+                    UiText {
+                        x: 8px;
+                        y: 0;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: label;
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-xs;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => {
+                            root.grid-note-picked(index);
+                            grid-popup.close();
+                        }
                     }
                 }
             }

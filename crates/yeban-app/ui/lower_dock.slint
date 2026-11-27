@@ -117,6 +117,8 @@ export component UnifiedLowerDock inherits Rectangle {
     callback roll-marquee(length, length, length, length, bool);
     callback double-clicked(length, length);
     callback tool-selected(int);
+    callback roll-grid-note-picked(int);
+    callback roll-grid-mode-picked(int);
     callback note-drag-grab(length, length) -> bool;
     callback note-drag-move(length, length);
     callback note-drag-release(length, length);
@@ -141,6 +143,10 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <float> scroll-x: 0.0;
     in-out property <string> playhead-timecode: "";
     in-out property <int> active-tool: 1;
+    // T-FIX-579：卷帘网格视图态（宿主唯一写者；本组件只透传）。
+    in-out property <int> roll-grid-note: 4;
+    in-out property <int> roll-grid-mode: 0;
+    in-out property <int> roll-grid-ticks: 240;
     in-out property <string> roll-edit-status: "";
     in-out property <int> roll-base-pitch: 60;
     in-out property <string> roll-pitch-range-label: "C4 – Eb5";
@@ -2501,6 +2507,8 @@ export component UnifiedLowerDock inherits Rectangle {
                 playhead-timecode: root.playhead-timecode;
                 active-tool: root.active-tool;
                 edit-status: root.roll-edit-status;
+                grid-note-index: root.roll-grid-note;
+                grid-mode-index: root.roll-grid-mode;
                 base-midi-pitch: root.roll-base-pitch;
                 pitch-range-label: root.roll-pitch-range-label;
                 lane-key-labels: root.roll-lane-key-labels;
@@ -2516,6 +2524,8 @@ export component UnifiedLowerDock inherits Rectangle {
                 double-clicked(x, y) => { root.double-clicked(x, y); }
                 roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
                 tool-selected(tool) => { root.tool-selected(tool); }
+                grid-note-picked(index) => { root.roll-grid-note-picked(index); }
+                grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
                 note-drag-grab(x, y) => { return root.note-drag-grab(x, y); }
                 note-drag-move(x, y) => { root.note-drag-move(x, y); }
                 note-drag-release(x, y) => { root.note-drag-release(x, y); }

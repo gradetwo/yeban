@@ -38,8 +38,22 @@ export component HumanizeDialog inherits Rectangle {
     in-out property <string> time-jitter: "";
     in-out property <string> velocity-jitter: "";
     in-out property <string> seed: "";
-    in-out property <string> grid: "";
+    // T-FIX-579：音乐单位选择（0..6 = 1/1..1/64；修饰 0 直 / 1 附点 / 2 三连音）
+    // + 摇摆百分比。缺省 1/16 · 直 · 0% ⇒ 仍是 240 tick 的旧行为。
+    in-out property <int> grid-note-index: 4;
+    in-out property <int> grid-mode-index: 0;
+    in-out property <string> swing: "0";
+    in property <[string]> grid-note-labels: ["1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"];
+    in property <[string]> grid-mode-labels: [@tr("均分"), @tr("附点"), @tr("三连音")];
     in-out property <string> strength: "";
+    /// 哪一个网格清单正展开：0 = 无 / 1 = 音符值。纯视图态。
+    property <int> grid-expanded: 0;
+    out property <string> grid-label:
+        root.grid-note-index >= 0 && root.grid-note-index < root.grid-note-labels.length
+            ? root.grid-note-labels[root.grid-note-index]
+                + (root.grid-mode-index > 0 && root.grid-mode-index < root.grid-mode-labels.length
+                    ? " · " + root.grid-mode-labels[root.grid-mode-index] : "")
+            : "";
     // ---- 宿主写的失败行（空串 = 无失败；失败时弹窗不关）----------------------
     in-out property <string> error: "";
     // ---- 打开时焦点落哪个区段：0 = 人性化，1 = 量化（宿主在打开前写）--------
@@ -50,6 +64,8 @@ export component HumanizeDialog inherits Rectangle {
 
     callback apply-humanize();
     callback apply-quantize();
+    callback grid-note-picked(int);
+    callback grid-mode-picked(int);
     callback close();
 
     background: Tokens.mask-black.with-alpha(0.65);
@@ -100,9 +116,9 @@ export component HumanizeDialog inherits Rectangle {
 
         Rectangle {
             x: (root.width - 560px) / 2;
-            y: (root.height - 380px) / 2;
+            y: (root.height - 460px) / 2;
             width: 560px;
-            height: 380px;
+            height: 460px;
             background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
             border-radius: Tokens.radius-lg;
             border-width: 1px;
@@ -359,36 +375,141 @@ export component HumanizeDialog inherits Rectangle {
             UiText {
                 x: Tokens.space-6;
                 y: 240px;
-                width: 160px;
+                width: 104px;
                 height: 16px;
-                text: @tr("网格（tick）");
+                text: @tr("网格音符值");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
 
-            quantize-grid-input := ImeAwareTextInput {
+            Rectangle {
                 x: Tokens.space-6;
                 y: 260px;
-                width: 160px;
+                width: 104px;
                 height: 24px;
-                text <=> root.grid;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: root.grid-expanded == 1 ? Tokens.gold : Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "quantize-grid-selector";
+                accessible-label: @tr("网格音符值");
+                accessible-action-default => { root.grid-expanded = root.grid-expanded == 1 ? 0 : 1; }
+
+                quantize-grid-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.grid-expanded = root.grid-expanded == 1 ? 0 : 1;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 8px;
+                    y: 0;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    text: root.grid-label + " ▾";
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.grid-expanded = root.grid-expanded == 1 ? 0 : 1; }
+                }
+            }
+
+            UiText {
+                x: Tokens.space-6 + 112px;
+                y: 240px;
+                width: 84px;
+                height: 16px;
+                text: @tr("网格修饰");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Rectangle {
+                x: Tokens.space-6 + 112px;
+                y: 260px;
+                width: 84px;
+                height: 24px;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "quantize-grid-mode";
+                accessible-label: @tr("切换网格修饰");
+                accessible-action-default => { root.grid-mode-picked(Math.mod(root.grid-mode-index + 1, 3)); }
+
+                UiText {
+                    x: 8px;
+                    y: 0;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    text: root.grid-mode-index >= 0 && root.grid-mode-index < root.grid-mode-labels.length
+                        ? root.grid-mode-labels[root.grid-mode-index] : "";
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.grid-mode-picked(Math.mod(root.grid-mode-index + 1, 3)); }
+                }
+            }
+
+            UiText {
+                x: Tokens.space-6 + 204px;
+                y: 240px;
+                width: 76px;
+                height: 16px;
+                text: @tr("摇摆（0–100%）");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            quantize-swing-input := ImeAwareTextInput {
+                x: Tokens.space-6 + 204px;
+                y: 260px;
+                width: 76px;
+                height: 24px;
+                text <=> root.swing;
                 single-line: true;
                 font-family: Tokens.font-mono;
                 color: Tokens.gold;
                 font-size: Tokens.font-size-xs;
                 vertical-alignment: center;
                 accessible-role: text-input;
-                accessible-id: "quantize-grid-input";
-                accessible-label: @tr("网格（tick）");
-                accessible-value: root.grid;
+                accessible-id: "quantize-swing-input";
+                accessible-label: @tr("摇摆（0–100%）");
+                accessible-value: root.swing;
                 accessible-read-only: false;
                 accepted => { root.apply-quantize(); }
             }
 
             UiText {
-                x: Tokens.space-6 + 176px;
+                x: Tokens.space-6 + 288px;
                 y: 240px;
-                width: 160px;
+                width: 100px;
                 height: 16px;
                 text: @tr("强度（0–100%）");
                 color: Tokens.ink-2;
@@ -396,9 +517,9 @@ export component HumanizeDialog inherits Rectangle {
             }
 
             quantize-strength-input := ImeAwareTextInput {
-                x: Tokens.space-6 + 176px;
+                x: Tokens.space-6 + 288px;
                 y: 260px;
-                width: 160px;
+                width: 100px;
                 height: 24px;
                 text <=> root.strength;
                 single-line: true;
@@ -463,10 +584,60 @@ export component HumanizeDialog inherits Rectangle {
                 }
             }
 
+            // 网格音符值清单（展开时；与音频设置选择器同款手绘清单）。
+            if root.grid-expanded == 1 : Rectangle {
+                x: Tokens.space-6;
+                y: 284px;
+                width: 104px;
+                height: 168px;
+                z: 4;
+                background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                clip: true;
+
+                VerticalLayout {
+                    width: parent.width;
+                    for label[index] in root.grid-note-labels : Rectangle {
+                        height: 24px;
+                        background: index == root.grid-note-index ? Tokens.gold-deep : transparent;
+                        accessible-role: button;
+                        accessible-id: "quantize-grid-note-" + index;
+                        accessible-label: label;
+                        accessible-action-default => {
+                            root.grid-note-picked(index);
+                            root.grid-expanded = 0;
+                        }
+
+                        UiText {
+                            x: 8px;
+                            y: 0;
+                            width: parent.width - 16px;
+                            height: parent.height;
+                            text: label;
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => {
+                                root.grid-note-picked(index);
+                                root.grid-expanded = 0;
+                            }
+                        }
+                    }
+                }
+            }
+
             // ------------------------------------------------------------ 失败行
             Rectangle {
                 x: Tokens.space-6;
-                y: 344px;
+                y: 424px;
                 width: parent.width - 48px;
                 height: 16px;
                 clip: true;
@@ -490,39 +661,40 @@ export component HumanizeDialog inherits Rectangle {
     }
 
     // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
-    /// 五格**文本框**里哪一格正持有键盘：`0` 时值 / `1` 力度 / `2` 基础种子 /
-    /// `3` 网格 / `4` 强度 / `-1` 不在任何文本框内。
+    /// 哪一格**文本输入**正持有键盘：`0` 时值 / `1` 力度 / `2` 基础种子 /
+    /// `3` 摇摆 / `4` 强度 / `-1` 不在任何文本框内。
     out property <int> focused-field:
         humanize-time-input.has-focus ? 0
         : humanize-velocity-input.has-focus ? 1
         : humanize-seed-input.has-focus ? 2
-        : quantize-grid-input.has-focus ? 3
+        : quantize-swing-input.has-focus ? 3
         : quantize-strength-input.has-focus ? 4
         : -1;
 
-    /// 轮转**全集**的读数 —— 八格。`0..4` 同上，`5` 应用人性化 /
-    /// `6` 应用量化 / `7` ✕ 关闭 / `-1` 不在模态内。
+    /// 轮转**全集**的读数 —— 九格。`0..2` 人性化文本框，`3` 网格音符值 /
+    /// `4` 摇摆 / `5` 强度 / `6` 应用人性化 / `7` 应用量化 / `8` ✕ 关闭。
     out property <int> focused-control:
         humanize-time-input.has-focus ? 0
         : humanize-velocity-input.has-focus ? 1
         : humanize-seed-input.has-focus ? 2
-        : quantize-grid-input.has-focus ? 3
-        : quantize-strength-input.has-focus ? 4
-        : humanize-apply-focus.has-focus ? 5
-        : quantize-apply-focus.has-focus ? 6
-        : humanize-close-focus.has-focus ? 7
+        : quantize-grid-focus.has-focus ? 3
+        : quantize-swing-input.has-focus ? 4
+        : quantize-strength-input.has-focus ? 5
+        : humanize-apply-focus.has-focus ? 6
+        : quantize-apply-focus.has-focus ? 7
+        : humanize-close-focus.has-focus ? 8
         : -1;
 
     /// 打开时由宿主调用：焦点进 `focus-section` 指定的首格。
     public function focus-first-field() {
         if (root.focus-section == 1) {
-            quantize-grid-input.focus();
+            quantize-grid-focus.focus();
         } else {
             humanize-time-input.focus();
         }
     }
 
-    /// 八格的**唯一**一张「序号 → 控件」表。
+    /// 九格的**唯一**一张「序号 → 控件」表。
     public function focus-control(index: int) {
         if (index == 0) {
             humanize-time-input.focus();
@@ -531,20 +703,22 @@ export component HumanizeDialog inherits Rectangle {
         } else if (index == 2) {
             humanize-seed-input.focus();
         } else if (index == 3) {
-            quantize-grid-input.focus();
+            quantize-grid-focus.focus();
         } else if (index == 4) {
-            quantize-strength-input.focus();
+            quantize-swing-input.focus();
         } else if (index == 5) {
-            humanize-apply-focus.focus();
+            quantize-strength-input.focus();
         } else if (index == 6) {
-            quantize-apply-focus.focus();
+            humanize-apply-focus.focus();
         } else if (index == 7) {
+            quantize-apply-focus.focus();
+        } else if (index == 8) {
             humanize-close-focus.focus();
         }
     }
 
-    /// `Tab`：时值 → 力度 → 基础种子 → 网格 → 强度 → 应用人性化 →
-    /// 应用量化 → ✕ → 回第一格。两端都闭合；`-1` ⇒ 落回 `focus-section` 的首格。
+    /// `Tab`：时值 → 力度 → 基础种子 → 网格音符值 → 摇摆 → 强度 →
+    /// 应用人性化 → 应用量化 → ✕ → 回第一格。
     public function focus-next-control() {
         if (root.focused-control == 0) {
             root.focus-control(1);
@@ -561,6 +735,8 @@ export component HumanizeDialog inherits Rectangle {
         } else if (root.focused-control == 6) {
             root.focus-control(7);
         } else if (root.focused-control == 7) {
+            root.focus-control(8);
+        } else if (root.focused-control == 8) {
             root.focus-control(0);
         } else {
             root.focus-first-field();
@@ -583,8 +759,10 @@ export component HumanizeDialog inherits Rectangle {
             root.focus-control(5);
         } else if (root.focused-control == 7) {
             root.focus-control(6);
-        } else {
+        } else if (root.focused-control == 8) {
             root.focus-control(7);
+        } else {
+            root.focus-control(8);
         }
     }
 

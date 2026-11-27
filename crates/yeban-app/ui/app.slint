@@ -812,6 +812,12 @@ export component MainWindow inherits Window {
         "D#5", "D5", "C#5", "C5", "B4", "A#4", "A4", "G#4", "G4", "F#4", "F4", "E4", "D#4", "D4", "C#4", "C4"
     ];
     in-out property <string> roll-pitch-range-label: "C4 – Eb5";
+    // T-FIX-579：卷帘吸附网格视图态（0..6 = 1/1..1/64；0 直 / 1 附点 / 2 三连音）。
+    // `roll-grid-ticks` 是宿主按同一份换算写出的派生读数，编辑路径仍每次重算。
+    in-out property <int> roll-grid-note: 4;
+    in-out property <int> roll-grid-mode: 0;
+    in-out property <int> roll-grid-ticks: 240;
+    in-out property <string> quantize-swing: "0";
     in-out property <float> roll-scroll-x: 0.0;
     in-out property <int> roll-ticks-per-pixel: 30;
     in-out property <length> roll-velocity-lane-top: 0px;
@@ -1259,6 +1265,9 @@ export component MainWindow inherits Window {
     callback toggle-undo-tree();
     callback toggle-view();
     callback tool-selected(int);
+    // T-FIX-579：卷帘头网格选择器（音符值 / 修饰）只上抛下标，换算与视图态由宿主落点。
+    callback roll-grid-note-picked(int);
+    callback roll-grid-mode-picked(int);
     callback track-arm-toggle(int);
     callback track-create-audio();
     callback track-create-aux();
@@ -2290,6 +2299,9 @@ export component MainWindow inherits Window {
                 playhead-timecode: root.timecode;
                 active-tool: root.active-tool;
                 roll-edit-status: root.roll-edit-status;
+                roll-grid-note: root.roll-grid-note;
+                roll-grid-mode: root.roll-grid-mode;
+                roll-grid-ticks: root.roll-grid-ticks;
                 roll-base-pitch: root.roll-base-pitch;
                 roll-pitch-range-label: root.roll-pitch-range-label;
                 roll-lane-key-labels: root.roll-lane-key-labels;
@@ -2354,6 +2366,8 @@ export component MainWindow inherits Window {
                 double-clicked(x, y) => { root.double-clicked(x, y); }
                 roll-marquee(x1, y1, x2, y2, additive) => { root.roll-marquee(x1, y1, x2, y2, additive); }
                 tool-selected(tool) => { root.tool-selected(tool); }
+                roll-grid-note-picked(index) => { root.roll-grid-note-picked(index); }
+                roll-grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
                 note-drag-grab(x, y) => { return root.note-drag-grab(x, y); }
                 note-drag-move(x, y) => { root.note-drag-move(x, y); }
                 note-drag-release(x, y) => { root.note-drag-release(x, y); }
@@ -2768,13 +2782,17 @@ export component MainWindow inherits Window {
             time-jitter <=> root.humanize-time-jitter;
             velocity-jitter <=> root.humanize-velocity-jitter;
             seed <=> root.humanize-seed;
-            grid <=> root.humanize-grid;
+            grid-note-index <=> root.roll-grid-note;
+            grid-mode-index <=> root.roll-grid-mode;
+            swing <=> root.quantize-swing;
             strength <=> root.humanize-strength;
             error <=> root.humanize-error;
             focus-section: root.humanize-focus-section;
             scope-count <=> root.humanize-scope-count;
             apply-humanize => { root.apply-humanize(); }
             apply-quantize => { root.apply-quantize(); }
+            grid-note-picked(index) => { root.roll-grid-note-picked(index); }
+            grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
             close => { root.close-humanize(); }
         }
 
@@ -3373,6 +3391,8 @@ export component MainWindow inherits Window {
                 root.track-select(track_index);
             }
             tool-selected(tool) => { root.tool-selected(tool); }
+            roll-grid-note-picked(index) => { root.roll-grid-note-picked(index); }
+            roll-grid-mode-picked(index) => { root.roll-grid-mode-picked(index); }
 }
 
         if false : Rectangle {

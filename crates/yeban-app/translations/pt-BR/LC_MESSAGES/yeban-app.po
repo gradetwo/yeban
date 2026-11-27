@@ -1140,9 +1140,6 @@ msgstr "Piano Roll virtualizado"
 msgid "{}工具"
 msgstr "Ferramenta {}"
 
-msgid "吸附 1/16 · PPQ 960 · {}"
-msgstr "Snap 1/16 · PPQ 960 · {}"
-
 msgid "卷帘吸附与音域状态"
 msgstr "Estado de snap e alcance do Piano Roll"
 
@@ -1355,9 +1352,6 @@ msgstr "Aplicar Humanizar ao clip selecionado"
 
 msgid "应用人性化"
 msgstr "Aplicar Humanizar"
-
-msgid "网格（tick）"
-msgstr "Grade (ticks)"
 
 msgid "强度（0–100%）"
 msgstr "Intensidade (0–100%)"
@@ -2593,3 +2587,39 @@ msgstr "Somente exportação: a macro ainda não é aplicada durante a reproduç
 #: crates/yeban-app/ui/lower_dock.slint
 msgid "主控电平条: 点击清除过载指示"
 msgstr "Medidor de nível master: clique para limpar o indicador de sobrecarga"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "均分"
+msgstr "Regular"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "附点"
+msgstr "Pontuada"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "三连音"
+msgstr "Quiáltera"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格音符值"
+msgstr "Valor da grade"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "选择网格音符值"
+msgstr "Escolher o valor da grade"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "切换网格修饰"
+msgstr "Alternar o caráter da grade"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "网格修饰"
+msgstr "Caráter da grade"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "摇摆（0–100%）"
+msgstr "Swing (0–100%)"
+
+#: crates/yeban-app/ui/console/piano_roll.slint
+msgid "吸附 {} · PPQ 960 · {}"
+msgstr "Encaixe {} · PPQ 960 · {}"
