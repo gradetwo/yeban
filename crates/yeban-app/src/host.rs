@@ -9608,6 +9608,7 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
             let (track_id, _, _) = clip_placement_for(&project, clip_ulid.as_str())?;
             Some(track_id)
         });
+        let scroll_before_track_focus = ui.get_roll_scroll_x();
         if let Some(track_id) = track_target {
             let track_str = track_id.to_string();
             if ui.get_selected_track_id().as_str() != track_str.as_str() {
@@ -9620,6 +9621,9 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
                 }
             }
         }
+        // T-FIX-973：选片段的横向落点只由 `roll_focus_on_clip` 决定；按轨联动
+        // 可能已滚到首音符，这里先还原，避免“选 B 把 A 顶出左边”。
+        ui.set_roll_scroll_x(scroll_before_track_focus);
         // 幂等短路（判据 ⑤「不白重画」）：主选中相同 **且** 选区集已是单元素集
         // 才算一位不动 —— 框选出多选后点回主选中片段，集合必须收回单元素
         // （line/blank-drag-selection 补的半个条件）。
@@ -32122,6 +32126,72 @@ fn roll_scroll_for_tick(ui: &MainWindow, start_tick: u64) -> f32 {
     (px - 16.0).max(0.0)
 }
 
+/// 编曲时间线**实际可见宽**（px）。
+///
+/// 无头窗口里 `.slint` 可能还没报宽 ⇒ 退回窗口逻辑宽度（与 `apply_view` 用的
+/// 同一个读数）；两处都不可用 ⇒ `0.0`，调用方按“不知道视口”处理，不擅自滚动。
+fn arrangement_viewport_px(ui: &MainWindow) -> f32 {
+    let reported = ui.get_arrangement_timeline_px();
+    if reported.is_finite() && reported > 0.0 {
+        return reported;
+    }
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        0.0
+    }
+}
+
+/// 一段 tick 区间在**当前** scroll 下是否与视口有交集（半开区间）。
+fn tick_range_intersects_view(ui: &MainWindow, start_tick: u64, end_tick: u64) -> bool {
+    let viewport = arrangement_viewport_px(ui);
+    if viewport <= 0.0 {
+        return true;
+    }
+    let tpp = roll_ticks_per_pixel(ui).max(1);
+    let Ok(start_px) = crate::bridge::tick_to_px(start_tick, tpp) else {
+        return true;
+    };
+    let Ok(end_px) = crate::bridge::tick_to_px(end_tick, tpp) else {
+        return true;
+    };
+    let scroll = ui.get_roll_scroll_x();
+    let start_px = start_px as f32;
+    let end_px = end_px as f32;
+    end_px > scroll && start_px < scroll + viewport
+}
+
+/// 选中**屏外片段**时的最小滚动目标：能看见整段就让它贴边（留 16px），
+/// 比视口还宽就只把左沿拉进来。已在视口内 ⇒ `None`（一位不动）。
+fn clip_reveal_scroll(ui: &MainWindow, start_tick: u64, end_tick: u64) -> Option<f32> {
+    if tick_range_intersects_view(ui, start_tick, end_tick) {
+        return None;
+    }
+    let viewport = arrangement_viewport_px(ui);
+    if viewport <= 0.0 {
+        return None;
+    }
+    let tpp = roll_ticks_per_pixel(ui).max(1);
+    let start_px = crate::bridge::tick_to_px(start_tick, tpp).ok()? as f32;
+    let end_px = crate::bridge::tick_to_px(end_tick, tpp).ok()? as f32;
+    let current = ui.get_roll_scroll_x();
+    let mut target = if start_px >= current + viewport {
+        if end_px - start_px <= viewport {
+            (end_px + 16.0 - viewport).max(0.0)
+        } else {
+            (start_px - 16.0).max(0.0)
+        }
+    } else {
+        (start_px - 16.0).max(0.0)
+    };
+    let content = ui.get_arrangement_content_px();
+    if content.is_finite() && content > 0.0 {
+        target = target.min((content - viewport).max(0.0));
+    }
+    Some(target.max(0.0))
+}
+
 /// 把卷帘音高窗口取景到 `[lo, hi]`（**唯一**的取景公式落点：选轨联动与
 /// `apply_view` 的作用域取景都经这里，⛔ 不许出现第二处
 /// `apply_roll_pitch_range(roll_base_for_pitch_range(..))`）。
@@ -32280,7 +32350,20 @@ fn roll_focus_on_track(
         );
         ui.set_module_status_succeeded(true);
     }
-    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, start_tick));
+    // T-FIX-973：首个音符已在视口内 ⇒ 不滚动；只有真正屏外才定位。
+    let viewport = arrangement_viewport_px(ui);
+    let in_view = if viewport > 0.0 {
+        let tpp = roll_ticks_per_pixel(ui).max(1);
+        crate::bridge::tick_to_px(start_tick, tpp).is_ok_and(|px| {
+            let px = px as f32;
+            px >= ui.get_roll_scroll_x() && px <= ui.get_roll_scroll_x() + viewport
+        })
+    } else {
+        true
+    };
+    if !in_view {
+        ui.set_roll_scroll_x(roll_scroll_for_tick(ui, start_tick));
+    }
     true
 }
 
@@ -32301,7 +32384,21 @@ fn roll_focus_on_clip(
     let Some((_, _, placement)) = clip_placement_for(project, clip_ulid) else {
         return false;
     };
-    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, placement.start_tick));
+    let end_tick = placement
+        .start_tick
+        .saturating_add(placement.duration_ticks);
+    // 已在视口内 ⇒ 一位不动（保留相邻片段的空间参照）；屏外才做最小定位。
+    let Some(target) = clip_reveal_scroll(ui, placement.start_tick, end_tick) else {
+        return false;
+    };
+    // 兜底与旧口径共用同一份换算（起点留 16px）；只在视口宽不可用时才会走到。
+    let fallback = roll_scroll_for_tick(ui, placement.start_tick);
+    let target = if target.is_finite() { target } else { fallback };
+    ui.set_roll_scroll_x(target);
+    let feedback = "已滚动定位到视口外的选中片段";
+    ui.set_module_status(feedback.into());
+    ui.set_module_status_text(feedback.into());
+    ui.set_module_status_succeeded(true);
     true
 }
 
