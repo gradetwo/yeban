@@ -1020,7 +1020,7 @@ impl LiveAdminSurface {
             }
             None => (self.project.clone(), false),
         };
-        let (saved, asset_count) = if let Some(port) = self.undo.as_ref() {
+        let (saved, asset_count, embedded_count) = if let Some(port) = self.undo.as_ref() {
             // ⭐ 保真写：这条腿以前调 `save_project_file`（= 工程 + **空**图谱 + **空**资产池），
             // 于是"控制面打开一个带资产的工程 → `ui/force_save`"会把 `assets/{sha256}`
             // 和 `history.dag` **静默写空**：49605 B 的工程保存后只剩 5287 B，
@@ -1030,17 +1030,43 @@ impl LiveAdminSurface {
             // 现在两边同源：工程 + `encode_history_dag(graph)` + `port.assets()`。
             let assets = port.assets();
             let asset_count = assets.len();
+            // T-ISS-MWXVPJKY-C2DC76：控制面保存也必须带上被引用 user 预制。
+            // 此前这里逐字写 `embedded_presets: Vec::new()`，与 T-FIX-808 修掉的
+            // GUI 本地保存是同一个缺口；缺副本时响亮拒绝，不写缺件容器。
+            let entries = port.embedded_presets();
+            let embedded_table = if entries.is_empty() {
+                std::collections::BTreeMap::new()
+            } else {
+                yeban_mcp::domain::preset::parse_embedded_presets(&entries).map_err(|fault| {
+                    PortError::Rejected {
+                        message: format!("保存被拒：解析工程内嵌预制失败: {fault:?}"),
+                    }
+                })?
+            };
+            let embedded_presets = yeban_mcp::domain::preset::collect_embedded_presets(
+                &embedded_table,
+                &save_source,
+                true,
+            )
+            .map_err(|fault| PortError::Rejected {
+                message: format!("保存被拒：收集内嵌用户预制失败: {fault:?}"),
+            })?;
+            let embedded_count = embedded_presets.len();
             let archive = yeban_model::container::ProjectArchive {
                 project: save_source.clone(),
                 history_dag: yeban_model::commit::encode_history_dag(&port.graph()),
                 proposals: None,
                 assets,
-                embedded_presets: Vec::new(),
+                embedded_presets,
                 load_notes: Vec::new(),
             };
-            (save_archive_file(&archive, &path), asset_count)
+            (
+                save_archive_file(&archive, &path),
+                asset_count,
+                embedded_count,
+            )
         } else {
-            (save_project_file(&save_source, &path), 0)
+            (save_project_file(&save_source, &path), 0, 0)
         };
         let saved = saved.map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
@@ -1065,6 +1091,8 @@ impl LiveAdminSurface {
                 ),
                 // 资产池真实写出去几条（`assets/{sha256}`）—— 从前这里恒报 0 却仍写"保存成功"。
                 ("assets", ReportValue::Uint(asset_count as u64)),
+                // 内嵌 user 预制真实写出去几条（`presets/user/<id>.json`）。
+                ("embeddedPresets", ReportValue::Uint(embedded_count as u64)),
                 // 容器布局：`project.json` + `history.dag` + 每条资产一个 `assets/{sha256}`。
                 (
                     "containerEntries",
