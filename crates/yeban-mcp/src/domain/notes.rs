@@ -2610,10 +2610,10 @@ pub const RETROGRADE_CLIP_FIELDS: [&str; 1] = ["kind"];
 pub const HUMANIZE_CLIP_KIND: &str = "humanizeClip";
 /// `humanizeClip` 的**种子**字段名（必填，u64；同一种子 = 同一份抖动）。
 pub const HUMANIZE_CLIP_SEED_FIELD: &str = "seed";
-/// `humanizeClip` 的**时值抖动幅度**字段名（必填，微时值 ±n tick，
+/// `humanizeClip` 的**时值抖动幅度**字段名（**可选，缺省 0**，微时值 ±n tick，
 /// 顶到模型 `micro_timing_ticks` 的 ±240 上界）。
 pub const HUMANIZE_CLIP_TIME_FIELD: &str = "timeJitterTicks";
-/// `humanizeClip` 的**力度抖动幅度**字段名（必填，±n；结果裁进 1..=127）。
+/// `humanizeClip` 的**力度抖动幅度**字段名（**可选，缺省 0**，±n；结果裁进 1..=127）。
 pub const HUMANIZE_CLIP_VELOCITY_FIELD: &str = "velocityJitter";
 /// `humanizeClip` 允许出现的全部键。
 pub const HUMANIZE_CLIP_FIELDS: [&str; 11] = [
@@ -5391,13 +5391,17 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             )?;
             Ok(NoteOp::HumanizeClip {
                 seed: read_u64(object, HUMANIZE_CLIP_SEED_FIELD)?,
-                time_jitter_ticks: read_u64(object, HUMANIZE_CLIP_TIME_FIELD)?,
-                velocity_jitter: read_range(
+                // T-FIX-866：schema 广播两字段**可选、缺省 0** ⇒ 解析必须同口径；
+                // 省略与显式 0 是同一形态（判据 `humanize_clip_optional_jitters_default_to_zero`）。
+                time_jitter_ticks: read_optional_u64(object, HUMANIZE_CLIP_TIME_FIELD)?
+                    .unwrap_or(0),
+                velocity_jitter: read_optional_u16_bounded(
                     object,
                     HUMANIZE_CLIP_VELOCITY_FIELD,
                     0,
-                    MIDI_VELOCITY_MAX,
-                )?,
+                    u16::from(MIDI_VELOCITY_MAX),
+                )?
+                .map_or(0, |value| u8::try_from(value).unwrap_or(MIDI_VELOCITY_MAX)),
                 model,
                 timing_std_ticks: read_optional_u64(object, HUMANIZE_CLIP_TIMING_STD_FIELD)?,
                 velocity_std: read_optional_u64(object, HUMANIZE_CLIP_VELOCITY_STD_FIELD)?,
@@ -15273,6 +15277,53 @@ mod tests {
     /// 注入（实测红）：`expand_clip_level_op` 的 `needs_notes` 漏登记一个 ⇒
     /// 对应断言红（形态会落到 `continue` 臂、产出 0 条 op）；
     /// `quantize_tick` 换成"向下取整" ⇒ ③ 红（nearest-grid 而不是 floor）。
+    /// T-FIX-866：`humanizeClip` 的两个抖动幅度在 schema 里是**可选、缺省 0**；
+    /// 省略必须与显式写 0 解析成同一条形态、编译成同一批 op（且 0 抖动无 op）。
+    #[test]
+    fn humanize_clip_optional_jitters_default_to_zero() {
+        let omitted = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42,
+        }]))
+        .expect("schema 合规的省略调用必须解析成功");
+        let explicit = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42,
+            "timeJitterTicks": 0, "velocityJitter": 0,
+        }]))
+        .expect("显式 0 必须解析成功");
+        assert_eq!(
+            format!("{omitted:?}"),
+            format!("{explicit:?}"),
+            "省略 timeJitterTicks/velocityJitter ⇔ 显式 0"
+        );
+
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let a = compile(&project, &track, &clip, &omitted).expect("省略调用编译");
+        let b = compile(&project, &track, &clip, &explicit).expect("显式 0 编译");
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "省略与显式 0 必须编译成逐字节同一批 op"
+        );
+        assert_eq!(a.len(), b.len(), "省略与显式 0 的产物条数必须一致");
+
+        // 上报场景正是 `model="structured"`：省略也必须与显式 0 同形同产物。
+        let omitted_structured = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "model": "structured",
+        }]))
+        .expect("structured + 省略幅度必须解析成功");
+        let explicit_structured = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "model": "structured",
+            "timeJitterTicks": 0, "velocityJitter": 0,
+        }]))
+        .expect("structured + 显式 0 必须解析成功");
+        assert_eq!(
+            format!("{omitted_structured:?}"),
+            format!("{explicit_structured:?}"),
+            "structured 下省略幅度 ⇔ 显式 0"
+        );
+    }
+
     #[test]
     fn clip_level_ops_expand_with_their_documented_semantics() {
         let project = filled_project();
