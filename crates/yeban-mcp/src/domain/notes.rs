@@ -5150,7 +5150,75 @@ pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
             "`ops` 不得为空数组（空操作不是一次编辑请求）",
         ));
     }
-    items.iter().map(parse_one).collect()
+    let mut parsed = Vec::with_capacity(items.len());
+    let mut failures: Vec<(usize, Fault)> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match parse_one(item) {
+            Ok(op) => parsed.push(op),
+            Err(fault) => failures.push((index, fault)),
+        }
+    }
+    if failures.is_empty() {
+        return Ok(parsed);
+    }
+    // 单条错误保持既有形状/消息（旧判据逐字依赖）；两条以上才聚合，
+    // 一次报全所有可定位错误，并带 0 基 `opIndex`。
+    if failures.len() == 1 {
+        return Err(failures.pop().expect("刚检查过长度").1);
+    }
+    Err(ops_validation_failed(failures))
+}
+
+/// 把多条 `ops[i]` 失败合成一个**可一次修正**的载荷。
+fn ops_validation_failed(failures: Vec<(usize, Fault)>) -> Fault {
+    let mut errors: Vec<Value> = Vec::with_capacity(failures.len());
+    for (index, fault) in failures {
+        let mut detail = Map::new();
+        detail.insert("opIndex".to_owned(), Value::from(index));
+        match fault {
+            Fault::Domain {
+                code,
+                message,
+                data,
+            } => {
+                detail.insert("code".to_owned(), Value::from(code.as_str()));
+                detail.insert("message".to_owned(), Value::from(message));
+                if let Some(Value::Object(data)) = data {
+                    for key in ["reason", "field", "received", "expected", "accepted"] {
+                        if let Some(value) = data.get(key) {
+                            detail.insert(key.to_owned(), value.clone());
+                        }
+                    }
+                }
+            }
+            Fault::Impl { error } => {
+                detail.insert("code".to_owned(), Value::from(error.code));
+                detail.insert("message".to_owned(), Value::from(error.message));
+            }
+        }
+        if !detail.contains_key("path") {
+            let path = detail.get("field").and_then(Value::as_str).map_or_else(
+                || format!("ops[{index}]"),
+                |field| format!("ops[{index}].{field}"),
+            );
+            detail.insert("path".to_owned(), Value::from(path));
+        }
+        errors.push(Value::Object(detail));
+    }
+    let count = errors.len();
+    Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("ops 有 {count} 处可定位错误；按 errors[] 逐条修正后重试"),
+        serde_json::json!({
+            "reason": "opsValidationFailed",
+            "field": "ops",
+            "path": "ops",
+            "errorCount": count,
+            "errors": errors,
+            "stateChanged": false,
+            "retryable": false,
+        }),
+    )
 }
 
 /// 解析单个操作。

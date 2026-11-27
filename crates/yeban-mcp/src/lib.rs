@@ -141,6 +141,7 @@ pub mod op_schema;
 pub mod output_schema;
 pub mod payload;
 pub mod phase_align_auto_provider;
+pub mod recovery;
 pub mod samples;
 pub mod security;
 pub mod song_overview_provider;

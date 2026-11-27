@@ -6232,12 +6232,18 @@ fn plan_list_proposals(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
     let wanted = match arg_str(call, "kind") {
         Some(kind) => {
             if !KINDS.contains(&kind) {
-                return Err(Fault::domain(
+                return Err(Fault::domain_with_data(
                     ErrorCode::InvalidParameterRange,
                     format!(
                         "`kind` 只接受 {} 之一, 实际收到 `{kind}`",
                         KINDS.join(" / ")
                     ),
+                    serde_json::json!({
+                        "reason": "unknownProposalKind",
+                        "field": "kind",
+                        "received": kind,
+                        "accepted": KINDS,
+                    }),
                 ));
             }
             Some(kind)

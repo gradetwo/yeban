@@ -58,7 +58,7 @@ use crate::jsonrpc::{self, ErrorObject, Id, Request, Response};
 use crate::security::{
     AuthContext, BearerToken, Channel, Denial, RunMode, ScopeSet, authenticate, authorize,
 };
-use crate::tools::{self, ToolCall, ToolCallError};
+use crate::tools::{self, ToolCall};
 
 /// MCP 方法名：列出工具。
 pub const METHOD_TOOLS_LIST: &str = "tools/list";
@@ -512,12 +512,9 @@ impl Dispatcher {
         // 3. 工具解析 + 参数校验。
         let call = match ToolCall::from_params(request.params.as_ref()) {
             Ok(call) => call,
-            Err(ToolCallError::UnknownTool { name }) => {
-                let error = ErrorObject::tool_not_found(&name);
-                return (http_status_for(&error), Err(error));
-            }
-            Err(other) => {
-                let error = ErrorObject::invalid_params(other.to_string());
+            Err(error) => {
+                let error =
+                    crate::recovery::tool_call_error(&error, request.params.as_ref(), &self.domain);
                 return (http_status_for(&error), Err(error));
             }
         };
@@ -531,8 +528,18 @@ impl Dispatcher {
         // 因此是借用检查器保证的, 不靠自觉。运行期判据在 `tests/tools_e2e.rs`。
         if call.is_dry_run() {
             return match dry_run_result(&self.domain, &call) {
-                Ok(result) => (200, Ok(wrap_mcp_call_result(result))),
-                Err(error) => (http_status_for(&error), Err(error)),
+                Ok(result) => (
+                    200,
+                    Ok(wrap_mcp_call_result(crate::recovery::enrich_tool_value(
+                        result,
+                        &call,
+                        &self.domain,
+                    ))),
+                ),
+                Err(error) => (
+                    http_status_for(&error),
+                    Err(crate::recovery::enrich_impl_error(error, &call)),
+                ),
             };
         }
         // 6. 幂等去重: 命中缓存 ⇒ 永远走不到第 7 步 (因此不会重复施加副作用)。
@@ -555,7 +562,14 @@ impl Dispatcher {
         // 在**这里**做，而不是在管线出口：幂等缓存存的是本步的产物，重放时
         // 原样嵌回 `response.result` 并被判据要求与首次**逐字节相同**——
         // 出口处再包会让首次（已包）与重放内层（未包）对不上。
-        let payload = domain::execute(&mut self.domain, &call).map(wrap_mcp_call_result);
+        let payload = match domain::execute(&mut self.domain, &call) {
+            Ok(value) => Ok(wrap_mcp_call_result(crate::recovery::enrich_tool_value(
+                value,
+                &call,
+                &self.domain,
+            ))),
+            Err(error) => Err(crate::recovery::enrich_impl_error(error, &call)),
+        };
         let status = match &payload {
             Ok(_) => 200,
             Err(error) => http_status_for(error),
