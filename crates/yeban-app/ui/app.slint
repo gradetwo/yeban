@@ -321,6 +321,8 @@ export component MainWindow inherits Window {
     callback transport-toggle-play();
     callback transport-toggle-rec();
     callback transport-toggle-loop();
+    // ⭐ T-FIX-889：「按选区设循环」—— 走带栏按钮 → 宿主按选中剪辑写区间。
+    callback set-loop-from-selection();
     callback transport-rewind();
     callback transport-set-bpm(int);
     callback transport-set-scale(string);
@@ -577,8 +579,14 @@ export component MainWindow inherits Window {
     //    arrangement.slint 画出一条与实际播放范围无关的假循环带。归零后 start==end，
     //    :1879 换算出的 cycle-start-px/end-px 相等 ⇒ 画带条件 `end-px > start-px` 不成立，
     //    无真实区间时不画带。将来有可设区间时由宿主写入这两个属性即可接通（零回归）。
+    // ⭐ T-FIX-889：可设区间已接通 —— 走带栏「按选区设循环」按钮经宿主
+    //    `apply_loop_range_from_selection` 写这两个属性（同时开 cycle-enabled、
+    //    刷下面的 `cycle-range-readout`）。0..0 仍是默认态，仍不画带。
     in-out property <int> cycle-end-ticks: 0;
     in-out property <int> cycle-start-ticks: 0;
+    // ⭐ T-FIX-889：循环区间只读读数（`"{start} - {end}"`，未设置时 `"—"`）。
+    //    唯一写者是宿主的「按选区设循环」落点；走带栏只读展示（语言无关的纯数字）。
+    in-out property <string> cycle-range-readout: "—";
     in-out property <[bool]> device-bypassed: [];
     in-out property <bool> device-eq-available: false;
     in-out property <string> device-eq-device-id: "";
@@ -1665,6 +1673,8 @@ export component MainWindow inherits Window {
                 is-playing: root.is-playing;
                 is-recording: root.is-recording;
                 is-looping: root.is-looping;
+                // ⭐ T-FIX-889：循环区间只读读数（根 → 走带栏单向）。
+                cycle-range-readout: root.cycle-range-readout;
                 metronome-on: root.metronome-on;
                 timecode-text: root.timecode-text;
                 bpm-val: root.bpm-val;
@@ -1699,6 +1709,8 @@ export component MainWindow inherits Window {
                 toggle-rec() => { root.toggle-record(); }
                 toggle-record => { root.toggle-record(); }
                 toggle-loop() => { root.transport-toggle-loop(); }
+                // ⭐ T-FIX-889：「按选区设循环」—— 走带栏按钮 → 根回调 → 宿主。
+                set-loop-from-selection() => { root.set-loop-from-selection(); }
                 toggle-metronome() => { root.toggle-metronome(); }
                 rewind() => { root.transport-rewind(); }
                 revert-to-last-commit => { root.revert-to-last-commit(); }

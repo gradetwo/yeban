@@ -9442,6 +9442,64 @@ fn selected_clip_ulids_or_primary(ui: &MainWindow) -> Vec<String> {
     ids
 }
 
+/// 循环区间合法性（纯函数）：结束 tick 必须**严格**大于开始 tick.
+///
+/// ⭐ T-FIX-889：「按选区设循环」的退化区间裁决。`end == start`（零长剪辑）与
+/// `end < start`（坏数据）都算非法 —— 调用方响亮拒绝，⛔ 不静默吞掉、⛔ 不写
+/// 一个 0..0 的假区间（那会与 cycle_band 的"无真实区间不画带"口径撞车）。
+#[must_use]
+pub fn loop_range_is_valid(start: u64, end: u64) -> bool {
+    end > start
+}
+
+/// 「按选区设循环」的落点：把选中剪辑的 tick 跨度写进 `cycle-start/end-ticks`。
+///
+/// 成功时：写两个 tick 属性、开 `cycle-enabled`（带必须可见 ⇒ 开关必须开，
+/// 见 [`sync_aether_display`] 的 `is-looping` 同步）、刷 `cycle-range-readout`
+/// （`"{start} - {end}"`，语言无关的纯数字）、`report_notice` 成功回执。
+/// 失败时：**一个属性都不写**，读数不动，`report_notice` 错误级常驻（提示条 ＋
+/// 模块回执行同时写）—— 无选区 / 选区解析不到 / 区间非法三档各有各的文案。
+///
+/// 选区读 `selected-clip-ulids` 的**实时值**（与 `on_clip_select` 同源）；跨度
+/// 算在**当前**工程上（有撤销端口时 fresh 重投影，无端口时退回装配快照 —— 与
+/// `wire_clip_scope` 的 fresh/fallback 同一手法）。
+fn apply_loop_range_from_selection(ui: &MainWindow, view: &ViewState) {
+    use slint::Model as _;
+    let selected: Vec<String> = ui
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let Some((start, end)) = view.clip_selection_tick_span(&selected) else {
+        report_notice(
+            ui,
+            "未选中任何片段：请先在编曲区选中一个片段，再点「按选区设循环」。",
+            true,
+        );
+        return;
+    };
+    if !loop_range_is_valid(start, end) {
+        report_notice(
+            ui,
+            &format!(
+                "循环区间无效：结束 tick 必须大于开始 tick（{start} - {end}），请换一个片段再试。"
+            ),
+            true,
+        );
+        return;
+    }
+    ui.set_cycle_start_ticks(i32::try_from(start).unwrap_or(i32::MAX));
+    ui.set_cycle_end_ticks(i32::try_from(end).unwrap_or(i32::MAX));
+    ui.set_cycle_enabled(true);
+    sync_aether_display(ui);
+    ui.set_cycle_range_readout(format!("{start} - {end}").into());
+    report_notice(
+        ui,
+        &format!("[循环区间] 已按选区设置循环区间：{start} - {end} ticks。"),
+        false,
+    );
+}
+
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
 ///
 /// | 读 / 写 | 事实源 |
@@ -9464,6 +9522,10 @@ fn selected_clip_ulids_or_primary(ui: &MainWindow) -> Vec<String> {
 pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Option<Rc<UndoPort>>) {
     let weak = ui.as_weak();
     let undo_for_select = undo.clone();
+    // ⭐ T-FIX-889：「按选区设循环」也要一份投影与撤销端口 —— 必须在这里克隆：
+    // `on_clip_select` 的闭包会把 `view` 整个 move 走，后面再 `view.clone()` 编不过。
+    let view_for_loop = view.clone();
+    let undo_for_loop = undo.clone();
     let view_for_marquee = view.clone();
     let undo_for_marquee = undo.clone();
     ui.on_clip_select(move |clip_ulid| {
@@ -9598,6 +9660,23 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
             ui.set_show_lower_dock(true);
             ui.set_console_tab(-1);
             ui.set_console_tab(0);
+        }
+    });
+    // ⭐ T-FIX-889：「按选区设循环」按钮的落点（与 `on_clip_select` 同一作用域：
+    // 读同一份 `selected-clip-ulids`、用同一套 fresh/fallback 拿当前工程）。
+    ui.on_set_loop_from_selection({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let fresh = undo_for_loop.as_ref().and_then(|port| {
+                port.try_project()
+                    .and_then(|project| project_with_view_state(&project, &ui).ok())
+            });
+            let snapshot = view_for_loop.borrow().clone();
+            let state = fresh.as_ref().unwrap_or(&snapshot);
+            apply_loop_range_from_selection(&ui, state);
         }
     });
 }
@@ -27730,6 +27809,20 @@ mod tests {
         );
         drop(guard);
         assert!(!super::recording_in_progress(), "释放借用后恢复真实状态");
+    }
+
+    /// ⭐ T-FIX-889：循环区间合法性 —— 结束 tick 必须**严格**大于开始 tick。
+    /// 零长（`end == start`）与倒置（`end < start`）都算非法，宿主响亮拒绝。
+    #[test]
+    fn loop_range_requires_strictly_positive_span() {
+        assert!(super::loop_range_is_valid(0, 3840), "正常区间通过");
+        assert!(super::loop_range_is_valid(1920, 2880), "非零起点也通过");
+        assert!(
+            !super::loop_range_is_valid(0, 0),
+            "0..0 是默认态、不是合法区间"
+        );
+        assert!(!super::loop_range_is_valid(1920, 1920), "零长片段非法");
+        assert!(!super::loop_range_is_valid(3840, 0), "倒置区间非法");
     }
 
     // -------------------------------------------------------------------

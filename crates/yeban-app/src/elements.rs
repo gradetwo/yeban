@@ -267,6 +267,25 @@ impl ElementRegistry {
             "循环播放开关：开 / 关 (C)",
             false,
         );
+        // ⭐ T-FIX-889：「按选区设循环」键（`transport_bar.slint` 的
+        // `btn_set_loop_from_selection`）与循环区间只读读数（同一栏的
+        // `transport-loop-range-readout`，timecode 读数同款文本节点）。
+        // 两条都必须登记：漏了任一条 ⇒ `elements` 的覆盖判据新红（T-FIX-714
+        // 的 automation 泳道 TouchArea 未登记已在基线红，ISS-MWY9NIO4-BA87B6）。
+        registry.add(
+            "transport-set-loop-from-selection-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "按选区设循环",
+            false,
+        );
+        registry.add(
+            "transport-loop-range-readout",
+            ElementKind::Text,
+            "transport_bar.slint",
+            "循环区间",
+            false,
+        );
         // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
         // T-FIX-867：旧 `transport.slint` 的 `transport-metronome-button` 已落到
         // 新顶栏 `transport_bar.slint` 的 `btn_metronome`；`accessible-label` 随

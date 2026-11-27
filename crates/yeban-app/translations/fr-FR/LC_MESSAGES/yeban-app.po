@@ -2623,3 +2623,14 @@ msgstr "Swing (0–100 %)"
 #: crates/yeban-app/ui/console/piano_roll.slint
 msgid "吸附 {} · PPQ 960 · {}"
 msgstr "Aimantation {} · PPQ 960 · {}"
+
+# --- T-FIX-889: loop region entry (transport_bar.slint) ---
+#: crates/yeban-app/ui/transport_bar.slint
+msgid "按选区设循环"
+msgstr "Définir la boucle depuis la sélection"
+
+msgid "把选中片段的范围设为循环区间"
+msgstr "Définir la zone de boucle sur les clips sélectionnés"
+
+msgid "循环区间"
+msgstr "Zone de boucle"

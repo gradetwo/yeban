@@ -6240,6 +6240,39 @@ impl ViewState {
         span
     }
 
+    /// 选中剪辑（`MainWindow` 的 `selected-clip-ulids`）在**这份投影里**解析出的
+    /// tick 跨度。
+    ///
+    /// 与 [`Self::selection_tick_span`] 的区别：那是**音符**级（钢琴卷帘的
+    /// `selected-ulids`），这是**剪辑**级（编曲区的 `selected-clip-ulids`）——
+    /// 身份解析走投影自己的 `clips`（[`ClipView::placement_id`]），跨度取选中
+    /// 剪辑的并集（`min start_tick` / `max end_tick`）。
+    ///
+    /// ⭐ T-FIX-889：「按选区设循环」的落点用它算区间。返回 `None` = 选区为空，
+    /// 或选中的身份一个都不在工程里（与 `selection_tick_span` 同口径）；退化区间
+    /// （`end <= start`）**不在这里**拦 —— 那是宿主的合法性裁决
+    /// （[`crate::host::loop_range_is_valid`]），调用方响亮拒绝而不是静默吞掉。
+    #[must_use]
+    pub fn clip_selection_tick_span(
+        &self,
+        selected_placement_ids: &[String],
+    ) -> Option<(u64, u64)> {
+        let mut span: Option<(u64, u64)> = None;
+        for id in selected_placement_ids {
+            for clip in &self.clips {
+                if &clip.placement_id != id {
+                    continue;
+                }
+                span = Some(match span {
+                    None => (clip.start_tick, clip.end_tick),
+                    Some((start, end)) => (start.min(clip.start_tick), end.max(clip.end_tick)),
+                });
+                break;
+            }
+        }
+        span
+    }
+
     /// 工程的**内容末端 tick**：全部剪辑摆放与全部段落的 `end_tick` 的最大值。
     ///
     /// 它与投影内部用来铺标尺的那一次 `max` **同一口径**（`from_project_with_zoom_cursor_and_layout`
@@ -8531,6 +8564,39 @@ mod tests {
                 .expect("空工程")
                 .content_end_tick(),
             0
+        );
+    }
+
+    /// ⭐ T-FIX-889：`ViewState` 发布的**选中剪辑跨度**与投影读数一致。
+    ///
+    /// 口径与 `selection_tick_span` 对偶：那是音符级（`selected-ulids`），这是
+    /// 剪辑级（`selected-clip-ulids`）—— 身份解析走投影自己的 `clips`
+    /// （`ClipView::placement_id`），跨度取选中剪辑的并集。
+    #[test]
+    fn clip_selection_tick_span_covers_selected_clips() {
+        let project = filled_project();
+        let view = ViewState::from_project(&project).expect("投影");
+        assert!(view.clips.len() >= 2, "夹具必须有多个剪辑");
+        let first = view.clips.first().expect("剪辑").clone();
+        let last = view.clips.last().expect("剪辑").clone();
+        assert_eq!(
+            view.clip_selection_tick_span(std::slice::from_ref(&first.placement_id)),
+            Some((first.start_tick, first.end_tick)),
+            "单个剪辑的跨度就是它自己的区间"
+        );
+        assert_eq!(
+            view.clip_selection_tick_span(&[first.placement_id.clone(), last.placement_id.clone()]),
+            Some((
+                first.start_tick.min(last.start_tick),
+                first.end_tick.max(last.end_tick)
+            )),
+            "多选 = 整个选区的并集跨度（不是第一个剪辑的跨度）"
+        );
+        assert_eq!(view.clip_selection_tick_span(&[]), None, "空选区 ⇒ None");
+        assert_eq!(
+            view.clip_selection_tick_span(&["01J8Z5Q0R7K3M9X2V4B6N8P0PZ".to_owned()]),
+            None,
+            "选中的身份不在工程里 ⇒ None"
         );
     }
 

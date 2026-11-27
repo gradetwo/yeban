@@ -2623,3 +2623,14 @@ msgstr "스윙 (0–100%)"
 #: crates/yeban-app/ui/console/piano_roll.slint
 msgid "吸附 {} · PPQ 960 · {}"
 msgstr "스냅 {} · PPQ 960 · {}"
+
+# --- T-FIX-889: loop region entry (transport_bar.slint) ---
+#: crates/yeban-app/ui/transport_bar.slint
+msgid "按选区设循环"
+msgstr "선택 영역을 루프로 설정"
+
+msgid "把选中片段的范围设为循环区间"
+msgstr "선택한 클립 범위를 루프 구간으로 설정"
+
+msgid "循环区间"
+msgstr "루프 구간"

@@ -641,6 +641,10 @@ export component TransportHeaderBar inherits Rectangle {
     // （`ui.set_metronome_on`）；按钮与 `Cmd/Ctrl+Alt+N` 共用同一个落点。
     in-out property <bool> metronome-on: false;
     in-out property <string> timecode-text: "003.02.01";
+    // ⭐ T-FIX-889：循环区间只读读数（`"{start} - {end}"`，未设为 `"—"`）。
+    //    根 → 走带栏单向（app.slint 绑 `root.cycle-range-readout`）；唯一写者是
+    //    宿主的「按选区设循环」落点，栏内只读展示（语言无关的纯数字）。
+    in property <string> cycle-range-readout: "—";
     in-out property <int> bpm-val: 124;
     in-out property <string> bpm-display: "124.00";
     in-out property <string> scale-text: "C Minor (自然小调)";
@@ -665,6 +669,8 @@ export component TransportHeaderBar inherits Rectangle {
     callback toggle-rec();
     callback toggle-record();
     callback toggle-loop();
+    // ⭐ T-FIX-889：「按选区设循环」—— 按钮 → app.slint 根回调 → 宿主落点。
+    callback set-loop-from-selection();
     callback toggle-metronome();
     callback rewind();
     callback change-bpm(int);
@@ -1091,6 +1097,60 @@ export component TransportHeaderBar inherits Rectangle {
                             clicked => { root.toggle-loop(); }
                         }
                         TooltipBubble { text: @tr("选区循环播放开关 [C]"); is-visible: btn_loop_touch.has-hover; }
+                    }
+
+                    // ⭐ T-FIX-889：「按选区设循环」—— 把选中片段的范围写进
+                    //    cycle-start/end-ticks（宿主落点），并刷区间读数。
+                    //    文字键：与 LOOP 键同高同圆角，悬停浮出 lane 底色；宽随文案走
+                    //    （8 语译文长度不一，⛔ 不钉死宽度），左右各留 10px 内边距。
+                    btn_set_loop_from_selection := Rectangle {
+                        width: set_loop_label.width + 20px;
+                        height: 24px;
+                        border-radius: 3px;
+                        accessible-role: button;
+                        accessible-id: "transport-set-loop-from-selection-button";
+                        accessible-label: @tr("按选区设循环");
+                        accessible-action-default => { root.set-loop-from-selection(); }
+                        background: set_loop_touch.has-hover ? Tokens.bg-lane2 : transparent;
+                        border-width: set_loop_touch.has-hover ? 1px : 0;
+                        border-color: Tokens.line-strong;
+                        set_loop_label := Text {
+                            x: 10px;
+                            y: 0;
+                            height: parent.height;
+                            text: @tr("按选区设循环");
+                            font-size: 12px;
+                            color: Tokens.skin-text-strong;
+                            vertical-alignment: center;
+                        }
+                        set_loop_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.set-loop-from-selection(); }
+                        }
+                        TooltipBubble { text: @tr("把选中片段的范围设为循环区间"); is-visible: set_loop_touch.has-hover; }
+                    }
+
+                    // ⭐ T-FIX-889：循环区间只读读数（`"{start} - {end}"`，未设为 `"—"`）。
+                    //    与时间码读数同款：只读文本节点（⛔ 不是可点键），屏读器读成文本。
+                    Rectangle {
+                        height: 24px;
+                        accessible-role: text;
+                        accessible-id: "transport-loop-range-readout";
+                        accessible-label: @tr("循环区间");
+                        accessible-value: root.cycle-range-readout;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 0px;
+                            Text {
+                                text: root.cycle-range-readout;
+                                min-width: 48px;
+                                horizontal-alignment: left;
+                                font-family: Tokens.font-mono;
+                                font-size: 12px;
+                                color: Theme.accent;
+                                font-weight: 400;
+                            }
+                        }
                     }
 
                     // 6. Metronome Toggle Button (♩)
