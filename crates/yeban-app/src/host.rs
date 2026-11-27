@@ -14798,12 +14798,20 @@ fn humanize_module_receipt(receipt: &str) -> String {
     };
     let ok = field("outcome").as_deref() == Some("ok");
     let message = field("message").unwrap_or_default();
+    // ⭐ T-FIX-990：回执带 `durability_warning="…"` 时成功人话必须把警告说出来
+    // （与保存 `saved_status_text` 的"已保存（持久化警告：…）"同口径：警告是成功
+    // 的一部分，⛔ 不是失败；只在 `outcome=ok` 时缀，失败臂维持原样）。
+    // 字段是引号值（与 `clipping_note` 同款），`field()` 的引号分支会取到闭合引号。
+    let durability_clause = match (ok, field("durability_warning")) {
+        (true, Some(warning)) => format!("（持久化警告：{warning}）"),
+        _ => String::new(),
+    };
     let verdict = if ok { "完成" } else { "没做成" };
     if action_zh.is_empty() {
         // ⭐ T-FIX-167：不认识的 action 也不能把失败原因吞掉 —— 成功维持现状，
         // 失败必须带出 message（有 message 才缀，否则仍是旧的那一句）。
         return if ok {
-            "上一步操作完成".to_owned()
+            format!("上一步操作完成{durability_clause}")
         } else if message.is_empty() {
             "上一步操作没做成".to_owned()
         } else {
@@ -14811,9 +14819,9 @@ fn humanize_module_receipt(receipt: &str) -> String {
         };
     }
     if message.is_empty() {
-        format!("{action_zh} {verdict}")
+        format!("{action_zh} {verdict}{durability_clause}")
     } else {
-        format!("{action_zh} {verdict} · {message}")
+        format!("{action_zh} {verdict}{durability_clause} · {message}")
     }
 }
 
@@ -14866,6 +14874,81 @@ fn clipping_warning_line(clipped_samples: u64, suggested_trim_db: f32) -> String
         "⚠ 母带削波：{clipped_samples} 个样本，建议减 {:.1} dB",
         suggested_trim_db.abs()
     )
+}
+
+/// T-FIX-990：MIDI 导出成功回执的字段（纯函数；判据见同名单元测试）。
+///
+/// 持久化警告只在有警告时多一条 `durability_warning="…"`（与 `clipping_note`
+/// 同款引号值，内容 = CLI 同一条 `committed=true durability=warning` 的原文）；
+/// 干净路径回执逐字不变（`export_menu_repro_167` 的臂 1 仍认这 8 条）。
+fn midi_export_receipt_fields(report: &crate::export_midi::MidiExportReport) -> Vec<String> {
+    let mut fields = vec![
+        "outcome=ok".to_owned(),
+        format!("path={}", report.path.display()),
+        format!("bytes={}", report.bytes),
+        format!("ppq={}", report.ppq),
+        format!(
+            "format={}",
+            match report.format {
+                yeban_midi::midi::MidiFormat::SingleTrack => "single-track",
+                yeban_midi::midi::MidiFormat::Parallel => "parallel",
+            }
+        ),
+        format!("tracks={}", report.tracks),
+        format!("notes={}", report.notes),
+        format!("tempos={}", report.tempos),
+    ];
+    if let Some(warning) = report.durability_warning.as_deref() {
+        fields.push(format!("durability_warning=\"{warning}\""));
+    }
+    fields
+}
+
+/// T-FIX-990：MIDI 导出成功提示条（纯函数）。
+///
+/// 有持久化警告时警告写在路径之前（与保存 `saved_status_text` 同理由：
+/// 省略号只裁尾，警告不能被裁掉；无警告时逐字沿用旧文案）。
+fn midi_export_success_line(report: &crate::export_midi::MidiExportReport) -> String {
+    match report.durability_warning.as_deref() {
+        Some(warning) => format!(
+            "导出 MIDI 完成（持久化警告：{warning}）· {}",
+            report.path.display()
+        ),
+        None => format!("导出 MIDI 完成 · {}", report.path.display()),
+    }
+}
+
+/// T-FIX-990：分轨导出成功回执的字段（纯函数；判据见同名单元测试）。
+///
+/// `durability_warnings={n}` 计数是既有字段（T-FIX-691）；有警告时再多一条
+/// `durability_warning="…"`（首条原文 —— 人话行与 `toast_message` 读同一份
+/// 首条，⛔ 不各取一份）；干净路径回执逐字不变。
+fn stems_export_receipt_fields(
+    report: &crate::export_stems::ExportStemsReport,
+    dir: &std::path::Path,
+) -> Vec<String> {
+    let mut fields = vec![
+        "outcome=ok".to_owned(),
+        format!("dir={}", dir.display()),
+        format!("stems={}", report.stems.len()),
+        format!("skipped={}", report.skipped.len()),
+        format!("bytes={}", report.bytes_total),
+        format!("renders={}", report.renders),
+        format!("manifest={}", report.manifest_path.display()),
+        format!("audio_clips_rendered={}", report.audio_clips_rendered),
+        format!("audio_clips_skipped={}", report.audio_clips_skipped),
+    ];
+    if !report.durability_warnings.is_empty() {
+        fields.push(format!(
+            "durability_warnings={}",
+            report.durability_warnings.len()
+        ));
+        fields.push(format!(
+            "durability_warning=\"{}\"",
+            report.durability_warnings[0]
+        ));
+    }
+    fields
 }
 
 /// SFZ 解码读数的**汇总计数**（只从 `WavExportReport.sfz_decoded` 抄数，
@@ -20288,29 +20371,12 @@ pub fn wire_module_actions_with_shared(
                         // ⭐ `T-FIX-57`：与 `export-wav` 对齐 —— 成功同样给一条
                         // 带完整路径的可见提示条（此前只有状态栏一行，见
                         // `report_export_success` 的登记）。
-                        let success_line = format!("导出 MIDI 完成 · {}", report.path.display());
+                        // ⭐ T-FIX-990：回执字段与提示条都走纯函数（`midi_export_receipt_fields` /
+                        // `midi_export_success_line`）：有持久化警告时警告进回执字段、
+                        // 提示条与人话行（`humanize_module_receipt` 读同一字段），⛔ 不静默。
+                        let success_line = midi_export_success_line(&report);
                         (
-                            module_receipt(
-                                "export-midi",
-                                &[
-                                    "outcome=ok".to_owned(),
-                                    format!("path={}", report.path.display()),
-                                    format!("bytes={}", report.bytes),
-                                    format!("ppq={}", report.ppq),
-                                    format!(
-                                        "format={}",
-                                        match report.format {
-                                            yeban_midi::midi::MidiFormat::SingleTrack => {
-                                                "single-track"
-                                            }
-                                            yeban_midi::midi::MidiFormat::Parallel => "parallel",
-                                        }
-                                    ),
-                                    format!("tracks={}", report.tracks),
-                                    format!("notes={}", report.notes),
-                                    format!("tempos={}", report.tempos),
-                                ],
-                            ),
+                            module_receipt("export-midi", &midi_export_receipt_fields(&report)),
                             true,
                             Some(success_line),
                         )
@@ -29793,6 +29859,251 @@ mod tests {
         );
     }
 
+    /// T-FIX-990：MIDI 导出成功回执的干净臂 —— 无警告时字段逐字等于旧的 8 条。
+    #[test]
+    fn midi_export_receipt_fields_clean_are_byte_identical() {
+        let report = crate::export_midi::MidiExportReport {
+            path: std::path::PathBuf::from("/tmp/x.mid"),
+            bytes: 128,
+            temp_name: "x.tmp-1".to_owned(),
+            durability_warning: None,
+            tracks: 2,
+            notes: 6,
+            tempos: 1,
+            ppq: 960,
+            format: yeban_midi::midi::MidiFormat::Parallel,
+            channels_reused: 0,
+            max_tracks_per_channel: 1,
+        };
+        assert_eq!(
+            super::midi_export_receipt_fields(&report),
+            vec![
+                "outcome=ok".to_owned(),
+                "path=/tmp/x.mid".to_owned(),
+                "bytes=128".to_owned(),
+                "ppq=960".to_owned(),
+                "format=parallel".to_owned(),
+                "tracks=2".to_owned(),
+                "notes=6".to_owned(),
+                "tempos=1".to_owned(),
+            ],
+            "干净路径回执不得凭空多字段"
+        );
+        assert_eq!(
+            super::midi_export_success_line(&report),
+            "导出 MIDI 完成 · /tmp/x.mid",
+            "干净路径提示条必须逐字沿用旧文案"
+        );
+    }
+
+    /// T-FIX-990：MIDI 导出有持久化警告时 —— 回执多一条 `durability_warning="…"`
+    ///（全文），提示条里警告排在路径之前（省略号只裁尾）。
+    #[test]
+    fn midi_export_receipt_fields_and_success_line_carry_a_durability_warning() {
+        let warning = "文件已替换，但目录项未确认持久化（刷目录 `/tmp` 失败: 注入）";
+        let report = crate::export_midi::MidiExportReport {
+            path: std::path::PathBuf::from("/tmp/x.mid"),
+            bytes: 128,
+            temp_name: "x.tmp-1".to_owned(),
+            durability_warning: Some(warning.to_owned()),
+            tracks: 2,
+            notes: 6,
+            tempos: 1,
+            ppq: 960,
+            format: yeban_midi::midi::MidiFormat::Parallel,
+            channels_reused: 0,
+            max_tracks_per_channel: 1,
+        };
+        let fields = super::midi_export_receipt_fields(&report);
+        assert_eq!(
+            fields.len(),
+            9,
+            "有警告时回执是 8 条 + 1 条警告字段: {fields:?}"
+        );
+        assert_eq!(
+            fields[8],
+            format!("durability_warning=\"{warning}\""),
+            "警告字段必须带全文（引号值）: {fields:?}"
+        );
+        let line = super::midi_export_success_line(&report);
+        assert!(
+            line.contains("持久化警告"),
+            "提示条必须点名持久化警告: {line}"
+        );
+        assert!(line.contains(warning), "提示条必须带警告全文: {line}");
+        assert!(
+            line.find("持久化警告").expect("警告在") < line.find("/tmp/x.mid").expect("路径在"),
+            "警告必须排在路径之前（省略号只裁尾）: {line}"
+        );
+        assert!(!line.contains("导出失败"), "警告不是失败: {line}");
+    }
+
+    /// T-FIX-990：分轨导出成功回执的干净臂 —— 无警告时字段逐字等于旧的 9 条。
+    #[test]
+    fn stems_export_receipt_fields_clean_are_byte_identical() {
+        let report = crate::export_stems::ExportStemsReport {
+            dir: std::path::PathBuf::from("/tmp/stems-out"),
+            stems: Vec::new(),
+            skipped: Vec::new(),
+            bytes_total: 0,
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            audio_clips_rendered: 0,
+            audio_clips_skipped: 0,
+            manifest_path: std::path::PathBuf::from("/tmp/stems-out/stems-manifest.json"),
+            durability_warnings: Vec::new(),
+        };
+        assert_eq!(
+            super::stems_export_receipt_fields(&report, std::path::Path::new("/tmp/stems-out")),
+            vec![
+                "outcome=ok".to_owned(),
+                "dir=/tmp/stems-out".to_owned(),
+                "stems=0".to_owned(),
+                "skipped=0".to_owned(),
+                "bytes=0".to_owned(),
+                "renders=1".to_owned(),
+                "manifest=/tmp/stems-out/stems-manifest.json".to_owned(),
+                "audio_clips_rendered=0".to_owned(),
+                "audio_clips_skipped=0".to_owned(),
+            ],
+            "干净路径回执不得凭空多字段"
+        );
+    }
+
+    /// T-FIX-990：分轨导出有持久化警告时 —— 计数保留，再多一条首条原文；
+    /// 第二条警告只计条数，⛔ 不进人话行（与保存"首条原因"同口径）。
+    #[test]
+    fn stems_export_receipt_fields_carry_the_first_durability_warning() {
+        let first = "文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）";
+        let second = "文件已替换，但目录项未确认持久化（刷目录 `/tmp/other` 失败: 注入）";
+        let report = crate::export_stems::ExportStemsReport {
+            dir: std::path::PathBuf::from("/tmp/stems-out"),
+            stems: Vec::new(),
+            skipped: Vec::new(),
+            bytes_total: 0,
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            audio_clips_rendered: 0,
+            audio_clips_skipped: 0,
+            manifest_path: std::path::PathBuf::from("/tmp/stems-out/stems-manifest.json"),
+            durability_warnings: vec![first.to_owned(), second.to_owned()],
+        };
+        let fields =
+            super::stems_export_receipt_fields(&report, std::path::Path::new("/tmp/stems-out"));
+        assert_eq!(
+            fields.len(),
+            11,
+            "有警告时回执是 9 条 + 计数 + 首条: {fields:?}"
+        );
+        assert_eq!(
+            fields[9], "durability_warnings=2",
+            "计数必须照实报: {fields:?}"
+        );
+        assert_eq!(
+            fields[10],
+            format!("durability_warning=\"{first}\""),
+            "原文行必须是首条警告全文: {fields:?}"
+        );
+        assert!(
+            !fields[10].contains("/tmp/other"),
+            "第二条警告不得进人话行: {fields:?}"
+        );
+    }
+
+    /// T-FIX-990：人话行（常驻回执）—— 带警告字段的成功回执必须缀警告全文；
+    /// 干净回执逐字不变；失败臂即使带字段也不缀警告（警告不是失败原因）。
+    #[test]
+    fn humanize_module_receipt_names_a_durability_warning() {
+        let warning = "文件已替换，但目录项未确认持久化（刷目录 `/tmp` 失败: 注入）";
+        let warned = super::module_receipt(
+            "export-midi",
+            &[
+                "outcome=ok".to_owned(),
+                "path=/tmp/x.mid".to_owned(),
+                format!("durability_warning=\"{warning}\""),
+            ],
+        );
+        assert_eq!(
+            super::humanize_module_receipt(&warned),
+            format!("导出 MIDI 完成（持久化警告：{warning}）"),
+            "人话行必须缀警告全文"
+        );
+        let clean = super::module_receipt(
+            "export-midi",
+            &["outcome=ok".to_owned(), "path=/tmp/x.mid".to_owned()],
+        );
+        assert_eq!(
+            super::humanize_module_receipt(&clean),
+            "导出 MIDI 完成",
+            "干净回执人话行逐字不变"
+        );
+        let failed = super::module_receipt(
+            "export-midi",
+            &[
+                "outcome=error".to_owned(),
+                "error=export-midi".to_owned(),
+                "message=\"写盘失败\"".to_owned(),
+                format!("durability_warning=\"{warning}\""),
+            ],
+        );
+        let failed_text = super::humanize_module_receipt(&failed);
+        assert!(
+            !failed_text.contains("持久化警告"),
+            "失败臂不得缀警告（警告不是失败原因）: {failed_text}"
+        );
+        assert!(
+            failed_text.contains("写盘失败"),
+            "失败原因仍要带出: {failed_text}"
+        );
+    }
+
+    /// T-FIX-990：真后端 → 真显示函数（`DIR_SYNC_INJECTION` 注入刷目录失败）：
+    /// MIDI 导出仍成功，但回执字段、提示条、人话行三处都必须带警告。
+    /// （`DIR_SYNC_INJECTION` 是 `#[cfg(all(test, unix))]` 的 crate 内注入缝；
+    /// 分轨的同款端到端在 `yeban-mcp` 的流式判据里（`streaming_export_carries_…`），
+    /// 本 crate 的分轨显示臂由上面两条纯函数判据 + `toast_message` 判据覆盖。）
+    #[cfg(unix)]
+    #[test]
+    fn midi_export_gui_surfaces_carry_a_real_durability_warning() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-midi-durability-gui-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let target = dir.join("warned.mid");
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let report =
+            crate::export_midi::export_project_to_file(&crate::bridge::demo_project(), &target);
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+        let report = report.expect("rename 已成功 ⇒ 导出已提交，不是失败");
+        let warning = report
+            .durability_warning
+            .as_deref()
+            .expect("刷目录失败时回执必须带持久化警告");
+        assert!(
+            warning.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {warning}"
+        );
+        let fields = super::midi_export_receipt_fields(&report);
+        assert!(
+            fields.iter().any(|field| field.contains(warning)),
+            "回执字段必须带警告全文: {fields:?}"
+        );
+        let line = super::midi_export_success_line(&report);
+        assert!(line.contains(warning), "提示条必须带警告全文: {line}");
+        let receipt = super::module_receipt("export-midi", &fields);
+        let humanized = super::humanize_module_receipt(&receipt);
+        assert!(
+            humanized.contains(warning),
+            "人话行必须带警告全文: {humanized}"
+        );
+        assert!(target.exists(), "警告不是失败，文件必须完整在位");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⭐⭐ **判据（T-FIX-71，选择器清单）**：第一项恒为「系统默认」；
     /// 选择在枚举里 ⇒ 选中它；选择不在枚举里 ⇒ 追加「（未连接）」行并
     /// 选中（⛔ 不悄悄换成默认）；没选过 ⇒ 选中第一项。
@@ -35038,29 +35349,11 @@ pub fn wire_aether_actions(
                                     // （`report_export_success`，T-FIX-57）。⛔ 不再只留
                                     // 一条 4 秒就收走的 toast。T-FIX-418 的文案判定仍在
                                     // `export_stems::toast_message` 里，这里只拼、不再判。
-                                    let mut fields = vec![
-                                        "outcome=ok".to_owned(),
-                                        format!("dir={}", out_for_msg.display()),
-                                        format!("stems={}", report.stems.len()),
-                                        format!("skipped={}", report.skipped.len()),
-                                        format!("bytes={}", report.bytes_total),
-                                        format!("renders={}", report.renders),
-                                        format!("manifest={}", report.manifest_path.display()),
-                                        format!(
-                                            "audio_clips_rendered={}",
-                                            report.audio_clips_rendered
-                                        ),
-                                        format!(
-                                            "audio_clips_skipped={}",
-                                            report.audio_clips_skipped
-                                        ),
-                                    ];
-                                    if !report.durability_warnings.is_empty() {
-                                        fields.push(format!(
-                                            "durability_warnings={}",
-                                            report.durability_warnings.len()
-                                        ));
-                                    }
+                                    // ⭐ T-FIX-990：回执字段走纯函数（`stems_export_receipt_fields`）：
+                                    // `durability_warnings={n}` 计数既有，有警告时再多一条
+                                    // `durability_warning="…"`（首条原文），人话行与 toast
+                                    // 读同一份首条，⛔ 不静默。
+                                    let fields = stems_export_receipt_fields(&report, &out_for_msg);
                                     apply_module_receipt(
                                         &ui,
                                         &module_receipt("export-stems", &fields),

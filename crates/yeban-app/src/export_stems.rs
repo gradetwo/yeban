@@ -189,7 +189,21 @@ impl ExportStemsReport {
 ///   括号里仍保留轨级 `skipped` 数（整轨不出文件的轨），两者口径不同，⛔ 不合并。
 #[must_use]
 pub fn toast_message(report: &ExportStemsReport, dir: &std::path::Path) -> String {
-    if report.audio_clips_skipped == 0 {
+    // T-FIX-990：持久化警告也是"分轨警告"（与未渲染片段同档）：警告子句只追加，
+    // ⛔ 不改既有两条臂的文案 —— 零警告时逐字沿用旧文案（既有判据钉死）。
+    // 多条警告时只报首条原文（与保存"首条原因"、回执首条口径一致），条数照实报。
+    let mut clauses: Vec<String> = Vec::new();
+    if report.audio_clips_skipped > 0 {
+        clauses.push(format!("{} 个音频片段未渲染", report.audio_clips_skipped));
+    }
+    if !report.durability_warnings.is_empty() {
+        clauses.push(format!(
+            "持久化警告 {} 条，首条：{}",
+            report.durability_warnings.len(),
+            report.durability_warnings[0]
+        ));
+    }
+    if clauses.is_empty() {
         format!(
             "[导出] 分轨完成：{} 条（跳过 {}）→ {}",
             report.stems.len(),
@@ -198,9 +212,9 @@ pub fn toast_message(report: &ExportStemsReport, dir: &std::path::Path) -> Strin
         )
     } else {
         format!(
-            "[导出] 分轨警告：{} 条（{} 个音频片段未渲染；跳过 {}）→ {}",
+            "[导出] 分轨警告：{} 条（{}；跳过 {}）→ {}",
             report.stems.len(),
-            report.audio_clips_skipped,
+            clauses.join("；"),
             report.skipped.len(),
             dir.display(),
         )
@@ -439,6 +453,43 @@ mod tests {
             !lines[0].contains("durability"),
             "健康路径不得凭空多出 durability 字样: {}",
             lines[0]
+        );
+    }
+
+    /// 判据（T-FIX-990）：有持久化警告时 toast 必须降级为警告并点名条数与首条原文；
+    /// 无未渲染片段时也不得再报"分轨完成"。
+    #[test]
+    fn toast_message_names_a_durability_warning() {
+        let report = report_with(vec![
+            "文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）".to_owned(),
+        ]);
+        let toast = toast_message(&report, Path::new("/tmp/stems-out"));
+        assert!(
+            toast.starts_with("[导出] 分轨警告"),
+            "有持久化警告时 toast 必须降级为警告，实得 {toast}"
+        );
+        assert!(
+            toast.contains("持久化警告 1 条"),
+            "警告里必须点名条数，实得 {toast}"
+        );
+        assert!(
+            toast.contains("目录项未确认持久化"),
+            "警告里必须带首条原文，实得 {toast}"
+        );
+        assert!(
+            !toast.contains("分轨完成"),
+            "警告文案里不得再出现\"分轨完成\"，实得 {toast}"
+        );
+    }
+
+    /// 上条判据的反面（T-FIX-990）：无持久化警告时 toast 与从前逐字一致。
+    #[test]
+    fn toast_message_without_warnings_is_unchanged() {
+        let report = report_with(Vec::new());
+        let toast = toast_message(&report, Path::new("/tmp/stems-out"));
+        assert_eq!(
+            toast, "[导出] 分轨完成：0 条（跳过 0）→ /tmp/stems-out",
+            "零警告时 toast 必须逐字沿用旧文案"
         );
     }
 }
