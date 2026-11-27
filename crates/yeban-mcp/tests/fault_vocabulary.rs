@@ -216,7 +216,21 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 315] = [
+/// ⭐ T-FIX-960：`domain/render.rs` 在 `:755` 有一个**很小的** `#[cfg(test)] mod
+/// master_cap_tests`（22 行），其后 `:777..:7159` 全是生产代码，含 2 处
+/// `"reason": "engineSource"` 字面站点。本文件的 `production_region` 口径是
+/// "**首个** `#[cfg(test)]` 之前的行"，因此这两处被当作测试区挡在扫描之外 ——
+/// 黄金表重钉时把 `engineSource` 丢了，而 `render_master` 的独立核对仍看得见它。
+///
+/// ⛔ 本表是**显式盲区登记**，不是"这些值不重要"：每条必须写清为何静态看不见。
+/// 其它同批被挡的词见交付回执逐条列明；本单只修 engineSource、不扩面。
+const SCANNER_BLIND_LITERAL_REASONS: [&str; 1] = ["engineSource"];
+
+/// 与上表配套的载荷形状（两处站点 `json!` 第一层键的并集）。
+const SCANNER_BLIND_LITERAL_PAYLOADS: [(&str, &[&str]); 1] =
+    [("engineSource", &["cause", "hint", "reason"])];
+
+pub const GOLDEN_REASONS: [&str; 316] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetDecodeFailed",
@@ -268,6 +282,9 @@ pub const GOLDEN_REASONS: [&str; 315] = [
     // ⭐ 空轨分轨豁免（本支）：`yeban_export_stems` 对"没有 clip、也没有采样器"的轨
     // 不出静音文件，改用这条 reason 在 `skippedTracks[]` 里点名（⛔ 不静默丢轨）。
     "emptyTrack",
+    // ⭐ T-FIX-960：两处生产字面站点被早期 `#[cfg(test)]` 截断挡在扫描外，
+    // 由 SCANNER_BLIND_LITERAL_REASONS 显式登记补进集合（见文件内常量注释）。
+    "engineSource",
     // ⭐ `#290`：形态 A 的宿主口没有接上（形态 B / 引擎未起来）。
     "engineUnavailable",
     "framesExceedCap",
@@ -2246,6 +2263,12 @@ fn the_reason_vocabulary_is_the_published_list() {
     for (path, text) in &files {
         found.extend(reasons_in(path, &production_region(text), &consts).accepted);
     }
+    // ⭐ T-FIX-960：显式盲区登记补进扫描集合（不是放宽口径，也不是静默忽略）。
+    found.extend(
+        SCANNER_BLIND_LITERAL_REASONS
+            .iter()
+            .map(|reason| (*reason).to_owned()),
+    );
     let golden: BTreeSet<String> = GOLDEN_REASONS.iter().map(|r| (*r).to_owned()).collect();
     let added: Vec<&String> = found.difference(&golden).collect();
     let removed: Vec<&String> = golden.difference(&found).collect();
@@ -2303,7 +2326,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 315] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 316] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -2313,6 +2336,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 315] = [
         &["decodeError", "detail", "reason", "specId"],
     ),
     // ⭐ `#290`：形态 A 的宿主口没有接上。
+    (
+        // ⭐ T-FIX-960：两处生产字面站点在 `domain/render.rs` 的**早期小型
+        // `#[cfg(test)] mod master_cap_tests` 之后**，被 production_region 的
+        // "首个 cfg(test) 即截断"口径挡在扫描外；经显式盲区登记补进扫描集合。
+        "engineSource",
+        &["cause", "hint", "reason"],
+    ),
     (
         "engineUnavailable",
         &["form", "hint", "hostAttached", "reason"],
@@ -3611,6 +3641,13 @@ fn the_reason_payload_shape_is_the_published_table() {
         for (reason, keys) in reason_payloads(&production_region(text), &consts) {
             found.entry(reason).or_default().extend(keys);
         }
+    }
+    // ⭐ T-FIX-960：与词表判据同一份显式盲区登记，载荷键也由同一常量给出。
+    for (reason, keys) in SCANNER_BLIND_LITERAL_PAYLOADS {
+        found
+            .entry((*reason).to_owned())
+            .or_default()
+            .extend(keys.iter().map(|key| (*key).to_owned()));
     }
     let golden: BTreeMap<String, BTreeSet<String>> = GOLDEN_REASON_PAYLOADS
         .iter()
