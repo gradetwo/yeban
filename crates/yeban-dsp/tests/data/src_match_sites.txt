@@ -11,7 +11,7 @@
 #   ③ 注释：跳过 trim_start() 后以 // 开头的行。
 #   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
 # 合计 134 处：literal 69 ／ variable 65；其中 **twin_point_risk 0 处**
-src/band_solo.rs|241|variable|&ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/band_solo.rs|253|variable|&ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|443|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|444|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/compressor.rs|1431|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
