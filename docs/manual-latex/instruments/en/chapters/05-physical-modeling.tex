@@ -21,7 +21,7 @@ The difference between the four models is \textbf{how partials are spaced}. At t
 Model & Frequency spacing & Key parameter \\
 \hline
 String & $f_k=f_0\,k\sqrt{1+B k^2}$ & Stiffness $B$, default 0.0005; $B=0$ is pure harmonic \\
-Beam & $f_n=f_0\,n\sqrt{(1-b)+b n^2}$ & String↔beam mix $b$, default 0; $b=0$ soft string, $b=1$ beam \\
+Beam & $f_n=f_0\,n\sqrt{(1-b)+b n^2}$ & String$\leftrightarrow$beam mix $b$, default 0; $b=0$ soft string, $b=1$ beam \\
 Membrane & $f_{m,n}=f_0\dfrac{\sqrt{m^2+(n/a)^2}}{\sqrt{1+1/a^2}}$ & Aspect ratio $a$, default 1; two-dimensional \\
 Plate & $f_{m,n}=f_0\dfrac{m^2+(n/a)^2}{1+1/a^2}$ & Aspect ratio $a$, default 1; two-dimensional \\
 \hline
@@ -59,7 +59,7 @@ Parameter & Meaning & Range & Default \\
 \texttt{damping} & Base damping ratio $\zeta_0$ & 0.0001–1 & 0.005 \\
 \texttt{damping\_slope} & Damping slope vs frequency ratio $\zeta_1$ & 0–10 & 0.02 \\
 \texttt{stiffness} & String stiffness $B$ & 0–1 & 0.0005 \\
-\texttt{mix} & Beam string↔beam mix $b$ & 0–1 & 0 \\
+\texttt{mix} & Beam string$\leftrightarrow$beam mix $b$ & 0–1 & 0 \\
 \texttt{aspect} & 2D aspect ratio $a$ & $\ge0.01$ & 1 \\
 \texttt{excitation\_x} / \texttt{excitation\_y} & Excitation position (normalized) & 0–1 & 0.5 \\
 \texttt{pickup\_x} / \texttt{pickup\_y} & Pickup position (normalized) & 0–1 & 0.5 \\

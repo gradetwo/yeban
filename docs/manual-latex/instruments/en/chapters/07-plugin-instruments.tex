@@ -47,7 +47,7 @@ Load to current track & Validate-load and write a device definition & Usable row
 
 Default search paths are platform-specific: Linux uses \texttt{\textasciitilde/.vst3} and \texttt{/usr/lib/vst3}; macOS uses \texttt{\textasciitilde/Library/Audio/Plug-Ins/VST3} and \texttt{/Library/Audio/Plug-Ins/VST3}; Windows uses \texttt{\%COMMONPROGRAMFILES\%/VST3}. Extra dirs are operator-supplied; nonexistent dirs are skipped silently.
 
-⚠ A scan directory is not automatically a loadable directory. The path gate recognizes roots from the \texttt{YEBAN\_VST3\_PATHS} environment variable plus platform defaults; extra dirs typed in the panel only participate in scanning and are not in that root set. To load a plugin found in an extra dir, put the dir into \texttt{YEBAN\_VST3\_PATHS} and restart; otherwise you will see "scanned but load rejected".
+Warning: A scan directory is not automatically a loadable directory. The path gate recognizes roots from the \texttt{YEBAN\_VST3\_PATHS} environment variable plus platform defaults; extra dirs typed in the panel only participate in scanning and are not in that root set. To load a plugin found in an extra dir, put the dir into \texttt{YEBAN\_VST3\_PATHS} and restart; otherwise you will see "scanned but load rejected".
 
 \section{Load contract}
 

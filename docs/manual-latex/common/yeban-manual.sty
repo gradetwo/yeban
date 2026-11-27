@@ -22,6 +22,14 @@
 % on background layers; load those libraries centrally so every
 % volume builds without per-volume setup.
 \usetikzlibrary{positioning,calc,backgrounds,arrows,arrows.meta}
+% English volumes quote Chinese classical texts in the original
+% (chapter epigraphs keep the source text plus a translation), so
+% they need a CJK fallback font; Chinese volumes already load ctex.
+\@ifpackageloaded{ctex}{}{%
+  \RequirePackage{xeCJK}%
+  \setCJKmainfont{FandolSong-Regular}%
+  \setCJKsansfont{FandolHei-Regular}%
+}
 \RequirePackage{makeidx}
 % Chapters name identifiers with underscores inside \texttt and
 % backtick code spans (pitch_keycenter, tape_drive); the underscore

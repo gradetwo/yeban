@@ -82,7 +82,7 @@ Freeverb 混响 & 8 梳状 + 4 全通/声道，单声道输入取中值，湿路
 
 \texttt{reverb\_damp} 只管尾巴的高频：数值越大，尾巴越暗、越短；它不影响直达声。\texttt{reverb\_predelay} 只推湿路，干声不动；0.012 s 是默认的 12 ms，拉到 0.1 s 就是 100 ms。\texttt{reverb\_wet} 是湿路电平，DSP 里干路自动取 1 − wet；它不是一个独立的“dry/wet”旋钮。
 
-⚠ 参数名有坑：\texttt{reverb\_mix} 与 \texttt{reverb\_width} 是引擎\textbf{刻意不认}的拼写。湿干比要写 \texttt{reverb\_wet}（或别名 \texttt{reverb\_wet\_mix}）；宽度没有曝光到契约，内部默认 0.8，不能拿 \texttt{reverb\_width} 当旋钮写。写成不认的名字，设备卡会把它列进“未识别参数”，声音不变。
+注意：参数名有坑：\texttt{reverb\_mix} 与 \texttt{reverb\_width} 是引擎\textbf{刻意不认}的拼写。湿干比要写 \texttt{reverb\_wet}（或别名 \texttt{reverb\_wet\_mix}）；宽度没有曝光到契约，内部默认 0.8，不能拿 \texttt{reverb\_width} 当旋钮写。写成不认的名字，设备卡会把它列进“未识别参数”，声音不变。
 
 \section{卷积混响的参数}
 

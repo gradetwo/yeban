@@ -65,7 +65,7 @@ Parameter & Meaning & Range & Default \\
 \texttt{tape\_drive} & Saturation drive $g=1+9d$ & 0–1 & 0 \\
 \texttt{tape\_mix} & Dry/wet; 0 = dry passthrough & 0–1 & 0 \\
 \texttt{tape\_trim\_db} & Output trim & −24–24 dB & 0 \\
-\texttt{tape\_hf\_hz} & Wet-path one-pole low-pass; ≥20000 bypasses & 2000–20000 Hz & 20000 \\
+\texttt{tape\_hf\_hz} & Wet-path one-pole low-pass; $\geq$20000 bypasses & 2000–20000 Hz & 20000 \\
 \texttt{tape\_asym} & Curve asymmetry; 0 = odd only, >0 adds even & 0–0.5 & 0 \\
 \texttt{tape\_wow\_rate\_hz} & Transport wow rate & 0.05–2 Hz & 0.5 \\
 \texttt{tape\_wow\_depth\_ms} & Wow depth; 0 = no modulation & 0–8 ms & 0 \\
@@ -82,7 +82,7 @@ The curve is `pade_tanh(g·x)/g`; small-signal gain is about 1. `tape_trim_db` c
 
 `tape_asym > 0` produces even harmonics, the source of "warmth", but only when the stage is built; small-signal gain drops by about 1 dB, so use trim. `tape_wow` / `tape_flutter` are transport wow and flutter: they modulate the whole signal (dry included), not a chorus-style wet-only modulated delay. Their phase and drift are pure functions of `(seed, frame)`, so the same seed renders bit-identically. The tape stage has 31 samples of oversampling round-trip latency, reported into the device and included in PDC.
 
-⚠ The channel strip also has `filter_drive`; that is filter drive, not tape saturation, and it does not apply to sampler tracks. To saturate a sampler track, use the tape stage; do not treat `filter_drive` as "sampler saturation".
+Warning: The channel strip also has `filter_drive`; that is filter drive, not tape saturation, and it does not apply to sampler tracks. To saturate a sampler track, use the tape stage; do not treat `filter_drive` as "sampler saturation".
 
 \section{Soft clipping and bit crushing}
 
@@ -124,7 +124,7 @@ Parameter & Meaning & Range & Default \\
 \label{tab:crusher-params}
 \end{table}
 
-⚠ The crusher's default 16 bit / 1 / 0 is not bit-transparent: quantization really changes the low bits. As soon as the device is projected, it changes the output; do not treat it as "transparent by default".
+Warning: The crusher's default 16 bit / 1 / 0 is not bit-transparent: quantization really changes the low bits. As soon as the device is projected, it changes the output; do not treat it as "transparent by default".
 
 \section{Adjacent devices that are not modulation}
 

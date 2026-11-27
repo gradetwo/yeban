@@ -53,7 +53,7 @@ The drum machine has 16 slots. A 17th simultaneous trigger steals a sounding slo
 
 \section{Step sequencing}
 
-A factory style bar is 16 sixteenth-note steps (PPQ 960, 4 beats/bar ⇒ 240 ticks per step). Each step stores three things: velocity, ratchet, and tier.
+A factory style bar is 16 sixteenth-note steps (PPQ 960, 4 beats/bar $\Rightarrow$ 240 ticks per step). Each step stores three things: velocity, ratchet, and tier.
 
 \begin{center}
 \begin{tikzpicture}[font=\scriptsize, x=6.4mm, y=7mm]
@@ -73,9 +73,9 @@ The C/S/E marks merely indicate tier 0/1/2; they are not the actual pattern of a
 
 Intensity does not change tiers, only velocity: the factor is $0.55 + 0.45 \times$ intensity/100. Intensity 100 equals the preset's original velocity; intensity 0 compresses it to 55%. Swing is in per-mille: 500 is straight, and larger values delay every odd sixteenth step more. The UI accepts 500–700; the generation core itself accepts 500–1000. Ratchet divides one step into up to 8 sub-hits, with sub-hit velocity scaled by $0.85 + 0.15 \times k/n$; it is not "retrigger the same step", but multiple onsets inside one step.
 
-Fill only takes effect when "fill requested, preset has fill, and total bars ≥ 2": the last bar is replaced entirely by the fill lane table, and lanes absent from fill rest in that bar. Melodic lanes may carry an optional fourth element, pitch, but only for cowbell and 808 lanes; generation writes it as a constant pitch-bend curve, not per-sub-hit transposition.
+Fill only takes effect when "fill requested, preset has fill, and total bars $\geq$ 2": the last bar is replaced entirely by the fill lane table, and lanes absent from fill rest in that bar. Melodic lanes may carry an optional fourth element, pitch, but only for cowbell and 808 lanes; generation writes it as a constant pitch-bend curve, not per-sub-hit transposition.
 
-Determinism is a hard contract: same style, same parameters, same seed ⇒ byte-identical clip. The only random source is ghost-note decision, a pure hash of seed, GM key, and global step; it reads no clock and no global state.
+Determinism is a hard contract: same style, same parameters, same seed $\Rightarrow$ byte-identical clip. The only random source is ghost-note decision, a pure hash of seed, GM key, and global step; it reads no clock and no global state.
 
 \section{Drum presets and what generation produces}
 

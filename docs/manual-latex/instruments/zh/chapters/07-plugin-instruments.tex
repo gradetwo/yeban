@@ -47,7 +47,7 @@ AU / Audio Unit & 未提供 & 未提供 & 面板只列 VST3 \\
 
 默认搜索路径按平台：Linux 是 \texttt{\textasciitilde/.vst3} 与 \texttt{/usr/lib/vst3}；macOS 是 \texttt{\textasciitilde/Library/Audio/Plug-Ins/VST3} 与 \texttt{/Library/Audio/Plug-Ins/VST3}；Windows 是 \texttt{\%COMMONPROGRAMFILES\%/VST3}。额外目录由操作者显式填；不存在的目录静默跳过。
 
-⚠ 扫描目录不等于允许装载目录。路径门认的根是 \texttt{YEBAN\_VST3\_PATHS} 环境变量加平台默认根；面板里临时填的额外目录只参与扫描，不在这个根集合里。要让额外目录里的插件能装载，先把目录写进 \texttt{YEBAN\_VST3\_PATHS}，再重启应用；否则会看到“扫描得到、装载被拒”。
+注意：扫描目录不等于允许装载目录。路径门认的根是 \texttt{YEBAN\_VST3\_PATHS} 环境变量加平台默认根；面板里临时填的额外目录只参与扫描，不在这个根集合里。要让额外目录里的插件能装载，先把目录写进 \texttt{YEBAN\_VST3\_PATHS}，再重启应用；否则会看到“扫描得到、装载被拒”。
 
 \section{装载契约}
 

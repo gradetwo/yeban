@@ -21,7 +21,7 @@
 模型 & 频率排列 & 关键参数 \\
 \hline
 弦 String & $f_k=f_0\,k\sqrt{1+B k^2}$ & 刚度 $B$，默认 0.0005；$B=0$ 为纯谐波 \\
-梁 Beam & $f_n=f_0\,n\sqrt{(1-b)+b n^2}$ & 弦↔梁混合 $b$，默认 0；$b=0$ 柔弦，$b=1$ 梁 \\
+梁 Beam & $f_n=f_0\,n\sqrt{(1-b)+b n^2}$ & 弦$\leftrightarrow$梁混合 $b$，默认 0；$b=0$ 柔弦，$b=1$ 梁 \\
 膜 Membrane & $f_{m,n}=f_0\dfrac{\sqrt{m^2+(n/a)^2}}{\sqrt{1+1/a^2}}$ & 纵横比 $a$，默认 1；二维模态 \\
 板 Plate & $f_{m,n}=f_0\dfrac{m^2+(n/a)^2}{1+1/a^2}$ & 纵横比 $a$，默认 1；二维模态 \\
 \hline
@@ -59,7 +59,7 @@
 \texttt{damping} & 基础阻尼比 $\zeta_0$ & 0.0001–1 & 0.005 \\
 \texttt{damping\_slope} & 阻尼随频率比的斜率 $\zeta_1$ & 0–10 & 0.02 \\
 \texttt{stiffness} & 弦刚度 $B$ & 0–1 & 0.0005 \\
-\texttt{mix} & 梁的弦↔梁混合 $b$ & 0–1 & 0 \\
+\texttt{mix} & 梁的弦$\leftrightarrow$梁混合 $b$ & 0–1 & 0 \\
 \texttt{aspect} & 二维纵横比 $a$ & $\ge0.01$ & 1 \\
 \texttt{excitation\_x} / \texttt{excitation\_y} & 激励位置（归一化） & 0–1 & 0.5 \\
 \texttt{pickup\_x} / \texttt{pickup\_y} & 拾取位置（归一化） & 0–1 & 0.5 \\

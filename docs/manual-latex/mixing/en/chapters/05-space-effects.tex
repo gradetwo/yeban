@@ -82,7 +82,7 @@ Parameter & Meaning & Range & Default \\
 
 \texttt{reverb\_damp} only affects the tail's high frequencies: larger values make the tail darker and shorter; it does not touch the direct sound. \texttt{reverb\_predelay} delays only the wet path; the dry sound stays put. 0.012 s is the default 12 ms; 0.1 s is 100 ms. \texttt{reverb\_wet} is the wet level; the DSP takes dry as 1 − wet. It is not an independent dry/wet control.
 
-⚠ Naming trap: \texttt{reverb\_mix} and \texttt{reverb\_width} are spellings the engine \textbf{deliberately does not recognize}. For wet/dry use \texttt{reverb\_wet} (or alias \texttt{reverb\_wet\_mix}); width is not exposed in the contract (internal default 0.8), so \texttt{reverb\_width} cannot be used as a knob. A wrong name appears in the device card's "unrecognized parameters" list and the sound does not change.
+Warning: Naming trap: \texttt{reverb\_mix} and \texttt{reverb\_width} are spellings the engine \textbf{deliberately does not recognize}. For wet/dry use \texttt{reverb\_wet} (or alias \texttt{reverb\_wet\_mix}); width is not exposed in the contract (internal default 0.8), so \texttt{reverb\_width} cannot be used as a knob. A wrong name appears in the device card's "unrecognized parameters" list and the sound does not change.
 
 \section{Convolution reverb parameters}
 
