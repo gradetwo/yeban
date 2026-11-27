@@ -1412,6 +1412,17 @@ impl ElementRegistry {
             "下载原音源",
             false,
         );
+        // ⭐ T-FIX-966：无候选的救援行「去音源管理」入口。与上面的
+        // `missing-sounds-download-original` 同款行内模板族：运行时 id 为
+        // `missing-sounds-browse-{row}`，注册表按族名登记（单段模板前缀不以
+        // `-` 结尾 ⇒ id_matches_pattern 同时接受族名与带后缀的实例）。
+        registry.add(
+            "missing-sounds-browse",
+            ElementKind::Button,
+            "dialogs/missing_sounds_dialog.slint",
+            "去音源管理",
+            false,
+        );
         registry.add(
             "piano-roll-grid",
             ElementKind::Region,
