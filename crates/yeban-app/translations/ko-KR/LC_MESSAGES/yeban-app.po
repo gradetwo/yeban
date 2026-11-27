@@ -268,8 +268,14 @@ msgstr "메트로놈 스위치: 켬 (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "메트로놈 스위치: 끔 (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "카운트인 전환 (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "카운트인: 꺼짐 (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "카운트인: 1마디 (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "카운트인: 2마디 (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "믹스"

@@ -268,8 +268,14 @@ msgstr "Interruptor del metrónomo: activado (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "Interruptor del metrónomo: desactivado (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "Activar compás de entrada (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "Compás de entrada: desactivado (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "Compás de entrada: 1 compás (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "Compás de entrada: 2 compases (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "Mezcla"

@@ -249,6 +249,9 @@ export component MainWindow inherits Window {
     in-out property <string> active-tool-name: "pointer";
     in-out property <bool> is-playing: false;
     in-out property <bool> is-recording: false;
+    // ⭐ T-FIX-754：预备拍档位（0 / 1 / 2 小节）。模型支持 2 小节，旧界面只认 0/1；
+    // 菜单标题由这一个属性驱动，⛔ 不在 Slint 里再写一份“下一个值”的算法。
+    in-out property <int> count-in-bars: 0;
     in-out property <bool> is-looping: false;
     in-out property <string> timecode-text: "001.01.000";
     in-out property <int> bpm-val: 124;
@@ -1337,7 +1340,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: @tr("循环播放开关 (C)"); activated => { root.command-execute("transport-loop"); } }
             MenuItem { title: @tr("节拍器开关"); activated => { root.command-execute("transport-metronome"); } }
-            MenuItem { title: @tr("预备拍开关 (Ctrl+Alt+D)"); activated => { root.command-execute("transport-count-in"); } }
+            MenuItem { title: root.count-in-bars <= 0 ? @tr("预备拍开关：关 (Ctrl+Alt+D)") : root.count-in-bars == 1 ? @tr("预备拍开关：1 小节 (Ctrl+Alt+D)") : @tr("预备拍开关：2 小节 (Ctrl+Alt+D)"); activated => { root.command-execute("transport-count-in"); } }
         }
         Menu {
             title: @tr("混音");

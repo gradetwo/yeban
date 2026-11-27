@@ -268,8 +268,14 @@ msgstr "Metronom-Schalter: Ein (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "Metronom-Schalter: Aus (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "Einzähler umschalten (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "Einzähler: Aus (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "Einzähler: 1 Takt (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "Einzähler: 2 Takte (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "Mix"

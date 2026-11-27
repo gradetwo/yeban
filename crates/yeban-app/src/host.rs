@@ -465,6 +465,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 写整数 BPM（四舍五入；显示文本仍由 `bpm-display` 给两位小数）。
     // ⛔ 编辑中不回填整数读数之外的草稿：`bpm-val` 只表示权威工程的整数速度。
     ui.set_bpm_val(i32::try_from((view.bpm_millis + 500) / 1000).unwrap_or(0));
+    // ⭐ T-FIX-754：预备拍档位是**文档**读数 ⇒ 每次重投影都从同一份 `ViewState` 回填。
+    // 旧界面只认 0/1，2 小节工程打开后菜单就显示不出真实档位；这里补上第三档。
+    ui.set_count_in_bars(i32::from(view.count_in_bars));
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
     // 一律写 0，`apply_transport` 见到 0 就如实退回 tick 文本 —— 见 `timecode_grid_of`。
     let grid = view.timecode_grid();
@@ -19995,6 +19998,22 @@ pub(crate) fn apply_action_for_criteria(
     apply_engine_command(&mut context, action)
 }
 
+/// ⭐ **T-FIX-754**：预备拍档位的“下一个值”。模型支持 2 小节，UI 却只能 0⇄1
+/// ⇒ 这里把产品语义拉开成 **0 → 1 → 2 → 0**（不是 0⇄1 的开关）。
+///
+/// 口径：
+/// - 只认识 0 / 1 / 2 三档；未知值（旧工程损坏 / 未来档位）按 0 处理，避免把脏值
+///   留在文档里；
+/// - 2 → 0 是循环而不是回到 1：用户按第三下就是要“关”，⛔ 不是偷偷留 1 小节；
+/// - 纯函数，判据可逐档核对，⛔ 不依赖 UI / 文档 / 定时器。
+pub fn next_count_in_bars(current: u8) -> u8 {
+    match current {
+        0 => 1,
+        1 => 2,
+        _ => 0,
+    }
+}
+
 /// ⭐ **`TransportConfig` 文档级提交的唯一落点**（`D-UI-23` 开的道，`D-UI-29` 让节拍器也走它）。
 ///
 /// ## 为什么必须是这一个函数，而不是两条臂各写一遍
@@ -20138,8 +20157,17 @@ fn apply_action(
             };
             let old_config = project.transport;
             let mut new_config = old_config;
-            new_config.count_in_bars = if old_config.count_in_bars == 0 { 1 } else { 0 };
-            commit_transport_config(ui, port, "toggle count-in", old_config, new_config)
+            // ⭐ T-FIX-754：0 → 1 → 2 → 0。模型支持 2 小节，旧实现只 0⇄1，
+            // 2 小节工程按一下反而回 0（用户无法“恢复 2 小节”）。
+            new_config.count_in_bars = next_count_in_bars(old_config.count_in_bars);
+            let committed =
+                commit_transport_config(ui, port, "toggle count-in", old_config, new_config);
+            if committed {
+                // 重投影会写同一个值；这里先写一次是为了让菜单在提交当拍就回显新档位
+                // （判据也读这个属性，⛔ 不等下一次无关操作）。
+                ui.set_count_in_bars(i32::from(new_config.count_in_bars));
+            }
+            committed
         }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。

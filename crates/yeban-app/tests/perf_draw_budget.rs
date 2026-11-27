@@ -581,7 +581,9 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 74;
 // roll-scroll-x + tick 上下界）从 `apply_view` 移进了 `apply_scroll_view`，
 // 由整份重投影与滚动快路径**共用**。`apply_view` 自己的写入点因此从 125 降到 108；
 // 总写入量没有增加（移动，不是新增），滚动事件那一路反而从"每次 100+ 写"降到 17。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 108;
+// ⭐ T-FIX-754：108 → 109。`ui.set_count_in_bars` 是预备拍菜单档位的唯一注入点
+// （`ViewState::count_in_bars`，随重投影回填）；⛔ 不像 60Hz 心跳那样每帧跑。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 109;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

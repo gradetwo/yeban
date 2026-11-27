@@ -268,8 +268,14 @@ msgstr "Переключатель метронома: вкл. (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "Переключатель метронома: выкл. (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "Вступительные удары (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "Вступительные удары: выкл. (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "Вступительные удары: 1 такт (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "Вступительные удары: 2 такта (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "Микширование"

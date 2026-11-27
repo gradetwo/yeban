@@ -268,8 +268,14 @@ msgstr "Metronome Switch: On (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "Metronome Switch: Off (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "Toggle Count-In (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "Count-In: Off (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "Count-In: 1 bar (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "Count-In: 2 bars (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "Mix"

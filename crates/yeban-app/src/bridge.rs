@@ -4501,6 +4501,10 @@ pub struct ViewState {
     pub bpm_display: String,
     /// 速度的整数千分之一（给需要整数的判据 / 无障碍值用，避免界面层碰浮点）。
     pub bpm_millis: u32,
+    /// ⭐ T-FIX-754：预备拍档位（`transport.count_in_bars`，单位：小节）。
+    /// 菜单要回显 **2 小节**（模型早就支持，旧界面只认 0/1）⇒ 必须从同一份
+    /// `ViewState` 投影，⛔ 不在 Slint 里另写一份“下一个值”的算法。
+    pub count_in_bars: u8,
     /// 拍号分子。
     pub time_signature_numerator: u8,
     /// 拍号分母。
@@ -5160,6 +5164,7 @@ impl ViewState {
             bpm: project.bpm,
             bpm_display: format!("{:.2}", project.bpm),
             bpm_millis: bpm_millis(project.bpm),
+            count_in_bars: project.transport.count_in_bars,
             time_signature_numerator: project.time_signature.numerator,
             time_signature_denominator: project.time_signature.denominator,
             time_signature_display: format!(

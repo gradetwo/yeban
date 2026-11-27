@@ -53,8 +53,14 @@ fn every_menu_command_has_a_host_landing() {
 #[test]
 fn count_in_has_a_transport_menu_entry_and_host_arm() {
     assert!(
-        APP.contains("预备拍开关 (Ctrl+Alt+D)"),
-        "走带菜单必须有预备拍入口（清单 P1-8：藏在快捷键里等于没有）"
+        APP.contains("预备拍开关：关 (Ctrl+Alt+D)")
+            && APP.contains("预备拍开关：1 小节 (Ctrl+Alt+D)")
+            && APP.contains("预备拍开关：2 小节 (Ctrl+Alt+D)"),
+        "走带菜单必须有预备拍入口，且 0/1/2 三档都要能回显（清单 P1-8：藏在快捷键里等于没有）"
+    );
+    assert!(
+        APP.contains("root.count-in-bars <= 0"),
+        "菜单标题必须由 count-in-bars 驱动（⛔ 写死成 0/1 两档）"
     );
     assert!(
         APP.contains(r#"command-execute("transport-count-in")"#),

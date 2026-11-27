@@ -1151,7 +1151,10 @@ pub enum Action {
     /// ⛔ 两份"下一个值"的算法；界面上的点亮态 `metronome-on` 由
     /// `host::apply_metronome_mirror` 在每次发布成功的那一跳按快照校正。
     ToggleMetronome,
-    /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` 0 ⇄ 1）。
+    /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` **0 → 1 → 2 → 0**）。
+    ///
+    /// ⭐ T-FIX-754：模型支持 2 小节，旧实现只 0⇄1，2 小节工程按一下反而回 0；
+    /// 现在第三下 2 → 0，菜单回显当前档位（0 / 1 / 2）。
     ///
     /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里，但落点**不同**（`D-UI-23`）：
     /// 它走**文档级提交** `Op::SetTransportConfig`（⛔ 不换引擎 —— 实时引擎不实现预备拍，

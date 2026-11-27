@@ -268,8 +268,14 @@ msgstr "Interrupteur métronome : activé (Ctrl+Alt+N)"
 msgid "节拍器开关：关 (Ctrl+Alt+N)"
 msgstr "Interrupteur métronome : désactivé (Ctrl+Alt+N)"
 
-msgid "预备拍开关 (Ctrl+Alt+D)"
-msgstr "Compte à rebours (Ctrl+Alt+D)"
+msgid "预备拍开关：关 (Ctrl+Alt+D)"
+msgstr "Compte à rebours : désactivé (Ctrl+Alt+D)"
+
+msgid "预备拍开关：1 小节 (Ctrl+Alt+D)"
+msgstr "Compte à rebours : 1 mesure (Ctrl+Alt+D)"
+
+msgid "预备拍开关：2 小节 (Ctrl+Alt+D)"
+msgstr "Compte à rebours : 2 mesures (Ctrl+Alt+D)"
 
 msgid "混音"
 msgstr "Mixage"
