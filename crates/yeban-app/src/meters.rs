@@ -288,10 +288,23 @@ impl MeterSnapshot {
             .map_or(METER_FLOOR_DBFS, |master| sanitize_dbfs(master.lufs))
     }
 
-    /// 主控 LUFS 显示文本（`display_dbfs(master_lufs())`；stale 时为 `"--"`）。
+    /// 主控 LUFS 显示文本。**未测出**时不许把显示下限冒充真实读数：
+    /// stale / 无主总线 / 该主总线还没有帧（`quantum == None`）/ 帧里响度非有限
+    /// （窗口未满、静音、采样率不支持）⇒ `"--"`；只有真实帧给出有限 LUFS 时
+    /// 才显示读数（如 `-20.0`）。
+    ///
+    /// 数值侧 [`Self::master_lufs`] 仍返回钳到下限的有限值供柱高/计算使用，
+    /// ⛔ 不改 DSP 口径；本函数只决定界面把什么当成"已经测出来"的读数。
     #[must_use]
     pub fn master_lufs_label(&self) -> String {
         if self.stale {
+            return "--".to_owned();
+        }
+        let measured = self
+            .master
+            .as_ref()
+            .is_some_and(|master| master.quantum.is_some() && master.lufs.is_finite());
+        if !measured {
             return "--".to_owned();
         }
         display_dbfs(self.master_lufs())
@@ -932,7 +945,11 @@ mod tests {
         let view = ViewState::from_project(&project).expect("投影");
         let silent = silent_snapshot(&view);
         assert_eq!(silent.master_lufs(), METER_FLOOR_DBFS);
-        assert_eq!(silent.master_lufs_label(), "-120.0");
+        assert_eq!(
+            silent.master_lufs_label(),
+            "--",
+            "静音快照没有真实帧 ⇒ 未测出，不许显示 -120.0"
+        );
 
         let master_entity = project.master_bus_track_id;
 
@@ -967,7 +984,11 @@ mod tests {
         let shot = runtime.snapshot(&view);
 
         assert_eq!(shot.master_lufs(), METER_FLOOR_DBFS);
-        assert_eq!(shot.master_lufs_label(), "-120.0");
+        assert_eq!(
+            shot.master_lufs_label(),
+            "--",
+            "帧里响度非有限 ⇒ 未测出，不许把显示下限冒充读数"
+        );
     }
 
     /// 判据 11：引擎断流后**推进 N 跳** ⇒ stale 为真、文本 `"--"`，数值仍停在最后一帧；
