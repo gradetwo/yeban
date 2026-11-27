@@ -50,7 +50,20 @@ impl Drop for Scratch {
 
 fn write_container(dir: &Path, name: &str, project: &yeban_model::YebanProjectV1) -> PathBuf {
     let path = dir.join(name);
-    yeban_app::save::save_project_file(project, &path).expect("写出真容器");
+    // filled_project 自带音频片段：纯工程入口按契约报 RequiresArchive，
+    // 必须走归档入口并带上它引用的真实字节，夹具才自洽。
+    yeban_app::save::save_archive_file(
+        &yeban_model::container::ProjectArchive {
+            project: project.clone(),
+            history_dag: Vec::new(),
+            proposals: None,
+            assets: yeban_model::samples::filled_project_assets(),
+            embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
+        },
+        &path,
+    )
+    .expect("写出真容器");
     assert!(path.exists(), "夹具：必须真的落盘");
     path
 }
