@@ -5,7 +5,8 @@
 //! 原先另立的 `~/.yeban/onboarding.json` 就此并入，全应用只此一份
 //! 设置存储，旧文件的折入见 `help_state` 模块）。
 //!
-//! 存六样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
+//! 存六样用户偏好：界面语言（首次自动检测成功时落一次，之后显式选择可改）、
+//! 窗口布局（退出时快照）、
 //! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）、帮助系统
 //! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）、调试输出
 //! 开关（T-FIX-70，主菜单「设置 → 调试输出」写回，`--debug` /
@@ -14,7 +15,9 @@
 //! 的设备显示名，`None` = 该方向用系统默认设备）。
 //! 语言的启动优先级（定案）是 `--lang` 参数（临时覆盖、不写回）＞
 //! 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN，决策函数见
-//! [`resolve_startup_language`]，单测钉死。布局的恢复/写回/重置语义在
+//! [`resolve_startup_language`]，单测钉死。自动检测赢下启动时由
+//! [`persist_autodetected_language`] 写一次 `language`（显式选择仍走
+//! `save_language`，`--lang` 永远不写回）。布局的恢复/写回/重置语义在
 //! `host::apply_window_layout` / `host::save_window_layout` /
 //! `host::reset_window_layout`，启动时 `main.rs` 在语言之后应用。
 //!
@@ -173,10 +176,11 @@ pub enum SettingsWarning {
     },
 }
 
-/// `record_save_failure` 的事项闭集（七处调用点各一）。
+/// `record_save_failure` 的事项闭集（七个事项；语言有显式选择与
+/// 首次自动检测两个入口，共用同一事项）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveFailureSubject {
-    /// 语言选择（`save_language`）。
+    /// 界面语言（显式选择或首次自动检测）。
     Language,
     /// 最近工程清单（`record_recent_project`）。
     RecentProjects,
@@ -1503,23 +1507,136 @@ pub fn detect_from_locale_string(raw: &str) -> Language {
     }
 }
 
-/// 从进程环境读系统 locale（POSIX 优先级 `LC_ALL` ＞ `LC_MESSAGES` ＞
-/// `LANG`），映射到九语；三个变量全空 ⇒ zh-CN。
+/// 操作系统当前用户的界面语言本地名（如 `en-US` / `zh-CN`）。
 ///
-/// 口径：这是 Rust 侧对 Slint 首帧自动选择（`set_bundled_languages`
-/// 按系统 locale 选词表）的**同义复述**，不是第二套检测 —— 启动时
-/// `apply_language` 仍以这里算出的语言显式覆盖首帧选择。
-/// 已知缺口：Windows 上 `LANG` 类变量通常未设，检测落回 zh-CN
-///（Slint 自身的自动选择在 Windows 上能读到系统语言，但本函数
-/// 读不到；Windows 用户首次启动为 zh-CN，菜单里选一次后即持久化）。
-/// 缺口登记在 `docs/app-i18n-notes.md` §10，不静默。
+/// Windows 首选 `GetUserPreferredUILanguages`（`MUI_LANGUAGE_NAME`）：这是
+/// Slint 首帧自动选择（内部 `sys-locale`）用的同一条 Windows 来源，取用户
+/// UI 语言列表的第一项；该 API 不可用时再退 `GetUserDefaultLocaleName`。
+/// 其它平台返回 `None`，由 [`detect_from_env`] 的 POSIX 变量兜底。取不到
+/// 时返回 `None`，绝不猜。
+#[cfg(windows)]
+fn windows_locale_name() -> Option<String> {
+    windows_preferred_ui_language().or_else(windows_default_locale_name)
+}
+
+/// Windows 当前用户的首选 UI 语言（列表第一项），与 Slint 的自动选择同源。
+#[cfg(windows)]
+fn windows_preferred_ui_language() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+
+    // 先传空缓冲查询所需 UTF-16 长度；API 返回 FALSE 时没有可用语言。
+    let mut language_count = 0u32;
+    let mut buffer_len = 0u32;
+    // SAFETY: 空缓冲只查询长度，API 只写两个 out 参数；不读取未初始化内存。
+    let ok = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            std::ptr::null_mut(),
+            &mut buffer_len,
+        )
+    };
+    if ok == 0 || buffer_len == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; buffer_len as usize];
+    let mut language_count = 0u32;
+    // SAFETY: buffer 按上一次查询的长度分配；API 最多写入 buffer_len 个 u16，
+    // 返回 FALSE 时不读取缓冲。
+    let ok = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            buffer.as_mut_ptr(),
+            &mut buffer_len,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let used = (buffer_len as usize).min(buffer.len());
+    let first = buffer[..used]
+        .split(|unit| *unit == 0)
+        .find(|part| !part.is_empty())?;
+    let name = String::from_utf16(first).ok()?;
+    if name.trim().is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Windows 当前用户的默认 locale（`GetUserDefaultLocaleName`），仅在首选
+/// UI 语言 API 不可用时兜底；它可能受区域格式设置影响，所以不是第一来源。
+#[cfg(windows)]
+fn windows_default_locale_name() -> Option<String> {
+    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+
+    // `GetUserDefaultLocaleName` 要求至少 LOCALE_NAME_MAX_LENGTH（85）的缓冲；
+    // 取 128 留余量。API 返回的字符数**包含**结尾 NUL。
+    const BUFFER_LEN: usize = 128;
+    let mut buffer = [0u16; BUFFER_LEN];
+    // SAFETY: buffer 是长度 BUFFER_LEN 的可写 UTF-16 缓冲；API 只写入该缓冲，
+    // 返回值 n <= BUFFER_LEN 才是有效字符串；越界返回值不读取。
+    let n = unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), BUFFER_LEN as i32) };
+    if n <= 1 || n as usize > BUFFER_LEN {
+        return None;
+    }
+    let used = n as usize - 1;
+    let name = String::from_utf16_lossy(&buffer[..used]);
+    if name.trim().is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// 非 Windows 平台没有用户语言 API；统一由 POSIX 环境变量兜底。
+#[cfg(not(windows))]
+fn windows_locale_name() -> Option<String> {
+    None
+}
+
+/// 系统语言检测：Windows 先读当前用户的首选 UI 语言
+/// （`GetUserPreferredUILanguages`，与 Slint 的 `sys-locale` 同源；失败时
+/// 退 `GetUserDefaultLocaleName`），其它平台/Windows API 失败时再读进程
+/// 环境（`LC_ALL` ＞ `LC_MESSAGES` ＞ `LANG`），映射到九语；全空或认不出
+/// ⇒ zh-CN。
+///
+/// 为什么 Windows 不能只读环境变量：Explorer 启动的 GUI 进程通常没有
+/// `LANG` 类变量，旧实现会在英文系统上误落 zh-CN。Slint 的首帧自动选择
+/// 能读到系统语言，本函数必须与它同源；首帧之后仍由 `apply_language`
+/// 显式覆盖。
 #[must_use]
 pub fn detect_system_language() -> Language {
-    detect_from_env(
+    detect_system_language_from(
+        windows_locale_name().as_deref(),
         std::env::var("LC_ALL").ok(),
         std::env::var("LC_MESSAGES").ok(),
         std::env::var("LANG").ok(),
     )
+}
+
+/// [`detect_system_language`] 的纯函数核（Windows locale 与三个 POSIX 变量
+/// 都以参数传入，单测直接喂值，不依赖真实系统）。
+///
+/// 优先级：Windows 用户 locale ＞ `LC_ALL` ＞ `LC_MESSAGES` ＞ `LANG`；
+/// Windows locale 为空/None 时才回退环境变量。这样 `LANG=ja_JP` 之类被
+/// 移植工具设置的环境变量不会压过 Windows 用户自己的系统语言。
+#[must_use]
+pub fn detect_system_language_from(
+    windows_locale: Option<&str>,
+    lc_all: Option<String>,
+    lc_messages: Option<String>,
+    lang: Option<String>,
+) -> Language {
+    if let Some(raw) = windows_locale
+        && !raw.trim().is_empty()
+    {
+        return detect_from_locale_string(raw);
+    }
+    detect_from_env(lc_all, lc_messages, lang)
 }
 
 /// [`detect_system_language`] 的纯函数核（环境变量以参数传入，单测直接喂值）。
@@ -1535,6 +1652,53 @@ pub fn detect_from_env(
         }
     }
     Language::ZhCn
+}
+
+/// 自动检测结果是否该落盘：只有“既没给 `--lang`，也没有已存选择”时才写。
+/// 这两档任一存在时检测值只是兜底，写回会覆盖用户显式选择或把临时
+/// `--lang` 固化成永久设置。
+#[must_use]
+pub fn should_persist_detected_language(cli: Option<Language>, stored: Option<Language>) -> bool {
+    cli.is_none() && stored.is_none()
+}
+
+/// 把自动检测结果写到指定设置文件（测试用路径注入；生产入口见
+/// [`persist_autodetected_language`]）。返回是否真的写了。
+pub(crate) fn persist_autodetected_language_at(
+    path: &Path,
+    cli: Option<Language>,
+    stored: Option<Language>,
+    detected: Language,
+) -> io::Result<bool> {
+    if !should_persist_detected_language(cli, stored) {
+        return Ok(false);
+    }
+    // 判定在锁内再做一次：`load()` 与本次写回之间若有另一个实例刚写下
+    // 显式选择，不能拿启动时读到的旧 `stored` 覆盖它。
+    let mut wrote = false;
+    update_at(path, |settings| {
+        if settings.language.is_none() {
+            settings.language = Some(detected);
+            wrote = true;
+        }
+    })?;
+    Ok(wrote)
+}
+
+/// 首次启动自动检测赢下时，把检测结果写进默认设置文件，便于下一次
+/// 启动与实机取证直接读到 `language`。写失败只记待发警告（设置是偏好，
+/// 不让启动失败）；显式 `--lang` 或已有已存选择时**不写**。
+pub fn persist_autodetected_language(
+    cli: Option<Language>,
+    stored: Option<Language>,
+    detected: Language,
+) {
+    if !should_persist_detected_language(cli, stored) {
+        return;
+    }
+    if let Err(error) = persist_autodetected_language_at(&settings_path(), cli, stored, detected) {
+        record_save_failure(SaveFailureSubject::Language, &error);
+    }
 }
 
 #[cfg(test)]
@@ -1622,6 +1786,130 @@ mod tests {
             JaJp
         );
         assert_eq!(detect_from_env(None, None, None), Language::ZhCn);
+    }
+
+    /// Windows 用户 locale 是最高优先级的检测源；没有时才回退环境变量。
+    #[test]
+    fn windows_user_locale_is_detected_before_posix_env() {
+        use Language::{EnUs, JaJp, ZhCn};
+        assert_eq!(
+            detect_system_language_from(
+                Some("en-US"),
+                Some("ja_JP.UTF-8".to_owned()),
+                Some("de_DE.UTF-8".to_owned()),
+                Some("fr_FR.UTF-8".to_owned()),
+            ),
+            EnUs
+        );
+        assert_eq!(
+            detect_system_language_from(None, None, Some("ja_JP.UTF-8".to_owned()), None),
+            JaJp
+        );
+        // Windows locale 读不到时才由环境变量决定；全空落 zh-CN。
+        assert_eq!(
+            detect_system_language_from(Some(""), None, None, None),
+            ZhCn
+        );
+        assert_eq!(
+            detect_system_language_from(Some("zh-CN"), Some("en_US.UTF-8".to_owned()), None, None),
+            ZhCn
+        );
+    }
+
+    /// Windows 实机烟测：首选 UI 语言 API 必须能返回一个非空 locale 名。
+    /// 这条不锁定具体语言（CI 可能是任意 Windows 语言），只证明真实系统
+    /// 路径不是“恒 None”；具体 en-US 落点由上面的注入判据覆盖。
+    #[cfg(windows)]
+    #[test]
+    fn windows_user_language_api_is_readable() {
+        let name = windows_locale_name().expect("Windows 用户语言 API 必须可用");
+        assert!(!name.trim().is_empty(), "locale 名不能为空: {name:?}");
+    }
+
+    /// 英文 Windows 首启的组合判据：注入 `en-US` 检测值 → 启动决策落 en-US
+    /// → 设置文件出现 `language` 落点。无法取得真实英文系统时，这是路径证据；
+    /// 真实系统缺口在报告里单独响亮说明。
+    #[test]
+    fn english_windows_first_launch_maps_to_en_us_and_persists() {
+        let dir = test_dir("english-first-launch");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建测试目录");
+        save_to(&path, &Settings::default()).expect("写空设置");
+
+        let detected = detect_system_language_from(Some("en-US"), None, None, None);
+        let startup = resolve_startup_language(None, None, detected);
+        assert_eq!(startup, Language::EnUs, "英文 Windows 首启必须落 en-US");
+        assert!(
+            persist_autodetected_language_at(&path, None, None, startup)
+                .expect("首启检测写回必须成功"),
+            "自动检测赢下时必须真的写回"
+        );
+        let text = std::fs::read_to_string(&path).expect("读回设置");
+        assert!(
+            text.contains("\"language\": \"en-US\""),
+            "首启后设置须出现 language=en-US: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 自动检测赢下时把结果写进设置：英文 locale 在文件里落 en-US。
+    #[test]
+    fn autodetected_language_is_persisted_when_it_wins() {
+        let dir = test_dir("autodetect-persist");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建测试目录");
+        save_to(&path, &Settings::default()).expect("写空设置");
+
+        assert!(
+            persist_autodetected_language_at(&path, None, None, Language::EnUs)
+                .expect("自动检测写回必须成功")
+        );
+        let text = std::fs::read_to_string(&path).expect("读回设置");
+        assert!(
+            text.contains("\"language\": \"en-US\""),
+            "自动检测须落 en-US: {text}"
+        );
+        assert_eq!(load_from(&path).language, Some(Language::EnUs));
+
+        // 第二次启动已有已存选择，不再写（避免重复写盘）。
+        assert!(
+            !persist_autodetected_language_at(&path, None, Some(Language::EnUs), Language::EnUs)
+                .expect("已有选择时不该报错")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 显式 `--lang` 与已存选择都优先于检测，且都不允许被检测值覆盖。
+    #[test]
+    fn explicit_or_stored_choice_is_not_overwritten_by_detection() {
+        let dir = test_dir("autodetect-no-overwrite");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建测试目录");
+        let initial = Settings {
+            language: Some(Language::FrFr),
+            ..Settings::default()
+        };
+        save_to(&path, &initial).expect("写已存选择");
+
+        assert!(
+            !persist_autodetected_language_at(&path, Some(Language::DeDe), None, Language::EnUs)
+                .expect("显式 --lang 不该写回")
+        );
+        assert!(
+            !persist_autodetected_language_at(&path, None, Some(Language::FrFr), Language::EnUs)
+                .expect("已存选择不该被检测覆盖")
+        );
+        // 也覆盖“调用方读到的 stored 为空，但锁内文件已有选择”的竞态：
+        // 写回判定必须在锁内再看一次，不能覆盖刚落下的显式选择。
+        assert!(
+            !persist_autodetected_language_at(&path, None, None, Language::EnUs)
+                .expect("锁内已有选择时不该写")
+        );
+        assert_eq!(load_from(&path).language, Some(Language::FrFr));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 存取往返：写 `fr-FR` 再读回同一支；文件内容是带 version 的 JSON。

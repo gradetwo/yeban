@@ -341,12 +341,21 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // （`settings::resolve_startup_language`，单测钉死）—— 不覆盖就会在
     // 英文系统上首帧英文。运行期切换走主菜单
     // 「设置 → 语言」（host 里接的回调）；`--lang` 只是临时覆盖，不写回。
+    // 自动检测赢下启动时写一次 `language`（供下一次启动与实机核对）；
+    // 已有显式选择/`--lang` 时该函数自己判定为 no-op。
+    let stored_language = yeban_app::settings::load().language;
+    let detected_language = yeban_app::settings::detect_system_language();
     let startup_lang = yeban_app::settings::resolve_startup_language(
         options.lang_given.then_some(options.lang),
-        yeban_app::settings::load().language,
-        yeban_app::settings::detect_system_language(),
+        stored_language,
+        detected_language,
     );
     host::apply_language(&ui, startup_lang);
+    yeban_app::settings::persist_autodetected_language(
+        options.lang_given.then_some(options.lang),
+        stored_language,
+        detected_language,
+    );
 
     // 窗口布局（line/ui-window-state）：紧跟语言之后、同样在 `run()` 之前，
     // 把上次退出时存下的布局写回（`host::apply_window_layout` 是唯一写

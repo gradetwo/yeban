@@ -145,14 +145,17 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
   环境变量可覆盖路径，仅供单测与取证工具隔离用，生产不设）。
 - 启动优先级（定案，纯函数 `settings::resolve_startup_language`，单测钉死）：
   `--lang` 参数（显式给过才算，`Options.lang_given` 标记；临时覆盖、**不写回**）
-  ＞ 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN。系统检测读进程环境
+  ＞ 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN。系统检测在 Windows
+  走当前用户的首选 UI 语言（`GetUserPreferredUILanguages`，与 Slint 的
+  `sys-locale` 自动选择同源；该 API 不可用时退
+  `GetUserDefaultLocaleName`），其它平台/Windows API 失败时读进程环境
   `LC_ALL` ＞ `LC_MESSAGES` ＞ `LANG`（POSIX 优先级），映射到九语
   （`pt-PT` 落到 pt-BR——本线只有巴西葡语一支；`zh-TW` 落到 zh-CN——
   只有简体中文一支；认不出 / `C` / 空 ⇒ zh-CN）。检测复述 Slint 首帧
   自动选择（`set_bundled_languages` 按系统 locale 选词表），不是第二套
-  检测。已知缺口：Windows 上 `LANG` 类变量通常未设，检测落回 zh-CN
-  （Slint 自身在 Windows 上能读到系统语言，但 Rust 侧读不到；Windows
-  用户首次启动为 zh-CN，菜单里选一次后即持久化）。缺口在此登记，不静默。
+  检测。自动检测赢下启动（没有 `--lang` 且没有已存选择）时，启动路径
+  把结果写一次 `language` 到设置文件；`--lang` 与已有选择不会被检测
+  覆盖。T-FIX-813 已关闭此前的 Windows 落回 zh-CN 缺口。
 
 ## 4. 范围与排除项
 
@@ -263,8 +266,10 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 - 持久化与启动：新建 `src/settings.rs`，设置文件 `yeban/settings.json`
   （平台配置目录，见 §3；格式 `{"version": 1, "language": "fr-FR"}`）。
   启动优先级 `--lang` ＞ 已存选择 ＞ 系统检测 ＞ zh-CN（纯函数
-  `resolve_startup_language` 单测钉死；检测读 `LC_ALL` /
-  `LC_MESSAGES` / `LANG`，见 §3 缺口登记：Windows 检测落回 zh-CN）。
+  `resolve_startup_language` 单测钉死；Windows 检测走
+  `GetUserPreferredUILanguages`，失败退 `GetUserDefaultLocaleName`，
+  其它平台读 `LC_ALL` / `LC_MESSAGES` / `LANG`，自动检测赢下时写一次
+  `language`，见 §3）。
 - 证据帧：`examples/i18n_shots.rs` 出六帧（zh / en / fr / ja / ru /
   zh-back，1600×900），fr/ja/ru 三帧须全对应语言无中文残留（含状态
   栏两格），往返切回 zh 逐像素无损；取证运行的设置写回指到输出目录
@@ -273,7 +278,7 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
   line/ui-window-state，用同一设置存储做窗口几何＋面板布局持久化、
   主菜单「设置」加「恢复默认布局」。（已落地，见 §11。）
 - 已登记未修：① 「均分高度」按钮英文只显 'Even'（布局裁切，译文完整）；
-  ② Windows 首次启动语言检测落回 zh-CN（见 §3）。
+  ② ~~Windows 首次启动语言检测落回 zh-CN~~（T-FIX-813 已修，见 §3）。
 
 ## 11. 窗口布局持久化补记（line/ui-window-state，2026-11-17）
 

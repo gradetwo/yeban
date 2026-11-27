@@ -28058,7 +28058,9 @@ pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
 /// 设置文件（见 [`crate::settings::save_language`]）。写回失败不影响
 /// 本次切换，但会以错误级常驻提示展示（见
 /// [`report_pending_settings_warnings`]）；启动路径不走这里
-/// （`--lang` 临时覆盖与自动检测都不写回，见 `apply_language` 的文档）。
+/// （`main.rs` 只在自动检测赢下时调
+/// [`crate::settings::persist_autodetected_language`]；`--lang` 临时覆盖
+/// 与已有已存选择都不写回，见 `apply_language` 的文档）。
 pub fn apply_language_and_save(ui: &MainWindow, lang: crate::cli::Language) {
     apply_language(ui, lang);
     crate::settings::save_language(lang);

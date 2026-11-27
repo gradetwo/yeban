@@ -453,6 +453,7 @@ slint-build = { workspace = true, features = ["compat-1-18"] }
 # 因此口径同源，不会出现"工作区取主屏、缩放取副屏"的混算。
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ] }
