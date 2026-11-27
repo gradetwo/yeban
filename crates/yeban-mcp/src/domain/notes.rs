@@ -1364,7 +1364,7 @@ pub const TRANSPORT_COUNT_IN_FIELD: &str = "countInBars";
 
 /// `setTransportConfig` 的**启动量化**字段名（`ops[].launchQuantization`，必填，枚举串）。
 ///
-/// ⚠ 取值与线协议**逐字相同**（`Off` / `Bar` / `TwoBars` / `FourBars` / `EightBars`）
+/// ⚠ 取值与线协议**逐字相同**（`Off` / `Bar` / `TwoBars` / `FourBars` / `EightBars` / `HalfBeat` / `QuarterBeat` / `EighthBeat` / `SixteenthBeat`）
 /// —— 那是 `schemas/project.schema.json` 的 `transport.launch_quantization.enum`
 /// 与模型 `LaunchQuantization` 的 `serde` 名，因此本层**不另发明**一套拼写。
 pub const TRANSPORT_LAUNCH_FIELD: &str = "launchQuantization";
@@ -8543,16 +8543,20 @@ fn read_required_launch_quantization(
         "TwoBars" => Ok(LaunchQuantization::TwoBars),
         "FourBars" => Ok(LaunchQuantization::FourBars),
         "EightBars" => Ok(LaunchQuantization::EightBars),
+        "HalfBeat" => Ok(LaunchQuantization::HalfBeat),
+        "QuarterBeat" => Ok(LaunchQuantization::QuarterBeat),
+        "EighthBeat" => Ok(LaunchQuantization::EighthBeat),
+        "SixteenthBeat" => Ok(LaunchQuantization::SixteenthBeat),
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{field}` 不是规范的启动量化名: {other}                  (规范名与线协议逐字相同: Off / Bar / TwoBars / FourBars / EightBars)"
+                "`{field}` 不是规范的启动量化名: {other}                  (规范名与线协议逐字相同: Off / Bar / TwoBars / FourBars / EightBars / HalfBeat / QuarterBeat / EighthBeat / SixteenthBeat)"
             ),
             serde_json::json!({
                 "field": field,
                 "reason": "unknownLaunchQuantization",
                 "received": other,
-                "allowed": ["Off", "Bar", "TwoBars", "FourBars", "EightBars"],
+                "allowed": ["Off", "Bar", "TwoBars", "FourBars", "EightBars", "HalfBeat", "QuarterBeat", "EighthBeat", "SixteenthBeat"],
             }),
         )),
     }
@@ -24824,7 +24828,18 @@ mod tests {
             other => panic!("必须编译成 SetTransportConfig, 实际 {other:?}"),
         }
 
-        // ⑤ 反向：非规范量化名响亮失败。
+        // ⑤ 新增四档拍内量化逐个被接受（T-FIX-824；⛔ 不把 schema 扩了而解析器仍拒）。
+        for name in ["HalfBeat", "QuarterBeat", "EighthBeat", "SixteenthBeat"] {
+            parse_ops(&serde_json::json!([{
+                "kind": "setTransportConfig",
+                "metronomeEnabled": true,
+                "countInBars": 2,
+                "launchQuantization": name,
+            }]))
+            .unwrap_or_else(|err| panic!("新增量化档 `{name}` 必须被接受，实际 {err:?}"));
+        }
+
+        // ⑥ 反向：非规范量化名响亮失败。
         assert!(
             parse_ops(&serde_json::json!([{
                 "kind": "setTransportConfig",

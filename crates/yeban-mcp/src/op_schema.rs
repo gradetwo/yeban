@@ -878,7 +878,7 @@ pub fn ops_items() -> Value {
                     },
                     "launchQuantization": {
                         "type": "string",
-                        "enum": ["Off", "Bar", "TwoBars", "FourBars", "EightBars"],
+                        "enum": ["Off", "Bar", "TwoBars", "FourBars", "EightBars", "HalfBeat", "QuarterBeat", "EighthBeat", "SixteenthBeat"],
                         "description": "启动量化（模型 serde 名）",
                     },
                 }),

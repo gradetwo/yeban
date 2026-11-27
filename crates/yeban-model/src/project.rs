@@ -398,6 +398,14 @@ pub enum LaunchQuantization {
     FourBars,
     /// 八小节。
     EightBars,
+    /// 半拍（`1/2 Beat`）：四分音符拍的一半。
+    HalfBeat,
+    /// 四分之一拍（`1/4 Beat`）。
+    QuarterBeat,
+    /// 八分之一拍（`1/8 Beat`）。
+    EighthBeat,
+    /// 十六分之一拍（`1/16 Beat`）。
+    SixteenthBeat,
 }
 
 /// 传输控制配置 [MODEL-AST-002]。

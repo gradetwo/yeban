@@ -68,6 +68,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use yeban_model::LaunchQuantization;
 use yeban_model::PPQ;
 use yeban_model::project::{DEFAULT_BPM, MAX_BPM, MIN_BPM, TimeSignature};
 
@@ -223,6 +224,65 @@ pub fn next_bar_tick(position_ticks: u64, time_signature: TimeSignature) -> u64 
     // 退化输入（溢出把长度压成 0）退一步用"一拍"当小节，好过原地不动。
     let ticks_per_bar = ticks_per_bar.max(PPQ);
     (position_ticks / ticks_per_bar + 1) * ticks_per_bar
+}
+
+/// [ARCH-RT-005 族]：**下一个拍内分数边界**（`1/2`、`1/4`、`1/8`、`1/16` 拍）。
+///
+/// ⭐ 与 [`next_bar_tick`] 同一个"**严格大于**当前位置"口径：恰在边界上也取再下一个。
+/// 拍长按当前拍号分母算（`4·PPQ/denominator`）；分母不能整除该分数时退回
+/// 四分音符拍（`PPQ/fraction`），保证 32 分拍号下的 `1/16` 仍是整数 tick 栅格，
+/// ⛔ 不产生半 tick 的"假边界"。
+///
+/// ⚠ 全程整数：零浮点、零分配/锁/I-O ⇒ 实时侧可逐块直接调用 [MUST-GATE-001]。
+#[must_use]
+pub fn next_beat_fraction_tick(
+    position_ticks: u64,
+    time_signature: TimeSignature,
+    fraction: u64,
+) -> u64 {
+    let denominator = u64::from(time_signature.denominator.max(1));
+    let beat_ticks = (4 * PPQ / denominator).max(1);
+    let step = if fraction != 0 && beat_ticks.is_multiple_of(fraction) {
+        beat_ticks / fraction
+    } else {
+        (PPQ / fraction.max(1)).max(1)
+    };
+    (position_ticks / step + 1) * step
+}
+
+/// [ARCH-RT-005 族]：场景启动量化档的**唯一边界助手**。
+///
+/// `Off` ⇒ 当前位置；小节档从 [`next_bar_tick`] 起顺延；拍内档走
+/// [`next_beat_fraction_tick`]。控制面、事件环与判据共用本函数 ⇒ ⛔ 不各写一套边界。
+/// 拍号图（`time_signature_map`）的逐小节助手落地后，只需在这里替换小节边界来源。
+#[must_use]
+pub fn next_launch_quantization_tick(
+    position_ticks: u64,
+    quantization: LaunchQuantization,
+    time_signature: TimeSignature,
+) -> u64 {
+    use LaunchQuantization as Q;
+    match quantization {
+        Q::Off => position_ticks,
+        Q::Bar | Q::TwoBars | Q::FourBars | Q::EightBars => {
+            let bars = match quantization {
+                Q::Bar => 1,
+                Q::TwoBars => 2,
+                Q::FourBars => 4,
+                Q::EightBars => 8,
+                _ => 1,
+            };
+            let mut tick = next_bar_tick(position_ticks, time_signature);
+            for _ in 1..bars {
+                tick = next_bar_tick(tick, time_signature);
+            }
+            tick
+        }
+        Q::HalfBeat => next_beat_fraction_tick(position_ticks, time_signature, 2),
+        Q::QuarterBeat => next_beat_fraction_tick(position_ticks, time_signature, 4),
+        Q::EighthBeat => next_beat_fraction_tick(position_ticks, time_signature, 8),
+        Q::SixteenthBeat => next_beat_fraction_tick(position_ticks, time_signature, 16),
+    }
 }
 
 /// `bpm` → 微 BPM 整数（非有限值退回 [`DEFAULT_BPM`]，越界钳到模型范围）。
@@ -783,6 +843,66 @@ mod tests {
         }
         println!("[transport] 下一小节对齐表：{checked}/15 通过");
         assert_eq!(checked, 15, "十五条边界用例必须全部覆盖");
+    }
+
+    /// ⭐ T-FIX-824：九档启动量化共用**同一个严格大于**边界助手。
+    ///
+    /// 旧五档的读数与改前 `next_bar_tick` 循环**逐 tick 相同**：4/4 下一小节
+    /// `3840`，TwoBars `7680`，FourBars `15 360`，EightBars `30 720`，Off `0`。
+    /// 新四档在 4/4 下依次为 `480 / 240 / 120 / 60` tick；在 6/8 下拍长是
+    /// `4·PPQ/8 = 480`，半拍为 `240` tick（⛔ 不按 4/4 固定拍长外推）。
+    #[test]
+    fn launch_quantisation_tiers_share_one_strict_boundary() {
+        use yeban_model::LaunchQuantization as Q;
+        let common = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let cases: [(Q, u64); 9] = [
+            (Q::Off, 0),
+            (Q::Bar, 3_840),
+            (Q::TwoBars, 7_680),
+            (Q::FourBars, 15_360),
+            (Q::EightBars, 30_720),
+            (Q::HalfBeat, 480),
+            (Q::QuarterBeat, 240),
+            (Q::EighthBeat, 120),
+            (Q::SixteenthBeat, 60),
+        ];
+        for (quantization, expected) in cases {
+            assert_eq!(
+                next_launch_quantization_tick(0, quantization, common),
+                expected,
+                "{quantization:?} 在 4/4 tick 0 的边界必须为 {expected}"
+            );
+        }
+        // 恰在边界上 ⇒ 再下一个（与 next_beat_tick / next_bar_tick 同口径）。
+        assert_eq!(next_launch_quantization_tick(480, Q::HalfBeat, common), 960);
+        assert_eq!(next_launch_quantization_tick(479, Q::HalfBeat, common), 480);
+        assert_eq!(next_launch_quantization_tick(959, Q::HalfBeat, common), 960);
+        assert_eq!(
+            next_launch_quantization_tick(960, Q::HalfBeat, common),
+            1_440
+        );
+        assert_eq!(
+            next_launch_quantization_tick(239, Q::QuarterBeat, common),
+            240
+        );
+        assert_eq!(
+            next_launch_quantization_tick(240, Q::QuarterBeat, common),
+            480
+        );
+        assert_eq!(next_launch_quantization_tick(3_840, Q::Bar, common), 7_680);
+        // 拍号分母改了拍长：6/8 的 1/2 Beat = 240 tick。
+        let six_eight = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        assert_eq!(
+            next_launch_quantization_tick(0, Q::HalfBeat, six_eight),
+            240
+        );
+        println!("[transport] 九档边界：5 旧档 + 4 新档全部逐 tick 钉住");
     }
 
     /// [ARCH-RT-005] 件 2：**请求时刻 → 生效时刻**的帧换算（120 bpm、48 kHz ⇒ 1 拍 = 24000 帧）。

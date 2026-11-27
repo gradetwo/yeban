@@ -242,7 +242,11 @@
             "Bar",
             "TwoBars",
             "FourBars",
-            "EightBars"
+            "EightBars",
+            "HalfBeat",
+            "QuarterBeat",
+            "EighthBeat",
+            "SixteenthBeat"
           ]
         }
       }

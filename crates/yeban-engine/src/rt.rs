@@ -1269,26 +1269,11 @@ pub fn audition_topology_mismatch(
     None
 }
 
-/// 量化档 → "**几个小节**"（⭐ `Off` 不走这里：它在控制面直接取当前帧）。
-///
-/// ⚠ 取值**只来自模型既有枚举**（[`yeban_model::LaunchQuantization`]）：小节整数倍，
-/// ⛔ 没有 1/16、1/4、单拍 ⇒ ⛔ 不发明新档位。
-const fn quantization_bars(quantization: yeban_model::LaunchQuantization) -> u64 {
-    use yeban_model::LaunchQuantization as Q;
-    match quantization {
-        Q::Off => 1, // ⚠ 不可达（调用点已把它分出去）；给 1 以免除零/空转。
-        Q::Bar => 1,
-        Q::TwoBars => 2,
-        Q::FourBars => 4,
-        Q::EightBars => 8,
-    }
-}
-
 /// 一次**排队等待量化点**的场景启动（[ARCH-RT-005 族]：⭐ 照 [`AuditionBranch`] 的形状）。
 ///
 /// ⭐ **"何时开始"与"开始什么"共用同一个判定**：`switch_frame` 由 `Transport` 的
-/// [`next_bar_tick`](crate::transport::next_bar_tick) ＋ `frames_for_tick` 算出
-/// （量化档只有小节整数倍 ⇒ 与 `launch_quantization` 的现有取值一一对应），
+/// [`next_launch_quantization_tick`](crate::transport::next_launch_quantization_tick)
+/// ＋ `frames_for_tick` 算出（小节档与拍内档共用同一个边界助手），
 /// `tempo_bpm` 是**该场景自己的 tempo 覆盖**（[`yeban_model::SceneV3::tempo`]，
 /// ⛔ 场景不承载别的可执行状态 ⇒ 本机制只投射 tempo）。
 ///
@@ -1356,8 +1341,11 @@ impl PendingSceneLaunch {
 /// 场景启动的**生效帧** —— 控制面 [`EngineRuntime::queue_scene_launch`] 与事件面
 /// [`EngineEvent::SceneLaunch`] 共用的**唯一**实现。
 ///
-/// `Off` ⇒ 当前帧（立即）；其余档 ⇒ 从**下一个小节线**起再顺延 `step - 1` 个小节
-/// （`next_bar_tick` 的口径是"严格下一条"；档位只有小节整数倍）。
+/// `Off` ⇒ 当前帧（立即）；其余档 ⇒ 由 [`next_launch_quantization_tick`] 给出
+/// 下一条边界 tick（小节档从下一个小节线起顺延，拍内档到半拍/四分之一拍边界），
+/// 再经 `frames_for_tick` 落到采样点。
+///
+/// [`next_launch_quantization_tick`]: crate::transport::next_launch_quantization_tick
 fn scene_launch_switch_frame(
     transport: &Transport,
     quantization: yeban_model::LaunchQuantization,
@@ -1367,13 +1355,11 @@ fn scene_launch_switch_frame(
     match quantization {
         yeban_model::LaunchQuantization::Off => position_frames,
         other => {
-            let step = quantization_bars(other);
-            // 量化档是"1/2/4/8 小节"⇒ 从**下一个小节线**起再顺延 (step-1) 个小节。
-            let mut tick =
-                crate::transport::next_bar_tick(transport.position_ticks(), time_signature);
-            for _ in 1..step {
-                tick = crate::transport::next_bar_tick(tick, time_signature);
-            }
+            let tick = crate::transport::next_launch_quantization_tick(
+                transport.position_ticks(),
+                other,
+                time_signature,
+            );
             transport.frames_for_tick(tick)
         }
     }
@@ -4951,9 +4937,9 @@ impl EngineRuntime {
 
     /// ⭐ 控制路径：**武装一次量化场景启动**（照 [`Self::begin_audition`] 的形状）。
     ///
-    /// ⭐ **"何时开始"由量化档决定**：`quantization` 只有小节整数倍
-    /// （[`yeban_model::LaunchQuantization`]）⇒ 生效帧 = 从当前位置算出的
-    /// **第 n 个小节线**，经 [`crate::transport::next_bar_tick`] ＋ `frames_for_tick` 落到采样点。
+    /// ⭐ **"何时开始"由量化档决定**：小节档取**第 n 个小节线**，拍内档取
+    /// **下一个 1/2、1/4、1/8、1/16 拍边界**；两者共用
+    /// [`crate::transport::next_launch_quantization_tick`] ＋ `frames_for_tick` 落到采样点。
     /// `Off` ⇒ 取**当前帧**（立即生效，⭐ 这就是"控制臂"：证明量化那条红是因为量化）。
     ///
     /// ⚠ `time_signature` 由控制面给出（引擎的快照里没有拍号 ⇒ ⛔ 不在这里发明）；
@@ -8964,7 +8950,7 @@ mod tests {
     /// * `TwoBars` ⇒ 生效帧 = 第 **2** 个小节线（`96 000 × 2 / 128 = 1 500` 块）；
     /// * `FourBars` ⇒ 生效帧 = 第 **4** 个小节线（`96 000 × 4 / 128 = 3 000` 块）。
     ///
-    /// 独立变色：把 `quantization_bars` 的 `TwoBars` 改成 1 ⇒ 第一条断言读到 750，红；
+    /// 独立变色：把统一助手里的 `TwoBars` 改成 1 ⇒ 第一条断言读到 750，红；
     /// 把 `FourBars` 改成 2 ⇒ 第二条读到 1 500，红。
     #[test]
     fn two_and_four_bar_quantisation_land_on_their_own_bar_lines() {
@@ -8993,6 +8979,75 @@ mod tests {
             assert_eq!(rig.runtime.stats().scene_launches_applied, 1);
             assert!(!rig.runtime.has_pending_scene_launch());
         }
+    }
+
+    /// ⭐ T-FIX-824：**拍内档在各自的拍内边界生效**（数值逐项钉住）。
+    ///
+    /// 夹具：120 bpm、48 kHz、4/4 ⇒ 1 tick = 25 帧、1 量子 = 128 帧。
+    /// 4/4 边界 tick / 帧 / 生效块：
+    /// `HalfBeat 480 / 12 000 / 94`、`QuarterBeat 240 / 6 000 / 47`、
+    /// `EighthBeat 120 / 3 000 / 24`、`SixteenthBeat 60 / 1 500 / 12`。
+    ///
+    /// 独立变色：让拍内档回退成下一小节（Bar）⇒ 生效块变成 750，本判据四条全红。
+    #[test]
+    fn sub_beat_quantisation_lands_on_its_own_fraction_boundary() {
+        use yeban_model::LaunchQuantization as Q;
+        let cases: [(Q, u64, u64, usize); 4] = [
+            (Q::HalfBeat, 480, 12_000, 94),
+            (Q::QuarterBeat, 240, 6_000, 47),
+            (Q::EighthBeat, 120, 3_000, 24),
+            (Q::SixteenthBeat, 60, 1_500, 12),
+        ];
+        for (quantization, expected_tick, expected_frames, expected_blocks) in cases {
+            let mut rig = rig();
+            let scene_bpm = rig.runtime.transport().bpm() + 12.0;
+            rig.runtime.queue_scene_launch(
+                Some(EntityId::new()),
+                scene_bpm,
+                quantization,
+                common_time(),
+            );
+            let pending = rig.runtime.pending_launch.expect("排队后必须有待生效项");
+            assert_eq!(
+                pending.switch_frame(),
+                expected_frames,
+                "⭐ {quantization:?} 的生效帧必须为 {expected_frames}（tick {expected_tick} × 25 帧）"
+            );
+            let used = run_until_launch(&mut rig, 1_000);
+            assert_eq!(
+                used, expected_blocks,
+                "⭐ {quantization:?} 必须在第 {expected_blocks} 块生效（边界 tick {expected_tick}）"
+            );
+            assert!(
+                (rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9,
+                "⭐ {quantization:?} 到点后 tempo 必须变成 {scene_bpm}"
+            );
+            assert_eq!(rig.runtime.stats().scene_launches_applied, 1);
+            assert!(!rig.runtime.has_pending_scene_launch());
+        }
+    }
+
+    /// ⭐ T-FIX-824：**EightBars 有专门判据**（此前只有 TwoBars / FourBars）。
+    ///
+    /// 120 bpm / 48 kHz / 4/4 ⇒ 一小节 96 000 帧 = 750 块；EightBars 第 8 个小节线
+    /// = `768 000` 帧 = 第 **6 000** 块。
+    #[test]
+    fn eight_bar_quantisation_lands_on_its_own_bar_line() {
+        let mut rig = rig();
+        let scene_bpm = rig.runtime.transport().bpm() + 12.0;
+        rig.runtime.queue_scene_launch(
+            Some(EntityId::new()),
+            scene_bpm,
+            yeban_model::LaunchQuantization::EightBars,
+            common_time(),
+        );
+        let pending = rig.runtime.pending_launch.expect("排队后必须有待生效项");
+        assert_eq!(pending.switch_frame(), 768_000);
+        let used = run_until_launch(&mut rig, 7_000);
+        assert_eq!(used, 6_000, "EightBars ⇒ 第 8 个小节线（750 块/小节）");
+        assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
+        assert_eq!(rig.runtime.stats().scene_launches_applied, 1);
+        assert!(!rig.runtime.has_pending_scene_launch());
     }
 
     /// ⭐ 判据 ⑥（任务单 `#283`）：**事件环里的 `SceneLaunch` 与直接调用等价**。

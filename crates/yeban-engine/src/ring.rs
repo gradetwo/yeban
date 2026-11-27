@@ -184,7 +184,7 @@ pub enum EngineEvent {
     /// 载荷与 [`crate::rt::EngineRuntime::queue_scene_launch`] 的入参**一一对应**：
     /// `scene_id` 只作读数（引擎不认识场景实体），`tempo_bpm` 是该场景的 tempo 覆盖，
     /// `quantization` / `time_signature` 决定"何时生效"（生效帧仍由**引擎**在量子边界
-    /// 用 [`crate::transport::next_bar_tick`] 算，⛔ 不在这里预计算跨线程的绝对帧）。
+    /// 用 [`crate::transport::next_launch_quantization_tick`] 算，⛔ 不在这里预计算跨线程的绝对帧）。
     ///
     /// # 顺序与尺寸
     ///
