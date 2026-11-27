@@ -109,6 +109,7 @@ use yeban_render::wav::{
 };
 use yeban_sfz::PlayDirection;
 use yeban_sfz::SampleEnd;
+use yeban_sfz::Warning;
 use yeban_sfz::instrument::{
     AMPLITUDE_DEFAULT_PERCENT, CcGate, FilterType, Instrument, OffMode, Region, Trigger,
     TriggerEvent, amp_random_gain, rt_decay_gain, trigger_rand,
@@ -1365,6 +1366,11 @@ pub struct SfzLoad {
     pub sources: Option<Arc<[SfzSource]>>,
     /// ⭐ 容错展开时被跳过的 include（空 ⇒ 全部目标都读到了）。
     pub include_issues: Vec<IncludeIssue>,
+    /// ⭐ 解析器的非致命降级 / 钳位告警（未知 opcode、越界值钳位、丢弃的段等）。
+    ///
+    /// `yeban-sfz` 已经把「默认不能静默」落在自己的装载报告里；这一层**原样**
+    /// 带出，避免 MCP 调用方只看到 `loaded:true` 而不知道文件被降级处理过。
+    pub parser_warnings: Vec<Warning>,
     /// 区域摘要（顺序 = 文件里的顺序）。
     pub regions: Vec<RegionSummary>,
     /// ⭐ **引擎摊平口径**的静音区域数（缺样本 ＋ 内建静音；任务单 `#218` 起计数、
@@ -1669,10 +1675,31 @@ impl SfzLoad {
         }))
     }
 
-    /// 本次装载的全部非阻塞警告（样本读不到 ＋ 预算截断 ＋ CC 门控普查，顺序固定）。
+    /// 解析器逐条降级 / 钳位告警的 JSON 形态（`sfzParserWarning`）。
+    ///
+    /// `display` 是 `yeban-sfz` 的逐字诊断；`detail` 是调试形态（含行号与
+    /// 结构化字段），两者都不改写、不吞掉任何一条。
+    #[must_use]
+    pub fn parser_warnings_value(&self) -> Vec<serde_json::Value> {
+        self.parser_warnings
+            .iter()
+            .map(|warning| {
+                serde_json::json!({
+                    "code": "sfzParserWarning",
+                    "severity": "warning",
+                    "blocking": false,
+                    "display": warning.to_string(),
+                    "detail": format!("{warning:?}"),
+                    "hint": "解析器对这份 SFZ 的某条声明做了降级或钳位；按 display 修正文件后重新装载。⛔ 不是装载失败，但⛔ 也不代表文件被原样执行。",
+                })
+            })
+            .collect()
+    }
+
+    /// 本次装载的全部非阻塞警告（解析器降级/钳位 ＋ 样本读不到 ＋ 预算截断 ＋ CC 门控普查，顺序固定）。
     #[must_use]
     pub fn all_warnings(&self) -> Vec<serde_json::Value> {
-        let mut warnings: Vec<serde_json::Value> = Vec::new();
+        let mut warnings: Vec<serde_json::Value> = self.parser_warnings_value();
         if let Some(warning) = self.samples_warning() {
             warnings.push(warning);
         }
@@ -2760,11 +2787,13 @@ fn load_with_resolved(
         provider,
         cc_census,
         cc_seed_defaults,
+        parser_warnings,
     ) = {
         let instrument = match resolution.as_ref() {
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
         }?;
+        let parser_warnings = instrument.warnings().to_vec();
         // ⭐ set_ccN 离线播种（路线 a）：需求过滤器的 CC 可达集在这里并入本乐器的
         // 种子表 —— 与探针的种子层同一次解析、同一个来源（`cc_defaults()`），
         // 装载侧与渲染侧自此读同一份初值（泳道赢的优先级在 `with_cc_seeds` 里）。
@@ -2938,6 +2967,7 @@ fn load_with_resolved(
             provider,
             cc_census,
             cc_seed_defaults,
+            parser_warnings,
         )
     };
     // 片段序列随装载一起登记：渲染路径的 `with_instrument` 必须重放**同一份**展开结果。
@@ -2970,6 +3000,7 @@ fn load_with_resolved(
             // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
             limits: cache.limits(),
             cc_census,
+            parser_warnings,
             initial_cc: initial_cc.clone(),
             cc_seed_defaults,
         },

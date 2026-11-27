@@ -1727,7 +1727,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId。`data.silentRegionCount` 是引擎摊平口径的静音区域数 (缺样本 + 内建静音), `builtinSilentRegionCount` 是其中的 *silence 子集。⭐ 样本文件读不到时 status 仍是 success, 但 `data.warnings[]` 点名 `sfzSamplesUnreadable` —— 采样器轨没有正弦回退, 绑轨即整轨静音。⭐ CC 门控普查 `data.ccGateCensus`: 生效种子下不可发声的区域分计, 非 0 时 `warnings[]` 另点名 `sfzCcGatedSilence` (需注入 MidiCc 泳道校准)。⭐ 样本被预算上限跳过时 `data.sampleTruncation` 结构化记账 + `warnings[]` 点名 `sfzSampleBudgetTruncated`。可选 `initialCc` 并入同一种子表播种 (覆盖文件 `set_ccN`)。⭐ SFZ 规范的 23 个 `fil_type` 值全部可装载; 本仓尚未实现的 8 个类型在 `data.unsupportedFilterTypes[]` 点名, 这些区域滤波直通",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId。`data.silentRegionCount` 是引擎摊平口径的静音区域数 (缺样本 + 内建静音), `builtinSilentRegionCount` 是其中的 *silence 子集。⭐ 样本文件读不到时 status 仍是 success, 但 `data.warnings[]` 点名 `sfzSamplesUnreadable` —— 采样器轨没有正弦回退, 绑轨即整轨静音。⭐ 解析器的非致命降级/钳位 (未知 opcode、`pan=200` 这类装载期钳位、丢弃段等) 逐条进 `warnings[]`, `code=sfzParserWarning`, 带 `display`/`detail`/`hint`, 不因 `loaded:true` 被静默吞掉。⭐ CC 门控普查 `data.ccGateCensus`: 生效种子下不可发声的区域分计, 非 0 时 `warnings[]` 另点名 `sfzCcGatedSilence` (需注入 MidiCc 泳道校准)。⭐ 样本被预算上限跳过时 `data.sampleTruncation` 结构化记账 + `warnings[]` 点名 `sfzSampleBudgetTruncated`。可选 `initialCc` 并入同一种子表播种 (覆盖文件 `set_ccN`)。⭐ SFZ 规范的 23 个 `fil_type` 值全部可装载; 本仓尚未实现的 8 个类型在 `data.unsupportedFilterTypes[]` 点名, 这些区域滤波直通",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。

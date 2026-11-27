@@ -463,8 +463,8 @@ fn undo_display_schema() -> Value {
 /// `ignoredStripDevices` 由提案侧与母带侧**共用** —— 同一判定、同一形状，母带那枚
 /// 登记不变；`sampler_binding_warnings` 同批也挂进 `warnings[]`，但它用的是 `kind`
 /// 不是 `code`，⛔ 不进这个名册）。
-/// ⚠ 名册里不广播的 SFZ 三枚（`sfzSamplesUnreadable` / `sfzCcGatedSilence` /
-/// `sfzSampleBudgetTruncated`）⛔ 不在任何子集里
+/// ⚠ 名册里不广播的 SFZ 四枚（`sfzSamplesUnreadable` / `sfzCcGatedSilence` /
+/// `sfzSampleBudgetTruncated` / `sfzParserWarning`）⛔ 不在任何子集里
 /// —— 它们只出自 `yeban_load_sfz` 的响应构造器（`domain/sfz.rs` 的 `samples_warning` /
 /// `budget_truncation_warning` / `cc_gate_warning`，经 `all_warnings` 装配），
 /// 而 `for_tool` 对扩展工具返回 `None`（不广播 outputSchema，常驻判据
@@ -2877,7 +2877,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 13, "契约名册现读 13 枚: {contract:?}");
+        assert_eq!(contract.len(), 14, "契约名册现读 14 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2933,23 +2933,24 @@ mod tests {
             "广播侧发明了契约外的 code: {invented:?}"
         );
 
-        // ⭐ `sfzSamplesUnreadable`、`sfzCcGatedSilence`、`sfzSampleBudgetTruncated`
-        // 与 `peakAboveFullScale`
-        // **故意**不在任何子集里：前三枚只出自 SFZ 装载一族扩展工具，而扩展工具
+        // ⭐ `sfzSamplesUnreadable`、`sfzCcGatedSilence`、`sfzSampleBudgetTruncated`、
+        // `sfzParserWarning` 与 `peakAboveFullScale`
+        // **故意**不在任何子集里：前四枚只出自 SFZ 装载一族扩展工具，而扩展工具
         // 不广播 outputSchema；后者只出自 `yeban_export_stems` 的逐轨
         // `peakWarning`（`StemRow` 内嵌键），不在顶层 `warnings[]` 里，而
         // `export_stems` 不在 [`COVERED_TOOLS`] 之列。
-        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是这四枚。
+        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是这五枚。
         let unbroadcast: Vec<String> = contract.difference(&all).cloned().collect();
         assert_eq!(
             unbroadcast,
             [
                 "peakAboveFullScale".to_owned(),
                 "sfzCcGatedSilence".to_owned(),
+                "sfzParserWarning".to_owned(),
                 "sfzSampleBudgetTruncated".to_owned(),
                 "sfzSamplesUnreadable".to_owned()
             ],
-            "契约里不该被广播的 code 必须是 peakAboveFullScale、sfzCcGatedSilence、sfzSampleBudgetTruncated 与 sfzSamplesUnreadable（其余七枚都必须广播）"
+            "契约里不该被广播的 code 必须是 peakAboveFullScale、sfzCcGatedSilence、sfzParserWarning、sfzSampleBudgetTruncated 与 sfzSamplesUnreadable（其余九枚都必须广播）"
         );
     }
 

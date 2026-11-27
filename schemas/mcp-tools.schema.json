@@ -5,7 +5,7 @@
   "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "WarningCode": {
-      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` / `ignoredStripDevices` / `incompleteDrumNoteMap` / `unroutedTracks` = `domain/render.rs`，`sfzSamplesUnreadable` / `sfzCcGatedSilence` / `sfzSampleBudgetTruncated` = `domain/sfz.rs`，`peakAboveFullScale` = `domain/stems.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
+      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` / `ignoredStripDevices` / `incompleteDrumNoteMap` / `unroutedTracks` = `domain/render.rs`，`sfzSamplesUnreadable` / `sfzCcGatedSilence` / `sfzSampleBudgetTruncated` / `sfzParserWarning` = `domain/sfz.rs`，`peakAboveFullScale` = `domain/stems.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
       "type": "string",
       "enum": [
         "deviceOnSilentTrack",
@@ -15,6 +15,7 @@
         "masterFaderAboveUnity",
         "peakAboveFullScale",
         "sfzCcGatedSilence",
+        "sfzParserWarning",
         "sfzSampleBudgetTruncated",
         "sfzSamplesUnreadable",
         "silentSources",
@@ -1612,7 +1613,7 @@
         "yeban_load_sfz": {
           "title": "yeban_load_sfz",
           "type": "object",
-          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的解析层：展开 `#include` 后按 `parse_sources` 重放，与 app 侧同一个实现），会话内记住它并返回区域数、样本读数与 include 读账（`includeIssues` / `includeIssueCount`）。缺失的 include 只记一条、不失败；成环/超深度是错误。采样文件是否被真读看 `sampleFilesRead` 一族读数，不要用 `probe` 的能量判断。⭐ G4：有样本文件读不到 ⇒ `status` 仍为 `success`（解析/注册确实成功），但 `data.warnings[]` 点名 `sfzSamplesUnreadable`（`blocking:false`，含 `count`/`allSamplesUnreadable`/`examples`/`hint`）——采样器轨没有正弦回退，绑轨渲染即绝对静音；采样须按 `docs/SFZ_SAMPLE_ACQUISITION.md` 登记式外取后重新装载。⭐ T-FIX-278：SFZ 规范的 23 个 `fil_type` 值**全部可装载**（此前 12 个规范值直接让整份乐器解析失败）；`data.regionDetails[]` 逐区域给出 `filterType` / `filterImplemented` / `filterGainDb`。本仓尚未实现的 8 个类型（`bpf_1p` / `brf_1p` / `lpf_2p_sv` / `hpf_2p_sv` / `bpf_2p_sv` / `brf_2p_sv` / `comb` / `pink`）不影响装载，但 `data.unsupportedFilterTypes[]` 按类型点名（`regionCount` / `regions` / `supported:false` / `hint`），这些区域的滤波**直通**（采样与包络照常）。已实现 `pkf_2p` / `lsh` / `hsh` / `peq`，其中 `lsh` / `hsh` / `peq` 的增益由 `fil_gain`（dB）承载；规范外未知 `fil_type` 仍响亮拒绝。",
+          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的解析层：展开 `#include` 后按 `parse_sources` 重放，与 app 侧同一个实现），会话内记住它并返回区域数、样本读数与 include 读账（`includeIssues` / `includeIssueCount`）。解析器的非致命降级/钳位（未知 opcode、越界值钳位、丢弃段等）逐条进 `data.warnings[]`，`code=sfzParserWarning`，带 `display` / `detail` / `hint`，⛔ 不因 `loaded:true` 被静默吞掉。缺失的 include 只记一条、不失败；成环/超深度是错误。采样文件是否被真读看 `sampleFilesRead` 一族读数，不要用 `probe` 的能量判断。⭐ G4：有样本文件读不到 ⇒ `status` 仍为 `success`（解析/注册确实成功），但 `data.warnings[]` 点名 `sfzSamplesUnreadable`（`blocking:false`，含 `count`/`allSamplesUnreadable`/`examples`/`hint`）——采样器轨没有正弦回退，绑轨渲染即绝对静音；采样须按 `docs/SFZ_SAMPLE_ACQUISITION.md` 登记式外取后重新装载。⭐ T-FIX-278：SFZ 规范的 23 个 `fil_type` 值**全部可装载**（此前 12 个规范值直接让整份乐器解析失败）；`data.regionDetails[]` 逐区域给出 `filterType` / `filterImplemented` / `filterGainDb`。本仓尚未实现的 8 个类型（`bpf_1p` / `brf_1p` / `lpf_2p_sv` / `hpf_2p_sv` / `bpf_2p_sv` / `brf_2p_sv` / `comb` / `pink`）不影响装载，但 `data.unsupportedFilterTypes[]` 按类型点名（`regionCount` / `regions` / `supported:false` / `hint`），这些区域的滤波**直通**（采样与包络照常）。已实现 `pkf_2p` / `lsh` / `hsh` / `peq`，其中 `lsh` / `hsh` / `peq` 的增益由 `fil_gain`（dB）承载；规范外未知 `fil_type` 仍响亮拒绝。",
           "properties": {
             "path": {
               "type": "string",
