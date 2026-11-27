@@ -61,23 +61,27 @@
 //! [`platform_absolute_nonexistent`] 换成 `C:\nonexistent\…`，**语义一位未变**：
 //! 绝对路径原样返回、不存在的绝对路径也原样、⛔ 不查存在性。
 
-#![allow(unused)]
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
-use yeban_app::bridge::{ViewState, sfz_samples_present};
+mod common;
+
+use yeban_app::bridge::{InstrumentSampleProbe, ViewState, probe_instrument_samples};
 use yeban_app::engine_host::EngineHost;
 use yeban_app::file_picker::{FilePicker, PickerRequest};
-use yeban_app::host::{SaveStatus, build_main_window_with_console_tab, wire_save_with_engine};
+use yeban_app::host::{
+    SaveStatus, apply_language, build_main_window_with_console_tab, wire_save_with_engine,
+};
 use yeban_app::record_wav::{RecordOptions, record_project, record_project_under};
 use yeban_app::render_core::{render_project_f32, render_project_f32_with_assets_under};
 use yeban_app::scene::DemoScene;
 use yeban_app::sfz_load::{SfzRoots, arm_pending_sfz, repo_root, resolve_sampler_path};
 use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::EngineSnapshot;
+use yeban_model::container::write_project_container;
 use yeban_model::samples::filled_project;
 use yeban_model::{EntityId, SamplerBinding, YebanProjectV1};
 use yeban_render::dither::PcmBuffer;
@@ -103,6 +107,31 @@ struct Reading {
     missing: usize,
 }
 
+/// 在 `dir/samples` 下写一份 1 region ＋ 1 份 24-bit WAV 的 SFZ（幅度可调）。
+fn write_fixture(dir: &Path, amplitude: f64) {
+    std::fs::create_dir_all(dir.join("samples")).expect("建夹具目录");
+    // 0.1 s、440 Hz、给定幅度的 24-bit 单声道 WAV。
+    let frames = (RATE / 10) as usize;
+    let mut pcm: Vec<i32> = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let phase = std::f64::consts::TAU * 440.0 * frame as f64 / f64::from(RATE);
+        #[allow(clippy::cast_possible_truncation)]
+        let value = (phase.sin() * amplitude * 8_388_607.0).round() as i32;
+        pcm.push(value);
+    }
+    write_plain_wav(
+        dir.join("samples/tone.wav"),
+        &PcmFormat::integer(1, RATE, 24),
+        &PcmBuffer::Int24(pcm),
+    )
+    .expect("写夹具 WAV");
+    std::fs::write(
+        dir.join("samples/tone.sfz"),
+        "<region> sample=tone.wav key=60 pitch_keycenter=60\n",
+    )
+    .expect("写夹具 SFZ");
+}
+
 /// 仓库内的临时夹具（`target/tmp/...`；`Drop` 时删除自己）。
 struct Fixture {
     /// 夹具根目录（`samples/tone.sfz` ＋ `samples/tone.wav` 在它下面）。
@@ -110,34 +139,19 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// 建一份 1 region ＋ 1 份 24-bit WAV 的 SFZ。
+    /// 建一份 1 region ＋ 1 份 24-bit WAV 的 SFZ（幅度 0.5）。
     fn new(tag: &str) -> Self {
+        Self::new_with_amplitude(tag, 0.5)
+    }
+
+    /// 建一份同形状、但样本幅度可调的 SFZ（判据用它造"同名不同字节"的诱饵）。
+    fn new_with_amplitude(tag: &str, amplitude: f64) -> Self {
         let dir = repo_root().join("target/tmp").join(format!(
             "yeban-168-{tag}-{}-{}",
             std::process::id(),
             EntityId::new().to_canonical_string()
         ));
-        std::fs::create_dir_all(dir.join("samples")).expect("建夹具目录");
-        // 0.1 s、440 Hz、幅度 0.5 的 24-bit 单声道 WAV。
-        let frames = (RATE / 10) as usize;
-        let mut pcm: Vec<i32> = Vec::with_capacity(frames);
-        for frame in 0..frames {
-            let phase = std::f64::consts::TAU * 440.0 * frame as f64 / f64::from(RATE);
-            #[allow(clippy::cast_possible_truncation)]
-            let value = (phase.sin() * 0.5 * 8_388_607.0).round() as i32;
-            pcm.push(value);
-        }
-        write_plain_wav(
-            dir.join("samples/tone.wav"),
-            &PcmFormat::integer(1, RATE, 24),
-            &PcmBuffer::Int24(pcm),
-        )
-        .expect("写夹具 WAV");
-        std::fs::write(
-            dir.join("samples/tone.sfz"),
-            "<region> sample=tone.wav key=60 pitch_keycenter=60\n",
-        )
-        .expect("写夹具 SFZ");
+        write_fixture(&dir, amplitude);
         Self { dir }
     }
 
@@ -169,17 +183,6 @@ impl Drop for Fixture {
 /// **盘符**（`C:\…`）或 **UNC** 前缀（`\\server\share\…`），只有根 `/…` 不算。
 /// 于是解析器把 `/nonexistent/…` 当**相对**路径，走"工程目录 ⇒ 仓库根 ⇒ cwd"三档，
 /// 找不到就 `Err` ⇒ `expect` 在 Windows 上 panic。
-///
-/// 修法**不改语义**（"绝对路径原样返回、⛔ 不查存在性"），只把那条路径换成
-/// **运行判据的这个平台**自己的绝对路径形状：
-///
-/// | 平台 | 形状 | `Path::new(…).is_absolute()` |
-/// | :--- | :--- | :--- |
-/// | Unix / macOS | `/nonexistent/<name>` | `true` |
-/// | Windows | `C:\nonexistent\<name>` | `true` |
-///
-/// 两个分支都是普通字符串，**任意**平台都能编译 ⇒ 不需要 `#[cfg]` 复制整个判据；
-/// 判据里再用 `#[cfg]` 两条断言核"形状"、一条运行期断言核"真的读作绝对"。
 fn platform_absolute_nonexistent(name: &str) -> String {
     if cfg!(windows) {
         format!(r"C:\nonexistent\{name}")
@@ -232,223 +235,236 @@ fn load_reading(path: &str, roots: SfzRoots<'_>) -> Reading {
     }
 }
 
-/// `src/` 下全部 `*.rs` 的 `(文件名, 文本)`（判据 1 的机械读数）。
-fn rust_sources(dir: &Path, out: &mut Vec<(String, String)>) {
-    for entry in std::fs::read_dir(dir).expect("读 src 目录") {
-        let entry = entry.expect("目录项");
-        let path = entry.path();
-        if path.is_dir() {
-            rust_sources(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push((
-                path.file_name()
-                    .expect("有文件名")
-                    .to_string_lossy()
-                    .into_owned(),
-                std::fs::read_to_string(&path).expect("读源文件"),
-            ));
-        }
-    }
+/// 临时目录 + 唯一标签（`Drop` 由调用方删；⛔ 工作树里不留临时文件）。
+fn scratch_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "yeban-168-{tag}-{}-{}",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    dir
 }
 
 // ===========================================================================
-// 判据 1：一份实现（旧的两处都改成调它）
+// 判据 1：一份实现（探测与渲染都调同一个解析）
 // ===========================================================================
 #[test]
 fn one_resolver_is_the_single_source_of_truth() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let fixture = Fixture::new("one-resolver");
+    let literal = fixture.sfz().to_string_lossy().into_owned();
+    let resolved = resolve_sampler_path(&literal, SfzRoots::none()).expect("绝对 SFZ 必须解析");
+    assert_eq!(resolved, fixture.sfz(), "绝对路径原样就是夹具路径");
+    assert_eq!(
+        probe_instrument_samples(&literal),
+        InstrumentSampleProbe::Installable { decoded_samples: 1 },
+        "探测必须认可这份夹具"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+    let reading = load_reading(&literal, SfzRoots::none());
+    assert_eq!(reading.resolved, resolved, "探测与渲染必须是同一条路径");
+    assert_eq!(
+        (
+            reading.regions,
+            reading.decoded,
+            reading.silent,
+            reading.missing
+        ),
+        (1, 1, 0, 0),
+        "1 region、1 份解码、0 静音、0 缺样本"
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
+    // 仓库相对路径：仓库根只有 `repo_root()` 一份取值。
+    let relative = fixture.repo_relative_sfz();
+    let expected = repo_root().join(&relative);
+    assert_eq!(
+        resolve_sampler_path(&relative, SfzRoots::none()).expect("仓库相对路径必须解析"),
+        expected,
+        "仓库根候选必须来自 `repo_root()`"
     );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    let relative_reading = load_reading(&relative, SfzRoots::none());
+    assert_eq!(relative_reading.resolved, expected);
+    assert_eq!(relative_reading.decoded, 1);
 }
 
 // ===========================================================================
-// 判据 2：cwd 无关（仓根 / /tmp / crate 目录三档装载读数相同）
+// 判据 2：cwd 无关（仓根 / 临时目录 / crate 目录三档装载读数相同）
 // ===========================================================================
 #[test]
 fn the_same_project_loads_the_same_from_three_cwds() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let fixture = Fixture::new("three-cwds");
+    let relative = fixture.repo_relative_sfz();
+    let temp = scratch_dir("three-cwds-tmp");
+    let cwds = [
+        repo_root().to_path_buf(),
+        temp.clone(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    ];
+    let readings: Vec<Reading> = cwds
+        .iter()
+        .map(|cwd| load_reading(&relative, SfzRoots::none().with_cwd(cwd)))
+        .collect();
+    for (index, reading) in readings.iter().enumerate() {
+        assert_eq!(
+            reading, &readings[0],
+            "第 {index} 档 cwd 的读数必须与仓根那一档逐项相同"
+        );
+        assert_eq!(
+            reading.resolved,
+            fixture.sfz(),
+            "第 {index} 档 cwd 必须解析到仓库内同一个文件"
+        );
+    }
+    assert_eq!(
+        readings[0],
+        Reading {
+            resolved: fixture.sfz(),
+            regions: 1,
+            decoded: 1,
+            silent: 0,
+            missing: 0
+        }
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    std::fs::remove_dir_all(&temp).ok();
 }
 
 // ===========================================================================
-// 判据 3：找不到 ⇒ 响亮（逐字含"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"）＋ 不静音
+// 判据 3：找不到 ⇒ 响亮（逐字含"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"）＋ 列出全部候选
 // ===========================================================================
 #[test]
 fn a_missing_relative_path_is_loud_and_lists_every_root() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    let project_dir = scratch_dir("loud-project");
+    let library_root = scratch_dir("loud-library");
+    let cwd = scratch_dir("loud-cwd");
+    let missing = "assets/samples/t890-missing/tone.sfz";
+    let roots = SfzRoots {
+        project_dir: Some(&project_dir),
+        library_root: Some(&library_root),
+        cwd: Some(&cwd),
+    };
+    let error = resolve_sampler_path(missing, roots).expect_err("这份路径在任何根下都不存在");
+    assert_eq!(error.path(), missing, "错误必须回显用户原样写下的路径");
+    let expected: Vec<PathBuf> = vec![
+        project_dir.join(missing),
+        library_root.join("t890-missing/tone.sfz"),
+        repo_root().join(missing),
+        cwd.join(missing),
+    ];
+    assert_eq!(
+        error.tried(),
+        expected.as_slice(),
+        "候选必须按规则 2 的顺序列全"
+    );
+    assert_eq!(
+        error.tried().len(),
+        4,
+        "工程目录 / 库根 / 仓库根 / cwd 四条"
+    );
+    let text = error.to_string();
+    assert!(
+        text.starts_with(&format!("SFZ 路径 `{missing}` 找不到；试过：")),
+        "错误开头必须点名路径并说试过哪些根: {text}"
+    );
+    for candidate in &expected {
+        assert!(
+            text.contains(&candidate.display().to_string()),
+            "错误必须逐条列出候选 {}: {text}",
+            candidate.display()
+        );
+    }
+    assert_eq!(text.matches('／').count(), 3, "四个候选之间恰好三个分隔符");
+
+    // 渲染侧同一条语义：`arm_pending_sfz` 也必须响亮，而不是静默静音。
+    let (project, _track) = project_with_sampler(missing);
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("投影快照");
+    let error = arm_pending_sfz(
+        snapshot,
+        RATE as f32,
+        BTreeMap::<EntityId, SfzPlan>::new(),
+        roots,
     )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    .expect_err("渲染侧也必须报错");
+    let render_text = error.to_string();
     assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+        render_text.contains("试过：") && render_text.contains(missing),
+        "渲染侧错误必须带路径与试过的根: {render_text}"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    for dir in [&project_dir, &library_root, &cwd] {
+        assert!(
+            render_text.contains(&dir.display().to_string()),
+            "渲染侧错误也必须列出 {}: {render_text}",
+            dir.display()
+        );
+    }
+    std::fs::remove_dir_all(&project_dir).ok();
+    std::fs::remove_dir_all(&library_root).ok();
+    std::fs::remove_dir_all(&cwd).ok();
 }
 
 // ===========================================================================
-// 判据 4：绝对路径原样
+// 判据 4：绝对路径原样（不查存在性）
 // ===========================================================================
 #[test]
 fn absolute_paths_are_returned_verbatim() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let path = platform_absolute_nonexistent("yeban-168.sfz");
     assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+        Path::new(&path).is_absolute(),
+        "判据用的路径必须是本平台自己的绝对形状: {path}"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+    #[cfg(windows)]
+    assert!(path.starts_with(r"C:\"), "Windows 形状必须带盘符: {path}");
+    #[cfg(not(windows))]
+    assert_eq!(path, "/nonexistent/yeban-168.sfz");
+    let cwd = scratch_dir("absolute-cwd");
+    let roots = SfzRoots::none().with_cwd(&cwd);
+    let resolved = resolve_sampler_path(&path, roots).expect("绝对路径必须原样返回，⛔ 不查存在性");
+    assert_eq!(resolved, PathBuf::from(&path), "必须逐字相同");
+    assert!(!resolved.exists(), "判据故意用一条不存在的绝对路径");
+    // 存在的绝对路径同样原样（工程目录在场时也不被改写）。
+    let fixture = Fixture::new("absolute-existing");
+    let literal = fixture.sfz().to_string_lossy().into_owned();
+    assert_eq!(
+        resolve_sampler_path(&literal, SfzRoots::under_project(&fixture.dir)).expect("绝对路径"),
+        fixture.sfz()
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    std::fs::remove_dir_all(&cwd).ok();
 }
 
 // ===========================================================================
-// 判据 5：相对工程目录（样本放工程旁 ⇒ 任意 cwd 都读得到）
+// 判据 5：相对工程目录（样本放工程旁 ⇒ 任意 cwd 都读得到，且优先于 cwd 同名文件）
 // ===========================================================================
 #[test]
 fn a_project_adjacent_sfz_is_readable_from_any_cwd() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    let fixture = Fixture::new("adjacent");
+    // 诱饵：cwd 下有一条**同名不同字节**的文件 —— 工程目录必须胜出。
+    let decoy = scratch_dir("adjacent-decoy");
+    std::fs::create_dir_all(decoy.join("samples")).expect("建诱饵目录");
+    std::fs::write(
+        decoy.join("samples/tone.sfz"),
+        "<region> sample=decoy.wav key=60 pitch_keycenter=60\n",
     )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
-    );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    .expect("写诱饵 SFZ");
+    let relative = "samples/tone.sfz";
+    for cwd in [decoy.clone(), scratch_dir("adjacent-other")] {
+        let reading = load_reading(
+            relative,
+            SfzRoots::under_project(&fixture.dir).with_cwd(&cwd),
+        );
+        assert_eq!(
+            reading.resolved,
+            fixture.sfz(),
+            "工程旁的样本必须按工程目录解析，而不是 cwd"
+        );
+        assert_eq!(
+            (
+                reading.regions,
+                reading.decoded,
+                reading.silent,
+                reading.missing
+            ),
+            (1, 1, 0, 0),
+            "工程旁样本必须真的解出 PCM"
+        );
+        std::fs::remove_dir_all(&cwd).ok();
+    }
 }
 
 // ===========================================================================
@@ -456,98 +472,59 @@ fn a_project_adjacent_sfz_is_readable_from_any_cwd() {
 // ===========================================================================
 #[test]
 fn the_probe_and_the_renderer_use_the_same_resolver() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let fixture = Fixture::new("probe-renderer");
+    let relative = fixture.repo_relative_sfz();
+    assert_eq!(
+        probe_instrument_samples(&relative),
+        InstrumentSampleProbe::Installable { decoded_samples: 1 },
+        "仓库相对路径的探测必须可装"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
+    let resolved = resolve_sampler_path(&relative, SfzRoots::none()).expect("唯一解析");
+    let reading = load_reading(&relative, SfzRoots::none());
+    assert_eq!(reading.resolved, resolved, "探测与渲染必须是同一条解析结果");
+    assert_eq!(
+        (
+            reading.regions,
+            reading.decoded,
+            reading.silent,
+            reading.missing
+        ),
+        (1, 1, 0, 0)
     );
 }
 
 // ===========================================================================
 // 判据 2（进程级）：**不注入** cwd ⇒ 解析真的读 `std::env::current_dir()`
 // ===========================================================================
-//
-// `cargo test` 总是把测试二进制的 cwd 设成 crate 目录，所以"三种真实 cwd"只能由
-// **直接运行测试二进制**来制造（见交付报告的读数：从仓根 / `/tmp` / crate 目录各跑一次）。
-// 本判据本身不注入 `cwd` ⇒ `SfzRoots::none()` 走的是真实的 `std::env::current_dir()`。
 #[test]
 fn the_real_process_cwd_does_not_change_the_reading() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let fixture = Fixture::new("real-cwd");
+    let relative = fixture.repo_relative_sfz();
+    let real = std::env::current_dir().expect("读进程 cwd");
+    assert_eq!(
+        real.canonicalize().ok(),
+        Some(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .canonicalize()
+                .expect("crate 目录")
+        ),
+        "`cargo test` 的进程 cwd 是 crate 目录"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+    let real_reading = load_reading(&relative, SfzRoots::none());
+    let other = scratch_dir("real-cwd-other");
+    let injected_reading = load_reading(&relative, SfzRoots::none().with_cwd(&other));
+    assert_eq!(
+        real_reading, injected_reading,
+        "真实 cwd 与注入的另一档 cwd 必须给出同一份读数"
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    assert_eq!(real_reading.resolved, fixture.sfz());
+    assert_eq!(real_reading.decoded, 1);
+    std::fs::remove_dir_all(&other).ok();
 }
 
 // ===========================================================================
 // 任务单 `#170`：⭐ 工程目录跟着**当前工程文件**走
 // ===========================================================================
-//
-// 两条缺口共用**一条**语义：`EngineHost.project_dir` / 渲染入口的 `project_dir`
-// = "当前工程文件所在目录"。
-//
-// | 判据 | 对象 | 读数 |
-// | :--- | :--- | :--- |
-// | ① | GUI「另存为」前后的 `EngineHost::project_dir()` | `Option<PathBuf>`（逐字）＋ 随后 `reload` 的 `sfz_plan` / `cache misses` |
-// | ② | 取消 / 失败后的 `project_dir` | 同一个 `Option<PathBuf>`（必须**不变**） |
-// | ③ | `--record-wav` 的渲染入口 | `recorded-wav: frames=… bytes=…` ＋ `SfzDecodeReport::{decoded,silent}` |
-// | ④ | 旧入口 vs `_under(None)` | WAV **字节**（逐位比较）＋ `digest` 十六进制 |
 
 /// 判据用的**脚本化保存对话框**：`path = None` ⇒ 用户取消（`FilePicker` 的既有口径）。
 struct ScriptedSave {
@@ -599,243 +576,286 @@ fn save_window() -> (Tier1Window, yeban_app::ui::MainWindow) {
     (tier1, ui)
 }
 
-/// ⭐ 判据 ①：**另存为到另一个目录** ⇒ `project_dir` 跟着新文件走，随后相对路径的
-/// 工程旁样本按**新**目录解析得到。
-///
-/// 读数：`before = old.dir`、`after = new.dir`、`reload = Ok`、`sfz_plan = Some`、
-/// `cache misses = 1`。
+/// 装配「保存」回调（旧入口 `wire_save` 的同一条落点）。
+fn wire_save(
+    ui: &yeban_app::ui::MainWindow,
+    target: Option<PathBuf>,
+    picker: Rc<dyn FilePicker>,
+    engine: Rc<RefCell<EngineHost>>,
+) {
+    wire_save_with_engine(
+        ui,
+        SaveStatus {
+            target,
+            project: Rc::new(RefCell::new(filled_project())),
+        },
+        None,
+        picker,
+        None,
+        Some(engine),
+    );
+}
+
+/// 一个装过旧工程路径的宿主（判据要读"目录动没动"）。
+fn engine_at(path: &Path) -> Rc<RefCell<EngineHost>> {
+    let engine = Rc::new(RefCell::new(EngineHost::new()));
+    engine
+        .borrow_mut()
+        .set_project_path(Some(path.to_path_buf()));
+    engine
+}
+
+// ===========================================================================
+// 判据 ①：**另存为到另一个目录** ⇒ `project_dir` 跟着新文件走，随后相对路径的
+//         工程旁样本按**新**目录解析得到。
+// ===========================================================================
 #[test]
 fn saving_elsewhere_moves_the_project_dir_to_the_new_file() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let fixture = Fixture::new("save-elsewhere");
+    let old_dir = scratch_dir("save-elsewhere-old");
+    let old_file = old_dir.join("old.yeban");
+    let new_file = fixture.dir.join("saved-as-168.yeban");
+    let engine = engine_at(&old_file);
+    let (tier1, ui) = save_window();
+    let picker = Rc::new(ScriptedSave::answering(new_file.clone()));
+    let dyn_picker: Rc<dyn FilePicker> = picker.clone();
+    wire_save(&ui, Some(old_file.clone()), dyn_picker, Rc::clone(&engine));
+    ui.invoke_save_project_as();
+    assert_eq!(picker.calls.get(), 1, "另存为问了一次对话框");
     assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+        new_file.is_file(),
+        "另存为必须真的落盘: {}",
+        new_file.display()
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+    assert_eq!(
+        engine.borrow().project_dir(),
+        Some(fixture.dir.as_path()),
+        "落盘成功后工程目录必须跟着新文件"
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
+    assert_eq!(
+        engine.borrow().project_path(),
+        Some(new_file.as_path()),
+        "真实文件名也要跟着新文件（导出护栏读它）"
     );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    // 新目录里的相对样本：随后的 reload 必须读得到（目录没跟着走 ⇒ 解析失败）。
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    engine
+        .borrow_mut()
+        .reload(&project, 1)
+        .expect("工程目录已跟着新文件 ⇒ 工程旁样本必须可解析");
+    std::fs::remove_dir_all(&old_dir).ok();
+    let _ = tier1;
 }
 
-/// ⭐ 判据 ②a：用户在「另存为」对话框里按**取消** ⇒ `project_dir` **一位不动**
-/// （与 `wire_save` 的既有取消口径一致：⛔ 不写状态、⛔ 不写文件）。
+// ===========================================================================
+// 判据 ②a：用户按**取消** ⇒ `project_dir` **一位不动**（⛔ 不写状态、⛔ 不写文件）
+// ===========================================================================
 #[test]
 fn a_cancelled_save_leaves_the_project_dir_alone() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let old_dir = scratch_dir("cancel-old");
+    let old_file = old_dir.join("old.yeban");
+    let engine = engine_at(&old_file);
+    let (tier1, ui) = save_window();
+    let picker = Rc::new(ScriptedSave::cancelling());
+    let dyn_picker: Rc<dyn FilePicker> = picker.clone();
+    let before = ui.get_save_status();
+    wire_save(&ui, None, dyn_picker, Rc::clone(&engine));
+    ui.invoke_save_project_as();
+    assert_eq!(picker.calls.get(), 1, "对话框被问了一次");
+    assert_eq!(
+        engine.borrow().project_dir(),
+        Some(old_dir.as_path()),
+        "取消不动工程目录"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    assert_eq!(ui.get_save_status(), before, "取消⛔ 不写保存回执");
+    std::fs::remove_dir_all(&old_dir).ok();
+    let _ = tier1;
 }
 
-/// ⭐ 判据 ②b：落盘**失败**（目标目录不存在）⇒ `project_dir` **一位不动**，
-/// 且界面如实报"保存失败"。
+// ===========================================================================
+// 判据 ②b：落盘**失败**（目标目录不存在）⇒ `project_dir` **一位不动**，
+//          且界面如实报"保存失败"
+// ===========================================================================
 #[test]
 fn a_failed_save_leaves_the_project_dir_alone() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let old_dir = scratch_dir("failed-old");
+    let old_file = old_dir.join("old.yeban");
+    let engine = engine_at(&old_file);
+    let (tier1, ui) = save_window();
+    apply_language(&ui, yeban_app::cli::Language::ZhCn);
+    let missing_dir = scratch_dir("failed-target").join("no-such-subdir");
+    let bad_target = missing_dir.join("boom.yeban");
+    let picker = Rc::new(ScriptedSave::answering(bad_target.clone()));
+    let dyn_picker: Rc<dyn FilePicker> = picker.clone();
+    wire_save(&ui, Some(old_file), dyn_picker, Rc::clone(&engine));
+    ui.invoke_save_project_as();
+    assert!(!bad_target.exists(), "落盘失败⛔ 不留文件");
+    assert_eq!(
+        engine.borrow().project_dir(),
+        Some(old_dir.as_path()),
+        "失败不动工程目录"
     );
+    let status = ui.get_save_status().to_string();
     assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+        status.starts_with("保存失败："),
+        "界面必须如实报保存失败: {status}"
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    assert!(!ui.get_save_succeeded(), "失败必须标成未成功");
+    std::fs::remove_dir_all(&old_dir).ok();
+    let _ = tier1;
 }
 
-/// ⭐ 判据 ③（直接入口）：录制入口**拿得到工程目录** ⇒ 工程旁的相对样本读得到；
-/// 反之（旧入口 `None`）**响亮**失败且⛔ 不写文件。
+// ===========================================================================
+// 判据 ③（直接入口）：录制入口**拿得到工程目录** ⇒ 工程旁的相对样本读得到；
+//          反之（旧入口 `None`）**响亮**失败且⛔ 不写文件。
+// ===========================================================================
 #[test]
 fn the_record_entry_reads_a_sample_next_to_the_project_file() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    let fixture = Fixture::new("record-entry");
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    let options = RecordOptions {
+        seconds: 0.1,
+        channels: 1,
+        ..RecordOptions::default()
+    };
+    let out = fixture.dir.join("take.wav");
+    let report = record_project_under(&project, &out, &options, None, Some(fixture.dir.as_path()))
+        .expect("工程旁的样本必须读得到");
+    assert_eq!(report.frames, 4_800, "0.1 s @ 48 kHz");
+    assert_eq!(
+        report.bytes,
+        std::fs::metadata(&out).expect("WAV 必须落盘").len()
     );
     assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+        report
+            .source
+            .contains("sfz(tracks=1 regions=1 samples=1 silent=0"),
+        "来源必须如实报「读到 1 份、0 静音」: {}",
+        report.source
     );
+    // 旧入口（`None`）：同一条相对路径不认识工程目录 ⇒ 响亮失败，⛔ 静默出静音。
+    let old_out = fixture.dir.join("old-take.wav");
+    let error = record_project(&project, &old_out, &options, None)
+        .expect_err("旧入口读不到工程旁样本时必须报错");
+    let text = error.to_string();
     assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
+        text.contains("试过：") && text.contains("samples/tone.sfz"),
+        "旧入口的错误必须响亮列出试过的根: {text}"
     );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    assert!(!old_out.exists(), "失败⛔ 不写半成品 WAV");
 }
 
-/// ⭐ 判据 ③（生产接线）：**真二进制** `--open … --record-wav …` 也拿得到工程目录
-/// （证明 `cli` 那一跳真的把 `Loaded::project_dir()` 交给了录制入口，⛔ 不只测内部函数）。
+// ===========================================================================
+// 判据 ③（生产接线）：**真二进制** `--open … --record-wav …` 也拿得到工程目录
+// ===========================================================================
 #[test]
 fn the_cli_record_entry_plumbs_the_project_dir() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    let fixture = Fixture::new("cli-record");
+    let (mut project, _track) = project_with_sampler("samples/tone.sfz");
+    // `--open` 把缺资产当硬错；本判据只测目录接线 ⇒ 把音频片段换成空 MIDI 片段。
+    for entry in project.clip_pool.values_mut() {
+        if matches!(entry.content, yeban_model::ClipContent::Audio { .. }) {
+            entry.content = yeban_model::ClipContent::Midi {
+                notes: BTreeMap::new(),
+            };
+        }
+    }
+    let bytes = write_project_container(
+        &project,
+        b"t890-cli-history",
+        &BTreeMap::<yeban_model::AssetHash, Vec<u8>>::new(),
     )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    .expect("写容器工程");
+    let project_file = fixture.dir.join("song.yeban");
+    std::fs::write(&project_file, &bytes).expect("写工程文件");
+    let out = fixture.dir.join("cli-take.wav");
+    // cwd 故意放在一个**没有** samples 的目录：只有 `--open` 的父目录能解释这条相对路径。
+    let cwd = scratch_dir("cli-record-cwd");
+    let bin = common::bin_path();
+    let output = Command::new(&bin)
+        .current_dir(&cwd)
+        .args([
+            "--open",
+            project_file.to_str().expect("UTF-8 工程路径"),
+            "--record-wav",
+            out.to_str().expect("UTF-8 录制路径"),
+            "--record-seconds",
+            "0.2",
+        ])
+        .output()
+        .expect("执行真二进制");
     assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+        output.status.success(),
+        "`--open … --record-wav` 必须成功: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("recorded-wav:"))
+        .unwrap_or_else(|| panic!("stdout 必须有 recorded-wav 行: {stdout}"));
     assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
+        line.contains("sfz(tracks=1 regions=1 samples=1 silent=0"),
+        "CLI 那一跳必须把工程目录交给录制入口（否则样本解析不到）: {line}"
     );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    assert!(out.is_file(), "录制必须落盘: {}", out.display());
+    std::fs::remove_dir_all(&cwd).ok();
 }
 
-/// ⭐ 判据 ④：旧入口（`project_dir = None` 的委托路径）**逐位不变**。
-///
-/// 读数：旧入口与 `_under(None)` 写出的 WAV **字节相等**（逐字节比较）、
-/// 渲染 `samples` 相等、`digest` 十六进制相等。
+// ===========================================================================
+// 判据 ④：旧入口（`project_dir = None` 的委托路径）**逐位不变**
+// ===========================================================================
 #[test]
 fn the_old_entries_are_bit_identical_on_the_none_path() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback save-project("),
-        "新 UI 契约面必须声明 callback save-project("
+    // 题面：没有采样器的工程 + 采样器指向**仓库内相对路径**的工程，两条腿都要逐位相同。
+    let plain = filled_project();
+    let options = RecordOptions {
+        seconds: 0.1,
+        channels: 1,
+        ..RecordOptions::default()
+    };
+    let wav_options = record_wav_options(&options);
+    let base = render_project_f32(&plain, wav_options, None).expect("旧渲染入口");
+    let under = render_project_f32_with_assets_under(&plain, wav_options, None, &[], None)
+        .expect("`_under(None)` 渲染入口");
+    assert_eq!(base.0, under.samples, "样本必须逐位相同");
+    assert_eq!(base.1, under.frames, "帧数必须相同");
+    assert_eq!(base.2, under.source_label, "来源文案必须逐字相同");
+    assert_eq!(base.3, under.digest, "digest 必须逐位相同");
+
+    let fixture = Fixture::new("old-none-path");
+    // 旧入口若偷偷带上项目目录，就会读到这份同名不同字节的诱饵 ⇒ 逐位相同必须变红。
+    let decoy =
+        std::env::temp_dir().join(format!("yeban-168-none-path-decoy-{}", std::process::id()));
+    let relative = fixture.repo_relative_sfz();
+    let fixture_root = Path::new(&relative)
+        .parent()
+        .and_then(Path::parent)
+        .expect("诱饵的夹具根");
+    write_fixture(&decoy.join(fixture_root), 0.25);
+    let (with_sampler, _track) = project_with_sampler(&relative);
+    let old_render = render_project_f32(&with_sampler, wav_options, None).expect("旧渲染入口");
+    let under_render =
+        render_project_f32_with_assets_under(&with_sampler, wav_options, None, &[], None)
+            .expect("`_under(None)` 渲染入口");
+    assert_eq!(old_render.0, under_render.samples);
+    assert_eq!(old_render.2, under_render.source_label);
+    assert_eq!(old_render.3, under_render.digest);
+
+    let dir = scratch_dir("old-none-wav");
+    let old_path = dir.join("old.wav");
+    let under_path = dir.join("under.wav");
+    let old_report = record_project(&with_sampler, &old_path, &options, None).expect("旧录制入口");
+    let under_report = record_project_under(&with_sampler, &under_path, &options, None, None)
+        .expect("`_under(None)` 录制入口");
+    assert_eq!(old_report.frames, under_report.frames);
+    assert_eq!(
+        std::fs::read(&old_path).expect("读旧入口 WAV"),
+        std::fs::read(&under_path).expect("读 `_under(None)` WAV"),
+        "旧入口与 `_under(None)` 的 WAV 必须逐字节相同"
     );
-    assert!(
-        aether_host.contains("on_save_project"),
-        "宿主接线层必须注册 on_save_project"
-    );
-    assert!(
-        aether_app.contains("> save-status:"),
-        "新 UI 契约面必须声明 > save-status:"
-    );
-    assert!(
-        aether_host.contains("set_save_status"),
-        "宿主接线层必须注册 set_save_status"
-    );
-    assert!(
-        aether_app.contains("> save-succeeded:"),
-        "新 UI 契约面必须声明 > save-succeeded:"
-    );
-    assert!(
-        aether_host.contains("set_save_succeeded"),
-        "宿主接线层必须注册 set_save_succeeded"
-    );
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&decoy).ok();
 }
 
 /// 与 [`record_project`] 内部**同一组**渲染选项（判据用它读 `samples` / `digest`）。
@@ -849,7 +869,6 @@ fn record_wav_options(options: &RecordOptions) -> yeban_app::export_wav::WavExpo
         bit_depth: yeban_render::dither::BitDepth::Int24,
         limiter: false,
         threads: None,
-        // 渲染侧不读响度字段 ⇒ `None`。
         loudness: None,
     }
 }
