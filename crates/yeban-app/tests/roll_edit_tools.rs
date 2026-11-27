@@ -16,11 +16,11 @@
 //!
 //! | 判据 | 证明 |
 //! | :--- | :--- |
-//! | `a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch` | §3.6：**按语义 ID**（`piano-roll-scroll-area`）注入 `down → up` ⇒ 权威工程音符 **+1**，且新音符的 `start_tick` / `pitch` 与**坐标换算**（`snapped_tick_at` / `lane_at_y` ＋ `pitch_lane`）逐值一致；并给出**即时可视反馈**读数（新元素进运行时树） |
-//! | `clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order` | **本票修的缺陷的判据**：按**生产顺序**（`build_live_ui` ＋ `wire_roll_edit`）装配后，用**默认选择工具**点一个现成音符的**绘制坐标**（= 人手真正点得到的矩形）⇒ `selected-note-count == 1` 且该音符 ULID 进 `selected-ulids`（宿主从不减 `(68, 28)` 帧原点时这里恒为 0 —— 见文件末的"怎么变红"） |
+//! | `contract_only_a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch` | §3.6：**按语义 ID**（`piano-roll-scroll-area`）注入 `down → up` ⇒ 权威工程音符 **+1**，且新音符的 `start_tick` / `pitch` 与**坐标换算**（`snapped_tick_at` / `lane_at_y` ＋ `pitch_lane`）逐值一致；并给出**即时可视反馈**读数（新元素进运行时树） |
+//! | `contract_only_clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order` | **本票修的缺陷的判据**：按**生产顺序**（`build_live_ui` ＋ `wire_roll_edit`）装配后，用**默认选择工具**点一个现成音符的**绘制坐标**（= 人手真正点得到的矩形）⇒ `selected-note-count == 1` 且该音符 ULID 进 `selected-ulids`（宿主从不减 `(68, 28)` 帧原点时这里恒为 0 —— 见文件末的"怎么变红"） |
 //! | `a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note` | **帧控制臂**：把**宿主坐标数**原样当绘制坐标注入（= 旧判据的做法）⇒ 点不到靶子（预期 ULID 不得进选区）。它与上一条一起把两件事钉住：`hit_test_visible` 说**宿主帧**，界面回调报**绘制帧**，两者差 `bridge::painted_to_host` |
-//! | `clicking_a_note_without_wire_roll_edit_still_selects_it` | **覆盖控制臂**：同样是 `build_live_ui` 但**不调** `wire_roll_edit`（= 覆盖发生前的形态）的同一个**绘制坐标**点击也选中它 ⇒ 把上一轮的缺陷隔离到"后装 handler 覆盖"，并证明坐标 / 夹具本身是对的 |
-//! | `the_eraser_click_deletes_the_note_under_the_cursor` | 橡皮擦点击接上后：点光标下的音符 ⇒ 权威工程音符 **−1**，删掉的正是点中的那个身份，且选区被清空（与键盘 `Delete` 同一取向） |
+//! | `contract_only_clicking_a_note_without_wire_roll_edit_still_selects_it` | **覆盖控制臂**：同样是 `build_live_ui` 但**不调** `wire_roll_edit`（= 覆盖发生前的形态）的同一个**绘制坐标**点击也选中它 ⇒ 把上一轮的缺陷隔离到"后装 handler 覆盖"，并证明坐标 / 夹具本身是对的 |
+//! | `contract_only_the_eraser_click_deletes_the_note_under_the_cursor` | 橡皮擦点击接上后：点光标下的音符 ⇒ 权威工程音符 **−1**，删掉的正是点中的那个身份，且选区被清空（与键盘 `Delete` 同一取向） |
 //! | `a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot` | **D-UI-10**：铅笔加一个音符之后，一次越过 4px 阈值的水平拖动（= 人手上的"随手一拖"）必须把界面重投影成**此刻**的工程 ⇒ 那个音符的矩形仍在运行时树里、偏移确实动了。旧实现只在 `build_main_window_with_console_tab` 装一次滚动 handler 并抓住**装配/接线那一刻**的快照 ⇒ 拖动把整个界面重绘回快照（实测症状：刚画的音符整批从树里消失、读数变回 0 轨 / bpm 120.00，⛔ 没有 `Op`、⛔ 没有日志、撤销栈一位没动） |
 //!
 //! ## 未接的部分（如实登记，⛔ 不假装）
@@ -39,14 +39,14 @@
 //!
 //! - **本票（帧原点）**：让 `install_roll_click` 把界面报的 `(x, y)` 当宿主坐标用
 //!   （= 不在派发器里做 `bridge::painted_to_host`）⇒
-//!   `clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order`
+//!   `contract_only_clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order`
 //!   的 `selected-note-count` 停在 0（实测断言：左 0、右 1），因为绘制坐标的 y 比音符顶沿
 //!   低 28px、超过音符高 12px。帧控制臂在**同一份代码**上**也红**（它断言宿主坐标数字点不到），
 //!   两条一起才说明"少了一次换算"而不是"坐标 / 夹具坏了"。
 //! - 让 `wire_roll_edit` 重新注册一个**只认铅笔**的 handler（即覆盖派发器里的选区那一段）
 //!   ⇒ 生产顺序那条判据的 `selected-note-count` 停在 0；**覆盖控制臂仍绿** ——
 //!   这正是"缺陷在覆盖、不在坐标"的证据。
-//! - 让橡皮擦分支重新什么都不做 ⇒ `the_eraser_click_deletes_the_note_under_the_cursor` 红。
+//! - 让橡皮擦分支重新什么都不做 ⇒ `contract_only_the_eraser_click_deletes_the_note_under_the_cursor` 红。
 //! - 让 `install_roll_scroll` 退回"只抓快照、不读端口"（= 在 `host.rs` 的 `install_roll_scroll` 里把
 //!   `port` 参数恒传 `None`）⇒ D-UI-10 那条判据的 `note_rect_in_tree` 变 `false`（音符被重绘掉），
 //!   而偏移断言仍绿 —— 证明红在"重投影用错了工程"，不在"手势没送到"。
@@ -408,7 +408,8 @@ fn click_in_roll_by_id_at(plane: &mut LiveControlPlane, seq: i64, hit_x: f32, hi
 
 /// 判据 ①（§3.6）：按语义 ID 注入一次铅笔点击 ⇒ **恰好一个**新音符，且 tick / pitch 与坐标换算一致。
 #[test]
-fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
+fn contract_only_a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -456,7 +457,9 @@ fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
 /// 帧控制臂（下一条判据）在**同一份旧代码**上**也红**（它断言宿主坐标数字点不到），
 /// 两条一起才把缺陷定位到"少了一次 `bridge::painted_to_host`"而不是坐标 / 夹具坏了。
 #[test]
-fn clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order() {
+fn contract_only_clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order()
+ {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -501,38 +504,33 @@ fn clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_
 /// ⛔ 断言只看"靶子不在选区里"，不假定选区一定为空 —— 换回来的点可能压到别的音符上。
 #[test]
 fn a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let (window, port, mut plane) = assemble();
+    use slint::Model as _;
+    let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
+    let expected_ulid = view.notes[index].id.clone();
+    let (host_x, host_y) = note_center_in_host_view(&view, index, 0.0);
+    assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
+
+    // 数字就是宿主帧中心；但注入面是绘制帧 ⇒ 宿主换算后会落到靶子左上方。
+    click_in_roll_by_id_at(&mut plane, 10, host_x, host_y);
+
+    let count = window.get_selected_note_count();
+    let selected: Vec<String> = window
+        .get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    report_line(&format!(
+        "[roll-frame] 把宿主帧数 ({host_x},{host_y}) 当绘制帧注入 ⇒ selected-note-count={count} \
+         selected-ulids={selected:?}；靶子 `{expected_ulid}` 必须**不在**选区里"
+    ));
     assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
-    );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
-    );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+        !selected.iter().any(|id| id == &expected_ulid),
+        "宿主帧数字不是绘制坐标：帧原点 (68, 28) 未减时才会选中 `{expected_ulid}`（旧代码的读数）"
     );
 }
 
@@ -543,7 +541,8 @@ fn a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
 /// `wire_roll_edit` 后装的 handler 把选区 handler 覆盖了。本判据在上一轮修复前后都绿；
 /// 在本票的帧修复前后也都绿（它走的是同一个派发器里的同一条换算）。
 #[test]
-fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
+fn contract_only_clicking_a_note_without_wire_roll_edit_still_selects_it() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -586,7 +585,8 @@ fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
 /// 自己写明的方式**更新**而来：唯一派发器把橡皮擦接到了 [`yeban_app::host::delete_ops_for`]
 /// （与键盘 `Delete` 同一个"选区身份 → 待提交批"解析点），所以"点击不删"的登记到此为止。
 #[test]
-fn the_eraser_click_deletes_the_note_under_the_cursor() {
+fn contract_only_the_eraser_click_deletes_the_note_under_the_cursor() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -858,7 +858,8 @@ fn target_note(
 /// 判据 (a)：选择工具在音符上拖动 ⇒ 权威工程的 `start_tick` 与 `pitch` 按**吸附后的
 /// 指针位移**改变，且**时值一位不动**（是"移动"不是"改时值"）。
 #[test]
-fn move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
+fn contract_only_move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -896,7 +897,8 @@ fn move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
 
 /// 判据 (b)：音符拖动**不**顺带滚动；控制臂 = **同一次装配里**的空白处拖动照旧滚动。
 #[test]
-fn move_arm_b_a_note_drag_does_not_scroll_the_roll() {
+fn contract_only_move_arm_b_a_note_drag_does_not_scroll_the_roll() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -938,44 +940,53 @@ fn move_arm_b_a_note_drag_does_not_scroll_the_roll() {
 /// 不在"修复前 / 修复后"，而在"**取消这条收尾路径**在不在"（见文件末"怎么变红"）。
 #[test]
 fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    let commits_before = port.display().commit_count;
+
+    let element_origin = pointer_down_in_roll(&mut plane, 10, target.painted_center);
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        element_origin,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    // 拖到一半：`Escape`（`Action::Cancel` 的唯一键盘入口）⇒ 丢弃草稿、⛔ 不提交。
+    press_escape(&mut plane, 30);
+    pointer_up_in_roll(&mut plane, 40);
+
+    let project_after = port.project();
+    let after_bytes = serde_json::to_vec(&project_after).expect("序列化终点工程");
+    let commits_after = port.display().commit_count;
+    report_line(&format!(
+        "[roll-move-c] 拖动中途 `Escape` 后松手：工程字节 {} ⇒ {}（逐字节相同 = {}）；\
+         提交数 {} ⇒ {}；undoable={}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        commits_before,
+        commits_after,
+        port.display().undoable
+    ));
+    assert_eq!(
+        before_bytes, after_bytes,
+        "`Escape` 取消后工程必须**逐字节**不变（草稿从未写进工程，收尾后也不许补写）"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        commits_after, commits_before,
+        "`Escape` 取消不得提交任何 op"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
 }
 
 /// 判据 (c2) 的**控制臂**：同一手势改用 `up` 收尾 ⇒ 音符真的移动、恰好提交 1 次。
 ///
-/// 它与 [`pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing`] 是**一对**：
+/// 它与 [`contract_only_pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing`] 是**一对**：
 /// 控制臂证明"按下 → 4 步 move → 收尾"这条路是**活的**，因此见证臂的"什么都没发生"
 /// 不是空转。
 ///
@@ -983,7 +994,8 @@ fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_noth
 /// （`crates/yeban-ui-test-port/src/render.rs` 的线程约束），一个测试里调两次 `assemble()`
 /// 会以 `PlatformUnavailable { "The platform has already been initialized." }` 红 —— 实测过。
 #[test]
-fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
+fn contract_only_pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1034,7 +1046,7 @@ fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
 ///
 /// 1. **手势真的在手**：按下靶音符后 `note-drag-active == true`（宿主已接管），
 ///    随后 4 步 `move` 越过规范的 `4px` 阈值 —— 同一个手势若走 `up` 会**提交**
-///    （兄弟判据 `pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness` 逐字证明）；
+///    （兄弟判据 `contract_only_pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness` 逐字证明）；
 /// 2. **取消后不提交**：工程字节 == 拖动前、`commit_count` 不变、`undoable` 不变；
 /// 3. **收尾真的跑了**：取消后 `note-drag-active == false`。它**只**由 `cancel_note_drag`
 ///    （取消）或 `commit_note_drag`（提交）清零；既然 ② 证明没提交，归零就只能是
@@ -1043,7 +1055,8 @@ fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
 ///    与 `drag-moved` 仍为真 ⇒ 这一 `up` 会走 `note-drag-release` 提交一个 op；
 ///    它仍报 0 才是"取消确实到达了控件的抓取通道"的机械证据。
 #[test]
-fn pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
+fn contract_only_pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1083,7 +1096,8 @@ fn pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
 ///
 /// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
 #[test]
-fn move_arm_d_exactly_one_history_entry_per_gesture() {
+fn contract_only_move_arm_d_exactly_one_history_entry_per_gesture() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1133,7 +1147,8 @@ fn move_arm_d_exactly_one_history_entry_per_gesture() {
 /// **它不证明什么**：行为（一行注释就能让字面计数 ≥1）⇒ 行为由 (a)–(d) 管；也不证明
 /// 每条 `ToolDrag` 变体都被消费（`AdjustVelocity` **故意**仍未被消费，见交付报告）。
 #[test]
-fn move_arm_e_the_drag_taxonomy_gains_a_production_consumer() {
+fn contract_only_move_arm_e_the_drag_taxonomy_gains_a_production_consumer() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1199,38 +1214,67 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// **它不证明什么**：其它工具（剪刀 / 橡皮擦 / 力度）的**拖拽**语义 —— 那些仍未接线。
 #[test]
 fn a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before = note_count(&project_before);
+    let view = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+
+    // 靶点：空白 **且** 铅笔画得出来。
+    let mut target = None;
+    let mut y = 8.0_f32;
+    while y < viewport_height && target.is_none() {
+        let mut x = 1.0_f32;
+        while x < viewport_width {
+            if view
+                .hit_test_visible(0.0, viewport_width, x, y, NOTE_HEIGHT)
+                .is_none()
+                && pencil_op_for(
+                    &project_before,
+                    0.0,
+                    x,
+                    y,
+                    ROLL_SNAP_GRID_TICKS,
+                    i32::from(PENCIL_TOOL_DIGIT),
+                )
+                .is_some()
+            {
+                target = Some((x, y));
+                break;
+            }
+            x += 7.0;
+        }
+        y += 7.0;
+    }
+    let (host_x, host_y) = target.expect("夹具里必须存在一个既空白又在片段内的点");
+    let (painted_x, painted_y) = host_to_painted(host_x, host_y);
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    let scroll_before = window.get_roll_scroll_x();
+
+    drag_in_roll_by_id_at(
+        &mut plane,
+        10,
+        (painted_x, painted_y),
+        -40.0,
+        0.0,
+        DRAG_STEPS,
     );
+
+    let after = note_count(&port.project());
+    let scroll_after = window.get_roll_scroll_x();
+    report_line(&format!(
+        "[roll-scroll-defect] 铅笔下的**滚动拖拽**（空白且在片段内的点 宿主帧 {host_x},{host_y}，左拖 40px）⇒ \
+         音符数 {before} ⇒ {after}（必须不变）；`roll-scroll-x` {scroll_before} ⇒ {scroll_after}（必须照旧滚动）"
+    ));
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        (scroll_after - scroll_before).abs() > 0.5,
+        "非空转前提：这一拖必须真的滚动了（否则测的不是\"滚动拖拽\"）"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+    assert_eq!(
+        after, before,
+        "滚动拖拽**不得**在松手处插入音符（`up` 只在位移未越 4px 阈值时才算一次单击）"
     );
 }
 
@@ -1470,7 +1514,8 @@ fn drag_velocity_to_lane_y(
 /// 判据 (a)：力度工具把某根柱竖直拖到一条车道内 y ⇒ 权威工程的力度 = **判据自己按车道几何
 /// 算出的绝对数**（不是"起点加增量"，也不是从被测代码读回来的数）。
 #[test]
-fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
+fn contract_only_velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1516,7 +1561,8 @@ fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
 /// ⇒ 单击力度柱不但选不中，还会把已有选区**清掉**（比"点了没反应"更糟）。
 /// 靶子由 [`velocity_target`] 从**运行时包围盒**给出，与被测代码不共享几何假设。
 #[test]
-fn velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
+fn contract_only_velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1568,7 +1614,8 @@ fn velocity_click_selects_the_note_whose_bar_is_under_the_pointer() {
 /// ⛔ 它**不证明**像素：读的是窗口上的草稿属性，不是截图。柱高与草稿值的关系由
 /// `piano_roll.slint` 的 `28px * velocity_reading` 表达（由 `bridge.rs` 的文本守卫对账）。
 #[test]
-fn velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() {
+fn contract_only_velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1606,7 +1653,8 @@ fn velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() 
 
 /// 判据 (b)：拖到车道上沿之外 ⇒ **恰好 127**；拖到下沿之下 ⇒ **恰好 0**（夹紧，⛔ 不越界）。
 #[test]
-fn velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
+fn contract_only_velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1646,7 +1694,8 @@ fn velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
 ///
 /// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
 #[test]
-fn velocity_arm_c_exactly_one_history_entry_per_gesture() {
+fn contract_only_velocity_arm_c_exactly_one_history_entry_per_gesture() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1693,39 +1742,53 @@ fn velocity_arm_c_exactly_one_history_entry_per_gesture() {
 /// ⛔ 不证明"取消在任何夹具下都能还原"（草稿从未进过工程，见判据 (c) 的提交计数）。
 #[test]
 fn velocity_arm_d_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+    let commits_before = port.display().commit_count;
+
+    let element_origin = pointer_down_in_roll(&mut plane, 10, target.grab);
+    // 拖到"力度 32"那条 y（> 4px 阈值 ⇒ `.slint` 认它是拖拽，抬起会 fire `release`）。
+    let target_lane_y = velocity_bar_top_lane_y(32);
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        element_origin,
+        target.grab,
+        0.0,
+        target.lane_top_local + target_lane_y - target.grab.1,
+        DRAG_STEPS,
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    // 拖到一半：`Escape`（`Action::Cancel` 的唯一键盘入口）⇒ 丢弃草稿、⛔ 不提交。
+    press_escape(&mut plane, 30);
+    pointer_up_in_roll(&mut plane, 40);
+
+    let project_after = port.project();
+    let after_bytes = serde_json::to_vec(&project_after).expect("序列化终点工程");
+    let commits_after = port.display().commit_count;
+    report_line(&format!(
+        "[roll-velocity-d] 拖动中途 `Escape` 后松手：工程字节 {} ⇒ {}（逐字节相同 = {}）；\
+         提交数 {} ⇒ {}；undoable={}；力度 {} ⇒ {}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        commits_before,
+        commits_after,
+        port.display().undoable,
+        target.before,
+        velocity_of(&project_after, &target.ulid)
+    ));
+    assert_eq!(
+        before_bytes, after_bytes,
+        "`Escape` 取消后工程必须**逐字节**不变（草稿从未写进工程，收尾后也不许补写）"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        commits_after, commits_before,
+        "`Escape` 取消不得提交任何 op"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
 }
 
 /// 去掉 `//` 注释（含行尾注释）之后的**代码文本**（与 `tests/tool_matrix_wiring.rs` 的
@@ -1765,7 +1828,8 @@ fn code_only(source: &str) -> String {
 /// **它不证明什么**：可达性 —— 一个 `if false { ToolDrag::AdjustVelocity }` 也能让它绿；
 /// 真正"拖得动"由 (a)–(d) 用真实指针注入管。也**不证明**其余三个变体没被误接。
 #[test]
-fn velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
+fn contract_only_velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1818,7 +1882,8 @@ fn velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
 /// **它不证明什么**：空白处的 marquee / 框选语义（仍未裁决，本切片不实现）；
 /// 也不证明"单击空白仍然清空选区"（那是另一条判据的事，本文件不重复）。
 #[test]
-fn a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
+fn contract_only_a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -1999,7 +2064,8 @@ fn painted_target_note(
 /// 为什么靶子必须是 0 力度：那颗音符的柱高是 0px、`velocity_bar_at` 也拒绝它
 /// ⇒ 拖拽臂**够不着**；双击是规范给它的恢复路径。100 力度音符上的双击由 (b) 的第二拍管。
 #[test]
-fn velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
+fn contract_only_velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2038,7 +2104,8 @@ fn velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
 /// 判据 (b)：一次双击 = **恰好一个**原子 op（一次提交 / 一步撤销），
 /// 而**已经是 100** 的音符上再双击 = **0** 个 op（⛔ 不写空编辑）。
 #[test]
-fn velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
+fn contract_only_velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2080,38 +2147,32 @@ fn velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
 /// 不是"能力存在"。能力由 (a)/(b) 管。
 #[test]
 fn velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let (ulid, point) = painted_target_note(&mut plane, &project_before, 1);
+    zero_velocity_via_authority(&port, &ulid);
+    let commits_before = port.display().commit_count;
+
+    // **单击**：一对 `down/up`（⛔ 不是两对）。
+    let _origin = pointer_down_in_roll(&mut plane, 10, point);
+    pointer_up_in_roll(&mut plane, 12);
+
+    let after = velocity_of(&port.project(), &ulid);
+    report_line(&format!(
+        "[roll-velocity-dc-c1] 力度工具**单击**靶 `{ulid}`（力度 0）：力度 = {after}；\
+         提交数 {commits_before} ⇒ {}",
+        port.display().commit_count
+    ));
+    assert_eq!(
+        after, 0,
+        "力度工具的**单击**语义（选中力度柱）仍未接线 ⇒ 单击必须**如实什么都不做**\
+         （⛔ 不能顺手恢复成 100 —— 那会把'双击'变成'单击也能改'）"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
-    );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "单击不得提交任何 op"
     );
 }
 
@@ -2119,7 +2180,8 @@ fn velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() 
 ///
 /// ⚠ 与 (c1) 同款：它在**修复前的代码上也是绿的** —— 控制臂只排除假阳性。
 #[test]
-fn velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged() {
+fn contract_only_velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2329,7 +2391,8 @@ fn knife_target(
 /// - 切分**期**的画面（无截图判据）；
 /// - 网格竖线的**绘制**位置（本判据断言的是模型里的 tick，不是像素）。
 #[test]
-fn a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
+fn contract_only_a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2378,7 +2441,8 @@ fn a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
 /// - 撤销**之后**的重做（由既有撤销判据管）；
 /// - 界面在撤销后的重投影（本判据只读权威工程的字节）。
 #[test]
-fn b_knife_split_is_one_atomic_commit_and_one_undo_step() {
+fn contract_only_b_knife_split_is_one_atomic_commit_and_one_undo_step() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -2421,39 +2485,45 @@ fn b_knife_split_is_one_atomic_commit_and_one_undo_step() {
 /// 它断言的是"没有假阳性"（点了空白不该切任何东西），**不是**能力存在。能力由 (a)/(b) 管。
 #[test]
 fn c1_a_knife_click_on_blank_space_changes_nothing() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let before = note_count(&project_before);
+    let commits_before = port.display().commit_count;
+    let view = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let viewport_height = bound_f32(&bounds, "height");
+    let (host_x, host_y) = a_blank_point(&view, viewport_width, viewport_height, 0.0);
+    assert_eq!(
+        view.hit_test_visible(0.0, viewport_width, host_x, host_y, NOTE_HEIGHT),
+        None,
+        "夹具前提：该点必须真的空白（`hit_test_visible` 无命中）"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    let (painted_x, painted_y) = host_to_painted(host_x, host_y);
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    click_in_roll_by_id_at(&mut plane, 10, painted_x, painted_y);
+
+    let after_bytes = serde_json::to_vec(&port.project()).expect("序列化终点工程");
+    report_line(&format!(
+        "[roll-knife-c1] 剪刀点空白（宿主帧 ({host_x},{host_y})）⇒ 音符数 {before} ⇒ {}；\
+         提交数 {commits_before} ⇒ {}；工程逐字节不变 = {}",
+        note_count(&port.project()),
+        port.display().commit_count,
+        before_bytes == after_bytes,
+    ));
+    assert_eq!(
+        note_count(&port.project()),
+        before,
+        "剪刀点空白不得改变音符数"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "剪刀点空白不得提交任何 op"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    assert_eq!(before_bytes, after_bytes, "剪刀点空白不得改动工程一个字节");
 }
 
 /// 判据 (c2) **控制臂**：吸附 tick **不严格落在**音符内部（点在音符**右沿内** 2px ⇒ 吸附向上
@@ -2473,39 +2543,61 @@ fn c1_a_knife_click_on_blank_space_changes_nothing() {
 /// （debug 下 panic）；`split_tick <= start` 的 `<=` 同理守着左半。
 #[test]
 fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let (window, port, mut plane) = assemble();
+    let target = knife_target(&window, &port, &mut plane, 10);
+    let before_bytes = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let before = note_count(&port.project());
+    let commits_before = port.display().commit_count;
+    // 夹具自证：这一点的吸附 tick **不严格落在**音符内部。
+    let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let degenerate_tick = view.snapped_tick_at(0.0, target.host_degenerate.0, ROLL_SNAP_GRID_TICKS);
     assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+        degenerate_tick <= target.before.0 || degenerate_tick >= target.before.0 + target.before.2,
+        "夹具前提：退化点的吸附 tick {degenerate_tick} 必须**不严格落在**音符 [{}, {}) 内部",
+        target.before.0,
+        target.before.0 + target.before.2
     );
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    click_in_roll_by_id_at(
+        &mut plane,
+        30,
+        target.painted_degenerate.0,
+        target.painted_degenerate.1,
+    );
+
+    let after_bytes = serde_json::to_vec(&port.project()).expect("序列化终点工程");
+    report_line(&format!(
+        "[roll-knife-c2] 剪刀点音符右沿内 2px（宿主帧 {:?}，吸附 tick {degenerate_tick}，\
+         音符 [{}, {})）⇒ 原文仍在 = {}；音符数 {before} ⇒ {}；提交数 {commits_before} ⇒ {}；\
+         工程逐字节不变 = {}",
+        target.host_degenerate,
+        target.before.0,
+        target.before.0 + target.before.2,
+        notes(&port.project())
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        note_count(&port.project()),
+        port.display().commit_count,
+        before_bytes == after_bytes,
+    ));
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        notes(&port.project())
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        "退化切分必须被拒绝：原文必须一位不动地留着"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        note_count(&port.project()),
+        before,
+        "退化切分不得增删任何音符"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "退化切分不得提交任何 op（一个空批也不许留下）"
     );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    assert_eq!(before_bytes, after_bytes, "退化切分不得改动工程一个字节");
 }
 
 // ===========================================================================
@@ -2669,39 +2761,163 @@ fn assemble_for_arrow_nudge() -> (
 ///   `Shift+Space` 判据是同一格）。真实事件源那一半由 `arrow_nudge_d_focus_*` 补。
 #[test]
 fn arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec_amount() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    // 夹具前提：应用的吸附网格与模型的 1/16 网格是**同一个**数（只用来说明耦合；
+    // 期望值本身来自上面那四个独立常量，⛔ 不来自这个常量）。
+    assert_eq!(
+        ROLL_SNAP_GRID_TICKS,
+        u64::try_from(NUDGE_GRID_TICKS_EXPECTED).expect("网格是正的"),
+        "夹具前提：`host::ROLL_SNAP_GRID_TICKS` 必须等于模型的 1/16 网格（960/4）"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    let baseline = note_readings(&port.project());
+    // 按 (tick, pitch) 精确点名样本工程里已知的两颗音符。
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    assert_eq!(
+        targets.len(),
+        2,
+        "夹具前提：样本工程里恰好有 (960,64) 与 (1920,67) 两个音符"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    select_ulids(&window, &targets);
+    assert_eq!(
+        window.get_selected_note_count(),
+        2,
+        "夹具前提：选区里有 2 条身份"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+
+    let bytes_baseline = serde_json::to_vec(&port.project()).expect("序列化基线");
+    // `(标签, 文本, shift, ctrl, alt, meta, 期望 tick 位移, 期望音高位移)`
+    let cases = [
+        (
+            "←（网格左移）",
+            "\u{f702}",
+            false,
+            false,
+            false,
+            false,
+            -NUDGE_GRID_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "→（网格右移）",
+            "\u{f703}",
+            false,
+            false,
+            false,
+            false,
+            NUDGE_GRID_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "Alt+←（1 tick）",
+            "\u{f702}",
+            false,
+            false,
+            true,
+            false,
+            -NUDGE_FINE_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "Alt+→（1 tick）",
+            "\u{f703}",
+            false,
+            false,
+            true,
+            false,
+            NUDGE_FINE_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "↑（半音）",
+            "\u{f700}",
+            false,
+            false,
+            false,
+            false,
+            0_i64,
+            NUDGE_SEMITONE_EXPECTED,
+        ),
+        (
+            "↓（半音）",
+            "\u{f701}",
+            false,
+            false,
+            false,
+            false,
+            0_i64,
+            -NUDGE_SEMITONE_EXPECTED,
+        ),
+        (
+            "Shift+↑（八度）",
+            "\u{f700}",
+            true,
+            false,
+            false,
+            false,
+            0_i64,
+            NUDGE_OCTAVE_EXPECTED,
+        ),
+        (
+            "Shift+↓（八度）",
+            "\u{f701}",
+            true,
+            false,
+            false,
+            false,
+            0_i64,
+            -NUDGE_OCTAVE_EXPECTED,
+        ),
+    ];
+    for (label, text, shift, ctrl, alt, meta, dt, dp) in cases {
+        let commits_before = port.display().commit_count;
+        let undoable_before = port.display().undoable;
+        let consumed = window.invoke_key_action(text.into(), shift, ctrl, alt, meta);
+        assert!(
+            consumed,
+            "`{label}` 必须被消费（宿主必须真的接上这一档微调；未接线时这一步的差异见交付报告的逐字红）"
+        );
+        let after = note_readings(&port.project());
+        // ① 每一颗**选中**的音符都恰好移动了独立算出来的那一对位移。
+        for id in &targets {
+            let (t0, p0, duration0, velocity0) = baseline[id];
+            let expected_tick = u64::try_from(i64::try_from(t0).expect("tick 在 i64 内") + dt)
+                .expect("期望 tick 非负（夹具选的就是不碰边界的两颗）");
+            let expected_pitch =
+                u8::try_from(i16::from(p0) + i16::from(dp)).expect("期望音高在 0..=127");
+            assert_eq!(
+                after[id],
+                (expected_tick, expected_pitch, duration0, velocity0),
+                "`{label}`：音符 {id} 的读数必须是 ({expected_tick}, {expected_pitch}, \
+                 {duration0}, {velocity0})（时值 / 力度不许动）"
+            );
+        }
+        // ② 选区**之外**每一个音符的四个字段都不动。
+        for (id, reading) in &baseline {
+            if targets.contains(id) {
+                continue;
+            }
+            assert_eq!(after[id], *reading, "`{label}` 不得动到选区之外的音符 {id}");
+        }
+        // ③ 一次按键 = 一次提交 / 一步撤销。
+        assert_eq!(
+            port.display().commit_count,
+            commits_before + 1,
+            "`{label}`：一次按键恰好一次提交"
+        );
+        assert_eq!(
+            port.display().undoable,
+            undoable_before + 1,
+            "`{label}`：一次按键恰好一步撤销"
+        );
+        // ④ 回到基线，供下一格使用（顺带证明这一格真的可逆）。
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "`{label}`：撤销必须真的改变了工程");
+        assert_eq!(
+            serde_json::to_vec(&port.project()).expect("序列化"),
+            bytes_baseline,
+            "`{label}`：一次撤销必须逐字节回到这一格之前，否则下一格的基线不成立"
+        );
+    }
 }
 
 /// 判据 (b)：**一次按键 = 一次提交 = 一步撤销**；N 次离散按键 ⇒ N 步，且撤销**不合并**。
@@ -2730,38 +2946,103 @@ fn arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec
 /// - ⛔ 不证明提交里的 op **类型**（只证明历史前进一次 + 工程字节可逆）。
 #[test]
 fn arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
-    );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
-    );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    let mut snapshots = vec![serde_json::to_vec(&port.project()).expect("序列化 b0")];
+    // 3 次**离散**按键（键重复就是这样的序列，不是一次连续手势）。
+    for step in 0..3 {
+        let consumed = window.invoke_key_action("\u{f703}".into(), false, false, false, false);
+        assert!(consumed, "第 {step} 次按键必须被消费");
+        snapshots.push(serde_json::to_vec(&port.project()).expect("序列化"));
+        assert_eq!(
+            port.display().commit_count,
+            commits_before + step + 1,
+            "N 次按键 ⇒ 恰好 N 次提交"
+        );
+        assert_eq!(
+            port.display().undoable,
+            undoable_before + step + 1,
+            "N 次按键 ⇒ 恰好 N 步撤销"
+        );
+    }
+    // 三次快照两两不同：N 步必须真的是 N 个不同状态。
+    assert_ne!(snapshots[0], snapshots[1], "第 1 次按键必须真的改了工程");
+    assert_ne!(snapshots[1], snapshots[2], "第 2 次按键必须真的改了工程");
+    assert_ne!(snapshots[2], snapshots[3], "第 3 次按键必须真的改了工程");
+    assert_ne!(snapshots[0], snapshots[3], "起点与三次之后必须不同");
+    report_line(&format!(
+        "[roll-nudge-b] 3 次**离散**按键 ⇒ 提交数 {commits_before} ⇒ {}、可撤销步数 {undoable_before} ⇒ {}；\
+         四份快照的字节长度 {:?}（两两不同 ⇒ 3 个不同状态）；选区 {targets:?}",
+        port.display().commit_count,
+        port.display().undoable,
+        snapshots.iter().map(Vec::len).collect::<Vec<_>>(),
+    ));
+    // ---- 观测：这一步在提交图谱里写下的 **op 形状**（逐字），以及"一次按键 = 一条提交" ----
+    {
+        let graph = port.graph();
+        let display = port.display();
+        let head = display.head.expect("提交之后图谱必须有一个头提交");
+        let tip = graph.commit(&head).expect("头提交必须在图谱里");
+        let tip_ops: Vec<String> = tip
+            .ops
+            .iter()
+            .map(|stamped| format!("{:?}", stamped.op))
+            .collect();
+        report_line(&format!(
+            "[roll-nudge-b-ops] 第 3 次按键那次提交：message={:?}；图谱里的载荷 {} 条 = {tip_ops:?}",
+            tip.message,
+            tip_ops.len(),
+        ));
+        assert_eq!(
+            tip_ops.len(),
+            1,
+            "一次按键在图谱里必须**恰好一条** `StampedOp`（它的 `op` 是 `undo_session::commit` \
+             按契约包出来的那**一个** `Op::Batch`）"
+        );
+        assert!(
+            tip_ops[0].starts_with("Batch {"),
+            "那一条必须是 `Op::Batch`（`undo_session::commit` 对**每一批**都这样包），实际 {:?}",
+            tip_ops[0]
+        );
+        // 批里恰好每个选中音符一条 `MoveNote`，且位移是**一个公共量**。
+        assert_eq!(
+            tip_ops[0].matches("MoveNote {").count(),
+            targets.len(),
+            "批里必须每个选中音符恰好一条 `MoveNote`：{tip_ops:?}"
+        );
+        assert_eq!(
+            tip_ops[0]
+                .matches("delta_tick: 240, delta_pitch: 0")
+                .count(),
+            targets.len(),
+            "所有 `MoveNote` 必须共用同一个公共位移（`→` = +240 tick / 0 半音）：{tip_ops:?}"
+        );
+    }
+    // 逐次撤销：每一次都回到**上一次按键之前**（不是一口气回到起点）。
+    for step in (0..3).rev() {
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "第 {} 次撤销必须真的改变了工程", 3 - step);
+        assert_eq!(
+            serde_json::to_vec(&port.project()).expect("序列化"),
+            snapshots[step],
+            "一次撤销必须逐字节回到第 {} 次按键**之前**（若 N 次被合并成一步，这里会直接回到 b0）",
+            step + 1
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-b] 三次撤销后：提交数 {}（撤销不减提交数）、可撤销步数 {} ⇒ 回到起点 {}；\
+         每一步 `project` 逐字节 == 对应快照 = true",
+        port.display().commit_count,
+        port.display().undoable,
+        undoable_before,
+    ));
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "三次撤销后可撤销步数必须回到起点"
     );
 }
 
@@ -2783,38 +3064,40 @@ fn arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
 /// ⛔ 不证明"有选区时会动"（那是 (a)）；⛔ 不证明夹紧（那是 (c2)）。
 #[test]
 fn arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    select_ulids(&window, &[]);
+    assert_eq!(
+        window.get_selected_note_count(),
+        0,
+        "夹具前提：选区必须是空的"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    for (label, text, shift, ctrl, alt, meta) in [
+        ("←", "\u{f702}", false, false, false, false),
+        ("→", "\u{f703}", false, false, false, false),
+        ("Alt+→", "\u{f703}", false, false, true, false),
+        ("↑", "\u{f700}", false, false, false, false),
+        ("↓", "\u{f701}", false, false, false, false),
+        ("Shift+↑", "\u{f700}", true, false, false, false),
+    ] {
+        let consumed = window.invoke_key_action(text.into(), shift, ctrl, alt, meta);
+        assert!(
+            !consumed,
+            "`{label}` 在空选区下不得被消费（吞掉一个没有对象的键，用户只会以为功能坏了）"
+        );
+    }
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "空选区下四档位移都不得留下任何提交（空批也不许）"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+    assert_eq!(port.display().undoable, undoable_before, "撤销栈不得增长");
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化终点工程"),
+        bytes_before,
+        "空选区下工程必须逐字节不变"
     );
 }
 
@@ -2841,39 +3124,60 @@ fn arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
 /// - ⛔ 不证明"上界"（`u64::MAX`）那一半 —— 夹具里没有任何音符接近时钟顶端。
 #[test]
 fn arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    // 夹具前提：样本工程里有一颗 **tick 0** 的音符（`samples.rs` 的 (0,60)）——
+    // 整块左移一格时它无处可去。
+    let targets = ulids_at(&port.project(), &[(0, 60), (1920, 67)]);
+    assert_eq!(
+        targets.len(),
+        2,
+        "夹具前提：样本工程里恰好有 (0,60) 与 (1920,67) 两个音符"
     );
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+
+    // ---- 左移：整块走不动 ⇒ 0 提交 ----
+    let consumed_left = window.invoke_key_action("\u{f702}".into(), false, false, false, false);
+    report_line(&format!(
+        "[roll-nudge-c2] 选区 {targets:?}（含 tick 0 的 (0,60)）按 `←`：被消费 = {consumed_left}；\
+         提交数 {commits_before} ⇒ {}；工程逐字节不变 = {}",
+        port.display().commit_count,
+        serde_json::to_vec(&port.project()).expect("序列化") == bytes_before,
+    ));
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        !consumed_left,
+        "整块走不动时 `←` 不得被消费（吞掉一个什么都做不了的键 = 用户以为功能坏了）"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "组夹紧之后位移为 (0,0) ⇒ 不得提交任何 op（⛔ 不写空 op、⛔ 不让模型去拒）"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "被夹紧的那一按不得改动工程一个字节"
     );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
+
+    // ---- 正控制：同一个选区按 `→` ⇒ 两颗都真的动了 240 ----
+    let consumed_right = window.invoke_key_action("\u{f703}".into(), false, false, false, false);
+    assert!(consumed_right, "正控制：同一个选区按 `→` 必须被消费");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "正控制：右移必须真的产生**一次**提交"
     );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0 + 240, p0, duration0, velocity0),
+            "正控制：音符 {id} 必须恰好右移 240 tick，其余字段不动"
+        );
+    }
 }
 
 /// ⭐ 判据 (d)：**焦点那一问的机械答案** —— 经**真 `WindowEvent`** 注入 `\u{f703}`
@@ -2913,39 +3217,103 @@ fn arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing()
 /// - ⛔ 不证明带修饰组合的真实事件（`Shift` 那一格由下一条判据观测；`Alt` 端口**表达不了**）。
 #[test]
 fn arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, input) = assemble_for_arrow_nudge();
+    // ---- 前置条件：否则"没反应"会被误读成接线坏了 ----
+    assert_eq!(
+        input.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "注入前焦点必须在主画布（`forward-focus: key-handler` 的默认态）"
     );
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        !input.borrow().is_composing(),
+        "注入前必须是非合成态，否则 §7.2 会把整个键吞掉"
     );
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+
+    // ---- 控制臂 ①：同一个装配里，真 `WindowEvent` 对**已绑定**的键真的到达宿主 ----
+    //
+    // `Tab`（画布聚焦）⇒ `Action::ToggleView` ⇒ `arrangement-view` 翻转。它把
+    // "真事件源 → key-handler → key-action → apply_action"这条链在本装配里证明为**活的**；
+    // 没有它，下面 `→` 的失败就无法排除"事件根本没送到"这一解释。
+    let arrangement_before = window.get_arrangement_view();
+    let tab = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Tab" })),
+    ));
+    assert!(!tab.is_error(), "`Tab` 注入必须落到真实窗口: {tab:?}");
+    assert_ne!(
+        window.get_arrangement_view(),
+        arrangement_before,
+        "真事件的 `Tab` 必须真的切了视图（否则本装配里的事件源链不活，下面的 `→` 说明不了焦点问题）"
+    );
+    // 切回原视图（`Tab` 是切换；两次 ⇒ 复原），免得把视图态带进下面的读数。
+    let tab_back = plane.plane().try_line(&request_line(
+        2,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Tab" })),
+    ));
     assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
+        !tab_back.is_error(),
+        "第二次 `Tab` 注入必须成功: {tab_back:?}"
     );
-    assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
+    assert_eq!(
+        window.get_arrangement_view(),
+        arrangement_before,
+        "两次 `Tab` 必须回到原视图"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+
+    // ---- 控制臂 ②：未绑定的 `\u{f704}`（F1）必须一位不动 ----
+    let unbound = plane.plane().try_line(&request_line(
+        3,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f704}" })),
+    ));
+    assert!(!unbound.is_error(), "注入必须落到真实窗口: {unbound:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "未绑定的键文本不得产生任何提交"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "未绑定的键文本不得改动工程"
     );
+
+    // ---- 本判据：真 `WindowEvent` 的 `→` ----
+    let pressed = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f703}" })),
+    ));
+    assert!(!pressed.is_error(), "`→` 注入必须落到真实窗口: {pressed:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "真 `WindowEvent` 的 `→` 必须产生**一次**提交 —— 焦点链必须把方向键文本交给宿主"
+    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0 + 240, p0, duration0, velocity0),
+            "真事件源下音符 {id} 必须恰好右移 240 tick"
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-d-focus] 真 `WindowEvent::KeyPressed{{text:\"\\u{{f703}}\"}}`（`→`）⇒ \
+         提交数 {commits_before} ⇒ {}；选区 {targets:?} 全部 +240 tick；\
+         未绑定的 `\\u{{f704}}`（F1）⇒ 0 提交 ⇒ 焦点链**交付**了方向键文本",
+        port.display().commit_count,
+    ));
 }
 
 /// 判据 (d2)：**`Shift` 组合**经真事件源也通 —— 注入真 `Shift` 按下，再注入真 `↑`
@@ -2964,39 +3332,51 @@ fn arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
 /// - ⛔ 不证明真实键盘的按下/释放顺序。
 #[test]
 fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_octave() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let commits_before = port.display().commit_count;
+
+    // ---- 真 `Shift` 按下（端口表达得了的那一个修饰位）----
+    let shift_down = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Shift" })),
+    ));
     assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+        !shift_down.is_error(),
+        "`Shift` 注入必须落到真实窗口: {shift_down:?}"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    // ---- 真 `↑` ----
+    let up = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f700}" })),
+    ));
+    assert!(!up.is_error(), "`↑` 注入必须落到真实窗口: {up:?}");
+
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "`Shift+↑`（真事件源）必须产生一次提交"
     );
-    assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
-    );
-    assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
-    );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0, p0 + 12, duration0, velocity0),
+            "真事件源下 `Shift+↑` 必须把音符 {id} 升**整八度**（+12 半音），tick 不许动"
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-d2-shift] 真 `Shift` 按下 + 真 `↑` ⇒ 提交数 {commits_before} ⇒ {}；\
+         选区 {targets:?} 全部 +12 半音（tick 不动）",
+        port.display().commit_count,
+    ));
 }
 
 /// 判据 (e)：`[UI-NOTE-005]` §3 项 3 —— `Shift+←/→` 经**真事件源**只改时值。
@@ -3031,39 +3411,135 @@ fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_
 /// - ⛔ 不证明幅度**常量**的来源（期望值 240 来自模型 PPQ/4，与 `NUDGE_GRID_TICKS_EXPECTED` 同源）。
 #[test]
 fn arrow_duration_resize_e_shift_arrows_change_only_the_selected_durations() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    assert_eq!(targets.len(), 2, "夹具必须能按 (tick, 音高) 点名两颗音符");
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    // 期望幅度按**模型**的 PPQ 推导，与平移判据同源（⛔ 不读 `host::nudge_delta_for`）。
+    let grid = u64::try_from(NUDGE_GRID_TICKS_EXPECTED).expect("网格必须是正数");
+
+    // ---- 真 `Shift` 按下（端口能表达的那一个修饰位）----
+    let shift_down = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Shift" })),
+    ));
     assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+        !shift_down.is_error(),
+        "`Shift` 注入必须落到真实窗口: {shift_down:?}"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    // ---- 真 `←`：缩短一个网格 ----
+    let left = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f702}" })),
+    ));
+    assert!(!left.is_error(), "`←` 注入必须落到真实窗口: {left:?}");
+
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "`Shift+←`（真事件源）必须产生**一次**提交"
     );
-    assert!(
-        aether_app.contains("> arrangement-view:"),
-        "新 UI 契约面必须声明 > arrangement-view:"
+    let after_shrink = note_readings(&port.project());
+    assert_eq!(
+        after_shrink.keys().collect::<Vec<_>>(),
+        baseline.keys().collect::<Vec<_>>(),
+        "音符**身份**集合必须不变（`SetNoteTiming` 而不是删 + 加）"
     );
-    assert!(
-        aether_host.contains("set_arrangement_view"),
-        "宿主接线层必须注册 set_arrangement_view"
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after_shrink[id],
+            (t0, p0, duration0 - grid, velocity0),
+            "`Shift+←` 必须只把音符 {id} 的时值缩短一个网格（起点 / 音高 / 力度不动）"
+        );
+    }
+    for (id, reading) in &baseline {
+        if !targets.contains(id) {
+            assert_eq!(
+                after_shrink[id], *reading,
+                "选区之外的音符 {id} 四个字段必须逐值不变"
+            );
+        }
+    }
+
+    // ---- 提交载荷：一条 `Batch`，批里每个选中音符一条 `SetNoteTiming` ----
+    {
+        let graph = port.graph();
+        let display = port.display();
+        let head = display.head.expect("提交之后图谱必须有一个头提交");
+        let tip = graph.commit(&head).expect("头提交必须在图谱里");
+        let tip_ops: Vec<String> = tip
+            .ops
+            .iter()
+            .map(|stamped| format!("{:?}", stamped.op))
+            .collect();
+        assert_eq!(
+            tip_ops.len(),
+            1,
+            "一次按键在图谱里必须**恰好一条** `StampedOp`: {tip_ops:?}"
+        );
+        assert!(tip_ops[0].starts_with("Batch {"), "必须是 `Op::Batch`");
+        assert_eq!(
+            tip_ops[0].matches("SetNoteTiming {").count(),
+            targets.len(),
+            "批里必须每个选中音符恰好一条 `SetNoteTiming`: {tip_ops:?}"
+        );
+        assert!(
+            !tip_ops[0].contains("MoveNote"),
+            "时值伸缩**不得**写 `MoveNote`: {tip_ops:?}"
+        );
+    }
+
+    // ---- 真 `→`（`Shift` 仍按着）：延回原值 ----
+    let right = plane.plane().try_line(&request_line(
+        11,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f703}" })),
+    ));
+    assert!(!right.is_error(), "`→` 注入必须落到真实窗口: {right:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 2,
+        "`Shift+→` 必须是**第二次**独立提交"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    let after_extend = note_readings(&port.project());
+    for id in &targets {
+        assert_eq!(
+            after_extend[id], baseline[id],
+            "缩短一格再延长一格 ⇒ 音符 {id} 必须回到原时值"
+        );
+    }
+
+    // ---- 两次撤销逐字节回到起点（一次按键一步）----
+    for step in 0..2 {
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "第 {} 次撤销必须真的改变了工程", step + 1);
+    }
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "两次撤销必须逐字节回到起点（若两次按键被合并成一步，这里会提前满足或停在半路）"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "撤销到底后可撤销步数必须回到起点"
     );
+
+    report_line(&format!(
+        "[roll-nudge-e-duration] 真 `Shift` + 真 `←` ⇒ 提交数 {commits_before} ⇒ {}；\
+         选区 {targets:?} 时值 −{grid} tick（起点 / 音高 / 力度不动、身份保住）；\
+         真 `→` ⇒ 延回原值、第二次提交；两次撤销 ⇒ `project` 逐字节回到起点",
+        commits_before + 2,
+    ));
 }
 
 // ===========================================================================
@@ -3242,7 +3718,8 @@ fn assemble_with_project(
 
 /// 判据 (a)：展示轨 A **没有**覆盖该 tick 的片段、B **有** ⇒ 铅笔**不得**写到 B。
 #[test]
-fn a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick() {
+fn contract_only_a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick() {
+    // contract-only（T-FIX-775）：本条只核对源码字符串契约面，不计入功能覆盖。
     // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
     let aether_app = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
@@ -3281,77 +3758,126 @@ fn a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick()
 /// 判据 (b)：展示轨 A **有**覆盖 ⇒ 写到**它**（B 也有覆盖，但 B 一位不动）。
 #[test]
 fn a_pencil_click_writes_to_the_displayed_track_not_a_covered_later_track() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let fixture = pencil_track_fixture(true, true);
+    let hit_x = host_x_inside_pencil_fixture(&fixture.project);
+    let expected = ViewState::from_project(&fixture.project)
+        .expect("投影")
+        .pencil_plan(0.0, hit_x, HIT_Y_IN_ROLL, ROLL_SNAP_GRID_TICKS)
+        .expect("计划");
+
+    // 纯函数读数：目标必须是展示轨的片段（⛔ 不用点击结果当期望）。
+    match pencil_op_for(
+        &fixture.project,
+        0.0,
+        hit_x,
+        HIT_Y_IN_ROLL,
+        ROLL_SNAP_GRID_TICKS,
+        i32::from(PENCIL_TOOL_DIGIT),
+    ) {
+        Some(yeban_model::Op::AddNote {
+            track_id,
+            clip_id,
+            note,
+        }) => {
+            assert_eq!(track_id, fixture.displayed, "必须写到展示轨 A");
+            assert_eq!(clip_id, fixture.displayed_clip, "必须写到 A 的片段");
+            assert_eq!(
+                (note.start_tick, note.pitch, note.duration_ticks),
+                (expected.start_tick, expected.pitch, expected.duration_ticks),
+                "tick / pitch / duration 必须与独立算出的计划逐值相同"
+            );
+        }
+        other => panic!("铅笔必须产生展示轨上的 AddNote，实际是 {other:?}"),
+    }
+
+    let (window, port, mut plane) = assemble_with_project(fixture.project);
+    let before = port.project();
+    let before_displayed = clip_note_count(&before, fixture.displayed_clip);
+    let before_later = clip_note_count(&before, fixture.later_clip);
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(&mut plane, 1, hit_x);
+    let after = port.project();
+    assert_eq!(
+        clip_note_count(&after, fixture.displayed_clip),
+        before_displayed + 1,
+        "展示轨 A 的片段必须 +1 个音符"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+    assert_eq!(
+        clip_note_count(&after, fixture.later_clip),
+        before_later,
+        "B 的片段（也有覆盖）必须一位不动"
     );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+    assert_eq!(
+        window.get_roll_edit_status(),
+        "",
+        "写入成功 ⇒ 拒绝文本必须被清空（⛔ 不留上一击的假话）"
     );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    report_line(&format!(
+        "[pencil-track-write] 展示轨 A 有覆盖 tick 的片段 ⇒ 点击后 A 片段音符 {before_displayed} ⇒ {}；\
+         B 片段 {before_later} ⇒ {}；拒绝文本 = {:?}",
+        clip_note_count(&after, fixture.displayed_clip),
+        clip_note_count(&after, fixture.later_clip),
+        window.get_roll_edit_status(),
+    ));
 }
 
 /// 判据 (c)：**单轨**工程 —— 两条规则指向同一条轨，结果与改前逐值相同。
 #[test]
 fn a_single_track_project_keeps_the_pre_166_pencil_result() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let mut fixture = pencil_track_fixture(true, false);
+    let displayed = fixture.displayed;
+    let displayed_clip = fixture.displayed_clip;
+    fixture.project.tracks.remove(&fixture.later);
+    let project = fixture.project;
+
+    let hit_x = host_x_inside_pencil_fixture(&project);
+    let expected = ViewState::from_project(&project)
+        .expect("投影")
+        .pencil_plan(0.0, hit_x, HIT_Y_IN_ROLL, ROLL_SNAP_GRID_TICKS)
+        .expect("计划");
+    let track = yeban_app::bridge::device_rack_track(&project).expect("单轨工程也有展示轨");
+    assert_eq!(track.id, displayed, "单轨工程：展示轨就是唯一那条轨");
+    match pencil_op_for(
+        &project,
+        0.0,
+        hit_x,
+        HIT_Y_IN_ROLL,
+        ROLL_SNAP_GRID_TICKS,
+        i32::from(PENCIL_TOOL_DIGIT),
+    ) {
+        Some(yeban_model::Op::AddNote {
+            track_id,
+            clip_id,
+            note,
+        }) => {
+            assert_eq!(track_id, displayed);
+            assert_eq!(clip_id, displayed_clip);
+            assert_eq!(
+                (note.start_tick, note.pitch, note.duration_ticks),
+                (expected.start_tick, expected.pitch, expected.duration_ticks),
+                "单轨：tick / pitch / duration 与改前同一份计划"
+            );
+        }
+        other => panic!("单轨铅笔必须产生 AddNote，实际是 {other:?}"),
+    }
+
+    let (window, port, mut plane) = assemble_with_project(project);
+    let before_total = note_count(&port.project());
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(&mut plane, 1, hit_x);
+    assert_eq!(
+        note_count(&port.project()),
+        before_total + 1,
+        "单轨：点击后必须恰好 +1"
     );
-    assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
-    );
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
-    );
-    assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
-    );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
-    );
+    report_line(&format!(
+        "[pencil-track-single] 1 条非主总线轨；展示轨 == 唯一轨；\
+         op 目标 ({displayed}, {displayed_clip}) tick={} pitch={} duration={}；音符 {before_total} ⇒ {}",
+        expected.start_tick,
+        expected.pitch,
+        expected.duration_ticks,
+        note_count(&port.project()),
+    ));
 }
 
 /// 在卷帘面**中心**做一次越过规范的 4px 阈值的水平拖动（合计 `dx`，正 = 指针向右）。
@@ -3401,38 +3927,79 @@ fn note_rect_in_tree(plane: &mut LiveControlPlane, seq: i64, ulid: &str) -> bool
 /// ④ 拖动⛔ 不改工程、⛔ 不插新音符（`up` 只在未越阈值时才 fired `clicked`）。
 #[test]
 fn a_scroll_drag_after_a_pencil_edit_redraws_the_live_project_not_the_wired_snapshot() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("> active-tool:"),
-        "新 UI 契约面必须声明 > active-tool:"
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+
+    // ---- 前置：找一个**真能落子**、并且向左滚 60px 之后仍在视口内的点击 x ----
+    // 视口裁剪会让一个太靠左的音符出树 —— 那是**正常行为**，⛔ 不是本判据要测的东西。
+    // 因此候选必须满足 `60 ≤ x ≤ 可见宽度 − 60`（可见宽度读自拖动面自己的包围盒）。
+    let scroll = 0.0_f32;
+    let drag_px = 60.0_f32;
+    let area = element_bounds(&mut plane, 1, SCROLL_AREA);
+    #[allow(clippy::cast_precision_loss)]
+    let grid_width = area["width"].as_f64().expect("width") as f32;
+    let hit_x = (0..240u8)
+        .map(|step| 10.0 * f32::from(step))
+        .filter(|x| (drag_px..=(grid_width - drag_px)).contains(x))
+        .find(|x| {
+            pencil_op_for(
+                &project_before,
+                scroll,
+                *x,
+                HIT_Y_IN_ROLL,
+                ROLL_SNAP_GRID_TICKS,
+                i32::from(PENCIL_TOOL_DIGIT),
+            )
+            .is_some()
+        })
+        .expect("夹具里必须存在一个可落子、且滚动 60px 后仍在视口内的位置");
+
+    window.set_active_tool(i32::from(PENCIL_TOOL_DIGIT));
+    click_in_roll_by_id(&mut plane, 10, hit_x);
+
+    let project_after = port.project();
+    let before_ids = notes(&project_before);
+    let mut new_ids: Vec<String> = notes(&project_after)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .filter(|id| !before_ids.iter().any(|(old, _, _)| old == id))
+        .collect();
+    assert_eq!(
+        new_ids.len(),
+        1,
+        "前置：铅笔点击必须恰好在权威工程里加一个音符"
     );
+    let new_id = new_ids.pop().expect("前置音符身份");
     assert!(
-        aether_host.contains("set_active_tool"),
-        "宿主接线层必须注册 set_active_tool"
+        note_rect_in_tree(&mut plane, 20, &new_id),
+        "前置：新音符必须已在运行时树里（否则后面的断言测的是裁剪，不是重投影）"
     );
+
+    // ---- 驱动滚动臂：指针向左 `drag_px`（`delta = last − now` ⇒ 偏移 +drag_px），分 3 步 ----
+    let offset_before = window.get_roll_scroll_x();
+    let notes_before = note_count(&project_after);
+    drag_roll_horizontally(&mut plane, 30, -drag_px, 3);
+    let offset_after = window.get_roll_scroll_x();
+    report_line(&format!(
+        "[roll-scroll-d-ui-10] 铅笔点 x={hit_x}（卷帘可见宽度 {grid_width}）加音符 {new_id}；\
+         拖动 {drag_px}px ⇒ 偏移 {offset_before} → {offset_after}"
+    ));
     assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+        (offset_after - offset_before).abs() > 0.5,
+        "前置：拖动必须真的推动宿主拥有的 `roll-scroll-x`（否则本判据没有驱动 `scroll-requested`）"
     );
+
+    // ---- 核心断言 ----
+    let still_in_tree = note_rect_in_tree(&mut plane, 40, &new_id);
+    let project_now = port.project();
     assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+        still_in_tree,
+        "D-UI-10：一次滚动之后，铅笔刚画下的音符 `{new_id}` 必须仍在运行时树里 —— 滚动 handler 若重投影接线时的快照，它会整批消失"
     );
-    assert!(
-        aether_app.contains("> note-drag-active:"),
-        "新 UI 契约面必须声明 > note-drag-active:"
-    );
-    assert!(
-        aether_host.contains("set_note_drag_active"),
-        "宿主接线层必须注册 set_note_drag_active"
+    assert_eq!(
+        note_count(&project_now),
+        notes_before,
+        "滚动手势⛔ 不改工程（`up` 只在未越 4px 阈值时才 fired `clicked`）"
     );
 }
 
