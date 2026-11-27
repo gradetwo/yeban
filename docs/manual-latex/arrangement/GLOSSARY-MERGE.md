@@ -1,5 +1,11 @@
 # 《编曲与配器手册》术语合并记录
 
+## 2026-11-27 T-FIX-879 电子舞曲独立章
+
+- 新增 4 条：`电子舞曲 / electronic dance music`、`泵感 / pumping`、`截止频率 / cutoff frequency`、`重复中的微变 / variation within repetition`。
+- 本册术语表：132 → 136 条；共用术语表中文 427 → 431 条、英文 426 → 430 条。
+- 中英行序保持对应；本章不新增重复词条。
+
 ## 2026-11-27 T-FIX-877 流行独立章
 
 - 新增 4 条：`情绪曲线 / emotional curve`、`耳糖 / ear candy`、`流行 / pop`、`托普线 / topline`。
