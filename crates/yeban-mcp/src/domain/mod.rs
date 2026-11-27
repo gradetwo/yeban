@@ -2937,6 +2937,16 @@ fn undo_refusal_to_fault(refusal: UndoRefusal) -> Fault {
             format!("模型层拒绝: {detail}"),
             serde_json::json!({ "model": detail }),
         ),
+        // T-FIX-865：会话级不一致必须有自己的 reason + hint，不能伪装成裸模型 CONFLICT。
+        UndoRefusal::StateMismatch { op, hint } => Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("重做栈与当前工程不一致（`{op}`)"),
+            serde_json::json!({
+                "reason": "cursorProjectMismatch",
+                "op": op,
+                "hint": hint,
+            }),
+        ),
         UndoRefusal::Serialization { detail } => {
             Fault::domain(ErrorCode::IoError, format!("工程容器写出失败: {detail}"))
         }

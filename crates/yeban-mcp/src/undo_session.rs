@@ -123,6 +123,16 @@ pub enum UndoRefusal {
         /// 模型错误的原文（`ModelError` 的 `Display`）。
         detail: String,
     },
+    /// T-FIX-865：重做栈与当前工程**不一致**（典型：保存已撤销的工程后重开，
+    /// 游标推导把某个 setter 误判成"已应用" ⇒ 下一步重做打在错误的文档位置上）。
+    /// ⛔ 不把这种会话级不一致伪装成模型 `CONFLICT`：调用方需要知道"重做不可用"
+    /// 以及下一步该做什么。工程与游标都不动。
+    StateMismatch {
+        /// 不一致的 op 变体名。
+        op: String,
+        /// 给调用方的人话建议。
+        hint: String,
+    },
     /// 容器写出失败（只有 [`canonical_project_bytes`] / [`UndoSession::project_bytes`] 会产出）。
     Serialization {
         /// 容器错误的原文。
@@ -145,6 +155,9 @@ impl fmt::Display for UndoRefusal {
                 "撤销位置 {undone} 不落在提交边界上 —— 图谱不是本会话写出来的（每条提交恰好一条 op）"
             ),
             Self::Model { detail } => write!(f, "模型层拒绝: {detail}"),
+            Self::StateMismatch { op, hint } => {
+                write!(f, "重做栈与当前工程不一致（`{op}`）: {hint}")
+            }
             Self::Serialization { detail } => write!(f, "工程容器写出失败: {detail}"),
         }
     }
@@ -720,7 +733,33 @@ pub fn redo(
             .ops_backwards_from(&head, index, 1)
             .map_err(model_refusal)?;
         match found.first() {
-            Some(stamped) => stamped.op.apply(project).map_err(model_refusal)?,
+            Some(stamped) => {
+                // T-FIX-865：保存已撤销的工程再打开时，游标是从 (文档, 图谱)
+                // 推导的；setter 的前置条件可能只查"实体在不在"，导致推导偏一步，
+                // 于是重做会把已经生效的 op 再打一次（裸模型 CONFLICT）。
+                // 施加前用同一把 `op_is_applied` 尺子校验：已应用 ⇒ 类型化拒绝。
+                if op_is_applied(&stamped.op, project) {
+                    return Err(UndoRefusal::StateMismatch {
+                        op: stamped.op.name().to_owned(),
+                        hint: "目标 op 已作用在当前工程上；本会话无法安全重做。\
+                               请在撤销前保存，或重新打开未撤销的工程后重试。"
+                            .to_owned(),
+                    });
+                }
+                // 即使前置条件尺子没抓到，施加失败也要如实升级为**类型化**拒绝：
+                // 重开后的游标是从 (文档, 图谱) 推导的，setter 的弱前置条件会让它偏一步。
+                // ⛔ 不把这种会话级不一致伪装成裸模型 CONFLICT（调用方无从下手）。
+                stamped
+                    .op
+                    .apply(project)
+                    .map_err(|error| UndoRefusal::StateMismatch {
+                        op: stamped.op.name().to_owned(),
+                        hint: format!(
+                            "模型拒绝 `{error}`；当前工程与重做栈不一致，本会话不能安全重做。\
+                         请在撤销前保存，或重新打开未撤销的工程后重试。"
+                        ),
+                    })?
+            }
             None => return Err(UndoRefusal::NoRedo),
         }
         state.cursor.skip -= 1;
