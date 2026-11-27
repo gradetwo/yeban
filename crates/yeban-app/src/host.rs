@@ -11036,6 +11036,12 @@ impl PortOpenProject {
         // 必须在换会话成功之后写：换会话失败时旧工程与旧预制表都一位不动。
         // 这里保留容器原始字节，运行期面板解析与后续保存回写共用这一份。
         self.port.replace_embedded_presets(embedded_presets);
+        // ⭐ T-FIX-797：换工程 = 换会话 ⇒ 脏标记基线必须跟着换成**新会话的当前
+        // `head` / 指纹**。否则「保存 A → 运行中打开 B → 不编辑 → 退出」仍拿 A 的
+        // 保存点比 B 的头 ⇒ 误报未保存。口径与 `wire_quit_guard` 的初值逐字一致
+        //（从文件打开的工程此刻就是「已保存」态）。
+        crate::dirty_guard::mark_saved(self.port.display().head);
+        crate::dirty_guard::mark_saved_fingerprint(self.port.fingerprint());
         // ⭐ T-FIX-349：工程边界清 ARA 会话（与 MCP `reset_history` 同义）。
         // 打开 / 新建 / 模板副本都走本函数 ⇒ 只有这一处清会话，⛔ 不另起生命周期。
         reset_plugin_panel_for_project_switch(ui);
