@@ -16735,11 +16735,32 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
         preset::parse_embedded_presets(&entries).map_err(|error| fault_text(&error))
     }
 
-    fn rows(port: Option<&Rc<UndoPort>>) -> Result<Vec<crate::ui::PresetRowData>, String> {
+    fn skipped_notice(listing: &serde_json::Value) -> Option<String> {
+        let skipped = listing
+            .get("skipped")
+            .and_then(serde_json::Value::as_array)?;
+        if skipped.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = skipped
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        Some(format!(
+            "跳过 {} 个无法读取的用户预制：{}",
+            names.len(),
+            names.join("、")
+        ))
+    }
+
+    fn rows(
+        port: Option<&Rc<UndoPort>>,
+    ) -> Result<(Vec<crate::ui::PresetRowData>, Option<String>), String> {
         let embedded = embedded_table(port)?;
         let listing = preset::list_presets_json("all", None);
+        let skipped = skipped_notice(&listing);
         let Some(presets) = listing.get("presets").and_then(serde_json::Value::as_array) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), skipped));
         };
         let mut rows: Vec<crate::ui::PresetRowData> = presets
             .iter()
@@ -16794,12 +16815,18 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 instrument: preset.instrument.as_str().into(),
             });
         }
-        Ok(rows)
+        Ok((rows, skipped))
     }
 
     fn refresh(ui: &MainWindow, port: Option<&Rc<UndoPort>>) {
         let rows = match rows(port) {
-            Ok(rows) => rows,
+            Ok((rows, skipped)) => {
+                if let Some(message) = skipped {
+                    ui.set_preset_error(message.clone().into());
+                    ui.set_toast_message(format!("[预制] {message}").into());
+                }
+                rows
+            }
             Err(message) => {
                 ui.set_preset_error(message.clone().into());
                 ui.set_toast_message(format!("[预制] {message}").into());
