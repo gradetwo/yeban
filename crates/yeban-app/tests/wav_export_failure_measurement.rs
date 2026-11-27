@@ -59,7 +59,12 @@ fn empty_project_export_failure_updates_the_measurement_row() {
         std::process::id(),
         yeban_model::EntityId::new()
     ));
-    let _midi = wire_module_actions_with(&ui, Some(Rc::clone(&port)), paths);
+    let _midi = wire_module_actions_with(
+        &ui,
+        Some(Rc::clone(&port)),
+        paths,
+        Rc::new(yeban_app::file_picker::NoPicker),
+    );
 
     // 打开弹窗：实测行先被重置成“尚未导出”，再模拟上一次成功导出的旧读数。
     ui.invoke_open_export_wav();
