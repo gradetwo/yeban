@@ -2461,6 +2461,19 @@ impl YebanProjectV1 {
                         id: placement.clip_id,
                     });
                 }
+                // T-FIX-443：MIDI 片段没有音频采样 ⇒ fade 字段只能是静默 no-op，
+                // 装载时就响亮拒绝（要么删字段，要么换成音频片段）。
+                if matches!(
+                    self.clip_pool
+                        .get(&placement.clip_id)
+                        .map(|entry| &entry.content),
+                    Some(ClipContent::Midi { .. })
+                ) && (placement.fade_in_ticks.is_some() || placement.fade_out_ticks.is_some())
+                {
+                    return Err(ModelError::ClipFadeOnMidiPlacement {
+                        placement: placement.id,
+                    });
+                }
             }
         }
 

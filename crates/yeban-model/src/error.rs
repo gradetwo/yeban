@@ -39,6 +39,14 @@ pub enum ModelError {
         value: u16,
     },
 
+    /// MIDI 片段的摆放带了音频 fade（T-FIX-443：MIDI 没有音频采样，fade 只能是
+    /// 静默 no-op ⇒ 在装载时响亮拒绝，⛔ 不假装生效）。
+    #[error("midi placement {placement} carries audio fade ticks")]
+    ClipFadeOnMidiPlacement {
+        /// 出问题的摆放身份。
+        placement: crate::ids::EntityId,
+    },
+
     /// MIDI 通道越界 (允许 0..=15)。
     #[error("note channel {channel} out of range 0..=15")]
     NoteChannelOutOfRange {

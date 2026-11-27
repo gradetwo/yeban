@@ -165,6 +165,7 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::TrackDelayOutOfRange { .. }
         | ModelError::ClipOffsetOutOfRange { .. }
         | ModelError::ClipFadeOutOfRange { .. }
+        | ModelError::ClipFadeOnMidiPlacement { .. }
         // B8 轨级调律偏移越界：与轨延时同组（同是音轨级标量）。
         | ModelError::TrackTuneOutOfRange { .. }
         | ModelError::ZeroDuration
