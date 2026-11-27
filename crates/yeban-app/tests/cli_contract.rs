@@ -358,45 +358,93 @@ fn broken_inputs_exit_non_zero_without_panicking() {
 /// 两次保存的字节完全相同（确定性）。
 #[test]
 fn save_as_round_trips_and_is_deterministic_from_the_real_binary() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    let dir = scratch_dir("save");
+    let source = write_real_container(&dir, "in.yeban");
+    let first = dir.join("out-a.yeban");
+    let second = dir.join("out-b.yeban");
+    let source = source.to_str().expect("utf8");
+
+    let mut printed_bytes = Vec::new();
+    for target in [&first, &second] {
+        let run = invoke(&[
+            "--open",
+            source,
+            "--save-as",
+            target.to_str().expect("utf8"),
+        ]);
+        assert_eq!(run.code, 0, "stderr={}", run.stderr);
+        let saved = line_with(&run.stdout, "saved:").expect("必须有 saved: 行");
+        assert!(saved.contains("assets=1"), "资产池不得静默丢失: {saved}");
+        assert!(
+            saved.contains("history-bytes=14"),
+            "history.dag 必须被保真写出: {saved}"
+        );
+        let expected = std::fs::metadata(target).expect("文件在").len();
+        assert_eq!(
+            field(saved, "bytes").as_deref(),
+            Some(expected.to_string().as_str()),
+            "打印的字节数必须是实际落盘字节数: {saved}"
+        );
+        printed_bytes.push(field(saved, "bytes").expect("bytes="));
+    }
+    assert_eq!(printed_bytes[0], printed_bytes[1], "两次保存字节数必须相同");
+    assert_eq!(
+        std::fs::read(&first).expect("读 a"),
+        std::fs::read(&second).expect("读 b"),
+        "同一输入两次 --save-as 的字节必须完全相同"
     );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
-    );
+
+    // 公开入口读回：工程等价 **且** 归档等价（历史 / 资产都没丢）。
+    let read_back = yeban_app::open::open_project_file(&first).expect("读回");
+    assert_eq!(read_back, yeban_app::bridge::demo_project());
+    let archive = yeban_app::open::open_project_archive_file(
+        &first,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("全保真读回");
+    assert_eq!(archive.history_dag, b"binary-history");
+    assert_eq!(archive.assets.len(), 1);
+    // 所有 `*.tmp-*` 都必须已被重命名掉（原子替换的痕迹）。
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B6: `--save-as` 不给 `--open` ⇒ 保存演示工程，并且**在输出里明说**这一点。
 #[test]
 fn save_as_without_open_says_it_saved_the_demo_project() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("sample");
+    let target = dir.join("demo.yeban");
+    let run = invoke(&["--save-as", target.to_str().expect("utf8")]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stdout.contains("project-source: sample=default"),
+        "必须明写工程来自内置样本:\n{}",
+        run.stdout
     );
+    assert!(run.stdout.contains("未读任何文件"), "{}", run.stdout);
+    let saved = line_with(&run.stdout, "saved:").expect("saved:");
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        saved.contains("from=sample=default") && saved.contains("不是从文件打开的"),
+        "saved: 行必须说清来源: {saved}"
     );
+    // ⭐ `#215`：`--save-as` 不给 `--open` 是**创建**一份新工程 ⇒ 创建时刻写真实时间。
+    // 因此对账口径是"除创建时刻外逐字段等于演示工程"，并单独断言时刻真的非 0。
+    let read_back = yeban_app::open::open_project_file(&target).expect("读回");
+    assert!(
+        read_back.metadata.created_at_unix_ms > 0,
+        "新建工程必须写真实创建时刻（实得 0 ⇒ BWF 起源日期会退回 1970-01-01）"
+    );
+    let mut expected = yeban_app::bridge::demo_project();
+    expected.metadata.created_at_unix_ms = read_back.metadata.created_at_unix_ms;
+    assert_eq!(read_back, expected, "除创建时刻外必须逐字段等于演示工程");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B7: 未知开关 / 缺取值 ⇒ 退出码 2 + **用法提示**（不许静默忽略）。
@@ -659,23 +707,44 @@ fn export_elements_matches_dump_elements() {
 #[cfg(unix)]
 #[test]
 fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
-    );
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = scratch_dir("readonly");
+    let source = write_real_container(&dir, "source.yeban");
+    let target = dir.join("target.yeban");
+    std::fs::copy(&source, &target).expect("先放一个真容器当旧文件");
+    let before = std::fs::read(&target).expect("读原文");
+
+    let mut permissions = std::fs::metadata(&dir).expect("目录元数据").permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(&dir, permissions).expect("降权");
+
+    let probe = dir.join(".probe");
+    let writable = std::fs::write(&probe, b"x").is_ok();
+    let _ = std::fs::remove_file(&probe);
+
+    if writable {
+        eprintln!("[tests/cli_contract] 只读目录仍可写 (特权进程?), 本条判据无从判定 —— 响亮跳过");
+    } else {
+        let run = invoke(&[
+            "--open",
+            source.to_str().expect("utf8"),
+            "--save-as",
+            target.to_str().expect("utf8"),
+        ]);
+        assert_eq!(run.code, 4, "只读目录必须退出 4; stderr={}", run.stderr);
+        assert!(run.stderr.contains("保存到"), "{}", run.stderr);
+        assert_eq!(
+            std::fs::read(&target).expect("旧文件必须还在"),
+            before,
+            "失败的保存绝不能破坏旧文件 (这就是原子替换的意义)"
+        );
+    }
+
+    let mut permissions = std::fs::metadata(&dir).expect("目录元数据").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&dir, permissions).expect("还原权限");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B14（`ROAD-M4-008` 选项 (a) 第三片）：`.yeban.lock` 被**别的持有者**持有时，
