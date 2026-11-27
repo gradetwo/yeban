@@ -7677,7 +7677,7 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
 ///
 /// ## 判据：写了才管，⛔ 不是"不全就拒绝一切"
 ///
-/// 判别只有一条（[`super::incomplete_drum_note_names`]，与引擎识别同一口径）：
+/// 判别只有一条（[`yeban_model::drums::incomplete_drum_note_map`]，与引擎识别同一口径）：
 /// **至少一个**键位名出现、且至少一个缺失或非有限 ⇒ 拒绝并逐条点名缺的键。
 /// 一个键位名都没写的设备**照旧接受**：那是普通复音合成器（只写音色旋钮的
 /// 设备与没有设备链逐位同解，是引擎模块文档 §6 钉住的既有口径），本闸门
@@ -7690,10 +7690,10 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
 /// 命中判据 ⇒ `INVALID_PARAMETER_RANGE`（`data.reason = "incompleteDrumNoteMap"`；
 /// `data.missingNoteNames` 逐条点名缺的键，`data.presentNoteNames` 给已写的键）。
 fn reject_incomplete_drum_note_map(device: &DeviceDefinition) -> Result<(), Fault> {
-    let Some(missing) = super::incomplete_drum_note_names(device) else {
+    let Some(missing) = yeban_model::drums::incomplete_drum_note_map(device) else {
         return Ok(());
     };
-    let present: Vec<&'static str> = super::DRUM_NOTE_NAMES
+    let present: Vec<&'static str> = yeban_model::drums::DRUM_NOTE_NAMES
         .iter()
         .copied()
         .filter(|name| !missing.contains(name))
@@ -7709,7 +7709,7 @@ fn reject_incomplete_drum_note_map(device: &DeviceDefinition) -> Result<(), Faul
              （一个都不写 = 普通复音合成器，不受本闸门影响）。",
             device.name,
             missing.join(", "),
-            super::DRUM_NOTE_NAMES.join(", "),
+            yeban_model::drums::DRUM_NOTE_NAMES.join(", "),
         ),
         serde_json::json!({
             "reason": "incompleteDrumNoteMap",

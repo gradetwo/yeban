@@ -103,8 +103,8 @@
 //!
 //! `DrumKitParams::kick_style` 选底鼓声部（`Classic` = 既有的 808 式下滑正弦，
 //! `Anatomy` = 本模块）；`DrumKitParams::anatomy` 是本模块的 9 个连续参数 +
-//! 6 个独奏 / 静音开关。引擎侧（`yeban-engine/src/drums.rs`）用
-//! `kick_style` / `anatomy_*` 两组旋钮名投影。MCP 侧**没有**鼓机参数工具
+//! 6 个独奏 / 静音开关。模型侧（`yeban-model/src/drums.rs`）用
+//! `kick_style` / `anatomy_*` 两组旋钮名投影（T-FIX-846 自引擎下移）。MCP 侧**没有**鼓机参数工具
 //! （`yeban-mcp` 里的 `drum*` 键全是段落生成的鼓网格参数），按任务口径不
 //! 新建工具，只留引擎层接口。
 

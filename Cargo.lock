@@ -7254,7 +7254,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "yeban-decode",
  "yeban-diagnostics",
- "yeban-engine",
  "yeban-midi",
  "yeban-midi-io",
  "yeban-model",

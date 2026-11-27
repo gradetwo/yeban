@@ -328,11 +328,11 @@ pub fn device_chain_value(track: &TrackV3) -> Value {
         let mut effects: Vec<&'static str> = Vec::new();
         let mut recognised_params: Vec<String> = Vec::new();
         let mut unrecognised_params: Vec<String> = Vec::new();
-        // T-FIX-746：乐器参数（鼓机键位/旋钮）由引擎自己的表判，⛔ 不拿效果词表去问；
+        // T-FIX-746：乐器参数（鼓机键位/旋钮）由模型侧的识别表判，⛔ 不拿效果词表去问；
         // 工厂预设的每个参数都会命中 ⇒ 不再被误报成 unrecognised。
         let instrument = device.kind == DeviceKind::InternalInstrument;
         let instrument_unknown = if instrument {
-            yeban_engine::drums::unknown_kit_param_names(device)
+            yeban_model::drums::unknown_kit_param_names(device)
         } else {
             Vec::new()
         };

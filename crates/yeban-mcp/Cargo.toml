@@ -70,10 +70,6 @@ yeban-model.workspace = true
 # 版本仍由根清单 `[workspace.dependencies]` 唯一决定 —— 本线**没有**改根清单的行,
 # 也没有新增任何第三方包 (`Cargo.lock` 只多一条成员间的依赖边)。
 yeban-theory.workspace = true
-# T-FIX-746：乐器参数（鼓机键位 + 旋钮）的唯一识别表在 yeban-engine::drums；
-# default-features = false ⇒ 不启用 device/cpal（与 yeban-render 同一形态）。
-# ⛔ 不在这里手抄第二份键位/旋钮名单。
-yeban-engine = { workspace = true, default-features = false }
 # 离线母带渲染器 (Rayon 多核调度 + RF64/BW64 + TPDF 抖动写入器)。
 # `yeban_render_master` 的渲染本体不再返回 -32005, 而是真的调用它。版本仍由根清单
 # 唯一决定, 本线**未改**根 `Cargo.toml`, 也未引入任何新的第三方包。
@@ -122,6 +118,9 @@ yeban-sfz.workspace = true
 # 逐字含 `yeban-engine`（"带 GUI / 音频栈 / 渲染栈的 crate"），而该门禁的取向就是
 # "把共享件**下移到轻量 crate**，而不是加依赖"。`yeban-record` 的唯一第三方依赖是
 # `rtrb`（已在树里）⇒ `Cargo.lock` 的包集合不变、⛔ 无新许可、⛔ 不拖 `cpal`。
+# T-FIX-846 对鼓机识别表做了同一形态的下移：`yeban-engine::drums` 的键位 / 旋钮
+# 识别表现住 `yeban-model/src/drums.rs`，本 crate 直接用模型侧的表（`yeban-model`
+# 已是本 crate 的依赖），`yeban-engine` 依赖边随之删除 —— 门禁重新变绿。
 # 机械证据：`cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0，
 # `cargo tree -p yeban-mcp -i cpal` ⇒ `did not match any packages`。
 yeban-midi-io = { workspace = true, optional = true }

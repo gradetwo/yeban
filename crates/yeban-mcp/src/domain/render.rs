@@ -1860,7 +1860,7 @@ pub(crate) fn ignored_strip_devices_warning(
 /// （`incompleteDrumNoteMap`），但存量工程与其它写入面（应用侧、预制、手工
 /// 改过的工程文件）仍可能把不完整映射带到渲染这里 ⇒ 本预警是渲染侧的兜底
 /// 点名：逐台给轨 / 设备 / `missingNoteNames`。
-/// 判别与写入闸门共用 [`super::incomplete_drum_note_names`]（⛔ 不许两处各写一份）。
+/// 判别与写入闸门共用 [`yeban_model::drums::incomplete_drum_note_map`]（⛔ 不许两处各写一份）。
 /// 作用域与 [`ignored_strip_devices_warning`] 一致：只看渲染源节点，且只看
 /// **非旁通**设备（旁通设备本就不作音源，与引擎识别跳过旁通同一口径）。
 /// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`（与削波预警同一条纪律）。
@@ -1878,7 +1878,7 @@ fn incomplete_drum_note_map_warning(
             if device.bypassed {
                 continue;
             }
-            if let Some(missing) = super::incomplete_drum_note_names(device) {
+            if let Some(missing) = yeban_model::drums::incomplete_drum_note_map(device) {
                 devices.push(serde_json::json!({
                     "track": track.name,
                     "trackNode": node.to_canonical_string(),

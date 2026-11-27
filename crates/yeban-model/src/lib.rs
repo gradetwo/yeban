@@ -48,6 +48,7 @@ pub mod clip_fade;
 pub mod clip_ops;
 pub mod commit;
 pub mod container;
+pub mod drums;
 pub mod error;
 pub mod ids;
 pub mod local_config;

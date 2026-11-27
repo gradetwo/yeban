@@ -11,7 +11,7 @@
 //!
 //! 判据 ① 用模型的公开 API 走**两次 `Op`**（[`Op::InsertDevice`] ＋ [`Op::SetTrackSampler`]），
 //! 断言两次**都被接受**，并在同一个 `YebanProjectV1` 上把两个读数**同时**读出来；
-//! 判据 ② 把"哪台设备会被引擎当成鼓机"这件事**从引擎源码读出来**对账 —— ⛔ 不手抄一份
+//! 判据 ② 把"哪台设备会被引擎当成鼓机"这件事**从模型侧识别表源码读出来**对账 —— ⛔ 不手抄一份
 //! 可能陈旧的名字表（仓内既有手法：`tests/schema_sampler_branch.rs` 直接读契约文件）。
 //!
 //! ## 引擎怎么认鼓机（本文件引用的**唯一**事实源）
@@ -22,24 +22,25 @@
 //! 1. 只看 `kind == DeviceKind::InternalInstrument` **且** `bypassed == false` 的设备；
 //! 2. 该设备的 `params` 里**五个键位名**（大小写不敏感）**全部**出现且取值**有限**：
 //!    `kick_note` / `snare_note` / `closed_hat_note` / `open_hat_note` / `clap_note`
-//!    （`fn note_slot` 的 match 臂就是这份名单）。
+//!    （`yeban-model/src/drums.rs::note_slot` 的 match 臂就是这份名单）。
 //!
 //! ⚠ 同一个 `devices` 序列还被 `crates/yeban-engine/src/synth.rs` 的
 //! `ToneParams::from_devices` **独立**扫一遍（识别键 `cutoff_hz`/`cutoff` 或六个振荡器键）
 //! ⇒「一台设备链里既有复音合成器参数、又有完整鼓机映射」在模型里就是**一条 `devices` 里的
-//! 普通内容**，模型层既不认识"鼓机"、也不认识"复音合成器"。
+//! 普通内容**，模型层**不禁止**这种组合（识别用的名字表住在 `crate::drums`，
+//! 那是共享词表、不是类型级禁令；复音合成器那边模型层仍不认识）。
 //!
 //! ## 判据（2 条，全部进 `cargo test -p yeban-model`）
 //!
 //! | # | 判据 | 测的是什么 |
 //! | :-- | :--- | :--- |
 //! | ① | [`model_allows_a_track_to_hold_both_a_sampler_and_a_drum_shaped_instrument`] | 两次 `Op` 都被接受 ＋ 两个读数同时成立 ＋ 整份文档仍合法可往返；⭐ 附**两条正对照**（只设 `sampler` / 只设设备）证明断言不是空转 |
-//! | ② | [`the_five_key_names_are_exactly_the_engines_drum_recognition_names`] | 判据 ① 用的五个键位名 ⇔ `crates/yeban-engine/src/drums.rs::note_slot` 的 match 臂（**读源码**，⛔ 不手抄） |
+//! | ② | [`the_five_key_names_are_exactly_the_models_drum_recognition_names`] | 判据 ① 用的五个键位名 ⇔ `crates/yeban-model/src/drums.rs::note_slot` 的 match 臂（**读源码**，⛔ 不手抄） |
 //!
 //! ## 边界（诚实声明）
 //!
 //! - 本文件**只加判据**：⛔ 不改任何生产代码、⛔ 不改 `schemas/**`（那是集成者独占）、
-//!   ⛔ 不动 `crates/yeban-engine/**`（那是另一条线的树）。判据 ② 对引擎源码**只读**；
+//!   ⛔ 不动 `crates/yeban-engine/**`（那是另一条线的树）。判据 ② 对模型侧识别表源码**只读**；
 //! - 本文件**不主张**"引擎的裁决对不对" —— `鼓机 ＞ SFZ ＞ 复音` 是**引擎层**的取舍
 //!   （`crate::drums` §4.1 ＋ `sfz-needs-3` 的信号腿），本文件只说**模型层不禁止**这个组合；
 //! - ⚠ `needs-1`（"这台设备是鼓机"没有类型级信息）**仍然成立**：本文件正是靠"五个键位名"
@@ -54,7 +55,7 @@ use yeban_model::{
     YebanProjectV1,
 };
 
-/// 引擎识别鼓机的**五个键位名**（事实源见判据 ②：`drums.rs::note_slot` 的 match 臂）。
+/// 模型侧识别表认的**五个键位名**（事实源见判据 ②：`yeban-model/src/drums.rs::note_slot` 的 match 臂）。
 const DRUM_KEY_PARAMS: [(&str, f32); 5] = [
     ("kick_note", 36.0),
     ("snare_note", 38.0),
@@ -286,35 +287,35 @@ fn model_allows_a_track_to_hold_both_a_sampler_and_a_drum_shaped_instrument() {
 // ② 判据 ① 用的五个键位名 ⇔ 引擎源码里 `note_slot` 的 match 臂（读源码，⛔ 不手抄）
 // ---------------------------------------------------------------------------
 
-/// 判据 ① 的设备夹具写的五个键位名，**就是**引擎 `drums.rs::note_slot` 认的那五个。
+/// 判据 ① 的设备夹具写的五个键位名，**就是**模型侧 `drums.rs::note_slot` 认的那五个。
 ///
-/// 为什么要有这一条：模型层**没有**"鼓机"这个概念（`crates/yeban-model/src/` 里
-/// `grep -rni drum` 只有 `ops.rs` 的一句注释），"哪台设备会被引擎当成鼓机"完全由
-/// `crates/yeban-engine/src/drums.rs` 的**名称约定**决定。若那条约定改名/改形，
+/// 为什么要有这一条：识别用的名字表住在 `crates/yeban-model/src/drums.rs`
+/// （T-FIX-846 自引擎下移），"哪台设备会被引擎当成鼓机"完全由那张表的
+/// **名称约定**决定。若那条约定改名/改形，
 /// 判据 ① 会**继续绿**（它只断言两次 `Op` 被接受）却已经不再构造"鼓机形状"的设备
 /// ⇒ 本判据就是那道防线：名字表**从源码读**，⛔ 不在这里另抄一份。
 ///
 /// 读不到 `fn note_slot` / 它的 match 臂时**响亮失败**（⛔ 不静默 SKIP）。
 #[test]
-fn the_five_key_names_are_exactly_the_engines_drum_recognition_names() {
+fn the_five_key_names_are_exactly_the_models_drum_recognition_names() {
     let path = repo_root()
         .join("crates")
-        .join("yeban-engine")
+        .join("yeban-model")
         .join("src")
         .join("drums.rs");
     let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("读取引擎源码 {} 失败: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("读取模型侧识别表源码 {} 失败: {error}", path.display()));
 
     let recognised = drum_names_in_note_slot(&source);
     let fixture: BTreeSet<&str> = DRUM_KEY_PARAMS.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         recognised, fixture,
-        "引擎 `drums.rs::note_slot` 认的键位名与判据 ① 的设备夹具不一致 —— \
-         要么夹具跟着改，要么引擎的识别约定真的变了（那是 needs-1 要落地的东西）"
+        "模型侧 `drums.rs::note_slot` 认的键位名与判据 ① 的设备夹具不一致 —— \
+         要么夹具跟着改，要么模型侧的识别约定真的变了（那是 needs-1 要落地的东西）"
     );
 }
 
-/// 从 `crates/yeban-engine/src/drums.rs` 的 `fn note_slot` 函数体里抽出全部字符串字面量。
+/// 从 `crates/yeban-model/src/drums.rs` 的 `fn note_slot` 函数体里抽出全部字符串字面量。
 ///
 /// ⚠ 这**不是**通用 Rust 解析器：它只吃"函数体是一串 `"name" => …` match 臂"这一种
 /// 今天真实存在的形状。形状一变（例如改成查表）就**响亮 panic**，逼作者显式更新 ——
@@ -322,7 +323,7 @@ fn the_five_key_names_are_exactly_the_engines_drum_recognition_names() {
 fn drum_names_in_note_slot(source: &str) -> BTreeSet<&str> {
     let signature = "fn note_slot(name: &str) -> Option<usize> {";
     let start = source.find(signature).unwrap_or_else(|| {
-        panic!("引擎源码里找不到 `{signature}` —— 识别约定已经改形，请显式更新本判据")
+        panic!("模型侧源码里找不到 `{signature}` —— 识别约定已经改形，请显式更新本判据")
     });
     let body = &source[start..];
     let end = body.find("\n}").unwrap_or_else(|| {
