@@ -197,7 +197,7 @@ export component AudioSettingsDialog inherits Rectangle {
                 border-radius: Tokens.radius-md;
                 border-width: 1px;
                 border-color: root.expanded == 1 ? Tokens.gold : Tokens.line-strong;
-                accessible-role: button;
+                accessible-role: combobox;
                 accessible-id: "audio-output-selector";
                 accessible-label: @tr("输出设备选择");
                 accessible-action-default => { root.expanded = root.expanded == 1 ? 0 : 1; }
@@ -270,7 +270,7 @@ export component AudioSettingsDialog inherits Rectangle {
                 border-radius: Tokens.radius-md;
                 border-width: 1px;
                 border-color: root.expanded == 2 ? Tokens.gold : Tokens.line-strong;
-                accessible-role: button;
+                accessible-role: combobox;
                 accessible-id: "audio-input-selector";
                 accessible-label: @tr("输入设备选择");
                 accessible-action-default => { root.expanded = root.expanded == 2 ? 0 : 2; }

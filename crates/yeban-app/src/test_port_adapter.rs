@@ -699,6 +699,94 @@ fn every_registry_role_is_a_slint_accessible_role() {
     );
 }
 
+/// 递归收集 `ui/` 下全部 `.slint` 源码（与 `elements.rs` 的扫描根同口径）。
+fn collect_slint_sources(dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_slint_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "slint")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            out.push(text);
+        }
+    }
+}
+
+/// 在一段 `.slint` 源里找某个语义 id 的 `accessible-role` 字面值。
+/// 两种形态都认：`accessible-id: "<id>"` 与共享控件转发的 `a11y-id: "<id>"`。
+/// ⛔ 不做"找到 id 就跳过"的静默放行：找不到返回 `None`，由调用方响亮失败。
+fn slint_role_for_id_in(source: &str, id: &str) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let direct = format!("accessible-id: \"{id}\"");
+    let forwarded = format!("a11y-id: \"{id}\"");
+    for (index, line) in lines.iter().enumerate() {
+        if !line.contains(&direct) && !line.contains(&forwarded) {
+            continue;
+        }
+        // 同一行或相邻数行内找 `accessible-role:`（布局里 role 常在 id 的上一行）。
+        for probe in &lines[index.saturating_sub(6)..(index + 7).min(lines.len())] {
+            let Some((_, rest)) = probe.split_once("accessible-role:") else {
+                continue;
+            };
+            let role = rest.trim().trim_end_matches(';').trim().to_owned();
+            if !role.is_empty() && role.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                return Some(role);
+            }
+        }
+    }
+    None
+}
+
+/// 判据 3b: `.slint` 源的 `accessible-role` 必须与注册表登记**交叉一致**。
+///
+/// 判据 1/3 的两侧都来自注册表（注册表 → 由注册表构造的静态树 / role 字符串合法性），
+/// 抓不到"`.slint` 源写 button、注册表写 combobox"这类漂移：屏幕阅读器按源 role 播报，
+/// 用户不知道选择器会展开。本判据直接读源码，并带合成变异红对照。
+#[test]
+fn slint_source_roles_match_the_registry_for_device_selectors() {
+    let registry = demo_registry();
+    let ui = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let mut sources = Vec::new();
+    collect_slint_sources(&ui, &mut sources);
+    assert!(!sources.is_empty(), "ui/ 下没有 .slint 源码");
+
+    for id in ["audio-output-selector", "audio-input-selector"] {
+        let meta = registry
+            .iter()
+            .find(|meta| meta.id == id)
+            .unwrap_or_else(|| panic!("注册表缺条目 `{id}`"));
+        let expected = meta.kind.accessible_role();
+        let found = sources
+            .iter()
+            .find_map(|source| slint_role_for_id_in(source, id));
+        assert_eq!(
+            found.as_deref(),
+            Some(expected),
+            "`{id}` 的 .slint 源 role 与注册表登记不一致（应为 `{expected}`）"
+        );
+    }
+
+    // 红对照：故意写错 role 必须被检出；改成一致后必须放行。两种 id 形态都过一遍。
+    let wrong_direct =
+        "Text {\n accessible-id: \"audio-input-selector\";\n accessible-role: button;\n}";
+    assert_eq!(
+        slint_role_for_id_in(wrong_direct, "audio-input-selector").as_deref(),
+        Some("button"),
+        "合成变异必须能被检出"
+    );
+    let right_forwarded =
+        "Text {\n a11y-id: \"audio-output-selector\";\n accessible-role: combobox;\n}";
+    assert_eq!(
+        slint_role_for_id_in(right_forwarded, "audio-output-selector").as_deref(),
+        Some("combobox"),
+        "a11y-id 转发形态必须被认出"
+    );
+}
+
 /// 判据 4: 静态树**没有几何**，因此 `[UI-MCP-002]` 的遮罩在它上面必须**显式报错**，
 /// 而不是"遮 0 个矩形"然后静默通过。
 ///
