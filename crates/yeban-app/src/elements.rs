@@ -329,6 +329,137 @@ impl ElementRegistry {
             "走带 TEMPO 读数",
             false,
         );
+        // ⭐ T-FIX-433：批 1 的 18 个 transport_bar 键（与 LOOP 同款三件套）。
+        // .slint 侧已补 accessible-role + accessible-id + accessible-label +
+        // accessible-action-default；这里登记 id 供
+        // `slint_accessible_ids_and_registry_cover_each_other` 对账（方向 2）。
+        // 标签取静态概括（动态 label 如 touch_tips 的两态并成一条，LOOP 同款）。
+        registry.add(
+            "transport-inspector-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "检查器与音色库 [I]",
+            false,
+        );
+        registry.add(
+            "transport-clip-matrix-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "Clip 激发矩阵",
+            false,
+        );
+        registry.add(
+            "transport-lower-dock-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "统一底栏 (混音控制台/钢琴卷帘) [P / X]",
+            false,
+        );
+        registry.add(
+            "transport-control-room-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "监听控制室与响度计 [F4]",
+            false,
+        );
+        registry.add(
+            "transport-tool-pointer-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "指针选区工具: 选择与移动 [1]",
+            false,
+        );
+        registry.add(
+            "transport-tool-range-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "力度 / 范围工具 [4]",
+            false,
+        );
+        registry.add(
+            "transport-tool-split-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "剃刀切分工具 [3]",
+            false,
+        );
+        registry.add(
+            "transport-tool-draw-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "画笔工具: 绘制音符与自动化 [2 / B]",
+            false,
+        );
+        registry.add(
+            "transport-bpm-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "工程主速度: 点击循环切换 (124/128/140 BPM)",
+            false,
+        );
+        registry.add(
+            "transport-scale-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "全局工程调式: 点击循环切换",
+            false,
+        );
+        registry.add(
+            "transport-buffer-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)",
+            false,
+        );
+        registry.add(
+            "transport-persona-default-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "默认工作区",
+            false,
+        );
+        registry.add(
+            "transport-persona-live-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "现场演出模式 (Clip 流)",
+            false,
+        );
+        registry.add(
+            "transport-persona-arrange-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "线性编曲模式 (时间轴流)",
+            false,
+        );
+        registry.add(
+            "transport-persona-mix-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "混音母带模式 (混音控制台流)",
+            false,
+        );
+        registry.add(
+            "transport-command-palette-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "快捷命令面板",
+            false,
+        );
+        registry.add(
+            "transport-hotspots-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "架构透视与热区诊断 [H]",
+            false,
+        );
+        registry.add(
+            "transport-tooltips-toggle-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "悬浮提示: 已开启 / 已关闭 (点击切换) [T]",
+            false,
+        );
         registry.add_known_absent(
             "transport-branch-button",
             ElementKind::Combobox,
@@ -6563,7 +6694,7 @@ mod tests {
     ///
     /// 键的口径：`{文件} :: {点击所在元素块首行} :: {空白归一化后的点击落点}`。块首行按
     /// `enclosing_element_header` 取（点击所在行的上一级 `{` 行）；单行 TouchArea 里
-    /// 块首会落到父元素上，但三元组在本树实测唯一（107 条无重键）。
+    /// 块首会落到父元素上，但三元组在本树实测唯一（89 条无重键；已含 T-FIX-845 的 automation-lane 项）。
     ///
     /// 注入证明（破坏 ⇒ 红）：删掉 LOOP 的 `accessible-role`（T-FIX-173 补丁 revert）
     /// ⇒ `transport_bar.slint :: btn_loop_touch := TouchArea { :: root.toggle-loop();` 落进
@@ -6916,6 +7047,7 @@ mod tests {
 
     /// [`every_clickable_control_is_either_role_bound_or_a_known_exception`] 的期望集合
     /// （T-FIX-180 在当前尖端盘点的存量 105 条 + T-FIX-293 新增 2 条搜索框清空 ×；
+    /// T-FIX-433 批 1 修掉 transport_bar.slint 18 条，现 88 条；
     /// 键口径见该判据文档）。
     ///
     /// 已排序。处置分两类 —— (a) 真实可点控件，role 尚未补（绝大多数）：后续按 LOOP
@@ -6934,7 +7066,6 @@ mod tests {
     /// | `control_room.slint` | 6 | 复位、监听 A/B、Dim、Mono、Side |
     /// | `left_panel.slint` | 17 | 面板折叠、inspector/browser 标签、乐器菜单开关、normalize、总线条开关、乐器菜单 × 关闭、乐器选项、空乐器区、focus-devices、EQ 快捷、清空搜索、4 个 tag 筛选、load-item |
     /// | `modals.slint` | 4 | ESC 按钮、命令项、关闭热点、toast 收起 |
-    /// | `transport_bar.slint` | 18 | 4 个区域开关、4 个工具选择、BPM/调式/缓冲循环器、4 个人格选择、命令面板、热点开关、提示开关 |
     /// | `app.slint`（横幅） | 1 | engine-error 横幅 × 收起 |
     /// | `arrangement.slint` | 20 | 本地菜单开关、和弦轨开关、add-track ×5（含 drop_zone）、缩放 H−/H+/V−/V+、和弦试听 ×5、菜单遮罩 ×1、菜单项 ×2、自动化泳道单击 ×1（T-FIX-845，坐标型指针面） |
     /// | `lower_dock.slint` | 20 | 乐器菜单、EQ/混响插入、量化、空位添加 ×4、bypass、删除、设备参数 ×2、swap、轨道选择、插入菜单、mute、solo、add track、菜单遮罩 ×1、菜单选项 ×1 |
@@ -6944,7 +7075,7 @@ mod tests {
     /// | `dialogs/preset_library.slint` | 1 | 预设行点击 |
     /// | `dialogs/startup_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
     /// | `dialogs/template_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
-    const KNOWN_ROLELESS_CLICKABLES: [&str; 107] = [
+    const KNOWN_ROLELESS_CLICKABLES: [&str; 89] = [
         "app.slint :: Rectangle { :: root.engine-error = \"\";",
         "app.slint :: TouchArea { :: root.ai-drawer-open = false; root.musical-pr-open = true;",
         "app.slint :: TouchArea { :: root.toggle-ai-drawer();",
@@ -7044,24 +7175,6 @@ mod tests {
         "modals.slint :: close_hotspot_touch := TouchArea { :: root.close-overlay();",
         "modals.slint :: cmd_touch := TouchArea { :: root.execute-command(cmd.id); root.close-modal();",
         "modals.slint :: esc_touch := TouchArea { :: root.close-modal();",
-        "transport_bar.slint :: bpm_touch := TouchArea { :: let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124); root.change-bpm(next-bpm);",
-        "transport_bar.slint :: buf_touch := TouchArea { :: if (root.buffer-samples == 64) { root.hot-swap-buffer(128); } else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); } else if (root.buffer-samples == 512) { root.hot-swap-buffer(2048); } else { root.hot-swap-buffer(64); }",
-        "transport_bar.slint :: scale_touch := TouchArea { :: let next-scale = root.scale-text == \"C Minor (自然小调)\" ? \"D Dorian (多利亚)\" : (root.scale-text == \"D Dorian (多利亚)\" ? \"F Major (大调)\" : \"C Minor (自然小调)\"); root.change-scale(next-scale);",
-        "transport_bar.slint :: touch_clip := TouchArea { :: root.toggle-zone(\"clipmatrix\");",
-        "transport_bar.slint :: touch_cmd := TouchArea { :: root.open-cmd-palette();",
-        "transport_bar.slint :: touch_dock := TouchArea { :: root.toggle-zone(\"lower\");",
-        "transport_bar.slint :: touch_drw := TouchArea { :: root.select-tool(\"draw\");",
-        "transport_bar.slint :: touch_insp := TouchArea { :: root.toggle-zone(\"browser\");",
-        "transport_bar.slint :: touch_p_cu := TouchArea { :: root.select-persona(PersonaMode.CubasePro);",
-        "transport_bar.slint :: touch_p_def := TouchArea { :: root.select-persona(PersonaMode.YebanDefault);",
-        "transport_bar.slint :: touch_p_live := TouchArea { :: root.select-persona(PersonaMode.AbletonLive);",
-        "transport_bar.slint :: touch_p_log := TouchArea { :: root.select-persona(PersonaMode.LogicPro);",
-        "transport_bar.slint :: touch_ptr := TouchArea { :: root.select-tool(\"pointer\");",
-        "transport_bar.slint :: touch_rng := TouchArea { :: root.select-tool(\"range\");",
-        "transport_bar.slint :: touch_room := TouchArea { :: root.toggle-zone(\"right\");",
-        "transport_bar.slint :: touch_splt := TouchArea { :: root.select-tool(\"split\");",
-        "transport_bar.slint :: touch_spot := TouchArea { :: root.toggle-hotspots();",
-        "transport_bar.slint :: touch_tips := TouchArea { :: Theme.show-tooltips = !Theme.show-tooltips;",
     ];
 
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。

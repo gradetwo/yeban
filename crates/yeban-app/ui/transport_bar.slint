@@ -743,6 +743,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 1. 检查器 [I]
                     Rectangle {
+                        // T-FIX-433：touch_insp 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-inspector-button";
+                        accessible-label: @tr("检查器与音色库 [I]");
+                        accessible-action-default => { root.toggle-zone("browser"); }
                         width: 28px;
                         height: 24px;
                         background: root.show-browser ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -763,6 +768,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 2. Clip 矩阵
                     Rectangle {
+                        // T-FIX-433：touch_clip 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-clip-matrix-button";
+                        accessible-label: @tr("Clip 激发矩阵");
+                        accessible-action-default => { root.toggle-zone("clipmatrix"); }
                         width: 28px;
                         height: 24px;
                         background: root.show-clipmatrix ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -783,6 +793,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 3. 底栏 [P/X]
                     Rectangle {
+                        // T-FIX-433：touch_dock 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-lower-dock-button";
+                        accessible-label: @tr("统一底栏 (混音控制台/钢琴卷帘) [P / X]");
+                        accessible-action-default => { root.toggle-zone("lower"); }
                         width: 28px;
                         height: 24px;
                         background: root.show-lower-dock ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -803,6 +818,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 4. 监听室 [F4]
                     Rectangle {
+                        // T-FIX-433：touch_room 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-control-room-button";
+                        accessible-label: @tr("监听控制室与响度计 [F4]");
+                        accessible-action-default => { root.toggle-zone("right"); }
                         width: 28px;
                         height: 24px;
                         background: root.show-control-room ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -839,6 +859,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 选区 [1]
                     Rectangle {
+                        // T-FIX-433：touch_ptr 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-tool-pointer-button";
+                        accessible-label: @tr("指针选区工具: 选择与移动 [1]");
+                        accessible-action-default => { root.select-tool("pointer"); }
                         width: 28px;
                         height: 24px;
                         background: root.active-tool == "pointer" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -858,6 +883,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 范围 [2]
                     Rectangle {
+                        // T-FIX-433：touch_rng 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-tool-range-button";
+                        accessible-label: @tr("力度 / 范围工具 [4]");
+                        accessible-action-default => { root.select-tool("range"); }
                         width: 28px;
                         height: 24px;
                         background: root.active-tool == "range" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -877,6 +907,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 切分 [3]
                     Rectangle {
+                        // T-FIX-433：touch_splt 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-tool-split-button";
+                        accessible-label: @tr("剃刀切分工具 [3]");
+                        accessible-action-default => { root.select-tool("split"); }
                         width: 28px;
                         height: 24px;
                         background: root.active-tool == "split" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -896,6 +931,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 画笔 [2 / B]
                     Rectangle {
+                        // T-FIX-433：touch_drw 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-tool-draw-button";
+                        accessible-label: @tr("画笔工具: 绘制音符与自动化 [2 / B]");
+                        accessible-action-default => { root.select-tool("draw"); }
                         width: 28px;
                         height: 24px;
                         background: root.active-tool == "draw" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -1265,6 +1305,14 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // BPM
                     Rectangle {
+                        // T-FIX-433：bpm_touch 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-bpm-button";
+                        accessible-label: @tr("工程主速度: 点击循环切换 (124/128/140 BPM)");
+                        accessible-action-default => {
+                            let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124);
+                            root.change-bpm(next-bpm);
+                        }
                         height: 24px;
                         VerticalLayout {
                             alignment: center;
@@ -1306,6 +1354,14 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // Global Scale Key
                     Rectangle {
+                        // T-FIX-433：scale_touch 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-scale-button";
+                        accessible-label: @tr("全局工程调式: 点击循环切换");
+                        accessible-action-default => {
+                            let next-scale = root.scale-text == "C Minor (自然小调)" ? "D Dorian (多利亚)" : (root.scale-text == "D Dorian (多利亚)" ? "F Major (大调)" : "C Minor (自然小调)");
+                            root.change-scale(next-scale);
+                        }
                         // F2：溢出档离场，读数与循环切换动作收进 ⋯ 弹出层（见右岛 Group F0）。
                         visible: !root.overflow;
                         height: 24px;
@@ -1595,6 +1651,16 @@ export component TransportHeaderBar inherits Rectangle {
             // 显式宽度：此前靠内容撑开、挂在 alignment:end 右岛里会被挤到只露出
             // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
+                // T-FIX-433：buf_touch 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                accessible-role: button;
+                accessible-id: "transport-buffer-button";
+                accessible-label: @tr("音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)");
+                accessible-action-default => {
+                    if (root.buffer-samples == 64) { root.hot-swap-buffer(128); }
+                    else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); }
+                    else if (root.buffer-samples == 512) { root.hot-swap-buffer(2048); }
+                    else { root.hot-swap-buffer(64); }
+                }
                 // F2：溢出档离场，读数与热切换动作收进 ⋯ 弹出层（见 Group F0）。
                 visible: !root.overflow;
                 width: 128px;
@@ -1708,6 +1774,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 1. 默认全景 (Default Production)
                     Rectangle {
+                        // T-FIX-433：touch_p_def 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-persona-default-button";
+                        accessible-label: @tr("默认工作区");
+                        accessible-action-default => { root.select-persona(PersonaMode.YebanDefault); }
                         width: 28px;
                         height: 24px;
                         background: Theme.persona == PersonaMode.YebanDefault ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -1727,6 +1798,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 2. 现场演出 (Clip Matrix Performance Flow)
                     Rectangle {
+                        // T-FIX-433：touch_p_live 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-persona-live-button";
+                        accessible-label: @tr("现场演出模式 (Clip 流)");
+                        accessible-action-default => { root.select-persona(PersonaMode.AbletonLive); }
                         width: 28px;
                         height: 24px;
                         background: Theme.persona == PersonaMode.AbletonLive ? Tokens.bg-shell : transparent;
@@ -1746,6 +1822,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 3. 线性编曲 (Arrange Flow)
                     Rectangle {
+                        // T-FIX-433：touch_p_log 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-persona-arrange-button";
+                        accessible-label: @tr("线性编曲模式 (时间轴流)");
+                        accessible-action-default => { root.select-persona(PersonaMode.LogicPro); }
                         width: 28px;
                         height: 24px;
                         background: Theme.persona == PersonaMode.LogicPro ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
@@ -1765,6 +1846,11 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 4. 混音控制台 (Mix & Master)
                     Rectangle {
+                        // T-FIX-433：touch_p_cu 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                        accessible-role: button;
+                        accessible-id: "transport-persona-mix-button";
+                        accessible-label: @tr("混音母带模式 (混音控制台流)");
+                        accessible-action-default => { root.select-persona(PersonaMode.CubasePro); }
                         width: 28px;
                         height: 24px;
                         background: Theme.persona == PersonaMode.CubasePro ? Tokens.bg-shell : transparent;
@@ -1786,6 +1872,11 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group I: Command palette button
             Rectangle {
+                // T-FIX-433：touch_cmd 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                accessible-role: button;
+                accessible-id: "transport-command-palette-button";
+                accessible-label: @tr("快捷命令面板");
+                accessible-action-default => { root.open-cmd-palette(); }
                 // F1 第三优先收起：窄档离场（Ctrl+K 键路照旧可用）。
                 visible: !root.hide-cmd;
                 width: 52px;
@@ -1813,6 +1904,11 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group J: Architecture insights toggle
             Rectangle {
+                // T-FIX-433：touch_spot 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                accessible-role: button;
+                accessible-id: "transport-hotspots-button";
+                accessible-label: @tr("架构透视与热区诊断 [H]");
+                accessible-action-default => { root.toggle-hotspots(); }
                 width: 28px;
                 height: 28px;
                 background: Theme.status-warn.with-alpha(0.18);
@@ -1832,6 +1928,13 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group K: Hover tooltips toggle switch (TIPS [T])
             Rectangle {
+                // T-FIX-433：touch_tips 是真实可点控件，补无障碍三件套（与 LOOP 同款）。
+                accessible-role: button;
+                accessible-id: "transport-tooltips-toggle-button";
+                accessible-label: Theme.show-tooltips
+                    ? @tr("悬浮提示: 已开启 (点击关闭) [T]")
+                    : @tr("悬浮提示: 已关闭 (点击开启) [T]");
+                accessible-action-default => { Theme.show-tooltips = !Theme.show-tooltips; }
                 // F1 第二优先收起：窄档离场（[T] 键路照旧可用）。
                 visible: !root.hide-tips;
                 width: 30px;
