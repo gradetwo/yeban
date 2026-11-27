@@ -219,6 +219,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("时值抖动量（tick）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: pt 译文 38 > 160px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             humanize-time-input := ImeAwareTextInput {
@@ -248,6 +250,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("力度抖动量（±n）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: pt 译文 39 > 160px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             humanize-velocity-input := ImeAwareTextInput {
@@ -277,6 +281,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("基础种子（缺省工程种子）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: es 译文 51 > 160px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             humanize-seed-input := ImeAwareTextInput {
@@ -440,6 +446,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("网格修饰");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: es 译文 19 > 84px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             Rectangle {
@@ -485,6 +493,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("摇摆（0–100%）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: de 译文 15 > 76px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             quantize-swing-input := ImeAwareTextInput {
@@ -514,6 +524,8 @@ export component HumanizeDialog inherits Rectangle {
                 text: @tr("强度（0–100%）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: pt 译文 20 > 100px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             quantize-strength-input := ImeAwareTextInput {

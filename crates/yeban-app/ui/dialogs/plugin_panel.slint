@@ -178,6 +178,8 @@ export component PluginPanelDialog inherits Rectangle {
             text: @tr("设备机架内");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+            // T-FIX-950: es 译文 26 > 100px/10px 容量；elide 只改绘制，不改 text/label/value。
+            overflow: elide;
             horizontal-alignment: right;
             vertical-alignment: center;
         }

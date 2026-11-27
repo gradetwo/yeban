@@ -148,6 +148,8 @@ export component PhaseAlignDialog inherits Rectangle {
                         text: @tr("基准轨");
                         width: 54px;
                         font-size: Tokens.font-size-sm;
+                        // T-FIX-950: es 译文 19 > 54px/11px 容量；elide 只改绘制，不改 text/label/value。
+                        overflow: elide;
                         color: Tokens.ink-1;
                     }
                     Field {
@@ -172,6 +174,8 @@ export component PhaseAlignDialog inherits Rectangle {
                         text: @tr("目标轨");
                         width: 54px;
                         font-size: Tokens.font-size-sm;
+                        // T-FIX-950: ru 译文 15 > 54px/11px 容量；elide 只改绘制，不改 text/label/value。
+                        overflow: elide;
                         color: Tokens.ink-1;
                     }
                     Field {

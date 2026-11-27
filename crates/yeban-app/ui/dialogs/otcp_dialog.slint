@@ -168,6 +168,8 @@ export component OtcpDialog inherits Rectangle {
                         text: @tr("任务号");
                         width: 62px;
                         font-size: Tokens.font-size-sm;
+                        // T-FIX-950: pt 译文 12 > 62px/11px 容量；elide 只改绘制，不改 text/label/value。
+                        overflow: elide;
                         color: Tokens.ink-1;
                     }
                     Field {

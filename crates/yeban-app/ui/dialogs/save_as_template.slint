@@ -194,6 +194,8 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 text: @tr("曲风（一级分类）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: pt 译文 36 > 160px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             template-style-input := ImeAwareTextInput {
@@ -228,6 +230,8 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 text: @tr("子曲风（二级分类）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: fr 译文 41 > 160px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             template-substyle-input := ImeAwareTextInput {

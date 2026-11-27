@@ -436,6 +436,8 @@ export component StartupChooserDialog inherits Rectangle {
                     text: @tr("详情");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-md;
+                    // T-FIX-950: ru 译文 11 > 60px/12px 容量；elide 只改绘制，不改 text/label/value。
+                    overflow: elide;
                     vertical-alignment: center;
                 }
 
@@ -572,6 +574,8 @@ export component StartupChooserDialog inherits Rectangle {
                     text: @tr("调号");
                     color: Tokens.ink-2;
                     font-size: Tokens.font-size-sm;
+                    // T-FIX-950: pt 译文 17 > 64px/11px 容量；elide 只改绘制，不改 text/label/value。
+                    overflow: elide;
                     vertical-alignment: center;
                 }
 
@@ -661,6 +665,8 @@ export component StartupChooserDialog inherits Rectangle {
                     text: @tr("拍号");
                     color: Tokens.ink-2;
                     font-size: Tokens.font-size-sm;
+                    // T-FIX-950: fr 译文 19 > 64px/11px 容量；elide 只改绘制，不改 text/label/value。
+                    overflow: elide;
                     vertical-alignment: center;
                 }
 
@@ -837,6 +843,8 @@ export component StartupChooserDialog inherits Rectangle {
                     text: @tr("采样率");
                     color: Tokens.ink-2;
                     font-size: Tokens.font-size-sm;
+                    // T-FIX-950: fr 译文 27 > 64px/11px 容量；elide 只改绘制，不改 text/label/value。
+                    overflow: elide;
                     vertical-alignment: center;
                 }
 

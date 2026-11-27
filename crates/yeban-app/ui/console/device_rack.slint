@@ -1917,6 +1917,8 @@ export component DeviceRack inherits Rectangle {
         text: @tr("无设备（点上方「装 EQ」或「装混响」）");
         color: Tokens.ink-2;
         font-size: Tokens.font-size-sm;
+        // T-FIX-950: fr 译文 89 显示宽度 > 420px/11px 容量；elide 只改绘制，不改 text/label/value。
+        overflow: elide;
         visible: root.device-names.length == 0;
         accessible-role: text;
         accessible-id: "device-rack-empty";
@@ -2083,6 +2085,8 @@ export component DeviceRack inherits Rectangle {
             text: @tr("还有 {} 台设备未显示", root.master-device-names.length - root.master-visible-card-count);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+            // T-FIX-950: de 译文 33 > 144px/10px 容量；elide 只改绘制，不改 text/label/value。
+            overflow: elide;
             accessible-role: text;
             accessible-id: "master-device-truncation-note";
             accessible-label: @tr("还有 {} 台设备未显示", root.master-device-names.length - root.master-visible-card-count);

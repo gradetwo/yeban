@@ -413,6 +413,8 @@ export component ExportWavDialog inherits Rectangle {
                 text: @tr("采样率 Hz（auto = 跟随工程）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: fr 译文 59 > 200px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             export-wav-sample-rate-input := ImeAwareTextInput {
@@ -486,6 +488,8 @@ export component ExportWavDialog inherits Rectangle {
                 text: @tr("时长 秒（缺省 = 全曲末端）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
+                // T-FIX-950: es 译文 59 > 200px/10px 容量；elide 只改绘制，不改 text/label/value。
+                overflow: elide;
             }
 
             export-wav-seconds-input := ImeAwareTextInput {
