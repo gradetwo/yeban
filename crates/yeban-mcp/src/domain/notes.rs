@@ -1413,6 +1413,8 @@ pub const TRACK_FLAG_FIELDS: [&str; 3] = ["kind", TRACK_FLAG_VALUE_FIELD, TRACK_
 /// ⭐ 故这里用 `&[&str]`（`&[T]` 的 impl 没有长度上限）⇒ 加 kind 时⛔ 不会撞墙。
 pub const OP_KINDS: &[&str] = &[
     "add",
+    ADD_CHORD_KIND,
+    ADD_NOTES_KIND,
     "delete",
     "move",
     "velocity",
@@ -1482,11 +1484,13 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 60 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 62 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     "add",
+    ADD_CHORD_KIND,
+    ADD_NOTES_KIND,
     "delete",
     "move",
     "velocity",
@@ -1513,8 +1517,9 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// （整片段移调**逐条读音符**，只是把点名换成枚举）⇒ 九个；整片段编辑形态
 /// （`quantizeClip` / `invertClip` / `retrogradeClip` / `humanizeClip`）⇒
 /// 十三个；人性化 ROI 线加上 `velocityShapeClip` / `chordStaggerClip`
-/// （整片段力度塑形与和弦错开，同样逐条读音符）⇒ 现在是**十五个**，也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的十五个。其余形态
+/// （整片段力度塑形与和弦错开，同样逐条读音符）⇒ 十五个；批量加音线加上
+/// `addChord` / `addNotes`（一次写多音，同样逐条写音符）⇒ 现在是**十七个**，也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的十七个。其余形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 /// ⚠ 这里⛔ 不写"其余 N 个"：那个数在本票之前就已经与 `47 − 8` 不符（写的是 33），
@@ -1522,15 +1527,17 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 九个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 十七个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 59 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 62 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
     "add",
+    ADD_CHORD_KIND,
+    ADD_NOTES_KIND,
     "delete",
     "move",
     "velocity",
@@ -2684,6 +2691,23 @@ pub const VELOCITY_SHAPE_CLIP_FIELDS: [&str; 9] = [
     VELOCITY_SHAPE_CLIP_JITTER_FIELD,
 ];
 
+/// `ops[].kind` 的**和弦**形态名（一次写一个和弦：同组音符共享起点，
+/// 展开成 per-note 的 `add`，只写音符内容）。
+pub const ADD_CHORD_KIND: &str = "addChord";
+/// `ops[].kind` 的**批量音符**形态名（一次写一批音符：各音起点独立，
+/// 展开成 per-note 的 `add`，只写音符内容）。
+pub const ADD_NOTES_KIND: &str = "addNotes";
+/// `addChord` / `addNotes` 的**音符数组**字段名（必填；每个元素都是
+/// `parse_note` 的完整音符形状）。
+pub const ADD_CHORD_NOTES_FIELD: &str = "notes";
+/// `addNotes` 的**音符数组**字段名（与 [`ADD_CHORD_NOTES_FIELD`] 同词：
+/// 同一个词必须同一个意思 —— 被批量写入的那批音符）。
+pub const ADD_NOTES_NOTES_FIELD: &str = ADD_CHORD_NOTES_FIELD;
+/// `addChord` 允许出现的全部键。
+pub const ADD_CHORD_FIELDS: [&str; 2] = ["kind", ADD_CHORD_NOTES_FIELD];
+/// `addNotes` 允许出现的全部键。
+pub const ADD_NOTES_FIELDS: [&str; 2] = ["kind", ADD_NOTES_NOTES_FIELD];
+
 /// `ops[].kind` 的**整片段和弦错开**形态名（同 `start_tick` 的和弦组内各音按
 /// 方向依次延迟；展开成 per-note 的 `setNoteExpression`，只写微时值）。
 pub const CHORD_STAGGER_CLIP_KIND: &str = "chordStaggerClip";
@@ -3479,6 +3503,30 @@ pub enum NoteOp {
     Add {
         /// 完整音符。
         note: Box<MidiNote>,
+    },
+    /// **一次插入一个和弦**（T-FIX-831：批量加音原语）。
+    ///
+    /// 同组音符**共享起点**：解析期逐条核对 `start_tick`，不齐 ⇒
+    /// `INVALID_PARAMETER_RANGE`（`reason = "chordStartTickMismatch"`，
+    /// `data` 点名 `opIndex` / `noteIndex` / 期望与实际起点）。
+    /// [`compile`] 在**同一批**里把它展开成 N 条 `Op::AddNote`
+    /// （N = 组内音符数），与 `add` 同一条撤销语义、同一批撤销。
+    ///
+    /// ⚠ **不是一个新的 `Op` 变体**：模型层早就有 `Op::AddNote`，缺的只是
+    /// "一次写多音"这个**批量粒度** ⇒ 展开通道与整片段形态共用
+    /// [`expand_clip_level_op`]，⛔ 第二份语义。
+    AddChord {
+        /// 同组音符（起点必须相同，见上）。
+        notes: Vec<MidiNote>,
+    },
+    /// **一次插入一批音符**（T-FIX-831：批量加音原语）。
+    ///
+    /// 各音起点独立（旋律批量录入）；与 [`Self::AddChord`] 同一条展开通道，
+    /// 只是**不**做"同组起点相同"那条校验。空数组 ⇒ 解析期响亮拒绝
+    /// （`reason = "emptyNoteBatch"`）。
+    AddNotes {
+        /// 本批音符（起点各自独立）。
+        notes: Vec<MidiNote>,
     },
     /// 删除音符。
     Delete {
@@ -4620,6 +4668,8 @@ impl NoteOp {
     pub const fn kind_name(&self) -> &'static str {
         match self {
             Self::Add { .. } => "add",
+            Self::AddChord { .. } => ADD_CHORD_KIND,
+            Self::AddNotes { .. } => ADD_NOTES_KIND,
             Self::Delete { .. } => "delete",
             Self::Move { .. } => "move",
             Self::TransposeClip { .. } => TRANSPOSE_CLIP_KIND,
@@ -4708,6 +4758,8 @@ impl NoteOp {
         matches!(
             self,
             Self::Add { .. }
+                | Self::AddChord { .. }
+                | Self::AddNotes { .. }
                 | Self::Delete { .. }
                 | Self::Move { .. }
                 | Self::Velocity { .. }
@@ -4900,10 +4952,9 @@ impl NoteOp {
 
     /// 该形态**读**工具顶层的 `clipId`（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
     ///
-    /// 只有五个音符形态与池级取走读它 —— 它们正是 [`compile`] 里 `clip_id` 的
-    /// **全部**消费者（`Op::AddNote` / `DeleteNote` / `MoveNote` /
-    /// `ModifyNoteVelocity` / `SetNoteTiming` / `RemoveClip` 的载荷，以及"片段池里
-    /// 必须有它"那次查找）。
+    /// 只有音符形态（[`NOTE_LEVEL_KINDS`] 全集）与池级取走读它 —— 它们正是
+    /// [`compile`] 里 `clip_id` 的**全部**消费者（音符级形态的载荷与
+    /// `RemoveClip` 的载荷，以及"片段池里必须有它"那次查找）。
     /// ⚠ 与 [`Self::is_self_addressed`] **不是**同一问：音轨属性级 / 路由级 / 段落级 /
     /// 场景级 / 资产级 / 文档级形态的寻址也在操作对象里，但它们只读顶层 `trackId`
     /// （或什么都不读），**不读** `clipId`（`addTrack` 连 `trackId` 都不读）。
@@ -4921,6 +4972,8 @@ impl NoteOp {
         matches!(
             self,
             Self::Add { .. }
+                | Self::AddChord { .. }
+                | Self::AddNotes { .. }
                 | Self::Delete { .. }
                 | Self::Move { .. }
                 | Self::Velocity { .. }
@@ -5300,6 +5353,18 @@ fn parse_one(item: &Value, index: usize) -> Result<NoteOp, Fault> {
                 .ok_or_else(|| missing("note", "对象"))?;
             Ok(NoteOp::Add {
                 note: Box::new(parse_note(note)?),
+            })
+        }
+        ADD_CHORD_KIND => {
+            reject_add_chord_fields(object)?;
+            Ok(NoteOp::AddChord {
+                notes: parse_note_batch(object, ADD_CHORD_KIND, index, true)?,
+            })
+        }
+        ADD_NOTES_KIND => {
+            reject_add_notes_fields(object)?;
+            Ok(NoteOp::AddNotes {
+                notes: parse_note_batch(object, ADD_NOTES_KIND, index, false)?,
             })
         }
         "delete" => Ok(NoteOp::Delete {
@@ -6573,6 +6638,122 @@ fn reject_chord_stagger_clip_fields(object: &Map<String, Value>) -> Result<(), F
         CHORD_STAGGER_CLIP_KIND,
         "unknownChordStaggerClipField",
     )
+}
+
+/// 拒绝 `addChord` 里 [`ADD_CHORD_FIELDS`] 之外的键。
+fn reject_add_chord_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &ADD_CHORD_FIELDS,
+        ADD_CHORD_KIND,
+        "unknownAddChordField",
+    )
+}
+
+/// 拒绝 `addNotes` 里 [`ADD_NOTES_FIELDS`] 之外的键。
+fn reject_add_notes_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &ADD_NOTES_FIELDS,
+        ADD_NOTES_KIND,
+        "unknownAddNotesField",
+    )
+}
+
+/// 解析 `addChord` / `addNotes` 的 `notes` 数组（T-FIX-831）。
+///
+/// 每个元素都是 [`parse_note`] 的完整音符形状；空数组 ⇒ `emptyNoteBatch`；
+/// 同一批里两个音符的 `(startTick, pitch, durationTicks)` 完全相同 ⇒
+/// `duplicateNoteInBatch`（它们会派生出**同一个**确定性音符身份，第二个会把
+/// 第一个静默顶掉 —— 默认不能静默，解析期就响亮拒绝）。
+/// `chord == true`（`addChord`）时再核对同组起点：首音的 `start_tick` 是锚，
+/// 之后任一音起点不同 ⇒ `chordStartTickMismatch`，`data` 点名
+/// `opIndex`（第几组）/ `noteIndex` / 期望与实际起点。
+fn parse_note_batch(
+    object: &Map<String, Value>,
+    kind: &str,
+    op_index: usize,
+    chord: bool,
+) -> Result<Vec<MidiNote>, Fault> {
+    let field = if chord {
+        ADD_CHORD_NOTES_FIELD
+    } else {
+        ADD_NOTES_NOTES_FIELD
+    };
+    let array = object
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing(field, "数组"))?;
+    if array.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{kind}` 的 `{field}` 不得为空数组（空操作不是一次编辑请求）"),
+            serde_json::json!({
+                "reason": "emptyNoteBatch",
+                "kind": kind,
+                "opIndex": op_index,
+            }),
+        ));
+    }
+    let mut notes = Vec::with_capacity(array.len());
+    for (note_index, item) in array.iter().enumerate() {
+        let note_object = item.as_object().ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`{kind}` 的 `{field}[{note_index}]` 必须是对象"),
+            )
+        })?;
+        notes.push(parse_note(note_object)?);
+    }
+    // 同批里两个音符派生出同一个确定性身份 ⇒ 第二个会把第一个静默顶掉。
+    for (index, note) in notes.iter().enumerate() {
+        if notes[..index].iter().any(|other| {
+            other.start_tick == note.start_tick
+                && other.pitch == note.pitch
+                && other.duration_ticks == note.duration_ticks
+        }) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`{kind}` 的 `{field}[{index}]` 与同批另一音符的 \
+                     (startTick, pitch, durationTicks) 完全相同，会派生出同一个音符身份"
+                ),
+                serde_json::json!({
+                    "reason": "duplicateNoteInBatch",
+                    "kind": kind,
+                    "opIndex": op_index,
+                    "noteIndex": index,
+                    "startTick": note.start_tick,
+                    "pitch": note.pitch,
+                    "durationTicks": note.duration_ticks,
+                }),
+            ));
+        }
+    }
+    if chord {
+        let anchor = notes[0].start_tick;
+        for (note_index, note) in notes.iter().enumerate() {
+            if note.start_tick != anchor {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{kind}` 第 {op_index} 组（ops[{op_index}]）的起点不齐：\
+                         第 {note_index} 个音符起点 {} ≠ 同组起点 {anchor}",
+                        note.start_tick
+                    ),
+                    serde_json::json!({
+                        "reason": "chordStartTickMismatch",
+                        "kind": kind,
+                        "opIndex": op_index,
+                        "noteIndex": note_index,
+                        "chordStartTick": anchor,
+                        "startTick": note.start_tick,
+                    }),
+                ));
+            }
+        }
+    }
+    Ok(notes)
 }
 
 /// 拒绝 `duplicateClip` 里 [`DUPLICATE_CLIP_FIELDS`] 之外的键。
@@ -9944,6 +10125,19 @@ fn expand_clip_level_op(
     clip_id: &EntityId,
     op: &NoteOp,
 ) -> Result<Option<Vec<NoteOp>>, Fault> {
+    // ⭐ T-FIX-831：批量加音形态（`addChord` / `addNotes`）**自带**音符，不读片段的
+    // 音符集合 ⇒ 在"要不要查池"那道门之前就展开成 per-note 的 `add`；越界报文、
+    // 撤销载荷、投影推进全部复用 `add` 臂 —— ⛔ 第二份语义。
+    if let NoteOp::AddChord { notes } | NoteOp::AddNotes { notes } = op {
+        return Ok(Some(
+            notes
+                .iter()
+                .map(|note| NoteOp::Add {
+                    note: Box::new(note.clone()),
+                })
+                .collect(),
+        ));
+    }
     // 先判"是不是展开形态"，再取音符集合：非展开形态连池都不查。
     let needs_notes = matches!(
         op,
@@ -10550,8 +10744,8 @@ fn compile_inner(
         // `if let` 体上保留对 `queue` 的借用，下面的 `splice`（可变借用）因此编译不过。
         // 所有"整片段"形态（`transposeClip` / `quantizeClip` / `invertClip` /
         // `retrogradeClip` / `humanizeClip` / `velocityShapeClip` /
-        // `chordStaggerClip`）共用这一条展开通道：
-        // [`expand_clip_level_op`] 在**当前投影**上把形态换成音符级条目。
+        // `chordStaggerClip`）与批量加音形态（`addChord` / `addNotes`）共用这一条
+        // 展开通道：[`expand_clip_level_op`] 在**当前投影**上把形态换成音符级条目。
         if let Some(expanded) = expand_clip_level_op(&project, track_id, clip_id, &queue[index])? {
             let _ = queue.splice(index..index + 1, expanded);
             // ⛔ 不推进下标：下一次迭代编译的就是刚展开的**第一条** `move`。
@@ -10651,7 +10845,9 @@ fn compile_inner(
             | NoteOp::RetrogradeClip
             | NoteOp::HumanizeClip { .. }
             | NoteOp::VelocityShapeClip { .. }
-            | NoteOp::ChordStaggerClip { .. } => {
+            | NoteOp::ChordStaggerClip { .. }
+            | NoteOp::AddChord { .. }
+            | NoteOp::AddNotes { .. } => {
                 // ⭐ 展开路径**只**在上面的 `if let`（同一形态 ⇒ 就地换成音符级条目
                 // 并 `continue`）。本臂因此拿不到"一条 `Op`"可返回 —— 用 `continue`
                 // 而不是 `unreachable!`：⛔ 在编译路径上留一条 panic。
@@ -15481,11 +15677,25 @@ mod tests {
     #[test]
     fn note_level_is_exactly_the_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 九个音符形态：解析后 `is_note_level()` 必须为真。
+        // 十一个音符形态：解析后 `is_note_level()` 必须为真。
         let note_forms = [
             (
                 "add",
                 serde_json::json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+            ),
+            (
+                "addChord",
+                serde_json::json!({"kind": "addChord", "notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 0, "pitch": 64, "durationTicks": 480},
+                ]}),
+            ),
+            (
+                "addNotes",
+                serde_json::json!({"kind": "addNotes", "notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 480, "pitch": 64, "durationTicks": 480},
+                ]}),
             ),
             (
                 "delete",
@@ -15568,14 +15778,18 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好十三个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好十七个（⛔ 不是常量自比）。
         // 本票（整片段编辑形态）新增 quantizeClip / invertClip / retrogradeClip /
         // humanizeClip 四个音符级形态（duplicateClip 也读片段但克隆 `ClipContent`
         // 不读音符 ⇒ 不是音符级）。
+        // 本票（批量加音）新增 addChord / addNotes 两个音符级形态（一次写多音，
+        // 同样逐条写音符）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
                 "add",
+                "addChord",
+                "addNotes",
                 "delete",
                 "move",
                 "velocity",
@@ -15591,10 +15805,10 @@ mod tests {
                 "velocityShapeClip",
                 "chordStaggerClip"
             ],
-            "音符级清单必须逐字是这十五个"
+            "音符级清单必须逐字是这十七个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 15);
-        // 十五个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 17);
+        // 十七个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -17416,7 +17630,8 @@ mod tests {
         // 本票（人性化 ROI）新增 velocityShapeClip / chordStaggerClip 两个 kind 后为 58 —— 同样与真实 `kind` 同步。
         // 本票新增 `setLyrics`（顶层文档字段，整体替换歌词时间轴）后为 59 —— 同样与真实 `kind` 同步。
         // 本票新增 `setTrackTune`（音轨属性，写 `tune_offset_cents`）后为 60 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 61);
+        // 本票新增 `addChord` / `addNotes`（批量加音：一次写一个和弦 / 一批音符）后为 62 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 63);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(
             TrackFlag::NAMES,
@@ -24076,10 +24291,24 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 61] = [
+        let table: [(&str, serde_json::Value); 63] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+            ),
+            (
+                "addChord",
+                serde_json::json!({"notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 0, "pitch": 64, "durationTicks": 480},
+                ]}),
+            ),
+            (
+                "addNotes",
+                serde_json::json!({"notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 480, "pitch": 64, "durationTicks": 480},
+                ]}),
             ),
             ("delete", serde_json::json!({"noteId": ulid})),
             (
@@ -24318,6 +24547,8 @@ mod tests {
             OP_KINDS,
             [
                 "add",
+                "addChord",
+                "addNotes",
                 "delete",
                 "move",
                 "velocity",
@@ -24740,12 +24971,35 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 62] = [
+        let rows: [Row<'_>; 64] = [
             (
                 "add",
                 None,
                 None,
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+                "AddNote",
+            ),
+            // ⭐ T-FIX-831：批量加音形态 —— 一条形态产出 N 条 `AddNote`（N = `notes`
+            // 数组长度，由下面的 `expected_len` 从**载荷**读，⛔ 手抄）。变体仍是
+            // `add` 的那个 ⇒ 本行⛔ 进 `seen`（那会把"变体数"这个读数凭空抬高一位）。
+            (
+                "addChord",
+                None,
+                None,
+                serde_json::json!({"notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 0, "pitch": 64, "durationTicks": 480},
+                ]}),
+                "AddNote",
+            ),
+            (
+                "addNotes",
+                None,
+                None,
+                serde_json::json!({"notes": [
+                    {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 480, "pitch": 64, "durationTicks": 480},
+                ]}),
                 "AddNote",
             ),
             (
@@ -25260,11 +25514,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "59 个 kind ＋ 1 个额外载荷分支"
+            "62 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 59 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 62 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -25304,6 +25558,9 @@ mod tests {
             let expected_len = match kind {
                 TRANSPOSE_CLIP_KIND | RETROGRADE_CLIP_KIND => notes_len,
                 INVERT_CLIP_KIND | HUMANIZE_CLIP_KIND => notes_len * 2,
+                // ⭐ T-FIX-831：批量加音一条形态产出 N 条 `AddNote`（N = `notes`
+                // 数组长度，从**载荷**读，⛔ 手抄 —— 与上面整片段形态同口径）。
+                ADD_CHORD_KIND | ADD_NOTES_KIND => payload["notes"].as_array().map_or(0, Vec::len),
                 _ => 1,
             };
             assert!(
@@ -25379,6 +25636,8 @@ mod tests {
                     | HUMANIZE_CLIP_KIND
                     | VELOCITY_SHAPE_CLIP_KIND
                     | CHORD_STAGGER_CLIP_KIND
+                    | ADD_CHORD_KIND
+                    | ADD_NOTES_KIND
             ) {
                 // 展开⛔ 引入新变体（它们是音符级形态的产物）⇒ 不进 `seen`、也不占单射名额。
             } else {
@@ -25407,13 +25666,16 @@ mod tests {
         // （产 `ModifyNoteVelocity` / `SetNoteExpression`，已有变体）⇒ 52 不变。
         // 本票的 `setLyrics`（独占 `SetLyrics` 变体）⇒ 52 → **53**。
         // 本票的 `setTrackTune`（独占 `SetTrackTune` 变体）⇒ 53 → **54**。
-        // T-FIX-711 的 `moveDevice`（独占 `Op::MoveDevice` 变体）⇒ 54 → **55**。
+        // 本票的 `moveDevice`（独占 `MoveDevice` 变体）⇒ 54 → **55**。
+        // 本票的 `addChord` / `addNotes` 是展开形态（产 `AddNote`，已有变体）⇒ 55 不变。
         assert_eq!(seen.len(), 55);
-        // ⭐ `#179`：音符级分支集合**恰好是十五个**，且逐字等于发布清单。
+        // ⭐ `#179`：音符级分支集合**恰好是十七个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
                 "add",
+                "addChord",
+                "addNotes",
                 "delete",
                 "move",
                 "velocity",
@@ -25429,18 +25691,147 @@ mod tests {
                 "velocityShapeClip",
                 "chordStaggerClip"
             ],
-            "音符级 kind 必须恰好是十五个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是十七个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            15,
-            "全部 kind 里 `is_note_level()` 为真的必须**恰好十五个**，实际: {note_level_seen:?}"
+            17,
+            "全部 kind 里 `is_note_level()` 为真的必须**恰好十七个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,
             NOTE_LEVEL_KINDS.to_vec(),
             "逐个 kind 收集到的音符级集合必须逐项等于 NOTE_LEVEL_KINDS"
         );
+    }
+
+    /// T-FIX-831：批量加音原语（`addChord` / `addNotes`）。
+    ///
+    /// - 解析：同起点两音 ⇒ `AddChord`；不同起点两音 ⇒ `AddNotes`；同组起点不齐 ⇒
+    ///   `chordStartTickMismatch` 且 `data.opIndex` 点名第几组；空数组 ⇒
+    ///   `emptyNoteBatch`；同批完全相同的音 ⇒ `duplicateNoteInBatch`；未知键 ⇒
+    ///   `unknownAddChordField`；
+    /// - 编译：一条 `addChord` 展开成 N 条 `AddNote`（N = 组内音符数），折算 tick
+    ///   与 `add` 同口径；
+    /// - `create: true` 仍只允许 `add`（`addChord` / `addNotes` ⇒
+    ///   `createRequiresAddOps`，830 的领地，本票只钉住边界）。
+    ///
+    /// 注入（实测红）：`parse_one` 的 `ADD_CHORD_KIND` 臂删掉 ⇒ 解析判据红；
+    /// `expand_clip_level_op` 的批量展开删掉 ⇒ 编译判据红（`continue` 臂产出 0 条 op）；
+    /// `parse_note_batch` 的起点核对删掉 ⇒ 不齐判据红（本应拒绝却放行）。
+    #[test]
+    fn batch_note_primitives_parse_expand_and_reject() {
+        // —— 解析：同起点 ⇒ AddChord，不同起点 ⇒ AddNotes。
+        let chord = parse_ops(&serde_json::json!([{
+            "kind": "addChord",
+            "notes": [
+                {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                {"startTick": 0, "pitch": 64, "durationTicks": 480},
+                {"startTick": 0, "pitch": 67, "durationTicks": 480},
+            ],
+        }]))
+        .expect("addChord 必须能解析");
+        assert_eq!(chord.len(), 1);
+        assert_eq!(chord[0].kind_name(), "addChord");
+        assert!(chord[0].is_note_level());
+        assert!(chord[0].reads_envelope_clip());
+        let batch = parse_ops(&serde_json::json!([{
+            "kind": "addNotes",
+            "notes": [
+                {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                {"startTick": 480, "pitch": 62, "durationTicks": 480},
+            ],
+        }]))
+        .expect("addNotes 必须能解析");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].kind_name(), "addNotes");
+        assert!(batch[0].is_note_level());
+
+        // —— 同和弦起点不齐：响亮报错并指明哪组（`opIndex` = 1，第 2 组）。
+        let misaligned = parse_ops(&serde_json::json!([
+            {"kind": "addChord", "notes": [
+                {"startTick": 0, "pitch": 60, "durationTicks": 480},
+                {"startTick": 0, "pitch": 64, "durationTicks": 480},
+            ]},
+            {"kind": "addChord", "notes": [
+                {"startTick": 960, "pitch": 60, "durationTicks": 480},
+                {"startTick": 1440, "pitch": 64, "durationTicks": 480},
+            ]},
+        ]));
+        let value = misaligned
+            .expect_err("同组起点不齐必须响亮拒绝")
+            .into_result()
+            .expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "chordStartTickMismatch");
+        assert_eq!(value["error"]["data"]["opIndex"], 1);
+        assert_eq!(value["error"]["data"]["noteIndex"], 1);
+        assert_eq!(value["error"]["data"]["chordStartTick"], 960);
+        assert_eq!(value["error"]["data"]["startTick"], 1440);
+
+        // —— 空数组与同批重复音：同样响亮拒绝。
+        let empty = parse_ops(&serde_json::json!([{"kind": "addNotes", "notes": []}]));
+        let value = empty
+            .expect_err("空数组必须拒绝")
+            .into_result()
+            .expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "emptyNoteBatch");
+        let duplicated = parse_ops(&serde_json::json!([{"kind": "addChord", "notes": [
+            {"startTick": 0, "pitch": 60, "durationTicks": 480},
+            {"startTick": 0, "pitch": 60, "durationTicks": 480},
+        ]}]));
+        let value = duplicated
+            .expect_err("同批重复音必须拒绝")
+            .into_result()
+            .expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "duplicateNoteInBatch");
+
+        // —— 未知键：闭合形态不静默吞键。
+        let unknown = parse_ops(&serde_json::json!([{"kind": "addChord", "notes": [
+            {"startTick": 0, "pitch": 60, "durationTicks": 480},
+        ], "extra": 1}]));
+        let value = unknown
+            .expect_err("未知键必须拒绝")
+            .into_result()
+            .expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "unknownAddChordField");
+
+        // —— 编译：一条 `addChord` 展开成 3 条 `AddNote`，折算 tick 与 `add` 同口径。
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let compiled = compile(&project, &track, &clip, &chord).expect("addChord 必须能编译");
+        assert_eq!(compiled.len(), 3);
+        let ticks: Vec<u64> = compiled
+            .iter()
+            .map(|op| match op {
+                Op::AddNote { note, .. } => note.start_tick,
+                other => panic!("addChord 只能产出 AddNote，实际 {}", other.name()),
+            })
+            .collect();
+        assert_eq!(ticks, [0, 0, 0]);
+        let compiled = compile(&project, &track, &clip, &batch).expect("addNotes 必须能编译");
+        assert_eq!(compiled.len(), 2);
+        let ticks: Vec<u64> = compiled
+            .iter()
+            .map(|op| match op {
+                Op::AddNote { note, .. } => note.start_tick,
+                other => panic!("addNotes 只能产出 AddNote，实际 {}", other.name()),
+            })
+            .collect();
+        assert_eq!(ticks, [0, 480]);
+
+        // —— `create: true` 仍只允许 `add`：`addChord` 进创建批次 ⇒ 响亮拒绝。
+        let created = compile_create(
+            &project,
+            &track,
+            &EntityId::from_str("01J8ZQ00000000000000000NEW").expect("ULID"),
+            "New",
+            &chord,
+        );
+        let value = created
+            .expect_err("create + addChord 必须拒绝")
+            .into_result()
+            .expect("带内");
+        assert_eq!(value["error"]["data"]["reason"], "createRequiresAddOps");
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`

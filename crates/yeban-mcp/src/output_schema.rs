@@ -1601,6 +1601,64 @@ fn edit_notes() -> Value {
                     },
                     "additionalProperties": false
                 }
+            },
+            // T-FIX-741: 片段/摆放派生读数（只在相关调用上出现, 因此不进 required）。
+            "clip": {
+                "type": "object",
+                "required": ["clipId", "name", "kind", "noteCount", "endTick"],
+                "properties": {
+                    "clipId": {"type": "string"},
+                    "name": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["midi", "audio"]},
+                    "noteCount": {"type": "integer", "minimum": 0},
+                    "endTick": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "placement": {
+                "type": "object",
+                "required": [
+                    "trackId",
+                    "placementId",
+                    "clipId",
+                    "startTick",
+                    "durationTicks",
+                    "loop"
+                ],
+                "properties": {
+                    "trackId": {"type": "string"},
+                    "placementId": {"type": "string"},
+                    "clipId": {"type": "string"},
+                    "startTick": {"type": "integer", "minimum": 0},
+                    "durationTicks": {"type": "integer", "minimum": 0},
+                    "loop": {
+                        "type": "object",
+                        "required": ["enabled", "startTick", "endTick"],
+                        "properties": {
+                            "enabled": {"type": "boolean"},
+                            "startTick": {"type": "integer", "minimum": 0},
+                            "endTick": {"type": "integer", "minimum": 0}
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "additionalProperties": false
+            },
+            // T-FIX-831: 本次新加音符的折算 tick 回显（只在加音符的调用上出现, 因此不进 required）。
+            "addedNotes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["noteId", "pitch", "startTick", "durationTicks", "velocity"],
+                    "properties": {
+                        "noteId": {"type": "string"},
+                        "pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+                        "startTick": {"type": "integer", "minimum": 0},
+                        "durationTicks": {"type": "integer", "minimum": 1},
+                        "velocity": {"type": "integer", "minimum": 0, "maximum": 127}
+                    },
+                    "additionalProperties": false
+                }
             }
         }),
     ))

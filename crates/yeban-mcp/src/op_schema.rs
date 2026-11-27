@@ -14,7 +14,7 @@
 //!
 //! | schema 分支 | 解析器 |
 //! | :--- | :--- |
-//! | `add` / `delete` / `move` / `velocity` | `notes.rs` 的同名臂 + `parse_note` |
+//! | `add` / `addChord` / `addNotes` / `delete` / `move` / `velocity` | `notes.rs` 的同名臂 + `parse_note` |
 //! | `setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` | `parse_static_lane` / `parse_track_flag_value` |
 //! | `insertDevice` / `removeDevice` | `parse_device` / `read_id` |
 //! | `setAutomationLane` / `removeAutomationPoint` | `parse_lane_edit` / `parse_point_removal` |
@@ -46,7 +46,9 @@ use yeban_model::music::{
 use yeban_model::project::{MAX_BPM, MIN_BPM};
 
 use crate::domain::extension_pure::{CURVE_NAMES, LANE_NAMES};
-use crate::domain::notes::{DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS, TRACK_KINDS};
+use crate::domain::notes::{
+    ADD_CHORD_KIND, ADD_NOTES_KIND, DEVICE_KINDS, LANE_WRITE_MODES, OP_KINDS, TRACK_KINDS,
+};
 use crate::effect_params;
 
 /// 一个 op 分支：判别键 + 必填集 + 属性 + （可选）封闭性。
@@ -426,6 +428,30 @@ pub fn ops_items() -> Value {
                 &["kind", "note"],
                 json!({ "kind": kind("add"), "note": note_object() }),
                 false,
+            ),
+            op(
+                ADD_CHORD_KIND,
+                "一次插入一个和弦：`notes` 里各音共享起点（起点不齐 ⇒ `chordStartTickMismatch`，`data.opIndex` 点名第几组）；展开成 per-note 的 `add`，与 `add` 同一条撤销语义；操作对象上的未知键会被响亮拒绝",
+                &["kind", "notes"],
+                json!({ "kind": kind(ADD_CHORD_KIND), "notes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": note_object(),
+                    "description": "和弦内各音（与 `add` 的 `note` 同一形状；起点必须相同）",
+                } }),
+                true,
+            ),
+            op(
+                ADD_NOTES_KIND,
+                "一次插入一批音符：`notes` 里各音起点独立（旋律批量录入）；展开成 per-note 的 `add`，与 `add` 同一条撤销语义；操作对象上的未知键会被响亮拒绝",
+                &["kind", "notes"],
+                json!({ "kind": kind(ADD_NOTES_KIND), "notes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": note_object(),
+                    "description": "本批音符（与 `add` 的 `note` 同一形状；起点各自独立）",
+                } }),
+                true,
             ),
             op(
                 "delete",

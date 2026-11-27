@@ -4070,12 +4070,16 @@ fn plan_query(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// **响应的形状**，不影响提案内容：两种取值下被创建的隔离分支、op 日志与提交
 /// 逐字节相同（判据 `tests/payload_budget.rs::include_ops_only_changes_the_response_shape`）。
 /// T-FIX-741：回执要带哪一块派生读数（由 `yeban_edit_notes` 指定）。
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ReceiptRequest {
     /// 要回显的片段（创建或改音符之后）。
     clip_id: Option<EntityId>,
     /// 要回显的摆放 `(trackId, placementId)`。
     placement: Option<(EntityId, EntityId)>,
+    /// 本次调用新加的音符（T-FIX-831：批量加音的折算 tick 在回执回显 ——
+    /// 每条 `{noteId, pitch, startTick, durationTicks, velocity}`，按编译顺序；
+    /// 空 = 本次没加音符 ⇒ 不出这个键，与 `clip` / `placement` 同口径）。
+    added_notes: Vec<Value>,
 }
 
 /// 从**模拟后**的工程读回 `clip` / `placement` 派生读数（T-FIX-741）。
@@ -4130,6 +4134,9 @@ fn build_clip_receipt(project: &YebanProjectV1, request: ReceiptRequest) -> Valu
                 },
             }),
         );
+    }
+    if !request.added_notes.is_empty() {
+        receipt.insert("addedNotes".to_owned(), Value::Array(request.added_notes));
     }
     Value::Object(receipt)
 }
@@ -4680,6 +4687,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             ReceiptRequest {
                 clip_id: Some(clip_id),
                 placement: placed_placement_id.map(|id| (track_id, id)),
+                // `create:true` 只允许逐条 `add`（批量加音形态被 `createRequiresAddOps`
+                // 挡下，T-FIX-831）⇒ 这里没有折算 tick 要回显。
+                added_notes: Vec::new(),
             },
         );
     }
@@ -4911,6 +4921,22 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // 描述里点名自动加载的预制（提案摘要随响应回传）。
         description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
     }
+    // ⭐ T-FIX-831：批量加音的折算 tick 在回执回显 —— 从**已编译**的 `Op` 里读
+    // 本次新加的音符（逐条 `add` 同样回显；`Op::Batch` 包装的 `AddTrack` 接线
+    // 批次里没有 `AddNote`，不受影响）。编译顺序 = 回显顺序。
+    let added_notes: Vec<Value> = compiled
+        .iter()
+        .filter_map(|op| match op {
+            Op::AddNote { note, .. } => Some(serde_json::json!({
+                "noteId": note.id.to_canonical_string(),
+                "pitch": note.pitch,
+                "startTick": note.start_tick,
+                "durationTicks": note.duration_ticks,
+                "velocity": note.velocity,
+            })),
+            _ => None,
+        })
+        .collect();
     let receipt = ReceiptRequest {
         clip_id: needs_clip.then_some(clip_id),
         placement: match &placement {
@@ -4920,6 +4946,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             }
             _ => None,
         },
+        added_notes,
     };
     let mut plan = propose_draft_with_receipt(
         domain,

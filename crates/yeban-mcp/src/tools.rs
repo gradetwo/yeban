@@ -1167,7 +1167,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             array_param(
                 "ops",
                 true,
-                "操作列表 (NoteOp 数组): 逐 `kind` 的形状、必填键与封闭性见本参数 `items` 的 `oneOf` 分支 (与解析器逐臂对账); `insertDevice` 的效果器参数名/单位/值域见该分支的 `device.params.items`。封闭形态上多余的键一律 `INVALID_PARAMETER_RANGE` (⛔ 静默丢弃)。顶层 `clipId` 只在读它的形态上必需 (见 `clipId` 参数)。⭐ 最小示例: `[{\"kind\":\"add\",\"note\":{\"startTick\":0,\"pitch\":60,\"durationTicks\":480}}]`",
+                "操作列表 (NoteOp 数组): 逐 `kind` 的形状、必填键与封闭性见本参数 `items` 的 `oneOf` 分支 (与解析器逐臂对账); `insertDevice` 的效果器参数名/单位/值域见该分支的 `device.params.items`。封闭形态上多余的键一律 `INVALID_PARAMETER_RANGE` (⛔ 静默丢弃)。顶层 `clipId` 只在读它的形态上必需 (见 `clipId` 参数)。批量加音: `addChord` 一次写一个和弦 (`notes` 各音共享起点，起点不齐 ⇒ `chordStartTickMismatch`，`data.opIndex` 点名第几组)，`addNotes` 一次写一批音符 (各音起点独立); 两者都展开成 per-note 的 `add`，折算 tick 在回执 `data.addedNotes` 回显；`create:true` 时仍只允许 `add`。⭐ 最小示例: `[{\"kind\":\"add\",\"note\":{\"startTick\":0,\"pitch\":60,\"durationTicks\":480}}]`",
                 crate::op_schema::ops_items,
             ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），

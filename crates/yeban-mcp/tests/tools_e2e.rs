@@ -10980,3 +10980,241 @@ fn edit_notes_missing_envelope_track_error_names_kind_and_op_index() {
         "被拒的调用不得改工程"
     );
 }
+
+/// T-FIX-831：8 小节每小节四音和弦可用 **8 条 op** 表达（上报人实测旧路径要 32 条
+/// `add`），折算 tick 在回执 `data.addedNotes` 回显，合并后工程里真的多出 32 个音符。
+///
+/// 注入（实测红）：`parse_one` 的 `ADD_CHORD_KIND` 臂删掉 ⇒ 本判据红（未知 kind）；
+/// `expand_clip_level_op` 的批量展开删掉 ⇒ 编译产出 0 条 op，合并后音符数不变，红。
+#[test]
+fn edit_notes_add_chord_eight_bars_of_four_note_chords_in_eight_ops() {
+    let scratch = Scratch::new("add-chord-eight-bars");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, _opened) = open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI 片段")
+        .id
+        .to_canonical_string();
+    let notes_before = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .and_then(|entry| entry.content.notes())
+        .map_or(0, |notes| notes.len());
+
+    // 8 小节 × 四音和弦（C 大调顺阶：C E G B / D F A C … 轮换只为让每组音高不同，
+    // 折算 tick 的断言只看起点与音高序列本身）。
+    let mut ops = Vec::new();
+    for bar in 0..8u64 {
+        let start = 7680 + bar * 3840;
+        let root = 60 + (bar % 4) * 2;
+        ops.push(json!({
+            "kind": "addChord",
+            "notes": [
+                {"startTick": start, "pitch": root, "durationTicks": 3840},
+                {"startTick": start, "pitch": root + 4, "durationTicks": 3840},
+                {"startTick": start, "pitch": root + 7, "durationTicks": 3840},
+                {"startTick": start, "pitch": root + 11, "durationTicks": 3840},
+            ],
+        }));
+    }
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track,
+            "clipId": clip,
+            "ops": ops,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    // 回执回显 32 条折算 tick：每小节 4 条同起点，按小节升序。
+    let added = created["data"]["addedNotes"]
+        .as_array()
+        .expect("回执必须有 addedNotes 数组");
+    assert_eq!(added.len(), 32, "8 小节 × 4 音 = 32 条: {created}");
+    let starts: Vec<u64> = added
+        .iter()
+        .map(|note| note["startTick"].as_u64().expect("startTick"))
+        .collect();
+    let mut expected_starts = Vec::new();
+    for bar in 0..8u64 {
+        for _ in 0..4 {
+            expected_starts.push(7680 + bar * 3840);
+        }
+    }
+    assert_eq!(
+        starts, expected_starts,
+        "折算 tick 必须按小节升序: {created}"
+    );
+    let pitches: Vec<u64> = added
+        .iter()
+        .map(|note| note["pitch"].as_u64().expect("pitch"))
+        .collect();
+    let mut expected_pitches = Vec::new();
+    for bar in 0..8u64 {
+        let root = 60 + (bar % 4) * 2;
+        expected_pitches.extend([root, root + 4, root + 7, root + 11]);
+    }
+    assert_eq!(
+        pitches, expected_pitches,
+        "音高序列必须与请求一致: {created}"
+    );
+
+    merge(&mut dispatcher, &auth, &created, "addChord eight bars");
+    let notes_after = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .and_then(|entry| entry.content.notes())
+        .map_or(0, |notes| notes.len());
+    assert_eq!(
+        notes_after,
+        notes_before + 32,
+        "合并后该片段必须恰好多 32 个音符"
+    );
+}
+
+/// T-FIX-831：45 条旋律音符可用 **1 条** `addNotes` op 表达（上报人实测旧路径要 45 条
+/// `add`），合并后工程里真的多出 45 个音符。
+#[test]
+fn edit_notes_add_notes_forty_five_note_melody_in_one_op() {
+    let scratch = Scratch::new("add-notes-melody");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, _opened) = open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI 片段")
+        .id
+        .to_canonical_string();
+    let notes_before = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .and_then(|entry| entry.content.notes())
+        .map_or(0, |notes| notes.len());
+
+    let notes: Vec<Value> = (0..45u64)
+        .map(|index| {
+            json!({
+                "startTick": 48000 + index * 480,
+                "pitch": 60 + (index % 12),
+                "durationTicks": 480,
+            })
+        })
+        .collect();
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track,
+            "clipId": clip,
+            "ops": [{ "kind": "addNotes", "notes": notes }],
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let added = created["data"]["addedNotes"]
+        .as_array()
+        .expect("回执必须有 addedNotes 数组");
+    assert_eq!(added.len(), 45, "45 条旋律必须一次回显 45 条: {created}");
+    assert_eq!(added[0]["startTick"], 48000, "首音起点: {created}");
+    assert_eq!(
+        added[44]["startTick"],
+        48000 + 44 * 480,
+        "末音起点: {created}"
+    );
+
+    merge(&mut dispatcher, &auth, &created, "addNotes melody");
+    let notes_after = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .and_then(|entry| entry.content.notes())
+        .map_or(0, |notes| notes.len());
+    assert_eq!(
+        notes_after,
+        notes_before + 45,
+        "合并后该片段必须恰好多 45 个音符"
+    );
+}
+
+/// T-FIX-831：同和弦起点不齐 ⇒ 响亮报错并指明**哪组**（`data.opIndex` = 1，第 2 组），
+/// 且整批不改工程。
+#[test]
+fn edit_notes_add_chord_misaligned_starts_names_the_group() {
+    let scratch = Scratch::new("add-chord-misaligned");
+    let (mut dispatcher, auth) = dispatcher();
+    let (_path, _opened) = open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+    let clip = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_some())
+        .expect("MIDI 片段")
+        .id
+        .to_canonical_string();
+    let bytes_before = project_bytes(&dispatcher);
+    let rejected = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track,
+            "clipId": clip,
+            "ops": [
+                {"kind": "addChord", "notes": [
+                    {"startTick": 7680, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 7680, "pitch": 64, "durationTicks": 480},
+                ]},
+                {"kind": "addChord", "notes": [
+                    {"startTick": 960, "pitch": 60, "durationTicks": 480},
+                    {"startTick": 1440, "pitch": 64, "durationTicks": 480},
+                ]},
+            ],
+        }),
+    );
+    assert_domain_error(
+        &rejected,
+        "INVALID_PARAMETER_RANGE",
+        "同组起点不齐必须响亮拒绝",
+    );
+    assert_eq!(
+        rejected["error"]["data"]["reason"], "chordStartTickMismatch",
+        "{rejected}"
+    );
+    assert_eq!(
+        rejected["error"]["data"]["opIndex"], 1,
+        "必须指明第 2 组: {rejected}"
+    );
+    assert_eq!(rejected["error"]["data"]["noteIndex"], 1, "{rejected}");
+    assert_eq!(
+        rejected["error"]["data"]["chordStartTick"], 960,
+        "{rejected}"
+    );
+    assert_eq!(rejected["error"]["data"]["startTick"], 1440, "{rejected}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒绝的调用不得改工程字节"
+    );
+}
