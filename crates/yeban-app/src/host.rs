@@ -20514,7 +20514,12 @@ fn apply_action(
                 return false;
             };
             let (delta_tick, delta_pitch) = nudge_delta_for(step, direction);
-            let ops = nudge_ops_for(&project, &selected, delta_tick, delta_pitch);
+            let mut ops = nudge_ops_for(&project, &selected, delta_tick, delta_pitch);
+            // ⭐ T-FIX-358（T-FIX-599 重贴）：整块位移后音符末端可能超出摆放 ⇒ 同批补摆放扩展
+            // （与拖动/插入/T-FIX-354 共用 placement_extension 原语）。
+            ops.extend(clip_extension_ops_for_notes(
+                &project, &selected, delta_tick, 0,
+            ));
             if ops.is_empty() {
                 // 没有选区 / 没有可平移的对象 / 整块已在边界上 ⇒ 没有可停靠的编辑, 如实不消费。
                 // ⭐ T-FIX-210：这三种原因用户看到的都是"按了没反应"，得把原因写出来。
@@ -20567,7 +20572,14 @@ fn apply_action(
                 return false;
             };
             let delta_ticks = resize_duration_delta_for(direction);
-            let ops = resize_duration_ops_for(&project, &selected, delta_ticks);
+            let mut ops = resize_duration_ops_for(&project, &selected, delta_ticks);
+            // ⭐ T-FIX-358（T-FIX-599 重贴）：缩放拉长后音符末端可能超出摆放 ⇒ 同批补摆放扩展。
+            ops.extend(clip_extension_ops_for_notes(
+                &project,
+                &selected,
+                0,
+                delta_ticks,
+            ));
             if ops.is_empty() {
                 // `D-UI-17`：音符选区**为空** ⇒ 同一把键落到选中的剪辑摆放上。
                 //
@@ -23408,6 +23420,92 @@ pub fn move_note_op_for(
     })
 }
 
+/// ⭐ T-FIX-358（T-FIX-599 重贴）：把"音符编辑后的末端"与所在摆放区间对账，必要时产出一条
+/// `Op::SetClipPlacementDuration`（与音符 op 同批提交、一次撤销），把摆放末端
+/// 扩到音符末端 —— 否则播放/渲染按摆放窗口裁剪，音符落在末端外就**静默不发声**。
+///
+/// 复用 [`yeban_midi::import::placement_extension`]（T-FIX-354 的共享原语），
+/// ⛔ 不另立第二套"摆放该多长"的规则。纯函数：不碰工程、不碰 UI。
+///
+/// - `note_end_tick` = 编辑后音符的 `start_tick + duration_ticks`（调用方算，饱和加）。
+/// - 所需末端还包含摆放内其他音符的末端（原语内部取 max），故多音符场景也安全。
+/// - 摆放不存在 / 无需扩展 ⇒ `None`（⛔ 不发空 op）。
+#[must_use]
+pub fn note_bounds_extension_op_for(
+    project: &yeban_model::YebanProjectV1,
+    track_id: yeban_model::EntityId,
+    clip_id: yeban_model::EntityId,
+    note_end_tick: u64,
+) -> Option<yeban_model::ops::Op> {
+    yeban_midi::import::placement_extension(project, track_id, clip_id, note_end_tick).2
+}
+
+/// ⭐ T-FIX-358（T-FIX-599 重贴）：键盘 nudge / 批量移动 / 时长缩放后，按选区音符的
+/// **编辑后末端**给每个被触碰的摆放补一条扩展 op（复用
+/// [`placement_extension`](yeban_midi::import::placement_extension)）。
+///
+/// 与 [`note_bounds_extension_op_for`] 的区别：这里一次覆盖**整批选区**，每个摆放一条
+/// （保持"一次按键 = 一步撤销"）。⛔ 不改 `nudge_ops_for` / `resize_duration_ops_for` /
+/// `note_drag_*_ops_for` 的返回语义（它们只产出音符 op，既有判据逐条钉着），扩展 op 由
+/// 调用点**另行拼接**。
+///
+/// - `delta_tick` / `delta_duration`：本次施加到每颗音符的位移 / 时长增量（可为负）。
+/// - 末端 = `start + delta_tick + (duration + delta_duration)`，饱和夹 0。
+#[must_use]
+pub fn clip_extension_ops_for_notes(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+    delta_tick: i64,
+    delta_duration: i64,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    // 每个摆放取"编辑后末端"的最大值（键序确定 → 产出顺序确定）。
+    let mut max_end: BTreeMap<(yeban_model::EntityId, yeban_model::EntityId), u64> =
+        BTreeMap::new();
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            let start = (i128::from(note.start_tick) + i128::from(delta_tick)).max(0);
+            let duration = (i128::from(note.duration_ticks) + i128::from(delta_duration)).max(0);
+            let end = u64::try_from(start.saturating_add(duration)).unwrap_or(u64::MAX);
+            let key = (track_id, *clip_id);
+            max_end
+                .entry(key)
+                .and_modify(|v| *v = (*v).max(end))
+                .or_insert(end);
+        }
+    }
+    let mut ops = Vec::new();
+    for ((track_id, clip_id), end) in max_end {
+        if let Some(ext) = note_bounds_extension_op_for(project, track_id, clip_id, end) {
+            ops.push(ext);
+        }
+    }
+    ops
+}
+
 /// 卷帘**移动臂**的 op 构造点：单颗拖动 = 一条 `Op::MoveNote`；**整选区拖动** =
 /// 每颗一条，且共用**组夹紧**后的同一个位移（复用键盘路径的 [`nudge_ops_for`]，
 /// ⛔ 不再长第二份"最低音/最早 tick 先撞边"的算术）。
@@ -23719,8 +23817,12 @@ fn commit_note_drag(
         // ⭐ T-ISS-MWTFLO7Z：改时值也按**选区**（与移动臂同一条"指针下那颗在选区里
         // 且选区多于一颗 ⇒ 整组"的规则，收在 `note_drag_resize_ops_for` 里）。
         let selected = selected_note_ulids(ui);
-        let ops =
+        let mut ops =
             note_drag_resize_ops_for(&project, &note, &selected, delta_tick, ROLL_SNAP_GRID_TICKS);
+        // ⭐ T-FIX-358（T-FIX-599 重贴）：缩放拉长后末端可能超出摆放 ⇒ 同批补扩展。
+        ops.extend(clip_extension_ops_for_notes(
+            &project, &selected, 0, delta_tick,
+        ));
         if ops.is_empty() {
             // 没跨过网格 / 每颗都已夹到最小格 ⇒ 一次空 op 都不提交。
             return;
@@ -23754,7 +23856,11 @@ fn commit_note_drag(
     // 同一个位移（规则收在 `note_drag_move_ops_for` 里，键盘微移的 `nudge_ops_for` 是
     // 同一份算术）。一次 `commit_ops` 包成**一个** `Op::Batch` ⇒ 一步撤销全部回位。
     let selected = selected_note_ulids(ui);
-    let ops = note_drag_move_ops_for(&project, &note, &selected, delta_tick, delta_pitch);
+    let mut ops = note_drag_move_ops_for(&project, &note, &selected, delta_tick, delta_pitch);
+    // ⭐ T-FIX-358（T-FIX-599 重贴）：拖动后末端可能超出摆放 ⇒ 同批补扩展。
+    ops.extend(clip_extension_ops_for_notes(
+        &project, &selected, delta_tick, 0,
+    ));
     if ops.is_empty() {
         // ⭐ T-FIX-210：解析失败 = 音符身份已失效（已被删 / 不在工程里）⇒ 写回执，
         // 否则用户只看到"拖了又弹回"。
@@ -28623,6 +28729,122 @@ mod pencil_op_tests {
             resize_duration_ops_for(&topped, &ids, -240).len(),
             total,
             "反方向（缩短）必须照常产出"
+        );
+    }
+
+    /// T-FIX-358（T-FIX-599 重贴）红对照：音符末端**超出摆放**时补一条摆放扩展 op，
+    /// 末端**在摆放内**时不发 op。未修树上没有这个原语/判据 ⇒ 直接红（缺函数）。
+    #[test]
+    fn note_bounds_extension_flags_notes_past_placement_end_only() {
+        use yeban_model::ops::Op;
+
+        let project = filled_project();
+        // 找一条带 MIDI 音符的摆放（placement duration = 3840，末音符末端在摆放内）。
+        let (track_id, clip_id, placement) = project
+            .tracks
+            .iter()
+            .find_map(|(tid, track)| {
+                track
+                    .clips
+                    .values()
+                    .find(|p| {
+                        project
+                            .clip_pool
+                            .get(&p.clip_id)
+                            .is_some_and(|e| e.content.notes().is_some())
+                    })
+                    .map(|p| (*tid, p.clip_id, p))
+            })
+            .expect("夹具里有一条带 MIDI 音符摆放的轨道");
+        let end_inside = placement.duration_ticks.saturating_sub(240);
+        assert!(
+            note_bounds_extension_op_for(&project, track_id, clip_id, end_inside).is_none(),
+            "末端在摆放内 ⇒ 不得发扩展 op（⛔ 不发空 op）"
+        );
+        let end_outside = placement.duration_ticks + 480;
+        let ext = note_bounds_extension_op_for(&project, track_id, clip_id, end_outside)
+            .expect("末端超出摆放必须发扩展 op");
+        let Op::SetClipPlacementDuration {
+            track_id: t,
+            placement_id,
+            old_duration_ticks,
+            new_duration_ticks,
+        } = ext
+        else {
+            panic!("扩展必须是 SetClipPlacementDuration, 实际 {ext:?}");
+        };
+        assert_eq!(t, track_id);
+        assert_eq!(placement_id, placement.id);
+        assert_eq!(old_duration_ticks, placement.duration_ticks);
+        assert_eq!(new_duration_ticks, end_outside);
+    }
+
+    /// T-FIX-358（T-FIX-599 重贴）红对照：整批选区编辑后，每个被触碰的摆放最多一条
+    /// 扩展 op，组内多颗音符只取最大末端（保持"一次按键一步撤销"）。
+    #[test]
+    fn clip_extension_ops_for_notes_emits_one_per_placement() {
+        use yeban_model::ops::Op;
+
+        let mut project = filled_project();
+        let (clip_id, placement_id) = project
+            .tracks
+            .values()
+            .flat_map(|track| track.clips.values())
+            .find(|p| {
+                project
+                    .clip_pool
+                    .get(&p.clip_id)
+                    .is_some_and(|e| e.content.notes().is_some())
+            })
+            .map(|p| (p.clip_id, p.id))
+            .expect("带 MIDI 的摆放");
+        let ids: Vec<String> = project
+            .clip_pool
+            .get(&clip_id)
+            .and_then(|e| e.content.notes())
+            .map(|notes| notes.keys().map(ToString::to_string).collect())
+            .expect("音符列表");
+        let placement_dur = project
+            .tracks
+            .values()
+            .flat_map(|track| track.clips.values())
+            .find(|p| p.id == placement_id)
+            .expect("摆放")
+            .duration_ticks;
+
+        // 末端都在摆放内 ⇒ 无扩展。
+        assert!(
+            clip_extension_ops_for_notes(&project, &ids, 0, 0).is_empty(),
+            "零位移且末端在内 ⇒ 不得发扩展"
+        );
+
+        // 把末音符推到接近摆放末端，再右移一个网格 ⇒ 末端超出 ⇒ 恰好一条扩展、按最大末端。
+        let last = ids.last().expect("有音符").clone();
+        let last_id = last.parse::<yeban_model::EntityId>().expect("ULID");
+        for entry in project.clip_pool.values_mut() {
+            if let Some(notes) = entry.content.notes_mut()
+                && let Some(note) = notes.get_mut(&last_id)
+            {
+                note.start_tick = placement_dur - 240;
+                note.duration_ticks = 480;
+            }
+        }
+        let ext_ops = clip_extension_ops_for_notes(&project, &ids, 240, 0);
+        assert_eq!(
+            ext_ops.len(),
+            1,
+            "一个摆放只发一条扩展 op（组内最大末端）, 实际 {ext_ops:?}"
+        );
+        let Op::SetClipPlacementDuration {
+            new_duration_ticks, ..
+        } = ext_ops[0]
+        else {
+            panic!("必须是摆放扩展 op");
+        };
+        assert_eq!(
+            new_duration_ticks,
+            placement_dur - 240 + 480 + 240,
+            "扩展末端 = 最大(音符 start + 位移 + duration)"
         );
     }
 }

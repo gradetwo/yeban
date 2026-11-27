@@ -646,8 +646,12 @@ fn model_note_span(note: &ParsedNote, ppq: u16) -> (u64, u64) {
 ///   按摆放窗口裁剪音符（引擎快照把音符时值裁到 `[start_tick, start_tick +
 ///   duration_ticks)`）⇒ 不撑长就等于静默裁掉，这条就是补上那块缺口的。
 /// - 目标摆放不在工程里时（`destination` 已保证它在，防御分支）⇒ 不扩展。
+///
+/// T-FIX-358（T-FIX-599 重贴）：`dest_*_end` 是"落进该摆放的音符末端"，不限 MIDI 导入 ——
+/// 钢琴卷帘拖动/缩放/nudge 后也用它算同一条扩展 op，故提升为 `pub` 共享原语，
+/// 让导入路径与卷帘编辑路径共用同一份"摆放该多长"的规则（⛔ 不另立第二套）。
 #[must_use]
-fn placement_extension(
+pub fn placement_extension(
     project: &YebanProjectV1,
     dest_track_id: EntityId,
     dest_clip_id: EntityId,
