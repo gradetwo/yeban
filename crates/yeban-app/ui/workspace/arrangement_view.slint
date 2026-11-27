@@ -88,6 +88,8 @@ export component ArrangementView inherits Rectangle {
     property <bool> marquee-pressed: false;
     property <bool> marquee-active: false;
     property <bool> marquee-additive: false;
+    // ⭐ T-FIX-858：Cmd/Ctrl = 差集减选（Ctrl 优先于 Shift）。
+    property <bool> marquee-subtractive: false;
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -299,7 +301,7 @@ export component ArrangementView inherits Rectangle {
     /// + 是否加选（Shift）。命中判定与选区写入在宿主。
     /// （2026-11-07 的空车道拖动横滚 `scroll-requested` 已按 Wang 2026-11-18
     /// 框选口径移除；本组件不再声明它 —— 根窗口的同名回调只剩卷帘在用。）
-    callback clip-marquee-select(length, length, length, length, bool);
+    callback clip-marquee-select(length, length, length, length, bool, bool);
     /// 点击自动化车道添加或编辑点 (G-A1): (点击处相对于车道区域的 x, 点击处相对于行区内容顶部的 y)
     callback automation-lane-click(length, length);
 
@@ -1082,6 +1084,7 @@ export component ArrangementView inherits Rectangle {
                 root.marquee-x1 = root.marquee-x0;
                 root.marquee-y1 = root.marquee-y0;
                 root.marquee-additive = event.modifiers.shift;
+                root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
                 root.marquee-pressed = true;
                 root.marquee-active = false;
             } else if event.kind == PointerEventKind.up {
@@ -1091,7 +1094,8 @@ export component ArrangementView inherits Rectangle {
                         root.marquee-y0 + root.rows-top,
                         root.marquee-x1 - 168px,
                         root.marquee-y1 + root.rows-top,
-                        root.marquee-additive);
+                        root.marquee-additive,
+                        root.marquee-subtractive);
                 } else if root.marquee-pressed {
                     root.automation-lane-click(self.mouse-x, self.mouse-y);
                 }

@@ -9532,12 +9532,16 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
     // 行几何帧）+ 加选标志；命中判定走纯函数 [`clip_marquee_hits`]（几何取
     // **当前**投影：有撤销端口时按现工程重投影，与 `on_clip_select` 的
     // fresh/fallback 同一手法），落选区走唯一写者 [`apply_clip_selection`]。
-    // 语义（照 Logic Pro 橡皮筋）：无修饰 = 命中集替换选区（空命中 = 清空）；
-    // Shift = 并入现有选区、主选中保住原值。视图态操作，⛔ 不进撤销栈、
-    // 不重投影（块没变，只有选中变）。
+    // 语义（照 Logic Pro 橡皮筋）：
+    // - 无修饰 = 命中集**替换**选区（空命中 = 清空）；
+    // - Shift = **并入**现有选区、主选中保住原值；
+    // - ⭐ T-FIX-858：Cmd/Ctrl = **差集**（从现有选区去掉命中项）；两者同按时
+    //   subtractive 优先（`.slint` 侧同时上报两个布尔）。主选中若被减掉 ⇒
+    //   回退到剩余集合首元，剩余为空 ⇒ 置空串。
+    // 视图态操作，⛔ 不进撤销栈、不重投影（块没变，只有选中变）。
     ui.on_clip_marquee_select({
         let weak = ui.as_weak();
-        move |x1, y1, x2, y2, additive| {
+        move |x1, y1, x2, y2, additive, subtractive| {
             use slint::Model as _;
             let Some(ui) = weak.upgrade() else {
                 return;
@@ -9549,7 +9553,7 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
             let snapshot = view_for_marquee.borrow().clone();
             let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
             let hits = clip_marquee_hits(state, x1, y1, x2, y2);
-            let mut selected: Vec<String> = if additive {
+            let mut selected: Vec<String> = if additive || subtractive {
                 ui.get_selected_clip_ulids()
                     .iter()
                     .map(|id| id.to_string())
@@ -9557,12 +9561,21 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
             } else {
                 Vec::new()
             };
-            for hit in hits {
-                if !selected.contains(&hit) {
-                    selected.push(hit);
+            if subtractive {
+                // ⭐ T-FIX-858：差集 —— 命中项从现有选区移除（无论原本是否选中）。
+                let hit_set: std::collections::HashSet<&str> =
+                    hits.iter().map(String::as_str).collect();
+                selected.retain(|id| !hit_set.contains(id.as_str()));
+            } else {
+                for hit in hits.iter() {
+                    if !selected.contains(hit) {
+                        selected.push(hit.clone());
+                    }
                 }
             }
-            let primary = if additive {
+            // 主选中：add/subtract 都先保住仍留在集合里的原主选中；被减掉时
+            // 回退到剩余首元（与既有 add 臂的 fallback 同口径），空集置空串。
+            let primary = if additive || subtractive {
                 let current = ui.get_selected_clip_ulid().to_string();
                 if selected.contains(&current) {
                     current

@@ -1049,7 +1049,7 @@ export component MainWindow inherits Window {
     /// 框选收尾（line/blank-drag-selection）：矩形四边（**时间轴像素帧**的 x
     /// 与行区内容帧的 y，逻辑像素，未归一化）+ 是否加选（Shift）。
     /// 命中判定与选区写入全在宿主（`host::wire_clip_scope`）。
-    callback clip-marquee-select(length, length, length, length, bool);
+    callback clip-marquee-select(length, length, length, length, bool, bool);
     callback close-audio-settings();
     callback close-drum-gen();
     callback close-export-wav();
@@ -1995,7 +1995,7 @@ export component MainWindow inherits Window {
                     track-reorder-drag(idx, y) => { root.track-reorder-drag(idx, y); }
                     track-reorder-release(idx) => { root.track-reorder-release(idx); }
                     track-reorder-step(idx, dir) => { root.track-reorder-step(idx, dir); }
-                    clip-marquee-select(x1, y1, x2, y2, additive) => { root.clip-marquee-select(x1, y1, x2, y2, additive); }
+                    clip-marquee-select(x1, y1, x2, y2, additive, subtractive) => { root.clip-marquee-select(x1, y1, x2, y2, additive, subtractive); }
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }
                     track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }

@@ -12,6 +12,7 @@
 //! | ②（真实拖拽） | 活窗口里在空白车道按下 → 拖过片段 → 松手：`selected-clip-ulids` == 命中集、主选中 == 命中首元、与块同序的标志逐项对齐 |
 //! | ③（单击不变） | 空白处单击（按下即松手、未越 4px 阈值）**不**改剪辑选区 —— 原来的单击选轨语义保留，框选不许吞掉它 |
 //! | ④（加选与清空） | Shift 框选（回调层）= 并入现有选区且主选中保住；无修饰框选空命中 = 清空选区 |
+//! | ⑤（T-FIX-858 三态） | Cmd/Ctrl 框选 = 差集，主选中被减则回退剩余首元；Shift 并集与无修饰替换不回归 |
 //!
 //! ## 平台约束
 //!
@@ -276,8 +277,14 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
         .find(|c| !expected.contains(&c.placement_id))
         .expect("演示工程必须有选区外的片段");
     let (ox, oy, ow, oh) = block_rect(&view, other);
-    port.ui()
-        .invoke_clip_marquee_select(ox + 2.0, oy + 2.0, ox + ow - 2.0, oy + oh - 2.0, true);
+    port.ui().invoke_clip_marquee_select(
+        ox + 2.0,
+        oy + 2.0,
+        ox + ow - 2.0,
+        oy + oh - 2.0,
+        true,
+        false,
+    );
     let after_add: Vec<String> = port
         .ui()
         .get_selected_clip_ulids()
@@ -299,7 +306,7 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
 
     // ④ 清空：无修饰框选落在空区域 ⇒ 选区清空、主选中为空串。
     port.ui()
-        .invoke_clip_marquee_select(100_000.0, 0.0, 100_050.0, 50.0, false);
+        .invoke_clip_marquee_select(100_000.0, 0.0, 100_050.0, 50.0, false, false);
     assert_eq!(
         port.ui().get_selected_clip_ulids().iter().count(),
         0,
@@ -411,4 +418,89 @@ fn blank_drag_selects_clips_when_content_overflows_viewport() {
         .map(|id| id.to_string())
         .collect();
     assert_eq!(selected, expected, "内容溢出时松手后选区集必须 == 命中集");
+}
+
+/// ⭐ T-FIX-858（ISS-MWY9RUN5-1294B2）：框选 tri-state。
+///
+/// 选区三态：无修饰 = 替换、Shift = 并集、Cmd/Ctrl = 差集。
+/// 走**回调层**（`invoke_clip_marquee_select`），不依赖真实拖拽面 —— 后者由 857
+/// 的活窗口判据负责，本判据只证 T-FIX-858 的三态语义与主选中裁决。
+#[test]
+fn marquee_modes_replace_add_and_subtract() {
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let mut port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1");
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<marquee-modes>", "yeban-app", project.clone(), NOW_MS).expect("open"),
+    ));
+    let live_view = Rc::new(RefCell::new(view.clone()));
+    host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    let ui = port.ui();
+
+    let ids: Vec<String> = view
+        .clips
+        .iter()
+        .take(3)
+        .map(|c| c.placement_id.clone())
+        .collect();
+    assert_eq!(ids.len(), 3, "夹具必须有 3 个片段");
+    let rect_of = |id: &str| {
+        let clip = view
+            .clips
+            .iter()
+            .find(|c| c.placement_id == id)
+            .expect("片段");
+        let (x, y, w, h) = block_rect(&view, clip);
+        (x + 2.0, y + 2.0, x + w - 2.0, y + h - 2.0)
+    };
+    let selected_of = || -> Vec<String> {
+        ui.get_selected_clip_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    };
+
+    // 初始：演示工程全部 3 个片段都在选区，主选中 = ids[0]。
+    host::apply_clip_selection(ui, &ids, &ids[0]);
+    assert_eq!(selected_of(), ids);
+
+    // ① Cmd/Ctrl 框住 ids[1] ⇒ 差集：剩 2 个，主选中 ids[0] 仍在 ⇒ 保住。
+    let (x1, y1, x2, y2) = rect_of(&ids[1]);
+    ui.invoke_clip_marquee_select(x1, y1, x2, y2, false, true);
+    let left = selected_of();
+    assert_eq!(left.len(), 2, "差集后必须剩 2 个");
+    assert!(!left.contains(&ids[1]) && left.contains(&ids[0]) && left.contains(&ids[2]));
+    assert_eq!(
+        ui.get_selected_clip_ulid().as_str(),
+        ids[0],
+        "主选中未被减 ⇒ 保住"
+    );
+
+    // ② Cmd/Ctrl 框住主选中 ids[0] ⇒ 回退到剩余首元 ids[2]。
+    let (x1, y1, x2, y2) = rect_of(&ids[0]);
+    ui.invoke_clip_marquee_select(x1, y1, x2, y2, false, true);
+    let left = selected_of();
+    assert_eq!(left, vec![ids[2].clone()], "主选中被减 ⇒ 回退剩余首元");
+    assert_eq!(ui.get_selected_clip_ulid().as_str(), ids[2]);
+
+    // ③ Shift 并集不回归：当前只剩 ids[2]，框住 ids[0] ⇒ 并回 2 个，主选中保住。
+    let (x1, y1, x2, y2) = rect_of(&ids[0]);
+    ui.invoke_clip_marquee_select(x1, y1, x2, y2, true, false);
+    let added = selected_of();
+    assert_eq!(added.len(), 2, "并集后 2 个");
+    assert!(added.contains(&ids[2]) && added.contains(&ids[0]));
+    assert_eq!(
+        ui.get_selected_clip_ulid().as_str(),
+        ids[2],
+        "并集保住原主选中"
+    );
+
+    // ④ 无修饰替换不回归：框住 ids[0] ⇒ 只剩它，主选中 = ids[0]。
+    ui.invoke_clip_marquee_select(x1, y1, x2, y2, false, false);
+    assert_eq!(selected_of(), vec![ids[0].clone()], "无修饰 = 替换");
+    assert_eq!(ui.get_selected_clip_ulid().as_str(), ids[0]);
 }

@@ -141,7 +141,7 @@ fn primary(window: &MainWindow) -> String {
 
 /// 框选两条剪辑，返回它们在夹具中的顺序（id、轨道、摆放）。
 fn box_select_two(window: &MainWindow) -> Vec<(String, EntityId, ClipPlacement)> {
-    window.invoke_clip_marquee_select(MARQUEE.0, MARQUEE.1, MARQUEE.2, MARQUEE.3, false);
+    window.invoke_clip_marquee_select(MARQUEE.0, MARQUEE.1, MARQUEE.2, MARQUEE.3, false, false);
     let got = selected(window);
     assert_eq!(got.len(), 2, "框选必须选中 2 条剪辑");
     let want: Vec<String> = placements(&filled_project())

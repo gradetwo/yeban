@@ -195,6 +195,9 @@ export component ArrangementViewport inherits Rectangle {
     property <bool> marquee-pressed: false;
     property <bool> marquee-active: false;
     property <bool> marquee-additive: false;
+    // ⭐ T-FIX-858：Cmd/Ctrl（macOS = meta，Linux/Windows = control）= 差集减选。
+    // 与 Shift 的并集互斥；两者同按时宿主侧 subtractive 优先。
+    property <bool> marquee-subtractive: false;
 
     callback select-track(int);
     // ⭐ T-FIX-232：包头手势的直接选轨（死文件 `workspace/arrangement_view.slint:200,713` 同款）。
@@ -349,7 +352,7 @@ export component ArrangementViewport inherits Rectangle {
     /// 框选收尾：矩形四边（x = **时间轴像素帧**，与 `blk.start_px` 同帧；
     /// y = Flickable 内容帧，与 `track-ys` 同帧；未归一化）+ 加选标志。
     /// 界面只做坐标帧换算，命中判定在宿主。
-    callback clip-marquee-select(length, length, length, length, bool);
+    callback clip-marquee-select(length, length, length, length, bool, bool);
 
     background: Theme.bg-canvas;
     clip: true;
@@ -1832,6 +1835,7 @@ export component ArrangementViewport inherits Rectangle {
                                         root.marquee-x1 = root.marquee-x0;
                                         root.marquee-y1 = root.marquee-y0;
                                         root.marquee-additive = event.modifiers.shift;
+                                        root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
                                         root.marquee-pressed = true;
                                         root.marquee-active = false;
                                     } else if event.kind == PointerEventKind.move && root.marquee-pressed {
@@ -1849,7 +1853,8 @@ export component ArrangementViewport inherits Rectangle {
                                                 root.marquee-y0,
                                                 root.marquee-x1 - root.timeline-origin-x + root.scroll-x,
                                                 root.marquee-y1,
-                                                root.marquee-additive);
+                                                root.marquee-additive,
+                                                root.marquee-subtractive);
                                         } else if root.marquee-pressed {
                                             // 未越阈值 = 单击：保持原语义（选中本轨）。
                                             root.select-track(trk.id);
