@@ -839,7 +839,7 @@ impl ElementRegistry {
             "arrangement-zoom-h-out-button",
             ElementKind::Button,
             "arrangement.slint",
-            "横向缩小",
+            "横向缩小（- 或 Shift+Alt+滚轮）",
             false,
         );
         registry.add(
@@ -853,14 +853,14 @@ impl ElementRegistry {
             "arrangement-zoom-h-in-button",
             ElementKind::Button,
             "arrangement.slint",
-            "横向放大",
+            "横向放大（= 或 Shift+Alt+滚轮）",
             false,
         );
         registry.add(
             "arrangement-zoom-v-out-button",
             ElementKind::Button,
             "arrangement.slint",
-            "纵向缩小",
+            "纵向缩小（Alt+滚轮）",
             false,
         );
         registry.add(
@@ -874,7 +874,7 @@ impl ElementRegistry {
             "arrangement-zoom-v-in-button",
             ElementKind::Button,
             "arrangement.slint",
-            "纵向放大",
+            "纵向放大（Alt+滚轮）",
             false,
         );
         registry.add(
