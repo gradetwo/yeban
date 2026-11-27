@@ -466,6 +466,12 @@ pub struct ParamSpec {
     /// ⚠ 同样用函数指针（不是 `Value`）以保持 `ParamSpec: Copy + const`；
     /// 清单在调用时从单一真相生成，⛔ 不在注册表里手抄。
     pub enum_values: Option<fn() -> Vec<String>>,
+    /// 额外的 JSON Schema 广播构造器（object 的 `properties`/`required`、array 的
+    /// `items`/`maxItems` 等）；`None` = 不广播。
+    ///
+    /// ⚠ 同样用函数指针（不是 `Value`）以保持 `ParamSpec: Copy + const`；
+    /// 约束在调用时由单一真相生成，⛔ 不在注册表里手抄。
+    pub extra_schema: Option<fn() -> Value>,
     /// 可接受的**兼容别名**（JSON 属性名）；空 = 无别名。
     ///
     /// 别名在解析后会规范成 [`Self::name`]，领域层只读规范名；
@@ -501,6 +507,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         max_len: None,
         items: None,
         enum_values: None,
+        extra_schema: None,
         aliases: &[],
         doc: "只读模拟校验: 只做参数与领域合法性校验, 不改任何状态",
     },
@@ -515,6 +522,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         max_len: Some(256),
         items: None,
         enum_values: None,
+        extra_schema: None,
         aliases: &[],
         doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存 (响应是 `{\"replayed\":true,\"response\":…}` 信封, 不是裸 `ToolResponse`); 空串按未提供处理; 作用域 = 工具名 + 键 ⇒ 不同工具复用同一个键不会互相命中",
     },
@@ -654,6 +662,7 @@ const fn param(
         max_len: None,
         items: None,
         enum_values: None,
+        extra_schema: None,
         aliases: &[],
         doc,
     }
@@ -680,6 +689,7 @@ const fn bounded_param(
         max_len,
         items: None,
         enum_values: None,
+        extra_schema: None,
         aliases: &[],
         doc,
     }
@@ -706,6 +716,7 @@ const fn array_param(
         max_len: None,
         items: Some(items),
         enum_values: None,
+        extra_schema: None,
         aliases: &[],
         doc,
     }
@@ -729,6 +740,30 @@ const fn enum_param(
         max_len: None,
         items: None,
         enum_values: Some(enum_values),
+        extra_schema: None,
+        aliases: &[],
+        doc,
+    }
+}
+
+/// 带额外 JSON Schema 广播的参数（object 嵌套约束 / array items+maxItems）。
+/// 与 `array_param` / `enum_param` 同款函数指针做法，保持 `ParamSpec: Copy + const`。
+const fn schema_param(
+    name: &'static str,
+    json_type: &'static str,
+    required: bool,
+    doc: &'static str,
+    extra_schema: fn() -> Value,
+) -> ParamSpec {
+    ParamSpec {
+        name,
+        json_type,
+        required,
+        min_len: None,
+        max_len: None,
+        items: None,
+        enum_values: None,
+        extra_schema: Some(extra_schema),
         aliases: &[],
         doc,
     }
@@ -749,6 +784,7 @@ const fn aliased_param(
         max_len: None,
         items: None,
         enum_values: None,
+        extra_schema: None,
         aliases,
         doc,
     }
@@ -1493,17 +1529,19 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "DeviceParam: 按参数名寻址 (与 paramIndex 二选一或并存; 并存必须指向同一个参数, 不一致响亮拒绝; 名字不存在时报错并列出该设备可用名全集)。落盘目标仍是下标形态; 成功响应以 resolvedParamName 回显落点规范名",
             ),
             param("macroIndex", "integer", false, "Macro: 宏下标 (默认 0)"),
-            param(
+            schema_param(
                 "ticks",
                 "array",
                 false,
                 "要读取自动化值的 tick 列表 (保持给定顺序; 最多 256 个)",
+                ToolSpec::automation_ticks_schema,
             ),
-            param(
+            schema_param(
                 "point",
                 "object",
                 false,
                 "要写入的一个点 {tick, value, curve?}; 缺省 = 只读调用 (一位都不改)",
+                ToolSpec::automation_point_schema,
             ),
             param(
                 "pointId",
@@ -3090,6 +3128,41 @@ impl ToolSpec {
         Value::Object(map)
     }
 
+    /// ⭐ T-FIX-956：`point` 的嵌套 schema。上界 = `u64::MAX`，与运行时
+    /// `parse_point` 的 `as_u64()` 同一口径（没有业务上限，⛔ 不另造一套）。
+    #[must_use]
+    pub fn automation_point_schema() -> Value {
+        serde_json::json!({
+            "properties": {
+                "tick": {
+                    "type": "integer",
+                    "minimum": 0_u64,
+                    "maximum": u64::MAX,
+                },
+                "value": { "type": "number" },
+                "curve": {
+                    "type": "string",
+                    "enum": crate::domain::extension_pure::CURVE_NAMES,
+                },
+            },
+            "required": ["tick", "value"],
+        })
+    }
+
+    /// ⭐ T-FIX-956：`ticks` 的 items 约束与条数护栏。上界同 `point.tick`；
+    /// `maxItems` 直接取运行时常量 `MAX_READ_TICKS`，⛔ 不手抄 256。
+    #[must_use]
+    pub fn automation_ticks_schema() -> Value {
+        serde_json::json!({
+            "items": {
+                "type": "integer",
+                "minimum": 0_u64,
+                "maximum": u64::MAX,
+            },
+            "maxItems": crate::domain::automation::MAX_READ_TICKS,
+        })
+    }
+
     /// 由注册表**派生**的 JSON Schema（`type: object` + `properties` + `required`）。
     ///
     /// 契约里的 `definitions.ToolCall.properties.arguments` 只声明了 `dryRun` /
@@ -3140,6 +3213,15 @@ impl ToolSpec {
                     "enum".to_owned(),
                     Value::Array(values().into_iter().map(Value::from).collect()),
                 );
+            }
+            // ⭐ T-FIX-956：object 嵌套 schema / array 的 items+maxItems 广播。
+            // 约束由单一真相函数在调用时生成，与运行时校验共用同一常量。
+            if let Some(extra) = spec.extra_schema
+                && let Value::Object(map) = extra()
+            {
+                for (key, value) in map {
+                    property.insert(key, value);
+                }
             }
             let canonical_property = Value::Object(property);
             properties.insert(spec.name.to_owned(), canonical_property.clone());

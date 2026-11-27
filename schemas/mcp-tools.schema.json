@@ -1413,8 +1413,10 @@
               "description": "要读取自动化值的 tick 列表 (保持给定顺序; 最多 256 个)",
               "items": {
                 "type": "integer",
-                "minimum": 0
-              }
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "maxItems": 256
             },
             "point": {
               "type": "object",
@@ -1422,16 +1424,18 @@
               "properties": {
                 "tick": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
                 },
                 "value": {
                   "type": "number"
                 },
                 "curve": {
                   "type": "string",
-                  "description": "Linear | Exponential | Logarithmic | SCurve (默认 Linear)"
+                  "enum": ["Linear", "Exponential", "Logarithmic", "SCurve"]
                 }
-              }
+              },
+              "required": ["tick", "value"]
             },
             "pointId": {
               "type": "string",

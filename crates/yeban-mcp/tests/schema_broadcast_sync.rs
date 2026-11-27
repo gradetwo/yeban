@@ -90,3 +90,46 @@ fn registered_argument_schemas_match_the_runtime_broadcast() {
         "静态 schema 的工具条目数必须与运行时注册表一致"
     );
 }
+
+/// ⭐ T-FIX-956：`yeban_edit_automation` 的 `point` / `ticks` 必须广播嵌套约束，
+/// 且上界与条数护栏直接读运行时常量（⛔ 不手抄 256 / u64::MAX）。
+#[test]
+fn automation_point_and_ticks_broadcast_nested_constraints() {
+    let spec = yeban_mcp::tools::tool("yeban_edit_automation")
+        .expect("edit_automation 必须在运行时注册表");
+    let schema = spec.input_schema();
+    let max_tick = u64::MAX;
+
+    let point = &schema["properties"]["point"];
+    assert_eq!(point["type"], "object");
+    assert_eq!(point["properties"]["tick"]["type"], "integer");
+    assert_eq!(point["properties"]["tick"]["minimum"], 0_u64);
+    assert_eq!(point["properties"]["tick"]["maximum"], max_tick);
+    assert_eq!(point["properties"]["value"]["type"], "number");
+    assert_eq!(
+        point["properties"]["curve"]["enum"],
+        serde_json::json!(yeban_mcp::domain::extension_pure::CURVE_NAMES)
+    );
+    let required = point["required"].as_array().expect("point.required");
+    assert!(
+        required.iter().any(|v| v == "tick"),
+        "point.required 缺 tick"
+    );
+    assert!(
+        required.iter().any(|v| v == "value"),
+        "point.required 缺 value"
+    );
+
+    let ticks = &schema["properties"]["ticks"];
+    assert_eq!(ticks["type"], "array");
+    assert_eq!(ticks["items"]["type"], "integer");
+    assert_eq!(ticks["items"]["minimum"], 0_u64);
+    assert_eq!(ticks["items"]["maximum"], max_tick);
+    assert_eq!(
+        ticks["maxItems"],
+        serde_json::json!(yeban_mcp::domain::automation::MAX_READ_TICKS)
+    );
+
+    // 红对照：把 tools.rs 的 `extra_schema` 广播分支摘掉 ⇒ point.properties / ticks.items 缺席，
+    // 本判据在 point.properties.tick.type 处红。
+}
