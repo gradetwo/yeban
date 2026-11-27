@@ -34513,6 +34513,9 @@ fn publish_missing_rows(ui: &MainWindow, rows: &MissingRows) {
     let (mut s3_name, mut s3_path, mut s3_on, mut s3_id) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut ready = 0usize;
+    // "只能去音源管理"的行：清单里连同类候选都没有，也没有原音源包 id。
+    // 这种行没有任何「下载」按钮；摘要若还让点下载，就是把用户指向不存在的控件。
+    let mut browse_only = 0usize;
     for item in items.iter() {
         track_names.push(SharedString::from(item.track_name.as_str()));
         // 只显示文件名主干：工程里那条路径是给开发看的，用户只认"哪一件"。
@@ -34524,6 +34527,9 @@ fn publish_missing_rows(ui: &MainWindow, rows: &MissingRows) {
             .count();
         if installed > 0 {
             ready += 1;
+        }
+        if item.suggestions.is_empty() && item.pack_id.is_none() {
+            browse_only += 1;
         }
         hints.push(SharedString::from(missing_row_hint(item, installed)));
         can_download.push(item.pack_id.is_some());
@@ -34558,14 +34564,34 @@ fn publish_missing_rows(ui: &MainWindow, rows: &MissingRows) {
             items.len()
         )
     } else if ready > 0 {
+        if browse_only > 0 {
+            format!(
+                "有 {} 条轨的音源没装好，其中 {} 条可以直接换成已装好的同类音源；其余的点「下载」或去音源管理装上再换。",
+                items.len(),
+                ready
+            )
+        } else {
+            format!(
+                "有 {} 条轨的音源没装好，其中 {} 条可以直接换成已装好的同类音源；其余的点「下载」装上再换。",
+                items.len(),
+                ready
+            )
+        }
+    } else if browse_only == 0 {
         format!(
-            "有 {} 条轨的音源没装好，其中 {} 条可以直接换成已装好的同类音源；其余的点「下载」装上再换。",
-            items.len(),
-            ready
+            "有 {} 条轨的音源没装好，同类音源这台机器上也还没装。点「下载」装好一件，回来我再帮你换。",
+            items.len()
+        )
+    } else if browse_only == items.len() {
+        // ⛔ 这些行没有候选、也没有原音源包：面板里**没有**「下载」按钮。
+        // 摘要必须改指真实存在的「去音源管理」入口，否则就是用户截图里的死路。
+        format!(
+            "有 {} 条轨的音源没装好，同类音源这台机器上还没装。先去音源管理装好一件，回来我再帮你换。",
+            items.len()
         )
     } else {
         format!(
-            "有 {} 条轨的音源没装好，同类音源这台机器上也还没装。点「下载」装好一件，回来我再帮你换。",
+            "有 {} 条轨的音源没装好，同类音源这台机器上还没装。点「下载」或先去音源管理装好一件，回来我再帮你换。",
             items.len()
         )
     };
@@ -34604,8 +34630,14 @@ fn missing_file_label(path: &str) -> String {
 /// 一行下面那句提示：说清"这条轨是哪种乐器、有几种走法"。
 fn missing_row_hint(item: &crate::missing_sounds::MissingSound, installed: usize) -> String {
     if item.suggestions.is_empty() {
+        if item.pack_id.is_some() {
+            return format!(
+                "这件的乐器类型是「{}」，但这台机器和清单里都没有可替换的同类。可以下载原音源，或去音源管理装好一件再回来。",
+                item.kind.label()
+            );
+        }
         return format!(
-            "这件的乐器类型是「{}」，但这台机器和清单里都没有可替换的同类。你可以自己装回原音源，或先用别的音源顶一下。",
+            "这件的乐器类型是「{}」，但这台机器和清单里都没有可替换的同类。先去音源管理装好一件，或先用别的音源顶一下。",
             item.kind.label()
         );
     }
@@ -34658,6 +34690,20 @@ fn open_library_for(ui: &MainWindow, seed: &str, status: &str) {
     ui.set_sound_library_status(SharedString::from(status));
     ui.set_sound_library_status_is_error(false);
     ui.invoke_sound_library_filter_changed(SharedString::from(seed));
+}
+
+/// 没有候选、也没有原音源包时：开音源管理，但**不筛任何包**（清单里没有可筛的）。
+///
+/// 与 [`open_library_for`] 同一条打开路径；区别只有搜索词清空 —— 用户上一次
+/// 可能筛着别的包，若不清，他进馆后看到的仍是一张被筛空的列表，还是找不到入口。
+fn open_library_for_browse(ui: &MainWindow) {
+    ui.set_missing_sounds_open(false);
+    ui.invoke_open_sound_library();
+    ui.set_sound_library_search(SharedString::from(""));
+    let status = "这台机器和清单里都没有可直接替换的同类。可以在音源管理里装好一件，回来再换。";
+    ui.set_sound_library_status(SharedString::from(status));
+    ui.set_sound_library_status_is_error(false);
+    ui.invoke_sound_library_filter_changed(SharedString::from(""));
 }
 
 /// 一条"下载完就换到轨上"的待办（用户点了「下载 X」那一刻记下）。
@@ -34989,6 +35035,26 @@ pub fn wire_missing_sounds_dialog(
             }
             .text_in(current_language());
             open_library_for(&ui, pack_id.as_str(), status.as_str());
+        }
+    });
+
+    // ---- 无候选 ⇒ 去音源管理（不筛包，先把入口打通）--------------------------
+    ui.on_missing_browse_library({
+        let weak = ui.as_weak();
+        let rows = Rc::clone(&rows);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            // 行号必须仍对应一条现存轨：回调是槽位制的，删行后旧点击不能打开空面板。
+            if rows
+                .borrow()
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .is_none()
+            {
+                return;
+            }
+            open_library_for_browse(&ui);
         }
     });
 

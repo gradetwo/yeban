@@ -1,12 +1,14 @@
 // 夜半 (Yeban) — 缺音源的救援面板
 //
-// 它回答的是"打开工程发现没声音"那一刻的三个问题：
+// 它回答的是"打开工程发现没声音"那一刻的问题：
 //   1. 是哪条轨、缺的是哪一件？
 //   2. 我能不能一键换一件**能响的相近音源**（同类乐器）？
 //   3. 如果我就想要原音源，去哪儿下载？
+//   4. 如果清单里连同类都没有，我从哪里装一件回来？
 //
 // ## 设计纪律（见 `docs/UX-错误与提醒设计原则.md`）
-// - 一屏说清，每一行**只放一轨**，行内最多 3 个候选 + 1 个"下载原音源"。
+// - 一屏说清，每一行**只放一轨**，行内最多 3 个候选 + 1 个"下载原音源"；
+//   没有候选的行必须给一个真的能点的「去音源管理」入口。
 // - 候选优先**已经装好的**（本地能直接响），其次才是要下载的；按钮文字如实
 //   区分「换成 X」（已装，点了就响）与「下载 X」（还没装，点了去下载）。
 // - ⛔ 不显示工程内部路径原文（那是给开发看的），只显示文件名主干与轨道名。
@@ -131,6 +133,7 @@ export component MissingSoundsDialog inherits Rectangle {
     callback swap-suggested(int, string, string);
     callback open-pack(int, string, string);
     callback download-original(int);
+    callback browse-library(int);
 
     // 行数由宿主写入（⛔ 不用 `track-names.length` 推：布局期数组可能还没到，面板高度会抖）
     in property <int> row-count: 0;
@@ -422,6 +425,61 @@ export component MissingSoundsDialog inherits Rectangle {
                                     clicked => { root.download-original(i); }
                                 }
                             }
+
+                            // 清单里连同类候选都没有 ⇒ 面板必须给一条真正能走的路。
+                            // 这行的「下载」按钮来自候选行；候选为空时它根本不出现，所以
+                            // 文案不能再让用户去点一个不存在的东西。这里直接开音源管理，
+                            // 用户装好一件再回来（面板关掉音源管理后会自己回来）。
+                            if root.s1-name[i] == "" : Rectangle {
+                                width: 96px;
+                                height: 26px;
+                                background: Tokens.bg-void;
+                                border-radius: Tokens.radius-sm;
+                                border-width: 1px;
+                                border-color: Tokens.gold-deep;
+                                property <string> row-suffix: "-" + i;
+                                accessible-role: button;
+                                accessible-id: "missing-sounds-browse" + self.row-suffix;
+                                accessible-label: @tr("去音源管理");
+                                accessible-action-default => { root.browse-library(i); }
+
+                                // 行取焦槽位 `100+i*10+5`：排在候选（1–3）与原音源下载（4）之后。
+                                browse-library-focus := FocusScope {
+                                    x: 0;
+                                    y: 0;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    focus-on-click: false;
+                                    focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 5; root.scroll-row-into-view(i); }
+                                    focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 5) { root.focused-row-slot = -1; } }
+                                    key-pressed(event) => {
+                                        if (event.text == Key.Return || event.text == Key.Space) {
+                                            root.browse-library(i);
+                                            accept
+                                        } else {
+                                            reject
+                                        }
+                                    }
+                                }
+
+                                UiText {
+                                    x: 4px;
+                                    y: 0;
+                                    width: parent.width - 8px;
+                                    height: parent.height;
+                                    text: @tr("去音源管理");
+                                    color: Tokens.gold-bright;
+                                    font-size: Tokens.font-size-xs;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    clicked => { root.browse-library(i); }
+                                }
+                            }
                         }
                     }
             }
@@ -497,7 +555,8 @@ export component MissingSoundsDialog inherits Rectangle {
     in-out property <int> focused-row-slot: -1;
     /// 槽位表（与树序 = Tab 序一致；行按钮的槽位见各行 `focus-gained`）：
     /// `0` ✕ 关闭 / `1` 「先不管」/ `100+i*10+{1,2,3}` 行 i 的候选（槽 1–3）/
-    /// `100+i*10+4` 行 i 的「下载原音源」/ `-1` 不在模态内。
+    /// `100+i*10+4` 行 i 的「下载原音源」/ `100+i*10+5` 行 i 的「去音源管理」/
+    /// `-1` 不在模态内。
     /// 静态锚点（0 / 1）由 `focus-control` 直达；行槽位只能由原生 Tab 遍历
     /// 到达 —— Slint 无法从 `for` 循环外按下标取焦重复元素（与 T-FIX-217
     /// 的音源管理同款约束；`focus-control` 调行槽位会被静默忽略，

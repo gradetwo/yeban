@@ -1208,10 +1208,11 @@ export component MainWindow inherits Window {
     callback sound-library-download-all();
     // 装好的音源 ⇒ 一次点击用到混音台当前轨（见 `host::wire_sound_library_dialog_with`）
     callback sound-library-use-pack(string);
-    // 缺音源救援面板的三个动作（接线见 `host::wire_missing_sounds_dialog`）：
-    // 换同类 / 就想要原音源（去下载）/ 先不管。
+    // 缺音源救援面板的动作（接线见 `host::wire_missing_sounds_dialog`）：
+    // 换同类 / 就想要原音源（去下载）/ 无候选时去音源管理 / 先不管。
     callback missing-swap-suggested(int, string, string);
     callback missing-download-original(int);
+    callback missing-browse-library(int);
     callback missing-close();
     // 候选还没装 ⇒ 去下载那一件（打开音源管理并按包 id 筛好）
     callback missing-open-pack(int, string, string);
@@ -3062,7 +3063,9 @@ export component MainWindow inherits Window {
         // T-FIX-182：`if` 改为 `visible:` 门控（与 T-FIX-131 的五只同理）。
         missing-sounds-dialog := MissingSoundsDialog {
             visible: root.missing-sounds-open;
-            z: 9400;
+            // 阻断性错误优先：压过首启引导层（z 9600）。用户在"音源没装好"的
+            // 状态下必须先能处理错误，不能被欢迎导览整块盖住。
+            z: 9650;
             row-count: root.missing-row-count;
             x: 0px;
             y: 0px;
@@ -3089,12 +3092,15 @@ export component MainWindow inherits Window {
             swap-suggested(row, path, name) => { root.missing-swap-suggested(row, path, name); }
             open-pack(r, id, name) => { root.missing-open-pack(r, id, name); }
             download-original(row) => { root.missing-download-original(row); }
+            browse-library(row) => { root.missing-browse-library(row); }
         }
 
         // T-FIX-182：`if` 改为 `visible:` 门控（与 T-FIX-131 的五只同理）。
         sound-library-dialog := SoundLibraryDialog {
             visible: root.sound-library-open;
-            z: 9600;
+            // 必须高于救援面板（9650）：从救援面板点「下载 / 去音源管理」进来时，
+            // 音源管理是前台，下载进度不能被救援面板盖住。
+            z: 9750;
             x: 0px;
             y: 0px;
             width: root.width;
