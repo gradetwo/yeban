@@ -4621,6 +4621,9 @@ mod tests {
                         byte_len: 1_024,
                         media_kind: MediaKind::Audio,
                         license: "CC0-1.0".to_owned(),
+
+                        frames: None,
+                        sample_rate: None,
                     },
                 ),
                 (
@@ -4631,6 +4634,9 @@ mod tests {
                         byte_len: 1_024,
                         media_kind: MediaKind::Audio,
                         license: "CC0-1.0".to_owned(),
+
+                        frames: None,
+                        sample_rate: None,
                     },
                 ),
             ]),
@@ -5220,6 +5226,9 @@ mod tests {
                     byte_len: 2_048,
                     media_kind: MediaKind::Audio,
                     license: "CC-BY-4.0".to_owned(),
+
+                    frames: None,
+                    sample_rate: None,
                 },
             },
             // 资产删除（夹具里已登记的 `b"kick"`）。
@@ -5231,6 +5240,9 @@ mod tests {
                     byte_len: 1_024,
                     media_kind: MediaKind::Audio,
                     license: "CC0-1.0".to_owned(),
+
+                    frames: None,
+                    sample_rate: None,
                 },
             },
             Op::SetMacro {
@@ -9826,6 +9838,9 @@ mod tests {
             byte_len: 2_048,
             media_kind: MediaKind::Audio,
             license: "CC0-1.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         };
 
         // ⑤ 新资产未注册时先拒（顺序在 ① 之前：`kick-unregistered` 不在夹具里；
@@ -9864,6 +9879,9 @@ mod tests {
                 byte_len: 2_048,
                 media_kind: MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
         let ClipContent::Audio { asset, .. } = &mut expected
@@ -9942,6 +9960,9 @@ mod tests {
                         byte_len: 2_048,
                         media_kind: MediaKind::Audio,
                         license: "CC0-1.0".to_owned(),
+
+                        frames: None,
+                        sample_rate: None,
                     },
                 },
                 Op::SetClipAsset {
@@ -12167,6 +12188,9 @@ mod tests {
             byte_len: 2_048,
             media_kind: MediaKind::Audio,
             license: "CC-BY-4.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         };
 
         // ① 创建：只加一个键，⛔ 不碰 clip_pool。

@@ -1412,6 +1412,9 @@ pub fn delivery_parts(
         byte_len: u64::try_from(asset_bytes.len()).unwrap_or(u64::MAX),
         media_kind: MediaKind::Audio,
         license: receipt.source_license.clone(),
+
+        frames: None,
+        sample_rate: None,
     };
     let ops = vec![
         Op::SetAsset {

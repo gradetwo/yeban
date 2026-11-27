@@ -509,6 +509,9 @@ pub fn filled_project() -> YebanProjectV1 {
                 byte_len: asset_byte_len,
                 media_kind: MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         )]),
         embedded_samples: BTreeMap::new(),
@@ -1025,6 +1028,9 @@ pub fn demo_project() -> YebanProjectV1 {
                 byte_len: kick_byte_len,
                 media_kind: MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         )]),
         ..YebanProjectV1::default()

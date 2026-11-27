@@ -312,6 +312,9 @@ pub fn asset_index(bytes: &[u8], original_path: &str, license: &str) -> AssetMet
         byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
         media_kind: MediaKind::Audio,
         license: license.to_owned(),
+
+        frames: None,
+        sample_rate: None,
     }
 }
 
@@ -365,8 +368,11 @@ pub fn import_bytes(
     license: &str,
     options: &DecodeOptions,
 ) -> DecodeResult<ImportedAsset> {
-    let index = asset_index(bytes, original_path, license);
+    let mut index = asset_index(bytes, original_path, license);
     let decoded = decode::decode_bytes(bytes, options)?;
+    // T-FIX-742：同 [`import_path_with_len`]，材料长度与采样率随解码一次登记。
+    index.frames = Some(decoded.frame_count());
+    index.sample_rate = Some(decoded.sample_rate());
     Ok(ImportedAsset { index, decoded })
 }
 
@@ -481,14 +487,20 @@ where
         });
     }
     let decoded = decode::decode_path(path, options)?;
-    let index = AssetMetadata {
+    let mut index = AssetMetadata {
         hash,
         original_path: path.to_string_lossy().into_owned(),
         // 权威长度 = 摘要实际覆盖的字节数（`== actual_len`，上面刚判过）。
         byte_len: hashed,
         media_kind: MediaKind::Audio,
         license: license.to_owned(),
+        frames: None,
+        sample_rate: None,
     };
+    // T-FIX-742：解码已经做过，顺手把素材长度与采样率登记进索引 ——
+    // 摆放的 `source_start_samples` 上限只能从这里读（字节数推不出帧数）。
+    index.frames = Some(decoded.frame_count());
+    index.sample_rate = Some(decoded.sample_rate());
     Ok(ImportedAsset { index, decoded })
 }
 
@@ -510,6 +522,20 @@ mod tests {
         wav(&spec, &encode_int_samples(16, values))
     }
 
+    #[test]
+    fn import_records_the_decoded_frame_count_and_sample_rate() {
+        let values: Vec<i32> = (0..2_000).map(|value| (value % 100) - 50).collect();
+        let bytes = fixture(&values, 2);
+        let imported = import_bytes(
+            &bytes,
+            "samples/hat.wav",
+            "CC0-1.0",
+            &DecodeOptions::default(),
+        )
+        .expect("导入");
+        assert_eq!(imported.index.frames, Some(1_000), "帧数 = 交错样本 / 声道");
+        assert_eq!(imported.index.sample_rate, Some(44_100));
+    }
     #[test]
     fn cas_index_matches_yeban_model_and_is_content_addressed() {
         let bytes = fixture(&[1, -2, 3, -4], 2);

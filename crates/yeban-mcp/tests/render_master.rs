@@ -6597,6 +6597,9 @@ fn the_known_unsupported_list_is_not_decoration() {
                     byte_len: 4,
                     media_kind: yeban_model::MediaKind::Audio,
                     license: "CC0-1.0".to_owned(),
+
+                    frames: None,
+                    sample_rate: None,
                 },
             );
             let clip = id(13);

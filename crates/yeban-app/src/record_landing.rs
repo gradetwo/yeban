@@ -481,6 +481,9 @@ pub fn land_recording_at(
                     media_kind: MediaKind::Audio,
                     // 录音不是"导入"：来源如实标 `user-recorded`，与 `user-imported` 区分。
                     license: "user-recorded".to_owned(),
+
+                    frames: None,
+                    sample_rate: None,
                 },
             },
         );

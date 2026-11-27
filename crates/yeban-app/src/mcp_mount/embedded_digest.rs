@@ -406,6 +406,9 @@ fn add_audio_clip(
             byte_len: u64::try_from(bytes.len()).expect("夹具字节数放得进 u64"),
             media_kind: MediaKind::Audio,
             license: "test fixture (generated in-memory)".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         },
     );
     place_clip(

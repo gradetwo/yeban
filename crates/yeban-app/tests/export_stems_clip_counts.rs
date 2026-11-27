@@ -261,6 +261,9 @@ fn project_with_audio_clip(asset: AssetHash, bytes: &[u8]) -> YebanProjectV1 {
             byte_len: u64::try_from(bytes.len()).expect("小文件"),
             media_kind: MediaKind::Audio,
             license: "CC0-1.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         },
     );
     project.validate().expect("夹具工程必须合法");

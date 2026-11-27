@@ -918,6 +918,9 @@ fn build_project(
                 byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
                 media_kind: MediaKind::Audio,
                 license: "user-imported".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
     }

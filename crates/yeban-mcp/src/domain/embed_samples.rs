@@ -626,6 +626,9 @@ mod tests {
                 byte_len: 11,
                 media_kind: yeban_model::MediaKind::Audio,
                 license: String::new(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
         let project_path = dir.join("proj.yeban");

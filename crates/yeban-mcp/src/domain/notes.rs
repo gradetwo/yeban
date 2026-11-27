@@ -23780,6 +23780,9 @@ mod tests {
             byte_len: 64,
             media_kind: yeban_model::MediaKind::Audio,
             license: "CC0-1.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         };
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
@@ -27145,6 +27148,9 @@ mod tests {
                 byte_len: 64,
                 media_kind: yeban_model::MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
         let before = project.assets.len();

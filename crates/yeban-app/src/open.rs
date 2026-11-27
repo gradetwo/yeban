@@ -323,6 +323,9 @@ fn backfill_audio_index_from_pool(archive: &mut ProjectArchive) -> usize {
                 byte_len,
                 media_kind: MediaKind::Audio,
                 license: BACKFILLED_ASSET_LICENSE.to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
         backfilled += 1;
@@ -955,6 +958,9 @@ mod tests {
                 byte_len: 0,
                 media_kind: yeban_model::project::MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
+
+                frames: None,
+                sample_rate: None,
             },
         );
         let bytes =

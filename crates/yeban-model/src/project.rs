@@ -2119,6 +2119,16 @@ pub struct AssetMetadata {
     pub media_kind: MediaKind,
     /// 许可标识（`MUST-GATE-014` 要求逐条可查）。
     pub license: String,
+    /// 素材的**帧数**（解码后的采样帧；`None` = 未知，旧工程/非 PCM 容器）。
+    ///
+    /// T-FIX-742：摆放的 `source_start_samples` 越界要靠它判。`Option` +
+    /// `serde(default)` + `skip_serializing_if` 与 D43 对 `Option<T>` 的豁免同一条口径 ⇒
+    /// 旧工程逐字节不变，缺字段照常载入（⛔ 不因为派生长度缺失就拒载）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    /// 素材的**采样率**（Hz；`None` = 未知）。与 [`Self::frames`] 同一条 D43 豁免。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
 }
 
 /// 顶层工程文档：唯一权威持久化结构 [MODEL-AST-002]。
@@ -2891,6 +2901,33 @@ mod tests {
     // `examples/export_schema_samples.rs` 使用，避免"测试一套、导出另一套"）。
     use crate::samples::{filled_project, fixture_id, master_track, midi_clip, midi_track};
 
+    #[test]
+    fn asset_metadata_media_length_is_optional_and_backward_compatible() {
+        let legacy = serde_json::json!({
+            "hash": "00".repeat(32),
+            "original_path": "samples/old.wav",
+            "byte_len": 48_044_u64,
+            "media_kind": "Audio",
+            "license": "CC0-1.0"
+        });
+        let parsed: AssetMetadata =
+            serde_json::from_value(legacy.clone()).expect("旧工程必须能载入");
+        assert_eq!(parsed.frames, None);
+        assert_eq!(parsed.sample_rate, None);
+        let written = serde_json::to_value(&parsed).expect("序列化");
+        assert!(
+            written.get("frames").is_none() && written.get("sample_rate").is_none(),
+            "None 不得落盘（旧工程逐字节不变）: {written}"
+        );
+
+        let mut measured = parsed;
+        measured.frames = Some(96_000);
+        measured.sample_rate = Some(48_000);
+        let value = serde_json::to_value(&measured).expect("序列化");
+        let back: AssetMetadata = serde_json::from_value(value).expect("回读");
+        assert_eq!(back.frames, Some(96_000));
+        assert_eq!(back.sample_rate, Some(48_000));
+    }
     #[test]
     fn source_start_samples_is_absent_when_none_and_defaults_on_old_load() {
         let placement = ClipPlacement::default();

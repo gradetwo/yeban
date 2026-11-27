@@ -254,6 +254,9 @@ fn fixture(bytes: Vec<u8>, plugin_device: Option<DeviceDefinition>) -> Fixture {
             byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
             media_kind: MediaKind::Audio,
             license: "CC0-1.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         },
     );
     project.tracks.insert(lead, track);

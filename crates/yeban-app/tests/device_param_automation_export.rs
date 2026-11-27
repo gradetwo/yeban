@@ -226,6 +226,9 @@ fn project(tune: &Tune<'_>, bytes: &[u8], seed: u32) -> YebanProjectV1 {
             byte_len: u64::try_from(bytes.len()).expect("小文件"),
             media_kind: MediaKind::Audio,
             license: "CC0-1.0".to_owned(),
+
+            frames: None,
+            sample_rate: None,
         },
     );
     if tune.insert_lane {

@@ -146,6 +146,9 @@ fn the_embedded_mount_carries_the_session_asset_pool_into_the_render() {
                     byte_len: u64::try_from(report.bytes.len()).expect("字节数放得进 u64"),
                     media_kind: MediaKind::Audio,
                     license: "test fixture (generated in-memory)".to_owned(),
+
+                    frames: None,
+                    sample_rate: None,
                 },
             },
             Op::AddClipPlacement {

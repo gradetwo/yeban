@@ -105,6 +105,9 @@ fn asset_metadata(hash: &AssetHash, original_path: &str, byte_len: usize) -> Ass
         byte_len: byte_len as u64,
         media_kind: MediaKind::Audio,
         license: "test-fixture".to_owned(),
+
+        frames: None,
+        sample_rate: None,
     }
 }
 
