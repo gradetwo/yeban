@@ -51,6 +51,131 @@ use std::fmt;
 // 账本第 314-318 轮：夹具家族（demo_*）下移到 `yeban-model::samples`；这里再导出, 调用方不变。
 pub use yeban_model::samples::{demo_id, demo_project};
 
+/// 内置演示在**播放面**上的循环铺底（T-FIX-886）。
+///
+/// ## 为什么放在 app 层，而不是改 `yeban-model::samples`
+///
+/// 模型里的 `demo_project()` / `filled_project()` 是**逐字节引脚**的样例
+///（ALS / 工程 JSON 等判据钉住），不能为了演示听感改它们的原始字段。
+/// 这里只在 `cli::Sample::project()` 交给产品播放路径之前，把**第一条 MIDI 摆放**
+/// 扩成整条演示时间线的循环：模型原件、导出夹具字节都不动。
+///
+/// ## 现场事实（ISS-MWYG6XT1-B22656）
+///
+/// 上报机在 007 小节读到端点峰值恒 0；本地实机从 000 开始采样却读到峰值
+/// `0.608666`。真正的无声边界不是 WASAPI：`demo_project` 的 MIDI 只有
+/// `0..2880 tick`（约 1.5 s），之后没有任何可闻内容；`filled_project` 的 Lead
+/// 循环摆放 `duration_ticks == loop end`，按 `[ADR-0010 D2]` 恰好覆盖 ⇒ 只播一遍。
+/// 因此这是**演示编排的听感缺口**，不是设备腿静音。
+///
+/// 本函数把这两条内置样例的 MIDI 铺底循环到演示时间线末端；不动音频片段
+///（它们继续按既有 solo/mute 规则被门控），也不改任何 WASAPI 参数。
+#[must_use]
+pub fn demo_project_for_playback() -> YebanProjectV1 {
+    // 演示 UI 的时间线是 16 小节（`song_overview_panel` 的既有口径），
+    // 120 BPM / 4/4 下 16 小节 = 32 s，足够覆盖 007 与 12 s 实机采样窗。
+    with_looped_demo_bed(demo_project(), 16)
+}
+
+/// `filled` 样例的播放面铺底（T-FIX-886）：Lead 的 1 小节循环铺满 160 小节。
+///
+/// 上报机的 `demo-filled.yeban` 在 029/160 小节采到全 0；本地模型里
+/// `filled_project` 的 Lead 循环摆放只有 1 小节（`end_tick == duration_ticks`），
+/// 所以 029 本来就没有内容。播放面扩成 160 小节后，同一断点由设备回调体
+/// `render_callback` 判据覆盖（见 `tests/demo_realtime_audio.rs`）。
+#[must_use]
+pub fn filled_project_for_playback() -> YebanProjectV1 {
+    with_looped_demo_bed(yeban_model::samples::filled_project(), 160)
+}
+
+/// 把工程里**第一条 MIDI 摆放**扩成 `bars` 小节的循环铺底。
+///
+/// - 未启用循环 ⇒ 以该 MIDI 片段的数据末端为循环终点启用；
+/// - 已启用循环 ⇒ 保留原循环区间，只把摆放时值铺到目标小节；
+/// - 只改 `duration_ticks` / `loop_config`，音符、片段、音频、路由一位不动。
+fn with_looped_demo_bed(mut project: YebanProjectV1, bars: u64) -> YebanProjectV1 {
+    const BEATS_PER_BAR: u64 = 4;
+    let bar_ticks = BEATS_PER_BAR.saturating_mul(PPQ);
+    let target_end = bar_ticks.saturating_mul(bars);
+
+    let midi_clip_ids: BTreeSet<EntityId> = project
+        .clip_pool
+        .iter()
+        .filter(|(_, entry)| matches!(entry.content, ClipContent::Midi { .. }))
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mut chosen: Option<((u64, EntityId, EntityId), u64, u64)> = None;
+    for (track_id, track) in &project.tracks {
+        for (placement_id, placement) in &track.clips {
+            if !midi_clip_ids.contains(&placement.clip_id) {
+                continue;
+            }
+            let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            let ClipContent::Midi { notes } = &entry.content else {
+                continue;
+            };
+            let Some(note_end) = notes
+                .values()
+                .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+                .max()
+            else {
+                continue;
+            };
+            let key = (placement.start_tick, *track_id, *placement_id);
+            if chosen
+                .as_ref()
+                .is_none_or(|(best_key, _, _)| key < *best_key)
+            {
+                chosen = Some((key, placement.start_tick, note_end));
+            }
+        }
+    }
+    let Some(((_, track_id, placement_id), start_tick, note_end)) = chosen else {
+        return project;
+    };
+
+    let Some(placement) = project
+        .tracks
+        .get_mut(&track_id)
+        .and_then(|track| track.clips.get_mut(&placement_id))
+    else {
+        return project;
+    };
+
+    let loop_start = if placement.loop_config.enabled {
+        placement.loop_config.start_tick
+    } else {
+        0
+    };
+    let loop_end = if placement.loop_config.enabled {
+        placement.loop_config.end_tick
+    } else {
+        note_end
+    };
+    if loop_end <= loop_start {
+        return project;
+    }
+    placement.loop_config = LoopConfig {
+        enabled: true,
+        start_tick: loop_start,
+        end_tick: loop_end,
+    };
+    placement.duration_ticks = target_end.saturating_sub(start_tick);
+    // 时间线也铺到同一末端，GUI 的 160 小节 filled 演示才能真正走到 029；
+    // 只延长最后一个段落，不增删段落、不改名字/颜色。
+    if let Some(last_section) = project
+        .sections
+        .values_mut()
+        .max_by_key(|section| section.end_tick)
+    {
+        last_section.end_tick = last_section.end_tick.max(target_end);
+    }
+    project
+}
+
 // 账本第 261 轮：这两个已**下移**到 `yeban-model`（MCP 与 UI 共用同一实现, 且不违反依赖方向）。
 use yeban_model::music::MidiNote;
 pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};

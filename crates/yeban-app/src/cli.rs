@@ -1174,8 +1174,8 @@ impl Sample {
     #[must_use]
     pub fn project(self) -> YebanProjectV1 {
         match self {
-            Self::Default => crate::bridge::demo_project(),
-            Self::Filled => yeban_model::samples::filled_project(),
+            Self::Default => crate::bridge::demo_project_for_playback(),
+            Self::Filled => crate::bridge::filled_project_for_playback(),
             Self::Empty => yeban_model::samples::default_project(),
         }
     }
