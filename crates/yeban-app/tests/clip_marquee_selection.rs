@@ -4,7 +4,7 @@
 //!
 //! Wang 2026-11-18 裁决（照 Logic Pro）：编曲区空白处拖拽 = 橡皮筋框选片段，
 //! ⛔ 不做拖拽滚动（2026-11-07 的「空车道拖动横滚」已废）；滚动只走滚轮 /
-//! Shift+滚轮 / 滚动条。本文件钉住新语义的四件事：
+//! Shift+滚轮 / 滚动条。本文件钉住新语义的五件事：
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
@@ -13,6 +13,7 @@
 //! | ③（单击不变） | 空白处单击（按下即松手、未越 4px 阈值）**不**改剪辑选区 —— 原来的单击选轨语义保留，框选不许吞掉它 |
 //! | ④（加选与清空） | Shift 框选（回调层）= 并入现有选区且主选中保住；无修饰框选空命中 = 清空选区 |
 //! | ⑤（T-FIX-858 三态） | Cmd/Ctrl 框选 = 差集，主选中被减则回退剩余首元；Shift 并集与无修饰替换不回归 |
+//! | ⑥（泳道可见仍框选） | 自动化通道可见（默认态）下空白拖拽仍框选（T-FIX-888）；泳道带内单击仍是自动化点编辑 |
 //!
 //! ## 平台约束
 //!
@@ -317,6 +318,153 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
         "",
         "主选中必须随之为空"
     );
+}
+
+/// 自动化通道可见（默认态）下空白拖拽仍框选（T-FIX-888，ISS-MWYH9WV3-A8955A）。
+///
+/// 与主判据同款拖拽，唯一差别：**不关泳道**。基线红：按下点落在起始轨的泳道带内，
+/// 泳道 TouchArea 抢走按下，框选进不了状态机，松手后选区为空。
+/// 修复后：泳道自身 TouchArea 接手势——拖拽改走同一份框选状态机（与空白车道
+/// TouchArea 同款坐标换算、同一份 `clip-marquee-select`），单击仍是自动化点
+/// 编辑（T-FIX-714 语义不变）。
+/// ⑤ 回归：泳道带内单击仍新增一个自动化点（泳道自身的编辑手势）。
+#[test]
+fn blank_drag_selects_clips_with_automation_lanes_visible() {
+    let project = demo_project();
+    let view = ViewState::from_project(&project).expect("演示工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let mut port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<clip-marquee-lanes>", "yeban-app", project.clone(), NOW_MS)
+            .expect("打开"),
+    ));
+    let live_view = Rc::new(RefCell::new(view.clone()));
+    host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    // T-FIX-888：泳道单击的宿主落点 —— 本文件只接了 wire_clip_scope（框选），
+    // `automation-lane-click` 的宿主接线须另接 wire_automation_lane_click，
+    // 与产品进程（main.rs 的 wire_callbacks）与 build_live_ui_with 同款，
+    // 共用同一份 undo 端口；不接它，.slint 的回调无人听，点数永远不增。
+    host::wire_automation_lane_click(port.ui(), &undo);
+    // ⭐ T-FIX-888：不关泳道 —— 默认态 automation-visible == true。
+    assert!(
+        port.ui().get_automation_visible(),
+        "本判据测的是通道可见的默认态，泳道必须可见"
+    );
+    port.refresh_tree(None).expect("必须能抓控件树");
+
+    let bounds = port
+        .tree()
+        .find_by_id(FLICKABLE)
+        .expect("控件树里必须有编曲滚动面")
+        .bounds
+        .expect("滚动面必须有几何");
+    let origin_x = f64::from(port.ui().get_track_headers_width()) + 5.0;
+    let visible_tx_max = (bounds.width as f32) - (origin_x as f32) - 24.0;
+
+    // 按下点：空白车道；目标：另一条轨道上、可见宽内的一条片段。
+    let (start_track, sx, sy) = blank_start(&view, visible_tx_max);
+    // 守卫：按下点必须落在起始轨的一条泳道带内，否则本判据测不到缺陷。
+    let lane_hit = view.automation_lanes.iter().any(|lane| {
+        lane.track_index == start_track && sy >= lane.band_y && sy < lane.band_y + lane.band_height
+    });
+    assert!(
+        lane_hit,
+        "按下点必须落在起始轨的泳道带内（否则缺陷不在本判据路径上）：track {start_track} y {sy}"
+    );
+    let target = view
+        .clips
+        .iter()
+        .find(|c| {
+            let (x, _, w, _) = block_rect(&view, c);
+            c.track_index != start_track && x + w / 2.0 < visible_tx_max
+        })
+        .expect("演示工程必须有异轨可见片段可作框选目标");
+    let (tx0, ty0, tw, th) = block_rect(&view, target);
+    let (ex, ey) = (tx0 + tw / 2.0, ty0 + th / 2.0);
+
+    // ② 真实拖拽：按下（Flickable 局部坐标）→ 三步移动（窗口绝对坐标）→ 松手。
+    port.dispatch_pointer_down(
+        FLICKABLE,
+        origin_x + f64::from(sx),
+        f64::from(sy),
+        PointerButton::Left,
+    )
+    .expect("空白车道必须可按下");
+    for step in 1..=3 {
+        let t = f64::from(step) / 3.0;
+        port.dispatch_pointer_move(
+            f64::from(bounds.x) + origin_x + f64::from(sx) + (f64::from(ex - sx)) * t,
+            f64::from(bounds.y) + f64::from(sy) + (f64::from(ey - sy)) * t,
+        )
+        .expect("拖动必须送达");
+    }
+    port.dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+
+    let expected = clip_marquee_hits(&view, sx, sy, ex, ey);
+    assert!(
+        expected.contains(&target.placement_id),
+        "框选矩形必须命中目标片段（判据自身的几何复算）：{expected:?}"
+    );
+    let selected: Vec<String> = port
+        .ui()
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(selected, expected, "通道可见时松手后选区集必须 == 命中集");
+
+    // ⑤ 回归：泳道带内单击仍归泳道 —— 取 tick 960（x = 32px，落在起始轨片段
+    // 覆盖区内，正是 T-FIX-714「含片段覆盖区」的那格）、带中线单击。
+    // 起始轨第一条泳道（音量）在 tick 0/1920/3840 有点，960 与两端都相隔
+    // 960 ticks，超出 8px × ticks_per_pixel = 240 ticks 的容差 ⇒ 新增一点。
+    // ⚠ 不断言 select-track 的选轨：`select-track` 的宿主落点只在产品进程
+    // 接线（app.slint:1940-1941），测试装配里不跑，旧 `clicked` 处理器在
+    // 同一装配里同样选不上轨 —— 该断言判不出新旧差异；生产里 select-track
+    // 调用逐字未变。点数 +1 才是泳道自身编辑手势的活证据。
+    let lane = view
+        .automation_lanes
+        .iter()
+        .find(|lane| lane.track_index == start_track)
+        .expect("起始轨必须有一条泳道");
+    let click_tick = 960u64;
+    let click_x = click_tick as f32 / view.ticks_per_pixel.max(1) as f32;
+    let click_y = lane.band_y + lane.band_height / 2.0;
+    assert!(
+        click_x + 20.0 < visible_tx_max,
+        "单击点必须在可见宽内：click_x {click_x} vs {visible_tx_max}"
+    );
+    let points_before = lane_point_count(&undo, &lane.target);
+    port.dispatch_pointer_down(
+        FLICKABLE,
+        origin_x + f64::from(click_x),
+        f64::from(click_y),
+        PointerButton::Left,
+    )
+    .expect("泳道带内必须可按下");
+    port.dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+    assert_eq!(
+        lane_point_count(&undo, &lane.target),
+        points_before + 1,
+        "泳道带内单击必须新增一个自动化点"
+    );
+}
+
+/// 读某条泳道当前点数（经 UndoPort 的现工程）。
+fn lane_point_count(undo: &Rc<UndoPort>, target: &yeban_model::AutomationTarget) -> usize {
+    let project = undo.try_project().expect("工程必须可读");
+    let track = project
+        .tracks
+        .get(&target.track_id())
+        .expect("目标轨道必须存在");
+    track
+        .automation_lanes
+        .get(target)
+        .map_or(0, |lane| lane.points.len())
 }
 
 /// 框选在**内容高出视口**时仍成立（回归 ISS-MWTNA3DX）。
