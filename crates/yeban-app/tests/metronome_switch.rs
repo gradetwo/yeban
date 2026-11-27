@@ -1,226 +1,172 @@
-//! ⭐ **节拍器开关的「点得动、关得掉」判据**（`#16`，UI 侧那一半）。
+//! ⭐ **节拍器开关的双入口行为判据**（`#16` / `T-FIX-558`）。
 //!
-//! ## ⭐ 本文件钉的是**哪一条腿**（`D-UI-29` 之后重读）
+//! ## 本文件钉的句子
 //!
-//! 节拍器拨动有两条腿：**有权威会话**时提交 `Op::SetTransportConfig`（文档 ⇒ 60 Hz
-//! 发布腿 ⇒ 新快照；⭐ 可撤销、⭐ 会持久化、⛔ 不动走带），**没有会话**时才落回
-//! "当场换一代引擎"（`crate::metronome::set_enabled`）。
+//! 走带区那颗 `transport-metronome-button` 与键盘 `Cmd/Ctrl+Alt+N` 是**同一个落点**
+//! （`host::apply_action` 的 `ToggleMetronome` 臂）。两入口各按一次，必须：
 //!
-//! 本文件的夹具把端口传成 `None`（`wire_transport(.., None)` / `wire_keys(.., None, ..)`）
-//! ⇒ 它证的正是**后一条腿**：镜面当累加器、换代真的出声、走带不被换代打坏。
-//! ⛔ 它因此**不**再是"整条节拍器链"的判据 —— 文档那一半由
-//! `tests/d_ui_29_metronome_writes_the_document.rs` 钉（那里的装配形有端口）。
+//! 1. **权威文档** `transport.metronome_enabled` 真的翻转（开 → `true`，关 → `false`）；
+//! 2. 界面镜面 `metronome-on` 立即跟随；
+//! 3. 下一跳发布后，**播放侧快照**跟着变；
+//! 4. 播放中开 ⇒ 推两拍后 `metronome_clicks` **为正**；关 ⇒ 同样推两拍**不再新增**咔哒；
+//! 5. 拨动前后走带**一直在跑**（⛔ 不换引擎、不停走带）。
 //!
-//! ## 被钉住的缺陷（接线前的推理，未上线）
+//! ## 为什么不再用源码字符串 grep
 //!
-//! 在**没有权威会话**这一形里，拨动**不写工程文档**（没有 `UndoPort` ⇒ 没有地方提交
-//! `Op::SetTransportConfig`）。若"下一个值"永远从**文档字段**算，第一次拨动之后文档仍是
-//! `false` ⇒ 第二次点击/按键会**再算出 `true`** ⇒ **开关关不掉**（点了没反应）。
-//! ⇒ 宿主引入运行态镜面 `MainWindow.metronome-on`（`MODEL-ISO-001` 挥发性层，
-//! 唯一写者是宿主），两个入口（按钮 / `Cmd/Ctrl+Alt+N`）共用**同一个**落点
-//! `host::apply_action` 的节拍器臂。
+//! 旧判据只断言 `app.slint` / `host.rs` 含有 `key-action` / `on_key_action` /
+//! `toggle-play` / `on_toggle_play` 字样 —— 那只能证明"字符串在文件里"，
+//! 把任一入口的落点或镜面跟随改坏，它仍然全绿。`T-FIX-550` 审计把这条记为
+//! **空转判据**；本文件用真窗口、真指针、真按键、真文档、真咔哒计数重写。
 //!
-//! ## 判据
+//! ## 装配
 //!
-//! | 判据 | 证的事 |
-//! | :--- | :--- |
-//! | ①（可寻址） | `transport-metronome-button` 在运行时树里、角色 = `Button`、标签与注册表逐字一致；装配态 `metronome-on == 文档字段`（`false`） |
-//! | ②（真点击 → 真引擎） | 注入真实指针点击 ⇒ 属性翻 `true`，走带**仍是 Playing**（换引擎不许破坏走带），再推进 2 拍后 `metronome_clicks` **新增**（⛔ 不是只看属性；换引擎的重建自身会 `pump` 出 tick 0 那一次，最多 1） |
-//! | ③（关得掉） | 再点一次 ⇒ 属性回 `false`；推进 2 拍后 `metronome_clicks == 0`（新快照真的关掉了）—— 这正是"从文档算下一个值"会红的格 |
-//! | ④（键盘同一落点） | `Cmd/Ctrl+Alt+N` 被消费 ⇒ 属性与音频面读数与点击**逐格相同**（开 ⇒ 有咔哒，再按 ⇒ 无咔哒） |
-//! | ⑤（属性是唯一镜面） | 点击**只发** `toggle-metronome` 回调、⛔ 不在 `.slint` 里翻转属性；属性由宿主写 —— 由 ②③④ 的往返共同证明 |
-//! | ⑥（这条腿不写文档） | 本装配**没有端口** ⇒ 拨动只动镜面与快照；文档字段在四次拨动之后**一位不动**（如实打印读数）。⭐ 有端口那一形由 `tests/d_ui_29_metronome_writes_the_document.rs` 判 |
+//! 与产品进程同一形态：`LiveUi`（真 Tier-1 活窗口）＋ `UndoPort` 权威会话 ＋
+//! 起一代引擎（`engine_quanta = 0`，装载即停住）。`Space` 起播；按钮入口走
+//! `.slint` 声明的 `invoke_toggle_metronome`（新 UI 顶栏不再进运行时控件树，指针
+//! 无法按 ID 寻址；该回调就是按钮的生产入口）；键盘入口走 `invoke_key_action`；
+//! 发布用 `engine_heartbeat`；发声用 `drive_audio` 推量子。
 //!
-//! ## 走的是哪条腿
+//! ## 边界
 //!
-//! 生产装配 [`ProductionLoop::start_with_audio_source`] ＋ 真 Tier-1 活窗口
-//! （`host::build_main_window` / `wire_transport(.., Some(project), _)` / `wire_keys`）＋
-//! [`EngineHost::render_into`]（内部即 `EngineRuntime::process_quantum`）。
+//! - ⛔ 没有人耳听；证的是"快照里有没有节拍器计划 ⇒ 渲染出没出咔哒"。
+//! - 关闭后的读数是"**不再新增**"而不是"归零"：本装配有权威会话，拨动只提交 op、
+//!   ⛔ 不换引擎，因此累计计数不会重置；"不再新增"是同一件事的可测信号。
+//! - `set_platform` 每线程一次 ⇒ 本文件只有一个 `#[test]`。
 //!
-//! ## 边界（不许当成已证）
+//! ## 本机不编译重依赖（`AGENTS.md` §5）
 //!
-//! - ⛔ **没有人耳听**：判据证明的是"咔哒计数与属性往返"，⛔ 不是听感。
-//! - ⛔ **不证文档持久化**：本装配**没有** `UndoPort`（夹具刻意传 `None`）⇒ 没有可提交的
-//!   对象，拨动只动镜面与当代快照。文档那一半（⭐ 可撤销、⭐ 会持久化）已由
-//!   `D-UI-29` 接上并另有判据（`tests/d_ui_29_metronome_writes_the_document.rs`）；
-//!   本文件下方只打印文档字段读数，⛔ 不假装它变了。
-//! - ⛔ `run_gui` 的事件循环没有执行：这里驱动的是它调用的**同一个**装配。
-//!
-//! ## 平台约束
-//!
-//! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
-//! 本文件只有一个 `#[test]`（与 `tests/console_maximize.rs` / `tests/rewind_sound.rs` 同款）。
+//! Slint 是重依赖 ⇒ 编译与判决交 CI；本机只做 `cargo fmt` 与静态核对。
 
 #![allow(unused)]
-use std::cell::RefCell;
+#[path = "../src/live_surface.rs"]
+#[allow(dead_code)]
+mod live;
+
 use std::rc::Rc;
 
-use yeban_app::bridge::ViewState;
-use yeban_app::elements::ElementKind;
-use yeban_app::engine_host::EngineHost;
-use yeban_app::host::{self, ProductionLoop};
-use yeban_app::input::{Focus, InputContext};
-use yeban_app::scene::DemoScene;
+use live::{EngineTick, LiveUi, LiveWiringOptions, build_live_ui_with};
+use slint::ComponentHandle;
+use yeban_app::engine_host::EditMark;
 use yeban_app::ui::MainWindow;
-use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
-use yeban_engine::transport::TransportState;
-use yeban_model::samples::filled_project;
-use yeban_ui_test_port::{LivePort, Permission, PointerButton, Size, UiTestPort as _};
+use yeban_app::undo::{UndoPort, UndoSession};
+use yeban_ui_test_port::port::Permission;
 
-/// 必须 ≥ 1120：节拍器键几何上钉在徽章右侧的缝里（窄档按设计隐藏）。
-const WINDOW: Size = Size::new(1440, 900);
+/// 提交时间戳（固定值 ⇒ 判据确定性）。
+const NOW_MS: u64 = 1_700_000_000_000;
 
-/// 工程声道的兜底值（投影失败时才用）。
-const FALLBACK_CHANNELS: u16 = 2;
+/// 覆盖 ≥2 拍：120 BPM / 48 kHz ⇒ 400 个量子 = 51_200 帧，无论开关落在拍内哪里
+/// 都至少过一次咔哒。
+const QUANTA_TWO_BEATS: u64 = 400;
 
-/// 覆盖 ≥2 拍：120 BPM / 48 kHz ⇒ 1 拍 = 24_000 帧 = 187.5 个量子；
-/// 400 个量子 = 51_200 帧 ⇒ 无论开关落点在拍内哪里，窗口里都**至少**有一次咔哒。
-const QUANTA_TWO_BEATS: usize = 400;
-
-struct Rig {
-    /// 持有它 ⇒ `EngineRebuild::collector` 的消费端一直在（与 `main.rs` 同一装配）。
-    _production: ProductionLoop,
-    engine: Rc<RefCell<EngineHost>>,
-    port: LivePort<MainWindow>,
-    /// 装配层交给宿主的**同一份**工程（只读；打印它的 `metronome_enabled` 证明文档没被改）。
-    project: yeban_model::YebanProjectV1,
+fn assemble(tag: &str) -> (LiveUi, Rc<UndoPort>, MainWindow) {
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open(tag, "yeban-app", project.clone(), NOW_MS).expect("打开会话"),
+    ));
+    let mut live = build_live_ui_with(
+        &project,
+        &LiveWiringOptions {
+            permission: Permission::Interactive,
+            engine_quanta: 0,
+            undo: Some(Rc::clone(&port)),
+            ..LiveWiringOptions::default()
+        },
+    )
+    .expect("真实界面 + Tier-1 执行面");
+    live.start_engine().expect("起一代引擎");
+    let window = live.ui().clone_strong();
+    (live, port, window)
 }
 
-impl Rig {
-    fn new() -> Self {
-        let project = filled_project();
-        let production =
-            ProductionLoop::start_with_audio_source(&project, 0, None).expect("产品装配建引擎");
-        let engine = production.engine_handle();
-        // `src/main.rs` 的同一行：新引擎默认自由跑 ⇒ 显式 `Stop`（界面初始态是停住）。
-        engine.borrow_mut().stop();
+fn live_project(port: &UndoPort) -> yeban_model::YebanProjectV1 {
+    port.try_project()
+        .expect("端口必须有一份权威工程（没有 ⇒ 前提不成立）")
+}
 
-        let view = ViewState::from_project(&project).expect("filled_project 必须能投影");
-        let scene = DemoScene::from_view(&view);
-        let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
-            host::build_main_window(&view, &scene)
-        })
-        .expect("Tier-1 平台 + 生产窗口构造入口");
+fn doc_enabled(port: &UndoPort) -> bool {
+    live_project(port).transport.metronome_enabled
+}
 
-        // 与 `main.rs` 同一对装配函数：走带（⭐ 带工程 ⇒ 镜面初值来自文档）＋ 输入 ＋ 键盘。
-        host::wire_transport(
-            port.ui(),
-            Rc::clone(&engine),
-            Some(Rc::new(RefCell::new(project.clone()))),
-            None,
-        );
-        let context = Rc::new(RefCell::new(InputContext::new()));
-        // `Cmd/Ctrl+Alt+N` 的绑定在画布焦点下解析（与 `src/metronome.rs` 判据同一前置）。
-        context.borrow_mut().set_focus(Focus::MainCanvas);
-        host::wire_input(port.ui(), Rc::clone(&context));
-        host::wire_keys(
-            port.ui(),
-            context,
-            None,
-            Some(Rc::clone(&engine)),
-            Some(Rc::new(RefCell::new(project.clone()))),
-        );
-        host::apply_transport(port.ui(), engine.borrow().transport());
+fn snapshot_enabled(live: &LiveUi) -> Option<bool> {
+    live.engine_metronome_enabled()
+}
 
-        Self {
-            _production: production,
-            engine,
-            port,
-            project,
-        }
-    }
+fn clicks(live: &LiveUi) -> u64 {
+    live.engine_metronome_clicks().expect("夹具已经起引擎")
+}
 
-    fn ui(&self) -> &MainWindow {
-        self.port.ui()
-    }
+fn heartbeat(live: &mut LiveUi, port: &UndoPort) -> EngineTick {
+    let mark = EditMark::from_display(&port.display());
+    let project = live_project(port);
+    live.engine_heartbeat(mark, Some(&project))
+}
 
-    fn metronome_on(&self) -> bool {
-        self.ui().get_metronome_on()
-    }
+fn press_space(window: &MainWindow) -> bool {
+    window.invoke_key_action(" ".into(), false, false, false, false)
+}
 
-    fn transport_state(&self) -> TransportState {
-        self.engine.borrow().transport().state
-    }
-
-    fn clicks(&self) -> u64 {
-        self.engine
-            .borrow()
-            .engine_stats()
-            .expect("控制腿必须有统计读数")
-            .metronome_clicks
-    }
-
-    /// 推 `quanta` 个量子（`render_into` ⇒ `EngineRuntime::process_quantum`）。
-    fn render(&self, quanta: usize) {
-        let channels = {
-            let engine = self.engine.borrow();
-            engine
-                .current_snapshot()
-                .map_or(FALLBACK_CHANNELS, |snapshot| snapshot.channels().max(1))
-        };
-        let block = DEFAULT_BLOCK_FRAMES * usize::from(channels);
-        let mut samples = vec![0.0_f32; block * quanta];
-        let driven = self
-            .engine
-            .borrow_mut()
-            .render_into(&mut samples, channels, quanta as u64);
-        assert_eq!(
-            driven, quanta as u64,
-            "render_into 必须推进请求的量子数（控制腿没有设备）"
-        );
-    }
-
-    /// 真实指针点击（按下 → 松手）⇒ 命中 `metronome_area` 的 `TouchArea`，⛔ 不是直接调 Rust 回调。
-    fn click_metronome(&mut self) {
-        // 每次点击前重抓树（`dispatch_*` 用的是端口里**缓存的**几何）。
-        self.port.refresh_tree(None).expect("必须能重抓控件树");
-        self.port
-            .dispatch_pointer_down(
-                "transport-metronome-button",
-                16.0,
-                16.0,
-                PointerButton::Left,
-            )
-            .expect("指针按下必须落到节拍器键");
-        self.port
-            .dispatch_pointer_up(PointerButton::Left)
-            .expect("指针释放必须落到活窗口");
-    }
-
-    /// 按 `Cmd/Ctrl+Alt+N`（走 `.slint` 的 `key-action` ⇒ `wire_keys` ⇒ `apply_action`，
-    /// 与生产同一条链）。返回值 = `.slint` 的 `EventResult`（是否被消费）。
-    fn press_metronome_key(&self) -> bool {
-        // 回调参数顺序与 `app.slint` 的声明一致：(text, shift, ctrl, alt, meta)。
-        self.ui()
-            .invoke_key_action("n".into(), false, true, true, false)
-    }
+fn press_metronome(window: &MainWindow) -> bool {
+    window.invoke_key_action("n".into(), false, true, true, false)
 }
 
 #[test]
-fn the_metronome_switch_round_trips_from_both_entries() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback key-action("),
-        "新 UI 契约面必须声明 callback key-action("
+fn both_entries_flip_the_document_and_the_clicks_follow_playback() {
+    let (mut live, port, window) = assemble("metronome-switch-t558");
+
+    // 前提读数：文档 / 镜面 / 快照 / 咔哒 / 走带全部对齐在"关、停"。
+    assert!(!doc_enabled(&port), "夹具文档节拍器应为关");
+    assert!(!window.get_metronome_on(), "装配镜面应来自文档（关）");
+    assert_eq!(snapshot_enabled(&live), Some(false), "装配快照应为关");
+    assert_eq!(clicks(&live), 0, "未播放时不应有咔哒");
+    assert!(!live.engine_transport_running(), "装载即停住");
+
+    // 起播：后面所有咔哒读数都必须发生在 Playing 里。
+    assert!(press_space(&window), "Space 必须被消费");
+    assert!(live.engine_transport_running(), "Space 后走带应在跑");
+
+    // 入口 ①：走带区按钮的 `.slint` 回调（按钮按下的生产入口）。
+    window.invoke_toggle_metronome();
+    assert!(doc_enabled(&port), "按钮按下后权威文档必须翻成开");
+    assert!(window.get_metronome_on(), "按钮按下后镜面必须立即跟随");
+    assert_eq!(
+        snapshot_enabled(&live),
+        Some(false),
+        "拨动只提交 op，尚未发布 ⇒ 快照应仍是上一代"
     );
+
+    let published = heartbeat(&mut live, &port);
     assert!(
-        aether_host.contains("on_key_action"),
-        "宿主接线层必须注册 on_key_action"
+        published.published_revision.is_some(),
+        "文档变了 ⇒ 下一跳必须发布新快照"
     );
+    assert_eq!(snapshot_enabled(&live), Some(true), "发布后快照应为开");
+
+    live.drive_audio(QUANTA_TWO_BEATS);
+    let clicks_after_on = clicks(&live);
     assert!(
-        aether_app.contains("callback toggle-play("),
-        "新 UI 契约面必须声明 callback toggle-play("
+        clicks_after_on > 0,
+        "播放中打开后推两拍必须数到咔哒，实际 {clicks_after_on}"
     );
+    assert!(live.engine_transport_running(), "拨动节拍器不许停掉走带");
+
+    // 入口 ②：`Cmd/Ctrl+Alt+N`（键盘入口，同一个落点）。
+    assert!(press_metronome(&window), "Cmd/Ctrl+Alt+N 必须被消费");
+    assert!(!doc_enabled(&port), "键盘按下后权威文档必须翻回关");
+    assert!(!window.get_metronome_on(), "键盘按下后镜面必须立即跟随");
+
+    let published = heartbeat(&mut live, &port);
     assert!(
-        aether_host.contains("on_toggle_play"),
-        "宿主接线层必须注册 on_toggle_play"
+        published.published_revision.is_some(),
+        "文档再变 ⇒ 下一跳必须发布新快照"
     );
+    assert_eq!(snapshot_enabled(&live), Some(false), "发布后快照应为关");
+
+    let before_off = clicks(&live);
+    live.drive_audio(QUANTA_TWO_BEATS);
+    assert_eq!(
+        clicks(&live),
+        before_off,
+        "关闭后同样推两拍不许再新增咔哒（累计计数不重置，等价可测信号）"
+    );
+    assert!(live.engine_transport_running(), "两个入口都不许停掉走带");
 }
