@@ -10522,6 +10522,11 @@ pub fn wire_save_with_engine(
         if matches!(outcome, crate::save_action::SaveOutcome::Saved { .. }) {
             let head = live_port.as_ref().and_then(|live| live.display().head);
             crate::dirty_guard::mark_saved(head);
+            // ⭐ T-FIX-736：同时记下落盘那一刻的文档指纹。撤销只前移游标、不动分支头，
+            // 单看 head 会把「保存后撤销」误判为干净（关窗丢改动）；指纹才是真源。
+            crate::dirty_guard::mark_saved_fingerprint(
+                live_port.as_ref().and_then(|live| live.fingerprint()),
+            );
         }
     });
 
@@ -32389,6 +32394,8 @@ pub fn wire_aether_actions(
                             return;
                         }
                         // T-FIX-208：有未保存改动先弹三选，避免一键丢编辑；判据与保存点同一真源。
+                        // T-FIX-736：判定前现读当前文档指纹；撤销/重做后 head 不变时靠指纹识别真改动。
+                        crate::dirty_guard::set_current_fingerprint(port.fingerprint());
                         if crate::dirty_guard::current_is_dirty(port.display().head) {
                             ui.set_quit_confirm_open(true);
                         } else {
@@ -34774,6 +34781,9 @@ pub fn wire_quit_guard(ui: &MainWindow, port: &Rc<UndoPort>) {
     // 新工程 / 无工程 head 为 None（空基线）—— 两者都不该在启动瞬间就弹框。
     let saved = Rc::new(crate::dirty_guard::SavedHead::new());
     saved.mark_saved(port.display().head);
+    // ⭐ T-FIX-736：初始保存点也记指纹 —— 从文件打开的工程此刻是「已保存」态，
+    // 之后撤销 / 重做引起的 head 不变要靠指纹识别。
+    saved.mark_saved_fingerprint(port.fingerprint());
     crate::dirty_guard::install(Rc::clone(&saved));
 
     let weak = ui.as_weak();
@@ -34843,6 +34853,8 @@ pub fn wire_quit_guard(ui: &MainWindow, port: &Rc<UndoPort>) {
                 if !finish_recording_before_exit(&ui) {
                     return slint::CloseRequestResponse::KeepWindowShown;
                 }
+                // T-FIX-736：关窗与 app-quit 同一判定口径 —— 现读指纹再比。
+                crate::dirty_guard::set_current_fingerprint(p.fingerprint());
                 if crate::dirty_guard::current_is_dirty(p.display().head) {
                     ui.set_quit_confirm_open(true);
                     return slint::CloseRequestResponse::KeepWindowShown;
