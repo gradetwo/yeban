@@ -25,6 +25,9 @@ use yeban_app::export_wav::WavExportOptions;
 use yeban_app::import_audio::{AudioImportOptions, AudioImportReport};
 use yeban_app::import_midi::MidiImportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution, View};
+use yeban_app::record_device::InputSourceFactory;
+use yeban_app::record_landing::{RecordTarget, land_recording_at, resolve_record_target};
+use yeban_app::record_wav::{RecordOptions, RecordPlan, Recorder};
 use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
 use yeban_engine::ring::TransportCommand;
@@ -530,6 +533,13 @@ fn kind_of(target: AutomationTarget) -> AutomationKind {
 }
 
 /// 应用状态。
+/// 一次 TUI 录音会话（`Recorder` 独占；停录时同步收干并落地）。
+struct RecordSession {
+    recorder: Recorder,
+    start_tick: u64,
+    target: RecordTarget,
+}
+
 pub struct App {
     /// 当前工程文档（`UndoPort` 当前版的镜像：每次提交/撤销后从端口刷新）。
     pub project: YebanProjectV1,
@@ -541,6 +551,12 @@ pub struct App {
     pub project_path: Option<PathBuf>,
     /// 引擎宿主（控制面模式：不开音频设备，墙钟泵送推进走带）。
     host: EngineHost,
+    /// 录音输入源工厂（生产 = `default_input_factory`；判据可注入失败/静音源）。
+    record_factory: Rc<dyn InputSourceFactory>,
+    /// 这次录音的落盘路径（生产 = `default_record_path`；判据可注入临时路径）。
+    record_path: PathBuf,
+    /// 进行中的录音会话；`None` = 未录。
+    record: Option<RecordSession>,
     /// reload 时领到的电平消费端（本宿主负责抽干，纪律同 GUI）。
     collector: Option<MeterCollector>,
     /// 当前模态。
@@ -751,6 +767,9 @@ impl App {
             archive: Some(archive),
             project_path,
             host,
+            record_factory: yeban_app::record_device::default_input_factory(),
+            record_path: yeban_app::record_wav::default_record_path(),
+            record: None,
             collector: Some(rebuild.collector),
             mode: Mode::Normal,
             focus: Pane::Tracks,
@@ -813,6 +832,117 @@ impl App {
     #[must_use]
     pub fn is_playing(&self) -> bool {
         self.transport().state == TransportState::Playing
+    }
+
+    /// 是否正在录音（TUI 自己的录音会话；与引擎走带状态并列投影）。
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.record.is_some()
+    }
+
+    /// **测试/嵌入 seam**：注入录音输入源与落盘路径（生产不调用）。
+    ///
+    /// 生产走 `default_input_factory`（真设备，`YEBAN_RECORD_SOURCE=silence` 可显式
+    /// 选静音腿）与 `default_record_path`；判据用这个缝验“起录失败 / 进入退出状态”，
+    /// ⛔ 不改进程环境、⛔ 不往仓库根写 `ui-record.wav`。
+    pub fn set_record_seam(&mut self, factory: Rc<dyn InputSourceFactory>, path: PathBuf) {
+        self.record_factory = factory;
+        self.record_path = path;
+    }
+
+    /// GUI `R` / `ToggleRecord` 与 `:record` 的共同落点：在录 ⇒ 停；没录 ⇒ 起。
+    ///
+    /// 起录失败（没有输入设备 / 流打不开）⇒ 保持未录，日志原文 `起录失败: …`；
+    /// 停录成功 ⇒ 同步收干并尝试走 `record_landing` 进工程，失败如实报“已落盘但未进工程”。
+    pub fn toggle_record(&mut self) {
+        if let Some(session) = self.record.take() {
+            self.stop_record(session);
+        } else {
+            self.start_record();
+        }
+    }
+
+    fn start_record(&mut self) {
+        let plan = RecordPlan {
+            path: self.record_path.clone(),
+            options: RecordOptions::default(),
+        };
+        let factory = Rc::clone(&self.record_factory);
+        let count_in_frames = yeban_app::host::record_count_in(
+            Some(self.port.as_ref()),
+            Some(&self.project),
+            plan.options.sample_rate,
+        );
+        let start_tick =
+            self.transport()
+                .position_ticks
+                .saturating_add(yeban_app::host::record_count_in_ticks(
+                    Some(self.port.as_ref()),
+                    Some(&self.project),
+                ));
+        let target = resolve_record_target(&self.project, &[], self.selected_track_id());
+        let mut recorder = Recorder::new();
+        match recorder.start_with_factory(
+            &plan.path,
+            &plan.options,
+            factory.as_ref(),
+            count_in_frames,
+            Some(start_tick),
+        ) {
+            Ok(()) => {
+                let source = factory.label().to_owned();
+                self.record = Some(RecordSession {
+                    recorder,
+                    start_tick,
+                    target,
+                });
+                self.log_line(format!("开始录音 ⇒ {}（源={source}）", plan.path.display()));
+            }
+            Err(error) => self.log_line(format!("起录失败: {error}")),
+        }
+    }
+
+    fn stop_record(&mut self, mut session: RecordSession) {
+        let start_tick = session.start_tick;
+        let target = session.target;
+        match session.recorder.stop() {
+            Ok(report) if report.frames == 0 => {
+                self.log_line(format!(
+                    "录音写入 0 帧（pushed={} dropped={} {} source={}）⇒ 输入设备没有送来任何帧；{} 是一条**空** WAV",
+                    report.pushed,
+                    report.dropped,
+                    report.gaps.summary(),
+                    report.source,
+                    report.path.display()
+                ));
+            }
+            Ok(report) => {
+                let gap_note = if report.gaps.is_loud() {
+                    "；输入时长缺口达响亮阈值，本条 take 不作为无缺口成功"
+                } else {
+                    ""
+                };
+                match land_recording_at(&self.port, &report.path, now_ms(), start_tick, target) {
+                    Ok(_) => {
+                        self.sync_from_port();
+                        self.log_line(format!(
+                            "录音已落盘并进工程：path={} frames={} dropped={} {} source={} start-tick={}{gap_note}",
+                            report.path.display(),
+                            report.frames,
+                            report.dropped,
+                            report.gaps.summary(),
+                            report.source,
+                            start_tick
+                        ));
+                    }
+                    Err(error) => self.log_line(format!(
+                        "录音已落盘但未进工程（{}）: {error}",
+                        report.path.display()
+                    )),
+                }
+            }
+            Err(error) => self.log_line(format!("停录失败: {error}")),
+        }
     }
 
     /// 每拍 tick 数（按拍号分母换算：拍 = 分母音符）。
@@ -2622,7 +2752,11 @@ impl App {
             device_sample_rate: device.device_sample_rate,
             device_active,
             conversion,
-            transport_state: reading.state,
+            transport_state: if self.record.is_some() {
+                TransportState::Recording
+            } else {
+                reading.state
+            },
             position_ticks: reading.position_ticks,
         }
     }
@@ -3622,6 +3756,7 @@ impl App {
         match action {
             Action::PlayPause => self.toggle_play(),
             Action::SelectAllNotes => self.select_all_notes(),
+            Action::ToggleRecord => self.toggle_record(),
             Action::ResumeFromCursor => {
                 // GUI 是「从光标处续播」；TUI 的小节光标即其对应物：定位后播放。
                 let ticks = u64::try_from(self.cursor_bar).unwrap_or(0) * self.bar_ticks();
@@ -4000,6 +4135,13 @@ impl App {
                 }
             }
             "reload" | "reload-engine" => self.reload_engine(),
+            "record" => {
+                if rest.is_empty() {
+                    self.toggle_record();
+                } else {
+                    self.log_line("用法：:record（再按一次停止）".to_owned());
+                }
+            }
             "play" => {
                 self.host.play();
                 self.log_line("播放".to_owned());

@@ -198,3 +198,122 @@ fn track_delete_command_removes_the_selected_track() {
         "命令回执必须点名删了哪条轨：{last}"
     );
 }
+
+/// T-FIX-800：R 走共享 `ToggleRecord`，无设备时起录失败必须响亮、且不进录音态。
+struct NoDeviceFactory;
+
+impl yeban_app::record_device::InputSourceFactory for NoDeviceFactory {
+    fn open(
+        &self,
+        _options: &yeban_app::record_wav::RecordOptions,
+    ) -> Result<Box<dyn yeban_app::record_wav::InputSource + Send>, String> {
+        Err("没有可用音频输入设备".to_owned())
+    }
+
+    fn label(&self) -> &'static str {
+        "no-device-test"
+    }
+}
+
+fn record_temp_path(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("yeban-tui-record-{tag}-{}.wav", std::process::id()))
+}
+
+fn select_audio_track(app: &mut App) {
+    let audio = app
+        .track_ids
+        .iter()
+        .copied()
+        .find(|id| {
+            app.project
+                .tracks
+                .get(id)
+                .is_some_and(|track| track.kind == TrackKind::Audio)
+        })
+        .expect("demo 至少一条音频轨");
+    app.selected = app
+        .track_ids
+        .iter()
+        .position(|id| *id == audio)
+        .expect("音频轨在轨道条里");
+}
+
+/// 无设备：R 不落“未实现”，而是 `起录失败`，状态保持 Stopped。
+#[test]
+fn record_key_without_input_device_is_loud() {
+    let mut app = app();
+    let path = record_temp_path("no-device");
+    app.set_record_seam(std::rc::Rc::new(NoDeviceFactory), path.clone());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+    assert!(!app.is_recording(), "起录失败时不许置录音态");
+    assert_eq!(
+        app.engine_status().transport_state,
+        yeban_engine::transport::TransportState::Stopped,
+        "起录失败时走带必须仍是 Stopped"
+    );
+    let last = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("起录失败") && last.contains("没有可用音频输入设备"),
+        "无设备必须响亮报错：{last}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// R 进入/退出录音态：静音源注入（不依赖声卡），状态投影与引擎走带一致。
+#[test]
+fn record_key_enters_and_exits_recording_state() {
+    let mut app = app();
+    select_audio_track(&mut app);
+    let path = record_temp_path("key");
+    app.set_record_seam(
+        std::rc::Rc::new(yeban_app::record_device::SilenceFactory),
+        path.clone(),
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    assert!(app.is_recording(), "第一次 R 必须进入录音态");
+    assert_eq!(
+        app.engine_status().transport_state,
+        yeban_engine::transport::TransportState::Recording,
+        "录音态必须投影到走带读数"
+    );
+    let started = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        started.contains("开始录音") && started.contains(&path.display().to_string()),
+        "起录回执必须点名落盘路径：{started}"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    assert!(!app.is_recording(), "第二次 R 必须退出录音态");
+    assert_eq!(
+        app.engine_status().transport_state,
+        yeban_engine::transport::TransportState::Stopped,
+        "停录后走带必须回到 Stopped"
+    );
+    let stopped = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        stopped.contains("录音"),
+        "停录必须给出落盘/空帧/失败回执：{stopped}"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// `:record` 与 R 共用同一落点。
+#[test]
+fn record_command_enters_and_exits_recording_state() {
+    let mut app = app();
+    select_audio_track(&mut app);
+    let path = record_temp_path("command");
+    app.set_record_seam(
+        std::rc::Rc::new(yeban_app::record_device::SilenceFactory),
+        path.clone(),
+    );
+
+    app.execute_command("record");
+    assert!(app.is_recording(), "`:record` 第一次必须进入录音态");
+    app.execute_command("record");
+    assert!(!app.is_recording(), "`:record` 第二次必须退出录音态");
+    let _ = std::fs::remove_file(path);
+}

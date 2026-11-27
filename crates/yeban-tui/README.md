@@ -84,6 +84,7 @@ Vi 层。
 | 动作 | GUI 键 | TUI 键 | 状态 |
 | --- | --- | --- | --- |
 | 播放/暂停 | `Space` | `Space`（同） | 已接（引擎走带） |
+| 录音开/关 | `R` | `R`（同）；或 `:record` | 已接（T-FIX-800；TUI 持有 `Recorder`，起录失败/no device 响亮回执，停录带缺口读数落盘并尝试进工程） |
 | 从光标处续播 | `Shift+Space` | `Shift+Space`（同，小节光标定位后播放） | 已接 |
 | 回到起点 | `Enter` | `Enter`（同） | 已接 |
 | 保存工程 | `Ctrl+S` | `Ctrl+S`（同）；另有 `:w [path]` 命令形态 | 已接 |
