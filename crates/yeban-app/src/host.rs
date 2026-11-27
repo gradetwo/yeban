@@ -10735,6 +10735,7 @@ impl OpenProjectRuntime for PortOpenProject {
             path,
             &crate::open::ProjectOpenOptions {
                 strict_missing_assets: true,
+                strict_preset_references: true,
                 ..Default::default()
             },
         )
@@ -10783,11 +10784,11 @@ impl PortOpenProject {
     /// 从端口借回（[`UndoPort::with_project`]），`after` 自己从端口取快照
     /// （见 [`OpenProjectAfter`]）。
     ///
-    /// 归档其余段（`history.dag` / `proposals` / `embedded_presets` /
-    /// `load_notes`）本函数**不消费**，随归档一起 drop —— 与修前逐位一致：
-    /// 修前也只读 `project` 与 `assets`（会话由 [`UndoSession::open`] 从根提交
-    /// 新建，`history.dag` 不进运行期会话 —— 那是启动装配
-    /// `open_undo_session` 的另一条腿）。
+    /// 工程 / 资产池 / 内嵌用户预制 **move** 进新会话与端口：内嵌预制的原始字节
+    /// 住在 [`UndoPort::embedded_presets`]（T-FIX-806），供运行期面板与保存回写
+    /// 使用；`history.dag` / `proposals` / `load_notes` 本函数仍**不消费**，随归档
+    /// 一起 drop（会话由 [`UndoSession::open`] 从根提交新建，`history.dag` 不进
+    /// 运行期会话 —— 那是启动装配 `open_undo_session` 的另一条腿）。
     ///
     /// `label` 是这份归档在回执 / 会话来源里的名字（文件打开时
     /// 就是路径本身，于是那条路的报文逐字不变）；`project_dir`
@@ -10825,10 +10826,14 @@ impl PortOpenProject {
             ui.set_show_floating_toast(true);
             return Err(message.to_owned());
         }
-        // T-FIX-428：工程与资产池从归档里 **move** 出来（⛔ 不 clone），
-        // 其余段随归档 drop（见本函数文档）。
-        let project = archive.project;
-        let assets = archive.assets;
+        // T-FIX-428：工程、资产池与内嵌用户预制从归档里 **move** 出来
+        // （⛔ 不 clone），其余段随归档 drop（见本函数文档）。
+        let yeban_model::container::ProjectArchive {
+            project,
+            assets,
+            embedded_presets,
+            ..
+        } = archive;
         // ③c 的纯读数先算好（换会话之前借 `project`，换会话之后它已搬进端口）。
         // `default_selected_track_id` 只调一次（修前 ③c 与 ③d 各调一次）。
         let selected_track = default_selected_track_id(&project);
@@ -10861,6 +10866,10 @@ impl PortOpenProject {
         //    工程与资产池都是 **move**（上面已从归档里取出，⛔ 不 clone）。
         self.port
             .open_project_session(format!("open {label}"), project, assets, now_ms())?;
+        // T-FIX-806：内嵌用户预制随新会话**替换**换入（空表 = 新工程没有内嵌副本）。
+        // 必须在换会话成功之后写：换会话失败时旧工程与旧预制表都一位不动。
+        // 这里保留容器原始字节，运行期面板解析与后续保存回写共用这一份。
+        self.port.replace_embedded_presets(embedded_presets);
         // ⭐ T-FIX-349：工程边界清 ARA 会话（与 MCP `reset_history` 同义）。
         // 打开 / 新建 / 模板副本都走本函数 ⇒ 只有这一处清会话，⛔ 不另起生命周期。
         reset_plugin_panel_for_project_switch(ui);
@@ -11501,6 +11510,7 @@ pub fn wire_open_project(
         let worker_weak = ui.as_weak();
         let options = crate::open::ProjectOpenOptions {
             strict_missing_assets: true,
+            strict_preset_references: true,
             ..Default::default()
         };
         let handle = std::thread::spawn(move || {

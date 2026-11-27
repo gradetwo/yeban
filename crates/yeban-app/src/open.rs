@@ -83,6 +83,14 @@ pub struct ProjectOpenOptions {
     /// [`OpenedProject::asset_audit`]，由调用方显示；`true`（生产 UI / 严格入口）：
     /// 首个缺口返回 [`OpenError::MissingAsset`]，⛔ 不给"有片段但无声"的工程开门。
     pub strict_missing_assets: bool,
+    /// 预制引用缺口是否升级为**打开失败**（T-FIX-806）。
+    ///
+    /// `false`（兼容默认）：沿既有行为；`true`（生产 GUI / CLI）：先解析内嵌
+    /// 用户预制、再校验全部 `track.preset` 引用（系统预制查发行表，用户预制
+    /// 查内嵌副本或用户库），首个缺口返回 [`OpenError::PresetReference`]。
+    /// 与 MCP `plan_open` 的 `parse_embedded_presets` + `validate_preset_references`
+    /// 同一段口径，⛔ 不静默打开一个缺预制的工程。
+    pub strict_preset_references: bool,
 }
 
 impl Default for ProjectOpenOptions {
@@ -92,6 +100,7 @@ impl Default for ProjectOpenOptions {
             limits: ContainerLimits::default(),
             max_file_bytes: MAX_PROJECT_FILE_BYTES,
             strict_missing_assets: false,
+            strict_preset_references: false,
         }
     }
 }
@@ -134,6 +143,15 @@ pub enum OpenError {
         /// 本次打开一共缺多少个不同资产（首个之外还有几个）。
         missing_count: usize,
     },
+    /// 工程轨引用了**无法解析**的预制（T-FIX-806）。
+    ///
+    /// 与 MCP 打开路径同段校验：内嵌用户预制先解析，再逐轨 `track.preset`
+    /// 解析；系统预制必须在发行表里，用户预制必须在内嵌副本或用户库里。
+    /// 首个缺口即拒绝打开，⛔ 不静默回干声。
+    PresetReference {
+        /// 给用户看的完整原因（含缺失标识与查找位置）。
+        detail: String,
+    },
     /// 文件有 ZIP 结构、但被容器层拒绝：**原样**携带 `yeban-model` 的裁决。
     ///
     /// 这一档的意思是"这**看起来是**一个 `.yeban`，但它坏了 / 不合法"（截断 / CRC /
@@ -167,7 +185,10 @@ impl OpenError {
             | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
-            Self::Io { .. } | Self::FileTooLarge { .. } | Self::MissingAsset { .. } => None,
+            Self::Io { .. }
+            | Self::FileTooLarge { .. }
+            | Self::MissingAsset { .. }
+            | Self::PresetReference { .. } => None,
         }
     }
 }
@@ -192,6 +213,7 @@ impl fmt::Display for OpenError {
                 "工程引用了 {missing_count} 个缺失资产：首个 `{hash}`（引用: {}）",
                 referenced_by.join(", ")
             ),
+            Self::PresetReference { detail } => write!(formatter, "预制引用校验失败: {detail}"),
             Self::Container(error) => write!(formatter, "容器被拒绝: {error}"),
             Self::NotAYebanContainer { path, container } => write!(
                 formatter,
@@ -210,7 +232,9 @@ impl std::error::Error for OpenError {
             | Self::NotAYebanContainer {
                 container: error, ..
             } => Some(error),
-            Self::FileTooLarge { .. } | Self::MissingAsset { .. } => None,
+            Self::FileTooLarge { .. }
+            | Self::MissingAsset { .. }
+            | Self::PresetReference { .. } => None,
         }
     }
 }
@@ -363,6 +387,9 @@ pub fn open_project_archive_file(
     let path = path.as_ref();
     let bytes = read_capped(path, options.max_file_bytes)?;
     let archive = open_project_archive(&bytes, &options.limits)?;
+    if options.strict_preset_references {
+        validate_preset_references(&archive)?;
+    }
     if options.strict_missing_assets
         && let Some(error) = strict_missing_asset_error(&archive)
     {
@@ -560,6 +587,10 @@ pub(crate) fn open_project_document_file_stepwise(
         return Ok(None);
     }
     on_phase(OpenLoadPhase::Auditing, 0.85, Some(file_bytes));
+    // 与 MCP `plan_open` 同序：先预制引用，再资产缺口（两者都缺时先报预制）。
+    if options.strict_preset_references {
+        validate_preset_references(&archive)?;
+    }
     if options.strict_missing_assets
         && let Some(error) = strict_missing_asset_error(&archive)
     {
@@ -585,6 +616,108 @@ fn has_zip_signature(bytes: &[u8]) -> bool {
     SIGNATURES
         .iter()
         .any(|signature| bytes.starts_with(signature.as_slice()))
+}
+
+/// 打开时校验 `track.preset` 的全部引用（T-FIX-806）。
+///
+/// 默认构建直接复用 `yeban-mcp` 的 `parse_embedded_presets` +
+/// `validate_preset_references`（与 MCP `yeban_open_project` **同一段**实现）：
+/// 先解析 `presets/user/<id>.json` 内嵌副本，再逐轨解析预制标识；系统预制
+/// 必须在发行表里，用户预制必须在内嵌副本或用户库里。首个缺口即返回
+/// [`OpenError::PresetReference`]，⛔ 不静默打开一个缺预制的工程。
+///
+/// `--no-default-features` 构建没有 `yeban-mcp` 依赖边，因此保留一份**逐条同义**
+/// 的本地校验（同一条 `Preset::parse` / `is_factory_preset` / 用户库路径），
+/// 不让"未编译 MCP"退化成静默放行。
+#[cfg(feature = "in-process-mcp")]
+fn validate_preset_references(
+    archive: &yeban_model::container::ProjectArchive,
+) -> Result<(), OpenError> {
+    use yeban_mcp::domain::error::Fault;
+    fn fault_message(fault: Fault) -> String {
+        match fault {
+            Fault::Domain { message, .. } => message,
+            Fault::Impl { error } => error.message,
+        }
+    }
+    let embedded = yeban_mcp::domain::preset::parse_embedded_presets(&archive.embedded_presets)
+        .map_err(|fault| OpenError::PresetReference {
+            detail: fault_message(fault),
+        })?;
+    yeban_mcp::domain::preset::validate_preset_references(&archive.project, &embedded).map_err(
+        |fault| OpenError::PresetReference {
+            detail: fault_message(fault),
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(not(feature = "in-process-mcp"))]
+fn validate_preset_references(
+    archive: &yeban_model::container::ProjectArchive,
+) -> Result<(), OpenError> {
+    use std::collections::BTreeMap;
+    use yeban_model::preset::{
+        Preset, is_factory_preset, preset_id_from_embedded_entry, user_preset_library_dir,
+        validate_preset_id,
+    };
+    const USER_PRESET_READ_MAX_BYTES: u64 = 16 * 1024 * 1024;
+    let mut embedded: BTreeMap<String, Preset> = BTreeMap::new();
+    for (entry_name, bytes) in &archive.embedded_presets {
+        let Some(id) = preset_id_from_embedded_entry(entry_name) else {
+            return Err(OpenError::PresetReference {
+                detail: format!("内嵌预制条目名非法：`{entry_name}`"),
+            });
+        };
+        let preset = Preset::parse(bytes).map_err(|error| OpenError::PresetReference {
+            detail: format!("内嵌预制 `{id}` 解析失败：{error}"),
+        })?;
+        if preset.id != id {
+            return Err(OpenError::PresetReference {
+                detail: format!(
+                    "内嵌预制条目 `{entry_name}` 里的标识是 `{}`，与条目名不符",
+                    preset.id
+                ),
+            });
+        }
+        embedded.insert(id, preset);
+    }
+    for track in archive.project.tracks.values() {
+        let Some(state) = track.preset.as_ref() else {
+            continue;
+        };
+        let Some(id) = state.preset_id.as_deref() else {
+            continue;
+        };
+        validate_preset_id(id).map_err(|error| OpenError::PresetReference {
+            detail: error.to_string(),
+        })?;
+        if is_factory_preset(id) || embedded.contains_key(id) {
+            continue;
+        }
+        let file = id.strip_prefix("user:").unwrap_or(id);
+        let path = user_preset_library_dir()
+            .map(|dir| dir.join(format!("{file}.json")))
+            .map_err(|detail| OpenError::PresetReference { detail })?;
+        let too_large =
+            std::fs::metadata(&path).is_ok_and(|meta| meta.len() > USER_PRESET_READ_MAX_BYTES);
+        let bytes = if too_large {
+            Err(OpenError::PresetReference {
+                detail: format!("用户预制 `{id}` 超过读取上限 {USER_PRESET_READ_MAX_BYTES} 字节"),
+            })
+        } else {
+            std::fs::read(&path).map_err(|_| OpenError::PresetReference {
+                detail: format!(
+                    "缺用户预制 `{id}`（用户库里没有 {}），拒绝静默回干声",
+                    path.display()
+                ),
+            })
+        }?;
+        Preset::parse(&bytes).map_err(|error| OpenError::PresetReference {
+            detail: format!("用户预制 `{id}` 损坏：{error}"),
+        })?;
+    }
+    Ok(())
 }
 
 /// **任务书点名的入口**：`open_project_file(path) -> Result<YebanProjectV1, OpenError>`。

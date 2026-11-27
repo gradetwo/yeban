@@ -452,6 +452,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⚠ 控制面权威形态下保存走权威自己的字节；这里的池只服务本地保存那条腿
     // （`UndoPort` 的文档已登记这条边界）。
     undo_port.replace_assets(loaded.archive.assets.clone());
+    // T-FIX-806：启动 `--open` 也是 GUI 打开工程的一条腿 —— 内嵌用户预制必须
+    // 与工程一起进运行期端口，否则面板 / 保存侧拿不到副本。
+    undo_port.replace_embedded_presets(loaded.archive.embedded_presets.clone());
     // ⭐ 任务单 `#136`：把**音频片段字节的来源**交给引擎宿主 —— 就是上面那一池
     // （`UndoPort::asset_bytes`，⛔ 不复制第二份字节）。来源必须在 `start` **之前**
     // 接上：`reload` 的第 1.3 步要当场给快照注入 `ClipContent::Audio` 的 PCM。

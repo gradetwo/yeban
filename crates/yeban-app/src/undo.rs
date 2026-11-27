@@ -365,6 +365,13 @@ pub struct UndoPort {
     /// 那份字节里有没有资产池，不属于本端口能决定的事。本池只服务**本地活会话**的保存
     /// （`crate::host::wire_save` 的 `live_port` 那条腿）。
     assets: RefCell<Vec<(AssetHash, Vec<u8>)>>,
+    /// ⭐ 工程包内嵌用户预制（T-FIX-806）：打开工程时随归档一起换入，供运行期
+    /// 面板解析 / 保存回写使用；`Vec<(条目名, 原始字节)>` 保留容器原样
+    /// （`presets/user/<id>.json`），⛔ 不在这里重新序列化。
+    ///
+    /// 空 `Vec` 是**一等状态**（新工程 / 内置样本没有内嵌副本）—— 打开时
+    /// **替换**整表，⛔ 不合并到上一个工程的预制，避免跨工程串包。
+    embedded_presets: RefCell<Vec<(String, Vec<u8>)>>,
     /// ⭐ 判据注入开关（T-FIX-303）：非零 ⇒ 下一次 `commit_ops*` 无条件返回
     /// [`UndoRefusal::Model`]。
     ///
@@ -385,6 +392,7 @@ impl UndoPort {
             open: Cell::new(false),
             last_origin: RefCell::new(None),
             assets: RefCell::new(Vec::new()),
+            embedded_presets: RefCell::new(Vec::new()),
             #[cfg(feature = "test-support")]
             refuse_next_commit: Cell::new(false),
         }
@@ -406,6 +414,7 @@ impl UndoPort {
             open: Cell::new(false),
             last_origin: RefCell::new(None),
             assets: RefCell::new(Vec::new()),
+            embedded_presets: RefCell::new(Vec::new()),
             #[cfg(feature = "test-support")]
             refuse_next_commit: Cell::new(false),
         }
@@ -458,6 +467,26 @@ impl UndoPort {
     #[must_use]
     pub fn assets(&self) -> Vec<(AssetHash, Vec<u8>)> {
         self.assets.borrow().clone()
+    }
+
+    /// 用一份归档的**内嵌用户预制**替换运行期副本（打开工程 = 新会话 ⇒ 换一表）。
+    ///
+    /// 输入是容器里的原始 `(条目名, 字节)`；本方法按条目名升序并保留同名的
+    /// **第一份**。空输入 = 新工程没有内嵌预制（⛔ 不是保留上一份）。
+    pub fn replace_embedded_presets(&self, entries: impl IntoIterator<Item = (String, Vec<u8>)>) {
+        let mut presets: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
+        presets.sort_by(|left, right| left.0.cmp(&right.0));
+        presets.dedup_by(|left, right| left.0 == right.0);
+        *self.embedded_presets.borrow_mut() = presets;
+    }
+
+    /// 运行期内嵌用户预制的一份拷贝（面板解析 / 保存打包用）。
+    ///
+    /// 与 [`Self::assets`] 同样给拷贝而不是借用：端口内部是 `RefCell`，
+    /// 借出去的切片会与后续换工程 / 保存路径的借用撞车。
+    #[must_use]
+    pub fn embedded_presets(&self) -> Vec<(String, Vec<u8>)> {
+        self.embedded_presets.borrow().clone()
     }
 
     /// 池里某个哈希的字节（判据 / 渲染读回用；不在池里 ⇒ `None`）。

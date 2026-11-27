@@ -5171,6 +5171,7 @@ pub fn load_project_with_clock(
                 path,
                 &ProjectOpenOptions {
                     strict_missing_assets: true,
+                    strict_preset_references: true,
                     ..ProjectOpenOptions::default()
                 },
             )
