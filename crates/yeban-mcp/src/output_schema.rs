@@ -1556,7 +1556,7 @@ fn edit_notes() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_edit_notes 成功响应的 data",
-            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` (本调用永远先写隔离提案分支); `proposal` 是**摘要** (不含逐条 `ops`, 除非 `includeOps:true`)。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`warnings[]` 逐条报非阻断问题: `code:\"unrecognisedEffectParam\"` (引擎不认又不是拼错的参数名, 带 `knownParams` 全集, 可当场改拼写重发) / `code:\"deviceOnSilentTrack\"` (设备装到无可发声内容的源轨上); 两者都可能为空数组。`resolvedParams` 逐条回显批里 `setParam` 的命中 (恒带, 无写入时为空数组); `clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 在涉及片段/摆放的调用上回显派生读数 (T-FIX-741, 与 dryRun 预览同一份)。⭐ `placement.add` 且 `autoMerge:true` 真的落地后，顶层另带 `createdPlacementId`（逐字等于 `willCreate.placements[0].id`），可立即拿它 move/fade；未合并提案或 `dryRun` **不带**该字段（此时唯一身份读数是 `willCreate.placements[0].id` 的计划值，不是已创建）。",
+            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` (本调用永远先写隔离提案分支); `proposal` 是**摘要** (不含逐条 `ops`, 除非 `includeOps:true`)。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`warnings[]` 逐条报非阻断问题: `code:\"unrecognisedEffectParam\"` (引擎不认又不是拼错的参数名, 带 `knownParams` 全集, 可当场改拼写重发) / `code:\"deviceOnSilentTrack\"` (设备装到无可发声内容的源轨上); 两者都可能为空数组。`resolvedParams` 逐条回显批里 `setParam` 的命中 (恒带, 无写入时为空数组); `clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 在涉及片段/摆放的调用上回显派生读数 (T-FIX-741, 与 dryRun 预览同一份)。⚠ `clip` / `placement` / `createdPlacementId` 三键都是**条件读数、刻意不进本 schema 的 `properties` 声明** (T-FIX-847): 纯音轨调用合法地不带 `clip` / `placement` (T-FIX-741 的 tools_e2e 判据钉死纯音轨调用 `clip` 缺席), `createdPlacementId` 也只在 `placement.add` 落地时出现, 而 `validate_complete` 要求每个声明字段都出现——声明它们会让 schema 与合法响应互相矛盾 (props_176 实测红); 与同拼装点的 `propose_section` / `set_macro` 一贯口径一致: 其真实响应同样可带这两键, 也从未声明。⭐ `placement.add` 且 `autoMerge:true` 真的落地后，顶层另带 `createdPlacementId`（逐字等于 `willCreate.placements[0].id`），可立即拿它 move/fade；未合并提案或 `dryRun` **不带**该字段（此时唯一身份读数是 `willCreate.placements[0].id` 的计划值，不是已创建）。",
         ),
         &[
             "created",
@@ -1586,10 +1586,6 @@ fn edit_notes() -> Value {
             "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},
             "merge": merge_shape_roster(),
-            "createdPlacementId": {
-                "type": "string",
-                "description": "仅当 `placement.add` 且 `autoMerge:true` 已落地时出现：逐字等于 `willCreate.placements[0].id`，可直接用于 `placement.move` / `setClipPlacementFade`。未合并 / dryRun 不带本字段。"
-            },
             "resolvedParams": {
                 "type": "array",
                 "items": {
@@ -1603,48 +1599,6 @@ fn edit_notes() -> Value {
                     },
                     "additionalProperties": false
                 }
-            },
-            // T-FIX-741: 片段/摆放派生读数（只在相关调用上出现, 因此不进 required）。
-            "clip": {
-                "type": "object",
-                "required": ["clipId", "name", "kind", "noteCount", "endTick"],
-                "properties": {
-                    "clipId": {"type": "string"},
-                    "name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["midi", "audio"]},
-                    "noteCount": {"type": "integer", "minimum": 0},
-                    "endTick": {"type": "integer", "minimum": 0}
-                },
-                "additionalProperties": false
-            },
-            "placement": {
-                "type": "object",
-                "required": [
-                    "trackId",
-                    "placementId",
-                    "clipId",
-                    "startTick",
-                    "durationTicks",
-                    "loop"
-                ],
-                "properties": {
-                    "trackId": {"type": "string"},
-                    "placementId": {"type": "string"},
-                    "clipId": {"type": "string"},
-                    "startTick": {"type": "integer", "minimum": 0},
-                    "durationTicks": {"type": "integer", "minimum": 0},
-                    "loop": {
-                        "type": "object",
-                        "required": ["enabled", "startTick", "endTick"],
-                        "properties": {
-                            "enabled": {"type": "boolean"},
-                            "startTick": {"type": "integer", "minimum": 0},
-                            "endTick": {"type": "integer", "minimum": 0}
-                        },
-                        "additionalProperties": false
-                    }
-                },
-                "additionalProperties": false
             }
         }),
     ))

@@ -622,6 +622,54 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         "{automation_preview}"
     );
 
+    // ⑦b `yeban_edit_notes` 的**片段形状**（T-FIX-847）：`create: true` 新建片段 +
+    // 加一个音符 + `placement.add` + `autoMerge: true` —— 这份真实响应**带**
+    // `clip` / `placement` 两份条件读数。两键**刻意不进** `edit_notes` 的
+    // outputSchema 声明：`validate_complete` 要求每个声明字段都出现，而 ⑦ 的
+    // 工程级调用（`setTempo`）合法地不带这两键（T-FIX-741 的 tools_e2e 判据钉死
+    // 纯音轨调用 `clip` 缺席）——声明它们会让 schema 与合法响应互相矛盾（本判据
+    // 在 T-FIX-847 之前正红在这里：`$.clip: schema 声明了这个字段, 但这份真实
+    // 响应里没有`）。片段形状与 ⑦ 的全字段形状都必须过 `validate_complete`，
+    // 两头一起钉：哪头把两键的出现/缺席形状改坏，都会在本判据里响亮报出来。
+    let clip_touching = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "create": true,
+            "clipId": "01J8ZQ00000000000000000099",
+            "clipName": "#176 片段形状",
+            "ops": [{"kind": "add", "note": {"pitch": 60, "startTick": 0, "durationTicks": 960}}],
+            "placement": {"kind": "add", "startTick": 0},
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(clip_touching["status"], "success", "{clip_touching}");
+    assert_eq!(
+        clip_touching["data"]["clip"]["clipId"], "01J8ZQ00000000000000000099",
+        "片段形状必须带 clip 读数且指向新建片段: {clip_touching}"
+    );
+    assert_eq!(
+        clip_touching["data"]["placement"]["clipId"], "01J8ZQ00000000000000000099",
+        "片段形状必须带 placement 读数且指向新建片段: {clip_touching}"
+    );
+    let edit_notes_schema = tools::catalog()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "yeban_edit_notes")
+        .unwrap_or_else(|| panic!("`yeban_edit_notes` 必须在 tools/list 里"))["outputSchema"]
+        .clone();
+    output_schema::validate_complete(&edit_notes_schema, &clip_touching["data"]).unwrap_or_else(
+        |violation| {
+            panic!(
+                "`yeban_edit_notes` 的片段形状真实响应违反自己的 schema: {violation}\n{}",
+                clip_touching["data"]
+            )
+        },
+    );
+
     // ⚠ `yeban_render_master` 不在此表（它跑两份互斥形状，各供 `validate`，见判据末尾）——
     // 此表只剩九工具，全跑 `validate_complete`。
     let responses: [(&str, &Value, &[&str]); 9] = [
