@@ -23397,19 +23397,18 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     else {
                         return;
                     };
-                    // `velocity_op_for` 在 `old_vel == new_vel` 时返回 `None` ⇒ 已经是 100 的音符
-                    // **一个 op 都不写**（模型的前置条件**不会**拒绝空 op ⇒ "不提交"必须在这里决定，
-                    // 否则一次什么都没改的双击会在撤销栈上留一步）。
-                    let Some(op) = velocity_op_for(
-                        project,
-                        &view.notes[index].id,
-                        yeban_model::music::DEFAULT_VELOCITY,
-                    ) else {
+                    // 组口径与拖动臂相同：命中在选区且选区多于一颗 ⇒ 整组恢复；
+                    // 否则只恢复命中那一颗。已经是 100 的不发 op（README：一次没改的双击
+                    // 不许在撤销栈上留步）。
+                    let selected = selected_note_ulids(&ui);
+                    let ops =
+                        velocity_restore_default_ops_for(project, &view.notes[index].id, &selected);
+                    if ops.is_empty() {
                         return;
-                    };
-                    // **一个原子 op = 一步撤销**（⛔ 不走拖拽臂的草稿路径：这是离散点击手势）。
+                    }
+                    // **一个原子 batch = 一步撤销**（⛔ 不走拖拽臂的草稿路径：这是离散点击手势）。
                     if port
-                        .commit_ops(now_ms(), "velocity: restore default", vec![op])
+                        .commit_ops(now_ms(), "velocity: restore default", ops)
                         .is_err()
                     {
                         return;
@@ -23879,6 +23878,96 @@ pub fn velocity_op_for(
     })
 }
 
+/// 力度拖动臂的组批构造点：把**同一个相对 delta** 加到选区每颗音符。
+///
+/// - 命中音符**在选区里**且选区多于一颗 ⇒ 整组；否则只改命中那一颗
+///   （与移动/改时值的"选区外按下只动指针下那颗"同一口径）。
+/// - `delta` 是相对量：`新 y 的绝对力度 - 按下时指针下那颗的力度`。单颗时
+///   `old + delta` 恰好等于新的绝对力度，因此与旧"绝对赋值"语义逐值一致。
+/// - 逐颗夹到 `0..=127`（`MIDI_VELOCITY_MAX`）；夹紧后没变的音符不发 op，
+///   越界不丢弃、也不让整批失败。
+/// - 空集 = 没有可提交的变化 ⇒ 调用方**不提交**空 batch。
+#[must_use]
+pub fn velocity_drag_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    dragged_ulid: &str,
+    selected_ulids: &[String],
+    delta: i16,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::BTreeSet;
+    let grouped = selected_ulids.len() > 1 && selected_ulids.iter().any(|id| id == dragged_ulid);
+    let targets: BTreeSet<yeban_model::EntityId> = if grouped {
+        selected_ulids
+            .iter()
+            .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+            .collect()
+    } else {
+        dragged_ulid
+            .parse::<yeban_model::EntityId>()
+            .ok()
+            .into_iter()
+            .collect()
+    };
+    let low = 0_i32;
+    let high = i32::from(yeban_model::music::MIDI_VELOCITY_MAX);
+    let mut ops = Vec::new();
+    for note_id in targets {
+        let Some((clip_id, track_id, old_vel)) = note_identity_for(project, note_id) else {
+            continue;
+        };
+        let new_vel = (i32::from(old_vel) + i32::from(delta)).clamp(low, high) as u8;
+        if new_vel == old_vel {
+            continue;
+        }
+        ops.push(yeban_model::ops::Op::ModifyNoteVelocity {
+            track_id,
+            clip_id,
+            note_id,
+            old_vel,
+            new_vel,
+        });
+    }
+    ops
+}
+
+/// 力度双击的组批构造点：把选区每颗恢复到 [`yeban_model::music::DEFAULT_VELOCITY`]。
+///
+/// 组口径与 [`velocity_drag_ops_for`] 相同：命中在选区且选区多于一颗 ⇒ 整组；
+/// 否则只命中那一颗。已经是默认值的音符不发空 op。
+#[must_use]
+pub fn velocity_restore_default_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    hit_ulid: &str,
+    selected_ulids: &[String],
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::BTreeSet;
+    let grouped = selected_ulids.len() > 1 && selected_ulids.iter().any(|id| id == hit_ulid);
+    let targets: BTreeSet<yeban_model::EntityId> = if grouped {
+        selected_ulids
+            .iter()
+            .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+            .collect()
+    } else {
+        hit_ulid
+            .parse::<yeban_model::EntityId>()
+            .ok()
+            .into_iter()
+            .collect()
+    };
+    let mut ops = Vec::new();
+    for note_id in targets {
+        let Some(op) = velocity_op_for(
+            project,
+            &note_id.to_canonical_string(),
+            yeban_model::music::DEFAULT_VELOCITY,
+        ) else {
+            continue;
+        };
+        ops.push(op);
+    }
+    ops
+}
+
 /// 移动手势的**草稿清零**（松手提交之后 / `Escape` / 指针离开窗口三条路径共用）。
 ///
 /// 五个手势读数**一律**在这一次清零 ⇒ 不存在"拖到一半松在窗口外，下一次移动继续拖"这种
@@ -24192,6 +24281,7 @@ fn clear_velocity_drag(ui: &MainWindow) {
     ui.set_velocity_drag_active(false);
     ui.set_note_drag_ulid("".into());
     ui.set_note_drag_preview_velocity(0.0);
+    ui.set_velocity_drag_origin(0);
 }
 
 /// 指针按下：判断这一按**是不是**拖力度柱（工具门 + 柱命中），是则**接管**并写下草稿起点。
@@ -24232,6 +24322,7 @@ fn begin_velocity_drag(
     // 身份与预览：与移动臂**共用** `note-drag-ulid`（界面只按它选被拖的那一个）。
     ui.set_note_drag_ulid(note.id.as_str().into());
     ui.set_note_drag_preview_velocity(note.velocity_normalized);
+    ui.set_velocity_drag_origin(i32::from(note.velocity));
     // `active` **最后**写：读者要么看到"还没开始"，要么看到一份**完整**的起点状态。
     ui.set_velocity_drag_active(true);
     true
@@ -24272,6 +24363,8 @@ fn commit_velocity_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, _x: f32, y
         return;
     }
     let note = ui.get_note_drag_ulid().to_string();
+    let start_vel = u8::try_from(ui.get_velocity_drag_origin()).unwrap_or(0);
+    let selected = selected_note_ulids(ui);
     clear_velocity_drag(ui);
     let Some(lane_y) = velocity_lane_y(ui, y) else {
         return;
@@ -24290,13 +24383,15 @@ fn commit_velocity_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, _x: f32, y
     let Some(project) = port.try_project() else {
         return;
     };
-    // `None` = 身份解析不出**或**力度没变（后者不提交空 op —— 模型不会拒绝它，
-    // 所以必须在这里决定，否则一次"什么都没改"的手势会留一步撤销）。
-    let Some(op) = velocity_op_for(&project, &note, new_vel) else {
+    // 相对 delta：指针下那颗从 `start_vel` 到 `new_vel` 的位移，原样加到选区每颗。
+    // 单颗时 `old + delta == new_vel`，与旧"绝对赋值"逐值一致；组拖时每颗各自钳位。
+    let delta = i16::from(new_vel) - i16::from(start_vel);
+    let ops = velocity_drag_ops_for(&project, &note, &selected, delta);
+    if ops.is_empty() {
         return;
-    };
+    }
     if port
-        .commit_ops(now_ms(), "velocity: set note velocity", vec![op])
+        .commit_ops(now_ms(), "velocity: adjust note velocity", ops)
         .is_err()
     {
         return;

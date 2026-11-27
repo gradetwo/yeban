@@ -992,6 +992,9 @@ export component MainWindow inherits Window {
     in-out property <bool> undo-tree-open: false;
     in-out property <int> undo-undone: 0;
     in-out property <bool> velocity-drag-active: false;
+    // 力度拖动起点的**指针下那颗**力度（0..=127）。组拖用 `新 y 的绝对力度 - 本值`
+    // 得到相对 delta，再逐颗加到选区；⛔ 不把逐颗的起点当成指针起点。
+    in-out property <int> velocity-drag-origin: 0;
     in-out property <string> window-title: @tr("夜半 Yeban");
     in-out property <float> zoom-h-fraction: 0.495;
     in-out property <float> zoom-v-fraction: 0.231;

@@ -3592,6 +3592,117 @@ fn one_group_commit_is_exactly_one_undo_step() {
     );
 }
 
+/// ③ 整组拖力度：三颗选中、拖指针下那一颗 -50 ⇒ 三条 `ModifyNoteVelocity`，
+/// 每颗都是 `old + delta`（不是只改命中一颗）；一次提交 = 一步撤销。
+#[test]
+fn a_group_velocity_drag_applies_one_delta_to_the_whole_selection() {
+    let project = yeban_model::samples::filled_project();
+    let (_clip_id, ulids) = a_clip_with_three_notes();
+    let selected = vec![ulids[0].clone(), ulids[1].clone(), ulids[2].clone()];
+    for id in &ulids {
+        assert_eq!(velocity_of(&project, id), 100, "夹具前提：三颗都是默认 100");
+    }
+
+    let ops = yeban_app::host::velocity_drag_ops_for(&project, &ulids[0], &selected, -50);
+    assert_eq!(ops.len(), 3, "三颗选中 ⇒ 三条 ModifyNoteVelocity");
+    for op in &ops {
+        match op {
+            yeban_model::ops::Op::ModifyNoteVelocity {
+                old_vel, new_vel, ..
+            } => {
+                assert_eq!((*old_vel, *new_vel), (100, 50), "同一 delta 逐颗相加");
+            }
+            other => panic!("组拖力度只该产 ModifyNoteVelocity，实测 {other:?}"),
+        }
+    }
+
+    let port = UndoPort::new(
+        UndoSession::open("<group-velocity>", "yeban-app", project.clone(), NOW_MS).expect("打开"),
+    );
+    port.commit_ops(NOW_MS, "velocity: adjust note velocity", ops)
+        .expect("一次提交整组力度");
+    for id in &ulids {
+        assert_eq!(velocity_of(&port.project(), id), 50, "整组都到 50");
+    }
+    assert!(
+        matches!(
+            port.perform(yeban_app::undo::UiAction::Undo),
+            yeban_app::undo::ActionOutcome::Changed { .. }
+        ),
+        "撤销必须真的走了一步"
+    );
+    for id in &ulids {
+        assert_eq!(velocity_of(&port.project(), id), 100, "一步撤销整组回 100");
+    }
+
+    // 越界逐颗钳到 127，不丢音符。
+    let ops = yeban_app::host::velocity_drag_ops_for(&project, &ulids[0], &selected, 100);
+    assert_eq!(ops.len(), 3, "三颗都变 ⇒ 三条");
+    for op in &ops {
+        match op {
+            yeban_model::ops::Op::ModifyNoteVelocity { new_vel, .. } => {
+                assert_eq!(*new_vel, 127, "100 + 100 必须钳到 127");
+            }
+            other => panic!("组拖力度只该产 ModifyNoteVelocity，实测 {other:?}"),
+        }
+    }
+}
+
+/// ④ 双击恢复默认按选区整组：三颗里两颗非 100、一颗已 100 ⇒ 只产两条 op；
+/// 一次提交 = 一步撤销，三颗全回 100。
+#[test]
+fn velocity_restore_default_applies_to_the_whole_selection() {
+    let project = yeban_model::samples::filled_project();
+    let (_clip_id, ulids) = a_clip_with_three_notes();
+    let selected = vec![ulids[0].clone(), ulids[1].clone(), ulids[2].clone()];
+    let port = UndoPort::new(
+        UndoSession::open(
+            "<group-velocity-default>",
+            "yeban-app",
+            project.clone(),
+            NOW_MS,
+        )
+        .expect("打开"),
+    );
+    for (ulid, target) in [(&ulids[0], 0_u8), (&ulids[1], 40_u8)] {
+        let (clip_id, track_id, old_vel) = identity_by_ulid(&port.project(), ulid);
+        port.commit_ops(
+            NOW_MS,
+            "fixture: set velocity",
+            vec![yeban_model::ops::Op::ModifyNoteVelocity {
+                track_id,
+                clip_id,
+                note_id: ulid.parse().expect("ULID"),
+                old_vel,
+                new_vel: target,
+            }],
+        )
+        .expect("夹具写力度");
+    }
+    let ops =
+        yeban_app::host::velocity_restore_default_ops_for(&port.project(), &ulids[0], &selected);
+    assert_eq!(ops.len(), 2, "只有两颗非 100 ⇒ 两条 op");
+    port.commit_ops(NOW_MS, "velocity: restore default", ops)
+        .expect("一次提交整组恢复");
+    for id in &ulids {
+        assert_eq!(velocity_of(&port.project(), id), 100, "三颗全回 100");
+    }
+    assert!(
+        matches!(
+            port.perform(yeban_app::undo::UiAction::Undo),
+            yeban_app::undo::ActionOutcome::Changed { .. }
+        ),
+        "撤销必须真的走了一步"
+    );
+    assert_eq!(velocity_of(&port.project(), &ulids[0]), 0, "撤销回 0");
+    assert_eq!(velocity_of(&port.project(), &ulids[1]), 40, "撤销回 40");
+    assert_eq!(
+        velocity_of(&port.project(), &ulids[2]),
+        100,
+        "未改的仍是 100"
+    );
+}
+
 /// ③ 整组改时值：每颗 +240（起点不动）；拖到负数每颗各自夹到最小格；零位移不发 op。
 #[test]
 fn a_group_resize_changes_every_selected_duration_and_clamps_at_the_grid_minimum() {
