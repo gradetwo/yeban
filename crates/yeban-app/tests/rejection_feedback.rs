@@ -188,6 +188,59 @@ fn a_refused_track_rename_is_visibly_reported() {
 }
 
 // ===========================================================================
+// ⑦ 新建轨道：统一回执不得被第二次 toast 覆盖
+// ===========================================================================
+
+#[test]
+fn a_refused_new_track_keeps_the_actionable_receipt_in_the_toast() {
+    let (window, port, _ui) = assemble();
+    let before_tracks = port.project().tracks.len();
+    let before_commits = commit_count(&port);
+    assert!(
+        !window.get_show_floating_toast(),
+        "夹具前提：提示条初始不显示"
+    );
+
+    port.refuse_next_commit_for_test();
+    window.invoke_track_create_midi();
+    assert_rejected(&window, "新建轨道");
+    let module = window.get_module_status_text().to_string();
+    let toast = window.get_toast_message().to_string();
+    for (label, text) in [("module-status-text", &module), ("toast-message", &toast)] {
+        assert!(
+            text.contains("没有生效"),
+            "{label} 必须仍然保留统一回执的“没有生效”，实测 {text:?}"
+        );
+        assert!(
+            text.contains("工程没有变化"),
+            "{label} 必须说清工程没有变化，实测 {text:?}"
+        );
+        assert!(
+            text.contains("再试一次"),
+            "{label} 必须给可执行下一步“再试一次”，实测 {text:?}"
+        );
+    }
+    assert_eq!(
+        toast, module,
+        "提示条与模块回执行必须仍是同一份统一回执；第二次写入不得退化成 vague toast"
+    );
+    assert_eq!(
+        port.project().tracks.len(),
+        before_tracks,
+        "被拒绝 ⇒ 轨道数不动"
+    );
+    assert_eq!(commit_count(&port), before_commits, "被拒绝 ⇒ 提交数不动");
+
+    // 成功路径回归：一次性开关已用掉，同一条命令必须真的新增一条轨。
+    window.invoke_track_create_midi();
+    assert!(
+        port.project().tracks.len() > before_tracks,
+        "成功路径必须真的新增轨道"
+    );
+    assert_eq!(commit_count(&port), before_commits + 1);
+}
+
+// ===========================================================================
 // ② Delete 删选区
 // ===========================================================================
 

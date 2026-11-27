@@ -6373,8 +6373,9 @@ fn create_track(ui: &MainWindow, port: &UndoPort, kind: crate::bridge::NewTrackK
         }
     };
     if port.commit_ops(now_ms(), "create track", ops).is_err() {
+        // T-FIX-915：拒绝回执只走 `report_rejected` 这一处（提示条＋模块回执）。
+        // ⛔ 不再补一条 `toast_track` —— 它会把提示条覆盖成无原因/无下一步的信息级短句。
         report_rejected(ui, "新建轨道");
-        toast_track(ui, "新建轨道被拒绝（工程未改）");
     } else {
         // 回执：用户刚点的那一下必须**看得见结果**。名字从提交后的工程读（差集取新增），
         // 读不到就退回不带名字的文案 —— ⛔ 不编一个假名字。
