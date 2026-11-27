@@ -422,6 +422,22 @@ fn op_is_applied(op: &Op, doc: &YebanProjectV1) -> bool {
     }
 }
 
+/// ⭐ T-FIX-969：`invert(doc).is_ok()` 对**相对位移**op 不能判"是否已经应用"——
+/// `Op::MoveNote` 的逆只用当前音符位置检查"再移回去是否合法"，撤销前后都为真，
+/// 于是 `op_is_applied` 恒 true，正常重做被 `StateMismatch` 误拒（Ctrl+Z 能回退、
+/// Ctrl+Shift+Z / 菜单 Redo 却什么都不做）。这类 op 的"已应用"不可由文档单值判定，
+/// 重做时直接走 `Op::apply`（它自带前置条件，失败仍会升级为类型化拒绝），
+/// ⛔ 不让启发式尺子冒充判决。
+fn op_applied_state_is_indeterminate(op: &Op) -> bool {
+    match op {
+        // 一次提交 = 一条 `Op::Batch`；只要批内有不可判定的相对 op，整批就不参与
+        // "已应用"启发式判定（否则批外层仍会被 `invert().is_ok()` 误判为已应用）。
+        Op::Batch { ops, .. } => ops.iter().any(op_applied_state_is_indeterminate),
+        Op::MoveNote { .. } => true,
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 会话动作：提交 / 撤销 / 重做
 // ---------------------------------------------------------------------------
@@ -738,7 +754,9 @@ pub fn redo(
                 // 推导的；setter 的前置条件可能只查"实体在不在"，导致推导偏一步，
                 // 于是重做会把已经生效的 op 再打一次（裸模型 CONFLICT）。
                 // 施加前用同一把 `op_is_applied` 尺子校验：已应用 ⇒ 类型化拒绝。
-                if op_is_applied(&stamped.op, project) {
+                if !op_applied_state_is_indeterminate(&stamped.op)
+                    && op_is_applied(&stamped.op, project)
+                {
                     return Err(UndoRefusal::StateMismatch {
                         op: stamped.op.name().to_owned(),
                         hint: "目标 op 已作用在当前工程上；本会话无法安全重做。\
@@ -2039,5 +2057,58 @@ mod tests {
         assert_eq!(rest.steps, 1, "只剩一步可重做");
         assert_eq!(session.project_bytes().expect("字节"), states[3]);
         assert_eq!(session.redo_steps(1).unwrap_err(), UndoRefusal::NoRedo);
+    }
+
+    /// ⭐ T-FIX-969：相对位移的撤销→重做必须真的把音符位置搬回来。
+    /// 红对照：恢复 `op_is_applied` 的 `invert().is_ok()` 判定（不排除 MoveNote）
+    /// ⇒ `redo_steps(1)` 被 StateMismatch 误拒，本条在 `.expect("重做")` 处红。
+    #[test]
+    fn redo_restores_a_relative_note_move() {
+        let (mut session, _fixture) = session();
+        // 选一颗起始 tick ≥ 240 的音符：撤销后逆位移 -240 仍合法，
+        // 才能暴露 `invert().is_ok()` 把"已应用"误判为 true 的缺陷。
+        let (track_id, clip_id, note_id) = {
+            let doc = session.project();
+            doc.tracks
+                .iter()
+                .find_map(|(track_id, track)| {
+                    track.clips.values().find_map(|placement| {
+                        let entry = doc.clip_pool.get(&placement.clip_id)?;
+                        let notes = entry.content.notes()?;
+                        let (note_id, _) = notes.iter().find(|(_, note)| note.start_tick >= 240)?;
+                        Some((*track_id, placement.clip_id, *note_id))
+                    })
+                })
+                .expect("夹具必须有可右移一拍的音符")
+        };
+        let before = session.project_bytes().expect("字节");
+        session
+            .commit(CommitRequest {
+                now_ms: NOW + 1,
+                origin: OpOrigin::UserUi,
+                message: "移动音符".to_owned(),
+                ops: vec![Op::MoveNote {
+                    track_id,
+                    clip_id,
+                    note_id,
+                    delta_tick: 240,
+                    delta_pitch: 0,
+                }],
+            })
+            .expect("提交");
+        let moved = session.project_bytes().expect("字节");
+        assert_ne!(moved, before, "提交必须真的改了工程");
+
+        let undone = session.undo_steps(1).expect("撤销");
+        assert_eq!(undone.steps, 1);
+        assert_eq!(session.project_bytes().expect("字节"), before, "撤销回原位");
+
+        let redone = session.redo_steps(1).expect("重做必须恢复移动");
+        assert_eq!(redone.steps, 1);
+        assert_eq!(
+            session.project_bytes().expect("字节"),
+            moved,
+            "重做后必须逐字节回到撤销前"
+        );
     }
 }
