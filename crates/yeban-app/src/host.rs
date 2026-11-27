@@ -13739,6 +13739,112 @@ pub fn report_notice(ui: &MainWindow, text: &str, error: bool) {
     ui.set_show_floating_toast(true);
 }
 
+/// T-FIX-912：分轨导出「没有活跃工程」的完整主文案（九语闭集）。
+///
+/// 动态回执走 Rust 侧表（与 `help.rs` / `sfz_doctor.rs` 同制式），
+/// ⛔ 不进 `.slint` 的 `@tr` / `.po`（Rust 调不了编译期宏）。
+pub fn stems_no_project_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => "分轨导出没有开始：当前没有打开工程。请先打开或新建工程，再回来导出分轨。",
+        EnUs => {
+            "Stem export didn't start: no project is open. Open or create a project, then export stems again."
+        }
+        FrFr => {
+            "L'export des stems n'a pas démarré : aucun projet n'est ouvert. Ouvrez ou créez un projet, puis relancez l'export des stems."
+        }
+        EsEs => {
+            "La exportación de stems no comenzó: no hay ningún proyecto abierto. Abre o crea un proyecto y vuelve a exportar los stems."
+        }
+        PtBr => {
+            "A exportação de stems não começou: nenhum projeto está aberto. Abra ou crie um projeto e exporte os stems novamente."
+        }
+        JaJp => {
+            "ステム書き出しは開始されませんでした：プロジェクトが開かれていません。プロジェクトを開くか新規作成してから、もう一度ステムを書き出してください。"
+        }
+        KoKr => {
+            "스템 내보내기가 시작되지 않았습니다. 열린 프로젝트가 없습니다. 프로젝트를 열거나 새로 만든 뒤 다시 스템을 내보내세요."
+        }
+        RuRu => {
+            "Экспорт стемов не начался: проект не открыт. Откройте или создайте проект, затем снова запустите экспорт стемов."
+        }
+        DeDe => {
+            "Stem-Export nicht gestartet: Kein Projekt geöffnet. Öffne oder erstelle ein Projekt und starte den Stem-Export erneut."
+        }
+    }
+}
+
+/// T-FIX-912：分轨渲染失败的主文案（九语闭集）。
+///
+/// 只写用户能判断的三件事：没完成、工程/原文件未受影响、下一步可做什么。
+/// 技术原文⛔ 不进这里 —— 由 [`report_module_failure`] 放进结构化回执的
+/// `detail=` 字段与 stderr。
+pub fn stems_render_failure_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => {
+            "分轨导出没有完成：工程和原文件没有被改动。请先重试；若仍失败，可先导出 WAV 检查，或确认分轨输出目录可写。"
+        }
+        EnUs => {
+            "Stem export didn't finish: the project and source files were not changed. Try again; if it still fails, export a WAV to check, or make sure the stems output folder is writable."
+        }
+        FrFr => {
+            "L'export des stems n'a pas abouti : le projet et les fichiers sources n'ont pas été modifiés. Réessayez ; si l'échec persiste, exportez un WAV pour vérifier ou assurez-vous que le dossier de sortie des stems est accessible en écriture."
+        }
+        EsEs => {
+            "La exportación de stems no terminó: el proyecto y los archivos originales no se modificaron. Reinténtalo; si sigue fallando, exporta un WAV para comprobarlo o asegúrate de que la carpeta de salida de stems tenga permiso de escritura."
+        }
+        PtBr => {
+            "A exportação de stems não foi concluída: o projeto e os arquivos originais não foram alterados. Tente novamente; se ainda falhar, exporte um WAV para verificar ou confirme se a pasta de saída dos stems permite gravação."
+        }
+        JaJp => {
+            "ステム書き出しは完了しませんでした：プロジェクトと元ファイルは変更されていません。もう一度試してください。それでも失敗する場合は、WAV を書き出して確認するか、ステムの出力先フォルダーに書き込み権限があるか確認してください。"
+        }
+        KoKr => {
+            "스템 내보내기가 완료되지 않았습니다. 프로젝트와 원본 파일은 변경되지 않았습니다. 다시 시도하세요. 계속 실패하면 WAV로 내보내 확인하거나 스템 출력 폴더에 쓰기 권한이 있는지 확인하세요."
+        }
+        RuRu => {
+            "Экспорт стемов не завершён: проект и исходные файлы не изменены. Повторите попытку; если ошибка остаётся, экспортируйте WAV для проверки или убедитесь, что папка вывода стемов доступна для записи."
+        }
+        DeDe => {
+            "Stem-Export nicht abgeschlossen: Projekt und Quelldateien wurden nicht verändert. Versuche es erneut; falls es weiter fehlschlägt, exportiere eine WAV zur Kontrolle oder prüfe, ob der Stem-Ausgabeordner beschreibbar ist."
+        }
+    }
+}
+
+/// T-FIX-912：模块失败的**唯一写点**（结构化回执 ＋ 人话回执行 ＋ 常驻错误提示条）。
+///
+/// 与 [`report_notice`] 的差别只有一处：`module-status` 保留
+/// `module:action=…:outcome=error:error=…:message="…"[:detail="…"]` 的技术原文，
+/// `module-status-text` 与提示条只写 `human`。技术原文留在回执与 stderr，
+/// ⛔ 不糊进主提示条。
+pub fn report_module_failure(
+    ui: &MainWindow,
+    action: &str,
+    code: &str,
+    human: &str,
+    detail: Option<&str>,
+) {
+    let mut fields = module_error_fields(code, human);
+    if let Some(detail) = detail {
+        let escaped = detail.replace('"', "'").replace('\n', " ");
+        fields.push(format!("detail=\"{escaped}\""));
+    }
+    let receipt = module_receipt(action, &fields);
+    // 先把结构化回执、两条专用行（削波/导入损失）在同一次写入里归位。
+    apply_module_receipt(ui, &receipt, false);
+    // 人话行与提示条是用户看到的全部；它们不含 `error=` / 锁文件 / 渲染栈。
+    ui.set_module_status_text(human.into());
+    ui.set_toast_message(human.into());
+    ui.set_toast_is_error(true);
+    ui.set_show_floating_toast(true);
+    if let Some(detail) = detail {
+        eprintln!("[yeban-app] {receipt}\n  detail: {detail}");
+    } else {
+        eprintln!("[yeban-app] {receipt}");
+    }
+}
+
 /// 把设置模块攒下的待发警告（写回失败 / 设置文件损坏，T-FIX-299）一次
 /// 取走，逐条用 [`report_notice`]（错误级常驻：提示条 ＋ 模块回执行
 /// 同时写）展示；无待发警告时什么都不做。调用方在每次设置写回动作
@@ -33348,7 +33454,14 @@ pub fn wire_aether_actions(
                             return;
                         }
                         let Some(project) = port.try_project() else {
-                            ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
+                            let human = stems_no_project_message(current_language());
+                            report_module_failure(
+                                &ui,
+                                "export-stems",
+                                NO_ACTIVE_PROJECT_CODE,
+                                human,
+                                None,
+                            );
                             return;
                         };
                         // ⭐ T-FIX-422：分轨导出的 `project_path` 必须是**真实工程文件路径**
@@ -33369,6 +33482,7 @@ pub fn wire_aether_actions(
                         let assets = port.assets();
                         let worker = w.clone();
                         let out_for_msg = out_dir.clone();
+                        let lang = current_language();
                         let _ = std::thread::spawn(move || {
                             let result = crate::export_stems::export_stems(
                                 &project,
@@ -33386,7 +33500,14 @@ pub fn wire_aether_actions(
                                         .into(),
                                 ),
                                 Err(err) => {
-                                    ui.set_toast_message(format!("[导出] 分轨失败：{err}").into())
+                                    let human = stems_render_failure_message(lang);
+                                    report_module_failure(
+                                        &ui,
+                                        "export-stems",
+                                        "stems-render-failed",
+                                        human,
+                                        Some(&err.to_string()),
+                                    );
                                 }
                             });
                         });
