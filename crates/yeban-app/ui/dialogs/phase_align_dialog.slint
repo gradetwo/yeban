@@ -232,7 +232,9 @@ export component PhaseAlignDialog inherits Rectangle {
                             vertical-alignment: center;
                         }
                         TouchArea {
-                            accessible-role: checkbox;
+                            // T-FIX-934: 与 elements.rs 的 ElementKind::Switch 对齐 ——
+                            // 注册表角色词表无 checkbox，此处是布尔开关语义，改源不改词表。
+                            accessible-role: switch;
                             accessible-id: "phase-align-apply-checkbox";
                             accessible-label: @tr("apply");
                             accessible-action-default => { root.apply = !root.apply; }

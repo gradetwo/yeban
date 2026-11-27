@@ -3434,7 +3434,8 @@ export component MainWindow inherits Window {
 }
 
         if false : Rectangle {
-            accessible-role: region;
+            // T-FIX-934: 与 elements.rs 的 ElementKind::Complementary 对齐（辅助栏）。
+            accessible-role: complementary;
             accessible-id: "ai-rail";
             accessible-label: @tr("AI 协作栏: 意图生成与声学诊断");
             Rectangle {

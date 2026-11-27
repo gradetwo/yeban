@@ -190,7 +190,8 @@ export component UnifiedLowerDock inherits Rectangle {
     vertical-stretch: root.console-maximized ? 1 : 0;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
-    accessible-role: region;
+    // T-FIX-934: 与 elements.rs 的 ElementKind::TabList 对齐（控制台标签导轨）。
+    accessible-role: tab-list;
     accessible-id: "console-tab-rail";
     accessible-label: @tr("底部控制台");
 

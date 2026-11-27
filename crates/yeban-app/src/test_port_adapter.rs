@@ -816,6 +816,33 @@ fn slint_source_roles_match_the_registry_for_undo_tree_readouts() {
     );
 }
 
+/// 判据 3b（T-FIX-934）：控制台标签导轨 / 相位对齐 apply 开关 / AI 辅助栏三处
+/// `.slint` 源 role 必须与注册表登记一致（同时认 `accessible-id` 与 `a11y-id` 两种形态）。
+#[test]
+fn slint_source_roles_match_the_registry_for_console_phase_and_ai_rail() {
+    assert_slint_source_roles_match_registry(&[
+        "console-tab-rail",
+        "phase-align-apply-checkbox",
+        "ai-rail",
+    ]);
+
+    // 红对照：把任一处 role 改错，公共 helper 必须点名该 id 并失败。
+    let wrong_direct =
+        "Rectangle {\n accessible-id: \"console-tab-rail\";\n accessible-role: region;\n}";
+    assert_eq!(
+        slint_role_for_id_in(wrong_direct, "console-tab-rail").as_deref(),
+        Some("region"),
+        "合成变异必须能被检出"
+    );
+    let right_forwarded =
+        "Rectangle {\n a11y-id: \"ai-rail\";\n accessible-role: complementary;\n}";
+    assert_eq!(
+        slint_role_for_id_in(right_forwarded, "ai-rail").as_deref(),
+        Some("complementary"),
+        "a11y-id 转发形态必须被认出"
+    );
+}
+
 /// 判据 4: 静态树**没有几何**，因此 `[UI-MCP-002]` 的遮罩在它上面必须**显式报错**，
 /// 而不是"遮 0 个矩形"然后静默通过。
 ///
