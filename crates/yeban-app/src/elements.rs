@@ -2525,14 +2525,14 @@ impl ElementRegistry {
         // `unknown_at_runtime` 因此仍然为空）。
         registry.add(
             "undo-tree-empty-state",
-            ElementKind::Region,
+            ElementKind::Text,
             "dialogs/undo_tree_modal.slint",
             "还没有任何版本提交。撤销历史为空。",
             false,
         );
         registry.add(
             "undo-tree-truncation-note",
-            ElementKind::Region,
+            ElementKind::Text,
             "dialogs/undo_tree_modal.slint",
             "更早的版本未画出（截断报数）",
             false,

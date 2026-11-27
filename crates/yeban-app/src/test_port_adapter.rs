@@ -741,23 +741,17 @@ fn slint_role_for_id_in(source: &str, id: &str) -> Option<String> {
     None
 }
 
-/// 判据 3b: `.slint` 源的 `accessible-role` 必须与注册表登记**交叉一致**。
-///
-/// 判据 1/3 的两侧都来自注册表（注册表 → 由注册表构造的静态树 / role 字符串合法性），
-/// 抓不到"`.slint` 源写 button、注册表写 combobox"这类漂移：屏幕阅读器按源 role 播报，
-/// 用户不知道选择器会展开。本判据直接读源码，并带合成变异红对照。
-#[test]
-fn slint_source_roles_match_the_registry_for_device_selectors() {
+fn assert_slint_source_roles_match_registry(ids: &[&str]) {
     let registry = demo_registry();
     let ui = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
     let mut sources = Vec::new();
     collect_slint_sources(&ui, &mut sources);
     assert!(!sources.is_empty(), "ui/ 下没有 .slint 源码");
 
-    for id in ["audio-output-selector", "audio-input-selector"] {
+    for id in ids {
         let meta = registry
             .iter()
-            .find(|meta| meta.id == id)
+            .find(|meta| meta.id == *id)
             .unwrap_or_else(|| panic!("注册表缺条目 `{id}`"));
         let expected = meta.kind.accessible_role();
         let found = sources
@@ -769,6 +763,16 @@ fn slint_source_roles_match_the_registry_for_device_selectors() {
             "`{id}` 的 .slint 源 role 与注册表登记不一致（应为 `{expected}`）"
         );
     }
+}
+
+/// 判据 3b: `.slint` 源的 `accessible-role` 必须与注册表登记**交叉一致**。
+///
+/// 判据 1/3 的两侧都来自注册表（注册表 → 由注册表构造的静态树 / role 字符串合法性），
+/// 抓不到"`.slint` 源写 button、注册表写 combobox"这类漂移：屏幕阅读器按源 role 播报，
+/// 用户不知道选择器会展开。本判据直接读源码，并带合成变异红对照。
+#[test]
+fn slint_source_roles_match_the_registry_for_device_selectors() {
+    assert_slint_source_roles_match_registry(&["audio-output-selector", "audio-input-selector"]);
 
     // 红对照：故意写错 role 必须被检出；改成一致后必须放行。两种 id 形态都过一遍。
     let wrong_direct =
@@ -783,6 +787,31 @@ fn slint_source_roles_match_the_registry_for_device_selectors() {
     assert_eq!(
         slint_role_for_id_in(right_forwarded, "audio-output-selector").as_deref(),
         Some("combobox"),
+        "a11y-id 转发形态必须被认出"
+    );
+}
+
+/// 判据 3c: 撤销树空状态与截断提示的 `.slint` 源 role 必须与注册表登记交叉一致。
+#[test]
+fn slint_source_roles_match_the_registry_for_undo_tree_readouts() {
+    assert_slint_source_roles_match_registry(&[
+        "undo-tree-empty-state",
+        "undo-tree-truncation-note",
+    ]);
+
+    // 红对照：故意写错 role 必须被检出；改成一致后必须放行。两种 id 形态都过一遍。
+    let wrong_direct =
+        "Text {\n accessible-id: \"undo-tree-empty-state\";\n accessible-role: region;\n}";
+    assert_eq!(
+        slint_role_for_id_in(wrong_direct, "undo-tree-empty-state").as_deref(),
+        Some("region"),
+        "合成变异必须能被检出"
+    );
+    let right_forwarded =
+        "Text {\n a11y-id: \"undo-tree-truncation-note\";\n accessible-role: text;\n}";
+    assert_eq!(
+        slint_role_for_id_in(right_forwarded, "undo-tree-truncation-note").as_deref(),
+        Some("text"),
         "a11y-id 转发形态必须被认出"
     );
 }
