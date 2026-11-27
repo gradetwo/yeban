@@ -91,6 +91,12 @@ pub struct MidiExportReport {
     pub bytes: usize,
     /// 用过的临时文件名（成功后它不应再存在；判据会去查）。
     pub temp_name: String,
+    /// T-FIX-691：持久化警告（`rename` 成功但刷目录失败 = 已提交、持久化未确认）。
+    ///
+    /// 完全落盘时为 [`Option::None`]；有警告**仍是**一次成功的导出（文件已经是新字节），
+    /// 调用方（CLI）必须把它如实带进回执，⛔ 不回滚、⛔ 不说"导出失败"。与 app 侧
+    /// `SaveReport.durability`（T-FIX-324）同口径。
+    pub durability_warning: Option<String>,
     /// 写出的 `MTrk` 条数（不含 conductor 轨）。
     pub tracks: usize,
     /// 写出的音符总数。

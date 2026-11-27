@@ -57,6 +57,9 @@ pub fn export_project_to_file(
         path: saved.path,
         bytes: saved.bytes,
         temp_name: saved.temp_name,
+        // T-FIX-691：`write_file_atomically` 的持久化警告必须进回执（此前只取了
+        // path/bytes/temp_name，警告被静默丢弃，刷目录失败时导出照样报成功）。
+        durability_warning: saved.durability.warning().map(str::to_owned),
         tracks: export.tracks.len(),
         notes: export.tracks.iter().map(|t| t.notes.len()).sum(),
         tempos: export.tempos.len(),
@@ -179,6 +182,51 @@ mod tests {
         let mut permissions = std::fs::metadata(&dir).expect("元数据").permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&dir, permissions).expect("还原权限");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 判据（T-FIX-691）：rename 成功但**目录项刷盘失败** ⇒ 导出仍成功，但回执必须带
+    /// 持久化警告（修前这里是 `None`：`saved.durability` 被静默丢弃，导出照样报成功）。
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_directory_sync_is_carried_in_the_receipt() {
+        let dir = scratch_dir("dirsync");
+        let target = dir.join("warned.mid");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let report = export_project_to_file(&crate::bridge::demo_project(), &target);
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let report = report.expect("rename 已成功 ⇒ 导出已提交，不是失败");
+        let warning = report
+            .durability_warning
+            .as_deref()
+            .expect("刷目录失败时回执必须带持久化警告（⛔ 不许静默丢弃 saved.durability）");
+        assert!(
+            warning.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {warning}"
+        );
+        // 文件内容完整在位（警告不是失败，不回滚）。
+        assert_eq!(
+            report.bytes,
+            std::fs::metadata(&target).expect("文件在").len() as usize
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上条判据的反面（T-FIX-691）：注入关掉时同一导出必须仍是干净回执（无警告）。
+    #[cfg(unix)]
+    #[test]
+    fn a_normal_export_carries_no_durability_warning() {
+        let dir = scratch_dir("durable");
+        let target = dir.join("quiet.mid");
+        let report =
+            export_project_to_file(&crate::bridge::demo_project(), &target).expect("导出必须成功");
+        assert!(
+            report.durability_warning.is_none(),
+            "健康路径回执不得凭空多出警告: {:?}",
+            report.durability_warning
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

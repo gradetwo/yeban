@@ -4642,6 +4642,22 @@ pub enum CliError {
         /// 持久化警告文案（说清"文件已替换，但目录项未确认持久化"）。
         detail: String,
     },
+    /// 任一**导出**已提交但目录项未确认持久化（T-FIX-691）。
+    ///
+    /// 与 [`Self::SaveCommittedNotDurable`] 同一口径，差别只在"这是一次导出"：
+    /// stdout 仍照常打全部批处理行（含各导出的回执行与 `committed=true durability=warning`
+    /// 警告行），退出码非零（[`EXIT_EXPORT`]）；⛔ 不与真正未写盘的导出失败共用一句
+    /// "导出失败"。`detail` 是第一条警告的文案，其余警告都在 `lines` 里（`--save-as`
+    /// 自己的警告会先行以 [`Self::SaveCommittedNotDurable`] 返回，到这里的只剩导出的警告）。
+    ExportCommittedNotDurable {
+        /// 第一条带警告的导出的目标路径（`.mid` / `.als` / `.logicx` 目录 /
+        /// 元素清单 / 切片目录 / 分轨目录）。
+        path: PathBuf,
+        /// 要上 stdout 的全部行（已算好的批处理行 + 各导出的回执行 + 警告行）。
+        lines: Vec<String>,
+        /// 第一条持久化警告文案（说清"文件已替换，但目录项未确认持久化"）。
+        detail: String,
+    },
     /// `--export-elements` 失败。
     Export {
         /// 目标路径。
@@ -4901,6 +4917,7 @@ impl CliError {
             | Self::SliceAudio { .. }
             | Self::LyricsExport { .. }
             | Self::ExportAls { .. }
+            | Self::ExportCommittedNotDurable { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
     }
@@ -4924,6 +4941,12 @@ impl fmt::Display for CliError {
             Self::SaveCommittedNotDurable { path, detail, .. } => write!(
                 formatter,
                 "保存到 `{}` 已提交，但目录项未确认持久化: {detail} \
+                 (committed=true durability=warning)",
+                path.display()
+            ),
+            Self::ExportCommittedNotDurable { path, detail, .. } => write!(
+                formatter,
+                "导出到 `{}` 已提交，但目录项未确认持久化: {detail} \
                  (committed=true durability=warning)",
                 path.display()
             ),
@@ -5088,6 +5111,7 @@ impl std::error::Error for CliError {
             Self::Usage(_)
             | Self::Ui { .. }
             | Self::SaveCommittedNotDurable { .. }
+            | Self::ExportCommittedNotDurable { .. }
             | Self::HeadlessIdleNotBatch
             | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
@@ -6717,6 +6741,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     let mut loaded = load_project(options)?;
     let mut lines: Vec<String> = Vec::new();
+    // T-FIX-691：各导出收集到的持久化警告（目标路径 + 文案）。警告行随各导出的回执行
+    // 立刻打进 `lines`；全部导出跑完、返回 `Ok` 之前，若有警告就以
+    // [`CliError::ExportCommittedNotDurable`] 非零退出（[`EXIT_EXPORT`]）—— 与
+    // `--save-as` 的 [`CliError::SaveCommittedNotDurable`]（[`EXIT_SAVE`]）同一口径：
+    // 文件已经是新字节，只差"目录项刷下去"这一层确认。⛔ 不回滚、⛔ 不说"导出失败"。
+    // 顺序：`--save-as` 在导出之后，它自己的警告会先行返回（`lines` 里已含各导出的
+    // 警告行，一并上 stdout，不丢）。
+    let mut durability_warnings: Vec<(PathBuf, String)> = Vec::new();
 
     // 需要投影的命令先投影：投影失败要**在**任何写盘动作之前失败。
     let view = if options.needs_projection() {
@@ -7088,6 +7120,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             report.bytes,
             report.temp_name,
         ));
+        // T-FIX-691：元素清单的持久化警告同样进回执（此前 `report.durability` 被丢弃）。
+        if let Some(warning) = report.durability.warning() {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            durability_warnings.push((path.clone(), warning.to_owned()));
+        }
     }
 
     if let Some(path) = options.export_midi.as_ref() {
@@ -7098,6 +7135,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             }
         })?;
         lines.push(exported_midi_line(&report, &loaded));
+        // T-FIX-691：MIDI 导出的持久化警告进回执（修前回执里没有它）。
+        if let Some(warning) = report.durability_warning.as_deref() {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            durability_warnings.push((path.clone(), warning.to_owned()));
+        }
     }
 
     // ⭐ `--export-song-overview`：总览图的**批处理**出口（与 `--export-midi` 同位置、
@@ -7355,6 +7397,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 }
             })?;
         lines.push(report.line());
+        // T-FIX-691：切片 SFZ 的持久化警告进回执（修前回执里没有它；切片 WAV 走
+        // `write_plain_wav`，其警告是 T-FIX-690 的落点，不在这里）。
+        if let Some(warning) = report.durability_warning.as_deref() {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            // 路径取被警告的文件本身（SFZ 文本），不是输入 WAV。
+            durability_warnings.push((report.sfz_path.clone(), warning.to_owned()));
+        }
     }
     // 第二道守卫（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）：
     // `--slice-out` 与修饰开关没有 `--slice-audio` 就没有落点；`--slice-audio`
@@ -7565,6 +7614,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             reason: error.reason(),
         })?;
         lines.extend(report.lines());
+        // T-FIX-691：分轨的持久化警告行已由 `ExportStemsReport::lines()` 打进 `lines`，
+        // 这里只登记（供文末统一非零退出）；无警告时什么都不加。
+        for warning in &report.durability_warnings {
+            durability_warnings.push((dir.clone(), warning.clone()));
+        }
     }
     // 默认构建的第二道防假绿（`Options` 的字段是公开的 ⇒ 判据可以绕过 `parse`）。
     #[cfg(not(feature = "in-process-mcp"))]
@@ -7582,6 +7636,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 source,
             })?;
         lines.push(exported_als_line(&report, &loaded));
+        // T-FIX-691：ALS 导出的持久化警告进回执（修前回执里没有它）。
+        if let Some(warning) = report.durability_warning.as_deref() {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            durability_warnings.push((path.clone(), warning.to_owned()));
+        }
         lines.extend(als_loss_lines(&report.losses));
     }
 
@@ -7602,6 +7661,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 source,
             })?;
         lines.push(exported_logic_line(&report, &loaded));
+        // T-FIX-691：Logic 导出的持久化警告进回执（修前回执里没有它）。
+        for warning in &report.durability_warnings {
+            lines.push(format!("committed=true durability=warning {warning}"));
+            durability_warnings.push((path.clone(), warning.clone()));
+        }
         lines.extend(logic_loss_lines(&report.losses));
     }
 
@@ -7623,6 +7687,16 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 detail: warning.to_owned(),
             });
         }
+    }
+
+    // T-FIX-691：任一导出带持久化警告 ⇒ 全部批处理行照常上 stdout，退出码非零
+    // （[`EXIT_EXPORT`]）。`detail` 只取第一条警告的文案，其余警告都在 `lines` 里。
+    if let Some((path, detail)) = durability_warnings.into_iter().next() {
+        return Err(CliError::ExportCommittedNotDurable {
+            path,
+            lines,
+            detail,
+        });
     }
 
     Ok(lines)
@@ -8074,10 +8148,13 @@ pub fn finish(result: Result<Vec<String>, CliError>) -> ExitCode {
             emit(&lines);
             ExitCode::from(EXIT_OK)
         }
-        // ⭐ T-FIX-324：已提交但目录项未确认持久化 ⇒ 批处理行（含 `saved:` 行与
-        // `committed=true durability=warning` 行）照常上 **stdout**，退出码非零 ——
+        // ⭐ T-FIX-324 / T-FIX-691：已提交但目录项未确认持久化 ⇒ 批处理行（含回执行
+        // 与 `committed=true durability=warning` 行）照常上 **stdout**，退出码非零 ——
         // 与真正未写盘（只有 stderr 一行）走两条不同的路，脚本两侧都能靠 stdout 判读。
-        Err(ref error @ CliError::SaveCommittedNotDurable { ref lines, .. }) => {
+        Err(
+            ref error @ (CliError::SaveCommittedNotDurable { ref lines, .. }
+            | CliError::ExportCommittedNotDurable { ref lines, .. }),
+        ) => {
             emit(lines);
             eprintln!("yeban-app: {error}");
             ExitCode::from(error.exit_code())
@@ -8539,6 +8616,244 @@ mod tests {
             crate::open::open_project_archive_file(&target, &ProjectOpenOptions::default()).is_ok(),
             "目标文件必须是可读的合法容器"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 33.6（T-FIX-691）：rename 成功但**目录项刷盘失败** ⇒ 各导出仍成功，
+    // 但回执必须带 `committed=true durability=warning` 行，退出码非零（`EXIT_EXPORT`），
+    // 且目标文件已经是新内容 —— ⛔ 不与真正未写盘共用一句"导出失败"。
+    // ------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn export_midi_with_directory_sync_warning_is_committed_not_failed() {
+        let dir = scratch_dir("dirsync-midi");
+        let (source, _) = write_container_file(&dir, "in.yeban");
+        let target = dir.join("out.mid");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-midi".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_EXPORT);
+        let CliError::ExportCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 ExportCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("exported-midi:")),
+            "stdout 必须仍有 exported-midi: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(
+            !text.contains("导出失败"),
+            "⛔ 不与真正未写盘共用一句'导出失败': {text}"
+        );
+        assert!(target.exists(), "目标文件必须在");
+        assert!(
+            std::fs::metadata(&target).expect("文件在").len() > 0,
+            "目标文件不得是空文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_elements_with_directory_sync_warning_is_committed_not_failed() {
+        let dir = scratch_dir("dirsync-elements");
+        let (source, _) = write_container_file(&dir, "in.yeban");
+        let target = dir.join("elements.txt");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-elements".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_EXPORT);
+        let CliError::ExportCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 ExportCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("exported:")),
+            "stdout 必须仍有 exported: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(target.exists(), "目标文件必须在");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slice_audio_with_directory_sync_warning_is_committed_not_failed() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+
+        let dir = scratch_dir("dirsync-slice");
+        let input = dir.join("vocal.wav");
+        let samples: Vec<f32> = (0..48_000)
+            .map(|index| (index as f32 * 0.01).sin() * 0.5)
+            .collect();
+        yeban_render::wav::write_plain_wav(
+            &input,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(samples),
+        )
+        .expect("写夹具 WAV");
+        let out_dir = dir.join("slices");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--slice-audio".to_owned(),
+                input.display().to_string(),
+                "--slice-out".to_owned(),
+                out_dir.display().to_string(),
+                "--slice-cuts".to_owned(),
+                "0.5".to_owned(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_EXPORT);
+        let CliError::ExportCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 ExportCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("sliced-audio:")),
+            "stdout 必须仍有 sliced-audio: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(out_dir.join("vocal.sfz").exists(), "SFZ 文件必须完整在位");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(unix, feature = "experimental-als-export"))]
+    #[test]
+    fn export_als_with_directory_sync_warning_is_committed_not_failed() {
+        let dir = scratch_dir("dirsync-als");
+        let (source, _) = write_container_file(&dir, "in.yeban");
+        let target = dir.join("out.als");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-als".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_EXPORT);
+        let CliError::ExportCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 ExportCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("exported-als:")),
+            "stdout 必须仍有 exported-als: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(target.exists(), "目标文件必须在");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(unix, feature = "experimental-logic-export"))]
+    #[test]
+    fn export_logic_with_directory_sync_warning_is_committed_not_failed() {
+        let dir = scratch_dir("dirsync-logic");
+        let (source, _) = write_container_file(&dir, "in.yeban");
+        let target = dir.join("out.logicx");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let result = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-logic".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        );
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let error = result.expect_err("目录项未确认持久化 ⇒ 退出码必须非零");
+        assert_eq!(error.exit_code(), EXIT_EXPORT);
+        let CliError::ExportCommittedNotDurable { lines, detail, .. } = error else {
+            panic!("必须是 ExportCommittedNotDurable, 实际: {error:?}");
+        };
+        let text = joined(&lines);
+        assert!(
+            lines.iter().any(|line| line.starts_with("exported-logic:")),
+            "stdout 必须仍有 exported-logic: 行: {text}"
+        );
+        assert!(
+            text.contains("committed=true durability=warning"),
+            "必须明写 committed=true / durability=warning: {text}"
+        );
+        assert!(
+            detail.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {detail}"
+        );
+        assert!(target.exists(), "目标目录必须在");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

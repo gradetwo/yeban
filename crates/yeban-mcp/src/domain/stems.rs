@@ -441,6 +441,17 @@ pub struct StemBatch {
     /// `true` ⇒ 每条分轨在渲染完成的那一刻就落了盘、`artifact.bytes` 已释放；
     /// [`write`] 因此不再重写，直接出回执。这是"同一批字节只写一次"的护栏。
     pub streamed: bool,
+    /// T-FIX-691：本批落盘时各文件的持久化警告（`rename` 成功但刷目录失败 =
+    /// 已提交、持久化未确认），每条是一份文件的警告文案。
+    ///
+    /// 只有流式路径（[`export_streaming`]）在这里填：`sink` 每写一条就把
+    /// [`store::Durability::Warning`] 的文案收进来。两阶段路径（[`export`] +
+    /// [`write`]）写盘发生在 [`write`] 里，那边的警告由 `write` 直接并进响应
+    /// （见 [`write`]）；`manifest` 的警告同理。空 ⇒ 回执里**没有**
+    /// `durabilityWarnings` 这个键（与 `peakWarning` / `stripWarning` 同一条
+    /// "条件键"纪律）。有警告**仍是**一次成功的导出，调用方必须如实显示，
+    /// ⛔ 不回滚、⛔ 不说"导出失败"。
+    pub durability_warnings: Vec<String>,
 }
 
 impl StemBatch {
@@ -496,8 +507,8 @@ impl StemBatch {
     /// `bytes` / `frames` / `bitDepth` / `channels` 等，消费方凭 `sha256` 与
     /// `bytes` 即可在进程退出后核对盘上文件、判定续跑还缺哪些轨。
     #[must_use]
-    pub fn manifest_value(&self, completed: &[StemRow]) -> Value {
-        json!({
+    pub fn manifest_value(&self, completed: &[StemRow], durability_warnings: &[String]) -> Value {
+        let mut value = json!({
             "format": STEMS_MANIFEST_FORMAT,
             "version": STEMS_MANIFEST_VERSION,
             "outputDir": self.request.out_dir.display().to_string(),
@@ -510,7 +521,10 @@ impl StemBatch {
             "stemsBasis": self.stems_basis(),
             "stems": completed.iter().map(StemRow::to_value).collect::<Vec<_>>(),
             "skippedTracks": self.skipped.iter().map(SkippedTrack::to_value).collect::<Vec<_>>(),
-        })
+        });
+        // T-FIX-691：批次级持久化警告槽位 —— 条件键，无警告时一位都不加。
+        insert_durability_warnings(&mut value, durability_warnings);
+        value
     }
 
     /// `dryRun` 预览：全部实测数字，一个字节都不写盘。
@@ -542,8 +556,13 @@ impl StemBatch {
     }
 
     /// 成功落盘后的响应 `data`（D5：`partial:false`）。
+    ///
+    /// `durability_warnings` 是本次落盘各文件的持久化警告（调用方 [`write`] 现算；
+    /// 流式批次也可以直接传 `&batch.durability_warnings`）。空 ⇒ 回执里**没有**
+    /// `durabilityWarnings` 这个键（T-FIX-691，与 `peakWarning` / `stripWarning`
+    /// 同一条"条件键"纪律）。
     #[must_use]
-    pub fn response_data(&self, completed: &[StemRow]) -> Value {
+    pub fn response_data(&self, completed: &[StemRow], durability_warnings: &[String]) -> Value {
         let mut map = Map::new();
         map.insert(
             "stems".to_owned(),
@@ -575,7 +594,9 @@ impl StemBatch {
             "manifestPath".to_owned(),
             json!(self.manifest_path().display().to_string()),
         );
-        Value::Object(map)
+        let mut value = Value::Object(map);
+        insert_durability_warnings(&mut value, durability_warnings);
+        value
     }
 
     fn preview_stems(&self) -> Value {
@@ -589,6 +610,46 @@ impl StemBatch {
 
     fn preview_skipped(&self) -> Value {
         Value::Array(self.skipped.iter().map(SkippedTrack::to_value).collect())
+    }
+}
+
+/// 往警告表里追加一条（T-FIX-691）：同文案去重 —— 同目录多文件刷目录失败时
+/// 文案逐字相同（只差目录路径，而同批文件同目录），留一条即可，⛔ 不刷屏。
+fn push_durability_warning(warnings: &mut Vec<String>, warning: &str) {
+    if !warnings.iter().any(|existing| existing == warning) {
+        warnings.push(warning.to_owned());
+    }
+}
+
+/// 批次级持久化警告槽位（T-FIX-691）的**唯一**拼装点。
+///
+/// `warnings` 为空 ⇒ 一位都不加（`manifest_value` / `response_data` / 部分成功
+/// 回执三处共用，⛔ 不各写一份条件）；非空 ⇒ 在对象上挂 `"durabilityWarnings"`：
+/// 文案字符串数组（与工程保存回执的 `durabilityWarning` 同一句话型，不另造
+/// `code` —— 故障词汇表冻结面只登记 `Fault` 的 `code`，警告文案不在其中）。
+/// 已有该键时**追加**不覆盖（`write` 先拼行级警告、后并 manifest 警告）。
+fn insert_durability_warnings(value: &mut Value, warnings: &[String]) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    match object.get_mut("durabilityWarnings") {
+        Some(Value::Array(existing)) => {
+            existing.extend(warnings.iter().map(|warning| Value::from(warning.as_str())));
+        }
+        _ => {
+            object.insert(
+                "durabilityWarnings".to_owned(),
+                Value::Array(
+                    warnings
+                        .iter()
+                        .map(|warning| Value::from(warning.as_str()))
+                        .collect(),
+                ),
+            );
+        }
     }
 }
 
@@ -728,7 +789,12 @@ fn bus_source_nodes(project: &YebanProjectV1) -> BTreeSet<EntityId> {
 }
 
 /// 分轨字节的去向：`None` = 全留内存；`Some(f)` = 每渲完一条立刻 `f(path, bytes)`。
-type StemWriter<'a> = Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<(), Fault>>;
+///
+/// T-FIX-691：`f` 返回持久化读数（[`store::Durability`]），不只是 `()` ——
+/// 旧入口 `store::write_project_atomic` 把第 3.5 步（rename 后刷父目录）的警告
+/// 静默吞掉；这里必须用 `write_project_atomic_with_durability`，调用方把警告
+/// 收进 [`StemBatch::durability_warnings`]。
+type StemWriter<'a> = Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<store::Durability, Fault>>;
 
 /// ⭐ 渲染整个批次（**只读**：`N + 1` 次 [`render::build`]，零字节落盘）。
 ///
@@ -764,7 +830,7 @@ pub fn export(
 ///
 /// 本函数把 `StemRow.artifact.bytes` 的生命周期压到"一条"：写成功就 `Vec::new()`。
 /// 单条产物与 [`export`] 逐字节相同（同一条渲染链、同一条容器编码、同一条写盘路径
-/// `store::write_project_atomic`），差别只在内存曲线。
+/// `store::write_project_atomic_with_durability`），差别只在内存曲线。
 ///
 /// ## 失败语义（与 [`write`] 同一条 D5）
 ///
@@ -794,7 +860,8 @@ pub fn export_streaming(
         request,
         now_ms,
         assets,
-        Some(&mut |path, bytes| store::write_project_atomic(path, bytes)),
+        // T-FIX-691：走带持久化读数的入口（旧入口把第 3.5 步的警告静默吞掉）。
+        Some(&mut |path, bytes| store::write_project_atomic_with_durability(path, bytes)),
     )
 }
 
@@ -964,6 +1031,9 @@ fn export_with_sink(
         .collect::<Vec<_>>();
     // 5. 逐轨渲染（`sink` 有值 ⇒ 渲完这条立刻写盘并释放字节）。
     let mut stems = Vec::with_capacity(planned.len());
+    // T-FIX-691：流式落盘各文件的持久化警告（`sink` 的 `Durability` 读数），
+    // 随批次带回（[`StemBatch::durability_warnings`]）。
+    let mut durability_warnings: Vec<String> = Vec::new();
     let mut renders = 1_usize;
     for (position, (track_id, name, file_name, path, kind)) in planned.into_iter().enumerate() {
         let mut stem_project = project_without_audition(project);
@@ -1051,18 +1121,28 @@ fn export_with_sink(
             artifact,
         };
         if let Some(write) = sink.as_mut() {
-            if let Err(fault) = (**write)(&row.path, &row.artifact.bytes) {
-                let remaining = planned_ids[position..].to_vec();
-                return Err(write_failed(
-                    request,
-                    &stems,
-                    &row,
-                    &remaining,
-                    renders,
-                    basis.frames,
-                    project.sample_rate().hz(),
-                    &fault,
-                ));
+            match (**write)(&row.path, &row.artifact.bytes) {
+                Ok(durability) => {
+                    // T-FIX-691：`rename` 成功但刷目录失败 = 已提交、持久化未确认 ——
+                    // 警告收进批次，不回滚、不说失败（同文案去重）。
+                    if let Some(warning) = durability.warning() {
+                        push_durability_warning(&mut durability_warnings, warning);
+                    }
+                }
+                Err(fault) => {
+                    let remaining = planned_ids[position..].to_vec();
+                    return Err(write_failed(
+                        request,
+                        &stems,
+                        &row,
+                        &remaining,
+                        renders,
+                        basis.frames,
+                        project.sample_rate().hz(),
+                        &fault,
+                        &durability_warnings,
+                    ));
+                }
             }
             // ⭐ 已落盘 ⇒ 这份字节不再有读者。`Vec::new()` 立刻归还，峰值因此只有
             //    "一条"而不是"一条 × 已出轨数"。
@@ -1080,6 +1160,7 @@ fn export_with_sink(
         basis_frames: basis.frames,
         sample_rate: project.sample_rate().hz(),
         streamed: sink.is_some(),
+        durability_warnings,
     })
 }
 
@@ -1099,22 +1180,38 @@ fn export_with_sink(
 ///
 /// 序列化失败或原子写失败时返回 [`Fault`]。
 pub fn write_manifest(batch: &StemBatch) -> Result<PathBuf, Fault> {
+    write_manifest_with_durability(batch, &[]).map(|(path, _)| path)
+}
+
+/// [`write_manifest`] 的带持久化读数版（T-FIX-691）。
+///
+/// `durability_warnings` 是各分轨文件的警告（写进 manifest 内容的
+/// `durabilityWarnings` 槽位）；返回值第二项是 **manifest 自身**写盘的警告
+/// （`None` = 完全落盘）。manifest 自己的警告不能写进 manifest 内容（先有鸡
+/// 还是先有蛋），由调用方并进响应回执。
+pub fn write_manifest_with_durability(
+    batch: &StemBatch,
+    durability_warnings: &[String],
+) -> Result<(PathBuf, Option<String>), Fault> {
     let path = batch.manifest_path();
     let mut text =
-        serde_json::to_string_pretty(&batch.manifest_value(&batch.stems)).map_err(|error| {
-            super::error::from_io(
-                "序列化分轨 manifest",
-                &std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-            )
-        })?;
+        serde_json::to_string_pretty(&batch.manifest_value(&batch.stems, durability_warnings))
+            .map_err(|error| {
+                super::error::from_io(
+                    "序列化分轨 manifest",
+                    &std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                )
+            })?;
     text.push('\n');
     // ⭐ T-FIX-501：manifest 失败时**如实说明分轨已落盘**（见 [`manifest_failed`]）。
     // 修前这里是裸 `?`：错误只带 `write_project_atomic` 的 I/O 原因，用户看不出
     // "N 条分轨已经完整躺在盘上、只需补写 manifest"，最可能的反应是重跑整批渲染
     // （大工程数分钟到数十分钟，全部白付）。
-    store::write_project_atomic(&path, text.as_bytes())
-        .map_err(|fault| manifest_failed(batch, &fault))?;
-    Ok(path)
+    // T-FIX-691：走带持久化读数的入口（旧入口把 manifest 自身的第 3.5 步警告
+    // 静默吞掉）；失败口径不变（仍是 `Fault`），警告随返回值带回。
+    let durability = store::write_project_atomic_with_durability(&path, text.as_bytes())
+        .map_err(|fault| manifest_failed(batch, &fault, durability_warnings))?;
+    Ok((path, durability.warning().map(str::to_owned)))
 }
 
 /// manifest 落盘失败的**部分成功回执**（T-FIX-501）。
@@ -1130,7 +1227,12 @@ pub fn write_manifest(batch: &StemBatch) -> Result<PathBuf, Fault> {
 ///
 /// ⚠ `write_manifest` 是 `pub`，理论上可以在"一条分轨都没写"时被单独调用 ⇒ 这里的
 /// "已落盘 N 条"一律用 `path.exists()` **实测**，0 条时就照实说 0 条（⛔ 不撒谎）。
-fn manifest_failed(batch: &StemBatch, fault: &Fault) -> Fault {
+fn manifest_failed(
+    batch: &StemBatch,
+    fault: &Fault,
+    // T-FIX-691：失败前已落盘各文件的持久化警告 —— 部分成功回执同样不得静默丢弃。
+    durability_warnings: &[String],
+) -> Fault {
     // ⭐ 错误码**原样继承**：`write_project_atomic` 在磁盘满时给的是 `DiskFull`，
     // 不许在这里统一降级成 `IoError` —— 那会把"磁盘满"这条可操作信息洗掉。
     let (failed_code, failed_reason, inner_data) = match fault {
@@ -1199,7 +1301,10 @@ fn manifest_failed(batch: &StemBatch, fault: &Fault) -> Fault {
             completed.len()
         )
     };
-    Fault::domain_with_data(failed_code, message, Value::Object(data))
+    // T-FIX-691：已落盘文件的持久化警告同样进部分成功回执（条件键，无警告不加）。
+    let mut data = Value::Object(data);
+    insert_durability_warnings(&mut data, durability_warnings);
+    Fault::domain_with_data(failed_code, message, data)
 }
 
 /// ⭐ 逐条原子落盘（唯一的副作用点，D5）。
@@ -1213,33 +1318,52 @@ pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
     //    一倍磁盘带宽，而且在"字节已释放"之后 `artifact.bytes` 是空数组 —— 那会写出
     //    一个 0 字节文件。这条短路是"同一批字节只写一次"的护栏。
     if batch.streamed {
-        write_manifest(batch)?;
-        return Ok(batch.response_data(&batch.stems));
+        // T-FIX-691：行级警告已在流式落盘时收进批次；这里再并 manifest 自身的警告。
+        let (_path, manifest_warning) =
+            write_manifest_with_durability(batch, &batch.durability_warnings)?;
+        let mut warnings = batch.durability_warnings.clone();
+        if let Some(warning) = manifest_warning.as_deref() {
+            push_durability_warning(&mut warnings, warning);
+        }
+        return Ok(batch.response_data(&batch.stems, &warnings));
     }
     // B6（2026-11-14）：写盘口建目录（[`validate`] 只读不建；`dryRun` 不走到
     // 这里 ⇒ 预览不落盘也不建目录）。
     std::fs::create_dir_all(&batch.request.out_dir)
         .map_err(|error| super::error::from_io("创建分轨输出目录", &error))?;
+    // T-FIX-691：逐条走带持久化读数的入口，警告收进本批（失败时同样进部分成功回执）。
+    let mut warnings: Vec<String> = Vec::new();
     for (position, row) in batch.stems.iter().enumerate() {
-        if let Err(fault) = store::write_project_atomic(&row.path, &row.artifact.bytes) {
-            let remaining = batch.stems[position..]
-                .iter()
-                .map(|row| row.track_id)
-                .collect::<Vec<_>>();
-            return Err(write_failed(
-                &batch.request,
-                &batch.stems[..position],
-                row,
-                &remaining,
-                batch.renders,
-                batch.basis_frames,
-                batch.sample_rate,
-                &fault,
-            ));
+        match store::write_project_atomic_with_durability(&row.path, &row.artifact.bytes) {
+            Ok(durability) => {
+                if let Some(warning) = durability.warning() {
+                    push_durability_warning(&mut warnings, warning);
+                }
+            }
+            Err(fault) => {
+                let remaining = batch.stems[position..]
+                    .iter()
+                    .map(|row| row.track_id)
+                    .collect::<Vec<_>>();
+                return Err(write_failed(
+                    &batch.request,
+                    &batch.stems[..position],
+                    row,
+                    &remaining,
+                    batch.renders,
+                    batch.basis_frames,
+                    batch.sample_rate,
+                    &fault,
+                    &warnings,
+                ));
+            }
         }
     }
-    write_manifest(batch)?;
-    Ok(batch.response_data(&batch.stems))
+    let (_path, manifest_warning) = write_manifest_with_durability(batch, &warnings)?;
+    if let Some(warning) = manifest_warning.as_deref() {
+        push_durability_warning(&mut warnings, warning);
+    }
+    Ok(batch.response_data(&batch.stems, &warnings))
 }
 
 /// 把落盘失败包成 D5 形状的部分成功回执。
@@ -1257,6 +1381,9 @@ fn write_failed(
     basis_frames: u64,
     sample_rate: u32,
     fault: &Fault,
+    // T-FIX-691：失败前已落盘各文件的持久化警告 —— 部分成功回执也是"导出路径"，
+    // 已写文件的警告同样不得静默丢弃。
+    durability_warnings: &[String],
 ) -> Fault {
     let (failed_reason, inner_data) = match fault {
         Fault::Domain { message, data, .. } => (message.clone(), data.clone()),
@@ -1323,6 +1450,9 @@ fn write_failed(
         "rollback".to_owned(),
         json!("none: 已落盘的分轨不会被删除 (删用户盘上的文件比留一个如实的 orphanedFiles 危险)"),
     );
+    // T-FIX-691：已落盘文件的持久化警告同样进部分成功回执（条件键，无警告不加）。
+    let mut data = Value::Object(data);
+    insert_durability_warnings(&mut data, durability_warnings);
     Fault::domain_with_data(
         ErrorCode::IoError,
         format!(
@@ -1331,7 +1461,7 @@ fn write_failed(
             failed.file_name,
             completed.len()
         ),
-        Value::Object(data),
+        data,
     )
 }
 
@@ -1587,8 +1717,9 @@ mod tests {
             basis_frames: 48_000,
             sample_rate: 48_000,
             streamed: false,
+            durability_warnings: Vec::new(),
         };
-        let value = batch.manifest_value(&batch.stems);
+        let value = batch.manifest_value(&batch.stems, &[]);
         assert_eq!(value["format"], json!(STEMS_MANIFEST_FORMAT));
         assert_eq!(value["version"], json!(STEMS_MANIFEST_VERSION));
         assert_eq!(value["manifestFileName"], json!(STEMS_MANIFEST_FILE_NAME));
@@ -1654,6 +1785,7 @@ mod tests {
             basis_frames: 48_000,
             sample_rate: 48_000,
             streamed: false,
+            durability_warnings: Vec::new(),
         };
         let fault = write_manifest(&batch).expect_err("manifest 落点是目录 ⇒ 必须失败");
         match fault {
@@ -1694,6 +1826,265 @@ mod tests {
             }
             other => panic!("必须是领域故障: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// T-FIX-691：`durabilityWarnings` 是**条件键** —— 有警告时出现、无警告时一位都不加，
+    /// 且响应与 manifest 两处同口径。
+    #[test]
+    fn durability_warnings_key_is_conditional_in_response_and_manifest() {
+        use std::str::FromStr;
+        let track_id = EntityId::from_str("01J8ZR00000000000000000001").expect("合法 ULID");
+        let batch = StemBatch {
+            request: StemRequest {
+                out_dir: PathBuf::from("/tmp/stems-out"),
+                track_ids: Some(vec![track_id]),
+            },
+            stems: Vec::new(),
+            skipped: Vec::new(),
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            streamed: false,
+            durability_warnings: vec![
+                "文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）".to_owned(),
+            ],
+        };
+        let response = batch.response_data(&batch.stems, &batch.durability_warnings);
+        assert_eq!(
+            response["durabilityWarnings"][0],
+            json!("文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）"),
+            "响应必须带批次级持久化警告槽位"
+        );
+        let manifest = batch.manifest_value(&batch.stems, &batch.durability_warnings);
+        assert_eq!(
+            manifest["durabilityWarnings"][0],
+            json!("文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）"),
+            "manifest 必须带同一条警告"
+        );
+        // 反面：无警告时两处都不许凭空多出这个键（健康路径形状与从前一致）。
+        let clean = StemBatch {
+            durability_warnings: Vec::new(),
+            ..batch
+        };
+        assert!(
+            clean
+                .response_data(&clean.stems, &[])
+                .get("durabilityWarnings")
+                .is_none(),
+            "健康路径响应不得凭空多出 durabilityWarnings"
+        );
+        assert!(
+            clean
+                .manifest_value(&clean.stems, &[])
+                .get("durabilityWarnings")
+                .is_none(),
+            "健康路径 manifest 不得凭空多出 durabilityWarnings"
+        );
+    }
+
+    /// T-FIX-691：`write_manifest_with_durability` —— manifest 自身刷目录失败时
+    /// 返回警告（不是 `Err`），文件内容完整在位。
+    #[cfg(unix)]
+    #[test]
+    fn manifest_write_with_directory_sync_failure_returns_a_warning() {
+        use std::str::FromStr;
+        let track_id = EntityId::from_str("01J8ZR00000000000000000001").expect("合法 ULID");
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-stems-manifest-dirsync-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let batch = StemBatch {
+            request: StemRequest {
+                out_dir: dir.clone(),
+                track_ids: None,
+            },
+            stems: Vec::new(),
+            skipped: vec![SkippedTrack {
+                track_id,
+                name: "Master".to_owned(),
+                reason: SkipReason::MasterBusTrack,
+                hint: None,
+            }],
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            streamed: false,
+            durability_warnings: Vec::new(),
+        };
+        store::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let outcome = write_manifest_with_durability(&batch, &[]);
+        store::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let (path, warning) = outcome.expect("manifest 刷目录失败必须是警告，不是失败");
+        assert_eq!(path, batch.manifest_path());
+        let warning = warning.expect("刷目录失败时必须带回警告");
+        assert!(
+            warning.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {warning}"
+        );
+        assert!(path.exists(), "manifest 文件必须完整在位");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 三条 MIDI 源轨（`Lead` / `Pad` / `Bass`）汇入 Master —— 与
+    /// `crates/yeban-mcp/tests/export_stems.rs` 的夹具同构（各 1 秒音符、音高不同）。
+    /// 只在 T-FIX-691 的流式判据里用：`export_streaming` 需要真渲染。
+    #[cfg(unix)]
+    fn three_track_project_for_durability() -> yeban_model::YebanProjectV1 {
+        use std::str::FromStr as _;
+        use yeban_model::{
+            ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig, MidiNote, RoutingEdge,
+            RoutingKind, SampleRate, TrackKind, TrackV3, YebanProjectV1,
+        };
+        fn id(seed: u32) -> EntityId {
+            let text = format!("01J8ZR{:0>16}{seed:04}", 0);
+            EntityId::from_str(&text).expect("合法 Crockford Base32 ULID")
+        }
+        let master = id(1);
+        let mut project = YebanProjectV1 {
+            id: id(999),
+            title: "stem durability".to_owned(),
+            bpm: 120.0,
+            master_bus_track_id: master,
+            ..YebanProjectV1::default()
+        };
+        project.audio_config.sample_rate = SampleRate::Hz48000;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        for (index, name) in ["Lead", "Pad", "Bass"].iter().enumerate() {
+            let seed = u32::try_from(index).expect("夹具规模放得进 u32");
+            let track = id(2 + seed);
+            let clip = id(10 + seed);
+            let placement = id(20 + seed);
+            let note = id(30 + seed);
+            let edge = id(40 + seed);
+            let mut params = TrackV3 {
+                id: track,
+                name: (*name).to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            };
+            params.clips.insert(
+                placement,
+                ClipPlacement {
+                    id: placement,
+                    clip_id: clip,
+                    start_tick: 0,
+                    duration_ticks: 1_920,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                    offset_samples: None,
+                    fade_in_ticks: None,
+                    fade_out_ticks: None,
+                    source_start_samples: None,
+                },
+            );
+            let mut notes = std::collections::BTreeMap::new();
+            notes.insert(
+                note,
+                MidiNote::new(note, 0, 48 + u8::try_from(index * 12).expect("取模"), 1_920),
+            );
+            project.clip_pool.insert(
+                clip,
+                ClipPoolEntry {
+                    id: clip,
+                    name: format!("{name}Clip"),
+                    content: ClipContent::Midi { notes },
+                },
+            );
+            project.tracks.insert(track, params);
+            project.routing_graph.edges.insert(
+                edge,
+                RoutingEdge {
+                    id: edge,
+                    source_node: track,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
+                },
+            );
+        }
+        project.routing_graph.nodes = vec![id(2), id(3), id(4), master];
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("分轨夹具必须合法: {error}"));
+        project
+    }
+
+    /// 判据（T-FIX-691）：流式落盘时目录刷盘失败 ⇒ 三条分轨仍成功落盘，但批次必须
+    /// 带持久化警告；随后 `write` 的响应回执同样带 `durabilityWarnings`
+    /// （行级 + manifest 自身的警告去重后同一条）。
+    #[cfg(unix)]
+    #[test]
+    fn streaming_export_carries_directory_sync_warnings_into_the_receipt() {
+        use yeban_model::ids::AssetHash;
+        let dir = std::env::temp_dir().join(format!("yeban-stems-dirsync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out_dir = dir.join("stems");
+        std::fs::create_dir_all(&out_dir).expect("建分轨目录");
+        let project_path = dir.join("demo.yebanproject");
+        let project = three_track_project_for_durability();
+        let request = StemRequest {
+            out_dir: out_dir.clone(),
+            track_ids: None,
+        };
+        let assets: std::collections::BTreeMap<AssetHash, Vec<u8>> =
+            std::collections::BTreeMap::new();
+
+        store::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let batch = export_streaming(
+            &project,
+            &project_path,
+            &request,
+            1_700_000_000_000,
+            &assets,
+        )
+        .expect("刷目录失败不是落盘失败");
+        let response = write(&batch).expect("写盘必须成功");
+        store::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        assert_eq!(batch.stems.len(), 3, "三条源轨 ⇒ 三条分轨");
+        assert_eq!(
+            batch.durability_warnings.len(),
+            1,
+            "同目录三文件文案相同 ⇒ 去重后只留一条: {:?}",
+            batch.durability_warnings
+        );
+        assert!(
+            batch.durability_warnings[0].contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {:?}",
+            batch.durability_warnings
+        );
+        // 分轨文件完整在位（警告不是失败，不回滚）。
+        for row in &batch.stems {
+            assert!(row.path.exists(), "分轨文件必须在: {}", row.path.display());
+        }
+        // 响应回执带批次级槽位（行级 + manifest 自身警告同文案 ⇒ 仍是一条）。
+        let warnings = response["durabilityWarnings"]
+            .as_array()
+            .expect("响应必须带 durabilityWarnings");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "响应里的警告去重后应为一条: {warnings:?}"
+        );
+        assert!(
+            warnings[0]
+                .as_str()
+                .is_some_and(|text| text.contains("目录项未确认持久化")),
+            "响应警告必须说清'文件已替换、目录项未确认': {warnings:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

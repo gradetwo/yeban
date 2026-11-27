@@ -123,10 +123,16 @@ pub struct ExportStemsReport {
     pub audio_clips_skipped: u64,
     /// manifest 的落点（`<dir>/stems-manifest.json`，已落盘）。
     pub manifest_path: PathBuf,
+    /// T-FIX-691：本批落盘的持久化警告（分轨文件 + manifest 自身；`rename` 成功但
+    /// 刷目录失败 = 已提交、持久化未确认），每条是一份文件的警告文案（同文案去重）。
+    ///
+    /// 完全落盘时为空；有警告**仍是**一次成功的导出，调用方（CLI）必须把它如实带进
+    /// 回执。与 app 侧 `SaveReport.durability`（T-FIX-324）同口径。
+    pub durability_warnings: Vec<String>,
 }
 
 impl ExportStemsReport {
-    /// 回执行：**一行汇总** + 每条分轨一行 + 每条跳过轨一行。
+    /// 回执行：**一行汇总** + 持久化警告行（有才打）+ 每条分轨一行 + 每条跳过轨一行。
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
@@ -141,6 +147,11 @@ impl ExportStemsReport {
             self.audio_clips_skipped,
             self.manifest_path.display(),
         )];
+        // T-FIX-691：持久化警告紧跟汇总行（与 `--export-midi` 等的
+        // `committed=true durability=warning` 同一条文案口径）；无警告时一行都不多。
+        for warning in &self.durability_warnings {
+            lines.push(format!("committed=true durability=warning {warning}"));
+        }
         for stem in &self.stems {
             lines.push(format!(
                 "{STEM_LINE_PREFIX} path={} track={} trackId={} fileName={} bytes={} bitDepth={} channels={} audioClipsRendered={} audioClipsSkipped={}",
@@ -292,7 +303,18 @@ pub fn export_stems(
     )?;
     // manifest 在分轨全部落盘后写（失败 ⇒ 整批以 `Fault` 响亮失败，⛔ 不假装
     // 索引已落盘）；内容与 MCP 腿的 `stems::write` 写的那份同一实现。
-    let manifest_path = stems::write_manifest(&batch)?;
+    // T-FIX-691：manifest 自身的持久化警告同样收进回执（行级警告已在流式落盘时
+    // 收进 `batch.durability_warnings`；同文案去重）。
+    let mut durability_warnings = batch.durability_warnings.clone();
+    let (manifest_path, manifest_warning) =
+        stems::write_manifest_with_durability(&batch, &durability_warnings)?;
+    if let Some(warning) = manifest_warning.as_deref()
+        && !durability_warnings
+            .iter()
+            .any(|existing| existing == warning)
+    {
+        durability_warnings.push(warning.to_owned());
+    }
     let mut stems_out = Vec::with_capacity(batch.stems.len());
     for row in &batch.stems {
         stems_out.push(StemLine {
@@ -333,5 +355,65 @@ pub fn export_stems(
         audio_clips_rendered: batch.audio_clips_rendered(),
         audio_clips_skipped: batch.audio_clips_skipped(),
         manifest_path,
+        durability_warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_with(warnings: Vec<String>) -> ExportStemsReport {
+        ExportStemsReport {
+            dir: PathBuf::from("/tmp/stems-out"),
+            stems: Vec::new(),
+            skipped: Vec::new(),
+            bytes_total: 0,
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            audio_clips_rendered: 0,
+            audio_clips_skipped: 0,
+            manifest_path: PathBuf::from("/tmp/stems-out/stems-manifest.json"),
+            durability_warnings: warnings,
+        }
+    }
+
+    /// 判据（T-FIX-691）：有持久化警告时汇总行后紧跟
+    /// `committed=true durability=warning` 行（与 `--export-midi` 等同一口径）。
+    #[test]
+    fn lines_carry_durability_warnings_right_after_the_summary() {
+        let report = report_with(vec![
+            "文件已替换，但目录项未确认持久化（刷目录 `/tmp/stems-out` 失败: 注入）".to_owned(),
+        ]);
+        let lines = report.lines();
+        assert_eq!(lines.len(), 2, "汇总行 + 1 条警告行: {lines:?}");
+        assert!(
+            lines[0].starts_with(RECEIPT_PREFIX),
+            "首行必须是汇总行: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("committed=true durability=warning"),
+            "警告行必须明写 committed=true / durability=warning: {}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {}",
+            lines[1]
+        );
+    }
+
+    /// 上条判据的反面（T-FIX-691）：无警告时回执形状与从前逐行一致（只剩汇总行）。
+    #[test]
+    fn lines_without_warnings_are_unchanged() {
+        let lines = report_with(Vec::new()).lines();
+        assert_eq!(lines.len(), 1, "无警告时只剩汇总行: {lines:?}");
+        assert!(
+            !lines[0].contains("durability"),
+            "健康路径不得凭空多出 durability 字样: {}",
+            lines[0]
+        );
+    }
 }

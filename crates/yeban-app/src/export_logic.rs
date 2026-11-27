@@ -154,6 +154,12 @@ pub struct LogicExportReport {
     pub mapped_notes: usize,
     /// 映射损失表（与写进 `MetaData.plist` 的 `YebanMappingLosses` 同一份产物）。
     pub losses: Vec<yeban_render::logic::LogicLoss>,
+    /// T-FIX-691：持久化警告（`rename` 成功但刷目录失败 = 已提交、持久化未确认），
+    /// 每条是一份文件的警告文案（同目录同文案的去重，只留一条）。
+    ///
+    /// 完全落盘时为空；有警告**仍是**一次成功的导出，调用方（CLI）必须把它如实带进
+    /// 回执。与 app 侧 `SaveReport.durability`（T-FIX-324）同口径。
+    pub durability_warnings: Vec<String>,
 }
 
 /// 把工程写成一个 `.logicx` **bundle 目录**，并**同时**返回映射损失表。
@@ -189,6 +195,9 @@ pub fn export_project_to_bundle(
         yeban_render::logic::build_bundle_from_donor(project, LOGIC_ALTERNATIVE, variant.as_str());
 
     let mut files = Vec::with_capacity(bundle.files.len());
+    // T-FIX-691：逐个文件的持久化警告都必须进回执（此前只取了 `saved.bytes`，警告被
+    // 静默丢弃）。同目录同文案的去重，只留一条 —— bundle 内多文件同父目录时不刷屏。
+    let mut durability_warnings: Vec<String> = Vec::new();
     for (relative, bytes) in &bundle.files {
         let path = directory.join(relative);
         if let Some(parent) = path.parent()
@@ -200,6 +209,11 @@ pub fn export_project_to_bundle(
             })?;
         }
         let saved = crate::save::write_file_atomically(bytes, &path)?;
+        if let Some(warning) = saved.durability.warning().map(str::to_owned)
+            && !durability_warnings.contains(&warning)
+        {
+            durability_warnings.push(warning);
+        }
         files.push((relative.clone(), saved.bytes));
     }
 
@@ -209,6 +223,7 @@ pub fn export_project_to_bundle(
         mapped_regions: bundle.mapped_regions,
         mapped_notes: bundle.mapped_notes,
         losses: bundle.losses,
+        durability_warnings,
     })
 }
 
@@ -274,5 +289,66 @@ mod tests {
             Some(OsStr::new("Song.logicx")),
             "带尾分隔符的路径不许被补成 `Song.logicx/.logicx`"
         );
+    }
+
+    /// 判据（T-FIX-691）：rename 成功但**目录项刷盘失败** ⇒ 导出仍成功，但回执必须带
+    /// 持久化警告（修前 `durability_warnings` 是空的：`saved.durability` 被静默丢弃）。
+    #[cfg(all(unix, feature = "experimental-logic-export"))]
+    #[test]
+    fn a_failed_directory_sync_is_carried_in_the_receipt() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-export-logic-dirsync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let target = dir.join("warned.logicx");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let report = export_project_to_bundle(&crate::bridge::demo_project(), &target);
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let report = report.expect("rename 已成功 ⇒ 导出已提交，不是失败");
+        assert!(
+            !report.durability_warnings.is_empty(),
+            "刷目录失败时回执必须带持久化警告（⛔ 不许静默丢弃 saved.durability）"
+        );
+        assert!(
+            report
+                .durability_warnings
+                .iter()
+                .any(|warning| warning.contains("目录项未确认持久化")),
+            "警告必须说清'文件已替换、目录项未确认': {:?}",
+            report.durability_warnings
+        );
+        // bundle 真的落盘了（警告不是失败，不回滚）。
+        assert!(report.directory.exists(), "bundle 目录必须在");
+        assert!(!report.files.is_empty(), "bundle 里必须有文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上条判据的反面（T-FIX-691）：注入关掉时同一导出必须仍是干净回执（无警告）。
+    #[cfg(all(unix, feature = "experimental-logic-export"))]
+    #[test]
+    fn a_normal_export_carries_no_durability_warning() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-export-logic-durable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let target = dir.join("quiet.logicx");
+        let report = export_project_to_bundle(&crate::bridge::demo_project(), &target)
+            .expect("导出必须成功");
+        assert!(
+            report.durability_warnings.is_empty(),
+            "健康路径回执不得凭空多出警告: {:?}",
+            report.durability_warnings
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

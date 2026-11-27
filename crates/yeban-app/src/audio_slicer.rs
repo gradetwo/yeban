@@ -325,6 +325,13 @@ pub struct SliceReport {
     pub base_key: u8,
     /// 丢弃的首段帧数（onset 检测模式下第一个 onset 之前的音频；显式切点模式恒为 0）。
     pub dropped_leading_frames: u64,
+    /// T-FIX-691：持久化警告（SFZ 文本 `rename` 成功但刷目录失败 = 已提交、持久化未确认）。
+    ///
+    /// 完全落盘时为 [`Option::None`]；有警告**仍是**一次成功的切片，调用方（CLI）
+    /// 必须把它如实带进回执。与 app 侧 `SaveReport.durability`（T-FIX-324）同口径。
+    /// ⚠ 切片 WAV 走 `write_plain_wav`（T-FIX-690 的落点，本单不管），只有 SFZ 文本
+    /// 走 `write_file_atomically` —— 这里只钉 SFZ 这一路。
+    pub durability_warning: Option<String>,
 }
 
 impl SliceReport {
@@ -471,15 +478,20 @@ pub fn slice_audio_file(
         );
     }
     let sfz_path = out_dir.join(format!("{stem}.sfz"));
-    if let Err(error) = write_file_atomically(sfz.as_bytes(), &sfz_path) {
-        for path in &written {
-            let _ = std::fs::remove_file(path);
+    // T-FIX-691：SFZ 文本的持久化警告必须进回执（此前 `write_file_atomically` 的
+    // `SaveReport` 整个被丢弃 —— 只处理了 `Err`，`Ok` 里的 `durability` 被静默丢掉）。
+    let durability_warning = match write_file_atomically(sfz.as_bytes(), &sfz_path) {
+        Ok(saved) => saved.durability.warning().map(str::to_owned),
+        Err(error) => {
+            for path in &written {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(AudioSlicerError::Write {
+                path: sfz_path,
+                reason: error.to_string(),
+            });
         }
-        return Err(AudioSlicerError::Write {
-            path: sfz_path,
-            reason: error.to_string(),
-        });
-    }
+    };
 
     Ok(SliceReport {
         input: input.to_path_buf(),
@@ -489,6 +501,7 @@ pub fn slice_audio_file(
         transform: options.transform,
         base_key: options.base_key,
         dropped_leading_frames,
+        durability_warning,
     })
 }
 
@@ -700,5 +713,84 @@ fn transform_slice(
             );
             Ok(out)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-slicer-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    /// 1 秒单声道正弦夹具（48 kHz，显式切点 0.5 秒 ⇒ 2 片）。
+    fn write_input_wav(path: &Path) {
+        let samples: Vec<f32> = (0..48_000)
+            .map(|index| (index as f32 * 0.01).sin() * 0.5)
+            .collect();
+        let format = PcmFormat::float(1, 48_000, 32);
+        write_plain_wav(path, &format, &PcmBuffer::Float32(samples)).expect("写夹具 WAV");
+    }
+
+    fn slice_options() -> SliceOptions {
+        SliceOptions {
+            cuts: Some(vec![0.5]),
+            ..SliceOptions::default()
+        }
+    }
+
+    /// 判据（T-FIX-691）：rename 成功但**目录项刷盘失败** ⇒ 切片仍成功，但回执必须带
+    /// 持久化警告（修前这里是 `None`：SFZ 写盘的 `SaveReport` 整个被丢弃）。
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_directory_sync_is_carried_in_the_receipt() {
+        let dir = scratch_dir("dirsync");
+        let input = dir.join("vocal.wav");
+        write_input_wav(&input);
+        let out_dir = dir.join("slices");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let report = slice_audio_file(&input, &out_dir, &slice_options());
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let report = report.expect("rename 已成功 ⇒ 切片已提交，不是失败");
+        assert_eq!(report.slices, 2, "显式切点 0.5 秒 ⇒ 2 片");
+        let warning = report
+            .durability_warning
+            .as_deref()
+            .expect("刷目录失败时回执必须带持久化警告（⛔ 不许静默丢弃 SFZ 写盘的 durability）");
+        assert!(
+            warning.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {warning}"
+        );
+        // SFZ 文本完整在位（警告不是失败，不回滚）。
+        assert!(report.sfz_path.exists(), "SFZ 文件必须在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上条判据的反面（T-FIX-691）：注入关掉时同一切片必须仍是干净回执（无警告）。
+    #[cfg(unix)]
+    #[test]
+    fn a_normal_slice_carries_no_durability_warning() {
+        let dir = scratch_dir("durable");
+        let input = dir.join("vocal.wav");
+        write_input_wav(&input);
+        let out_dir = dir.join("slices");
+        let report = slice_audio_file(&input, &out_dir, &slice_options()).expect("切片必须成功");
+        assert!(
+            report.durability_warning.is_none(),
+            "健康路径回执不得凭空多出警告: {:?}",
+            report.durability_warning
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

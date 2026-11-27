@@ -86,6 +86,11 @@ pub struct AlsExportReport {
     pub bytes: usize,
     /// 用过的临时文件名（成功之后它不应再存在；判据会去查）。
     pub temp_name: String,
+    /// T-FIX-691：持久化警告（`rename` 成功但刷目录失败 = 已提交、持久化未确认）。
+    ///
+    /// 完全落盘时为 [`Option::None`]；有警告**仍是**一次成功的导出，调用方（CLI）
+    /// 必须把它如实带进回执。与 app 侧 `SaveReport.durability`（T-FIX-324）同口径。
+    pub durability_warning: Option<String>,
     /// 写进 XML 的轨道数。
     pub mapped_tracks: usize,
     /// 写进 XML 的片段数。
@@ -117,9 +122,72 @@ pub fn export_project_to_file(
         path: saved.path,
         bytes: saved.bytes,
         temp_name: saved.temp_name,
+        // T-FIX-691：`write_file_atomically` 的持久化警告必须进回执（此前只取了
+        // path/bytes/temp_name，警告被静默丢弃）。
+        durability_warning: saved.durability.warning().map(str::to_owned),
         mapped_tracks: export.mapped_tracks,
         mapped_clips: export.mapped_clips,
         mapped_notes: export.mapped_notes,
         losses: export.losses,
     })
+}
+
+#[cfg(all(test, feature = "experimental-als-export"))]
+mod tests {
+    use super::*;
+    use yeban_model::EntityId;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-export-als-{tag}-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    /// 判据（T-FIX-691）：rename 成功但**目录项刷盘失败** ⇒ 导出仍成功，但回执必须带
+    /// 持久化警告（修前这里是 `None`：`saved.durability` 被静默丢弃）。
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_directory_sync_is_carried_in_the_receipt() {
+        let dir = scratch_dir("dirsync");
+        let target = dir.join("warned.als");
+
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(true));
+        let report = export_project_to_file(&crate::bridge::demo_project(), &target);
+        crate::save::DIR_SYNC_INJECTION.with(|cell| cell.set(false));
+
+        let report = report.expect("rename 已成功 ⇒ 导出已提交，不是失败");
+        let warning = report
+            .durability_warning
+            .as_deref()
+            .expect("刷目录失败时回执必须带持久化警告（⛔ 不许静默丢弃 saved.durability）");
+        assert!(
+            warning.contains("目录项未确认持久化"),
+            "警告必须说清'文件已替换、目录项未确认': {warning}"
+        );
+        assert_eq!(
+            report.bytes,
+            std::fs::metadata(&target).expect("文件在").len() as usize
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上条判据的反面（T-FIX-691）：注入关掉时同一导出必须仍是干净回执（无警告）。
+    #[cfg(unix)]
+    #[test]
+    fn a_normal_export_carries_no_durability_warning() {
+        let dir = scratch_dir("durable");
+        let target = dir.join("quiet.als");
+        let report =
+            export_project_to_file(&crate::bridge::demo_project(), &target).expect("导出必须成功");
+        assert!(
+            report.durability_warning.is_none(),
+            "健康路径回执不得凭空多出警告: {:?}",
+            report.durability_warning
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
