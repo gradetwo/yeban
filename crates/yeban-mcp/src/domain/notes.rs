@@ -4803,6 +4803,9 @@ impl NoteOp {
     /// [`Self::SetTrackDelay`] / [`Self::SetTrackTune`]）与两个设备形态
     /// （[`Self::InsertDevice`] / [`Self::RemoveDevice`]）为真，且**仅当**
     /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`。
+    /// 两个纯音轨元数据形态（[`Self::SetTrackName`] / [`Self::SetTrackColor`]）
+    /// 也为真：解析期它们的 `ops[].trackId` 是必填（`read_id`），因此没有
+    /// "省略回退顶层"这一问 —— 逐条点名是唯一写法，顶层 `trackId` 对它们可省。
     #[must_use]
     pub const fn addresses_own_track(&self) -> bool {
         matches!(
@@ -4825,7 +4828,8 @@ impl NoteOp {
             } | Self::RemoveDevice {
                 track_id: Some(_),
                 ..
-            }
+            } | Self::SetTrackName { .. }
+                | Self::SetTrackColor { .. }
         )
     }
 
@@ -4836,7 +4840,9 @@ impl NoteOp {
     /// `setTrackSolo` 在**逐条给了** `trackId` 时也算自带，路由级形态
     /// （`addRoutingNode` / `connectRouting` / `disconnectRouting` /
     /// `setRoutingGain` / `removeRoutingNode`）的寻址全在操作对象里、从不读顶层
-    /// `trackId`，因此也计入 —— 于是"一次调用对多条音轨
+    /// `trackId`，因此也计入；纯音轨元数据形态（`setTrackName` /
+    /// `setTrackColor`）经 [`Self::addresses_own_track`] 进入 —— 解析期
+    /// `ops[].trackId` 必填，逐条点名是唯一写法 —— 于是"一次调用对多条音轨
     /// 静音/独奏/调音"成立，顶层 `trackId` 对本批不被读取（可为占位身份，
     /// 与 `removeTrack` / 设备形态同一条路）。**`addTrack` 也算**：它只建新轨，
     /// 身份就是操作对象自带的 `trackId`，顶层 `trackId` 一个字节都不读
@@ -4924,6 +4930,44 @@ impl NoteOp {
             }
         }
         kinds
+    }
+
+    /// 该形态**读**工具顶层的 `trackId`。
+    ///
+    /// 与 [`Self::all_ops_address_their_own_track`] 同一份真相的**逐条版**：
+    /// 自带寻址（[`Self::is_self_addressed`]）、逐条给了 `trackId`
+    /// （[`Self::addresses_own_track`]）、路由级（[`Self::is_routing_level`]）
+    /// 与只建新轨（[`Self::AddTrack`]）都不读顶层 `trackId`；其余形态读它。
+    /// `domain::plan_edit_notes` 的缺参守卫用它把错误点名到具体 op。
+    #[must_use]
+    pub fn reads_envelope_track(&self) -> bool {
+        !(self.is_self_addressed()
+            || self.addresses_own_track()
+            || self.is_routing_level()
+            || matches!(self, Self::AddTrack { .. }))
+    }
+
+    /// 批内**读**顶层 `trackId` 的 kind（按出现顺序、去重）——
+    /// 缺参报文用 `requiredByKinds` 点名"到底哪一条需要"。
+    #[must_use]
+    pub fn envelope_track_kinds(ops: &[Self]) -> Vec<&'static str> {
+        let mut kinds: Vec<&'static str> = Vec::new();
+        for kind in ops
+            .iter()
+            .filter(|op| op.reads_envelope_track())
+            .map(Self::kind_name)
+        {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds
+    }
+
+    /// 批内第一条读顶层 `trackId` 的 op 下标（缺参报文用 `opIndex` 点名）。
+    #[must_use]
+    pub fn first_op_needing_envelope_track(ops: &[Self]) -> Option<usize> {
+        ops.iter().position(Self::reads_envelope_track)
     }
 
     /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池 / 段落）。
@@ -10158,7 +10202,7 @@ fn compile_inner(
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
     // 寻址自带的形态（`removeTrack`、**逐条给了** `trackId` 的两个设备形态、
     // `addTrack`，以及**逐条给了** `trackId` 的 `setParam` / `setTrackMute` /
-    // `setTrackSolo`）不读工具顶层的 `trackId` / `clipId`：它们的寻址在操作对象
+    // `setTrackSolo` / `setTrackName` / `setTrackColor`）不读工具顶层的 `trackId` / `clipId`：它们的寻址在操作对象
     // 自己身上。设备形态**省略** `ops[].trackId` 时（T-FIX-652）本判据为假 ⇒
     // 顶层 `trackId` 被当作回退值读。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 与
@@ -16461,6 +16505,96 @@ mod tests {
         assert!(
             !NoteOp::all_ops_address_their_own_track(&mixed_add),
             "有一条回退形态 ⇒ 顶层 trackId 照旧必填"
+        );
+    }
+
+    /// T-FIX-828：纯音轨元数据形态（`setTrackName` / `setTrackColor`）也自带寻址。
+    ///
+    /// 解析期它们的 `ops[].trackId` 是必填（`read_id`），`compile` 只读操作对象
+    /// 自己的 `track_id`（`compile_track_metadata_op`），因此顶层 `trackId`
+    /// 对它们可省 —— 此前 `addresses_own_track` 没列它们，`plan_edit_notes`
+    /// 在顶层缺 `trackId` 时走到 `arg_id`，误报「必须是 26 字符 ULID」。
+    ///
+    /// 注入（实测红）：把 `addresses_own_track` 里这两臂删掉 ⇒ ① ② 红；
+    /// 把 `envelope_track_kinds` / `first_op_needing_envelope_track` 的判定
+    /// 改成恒空 ⇒ ③ 红。
+    #[test]
+    fn set_track_name_and_color_address_their_own_track() {
+        let project = filled_project();
+        let ids: Vec<EntityId> = project.tracks.keys().copied().collect();
+        assert!(ids.len() >= 2, "夹具至少要有两条音轨: {}", ids.len());
+        let (a, b) = (ids[0], ids[1]);
+        let nil = EntityId::default();
+
+        // ① 两条 setTrackName 各带 trackId ⇒ 批谓词为真，占位顶层身份可编译。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackName", "trackId": a.to_canonical_string(), "name": "828-A"},
+            {"kind": "setTrackName", "trackId": b.to_canonical_string(), "name": "828-B"},
+        ]))
+        .expect("setTrackName 接受逐条 trackId");
+        assert!(
+            NoteOp::all_ops_address_their_own_track(&ops),
+            "setTrackName 逐条自带目标 ⇒ 顶层 trackId 不该被读"
+        );
+        let compiled = compile(&project, &nil, &nil, &ops).expect("占位顶层身份必须编译得过");
+        match (&compiled[0], &compiled[1]) {
+            (
+                Op::SetTrackName {
+                    track_id: first,
+                    new_name: first_name,
+                    ..
+                },
+                Op::SetTrackName {
+                    track_id: second,
+                    new_name: second_name,
+                    ..
+                },
+            ) => {
+                assert_eq!(*first, a, "第一条的目标必须是点名那条轨");
+                assert_eq!(*second, b, "第二条的目标必须是点名那条轨");
+                assert_eq!(first_name, "828-A");
+                assert_eq!(second_name, "828-B");
+            }
+            other => panic!("应当是两条 SetTrackName: {other:?}"),
+        }
+
+        // ② setTrackColor 同理。
+        let color_ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackColor", "trackId": a.to_canonical_string(), "color": "#FF0000"},
+        ]))
+        .expect("setTrackColor 接受逐条 trackId");
+        assert!(
+            NoteOp::all_ops_address_their_own_track(&color_ops),
+            "setTrackColor 逐条自带目标 ⇒ 顶层 trackId 不该被读"
+        );
+        let color_compiled =
+            compile(&project, &nil, &nil, &color_ops).expect("占位顶层身份必须编译得过");
+        assert!(
+            matches!(&color_compiled[0], Op::SetTrackColor { track_id, .. } if *track_id == a),
+            "编译出的必须是目标为点名那条轨的 SetTrackColor: {:?}",
+            color_compiled[0]
+        );
+
+        // ③ 混合批（setTrackName 点名 + setParam 回退）⇒ 批谓词为假；需要顶层
+        // trackId 的 kind 与下标必须能点名（plan 层缺参报文的真相）。
+        let mixed = parse_ops(&serde_json::json!([
+            {"kind": "setTrackName", "trackId": a.to_canonical_string(), "name": "828-A"},
+            {"kind": "setParam", "lane": "TrackVolume", "value": -3.0},
+        ]))
+        .expect("混合形状合法");
+        assert!(
+            !NoteOp::all_ops_address_their_own_track(&mixed),
+            "有一条回退形态 ⇒ 顶层 trackId 照旧必填"
+        );
+        assert_eq!(
+            NoteOp::first_op_needing_envelope_track(&mixed),
+            Some(1),
+            "第一个需要顶层 trackId 的 op 是下标 1 的 setParam"
+        );
+        assert_eq!(
+            NoteOp::envelope_track_kinds(&mixed),
+            vec!["setParam"],
+            "requiredByKinds 必须点名真正需要顶层 trackId 的 kind"
         );
     }
 

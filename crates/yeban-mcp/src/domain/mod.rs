@@ -4478,7 +4478,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // ⭐ 占位 envelope 身份的两条路: ① 批内**全是**自带寻址形态（`removeTrack` / 设备
     // 形态, 逐字节旧行为）; ② 批内**每条**要么自带寻址、要么自带 `ops[].trackId`
     // （`setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` /
-    // `setTrackDelay` 的逐条点名形态, 以及只建新轨的
+    // `setTrackDelay` / `setTrackName` / `setTrackColor` 的逐条点名形态, 以及只建新轨的
     // `addTrack` —— 它连顶层 `trackId` 都不读）, 且没有 `placement`
     // 在场、也不是 `create`（那两件事的语义挂在顶层身份上, 占位身份会把它们引向 nil）。
     // 判定住在 `notes::NoteOp::all_ops_address_their_own_track`（与 `compile` 同一份真相）。
@@ -4536,6 +4536,39 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
                          或给工具顶层 `trackId` 作为回退",
                         notes::DEVICE_TRACK_FIELD,
                     ),
+                }),
+            ));
+        }
+        // T-FIX-828：其余形态缺顶层 `trackId` 时也结构化拒绝 —— 点名顶层
+        // `trackId` 与真正需要它的 kind（`requiredByKinds`）及第一条这样的
+        // op 下标（`opIndex`），而不是 `arg_id` 那句笼统的「必须是 26 字符
+        // ULID」（tools.rs 的 `trackId` 参数描述早已这样承诺，代码一直没兑现）。
+        // 设备形态两处都缺的那条分支在上面先行，本分支只剩非设备形态；空批
+        // （只有 `placement` / `create` 承载调用）没有一条读顶层 `trackId`，
+        // 照旧落到下面的顶层/placement 解析（顶层身份是那两件事的语义锚点）。
+        if call.arguments.get("trackId").is_none()
+            && let Some(index) = notes::NoteOp::first_op_needing_envelope_track(&note_ops)
+        {
+            let required_by = notes::NoteOp::envelope_track_kinds(&note_ops);
+            let kinds = if required_by.is_empty() {
+                "(未知)".to_owned()
+            } else {
+                required_by.join(" / ")
+            };
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "缺少顶层 `trackId`: 这次调用含 {kinds} —— 这些形态没有自带 \
+                     `trackId`，读顶层 `trackId`（目标音轨）。给顶层 `trackId`（26 字符 ULID），\
+                     或给每条 op 自带 `trackId`（`setTrackName` / `setTrackColor` / `setParam` / \
+                     开关与设备形态都支持逐条点名）。"
+                ),
+                serde_json::json!({
+                    "reason": "trackIdRequired",
+                    "missing": "trackId",
+                    "opIndex": index,
+                    "requiredByKinds": required_by,
+                    "hint": "给顶层 `trackId` (26 字符 ULID)，或给每条 op 自带 `trackId`",
                 }),
             ));
         }

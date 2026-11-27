@@ -10558,3 +10558,181 @@ fn list_instruments_exposes_the_effect_param_table() {
         "拒绝必须列出可用分组"
     );
 }
+
+/// T-FIX-828 ①：两条 `setTrackName` 各带 `trackId`、无顶层 `trackId` 时成功；
+/// 旧顶层 `trackId` 写法保持兼容（顶层与逐条同时给出时以逐条值为准）。
+#[test]
+fn edit_notes_set_track_name_batch_needs_no_envelope_track() {
+    let scratch = Scratch::new("t828-set-track-name-batch");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let ids: Vec<_> = project.tracks.keys().copied().collect();
+    assert!(ids.len() >= 2, "夹具至少要有两条音轨");
+    let (a, b) = (ids[0], ids[1]);
+
+    // ① 无顶层 trackId：两条各带 trackId ⇒ 成功，两条目标各是点名那条轨。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            "ops": [
+                {"kind": "setTrackName", "trackId": a.to_canonical_string(), "name": "828-A"},
+                {"kind": "setTrackName", "trackId": b.to_canonical_string(), "name": "828-B"}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetTrackName"]["track_id"],
+        json!(a.to_canonical_string()),
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetTrackName"]["track_id"],
+        json!(b.to_canonical_string()),
+        "{created}"
+    );
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T828 rename two tracks" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert_eq!(project.track(&a).expect("a").name, "828-A");
+    assert_eq!(project.track(&b).expect("b").name, "828-B");
+
+    // ② 旧写法（顶层 trackId 照旧给）⇒ 同样成功；第二条的逐条值胜过顶层值。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "includeOps": true,
+            "trackId": a.to_canonical_string(),
+            "ops": [
+                {"kind": "setTrackName", "trackId": a.to_canonical_string(), "name": "828-C"},
+                {"kind": "setTrackName", "trackId": b.to_canonical_string(), "name": "828-D"}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetTrackName"]["track_id"],
+        json!(b.to_canonical_string()),
+        "顶层与逐条同时给出且不一致时以逐条值为准: {created}"
+    );
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T828 rename two tracks again" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("工程");
+    assert_eq!(project.track(&a).expect("a").name, "828-C");
+    assert_eq!(project.track(&b).expect("b").name, "828-D");
+}
+
+/// T-FIX-828 ②：真正需要顶层 `trackId` 的形态缺它时，错误必须结构化指明
+/// 原因（`reason: "trackIdRequired"`），并点名 `requiredByKinds` 与 op 下标 ——
+/// 不再是笼统的「必须是 26 字符 ULID」。
+#[test]
+fn edit_notes_missing_envelope_track_error_names_kind_and_op_index() {
+    let scratch = Scratch::new("t828-missing-envelope-track");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let ids: Vec<_> = project.tracks.keys().copied().collect();
+    assert!(!ids.is_empty(), "夹具至少要有一条音轨");
+    let a = ids[0];
+    let bytes_before = project_bytes(&dispatcher);
+
+    // ① 一条回退形态（setParam 省了 ops[].trackId）+ 无顶层 ⇒ 结构化拒绝。
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "ops": [{ "kind": "setParam", "lane": "TrackVolume", "value": -3.0 }]
+        }),
+    );
+    assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", "缺顶层音轨必须拒绝");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "trackIdRequired",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["missing"], "trackId",
+        "错误必须点名缺失的顶层字段: {refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["opIndex"], 0,
+        "错误必须点名第一个需要顶层 trackId 的 op 下标: {refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["requiredByKinds"],
+        json!(["setParam"]),
+        "错误必须点名真正需要顶层 trackId 的 kind: {refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("trackId"),
+        "错误文案必须点名缺失的顶层字段 `trackId`: {refused}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒的调用不得改工程"
+    );
+
+    // ② 混合批（setTrackName 点名 + setParam 回退）⇒ op 下标是 1，不是 0。
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "ops": [
+                {"kind": "setTrackName", "trackId": a.to_canonical_string(), "name": "828-X"},
+                {"kind": "setParam", "lane": "TrackVolume", "value": -3.0}
+            ]
+        }),
+    );
+    assert_domain_error(
+        &refused,
+        "INVALID_PARAMETER_RANGE",
+        "混合批缺顶层音轨必须拒绝",
+    );
+    assert_eq!(
+        refused["error"]["data"]["reason"], "trackIdRequired",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["opIndex"], 1,
+        "op 下标必须是第一个回退形态的位置: {refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["requiredByKinds"],
+        json!(["setParam"]),
+        "{refused}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒的调用不得改工程"
+    );
+}
