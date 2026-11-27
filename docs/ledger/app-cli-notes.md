@@ -102,9 +102,10 @@
 ```text
 headless ok
 opened: path=… bytes=… format=yeban-container                   (或 project-source: sample=…)
-project: id=… bpm=120.00 ts=4/4 title="夜半 Yeban"
-project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=0 asset-blobs=0 history-bytes=0
-view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=211 dynamic-regions=14
+project: id=… bpm=120.00 ts=4/4 title="夜半 Yeban" author="Yeban Project Contributors"
+project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=1 asset-blobs=1 history-bytes=0
+automation-engine: unapplied-lanes=… send-gain=… device-param=… macro=… midi-cc=… note="…"
+view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=947 dynamic-regions=17
 headless: 未构造 MainWindow, 未初始化 Slint 后端, 未渲染任何像素 —— …
 saved: path=… bytes=… history-bytes=… assets=… temp=… from=…
 exported: path=… lines=… bytes=… temp=…
@@ -126,6 +127,14 @@ exported: path=… lines=… bytes=… temp=…
 run `37242779089` 的 `rust (yeban-app)` job 里有一行原始日志
 `Running tests/cli_contract.rs (target/debug/deps/cli_contract-…)` → `test result: ok. 12 passed; 0 failed`。
 
+> **2026-11-28 复测（基线 `e920cc71`，真 `release-small` 二进制，yanshi-2）**：
+> §2.4 与 §3 的读数已按本次实测更新：`elements=947`、`dynamic-regions=17`、
+> `assets-indexed=1` / `asset-blobs=1`、`--save-as` 104238 字节 / `assets=1`、
+> `--export-elements` 947 行 / 135463 字节、zip 内 `project.json` 7756 字节。
+> 旧读数（211 / 6149 / 28221 / 5929）来自更早的演示工程，已失效。
+> 另：`project:` 行现带 `author="Yeban Project Contributors"`；无头输出里还有
+> `automation-engine:` 行（§2.4 模板与下文实测原样收录）。
+
 ```text
 $ yeban-app --version
 yeban-app 0.0.1
@@ -134,23 +143,25 @@ exit=0
 $ yeban-app --headless
 headless ok
 project-source: sample=default (内置演示工程; 未给 --open ⇒ 未读任何文件)
-project: id=01J8Z5Q0R7K3M9X2V4B6N8P0P0 bpm=120.00 ts=4/4 title="夜半 Yeban"
-project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=0 asset-blobs=0 history-bytes=0
-view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=211 dynamic-regions=14
+project: id=01J8Z5Q0R7K3M9X2V4B6N8P0P0 bpm=120.00 ts=4/4 title="夜半 Yeban" author="Yeban Project Contributors"
+project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=1 asset-blobs=1 history-bytes=0
+automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 midi-cc=0 note="有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点（离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点（拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP 渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点（离线导出/MCP 只在存在 Macro 泳道时按映射级联），MIDI CC 在监听里没有落点（离线导出/MCP 把 MidiCc 泳道求值成探针，逐块喂给 render_track_with_cc）"
+view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=947 dynamic-regions=17
 headless: 未构造 MainWindow, 未初始化 Slint 后端, 未渲染任何像素 —— 控件树断言需要 crates/yeban-ui-test-port 的 testing backend
 exit=0
 
 $ yeban-app --save-as /tmp/demo.yeban          # 没有 --open ⇒ 明说是演示工程
 ... (project-source: sample=default …)
-saved: path=/tmp/demo.yeban bytes=6149 history-bytes=0 assets=0 temp=demo.yeban.tmp-01M44JR0H8VYYMJ5642J1JXR03 from=sample=default (内置演示工程, 不是从文件打开的)
+saved: path=/tmp/demo.yeban bytes=104238 history-bytes=0 assets=1 temp=demo.yeban.tmp-01M8FKS2RHKAVNHE2665XBAKS1 from=sample=default (内置演示工程, 不是从文件打开的)
 exit=0
 
 $ yeban-app --open /tmp/demo.yeban --headless  # 再打开它（字节数一致 ⇒ 真的读了那个文件）
 headless ok
-opened: path=/tmp/demo.yeban bytes=6149 format=yeban-container
-project: id=01J8Z5Q0R7K3M9X2V4B6N8P0P0 bpm=120.00 ts=4/4 title="夜半 Yeban"
-project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=0 asset-blobs=0 history-bytes=0
-view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=211 dynamic-regions=14
+opened: path=/tmp/demo.yeban bytes=104238 format=yeban-container
+project: id=01J8Z5Q0R7K3M9X2V4B6N8P0P0 bpm=120.00 ts=4/4 title="夜半 Yeban" author="Yeban Project Contributors"
+project-counts: tracks-all=7 master-track=1 scenes=4 sections=4 clips-pool=2 midi-notes=6 assets-indexed=1 asset-blobs=1 history-bytes=0
+automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 midi-cc=0 note="有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点（离线导出/MCP 按边求值），DeviceParam 的 output_gain_db 在有通道条来源的轨上有实时落点（拼写 output_gain / fader_db 同一条），其余通道条（含压缩）/混响/卷积标量名字在离线导出/MCP 渲染里有落点（卷积 IR 形状没有），Macro 在监听里没有落点（离线导出/MCP 只在存在 Macro 泳道时按映射级联），MIDI CC 在监听里没有落点（离线导出/MCP 把 MidiCc 泳道求值成探针，逐块喂给 render_track_with_cc）"
+view-counts: tracks=6 master=1 clips=3 notes=6 sections=4 scenes=4 elements=947 dynamic-regions=17
 headless: 未构造 MainWindow, …
 exit=0
 
@@ -172,16 +183,17 @@ $ yeban-app --bogus
 exit=2
 
 $ yeban-app --open /tmp/demo.yeban --export-elements /tmp/e.txt --headless
-exported: path=/tmp/e.txt lines=211 bytes=28221 temp=e.txt.tmp-01M44JVDS62S0XX2BSQ236A7D2
-exit=0        # /tmp/e.txt 实测 211 行
+exported: path=/tmp/e.txt lines=947 bytes=135463 temp=e.txt.tmp-01M8FKS2XHB3RADVBBKBKAQ76E
+exit=0        # /tmp/e.txt 实测 947 行；--dump-elements 打到 stdout 共 954 行 = 947 元素行 + 末尾 7 行 headless 报告行，元素行逐行相同（非缺陷）
 
 $ yeban-app --open /tmp/project.json --headless     # 裸 project.json（从真容器里取出的那一份）
 (stderr) yeban-app: 打开 `/tmp/project.json` 失败: `/tmp/project.json` 不是 `.yeban` 容器 (容器裁决: end-of-central-directory record not found)
 exit=3        # stdout 为空：既不是"未知格式"，也不是"打开成空工程"（D43 删掉了兼容读路径）
 
 $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZIP**（D30）
-     5929  01-01-1980 00:00   project.json
+     7756  01-01-1980 00:00   project.json
         0  01-01-1980 00:00   history.dag
+    96044  01-01-1980 00:00   assets/1ed3429f42993c602a51cd1dc1ccdac69f935fe81d672d35ffe3bebb79995396
 ```
 
 ---
