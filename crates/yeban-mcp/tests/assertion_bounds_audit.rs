@@ -190,6 +190,16 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          内层是单条音轨的 placements，空集合是合法状态",
     ),
     (
+        "tests/tools_e2e.rs",
+        ".all(|warning| warning[\"code\"] != \"unrecognisedInstrumentParam\"),",
+        "否定制断言：断言的是“工厂鼓组不得混入 unrecognisedInstrumentParam 警告”，空集合时该性质仍然成立 \
+         （没有混入即结论正确）；⛔ 不能钉非空：工厂鼓组的每个参数都与渲染表匹配，实测 warnings 为空数组 \
+         （T-FIX-746 的判据原文就是“a factory lofi generation carries no unrecognisedInstrumentParam \
+         at all”，测试名即“factory kits stay quiet”）；泄漏失败模式仍被抓住：若出现该 code 的警告，\
+         `.all` 即为假 ⇒ 测试红；且同一测试函数上半段已用 Probe Kit 证明警告管线会报（恰好 1 条），\
+         静默空 warnings 的管线会在上半段先失败，不会从这半段溜过去。（T-FIX-849：逐条评审。）",
+    ),
+    (
         "tests/render_plugin_whitelist.rs",
         "plugins.iter().all(|row| {",
         "`scan_still_skips_missing_caller_dir_silently`：扫描结果允许为空（8c4ea390 起刻意不钉总行数，\
