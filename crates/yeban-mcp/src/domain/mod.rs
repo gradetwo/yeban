@@ -8455,8 +8455,31 @@ fn apply_redo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
 /// 即 `ARCH-SEC-004` 的同目录临时文件 + `fsync` + `rename`。失败时原文件不受影响、
 /// 临时文件被清理，**不会留下半个母带**。
 fn apply_render(artifact: render::RenderArtifact) -> Result<ToolResponse, Fault> {
-    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
-    Ok(ToolResponse::success(artifact.response_data()))
+    apply_export_artifact(&artifact.path, &artifact.bytes, artifact.response_data())
+}
+
+/// ⭐ T-FIX-986：渲染 / 母带 SFZ / 录音三路导出共用的落盘＋回执口径。
+/// 与保存、分轨同一把尺子：走 [`store::write_project_atomic_with_durability`]，
+/// 把 `Durability::Warning`（文件已替换但目录项未确认持久化）写进
+/// `data.durabilityWarning`；完全落盘时为 `null`，⛔ 不当成保存失败。
+fn apply_export_artifact(
+    path: &std::path::Path,
+    bytes: &[u8],
+    data: Value,
+) -> Result<ToolResponse, Fault> {
+    let durability = store::write_project_atomic_with_durability(path, bytes)?;
+    Ok(ToolResponse::success(with_durability_warning(
+        data, durability,
+    )))
+}
+
+/// 把落盘的持久化读数并进回执（无警告 ⇒ `null`，与保存路径逐字同口径）。
+fn with_durability_warning(mut data: Value, durability: store::Durability) -> Value {
+    let warning = durability.warning().map(Value::from).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut data {
+        map.insert("durabilityWarning".to_owned(), warning);
+    }
+    data
 }
 
 /// 把一份已解析的装载登记进会话 registry（`yeban_load_sfz` 与预制应用的
@@ -8507,16 +8530,14 @@ fn apply_load_sfz(domain: &mut Domain, load: sfz::SfzLoad) -> Result<ToolRespons
 /// `ARCH-SEC-004` 的同目录临时文件 + `fsync` + `rename`。失败时原文件不受影响、
 /// 临时文件被清理 —— **不会留下半个母带**。
 fn apply_render_sfz_wav(artifact: &sfz::SfzWavArtifact) -> Result<ToolResponse, Fault> {
-    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
-    Ok(ToolResponse::success(artifact.response_data()))
+    apply_export_artifact(&artifact.path, &artifact.bytes, artifact.response_data())
 }
 
 /// `yeban_record_wav` 的施加：把**已经录好并编码好**的 WAV 字节原子落盘。
 ///
 /// 与前两条导出共用 [`store::write_project_atomic`]（`ARCH-SEC-004`）。
 fn apply_record_wav(artifact: &record_wav::RecordArtifact) -> Result<ToolResponse, Fault> {
-    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
-    Ok(ToolResponse::success(artifact.response_data()))
+    apply_export_artifact(&artifact.path, &artifact.bytes, artifact.response_data())
 }
 
 /// `yeban_export_stems`（⭐ `ADR-0030`）：一次调用把每条源节点轨弹成一个 32-bit float WAV。
@@ -13635,5 +13656,55 @@ mod tests {
                 "拒绝必须保持工程不变 (autoMerge={auto_merge})"
             );
         }
+    }
+
+    /// ⭐ T-FIX-986：三路导出共用的落盘回执在目录刷盘失败时必须带
+    /// `durabilityWarning`（文件已替换、目录项未确认持久化），正常路径恒 null。
+    /// 红对照：把 `apply_export_artifact` 改回 `write_project_atomic` ⇒ 警告消失，
+    /// 本条红在 `.as_str().expect(...)`。
+    #[cfg(unix)]
+    #[test]
+    fn export_artifact_receipt_carries_durability_warning() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-tfix986-{}-{}",
+            std::process::id(),
+            yeban_model::EntityId::new()
+        ));
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("demo.yeban");
+        fs::write(&path, b"OLD\n").expect("原文件");
+        let data = serde_json::json!({"saved": true, "path": path.display().to_string()});
+
+        store::DIR_SYNC_INJECTION.with(|flag| flag.set(true));
+        let response =
+            apply_export_artifact(&path, b"NEW\n", data.clone()).expect("目录刷盘失败不是导出失败");
+        store::DIR_SYNC_INJECTION.with(|flag| flag.set(false));
+        let ToolResponse::Success { data: got } = response else {
+            panic!("导出必须成功");
+        };
+        let warning = got["durabilityWarning"]
+            .as_str()
+            .expect("导出回执必须带持久化警告");
+        assert!(
+            warning.contains("目录") || warning.contains("持"),
+            "警告必须说清发生了什么: {warning}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("读"),
+            b"NEW\n",
+            "文件已替换（已提交语义不变）"
+        );
+
+        let clean = dir.join("clean.yeban");
+        let response2 = apply_export_artifact(&clean, b"NEW\n", data).expect("正常落盘");
+        let ToolResponse::Success { data: got2 } = response2 else {
+            panic!("导出必须成功");
+        };
+        assert!(
+            got2["durabilityWarning"].is_null(),
+            "正常路径不出现警告（与保存/分轨同口径）"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }
