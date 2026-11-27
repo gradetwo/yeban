@@ -16,12 +16,17 @@
 //!
 //! - **引用** ＝ `::tests::NAME` 或 `.rs::NAME` 形状（`NAME` 取到第一个非标识符字符为止）；
 //!   只从 `src/**` 里取 —— 那是**对外承诺**的所在；`tests/**` 里提到别的判据是叙述。
+//! - **全大写常量名不纳入**（T-FIX-855）：判据是 `fn`（snake_case），数据常量不是判据；
+//!   名字全部字母大写（SCREAMING_SNAKE_CASE，如 `effect_params.rs::EFFECT_GROUPS`，实为
+//!   `pub const`）视为数据引用，不纳入抽取。混合大小写与全小写仍纳入 —— 判据名是
+//!   snake_case，不会全大写；⛔ 收窄不得静默吞掉真判据引用，见下「注入自证」。
 //! - **存在** ＝ `crates/yeban-mcp` 下**任一个** `.rs` 里有 `fn NAME(`（`src` 与 `tests` 都算，
 //!   因为判据既有内联模块测试也有集成测试）。
 //! - **非真空**：引用数必须 ≥ 当前读数 **29**（R93 棘轮：删引用要同步下调此界并在提交
 //!   说明写明理由），扫到的源文件数必须 ≥ 下界 40（R100：扫描面不能悄悄缩水）。
 //!   ⚠ 想缩面的**真实**保护是 29 这个引用数下界 —— 删掉一个源文件，它里面的引用随之消失，
 //!   引用数就掉下来；文件数下界只负责"扫描器没失灵"。
+//!   收窄后实测 41 处（T-FIX-855：排除 4 处误判的 EFFECT_GROUPS 引用后仍 ≥29，下界不动）。
 //!
 //! # 注入自证（改坏就会红）
 //!
@@ -52,6 +57,9 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// 抽出 `text` 里被**指名**的判据名（`::tests::NAME` ／ `.rs::NAME`）。
+///
+/// 全大写常量名（SCREAMING_SNAKE_CASE，如 `EFFECT_GROUPS`）不纳入：判据是 `fn`
+/// （snake_case），数据常量不是判据（T-FIX-855）。
 fn referenced_criteria(text: &str) -> Vec<String> {
     const MARKS: [&str; 2] = ["::tests::", ".rs::"];
     let mut out = Vec::new();
@@ -63,13 +71,28 @@ fn referenced_criteria(text: &str) -> Vec<String> {
                 .chars()
                 .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
                 .collect();
-            if !name.is_empty() {
+            if !name.is_empty() && !is_screaming_constant(&name) {
                 out.push(name);
             }
             rest = after;
         }
     }
     out
+}
+
+/// 全大写常量名：至少含一个 ASCII 字母，且所有字母均为大写（数字与 `_` 不计）。
+/// 判据名是 snake_case，必含小写字母；全大写即数据常量引用（如 `EFFECT_GROUPS`）。
+fn is_screaming_constant(name: &str) -> bool {
+    let mut has_letter = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphabetic() {
+            has_letter = true;
+            if !ch.is_ascii_uppercase() {
+                return false;
+            }
+        }
+    }
+    has_letter
 }
 
 /// 恒定输出：引用名逐条打印（⛔ 让抽取器变成黑箱的读数都没有）。
@@ -133,7 +156,7 @@ fn every_criterion_named_in_the_sources_exists() {
     // ① R93／R100：引用数必须达到下界（⛔ 抽取规则失灵 / 指路被整体删掉却静默通过）。
     assert!(
         references.len() >= 29,
-        "`src/**` 里的判据引用只剩 {} 处（现读 29 处）⇒ 抽取规则失灵，或指路被整体删掉 \
+        "`src/**` 里的判据引用只剩 {} 处（收窄后实测 41 处，T-FIX-855）⇒ 抽取规则失灵，或指路被整体删掉 \
          （⛔ 静默通过：删引用要同步下调此界并写明理由）",
         references.len()
     );
@@ -153,5 +176,22 @@ fn the_extractor_recognises_both_reference_shapes() {
     assert_eq!(
         got, expected,
         "抽取器必须认出两种形状（模块测试 / 集成测试文件）"
+    );
+}
+
+/// 抽取器收窄（T-FIX-855）：全大写常量名不是判据 —— `effect_params.rs::EFFECT_GROUPS`
+/// 是 `pub const`，散文里 4 处引用不得再被当成判据引用；真判据（snake_case）仍纳入，
+/// 两种形状都适用（`::tests::` 与 `.rs::`）。
+#[test]
+fn the_extractor_ignores_screaming_constant_names() {
+    let const_file = format!("{}{}{}", "effect_params", ".rs::", "EFFECT_GROUPS");
+    let const_module = format!("{}{}{}", "x::", "tests::", "MAX_ITEMS");
+    let criterion = format!("{}{}{}", "render_master", ".rs::", "gamma_case");
+    let prose = format!("数据取自 `{const_file}` 与 `{const_module}`；另见 `{criterion}`");
+    let got = referenced_criteria(&prose);
+    assert_eq!(
+        got,
+        vec!["gamma_case".to_string()],
+        "全大写常量名必须被排除，真判据名必须保留"
     );
 }
