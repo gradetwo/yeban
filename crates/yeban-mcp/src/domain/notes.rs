@@ -12438,6 +12438,40 @@ fn compile_track_metadata_op(project: &YebanProjectV1, op: &NoteOp) -> Result<Op
     }
 }
 
+/// **服务端为 `create: true` 省略 `clipId` 时派生的片段身份**（T-FIX-830）。
+///
+/// 与 [`parse_note`]（省略 `note.id` ⇒ `deterministic_id("note:{start}:{pitch}:{duration}")`）
+/// 和 `DuplicateClip`（省略 `new_clip_id` ⇒ `deterministic_id("clip-copy:{src}:{name}")`）
+/// 同一条纪律：**省略的身份是请求内容的纯函数**，不是随机数。`preview()` 与
+/// `execute()` 是两次独立的 `plan()` 调用（见 `domain::preview` / `domain::execute`），
+/// 随机派生会让 dryRun 预览的 op 与真提交的 op 逐字节不同 —— 那正是 `ids` 模块头
+/// 钉住的"同一请求应当产出同一载荷"。
+///
+/// 标签 = `create-clip:{track}:{notes}`，其中 `notes` 是各条 `add` 音符的
+/// 规范 JSON（`serde_json` 序列化，字段顺序稳定），**按音符 JSON 排序后**拼接
+/// （`add` 的顺序不改变产出的片段内容，标签也不应随它变）。`clipName` 不参与
+/// 身份（`tools.rs` 的 `clipName` 描述：只是给人看的标签）；`setTrackName` /
+/// `setTrackColor` 也不参与（它们不依赖新片段）。
+///
+/// 影响（响亮，不静默）：内容**完全相同**的两次创建命中同一身份，第二份会被
+/// [`compile_create`] 以 `clipAlreadyExists` CONFLICT 拒绝 —— 要建内容相同的
+/// 第二份请显式给 `clipId`。这与 `duplicateClip` 省略 `newClipId` 时的同形口径一致。
+#[must_use]
+pub fn mint_create_clip_id(track_id: &EntityId, ops: &[NoteOp]) -> EntityId {
+    let mut notes: Vec<String> = Vec::new();
+    for op in ops {
+        if let NoteOp::Add { note } = op {
+            notes.push(serde_json::to_string(&**note).expect("音符序列化不失败"));
+        }
+    }
+    notes.sort_unstable();
+    deterministic_id(&format!(
+        "create-clip:{}:{}",
+        track_id.to_canonical_string(),
+        notes.join(",")
+    ))
+}
+
 /// **材料创建**形态的编译（`arguments.create: true`）：把一组 `add` 折成**一条**
 /// [`Op::AddClip`]，可同批携带纯音轨元数据操作。
 ///
@@ -21828,6 +21862,47 @@ mod tests {
             entry.content.notes().is_some_and(|notes| !notes.is_empty()),
             "新条目必须是 `usable_materials` 认的形态 (MIDI 且至少一个音符)"
         );
+    }
+
+    /// T-FIX-830：服务端派生的创建身份是请求内容的纯函数 —— 同一请求两次派生
+    /// 同一身份（dryRun 预览才能等于真做），内容不同（音符/音轨）派生不同身份，
+    /// `add` 顺序不影响派生（顺序不改变产出的片段内容）。
+    #[test]
+    fn mint_create_clip_id_is_deterministic_and_content_sensitive() {
+        let (track_id, _) = lead_clip(&filled_project());
+        let ops =
+            parse_ops(&serde_json::json!([add_json(0, 60), add_json(480, 64)])).expect("解析");
+        let first = mint_create_clip_id(&track_id, &ops);
+        assert_eq!(
+            first,
+            mint_create_clip_id(&track_id, &ops),
+            "同一请求必须派生同一身份"
+        );
+        // `add` 顺序不改变产出的片段内容，也不改变派生身份。
+        let reordered =
+            parse_ops(&serde_json::json!([add_json(480, 64), add_json(0, 60)])).expect("解析");
+        assert_eq!(
+            first,
+            mint_create_clip_id(&track_id, &reordered),
+            "add 顺序不改变派生身份"
+        );
+        // 音符内容不同 ⇒ 身份不同。
+        let different_notes =
+            parse_ops(&serde_json::json!([add_json(0, 60), add_json(480, 65)])).expect("解析");
+        assert_ne!(
+            first,
+            mint_create_clip_id(&track_id, &different_notes),
+            "音符内容不同必须派生不同身份"
+        );
+        // 音轨不同 ⇒ 身份不同。
+        let other_track = deterministic_id("track:other");
+        assert_ne!(
+            first,
+            mint_create_clip_id(&other_track, &ops),
+            "音轨不同必须派生不同身份"
+        );
+        // 是合法的 26 字符 ULID 文本。
+        assert_eq!(first.to_canonical_string().len(), 26);
     }
 
     /// `create: true` 且池里已有该身份 ⇒ `CONFLICT`（绝不覆盖别人的片段）。

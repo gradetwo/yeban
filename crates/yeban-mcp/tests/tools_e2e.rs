@@ -2641,6 +2641,160 @@ fn fix_650_create_true_allows_track_metadata_in_same_batch() {
     );
 }
 
+/// T-FIX-830：`create: true` 省略 `clipId` ⇒ 服务端确定性派生新身份，
+/// 回执 `willCreate.clipPoolEntries[].id` 回传；显式 ID 旧路径不变。
+/// 另钉两条派生语义：同请求两次派生同一身份；内容完全相同的再次创建在
+/// 合并后命中同一身份而 `CONFLICT`（要建内容相同的第二份请显式给 `clipId`）。
+#[test]
+fn create_true_without_clip_id_is_server_minted() {
+    let scratch = Scratch::new("create-minted");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = write_project_of(&scratch, "naked.yeban", &project_without_midi_material());
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    let project = dispatcher.domain().active_project().expect("工程").clone();
+    let source_track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Midi)
+        .expect("样本里必须有 MIDI 音轨")
+        .id
+        .to_canonical_string();
+
+    // ① 省略 clipId 的 create 成功，回执含新片段 ID（26 字符 ULID，非占位 nil）。
+    let arguments = json!({
+        "trackId": source_track,
+        "clipName": "Minted",
+        "create": true,
+        "includeOps": true,
+        "ops": [
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+            {"kind": "add", "note": {"startTick": 480, "pitch": 67, "durationTicks": 480}},
+        ],
+    });
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        arguments.clone(),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let minted = created["data"]["willCreate"]["clipPoolEntries"][0]["id"]
+        .as_str()
+        .expect("回执必须含新片段 ID")
+        .to_owned();
+    assert_eq!(minted.len(), 26, "派生身份必须是 26 字符 ULID: {minted}");
+    assert_ne!(
+        minted, "00000000000000000000000000",
+        "派生身份不得是占位 nil: {minted}"
+    );
+    assert_eq!(
+        created["data"]["willCreate"]["clipPoolEntries"][0]["name"], "Minted",
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["willCreate"]["clipPoolEntries"][0]["notes"], 2,
+        "{created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["description"],
+        format!("edit_notes create {minted}"),
+        "提案描述必须点名派生身份: {created}"
+    );
+
+    // ② 同请求再调一次（合并前）⇒ 同一派生身份（确定性派生）。
+    let again = call(&mut dispatcher, &auth, "yeban_edit_notes", arguments);
+    assert_eq!(again["status"], "success", "{again}");
+    assert_eq!(
+        again["data"]["willCreate"]["clipPoolEntries"][0]["id"], minted,
+        "同请求必须派生同一身份: {again}"
+    );
+
+    // ③ 合并 ⇒ 池子里真的多了一条以该身份命名的 MIDI 材料。
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "T-FIX-830" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程").clone();
+    let entry = after
+        .clip_pool
+        .values()
+        .find(|entry| entry.id.to_canonical_string() == minted)
+        .expect("池里必须有派生身份的新片段");
+    assert_eq!(entry.name, "Minted");
+    assert_eq!(
+        entry.content.notes().map(std::collections::BTreeMap::len),
+        Some(2)
+    );
+
+    // ④ 内容完全相同的再次创建（合并后）⇒ 命中同一身份而 CONFLICT。
+    let bytes_before = project_bytes(&dispatcher);
+    let clash = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track,
+            "clipName": "Minted",
+            "create": true,
+            "ops": [
+                {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+                {"kind": "add", "note": {"startTick": 480, "pitch": 67, "durationTicks": 480}},
+            ],
+        }),
+    );
+    assert_domain_error(&clash, "CONFLICT", "内容相同的再次创建必须撞库");
+    assert_eq!(clash["error"]["data"]["reason"], "clipAlreadyExists");
+    assert_eq!(clash["error"]["data"]["clipId"], minted, "{clash}");
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "失败不得改工程");
+
+    // ⑤ 显式 ID 旧路径不变：显式给新身份 ⇒ 成功且回执就是给的那个身份。
+    let explicit = yeban_mcp::domain::ids::deterministic_id("clip:830:explicit");
+    let explicit = explicit.to_canonical_string();
+    let created_explicit = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": source_track, "clipId": explicit, "clipName": "Explicit",
+            "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 72, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(created_explicit["status"], "success", "{created_explicit}");
+    assert_eq!(
+        created_explicit["data"]["willCreate"]["clipPoolEntries"][0]["id"], explicit,
+        "显式 ID 必须原样回传: {created_explicit}"
+    );
+
+    // ⑥ 空 ops 的 create（T-FIX-41）省略 clipId 也能派生身份。
+    let created_empty = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({ "trackId": source_track, "create": true, "ops": [] }),
+    );
+    assert_eq!(created_empty["status"], "success", "{created_empty}");
+    let empty_minted = created_empty["data"]["willCreate"]["clipPoolEntries"][0]["id"]
+        .as_str()
+        .expect("空片段也必须有派生身份")
+        .to_owned();
+    assert_eq!(empty_minted.len(), 26, "{empty_minted}");
+    assert_ne!(empty_minted, minted, "空片段与有音符的片段身份必须不同");
+}
+
 /// `create: true` 的三条**响亮失败**口径（端到端；每条都在真实文件系统上）。
 #[test]
 fn needs_8_create_true_refuses_what_it_cannot_honour() {

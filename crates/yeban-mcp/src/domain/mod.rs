@@ -4580,7 +4580,18 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         })?;
 
         let clip_id = if needs_clip {
-            require_envelope_clip(call, &note_ops, placement_raw.is_some(), creating)?
+            // ⭐ T-FIX-830：`create: true` 省略 `clipId`（含显式 `null`，与
+            // `parse_note` 省略 `note.id` 同口径）⇒ 服务端确定性派生
+            // （`notes::mint_create_clip_id`，与 `parse_note` / `duplicateClip`
+            // 的省略身份同一条纪律：同请求 dryRun 预览与真调用同一身份）。
+            // 显式给了仍走旧的 `require_envelope_clip`；其余需要 `clipId` 的形态
+            // （`placement` 在场、读它的音符形态）缺参时仍响亮拒绝 —— 派生只对
+            // `create` 开口。
+            if creating && matches!(call.arguments.get("clipId"), None | Some(Value::Null)) {
+                notes::mint_create_clip_id(&track_id, &note_ops)
+            } else {
+                require_envelope_clip(call, &note_ops, placement_raw.is_some(), creating)?
+            }
         } else {
             EntityId::default()
         };
@@ -13192,6 +13203,68 @@ mod tests {
             planned_ops,
             Value::Array(committed),
             "预览里的 op 必须与真实提交的 op 逐字节相同 (确定性身份)"
+        );
+    }
+
+    /// T-FIX-830：`create: true` 省略 `clipId` 时，dryRun 预览的 op 也必须与
+    /// 真提交的 op 逐字节相同 —— `preview()` 与 `execute()` 是两次独立的
+    /// `plan()` 调用，服务端派生的身份若是随机的，两次派生就会不同。
+    /// 这条判据与上一条同构，只是走 `create` 那条分支且不给 `clipId`。
+    #[test]
+    fn create_without_clip_id_dry_run_preview_ops_equal_the_ops_actually_committed() {
+        let mut domain = domain();
+        let track = domain
+            .active_project()
+            .expect("工程")
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Midi)
+            .expect("样本里必须有 MIDI 音轨")
+            .id;
+        let arguments = serde_json::json!({
+            "trackId": track.to_canonical_string(),
+            "clipName": "Minted",
+            "create": true,
+            "includeOps": true,
+            "ops": [
+                {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}},
+                {"kind": "add", "note": {"startTick": 480, "pitch": 67, "durationTicks": 480}},
+            ],
+        });
+        let call = call("yeban_edit_notes", arguments);
+        let preview = preview(&domain, &call).expect("预览");
+        let planned_ops = preview["ops"].clone();
+        // 预览里那条 AddClip 用的就是服务端派生的身份，且回执点名了它。
+        assert_eq!(
+            preview["willCreate"]["clipPoolEntries"][0]["name"], "Minted",
+            "预览回执必须点名新建片段: {preview}"
+        );
+        let minted = preview["willCreate"]["clipPoolEntries"][0]["id"]
+            .as_str()
+            .expect("回执必须含新片段 ID")
+            .to_owned();
+        assert_eq!(minted.len(), 26, "派生身份必须是 26 字符 ULID: {minted}");
+
+        let created = execute(&mut domain, &call).expect("执行");
+        let proposal_id = created["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("id");
+        let record = domain
+            .proposal(&EntityId::from_str(proposal_id).expect("ULID"))
+            .expect("记录");
+        let committed: Vec<Value> = record
+            .ops
+            .iter()
+            .map(|stamped| serde_json::to_value(&stamped.op).expect("序列化"))
+            .collect();
+        assert_eq!(
+            planned_ops,
+            Value::Array(committed),
+            "省略 clipId 的 create：预览里的 op 必须与真实提交的 op 逐字节相同 (确定性派生)"
+        );
+        assert_eq!(
+            created["data"]["willCreate"]["clipPoolEntries"][0]["id"], minted,
+            "真调用的回执必须含同一派生身份: {created}"
         );
     }
 

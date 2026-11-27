@@ -1085,7 +1085,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "clipId",
                 "string",
                 false,
-                "片段 EntityId; ⭐ **按 `ops[].kind` 条件必需**: 只有**读**它的形态需要 —— 音符形态 (清单以 `domain::notes::ENVELOPE_CLIP_KINDS` 为准)、池级 `removeClip`, 以及 `placement` 在场 / `create:true` 时。其余形态 (音轨/设备/路由/段落/场景/资产/文档级) **不读**它: 省略即可, 给了也接受但忽略 (不查片段池)。需要而缺 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"clipIdRequired\"`, 带 `requiredByKinds`)。逐 kind 口径见 `ops.items` 各分支的 `x-envelope.clipId` 与分支描述。`create:true` 时它是**将要新建的**片段身份 (池里已有 ⇒ `CONFLICT`)",
+                "片段 EntityId; ⭐ **按 `ops[].kind` 条件必需**: 只有**读**它的形态需要 —— 音符形态 (清单以 `domain::notes::ENVELOPE_CLIP_KINDS` 为准)、池级 `removeClip`, 以及 `placement` 在场 / `create:true` 时。其余形态 (音轨/设备/路由/段落/场景/资产/文档级) **不读**它: 省略即可, 给了也接受但忽略 (不查片段池)。需要而缺 ⇒ `INVALID_PARAMETER_RANGE` (`reason:\"clipIdRequired\"`, 带 `requiredByKinds`)。逐 kind 口径见 `ops.items` 各分支的 `x-envelope.clipId` 与分支描述。`create:true` 时它是**将要新建的**片段身份 (池里已有 ⇒ `CONFLICT`)；省略 (含显式 `null`) ⇒ 服务端按 (`trackId`, 音符内容) 确定性派生 (`domain::notes::mint_create_clip_id`)，新身份经回执 `willCreate.clipPoolEntries[].id` 回传；同请求 dryRun 预览与真调用同一身份。内容完全相同的再次创建会命中同一身份而 `CONFLICT` —— 要建内容相同的第二份请显式给 `clipId`",
             ),
             array_param(
                 "ops",
@@ -1108,7 +1108,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "create",
                 "boolean",
                 false,
-                "用 `clipId` 新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 允许 `add` (它们成为新片段的初始内容) 与纯音轨元数据 `setTrackName` / `setTrackColor` (不依赖新片段, 编译成既有 Op 并与 `Op::AddClip` 同批原子施加); 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE` (含音符级/片段级/摆放级/设备级/自动化级与 `removeClip`); `setTrackName`/`setTrackColor` 指向不存在的轨 ⇒ 整批拒绝且不建片段。可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导",
+                "用 `clipId`（可省；省略时服务端确定性派生，见 `clipId` 参数）新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 允许 `add` (它们成为新片段的初始内容) 与纯音轨元数据 `setTrackName` / `setTrackColor` (不依赖新片段, 编译成既有 Op 并与 `Op::AddClip` 同批原子施加); 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE` (含音符级/片段级/摆放级/设备级/自动化级与 `removeClip`); `setTrackName`/`setTrackColor` 指向不存在的轨 ⇒ 整批拒绝且不建片段。可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导",
             ),
             param(
                 "clipName",
