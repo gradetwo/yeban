@@ -15,7 +15,9 @@
 //!    与 `read`/`attached`/`dropped` 一起上报（手搓含空/坏 UTF-8 的 `FF 05`）。
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
@@ -86,6 +88,149 @@ fn create_test_smf_file() -> PathBuf {
     ));
     fs::write(&path, bytes).expect("写测试 SMF 文件");
     path
+}
+
+static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// 一次性的临时目录（`Drop` 时删除，**绝不污染仓库**）。
+struct Scratch {
+    dir: PathBuf,
+}
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |delta| delta.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-import-t364-{tag}-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            SCRATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("建临时目录");
+        Self { dir }
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// 不带活跃工程的调度器（供 `yeban_open_project` 从头建工程的判据使用）。
+fn dispatcher_empty() -> Dispatcher {
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+}
+
+/// 经真实 `yeban_open_project {create: true}` 建一份默认种子工程
+/// （1 条 MIDI 轨、1 小节种子片段、4 颗种子音），返回调度器与工程路径。
+/// `scratch` 必须由调用方持有到判据结束（`Drop` 时清盘）。
+fn open_default_project(scratch: &Scratch) -> (Dispatcher, PathBuf) {
+    let project_path = scratch.join("demo.yeban");
+    let mut dispatcher = dispatcher_empty();
+    let created = call_tool(
+        &mut dispatcher,
+        "yeban_open_project",
+        json!({"path": project_path.display().to_string(), "create": true}),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(created["data"]["created"], true, "{created}");
+    (dispatcher, project_path)
+}
+
+fn first_non_master_track_id(project: &YebanProjectV1) -> EntityId {
+    *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("非 master 音轨")
+}
+
+/// ⭐ T-FIX-364：60 s SMF（format 1、PPQ 960、120 BPM）：2 条轨 × 120 颗音，
+/// 每轨第 i 颗起于 `i * 960`、长 480 tick；末音止于 114720 tick（≈ 59.75 s）。
+/// 与任务单的"60 s、2×120 音符 SMF"同一量级；`noteCount` 必须为 240。
+fn create_60s_smf_file() -> PathBuf {
+    fn vlq(mut value: u32) -> Vec<u8> {
+        let mut bytes = vec![(value & 0x7F) as u8];
+        value >>= 7;
+        while value > 0 {
+            bytes.push(((value & 0x7F) as u8) | 0x80);
+            value >>= 7;
+        }
+        bytes.reverse();
+        bytes
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MThd");
+    bytes.extend_from_slice(&6u32.to_be_bytes());
+    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&3u16.to_be_bytes());
+    bytes.extend_from_slice(&960u16.to_be_bytes());
+    let mut conductor: Vec<u8> = Vec::new();
+    conductor.extend_from_slice(&vlq(0));
+    conductor.extend_from_slice(&[0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]);
+    conductor.extend_from_slice(&vlq(0));
+    conductor.extend_from_slice(&[0xFF, 0x2F, 0x00]);
+    bytes.extend_from_slice(b"MTrk");
+    bytes.extend_from_slice(&(conductor.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&conductor);
+    for _track in 0..2 {
+        let mut track: Vec<u8> = Vec::new();
+        let mut cursor: u32 = 0;
+        for i in 0..120u32 {
+            let start = i * 960;
+            let end = start + 480;
+            let key = 60 + (i % 24) as u8;
+            track.extend_from_slice(&vlq(start - cursor));
+            track.extend_from_slice(&[0x90, key, 100]);
+            cursor = start;
+            track.extend_from_slice(&vlq(end - cursor));
+            track.extend_from_slice(&[0x80, key, 0]);
+            cursor = end;
+        }
+        track.extend_from_slice(&vlq(0));
+        track.extend_from_slice(&[0xFF, 0x2F, 0x00]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&track);
+    }
+    let path = std::env::temp_dir().join(format!(
+        "yeban-test-import-60s-{}-{}.mid",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    fs::write(&path, bytes).expect("写 60s SMF 文件");
+    path
+}
+
+/// 走真实 `yeban_render_master` 管线渲染母带，返回完整响应。
+fn render_master(dispatcher: &mut Dispatcher, out: &Path) -> Value {
+    let result = call_tool(
+        dispatcher,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "渲染必须成功: {result}");
+    result
+}
+
+/// `sources[].notes` 之和（排程的音符数，含循环展开的副本 —— 见判据注释）。
+fn total_render_notes(rendered: &Value) -> u64 {
+    rendered["data"]["sources"]
+        .as_array()
+        .expect("sources 数组")
+        .iter()
+        .map(|source| source["notes"].as_u64().unwrap_or(0))
+        .sum()
 }
 
 #[test]
@@ -189,14 +334,37 @@ fn test_import_midi_dry_run_preview_vs_real_execution() {
 fn test_import_midi_fault_handling() {
     let smf_path = create_test_smf_file();
 
-    // 1. CONFLICT: 目标 clip 非空（filled_project 内已有音符）
+    // 1. CONFLICT: 显式指定的目标 clip 非空（filled_project 内已有音符）。
+    // ⭐ T-FIX-364：不给 `clipId` 时默认目标不再 CONFLICT —— 导入会自建空片段
+    // 当落点；CONFLICT 只保留给**显式点名**一个非空片段的调用（调用方自己的
+    // 选择，⛔ 不静默改写目标），所以本用例必须显式给 `clipId`。
     {
-        let mut dispatcher = dispatcher_with_project(filled_project());
+        let project = filled_project();
+        let track_id = first_non_master_track_id(&project);
+        let clip_id = project
+            .tracks
+            .get(&track_id)
+            .expect("音轨")
+            .clips
+            .values()
+            .find(|placement| {
+                matches!(
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .map(|entry| &entry.content),
+                    Some(ClipContent::Midi { .. })
+                )
+            })
+            .expect("目标摆放")
+            .clip_id;
+        let mut dispatcher = dispatcher_with_project(project);
         let res = call_tool(
             &mut dispatcher,
             "yeban_import_midi",
             json!({
                 "path": smf_path.to_str().expect("str"),
+                "clipId": clip_id.to_canonical_string(),
             }),
         );
         assert_eq!(res["status"], "error", "{res}");
@@ -1131,6 +1299,17 @@ fn import_midi_creates_a_placement_on_a_track_that_has_none() {
         data["noteCount"].as_u64().unwrap_or(0) > 0,
         "导入必须真的落音符: {data}"
     );
+    // ⭐ T-FIX-364：自建落点的回执必须与实际可听一致 —— 自建摆放按内容跨度
+    // 创建，4 颗音符全在窗口里；旧实现在"工程视图里还没有摆放"的前提下算可听，
+    // 于是 `audibleNotes: 0 / clippedNotes: 4`，谎报了这次成功的导入。
+    assert_eq!(data["noteCount"], 4, "{data}");
+    assert_eq!(
+        data["audibleNotes"], 4,
+        "自建摆放覆盖整段 ⇒ 4 颗全可听: {data}"
+    );
+    assert_eq!(data["clippedNotes"], 0, "{data}");
+    assert_eq!(data["targetDurationTicks"], 3360, "{data}");
+    assert_eq!(data["requiredDurationTicks"], 3360, "{data}");
     let imported_clip = data["clipId"].as_str().expect("clipId").to_owned();
 
     let project = dispatcher.domain().active_project().expect("活跃工程");
@@ -1239,6 +1418,248 @@ fn import_midi_with_explicit_clip_id_extends_a_short_placement() {
         .get(&placement_id)
         .expect("目标摆放");
     assert_eq!(placement.duration_ticks, 3360, "导入后摆放必须撑到 3360");
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// ⭐ T-FIX-364（验收 1）：默认种子工程 + `yeban_import_midi` 一次调用成功。
+///
+/// 旧行为：默认目标是唯一的种子片段（1 小节、4 颗种子音）⇒
+/// `CONFLICT: destination clip '…' is not empty (contains 4 notes)`，
+/// 调用方必须先手工建空片段（还得猜 `durationTicks`，否则
+/// `durationNotDerivable`）。新行为：默认目标不可用时自建空 MIDI 片段 +
+/// 摆放当落点；种子片段一字不动，导入的音符全落在新片段里。
+#[test]
+fn import_midi_auto_creates_destination_when_default_clip_is_not_empty() {
+    let smf_path = create_test_smf_file();
+    let scratch = Scratch::new("default-import");
+    let (mut dispatcher, _project_path) = open_default_project(&scratch);
+    let seed_clip = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        let track_id = first_non_master_track_id(project);
+        project
+            .tracks
+            .get(&track_id)
+            .expect("音轨")
+            .clips
+            .values()
+            .next()
+            .expect("种子摆放")
+            .clip_id
+    };
+
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({"path": smf_path.to_str().expect("str")}),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert_eq!(data["applied"], true, "{data}");
+    assert_eq!(data["noteCount"], 4, "{data}");
+    assert_eq!(
+        data["audibleNotes"], 4,
+        "自建摆放覆盖整段 ⇒ 4 颗全可听: {data}"
+    );
+    assert_eq!(data["clippedNotes"], 0, "{data}");
+    assert_eq!(data["targetDurationTicks"], 3360, "{data}");
+    assert_eq!(data["requiredDurationTicks"], 3360, "{data}");
+    let imported_clip = data["clipId"].as_str().expect("clipId").to_owned();
+    assert_ne!(
+        imported_clip,
+        seed_clip.to_canonical_string(),
+        "落点必须是新片段，不是种子片段: {data}"
+    );
+
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let track_id = first_non_master_track_id(project);
+    let track = project.tracks.get(&track_id).expect("音轨");
+    assert_eq!(track.clips.len(), 2, "种子摆放 + 自建摆放: {track:?}");
+    let seed_notes = project
+        .clip_pool
+        .get(&seed_clip)
+        .and_then(|entry| entry.content.notes())
+        .map(|notes| notes.len())
+        .unwrap_or(0);
+    assert_eq!(seed_notes, 4, "种子片段的 4 颗种子音必须一字不动");
+    let imported_notes = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.id.to_canonical_string() == imported_clip)
+        .and_then(|entry| entry.content.notes())
+        .map(|notes| notes.len())
+        .unwrap_or(0);
+    assert_eq!(imported_notes, 4, "导入的 4 颗音符必须全落在新片段里");
+    let placement = track
+        .clips
+        .values()
+        .find(|placement| placement.clip_id.to_canonical_string() == imported_clip)
+        .expect("自建摆放");
+    assert_eq!(
+        placement.duration_ticks, 3360,
+        "自建摆放时值必须覆盖内容末端"
+    );
+
+    // 同一文件再导一次：默认目标变成第一次自建的片段（已非空）⇒ 仍须自建，
+    // 且新片段身份必须与第一次的不撞（派生身份后缀递增，⛔ 不是复用同一身份）。
+    let second = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({"path": smf_path.to_str().expect("str")}),
+    );
+    assert_eq!(second["status"], "success", "{second}");
+    let second_data = &second["data"];
+    assert_eq!(second_data["noteCount"], 4, "{second_data}");
+    assert_eq!(second_data["audibleNotes"], 4, "{second_data}");
+    let second_clip = second_data["clipId"].as_str().expect("clipId").to_owned();
+    assert_ne!(second_clip, imported_clip, "第二次自建必须换一个新片段身份");
+    assert_ne!(
+        second_clip,
+        seed_clip.to_canonical_string(),
+        "第二次自建也不能落在种子片段上"
+    );
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let track = project.tracks.get(&track_id).expect("音轨");
+    assert_eq!(track.clips.len(), 3, "种子摆放 + 两次自建摆放: {track:?}");
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// ⭐ T-FIX-364（验收 2 + 3，显式 1 小节空片段路径）：60 s SMF 导入 1 小节
+/// 空片段（循环关闭）⇒ T-FIX-354 的扩展把摆放从 3840 撑到 114720，
+/// 240 颗音符全可听；`render_master` 的 `sources[].notes` 之和必须等于
+/// `noteCount`（= `audibleNotes`），回执与渲染对账一致。
+///
+/// 循环关闭是任务单场景本身的形状：经 `yeban_edit_notes create:true` 手工
+/// 建的空片段摆放循环缺省关闭；`filled_project` 的种子摆放自带
+/// `loop [0, 3840)`，用它量会把"循环遮住"与"摆放不够长"混在一起 ——
+/// 循环遮住的音符按设计计入 `clipped_notes`（T-FIX-354 注释），⛔ 不是本任务的量。
+#[test]
+fn import_midi_long_file_into_one_bar_empty_clip_reconciles_with_render() {
+    let smf_path = create_60s_smf_file();
+    let mut project = project_with_notes(0);
+    let track_id = first_non_master_track_id(&project);
+    let (clip_id, placement_id) = {
+        let track = project.tracks.get(&track_id).expect("音轨");
+        let placement = track
+            .clips
+            .values()
+            .find(|placement| {
+                matches!(
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .map(|entry| &entry.content),
+                    Some(ClipContent::Midi { .. })
+                )
+            })
+            .expect("目标摆放");
+        (placement.clip_id, placement.id)
+    };
+    {
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("音轨")
+            .clips
+            .get_mut(&placement_id)
+            .expect("目标摆放");
+        placement.duration_ticks = 3840;
+        placement.loop_config = yeban_model::LoopConfig::default();
+    }
+    let scratch = Scratch::new("long-import");
+    let mut dispatcher = dispatcher_with_project(project);
+
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({
+            "path": smf_path.to_str().expect("str"),
+            "clipId": clip_id.to_canonical_string(),
+        }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert_eq!(data["noteCount"], 240, "{data}");
+    assert_eq!(data["audibleNotes"], 240, "扩展后 240 颗全可听: {data}");
+    assert_eq!(data["clippedNotes"], 0, "{data}");
+    assert_eq!(data["targetDurationTicks"], 3840, "{data}");
+    assert_eq!(data["requiredDurationTicks"], 114720, "{data}");
+
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let placement = project
+        .tracks
+        .get(&track_id)
+        .expect("音轨")
+        .clips
+        .get(&placement_id)
+        .expect("目标摆放");
+    assert_eq!(
+        placement.duration_ticks, 114720,
+        "导入后摆放必须撑到内容末端 114720（T-FIX-354 的扩展）"
+    );
+
+    let out = scratch.join("master.wav");
+    let rendered = render_master(&mut dispatcher, &out);
+    assert_eq!(
+        total_render_notes(&rendered),
+        240,
+        "渲染排程的音符数必须等于导入音符数: {}",
+        rendered["data"]["sources"]
+    );
+
+    let _ = fs::remove_file(smf_path);
+}
+
+/// ⭐ T-FIX-364（验收 1 + 2 + 3，自建落点路径）：默认种子工程 + 60 s SMF
+/// 一次调用成功 —— 自建落点必须走通 T-FIX-354 的扩展（自建摆放按内容跨度
+/// 创建），回执 `audibleNotes == noteCount == 240`，且与 `render_master`
+/// 的 `sources[].notes` 之和对账一致。
+///
+/// 对账口径：渲染按**轨**数排程音符 —— 种子片段的 4 颗种子音与自建落点同在
+/// Track 1 上，所以渲染总数 = 种子音（4）+ 导入音（240）= 244；只数"导入
+/// 的"那一半时必须先减掉种子音 —— ⛔ 不能把 244 写成"导入了 244 颗"。
+#[test]
+fn import_midi_auto_created_destination_reconciles_with_render() {
+    let smf_path = create_60s_smf_file();
+    let scratch = Scratch::new("auto-long-import");
+    let (mut dispatcher, _project_path) = open_default_project(&scratch);
+    let seed_notes: u64 = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(|notes| notes.len() as u64)
+            .sum()
+    };
+    assert_eq!(seed_notes, 4, "默认种子工程必须恰好 4 颗种子音");
+
+    let result = call_tool(
+        &mut dispatcher,
+        "yeban_import_midi",
+        json!({"path": smf_path.to_str().expect("str")}),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    assert_eq!(data["applied"], true, "{data}");
+    assert_eq!(data["noteCount"], 240, "{data}");
+    assert_eq!(
+        data["audibleNotes"], 240,
+        "自建摆放覆盖整段 ⇒ 240 颗全可听: {data}"
+    );
+    assert_eq!(data["clippedNotes"], 0, "{data}");
+    assert_eq!(data["targetDurationTicks"], 114720, "{data}");
+    assert_eq!(data["requiredDurationTicks"], 114720, "{data}");
+
+    let out = scratch.join("master.wav");
+    let rendered = render_master(&mut dispatcher, &out);
+    assert_eq!(
+        total_render_notes(&rendered),
+        seed_notes + 240,
+        "渲染排程的音符数必须等于种子音 + 导入音符数: {}",
+        rendered["data"]["sources"]
+    );
 
     let _ = fs::remove_file(smf_path);
 }

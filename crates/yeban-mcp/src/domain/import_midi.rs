@@ -155,6 +155,12 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     // "往新轨导 MIDI"这条最自然的用法永远走不通 —— 必须先手工造一个**带音符**的
     // 片段当落点，而那个片段又必须是空的才能导入（自相矛盾）。
     //
+    // ⭐ T-FIX-364：默认目标是**非空** MIDI 片段时同样自建落点 —— 默认种子工程
+    // 只有一条 1 小节种子片段（4 颗种子音），直接导入必然 CONFLICT，调用方被迫
+    // 先手工建空片段（还得猜 `durationTicks`，否则 `durationNotDerivable`）。
+    // 显式给 `clipId` 时不触发：调用方点名的非空片段仍是 CONFLICT（⛔ 不静默
+    // 改写目标）；默认目标本身是空片段时也不触发，走原路径。
+    //
     // 这里先在工程副本里插入一条**空 MIDI 片段**并把它的身份显式交给 `destination`，
     // 摆放本身等读完文件、知道内容长度之后再补（时值必须覆盖整段，短了会裁剪音符）。
     // 两条 op 都前置到本批 ⇒ 与音符同一次原子提交、一次撤销。
@@ -170,18 +176,54 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     let mut patched: Option<YebanProjectV1> = None;
     let mut auto_placement: Option<(EntityId, EntityId, EntityId)> = None;
     let mut auto_clip_id: Option<EntityId> = None;
-    if clip_id_opt.is_none()
-        && let Some(auto_track) = resolved_track
+    let auto_track: Option<EntityId> = if clip_id_opt.is_some() {
+        None
+    } else if let Some(track) = resolved_track
         && project
             .tracks
-            .get(&auto_track)
+            .get(&track)
             .is_some_and(|track| track.clips.is_empty())
     {
-        let clip_id = deterministic_id(&format!(
+        Some(track)
+    } else {
+        // 默认目标已定但不可用（非空 MIDI 片段）⇒ 在该目标所在的轨上自建落点。
+        // `destination` 是纯函数：这里只读它决定的目标，不产生任何副作用。
+        destination(
+            project,
+            &MidiImportOptions {
+                track_id: track_id_opt,
+                clip_id: None,
+                split_tracks,
+            },
+        )
+        .ok()
+        .filter(|(_, default_clip)| {
+            project.clip_pool.get(default_clip).is_some_and(
+                |entry| matches!(&entry.content, ClipContent::Midi { notes } if !notes.is_empty()),
+            )
+        })
+        .map(|(default_track, _)| default_track)
+    };
+    if let Some(auto_track) = auto_track {
+        // 自建片段的身份必须与池里已有的身份不撞：同一文件两次导入默认目标时，
+        // 第二次的默认目标是第一次自建的片段（已非空）⇒ 仍会触发自建；若沿用
+        // 同一个派生身份，`AddClip` 会与池里已有的片段撞身份 —— 后缀递增，
+        // 仍是确定性的（⛔ 不取墙钟/随机数）。
+        let mut clip_id = deterministic_id(&format!(
             "import-midi-clip:{}:{}",
             auto_track.to_canonical_string(),
             path.to_string_lossy()
         ));
+        let mut suffix = 2u32;
+        while project.clip_pool.contains_key(&clip_id) {
+            clip_id = deterministic_id(&format!(
+                "import-midi-clip:{}:{}:{}",
+                auto_track.to_canonical_string(),
+                path.to_string_lossy(),
+                suffix
+            ));
+            suffix += 1;
+        }
         let placement_id = deterministic_id(&super::notes::placement_label(
             &clip_id.to_canonical_string(),
             &auto_track.to_canonical_string(),
@@ -209,7 +251,10 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     let (track_id, clip_id) = destination(
         project_view,
         &MidiImportOptions {
-            track_id: track_id_opt,
+            // 自建落点时目标轨就是自建的那条轨（⛔ 不让 `destination` 按"第一条
+            // 带 MIDI 摆放的轨"另选一条 —— 那会让回执的 `trackId` 与摆放真正
+            // 所在的轨错开，`audibleNotes` 也会按错的轨去算）。
+            track_id: track_id_opt.or(auto_track),
             clip_id: clip_id_opt.or(auto_clip_id),
             split_tracks,
         },
@@ -253,6 +298,7 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
     })?;
 
     // 自建摆放的时值必须覆盖整段内容：短了渲染会按摆放裁剪导入的音符。
+    let mut auto_placement_value: Option<yeban_model::ClipPlacement> = None;
     if let Some((auto_track, auto_clip, placement_id)) = auto_placement {
         let span_ticks = parsed
             .notes
@@ -276,10 +322,33 @@ pub fn plan(project: &YebanProjectV1, arguments: &Map<String, Value>) -> Result<
             track_id: auto_track,
             placement,
         });
+        auto_placement_value = Some(placement);
     }
 
+    // ⭐ T-FIX-364：回执的可听读数必须按"导入后生效"的摆放算 —— 自建摆放是
+    // 本次提交的一部分，`plan_midi_import` 必须在"已经有这条摆放"的工程视图
+    // 上算 `audibleNotes`，否则自建落点永远报 `audibleNotes: 0 /
+    // clippedNotes: N`（旧实现只把摆放塞进 `auto_ops`，规划时视图里还没有
+    // 它）。这里只克隆视图供规划用，真正的落点仍由 `auto_ops` 里的
+    // `AddClipPlacement` 一次提交创建；非自建路径视图不变，逐字同旧行为。
+    // （与 GUI 的 T-FIX-720 同一做法：先补摆放再重规划。）
+    let plan_view_owned: Option<YebanProjectV1> =
+        match (auto_placement, auto_placement_value.as_ref()) {
+            (Some((auto_track, _, _)), Some(placement)) => {
+                let mut view = project_view.clone();
+                view.tracks
+                    .get_mut(&auto_track)
+                    .expect("自建落点的轨必须在工程视图里")
+                    .clips
+                    .insert(placement.id, *placement);
+                Some(view)
+            }
+            _ => None,
+        };
+    let plan_view: &YebanProjectV1 = plan_view_owned.as_ref().unwrap_or(project_view);
+
     let mut plan = plan_midi_import(
-        project_view,
+        plan_view,
         &parsed,
         &MidiImportOptions {
             track_id: Some(track_id),

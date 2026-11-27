@@ -10742,7 +10742,11 @@ mod tests {
             ("yeban_export_diagnostics", serde_json::json!({})),
             // SMF 导出：**只读**且没有可调参数 —— `filled_project` 有 MIDI 内容 ⇒ 规划成功。
             ("yeban_export_midi", serde_json::json!({})),
-            // SMF 导入：夹具 `filled_project` 的目标 MIDI 片段非空 ⇒ 规划阶段即报 `CONFLICT`。
+            // SMF 导入：⭐ T-FIX-364 之后默认目标不再因"非空"而 CONFLICT ——
+            // 夹具 `filled_project` 的目标片段非空时导入会自建空片段当落点，
+            // 于是规划走到读盘这一步；`path` 指向不存在的文件 ⇒ `FILE_NOT_FOUND`。
+            // （显式点名非空片段仍是 `CONFLICT`，由
+            // `tests/import_midi_tool.rs` 的 `test_import_midi_fault_handling` 钉。）
             (
                 "yeban_import_midi",
                 serde_json::json!({"path": unique_path()}),
@@ -10984,8 +10988,8 @@ mod tests {
                     assert_eq!(fault.domain_code(), Some(ErrorCode::FileNotFound));
                 }
                 "yeban_import_midi" => {
-                    let fault = outcome.expect_err("目标 MIDI 片段非空");
-                    assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+                    let fault = outcome.expect_err("路径不存在");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::FileNotFound));
                 }
                 "yeban_undo" | "yeban_redo" => {
                     let fault = outcome.expect_err("没有历史");

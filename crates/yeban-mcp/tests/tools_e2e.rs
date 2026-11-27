@@ -1647,7 +1647,9 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         ),
         // SMF 导出：只读且无参数（活跃工程有 MIDI 内容 ⇒ 带内成功）。
         ("yeban_export_midi", json!({})),
-        // SMF 导入：活跃工程的默认 MIDI 片段非空 ⇒ 带内 `CONFLICT`（不是实现级出口）。
+        // SMF 导入：⭐ T-FIX-364 之后默认目标非空不再 `CONFLICT`（自建落点），
+        // 于是规划走到读盘这一步；`path` 不存在 ⇒ 带内 `FILE_NOT_FOUND`
+        // （不是实现级出口）。
         (
             "yeban_import_midi",
             json!({ "path": scratch.text("missing.mid") }),
